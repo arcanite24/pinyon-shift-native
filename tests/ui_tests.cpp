@@ -98,9 +98,9 @@ race::CareerCatalog make_test_catalog() {
   sh01.event_id = 101, sh01.horizon_id = "EXHIBITION_1", sh01.style = 3, sh01.popularity_rank_req = 225;
   sh01.player_car_id = 404, sh01.prize_car_id = 424, sh01.cash_prize = 10000;
 
-  // Nemesis showdown with prereq
+  // Nemesis showdown with prereq (fr10, event_id 30 — uncompleted in test catalog)
   race::CareerEvent nm01;
-  nm01.event_id = 169, nm01.horizon_id = "NEM_1", nm01.style = 5, nm01.prereq_event_id = 999;
+  nm01.event_id = 169, nm01.horizon_id = "NEM_1", nm01.style = 5, nm01.prereq_event_id = 30;
 
   // Headline finale (style 6)
   race::CareerEvent sd01;

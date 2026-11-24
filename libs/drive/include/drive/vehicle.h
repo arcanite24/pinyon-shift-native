@@ -427,6 +427,13 @@ struct Input {
   double clutch = 0;
   int shift = 0;
   bool linear_steer = false;  // true for 900-deg steering wheel: bypass gamepad speed narrowing
+  // Optional road/lane guidance for Assisted steering mode (assists_.steering == 0):
+  // when has_assist_lane is true, Assisted steering adds a gentle centering bias
+  // toward the lane (assist_heading_error_rad: signed angle to road tangent,
+  // positive right; assist_lateral_offset_m: signed distance right of lane center).
+  bool has_assist_lane = false;
+  double assist_heading_error_rad = 0.0;
+  double assist_lateral_offset_m = 0.0;
 };
 
 // Runtime driving assists matching ForzaProfile.sch enums
@@ -617,6 +624,11 @@ class Vehicle {
   double decel_table_at(double speed_ms) const;
   // The static load the springs are preloaded with, per wheel (N).
   double static_load(int wheel) const { return preload_[wheel]; }
+  // Body-frame signed lateral acceleration in g (+X right in a right turn).
+  double lateral_g() const { return lateral_g_; }
+  // World-space Y component of the body's +Y up vector (< 0.5 indicates rollover).
+  double up_y() const { return rotate(rot_, {0, 1, 0}).y; }
+  bool is_rolled_over() const { return up_y() < 0.5; }
 
  private:
   void substep(double dt, const Ground& ground);
@@ -700,6 +712,7 @@ class Vehicle {
   DraftState draft_{};
   DamageMods damage_{};
   double body_force_ = 0;
+  double lateral_g_ = 0;
   BodyContact strongest_;
 };
 

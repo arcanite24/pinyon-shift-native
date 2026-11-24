@@ -1048,6 +1048,7 @@ void sfx_engine_checks() {
   vs.redline_rpm = 7000.0f;
   vs.throttle = 0.0f;  // overrun for backfire
   vs.forced_induction = 1;
+  vs.turbo_level = 1;
   vs.turbo_norm_rpm = 0.8f;
   vs.turbo_psi = 16.0f;
   vs.bov_open = true;
@@ -1159,7 +1160,7 @@ void sfx_engine_checks() {
     st.redline_rpm = 7500.0f;
     st.trans_level = 2;
     st.forced_induction = 1;
-    st.turbo_level = 2;
+    st.turbo_level = 3;
     st.turbo_norm_rpm = 0.85f;
     st.scraping = true;
     st.scrape_intensity = 0.8f;
@@ -1629,6 +1630,7 @@ void hitch_and_underrun_recovery_checks() {
     vs.redline_rpm = 8000.0f;
     vs.throttle = 0.35f;
     vs.forced_induction = 1;
+    vs.turbo_level = 1;
     vs.turbo_norm_rpm = 0.5f;
     for (auto& w : vs.wheels) {
       w.load = 1.0f;
@@ -1861,6 +1863,358 @@ void phase2_parity_checks() {
   }
 }
 
+void phase_r2_1_audio_parity_checks() {
+  auto make_tone = [](double hz, int frames, int rate = 48000) {
+    audio::PcmSample s;
+    s.rate = rate;
+    s.data.resize(size_t(frames));
+    for (int i = 0; i < frames; ++i)
+      s.data[size_t(i)] = float(0.6 * std::sin(2.0 * 3.14159265358979323846 * hz * double(i) / double(rate)));
+    return s;
+  };
+  auto rms = [](const std::vector<float>& buf) {
+    double acc = 0.0;
+    for (float v : buf) acc += double(v) * double(v);
+    return buf.empty() ? 0.0 : std::sqrt(acc / double(buf.size()));
+  };
+
+  // 1. P0-A2: Lock-free SpscRingBuffer wrap-around & concurrent producer/consumer FIFO integrity.
+  {
+    audio::SpscRingBuffer<float> rb(100);
+    CHECK(rb.capacity() == 128);  // power-of-two rounding
+    std::vector<float> in(90), out(90, 0.0f);
+    for (size_t i = 0; i < in.size(); ++i) in[i] = float(i + 1);
+    CHECK(rb.write(in.data(), 90) == 90);
+    CHECK(rb.available_read() == 90 && rb.available_write() == 38);
+    CHECK(rb.read(out.data(), 60) == 60);
+    CHECK(out[0] == 1.0f && out[59] == 60.0f);
+    // Write 80 across wrap boundary.
+    std::vector<float> in2(80);
+    for (size_t i = 0; i < 80; ++i) in2[i] = float(100 + i);
+    CHECK(rb.write(in2.data(), 80) == 80);
+    std::vector<float> drain(110, 0.0f);
+    CHECK(rb.read(drain.data(), 110) == 110);
+    CHECK(drain[0] == 61.0f && drain[29] == 90.0f && drain[30] == 100.0f && drain[109] == 179.0f);
+    CHECK(rb.available_read() == 0);
+
+    // Concurrent SPSC stress (100,000 floats).
+    audio::SpscRingBuffer<float> srb(4096);
+    constexpr size_t kTotal = 100000;
+    std::atomic<bool> ok{true};
+    std::thread prod([&]() {
+      size_t sent = 0;
+      float chunk[257];
+      while (sent < kTotal) {
+        const size_t n = std::min<size_t>(257, kTotal - sent);
+        for (size_t i = 0; i < n; ++i) chunk[i] = float(sent + i);
+        size_t off = 0;
+        while (off < n) off += srb.write(chunk + off, n - off);
+        sent += n;
+      }
+    });
+    std::thread cons([&]() {
+      size_t got = 0;
+      float chunk[193];
+      while (got < kTotal) {
+        const size_t n = srb.read(chunk, std::min<size_t>(193, kTotal - got));
+        for (size_t i = 0; i < n; ++i) {
+          if (chunk[i] != float(got + i)) ok.store(false, std::memory_order_relaxed);
+        }
+        got += n;
+      }
+    });
+    prod.join();
+    cons.join();
+    CHECK(ok.load());
+  }
+
+  // 2. P0-A8: Multichannel FSB4 xma2_wave stream count ((channels + 1) / 2) and channel masks.
+  {
+    std::vector<uint8_t> pkt(2048, 0);
+    auto u16_at = [](const std::vector<uint8_t>& b, size_t off) {
+      return uint16_t(b[off] | (uint16_t(b[off + 1]) << 8));
+    };
+    auto u32_at = [](const std::vector<uint8_t>& b, size_t off) {
+      return uint32_t(b[off]) | (uint32_t(b[off + 1]) << 8) | (uint32_t(b[off + 2]) << 16) |
+             (uint32_t(b[off + 3]) << 24);
+    };
+    struct Case {
+      uint16_t ch;
+      uint16_t want_streams;
+      uint32_t want_mask;
+    };
+    for (const Case c : std::initializer_list<Case>{
+             {1, 1, 0x4u}, {2, 1, 0x3u}, {4, 2, 0x33u}, {6, 3, 0x3Fu}, {8, 4, 0x63Fu}}) {
+      audio::FsbSample s;
+      s.channels = c.ch;
+      s.rate = 48000;
+      s.frames = 1024;
+      const auto w = audio::xma2_wave(s, pkt);
+      // RIFF(12) + fmt_hdr(8) + WAVEFORMATEX(18) = offset 38 -> num_streams(u16), offset 40 -> mask(u32).
+      CHECK(w.size() >= 72);
+      CHECK(u16_at(w, 22) == c.ch);
+      CHECK(u16_at(w, 38) == c.want_streams);
+      CHECK(u32_at(w, 40) == c.want_mask);
+    }
+  }
+
+  // 3. P0-A4: AudioEngine::trigger_collision propagates surface_hint & SmashMaterial all the way to SfxEngine.
+  {
+    audio::AudioEngine eng(48000);
+    auto sfx = std::make_unique<audio::SfxEngine>(48000);
+    // Populate ONLY kImpactMetal (leave kImpact3d empty!) so Metal surface_hint=3 MUST propagate to produce audio.
+    sfx->set_sample(audio::SfxSoundId::kImpactMetal, make_tone(440.0, 2400));
+    sfx->set_sample(audio::SfxSoundId::kBreakFence, make_tone(620.0, 2400));
+    sfx->set_sample(audio::SfxSoundId::kBreakGlass, make_tone(920.0, 2400));
+    auto* sfx_raw = sfx.get();
+    eng.set_sfx_engine(std::move(sfx));
+
+    audio::CollisionHit metal_hit{};
+    metal_hit.rel_speed_mps = 15.0f;
+    metal_hit.pos = {1.0f, 0.0f, 0.0f};
+    metal_hit.surface_hint = 3;  // Metal/Guardrail
+    eng.trigger_collision(metal_hit);
+    std::vector<float> out(4800 * 2, 0.0f);
+    eng.render_offline(out.data(), 4800);
+    CHECK(rms(out) > 0.02);
+    CHECK(sfx_raw->last_one_shot_id() == audio::SfxSoundId::kImpactMetal);
+
+    // Wait past 75 ms collision cooldown (4800 frames = 100 ms already rendered).
+    audio::CollisionHit fence_break{};
+    fence_break.rel_speed_mps = 14.0f;
+    fence_break.pos = {0.0f, 0.0f, 1.0f};
+    fence_break.is_break = true;
+    fence_break.smash_material = audio::SmashMaterial::kFence;
+    eng.trigger_collision(fence_break);
+    std::fill(out.begin(), out.end(), 0.0f);
+    eng.render_offline(out.data(), 4800);
+    CHECK(rms(out) > 0.02);
+    CHECK(sfx_raw->last_one_shot_id() == audio::SfxSoundId::kBreakFence);
+
+    audio::CollisionHit glass_break{};
+    glass_break.rel_speed_mps = 14.0f;
+    glass_break.pos = {0.0f, 0.0f, 1.0f};
+    glass_break.is_break = true;
+    glass_break.smash_material = audio::SmashMaterial::kGlass;
+    eng.trigger_collision(glass_break);
+    std::fill(out.begin(), out.end(), 0.0f);
+    eng.render_offline(out.data(), 4800);
+    CHECK(rms(out) > 0.02);
+    CHECK(sfx_raw->last_one_shot_id() == audio::SfxSoundId::kBreakGlass);
+  }
+
+  // 4. P0-A6: Turbo/SC tier indexing (0=none, 1=L1, 2=L2, 3=L3) & per-car blowoffChoice selection.
+  {
+    constexpr int kFrames = 2400;
+    std::array<std::vector<float>, audio::kBuses> bufs;
+    float* ptrs[audio::kBuses]{};
+    auto clear_bufs = [&]() {
+      for (int b = 0; b < audio::kBuses; ++b) {
+        bufs[size_t(b)].assign(kFrames * 2, 0.0f);
+        ptrs[b] = bufs[size_t(b)].data();
+      }
+    };
+
+    // 4a. turbo_level == 0 -> silent; turbo_level == 1 -> L1; 2 -> L2; 3 -> L3.
+    {
+      audio::SfxEngine sfx(48000);
+      sfx.set_sample(audio::SfxSoundId::kTurboSpool, make_tone(1000.0, 9600));
+      sfx.set_sample(audio::SfxSoundId::kTurboSpoolL2, make_tone(1400.0, 9600));
+      sfx.set_sample(audio::SfxSoundId::kScWhineL3, make_tone(1200.0, 9600));
+
+      audio::VehicleAudioState st{};
+      st.forced_induction = 1;
+      st.turbo_level = 0;  // 0 = none!
+      st.turbo_norm_rpm = 0.9f;
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kTurbo)]) < 1e-6);
+
+      // turbo_level == 2 must pick L2 (not L3); verify by setting ONLY L2 in a fresh SfxEngine.
+      audio::SfxEngine sfx_l2(48000);
+      sfx_l2.set_sample(audio::SfxSoundId::kTurboSpoolL2, make_tone(1400.0, 9600));
+      st.turbo_level = 2;
+      clear_bufs();
+      sfx_l2.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kTurbo)]) > 0.02);
+
+      // turbo_level == 1 must NOT play L2 (only L1, which is empty in sfx_l2).
+      audio::SfxEngine sfx_l2_only(48000);
+      sfx_l2_only.set_sample(audio::SfxSoundId::kTurboSpoolL2, make_tone(1400.0, 9600));
+      st.turbo_level = 1;
+      clear_bufs();
+      sfx_l2_only.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kTurbo)]) < 1e-6);
+
+      // Supercharger: sc_level == 0 -> silent; sc_level == 3 -> kScWhineL3.
+      st.forced_induction = 2;
+      st.sc_level = 0;
+      st.supercharger_norm_rpm = 0.9f;
+      st.throttle = 1.0f;
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kSupercharger)]) < 1e-6);
+      st.sc_level = 3;
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kSupercharger)]) > 0.02);
+    }
+
+    // 4b. Per-car blowoffL2Choice == 4 selects kTurboBovL2C4Hi (not hardcoded Choice 1).
+    {
+      audio::SfxEngine sfx(48000);
+      const auto want_id = audio::turbo_bov_sound_id(2, 4, true);
+      CHECK(want_id == audio::SfxSoundId::kTurboBovL2C4Hi);
+      sfx.set_sample(want_id, make_tone(820.0, 4800));
+      audio::VehicleAudioState st{};
+      st.forced_induction = 1;
+      st.turbo_level = 2;
+      st.turbo_psi = 16.0f;  // > 13.0 -> Hi
+      st.bov_open = true;
+      st.blowoff_level = {1, 2, 3};
+      st.blowoff_choice = {1, 4, 2};
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kTurbo)]) > 0.02);
+      CHECK(sfx.last_one_shot_id() == want_id);
+    }
+  }
+
+  // 5. P0-A7: DLC LOD1_pri_1650 discovery, TU4 XML layering, Rally subsystems & SetRadioRallyMode.
+  {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path tmp = fs::temp_directory_path(ec) / "shift_audio_r2_1_test";
+    fs::remove_all(tmp, ec);
+
+    // 5a. LOD1_pri_1650 discovery in SoundFiles::open.
+    const fs::path media = tmp / "disc" / "media";
+    const fs::path pkg_dz = tmp / "state" / "user" / "0000000000000000" / "4D5309C9" / "00000002" / "PKG_RALLY" /
+                            "Media" / "DLCZips";
+    const fs::path lod1_pri = pkg_dz / "LOD1_pri_1650";
+    fs::create_directories(media / "audio" / "cars" / "Engines" / "Soundbanks" / "LOD1", ec);
+    fs::create_directories(lod1_pri, ec);
+    { std::ofstream(lod1_pri / "DLC_RallyCar_Exh.fsb") << "stub"; }
+    cars::Install inst;
+    inst.media = media;
+    cars::Package pkg;
+    pkg.id = "PKG_RALLY";
+    pkg.archives.push_back(pkg_dz / "1600_pri_65");  // sibling dir in same DLCZips parent
+    fs::create_directories(pkg_dz / "1600_pri_65", ec);
+    inst.packages.push_back(std::move(pkg));
+    audio::SoundFiles sf;
+    std::string err;
+    CHECK(sf.open(inst, &err));
+    CHECK(!sf.bank("DLC_RallyCar_Exh.fsb").empty());
+
+    // 5b. TU4 overrides for AudioEngineConfig.xml, SurfaceChanges.xml, CollisionData.xml.
+    const fs::path game_root = tmp / "disc";
+    const fs::path state_root = tmp / "state";
+    fs::create_directories(game_root / "media" / "audio" / "cars" / "Tires", ec);
+    fs::create_directories(game_root / "media" / "audio" / "collisions", ec);
+    fs::create_directories(state_root / "title-update-v4" / "media" / "audio" / "cars" / "Tires", ec);
+    fs::create_directories(state_root / "title-update-v4" / "media" / "audio" / "collisions", ec);
+    {
+      std::ofstream(game_root / "media" / "audio" / "AudioEngineConfig.xml")
+          << R"(<AudioEngineConfig compressorRatio="0.25" saturatorSaturation="0.90"/>)";
+      std::ofstream(state_root / "title-update-v4" / "media" / "audio" / "AudioEngineConfig.xml")
+          << R"(<AudioEngineConfig compressorRatio="0.33"/>)";
+      std::ofstream(game_root / "media" / "audio" / "cars" / "Tires" / "Tires.xml")
+          << R"(<Tires><SurfaceMap PhysicsSurface="Asphalt" Lod1EventGroup="OnRoad"/></Tires>)";
+      std::ofstream(game_root / "media" / "audio" / "cars" / "Tires" / "SurfaceChanges.xml")
+          << R"(<SurfaceChanges><Surfaces Surface1="Asphalt" Surface2="Dirt"><S1toS2 Event="HardToDirt"/></Surfaces></SurfaceChanges>)";
+      std::ofstream(state_root / "title-update-v4" / "media" / "audio" / "cars" / "Tires" / "SurfaceChanges.xml")
+          << R"(<SurfaceChanges><Surfaces Surface1="Asphalt" Surface2="RallyGravel"><S1toS2 Event="HardToRallyGravel"/></Surfaces></SurfaceChanges>)";
+      std::ofstream(game_root / "media" / "audio" / "collisions" / "CollisionData.xml")
+          << R"(<CollisionData MSBetweenDiffCollisions="75"><CollisionEvent Surface1="Asphalt" Surface2="CarAluminum"><Impact3D Group="G" Event="E1"/></CollisionEvent></CollisionData>)";
+      std::ofstream(state_root / "title-update-v4" / "media" / "audio" / "collisions" / "CollisionData.xml")
+          << R"(<CollisionData MSBetweenDiffCollisions="60"><CollisionEvent Surface1="RallyGravel" Surface2="CarAluminum"><Impact3D Group="G" Event="E2"/></CollisionEvent></CollisionData>)";
+    }
+    audio::MasterDspConfig mdsp;
+    CHECK(mdsp.load(game_root, nullptr, state_root));
+    CHECK(near(mdsp.compressor_ratio, 0.33, 1e-4) && near(mdsp.saturator_saturation, 0.90, 1e-4));
+    audio::TiresConfig tcfg;
+    CHECK(tcfg.load(game_root, nullptr, state_root));
+    CHECK(tcfg.surface_change_event("Asphalt", "Dirt") == "HardToDirt");
+    CHECK(tcfg.surface_change_event("Asphalt", "RallyGravel") == "HardToRallyGravel");
+    audio::CollisionAudioConfig ccfg;
+    CHECK(ccfg.load(game_root, nullptr, state_root));
+    CHECK(near(ccfg.ms_between_diff_collisions, 60.0, 1e-3));
+    CHECK(ccfg.find_pair("Asphalt", "CarAluminum") != nullptr);
+    CHECK(ccfg.find_pair("RallyGravel", "CarAluminum") != nullptr);
+
+    // 5c. SetRadioRallyMode attenuates GameMusic while keeping RallyCoDriver at 1.0.
+    audio::SnapshotMatrix mat;
+    const std::string snap_xml = R"(
+      <AudioMixerSnapshots>
+        <FreeRoam group="Gameplay">
+          <GameMusic active="1" destvolume="1.0"/>
+          <RallyCoDriver active="1" destvolume="1.0"/>
+        </FreeRoam>
+      </AudioMixerSnapshots>
+    )";
+    CHECK(mat.parse(snap_xml));
+    CHECK(near(mat.gain(audio::Category::kGameMusic), 1.0, 1e-4));
+    mat.set_radio_rally_mode(true, 0.0f);
+    CHECK(mat.radio_rally_mode());
+    CHECK(mat.gain(audio::Category::kGameMusic) < 0.35f);
+    CHECK(near(mat.gain(audio::Category::kRallyCoDriver), 1.0, 1e-4));
+    mat.set_radio_rally_mode(false, 0.0f);
+    CHECK(near(mat.gain(audio::Category::kGameMusic), 1.0, 1e-4));
+
+    // 5d. AudioEngine::SetRadioRallyMode + trigger_landing + 13-region ColoradoDirt ambience + Rally_Tires.
+    audio::AudioEngine eng(48000);
+    auto sfx = std::make_unique<audio::SfxEngine>(48000);
+    sfx->set_sample(audio::SfxSoundId::kCarLandingHeavy, make_tone(85.0, 2400));
+    sfx->set_sample(audio::SfxSoundId::kRallyTireRollGravel, make_tone(310.0, 4800));
+    auto* sfx_ptr = sfx.get();
+    eng.set_sfx_engine(std::move(sfx));
+    eng.SetRadioRallyMode(true);
+    CHECK(eng.radio_rally_mode());
+
+    audio::LandingHit lh{};
+    lh.impact_speed_mps = 7.0f;
+    lh.air_time_s = 0.85f;
+    lh.surface_hint = 1;
+    eng.trigger_landing(lh);
+    std::vector<float> lout(2400 * 2, 0.0f);
+    eng.render_offline(lout.data(), 2400);
+    CHECK(rms(lout) > 0.02);
+    CHECK(sfx_ptr->last_one_shot_id() == audio::SfxSoundId::kCarLandingHeavy);
+    CHECK(eng.telemetry().radio_rally_mode);
+
+    // Rally_Tires: rally_mode=true plays kRallyTireRollGravel on OffRoad/Gravel wheel surface.
+    audio::VehicleAudioState rst{};
+    rst.speed_mph = 60.0f;
+    rst.rally_mode = true;
+    for (auto& w : rst.wheels) {
+      w.surface_group = 1;
+      w.load = 1.0f;
+    }
+    eng.set_vehicle_state(rst);
+    std::vector<float> rout(2400 * 2, 0.0f);
+    eng.render_offline(rout.data(), 2400);
+    CHECK(rms(rout) > 0.005);
+
+    // 13-region ColoradoDirt ambience selection.
+    audio::AmbienceBedPlayer amb(48000);
+    amb.set_rally_world(true);
+    for (int r = 0; r < audio::AmbienceBedPlayer::kMaxRallyRegions; ++r) {
+      amb.set_rally_bed_sample(r, "region" + std::to_string(r), make_tone(120.0 + 15.0 * r, 4800));
+    }
+    audio::AcousticsSample ac{};
+    ac.is_rally_world = true;
+    ac.ambience_snapshot = "region9";
+    std::vector<float> aout(2400 * 2, 0.0f);
+    amb.render(ac, 15.0f, aout.data(), 2400);
+    CHECK(amb.rally_bed_count() == 13);
+    CHECK(amb.last_rally_region() == 9);
+    CHECK(rms(aout) > 0.005);
+
+    fs::remove_all(tmp, ec);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1878,6 +2232,7 @@ int main() {
   audio_thread_checks();
   hitch_and_underrun_recovery_checks();
   phase2_parity_checks();
+  phase_r2_1_audio_parity_checks();
   r34_checks();
   std::printf("audio_tests: %d failures\n", failures);
   return failures ? 1 : 0;

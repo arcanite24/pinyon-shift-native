@@ -2,12 +2,13 @@
 // carview: Hi-Z depth pyramid generator (world_gpu.cpp).
 // Mip 0 reads depth_resolved (arbitrary resolution) and reduces each mapped texel
 // footprint to dst_size; mips 1..N reduce 2x2 texels from the previous mip.
-// Reverse-Z stores the minimum (furthest visible depth in the tile); forward-Z
-// stores the maximum.
+// Dual-channel RG32F output:
+//   .r = conservative FARTHEST depth in tile (min in Reverse-Z, max in Forward-Z) for occlusion culling
+//   .g = conservative NEAREST depth in tile (max in Reverse-Z, min in Forward-Z) for Hi-Z SSR ray marching
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D src_tex;
-layout(set = 0, binding = 1, r32f) writeonly uniform image2D dst_img;
+layout(set = 0, binding = 1, rg32f) writeonly uniform image2D dst_img;
 
 layout(push_constant) uniform Push {
   uvec2 src_size;
@@ -20,7 +21,8 @@ void main() {
   const uvec2 dst = gl_GlobalInvocationID.xy;
   if (dst.x >= p.dst_size.x || dst.y >= p.dst_size.y) return;
 
-  float out_d = (p.reverse_z != 0u) ? 1.0 : 0.0;
+  float far_z = (p.reverse_z != 0u) ? 1.0 : 0.0;
+  float near_z = (p.reverse_z != 0u) ? 0.0 : 1.0;
   if (p.is_mip0 != 0u) {
     const uint x0 = (dst.x * p.src_size.x) / p.dst_size.x;
     const uint y0 = (dst.y * p.src_size.y) / p.dst_size.y;
@@ -29,7 +31,8 @@ void main() {
     for (uint y = y0; y <= y1; ++y) {
       for (uint x = x0; x <= x1; ++x) {
         const float d = texelFetch(src_tex, ivec2(int(x), int(y)), 0).r;
-        out_d = (p.reverse_z != 0u) ? min(out_d, d) : max(out_d, d);
+        far_z = (p.reverse_z != 0u) ? min(far_z, d) : max(far_z, d);
+        near_z = (p.reverse_z != 0u) ? max(near_z, d) : min(near_z, d);
       }
     }
   } else {
@@ -40,10 +43,11 @@ void main() {
     for (int dy = 0; dy < ny; ++dy) {
       for (int dx = 0; dx < nx; ++dx) {
         const ivec2 c = min(base + ivec2(dx, dy), max_c);
-        const float d = texelFetch(src_tex, c, 0).r;
-        out_d = (p.reverse_z != 0u) ? min(out_d, d) : max(out_d, d);
+        const vec2 d = texelFetch(src_tex, c, 0).rg;
+        far_z = (p.reverse_z != 0u) ? min(far_z, d.r) : max(far_z, d.r);
+        near_z = (p.reverse_z != 0u) ? max(near_z, d.g) : min(near_z, d.g);
       }
     }
   }
-  imageStore(dst_img, ivec2(dst), vec4(out_d, 0.0, 0.0, 0.0));
+  imageStore(dst_img, ivec2(dst), vec4(far_z, near_z, 0.0, 0.0));
 }

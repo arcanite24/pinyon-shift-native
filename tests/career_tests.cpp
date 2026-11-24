@@ -121,10 +121,13 @@ void test_career_progression_rules() {
   race::CareerEvent street;
   street.event_id = 57, street.horizon_id = "STREET_1", street.style = 2, street.hub_id = 1, street.unlock_points_req = 310;
 
+  race::CareerEvent nemesis_prereq;
+  nemesis_prereq.event_id = 167, nemesis_prereq.horizon_id = "NEM_PRE", nemesis_prereq.level = 0, nemesis_prereq.style = 5;
+
   race::CareerEvent nemesis;
   nemesis.event_id = 169, nemesis.horizon_id = "NEM_FINAL", nemesis.level = 0, nemesis.style = 5, nemesis.prereq_event_id = 167;
 
-  cat.events = {fest_y, fest_g, showcase, street, nemesis};
+  cat.events = {fest_y, fest_g, showcase, street, nemesis_prereq, nemesis};
 
   race::CarSpec corrado;
   corrado.car_id = 309, corrado.media_name = "VW_Corrado_95", corrado.stock_class = 2;
@@ -164,6 +167,29 @@ void test_career_progression_rules() {
   CHECK(cat.is_event_unlocked(street, rec, collected, 225));
   rec.event_places[167] = 1;
   CHECK(cat.is_event_unlocked(nemesis, rec, collected, 225));
+
+  // P0-K1: STREET_PLNS_007 (Event ID 92) has prereq_event_id = 91 which does not exist in
+  // catalog.events; missing prereq must be treated as satisfied so Event 92 is never deadlocked.
+  race::CareerEvent street92;
+  street92.event_id = 92;
+  street92.horizon_id = "STREET_PLNS_007";
+  street92.style = 2;
+  street92.hub_id = 1;
+  street92.unlock_points_req = 310;
+  street92.prereq_event_id = 91;  // absent from cat.events
+  cat.events.push_back(street92);
+  CHECK(cat.find_event_by_id(91) == nullptr);
+  CHECK(cat.is_event_unlocked(street92, rec, collected, 225));
+
+  // Existing prereq (Event 92 IS in cat.events) still gates a dependent event until won.
+  race::CareerEvent street93 = street92;
+  street93.event_id = 93;
+  street93.horizon_id = "STREET_PLNS_008";
+  street93.prereq_event_id = 92;
+  cat.events.push_back(street93);
+  CHECK(!cat.is_event_unlocked(street93, rec, collected, 225));
+  rec.event_places[92] = 1;
+  CHECK(cat.is_event_unlocked(street93, rec, collected, 225));
 
   // Eligibility: Corrado (D, FWD) passes fest_g (C, FWD); Skyline (A, AWD) fails class; Showcase uses loaner!
   const std::vector<std::string> classes = {"F", "E", "D", "C", "B", "A", "S"};

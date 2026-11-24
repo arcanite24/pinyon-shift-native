@@ -366,29 +366,44 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     u.texel_size[1] = render_height_ ? 1.0f / float(render_height_) : 1.0f / 720.0f;
     u.texel_size[2] = s.time_sec;
     u.texel_size[3] = float(frames_submitted_ & 63u) / 64.0f;
-    const float ao_strength = graphics_.ssao == modern::SsaoQuality::kLow      ? 0.50f
+    // Gate raster screen-space passes off when hardware RT is active (matches renderer_frame.cpp,
+    // which skips SSAO/SSCS/SSR/Volumetric under rt_active so stale buffers are never composited over RT HDR).
+    const bool rt_active = options_.post.enabled && (post_final_ != VK_NULL_HANDLE) &&
+                           (active_rt_mode() != rt::RtMode::kOff) && bool(scene_.record_rt);
+    const bool ssao_on = !rt_active && modern_ready_ && (graphics_.ssao != modern::SsaoQuality::kOff) &&
+                         ao_raw_.view && ao_blur_.view;
+    const float ao_strength = !ssao_on                                        ? 0.0f
+                              : graphics_.ssao == modern::SsaoQuality::kLow   ? 0.50f
                               : graphics_.ssao == modern::SsaoQuality::kMedium ? 0.72f
-                              : graphics_.ssao == modern::SsaoQuality::kHigh   ? 0.88f
-                              : graphics_.ssao == modern::SsaoQuality::kUltra  ? 0.96f
-                                                                               : 0.0f;
+                              : graphics_.ssao == modern::SsaoQuality::kHigh  ? 0.88f
+                              : graphics_.ssao == modern::SsaoQuality::kUltra ? 0.96f
+                                                                              : 0.0f;
     u.modern_p[0] = ao_strength;
     u.modern_p[1] = float(lut_image_size_);
     u.modern_p[2] = lut_strength_;
     u.modern_p[3] = out_alpha;
-    const float sscs_strength = graphics_.contact_shadows == modern::ContactShadows::kLow     ? 0.70f
-                                : graphics_.contact_shadows == modern::ContactShadows::kHigh  ? 0.85f
-                                : graphics_.contact_shadows == modern::ContactShadows::kUltra ? 0.95f
-                                                                                              : 0.0f;
+    const bool sscs_on = !rt_active && modern_ready_ && sscs_pipe_ &&
+                         (graphics_.contact_shadows != modern::ContactShadows::kOff) && sscs_.view;
+    const float sscs_strength = !sscs_on                                                        ? 0.0f
+                                : graphics_.contact_shadows == modern::ContactShadows::kLow     ? 0.70f
+                                : graphics_.contact_shadows == modern::ContactShadows::kHigh    ? 0.85f
+                                : graphics_.contact_shadows == modern::ContactShadows::kUltra   ? 0.95f
+                                                                                                : 0.0f;
     const bool vel_mblur_ready =
         (graphics_.velocity_blur != modern::VelocityBlur::kOff) && mblur_neighbor_.view && motion_vec_.view;
     u.sota_p[0] = float(int(graphics_.tonemapper));
-    u.sota_p[1] = sscs_.view ? sscs_strength : 0.0f;
+    u.sota_p[1] = sscs_strength;
     u.sota_p[2] = vel_mblur_ready ? float(modern::velocity_blur_taps(graphics_.velocity_blur)) : 0.0f;
-    u.sota_p[3] = (graphics_.ssao == modern::SsaoQuality::kHigh || graphics_.ssao == modern::SsaoQuality::kUltra)
-                      ? 1.0f
-                      : (graphics_.ssao != modern::SsaoQuality::kOff ? 0.55f : 0.0f);
-    const bool ssr_on = (graphics_.ssr != modern::SsrQuality::kOff) && ssr_blur_.view;
-    const bool vol_on = (graphics_.volumetric_fog != modern::VolumetricFog::kOff) && vol_blur_.view && vol_state_valid_;
+    u.sota_p[3] = !ssao_on ? 0.0f
+                           : ((graphics_.ssao == modern::SsaoQuality::kHigh ||
+                               graphics_.ssao == modern::SsaoQuality::kUltra)
+                                  ? 1.0f
+                                  : 0.55f);
+    const bool ssr_on = !rt_active && modern_ready_ && ssr_pipe_ &&
+                        (graphics_.ssr != modern::SsrQuality::kOff) && ssr_raw_.view && ssr_blur_.view;
+    const bool vol_on = !rt_active && modern_ready_ && vol_pipe_ &&
+                        (graphics_.volumetric_fog != modern::VolumetricFog::kOff) && vol_raw_.view && vol_blur_.view &&
+                        vol_ubo_.buffer && vol_state_valid_;
     u.phase_b[0] = ssr_on ? (graphics_.ssr == modern::SsrQuality::kFull ? 0.90f : 0.80f) : 0.0f;
     u.phase_b[1] = vol_on ? 1.0f : 0.0f;
     u.phase_b[2] = vol_width_ ? 1.0f / float(vol_width_) : 0.0f;

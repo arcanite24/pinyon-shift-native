@@ -603,11 +603,14 @@ void main() {
     if ((flags & kFlagInstanced) != 0u && car_instances[v_instance].lamp_rgb[0].w > 0.5) {
       paint_col = car_instances[v_instance].lamp_rgb[0].rgb;
     }
-    // Only apply player's Paint Shop finish override to non-instanced player car;
-    // draw.params.w > 0.5 carries a per-region (hood/wing/mirrors) finish override.
-    int finish = ((flags & kFlagInstanced) == 0u)
-                     ? (draw.params.w > 0.5 ? int(draw.params.w + 0.5) - 1 : int(frame.paint_finish.x + 0.5))
-                     : 0;
+    // Honor per-draw finish overrides (draw.params.w > 0.5) on all cars, honor
+    // frame.paint_finish.x on player & showroom/autoshow previews (frame.drive.w < 0.5),
+    // and keep full metallic flake (finish == 1) on instanced cars carrying kFlagMetallic.
+    int finish = (draw.params.w > 0.5)
+                     ? (int(draw.params.w + 0.5) - 1)
+                     : (((flags & kFlagInstanced) == 0u || frame.drive.w < 0.5)
+                            ? int(frame.paint_finish.x + 0.5)
+                            : (((flags & kFlagMetallic) != 0u) ? 1 : 0));
     float xml_paint_scale = clamp(draw_tint.a, 0.15, 1.85);
     if (finish == 1) {
       // Metallic Flake (ShaderSettings/Metallic.xml): multiscale anti-aliased sparkle + dual-lobe metallic depth.
@@ -687,7 +690,7 @@ void main() {
     vec3 texel = (flags & kFlagStripe) != 0u ? t0.rgb * stripe_rgb : t0.rgb;
     base = mix(paint_col, texel, t0.a);
     // Apply runtime Shared/ShaderSettings/{Normal,Metallic,Matte}.xml PaintScale when provided.
-    if ((flags & kFlagInstanced) == 0u && abs(xml_paint_scale - 1.0) > 0.01) {
+    if (abs(xml_paint_scale - 1.0) > 0.01) {
       paint_scale = xml_paint_scale;
     }
     // Non-paint baked atlas details (badges, black trim) are not metallic flake.

@@ -106,7 +106,12 @@ void Renderer::record_ssr(VkCommandBuffer cmd) {
   const float frame_jitter = float(frames_submitted_ & 63u) / 64.0f;
   const float strength = (graphics_.ssr == modern::SsrQuality::kFull) ? 0.90f : 0.80f;
   const float max_steps = float(modern::ssr_steps(graphics_.ssr));
-  const float has_hiz = (hiz_preview_view_ != VK_NULL_HANDLE) ? 1.0f : 0.0f;
+  const bool hiz_ready =
+      (hiz_preview_view_ != VK_NULL_HANDLE) && (hiz_width_ > 0) && (hiz_height_ > 0) && (hiz_mips_ > 0);
+  const float has_hiz = hiz_ready ? 1.0f : 0.0f;
+  const float hiz_w = hiz_ready ? float(hiz_width_) : float(std::max(1u, render_width()));
+  const float hiz_h = hiz_ready ? float(hiz_height_) : float(std::max(1u, render_height()));
+  const float hiz_max_mip = hiz_ready ? float(hiz_mips_ - 1u) : 0.0f;
   auto draw_ssr = [&](const Image& dst, VkDescriptorSet set, float mode) {
     image_barrier(cmd, dst.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
@@ -132,7 +137,7 @@ void Renderer::record_ssr(VkCommandBuffer cmd) {
     } pc = {{cam_proj00_, cam_proj11_, cam_near_, cam_far_},
             {max_steps, options_.reverse_z ? 1.0f : 0.0f, has_hiz, frame_jitter},
             {1.0f / float(std::max(1u, ssr_width_)), 1.0f / float(std::max(1u, ssr_height_)), mode, strength},
-            {512.0f, 256.0f, 9.0f, 0.0f}};
+            {hiz_w, hiz_h, hiz_max_mip, 0.0f}};
     vkCmdPushConstants(cmd, ssr_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);

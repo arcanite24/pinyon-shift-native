@@ -39,7 +39,7 @@ struct CarTrackOffsetRow {
 };
 
 struct BrakeVisualSpec {
-  int size_in = 0;   // FrontBrakeSize / RearBrakeSize (7..16 inches)
+  int size_in = 0;   // FrontBrakeSize / RearBrakeSize (7..17 inches)
   int type_id = 2;   // 1=drum, 2=steel, 3=drilled, 4=slotted, 5=carbon
   int pistons = 2;   // 2, 4, 6, or 8
   int level = 0;     // 0=stock (use car's own baked brake models), >=1=swap from media/brakes/
@@ -63,9 +63,12 @@ struct VisualSetup {
   float brake_draw_offset = 0.0f;
   bool wheel_is_chrome = false;
   bool wheel_is_stock = true;
-  int tire_compound_level = 0;  // 0=stock/street (TireA), 1=sport (TireB), >=2=race/rally (TireC)
+  int tire_compound_level = 0;  // 0=stock, 1=street (TireA), 2=sport (TireB), 3=race/5=rally (TireC/Rally)
   std::array<int64_t, 2> tyre_width_mm{0, 0};
   std::array<int64_t, 2> rim_inches{0, 0};
+  std::array<int64_t, 2> stock_tyre_width_mm{0, 0};
+  std::array<int64_t, 2> stock_rim_inches{0, 0};
+  std::array<int64_t, 2> stock_tyre_aspect{0, 0};
   std::string tyre_media_override;  // e.g. "tireatoy_fjcruiser_12"
 
   // Suspension stance & alignment.
@@ -73,11 +76,22 @@ struct VisualSetup {
   std::array<float, 2> track_offset_m{0.0f, 0.0f};   // per-side lateral offset (+ outward)
   std::array<float, 2> camber_rad{0.0f, 0.0f};       // negative = top tilts inward
 
-  // Upgraded brakes (front=0, rear=1) + Data_Car caliper angles (degrees).
+  // Upgraded brakes (front=0, rear=1) + Data_Car.CaliperAngleFront/Rear (already in radians).
   std::array<BrakeVisualSpec, 2> brakes{};
-  std::array<float, 2> caliper_angle_deg{0.0f, 0.0f};
+  std::array<float, 2> caliper_angle_deg{0.0f, 0.0f};  // raw Data_Car.CaliperAngleFront/Rear (radians)
   bool has_caliper_angle_override = false;
 };
+
+// Computes the rolling outer radius (metres) of a tyre/rim setup, preserving
+// the stock rolling outer radius when rim diameter or tyre width is upgraded
+// (thinning the sidewall as rim diameter grows, clamped to a minimum sidewall
+// so the rim never exceeds the outer radius).
+float compute_tire_outer_radius_m(int64_t stock_rim_in, int64_t stock_width_mm, int64_t stock_aspect,
+                                  int64_t fitted_rim_in, int64_t fitted_width_mm);
+
+// Maps List_UpgradeTireCompound.Level to the tyre texture archive letter:
+// <2 -> 'a' (TireA: Stock/Street), ==2 -> 'b' (TireB: Sport), >2 -> 'c' (TireC: Race/Rally).
+char tire_compound_texture_letter(int compound_level);
 
 // Returns the lower-case per-car tyre archive stem ("tirea<media>") for the
 // 6 models that ship their own tyre set (SVT Raptor + LCE/HALO, H1 Alpha,

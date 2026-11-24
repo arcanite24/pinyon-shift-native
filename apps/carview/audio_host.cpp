@@ -485,12 +485,19 @@ bool AudioHost::init_sfx(const std::filesystem::path& game_root, const std::file
     sfx_cache_dir_ = cache_dir;
     auto sfx = std::make_unique<audio::SfxEngine>(kAudioRate);
     std::string snote;
-    if (sfx->load(game_root, cache_dir, burble_bank, &snote)) {
+    if (sfx->load(game_root, cache_dir, burble_bank, &snote, state_root)) {
       std::printf("%s\n", snote.c_str());
+      if (!state_root.empty()) {
+        std::string rnote;
+        if (sfx->load_rally_sfx(state_root, cache_dir, &rnote) && !rnote.empty()) {
+          std::printf("%s\n", rnote.c_str());
+        }
+        rally_sfx_tried_ = true;
+      }
       engine_.set_sfx_engine(std::move(sfx));
       has_sfx_ = true;
     }
-    tires_cfg_.load(game_root, nullptr);
+    tires_cfg_.load(game_root, nullptr, state_root);
     engine_.init_ui_music(game_root, cache_dir);
   }
   return has_sfx_;
@@ -625,6 +632,23 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
       std::printf("world acoustics: queued %d AMB_*.fev ambience beds for async decode\n", beds);
     }
   }
+  if (!rally_acoustics_tried_ && !rally_package.empty()) {
+    rally_acoustics_tried_ = true;
+    std::string rnote;
+    if (acoustics_.load_rally_configs(rally_package, &rnote) && !rnote.empty()) {
+      std::printf("%s\n", rnote.c_str());
+      has_acoustics_ = true;
+    }
+    const int rbeds = engine_.load_rally_ambience_beds(rally_package, cache_dir);
+    if (rbeds > 0) {
+      std::printf("world acoustics (rally): queued %d ColoradoDirt AMB_*.fev beds\n", rbeds);
+    }
+    std::string rvonote;
+    if (engine_.load_rally_vo(rally_package, satnav_language_, &rvonote) && !rvonote.empty()) {
+      std::printf("%s\n", rvonote.c_str());
+    }
+  }
+  set_rally_world(is_rally);
 
   if (acoustics_world_key_ != world_key) {
     acoustics_.clear_soundscapes();
@@ -892,8 +916,12 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
     eff.susp_vol_scale = float(es.suspension_volume);
     eff.ev_vol_scale = float(es.electric_motor_volume);
     eff.num_cylinders = es.num_cylinders;
+    eff.blowoff_level = es.blowoff_level;
+    eff.blowoff_choice = es.blowoff_choice;
   }
+  eff.rally_mode = eff.rally_mode || rally_world_;
   engine_.set_vehicle_state(eff);
+  set_radio_rally_mode(in_race && rally_world_);
   if (engine_.has_snapshot_matrix()) {
     if (in_race != last_in_race_) {
       last_in_race_ = in_race;
@@ -931,6 +959,20 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
 }
 
 void AudioHost::trigger_collision(const audio::CollisionHit& hit) { engine_.trigger_collision(hit); }
+
+void AudioHost::trigger_landing(const audio::LandingHit& hit) { engine_.trigger_landing(hit); }
+
+void AudioHost::set_rally_world(bool on) {
+  rally_world_ = on;
+  acoustics_.set_rally_world(on);
+  engine_.set_rally_world(on);
+}
+
+void AudioHost::set_radio_rally_mode(bool on) {
+  if (on == last_radio_rally_mode_) return;
+  last_radio_rally_mode_ = on;
+  engine_.set_radio_rally_mode(on);
+}
 
 void AudioHost::trigger_ui(audio::UiCue cue) { engine_.trigger_ui(cue); }
 

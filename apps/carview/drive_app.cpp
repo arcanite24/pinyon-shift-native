@@ -16,6 +16,7 @@
 #include "drive_helpers.h"
 #include "gamepad_db.h"
 #include "profile/drive_save.h"
+#include "race/difficulty.h"
 #include "settings.h"
 #include "showroom.h"
 #include "slice12_runtime.h"
@@ -240,6 +241,7 @@ bool DriveApp::init(int& exit_code) {
       sb.replays_dir = carview::default_replays_dir();
       const auto prof_dir = save_session.boot(sb);
       save_path = prof_dir / "save.txt";
+      clean_user_dir = prof_dir;
       for (const auto& line : save_session.log) std::printf("save: %s\n", line.c_str());
       save_session.log.clear();
     }
@@ -251,6 +253,7 @@ bool DriveApp::init(int& exit_code) {
       mods_session.log.clear();
     }
   }
+  if (clean_user_dir.empty() && !save_path.empty()) clean_user_dir = save_path.parent_path();
   if (!save_path.empty() && slice12_modded_save && !mods_session.isolation().isolated) {
     save_path = drive::resolve_isolated_save_path(save_path, true);
   }
@@ -598,8 +601,42 @@ bool DriveApp::init(int& exit_code) {
     career.prize_cars = saved.prize_cars;
     if (saved.difficulty >= 0 && saved.difficulty <= 4) race_options.difficulty = race::Difficulty(saved.difficulty);
     if (saved.ai_mode >= 0 && saved.ai_mode <= 2) race_options.ai_mode = race::AiMode(saved.ai_mode);
+    // Restore any in-progress Barn Find restorations saved before quitting (skipping cars already in garage).
+    pending_barn_restorations.clear();
+    barn_restorations_reconciled = false;
+    for (const auto& br : saved.pending_barn_restorations) {
+      if (br.car_id <= 0) continue;
+      bool already_owned = false;
+      for (const auto& gc : career_garage.cars) {
+        if (gc.car_id == br.car_id) {
+          already_owned = true;
+          break;
+        }
+      }
+      if (already_owned) continue;
+      char bbuf[32];
+      std::snprintf(bbuf, sizeof bbuf, "barnfind_%02d", std::max(1, br.barn_id));
+      std::string cname;
+      if (auto it = baked_ids.find(br.car_id); it != baked_ids.end()) cname = carview::car_name(it->second);
+      if (cname.empty() && have_career_catalog) {
+        if (const auto* sp = career_catalog.find_car(br.car_id)) cname = carview::car_name(sp->media_name);
+      }
+      if (cname.empty()) cname = "Barn Find #" + std::to_string(br.barn_id);
+      const double rem = std::max(0.0, double(br.remaining_sec));
+      pending_barn_restorations.push_back({bbuf, cname, int64_t(br.car_id), rem, 0.0});
+    }
   }
-  dynamic_ai_skill = have_saved ? saved.ai_skill : 10;
+  // Sync dynamic_ai_skill to the player's chosen difficulty band so Stock mode never reverts Hard/Pro/Easy back to Med.
+  if (have_saved) {
+    dynamic_ai_skill = saved.ai_skill;
+    const auto want_tier =
+        race_options.difficulty == race::Difficulty::kHardPlus ? race::Difficulty::kPro : race_options.difficulty;
+    if (race::difficulty_from_dynamic_skill(dynamic_ai_skill) != want_tier) {
+      dynamic_ai_skill = dynamic_skill_for_difficulty(race_options.difficulty);
+    }
+  } else {
+    dynamic_ai_skill = dynamic_skill_for_difficulty(race_options.difficulty);
+  }
   if (wristbands.levels.empty() && !world_dir.empty()) {
     std::string e;
     race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e);
@@ -973,6 +1010,8 @@ bool DriveApp::handle_rally_world_switch() {
       rally_session.retire();
       rally_hub_open = false;
       rally_service_open = false;
+      rally_service_return = false;
+      rally_service_resume_after_reload = false;
       rally_results_open = false;
       world_changed = true;
       std::printf("rally: returned to Colorado (%s)\n", world_dir.string().c_str());

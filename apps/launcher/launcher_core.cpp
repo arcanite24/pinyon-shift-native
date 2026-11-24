@@ -2765,6 +2765,174 @@ int compare_release_version(const ReleaseVersion& a, const ReleaseVersion& b) {
   return a.prerelease < b.prerelease ? -1 : (a.prerelease > b.prerelease ? 1 : 0);
 }
 
+namespace {
+
+bool is_valid_sha256_hex(std::string_view s) {
+  return s.size() == 64 && std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
+}
+
+bool ends_with_local(std::string_view s, std::string_view suffix) {
+  return s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix;
+}
+
+std::string detect_platform_token(std::string_view selector) {
+  const std::string low = lower_ascii(trim(selector));
+  if (low == "windows" || low == "win" || low == "win32" || low == "win64" ||
+      low.find("windows") != std::string::npos) {
+    return "windows";
+  }
+  if (low == "macos" || low == "osx" || low == "darwin" || low.find("macos") != std::string::npos) {
+    return "macos";
+  }
+  if (low == "linux" || low.find("linux") != std::string::npos) {
+    return "linux";
+  }
+  if (low == "android" || low.find("android") != std::string::npos) {
+    return "android";
+  }
+  return {};
+}
+
+// Returns match priority (0 = exact match, 1 = .zip, 2 = .tar.gz/.tgz, 3 = .dmg/.apk), or -1 if non-matching.
+int match_release_asset_rank(std::string_view asset_name, std::string_view platform_selector) {
+  const std::string name = lower_ascii(trim(asset_name));
+  const std::string sel = lower_ascii(trim(platform_selector));
+  if (name.empty() || sel.empty()) return -1;
+
+  // Never treat checksum/signature sidecars as installable release packages.
+  if (ends_with_local(name, ".sha256") || ends_with_local(name, ".sha256sum") ||
+      ends_with_local(name, ".sig") || ends_with_local(name, ".asc") || ends_with_local(name, ".txt")) {
+    return -1;
+  }
+
+  if (name == sel) return 0;
+
+  const std::string plat = detect_platform_token(sel);
+  if (plat.empty()) return -1;
+
+  const std::string prefix = "shift-engine-" + plat;
+  if (name.rfind(prefix, 0) != 0) return -1;
+  if (name.size() <= prefix.size()) return -1;
+  const char sep = name[prefix.size()];
+  if (sep != '-' && sep != '.') return -1;
+
+  if (plat == "windows") {
+    if (ends_with_local(name, ".zip")) return 1;
+    return -1;
+  }
+  if (plat == "macos") {
+    if (ends_with_local(name, ".zip")) return 1;
+    if (ends_with_local(name, ".tar.gz") || ends_with_local(name, ".tgz")) return 2;
+    if (ends_with_local(name, ".dmg")) return 3;
+    return -1;
+  }
+  if (plat == "linux") {
+    if (ends_with_local(name, ".zip")) return 1;
+    if (ends_with_local(name, ".tar.gz") || ends_with_local(name, ".tgz")) return 2;
+    return -1;
+  }
+  if (plat == "android") {
+    if (ends_with_local(name, ".apk")) return 1;
+    if (ends_with_local(name, ".zip")) return 2;
+    return -1;
+  }
+  return -1;
+}
+
+bool is_safe_https_url(std::string_view url) {
+  if (url.rfind("https://", 0) != 0) return false;
+  if (url.size() <= 8 || url.size() > 2048) return false;
+  return url.find_first_of(" \t\r\n\"'`$|;&<>\\") == std::string_view::npos;
+}
+
+std::string escape_ps_single_quoted(std::string_view s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (char c : s) {
+    if (c == '\'') out += "''";
+    else out += c;
+  }
+  return out;
+}
+
+std::string escape_sh_single_quoted(std::string_view s) {
+  std::string out = "'";
+  out.reserve(s.size() + 8);
+  for (char c : s) {
+    if (c == '\'') out += "'\\''";
+    else out += c;
+  }
+  out += "'";
+  return out;
+}
+
+bool is_safe_script_path(const std::filesystem::path& p) {
+  const std::string s = p.string();
+  if (s.empty()) return false;
+  return s.find_first_of("\r\n\"") == std::string::npos;
+}
+
+bool is_path_within(const std::filesystem::path& candidate, const std::filesystem::path& root) {
+  std::error_code ec;
+  const auto norm_root = std::filesystem::weakly_canonical(root, ec);
+  const auto norm_cand = std::filesystem::weakly_canonical(candidate, ec);
+  const auto rel = norm_cand.lexically_relative(norm_root);
+  if (rel.empty()) return false;
+  for (const auto& part : rel) {
+    if (part == "..") return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+bool matches_release_asset(std::string_view asset_name, std::string_view platform_selector) {
+  return match_release_asset_rank(asset_name, platform_selector) >= 0;
+}
+
+std::string parse_sha256_checksum_text(std::string_view text, std::string_view asset_name) {
+  const std::string want_name = lower_ascii(std::filesystem::path(asset_name).filename().string());
+  std::string fallback_hex;
+  size_t line_count = 0;
+
+  size_t pos = 0;
+  while (pos <= text.size()) {
+    const size_t nl = text.find('\n', pos);
+    std::string line = trim(text.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos));
+    if (nl == std::string_view::npos) pos = text.size() + 1;
+    else pos = nl + 1;
+
+    if (line.empty() || line[0] == '#') continue;
+    ++line_count;
+
+    // Accept optional "sha256:" prefix.
+    std::string low_line = lower_ascii(line);
+    if (low_line.rfind("sha256:", 0) == 0) {
+      line = trim(line.substr(7));
+      low_line = lower_ascii(line);
+    }
+
+    const size_t ws = line.find_first_of(" \t");
+    const std::string token = lower_ascii(ws == std::string::npos ? line : line.substr(0, ws));
+    if (!is_valid_sha256_hex(token)) continue;
+
+    if (ws == std::string::npos) {
+      if (fallback_hex.empty()) fallback_hex = token;
+      continue;
+    }
+
+    std::string fname = trim(line.substr(ws + 1));
+    if (!fname.empty() && fname[0] == '*') fname = fname.substr(1);
+    const std::string base = lower_ascii(std::filesystem::path(fname).filename().string());
+    if (!want_name.empty() && base == want_name) return token;
+    if (fallback_hex.empty()) fallback_hex = token;
+  }
+
+  // Only fall back to the sole checksum line when no filename mismatch occurred (single-file .sha256).
+  if (want_name.empty() || line_count == 1) return fallback_hex;
+  return {};
+}
+
 std::optional<AvailableUpdate> select_github_update(std::string_view releases_json,
                                                     std::string_view current_version,
                                                     std::string_view channel,
@@ -2796,30 +2964,68 @@ std::optional<AvailableUpdate> select_github_update(std::string_view releases_js
 
     const auto* assets = rel.get("assets");
     if (!assets || assets->kind != JsonVal::kArray) continue;
+
+    // Collect optional companion checksum asset URLs (<asset>.sha256 or SHA256SUMS*).
+    std::map<std::string, std::string> checksum_urls;
+    std::string shared_sums_url;
     for (const auto& asset : assets->arr) {
       if (asset.kind != JsonVal::kObject) continue;
       const auto* name_v = asset.get("name");
-      if (!name_v || name_v->as_string() != platform_asset_name) continue;
       const auto* url_v = asset.get("browser_download_url");
-      const auto* dig_v = asset.get("digest");
-      if (!url_v || !dig_v) continue;
-      const std::string digest = lower_ascii(dig_v->as_string());
-      if (digest.rfind("sha256:", 0) != 0 || digest.size() != 71) continue;
-      const std::string hex = digest.substr(7);
-      if (!std::all_of(hex.begin(), hex.end(), [](unsigned char c) { return std::isxdigit(c); })) continue;
+      if (!name_v || !url_v) continue;
+      const std::string low_name = lower_ascii(name_v->as_string());
+      if (ends_with_local(low_name, ".sha256")) {
+        checksum_urls[low_name] = url_v->as_string();
+      } else if (low_name == "sha256sums" || low_name == "sha256sums.txt" || low_name == "checksums.txt") {
+        shared_sums_url = url_v->as_string();
+      }
+    }
+
+    int best_rank = 1000;
+    std::optional<AvailableUpdate> rel_pick;
+    for (const auto& asset : assets->arr) {
+      if (asset.kind != JsonVal::kObject) continue;
+      const auto* name_v = asset.get("name");
+      const auto* url_v = asset.get("browser_download_url");
+      if (!name_v || !url_v) continue;
+
+      const std::string aname = name_v->as_string();
+      const int rank = match_release_asset_rank(aname, platform_asset_name);
+      if (rank < 0 || rank >= best_rank) continue;
+
+      std::string hex;
+      if (const auto* dig_v = asset.get("digest")) {
+        const std::string digest = lower_ascii(dig_v->as_string());
+        if (digest.rfind("sha256:", 0) == 0 && digest.size() == 71) {
+          const std::string candidate = digest.substr(7);
+          if (is_valid_sha256_hex(candidate)) hex = candidate;
+        }
+      }
+
+      std::string sha_url;
+      if (const auto it = checksum_urls.find(lower_ascii(aname) + ".sha256"); it != checksum_urls.end()) {
+        sha_url = it->second;
+      } else if (!shared_sums_url.empty()) {
+        sha_url = shared_sums_url;
+      }
 
       AvailableUpdate u;
       u.version = ver.to_string();
       u.tag = tag_v->as_string();
       if (const auto* hu = rel.get("html_url")) u.release_url = hu->as_string();
-      u.asset_name = name_v->as_string();
+      u.asset_name = aname;
       u.download_url = url_v->as_string();
       if (const auto* sz = asset.get("size")) u.size_bytes = sz->as_u64();
-      u.sha256 = hex;
-      best = std::move(u);
+      u.sha256 = std::move(hex);
+      u.sha256_url = std::move(sha_url);
+      rel_pick = std::move(u);
+      best_rank = rank;
+    }
+
+    if (rel_pick) {
+      best = std::move(rel_pick);
       best_ver = ver;
       have_best = true;
-      break;
     }
   }
   return best;
@@ -2831,17 +3037,36 @@ StagedUpdatePlan plan_staged_update(const std::filesystem::path& unpacked_dir,
   plan.staging_dir = install_dir / ".shift-update";
   std::error_code ec;
   if (!std::filesystem::is_directory(unpacked_dir, ec)) return plan;
-  for (const auto& e : std::filesystem::directory_iterator(unpacked_dir, ec)) {
+
+  // Unwrap a single top-level package folder (e.g. `shift-engine-windows-0.2.0/`)
+  // produced by `tools/package.py` so its binaries map directly into `install_dir`.
+  std::filesystem::path content_root = unpacked_dir;
+  {
+    std::vector<std::filesystem::path> top_dirs;
+    bool any_top_file = false;
+    for (const auto& e : std::filesystem::directory_iterator(unpacked_dir, ec)) {
+      if (e.is_regular_file(ec)) any_top_file = true;
+      else if (e.is_directory(ec)) top_dirs.push_back(e.path());
+    }
+    if (!any_top_file && top_dirs.size() == 1) {
+      content_root = top_dirs.front();
+    }
+  }
+
+  for (const auto& e : std::filesystem::recursive_directory_iterator(content_root, ec)) {
     if (!e.is_regular_file(ec)) continue;
-    plan.moves.emplace_back(e.path(), install_dir / e.path().filename());
+    const auto rel = std::filesystem::relative(e.path(), content_root, ec);
+    if (ec || rel.empty()) continue;
+    plan.moves.emplace_back(e.path(), install_dir / rel);
   }
   std::sort(plan.moves.begin(), plan.moves.end(),
-            [](const auto& a, const auto& b) { return a.first.filename() < b.first.filename(); });
+            [](const auto& a, const auto& b) { return a.second.generic_string() < b.second.generic_string(); });
   return plan;
 }
 
 bool verify_update_sha256(const std::filesystem::path& file, std::string_view expected_hex,
                           std::string* actual_hex) {
+  if (!is_valid_sha256_hex(expected_hex)) return false;
   std::string hex;
   if (!sha256_file(file, hex)) return false;
   if (actual_hex) *actual_hex = hex;
@@ -2859,6 +3084,364 @@ int preset_index_for_name(std::string_view preset) {
 }
 
 namespace {
+
+bool fetch_https_text(std::string_view url, std::string& out_text, std::string& err, size_t max_bytes = 64 * 1024) {
+  out_text.clear();
+  if (!is_safe_https_url(url)) {
+    err = "invalid HTTPS URL";
+    return false;
+  }
+#ifdef _WIN32
+  std::wstring wurl;
+  wurl.reserve(url.size());
+  for (char c : url) wurl.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+
+  URL_COMPONENTS uc{};
+  uc.dwStructSize = sizeof(uc);
+  wchar_t host[256]{};
+  wchar_t path[2048]{};
+  uc.lpszHostName = host;
+  uc.dwHostNameLength = DWORD(std::size(host));
+  uc.lpszUrlPath = path;
+  uc.dwUrlPathLength = DWORD(std::size(path));
+  if (!WinHttpCrackUrl(wurl.c_str(), DWORD(wurl.size()), 0, &uc) || uc.nScheme != INTERNET_SCHEME_HTTPS) {
+    err = "invalid HTTPS URL";
+    return false;
+  }
+
+  HINTERNET hSession = WinHttpOpen(L"shift-launcher/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                                   WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!hSession) {
+    err = "WinHTTP init failed";
+    return false;
+  }
+  WinHttpSetTimeouts(hSession, 4000, 4000, 4000, 10000);
+  DWORD redir = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+  WinHttpSetOption(hSession, WINHTTP_OPTION_REDIRECT_POLICY, &redir, sizeof(redir));
+
+  HINTERNET hConnect = WinHttpConnect(hSession, host, uc.nPort ? uc.nPort : INTERNET_DEFAULT_HTTPS_PORT, 0);
+  if (!hConnect) {
+    WinHttpCloseHandle(hSession);
+    err = "offline or host unreachable";
+    return false;
+  }
+  HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path, nullptr, WINHTTP_NO_REFERER,
+                                          WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+  if (!hRequest) {
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    err = "HTTP request creation failed";
+    return false;
+  }
+  bool ok = false;
+  if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+      WinHttpReceiveResponse(hRequest, nullptr)) {
+    DWORD status = 0, slen = sizeof(status);
+    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                        &status, &slen, WINHTTP_NO_HEADER_INDEX);
+    if (status == 200) {
+      DWORD avail = 0;
+      while (WinHttpQueryDataAvailable(hRequest, &avail) && avail > 0 && out_text.size() < max_bytes) {
+        const size_t want = std::min<size_t>(avail, max_bytes - out_text.size());
+        std::string chunk(want, '\0');
+        DWORD got = 0;
+        if (!WinHttpReadData(hRequest, chunk.data(), static_cast<DWORD>(want), &got) || got == 0) break;
+        chunk.resize(got);
+        out_text += chunk;
+      }
+      ok = !out_text.empty();
+    } else {
+      err = "HTTP " + std::to_string(status);
+    }
+  } else {
+    err = "offline or connection timed out";
+  }
+  WinHttpCloseHandle(hRequest);
+  WinHttpCloseHandle(hConnect);
+  WinHttpCloseHandle(hSession);
+  return ok;
+#else
+  const std::string cmd = "curl -fsSL --proto =https --max-time 10 -A \"shift-launcher/1.0\" " +
+                          escape_sh_single_quoted(url) + " 2>/dev/null";
+  FILE* fp = popen(cmd.c_str(), "r");
+  if (!fp) {
+    err = "curl unavailable";
+    return false;
+  }
+  char buf[4096];
+  while (out_text.size() < max_bytes) {
+    const size_t n = std::fread(buf, 1, std::min(sizeof(buf), max_bytes - out_text.size()), fp);
+    if (n == 0) break;
+    out_text.append(buf, n);
+  }
+  const int rc = pclose(fp);
+  if (rc != 0 || out_text.empty()) {
+    err = "download failed";
+    return false;
+  }
+  return true;
+#endif
+}
+
+bool download_https_url_to_file(std::string_view url, const std::filesystem::path& dest_file, std::string& err) {
+  if (!is_safe_https_url(url)) {
+    err = "refusing non-HTTPS update URL";
+    return false;
+  }
+  std::error_code ec;
+  if (dest_file.has_parent_path()) std::filesystem::create_directories(dest_file.parent_path(), ec);
+  std::filesystem::remove(dest_file, ec);
+
+#ifdef _WIN32
+  std::wstring wurl;
+  wurl.reserve(url.size());
+  for (char c : url) wurl.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+
+  URL_COMPONENTS uc{};
+  uc.dwStructSize = sizeof(uc);
+  wchar_t host[256]{};
+  wchar_t path[2048]{};
+  uc.lpszHostName = host;
+  uc.dwHostNameLength = DWORD(std::size(host));
+  uc.lpszUrlPath = path;
+  uc.dwUrlPathLength = DWORD(std::size(path));
+  if (!WinHttpCrackUrl(wurl.c_str(), DWORD(wurl.size()), 0, &uc) || uc.nScheme != INTERNET_SCHEME_HTTPS) {
+    err = "invalid HTTPS download URL";
+    return false;
+  }
+
+  HINTERNET hSession = WinHttpOpen(L"shift-launcher/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                                   WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!hSession) {
+    err = "WinHTTP init failed";
+    return false;
+  }
+  WinHttpSetTimeouts(hSession, 5000, 10000, 15000, 60000);
+  DWORD redir = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+  WinHttpSetOption(hSession, WINHTTP_OPTION_REDIRECT_POLICY, &redir, sizeof(redir));
+
+  HINTERNET hConnect = WinHttpConnect(hSession, host, uc.nPort ? uc.nPort : INTERNET_DEFAULT_HTTPS_PORT, 0);
+  if (!hConnect) {
+    WinHttpCloseHandle(hSession);
+    err = "cannot reach download host";
+    return false;
+  }
+  HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path, nullptr, WINHTTP_NO_REFERER,
+                                          WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+  if (!hRequest) {
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    err = "download request creation failed";
+    return false;
+  }
+
+  bool ok = false;
+  if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+      WinHttpReceiveResponse(hRequest, nullptr)) {
+    DWORD status = 0, slen = sizeof(status);
+    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                        &status, &slen, WINHTTP_NO_HEADER_INDEX);
+    if (status == 200) {
+      std::ofstream out(dest_file, std::ios::binary | std::ios::trunc);
+      if (!out) {
+        err = "cannot write " + dest_file.string();
+      } else {
+        constexpr uint64_t kMaxArchiveBytes = 512ull << 20;
+        uint64_t total = 0;
+        std::vector<char> buf(64 * 1024);
+        bool write_ok = true;
+        DWORD avail = 0;
+        while (WinHttpQueryDataAvailable(hRequest, &avail) && avail > 0) {
+          DWORD remaining = avail;
+          while (remaining > 0) {
+            const DWORD want = std::min<DWORD>(remaining, DWORD(buf.size()));
+            DWORD got = 0;
+            if (!WinHttpReadData(hRequest, buf.data(), want, &got) || got == 0) {
+              write_ok = false;
+              break;
+            }
+            total += got;
+            if (total > kMaxArchiveBytes) {
+              err = "update archive exceeds 512 MiB limit";
+              write_ok = false;
+              break;
+            }
+            out.write(buf.data(), std::streamsize(got));
+            if (!out) {
+              err = "disk write error during update download";
+              write_ok = false;
+              break;
+            }
+            remaining -= got;
+          }
+          if (!write_ok) break;
+        }
+        out.close();
+        ok = write_ok && total > 0;
+        if (!ok && err.empty()) err = "empty download response";
+      }
+    } else {
+      err = "download HTTP " + std::to_string(status);
+    }
+  } else {
+    err = "download failed or timed out";
+  }
+
+  WinHttpCloseHandle(hRequest);
+  WinHttpCloseHandle(hConnect);
+  WinHttpCloseHandle(hSession);
+  if (!ok) std::filesystem::remove(dest_file, ec);
+  return ok;
+#else
+  const std::string cmd = "curl -fsSL --proto =https --max-time 120 -A \"shift-launcher/1.0\" -o " +
+                          escape_sh_single_quoted(dest_file.string()) + " " + escape_sh_single_quoted(url) +
+                          " >/dev/null 2>&1";
+  const int rc = run_hidden_cmd_simple(cmd);
+  if (rc != 0 || !std::filesystem::is_regular_file(dest_file, ec) || std::filesystem::file_size(dest_file, ec) == 0) {
+    std::filesystem::remove(dest_file, ec);
+    err = "HTTPS download failed";
+    return false;
+  }
+  return true;
+#endif
+}
+
+bool unpack_update_archive(const std::filesystem::path& archive_path, const std::filesystem::path& dest_dir,
+                           std::string& err) {
+  std::error_code ec;
+  std::filesystem::remove_all(dest_dir, ec);
+  std::filesystem::create_directories(dest_dir, ec);
+
+  const std::string low_name = lower_ascii(archive_path.filename().string());
+  if (ends_with_local(low_name, ".zip")) {
+#ifdef _WIN32
+    const std::string cmd = "powershell -NoProfile -Command \"Expand-Archive -Force -LiteralPath '" +
+                            escape_ps_single_quoted(archive_path.string()) + "' -DestinationPath '" +
+                            escape_ps_single_quoted(dest_dir.string()) + "'\"";
+#else
+    const std::string cmd = "unzip -qo " + escape_sh_single_quoted(archive_path.string()) + " -d " +
+                            escape_sh_single_quoted(dest_dir.string()) + " >/dev/null 2>&1";
+#endif
+    if (run_hidden_cmd_simple(cmd) != 0) {
+      err = "failed to unpack ZIP archive";
+      return false;
+    }
+    return true;
+  }
+  if (ends_with_local(low_name, ".tar.gz") || ends_with_local(low_name, ".tgz")) {
+#ifdef _WIN32
+    const std::string cmd = "tar -xzf " + quote_arg_shell(archive_path.string()) + " -C " +
+                            quote_arg_shell(dest_dir.string());
+#else
+    const std::string cmd = "tar -xzf " + escape_sh_single_quoted(archive_path.string()) + " -C " +
+                            escape_sh_single_quoted(dest_dir.string()) + " >/dev/null 2>&1";
+#endif
+    if (run_hidden_cmd_simple(cmd) != 0) {
+      err = "failed to unpack tar.gz archive";
+      return false;
+    }
+    return true;
+  }
+  if (ends_with_local(low_name, ".dmg")) {
+    err = "DMG image verified; open it manually or select a .zip release asset for automatic swap";
+    return false;
+  }
+  err = "unsupported update archive format: " + archive_path.filename().string();
+  return false;
+}
+
+bool write_staged_apply_script(const StagedUpdatePlan& plan, const std::filesystem::path& install_dir,
+                               uint32_t wait_pid, const std::filesystem::path& relaunch_exe,
+                               std::filesystem::path& out_script, std::string& err) {
+  if (!is_safe_script_path(plan.staging_dir) || !is_safe_script_path(install_dir) ||
+      (!relaunch_exe.empty() && !is_safe_script_path(relaunch_exe))) {
+    err = "install path contains unsupported characters for update script";
+    return false;
+  }
+  for (const auto& [src, dst] : plan.moves) {
+    if (!is_safe_script_path(src) || !is_safe_script_path(dst)) {
+      err = "staged file path contains unsupported characters";
+      return false;
+    }
+    if (!is_path_within(dst, install_dir)) {
+      err = "refused staged file escaping install directory: " + dst.string();
+      return false;
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::create_directories(plan.staging_dir, ec);
+
+#ifdef _WIN32
+  out_script = plan.staging_dir / "apply-update.cmd";
+  std::ofstream out(out_script, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    err = "cannot write " + out_script.string();
+    return false;
+  }
+  out << "@echo off\r\n"
+      << "setlocal\r\n";
+  if (wait_pid > 0) {
+    out << "for /L %%I in (1,1,30) do (\r\n"
+        << "  tasklist /FI \"PID eq " << wait_pid << "\" 2>NUL | find /I \"" << wait_pid
+        << "\" >NUL || goto :shift_apply_ready\r\n"
+        << "  timeout /t 1 /nobreak >NUL\r\n"
+        << ")\r\n"
+        << ":shift_apply_ready\r\n";
+  }
+  for (const auto& [src, dst] : plan.moves) {
+    if (dst.has_parent_path()) {
+      out << "if not exist \"" << dst.parent_path().string() << "\" mkdir \"" << dst.parent_path().string()
+          << "\" 2>NUL\r\n";
+    }
+    out << "copy /Y \"" << src.string() << "\" \"" << dst.string() << "\" >NUL\r\n"
+        << "if errorlevel 1 exit /b 1\r\n";
+  }
+  if (!relaunch_exe.empty()) {
+    out << "if exist \"" << relaunch_exe.string() << "\" start \"\" \"" << relaunch_exe.string() << "\"\r\n";
+  }
+  out << "rmdir /S /Q \"" << plan.staging_dir.string() << "\" 2>NUL\r\n"
+      << "exit /b 0\r\n";
+  out.close();
+  return bool(out);
+#else
+  out_script = plan.staging_dir / "apply-update.sh";
+  std::ofstream out(out_script, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    err = "cannot write " + out_script.string();
+    return false;
+  }
+  out << "#!/bin/sh\n"
+      << "set -e\n";
+  if (wait_pid > 0) {
+    out << "i=0\n"
+        << "while kill -0 " << wait_pid << " 2>/dev/null && [ \"$i\" -lt 30 ]; do\n"
+        << "  sleep 1\n"
+        << "  i=$((i + 1))\n"
+        << "done\n";
+  }
+  for (const auto& [src, dst] : plan.moves) {
+    if (dst.has_parent_path()) {
+      out << "mkdir -p " << escape_sh_single_quoted(dst.parent_path().string()) << "\n";
+    }
+    out << "cp -f " << escape_sh_single_quoted(src.string()) << " " << escape_sh_single_quoted(dst.string()) << "\n";
+  }
+  if (!relaunch_exe.empty()) {
+    out << "if [ -x " << escape_sh_single_quoted(relaunch_exe.string()) << " ]; then\n"
+        << "  " << escape_sh_single_quoted(relaunch_exe.string()) << " >/dev/null 2>&1 &\n"
+        << "fi\n";
+  }
+  out << "rm -rf " << escape_sh_single_quoted(plan.staging_dir.string()) << "\n";
+  out.close();
+  if (!out) return false;
+  std::filesystem::permissions(
+      out_script,
+      std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+      std::filesystem::perm_options::add, ec);
+  return true;
+#endif
+}
+
 bool fetch_github_releases_json(std::string_view repo, std::string& out_json, std::string& err) {
   out_json.clear();
   if (repo.empty() || repo.find_first_of(" \t\r\n\"'\\") != std::string_view::npos) {
@@ -2960,6 +3543,12 @@ UpdateCheckResult check_github_updates(std::string_view current_version, std::st
   res.ok = true;
   res.update = select_github_update(json, current_version, channel, platform_asset_name);
   if (res.update) {
+    if (res.update->sha256.empty() && !res.update->sha256_url.empty()) {
+      std::string sha_text, sha_err;
+      if (fetch_https_text(res.update->sha256_url, sha_text, sha_err)) {
+        res.update->sha256 = parse_sha256_checksum_text(sha_text, res.update->asset_name);
+      }
+    }
     res.update_available = true;
     res.status = "Update available: v" + res.update->version + " (" + res.update->tag + ") — " + res.update->asset_name;
   } else {
@@ -2967,6 +3556,140 @@ UpdateCheckResult check_github_updates(std::string_view current_version, std::st
     res.status = "Up to date on v" + std::string(current_version) + " (" + std::string(channel) + " channel).";
   }
   return res;
+}
+
+StagedUpdateApplyResult prepare_staged_update_from_archive(const std::filesystem::path& archive_path,
+                                                           std::string_view expected_sha256,
+                                                           const std::filesystem::path& install_dir,
+                                                           uint32_t wait_pid,
+                                                           const std::filesystem::path& relaunch_exe) {
+  StagedUpdateApplyResult res;
+  res.archive_path = archive_path;
+  res.staging_dir = install_dir / ".shift-update";
+
+  if (install_dir.empty()) {
+    res.status = "Update aborted: install directory is not set.";
+    return res;
+  }
+  if (!is_valid_sha256_hex(expected_sha256)) {
+    res.status = "Update aborted: release is missing a valid SHA-256 checksum.";
+    return res;
+  }
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(archive_path, ec)) {
+    res.status = "Update aborted: archive not found at " + archive_path.string();
+    return res;
+  }
+  if (!verify_update_sha256(archive_path, expected_sha256, &res.actual_sha256)) {
+    res.status = "SHA-256 mismatch: expected " + lower_ascii(expected_sha256).substr(0, 16) + "..., got " +
+                 (res.actual_sha256.empty() ? std::string("<read error>") : res.actual_sha256.substr(0, 16) + "...");
+    return res;
+  }
+  res.verified = true;
+
+  const std::filesystem::path unpacked_dir = res.staging_dir / "unpacked";
+  std::string err;
+  if (!unpack_update_archive(archive_path, unpacked_dir, err)) {
+    res.status = "Update staging failed: " + err;
+    return res;
+  }
+
+  res.plan = plan_staged_update(unpacked_dir, install_dir);
+  if (res.plan.moves.empty()) {
+    res.status = "Update staging failed: unpacked archive contained no files.";
+    return res;
+  }
+
+  if (!write_staged_apply_script(res.plan, install_dir, wait_pid, relaunch_exe, res.apply_script_path, err)) {
+    res.status = "Update staging failed: " + err;
+    return res;
+  }
+
+  res.ok = true;
+  res.status = "Verified SHA-256 and staged " + std::to_string(res.plan.moves.size()) +
+               " file(s). Click 'Apply & Restart' to install.";
+  return res;
+}
+
+StagedUpdateApplyResult stage_github_update(const AvailableUpdate& update,
+                                            const std::filesystem::path& install_dir,
+                                            uint32_t wait_pid,
+                                            const std::filesystem::path& relaunch_exe) {
+  StagedUpdateApplyResult res;
+  res.staging_dir = install_dir / ".shift-update";
+
+  if (update.download_url.empty() || !is_safe_https_url(update.download_url)) {
+    res.status = "Update aborted: invalid or non-HTTPS download URL.";
+    return res;
+  }
+
+  std::string expected_sha = lower_ascii(trim(update.sha256));
+  if (!is_valid_sha256_hex(expected_sha) && !update.sha256_url.empty()) {
+    std::string sha_text, sha_err;
+    if (!fetch_https_text(update.sha256_url, sha_text, sha_err)) {
+      res.status = "Update aborted: could not fetch SHA-256 checksum (" + sha_err + ").";
+      return res;
+    }
+    expected_sha = parse_sha256_checksum_text(sha_text, update.asset_name);
+  }
+  if (!is_valid_sha256_hex(expected_sha)) {
+    res.status = "Update aborted: release is missing a valid SHA-256 checksum.";
+    return res;
+  }
+
+  const std::string safe_name = std::filesystem::path(update.asset_name).filename().string();
+  if (safe_name.empty()) {
+    res.status = "Update aborted: invalid release asset filename.";
+    return res;
+  }
+
+  const std::filesystem::path archive_path = res.staging_dir / safe_name;
+  std::string dl_err;
+  if (!download_https_url_to_file(update.download_url, archive_path, dl_err)) {
+    res.status = "Update download failed: " + dl_err;
+    return res;
+  }
+
+  res = prepare_staged_update_from_archive(archive_path, expected_sha, install_dir, wait_pid, relaunch_exe);
+  if (!res.verified) {
+    std::error_code ec;
+    std::filesystem::remove(archive_path, ec);
+  }
+  return res;
+}
+
+bool launch_staged_update_script(const std::filesystem::path& script_path, std::string* error) {
+  std::error_code ec;
+  if (script_path.empty() || !std::filesystem::is_regular_file(script_path, ec)) {
+    if (error) *error = "Staged update script not found.";
+    return false;
+  }
+#ifdef _WIN32
+  std::string cmd = "cmd.exe /C \"" + script_path.string() + "\"";
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                      CREATE_NO_WINDOW | DETACHED_PROCESS, nullptr, nullptr, &si, &pi)) {
+    if (error) *error = "Failed to launch staged update script.";
+    return false;
+  }
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  return true;
+#else
+  const pid_t pid = fork();
+  if (pid < 0) {
+    if (error) *error = "Failed to fork update applier.";
+    return false;
+  }
+  if (pid == 0) {
+    setsid();
+    execl("/bin/sh", "sh", script_path.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  return true;
+#endif
 }
 
 std::vector<BackendChoice> available_backend_choices(const std::string& os_override) {

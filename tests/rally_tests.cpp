@@ -150,7 +150,14 @@ void test_championship_standings_and_rewards() {
   auto f1 = sess.record_stage_finish(cat, 102.0, st1);
   CHECK(!f1.championship_complete && sess.in_service_area());
   CHECK(f1.stage_place == 2 && f1.overall_place == 2 && near(f1.overall_gap_to_leader, 2.0));
-  CHECK(sess.advance_from_service_area() && sess.current_stage_index() == 1);
+  // P0-K3: double-scoring guard prevents recording Stage 1 twice while in Service Area.
+  auto f1_dup = sess.record_stage_finish(cat, 99.0, st1);
+  CHECK(sess.stages_completed() == 1 && near(sess.player_total_time(), 102.0) && near(f1_dup.player_total_time, 102.0));
+  // P0-K3: Service Area revalidation blocks class > target_class (4=B) or missing rally kit.
+  std::string val_err;
+  CHECK(!sess.advance_from_service_area(5, true, &val_err) && !val_err.empty() && sess.in_service_area());
+  CHECK(!sess.advance_from_service_area(4, false, &val_err) && !val_err.empty() && sess.in_service_area());
+  CHECK(sess.advance_from_service_area(4, true, &val_err) && val_err.empty() && sess.current_stage_index() == 1);
 
   // Stage 2: AI#0 = 105s (cum 205), Player = 101s (cum 203 -> overtakes to 1st overall!), rest = 110s.
   std::vector<double> st2(49, 110.0);

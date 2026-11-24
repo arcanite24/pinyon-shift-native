@@ -15,6 +15,7 @@
 #include <thread>
 #include <vector>
 
+#include "audio/rt.h"
 #include "ui.h"
 
 namespace carview {
@@ -50,10 +51,17 @@ struct FmvStreamDef {
     std::string lang;
   };
   std::vector<AudioTrack> audio;
-  // Returns the 0-based audio stream index matching `language` (or EN fallback,
-  // or 0 if no .def audio entries exist).
+  // Returns the retail ASF stream `id` attribute matching `language` (with EN
+  // fallback, or first valid id, or -1 if no .def audio entries carry an id).
+  int audio_stream_id_for(std::string_view language) const;
+  // Returns the retail ASF stream `id` matching `language` when present,
+  // falling back to the 0-based XML element index only if `id < 0`.
   int audio_index_for(std::string_view language) const;
 };
+
+// Downmixes interleaved multichannel PCM (mono, stereo, quad, 5.1 WMA Pro,
+// 7.1) into interleaved stereo float PCM using ITU/FMOD 0.7071 fold weights.
+void downmix_interleaved_to_stereo(const float* src, int src_channels, size_t frames, float* dst_stereo);
 
 struct FmvSubtitleCue {
   int index = 0;
@@ -115,11 +123,11 @@ class FmvPlayer {
   void open_synthetic(int w, int h, double fps, double duration_s, std::string title = "FMV");
   void close();
 
-  bool active() const { return active_; }
+  bool active() const { return active_.load(std::memory_order_acquire); }
   bool finished() const { return finished_; }
-  bool paused() const { return paused_; }
+  bool paused() const { return paused_.load(std::memory_order_acquire); }
   bool is_synthetic() const { return synthetic_; }
-  void set_paused(bool p) { paused_ = p; }
+  void set_paused(bool p) { paused_.store(p, std::memory_order_release); }
   void skip();
 
   int width() const { return width_; }
@@ -151,16 +159,21 @@ class FmvPlayer {
     std::vector<uint8_t> rgba;
   };
 
+  void push_audio_stereo(const float* stereo, size_t n_floats);
   void video_worker(std::string cmd, int w, int h, double fps);
   void audio_worker(std::string cmd);
 #ifdef _WIN32
-  void mf_worker(std::filesystem::path wmv_path, int audio_idx, int target_w, int target_h, bool loop);
+  void mf_worker(std::filesystem::path wmv_path, int video_stream_id, int audio_stream_id, int target_w, int target_h,
+                 bool loop);
+#elif defined(SHIFT_HAVE_FFMPEG_FMV)
+  void ff_worker(std::filesystem::path wmv_path, int video_stream_id, int audio_stream_id, int target_w, int target_h,
+                 bool loop);
 #endif
   void render_synthetic_frame(double t, std::vector<uint8_t>& rgba) const;
 
-  bool active_ = false;
+  std::atomic<bool> active_{false};
   bool finished_ = false;
-  bool paused_ = false;
+  std::atomic<bool> paused_{false};
   bool synthetic_ = false;
   int width_ = 0;
   int height_ = 0;
@@ -182,8 +195,8 @@ class FmvPlayer {
   mutable std::mutex video_mu_;
   std::deque<VideoFrame> video_q_;
 
-  mutable std::mutex audio_mu_;
-  std::deque<float> audio_q_;  // interleaved stereo floats
+  // Lock-free SPSC ring buffer (~2.73 s stereo at 48 kHz) for RT audio_thread read_audio().
+  audio::SpscRingBuffer<float> audio_ring_{262144};
 
   std::thread video_thread_;
   std::thread audio_thread_;

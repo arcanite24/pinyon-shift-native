@@ -10,18 +10,40 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kDeg = 180.0 / kPi;
+constexpr double kMphToMps = 0.44704;
+// Travel-time routing constants (GlobalRegistry.xml road speeds, OneWayMultiplier, TurnDelaySeconds).
+constexpr double kMphFreeway = 75.0;
+constexpr double kMphARoad = 60.0;
+constexpr double kMphBRoad = 40.0;
+constexpr double kMphDirtRoad = 35.0;
+constexpr double kMphNone = 1.0;
+constexpr double kMaxSpeedMps = kMphFreeway * kMphToMps;
+constexpr double kOneWayMultiplier = 999.0;
+constexpr double kTurnDelaySeconds = 5.0;
+// Sharp-turn threshold (~35 degrees): cos(35 deg) ~= 0.819152.
+constexpr double kSharpTurnCos = 0.8191520442889918;
 
 bool is_drivable_type(const std::string& t) {
   return t == "dirt" || t == "b" || t == "a" || t == "freeway";
 }
 
-// Road preference multiplier (>= 1.0 so Euclidean heuristic stays admissible).
-double road_weight(const std::string& t) {
-  if (t == "freeway") return 1.00;
-  if (t == "a") return 1.02;
-  if (t == "b") return 1.06;
-  if (t == "dirt") return 1.25;
-  return 1.50;
+double road_speed_mps(const std::string& t) {
+  if (t == "freeway") return kMphFreeway * kMphToMps;
+  if (t == "a") return kMphARoad * kMphToMps;
+  if (t == "b") return kMphBRoad * kMphToMps;
+  if (t == "dirt") return kMphDirtRoad * kMphToMps;
+  return kMphNone * kMphToMps;
+}
+
+double edge_travel_time(double len_m, const std::string& t, bool wrong_way = false) {
+  const double base = std::max(1e-4, len_m / road_speed_mps(t));
+  return wrong_way ? (base * kOneWayMultiplier) : base;
+}
+
+double turn_penalty_s(double in_dx, double in_dz, double out_dx, double out_dz, bool ignore_turn) {
+  if (ignore_turn) return 0.0;
+  const double dot = in_dx * out_dx + in_dz * out_dz;
+  return dot < kSharpTurnCos ? kTurnDelaySeconds : 0.0;
 }
 
 double wrap_angle(double a) {
@@ -75,29 +97,44 @@ void GpsSolver::build(const NavMap& nav) {
   ignore_turn_node_.assign(n_nodes, 0);
   node_xz_.resize(n_nodes);
   adj_.assign(n_nodes, {});
+  edge_to_node_.clear();
+  edge_dir_.clear();
 
   for (size_t i = 0; i < n_nodes; ++i) {
     node_xz_[i] = {nav.nodes[i].x, nav.nodes[i].z};
     if (nav.node_tag(uint32_t(i), "ignore_turn_flags") == "true") ignore_turn_node_[i] = 1;
   }
 
+  auto push_edge = [&](uint32_t u, uint32_t v, int ri, int seg, bool forward, double len, double cost,
+                       bool wrong_way) {
+    const double dx = node_xz_[v][0] - node_xz_[u][0];
+    const double dz = node_xz_[v][1] - node_xz_[u][1];
+    const double hlen = std::hypot(dx, dz);
+    const double ux = hlen > 1e-6 ? (dx / hlen) : 0.0;
+    const double uz = hlen > 1e-6 ? (dz / hlen) : 1.0;
+    const uint32_t eid = uint32_t(edge_to_node_.size());
+    edge_to_node_.push_back(v);
+    edge_dir_.push_back({ux, uz});
+    adj_[u].push_back({eid, u, v, ri, seg, forward, len, cost, ux, uz, wrong_way});
+  };
+
   for (size_t ri = 0; ri < rds.size(); ++ri) {
     const Road& r = rds[ri];
     if (!is_drivable_type(r.type) || r.nodes.size() < 2) continue;
     drivable_road_[ri] = 1;
-    const double w = road_weight(r.type);
     for (size_t k = 0; k + 1 < r.nodes.size(); ++k) {
       const uint32_t u = r.nodes[k];
       const uint32_t v = r.nodes[k + 1];
       const double len = r.s[k + 1] - r.s[k];
-      const double cost = std::max(0.01, len * w);
-      adj_[u].push_back({v, int(ri), int(k), true, len, cost, false});
+      const double cost = edge_travel_time(len, r.type, false);
+      push_edge(u, v, int(ri), int(k), true, len, cost, false);
       if (!r.oneway) {
-        adj_[v].push_back({u, int(ri), int(k), false, len, cost, false});
+        push_edge(v, u, int(ri), int(k), false, len, cost, false);
       } else {
-        // Store wrong-way edge marked wrong_way=true so fallback can recover from
-        // isolated one-way stubs without altering normal directed routing.
-        adj_[v].push_back({u, int(ri), int(k), false, len, std::max(0.1, len * 8.0), true});
+        // Store wrong-way edge marked wrong_way=true with OneWayMultiplier=999.0
+        // so fallback can recover from isolated one-way stubs while strongly
+        // preferring any legal detour.
+        push_edge(v, u, int(ri), int(k), false, len, edge_travel_time(len, r.type, true), true);
       }
     }
   }
@@ -147,8 +184,8 @@ GpsRoute GpsSolver::run_astar(const RoadHit& sh, const RoadHit& gh, double goal_
   if (sh.road == gh.road) {
     const bool forward = gh.s >= sh.s;
     if (forward || !sr.oneway || allow_wrong_way) {
-      const double w = (!forward && sr.oneway) ? 8.0 : road_weight(sr.type);
-      direct_cost = std::fabs(gh.s - sh.s) * w;
+      const bool wrong_way = !forward && sr.oneway;
+      direct_cost = edge_travel_time(std::fabs(gh.s - sh.s), sr.type, wrong_way);
       std::vector<int> pnodes;
       direct.points.push_back(sp);
       pnodes.push_back(-1);
@@ -165,6 +202,20 @@ GpsRoute GpsSolver::run_astar(const RoadHit& sh, const RoadHit& gh, double goal_
       }
       direct.points.push_back(gp);
       pnodes.push_back(-1);
+      // Include sharp-turn penalties along direct same-road vertices so comparison
+      // against A* travel time is consistent.
+      for (size_t i = 1; i + 1 < direct.points.size(); ++i) {
+        const double ax = direct.points[i].x - direct.points[i - 1].x;
+        const double az = direct.points[i].z - direct.points[i - 1].z;
+        const double bx = direct.points[i + 1].x - direct.points[i].x;
+        const double bz = direct.points[i + 1].z - direct.points[i].z;
+        const double la = std::hypot(ax, az), lb = std::hypot(bx, bz);
+        if (la > 1e-4 && lb > 1e-4) {
+          const int nid = pnodes[i];
+          const bool ign = nid >= 0 && size_t(nid) < ignore_turn_node_.size() && ignore_turn_node_[size_t(nid)];
+          direct_cost += turn_penalty_s(ax / la, az / la, bx / lb, bz / lb, ign);
+        }
+      }
       direct.s.resize(direct.points.size(), 0.0);
       for (size_t i = 1; i < direct.points.size(); ++i) {
         direct.s[i] = direct.s[i - 1] + std::hypot(direct.points[i].x - direct.points[i - 1].x,
@@ -182,94 +233,139 @@ GpsRoute GpsSolver::run_astar(const RoadHit& sh, const RoadHit& gh, double goal_
     }
   }
 
-  const uint32_t n_nodes = uint32_t(adj_.size());
-  const uint32_t kGoalVirtual = n_nodes;
+  // Edge-state A* in travel-time seconds:
+  // States 0..n_edges-1 represent arriving via directed edge `eid` (preserving exact
+  // incoming tangent for TurnDelaySeconds); n_edges = seed s_b, n_edges+1 = seed s_a,
+  // n_edges+2 = virtual goal.
+  const uint32_t n_edges = uint32_t(edge_to_node_.size());
+  const uint32_t kSeedSb = n_edges;
+  const uint32_t kSeedSa = n_edges + 1;
+  const uint32_t kGoalVirtual = n_edges + 2;
+  const uint32_t n_states = n_edges + 3;
   const double kInf = std::numeric_limits<double>::infinity();
 
-  std::vector<double> g_score(n_nodes + 1, kInf);
-  std::vector<int> parent(n_nodes + 1, -1);
-  std::vector<uint8_t> closed(n_nodes + 1, 0);
+  std::vector<double> g_score(n_states, kInf);
+  std::vector<int> parent(n_states, -1);
+  std::vector<uint8_t> closed(n_states, 0);
 
   struct OpenItem {
     double f;
-    uint32_t u;
+    uint32_t st;
     bool operator>(const OpenItem& o) const { return f > o.f; }
   };
   std::priority_queue<OpenItem, std::vector<OpenItem>, std::greater<OpenItem>> open;
 
-  auto h = [&](uint32_t u) -> double {
-    if (u == kGoalVirtual) return 0.0;
-    return std::hypot(node_xz_[u][0] - gp.x, node_xz_[u][1] - gp.z);
+  auto h_node = [&](uint32_t u) -> double {
+    return std::hypot(node_xz_[u][0] - gp.x, node_xz_[u][1] - gp.z) / kMaxSpeedMps;
+  };
+
+  auto unit_dir = [](double x0, double z0, double x1, double z1, bool& valid) -> std::array<double, 2> {
+    const double dx = x1 - x0, dz = z1 - z0, l = std::hypot(dx, dz);
+    if (l > 1e-4) {
+      valid = true;
+      return {dx / l, dz / l};
+    }
+    valid = false;
+    return {0.0, 1.0};
   };
 
   // Seed start segment endpoints.
-  const double sw = road_weight(sr.type);
   const uint32_t s_a = sr.nodes[size_t(sh.segment)];
   const uint32_t s_b = sr.nodes[size_t(sh.segment + 1)];
   const double d_sb = std::max(0.0, sr.s[size_t(sh.segment + 1)] - sh.s);
   const double d_sa = std::max(0.0, sh.s - sr.s[size_t(sh.segment)]);
+  bool sb_dir_ok = false, sa_dir_ok = false;
+  const auto sb_dir = unit_dir(node_xz_[s_a][0], node_xz_[s_a][1], node_xz_[s_b][0], node_xz_[s_b][1], sb_dir_ok);
+  const auto sa_dir = unit_dir(node_xz_[s_b][0], node_xz_[s_b][1], node_xz_[s_a][0], node_xz_[s_a][1], sa_dir_ok);
 
   // Forward along start segment -> s_b
   {
-    const double c = d_sb * sw;
-    g_score[s_b] = c;
-    parent[s_b] = -2;  // seeded from start
-    open.push({c + h(s_b), s_b});
+    const double c = d_sb > 1e-4 ? edge_travel_time(d_sb, sr.type, false) : 0.0;
+    g_score[kSeedSb] = c;
+    parent[kSeedSb] = -2;
+    open.push({c + h_node(s_b), kSeedSb});
   }
   // Backward along start segment -> s_a (if two-way or fallback)
   if (!sr.oneway || allow_wrong_way) {
-    const double c = d_sa * (sr.oneway ? 8.0 : sw);
-    if (c < g_score[s_a]) {
-      g_score[s_a] = c;
-      parent[s_a] = -2;
-      open.push({c + h(s_a), s_a});
-    }
+    const double c = d_sa > 1e-4 ? edge_travel_time(d_sa, sr.type, sr.oneway) : 0.0;
+    g_score[kSeedSa] = c;
+    parent[kSeedSa] = -2;
+    open.push({c + h_node(s_a), kSeedSa});
   }
 
-  // Goal segment entry endpoints: reaching g_a can finish forward to gp;
-  // reaching g_b can finish backward to gp if !gr.oneway (or fallback).
-  const double gw = road_weight(gr.type);
+  // Goal segment entry endpoints.
   const uint32_t g_a = gr.nodes[size_t(gh.segment)];
   const uint32_t g_b = gr.nodes[size_t(gh.segment + 1)];
   const double d_ga = std::max(0.0, gh.s - gr.s[size_t(gh.segment)]);
   const double d_gb = std::max(0.0, gr.s[size_t(gh.segment + 1)] - gh.s);
+  bool ga_dir_ok = false, gb_dir_ok = false;
+  const auto ga_dir = unit_dir(node_xz_[g_a][0], node_xz_[g_a][1], node_xz_[g_b][0], node_xz_[g_b][1], ga_dir_ok);
+  const auto gb_dir = unit_dir(node_xz_[g_b][0], node_xz_[g_b][1], node_xz_[g_a][0], node_xz_[g_a][1], gb_dir_ok);
+
+  auto state_node = [&](uint32_t st) -> uint32_t {
+    if (st == kSeedSb) return s_b;
+    if (st == kSeedSa) return s_a;
+    return edge_to_node_[st];
+  };
+  auto state_dir = [&](uint32_t st, bool& has_dir) -> std::array<double, 2> {
+    if (st == kSeedSb) {
+      has_dir = sb_dir_ok;
+      return sb_dir;
+    }
+    if (st == kSeedSa) {
+      has_dir = sa_dir_ok;
+      return sa_dir;
+    }
+    has_dir = true;
+    return edge_dir_[st];
+  };
 
   while (!open.empty()) {
     const auto cur = open.top();
     open.pop();
-    const uint32_t u = cur.u;
-    if (closed[u]) continue;
-    closed[u] = 1;
-    if (u == kGoalVirtual) break;
-    const double gu = g_score[u];
+    const uint32_t st = cur.st;
+    if (closed[st]) continue;
+    closed[st] = 1;
+    if (st == kGoalVirtual) break;
+    const double gu = g_score[st];
     if (gu >= direct_cost && direct.valid) break;
+
+    const uint32_t u = state_node(st);
+    bool has_in_dir = false;
+    const auto in_dir = state_dir(st, has_in_dir);
+    const bool ign_turn = u < ignore_turn_node_.size() && ignore_turn_node_[u] != 0;
 
     // Virtual edges into goal.
     if (u == g_a) {
-      const double c = gu + d_ga * gw;
+      double tp = 0.0;
+      if (has_in_dir && ga_dir_ok && d_ga > 1e-4) tp = turn_penalty_s(in_dir[0], in_dir[1], ga_dir[0], ga_dir[1], ign_turn);
+      const double c = gu + (d_ga > 1e-4 ? edge_travel_time(d_ga, gr.type, false) : 0.0) + tp;
       if (c < g_score[kGoalVirtual]) {
         g_score[kGoalVirtual] = c;
-        parent[kGoalVirtual] = int(u);
+        parent[kGoalVirtual] = int(st);
         open.push({c, kGoalVirtual});
       }
     }
     if (u == g_b && (!gr.oneway || allow_wrong_way)) {
-      const double c = gu + d_gb * (gr.oneway ? 8.0 : gw);
+      double tp = 0.0;
+      if (has_in_dir && gb_dir_ok && d_gb > 1e-4) tp = turn_penalty_s(in_dir[0], in_dir[1], gb_dir[0], gb_dir[1], ign_turn);
+      const double c = gu + (d_gb > 1e-4 ? edge_travel_time(d_gb, gr.type, gr.oneway) : 0.0) + tp;
       if (c < g_score[kGoalVirtual]) {
         g_score[kGoalVirtual] = c;
-        parent[kGoalVirtual] = int(u);
+        parent[kGoalVirtual] = int(st);
         open.push({c, kGoalVirtual});
       }
     }
 
     for (const Edge& e : adj_[u]) {
       if (e.wrong_way && !allow_wrong_way) continue;
-      if (closed[e.to]) continue;
-      const double ng = gu + e.cost;
-      if (ng < g_score[e.to]) {
-        g_score[e.to] = ng;
-        parent[e.to] = int(u);
-        open.push({ng + h(e.to), e.to});
+      if (closed[e.id]) continue;
+      const double tp = has_in_dir ? turn_penalty_s(in_dir[0], in_dir[1], e.dir_x, e.dir_z, ign_turn) : 0.0;
+      const double ng = gu + e.cost + tp;
+      if (ng < g_score[e.id]) {
+        g_score[e.id] = ng;
+        parent[e.id] = int(st);
+        open.push({ng + h_node(e.to), e.id});
       }
     }
   }
@@ -277,10 +373,10 @@ GpsRoute GpsSolver::run_astar(const RoadHit& sh, const RoadHit& gh, double goal_
   if (direct.valid && direct_cost <= g_score[kGoalVirtual]) return direct;
   if (!std::isfinite(g_score[kGoalVirtual]) || parent[kGoalVirtual] < 0) return direct;
 
-  // Reconstruct node sequence.
+  // Reconstruct node sequence from edge states.
   std::vector<uint32_t> rev_nodes;
   for (int cur = parent[kGoalVirtual]; cur >= 0; cur = parent[size_t(cur)]) {
-    rev_nodes.push_back(uint32_t(cur));
+    rev_nodes.push_back(state_node(uint32_t(cur)));
   }
   std::reverse(rev_nodes.begin(), rev_nodes.end());
 

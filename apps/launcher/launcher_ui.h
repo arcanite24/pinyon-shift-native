@@ -108,6 +108,8 @@ struct LauncherUiState {
   std::string current_version = "0.1.0";
   std::string update_channel = "stable";
   std::optional<AvailableUpdate> available_update;
+  std::filesystem::path staged_apply_script;
+  int staged_file_count = 0;
   std::string update_status = "No update check run yet.";
 
   // Android Wi-Fi Sync tab state

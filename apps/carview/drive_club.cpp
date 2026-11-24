@@ -11,6 +11,17 @@
 #include "cars/sources.h"
 
 namespace carview {
+namespace {
+
+struct ClubBankedTracker {
+  const DriveSession* owner = nullptr;
+  double last_banked_at = -1e9;
+  double last_sim_time = -1.0;
+};
+
+ClubBankedTracker g_club_banked_tracker;
+
+}  // namespace
 
 void DriveSession::club_ensure_meta() {
         if (!*app.car_names_loaded) carview::car_name("");  // ensures v4 carchallenge* string tables are loaded
@@ -127,7 +138,18 @@ void DriveSession::club_check() {
 }
 
 void DriveSession::club_step() {
+        const double now_t = vehicle.time();
+        if (g_club_banked_tracker.owner != this || now_t < g_club_banked_tracker.last_sim_time - 1e-6) {
+          g_club_banked_tracker.owner = this;
+          g_club_banked_tracker.last_banked_at =
+              app.skill_tracker ? app.skill_tracker->hud().banked_at : -1e9;
+        }
+        g_club_banked_tracker.last_sim_time = now_t;
         if (club_runs.empty()) {
+          if (app.skill_tracker) {
+            g_club_banked_tracker.last_banked_at =
+                std::max(g_club_banked_tracker.last_banked_at, app.skill_tracker->hud().banked_at);
+          }
           club_pending.clear();
           return;
         }
@@ -150,7 +172,8 @@ void DriveSession::club_step() {
         s.is_drifting = !air && s.speed_mph >= 12.0 && v_fwd > 2.0 && v_lat > 2.2 && (v_lat / std::max(1.0, v_fwd)) > 0.18;
         s.jump_m = air ? std::hypot(at.x - club_takeoff.x, at.z - club_takeoff.z) : 0;
         s.collided = vehicle.strongest_body_contact().force > 4 * vehicle.params().mass * 9.81 ||
-                     (traffic && traffic->player_impulse() > 2.0 * vehicle.params().mass);
+                     (traffic && traffic->player_impulse() > 2.0 * vehicle.params().mass) ||
+                     (app.race && app.race->player_impulse() > 2.0 * vehicle.params().mass);
         s.x = at.x, s.z = at.z;
 
         // Skills, smashables, speed cameras, events, and H2H pulses.
@@ -159,8 +182,15 @@ void DriveSession::club_step() {
         if (app.skill_tracker) {
           const auto sh = app.skill_tracker->hud();
           s.skill_points = sh.active ? double(sh.chain_points) * double(std::max(1, sh.multiplier)) : 0.0;
+          if (sh.banked_at > g_club_banked_tracker.last_banked_at && sh.banked_total > 0) {
+            s.banked_skill_points_delta = double(sh.banked_total);
+            g_club_banked_tracker.last_banked_at = sh.banked_at;
+          } else {
+            s.banked_skill_points_delta = 0.0;
+          }
         } else {
           s.skill_points = 0.0;
+          s.banked_skill_points_delta = 0.0;
         }
         s.smashables_broken = std::move(club_pending.smashables);
         s.speed_cameras = std::move(club_pending.cameras);

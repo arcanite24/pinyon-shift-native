@@ -227,10 +227,103 @@ std::optional<std::array<double, 3>> TrainerState::consume_gps(bool in_race) {
   return pt;
 }
 
+void TrainerState::configure_save_root(const std::filesystem::path& clean_user_dir, bool already_isolated) {
+  clean_user_dir_ = clean_user_dir;
+  active_user_dir_ = clean_user_dir;
+  modded_isolation_active_ = already_isolated;
+  modded_isolation_triggered_ = false;
+  if (!modded_isolation_active_ && !clean_user_dir_.empty() &&
+      requires_modded_save(config, pacing, hidden_cars)) {
+    active_user_dir_ = resolve_isolated_user_dir(clean_user_dir_, true);
+    modded_isolation_active_ = true;
+    modded_isolation_triggered_ = true;
+  }
+}
+
+bool TrainerState::sync_modded_isolation() {
+  if (modded_isolation_active_) return false;
+  if (!requires_modded_save(config, pacing, hidden_cars)) return false;
+  if (!clean_user_dir_.empty()) {
+    active_user_dir_ = resolve_isolated_user_dir(clean_user_dir_, true);
+  }
+  modded_isolation_active_ = true;
+  modded_isolation_triggered_ = true;
+  return true;
+}
+
+bool TrainerState::consume_modded_isolation_triggered() {
+  if (!modded_isolation_triggered_) return false;
+  modded_isolation_triggered_ = false;
+  return true;
+}
+
 // ---- Save-tree isolation ----
 
 bool requires_modded_save(const TrainerConfig& trainer, const FestivalPacingConfig& pacing, bool hidden_cars) {
   return trainer.cheats_enabled || pacing.modifies_economy() || hidden_cars;
+}
+
+namespace {
+
+std::filesystem::path compute_modded_dir(const std::filesystem::path& parent) {
+  if (parent.filename() == "user") {
+    return parent.parent_path() / "user-modded";
+  }
+  if (parent.filename() == "user-modded") {
+    return parent;
+  }
+  return parent / "user-modded";
+}
+
+bool seed_modded_save_tree(const std::filesystem::path& src_dir, const std::filesystem::path& dst_dir,
+                           const std::filesystem::path& save_filename) {
+  if (src_dir.empty() || dst_dir.empty() || src_dir == dst_dir) return false;
+  bool any_seeded = false;
+
+  auto copy_file_if_missing = [&](const std::filesystem::path& src, const std::filesystem::path& dst) {
+    std::error_code ec;
+    if (!std::filesystem::exists(dst, ec) && std::filesystem::is_regular_file(src, ec)) {
+      std::filesystem::create_directories(dst.parent_path(), ec);
+      if (std::filesystem::copy_file(src, dst, std::filesystem::copy_options::skip_existing, ec)) {
+        any_seeded = true;
+      }
+    }
+  };
+
+  if (!save_filename.empty()) {
+    copy_file_if_missing(src_dir / save_filename, dst_dir / save_filename);
+  }
+  if (save_filename != "save.txt") {
+    copy_file_if_missing(src_dir / "save.txt", dst_dir / "save.txt");
+  }
+  copy_file_if_missing(src_dir / "garage.txt", dst_dir / "garage.txt");
+
+  std::error_code ec;
+  const std::filesystem::path src_liveries = src_dir / "liveries";
+  const std::filesystem::path dst_liveries = dst_dir / "liveries";
+  if (!std::filesystem::exists(dst_liveries, ec) && std::filesystem::is_directory(src_liveries, ec)) {
+    std::filesystem::create_directories(dst_liveries, ec);
+    std::filesystem::copy(src_liveries, dst_liveries,
+                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::skip_existing, ec);
+    if (!ec) any_seeded = true;
+  }
+
+  return any_seeded;
+}
+
+}  // namespace
+
+std::filesystem::path resolve_isolated_user_dir(const std::filesystem::path& main_user_dir, bool use_modded,
+                                                bool* seeded_copy) {
+  if (seeded_copy) *seeded_copy = false;
+  if (!use_modded || main_user_dir.empty()) return main_user_dir;
+
+  const std::filesystem::path modded_dir = compute_modded_dir(main_user_dir);
+  std::error_code ec;
+  std::filesystem::create_directories(modded_dir, ec);
+  const bool seeded = seed_modded_save_tree(main_user_dir, modded_dir, "save.txt");
+  if (seeded_copy) *seeded_copy = seeded;
+  return modded_dir;
 }
 
 std::filesystem::path resolve_isolated_save_path(const std::filesystem::path& main_save_path, bool use_modded,
@@ -240,21 +333,11 @@ std::filesystem::path resolve_isolated_save_path(const std::filesystem::path& ma
 
   const std::filesystem::path filename = main_save_path.filename();
   const std::filesystem::path parent = main_save_path.parent_path();
-  std::filesystem::path modded_dir;
-  if (parent.filename() == "user") {
-    modded_dir = parent.parent_path() / "user-modded";
-  } else {
-    modded_dir = parent / "user-modded";
-  }
+  const std::filesystem::path modded_dir = compute_modded_dir(parent);
   const std::filesystem::path modded_path = modded_dir / filename;
 
-  std::error_code ec;
-  if (!std::filesystem::exists(modded_path, ec) && std::filesystem::exists(main_save_path, ec)) {
-    std::filesystem::create_directories(modded_dir, ec);
-    if (std::filesystem::copy_file(main_save_path, modded_path, std::filesystem::copy_options::skip_existing, ec)) {
-      if (seeded_copy) *seeded_copy = true;
-    }
-  }
+  const bool seeded = seed_modded_save_tree(parent, modded_dir, filename);
+  if (seeded_copy) *seeded_copy = seeded;
   return modded_path;
 }
 

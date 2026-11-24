@@ -156,6 +156,24 @@ class TrainerState {
   // Returns the destination point when ready to execute on an open map (or direct handoff).
   std::optional<std::array<double, 3>> consume_teleport(double now_s, bool map_open, bool in_race);
   std::optional<std::array<double, 3>> consume_gps(bool in_race);
+
+  // Live modded-save isolation (`user` -> `user-modded`).
+  // Call configure_save_root() at session start with the active save directory,
+  // then call sync_modded_isolation() whenever F6/F10 trainer settings change
+  // (or once per frame) and consume_modded_isolation_triggered() to redirect
+  // app.save_path, app.garage_path, and liveries/ live before any write occurs.
+  void configure_save_root(const std::filesystem::path& clean_user_dir, bool already_isolated = false);
+  bool sync_modded_isolation();
+  bool consume_modded_isolation_triggered();
+  bool modded_isolation_active() const { return modded_isolation_active_; }
+  const std::filesystem::path& active_user_dir() const { return active_user_dir_; }
+  const std::filesystem::path& clean_user_dir() const { return clean_user_dir_; }
+
+ private:
+  std::filesystem::path clean_user_dir_;
+  std::filesystem::path active_user_dir_;
+  bool modded_isolation_active_ = false;
+  bool modded_isolation_triggered_ = false;
 };
 
 // ---- Save-tree isolation (`user` vs `user-modded`) ----
@@ -163,10 +181,18 @@ class TrainerState {
 // True whenever Trainer cheats, Festival Pacing (non-1x), or Hidden Cars are enabled.
 bool requires_modded_save(const TrainerConfig& trainer, const FestivalPacingConfig& pacing, bool hidden_cars);
 
+// Resolves the save directory: returns `main_user_dir` unchanged when `!use_modded`.
+// When `use_modded` is true, maps `<root>/user` (or `<dir>`) to `<root>/user-modded`
+// (idempotently if already `user-modded`) and seeds save.txt, garage.txt, and
+// liveries/ from `main_user_dir` when missing in `user-modded/`.
+std::filesystem::path resolve_isolated_user_dir(const std::filesystem::path& main_user_dir, bool use_modded,
+                                                bool* seeded_copy = nullptr);
+
 // Resolves the save file path: returns `main_save_path` unchanged when `!use_modded`.
 // When `use_modded` is true, maps `<root>/user/<name>` (or `<dir>/<name>`) to
-// `<root>/user-modded/<name>` and seeds it once from `main_save_path` if missing,
-// guaranteeing the player's main save is never written by modded/cheat sessions.
+// `<root>/user-modded/<name>` and seeds `<name>`, `garage.txt`, and `liveries/`
+// once from the main save directory if missing, guaranteeing the player's clean
+// save tree is never written by modded/cheat sessions.
 std::filesystem::path resolve_isolated_save_path(const std::filesystem::path& main_save_path, bool use_modded,
                                                  bool* seeded_copy = nullptr);
 

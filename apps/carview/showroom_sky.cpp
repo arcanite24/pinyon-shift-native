@@ -518,20 +518,28 @@ void Showroom::record_sky_before(VkCommandBuffer cmd) {
   fill_sky_uniforms(frame_, u);
 
   // Update mode 0 (atmosphere) and mode 1 (disc + clouds + horizon fog) UBOs.
+  // Pre-transfer WAR barrier ensures prior frame fragment reads complete before overwriting the UBO.
   for (int m = 0; m < 2; ++m) {
     u.cam_fwd[3] = float(m);
-    vkCmdUpdateBuffer(cmd, sky_ubo_[m].buffer, 0, sizeof(SkyUniforms), &u);
     VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-    b.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    b.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+    b.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.buffer = sky_ubo_[m].buffer;
     b.size = sizeof(SkyUniforms);
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dep.bufferMemoryBarrierCount = 1;
     dep.pBufferMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    vkCmdUpdateBuffer(cmd, sky_ubo_[m].buffer, 0, sizeof(SkyUniforms), &u);
+
+    b.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
     vkCmdPipelineBarrier2(cmd, &dep);
   }
 }

@@ -224,6 +224,15 @@ bool decode_xma2_interleaved(const FsbSample& s, std::span<const uint8_t> raw_xm
             interleaved_out[base + size_t(i) * size_t(ch) + size_t(c)] = std::isfinite(v) ? std::clamp(v, -1.0f, 1.0f) : 0.0f;
           }
         }
+      } else if (frame->format == AV_SAMPLE_FMT_S16) {
+        const auto* src = reinterpret_cast<const int16_t*>(frame->data[0]);
+        for (int i = 0; i < nb; ++i) {
+          for (int c = 0; c < ch; ++c) {
+            const int sc = std::min(c, fch - 1);
+            interleaved_out[base + size_t(i) * size_t(ch) + size_t(c)] =
+                src ? (float(src[size_t(i) * size_t(fch) + size_t(sc)]) / 32768.0f) : 0.0f;
+          }
+        }
       }
       av_frame_unref(frame);
     }
@@ -234,9 +243,19 @@ bool decode_xma2_interleaved(const FsbSample& s, std::span<const uint8_t> raw_xm
   for (size_t off = 0; off + kXmaPacket <= aligned_bytes; off += kXmaPacket) {
     if (av_new_packet(pkt, int(kXmaPacket)) < 0) break;
     std::memcpy(pkt->data, raw_xma.data() + off, kXmaPacket);
-    const int sr = avcodec_send_packet(ctx, pkt);
+    int eagain_retries = 0;
+    for (;;) {
+      const int sr = avcodec_send_packet(ctx, pkt);
+      if (sr == AVERROR(EAGAIN)) {
+        const size_t before = interleaved_out.size();
+        drain_frames();
+        if (interleaved_out.size() == before && ++eagain_retries > 16) break;
+        continue;
+      }
+      if (sr >= 0) drain_frames();
+      break;
+    }
     av_packet_unref(pkt);
-    if (sr >= 0 || sr == AVERROR(EAGAIN)) drain_frames();
   }
   avcodec_send_packet(ctx, nullptr);
   drain_frames();
@@ -349,6 +368,14 @@ bool decode_fsb_subsound_stereo(const std::filesystem::path& bank_path, uint32_t
       for (size_t i = 0; i < frames; ++i) {
         stereo_interleaved[2 * i] = inter[i];
         stereo_interleaved[2 * i + 1] = inter[i];
+      }
+    } else if (ch >= 6) {
+      // Standard 5.1 -> stereo fold (FL, FR, C, LFE, RL, RR).
+      constexpr float kFold = 0.70710678f;
+      for (size_t i = 0; i < frames; ++i) {
+        const float* f = &inter[i * size_t(ch)];
+        stereo_interleaved[2 * i] = std::clamp(f[0] + kFold * f[2] + kFold * f[4], -1.0f, 1.0f);
+        stereo_interleaved[2 * i + 1] = std::clamp(f[1] + kFold * f[2] + kFold * f[5], -1.0f, 1.0f);
       }
     } else {
       for (size_t i = 0; i < frames; ++i) {

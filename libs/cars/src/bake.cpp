@@ -620,21 +620,40 @@ bool load_brake_model(const std::filesystem::path& game_root, int size_in, int t
     return false;
   }
 
-  // Clamp size to available range (7..16) and pistons to {2,4,6,8}.
-  const int sz = std::clamp(size_in, 7, 16);
+  // Clamp size to available range (7..17) and pistons to {2,4,6,8}.
+  const int sz = std::clamp(size_in, 7, 17);
+  const bool drum_null = (!is_rotor && type_id == 1);
   std::vector<std::string> candidates;
-  if (is_rotor) {
+  if (drum_null) {
+    // Drum brakes (List_BrakeType ID 1) use the null caliper model rather than a floating disc caliper.
+    candidates.push_back("drum_null_caliper.rmb.carbin");
+  } else if (is_rotor) {
     const std::string stem = brake_type_stem(type_id);
     candidates.push_back(std::to_string(sz) + "_" + stem + "_lod0.rmb.carbin");
     candidates.push_back(std::to_string(sz) + "_" + stem + ".rmb.carbin");
-    candidates.push_back(std::to_string(sz) + "_rotor_steel_lod0.rmb.carbin");
-    candidates.push_back(std::to_string(sz) + "_rotor_steel.rmb.carbin");
+    if (type_id == 1) {
+      const int drum_sz = std::clamp(sz, 7, 10);
+      candidates.push_back(std::to_string(drum_sz) + "_drum_lod0.rmb.carbin");
+      candidates.push_back(std::to_string(drum_sz) + "_drum.rmb.carbin");
+    }
+    if (sz == 17) {
+      candidates.push_back("16_" + stem + "_lod0.rmb.carbin");
+      candidates.push_back("16_" + stem + ".rmb.carbin");
+    }
+    const int fallback_sz = std::min(sz, 16);
+    candidates.push_back(std::to_string(fallback_sz) + "_rotor_steel_lod0.rmb.carbin");
+    candidates.push_back(std::to_string(fallback_sz) + "_rotor_steel.rmb.carbin");
   } else {
     const int p = pistons >= 8 ? 8 : pistons >= 6 ? 6 : pistons >= 4 ? 4 : 2;
     candidates.push_back(std::to_string(sz) + "_caliper_" + std::to_string(p) + "_lod0.rmb.carbin");
     candidates.push_back(std::to_string(sz) + "_caliper_" + std::to_string(p) + ".rmb.carbin");
-    candidates.push_back(std::to_string(sz) + "_caliper_4_lod0.rmb.carbin");
-    candidates.push_back(std::to_string(sz) + "_caliper_2.rmb.carbin");
+    if (sz == 17) {
+      candidates.push_back("16_caliper_" + std::to_string(p) + "_lod0.rmb.carbin");
+      candidates.push_back("16_caliper_" + std::to_string(p) + ".rmb.carbin");
+    }
+    const int fallback_sz = std::min(sz, 16);
+    candidates.push_back(std::to_string(fallback_sz) + "_caliper_4_lod0.rmb.carbin");
+    candidates.push_back(std::to_string(fallback_sz) + "_caliper_2.rmb.carbin");
   }
 
   // Case-insensitive lookup in media/brakes/.
@@ -696,11 +715,22 @@ bool load_brake_model(const std::filesystem::path& game_root, int size_in, int t
       bs.material = classify(s.material, bs.transparent, role);
       bs.indices = fh1::carbin_triangle_list(s);
       assign_slots(bs, role, {}, {}, notes);
+      // Generic media/brakes/* meshes do not share UV layout with a car's exterior
+      // paint @atlas: bind Shared/rotor0..4.xds for rotors/drums/hubs, and leave
+      // generic caliper slot 0 empty so Data_Car/custom caliper paint tints cleanly.
+      if (bs.slots[0] == "@atlas") {
+        if (is_rotor && bs.material != MaterialClass::kCaliper) {
+          const int rotor_idx = std::clamp(type_id - 1, 0, 4);
+          bs.slots[0] = "shared:rotor" + std::to_string(rotor_idx) + ".xds";
+        } else {
+          bs.slots[0].clear();
+        }
+      }
       bp.subsections.push_back(std::move(bs));
     }
     out.parts.push_back(std::move(bp));
   }
-  return !out.parts.empty();
+  return drum_null || !out.parts.empty();
 }
 
 }  // namespace cars

@@ -1,6 +1,8 @@
 #include "game_hud_internal.h"
 #include "touch_controls.h"
 
+#include <cstdlib>
+
 namespace carview {
 
 using namespace hud_detail;
@@ -388,15 +390,66 @@ void set_ui_textures(std::function<bool(const std::string&, std::array<float, 4>
   ui4::set_texture_loader(std::move(source));
 }
 bool ui_texture(const std::string& path, std::array<float, 4>& uv) { return textures() && textures()(path, uv); }
+namespace {
+
+// Matches the inline rich-text style tags supported by ui::List's parse_style_tag()
+// (single `{...}` or double `{{...}}`: font/font_pop/font=... and colour/color).
+bool is_supported_ui_style_tag(std::string_view tag) {
+  auto trim_tag = [](std::string_view v) {
+    while (!v.empty() && (v.front() == ' ' || v.front() == '\'' || v.front() == '"')) v.remove_prefix(1);
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\'' || v.back() == '"')) v.remove_suffix(1);
+    return v;
+  };
+  std::string low;
+  low.reserve(tag.size());
+  for (char c : tag) low.push_back(char(std::tolower(static_cast<unsigned char>(c))));
+
+  if (low == "font_pop" || low == "font" || low == "colour_pop" || low == "color_pop" ||
+      low == "colour" || low == "color") {
+    return true;
+  }
+  if (low.rfind("font=", 0) == 0) {
+    return !trim_tag(std::string_view(low).substr(5)).empty();
+  }
+  if (low.rfind("colour=", 0) == 0 || low.rfind("color=", 0) == 0) {
+    const size_t eq = low.find('=');
+    const std::string v(trim_tag(std::string_view(low).substr(eq + 1)));
+    const char* p = v.c_str();
+    int n = 0;
+    while (*p && n < 4) {
+      while (*p == ' ' || *p == ',' || *p == '\t') ++p;
+      if (!*p) break;
+      char* end = nullptr;
+      (void)std::strtol(p, &end, 10);
+      if (end == p) break;
+      ++n;
+      p = end;
+    }
+    return n >= 3;
+  }
+  return false;
+}
+
+}  // namespace
+
 std::string strip_ui_inline_tags(std::string s) {
-  // Strip retail inline font/icon markup such as {font='SYM'} or [UI.Flow...] without altering plain text.
+  // Preserve rich-text inline tags handled by ui::List (e.g. {font='SYM'}, {font_pop},
+  // {colour='R G B A'}, {colour_pop}, single or doubled braces) while stripping
+  // unrecognized {...} placeholders and [UI.*] flow tokens so no raw markup leaks.
   std::string out;
   out.reserve(s.size());
   for (size_t i = 0; i < s.size();) {
     if (s[i] == '{') {
-      const size_t close = s.find('}', i + 1);
-      if (close != std::string::npos && close - i < 48) {
-        i = close + 1;
+      const bool dbl = (i + 1 < s.size() && s[i + 1] == '{');
+      const size_t tag_start = i + (dbl ? 2 : 1);
+      const size_t close = dbl ? s.find("}}", tag_start) : s.find('}', tag_start);
+      if (close != std::string::npos && close - tag_start <= 64) {
+        const std::string_view tag(s.data() + tag_start, close - tag_start);
+        const size_t end = close + (dbl ? 2 : 1);
+        if (is_supported_ui_style_tag(tag)) {
+          out.append(s, i, end - i);
+        }
+        i = end;
         continue;
       }
     } else if (s[i] == '[' && i + 4 < s.size() && s.compare(i, 4, "[UI.") == 0) {

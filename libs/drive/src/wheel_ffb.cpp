@@ -532,7 +532,7 @@ WheelFfbTelemetry ffb_telemetry_from_vehicle(const Vehicle& v, bool driving, dou
   t.front_slip_ratio = 0.5 * (w[0].slip_ratio + w[1].slip_ratio);
   t.front_load_n = w[0].load + w[1].load;
   t.static_front_load_n = std::max(100.0, v.static_load(0) + v.static_load(1));
-  t.lateral_g = lateral_g;
+  t.lateral_g = std::isnan(lateral_g) ? v.lateral_g() : lateral_g;
   t.rpm = v.rpm();
   t.redline_rpm = v.params().redline_rpm;
   t.surface_bump_rumble = v.surface_bump_rumble();
@@ -620,7 +620,10 @@ WheelFfbForces WheelFfbSolver::step(const WheelFfbTelemetry& tel, const WheelFfb
   out.spring_coeff = scale_cond(speed_spring, cfg.spring_percent);
 
   // Dynamic self-aligning torque from front tyre slip angle + front load + lateral G.
-  // Past peak grip (|slip| > 1.0), aligning torque drops off naturally (understeer lightness).
+  // In Vehicle's body frame (+X right, +Z forward), a right turn (steer > 0) produces
+  // negative front_slip_angle and positive lateral_g; self-aligning torque must oppose
+  // the turn (negative force pushing left toward center). Past peak grip (|slip| > 1.0),
+  // aligning torque drops off naturally (understeer lightness).
   const double load_ratio = std::clamp(tel.front_load_n / std::max(100.0, tel.static_front_load_n), 0.0, 2.0);
   const double sa = tel.front_slip_angle;
   const double abs_sa = std::fabs(sa);
@@ -630,7 +633,7 @@ WheelFfbForces WheelFfbSolver::step(const WheelFfbTelemetry& tel, const WheelFfb
   const double lock_fade = 1.0 - 0.35 * std::clamp(std::fabs(tel.front_slip_ratio) - 0.8, 0.0, 1.0);
   const double low_speed_gate = std::clamp(speed / 3.0, 0.0, 1.0);
   const double raw_align =
-      -(0.72 * slip_align * load_ratio * lock_fade + 0.22 * std::clamp(tel.lateral_g / 1.5, -1.0, 1.0)) *
+      (0.72 * slip_align * load_ratio * lock_fade - 0.22 * std::clamp(tel.lateral_g / 1.5, -1.0, 1.0)) *
       low_speed_gate;
 
   const double alpha = dt > 0.0 ? (1.0 - std::exp(-dt * 35.0)) : 1.0;

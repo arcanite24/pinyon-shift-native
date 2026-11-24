@@ -5,9 +5,12 @@
 #include <cmath>
 #include <fstream>
 #include <sstream>
+#include <system_error>
 
 #include "audio/xml.h"
 #include "cars/mods.h"
+#include "cars/sources.h"
+#include "fh1data/archive.h"
 
 namespace audio {
 namespace {
@@ -24,6 +27,62 @@ std::string read_text(const std::filesystem::path& p) {
   std::ostringstream ss;
   ss << f.rdbuf();
   return ss.str();
+}
+
+std::string normalize_rel(std::string_view s) {
+  std::string out(s);
+  for (char& c : out) {
+    if (c == '\\') c = '/';
+    else c = char(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return out;
+}
+
+// Reads a TU4 override XML (e.g. "audio/cars/Tires/SurfaceChanges.xml" or
+// "audio/collisions/CollisionData.xml") from title-update-v4/media.zip or
+// an extracted TU4 directory under `state_root`.
+std::string read_tu4_override_xml(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
+                                  std::string_view rel_under_media) {
+  if (state_root.empty() || rel_under_media.empty()) return {};
+  std::error_code ec;
+  const std::string want = normalize_rel(rel_under_media);
+  const std::string want_media = "media/" + want;
+
+  // 1. Loose extracted TU4 files under state_root/title-update-v4/.
+  const std::filesystem::path loose_candidates[] = {
+      state_root / "title-update-v4" / "media" / rel_under_media,
+      state_root / "title-update-v4" / rel_under_media,
+  };
+  for (const auto& p : loose_candidates) {
+    if (std::filesystem::exists(p, ec)) {
+      std::string txt = read_text(p);
+      if (!txt.empty()) return txt;
+    }
+  }
+
+  // 2. title-update-v4/media.zip (discovered via cars::Install or directly under state_root).
+  std::filesystem::path v4_zip;
+  cars::Install inst;
+  if (!game_root.empty() && cars::discover_install(game_root, state_root, {}, inst, nullptr) &&
+      !inst.v4_media_zip.empty()) {
+    v4_zip = inst.v4_media_zip;
+  } else {
+    const auto direct = state_root / "title-update-v4" / "media.zip";
+    if (std::filesystem::exists(direct, ec)) v4_zip = direct;
+  }
+  if (v4_zip.empty() || !std::filesystem::exists(v4_zip, ec)) return {};
+  if (auto z = fh1::Archive::open(v4_zip, nullptr)) {
+    for (const auto& m : z->members()) {
+      const std::string nm = normalize_rel(m.name);
+      if (nm == want || nm == want_media) {
+        const auto rr = z->read(m.name);
+        if (rr.ok() && !rr.data.empty()) {
+          return std::string(reinterpret_cast<const char*>(rr.data.data()), rr.data.size());
+        }
+      }
+    }
+  }
+  return {};
 }
 
 std::string join_group_event(const XmlNode* n) {
@@ -101,12 +160,70 @@ bool TiresConfig::parse_surface_changes(std::string_view xml, std::string* error
   return !changes.empty();
 }
 
-bool TiresConfig::load(const std::filesystem::path& game_root, std::string* error) {
+bool TiresConfig::merge_tires(std::string_view xml, std::string* error) {
+  TiresConfig overlay;
+  if (!overlay.parse_tires(xml, error)) return false;
+  for (auto& ov : overlay.surfaces) {
+    bool replaced = false;
+    for (auto& s : surfaces) {
+      if (iequals(s.physics_surface, ov.physics_surface)) {
+        s = ov;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) surfaces.push_back(std::move(ov));
+  }
+  return true;
+}
+
+bool TiresConfig::merge_surface_changes(std::string_view xml, std::string* error) {
+  TiresConfig overlay;
+  if (!overlay.parse_surface_changes(xml, error)) return false;
+  for (auto& ov : overlay.changes) {
+    bool replaced = false;
+    for (auto& c : changes) {
+      if ((iequals(c.s1, ov.s1) && iequals(c.s2, ov.s2)) || (iequals(c.s1, ov.s2) && iequals(c.s2, ov.s1))) {
+        c = ov;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) changes.push_back(std::move(ov));
+  }
+  return true;
+}
+
+bool TiresConfig::load(const std::filesystem::path& game_root, std::string* error,
+                       const std::filesystem::path& state_root) {
   const auto dir = game_root / "media" / "audio" / "cars" / "Tires";
-  const std::string t = read_text(cars::mods::resolve(dir / "Tires.xml"));
-  const std::string sc = read_text(cars::mods::resolve(dir / "SurfaceChanges.xml"));
-  if (t.empty() || !parse_tires(t, error)) return false;
-  if (!sc.empty()) parse_surface_changes(sc, nullptr);
+  const auto base_tires = dir / "Tires.xml";
+  const auto resolved_tires = cars::mods::resolve(base_tires);
+  const bool mod_tires = (resolved_tires != base_tires);
+
+  const auto base_sc = dir / "SurfaceChanges.xml";
+  const auto resolved_sc = cars::mods::resolve(base_sc);
+  const bool mod_sc = (resolved_sc != base_sc);
+
+  const std::string t = read_text(resolved_tires);
+  bool ok = !t.empty() && parse_tires(t, error);
+  if (!mod_tires && !state_root.empty()) {
+    const std::string tu4_t = read_tu4_override_xml(game_root, state_root, "audio/cars/Tires/Tires.xml");
+    if (!tu4_t.empty()) {
+      ok = ok ? (merge_tires(tu4_t, nullptr) || ok) : parse_tires(tu4_t, error);
+    }
+  }
+  if (!ok) return false;
+
+  const std::string sc = read_text(resolved_sc);
+  bool have_sc = !sc.empty() && parse_surface_changes(sc, nullptr);
+  if (!mod_sc && !state_root.empty()) {
+    const std::string tu4_sc = read_tu4_override_xml(game_root, state_root, "audio/cars/Tires/SurfaceChanges.xml");
+    if (!tu4_sc.empty()) {
+      if (have_sc) merge_surface_changes(tu4_sc, nullptr);
+      else parse_surface_changes(tu4_sc, nullptr);
+    }
+  }
   return true;
 }
 
@@ -148,14 +265,44 @@ bool CollisionAudioConfig::parse(std::string_view xml, std::string* error) {
   return !pairs.empty();
 }
 
-bool CollisionAudioConfig::load(const std::filesystem::path& game_root, std::string* error) {
-  const auto p = cars::mods::resolve(game_root / "media" / "audio" / "collisions" / "CollisionData.xml");
-  const std::string t = read_text(p);
-  if (t.empty()) {
-    if (error) *error = "cannot read " + p.string();
-    return false;
+bool CollisionAudioConfig::merge(std::string_view xml, std::string* error) {
+  XmlNode root;
+  if (!parse_xml(xml, root, error)) return false;
+  if (root.has("MSBetweenDiffCollisions")) {
+    ms_between_diff_collisions = root.number("MSBetweenDiffCollisions", ms_between_diff_collisions);
   }
-  return parse(t, error);
+  CollisionAudioConfig overlay;
+  if (!overlay.parse(xml, error)) return false;
+  for (auto& ov : overlay.pairs) {
+    bool replaced = false;
+    for (auto& p : pairs) {
+      if (p.is_break == ov.is_break && ((iequals(p.surface1, ov.surface1) && iequals(p.surface2, ov.surface2)) ||
+                                        (iequals(p.surface1, ov.surface2) && iequals(p.surface2, ov.surface1)))) {
+        p = ov;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) pairs.push_back(std::move(ov));
+  }
+  return true;
+}
+
+bool CollisionAudioConfig::load(const std::filesystem::path& game_root, std::string* error,
+                                const std::filesystem::path& state_root) {
+  const auto base_p = game_root / "media" / "audio" / "collisions" / "CollisionData.xml";
+  const auto p = cars::mods::resolve(base_p);
+  const bool mod_overridden = (p != base_p);
+  const std::string t = read_text(p);
+  bool ok = !t.empty() && parse(t, error);
+  if (!mod_overridden && !state_root.empty()) {
+    const std::string tu4 = read_tu4_override_xml(game_root, state_root, "audio/collisions/CollisionData.xml");
+    if (!tu4.empty()) {
+      ok = ok ? (merge(tu4, nullptr) || ok) : parse(tu4, error);
+    }
+  }
+  if (!ok && error && error->empty()) *error = "cannot read " + p.string();
+  return ok;
 }
 
 const CollisionEventSpec* CollisionAudioConfig::find_pair(std::string_view s1, std::string_view s2) const {

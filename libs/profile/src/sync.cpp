@@ -1,6 +1,7 @@
 #include "profile/sync.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -58,14 +59,40 @@ bool write_atomic(const fs::path& p, const std::string& data) {
   return !ec;
 }
 
-std::vector<fs::path> save_files(const fs::path& dir) {
-  std::vector<fs::path> out;
+bool is_liv_file(const fs::path& p) {
+  std::string ext = p.extension().string();
+  for (char& c : ext) c = char(std::tolower(static_cast<unsigned char>(c)));
+  return ext == ".liv";
+}
+
+bool is_safe_archive_name(const std::string& n) {
+  if (n.empty() || n.find_first_of("\\:") != std::string::npos || n == "." || n == "..") return false;
+  if (n.front() == '/' || n.back() == '/') return false;
+  const size_t slash = n.find('/');
+  if (slash == std::string::npos) return true;
+  if (n.substr(0, slash) != "liveries") return false;
+  const std::string rest = n.substr(slash + 1);
+  return !rest.empty() && rest != "." && rest != ".." && rest.find('/') == std::string::npos;
+}
+
+// Save folder's plain files plus `liveries/*.liv` (relative POSIX paths, sorted).
+std::vector<std::string> save_files(const fs::path& dir) {
+  std::vector<std::string> out;
   std::error_code ec;
   for (const auto& e : fs::directory_iterator(dir, ec)) {
     if (!e.is_regular_file(ec)) continue;
     const std::string n = e.path().filename().string();
     if (n.ends_with(".tmp") || n == "mods.lock" || n.ends_with(".pre-import")) continue;
-    out.push_back(e.path());
+    out.push_back(n);
+  }
+  const fs::path liv_dir = dir / "liveries";
+  if (fs::is_directory(liv_dir, ec)) {
+    for (const auto& e : fs::directory_iterator(liv_dir, ec)) {
+      if (!e.is_regular_file(ec)) continue;
+      const std::string n = e.path().filename().string();
+      if (n.ends_with(".tmp") || !is_liv_file(e.path())) continue;
+      out.push_back("liveries/" + n);
+    }
   }
   std::sort(out.begin(), out.end());
   return out;
@@ -192,11 +219,12 @@ bool import_remote(const Context& ctx, DeviceState& s, const Remote& r, std::str
     }
   }
   fs::create_directories(ctx.save_dir, ec);
-  for (const auto& f : save_files(stage)) {
-    const fs::path dst = ctx.save_dir / f.filename();
+  for (const auto& rel : save_files(stage)) {
+    const fs::path dst = ctx.save_dir / rel;
+    fs::create_directories(dst.parent_path(), ec);
     fs::path tmp = dst;
     tmp += ".tmp";
-    fs::copy_file(f, tmp, fs::copy_options::overwrite_existing, ec);
+    fs::copy_file(stage / rel, tmp, fs::copy_options::overwrite_existing, ec);
     if (!ec) fs::rename(tmp, dst, ec);
     if (ec) {
       if (error) *error = "cannot replace " + dst.string() + ": " + ec.message();
@@ -265,10 +293,10 @@ std::string save_hash(const fs::path& save_dir) {
   const auto files = save_files(save_dir);
   if (files.empty()) return {};
   detail::Sha256 h;
-  for (const auto& f : files) {
+  for (const auto& rel : files) {
     std::vector<uint8_t> bytes;
-    read_bytes(f, bytes);
-    h.update(f.filename().string() + "\n" + std::to_string(bytes.size()) + "\n");
+    read_bytes(save_dir / rel, bytes);
+    h.update(rel + "\n" + std::to_string(bytes.size()) + "\n");
     h.update(bytes);
   }
   return h.hex();
@@ -276,10 +304,10 @@ std::string save_hash(const fs::path& save_dir) {
 
 bool pack(const fs::path& save_dir, std::vector<uint8_t>& archive) {
   std::string out = "shift-save-archive 1\n";
-  for (const auto& f : save_files(save_dir)) {
+  for (const auto& rel : save_files(save_dir)) {
     std::vector<uint8_t> bytes;
-    if (!read_bytes(f, bytes)) return false;
-    out += "file " + f.filename().string() + " " + std::to_string(bytes.size()) + "\n";
+    if (!read_bytes(save_dir / rel, bytes)) return false;
+    out += "file " + rel + " " + std::to_string(bytes.size()) + "\n";
     out.append(bytes.begin(), bytes.end());
     out += "\n";
   }
@@ -308,10 +336,11 @@ bool unpack(const std::vector<uint8_t>& archive, const fs::path& dir, std::strin
     const auto sp = line.rfind(' ');
     const std::string name = line.substr(5, sp - 5);
     const size_t size = size_t(std::strtoull(line.c_str() + sp + 1, nullptr, 10));
-    if (name.empty() || name.find_first_of("/\\:") != std::string::npos || name == "." || name == "..")
-      return fail("bad file name in the archive");
+    if (!is_safe_archive_name(name)) return fail("bad file name in the archive");
     if (at + size + 1 > s.size()) return fail("truncated archive");
-    std::ofstream f(dir / name, std::ios::binary | std::ios::trunc);
+    const fs::path dst = dir / name;
+    fs::create_directories(dst.parent_path(), ec);
+    std::ofstream f(dst, std::ios::binary | std::ios::trunc);
     if (!f.write(s.data() + at, std::streamsize(size))) return fail("cannot write " + name);
     at += size + 1;
   }

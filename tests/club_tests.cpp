@@ -567,6 +567,167 @@ int main() {
     CHECK(stats.achievements_unlocked == 4);
   }
 
+  // --- P0-K6: Cumulative banked skill_points + unique speed_camera history + parent <group type="or"> save_progress ---
+  {
+    const char* kP0K6Xml = R"(<car_challenges>
+      <!-- 0: cumulative banked skill_points with save_progress -->
+      <display title="IDS_BANK_SP" description="IDS_BankSkillPoints"/>
+      <pass_when save_progress="true">
+        <skill_points is="more_equal" value="10000"/>
+      </pass_when>
+
+      <!-- 1: unique speed_camera with save_progress (standard seen_cameras mode) -->
+      <display title="IDS_UNIQUE_TRAPS" description="IDS_UniqueTraps"/>
+      <pass_when pass_count="3" save_progress="true">
+        <speed_camera type="trap" unique="true"/>
+      </pass_when>
+
+      <!-- 2: combined-speed unique speed_camera with save_progress -->
+      <display title="IDS_COMBINED_TRAPS" description="IDS_CombinedTraps"/>
+      <pass_when pass_count="3" save_progress="true">
+        <speed_camera type="trap" unique="true" min_speed="300"/>
+      </pass_when>
+
+      <!-- 3: parent <group type="or" pass_count="3"> with save_progress on child pass_when -->
+      <display title="IDS_OR_SAVED" description="IDS_OrSaved"/>
+      <group type="or" pass_count="3">
+        <pass_when save_progress="true"><skills type="drift"/></pass_when>
+        <pass_when save_progress="true"><skills type="edrift"/></pass_when>
+      </group>
+    </car_challenges>)";
+
+    std::vector<Challenge> p6;
+    std::string p6err;
+    CHECK(parse_challenges(kP0K6Xml, p6, &p6err));
+    CHECK(p6.size() == 4);
+
+    auto roundtrip_save = [&](const Challenge& ch, const std::vector<int>& prog) -> std::vector<int> {
+      drive::DriveSave ds;
+      ds.car = "SUB_ImprezaWRX_05";
+      drive::SavedClubCar sc;
+      sc.car_id = 4242;
+      sc.challenges = {{ch.definition_hash, false}};
+      sc.progress = {prog};
+      ds.club.push_back(sc);
+      drive::DriveSave parsed;
+      std::string err;
+      CHECK(drive::save_from_text(drive::save_to_text(ds), parsed, &err));
+      return (!parsed.club.empty() && !parsed.club[0].progress.empty()) ? parsed.club[0].progress[0]
+                                                                        : std::vector<int>{};
+    };
+
+    // (1) Cumulative banked skill_points persists partial accum_value across save/reload.
+    {
+      Run r1(p6[0], locs);
+      CHECK(r1.has_save_progress());
+      // Unbanked chain score alone does not complete cumulative banked challenge.
+      Signal s;
+      s.time = 1.0;
+      s.skill_points = 12000.0;
+      s.banked_skill_points_delta = 0.0;
+      CHECK(!r1.step(s));
+      // Bank 4500 pts -> partial progress saved.
+      s.time = 2.0;
+      s.skill_points = 0.0;
+      s.banked_skill_points_delta = 4500.0;
+      s.skill_chain_completed = true;
+      CHECK(!r1.step(s));
+      CHECK(near(r1.progress(s), 0.45, 0.01));
+      const auto saved = roundtrip_save(p6[0], r1.export_save_progress());
+      CHECK(saved.size() == 1 && saved[0] == 4500);
+
+      // Reload into fresh Run and bank 5500 more -> passes!
+      Run r2(p6[0], locs);
+      r2.import_save_progress(saved);
+      Signal s2;
+      s2.time = 1.0;
+      s2.banked_skill_points_delta = 3000.0;
+      CHECK(!r2.step(s2));
+      CHECK(near(r2.progress(s2), 0.75, 0.01));
+      s2.time = 2.0;
+      s2.banked_skill_points_delta = 2500.0;
+      CHECK(r2.step(s2));
+      CHECK(r2.passed());
+    }
+
+    // (2a) Unique speed_camera persists seen_cameras IDs across save/reload (no duplicate credit).
+    {
+      Run r1(p6[1], locs);
+      Signal s;
+      s.time = 1.0;
+      s.speed_cameras = {{false, 201, "", 115.0}};
+      CHECK(!r1.step(s));
+      s.time = 2.0;
+      s.speed_cameras = {{false, 202, "", 120.0}};
+      CHECK(!r1.step(s));
+      const auto saved = roundtrip_save(p6[1], r1.export_save_progress());
+
+      Run r2(p6[1], locs);
+      r2.import_save_progress(saved);
+      // Re-hitting trap 201 after reload must NOT count as a 3rd unique camera!
+      Signal s2;
+      s2.time = 1.0;
+      s2.speed_cameras = {{false, 201, "", 130.0}};
+      CHECK(!r2.step(s2));
+      CHECK(!r2.passed());
+      // Hitting brand-new trap 203 completes 3/3!
+      s2.time = 2.0;
+      s2.speed_cameras = {{false, 203, "", 110.0}};
+      CHECK(r2.step(s2));
+      CHECK(r2.passed());
+    }
+
+    // (2b) Combined-speed unique speed_camera persists camera_hits & speeds across save/reload.
+    {
+      Run r1(p6[2], locs);
+      Signal s;
+      s.time = 1.0;
+      s.speed_cameras = {{false, 205, "", 110.0}};
+      CHECK(!r1.step(s));
+      s.time = 2.0;
+      s.speed_cameras = {{false, 206, "", 105.0}};
+      CHECK(!r1.step(s));
+      const auto saved = roundtrip_save(p6[2], r1.export_save_progress());
+
+      Run r2(p6[2], locs);
+      r2.import_save_progress(saved);
+      // Re-hitting trap 205 at 95 mph must NOT add a 3rd slot.
+      Signal s2;
+      s2.time = 1.0;
+      s2.speed_cameras = {{false, 205, "", 95.0}};
+      CHECK(!r2.step(s2));
+      // Hitting trap 207 at 100 mph gives 110 + 105 + 100 = 315 >= 300 -> passes!
+      s2.time = 2.0;
+      s2.speed_cameras = {{false, 207, "", 100.0}};
+      CHECK(r2.step(s2));
+      CHECK(r2.passed());
+    }
+
+    // (3) Parent <group type="or" pass_count="3"> persists count when save_progress is on children.
+    {
+      Run r1(p6[3], locs);
+      CHECK(r1.has_save_progress());
+      Signal s;
+      s.time = 1.0;
+      s.skills_awarded = {{"drift", 3}};
+      CHECK(!r1.step(s));
+      s.time = 2.0;
+      s.skills_awarded = {{"edrift", 2}};
+      CHECK(!r1.step(s));
+      const auto saved = roundtrip_save(p6[3], r1.export_save_progress());
+      CHECK(!saved.empty() && saved[0] == 2);
+
+      // Reload into fresh Run: 1 more drift finishes 3/3!
+      Run r2(p6[3], locs);
+      r2.import_save_progress(saved);
+      Signal s2;
+      s2.time = 1.0;
+      s2.skills_awarded = {{"drift", 1}};
+      CHECK(r2.step(s2));
+      CHECK(r2.passed());
+    }
+  }
+
   // Full real v4 1000 Club corpus: ALL 1,145 / 1,145 challenges across 218 cars supported!
   if (const char* state = std::getenv("SHIFT_STATE_ROOT")) {
     ClubData club;

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -299,6 +300,59 @@ bool WorldAcousticsData::load_configs(const std::filesystem::path& game_root, st
   return ok;
 }
 
+bool WorldAcousticsData::load_rally_configs(const std::filesystem::path& rally_root_or_state_root, std::string* note) {
+  if (rally_root_or_state_root.empty()) return false;
+  std::error_code ec;
+  std::vector<std::filesystem::path> track_dirs = {
+      rally_root_or_state_root,
+      rally_root_or_state_root / "media" / "tracks" / "coloradodirt",
+      rally_root_or_state_root / "Media" / "tracks" / "ColoradoDirt",
+      rally_root_or_state_root / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "tracks" / "ColoradoDirt",
+  };
+  auto push_pkg_tracks = [&](const std::filesystem::path& pr) {
+    if (!std::filesystem::is_directory(pr, ec)) return;
+    for (const auto& pkg : std::filesystem::directory_iterator(pr, ec)) {
+      if (!pkg.is_directory(ec)) continue;
+      const auto dz = pkg.path() / "Media" / "DLCZips";
+      if (!std::filesystem::is_directory(dz, ec)) continue;
+      for (const auto& z : std::filesystem::directory_iterator(dz, ec)) {
+        if (!z.is_directory(ec)) continue;
+        track_dirs.push_back(z.path() / "Media" / "tracks" / "ColoradoDirt");
+      }
+    }
+  };
+  push_pkg_tracks(rally_root_or_state_root / "user" / "0000000000000000" / "4D5309C9" / "00000002");
+  push_pkg_tracks(rally_root_or_state_root / "00000002");
+
+  bool ok = false;
+  for (const auto& d : track_dirs) {
+    if (!std::filesystem::is_directory(d, ec)) continue;
+    const auto rev = d / "coloradodirt_reverb.xml";
+    const auto amb = d / "coloradodirt_ambience.xml";
+    if (std::filesystem::exists(rev, ec)) {
+      std::vector<ReverbTemplate> rt;
+      if (parse_reverb_xml(read_text(rev), rt)) {
+        reverb_templates_ = std::move(rt);
+        ok = true;
+      }
+    }
+    if (std::filesystem::exists(amb, ec)) {
+      std::vector<AmbienceTemplate> at;
+      if (parse_ambience_xml(read_text(amb), at)) {
+        ambience_templates_ = std::move(at);
+        ok = true;
+      }
+    }
+    if (ok) break;
+  }
+  if (ok) rally_world_ = true;
+  if (note) {
+    *note = "rally acoustics: " + std::to_string(reverb_templates_.size()) + " reverb templates, " +
+            std::to_string(ambience_templates_.size()) + " ambience templates";
+  }
+  return ok;
+}
+
 int WorldAcousticsData::load_soundscapes_from_archive(const std::filesystem::path& bin_zip, int max_tiles) {
   std::error_code ec;
   if (bin_zip.empty() || !std::filesystem::exists(bin_zip, ec)) return 0;
@@ -340,6 +394,7 @@ void WorldAcousticsData::add_tile(SoundscapeTile tile) {
 
 AcousticsSample WorldAcousticsData::evaluate(float x, float y, float z) const {
   AcousticsSample out;
+  out.is_rally_world = rally_world_;
   if (!reverb_templates_.empty()) out.reverb = reverb_templates_[0];
   if (!ambience_templates_.empty()) out.ambience_snapshot = ambience_templates_[0].snapshot_mix;
 
@@ -703,18 +758,91 @@ bool pick_first_fev_sample(const FevProject& proj, const FevEvent& ev, std::file
   return false;
 }
 
+bool dir_has_rally_amb(const std::filesystem::path& dir) {
+  std::error_code ec;
+  if (dir.empty() || !std::filesystem::is_directory(dir, ec)) return false;
+  for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+    if (!e.is_regular_file(ec)) continue;
+    const std::string fn = lower_str(e.path().filename().string());
+    const std::string ext = lower_str(e.path().extension().string());
+    if (fn.rfind("amb_", 0) == 0 && (ext == ".fev" || ext == ".fsb")) return true;
+  }
+  return false;
+}
+
+std::filesystem::path find_colorado_dirt_amb_dir(const std::filesystem::path& root) {
+  std::error_code ec;
+  if (root.empty() || !std::filesystem::exists(root, ec)) return {};
+  const std::filesystem::path direct[] = {
+      root,
+      root / "ColoradoDirt",
+      root / "Tracks" / "ColoradoDirt",
+      root / "audio" / "Tracks" / "ColoradoDirt",
+      root / "Media" / "audio" / "Tracks" / "ColoradoDirt",
+      root / "media" / "audio" / "Tracks" / "ColoradoDirt",
+      root / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "audio" / "Tracks" / "ColoradoDirt",
+  };
+  for (const auto& d : direct) {
+    if (dir_has_rally_amb(d)) return d;
+  }
+  auto scan_dlczips = [&](const std::filesystem::path& dz) -> std::filesystem::path {
+    if (!std::filesystem::is_directory(dz, ec)) return {};
+    for (const auto& z : std::filesystem::directory_iterator(dz, ec)) {
+      if (!z.is_directory(ec)) continue;
+      for (const auto& cand : {z.path() / "Media" / "audio" / "Tracks" / "ColoradoDirt",
+                               z.path() / "Media" / "audio" / "tracks" / "coloradodirt"}) {
+        if (dir_has_rally_amb(cand)) return cand;
+      }
+    }
+    return {};
+  };
+  if (auto hit = scan_dlczips(root / "Media" / "DLCZips"); !hit.empty()) return hit;
+  const std::filesystem::path pkg_roots[] = {
+      root / "user" / "0000000000000000" / "4D5309C9" / "00000002",
+      root / "00000002",
+      root,
+  };
+  for (const auto& pr : pkg_roots) {
+    if (!std::filesystem::is_directory(pr, ec)) continue;
+    for (const auto& pkg : std::filesystem::directory_iterator(pr, ec)) {
+      if (!pkg.is_directory(ec)) continue;
+      if (auto hit = scan_dlczips(pkg.path() / "Media" / "DLCZips"); !hit.empty()) return hit;
+    }
+  }
+  return {};
+}
+
+std::string normalize_region_token(std::string_view s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    if (std::isalnum(u)) out.push_back(char(std::tolower(u)));
+  }
+  if (out.rfind("amb", 0) == 0 && out.size() > 3) out.erase(0, 3);
+  return out;
+}
+
 }  // namespace
 
 AmbienceBedPlayer::AmbienceBedPlayer(int rate) : rate_(std::max(8000, rate)) {
   beds_.fill(nullptr);
   bed_phase_.fill(0.0);
   bed_gain_.fill(0.0f);
+  rally_beds_.fill(nullptr);
+  rally_phase_.fill(0.0);
+  rally_gain_.fill(0.0f);
 }
 
 AmbienceBedPlayer::~AmbienceBedPlayer() {
   stop_worker();
+  stop_rally_worker();
   drain_loaded();
   for (PcmSample*& p : beds_) {
+    delete p;
+    p = nullptr;
+  }
+  for (PcmSample*& p : rally_beds_) {
     delete p;
     p = nullptr;
   }
@@ -723,6 +851,11 @@ AmbienceBedPlayer::~AmbienceBedPlayer() {
 void AmbienceBedPlayer::stop_worker() {
   stop_worker_.store(true, std::memory_order_release);
   if (worker_.joinable()) worker_.join();
+}
+
+void AmbienceBedPlayer::stop_rally_worker() {
+  stop_rally_worker_.store(true, std::memory_order_release);
+  if (rally_worker_.joinable()) rally_worker_.join();
 }
 
 void AmbienceBedPlayer::drain_loaded() {
@@ -736,6 +869,21 @@ void AmbienceBedPlayer::drain_loaded() {
       delete lb.pcm;
     }
   }
+  auto drain_rally = [&](SpscQueue<LoadedRallyBed>& q) {
+    LoadedRallyBed rb;
+    while (q.pop(rb)) {
+      if (rb.region_idx >= 0 && rb.region_idx < kMaxRallyRegions) {
+        const size_t idx = size_t(rb.region_idx);
+        delete rally_beds_[idx];
+        rally_beds_[idx] = rb.pcm;
+        rally_names_[idx] = rb.name;
+      } else {
+        delete rb.pcm;
+      }
+    }
+  };
+  drain_rally(rally_loaded_q_);
+  drain_rally(rally_direct_q_);
 }
 
 void AmbienceBedPlayer::set_bed_sample(AmbienceBedSlot slot, PcmSample pcm) {
@@ -745,9 +893,28 @@ void AmbienceBedPlayer::set_bed_sample(AmbienceBedSlot slot, PcmSample pcm) {
   if (!loaded_q_.push({slot, p})) delete p;
 }
 
+void AmbienceBedPlayer::set_rally_bed_sample(int region_idx, std::string_view region_name, PcmSample pcm) {
+  if (region_idx < 0 || region_idx >= kMaxRallyRegions) return;
+  LoadedRallyBed item{};
+  item.region_idx = region_idx;
+  const std::string tok = normalize_region_token(region_name);
+  const size_t n = std::min(tok.size(), item.name.size() - 1);
+  if (n > 0) std::memcpy(item.name.data(), tok.data(), n);
+  item.name[n] = '\0';
+  item.pcm = new PcmSample(std::move(pcm));
+  if (!rally_direct_q_.push(item)) delete item.pcm;
+}
+
 int AmbienceBedPlayer::loaded_bed_count() const {
   int n = 0;
   for (const PcmSample* p : beds_)
+    if (p && !p->data.empty()) ++n;
+  return n;
+}
+
+int AmbienceBedPlayer::rally_bed_count() const {
+  int n = 0;
+  for (const PcmSample* p : rally_beds_)
     if (p && !p->data.empty()) ++n;
   return n;
 }
@@ -864,6 +1031,116 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
   return queued;
 }
 
+int AmbienceBedPlayer::load_rally_from_disc(const std::filesystem::path& rally_root_or_state_root,
+                                            const std::filesystem::path& cache_dir) {
+  stop_rally_worker();
+  const auto amb_dir = find_colorado_dirt_amb_dir(rally_root_or_state_root);
+  if (amb_dir.empty()) return 0;
+
+  struct RallyJob {
+    int region_idx = 0;
+    std::string region_name;
+    std::filesystem::path bank;
+    uint32_t sub = 0;
+  };
+
+  std::error_code ec;
+  std::vector<std::filesystem::path> fevs;
+  std::vector<std::filesystem::path> fsbs;
+  for (const auto& e : std::filesystem::directory_iterator(amb_dir, ec)) {
+    if (!e.is_regular_file(ec)) continue;
+    const std::string fn = lower_str(e.path().filename().string());
+    const std::string ext = lower_str(e.path().extension().string());
+    if (fn.rfind("amb_", 0) != 0) continue;
+    if (ext == ".fev") fevs.push_back(e.path());
+    else if (ext == ".fsb") fsbs.push_back(e.path());
+  }
+  auto by_lower_name = [](const std::filesystem::path& a, const std::filesystem::path& b) {
+    return lower_str(a.filename().string()) < lower_str(b.filename().string());
+  };
+  std::sort(fevs.begin(), fevs.end(), by_lower_name);
+  std::sort(fsbs.begin(), fsbs.end(), by_lower_name);
+
+  std::vector<RallyJob> jobs;
+  std::vector<std::string> seen_stems;
+  auto stem_seen = [&](const std::string& s) {
+    return std::find(seen_stems.begin(), seen_stems.end(), s) != seen_stems.end();
+  };
+
+  for (const auto& fev_path : fevs) {
+    if (int(jobs.size()) >= kMaxRallyRegions) break;
+    const std::string stem = lower_str(fev_path.stem().string());
+    FevProject proj;
+    std::filesystem::path bank;
+    uint32_t sub = 0;
+    bool resolved = false;
+    if (load_fev(fev_path, proj, nullptr)) {
+      for (const auto& ev : proj.events) {
+        if (pick_first_fev_sample(proj, ev, bank, sub) && std::filesystem::exists(bank, ec)) {
+          resolved = true;
+          break;
+        }
+      }
+    }
+    if (!resolved) {
+      auto sib = fev_path;
+      sib.replace_extension(".fsb");
+      if (std::filesystem::exists(sib, ec)) {
+        bank = sib;
+        sub = 0;
+        resolved = true;
+      }
+    }
+    if (resolved) {
+      seen_stems.push_back(stem);
+      jobs.push_back({int(jobs.size()), normalize_region_token(stem), bank, sub});
+    }
+  }
+  for (const auto& fsb_path : fsbs) {
+    if (int(jobs.size()) >= kMaxRallyRegions) break;
+    const std::string stem = lower_str(fsb_path.stem().string());
+    if (stem_seen(stem)) continue;
+    seen_stems.push_back(stem);
+    jobs.push_back({int(jobs.size()), normalize_region_token(stem), fsb_path, 0});
+  }
+
+  const int queued = int(jobs.size());
+  if (jobs.empty()) return 0;
+
+  stop_rally_worker_.store(false, std::memory_order_release);
+  rally_worker_ = std::thread([this, jobs = std::move(jobs), cache_dir]() {
+    const std::filesystem::path ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
+    std::error_code tec;
+    const std::filesystem::path amb_cache = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / "ambience_rally");
+    const std::filesystem::path temp_dir =
+        std::filesystem::temp_directory_path(tec) /
+        ("shift-rally-amb-decode-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+    std::filesystem::create_directories(temp_dir, tec);
+    for (const auto& j : jobs) {
+      if (stop_rally_worker_.load(std::memory_order_acquire)) break;
+      const std::string fname = lower_str(j.bank.stem().string()) + "." + std::to_string(j.sub) + ".s16";
+      const std::filesystem::path cf = amb_cache.empty() ? std::filesystem::path{} : (amb_cache / fname);
+      auto pcm = std::make_unique<PcmSample>();
+      bool ok = !cf.empty() && read_cached_amb(cf, *pcm);
+      if (!ok) {
+        ok = decode_amb_subsound(j.bank, j.sub, ffmpeg, temp_dir, *pcm);
+        if (ok && !cf.empty()) write_cached_amb(cf, *pcm);
+      }
+      if (ok && !pcm->data.empty()) {
+        LoadedRallyBed item{};
+        item.region_idx = j.region_idx;
+        const size_t n = std::min(j.region_name.size(), item.name.size() - 1);
+        if (n > 0) std::memcpy(item.name.data(), j.region_name.data(), n);
+        item.name[n] = '\0';
+        item.pcm = pcm.release();
+        if (!rally_loaded_q_.push(item)) delete item.pcm;
+      }
+    }
+    std::filesystem::remove_all(temp_dir, tec);
+  });
+  return queued;
+}
+
 void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
                                float tod_hour) {
   if (!out_stereo || frames <= 0) return;
@@ -884,6 +1161,105 @@ void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, f
   const float fest_target = std::max(sample.festival_proximity, sample.crowd_proximity) * (1.0f + 0.15f * night_amt);
   const float nature_tod_scale = 1.0f - 0.25f * night_amt;
   const float sm = 1.0f - std::exp(-1.0f / (0.15f * float(rate_)));
+
+  // ColoradoDirt Rally world: select among the 13 regional AMB_*.fev/.fsb beds.
+  const bool use_rally_beds = rally_world_.load(std::memory_order_acquire) || sample.is_rally_world;
+  if (use_rally_beds) {
+    int first_loaded = -1;
+    int loaded_indices[kMaxRallyRegions]{};
+    int loaded_count = 0;
+    for (int i = 0; i < kMaxRallyRegions; ++i) {
+      if (rally_beds_[size_t(i)] && !rally_beds_[size_t(i)]->data.empty()) {
+        if (first_loaded < 0) first_loaded = i;
+        loaded_indices[loaded_count++] = i;
+      }
+    }
+    if (loaded_count > 0) {
+      int active_r = -1;
+      const std::string want_tok = normalize_region_token(sample.ambience_snapshot);
+      if (!want_tok.empty()) {
+        for (int i = 0; i < kMaxRallyRegions; ++i) {
+          if (!rally_beds_[size_t(i)] || rally_beds_[size_t(i)]->data.empty()) continue;
+          const std::string_view rname(rally_names_[size_t(i)].data());
+          if (!rname.empty() && (rname == want_tok || rname.find(want_tok) != std::string_view::npos ||
+                                 want_tok.find(rname) != std::string_view::npos)) {
+            active_r = i;
+            break;
+          }
+        }
+      }
+      if (active_r < 0 && sample.ambience_template_idx >= 0) {
+        const int direct_idx = sample.ambience_template_idx;
+        if (direct_idx < kMaxRallyRegions && rally_beds_[size_t(direct_idx)] &&
+            !rally_beds_[size_t(direct_idx)]->data.empty()) {
+          active_r = direct_idx;
+        } else {
+          active_r = loaded_indices[direct_idx % loaded_count];
+        }
+      }
+      if (active_r < 0) active_r = first_loaded;
+      last_rally_region_.store(active_r, std::memory_order_release);
+
+      for (int i = 0; i < kMaxRallyRegions; ++i) {
+        const PcmSample* pcm = rally_beds_[size_t(i)];
+        if (!pcm || pcm->data.empty()) {
+          rally_gain_[size_t(i)] = 0.0f;
+          continue;
+        }
+        const float target = (i == active_r) ? (0.20f * speed_target * nature_tod_scale) : 0.0f;
+        if (target < 1e-4f && rally_gain_[size_t(i)] < 1e-4f) {
+          rally_gain_[size_t(i)] = 0.0f;
+          continue;
+        }
+        const size_t n = pcm->data.size();
+        const double step = double(std::max(1, pcm->rate)) / double(rate_);
+        const size_t r_off = n > 1024 ? size_t(std::min<size_t>(n / 3, size_t(0.013 * pcm->rate))) : 0;
+        double ph = rally_phase_[size_t(i)];
+        float g = rally_gain_[size_t(i)];
+        for (int f = 0; f < frames; ++f) {
+          g += (target - g) * sm;
+          const size_t k = size_t(ph);
+          const float frac = float(ph - double(k));
+          const float sl = pcm->data[k % n] + (pcm->data[(k + 1) % n] - pcm->data[k % n]) * frac;
+          const size_t kr = (k + r_off) % n;
+          const float sr = pcm->data[kr] + (pcm->data[(kr + 1) % n] - pcm->data[kr]) * frac;
+          out_stereo[2 * f] += sl * g;
+          out_stereo[2 * f + 1] += sr * g;
+          ph += step;
+          if (ph >= double(n)) ph = std::fmod(ph, double(n));
+        }
+        rally_phase_[size_t(i)] = ph;
+        rally_gain_[size_t(i)] = g;
+      }
+      // Mix crowd bed on top if near rally spectators.
+      const PcmSample* crowd_pcm = beds_[size_t(AmbienceBedSlot::kCrowd)];
+      if (crowd_pcm && !crowd_pcm->data.empty() && fest_target > 1e-4f) {
+        const size_t n = crowd_pcm->data.size();
+        const double step = double(std::max(1, crowd_pcm->rate)) / double(rate_);
+        const size_t r_off = n > 1024 ? size_t(std::min<size_t>(n / 3, size_t(0.013 * crowd_pcm->rate))) : 0;
+        double ph = bed_phase_[size_t(AmbienceBedSlot::kCrowd)];
+        float g = bed_gain_[size_t(AmbienceBedSlot::kCrowd)];
+        const float target = 0.28f * fest_target;
+        for (int f = 0; f < frames; ++f) {
+          g += (target - g) * sm;
+          const size_t k = size_t(ph);
+          const float frac = float(ph - double(k));
+          const float sl = crowd_pcm->data[k % n] + (crowd_pcm->data[(k + 1) % n] - crowd_pcm->data[k % n]) * frac;
+          const size_t kr = (k + r_off) % n;
+          const float sr = crowd_pcm->data[kr] + (crowd_pcm->data[(kr + 1) % n] - crowd_pcm->data[kr]) * frac;
+          out_stereo[2 * f] += sl * g;
+          out_stereo[2 * f + 1] += sr * g;
+          ph += step;
+          if (ph >= double(n)) ph = std::fmod(ph, double(n));
+        }
+        bed_phase_[size_t(AmbienceBedSlot::kCrowd)] = ph;
+        bed_gain_[size_t(AmbienceBedSlot::kCrowd)] = g;
+      }
+      return;
+    }
+  } else {
+    rally_gain_.fill(0.0f);
+  }
 
   // Pick regional bed slot from active ambience snapshot.
   AmbienceBedSlot region = AmbienceBedSlot::kDefault;

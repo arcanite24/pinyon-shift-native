@@ -303,22 +303,48 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     }
   }
   const auto slots = route_.slots();
+  const bool is_showcase_event = !stage_ && race::is_airborne_showcase(event_.career_type, event_.horizon_id);
+  const auto cps = race::checkpoints(route_);
+  checkpoint_gates_.clear();
+  checkpoint_progress_.clear();
   if (street_ && !slots.empty()) {
-    // The finish: the last checkpoint's plane, normal from the one before
-    // (the oracle's measured rule); the start line (unused by a sprint):
-    // through slot 00 along its facing; the grid stands behind pole.
-    const auto cps = race::checkpoints(route_);
-    finish = race::checkpoint_gate(route_, cps.size() - 1);
-    const auto* s0 = slots[0];
-    gate = race::Gate{s0->x, s0->z, s0->fx, s0->fz, 60};
-    line_.gate_progress = line_.line.nearest(s0->x, s0->z, 0, std::min(400.0, line_.line.length())) + 5;
+    // Keep an explicit sprint finish gantry (e.g. Route 206 / PLANE_RACE_006) when present;
+    // street races without end_race_cannon_* finish at the last checkpoint's plane.
+    if (!finish && !cps.empty()) finish = race::checkpoint_gate(route_, cps.size() - 1);
+    if (!gate) {
+      const auto* s0 = slots[0];
+      gate = race::Gate{s0->x, s0->z, s0->fx, s0->fz, 60};
+      line_.gate_progress = line_.line.nearest(s0->x, s0->z, 0, std::min(400.0, line_.line.length())) + 5;
+    }
+  }
+  // Load route_checkpoint_NN gates for street races AND all airborne showcase events
+  // (even when a showcase has a .owt AI line and street_ == false).
+  if ((street_ || is_showcase_event) && !cps.empty() && !slots.empty()) {
+    if (!gate) {
+      const auto* s0 = slots[0];
+      gate = race::Gate{s0->x, s0->z, s0->fx, s0->fz, 60};
+      line_.gate_progress = line_.line.nearest(s0->x, s0->z, 0, std::min(400.0, line_.line.length())) + 5;
+    }
+    if (!finish) finish = race::checkpoint_gate(route_, cps.size() - 1);
     double from = line_.gate_progress;
-    for (size_t k = 0; k < cps.size(); ++k)
+    for (size_t k = 0; k < cps.size(); ++k) {
       if (auto g = race::checkpoint_gate(route_, k)) {
         checkpoint_gates_.push_back(*g);
-        from = line_.line.nearest(g->x, g->z, from, std::min(line_.line.length(), from + 2000));
+        const double win_end = std::min(line_.line.length(), from + 4000.0);
+        from = line_.line.nearest(g->x, g->z, from, win_end);
         checkpoint_progress_.push_back(from);
       }
+    }
+    // When the route has an explicit finish line past the final intermediate checkpoint
+    // (e.g. Route 206 / PLANE_RACE_006), append it so every checkpoint must be cleared first.
+    if (finish && !checkpoint_gates_.empty()) {
+      const auto& last_cp = checkpoint_gates_.back();
+      if (std::hypot(finish->x - last_cp.x, finish->z - last_cp.z) > 15.0) {
+        checkpoint_gates_.push_back(*finish);
+        const double fin_p = line_.line.nearest(finish->x, finish->z, from, line_.line.length());
+        checkpoint_progress_.push_back(fin_p);
+      }
+    }
   }
   if (!street_ && !circuit_ && !slots.empty() && (!gate || !finish)) {
     // An open line with no gantry or cannons (route 136): the start line
@@ -440,13 +466,21 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   // A stage's finish is placed by progress; the nearest point can be an
   // earlier pass where the line doubles back.
   if (stage_ && have_stage_track_) finish_progress_ = stage_finish_progress_;
-  // Airborne Showcases (PLANE_RACE_001..007, CareerTypeId = 8): initialize the
-  // animated airborne opponent along the showcase route.
+  // Airborne Showcases (PLANE_RACE_001..007, CareerTypeId = 8): load airborne_challenges.xml
+  // and initialize the animated retail aircraft (P-51 Mustang, Helicopter, Biplane, Hot-Air Balloon).
+  showcase_xml_specs_.clear();
+  showcase_rumble_ = 0.0;
   if (race::is_airborne_showcase(event_.career_type, event_.horizon_id)) {
+    std::string sc_err;
+    (void)race::load_airborne_challenges(root, showcase_xml_specs_, &sc_err);
+    const race::ShowcaseSpec spec =
+        race::resolve_showcase_spec(event_.event_id, event_.horizon_id, showcase_xml_specs_, int(o.difficulty));
     const double fin_p = finish_progress_ > line_.gate_progress + 100.0 ? finish_progress_ : line_.line.length();
-    showcase_.init(race::showcase_spec_for(event_.horizon_id), line_.line, line_.gate_progress, fin_p);
-    std::printf("race: airborne showcase opponent %s (route %.0f m)\n", showcase_.spec().display_name.c_str(),
-                fin_p - line_.gate_progress);
+    showcase_.init(spec, line_.line, line_.gate_progress, fin_p);
+    std::printf("race: airborne showcase opponent %s (event %lld, xml=%s, %zu timing cps, route %.0f m)\n",
+                showcase_.spec().display_name.c_str(), (long long)event_.event_id,
+                showcase_xml_specs_.empty() ? "defaults" : "airborne_challenges.xml",
+                showcase_.spec().timing_checkpoints.size(), fin_p - line_.gate_progress);
   }
   const size_t n = size_t(cars);
   states_.resize(n), inputs_.resize(n), progress_.resize(n), cross_.resize(n), speed_.resize(n), lanes_.assign(n, 0), caps_.assign(n, 1e9f);
@@ -944,13 +978,13 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     }
     c.body->set_torque_factor(c.ai.torque() * (1 + boost + nem_torque));
     const bool over_corner = c.ai.state() == race::DriverAi::State::kRubberband && c.ai.mode() == 4;
-    const bool is_catchup = c.ai.state() == race::DriverAi::State::kCatchUp;
     const auto& bp = c.body->params();
     const double half_track = 0.5 * std::fabs(bp.wheel_centres[1].x - bp.wheel_centres[0].x);
     const double com_h = std::max(0.20, bp.centre_of_mass.y);
     const double max_grip = (half_track > 0.3 && (half_track / com_h) < 1.45) ? 1.0 : 1.25;
-    // SPEC-RACE-AI: catch-up pulls only planner (b', c'), never the tyre AI grip factor.
-    const double ai_corner_grip = (over_corner || is_catchup) ? 1.0 : std::clamp(c.ai.cornering(), 1.0, max_grip);
+    // Keep deliberate mode-4 over-cornering mistakes at 1.0 grip so they can run wide,
+    // while allowing Hard/Pro AI and kCatchUp to retain their cornering grip up to max_grip.
+    const double ai_corner_grip = over_corner ? 1.0 : std::clamp(c.ai.cornering(), 1.0, max_grip);
     c.body->set_ai_grip(ai_corner_grip, ai_corner_grip);
     const double d = std::hypot(at.x - cx, at.z - cz);
     if (c.far && d < radius - 80) c.far = false;
@@ -987,17 +1021,45 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   constexpr double kPlayerTorqueScale = 0.0;
   constexpr double kRaceCarTorqueScale = 0.2;
   constexpr double kRaceCarVsTrafficTorqueScale = 0.05;
+  drive::ContactOptions contact_options;
+  contact_options.restitution = 0;
+  contact_options.friction = 0.05;
+  player_impulse_ = 0.0;
+  player_impulse_local_pos_ = {0.0f, 0.5f, 1.5f};
+  if (session_->collides(n)) {
+    const drive::Quat pq = player.orientation();
+    const drive::Quat pq_inv{-pq.x, -pq.y, -pq.z, pq.w};
+    const float hw = float(std::max(0.5, 0.5 * player.params().size.x));
+    const float hl = float(std::max(1.0, 0.5 * player.params().size.z));
+    const float hh = float(std::max(0.8, player.params().size.y));
+    for (size_t k = 0; k < n; ++k) {
+      if (!session_->collides(k) || !cars_[k].body) continue;
+      drive::Vehicle& ai_v = *cars_[k].body;
+      const drive::Vec3 d = player.position() - ai_v.position();
+      const double r = player.params().size.z + ai_v.params().size.z;
+      if (!(d.x * d.x + d.z * d.z <= r * r)) continue;
+      double j = 0.0;
+      if (drive::car_contact(player, kPlayerTorqueScale, ai_v, kRaceCarTorqueScale, contact_options, &j)) {
+        ++contact_count_;
+        if (j > player_impulse_) {
+          player_impulse_ = j;
+          const drive::Vec3 rel = ai_v.position() - player.position();
+          const drive::Vec3 loc = drive::rotate(pq_inv, rel);
+          player_impulse_local_pos_ = {
+              std::clamp(float(loc.x), -hw, hw),
+              std::clamp(float(loc.y) + 0.5f, 0.1f, hh),
+              std::clamp(float(loc.z), -hl, hl),
+          };
+        }
+      }
+    }
+  }
   contacts_.clear();
-  if (session_->collides(n))
-    contacts_.push_back({&player, kPlayerTorqueScale, 1, drive::ContactRole::kPlayer, kPlayerTorqueScale});
   for (size_t k = 0; k < n; ++k)
     if (session_->collides(k))
       contacts_.push_back(
           {cars_[k].body.get(), kRaceCarTorqueScale, 0, drive::ContactRole::kRaceAi, kRaceCarVsTrafficTorqueScale});
   if (traffic) traffic->contact_bodies(contacts_, 1);
-  drive::ContactOptions contact_options;
-  contact_options.restitution = 0;
-  contact_options.friction = 0.05;
   contact_count_ += drive::resolve_contacts(contacts_, contact_options);
   // The session: each car's move over the step.
   auto sample = [&](size_t i, const drive::Vehicle& v, double x0, double z0) {
@@ -1013,6 +1075,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     const double cr = field_->cross_track(i);
     const double room = line_.line.room(s.progress, cr > 0);
     s.off_route = std::max(0.0, std::fabs(cr) - room);
+    s.up_y = v.up_y();
   };
   for (size_t k = 0; k < n; ++k) sample(k, *cars_[k].body, cars_[k].px, cars_[k].pz);
   sample(n, player, ppx_, ppz_);
@@ -1068,7 +1131,11 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   const int player_place = session_->car(n).place;
   for (size_t k = 0; k < n; ++k)
     cars_[k].ai.update(field_->progress(k) - field_->progress(n), session_->car(k).place - player_place);
-  if (showcase_.active()) showcase_.step(drive::Vehicle::kStep, session_->clock(), field_->progress(n));
+  showcase_rumble_ = 0.0;
+  if (showcase_.active()) {
+    showcase_.step(drive::Vehicle::kStep, session_->clock(), field_->progress(n));
+    showcase_rumble_ = showcase_rumble_strength(player.position());
+  }
   for (size_t i : session_->resets()) reset_car(i < n ? *cars_[i].body : player, i, near, cx, cz, radius);
   for (size_t i = 0; i <= n; ++i)
     if (session_->finished(i) && session_->car(i).finish > session_->clock() - drive::Vehicle::kStep - 1e-9)
@@ -1261,7 +1328,7 @@ std::string RaceView::banner() const {
     std::snprintf(b, sizeof b, "STAGE TIME %s  %d OF %zu", t, stage_place_, stage_field_.size() + 1);
   } else if (s.finished(n)) {
     clock_text(s.car(n).finish, t, sizeof t);
-    const int p = s.car(n).place;
+    const int p = player_place();
     const int64_t credits = award_ ? award_->credits : credits_for(p);
     if (award_ && award_->wristband_points > 0)
       std::snprintf(b, sizeof b, "FINISHED %s PLACE  %s  %lld CR  +%d WRISTBAND", ordinal(p), t, (long long)credits,
@@ -1270,17 +1337,62 @@ std::string RaceView::banner() const {
   } else {
     clock_text(c, t, sizeof t);
     const char* go = c < 1.5 ? "GO!  " : "";
+    const int p = player_place();
+    const size_t total = showcase_.active() ? 2u : (n + 1);
     if (circuit_)
-      std::snprintf(b, sizeof b, "%sLAP %d/%d  P%d/%zu  %s", go, s.lap(n), s.laps(), s.car(n).place, n + 1, t);
+      std::snprintf(b, sizeof b, "%sLAP %d/%d  P%d/%zu  %s", go, s.lap(n), s.laps(), p, total, t);
     else {
       // A sprint, and any race on an open line: PROGRESS in percent of the
       // run (SPEC-EVENTS, Laps on an open route).
       const double run = std::max(1.0, finish_progress_ - line_.gate_progress);
       const double pc = std::clamp((field_->progress(n) - line_.gate_progress) / run, 0.0, 1.0);
-      std::snprintf(b, sizeof b, "%sP%d/%zu  %s  PROGRESS %.0f%%", go, s.car(n).place, n + 1, t, 100 * pc);
+      std::snprintf(b, sizeof b, "%sP%d/%zu  %s  PROGRESS %.0f%%", go, p, total, t, 100 * pc);
     }
   }
   return b;
+}
+
+int RaceView::player_place() const {
+  if (!session_) return 1;
+  const size_t pi = player_index();
+  const auto& me = session_->car(pi);
+  if (showcase_.active() && field_) {
+    return showcase_.player_place(field_->progress(pi), session_->finished(pi), me.finish);
+  }
+  return me.place;
+}
+
+void RaceView::set_difficulty(race::Difficulty d) {
+  o_.difficulty = d;
+  if (showcase_.active() && session_ && !session_->started()) {
+    const race::ShowcaseSpec spec =
+        race::resolve_showcase_spec(event_.event_id, event_.horizon_id, showcase_xml_specs_, int(d));
+    const double fin_p = finish_progress_ > line_.gate_progress + 100.0 ? finish_progress_ : line_.line.length();
+    showcase_.init(spec, line_.line, line_.gate_progress, fin_p);
+  }
+}
+
+double RaceView::showcase_rumble_strength(const drive::Vec3& player_pos) const {
+  if (!showcase_.active()) return 0.0;
+  const auto& sp = showcase_.pose().position;
+  const double dx = sp[0] - player_pos.x;
+  const double dy = sp[1] - player_pos.y;
+  const double dz = sp[2] - player_pos.z;
+  const double dist_m = std::sqrt(dx * dx + dy * dy + dz * dz);
+  return showcase_.near_rumble_strength(dist_m);
+}
+
+Showroom* RaceView::find_loaded_model(const std::string& media, int64_t color_seq) const {
+  if (media.empty() || models_.empty()) return nullptr;
+  if (color_seq >= 0) {
+    const std::string exact = media + "#" + std::to_string(color_seq);
+    if (auto it = models_.find(exact); it != models_.end() && it->second) return it->second.get();
+  }
+  const std::string prefix = media + "#";
+  for (const auto& [k, m] : models_) {
+    if (m && k.rfind(prefix, 0) == 0) return m.get();
+  }
+  return nullptr;
 }
 
 int64_t RaceView::credits_for(int place) const {
@@ -1296,7 +1408,7 @@ const race::RaceAward* RaceView::award(race::CareerRecord& career, const race::W
   if (stage_ || award_ || !session_->finished(n)) return nullptr;
   const auto& c = session_->car(n);
   const int racers = showcase_.active() ? 2 : int(session_->size());
-  const int place = showcase_.active() ? showcase_.player_place(field_->progress(n), true, c.finish) : c.place;
+  const int place = player_place();
   race::RaceBonusInputs eff_extras = extras;
   if (eff_extras.assists_pct == 0) eff_extras.assists_pct = race::assist_difficulty_bonus_percent(o_.assists);
   eff_extras.prize_car_max_place = std::max(eff_extras.prize_car_max_place, event_.prize_car_max_place);
@@ -1702,6 +1814,9 @@ RaceView::RewindSnapshot RaceView::capture_rewind() const {
 }
 
 void RaceView::restore_rewind(const RewindSnapshot& s, bool mark_player_lap_dirty) {
+  player_impulse_ = 0.0;
+  player_impulse_local_pos_ = {0.0f, 0.5f, 1.5f};
+  showcase_rumble_ = 0.0;
   if (session_) {
     session_->restore(s.session);
     if (mark_player_lap_dirty) session_->mark_lap_dirty(player_index());

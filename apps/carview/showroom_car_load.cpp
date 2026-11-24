@@ -300,6 +300,39 @@ class DiscCarCache {
   LruMap car_lru_map_;
 };
 
+struct CarAnimEventsFlags {
+  bool has_rear_wing = false;
+  bool has_headlight = false;
+  bool has_engine_vent = false;
+};
+
+CarAnimEventsFlags parse_car_anim_events_xml(const std::string& xml) {
+  CarAnimEventsFlags out;
+  const std::string lx = lower(xml);
+  size_t pos = 0;
+  while ((pos = lx.find('<', pos)) != std::string::npos) {
+    const size_t end = lx.find('>', pos + 1);
+    if (end == std::string::npos) break;
+    const std::string tag = lx.substr(pos + 1, end - pos - 1);
+    pos = end + 1;
+    if (tag.rfind("part", 0) != 0 && tag.rfind("physicspart", 0) != 0) continue;
+    const size_t np = tag.find("name=\"");
+    if (np == std::string::npos) continue;
+    const size_t v0 = np + 6;
+    const size_t v1 = tag.find('"', v0);
+    if (v1 == std::string::npos) continue;
+    const std::string name = tag.substr(v0, v1 - v0);
+    if (name.find("headlight") != std::string::npos) {
+      out.has_headlight = true;
+    } else if (name.find("wing") != std::string::npos || name.find("spoiler") != std::string::npos) {
+      out.has_rear_wing = true;
+    } else if (name.find("vent") != std::string::npos) {
+      out.has_engine_vent = true;
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 bool open_disc_car_folder(const std::filesystem::path& game_root, const std::string& car_name,
@@ -636,6 +669,17 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   // Apply fitted visual overrides (tyre widths, rim diameters, ride height,
   // CarTrackOffsets, caliper angles, aftermarket rim, per-car tyre).
   const cars::VisualSetup& vis = options_.visual;
+  // Capture stock rim/tyre dimensions before applying overrides so upgraded
+  // rims & widths preserve the stock rolling outer radius (thinning sidewall).
+  const std::array<int64_t, 2> stock_rim_in = {
+      (vis.active && vis.stock_rim_inches[0] > 0) ? vis.stock_rim_inches[0] : info.rim_inches[0],
+      (vis.active && vis.stock_rim_inches[1] > 0) ? vis.stock_rim_inches[1] : info.rim_inches[1]};
+  const std::array<int64_t, 2> stock_width_mm = {
+      (vis.active && vis.stock_tyre_width_mm[0] > 0) ? vis.stock_tyre_width_mm[0] : info.tyre_width_mm[0],
+      (vis.active && vis.stock_tyre_width_mm[1] > 0) ? vis.stock_tyre_width_mm[1] : info.tyre_width_mm[1]};
+  const std::array<int64_t, 2> stock_aspect = {
+      (vis.active && vis.stock_tyre_aspect[0] > 0) ? vis.stock_tyre_aspect[0] : info.tyre_aspect[0],
+      (vis.active && vis.stock_tyre_aspect[1] > 0) ? vis.stock_tyre_aspect[1] : info.tyre_aspect[1]};
   if (vis.active) {
     for (size_t a = 0; a < 2; ++a) {
       if (vis.tyre_width_mm[a] > 0) info.tyre_width_mm[a] = vis.tyre_width_mm[a];
@@ -652,9 +696,10 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       const size_t wheel_rows[4] = {5, 6, 8, 7};
       for (size_t w = 0; w < 4; ++w) {
         const size_t axle = w < 2 ? 0 : 1;
-        const float rim_r = float(info.rim_inches[axle]) * 0.0254f * 0.5f;
         const float width = float(info.tyre_width_mm[axle]) / 1000.0f;
-        const float outer = rim_r + width * float(info.tyre_aspect[axle]) / 100.0f;
+        const float outer = cars::compute_tire_outer_radius_m(stock_rim_in[axle], stock_width_mm[axle],
+                                                              stock_aspect[axle], info.rim_inches[axle],
+                                                              info.tyre_width_mm[axle]);
         const float side = (w % 2 == 0) ? -1.0f : 1.0f;
         const float track_x = (info.track_outer[axle] - width) * 0.5f + vis.track_offset_m[axle];
         const float bx = side * track_x;
@@ -668,27 +713,60 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   }
 
   // Per-car tyre check (FJ Cruiser TOY_FJCruiser_12, Raptor, Wrangler, H1):
-  // prefer the car's own TireA<MediaName> archive if available in bake or disc.
+  // prefer the car's own TireA<MediaName> geometry if available in bake or disc,
+  // and allow compound texture swapping onto TireB<MediaName> / TireC<MediaName>
+  // when present (e.g. TireBFOR_SVTRaptor_12.zip, TireCFOR_SVTRaptor_12.zip).
   std::string want_tyre = vis.active && !vis.tyre_media_override.empty()
                               ? lower(vis.tyre_media_override)
                               : cars::per_car_tyre_media(info.media_name);
-  if (!want_tyre.empty() && info.tyre_media == cars::kTyreModel) {
+  auto try_load_tyre_tex_pack = [&](const std::string& media) -> bool {
+    if (media.empty()) return false;
     std::error_code tec;
     if (!bake_dir.empty() &&
-        std::filesystem::exists(cars::mods::resolve(bake_dir / "wheels" / (want_tyre + ".shiftbake")), tec)) {
-      info.tyre_media = want_tyre;
-      info.tyre_texture_media = want_tyre;
-    } else if (!disc_root.empty() &&
-               DiscCarCache::instance().load_wheel(disc_root, want_tyre, true, tyre_, nullptr)) {
-      info.tyre_media = want_tyre;
-      info.tyre_texture_media = want_tyre;
-      tyre_textures_ = tyre_;
+        std::filesystem::exists(cars::mods::resolve(bake_dir / "wheels" / (media + ".shiftbake")), tec)) {
+      info.tyre_texture_media = media;
+      return true;
     }
-  } else if (vis.active && want_tyre.empty() && info.tyre_texture_media == cars::kTyreTextures) {
-    // Select TireA (stock/street), TireB (sport), or TireC (race/rally) texture pack
-    // matching the fitted List_UpgradeCarBodyTireCompound upgrade level.
-    if (vis.tire_compound_level == 1) info.tyre_texture_media = "tireb";
-    else if (vis.tire_compound_level >= 2) info.tyre_texture_media = "tirec";
+    if (!disc_root.empty() && DiscCarCache::instance().load_wheel(disc_root, media, true, tyre_textures_, nullptr)) {
+      info.tyre_texture_media = media;
+      return true;
+    }
+    return false;
+  };
+  if (!want_tyre.empty()) {
+    if (info.tyre_media == cars::kTyreModel) {
+      std::error_code tec;
+      if (!bake_dir.empty() &&
+          std::filesystem::exists(cars::mods::resolve(bake_dir / "wheels" / (want_tyre + ".shiftbake")), tec)) {
+        info.tyre_media = want_tyre;
+        info.tyre_texture_media = want_tyre;
+      } else if (!disc_root.empty() &&
+                 DiscCarCache::instance().load_wheel(disc_root, want_tyre, true, tyre_, nullptr)) {
+        info.tyre_media = want_tyre;
+        info.tyre_texture_media = want_tyre;
+      }
+    }
+    if (vis.active && want_tyre.size() > 5 && want_tyre.rfind("tirea", 0) == 0) {
+      const char letter = cars::tire_compound_texture_letter(vis.tire_compound_level);
+      if (letter != 'a') {
+        const std::string comp_media = std::string("tire") + letter + want_tyre.substr(5);
+        if (!try_load_tyre_tex_pack(comp_media)) {
+          info.tyre_texture_media = want_tyre;
+        }
+      } else {
+        info.tyre_texture_media = want_tyre;
+      }
+    }
+  } else if (vis.active) {
+    // Select TireA (stock/street, <2), TireB (sport, ==2), or TireC (race/rally, >2)
+    // matching List_UpgradeTireCompound.Level; at TU4 Rally Level 5 prefer a dedicated
+    // rally tyre texture pack if present on disc, else TireC.
+    if (vis.tire_compound_level >= 5 && (try_load_tyre_tex_pack("tirerally") || try_load_tyre_tex_pack("tired"))) {
+      // Dedicated rally tyre texture archive loaded.
+    } else {
+      const char letter = cars::tire_compound_texture_letter(vis.tire_compound_level);
+      info.tyre_texture_media = std::string("tire") + letter;
+    }
   }
 
   // Load rim: pre-baked .shiftbake first, then on-demand from disc/packages
@@ -1018,6 +1096,85 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     }
   }
 
+  // Parse CarAnimationEvents.xml (when available on disc) and tag animated body/cockpit
+  // parts accurately:
+  // - Active rear wings ONLY on cars declaring RearWing / active aero in CarAnimationEvents.xml
+  //   or carrying active-aero linkages (winga_arm*/winga_piston/winga_lower/winga_suspension),
+  //   so fixed stock winga spoilers on the other ~115 cars never detach.
+  // - Pop-up headlights on cars declaring headlight in CarAnimationEvents.xml OR carrying
+  //   explicit pop-up parts (headlightLup/Rup/Ldown/Rdown/headlightcover).
+  // - Active EngineVent louvers (e.g. Murcielago SV, Aventador, Reventon).
+  {
+    CarAnimEventsFlags anim_flags;
+    if (!disc_root.empty()) {
+      cars::Folder folder;
+      if (open_disc_car_folder(disc_root, info.media_name, folder)) {
+        std::vector<uint8_t> xml_bytes;
+        if (folder.read("caranimationevents.xml", xml_bytes, nullptr) && !xml_bytes.empty()) {
+          anim_flags = parse_car_anim_events_xml(std::string(xml_bytes.begin(), xml_bytes.end()));
+        }
+      }
+    }
+    auto is_wing_linkage = [](const std::string& p) {
+      return p.rfind("winga_arm", 0) == 0 || p.rfind("winga_piston", 0) == 0 ||
+             p.rfind("winga_lower", 0) == 0 || p.rfind("winga_suspension", 0) == 0;
+    };
+    bool has_wing_linkages = false;
+    bool has_winga_main = false;
+    bool has_hl_up = false;
+    bool has_hl_down = false;
+    for (const auto& d : draws_) {
+      if (d.wheel >= 0 || d.cockpit_role >= 0) continue;
+      if (d.part_name == "winga") has_winga_main = true;
+      if (is_wing_linkage(d.part_name)) has_wing_linkages = true;
+      if (d.part_name == "headlightlup" || d.part_name == "headlightrup") has_hl_up = true;
+      if (d.part_name == "headlightldown" || d.part_name == "headlightrdown") has_hl_down = true;
+    }
+    const bool active_wing_car = anim_flags.has_rear_wing || has_wing_linkages;
+    const bool dual_popup_mesh = has_hl_up && has_hl_down;
+    for (auto& d : draws_) {
+      if (d.wheel >= 0 || d.cockpit_role >= 0) continue;
+      if (active_wing_car) {
+        if (d.part_name == "winga") {
+          d.anim_part = 1;
+          continue;
+        }
+        if (is_wing_linkage(d.part_name)) {
+          // Cars like Pagani Huayra have no main winga blade; winga_arm1..4 are the 4 aero flaps.
+          d.anim_part = has_winga_main ? 8 : 1;
+          continue;
+        }
+      }
+      if (dual_popup_mesh) {
+        if (d.part_name == "headlightlup" || d.part_name == "headlightrup") {
+          d.anim_part = 9;
+          std::memset(d.push.model, 0, sizeof d.push.model);
+          d.push.model[15] = 1.0f;
+          continue;
+        }
+        if (d.part_name == "headlightldown" || d.part_name == "headlightrdown") {
+          d.anim_part = 10;
+          continue;
+        }
+      } else {
+        const bool explicit_popup = d.part_name == "headlightlup" || d.part_name == "headlightrup" ||
+                                    d.part_name == "headlightldown" || d.part_name == "headlightrdown" ||
+                                    d.part_name.rfind("headlightcover", 0) == 0 ||
+                                    d.part_name.find("popup") != std::string::npos ||
+                                    d.part_name.find("retract") != std::string::npos;
+        const bool xml_popup = anim_flags.has_headlight &&
+                               (d.part_name == "headlightl" || d.part_name == "headlightr");
+        if (explicit_popup || xml_popup) {
+          d.anim_part = 2;
+          continue;
+        }
+      }
+      if (anim_flags.has_engine_vent && d.part_name.find("vent") != std::string::npos) {
+        d.anim_part = 7;
+      }
+    }
+  }
+
   // The inverse pose: model = R (body - (0, lift, 0)); R is its own inverse.
   const float cp = std::cos(info.pitch), sp = std::sin(info.pitch);
   const float pose[16] = {1, 0, 0, 0, 0, cp, sp, 0, 0, sp, -cp, 0, 0, -cp * info.lift, -sp * info.lift, 1};
@@ -1025,12 +1182,12 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   const float* body_to_model = body_to_model_;
 
   // Brakes: each corner's rotor and calliper, centred on the hub, rotated by
-  // CaliperAngleFront/Rear and laterally offset by List_Wheels.BrakeDrawOffset.
+  // CaliperAngleFront/Rear (radians, upgraded generic calipers only), tilted by
+  // static camber, and laterally offset by List_Wheels.BrakeDrawOffset.
   // When upgraded brakes (Level >= 1) are fitted and game_root is set, load
   // the upgraded rotor & caliper models from media/brakes/.
   static constexpr bake::Corner kCorners[4] = {bake::Corner::kLF, bake::Corner::kRF, bake::Corner::kLR,
                                                bake::Corner::kRR};
-  constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
   std::array<bake::Model, 2> upg_rotor, upg_caliper;
   std::array<bool, 2> has_upg_rotor{false, false}, has_upg_caliper{false, false};
   if (vis.active && !options_.game_root.empty()) {
@@ -1051,10 +1208,13 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     const bool right = (corner % 2) == 1;
     const float side = right ? 1.0f : -1.0f;
     const float brake_dx = vis.active ? (side * vis.brake_draw_offset) : 0.0f;
-    const float cal_rad = is_rotor ? 0.0f : (info.caliper_angle[size_t(axle)] * kDegToRad);
+    // Data_Car.CaliperAngleFront/Rear are already in radians; only rotate generic
+    // upgraded media/brakes/* calipers (stock per-car calipers are authored in place).
+    const float cal_rad = (!is_rotor && mirror_right) ? info.caliper_angle[size_t(axle)] : 0.0f;
     const float ca = std::cos(cal_rad), sa = std::sin(cal_rad);
     // Local transform about hub in body frame: optional half-turn for loose
-    // right-side models, caliper angle rotation around axle X, lateral offset.
+    // right-side models, caliper angle rotation around axle X, lateral offset,
+    // and static alignment camber around Z matching the wheel/tyre transform.
     float rot_x[16];
     identity(rot_x);
     rot_x[5] = ca;
@@ -1076,6 +1236,18 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       multiply(rot_x, lin_pose, local_body);
     }
     local_body[12] += brake_dx;
+    const float cam = vis.active ? (right ? -vis.camber_rad[size_t(axle)] : vis.camber_rad[size_t(axle)]) : 0.0f;
+    if (cam != 0.0f) {
+      float rz[16], tilted[16];
+      identity(rz);
+      const float cc = std::cos(cam), sc = std::sin(cam);
+      rz[0] = cc;
+      rz[1] = sc;
+      rz[4] = -sc;
+      rz[5] = cc;
+      multiply(rz, local_body, tilted);
+      std::memcpy(local_body, tilted, sizeof local_body);
+    }
     std::memcpy(pending_local_, local_body, sizeof local_body);
     pending_wheel_ = corner;
     pending_spins_ = is_rotor;
@@ -1092,7 +1264,8 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   for (int c = 0; c < 4; ++c) {
     const size_t axle = c < 2 ? 0 : 1;
     if (has_upg_rotor[axle]) add_brake_at(upg_rotor[axle], c, true, true, car_);
-    if (has_upg_caliper[axle]) add_brake_at(upg_caliper[axle], c, false, true, car_);
+    if (has_upg_caliper[axle] && !upg_caliper[axle].parts.empty())
+      add_brake_at(upg_caliper[axle], c, false, true, car_);
   }
   for (const auto& m : car_.models) {
     if (m.role != Role::kCaliper && m.role != Role::kRotor) continue;
@@ -1170,13 +1343,12 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     const int axle = c < 2 ? 0 : 1;
     const bool right = c % 2 == 1;
     const float inches = info.rim_inches[size_t(axle)] > 0 ? float(info.rim_inches[size_t(axle)]) : 14.0f;
-    const float rim_radius = inches * 0.0254f / 2;
     const float width_m = info.tyre_width_mm[size_t(axle)] > 0
                               ? float(info.tyre_width_mm[size_t(axle)]) / 1000.0f
                               : 0.2f;
-    const float aspect = info.tyre_aspect[size_t(axle)] > 0 ? float(info.tyre_aspect[size_t(axle)]) / 100.0f
-                                                           : 0.5f;
-    const float outer = rim_radius + width_m * aspect;
+    const float outer = cars::compute_tire_outer_radius_m(stock_rim_in[size_t(axle)], stock_width_mm[size_t(axle)],
+                                                          stock_aspect[size_t(axle)], info.rim_inches[size_t(axle)],
+                                                          info.tyre_width_mm[size_t(axle)]);
     const float w_rim = (inches - 14.0f) / 10.0f;
     const float rim_scale = rim && header_ok ? width_m / (rim->header_bounds[1] - rim->header_bounds[3]) : 1.0f;
     // Body-frame wheel matrix: centre, static alignment camber about Z, the

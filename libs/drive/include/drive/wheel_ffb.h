@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -244,8 +245,10 @@ struct WheelFfbForces {
   double aligning_norm = 0.0;   // -1..+1 pre-invert aligning torque
 };
 
-// Extracts FFB telemetry directly from a drive::Vehicle.
-WheelFfbTelemetry ffb_telemetry_from_vehicle(const Vehicle& v, bool driving, double lateral_g = 0.0);
+// Extracts FFB telemetry directly from a drive::Vehicle. When `lateral_g` is NaN
+// (the default), pulls `v.lateral_g()` directly from the vehicle physics state.
+WheelFfbTelemetry ffb_telemetry_from_vehicle(const Vehicle& v, bool driving,
+                                             double lateral_g = std::numeric_limits<double>::quiet_NaN());
 
 // Pure-math FFB solver: computes condition and dynamic steering forces for one frame.
 class WheelFfbSolver {

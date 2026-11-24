@@ -178,16 +178,60 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
       l.text(g.R(1181), y + (14 * s - ns.size) * 0.5f, row.name, ns);
     }
   }
-  // 947_HUD/I_321_Go: countdown / GO! signal.
-  if (racing && r.clock < 40.0 / 60.0) {
-    const float a = 1 - clamp01((r.clock - 0.5) / 0.17);
+  // 947_HUD/I_321_Go: pre-race 3-2-1 countdown digits and GO! signal.
+  {
     const SceneFrame cf{0.5f * g.w - 640 * s, 0.5f * g.h - 360 * s, s};
-    const int go_node = sc.find("TEXT_GO", sc.find("I_321_Go"));
-    if (go_node >= 0) {
-      sc.text(l, cf, go_node, "GO!", ui::fade(kSoft, a), 2.0f, 2.0f, false);
-      sc.text(l, cf, go_node, "GO!", ui::fade(kText, a), 0, 0, false);
-    } else {
-      shadowed(l, g.C(637.5f), g.T(230), "GO!", font(ui::Font::kE, 64 * s, ui::fade(kText, a), Align::kCenter), s);
+    const int go_root = sc.find("I_321_Go");
+    const int go_node = sc.find("TEXT_GO", go_root);
+    if (r.phase == RaceHud::kCountdown) {
+      int digit = r.digit;
+      if (digit <= 0 && r.clock < 0.0 && r.clock >= -3.0) {
+        digit = int(std::ceil(-r.clock));
+      }
+      if (digit >= 1 && digit <= 3) {
+        // Fractional progress [0, 1] within the current countdown second for pop-in / fade-out.
+        const float u = (r.clock < 0.0 && r.clock >= -3.0) ? clamp01(double(digit) + r.clock) : 0.25f;
+        const float in_a = ease_in_time(u, 0.0, 0.12);
+        const float out_a = 1.0f - clamp01((u - 0.72) / 0.28);
+        const float a = in_a * out_a;
+        const float pulse = 1.0f + 0.30f * (1.0f - ease_in_time(u, 0.0, 0.22));
+        if (a > 1e-3f) {
+          char dtxt[4];
+          std::snprintf(dtxt, sizeof dtxt, "%d", digit);
+          const char* digit_node_name = digit == 3 ? "TEXT_3" : digit == 2 ? "TEXT_2" : "TEXT_1";
+          int anchor_node = sc.find(digit_node_name, go_root);
+          if (anchor_node < 0) anchor_node = go_node;
+
+          float cx = g.C(637.5f);
+          float cy = g.T(262.0f);
+          TextStyle ts = font(ui::Font::kE, 84.0f * s * pulse, ui::fade(kText, a), Align::kCenter);
+          if (anchor_node >= 0) {
+            const auto [nx, ny] = sc.at(anchor_node);
+            cx = cf.x(nx);
+            cy = cf.y(ny);
+            ts = sc.style(anchor_node, cf, ui::fade(kText, a));
+            ts.align = Align::kCenter;
+            ts.size = std::max(ts.size, 76.0f * s) * pulse;
+          }
+          const float top_y = cy - 0.5f * ts.size;
+          // Horizon pink pop-in glow + crisp drop shadow + bold white countdown digit.
+          TextStyle glow = ts;
+          glow.color = ui::fade(kPink, a * (0.45f + 0.35f * (1.0f - u)));
+          l.text(cx, top_y + 3.0f * s, dtxt, glow);
+          TextStyle sh = ts;
+          sh.color = ui::fade(kSoft, a);
+          l.text(cx + 2.5f * s, top_y + 2.5f * s, dtxt, sh);
+          l.text(cx, top_y, dtxt, ts);
+        }
+      }
+    } else if (racing && r.clock < 40.0 / 60.0) {
+      const float a = 1 - clamp01((r.clock - 0.5) / 0.17);
+      if (go_node >= 0) {
+        sc.text(l, cf, go_node, "GO!", ui::fade(kSoft, a), 2.0f, 2.0f, false);
+        sc.text(l, cf, go_node, "GO!", ui::fade(kText, a), 0, 0, false);
+      } else {
+        shadowed(l, g.C(637.5f), g.T(230), "GO!", font(ui::Font::kE, 64 * s, ui::fade(kText, a), Align::kCenter), s);
+      }
     }
   }
   // Wrong way: 947_HUD's WrongWay sign (WRONGWAYICON, 582,174-698,290),

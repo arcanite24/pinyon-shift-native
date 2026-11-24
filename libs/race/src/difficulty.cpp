@@ -12,9 +12,13 @@ DriverSetup assign_driver(int event_skill, int event_temperament, int event_rubb
   DriverSetup s;
   s.skill = std::clamp(event_skill + skill_modifier, 1, 80);
   s.temperament = std::clamp(event_temperament + aggro_modifier, 1, 10);
-  if (event_rubberband >= 1 && event_rubberband <= 10) s.rubberband_id = event_rubberband + rubberband_modifier;
-  else if (const SkillRow* r = rows.skill(s.skill)) s.rubberband_id = r->rubberband_id;
-  else s.rubberband_id = 0;
+  if (event_rubberband >= 1) {
+    s.rubberband_id = (event_rubberband <= 10) ? (event_rubberband + rubberband_modifier) : event_rubberband;
+  } else if (const SkillRow* r = rows.skill(s.skill)) {
+    s.rubberband_id = r->rubberband_id;
+  } else {
+    s.rubberband_id = 0;
+  }
   return s;
 }
 

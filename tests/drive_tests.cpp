@@ -1118,6 +1118,68 @@ int main() {
     for (int i = 0; i < 30; ++i) v_hb.step({0, 0.0, 0.0, true}, flat_g);
     CHECK(v_hb.gear_state() == drive::Vehicle::GearState::kOpen && v_hb.clutch() < 0.05);
   }
+  // 10) P0-P4: FrictionTorqueMod SI 100x scale (Normal vs Simulation yaw damping) + Assisted lane centering.
+  {
+    const auto p = test_car();
+    drive::FlatGround flat_g;
+    drive::Vehicle v_norm(p), v_sim(p);
+    drive::VehicleAssists a_norm, a_sim;
+    a_norm.steering = 1;  // Normal
+    a_sim.steering = 2;   // Simulation
+    v_norm.set_assists(a_norm);
+    v_sim.set_assists(a_sim);
+    // Start sliding sideways at 25 m/s with yaw rate 1.2 rad/s (> 5 deg yaw slip).
+    v_norm.launch({0, 0, 0}, 0.35, 25.0);
+    v_sim.launch({0, 0, 0}, 0.35, 25.0);
+    v_norm.set_velocity({0.0, 0.0, 25.0}, {0.0, 1.2, 0.0});
+    v_sim.set_velocity({0.0, 0.0, 25.0}, {0.0, 1.2, 0.0});
+    for (int i = 0; i < 20; ++i) {
+      v_norm.step({0.0, 0.2, 0.0, false}, flat_g);
+      v_sim.step({0.0, 0.2, 0.0, false}, flat_g);
+    }
+    // With authentic 100x FrictionTorqueMod scale (10,000..18,000 N*m clamp), Normal
+    // steering measurably damps yaw rate relative to Simulation steering.
+    CHECK(v_norm.angular_velocity().y < v_sim.angular_velocity().y - 0.15);
+
+    // Assisted steering gentle lane centering bias: car right of lane center (+2.5 m)
+    // with zero stick steers gently left; Simulation mode ignores lane guidance.
+    drive::Vehicle v_ast(p), v_sim2(p);
+    drive::VehicleAssists a_ast;
+    a_ast.steering = 0;  // Assisted
+    v_ast.set_assists(a_ast);
+    v_sim2.set_assists(a_sim);
+    v_ast.launch({0, 0, 0}, 0.0, 20.0);
+    v_sim2.launch({0, 0, 0}, 0.0, 20.0);
+    drive::Input lane_in{};
+    lane_in.throttle = 0.2;
+    lane_in.has_assist_lane = true;
+    lane_in.assist_lateral_offset_m = 2.5;
+    lane_in.assist_heading_error_rad = 0.0;
+    for (int i = 0; i < 30; ++i) {
+      v_ast.step(lane_in, flat_g);
+      v_sim2.step(lane_in, flat_g);
+    }
+    CHECK(v_ast.steer_angle() < -0.02);
+    CHECK(std::fabs(v_sim2.steer_angle()) < 1e-6);
+  }
+  // 11) P0-K2: PendingBarnRestoration serialization/deserialization round-trip.
+  {
+    drive::DriveSave ds;
+    ds.car = "VW_Corrado_95";
+    ds.position = {100.0, 10.0, 200.0};
+    ds.heading = 0.25;
+    ds.pending_barn_restorations.push_back({1, 1044, 32.5f});
+    ds.pending_barn_restorations.push_back({4, 1089, 12.25f});
+    const std::string text = drive::save_to_text(ds);
+    drive::DriveSave parsed;
+    std::string err;
+    CHECK(drive::save_from_text(text, parsed, &err));
+    CHECK(parsed.pending_barn_restorations.size() == 2);
+    CHECK(parsed.pending_barn_restorations[0].barn_id == 1 && parsed.pending_barn_restorations[0].car_id == 1044 &&
+          std::fabs(parsed.pending_barn_restorations[0].remaining_sec - 32.5f) < 1e-3f);
+    CHECK(parsed.pending_barn_restorations[1].barn_id == 4 && parsed.pending_barn_restorations[1].car_id == 1089 &&
+          std::fabs(parsed.pending_barn_restorations[1].remaining_sec - 12.25f) < 1e-3f);
+  }
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

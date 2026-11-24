@@ -114,6 +114,9 @@ class AudioHost {
   void update_vehicle(const audio::VehicleAudioState& st, bool in_race, bool rewinding, bool countdown_active,
                       int countdown_digit);
   void trigger_collision(const audio::CollisionHit& hit);
+  void trigger_landing(const audio::LandingHit& hit);
+  void set_rally_world(bool on);
+  void set_radio_rally_mode(bool on);
   void trigger_ui(audio::UiCue cue);
   void trigger_satnav(audio::SatNavCue cue);
   void set_satnav_enabled(bool on);
@@ -204,6 +207,10 @@ class AudioHost {
   bool has_vo_ = false;
   bool acoustics_tried_ = false;
   bool has_acoustics_ = false;
+  bool rally_sfx_tried_ = false;
+  bool rally_acoustics_tried_ = false;
+  bool rally_world_ = false;
+  bool last_radio_rally_mode_ = false;
   std::string acoustics_world_key_;
   audio::WorldAcousticsData acoustics_;
   bool last_paused_ = false;

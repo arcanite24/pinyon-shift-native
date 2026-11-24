@@ -480,6 +480,7 @@ void Vehicle::reset(const Vec3& position, double heading) {
   shifted_without_clutch_ = false;
   trans_damage_ = 0;
   stall_timer_ = 0;
+  lateral_g_ = 0;
   raw_ = shaped_ = {};
   for (int i = 0; i < kWheels; ++i) {
     w_[i] = {};
@@ -608,6 +609,16 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   const double stick_abs = std::fabs(shaped_.steer);
   const double stick_shaped = sign(shaped_.steer) * lerp(stick_abs, stick_abs * stick_abs, sw_blend);
   double target = stick_shaped * lock;
+  // Assisted steering mode: gentle road/lane centering bias when road guidance is
+  // provided on Input, fading out smoothly when the player applies deliberate lock.
+  if (assists_.steering == 0 && raw.has_assist_lane && v_abs > 3.0) {
+    const double speed_fade = ramp(v_abs, 3.0, 12.0);
+    const double player_fade = 1.0 - 0.65 * stick_abs;
+    const double raw_bias = 0.45 * raw.assist_heading_error_rad - 0.08 * raw.assist_lateral_offset_m;
+    const double max_bias = 0.35 * lock;
+    const double lane_bias = std::clamp(raw_bias, -max_bias, max_bias) * speed_fade * player_fade;
+    target = std::clamp(target + lane_bias, -lock, lock);
+  }
   const bool centring = std::fabs(target) < std::fabs(steer_angle_) && target * steer_angle_ >= 0;
   const double mean_rear_sa = 0.5 * (w_[2].slip_angle + w_[3].slip_angle);
   const bool countersteering =
@@ -1758,18 +1769,17 @@ void Vehicle::substep(double dt, const Ground& ground) {
         const double yaw_cross = fwd_w.x * vel_.z - fwd_w.z * vel_.x;
         const bool straightening = (ang_.y * yaw_cross) < 0.0;
         const double mode_scale = straightening ? lerp(1.0, 0.8, u_yaw) : lerp(1.0, 0.7, u_yaw);
-        const double base_clamp = straightening
-                                      ? lerp(lerp(145.0, 140.0, u_yaw), lerp(115.0, 120.0, u_yaw), u_mass)
-                                      : lerp(lerp(180.0, 120.0, u_yaw), lerp(150.0, 100.0, u_yaw), u_mass);
-        int n_grounded = 0, n_offroad = 0;
+        // FrictionTorqueMod table values (100..180) are in 100 N*m units -> SI N*m.
+        const double base_clamp = (straightening
+                                       ? lerp(lerp(145.0, 140.0, u_yaw), lerp(115.0, 120.0, u_yaw), u_mass)
+                                       : lerp(lerp(180.0, 120.0, u_yaw), lerp(150.0, 100.0, u_yaw), u_mass)) *
+                                  100.0;
+        int n_offroad = 0;
         for (int i = 0; i < kWheels; ++i) {
-          if (w_[i].contact) {
-            ++n_grounded;
-            if (surf[i].off_roadness >= 0.5) ++n_offroad;
-          }
+          if (w_[i].contact && surf[i].off_roadness >= 0.5) ++n_offroad;
         }
-        const double offroad_frac = n_grounded > 0 ? double(n_offroad) / double(n_grounded) : 0.0;
-        const double offroad_mod = lerp(1.0, 1.2, offroad_frac);
+        // Off-road modifier activates only when all 4 wheels are off-road.
+        const double offroad_mod = (n_offroad == kWheels) ? 1.2 : 1.0;
         const double fwd_mod = p.layout == CarParams::Layout::kFront ? 0.9 : 1.0;
         const double clamp_t = base_clamp * assist_gain * offroad_mod;
         const double yaw_damp =
@@ -1778,6 +1788,9 @@ void Vehicle::substep(double dt, const Ground& ground) {
       }
     }
   }
+
+  // Record body-frame signed lateral G (+X right in a right turn) for FFB & telemetry.
+  lateral_g_ = rotate_inverse(rot_, force * (1.0 / p.mass)).x / std::max(1.0, p.gravity);
 
   // Integrate (semi-implicit Euler).
   vel_ = vel_ + force * (dt / p.mass);

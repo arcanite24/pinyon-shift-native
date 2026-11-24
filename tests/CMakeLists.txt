@@ -248,6 +248,10 @@ add_executable(visual_upgrades_tests visual_upgrades_tests.cpp)
 target_link_libraries(visual_upgrades_tests PRIVATE shift_cars)
 add_test(NAME visual_upgrades_tests COMMAND visual_upgrades_tests)
 
+add_executable(cars_visual_parity_tests ../libs/cars/tests/cars_visual_parity_tests.cpp)
+target_link_libraries(cars_visual_parity_tests PRIVATE shift_cars)
+add_test(NAME cars_visual_parity_tests COMMAND cars_visual_parity_tests)
+
 add_executable(hub_shop_tests hub_shop_tests.cpp
   ../apps/carview/autoshow.cpp
   ../apps/carview/upgrade_shop.cpp

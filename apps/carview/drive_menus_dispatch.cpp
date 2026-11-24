@@ -146,6 +146,9 @@ void DriveSession::open_paint() {
 }
 
 void DriveSession::open_shop_or_autoshow(bool is_autoshow) {
+          app.autoshow_buy_confirm = false;
+          app.hub_orbit_dragging = false;
+          app.hub_orbit_dragged = false;
           // Ensure a career garage exists so Autoshow & Upgrades always work smoothly.
           if (!app.have_garage && app.have_career_catalog) {
             if (const auto* spec = app.career_catalog.find_car_by_media(app.car))
@@ -193,7 +196,9 @@ bool DriveSession::collect_next_wristband() {
             ceremony.bonus_car = app.award_garage_car(wb.reward_car_id, 0, false);
             app.garage_picker();
           }
-          app.campaign.on_wristband_collected(pending, ceremony.bonus_car, newly_unlocked, app.fmv_player, &app.audio_host);
+          const auto wb_action =
+              app.campaign.on_wristband_collected(pending, ceremony.bonus_car, newly_unlocked, app.fmv_player, &app.audio_host);
+          apply_campaign_action(wb_action);
           ceremony.active = false;  // presented through campaign director stage fly-in ceremony
           save_due = true;
           return true;
@@ -243,15 +248,22 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
               app.car = it->second;
             }
           }
-          // Wire dynamic AI difficulty (AISkillAdjustments) into career races when running in Stock mode.
-          if (app.race_options.ai_mode == race::AiMode::kStock && app.career.num_races > 0) {
-            app.race_options.difficulty = race::difficulty_from_dynamic_skill(app.dynamic_ai_skill);
+          // Preserve the player's manually chosen difficulty tier (never silently revert Hard/Pro/Easy to Med).
+          // Keep dynamic_ai_skill aligned inside the selected difficulty tier band.
+          {
+            const auto want_tier = app.race_options.difficulty == race::Difficulty::kHardPlus
+                                       ? race::Difficulty::kPro
+                                       : app.race_options.difficulty;
+            if (race::difficulty_from_dynamic_skill(app.dynamic_ai_skill) != want_tier) {
+              app.dynamic_ai_skill = DriveApp::dynamic_skill_for_difficulty(app.race_options.difficulty);
+            }
           }
           events_page.close();
-          app.campaign.on_enter_event(ev, app.fmv_player, &app.audio_host);
+          const auto enter_action = app.campaign.on_enter_event(ev, app.fmv_player, &app.audio_host);
+          apply_campaign_action(enter_action);
           if (app.campaign.is_blocking_gameplay() && !app.headless) {
             pending_event_launch = ev.horizon_id;
-          } else {
+          } else if (running && app.next_event.empty()) {
             app.next_event = ev.horizon_id;
             running = false;
           }
@@ -299,6 +311,8 @@ void DriveSession::start_new_career() {
           app.pre_loaner_car.clear();
           app.story_intro.reset();
           app.pending_handoff = {};
+          app.pending_barn_restorations.clear();
+          app.barn_restorations_reconciled = false;
           app.pending_autoshow_open = false;
           if (auto vit = app.baked_ids.find(race::CampaignFlow::kViperCarId); vit != app.baked_ids.end()) {
             app.next_car = vit->second;
@@ -426,6 +440,7 @@ void DriveSession::sync_pause_labels() {
 void DriveSession::cycle_difficulty(int by) {
           const int d = ((int(app.race_options.difficulty) + by) % 5 + 5) % 5;
           app.race_options.difficulty = race::Difficulty(d);
+          app.dynamic_ai_skill = DriveApp::dynamic_skill_for_difficulty(app.race_options.difficulty);
           if (app.race) app.race->set_difficulty(app.race_options.difficulty);
           sync_pause_labels();
           const auto sfile = settings_path();

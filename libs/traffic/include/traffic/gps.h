@@ -103,12 +103,16 @@ class GpsSolver {
 
  private:
   struct Edge {
+    uint32_t id = 0;
+    uint32_t from = 0;
     uint32_t to = 0;
     int road = -1;
-    int seg = 0;      // segment index on `road`
+    int seg = 0;          // segment index on `road`
     bool forward = true;  // true: seg -> seg+1, false: seg+1 -> seg
     double length = 0.0;
-    double cost = 0.0;
+    double cost = 0.0;    // travel time in seconds
+    double dir_x = 0.0;   // unit horizontal direction from -> to
+    double dir_z = 1.0;
     bool wrong_way = false;
   };
 
@@ -121,6 +125,8 @@ class GpsSolver {
   std::vector<uint8_t> ignore_turn_node_;   // 1 if node tagged ignore_turn_flags=true
   std::vector<std::array<double, 2>> node_xz_;
   std::vector<std::vector<Edge>> adj_;
+  std::vector<uint32_t> edge_to_node_;
+  std::vector<std::array<double, 2>> edge_dir_;
 };
 
 class GpsNavigator {

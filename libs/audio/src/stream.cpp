@@ -92,10 +92,19 @@ drwav_bool32 wav_tell(void* u, drwav_int64* cursor) {
   return DRWAV_TRUE;
 }
 
-// Converts `got` interleaved `ch`-channel frames in `tmp` to stereo in `dst`.
+// Converts `got` interleaved `ch`-channel frames in `src` to stereo in `dst`.
 void to_stereo(const float* src, int ch, int64_t got, float* dst) {
   if (ch == 2) {
     std::memcpy(dst, src, size_t(got) * 2 * sizeof(float));
+    return;
+  }
+  if (ch >= 6) {
+    constexpr float kFold = 0.70710678f;
+    for (int64_t i = 0; i < got; ++i) {
+      const float* f = src + i * ch;
+      dst[2 * i] = std::clamp(f[0] + kFold * f[2] + kFold * f[4], -1.0f, 1.0f);
+      dst[2 * i + 1] = std::clamp(f[1] + kFold * f[2] + kFold * f[5], -1.0f, 1.0f);
+    }
     return;
   }
   for (int64_t i = 0; i < got; ++i) {
@@ -133,10 +142,12 @@ class FsbMpegSource final : public PcmSource {
     open_ = drmp3_init_memory(&dec_, mp3_.data() + byte_off, mp3_.size() - byte_off, nullptr) != 0;
     if (!open_) return false;
     int64_t skip = frame - k * spf_;
-    float discard[2048 * 2];
+    const int ch = std::max(1, int(dec_.channels));
+    constexpr int64_t kChunkFrames = 2048;
+    scratch_.resize(size_t(kChunkFrames) * size_t(ch));
     while (skip > 0) {
-      const drmp3_uint64 ask = drmp3_uint64(std::min<int64_t>(skip, 2048));
-      const drmp3_uint64 got = drmp3_read_pcm_frames_f32(&dec_, ask, discard);
+      const drmp3_uint64 ask = drmp3_uint64(std::min<int64_t>(skip, kChunkFrames));
+      const drmp3_uint64 got = drmp3_read_pcm_frames_f32(&dec_, ask, scratch_.data());
       if (got == 0) break;
       skip -= int64_t(got);
     }

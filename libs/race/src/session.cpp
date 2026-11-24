@@ -49,7 +49,7 @@ bool Session::all_finished() const {
 
 void Session::reset_done(size_t i) {
   Car& c = cars_[i];
-  c.wrong = c.slow = c.off5 = c.off15 = 0;
+  c.wrong = c.slow = c.off5 = c.off15 = c.rolled = 0;
   c.no_collide_until = clock_ + 3.0;  // PostResetNonCollideTime
 }
 
@@ -105,11 +105,17 @@ void Session::step(double dt, std::span<const CarSample> s) {
     // The interim automatic resets (every car).
     if (o_.resets && c.finish < 0) {
       const double mph = q.speed / 0.44704;
+      c.rolled = q.up_y < 0.5 ? c.rolled + dt : 0;
       c.wrong = (q.heading_cos < 0.342 && mph > 40) ? c.wrong + dt : 0;
       c.slow = mph < 5 ? c.slow + dt : 0;
       c.off5 = q.off_route > 5 ? c.off5 + dt : 0;
       c.off15 = q.off_route > 15 ? c.off15 + dt : 0;
-      c.reason = c.wrong >= 3 ? "wrong way" : c.slow >= 3 ? "no progress" : c.off15 >= 3 ? "15 m off" : c.off5 >= 6 ? "5 m off" : "";
+      c.reason = c.rolled >= o_.rollover_time ? "rolled over"
+               : c.wrong >= 3                 ? "wrong way"
+               : c.slow >= 3                  ? "no progress"
+               : c.off15 >= 3                 ? "15 m off"
+               : c.off5 >= 6                  ? "5 m off"
+                                              : "";
       if (*c.reason) resets_.push_back(i);
     }
   }

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <string>
@@ -15,6 +16,7 @@
 #include "display_hdr_win.h"
 #include "drive_session.h"
 #include "fh1data/cjk_font.h"
+#include "fh1data/members.h"
 #include "settings.h"
 #include "world_view.h"
 
@@ -43,6 +45,133 @@ inline void lower_stream_worker_priority() {
 #else
   SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_LOW);
 #endif
+}
+
+// Resolves TU4 / Horizon Rally surface types (surfaces 68-71: RallyGrass, Dirt2,
+// Dirt3, RallyGravel) from title-update-v4/media.zip (physics/surfacetypes.xml),
+// extracted title-update-v4/, 1600_pri_65, or state_root VFS, falling back to
+// base media/physics.zip if unavailable. Supports both full surfacetypes.xml
+// replacements and updated-surfacetypes.xml overlays.
+std::filesystem::path resolve_surface_types_source(const DriveApp& app,
+                                                   const std::filesystem::path& base_phys_zip) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+
+  fs::path base_src = base_phys_zip;
+  if (!fs::exists(base_src, ec) && !app.colorado_world_dir.empty()) {
+    const fs::path alt = app.colorado_world_dir.parent_path().parent_path() / "physics.zip";
+    if (fs::exists(alt, ec)) base_src = alt;
+  }
+
+  size_t base_count = 0;
+  std::string base_xml;
+  if (fs::exists(base_src, ec)) {
+    fh1::MemberSource base_ms;
+    std::vector<uint8_t> bytes;
+    if (base_ms.open(base_src, nullptr) && base_ms.read("surfacetypes.xml", bytes, nullptr)) {
+      base_xml.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+      std::vector<fh1::SurfaceType> parsed;
+      if (fh1::parse_surface_types(base_xml, parsed, nullptr)) base_count = parsed.size();
+    }
+  }
+
+  fs::path sr = app.state_root;
+  if (sr.empty()) {
+    if (const char* env_sr = std::getenv("SHIFT_STATE_ROOT"); env_sr && *env_sr) sr = env_sr;
+  }
+
+  std::vector<fs::path> candidates;
+  if (!sr.empty()) {
+    candidates.push_back(sr / "title-update-v4" / "media.zip");
+    candidates.push_back(sr / "title-update-v4");
+    candidates.push_back(sr / "media.zip");
+  }
+  if (!app.rally_catalog.package_dir.empty()) {
+    candidates.push_back(app.rally_catalog.package_dir / "Media" / "DLCZips" / "1600_pri_65");
+    candidates.push_back(app.rally_catalog.package_dir / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "physics.zip");
+  }
+  if (!app.world_dir.empty() && !app.colorado_world()) {
+    const fs::path rally_media = app.world_dir.parent_path().parent_path();
+    candidates.push_back(rally_media / "physics.zip");
+    candidates.push_back(rally_media);
+  }
+
+  auto write_cached_xml = [&](const std::string& xml_text) -> fs::path {
+    const fs::path cache_dir = (!sr.empty() ? (sr / "cache") : fs::temp_directory_path(ec)) / "surfaces_v4";
+    fs::create_directories(cache_dir, ec);
+    const fs::path out_file = cache_dir / "surfacetypes.xml";
+    std::ofstream f(out_file, std::ios::binary | std::ios::trunc);
+    if (!f) return {};
+    f.write(xml_text.data(), std::streamsize(xml_text.size()));
+    f.close();
+    return f.good() ? cache_dir : fs::path{};
+  };
+
+  for (const auto& cand : candidates) {
+    if (cand.empty() || !fs::exists(cand, ec)) continue;
+    fh1::MemberSource ms;
+    if (!ms.open(cand, nullptr)) continue;
+
+    // 1. Direct full surfacetypes.xml (e.g. title-update-v4/media.zip -> physics/surfacetypes.xml, 72 entries).
+    if (ms.contains("surfacetypes.xml")) {
+      std::vector<uint8_t> bytes;
+      if (ms.read("surfacetypes.xml", bytes, nullptr)) {
+        std::vector<fh1::SurfaceType> parsed;
+        const std::string_view sv(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        if (fh1::parse_surface_types(sv, parsed, nullptr) &&
+            (parsed.size() >= 72 || parsed.size() > base_count)) {
+          return cand;
+        }
+      }
+    }
+
+    // 2. Explicit updated-surfacetypes.xml (full replacement or partial 68..71 overlay).
+    if (ms.contains("updated-surfacetypes.xml")) {
+      std::vector<uint8_t> bytes;
+      if (ms.read("updated-surfacetypes.xml", bytes, nullptr)) {
+        const std::string upd_xml(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        std::vector<fh1::SurfaceType> parsed;
+        if (fh1::parse_surface_types(upd_xml, parsed, nullptr) &&
+            (parsed.size() >= 72 || parsed.size() > base_count)) {
+          const fs::path dir = write_cached_xml(upd_xml);
+          if (!dir.empty()) return dir;
+        } else if (!base_xml.empty()) {
+          // Merge extra Rally surface entries (68..71) into base SurfaceTypes.xml.
+          std::string merged = base_xml;
+          static constexpr const char* kRallyNames[4] = {"RallyGrass", "Dirt2", "Dirt3", "RallyGravel"};
+          const size_t list_close = merged.find("</SurfaceTypesList>");
+          const size_t defs_close = merged.find("</SurfaceTypes>");
+          if (list_close != std::string::npos && defs_close != std::string::npos && list_close < defs_close) {
+            std::string add_list;
+            std::string add_defs;
+            for (const char* rname : kRallyNames) {
+              const std::string open_tag = std::string("<") + rname;
+              const std::string close_tag = std::string("</") + rname + ">";
+              const size_t d0 = upd_xml.find(open_tag);
+              const size_t d1 = d0 != std::string::npos ? upd_xml.find(close_tag, d0) : std::string::npos;
+              if (merged.find(std::string("value=\"") + rname + "\"") == std::string::npos) {
+                add_list += "    <SurfaceType value=\"" + std::string(rname) + "\" />\n";
+              }
+              if (d0 != std::string::npos && d1 != std::string::npos) {
+                add_defs += "\n" + upd_xml.substr(d0, (d1 + close_tag.size()) - d0) + "\n";
+              }
+            }
+            if (!add_list.empty() || !add_defs.empty()) {
+              merged.insert(defs_close, add_defs);
+              merged.insert(list_close, add_list);
+              std::vector<fh1::SurfaceType> check_parsed;
+              if (fh1::parse_surface_types(merged, check_parsed, nullptr) && check_parsed.size() > base_count) {
+                const fs::path dir = write_cached_xml(merged);
+                if (!dir.empty()) return dir;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return base_src;
 }
 
 }  // namespace
@@ -253,10 +382,11 @@ bool DriveWorldHost::open_world_and_car() {
         std::string col_err;
         std::future<bool> fut_col;
         if (!app.render_ground) {
-          const auto phys_zip =
+          const auto base_phys_zip =
               (app.game_root_given.empty() ? app.world_dir.parent_path().parent_path() : app.game_root_of() / "media") / "physics.zip";
-          fut_col = std::async(std::launch::async, [&, phys_zip]() {
-            return collision.open(app.world_dir, phys_zip, &col_err, &warning);
+          const auto phys_src = resolve_surface_types_source(app, base_phys_zip);
+          fut_col = std::async(std::launch::async, [&, phys_src]() {
+            return collision.open(app.world_dir, phys_src, &col_err, &warning);
           });
         }
         const bool world_ok = colorado.open(app.world_dir, app.cache_path, &app.error);

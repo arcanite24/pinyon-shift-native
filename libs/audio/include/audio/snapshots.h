@@ -104,6 +104,11 @@ class SnapshotMatrix {
   void restore_gameplay();
   std::string_view active_name(SnapshotGroup g) const;
 
+  // Rally stage radio routing: attenuates GameMusic cleanly during Rally stages
+  // while keeping RallyCoDriver clear (1.0).
+  void set_radio_rally_mode(bool on, float fade_s = 0.20f);
+  bool radio_rally_mode() const { return radio_rally_mode_; }
+
   // Automatic CrashData and TopSpeedData triggers.
   void update_dynamics(double dt, float focus_speed_mph, float car_top_speed_mph = 140.0f);
   void reset_dynamics();
@@ -151,6 +156,14 @@ class SnapshotMatrix {
   bool crash_latched_ = false;
   bool crash_saw_slow_ = false;
   bool in_top_speed_ = false;
+
+  // Radio Rally Mode state (attenuates GameMusic while preserving RallyCoDriver).
+  bool radio_rally_mode_ = false;
+  float radio_rally_gain_ = 1.0f;
+  float radio_rally_start_ = 1.0f;
+  float radio_rally_target_ = 1.0f;
+  float radio_rally_elapsed_ = 0.0f;
+  float radio_rally_duration_ = 0.0f;
 };
 
 // GlobalDSPConfig.xml: car-bus peaking EQ for Rewind, 3-2-1 countdown, and
@@ -170,7 +183,8 @@ struct GlobalDspConfig {
   std::array<GlobalDspBand, 4> cockpit{};
 
   bool parse(std::string_view xml, std::string* error = nullptr);
-  bool load(const std::filesystem::path& game_root, std::string* error = nullptr);
+  bool load(const std::filesystem::path& game_root, std::string* error = nullptr,
+            const std::filesystem::path& state_root = {});
 };
 
 // Slewed stereo peaking EQ on AllCarsEmissionGroup (SPEC-AUDIO-EVENTS:
@@ -220,7 +234,8 @@ struct MasterDspConfig {
   float saturator_gain = 1.0f;
 
   bool parse(std::string_view xml, std::string* error = nullptr);
-  bool load(const std::filesystem::path& game_root, std::string* error = nullptr);
+  bool load(const std::filesystem::path& game_root, std::string* error = nullptr,
+            const std::filesystem::path& state_root = {});
 };
 
 // Exact FH1 12-block (256-sample) RMS compressor (with LFE channel bypass)

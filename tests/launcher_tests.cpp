@@ -637,6 +637,77 @@ void test_radio_wheel_updater() {
   const auto up_to_date = launcher::select_github_update(releases_json, "0.2.0", "stable", "shift-engine-windows.zip");
   assert(!up_to_date.has_value());
 
+  // Versioned package.py release assets (shift-engine-<platform>-<ver>.zip / .tar.gz / .dmg + .sha256)
+  assert(launcher::matches_release_asset("shift-engine-windows-0.2.0.zip", "windows"));
+  assert(launcher::matches_release_asset("shift-engine-windows-v0.2.0.zip", "shift-engine-windows-x64.zip"));
+  assert(launcher::matches_release_asset("shift-engine-linux-0.2.0.tar.gz", "linux"));
+  assert(launcher::matches_release_asset("shift-engine-macos-0.2.0.dmg", "macos"));
+  assert(!launcher::matches_release_asset("shift-engine-windows-0.2.0.zip.sha256", "windows"));
+  assert(!launcher::matches_release_asset("shift-engine-linux-0.2.0.zip", "windows"));
+
+  const std::string ver_sha(64, 'b');
+  const std::string versioned_json =
+      "["
+      "{\"tag_name\":\"v0.2.1\",\"draft\":false,\"prerelease\":false,\"html_url\":\"https://example/021\","
+      " \"assets\":["
+      "  {\"name\":\"shift-engine-windows-0.2.1.zip.sha256\",\"browser_download_url\":\"https://example/win.sha256\",\"size\":96},"
+      "  {\"name\":\"shift-engine-windows-0.2.1.zip\",\"browser_download_url\":\"https://example/win.zip\",\"size\":9999},"
+      "  {\"name\":\"shift-engine-linux-0.2.1.tar.gz\",\"browser_download_url\":\"https://example/lin.tar.gz\",\"size\":8888,"
+      "   \"digest\":\"sha256:" + ver_sha + "\"}"
+      "]}"
+      "]";
+  const auto win_ver = launcher::select_github_update(versioned_json, "0.1.0", "stable", "windows");
+  assert(win_ver.has_value());
+  assert(win_ver->asset_name == "shift-engine-windows-0.2.1.zip");
+  assert(win_ver->sha256.empty());
+  assert(win_ver->sha256_url == "https://example/win.sha256");
+
+  const auto lin_ver = launcher::select_github_update(versioned_json, "0.1.0", "stable", "linux");
+  assert(lin_ver.has_value());
+  assert(lin_ver->asset_name == "shift-engine-linux-0.2.1.tar.gz");
+  assert(lin_ver->sha256 == ver_sha);
+
+  // Checksum file parsing (bare, sha256: prefixed, and multi-line SHA256SUMS)
+  assert(launcher::parse_sha256_checksum_text(ver_sha + "  shift-engine-windows-0.2.1.zip\n",
+                                              "shift-engine-windows-0.2.1.zip") == ver_sha);
+  const std::string sums_txt = fake_sha + "  shift-engine-linux-0.2.1.zip\n" +
+                               ver_sha + " *shift-engine-windows-0.2.1.zip\n";
+  assert(launcher::parse_sha256_checksum_text(sums_txt, "shift-engine-windows-0.2.1.zip") == ver_sha);
+
+  // plan_staged_update unwraps single top-level release directory & preserves subpaths
+  const auto unpacked = root / "unpacked";
+  const auto install_dir = root / "install";
+  std::filesystem::create_directories(unpacked / "shift-engine-windows-0.2.1" / "docs");
+  {
+    std::ofstream f(unpacked / "shift-engine-windows-0.2.1" / "shift-launcher.exe", std::ios::binary);
+    f << "NEWBIN";
+  }
+  {
+    std::ofstream f(unpacked / "shift-engine-windows-0.2.1" / "docs" / "README.md", std::ios::binary);
+    f << "README";
+  }
+  const auto plan = launcher::plan_staged_update(unpacked, install_dir);
+  assert(plan.moves.size() == 2);
+  bool found_launcher = false;
+  bool found_readme = false;
+  for (const auto& [src, dst] : plan.moves) {
+    if (dst == install_dir / "shift-launcher.exe") found_launcher = true;
+    if (dst == install_dir / "docs" / "README.md") found_readme = true;
+  }
+  assert(found_launcher && found_readme);
+
+  // prepare_staged_update_from_archive safely blocks missing & mismatched SHA-256
+  const auto fake_zip = root / "shift-engine-windows-0.2.1.zip";
+  {
+    std::ofstream f(fake_zip, std::ios::binary);
+    f << "not-matching-digest";
+  }
+  const auto no_sha = launcher::prepare_staged_update_from_archive(fake_zip, "", install_dir);
+  assert(!no_sha.ok && !no_sha.verified);
+  const auto bad_sha = launcher::prepare_staged_update_from_archive(fake_zip, ver_sha, install_dir);
+  assert(!bad_sha.ok && !bad_sha.verified);
+  assert(bad_sha.status.find("mismatch") != std::string::npos);
+
   std::filesystem::remove_all(root);
   std::printf("  [ok] radio builder, wheel settings & self-updater\n");
 }

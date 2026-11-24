@@ -23,6 +23,7 @@ namespace audio {
 struct VoScriptEntry {
   std::string filename_id;
   uint32_t soundbank_index = 0;
+  uint8_t bank_id = 0;  // 0 = base VO_<LANG>_Stream.fsb, 1 = Rally_VO bank
 };
 
 struct VoScript {
@@ -46,6 +47,13 @@ class VoPlayer {
   // Loads DialogueScript_<LANG>.xml and VO_<LANG>_Stream.fsb headers from
   // `game_root` (honouring cars::mods::resolve and EN fallback).
   bool load(const std::filesystem::path& game_root, std::string_view language = "EN", std::string* note = nullptr);
+
+  // Discovers and layers Horizon Rally VO (`Rally_VO_<LANG>_Stream.fsb` /
+  // `Rally_DialogueScript_<LANG>.xml` or `Rally_VO[_<LANG>].fev/.fsb`) from a
+  // Rally package dir, direct VO dir, or launcher `state_root`.
+  bool load_rally_vo(const std::filesystem::path& rally_root_or_state_root, std::string_view language = "EN",
+                     std::string* note = nullptr);
+  bool has_rally_vo() const { return has_rally_vo_; }
 
   // Registers an in-memory PCM clip for a trigger ID (unit tests / fallback).
   void set_clip(std::string_view trigger_id, PcmSample sample);
@@ -72,8 +80,10 @@ class VoPlayer {
   struct QueuedLine {
     std::string trigger_id;
     int64_t sample_index = -1;  // >= 0: FSB stream; -1: in-memory PcmSample
+    uint8_t bank_id = 0;        // 0 = base VO, 1 = Rally_VO
   };
 
+  void ensure_pool();
   void start_next();
   void stop_active();
 
@@ -82,6 +92,9 @@ class VoPlayer {
   VoScript script_;
   std::filesystem::path fsb_path_;
   std::vector<FsbSample> fsb_samples_;
+  std::filesystem::path rally_fsb_path_;
+  std::vector<FsbSample> rally_fsb_samples_;
+  bool has_rally_vo_ = false;
   std::unique_ptr<StreamPool> pool_;
   std::unordered_map<std::string, PcmSample> mem_clips_;
 

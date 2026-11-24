@@ -707,12 +707,14 @@ void test_phase3_livery_and_paint_parity() {
 
   std::vector<uint8_t> rgba;
   CHECK(cars::composite_livery(doc, nullptr, &planes, rgba, 128));
-  // Center of top_plane (32, 32) was punched out by mask layer -> alpha 0.
-  CHECK(rgba[(32 * 128 + 32) * 4 + 3] == 0);
-  // Corner inside top_plane (8, 8) remains green opaque -> alpha 255.
-  CHECK(rgba[(8 * 128 + 8) * 4 + 3] == 255);
-  // Outside top_plane (96, 96) must not bleed -> alpha 0.
+  // Bottom-up TGA Y-flip maps top_plane (top=-512, bottom=0) to py in [64..127], px in [0..63].
+  // Center of top_plane (32, 96) was punched out by mask layer -> alpha 0.
+  CHECK(rgba[(96 * 128 + 32) * 4 + 3] == 0);
+  // Corner inside top_plane (8, 72) remains green opaque -> alpha 255.
+  CHECK(rgba[(72 * 128 + 8) * 4 + 3] == 255);
+  // Outside top_plane (96, 96) and (32, 32) must not bleed -> alpha 0.
   CHECK(rgba[(96 * 128 + 96) * 4 + 3] == 0);
+  CHECK(rgba[(32 * 128 + 32) * 4 + 3] == 0);
 
   // Round-trip .liv preserves is_mask, group_id, and kWing.
   const fs::path tmp_liv = fs::temp_directory_path() / "shift_phase3_livery_test.liv";

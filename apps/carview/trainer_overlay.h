@@ -18,6 +18,7 @@ struct TrainerActionOutcome {
   bool wristband_changed = false;
   bool saved_road_changed = false;
   bool settings_dirty = false;
+  bool isolation_triggered = false;
   std::string message;
 };
 

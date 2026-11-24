@@ -781,9 +781,10 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
       VkDescriptorSet tex_set =
           (b.texture_record != kNoWorldTexture) ? world_set(b.texture_record) : VK_NULL_HANDLE;
       if (tex_set != VK_NULL_HANDLE) {
-        // Use two-sided world_coverage_ for real FH1 smashable .rmb.bin debris so thin sign boards,
-        // hollow planks, and cutout fence pieces render cleanly from both sides while tumbling.
-        bind_pipe(world_coverage_ ? world_coverage_ : world_opaque_);
+        // Bind world_coverage_ ONLY for alpha-cutout debris (b.cutout != 0); opaque debris
+        // (b.cutout == 0, pc.params[0] = 0.0f) writes surf_gloss (~0.0) into .a under linear HDR,
+        // which hardware alpha-to-coverage at MSAA would discard if bound to world_coverage_.
+        bind_pipe((b.cutout && world_coverage_) ? world_coverage_ : world_opaque_);
         const VkDescriptorSet sets[2] = {frame_set_, tex_set};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
         uint32_t fl = 1u;  // kFlagTextured

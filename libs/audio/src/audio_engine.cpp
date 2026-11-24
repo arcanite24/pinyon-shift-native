@@ -375,6 +375,20 @@ void AudioEngine::trigger_collision(const CollisionHit& hit) {
   c.f3 = hit.pos.z;
   c.b0 = hit.is_car_on_car;
   c.b1 = hit.is_break;
+  c.i0 = int(hit.surface_hint);
+  c.i1 = int(hit.smash_material);
+  enqueue(c);
+}
+
+void AudioEngine::trigger_landing(const LandingHit& hit) {
+  Command c;
+  c.kind = Command::kTriggerLanding;
+  c.f0 = hit.impact_speed_mps;
+  c.f1 = hit.pos.x;
+  c.f2 = hit.pos.y;
+  c.f3 = hit.pos.z;
+  c.i0 = int(hit.surface_hint);
+  c.i1 = int(std::lround(std::clamp(std::isfinite(hit.air_time_s) ? hit.air_time_s : 0.0f, 0.0f, 30.0f) * 1000.0f));
   enqueue(c);
 }
 
@@ -610,12 +624,44 @@ bool AudioEngine::load_snapshot_matrix_xml(std::string_view xml, std::string* er
   return true;
 }
 
-int AudioEngine::load_ambience_beds(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir) {
-  return ambience_bed_.load_from_disc(game_root, cache_dir);
+int AudioEngine::load_ambience_beds(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
+                                    const std::filesystem::path& state_root) {
+  int total = ambience_bed_.load_from_disc(game_root, cache_dir);
+  if (!state_root.empty()) {
+    total += ambience_bed_.load_rally_from_disc(state_root, cache_dir);
+  }
+  return total;
+}
+
+int AudioEngine::load_rally_ambience_beds(const std::filesystem::path& rally_root_or_state_root,
+                                          const std::filesystem::path& cache_dir) {
+  return ambience_bed_.load_rally_from_disc(rally_root_or_state_root, cache_dir);
+}
+
+void AudioEngine::set_rally_world(bool on) {
+  ambience_bed_.set_rally_world(on);
+  Command c;
+  c.kind = Command::kRallyWorld;
+  c.b0 = on;
+  enqueue(c);
 }
 
 void AudioEngine::set_ambience_bed_sample(AmbienceBedSlot slot, PcmSample pcm) {
   ambience_bed_.set_bed_sample(slot, std::move(pcm));
+}
+
+void AudioEngine::set_rally_ambience_bed_sample(int region_idx, std::string_view region_name, PcmSample pcm) {
+  ambience_bed_.set_rally_bed_sample(region_idx, region_name, std::move(pcm));
+}
+
+bool AudioEngine::load_rally_vo(const std::filesystem::path& rally_root_or_state_root, std::string_view language,
+                                std::string* note) {
+  if (running_.load(std::memory_order_acquire)) return false;
+  drain_commands();
+  if (!vo_) {
+    vo_ = new VoPlayer(rate_, true);
+  }
+  return vo_->load_rally_vo(rally_root_or_state_root, language, note);
 }
 
 void AudioEngine::reload_sfx_burble(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
@@ -634,9 +680,9 @@ bool AudioEngine::load_mixer_configs(const std::filesystem::path& game_root, std
     use_matrix_ = true;
     for (int b = 0; b < kBuses; ++b) matrix_bus_smooth_[size_t(b)] = matrix_.bus_gain(Bus(b));
   }
-  global_dsp_.load(game_root, nullptr);
+  global_dsp_.load(game_root, nullptr, state_root);
   MasterDspConfig mdsp;
-  if (mdsp.load(game_root, nullptr)) rms_stage_.set_config(mdsp);
+  if (mdsp.load(game_root, nullptr, state_root)) rms_stage_.set_config(mdsp);
   if (note) {
     if (have_matrix) {
       *note = "audio mixer: " + std::to_string(matrix_.snapshot_count()) + " snapshots, " +
@@ -682,6 +728,14 @@ void AudioEngine::set_car_bus_dsp_mode(CarDspMode mode) {
   Command c;
   c.kind = Command::kCarBusDspMode;
   c.i0 = int(mode);
+  enqueue(c);
+}
+
+void AudioEngine::set_radio_rally_mode(bool on) {
+  radio_rally_mode_shadow_.store(on, std::memory_order_release);
+  Command c;
+  c.kind = Command::kRadioRallyMode;
+  c.b0 = on;
   enqueue(c);
 }
 
@@ -814,6 +868,13 @@ void AudioEngine::drain_commands() {
       case Command::kUiMusicMode:
         ui_music_mode_ = UiMusicMode(std::clamp(c.i0, 0, int(UiMusicMode::kPostRaceVictory)));
         break;
+      case Command::kRadioRallyMode:
+        radio_rally_mode_ = c.b0;
+        if (use_matrix_) matrix_.set_radio_rally_mode(c.b0);
+        break;
+      case Command::kRallyWorld:
+        ambience_bed_.set_rally_world(c.b0);
+        break;
       case Command::kSnapshot: mixer_.snapshots().set_active(c.i0, c.b0); break;
       case Command::kMatrixActivate:
         if (use_matrix_) {
@@ -934,7 +995,19 @@ void AudioEngine::drain_commands() {
           hit.pos = {c.f1, c.f2, c.f3};
           hit.is_car_on_car = c.b0;
           hit.is_break = c.b1;
+          hit.surface_hint = uint8_t(std::clamp(c.i0, 0, 255));
+          hit.smash_material = SmashMaterial(std::clamp(c.i1, 0, int(SmashMaterial::kCount) - 1));
           sfx_->trigger_collision(hit, last_veh_state_);
+        }
+        break;
+      case Command::kTriggerLanding:
+        if (sfx_) {
+          LandingHit hit{};
+          hit.impact_speed_mps = c.f0;
+          hit.pos = {c.f1, c.f2, c.f3};
+          hit.surface_hint = uint8_t(std::clamp(c.i0, 0, 255));
+          hit.air_time_s = float(std::max(0, c.i1)) * 0.001f;
+          sfx_->trigger_landing(hit, last_veh_state_);
         }
         break;
       case Command::kTriggerUi:
@@ -995,6 +1068,8 @@ void AudioEngine::sanitize_output(float* out, int frames) {
     rms_stage_.prepare(rate_);
     music_hp_prev_in_[0] = music_hp_prev_in_[1] = 0.0f;
     music_hp_prev_out_[0] = music_hp_prev_out_[1] = 0.0f;
+    rally_hp_prev_in_[0] = rally_hp_prev_in_[1] = 0.0f;
+    rally_hp_prev_out_[0] = rally_hp_prev_out_[1] = 0.0f;
     for (auto& eq : car_eqs_) eq.prepare(rate_);
   }
 }
@@ -1124,6 +1199,34 @@ void AudioEngine::render_block(float* out, int frames) {
             music_hp_prev_in_[ch] = x;
             music_hp_prev_out_[ch] = y;
             mbuf[2 * size_t(i) + size_t(ch)] = x + (y - x) * music_hp_mix_;
+          }
+        }
+      }
+    }
+    // Radio Rally Mode: smoothly attenuate and high-pass filter Bus::kMusic
+    // during Rally stages (and duck further while Co-Driver speaks), keeping
+    // Bus::kRallyCoDriver clear while preserving custom radio / User Music.
+    {
+      const bool cd_speaking = codriver_ && codriver_->playing();
+      const float target_g = !radio_rally_mode_ ? 1.0f
+                             : use_matrix_      ? (cd_speaking ? 0.50f : 1.0f)
+                                                : (cd_speaking ? 0.15f : 0.30f);
+      const float target_hp = radio_rally_mode_ ? 1.0f : 0.0f;
+      if (radio_rally_mode_ || std::fabs(rally_radio_gain_ - 1.0f) > 1e-4f || rally_hp_mix_ > 1e-4f) {
+        const float sm = 1.0f - std::exp(-1.0f / (0.04f * float(rate_)));
+        const float fc = 260.0f;
+        const float rc = 1.0f / (2.0f * 3.14159265f * fc);
+        const float alpha = rc / (rc + 1.0f / float(rate_));
+        for (int i = 0; i < frames; ++i) {
+          rally_radio_gain_ += (target_g - rally_radio_gain_) * sm;
+          rally_hp_mix_ += (target_hp - rally_hp_mix_) * sm;
+          for (int ch = 0; ch < 2; ++ch) {
+            const float x = safe_f(mbuf[2 * size_t(i) + size_t(ch)], 0.0f);
+            float y = alpha * (rally_hp_prev_out_[ch] + x - rally_hp_prev_in_[ch]);
+            if (!std::isfinite(y) || std::fabs(y) < 1e-20f) y = 0.0f;
+            rally_hp_prev_in_[ch] = x;
+            rally_hp_prev_out_[ch] = y;
+            mbuf[2 * size_t(i) + size_t(ch)] = (x + (y - x) * rally_hp_mix_) * rally_radio_gain_;
           }
         }
       }
@@ -1357,6 +1460,7 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   t.satnav_playing = satnav_ && satnav_->playing();
   t.vo_playing = (vo_ && vo_->playing()) || (codriver_ && codriver_->playing());
   t.in_tunnel = have_acoustics_ && last_acoustics_.in_tunnel;
+  t.radio_rally_mode = radio_rally_mode_;
   telemetry_buf_.write(t);
 }
 

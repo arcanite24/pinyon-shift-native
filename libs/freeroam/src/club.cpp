@@ -554,6 +554,65 @@ std::string camera_hit_key(const SpeedCameraHit& h) {
   return h.is_zone ? "zone" : "trap";
 }
 
+// Non-negative integer encoding for camera keys so `seen_cameras` and `camera_hits`
+// round-trip cleanly through `DriveSave::SavedClubCar::progress` (vector<int> >= 0).
+int encode_camera_key(const std::string& key) {
+  if (key.rfind("t:", 0) == 0) {
+    const int id = std::atoi(key.c_str() + 2);
+    if (id > 0 && id < 0x1FFFFFFF) return (id << 2) | 0;
+  } else if (key.rfind("z:", 0) == 0) {
+    const int id = std::atoi(key.c_str() + 2);
+    if (id > 0 && id < 0x1FFFFFFF) return (id << 2) | 1;
+  } else if (key.rfind("h:", 0) == 0) {
+    const int tok = std::atoi(key.c_str() + 2);
+    if (tok > 0) return tok;
+  }
+  uint32_t h = 2166136261u;
+  for (char ch : key) {
+    h ^= uint8_t(ch);
+    h *= 16777619u;
+  }
+  const int hash29 = int((h & 0x1FFFFFFFu) ? (h & 0x1FFFFFFFu) : 1u);
+  return (hash29 << 2) | 2;
+}
+
+std::string decode_camera_key(int tok) {
+  if (tok <= 0) return {};
+  const int kind = tok & 3;
+  const int val = tok >> 2;
+  if (kind == 0) return "t:" + std::to_string(val);
+  if (kind == 1) return "z:" + std::to_string(val);
+  return "h:" + std::to_string(tok);
+}
+
+std::string canonical_camera_key(const SpeedCameraHit& h) {
+  return decode_camera_key(encode_camera_key(camera_hit_key(h)));
+}
+
+bool tree_has_chain_fail(const Node& n) {
+  if (is_fail(n)) {
+    for (const auto& c : n.conditions)
+      if (c.kind == Cond::kNumSkillChains) return true;
+  }
+  for (const auto& ch : n.children)
+    if (tree_has_chain_fail(ch)) return true;
+  return false;
+}
+
+const Condition* find_speed_camera_cond(const Node& n) {
+  if (n.kind != Kind::kPass) return nullptr;
+  for (const auto& c : n.conditions)
+    if (c.kind == Cond::kSpeedCamera) return &c;
+  return nullptr;
+}
+
+const Condition* find_skill_points_cond(const Node& n) {
+  if (n.kind != Kind::kPass) return nullptr;
+  for (const auto& c : n.conditions)
+    if (c.kind == Cond::kSkillPoints) return &c;
+  return nullptr;
+}
+
 bool has_substr(std::string_view hay, std::string_view needle) {
   return hay.find(needle) != std::string_view::npos;
 }
@@ -845,7 +904,26 @@ Run::Run(const Challenge& challenge, const Locations& locations) : c_(&challenge
   std::string missing;
   check_locations(c_->root, *locs_, missing);
   unsupported_ = !c_->supported || !missing.empty();
+  const bool explicit_bank =
+      has_substr(lower(c_->title), "bankskillpoints") || has_substr(lower(c_->description), "bankskillpoints");
+  single_chain_skill_points_ =
+      !explicit_bank && (tree_has_chain_fail(c_->root) || has_substr(lower(c_->title), "samechain") ||
+                         has_substr(lower(c_->description), "samechain"));
   build(c_->root, root_);
+}
+
+bool Run::is_cumulative_skill_points(const Node& n) const {
+  if (!find_skill_points_cond(n)) return false;
+  return n.save_progress || !single_chain_skill_points_;
+}
+
+bool Run::node_saves_progress(const Node& n) {
+  if (n.save_progress) return true;
+  if (n.kind == Kind::kOr && n.pass_count > 1) {
+    for (const auto& ch : n.children)
+      if (!is_fail(ch) && has_saved_rec(ch)) return true;
+  }
+  return false;
 }
 
 void Run::build(const Node& n, State& st) {
@@ -854,19 +932,21 @@ void Run::build(const Node& n, State& st) {
 }
 
 void Run::activate(const Node& n, State& st, double t, bool keep_saved) {
-  st.active = true, st.done = false, st.start = t, st.current = 0, st.chains = 0, st.was_true = false,
-  st.started = false;
+  const bool preserve = keep_saved && node_saves_progress(n);
+  st.active = true, st.start = t, st.current = 0, st.chains = 0, st.was_true = false, st.started = false;
   st.times.clear();
-  st.camera_hits.clear();
-  if (!(keep_saved && n.save_progress)) {
+  if (!preserve) {
+    st.done = false;
     st.count = 0;
+    st.accum_value = 0.0;
     st.seen_cameras.clear();
+    st.camera_hits.clear();
   }
   if (n.kind == Kind::kAToB) return;  // its children start with the trip
   for (size_t i = 0; i < n.children.size(); ++i) activate(n.children[i], st.children[i], t, keep_saved);
 }
 
-bool Run::holds(const Condition& c, const State& owner, const Signal& s) const {
+bool Run::holds(const Condition& c, const Node& owner_node, const State& owner, const Signal& s) const {
   switch (c.kind) {
     case Cond::kSpeed: return compare(s.speed_mph, c.cmp, c.value);
     case Cond::kTimer: return compare(s.time - owner.start, c.cmp, c.value);
@@ -885,7 +965,10 @@ bool Run::holds(const Condition& c, const State& owner, const Signal& s) const {
       }
       return false;
     }
-    case Cond::kSkillPoints: return compare(s.skill_points, c.cmp, c.value);
+    case Cond::kSkillPoints: {
+      const double pts = is_cumulative_skill_points(owner_node) ? owner.accum_value : s.skill_points;
+      return compare(pts, c.cmp, c.value);
+    }
     case Cond::kNumSkillChains: return compare(double(owner.chains), c.cmp, c.value);
     case Cond::kSmashables: {
       for (const auto& sm : s.smashables_broken) {
@@ -920,7 +1003,9 @@ bool Run::holds(const Condition& c, const State& owner, const Signal& s) const {
 }
 
 bool Run::progressed(const Node& n, const State& st) const {
-  if (st.done || st.count > 0 || st.current > 0 || st.started || !st.camera_hits.empty()) return true;
+  if (st.done || st.count > 0 || st.current > 0 || st.started || st.accum_value > 0.0 || !st.camera_hits.empty() ||
+      !st.seen_cameras.empty())
+    return true;
   for (size_t i = 0; i < n.children.size(); ++i)
     if (!is_fail(n.children[i]) && progressed(n.children[i], st.children[i])) return true;
   return false;
@@ -932,12 +1017,17 @@ Run::Result Run::advance(const Node& n, State& st, const Signal& s) {
 
   auto all = [&] {
     for (const auto& c : n.conditions)
-      if (!holds(c, st, s)) return false;
+      if (!holds(c, n, st, s)) return false;
     return !n.conditions.empty();
   };
   auto all_state_conds = [&] {
     for (const auto& c : n.conditions)
-      if (!is_event_cond(c.kind) && !holds(c, st, s)) return false;
+      if (!is_event_cond(c.kind) && !holds(c, n, st, s)) return false;
+    return true;
+  };
+  auto all_non_skill_points_conds = [&] {
+    for (const auto& c : n.conditions)
+      if (c.kind != Cond::kSkillPoints && !holds(c, n, st, s)) return false;
     return true;
   };
   // A group's pass: once, or again until its pass_count.
@@ -967,7 +1057,7 @@ Run::Result Run::advance(const Node& n, State& st, const Signal& s) {
         if (combined_mode) {
           for (const auto& h : s.speed_cameras) {
             if (!camera_matches_target(*cam, h)) continue;
-            const std::string key = camera_hit_key(h);
+            const std::string key = canonical_camera_key(h);
             if (cam->unique) {
               bool updated = false;
               for (auto& prev : st.camera_hits) {
@@ -1001,7 +1091,7 @@ Run::Result Run::advance(const Node& n, State& st, const Signal& s) {
         if (n.pass_interval > 0) {
           for (const auto& h : s.speed_cameras) {
             if (!camera_matches_target(*cam, h) || !camera_matches_speed(*cam, h)) continue;
-            st.camera_hits.push_back({s.time, camera_hit_key(h), h.speed_mph});
+            st.camera_hits.push_back({s.time, canonical_camera_key(h), h.speed_mph});
           }
           while (!st.camera_hits.empty() && st.camera_hits.front().time < s.time - n.pass_interval)
             st.camera_hits.pop_front();
@@ -1018,7 +1108,7 @@ Run::Result Run::advance(const Node& n, State& st, const Signal& s) {
         // Standard single or repeated speed_camera pass_when.
         for (const auto& h : s.speed_cameras) {
           if (!camera_matches_target(*cam, h) || !camera_matches_speed(*cam, h)) continue;
-          const std::string key = camera_hit_key(h);
+          const std::string key = canonical_camera_key(h);
           if (cam->unique && !st.seen_cameras.insert(key).second) continue;
           if (++st.count >= n.pass_count) {
             st.done = true;
@@ -1046,7 +1136,7 @@ Run::Result Run::advance(const Node& n, State& st, const Signal& s) {
           } else if (c.kind == Cond::kSmashables) {
             for (const auto& sm : s.smashables_broken)
               if (c.name.empty() || lower(sm) == c.name) ++matches;
-          } else if (holds(c, st, s)) {
+          } else if (holds(c, n, st, s)) {
             matches = 1;
           }
           if (matches == 0) {
@@ -1077,6 +1167,11 @@ Run::Result Run::advance(const Node& n, State& st, const Signal& s) {
           st.count = int(st.times.size());
         }
         return st.done ? Result::kPassed : Result::kRunning;
+      }
+
+      // Cumulative banked skill_points accumulation (no num_skill_chains fail / save_progress).
+      if (is_cumulative_skill_points(n) && s.banked_skill_points_delta > 0.0 && all_non_skill_points_conds()) {
+        st.accum_value += s.banked_skill_points_delta;
       }
 
       // State-only conditions (original edge-triggered semantics).
@@ -1202,8 +1297,10 @@ double Run::progress(const Signal& s) const {
     }
     if (n->kind == Kind::kPass) {
       for (const auto& c : n->conditions) {
-        if (c.kind == Cond::kSkillPoints && c.value > 0 && s.skill_points > 0)
-          return std::clamp(s.skill_points / c.value, 0.0, 1.0);
+        if (c.kind == Cond::kSkillPoints && c.value > 0) {
+          const double pts = is_cumulative_skill_points(*n) ? st->accum_value : s.skill_points;
+          if (pts > 0.0) return std::clamp(pts / c.value, 0.0, 1.0);
+        }
         if (c.kind == Cond::kTimer && c.value > 0 && st->active)
           return std::clamp((s.time - st->start) / c.value, 0.0, 1.0);
       }
@@ -1263,18 +1360,88 @@ std::string Run::status(const Signal& s) const {
 }
 
 void Run::export_saved_rec(const Node& n, const State& st, std::vector<int>& out) const {
-  if (n.save_progress) out.push_back(st.count);
+  if (node_saves_progress(n)) {
+    if (is_cumulative_skill_points(n)) {
+      out.push_back(std::max(0, int(std::llround(st.accum_value))));
+    } else if (const Condition* cam = find_speed_camera_cond(n)) {
+      const bool combined_mode = (n.pass_count > 1 && n.pass_interval <= 0 && cam->min_speed > 0);
+      out.push_back(std::clamp(st.count, 0, n.pass_count));
+      if (combined_mode) {
+        out.push_back(int(st.camera_hits.size()));
+        for (const auto& hit : st.camera_hits) {
+          out.push_back(encode_camera_key(hit.key));
+          out.push_back(std::max(0, int(std::llround(hit.speed_mph * 10.0))));
+        }
+      } else if (cam->unique) {
+        out.push_back(int(st.seen_cameras.size()));
+        for (const auto& key : st.seen_cameras) out.push_back(encode_camera_key(key));
+      }
+    } else {
+      out.push_back(std::clamp(st.count, 0, n.pass_count));
+    }
+  }
   for (size_t i = 0; i < n.children.size() && i < st.children.size(); ++i)
     export_saved_rec(n.children[i], st.children[i], out);
 }
 
 void Run::import_saved_rec(const Node& n, State& st, const std::vector<int>& in, size_t& idx) {
-  if (n.save_progress) {
-    if (idx < in.size()) {
-      st.count = std::clamp(in[idx], 0, n.pass_count);
-      if (st.count >= n.pass_count) st.done = true;
+  if (node_saves_progress(n)) {
+    if (is_cumulative_skill_points(n)) {
+      if (idx < in.size()) {
+        st.accum_value = double(std::max(0, in[idx]));
+        if (const Condition* sp = find_skill_points_cond(n)) {
+          if (compare(st.accum_value, sp->cmp, sp->value)) {
+            st.done = true;
+            st.count = n.pass_count;
+          }
+        }
+      }
+      ++idx;
+    } else if (const Condition* cam = find_speed_camera_cond(n)) {
+      const bool combined_mode = (n.pass_count > 1 && n.pass_interval <= 0 && cam->min_speed > 0);
+      if (idx < in.size()) {
+        st.count = std::clamp(in[idx], 0, n.pass_count);
+      }
+      ++idx;
+      if (combined_mode) {
+        if (idx < in.size()) {
+          const int n_hits = std::clamp(in[idx++], 0, n.pass_count);
+          st.camera_hits.clear();
+          st.seen_cameras.clear();
+          double sum_mph = 0.0;
+          for (int k = 0; k < n_hits && idx + 1 < in.size(); ++k) {
+            const std::string key = decode_camera_key(in[idx++]);
+            const double spd = double(std::max(0, in[idx++])) / 10.0;
+            if (!key.empty()) {
+              st.camera_hits.push_back({0.0, key, spd});
+              if (cam->unique) st.seen_cameras.insert(key);
+              sum_mph += spd;
+            }
+          }
+          if (!st.camera_hits.empty()) st.count = std::clamp(int(st.camera_hits.size()), 0, n.pass_count);
+          if (st.count >= n.pass_count && sum_mph >= cam->min_speed) st.done = true;
+        }
+      } else if (cam->unique) {
+        if (idx < in.size()) {
+          const int n_seen = std::clamp(in[idx++], 0, 256);
+          st.seen_cameras.clear();
+          for (int k = 0; k < n_seen && idx < in.size(); ++k) {
+            const std::string key = decode_camera_key(in[idx++]);
+            if (!key.empty()) st.seen_cameras.insert(key);
+          }
+          st.count = std::clamp(std::max(st.count, int(st.seen_cameras.size())), 0, n.pass_count);
+        }
+        if (st.count >= n.pass_count) st.done = true;
+      } else {
+        if (st.count >= n.pass_count) st.done = true;
+      }
+    } else {
+      if (idx < in.size()) {
+        st.count = std::clamp(in[idx], 0, n.pass_count);
+        if (st.count >= n.pass_count) st.done = true;
+      }
+      ++idx;
     }
-    ++idx;
   }
   for (size_t i = 0; i < n.children.size() && i < st.children.size(); ++i)
     import_saved_rec(n.children[i], st.children[i], in, idx);

@@ -36,6 +36,11 @@ struct ReplayCarInfo {
   std::string driver_name;
   bool is_player = false;
   bool is_traffic = false;
+  int32_t paint_index = -1;     // manufacturer colour sequence/index (-1 = default)
+  uint32_t body_color = 0;      // 0x00RRGGBB override when has_body_color is true
+  bool has_body_color = false;  // true when body_color holds an explicit RGB override
+  int32_t rim_id = 0;           // aftermarket rim id (0 = stock)
+  std::string livery_id;        // optional livery identifier / filename
 };
 
 struct ReplayCarSample {

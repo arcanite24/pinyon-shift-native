@@ -145,9 +145,18 @@ class RaceView {
   // Airborne Showcase support (PLANE_RACE_001..007): textured 3D aircraft mesh & sky tag.
   bool is_showcase() const { return showcase_.active(); }
   const race::ShowcaseOpponent& showcase() const { return showcase_; }
+  double showcase_rumble() const { return showcase_rumble_; }
+  double showcase_rumble_strength(const drive::Vec3& player_pos) const;
   void build_showcase_mesh(std::vector<Showroom::ShowcaseVertex>& out) const;
   void append_showcase_mesh(std::vector<world::DebrisVertex>& out) const;
   bool showcase_tag(OpponentTag& out) const;
+  // Car-to-car collision impulse against race AI during the last step (N s) & player-local contact point.
+  double player_impulse() const { return player_impulse_; }
+  std::array<float, 3> player_impulse_local_pos() const { return player_impulse_local_pos_; }
+  // Effective player race place (airborne showcase returns 1 or 2 vs aircraft; normal race returns session place).
+  int player_place() const;
+  // Reuses an already-uploaded opponent guest Showroom for replay without synchronous re-upload hitches.
+  Showroom* find_loaded_model(const std::string& media, int64_t color_seq = -1) const;
   const race::EventData& event() const { return event_; }
   std::string banner() const;
   // What the HUD shows of the race (game_hud.h), from the session.
@@ -158,7 +167,7 @@ class RaceView {
   void opponent_positions(std::vector<std::array<double, 2>>& out) const;
   void opponent_tags(std::vector<OpponentTag>& out) const;
   // Allows updating difficulty on the pre-race grid menu before the race starts.
-  void set_difficulty(race::Difficulty d) { o_.difficulty = d; }
+  void set_difficulty(race::Difficulty d);
   race::Difficulty difficulty() const { return o_.difficulty; }
   void set_ai_mode(race::AiMode m) { o_.ai_mode = m; }
   race::AiMode ai_mode() const { return o_.ai_mode; }
@@ -296,6 +305,10 @@ class RaceView {
   std::vector<race::CarSample> samples_;
   std::vector<drive::ContactBody> contacts_;
   int contact_count_ = 0, resets_ = 0, far_steps_ = 0, hole_steps_ = 0;
+  double player_impulse_ = 0.0;
+  std::array<float, 3> player_impulse_local_pos_{0.0f, 0.5f, 1.5f};
+  double showcase_rumble_ = 0.0;
+  std::vector<race::ShowcaseSpec> showcase_xml_specs_;
   double cx_ = 0, cz_ = 0, radius_ = 0;
   bool center_known_ = false;
   double blend_ = 1;

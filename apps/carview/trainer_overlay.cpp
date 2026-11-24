@@ -109,14 +109,17 @@ void TrainerOverlay::step(int by, drive::TrainerState& state) {
       case 2: wristband_idx_ = ((wristband_idx_ + by) % 7 + 7) % 7; break;
       case 3:
         state.pacing.enabled = !state.pacing.enabled;
+        state.sync_modded_isolation();
         break;
       case 4:
         state.pacing.price_multiplier = cycle_double(kPriceMults, state.pacing.price_multiplier, by);
         state.pacing.enabled = true;
+        state.sync_modded_isolation();
         break;
       case 5:
         state.pacing.reward_multiplier = cycle_double(kRewardMults, state.pacing.reward_multiplier, by);
         state.pacing.enabled = true;
+        state.sync_modded_isolation();
         break;
       default: break;
     }
@@ -143,7 +146,10 @@ void TrainerOverlay::step(int by, drive::TrainerState& state) {
 
   if (tab_ == Tab::kDebug) {
     switch (row_) {
-      case 0: state.hidden_cars = !state.hidden_cars; break;
+      case 0:
+        state.hidden_cars = !state.hidden_cars;
+        state.sync_modded_isolation();
+        break;
       case 1: state.config.debug_bloom = !state.config.debug_bloom; break;
       case 2: state.config.debug_motion_blur = !state.config.debug_motion_blur; break;
       case 3: state.config.debug_dof = !state.config.debug_dof; break;
@@ -162,6 +168,7 @@ TrainerActionOutcome TrainerOverlay::activate(drive::TrainerState& state, int64_
     out.message = last_message_;
     return out;
   }
+  out.isolation_triggered = state.sync_modded_isolation();
   if (tab_ == Tab::kPlayer) {
     if (row_ == 0) {
       state.apply_set_credits(credits, kSetCredits[size_t(set_credits_idx_)].amount);

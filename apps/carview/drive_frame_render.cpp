@@ -34,7 +34,30 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               }
             }
           }
+          drive::CameraView rv_cam{};
+          bool have_rv_cam = false;
+          if (replay_viewer.active() && !photo_mode.active()) {
+            float oy = 0.0f, op = 0.0f, oz = 0.0f;
+            const bool* kb = SDL_GetKeyboardState(nullptr);
+            if (kb[SDL_SCANCODE_A]) oy -= 1.0f;
+            if (kb[SDL_SCANCODE_D]) oy += 1.0f;
+            if (kb[SDL_SCANCODE_W]) op += 1.0f;
+            if (kb[SDL_SCANCODE_S]) op -= 1.0f;
+            if (kb[SDL_SCANCODE_Q]) oz -= 1.0f;
+            if (kb[SDL_SCANCODE_E]) oz += 1.0f;
+            auto gb = [&](double x, double y, double z, double& gy) {
+              drive::Hit hit;
+              if (!host.ground || !host.ground->raycast({x, y, z}, {0, -1, 0}, 80.0, hit)) return false;
+              gy = y - hit.distance;
+              return true;
+            };
+            rv_cam = replay_viewer.compute_camera(frame_dt, oy, op, oz, gb);
+            have_rv_cam = true;
+          }
           const audio::View cur_audio_view = audio_view();
+          const bool rewind_audio_hold = rewind_buf.is_rewinding() || rewind_buf.is_paused_at_keyframe();
+          const bool rewind_settling = rewind_buf.is_settling();
+          const bool rewind_audio_frozen = rewind_buf.is_paused_at_keyframe() || rewind_settling;
           const bool exterior_ui_open =
               !app.show_title && !app.fmv_player.active() &&
               (autoshow.is_open() || shop.is_open() || paint_open || garage_open || events_page.is_open() ||
@@ -43,11 +66,37 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           const bool pause_snapshot_active =
               !app.show_title && !app.fmv_player.active() &&
               (menu.open || settings_page.is_open() || mods_page.is_open() || save_page.is_open() || club_open || car_club_open ||
-               slice12.trainer_overlay.is_open() || rewind_buf.is_rewinding() || rewind_buf.is_paused_at_keyframe() ||
+               slice12.trainer_overlay.is_open() || rewind_audio_hold || rewind_settling ||
                (replay_viewer.active() && replay_viewer.paused()) ||
                (menu_paused && !exterior_ui_open && !photo_mode.active() && !replay_viewer.active() &&
                 !trainer_freecam_active));
-          app.audio_host.update_frame(sound_inputs(cur_audio_view), pause_snapshot_active, exterior_ui_open,
+          audio::EnginePlayer::Update eng_in = sound_inputs(cur_audio_view);
+          if (replay_viewer.active()) {
+            const auto rcm = replay_viewer.camera_mode();
+            const audio::View r_view = (rcm == ReplayCameraMode::kCockpit) ? audio::View::kCockpit
+                                       : (rcm == ReplayCameraMode::kBumper || rcm == ReplayCameraMode::kHood)
+                                           ? audio::View::kFront
+                                           : audio::View::kFollow;
+            eng_in.view = r_view;
+            if (const auto* rfc = replay_viewer.focused_car()) {
+              const double rate = replay_viewer.paused() ? 0.0 : std::clamp(std::fabs(replay_viewer.speed()), 0.25, 2.0);
+              const auto& vp = vehicle.params();
+              const double rec_rpm = std::clamp(double(rfc->rpm) * rate, vp.idle_rpm * 0.5, vp.redline_rpm * 1.15);
+              const double rec_thr = (double(rfc->throttle_u8) / 255.0) * (rate > 0.0 ? 1.0 : 0.0);
+              const double torque = vehicle.engine_torque(rec_rpm, rec_thr);
+              const double full = vehicle.engine_torque(rec_rpm, 1.0);
+              const double closed = vehicle.engine_torque(rec_rpm, 0.0);
+              eng_in.rpm = rec_rpm;
+              eng_in.throttle = rec_thr;
+              eng_in.pos_torque = (torque > 0.0 && full > 0.0) ? (torque / full) : 0.0;
+              eng_in.neg_torque = (torque < 0.0 && closed < 0.0) ? (torque / closed) : 0.0;
+            }
+          } else if (rewind_audio_frozen) {
+            eng_in.throttle = 0.0;
+            eng_in.pos_torque = 0.0;
+            eng_in.neg_torque = 0.0;
+          }
+          app.audio_host.update_frame(eng_in, pause_snapshot_active, exterior_ui_open,
                                       app.show_title, loading_screen.active());
           {
             using UiMusic = audio::AudioEngine::UiMusicMode;
@@ -131,9 +180,9 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               }
               wa.surface_group = sgrp;
             }
-            if (have_cam_view) {
-              const auto& cf = last_cam_view.forward;
-              const auto& cu = last_cam_view.up;
+            auto set_listener_from_cam = [&](const drive::CameraView& cv) {
+              const auto& cf = cv.forward;
+              const auto& cu = cv.up;
               // Right-handed/left-handed basis: cross(up, forward) points right in our Y-up +Z-forward world.
               double rx = cu[1] * cf[2] - cu[2] * cf[1];
               double ry = cu[2] * cf[0] - cu[0] * cf[2];
@@ -148,14 +197,32 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 ry = vright.y;
                 rz = vright.z;
               }
-              vst.listener_pos = {float(last_cam_view.eye[0]), float(last_cam_view.eye[1]), float(last_cam_view.eye[2])};
+              vst.listener_pos = {float(cv.eye[0]), float(cv.eye[1]), float(cv.eye[2])};
               vst.listener_right = {float(rx), float(ry), float(rz)};
+            };
+            if (have_rv_cam) {
+              set_listener_from_cam(rv_cam);
+              if (replay_viewer.camera_mode() == ReplayCameraMode::kTrackSide) {
+                vst.listener_vel = {0.0f, 0.0f, 0.0f};
+              } else if (const auto* rfc = replay_viewer.focused_car()) {
+                const float rate = replay_viewer.paused()
+                                       ? 0.0f
+                                       : float(std::clamp(std::fabs(replay_viewer.speed()), 0.25, 2.0));
+                vst.listener_vel = {rfc->vel[0] * rate, rfc->vel[1] * rate, rfc->vel[2] * rate};
+              } else {
+                vst.listener_vel = {0.0f, 0.0f, 0.0f};
+              }
+            } else if (have_cam_view) {
+              set_listener_from_cam(last_cam_view);
+              vst.listener_vel = {float(vvel.x), float(vvel.y), float(vvel.z)};
             } else {
               vst.listener_pos = {float(vpos.x), float(vpos.y), float(vpos.z)};
               vst.listener_right = {float(vright.x), float(vright.y), float(vright.z)};
+              vst.listener_vel = {float(vvel.x), float(vvel.y), float(vvel.z)};
             }
-            vst.listener_vel = {float(vvel.x), float(vvel.y), float(vvel.z)};
-            vst.cockpit_view = cur_audio_view == audio::View::kCockpit;
+            vst.cockpit_view = replay_viewer.active()
+                                   ? (replay_viewer.camera_mode() == ReplayCameraMode::kCockpit)
+                                   : (cur_audio_view == audio::View::kCockpit);
             vst.in_race = app.race != nullptr;
             vst.rewinding = rewind_buf.is_rewinding();
             {
@@ -175,7 +242,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   prox = std::max(prox, float(1.0 - std::clamp(rh.distance / 12.0, 0.0, 1.0)));
               }
               vst.reflection_proximity = prox;
-              const bool aero_car = (vp.aero_df_rear + vp.aero_part_df_rear) > 0.35;
+              const bool aero_car = host.showroom.has_active_aero();
               vst.active_aero_deploy =
                   aero_car ? ((vst.speed_mph > 75.0f || (vst.speed_mph > 55.0f && brake_glow(vehicle) > 0.5f)) ? 1.0f : 0.0f)
                            : 0.0f;
@@ -201,65 +268,97 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               audio::OtherCarAudio car{};
             };
             std::vector<Cand> cands;
-            if (app.race) {
-              std::vector<carview::RaceView::OpponentTag> otags;
-              app.race->opponent_tags(otags);
-              for (size_t oi = 0; oi < otags.size(); ++oi) {
-                const auto& ot = otags[oi];
-                const double dx = ot.x - vpos.x, dy = ot.y - vpos.y, dz = ot.z - vpos.z;
-                const double d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 > 220.0 * 220.0) continue;
+            if (replay_viewer.active()) {
+              const uint32_t focus_slot = replay_viewer.focus_slot();
+              const float rate = replay_viewer.paused()
+                                     ? 0.0f
+                                     : float(std::clamp(std::fabs(replay_viewer.speed()), 0.25, 2.0));
+              const float fov_rad = float((have_rv_cam ? rv_cam.fov_degrees : 48.0) * (3.14159265358979323846 / 180.0));
+              const float fov_rolloff = std::max(0.25f, audio::replay_fov_rolloff_scale(fov_rad));
+              const float inv_fov = 1.0f / fov_rolloff;
+              for (const auto& rc : replay_viewer.current_cars()) {
+                if (rc.slot == focus_slot) continue;
+                const float dx = rc.pos[0] - vst.listener_pos.x;
+                const float dy = rc.pos[1] - vst.listener_pos.y;
+                const float dz = rc.pos[2] - vst.listener_pos.z;
+                const double d2 = double(dx) * dx + double(dy) * dy + double(dz) * dz;
+                if (d2 > 260.0 * 260.0) continue;
+                const auto* rinfo = replay_viewer.recording().find_car_info(rc.slot);
                 audio::OtherCarAudio oc{};
-                oc.active = true;
-                oc.is_traffic = false;
-                oc.variant = uint8_t(oi & 3u);
-                oc.pos = {float(ot.x), float(ot.y), float(ot.z)};
-                oc.vel = {float(ot.vx), float(ot.vy), float(ot.vz)};
-                oc.rpm = float(ot.rpm);
-                oc.speed_mph = float(std::fabs(ot.speed) * 2.2369363);
-                // Distinct per-opponent engine pitch/timbre identity + cornering tyre scrub.
-                uint32_t nh = 2166136261u ^ uint32_t(oi * 37u);
-                for (char ch : ot.name) nh = (nh ^ uint8_t(ch)) * 16777619u;
-                oc.pitch_scale = 0.84f + 0.36f * float(nh & 0xFFu) / 255.0f;
-                oc.slip = (oc.speed_mph > 25.0f && ot.rpm > 4500.0) ? 0.40f : 0.12f;
+                oc.active = rate > 0.0f;
+                oc.is_traffic = rinfo ? rinfo->is_traffic : (rc.slot >= 100u);
+                oc.variant = uint8_t(rc.slot & 3u);
+                // Scale emitter offset by 1 / replay_fov_rolloff_scale so telephoto zoom pulls distant cars closer.
+                oc.pos = {vst.listener_pos.x + dx * inv_fov, vst.listener_pos.y + dy * inv_fov,
+                          vst.listener_pos.z + dz * inv_fov};
+                oc.vel = {rc.vel[0] * rate, rc.vel[1] * rate, rc.vel[2] * rate};
+                oc.rpm = std::max(800.0f, rc.rpm * rate);
+                oc.speed_mph = float(std::fabs(rc.speed_mps) * 2.2369363) * rate;
+                oc.pitch_scale = 0.84f + 0.36f * float((rc.slot * 73u) & 0xFFu) / 255.0f;
+                oc.slip = (rc.brake_u8 > 80 || std::abs(int(rc.steer_i8)) > 48) ? 0.38f : 0.10f;
                 cands.push_back({d2, oc});
               }
-            }
-            if (traffic && traffic->cars()) {
-              for (const auto& tc : *traffic->cars()) {
-                const double dx = tc.position.x - vpos.x, dy = tc.position.y - vpos.y, dz = tc.position.z - vpos.z;
-                const double d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 > 140.0 * 140.0) continue;
-                audio::OtherCarAudio oc{};
-                oc.active = true;
-                oc.is_traffic = true;
-                oc.pos = {float(tc.position.x), float(tc.position.y), float(tc.position.z)};
-                oc.vel = {float(std::sin(tc.heading) * tc.speed), 0.0f, float(std::cos(tc.heading) * tc.speed)};
-                oc.rpm = float(1100.0 + std::fabs(tc.speed) * 90.0);
-                oc.speed_mph = float(std::fabs(tc.speed) * 2.2369363);
-                oc.pitch_scale = 0.82f + 0.30f * float((uint32_t(tc.model) * 73u) & 0xFFu) / 255.0f;
-                oc.slip = (tc.target < tc.speed - 2.0 || std::fabs(tc.steer_angle) > 0.12) ? 0.28f : 0.05f;
-                cands.push_back({d2, oc});
+            } else if (!rewind_audio_frozen) {
+              if (app.race) {
+                std::vector<carview::RaceView::OpponentTag> otags;
+                app.race->opponent_tags(otags);
+                for (size_t oi = 0; oi < otags.size(); ++oi) {
+                  const auto& ot = otags[oi];
+                  const double dx = ot.x - vpos.x, dy = ot.y - vpos.y, dz = ot.z - vpos.z;
+                  const double d2 = dx * dx + dy * dy + dz * dz;
+                  if (d2 > 220.0 * 220.0) continue;
+                  audio::OtherCarAudio oc{};
+                  oc.active = true;
+                  oc.is_traffic = false;
+                  oc.variant = uint8_t(oi & 3u);
+                  oc.pos = {float(ot.x), float(ot.y), float(ot.z)};
+                  oc.vel = {float(ot.vx), float(ot.vy), float(ot.vz)};
+                  oc.rpm = float(ot.rpm);
+                  oc.speed_mph = float(std::fabs(ot.speed) * 2.2369363);
+                  // Distinct per-opponent engine pitch/timbre identity + cornering tyre scrub.
+                  uint32_t nh = 2166136261u ^ uint32_t(oi * 37u);
+                  for (char ch : ot.name) nh = (nh ^ uint8_t(ch)) * 16777619u;
+                  oc.pitch_scale = 0.84f + 0.36f * float(nh & 0xFFu) / 255.0f;
+                  oc.slip = (oc.speed_mph > 25.0f && ot.rpm > 4500.0) ? 0.40f : 0.12f;
+                  cands.push_back({d2, oc});
+                }
               }
-            }
-            if (festival_mgr && !app.race) {
-              const auto& fcars = festival_mgr->cars();
-              for (size_t fi = 0; fi < fcars.size(); ++fi) {
-                const auto& fc = fcars[fi];
-                const double dx = fc.position.x - vpos.x, dy = fc.position.y - vpos.y, dz = fc.position.z - vpos.z;
-                const double d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 > 220.0 * 220.0) continue;
-                audio::OtherCarAudio oc{};
-                oc.active = true;
-                oc.is_traffic = false;
-                oc.variant = uint8_t(fc.id & 3u);
-                oc.pos = {float(fc.position.x), float(fc.position.y), float(fc.position.z)};
-                oc.vel = {float(fc.vx), float(fc.vy), float(fc.vz)};
-                oc.rpm = float(fc.rpm);
-                oc.speed_mph = float(std::fabs(fc.speed) * 2.2369363);
-                oc.pitch_scale = 0.85f + 0.34f * float((uint32_t(fc.id) * 97u) & 0xFFu) / 255.0f;
-                oc.slip = fc.braking ? 0.38f : 0.10f;
-                cands.push_back({d2, oc});
+              if (traffic && traffic->cars()) {
+                for (const auto& tc : *traffic->cars()) {
+                  const double dx = tc.position.x - vpos.x, dy = tc.position.y - vpos.y, dz = tc.position.z - vpos.z;
+                  const double d2 = dx * dx + dy * dy + dz * dz;
+                  if (d2 > 140.0 * 140.0) continue;
+                  audio::OtherCarAudio oc{};
+                  oc.active = true;
+                  oc.is_traffic = true;
+                  oc.pos = {float(tc.position.x), float(tc.position.y), float(tc.position.z)};
+                  oc.vel = {float(std::sin(tc.heading) * tc.speed), 0.0f, float(std::cos(tc.heading) * tc.speed)};
+                  oc.rpm = float(1100.0 + std::fabs(tc.speed) * 90.0);
+                  oc.speed_mph = float(std::fabs(tc.speed) * 2.2369363);
+                  oc.pitch_scale = 0.82f + 0.30f * float((uint32_t(tc.model) * 73u) & 0xFFu) / 255.0f;
+                  oc.slip = (tc.target < tc.speed - 2.0 || std::fabs(tc.steer_angle) > 0.12) ? 0.28f : 0.05f;
+                  cands.push_back({d2, oc});
+                }
+              }
+              if (festival_mgr && !app.race) {
+                const auto& fcars = festival_mgr->cars();
+                for (size_t fi = 0; fi < fcars.size(); ++fi) {
+                  const auto& fc = fcars[fi];
+                  const double dx = fc.position.x - vpos.x, dy = fc.position.y - vpos.y, dz = fc.position.z - vpos.z;
+                  const double d2 = dx * dx + dy * dy + dz * dz;
+                  if (d2 > 220.0 * 220.0) continue;
+                  audio::OtherCarAudio oc{};
+                  oc.active = true;
+                  oc.is_traffic = false;
+                  oc.variant = uint8_t(fc.id & 3u);
+                  oc.pos = {float(fc.position.x), float(fc.position.y), float(fc.position.z)};
+                  oc.vel = {float(fc.vx), float(fc.vy), float(fc.vz)};
+                  oc.rpm = float(fc.rpm);
+                  oc.speed_mph = float(std::fabs(fc.speed) * 2.2369363);
+                  oc.pitch_scale = 0.85f + 0.34f * float((uint32_t(fc.id) * 97u) & 0xFFu) / 255.0f;
+                  oc.slip = fc.braking ? 0.38f : 0.10f;
+                  cands.push_back({d2, oc});
+                }
               }
             }
             std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.d2 < b.d2; });
@@ -279,11 +378,40 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 vst.speed_mph = float(std::fabs(rfc->speed_mps) * 2.2369363) * rate;
                 vst.rpm = std::clamp(rfc->rpm * rate, float(vp.idle_rpm) * 0.5f, float(vp.redline_rpm) * 1.15f);
                 vst.throttle = (float(rfc->throttle_u8) / 255.0f) * (rate > 0.0f ? 1.0f : 0.0f);
+                vst.engine_load = float(std::clamp(eng_in.pos_torque, 0.0, 1.0));
                 vst.gear = rfc->gear;
                 vst.shifting = false;
+                vst.scraping = false;
+                vst.scrape_intensity = 0.0f;
+                for (int wi = 0; wi < 4; ++wi) {
+                  vst.wheels[size_t(wi)].wheel_rpm = float(rfc->wheel_omega[wi] * 9.5492966) * rate;
+                  vst.wheels[size_t(wi)].slip_combined = 0.0f;
+                }
+              }
+            } else if (rewind_audio_frozen) {
+              // Keep world/tyre/engine live SFX muted while paused at a Rewind keyframe or during 1.0s kSettling.
+              vst.speed_mph = 0.0f;
+              vst.throttle = 0.0f;
+              vst.engine_load = 0.0f;
+              vst.scraping = false;
+              vst.scrape_intensity = 0.0f;
+              for (auto& wa : vst.wheels) {
+                wa.slip_combined = 0.0f;
+                wa.wheel_rpm = 0.0f;
+                wa.bottom_out_force = 0.0f;
               }
             }
-            app.audio_host.update_vehicle(vst, app.race != nullptr, rewind_buf.is_rewinding(), in_countdown, countdown_digit);
+            app.audio_host.update_vehicle(vst, app.race != nullptr, rewind_audio_hold, in_countdown, countdown_digit);
+          }
+          // Airborne Showcase proximity flyby rumble (airborne_challenges.xml RumbleWhenNearPlayer).
+          if (app.race && app.race->is_showcase() && !menu_paused && !rewind_buf.active() && rumble_enabled &&
+              rumble_scale > 0.0 && !pads.empty()) {
+            const double flyby = app.race->showcase_rumble();
+            if (flyby > 0.02) {
+              const uint16_t lo = uint16_t(std::clamp(flyby * rumble_scale, 0.0, 1.0) * 65535.0);
+              const uint16_t hi = uint16_t(std::clamp(flyby * 0.65 * rumble_scale, 0.0, 1.0) * 65535.0);
+              for (SDL_Gamepad* pad : pads) SDL_RumbleGamepad(pad, lo, hi, 100);
+            }
           }
           int w = 0, h = 0;
           SDL_GetWindowSizeInPixels(app.window, &w, &h);
@@ -291,9 +419,19 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           const drive::Vehicle::Pose stepped = vehicle.pose();
           const bool rewind_scrub_view = rewind_buf.is_rewinding() || rewind_buf.is_paused_at_keyframe();
           if (replay_viewer.active()) {
-            if (const auto* fc = replay_viewer.focused_car()) {
+            // Keep the player car mesh at the player's replay pose (slot 0), never overwriting it
+            // with a focused AI car's pose (the AI car renders on its own guest instance).
+            const drive::ReplayCarSample* player_rc = nullptr;
+            for (const auto& rc : replay_viewer.current_cars()) {
+              if (rc.slot == 0u) {
+                player_rc = &rc;
+                break;
+              }
+            }
+            if (!player_rc) player_rc = replay_viewer.focused_car();
+            if (player_rc) {
               drive::Vehicle::Pose rp = stepped;
-              fc->apply_to_pose(rp);
+              player_rc->apply_to_pose(rp);
               vehicle.set_pose(rp);
             }
           } else if (rewind_scrub_view) {
@@ -313,14 +451,16 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           host.showroom.set_braking(brake_glow(vehicle));
           host.showroom.set_rotor_heat(rotor_heat);
           {
-            const auto& vp = vehicle.params();
             const float spd_mph = float(std::fabs(vehicle.speed()) * 2.2369363);
-            const bool aero_car = (vp.aero_df_rear + vp.aero_part_df_rear) > 0.35;
+            const bool aero_car = host.showroom.has_active_aero();
             const float aero_tgt =
                 aero_car ? ((spd_mph > 75.0f || (spd_mph > 55.0f && brake_glow(vehicle) > 0.5f)) ? 1.0f : 0.0f) : 0.0f;
-            const float popup_tgt = player_lamps.headlamps_on ? 1.0f : 0.0f;
+            const bool req_headlamps =
+                (light_override == 1 || light_override == 2) ||
+                (light_override == 0 && drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec));
+            const float popup_tgt = req_headlamps ? 1.0f : 0.0f;
             host.showroom.set_animated_car_parts(aero_tgt, popup_tgt, float(vehicle.time()),
-                                                 float(std::clamp(frame_dt, 0.001, 0.1)));
+                                                 app.headless ? 10.0f : float(std::clamp(frame_dt, 0.001, 0.1)));
           }
           tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
           place_world();
@@ -329,24 +469,6 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           update_driving_line_overlay();
           const float aspect = h > 0 ? float(w) / float(h) : 1.0f;
           drive::CameraView rw_cam{};
-          drive::CameraView rv_cam{};
-          if (replay_viewer.active() && !photo_mode.active()) {
-            float oy = 0.0f, op = 0.0f, oz = 0.0f;
-            const bool* kb = SDL_GetKeyboardState(nullptr);
-            if (kb[SDL_SCANCODE_A]) oy -= 1.0f;
-            if (kb[SDL_SCANCODE_D]) oy += 1.0f;
-            if (kb[SDL_SCANCODE_W]) op += 1.0f;
-            if (kb[SDL_SCANCODE_S]) op -= 1.0f;
-            if (kb[SDL_SCANCODE_Q]) oz -= 1.0f;
-            if (kb[SDL_SCANCODE_E]) oz += 1.0f;
-            auto gb = [&](double x, double y, double z, double& gy) {
-              drive::Hit hit;
-              if (!host.ground || !host.ground->raycast({x, y, z}, {0, -1, 0}, 80.0, hit)) return false;
-              gy = y - hit.distance;
-              return true;
-            };
-            rv_cam = replay_viewer.compute_camera(frame_dt, oy, op, oz, gb);
-          }
           drive::CameraView fc_cam{};
           if (trainer_freecam_active) {
             const auto& fc = slice12.trainer.free_cam;
@@ -419,23 +541,169 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             else if (garage_open) active_hub_room = HubRoom::kGarage;
           }
           ShowroomFrame hub_cam_frame{};
+          bool hide_for_garage_preview = false;
+          static HubCameraFocus s_last_hub_focus = HubCameraFocus::kTurntable;
+          static std::string s_last_hub_car;
+          static HubRoom s_cached_stage_room = HubRoom::kNone;
+          static float s_cached_stage_hw = 0.0f, s_cached_stage_hl = 0.0f, s_cached_stage_fy = 0.0f;
+          static WorldTriangles s_cached_stage_wt;
           if (active_hub_room != HubRoom::kNone) {
-            if (active_hub_room != last_hub_room) {
+            const Showroom* preview_sr = &host.showroom;
+            std::string cur_preview_car = app.car;
+            int64_t garage_preview_seq = -1;
+            if (active_hub_room == HubRoom::kAutoshow) {
+              host.showroom.set_instances({});
+              if (const auto* sel_as = autoshow.selected_car(); sel_as && !sel_as->dealer.media_name.empty()) {
+                cur_preview_car = sel_as->dealer.media_name;
+                if (auto it = festival_guests.find(cur_preview_car); it != festival_guests.end() && it->second) {
+                  preview_sr = it->second.get();
+                }
+              }
+            } else if (active_hub_room == HubRoom::kGarage) {
+              if (app.have_garage && !app.career_garage.cars.empty()) {
+                if (const auto* ge = garage_browser.selected_entry()) {
+                  if (!ge->media_name.empty()) cur_preview_car = ge->media_name;
+                  else if (auto bit = app.baked_ids.find(ge->car_id); bit != app.baked_ids.end()) cur_preview_car = bit->second;
+                  garage_preview_seq = ge->colour_seq;
+                }
+              } else if (garage_pick < app.baked_cars.size()) {
+                cur_preview_car = app.baked_cars[garage_pick];
+              }
+              if (!cur_preview_car.empty() && lower_ascii(cur_preview_car) != lower_ascii(app.car)) {
+                const std::string gkey =
+                    garage_preview_seq > 0 ? (cur_preview_car + "#" + std::to_string(garage_preview_seq)) : cur_preview_car;
+                auto it = festival_guests.find(gkey);
+                if (it == festival_guests.end() && garage_preview_seq > 0) it = festival_guests.find(cur_preview_car);
+                if (it == festival_guests.end() && festival_guests.size() < 24) {
+                  auto gs = std::make_unique<Showroom>(host.renderer);
+                  gs->set_guest();
+                  ShowroomOptions opt{};
+                  opt.game_root = app.game_root_of();
+                  if (garage_preview_seq > 0) opt.match_sequence = garage_preview_seq;
+                  std::string ge_err;
+                  if (gs->load(app.bake_dir, cur_preview_car, opt, ge_err) && gs->upload(ge_err)) {
+                    gs->load_car_lamps(app.game_root_of(), cur_preview_car);
+                    it = festival_guests.emplace(gkey, std::move(gs)).first;
+                  } else {
+                    it = festival_guests.emplace(gkey, nullptr).first;
+                  }
+                }
+                if (it != festival_guests.end() && it->second) {
+                  preview_sr = it->second.get();
+                  hide_for_garage_preview = true;
+                  Showroom::Instance inst{};
+                  inst.car = it->second.get();
+                  inst.model[0] = 1.0f;
+                  inst.model[5] = 1.0f;
+                  inst.model[10] = 1.0f;
+                  inst.model[15] = 1.0f;
+                  host.showroom.set_instances({inst});
+                } else {
+                  host.showroom.set_instances({});
+                }
+              } else {
+                host.showroom.set_instances({});
+              }
+            } else {
+              host.showroom.set_instances({});
+            }
+
+            const HubCameraFocus desired_focus =
+                (active_hub_room == HubRoom::kWorkshop)
+                    ? carview::focus_for_part_enum(shop.active_part_enum())
+                    : (active_hub_room == HubRoom::kPaintShop)
+                          ? (livery_editor.is_open() ? HubCameraFocus::kSide : HubCameraFocus::kTurntable)
+                          : HubCameraFocus::kTurntable;
+            const bool room_changed = (active_hub_room != last_hub_room);
+            if (room_changed) {
               hub_cam = HubCamera{};
               last_hub_room = active_hub_room;
             }
-            if (active_hub_room == HubRoom::kWorkshop) {
-              hub_cam.set_focus(carview::focus_for_part_enum(shop.active_part_enum()));
-            } else if (active_hub_room == HubRoom::kPaintShop) {
-              hub_cam.set_focus(livery_editor.is_open() ? HubCameraFocus::kSide : HubCameraFocus::kTurntable);
-            } else {
-              hub_cam.set_focus(HubCameraFocus::kTurntable);
+            // Only reset camera focus when the hub screen, part focus, or highlighted car changes,
+            // preserving smooth turntable auto-orbit and manual right-stick inspection.
+            if (room_changed || desired_focus != s_last_hub_focus || cur_preview_car != s_last_hub_car) {
+              hub_cam.set_focus(desired_focus);
+              s_last_hub_focus = desired_focus;
+              s_last_hub_car = cur_preview_car;
             }
-            hub_cam.step(float(std::clamp(frame_dt, 0.0, 0.1)));
+            const float hub_dt = float(std::clamp(frame_dt, 0.0, 0.1));
+            for (SDL_Gamepad* pad : pads) {
+              const double rx = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX) / 32767.0, 0.18, 0.95);
+              const double ry = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY) / 32767.0, 0.18, 0.95);
+              if (std::fabs(rx) > 1e-3 || std::fabs(ry) > 1e-3) {
+                hub_cam.nudge_orbit(float(rx) * 1.8f * hub_dt, float(-ry) * 1.1f * hub_dt, 0.0f);
+              }
+            }
+            hub_cam.step(hub_dt);
             carview::build_hub_frame(active_hub_room, hub_cam, uint32_t(std::max(1, w)), uint32_t(std::max(1, h)),
                                      hub_cam_frame, host.renderer.reverse_z());
-          } else {
+
+            // Render the dedicated 3D studio turntable stage & per-room background colour while
+            // keeping the streamed Colorado GPU world resident (shifted below far clip).
+            const auto hub_bg = carview::hub_background_color(active_hub_room);
+            host.showroom.set_background(hub_bg[0], hub_bg[1], hub_bg[2]);
+            const auto& bmin = preview_sr->bounds_min();
+            const auto& bmax = preview_sr->bounds_max();
+            const float hw = std::clamp(0.5f * (bmax[0] - bmin[0]), 0.70f, 1.45f);
+            const float hl = std::clamp(0.5f * (bmax[2] - bmin[2]), 1.60f, 3.00f);
+            const float fy = bmin[1];
+            if (s_cached_stage_room != active_hub_room || std::fabs(s_cached_stage_hw - hw) > 0.02f ||
+                std::fabs(s_cached_stage_hl - hl) > 0.02f || std::fabs(s_cached_stage_fy - fy) > 0.02f) {
+              s_cached_stage_room = active_hub_room;
+              s_cached_stage_hw = hw;
+              s_cached_stage_hl = hl;
+              s_cached_stage_fy = fy;
+              s_cached_stage_wt = carview::build_hub_stage(active_hub_room, hw, hl, fy);
+            }
+            constexpr float kHubStageYOffset = 2000.0f;
+            const float hub_world_xf[16] = {
+                1.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 1.0f, 0.0f,
+                0.0f, -kHubStageYOffset, 0.0f, 1.0f,
+            };
+            host.showroom.set_world_transform(hub_world_xf);
+            const float studio_sun[3] = {0.45f, 0.78f, -0.42f};
+            const float studio_up[3] = {0.0f, 1.0f, 0.0f};
+            host.showroom.set_world_light(studio_sun, studio_up, 1.0f);
+            const double ox = host.showroom.world_origin_x();
+            const double oz = host.showroom.world_origin_z();
+            std::vector<world::DebrisVertex> stage_verts;
+            const size_t n_tris = s_cached_stage_wt.positions.size() / 3u;
+            stage_verts.reserve(n_tris * 3u);
+            auto lin_to_u8_srgb = [](float c) -> uint8_t {
+              const float s = std::pow(std::clamp(c, 0.0f, 1.0f), 1.0f / 2.2f);
+              return uint8_t(std::clamp(std::lround(s * 255.0f), 0l, 255l));
+            };
+            for (size_t t = 0; t < n_tris; ++t) {
+              const uint8_t grp = t < s_cached_stage_wt.group.size() ? s_cached_stage_wt.group[t] : 0u;
+              const std::array<float, 3> col =
+                  grp < s_cached_stage_wt.colours.size() ? s_cached_stage_wt.colours[grp] : std::array<float, 3>{0.2f, 0.2f, 0.22f};
+              const std::array<uint8_t, 4> rgba{lin_to_u8_srgb(col[0]), lin_to_u8_srgb(col[1]),
+                                                lin_to_u8_srgb(col[2]), 255u};
+              for (size_t k = 0; k < 3u; ++k) {
+                const size_t vi = t * 3u + k;
+                const auto& p = s_cached_stage_wt.positions[vi];
+                const auto nrm = vi < s_cached_stage_wt.normals.size() ? s_cached_stage_wt.normals[vi]
+                                                                       : std::array<float, 3>{0.0f, 1.0f, 0.0f};
+                world::DebrisVertex dv{};
+                dv.pos = {float(double(p[0]) + ox), p[1] + kHubStageYOffset, float(double(p[2]) + oz)};
+                dv.normal = nrm;
+                dv.rgba = rgba;
+                dv.texture_record = world::kNoTexture;
+                stage_verts.push_back(dv);
+              }
+            }
+            host.showroom.set_debris_mesh(stage_verts);
+            host.showroom.set_skidmarks({}, {});
+            host.showroom.set_particles({}, {}, {}, 0.25f, false);
+            host.showroom.set_showcase_mesh({});
+            host.showroom.set_world_overlay({});
+          } else if (last_hub_room != HubRoom::kNone) {
+            host.showroom.set_background(0.42f, 0.55f, 0.72f);
+            host.showroom.set_draw_car(true);
             last_hub_room = HubRoom::kNone;
+            s_last_hub_car.clear();
           }
           ShowroomFrame cam_frame =
               photo_mode.active()
@@ -488,9 +756,10 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           if (photo_mode.active() || replay_viewer.active() || active_hub_room != HubRoom::kNone || app.show_title ||
               camp_cam_active || (app.race && grid_menu_open) || ceremony.active || rewind_scrub_view) {
             const bool hide_for_replay =
-                replay_viewer.active() && replay_viewer.camera_mode() == carview::ReplayCameraMode::kBumper;
+                replay_viewer.active() && replay_viewer.focus_slot() == 0u &&
+                replay_viewer.camera_mode() == carview::ReplayCameraMode::kBumper;
             const bool hide_for_photo = photo_mode.active() && photo_mode.effects().hide_car;
-            host.showroom.set_draw_car(!hide_for_replay && !hide_for_photo);
+            host.showroom.set_draw_car(!hide_for_replay && !hide_for_photo && !hide_for_garage_preview);
           }
           host.renderer.set_photo_pt_accumulate(photo_mode.active() &&
                                            host.renderer.active_rt_mode() != carview::rt::RtMode::kOff);

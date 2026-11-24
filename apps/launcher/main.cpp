@@ -26,6 +26,8 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#else
+#include <unistd.h>
 #endif
 
 #include <fh1data/archive.h>
@@ -323,10 +325,13 @@ int main(int argc, char** argv) {
     }
   }
 
+  std::filesystem::path exe_path;
   std::filesystem::path exe_dir;
   if (argc > 0 && argv[0]) {
     std::error_code ec;
-    exe_dir = std::filesystem::weakly_canonical(std::filesystem::path(argv[0]), ec).parent_path();
+    exe_path = std::filesystem::weakly_canonical(std::filesystem::path(argv[0]), ec);
+    if (exe_path.empty()) exe_path = std::filesystem::path(argv[0]);
+    exe_dir = exe_path.parent_path();
   }
 
   launcher::LauncherUiState state;
@@ -468,6 +473,7 @@ int main(int argc, char** argv) {
   bool was_setup_running = false;
   bool was_content_running = false;
   bool text_input_active = false;
+  bool quit_for_update = false;
   carview::ui::List ui_list;
   std::vector<launcher::HitBox> hitboxes;
 
@@ -680,16 +686,55 @@ int main(int argc, char** argv) {
       state.update_channel = (state.update_channel == "stable") ? "preview" : "stable";
     } else if (id == "upd:check") {
 #ifdef _WIN32
-      constexpr const char* kAssetName = "shift-engine-windows-x64.zip";
+      constexpr const char* kPlatformSelector = "windows";
 #elif defined(__APPLE__)
-      constexpr const char* kAssetName = "shift-engine-macos-arm64.dmg";
+      constexpr const char* kPlatformSelector = "macos";
 #else
-      constexpr const char* kAssetName = "shift-engine-linux-x64.tar.gz";
+      constexpr const char* kPlatformSelector = "linux";
 #endif
-      const auto ur = launcher::check_github_updates(state.current_version, state.update_channel, kAssetName);
+      const auto ur = launcher::check_github_updates(state.current_version, state.update_channel, kPlatformSelector);
       state.available_update = ur.update;
+      state.staged_apply_script.clear();
+      state.staged_file_count = 0;
       state.update_status = ur.status;
       state.banner_notice = ur.status;
+    } else if (id == "upd:stage") {
+      if (!state.available_update) {
+        state.update_status = "No update selected. Check for updates first.";
+        state.banner_notice = state.update_status;
+      } else {
+#ifdef _WIN32
+        const uint32_t self_pid = uint32_t(GetCurrentProcessId());
+#else
+        const uint32_t self_pid = uint32_t(getpid());
+#endif
+        const auto sr = launcher::stage_github_update(*state.available_update, state.paths.launcher_dir, self_pid,
+                                                      exe_path);
+        if (sr.ok) {
+          state.staged_apply_script = sr.apply_script_path;
+          state.staged_file_count = int(sr.plan.moves.size());
+        } else {
+          state.staged_apply_script.clear();
+          state.staged_file_count = 0;
+        }
+        state.update_status = sr.status;
+        state.banner_notice = sr.status;
+      }
+    } else if (id == "upd:apply") {
+      if (state.staged_apply_script.empty()) {
+        state.update_status = "Stage and verify an update before applying.";
+        state.banner_notice = state.update_status;
+      } else {
+        std::string aerr;
+        if (launcher::launch_staged_update_script(state.staged_apply_script, &aerr)) {
+          state.update_status = "Applying staged update and restarting launcher...";
+          state.banner_notice = state.update_status;
+          quit_for_update = true;
+        } else {
+          state.update_status = "Could not start staged update: " + aerr;
+          state.banner_notice = state.update_status;
+        }
+      }
     } else if (id == "sync:play") {
       state.sync_include_play = !state.sync_include_play;
     } else if (id == "sync:dlc") {
@@ -729,7 +774,7 @@ int main(int argc, char** argv) {
 
   float user_zoom = 1.0f;
   bool running = true;
-  while (running) {
+  while (running && !quit_for_update) {
     const auto [scale_x, scale_y] = current_pixel_scale();
 
     SDL_Event e;

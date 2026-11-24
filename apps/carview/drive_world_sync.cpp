@@ -57,7 +57,8 @@ void DriveSession::place_world() {
         if (traffic) traffic->place(info, vehicle);
         else host.showroom.set_instances({});
         if (replay_viewer.active() && replay_viewer.current_cars().size() > 1) {
-          // Multi-car Replay: place every recorded non-focused car onto guest Showrooms in player-local space.
+          // Multi-car Replay: player (slot 0) stays on host.showroom; place every recorded
+          // opponent/traffic car (slot > 0) onto its own guest Showroom in player-local space.
           host.showroom.set_instances({});
           float pm[16];
           drive::model_to_world(info, vehicle, pm);
@@ -78,29 +79,81 @@ void DriveSession::place_world() {
 
           std::vector<Showroom::Instance> rmore;
           const uint32_t focus_slot = replay_viewer.focus_slot();
+          const bool hide_focus_bumper = replay_viewer.camera_mode() == ReplayCameraMode::kBumper;
           const bool night_lamps = drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec);
-          for (const auto& rc : replay_viewer.current_cars()) {
-            if (rc.slot == focus_slot) continue;
+          const auto& all_rcars = replay_viewer.current_cars();
+          // Process the focused car first so it gets priority for the 1-per-frame guest upload budget.
+          std::vector<size_t> order;
+          order.reserve(all_rcars.size());
+          for (size_t idx = 0; idx < all_rcars.size(); ++idx) {
+            if (all_rcars[idx].slot == focus_slot) order.push_back(idx);
+          }
+          for (size_t idx = 0; idx < all_rcars.size(); ++idx) {
+            if (all_rcars[idx].slot != focus_slot) order.push_back(idx);
+          }
+          int uploads_this_frame = 0;
+          constexpr float kTwoPi = 6.28318530717958647692f;
+          std::unordered_set<Showroom*> wheel_posed_guests;
+          for (size_t idx : order) {
+            const auto& rc = all_rcars[idx];
+            // Slot 0 is always rendered by host.showroom (player car).
+            if (rc.slot == 0u) continue;
+            if (hide_focus_bumper && rc.slot == focus_slot) continue;
             const auto* cinfo = replay_viewer.recording().find_car_info(rc.slot);
             std::string media = (cinfo && !cinfo->car_media.empty()) ? cinfo->car_media : app.car;
-            auto it = festival_guests.find(media);
-            if (it == festival_guests.end() && festival_guests.size() < 24) {
-              auto gs = std::make_unique<Showroom>(host.renderer);
-              gs->set_guest();
-              if (host.showroom.dynamic_env_view() && host.showroom.dynamic_env_sampler()) {
-                gs->set_shared_dynamic_env(host.showroom.dynamic_env_view(), host.showroom.dynamic_env_sampler());
+            const int64_t paint_seq = cinfo ? int64_t(cinfo->paint_index) : -1;
+            Showroom* guest_sr = app.race ? app.race->find_loaded_model(media, paint_seq) : nullptr;
+            if (!guest_sr) {
+              const std::string gkey = paint_seq >= 0 ? (media + "#" + std::to_string(paint_seq)) : media;
+              auto it = festival_guests.find(gkey);
+              if (it == festival_guests.end() && paint_seq >= 0) it = festival_guests.find(media);
+              if (it == festival_guests.end() && festival_guests.size() < 24 && uploads_this_frame < 1) {
+                ++uploads_this_frame;
+                auto gs = std::make_unique<Showroom>(host.renderer);
+                gs->set_guest();
+                if (host.showroom.dynamic_env_view() && host.showroom.dynamic_env_sampler()) {
+                  gs->set_shared_dynamic_env(host.showroom.dynamic_env_view(), host.showroom.dynamic_env_sampler());
+                }
+                ShowroomOptions opt{};
+                opt.game_root = app.game_root_of();
+                if (paint_seq > 0) opt.match_sequence = paint_seq;
+                std::string ge;
+                if (gs->load(app.bake_dir, media, opt, ge) && gs->upload(ge)) {
+                  gs->load_car_lamps(app.game_root_of(), media);
+                  it = festival_guests.emplace(gkey, std::move(gs)).first;
+                } else {
+                  it = festival_guests.emplace(gkey, nullptr).first;
+                }
               }
-              ShowroomOptions opt{};
-              opt.game_root = app.game_root_of();
-              std::string ge;
-              if (gs->load(app.bake_dir, media, opt, ge) && gs->upload(ge)) {
-                gs->load_car_lamps(app.game_root_of(), media);
-                it = festival_guests.emplace(media, std::move(gs)).first;
-              } else {
-                it = festival_guests.emplace(media, nullptr).first;
-              }
+              if (it != festival_guests.end() && it->second) guest_sr = it->second.get();
             }
-            Showroom* guest_sr = (it != festival_guests.end() && it->second) ? it->second.get() : &host.showroom;
+            if (!guest_sr) continue;
+            // Forward recorded wheel steer, spin, angular speed, and suspension Y to the guest car.
+            if (wheel_posed_guests.insert(guest_sr).second) {
+              const auto& rest = guest_sr->car().wheel_centres_body;
+              bool have_rec_wheels = false;
+              for (int wi = 0; wi < 4; ++wi) {
+                if (std::fabs(rc.wheel_omega[wi]) > 1e-4f || std::fabs(rc.wheel_spin[wi]) > 1e-4f ||
+                    std::fabs(rc.wheel_steer[wi]) > 1e-4f || std::fabs(rc.wheel_y[wi]) > 1e-4f) {
+                  have_rec_wheels = true;
+                  break;
+                }
+              }
+              const float radius = std::clamp(rest[0][1], 0.26f, 0.55f);
+              const float fallback_omega = rc.speed_mps / radius;
+              float fallback_spin = std::fmod(float(replay_viewer.time()) * fallback_omega, kTwoPi);
+              if (fallback_spin < 0.0f) fallback_spin += kTwoPi;
+              WheelPose wposes[4]{};
+              for (int wi = 0; wi < 4; ++wi) {
+                wposes[wi].centre[0] = rest[size_t(wi)][0];
+                wposes[wi].centre[1] = (std::fabs(rc.wheel_y[wi]) > 1e-4f) ? rc.wheel_y[wi] : rest[size_t(wi)][1];
+                wposes[wi].centre[2] = rest[size_t(wi)][2];
+                wposes[wi].steer = rc.wheel_steer[wi];
+                wposes[wi].spin = have_rec_wheels ? rc.wheel_spin[wi] : fallback_spin;
+                wposes[wi].omega = have_rec_wheels ? rc.wheel_omega[wi] : fallback_omega;
+              }
+              guest_sr->set_wheel_poses(wposes);
+            }
             const drive::Quat q{double(rc.quat[1]), double(rc.quat[2]), double(rc.quat[3]), double(rc.quat[0])};
             float gm[16];
             drive::model_to_world(guest_sr->car(), q, {0, 0, 0}, gm);
@@ -117,11 +170,22 @@ void DriveSession::place_world() {
                 for (int kk = 0; kk < 4; ++kk) sum += world_to_player[kk * 4 + row] * gmd[col * 4 + kk];
                 inst.model[col * 4 + row] = float(sum);
               }
-            drive::CarLampState ls;
-            ls.headlamps_on = night_lamps;
-            ls.brake_on = rc.brake_u8 > 20;
+            drive::CarLampState ls = (rc.lamp_bits != 0u) ? drive::unpack_replay_lamps(rc.lamp_bits) : drive::CarLampState{};
+            if (rc.lamp_bits == 0u) {
+              ls.headlamps_on = night_lamps;
+              ls.brake_on = rc.brake_u8 > 20;
+              ls.reverse_on = rc.gear < 0;
+            }
             inst.lamps = ls.vectors();
             inst.has_lamps = true;
+            if (cinfo && cinfo->has_body_color) {
+              const uint32_t rgb = cinfo->body_color;
+              auto to_lin = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+              inst.paint_rgb[0] = to_lin(float((rgb >> 16) & 0xFFu) / 255.0f);
+              inst.paint_rgb[1] = to_lin(float((rgb >> 8) & 0xFFu) / 255.0f);
+              inst.paint_rgb[2] = to_lin(float(rgb & 0xFFu) / 255.0f);
+              inst.has_paint = true;
+            }
             rmore.push_back(inst);
           }
           host.showroom.set_instances(std::move(rmore));
@@ -253,6 +317,7 @@ void DriveSession::place_world() {
           lin.tod_sec = app.tod_clock.tod_sec;
           lin.dt = float(tod_frame_dt > 0.0 ? tod_frame_dt : 1.0 / 60.0);
           lin.light_override = light_override;
+          lin.popup_open = app.headless ? 1.0f : host.showroom.popup_open();
           lin.snap_headlamps = app.headless;
           player_lamps.update(lin);
           host.showroom.set_lamp_state(player_lamps);

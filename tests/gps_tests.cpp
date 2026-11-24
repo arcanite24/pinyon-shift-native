@@ -205,6 +205,67 @@ void test_satnav_vo_ducking_and_save() {
   check(!sp.live_settings().satnav, "LiveSettings reports satnav=false");
 }
 
+void test_travel_time_and_turn_delay() {
+  // 1) Highway preference: 1200 m freeway (75 mph -> ~35.8 s) beats 800 m dirt shortcut (35 mph -> ~51.1 s).
+  {
+    NavBuilder b;
+    const uint32_t s = b.add_node(0, 0);
+    const uint32_t g = b.add_node(0, 800);
+    const uint32_t d_mid = b.add_node(0, 400);
+    // Curved freeway arc east of the straight dirt road (smooth gentle bends < 35 deg, total ~1080 m).
+    const uint32_t f1 = b.add_node(120, 180);
+    const uint32_t f2 = b.add_node(200, 400);
+    const uint32_t f3 = b.add_node(120, 620);
+
+    b.add_way({s, d_mid, g}, "dirt", false, "Dirt Shortcut");
+    b.add_way({s, f1, f2, f3, g}, "freeway", false, "Interstate 76");
+
+    traffic::GpsSolver solver;
+    solver.build(b.map);
+    const auto r = solver.solve(0, 5, 0, 795);
+    check(r.valid, "highway preference route valid");
+    bool used_freeway = false;
+    for (const auto& pt : r.points)
+      if (pt.x > 100.0) used_freeway = true;
+    check(used_freeway, "GPS prefers faster 75 mph freeway over shorter 35 mph dirt road");
+  }
+
+  // 2) TurnDelaySeconds=5.0: a 157 m smooth semicircle (8 chords of 22.5 deg < 35 deg, 0 turn
+  //    delays -> ~5.86 s at 60 mph) beats a shorter 100 m shortcut with a sharp 90-deg turn
+  //    (3.73 s + 5.0 s = 8.73 s).
+  {
+    NavBuilder b;
+    const uint32_t n0 = b.add_node(0, 0);
+    const uint32_t n1 = b.add_node(0, 100);
+    const uint32_t goal = b.add_node(100, 100);
+    const uint32_t g_ext = b.add_node(100, 0);  // continues south from semicircle tangent
+
+    std::vector<uint32_t> arc_nodes = {n1};
+    constexpr double kPi = 3.14159265358979323846;
+    for (int k = 1; k < 8; ++k) {
+      const double theta = kPi * double(k) / 8.0;  // 0 at (0,100) -> pi at (100,100), center (50,100) R=50
+      const float x = float(50.0 - 50.0 * std::cos(theta));
+      const float z = float(100.0 + 50.0 * std::sin(theta));
+      arc_nodes.push_back(b.add_node(x, z));
+    }
+    arc_nodes.push_back(goal);
+
+    b.add_way({n0, n1}, "a", false, "Entry");
+    b.add_way({n1, goal}, "a", false, "Sharp 90 Shortcut");
+    b.add_way(arc_nodes, "a", false, "Smooth Semicircle");
+    b.add_way({goal, g_ext}, "a", false, "Exit");
+
+    traffic::GpsSolver solver;
+    solver.build(b.map);
+    const auto r = solver.solve(0, 10, 100, 50);
+    check(r.valid, "turn-delay route valid");
+    bool took_smooth = false;
+    for (const auto& pt : r.points)
+      if (pt.z > 130.0) took_smooth = true;
+    check(took_smooth, "GPS TurnDelaySeconds=5.0 prefers smooth 157 m arc over 100 m 90-deg shortcut");
+  }
+}
+
 void test_colorado_nav_optional() {
   const char* gr = std::getenv("SHIFT_GAME_ROOT");
   if (!gr || !*gr) return;
@@ -230,6 +291,7 @@ void test_colorado_nav_optional() {
 int main() {
   test_astar_and_oneway();
   test_turns_reroute_and_arrival();
+  test_travel_time_and_turn_delay();
   test_satnav_vo_ducking_and_save();
   test_colorado_nav_optional();
   if (g_failed == 0) std::printf("gps_tests: PASS\n");

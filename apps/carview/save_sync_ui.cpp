@@ -182,7 +182,26 @@ void SaveSession::refresh_sync_remotes() {
     if (r.loadable && r.relation == profile::sync::Relation::kDiverged) sync_report_.conflict = true;
 }
 
+void SaveSession::sync_active_profile_dir() {
+  if (!profiles_) return;
+  active_save_dir_ = profiles_->active().save_dir;
+  backup_cfg_.save_dir = active_save_dir_;
+  sync_ctx_.save_dir = active_save_dir_;
+  sync_ctx_.backups = backup_cfg_;
+  auto_backup_ = std::make_unique<profile::backup::AutoBackup>(backup_cfg_);
+}
+
 // ---------------------------------------------------------------- SaveProfilePage
+
+bool SaveProfilePage::consume_reload_from_disk(std::filesystem::path* out_save_dir, ReloadReason* out_reason) {
+  if (!reload_pending_) return false;
+  if (out_save_dir) *out_save_dir = reload_dir_;
+  if (out_reason) *out_reason = reload_reason_;
+  reload_pending_ = false;
+  reload_reason_ = ReloadReason::kNone;
+  reload_dir_.clear();
+  return true;
+}
 
 void SaveProfilePage::open(SaveSession& session, Tab initial_tab) {
   open_ = true;
@@ -330,6 +349,9 @@ void SaveProfilePage::nav(Nav n, SaveSession& session) {
         const auto id = backups_[size_t(selected_)].id;
         if (profile::backup::restore(session.backup_config(), id, &err)) {
           restart_recommended_ = true;
+          reload_pending_ = true;
+          reload_reason_ = ReloadReason::kBackupRestored;
+          reload_dir_ = session.active_save_dir();
           notice_ = "RESTORED " + id + " (PREVIOUS SAVE BACKED UP)";
           refresh(session);
         } else {
@@ -347,8 +369,12 @@ void SaveProfilePage::nav(Nav n, SaveSession& session) {
       } else if (tab_ == Tab::kProfiles && selected_ < int(session.profiles().profiles().size())) {
         const auto& p = session.profiles().profiles()[size_t(selected_)];
         if (session.profiles().switch_to(p.name, &err)) {
+          session.sync_active_profile_dir();
           restart_recommended_ = true;
-          notice_ = "ACTIVE PROFILE SET TO " + upper_ascii(p.gamertag) + " (NEXT START)";
+          reload_pending_ = true;
+          reload_reason_ = ReloadReason::kProfileSwitched;
+          reload_dir_ = session.active_save_dir();
+          notice_ = "ACTIVE PROFILE SET TO " + upper_ascii(p.gamertag) + " (RELOADING SAVE)";
           refresh(session);
         } else {
           notice_ = "PROFILE SWITCH: " + err;
@@ -364,8 +390,11 @@ void SaveProfilePage::nav(Nav n, SaveSession& session) {
         const auto res = profile::import::run(cand.path, opts);
         if (res.ok) {
           restart_recommended_ = true;
+          reload_pending_ = true;
+          reload_reason_ = ReloadReason::kSaveImported;
+          reload_dir_ = session.active_save_dir();
           notice_ = "IMPORTED " + std::to_string(res.garage_cars) + " CARS & " + ui4::format_credits(res.credits) +
-                    " (NEXT START)";
+                    " (RELOADING SAVE)";
           refresh(session);
         } else {
           notice_ = "IMPORT: " + res.error;

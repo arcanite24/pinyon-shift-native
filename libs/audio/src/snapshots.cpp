@@ -1,9 +1,11 @@
 #include "audio/snapshots.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <sstream>
+#include <system_error>
 
 #include "audio/xml.h"
 #include "cars/mods.h"
@@ -32,6 +34,55 @@ std::string read_text_file(const std::filesystem::path& p) {
   std::ostringstream ss;
   ss << f.rdbuf();
   return ss.str();
+}
+
+std::string normalize_rel_path(std::string_view s) {
+  std::string out(s);
+  for (char& c : out) {
+    if (c == '\\') c = '/';
+    else c = char(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return out;
+}
+
+std::string read_tu4_audio_xml(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
+                               std::string_view rel_under_media) {
+  if (state_root.empty() || rel_under_media.empty()) return {};
+  std::error_code ec;
+  const std::string want = normalize_rel_path(rel_under_media);
+  const std::string want_media = "media/" + want;
+  const std::filesystem::path loose_candidates[] = {
+      state_root / "title-update-v4" / "media" / rel_under_media,
+      state_root / "title-update-v4" / rel_under_media,
+  };
+  for (const auto& p : loose_candidates) {
+    if (std::filesystem::exists(p, ec)) {
+      std::string txt = read_text_file(p);
+      if (!txt.empty()) return txt;
+    }
+  }
+  std::filesystem::path v4_zip;
+  cars::Install inst;
+  if (!game_root.empty() && cars::discover_install(game_root, state_root, {}, inst, nullptr) &&
+      !inst.v4_media_zip.empty()) {
+    v4_zip = inst.v4_media_zip;
+  } else {
+    const auto direct = state_root / "title-update-v4" / "media.zip";
+    if (std::filesystem::exists(direct, ec)) v4_zip = direct;
+  }
+  if (v4_zip.empty() || !std::filesystem::exists(v4_zip, ec)) return {};
+  if (auto z = fh1::Archive::open(v4_zip, nullptr)) {
+    for (const auto& m : z->members()) {
+      const std::string nm = normalize_rel_path(m.name);
+      if (nm == want || nm == want_media) {
+        const auto rr = z->read(m.name);
+        if (rr.ok() && !rr.data.empty()) {
+          return std::string(reinterpret_cast<const char*>(rr.data.data()), rr.data.size());
+        }
+      }
+    }
+  }
+  return {};
 }
 
 float slew(float cur, float target, float max_step) {
@@ -124,6 +175,12 @@ bool SnapshotMatrix::parse(std::string_view xml, std::string* error) {
     for (auto& c : row) c = Cell{};
   active_idx_.fill(-1);
   saved_gameplay_idx_ = -1;
+  radio_rally_mode_ = false;
+  radio_rally_gain_ = 1.0f;
+  radio_rally_start_ = 1.0f;
+  radio_rally_target_ = 1.0f;
+  radio_rally_elapsed_ = 0.0f;
+  radio_rally_duration_ = 0.0f;
   reset_dynamics();
 
   bool saw_rally = false;
@@ -297,6 +354,24 @@ void SnapshotMatrix::restore_gameplay() {
   if (saved_gameplay_idx_ >= 0 && size_t(saved_gameplay_idx_) < defs_.size()) apply_def(saved_gameplay_idx_);
 }
 
+void SnapshotMatrix::set_radio_rally_mode(bool on, float fade_s) {
+  radio_rally_mode_ = on;
+  const float target = on ? 0.30f : 1.0f;
+  // Also activate any Rally radio snapshot defined in v4 AudioMixerSnapshots.xml.
+  if (on) {
+    if (find("RadioRally") >= 0) activate("RadioRally");
+  } else if (iequals(active_name(SnapshotGroup::kRadio), "RadioRally")) {
+    activate("RadioNormal");
+  }
+  radio_rally_start_ = radio_rally_gain_;
+  radio_rally_target_ = target;
+  radio_rally_elapsed_ = 0.0f;
+  radio_rally_duration_ = std::max(0.0f, fade_s);
+  if (radio_rally_duration_ <= 1e-5f) {
+    radio_rally_gain_ = target;
+  }
+}
+
 void SnapshotMatrix::reset_dynamics() {
   have_prev_speed_ = false;
   prev_speed_mph_ = 0.0f;
@@ -383,12 +458,22 @@ void SnapshotMatrix::advance(double dt) {
       }
     }
   }
+  if (radio_rally_duration_ > 0.0f && radio_rally_elapsed_ < radio_rally_duration_) {
+    radio_rally_elapsed_ = std::min(radio_rally_duration_, radio_rally_elapsed_ + step);
+    const float t = std::clamp(radio_rally_elapsed_ / radio_rally_duration_, 0.0f, 1.0f);
+    radio_rally_gain_ = radio_rally_start_ + (radio_rally_target_ - radio_rally_start_) * t;
+    if (radio_rally_elapsed_ >= radio_rally_duration_ - 1e-6f) {
+      radio_rally_gain_ = radio_rally_target_;
+      radio_rally_duration_ = 0.0f;
+    }
+  }
 }
 
 float SnapshotMatrix::gain(Category c) const {
   const size_t ci = size_t(std::clamp(int(c), 0, kCategories - 1));
   float prod = 1.0f;
   for (size_t g = 0; g < kSnapshotGroups; ++g) prod *= cells_[g][ci].current;
+  if (c == Category::kGameMusic) prod *= radio_rally_gain_;
   return std::clamp(prod, 0.0f, 1.0f);
 }
 
@@ -446,14 +531,19 @@ bool GlobalDspConfig::parse(std::string_view xml, std::string* error) {
   return true;
 }
 
-bool GlobalDspConfig::load(const std::filesystem::path& game_root, std::string* error) {
-  const auto path = cars::mods::resolve(game_root / "media" / "audio" / "GlobalDSPConfig.xml");
+bool GlobalDspConfig::load(const std::filesystem::path& game_root, std::string* error,
+                           const std::filesystem::path& state_root) {
+  const auto base_path = game_root / "media" / "audio" / "GlobalDSPConfig.xml";
+  const auto path = cars::mods::resolve(base_path);
+  const bool mod_overridden = (path != base_path);
   const std::string text = read_text_file(path);
-  if (text.empty()) {
-    if (error) *error = "cannot read " + path.string();
-    return false;
+  bool ok = !text.empty() && parse(text, error);
+  if (!mod_overridden && !state_root.empty()) {
+    const std::string tu4 = read_tu4_audio_xml(game_root, state_root, "audio/GlobalDSPConfig.xml");
+    if (!tu4.empty()) ok = parse(tu4, ok ? nullptr : error) || ok;
   }
-  return parse(text, error);
+  if (!ok && error && error->empty()) *error = "cannot read " + path.string();
+  return ok;
 }
 
 // ------------------------------------------------------------------ CarBusEq
@@ -539,14 +629,19 @@ bool MasterDspConfig::parse(std::string_view xml, std::string* error) {
   return true;
 }
 
-bool MasterDspConfig::load(const std::filesystem::path& game_root, std::string* error) {
-  const auto path = cars::mods::resolve(game_root / "media" / "audio" / "AudioEngineConfig.xml");
+bool MasterDspConfig::load(const std::filesystem::path& game_root, std::string* error,
+                           const std::filesystem::path& state_root) {
+  const auto base_path = game_root / "media" / "audio" / "AudioEngineConfig.xml";
+  const auto path = cars::mods::resolve(base_path);
+  const bool mod_overridden = (path != base_path);
   const std::string text = read_text_file(path);
-  if (text.empty()) {
-    if (error) *error = "cannot read " + path.string();
-    return false;
+  bool ok = !text.empty() && parse(text, error);
+  if (!mod_overridden && !state_root.empty()) {
+    const std::string tu4 = read_tu4_audio_xml(game_root, state_root, "audio/AudioEngineConfig.xml");
+    if (!tu4.empty()) ok = parse(tu4, ok ? nullptr : error) || ok;
   }
-  return parse(text, error);
+  if (!ok && error && error->empty()) *error = "cannot read " + path.string();
+  return ok;
 }
 
 // ------------------------------------------------------------ MasterRmsStage

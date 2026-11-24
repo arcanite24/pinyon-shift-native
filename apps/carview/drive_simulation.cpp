@@ -11,6 +11,82 @@
 #include "world/road_follow.h"
 
 namespace carview {
+namespace {
+
+audio::SmashMaterial classify_smash_material(const std::string& stem_l, const std::string& stype,
+                                             uint8_t& out_surface_hint) {
+  auto has = [&](const char* needle) { return stem_l.find(needle) != std::string::npos; };
+  if (stype == "fence" || has("fence") || has("gate") || has("barricade")) {
+    out_surface_hint = (has("chain") || has("metal") || has("steel") || has("iron")) ? 3 : 4;
+    return audio::SmashMaterial::kFence;
+  }
+  if (has("glass") || has("window") || has("bottle") || has("busstop") || has("lantern")) {
+    out_surface_hint = 0;
+    return audio::SmashMaterial::kGlass;
+  }
+  if (stype == "flower" || has("bush") || has("shrub") || has("tree") || has("cactus") || has("flower") ||
+      has("plant") || has("hedge") || has("leaf") || has("foliage")) {
+    out_surface_hint = 2;
+    return audio::SmashMaterial::kFoliage;
+  }
+  if (has("stone") || has("rock") || has("brick") || has("concrete") || has("cinder") || has("planter") ||
+      has("wall")) {
+    out_surface_hint = 0;
+    return audio::SmashMaterial::kStone;
+  }
+  if (stype == "cone" || stype == "bin" || has("plastic") || has("cone") || has("pylon") || has("delineator") ||
+      has("trash") || has("bin") || has("garbage") || has("cooler") || has("drum") || has("chair")) {
+    out_surface_hint = 0;
+    return audio::SmashMaterial::kPlastic;
+  }
+  if (has("wood") || has("log") || has("lumber") || has("fruit") || has("crate") || has("plank") ||
+      has("picnic") || has("bench") || has("barrel") || has("pallet") || has("barn") || has("hay") ||
+      stype == "picnic") {
+    out_surface_hint = 4;
+    return audio::SmashMaterial::kWood;
+  }
+  if (stype == "sign" || stype == "pole" || stype == "camera" || has("metal") || has("hydrant") ||
+      has("mailbox") || has("postbox") || has("pole") || has("sign") || has("camera") || has("meter") ||
+      has("rail") || has("steel")) {
+    out_surface_hint = 3;
+    return audio::SmashMaterial::kMetal;
+  }
+  out_surface_hint = 0;
+  return audio::SmashMaterial::kDefault;
+}
+
+int parse_barn_numeric_id(const std::string& barn_name) {
+  int val = 0;
+  bool any = false;
+  for (char c : barn_name) {
+    if (c >= '0' && c <= '9') {
+      val = val * 10 + (c - '0');
+      any = true;
+    }
+  }
+  return any ? val : 0;
+}
+
+void sync_saved_pending_barns(DriveApp& app) {
+  app.saved.pending_barn_restorations.clear();
+  for (const auto& br : app.pending_barn_restorations) {
+    drive::PendingBarnRestoration p{};
+    p.barn_id = parse_barn_numeric_id(br.barn_id);
+    p.car_id = int(br.car_id);
+    p.remaining_sec = float(std::max(0.0, br.ready_after_s - br.elapsed_s));
+    app.saved.pending_barn_restorations.push_back(p);
+  }
+}
+
+struct RolloverRecoveryState {
+  const DriveSession* owner = nullptr;
+  double last_sim_time = -1.0;
+  double rolled_s = 0.0;
+};
+
+RolloverRecoveryState g_rollover_state;
+
+}  // namespace
 
 audio::EnginePlayer::Update DriveSession::sound_inputs(audio::View audio_view) {
         audio::EnginePlayer::Update u;
@@ -240,6 +316,8 @@ bool DriveSession::free_roam_step() {
             bhit.rel_speed_mps = float(std::fabs(vehicle.speed()));
             bhit.pos = {float(at.x), float(at.y), float(at.z)};
             bhit.is_break = true;
+            bhit.surface_hint = 3;
+            bhit.smash_material = audio::SmashMaterial::kMetal;
             app.audio_host.trigger_collision(bhit);
             const drive::Vec3 vel_s = vehicle.velocity();
             host.particle_sys.spawn_smashable_burst("flyer", {float(at.x), float(at.y + 0.7), float(at.z)},
@@ -282,6 +360,7 @@ bool DriveSession::free_roam_step() {
             app.campaign.on_barn_find(true, b.name, named, &app.audio_host);
             app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
             app.pending_barn_restorations.push_back({b.name, named, b.car_id, 45.0, 0.0});
+            sync_saved_pending_barns(app);
             std::printf("t %.2f s: %s found: %s (Data_Car %d) sent to Dak for restoration\n", vehicle.time(), b.name.c_str(),
                         named.c_str(), b.car_id);
           }
@@ -412,7 +491,7 @@ bool DriveSession::step(const drive::Input& user_in) {
           }
           if (r_finished && !club_race_was_finished) {
             club_pending.event_completed = true;
-            club_pending.event_finish_place = pc.place;
+            club_pending.event_finish_place = app.race->player_place();
             app.audio_host.trigger_ui(audio::UiCue::kRaceFinish);
           }
           club_race_was_finished = r_finished;
@@ -534,11 +613,13 @@ bool DriveSession::step(const drive::Input& user_in) {
                 app.dynamic_ai_skill, pl_t, ai_ref, app.career.num_races, eff_mode, app.race->event().skill_adjustments);
             if (!app.headless) {
               const race::CareerEvent* cev = app.have_career_catalog ? app.career_catalog.find_event(app.race_event) : nullptr;
-              const int pl = app.race->session().car(app.race->player_index()).place;
-              const int ncars = int(app.race->player_index()) + 1;
-              app.campaign.on_race_finished(cev, *a, pl, ncars, pop_before, app.current_pop_rank(), bal_before, app.career.credits,
-                                        app.career.wristband_points, app.collected_wristband, won_car_name,
-                                        app.have_career_catalog ? &app.career_catalog : nullptr, app.fmv_player, &app.audio_host);
+              const int pl = app.race->player_place();
+              const int ncars = app.race->is_showcase() ? 2 : int(app.race->player_index()) + 1;
+              const auto camp_act = app.campaign.on_race_finished(
+                  cev, *a, pl, ncars, pop_before, app.current_pop_rank(), bal_before, app.career.credits,
+                  app.career.wristband_points, app.collected_wristband, won_car_name,
+                  app.have_career_catalog ? &app.career_catalog : nullptr, app.fmv_player, &app.audio_host);
+              apply_campaign_action(camp_act);
               app.campaign_owns_post_race = true;
             }
             save_due = true;  // the window saves the award at once
@@ -582,14 +663,7 @@ bool DriveSession::step(const drive::Input& user_in) {
             bhit.rel_speed_mps = float(std::fabs(vehicle.speed()));
             bhit.pos = {sev.pos[0], sev.pos[1], sev.pos[2]};
             bhit.is_break = true;
-            if (stem_l.find("wood") != std::string::npos || stem_l.find("fence") != std::string::npos ||
-                stem_l.find("log") != std::string::npos || stem_l.find("fruit") != std::string::npos) {
-              bhit.surface_hint = 4;
-            } else if (stem_l.find("metal") != std::string::npos || stem_l.find("hydrant") != std::string::npos ||
-                       stem_l.find("mailbox") != std::string::npos || stem_l.find("trash") != std::string::npos ||
-                       stem_l.find("pole") != std::string::npos || stem_l.find("sign") != std::string::npos) {
-              bhit.surface_hint = 3;
-            }
+            bhit.smash_material = classify_smash_material(stem_l, stype, bhit.surface_hint);
             app.audio_host.trigger_collision(bhit);
             if (sev.object_type_index == 1) app.audio_host.trigger_ui(audio::UiCue::kSignSmash);
           }
@@ -611,13 +685,24 @@ bool DriveSession::step(const drive::Input& user_in) {
           vin.car_forward = {float(vfwd.x), float(vfwd.y), float(vfwd.z)};
           vin.car_right = {float(vright.x), float(vright.y), float(vright.z)};
           vin.car_up = {float(vup.x), float(vup.y), float(vup.z)};
-          const float half_len = float(std::max(1.4, vehicle.params().size.z * 0.5));
-          const float half_w = float(std::max(0.6, vehicle.params().size.x * 0.5));
-          const drive::Vec3 ex_l = vpos + drive::rotate(vrot, {-half_w * 0.42, -0.22, -half_len - 0.05});
-          const drive::Vec3 ex_r = vpos + drive::rotate(vrot, {half_w * 0.42, -0.22, -half_len - 0.05});
-          vin.exhaust_tips[0] = {float(ex_l.x), float(ex_l.y), float(ex_l.z)};
-          vin.exhaust_tips[1] = {float(ex_r.x), float(ex_r.y), float(ex_r.z)};
-          vin.exhaust_tip_count = 2;
+          const auto local_tips = host.showroom.exhaust_tips_local();
+          if (!local_tips.empty()) {
+            const size_t tip_n = std::min(local_tips.size(), vin.exhaust_tips.size());
+            for (size_t ti = 0; ti < tip_n; ++ti) {
+              const auto& lt = local_tips[ti];
+              const drive::Vec3 wt = vpos + drive::rotate(vrot, {double(lt[0]), double(lt[1]), double(lt[2])});
+              vin.exhaust_tips[ti] = {float(wt.x), float(wt.y), float(wt.z)};
+            }
+            vin.exhaust_tip_count = int(tip_n);
+          } else {
+            const float half_len = float(std::max(1.4, vehicle.params().size.z * 0.5));
+            const float half_w = float(std::max(0.6, vehicle.params().size.x * 0.5));
+            const drive::Vec3 ex_l = vpos + drive::rotate(vrot, {-half_w * 0.42, -0.22, -half_len - 0.05});
+            const drive::Vec3 ex_r = vpos + drive::rotate(vrot, {half_w * 0.42, -0.22, -half_len - 0.05});
+            vin.exhaust_tips[0] = {float(ex_l.x), float(ex_l.y), float(ex_l.z)};
+            vin.exhaust_tips[1] = {float(ex_r.x), float(ex_r.y), float(ex_r.z)};
+            vin.exhaust_tip_count = 2;
+          }
 
           const float idle_r = float(std::max(600.0, vehicle.params().idle_rpm));
           const float red_r = float(std::max(idle_r + 1000.0, vehicle.params().redline_rpm));
@@ -625,7 +710,8 @@ bool DriveSession::step(const drive::Input& user_in) {
           vin.throttle = float(in.throttle);
           vin.upshift_event = (vehicle.gear() > host.last_vfx_gear && vehicle.gear() >= 2);
           host.last_vfx_gear = vehicle.gear();
-          vin.backfire_level = std::clamp(audio_upgrades.exhaust, 0, 3);
+          vin.backfire_level = std::clamp(
+              std::max({audio_upgrades.exhaust, audio_camshaft_level, vehicle.params().has_turbo ? 1 : 0}), 0, 3);
           const uint32_t cur_bf = app.audio_host.telemetry().backfire_count;
           if (cur_bf > host.last_audio_backfire_count) {
             vin.audio_backfire_pulses = cur_bf - host.last_audio_backfire_count;
@@ -715,7 +801,9 @@ bool DriveSession::step(const drive::Input& user_in) {
           si.wheel_spin = max_spin;
           const double mass = std::max(500.0, vehicle.params().mass);
           si.world_impact_ms = vehicle.strongest_body_contact().force * drive::Vehicle::kStep / mass;
-          si.car_impact_ms = traffic ? traffic->player_impulse() / mass : 0.0;
+          const double traffic_imp_s = traffic ? traffic->player_impulse() : 0.0;
+          const double race_imp_s = app.race ? app.race->player_impulse() : 0.0;
+          si.car_impact_ms = std::max({traffic_imp_s, race_imp_s, step_car_impact_accum}) / mass;
           si.smashed_object = smashed_prop;
           si.smashed_type = smashed_type;
           const drive::Vec3 at = vehicle.position();
@@ -737,7 +825,7 @@ bool DriveSession::step(const drive::Input& user_in) {
             std::vector<carview::RaceView::OpponentTag> otags;
             app.race->opponent_tags(otags);
             for (const auto& ot : otags) check_other(ot.x, ot.z, ot.speed);
-            const int cur_place = app.race->session().car(app.race->player_index()).place;
+            const int cur_place = app.race->player_place();
             if (prev_race_place > 0 && cur_place < prev_race_place && app.race->session().clock() > 2.0) {
               si.passed_opponent = true;
               si.pass_speed_diff_mph = std::max(5.0, si.speed_ms * 0.25);
@@ -918,7 +1006,14 @@ bool DriveSession::step(const drive::Input& user_in) {
                 hit.rel_speed_mps = float(dv_f);
                 hit.pos = {float(fcol.contact_point[0]), float(fcol.contact_point[1]), float(fcol.contact_point[2])};
                 hit.is_car_on_car = true;
+                hit.surface_hint = 1;
                 app.audio_host.trigger_collision(hit);
+                const drive::Vec3 rel{fcol.contact_point[0] - fp.x, fcol.contact_point[1] - fp.y,
+                                      fcol.contact_point[2] - fp.z};
+                const drive::Quat q = vehicle.orientation();
+                const drive::Quat qinv{-q.x, -q.y, -q.z, q.w};
+                const drive::Vec3 loc = drive::rotate(qinv, rel);
+                car_damage.record_impact(float(loc.x), float(loc.y), float(loc.z), float(dv_f));
               }
             }
           }
@@ -926,7 +1021,7 @@ bool DriveSession::step(const drive::Input& user_in) {
         club_step();  // evaluates all active 1000 Club challenges on full step signals
         if (!host.streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
-        // nearest road (the windowed mode has R).
+        // nearest road; windowed free-roam also auto-recovers sustained rollovers (~2.0 s).
         if (app.headless && !app.race && host.follower.stuck(vehicle, in)) {
           const drive::Vec3 at = vehicle.position();
           double away = 0;
@@ -938,6 +1033,43 @@ bool DriveSession::step(const drive::Input& user_in) {
             rig_accel.reset();
             std::printf("t %.2f s: stuck at %.1f %.1f %.1f, put back on the road %.1f m away (nearest road "
                         "triangle)\n", vehicle.time(), at.x, at.y, at.z, sp.distance);
+          }
+        } else if (!app.headless && !app.race) {
+          if (g_rollover_state.owner != this || vehicle.time() < g_rollover_state.last_sim_time - 1e-6) {
+            g_rollover_state.owner = this;
+            g_rollover_state.rolled_s = 0.0;
+          }
+          g_rollover_state.last_sim_time = vehicle.time();
+          if (vehicle.is_rolled_over()) {
+            g_rollover_state.rolled_s += drive::Vehicle::kStep;
+            if (g_rollover_state.rolled_s >= 2.0) {
+              g_rollover_state.rolled_s = 0.0;
+              const drive::Vec3 at = vehicle.position();
+              double away = 0.0;
+              world::Spawn sp{};
+              bool placed = false;
+              if (safe_reset_ok && safe_reset.place(*host.streamer, vehicle, &away)) {
+                placed = true;
+              } else if (world::recover(*host.streamer, vehicle, &sp)) {
+                away = sp.distance;
+                placed = true;
+              } else {
+                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                double gy = at.y;
+                if (host.ground) world::ground_height(*host.ground, at.x, at.z, at.y + 4.0, gy);
+                vehicle.place({at.x, gy + 0.05, at.z}, std::atan2(f.x, f.z));
+                placed = true;
+              }
+              if (placed) {
+                rig_accel.reset();
+                notice = "CAR ROLLED OVER — RESET TO ROAD";
+                notice_until = vehicle.time() + 3.0;
+                std::printf("t %.2f s: rollover recovery at %.1f %.1f %.1f (%.1f m to road)\n", vehicle.time(), at.x,
+                            at.y, at.z, away);
+              }
+            }
+          } else {
+            g_rollover_state.rolled_s = 0.0;
           }
         }
         // Off the collision (the .fiz has holes outside the drivable strips):

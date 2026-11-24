@@ -39,7 +39,10 @@ struct TiresConfig {
 
   bool parse_tires(std::string_view xml, std::string* error = nullptr);
   bool parse_surface_changes(std::string_view xml, std::string* error = nullptr);
-  bool load(const std::filesystem::path& game_root, std::string* error = nullptr);
+  bool merge_tires(std::string_view xml, std::string* error = nullptr);
+  bool merge_surface_changes(std::string_view xml, std::string* error = nullptr);
+  bool load(const std::filesystem::path& game_root, std::string* error = nullptr,
+            const std::filesystem::path& state_root = {});
 
   const TireSurfaceEntry* find_surface(std::string_view physics_surface) const;
   // Returns the event name (e.g. "HardToHard", "DirtToHard", "Silent", or empty).
@@ -60,7 +63,9 @@ struct CollisionAudioConfig {
   std::vector<CollisionEventSpec> pairs;
 
   bool parse(std::string_view xml, std::string* error = nullptr);
-  bool load(const std::filesystem::path& game_root, std::string* error = nullptr);
+  bool merge(std::string_view xml, std::string* error = nullptr);
+  bool load(const std::filesystem::path& game_root, std::string* error = nullptr,
+            const std::filesystem::path& state_root = {});
 
   const CollisionEventSpec* find_pair(std::string_view s1, std::string_view s2) const;
 };

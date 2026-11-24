@@ -346,8 +346,41 @@ void test_save_page(carview::SaveSession& session, carview::SaveProfilePage& pag
   CHECK(l.items().size() > 50);
   CHECK(lit(l) > 80000);
 
+  // Test P0-G1 reload-from-disk signaling on backup restore and profile switch.
+  {
+    CHECK(!page.reload_pending());
+    page.set_tab(carview::SaveProfilePage::Tab::kBackups);
+    page.select_row(0, session);
+    page.nav(carview::Nav::kAccept, session);
+    CHECK(page.reload_pending());
+    std::filesystem::path reload_dir;
+    carview::SaveProfilePage::ReloadReason reason = carview::SaveProfilePage::ReloadReason::kNone;
+    CHECK(page.consume_reload_from_disk(&reload_dir, &reason));
+    CHECK(reason == carview::SaveProfilePage::ReloadReason::kBackupRestored);
+    CHECK(reload_dir == session.active_save_dir());
+    CHECK(!page.reload_pending());
+    CHECK(!page.consume_reload_from_disk());
+
+    // Profile switch updates session.active_save_dir() and flags reload from disk.
+    page.set_tab(carview::SaveProfilePage::Tab::kProfiles);
+    page.select_row(1, session);  // "weekend" profile
+    page.nav(carview::Nav::kAccept, session);
+    CHECK(page.reload_pending());
+    CHECK(page.consume_reload_from_disk(&reload_dir, &reason));
+    CHECK(reason == carview::SaveProfilePage::ReloadReason::kProfileSwitched);
+    CHECK(reload_dir == session.active_save_dir());
+    CHECK(session.active_profile_name() == "weekend");
+
+    // Switch back to default so screenshot export matches original state.
+    page.select_row(0, session);
+    page.nav(carview::Nav::kAccept, session);
+    CHECK(page.consume_reload_from_disk());
+    CHECK(session.active_profile_name() == "default");
+  }
+
   // Leave page open on Backups tab for main() screenshot export.
   page.set_tab(carview::SaveProfilePage::Tab::kBackups);
+  page.set_notice("AUTOMATIC BACKUPS AT START, EVERY 10 MIN & CLEAN EXIT");
 }
 #endif
 

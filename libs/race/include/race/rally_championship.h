@@ -154,6 +154,11 @@ struct RallyChampionshipReward {
   std::vector<int64_t> unlocked_events;
 };
 
+struct RallyCarValidation {
+  bool valid = true;
+  std::string reason;
+};
+
 // Runs a full 4-stage championship (or single-stage RALLY_HEATS) with
 // cumulative time standings, service-area state, and final reward commit.
 class RallyChampionshipSession {
@@ -177,17 +182,26 @@ class RallyChampionshipSession {
   int difficulty() const { return difficulty_; }
 
   int current_stage_index() const { return current_stage_; }  // 0..total_stages-1
+  int stages_completed() const { return drivers_.empty() ? 0 : int(drivers_[0].stage_times.size()); }
   int total_stages() const { return int(stages_.size()); }
   const RallyStageInfo* current_stage() const;
   const std::vector<RallyStageInfo>& stages() const { return stages_; }
 
   // Records completion of the current stage using `player_stage_time` and
   // deterministic `ai_stage_times` (if empty, generated from `catalog.field`).
+  // Guarded against double-scoring if the current stage was already recorded.
   RallyStageFinish record_stage_finish(const RallyCatalog& catalog, double player_stage_time,
                                        const std::vector<double>& ai_stage_times = {});
 
+  // Revalidates that the player's current car still meets this championship's
+  // class limit (car_class_id <= target_class) and required rally upgrade kit
+  // before leaving the Service Area. (RALLY_HEATS uses a loaner and always passes.)
+  RallyCarValidation validate_car(int car_class_id, bool has_rally_kit) const;
+
   // Leaves the between-stage Service Area and advances to the next stage.
   bool advance_from_service_area();
+  // Revalidates car class & rally kit before leaving Service Area.
+  bool advance_from_service_area(int car_class_id, bool has_rally_kit, std::string* reason = nullptr);
 
   // Retires early from the championship.
   void retire();

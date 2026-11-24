@@ -264,7 +264,9 @@ bool WorldGpu::init(const Setup& setup, std::string& error) {
 
 bool WorldGpu::create_hiz(std::string& error) {
   VkDevice d = r_.device_;
-  if (!r_.create_image(kHizWidth, kHizHeight, kHizMips, VK_FORMAT_R32_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+  // RG32F stores dual-channel depth bounds: .r = conservative farthest Z (occlusion culling),
+  // .g = conservative nearest Z (Hi-Z SSR acceleration).
+  if (!r_.create_image(kHizWidth, kHizHeight, kHizMips, VK_FORMAT_R32G32_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, hiz_image_)) {
     error = "hiz image";
@@ -274,7 +276,7 @@ bool WorldGpu::create_hiz(std::string& error) {
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vi.image = hiz_image_.image;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vi.format = VK_FORMAT_R32_SFLOAT;
+    vi.format = VK_FORMAT_R32G32_SFLOAT;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, m, 1, 0, 1};
     WG_TRY(vkCreateImageView(d, &vi, nullptr, &hiz_mip_views_[m]), "hiz mip view");
   }
@@ -290,17 +292,20 @@ bool WorldGpu::create_hiz(std::string& error) {
     img_barrier(cmd, hiz_image_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_CLEAR_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, kHizMips);
-    const VkClearColorValue clr{{r_.reverse_z() ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f}};
+    const float clear_z = r_.reverse_z() ? 0.0f : 1.0f;
+    const VkClearColorValue clr{{clear_z, clear_z, 0.0f, 0.0f}};
     const VkImageSubresourceRange rng{VK_IMAGE_ASPECT_COLOR_BIT, 0, kHizMips, 0, 1};
     vkCmdClearColorImage(cmd, hiz_image_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &rng);
     img_barrier(cmd, hiz_image_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, 0, kHizMips);
   });
   if (!ok) {
     error = "hiz init clear";
     return false;
   }
+  r_.set_hiz_dimensions(kHizWidth, kHizHeight, kHizMips);
   hiz_valid_ = false;
   return true;
 }
@@ -523,6 +528,7 @@ void WorldGpu::destroy_generation(Generation& g) {
   g.table_bytes = g.trees_bytes = 0;
   g.rows = g.trees_count = 0;
   g.pending_upload = false;
+  g.has_opaque_dither = false;
 }
 
 void WorldGpu::record_copies(VkCommandBuffer cmd, VkBuffer staged_vertices, const std::vector<Copy>& vertex_copies,
@@ -668,8 +674,27 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
   };
 
   Generation next;
-  const uint32_t n = uint32_t(std::min<size_t>(rows.size(), size_t(kMaxPerBatch) * 2));
-  const uint32_t tn = uint32_t(std::min<size_t>(trees.size(), size_t(kMaxTrees)));
+  const uint32_t n = uint32_t(std::min<size_t>(rows.size(), size_t(kMaxTableRows)));
+  std::vector<gpuworld::TreeInstanceGpu> valid_trees;
+  const gpuworld::TreeInstanceGpu* tree_data = trees.data();
+  uint32_t tn = (n > 0) ? uint32_t(std::min<size_t>(trees.size(), size_t(kMaxTrees))) : 0u;
+  if (tn > 0) {
+    bool any_oob = false;
+    for (uint32_t i = 0; i < tn; ++i) {
+      if (trees[i].col_tex[2] >= n) {
+        any_oob = true;
+        break;
+      }
+    }
+    if (any_oob) {
+      valid_trees.reserve(tn);
+      for (uint32_t i = 0; i < tn; ++i) {
+        if (trees[i].col_tex[2] < n) valid_trees.push_back(trees[i]);
+      }
+      tree_data = valid_trees.data();
+      tn = uint32_t(valid_trees.size());
+    }
+  }
   if (n > 0) {
     next.table_bytes = VkDeviceSize(n) * sizeof(gpuworld::DrawGpu);
     if (!stage_device_buffer(rows.data(), next.table_bytes, next.table, next.table_staging)) {
@@ -678,7 +703,7 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
     }
     if (tn > 0) {
       next.trees_bytes = VkDeviceSize(tn) * sizeof(gpuworld::TreeInstanceGpu);
-      if (!stage_device_buffer(trees.data(), next.trees_bytes, next.trees, next.trees_staging)) {
+      if (!stage_device_buffer(tree_data, next.trees_bytes, next.trees, next.trees_staging)) {
         destroy_generation(next);
         error = "world tree instances";
         return false;
@@ -721,12 +746,16 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
   };
   for (uint32_t i = 0; i < n; ++i) {
     const auto& row = rows[i];
+    if (row.draw[0] > 0u && row.draw[3] <= gpuworld::kOpaqueDecal) {
+      const uint32_t fl = uint32_t(row.params[1] + 0.5f);
+      if ((fl & (128u | 256u | 512u)) != 0u) next.has_opaque_dither = true;
+    }
     for (uint32_t k = 0; k < 4; ++k) record_slot(row.tex0[k]);
     for (uint32_t k = 0; k < 3; ++k) record_slot(row.tex1[k]);
     record_slot(row.tex1[3] >> 1u);
   }
   for (uint32_t i = 0; i < tn; ++i) {
-    record_slot(trees[i].col_tex[1]);
+    record_slot(tree_data[i].col_tex[1]);
   }
   Generation old = generation_;
   generation_ = next;
@@ -787,6 +816,8 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
       patches.swap(pending_index_patches_);
     }
     if (!patches.empty() && indices_.buffer) {
+      buffer_barrier(cmd, indices_.buffer, VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
+                     VK_ACCESS_2_INDEX_READ_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
       const VkDeviceSize max_bytes = indices_.size;
       bool patched = false;
       for (const auto& pt : patches) {
@@ -919,6 +950,8 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
   if (generation_.trees_count > 0 && generation_.trees.buffer) {
     u.info[0] = generation_.trees_count;
     u.info[1] = kMaxTrees;
+    buffer_barrier(cmd, s.cull_ubo.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT,
+                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     vkCmdUpdateBuffer(cmd, s.cull_ubo.buffer, 0, sizeof u, &u);
     buffer_barrier(cmd, s.cull_ubo.buffer, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
@@ -959,7 +992,7 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
 }
 
 void WorldGpu::record_z_prepass(VkCommandBuffer cmd, const DrawParams& p) {
-  if (generation_.rows == 0 || !slots_[recorded_slot_].used || !z_prepass_) return;
+  if (generation_.rows == 0 || !slots_[recorded_slot_].used || !z_prepass_ || generation_.has_opaque_dither) return;
   SlotBuffers& s = slots_[recorded_slot_];
   const VkDescriptorSet sets[4] = {p.frame_set, bindless_set_, generation_.set, s.vis_set};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 4, sets, 0, nullptr);
@@ -1018,7 +1051,8 @@ void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_.buffer, &zero);
   vkCmdBindIndexBuffer(cmd, indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
   VkPipeline bound = VK_NULL_HANDLE;
-  const VkPipeline op_pipe = (p.swap < 1.5f && opaque_dither_)
+  const bool need_opaque_dither = (p.swap < 1.5f) || generation_.has_opaque_dither;
+  const VkPipeline op_pipe = (need_opaque_dither && opaque_dither_)
                                  ? opaque_dither_
                                  : ((p.depth_prepass && opaque_after_z_) ? opaque_after_z_ : opaque_);
   for (uint32_t b = 0; b < gpuworld::kBatchCount; ++b) {
@@ -1100,6 +1134,7 @@ void WorldGpu::record_hiz(VkCommandBuffer cmd, VkImageView depth_view, uint32_t 
     dw = std::max(1u, dw / 2u);
     dh = std::max(1u, dh / 2u);
   }
+  r_.set_hiz_dimensions(kHizWidth, kHizHeight, kHizMips);
   hiz_valid_ = true;
 }
 

@@ -170,8 +170,8 @@ void main() {
 
   int max_steps = clamp(int(pc.ssr_params.x + 0.5), 12, 40);
   bool has_hiz = pc.ssr_params.z > 0.5;
-  float hiz_max_mip = max(pc.hiz_params.z, 1.0);
-  float mip = has_hiz ? 2.0 : 0.0;
+  float hiz_max_mip = max(pc.hiz_params.z, 0.0);
+  float mip = has_hiz ? min(2.0, hiz_max_mip) : 0.0;
 
   // Bias start along normal + reflection direction to prevent self-intersection.
   vec3 ray_orig = P + N * clamp(0.03 + d_c * 0.0025, 0.03, 0.30);
@@ -193,10 +193,11 @@ void main() {
     float step_len = base_step * (0.45 + 1.35 * (float(i) / float(max_steps)));
 
     if (has_hiz && mip > 0.5) {
-      float hz = textureLod(hiz_tex, uv, mip).r;
+      // Hi-Z .g stores the conservative NEAREST surface Z in the tile (max Z in Reversed-Z,
+      // min Z in Forward-Z), so hiz_d is the closest possible surface distance in the tile.
+      // When ray_d < hiz_d, the ray is guaranteed strictly in front of every occluder in the tile.
+      float hz = textureLod(hiz_tex, uv, mip).g;
       float hiz_d = linear_depth_from_z(hz);
-      // In Reversed-Z Hi-Z stores min depth (= farthest occluder in tile); if ray is still well in front
-      // of the tile's nearest possible surface, accelerate cleanly.
       if (ray_d < hiz_d * 0.92 - 0.15) {
         prev_t = t;
         t += step_len * (1.0 + 0.45 * mip);

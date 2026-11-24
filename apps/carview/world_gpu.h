@@ -25,6 +25,9 @@ class WorldGpu {
  public:
   static constexpr uint32_t kMaxTextures = 4096;
   static constexpr uint32_t kMaxPerBatch = 8192;  // indirect commands per batch
+  static constexpr uint32_t kMaxTreeTemplates = kMaxTextures;  // at most one template row per bindless texture
+  static constexpr uint32_t kMaxTableRows =
+      gpuworld::kBatchCount * kMaxPerBatch + kMaxTreeTemplates;  // 32768 world draws + tree templates
   static constexpr uint32_t kMaxTrees = 131072;   // max hardware-instanced tree sprites
   static constexpr uint32_t kHizWidth = 512;
   static constexpr uint32_t kHizHeight = 256;
@@ -124,6 +127,7 @@ class WorldGpu {
     uint32_t rows = 0;
     uint32_t trees_count = 0;
     bool pending_upload = false;
+    bool has_opaque_dither = false;
   };
   void destroy_generation(Generation& g);
   struct SlotBuffers {

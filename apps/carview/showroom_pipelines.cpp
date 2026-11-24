@@ -797,7 +797,9 @@ bool Showroom::create_pipelines(std::string& error) {
                 true, world_pipeline_layout_);
     queue_build(world_frag, r_.scene_format(), r_.samples_, true, false, 1, world_alpha_, world_vert, &world_input,
                 false, world_pipeline_layout_);
-    queue_build(world_frag, r_.scene_format(), r_.samples_, true, false, 4, world_water_, world_vert, &world_input,
+    // Lake water writes surface depth (while blending over already-rendered lake bed) so
+    // depth_resolved_ / Hi-Z / SSR trace from the water surface instead of the underwater bed.
+    queue_build(world_frag, r_.scene_format(), r_.samples_, true, true, 4, world_water_, world_vert, &world_input,
                 false, world_pipeline_layout_);
     if (!guest_) {
       queue_build(world_opaque_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,

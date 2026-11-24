@@ -92,7 +92,7 @@ bool CareerCatalog::is_hub_unlocked(const StreetHub& hub, const CareerRecord& re
 
 bool CareerCatalog::is_event_unlocked(const CareerEvent& ev, const CareerRecord& rec, int collected_wristband,
                                       int popularity_rank) const {
-  if (ev.prereq_event_id > 0) {
+  if (ev.prereq_event_id > 0 && find_event_by_id(ev.prereq_event_id) != nullptr) {
     auto it = rec.event_places.find(ev.prereq_event_id);
     if (it == rec.event_places.end() || it->second != 1) return false;
   }

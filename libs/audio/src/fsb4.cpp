@@ -57,11 +57,18 @@ bool read_fsb4(std::span<const uint8_t> bank, std::vector<FsbSample>& out, std::
 
 std::vector<uint8_t> xma2_wave(const FsbSample& s, std::span<const uint8_t> data) {
   const uint32_t channels = s.channels ? s.channels : 1;
-  const uint32_t mask = channels == 1 ? 0x4 : 0x3;
+  const uint32_t num_streams = (channels + 1u) / 2u;
+  uint32_t mask = 0x4u;
+  if (channels == 1) mask = 0x4u;
+  else if (channels == 2) mask = 0x3u;
+  else if (channels == 4) mask = 0x33u;
+  else if (channels == 6) mask = 0x3Fu;
+  else if (channels == 8) mask = 0x63Fu;
+  else mask = (channels < 32u) ? ((1u << channels) - 1u) : 0xFFFFFFFFu;
   const size_t body = data.size() / kXmaPacket * kXmaPacket;
   std::vector<uint8_t> extra;
-  put16(extra, 1);          // streams
-  put32(extra, mask);       // channel mask
+  put16(extra, num_streams);  // streams ((channels + 1) / 2 stereo pairs)
+  put32(extra, mask);         // channel mask
   put32(extra, s.frames);   // samples encoded
   put32(extra, uint32_t(data.size()));  // bytes per block
   put32(extra, 0);          // play begin

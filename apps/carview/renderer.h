@@ -344,6 +344,11 @@ class Renderer {
   modern::ModernTargetPlan allocated_modern_targets() const { return allocated_targets_; }
   void set_inspector_preview(bool active, InspectorView view);
   void set_hiz_preview_view(VkImageView view);
+  void set_hiz_dimensions(uint32_t width, uint32_t height, uint32_t mips) {
+    hiz_width_ = width;
+    hiz_height_ = height;
+    hiz_mips_ = mips;
+  }
   bool take_inspector_preview(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height);
   static constexpr uint32_t kInspectorPreviewW = 320;
   static constexpr uint32_t kInspectorPreviewH = 180;
@@ -569,6 +574,7 @@ class Renderer {
   bool inspector_active_ = false;
   InspectorView inspector_view_ = InspectorView::kColor;
   VkImageView hiz_preview_view_ = VK_NULL_HANDLE;
+  uint32_t hiz_width_ = 0, hiz_height_ = 0, hiz_mips_ = 0;
   bool inspector_has_rgba_ = false;
   std::vector<uint8_t> inspector_rgba_;
   Buffer inspector_offscreen_buf_;

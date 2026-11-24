@@ -11,7 +11,38 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   auto note = [&](std::string s) {
     if (notes) notes->push_back(std::move(s));
   };
+  // Preserve existing local spawn/pose, camera/control bindings, audio/radio,
+  // and local difficulty/ToD preferences when importing into an existing DriveSave.
+  const auto prev_position = out.position;
+  const double prev_heading = out.heading;
+  const bool prev_has_spawn = out.has_spawn;
+  const auto prev_spawn = out.spawn;
+  const double prev_spawn_heading = out.spawn_heading;
+  const bool prev_has_controls = out.has_controls;
+  const auto prev_controls = out.controls;
+  const std::string prev_radio_station = out.radio_station;
+  const bool prev_radio_dj = out.radio_dj;
+  const double prev_radio_volume = out.radio_volume;
+  const double prev_tod_sec = out.tod_sec;
+  const int prev_difficulty = out.difficulty;
+  const int prev_ai_skill = out.ai_skill;
+  const int prev_ai_mode = out.ai_mode;
+
   out = drive::DriveSave{};
+  out.position = prev_position;
+  out.heading = prev_heading;
+  out.has_spawn = prev_has_spawn;
+  out.spawn = prev_spawn;
+  out.spawn_heading = prev_spawn_heading;
+  out.has_controls = prev_has_controls;
+  out.controls = prev_controls;
+  out.radio_station = prev_radio_station;
+  out.radio_dj = prev_radio_dj;
+  out.radio_volume = prev_radio_volume;
+  out.tod_sec = prev_tod_sec;
+  out.difficulty = prev_difficulty;
+  out.ai_skill = prev_ai_skill;
+  out.ai_mode = prev_ai_mode;
   out.owned_garage = true;
   // The selected car, or the next loadable one (FORMAT-PROFILE: a missing
   // model is kept but hidden; select another).

@@ -46,10 +46,39 @@ void test_fmv_def_and_subtitles() {
   check(carview::parse_fmv_def(def_xml, def), "parse_fmv_def succeeds");
   check(def.video_id == 5, "def video id == 5");
   check(def.audio.size() == 4, "def has 4 audio languages");
-  check(def.audio_index_for("EN") == 0, "EN maps to audio index 0");
-  check(def.audio_index_for("fr") == 1, "fr (case-insensitive) maps to audio index 1");
-  check(def.audio_index_for("MX") == 2, "MX maps to audio index 2");
-  check(def.audio_index_for("JP") == 0, "JP falls back to EN audio index 0");
+  check(def.audio_stream_id_for("EN") == 4, "EN maps to retail ASF stream id 4");
+  check(def.audio_stream_id_for("fr") == 1, "fr (case-insensitive) maps to retail ASF stream id 1");
+  check(def.audio_stream_id_for("MX") == 2, "MX maps to retail ASF stream id 2");
+  check(def.audio_stream_id_for("BR") == 3, "BR maps to retail ASF stream id 3");
+  check(def.audio_stream_id_for("JP") == 4, "JP falls back to EN retail ASF stream id 4");
+  check(def.audio_index_for("EN") == 4 && def.audio_index_for("fr") == 1,
+        "audio_index_for preserves retail ASF stream id (not 0-based element index)");
+
+  // Rally / 1000 Club high stream IDs (e.g. id="13").
+  const std::string rally_def_xml = R"(
+    <StreamDefinition>
+      <Audio id="7" lang="DE"/>
+      <Audio id="13" lang="EN"/>
+      <Video id="14" />
+    </StreamDefinition>
+  )";
+  carview::FmvStreamDef rally_def;
+  check(carview::parse_fmv_def(rally_def_xml, rally_def), "parse_fmv_def succeeds for Rally/Club XML");
+  check(rally_def.video_id == 14, "Rally def video id == 14");
+  check(rally_def.audio_stream_id_for("EN") == 13, "Rally EN maps to ASF stream id 13");
+  check(rally_def.audio_stream_id_for("de") == 7, "Rally DE maps to ASF stream id 7");
+  check(rally_def.audio_stream_id_for("KR") == 13, "Rally unknown language falls back to EN id 13");
+
+  // 5.1 WMA Pro -> stereo downmix fold check (FL + 0.707*C + 0.707*BL, FR + 0.707*C + 0.707*BR).
+  {
+    const float in51[6] = {0.4f, 0.2f, 0.2f, 0.9f, 0.1f, 0.3f};
+    float out2[2] = {0.0f, 0.0f};
+    carview::downmix_interleaved_to_stereo(in51, 6, 1, out2);
+    const float want_l = 0.4f + 0.70710678f * 0.2f + 0.70710678f * 0.1f;
+    const float want_r = 0.2f + 0.70710678f * 0.2f + 0.70710678f * 0.3f;
+    check(std::fabs(out2[0] - want_l) < 1e-4f && std::fabs(out2[1] - want_r) < 1e-4f,
+          "5.1 WMA Pro -> stereo downmix uses ITU 0.7071 fold weights and omits LFE");
+  }
 
   const std::string sub_xml = R"(
     <Subtitles>

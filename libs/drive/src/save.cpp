@@ -43,6 +43,9 @@ std::string save_to_text(const DriveSave& s) {
   }
   for (const auto& b : s.barns)
     out += "barn " + b.name + " " + std::to_string(b.status) + " " + num(b.rumour_at) + " " + num(b.found_at) + "\n";
+  for (const auto& br : s.pending_barn_restorations)
+    out += "pending_barn " + std::to_string(br.barn_id) + " " + std::to_string(br.car_id) + " " +
+           num(double(br.remaining_sec)) + "\n";
   if (!s.garage.empty()) {
     out += "garage";
     for (int id : s.garage) out += " " + std::to_string(id);
@@ -241,6 +244,13 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
     } else if (key == "barn") {
       SavedBarn b;
       if (l >> b.name >> b.status >> b.rumour_at >> b.found_at) out.barns.push_back(b);
+    } else if (key == "pending_barn") {
+      PendingBarnRestoration br;
+      double rem = 0.0;
+      if (l >> br.barn_id >> br.car_id >> rem && std::isfinite(rem) && rem >= 0.0) {
+        br.remaining_sec = float(rem);
+        out.pending_barn_restorations.push_back(br);
+      }
     } else if (key == "garage") {
       for (int id; l >> id;) out.garage.push_back(id);
     } else if (key == "owned_garage") {

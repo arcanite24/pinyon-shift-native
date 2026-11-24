@@ -7,8 +7,10 @@
 //                  audio thread's published state (radio popup, meters).
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <cstring>
 #include <type_traits>
 #include <vector>
 
@@ -50,6 +52,86 @@ class SpscQueue {
 
  private:
   std::vector<T> slots_;
+  size_t mask_ = 1;
+  alignas(64) std::atomic<size_t> write_{0};
+  alignas(64) std::atomic<size_t> read_{0};
+};
+
+// Lock-free power-of-two SPSC bulk ring buffer for real-time PCM audio streaming
+// (e.g. FMV decode worker -> TIME_CRITICAL audio render callback). Zero mutexes,
+// zero heap allocations after construction, contiguous wrap-around memcpy.
+template <class T>
+class SpscRingBuffer {
+  static_assert(std::is_trivially_copyable_v<T>);
+
+ public:
+  explicit SpscRingBuffer(size_t min_capacity = 65536) {
+    size_t n = 2;
+    while (n < min_capacity) n <<= 1;
+    buf_.resize(n);
+    mask_ = n - 1;
+  }
+
+  size_t capacity() const { return mask_ + 1; }
+
+  size_t available_read() const {
+    const size_t w = write_.load(std::memory_order_acquire);
+    const size_t r = read_.load(std::memory_order_relaxed);
+    return w - r;
+  }
+
+  size_t available_write() const {
+    const size_t w = write_.load(std::memory_order_relaxed);
+    const size_t r = read_.load(std::memory_order_acquire);
+    return (mask_ + 1) - (w - r);
+  }
+
+  // Producer thread only: writes up to `count` elements; returns count written.
+  size_t write(const T* src, size_t count) {
+    if (!src || count == 0) return 0;
+    const size_t w = write_.load(std::memory_order_relaxed);
+    const size_t r = read_.load(std::memory_order_acquire);
+    const size_t cap = mask_ + 1;
+    const size_t avail = cap - (w - r);
+    const size_t n = std::min(count, avail);
+    if (n == 0) return 0;
+    const size_t idx = w & mask_;
+    const size_t first = std::min(n, cap - idx);
+    std::memcpy(buf_.data() + idx, src, first * sizeof(T));
+    if (n > first) {
+      std::memcpy(buf_.data(), src + first, (n - first) * sizeof(T));
+    }
+    write_.store(w + n, std::memory_order_release);
+    return n;
+  }
+
+  // Consumer thread only: reads up to `count` elements; returns count read.
+  size_t read(T* dst, size_t count) {
+    if (!dst || count == 0) return 0;
+    const size_t r = read_.load(std::memory_order_relaxed);
+    const size_t w = write_.load(std::memory_order_acquire);
+    const size_t cap = mask_ + 1;
+    const size_t avail = w - r;
+    const size_t n = std::min(count, avail);
+    if (n == 0) return 0;
+    const size_t idx = r & mask_;
+    const size_t first = std::min(n, cap - idx);
+    std::memcpy(dst, buf_.data() + idx, first * sizeof(T));
+    if (n > first) {
+      std::memcpy(dst + first, buf_.data(), (n - first) * sizeof(T));
+    }
+    read_.store(r + n, std::memory_order_release);
+    return n;
+  }
+
+  // Call only when producer & consumer are stopped/quiesced.
+  void clear() {
+    read_.store(0, std::memory_order_relaxed);
+    write_.store(0, std::memory_order_release);
+  }
+
+ private:
+  std::vector<T> buf_;
   size_t mask_ = 1;
   alignas(64) std::atomic<size_t> write_{0};
   alignas(64) std::atomic<size_t> read_{0};

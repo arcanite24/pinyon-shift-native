@@ -78,6 +78,19 @@ void test_save_isolation() {
   check(drive::write_save(main_save, orig, &err), "write main save in user/");
   const std::string orig_bytes = read_whole_file(main_save);
 
+  // Also create garage.txt and liveries/ in user/ to verify full modded-tree seeding (P0-G3).
+  const fs::path main_garage = root / "user" / "garage.txt";
+  {
+    std::ofstream gf(main_garage, std::ios::binary);
+    gf << "garage_test_v1\n";
+  }
+  const fs::path main_livery = root / "user" / "liveries" / "car_1.liv";
+  fs::create_directories(main_livery.parent_path(), ec);
+  {
+    std::ofstream lf(main_livery, std::ios::binary);
+    lf << "livery_data_clean\n";
+  }
+
   drive::TrainerConfig tc;
   drive::FestivalPacingConfig pc;
   check(!drive::requires_modded_save(tc, pc, false), "clean session uses main save");
@@ -96,6 +109,44 @@ void test_save_isolation() {
   const fs::path modded_save = drive::resolve_isolated_save_path(main_save, true, &seeded);
   check(seeded, "first modded run seeds user-modded/save.txt from user/save.txt");
   check(modded_save == root / "user-modded" / "save.txt", "modded path is user-modded/save.txt");
+  check(read_whole_file(root / "user-modded" / "garage.txt") == "garage_test_v1\n",
+        "modded isolation seeds user-modded/garage.txt");
+  check(read_whole_file(root / "user-modded" / "liveries" / "car_1.liv") == "livery_data_clean\n",
+        "modded isolation seeds user-modded/liveries/");
+  check(drive::resolve_isolated_save_path(modded_save, true) == modded_save,
+        "resolve_isolated_save_path is idempotent on user-modded/");
+
+  // Live transition via TrainerState::configure_save_root + sync_modded_isolation + consume_modded_isolation_triggered.
+  {
+    const fs::path live_root = root / "live_case" / "user";
+    fs::create_directories(live_root / "liveries", ec);
+    check(drive::write_save(live_root / "save.txt", orig, &err), "write live user/save.txt");
+    {
+      std::ofstream gf(live_root / "garage.txt", std::ios::binary);
+      gf << "live_garage\n";
+    }
+    {
+      std::ofstream lf(live_root / "liveries" / "skyline.liv", std::ios::binary);
+      lf << "skyline_paint\n";
+    }
+    drive::TrainerState tst;
+    tst.configure_save_root(live_root, false);
+    check(!tst.modded_isolation_active() && tst.active_user_dir() == live_root,
+          "live trainer starts in clean user dir");
+    check(!tst.sync_modded_isolation() && !tst.consume_modded_isolation_triggered(),
+          "no isolation triggered while cheats off");
+    tst.config.cheats_enabled = true;
+    check(tst.sync_modded_isolation(), "toggling cheats on triggers live isolation");
+    check(tst.modded_isolation_active(), "modded isolation becomes active");
+    check(tst.active_user_dir() == root / "live_case" / "user-modded",
+          "active_user_dir redirects to user-modded");
+    check(tst.consume_modded_isolation_triggered(), "consume_modded_isolation_triggered fires once");
+    check(!tst.consume_modded_isolation_triggered(), "consume_modded_isolation_triggered clears latch");
+    check(read_whole_file(tst.active_user_dir() / "garage.txt") == "live_garage\n",
+          "live isolation copies garage.txt");
+    check(read_whole_file(tst.active_user_dir() / "liveries" / "skyline.liv") == "skyline_paint\n",
+          "live isolation copies liveries/");
+  }
 
   // Mutate modded save heavily via trainer cheats.
   drive::DriveSave modded;

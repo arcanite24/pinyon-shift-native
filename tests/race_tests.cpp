@@ -30,6 +30,7 @@
 #include "race/route.h"
 #include "race/session.h"
 #include "race/showcase.h"
+#include "race/street_line.h"
 
 namespace {
 
@@ -762,14 +763,62 @@ int main() {
       CHECK(lane[0] < -1.0f);  // moved left around traffic car at cross = +0.5
     }
 
-    // Airborne Showcases: all 7 PLANE_RACE events + animated 3D flight path & finish evaluation.
+    // Airborne Showcases: all 7 PLANE_RACE events + XML parser + spring rubber-banding & timing checkpoints.
     {
       CHECK(race::is_airborne_showcase(8, "PLANE_RACE_001"));
-      CHECK(race::showcase_spec_for("PLANE_RACE_001").kind == race::ShowcaseAircraftKind::kMustangP51);
-      CHECK(race::showcase_spec_for("PLANE_RACE_002").kind == race::ShowcaseAircraftKind::kHotAirBalloon);
-      CHECK(race::showcase_spec_for("PLANE_RACE_003").kind == race::ShowcaseAircraftKind::kStuntJet);
-      CHECK(race::showcase_spec_for("PLANE_RACE_004").kind == race::ShowcaseAircraftKind::kBiplane);
-      CHECK(race::showcase_spec_for("PLANE_RACE_006").kind == race::ShowcaseAircraftKind::kHelicopter);
+      const auto p1 = race::showcase_spec_for("PLANE_RACE_001");
+      const auto p2 = race::showcase_spec_for("PLANE_RACE_002");
+      const auto p3 = race::showcase_spec_for("PLANE_RACE_003");
+      const auto p4 = race::showcase_spec_for("PLANE_RACE_004");
+      const auto p5 = race::showcase_spec_for("PLANE_RACE_005");
+      const auto p6 = race::showcase_spec_for("PLANE_RACE_006");
+      const auto p7 = race::showcase_spec_for("PLANE_RACE_007");
+      CHECK(p1.event_id == 101 && p1.kind == race::ShowcaseAircraftKind::kMustangP51 && near(p1.cross_finish_time_s, 171.68, 0.02));
+      CHECK(p2.event_id == 168 && p2.kind == race::ShowcaseAircraftKind::kHelicopter && near(p2.cross_finish_time_s, 121.94, 0.02));
+      CHECK(p3.event_id == 172 && p3.kind == race::ShowcaseAircraftKind::kBiplane && near(p3.cross_finish_time_s, 134.70, 0.02));
+      CHECK(p4.event_id == 223 && p4.kind == race::ShowcaseAircraftKind::kHotAirBalloon &&
+            near(p4.cross_finish_time_s, 96.69, 0.02) && p4.on_countdown && near(p4.rumble_strength, 0.0));
+      CHECK(p5.event_id == 220 && p5.kind == race::ShowcaseAircraftKind::kHelicopter && near(p5.cross_finish_time_s, 121.83, 0.02));
+      CHECK(p6.event_id == 222 && p6.kind == race::ShowcaseAircraftKind::kMustangP51 && near(p6.cross_finish_time_s, 178.03, 0.02));
+      CHECK(p7.event_id == 246 && p7.kind == race::ShowcaseAircraftKind::kBiplane && near(p7.cross_finish_time_s, 108.90, 0.02));
+
+      // Tolerant airborne_challenges.xml parsing (including unclosed </DifficulySettings quirk).
+      const char* sample_xml = R"(<?xml version="1.0" encoding="utf-8"?>
+        <EventIDtoChallengeMap>
+          <ChallengeEvent eventid="168" refname="Horizon Chopper Race">
+            <Names objectfilename="ANIM_Showcase_Event_Helicopter_Race.pgeo" anim_in_race="ANIM_Showcase_Event_Helicopter_Race"/>
+            <AnimStart on_countdown="false"/>
+            <Timing in_race_anim_cross_start_time="0.00" in_race_anim_cross_finish_time="121.94"/>
+            <TimingCheckpoints>
+              <CheckPoint Time="0.0" SplineDistToNext="100.0" AdditionalRubberBandOffset="0.0"/>
+              <CheckPoint Time="0.0" SplineDistToNext="500.0" AdditionalRubberBandOffset="0.0"/>
+              <CheckPoint Time="60.0" SplineDistToNext="500.0" AdditionalRubberBandOffset="0.01"/>
+              <CheckPoint Time="121.94" SplineDistToNext="100.0" AdditionalRubberBandOffset="0.0"/>
+            </TimingCheckpoints>
+            <RubberBanding rubber_band_spring="30000.0" accel_rate="0.2" decel_rate="0.1" rubber_band_offset_ahead="0.001"/>
+            <DifficulySettings><AnimSpeeds base_mult="1.0" rubber_band_min_mult="0.9" rubber_band_max_mult="1.1"/></DifficulySettings
+            <DifficulySettings><AnimSpeeds base_mult="1.0" rubber_band_min_mult="0.9" rubber_band_max_mult="1.1"/></DifficulySettings>
+            <RumbleWhenNearPlayer strength="0.6" distance_outer="10.0" distance_inner="1.0"/>
+          </ChallengeEvent>
+          <ChallengeEvent eventid="223" refname="Balloon Event">
+            <Names objectfilename="ANIM_Showcase_Event_Balloon_Race.pgeo" anim_in_race="ANIM_Showcase_Event_Balloon_Race"/>
+            <AnimStart on_countdown="true"/>
+            <Timing in_race_anim_cross_start_time="0.20" in_race_anim_cross_finish_time="96.69"/>
+            <RubberBanding rubber_band_spring="300.0" accel_rate="0.1" decel_rate="0.04" rubber_band_offset_ahead="-0.006"/>
+            <DifficulySettings><AnimSpeeds base_mult="1.0" rubber_band_min_mult="0.7" rubber_band_max_mult="1.3"/></DifficulySettings>
+            <RumbleWhenNearPlayer strength="0.0" distance_outer="8.0" distance_inner="1.0"/>
+          </ChallengeEvent>
+        </EventIDtoChallengeMap>)";
+      std::vector<race::ShowcaseSpec> parsed_xml;
+      std::string xerr;
+      CHECK(race::parse_airborne_challenges_xml(sample_xml, parsed_xml, &xerr));
+      CHECK(parsed_xml.size() == 2);
+      CHECK(parsed_xml[0].event_id == 168 && parsed_xml[0].kind == race::ShowcaseAircraftKind::kHelicopter &&
+            parsed_xml[0].timing_checkpoints.size() == 4 && near(parsed_xml[0].rubber_band_min_mult, 0.9) &&
+            near(parsed_xml[0].rubber_band_max_mult, 1.1) && near(parsed_xml[0].rumble_strength, 0.6));
+      CHECK(parsed_xml[1].event_id == 223 && parsed_xml[1].kind == race::ShowcaseAircraftKind::kHotAirBalloon &&
+            parsed_xml[1].on_countdown && near(parsed_xml[1].rumble_strength, 0.0));
+
       drive::RacingLine rl;
       for (int i = 0; i <= 100; ++i) {
         rl.x.push_back(0.0f);
@@ -780,11 +829,17 @@ int main() {
         rl.speed.push_back(50.0f);
       }
       race::ShowcaseOpponent opp;
-      opp.init(race::showcase_spec_for("PLANE_RACE_001"), rl, 0.0, 1500.0);
+      opp.init(p1, rl, 0.0, 1500.0);
       CHECK(opp.active());
       for (int s = 0; s < 120; ++s) opp.step(0.05, s * 0.05, s * 2.5);
       CHECK(opp.pose().position[1] > 18.0 && opp.pose().progress_m > 200.0);
       CHECK(opp.player_place(1500.0, true, 25.0) == 1);
+
+      // Balloon starts moving during countdown (`on_countdown=true`) and emits zero proximity rumble.
+      race::ShowcaseOpponent balloon;
+      balloon.init(parsed_xml[1], rl, 0.0, 1500.0);
+      balloon.step(1.0, -3.0, 0.0);
+      CHECK(balloon.anim_time() > 0.5 && near(balloon.near_rumble_strength(2.0), 0.0));
     }
 
     // Full post-race breakdown (Assists, Skills, Bounty, Nemesis) + Style-6 50k CR first-win override
@@ -883,6 +938,103 @@ int main() {
       codriver.rewind_to(2.5);
       CHECK(codriver.fired_count() == 1);
       CHECK(codriver.pending_audio_cues() == 0);
+    }
+
+    // P0-P5: Session rollover detection (up_y < 0.5 sustained triggers "rolled over" reset).
+    {
+      race::Gate start{0, 0, 0, 1, 20};
+      race::Session sess(1, false, 1, start, race::Gate{0, 500, 0, 1, 20},
+                         {.countdown = 0.0, .resets = true, .rollover_time = 2.0});
+      std::vector<race::CarSample> cs(1);
+      // Car is sliding fast on-route (speed=15 m/s, off_route=0) but upside down (up_y=-0.8).
+      cs[0] = {0, 10, 0, 25, 15.0, 1.0, 0.0, 25.0, -0.8};
+      sess.step(1.0, cs);
+      CHECK(sess.resets().empty());
+      sess.step(1.1, cs);
+      CHECK(sess.resets().size() == 1 && sess.resets()[0] == 0);
+      CHECK(std::string(sess.car(0).reason) == "rolled over");
+      sess.reset_done(0);
+      CHECK(near(sess.car(0).rolled, 0.0));
+    }
+
+    // P0-I1: assign_driver() preserves event_rubberband > 10 (Street Race 14, 21..30 & Star Showdown 41..44).
+    {
+      race::EventData rows;
+      race::SkillRow sr;
+      sr.id = 20;
+      sr.rubberband_id = 3;
+      rows.skills.push_back(sr);
+      // 1..10: adds rubberband_modifier.
+      const auto d_std = race::assign_driver(20, 5, 6, 0, 0, 2, rows);
+      CHECK(d_std.rubberband_id == 8);
+      // Street Race rows (14, 21..30): kept verbatim without modifier.
+      CHECK(race::assign_driver(20, 5, 14, 0, 0, 3, rows).rubberband_id == 14);
+      for (int rb = 21; rb <= 30; ++rb) {
+        CHECK(race::assign_driver(20, 5, rb, 0, 0, -2, rows).rubberband_id == rb);
+      }
+      // Star Showdown boss rows (41..44): kept verbatim without modifier.
+      for (int rb = 41; rb <= 44; ++rb) {
+        CHECK(race::assign_driver(20, 5, rb, 0, 0, 4, rows).rubberband_id == rb);
+      }
+      // < 1: falls back to skill->rubberband_id.
+      CHECK(race::assign_driver(20, 5, 0, 0, 0, 2, rows).rubberband_id == 3);
+      CHECK(race::assign_driver(20, 5, -1, 0, 0, 2, rows).rubberband_id == 3);
+    }
+
+    // P0-I5 (street_line): skip empty/"none" road_type ways and obey TurnDelay/OneWay.
+    {
+      traffic::NavMap nav;
+      auto add_key = [&](const std::string& k) -> uint32_t {
+        for (uint32_t i = 0; i < nav.keys.size(); ++i)
+          if (nav.keys[i] == k) return i;
+        nav.keys.push_back(k);
+        return uint32_t(nav.keys.size() - 1);
+      };
+      auto add_val = [&](const std::string& v) -> uint32_t {
+        for (uint32_t i = 0; i < nav.values.size(); ++i)
+          if (nav.values[i] == v) return i;
+        nav.values.push_back(v);
+        return uint32_t(nav.values.size() - 1);
+      };
+      auto add_node = [&](float x, float z) -> uint32_t {
+        traffic::NavNode nd;
+        nd.id = uint32_t(nav.nodes.size() + 1);
+        nd.x = x;
+        nd.z = z;
+        nav.nodes.push_back(nd);
+        return uint32_t(nav.nodes.size() - 1);
+      };
+      auto add_way = [&](const std::vector<uint32_t>& ns, const std::string& rt, bool oneway = false) {
+        traffic::NavWay w;
+        w.node_first = uint32_t(nav.way_nodes.size());
+        w.node_count = uint32_t(ns.size());
+        for (uint32_t n : ns) nav.way_nodes.push_back(n);
+        w.tag_first = uint32_t(nav.tags.size());
+        if (!rt.empty()) nav.tags.push_back({add_key("road_type"), add_val(rt)});
+        if (oneway) nav.tags.push_back({add_key("oneway"), add_val("true")});
+        w.tag_count = uint32_t(nav.tags.size()) - w.tag_first;
+        nav.ways.push_back(w);
+      };
+      // Non-road outline nodes right on top of start/goal (must be ignored!).
+      const uint32_t o0 = add_node(0, 0), o1 = add_node(0, 200);
+      add_way({o0, o1}, "none");
+      add_way({o0, o1}, "");
+      // Real road at x=10, z=0..200.
+      const uint32_t r0 = add_node(10, 0), r1 = add_node(10, 100), r2 = add_node(10, 200);
+      add_way({r0, r1, r2}, "a");
+
+      race::Route route;
+      route.id = 999;
+      route.transforms.push_back({"start_location_00", 5, 0, 0, 0, 1, std::nullopt});
+      route.transforms.push_back({"route_checkpoint_00", 5, 0, 200, 0, 1, 25.0});
+      race::AiLineFile line;
+      std::string err;
+      CHECK(race::build_street_line(nav, route, line, &err));
+      // Middle points must lie along the real road at x ~ 10, NOT the "none" outline at x = 0.
+      bool stayed_on_road = false;
+      for (const auto& pt : line.points)
+        if (pt.z > 80.0f && pt.z < 120.0f && pt.x > 7.0f) stayed_on_road = true;
+      CHECK(stayed_on_road);
     }
   }
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {

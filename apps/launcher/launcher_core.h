@@ -484,7 +484,16 @@ struct AvailableUpdate {
   std::string download_url;
   uint64_t size_bytes = 0;
   std::string sha256;
+  std::string sha256_url;  // optional companion .sha256 / SHA256SUMS asset URL
 };
+
+// Returns true if `asset_name` matches `platform_selector` — either an exact
+// filename or a versioned package name such as `shift-engine-windows-0.2.0.zip`,
+// `shift-engine-linux-0.2.0.tar.gz`, or `shift-engine-macos-0.2.0.dmg`.
+bool matches_release_asset(std::string_view asset_name, std::string_view platform_selector);
+
+// Extracts a lowercase 64-hex SHA-256 digest from a `.sha256` or `SHA256SUMS` text.
+std::string parse_sha256_checksum_text(std::string_view text, std::string_view asset_name = {});
 
 std::optional<AvailableUpdate> select_github_update(std::string_view releases_json,
                                                     std::string_view current_version,
@@ -517,6 +526,38 @@ StagedUpdatePlan plan_staged_update(const std::filesystem::path& unpacked_dir,
                                     const std::filesystem::path& install_dir);
 bool verify_update_sha256(const std::filesystem::path& file, std::string_view expected_hex,
                           std::string* actual_hex = nullptr);
+
+struct StagedUpdateApplyResult {
+  bool ok = false;
+  bool verified = false;
+  std::filesystem::path archive_path;
+  std::filesystem::path staging_dir;
+  std::filesystem::path apply_script_path;
+  StagedUpdatePlan plan;
+  std::string actual_sha256;
+  std::string status;
+};
+
+// Verifies `archive_path` against `expected_sha256`, unpacks it into
+// `<install_dir>/.shift-update/unpacked`, builds a StagedUpdatePlan, and writes
+// a platform apply script ready to swap binaries cleanly after exit.
+StagedUpdateApplyResult prepare_staged_update_from_archive(
+    const std::filesystem::path& archive_path,
+    std::string_view expected_sha256,
+    const std::filesystem::path& install_dir,
+    uint32_t wait_pid = 0,
+    const std::filesystem::path& relaunch_exe = {});
+
+// Downloads `update` over HTTPS (fetching `sha256_url` if `sha256` is empty),
+// verifies SHA-256, unpacks, plans, and writes the staged apply script.
+StagedUpdateApplyResult stage_github_update(
+    const AvailableUpdate& update,
+    const std::filesystem::path& install_dir,
+    uint32_t wait_pid = 0,
+    const std::filesystem::path& relaunch_exe = {});
+
+// Launches the generated staged apply script detached so the launcher can exit.
+bool launch_staged_update_script(const std::filesystem::path& script_path, std::string* error = nullptr);
 
 // ---- 10. Android Wi-Fi Sync Server & QR Code -------------------------------
 

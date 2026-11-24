@@ -488,7 +488,8 @@ const RallyStageInfo* RallyChampionshipSession::current_stage() const {
 RallyStageFinish RallyChampionshipSession::record_stage_finish(const RallyCatalog& catalog, double player_stage_time,
                                                                const std::vector<double>& ai_stage_times) {
   RallyStageFinish fin;
-  if (!active_ || finished_ || current_stage_ >= int(stages_.size())) return fin;
+  if (!active_ || current_stage_ >= int(stages_.size())) return fin;
+  if (finished_ || in_service_area_ || stages_completed() > current_stage_) return last_finish_;
 
   const auto& stg = stages_[size_t(current_stage_)];
   std::vector<double> ai_times = ai_stage_times;
@@ -561,11 +562,46 @@ RallyStageFinish RallyChampionshipSession::record_stage_finish(const RallyCatalo
   return fin;
 }
 
+RallyCarValidation RallyChampionshipSession::validate_car(int car_class_id, bool has_rally_kit) const {
+  RallyCarValidation v;
+  if (!active_) {
+    v.valid = false;
+    v.reason = "NO ACTIVE RALLY SESSION";
+    return v;
+  }
+  if (is_heats_) return v;  // RALLY_HEATS supplies a loaner rally car.
+  if (!has_rally_kit) {
+    v.valid = false;
+    v.reason = "RALLY UPGRADE KIT REQUIRED";
+    return v;
+  }
+  if (target_class_ > 0 && car_class_id > target_class_) {
+    v.valid = false;
+    v.reason = std::string("CAR CLASS EXCEEDS CLASS ") + rally_class_name(target_class_) + " LIMIT";
+    return v;
+  }
+  return v;
+}
+
 bool RallyChampionshipSession::advance_from_service_area() {
   if (!active_ || !in_service_area_ || finished_) return false;
   ++current_stage_;
   in_service_area_ = false;
   return current_stage_ < int(stages_.size());
+}
+
+bool RallyChampionshipSession::advance_from_service_area(int car_class_id, bool has_rally_kit, std::string* reason) {
+  if (!active_ || !in_service_area_ || finished_) {
+    if (reason) *reason = "NOT IN SERVICE AREA";
+    return false;
+  }
+  const RallyCarValidation v = validate_car(car_class_id, has_rally_kit);
+  if (!v.valid) {
+    if (reason) *reason = v.reason;
+    return false;
+  }
+  if (reason) reason->clear();
+  return advance_from_service_area();
 }
 
 void RallyChampionshipSession::retire() {

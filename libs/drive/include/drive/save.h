@@ -61,6 +61,12 @@ struct SavedBarn {
   double rumour_at = 0, found_at = 0;
 };
 
+struct PendingBarnRestoration {
+  int barn_id = 0;
+  int car_id = 0;
+  float remaining_sec = 0.0f;
+};
+
 struct SavedClubCar {
   int64_t car_id = 0;
   std::vector<std::pair<uint32_t, bool>> challenges;  // key, completed
@@ -79,6 +85,7 @@ struct DriveSave {
   double total_distance = 0;
   std::vector<std::string> signs_found;
   std::vector<SavedBarn> barns;
+  std::vector<PendingBarnRestoration> pending_barn_restorations;
   std::vector<int> garage;
   bool owned_garage = false;
   // The career.

@@ -848,8 +848,38 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     carview::build_drive_hud(l, d, float(W), float(H));
     save_frame("ui4_prerace_postrace.png", l, load_or_build_backdrop(world_bg_path));
 
+    // Also verify Pre-Race 3-2-1 countdown digits render during kCountdown (P0-U1).
+    rh.phase = carview::RaceHud::kCountdown;
+    rh.grid_menu_open = false;
+    rh.digit = 0;
+    rh.clock = 0.0;
+    carview::ui::List lcount0;
+    carview::build_drive_hud(lcount0, d, float(W), float(H));
+    for (int cd = 3; cd >= 1; --cd) {
+      rh.digit = cd;
+      rh.clock = -double(cd) + 0.25;
+      carview::ui::List lcount;
+      carview::build_drive_hud(lcount, d, float(W), float(H));
+      check(lcount.items().size() > lcount0.items().size(), "Pre-race countdown digit emits visible shapes");
+    }
+
+    // Also verify game_text() preserves {font='SYM'} and {colour=...} while stripping unknown tags (P0-U3).
+    {
+      carview::set_game_text([](const std::string& k) { return k; });
+      const std::string rich =
+          carview::game_text("PRESS {font='SYM'}A{font_pop} FOR {colour='249 0 100 255'}HORIZON{colour_pop} {0} [UI.Flow]");
+      check(rich.find("{font='SYM'}") != std::string::npos, "game_text preserves {font='SYM'} tag");
+      check(rich.find("{font_pop}") != std::string::npos, "game_text preserves {font_pop} tag");
+      check(rich.find("{colour='249 0 100 255'}") != std::string::npos, "game_text preserves {colour=...} tag");
+      check(rich.find("{0}") == std::string::npos, "game_text strips unrecognized {0} placeholder");
+      check(rich.find("[UI.Flow]") == std::string::npos, "game_text strips [UI.*] token");
+      carview::set_game_text({});
+    }
+
     // Also verify Pre-Race Grid Menu, Race Results Table, Points Earned, and Prize Car Won emit full UI4 chrome.
     rh.phase = carview::RaceHud::kCountdown;
+    rh.digit = 0;
+    rh.clock = 0.0;
     rh.grid_menu_open = true;
     rh.grid_menu = {"START RACE", "DIFFICULTY", "QUIT RACE"};
     rh.grid_car_info = "2002 Nissan Skyline GT-R V-spec II  •  B 461";

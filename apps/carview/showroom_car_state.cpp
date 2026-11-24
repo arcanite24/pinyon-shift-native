@@ -416,12 +416,7 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       d.part_name = lower(part.name);
       std::memcpy(d.rest_model, d.push.model, sizeof d.rest_model);
       if (d.wheel < 0 && d.cockpit_role < 0) {
-        if (d.part_name == "winga" || d.part_name == "wing" || d.part_name.find("spoiler") != std::string::npos ||
-            d.part_name.find("aero") != std::string::npos) {
-          d.anim_part = 1;
-        } else if (d.part_name.find("popup") != std::string::npos || d.part_name.find("retract") != std::string::npos) {
-          d.anim_part = 2;
-        } else if (d.part_name.rfind("bumperf", 0) == 0) {
+        if (d.part_name.rfind("bumperf", 0) == 0) {
           d.anim_part = 3;
         } else if (d.part_name.rfind("bumperr", 0) == 0) {
           d.anim_part = 4;
@@ -491,7 +486,8 @@ void Showroom::set_animated_car_parts(float aero_deploy, float popup_open, float
   for (Draw& d : draws_) {
     if (d.anim_part == 0 || d.wheel >= 0 || d.cockpit_role >= 0) continue;
     if (d.anim_part == 1) {
-      // Active rear aero spoiler / airbrake: smoothly rises + pitches up at high speed or braking.
+      // Active rear aero spoiler / airbrake / flaps (only on CarAnimationEvents RearWing or
+      // active-aero linkage cars): smoothly rises + pitches up at high speed or braking.
       if (aero_deploy_smooth_ > 0.002f) {
         float xform[16];
         make_rot_x(d.centre, aero_deploy_smooth_ * 0.24f, aero_deploy_smooth_ * 0.085f, xform);
@@ -499,14 +495,44 @@ void Showroom::set_animated_car_parts(float aero_deploy, float popup_open, float
       } else {
         std::memcpy(d.push.model, d.rest_model, sizeof d.push.model);
       }
-    } else if (d.anim_part == 2) {
-      // Retractable pop-up headlights: hinge open when headlamps activate.
-      if (popup_open_smooth_ > 0.002f) {
+    } else if (d.anim_part == 8) {
+      // Active rear wing linkage sub-parts (winga_arm*, winga_piston, winga_lower, winga_suspension):
+      // smoothly extend with the deployed wing so pistons/arms stay joined cleanly.
+      if (aero_deploy_smooth_ > 0.002f) {
         float xform[16];
-        make_rot_x(d.centre, -popup_open_smooth_ * 0.65f, popup_open_smooth_ * 0.03f, xform);
+        make_rot_x(d.centre, aero_deploy_smooth_ * 0.14f, aero_deploy_smooth_ * 0.055f, xform);
         multiply(xform, d.rest_model, d.push.model);
       } else {
         std::memcpy(d.push.model, d.rest_model, sizeof d.push.model);
+      }
+    } else if (d.anim_part == 7) {
+      // Active EngineVent louvers (e.g. Murcielago SV, Aventador, Reventon): tilt open at speed.
+      if (aero_deploy_smooth_ > 0.002f) {
+        float xform[16];
+        make_rot_x(d.centre, aero_deploy_smooth_ * 0.26f, aero_deploy_smooth_ * 0.025f, xform);
+        multiply(xform, d.rest_model, d.push.model);
+      } else {
+        std::memcpy(d.push.model, d.rest_model, sizeof d.push.model);
+      }
+    } else if (d.anim_part == 2) {
+      // Retractable pop-up headlight pods: hinge front lip upward (+X rotation in -Z forward model frame)
+      // when headlamps activate.
+      if (popup_open_smooth_ > 0.002f) {
+        float xform[16];
+        make_rot_x(d.centre, popup_open_smooth_ * 0.55f, popup_open_smooth_ * 0.045f, xform);
+        multiply(xform, d.rest_model, d.push.model);
+      } else {
+        std::memcpy(d.push.model, d.rest_model, sizeof d.push.model);
+      }
+    } else if (d.anim_part == 9 || d.anim_part == 10) {
+      // Dual-mesh pop-up headlights (headlightLup/Rup vs headlightLdown/Rdown, e.g. BMW M1):
+      // toggle cleanly between retracted and deployed pod meshes.
+      const bool show = (d.anim_part == 9) ? (popup_open_smooth_ >= 0.5f) : (popup_open_smooth_ < 0.5f);
+      if (show) {
+        std::memcpy(d.push.model, d.rest_model, sizeof d.push.model);
+      } else {
+        std::memset(d.push.model, 0, sizeof d.push.model);
+        d.push.model[15] = 1.0f;
       }
     } else if (d.anim_part >= 3 && d.anim_part <= 6) {
       // Severely damaged loose bumpers / side mirrors droop slightly & rattle with chassis vibration.

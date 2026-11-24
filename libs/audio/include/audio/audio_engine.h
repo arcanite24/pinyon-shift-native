@@ -61,6 +61,7 @@ struct AudioTelemetry {
   bool satnav_playing = false;
   bool vo_playing = false;
   bool in_tunnel = false;
+  bool radio_rally_mode = false;
 };
 
 class AudioEngine {
@@ -96,8 +97,15 @@ class AudioEngine {
   void set_vo_player(std::unique_ptr<VoPlayer> vo);
   void set_acoustics_sample(const AcousticsSample& sample);
   void set_listener_pose(std::array<float, 3> pos, float heading_rad);
-  int load_ambience_beds(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir);
+  int load_ambience_beds(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
+                         const std::filesystem::path& state_root = {});
+  int load_rally_ambience_beds(const std::filesystem::path& rally_root_or_state_root,
+                               const std::filesystem::path& cache_dir);
+  void set_rally_world(bool on);
   void set_ambience_bed_sample(AmbienceBedSlot slot, PcmSample pcm);
+  void set_rally_ambience_bed_sample(int region_idx, std::string_view region_name, PcmSample pcm);
+  bool load_rally_vo(const std::filesystem::path& rally_root_or_state_root, std::string_view language = "EN",
+                     std::string* note = nullptr);
   void reload_sfx_burble(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
                          const std::string& burble_bank);
   // Attaches `radio` (caller keeps `RadioData` and `Radio` alive until
@@ -112,6 +120,7 @@ class AudioEngine {
 
   // Lock-free discrete SFX/UI/VO triggers.
   void trigger_collision(const CollisionHit& hit);
+  void trigger_landing(const LandingHit& hit);
   void trigger_ui(UiCue cue);
   void trigger_satnav(SatNavCue cue);
   void set_satnav_enabled(bool on);
@@ -152,6 +161,10 @@ class AudioEngine {
   void restore_gameplay_snapshot();
   void set_dynamics_speed(float speed_mph, float top_speed_mph = 140.0f);
   void set_car_bus_dsp_mode(CarDspMode mode);
+  // Rally stage radio attenuation & high-pass routing (keeps Co-Driver clear).
+  void set_radio_rally_mode(bool on);
+  void SetRadioRallyMode(bool on) { set_radio_rally_mode(on); }
+  bool radio_rally_mode() const { return radio_rally_mode_shadow_.load(std::memory_order_acquire); }
 
   // Radio commands (executed on the audio thread so Radio is single-threaded).
   void radio_press(int dir);
@@ -216,6 +229,7 @@ class AudioEngine {
       kSwapRuntimeRadio,
       kSwapUserMusic,
       kTriggerCollision,
+      kTriggerLanding,
       kTriggerUi,
       kTriggerSatNav,
       kSatNavEnable,
@@ -230,9 +244,12 @@ class AudioEngine {
       kCarBusDspMode,
       kPlaybackSystem,
       kUiMusicMode,
+      kRadioRallyMode,
+      kRallyWorld,
     };
     Kind kind = kBusLevel;
     int i0 = 0;
+    int i1 = 0;
     float f0 = 0.0f;
     float f1 = 0.0f;
     float f2 = 0.0f;
@@ -304,6 +321,12 @@ class AudioEngine {
   float music_hp_mix_ = 0.0f;
   float music_hp_prev_in_[2]{0.0f, 0.0f};
   float music_hp_prev_out_[2]{0.0f, 0.0f};
+  bool radio_rally_mode_ = false;
+  std::atomic<bool> radio_rally_mode_shadow_{false};
+  float rally_radio_gain_ = 1.0f;
+  float rally_hp_mix_ = 0.0f;
+  float rally_hp_prev_in_[2]{0.0f, 0.0f};
+  float rally_hp_prev_out_[2]{0.0f, 0.0f};
 
   // Async in-process UIInGame_Streams.fsb music tracks (Title, Homespace, Loading, Map, PostRace).
   struct StereoTrack {

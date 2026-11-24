@@ -13,7 +13,7 @@ namespace drive {
 namespace {
 
 constexpr char kReplayMagic[8] = {'S', 'H', 'F', 'T', 'R', 'E', 'P', 'L'};
-constexpr uint32_t kReplayVersion = 1;
+constexpr uint32_t kReplayVersion = 2;
 constexpr uint32_t kMaxFramesFile = 360000;   // 100 minutes at 60 Hz
 constexpr uint32_t kMaxCarsPerFrame = 128;
 constexpr uint32_t kMaxRosterEntries = 256;
@@ -415,8 +415,12 @@ bool save_replay_file(const std::filesystem::path& path, const ReplayRecording& 
     payload.pod(r.car_id);
     payload.str(r.car_media);
     payload.str(r.driver_name);
-    const uint8_t flags = (r.is_player ? 1u : 0u) | (r.is_traffic ? 2u : 0u);
+    const uint8_t flags = (r.is_player ? 1u : 0u) | (r.is_traffic ? 2u : 0u) | (r.has_body_color ? 4u : 0u);
     payload.pod(flags);
+    payload.pod(r.paint_index);
+    payload.pod(r.body_color);
+    payload.pod(r.rim_id);
+    payload.str(r.livery_id);
   }
 
   const uint32_t marker_n = uint32_t(std::min<size_t>(rec.meta.markers.size(), kMaxMarkers));
@@ -494,7 +498,7 @@ bool load_replay_file(const std::filesystem::path& path, ReplayRecording& out, s
     if (error) *error = "invalid replay file magic";
     return false;
   }
-  if (version != kReplayVersion) {
+  if (version < 1 || version > kReplayVersion) {
     if (error) *error = "unsupported replay version " + std::to_string(version);
     return false;
   }
@@ -541,6 +545,13 @@ bool load_replay_file(const std::filesystem::path& path, ReplayRecording& out, s
     }
     ci.is_player = (flags & 1u) != 0;
     ci.is_traffic = (flags & 2u) != 0;
+    ci.has_body_color = (flags & 4u) != 0;
+    if (version >= 2) {
+      if (!r.pod(ci.paint_index) || !r.pod(ci.body_color) || !r.pod(ci.rim_id) || !r.str(ci.livery_id)) {
+        if (error) *error = "corrupt replay roster appearance metadata";
+        return false;
+      }
+    }
   }
 
   uint32_t marker_n = 0;

@@ -5,35 +5,75 @@
 #include <cstdio>
 #include <limits>
 #include <queue>
+#include <string_view>
 
 namespace race {
 namespace {
 
+constexpr double kMphToMps = 0.44704;
+constexpr float kOneWayMultiplier = 999.0f;
+constexpr float kTurnDelaySeconds = 20.0f;
+// Sharp-turn threshold (~35 degrees): cos(35 deg) ~= 0.819152.
+constexpr float kSharpTurnCos = 0.819152f;
+
+float road_speed_mps(std::string_view rt) {
+  if (rt == "freeway") return float(75.0 * kMphToMps);
+  if (rt == "a") return float(60.0 * kMphToMps);
+  if (rt == "b") return float(40.0 * kMphToMps);
+  if (rt == "dirt") return float(35.0 * kMphToMps);
+  return float(1.0 * kMphToMps);
+}
+
 struct Edge {
-  uint32_t to;
-  float length;
+  uint32_t id = 0;
+  uint32_t to = 0;
+  float cost = 0.0f;  // travel time in seconds
+  float dx = 0.0f;    // unit horizontal direction
+  float dz = 1.0f;
 };
 
 struct Graph {
   std::vector<std::vector<Edge>> out;
+  std::vector<uint32_t> edge_to;
+  std::vector<float> edge_dx, edge_dz;
   std::vector<uint8_t> on_way;
+  std::vector<uint8_t> ignore_turn;
 };
 
 Graph build_graph(const traffic::NavMap& nav) {
   Graph g;
   g.out.resize(nav.nodes.size());
   g.on_way.assign(nav.nodes.size(), 0);
+  g.ignore_turn.assign(nav.nodes.size(), 0);
+  for (uint32_t i = 0; i < nav.nodes.size(); ++i) {
+    if (nav.node_tag(i, "ignore_turn_flags") == "true") g.ignore_turn[i] = 1;
+  }
+  auto add_edge = [&](uint32_t u, uint32_t v, float cost, float dx, float dz) {
+    const uint32_t eid = uint32_t(g.edge_to.size());
+    g.edge_to.push_back(v);
+    g.edge_dx.push_back(dx);
+    g.edge_dz.push_back(dz);
+    g.out[u].push_back({eid, v, cost, dx, dz});
+  };
   for (uint32_t w = 0; w < nav.ways.size(); ++w) {
+    // Skip non-road ways (map outlines / untagged splines with empty or "none" road_type).
+    const std::string_view rt = nav.way_tag(w, "road_type");
+    if (rt.empty() || rt == "none") continue;
+    const bool oneway = nav.way_tag(w, "oneway") == "true";
+    const float speed = road_speed_mps(rt);
     const uint32_t n = nav.ways[w].node_count;
     for (uint32_t k = 0; k + 1 < n; ++k) {
       const uint32_t a = nav.way_node(w, k), b = nav.way_node(w, k + 1);
       if (a >= nav.nodes.size() || b >= nav.nodes.size() || a == b) continue;
       const auto& p = nav.nodes[a];
       const auto& q = nav.nodes[b];
-      const float len = std::hypot(q.x - p.x, q.z - p.z);
-      // Both directions: a race closes the roads.
-      g.out[a].push_back({b, len});
-      g.out[b].push_back({a, len});
+      const float vx = q.x - p.x, vz = q.z - p.z;
+      const float len = std::hypot(vx, vz);
+      const float ux = len > 1e-4f ? (vx / len) : 0.0f;
+      const float uz = len > 1e-4f ? (vz / len) : 1.0f;
+      const float time_s = std::max(1e-4f, len / speed);
+      add_edge(a, b, time_s, ux, uz);
+      add_edge(b, a, oneway ? (time_s * kOneWayMultiplier) : time_s, -ux, -uz);
       g.on_way[a] = g.on_way[b] = 1;
     }
   }
@@ -52,35 +92,62 @@ uint32_t nearest_node(const traffic::NavMap& nav, const Graph& g, double x, doub
   return best;
 }
 
-// Dijkstra from a to b; the node indices from a to b, empty when none.
-// When b is out of reach, `reached` (if given) holds every node's distance
+// Edge-state Dijkstra from a to b with TurnDelaySeconds=20.0 on sharp turns (> ~35 deg)
+// and OneWayMultiplier=999.0 on one-way edges.
+// When b is out of reach, `reached` (if given) holds every node's best cost
 // from a (infinite when unreachable): the whole component was searched.
 std::vector<uint32_t> shortest(const Graph& g, uint32_t a, uint32_t b, std::vector<float>* reached = nullptr) {
-  const size_t n = g.out.size();
-  std::vector<float> dist(n, std::numeric_limits<float>::infinity());
-  std::vector<uint32_t> prev(n, std::numeric_limits<uint32_t>::max());
+  if (a == b) return {a};
+  const uint32_t n_edges = uint32_t(g.edge_to.size());
+  const uint32_t kStartState = n_edges;
+  const size_t n_states = size_t(n_edges) + 1;
+  const float kInf = std::numeric_limits<float>::infinity();
+  std::vector<float> dist(n_states, kInf);
+  std::vector<uint32_t> prev(n_states, std::numeric_limits<uint32_t>::max());
+  std::vector<float> node_dist;
+  if (reached) node_dist.assign(g.out.size(), kInf);
   using Q = std::pair<float, uint32_t>;
   std::priority_queue<Q, std::vector<Q>, std::greater<Q>> q;
-  dist[a] = 0.0f;
-  q.push({0.0f, a});
+  dist[kStartState] = 0.0f;
+  if (reached) node_dist[a] = 0.0f;
+  q.push({0.0f, kStartState});
+  uint32_t best_goal_state = std::numeric_limits<uint32_t>::max();
   while (!q.empty()) {
-    const auto [d, u] = q.top();
+    const auto [d, st] = q.top();
     q.pop();
-    if (d > dist[u]) continue;
-    if (u == b) break;
+    if (d > dist[st]) continue;
+    const uint32_t u = (st == kStartState) ? a : g.edge_to[st];
+    if (u == b) {
+      best_goal_state = st;
+      break;
+    }
+    const bool has_in = (st != kStartState);
+    const float in_dx = has_in ? g.edge_dx[st] : 0.0f;
+    const float in_dz = has_in ? g.edge_dz[st] : 0.0f;
+    const bool ign = u < g.ignore_turn.size() && g.ignore_turn[u] != 0;
     for (const Edge& e : g.out[u]) {
-      const float nd = d + e.length;
-      if (nd < dist[e.to]) dist[e.to] = nd, prev[e.to] = u, q.push({nd, e.to});
+      float tp = 0.0f;
+      if (has_in && !ign) {
+        const float dot = in_dx * e.dx + in_dz * e.dz;
+        if (dot < kSharpTurnCos) tp = kTurnDelaySeconds;
+      }
+      const float nd = d + e.cost + tp;
+      if (nd < dist[e.id]) {
+        dist[e.id] = nd;
+        prev[e.id] = st;
+        if (reached && nd < node_dist[e.to]) node_dist[e.to] = nd;
+        q.push({nd, e.id});
+      }
     }
   }
-  if (!std::isfinite(dist[b])) {
-    if (reached) *reached = std::move(dist);
+  if (best_goal_state == std::numeric_limits<uint32_t>::max()) {
+    if (reached) *reached = std::move(node_dist);
     return {};
   }
   std::vector<uint32_t> path;
-  for (uint32_t v = b; v != std::numeric_limits<uint32_t>::max(); v = prev[v]) {
-    path.push_back(v);
-    if (v == a) break;
+  for (uint32_t st = best_goal_state; st != std::numeric_limits<uint32_t>::max(); st = prev[st]) {
+    path.push_back(st == kStartState ? a : g.edge_to[st]);
+    if (st == kStartState) break;
   }
   std::reverse(path.begin(), path.end());
   return path;

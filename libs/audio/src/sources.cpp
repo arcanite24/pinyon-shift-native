@@ -1,8 +1,11 @@
 #include "audio/sources.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <set>
 #include <system_error>
 
 #include "cars/mods.h"
@@ -45,16 +48,43 @@ void add_banks(const std::filesystem::path& lod1, std::map<std::string, std::fil
   std::error_code ec;
   if (lod1.empty() || !std::filesystem::is_directory(lod1, ec)) return;
   for (const auto& e : std::filesystem::directory_iterator(lod1, ec))
-    if (e.is_regular_file() && lower_name(e.path().extension().string()) == ".fsb")
+    if (e.is_regular_file(ec) && lower_name(e.path().extension().string()) == ".fsb")
       banks[lower_name(e.path().filename().string())] = e.path();
 }
 
-std::filesystem::path lod1_under(std::filesystem::path media) {
-  for (const char* part : {"audio", "cars", "Engines", "Soundbanks", "LOD1"}) {
+uint32_t pri_order(const std::string& lower_dir) {
+  const size_t pos = lower_dir.rfind("_pri_");
+  if (pos == std::string::npos) return 0;
+  return uint32_t(std::strtoul(lower_dir.c_str() + pos + 5, nullptr, 10));
+}
+
+// Scans Media/audio/cars/Engines/Soundbanks/LOD1 and any LOD1_pri_* (such as
+// LOD1_pri_1650) or *_pri_* car-pack soundbank subdirectories in ascending priority.
+void add_soundbanks_under(std::filesystem::path media, std::map<std::string, std::filesystem::path>& banks) {
+  for (const char* part : {"audio", "cars", "Engines", "Soundbanks"}) {
     media = child_nocase(media, part);
-    if (media.empty()) return {};
+    if (media.empty()) return;
   }
-  return media;
+  add_banks(media, banks);
+  add_banks(child_nocase(media, "LOD1"), banks);
+  std::error_code ec;
+  std::vector<std::pair<uint32_t, std::filesystem::path>> pri_dirs;
+  for (const auto& e : std::filesystem::directory_iterator(media, ec)) {
+    if (!e.is_directory(ec)) continue;
+    const std::string dn = lower_name(e.path().filename().string());
+    if (dn == "lod1") continue;
+    if (dn.rfind("lod1_", 0) == 0 || dn.find("_pri_") != std::string::npos) {
+      pri_dirs.emplace_back(pri_order(dn), e.path());
+    }
+  }
+  std::sort(pri_dirs.begin(), pri_dirs.end(), [](const auto& a, const auto& b) {
+    if (a.first != b.first) return a.first < b.first;
+    return lower_name(a.second.filename().string()) < lower_name(b.second.filename().string());
+  });
+  for (const auto& [pri, dir] : pri_dirs) {
+    (void)pri;
+    add_banks(dir, banks);
+  }
 }
 
 }  // namespace
@@ -99,13 +129,15 @@ bool SoundFiles::open(const cars::Install& install, std::string* error) {
     std::error_code ec;
     if (std::filesystem::exists(p, ec) && !add_archive(p, true, k)) return false;
   }
-  add_banks(lod1_under(install.media), banks_);
+  add_soundbanks_under(install.media, banks_);
   auto add_loose_dir = [&](const std::filesystem::path& dir) {
     std::error_code ec;
+    // Direct .fsb files inside loose car-pack audio dirs (e.g. LOD1_pri_1650/).
+    add_banks(dir, banks_);
     const auto media = child_nocase(dir, "Media");
-    if (media.empty()) return;
-    add_banks(lod1_under(media), banks_);
-    const auto audio_dir = child_nocase(media, "audio");
+    const auto root = media.empty() ? dir : media;
+    add_soundbanks_under(root, banks_);
+    const auto audio_dir = child_nocase(root, "audio");
     const auto cars_sub = child_nocase(audio_dir, "cars");
     if (cars_sub.empty()) return;
     const auto engines_sub = child_nocase(cars_sub, "Engines");
@@ -125,23 +157,50 @@ bool SoundFiles::open(const cars::Install& install, std::string* error) {
   // The packages, in ascending priority (later wins), then v4.
   for (const auto& pkg : install.packages) {
     if (pkg.id == cars::kCommunityPackage) continue;
+    std::set<std::filesystem::path> scanned_parents;
     for (const auto& zip : pkg.archives) {
       std::error_code ec;
+      if (zip.has_parent_path()) scanned_parents.insert(zip.parent_path());
       if (std::filesystem::is_directory(zip, ec)) {
         add_loose_dir(zip);
         continue;
       }
       if (!add_archive(zip, false, 0)) return false;
-      // Loose banks: <offer>_pri_<n>/Media/audio/cars/Engines/Soundbanks/LOD1/.
+      // Loose banks: <offer>_pri_<n>/Media/audio/cars/Engines/Soundbanks/LOD1* (incl. LOD1_pri_1650).
       std::filesystem::path loose = zip;
       loose.replace_extension();
-      add_banks(lod1_under(child_nocase(loose, "Media")), banks_);
+      add_loose_dir(loose);
+    }
+    // Scan sibling DLC *_pri_* / LOD1_pri_* car-pack audio directories (e.g. LOD1_pri_1650)
+    // inside each package's DLCZips folder in ascending priority order.
+    for (const auto& parent : scanned_parents) {
+      std::error_code ec;
+      if (!std::filesystem::is_directory(parent, ec)) continue;
+      std::vector<std::pair<uint32_t, std::filesystem::path>> pri_dirs;
+      for (const auto& e : std::filesystem::directory_iterator(parent, ec)) {
+        if (!e.is_directory(ec)) continue;
+        const std::string dn = lower_name(e.path().filename().string());
+        if (dn.find("_pri_") != std::string::npos || dn.rfind("lod1", 0) == 0) {
+          pri_dirs.emplace_back(pri_order(dn), e.path());
+        }
+      }
+      std::sort(pri_dirs.begin(), pri_dirs.end(), [](const auto& a, const auto& b) {
+        if (a.first != b.first) return a.first < b.first;
+        return lower_name(a.second.filename().string()) < lower_name(b.second.filename().string());
+      });
+      for (const auto& [pri, dir] : pri_dirs) {
+        (void)pri;
+        add_loose_dir(dir);
+      }
     }
   }
   if (!install.v4_media_zip.empty()) {
     std::error_code ec;
     if (std::filesystem::exists(install.v4_media_zip, ec) && !add_archive(install.v4_media_zip, false, 0))
       return false;
+    if (install.v4_media_zip.has_parent_path()) {
+      add_loose_dir(install.v4_media_zip.parent_path());
+    }
   }
   return true;
 }

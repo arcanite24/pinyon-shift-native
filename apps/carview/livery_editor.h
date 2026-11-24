@@ -116,6 +116,8 @@ class LiveryEditor {
   // Persistence (.liv) & 1024x1024 compositor.
   bool save(const std::filesystem::path& path, std::string* error = nullptr) const;
   bool load(const std::filesystem::path& path, std::string* error = nullptr);
+  void set_plane_masks(cars::LiveryMaskSet masks) { plane_masks_ = std::move(masks); }
+  const cars::LiveryMaskSet& plane_masks() const { return plane_masks_; }
   bool composite_1024(const std::vector<cars::bake::LiveryPlane>* planes, std::vector<uint8_t>& out_rgba,
                       uint32_t size = 1024);
 
@@ -148,6 +150,7 @@ class LiveryEditor {
   ShapeCategory shape_cat_ = ShapeCategory::kAll;
   cars::LiveryDocument doc_;
   cars::LiveryLibrary lib_;
+  cars::LiveryMaskSet plane_masks_;
   std::vector<cars::SpecialColorRow> specials_;
   std::vector<cars::bake::Colour> mfg_colors_;
   std::vector<PreviousColorEntry> prev_colors_;

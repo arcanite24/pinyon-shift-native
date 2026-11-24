@@ -60,6 +60,29 @@ std::string per_car_tyre_media(std::string_view car_media) {
 
 bool is_own_tyre_car(std::string_view car_media) { return !per_car_tyre_media(car_media).empty(); }
 
+float compute_tire_outer_radius_m(int64_t stock_rim_in, int64_t stock_width_mm, int64_t stock_aspect,
+                                  int64_t fitted_rim_in, int64_t fitted_width_mm) {
+  (void)fitted_width_mm;
+  const float s_rim_in = stock_rim_in > 0 ? float(stock_rim_in) : 14.0f;
+  const float s_rim_r = s_rim_in * 0.0254f * 0.5f;
+  const float s_width_m = stock_width_mm > 0 ? float(stock_width_mm) / 1000.0f : 0.2f;
+  const float s_aspect = stock_aspect > 0 ? float(stock_aspect) / 100.0f : 0.5f;
+  const float stock_outer = s_rim_r + s_width_m * s_aspect;
+
+  const float f_rim_in = fitted_rim_in > 0 ? float(fitted_rim_in) : s_rim_in;
+  const float f_rim_r = f_rim_in * 0.0254f * 0.5f;
+  // Preserve stock rolling outer radius as rim diameter or tyre width increases,
+  // while keeping at least a 25 mm low-profile sidewall so the rim never protrudes.
+  constexpr float kMinSidewallM = 0.025f;
+  return std::max(stock_outer, f_rim_r + kMinSidewallM);
+}
+
+char tire_compound_texture_letter(int compound_level) {
+  if (compound_level < 2) return 'a';
+  if (compound_level == 2) return 'b';
+  return 'c';
+}
+
 const char* brake_type_stem(int type_id) {
   switch (type_id) {
     case 1: return "drum";
@@ -219,7 +242,22 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
   out.shown_parts.assign(shown.begin(), shown.end());
   out.removed_parts.assign(removed.begin(), removed.end());
 
-  // 2. Upgraded tyre widths & rim diameters.
+  // 2. Stock & upgraded tyre widths, aspect ratios, and rim diameters.
+  // Query un-overwritten stock Data_Car dimensions so rim/width upgrades can
+  // preserve the stock rolling outer radius (thinning sidewall as rim grows).
+  db.each(
+      "SELECT FrontTireWidthMM, RearTireWidthMM, FrontWheelDiameterIN, RearWheelDiameterIN, "
+      "FrontTireAspect, RearTireAspect FROM Data_Car WHERE Id = ? LIMIT 1",
+      {std::to_string(car_id)},
+      [&](sqlite3_stmt* st) {
+        out.stock_tyre_width_mm[0] = sqlite3_column_int64(st, 0);
+        out.stock_tyre_width_mm[1] = sqlite3_column_int64(st, 1);
+        out.stock_rim_inches[0] = sqlite3_column_int64(st, 2);
+        out.stock_rim_inches[1] = sqlite3_column_int64(st, 3);
+        out.stock_tyre_aspect[0] = sqlite3_column_int64(st, 4);
+        out.stock_tyre_aspect[1] = sqlite3_column_int64(st, 5);
+      },
+      nullptr);
   const int64_t fw = int64_t(std::llround(phys.get("Data_Car.FrontTireWidthMM", 0.0)));
   const int64_t rw = int64_t(std::llround(phys.get("Data_Car.RearTireWidthMM", 0.0)));
   const int64_t fr = int64_t(std::llround(phys.get("Data_Car.FrontWheelDiameterIN", 0.0)));
@@ -242,7 +280,7 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
       out.wheel_is_stock = w.is_stock;
     }
   }
-  out.tire_compound_level = std::clamp(int(std::llround(phys.get("List_UpgradeCarBodyTireCompound.Level", 0.0))), 0, 4);
+  out.tire_compound_level = std::clamp(int(std::llround(phys.get("List_UpgradeTireCompound.Level", 0.0))), 0, 5);
 
   // 4. Suspension ride height & camber (fitted SpringDamperPhysics + optional tuning).
   auto eval_rh = [&](const std::string& prefix, const std::string& stock_col, float norm) -> float {
@@ -259,9 +297,9 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
   out.ride_height_m[1] = eval_rh("RearSpringDamper", "Data_Car.RearStockRideHeight", tune_rear_rh_norm);
 
   const double cam_f = tune_front_camber_deg > -90.0f ? double(tune_front_camber_deg)
-                                                      : phys.get("FrontSpringDamper.DefCamber", 0.0);
+                                                      : phys.get("FrontSpringDamper.StaticCamber", 0.0);
   const double cam_r = tune_rear_camber_deg > -90.0f ? double(tune_rear_camber_deg)
-                                                     : phys.get("RearSpringDamper.DefCamber", 0.0);
+                                                     : phys.get("RearSpringDamper.StaticCamber", 0.0);
   out.camber_rad[0] = float(cam_f) * kDegToRad;
   out.camber_rad[1] = float(cam_r) * kDegToRad;
 

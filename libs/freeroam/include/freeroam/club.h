@@ -176,8 +176,9 @@ struct Signal {
 
   // Skills & skill chains (Slice 6 SkillTracker):
   std::vector<SkillAward> skills_awarded;
-  double skill_points = 0;           // active chain score (chain_points * multiplier)
-  bool skill_chain_completed = false;  // pulse when a skill chain banks or breaks
+  double skill_points = 0;               // active unbanked chain score (chain_points * multiplier)
+  double banked_skill_points_delta = 0;  // skill points banked this step (for cumulative challenges)
+  bool skill_chain_completed = false;    // pulse when a skill chain banks or breaks
 
   // Smashables broken this step (Slice 4 SmashableWorld + discount signs):
   std::vector<std::string> smashables_broken;
@@ -271,6 +272,7 @@ class Run {
     double start = 0;
     int count = 0, current = 0;  // pass count; a then-group's current child
     int chains = 0;              // skill chains completed since activation
+    double accum_value = 0.0;    // cumulative numeric progress (e.g. banked skill_points)
     bool was_true = false;
     bool started = false;        // a_to_b: left A
     std::deque<double> times;    // pass_interval timestamps
@@ -281,16 +283,19 @@ class Run {
   void build(const Node& n, State& st);
   void activate(const Node& n, State& st, double t, bool keep_saved);
   Result advance(const Node& n, State& st, const Signal& s);
-  bool holds(const Condition& c, const State& owner, const Signal& s) const;
+  bool holds(const Condition& c, const Node& owner_node, const State& owner, const Signal& s) const;
   bool progressed(const Node& n, const State& st) const;
+  bool is_cumulative_skill_points(const Node& n) const;
   void export_saved_rec(const Node& n, const State& st, std::vector<int>& out) const;
   void import_saved_rec(const Node& n, State& st, const std::vector<int>& in, size_t& idx);
+  static bool node_saves_progress(const Node& n);
   static bool has_saved_rec(const Node& n);
 
   const Challenge* c_;
   const Locations* locs_;
   State root_;
   bool passed_ = false, unsupported_ = false;
+  bool single_chain_skill_points_ = false;
   int failures_ = 0;
 };
 

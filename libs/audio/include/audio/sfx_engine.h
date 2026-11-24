@@ -36,7 +36,7 @@ struct OtherCarAudio {
 };
 
 struct WheelAudio {
-  uint8_t surface_group = 0;  // 0=OnRoad, 1=OffRoad, 2=Grass, 3=Brick, 4=Trackway
+  uint8_t surface_group = 0;  // 0=OnRoad, 1=OffRoad/Gravel, 2=Grass, 3=Brick, 4=Trackway, 5=Mud
   float slip_combined = 0.0f;
   float wheel_rpm = 0.0f;
   float load = 1.0f;
@@ -71,11 +71,14 @@ struct VehicleAudioState {
   float turbo_norm_rpm = 0.0f;
   bool bov_open = false;
   float supercharger_norm_rpm = 0.0f;
-  int trans_level = 0;
-  int turbo_level = 0;
-  int sc_level = 0;
+  int trans_level = 0;  // 0=L0, 1=L1, 2=L2, 3=L3
+  int turbo_level = 0;  // 0=None, 1=L1, 2=L2, 3=L3
+  int sc_level = 0;     // 0=None, 1=L1, 2=L2, 3=L3
   bool sc_is_centrifugal = false;
+  std::array<int, 3> blowoff_level{1, 2, 3};   // per-car _ET.xml blowoffL1..L3Level (1..3)
+  std::array<int, 3> blowoff_choice{1, 1, 1};  // per-car _ET.xml blowoffL1..L3Choice (1..5)
   int backfire_level = 0;
+  bool rally_mode = false;  // selects Rally_Tires.fev/.fsb surfaces when loaded
   bool scraping = false;
   float scrape_intensity = 0.0f;
   std::array<WheelAudio, 4> wheels{};
@@ -103,12 +106,32 @@ struct VehicleAudioState {
   ShowcaseAudioState showcase{};
 };
 
+enum class SmashMaterial : uint8_t {
+  kDefault = 0,
+  kWood,
+  kMetal,
+  kGlass,
+  kPlastic,
+  kFoliage,
+  kStone,
+  kFence,
+  kCount,
+};
+
 struct CollisionHit {
   float rel_speed_mps = 0.0f;
   Vec3f pos{};
   bool is_car_on_car = false;
   bool is_break = false;
   uint8_t surface_hint = 0;  // 0=Asphalt/Concrete, 1=Car, 2=Dirt/Grass, 3=Metal/Guardrail, 4=Wood/Prop
+  SmashMaterial smash_material = SmashMaterial::kDefault;
+};
+
+struct LandingHit {
+  float impact_speed_mps = 0.0f;  // vertical touchdown speed magnitude (m/s)
+  float air_time_s = 0.0f;        // seconds airborne before landing
+  Vec3f pos{};
+  uint8_t surface_hint = 0;       // 0=Asphalt/Hard, 1=Dirt/Gravel, 2=Grass, 3=Mud
 };
 
 enum class UiCue : uint8_t {
@@ -241,19 +264,74 @@ enum class SfxSoundId : int {
   kHubAmbAutoshow,
   kHubAmbPaintshop,
   kHubAmbWorkshop,
+  // Per-material smashable prop banks (Collisions.fev BreakEvent variants).
+  kBreakWood,
+  kBreakMetal,
+  kBreakGlass,
+  kBreakPlastic,
+  kBreakFoliage,
+  kBreakStone,
+  kBreakFence,
+  // Per-car Turbo BOV choices 2..5 for L1..L3 Lo/Hi (Turbos.fev).
+  kTurboBovL1C2Lo,
+  kTurboBovL1C2Hi,
+  kTurboBovL1C3Lo,
+  kTurboBovL1C3Hi,
+  kTurboBovL1C4Lo,
+  kTurboBovL1C4Hi,
+  kTurboBovL1C5Lo,
+  kTurboBovL1C5Hi,
+  kTurboBovL2C2Lo,
+  kTurboBovL2C2Hi,
+  kTurboBovL2C3Lo,
+  kTurboBovL2C3Hi,
+  kTurboBovL2C4Lo,
+  kTurboBovL2C4Hi,
+  kTurboBovL2C5Lo,
+  kTurboBovL2C5Hi,
+  kTurboBovL3C2Lo,
+  kTurboBovL3C2Hi,
+  kTurboBovL3C3Lo,
+  kTurboBovL3C3Hi,
+  kTurboBovL3C4Lo,
+  kTurboBovL3C4Hi,
+  kTurboBovL3C5Lo,
+  kTurboBovL3C5Hi,
+  // Horizon Rally DLC subsystems: Rally_Tires.fev/.fsb and Car_Landings.fev/.fsb.
+  kRallyTireRollGravel,
+  kRallyTireSkidGravel,
+  kRallyTireRollDirt,
+  kRallyTireSkidDirt,
+  kRallyTireRollMud,
+  kRallyTireSkidMud,
+  kRallyTireRollTarmac,
+  kRallyTireSkidTarmac,
+  kCarLandingLight,
+  kCarLandingHeavy,
+  kCarLandingDirt,
   kCount
 };
+
+// Maps Turbo BOV (level 1..3, choice 1..5, hi = >13 PSI) to its SfxSoundId.
+SfxSoundId turbo_bov_sound_id(int level_1_to_3, int choice_1_to_5, bool hi);
+// Maps SmashMaterial (with optional CollisionHit::surface_hint fallback) to its SfxSoundId.
+SfxSoundId smash_material_sound_id(SmashMaterial mat, uint8_t surface_hint = 0);
 
 class SfxEngine {
  public:
   explicit SfxEngine(int out_rate = 48000);
   ~SfxEngine();
 
-  // Parses .fev projects and XML tables from `game_root`, then starts an
-  // async background worker decoding referenced FSB4 subsounds into
-  // `cache_dir` (never blocking the audio thread).
+  // Parses .fev projects and XML tables from `game_root` (layering TU4 overrides
+  // and Rally DLC banks when `state_root` is provided), then starts an async
+  // background worker decoding referenced FSB4 subsounds into `cache_dir`.
   bool load(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
-            const std::string& burble_bank = {}, std::string* note = nullptr);
+            const std::string& burble_bank = {}, std::string* note = nullptr,
+            const std::filesystem::path& state_root = {});
+  // Discovers and asynchronously decodes Rally DLC `Rally_Tires.fev/.fsb` and
+  // `Car_Landings.fev/.fsb` from a Rally package dir, audio dir, or `state_root`.
+  bool load_rally_sfx(const std::filesystem::path& rally_root_or_state_root,
+                      const std::filesystem::path& cache_dir, std::string* note = nullptr);
   // Asynchronously reloads the 4-subsound exhaust burble bank on car change.
   void reload_burble_bank(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
                           const std::string& burble_bank);
@@ -272,6 +350,7 @@ class SfxEngine {
 
   // Audio-thread trigger entry points (lock-free, no heap allocation).
   void trigger_collision(const CollisionHit& hit, const VehicleAudioState& st);
+  void trigger_landing(const LandingHit& hit, const VehicleAudioState& st);
   void trigger_ui(UiCue cue);
 
   // Audio-thread render: adds active SFX & 3D AI/traffic car audio into the
@@ -283,6 +362,7 @@ class SfxEngine {
   int active_one_shots() const;
   int loaded_sample_count() const;
   uint32_t backfire_count() const { return backfire_count_.load(std::memory_order_relaxed); }
+  SfxSoundId last_one_shot_id() const { return last_one_shot_id_.load(std::memory_order_acquire); }
 
  private:
   struct DecodeJob {
@@ -332,15 +412,18 @@ class SfxEngine {
   std::array<PcmSample*, int(SfxSoundId::kCount)> samples_{};
   // Dedicated SPSC queues (one per producer) so the real-time audio thread
   // drains all loaded samples lock-free with zero multi-producer races.
-  SpscQueue<LoadedSample> loaded_q_{256};         // producer: worker_
+  SpscQueue<LoadedSample> loaded_q_{512};         // producer: worker_
   SpscQueue<LoadedSample> burble_loaded_q_{32};   // producer: burble_worker_
-  SpscQueue<LoadedSample> direct_loaded_q_{256};  // producer: set_sample() (guarded by direct_q_mu_)
+  SpscQueue<LoadedSample> rally_loaded_q_{64};    // producer: rally_worker_
+  SpscQueue<LoadedSample> direct_loaded_q_{512};  // producer: set_sample() (guarded by direct_q_mu_)
   std::mutex direct_q_mu_;
   std::mutex lifecycle_mu_;  // guards control-thread worker start/stop only (never locked on audio thread)
   std::atomic<bool> stop_worker_{false};
   std::thread worker_;
   std::atomic<bool> stop_burble_worker_{false};
   std::thread burble_worker_;
+  std::atomic<bool> stop_rally_worker_{false};
+  std::thread rally_worker_;
 
   // Continuous loop voices.
   LoopVoice wind_voice_{};
@@ -374,8 +457,10 @@ class SfxEngine {
   std::array<double, 4> susp_cooldown_s_{0, 0, 0, 0};
   double time_s_ = 0.0;
   double last_collision_s_ = -10.0;
+  double last_landing_s_ = -10.0;
   double backfire_timer_ms_ = 500.0;
   std::atomic<uint32_t> backfire_count_{0};
+  std::atomic<SfxSoundId> last_one_shot_id_{SfxSoundId::kCount};
   std::mt19937 rng_{0x51C2u};
 
   static constexpr int kMaxOneShots = 24;

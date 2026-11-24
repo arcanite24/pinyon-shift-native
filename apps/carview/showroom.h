@@ -8,9 +8,11 @@
 // AUTOSHOW_REFERENCE (what the showroom draws).
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -485,6 +487,126 @@ class Showroom {
   void set_cockpit_wheel_offsets(std::array<float, 3> pos_offset_m, float rot_offset_deg);
   // Animates 3D active aero spoilers, pop-up headlights, and severely damaged loose bumper/mirror rattle.
   void set_animated_car_parts(float aero_deploy, float popup_open, float time_sec, float dt = 1.0f / 60.0f);
+  // True when this car carries animated active aero (rear wing/flaps or active engine vents).
+  bool has_active_aero() const {
+    for (const auto& d : draws_) {
+      if (d.anim_part == 1 || d.anim_part == 7) return true;
+    }
+    return false;
+  }
+  // Pop-up headlight pod openness [0..1] (always 1.0f on cars without retractable pods).
+  float popup_open() const {
+    for (const auto& d : draws_) {
+      if (d.anim_part == 2 || d.anim_part == 9 || d.anim_part == 10) {
+        return popup_open_smooth_ >= 0.95f ? 1.0f : popup_open_smooth_;
+      }
+    }
+    return 1.0f;
+  }
+  // Rear-most body-frame exhaust tip exit positions (+X right, +Y up, +Z forward, -Z rear)
+  // derived from the car's actual baked/disc exhaust part geometry.
+  std::vector<std::array<float, 3>> exhaust_tips_local() const {
+    const float cp = std::cos(car_.car.pitch), sp = std::sin(car_.car.pitch);
+    const float lift = car_.car.lift;
+    auto to_body = [&](const float m[16], const float p[3]) -> std::array<float, 3> {
+      const float mx = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+      const float my = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
+      const float mz = m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14];
+      return {mx, cp * my + sp * mz + lift, sp * my - cp * mz};
+    };
+
+    std::vector<std::array<float, 3>> raw;
+    for (const auto& d : draws_) {
+      if (d.wheel >= 0 || d.cockpit_role >= 0 || d.index_count == 0) continue;
+      if (d.part_name.find("exhaust") == std::string::npos) continue;
+      if (size_t(d.first_index) + size_t(d.index_count) > indices_.size()) continue;
+
+      std::vector<std::array<float, 3>> pts;
+      pts.reserve(std::min<size_t>(d.index_count, 512));
+      float min_z = 1e9f;
+      for (uint32_t i = 0; i < d.index_count; ++i) {
+        const int64_t vi = int64_t(d.vertex_offset) + int64_t(indices_[size_t(d.first_index) + size_t(i)]);
+        if (vi < 0 || size_t(vi) >= vertices_.size()) continue;
+        const auto bp = to_body(d.rest_model, vertices_[size_t(vi)].position.data());
+        min_z = std::min(min_z, bp[2]);
+        pts.push_back(bp);
+      }
+      if (pts.empty() || min_z > 1e8f) continue;
+
+      const float z_band = min_z + 0.08f;
+      float min_x = 1e9f, max_x = -1e9f;
+      double sum_x = 0.0, sum_y = 0.0;
+      size_t rim_n = 0;
+      for (const auto& p : pts) {
+        if (p[2] > z_band) continue;
+        min_x = std::min(min_x, p[0]);
+        max_x = std::max(max_x, p[0]);
+        sum_x += double(p[0]);
+        sum_y += double(p[1]);
+        ++rim_n;
+      }
+      if (rim_n == 0) continue;
+
+      if (min_x < -0.18f && max_x > 0.18f && (max_x - min_x) > 0.45f) {
+        double lx = 0.0, ly = 0.0, rx = 0.0, ry = 0.0;
+        float lz = 1e9f, rz = 1e9f;
+        size_t ln = 0, rn = 0;
+        for (const auto& p : pts) {
+          if (p[2] > z_band) continue;
+          if (p[0] < 0.0f) {
+            lx += double(p[0]);
+            ly += double(p[1]);
+            lz = std::min(lz, p[2]);
+            ++ln;
+          } else {
+            rx += double(p[0]);
+            ry += double(p[1]);
+            rz = std::min(rz, p[2]);
+            ++rn;
+          }
+        }
+        if (ln > 0) raw.push_back({float(lx / double(ln)), float(ly / double(ln)), lz - 0.04f});
+        if (rn > 0) raw.push_back({float(rx / double(rn)), float(ry / double(rn)), rz - 0.04f});
+      } else {
+        raw.push_back({float(sum_x / double(rim_n)), float(sum_y / double(rim_n)), min_z - 0.04f});
+      }
+    }
+
+    // Merge co-located exhaust subsections (e.g. inner/outer chrome rings of the same tailpipe).
+    struct Cluster {
+      double sx = 0.0, sy = 0.0;
+      float min_z = 1e9f;
+      int n = 0;
+    };
+    std::vector<Cluster> clusters;
+    for (const auto& p : raw) {
+      bool merged = false;
+      for (auto& c : clusters) {
+        const float cx = float(c.sx / double(c.n));
+        const float cy = float(c.sy / double(c.n));
+        const float dx = p[0] - cx, dy = p[1] - cy, dz = p[2] - c.min_z;
+        if (dx * dx + dy * dy + dz * dz < 0.24f * 0.24f) {
+          c.sx += double(p[0]);
+          c.sy += double(p[1]);
+          c.min_z = std::min(c.min_z, p[2]);
+          ++c.n;
+          merged = true;
+          break;
+        }
+      }
+      if (!merged) clusters.push_back({double(p[0]), double(p[1]), p[2], 1});
+    }
+
+    std::vector<std::array<float, 3>> out;
+    out.reserve(clusters.size());
+    for (const auto& c : clusters) {
+      out.push_back({float(c.sx / double(c.n)), float(c.sy / double(c.n)), c.min_z});
+    }
+    std::sort(out.begin(), out.end(),
+              [](const std::array<float, 3>& a, const std::array<float, 3>& b) { return a[0] < b[0]; });
+    if (out.size() > 4) out.resize(4);
+    return out;
+  }
   bool has_cockpit_mesh() const { return cockpit_rigs_[0].valid; }
   // Batched/instanced soft particle atlas & skidmark pipelines (SPEC-VFX-AND-PARTICLES).
   bool init_vfx(const world::ParticleLibrary* lib, std::string& error);

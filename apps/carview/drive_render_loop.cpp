@@ -11,6 +11,101 @@
 #include "world/road_follow.h"
 
 namespace carview {
+namespace {
+
+uint8_t collision_surface_hint(const world::Collision& col, int surf_idx) {
+  const auto& surfs = col.surfaces();
+  if (surf_idx < 0 || size_t(surf_idx) >= surfs.size()) return 0;
+  const auto& sf = surfs[size_t(surf_idx)];
+  const std::string name = lower_ascii(sf.name);
+  const std::string cat = lower_ascii(sf.category);
+  if (cat == "guardrail" || name.find("guardrail") != std::string::npos || name.find("metal") != std::string::npos ||
+      name.find("steel") != std::string::npos || name.find("rail") != std::string::npos) {
+    return 3;  // Metal/Guardrail
+  }
+  if (name.find("wood") != std::string::npos || name.find("timber") != std::string::npos ||
+      name.find("plank") != std::string::npos || name.find("fence") != std::string::npos) {
+    return 4;  // Wood/Prop
+  }
+  if (cat == "softworld" || sf.off_roadness >= 0.25f || name.find("dirt") != std::string::npos ||
+      name.find("grass") != std::string::npos || name.find("gravel") != std::string::npos ||
+      name.find("sand") != std::string::npos || name.find("mud") != std::string::npos ||
+      name.find("snow") != std::string::npos) {
+    return 2;  // Dirt/Grass
+  }
+  return 0;  // Asphalt/Concrete
+}
+
+uint8_t landing_surface_hint(const world::Collision& col, int surf_idx) {
+  const auto& surfs = col.surfaces();
+  if (surf_idx < 0 || size_t(surf_idx) >= surfs.size()) return 0;
+  const auto& sf = surfs[size_t(surf_idx)];
+  const std::string name = lower_ascii(sf.name);
+  if (name.find("mud") != std::string::npos) return 3;
+  if (name.find("grass") != std::string::npos) return 2;
+  if (sf.off_roadness >= 0.2f || name.find("dirt") != std::string::npos || name.find("gravel") != std::string::npos ||
+      name.find("sand") != std::string::npos || lower_ascii(sf.category) == "softworld") {
+    return 1;
+  }
+  return 0;
+}
+
+int parse_barn_numeric_id(const std::string& barn_name) {
+  int val = 0;
+  bool any = false;
+  for (char c : barn_name) {
+    if (c >= '0' && c <= '9') {
+      val = val * 10 + (c - '0');
+      any = true;
+    }
+  }
+  return any ? val : 0;
+}
+
+void sync_pending_barns_to_save(DriveApp& app) {
+  app.saved.pending_barn_restorations.clear();
+  for (const auto& br : app.pending_barn_restorations) {
+    drive::PendingBarnRestoration p{};
+    p.barn_id = parse_barn_numeric_id(br.barn_id);
+    p.car_id = int(br.car_id);
+    p.remaining_sec = float(std::max(0.0, br.ready_after_s - br.elapsed_s));
+    app.saved.pending_barn_restorations.push_back(p);
+  }
+}
+
+void restore_pending_barns_from_save(DriveApp& app, const drive::DriveSave& s) {
+  app.pending_barn_restorations.clear();
+  for (const auto& p : s.pending_barn_restorations) {
+    DriveApp::PendingBarnRestore br;
+    br.car_id = p.car_id;
+    br.ready_after_s = std::max(0.0, double(p.remaining_sec));
+    br.elapsed_s = 0.0;
+    for (const auto& b : app.collectibles.barns) {
+      if ((p.car_id > 0 && b.car_id == p.car_id) ||
+          (p.barn_id > 0 && parse_barn_numeric_id(b.name) == p.barn_id)) {
+        br.barn_id = b.name;
+        br.car_name = barn_car_label(b);
+        if (!b.car_name_key.empty()) {
+          const uint32_t ref = uint32_t(fh1::string_hash("Barnfind")) << 16 | fh1::string_hash(b.car_name_key);
+          const std::string t = carview::game_text("_&" + std::to_string(ref));
+          if (!t.empty() && t[0] != '_') br.car_name = t;
+        }
+        break;
+      }
+    }
+    if (br.barn_id.empty()) br.barn_id = "barnfind_" + std::to_string(p.barn_id);
+    if (br.car_name.empty()) {
+      if (auto it = app.baked_ids.find(p.car_id); it != app.baked_ids.end()) {
+        br.car_name = carview::car_name(it->second);
+      } else {
+        br.car_name = "BARN FIND";
+      }
+    }
+    app.pending_barn_restorations.push_back(std::move(br));
+  }
+}
+
+}  // namespace
 
 void prime_world_and_snap_vehicle(DriveSession& s, std::array<double, 3> target_pos, double target_heading);
 
@@ -168,6 +263,13 @@ void DriveSession::run_window_loop() {
           }
         }
         slice12.set_window(app.window);
+        if (!app.save_path.empty() && slice12.trainer.clean_user_dir().empty()) {
+          slice12.trainer.configure_save_root(
+              app.save_path.parent_path(), app.slice12_modded_save || app.mods_session.isolation().isolated);
+        }
+        if (app.pending_barn_restorations.empty() && app.have_saved && !app.saved.pending_barn_restorations.empty()) {
+          restore_pending_barns_from_save(app, app.saved);
+        }
         slice12.sync_pad_capabilities(pads);
         slice12.sync_wheel_devices();
         if (app.window) {
@@ -204,6 +306,9 @@ void DriveSession::run_window_loop() {
   bool playtest_bug_capture_waiting = false;
   int playtest_bug_capture_retries = 0;
   PlaytestFrameSample playtest_bug_sample{};
+  double air_time_s = 0.0;
+  double prev_vel_y = 0.0;
+  double min_air_vel_y = 0.0;
   while (running) {
     poll_sdl_events();
     if (!running) break;
@@ -397,6 +502,8 @@ void DriveSession::run_window_loop() {
               if (app.pending_barn_restorations.front().elapsed_s >= app.pending_barn_restorations.front().ready_after_s) {
                 const auto br = app.pending_barn_restorations.front();
                 app.pending_barn_restorations.erase(app.pending_barn_restorations.begin());
+                sync_pending_barns_to_save(app);
+                save_due = true;
                 if (br.car_id > 0) {
                   app.award_garage_car(br.car_id, 0, false);
                   app.garage_picker();
@@ -477,6 +584,9 @@ void DriveSession::run_window_loop() {
           }
           if (sim_paused != was_sim_paused) {
             rig_accel.reset();
+            air_time_s = 0.0;
+            min_air_vel_y = 0.0;
+            prev_vel_y = vehicle.velocity().y;
             was_sim_paused = sim_paused;
           }
           if (!menu_paused) rewind_buf.update(frame_dt);
@@ -602,12 +712,149 @@ void DriveSession::run_window_loop() {
             accumulator += frame_dt * game_spd;
           }
           last_tick_ns = now;
+          // P0-G1: Hot-reload DriveSave + CareerGarage from disk after SaveProfilePage restore/import/profile switch
+          // BEFORE any autosave check so restored/imported/switched saves are never overwritten by stale memory.
+          {
+            std::filesystem::path reload_dir;
+            SaveProfilePage::ReloadReason reload_reason = SaveProfilePage::ReloadReason::kNone;
+            if (save_page.consume_reload_from_disk(&reload_dir, &reload_reason)) {
+              if (!reload_dir.empty()) {
+                app.save_path = reload_dir / "save.txt";
+                app.garage_path = reload_dir / "garage.txt";
+                achievements_path = reload_dir / "achievements.txt";
+              }
+              drive::DriveSave disk_save;
+              std::string rerr;
+              const bool loaded_save = !app.save_path.empty() && drive::read_save(app.save_path, disk_save, &rerr);
+              if (loaded_save) {
+                app.saved = disk_save;
+                app.have_saved = true;
+                app.career = race::CareerRecord{};
+                app.career.credits = disk_save.credits;
+                app.career.total_winnings = disk_save.total_winnings;
+                app.career.wristband_points = disk_save.wristband_points;
+                app.career.num_races = disk_save.num_races;
+                app.career.num_victories = disk_save.num_victories;
+                app.career.num_podiums = disk_save.num_podiums;
+                app.career.time_in_festival = disk_save.time_festival;
+                app.career.time_in_street = disk_save.time_street;
+                app.career.time_in_exhibition = disk_save.time_exhibition;
+                app.career.top_speed = disk_save.top_speed;
+                for (const auto& [id, place] : disk_save.race_results) app.career.race_places[id] = place;
+                for (const auto& [id, place] : disk_save.event_results) app.career.event_places[id] = place;
+                app.career.prize_cars = disk_save.prize_cars;
+                app.career.driver_xp = disk_save.driver_xp;
+                app.career.driver_level = app.have_prog_tables
+                                              ? app.prog_tables.driver_level_for_xp(app.career.driver_xp)
+                                              : std::max(1, disk_save.level);
+                for (const auto& [mid, xp] : disk_save.make_affinity) app.career.make_affinity_xp[mid] = xp;
+                if (disk_save.difficulty >= 0 && disk_save.difficulty <= 4)
+                  app.race_options.difficulty = race::Difficulty(disk_save.difficulty);
+                if (disk_save.ai_mode >= 0 && disk_save.ai_mode <= 2)
+                  app.race_options.ai_mode = race::AiMode(disk_save.ai_mode);
+                app.dynamic_ai_skill = disk_save.ai_skill;
+                app.h2h_races = disk_save.h2h_races;
+                app.h2h_wins = disk_save.h2h_wins;
+                app.collected_wristband =
+                    disk_save.collected_wristband >= 0
+                        ? disk_save.collected_wristband
+                        : (app.have_career_catalog
+                               ? std::max(0, app.career_catalog.earned_wristband(app.career.wristband_points))
+                               : std::max(0, app.wristbands.level_index(app.career.wristband_points)));
+                app.max_skills_car = disk_save.max_skills_car;
+                app.treasure_map_setting = disk_save.treasure_map;
+                app.campaign.load_from_save(disk_save);
+                if (disk_save.tod_sec >= 0.0 && disk_save.tod_sec < 86400.0) app.tod_clock.tod_sec = disk_save.tod_sec;
+                app.outpost_progress.discovered_outposts.clear();
+                app.outpost_progress.discovered_outposts.insert(disk_save.discovered_outposts.begin(),
+                                                                disk_save.discovered_outposts.end());
+                app.outpost_progress.completed_pr_stunts.clear();
+                app.outpost_progress.completed_pr_stunts.insert(disk_save.completed_pr_stunts.begin(),
+                                                                disk_save.completed_pr_stunts.end());
+                if (app.road_discovery.ready() && !disk_save.road_discovery_words.empty()) {
+                  app.road_discovery.load_words(disk_save.road_discovery_nodes, disk_save.road_discovery_words);
+                }
+                if (app.speed_tracker) {
+                  app.speed_tracker->load_records(disk_save.speed_traps, disk_save.speed_zones);
+                }
+                if (app.have_skills_data) {
+                  app.skill_tracker = std::make_unique<freeroam::SkillTracker>(
+                      app.skills_data, disk_save.popularity_points, disk_save.fame_rewards_claimed,
+                      disk_save.max_skills_score, app.max_skills_car);
+                  for (const auto& sp : disk_save.sponsors)
+                    app.skill_tracker->set_sponsor_progress(sp.id, sp.count, sp.claimed);
+                }
+                if (!app.collectibles.signs.empty()) {
+                  app.progress = freeroam::Progress{};
+                  progress_from_save(disk_save, app.collectibles, app.progress);
+                  app.progress_loaded = true;
+                }
+                promo_tracker.load(disk_save.promo_cars, std::max(240, int(app.baked_cars.size())));
+                if (disk_save.has_controls) live_controls = disk_save.controls;
+                restore_pending_barns_from_save(app, disk_save);
+                club_check();
+              } else {
+                app.saved = drive::DriveSave{};
+                app.have_saved = false;
+                app.career = race::CareerRecord{};
+                app.pending_barn_restorations.clear();
+                app.h2h_races = 0;
+                app.h2h_wins = 0;
+                club_check();
+              }
+              garage::Garage disk_garage;
+              std::string gerr;
+              if (!app.garage_path.empty() && garage::read_garage(app.garage_path, disk_garage, &gerr)) {
+                app.career_garage = std::move(disk_garage);
+                app.have_garage = true;
+                app.garage_picker();
+              } else if (!loaded_save) {
+                app.career_garage = garage::Garage{};
+                app.have_garage = false;
+              }
+              if (app.demo_achievements_png.empty()) achievements.load_state(achievements_path);
+              save_due = false;
+              next_save = vehicle.time() + 30.0;
+              if (!reload_dir.empty()) {
+                slice12.trainer.configure_save_root(
+                    reload_dir, app.slice12_modded_save || app.mods_session.isolation().isolated);
+              }
+              const char* reason_msg = "SAVE RELOADED FROM DISK";
+              if (reload_reason == SaveProfilePage::ReloadReason::kBackupRestored)
+                reason_msg = "BACKUP RESTORED & RELOADED";
+              else if (reload_reason == SaveProfilePage::ReloadReason::kProfileSwitched)
+                reason_msg = "PROFILE SWITCHED & RELOADED";
+              else if (reload_reason == SaveProfilePage::ReloadReason::kSaveImported)
+                reason_msg = "SAVE IMPORTED & RELOADED";
+              notice = reason_msg;
+              notice_until = vehicle.time() + 4.0;
+              std::printf("save: %s (%s)\n", reason_msg, app.save_path.string().c_str());
+            }
+          }
+          // P0-G3: Live F6/F10 modded-save isolation before any save write occurs.
+          slice12.trainer.sync_modded_isolation();
+          if (slice12.trainer.consume_modded_isolation_triggered()) {
+            const auto& dir = slice12.trainer.active_user_dir();
+            if (!dir.empty()) {
+              app.save_path = dir / "save.txt";
+              app.garage_path = dir / "garage.txt";
+              achievements_path = dir / "achievements.txt";
+            }
+            app.slice12_modded_save = true;
+            ach_isolated = true;
+            slice12.save_tree_label = "user-modded";
+            notice = "CHEATS ACTIVE — SAVE ISOLATED TO USER-MODDED";
+            notice_until = vehicle.time() + 4.0;
+            std::printf("trainer: modded isolation active -> %s\n", app.save_path.string().c_str());
+          }
           if (vehicle.time() >= next_save) {
+            sync_pending_barns_to_save(app);
             save_now("timer");
             next_save = vehicle.time() + 30;
           }
           if (save_due && !map_open) {  // a collectible or award: micro-save
             save_due = false;
+            sync_pending_barns_to_save(app);
             save_now("collectible");
             eval_achievements(true);
           }
@@ -636,6 +883,42 @@ void DriveSession::run_window_loop() {
             if (vehicle.hand_of_god_triggered()) {
               vehicle.clear_hand_of_god();
               put_back();
+              air_time_s = 0.0;
+              min_air_vel_y = 0.0;
+              prev_vel_y = 0.0;
+            }
+            // P0-A4: Detect jump landings (>0.25 s airborne -> re-ground) and fire Car_Landings.fev.
+            {
+              const auto& ws_land = vehicle.wheels();
+              int grounded = 0;
+              int land_surf = -1;
+              for (int wi = 0; wi < drive::kWheels; ++wi) {
+                if (ws_land[size_t(wi)].contact) {
+                  ++grounded;
+                  if (land_surf < 0) land_surf = ws_land[size_t(wi)].surface;
+                }
+              }
+              const double vy = vehicle.velocity().y;
+              if (grounded == 0) {
+                air_time_s += drive::Vehicle::kStep;
+                min_air_vel_y = std::min(min_air_vel_y, vy);
+              } else {
+                if (air_time_s > 0.25) {
+                  const double impact_vy = std::max({0.0, -prev_vel_y, -min_air_vel_y});
+                  if (impact_vy >= 1.2 || air_time_s >= 0.35) {
+                    const drive::Vec3 vp = vehicle.position();
+                    audio::LandingHit lhit{};
+                    lhit.impact_speed_mps = float(impact_vy);
+                    lhit.air_time_s = float(air_time_s);
+                    lhit.pos = {float(vp.x), float(vp.y), float(vp.z)};
+                    lhit.surface_hint = landing_surface_hint(host.collision, land_surf);
+                    app.audio_host.trigger_landing(lhit);
+                  }
+                }
+                air_time_s = 0.0;
+                min_air_vel_y = 0.0;
+              }
+              prev_vel_y = vy;
             }
             {
               drive::RewindCameraState cs;
@@ -706,8 +989,9 @@ void DriveSession::run_window_loop() {
               }
             }
             frame_world_impact = std::max(frame_world_impact, vehicle.body_contact_force());
-            if (traffic) frame_car_impact = std::max(frame_car_impact, traffic->player_impulse());
-            frame_car_impact = std::max(frame_car_impact, step_car_impact_accum);
+            const double traffic_imp = traffic ? traffic->player_impulse() : 0.0;
+            const double race_imp = app.race ? app.race->player_impulse() : 0.0;
+            frame_car_impact = std::max({frame_car_impact, traffic_imp, race_imp, step_car_impact_accum});
             frame_object_impact = std::max(frame_object_impact, step_object_impact_accum);
             if (frame_car_impact > 1.0) {
               const double dv_imp = frame_car_impact / std::max(500.0, vehicle.params().mass);
@@ -718,25 +1002,61 @@ void DriveSession::run_window_loop() {
               const double mass = std::max(100.0, vehicle.params().mass);
               const auto& bc = vehicle.strongest_body_contact();
               const double dv_world = bc.force * drive::Vehicle::kStep / mass;
-              const double dv_car = traffic ? traffic->player_impulse() / mass : 0.0;
+              const double dv_race = race_imp / mass;
+              const double dv_traffic = traffic_imp / mass;
               if (dv_world > 1.0) {
                 audio::CollisionHit hit{};
                 hit.rel_speed_mps = float(dv_world);
                 hit.pos = {float(bc.point.x), float(bc.point.y), float(bc.point.z)};
+                hit.surface_hint = collision_surface_hint(host.collision, bc.surface);
                 app.audio_host.trigger_collision(hit);
                 const drive::Vec3 rel = bc.point - vehicle.position();
                 const drive::Quat q = vehicle.orientation();
                 const drive::Quat qinv{-q.x, -q.y, -q.z, q.w};
                 const drive::Vec3 loc = drive::rotate(qinv, rel);
                 car_damage.record_impact(float(loc.x), float(loc.y), float(loc.z), float(dv_world));
-              } else if (dv_car > 1.0) {
-                const drive::Vec3 vp = vehicle.position();
+              }
+              if (dv_race > 1.0 && app.race) {
+                const std::array<float, 3> rloc = app.race->player_impulse_local_pos();
+                const drive::Vec3 wpos =
+                    vehicle.position() + drive::rotate(vehicle.orientation(), {double(rloc[0]), double(rloc[1]), double(rloc[2])});
                 audio::CollisionHit hit{};
-                hit.rel_speed_mps = float(dv_car);
-                hit.pos = {float(vp.x), float(vp.y), float(vp.z)};
+                hit.rel_speed_mps = float(dv_race);
+                hit.pos = {float(wpos.x), float(wpos.y), float(wpos.z)};
                 hit.is_car_on_car = true;
+                hit.surface_hint = 1;
                 app.audio_host.trigger_collision(hit);
-                car_damage.record_impact(0.0f, 0.5f, 1.5f, float(dv_car));
+                car_damage.record_impact(rloc[0], rloc[1], rloc[2], float(dv_race));
+              } else if (dv_traffic > 1.0) {
+                const drive::Vec3 vp = vehicle.position();
+                const drive::Quat q = vehicle.orientation();
+                const drive::Quat qinv{-q.x, -q.y, -q.z, q.w};
+                std::array<float, 3> tloc = {0.0f, 0.5f, 1.5f};
+                drive::Vec3 wpos = vp;
+                if (traffic && traffic->cars()) {
+                  double best_d2 = 100.0;
+                  const double half_w = std::max(0.5, vehicle.params().size.x * 0.5);
+                  const double half_l = std::max(1.2, vehicle.params().size.z * 0.5);
+                  for (const auto& tc : *traffic->cars()) {
+                    const drive::Vec3 rel{tc.position.x - vp.x, tc.position.y - vp.y, tc.position.z - vp.z};
+                    const double d2 = rel.x * rel.x + rel.y * rel.y + rel.z * rel.z;
+                    if (d2 < best_d2 && d2 > 1e-6) {
+                      best_d2 = d2;
+                      const drive::Vec3 loc = drive::rotate(qinv, rel);
+                      tloc = {float(std::clamp(loc.x, -half_w, half_w)),
+                              float(std::clamp(loc.y + 0.4, 0.1, 1.2)),
+                              float(std::clamp(loc.z, -half_l, half_l))};
+                      wpos = vp + drive::rotate(q, {double(tloc[0]), double(tloc[1]), double(tloc[2])});
+                    }
+                  }
+                }
+                audio::CollisionHit hit{};
+                hit.rel_speed_mps = float(dv_traffic);
+                hit.pos = {float(wpos.x), float(wpos.y), float(wpos.z)};
+                hit.is_car_on_car = true;
+                hit.surface_hint = 1;
+                app.audio_host.trigger_collision(hit);
+                car_damage.record_impact(tloc[0], tloc[1], tloc[2], float(dv_traffic));
               }
               const auto& ws = vehicle.wheels();
               const auto& col_surfs = host.collision.surfaces();

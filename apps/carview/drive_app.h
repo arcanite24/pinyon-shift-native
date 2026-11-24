@@ -85,6 +85,7 @@ struct DriveApp : DriveConfig {
   bool again = false;
   bool car_given = false;
   bool slice12_modded_save = false;
+  std::filesystem::path clean_user_dir;
   ModsSession mods_session;
   SaveSession save_session;
   drive::DriveSave saved;
@@ -116,6 +117,7 @@ struct DriveApp : DriveConfig {
   bool campaign_new_career_pending = false;
   PendingCampaignHandoff pending_handoff;
   std::vector<PendingBarnRestore> pending_barn_restorations;
+  bool barn_restorations_reconciled = false;
   bool pending_autoshow_open = false;
   bool campaign_owns_post_race = false;
   bool boot_intro_checked = false;
@@ -135,6 +137,16 @@ struct DriveApp : DriveConfig {
   bool race_pi_cfg_loaded = false;
 
   int dynamic_ai_skill = 10;
+  static int dynamic_skill_for_difficulty(race::Difficulty d) {
+    switch (d) {
+      case race::Difficulty::kEasy: return 18;
+      case race::Difficulty::kMed: return 10;
+      case race::Difficulty::kHard: return 3;
+      case race::Difficulty::kPro:
+      case race::Difficulty::kHardPlus: return 1;
+    }
+    return 10;
+  }
   race::ProgressionTables prog_tables;
   bool have_prog_tables = false;
   int h2h_races = 0;
@@ -214,12 +226,20 @@ struct DriveApp : DriveConfig {
   bool rally_hub_open = false;
   int rally_hub_selected = 0;
   bool rally_service_open = false;
+  bool rally_service_return = false;
+  bool rally_service_resume_after_reload = false;
   int rally_service_selected = 0;
   bool rally_service_repaired = false;
   bool rally_results_open = false;
   RallyChampResultsState rally_results_state{};
   int rally_world_switch = 0;
   std::string rally_notice;
+
+  bool autoshow_buy_confirm = false;
+  bool hub_orbit_dragging = false;
+  bool hub_orbit_dragged = false;
+  float hub_orbit_last_x = 0.0f;
+  float hub_orbit_last_y = 0.0f;
 
   int pose_shot_counter = 0;
   PlaytestRecorder playtest_recorder;

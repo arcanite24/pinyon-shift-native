@@ -146,7 +146,8 @@ void test_ffb_solver_and_trace() {
   slow_tel.speed_mps = 5.0;
   slow_tel.front_load_n = 7000.0;
   slow_tel.static_front_load_n = 7000.0;
-  slow_tel.front_slip_angle = 0.5;
+  slow_tel.front_slip_angle = -0.5;  // right turn -> negative slip angle in Vehicle frame
+  slow_tel.lateral_g = 0.4;
   slow_tel.rpm = 2000.0;
   slow_tel.redline_rpm = 7000.0;
 
@@ -155,7 +156,8 @@ void test_ffb_solver_and_trace() {
   check(f_slow.inertia_coeff > 0 && f_slow.friction_coeff > 0 && f_slow.damper_coeff > 0 && f_slow.spring_coeff > 0,
         "FFB outputs all four condition effects (inertia, friction, damper, spring)");
 
-  // Higher speed stiffens spring and lowers static friction; aligning force opposes positive slip.
+  // Higher speed stiffens spring and lowers static friction; right-turn negative slip produces
+  // negative (left-centering) aligning force, and left-turn positive slip produces positive force.
   drive::WheelFfbTelemetry fast_tel = slow_tel;
   fast_tel.speed_mps = 50.0;
   fast_tel.rpm = 6800.0;
@@ -167,7 +169,50 @@ void test_ffb_solver_and_trace() {
   check(f_fast.friction_coeff < f_slow.friction_coeff, "static friction eases off at speed");
   check(f_fast.engine_rumble > f_slow.engine_rumble, "engine rumble grows toward redline");
   check(f_fast.aligning_norm < -0.2 && f_fast.constant_force < 0,
-        "positive front slip produces opposing aligning force");
+        "right-turn front slip produces negative centering aligning force");
+
+  // Left turn: positive front_slip_angle & negative lateral_g -> positive (right-centering) force.
+  drive::WheelFfbTelemetry left_tel = fast_tel;
+  left_tel.front_slip_angle = +0.5;
+  left_tel.lateral_g = -0.4;
+  solver.reset();
+  drive::WheelFfbForces f_left{};
+  for (int i = 0; i < 6; ++i) f_left = solver.step(left_tel, cfg, 1.0 / 60.0);
+  check(f_left.aligning_norm > 0.2 && f_left.constant_force > 0,
+        "left-turn front slip produces positive centering aligning force");
+
+  // End-to-end Vehicle -> ffb_telemetry_from_vehicle -> WheelFfbSolver sign check.
+  {
+    drive::CarParams cp;
+    cp.wheel_centres = {{{-0.78, 0.33, 1.35}, {0.78, 0.33, 1.35}, {-0.78, 0.33, -1.35}, {0.78, 0.33, -1.35}}};
+    cp.tyre_radius = {0.33, 0.33, 0.33, 0.33};
+    drive::FlatGround flat;
+    drive::Vehicle vr(cp), vl(cp);
+    vr.launch({0, 0, 0}, 0.0, 22.0);
+    vl.launch({0, 0, 0}, 0.0, 22.0);
+    for (int i = 0; i < 20; ++i) {
+      vr.step({+0.6, 0.3, 0.0, false}, flat);
+      vl.step({-0.6, 0.3, 0.0, false}, flat);
+    }
+    const auto tr = drive::ffb_telemetry_from_vehicle(vr, true);
+    const auto tl = drive::ffb_telemetry_from_vehicle(vl, true);
+    check(tr.front_slip_angle < 0.0 && tr.lateral_g > 0.05, "Vehicle right turn yields negative front slip & +lat G");
+    check(tl.front_slip_angle > 0.0 && tl.lateral_g < -0.05, "Vehicle left turn yields positive front slip & -lat G");
+    drive::WheelFfbSolver sr, sl;
+    drive::WheelFfbForces fr{}, fl{};
+    for (int i = 0; i < 8; ++i) {
+      fr = sr.step(tr, cfg, 1.0 / 60.0);
+      fl = sl.step(tl, cfg, 1.0 / 60.0);
+    }
+    check(fr.aligning_norm < 0.0 && fr.constant_force < 0,
+          "Vehicle right turn produces negative (left-centering) FFB torque");
+    check(fl.aligning_norm > 0.0 && fl.constant_force > 0,
+          "Vehicle left turn produces positive (right-centering) FFB torque");
+  }
+
+  // Restore solver state on fast_tel before subsequent rumble/invert checks.
+  solver.reset();
+  for (int i = 0; i < 6; ++i) f_fast = solver.step(fast_tel, cfg, 1.0 / 60.0);
 
   fast_tel.surface_bump_rumble = 0.8;
   const auto f_bump = solver.step(fast_tel, cfg, 1.0 / 60.0);

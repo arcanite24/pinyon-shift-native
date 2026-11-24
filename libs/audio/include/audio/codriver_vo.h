@@ -28,9 +28,9 @@ class CoDriverVoPlayer {
   CoDriverVoPlayer(const CoDriverVoPlayer&) = delete;
   CoDriverVoPlayer& operator=(const CoDriverVoPlayer&) = delete;
 
-  // Loads CoDriver_<LANG>.fev / CoDriver_<LANG>.fsb from
-  // `rally_package_dir/Media/DLCZips/1600_pri_65/Media/audio/VO` (falling back
-  // to EN) and begins asynchronous XMA2 -> PCM decoding into
+  // Loads CoDriver_<LANG>.fev / CoDriver_<LANG>.fsb from a Rally package dir,
+  // direct VO dir, or launcher `state_root` (scanning DLCZips/*_pri_*/Media/audio/VO,
+  // falling back to EN) and begins asynchronous XMA2 -> PCM decoding into
   // `cache_dir/codriver_<LANG>`.
   bool load(const std::filesystem::path& rally_package_dir, const std::filesystem::path& cache_dir,
             std::string_view language = "EN", std::string* note = nullptr);

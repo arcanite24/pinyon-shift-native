@@ -111,6 +111,7 @@ struct AcousticsSample {
   std::string ambience_snapshot = "DefaultLocation";
   float festival_proximity = 0.0f;  // 0..1 proximity to festival crowd/stage emitters
   float crowd_proximity = 0.0f;     // 0..1 proximity to crowd emitters
+  bool is_rally_world = false;      // true when active world is Horizon Rally (ColoradoDirt)
 };
 
 bool parse_reverb_xml(std::string_view xml, std::vector<ReverbTemplate>& out, std::string* error = nullptr);
@@ -123,6 +124,11 @@ bool parse_soundscape_xml(std::string_view xml, SoundscapeTile& out, std::string
 class WorldAcousticsData {
  public:
   bool load_configs(const std::filesystem::path& game_root, std::string* note = nullptr);
+  // Loads Horizon Rally (ColoradoDirt) reverb/ambience configs when present under
+  // a Rally package dir, direct track dir, or launcher `state_root`.
+  bool load_rally_configs(const std::filesystem::path& rally_root_or_state_root, std::string* note = nullptr);
+  void set_rally_world(bool on) { rally_world_ = on; }
+  bool is_rally_world() const { return rally_world_; }
   // Loads a bounded subset (or all) of .soundscape tiles from Colorado's
   // `media/tracks/colorado/bin.zip` or Rally's `ColoradoDirt_pri_65.zip`.
   int load_soundscapes_from_archive(const std::filesystem::path& bin_zip, int max_tiles = 0);
@@ -144,6 +150,7 @@ class WorldAcousticsData {
   AcousticsSample evaluate(float x, float y, float z) const;
 
  private:
+  bool rally_world_ = false;
   std::vector<ReverbTemplate> reverb_templates_;
   std::vector<AmbienceTemplate> ambience_templates_;
   std::vector<ReverbZone> reverb_zones_;
@@ -212,6 +219,8 @@ enum class AmbienceBedSlot : int {
 // available, with a gentle filtered procedural fallback when absent.
 class AmbienceBedPlayer {
  public:
+  static constexpr int kMaxRallyRegions = 13;
+
   explicit AmbienceBedPlayer(int rate = 48000);
   ~AmbienceBedPlayer();
 
@@ -219,9 +228,20 @@ class AmbienceBedPlayer {
   // Colorado_Festival.fev under `game_root` and decodes loops asynchronously
   // into `cache_dir` (never blocking the audio thread).
   int load_from_disc(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir);
+  // Scans up to 13 regional `ColoradoDirt/AMB_*.fev/.fsb` banks from a Rally
+  // package dir, direct ColoradoDirt dir, or launcher `state_root` and decodes
+  // them asynchronously into `cache_dir`.
+  int load_rally_from_disc(const std::filesystem::path& rally_root_or_state_root,
+                           const std::filesystem::path& cache_dir);
+  // Selects ColoradoDirt Rally regional ambience banks vs base Colorado beds.
+  void set_rally_world(bool on) { rally_world_.store(on, std::memory_order_release); }
+  bool rally_world() const { return rally_world_.load(std::memory_order_acquire); }
   // Injects a mono PCM loop directly (for unit tests without disc files).
   void set_bed_sample(AmbienceBedSlot slot, PcmSample pcm);
+  void set_rally_bed_sample(int region_idx, std::string_view region_name, PcmSample pcm);
   int loaded_bed_count() const;
+  int rally_bed_count() const;
+  int last_rally_region() const { return last_rally_region_.load(std::memory_order_acquire); }
 
   void render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
               float tod_hour = 12.0f);
@@ -231,7 +251,13 @@ class AmbienceBedPlayer {
     AmbienceBedSlot slot = AmbienceBedSlot::kDefault;
     PcmSample* pcm = nullptr;
   };
+  struct LoadedRallyBed {
+    int region_idx = 0;
+    std::array<char, 64> name{};
+    PcmSample* pcm = nullptr;
+  };
   void stop_worker();
+  void stop_rally_worker();
   void drain_loaded();
 
   int rate_ = 48000;
@@ -241,6 +267,17 @@ class AmbienceBedPlayer {
   SpscQueue<LoadedBed> loaded_q_{32};
   std::atomic<bool> stop_worker_{false};
   std::thread worker_;
+
+  std::atomic<bool> rally_world_{false};
+  std::atomic<int> last_rally_region_{-1};
+  std::array<PcmSample*, kMaxRallyRegions> rally_beds_{};
+  std::array<std::array<char, 64>, kMaxRallyRegions> rally_names_{};
+  std::array<double, kMaxRallyRegions> rally_phase_{};
+  std::array<float, kMaxRallyRegions> rally_gain_{};
+  SpscQueue<LoadedRallyBed> rally_loaded_q_{32};
+  SpscQueue<LoadedRallyBed> rally_direct_q_{32};
+  std::atomic<bool> stop_rally_worker_{false};
+  std::thread rally_worker_;
 
   uint32_t rng_ = 0x12345678u;
   float lp_l_ = 0.0f, lp_r_ = 0.0f;

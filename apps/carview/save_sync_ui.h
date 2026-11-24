@@ -70,6 +70,8 @@ class SaveSession {
   const profile::sync::Context& sync_context() const { return sync_ctx_; }
   const profile::sync::BootReport& sync_report() const { return sync_report_; }
   void refresh_sync_remotes();
+  // Rebinds active_save_dir_, backup config, and sync context after a profile switch.
+  void sync_active_profile_dir();
 
   std::vector<std::string> log;
   std::vector<std::pair<std::string, float>> notices;
@@ -130,9 +132,21 @@ class SaveProfilePage {
   const std::vector<profile::backup::Entry>& backups() const { return backups_; }
   const std::vector<profile::sync::Remote>& remotes() const { return remotes_; }
   const std::vector<ImportCandidate>& import_candidates() const { return imports_; }
+  enum class ReloadReason { kNone = 0, kBackupRestored, kProfileSwitched, kSaveImported };
+
   const std::string& notice() const { return notice_; }
   void set_notice(std::string n) { notice_ = std::move(n); }
   bool restart_recommended() const { return restart_recommended_; }
+
+  // Set whenever a backup restore, save import, or profile switch mutates disk
+  // save files or switches the active save directory. Runtime callers must
+  // consume this immediately to reload in-memory DriveSave + CareerGarage +
+  // liveries from disk so autosave / clean exit never overwrite them.
+  bool reload_pending() const { return reload_pending_; }
+  ReloadReason pending_reload_reason() const { return reload_reason_; }
+  const std::filesystem::path& pending_reload_dir() const { return reload_dir_; }
+  bool consume_reload_from_disk(std::filesystem::path* out_save_dir = nullptr,
+                                ReloadReason* out_reason = nullptr);
 
   void refresh(SaveSession& session);
 
@@ -147,6 +161,9 @@ class SaveProfilePage {
   Tab tab_ = Tab::kBackups;
   int selected_ = 0;
   bool restart_recommended_ = false;
+  bool reload_pending_ = false;
+  ReloadReason reload_reason_ = ReloadReason::kNone;
+  std::filesystem::path reload_dir_;
   std::string notice_;
   std::vector<profile::backup::Entry> backups_;
   std::vector<profile::sync::Remote> remotes_;

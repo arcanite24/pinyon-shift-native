@@ -91,12 +91,48 @@ struct LiveryDocument {
   std::vector<VinylLayer> layers;
 };
 
+struct LiveryPlaneMask {
+  std::string plane_name;  // lower-case plane name ("front", "back", "top", "left", "right", "wing")
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::vector<uint8_t> alpha;  // top-first R8 alpha channel (width * height bytes)
+};
+
+struct LiveryMaskSet {
+  std::vector<LiveryPlaneMask> planes;
+  bool empty() const { return planes.empty(); }
+  const LiveryPlaneMask* find_plane(LiveryPlaneKind pk) const;
+};
+
+// Normalized top-first UV sub-rectangle and plane transform resolved from Masks.xml.
+struct LiveryPlaneRect {
+  float u0 = 0.0f;
+  float v0 = 0.0f;
+  float w = 1.0f;
+  float h = 1.0f;
+  float rot_deg = 0.0f;
+  float x_scale = 1.0f;
+  float y_scale = 1.0f;
+};
+
+// Resolves a Masks.xml plane into top-first UV space [0..1]x[0..1] (converting
+// bottom-up TGA pixel coordinates around (512, 512) to top-first Vulkan UVs).
+LiveryPlaneRect resolve_livery_plane_rect(const std::vector<bake::LiveryPlane>* planes, LiveryPlaneKind pk);
+
+// Loads per-plane LiveryMasks/<plane>.tga alpha masks from a car archive (.zip)
+// or unpacked car directory.
+bool load_livery_masks(const std::filesystem::path& car_archive_or_dir, LiveryMaskSet& out,
+                       std::string* error = nullptr);
+bool load_livery_masks_for_car(const std::filesystem::path& game_root, const std::string& car_media,
+                               LiveryMaskSet& out, std::string* error = nullptr);
+
 // Composites all visible layers of `doc` onto a `size x size` (default 1024x1024)
 // RGBA8 texture in LiveryMasks UV space. When `lib` is null or a shape is a
 // built-in primitive ("@rect", "@circle", "@stripe", "@star", "@chevron"),
-// falls back cleanly to crisp built-in vector geometry.
+// falls back cleanly to crisp built-in vector geometry. When `masks` is provided,
+// clips each plane's decals against its authored LiveryMasks/<plane>.tga alpha.
 bool composite_livery(const LiveryDocument& doc, LiveryLibrary* lib, const std::vector<bake::LiveryPlane>* planes,
-                      std::vector<uint8_t>& out_rgba, uint32_t size = 1024);
+                      std::vector<uint8_t>& out_rgba, uint32_t size = 1024, const LiveryMaskSet* masks = nullptr);
 
 // Saves/loads a LiveryDocument to/from a .liv file (human-readable shift-livery 1
 // format, plus graceful import of raw FH1 binary .liv headers).

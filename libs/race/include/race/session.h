@@ -33,13 +33,15 @@ struct CarSample {
   double heading_cos = 1;                 // cos(car forward, the line's direction)
   double off_route = 0;                   // m beyond the road's edge (0 on the road)
   double progress = 0;                    // m along the shared line
+  double up_y = 1.0;                      // body up-axis Y in world space (< 0.5 = rolled over)
 };
 
 class Session {
  public:
   struct Options {
-    double countdown = 6.0;  // s from the cutscene's start to the start signal
+    double countdown = 6.0;      // s from the cutscene's start to the start signal
     bool resets = true;
+    double rollover_time = 2.0;  // s with up_y < 0.5 before triggering rollover recovery
   };
   struct Car {
     int crossings = 0;
@@ -48,7 +50,7 @@ class Session {
     double best_lap = -1;
     std::vector<double> laps;
     int place = 0;
-    double wrong = 0, slow = 0, off5 = 0, off15 = 0;  // reset timers, s
+    double wrong = 0, slow = 0, off5 = 0, off15 = 0, rolled = 0;  // reset timers, s
     double no_collide_until = -1e9;
     const char* reason = "";  // the last reset's condition
     double distance = 0;      // m driven from the signal to the finish (horizontal)

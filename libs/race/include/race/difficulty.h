@@ -14,9 +14,10 @@ struct DriverSetup {
   int skill = 50, temperament = 5, rubberband_id = 0;
 };
 // Steps 1-3 of the spec: the event's values plus the driver's modifiers,
-// skill clamped to 1-80 and temperament to 1-10; the rubber-band id is the
-// event's plus the driver's modifier when it is 1 to 10, otherwise the
-// skill row's Rubberbands_id.
+// skill clamped to 1-80 and temperament to 1-10; the rubber-band id uses
+// event_rubberband whenever >= 1 (adding rubberband_modifier only for 1..10,
+// preserving Street Race / Star Showdown ids > 10 verbatim), and falls back to
+// the skill row's Rubberbands_id only when event_rubberband < 1.
 DriverSetup assign_driver(int event_skill, int event_temperament, int event_rubberband, int skill_modifier,
                           int aggro_modifier, int rubberband_modifier, const EventData& rows);
 // Assigns driver parameters with Pinyon Shift's HARD mode (+1 tier, max

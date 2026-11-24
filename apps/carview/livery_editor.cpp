@@ -40,8 +40,15 @@ bool LiveryEditor::open(const cars::PartsDb* db, const std::filesystem::path& ga
     cars::load_livery_file(liv_path, doc_, nullptr);
     doc_.car_id = car_id;
   }
+  plane_masks_.planes.clear();
   if (db && db->is_open()) {
     cars::query_special_colors(*db, specials_, nullptr);
+    if (!game_root.empty() && car_id > 0) {
+      cars::CarPhysics phys;
+      if (db->physics(car_id, {}, phys, nullptr) && !phys.media_name.empty()) {
+        cars::load_livery_masks_for_car(game_root, phys.media_name, plane_masks_, nullptr);
+      }
+    }
   }
   if (!game_root.empty()) {
     const auto lzip = game_root / "media" / "Livery.zip";
@@ -406,15 +413,30 @@ void LiveryEditor::toggle_layer_group() {
 bool LiveryEditor::mirror_selected_layer() {
   if (layer_idx_ >= doc_.layers.size()) return false;
   cars::VinylLayer mir = doc_.layers[layer_idx_];
-  if (mir.plane == cars::LiveryPlaneKind::kLeft) {
-    mir.plane = cars::LiveryPlaneKind::kRight;
-  } else if (mir.plane == cars::LiveryPlaneKind::kRight) {
-    mir.plane = cars::LiveryPlaneKind::kLeft;
+  const float norm_rot = std::fmod(std::fmod(mir.rot_deg, 360.0f) + 360.0f, 360.0f);
+  if (mir.plane == cars::LiveryPlaneKind::kLeft || mir.plane == cars::LiveryPlaneKind::kRight) {
+    // Left <-> Right viewer coordinates both have y=0 at roof and y=1 at rocker;
+    // nose sits at x=0 on Left and x=1 on Right, while composite_livery rotates
+    // the Right plane by Masks.xml rotation=180 into right.tga atlas space.
+    mir.plane = (mir.plane == cars::LiveryPlaneKind::kLeft) ? cars::LiveryPlaneKind::kRight
+                                                            : cars::LiveryPlaneKind::kLeft;
+    mir.x = std::clamp(1.0f - mir.x, 0.0f, 1.0f);
+    mir.flip_x = !mir.flip_x;
+    mir.rot_deg = std::fmod(360.0f - norm_rot, 360.0f);
+    mir.skew = -mir.skew;
+  } else if (mir.plane == cars::LiveryPlaneKind::kTop) {
+    // Top plane runs nose-to-tail along X and left-to-right across the car along Y.
+    mir.y = std::clamp(1.0f - mir.y, 0.0f, 1.0f);
+    mir.flip_y = !mir.flip_y;
+    mir.rot_deg = std::fmod(360.0f - norm_rot, 360.0f);
+    mir.skew = -mir.skew;
+  } else {
+    // Front, Rear, Wing, and FullAtlas mirror symmetrically across horizontal X.
+    mir.x = std::clamp(1.0f - mir.x, 0.0f, 1.0f);
+    mir.flip_x = !mir.flip_x;
+    mir.rot_deg = std::fmod(360.0f - norm_rot, 360.0f);
+    mir.skew = -mir.skew;
   }
-  mir.x = std::clamp(1.0f - mir.x, 0.0f, 1.0f);
-  mir.flip_x = !mir.flip_x;
-  mir.rot_deg = std::fmod(360.0f - mir.rot_deg, 360.0f);
-  mir.skew = -mir.skew;
   doc_.layers.insert(doc_.layers.begin() + ptrdiff_t(layer_idx_ + 1), mir);
   layer_idx_ += 1;
   dirty_ = true;
@@ -456,7 +478,8 @@ bool LiveryEditor::load(const std::filesystem::path& path, std::string* error) {
 
 bool LiveryEditor::composite_1024(const std::vector<cars::bake::LiveryPlane>* planes, std::vector<uint8_t>& out_rgba,
                                   uint32_t size) {
-  return cars::composite_livery(doc_, lib_.is_open() ? &lib_ : nullptr, planes, out_rgba, size);
+  return cars::composite_livery(doc_, lib_.is_open() ? &lib_ : nullptr, planes, out_rgba, size,
+                                plane_masks_.empty() ? nullptr : &plane_masks_);
 }
 
 void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor& editor,

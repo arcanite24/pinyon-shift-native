@@ -78,15 +78,40 @@ Entry read_entry(const fs::path& dir) {
   return e;
 }
 
-// The save folder's plain files (not sub-folders, temporaries or locks).
-std::vector<fs::path> save_files(const fs::path& dir) {
-  std::vector<fs::path> out;
+bool is_liv_file(const fs::path& p) {
+  std::string ext = p.extension().string();
+  for (char& c : ext) c = char(std::tolower(static_cast<unsigned char>(c)));
+  return ext == ".liv";
+}
+
+bool is_safe_backup_name(const std::string& n) {
+  if (n.empty() || n.find_first_of("\\:") != std::string::npos || n == "." || n == "..") return false;
+  if (n.front() == '/' || n.back() == '/') return false;
+  const size_t slash = n.find('/');
+  if (slash == std::string::npos) return true;
+  if (n.substr(0, slash) != "liveries") return false;
+  const std::string rest = n.substr(slash + 1);
+  return !rest.empty() && rest != "." && rest != ".." && rest.find('/') == std::string::npos;
+}
+
+// The save folder's plain files plus `liveries/*.liv` (relative POSIX paths, sorted).
+std::vector<std::string> save_files(const fs::path& dir) {
+  std::vector<std::string> out;
   std::error_code ec;
   for (const auto& e : fs::directory_iterator(dir, ec)) {
     if (!e.is_regular_file(ec)) continue;
     const std::string n = e.path().filename().string();
     if (n.ends_with(".tmp") || n == "mods.lock") continue;
-    out.push_back(e.path());
+    out.push_back(n);
+  }
+  const fs::path liv_dir = dir / "liveries";
+  if (fs::is_directory(liv_dir, ec)) {
+    for (const auto& e : fs::directory_iterator(liv_dir, ec)) {
+      if (!e.is_regular_file(ec)) continue;
+      const std::string n = e.path().filename().string();
+      if (n.ends_with(".tmp") || !is_liv_file(e.path())) continue;
+      out.push_back("liveries/" + n);
+    }
   }
   std::sort(out.begin(), out.end());
   return out;
@@ -153,16 +178,18 @@ bool snapshot(const Config& cfg, std::string_view reason, Entry* out, std::strin
   manifest << "credits " << e.credits << "\n";
   auto add = [&](const fs::path& src, const std::string& as) {
     std::vector<uint8_t> bytes;
-    if (!read_bytes(src, bytes) || !write_bytes(tmp / as, bytes)) return false;
+    const fs::path dst = tmp / as;
+    fs::create_directories(dst.parent_path(), ec);
+    if (!read_bytes(src, bytes) || !write_bytes(dst, bytes)) return false;
     manifest << "file " << as << " " << bytes.size() << " " << detail::sha256_hex(bytes) << "\n";
     ++e.files;
     e.bytes += bytes.size();
     return true;
   };
-  for (const auto& f : files)
-    if (!add(f, f.filename().string())) {
+  for (const auto& rel : files)
+    if (!add(cfg.save_dir / rel, rel)) {
       fs::remove_all(tmp, ec);
-      if (error) *error = "cannot copy " + f.string();
+      if (error) *error = "cannot copy " + (cfg.save_dir / rel).string();
       return false;
     }
   if (!cfg.achievements.empty() && fs::is_regular_file(cfg.achievements, ec))
@@ -244,6 +271,10 @@ bool restore(const Config& cfg, const std::string& id, std::string* error, int64
       std::string name, sha;
       uint64_t size = 0;
       ls >> name >> size >> sha;
+      if (!is_safe_backup_name(name)) {
+        if (error) *error = "backup " + id + " has unsafe path (" + name + ")";
+        return false;
+      }
       Item it{name, {}};
       if (!read_bytes(src / name, it.bytes) || it.bytes.size() != size ||
           (!sha.empty() && detail::sha256_hex(it.bytes) != sha)) {
@@ -260,6 +291,7 @@ bool restore(const Config& cfg, const std::string& id, std::string* error, int64
   for (const auto& it : items) {
     const fs::path dst =
         it.name == "achievements.txt" && !cfg.achievements.empty() ? cfg.achievements : cfg.save_dir / it.name;
+    fs::create_directories(dst.parent_path(), ec);
     fs::path tmp = dst;
     tmp += ".tmp";
     if (!write_bytes(tmp, it.bytes)) {

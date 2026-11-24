@@ -12,6 +12,7 @@
 //     nested user/ export, ZIP archive extraction, .pre-import + before-import
 //     backups, v4 vs base guard, encrypted console ForzaProfile refusal (zero
 //     console keys).
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -465,6 +466,105 @@ void test_xenia_pinyon_import() {
   auto res_v4_ok = profile::import::run(zip_path, opts);
   CHECK(res_v4_ok.ok && res_v4_ok.v4_save && res_v4_ok.credits == 777000);
   CHECK(res_v4_ok.detection.kind == profile::import::SourceKind::kExportZip);
+
+  // (d) P0-G4: importing into an existing save preserves spawn pose, camera/audio, and controls!
+  {
+    const fs::path keep_dir = root / "dest_preserve" / "drive";
+    drive::DriveSave existing;
+    existing.car = "VW_Corrado_95";
+    existing.position = {1234.5, 56.25, -789.0};
+    existing.heading = 1.75;
+    existing.has_spawn = true;
+    existing.spawn = {111.0, 22.0, 333.0};
+    existing.spawn_heading = -0.85;
+    existing.radio_station = "Radio2_BassArena";
+    existing.radio_dj = false;
+    existing.radio_volume = 0.65;
+    existing.tod_sec = 43210.0;
+    existing.has_controls = true;
+    existing.controls.layout_id = 3;
+    existing.controls.rumble_enabled = false;
+    existing.controls.rumble_scale = 0.4;
+    existing.controls.camera_effects = false;
+    existing.controls.assists.steering = 2;
+    existing.controls.assists.shifting = 2;
+    std::string werr;
+    CHECK(drive::write_save(keep_dir / "save.txt", existing, &werr));
+
+    profile::import::Options keep_opts = opts;
+    keep_opts.save_dir = keep_dir;
+    keep_opts.backups.save_dir = keep_dir;
+    keep_opts.backups.backups_dir = root / "dest_preserve" / "backups";
+    keep_opts.replace_existing = true;
+    auto rkeep = profile::import::run(exp_root, keep_opts);
+    CHECK(rkeep.ok && rkeep.credits == 123456);
+
+    drive::DriveSave after;
+    CHECK(drive::read_save(keep_dir / "save.txt", after, &werr));
+    CHECK(after.credits == 123456 && after.owned_garage);
+    CHECK(std::fabs(after.position[0] - 1234.5) < 1e-3 && std::fabs(after.position[2] - (-789.0)) < 1e-3);
+    CHECK(std::fabs(after.heading - 1.75) < 1e-3);
+    CHECK(after.has_spawn && std::fabs(after.spawn[0] - 111.0) < 1e-3 && std::fabs(after.spawn_heading - (-0.85)) < 1e-3);
+    CHECK(after.has_controls && after.controls.layout_id == 3 && !after.controls.rumble_enabled &&
+          std::fabs(after.controls.rumble_scale - 0.4) < 1e-3 && !after.controls.camera_effects &&
+          after.controls.assists.steering == 2 && after.controls.assists.shifting == 2);
+    CHECK(after.radio_station == "Radio2_BassArena" && !after.radio_dj && std::fabs(after.radio_volume - 0.65) < 1e-3);
+    CHECK(std::fabs(after.tod_sec - 43210.0) < 1e-2);
+  }
+}
+
+void test_liveries_backup_and_sync() {
+  // P0-G3: liveries/*.liv are included in backup snapshots/restore and cross-device sync!
+  const fs::path root = fresh("liveries_g3");
+  const fs::path dev_a = root / "pc_a";
+  const fs::path dev_b = root / "pc_b";
+  const fs::path shared = root / "shared";
+  fs::create_directories(shared);
+
+  write_sample_save(dev_a / "drive", "NIS_SkylineGTRVSpecII_02", 42000);
+  const std::string liv_payload = "LIV1_CUSTOM_DECAL_PAYLOAD_DATA";
+  write_file(dev_a / "drive" / "liveries" / "skyline_custom.liv", liv_payload);
+
+  // 1) Backup snapshot & restore preserves liveries/*.liv.
+  profile::backup::Config bcfg;
+  bcfg.save_dir = dev_a / "drive";
+  bcfg.backups_dir = dev_a / "backups";
+  profile::backup::Entry snap;
+  std::string err;
+  CHECK(profile::backup::snapshot(bcfg, "manual", &snap, &err, 1700200000));
+  CHECK(fs::exists(snap.dir / "liveries" / "skyline_custom.liv"));
+
+  // Delete livery folder on disk, restore backup -> livery file comes back byte-for-byte!
+  std::error_code ec;
+  fs::remove_all(dev_a / "drive" / "liveries", ec);
+  CHECK(!fs::exists(dev_a / "drive" / "liveries" / "skyline_custom.liv"));
+  CHECK(profile::backup::restore(bcfg, snap.id, &err, 1700200010));
+  CHECK(fs::exists(dev_a / "drive" / "liveries" / "skyline_custom.liv"));
+  {
+    std::ifstream in(dev_a / "drive" / "liveries" / "skyline_custom.liv", std::ios::binary);
+    std::string restored((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(restored == liv_payload);
+  }
+
+  // 2) Sync publish from A -> boot on B brings liveries/*.liv across!
+  const std::string h1 = profile::sync::save_hash(dev_a / "drive");
+  write_file(dev_a / "drive" / "liveries" / "skyline_custom.liv", liv_payload + "_V2");
+  const std::string h2 = profile::sync::save_hash(dev_a / "drive");
+  CHECK(!h1.empty() && !h2.empty() && h1 != h2);
+
+  auto ctx_a = make_sync_ctx(dev_a, shared, "PCA", "v4", 1700200100);
+  auto rep_a = profile::sync::boot(ctx_a);
+  CHECK(rep_a.published);
+
+  auto ctx_b = make_sync_ctx(dev_b, shared, "PCB", "v4", 1700200110);
+  auto rep_b = profile::sync::boot(ctx_b);
+  CHECK(rep_b.imported && rep_b.imported_from == "PCA");
+  CHECK(fs::exists(dev_b / "drive" / "liveries" / "skyline_custom.liv"));
+  {
+    std::ifstream in(dev_b / "drive" / "liveries" / "skyline_custom.liv", std::ios::binary);
+    std::string synced((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(synced == liv_payload + "_V2");
+  }
 }
 
 }  // namespace
@@ -479,6 +579,7 @@ int main() {
   test_profiles();
   test_save_sync();
   test_xenia_pinyon_import();
+  test_liveries_backup_and_sync();
 
   fs::remove_all(g_root, ec);
   if (g_failed) {

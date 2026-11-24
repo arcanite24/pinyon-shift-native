@@ -1233,15 +1233,28 @@ void draw_update_tab(ui::List& l, const LauncherUiState& st, float x0, float y0,
 
   if (st.available_update) {
     const auto& u = *st.available_update;
-    draw_inset_box(l, x0 + 24.0f * d, cy, x1 - 24.0f * d, cy + 156.0f * d, d, kBlue);
+    draw_inset_box(l, x0 + 24.0f * d, cy, x1 - 24.0f * d, cy + 156.0f * d, d,
+                   !st.staged_apply_script.empty() ? kGreen : kBlue);
     draw_text(l, x0 + 40.0f * d, cy + 16.0f * d, "Available: " + u.tag + "  \xC2\xB7  " + u.asset_name,
               FontFace::kSemiBold, 15.0f * d, kTextPrimary, ui::Align::kLeft, cw - 80.0f * d);
     draw_text(l, x0 + 40.0f * d, cy + 44.0f * d, "Size: " + fmt_size(u.size_bytes), FontFace::kRegular, 12.5f * d,
               kTextSecondary);
-    draw_text(l, x0 + 40.0f * d, cy + 68.0f * d, "SHA-256: " + u.sha256, FontFace::kMono, 11.5f * d, kGreen,
-              ui::Align::kLeft, cw - 80.0f * d);
+    if (!u.sha256.empty()) {
+      draw_text(l, x0 + 40.0f * d, cy + 68.0f * d, "SHA-256: " + u.sha256, FontFace::kMono, 11.5f * d, kGreen,
+                ui::Align::kLeft, cw - 80.0f * d);
+    } else if (!u.sha256_url.empty()) {
+      draw_text(l, x0 + 40.0f * d, cy + 68.0f * d, "SHA-256: companion .sha256 checksum asset will be verified",
+                FontFace::kMono, 11.5f * d, kBlue, ui::Align::kLeft, cw - 80.0f * d);
+    } else {
+      draw_text(l, x0 + 40.0f * d, cy + 68.0f * d, "SHA-256: missing (cannot verify release integrity)",
+                FontFace::kMono, 11.5f * d, kAmber, ui::Align::kLeft, cw - 80.0f * d);
+    }
     draw_button(l, hits, st, "upd:stage", x0 + 40.0f * d, cy + 102.0f * d, x0 + 236.0f * d, cy + 136.0f * d,
-                "Stage & Verify Update", d, {.primary = true});
+                "Stage & Verify Update", d, {.primary = st.staged_apply_script.empty()});
+    if (!st.staged_apply_script.empty()) {
+      draw_button(l, hits, st, "upd:apply", x0 + 248.0f * d, cy + 102.0f * d, x0 + 448.0f * d, cy + 136.0f * d,
+                  "Apply & Restart (" + std::to_string(st.staged_file_count) + " files)", d, {.primary = true});
+    }
   }
 }
 

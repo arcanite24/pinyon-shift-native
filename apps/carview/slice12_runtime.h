@@ -246,7 +246,7 @@ struct Slice12Runtime {
     else rig.set_head_pose({});
 
     // 2. DirectInput FFB + CSV trace.
-    const auto ffb_tel = drive::ffb_telemetry_from_vehicle(v, active_drive);
+    const auto ffb_tel = drive::ffb_telemetry_from_vehicle(v, active_drive, v.lateral_g());
     const auto ffb_forces = ffb_solver.step(ffb_tel, ffb_cfg, dt_s);
     if (ffb_device.is_open()) ffb_device.apply(ffb_forces);
     if (ffb_trace.is_recording()) ffb_trace.record(v.time(), ffb_cfg.mode, ffb_tel, ffb_forces);

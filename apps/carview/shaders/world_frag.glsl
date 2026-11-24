@@ -786,6 +786,10 @@ void main() {
     float depth_opac = 1.0 - transmittance.r;
     float wa = clamp(mix(shore_a * 0.72, 0.96, clamp(fresnel * 0.65 + depth_opac * 0.65 + foam_band * 0.4, 0.0, 1.0)),
                      0.0, 0.98);
+#ifndef OPAQUE_NO_DISCARD
+    // Avoid overwriting shore terrain depth with invisible shoreline margin triangles now that world_water_ writes depth.
+    if (blend == kAlpha && wa < 0.02) discard;
+#endif
     out_color = blend == kAlpha ? vec4(w_enc * wa, wa) : vec4(w_enc, 1.0);
     return;
   }

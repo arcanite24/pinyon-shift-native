@@ -136,9 +136,63 @@ std::string strip_project_prefix(std::string_view full_path) {
   const auto slash = full_path.find('/');
   if (slash != std::string_view::npos) {
     const auto prefix = lower_str(full_path.substr(0, slash));
-    if (prefix.rfind("codriver", 0) == 0) return lower_str(full_path.substr(slash + 1));
+    if (prefix.rfind("codriver", 0) == 0 || prefix.rfind("rally_vo", 0) == 0)
+      return lower_str(full_path.substr(slash + 1));
   }
   return lower_str(full_path);
+}
+
+bool dir_has_codriver_bank(const std::filesystem::path& dir) {
+  std::error_code ec;
+  if (dir.empty() || !std::filesystem::is_directory(dir, ec)) return false;
+  for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+    if (!e.is_regular_file(ec)) continue;
+    const std::string fn = lower_str(e.path().filename().string());
+    if ((fn.rfind("codriver_", 0) == 0 || fn.rfind("rally_vo", 0) == 0) &&
+        lower_str(e.path().extension().string()) == ".fev") {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::filesystem::path find_codriver_vo_dir(const std::filesystem::path& root) {
+  std::error_code ec;
+  if (root.empty() || !std::filesystem::exists(root, ec)) return {};
+  const std::filesystem::path direct[] = {
+      root,
+      root / "VO",
+      root / "audio" / "VO",
+      root / "Media" / "audio" / "VO",
+      root / "media" / "audio" / "VO",
+      root / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "audio" / "VO",
+  };
+  for (const auto& d : direct) {
+    if (dir_has_codriver_bank(d)) return d;
+  }
+  auto scan_dlczips = [&](const std::filesystem::path& dlczips) -> std::filesystem::path {
+    if (!std::filesystem::is_directory(dlczips, ec)) return {};
+    for (const auto& z : std::filesystem::directory_iterator(dlczips, ec)) {
+      if (!z.is_directory(ec)) continue;
+      const auto cand = z.path() / "Media" / "audio" / "VO";
+      if (dir_has_codriver_bank(cand)) return cand;
+    }
+    return {};
+  };
+  if (auto hit = scan_dlczips(root / "Media" / "DLCZips"); !hit.empty()) return hit;
+  const std::filesystem::path pkg_roots[] = {
+      root / "user" / "0000000000000000" / "4D5309C9" / "00000002",
+      root / "00000002",
+      root,
+  };
+  for (const auto& pr : pkg_roots) {
+    if (!std::filesystem::is_directory(pr, ec)) continue;
+    for (const auto& pkg : std::filesystem::directory_iterator(pr, ec)) {
+      if (!pkg.is_directory(ec)) continue;
+      if (auto hit = scan_dlczips(pkg.path() / "Media" / "DLCZips"); !hit.empty()) return hit;
+    }
+  }
+  return {};
 }
 
 }  // namespace
@@ -240,7 +294,10 @@ bool CoDriverVoPlayer::load(const std::filesystem::path& rally_package_dir, cons
     return false;
   }
 
-  const auto vo_dir = rally_package_dir / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "audio" / "VO";
+  auto vo_dir = find_codriver_vo_dir(rally_package_dir);
+  if (vo_dir.empty()) {
+    vo_dir = rally_package_dir / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "audio" / "VO";
+  }
   std::string lang = upper_str(language.empty() ? std::string_view("EN") : language);
   std::error_code ec;
   auto fev_path = vo_dir / ("CoDriver_" + lang + ".fev");
@@ -249,6 +306,27 @@ bool CoDriverVoPlayer::load(const std::filesystem::path& rally_package_dir, cons
     lang = "EN";
     fev_path = vo_dir / "CoDriver_EN.fev";
     fsb_path = vo_dir / "CoDriver_EN.fsb";
+  }
+  if (!std::filesystem::exists(fev_path, ec) || !std::filesystem::exists(fsb_path, ec)) {
+    // Also check Rally_VO_<LANG>.fev/.fsb if CoDriver_<LANG> is not present in this directory.
+    const std::string req_lang = upper_str(language.empty() ? std::string_view("EN") : language);
+    auto rfev = vo_dir / ("Rally_VO_" + req_lang + ".fev");
+    auto rfsb = vo_dir / ("Rally_VO_" + req_lang + ".fsb");
+    if (std::filesystem::exists(rfev, ec) && std::filesystem::exists(rfsb, ec)) {
+      lang = req_lang;
+      fev_path = rfev;
+      fsb_path = rfsb;
+    } else if (std::filesystem::exists(vo_dir / "Rally_VO_EN.fev", ec) &&
+               std::filesystem::exists(vo_dir / "Rally_VO_EN.fsb", ec)) {
+      lang = "EN";
+      fev_path = vo_dir / "Rally_VO_EN.fev";
+      fsb_path = vo_dir / "Rally_VO_EN.fsb";
+    } else if (std::filesystem::exists(vo_dir / "Rally_VO.fev", ec) &&
+               std::filesystem::exists(vo_dir / "Rally_VO.fsb", ec)) {
+      lang = "EN";
+      fev_path = vo_dir / "Rally_VO.fev";
+      fsb_path = vo_dir / "Rally_VO.fsb";
+    }
   }
   if (!std::filesystem::exists(fev_path, ec) || !std::filesystem::exists(fsb_path, ec)) {
     if (note) *note = "CoDriver_" + lang + ".fev/.fsb not found";

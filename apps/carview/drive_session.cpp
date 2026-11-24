@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <sqlite3.h>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "drive/from_bake.h"
 #include "drive/from_physics.h"
 #include "fh1data/spa.h"
+#include "fh1data/stringtables.h"
 #include "garage/garage.h"
 #include "profile/drive_save.h"
 #include "settings.h"
@@ -23,6 +25,52 @@
 namespace carview {
 
 namespace {
+
+std::string resolve_engine_swap_audio_car(DriveApp& app, int64_t* out_swapped_engine_id = nullptr) {
+  if (out_swapped_engine_id) *out_swapped_engine_id = -1;
+  if (!app.have_garage || !app.parts_db.valid()) return app.car;
+  const garage::Car* gc = app.career_garage.selected_car();
+  if (!gc) return app.car;
+  auto it = app.baked_ids.find(gc->car_id);
+  if (it == app.baked_ids.end() || lower_ascii(it->second) != lower_ascii(app.car)) return app.car;
+  const auto db = app.parts_db.get();
+  if (!db || !db->is_open()) return app.car;
+  cars::CarPhysics rows;
+  if (!db->physics(gc->car_id, garage::fitted(*gc), rows, nullptr)) return app.car;
+  const bool is_stock_engine = int64_t(std::llround(rows.get("List_UpgradeEngine.IsStock", 1.0))) != 0;
+  const int64_t engine_id = int64_t(std::llround(rows.get("List_UpgradeEngine.EngineID", -1.0)));
+  if (is_stock_engine || engine_id <= 0) return app.car;
+  if (out_swapped_engine_id) *out_swapped_engine_id = engine_id;
+
+  std::string donor_media;
+  const std::string eng_str = std::to_string(engine_id);
+  const std::string car_str = std::to_string(gc->car_id);
+  // First: find a donor car whose stock engine matches the swapped EngineID (maps directly to <MediaName>_ET.xml).
+  db->each(
+      "SELECT c.MediaName FROM List_UpgradeEngine ue "
+      "JOIN Data_Car c ON c.Id = ue.Ordinal "
+      "WHERE ue.EngineID = ? AND ue.IsStock = 1 AND c.Id != ? "
+      "ORDER BY c.Id ASC LIMIT 1",
+      {eng_str, car_str},
+      [&](sqlite3_stmt* st) {
+        if (donor_media.empty()) {
+          if (const unsigned char* p = sqlite3_column_text(st, 0); p && *p) donor_media = reinterpret_cast<const char*>(p);
+        }
+      },
+      nullptr);
+  // Fallback: query Data_Engine.MediaName if no separate donor car uses this engine stock.
+  if (donor_media.empty()) {
+    db->each(
+        "SELECT MediaName FROM Data_Engine WHERE EngineID = ? LIMIT 1", {eng_str},
+        [&](sqlite3_stmt* st) {
+          if (donor_media.empty()) {
+            if (const unsigned char* p = sqlite3_column_text(st, 0); p && *p) donor_media = reinterpret_cast<const char*>(p);
+          }
+        },
+        nullptr);
+  }
+  return donor_media.empty() ? app.car : donor_media;
+}
 
 drive::CarParams build_session_vehicle_params(DriveApp& app, DriveWorldHost& host,
                                               const cars::bake::CarInfo& info,
@@ -43,11 +91,20 @@ drive::CarParams build_session_vehicle_params(DriveApp& app, DriveWorldHost& hos
                 audio_upgrades.intake = int(rows.get("List_UpgradeEngineIntake.Level", 0));
                 audio_upgrades.exhaust = int(rows.get("List_UpgradeEngineExhaust.Level", 0));
                 audio_trans_level = int(rows.get("List_UpgradeDrivetrainTransmission.Level", 0));
-                audio_turbo_level = std::max({int(rows.get("List_UpgradeEngineTurboSingle.Level", 0)),
-                                              int(rows.get("List_UpgradeEngineTurboTwin.Level", 0)),
-                                              int(rows.get("List_UpgradeEngineTurboQuad.Level", 0))});
-                const int csc_lvl = int(rows.get("List_UpgradeEngineCSC.Level", 0));
-                const int dsc_lvl = int(rows.get("List_UpgradeEngineDSC.Level", 0));
+                auto fi_tier = [&](const char* tbl) -> int {
+                  const std::string lvl_k = std::string(tbl) + ".Level";
+                  const std::string max_k = std::string(tbl) + ".MaxScale";
+                  const std::string red_k = std::string(tbl) + ".RedlineRPMScale";
+                  if (!rows.has(lvl_k) && !rows.has(max_k) && !rows.has(red_k)) return 0;
+                  const int raw = int(std::lround(rows.get(lvl_k, 0.0)));
+                  // Map DB upgrade level (0=stock, 1=street/L1, 2=sport/L2, 3=race/L3) -> SfxEngine 1..3.
+                  return std::clamp(raw <= 0 ? 1 : raw, 1, 3);
+                };
+                audio_turbo_level = std::max({fi_tier("List_UpgradeEngineTurboSingle"),
+                                              fi_tier("List_UpgradeEngineTurboTwin"),
+                                              fi_tier("List_UpgradeEngineTurboQuad")});
+                const int csc_lvl = fi_tier("List_UpgradeEngineCSC");
+                const int dsc_lvl = fi_tier("List_UpgradeEngineDSC");
                 audio_sc_level = std::max(csc_lvl, dsc_lvl);
                 audio_sc_is_centrifugal = (csc_lvl > 0 && csc_lvl >= dsc_lvl);
                 audio_camshaft_level = int(rows.get("List_UpgradeEngineCamshaft.Level", 0));
@@ -58,7 +115,10 @@ drive::CarParams build_session_vehicle_params(DriveApp& app, DriveWorldHost& hos
               }
               physics_notes.push_back("garage parts not applied: " + e);
             }
-        return drive::params_for_baked_car(info, app.bake_dir, &physics_notes);
+        drive::CarParams params = drive::params_for_baked_car(info, app.bake_dir, &physics_notes);
+        if (params.has_turbo && audio_turbo_level == 0) audio_turbo_level = 1;
+        if (params.has_supercharger && audio_sc_level == 0) audio_sc_level = 1;
+        return params;
 }
 
 }  // namespace
@@ -119,11 +179,41 @@ void DriveSession::init_session() {
       if (app.sound && (!app.headless || !app.audio_out.empty() || app.bench_audio || app.bench_full_fx)) {
         const auto aud_t0 = std::chrono::steady_clock::now();
         std::string sound_note;
-        if (app.audio_host.load_car(app.sound_dir, app.game_root_of(), app.state_root, app.car, audio_upgrades, vehicle.params().idle_rpm,
-                                vehicle.params().redline_rpm, &sound_note))
+        int64_t swapped_engine_id = -1;
+        const std::string audio_car = resolve_engine_swap_audio_car(app, &swapped_engine_id);
+        bool loaded_car_audio = app.audio_host.load_car(app.sound_dir, app.game_root_of(), app.state_root, audio_car,
+                                                        audio_upgrades, vehicle.params().idle_rpm,
+                                                        vehicle.params().redline_rpm, &sound_note);
+        if (!loaded_car_audio && lower_ascii(audio_car) != lower_ascii(app.car)) {
+          std::fprintf(stderr, "carview: engine swap audio %s unavailable (%s); falling back to %s\n",
+                       audio_car.c_str(), sound_note.c_str(), app.car.c_str());
+          sound_note.clear();
+          loaded_car_audio = app.audio_host.load_car(app.sound_dir, app.game_root_of(), app.state_root, app.car,
+                                                     audio_upgrades, vehicle.params().idle_rpm,
+                                                     vehicle.params().redline_rpm, &sound_note);
+        } else if (loaded_car_audio && lower_ascii(audio_car) != lower_ascii(app.car)) {
+          std::printf("engine swap audio: %s -> %s (EngineID %lld)\n", app.car.c_str(), audio_car.c_str(),
+                      (long long)swapped_engine_id);
+        }
+        if (loaded_car_audio)
           std::printf("%s\n", sound_note.c_str());
         else
           std::fprintf(stderr, "carview: no engine sound (%s)\n", sound_note.c_str());
+        if (!app.headless || app.bench_audio || app.bench_full_fx) {
+          const auto game_root = app.game_root_of();
+          const auto sfx_cache = !app.sound_dir.empty() ? app.sound_dir : (app.state_root / "sound-cache");
+          if (!game_root.empty()) {
+            app.audio_host.init_sfx(game_root, sfx_cache, app.audio_host.car_burble_bank(), app.state_root);
+            const auto rally_pkg = !app.rally_catalog.package_dir.empty()
+                                       ? app.rally_catalog.package_dir
+                                       : (!app.state_root.empty() ? race::find_rally_package(app.state_root)
+                                                                  : std::filesystem::path{});
+            app.audio_host.init_acoustics(game_root, sfx_cache, app.world_dir, rally_pkg);
+            if (!app.colorado_world() && !rally_pkg.empty()) {
+              app.audio_host.init_codriver(rally_pkg, sfx_cache, app.language);
+            }
+          }
+        }
         app.bench_startup.audio_load_ms +=
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_t0).count();
       } else {
@@ -243,6 +333,20 @@ void DriveSession::init_session() {
           slice12.trainer.config.saved_map_road = boot_live_settings.trainer_saved_road;
         slice12.trainer.pacing = boot_live_settings.festival_pacing;
         slice12.trainer.hidden_cars = boot_live_settings.hidden_cars;
+        const bool already_isolated = app.slice12_modded_save || app.mods_session.isolation().isolated;
+        const std::filesystem::path clean_dir =
+            !app.clean_user_dir.empty()
+                ? app.clean_user_dir
+                : (!app.save_path.empty() ? app.save_path.parent_path() : std::filesystem::path{});
+        slice12.trainer.configure_save_root(clean_dir, already_isolated);
+        if (slice12.trainer.consume_modded_isolation_triggered() && !slice12.trainer.active_user_dir().empty()) {
+          const auto iso_dir = slice12.trainer.active_user_dir();
+          if (!app.save_path.empty()) app.save_path = iso_dir / app.save_path.filename();
+          if (!app.garage_path.empty()) app.garage_path = iso_dir / app.garage_path.filename();
+          app.slice12_modded_save = true;
+          slice12.save_tree_label = "user-modded";
+          std::printf("trainer: isolated save tree active (%s)\n", iso_dir.string().c_str());
+        }
         slice12.wheel_shaping = boot_live_settings.wheel_shaping;
         slice12.ffb_cfg = boot_live_settings.wheel_ffb;
         slice12.ds_cfg = boot_live_settings.dualsense;
@@ -357,12 +461,74 @@ void DriveSession::init_session() {
         rig.set_mode(drive::CameraMode(std::clamp(app.camera_mode, 0, drive::kCameraModes - 1)));
         cars::Install rumble_install;
         const char* rumble_state = std::getenv("SHIFT_STATE_ROOT");
+        const std::filesystem::path rumble_sr =
+            !app.state_root.empty() ? app.state_root : (rumble_state ? std::filesystem::path(rumble_state) : std::filesystem::path{});
         std::string rumble_xml, rumble_err;
         drive::RumbleConfig rumble_cfg;
-        if (cars::discover_install(app.game_root_of(), rumble_state ? rumble_state : "", "", rumble_install, nullptr) &&
+        if (cars::discover_install(app.game_root_of(), rumble_sr, "", rumble_install, nullptr) &&
             cars::load_rumble_xml(rumble_install, rumble_xml, &rumble_err) &&
             drive::parse_controller_rumble(rumble_xml, rumble_cfg, &rumble_err)) {
           gamepad_rumble.set_config(rumble_cfg);
+        }
+      }
+      // P0-K2: Reconcile Barn Find restorations against collectibles & garage once per save load
+      // so pending timers resume cleanly and any kBarnFound car missing from garage is immediately awarded.
+      if (app.progress_loaded && !app.collectibles.barns.empty() && !app.barn_restorations_reconciled) {
+        app.barn_restorations_reconciled = true;
+        auto owns_car = [&](int64_t cid) {
+          for (const auto& gc : app.career_garage.cars)
+            if (gc.car_id == cid) return true;
+          return false;
+        };
+        auto resolve_barn_label = [&](const freeroam::Barn& b) {
+          std::string named = barn_car_label(b);
+          if (!b.car_name_key.empty()) {
+            const uint32_t ref = uint32_t(fh1::string_hash("Barnfind")) << 16 | fh1::string_hash(b.car_name_key);
+            const std::string t = carview::game_text("_&" + std::to_string(ref));
+            if (!t.empty() && t[0] != '_') named = t;
+          }
+          return named;
+        };
+        // Refine restored pending entries against collectibles metadata & drop any already-owned cars.
+        std::vector<DriveApp::PendingBarnRestore> kept;
+        kept.reserve(app.pending_barn_restorations.size());
+        for (auto& br : app.pending_barn_restorations) {
+          if (br.car_id <= 0 || owns_car(br.car_id)) continue;
+          for (const auto& b : app.collectibles.barns) {
+            if (b.car_id == br.car_id || b.name == br.barn_id) {
+              br.barn_id = b.name;
+              const std::string lbl = resolve_barn_label(b);
+              if (!lbl.empty()) br.car_name = lbl;
+              break;
+            }
+          }
+          kept.push_back(std::move(br));
+        }
+        app.pending_barn_restorations = std::move(kept);
+        // Award any barn already marked kBarnFound whose car is neither in garage nor pending restoration.
+        int reconciled_count = 0;
+        for (size_t bi = 0; bi < app.collectibles.barns.size() && bi < app.progress.barns.size(); ++bi) {
+          if (app.progress.barns[bi].status != freeroam::kBarnFound) continue;
+          const auto& b = app.collectibles.barns[bi];
+          if (b.car_id <= 0 || owns_car(b.car_id)) continue;
+          bool in_pending = false;
+          for (const auto& pbr : app.pending_barn_restorations) {
+            if (pbr.car_id == b.car_id) {
+              in_pending = true;
+              break;
+            }
+          }
+          if (in_pending) continue;
+          const std::string awarded = app.award_garage_car(b.car_id, 0, false);
+          if (!awarded.empty()) {
+            ++reconciled_count;
+            std::printf("barn finds: reconciled missing %s (%s, Data_Car %d) into garage\n", b.name.c_str(),
+                        awarded.c_str(), b.car_id);
+          }
+        }
+        if (reconciled_count > 0) {
+          app.garage_picker();
+          save_due = true;
         }
       }
       slice12.apply_live_settings(boot_live_settings, rig, settings_path().parent_path());
@@ -488,8 +654,11 @@ void DriveSession::finalize_session(bool& session_again) {
                     app.collectibles.barns.size(), app.progress.total_distance / 1000);
       const bool will_hot_reload =
           (app.status == 0 && app.rally_world_switch == 0 && (app.leave_race || !app.next_event.empty() || !app.next_car.empty() || hot_reload_car));
-      if (!skip_end_save) save_now("end");
-      if (!skip_end_save && !app.again && !will_hot_reload && app.rally_world_switch == 0) app.save_session.on_exit(vehicle.time());
+      // P0-G1: Never overwrite disk save files with stale in-memory state when a backup restore,
+      // save import, or profile switch has mutated disk saves and awaits reload.
+      const bool block_end_save = skip_end_save || save_page.reload_pending();
+      if (!block_end_save) save_now("end");
+      if (!block_end_save && !app.again && !will_hot_reload && app.rally_world_switch == 0) app.save_session.on_exit(vehicle.time());
       if (traffic) std::printf("%s\n", traffic->summary().c_str());
       // Handle car switch / paint / upgrades / race start & leave in-place without tearing down
       // Renderer, pipelines, WorldGpu, world textures, or World (~12 s -> <0.25 s).
@@ -548,7 +717,18 @@ void DriveSession::finalize_session(bool& session_again) {
           SDL_SetWindowTitle(app.window, ("carview drive - loading " + (!opened_id.empty() ? opened_id : id)).c_str());
         }
         if (!app.next_car.empty()) {
-          if (app.race) {
+          if (app.rally_service_resume_after_reload && app.rally_session.active() &&
+              app.rally_session.in_service_area()) {
+            // P0-K3: Reload upgraded car in-place while keeping app.rally_session alive and reopening Service Area.
+            if (app.race) {
+              app.race->release_models();
+              app.race.reset();
+              app.race_event.clear();
+            }
+            app.rally_service_resume_after_reload = false;
+            app.rally_service_open = true;
+            app.rally_service_selected = 0;
+          } else if (app.race) {
             std::printf("race: left for a car change\n");
             app.race->release_models();
             app.race.reset();
@@ -797,7 +977,7 @@ void DriveSession::reload_mod_textures() {
 }
 
 void DriveSession::save_now(const char* why) {
-        if (app.save_path.empty() || app.status != 0) return;
+        if (app.save_path.empty() || app.status != 0 || save_page.reload_pending()) return;
         drive::DriveSave s;
         s.car = !app.pre_loaner_car.empty() ? app.pre_loaner_car : app.car;
         const drive::Vec3 at = vehicle.position();
@@ -822,6 +1002,25 @@ void DriveSession::save_now(const char* why) {
           s.signs_found = app.saved.signs_found;
           s.barns = app.saved.barns;
           s.garage = app.saved.garage;
+        }
+        s.pending_barn_restorations.clear();
+        for (const auto& br : app.pending_barn_restorations) {
+          if (br.car_id <= 0) continue;
+          int bid = 0;
+          for (size_t bi = 0; bi < app.collectibles.barns.size(); ++bi) {
+            if (app.collectibles.barns[bi].name == br.barn_id || app.collectibles.barns[bi].car_id == br.car_id) {
+              bid = int(bi) + 1;
+              break;
+            }
+          }
+          if (bid == 0) {
+            const size_t pos = br.barn_id.find_last_not_of("0123456789");
+            if (pos != std::string::npos && pos + 1 < br.barn_id.size()) {
+              bid = std::atoi(br.barn_id.c_str() + pos + 1);
+            }
+          }
+          const float rem = float(std::max(0.0, br.ready_after_s - br.elapsed_s));
+          s.pending_barn_restorations.push_back({bid, int(br.car_id), rem});
         }
         s.owned_garage = app.have_garage || (app.have_saved && app.saved.owned_garage);
         s.career_started = (app.have_saved && app.saved.career_started) || s.owned_garage || app.career.num_races > 0 || app.career.credits > 0;
