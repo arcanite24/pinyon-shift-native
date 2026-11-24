@@ -298,10 +298,13 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         if (nrm_uv1) flags |= kFlagNormalUv1;
       }
       uint32_t t_dmg = UINT32_MAX;
-      if ((klass == MaterialClass::kPaint || klass == MaterialClass::kOpaque) && s.slots[0] == "@atlas") {
-        t_dmg = try_tex({"car:damage_lod0.xds", "car:damage.xds"});
+      if ((klass == MaterialClass::kPaint || klass == MaterialClass::kOpaque) && s.slots[0] == "@atlas" &&
+          !flat_glass) {
+        t_dmg = (s.lod == 0) ? try_tex({"car:damage_lod0.xds", "car:damage.xds"})
+                             : try_tex({"car:damage.xds", "car:damage_lod0.xds"});
       } else if (klass == MaterialClass::kLamp) {
-        t_dmg = try_tex({"car:damagelights_lod0.xds", "car:damagelights.xds"});
+        t_dmg = (s.lod == 0) ? try_tex({"car:damagelights_lod0.xds", "car:damagelights.xds"})
+                             : try_tex({"car:damagelights.xds", "car:damagelights_lod0.xds"});
       }
       if (t_dmg != UINT32_MAX) flags |= kFlagDamageMap;
       // Alpha-tested emissive gauge overlays (z_gauge_emissive_alpha, gauge_emissive_alpha):
@@ -313,8 +316,11 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       d.push.tint[3] = 1;
       // Sub-material variant ID encoded in params[2] for showroom.frag:
       // 1=outer_rim (chrome lip), 2=inner_rim/wheel_black (dark barrel), 3=rotor/brake/drum,
-      // 4=hub, 5=cockpit metal/metal2, 6=defrost_lines, 10=mirrorLeft, 11=mirrorMiddle, 12=mirrorRight,
-      // 15=cockpit gauge needle, 16=cockpit digital MFD gauge.
+      // 4=hub, 5=cockpit metal/metal2, 6=defrost_lines, 9=non-window glass (interior/lamp lenses),
+      // 10=mirrorLeft, 11=mirrorMiddle, 12=mirrorRight, 15=cockpit gauge needle,
+      // 16=cockpit digital MFD gauge, 17=backlit cluster dial, 18=dark underbody/trim,
+      // 20=front windshield (laminated), 21=rear window (tempered),
+      // 22=left side window (tempered), 23=right side window (tempered).
       float submat_id = 0.0f;
       if (is_defrost) {
         submat_id = 6.0f;
@@ -322,6 +328,23 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         if (technique == "mirrorleft") submat_id = 10.0f;
         else if (technique == "mirrorright") submat_id = 12.0f;
         else submat_id = 11.0f;
+      } else if (klass == MaterialClass::kGlass && (flags & kFlagCover) == 0u) {
+        const std::string pname_l = lower(part.name);
+        if (pname_l == "interior" || pname_l.rfind("headlight", 0) == 0 ||
+            pname_l.rfind("taillight", 0) == 0 || pname_l == "glasslhl" || pname_l == "glassrhl" ||
+            pname_l == "glassltl" || pname_l == "glassrtl" ||
+            technique == "lights_glass" || technique == "light_glass" || technique == "red_glass") {
+          submat_id = 9.0f;
+        } else if (pname_l == "glassf" || technique == "frontwindow") {
+          submat_id = 20.0f;
+        } else if (pname_l == "glassr" || pname_l.rfind("trunk", 0) == 0 ||
+                   pname_l.rfind("hatch", 0) == 0 || pname_l == "rearwindow") {
+          submat_id = 21.0f;
+        } else if (pname_l == "glasslf" || pname_l == "glasslr" || pname_l.rfind("doorl", 0) == 0) {
+          submat_id = 22.0f;
+        } else if (pname_l == "glassrf" || pname_l == "glassrr" || pname_l.rfind("doorr", 0) == 0) {
+          submat_id = 23.0f;
+        }
       } else if (d.cockpit_role >= 1 || technique == "gauge_needle" || technique == "cockpit_gauge_needle") {
         submat_id = 15.0f;
       } else if (d.lamp_channel == drive::LampChannel::kDigitalGauge) {
@@ -382,6 +405,28 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       drawn = true;
     }
     if (drawn) drawn_parts_.push_back(model.name + "/" + part.name);
+  }
+  // Optional diagnostic damage preset for deterministic headless verification:
+  // CARVIEW_DAMAGE="front,rear,left,right,glass_crack,scratch[,body_dirt]"
+  if (!guest_) {
+    if (const char* dmg_env = std::getenv("CARVIEW_DAMAGE"); dmg_env && *dmg_env) {
+      float f = 0.0f, r = 0.0f, l = 0.0f, ri = 0.0f, gc = 0.0f, sc = 0.0f, bd = 0.0f;
+      const int n = std::sscanf(dmg_env, "%f,%f,%f,%f,%f,%f,%f", &f, &r, &l, &ri, &gc, &sc, &bd);
+      if (n >= 4) {
+        damage_zones_[0] = std::clamp(f, 0.0f, 1.0f);
+        damage_zones_[1] = std::clamp(r, 0.0f, 1.0f);
+        damage_zones_[2] = std::clamp(l, 0.0f, 1.0f);
+        damage_zones_[3] = std::clamp(ri, 0.0f, 1.0f);
+        damage_dirt_[0] = std::clamp(n >= 7 ? bd : 0.0f, 0.0f, 1.0f);
+        damage_dirt_[1] = 0.0f;
+        damage_dirt_[2] = std::clamp(n >= 5 ? gc : std::max(f, r), 0.0f, 1.0f);
+        damage_dirt_[3] = std::clamp(n >= 6 ? sc : std::max({f, r, l, ri}), 0.0f, 1.0f);
+        for (int i = 0; i < 4; ++i) {
+          frame_.damage_dirt[i] = damage_dirt_[i];
+          frame_.damage_zones[i] = damage_zones_[i];
+        }
+      }
+    }
   }
 }
 
@@ -607,7 +652,7 @@ void Showroom::set_damage_state(const drive::CarDamageState& dmg) {
   } else {
     damage_dirt_[0] = std::clamp(dmg.body_dirt, 0.0f, 1.0f);
     damage_dirt_[1] = std::clamp(dmg.tyre_dirt, 0.0f, 1.0f);
-    damage_dirt_[2] = std::clamp(dmg.glass_crack, 0.0f, 1.0f);
+    damage_dirt_[2] = std::clamp(std::max(dmg.glass_crack, dmg.zone_roof), 0.0f, 1.0f);
     damage_dirt_[3] = std::clamp(dmg.scratch_amount, 0.0f, 1.0f);
     damage_zones_[0] = std::clamp(dmg.zone_front, 0.0f, 1.0f);
     damage_zones_[1] = std::clamp(dmg.zone_rear, 0.0f, 1.0f);

@@ -580,6 +580,7 @@ void main() {
   float coat_mask = 1.0;
   float paint_metallic = 0.0;
   float paint_scale = 1.0;
+  float glass_crack_vein = 0.0;
 
   if ((flags & kFlagGrille) != 0u) {
     if ((flags & kFlagCutout) != 0u && t1.a < 0.5) discard;
@@ -728,14 +729,55 @@ void main() {
       if ((flags & kFlagLampEmissive) != 0u) {
         emissive = draw_tint.rgb;
       }
-      // Real FH1 Shared/glass_texture.xds fracture overlay when damage_dirt.z > 0.05.
-      float crack = frame.damage_dirt.z;
-      if (crack > 0.05) {
-        vec4 gt = texture(shared_glass_crack, v_uv0 * 2.5);
-        float c_mask = clamp(max(gt.a, dot(gt.rgb, vec3(0.3333))) * smoothstep(0.05, 0.55, crack), 0.0, 1.0);
-        base = mix(base, vec3(0.72, 0.78, 0.84), c_mask * 0.75);
-        alpha = clamp(alpha + c_mask * 0.42, 0.0, 0.96);
-        gloss = mix(gloss, 0.25, c_mask);
+      // Real FH1 Shared/glass_texture.xds fracture & shatter-out damage (1:1 UV0 layout):
+      // - Left half (u < 0.5): laminated windshield spiderweb cracks in RGB, alpha=1 (never punches out).
+      // - Right half (u >= 0.5): tempered rear/side glass cracks in RGB, alpha=0 inside shattered hole.
+      // Only apply player car damage (never leak onto instanced traffic/AI cars or non-window glass).
+      if ((flags & kFlagInstanced) == 0u && submat != 9u) {
+        float win_dmg = 0.0;
+        if (submat == 20u) {
+          win_dmg = max(frame.damage_dirt.z, smoothstep(0.25, 0.92, frame.damage_zones.x));
+        } else if (submat == 21u) {
+          win_dmg = smoothstep(0.22, 0.92, frame.damage_zones.y);
+        } else if (submat == 22u) {
+          win_dmg = smoothstep(0.22, 0.92, frame.damage_zones.z);
+        } else if (submat == 23u) {
+          win_dmg = smoothstep(0.22, 0.92, frame.damage_zones.w);
+        } else if (v_uv0.x < 0.5) {
+          win_dmg = max(frame.damage_dirt.z, smoothstep(0.25, 0.92, frame.damage_zones.x));
+        } else if (v_local_pos.z > 0.55 && abs(v_local_pos.x) < 0.65) {
+          win_dmg = smoothstep(0.22, 0.92, frame.damage_zones.y);
+        } else if (v_local_pos.x < -0.40) {
+          win_dmg = smoothstep(0.22, 0.92, frame.damage_zones.z);
+        } else if (v_local_pos.x > 0.40) {
+          win_dmg = smoothstep(0.22, 0.92, frame.damage_zones.w);
+        }
+        if (win_dmg > 0.04) {
+          vec2 guv = clamp(v_uv0, vec2(0.002), vec2(0.998));
+          vec4 gt = texture(shared_glass_crack, guv);
+          bool tempered = (submat == 21u || submat == 22u || submat == 23u || guv.x >= 0.5);
+          // Heavy tempered-glass crash shatters out the center pane where Shared/glass_texture alpha < 0.5,
+          // leaving realistic jagged cracked glass shards around the perimeter frame.
+          if (tempered && win_dmg > 0.72 && gt.a < 0.5) {
+            discard;
+          }
+          // Crack veins live strictly in RGB (never alpha, which is the glass presence mask!).
+          float crack_rgb = max(gt.r, max(gt.g, gt.b));
+          if (tempered && win_dmg <= 0.72) {
+            // While tempered glass is cracked but not yet shattered out, map left-half spiderweb
+            // veins across the intact center so cracks span the pane without any opaque white fill.
+            vec2 spider_uv = vec2(clamp((guv.x - 0.5) * 0.96 + 0.02, 0.004, 0.496), guv.y);
+            vec3 sp = texture(shared_glass_crack, spider_uv).rgb;
+            crack_rgb = max(crack_rgb, max(sp.r, max(sp.g, sp.b)));
+          }
+          float dmg_vis = smoothstep(0.04, 0.85, win_dmg);
+          // Threshold above DXT5 block noise (~0.04) so intact glass between crack veins stays 100% clear.
+          float vein = smoothstep(mix(0.30, 0.08, dmg_vis), 0.60, crack_rgb) * dmg_vis;
+          glass_crack_vein = vein;
+          base = mix(base, vec3(0.46, 0.54, 0.52), vein * 0.70);
+          alpha = clamp(alpha + vein * 0.36, 0.0, 0.88);
+          gloss = mix(gloss, 0.30, vein);
+        }
       }
     }
   } else if (klass == kLamp) {
@@ -937,42 +979,44 @@ void main() {
   // Real FH1 damage_LOD0.xds impact scratches/scuffs & Shared/dirt_pattern + dirt_mask accumulation.
   // Only apply player damage/dirt to the player car (not instanced traffic/AI cars).
   if ((flags & kFlagInstanced) == 0u && (klass == kPaint || klass == kOpaque || klass == kCarbon || klass == kRim)) {
-    float z_front = smoothstep(-0.65, -1.95, v_local_pos.z) * frame.damage_zones.x;
+    float z_front = smoothstep(0.65, 1.95, -v_local_pos.z) * frame.damage_zones.x;
     float z_rear = smoothstep(0.65, 1.95, v_local_pos.z) * frame.damage_zones.y;
-    float x_left = smoothstep(-0.50, -0.95, v_local_pos.x) * frame.damage_zones.z;
+    float x_left = smoothstep(0.50, 0.95, -v_local_pos.x) * frame.damage_zones.z;
     float x_right = smoothstep(0.50, 0.95, v_local_pos.x) * frame.damage_zones.w;
     float local_dmg = clamp(max(max(z_front, z_rear), max(x_left, x_right)), 0.0, 1.0);
     if (local_dmg > 0.02 && frame.damage_dirt.w > 0.01) {
       float dmg_amt = clamp(local_dmg * frame.damage_dirt.w, 0.0, 1.0);
-      // Directional scrape streaks along car-local panels for crisp scuff breakup.
+      // Directional scrape streaks along car-local panels for subtle scuff breakup on fallback meshes.
       vec2 scrape_uv = vec2(v_local_pos.z * 7.5 + v_local_pos.x * 3.0, v_local_pos.y * 22.0);
-      float streak = smoothstep(0.32, 0.78, fbm(scrape_uv));
+      float streak = smoothstep(0.48, 0.84, fbm(scrape_uv));
       float scratch_mask = 0.0;
       vec3 dmg_col = vec3(0.14, 0.145, 0.155);
       if ((flags & kFlagDamageMap) != 0u) {
         vec4 dm = texture(damage_map, v_uv0);
-        // Use alpha delta over t0.a (so BC1 alpha=1.0 never triggers solid blocks) and RGB delta.
+        // FH1 damage_LOD0.xds uses the same paint-mask alpha convention as nodamage_LOD0.xds:
+        // alpha=0 is clean paint (whose unshown RGB canvas differs from nodamage's white canvas),
+        // and alpha>0 is authored scratches/chips/scuffs. Only use RGB delta where both atlases are opaque (BC1).
         float alpha_delta = clamp(dm.a - t0.a, 0.0, 1.0);
-        float color_delta = smoothstep(0.08, 0.38, length(dm.rgb - t0.rgb));
-        float tex_dmg = max(alpha_delta, color_delta);
-        scratch_mask = clamp(max(tex_dmg * 0.90, streak * 0.55) * dmg_amt, 0.0, 0.85);
-        // Clamp damage_map luminance so bright white/empty atlas canvas texels never paint white patches;
-        // expose dark charcoal primer and scuffed brushed bare metal instead.
-        vec3 dm_safe = min(dm.rgb, vec3(0.30));
-        vec3 bare_metal = mix(vec3(0.11, 0.115, 0.125), vec3(0.32, 0.34, 0.37), smoothstep(0.35, 0.78, scratch_mask));
-        dmg_col = mix(bare_metal, dm_safe * 0.80, color_delta * 0.55);
+        float opaque_delta = smoothstep(0.08, 0.35, length(dm.rgb - t0.rgb)) * step(0.95, min(t0.a, dm.a));
+        float tex_dmg = max(alpha_delta, opaque_delta);
+        scratch_mask = clamp(tex_dmg * smoothstep(0.02, 0.55, dmg_amt) * (0.45 + 0.55 * dmg_amt), 0.0, 0.92);
+        // Clamp damage_map luminance so bright/empty atlas texels never paint white patches;
+        // preserve dark charcoal primer scrapes and expose brushed bare metal on deep core gouges.
+        vec3 dm_safe = min(dm.rgb, vec3(0.36));
+        vec3 bare_metal = mix(vec3(0.10, 0.105, 0.115), vec3(0.28, 0.30, 0.33), smoothstep(0.45, 0.85, tex_dmg));
+        dmg_col = mix(dm_safe, bare_metal, smoothstep(0.50, 0.90, tex_dmg) * 0.55);
       } else {
         vec3 dp = texture(shared_dirt_pattern, v_uv0 * 4.0).rgb;
-        scratch_mask = clamp((0.35 + 0.65 * streak) * dmg_amt * 0.80, 0.0, 0.82);
-        dmg_col = mix(vec3(0.13, 0.135, 0.145), min(dp, vec3(0.32)), 0.35);
+        scratch_mask = clamp(streak * dmg_amt * 0.65, 0.0, 0.65);
+        dmg_col = mix(vec3(0.12, 0.125, 0.135), min(dp, vec3(0.28)), 0.35);
       }
       base = mix(base, dmg_col, scratch_mask);
       gloss = mix(gloss, 0.14, scratch_mask * 0.85);
-      metal = mix(metal, 0.42, smoothstep(0.45, 0.85, scratch_mask));
+      metal = mix(metal, 0.45, smoothstep(0.50, 0.88, scratch_mask));
       coat_mask *= (1.0 - scratch_mask * 0.92);
     }
     if (frame.damage_dirt.x > 0.01) {
-      float low_mask = smoothstep(0.76, 0.02, v_local_pos.y);
+      float low_mask = 1.0 - smoothstep(0.02, 0.76, v_local_pos.y);
       vec2 dirt_uv = v_local_pos.xz * 0.75 + vec2(v_local_pos.y * 0.9, v_local_pos.y * 0.6);
       vec4 dpat = texture(shared_dirt_pattern, dirt_uv * 2.5);
       vec4 dmsk = texture(shared_dirt_mask, dirt_uv * 1.2);
@@ -1155,9 +1199,10 @@ void main() {
       // FH1 window glass: strong grazing Fresnel (4.35 / 0.70), sharp mip-0 reflection, clear straight-through.
       // Lit base tint avoids unlit khaki/tan rear-window glow under high midnight post-exposure.
       float F_glass = clamp(0.047 + 0.70 * pow(1.0 - nv, 4.35), 0.047, 0.92);
-      vec3 glass_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
-      vec3 glass_spec = direct_col * pow(nh, 140.0) * 2.2 * ndl * lit;
-      colour = base * diffuse_light * alpha + F_glass * glass_refl + glass_spec + emissive;
+      vec3 glass_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl * (1.0 - glass_crack_vein * 0.55);
+      vec3 glass_spec = direct_col * pow(nh, 140.0) * 2.2 * ndl * lit * (1.0 - glass_crack_vein * 0.50);
+      vec3 crack_scatter = vec3(0.48, 0.56, 0.54) * (diffuse_light + direct_col * 0.25) * glass_crack_vein * 0.42;
+      colour = base * diffuse_light * alpha + F_glass * glass_refl + glass_spec + crack_scatter + emissive;
       alpha = clamp(alpha + F_glass * 0.65, 0.0, 0.96);
     }
   }
