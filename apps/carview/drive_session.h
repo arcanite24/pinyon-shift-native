@@ -290,7 +290,7 @@ struct DriveSession {
   std::unordered_map<uint64_t, WorldRewindSnapshot> world_rewind_snaps;
   uint64_t last_rewind_smash_snap = 0u;
   drive::BrakingTable braking_table;
-  drive::DrivingLineMode driving_line_mode = drive::DrivingLineMode::kBrakingOnly;
+  drive::DrivingLineMode driving_line_mode = drive::DrivingLineMode::kFull;
   int pending_shift = 0;
   std::vector<drive::DrivingLineSample> dl_samples;
   std::vector<drive::DrivingLineVertex> dl_verts;
@@ -445,6 +445,7 @@ struct DriveSession {
   bool collect_next_wristband();
   void open_events_browser(int hub_filter);
   bool try_enter_event(const race::CareerEvent& ev);
+  void update_driving_line_overlay();
   void start_new_career();
   bool map_marker_visible(const MapMarker& m);
   void update_map_selection();

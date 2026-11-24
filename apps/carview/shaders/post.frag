@@ -144,7 +144,9 @@ float eval_auto_exposure() {
   if ((flags & 4u) == 0u) return p.def.w;
   // Adapted luminance mapped into TrackSettings.xml key domain (0..65) so sunlit Colorado
   // asphalt and cyan-blue sky preserve highlight headroom without crushing shadowed hillsides.
-  float L = max(texture(lum_adapt, vec2(0.5)).r, 0.0) * 110.0;
+  float raw_l = texture(lum_adapt, vec2(0.5)).r;
+  if (isnan(raw_l) || isinf(raw_l)) raw_l = 0.35;
+  float L = max(raw_l, 0.06) * 110.0;
   float ev_curve = p.exp_ev.x;
   if (L <= p.exp_keys.x) {
     ev_curve = p.exp_ev.x;
@@ -167,7 +169,12 @@ float eval_auto_exposure() {
   return exp2(ev_total);
 }
 
-vec3 raw_scene(vec2 uv) { return min(max(texture(src, clamp(uv, vec2(0.001), vec2(0.999))).rgb, vec3(0.0)), vec3(64.0)); }
+vec3 raw_scene(vec2 uv) {
+  vec3 c = texture(src, clamp(uv, vec2(0.001), vec2(0.999))).rgb;
+  c = mix(c, vec3(0.0), isnan(c));
+  c = mix(c, vec3(0.0), isinf(c));
+  return min(max(c, vec3(0.0)), vec3(64.0));
+}
 
 bool is_sky_depth(float z, bool rev_z) {
   return rev_z ? (z <= 1e-4) : (z >= 0.9999);
@@ -254,9 +261,15 @@ void main() {
       }
     }
     float l_frame = sum_l / max(sum_w, 1e-4);
+    if (isnan(l_frame) || isinf(l_frame)) l_frame = 0.35;
+    l_frame = clamp(l_frame, 0.06, 64.0);
     float l_prev = texture(aux, vec2(0.5)).r;
+    if (isnan(l_prev) || isinf(l_prev) || l_prev < 0.05) l_prev = l_frame;
     float alpha = clamp(p.mode.w, 0.0, 1.0);
-    float l_adapt = mix(l_prev, l_frame, alpha);
+    // Hard scene-cut guard (e.g. dark FMV/fade -> sunlit Colorado career start):
+    // snap upward immediately on >3x brightness jumps so auto-exposure never flashes white.
+    if (l_frame > l_prev * 3.0) alpha = 1.0;
+    float l_adapt = clamp(mix(l_prev, l_frame, alpha), 0.06, 64.0);
     out_color = vec4(l_adapt, l_frame, 0.0, 1.0);
     return;
   }
@@ -525,7 +538,10 @@ void main() {
 
   // Physically-based Jimenez / Dual-Kawase bloom composite (energy-conserving blend).
   if ((flags & 1u) != 0u) {
-    vec3 bloom_rgb = max(texture(aux, clamp(v_uv, vec2(0.001), vec2(0.999))).rgb, vec3(0.0));
+    vec3 bloom_rgb = texture(aux, clamp(v_uv, vec2(0.001), vec2(0.999))).rgb;
+    bloom_rgb = mix(bloom_rgb, vec3(0.0), isnan(bloom_rgb));
+    bloom_rgb = mix(bloom_rgb, vec3(0.0), isinf(bloom_rgb));
+    bloom_rgb = clamp(bloom_rgb, vec3(0.0), vec3(8.0));
     c_lin += bloom_rgb * p.bloom_p.y;
   }
 

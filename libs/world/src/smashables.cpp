@@ -548,23 +548,38 @@ const PropPhysicsDef* SmashableWorld::match_definition(const CollObjPlacement& p
 
 std::array<uint8_t, 4> SmashableWorld::colour_for_prop(int32_t surface_type, int8_t object_type,
                                                        std::string_view stem) const {
-  if (object_type == 1 || stem.find("flyer") != std::string_view::npos) {
-    // Horizon discount sign: bright yellow/gold board shards!
-    return {245, 200, 35, 255};
+  if (object_type == 1 || stem.find("flyer") != std::string_view::npos ||
+      stem.find("discount") != std::string_view::npos) {
+    // Horizon discount sign: warm gold/crimson board shards.
+    return {212, 162, 28, 255};
   }
-  if (surface_type == 64 || stem.find("cone") != std::string_view::npos) {
-    return {240, 105, 25, 255};  // road cone orange
+  if (stem.find("stop") != std::string_view::npos || stem.find("hydrant") != std::string_view::npos ||
+      stem.find("noentry") != std::string_view::npos) {
+    return {168, 30, 34, 255};  // traffic-sign crimson red
   }
-  if (surface_type == 60 || surface_type == 15 || object_type == 0) {
-    return {168, 126, 78, 255};  // weathered Colorado fence/picnic wood
+  if (surface_type == 64 || stem.find("cone") != std::string_view::npos ||
+      stem.find("bollard") != std::string_view::npos) {
+    return {208, 84, 20, 255};  // road cone / construction orange
   }
-  if (surface_type == 61 || surface_type == 66 || surface_type == 67 || object_type == 2) {
-    return {175, 182, 190, 255};  // painted metal sign/pole/mailbox
+  if (stem.find("sign") != std::string_view::npos || stem.find("milepost") != std::string_view::npos) {
+    return {178, 138, 36, 255};  // Colorado highway sign ochre/amber
+  }
+  if (stem.find("wood") != std::string_view::npos || stem.find("fence") != std::string_view::npos ||
+      stem.find("rail") != std::string_view::npos || stem.find("bench") != std::string_view::npos ||
+      stem.find("crate") != std::string_view::npos || stem.find("table") != std::string_view::npos ||
+      surface_type == 60 || surface_type == 15 || object_type == 0) {
+    return {118, 84, 52, 255};  // weathered Colorado cedar/pine wood
+  }
+  if (stem.find("pole") != std::string_view::npos || stem.find("lamp") != std::string_view::npos ||
+      stem.find("light") != std::string_view::npos || stem.find("post") != std::string_view::npos ||
+      stem.find("mail") != std::string_view::npos || stem.find("metal") != std::string_view::npos ||
+      surface_type == 61 || surface_type == 66 || surface_type == 67 || object_type == 2) {
+    return {76, 82, 88, 255};  // weathered dark galvanized steel / iron pole (never bright white)
   }
   if (surface_type == 63 || surface_type == 65) {
-    return {215, 215, 220, 255};  // plastic/parasol
+    return {96, 102, 108, 255};  // matte charcoal/slate plastic (never blown-out white)
   }
-  return {165, 138, 105, 255};
+  return {116, 94, 68, 255};  // earthy weathered timber/metal fallback
 }
 
 bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::filesystem::path& world_dir,
@@ -894,12 +909,20 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
         }
 
         const auto base_col = colour_for_prop(def.surface_type_index, def.object_type_index, pp.place.stem);
+        const bool is_pole_prop = pp.place.stem.find("pole") != std::string::npos ||
+                                  pp.place.stem.find("lamp") != std::string::npos ||
+                                  pp.place.stem.find("post") != std::string::npos ||
+                                  def.object_type_index == 2;
+        const bool is_sign_prop = pp.place.stem.find("sign") != std::string::npos ||
+                                  pp.place.stem.find("stop") != std::string::npos ||
+                                  def.object_type_index == 1;
+        const std::array<uint8_t, 4> post_steel_col{70, 76, 82, 255};
         auto vary_col = [&](std::array<uint8_t, 4> c) {
-          const float shade = 0.82f + 0.30f * rand01();
+          const float shade = 0.78f + 0.24f * rand01();
           return std::array<uint8_t, 4>{
-              uint8_t(std::clamp(int(float(c[0]) * shade), 0, 255)),
-              uint8_t(std::clamp(int(float(c[1]) * shade), 0, 255)),
-              uint8_t(std::clamp(int(float(c[2]) * shade), 0, 255)),
+              uint8_t(std::clamp(int(float(c[0]) * shade), 0, 225)),
+              uint8_t(std::clamp(int(float(c[1]) * shade), 0, 225)),
+              uint8_t(std::clamp(int(float(c[2]) * shade), 0, 225)),
               c[3],
           };
         };
@@ -923,14 +946,22 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
                 dir_z * impulse_scale * (0.65f + 0.65f * rand01()) + rand_sym() * 3.8f,
             };
             b.omega = {rand_sym() * 12.0f, rand_sym() * 12.0f, rand_sym() * 12.0f};
-            // Preserve authentic fractured plank/panel proportions from child_render_models / child AABBs.
-            b.half_extents = {
-                std::clamp(ch.half_extents[0], 0.05f, 0.72f),
-                std::clamp(ch.half_extents[1], 0.04f, 0.72f),
-                std::clamp(ch.half_extents[2], 0.02f, 0.22f),
-            };
+            // Preserve authentic fractured plank/panel/pole proportions from child AABBs.
+            if (is_pole_prop && !is_sign_prop) {
+              b.half_extents = {
+                  std::clamp(ch.half_extents[0], 0.045f, 0.09f),
+                  std::clamp(ch.half_extents[1], 0.28f, 0.65f),
+                  std::clamp(ch.half_extents[2], 0.045f, 0.09f),
+              };
+            } else {
+              b.half_extents = {
+                  std::clamp(ch.half_extents[0], 0.05f, 0.58f),
+                  std::clamp(ch.half_extents[1], 0.04f, 0.58f),
+                  std::clamp(ch.half_extents[2], 0.02f, 0.16f),
+              };
+            }
             b.mass_kg = ch.mass_kg();
-            b.colour = vary_col(base_col);
+            b.colour = vary_col((is_sign_prop && (ci % 2 == 1)) ? post_steel_col : base_col);
             spawn_dynamic_body(b);
             ++spawned;
           }
@@ -950,18 +981,25 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
             if (def.object_type_index == 0) {
               // Wooden fence slats/rails: elongated thin planks rather than cubes.
               b.half_extents = {0.42f + 0.18f * rand01(), 0.07f + 0.03f * rand01(), 0.025f};
-            } else if (def.object_type_index == 1) {
-              // Road sign / flyer shards: flat thin panel fragments.
-              b.half_extents = {0.26f + 0.10f * rand01(), 0.22f + 0.08f * rand01(), 0.018f};
+            } else if (is_sign_prop) {
+              // Road sign / flyer shards: flat thin sign plate + slender galvanized post segments.
+              if (ci == 0) {
+                b.half_extents = {0.26f + 0.08f * rand01(), 0.22f + 0.07f * rand01(), 0.016f};
+              } else {
+                b.half_extents = {0.042f, 0.36f + 0.16f * rand01(), 0.042f};
+              }
+            } else if (is_pole_prop) {
+              // Streetlamp / utility / metal pole segments: slender dark steel shafts.
+              b.half_extents = {0.052f, 0.38f + 0.18f * rand01(), 0.052f};
             } else {
               b.half_extents = {
-                  std::clamp(def.half_extents[0] * 0.45f, 0.09f, 0.48f),
-                  std::clamp(def.half_extents[1] * 0.40f, 0.06f, 0.48f),
-                  std::clamp(def.half_extents[2] * 0.30f, 0.03f, 0.18f),
+                  std::clamp(def.half_extents[0] * 0.40f, 0.08f, 0.38f),
+                  std::clamp(def.half_extents[1] * 0.36f, 0.06f, 0.38f),
+                  std::clamp(def.half_extents[2] * 0.26f, 0.03f, 0.14f),
               };
             }
             b.mass_kg = prop_mass_kg / float(chunks);
-            b.colour = vary_col(base_col);
+            b.colour = vary_col((is_sign_prop && ci > 0) ? post_steel_col : base_col);
             spawn_dynamic_body(b);
             ++spawned;
           }
@@ -1064,19 +1102,27 @@ void SmashableWorld::build_debris_mesh(std::vector<DebrisVertex>& out_tris) cons
     std::array<uint8_t, 4> col = b.colour;
     col[3] = uint8_t(float(col[3]) * fade);
 
+    static constexpr float kFaceShade[6] = {0.96f, 0.84f, 0.88f, 0.92f, 1.00f, 0.68f};
     for (int f = 0; f < 6; ++f) {
       const drive::Vec3 wn = drive::rotate(b.rot, {kNormals[f][0], kNormals[f][1], kNormals[f][2]});
       const std::array<float, 3> n = {float(wn.x), float(wn.y), float(wn.z)};
+      const float fs = kFaceShade[f];
+      const std::array<uint8_t, 4> fcol = {
+          uint8_t(std::clamp(int(float(col[0]) * fs), 0, 255)),
+          uint8_t(std::clamp(int(float(col[1]) * fs), 0, 255)),
+          uint8_t(std::clamp(int(float(col[2]) * fs), 0, 255)),
+          col[3],
+      };
       const auto& p0 = wv[size_t(kFaces[f][0])];
       const auto& p1 = wv[size_t(kFaces[f][1])];
       const auto& p2 = wv[size_t(kFaces[f][2])];
       const auto& p3 = wv[size_t(kFaces[f][3])];
-      out_tris.push_back({p0, n, col});
-      out_tris.push_back({p1, n, col});
-      out_tris.push_back({p2, n, col});
-      out_tris.push_back({p0, n, col});
-      out_tris.push_back({p2, n, col});
-      out_tris.push_back({p3, n, col});
+      out_tris.push_back({p0, n, fcol});
+      out_tris.push_back({p1, n, fcol});
+      out_tris.push_back({p2, n, fcol});
+      out_tris.push_back({p0, n, fcol});
+      out_tris.push_back({p2, n, fcol});
+      out_tris.push_back({p3, n, fcol});
     }
   }
 }

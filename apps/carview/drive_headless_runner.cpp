@@ -415,6 +415,7 @@ bool DriveSession::run_demo_captures() {
             host.showroom.set_draw_car(true);
             tod_cockpit_cam = false;
             place_world();
+            update_driving_line_overlay();
             const float aspect = float(app.width) / float(app.height);
             const drive::Vec3 vp = vehicle.position();
             const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});

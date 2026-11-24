@@ -30,7 +30,9 @@ layout(location = 0) out vec4 out_color;
 float eval_auto_exposure() {
   uint flags = uint(p.bloom_p.z + 0.5);
   if ((flags & 4u) == 0u) return p.def.w;
-  float L = max(texture(lum_adapt, vec2(0.5)).r, 0.0) * 110.0;
+  float raw_l = texture(lum_adapt, vec2(0.5)).r;
+  if (isnan(raw_l) || isinf(raw_l)) raw_l = 0.35;
+  float L = max(raw_l, 0.06) * 110.0;
   float ev_curve = p.exp_ev.x;
   if (L <= p.exp_keys.x) {
     ev_curve = p.exp_ev.x;
@@ -74,7 +76,10 @@ vec3 soft_threshold(vec3 c, float exp_scale) {
 }
 
 vec3 sample_src(vec2 uv) {
-  return min(max(texture(src, clamp(uv, vec2(0.0005), vec2(0.9995))).rgb, vec3(0.0)), vec3(64.0));
+  vec3 c = texture(src, clamp(uv, vec2(0.0005), vec2(0.9995))).rgb;
+  c = mix(c, vec3(0.0), isnan(c));
+  c = mix(c, vec3(0.0), isinf(c));
+  return min(max(c, vec3(0.0)), vec3(64.0));
 }
 
 void main() {

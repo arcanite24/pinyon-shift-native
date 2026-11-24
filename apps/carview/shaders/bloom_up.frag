@@ -25,7 +25,10 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
 vec3 sample_aux(vec2 uv) {
-  return max(texture(aux, clamp(uv, vec2(0.0005), vec2(0.9995))).rgb, vec3(0.0));
+  vec3 c = texture(aux, clamp(uv, vec2(0.0005), vec2(0.9995))).rgb;
+  c = mix(c, vec3(0.0), isnan(c));
+  c = mix(c, vec3(0.0), isinf(c));
+  return clamp(c, vec3(0.0), vec3(16.0));
 }
 
 void main() {
@@ -46,6 +49,9 @@ void main() {
   vec3 i = sample_aux(v_uv + vec2( d.x, -d.y));
 
   vec3 upsampled = (ee * 4.0 + (b + dd + ff + h) * 2.0 + (a + c + g + i)) * (1.0 / 16.0);
-  vec3 cur = max(texture(src, clamp(v_uv, vec2(0.0005), vec2(0.9995))).rgb, vec3(0.0));
+  vec3 cur = texture(src, clamp(v_uv, vec2(0.0005), vec2(0.9995))).rgb;
+  cur = mix(cur, vec3(0.0), isnan(cur));
+  cur = mix(cur, vec3(0.0), isinf(cur));
+  cur = clamp(cur, vec3(0.0), vec3(16.0));
   out_color = vec4(cur * p.mode.x + upsampled * p.mode.w, 1.0);
 }
