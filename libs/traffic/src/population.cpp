@@ -287,6 +287,97 @@ void Population::pose(Car& car) const {
   }
   car.position = p;
   car.heading = std::atan2(t[0], t[1]);
+  car.steer_angle = 0.0;
+  car.yaw_rate = 0.0;
+  car.pose_initialized = true;
+}
+
+bool Population::pick_junction_option(const Car& car, uint32_t node, const std::array<double, 2>& in_tangent,
+                                      JunctionOption& out) const {
+  const auto& roads = roads_.roads();
+  auto is_paved = [](const std::string& t) { return t == "a" || t == "b" || t == "freeway"; };
+  const bool cur_paved = car.road >= 0 && size_t(car.road) < roads.size() && is_paved(roads[size_t(car.road)].type);
+  const std::string cur_type =
+      (car.road >= 0 && size_t(car.road) < roads.size()) ? roads[size_t(car.road)].type : std::string();
+
+  struct Cand {
+    JunctionOption opt;
+    double cos_turn = 0.0;
+    bool paved = false;
+    bool same_type = false;
+    bool allowed = false;
+  };
+  std::vector<Cand> options, allowed;
+  for (const auto& [r2, i2] : roads_.at_node(node)) {
+    const Road& o = roads[size_t(r2)];
+    if (!o.traffic) continue;
+    const int n2 = int(o.points.size());
+    const DensityEntry* e = entry(o);
+    const bool ok_model = e && e->allows(car.model);
+    for (int d2 : {1, -1}) {
+      if (d2 > 0 && i2 + 1 >= n2) continue;
+      if (d2 < 0 && (i2 == 0 || o.oneway)) continue;
+      if (r2 == car.road && d2 == -car.dir) continue;
+      int nk = std::clamp(i2 + d2, 0, n2 - 1);
+      double ox = o.points[size_t(nk)].x - o.points[size_t(i2)].x;
+      double oz = o.points[size_t(nk)].z - o.points[size_t(i2)].z;
+      double ol = std::hypot(ox, oz);
+      while (ol < 1.0 && nk + d2 >= 0 && nk + d2 < n2) {
+        nk += d2;
+        ox = o.points[size_t(nk)].x - o.points[size_t(i2)].x;
+        oz = o.points[size_t(nk)].z - o.points[size_t(i2)].z;
+        ol = std::hypot(ox, oz);
+      }
+      if (ol > 1e-6) ox /= ol, oz /= ol;
+      else ox = in_tangent[0], oz = in_tangent[1];
+      const double cos_turn = std::clamp(in_tangent[0] * ox + in_tangent[1] * oz, -1.0, 1.0);
+      Cand c{{r2, i2, d2}, cos_turn, is_paved(o.type), o.type == cur_type, ok_model};
+      options.push_back(c);
+      if (ok_model) allowed.push_back(c);
+    }
+  }
+  const auto& pool = allowed.empty() ? options : allowed;
+  if (pool.empty()) return false;
+
+  bool has_non_turnback = false;
+  for (const auto& c : pool)
+    if (c.cos_turn > -0.45) has_non_turnback = true;
+  bool has_paved = false;
+  if (cur_paved) {
+    for (const auto& c : pool)
+      if (c.paved && (!has_non_turnback || c.cos_turn > -0.45)) has_paved = true;
+  }
+
+  std::vector<std::pair<JunctionOption, uint64_t>> weighted;
+  uint64_t total_w = 0;
+  for (const auto& c : pool) {
+    if (has_non_turnback && c.cos_turn <= -0.45) continue;
+    uint64_t w = 1;
+    if (c.cos_turn > 0.80) w = 12;       // straight continuation (< 37 deg)
+    else if (c.cos_turn > 0.45) w = 4;   // gentle fork (37..63 deg)
+    else if (c.cos_turn > -0.15) w = 2;  // standard intersection turn (63..99 deg)
+    else w = 1;
+    if (c.opt.road == car.road) w += 6;
+    else if (c.same_type) w += 3;
+    if (has_paved && !c.paved) w = 1;
+    weighted.push_back({c.opt, w});
+    total_w += w;
+  }
+  if (weighted.empty() || total_w == 0) {
+    out = pool.front().opt;
+    return true;
+  }
+  // Fixed per car and node so lookahead, indicators, and traversal always agree.
+  uint64_t pick = mix(uint64_t(car.id) * 0x9e3779b97f4a7c15ull ^ uint64_t(node)) % total_w;
+  for (const auto& [opt, w] : weighted) {
+    if (pick < w) {
+      out = opt;
+      return true;
+    }
+    pick -= w;
+  }
+  out = weighted.back().first;
+  return true;
 }
 
 void Population::advance(Car& car, double distance) const {
@@ -315,26 +406,14 @@ void Population::advance(Car& car, double distance) const {
       if (to_node <= 0) car.s += car.dir * 1e-6;  // past a repeated point
       continue;
     }
-    // A junction or the road's end: any way traffic may use at the node,
-    // in a direction a one-way allows, never back the way it came.
-    struct Option {
-      int road, index, dir;
-    };
-    std::vector<Option> options, allowed;
-    for (const auto& [r2, i2] : roads_.at_node(node)) {
-      const Road& o = roads[size_t(r2)];
-      if (!o.traffic) continue;
-      for (int d2 : {1, -1}) {
-        if (d2 > 0 && i2 + 1 >= int(o.points.size())) continue;
-        if (d2 < 0 && (i2 == 0 || o.oneway)) continue;
-        if (r2 == car.road && d2 == -car.dir) continue;
-        options.push_back({r2, i2, d2});
-        const DensityEntry* e = entry(o);
-        if (e && e->allows(car.model)) allowed.push_back({r2, i2, d2});
-      }
-    }
-    const auto& pickfrom = allowed.empty() ? options : allowed;
-    if (pickfrom.empty()) {
+    const int prev_k = std::clamp(k - car.dir, 0, n - 1);
+    double ix = r.points[size_t(k)].x - r.points[size_t(prev_k)].x;
+    double iz = r.points[size_t(k)].z - r.points[size_t(prev_k)].z;
+    const double il = std::hypot(ix, iz);
+    const std::array<double, 2> in_t =
+        il > 1e-6 ? std::array<double, 2>{ix / il, iz / il} : std::array<double, 2>{std::sin(car.heading), std::cos(car.heading)};
+    JunctionOption o;
+    if (!pick_junction_option(car, node, in_t, o)) {
       // A dead end: turn round where the road allows it, else leave.
       if (r.oneway) {
         car.road = -1;
@@ -344,14 +423,88 @@ void Population::advance(Car& car, double distance) const {
       car.last_node = int(node);
       continue;
     }
-    // The choice is fixed per car and node, so a look ahead along the
-    // lane takes the same way the car will.
-    const Option& o = pickfrom[size_t(mix(uint64_t(car.id) * 0x9e3779b97f4a7c15ull ^ node) % pickfrom.size())];
     car.road = o.road;
     car.dir = o.dir;
     car.s = roads[size_t(o.road)].s[size_t(o.index)] + o.dir * 1e-6;
     car.last_node = int(node);
   }
+}
+
+void Population::sync_cursor(Car& car, double max_advance) const {
+  if (car.road < 0) return;
+  const double span = std::max(8.0, max_advance);
+  double best_ds = 0.0;
+  double best_d2 = 1e30;
+  constexpr double kCoarse = 0.75;
+  for (double ds = 0.0; ds <= span; ds += kCoarse) {
+    const P3 pt = lane_point(car, ds);
+    const double dx = car.position.x - pt.x, dz = car.position.z - pt.z;
+    const double d2 = dx * dx + dz * dz;
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_ds = ds;
+    }
+  }
+  const double lo = std::max(0.0, best_ds - kCoarse);
+  const double hi = std::min(span, best_ds + kCoarse);
+  for (double ds = lo; ds <= hi; ds += 0.15) {
+    const P3 pt = lane_point(car, ds);
+    const double dx = car.position.x - pt.x, dz = car.position.z - pt.z;
+    const double d2 = dx * dx + dz * dz;
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_ds = ds;
+    }
+  }
+  if (best_ds > 1e-4) advance(car, best_ds);
+}
+
+void Population::steer_kinematic(Car& car, const P3& aim, double dt) const {
+  constexpr double kWheelbase = 2.65;
+  constexpr double kMaxSteer = 0.58;
+  constexpr double kMaxSteerRate = 2.3;
+  constexpr double kMaxLatG = 7.0;
+  constexpr double kMaxYawRate = 1.45;
+  const double fx = std::sin(car.heading), fz = std::cos(car.heading);
+  const auto rt = right_of(fx, fz);
+  const double dx = aim.x - car.position.x, dz = aim.z - car.position.z;
+  const double lx = dx * rt[0] + dz * rt[1];
+  const double lz = dx * fx + dz * fz;
+  const double ld = std::max(3.0, std::hypot(lx, lz));
+  const double alpha = std::atan2(lx, lz);
+  double target_steer = std::atan(2.0 * kWheelbase * std::sin(alpha) / ld);
+  const double v_eff = std::max(car.speed, 2.0);
+  const double grip_steer = std::clamp(std::atan(kWheelbase * kMaxLatG / (v_eff * v_eff)), 0.06, kMaxSteer);
+  target_steer = std::clamp(target_steer, -grip_steer, grip_steer);
+  car.steer_angle += std::clamp(target_steer - car.steer_angle, -kMaxSteerRate * dt, kMaxSteerRate * dt);
+
+  double target_yaw = (car.speed / kWheelbase) * std::tan(car.steer_angle);
+  const double yaw_cap = std::min(kMaxYawRate, kMaxLatG / std::max(car.speed, 3.5));
+  target_yaw = std::clamp(target_yaw, -yaw_cap, yaw_cap);
+  car.yaw_rate += (target_yaw - car.yaw_rate) * std::min(1.0, dt / 0.08);
+  car.heading = std::remainder(car.heading + car.yaw_rate * dt, 2.0 * kPi);
+
+  const double nfx = std::sin(car.heading), nfz = std::cos(car.heading);
+  car.position.x += nfx * car.speed * dt;
+  car.position.z += nfz * car.speed * dt;
+
+  double y_hint = std::isfinite(car.position.y) ? 0.5 * (car.position.y + aim.y) : aim.y;
+  double y = y_hint;
+  if (ground_ && ground_(car.position.x, car.position.z, y_hint, y)) {
+    car.position.y = y;
+  } else {
+    car.position.y += (aim.y - car.position.y) * std::min(1.0, dt * 8.0);
+  }
+  double target_pitch = 0.0;
+  if (ground_) {
+    double yf = car.position.y, yb = car.position.y;
+    constexpr double kHalf = 1.4;
+    if (ground_(car.position.x + nfx * kHalf, car.position.z + nfz * kHalf, car.position.y, yf) &&
+        ground_(car.position.x - nfx * kHalf, car.position.z - nfz * kHalf, car.position.y, yb)) {
+      target_pitch = std::clamp(std::atan2(yf - yb, 2.0 * kHalf), -0.45, 0.45);
+    }
+  }
+  car.pitch += (target_pitch - car.pitch) * std::min(1.0, dt / 0.12);
 }
 
 P3 Population::lane_point(const Car& car, double ahead) const {
@@ -381,25 +534,6 @@ bool Population::next_junction(const Car& car, double max_dist, uint32_t& node_o
     const uint32_t node = r.nodes[size_t(k)];
     const bool at_end = car.dir > 0 ? k == n - 1 : k == 0;
     if (at_end || roads_.degree(node) >= 3) {
-      struct Option {
-        int road, index, dir;
-      };
-      std::vector<Option> options, allowed;
-      for (const auto& [r2, i2] : roads_.at_node(node)) {
-        const Road& o = roads[size_t(r2)];
-        if (!o.traffic) continue;
-        for (int d2 : {1, -1}) {
-          if (d2 > 0 && i2 + 1 >= int(o.points.size())) continue;
-          if (d2 < 0 && (i2 == 0 || o.oneway)) continue;
-          if (r2 == car.road && d2 == -car.dir) continue;
-          options.push_back({r2, i2, d2});
-          const DensityEntry* e = entry(o);
-          if (e && e->allows(car.model)) allowed.push_back({r2, i2, d2});
-        }
-      }
-      const auto& pickfrom = allowed.empty() ? options : allowed;
-      if (pickfrom.empty()) return false;
-      const Option& o = pickfrom[size_t(mix(uint64_t(car.id) * 0x9e3779b97f4a7c15ull ^ node) % pickfrom.size())];
       // Incoming and outgoing tangents at the junction node.
       const int prev_k = std::clamp(k - car.dir, 0, n - 1);
       double ix = r.points[size_t(k)].x - r.points[size_t(prev_k)].x;
@@ -407,6 +541,8 @@ bool Population::next_junction(const Car& car, double max_dist, uint32_t& node_o
       const double il = std::hypot(ix, iz);
       if (il > 1e-6) ix /= il, iz /= il;
       else ix = std::sin(car.heading), iz = std::cos(car.heading);
+      JunctionOption o;
+      if (!pick_junction_option(car, node, {ix, iz}, o)) return false;
       const Road& nr = roads[size_t(o.road)];
       const int next_k = std::clamp(o.index + o.dir, 0, int(nr.points.size()) - 1);
       double ox = nr.points[size_t(next_k)].x - nr.points[size_t(o.index)].x;
@@ -472,10 +608,12 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
         car.turn_right = turn_angle > 0;
         car.indicator_hold = config_.time_to_keep_indicating;
       }
-      // Slow for sharp junction turns too.
-      if (std::fabs(turn_angle) > 0.6) {
-        const double vturn = std::max(config_.speed_min, 8.0);
-        target = std::min(target, std::sqrt(vturn * vturn + 2 * kBendDecel * jdist));
+      // Slow smoothly for junction turns well before entering the intersection.
+      if (std::fabs(turn_angle) > 0.30) {
+        const double vturn =
+            std::clamp(16.0 - 7.0 * std::fabs(turn_angle), config_.speed_min, car.base_speed);
+        const double brk_d = std::max(0.0, jdist - 5.0);
+        target = std::min(target, std::sqrt(vturn * vturn + 2.0 * kBendDecel * brk_d));
       }
       // Give-way against approaching cross-traffic or player.
       if (jdist > 2.5 && !car.off_line) {
@@ -507,19 +645,47 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
     }
   }
 
-  // The car or player ahead in the lane: match its speed, stop short of it.
-  const double fx = std::sin(car.heading), fz = std::cos(car.heading);
+  // The car or player ahead in the lane: evaluated in the road-lane frame so a
+  // temporarily yawed car recovering from a nudge does not false-brake for
+  // vehicles parked off the shoulder, while accurately stopping for true
+  // in-lane obstacles using kinematic stopping distance.
+  std::array<double, 2> lane_t{};
+  const P3 road_c = roads_.point_at(car.road, car.s, nullptr, &lane_t);
+  const double fx = lane_t[0] * car.dir, fz = lane_t[1] * car.dir;
   const auto right = right_of(fx, fz);
+  const P3 lane_origin{road_c.x + right[0] * car.lateral, road_c.y, road_c.z + right[1] * car.lateral};
   bool blocked_by_traffic = false;
+  bool emergency_brake = false;
   auto ahead = [&](const P3& p, double vx, double vz, double search, double half_width, bool is_traffic) {
-    const double rx = p.x - car.position.x, rz = p.z - car.position.z;
+    const double rx = p.x - lane_origin.x, rz = p.z - lane_origin.z;
     const double d = rx * fx + rz * fz, lat = rx * right[0] + rz * right[1];
     if (d <= 0 || d > search || std::fabs(lat) > half_width) return;
-    const double need = std::max(config_.min_look_ahead, car.speed * config_.look_ahead_time) + kCarLength;
     const double along = vx * fx + vz * fz;
+    const double v_lead = std::max(0.0, along);
+    const double eff_decel = std::max(2.0, config_.decel_max * 0.72);
+    const double stop_dist =
+        car.speed > v_lead ? (car.speed * car.speed - v_lead * v_lead) / (2.0 * eff_decel) : 0.0;
+    const double time_gap = std::max(config_.min_look_ahead, car.speed * config_.look_ahead_time);
+    const double need = std::max(time_gap, stop_dist) + kCarLength + 2.0;
     if (is_traffic && along < car.base_speed - 1.5) blocked_by_traffic = true;
-    if (d < need) target = std::min(target, d < 0.6 * need ? 0.0 : std::max(0.0, along - 2.0));
-    else if (d < 2 * need) target = std::min(target, std::max(0.0, along) + 2.0);
+    const bool oncoming_headon = !is_traffic && along < -1.0;
+    if (oncoming_headon && d < need + 14.0) {
+      // Oncoming player directly in our lane: brake sharply while swerving aside.
+      target = std::min(target, std::max(0.0, (d - 10.0) * 0.35));
+      emergency_brake = true;
+      return;
+    }
+    if (d <= kCarLength + 3.0) {
+      target = 0.0;
+      emergency_brake = true;
+    } else if (d < need) {
+      const double room = std::max(0.0, d - (kCarLength + 2.5));
+      const double v_safe = std::sqrt(v_lead * v_lead + 2.0 * (config_.decel_max * 0.85) * room);
+      target = std::min(target, d < 0.55 * need ? std::min(v_safe, std::max(0.0, v_lead - 1.5)) : v_safe);
+      if (d < 0.65 * need && v_lead < car.speed - 2.5) emergency_brake = true;
+    } else if (d < 1.6 * need && v_lead < target) {
+      target = std::min(target, v_lead + 2.0);
+    }
   };
   for (const auto& o : cars_) {
     if (o.id == car.id) continue;
@@ -566,19 +732,21 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
 
   // Player swerve avoidance (MaxAvoidOffset / MaxAvoidDistance / MaxAvoidSpeed)
   // and CollisionResponse headlight flashing on oncoming lane encroachments.
+  // Evaluated in road-tangent coordinates so avoid_offset always pushes away from the player.
   {
     double want_avoid = 0.0;
-    const double rx = player.x - car.position.x, rz = player.z - car.position.z;
+    const double rx = player.x - (road_c.x + right[0] * car.target_lateral);
+    const double rz = player.z - (road_c.z + right[1] * car.target_lateral);
     const double d = rx * fx + rz * fz, lat = rx * right[0] + rz * right[1];
     const double along = player_velocity.x * fx + player_velocity.z * fz;
     const double p_speed = std::hypot(player_velocity.x, player_velocity.z);
     if (!car.off_line && d > 0 && d < config_.avoid_max_distance && std::fabs(lat) < 2.6) {
       const bool oncoming = along < -1.0;
-      const bool slow_blocker = p_speed > 0.3 && p_speed < config_.avoid_max_speed && d < 35.0 && std::fabs(lat) < 2.2;
+      const bool slow_blocker = p_speed < config_.avoid_max_speed && d < 42.0 && std::fabs(lat) < 2.5;
       if (oncoming || slow_blocker) {
         const double dir_sign = lat <= 0.2 ? 1.0 : -1.0;
-        const double max_off = std::min(config_.avoid_max_offset, 2.0);
-        const double mag = std::clamp((2.6 - std::fabs(lat)) * 0.85, 0.4, max_off);
+        const double max_off = std::min(config_.avoid_max_offset, 2.2);
+        const double mag = std::clamp((2.6 - std::fabs(lat)) * 0.9, 0.5, max_off);
         want_avoid = dir_sign * mag;
         if (oncoming && car.flash_cooldown <= 0) {
           car.flash_cooldown = config_.time_between_light_flashes;
@@ -589,19 +757,33 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
         }
       }
     }
-    const double avoid_step = 3.5 * dt;
+    const double avoid_step = 2.6 * dt;
     car.avoid_offset += std::clamp(want_avoid - car.avoid_offset, -avoid_step, avoid_step);
     const double desired_lat = car.target_lateral + car.avoid_offset;
-    const double lat_rate = std::fabs(car.avoid_offset) > 0.05 ? 3.5 : std::max(1.2, config_.lane_change_rate * 4.5);
+    const double lat_rate = std::fabs(car.avoid_offset) > 0.05 ? 2.6 : std::max(1.2, config_.lane_change_rate * 4.5);
     car.lateral += std::clamp(desired_lat - car.lateral, -lat_rate * dt, lat_rate * dt);
   }
 
+  // Hold cornering speed while still heavily steered mid-turn so cars don't
+  // gun the throttle and swing wide out of 90-degree intersections.
+  if (std::fabs(car.steer_angle) > 0.16) {
+    const double turn_cap = std::clamp(13.0 - 15.0 * std::fabs(car.steer_angle), config_.speed_min, car.base_speed);
+    target = std::min(target, turn_cap);
+  }
   car.target = target;
   if (car.physics && bodies_ && car.body) return;  // the host's body moves it
+  const double decel = emergency_brake ? config_.decel_max * 1.45 : config_.decel_max;
   if (target > car.speed) car.speed = std::min(target, car.speed + config_.accel_max * dt);
-  else car.speed = std::max(target, car.speed - config_.decel_max * dt);
-  advance(car, car.speed * dt);
-  pose(car);
+  else car.speed = std::max(target, car.speed - decel * dt);
+  if (!car.pose_initialized) pose(car);
+  if (car.speed > 0.02) {
+    const double look_d = std::clamp(car.speed * 0.70, 9.0, 22.0);
+    const P3 aim = lane_point(car, look_d);
+    steer_kinematic(car, aim, dt);
+    sync_cursor(car, car.speed * dt * 3.0 + 10.0);
+  } else {
+    car.yaw_rate *= std::exp(-dt * 8.0);
+  }
 }
 
 void Population::follow(size_t index, const P3& body, double heading, double speed, double up_y) {
@@ -640,7 +822,7 @@ void Population::follow(size_t index, const P3& body, double heading, double spe
   const double lerr = std::fabs(best_lat - car.lateral);
   if (best > 30) car.off_line = true;
   else if (car.off_line) car.off_line = !(lerr < 0.75 && herr < 0.2);
-  else car.off_line = lerr > 2.0 || herr > 0.6;
+  else car.off_line = lerr > 2.8 || herr > 0.85;
 }
 
 void Population::step(double dt, const P3& player, const P3& player_velocity) {

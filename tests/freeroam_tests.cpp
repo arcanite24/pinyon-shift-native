@@ -279,6 +279,113 @@ int main() {
     CHECK(hres.won && hres.payout_credits == h2h_wager_credits(540, 0));
   }
 
+  // Festival AI smoothness across a 90-degree junction: bounded yaw rate & lateral accel,
+  // no instant heading snaps or rail teleports, and braking before the sharp turn.
+  {
+    traffic::NavMap nm;
+    nm.keys = {"road_type", "traffic_density"};
+    nm.values = {"a", "5"};
+    // 90-degree corner: (0,0) -> (0,120) -> (120,120)
+    const float pts[7][2] = {{0, 0}, {0, 40}, {0, 80}, {0, 120}, {40, 120}, {80, 120}, {120, 120}};
+    for (uint32_t i = 0; i < 7; ++i) {
+      traffic::NavNode nd;
+      nd.id = i;
+      nd.x = pts[i][0];
+      nd.z = pts[i][1];
+      nm.nodes.push_back(nd);
+    }
+    nm.way_nodes = {0, 1, 2, 3, 3, 4, 5, 6};
+    nm.tags = {{0, 0}, {1, 1}, {0, 0}, {1, 1}};
+    traffic::NavWay w0, w1;
+    w0.node_first = 0, w0.node_count = 4, w0.tag_first = 0, w0.tag_count = 2;
+    w1.node_first = 4, w1.node_count = 4, w1.tag_first = 2, w1.tag_count = 2;
+    nm.ways = {w0, w1};
+    traffic::Roads roads;
+    roads.build(nm);
+    traffic::TrafficConfig cfg;
+    cfg.initial_festival_cars = 0;
+    cfg.min_festival = 1;
+    cfg.max_festival = 1;
+    FestivalManager fm(nm, roads, cfg, 17);
+    fm.set_roster({{1219, "NIS_SkylineGTRVSpecII_02", "Smooth Driver", "A", 540}});
+    const uint32_t cid = fm.spawn_ahead({0, 0, 10}, 0.0, 20.0);
+    CHECK(cid > 0 && fm.cars().size() == 1);
+    const double dt = 1.0 / 60.0;
+    double prev_h = fm.cars()[0].heading;
+    traffic::P3 prev_p = fm.cars()[0].position;
+    double max_yaw_rate = 0.0, max_lat_acc = 0.0, max_step_jump = 0.0;
+    double min_speed = 1e9, init_speed = fm.cars()[0].speed;
+    bool saw_braking = false, rounded_corner = false;
+    for (int k = 1; k <= 600; ++k) {
+      // Keep the player well off the road so the AI car has an unobstructed corner.
+      fm.step(dt, k * dt, {60, 0, 60}, 0.0, 0.0);
+      if (fm.cars().empty()) break;
+      const auto& c = fm.cars()[0];
+      double dh = c.heading - prev_h;
+      while (dh > 3.14159265358979323846) dh -= 2.0 * 3.14159265358979323846;
+      while (dh < -3.14159265358979323846) dh += 2.0 * 3.14159265358979323846;
+      const double yr = std::fabs(dh) / dt;
+      max_yaw_rate = std::max(max_yaw_rate, yr);
+      max_lat_acc = std::max(max_lat_acc, yr * c.speed);
+      max_step_jump = std::max(max_step_jump, std::hypot(c.position.x - prev_p.x, c.position.z - prev_p.z));
+      min_speed = std::min(min_speed, c.speed);
+      saw_braking |= c.braking;
+      if (c.position.x > 30.0 && std::fabs(c.position.z - 117.8) < 4.0) rounded_corner = true;
+      prev_h = c.heading;
+      prev_p = c.position;
+    }
+    std::printf("festival corner: init %.1f -> min %.1f m/s, max yaw %.2f rad/s, max lat %.1f m/s^2, jump %.2f m, "
+                "braked %d, rounded %d\n",
+                init_speed, min_speed, max_yaw_rate, max_lat_acc, max_step_jump, int(saw_braking), int(rounded_corner));
+    CHECK(max_yaw_rate < 2.2);
+    CHECK(max_lat_acc < 16.0);
+    CHECK(max_step_jump < 1.0);
+    CHECK(saw_braking && min_speed < init_speed - 8.0);
+    CHECK(rounded_corner);
+  }
+
+  // Festival AI inter-car separation: two Festival cars on the same road must never fuse/overlap.
+  {
+    traffic::NavMap nm;
+    nm.keys = {"road_type", "traffic_density"};
+    nm.values = {"a", "5"};
+    for (uint32_t i = 0; i < 20; ++i) {
+      traffic::NavNode nd;
+      nd.id = i;
+      nd.z = float(i * 40);
+      nm.nodes.push_back(nd);
+      nm.way_nodes.push_back(i);
+    }
+    nm.tags = {{0, 0}, {1, 1}};
+    traffic::NavWay w;
+    w.node_count = 20;
+    w.tag_count = 2;
+    nm.ways.push_back(w);
+    traffic::Roads roads;
+    roads.build(nm);
+    traffic::TrafficConfig cfg;
+    cfg.initial_festival_cars = 0;
+    cfg.min_festival = 2;
+    cfg.max_festival = 2;
+    FestivalManager fm(nm, roads, cfg, 23);
+    fm.set_roster({{1001, "CAR_SLOW", "Terry Adams", "D", 247}, {1002, "CAR_FAST", "Michael Allen", "B", 439}});
+    // Spawn two cars 12 m apart on the same straight road, trailing car faster than lead car.
+    const uint32_t id1 = fm.spawn_ahead({0, 0, 50}, 0.0, 26.0);
+    const uint32_t id2 = fm.spawn_ahead({0, 0, 50}, 0.0, 14.0);
+    CHECK(id1 > 0 && id2 > 0 && fm.cars().size() == 2);
+    double min_dist = 1e9;
+    const double dt = 1.0 / 60.0;
+    for (int k = 1; k <= 360; ++k) {
+      fm.step(dt, k * dt, {0, 0, 50 + k * dt * 20.0}, 0.0, 20.0);
+      if (fm.cars().size() < 2) break;
+      const auto& a = fm.cars()[0];
+      const auto& b = fm.cars()[1];
+      min_dist = std::min(min_dist, std::hypot(a.position.x - b.position.x, a.position.z - b.position.z));
+    }
+    std::printf("festival separation: min center dist %.2f m\n", min_dist);
+    CHECK(min_dist >= 2.1);
+  }
+
   // The player's disc.
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {
     Collectibles disc;

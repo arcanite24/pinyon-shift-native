@@ -286,6 +286,7 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     double dist2 = 1e30;
     const drive::Vehicle* body = nullptr;
     double speed = 0.0;
+    double steer = 0.0;
   };
   std::map<Showroom*, WheelDriver> wheel_drivers;
   const drive::Vec3 player_pos = player.position();
@@ -348,6 +349,7 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
       wd.dist2 = d2;
       wd.body = body;
       wd.speed = body ? body->speed() : c.speed;
+      wd.steer = c.steer_angle;
     }
   }
   constexpr float kTwoPi = 6.28318530717958647692f;
@@ -375,7 +377,7 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
         wposes[wi].centre[0] = rest[size_t(wi)][0];
         wposes[wi].centre[1] = rest[size_t(wi)][1];
         wposes[wi].centre[2] = rest[size_t(wi)][2];
-        wposes[wi].steer = 0.0f;
+        wposes[wi].steer = (wi < 2) ? float(wd.steer) : 0.0f;
         wposes[wi].spin = spin;
         wposes[wi].omega = omega;
       }

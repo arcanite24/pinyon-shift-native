@@ -44,6 +44,9 @@ struct FestivalAiCar {
   traffic::P3 position{};
   double vx = 0.0, vy = 0.0, vz = 0.0;
   double heading = 0.0, pitch = 0.0;
+  double steer_angle = 0.0;
+  double yaw_rate = 0.0;
+  bool pose_initialized = false;
   double rpm = 2200.0;
   bool braking = false;
   double knockback_vx = 0.0, knockback_vz = 0.0;
@@ -182,6 +185,17 @@ class FestivalManager {
   }
 
  private:
+  struct BranchOption {
+    int road = -1;
+    int idx = 0;
+    int dir = 1;
+  };
+  bool pick_roaming_branch(uint32_t car_id, int cur_road, int cur_dir, uint32_t node,
+                           const std::array<double, 2>& in_tangent, BranchOption& out) const;
+  bool sample_roaming_ahead(const FestivalAiCar& car, double dist, double lateral, traffic::P3& pos_out,
+                            std::array<double, 2>& tangent_out) const;
+  void sync_roaming_cursor(FestivalAiCar& car, double max_advance) const;
+  void steer_towards(FestivalAiCar& car, const traffic::P3& aim, double dt, double max_lat_g) const;
   bool spawn_roaming(const traffic::P3& player, bool initial);
   void advance_roaming(FestivalAiCar& car, double dist) const;
   void pose_roaming(FestivalAiCar& car) const;

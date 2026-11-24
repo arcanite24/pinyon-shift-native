@@ -375,16 +375,24 @@ void test_ai_slip_rule() {
     std::vector<drive::AiCarState> st(1);
     std::vector<drive::Input> ins(1);
     double max_abs_steer = 0.0;
+    double max_steer_step = 0.0;
+    double prev_steer = 0.0;
     for (int s = 0; s < int(20 / drive::Vehicle::kStep); ++s) {
+      // Trigger a sudden lane change mid-run to verify steer_rate prevents 1-tick snaps.
+      if (s == 600) field.set_lane(0, 2.5f);
+      if (s == 1200) field.set_lane(0, -2.5f);
       st[0] = drive::ai_state(car);
       field.drive(st, ins);
       drive::ai_traction(car, cap, drive::Vehicle::kStep, ins[0], !use_slip);
       max_abs_steer = std::max(max_abs_steer, std::fabs(ins[0].steer));
+      if (s > 0) max_steer_step = std::max(max_steer_step, std::fabs(ins[0].steer - prev_steer));
+      prev_steer = ins[0].steer;
       car.step(ins[0], ground);
     }
     CHECK(std::isfinite(car.position().x) && std::isfinite(car.position().z));
     CHECK(field.progress(0) > 150.0);
     CHECK(max_abs_steer > 0.02);
+    if (use_slip) CHECK(max_steer_step < 0.08);
     return field.progress(0);
   };
 

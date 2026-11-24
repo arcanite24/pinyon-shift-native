@@ -44,6 +44,9 @@ struct Car {
   // host gives one) and the heading (atan2 of forward x, z).
   P3 position;
   double heading = 0, pitch = 0;
+  double steer_angle = 0;   // front road-wheel steer angle (rad)
+  double yaw_rate = 0;      // body yaw rate (rad/s)
+  bool pose_initialized = false;
   bool physics = false;     // in full physics (within the high-LOD distance, or knocked off its line)
   bool off_line = false;    // knocked off its lane (stays in physics until back on it)
   bool body = false;        // the host has a body for it (bodies.h): it is not placed on the lane
@@ -148,9 +151,16 @@ class Population {
   double spawn_interval(double player_speed);
   bool spawn(const P3& player, double player_speed, bool initial);
   bool place(Car& car, int road, double s, int dir, int lane_index = 0);
+  struct JunctionOption {
+    int road = -1, index = 0, dir = 1;
+  };
+  bool pick_junction_option(const Car& car, uint32_t node, const std::array<double, 2>& in_tangent,
+                            JunctionOption& out) const;
   bool next_junction(const Car& car, double max_dist, uint32_t& node_out, double& dist_out, P3& pos_out,
                      double& turn_angle_out) const;
   void drive(Car& car, double dt, const P3& player, const P3& player_velocity);
+  void sync_cursor(Car& car, double max_advance) const;
+  void steer_kinematic(Car& car, const P3& aim, double dt) const;
   void advance(Car& car, double distance) const;
   void pose(Car& car) const;
   int64_t pick_model(const DensityEntry& e);

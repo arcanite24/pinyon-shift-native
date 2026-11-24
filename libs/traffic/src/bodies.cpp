@@ -42,22 +42,32 @@ drive::Vehicle* Bodies::body(uint32_t car) {
   return it == bodies_.end() ? nullptr : it->second.v.get();
 }
 
-drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v) const {
+drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v, double& prev_steer) const {
   drive::Input in;
   const double speed = v.speed();
   if (car.off_line) {
     in.brake = 1;  // knocked off its line: full brake until stopped
+    prev_steer *= 0.95;
+    in.steer = prev_steer;
     return in;
   }
-  const P3 aim = pop_.lane_point(car, std::max(8.0, speed));
+  const double look_d = std::clamp(speed * 0.75, 7.5, 24.0);
+  const P3 aim = pop_.lane_point(car, look_d);
   const Vec3 pos = v.position();
   const Vec3 local = drive::rotate_inverse(v.orientation(), Vec3{aim.x - pos.x, 0, aim.z - pos.z});
   const double d2 = local.x * local.x + local.z * local.z;
   const auto& p = v.params();
-  const double wheelbase = std::fabs(p.wheel_centres[0].z - p.wheel_centres[2].z);
-  // Pure pursuit: the road-wheel angle onto the arc through the aim point.
-  const double delta = d2 > 1e-6 ? std::atan(2 * wheelbase * local.x / d2) : 0;
-  in.steer = std::clamp(delta / std::max(0.05, p.max_steer), -1.0, 1.0);
+  const double wheelbase = std::max(1.5, std::fabs(p.wheel_centres[0].z - p.wheel_centres[2].z));
+  // Pure pursuit with speed-safe lateral acceleration cap and smooth steer rate clamping.
+  double delta = d2 > 1e-6 ? std::atan(2.0 * wheelbase * local.x / d2) : 0.0;
+  const double v_eff = std::max(speed, 2.5);
+  const double grip_lock = std::clamp(std::atan(wheelbase * 7.5 / (v_eff * v_eff)), 0.08, std::max(0.08, p.max_steer));
+  delta = std::clamp(delta, -grip_lock, grip_lock);
+  const double want_steer = std::clamp(delta / std::max(0.05, p.max_steer), -1.0, 1.0);
+  constexpr double kSteerRate = 2.6;  // full-lock units per second
+  const double max_step = kSteerRate * drive::Vehicle::kStep;
+  prev_steer += std::clamp(want_steer - prev_steer, -max_step, max_step);
+  in.steer = prev_steer;
   speed_input(car.target, speed, o_, in);
   return in;
 }
@@ -65,31 +75,42 @@ drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v) const 
 void Bodies::speed_input(double target, double speed, const BodiesOptions& o, drive::Input& in) {
   const double err = target - speed;
   in.throttle = in.brake = 0;
-  if (target < 0.5) in.brake = o.brake_max_input;  // stop and hold
-  else if (err < -0.6) in.brake = std::clamp(-0.3 * err, 0.0, o.brake_max_input);
-  else in.throttle = o.accel_max_input;
+  if (target < 1.0) {
+    // Firm stop for obstacles/player/give-way instead of creeping through on 0.2 brake.
+    in.brake = speed > 0.3 ? std::clamp(std::max(o.brake_max_input, 0.80), 0.0, 1.0) : o.brake_max_input;
+  } else if (err < -2.5) {
+    in.brake = std::clamp(-0.22 * err, o.brake_max_input, 0.85);
+  } else if (err < -0.6) {
+    in.brake = std::clamp(-0.3 * err, 0.0, o.brake_max_input);
+  } else {
+    in.throttle = o.accel_max_input;
+  }
 }
 
 void Bodies::hold_lane(drive::Vehicle& v, double target, const std::array<double, 2>& lane, double lateral,
-                       double heading_error, const BodiesOptions& o) {
+                       double heading_error, const BodiesOptions& o, double blend) {
+  blend = std::clamp(blend, 0.0, 1.0);
+  if (blend <= 1e-4) return;
   const double f = std::clamp((v.params().size.z - o.gains_length_min) /
                                   std::max(1e-6, o.gains_length_max - o.gains_length_min),
                               0.0, 1.0);
   auto k = [f](double a, double b) { return a + (b - a) * f; };
-  // The share of an error removed in one step, and the rate that removes it.
   auto share = [](double gain) { return 1 - std::pow(1 - std::clamp(gain, 0.0, 1.0), drive::Vehicle::kStep * 60); };
-  const double sp = share(k(o.gains_min.position_k, o.gains_max.position_k));
-  const double sl = share(k(o.gains_min.lane_offset_k, o.gains_max.lane_offset_k));
-  const double sh = share(k(o.gains_min.heading_k, o.gains_max.heading_k));
+  const double sp = share(k(o.gains_min.position_k, o.gains_max.position_k)) * blend;
   const auto right = right_of(lane[0], lane[1]);
   Vec3 vel = v.velocity();
   const double along = vel.x * lane[0] + vel.z * lane[1];
+  const double cur_across = vel.x * right[0] + vel.z * right[1];
   const double along2 = along + (target - along) * sp;
-  const double across2 = std::clamp(-lateral * sl / drive::Vehicle::kStep, -o.hold_max_across, o.hold_max_across);
+  // Gentle physically-scaled lane centering & yaw damping (steers on wheels instead of harsh crabbing).
+  const double speed_scale = std::clamp(std::fabs(along) / 5.0, 0.0, 1.0);
+  const double want_across = std::clamp(-lateral * 1.4 * speed_scale, -o.hold_max_across, o.hold_max_across);
+  const double across2 = cur_across + (want_across - cur_across) * (0.28 * blend);
   vel.x = lane[0] * along2 + right[0] * across2;
   vel.z = lane[1] * along2 + right[1] * across2;
   Vec3 ang = v.angular_velocity();
-  ang.y = std::clamp(heading_error * sh / drive::Vehicle::kStep, -o.hold_max_yaw, o.hold_max_yaw);
+  const double want_yaw = std::clamp(heading_error * 3.5 * speed_scale, -o.hold_max_yaw, o.hold_max_yaw);
+  ang.y = ang.y + (want_yaw - ang.y) * (0.45 * blend);
   v.set_velocity(vel, ang);
 }
 
@@ -128,9 +149,10 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
     Body& b = it->second;
     b.since_contact += drive::Vehicle::kStep;
     if (!c.off_line && b.since_contact >= o_.hold_after_contact) {
-      // The lane line at the body: its direction of travel, the body's
-      // offset right of it and the heading error.
-      const P3 p0 = pop_.lane_point(c, 0), p1 = pop_.lane_point(c, 1);
+      // Smooth pursuit chord along the lane so junctions never produce a 90-deg rail snap
+      // and hold_lane aligns with (rather than fights) pure-pursuit lane re-entry.
+      const double chord_d = std::clamp(c.speed * 0.55, 6.0, 16.0);
+      const P3 p0 = pop_.lane_point(c, 0), p1 = pop_.lane_point(c, chord_d);
       const double dx = p1.x - p0.x, dz = p1.z - p0.z, l = std::hypot(dx, dz);
       if (l > 1e-6) {
         const std::array<double, 2> lane{dx / l, dz / l};
@@ -138,13 +160,17 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
         const Vec3 at = b.v->position();
         const Vec3 fw = drive::rotate(b.v->orientation(), {0, 0, 1});
         const double lateral = (at.x - p0.x) * rt[0] + (at.z - p0.z) * rt[1];
-        const double herr = std::remainder(std::atan2(lane[0], lane[1]) - std::atan2(fw.x, fw.z), 2 * 3.14159265358979323846);
+        const double aim_dx = p1.x - at.x, aim_dz = p1.z - at.z;
+        const double aim_h = std::hypot(aim_dx, aim_dz) > 0.5 ? std::atan2(aim_dx, aim_dz) : std::atan2(lane[0], lane[1]);
+        const double herr = std::remainder(aim_h - std::atan2(fw.x, fw.z), 2 * 3.14159265358979323846);
         const double sp = b.v->speed(), dt = drive::Vehicle::kStep;
-        const double speed = sp + std::clamp(c.target - sp, -o_.decel_max * dt, o_.accel_max * dt);
-        hold_lane(*b.v, speed, lane, lateral, herr, o_);
+        const double decel_rate = c.target < 1.0 ? o_.decel_max * 1.45 : o_.decel_max;
+        const double speed = sp + std::clamp(c.target - sp, -decel_rate * dt, o_.accel_max * dt);
+        const double hold_blend = std::clamp((b.since_contact - o_.hold_after_contact) / 1.0, 0.0, 1.0);
+        hold_lane(*b.v, speed, lane, lateral, herr, o_, hold_blend);
       }
     }
-    b.v->step(drive_input(c, *b.v), ground);
+    b.v->step(drive_input(c, *b.v, b.prev_steer), ground);
   }
   // Contacts: each body with the player's car and with the others.
   std::vector<Body*> list;

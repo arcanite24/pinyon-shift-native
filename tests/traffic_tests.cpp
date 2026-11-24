@@ -372,6 +372,110 @@ void test_traffic_behaviors() {
     pop.step(0.1, {0, 0, -100}, {0, 0, 0});
     CHECK(!pop.cars().empty() && pop.cars()[0].alpha < 0.8f);
   }
+  // 6. Smooth 90-degree junction cornering & braking: bounded yaw rate, no heading snap or rail teleport.
+  {
+    traffic::NavMap m;
+    m.keys = {"road_type", "traffic_density"};
+    m.values = {"a", "5"};
+    const float pts[5][2] = {{0, 0}, {0, 50}, {0, 100}, {50, 100}, {100, 100}};
+    for (uint32_t i = 0; i < 5; ++i) {
+      traffic::NavNode n;
+      n.id = i;
+      n.x = pts[i][0];
+      n.z = pts[i][1];
+      m.nodes.push_back(n);
+    }
+    m.way_nodes = {0, 1, 2, 2, 3, 4};
+    m.tags = {{0, 0}, {1, 1}, {0, 0}, {1, 1}};
+    traffic::NavWay w0, w1;
+    w0.node_first = 0, w0.node_count = 3, w0.tag_first = 0, w0.tag_count = 2;
+    w1.node_first = 3, w1.node_count = 3, w1.tag_first = 2, w1.tag_count = 2;
+    m.ways = {w0, w1};
+    traffic::Roads roads;
+    roads.build(m);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    traffic::DensityEntry e;
+    e.id = 5, e.speed_mph = 35;
+    c.traffic[5] = e;
+    c.models = {{282, 0, false, false}};
+    traffic::Population pop(roads, c, 29);
+    traffic::Car car;
+    car.model = 282;
+    car.base_speed = car.speed = car.target = 15.5;
+    pop.add(car, 0, 20, 1);
+    const double dt = 1.0 / 60.0;
+    double prev_h = pop.cars()[0].heading;
+    traffic::P3 prev_p = pop.cars()[0].position;
+    double max_yaw_rate = 0.0, max_lat_acc = 0.0, max_step_jump = 0.0, min_speed = 1e9;
+    bool rounded = false;
+    for (int i = 0; i < 600; ++i) {
+      // Keep player off-road so the traffic car has a clear 90-degree turn.
+      pop.step(dt, {50, 0, 50}, {0, 0, 0});
+      if (pop.cars().empty()) break;
+      const auto& tc = pop.cars()[0];
+      const double dh = std::remainder(tc.heading - prev_h, 2.0 * 3.14159265358979323846);
+      const double yr = std::fabs(dh) / dt;
+      max_yaw_rate = std::max(max_yaw_rate, yr);
+      max_lat_acc = std::max(max_lat_acc, yr * tc.speed);
+      max_step_jump = std::max(max_step_jump, std::hypot(tc.position.x - prev_p.x, tc.position.z - prev_p.z));
+      min_speed = std::min(min_speed, tc.speed);
+      if (tc.position.x > 25.0 && std::fabs(tc.position.z - 97.8) < 3.5) rounded = true;
+      prev_h = tc.heading;
+      prev_p = tc.position;
+    }
+    const auto end_p = pop.cars().empty() ? traffic::P3{} : pop.cars()[0].position;
+    const int end_r = pop.cars().empty() ? -1 : pop.cars()[0].road;
+    const double end_s = pop.cars().empty() ? -1.0 : pop.cars()[0].s;
+    std::printf("traffic corner: min %.1f m/s, max yaw %.2f rad/s, max lat %.1f m/s^2, jump %.2f m, rounded %d "
+                "(end %.1f,%.1f road %d s %.1f)\n",
+                min_speed, max_yaw_rate, max_lat_acc, max_step_jump, int(rounded), end_p.x, end_p.z, end_r, end_s);
+    CHECK(max_yaw_rate < 1.8);
+    CHECK(max_lat_acc < 8.5);
+    CHECK(max_step_jump < 0.8);
+    CHECK(min_speed < 9.5);
+    CHECK(rounded);
+  }
+  // 7. Parked player in traffic lane: physics traffic brakes cleanly without plowing into the player.
+  {
+    const traffic::NavMap map = straight_road();
+    traffic::Roads roads;
+    roads.build(map);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    traffic::DensityEntry e;
+    e.id = 5, e.speed_mph = 35;
+    c.traffic[5] = e;
+    c.models = {{282, 0, false, false}};
+    traffic::Population pop(roads, c, 31);
+    traffic::Car car;
+    car.model = 282;
+    car.base_speed = car.speed = car.target = 15.5;
+    pop.add(car, 0, 80, 1);
+    drive::CarParams params;
+    const double r = 0.31;
+    params.wheel_centres = {drive::Vec3{-0.72, r, 1.15}, drive::Vec3{0.72, r, 1.15}, drive::Vec3{-0.72, r, -1.15},
+                            drive::Vec3{0.72, r, -1.15}};
+    params.tyre_radius = {r, r, r, r};
+    params.centre_of_mass = {0, 0.5, 0.05};
+    params.size = {1.64, 1.3, 3.9};
+    traffic::Bodies bodies(pop, [&](int64_t) { return &params; });
+    drive::Vehicle me(params);
+    me.reset({2.2, 0, 135}, 0);  // stopped dead in traffic car's lane 55 m ahead
+    const drive::FlatGround flat;
+    drive::Input hold;
+    hold.brake = 1;
+    hold.handbrake = true;
+    for (int i = 0; i < int(6.0 / drive::Vehicle::kStep); ++i) {
+      me.step(hold, flat);
+      const auto p = me.position(), v = me.velocity();
+      pop.step(drive::Vehicle::kStep, {p.x, p.y, p.z}, {v.x, v.y, v.z});
+      bodies.step(flat, &me);
+    }
+    std::printf("traffic parked avoidance: player contacts %d, traffic speed %.2f m/s\n", bodies.player_contacts(),
+                pop.cars().empty() ? -1.0 : pop.cars()[0].speed);
+    CHECK(bodies.player_contacts() == 0);
+  }
 }
 
 }  // namespace

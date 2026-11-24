@@ -78,7 +78,7 @@ class Bodies {
   // share, capped at hold_max_across and hold_max_yaw. The vertical motion
   // and pitch and roll are the body's own.
   static void hold_lane(drive::Vehicle& v, double target, const std::array<double, 2>& lane, double lateral,
-                        double heading_error, const BodiesOptions& o);
+                        double heading_error, const BodiesOptions& o, double blend = 1.0);
 
   const drive::Vehicle* body(uint32_t car) const;
   drive::Vehicle* body(uint32_t car);
@@ -100,7 +100,9 @@ class Bodies {
   struct BodySnapshot {
     drive::Vehicle vehicle;
     double since_contact = 1e9;
-    BodySnapshot(const drive::Vehicle& v, double sc) : vehicle(v), since_contact(sc) {}
+    double prev_steer = 0.0;
+    BodySnapshot(const drive::Vehicle& v, double sc, double ps = 0.0)
+        : vehicle(v), since_contact(sc), prev_steer(ps) {}
   };
   struct Snapshot {
     std::map<uint32_t, BodySnapshot> bodies;
@@ -108,7 +110,7 @@ class Bodies {
   Snapshot snapshot() const {
     Snapshot s;
     for (const auto& [id, b] : bodies_) {
-      if (b.v) s.bodies.emplace(id, BodySnapshot(*b.v, b.since_contact));
+      if (b.v) s.bodies.emplace(id, BodySnapshot(*b.v, b.since_contact, b.prev_steer));
     }
     return s;
   }
@@ -118,6 +120,7 @@ class Bodies {
       Body b;
       b.v = std::make_unique<drive::Vehicle>(bs.vehicle);
       b.since_contact = bs.since_contact;
+      b.prev_steer = bs.prev_steer;
       bodies_.emplace(id, std::move(b));
     }
     step_player_ = 0.0;
@@ -127,8 +130,9 @@ class Bodies {
   struct Body {
     std::unique_ptr<drive::Vehicle> v;
     double since_contact = 1e9;  // s
+    double prev_steer = 0.0;
   };
-  drive::Input drive_input(const Car& car, const drive::Vehicle& v) const;
+  drive::Input drive_input(const Car& car, const drive::Vehicle& v, double& prev_steer) const;
   bool collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b, double* impulse = nullptr);
 
   Population& pop_;
