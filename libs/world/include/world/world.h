@@ -83,6 +83,33 @@ enum class Layers : uint8_t {
   kBillboard,
 };
 
+// Bitmask values for MeshMaterial::is_road (bit 0 preserves legacy non-zero checks).
+constexpr uint8_t kRoadSurface = 1u;
+constexpr uint8_t kRoadNoise = 2u;     // splat holds H_ROAD Noise texture (slot 2)
+constexpr uint8_t kRoadModulate = 4u;  // spec_map holds H_ROAD Modulate texture (slot 6)
+
+// Modes for MeshMaterial::is_emissive_map.
+constexpr uint8_t kEmissiveNone = 0u;    // Light_Map only (slot 7 in light_map)
+constexpr uint8_t kEmissiveOnly = 1u;    // EmissiveMapSampler only (slot 3 in light_map)
+constexpr uint8_t kEmissiveDualLm = 2u;  // Dual _EMIS + _LM (slot 7 in light_map, slot 3 in layer_c)
+
+// Track-wide road specular and lightmap shading parameters from TrackSettings.xml
+// (<RoadSpecular> and <TrackLightMapParams>).
+struct TrackMaterialSettings {
+  float road_specular_scale = 0.72f;
+  float road_glossiness = 42.0f;
+  float road_fresnel = 0.30f;
+  float road_skid_strength = 0.65f;
+  float road_skid2_strength = 0.45f;
+  float lightmap_scale = 1.40f;
+  float lightmap_bias = 0.0f;
+  float lightmap_ao_floor = 0.05f;
+  bool loaded = false;
+
+  bool load_xml(const std::string& xml_text);
+  bool load_file(const std::filesystem::path& path);
+};
+
 struct MeshMaterial {
   std::string effect;               // upper case, e.g. H_ROAD_DIFF3_NORM1_NOISE_AO_LM
   uint32_t albedo = kNoTexture;     // slot 0: Diffuse_Texture or Blend_A
@@ -106,12 +133,12 @@ struct MeshMaterial {
   uint32_t spec_map = kNoTexture;
   std::array<float, 2> tiling_c{1, 1};  // pixel constant 1 xy (Blend_C tiling)
   float emissive_force = 0.0f;          // pixel constant 3 w on _LM / _EMIS effects
-  uint8_t is_emissive_map = 0;          // EmissiveMapSampler (slot 3) staggered dusk/dawn prop windows
+  uint8_t is_emissive_map = 0;          // kEmissiveNone / kEmissiveOnly / kEmissiveDualLm
   uint8_t is_water = 0;                 // LAKE_* water effect
   uint8_t anim_flag = 0;                // ANIM_FLAG* waving cloth flag effect
   uint8_t is_grass = 0;                 // _0x00005007 grass quad / grass shell effect
-  uint8_t is_road = 0;                  // H_ROAD* road surface (RoadSpecular / RoadGlossiness)
-  std::array<float, 2> decal_noise_c4{3.5f, 8.0f};  // H_VBLND_DECAL* pixel constant 4 xy
+  uint8_t is_road = 0;                  // bitmask: kRoadSurface | kRoadNoise | kRoadModulate
+  std::array<float, 2> decal_noise_c4{3.5f, 8.0f};  // H_VBLND_DECAL c4 xy (y < 0: _MASK), or RoadSpecular / TrackLightMapParams
   // The far ring (ours): 0 near scenery, 1 a MIDDIST object, 2 an UberLOD
   // one. The renderer pushes far levels back in depth so the near terrain
   // wins where both are drawn.
@@ -132,6 +159,25 @@ struct MeshMaterial {
                            decal_noise_c4);
   }
 };
+
+// Pure effect-slot resolver shared by World::gather() and unit tests.
+// `slot_records` holds all 8 resolved texture record indices (kNoTexture when unbound);
+// `file_slot_records` holds only file-backed records (type 4 .bix or type 0 CAFF, kNoTexture for type-1 stubs).
+struct ResolvedMaterialSlots {
+  MeshMaterial material;
+  int splat_uv = -1;
+  std::array<float, 2> splat_tiling{1.0f, 1.0f};
+  float weight_gain = -1.0f;
+  bool decal_fade = false;
+};
+
+ResolvedMaterialSlots resolve_effect_material(
+    const std::string& effect,
+    const std::array<uint32_t, 8>& slot_records,
+    const std::array<uint32_t, 8>& file_slot_records,
+    const std::vector<std::array<float, 4>>& pixel_constants,
+    const TrackMaterialSettings& track_settings = {},
+    uint32_t albedo_tex_id = 0);
 
 // Staggered night streetlamp / festival / outpost glow sprite (SPEC-SKY-AND-TOD §6.3).
 struct WorldGlow {
@@ -255,6 +301,8 @@ class World {
   size_t placement_count() const;
   // The ribbon's texture records (WORLD-MATERIALS), by record index.
   const std::vector<fh1::PvsTexture>& textures() const;
+  // Track-wide road specular and lightmap shading constants from TrackSettings.xml.
+  const TrackMaterialSettings& track_settings() const;
   // Reads and untiles a texture record's files (type 4 .bix pair or type 0
   // CAFF .bin). False for records without a file and for files whose sizes
   // do not fit the layout (the spec's three undecoded CAFF textures). Uses

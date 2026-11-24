@@ -9,10 +9,94 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <unordered_set>
+
+#include "fh1data/archive.h"
+#include "fh1data/xds.h"
 
 namespace carview {
 
 namespace {
+
+// Expanded 10x10 mipmapped particle atlas (2560x2560 = 100 cells of 256x256, 9 mip levels
+// stopping cleanly at 1x1 per cell so all 72 retail effects.zip .xds textures fit with zero
+// truncation and zero cross-cell mip bleed).
+//   slot  0    : procedural soft puff fallback
+//   slots 1..31: <Texture2> / *_grad*.xds secondary & gradient lookup textures (5-bit shader index)
+//   slots 32..99: primary particle diffuse / flipbook textures
+constexpr uint32_t kExpandedAtlasGrid = 10;
+constexpr uint32_t kExpandedAtlasCell = 256;
+constexpr uint32_t kExpandedAtlasSize = kExpandedAtlasGrid * kExpandedAtlasCell;  // 2560
+constexpr uint32_t kExpandedAtlasMips = 9;                                      // 2560 -> 10 (1x1/cell)
+constexpr uint16_t kExpandedAtlasMaxSlots = uint16_t(kExpandedAtlasGrid * kExpandedAtlasGrid);
+constexpr uint16_t kMaxTex2Slot = 31;
+
+bool load_retail_treadmark(const std::filesystem::path& game_root, fh1::RgbaImage& out) {
+  if (game_root.empty()) return false;
+  std::error_code ec;
+  const std::filesystem::path loose_cands[] = {
+      game_root / "media" / "tracks" / "treadmark.xds",
+      game_root / "media" / "tracks" / "Treadmark.xds",
+      game_root / "Media" / "Tracks" / "treadmark.xds",
+  };
+  for (const auto& p : loose_cands) {
+    if (!std::filesystem::exists(p, ec)) continue;
+    std::ifstream f(p, std::ios::binary | std::ios::ate);
+    if (!f) continue;
+    const auto sz = f.tellg();
+    if (sz <= 0 || sz > 16 * 1024 * 1024) continue;
+    std::vector<uint8_t> bytes(static_cast<size_t>(sz));
+    f.seekg(0);
+    if (!f.read(reinterpret_cast<char*>(bytes.data()), sz)) continue;
+    const auto dec = fh1::decode_xds(bytes, false);
+    if ((dec.status == fh1::XdsStatus::kOk || dec.status == fh1::XdsStatus::kBaseOnly) && !dec.levels.empty() &&
+        dec.levels[0].width >= 32 && dec.levels[0].height >= 32) {
+      out = dec.levels[0];
+      return true;
+    }
+  }
+  // Fallback search inside media/cars/Shared.zip if present there.
+  const auto shared_zip = game_root / "media" / "cars" / "Shared.zip";
+  if (std::filesystem::exists(shared_zip, ec)) {
+    if (auto ar = fh1::Archive::open(shared_zip, nullptr)) {
+      for (const auto& m : ar->members()) {
+        if (lower(m.name).find("treadmark.xds") != std::string::npos) {
+          const auto rd = ar->read(m);
+          if (rd.ok() && !rd.data.empty()) {
+            const auto dec = fh1::decode_xds(rd.data, false);
+            if ((dec.status == fh1::XdsStatus::kOk || dec.status == fh1::XdsStatus::kBaseOnly) &&
+                !dec.levels.empty() && dec.levels[0].width >= 32 && dec.levels[0].height >= 32) {
+              out = dec.levels[0];
+              return true;
+            }
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+std::vector<uint8_t> crop_rgba_band(const fh1::RgbaImage& src, uint32_t x0, uint32_t w) {
+  std::vector<uint8_t> out(size_t(w) * src.height * 4, 0);
+  for (uint32_t y = 0; y < src.height; ++y) {
+    const uint8_t* s = src.rgba.data() + (size_t(y) * src.width + x0) * 4;
+    uint8_t* d = out.data() + size_t(y) * w * 4;
+    std::memcpy(d, s, size_t(w) * 4);
+  }
+  return out;
+}
+
+uint32_t full_mip_count(uint32_t w, uint32_t h) {
+  uint32_t m = 1;
+  uint32_t d = std::min(w, h);
+  while (d > 1u) {
+    d /= 2u;
+    ++m;
+  }
+  return m;
+}
 
 void blit_cell_bilinear(const uint8_t* src, uint32_t sw, uint32_t sh, uint8_t* dst, uint32_t atlas_w,
                         uint32_t cell_x, uint32_t cell_y, uint32_t cell_sz) {
@@ -106,36 +190,72 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
   if (guest_ || !r_.device_) return true;
   if (vfx_ready_) return true;
 
-  // 1. Build 2048x2048 RGBA8 particle texture atlas (8x8 grid of 256x256 cells).
-  std::vector<uint8_t> atlas_rgba(size_t(kParticleAtlasSize) * kParticleAtlasSize * 4, 0);
-  fill_soft_puff_cell(atlas_rgba.data(), kParticleAtlasSize, kParticleAtlasCell);
+  // 1. Build 2560x2560 RGBA8 mipmapped particle texture atlas (10x10 grid of 256x256 cells, 100 slots).
+  //    Slot 0 = procedural soft puff; slots 1..31 = <Texture2> / *_grad*.xds ramps; slots 32..99 = primary textures.
+  std::vector<uint8_t> atlas_rgba(size_t(kExpandedAtlasSize) * kExpandedAtlasSize * 4, 0);
+  fill_soft_puff_cell(atlas_rgba.data(), kExpandedAtlasSize, kExpandedAtlasCell);
   atlas_tex_slot_.clear();
 
   if (lib) {
-    // Prioritize core vehicle/world textures first, then fill remaining slots up to 63.
-    std::vector<std::string> tex_order = {
+    std::vector<std::string> grad_order;
+    std::vector<std::string> primary_order = {
         "gr_puffy_smoke_diff.xds",   "gr_backfire_diff.xds",     "vehicle_sparks_diff.xds",
         "gr_dirt_8x1_diff.xds",      "gr_gravel_8x1_diff.xds",   "gr_woodsplinters_diff.xds",
         "gr_aspen_leaves_diff.xds",  "gr_grass_8x1_diff.xds",    "gr_glass_diff.xds",
     };
-    for (const auto& [ename, def] : lib->effects()) {
-      if (!def.texture_name.empty() &&
-          std::find(tex_order.begin(), tex_order.end(), def.texture_name) == tex_order.end()) {
-        tex_order.push_back(def.texture_name);
+    std::unordered_set<std::string> seen_grad;
+    std::unordered_set<std::string> seen_primary(primary_order.begin(), primary_order.end());
+
+    auto push_grad = [&](const std::string& tname) {
+      if (!tname.empty() && seen_grad.insert(tname).second) grad_order.push_back(tname);
+    };
+    auto push_primary = [&](const std::string& tname) {
+      if (!tname.empty() && !seen_grad.count(tname) && seen_primary.insert(tname).second) {
+        primary_order.push_back(tname);
       }
+    };
+
+    // Collect all <Texture2> and *_grad*.xds textures first so they occupy 5-bit shader slots [1..31].
+    for (const auto& [ename, def] : lib->effects()) {
+      (void)ename;
+      if (!def.texture2_name.empty()) push_grad(def.texture2_name);
     }
-    uint16_t slot = 1;
-    const uint16_t max_slots = uint16_t(kParticleAtlasGrid * kParticleAtlasGrid);
-    for (const auto& tname : tex_order) {
-      if (slot >= max_slots) break;
+    for (const auto& xname : lib->xds_names()) {
+      if (xname.find("_grad") != std::string::npos) push_grad(xname);
+    }
+    for (const auto& [ename, def] : lib->effects()) {
+      (void)ename;
+      if (!def.texture_name.empty()) push_primary(def.texture_name);
+    }
+    for (const auto& xname : lib->xds_names()) {
+      push_primary(xname);
+    }
+
+    auto pack_tex = [&](const std::string& tname, uint16_t& slot, uint16_t slot_limit) {
+      if (slot >= slot_limit || atlas_tex_slot_.count(tname)) return;
       fh1::RgbaImage img;
       if (lib->decode_texture(tname, img)) {
-        const uint32_t cx = slot % kParticleAtlasGrid;
-        const uint32_t cy = slot / kParticleAtlasGrid;
-        blit_cell_bilinear(img.rgba.data(), img.width, img.height, atlas_rgba.data(), kParticleAtlasSize, cx, cy,
-                           kParticleAtlasCell);
+        const uint32_t cx = slot % kExpandedAtlasGrid;
+        const uint32_t cy = slot / kExpandedAtlasGrid;
+        blit_cell_bilinear(img.rgba.data(), img.width, img.height, atlas_rgba.data(), kExpandedAtlasSize, cx, cy,
+                           kExpandedAtlasCell);
         atlas_tex_slot_[tname] = slot;
         ++slot;
+      }
+    };
+
+    uint16_t grad_slot = 1;
+    for (const auto& tname : grad_order) {
+      pack_tex(tname, grad_slot, uint16_t(kMaxTex2Slot + 1));
+    }
+    // Primary textures start right after the reserved <Texture2> range (slot 32..99),
+    // and overflow any remaining slots cleanly into unused slots < 32 if ever needed.
+    uint16_t prim_slot = uint16_t(kMaxTex2Slot + 1);
+    for (const auto& tname : primary_order) {
+      if (prim_slot < kExpandedAtlasMaxSlots) {
+        pack_tex(tname, prim_slot, kExpandedAtlasMaxSlots);
+      } else if (grad_slot <= kMaxTex2Slot) {
+        pack_tex(tname, grad_slot, uint16_t(kMaxTex2Slot + 1));
       }
     }
   }
@@ -251,28 +371,56 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     if (!ok) error = std::string(label) + " upload";
     return ok;
   };
-  auto upload_rgba_image = [&](const uint8_t* pixels, uint32_t w, uint32_t h, bool srgb, GpuTexture& dst,
-                               const char* label) -> bool {
-    return upload_rgba_image_mips(pixels, w, h, 1u, srgb, dst, label);
-  };
 
-  if (!upload_rgba_image(atlas_rgba.data(), kParticleAtlasSize, kParticleAtlasSize, true, particle_atlas_,
-                         "particle atlas"))
+  if (!upload_rgba_image_mips(atlas_rgba.data(), kExpandedAtlasSize, kExpandedAtlasSize, kExpandedAtlasMips, true,
+                              particle_atlas_, "particle atlas"))
     return false;
-  const auto skid_asph = make_skid_texture(256, false);
-  const auto skid_rut = make_skid_texture(256, true);
-  if (!upload_rgba_image(skid_asph.data(), 256, 256, true, skid_asphalt_tex_, "skid asphalt")) return false;
-  if (!upload_rgba_image(skid_rut.data(), 256, 256, true, skid_rut_tex_, "skid rut")) return false;
 
-  // 2. Samplers.
+  // Load retail media/tracks/treadmark.xds (512x128 two-band strip: left = asphalt rubber, right = dirt/gravel rut),
+  // falling back cleanly to procedural skid textures when unavailable.
+  fh1::RgbaImage retail_tm;
+  bool uploaded_retail_skids = false;
+  if (load_retail_treadmark(options_.game_root, retail_tm)) {
+    if (retail_tm.width >= retail_tm.height * 2u) {
+      const uint32_t half_w = retail_tm.width / 2u;
+      const auto left_band = crop_rgba_band(retail_tm, 0u, half_w);
+      const auto right_band = crop_rgba_band(retail_tm, half_w, half_w);
+      const uint32_t mips = full_mip_count(half_w, retail_tm.height);
+      if (upload_rgba_image_mips(left_band.data(), half_w, retail_tm.height, mips, true, skid_asphalt_tex_,
+                                 "skid asphalt") &&
+          upload_rgba_image_mips(right_band.data(), half_w, retail_tm.height, mips, true, skid_rut_tex_, "skid rut")) {
+        uploaded_retail_skids = true;
+      }
+    } else {
+      const uint32_t mips = full_mip_count(retail_tm.width, retail_tm.height);
+      if (upload_rgba_image_mips(retail_tm.rgba.data(), retail_tm.width, retail_tm.height, mips, true,
+                                 skid_asphalt_tex_, "skid asphalt") &&
+          upload_rgba_image_mips(retail_tm.rgba.data(), retail_tm.width, retail_tm.height, mips, true, skid_rut_tex_,
+                                 "skid rut")) {
+        uploaded_retail_skids = true;
+      }
+    }
+  }
+  if (!uploaded_retail_skids) {
+    const auto skid_asph = make_skid_texture(256, false);
+    const auto skid_rut = make_skid_texture(256, true);
+    if (!upload_rgba_image_mips(skid_asph.data(), 256, 256, 8u, true, skid_asphalt_tex_, "skid asphalt")) return false;
+    if (!upload_rgba_image_mips(skid_rut.data(), 256, 256, 8u, true, skid_rut_tex_, "skid rut")) return false;
+  }
+
+  // 2. Samplers (trilinear mipmapping for both particle atlas and skidmark strips).
   VkSamplerCreateInfo psamp{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   psamp.magFilter = psamp.minFilter = VK_FILTER_LINEAR;
+  psamp.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  psamp.minLod = 0.0f;
+  psamp.maxLod = float(kExpandedAtlasMips - 1u);
   psamp.addressModeU = psamp.addressModeV = psamp.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   VK_TRY(vkCreateSampler(r_.device_, &psamp, nullptr, &particle_sampler_), "particle sampler");
 
   VkSamplerCreateInfo ssamp = psamp;
   ssamp.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   ssamp.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  ssamp.maxLod = 12.0f;
   ssamp.anisotropyEnable = r_.sampler_anisotropy() > 1.0f ? VK_TRUE : VK_FALSE;
   ssamp.maxAnisotropy = r_.sampler_anisotropy();
   VK_TRY(vkCreateSampler(r_.device_, &ssamp, nullptr, &skid_sampler_), "skid sampler");
@@ -292,8 +440,19 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
   }
   if (!options_.game_root.empty()) {
     std::string spec_err;
-    if (spectator_anim_.init(options_.game_root / "media", world::TrackPostConfig{}, &spec_err) &&
-        spectator_anim_.catalog().has_3d_spectators()) {
+    bool anim_ok = false;
+    if (auto* shared_anim = world::AnimatedWorldSystem::shared()) {
+      // Reuse the single DriveApp-initialized AnimatedWorldSystem (including real TrackPostConfig
+      // crowd tints/LOD distances, parsed .pgeo objects, and active Colorado/Rally world state).
+      spectator_anim_.share_from(*shared_anim);
+      anim_ok = spectator_anim_.catalog().has_3d_spectators();
+    } else {
+      world::TrackPostConfig post_cfg{};
+      post_cfg.load_file(options_.game_root / "media" / "tracks" / "colorado" / "TrackSettings.xml");
+      anim_ok = spectator_anim_.init(options_.game_root / "media", post_cfg, &spec_err) &&
+                spectator_anim_.catalog().has_3d_spectators();
+    }
+    if (anim_ok) {
       const auto& cat = spectator_anim_.catalog();
       if (upload_rgba_image_mips(cat.atlas_rgba.data(), world::SpectatorCatalog::kAtlasSize,
                                  world::SpectatorCatalog::kAtlasSize, world::SpectatorCatalog::kAtlasMipLevels, true,
@@ -612,8 +771,8 @@ void Showroom::set_particles(const std::vector<world::ParticleSprite>& alpha,
 
   auto* dst = static_cast<ParticleGpu*>(particle_buf_.data());
   uint32_t out_n = 0;
-  const float cell_uv = 1.0f / float(kParticleAtlasGrid);
-  const float inset = 1.5f / float(kParticleAtlasSize);
+  const float cell_uv = 1.0f / float(kExpandedAtlasGrid);
+  const float inset = 1.5f / float(kExpandedAtlasSize);
 
   auto emit_batch = [&](const std::vector<world::ParticleSprite>& list) -> uint32_t {
     uint32_t added = 0;
@@ -624,8 +783,15 @@ void Showroom::set_particles(const std::vector<world::ParticleSprite>& alpha,
         auto it = atlas_tex_slot_.find(used_textures[size_t(sp.texture_slot - 1)]);
         if (it != atlas_tex_slot_.end()) atlas_slot = it->second;
       }
-      const uint32_t cx = atlas_slot % kParticleAtlasGrid;
-      const uint32_t cy = atlas_slot / kParticleAtlasGrid;
+      uint16_t atlas_slot2 = 0;
+      if (sp.texture2_slot > 0 && size_t(sp.texture2_slot - 1) < used_textures.size()) {
+        auto it2 = atlas_tex_slot_.find(used_textures[size_t(sp.texture2_slot - 1)]);
+        if (it2 != atlas_tex_slot_.end() && it2->second >= 1u && it2->second <= kMaxTex2Slot) {
+          atlas_slot2 = it2->second;
+        }
+      }
+      const uint32_t cx = atlas_slot % kExpandedAtlasGrid;
+      const uint32_t cy = atlas_slot / kExpandedAtlasGrid;
       const int fx = std::max(1, sp.frames_x);
       const int fy = std::max(1, sp.frames_y);
       const int fi = std::max(0, sp.frame_index) % (fx * fy);
@@ -639,6 +805,9 @@ void Showroom::set_particles(const std::vector<world::ParticleSprite>& alpha,
       const auto rp = xform_pt(sp.pos);
       const auto rv = xform_dir(sp.vel);
       uint32_t flags = (sp.velocity_aligned ? 1u : 0u) | (sp.dynamic_lighting ? 2u : 0u) | (sp.additive ? 4u : 0u);
+      // Bind <Texture2> / <Gradient> atlas slot (1..31) in bits 3..7 of flags for particle.frag.
+      const uint32_t tex2_idx = (sp.use_gradient || atlas_slot2 > 0u) ? uint32_t(atlas_slot2 & 0x1Fu) : 0u;
+      flags |= (tex2_idx << 3u);
       const uint32_t scr_byte = uint32_t(std::clamp(sp.max_screen_size * 100.0f, 8.0f, 95.0f));
       flags |= (scr_byte << 8u);
 
@@ -660,7 +829,13 @@ void Showroom::set_particles(const std::vector<world::ParticleSprite>& alpha,
         g.light[c] = sp.light_influence[c];
       }
       g.extra[0] = sp.spin_rad;
-      g.extra[1] = sp.soft_depth_m;
+      const float clamped_soft = std::clamp(sp.soft_depth_m, 0.0f, 3.5f);
+      if (tex2_idx > 0u) {
+        const uint32_t grad_q = uint32_t(std::clamp(int(std::lround(sp.gradient_row_v * 16.0f - 0.5f)), 0, 15));
+        g.extra[1] = clamped_soft + float(grad_q + 1u) * 4.0f;
+      } else {
+        g.extra[1] = clamped_soft;
+      }
       g.extra[2] = sp.headlight_power;
       g.extra[3] = float(flags);
       ++added;

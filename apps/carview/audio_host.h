@@ -92,6 +92,7 @@ class AudioHost {
   const std::string& acoustics_world_key() const { return acoustics_world_key_; }
   size_t acoustics_reverb_zones() const { return acoustics_.reverb_zone_count(); }
   size_t acoustics_ambience_zones() const { return acoustics_.ambience_zone_count(); }
+  bool in_tunnel() const { return last_in_tunnel_; }
   std::string car_burble_bank() const;
 
   // Initializes Your Music from `music_dir` (<state>/music).
@@ -224,6 +225,7 @@ class AudioHost {
   audio::CarDspMode last_dsp_mode_ = audio::CarDspMode::kOff;
 
   bool have_acoustics_sent_ = false;
+  bool last_in_tunnel_ = false;
   std::array<float, 3> last_acoustics_pos_{0.0f, 0.0f, 0.0f};
   float last_acoustics_heading_ = 0.0f;
   std::chrono::steady_clock::time_point last_acoustics_tp_{};

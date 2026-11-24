@@ -53,9 +53,13 @@ void Showroom::apply_tod_to_frame() {
   frame_.fog_color[2] = t.fog_color[2];
   frame_.fog_color[3] = t.fog_start;
 
-  frame_.fog_scatter[0] = t.fog_sun_scatter_color[0];
-  frame_.fog_scatter[1] = t.fog_sun_scatter_color[1];
-  frame_.fog_scatter[2] = t.fog_sun_scatter_color[2];
+  // Modulate atmospheric sun-scatter colour by Fog_Templates SunScatterStartDistance /
+  // SunScatterRampupDistance (SPEC-SKY-AND-TOD §4) evaluated at mid-horizon distance.
+  const float sc_dist_world =
+      std::clamp((3500.0f - t.fog_sun_scatter_start) / std::max(t.fog_sun_scatter_rampup, 1.0f), 0.15f, 1.0f);
+  frame_.fog_scatter[0] = t.fog_color[0] + (t.fog_sun_scatter_color[0] - t.fog_color[0]) * sc_dist_world;
+  frame_.fog_scatter[1] = t.fog_color[1] + (t.fog_sun_scatter_color[1] - t.fog_color[1]) * sc_dist_world;
+  frame_.fog_scatter[2] = t.fog_color[2] + (t.fog_sun_scatter_color[2] - t.fog_color[2]) * sc_dist_world;
   frame_.fog_scatter[3] = t.fog_sun_scatter_power;
 
   // Convert TimeOfDayA FogDensity (~0.03 day .. 0.08 night) to exp2 distance rate.
@@ -497,16 +501,20 @@ void Showroom::fill_sky_uniforms(const ShowroomFrame& view_frame, SkyUniforms& u
   u.close_layers[2] = std::fmod(t.close_front_revs * day_frac + tod_real_time_ * 0.0005f, 1.0f);
   u.close_layers[3] = std::fmod(t.close_back_revs * day_frac - tod_real_time_ * 0.0003f, 1.0f);
   u.close_back_dense_col[0] = t.close_back_dense_color[0]; u.close_back_dense_col[1] = t.close_back_dense_color[1];
-  u.close_back_dense_col[2] = t.close_back_dense_color[2]; u.close_back_dense_col[3] = t.close_dense_intensity;
+  u.close_back_dense_col[2] = t.close_back_dense_color[2]; u.close_back_dense_col[3] = 1.0f;  // sky saturation (1.0 main)
   u.close_back_thin_col[0] = t.close_back_thin_color[0]; u.close_back_thin_col[1] = t.close_back_thin_color[1];
-  u.close_back_thin_col[2] = t.close_back_thin_color[2]; u.close_back_thin_col[3] = t.close_thin_intensity;
+  u.close_back_thin_col[2] = t.close_back_thin_color[2]; u.close_back_thin_col[3] = t.close_back_bottom_intensity;
   u.close_back_bot_col[0] = t.close_back_bottom_color[0]; u.close_back_bot_col[1] = t.close_back_bottom_color[1];
-  u.close_back_bot_col[2] = t.close_back_bottom_color[2]; u.close_back_bot_col[3] = t.close_bottom_power;
+  u.close_back_bot_col[2] = t.close_back_bottom_color[2]; u.close_back_bot_col[3] = t.close_back_bottom_power;
 
   u.fog_color[0] = t.fog_color[0]; u.fog_color[1] = t.fog_color[1]; u.fog_color[2] = t.fog_color[2];
   u.fog_color[3] = std::clamp(t.fog_sky_height_fade_start / 15000.0f, 0.0f, 0.25f);
-  u.fog_scatter[0] = t.fog_sun_scatter_color[0]; u.fog_scatter[1] = t.fog_sun_scatter_color[1];
-  u.fog_scatter[2] = t.fog_sun_scatter_color[2]; u.fog_scatter[3] = t.fog_sun_scatter_power;
+  const float sc_dist_sky =
+      std::clamp((15000.0f - t.fog_sun_scatter_start) / std::max(t.fog_sun_scatter_rampup, 1.0f), 0.15f, 1.0f);
+  u.fog_scatter[0] = t.fog_color[0] + (t.fog_sun_scatter_color[0] - t.fog_color[0]) * sc_dist_sky;
+  u.fog_scatter[1] = t.fog_color[1] + (t.fog_sun_scatter_color[1] - t.fog_color[1]) * sc_dist_sky;
+  u.fog_scatter[2] = t.fog_color[2] + (t.fog_sun_scatter_color[2] - t.fog_color[2]) * sc_dist_sky;
+  u.fog_scatter[3] = t.fog_sun_scatter_power;
   u.fog_sky[0] = std::clamp(t.fog_sky_height_fade_end / 15000.0f, 0.05f, 0.35f);
   u.fog_sky[1] = std::clamp(t.fog_density * 14.0f, 0.15f, 0.85f);
   u.fog_sky[2] = sky_has_textures_ ? 1.0f : 0.0f;

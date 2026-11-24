@@ -80,7 +80,8 @@ void DriveSession::place_world() {
           std::vector<Showroom::Instance> rmore;
           const uint32_t focus_slot = replay_viewer.focus_slot();
           const bool hide_focus_bumper = replay_viewer.camera_mode() == ReplayCameraMode::kBumper;
-          const bool night_lamps = drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec);
+          const bool night_lamps =
+              drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec) || app.audio_host.in_tunnel();
           const auto& all_rcars = replay_viewer.current_cars();
           // Process the focused car first so it gets priority for the 1-per-frame guest upload budget.
           std::vector<size_t> order;
@@ -215,7 +216,8 @@ void DriveSession::place_world() {
           world_to_player[15] = 1.0;
 
           std::vector<Showroom::Instance> fmore;
-          const bool night_lamps = drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec);
+          const bool night_lamps =
+              drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec) || app.audio_host.in_tunnel();
           const float fdt = float(tod_frame_dt > 0.0 ? std::clamp(tod_frame_dt, 0.0, 0.25) : 1.0 / 60.0);
           static std::map<const Showroom*, float> s_fest_wheel_spin;
           std::map<Showroom*, double> fest_wheel_speed;
@@ -308,6 +310,19 @@ void DriveSession::place_world() {
           }
           if (!fmore.empty()) host.showroom.add_instances(fmore);
         }
+        const bool in_tunnel = app.audio_host.in_tunnel();
+        static const DriveWorldHost* s_tunnel_host = nullptr;
+        static float s_tunnel_blend = 0.0f;
+        if (s_tunnel_host != &host || app.headless || tod_frame_dt <= 0.0) {
+          s_tunnel_host = &host;
+          s_tunnel_blend = in_tunnel ? 1.0f : 0.0f;
+        } else {
+          const float t_alpha = std::clamp(1.0f - std::exp(-float(tod_frame_dt) / 0.35f), 0.0f, 1.0f);
+          s_tunnel_blend += ((in_tunnel ? 1.0f : 0.0f) - s_tunnel_blend) * t_alpha;
+        }
+        const float tunnel_t = std::clamp(s_tunnel_blend, 0.0f, 1.0f);
+        const float active_near =
+            (host.cam_proj.near_z > 0.01f && std::isfinite(host.cam_proj.near_z)) ? host.cam_proj.near_z : 0.25f;
         {
           drive::LampInputs lin{};
           const float bg = brake_glow(vehicle);
@@ -316,7 +331,8 @@ void DriveSession::place_world() {
           lin.gear = vehicle.gear();
           lin.tod_sec = app.tod_clock.tod_sec;
           lin.dt = float(tod_frame_dt > 0.0 ? tod_frame_dt : 1.0 / 60.0);
-          lin.light_override = light_override;
+          // Entering a tunnel automatically triggers daytime headlamps when in auto lamp mode.
+          lin.light_override = (light_override == 0 && in_tunnel) ? 1 : light_override;
           lin.popup_open = app.headless ? 1.0f : host.showroom.popup_open();
           lin.snap_headlamps = app.headless;
           player_lamps.update(lin);
@@ -353,9 +369,30 @@ void DriveSession::place_world() {
             tod.fog_density *= ft.density;
             tod.fog_start *= ft.start_distance;
             tod.fog_sun_scatter_power *= ft.sun_scatter_power;
+            tod.fog_sun_scatter_start = std::max(0.0f, ft.sun_scatter_start_distance);
+            tod.fog_sun_scatter_rampup = std::max(1.0f, ft.sun_scatter_rampup_distance);
             tod.fog_height_fade_amount *= ft.height_fade_amount;
             tod.fog_height_fade_start *= ft.height_fade_start;
             tod.fog_height_fade_end *= ft.height_fade_end;
+          }
+          // Tunnel occlusion: suppress direct sun & sky-ambient bounce and illuminate tunnel/car lamps.
+          if (tunnel_t > 0.001f) {
+            const float sun_keep = 1.0f - 0.85f * tunnel_t;
+            const float sky_keep = 1.0f - 0.72f * tunnel_t;
+            const float gnd_keep = 1.0f - 0.45f * tunnel_t;
+            const float amb_keep = 1.0f - 0.55f * tunnel_t;
+            for (int k = 0; k < 3; ++k) {
+              tod.sun_color[k] *= sun_keep;
+              tod.car_sun_color[k] *= sun_keep;
+              tod.hl_top[k] *= sky_keep;
+              tod.car_hl_top[k] *= sky_keep;
+              tod.hl_bottom[k] *= gnd_keep;
+              tod.car_hl_bottom[k] *= gnd_keep;
+              tod.ambient_color[k] *= amb_keep;
+            }
+            tod.ibl_ambient_scale *= amb_keep;
+            tod.switch_on_lights = std::max(tod.switch_on_lights, tunnel_t);
+            tod.shadow_intensity = tod.shadow_intensity * (1.0f - tunnel_t) - tunnel_t;
           }
           host.showroom.set_tod(tod, app.tod_clock.moon_phase(), float(vehicle.time()), float(vpos.y));
           if (app.post_on) {
@@ -363,17 +400,18 @@ void DriveSession::place_world() {
             const float dn = tod.day_night_post;
             for (int k = 0; k < 6; ++k) ps.hable[k] = cfg.hable_day[k] + dn * (cfg.hable_night[k] - cfg.hable_day[k]);
             ps.white = cfg.white_day + dn * (cfg.white_night - cfg.white_day);
-            ps.desaturate = std::clamp(cfg.desat_amount * tod.desat_amount_mult, 0.0f, 1.5f);
-            for (int k = 0; k < 3; ++k) {
-              ps.luminance[k] = cfg.desat_luminosity[k] * tod.desat_luminosity_mult[k];
-              ps.balance[k] = cfg.desat_post_mod[k] * tod.desat_post_mod_mult[k];
-            }
-            if (const char* b = std::getenv("SHIFT_BALANCE"))
-              std::sscanf(b, "%f,%f,%f", &ps.balance[0], &ps.balance[1], &ps.balance[2]);
             const auto& bt = zone_blender.bloom;
             const auto& cs = zone_blender.color;
             const auto& vt = zone_blender.vig_top;
             const auto& vb = zone_blender.vig_bottom;
+            // Forward blended per-zone ColorSettings_Templates.xml (desat_*, contrast, brightness, exposure_bias).
+            ps.desaturate = std::clamp(cs.desat_amount * tod.desat_amount_mult, 0.0f, 1.5f);
+            for (int k = 0; k < 3; ++k) {
+              ps.luminance[k] = cs.desat_luminosity[k] * tod.desat_luminosity_mult[k];
+              ps.balance[k] = cs.desat_post_mod[k] * tod.desat_post_mod_mult[k];
+            }
+            if (const char* b = std::getenv("SHIFT_BALANCE"))
+              std::sscanf(b, "%f,%f,%f", &ps.balance[0], &ps.balance[1], &ps.balance[2]);
             ps.bloom = (app.bloom_flag >= 0 ? app.bloom_flag == 1 : !app.low_preset) && slice12.trainer.config.debug_bloom;
             ps.bloom_cutoff = std::max(0.05f, bt.cutoff * tod.bloom_cutoff_mult);
             ps.bloom_scale = std::max(0.0f, bt.scale * tod.bloom_scale_mult);
@@ -382,28 +420,38 @@ void DriveSession::place_world() {
             ps.bloom_upper_grad = std::max(0.05f, bt.upper_grad * tod.bloom_upper_grad_mult);
             for (int k = 0; k < 5; ++k) ps.bloom_weights[k] = bt.weights[k];
             ps.vignette_amount = std::clamp(tod.vignette_amount, 0.0f, 1.0f);
-            ps.contrast = std::clamp(1.0f + cs.contrast, 0.5f, 1.8f);
+            ps.contrast = std::clamp((1.0f + cs.contrast) * tod.contrast_mult, 0.5f, 1.8f);
             ps.brightness = std::clamp(cs.brightness, -0.35f, 0.35f);
             ps.paired_vignette = !app.tod_system.zones.vignette_templates.empty() && !app.low_preset;
+            const float lr_int = std::clamp(tod.light_rays_intensity, 0.0f, 1.5f);
+            const float lr_w = std::clamp(lr_int, 0.0f, 1.0f);
+            const float sc_dist_rays =
+                std::clamp((3500.0f - tod.fog_sun_scatter_start) / std::max(tod.fog_sun_scatter_rampup, 1.0f),
+                           0.15f, 1.0f);
             for (int k = 0; k < 3; ++k) {
               ps.vig_top_color[k] = vt.color[k];
               ps.vig_bot_color[k] = vb.color[k];
-              ps.sun_scatter_color[k] = std::clamp(tod.fog_sun_scatter_color[k] * 1.45f + tod.sun_color[k] * 0.45f,
-                                                   0.05f, 2.0f);
+              const float fog_sc =
+                  tod.fog_color[k] + (tod.fog_sun_scatter_color[k] - tod.fog_color[k]) * sc_dist_rays;
+              const float base_scatter = fog_sc * 1.45f + tod.sun_color[k] * 0.45f;
+              ps.sun_scatter_color[k] =
+                  std::clamp(base_scatter * (1.0f - lr_w) + tod.light_rays_color[k] * lr_w, 0.05f, 2.0f);
             }
             constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
-            ps.vig_top_opacity = vt.color[3];
+            const float vt_span = std::clamp(vt.max_intensity - vt.min_intensity, 0.0f, 1.0f);
+            const float vb_span = std::clamp(vb.max_intensity - vb.min_intensity, 0.0f, 1.0f);
+            ps.vig_top_opacity = std::clamp(vt.color[3], 0.0f, 1.0f) * vt_span;
             ps.vig_top_center[0] = 0.5f + vt.pos_x * 0.5f;
             ps.vig_top_center[1] = 0.5f - vt.pos_y * 0.5f;
-            ps.vig_top_radius[0] = std::max(vt.scale_x, 0.25f);
-            ps.vig_top_radius[1] = std::max(vt.scale_y, 0.25f);
+            ps.vig_top_radius[0] = std::max(vt.scale_x, 0.005f);
+            ps.vig_top_radius[1] = std::max(vt.scale_y, 0.005f);
             ps.vig_top_rot = vt.angle_deg * kDegToRad;
             ps.vig_top_feather = std::clamp(vt.power, 0.25f, 8.0f);
-            ps.vig_bot_opacity = vb.color[3];
+            ps.vig_bot_opacity = std::clamp(vb.color[3], 0.0f, 1.0f) * vb_span;
             ps.vig_bot_center[0] = 0.5f + vb.pos_x * 0.5f;
             ps.vig_bot_center[1] = 0.5f - vb.pos_y * 0.5f;
-            ps.vig_bot_radius[0] = std::max(vb.scale_x, 0.25f);
-            ps.vig_bot_radius[1] = std::max(vb.scale_y, 0.25f);
+            ps.vig_bot_radius[0] = std::max(vb.scale_x, 0.005f);
+            ps.vig_bot_radius[1] = std::max(vb.scale_y, 0.005f);
             ps.vig_bot_rot = vb.angle_deg * kDegToRad;
             ps.vig_bot_feather = std::clamp(vb.power, 0.25f, 8.0f);
             // Optical post-FX: speed/camera radial motion blur, DoF, god rays & lens flare/dirt.
@@ -420,11 +468,11 @@ void DriveSession::place_world() {
             ps.dof_focal_range = 42.0f;
             ps.dof_max_blur = std::clamp(cfg.dof_focal_max_blur > 0.05f ? cfg.dof_focal_max_blur * 0.55f : 0.35f,
                                          0.15f, 0.65f);
-            ps.near_plane = 0.25f;
+            ps.near_plane = active_near;
             ps.god_rays = !app.low_preset && (!app.bench || app.bench_full_fx);
             ps.lens_flare = !app.low_preset && (!app.bench || app.bench_full_fx);
-            ps.god_ray_strength = 0.48f;
-            ps.lens_flare_strength = 0.36f;
+            ps.god_ray_strength = lr_int * (1.0f - tunnel_t);
+            ps.lens_flare_strength = 0.36f * (1.0f - tunnel_t);
             ps.time_sec = float(vehicle.time());
             ps.lut_enabled = true;
             if (app.exposure_given > 0) {
@@ -435,11 +483,17 @@ void DriveSession::place_world() {
               const bool cockpit = tod_cockpit_cam;
               const float* keys = cockpit ? cfg.cockpit_keys : cfg.exterior_keys;
               const float* evs = cockpit ? cfg.cockpit_ev : cfg.exterior_ev;
-              for (int k = 0; k < 4; ++k) ps.exp_keys[k] = keys[k], ps.exp_ev[k] = evs[k];
-              // Exact TrackSettings.xml filmicTone.exposure EV offset (SKY_AND_TOD §5.2):
-              // post.frag evaluates exp2(clamp(ev_curve + filmic_exposure, -2.0, 6.0)).
-              ps.exposure = cfg.filmic_exposure;
-              const float tau = std::max(cfg.tonemap_delay * 10.0f, 0.05f);
+              // Apply TrackSettings filmicTone.exposure + blended zone ExposureBias + tunnel adaptation,
+              // respecting parsed CameraExposureRange [exposure_min, exposure_max] (SKY_AND_TOD §5.2).
+              const float ev_min = std::min(cfg.exposure_min, cfg.exposure_max);
+              const float ev_max = std::max(cfg.exposure_min, cfg.exposure_max);
+              const float tunnel_ev = 0.65f * tunnel_t;
+              ps.exposure = std::clamp(cfg.filmic_exposure + cs.exposure_bias + tunnel_ev, ev_min, ev_max);
+              for (int k = 0; k < 4; ++k) {
+                ps.exp_keys[k] = keys[k];
+                ps.exp_ev[k] = std::clamp(evs[k] + ps.exposure, ev_min, ev_max) - ps.exposure;
+              }
+              const float tau = std::max(cfg.tonemap_delay * 10.0f * (1.0f - 0.35f * tunnel_t), 0.05f);
               ps.adapt_alpha = (app.headless || tod_frame_dt <= 0.0)
                                    ? 1.0f
                                    : float(1.0 - std::exp(-tod_frame_dt / double(tau)));
@@ -546,7 +600,7 @@ void DriveSession::place_world() {
           host.showroom.set_debris_mesh(debris_tris);
           std::vector<world::ParticleSprite> p_alpha, p_add;
           host.particle_sys.build_sprites({float(vpos.x), float(vpos.y + 1.5), float(vpos.z)}, p_alpha, p_add);
-          host.showroom.set_particles(p_alpha, p_add, host.particle_sys.used_textures(), 0.25f, tod_cockpit_cam);
+          host.showroom.set_particles(p_alpha, p_add, host.particle_sys.used_textures(), active_near, tod_cockpit_cam);
         }
 }
 

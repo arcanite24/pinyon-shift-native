@@ -283,11 +283,21 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
       flags |= 16;
       if (mat.splat != kNoWorldTexture) {
         d.splat = mat.splat;
-        flags |= 2097152u;  // world.frag kFlagDecalNoise (H_VBLND_DECAL Noise_Sampler)
+        flags |= 2097152u;  // world.frag kFlagDecalNoise (H_VBLND_DECAL Noise_Sampler / Mask)
       }
     }
     if (flags && mat.layers == 4) flags |= 32;  // tree sprite: turned to the camera in world.vert
-    if (mat.light_map != kNoWorldTexture) {
+    if (mat.is_emissive_map == 2) {
+      // Dual _EMIS + _LM building prop: Light_Map (slot 7) in light_map, EmissiveMapSampler (slot 3) in layer_c.
+      if (mat.light_map != kNoWorldTexture) {
+        d.light_map = mat.light_map;
+        flags |= 2048u;  // kFlagLightMap
+      }
+      if (mat.layer_c != kNoWorldTexture) {
+        d.layer_c = mat.layer_c;
+        flags |= 8388608u;  // kFlagEmissiveMap
+      }
+    } else if (mat.light_map != kNoWorldTexture) {
       d.light_map = mat.light_map;
       flags |= mat.is_emissive_map ? 8388608u : 2048u;  // kFlagEmissiveMap (slot 3) vs kFlagLightMap (slot 7)
     }
@@ -299,7 +309,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
       d.ao_map = mat.ao_map;
       flags |= 8192u;  // world.frag kFlagAoMap
     }
-    if (flags && mat.layer_c != kNoWorldTexture) {
+    if (flags && mat.layer_c != kNoWorldTexture && mat.is_emissive_map != 2) {
       d.layer_c = mat.layer_c;
       flags |= 16384u;  // world.frag kFlagLayerC
     }
@@ -316,12 +326,21 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     if (mat.is_grass) {
       flags |= 262144u;  // world.vert kFlagGrass
     }
-    if (mat.spec_map != kNoWorldTexture) {
+    const bool road_modulate = (mat.is_road & 4u) != 0u;
+    if (mat.spec_map != kNoWorldTexture && !road_modulate) {
       d.spec_map = mat.spec_map;
       flags |= 524288u;  // world.frag kFlagSpecMap
     }
     if (mat.is_road) {
       flags |= 1048576u;  // world.frag kFlagRoad
+      if ((mat.is_road & 2u) != 0u && mat.splat != kNoWorldTexture) {
+        d.splat = mat.splat;
+        flags |= 2097152u;  // world.frag kFlagRoadNoise (shares bit 21 with kFlagDecalNoise)
+      }
+      if (road_modulate && mat.spec_map != kNoWorldTexture) {
+        d.spec_map = mat.spec_map;
+        flags |= 4194304u;  // world.frag kFlagRoadModulate (shares bit 22 with kFlagWaterNormalB)
+      }
     }
     if (flags & 1u) std::memcpy(d.push.tint, mat.tiling.data(), sizeof d.push.tint);
     // The distance cross-fade (world.frag): 128 a prop's LOD00, 256 its
@@ -331,12 +350,13 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     // Encode integer far-ring level (0, 1, 2) plus c3.w emissive_force in [0, 0.45] so
     // world_cull.comp (params.z < 0.5) and world_vert.glsl (> 0.5 / > 1.5) stay exact.
     d.push.params[2] = float(mat.far) + std::clamp(mat.emissive_force, 0.0f, 1.0f) * 0.45f;
-    // params[3] carries packed half2x16: tiling_c for H_BLND3 (kFlagLayerC),
-    // or decal_noise_c4 for H_VBLND_DECAL (kFlagDecalNoise); 1.0 otherwise
-    // (the obsolete 2.5x H_VBLND light gain hack is removed).
+    // params[3] carries packed half2x16: tiling_c for H_BLND3/H_ROAD_DIFF3 (kFlagLayerC),
+    // decal_noise_c4 for H_VBLND_DECAL (kFlagVertexFade | kFlagDecalNoise),
+    // RoadSpecular/RoadGlossiness for H_ROAD (without kFlagLayerC),
+    // or TrackLightMapParams for _LM materials (without kFlagLayerC/kFlagRoad/kFlagVertexFade).
     if (flags & 16384u) {
       d.push.params[3] = pack_half2x16_float(mat.tiling_c[0], mat.tiling_c[1]);
-    } else if (flags & 2097152u) {
+    } else if (((flags & 16u) && (flags & 2097152u)) || (flags & 1048576u) || (flags & 2048u)) {
       d.push.params[3] = pack_half2x16_float(mat.decal_noise_c4[0], mat.decal_noise_c4[1]);
     } else {
       d.push.params[3] = 1.0f;

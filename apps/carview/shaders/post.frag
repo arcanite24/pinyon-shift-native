@@ -577,20 +577,20 @@ void main() {
 
   // Paired rotated elliptical VignetteTop + VignetteBottom (SKY_AND_TOD.md §5.5 step 4):
   // evaluated in sqrt (gamma-2) space with FH1's subtractive sky-tinting formula.
-  // VignetteTop tints the upper sky half; VignetteBottom grounds the lower road edge
-  // with intensity bounded to match retail MinIntensity (0.749..0.784).
+  // Per-zone MinIntensity / MaxIntensity bounds from Vignette_Templates.xml are folded into
+  // vig_top_col.w and vig_bot_col.w on the CPU so no hardcoded intensity caps override templates.
   float vig_scale = clamp(p.mode.w, 0.0, 1.0);
   if ((oflags & 32u) != 0u && vig_scale > 0.001) {
     vec3 s = sqrt(max(t, vec3(0.0)));
     if (opt.vig_top_col.w > 0.001) {
       float m_top = eval_rotated_vignette(v_uv, opt.vig_top_geom, opt.vig_top_rot, -1.0);
-      float a_top = clamp(m_top * opt.vig_top_col.w * vig_scale, 0.0, 0.65);
+      float a_top = clamp(m_top * opt.vig_top_col.w * vig_scale, 0.0, 1.0);
       vec3 target_top = clamp(s - vec3(1.0) + opt.vig_top_col.rgb, vec3(0.0), vec3(1.0));
       s = mix(s, target_top, a_top);
     }
     if (opt.vig_bot_col.w > 0.001) {
       float m_bot = eval_rotated_vignette(v_uv, opt.vig_bot_geom, opt.vig_bot_rot, 1.0);
-      float a_bot = clamp(m_bot * opt.vig_bot_col.w * vig_scale, 0.0, 1.0) * 0.24;
+      float a_bot = clamp(m_bot * opt.vig_bot_col.w * vig_scale, 0.0, 1.0);
       vec3 target_bot = clamp(s - vec3(1.0) + opt.vig_bot_col.rgb, vec3(0.0), vec3(1.0));
       s = mix(s, target_bot, a_bot);
     }

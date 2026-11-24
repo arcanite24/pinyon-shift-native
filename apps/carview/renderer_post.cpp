@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
 
 #include "bloom_down_frag_spv.h"
 #include "bloom_up_frag_spv.h"
@@ -11,6 +13,14 @@
 #include "post_vert_spv.h"
 
 namespace carview {
+namespace {
+
+// Tracks the upgraded mip-0 bloom persistence target (`bloom_b_[5]`) per Renderer
+// so `bloom_persist` feeds back mip-0 bright-pass rather than 6-mip upsampled `bloom_b_[0]`.
+std::mutex g_bloom_persist_mutex;
+std::unordered_map<const Renderer*, VkImage> g_bloom_persist_img;
+
+}  // namespace
 
 void Renderer::set_post_lut(std::span<const uint8_t> rgba, uint32_t size) {
   if (size < 2 || size > 65) return;
@@ -321,7 +331,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
                             (s.paired_vignette ? 32u : 0u);
     PostOpticalUbo u{};
     u.flags_near[0] = float(oflags);
-    u.flags_near[1] = s.near_plane;
+    u.flags_near[1] = (cam_vp_set_ && cam_near_ > 0.01f) ? cam_near_ : s.near_plane;
     u.flags_near[2] = s.contrast;
     u.flags_near[3] = s.brightness;
     u.mblur[0] = s.motion_blur_center[0];
@@ -552,26 +562,64 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
   // 2. Physically-Based 6-level Jimenez / Dual-Kawase bloom pyramid:
   //    Mip 0: 13-tap Karis-averaged anti-firefly prefilter -> Mips 1..5: 13-tap progressive downsample
   //    Mips 5->0: 9-tap 3x3 tent-filter progressive upsample combine (11 passes vs 19 Gaussian passes).
+  //    Temporal bloom_persist feeds back mip-0 bright-pass stored in the otherwise-unused `bloom_b_[5]`
+  //    slot (upgraded to mip-0 extent on first bloom frame) instead of 6-mip upsampled `bloom_b_[0]`.
   if (s.bloom && bloom_a_[0].image && bloom_b_[0].image && post_bloom_down_ && post_bloom_up_) {
-    // On first bloom frame (or after resize), clear & transition bloom_b_[0] to SHADER_READ_ONLY_OPTIMAL
+    if (!bloom_prev_valid_ && bloom_b_[5].image && bloom_w_[0] > 0 && bloom_h_[0] > 0) {
+      bool need_upgrade = false;
+      {
+        std::lock_guard<std::mutex> lock(g_bloom_persist_mutex);
+        auto it = g_bloom_persist_img.find(this);
+        need_upgrade = (it == g_bloom_persist_img.end() || it->second != bloom_b_[5].image ||
+                        bloom_b_[5].bytes < bloom_a_[0].bytes);
+      }
+      if (need_upgrade) {
+        wait_idle();
+        destroy_image(bloom_b_[5]);
+        const VkImageUsageFlags persist_usage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (create_image(bloom_w_[0], bloom_h_[0], 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, persist_usage,
+                         VK_IMAGE_ASPECT_COLOR_BIT, bloom_b_[5])) {
+          VkDescriptorImageInfo pimg{post_sampler_, bloom_b_[5].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+          VkWriteDescriptorSet pw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+          pw.dstSet = post_sets_[2];
+          pw.dstBinding = 1;
+          pw.descriptorCount = 1;
+          pw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+          pw.pImageInfo = &pimg;
+          vkUpdateDescriptorSets(device_, 1, &pw, 0, nullptr);
+          std::lock_guard<std::mutex> lock(g_bloom_persist_mutex);
+          g_bloom_persist_img[this] = bloom_b_[5].image;
+        }
+      }
+    }
+    Image& persist_img = bloom_b_[5].image ? bloom_b_[5] : bloom_b_[0];
+    // On first bloom frame (or after resize), clear & transition persist target to SHADER_READ_ONLY_OPTIMAL
     // so binding 1 (`aux`) in post_sets_[2] is always in a valid readable layout.
     if (!bloom_prev_valid_) {
       const VkClearColorValue zero_col{{0.0f, 0.0f, 0.0f, 0.0f}};
       const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      image_barrier(cmd, bloom_b_[0].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+      image_barrier(cmd, persist_img.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, read_stage, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_CLEAR_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
-      vkCmdClearColorImage(cmd, bloom_b_[0].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero_col, 1, &range);
-      image_barrier(cmd, bloom_b_[0].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      vkCmdClearColorImage(cmd, persist_img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero_col, 1, &range);
+      image_barrier(cmd, persist_img.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stage, read);
     }
-    // Downsample mip 0 (Karis average + soft-knee prefilter + temporal bloom_persist from previous bloom_b_[0]).
+    // Downsample mip 0 (Karis average + soft-knee prefilter + temporal bloom_persist from previous mip-0 bright-pass).
     const float safe_persist = bloom_prev_valid_ ? std::clamp(finite_or(s.bloom_persist, 0.0f), 0.0f, 0.35f) : 0.0f;
     to_write(bloom_a_[0]);
     pass(bloom_a_[0].view, bloom_w_[0], bloom_h_[0], post_bloom_down_, post_sets_[2], 0.0f,
          1.0f / float(std::max(1u, render_width_)), 1.0f / float(std::max(1u, render_height_)), safe_persist);
     to_read(bloom_a_[0]);
+
+    // Save mip-0 bright-pass into bloom_b_[5] for next frame's bloom_persist feedback.
+    if (bloom_b_[5].view && post_quarter_) {
+      to_write(bloom_b_[5]);
+      pass(bloom_b_[5].view, bloom_w_[0], bloom_h_[0], post_quarter_, post_sets_[3], 5.0f, 1.0f, 0.0f, 0.0f);
+      to_read(bloom_b_[5]);
+    }
 
     // Progressive 13-tap downsamples mips 1..5.
     for (uint32_t k = 1; k < kBloomLevels; ++k) {

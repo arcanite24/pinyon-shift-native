@@ -652,6 +652,7 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
 
   if (acoustics_world_key_ != world_key) {
     acoustics_.clear_soundscapes();
+    last_in_tunnel_ = false;
     acoustics_world_key_ = world_key;
     std::error_code ec;
     std::filesystem::path archive_path;
@@ -785,7 +786,11 @@ void AudioHost::update_world_acoustics(float x, float y, float z, float heading_
   last_acoustics_heading_ = heading_rad;
   last_acoustics_tp_ = now;
   if (radio_) engine_.set_listener_pose({x, y, z}, heading_rad);
-  if (has_acoustics_) engine_.set_acoustics_sample(acoustics_.evaluate(x, y, z));
+  if (has_acoustics_) {
+    const auto sample = acoustics_.evaluate(x, y, z);
+    last_in_tunnel_ = sample.in_tunnel;
+    engine_.set_acoustics_sample(sample);
+  }
 }
 
 void AudioHost::init_user_music(const std::filesystem::path& music_dir, bool non_blocking) {

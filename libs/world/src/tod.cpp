@@ -438,6 +438,8 @@ TodState evaluate_tod(const TodPreset& p, double tod_sec) {
   s.close_top_intensity = p.scalar("CloseCloudTopIntensity", m, 0.5f);
   s.close_bottom_power = p.scalar("CloseCloudBottomPower", m, 2.0f);
   s.close_bottom_intensity = p.scalar("CloseCloudBottomIntensity", m, 0.05f);
+  s.close_back_bottom_power = p.scalar("CloseCloudBottomPowerBack", m, s.close_bottom_power);
+  s.close_back_bottom_intensity = p.scalar("CloseCloudBottomIntensityBack", m, s.close_bottom_intensity * 0.5f);
   s.close_top_mask_power = p.scalar("CloseCloudTopMaskPower", m, 1.0f);
   s.close_bottom_mask_power = p.scalar("CloseCloudBottomMaskPower", m, 1.5f);
   s.close_top_alpha = p.scalar("CloseCloudTopAlpha", m, 1.0f);
@@ -448,12 +450,22 @@ TodState evaluate_tod(const TodPreset& p, double tod_sec) {
   s.close_front_revs = p.scalar("CloseCloudFrontRevs", m, 2.0f);
   s.close_back_revs = p.scalar("CloseCloudBackRevs", m, -1.269f);
 
+  // Dynamic reflection cubemap sky & sun curves.
+  s.cube_atmo_haze_color = p.vec3("CubeAtmosphereHazeColour", m, s.atmo_haze_color);
+  s.cube_atmo_haze_power = p.scalar("CubeAtmosphereHazePower", m, s.atmo_haze_power);
+  s.cube_atmo_haze_intensity = p.scalar("CubeAtmosphereHazeIntensity", m, s.atmo_haze_intensity);
+  s.cube_atmo_haze_elliptical = p.scalar("CubeAtmosphereHazeEllipticalScale", m, s.atmo_haze_elliptical);
+  s.cube_sun_object_color = p.vec3("CubeSunObjectColour", m, s.sun_object_color);
+  s.cube_sun_object_size = p.scalar("CubeSunObjectSize", m, s.sun_object_size);
+
   // Fog.
   s.fog_color = p.vec3("FogColour", m, {0.091f, 0.1374f, 0.1446f});
   s.fog_density = p.scalar("FogDensity", m, 0.03f);
   s.fog_start = p.scalar("FogStartDistance", m, 975.0f);
   s.fog_sun_scatter_color = p.vec3("FogSunScatterColour", m, {0.223f, 0.223f, 0.223f});
   s.fog_sun_scatter_power = p.scalar("FogSunScatterPower", m, 5.0f);
+  s.fog_sun_scatter_start = p.scalar("FogSunScatterStartDistance", m, 0.0f);
+  s.fog_sun_scatter_rampup = p.scalar("FogSunScatterRampupDistance", m, 10000.0f);
   s.fog_height_fade_amount = p.scalar("FogHeightFadeAmount", m, 0.9f);
   s.fog_height_fade_start = p.scalar("FogHeightFadeStart", m, 200.0f);
   s.fog_height_fade_end = p.scalar("FogHeightFadeEnd", m, 4000.0f);
@@ -528,6 +540,13 @@ bool TrackPostConfig::load_xml(const std::string& xml_text) {
     desat_post_mod[1] = pm->num("g", desat_post_mod[1]);
     desat_post_mod[2] = pm->num("b", desat_post_mod[2]);
   }
+  if (const auto* eb = root.child_ci("ExposureBias")) exposure_bias = eb->num("value", exposure_bias);
+  if (const auto* ct = root.child_ci("Contrast")) contrast = ct->num("value", contrast);
+  if (const auto* br = root.child_ci("Brightness")) brightness = br->num("value", brightness);
+  if (const auto* cs = root.child_ci("cubeSkyScale")) cube_sky_scale = cs->num("value", cube_sky_scale);
+  if (const auto* csat = root.child_ci("cubeSkySaturation")) cube_sky_saturation = csat->num("value", cube_sky_saturation);
+  if (const auto* cg = root.child_ci("cubeReflGroundScale")) cube_refl_ground_scale = cg->num("value", cube_refl_ground_scale);
+  if (const auto* cm = root.child_ci("Cubemap")) cube_far_distance = cm->num("FarDistance", cube_far_distance);
   if (const auto* b = root.child_ci("bloom")) {
     if (const auto* c = b->child_ci("cutoff")) bloom_cutoff = c->num("value", bloom_cutoff);
     if (const auto* sc = b->child_ci("scale")) bloom_scale = sc->num("value", bloom_scale);
@@ -871,6 +890,8 @@ bool PostZoneSet::load(const std::filesystem::path& world_dir, const std::filesy
                 ft.sun_scatter_color[1] = ch.num("SunScatterColorG", ft.sun_scatter_color[1]);
                 ft.sun_scatter_color[2] = ch.num("SunScatterColorB", ft.sun_scatter_color[2]);
                 ft.sun_scatter_power = ch.num("SunScatterPower", ft.sun_scatter_power);
+                ft.sun_scatter_start_distance = ch.num("SunScatterStartDistance", ft.sun_scatter_start_distance);
+                ft.sun_scatter_rampup_distance = ch.num("SunScatterRampupDistance", ft.sun_scatter_rampup_distance);
                 ft.height_fade_amount = ch.num("HeightFadeAmount", ft.height_fade_amount);
                 ft.height_fade_start = ch.num("HeightFadeStart", ft.height_fade_start);
                 ft.height_fade_end = ch.num("HeightFadeEnd", ft.height_fade_end);
@@ -953,6 +974,9 @@ BloomTemplate PostZoneSet::bloom_for(int zone_index, const TrackPostConfig& defa
 ColorSettingsTemplate PostZoneSet::color_settings_for(int zone_index, const TrackPostConfig& defaults) const {
   ColorSettingsTemplate out;
   out.desat_amount = defaults.desat_amount;
+  out.exposure_bias = defaults.exposure_bias;
+  out.contrast = defaults.contrast;
+  out.brightness = defaults.brightness;
   for (int i = 0; i < 3; ++i) {
     out.desat_luminosity[i] = defaults.desat_luminosity[i];
     out.desat_post_mod[i] = defaults.desat_post_mod[i];
@@ -1030,6 +1054,8 @@ void PostZoneBlender::update(const PostZoneSet& set, const TrackPostConfig& defa
   mixf(fog.density, tf.density);
   mixf(fog.start_distance, tf.start_distance);
   mixf(fog.sun_scatter_power, tf.sun_scatter_power);
+  mixf(fog.sun_scatter_start_distance, tf.sun_scatter_start_distance);
+  mixf(fog.sun_scatter_rampup_distance, tf.sun_scatter_rampup_distance);
   mixf(fog.height_fade_amount, tf.height_fade_amount);
   mixf(fog.height_fade_start, tf.height_fade_start);
   mixf(fog.height_fade_end, tf.height_fade_end);
@@ -1141,13 +1167,18 @@ const TodPreset& TodSystem::active_preset(const TodClock& clock) const {
 }
 
 TodState TodSystem::evaluate(const TodClock& clock) const {
+  TodState s = loaded_tod ? evaluate_tod(active_preset(clock), clock.tod_sec) : TodState{};
   if (!loaded_tod) {
-    TodState s;
     s.tod_sec = float(clock.tod_sec);
     s.tod_min = float(clock.tod_sec / 60.0);
-    return s;
   }
-  return evaluate_tod(active_preset(clock), clock.tod_sec);
+  s.cube_sky_saturation = post_config.cube_sky_saturation;
+  s.cube_refl_ground_scale = post_config.cube_refl_ground_scale;
+  s.cube_far_distance = post_config.cube_far_distance;
+  s.shadow_near = post_config.shadow_near;
+  s.shadow_far = post_config.shadow_far;
+  s.shadow_color = {post_config.shadow_color[0], post_config.shadow_color[1], post_config.shadow_color[2]};
+  return s;
 }
 
 }  // namespace world

@@ -115,6 +115,8 @@ struct TodState {
   float close_top_intensity = 0.5f;
   float close_bottom_power = 2.0f;
   float close_bottom_intensity = 0.05f;
+  float close_back_bottom_power = 1.0f;
+  float close_back_bottom_intensity = 0.0f;
   float close_top_mask_power = 1.0f;
   float close_bottom_mask_power = 1.5f;
   float close_top_alpha = 1.0f;
@@ -125,12 +127,30 @@ struct TodState {
   float close_front_revs = 2.0f;
   float close_back_revs = -1.269f;
 
+  // Dynamic reflection cubemap curves & TrackSettings scaling.
+  std::array<float, 3> cube_atmo_haze_color{0.246f, 0.472f, 0.497f};
+  float cube_atmo_haze_power = 4.0f;
+  float cube_atmo_haze_intensity = 1.0f;
+  float cube_atmo_haze_elliptical = 0.64f;
+  std::array<float, 3> cube_sun_object_color{1.0f, 0.99f, 0.92f};
+  float cube_sun_object_size = 10.0f;
+  float cube_sky_saturation = 0.60f;
+  float cube_refl_ground_scale = 1.0f;
+  float cube_far_distance = 200.0f;
+
+  // Shadow cascade ends & tint forwarded from TrackSettings.xml.
+  float shadow_near = 25.0f;
+  float shadow_far = 202.0f;
+  std::array<float, 3> shadow_color{0.35f, 0.35f, 0.35f};
+
   // Atmospheric distance/height/scatter fog.
   std::array<float, 3> fog_color{0.091f, 0.1374f, 0.1446f};
   float fog_density = 0.03f;
   float fog_start = 975.0f;
   std::array<float, 3> fog_sun_scatter_color{0.223f, 0.223f, 0.223f};
   float fog_sun_scatter_power = 5.0f;
+  float fog_sun_scatter_start = 0.0f;
+  float fog_sun_scatter_rampup = 10000.0f;
   float fog_height_fade_amount = 0.9f;
   float fog_height_fade_start = 200.0f;
   float fog_height_fade_end = 4000.0f;
@@ -198,10 +218,19 @@ struct TrackPostConfig {
   float exposure_min = -2.0f;
   float exposure_max = 6.0f;
 
-  // Colour desaturation and post-tint.
+  // Colour desaturation, post-tint, and track-wide color settings defaults.
   float desat_amount = 0.90f;
   float desat_luminosity[3] = {0.2126f, 0.7152f, 0.0722f};
   float desat_post_mod[3] = {1.04f, 1.02f, 1.00f};
+  float exposure_bias = 0.0f;
+  float contrast = 0.0f;
+  float brightness = 0.0f;
+
+  // Dynamic cubemap TrackSettings parameters (cubeSkySaturation / cubeReflGroundScale / Cubemap).
+  float cube_sky_scale = 0.0f;
+  float cube_sky_saturation = 0.60f;
+  float cube_refl_ground_scale = 1.0f;
+  float cube_far_distance = 200.0f;
 
   // Bloom defaults.
   float bloom_cutoff = 1.0f;
@@ -310,6 +339,8 @@ struct FogTemplate {
   float start_distance = 1.0f;
   float sun_scatter_color[3] = {1.0f, 1.0f, 1.0f};
   float sun_scatter_power = 1.0f;
+  float sun_scatter_start_distance = 0.0f;
+  float sun_scatter_rampup_distance = 10000.0f;
   float height_fade_amount = 1.0f;
   float height_fade_start = 1.0f;
   float height_fade_end = 1.0f;

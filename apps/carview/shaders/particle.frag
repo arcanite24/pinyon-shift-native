@@ -143,6 +143,26 @@ void main() {
   uint flags = uint(v_extra.z + 0.5);
   bool dynamic_light = (flags & 2u) != 0u;
   bool additive = (flags & 4u) != 0u;
+  uint tex2_slot = (flags >> 3u) & 0x1Fu;
+
+  // Decode packed soft-depth thickness and <Gradient> row index from v_extra.x when <Texture2> is bound.
+  float raw_soft = v_extra.x;
+  float soft_m = raw_soft;
+  if (tex2_slot > 0u) {
+    float grad_q = max(floor(raw_soft * 0.25) - 1.0, 0.0);
+    soft_m = fract(raw_soft * 0.25) * 4.0;
+    float grad_v = clamp((grad_q + 0.5) / 16.0, 0.03, 0.97);
+    // Index along the selected horizontal gradient strip using primary texture luminance.
+    float grad_u = clamp(dot(tex.rgb, vec3(0.299, 0.587, 0.114)), 0.02, 0.98);
+    // 10x10 particle atlas (2560x2560, 100 cells of 256x256).
+    const float inv_grid = 1.0 / 10.0;
+    const float pad = 1.5 / 2560.0;
+    vec2 cell2 = vec2(float(tex2_slot % 10u), float(tex2_slot / 10u));
+    vec2 uv2 = cell2 * inv_grid + vec2(pad) + vec2(grad_u, grad_v) * (inv_grid - 2.0 * pad);
+    vec4 tex2 = texture(particle_atlas, uv2);
+    tex.rgb = mix(tex.rgb, tex2.rgb, clamp(tex2.a, 0.65, 1.0));
+  }
+
   float alpha = tex.a * v_color.a;
   if (additive) {
     alpha = max(tex.a, dot(tex.rgb, vec3(0.3333))) * v_color.a;
@@ -156,8 +176,7 @@ void main() {
   }
   if (alpha <= 0.004) discard;
 
-  // Soft-particle depth fade (_soft / _animated_soft).
-  float soft_m = v_extra.x;
+  // Soft-particle depth fade (_soft / _animated_soft / _gradient_soft).
   if (soft_m > 0.01 && push_c.up_dir.w > 0.5) {
     vec2 suv = gl_FragCoord.xy * push_c.viewport_near.xy;
     float sd = texture(scene_depth, suv).r;

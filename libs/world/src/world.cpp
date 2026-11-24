@@ -8,9 +8,11 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <initializer_list>
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <unordered_map>
@@ -64,7 +66,381 @@ constexpr const char* kCacheMagic = "shift-world-index 3";
 // WORLD-MATERIALS, Placeholder models: the art tools' missing-material texture.
 constexpr uint32_t kPlaceholderTextureId = 0x00002CA9u;
 
+bool parse_finite_float(std::string_view sv, float& out) {
+  while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.front()))) sv.remove_prefix(1);
+  while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.back()))) sv.remove_suffix(1);
+  if (sv.empty()) return false;
+  std::string tmp(sv);
+  char* end = nullptr;
+  const float v = std::strtof(tmp.c_str(), &end);
+  if (end == tmp.c_str() || !std::isfinite(v) || std::fabs(v) > 1e5f) return false;
+  out = v;
+  return true;
+}
+
+// Extracts a named attribute from an XML opening tag slice (case-insensitive).
+bool xml_attr_float(std::string_view tag_body, std::string_view attr_name, float& out) {
+  const std::string low_body = lower(std::string(tag_body));
+  const std::string low_attr = lower(std::string(attr_name));
+  size_t pos = 0;
+  while ((pos = low_body.find(low_attr, pos)) != std::string::npos) {
+    const bool start_ok = (pos == 0) || std::isspace(static_cast<unsigned char>(low_body[pos - 1]));
+    size_t after = pos + low_attr.size();
+    while (after < low_body.size() && std::isspace(static_cast<unsigned char>(low_body[after]))) ++after;
+    if (start_ok && after < low_body.size() && low_body[after] == '=') {
+      ++after;
+      while (after < low_body.size() && std::isspace(static_cast<unsigned char>(low_body[after]))) ++after;
+      if (after < tag_body.size() && (tag_body[after] == '"' || tag_body[after] == '\'')) {
+        const char q = tag_body[after++];
+        const size_t end_q = tag_body.find(q, after);
+        if (end_q != std::string_view::npos) {
+          return parse_finite_float(tag_body.substr(after, end_q - after), out);
+        }
+      }
+    }
+    pos += low_attr.size();
+  }
+  return false;
+}
+
+// Finds the opening tag body and optional inner content for the first matching XML element (case-insensitive).
+bool find_xml_element(std::string_view xml, std::string_view elem_name,
+                      std::string_view& out_tag_body, std::string_view& out_inner) {
+  const std::string low_xml = lower(std::string(xml));
+  const std::string needle = "<" + lower(std::string(elem_name));
+  size_t pos = 0;
+  while ((pos = low_xml.find(needle, pos)) != std::string::npos) {
+    const size_t after = pos + needle.size();
+    if (after < low_xml.size() &&
+        (std::isspace(static_cast<unsigned char>(low_xml[after])) ||
+         low_xml[after] == '>' || low_xml[after] == '/')) {
+      const size_t gt = low_xml.find('>', after);
+      if (gt == std::string::npos) return false;
+      const bool self_closing = (gt > pos && low_xml[gt - 1] == '/');
+      const size_t body_end = self_closing ? (gt - 1) : gt;
+      out_tag_body = xml.substr(after, body_end - after);
+      out_inner = {};
+      if (!self_closing) {
+        const std::string close_tag = "</" + lower(std::string(elem_name)) + ">";
+        const size_t close_pos = low_xml.find(close_tag, gt + 1);
+        if (close_pos != std::string::npos) {
+          out_inner = xml.substr(gt + 1, close_pos - (gt + 1));
+        }
+      }
+      return true;
+    }
+    pos = after;
+  }
+  return false;
+}
+
 }  // namespace
+
+bool TrackMaterialSettings::load_xml(const std::string& xml_text) {
+  if (xml_text.empty()) return false;
+  // Strip XML comments so commented-out tags are never parsed.
+  std::string clean;
+  clean.reserve(xml_text.size());
+  for (size_t i = 0; i < xml_text.size();) {
+    if (i + 3 < xml_text.size() && xml_text.compare(i, 4, "<!--") == 0) {
+      const size_t end = xml_text.find("-->", i + 4);
+      if (end == std::string::npos) break;
+      i = end + 3;
+    } else {
+      clean.push_back(xml_text[i++]);
+    }
+  }
+
+  auto try_any_attr = [](std::string_view tag_body, std::initializer_list<const char*> names, float& dst) -> bool {
+    for (const char* n : names) {
+      if (xml_attr_float(tag_body, n, dst)) return true;
+    }
+    return false;
+  };
+  auto try_child_value = [](std::string_view inner, std::initializer_list<const char*> names, float& dst) -> bool {
+    if (inner.empty()) return false;
+    for (const char* n : names) {
+      std::string_view cb, ci;
+      if (find_xml_element(inner, n, cb, ci)) {
+        if (xml_attr_float(cb, "value", dst) || xml_attr_float(cb, "val", dst) || parse_finite_float(ci, dst))
+          return true;
+      }
+    }
+    return false;
+  };
+
+  bool matched_any = false;
+  std::string_view tag_body, inner;
+  if (find_xml_element(clean, "RoadSpecular", tag_body, inner)) {
+    matched_any = true;
+    float v = 0.0f;
+    if (try_any_attr(tag_body, {"RoadSpec", "RoadSpecular", "Specular", "Intensity", "Scale", "value"}, v) ||
+        try_child_value(inner, {"RoadSpec", "RoadSpecular", "Specular", "Intensity", "Scale"}, v)) {
+      road_specular_scale = std::clamp(v, 0.0f, 4.0f);
+    }
+    if (try_any_attr(tag_body, {"RoadGlossiness", "Glossiness", "Power", "Exponent"}, v) ||
+        try_child_value(inner, {"RoadGlossiness", "Glossiness", "Power", "Exponent"}, v)) {
+      road_glossiness = std::clamp(v, 4.0f, 256.0f);
+    }
+    if (try_any_attr(tag_body, {"RoadFresnel", "Fresnel"}, v) ||
+        try_child_value(inner, {"RoadFresnel", "Fresnel"}, v)) {
+      road_fresnel = std::clamp(v, 0.0f, 1.0f);
+    }
+    if (try_any_attr(tag_body, {"RoadSkid", "Skid"}, v) ||
+        try_child_value(inner, {"RoadSkid", "Skid"}, v)) {
+      road_skid_strength = std::clamp(v, 0.0f, 4.0f);
+    }
+    if (try_any_attr(tag_body, {"RoadSkid2", "Skid2"}, v) ||
+        try_child_value(inner, {"RoadSkid2", "Skid2"}, v)) {
+      road_skid2_strength = std::clamp(v, 0.0f, 4.0f);
+    }
+  }
+  if (find_xml_element(clean, "RoadGlossiness", tag_body, inner)) {
+    matched_any = true;
+    float v = 0.0f;
+    if (xml_attr_float(tag_body, "value", v) || parse_finite_float(inner, v)) {
+      road_glossiness = std::clamp(v, 4.0f, 256.0f);
+    }
+  }
+  if (find_xml_element(clean, "TrackLightMapParams", tag_body, inner)) {
+    matched_any = true;
+    float v = 0.0f;
+    if (try_any_attr(tag_body, {"Scale", "Intensity", "Gain", "Multiplier", "NightScale", "LightMapScale", "value"}, v) ||
+        try_child_value(inner, {"Scale", "Intensity", "Gain", "Multiplier", "NightScale", "LightMapScale"}, v)) {
+      lightmap_scale = std::clamp(v, 0.0f, 6.0f);
+    }
+    if (try_any_attr(tag_body, {"Bias", "Offset", "Ambient"}, v) ||
+        try_child_value(inner, {"Bias", "Offset", "Ambient"}, v)) {
+      lightmap_bias = std::clamp(v, 0.0f, 0.5f);
+    }
+    if (try_any_attr(tag_body, {"AOFloor", "MinAO", "Min", "DarkFloor"}, v) ||
+        try_child_value(inner, {"AOFloor", "MinAO", "Min", "DarkFloor"}, v)) {
+      lightmap_ao_floor = std::clamp(v, 0.0f, 0.5f);
+    }
+  }
+  loaded = matched_any;
+  return matched_any;
+}
+
+bool TrackMaterialSettings::load_file(const fs::path& path) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) return false;
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  return load_xml(ss.str());
+}
+
+ResolvedMaterialSlots resolve_effect_material(
+    const std::string& effect,
+    const std::array<uint32_t, 8>& slot_records,
+    const std::array<uint32_t, 8>& file_slot_records,
+    const std::vector<std::array<float, 4>>& pixel_constants,
+    const TrackMaterialSettings& track_settings,
+    uint32_t albedo_tex_id) {
+  ResolvedMaterialSlots out;
+  MeshMaterial& mm = out.material;
+  mm.effect = effect;
+  mm.blend = effect_blend(effect);
+  mm.albedo = slot_records[0];
+
+  auto constant = [&](size_t i) -> std::array<float, 4> {
+    return i < pixel_constants.size() ? pixel_constants[i] : std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f};
+  };
+  auto starts = [&](const char* prefix) { return mm.effect.rfind(prefix, 0) == 0; };
+  auto has_tok = [&](const char* tok) { return mm.effect.find(tok) != std::string::npos; };
+
+  if (is_water_effect(mm.effect)) {
+    mm.albedo = kNoTexture;  // slot 0 on LAKE_* is a cube map, not a 2D diffuse
+    mm.is_water = 1;
+    mm.normal_map = file_slot_records[1];  // NormalMap A (only when file-backed)
+    mm.layer_b = file_slot_records[2];     // NormalMap B / foam map (only when file-backed)
+  }
+  if (has_tok("ANIM_FLAG") || has_tok("FLAG")) {
+    mm.anim_flag = 1;
+  }
+  constexpr uint32_t kGrassTextureId = 0x00005007u;
+  if ((mm.albedo != kNoTexture && albedo_tex_id == kGrassTextureId) || has_tok("GRASS")) {
+    mm.is_grass = 1;
+  }
+
+  const bool vblend = starts("H_VBLND");
+  const bool decal = starts("H_VBLND_DECAL");
+  const bool blnd3 = starts("H_BLND3");
+  const bool splat = starts("H_BLND2") || blnd3;
+  const bool road = starts("H_ROAD");
+  const bool prop_diff = starts("H_DIFF");
+  const bool has_norm = has_tok("_NORM");
+  const bool has_ao = has_tok("_AO");
+  const bool has_lm = mm.effect.ends_with("_LM");
+  const bool has_emis = has_tok("EMIS");
+  const bool has_spec = has_tok("_SPEC");
+  const bool has_noise = has_tok("_NOISE");
+  const bool has_modulate = has_tok("_MODULATE");
+  const bool has_mask = has_tok("_MASK");
+
+  if (vblend) out.weight_gain = constant(4)[0];
+  if ((vblend && !decal) || splat || starts("H_BLND1")) mm.tiling = constant(0);
+
+  if (road) {
+    mm.is_road = kRoadSurface;
+    if (!pixel_constants.empty()) {
+      auto c0 = constant(0);
+      for (float& v : c0)
+        if (std::fabs(v) < 1e-4f || !std::isfinite(v)) v = 1.0f;
+      mm.tiling = c0;
+    }
+    const bool road_diff3 = has_tok("DIFF3");
+    const bool road_diff2 = has_tok("DIFF2");
+    if (road_diff2 || road_diff3) {
+      const uint32_t lb = file_slot_records[1];
+      if (lb != kNoTexture) {
+        mm.layers = Layers::kVertexBlend;
+        mm.layer_b = lb;
+        if (road_diff3) {
+          const uint32_t lc = file_slot_records[5];
+          if (lc != kNoTexture) {
+            mm.layer_c = lc;
+            const auto c1 = constant(1);
+            const float cx = (std::fabs(c1[0]) > 1e-4f && std::isfinite(c1[0])) ? c1[0] : mm.tiling[2];
+            const float cy = (std::fabs(c1[1]) > 1e-4f && std::isfinite(c1[1])) ? c1[1] : mm.tiling[3];
+            mm.tiling_c = {cx, cy};
+          }
+        }
+      }
+    }
+    // H_ROAD Noise (slot 2) provides macro asphalt surface variation & specular breakup.
+    if (has_noise) {
+      const uint32_t noise_tex = file_slot_records[2];
+      if (noise_tex != kNoTexture) {
+        mm.splat = noise_tex;
+        mm.is_road |= kRoadNoise;
+        const auto c1 = constant(1);
+        const float nx = (pixel_constants.size() > 1 && std::fabs(c1[2]) > 1e-4f && std::isfinite(c1[2])) ? c1[2] : 1.0f;
+        const float ny = (pixel_constants.size() > 1 && std::fabs(c1[3]) > 1e-4f && std::isfinite(c1[3])) ? c1[3] : 1.0f;
+        out.splat_uv = 1;
+        out.splat_tiling = {nx, ny};
+      }
+    }
+    // H_ROAD Modulate (slot 6) provides macro wear / lane / shoulder albedo & gloss modulation.
+    if (has_modulate) {
+      const uint32_t mod_tex = file_slot_records[6];
+      if (mod_tex != kNoTexture) {
+        mm.spec_map = mod_tex;
+        mm.is_road |= kRoadModulate;
+        if (out.splat_uv < 0) {
+          out.splat_uv = 1;
+          out.splat_tiling = {1.0f, 1.0f};
+        }
+      }
+    }
+    // Pass TrackSettings.xml RoadSpecular scale & RoadGlossiness into the road shader.
+    mm.decal_noise_c4 = {track_settings.road_specular_scale, track_settings.road_glossiness};
+  }
+
+  if (decal) {
+    mm.layers = Layers::kVertexFade;
+    out.decal_fade = true;
+    // H_VBLND_DECAL*_NOISE*: Noise_Sampler in slot 2, tiled by c1.zw, modulated by c4.xy.
+    if (has_noise) {
+      mm.splat = file_slot_records[2];
+      const auto c1 = constant(1);
+      const float nx = (std::fabs(c1[2]) > 1e-4f && std::isfinite(c1[2])) ? c1[2] : 1.0f;
+      const float ny = (std::fabs(c1[3]) > 1e-4f && std::isfinite(c1[3])) ? c1[3] : 1.0f;
+      mm.tiling = {1.0f, 1.0f, nx, ny};
+      if (pixel_constants.size() > 4) {
+        const auto c4 = constant(4);
+        mm.decal_noise_c4 = {c4[0], std::max(std::fabs(c4[1]), 0.01f)};
+      }
+    } else if (has_mask) {
+      // H_VBLND_DECAL*_MASK*: decal alpha mask texture (slot 2, fallback slot 1),
+      // signaled to world_frag.glsl via negative decal_noise_c4.y.
+      uint32_t mask_tex = file_slot_records[2];
+      if (mask_tex == kNoTexture) mask_tex = file_slot_records[1];
+      if (mask_tex != kNoTexture) {
+        mm.splat = mask_tex;
+        const auto c0 = constant(0);
+        const auto c1 = constant(1);
+        const float ax = (!pixel_constants.empty() && std::fabs(c0[0]) > 1e-4f && std::isfinite(c0[0])) ? c0[0] : 1.0f;
+        const float ay = (!pixel_constants.empty() && std::fabs(c0[1]) > 1e-4f && std::isfinite(c0[1])) ? c0[1] : 1.0f;
+        const float mx = (pixel_constants.size() > 1 && std::fabs(c1[2]) > 1e-4f && std::isfinite(c1[2])) ? c1[2] : 1.0f;
+        const float my = (pixel_constants.size() > 1 && std::fabs(c1[3]) > 1e-4f && std::isfinite(c1[3])) ? c1[3] : 1.0f;
+        mm.tiling = {ax, ay, mx, my};
+        mm.decal_noise_c4 = {1.0f, -1.0f};
+      }
+    }
+  }
+
+  if (vblend && !decal) {
+    mm.layers = Layers::kVertexBlend;
+    mm.layer_b = slot_records[1];
+  } else if (splat) {
+    mm.layers = Layers::kSplat;
+    mm.layer_b = slot_records[1];
+    mm.splat = slot_records[2];
+    out.splat_uv = 1;
+    out.splat_tiling = {constant(1)[2], constant(1)[3]};
+    if (blnd3) {
+      mm.layer_c = file_slot_records[5];
+      mm.tiling_c = {constant(1)[0], constant(1)[1]};
+    }
+  }
+
+  if (has_norm && !mm.is_water) {
+    mm.normal_map = prop_diff ? file_slot_records[1] : file_slot_records[3];
+  }
+
+  // Restore authored AO on all _AO effects including H_VBLND_*_AO* (file_slot_records already
+  // filters out type-1 all-white MIDDIST stubs so hills remain un-darkened while near terrain &
+  // architecture receive full authored AO).
+  if (has_ao) {
+    if (road && has_tok("DIFF3") && has_modulate) {
+      mm.ao_map = file_slot_records[4];
+    } else if (blnd3 || (road && has_tok("DIFF3"))) {
+      // H_BLND3* and H_ROAD_DIFF3* (without MODULATE) put Blend_C in slot 5 and AO in slot 6.
+      mm.ao_map = file_slot_records[6];
+    } else {
+      mm.ao_map = file_slot_records[5];
+    }
+  }
+
+  if (has_lm) {
+    mm.light_map = file_slot_records[7];
+    if (pixel_constants.size() > 3) mm.emissive_force = std::clamp(pixel_constants[3][3], 0.0f, 1.0f);
+    if (!road && !decal && mm.layer_c == kNoTexture) {
+      mm.decal_noise_c4 = {track_settings.lightmap_scale, track_settings.lightmap_ao_floor};
+    }
+  }
+  if (has_emis) {
+    // Staggered dusk/dawn EmissiveMapSampler (slot 3 on prop emissive shaders, SKY_AND_TOD §6.2).
+    // Preserve BOTH Light_Map (slot 7 -> light_map) and EmissiveMapSampler (slot 3 -> layer_c)
+    // on dual _EMIS + _LM building props so night light spill and staggered lit windows both render.
+    const uint32_t em = file_slot_records[3];
+    if (em != kNoTexture) {
+      if (mm.light_map == kNoTexture) {
+        mm.light_map = em;
+        mm.is_emissive_map = kEmissiveOnly;
+      } else if (mm.layer_c == kNoTexture) {
+        mm.layer_c = em;
+        mm.is_emissive_map = kEmissiveDualLm;
+      }
+      if (pixel_constants.size() > 3) mm.emissive_force = std::clamp(pixel_constants[3][3], 0.0f, 1.0f);
+    }
+  }
+
+  // Bind SpecularMap across both prop (H_DIFF_*_SPEC*) and non-prop world materials
+  // (H_VBLND*_SPEC*, H_BLND*_SPEC*, H_ROAD*_SPEC*), never overwriting H_ROAD Modulate or AO.
+  if (has_spec && mm.spec_map == kNoTexture && !mm.is_water) {
+    const bool slot4_is_ao = (road && has_tok("DIFF3") && has_modulate);
+    uint32_t sp = slot4_is_ao ? kNoTexture : file_slot_records[4];
+    if (sp == kNoTexture && starts("H_BLND1") && !has_norm && !has_tok("_REFL")) {
+      const uint32_t cand = file_slot_records[1];
+      if (cand != kNoTexture && cand != mm.ao_map && cand != mm.normal_map) sp = cand;
+    }
+    mm.spec_map = sp;
+  }
+
+  return out;
+}
 
 const char* surface_name(Surface s) {
   switch (s) {
@@ -185,6 +561,7 @@ struct World::Impl {
   fh1::PvsObjectTable table;
   fh1::PropWorld props;
   std::unique_ptr<fh1::PropModels> prop_models;
+  TrackMaterialSettings track_settings;
   bool have_props = false;
 };
 
@@ -194,6 +571,8 @@ World::~World() = default;
 size_t World::placement_count() const { return impl_->have_props ? impl_->props.placements.size() : 0; }
 
 const std::vector<fh1::PvsTexture>& World::textures() const { return impl_->table.textures; }
+
+const TrackMaterialSettings& World::track_settings() const { return impl_->track_settings; }
 
 bool World::read_texture(uint32_t record, fh1::WorldTexture& out, std::string* error) {
   if (record >= impl_->table.textures.size()) {
@@ -376,6 +755,18 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
       *error = "props: " + e;  // not fatal: the caller may go on without props
     }
   }
+  // Track-wide material settings (RoadSpecular / TrackLightMapParams from TrackSettings.xml).
+  impl_->track_settings = {};
+  if (!impl_->track_settings.load_file(colorado / "TrackSettings.xml") && !dlc_zips.empty()) {
+    std::string zwhy;
+    if (auto pkg_zip = fh1::Archive::open(dlc_zips / "1600_pri_65.zip", &zwhy)) {
+      auto r = pkg_zip->read("media/Tracks/ColoradoDirt/TrackSettings.xml");
+      if (r.ok()) {
+        std::string xml(reinterpret_cast<const char*>(r.data.data()), r.data.size());
+        impl_->track_settings.load_xml(xml);
+      }
+    }
+  }
   return true;
 }
 
@@ -474,18 +865,16 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         fh1::RmbVertexLayout layout;
         std::array<float, 4> uv{0, 0, 1, 1};
         int lightmap = -1;
-        int splat_uv = -1;          // kSplat: TEXCOORD1, times splat_tiling
+        int splat_uv = -1;          // kSplat / H_ROAD Noise+Modulate: TEXCOORD1, times splat_tiling
         std::array<float, 2> splat_tiling{1, 1};
         float weight_gain = -1;     // H_VBLND: c4.x of the vertex-colour weight
         bool decal_fade = false;    // H_VBLND_DECAL: the weight is the fade, from COLOR.w
+        bool is_road_mat = false;
         if (options.render_data) {
           if (s.material_index < model.materials.size()) {
             const fh1::RmbMaterial& m = model.materials[s.material_index];
-            MeshMaterial mm;
-            mm.far = far;
-            mm.fade = fade;
-            mm.effect = model.effects[m.effect];
-            mm.blend = effect_blend(mm.effect);
+            const std::string& eff = model.effects[m.effect];
+            if (eff == "UNDERGROUND") continue;
             // A slot's texture record: a file (types 4 and 0) or a bundle
             // entry (types 1 and 3; WORLD-MATERIALS, Small textures).
             auto slot_record = [&](size_t slot) {
@@ -494,19 +883,6 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
               const uint32_t record = (*texture_list)[size_t(v)];
               return record < impl_->table.textures.size() ? record : kNoTexture;
             };
-            mm.albedo = slot_record(0);
-            if (mm.effect == "UNDERGROUND") continue;
-            // WORLD-MATERIALS, Placeholder models: slot 0 on the art tools'
-            // missing-material marker (_0x00002CA9) is never drawn, in any
-            // pass (shadow stand-ins too, interim).
-            if (mm.albedo != kNoTexture && impl_->table.textures[mm.albedo].id == kPlaceholderTextureId) continue;
-            for (size_t k = 0; k < 3; ++k) {
-              const int32_t v = k < m.slots.size() ? m.slots[k] : -2;
-              mm.slot_values[k] = v;
-              if (v >= 0 && texture_list && size_t(v) < texture_list->size() &&
-                  (*texture_list)[size_t(v)] < impl_->table.textures.size())
-                mm.slot_types[k] = int32_t(impl_->table.textures[(*texture_list)[size_t(v)]].type);
-            }
             // Helper: file-backed texture record only (skips all-black Light_Map / all-white AO type-1 stubs).
             auto file_slot = [&](size_t slot) -> uint32_t {
               const uint32_t rec = slot_record(slot);
@@ -514,132 +890,35 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
               const uint8_t ty = impl_->table.textures[rec].type;
               return (ty == fh1::kPvsTextureBix || ty == fh1::kPvsTextureCaff) ? rec : kNoTexture;
             };
-            if (is_water_effect(mm.effect)) {
-              mm.albedo = kNoTexture;  // slot 0 on LAKE_* is a cube map, not a 2D diffuse
-              mm.is_water = 1;
-              mm.normal_map = file_slot(1);  // NormalMap A (only when file-backed)
-              mm.layer_b = file_slot(2);     // NormalMap B / foam map (only when file-backed)
+            std::array<uint32_t, 8> raw_slots{};
+            std::array<uint32_t, 8> file_slots{};
+            for (size_t k = 0; k < 8; ++k) {
+              raw_slots[k] = slot_record(k);
+              file_slots[k] = file_slot(k);
             }
-            if (mm.effect.find("ANIM_FLAG") != std::string::npos || mm.effect.find("FLAG") != std::string::npos) {
-              mm.anim_flag = 1;
+            // WORLD-MATERIALS, Placeholder models: slot 0 on the art tools'
+            // missing-material marker (_0x00002CA9) is never drawn, in any
+            // pass (shadow stand-ins too, interim).
+            if (raw_slots[0] != kNoTexture && impl_->table.textures[raw_slots[0]].id == kPlaceholderTextureId)
+              continue;
+            const uint32_t albedo_id = raw_slots[0] != kNoTexture ? impl_->table.textures[raw_slots[0]].id : 0u;
+            ResolvedMaterialSlots resolved = resolve_effect_material(
+                eff, raw_slots, file_slots, m.pixel_constants, impl_->track_settings, albedo_id);
+            MeshMaterial& mm = resolved.material;
+            mm.far = far;
+            mm.fade = fade;
+            for (size_t k = 0; k < 3; ++k) {
+              const int32_t v = k < m.slots.size() ? m.slots[k] : -2;
+              mm.slot_values[k] = v;
+              if (v >= 0 && texture_list && size_t(v) < texture_list->size() &&
+                  (*texture_list)[size_t(v)] < impl_->table.textures.size())
+                mm.slot_types[k] = int32_t(impl_->table.textures[(*texture_list)[size_t(v)]].type);
             }
-            constexpr uint32_t kGrassTextureId = 0x00005007u;
-            if ((mm.albedo != kNoTexture && impl_->table.textures[mm.albedo].id == kGrassTextureId) ||
-                mm.effect.find("GRASS") != std::string::npos) {
-              mm.is_grass = 1;
-            }
-            // Terrain layers (WORLD-MATERIALS, Terrain shading): pixel
-            // constants 0 and 1 are the tilings, 4's x the vertex weight's
-            // gain; Blend_B in slot 1, Splat in slot 2, Blend_C in slot 5 (H_BLND3).
-            auto constant = [&](size_t i) {
-              return i < m.pixel_constants.size() ? m.pixel_constants[i] : std::array<float, 4>{1, 1, 1, 1};
-            };
-            const bool vblend = mm.effect.rfind("H_VBLND", 0) == 0;
-            const bool decal = mm.effect.rfind("H_VBLND_DECAL", 0) == 0;
-            const bool blnd3 = mm.effect.rfind("H_BLND3", 0) == 0;
-            const bool splat = mm.effect.rfind("H_BLND2", 0) == 0 || blnd3;
-            const bool road = mm.effect.rfind("H_ROAD", 0) == 0;
-            const bool prop_diff = mm.effect.rfind("H_DIFF", 0) == 0;
-            const bool has_norm = mm.effect.find("_NORM") != std::string::npos;
-            const bool has_ao = mm.effect.find("_AO") != std::string::npos;
-            const bool has_lm = mm.effect.ends_with("_LM");
-            const bool has_emis = mm.effect.find("EMIS") != std::string::npos;
-            const bool has_spec = mm.effect.find("_SPEC") != std::string::npos;
-            if (vblend) weight_gain = constant(4)[0];
-            if ((vblend && !decal) || splat || mm.effect.rfind("H_BLND1", 0) == 0) mm.tiling = constant(0);
-            if (road) {
-              mm.is_road = 1;
-              if (!m.pixel_constants.empty()) {
-                auto c0 = constant(0);
-                for (float& v : c0)
-                  if (std::fabs(v) < 1e-4f || !std::isfinite(v)) v = 1.0f;
-                mm.tiling = c0;
-              }
-              const bool road_diff3 = mm.effect.find("DIFF3") != std::string::npos;
-              const bool road_diff2 = mm.effect.find("DIFF2") != std::string::npos;
-              if (road_diff2 || road_diff3) {
-                const uint32_t lb = file_slot(1);
-                if (lb != kNoTexture) {
-                  mm.layers = Layers::kVertexBlend;
-                  mm.layer_b = lb;
-                  if (road_diff3) {
-                    const uint32_t lc = file_slot(5);
-                    if (lc != kNoTexture) {
-                      mm.layer_c = lc;
-                      const auto c1 = constant(1);
-                      const float cx = std::fabs(c1[0]) > 1e-4f ? c1[0] : mm.tiling[2];
-                      const float cy = std::fabs(c1[1]) > 1e-4f ? c1[1] : mm.tiling[3];
-                      mm.tiling_c = {cx, cy};
-                    }
-                  }
-                }
-              }
-            }
-            if (decal) {
-              mm.layers = Layers::kVertexFade;
-              decal_fade = true;
-              // H_VBLND_DECAL*_NOISE* Noise_Sampler is slot 2, tiled by c1.zw, modulated by c4.xy
-              // (WORLD_MATERIALS.md:632-640). Only enable when the effect actually has _NOISE (not _MASK road lines!).
-              if (mm.effect.find("_NOISE") != std::string::npos) {
-                mm.splat = file_slot(2);
-                const auto c1 = constant(1);
-                const float nx = std::fabs(c1[2]) > 1e-4f ? c1[2] : 1.0f;
-                const float ny = std::fabs(c1[3]) > 1e-4f ? c1[3] : 1.0f;
-                mm.tiling = {1.0f, 1.0f, nx, ny};
-                if (m.pixel_constants.size() > 4) {
-                  const auto c4 = constant(4);
-                  mm.decal_noise_c4 = {c4[0], c4[1]};
-                }
-              }
-            }
-            if (vblend && !decal) {
-              mm.layers = Layers::kVertexBlend;
-              mm.layer_b = slot_record(1);
-            } else if (splat) {
-              mm.layers = Layers::kSplat;
-              mm.layer_b = slot_record(1);
-              mm.splat = slot_record(2);
-              splat_uv = 1;
-              splat_tiling = {constant(1)[2], constant(1)[3]};
-              if (blnd3) {
-                mm.layer_c = file_slot(5);
-                mm.tiling_c = {constant(1)[0], constant(1)[1]};
-              }
-            }
-            if (has_norm && !mm.is_water) {
-              mm.normal_map = prop_diff ? file_slot(1) : file_slot(3);
-            }
-            if (has_ao && (road || mm.layers != Layers::kVertexBlend)) {
-              if (road && mm.effect.find("DIFF3") != std::string::npos &&
-                  mm.effect.find("MODULATE") != std::string::npos) {
-                mm.ao_map = file_slot(4);
-              } else if (blnd3 || (road && mm.effect.find("DIFF3") != std::string::npos)) {
-                // Both H_BLND3* and H_ROAD_DIFF3* (without MODULATE) put Blend_C in slot 5 and AO in slot 6
-                // (WORLD_MATERIALS.md:582). Binding slot 5 as AO crushes road verges with dark Blend_C texels!
-                mm.ao_map = file_slot(6);
-              } else {
-                mm.ao_map = file_slot(5);
-              }
-            }
-            if (has_lm) {
-              mm.light_map = file_slot(7);
-              if (m.pixel_constants.size() > 3) mm.emissive_force = std::clamp(m.pixel_constants[3][3], 0.0f, 1.0f);
-            }
-            if (mm.light_map == kNoTexture && has_emis) {
-              // Staggered dusk/dawn EmissiveMapSampler (slot 3 on prop emissive shaders, SKY_AND_TOD §6.2),
-              // including dual _EMIS*_LM effects whose slot 7 Light_Map is empty/stubbed.
-              const uint32_t em = file_slot(3);
-              if (em != kNoTexture) {
-                mm.light_map = em;
-                mm.is_emissive_map = 1;
-                if (m.pixel_constants.size() > 3) mm.emissive_force = std::clamp(m.pixel_constants[3][3], 0.0f, 1.0f);
-              }
-            }
-            if (has_spec && prop_diff) {
-              // Across all 173 FH1 track effects, SpecularMap on H_DIFF_SPEC_* is
-              // always slot 4 (slot 2 on *_REFL_* is the 6-face Cube_Map, e.g. 0x0d9d/0x2a9d).
-              mm.spec_map = file_slot(4);
-            }
+            splat_uv = resolved.splat_uv;
+            splat_tiling = resolved.splat_tiling;
+            weight_gain = resolved.weight_gain;
+            decal_fade = resolved.decal_fade;
+            is_road_mat = (mm.is_road != 0u);
             auto [it, fresh] = material_index.emplace(mm.key(), uint32_t(out.materials.size()));
             if (fresh) out.materials.push_back(mm);
             mat = it->second;
@@ -684,7 +963,8 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           out.uv0.push_back(texcoord(0));
           const auto lm_uv = texcoord(lightmap);
           if (splat_uv >= 0) {
-            const auto s = texcoord(splat_uv);
+            const int tc_idx = (splat_uv == 1 && layout.texcoord[1] >= 0 && (!is_road_mat || lightmap != 1)) ? 1 : 0;
+            const auto s = texcoord(tc_idx);
             out.uv1.push_back({s[0] * splat_tiling[0], s[1] * splat_tiling[1]});
           } else {
             out.uv1.push_back(lm_uv);

@@ -446,12 +446,13 @@ class Renderer {
   VramStats vram_detailed_stats() const;
   VkDeviceSize device_local_bytes() const;
 
- private:
   struct Buffer {
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
     VkDeviceSize size = 0;
   };
+
+ private:
   struct Image {
     VkImage image = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;

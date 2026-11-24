@@ -277,6 +277,13 @@ bool parse_soundscape_xml(std::string_view xml, SoundscapeTile& out, std::string
 bool WorldAcousticsData::load_configs(const std::filesystem::path& game_root, std::string* note) {
   if (game_root.empty()) return false;
   std::error_code ec;
+  const std::string low_root = lower_str(game_root.string());
+  const bool want_rally = rally_world_ || low_root.find("coloradodirt") != std::string::npos ||
+                          low_root.find("1600_pri_65") != std::string::npos;
+  if (want_rally) {
+    if (load_rally_configs(game_root, note)) return true;
+  }
+
   const auto rev_path = cars::mods::resolve(game_root / "media" / "tracks" / "colorado" / "colorado_reverb.xml");
   const auto amb_path = cars::mods::resolve(game_root / "media" / "tracks" / "colorado" / "colorado_ambience.xml");
   const auto rib_path =
@@ -285,7 +292,7 @@ bool WorldAcousticsData::load_configs(const std::filesystem::path& game_root, st
   bool ok = false;
   if (std::filesystem::exists(rev_path, ec)) ok |= parse_reverb_xml(read_text(rev_path), reverb_templates_);
   if (std::filesystem::exists(amb_path, ec)) ok |= parse_ambience_xml(read_text(amb_path), ambience_templates_);
-  if (std::filesystem::exists(rib_path, ec)) {
+  if (!want_rally && std::filesystem::exists(rib_path, ec)) {
     std::vector<AmbientEmitter3D> rib;
     if (parse_ribbon_audio_xml(read_text(rib_path), rib)) {
       emitters_.insert(emitters_.end(), rib.begin(), rib.end());
@@ -309,6 +316,13 @@ bool WorldAcousticsData::load_rally_configs(const std::filesystem::path& rally_r
       rally_root_or_state_root / "Media" / "tracks" / "ColoradoDirt",
       rally_root_or_state_root / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "tracks" / "ColoradoDirt",
   };
+  std::vector<std::filesystem::path> zip_cands;
+  if (lower_str(rally_root_or_state_root.extension().string()) == ".zip" &&
+      std::filesystem::exists(rally_root_or_state_root, ec)) {
+    zip_cands.push_back(rally_root_or_state_root);
+  }
+  zip_cands.push_back(rally_root_or_state_root / "Media" / "DLCZips" / "1600_pri_65.zip");
+  zip_cands.push_back(rally_root_or_state_root / "1600_pri_65.zip");
   auto push_pkg_tracks = [&](const std::filesystem::path& pr) {
     if (!std::filesystem::is_directory(pr, ec)) return;
     for (const auto& pkg : std::filesystem::directory_iterator(pr, ec)) {
@@ -316,8 +330,11 @@ bool WorldAcousticsData::load_rally_configs(const std::filesystem::path& rally_r
       const auto dz = pkg.path() / "Media" / "DLCZips";
       if (!std::filesystem::is_directory(dz, ec)) continue;
       for (const auto& z : std::filesystem::directory_iterator(dz, ec)) {
-        if (!z.is_directory(ec)) continue;
-        track_dirs.push_back(z.path() / "Media" / "tracks" / "ColoradoDirt");
+        if (z.is_directory(ec)) {
+          track_dirs.push_back(z.path() / "Media" / "tracks" / "ColoradoDirt");
+        } else if (z.is_regular_file(ec) && lower_str(z.path().filename().string()) == "1600_pri_65.zip") {
+          zip_cands.push_back(z.path());
+        }
       }
     }
   };
@@ -344,6 +361,36 @@ bool WorldAcousticsData::load_rally_configs(const std::filesystem::path& rally_r
       }
     }
     if (ok) break;
+  }
+  if (!ok) {
+    // Also check Rally DLC archive (`1600_pri_65.zip`) directly when XMLs are not unpacked loose.
+    for (const auto& zp : zip_cands) {
+      if (!std::filesystem::exists(zp, ec)) continue;
+      auto arc = fh1::Archive::open(zp, nullptr);
+      if (!arc) continue;
+      for (const auto& m : arc->members()) {
+        std::string low = lower_str(m.name);
+        for (char& c : low) {
+          if (c == '\\') c = '/';
+        }
+        if (low.ends_with("coloradodirt_reverb.xml")) {
+          const auto rd = arc->read(m);
+          std::vector<ReverbTemplate> rt;
+          if (rd.ok() && parse_reverb_xml(std::string_view(reinterpret_cast<const char*>(rd.data.data()), rd.data.size()), rt)) {
+            reverb_templates_ = std::move(rt);
+            ok = true;
+          }
+        } else if (low.ends_with("coloradodirt_ambience.xml")) {
+          const auto rd = arc->read(m);
+          std::vector<AmbienceTemplate> at;
+          if (rd.ok() && parse_ambience_xml(std::string_view(reinterpret_cast<const char*>(rd.data.data()), rd.data.size()), at)) {
+            ambience_templates_ = std::move(at);
+            ok = true;
+          }
+        }
+      }
+      if (ok) break;
+    }
   }
   if (ok) rally_world_ = true;
   if (note) {

@@ -249,6 +249,125 @@ int main() {
     CHECK(!world::skipped_object("Terrain_Road_LOD00"));
   }
 
+  // 5b2. Clean-room Round 2 world material resolution & TrackSettings road/lightmap parsing:
+  // - H_VBLND_*_AO* authored AO preservation (file-backed AO kept, type-1 stubs filtered out)
+  // - Dual _EMIS + _LM building prop binding (both Light_Map slot 7 and EmissiveMap slot 3 preserved)
+  // - H_ROAD Noise (slot 2) & Modulate (slot 6) slot assignment + RoadSpecular / TrackLightMapParams
+  // - Non-prop SpecMap binding & H_VBLND_DECAL*_MASK* decal masking
+  {
+    const std::string track_xml = R"(
+      <TrackSettings>
+        <RoadSpecular RoadSpec="0.95" RoadGlossiness="56.0" RoadFresnel="0.34" RoadSkid="0.72" RoadSkid2="0.48"/>
+        <TrackLightMapParams Scale="1.65" Bias="0.03" AOFloor="0.08"/>
+      </TrackSettings>
+    )";
+    world::TrackMaterialSettings tms;
+    CHECK(tms.load_xml(track_xml));
+    CHECK(tms.loaded);
+    CHECK(std::fabs(tms.road_specular_scale - 0.95f) < 1e-4f);
+    CHECK(std::fabs(tms.road_glossiness - 56.0f) < 1e-4f);
+    CHECK(std::fabs(tms.road_fresnel - 0.34f) < 1e-4f);
+    CHECK(std::fabs(tms.road_skid_strength - 0.72f) < 1e-4f);
+    CHECK(std::fabs(tms.road_skid2_strength - 0.48f) < 1e-4f);
+    CHECK(std::fabs(tms.lightmap_scale - 1.65f) < 1e-4f);
+    CHECK(std::fabs(tms.lightmap_bias - 0.03f) < 1e-4f);
+    CHECK(std::fabs(tms.lightmap_ao_floor - 0.08f) < 1e-4f);
+
+    const uint32_t N = world::kNoTexture;
+    // (a) H_VBLND_*_AO* authored AO preservation: file-backed slot 5 AO must NOT be stripped.
+    {
+      const std::array<uint32_t, 8> raw{100u, 101u, N, 103u, N, 105u, N, 107u};
+      const std::array<uint32_t, 8> file{100u, 101u, N, 103u, N, 105u, N, 107u};
+      const std::vector<std::array<float, 4>> pc{{2.0f, 2.0f, 3.0f, 3.0f}};
+      const auto r = world::resolve_effect_material("H_VBLND_NORM_AO_LM", raw, file, pc, tms);
+      CHECK(r.material.layers == world::Layers::kVertexBlend);
+      CHECK(r.material.albedo == 100u);
+      CHECK(r.material.layer_b == 101u);
+      CHECK(r.material.normal_map == 103u);
+      CHECK(r.material.ao_map == 105u);
+      CHECK(r.material.light_map == 107u);
+      CHECK(std::fabs(r.material.decal_noise_c4[0] - 1.65f) < 1e-4f);
+      CHECK(std::fabs(r.material.decal_noise_c4[1] - 0.08f) < 1e-4f);
+
+      // Type-1 stub in slot 5 (present in raw, kNoTexture in file) must stay kNoTexture (MIDDIST hills).
+      const std::array<uint32_t, 8> stub_file{100u, 101u, N, 103u, N, N, N, N};
+      const auto r_stub = world::resolve_effect_material("H_VBLND_NORM_AO_LM", raw, stub_file, pc, tms);
+      CHECK(r_stub.material.ao_map == N);
+    }
+
+    // (b) Dual _EMIS + _LM building prop: preserve BOTH slot 7 Light_Map AND slot 3 EmissiveMapSampler.
+    {
+      const std::array<uint32_t, 8> slots{200u, 201u, N, 203u, 204u, 205u, N, 207u};
+      const std::vector<std::array<float, 4>> pc{{1, 1, 1, 1}, {1, 1, 1, 1}, {1, 1, 1, 1}, {0, 0, 0, 0.25f}};
+      const auto r = world::resolve_effect_material("H_DIFF_NORM_SPEC_EMIS_AO_LM", slots, slots, pc, tms);
+      CHECK(r.material.albedo == 200u);
+      CHECK(r.material.normal_map == 201u);
+      CHECK(r.material.spec_map == 204u);
+      CHECK(r.material.ao_map == 205u);
+      CHECK(r.material.light_map == 207u);
+      CHECK(r.material.layer_c == 203u);
+      CHECK(r.material.is_emissive_map == world::kEmissiveDualLm);
+      CHECK(std::fabs(r.material.emissive_force - 0.25f) < 1e-4f);
+
+      // When slot 7 Light_Map is stubbed/empty, _EMIS falls back to kEmissiveOnly in light_map.
+      const std::array<uint32_t, 8> no_lm{200u, 201u, N, 203u, 204u, 205u, N, N};
+      const auto r_em = world::resolve_effect_material("H_DIFF_NORM_SPEC_EMIS_AO_LM", slots, no_lm, pc, tms);
+      CHECK(r_em.material.light_map == 203u);
+      CHECK(r_em.material.layer_c == N);
+      CHECK(r_em.material.is_emissive_map == world::kEmissiveOnly);
+    }
+
+    // (c) H_ROAD Noise (slot 2) & Modulate (slot 6) + AO slot 4/6 + RoadSpecular propagation.
+    {
+      const std::array<uint32_t, 8> slots{300u, 301u, 302u, 303u, 304u, 305u, 306u, 307u};
+      const std::vector<std::array<float, 4>> pc{{4.0f, 4.0f, 2.0f, 2.0f}, {3.0f, 3.0f, 0.5f, 0.25f}};
+      const auto r = world::resolve_effect_material("H_ROAD_DIFF3_NORM1_NOISE_MODULATE_AO_LM", slots, slots, pc, tms);
+      CHECK((r.material.is_road & world::kRoadSurface) != 0u);
+      CHECK((r.material.is_road & world::kRoadNoise) != 0u);
+      CHECK((r.material.is_road & world::kRoadModulate) != 0u);
+      CHECK(r.material.albedo == 300u);
+      CHECK(r.material.layer_b == 301u);
+      CHECK(r.material.splat == 302u);      // slot 2 Noise
+      CHECK(r.material.normal_map == 303u); // slot 3 NormalMap
+      CHECK(r.material.ao_map == 304u);     // slot 4 AO (when DIFF3 + MODULATE)
+      CHECK(r.material.layer_c == 305u);    // slot 5 Blend_C
+      CHECK(r.material.spec_map == 306u);   // slot 6 Modulate
+      CHECK(r.material.light_map == 307u);  // slot 7 Light_Map
+      CHECK(r.splat_uv == 1);
+      CHECK(std::fabs(r.splat_tiling[0] - 0.5f) < 1e-4f && std::fabs(r.splat_tiling[1] - 0.25f) < 1e-4f);
+      CHECK(std::fabs(r.material.decal_noise_c4[0] - 0.95f) < 1e-4f);
+      CHECK(std::fabs(r.material.decal_noise_c4[1] - 56.0f) < 1e-4f);
+
+      // H_ROAD_DIFF3 without MODULATE places AO in slot 6 and does not set kRoadModulate.
+      const auto r_nomod = world::resolve_effect_material("H_ROAD_DIFF3_NORM1_NOISE_AO_LM", slots, slots, pc, tms);
+      CHECK((r_nomod.material.is_road & world::kRoadNoise) != 0u);
+      CHECK((r_nomod.material.is_road & world::kRoadModulate) == 0u);
+      CHECK(r_nomod.material.splat == 302u);
+      CHECK(r_nomod.material.ao_map == 306u);
+      CHECK(r_nomod.material.spec_map == N);
+    }
+
+    // (d) Non-prop SpecMap binding & H_VBLND_DECAL*_MASK* decal masking.
+    {
+      const std::array<uint32_t, 8> slots{400u, 401u, N, 403u, 404u, 405u, N, 407u};
+      const auto r_spec = world::resolve_effect_material("H_VBLND_NORM_SPEC_AO_LM", slots, slots, {}, tms);
+      CHECK(r_spec.material.spec_map == 404u);
+      CHECK(r_spec.material.ao_map == 405u);
+
+      const std::array<uint32_t, 8> mask_slots{500u, N, 502u, 503u, N, N, N, N};
+      const auto r_mask = world::resolve_effect_material("H_VBLND_DECAL_NORM_MASK", mask_slots, mask_slots, {}, tms);
+      CHECK(r_mask.material.layers == world::Layers::kVertexFade);
+      CHECK(r_mask.material.splat == 502u);
+      CHECK(r_mask.material.decal_noise_c4[1] < 0.0f);  // negative sentinel selects _MASK mode in world_frag.glsl
+
+      const std::array<uint32_t, 8> noise_slots{510u, N, 512u, N, N, N, N, N};
+      const std::vector<std::array<float, 4>> npc{{1, 1, 1, 1}, {1, 1, 2, 2}, {1, 1, 1, 1}, {1, 1, 1, 1}, {3.5f, 8.0f, 0, 0}};
+      const auto r_noise = world::resolve_effect_material("H_VBLND_DECAL_NOISE", noise_slots, noise_slots, npc, tms);
+      CHECK(r_noise.material.splat == 512u);
+      CHECK(r_noise.material.decal_noise_c4[1] > 0.0f);
+    }
+  }
+
   // 5c. Spectators.zip `.skinbin` big-endian parser (valid mesh + outward winding + truncated rejection).
   {
     auto push_be16 = [](std::vector<uint8_t>& buf, uint16_t v) {

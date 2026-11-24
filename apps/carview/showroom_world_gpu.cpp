@@ -845,13 +845,18 @@ bool Showroom::build_gpu_table(std::string& error) {
         flags &= ~16384u;
         ++gpu_table_layer_fallback_;
       }
-      if ((flags & (2048u | 8388608u)) != 0u && (d.light_map == kNoWorldTexture || !has_lmap)) {
+      const bool dual_em_lm = (flags & 2048u) != 0u && (flags & 8388608u) != 0u;
+      if (dual_em_lm) {
+        if (d.light_map == kNoWorldTexture || !has_lmap) flags &= ~2048u;
+        if (d.layer_c == kNoWorldTexture || !has_layc) flags &= ~8388608u;
+      } else if ((flags & (2048u | 8388608u)) != 0u && (d.light_map == kNoWorldTexture || !has_lmap)) {
         flags &= ~(2048u | 8388608u);
       }
       if (d.normal_map == kNoWorldTexture || !has_nmap) flags &= ~4096u;
       if (d.ao_map == kNoWorldTexture || !has_ao) flags &= ~8192u;
       if ((flags & 2097152u) != 0u && (d.splat == kNoWorldTexture || !has_splat)) flags &= ~2097152u;
       if ((flags & 32768u) != 0u && (d.texture_b == kNoWorldTexture || !has_texb)) flags &= ~4194304u;
+      if ((flags & 1048576u) != 0u && (d.spec_map == kNoWorldTexture || !has_spec)) flags &= ~4194304u;
       if (d.spec_map == kNoWorldTexture || !has_spec) flags &= ~524288u;
     }
     if (d.blend == 1 && single_sample) flags |= 64u;  // cut-outs without MSAA: world.frag's alpha test
@@ -862,7 +867,13 @@ bool Showroom::build_gpu_table(std::string& error) {
     row.tex0[0] = (d.texture != kNoWorldTexture && has_tex0) ? s_tex0 : WorldGpu::kDefaultWhite;
     row.tex0[1] = (d.texture_b != kNoWorldTexture && has_texb) ? s_texb : WorldGpu::kDefaultWhite;
     row.tex0[2] = (d.splat != kNoWorldTexture && has_splat) ? s_splat : WorldGpu::kDefaultWhite;
-    row.tex0[3] = (d.light_map != kNoWorldTexture && has_lmap) ? s_lmap : WorldGpu::kDefaultBlack;
+    // If a dual _EMIS+_LM draw lost its Light_Map (2048u cleared) while keeping EmissiveMap (8388608u in layer_c),
+    // route s_layc into tex0[3] so the shader's emissive-only path samples the window mask.
+    const bool dual_em_fallback = (d.light_map == kNoWorldTexture || !has_lmap) &&
+                                  (flags & 8388608u) != 0u && (flags & 2048u) == 0u &&
+                                  d.layer_c != kNoWorldTexture && has_layc;
+    row.tex0[3] = dual_em_fallback ? s_layc
+                                   : ((d.light_map != kNoWorldTexture && has_lmap) ? s_lmap : WorldGpu::kDefaultBlack);
     row.tex1[0] = (d.normal_map != kNoWorldTexture && has_nmap) ? s_nmap : WorldGpu::kDefaultFlatNormal;
     row.tex1[1] = (d.ao_map != kNoWorldTexture && has_ao) ? s_ao : WorldGpu::kDefaultWhite;
     row.tex1[2] = (d.layer_c != kNoWorldTexture && has_layc) ? s_layc : WorldGpu::kDefaultWhite;
@@ -897,7 +908,8 @@ bool Showroom::build_gpu_table(std::string& error) {
         if (present && rows.size() < WorldGpu::kMaxTableRows) {
           it->second = {uint32_t(rows.size()), tslot, true};
           gpuworld::DrawGpu row{};
-          uint32_t fl = 1u | 32u;
+          // Enable kFlagLodFar (256u) so GPU tree billboards smoothly cross-fade via v_fade in world_tree_gpu.vert.
+          uint32_t fl = 1u | 32u | 256u;
           if (single_sample) fl |= 64u;
           row.tint[0] = row.tint[1] = row.tint[2] = row.tint[3] = 1.0f;
           row.params[0] = 1.0f;  // coverage

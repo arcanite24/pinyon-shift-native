@@ -958,11 +958,18 @@ void DriveApp::reload_world_assets(bool init_anim) {
     }
   }
   if (!groot.empty()) {
-    if (init_anim && world_anim.init(groot / "media", tod_system.post_config, &anim_err)) {
-      const auto& cat = world_anim.catalog();
-      std::printf("world_anim: %zu spectator models (%d angles), %zu crowdclasses, %zu animated pgeo / %zu xds\n",
-                  cat.models.size(), cat.num_sprite_angles, cat.crowdclasses.size(), cat.animated_pgeos,
-                  cat.animated_xds);
+    if (init_anim) {
+      if (world_anim.init(groot / "media", tod_system.post_config, &anim_err, world_dir)) {
+        const auto& cat = world_anim.catalog();
+        std::printf(
+            "world_anim: %zu spectator models (%d angles, %zu sit), %zu anim clips, %zu crowdclasses, "
+            "%zu animated pgeo (%zu decoded) / %zu xds\n",
+            cat.models.size(), cat.num_sprite_angles, cat.sit_assets.size(), cat.anim_clips.size(),
+            cat.crowdclasses.size(), cat.animated_pgeos, cat.pgeo_objects.size(), cat.animated_xds);
+      }
+      world::AnimatedWorldSystem::set_shared(&world_anim);
+    } else {
+      world_anim.set_world(groot / "media", world_dir, tod_system.post_config);
     }
     if (fut_vfx.valid() && fut_vfx.get()) {
       std::printf("vfx: %zu effects, %zu xds textures, %zu world emitters, %zu smashable effects\n",

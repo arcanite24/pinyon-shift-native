@@ -103,7 +103,9 @@ vec3 encode_srgb(vec3 c) {
 
 void main() {
   vec4 tex = texture(skid_tex, v_uv);
-  float alpha = tex.a * v_color.a;
+  // Feather lateral ribbon edges so retail treadmark.xds strips blend seamlessly into road/gravel.
+  float edge_feather = smoothstep(0.0, 0.08, v_uv.x) * smoothstep(1.0, 0.92, v_uv.x);
+  float alpha = tex.a * v_color.a * edge_feather;
   if (alpha <= 0.005) discard;
 
   vec3 n = normalize(v_normal);
@@ -118,10 +120,13 @@ void main() {
   float sh = mix(1.0, skid_shadow(v_world_pos, n), shadow_scale);
   vec3 lit = sun_col * (ndl * sh) + mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * 1.15;
 
-  // Base tint: dark rubber on asphalt (TextureIndex 0), dusty brown/ochre rut on dirt/gravel (TextureIndex 1).
+  // Retail treadmark.xds modulation: dark rubber tread on asphalt (TextureIndex 0),
+  // warm dusty ochre/gravel rut on dirt/grass/gravel (TextureIndex 1).
   bool is_rut = push_c.up_dir.w > 0.5;
-  vec3 base = is_rut ? (tex.rgb * mix(vec3(0.50, 0.39, 0.29), v_color.rgb * vec3(0.62, 0.52, 0.40), 0.5))
-                     : (tex.rgb * max(v_color.rgb, vec3(0.025, 0.025, 0.028)));
+  float tread_luma = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
+  vec3 asphalt_tint = mix(vec3(0.025, 0.025, 0.028), v_color.rgb, 0.85);
+  vec3 base = is_rut ? (tex.rgb * mix(vec3(0.48, 0.37, 0.27), v_color.rgb * vec3(0.62, 0.52, 0.40), 0.5))
+                     : (asphalt_tint * mix(vec3(0.45), max(tex.rgb, vec3(tread_luma * 0.55)), 0.85));
   vec3 col = base * lit * push_c.sun_dir.w;
 
   // Headlight illumination on skids/ruts at night.

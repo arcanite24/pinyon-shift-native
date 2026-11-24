@@ -22,6 +22,68 @@ std::string to_lower(std::string_view s) {
   return out;
 }
 
+std::string normalize_xds_name(std::string_view raw) {
+  std::string s = to_lower(raw);
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+  if (s.empty()) return {};
+  for (const std::string_view ext : {".xds", ".tga", ".dds"}) {
+    if (s.size() > ext.size() && s.compare(s.size() - ext.size(), ext.size(), ext) == 0) {
+      s.resize(s.size() - ext.size());
+      break;
+    }
+  }
+  s += ".xds";
+  return s;
+}
+
+bool is_rally_world_dir(const std::filesystem::path& world_dir) {
+  if (world_dir.empty()) return false;
+  const std::string low = to_lower(world_dir.string());
+  return low.find("coloradodirt") != std::string::npos || low.find("1600_pri_65") != std::string::npos;
+}
+
+std::string read_archive_ribbon_xml(const std::filesystem::path& world_dir, std::string_view world_key_low,
+                                    std::string_view filename_low) {
+  std::error_code ec;
+  std::vector<std::filesystem::path> zip_cands;
+  if (to_lower(world_dir.extension().string()) == ".zip" && std::filesystem::exists(world_dir, ec)) {
+    zip_cands.push_back(world_dir);
+  }
+  std::filesystem::path cur = world_dir;
+  for (int depth = 0; depth < 6 && !cur.empty(); ++depth) {
+    if (cur.has_filename() && cur.has_parent_path()) {
+      const auto sib = cur.parent_path() / (cur.filename().string() + ".zip");
+      if (std::filesystem::exists(sib, ec)) zip_cands.push_back(sib);
+    }
+    const auto z1600 = cur / "1600_pri_65.zip";
+    if (std::filesystem::exists(z1600, ec)) zip_cands.push_back(z1600);
+    const auto dlcz = cur / "Media" / "DLCZips" / "1600_pri_65.zip";
+    if (std::filesystem::exists(dlcz, ec)) zip_cands.push_back(dlcz);
+    const auto par = cur.parent_path();
+    if (par == cur) break;
+    cur = par;
+  }
+  const std::string suffix = std::string(world_key_low) + "/ribbon_00/" + std::string(filename_low);
+  for (const auto& zp : zip_cands) {
+    auto ar = fh1::Archive::open(zp, nullptr);
+    if (!ar) continue;
+    for (const auto& m : ar->members()) {
+      std::string low = to_lower(m.name);
+      for (char& c : low) {
+        if (c == '\\') c = '/';
+      }
+      if (low.size() >= suffix.size() && low.compare(low.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        const auto rd = ar->read(m);
+        if (rd.ok() && !rd.data.empty()) {
+          return std::string(reinterpret_cast<const char*>(rd.data.data()), rd.data.size());
+        }
+      }
+    }
+  }
+  return {};
+}
+
 std::string read_text_file(const std::filesystem::path& path) {
   std::ifstream f(path, std::ios::binary);
   if (!f) return {};
@@ -162,6 +224,11 @@ bool parse_particle_effect_xml(std::string_view xml, const std::string& name, Pa
         else if (st == "_animated_soft") out.shader_kind = ParticleShaderKind::kAnimatedSoft;
         else if (st == "_animated_rowonly") out.shader_kind = ParticleShaderKind::kAnimatedRowOnly;
         else if (st == "_animated_rowonly_gradient") out.shader_kind = ParticleShaderKind::kAnimatedRowOnlyGradient;
+        else if (st == "_gradient") out.shader_kind = ParticleShaderKind::kGradient;
+        else if (st == "_gradient_soft") out.shader_kind = ParticleShaderKind::kGradientSoft;
+        else if (st == "_animated") out.shader_kind = ParticleShaderKind::kAnimated;
+        else if (st == "_animated_gradient") out.shader_kind = ParticleShaderKind::kAnimatedGradient;
+        else if (st == "_animated_rowonly_soft") out.shader_kind = ParticleShaderKind::kAnimatedRowOnlySoft;
         else out.shader_kind = ParticleShaderKind::kDefault;
       }
     }
@@ -171,6 +238,10 @@ bool parse_particle_effect_xml(std::string_view xml, const std::string& name, Pa
       read_attr_i(t, "numFramesY", out.num_frames_y);
       out.num_frames_x = std::max(1, out.num_frames_x);
       out.num_frames_y = std::max(1, out.num_frames_y);
+    }
+    if (auto t = find_in("Gradient", ep, ep_end); !t.empty()) {
+      read_attr_i(t, "numGradientRows", out.num_gradient_rows);
+      out.num_gradient_rows = std::max(1, out.num_gradient_rows);
     }
     if (auto t = find_in("RenderInMirror", ep, ep_end); !t.empty()) {
       int rm = 1;
@@ -254,7 +325,11 @@ bool parse_particle_effect_xml(std::string_view xml, const std::string& name, Pa
     }
     if (auto t = find_in("Texture", rn, rn_end); !t.empty()) {
       std::string tex;
-      if (read_attr(t, "value", tex)) out.texture_name = to_lower(tex);
+      if (read_attr(t, "value", tex)) out.texture_name = normalize_xds_name(tex);
+    }
+    if (auto t = find_in("Texture2", rn, rn_end); !t.empty()) {
+      std::string tex2;
+      if (read_attr(t, "value", tex2)) out.texture2_name = normalize_xds_name(tex2);
     }
     if (auto t = find_in("BlendType", rn, rn_end); !t.empty()) {
       std::string bt;
@@ -414,6 +489,7 @@ bool ParticleLibrary::load(const std::filesystem::path& media_dir, const std::fi
   smashable_effects_.clear();
   world_emitters_.clear();
   backfire_config_ = BackfireTimerConfig{};
+  rally_world_ = is_rally_world_dir(world_dir);
 
   const auto zip_path = media_dir / "effects.zip";
   if (std::filesystem::exists(zip_path)) {
@@ -443,14 +519,35 @@ bool ParticleLibrary::load(const std::filesystem::path& media_dir, const std::fi
     }
   }
 
-  if (!world_dir.empty()) {
-    const auto se_path = world_dir / "Ribbon_00" / "SmashableEffects.xml";
-    if (std::filesystem::exists(se_path)) {
-      parse_smashable_effects_xml(read_text_file(se_path), smashable_effects_);
+  auto load_ribbon_xml = [&](const char* filename, const char* filename_low) -> std::string {
+    std::error_code ec;
+    if (!world_dir.empty()) {
+      const auto loose = world_dir / "Ribbon_00" / filename;
+      if (std::filesystem::exists(loose, ec)) {
+        std::string txt = read_text_file(loose);
+        if (!txt.empty()) return txt;
+      }
+      if (rally_world_) {
+        std::string arc_txt = read_archive_ribbon_xml(world_dir, "coloradodirt", filename_low);
+        if (!arc_txt.empty()) return arc_txt;
+      }
     }
-    const auto pe_path = world_dir / "Ribbon_00" / "ParticleEmitters.xml";
-    if (std::filesystem::exists(pe_path)) {
-      parse_particle_emitters_xml(read_text_file(pe_path), world_emitters_);
+    // Fallback to base Colorado XMLs only when the active world / Rally archive lacks them.
+    if (!media_dir.empty()) {
+      const auto fb = media_dir / "tracks" / "colorado" / "Ribbon_00" / filename;
+      if (std::filesystem::exists(fb, ec)) return read_text_file(fb);
+    }
+    return {};
+  };
+
+  if (!world_dir.empty()) {
+    const std::string se_xml = load_ribbon_xml("SmashableEffects.xml", "smashableeffects.xml");
+    if (!se_xml.empty()) {
+      parse_smashable_effects_xml(se_xml, smashable_effects_);
+    }
+    const std::string pe_xml = load_ribbon_xml("ParticleEmitters.xml", "particleemitters.xml");
+    if (!pe_xml.empty()) {
+      parse_particle_emitters_xml(pe_xml, world_emitters_);
     }
   }
 
@@ -459,6 +556,14 @@ bool ParticleLibrary::load(const std::filesystem::path& media_dir, const std::fi
     parse_backfire_timer_config_xml(read_text_file(bf_path), backfire_config_);
   }
   return !effects_.empty();
+}
+
+std::vector<std::string> ParticleLibrary::xds_names() const {
+  std::vector<std::string> names;
+  names.reserve(xds_members_.size());
+  for (const auto& [k, _] : xds_members_) names.push_back(k);
+  std::sort(names.begin(), names.end());
+  return names;
 }
 
 const ParticleEffectDef* ParticleLibrary::find_effect(std::string_view name) const {
@@ -473,7 +578,7 @@ std::string ParticleLibrary::smashable_effect_for(std::string_view stem) const {
 
 bool ParticleLibrary::decode_texture(std::string_view filename, fh1::RgbaImage& out) const {
   if (!effects_zip_) return false;
-  const std::string key = to_lower(filename);
+  const std::string key = normalize_xds_name(filename);
   auto it = xds_members_.find(key);
   if (it == xds_members_.end()) return false;
   const auto res = effects_zip_->read(it->second);
@@ -546,6 +651,7 @@ void ParticleSystem::spawn_one(const ParticleEffectDef& def, const std::array<fl
   LiveParticle p;
   p.def = &def;
   p.tex_slot = resolve_texture_slot(def.texture_name);
+  p.tex2_slot = resolve_texture_slot(def.texture2_name);
   p.child_depth = child_depth;
   p.pos = pos;
   p.age = 0.0f;
@@ -586,6 +692,9 @@ void ParticleSystem::spawn_one(const ParticleEffectDef& def, const std::array<fl
   p.alpha_scale = std::clamp(intensity_scale, 0.1f, 2.0f);
   if (def.num_frames_y > 1) {
     p.anim_row = int(rand01() * float(def.num_frames_y)) % def.num_frames_y;
+  }
+  if (def.num_gradient_rows > 1) {
+    p.grad_row = int(rand01() * float(def.num_gradient_rows)) % def.num_gradient_rows;
   }
   particles_.push_back(p);
 }
@@ -946,9 +1055,11 @@ void ParticleSystem::build_sprites(const std::array<float, 3>& eye_game, std::ve
     sp.size_x = sx;
     sp.size_y = sy;
     sp.spin_rad = p.spin;
-    sp.soft_depth_m =
-        (d.shader_kind == ParticleShaderKind::kSoft || d.shader_kind == ParticleShaderKind::kAnimatedSoft) ? 0.55f
-                                                                                                           : 0.0f;
+    const bool is_soft = (d.shader_kind == ParticleShaderKind::kSoft ||
+                          d.shader_kind == ParticleShaderKind::kAnimatedSoft ||
+                          d.shader_kind == ParticleShaderKind::kAnimatedRowOnlySoft ||
+                          d.shader_kind == ParticleShaderKind::kGradientSoft);
+    sp.soft_depth_m = is_soft ? 0.55f : 0.0f;
     sp.rgba = rgba;
     sp.light_influence = d.light_influence;
     sp.headlight_power = d.headlight_power;
@@ -956,7 +1067,8 @@ void ParticleSystem::build_sprites(const std::array<float, 3>& eye_game, std::ve
     sp.frames_x = std::max(1, d.num_frames_x);
     sp.frames_y = std::max(1, d.num_frames_y);
     if (d.shader_kind == ParticleShaderKind::kAnimatedRowOnly ||
-        d.shader_kind == ParticleShaderKind::kAnimatedRowOnlyGradient) {
+        d.shader_kind == ParticleShaderKind::kAnimatedRowOnlyGradient ||
+        d.shader_kind == ParticleShaderKind::kAnimatedRowOnlySoft) {
       const int col = int(u * float(sp.frames_x) * std::max(d.anim_rate, 0.5f)) % sp.frames_x;
       sp.frame_index = p.anim_row * sp.frames_x + col;
     } else {
@@ -964,6 +1076,12 @@ void ParticleSystem::build_sprites(const std::array<float, 3>& eye_game, std::ve
       sp.frame_index = (total > 1) ? (int(u * float(total) * std::max(d.anim_rate, 0.5f)) % total) : 0;
     }
     sp.texture_slot = p.tex_slot;
+    sp.texture2_slot = p.tex2_slot;
+    sp.gradient_row_v = (float(p.grad_row) + 0.5f) / float(std::max(1, d.num_gradient_rows));
+    sp.use_gradient = (d.shader_kind == ParticleShaderKind::kGradient ||
+                       d.shader_kind == ParticleShaderKind::kGradientSoft ||
+                       d.shader_kind == ParticleShaderKind::kAnimatedGradient ||
+                       d.shader_kind == ParticleShaderKind::kAnimatedRowOnlyGradient);
     sp.additive = d.additive;
     sp.velocity_aligned = d.velocity_quad;
     sp.dynamic_lighting = d.dynamic_lighting;

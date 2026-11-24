@@ -168,6 +168,209 @@ void test_stars_and_zones() {
   check(!z.contains(8.0f, 8.0f), "point outside zone triangle");
 }
 
+void test_clouds_cube_scatter_and_color_settings() {
+  // 1. CloseCloudBottomPowerBack / IntensityBack, 6 Cube* curves, LightRays*, and FogSunScatter* parsing.
+  const std::string xml = R"xml(<?xml version="1.0" encoding="utf-8"?>
+<TOD version="2">
+  <CloseCloudBottomPower numKeys="2">
+    <Key time="0.0" x="2.0"/>
+    <Key time="720.0" x="4.0"/>
+  </CloseCloudBottomPower>
+  <CloseCloudBottomIntensity numKeys="2">
+    <Key time="0.0" x="0.10"/>
+    <Key time="720.0" x="0.40"/>
+  </CloseCloudBottomIntensity>
+  <CloseCloudBottomPowerBack numKeys="2">
+    <Key time="0.0" x="1.5"/>
+    <Key time="720.0" x="5.5"/>
+  </CloseCloudBottomPowerBack>
+  <CloseCloudBottomIntensityBack numKeys="2">
+    <Key time="0.0" x="0.05"/>
+    <Key time="720.0" x="0.65"/>
+  </CloseCloudBottomIntensityBack>
+  <CubeAtmosphereHazeColour numKeys="2">
+    <Key time="0.0" x="0.10" y="0.20" z="0.40"/>
+    <Key time="720.0" x="0.50" y="0.60" z="0.80"/>
+  </CubeAtmosphereHazeColour>
+  <CubeAtmosphereHazePower numKeys="2">
+    <Key time="0.0" x="4.0"/>
+    <Key time="720.0" x="8.0"/>
+  </CubeAtmosphereHazePower>
+  <CubeAtmosphereHazeIntensity numKeys="2">
+    <Key time="0.0" x="0.25"/>
+    <Key time="720.0" x="0.75"/>
+  </CubeAtmosphereHazeIntensity>
+  <CubeAtmosphereHazeEllipticalScale numKeys="2">
+    <Key time="0.0" x="0.60"/>
+    <Key time="720.0" x="1.00"/>
+  </CubeAtmosphereHazeEllipticalScale>
+  <CubeSunObjectColour numKeys="2">
+    <Key time="0.0" x="0.30" y="0.10" z="0.02"/>
+    <Key time="720.0" x="0.90" y="0.80" z="0.70"/>
+  </CubeSunObjectColour>
+  <CubeSunObjectSize numKeys="2">
+    <Key time="0.0" x="10.0"/>
+    <Key time="720.0" x="22.0"/>
+  </CubeSunObjectSize>
+  <LightRaysColour numKeys="2">
+    <Key time="0.0" x="0.20" y="0.30" z="0.50"/>
+    <Key time="720.0" x="1.00" y="0.80" z="0.60"/>
+  </LightRaysColour>
+  <LightRaysIntensity numKeys="2">
+    <Key time="0.0" x="0.50"/>
+    <Key time="720.0" x="0.80"/>
+  </LightRaysIntensity>
+  <FogSunScatterStartDistance numKeys="2">
+    <Key time="0.0" x="200.0"/>
+    <Key time="720.0" x="1200.0"/>
+  </FogSunScatterStartDistance>
+  <FogSunScatterRampupDistance numKeys="2">
+    <Key time="0.0" x="4000.0"/>
+    <Key time="720.0" x="12000.0"/>
+  </FogSunScatterRampupDistance>
+</TOD>)xml";
+
+  world::TodPreset preset;
+  check(preset.load_xml(xml), "load R2-2 parity TOD XML");
+  const auto mid = world::evaluate_tod(preset, 360.0 * 60.0);  // 06:00 midpoint
+  check(near(mid.close_back_bottom_power, 3.5f), "CloseCloudBottomPowerBack midpoint == 3.5");
+  check(near(mid.close_back_bottom_intensity, 0.35f), "CloseCloudBottomIntensityBack midpoint == 0.35");
+  check(near(mid.cube_atmo_haze_color[0], 0.30f) && near(mid.cube_atmo_haze_color[2], 0.60f),
+        "CubeAtmosphereHazeColour midpoint");
+  check(near(mid.cube_atmo_haze_power, 6.0f), "CubeAtmosphereHazePower midpoint == 6.0");
+  check(near(mid.cube_atmo_haze_intensity, 0.50f), "CubeAtmosphereHazeIntensity midpoint == 0.50");
+  check(near(mid.cube_atmo_haze_elliptical, 0.80f), "CubeAtmosphereHazeEllipticalScale midpoint == 0.80");
+  check(near(mid.cube_sun_object_color[0], 0.60f) && near(mid.cube_sun_object_color[1], 0.45f),
+        "CubeSunObjectColour midpoint");
+  check(near(mid.cube_sun_object_size, 16.0f), "CubeSunObjectSize midpoint == 16.0");
+  check(near(mid.light_rays_color[0], 0.60f) && near(mid.light_rays_intensity, 0.65f),
+        "LightRaysColour/Intensity midpoint");
+  check(near(mid.fog_sun_scatter_start, 700.0f), "FogSunScatterStartDistance midpoint == 700");
+  check(near(mid.fog_sun_scatter_rampup, 8000.0f), "FogSunScatterRampupDistance midpoint == 8000");
+
+  // Missing back-cloud / Cube* curves cleanly fall back to front/main curves.
+  world::TodPreset minimal;
+  check(minimal.load_xml(R"xml(<TOD version="2">
+    <CloseCloudBottomPower numKeys="1"><Key time="0.0" x="3.2"/></CloseCloudBottomPower>
+    <CloseCloudBottomIntensity numKeys="1"><Key time="0.0" x="0.24"/></CloseCloudBottomIntensity>
+    <AtmosphereHazePower numKeys="1"><Key time="0.0" x="7.5"/></AtmosphereHazePower>
+    <SunObjectSize numKeys="1"><Key time="0.0" x="18.0"/></SunObjectSize>
+  </TOD>)xml"), "load minimal fallback TOD XML");
+  const auto fb = world::evaluate_tod(minimal, 0.0);
+  check(near(fb.close_back_bottom_power, 3.2f), "CloseCloudBottomPowerBack fallback matches front power");
+  check(near(fb.close_back_bottom_intensity, 0.12f), "CloseCloudBottomIntensityBack fallback == 0.5x front");
+  check(near(fb.cube_atmo_haze_power, 7.5f), "CubeAtmosphereHazePower fallback matches main haze power");
+  check(near(fb.cube_sun_object_size, 18.0f), "CubeSunObjectSize fallback matches main sun size");
+
+  // 2. TrackPostConfig cubemap, shadow, exposure range, and ColorSettings defaults.
+  world::TrackPostConfig cfg;
+  check(cfg.load_xml(R"xml(<TrackSettings Version="64">
+    <cubeSkyScale value="0.25"/>
+    <cubeSkySaturation value="0.60"/>
+    <cubeReflGroundScale value="0.85"/>
+    <Cubemap FarDistance="240.0"/>
+    <ShadowEnds ShadowNear="28.0" InGameShadowEnd="215.0"/>
+    <ShadowColor r="0.30" g="0.32" b="0.38"/>
+    <CameraExposureRange minval="-1.5" maxval="4.5"/>
+    <ExposureBias value="0.20"/>
+    <Contrast value="0.08"/>
+    <Brightness value="-0.03"/>
+  </TrackSettings>)xml"), "parse TrackPostConfig cubemap/shadow/color fields");
+  check(near(cfg.cube_sky_scale, 0.25f) && near(cfg.cube_sky_saturation, 0.60f) &&
+            near(cfg.cube_refl_ground_scale, 0.85f) && near(cfg.cube_far_distance, 240.0f),
+        "TrackPostConfig cubemap parameters parsed");
+  check(near(cfg.shadow_near, 28.0f) && near(cfg.shadow_far, 215.0f) && near(cfg.shadow_color[2], 0.38f),
+        "TrackPostConfig shadow parameters parsed");
+  check(near(cfg.exposure_min, -1.5f) && near(cfg.exposure_max, 4.5f) && near(cfg.exposure_bias, 0.20f) &&
+            near(cfg.contrast, 0.08f) && near(cfg.brightness, -0.03f),
+        "TrackPostConfig exposure & color defaults parsed");
+
+  world::TodSystem sys;
+  sys.preset_a = preset;
+  sys.post_config = cfg;
+  sys.loaded_tod = true;
+  world::TodClock clk;
+  clk.set_hour(6.0);
+  const auto sys_s = sys.evaluate(clk);
+  check(near(sys_s.cube_sky_saturation, 0.60f) && near(sys_s.cube_refl_ground_scale, 0.85f) &&
+            near(sys_s.cube_far_distance, 240.0f),
+        "TodSystem::evaluate forwards cubemap TrackSettings into TodState");
+  check(near(sys_s.shadow_near, 28.0f) && near(sys_s.shadow_far, 215.0f) && near(sys_s.shadow_color[0], 0.30f),
+        "TodSystem::evaluate forwards ShadowEnds/ShadowColor into TodState");
+
+  // 3. Per-zone ColorSettings_Templates & Fog SunScatterStartDistance/RampupDistance forwarding + blending.
+  world::PostZoneSet zset;
+  world::PostZone za;
+  za.name = "Canyon";
+  za.color_settings = "canyon_col";
+  za.fog_template = "canyon_fog";
+  za.lerp_time = 10.0f;
+  za.triangles.push_back({{0.0f, 100.0f, 0.0f}, {0.0f, 0.0f, 100.0f}});
+  world::PostZone zb;
+  zb.name = "Alpine";
+  zb.color_settings = "alpine_col";
+  zb.fog_template = "alpine_fog";
+  zb.lerp_time = 10.0f;
+  zb.triangles.push_back({{200.0f, 300.0f, 200.0f}, {0.0f, 0.0f, 100.0f}});
+  zset.zones = {za, zb};
+
+  world::ColorSettingsTemplate ca;
+  ca.desat_amount = 0.72f;
+  ca.desat_luminosity[0] = 0.25f; ca.desat_luminosity[1] = 0.65f; ca.desat_luminosity[2] = 0.10f;
+  ca.desat_post_mod[0] = 1.12f; ca.desat_post_mod[1] = 0.98f; ca.desat_post_mod[2] = 0.90f;
+  ca.exposure_bias = -0.35f;
+  ca.contrast = 0.15f;
+  ca.brightness = 0.04f;
+  world::ColorSettingsTemplate cb;
+  cb.desat_amount = 1.05f;
+  cb.desat_luminosity[0] = 0.20f; cb.desat_luminosity[1] = 0.72f; cb.desat_luminosity[2] = 0.08f;
+  cb.desat_post_mod[0] = 0.96f; cb.desat_post_mod[1] = 1.02f; cb.desat_post_mod[2] = 1.10f;
+  cb.exposure_bias = 0.45f;
+  cb.contrast = -0.05f;
+  cb.brightness = -0.02f;
+  zset.color_templates["canyon_col"] = ca;
+  zset.color_templates["alpine_col"] = cb;
+
+  world::FogTemplate fa;
+  fa.sun_scatter_start_distance = 500.0f;
+  fa.sun_scatter_rampup_distance = 3000.0f;
+  world::FogTemplate fb_fog;
+  fb_fog.sun_scatter_start_distance = 4500.0f;
+  fb_fog.sun_scatter_rampup_distance = 25000.0f;
+  zset.fog_templates["canyon_fog"] = fa;
+  zset.fog_templates["alpine_fog"] = fb_fog;
+
+  // Fallback outside all zones inherits TrackPostConfig color defaults.
+  const auto outside_cs = zset.color_settings_for(-1, cfg);
+  check(near(outside_cs.desat_amount, cfg.desat_amount) && near(outside_cs.exposure_bias, cfg.exposure_bias) &&
+            near(outside_cs.contrast, cfg.contrast) && near(outside_cs.brightness, cfg.brightness),
+        "color_settings_for(-1) falls back to TrackPostConfig defaults");
+
+  world::PostZoneBlender blender;
+  blender.update(zset, cfg, 10.0f, 10.0f, 0.016f, true);  // snap into Canyon
+  check(blender.active_zone == 0, "blender active_zone == Canyon");
+  check(near(blender.color.desat_amount, 0.72f) && near(blender.color.desat_post_mod[0], 1.12f) &&
+            near(blender.color.exposure_bias, -0.35f),
+        "blender snaps Canyon ColorSettings_Templates fields");
+  check(near(blender.fog.sun_scatter_start_distance, 500.0f) &&
+            near(blender.fog.sun_scatter_rampup_distance, 3000.0f),
+        "blender snaps Canyon Fog SunScatter distances");
+
+  // Step halfway into Alpine and confirm smooth forwarding/interpolation.
+  blender.update(zset, cfg, 210.0f, 10.0f, 2.0f, false);
+  check(blender.active_zone == 1, "blender active_zone == Alpine");
+  check(blender.color.desat_amount > 0.72f && blender.color.desat_amount < 1.05f,
+        "blender interpolates desat_amount across zones");
+  check(blender.color.exposure_bias > -0.35f && blender.color.exposure_bias < 0.45f,
+        "blender interpolates exposure_bias across zones");
+  check(blender.color.desat_post_mod[2] > 0.90f && blender.color.desat_post_mod[2] < 1.10f,
+        "blender interpolates desat_post_mod across zones");
+  check(blender.fog.sun_scatter_start_distance > 500.0f && blender.fog.sun_scatter_start_distance < 4500.0f,
+        "blender interpolates fog SunScatterStartDistance");
+  check(blender.fog.sun_scatter_rampup_distance > 3000.0f && blender.fog.sun_scatter_rampup_distance < 25000.0f,
+        "blender interpolates fog SunScatterRampupDistance");
+}
+
 void test_disc_assets_if_available() {
   const char* env_root = std::getenv("SHIFT_GAME_ROOT");
   std::filesystem::path game_root;
@@ -234,9 +437,15 @@ void test_disc_assets_if_available() {
                            std::fabs(night_mid[2] - 0.5f);
   check(night_diff > 0.05f, "ColorGradingLookup_Night.dds applies non-identity night grade");
 
-  // ShadowEnds parsed from TrackSettings.xml.
+  // ShadowEnds and cubemap parameters parsed from TrackSettings.xml.
   check(near(sys.post_config.shadow_near, 25.0f, 0.1f), "ShadowNear == 25");
   check(near(sys.post_config.shadow_far, 202.0f, 0.1f), "InGameShadowEnd == 202");
+  check(near(sys.post_config.cube_sky_saturation, 0.60f, 0.02f), "cubeSkySaturation == 0.60");
+  check(near(sys.post_config.cube_far_distance, 200.0f, 1.0f), "Cubemap FarDistance == 200");
+  const auto sunset = world::evaluate_tod(sys.preset_a, 18.0 * 3600.0);
+  check(sunset.close_back_bottom_power > 0.0f, "Colorado CloseCloudBottomPowerBack parsed");
+  check(sunset.cube_sun_object_size > 0.0f && sunset.cube_atmo_haze_power > 0.0f, "Colorado Cube* curves parsed");
+  check(sunset.light_rays_intensity > 0.1f, "Colorado LightRaysIntensity active at sunset");
 }
 
 }  // namespace
@@ -246,6 +455,7 @@ int main() {
   test_clock();
   test_exposure_and_lut();
   test_stars_and_zones();
+  test_clouds_cube_scatter_and_color_settings();
   test_disc_assets_if_available();
   if (g_failures == 0) std::printf("tod_tests: all checks passed\n");
   return g_failures ? 1 : 0;

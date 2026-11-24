@@ -3,8 +3,38 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
+#include <mutex>
+#include <unordered_map>
 
 namespace carview {
+namespace {
+
+constexpr uint32_t kMaxShadowTrees = 512;
+constexpr uint32_t kMaxShadowTreeVerts = kMaxShadowTrees * 6u;
+
+struct ShadowTreeBatch {
+  uint32_t texture = kNoWorldTexture;
+  uint32_t first_vertex = 0;
+  uint32_t vertex_count = 0;
+};
+
+struct ShadowTreeCache {
+  Renderer::Buffer vb;
+  void* mapped = nullptr;
+  std::vector<WorldVertex> cpu;
+  std::vector<ShadowTreeBatch> batches;
+  uint64_t world_gen = 0;
+  float eye_sc[3] = {1e9f, 1e9f, 1e9f};
+  float sun_sc[3] = {0.0f, 1.0f, 0.0f};
+  uint64_t ver = 0;
+  uint64_t slot_ver[Renderer::kFramesInFlight] = {};
+};
+
+std::mutex g_shadow_tree_mutex;
+std::unordered_map<const Showroom*, std::unique_ptr<ShadowTreeCache>> g_shadow_tree_caches;
+
+}  // namespace
 
 bool Showroom::shadows_on() const {
   return shadow_set_ && shadow_world_ && r_.shadow_size_ > 1 && world_textured_ && !world_draws_.empty();
@@ -15,11 +45,17 @@ void Showroom::place_shadow() {
   const auto pcss_q = r_.graphics_settings().shadow_pcss;
   const bool three_cascades = (r_.shadow_cascades_ >= 3u) && (shadow_set_mid_ != VK_NULL_HANDLE) &&
                               (shadow_set_far_ != VK_NULL_HANDLE);
-  // Phase B 3-cascade stabilized D32 CSM radii (Near ~20m, Mid ~90m, Far ~320m) on high/ultra;
-  // falls back to fast 2-cascade (Near ~30m, Far ~185m) on low/low-power.
-  const float near_radius = three_cascades ? 20.0f : std::min(s.radius, 30.0f);
-  const float mid_radius = 90.0f;
-  const float far_radius = three_cascades ? 320.0f : std::max(s.radius * 3.0f, 185.0f);
+  // Wire parsed TrackSettings.xml ShadowEnds (ShadowNear / InGameShadowEnd) into stabilized CSM splits.
+  const float parsed_near =
+      tod_active_ ? std::clamp(tod_state_.shadow_near, 16.0f, 40.0f) : (three_cascades ? 20.0f : std::min(s.radius, 30.0f));
+  const float parsed_far =
+      tod_active_ ? std::clamp(tod_state_.shadow_far, 120.0f, 360.0f)
+                  : (three_cascades ? 320.0f : std::max(s.radius * 3.0f, 185.0f));
+  const float near_radius = three_cascades ? parsed_near : std::min(s.radius, parsed_near);
+  const float far_radius = three_cascades
+                               ? (pcss_q == modern::ShadowPcss::kUltra ? std::max(parsed_far, 260.0f) : parsed_far)
+                               : std::max(s.radius * 3.0f, parsed_far);
+  const float mid_radius = std::clamp(std::sqrt(near_radius * far_radius), near_radius * 2.2f, far_radius * 0.55f);
   constexpr float kDepth = 520.0f;
   auto dot3 = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
   auto normalise = [&](float* v) {
@@ -96,9 +132,14 @@ void Showroom::place_shadow() {
   std::memcpy(frame_.shadow_matrix, m_near, sizeof m_near);
   std::memcpy(frame_.shadow_matrix_mid, m_mid, sizeof m_mid);
   std::memcpy(frame_.shadow_matrix_far, m_far, sizeof m_far);
+  const float shadow_luma =
+      tod_active_ ? std::clamp(0.2126f * tod_state_.shadow_color[0] + 0.7152f * tod_state_.shadow_color[1] +
+                                   0.0722f * tod_state_.shadow_color[2],
+                               0.0f, 1.0f)
+                  : s.strength;
   frame_.shadow[0] = 1.0f;
   frame_.shadow[1] = 1.0f / float(r_.shadow_size_);
-  frame_.shadow[2] = s.strength;
+  frame_.shadow[2] = shadow_luma;
   frame_.shadow[3] = float(s.taps);
   frame_.shadow_bias[0] = 1.35f * texel_near;
   frame_.shadow_bias[1] = frame_.shadow_bias[2] = frame_.shadow_bias[3] = 0.0f;
@@ -111,17 +152,20 @@ void Showroom::place_shadow() {
   frame_.shadow_far_bias[0] = 1.55f * texel_far;
   frame_.shadow_far_bias[1] = shadow_set_far_ ? 1.0f : 0.0f;
 
-  auto fill_shadow_frame = [&](ShowroomFrame& dst, const float m[16], const float c[3]) {
+  auto fill_shadow_frame = [&](ShowroomFrame& dst, const float m[16]) {
     dst = frame_;
     std::memcpy(dst.view_projection, m, 16 * sizeof(float));
     std::memcpy(dst.transparent_view_projection, m, 16 * sizeof(float));
-    for (int k = 0; k < 3; ++k) dst.eye[k] = c[k] + sun[k] * 1000.0f;
-    dst.eye[3] = 1.0f;
-    dst.world_fade[1] = 0.0f;
+    // Preserve camera eye and apply a crisp midpoint prop LOD split so LOD00 (kFlagLodNear) and
+    // LOD02 (kFlagLodFar) are NEVER drawn simultaneously into the shadow map (no double overdraw / acne).
+    if (frame_.world_fade[1] > 0.0f) {
+      dst.world_fade[0] = frame_.world_fade[0] + 0.5f * frame_.world_fade[1];
+      dst.world_fade[1] = 0.01f;
+    }
   };
-  fill_shadow_frame(shadow_frame_, m_near, centre_near);
-  if (three_cascades) fill_shadow_frame(shadow_frame_mid_, m_mid, centre_mid);
-  fill_shadow_frame(shadow_frame_far_, m_far, centre_far);
+  fill_shadow_frame(shadow_frame_, m_near);
+  if (three_cascades) fill_shadow_frame(shadow_frame_mid_, m_mid);
+  fill_shadow_frame(shadow_frame_far_, m_far);
 }
 
 void Showroom::record_shadow(VkCommandBuffer cmd) {
@@ -158,6 +202,140 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
   shadow_drawn_ = shadow_cars_ = 0;
   const auto eye = eye_in_scenery(world_transform_);
   const bool ultra_pcss = r_.graphics_settings().shadow_pcss == modern::ShadowPcss::kUltra;
+  const float lod_mid = (world_fade_[1] > 0.0f) ? (world_fade_[0] + 0.5f * world_fade_[1]) : 0.0f;
+
+  // Build / refresh sun-facing alpha-tested shadow quads for GPU-instanced trees (`world_trees_`)
+  // within Near/Mid shadow reach so Colorado forests cast dappled tree shadows onto roads & cars.
+  ShadowTreeCache* tree_cache = nullptr;
+  VkDeviceSize tree_vb_offset = 0;
+  if (!world_trees_.empty() && shadow_cutout_) {
+    const float* from = shadow_direction_set_ ? shadow_direction_ : world_sun_;
+    float sun_sc[3] = {
+        world_transform_[0] * from[0] + world_transform_[1] * from[1] + world_transform_[2] * from[2],
+        world_transform_[4] * from[0] + world_transform_[5] * from[1] + world_transform_[6] * from[2],
+        world_transform_[8] * from[0] + world_transform_[9] * from[1] + world_transform_[10] * from[2],
+    };
+    const float sl = std::sqrt(sun_sc[0] * sun_sc[0] + sun_sc[1] * sun_sc[1] + sun_sc[2] * sun_sc[2]);
+    if (sl > 1e-5f) sun_sc[0] /= sl, sun_sc[1] /= sl, sun_sc[2] /= sl;
+    else sun_sc[0] = 0.0f, sun_sc[1] = 1.0f, sun_sc[2] = 0.0f;
+
+    std::lock_guard<std::mutex> lock(g_shadow_tree_mutex);
+    auto& ptr = g_shadow_tree_caches[this];
+    if (!ptr) {
+      auto c = std::make_unique<ShadowTreeCache>();
+      const VkDeviceSize region = VkDeviceSize(kMaxShadowTreeVerts) * sizeof(WorldVertex);
+      if (r_.create_buffer(region * Renderer::kFramesInFlight, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, c->vb)) {
+        if (vmaMapMemory(r_.allocator_, c->vb.allocation, &c->mapped) != VK_SUCCESS) {
+          c->mapped = nullptr;
+          r_.destroy_buffer(c->vb);
+        }
+      }
+      if (c->mapped) {
+        ptr = std::move(c);
+        Renderer* rptr = &r_;
+        const Showroom* key = this;
+        retired_.push_back({std::numeric_limits<uint64_t>::max(), [rptr, key]() {
+                              std::unique_ptr<ShadowTreeCache> doomed;
+                              {
+                                std::lock_guard<std::mutex> lk(g_shadow_tree_mutex);
+                                auto jt = g_shadow_tree_caches.find(key);
+                                if (jt != g_shadow_tree_caches.end()) {
+                                  doomed = std::move(jt->second);
+                                  g_shadow_tree_caches.erase(jt);
+                                }
+                              }
+                              if (doomed && doomed->vb.allocation) {
+                                if (doomed->mapped) vmaUnmapMemory(rptr->allocator_, doomed->vb.allocation);
+                                rptr->destroy_buffer(doomed->vb);
+                              }
+                            }});
+      }
+    }
+    if (ptr && ptr->mapped) {
+      tree_cache = ptr.get();
+      const float moved2 = (eye[0] - tree_cache->eye_sc[0]) * (eye[0] - tree_cache->eye_sc[0]) +
+                           (eye[1] - tree_cache->eye_sc[1]) * (eye[1] - tree_cache->eye_sc[1]) +
+                           (eye[2] - tree_cache->eye_sc[2]) * (eye[2] - tree_cache->eye_sc[2]);
+      const float sun_dot = sun_sc[0] * tree_cache->sun_sc[0] + sun_sc[1] * tree_cache->sun_sc[1] +
+                            sun_sc[2] * tree_cache->sun_sc[2];
+      if (tree_cache->world_gen != world_generation_ || moved2 > 9.0f || sun_dot < 0.998f || tree_cache->ver == 0) {
+        tree_cache->world_gen = world_generation_;
+        for (int k = 0; k < 3; ++k) tree_cache->eye_sc[k] = eye[size_t(k)], tree_cache->sun_sc[k] = sun_sc[k];
+        const float max_tree_r = low_memory_mode_ ? 55.0f : 95.0f;
+        const float max_tree_r2 = max_tree_r * max_tree_r;
+        const size_t cap_trees = low_memory_mode_ ? 256u : kMaxShadowTrees;
+        struct Cand {
+          float d2;
+          uint32_t tex;
+          size_t idx;
+        };
+        std::vector<Cand> cands;
+        cands.reserve(512);
+        for (size_t i = 0; i < world_trees_.size(); ++i) {
+          const auto& t = world_trees_[i];
+          if (t.texture == kNoWorldTexture || t.half_width <= 0.01f || t.height <= 0.01f) continue;
+          const float dx = t.base[0] - eye[0];
+          const float dy = t.base[1] - eye[1];
+          const float dz = t.base[2] - eye[2];
+          const float d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 > max_tree_r2) continue;
+          cands.push_back({d2, t.texture, i});
+        }
+        if (cands.size() > cap_trees) {
+          std::nth_element(cands.begin(), cands.begin() + ptrdiff_t(cap_trees), cands.end(),
+                           [](const Cand& a, const Cand& b) { return a.d2 < b.d2; });
+          cands.resize(cap_trees);
+        }
+        std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.tex < b.tex; });
+        tree_cache->cpu.clear();
+        tree_cache->cpu.reserve(cands.size() * 6u);
+        tree_cache->batches.clear();
+        static constexpr int kQuad[6] = {0, 1, 2, 0, 2, 3};
+        for (const auto& c : cands) {
+          const auto& t = world_trees_[c.idx];
+          float u[3] = {t.up[0], t.up[1], t.up[2]};
+          const float ul = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+          if (ul > 1e-4f) u[0] /= ul, u[1] /= ul, u[2] /= ul;
+          else u[0] = 0.0f, u[1] = 1.0f, u[2] = 0.0f;
+          // Orient billboard perpendicular to sun ray for full canopy shadow projection.
+          float rx = u[1] * sun_sc[2] - u[2] * sun_sc[1];
+          float ry = u[2] * sun_sc[0] - u[0] * sun_sc[2];
+          float rz = u[0] * sun_sc[1] - u[1] * sun_sc[0];
+          const float rl = std::sqrt(rx * rx + ry * ry + rz * rz);
+          if (rl > 1e-4f) rx /= rl, ry /= rl, rz /= rl;
+          else rx = 1.0f, ry = 0.0f, rz = 0.0f;
+          const uint32_t first_v = uint32_t(tree_cache->cpu.size());
+          for (int qi = 0; qi < 6; ++qi) {
+            const int corner = kQuad[qi];
+            const float ox = (corner == 1 || corner == 2) ? t.half_width : -t.half_width;
+            const float oy = (corner >= 2) ? t.height : 0.0f;
+            WorldVertex v{};
+            v.position[0] = t.base[0] + rx * ox + u[0] * oy;
+            v.position[1] = t.base[1] + ry * ox + u[1] * oy;
+            v.position[2] = t.base[2] + rz * ox + u[2] * oy;
+            v.uv0[0] = (corner == 1 || corner == 2) ? t.uv[2] : t.uv[0];
+            v.uv0[1] = (corner >= 2) ? t.uv[1] : t.uv[3];
+            tree_cache->cpu.push_back(v);
+          }
+          if (!tree_cache->batches.empty() && tree_cache->batches.back().texture == c.tex) {
+            tree_cache->batches.back().vertex_count += 6u;
+          } else {
+            tree_cache->batches.push_back({c.tex, first_v, 6u});
+          }
+        }
+        ++tree_cache->ver;
+      }
+      const uint32_t slot = r_.frame_slot();
+      const VkDeviceSize region = VkDeviceSize(kMaxShadowTreeVerts) * sizeof(WorldVertex);
+      tree_vb_offset = VkDeviceSize(slot) * region;
+      if (tree_cache->slot_ver[slot] != tree_cache->ver && !tree_cache->cpu.empty()) {
+        std::memcpy(static_cast<uint8_t*>(tree_cache->mapped) + tree_vb_offset, tree_cache->cpu.data(),
+                    tree_cache->cpu.size() * sizeof(WorldVertex));
+        tree_cache->slot_ver[slot] = tree_cache->ver;
+      }
+    }
+  }
 
   auto draw_cascade = [&](uint32_t x_offset, VkDescriptorSet cascade_set, const ShowroomFrame& sf, bool is_far,
                           bool draw_cars) {
@@ -195,7 +373,20 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     VkPipeline bound = VK_NULL_HANDLE;
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
     for (const auto& d : world_draws_) {
-      if (!d.cull || d.blend >= 2 || outside(d) || near_lod_beyond(d, eye)) continue;
+      if (!d.cull || d.blend >= 2) continue;
+      const uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
+      if ((fl & (2u | 32768u)) != 0u) continue;  // skip sky dome & water planes
+      if (outside(d) || near_lod_beyond(d, eye)) continue;
+      // Skip LOD02 cells wholly inside the LOD00 midpoint radius (complements near_lod_beyond).
+      if ((fl & 256u) != 0u && lod_mid > kPropReach) {
+        const float max_r = lod_mid - kPropReach;
+        float max_d2 = 0.0f;
+        for (int k = 0; k < 3; ++k) {
+          const float q = std::max(std::fabs(d.box_min[k] - eye[size_t(k)]), std::fabs(d.box_max[k] - eye[size_t(k)]));
+          max_d2 += q * q;
+        }
+        if (max_d2 < max_r * max_r) continue;
+      }
       // Far cascade skips tiny billboard/cutout draws unless Ultra PCSS is active for fast 4K framing.
       if (is_far && d.blend == 1 && !ultra_pcss) continue;
       ++shadow_drawn_;
@@ -224,7 +415,89 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
                          sizeof(ShowroomPush), &push);
       vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
     }
-    // Player & traffic cars cast crisp shadows in Near (~20m) and Mid (~90m) cascades.
+    // Dynamic shadow casters: GPU-instanced trees, smashable debris / animated world props (balloons,
+    // windmills, banners), festival crowds, and airborne showcase aircraft/balloons.
+    {
+      ShowroomPush dpc{};
+      std::memcpy(dpc.model, world_transform_, sizeof dpc.model);
+      std::memcpy(dpc.uv0, world_sun_, sizeof dpc.uv0);
+      std::memcpy(dpc.uv1, world_up_, sizeof dpc.uv1);
+      dpc.tint[0] = dpc.tint[1] = dpc.tint[2] = dpc.tint[3] = 1.0f;
+      dpc.params[0] = 0.0f;
+      dpc.params[1] = 0.0f;
+      dpc.params[2] = 0.0f;
+      dpc.params[3] = 1.0f;
+
+      if (tree_cache && !tree_cache->batches.empty() && shadow_cutout_ && (!is_far || ultra_pcss)) {
+        if (shadow_cutout_ != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = shadow_cutout_);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &tree_cache->vb.buffer, &tree_vb_offset);
+        for (const auto& tb : tree_cache->batches) {
+          if (tb.vertex_count == 0) continue;
+          VkDescriptorSet tset = world_set(tb.texture);
+          if (!tset) continue;
+          if (tset != bound_set)
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1,
+                                    &(bound_set = tset), 0, nullptr);
+          dpc.params[0] = 1.0f;
+          dpc.params[1] = 1.0f;  // kFlagTextured for alpha-test in shadow.frag
+          vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                             sizeof dpc, &dpc);
+          vkCmdDraw(cmd, tb.vertex_count, 1, tb.first_vertex, 0);
+          ++shadow_drawn_;
+        }
+      }
+      if (vfx_ready_ && debris_count_ > 0 && debris_buf_.ready()) {
+        const VkDeviceSize at = dyn_sync(debris_buf_, VkDeviceSize(debris_count_) * sizeof(WorldVertex));
+        vkCmdBindVertexBuffers(cmd, 0, 1, &debris_buf_.buf.buffer, &at);
+        for (const auto& db : debris_batches_) {
+          if (db.vertex_count == 0) continue;
+          if (db.cutout && is_far && !ultra_pcss) continue;
+          const VkPipeline pipe = (db.cutout && shadow_cutout_) ? shadow_cutout_ : shadow_world_;
+          if (pipe != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipe);
+          dpc.params[0] = db.cutout ? 1.0f : 0.0f;
+          dpc.params[1] = 0.0f;
+          if (db.cutout && shadow_cutout_) {
+            VkDescriptorSet tset =
+                (db.texture_record != kNoWorldTexture) ? world_set(db.texture_record) : VK_NULL_HANDLE;
+            if (tset) {
+              dpc.params[1] = 1.0f;
+            } else {
+              tset = world_white_set_;
+            }
+            if (tset && tset != bound_set)
+              vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1,
+                                      &(bound_set = tset), 0, nullptr);
+          }
+          vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                             sizeof dpc, &dpc);
+          vkCmdDraw(cmd, db.vertex_count, 1, db.first_vertex, 0);
+          ++shadow_drawn_;
+        }
+      }
+      if (vfx_ready_ && !is_far && spectator_count_ > 0 && spectator_buf_.ready()) {
+        if (shadow_world_ != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = shadow_world_);
+        dpc.params[0] = 0.0f;
+        dpc.params[1] = 0.0f;
+        vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof dpc, &dpc);
+        const VkDeviceSize at = dyn_sync(spectator_buf_, VkDeviceSize(spectator_count_) * sizeof(WorldVertex));
+        vkCmdBindVertexBuffers(cmd, 0, 1, &spectator_buf_.buf.buffer, &at);
+        vkCmdDraw(cmd, spectator_count_, 1, 0, 0);
+        ++shadow_drawn_;
+      }
+      if (vfx_ready_ && showcase_count_ > 0 && showcase_buf_.ready()) {
+        if (shadow_world_ != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = shadow_world_);
+        dpc.params[0] = 0.0f;
+        dpc.params[1] = 0.0f;
+        vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof dpc, &dpc);
+        const VkDeviceSize at = dyn_sync(showcase_buf_, VkDeviceSize(showcase_count_) * sizeof(WorldVertex));
+        vkCmdBindVertexBuffers(cmd, 0, 1, &showcase_buf_.buf.buffer, &at);
+        vkCmdDraw(cmd, showcase_count_, 1, 0, 0);
+        ++shadow_drawn_;
+      }
+    }
+    // Player & traffic cars cast crisp shadows in Near (~25m) and Mid (~70m) cascades.
     if (draw_cars) {
       if (draw_car_) record_shadow_car(cmd, nullptr, cascade_set);
       if (!instances_.empty() && car_inst_buf_.ready() && shadow_car_) {

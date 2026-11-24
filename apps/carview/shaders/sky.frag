@@ -39,9 +39,9 @@ layout(set = 0, binding = 0) uniform SkyUniforms {
   vec4 close_intens;     // x back_int, y top_int, z bot_int, w alpha_curve
   vec4 close_masks;      // x top_mask_pow, y bot_mask_pow, z top_alpha, w bot_alpha
   vec4 close_layers;     // x front_alpha, y back_alpha, z front_rev_off, w back_rev_off
-  vec4 close_back_dense_col; // rgb CloseCloudDenseColourBack, w dense_intensity
-  vec4 close_back_thin_col;  // rgb CloseCloudThinColourBack, w thin_intensity
-  vec4 close_back_bot_col;   // rgb CloseCloudBottomColourBack, w bot_power
+  vec4 close_back_dense_col; // rgb CloseCloudDenseColourBack, w sky_saturation (1.0 main, cubeSkySaturation cubemap)
+  vec4 close_back_thin_col;  // rgb CloseCloudThinColourBack, w CloseCloudBottomIntensityBack
+  vec4 close_back_bot_col;   // rgb CloseCloudBottomColourBack, w CloseCloudBottomPowerBack
 
   vec4 fog_color;        // rgb FogColour, w sky_fog_start_norm
   vec4 fog_scatter;      // rgb FogSunScatterColour, w FogSunScatterPower
@@ -102,6 +102,9 @@ void main() {
     // Subtle sky gradient dither scaled by luminance so night exposure does not amplify it.
     float dither = (texture(tex_dither, gl_FragCoord.xy / 128.0).r - 0.5) * 0.0004;
     lin_rgb = max(lin_rgb + vec3(dither), vec3(0.0));
+    float sky_sat = clamp(sky.close_back_dense_col.w, 0.0, 2.0);
+    float sky_luma = dot(lin_rgb, vec3(0.2126, 0.7152, 0.0722));
+    lin_rgb = max(mix(vec3(sky_luma), lin_rgb, sky_sat), vec3(0.0));
     out_color = vec4(out_rgb(lin_rgb), 1.0);
     return;
   }
@@ -190,14 +193,15 @@ void main() {
       vec2 ad_b = texture(tex_close_ad_b, cuv_b).rg;
       float am_b = texture(tex_close_am_b, cuv_b).r;
       vec2 tb_b = texture(tex_close_tb_b, cuv_b).rg;
-      vec3 base_b = mix(sky.close_back_dense_col.rgb * sky.close_back_dense_col.w,
-                        sky.close_back_thin_col.rgb * sky.close_back_thin_col.w, am_b);
-      vec3 bot_b = sky.close_back_bot_col.rgb * sky.close_intens.z * 0.5 *
-                   pow(sun_dot, max(sky.close_back_bot_col.w, 0.5)) * pow(tb_b.g, max(sky.close_masks.y, 0.25));
-      vec3 lit_b = base_b + sky.close_back_col.rgb * sky.close_intens.x * 0.5 *
-                   pow(sun_dot, max(sky.close_back_col.w, 0.5)) * (1.0 - ad_b.g) +
-                   sky.close_top_col.rgb * sky.close_intens.y * 0.5 * pow(tb_b.r, max(sky.close_masks.x, 0.25)) +
-                   bot_b;
+      vec3 base_b = mix(sky.close_back_dense_col.rgb * sky.close_dense_col.w,
+                        sky.close_back_thin_col.rgb * sky.close_thin_col.w, am_b);
+      vec3 back_b = sky.close_back_col.rgb * sky.close_intens.x * 0.5 *
+                    pow(max(sun_dot, 0.0), max(sky.close_back_col.w, 0.5)) * (1.0 - ad_b.g);
+      vec3 top_b = sky.close_top_col.rgb * sky.close_intens.y * 0.5 *
+                   pow(max(sun_dot, 0.0), max(sky.close_top_col.w, 0.5)) * pow(tb_b.r, max(sky.close_masks.x, 0.25));
+      vec3 bot_b = sky.close_back_bot_col.rgb * sky.close_back_thin_col.w *
+                   pow(max(sun_dot, 0.0), max(sky.close_back_bot_col.w, 0.5)) * pow(tb_b.g, max(sky.close_masks.y, 0.25));
+      vec3 lit_b = base_b + back_b + top_b + bot_b;
       float ca_b = pow(clamp(ad_b.r, 0.0, 1.0), alpha_curve) * sky.close_layers.y;
 
       float h_fade = smoothstep(0.01, 0.14, V.y) *
@@ -225,6 +229,9 @@ void main() {
     }
   }
 
+  float sky_sat = clamp(sky.close_back_dense_col.w, 0.0, 2.0);
+  float acc_luma = dot(acc_rgb, vec3(0.2126, 0.7152, 0.0722));
+  acc_rgb = max(mix(vec3(acc_luma), acc_rgb, sky_sat), vec3(0.0));
   vec3 enc = out_rgb(acc_rgb);
   out_color = vec4(enc * acc_a, acc_a);
 }

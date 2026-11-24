@@ -146,6 +146,8 @@ const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat 
            kFlagLayerC = 16384u, kFlagWater = 32768u, kFlagVertexLit = 65536u, kFlagSpecMap = 524288u,
            kFlagRoad = 1048576u, kFlagDecalNoise = 2097152u, kFlagWaterNormalB = 4194304u,
            kFlagEmissiveMap = 8388608u;
+const uint kFlagRoadNoise = kFlagDecalNoise;       // bit 21 when kFlagRoad is set (splat_map = H_ROAD Noise)
+const uint kFlagRoadModulate = kFlagWaterNormalB;  // bit 22 when kFlagRoad is set (spec_map = H_ROAD Modulate)
 
 // The screen-door threshold of this pixel (interleaved gradient noise): one
 // pattern shared by every draw, so fades that split a pixel between two
@@ -424,9 +426,8 @@ float sun_shadow(vec3 p, vec3 n) {
   return mix(frame.shadow.z, 1.0, lit_n);
 }
 
-// Cotangent-frame tangent-space normal perturbation from DXN/BC5 normal map.
-vec3 perturb_normal(vec3 n, vec3 pos, vec2 uv, vec2 nm_xy) {
-  vec2 dxy = nm_xy * 2.0 - 1.0;
+// Cotangent-frame tangent-space normal perturbation from DXN/BC5 normal map slope dxy in [-1, 1].
+vec3 perturb_normal_dxy(vec3 n, vec3 pos, vec2 uv, vec2 dxy) {
   float nz = sqrt(max(1.0 - dot(dxy, dxy), 0.01));
   vec3 dp1 = dFdx(pos);
   vec3 dp2 = dFdy(pos);
@@ -439,6 +440,10 @@ vec3 perturb_normal(vec3 n, vec3 pos, vec2 uv, vec2 nm_xy) {
   float invmax = inversesqrt(max(dot(T, T), dot(B, B)) + 1e-8);
   if (invmax > 1e3) return n;
   return normalize(T * (dxy.x * invmax) + B * (dxy.y * invmax) + n * nz);
+}
+
+vec3 perturb_normal(vec3 n, vec3 pos, vec2 uv, vec2 nm_xy) {
+  return perturb_normal_dxy(n, pos, uv, nm_xy * 2.0 - 1.0);
 }
 
 vec3 render_to_game_dir(vec3 d) {
@@ -461,6 +466,7 @@ mat2 hex_rot(float a) {
 struct HexTileSample {
   vec2 uv1, uv2, uv3;
   vec2 dx1, dy1, dx2, dy2, dx3, dy3;
+  mat2 r1, r2, r3;
   vec3 w;
 };
 
@@ -503,30 +509,58 @@ HexTileSample hex_tile_setup(vec2 uv) {
   mat2 r3 = hex_rot(h3.x * 6.2831853);
 
   HexTileSample s;
-  s.uv1 = r1 * uv + h1; s.dx1 = r1 * ddx; s.dy1 = r1 * ddy;
-  s.uv2 = r2 * uv + h2; s.dx2 = r2 * ddx; s.dy2 = r2 * ddy;
-  s.uv3 = r3 * uv + h3; s.dx3 = r3 * ddx; s.dy3 = r3 * ddy;
+  s.uv1 = r1 * uv + h1; s.dx1 = r1 * ddx; s.dy1 = r1 * ddy; s.r1 = r1;
+  s.uv2 = r2 * uv + h2; s.dx2 = r2 * ddx; s.dy2 = r2 * ddy; s.r2 = r2;
+  s.uv3 = r3 * uv + h3; s.dx3 = r3 * ddx; s.dy3 = r3 * ddy; s.r3 = r3;
   s.w = pow(max(vec3(w1, w2, w3), vec3(0.0)), vec3(5.0));
   return s;
 }
 
-vec4 hex_tile_combine(vec4 c1, vec4 c2, vec4 c3, vec3 base_w) {
+vec3 hex_tile_weights(vec4 c1, vec4 c2, vec4 c3, vec3 base_w) {
   // Contrast-preserving soft-max weights prevent muddy grey blending across hex borders.
   vec3 lum = vec3(dot(c1.rgb, vec3(0.299, 0.587, 0.114)),
                   dot(c2.rgb, vec3(0.299, 0.587, 0.114)),
                   dot(c3.rgb, vec3(0.299, 0.587, 0.114)));
   vec3 w = base_w * exp2(lum * 2.0);
-  w /= max(w.x + w.y + w.z, 1e-5);
+  return w / max(w.x + w.y + w.z, 1e-5);
+}
+
+vec4 hex_tile_combine(vec4 c1, vec4 c2, vec4 c3, vec3 base_w) {
+  vec3 w = hex_tile_weights(c1, c2, c3, base_w);
   return c1 * w.x + c2 * w.y + c3 * w.z;
 }
 
+#define SAMPLE_HEX_TILE_STATE(TEX, UV, HS, W_OUT, DST)                                                      \
+  do {                                                                                                      \
+    HS = hex_tile_setup(UV);                                                                                \
+    vec4 _c1 = textureGrad(TEX, HS.uv1, HS.dx1, HS.dy1);                                                    \
+    vec4 _c2 = textureGrad(TEX, HS.uv2, HS.dx2, HS.dy2);                                                    \
+    vec4 _c3 = textureGrad(TEX, HS.uv3, HS.dx3, HS.dy3);                                                    \
+    W_OUT = hex_tile_weights(_c1, _c2, _c3, HS.w);                                                          \
+    DST = _c1 * W_OUT.x + _c2 * W_OUT.y + _c3 * W_OUT.z;                                                    \
+  } while (false)
+
 #define SAMPLE_HEX_TILE(TEX, UV, DST)                                                                       \
   do {                                                                                                      \
-    HexTileSample _hs = hex_tile_setup(UV);                                                                 \
-    vec4 _c1 = textureGrad(TEX, _hs.uv1, _hs.dx1, _hs.dy1);                                                 \
-    vec4 _c2 = textureGrad(TEX, _hs.uv2, _hs.dx2, _hs.dy2);                                                 \
-    vec4 _c3 = textureGrad(TEX, _hs.uv3, _hs.dx3, _hs.dy3);                                                 \
-    DST = hex_tile_combine(_c1, _c2, _c3, _hs.w);                                                           \
+    HexTileSample _hs;                                                                                      \
+    vec3 _hw;                                                                                               \
+    SAMPLE_HEX_TILE_STATE(TEX, UV, _hs, _hw, DST);                                                          \
+  } while (false)
+
+#define SAMPLE_HEX_TILE_NORMAL_DXY(TEX, HS, W, DXY_OUT)                                                     \
+  do {                                                                                                      \
+    vec2 _n1 = transpose(HS.r1) * (textureGrad(TEX, HS.uv1, HS.dx1, HS.dy1).xy * 2.0 - 1.0);                \
+    vec2 _n2 = transpose(HS.r2) * (textureGrad(TEX, HS.uv2, HS.dx2, HS.dy2).xy * 2.0 - 1.0);                \
+    vec2 _n3 = transpose(HS.r3) * (textureGrad(TEX, HS.uv3, HS.dx3, HS.dy3).xy * 2.0 - 1.0);                \
+    DXY_OUT = _n1 * W.x + _n2 * W.y + _n3 * W.z;                                                            \
+  } while (false)
+
+#define SAMPLE_HEX_TILE_WEIGHTED(TEX, HS, W, DST)                                                           \
+  do {                                                                                                      \
+    vec4 _s1 = textureGrad(TEX, HS.uv1, HS.dx1, HS.dy1);                                                    \
+    vec4 _s2 = textureGrad(TEX, HS.uv2, HS.dx2, HS.dy2);                                                    \
+    vec4 _s3 = textureGrad(TEX, HS.uv3, HS.dx3, HS.dy3);                                                    \
+    DST = _s1 * W.x + _s2 * W.y + _s3 * W.z;                                                                \
   } while (false)
 
 void main() {
@@ -795,15 +829,19 @@ void main() {
   }
 
   vec4 t;
+  bool use_hex = false;
+  HexTileSample hex_a;
+  vec3 hex_w_a = vec3(1.0, 0.0, 0.0);
+  float road_spec_mod = 1.0;
   if ((flags & kFlagTextured) != 0u) {
     // Mikkelsen Hex-Tiling on organic multi-layer terrain blends (never on directional roads or billboards).
-    bool use_hex = frame.shadow_bias.z > 0.5 &&
-                   (flags & (kFlagVertexBlend | kFlagSplat)) != 0u &&
-                   (flags & (kFlagRoad | kFlagBillboard)) == 0u &&
-                   eye_dist < 1100.0;
+    use_hex = frame.shadow_bias.z > 0.5 &&
+              (flags & (kFlagVertexBlend | kFlagSplat)) != 0u &&
+              (flags & (kFlagRoad | kFlagBillboard)) == 0u &&
+              eye_dist < 1100.0;
     vec2 uv_a = v_uv0 * draw.tint.xy;
     if (use_hex) {
-      SAMPLE_HEX_TILE(albedo, uv_a, t);
+      SAMPLE_HEX_TILE_STATE(albedo, uv_a, hex_a, hex_w_a, t);
     } else {
       t = texture(albedo, uv_a);
     }
@@ -844,6 +882,19 @@ void main() {
         }
       }
     }
+    // H_ROAD macro variation: Noise (slot 2 -> splat_map) & Modulate (slot 6 -> spec_map).
+    if ((flags & kFlagRoad) != 0u) {
+      if ((flags & kFlagRoadNoise) != 0u) {
+        vec3 r_noise = texture(splat_map, v_uv1).rgb;
+        t.rgb *= mix(vec3(0.84), vec3(1.16), r_noise);
+        road_spec_mod *= mix(0.75, 1.25, dot(r_noise, vec3(0.299, 0.587, 0.114)));
+      }
+      if ((flags & kFlagRoadModulate) != 0u) {
+        vec3 r_mod = texture(spec_map, v_uv1).rgb;
+        t.rgb *= clamp(mix(vec3(0.65), vec3(1.35), r_mod), vec3(0.55), vec3(1.40));
+        road_spec_mod *= mix(0.80, 1.20, dot(r_mod, vec3(0.3333)));
+      }
+    }
   } else if ((flags & kFlagVertexLit) != 0u) {
     t = vec4(pow(v_colour.rgb, vec3(2.2)), v_colour.a);
   } else {
@@ -863,19 +914,37 @@ void main() {
   if ((flags & kFlagBillboard) != 0u) t.rgb *= 1.85 * pow(max(v_colour.rgb, vec3(0.0)), vec3(1.35));
 
   vec3 n = n_geom;
-  if ((flags & kFlagNormalMap) != 0u && (flags & kFlagBillboard) == 0u && eye_dist < 140.0) {
-    vec2 nm_uv = v_uv0 * draw.tint.xy;
-    vec2 nm = texture(normal_map, nm_uv).xy;
-    vec3 np = perturb_normal(n_geom, v_position, nm_uv, nm);
-    float fade_nm = 1.0 - smoothstep(85.0, 140.0, eye_dist);
-    n = normalize(mix(n_geom, np, fade_nm * 0.75));
+  if ((flags & kFlagNormalMap) != 0u && (flags & kFlagBillboard) == 0u) {
+    float fade_nm = 1.0 - smoothstep(100.0, 175.0, eye_dist);
+    if (fade_nm > 0.001) {
+      vec2 nm_uv = v_uv0 * draw.tint.xy;
+      vec2 nm_dxy;
+      if (use_hex) {
+        SAMPLE_HEX_TILE_NORMAL_DXY(normal_map, hex_a, hex_w_a, nm_dxy);
+      } else {
+        nm_dxy = texture(normal_map, nm_uv).xy * 2.0 - 1.0;
+      }
+      vec3 np = perturb_normal_dxy(n_geom, v_position, nm_uv, nm_dxy);
+      n = normalize(mix(n_geom, np, fade_nm * 0.75));
+    }
   }
 
-  // FH1 terrain/world AO at TEXCOORD2 (v_uv2, separate from Splat uv1): 0.05 + 0.95 * AO.
+  // TrackSettings.xml TrackLightMapParams (scale & AO floor) on _LM draws without LayerC/Road/Decal params.
+  float lm_scale = 1.4;
+  float ao_floor = 0.05;
+  if ((flags & kFlagLightMap) != 0u && (flags & (kFlagLayerC | kFlagRoad | kFlagVertexFade)) == 0u) {
+    vec2 lmp = unpackHalf2x16(floatBitsToUint(draw.params.w));
+    if (lmp.x > 0.01 && lmp.x <= 6.0) {
+      lm_scale = lmp.x;
+      if (lmp.y >= 0.0 && lmp.y <= 0.5) ao_floor = lmp.y;
+    }
+  }
+
+  // FH1 terrain/world AO at TEXCOORD2 (v_uv2, separate from Splat uv1): ao_floor + (1 - ao_floor) * AO.
   float ao = 1.0;
   if ((flags & kFlagAoMap) != 0u && (flags & kFlagBillboard) == 0u) {
     vec3 ao_s = texture(ao_map, v_uv2).rgb;
-    ao = 0.05 + 0.95 * dot(ao_s, vec3(0.3333));
+    ao = ao_floor + (1.0 - ao_floor) * dot(ao_s, vec3(0.3333));
   }
 
   float ndl = max(dot(n, sun), 0.0);
@@ -884,7 +953,7 @@ void main() {
   float ibl_amb = frame.sun_color.w >= 0.0 ? max(frame.car_light_top.w, 0.01) : 1.0;
   vec3 hemi_amb = mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb;
   if (frame.sun_color.w >= 0.0) {
-    if ((flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u) {
+    if ((flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u && (flags & kFlagBillboard) == 0u) {
       // SKY_AND_TOD §2.4: AmbientColour lifts shadowed world props cleanly in daylight.
       hemi_amb += frame.ambient_color.rgb * 0.35 * ibl_amb;
     } else if ((flags & (kFlagRoad | kFlagSky)) == 0u) {
@@ -900,10 +969,16 @@ void main() {
   float surf_gloss = 0.0;
   float spec_mask = 1.0;
   if ((flags & kFlagSpecMap) != 0u && (flags & kFlagBillboard) == 0u) {
-    spec_mask = dot(texture(spec_map, v_uv0 * draw.tint.xy).rgb, vec3(0.3333));
+    vec4 sp_sample;
+    if (use_hex) {
+      SAMPLE_HEX_TILE_WEIGHTED(spec_map, hex_a, hex_w_a, sp_sample);
+    } else {
+      sp_sample = texture(spec_map, v_uv0 * draw.tint.xy);
+    }
+    spec_mask = dot(sp_sample.rgb, vec3(0.3333));
   }
   if ((flags & kFlagRoad) != 0u && (flags & kFlagBillboard) == 0u) {
-    surf_gloss = clamp(0.20 + 0.28 * spec_mask, 0.18, 0.48);
+    surf_gloss = clamp((0.20 + 0.28 * spec_mask) * road_spec_mod, 0.16, 0.52);
   } else if ((flags & kFlagSpecMap) != 0u && (flags & kFlagBillboard) == 0u) {
     surf_gloss = clamp(0.10 + 0.22 * spec_mask, 0.0, 0.34);
   }
@@ -912,9 +987,17 @@ void main() {
     float nv_s = clamp(dot(n, view), 0.0, 1.0);
     if ((flags & kFlagRoad) != 0u) {
       // FH1 H_ROAD asphalt specular (TrackSettings.xml RoadSpecular / RoadGlossiness).
+      float road_spec_scale = 0.72;
+      float road_gloss = 42.0;
+      if ((flags & kFlagLayerC) == 0u) {
+        vec2 rp = unpackHalf2x16(floatBitsToUint(draw.params.w));
+        if (rp.x > 0.01 && rp.x <= 4.0) road_spec_scale = rp.x;
+        if (rp.y >= 4.0 && rp.y <= 256.0) road_gloss = rp.y;
+      }
       float fres_r = 0.04 + 0.30 * pow(1.0 - nv_s, 4.0);
-      float spec_r = (pow(max(dot(n, h_v), 0.0), 42.0) * 0.62 + pow(max(dot(n, h_v), 0.0), 10.0) * 0.14) *
-                     fres_r * spec_mask * ndl * shade * ao;
+      float nh_r = max(dot(n, h_v), 0.0);
+      float spec_r = (pow(nh_r, road_gloss) * 0.62 + pow(nh_r, max(road_gloss * 0.24, 4.0)) * 0.14) *
+                     (road_spec_scale / 0.72) * fres_r * spec_mask * road_spec_mod * ndl * shade * ao;
       colour += sun_col * spec_r * draw.up.w;
     } else if ((flags & (kFlagNormalMap | kFlagSpecMap)) != 0u) {
       float fres = 0.04 + 0.25 * pow(1.0 - nv_s, 4.0);
@@ -957,19 +1040,24 @@ void main() {
   // World night Light_Map (slot 7) & staggered dusk/dawn EmissiveMapSampler (slot 3) (SKY_AND_TOD §6.1-6.2):
   // Light_Map holds baked incident night irradiance (billboard spotlights, outpost floodlights, patio lamps)
   // and modulates surface albedo t.rgb; EmissiveMap (slot 3) is self-emission (lit windows / neon signs).
+  // Dual _EMIS + _LM building props set BOTH flags, reading Light_Map from light_map and EmissiveMap from layer_c.
   // c3.w (emissive_force) encoded in fractional part of draw.params.z enables daytime interior/sign glow.
   float emissive_force = clamp((draw.params.z - floor(draw.params.z + 0.01)) / 0.45, 0.0, 1.0);
-  if ((flags & kFlagLightMap) != 0u) {
+  bool has_lm = (flags & kFlagLightMap) != 0u;
+  bool has_em = (flags & kFlagEmissiveMap) != 0u;
+  if (has_lm) {
     float lm_gain = max(frame.sky_color.w, emissive_force);
     if (lm_gain > 0.002) {
       vec3 lm = texture(light_map, v_uv2).rgb;
-      colour += t.rgb * lm * lm_gain * 1.4 * draw.up.w;
+      colour += t.rgb * lm * lm_gain * lm_scale * draw.up.w;
     }
-  } else if ((flags & kFlagEmissiveMap) != 0u) {
+  }
+  if (has_em) {
     float lit_flag = step(v_emissive_thresh, frame.sky_color.w);
     float em_gain = max(lit_flag * frame.sky_color.w, emissive_force);
     if (em_gain > 0.002) {
-      vec3 em = texture(light_map, v_uv0 * draw.tint.xy).rgb;
+      vec2 em_uv = v_uv0 * draw.tint.xy;
+      vec3 em = has_lm ? texture(layer_c, em_uv).rgb : texture(light_map, em_uv).rgb;
       colour += em * em_gain * 1.6 * draw.up.w;
     }
   }
@@ -982,13 +1070,18 @@ void main() {
     // Alpha to coverage, sharpened to the texel edge (alpha-test discard ran early above).
     alpha = clamp((t.a - 0.5) / max(fwidth(t.a), 1e-4) + 0.5, 0.0, 1.0);
   } else if (blend == kAlpha) {
-    // H_VBLND_DECAL with Noise_Sampler (WORLD_MATERIALS.md:632-640):
-    // saturate(0.5 + c4.x * (COLOR.w - 0.5) - c4.y * (N - 0.5)).
-    if ((flags & kFlagDecalNoise) != 0u) {
+    // H_VBLND_DECAL with Noise_Sampler (c4.y >= 0) or Mask (c4.y < 0):
+    if ((flags & kFlagVertexFade) != 0u && (flags & kFlagDecalNoise) != 0u) {
       vec2 c4 = unpackHalf2x16(floatBitsToUint(draw.params.w));
-      float n_a = texture(splat_map, v_uv0 * draw.tint.zw).a;
-      float fade = clamp(0.5 + c4.x * (v_colour.a - 0.5) - c4.y * (n_a - 0.5), 0.0, 1.0);
-      alpha = t.a * fade;
+      vec4 mask_s = texture(splat_map, v_uv0 * draw.tint.zw);
+      if (c4.y < 0.0) {
+        // H_VBLND_DECAL*_MASK*: modulate decal alpha by mask texture (alpha when shaped, else RGB luma) * vertex fade.
+        float mask_val = (mask_s.a < 0.99) ? mask_s.a : dot(mask_s.rgb, vec3(0.3333));
+        alpha = t.a * mask_val * v_colour.r;
+      } else {
+        float fade = clamp(0.5 + c4.x * (v_colour.a - 0.5) - c4.y * (mask_s.a - 0.5), 0.0, 1.0);
+        alpha = t.a * fade;
+      }
     } else if ((flags & kFlagRoad) != 0u) {
       // H_ROAD_*_BLEND_* samples Blend_A without multiplying by Blend_A.a (WORLD_MATERIALS.md:640).
       alpha = clamp(v_colour.a, 0.0, 1.0);

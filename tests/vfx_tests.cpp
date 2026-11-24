@@ -1,13 +1,16 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "fh1data/archive.h"
 #include "fh1data/collision.h"
 #include "world/vfx.h"
+#include "world/world_anim.h"
 
 namespace {
 
@@ -338,6 +341,216 @@ void test_skidmarks() {
   CHECK(skids.segment_count() == 0);
 }
 
+void write_be16(std::vector<uint8_t>& buf, size_t off, uint16_t v) {
+  buf[off + 0] = uint8_t((v >> 8) & 0xFFu);
+  buf[off + 1] = uint8_t(v & 0xFFu);
+}
+
+void write_be32(std::vector<uint8_t>& buf, size_t off, uint32_t v) {
+  buf[off + 0] = uint8_t((v >> 24) & 0xFFu);
+  buf[off + 1] = uint8_t((v >> 16) & 0xFFu);
+  buf[off + 2] = uint8_t((v >> 8) & 0xFFu);
+  buf[off + 3] = uint8_t(v & 0xFFu);
+}
+
+void write_bef32(std::vector<uint8_t>& buf, size_t off, float f) {
+  uint32_t u = 0;
+  std::memcpy(&u, &f, 4);
+  write_be32(buf, off, u);
+}
+
+uint16_t encode_f16(float f) {
+  uint32_t u = 0;
+  std::memcpy(&u, &f, 4);
+  const uint32_t sign = (u >> 16) & 0x8000u;
+  const int32_t exp = int32_t((u >> 23) & 0xFFu) - 127 + 15;
+  const uint32_t mant = u & 0x7FFFFFu;
+  if (exp <= 0) return uint16_t(sign);
+  if (exp >= 31) return uint16_t(sign | 0x7BFFu);
+  return uint16_t(sign | (uint32_t(exp) << 10) | (mant >> 13));
+}
+
+void test_pgeo_parsing_and_loading() {
+  // Build a synthetic clean-room kind-4 .pgeo container (1 submesh, 3 vertices, 3 indices = 1 triangle).
+  const std::string obj_name = "ANIM_TestBalloon_001";
+  const std::string tex_name = "TEST_Balloon_DIFF";
+  const size_t name_len = obj_name.size() + 1;
+  const size_t hdr_base = (0x60 + name_len + 15u) & ~size_t(15u);
+  const size_t tex_table_off = hdr_base + 0x60;
+  const size_t tex_str_off = tex_table_off + 4u;
+  const size_t sub_off = (tex_str_off + tex_name.size() + 1u + 15u) & ~size_t(15u);
+  const size_t draw_off = sub_off + 0x44;
+  const size_t gr2_off = draw_off + 0x2c;
+  const uint32_t gr2_size = 0x20;
+  const size_t geom_off = gr2_off + gr2_size;
+  const uint32_t idx_bytes = 3u * 2u;     // 3 uint16 indices
+  const uint32_t vb_bytes = 3u * 12u;     // 3 vertices * 12-byte stride
+  const uint32_t geom_size = idx_bytes + vb_bytes;
+  const uint32_t total_size = uint32_t(geom_off + geom_size);
+
+  std::vector<uint8_t> pgeo(total_size, 0);
+  std::memcpy(pgeo.data(), "OEGP", 4);
+  write_bef32(pgeo, 0x10, -8.0f);
+  write_bef32(pgeo, 0x14, 0.0f);
+  write_bef32(pgeo, 0x18, -8.0f);
+  write_bef32(pgeo, 0x20, 8.0f);
+  write_bef32(pgeo, 0x24, 24.0f);
+  write_bef32(pgeo, 0x28, 8.0f);
+  write_be32(pgeo, 0x30, 4u);  // kind 4 = animated object
+  write_be32(pgeo, 0x3c, uint32_t(name_len));
+  write_be32(pgeo, 0x48, total_size);
+  write_be32(pgeo, 0x4c, gr2_size);
+  write_be32(pgeo, 0x50, geom_size);
+  std::memcpy(pgeo.data() + 0x60, obj_name.c_str(), name_len);
+
+  // Texture count (1) and submesh count (1).
+  write_be32(pgeo, hdr_base + 0x44, 1u);
+  write_be32(pgeo, hdr_base + 0x50, 1u);
+  write_be32(pgeo, tex_table_off, uint32_t(tex_name.size() + 1u));
+  std::memcpy(pgeo.data() + tex_str_off, tex_name.c_str(), tex_name.size() + 1u);
+
+  // Submesh descriptor: (nv=3, ni=3, flag=1).
+  write_be32(pgeo, sub_off + 4, 3u);
+  write_be32(pgeo, sub_off + 8, 3u);
+  write_be32(pgeo, sub_off + 12, 1u);
+
+  // Draw descriptor: ntris=1 at +20.
+  write_be32(pgeo, draw_off + 20, 1u);
+
+  // Geometry block: 3 indices (0, 1, 2) + 3 half-float vertices.
+  write_be16(pgeo, geom_off + 0, 0u);
+  write_be16(pgeo, geom_off + 2, 1u);
+  write_be16(pgeo, geom_off + 4, 2u);
+  const float verts[3][3] = {{-4.0f, 1.0f, 0.0f}, {4.0f, 1.0f, 0.0f}, {0.0f, 18.0f, 2.0f}};
+  for (int i = 0; i < 3; ++i) {
+    const size_t vp = geom_off + idx_bytes + size_t(i) * 12u;
+    write_be16(pgeo, vp + 0, encode_f16(verts[i][0]));
+    write_be16(pgeo, vp + 2, encode_f16(verts[i][1]));
+    write_be16(pgeo, vp + 4, encode_f16(verts[i][2]));
+  }
+
+  world::AnimatedPgeoObject parsed;
+  CHECK(world::parse_animated_pgeo(pgeo, parsed, true));
+  CHECK(parsed.name == obj_name);
+  CHECK(parsed.kind == 4u);
+  CHECK(parsed.category == world::AnimatedPgeoCategory::kBalloon);
+  CHECK(parsed.textures.size() == 1 && parsed.textures[0] == tex_name);
+  CHECK(parsed.submeshes.size() == 1);
+  CHECK(parsed.submeshes[0].vertices.size() == 3);
+  CHECK(parsed.submeshes[0].indices.size() == 3);
+  CHECK(std::fabs(parsed.submeshes[0].vertices[2].pos[1] - 18.0f) < 0.25f);
+
+  // Verify 10-angle crowd impostor azimuth quantization covers all 10 bins cleanly.
+  std::set<int> bins;
+  for (int step = 0; step < 100; ++step) {
+    const float az = float(step) * (3.14159265f / 100.0f);
+    const int idx = world::select_impostor_angle(az, 10, false);
+    CHECK(idx >= 0 && idx < 10);
+    bins.insert(idx);
+  }
+  CHECK(bins.size() == 10);
+}
+
+void test_rally_world_separation_and_sharing() {
+  // 1. Verify AnimatedWorldSystem ColoradoDirt separation: no Colorado Festival balloons/stage crowds.
+  world::AnimatedWorldSystem primary;
+  world::TrackPostConfig cfg;
+  cfg.crowd_sprite_distance = 52.0f;
+  cfg.crowd_dark[0] = 0.45f;
+  primary.set_world({}, std::filesystem::path("Media/DLCZips/1600_pri_65/Media/Tracks/ColoradoDirt"), cfg);
+  CHECK(primary.is_rally_world());
+  CHECK(primary.balloons().empty());
+  CHECK(primary.pgeo_placements().empty());
+  CHECK(!primary.crowds().empty());
+  CHECK(!primary.flags().empty());
+  for (const auto& cl : primary.crowds()) {
+    CHECK(!cl.stage_lit);  // Rally roadside spectators & marshals have no Festival stage floodlights
+  }
+
+  // 2. Verify shared AnimatedWorldSystem state between DriveApp and Showroom (zero duplicate init,
+  //    real TrackPostConfig & live Rally/Colorado world switch preserved).
+  world::AnimatedWorldSystem::set_shared(&primary);
+  CHECK(world::AnimatedWorldSystem::shared() == &primary);
+  world::AnimatedWorldSystem mirror;
+  mirror.share_from(*world::AnimatedWorldSystem::shared());
+  CHECK(mirror.is_rally_world());
+  CHECK(std::fabs(mirror.post_config().crowd_sprite_distance - 52.0f) < 1e-4f);
+  CHECK(mirror.balloons().empty());
+
+  // Switch primary back to Colorado -> shared mirror sees Colorado balloons & festival crowds immediately.
+  primary.set_world({}, std::filesystem::path("media/tracks/colorado"), cfg);
+  CHECK(!mirror.is_rally_world());
+  CHECK(!mirror.balloons().empty());
+  world::AnimatedWorldSystem::set_shared(nullptr);
+
+  // 3. Verify ParticleLibrary records Rally world context cleanly when world_dir is ColoradoDirt.
+  world::ParticleLibrary rally_lib;
+  rally_lib.load({}, std::filesystem::path("Media/DLCZips/1600_pri_65/Media/Tracks/ColoradoDirt"));
+  CHECK(rally_lib.is_rally_world());
+}
+
+void test_particle_atlas_capacity_and_gradient() {
+  // 1. Verify >64 particle textures receive unique monotonic atlas slots (supporting all 72+ .xds with zero truncation).
+  world::ParticleSystem ps;
+  std::set<uint16_t> assigned;
+  for (int i = 0; i < 80; ++i) {
+    const std::string tname = "particle_tex_" + std::to_string(i) + ".xds";
+    const uint16_t slot = ps.resolve_texture_slot(tname);
+    CHECK(slot == uint16_t(i + 1));
+    assigned.insert(slot);
+  }
+  CHECK(assigned.size() == 80);
+  CHECK(ps.used_textures().size() == 80);
+  CHECK(ps.resolve_texture_slot("particle_tex_71.xds") == 72u);  // 72nd .xds never truncated at 63!
+
+  // 2. Verify <Texture2>, <Gradient numGradientRows>, and .tga -> .xds normalization in particle XMLs.
+  const std::string grad_xml = R"(
+<Effect Version="14" budget="80" lowerbudget="40">
+  <EmitterProperties type="SuperSpray">
+    <Quantity value="20.0" var="0.0"/>
+    <Velocity value="2.0" variation="0.0"/>
+    <Life value="1.5" variation="0.0"/>
+    <ParticleShaderType Version="3" value="_animated_rowonly_gradient"/>
+    <Animation rate="1.0" numFramesX="4" numFramesY="2"/>
+    <Gradient numGradientRows="10"/>
+    <Size valueX="0.2" valueY="0.2" maxValueX="0.4" maxValueY="0.4"/>
+  </EmitterProperties>
+  <Render>
+    <ParticleType value="BillboardedQuad" dynamic_lighting="1">
+      <Texture value="GR_Confetti_DIFF.tga"/>
+      <Texture2 value="GR_Confetti_GRAD.tga"/>
+      <Material>
+        <BlendType value="alpha"/>
+        <RGBStart r="1.0" g="1.0" b="1.0" a="1.0"/>
+        <RGBMid r="1.0" g="1.0" b="1.0" a="1.0"/>
+        <RGBEnd r="1.0" g="1.0" b="1.0" a="0.0"/>
+      </Material>
+    </ParticleType>
+  </Render>
+</Effect>)";
+  world::ParticleEffectDef gdef;
+  CHECK(world::parse_particle_effect_xml(grad_xml, "ConfettiTest", gdef));
+  CHECK(gdef.shader_kind == world::ParticleShaderKind::kAnimatedRowOnlyGradient);
+  CHECK(gdef.num_gradient_rows == 10);
+  CHECK(gdef.texture_name == "gr_confetti_diff.xds");
+  CHECK(gdef.texture2_name == "gr_confetti_grad.xds");
+
+  world::ParticleLibrary glib;
+  glib.add_effect(gdef);
+  world::ParticleSystem gps;
+  gps.set_library(&glib);
+  gps.spawn_burst("confettitest", {0, 2, 0}, {0, 1, 0}, {0, 0, 0}, 6, 1.0f);
+  std::vector<world::ParticleSprite> alpha, add;
+  gps.build_sprites({0, 2, -5}, alpha, add);
+  CHECK(alpha.size() == 6);
+  for (const auto& sp : alpha) {
+    CHECK(sp.use_gradient);
+    CHECK(sp.texture_slot > 0);
+    CHECK(sp.texture2_slot > 0 && sp.texture2_slot != sp.texture_slot);
+    CHECK(sp.gradient_row_v > 0.0f && sp.gradient_row_v < 1.0f);
+  }
+}
+
 void test_corpus_counts() {
   const char* env_root = std::getenv("SHIFT_GAME_ROOT");
   if (!env_root || !*env_root) return;
@@ -390,6 +603,28 @@ void test_corpus_counts() {
     std::printf("corpus vfx: %zu effects, %zu xds, %zu emitters, %zu surfaces (tex0=%d tex1=%d spark=%d)\n",
                 lib.effects().size(), lib.xds_count(), lib.world_emitters().size(), surfs.size(), tex0, tex1, spark);
   }
+
+  // Verify all 72 retail .xds particle textures receive unique slots > 64 without truncation.
+  {
+    world::ParticleSystem ps;
+    for (const auto& xname : lib.xds_names()) {
+      CHECK(ps.resolve_texture_slot(xname) > 0);
+    }
+    CHECK(ps.used_textures().size() == 72);
+  }
+
+  // Verify animatedobjects.zip .pgeo decoding, sitting spectators, .anim.bin clips, and impostors.
+  if (std::filesystem::exists(media / "Spectators.zip") && std::filesystem::exists(media / "animatedobjects.zip")) {
+    world::AnimatedWorldSystem anim;
+    CHECK(anim.init(media, world::TrackPostConfig{}, &err, colorado));
+    const auto& cat = anim.catalog();
+    CHECK(cat.animated_pgeos == 290);
+    CHECK(!cat.pgeo_objects.empty());
+    CHECK(!anim.pgeo_placements().empty());
+    CHECK(!cat.sit_assets.empty());
+    CHECK(!cat.anim_clips.empty());
+    CHECK(cat.has_impostor_sprites);
+  }
 }
 
 }  // namespace
@@ -398,6 +633,9 @@ int main() {
   test_xml_parsers();
   test_particle_simulation();
   test_skidmarks();
+  test_pgeo_parsing_and_loading();
+  test_rally_world_separation_and_sharing();
+  test_particle_atlas_capacity_and_gradient();
   test_corpus_counts();
   if (g_failures == 0) {
     std::printf("vfx_tests: all checks passed\n");

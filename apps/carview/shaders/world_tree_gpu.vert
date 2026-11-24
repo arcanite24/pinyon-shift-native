@@ -6,6 +6,31 @@
 layout(set = 0, binding = 0) uniform Frame {
   mat4 view_projection;
   vec4 eye;
+  vec4 key_light;
+  vec4 fill_light;
+  vec4 options;
+  vec4 tint_light;
+  vec4 reflect_tint;
+  mat4 transparent_view_projection;
+  vec4 stripe;
+  mat4 shadow_matrix;
+  vec4 shadow;
+  vec4 shadow_bias;
+  vec4 world_fade;  // prop LOD distance, its band; the edge fade's start and end
+  vec4 drive;
+  vec4 sun_color;
+  vec4 sky_color;
+  vec4 ground_color;
+  vec4 fog_color;
+  vec4 fog_scatter;
+  vec4 fog_params;
+  vec4 car_light_top;
+  vec4 car_light_bot;
+  mat4 shadow_matrix_far;
+  vec4 shadow_far_bias;
+  vec4 env_basis_x;  // xyz game X in render space, w real_time_sec
+  vec4 env_basis_y;  // xyz game Y in render space, w wind_speed
+  vec4 env_basis_z;  // xyz game Z in render space, w wind_amplitude
 } frame;
 
 struct TreeInstanceGpu {
@@ -50,24 +75,74 @@ void main() {
   vec4 world = push.model * vec4(t.base_hw.xyz, 1.0);
   const vec3 u_axis = normalize(mat3(push.model) * t.up_h.xyz);
   const vec3 to_eye = frame.eye.xyz - world.xyz;
+  const float eye_dist = length(to_eye);
+
+  // Smooth LOD billboard cross-fade (v_fade.x = fade-in, v_fade.y = far fade-out) using world_fade.
+  v_fade = vec2(1.0, 0.0);
+  if (frame.world_fade.y > 0.0) {
+    const bool is_distant_proxy = (t.uv_rect.x <= 0.001 && t.uv_rect.y <= 0.001 &&
+                                   t.uv_rect.z >= 0.999 && t.uv_rect.w >= 0.999);
+    float s = 1.0;
+    if (is_distant_proxy && frame.world_fade.w > frame.world_fade.z) {
+      // Complementary cross-fade matching 3D tree props fading out across [world_fade.z, world_fade.w].
+      s = smoothstep(frame.world_fade.z, frame.world_fade.w, eye_dist);
+    } else {
+      // Smooth near-camera fade-in so roadside native tree sprites never pop or clip sharply.
+      const float near_start = 8.0;
+      const float near_end = near_start + min(max(frame.world_fade.y, 12.0), 18.0);
+      s = smoothstep(near_start, near_end, eye_dist);
+    }
+    const float far_end = max(frame.world_fade.w * 4.5, 1750.0);
+    const float far_start = far_end - max(frame.world_fade.y * 8.0, 180.0);
+    const float e = smoothstep(far_start, far_end, eye_dist);
+    v_fade = vec2(s, e);
+    if (s <= 0.001 || e >= 0.999) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      v_position = vec3(0.0);
+      v_normal = vec3(0.0);
+      v_uv0 = vec2(0.0);
+      v_uv1 = vec2(0.0);
+      v_uv2 = vec2(0.0);
+      v_colour = vec4(0.0);
+      v_draw = t.col_tex.z;
+      v_emissive_thresh = 0.5;
+      return;
+    }
+  }
+
   vec3 r_axis = cross(u_axis, to_eye);
   const float len = length(r_axis);
   r_axis = len > 1e-4 ? (r_axis / len) : vec3(1.0, 0.0, 0.0);
-  // Subtle wind sway on tree canopies (push.pad: x=time_sec, y=wind_speed, z=wind_amplitude).
-  float sway = 0.0;
-  if (oy > 0.01 && push.pad.z > 0.001) {
-    float phase = dot(t.base_hw.xz, vec2(0.19, 0.23)) + push.pad.x * max(push.pad.y, 0.4) * 1.15;
-    float gust = sin(phase) + 0.35 * sin(phase * 2.3 + 1.1);
-    sway = gust * min(push.pad.z, 0.85) * min(oy * 0.045, 0.42);
+
+  // World-space horizontal wind sway on tree canopies (independent of camera rotation).
+  const float t_sec = push.pad.x > 0.0 ? push.pad.x : frame.env_basis_x.w;
+  const float wspd = push.pad.y > 0.0 ? push.pad.y : frame.env_basis_y.w;
+  const float wamp = push.pad.z > 0.0 ? push.pad.z : frame.env_basis_z.w;
+  vec3 sway_offset = vec3(0.0);
+  if (oy > 0.01 && wamp > 0.001) {
+    // Consistent world-space wind direction in game XZ (matching grass sway in world_vert.glsl).
+    vec3 wind_world = frame.env_basis_x.xyz * 0.8 + frame.env_basis_z.xyz * 0.6;
+    if (dot(wind_world, wind_world) < 1e-4) {
+      wind_world = mat3(push.model) * vec3(0.8, 0.0, 0.6);
+    }
+    wind_world -= u_axis * dot(wind_world, u_axis);
+    const float wlen = length(wind_world);
+    const vec3 wind_dir = wlen > 1e-4 ? (wind_world / wlen) : vec3(1.0, 0.0, 0.0);
+    const vec3 wind_side = cross(u_axis, wind_dir);
+    // Traveling gust wave aligned with world-space wind XZ.
+    const float phase = dot(t.base_hw.xz, vec2(0.16, 0.12)) - t_sec * max(wspd, 0.4) * 1.15;
+    const float gust = sin(phase) + 0.35 * sin(phase * 2.3 + 1.1);
+    const float cross_gust = sin(phase * 1.47 + 2.4) * 0.22;
+    const float amp = min(wamp, 0.85) * min(oy * 0.045, 0.42);
+    sway_offset = (wind_dir * gust + wind_side * cross_gust) * amp;
   }
-  world.xyz += r_axis * (ox + sway) + u_axis * oy;
+  world.xyz += r_axis * ox + u_axis * oy + sway_offset;
 
   v_position = world.xyz;
   v_normal = normalize(u_axis * 0.65 + normalize(to_eye + vec3(0.0, 0.001, 0.0)) * 0.35);
   v_uv0 = uv;
   v_uv1 = vec2(ox, oy);
   v_colour = unpackUnorm4x8(t.col_tex.x);
-  v_fade = vec2(0.0);
   v_draw = t.col_tex.z;
   v_uv2 = vec2(0.0);
   v_emissive_thresh = 0.5;

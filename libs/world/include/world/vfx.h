@@ -32,6 +32,11 @@ enum class ParticleShaderKind : uint8_t {
   kAnimatedSoft = 2,
   kAnimatedRowOnly = 3,
   kAnimatedRowOnlyGradient = 4,
+  kGradient = 5,
+  kGradientSoft = 6,
+  kAnimated = 7,
+  kAnimatedGradient = 8,
+  kAnimatedRowOnlySoft = 9,
 };
 
 struct ParticleEffectDef {
@@ -55,6 +60,7 @@ struct ParticleEffectDef {
   ParticleShaderKind shader_kind = ParticleShaderKind::kSoft;
   float anim_rate = 1.0f;
   int num_frames_x = 1, num_frames_y = 1;
+  int num_gradient_rows = 1;
   bool render_in_mirror = true;
 
   // <Size>
@@ -87,7 +93,8 @@ struct ParticleEffectDef {
   float max_screen_size = 0.5f;
   std::array<float, 4> light_influence{0.25f, 1.5f, 1.5f, 1.0f};
   float headlight_power = 1.0f;
-  std::string texture_name;  // lower-case .xds filename in effects.zip
+  std::string texture_name;   // lower-case .xds filename in effects.zip
+  std::string texture2_name;  // optional secondary / gradient ramp .xds filename in effects.zip
 
   // <Material>
   bool additive = false;
@@ -166,6 +173,8 @@ class ParticleLibrary {
   const ParticleEffectDef* find_effect(std::string_view name) const;
   const std::map<std::string, ParticleEffectDef>& effects() const { return effects_; }
   size_t xds_count() const { return xds_members_.size(); }
+  std::vector<std::string> xds_names() const;
+  bool is_rally_world() const { return rally_world_; }
   const std::map<std::string, std::string>& smashable_effects() const { return smashable_effects_; }
   std::string smashable_effect_for(std::string_view stem) const;
   const std::vector<WorldEmitter>& world_emitters() const { return world_emitters_; }
@@ -183,6 +192,7 @@ class ParticleLibrary {
   std::map<std::string, std::string> smashable_effects_;      // lower-case stem -> effect name
   std::vector<WorldEmitter> world_emitters_;
   BackfireTimerConfig backfire_config_;
+  bool rally_world_ = false;
 };
 
 // Render-ready particle sprite in game-frame world coordinates.
@@ -200,7 +210,10 @@ struct ParticleSprite {
   int frame_index = 0;
   int frames_x = 1;
   int frames_y = 1;
-  uint16_t texture_slot = 0;   // assigned by texture mapper
+  uint16_t texture_slot = 0;   // primary texture slot assigned by texture mapper
+  uint16_t texture2_slot = 0;  // optional secondary / gradient ramp texture slot (0 = none)
+  float gradient_row_v = 0.5f; // normalized V row [0..1] for <Gradient numGradientRows="N">
+  bool use_gradient = false;   // true for _gradient / _gradient_soft / _animated*_gradient
   bool additive = false;
   bool velocity_aligned = false;
   bool dynamic_lighting = true;
@@ -290,6 +303,7 @@ class ParticleSystem {
   struct LiveParticle {
     const ParticleEffectDef* def = nullptr;
     uint16_t tex_slot = 0;
+    uint16_t tex2_slot = 0;
     uint8_t child_depth = 0;
     std::array<float, 3> pos{};
     std::array<float, 3> vel{};
@@ -301,6 +315,7 @@ class ParticleSystem {
     float spin_rate = 0.0f;
     float alpha_scale = 1.0f;
     int anim_row = 0;
+    int grad_row = 0;
   };
 
   void spawn_one(const ParticleEffectDef& def, const std::array<float, 3>& pos,

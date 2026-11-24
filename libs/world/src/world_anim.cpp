@@ -129,6 +129,66 @@ float read_bef32(const uint8_t* p) {
   return f;
 }
 
+float half_to_float_be(uint16_t h) {
+  const uint32_t sign = uint32_t(h >> 15) << 31;
+  const uint32_t exp = (h >> 10) & 0x1Fu;
+  const uint32_t mant = h & 0x3FFu;
+  uint32_t bits = 0;
+  if (exp == 0) {
+    if (mant == 0) {
+      bits = sign;
+    } else {
+      const float v = std::ldexp(float(mant), -24);
+      std::memcpy(&bits, &v, 4);
+      bits |= sign;
+    }
+  } else if (exp == 31) {
+    bits = sign | 0x7F800000u | (mant << 13);
+  } else {
+    bits = sign | ((exp + 112u) << 23) | (mant << 13);
+  }
+  float out = 0.0f;
+  std::memcpy(&out, &bits, 4);
+  return out;
+}
+
+bool is_rally_world_path(const std::filesystem::path& world_dir) {
+  if (world_dir.empty()) return false;
+  const std::string low = lower_ascii(world_dir.string());
+  return low.find("coloradodirt") != std::string::npos || low.find("1600_pri_65") != std::string::npos;
+}
+
+void blit_atlas_subrect(const fh1::RgbaImage& src, uint32_t sx0, uint32_t sy0, uint32_t sw, uint32_t sh,
+                        uint8_t* dst_atlas, uint32_t atlas_size, uint32_t cell_x, uint32_t cell_y,
+                        uint32_t cell_size) {
+  if (src.width == 0 || src.height == 0 || sw == 0 || sh == 0 ||
+      src.rgba.size() < size_t(src.width) * src.height * 4) {
+    return;
+  }
+  for (uint32_t y = 0; y < cell_size; ++y) {
+    const float sy = float(sy0) + (float(y) + 0.5f) * float(sh) / float(cell_size) - 0.5f;
+    const uint32_t y0 = uint32_t(std::clamp(int(std::floor(sy)), 0, int(src.height) - 1));
+    const uint32_t y1 = std::min(y0 + 1, src.height - 1);
+    const float fy = std::clamp(sy - float(y0), 0.0f, 1.0f);
+    for (uint32_t x = 0; x < cell_size; ++x) {
+      const float sx = float(sx0) + (float(x) + 0.5f) * float(sw) / float(cell_size) - 0.5f;
+      const uint32_t x0 = uint32_t(std::clamp(int(std::floor(sx)), 0, int(src.width) - 1));
+      const uint32_t x1 = std::min(x0 + 1, src.width - 1);
+      const float fx = std::clamp(sx - float(x0), 0.0f, 1.0f);
+      const uint8_t* p00 = src.rgba.data() + (size_t(y0) * src.width + x0) * 4;
+      const uint8_t* p10 = src.rgba.data() + (size_t(y0) * src.width + x1) * 4;
+      const uint8_t* p01 = src.rgba.data() + (size_t(y1) * src.width + x0) * 4;
+      const uint8_t* p11 = src.rgba.data() + (size_t(y1) * src.width + x1) * 4;
+      uint8_t* o = dst_atlas + (size_t(cell_y * cell_size + y) * atlas_size + (cell_x * cell_size + x)) * 4;
+      for (int c = 0; c < 4; ++c) {
+        const float top = float(p00[c]) * (1.0f - fx) + float(p10[c]) * fx;
+        const float bot = float(p01[c]) * (1.0f - fx) + float(p11[c]) * fx;
+        o[c] = clamp_u8(top * (1.0f - fy) + bot * fy);
+      }
+    }
+  }
+}
+
 uint8_t lin_to_srgb_u8(float c) {
   c = std::clamp(c, 0.0f, 1.0f);
   const float s = c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
@@ -260,13 +320,292 @@ bool parse_stand_skeleton_from_anim_bin(std::span<const uint8_t> data,
   return true;
 }
 
+// Verified 15-bone FH1 Sitting skeleton hierarchy & rest-pose world joint coordinates
+// (from media/Spectators.zip/anims/Sit_Idle_01.anim.bin: +X character left, +Y up, +Z forward).
+constexpr std::array<SpectatorStandBone, SpectatorCatalog::kSitBoneCount> kDefaultSitSkeleton{{
+    {-1, {+0.0000f, +0.4861f, -0.4334f}},  //  0: root
+    { 0, {+0.0000f, +0.5374f, -0.4334f}},  //  1: pelvis
+    { 1, {+0.0000f, +0.5374f, -0.4334f}},  //  2: hip
+    { 2, {+0.0000f, +0.5374f, -0.4334f}},  //  3: thigh_base
+    { 3, {+0.0016f, +0.5312f, -0.0354f}},  //  4: knees
+    { 4, {+0.0001f, +0.1116f, -0.0766f}},  //  5: feet
+    { 2, {-0.0024f, +0.6191f, -0.4577f}},  //  6: spine
+    { 6, {-0.0266f, +1.1070f, -0.2787f}},  //  7: chest/neck
+    { 7, {+0.0069f, +1.0530f, -0.2984f}},  //  8: armL_shoulder
+    { 8, {+0.1344f, +1.0028f, -0.2914f}},  //  9: armL_upper
+    { 9, {+0.2024f, +0.7583f, -0.2802f}},  // 10: armL_lower
+    { 7, {-0.0546f, +1.0503f, -0.2994f}},  // 11: armR_shoulder
+    {11, {-0.1833f, +1.0050f, -0.2863f}},  // 12: armR_upper
+    {12, {-0.2471f, +0.7596f, -0.2712f}},  // 13: armR_lower
+    { 7, {-0.0282f, +1.1728f, -0.2737f}},  // 14: head
+}};
+
+bool parse_sit_skeleton_from_anim_bin(std::span<const uint8_t> data,
+                                      std::array<SpectatorStandBone, SpectatorCatalog::kSitBoneCount>& out) {
+  constexpr size_t kBase = 0x190;
+  if (data.size() < kBase + 0x40 || std::memcmp(data.data(), "CAFF", 4) != 0) return false;
+  const uint8_t* p = data.data() + kBase;
+  const uint16_t nbones = read_be16(p + 0x20);
+  const uint32_t bone_off = read_be32(p + 0x2c);
+  if (nbones != SpectatorCatalog::kSitBoneCount) return false;
+  if (kBase + size_t(bone_off) + size_t(nbones) * 0x34 > data.size()) return false;
+
+  std::array<SpectatorStandBone, SpectatorCatalog::kSitBoneCount> parsed{};
+  for (size_t b = 0; b < SpectatorCatalog::kSitBoneCount; ++b) {
+    const uint8_t* bp = p + bone_off + b * 0x34;
+    const float wx = read_bef32(bp + 12);
+    const float wy = read_bef32(bp + 16);
+    const float wz = read_bef32(bp + 20);
+    const int16_t parent = int16_t(read_be16(bp + 40));
+    if (!std::isfinite(wx) || !std::isfinite(wy) || !std::isfinite(wz)) return false;
+    if (parent >= int16_t(b) || parent < -1) return false;
+    if (std::fabs(wx) > 2.0f || wy < -0.5f || wy > 2.5f || std::fabs(wz) > 2.0f) return false;
+    parsed[b].parent = parent;
+    parsed[b].bind_world = {wx, wy, wz};
+  }
+  out = parsed;
+  return true;
+}
+
+AnimatedPgeoCategory classify_pgeo_name(const std::string& low_name) {
+  if (low_name.find("balloon") != std::string::npos || low_name.find("blimp") != std::string::npos) {
+    return AnimatedPgeoCategory::kBalloon;
+  }
+  if (low_name.find("windmill") != std::string::npos || low_name.find("windturbine") != std::string::npos) {
+    return AnimatedPgeoCategory::kWindmill;
+  }
+  if (low_name.find("banner") != std::string::npos || low_name.find("flag") != std::string::npos) {
+    return AnimatedPgeoCategory::kBannerOrFlag;
+  }
+  if (low_name.find("airwalker") != std::string::npos || low_name.find("airdancer") != std::string::npos) {
+    return AnimatedPgeoCategory::kAirwalker;
+  }
+  if (low_name.find("stage") != std::string::npos || low_name.find("light") != std::string::npos ||
+      low_name.find("laser") != std::string::npos) {
+    return AnimatedPgeoCategory::kStageLight;
+  }
+  if (low_name.find("biplane") != std::string::npos || low_name.find("plane") != std::string::npos ||
+      low_name.find("helicopter") != std::string::npos || low_name.find("mustang") != std::string::npos) {
+    return AnimatedPgeoCategory::kAircraft;
+  }
+  return AnimatedPgeoCategory::kOther;
+}
+
 }  // namespace
+
+int select_impostor_angle(float rel_azimuth_rad, int num_angles, bool both_sides) {
+  const int n = std::max(1, num_angles);
+  // Normalize relative azimuth into [0, 2*pi).
+  float a = std::fmod(rel_azimuth_rad, 2.0f * kPi);
+  if (a < 0.0f) a += 2.0f * kPi;
+  if (!both_sides && a > kPi) {
+    // Symmetric hemisphere fold when sprites only cover [0..pi].
+    a = 2.0f * kPi - a;
+  }
+  const float span = both_sides ? (2.0f * kPi) : kPi;
+  const float norm = std::clamp(a / span, 0.0f, 0.9999f);
+  return std::clamp(int(norm * float(n)), 0, n - 1);
+}
+
+bool parse_spectator_anim_clip(std::span<const uint8_t> data, const std::string& name, SpectatorAnimClip& out) {
+  out = SpectatorAnimClip{};
+  out.name = name;
+  constexpr size_t kBase = 0x190;
+  if (data.size() < kBase + 0x34 || std::memcmp(data.data(), "CAFF", 4) != 0) return false;
+  const uint8_t* p = data.data() + kBase;
+  const float dur = read_bef32(p + 0x1c);
+  const uint16_t nbones = read_be16(p + 0x20);
+  const uint16_t nframes = read_be16(p + 0x22);
+  if (!std::isfinite(dur) || dur <= 0.05f || dur > 600.0f) return false;
+  if (nbones == 0 || nbones > 64) return false;
+  out.duration_sec = dur;
+  out.bone_count = nbones;
+  out.frame_count = nframes;
+  const std::string low = lower_ascii(name);
+  out.is_sitting = (nbones == SpectatorCatalog::kSitBoneCount) || (low.find("sit") != std::string::npos);
+  out.is_cheer = (low.find("cheer") != std::string::npos || low.find("gig") != std::string::npos);
+  // Higher cadence / shorter cheer loops carry higher animation energy.
+  const float fps = (nframes > 0 && dur > 0.05f) ? (float(nframes) / dur) : 30.0f;
+  const float base_e = out.is_cheer ? 0.85f : 0.42f;
+  const float cadence = std::clamp(3.2f / std::max(dur, 1.0f), 0.55f, 1.35f);
+  out.energy = std::clamp(base_e * (0.75f + 0.25f * cadence) * std::clamp(fps / 30.0f, 0.7f, 1.3f), 0.20f, 1.0f);
+  return true;
+}
+
+bool parse_animated_pgeo(std::span<const uint8_t> data, AnimatedPgeoObject& out, bool decode_geometry) {
+  out = AnimatedPgeoObject{};
+  if (data.size() < 0x60 || std::memcmp(data.data(), "OEGP", 4) != 0) return false;
+  const uint8_t* p = data.data();
+  out.box_min = {read_bef32(p + 0x10), read_bef32(p + 0x14), read_bef32(p + 0x18)};
+  out.box_max = {read_bef32(p + 0x20), read_bef32(p + 0x24), read_bef32(p + 0x28)};
+  for (int i = 0; i < 3; ++i) {
+    if (!std::isfinite(out.box_min[i]) || !std::isfinite(out.box_max[i])) return false;
+  }
+  out.kind = read_be32(p + 0x30);
+  const uint32_t name_len = read_be32(p + 0x3c);
+  const uint32_t total_size = read_be32(p + 0x48);
+  const uint32_t gr2_size = read_be32(p + 0x4c);
+  const uint32_t geom_size = read_be32(p + 0x50);
+  if (total_size != data.size()) return false;
+  if (name_len == 0 || name_len > 512 || 0x60 + size_t(name_len) > data.size()) return false;
+  if (size_t(gr2_size) + size_t(geom_size) > data.size()) return false;
+
+  std::string name(reinterpret_cast<const char*>(p + 0x60), name_len);
+  while (!name.empty() && name.back() == '\0') name.pop_back();
+  out.name = std::move(name);
+  out.gr2_bytes = gr2_size;
+  out.geom_bytes = geom_size;
+  const std::string low = lower_ascii(out.name);
+  out.category = classify_pgeo_name(low);
+  out.is_world_space = (std::fabs(out.box_min[0]) > 50.0f || std::fabs(out.box_min[2]) > 50.0f ||
+                        std::fabs(out.box_max[0]) > 50.0f || std::fabs(out.box_max[2]) > 50.0f);
+  out.anim_period_sec = (out.category == AnimatedPgeoCategory::kBalloon)     ? 14.0f
+                        : (out.category == AnimatedPgeoCategory::kWindmill)  ? 6.5f
+                        : (out.category == AnimatedPgeoCategory::kAirwalker) ? 3.2f
+                                                                             : 9.0f;
+
+  // Parse texture reference table following the 16-byte-aligned object name.
+  const size_t hdr_base = (0x60 + size_t(name_len) + 15u) & ~size_t(15u);
+  const size_t geom_off = data.size() - size_t(geom_size);
+  const size_t gr2_off = geom_off - size_t(gr2_size);
+  if (hdr_base + 0x64 <= gr2_off) {
+    const uint32_t ntex = read_be32(p + hdr_base + 0x44);
+    if (ntex > 0 && ntex <= 32 && hdr_base + 0x60 + size_t(ntex) * 4 <= gr2_off) {
+      size_t str_pos = hdr_base + 0x60 + size_t(ntex) * 4;
+      for (uint32_t t = 0; t < ntex; ++t) {
+        const uint32_t slen = read_be32(p + hdr_base + 0x60 + size_t(t) * 4);
+        if (slen == 0 || slen > 256 || str_pos + slen > gr2_off) break;
+        std::string tn(reinterpret_cast<const char*>(p + str_pos), slen);
+        while (!tn.empty() && tn.back() == '\0') tn.pop_back();
+        if (!tn.empty()) out.textures.push_back(std::move(tn));
+        str_pos += slen;
+      }
+    }
+  }
+
+  // Decode half-float mesh geometry from kind-4 animated .pgeo when requested.
+  if (decode_geometry && out.kind == 4u && geom_size >= 16u && hdr_base + 0x54 <= gr2_off) {
+    const uint32_t nsub = read_be32(p + hdr_base + 0x50);
+    if (nsub > 0 && nsub <= 64 && gr2_off >= hdr_base + size_t(nsub) * 0x2cu) {
+      const size_t draw_off = gr2_off - size_t(nsub) * 0x2cu;
+      std::vector<uint32_t> ntris(nsub, 0);
+      bool tris_ok = true;
+      for (uint32_t k = 0; k < nsub; ++k) {
+        ntris[k] = read_be32(p + draw_off + size_t(k) * 0x2cu + 20u);
+        if (ntris[k] == 0 || ntris[k] > 100000u) {
+          tris_ok = false;
+          break;
+        }
+      }
+      if (tris_ok) {
+        std::vector<std::pair<uint32_t, uint32_t>> sub_counts;
+        sub_counts.reserve(nsub);
+        size_t scan = hdr_base + 0x60;
+        for (uint32_t k = 0; k < nsub; ++k) {
+          const uint32_t want_ni = ntris[k] * 3u;
+          bool found = false;
+          for (size_t off = scan; off + 8 <= draw_off; off += 4) {
+            if (read_be32(p + off) == want_ni && off >= hdr_base + 4) {
+              const uint32_t nv = read_be32(p + off - 4);
+              const uint32_t flg = read_be32(p + off + 4);
+              if (nv >= 3u && nv <= 65535u && flg <= 2u) {
+                sub_counts.push_back({nv, want_ni});
+                scan = off + 8;
+                found = true;
+                break;
+              }
+            }
+          }
+          if (!found) break;
+        }
+
+        if (sub_counts.size() == nsub) {
+          size_t total_v = 0, total_i = 0;
+          for (const auto& [nv, ni] : sub_counts) {
+            total_v += nv;
+            total_i += ni;
+          }
+          const size_t idx_bytes = total_i * 2u;
+          if (total_v > 0 && idx_bytes < geom_size) {
+            const size_t rem = geom_size - idx_bytes;
+            const size_t stride = rem / total_v;
+            const size_t pad = rem - stride * total_v;
+            if ((stride == 12 || stride == 16 || stride == 20 || stride == 24 || stride == 28 || stride == 32) &&
+                pad <= 8) {
+              const size_t vb_base = geom_off + idx_bytes + (pad <= 4 ? pad : 0);
+              size_t cur_i = 0;
+              size_t cur_v = 0;
+              out.submeshes.reserve(nsub);
+              for (const auto& [nv, ni] : sub_counts) {
+                AnimatedPgeoSubmesh sm;
+                sm.vertices.resize(nv);
+                sm.indices.reserve(ni);
+                sm.box_min = {1e9f, 1e9f, 1e9f};
+                sm.box_max = {-1e9f, -1e9f, -1e9f};
+                bool verts_valid = true;
+                for (uint32_t vi = 0; vi < nv; ++vi) {
+                  const size_t vp = vb_base + (cur_v + vi) * stride;
+                  if (vp + 6 > data.size()) {
+                    verts_valid = false;
+                    break;
+                  }
+                  const float vx = half_to_float_be(read_be16(p + vp + 0));
+                  const float vy = half_to_float_be(read_be16(p + vp + 2));
+                  const float vz = half_to_float_be(read_be16(p + vp + 4));
+                  if (!std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(vz) ||
+                      std::fabs(vx) > 20000.0f || std::fabs(vy) > 20000.0f || std::fabs(vz) > 20000.0f) {
+                    verts_valid = false;
+                    break;
+                  }
+                  sm.vertices[vi].pos = {vx, vy, vz};
+                  sm.vertices[vi].normal = {0.0f, 0.0f, 0.0f};
+                  sm.box_min[0] = std::min(sm.box_min[0], vx);
+                  sm.box_min[1] = std::min(sm.box_min[1], vy);
+                  sm.box_min[2] = std::min(sm.box_min[2], vz);
+                  sm.box_max[0] = std::max(sm.box_max[0], vx);
+                  sm.box_max[1] = std::max(sm.box_max[1], vy);
+                  sm.box_max[2] = std::max(sm.box_max[2], vz);
+                }
+                if (verts_valid) {
+                  for (uint32_t ii = 0; ii + 2 < ni; ii += 3) {
+                    const size_t ip = geom_off + (cur_i + ii) * 2u;
+                    if (ip + 6 > data.size()) break;
+                    const uint16_t i0 = read_be16(p + ip + 0);
+                    const uint16_t i1 = read_be16(p + ip + 2);
+                    const uint16_t i2 = read_be16(p + ip + 4);
+                    if (i0 >= nv || i1 >= nv || i2 >= nv || i0 == i1 || i1 == i2 || i0 == i2) continue;
+                    sm.indices.push_back(i0);
+                    sm.indices.push_back(i1);
+                    sm.indices.push_back(i2);
+                    const auto fn = vcross(vsub(sm.vertices[i1].pos, sm.vertices[i0].pos),
+                                           vsub(sm.vertices[i2].pos, sm.vertices[i0].pos));
+                    for (uint16_t idx : {i0, i1, i2}) {
+                      sm.vertices[idx].normal[0] += fn[0];
+                      sm.vertices[idx].normal[1] += fn[1];
+                      sm.vertices[idx].normal[2] += fn[2];
+                    }
+                  }
+                  for (auto& v : sm.vertices) v.normal = vnorm(v.normal);
+                  if (!sm.indices.empty()) out.submeshes.push_back(std::move(sm));
+                }
+                cur_i += ni;
+                cur_v += nv;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return true;
+}
 
 bool parse_skinbin(std::span<const uint8_t> data, SpectatorMeshLod& out, int preferred_lod) {
   out.vertices.clear();
   out.indices.clear();
   for (auto& li : out.lod_indices) li.clear();
   out.has_stand_skeleton = false;
+  out.has_sit_skeleton = false;
   if (data.size() < 0x48) return false;
   const uint8_t* p = data.data();
   const uint32_t num_lods = read_be32(p + 0x04);
@@ -313,10 +652,13 @@ bool parse_skinbin(std::span<const uint8_t> data, SpectatorMeshLod& out, int pre
   }
   if (out.min_y > 1e8f) out.min_y = 0.0f;
 
-  // Detect standard 19-bone FH1 standing spectator skeleton (spine=8, armL=11/12, armR=15/16, head=18).
+  // Detect standard 19-bone FH1 standing spectator skeleton (spine=8, armL=11/12, armR=15/16, head=18)
+  // and 15-bone FH1 sitting spectator skeleton (spine=6, armL=9/10, armR=12/13, head=14).
   out.has_stand_skeleton = (max_bone <= 18u && b_cnt[8] > 0 && b_cnt[11] > 0 && b_cnt[12] > 0 &&
                             b_cnt[15] > 0 && b_cnt[16] > 0 && b_cnt[18] > 0);
-  if (out.has_stand_skeleton) {
+  out.has_sit_skeleton = (!out.has_stand_skeleton && max_bone <= 14u && b_cnt[6] > 0 && b_cnt[9] > 0 &&
+                          b_cnt[10] > 0 && b_cnt[12] > 0 && b_cnt[13] > 0 && b_cnt[14] > 0);
+  if (out.has_stand_skeleton || out.has_sit_skeleton) {
     out.has_arm_bones = true;
   }
 
@@ -501,7 +843,7 @@ bool SpectatorCatalog::load_spectators_xml(const std::string& raw_xml) {
     }
   }
 
-  // <crowdclass name="..." skeleton="..." modelset="...">
+  // <crowdclass name="..." ...> <skeleton name="..."/> <modelset name="..."/> <idle/cheer name="..."/> </crowdclass>
   {
     size_t pos = 0;
     while (pos < xml.size()) {
@@ -514,12 +856,50 @@ bool SpectatorCatalog::load_spectators_xml(const std::string& raw_xml) {
       cc.name = attr_value(ctag, "name");
       cc.skeleton = attr_value(ctag, "skeleton");
       cc.modelset = attr_value(ctag, "modelset");
+      const bool self_closing = (gt > cp && xml[gt - 1] == '/');
+      size_t next_pos = gt + 1;
+      if (!self_closing) {
+        const size_t end = xml.find("</crowdclass>", gt + 1);
+        if (end != std::string::npos) {
+          size_t cur = gt + 1;
+          while (cur < end) {
+            const size_t lt = xml.find('<', cur);
+            if (lt == std::string::npos || lt >= end) break;
+            const size_t cgt = xml.find('>', lt);
+            if (cgt == std::string::npos || cgt >= end) break;
+            const std::string sub = xml.substr(lt, cgt - lt + 1);
+            if (sub.rfind("<skeleton ", 0) == 0) {
+              const std::string sn = attr_value(sub, "name");
+              if (!sn.empty()) cc.skeleton = sn;
+            } else if (sub.rfind("<modelset ", 0) == 0) {
+              const std::string mn = attr_value(sub, "name");
+              if (!mn.empty()) cc.modelset = mn;
+            } else if (sub.rfind("<idle ", 0) == 0) {
+              const std::string an = attr_value(sub, "name");
+              if (!an.empty()) cc.idle_anims.push_back(an);
+            } else if (sub.rfind("<cheer ", 0) == 0) {
+              const std::string an = attr_value(sub, "name");
+              if (!an.empty()) cc.cheer_anims.push_back(an);
+            }
+            cur = cgt + 1;
+          }
+          next_pos = end + 13;
+        }
+      }
       if (!cc.name.empty()) crowdclasses.push_back(std::move(cc));
-      pos = gt + 1;
+      pos = next_pos;
     }
   }
 
   return !models.empty();
+}
+
+const AnimatedPgeoObject* SpectatorCatalog::find_pgeo(const std::string& name_substr) const {
+  const std::string want = lower_ascii(name_substr);
+  for (const auto& obj : pgeo_objects) {
+    if (lower_ascii(obj.name).find(want) != std::string::npos) return &obj;
+  }
+  return nullptr;
 }
 
 bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, std::string* error) {
@@ -529,7 +909,11 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
   animated_pgeos = 0;
   animated_xds = 0;
   assets.clear();
+  sit_assets.clear();
   atlas_rgba.clear();
+  has_impostor_sprites = false;
+  anim_clips.clear();
+  pgeo_objects.clear();
 
   bool loaded_any = false;
   const auto spec_zip = media_dir / "Spectators.zip";
@@ -546,9 +930,23 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
           if (c == '\\') c = '/';
         }
         member_by_low[low] = idx;
-        if (low.ends_with(".anim.bin")) ++spectators_anim_bins;
-        else if (low.ends_with(".skinbin")) ++spectators_skinbins;
-        else if (low.ends_with(".xds")) ++spectators_xds;
+        if (low.ends_with(".anim.bin")) {
+          ++spectators_anim_bins;
+          const auto ard = ar->read(entry);
+          if (ard.ok()) {
+            const size_t sl = low.find_last_of('/');
+            std::string stem = (sl == std::string::npos) ? low : low.substr(sl + 1);
+            if (stem.size() > 9) stem.resize(stem.size() - 9);  // strip ".anim.bin"
+            SpectatorAnimClip clip;
+            if (parse_spectator_anim_clip(ard.data, stem, clip)) {
+              anim_clips[stem] = std::move(clip);
+            }
+          }
+        } else if (low.ends_with(".skinbin")) {
+          ++spectators_skinbins;
+        } else if (low.ends_with(".xds")) {
+          ++spectators_xds;
+        }
         if (low == "spectators.xml" || low.ends_with("/spectators.xml")) {
           const auto rd = ar->read(entry);
           if (rd.ok()) {
@@ -557,8 +955,8 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
         }
       }
 
-      // Load exact 19-bone Standing skeleton hierarchy & bind-pose joint coordinates from
-      // anims/Stand_Idle_01.anim.bin (with verified table as fallback).
+      // Load exact 19-bone Standing skeleton & 15-bone Sitting skeleton hierarchies from
+      // anims/Stand_Idle_01.anim.bin and anims/Sit_Idle_01.anim.bin (with verified defaults).
       stand_skeleton = kDefaultStandSkeleton;
       has_stand_skeleton_data = true;
       if (const auto sit = member_by_low.find("anims/stand_idle_01.anim.bin"); sit != member_by_low.end()) {
@@ -567,12 +965,21 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
           parse_stand_skeleton_from_anim_bin(ard.data, stand_skeleton);
         }
       }
+      sit_skeleton = kDefaultSitSkeleton;
+      has_sit_skeleton_data = true;
+      if (const auto sit = member_by_low.find("anims/sit_idle_01.anim.bin"); sit != member_by_low.end()) {
+        const auto ard = ar->read(members[sit->second]);
+        if (ard.ok()) {
+          parse_sit_skeleton_from_anim_bin(ard.data, sit_skeleton);
+        }
+      }
 
-      // Decode ALL 20 standing 3D spectator meshes (.skinbin, LOD0/1/2) + their native 256x256
-      // textures (.dds.xds) into a 2048x2048 (8x8 x 256) RGBA8 atlas:
-      //   slots  0..19: native 1:1 sRGB diffuse textures
-      //   slots 24..43: warm festival/outpost night stage-light bounce (light_map)
-      //   slots 43..62: subtle dusk/moonlight ambient fill (light_map)
+      // Decode ALL 20 standing & sitting 3D spectator meshes (.skinbin, LOD0/1/2) + native 256x256
+      // textures (.dds.xds) + 10-angle sprites.xds impostor slices into the 2048x2048 RGBA8 atlas:
+      //   slots  0..19: native 1:1 sRGB character diffuse textures
+      //   slots 20..29: 10-angle distant crowd impostor slices (from sprites.xds)
+      //   slot  60    : warm festival/outpost night stage-light irradiance (light_map)
+      //   slot  61    : subtle dusk/moonlight ambient fill (light_map)
       //   slot  63    : pure black (unlit)
       std::unordered_map<std::string, std::string> tex_by_model;
       for (const auto& m : models) {
@@ -626,9 +1033,49 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
         asset.name = cname;
         asset.atlas_slot = slot;
         asset.is_male = (tex_base.rfind("female", 0) != 0);
+        asset.is_sitting = false;
         if (!parse_skinbin(srd.data, asset.mesh, 0)) continue;
         assets.push_back(std::move(asset));
+
+        // Decode paired sitting mesh (`models/<name>_sit.skinbin`), sharing the exact same texture slot.
+        const std::string sit_key = "models/" + low_name + "_sit.skinbin";
+        if (const auto sit_it = member_by_low.find(sit_key); sit_it != member_by_low.end()) {
+          const auto sit_rd = ar->read(members[sit_it->second]);
+          if (sit_rd.ok()) {
+            SpectatorAsset sit_asset;
+            sit_asset.name = cname;
+            sit_asset.atlas_slot = slot;
+            sit_asset.is_male = (tex_base.rfind("female", 0) != 0);
+            sit_asset.is_sitting = true;
+            if (parse_skinbin(sit_rd.data, sit_asset.mesh, 0)) {
+              sit_assets.push_back(std::move(sit_asset));
+            }
+          }
+        }
       }
+
+      // Decode 10-angle distant crowd impostor sprites (`sprites.xds`) into atlas slots 20..29.
+      if (const auto sp_it = member_by_low.find("sprites.xds"); sp_it != member_by_low.end()) {
+        const auto sp_rd = ar->read(members[sp_it->second]);
+        if (sp_rd.ok()) {
+          const auto dec = fh1::decode_xds(sp_rd.data, false);
+          if (!dec.levels.empty() && dec.levels[0].width >= 64 && dec.levels[0].height >= 32) {
+            const auto& img = dec.levels[0];
+            const uint32_t angles =
+                uint32_t(std::clamp(num_sprite_angles, 1, int(kMaxImpostorSlots)));
+            const uint32_t slice_w = std::max(1u, img.width / angles);
+            for (uint32_t a = 0; a < angles; ++a) {
+              const uint32_t slot = kImpostorBaseSlot + a;
+              const uint32_t sx0 = std::min(a * slice_w, img.width - 1u);
+              const uint32_t sw = std::min(slice_w, img.width - sx0);
+              blit_atlas_subrect(img, sx0, 0u, sw, img.height, tmp_atlas.data(), kAtlasSize, slot % kAtlasGrid,
+                                 slot / kAtlasGrid, kAtlasCell);
+            }
+            has_impostor_sprites = true;
+          }
+        }
+      }
+
       // Bake vertical overhead irradiance cells for world_frag.glsl night Light_Map (`t.rgb * lm * lm_gain * 1.4`):
       // kNightLitSlot = warm Festival/Outpost stage spotlight falloff; kNightDimSlot = soft dusk/moonlight fill.
       fill_atlas_cell_vertical_irradiance(tmp_atlas.data(), kAtlasSize, kNightLitSlot, kAtlasGrid, kAtlasCell,
@@ -648,10 +1095,31 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
   if (std::filesystem::exists(anim_zip)) {
     std::string err;
     if (auto ar = fh1::Archive::open(anim_zip, &err)) {
+      size_t decoded_geom_count = 0;
+      constexpr size_t kMaxDecodedGeomPgeos = 20;
       for (const auto& entry : ar->members()) {
         const std::string low = lower_ascii(entry.name);
-        if (low.ends_with(".pgeo")) ++animated_pgeos;
-        else if (low.ends_with(".xds")) ++animated_xds;
+        if (low.ends_with(".pgeo")) {
+          ++animated_pgeos;
+          const bool want_geom =
+              (decoded_geom_count < kMaxDecodedGeomPgeos) &&
+              (low.find("balloon") != std::string::npos || low.find("airwalker") != std::string::npos ||
+               low.find("windmill") != std::string::npos || low.find("windturbine") != std::string::npos ||
+               low.find("planebanner") != std::string::npos || low.find("mainstage_lights") != std::string::npos);
+          const bool want_meta = want_geom || low.rfind("anim_", 0) == 0;
+          if (want_meta) {
+            const auto rd = ar->read(entry);
+            if (rd.ok()) {
+              AnimatedPgeoObject obj;
+              if (parse_animated_pgeo(rd.data, obj, want_geom)) {
+                if (!obj.submeshes.empty()) ++decoded_geom_count;
+                pgeo_objects.push_back(std::move(obj));
+              }
+            }
+          }
+        } else if (low.ends_with(".xds")) {
+          ++animated_xds;
+        }
       }
     }
   }
@@ -662,6 +1130,58 @@ namespace {
 
 std::atomic<const drive::Ground*> g_last_ground{nullptr};
 std::atomic<const AnimatedWorldSystem*> g_last_ground_owner{nullptr};
+std::atomic<AnimatedWorldSystem*> g_shared_anim{nullptr};
+
+std::string read_rally_gameobjs_xml(const std::filesystem::path& world_dir) {
+  std::error_code ec;
+  if (!world_dir.empty()) {
+    const auto loose = world_dir / "Ribbon_00" / "GameObjs.xml";
+    if (std::filesystem::exists(loose, ec)) {
+      std::ifstream f(loose, std::ios::binary);
+      if (f) {
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        return ss.str();
+      }
+    }
+    // Search ancestor DLCZips archives (e.g. 1600_pri_65.zip) for ColoradoDirt/Ribbon_00/GameObjs.xml.
+    std::vector<std::filesystem::path> zip_cands;
+    if (lower_ascii(world_dir.extension().string()) == ".zip") {
+      zip_cands.push_back(world_dir);
+    }
+    std::filesystem::path cur = world_dir;
+    for (int depth = 0; depth < 6 && !cur.empty(); ++depth) {
+      if (cur.has_filename() && cur.has_parent_path()) {
+        const auto sib = cur.parent_path() / (cur.filename().string() + ".zip");
+        if (std::filesystem::exists(sib, ec)) zip_cands.push_back(sib);
+      }
+      const auto z1600 = cur / "1600_pri_65.zip";
+      if (std::filesystem::exists(z1600, ec)) zip_cands.push_back(z1600);
+      const auto dlcz = cur / "Media" / "DLCZips" / "1600_pri_65.zip";
+      if (std::filesystem::exists(dlcz, ec)) zip_cands.push_back(dlcz);
+      const auto par = cur.parent_path();
+      if (par == cur) break;
+      cur = par;
+    }
+    for (const auto& zp : zip_cands) {
+      auto ar = fh1::Archive::open(zp, nullptr);
+      if (!ar) continue;
+      for (const auto& m : ar->members()) {
+        std::string low = lower_ascii(m.name);
+        for (char& c : low) {
+          if (c == '\\') c = '/';
+        }
+        if (low.ends_with("coloradodirt/ribbon_00/gameobjs.xml")) {
+          const auto rd = ar->read(m);
+          if (rd.ok() && !rd.data.empty()) {
+            return std::string(reinterpret_cast<const char*>(rd.data.data()), rd.data.size());
+          }
+        }
+      }
+    }
+  }
+  return {};
+}
 
 struct Mat3 {
   float m[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -779,13 +1299,44 @@ bool is_obstacle_surface(int surface) {
 
 }  // namespace
 
-AnimatedWorldSystem::AnimatedWorldSystem() { populate_default_colorado(); }
+AnimatedWorldSystem::AnimatedWorldSystem() : state_(std::make_shared<SharedState>()) {
+  populate_default_colorado();
+}
 
 AnimatedWorldSystem::~AnimatedWorldSystem() {
   if (g_last_ground_owner.load(std::memory_order_relaxed) == this) {
     g_last_ground.store(nullptr, std::memory_order_relaxed);
     g_last_ground_owner.store(nullptr, std::memory_order_relaxed);
   }
+  AnimatedWorldSystem* expected = this;
+  g_shared_anim.compare_exchange_strong(expected, nullptr, std::memory_order_relaxed);
+}
+
+void AnimatedWorldSystem::set_shared(AnimatedWorldSystem* instance) {
+  g_shared_anim.store(instance, std::memory_order_relaxed);
+}
+
+AnimatedWorldSystem* AnimatedWorldSystem::shared() {
+  return g_shared_anim.load(std::memory_order_relaxed);
+}
+
+void AnimatedWorldSystem::share_from(const AnimatedWorldSystem& other) {
+  if (other.state_) state_ = other.state_;
+}
+
+void AnimatedWorldSystem::set_post_config(const TrackPostConfig& post_cfg) {
+  state_->post_cfg = post_cfg;
+}
+
+const TrackPostConfig& AnimatedWorldSystem::post_config() const { return state_->post_cfg; }
+const SpectatorCatalog& AnimatedWorldSystem::catalog() const { return state_->catalog; }
+bool AnimatedWorldSystem::is_rally_world() const { return state_->rally_world; }
+const std::vector<HotAirBalloon>& AnimatedWorldSystem::balloons() const { return state_->balloons; }
+const std::vector<WindmillProp>& AnimatedWorldSystem::windmills() const { return state_->windmills; }
+const std::vector<FestivalFlagProp>& AnimatedWorldSystem::flags() const { return state_->flags; }
+const std::vector<CrowdCluster>& AnimatedWorldSystem::crowds() const { return state_->crowds; }
+const std::vector<AnimatedWorldPlacement>& AnimatedWorldSystem::pgeo_placements() const {
+  return state_->pgeo_placements;
 }
 
 const drive::Ground* AnimatedWorldSystem::last_ground() {
@@ -793,16 +1344,35 @@ const drive::Ground* AnimatedWorldSystem::last_ground() {
 }
 
 bool AnimatedWorldSystem::init(const std::filesystem::path& media_dir, const TrackPostConfig& post_cfg,
-                               std::string* error) {
-  post_cfg_ = post_cfg;
-  populate_default_colorado();
-  populate_gameobjs_crowds(media_dir);
-  return catalog_.load_from_media(media_dir, error);
+                               std::string* error, const std::filesystem::path& world_dir) {
+  const bool loaded = state_->catalog.load_from_media(media_dir, error);
+  set_world(media_dir, world_dir, post_cfg);
+  return loaded;
+}
+
+void AnimatedWorldSystem::set_world(const std::filesystem::path& media_dir, const std::filesystem::path& world_dir,
+                                    const TrackPostConfig& post_cfg) {
+  state_->post_cfg = post_cfg;
+  state_->rally_world = is_rally_world_path(world_dir);
+  state_->balloons.clear();
+  state_->windmills.clear();
+  state_->flags.clear();
+  state_->crowds.clear();
+  state_->pgeo_placements.clear();
+
+  if (state_->rally_world) {
+    populate_rally_world(media_dir, world_dir);
+  } else {
+    populate_default_colorado();
+    populate_pgeo_placements();
+    populate_gameobjs_crowds(media_dir);
+  }
 }
 
 void AnimatedWorldSystem::populate_default_colorado() {
-  // Iconic Colorado Horizon Festival & valley hot-air balloons.
-  balloons_ = {
+  // Fallback procedural Colorado Horizon Festival & valley hot-air balloons
+  // (used when animatedobjects.zip `.pgeo` balloons are unavailable).
+  state_->balloons = {
       {{2075.0f, 185.0f, 905.0f}, 7.6f, 18.0f, 0.2f, {236, 46, 86}, {250, 212, 48}, {38, 134, 218}},
       {{1915.0f, 202.0f, 1055.0f}, 8.2f, 19.5f, 1.4f, {244, 132, 34}, {245, 245, 240}, {32, 168, 152}},
       {{2145.0f, 196.0f, 1060.0f}, 7.0f, 16.5f, 2.7f, {58, 126, 224}, {252, 232, 92}, {228, 66, 62}},
@@ -815,7 +1385,7 @@ void AnimatedWorldSystem::populate_default_colorado() {
   };
 
   // Colorado ranch & hillside spinning windmills.
-  windmills_ = {
+  state_->windmills = {
       {{2052.0f, 143.0f, 928.0f}, 0.65f, 13.5f, 4.1f, 0.0f},
       {{1890.0f, 142.0f, 1020.0f}, 1.15f, 14.5f, 4.4f, 1.3f},
       {{2185.0f, 148.0f, 845.0f}, -0.45f, 15.0f, 4.5f, 2.6f},
@@ -825,7 +1395,7 @@ void AnimatedWorldSystem::populate_default_colorado() {
   };
 
   // Waving Horizon festival flags placed behind festival barriers (well off the asphalt road).
-  flags_ = {
+  state_->flags = {
       {{2018.0f, 144.2f, 932.0f}, 7.2f, 1.75f, 3.4f, 0.0f, {236, 42, 92}, {252, 212, 44}},
       {{2030.0f, 143.8f, 922.0f}, 7.2f, 1.75f, 3.4f, 1.1f, {38, 158, 224}, {248, 246, 240}},
       {{2042.0f, 143.4f, 912.0f}, 7.2f, 1.75f, 3.4f, 2.2f, {246, 146, 32}, {252, 226, 78}},
@@ -833,25 +1403,264 @@ void AnimatedWorldSystem::populate_default_colorado() {
       {{1968.0f, 145.2f, 964.0f}, 7.2f, 1.75f, 3.4f, 4.4f, {48, 184, 132}, {248, 244, 232}},
   };
 
-  // Cheering festival spectators positioned strictly behind real Colorado metal festival barriers:
-  // obj_fest_barriermetal line from (1992.76, 143.73, 960.09) to (2007.43, 142.78, 949.33),
-  // tangent dir = (+0.808, -0.052, -0.589), true orthogonal road-facing normal face = (+0.589, +0.808).
-  // Row 1 spans the full metal barrier ~1.10 m behind the rail; Row 2 sits ~0.92 m further back
-  // (strictly on the dry dirt shoulder well clear of the lake edge).
-  crowds_ = {
+  // Cheering festival spectators positioned strictly behind real Colorado metal festival barriers,
+  // including standing barrier rows and seated grandstand/festival seating clusters.
+  state_->crowds = {
       {{1993.65f, 143.65f, 958.25f}, 0.808f, -0.052f, -0.589f, 0.589f, 0.808f, 13, 1.12f, "Barrier", false, true},
       {{1994.75f, 143.52f, 956.40f}, 0.808f, -0.052f, -0.589f, 0.589f, 0.808f, 9, 1.48f, "GigCheer01", false, true},
       // Canonical Horizon Festival Hub baseline clusters (Main Stage, Race Central, Autoshow, Dak's Garage).
       {{-1458.0f, 26.0f, -340.0f}, 0.85f, 0.0f, -0.52f, 0.52f, 0.85f, 12, 1.15f, "GigCheer01", true, true},
-      {{-1458.5f, 26.0f, -340.9f}, 0.85f, 0.0f, -0.52f, 0.52f, 0.85f, 8, 1.45f, "Stand", true, true},
+      {{-1458.5f, 26.0f, -340.9f}, 0.85f, 0.0f, -0.52f, 0.52f, 0.85f, 8, 1.45f, "Sit", true, true},
       {{-1388.0f, 1.0f, -18.0f}, 0.72f, 0.0f, 0.69f, -0.69f, 0.72f, 12, 1.15f, "Barrier", true, true},
-      {{-1387.3f, 1.0f, -18.7f}, 0.72f, 0.0f, 0.69f, -0.69f, 0.72f, 8, 1.45f, "GigCheer01", true, true},
+      {{-1387.3f, 1.0f, -18.7f}, 0.72f, 0.0f, 0.69f, -0.69f, 0.72f, 8, 1.45f, "Sit", true, true},
       {{-1012.0f, 0.0f, -252.0f}, 0.92f, 0.0f, 0.39f, -0.39f, 0.92f, 10, 1.20f, "Barrier", true, true},
       {{-952.0f, 0.0f, -172.0f}, 0.60f, 0.0f, -0.80f, 0.80f, 0.60f, 10, 1.20f, "Barrier", true, true},
   };
 }
 
+void AnimatedWorldSystem::populate_pgeo_placements() {
+  state_->pgeo_placements.clear();
+  const auto& cat = state_->catalog;
+  if (cat.pgeo_objects.empty()) return;
+
+  static constexpr std::array<std::array<uint8_t, 3>, 6> kPrimaryPal{{
+      {236, 46, 86}, {244, 132, 34}, {58, 126, 224}, {214, 52, 138}, {40, 172, 118}, {162, 56, 204},
+  }};
+  static constexpr std::array<std::array<uint8_t, 3>, 6> kSecondaryPal{{
+      {250, 212, 48}, {245, 245, 240}, {252, 232, 92}, {248, 242, 226}, {246, 222, 68}, {250, 206, 54},
+  }};
+  static constexpr std::array<std::array<uint8_t, 3>, 6> kAccentPal{{
+      {38, 134, 218}, {32, 168, 152}, {228, 66, 62}, {246, 176, 42}, {232, 64, 52}, {244, 242, 238},
+  }};
+
+  // 1. Place parsed `.pgeo` hot-air balloons using actual `.pgeo` world-space bounds & submesh offsets.
+  const AnimatedPgeoObject* balloon_race = cat.find_pgeo("balloon_race");
+  const AnimatedPgeoObject* balloon_intro = cat.find_pgeo("balloon_showcase_intro");
+  const AnimatedPgeoObject* balloon_mesh_src =
+      (balloon_race && !balloon_race->submeshes.empty())
+          ? balloon_race
+          : ((balloon_intro && !balloon_intro->submeshes.empty()) ? balloon_intro : nullptr);
+
+  if (balloon_mesh_src) {
+    size_t idx = 0;
+    // Derive real world balloon cluster from ANIM_Showcase_Event_Balloon_Race.pgeo's bounding volume.
+    if (balloon_race && balloon_race->is_world_space) {
+      const float x0 = balloon_race->box_min[0], x1 = balloon_race->box_max[0];
+      const float y0 = std::max(balloon_race->box_min[1], 120.0f);
+      const float y1 = std::max(balloon_race->box_max[1], y0 + 40.0f);
+      const float z0 = balloon_race->box_min[2], z1 = balloon_race->box_max[2];
+      for (int k = 0; k < 5; ++k) {
+        const float u = (float(k) + 0.5f) / 5.0f;
+        const float v = 0.25f + 0.50f * hash_01(k * 7, 13, 91u);
+        AnimatedWorldPlacement pl;
+        pl.pgeo_name = balloon_mesh_src->name;
+        pl.category = AnimatedPgeoCategory::kBalloon;
+        pl.base_pos = {x0 + (x1 - x0) * u, y0 + (y1 - y0) * (0.45f + 0.35f * v), z0 + (z1 - z0) * v};
+        pl.yaw = u * 6.283185f;
+        pl.scale = 0.46f + 0.08f * hash_01(k, 3, 19u);
+        pl.phase = float(k) * 1.15f;
+        pl.primary_rgb = kPrimaryPal[idx % kPrimaryPal.size()];
+        pl.secondary_rgb = kSecondaryPal[idx % kSecondaryPal.size()];
+        pl.accent_rgb = kAccentPal[idx % kAccentPal.size()];
+        state_->pgeo_placements.push_back(std::move(pl));
+        ++idx;
+      }
+    }
+    // Derive Horizon Festival & valley balloon formations from ANIM_Balloon_Showcase_Intro_001.pgeo
+    // submesh offsets anchored over the Festival Hub & central Colorado vistas.
+    if (balloon_intro && !balloon_intro->submeshes.empty()) {
+      const std::array<std::array<float, 3>, 2> anchors{{
+          {1850.0f, 195.0f, 960.0f},   // North Festival / reservoir vista
+          {-1380.0f, 178.0f, -260.0f}, // Main Horizon Festival Hub
+      }};
+      for (const auto& anc : anchors) {
+        for (size_t s = 0; s < balloon_intro->submeshes.size() && s < 5; ++s) {
+          const auto& sm = balloon_intro->submeshes[s];
+          const float ox = 0.5f * (sm.box_min[0] + sm.box_max[0]);
+          const float oy = 0.5f * (sm.box_min[1] + sm.box_max[1]);
+          const float oz = 0.5f * (sm.box_min[2] + sm.box_max[2]);
+          AnimatedWorldPlacement pl;
+          pl.pgeo_name = balloon_mesh_src->name;
+          pl.category = AnimatedPgeoCategory::kBalloon;
+          pl.base_pos = {anc[0] + std::clamp(ox * 0.45f, -320.0f, 320.0f),
+                         anc[1] + std::clamp(oy * 0.25f, -15.0f, 45.0f),
+                         anc[2] + std::clamp(oz * 1.4f, -260.0f, 260.0f)};
+          pl.yaw = float(idx) * 0.9f;
+          pl.scale = 0.44f + 0.06f * float(s % 3);
+          pl.phase = float(idx) * 1.25f;
+          pl.primary_rgb = kPrimaryPal[idx % kPrimaryPal.size()];
+          pl.secondary_rgb = kSecondaryPal[idx % kSecondaryPal.size()];
+          pl.accent_rgb = kAccentPal[idx % kAccentPal.size()];
+          state_->pgeo_placements.push_back(std::move(pl));
+          ++idx;
+        }
+      }
+    }
+  }
+
+  // 2. Place parsed `.pgeo` festival airwalkers near the Festival Hub if decoded.
+  if (const auto* aw = cat.find_pgeo("airwalker_001"); aw && !aw->submeshes.empty()) {
+    const std::array<std::array<float, 3>, 2> spots{{
+        {-1448.0f, 26.0f, -330.0f},
+        {-1376.0f, 1.0f, -10.0f},
+    }};
+    for (size_t i = 0; i < spots.size(); ++i) {
+      AnimatedWorldPlacement pl;
+      pl.pgeo_name = aw->name;
+      pl.category = AnimatedPgeoCategory::kAirwalker;
+      pl.base_pos = spots[i];
+      pl.yaw = float(i) * 1.4f;
+      pl.scale = 1.0f;
+      pl.phase = float(i) * 2.1f;
+      pl.primary_rgb = (i == 0) ? std::array<uint8_t, 3>{238, 44, 96} : std::array<uint8_t, 3>{44, 168, 232};
+      pl.secondary_rgb = {252, 214, 48};
+      pl.accent_rgb = {246, 246, 244};
+      state_->pgeo_placements.push_back(std::move(pl));
+    }
+  }
+}
+
+void AnimatedWorldSystem::populate_rally_world(const std::filesystem::path& /*media_dir*/,
+                                               const std::filesystem::path& world_dir) {
+  // ColoradoDirt (Horizon Rally): NO Horizon Festival crowds or hot-air balloons.
+  // Populate Rally-appropriate roadside spectators, compact stage marshals, and
+  // high-visibility Rally stage marker flags from Rally's GameObjs.xml.
+  const std::string xml = read_rally_gameobjs_xml(world_dir);
+
+  auto parse_attr_float = [](const std::string& tag, const char* name, float fallback) -> float {
+    const std::string v = attr_value(tag, name);
+    return v.empty() ? fallback : float(std::atof(v.c_str()));
+  };
+  auto too_close = [&](float x, float z, float min_d) -> bool {
+    const float min_d2 = min_d * min_d;
+    for (const auto& c : state_->crowds) {
+      const float dx = c.origin[0] - x;
+      const float dz = c.origin[2] - z;
+      if (dx * dx + dz * dz < min_d2) return true;
+    }
+    return false;
+  };
+
+  size_t pos = 0;
+  constexpr size_t kMaxRallyClusters = 48;
+  size_t added = 0;
+  while (pos < xml.size() && added < kMaxRallyClusters) {
+    const size_t gid_pos = xml.find("GameplayID=\"", pos);
+    if (gid_pos == std::string::npos) break;
+    const size_t gid_end = xml.find('"', gid_pos + 12);
+    if (gid_end == std::string::npos) break;
+    const std::string gid = xml.substr(gid_pos + 12, gid_end - (gid_pos + 12));
+    const std::string low = lower_ascii(gid);
+    pos = gid_end + 1;
+
+    const bool is_stage = low.rfind("race_", 0) == 0 || low.rfind("mission_", 0) == 0 ||
+                          low.rfind("festival_", 0) == 0 || low.rfind("workshop_", 0) == 0 ||
+                          low.rfind("nr", 0) == 0;
+    if (!is_stage) continue;
+
+    const size_t block_end = xml.find("</Obj", pos);
+    if (block_end == std::string::npos) break;
+    const size_t pos_tag = xml.find("<Pos ", pos);
+    if (pos_tag == std::string::npos || pos_tag > block_end) continue;
+    const size_t pos_gt = xml.find('>', pos_tag);
+    if (pos_gt == std::string::npos || pos_gt > block_end) continue;
+    const std::string pstr = xml.substr(pos_tag, pos_gt - pos_tag + 1);
+    const float ox = parse_attr_float(pstr, "x", 0.0f);
+    const float oy = parse_attr_float(pstr, "y", 0.0f);
+    const float oz = parse_attr_float(pstr, "z", 0.0f);
+
+    float xx = 1.0f, xz = 0.0f;
+    float zx = 0.0f, zz = 1.0f;
+    if (const size_t x_tag = xml.find("<XAxis ", pos); x_tag != std::string::npos && x_tag < block_end) {
+      if (const size_t x_gt = xml.find('>', x_tag); x_gt != std::string::npos && x_gt < block_end) {
+        const std::string xstr = xml.substr(x_tag, x_gt - x_tag + 1);
+        xx = parse_attr_float(xstr, "x", 1.0f);
+        xz = parse_attr_float(xstr, "z", 0.0f);
+      }
+    }
+    if (const size_t z_tag = xml.find("<ZAxis ", pos); z_tag != std::string::npos && z_tag < block_end) {
+      if (const size_t z_gt = xml.find('>', z_tag); z_gt != std::string::npos && z_gt < block_end) {
+        const std::string zstr = xml.substr(z_tag, z_gt - z_tag + 1);
+        zx = parse_attr_float(zstr, "x", 0.0f);
+        zz = parse_attr_float(zstr, "z", 1.0f);
+      }
+    }
+    const float zl = std::hypot(zx, zz);
+    if (zl > 1e-4f) {
+      zx /= zl;
+      zz /= zl;
+    } else {
+      zx = 0.0f;
+      zz = 1.0f;
+    }
+    const float dot_xz = xx * zx + xz * zz;
+    xx -= dot_xz * zx;
+    xz -= dot_xz * zz;
+    const float xl = std::hypot(xx, xz);
+    if (xl > 1e-4f) {
+      xx /= xl;
+      xz /= xl;
+    } else {
+      xx = zz;
+      xz = -zx;
+    }
+
+    // Offset roadside rally spectators & marshals safely off the dirt stage verge (~8.5 m).
+    const float lateral = 8.5f;
+    const bool is_marshal_post = (added % 3u == 0u);
+    const int count = is_marshal_post ? 3 : 6;
+    const float spacing = is_marshal_post ? 1.45f : 1.25f;
+    const float half_span = 0.5f * float(count - 1) * spacing;
+    const float cx = ox + xx * lateral - zx * half_span;
+    const float cz = oz + xz * lateral - zz * half_span;
+    if (too_close(cx, cz, 28.0f)) continue;
+
+    CrowdCluster cl;
+    cl.origin = {cx, oy, cz};
+    cl.dir_x = zx;
+    cl.dir_y = 0.0f;
+    cl.dir_z = zz;
+    cl.face_x = -xx;
+    cl.face_z = -xz;
+    cl.count = count;
+    cl.spacing = spacing;
+    cl.crowdclass = is_marshal_post ? "Stand" : ((added % 4u == 1u) ? "Sit" : "Barrier");
+    cl.require_offroad = true;
+    cl.stage_lit = false;  // dirt rally stage verge: no festival neon floodlights
+    state_->crowds.push_back(std::move(cl));
+
+    // Place a waving high-visibility Rally stage marker flag opposite the marshal post.
+    if (state_->flags.size() < 24) {
+      FestivalFlagProp fl;
+      fl.base_pos = {ox - xx * 7.2f, oy, oz - xz * 7.2f};
+      fl.pole_height = 4.2f;
+      fl.width = 0.95f;
+      fl.height = 1.85f;
+      fl.phase = float(added) * 0.85f;
+      fl.primary_rgb = {244, 96, 22};   // rally high-visibility orange
+      fl.stripe_rgb = {246, 246, 242};  // rally white chevron stripe
+      state_->flags.push_back(fl);
+    }
+    ++added;
+  }
+
+  // If Rally GameObjs.xml was absent (e.g. unit tests without DLC files), add a minimal
+  // Rally roadside marshal & spectator baseline distinct from Colorado Festival clusters.
+  if (state_->crowds.empty()) {
+    state_->crowds = {
+        {{120.0f, 10.0f, 80.0f}, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f, 5, 1.30f, "Barrier", true, false},
+        {{145.0f, 10.0f, 72.0f}, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 3, 1.45f, "Stand", true, false},
+        {{168.0f, 10.0f, 84.0f}, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f, 4, 1.35f, "Sit", true, false},
+    };
+    state_->flags = {
+        {{118.0f, 10.0f, 70.0f}, 4.2f, 0.95f, 1.85f, 0.0f, {244, 96, 22}, {246, 246, 242}},
+        {{148.0f, 10.0f, 84.0f}, 4.2f, 0.95f, 1.85f, 1.4f, {244, 96, 22}, {246, 246, 242}},
+    };
+  }
+}
+
 void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& media_dir) {
+  if (state_->rally_world) return;
   // Auto-populate grounded festival crowd clusters along real Colorado Festival Hub,
   // Outpost, Exhibition, Showcase, and Race start/finish sites from Ribbon_00/GameObjs.xml.
   const auto objs_path = media_dir / "Tracks" / "Colorado" / "Ribbon_00" / "GameObjs.xml";
@@ -870,7 +1679,7 @@ void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& 
 
   auto too_close = [&](float x, float z, float min_d) -> bool {
     const float min_d2 = min_d * min_d;
-    for (const auto& c : crowds_) {
+    for (const auto& c : state_->crowds) {
       const float dx = c.origin[0] - x;
       const float dz = c.origin[2] - z;
       if (dx * dx + dz * dz < min_d2) return true;
@@ -974,10 +1783,10 @@ void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& 
     cl.crowdclass = is_festival ? "GigCheer01" : "Barrier";
     cl.require_offroad = true;
     cl.stage_lit = lit_stage;
-    crowds_.push_back(std::move(cl));
+    state_->crowds.push_back(std::move(cl));
     ++added;
 
-    // Add a staggered second row behind Festival/Outpost/Exhibition crowds for authentic depth.
+    // Add a staggered second row behind Festival/Outpost/Exhibition crowds (mixing seated bleachers).
     if ((is_festival || is_outpost || is_exhibition) && added < kMaxAutoClusters) {
       const int back_count = is_festival ? 7 : 6;
       const float back_spacing = 1.42f;
@@ -992,10 +1801,10 @@ void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& 
       back.face_z = -xz;
       back.count = back_count;
       back.spacing = back_spacing;
-      back.crowdclass = "GigCheer01";
+      back.crowdclass = (added % 4u == 0u) ? "Sit" : "GigCheer01";
       back.require_offroad = true;
       back.stage_lit = lit_stage;
-      crowds_.push_back(std::move(back));
+      state_->crowds.push_back(std::move(back));
       ++added;
     }
   }
@@ -1008,9 +1817,10 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
     g_last_ground.store(ground, std::memory_order_relaxed);
     g_last_ground_owner.store(this, std::memory_order_relaxed);
   }
-  const float wind_spd = std::clamp(post_cfg_.wind_speed, 0.25f, 5.0f);
-  const float wind_amp = std::clamp(post_cfg_.wind_amplitude, 0.04f, 0.85f);
-  float wx = post_cfg_.wind_dir[0], wz = post_cfg_.wind_dir[2];
+  const auto& post_cfg = state_->post_cfg;
+  const float wind_spd = std::clamp(post_cfg.wind_speed, 0.25f, 5.0f);
+  const float wind_amp = std::clamp(post_cfg.wind_amplitude, 0.04f, 0.85f);
+  float wx = post_cfg.wind_dir[0], wz = post_cfg.wind_dir[2];
   const float wlen = std::sqrt(wx * wx + wz * wz);
   if (wlen > 1e-4f) {
     wx /= wlen;
@@ -1028,78 +1838,183 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
                                                                                        : fallback;
   };
 
-  // 1. Hot-air balloons (visible up to 1200 m).
-  for (const auto& b : balloons_) {
-    const double dx = double(b.base_pos[0]) - eye_x;
-    const double dz = double(b.base_pos[2]) - eye_z;
-    if (dx * dx + dz * dz > 1200.0 * 1200.0) continue;
-
-    const float bob = std::sin(time_sec * 0.42f + b.phase) * 3.2f;
-    const float sway_x = std::cos(time_sec * 0.23f + b.phase) * 2.0f;
-    const float sway_z = std::sin(time_sec * 0.19f + b.phase * 1.3f) * 2.0f;
-    const float rot = time_sec * 0.11f + b.phase;
-    const float cx = b.base_pos[0] + sway_x;
-    const float cy = b.base_pos[1] + bob;
-    const float cz = b.base_pos[2] + sway_z;
-
-    // Envelope profile: 5 latitude rings, 12 longitude gores.
-    constexpr int kSegs = 12;
-    constexpr int kRings = 5;
-    const float ring_h[kRings] = {0.0f, 0.22f, 0.52f, 0.80f, 1.0f};
-    const float ring_r[kRings] = {0.22f, 0.68f, 1.00f, 0.84f, 0.0f};
-
-    for (int r = 0; r < kRings - 1; ++r) {
-      const float y0 = cy + ring_h[r] * b.height;
-      const float y1 = cy + ring_h[r + 1] * b.height;
-      const float r0 = ring_r[r] * b.radius;
-      const float r1 = ring_r[r + 1] * b.radius;
+  if (state_->rally_world) {
+    // ColoradoDirt Rally world: waving high-visibility stage marker pennants/flags
+    // (no Colorado Festival hot-air balloons or festival airwalkers).
+    for (const auto& fl : state_->flags) {
+      const double dx = double(fl.base_pos[0]) - eye_x;
+      const double dz = double(fl.base_pos[2]) - eye_z;
+      if (dx * dx + dz * dz > 260.0 * 260.0) continue;
+      const float gy = ground_y(fl.base_pos[0], fl.base_pos[2], fl.base_pos[1]);
+      // Slender matte metal pole.
+      push_box(out, {fl.base_pos[0], gy + fl.pole_height * 0.5f, fl.base_pos[2]}, {0.04f, 0, 0},
+               {0, fl.pole_height * 0.5f, 0}, {0, 0, 0.04f}, {92, 96, 102, 255});
+      // Wind-rippling 3-segment rally stage banner pennant.
+      constexpr int kSegs = 3;
+      const float y_top = gy + fl.pole_height;
+      const float y_bot = y_top - fl.height;
       for (int s = 0; s < kSegs; ++s) {
-        const float a0 = rot + (2.0f * kPi * float(s)) / float(kSegs);
-        const float a1 = rot + (2.0f * kPi * float(s + 1)) / float(kSegs);
-        const auto& col = ((s + r) % 3 == 0) ? b.primary_rgb : (((s + r) % 3 == 1) ? b.secondary_rgb : b.accent_rgb);
-        const std::array<uint8_t, 4> rgba{col[0], col[1], col[2], 255};
-        const std::array<float, 3> p00{cx + std::cos(a0) * r0, y0, cz + std::sin(a0) * r0};
-        const std::array<float, 3> p10{cx + std::cos(a1) * r0, y0, cz + std::sin(a1) * r0};
-        if (r + 1 == kRings - 1) {
-          const std::array<float, 3> top{cx, y1, cz};
-          push_tri(out, p00, top, p10, rgba);
-        } else {
-          const std::array<float, 3> p01{cx + std::cos(a0) * r1, y1, cz + std::sin(a0) * r1};
-          const std::array<float, 3> p11{cx + std::cos(a1) * r1, y1, cz + std::sin(a1) * r1};
-          push_quad(out, p00, p01, p11, p10, rgba);
-        }
+        const float t0 = float(s) / float(kSegs);
+        const float t1 = float(s + 1) / float(kSegs);
+        const float w0 = std::sin(time_sec * (3.2f + wind_spd * 1.4f) - t0 * 3.1f + fl.phase) * (0.14f + wind_amp * 0.35f) * t0;
+        const float w1 = std::sin(time_sec * (3.2f + wind_spd * 1.4f) - t1 * 3.1f + fl.phase) * (0.14f + wind_amp * 0.35f) * t1;
+        const std::array<float, 3> p00{fl.base_pos[0] + wx * (t0 * fl.width) - wz * w0, y_bot,
+                                       fl.base_pos[2] + wz * (t0 * fl.width) + wx * w0};
+        const std::array<float, 3> p10{fl.base_pos[0] + wx * (t1 * fl.width) - wz * w1, y_bot + 0.12f * t1,
+                                       fl.base_pos[2] + wz * (t1 * fl.width) + wx * w1};
+        const std::array<float, 3> p11{fl.base_pos[0] + wx * (t1 * fl.width) - wz * w1, y_top - 0.12f * t1,
+                                       fl.base_pos[2] + wz * (t1 * fl.width) + wx * w1};
+        const std::array<float, 3> p01{fl.base_pos[0] + wx * (t0 * fl.width) - wz * w0, y_top,
+                                       fl.base_pos[2] + wz * (t0 * fl.width) + wx * w0};
+        const auto& c = (s == 1) ? fl.stripe_rgb : fl.primary_rgb;
+        push_quad(out, p00, p10, p11, p01, {c[0], c[1], c[2], 255}, true);
       }
     }
-    // Wicker gondola basket underneath + 4 thin suspension cables.
-    const float by = cy - 3.0f;
-    push_box(out, {cx, by, cz}, {1.25f, 0, 0}, {0, 1.05f, 0}, {0, 0, 1.25f}, {154, 108, 62, 255});
-    // Burner glow core just under mouth.
-    const float pulse = 0.7f + 0.3f * std::sin(time_sec * 3.1f + b.phase * 2.0f);
-    push_box(out, {cx, cy - 0.55f, cz}, {0.45f, 0, 0}, {0, 0.35f, 0}, {0, 0, 0.45f},
-             {clamp_u8(255.0f * pulse), clamp_u8(178.0f * pulse), 52, 255});
-    for (int k = 0; k < 4; ++k) {
-      const float ca = rot + float(k) * (kPi * 0.5f) + 0.4f;
-      const float ox = std::cos(ca), oz = std::sin(ca);
-      const std::array<float, 3> bot{cx + ox * 1.15f, by + 1.0f, cz + oz * 1.15f};
-      const std::array<float, 3> top{cx + ox * (b.radius * 0.21f), cy + 0.1f, cz + oz * (b.radius * 0.21f)};
-      const std::array<float, 3> side{-oz * 0.08f, 0.0f, ox * 0.08f};
-      push_quad(out, bot, top, {top[0] + side[0], top[1], top[2] + side[2]},
-                {bot[0] + side[0], bot[1], bot[2] + side[2]}, {72, 68, 64, 255}, true);
+  } else if (!state_->pgeo_placements.empty()) {
+    // 1a. Render parsed `.pgeo` animated world objects from animatedobjects.zip
+    // (real decoded hot-air balloon & festival prop meshes instead of procedural balloons).
+    constexpr size_t kMaxPgeoVertsPerFrame = 48000;
+    const size_t pgeo_start_v = out.size();
+    for (const auto& pl : state_->pgeo_placements) {
+      if ((out.size() - pgeo_start_v) >= kMaxPgeoVertsPerFrame) break;
+      const double dx = double(pl.base_pos[0]) - eye_x;
+      const double dz = double(pl.base_pos[2]) - eye_z;
+      const double max_d = (pl.category == AnimatedPgeoCategory::kBalloon) ? 1400.0 : 280.0;
+      if (dx * dx + dz * dz > max_d * max_d) continue;
+
+      const AnimatedPgeoObject* obj = state_->catalog.find_pgeo(pl.pgeo_name);
+      if (!obj || obj->submeshes.empty()) continue;
+
+      // Submesh 0 holds the primary envelope / body; submesh 1 (when small) holds basket/flame.
+      const auto& sm0 = obj->submeshes[0];
+      const float b_cx = 0.5f * (sm0.box_min[0] + sm0.box_max[0]);
+      const float b_cy = sm0.box_min[1];
+      const float b_cz = 0.5f * (sm0.box_min[2] + sm0.box_max[2]);
+      const float b_h = std::max(sm0.box_max[1] - sm0.box_min[1], 1.0f);
+
+      float cx = pl.base_pos[0], cy = pl.base_pos[1], cz = pl.base_pos[2];
+      float yaw = pl.yaw;
+      float lean_x = 0.0f, lean_z = 0.0f;
+      if (pl.category == AnimatedPgeoCategory::kBalloon) {
+        cy += std::sin(time_sec * 0.42f + pl.phase) * 3.2f;
+        cx += std::cos(time_sec * 0.23f + pl.phase) * 2.0f;
+        cz += std::sin(time_sec * 0.19f + pl.phase * 1.3f) * 2.0f;
+        yaw += time_sec * 0.11f;
+      } else if (pl.category == AnimatedPgeoCategory::kAirwalker) {
+        cy = ground_y(cx, cz, cy);
+        const float wave = std::sin(time_sec * (3.6f + wind_spd) + pl.phase) * (0.28f + wind_amp * 0.45f);
+        lean_x = wx * wave;
+        lean_z = wz * wave;
+      }
+      const float cs = std::cos(yaw), sn = std::sin(yaw);
+
+      // Stride triangles cleanly for distant `.pgeo` balloons to keep frame vertex budgets lean.
+      const double dist = std::sqrt(dx * dx + dz * dz);
+      const size_t tri_count = sm0.indices.size() / 3u;
+      const size_t tri_step = (dist > 600.0 && tri_count > 1200) ? 2u : 1u;
+      out.reserve(out.size() + (tri_count / tri_step) * 3u);
+      for (size_t t = 0; t < tri_count; t += tri_step) {
+        if ((out.size() - pgeo_start_v) + 3u > kMaxPgeoVertsPerFrame) break;
+        const uint16_t i0 = sm0.indices[t * 3u + 0u];
+        const uint16_t i1 = sm0.indices[t * 3u + 1u];
+        const uint16_t i2 = sm0.indices[t * 3u + 2u];
+        const auto& v0 = sm0.vertices[i0];
+        const auto& v1 = sm0.vertices[i1];
+        const auto& v2 = sm0.vertices[i2];
+        const float mid_h = std::clamp(((v0.pos[1] + v1.pos[1] + v2.pos[1]) / 3.0f - b_cy) / b_h, 0.0f, 1.0f);
+        const float mid_ang = std::atan2((v0.pos[2] + v1.pos[2] + v2.pos[2]) / 3.0f - b_cz,
+                                         (v0.pos[0] + v1.pos[0] + v2.pos[0]) / 3.0f - b_cx);
+        const int band = int(std::floor((mid_ang + kPi) / (2.0f * kPi) * 12.0f)) + int(mid_h * 4.0f);
+        const auto& col = (mid_h < 0.14f && pl.category == AnimatedPgeoCategory::kBalloon)
+                              ? std::array<uint8_t, 3>{152, 108, 64}
+                              : ((band % 3 == 0) ? pl.primary_rgb
+                                                 : ((band % 3 == 1) ? pl.secondary_rgb : pl.accent_rgb));
+        const std::array<uint8_t, 4> rgba{col[0], col[1], col[2], 255};
+        auto xform_v = [&](const AnimatedPgeoSubmesh::Vertex& v) -> DebrisVertex {
+          const float lx = (v.pos[0] - b_cx) * pl.scale;
+          const float ly = (v.pos[1] - b_cy) * pl.scale;
+          const float lz = (v.pos[2] - b_cz) * pl.scale;
+          const float h_frac = std::clamp((v.pos[1] - b_cy) / b_h, 0.0f, 1.0f);
+          const float px = cx + lx * cs + lz * sn + lean_x * h_frac * ly;
+          const float py = cy + ly;
+          const float pz = cz - lx * sn + lz * cs + lean_z * h_frac * ly;
+          const std::array<float, 3> wn{v.normal[0] * cs + v.normal[2] * sn, v.normal[1],
+                                        -v.normal[0] * sn + v.normal[2] * cs};
+          return {{px, py, pz}, wn, rgba};
+        };
+        out.push_back(xform_v(v0));
+        out.push_back(xform_v(v1));
+        out.push_back(xform_v(v2));
+      }
+      if (pl.category == AnimatedPgeoCategory::kBalloon) {
+        const float pulse = 0.7f + 0.3f * std::sin(time_sec * 3.1f + pl.phase * 2.0f);
+        push_box(out, {cx, cy + b_h * pl.scale * 0.18f, cz}, {0.55f, 0, 0}, {0, 0.42f, 0}, {0, 0, 0.55f},
+                 {clamp_u8(255.0f * pulse), clamp_u8(178.0f * pulse), 52, 255});
+      }
+    }
+  } else {
+    // 1b. Procedural hot-air balloon fallback (only when animatedobjects.zip `.pgeo` is absent).
+    for (const auto& b : state_->balloons) {
+      const double dx = double(b.base_pos[0]) - eye_x;
+      const double dz = double(b.base_pos[2]) - eye_z;
+      if (dx * dx + dz * dz > 1200.0 * 1200.0) continue;
+
+      const float bob = std::sin(time_sec * 0.42f + b.phase) * 3.2f;
+      const float sway_x = std::cos(time_sec * 0.23f + b.phase) * 2.0f;
+      const float sway_z = std::sin(time_sec * 0.19f + b.phase * 1.3f) * 2.0f;
+      const float rot = time_sec * 0.11f + b.phase;
+      const float cx = b.base_pos[0] + sway_x;
+      const float cy = b.base_pos[1] + bob;
+      const float cz = b.base_pos[2] + sway_z;
+
+      constexpr int kSegs = 12;
+      constexpr int kRings = 5;
+      const float ring_h[kRings] = {0.0f, 0.22f, 0.52f, 0.80f, 1.0f};
+      const float ring_r[kRings] = {0.22f, 0.68f, 1.00f, 0.84f, 0.0f};
+
+      for (int r = 0; r < kRings - 1; ++r) {
+        const float y0 = cy + ring_h[r] * b.height;
+        const float y1 = cy + ring_h[r + 1] * b.height;
+        const float r0 = ring_r[r] * b.radius;
+        const float r1 = ring_r[r + 1] * b.radius;
+        for (int s = 0; s < kSegs; ++s) {
+          const float a0 = rot + (2.0f * kPi * float(s)) / float(kSegs);
+          const float a1 = rot + (2.0f * kPi * float(s + 1)) / float(kSegs);
+          const auto& col = ((s + r) % 3 == 0) ? b.primary_rgb : (((s + r) % 3 == 1) ? b.secondary_rgb : b.accent_rgb);
+          const std::array<uint8_t, 4> rgba{col[0], col[1], col[2], 255};
+          const std::array<float, 3> p00{cx + std::cos(a0) * r0, y0, cz + std::sin(a0) * r0};
+          const std::array<float, 3> p10{cx + std::cos(a1) * r0, y0, cz + std::sin(a1) * r0};
+          if (r + 1 == kRings - 1) {
+            const std::array<float, 3> top{cx, y1, cz};
+            push_tri(out, p00, top, p10, rgba);
+          } else {
+            const std::array<float, 3> p01{cx + std::cos(a0) * r1, y1, cz + std::sin(a0) * r1};
+            const std::array<float, 3> p11{cx + std::cos(a1) * r1, y1, cz + std::sin(a1) * r1};
+            push_quad(out, p00, p01, p11, p10, rgba);
+          }
+        }
+      }
+      const float by = cy - 3.0f;
+      push_box(out, {cx, by, cz}, {1.25f, 0, 0}, {0, 1.05f, 0}, {0, 0, 1.25f}, {154, 108, 62, 255});
+      const float pulse = 0.7f + 0.3f * std::sin(time_sec * 3.1f + b.phase * 2.0f);
+      push_box(out, {cx, cy - 0.55f, cz}, {0.45f, 0, 0}, {0, 0.35f, 0}, {0, 0, 0.45f},
+               {clamp_u8(255.0f * pulse), clamp_u8(178.0f * pulse), 52, 255});
+      for (int k = 0; k < 4; ++k) {
+        const float ca = rot + float(k) * (kPi * 0.5f) + 0.4f;
+        const float ox = std::cos(ca), oz = std::sin(ca);
+        const std::array<float, 3> bot{cx + ox * 1.15f, by + 1.0f, cz + oz * 1.15f};
+        const std::array<float, 3> top{cx + ox * (b.radius * 0.21f), cy + 0.1f, cz + oz * (b.radius * 0.21f)};
+        const std::array<float, 3> side{-oz * 0.08f, 0.0f, ox * 0.08f};
+        push_quad(out, bot, top, {top[0] + side[0], top[1], top[2] + side[2]},
+                  {bot[0] + side[0], bot[1], bot[2] + side[2]}, {72, 68, 64, 255}, true);
+      }
     }
   }
 
-  // Authentic Colorado props (Horizon festival banners, fences, structures) are streamed from
-  // FH1 .rmb.bin assets with GPU wind sway (world_vert.glsl). Synthetic procedural windmills,
-  // tri-stripe flags, and blocky box spectators are intentionally omitted so they do not
-  // overlay authentic Colorado scenery.
-  (void)wx;
-  (void)wz;
-  (void)ground_y;
-
   // 2. Roadside wind-swaying grass quads (_0x00005007 / TrackSettings grass parameters).
-  if (include_grass && ground && post_cfg_.grass_height_scale > 0.01f) {
-    const float max_r = std::clamp(post_cfg_.grass_fade_end * 0.20f, 22.0f, 52.0f);
-    const float fade_start = std::clamp(post_cfg_.grass_fade_start * 0.14f, 10.0f, max_r - 4.0f);
+  if (include_grass && ground && post_cfg.grass_height_scale > 0.01f) {
+    const float max_r = std::clamp(post_cfg.grass_fade_end * 0.20f, 22.0f, 52.0f);
+    const float fade_start = std::clamp(post_cfg.grass_fade_start * 0.14f, 10.0f, max_r - 4.0f);
     const float cell = 2.8f;
     const int cx0 = int(std::floor((eye_x - max_r) / cell));
     const int cx1 = int(std::floor((eye_x + max_r) / cell));
@@ -1132,7 +2047,7 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
         if (fade <= 0.05f) continue;
 
         const float h_rand = 0.16f + 0.18f * hash_01(gx, gz, 211u);
-        const float gh = h_rand * std::clamp(post_cfg_.grass_height_scale, 0.3f, 2.0f) * fade;
+        const float gh = h_rand * std::clamp(post_cfg.grass_height_scale, 0.3f, 2.0f) * fade;
         const float w = 0.035f + 0.028f * hash_01(gx, gz, 251u);
         const float gy = float(start_y - h.distance);
         const float sway = std::sin(time_sec * (1.8f + wind_spd * 1.1f) + ox * 0.28f + oz * 0.22f) *
@@ -1171,10 +2086,29 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
                                                const drive::Ground* ground, std::vector<SpectatorVertex>& out,
                                                std::vector<std::array<float, 4>>* shadow_discs) const {
   (void)eye_y;
-  if (!catalog_.has_3d_spectators() || crowds_.empty()) return;
+  const auto& cat = state_->catalog;
+  const auto& crowds = state_->crowds;
+  const auto& post_cfg = state_->post_cfg;
+  if (!cat.has_3d_spectators() || crowds.empty()) return;
   const float inv_grid = 1.0f / float(SpectatorCatalog::kAtlasGrid);
   const float uv_pad = 1.0f / float(SpectatorCatalog::kAtlasCell);
-  const auto& skel = catalog_.has_stand_skeleton_data ? catalog_.stand_skeleton : kDefaultStandSkeleton;
+  const auto& stand_skel = cat.has_stand_skeleton_data ? cat.stand_skeleton : kDefaultStandSkeleton;
+  const auto& sit_skel = cat.has_sit_skeleton_data ? cat.sit_skeleton : kDefaultSitSkeleton;
+  const float sprite_dist = std::clamp(post_cfg.crowd_sprite_distance, 25.0f, 115.0f);
+  const float max_crowd_dist = std::max(120.0f, sprite_dist + 65.0f);
+
+  // Retail TrackSettings <Crowds> dark/light tint bounds, softly normalized into [0.68..1.0]
+  // so vertex colors match TrackSettings without over-darkening or blowing out albedo.
+  auto eval_crowd_tint = [&](float ny) -> std::array<uint8_t, 4> {
+    const float up_f = std::clamp(0.5f + 0.5f * ny, 0.0f, 1.0f);
+    std::array<uint8_t, 4> c{255, 255, 255, 255};
+    for (int ch = 0; ch < 3; ++ch) {
+      const float d_t = std::clamp(0.72f + 0.28f * post_cfg.crowd_dark[ch], 0.55f, 1.0f);
+      const float l_t = std::clamp(0.84f + 0.16f * std::min(post_cfg.crowd_light[ch], 1.5f), 0.75f, 1.0f);
+      c[size_t(ch)] = clamp_u8((d_t * (1.0f - up_f) + l_t * up_f) * 255.0f);
+    }
+    return c;
+  };
 
   struct GroundSample {
     float y = 0.0f;
@@ -1213,16 +2147,31 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
     return gs;
   };
 
-  // Pre-build male-only and full asset index pools for crowdclass variety.
-  std::vector<size_t> all_pool;
-  std::vector<size_t> male_pool;
-  all_pool.reserve(catalog_.assets.size());
-  male_pool.reserve(catalog_.assets.size());
-  for (size_t a = 0; a < catalog_.assets.size(); ++a) {
-    all_pool.push_back(a);
-    if (catalog_.assets[a].is_male) male_pool.push_back(a);
+  // Pre-build standing and sitting male-only & full asset pools.
+  std::vector<size_t> all_stand_pool, male_stand_pool;
+  all_stand_pool.reserve(cat.assets.size());
+  male_stand_pool.reserve(cat.assets.size());
+  for (size_t a = 0; a < cat.assets.size(); ++a) {
+    all_stand_pool.push_back(a);
+    if (cat.assets[a].is_male) male_stand_pool.push_back(a);
   }
-  if (male_pool.empty()) male_pool = all_pool;
+  if (male_stand_pool.empty()) male_stand_pool = all_stand_pool;
+
+  std::vector<size_t> all_sit_pool, male_sit_pool;
+  all_sit_pool.reserve(cat.sit_assets.size());
+  male_sit_pool.reserve(cat.sit_assets.size());
+  for (size_t a = 0; a < cat.sit_assets.size(); ++a) {
+    all_sit_pool.push_back(a);
+    if (cat.sit_assets[a].is_male) male_sit_pool.push_back(a);
+  }
+  if (male_sit_pool.empty()) male_sit_pool = all_sit_pool;
+
+  // Map lower-case crowdclass name -> SpectatorCrowdClass for .anim.bin clip lookup.
+  std::unordered_map<std::string, const SpectatorCrowdClass*> cc_by_low;
+  cc_by_low.reserve(cat.crowdclasses.size());
+  for (const auto& cc : cat.crowdclasses) {
+    cc_by_low[lower_ascii(cc.name)] = &cc;
+  }
 
   // Sort nearby clusters closest-first so high-detail near spectators are never truncated by GPU vertex cap.
   struct ClusterRef {
@@ -1231,13 +2180,14 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
   };
   std::vector<ClusterRef> active_clusters;
   active_clusters.reserve(16);
-  for (size_t ci = 0; ci < crowds_.size(); ++ci) {
-    const auto& cl = crowds_[ci];
+  const double cull_r = double(max_crowd_dist) + 25.0;
+  for (size_t ci = 0; ci < crowds.size(); ++ci) {
+    const auto& cl = crowds[ci];
     const double mid = 0.5 * double(std::max(0, cl.count - 1)) * double(cl.spacing);
     const double cdx = double(cl.origin[0]) + double(cl.dir_x) * mid - eye_x;
     const double cdz = double(cl.origin[2]) + double(cl.dir_z) * mid - eye_z;
     const double d2 = cdx * cdx + cdz * cdz;
-    if (d2 <= 145.0 * 145.0) active_clusters.push_back({ci, d2});
+    if (d2 <= cull_r * cull_r) active_clusters.push_back({ci, d2});
   }
   std::sort(active_clusters.begin(), active_clusters.end(),
             [](const ClusterRef& a, const ClusterRef& b) { return a.dist2 < b.dist2; });
@@ -1249,13 +2199,34 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
 
   for (const auto& cref : active_clusters) {
     const size_t ci = cref.idx;
-    const auto& cl = crowds_[ci];
+    const auto& cl = crowds[ci];
     const std::string low_cc = lower_ascii(cl.crowdclass);
     const bool is_gig = (low_cc.find("gig") != std::string::npos || low_cc.find("cheer") != std::string::npos);
+    const bool is_sit_class =
+        !cat.sit_assets.empty() &&
+        ((low_cc == "sit" || low_cc == "loopingsit") ||
+         (low_cc.find("sit") != std::string::npos && low_cc.find("satshoulders") == std::string::npos));
     const bool is_male_only = (low_cc.find("sat") != std::string::npos && low_cc.find("02") == std::string::npos &&
                                low_cc.find("03") == std::string::npos);
-    const auto& pool = is_male_only ? male_pool : all_pool;
+    const auto& active_assets = is_sit_class ? cat.sit_assets : cat.assets;
+    const auto& pool = is_sit_class ? (is_male_only ? male_sit_pool : all_sit_pool)
+                                    : (is_male_only ? male_stand_pool : all_stand_pool);
     const size_t pool_n = pool.size();
+    if (pool_n == 0) continue;
+
+    // Resolve `.anim.bin` clip list for this crowdclass from parsed spectators.xml.
+    std::vector<const SpectatorAnimClip*> class_clips;
+    if (const auto cc_it = cc_by_low.find(low_cc); cc_it != cc_by_low.end() && cc_it->second) {
+      auto add_clips = [&](const std::vector<std::string>& names) {
+        for (const auto& an : names) {
+          if (const auto clip_it = cat.anim_clips.find(lower_ascii(an)); clip_it != cat.anim_clips.end()) {
+            class_clips.push_back(&clip_it->second);
+          }
+        }
+      };
+      add_clips(cc_it->second->cheer_anims);
+      add_clips(cc_it->second->idle_anims);
+    }
 
     // Pick a coprime stride per cluster so adjacent spectators never repeat the same character/outfit.
     size_t stride = 1;
@@ -1311,10 +2282,10 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
       const double dx = double(px) - eye_x;
       const double dz = double(pz) - eye_z;
       const double d2 = dx * dx + dz * dz;
-      if (d2 > 120.0 * 120.0) continue;
+      if (d2 > double(max_crowd_dist) * double(max_crowd_dist)) continue;
       const float dist = float(std::sqrt(d2));
 
-      const auto& asset = catalog_.assets[pool[(start_asset + size_t(i) * stride) % pool_n]];
+      const auto& asset = active_assets[pool[(start_asset + size_t(i) * stride) % pool_n]];
       const auto diff_off = slot_uv_off(asset.atlas_slot);
       const auto lm_off = slot_uv_off(cl.stage_lit ? SpectatorCatalog::kNightLitSlot : SpectatorCatalog::kNightDimSlot);
 
@@ -1323,6 +2294,47 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
       const float syaw = std::sin(yaw);
       // Natural human height variation (~1.68 m to 1.86 m for FH1's ~1.79 m rigs).
       const float scale = asset.is_male ? (0.96f + 0.08f * r0) : (0.93f + 0.07f * r0);
+
+      // Distant 10-angle impostor billboard beyond TrackSettings `crowd_sprite_distance` (when sprites.xds loaded).
+      if (dist >= sprite_dist && cat.has_impostor_sprites) {
+        const float to_ex = float(-dx) / std::max(dist, 1e-3f);
+        const float to_ez = float(-dz) / std::max(dist, 1e-3f);
+        const float fwd_dot = to_ex * syaw + to_ez * cyaw;
+        const float left_dot = to_ex * cyaw - to_ez * syaw;
+        const float rel_az = std::atan2(left_dot, fwd_dot);
+        const int angle_idx = select_impostor_angle(rel_az, cat.num_sprite_angles, cat.sprites_both_sides);
+        const uint32_t imp_slot = SpectatorCatalog::kImpostorBaseSlot + uint32_t(angle_idx % int(SpectatorCatalog::kMaxImpostorSlots));
+        const auto imp_off = slot_uv_off(imp_slot);
+
+        // Camera-facing vertical quad (6 vertices instead of 500+ 3D mesh vertices).
+        const float right_x = -to_ez;
+        const float right_z = to_ex;
+        const float half_w = 0.36f * scale;
+        const float height = (is_sit_class ? 1.38f : 1.78f) * scale;
+        const float bob = std::sin(time_sec * (2.6f + r2) + r1 * 6.283f) * 0.03f;
+        const float u0 = imp_off[0] + uv_pad * inv_grid;
+        const float u1 = imp_off[0] + (1.0f - uv_pad) * inv_grid;
+        const float v0 = imp_off[1] + uv_pad * inv_grid;
+        const float v1 = imp_off[1] + (1.0f - uv_pad) * inv_grid;
+        const std::array<float, 3> n_face{to_ex, 0.25f, to_ez};
+        const auto tint_top = eval_crowd_tint(0.85f);
+        const auto tint_bot = eval_crowd_tint(-0.35f);
+        const float lm_u = lm_off[0] + 0.5f * inv_grid;
+        const float lm_vt = lm_off[1] + 0.12f * inv_grid;
+        const float lm_vb = lm_off[1] + 0.90f * inv_grid;
+
+        const SpectatorVertex bl{{px - right_x * half_w, py, pz - right_z * half_w}, n_face, {u0, v1}, tint_bot, {lm_u, lm_vb}};
+        const SpectatorVertex br{{px + right_x * half_w, py, pz + right_z * half_w}, n_face, {u1, v1}, tint_bot, {lm_u, lm_vb}};
+        const SpectatorVertex tr{{px + right_x * half_w, py + height + bob, pz + right_z * half_w}, n_face, {u1, v0}, tint_top, {lm_u, lm_vt}};
+        const SpectatorVertex tl{{px - right_x * half_w, py + height + bob, pz - right_z * half_w}, n_face, {u0, v0}, tint_top, {lm_u, lm_vt}};
+        out.push_back(bl);
+        out.push_back(br);
+        out.push_back(tr);
+        out.push_back(bl);
+        out.push_back(tr);
+        out.push_back(tl);
+        continue;
+      }
 
       // Subtle living head gaze tracking toward the player car/camera when passing within 35 m in front.
       float gaze_yaw = 0.0f;
@@ -1340,10 +2352,19 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         }
       }
 
-      // Per-spectator tempo, phase, handedness, and slow energy envelope so crowds feel organic & alive.
+      // Derive per-spectator tempo, phase, and energy envelope from parsed `.anim.bin` clips.
+      float clip_dur = is_gig ? 2.1f : 3.4f;
+      float clip_energy = is_gig ? 0.90f : 0.65f;
+      if (!class_clips.empty()) {
+        const auto* clip = class_clips[(h2 >> 8) % class_clips.size()];
+        clip_dur = std::clamp(clip->duration_sec, 0.8f, 12.0f);
+        clip_energy = clip->energy;
+      }
       const float phase = r1 * 6.2831853f;
-      const float freq = (is_gig ? 3.2f : 2.5f) + 1.2f * r2;
-      const float env = 0.65f + 0.35f * std::sin(time_sec * (0.38f + 0.25f * r3) + phase * 2.1f);
+      const float clip_cycle = (2.0f * kPi) / clip_dur;
+      const float freq = std::clamp(clip_cycle * (is_gig ? 1.5f : 1.25f) + 0.65f * r2, 1.6f, 4.8f);
+      const float env = (0.48f + 0.36f * clip_energy) +
+                        0.28f * std::sin(time_sec * (0.38f + 0.25f * r3) + phase * 2.1f);
       const float beat = std::sin(time_sec * freq + phase);
       const float beat2 = std::sin(time_sec * (freq * 2.0f) + phase * 1.5f);
       const float sway = std::cos(time_sec * (freq * 0.5f) + phase * 1.3f);
@@ -1362,9 +2383,83 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         style = kBarrierStyles[style_roll];
       }
 
-      // Build exact 19-bone hierarchical Forward Kinematics transforms (zero tearing, watertight joints).
+      // Build exact hierarchical Forward Kinematics transforms (19-bone Standing or 15-bone Sitting rig).
       std::array<BoneXform, SpectatorMeshLod::kMaxBones> bone_xf{};
-      if (asset.mesh.has_stand_skeleton) {
+      if (asset.mesh.has_sit_skeleton) {
+        std::array<Mat3, SpectatorCatalog::kSitBoneCount> local_r{};
+        for (auto& m : local_r) m = mat3_id();
+
+        const float spine_pitch = 0.06f + 0.05f * beat * env;
+        const float spine_yaw = 0.08f * sway + gaze_yaw * 0.25f;
+        const float head_yaw = gaze_yaw * 0.75f + idle_look * 0.65f;
+        const float head_pitch = -0.04f + 0.05f * beat * env;
+        float l_up = 0.45f, l_out = 0.14f, l_twist = 0.36f, l_elbow = 1.05f;
+        float r_up = 0.45f, r_out = 0.14f, r_twist = 0.36f, r_elbow = 1.05f;
+        if (style == 0u || style == 3u || style == 6u) {
+          const float pump = 0.28f * beat * env;
+          l_up = 1.85f + pump;
+          l_out = 0.30f + 0.07f * sway;
+          l_elbow = 1.05f - 0.22f * beat * env;
+          r_up = 1.78f - pump * 0.6f;
+          r_out = 0.28f - 0.07f * sway;
+          r_elbow = 1.08f + 0.18f * beat * env;
+        } else if (style == 2u) {
+          const float clap = 0.5f + 0.5f * beat2;
+          l_up = 0.62f;
+          l_out = 0.08f + 0.14f * clap * env;
+          l_twist = 0.76f - 0.18f * clap * env;
+          l_elbow = 1.55f - 0.10f * clap * env;
+          r_up = 0.62f;
+          r_out = l_out;
+          r_twist = l_twist;
+          r_elbow = l_elbow;
+        } else if (style == 1u) {
+          l_up = 1.95f + 0.26f * beat * env;
+          l_out = 0.26f;
+          l_elbow = 1.02f - 0.25f * beat * env;
+          r_up = 0.25f;
+          r_out = 0.16f;
+          r_elbow = 0.85f;
+        }
+        if (mirror) {
+          std::swap(l_up, r_up);
+          std::swap(l_out, r_out);
+          std::swap(l_twist, r_twist);
+          std::swap(l_elbow, r_elbow);
+        }
+        local_r[6] = mat3_mul(rot_y(spine_yaw), rot_x(spine_pitch));
+        local_r[7] = rot_y(head_yaw * 0.35f);
+        local_r[14] = mat3_mul(rot_y(head_yaw * 0.65f), rot_x(head_pitch));
+        local_r[9] = make_arm_rot(+1.0f, l_up, l_out, l_twist);
+        local_r[10] = rot_x(-std::clamp(l_elbow, 0.1f, 2.15f));
+        local_r[12] = make_arm_rot(-1.0f, r_up, r_out, r_twist);
+        local_r[13] = rot_x(-std::clamp(r_elbow, 0.1f, 2.15f));
+
+        std::array<std::array<float, 3>, SpectatorCatalog::kSitBoneCount> bind_p{};
+        std::array<BoneXform, SpectatorCatalog::kSitBoneCount> world_xf{};
+        for (size_t b = 0; b < SpectatorCatalog::kSitBoneCount; ++b) {
+          bind_p[b] = {sit_skel[b].bind_world[0], sit_skel[b].bind_world[1] - asset.mesh.min_y, sit_skel[b].bind_world[2]};
+          const int16_t par = sit_skel[b].parent;
+          if (par < 0) {
+            world_xf[b].r = local_r[b];
+            world_xf[b].t = bind_p[b];
+          } else {
+            const auto& pw = world_xf[size_t(par)];
+            const std::array<float, 3> local_off{
+                bind_p[b][0] - bind_p[size_t(par)][0],
+                bind_p[b][1] - bind_p[size_t(par)][1],
+                bind_p[b][2] - bind_p[size_t(par)][2],
+            };
+            const auto rot_off = mat3_vec(pw.r, local_off);
+            world_xf[b].r = mat3_mul(pw.r, local_r[b]);
+            world_xf[b].t = {pw.t[0] + rot_off[0], pw.t[1] + rot_off[1], pw.t[2] + rot_off[2]};
+          }
+          const auto neg_bind = mat3_vec(world_xf[b].r, bind_p[b]);
+          bone_xf[b].r = world_xf[b].r;
+          bone_xf[b].t = {world_xf[b].t[0] - neg_bind[0], world_xf[b].t[1] - neg_bind[1],
+                          world_xf[b].t[2] - neg_bind[2]};
+        }
+      } else if (asset.mesh.has_stand_skeleton) {
         std::array<Mat3, SpectatorCatalog::kStandBoneCount> local_r{};
         for (auto& m : local_r) m = mat3_id();
 
@@ -1543,8 +2638,8 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         std::array<std::array<float, 3>, SpectatorCatalog::kStandBoneCount> bind_p{};
         std::array<BoneXform, SpectatorCatalog::kStandBoneCount> world_xf{};
         for (size_t b = 0; b < SpectatorCatalog::kStandBoneCount; ++b) {
-          bind_p[b] = {skel[b].bind_world[0], skel[b].bind_world[1] - asset.mesh.min_y, skel[b].bind_world[2]};
-          const int16_t par = skel[b].parent;
+          bind_p[b] = {stand_skel[b].bind_world[0], stand_skel[b].bind_world[1] - asset.mesh.min_y, stand_skel[b].bind_world[2]};
+          const int16_t par = stand_skel[b].parent;
           if (par < 0) {
             world_xf[b].r = local_r[b];
             world_xf[b].t = {bind_p[b][0] + hip_x, bind_p[b][1] + hip_dy, bind_p[b][2] + hip_z};
@@ -1566,8 +2661,10 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         }
       }
 
-      // Select crisp multi-LOD mesh by distance: LOD 0 (<32 m), LOD 1 (32..68 m), LOD 2 (>68 m).
-      const size_t lod_idx = (dist < 32.0f) ? 0u : ((dist < 68.0f) ? 1u : 2u);
+      // Select crisp multi-LOD mesh by distance scaled to TrackSettings crowd_sprite_distance.
+      const float lod0_end = std::min(32.0f, sprite_dist * 0.55f);
+      const float lod1_end = std::min(68.0f, sprite_dist * 0.92f);
+      const size_t lod_idx = (dist < lod0_end) ? 0u : ((dist < lod1_end) ? 1u : 2u);
       const auto& verts = asset.mesh.vertices;
       const auto& inds =
           !asset.mesh.lod_indices[lod_idx].empty() ? asset.mesh.lod_indices[lod_idx] : asset.mesh.indices;
@@ -1576,17 +2673,20 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         shadow_discs->push_back({px, py + 0.03f, pz, 0.42f * scale});
       }
 
+      const size_t max_rig_bones = asset.mesh.has_sit_skeleton ? SpectatorCatalog::kSitBoneCount
+                                                               : SpectatorCatalog::kStandBoneCount;
+      const bool has_rig = asset.mesh.has_stand_skeleton || asset.mesh.has_sit_skeleton;
       out.reserve(out.size() + inds.size());
       for (uint16_t idx : inds) {
         const auto& v = verts[idx];
-        // Normalize feet strictly to y=0 so every spectator stands flush on the terrain surface.
+        // Normalize feet strictly to y=0 so every spectator sits/stands flush on the terrain surface.
         const std::array<float, 3> bp{v.pos[0], v.pos[1] - asset.mesh.min_y, v.pos[2]};
         std::array<float, 3> posed_p = bp;
         std::array<float, 3> posed_n = v.normal;
 
-        if (asset.mesh.has_stand_skeleton && v.bone0 < SpectatorCatalog::kStandBoneCount) {
+        if (has_rig && v.bone0 < max_rig_bones) {
           const float w0 = float(v.weight0);
-          const float w1 = (v.bone1 < SpectatorCatalog::kStandBoneCount) ? float(v.weight1) : 0.0f;
+          const float w1 = (v.bone1 < max_rig_bones) ? float(v.weight1) : 0.0f;
           const float wsum = w0 + w1;
           if (wsum > 1e-3f) {
             const float a0 = w0 / wsum;
@@ -1607,7 +2707,7 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
             }
           }
         } else {
-          // Fallback upper-body sway for synthetic meshes without the 19-bone rig.
+          // Fallback upper-body sway for synthetic meshes without a skeletal rig.
           const float upper = std::clamp((bp[1] - 0.85f) / 0.85f, 0.0f, 1.0f);
           const float mid = std::clamp((bp[1] - 0.12f) / 0.60f, 0.0f, 1.0f);
           posed_p[0] += sway * 0.028f * upper;
@@ -1636,7 +2736,7 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         const float h_norm = std::clamp(1.0f - bp[1] / 1.82f - posed_n[1] * 0.14f, 0.04f, 0.96f);
         const float lm_u = lm_off[0] + 0.5f * inv_grid;
         const float lm_v = lm_off[1] + h_norm * inv_grid;
-        out.push_back({{wx, wy, wz}, {nx, ny, nz}, {u, tv}, {255, 255, 255, 255}, {lm_u, lm_v}});
+        out.push_back({{wx, wy, wz}, {nx, ny, nz}, {u, tv}, eval_crowd_tint(ny), {lm_u, lm_v}});
       }
     }
   }
