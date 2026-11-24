@@ -1,17 +1,229 @@
 #include "world/smashables.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <mutex>
 #include <sstream>
+#include <thread>
+#include <unordered_set>
 
 #include "fh1data/archive.h"
 #include "fh1data/bytes.h"
+#include "fh1data/members.h"
+#include "fh1data/placements.h"
+#include "fh1data/props.h"
+#include "fh1data/rmb.h"
+#include "fh1data/world_texture.h"
 
 namespace world {
 namespace {
+
+constexpr uint32_t kPlaceholderTextureId = 0x00002CA9u;
+
+struct DebrisModelVertex {
+  std::array<float, 3> pos{};     // local game frame (v_file.x, v_file.y, -v_file.z)
+  std::array<float, 3> normal{};  // local game frame (n_file.x, n_file.y, -n_file.z)
+  std::array<float, 2> uv{};
+  std::array<uint8_t, 4> rgba{255, 255, 255, 255};
+};
+
+struct DebrisSubmesh {
+  uint32_t texture_record = kNoTexture;
+  uint8_t cutout = 0;
+  std::vector<DebrisModelVertex> tris;  // 3 verts per triangle
+};
+
+struct DebrisModel {
+  std::vector<DebrisSubmesh> submeshes;
+  std::array<float, 3> box_min{0, 0, 0};
+  std::array<float, 3> box_max{0, 0, 0};
+  bool valid() const {
+    for (const auto& s : submeshes)
+      if (!s.tris.empty()) return true;
+    return false;
+  }
+};
+
+drive::Quat quat_normalize(const drive::Quat& q);
+
+drive::Quat quat_from_basis(const std::array<float, 3>& x_in, const std::array<float, 3>& y_in,
+                            const std::array<float, 3>& z_in) {
+  auto norm3 = [](drive::Vec3 v, drive::Vec3 fallback) -> drive::Vec3 {
+    const double l = std::sqrt(drive::dot(v, v));
+    return l > 1e-6 ? v * (1.0 / l) : fallback;
+  };
+  const drive::Vec3 x = norm3({x_in[0], x_in[1], x_in[2]}, {1, 0, 0});
+  drive::Vec3 y = {y_in[0], y_in[1], y_in[2]};
+  y = norm3(y - x * drive::dot(y, x), {0, 1, 0});
+  drive::Vec3 z = drive::cross(x, y);
+  // Respect input Z orientation if consistent, keeping right-handedness (det = +1).
+  if (drive::dot(z, {z_in[0], z_in[1], z_in[2]}) < 0.0) {
+    y = y * -1.0;
+    z = drive::cross(x, y);
+  }
+  z = norm3(z, {0, 0, 1});
+
+  // Rotation matrix R has columns (x, y, z): R[row][col].
+  const double m00 = x.x, m01 = y.x, m02 = z.x;
+  const double m10 = x.y, m11 = y.y, m12 = z.y;
+  const double m20 = x.z, m21 = y.z, m22 = z.z;
+  const double trace = m00 + m11 + m22;
+  drive::Quat q{};
+  if (trace > 0.0) {
+    const double s = std::sqrt(trace + 1.0) * 2.0;
+    q.w = 0.25 * s;
+    q.x = (m21 - m12) / s;
+    q.y = (m02 - m20) / s;
+    q.z = (m10 - m01) / s;
+  } else if (m00 > m11 && m00 > m22) {
+    const double s = std::sqrt(std::max(1e-12, 1.0 + m00 - m11 - m22)) * 2.0;
+    q.w = (m21 - m12) / s;
+    q.x = 0.25 * s;
+    q.y = (m01 + m10) / s;
+    q.z = (m02 + m20) / s;
+  } else if (m11 > m22) {
+    const double s = std::sqrt(std::max(1e-12, 1.0 + m11 - m00 - m22)) * 2.0;
+    q.w = (m02 - m20) / s;
+    q.x = (m01 + m10) / s;
+    q.y = 0.25 * s;
+    q.z = (m12 + m21) / s;
+  } else {
+    const double s = std::sqrt(std::max(1e-12, 1.0 + m22 - m00 - m11)) * 2.0;
+    q.w = (m10 - m01) / s;
+    q.x = (m02 + m20) / s;
+    q.y = (m12 + m21) / s;
+    q.z = 0.25 * s;
+  }
+  return quat_normalize(q);
+}
+
+bool decode_rmb_to_debris_model(const fh1::RenderModel& model, uint32_t member, const fh1::PvsObjectTable& table,
+                                DebrisModel& out) {
+  out = DebrisModel{};
+  out.box_min = {1e30f, 1e30f, 1e30f};
+  out.box_max = {-1e30f, -1e30f, -1e30f};
+  const std::vector<uint32_t>* texture_list = nullptr;
+  if (member >= 1 && member - 1 < table.model_textures.size()) {
+    texture_list = &table.model_textures[member - 1];
+  }
+
+  std::unordered_map<uint64_t, size_t> submesh_by_key;
+  size_t submesh_number = 0;
+  for (const auto& o : model.objects) {
+    const size_t first_submesh = submesh_number;
+    submesh_number += o.submeshes.size();
+    if (skipped_object(o.name)) continue;
+    for (size_t si = 0; si < o.submeshes.size(); ++si) {
+      const auto& s = o.submeshes[si];
+      if (skipped_material(s.material)) continue;
+      uint32_t albedo_rec = kNoTexture;
+      uint8_t cutout = 0;
+      fh1::RmbVertexLayout layout;
+      std::array<float, 4> uv_scale{0.0f, 0.0f, 1.0f, 1.0f};
+      if (s.material_index < model.materials.size()) {
+        const fh1::RmbMaterial& mat = model.materials[s.material_index];
+        const std::string& eff = mat.effect < model.effects.size() ? model.effects[mat.effect] : std::string{};
+        if (eff == "UNDERGROUND") continue;
+        const int32_t slot0 = !mat.slots.empty() ? mat.slots[0] : -2;
+        if (slot0 >= 0 && texture_list && size_t(slot0) < texture_list->size()) {
+          const uint32_t rec = (*texture_list)[size_t(slot0)];
+          if (rec < table.textures.size()) {
+            if (table.textures[rec].id == kPlaceholderTextureId) continue;
+            albedo_rec = rec;
+          }
+        }
+        cutout = (effect_blend(eff) == Blend::kCoverage) ? 1u : 0u;
+        layout = fh1::rmb_vertex_layout(eff, o.stride);
+        if (first_submesh + si < model.uv_offset_scale.size()) {
+          uv_scale = model.uv_offset_scale[first_submesh + si];
+        }
+      }
+      const auto tri = fh1::rmb_triangle_list(s);
+      if (tri.size() < 3) continue;
+
+      const uint64_t sm_key = (uint64_t(cutout) << 32) | uint64_t(albedo_rec);
+      auto [it, added] = submesh_by_key.emplace(sm_key, out.submeshes.size());
+      if (added) {
+        DebrisSubmesh ds;
+        ds.texture_record = albedo_rec;
+        ds.cutout = cutout;
+        out.submeshes.push_back(std::move(ds));
+      }
+      auto& dst = out.submeshes[it->second].tris;
+      dst.reserve(dst.size() + tri.size());
+
+      auto fetch = [&](uint32_t vi) -> DebrisModelVertex {
+        DebrisModelVertex dv;
+        const auto p = o.position(vi);
+        // File frame -> local game frame (Z negated).
+        dv.pos = {p[0], p[1], -p[2]};
+        for (int k = 0; k < 3; ++k) {
+          out.box_min[size_t(k)] = std::min(out.box_min[size_t(k)], dv.pos[size_t(k)]);
+          out.box_max[size_t(k)] = std::max(out.box_max[size_t(k)], dv.pos[size_t(k)]);
+        }
+        const uint8_t* vptr = &o.vertices[size_t(vi) * o.stride];
+        if (layout.normal >= 0) {
+          const auto n = fh1::rmb_normal(vptr + layout.normal);
+          const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+          if (len > 1e-4f) dv.normal = {n[0] / len, n[1] / len, -n[2] / len};
+          else dv.normal = {0.0f, 1.0f, 0.0f};
+        } else {
+          dv.normal = {0.0f, 1.0f, 0.0f};
+        }
+        if (layout.texcoord[0] >= 0) {
+          const auto t = fh1::rmb_texcoord(vptr + layout.texcoord[0]);
+          dv.uv = {uv_scale[0] + uv_scale[2] * t[0], uv_scale[1] + uv_scale[3] * t[1]};
+        }
+        dv.rgba = layout.colour >= 0 ? fh1::rmb_colour(vptr + layout.colour)
+                                     : std::array<uint8_t, 4>{255, 255, 255, 255};
+        return dv;
+      };
+
+      for (size_t t = 0; t + 2 < tri.size(); t += 3) {
+        DebrisModelVertex v0 = fetch(tri[t]);
+        DebrisModelVertex v1 = fetch(tri[t + 1]);
+        DebrisModelVertex v2 = fetch(tri[t + 2]);
+        if (layout.normal < 0) {
+          const float e1[3] = {v1.pos[0] - v0.pos[0], v1.pos[1] - v0.pos[1], v1.pos[2] - v0.pos[2]};
+          const float e2[3] = {v2.pos[0] - v0.pos[0], v2.pos[1] - v0.pos[1], v2.pos[2] - v0.pos[2]};
+          const float nx = e1[1] * e2[2] - e1[2] * e2[1];
+          const float ny = e1[2] * e2[0] - e1[0] * e2[2];
+          const float nz = e1[0] * e2[1] - e1[1] * e2[0];
+          const float l = std::sqrt(nx * nx + ny * ny + nz * nz);
+          if (l > 1e-6f) v0.normal = v1.normal = v2.normal = {nx / l, ny / l, nz / l};
+        }
+        dst.push_back(v0);
+        dst.push_back(v1);
+        dst.push_back(v2);
+      }
+    }
+  }
+  if (!out.valid()) {
+    out.box_min = out.box_max = {0, 0, 0};
+    return false;
+  }
+  return true;
+}
+
+int64_t spatial_key_1m(float x, float y, float z) {
+  const int64_t ix = int64_t(std::floor(x));
+  const int64_t iy = int64_t(std::floor(y * 0.5f));
+  const int64_t iz = int64_t(std::floor(z));
+  return (ix * 73856093ll) ^ (iy * 19349663ll) ^ (iz * 83492791ll);
+}
+
+int part_index_of(std::string_view physics_type) {
+  const size_t d1 = physics_type.find('.');
+  if (d1 == std::string_view::npos) return 0;
+  const size_t d2 = physics_type.find('.', d1 + 1);
+  const auto mid = physics_type.substr(d1 + 1, d2 == std::string_view::npos ? std::string_view::npos : d2 - d1 - 1);
+  if (mid.empty() || !std::isdigit(static_cast<unsigned char>(mid[0]))) return 0;
+  return std::atoi(std::string(mid).c_str());
+}
 
 std::string to_lower(std::string_view s) {
   std::string out(s);
@@ -582,16 +794,102 @@ std::array<uint8_t, 4> SmashableWorld::colour_for_prop(int32_t surface_type, int
   return {116, 94, 68, 255};  // earthy weathered timber/metal fallback
 }
 
+struct SmashableWorld::Impl {
+  fh1::MemberSource source;
+  fh1::PvsObjectTable table;
+  std::string prefix = "coloradoout";
+  std::unordered_map<uint32_t, DebrisModel> debris_models;
+  mutable std::mutex tex_mutex;
+  bool small_read = false;
+  struct SmallTex {
+    uint32_t width = 0, height = 0, levels = 0, format_word = 0;
+    std::vector<uint8_t> payload;
+  };
+  mutable std::unordered_map<uint32_t, SmallTex> small_textures;
+  bool source_ready = false;
+
+  void ensure_small_textures_locked() const {
+    if (small_read || !source_ready) return;
+    const_cast<Impl*>(this)->small_read = true;
+    const auto names = const_cast<fh1::MemberSource&>(source).with_suffix(".bundle");
+    std::vector<uint8_t> buf;
+    std::vector<fh1::BundleEntry> entries;
+    for (const auto& name : names) {
+      if (const_cast<fh1::MemberSource&>(source).read(name, buf, nullptr) &&
+          fh1::parse_bundle(buf, entries, nullptr)) {
+        for (const auto& e : entries) {
+          if (!small_textures.count(e.record)) {
+            small_textures[e.record] = {e.width, e.height, e.levels, e.format_word,
+                                        {e.payload.begin(), e.payload.end()}};
+          }
+        }
+      }
+    }
+  }
+};
+
+SmashableWorld::SmashableWorld() : impl_(std::make_unique<Impl>()) {}
+SmashableWorld::~SmashableWorld() = default;
+SmashableWorld::SmashableWorld(SmashableWorld&&) noexcept = default;
+SmashableWorld& SmashableWorld::operator=(SmashableWorld&&) noexcept = default;
+
+size_t SmashableWorld::loaded_debris_model_count() const {
+  return impl_ ? impl_->debris_models.size() : 0;
+}
+
+size_t SmashableWorld::matched_global_index_count() const {
+  size_t n = 0;
+  for (const auto& pp : props_)
+    if (pp.global_index >= 0) ++n;
+  return n;
+}
+
+bool SmashableWorld::read_texture(uint32_t record, fh1::WorldTexture& out, std::string* error) const {
+  if (!impl_ || !impl_->source_ready || record >= impl_->table.textures.size()) {
+    if (error) *error = "smashable texture record unavailable";
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(impl_->tex_mutex);
+  const fh1::PvsTexture& t = impl_->table.textures[record];
+  char name[32];
+  std::vector<uint8_t> a, b;
+  bool exact = false, ok = false;
+  auto& src = const_cast<fh1::MemberSource&>(impl_->source);
+  if (t.type == fh1::kPvsTextureBix) {
+    std::snprintf(name, sizeof name, "_0x%08x.bix", t.id);
+    std::string base = name;
+    base.insert(base.size() - 4, "_b");
+    ok = src.read(name, a, error) && src.read(base, b, error) && fh1::decode_bix(a, b, out, error, &exact);
+  } else if (t.type == fh1::kPvsTextureCaff) {
+    std::snprintf(name, sizeof name, "_0x%08x.bin", t.id);
+    ok = src.read(name, a, error) && fh1::decode_caff(a, out, error, &exact);
+  } else {
+    impl_->ensure_small_textures_locked();
+    const auto it = impl_->small_textures.find(record);
+    if (it == impl_->small_textures.end()) {
+      if (error) *error = "smashable bundle texture missing";
+      return false;
+    }
+    const auto& s = it->second;
+    return fh1::decode_bundle_entry({record, s.width, s.height, s.levels, s.format_word, s.payload}, out, error);
+  }
+  return ok && exact;
+}
+
 bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::filesystem::path& world_dir,
                           std::string* error) {
   defs_ = PhysicsDefinitions{};
   coll_types_.clear();
   smash_types_.clear();
   props_.clear();
+  raw_xml_prop_count_ = 0;
   grid_.clear();
   dynamic_bodies_.clear();
+  broken_positions_.reset();
   evictions_ = 0;
+  impl_ = std::make_unique<Impl>();
 
+  std::vector<CollObjPlacement> raw_placements;
   if (!world_dir.empty()) {
     const auto pd_path = world_dir / "PhysicsDefinitions.bin";
     if (std::filesystem::exists(pd_path)) {
@@ -603,10 +901,306 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
     }
     const auto co_path = world_dir / "Ribbon_00" / "CollObjs.xml";
     if (std::filesystem::exists(co_path)) {
-      std::vector<CollObjPlacement> placements;
-      if (parse_coll_objs_xml(read_text_file(co_path), placements)) {
-        props_.reserve(placements.size());
-        for (const auto& pl : placements) add_prop(pl);
+      parse_coll_objs_xml(read_text_file(co_path), raw_placements);
+      raw_xml_prop_count_ = raw_placements.size();
+    }
+  }
+
+  // Deduplicate CollObjs.xml stacked child rows (e.g. CO_Bench_001.0.rmb .. .12.rmb all share
+  // the exact same world position): keep one parent prop per physical placement, preferring .0.rmb.
+  struct DedupKey {
+    std::string stem;
+    int32_t qx, qy, qz;
+    bool operator==(const DedupKey& o) const {
+      return qx == o.qx && qy == o.qy && qz == o.qz && stem == o.stem;
+    }
+  };
+  struct DedupHash {
+    size_t operator()(const DedupKey& k) const {
+      size_t h = std::hash<std::string>{}(k.stem);
+      h ^= size_t(uint32_t(k.qx)) * 2654435761u + 0x9e3779b9u + (h << 6) + (h >> 2);
+      h ^= size_t(uint32_t(k.qy)) * 2246822519u + 0x9e3779b9u + (h << 6) + (h >> 2);
+      h ^= size_t(uint32_t(k.qz)) * 3266489917u + 0x9e3779b9u + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  std::unordered_map<DedupKey, std::pair<size_t, int>, DedupHash> unique_xml;
+  unique_xml.reserve(raw_placements.size() / 3 + 64);
+  for (size_t i = 0; i < raw_placements.size(); ++i) {
+    const auto& pl = raw_placements[i];
+    const DedupKey dk{pl.stem, int32_t(std::lround(pl.pos[0] * 4.0f)), int32_t(std::lround(pl.pos[1] * 4.0f)),
+                      int32_t(std::lround(pl.pos[2] * 4.0f))};
+    const int part = part_index_of(pl.physics_type);
+    auto it = unique_xml.find(dk);
+    if (it == unique_xml.end()) {
+      unique_xml.emplace(dk, std::make_pair(i, part));
+    } else if (part < it->second.second) {
+      it->second = {i, part};
+    }
+  }
+  std::vector<size_t> parent_indices;
+  parent_indices.reserve(unique_xml.size());
+  for (const auto& [k, v] : unique_xml) parent_indices.push_back(v.first);
+  std::sort(parent_indices.begin(), parent_indices.end());
+  props_.reserve(parent_indices.size());
+  for (size_t idx : parent_indices) add_prop(raw_placements[idx]);
+
+  // Open bin.zip + Ribbon_00/<world>_00.pvs to resolve exact FH1 GlobalIndex from .pvsz records
+  // (PvszRecord::word == GlobalIndex 0..MaxGlobalIndex-1) and pre-decode real .rmb.bin debris meshes.
+  if (!world_dir.empty() && !defs_.definitions.empty()) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path zip = world_dir / "bin.zip";
+    fs::path dlc_zips;
+    if (!fs::exists(zip, ec)) {
+      const fs::path alt1 = world_dir / "ColoradoDirt_pri_65.zip";
+      const fs::path parent_zips = world_dir.parent_path().parent_path().parent_path().parent_path();
+      const fs::path alt2 = parent_zips / "ColoradoDirt_pri_65.zip";
+      if (fs::exists(alt1, ec)) {
+        zip = alt1;
+        dlc_zips = world_dir;
+      } else if (fs::exists(alt2, ec)) {
+        zip = alt2;
+        dlc_zips = parent_zips;
+      }
+    }
+    std::vector<uint8_t> pvs_bytes;
+    const fs::path pvs_path = ribbon_file(world_dir, "_00.pvs");
+    if (std::ifstream pf(pvs_path, std::ios::binary); pf) {
+      pvs_bytes.assign((std::istreambuf_iterator<char>(pf)), {});
+    } else if (!dlc_zips.empty()) {
+      std::string zwhy;
+      if (auto pkg = fh1::Archive::open(dlc_zips / "1600_pri_65.zip", &zwhy)) {
+        auto r = pkg->read("media/Tracks/ColoradoDirt/Ribbon_00/ColoradoDirt_00.pvs");
+        if (r.ok()) pvs_bytes = std::move(r.data);
+      }
+    }
+
+    std::string m_err;
+    if (!pvs_bytes.empty() && fs::exists(zip, ec) && impl_->source.open(zip, &m_err) &&
+        fh1::parse_object_table(pvs_bytes, impl_->table, &m_err)) {
+      impl_->source_ready = true;
+      impl_->prefix = model_prefix(world_dir);
+
+      // 1. Scan all .pvsz zones in parallel for smashable placements (extended && word < MaxGlobalIndex).
+      const auto pvsz_names = impl_->source.with_suffix(".pvsz");
+      struct PvszSmash {
+        uint32_t object_id = 0;
+        uint32_t global_index = 0;
+        int32_t intact_member = -1;
+        std::array<float, 3> pos{};
+        std::array<float, 3> x_axis{1, 0, 0};
+        std::array<float, 3> y_axis{0, 1, 0};
+        std::array<float, 3> z_axis{0, 0, 1};
+        std::vector<uint8_t> routes;
+        std::string name;
+      };
+      const uint32_t max_g = uint32_t(defs_.global_to_list.size());
+      std::vector<std::vector<PvszSmash>> per_zone(pvsz_names.size());
+      {
+        const size_t n = pvsz_names.size();
+        const size_t threads = std::min<size_t>(n, std::max<size_t>(1, std::thread::hardware_concurrency()));
+        std::atomic<size_t> next{0};
+        auto worker = [&]() {
+          std::vector<uint8_t> bytes;
+          for (;;) {
+            const size_t zi = next.fetch_add(1, std::memory_order_relaxed);
+            if (zi >= n) break;
+            fh1::PvszZone zone;
+            if (!impl_->source.read(pvsz_names[zi], bytes, nullptr) ||
+                !fh1::parse_pvsz(bytes, zone, nullptr, fh1::PvszStartRule::kMostRigid))
+              continue;
+            auto& dst = per_zone[zi];
+            for (size_t k = 0; k < zone.ids.size() && k < zone.records.size(); ++k) {
+              const auto& rec = zone.records[k];
+              if (!rec.extended || rec.word >= max_g) continue;
+              const uint32_t oid = fh1::pvsz_object_id(zone.ids[k]);
+              PvszSmash s;
+              s.object_id = oid;
+              s.global_index = rec.word;
+              if (oid < impl_->table.objects.size()) s.intact_member = int32_t(impl_->table.objects[oid].member);
+              s.pos = rec.position;
+              // R_game = M * F (col0 = h0..2, col1 = h3..5, col2 = -h6..8 -> right-handed SO(3), det = +1).
+              s.x_axis = {rec.rotation[0], rec.rotation[1], rec.rotation[2]};
+              s.y_axis = {rec.rotation[3], rec.rotation[4], rec.rotation[5]};
+              s.z_axis = {-rec.rotation[6], -rec.rotation[7], -rec.rotation[8]};
+              s.routes = rec.extra;
+              s.name = to_lower(rec.name);
+              dst.push_back(std::move(s));
+            }
+          }
+        };
+        if (threads > 1 && n >= 4) {
+          std::vector<std::thread> pool;
+          pool.reserve(threads);
+          for (size_t t = 0; t < threads; ++t) pool.emplace_back(worker);
+          for (auto& w : pool) w.join();
+        } else {
+          worker();
+        }
+      }
+
+      // Deduplicate by object_id and build a 1 m spatial index for exact CollObjs.xml linking.
+      std::unordered_map<uint32_t, PvszSmash> unique_pvsz;
+      for (auto& zv : per_zone) {
+        for (auto& s : zv) unique_pvsz.try_emplace(s.object_id, std::move(s));
+      }
+      per_zone.clear();
+
+      std::vector<const PvszSmash*> pvsz_list;
+      pvsz_list.reserve(unique_pvsz.size());
+      std::unordered_map<int64_t, std::vector<size_t>> pvsz_grid;
+      for (const auto& [oid, s] : unique_pvsz) {
+        const size_t si = pvsz_list.size();
+        pvsz_list.push_back(&s);
+        pvsz_grid[spatial_key_1m(s.pos[0], s.pos[1], s.pos[2])].push_back(si);
+      }
+
+      std::vector<uint8_t> pvsz_claimed(pvsz_list.size(), 0);
+      std::unordered_map<std::string, int32_t> stem_to_global;
+      std::unordered_map<std::string, int32_t> stem_to_intact;
+
+      // Pass 1: exact positional link from CollObjs.xml -> .pvsz GlobalIndex.
+      for (auto& pp : props_) {
+        const int32_t ix0 = int32_t(std::floor(pp.place.pos[0]));
+        const int32_t iy0 = int32_t(std::floor(pp.place.pos[1] * 0.5f));
+        const int32_t iz0 = int32_t(std::floor(pp.place.pos[2]));
+        size_t best_si = SIZE_MAX;
+        float best_d2 = 0.65f * 0.65f;
+        for (int32_t dz = -1; dz <= 1; ++dz) {
+          for (int32_t dy = -1; dy <= 1; ++dy) {
+            for (int32_t dx = -1; dx <= 1; ++dx) {
+              const int64_t key =
+                  (int64_t(ix0 + dx) * 73856093ll) ^ (int64_t(iy0 + dy) * 19349663ll) ^ (int64_t(iz0 + dz) * 83492791ll);
+              auto it = pvsz_grid.find(key);
+              if (it == pvsz_grid.end()) continue;
+              for (size_t si : it->second) {
+                const auto& ps = *pvsz_list[si];
+                const float ddx = ps.pos[0] - pp.place.pos[0];
+                const float ddy = ps.pos[1] - pp.place.pos[1];
+                const float ddz = ps.pos[2] - pp.place.pos[2];
+                const float d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+                if (d2 < best_d2) {
+                  best_d2 = d2;
+                  best_si = si;
+                }
+              }
+            }
+          }
+        }
+        if (best_si != SIZE_MAX) {
+          const auto& ps = *pvsz_list[best_si];
+          pvsz_claimed[best_si] = 1;
+          pp.global_index = int32_t(ps.global_index);
+          pp.intact_member = ps.intact_member;
+          pp.routes = ps.routes;
+          const uint16_t list_idx = defs_.global_to_list[ps.global_index];
+          if (list_idx < defs_.definitions.size()) {
+            pp.def = &defs_.definitions[list_idx];
+            pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 2.5f);
+          }
+          stem_to_global.try_emplace(pp.place.stem, pp.global_index);
+          if (pp.intact_member >= 0) stem_to_intact.try_emplace(pp.place.stem, pp.intact_member);
+        }
+      }
+
+      // Pass 2: propagate stem -> GlobalIndex to any CollObjs.xml entry not directly matched.
+      for (auto& pp : props_) {
+        if (pp.global_index >= 0) continue;
+        if (const auto it = stem_to_global.find(pp.place.stem); it != stem_to_global.end()) {
+          pp.global_index = it->second;
+          const uint16_t list_idx = defs_.global_to_list[size_t(it->second)];
+          if (list_idx < defs_.definitions.size()) {
+            pp.def = &defs_.definitions[list_idx];
+            pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 2.5f);
+          }
+          if (const auto mit = stem_to_intact.find(pp.place.stem); mit != stem_to_intact.end()) {
+            pp.intact_member = mit->second;
+          }
+        }
+      }
+
+      // Pass 3: include any unclaimed breakable .pvsz smashables not already in CollObjs.xml
+      // (skip Flyer signs owned by FreeRoam and BF_* barn doors owned by BarnDoorCollider).
+      std::unordered_set<int64_t> extra_seen;
+      for (size_t si = 0; si < pvsz_list.size(); ++si) {
+        if (pvsz_claimed[si]) continue;
+        const auto& ps = *pvsz_list[si];
+        if (ps.name.rfind("bf_", 0) == 0 || ps.name.rfind("flyer_", 0) == 0) continue;
+        const uint16_t list_idx = defs_.global_to_list[ps.global_index];
+        if (list_idx >= defs_.definitions.size()) continue;
+        const PropPhysicsDef& d = defs_.definitions[list_idx];
+        if (d.object_type_index == 1 || d.unbreakable()) continue;
+        const int64_t pos_key =
+            (int64_t(std::lround(ps.pos[0] * 4.0f)) * 73856093ll) ^
+            (int64_t(std::lround(ps.pos[1] * 4.0f)) * 19349663ll) ^
+            (int64_t(std::lround(ps.pos[2] * 4.0f)) * 83492791ll);
+        if (!extra_seen.insert(pos_key).second) continue;
+
+        PlacedProp pp;
+        pp.place.pos = ps.pos;
+        pp.place.x_axis = ps.x_axis;
+        pp.place.y_axis = ps.y_axis;
+        pp.place.z_axis = ps.z_axis;
+        pp.place.stem = !ps.name.empty() ? ps.name : ("pvsz_g" + std::to_string(ps.global_index));
+        pp.place.physics_type = pp.place.stem;
+        pp.def = &d;
+        pp.global_index = int32_t(ps.global_index);
+        pp.intact_member = ps.intact_member;
+        pp.routes = ps.routes;
+        pp.radius = std::clamp(d.bounding_radius, 0.35f, 2.5f);
+        const uint32_t idx = uint32_t(props_.size());
+        props_.push_back(std::move(pp));
+        grid_[cell_key(ps.pos[0], ps.pos[2])].push_back(idx);
+      }
+
+      // 2. Pre-decode all unique FH1 smashable child/intact .rmb.bin render models in parallel
+      //    so runtime prop shattering has zero disc I/O stutter.
+      std::unordered_set<uint32_t> wanted_members;
+      for (const auto& row : defs_.child_render_models) {
+        for (int32_t rm : row)
+          if (rm >= 0) wanted_members.insert(uint32_t(rm));
+      }
+      for (const auto& pp : props_) {
+        if (pp.intact_member >= 0) wanted_members.insert(uint32_t(pp.intact_member));
+      }
+      std::vector<uint32_t> member_list(wanted_members.begin(), wanted_members.end());
+      std::sort(member_list.begin(), member_list.end());
+      std::vector<DebrisModel> decoded(member_list.size());
+      std::vector<uint8_t> decoded_ok(member_list.size(), 0);
+      {
+        const size_t n = member_list.size();
+        const size_t threads = std::min<size_t>(n, std::max<size_t>(1, std::thread::hardware_concurrency()));
+        std::atomic<size_t> next{0};
+        auto worker = [&]() {
+          std::vector<uint8_t> buf;
+          for (;;) {
+            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= n) break;
+            const uint32_t m = member_list[i];
+            const std::string mname = fh1::PropModels::member_name(m, impl_->prefix);
+            if (!impl_->source.contains(mname) || !impl_->source.read(mname, buf, nullptr)) continue;
+            fh1::RenderModel rm;
+            if (!fh1::parse_render_model(buf, rm, nullptr)) continue;
+            std::string ignored;
+            fh1::parse_render_materials(buf, rm, &ignored);
+            if (decode_rmb_to_debris_model(rm, m, impl_->table, decoded[i])) {
+              decoded_ok[i] = 1;
+            }
+          }
+        };
+        if (threads > 1 && n >= 4) {
+          std::vector<std::thread> pool;
+          pool.reserve(threads);
+          for (size_t t = 0; t < threads; ++t) pool.emplace_back(worker);
+          for (auto& w : pool) w.join();
+        } else {
+          worker();
+        }
+      }
+      impl_->debris_models.reserve(member_list.size());
+      for (size_t i = 0; i < member_list.size(); ++i) {
+        if (decoded_ok[i]) impl_->debris_models.emplace(member_list[i], std::move(decoded[i]));
       }
     }
   }
@@ -740,33 +1334,76 @@ int SmashableWorld::spawn_flyer_shatter(const std::array<float, 3>& pos, const s
   const float spd = std::sqrt(car_vel[0] * car_vel[0] + car_vel[2] * car_vel[2]);
   const float dir_x = (spd > 0.5f) ? car_vel[0] / spd : 0.0f;
   const float dir_z = (spd > 0.5f) ? car_vel[2] / spd : 1.0f;
-  const float boost = std::clamp(spd * 1.15f, 6.0f, 32.0f);
+  const float boost = std::clamp(spd * 1.05f, 5.5f, 28.0f);
+
+  // Locate the Flyer's exact GlobalIndex (g = 162 in Colorado) so we spawn its 12 real FH1 .rmb.bin shards.
+  const std::vector<int32_t>* flyer_rms = nullptr;
+  for (size_t g = 0; g < defs_.global_to_list.size() && g < defs_.child_render_models.size(); ++g) {
+    const uint16_t li = defs_.global_to_list[g];
+    if (li < defs_.definitions.size() && defs_.definitions[li].object_type_index == 1) {
+      flyer_rms = &defs_.child_render_models[g];
+      break;
+    }
+  }
+  // Align sign plane roughly perpendicular to striking direction (looks natural if orientation isn't passed).
+  const float yaw = std::atan2(dir_x, dir_z);
+  const drive::Quat flyer_rot{0.0, std::sin(double(yaw) * 0.5), 0.0, std::cos(double(yaw) * 0.5)};
 
   for (int i = 0; i < pieces; ++i) {
     DynamicBody b;
-    const float row = float(i % 4) - 1.5f;
-    const float col = float(i / 4) - 1.0f;
-    b.pos = {pos[0] + row * 0.22f + rand_sym() * 0.1f, pos[1] + 0.45f + col * 0.28f + 0.35f,
-             pos[2] + rand_sym() * 0.2f};
-    b.vel = {
-        dir_x * boost * (0.75f + 0.55f * rand01()) + rand_sym() * 4.5f,
-        3.2f + rand01() * 5.2f,
-        dir_z * boost * (0.75f + 0.55f * rand01()) + rand_sym() * 4.5f,
-    };
-    b.omega = {rand_sym() * 14.0f, rand_sym() * 14.0f, rand_sym() * 14.0f};
+    const int32_t rm = (flyer_rms && size_t(i) < flyer_rms->size()) ? (*flyer_rms)[size_t(i)] : -1;
+    const bool has_rm = (rm >= 0 && impl_ && impl_->debris_models.count(uint32_t(rm)) > 0);
     if (flyer_def && size_t(i) < flyer_def->children.size()) {
       const auto& ch = flyer_def->children[size_t(i)];
-      b.half_extents = {
-          std::clamp(ch.half_extents[0] * 0.55f, 0.10f, 0.28f),
-          std::clamp(ch.half_extents[1] * 0.55f, 0.07f, 0.22f),
-          std::clamp(ch.half_extents[2] * 0.25f, 0.018f, 0.032f),
-      };
+      if (has_rm) {
+        const auto& dm = impl_->debris_models.at(uint32_t(rm));
+        const float go_len2 = ch.graphics_offset[0] * ch.graphics_offset[0] +
+                              ch.graphics_offset[1] * ch.graphics_offset[1] +
+                              ch.graphics_offset[2] * ch.graphics_offset[2];
+        std::array<float, 3> com_local{};
+        if (go_len2 > 1e-6f) {
+          com_local = {-ch.graphics_offset[0], -ch.graphics_offset[1], -ch.graphics_offset[2]};
+          b.mesh_offset = ch.graphics_offset;
+        } else {
+          com_local = {0.5f * (dm.box_min[0] + dm.box_max[0]), 0.5f * (dm.box_min[1] + dm.box_max[1]),
+                       0.5f * (dm.box_min[2] + dm.box_max[2])};
+          b.mesh_offset = {-com_local[0], -com_local[1], -com_local[2]};
+        }
+        const drive::Vec3 cw = drive::rotate(flyer_rot, {com_local[0], com_local[1], com_local[2]});
+        b.pos = {pos[0] + float(cw.x), pos[1] + float(cw.y), pos[2] + float(cw.z)};
+        b.rot = flyer_rot;
+        b.render_model_member = rm;
+        b.half_extents = {
+            std::max(0.03f, 0.5f * (dm.box_max[0] - dm.box_min[0])),
+            std::max(0.03f, 0.5f * (dm.box_max[1] - dm.box_min[1])),
+            std::max(0.03f, 0.5f * (dm.box_max[2] - dm.box_min[2])),
+        };
+      } else {
+        const float row = float(i % 4) - 1.5f;
+        const float col = float(i / 4) - 1.0f;
+        b.pos = {pos[0] + row * 0.22f + rand_sym() * 0.1f, pos[1] + 0.45f + col * 0.28f + 0.35f,
+                 pos[2] + rand_sym() * 0.2f};
+        b.half_extents = {
+            std::clamp(ch.half_extents[0] * 0.55f, 0.10f, 0.28f),
+            std::clamp(ch.half_extents[1] * 0.55f, 0.07f, 0.22f),
+            std::clamp(ch.half_extents[2] * 0.25f, 0.018f, 0.032f),
+        };
+      }
       b.mass_kg = ch.mass_kg();
     } else {
+      const float row = float(i % 4) - 1.5f;
+      const float col = float(i / 4) - 1.0f;
+      b.pos = {pos[0] + row * 0.22f + rand_sym() * 0.1f, pos[1] + 0.45f + col * 0.28f + 0.35f,
+               pos[2] + rand_sym() * 0.2f};
       b.half_extents = {0.20f, 0.14f, 0.022f};
       b.mass_kg = 1.8f;
     }
-    // Authentic Horizon discount sign board panels: crimson red face, charcoal trim, weathered wood frame.
+    b.vel = {
+        dir_x * boost * (0.70f + 0.55f * rand01()) + rand_sym() * 3.8f,
+        2.6f + rand01() * 4.4f,
+        dir_z * boost * (0.70f + 0.55f * rand01()) + rand_sym() * 3.8f,
+    };
+    b.omega = {rand_sym() * 12.0f, rand_sym() * 12.0f, rand_sym() * 12.0f};
     if (i % 3 == 0) b.colour = {205, 38, 62, 255};
     else if (i % 3 == 1) b.colour = {42, 40, 44, 255};
     else b.colour = {178, 136, 86, 255};
@@ -862,6 +1499,7 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
       for (uint32_t idx : it->second) {
         auto& pp = props_[idx];
         if (pp.broken || !pp.def) continue;
+        if (active_route_ >= 0 && !fh1::shown_on_route(pp.routes, active_route_)) continue;
         const float px = pp.place.pos[0] - float(cpos.x);
         const float py = pp.place.pos[1] - float(cpos.y);
         const float pz = pp.place.pos[2] - float(cpos.z);
@@ -890,7 +1528,7 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
           continue;
         }
 
-        // Break prop -> record broken position for static prop hiding and spawn fractured child debris.
+        // Break prop -> record broken position for static prop hiding and spawn real FH1 fractured debris.
         pp.broken = true;
         const float hide_r = std::clamp(std::max(pp.radius, def.bounding_radius) + 0.65f, 1.5f, 4.5f);
         auto next_hidden = broken_positions_
@@ -929,82 +1567,145 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
               c[3],
           };
         };
+
+        const drive::Quat prop_rot = quat_from_basis(pp.place.x_axis, pp.place.y_axis, pp.place.z_axis);
+        const std::vector<int32_t>* child_rms =
+            (pp.global_index >= 0 && size_t(pp.global_index) < defs_.child_render_models.size())
+                ? &defs_.child_render_models[size_t(pp.global_index)]
+                : nullptr;
+
         int spawned = 0;
-        const float impulse_scale = std::clamp(car_speed * 1.15f, 5.5f, 30.0f);
+        const float impulse_scale = std::clamp(car_speed * 0.95f, 4.0f, 28.0f);
+        const float lift_scale = std::clamp(1.2f + car_speed * 0.14f, 1.4f, 5.2f);
+        const float spin_scale = std::clamp(3.0f + car_speed * 0.35f, 3.5f, 12.0f);
         const float dir_x = (car_speed > 0.5f) ? float(cvel.x) / car_speed : float(cfwd.x);
         const float dir_z = (car_speed > 0.5f) ? float(cvel.z) / car_speed : float(cfwd.z);
+
+        auto setup_real_piece = [&](DynamicBody& b, int32_t rm, const PropPhysicsDef& piece_def) -> bool {
+          if (rm < 0 || !impl_) return false;
+          const auto mit = impl_->debris_models.find(uint32_t(rm));
+          if (mit == impl_->debris_models.end()) return false;
+          const auto& dm = mit->second;
+          const float go_len2 = piece_def.graphics_offset[0] * piece_def.graphics_offset[0] +
+                                piece_def.graphics_offset[1] * piece_def.graphics_offset[1] +
+                                piece_def.graphics_offset[2] * piece_def.graphics_offset[2];
+          std::array<float, 3> com_local{};
+          if (go_len2 > 1e-6f) {
+            // Confirmed FH1 convention: graphics_offset == -(local game-frame CoM of child .rmb.bin).
+            com_local = {-piece_def.graphics_offset[0], -piece_def.graphics_offset[1], -piece_def.graphics_offset[2]};
+            b.mesh_offset = piece_def.graphics_offset;
+          } else {
+            com_local = {0.5f * (dm.box_min[0] + dm.box_max[0]), 0.5f * (dm.box_min[1] + dm.box_max[1]),
+                         0.5f * (dm.box_min[2] + dm.box_max[2])};
+            b.mesh_offset = {-com_local[0], -com_local[1], -com_local[2]};
+          }
+          const drive::Vec3 com_world = drive::rotate(prop_rot, {com_local[0], com_local[1], com_local[2]});
+          b.pos = {pp.place.pos[0] + float(com_world.x), pp.place.pos[1] + float(com_world.y),
+                   pp.place.pos[2] + float(com_world.z)};
+          b.rot = prop_rot;
+          b.render_model_member = rm;
+          b.half_extents = {
+              std::max(0.025f, 0.5f * (dm.box_max[0] - dm.box_min[0])),
+              std::max(0.025f, 0.5f * (dm.box_max[1] - dm.box_min[1])),
+              std::max(0.025f, 0.5f * (dm.box_max[2] - dm.box_min[2])),
+          };
+          b.mass_kg = piece_def.mass_kg();
+          // Radial scatter outward from prop origin plus forward carry from the striking vehicle.
+          const float rx = float(com_world.x);
+          const float rz = float(com_world.z);
+          const float rlen = std::sqrt(rx * rx + rz * rz);
+          const float out_x = (rlen > 0.05f) ? (rx / rlen) * (1.2f + 1.4f * rand01()) : rand_sym() * 1.8f;
+          const float out_z = (rlen > 0.05f) ? (rz / rlen) * (1.2f + 1.4f * rand01()) : rand_sym() * 1.8f;
+          b.vel = {
+              dir_x * impulse_scale * (0.65f + 0.50f * rand01()) + out_x + rand_sym() * 1.6f,
+              lift_scale * (0.55f + 0.70f * rand01()),
+              dir_z * impulse_scale * (0.65f + 0.50f * rand01()) + out_z + rand_sym() * 1.6f,
+          };
+          b.omega = {rand_sym() * spin_scale, rand_sym() * spin_scale, rand_sym() * spin_scale};
+          b.colour = base_col;
+          return true;
+        };
 
         if (!def.children.empty()) {
           for (size_t ci = 0; ci < def.children.size(); ++ci) {
             const auto& ch = def.children[ci];
             DynamicBody b;
-            b.pos = {
-                pp.place.pos[0] + ch.aabb_centre_offset[0] + rand_sym() * 0.35f,
-                pp.place.pos[1] + std::max(0.25f, ch.aabb_centre_offset[1] + 0.5f) + rand01() * 0.45f,
-                pp.place.pos[2] + ch.aabb_centre_offset[2] + rand_sym() * 0.35f,
-            };
-            b.vel = {
-                dir_x * impulse_scale * (0.65f + 0.65f * rand01()) + rand_sym() * 3.8f,
-                2.8f + rand01() * 4.8f,
-                dir_z * impulse_scale * (0.65f + 0.65f * rand01()) + rand_sym() * 3.8f,
-            };
-            b.omega = {rand_sym() * 12.0f, rand_sym() * 12.0f, rand_sym() * 12.0f};
-            // Preserve authentic fractured plank/panel/pole proportions from child AABBs.
-            if (is_pole_prop && !is_sign_prop) {
-              b.half_extents = {
-                  std::clamp(ch.half_extents[0], 0.045f, 0.09f),
-                  std::clamp(ch.half_extents[1], 0.28f, 0.65f),
-                  std::clamp(ch.half_extents[2], 0.045f, 0.09f),
+            const int32_t rm = (child_rms && ci < child_rms->size() && (*child_rms)[ci] >= 0) ? (*child_rms)[ci] : -1;
+            if (!setup_real_piece(b, rm, ch)) {
+              b.pos = {
+                  pp.place.pos[0] + ch.aabb_centre_offset[0] + rand_sym() * 0.35f,
+                  pp.place.pos[1] + std::max(0.25f, ch.aabb_centre_offset[1] + 0.5f) + rand01() * 0.45f,
+                  pp.place.pos[2] + ch.aabb_centre_offset[2] + rand_sym() * 0.35f,
               };
-            } else {
-              b.half_extents = {
-                  std::clamp(ch.half_extents[0], 0.05f, 0.58f),
-                  std::clamp(ch.half_extents[1], 0.04f, 0.58f),
-                  std::clamp(ch.half_extents[2], 0.02f, 0.16f),
+              b.vel = {
+                  dir_x * impulse_scale * (0.65f + 0.65f * rand01()) + rand_sym() * 3.8f,
+                  lift_scale * (0.6f + 0.7f * rand01()),
+                  dir_z * impulse_scale * (0.65f + 0.65f * rand01()) + rand_sym() * 3.8f,
               };
+              b.omega = {rand_sym() * spin_scale, rand_sym() * spin_scale, rand_sym() * spin_scale};
+              if (is_pole_prop && !is_sign_prop) {
+                b.half_extents = {
+                    std::clamp(ch.half_extents[0], 0.045f, 0.09f),
+                    std::clamp(ch.half_extents[1], 0.28f, 0.65f),
+                    std::clamp(ch.half_extents[2], 0.045f, 0.09f),
+                };
+              } else {
+                b.half_extents = {
+                    std::clamp(ch.half_extents[0], 0.05f, 0.58f),
+                    std::clamp(ch.half_extents[1], 0.04f, 0.58f),
+                    std::clamp(ch.half_extents[2], 0.02f, 0.16f),
+                };
+              }
+              b.mass_kg = ch.mass_kg();
+              b.colour = vary_col((is_sign_prop && (ci % 2 == 1)) ? post_steel_col : base_col);
             }
-            b.mass_kg = ch.mass_kg();
-            b.colour = vary_col((is_sign_prop && (ci % 2 == 1)) ? post_steel_col : base_col);
             spawn_dynamic_body(b);
             ++spawned;
           }
         } else {
-          // Single-piece breakable prop (e.g. fence plank, sign post, mailbox): spawn proportioned shards.
-          const int chunks = (def.object_type_index == 0) ? 4 : 3;
-          for (int ci = 0; ci < chunks; ++ci) {
-            DynamicBody b;
-            b.pos = {pp.place.pos[0] + rand_sym() * 0.25f, pp.place.pos[1] + 0.45f + float(ci) * 0.2f,
-                     pp.place.pos[2] + rand_sym() * 0.25f};
-            b.vel = {
-                dir_x * impulse_scale * (0.7f + 0.5f * rand01()) + rand_sym() * 3.5f,
-                2.5f + rand01() * 4.5f,
-                dir_z * impulse_scale * (0.7f + 0.5f * rand01()) + rand_sym() * 3.5f,
-            };
-            b.omega = {rand_sym() * 11.0f, rand_sym() * 11.0f, rand_sym() * 11.0f};
-            if (def.object_type_index == 0) {
-              // Wooden fence slats/rails: elongated thin planks rather than cubes.
-              b.half_extents = {0.42f + 0.18f * rand01(), 0.07f + 0.03f * rand01(), 0.025f};
-            } else if (is_sign_prop) {
-              // Road sign / flyer shards: flat thin sign plate + slender galvanized post segments.
-              if (ci == 0) {
-                b.half_extents = {0.26f + 0.08f * rand01(), 0.22f + 0.07f * rand01(), 0.016f};
-              } else {
-                b.half_extents = {0.042f, 0.36f + 0.16f * rand01(), 0.042f};
-              }
-            } else if (is_pole_prop) {
-              // Streetlamp / utility / metal pole segments: slender dark steel shafts.
-              b.half_extents = {0.052f, 0.38f + 0.18f * rand01(), 0.052f};
-            } else {
-              b.half_extents = {
-                  std::clamp(def.half_extents[0] * 0.40f, 0.08f, 0.38f),
-                  std::clamp(def.half_extents[1] * 0.36f, 0.06f, 0.38f),
-                  std::clamp(def.half_extents[2] * 0.26f, 0.03f, 0.14f),
+          // Single-piece breakable prop (e.g. cone, deer sign, fence end post): send the prop's own
+          // real .rmb.bin mesh tumbling whole as a single rigid body!
+          const int32_t single_rm = (child_rms && !child_rms->empty() && (*child_rms)[0] >= 0) ? (*child_rms)[0]
+                                                                                               : pp.intact_member;
+          DynamicBody whole;
+          if (setup_real_piece(whole, single_rm, def)) {
+            spawn_dynamic_body(whole);
+            spawned = 1;
+          } else {
+            // Synthetic unit-test fallback when no .rmb.bin archive is loaded.
+            const int chunks = (def.object_type_index == 0) ? 4 : 3;
+            for (int ci = 0; ci < chunks; ++ci) {
+              DynamicBody b;
+              b.pos = {pp.place.pos[0] + rand_sym() * 0.25f, pp.place.pos[1] + 0.45f + float(ci) * 0.2f,
+                       pp.place.pos[2] + rand_sym() * 0.25f};
+              b.vel = {
+                  dir_x * impulse_scale * (0.7f + 0.5f * rand01()) + rand_sym() * 3.5f,
+                  lift_scale * (0.55f + 0.7f * rand01()),
+                  dir_z * impulse_scale * (0.7f + 0.5f * rand01()) + rand_sym() * 3.5f,
               };
+              b.omega = {rand_sym() * spin_scale, rand_sym() * spin_scale, rand_sym() * spin_scale};
+              if (def.object_type_index == 0) {
+                b.half_extents = {0.42f + 0.18f * rand01(), 0.07f + 0.03f * rand01(), 0.025f};
+              } else if (is_sign_prop) {
+                if (ci == 0) {
+                  b.half_extents = {0.26f + 0.08f * rand01(), 0.22f + 0.07f * rand01(), 0.016f};
+                } else {
+                  b.half_extents = {0.042f, 0.36f + 0.16f * rand01(), 0.042f};
+                }
+              } else if (is_pole_prop) {
+                b.half_extents = {0.052f, 0.38f + 0.18f * rand01(), 0.052f};
+              } else {
+                b.half_extents = {
+                    std::clamp(def.half_extents[0] * 0.40f, 0.08f, 0.38f),
+                    std::clamp(def.half_extents[1] * 0.36f, 0.06f, 0.38f),
+                    std::clamp(def.half_extents[2] * 0.26f, 0.03f, 0.14f),
+                };
+              }
+              b.mass_kg = prop_mass_kg / float(chunks);
+              b.colour = vary_col((is_sign_prop && ci > 0) ? post_steel_col : base_col);
+              spawn_dynamic_body(b);
+              ++spawned;
             }
-            b.mass_kg = prop_mass_kg / float(chunks);
-            b.colour = vary_col((is_sign_prop && ci > 0) ? post_steel_col : base_col);
-            spawn_dynamic_body(b);
-            ++spawned;
           }
         }
 
@@ -1014,6 +1715,7 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
         ev.prop_stem = pp.place.stem;
         ev.object_type_index = def.object_type_index;
         ev.surface_type_index = def.surface_type_index;
+        ev.global_index = pp.global_index;
         ev.debris_spawned = spawned;
         ev.hide_radius = hide_r;
         events.push_back(std::move(ev));
@@ -1074,9 +1776,8 @@ void SmashableWorld::reset_broken() {
 void SmashableWorld::build_debris_mesh(std::vector<DebrisVertex>& out_tris) const {
   out_tris.clear();
   if (dynamic_bodies_.empty()) return;
-  out_tris.reserve(dynamic_bodies_.size() * 36);
 
-  // Unit cube 6 faces (2 triangles each = 36 vertices).
+  // Unit cube 6 faces (2 triangles each = 36 vertices) used only as synthetic fallback when no disc .rmb.bin is loaded.
   static constexpr int kFaces[6][4] = {
       {0, 1, 2, 3}, {5, 4, 7, 6}, {4, 0, 3, 7}, {1, 5, 6, 2}, {3, 2, 6, 7}, {4, 5, 1, 0},
   };
@@ -1087,12 +1788,55 @@ void SmashableWorld::build_debris_mesh(std::vector<DebrisVertex>& out_tris) cons
       {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}, {-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
   };
 
+  // Group real textured triangles by (cutout, texture_record) so Showroom issues minimal batched draw calls.
+  std::map<uint64_t, std::vector<DebrisVertex>> batches;
+  std::vector<DebrisVertex> untextured;
+
   for (const auto& b : dynamic_bodies_) {
     const float fade = (b.age > kDebrisDespawnSeconds - 1.5f)
                            ? std::clamp((kDebrisDespawnSeconds - b.age) / 1.5f, 0.0f, 1.0f)
                            : 1.0f;
     if (fade <= 0.02f) continue;
-    const float scale = (fade < 1.0f) ? (0.4f + 0.6f * fade) : 1.0f;
+    const float scale = (fade < 1.0f) ? (0.25f + 0.75f * fade) : 1.0f;
+
+    const DebrisModel* dm = nullptr;
+    if (b.render_model_member >= 0 && impl_) {
+      const auto mit = impl_->debris_models.find(uint32_t(b.render_model_member));
+      if (mit != impl_->debris_models.end()) dm = &mit->second;
+    }
+
+    if (dm && dm->valid()) {
+      for (const auto& sm : dm->submeshes) {
+        if (sm.tris.empty()) continue;
+        std::vector<DebrisVertex>* dst = &untextured;
+        if (sm.texture_record != kNoTexture) {
+          const uint64_t bkey = (uint64_t(sm.cutout) << 32) | uint64_t(sm.texture_record);
+          dst = &batches[bkey];
+        }
+        dst->reserve(dst->size() + sm.tris.size());
+        for (const auto& mv : sm.tris) {
+          const drive::Vec3 local{
+              double((mv.pos[0] + b.mesh_offset[0]) * scale),
+              double((mv.pos[1] + b.mesh_offset[1]) * scale),
+              double((mv.pos[2] + b.mesh_offset[2]) * scale),
+          };
+          const drive::Vec3 wp = drive::rotate(b.rot, local);
+          const drive::Vec3 wn = drive::rotate(b.rot, {double(mv.normal[0]), double(mv.normal[1]), double(mv.normal[2])});
+          DebrisVertex out{};
+          out.pos = {b.pos[0] + float(wp.x), b.pos[1] + float(wp.y), b.pos[2] + float(wp.z)};
+          out.normal = {float(wn.x), float(wn.y), float(wn.z)};
+          out.rgba = (sm.texture_record != kNoTexture) ? mv.rgba : b.colour;
+          out.rgba[3] = uint8_t(float(out.rgba[3]) * fade);
+          out.uv = mv.uv;
+          out.texture_record = sm.texture_record;
+          out.cutout = sm.cutout;
+          dst->push_back(out);
+        }
+      }
+      continue;
+    }
+
+    // Synthetic box fallback (only when no game disc .rmb.bin library was loaded, e.g. unit tests).
     const float hx = b.half_extents[0] * scale;
     const float hy = b.half_extents[1] * scale;
     const float hz = b.half_extents[2] * scale;
@@ -1120,14 +1864,20 @@ void SmashableWorld::build_debris_mesh(std::vector<DebrisVertex>& out_tris) cons
       const auto& p1 = wv[size_t(kFaces[f][1])];
       const auto& p2 = wv[size_t(kFaces[f][2])];
       const auto& p3 = wv[size_t(kFaces[f][3])];
-      out_tris.push_back({p0, n, fcol});
-      out_tris.push_back({p1, n, fcol});
-      out_tris.push_back({p2, n, fcol});
-      out_tris.push_back({p0, n, fcol});
-      out_tris.push_back({p2, n, fcol});
-      out_tris.push_back({p3, n, fcol});
+      untextured.push_back({p0, n, fcol});
+      untextured.push_back({p1, n, fcol});
+      untextured.push_back({p2, n, fcol});
+      untextured.push_back({p0, n, fcol});
+      untextured.push_back({p2, n, fcol});
+      untextured.push_back({p3, n, fcol});
     }
   }
+
+  size_t total = untextured.size();
+  for (const auto& [k, v] : batches) total += v.size();
+  out_tris.reserve(total);
+  for (const auto& [k, v] : batches) out_tris.insert(out_tris.end(), v.begin(), v.end());
+  out_tris.insert(out_tris.end(), untextured.begin(), untextured.end());
 }
 
 SmashableWorld::RewindSnapshot SmashableWorld::capture_rewind() const {

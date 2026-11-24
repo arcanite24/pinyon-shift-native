@@ -57,6 +57,10 @@ class WorldGpu {
   };
   void record_copies(VkCommandBuffer cmd, VkBuffer staged_vertices, const std::vector<Copy>& vertex_copies,
                      VkBuffer staged_indices, const std::vector<Copy>& index_copies);
+  // Per-instance smashable prop hiding/restoration directly on the resident index arena
+  // (executed asynchronously in record_cull before culling/drawing, zero stall).
+  void queue_index_zero(uint32_t first_index, uint32_t count);
+  void queue_index_restore(uint32_t first_index, std::vector<uint32_t> indices);
 
   // ---- bindless textures ----
   uint32_t texture_slot(uint32_t record) const;
@@ -152,6 +156,12 @@ class WorldGpu {
   SlotBuffers slots_[Renderer::kFramesInFlight];
   uint32_t last_tested_ = 0, last_drawn_ = 0, last_hiz_culled_ = 0, last_trees_drawn_ = 0;
   uint32_t recorded_slot_ = 0;
+  struct IndexPatch {
+    uint32_t first_index = 0;
+    uint32_t count = 0;
+    std::vector<uint32_t> data;  // empty => zero fill (hide); non-empty => restore original indices (Rewind)
+  };
+  std::vector<IndexPatch> pending_index_patches_;
   mutable std::mutex mutex_;
 };
 

@@ -538,6 +538,19 @@ void WorldGpu::record_copies(VkCommandBuffer cmd, VkBuffer staged_vertices, cons
   run(staged_indices, indices_.buffer, index_copies);
 }
 
+void WorldGpu::queue_index_zero(uint32_t first_index, uint32_t count) {
+  if (count == 0) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  pending_index_patches_.push_back({first_index, count, {}});
+}
+
+void WorldGpu::queue_index_restore(uint32_t first_index, std::vector<uint32_t> indices) {
+  if (indices.empty()) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  const uint32_t count = uint32_t(indices.size());
+  pending_index_patches_.push_back({first_index, count, std::move(indices)});
+}
+
 uint32_t WorldGpu::texture_slot(uint32_t record) const {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto it = texture_slots_.find(record);
@@ -704,6 +717,45 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
     last_trees_drawn_ = std::min(tc[1], kMaxTrees);
   }
   vkResetDescriptorPool(r_.device_, s.pool, 0);
+
+  // Apply queued per-instance smashable prop hides/restores directly to the resident index arena
+  // before any draw pass (opaque, cutout, z-prepass, shadow, env) reads indices_.buffer.
+  {
+    std::vector<IndexPatch> patches;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      patches.swap(pending_index_patches_);
+    }
+    if (!patches.empty() && indices_.buffer) {
+      const VkDeviceSize max_bytes = indices_.size;
+      bool patched = false;
+      for (const auto& pt : patches) {
+        if (pt.count == 0) continue;
+        const VkDeviceSize byte_off = VkDeviceSize(pt.first_index) * sizeof(uint32_t);
+        const VkDeviceSize byte_len = VkDeviceSize(pt.count) * sizeof(uint32_t);
+        if (byte_off >= max_bytes || byte_len > max_bytes - byte_off) continue;
+        if (pt.data.empty()) {
+          vkCmdFillBuffer(cmd, indices_.buffer, byte_off, byte_len, 0u);
+          patched = true;
+        } else {
+          // vkCmdUpdateBuffer supports up to 65536 bytes (16384 uint32_t) per call.
+          const size_t total_u32 = std::min<size_t>(pt.count, pt.data.size());
+          for (size_t done = 0; done < total_u32; done += 16384u) {
+            const size_t chunk = std::min<size_t>(16384u, total_u32 - done);
+            vkCmdUpdateBuffer(cmd, indices_.buffer, byte_off + VkDeviceSize(done) * sizeof(uint32_t),
+                              VkDeviceSize(chunk) * sizeof(uint32_t), pt.data.data() + done);
+          }
+          patched = true;
+        }
+      }
+      if (patched) {
+        buffer_barrier(cmd, indices_.buffer, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
+                       VK_ACCESS_2_INDEX_READ_BIT);
+      }
+    }
+  }
+
   if (generation_.rows == 0) return;
 
   if (generation_.pending_upload) {

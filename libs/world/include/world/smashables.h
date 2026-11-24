@@ -143,15 +143,21 @@ struct SmashEvent {
   std::string prop_stem;
   int8_t object_type_index = -1;  // 0 Fence, 1 Flyer, 2 Mailbox, 3 RaceActivation
   int32_t surface_type_index = -1;
+  int32_t global_index = -1;      // PhysicsDefinitions GlobalIndex (0..MaxGlobalIndex-1), or -1
   int debris_spawned = 0;
   float hide_radius = 2.0f;       // radius (m) to mask out intact static world prop
 };
 
 // Render-ready vertex for dynamic flying smashable debris (game frame).
+// Real FH1 child/prop .rmb.bin debris carries UV + PVS texture_record + cutout flag;
+// untextured fallback / world_anim callers leave texture_record == kNoTexture.
 struct DebrisVertex {
   std::array<float, 3> pos{};
   std::array<float, 3> normal{0, 1, 0};
   std::array<uint8_t, 4> rgba{200, 180, 150, 255};
+  std::array<float, 2> uv{0.0f, 0.0f};
+  uint32_t texture_record = kNoTexture;
+  uint8_t cutout = 0;
 };
 
 // Runtime 384-body dynamic smashable prop pool + barn-door collision manager.
@@ -160,12 +166,23 @@ class SmashableWorld {
   static constexpr size_t kMaxDynamicBodies = 384;  // confirmed pool cap (FORMAT-PHYSICS-DEFINITIONS)
   static constexpr float kDebrisDespawnSeconds = 9.0f;
 
-  SmashableWorld() = default;
+  SmashableWorld();
+  ~SmashableWorld();
+  SmashableWorld(SmashableWorld&&) noexcept;
+  SmashableWorld& operator=(SmashableWorld&&) noexcept;
+  SmashableWorld(const SmashableWorld&) = delete;
+  SmashableWorld& operator=(const SmashableWorld&) = delete;
 
   // Loads PhysicsDefinitions.bin, SmashableObjectTypes.xml, physics.zip/CollObjects.xml,
-  // and Ribbon_00/CollObjs.xml from the player's media & track folders.
+  // Ribbon_00/CollObjs.xml, and real FH1 smashable .rmb.bin debris models + .pvsz GlobalIndex links.
   bool load(const std::filesystem::path& media_dir, const std::filesystem::path& world_dir,
             std::string* error = nullptr);
+
+  // Active track route filter for .pvsz smashables (0 = free roam, -1 = all routes).
+  void set_active_route(int route) { active_route_ = route; }
+
+  // Decodes a world texture record referenced by a real smashable debris mesh from bin.zip.
+  bool read_texture(uint32_t record, fh1::WorldTexture& out, std::string* error = nullptr) const;
 
   // Registers barn-door colliders from GameObjs.xml (matching `closed_coll_id` / `open_coll_id`).
   bool load_barn_doors(const std::filesystem::path& game_objs_path,
@@ -206,7 +223,10 @@ class SmashableWorld {
   const std::vector<CollObjectType>& coll_object_types() const { return coll_types_; }
   const std::vector<std::string>& smashable_object_types() const { return smash_types_; }
   const std::vector<BarnDoorCollider>& barn_doors() const { return barn_doors_; }
-  size_t placed_prop_count() const { return props_.size(); }
+  size_t placed_prop_count() const { return raw_xml_prop_count_ ? raw_xml_prop_count_ : props_.size(); }
+  size_t unique_prop_count() const { return props_.size(); }
+  size_t loaded_debris_model_count() const;
+  size_t matched_global_index_count() const;
   size_t active_dynamic_count() const { return dynamic_bodies_.size(); }
   size_t broken_prop_count() const { return broken_positions_ ? broken_positions_->size() : 0; }
   std::shared_ptr<const std::vector<GatherOptions::HiddenSphere>> broken_hidden_positions() const {
@@ -218,9 +238,13 @@ class SmashableWorld {
   static bool should_break(const PropPhysicsDef& def, float impact_speed_mps);
 
  private:
+  struct Impl;
   struct PlacedProp {
     CollObjPlacement place;
     const PropPhysicsDef* def = nullptr;
+    int32_t global_index = -1;       // exact GlobalIndex into PhysicsDefinitions (0..MaxGlobalIndex-1)
+    int32_t intact_member = -1;      // intact coloradoout.NNNNN.rmb.bin member (fallback debris mesh)
+    std::vector<uint8_t> routes;     // empty = shown on every route; else route IDs (0 = free roam)
     float radius = 0.8f;
     bool broken = false;
   };
@@ -230,7 +254,9 @@ class SmashableWorld {
     drive::Quat rot{};
     std::array<float, 3> omega{};
     std::array<float, 3> half_extents{0.25f, 0.25f, 0.08f};
+    std::array<float, 3> mesh_offset{};  // local game-frame CoM shift applied to real .rmb.bin vertices
     std::array<uint8_t, 4> colour{185, 145, 95, 255};
+    int32_t render_model_member = -1;    // real coloradoout.NNNNN.rmb.bin member (-1 = procedural box fallback)
     float mass_kg = 10.0f;
     float age = 0.0f;
     bool settled = false;
@@ -242,10 +268,13 @@ class SmashableWorld {
   void step_barn_doors(drive::Vehicle& vehicle);
   static int64_t cell_key(float x, float z);
 
+  std::unique_ptr<Impl> impl_;
   PhysicsDefinitions defs_;
   std::vector<CollObjectType> coll_types_;
   std::vector<std::string> smash_types_;
   std::vector<PlacedProp> props_;
+  size_t raw_xml_prop_count_ = 0;
+  int active_route_ = 0;
   std::unordered_map<int64_t, std::vector<uint32_t>> grid_;  // 25 m XZ spatial grid
   std::vector<DynamicBody> dynamic_bodies_;                  // capped at kMaxDynamicBodies (384)
   std::vector<BarnDoorCollider> barn_doors_;

@@ -10,6 +10,61 @@
 
 namespace carview {
 
+namespace {
+
+// Per-prop-instance index spans recorded when prop draws are placed into the GPU arena.
+// Allows smashing a single fence panel / sign / pole inside a 64m or 256m merged draw
+// without hiding neighboring intact props or failing on wide/sloped cell AABBs.
+struct PropInstanceSpan {
+  float gx = 0.0f, gy = 0.0f, gz = 0.0f;  // prop placement origin (game frame)
+  float bmin[3] = {0.0f, 0.0f, 0.0f};     // world-space AABB (game frame)
+  float bmax[3] = {0.0f, 0.0f, 0.0f};
+  uint32_t rel_index_offset = 0;          // offset within this draw's index range
+  uint32_t index_count = 0;
+  bool hidden = false;
+  std::vector<uint32_t> saved_indices;    // original indices for lossless Rewind restore
+};
+
+struct HiddenSphereRec {
+  std::array<float, 3> pos{};
+  float radius = 2.0f;
+};
+
+struct SmashHideState {
+  std::unordered_map<uint64_t, std::vector<PropInstanceSpan>> by_draw_key;
+  std::vector<HiddenSphereRec> active_spheres;
+};
+
+std::mutex g_smash_hide_mutex;
+std::unordered_map<const Showroom*, SmashHideState> g_smash_hide;
+
+bool span_matches_origin(const PropInstanceSpan& sp, const std::array<float, 3>& game_pos, float radius_m) {
+  // .pvsz / CollObjs prop origins match within centimetres; keep the origin radius tight
+  // so neighboring fence panels 3-4 m away stay intact.
+  const float r = std::clamp(radius_m * 0.72f, 1.15f, 2.35f);
+  const float dx = sp.gx - game_pos[0];
+  const float dy = sp.gy - game_pos[1];
+  const float dz = sp.gz - game_pos[2];
+  return (dx * dx + dz * dz <= r * r) && (std::fabs(dy) <= r + 1.6f);
+}
+
+bool span_matches_aabb_fallback(const PropInstanceSpan& sp, const std::array<float, 3>& game_pos, float pad_m) {
+  const float ex = sp.bmax[0] - sp.bmin[0];
+  const float ey = sp.bmax[1] - sp.bmin[1];
+  const float ez = sp.bmax[2] - sp.bmin[2];
+  // Never hide giant buildings via fallback AABB overlap.
+  if (ex > 14.0f || ey > 14.0f || ez > 14.0f) return false;
+  const float cx = std::clamp(game_pos[0], sp.bmin[0], sp.bmax[0]);
+  const float cy = std::clamp(game_pos[1], sp.bmin[1], sp.bmax[1]);
+  const float cz = std::clamp(game_pos[2], sp.bmin[2], sp.bmax[2]);
+  const float dx = game_pos[0] - cx;
+  const float dy = game_pos[1] - cy;
+  const float dz = game_pos[2] - cz;
+  return (dx * dx + dz * dz <= pad_m * pad_m) && (std::fabs(dy) <= pad_m + 1.5f);
+}
+
+}  // namespace
+
 bool Showroom::begin_world_texture(const WorldTextureData& t, VkBuffer texels, VkDeviceSize offset, uint32_t levels,
                                    uint32_t skip, VkCommandBuffer cmd, Renderer::Image* made, std::string& error) {
   GpuTexture image;
@@ -132,6 +187,18 @@ bool Showroom::upload_world_textures(const std::vector<std::shared_ptr<const Wor
 size_t Showroom::world_texture_count() const {
   std::lock_guard<std::mutex> lock(world_textures_mutex_);
   return world_textures_.size();
+}
+
+bool Showroom::has_world_texture(uint32_t record) const {
+  if (record == kNoWorldTexture) return false;
+  std::lock_guard<std::mutex> lock(world_textures_mutex_);
+  return world_sets_.count(record) != 0;
+}
+
+bool Showroom::ensure_world_texture(const std::shared_ptr<const WorldTextureData>& tex, std::string& error) {
+  if (!tex) return false;
+  std::vector<std::shared_ptr<const WorldTextureData>> one{tex};
+  return upload_world_textures(one, error);
 }
 
 bool Showroom::replace_world_texture(uint32_t record, const bake::Texture& texture, bool srgb, std::string& error) {
@@ -369,6 +436,15 @@ void Showroom::world_release_draws(std::vector<WorldGeometry::Draw>& draws) {
     gpu_world_->resident().release(d.key, tag);
     d.resident = false;
   }
+  // Prune per-instance prop span metadata for draws no longer resident in the arena.
+  std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
+  if (auto it = g_smash_hide.find(this); it != g_smash_hide.end()) {
+    auto& by_key = it->second.by_draw_key;
+    for (auto kit = by_key.begin(); kit != by_key.end();) {
+      if (!gpu_world_->resident().contains(kit->first)) kit = by_key.erase(kit);
+      else ++kit;
+    }
+  }
 }
 
 // Gives each draw of a pending world its place in the arenas: found by key (a regather that left it as it was
@@ -435,6 +511,112 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
     }
     d.resident = true;
   }
+
+  // Build per-prop-instance index spans for all newly placed prop draws (64m & 256m merged cells)
+  // directly from WorldVertex::centre so smashing any single prop immediately zeroes ONLY its own
+  // triangles in the resident index arena (never hiding neighboring intact props).
+  if (st.vertices && st.indices && st.vertices->allocation && st.indices->allocation) {
+    void* v_raw = nullptr;
+    void* i_raw = nullptr;
+    if (vmaMapMemory(r_.allocator_, st.vertices->allocation, &v_raw) == VK_SUCCESS) {
+      if (vmaMapMemory(r_.allocator_, st.indices->allocation, &i_raw) == VK_SUCCESS) {
+        const auto* verts = static_cast<const WorldVertex*>(v_raw);
+        auto* idxs = static_cast<uint32_t*>(i_raw);
+        constexpr uint32_t kNonPropMask = 2u | 4u | 8u | 32u | 16384u | 32768u | 1048576u;
+
+        std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
+        auto& state = g_smash_hide[this];
+
+        for (size_t i = 0; i < st.draws.size(); ++i) {
+          const auto& d = st.draws[i];
+          const gpuworld::ResidentDraw* rd = placed[i];
+          if (!rd || d.index_count < 3) continue;
+          const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+          const bool is_prop_draw =
+              (flags & (128u | 256u | 512u)) != 0u && (flags & kNonPropMask) == 0u && d.decal == 0u;
+          if (!is_prop_draw) continue;
+
+          auto existing = state.by_draw_key.find(d.key);
+          if (existing == state.by_draw_key.end()) {
+            std::vector<PropInstanceSpan> spans;
+            const uint32_t tri_count = d.index_count / 3;
+            const uint32_t base_idx = staged_first[i];
+            int64_t cur_qk = 0;
+            bool have_cur = false;
+            for (uint32_t t = 0; t < tri_count; ++t) {
+              const uint32_t i0 = idxs[size_t(base_idx) + t * 3 + 0];
+              const uint32_t i1 = idxs[size_t(base_idx) + t * 3 + 1];
+              const uint32_t i2 = idxs[size_t(base_idx) + t * 3 + 2];
+              const WorldVertex& v0 = verts[size_t(d.vertex_begin) + i0];
+              const WorldVertex& v1 = verts[size_t(d.vertex_begin) + i1];
+              const WorldVertex& v2 = verts[size_t(d.vertex_begin) + i2];
+              const float gx = float(st.origin_x) + v0.position[0] + float(v0.centre[0]) * 0.1f;
+              const float gy = v0.position[1] + float(v0.centre[1]) * 0.1f;
+              const float gz = float(st.origin_z) + v0.position[2] + float(v0.centre[2]) * 0.1f;
+              const int64_t qk = (int64_t(std::lround(gx * 2.0f)) * 73856093ll) ^
+                                 (int64_t(std::lround(gy * 2.0f)) * 19349663ll) ^
+                                 (int64_t(std::lround(gz * 2.0f)) * 83492791ll);
+              if (!have_cur || qk != cur_qk) {
+                PropInstanceSpan sp;
+                sp.gx = gx;
+                sp.gy = gy;
+                sp.gz = gz;
+                sp.bmin[0] = sp.bmax[0] = float(st.origin_x) + v0.position[0];
+                sp.bmin[1] = sp.bmax[1] = v0.position[1];
+                sp.bmin[2] = sp.bmax[2] = float(st.origin_z) + v0.position[2];
+                sp.rel_index_offset = t * 3;
+                sp.index_count = 0;
+                spans.push_back(std::move(sp));
+                cur_qk = qk;
+                have_cur = true;
+              }
+              auto& sp = spans.back();
+              sp.index_count += 3;
+              for (const WorldVertex* vp : {&v0, &v1, &v2}) {
+                const float wx = float(st.origin_x) + vp->position[0];
+                const float wy = vp->position[1];
+                const float wz = float(st.origin_z) + vp->position[2];
+                sp.bmin[0] = std::min(sp.bmin[0], wx);
+                sp.bmax[0] = std::max(sp.bmax[0], wx);
+                sp.bmin[1] = std::min(sp.bmin[1], wy);
+                sp.bmax[1] = std::max(sp.bmax[1], wy);
+                sp.bmin[2] = std::min(sp.bmin[2], wz);
+                sp.bmax[2] = std::max(sp.bmax[2], wz);
+              }
+            }
+            for (auto& sp : spans) {
+              sp.saved_indices.assign(idxs + size_t(base_idx) + sp.rel_index_offset,
+                                      idxs + size_t(base_idx) + sp.rel_index_offset + sp.index_count);
+              // Mask immediately inside staging buffer if this prop was already smashed before regather finished.
+              for (const auto& hs : state.active_spheres) {
+                if (span_matches_origin(sp, hs.pos, hs.radius)) {
+                  sp.hidden = true;
+                  std::memset(idxs + size_t(base_idx) + sp.rel_index_offset, 0,
+                              size_t(sp.index_count) * sizeof(uint32_t));
+                  break;
+                }
+              }
+            }
+            if (!spans.empty()) state.by_draw_key.emplace(d.key, std::move(spans));
+          } else if (!state.active_spheres.empty()) {
+            // Resident draw reused across regather: ensure any newly smashed spans are masked on GPU too.
+            for (auto& sp : existing->second) {
+              if (sp.hidden) continue;
+              for (const auto& hs : state.active_spheres) {
+                if (span_matches_origin(sp, hs.pos, hs.radius)) {
+                  sp.hidden = true;
+                  gpu_world_->queue_index_zero(rd->index_base + sp.rel_index_offset, sp.index_count);
+                  break;
+                }
+              }
+            }
+          }
+        }
+        vmaUnmapMemory(r_.allocator_, st.indices->allocation);
+      }
+      vmaUnmapMemory(r_.allocator_, st.vertices->allocation);
+    }
+  }
   return true;
 }
 
@@ -455,44 +637,134 @@ bool Showroom::is_smashable_prop_draw(uint32_t flags, uint8_t decal, float ex, f
 
 size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, float radius_m) {
   if (world_draws_.empty() || radius_m <= 0.0f) return 0;
-  // World draw AABBs live in the scenery-relative frame (shifted by world_origin_).
-  const float sx = float(double(game_pos[0]) - world_origin_[0]);
-  const float sy = game_pos[1];
-  const float sz = float(double(game_pos[2]) - world_origin_[1]);
   const float r = std::max(0.5f, radius_m);
-  size_t hidden = 0;
-  for (auto& d : world_draws_) {
-    if (d.index_count == 0 || !d.cull) continue;
-    const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
-    const float ex = d.box_max[0] - d.box_min[0];
-    const float ey = d.box_max[1] - d.box_min[1];
-    const float ez = d.box_max[2] - d.box_min[2];
-    if (!is_smashable_prop_draw(flags, d.decal, ex, ey, ez)) continue;
-    // Closest point on draw AABB to smashed prop sphere.
-    const float cx = std::clamp(sx, d.box_min[0], d.box_max[0]);
-    const float cy = std::clamp(sy, d.box_min[1], d.box_max[1]);
-    const float cz = std::clamp(sz, d.box_min[2], d.box_max[2]);
-    const float dx = sx - cx, dy = sy - cy, dz = sz - cz;
-    if (dx * dx + dz * dz <= r * r && std::fabs(dy) <= r + 1.5f) {
-      d.hidden_index_count = d.index_count;
-      d.index_count = 0;
-      ++hidden;
+  size_t hidden_spans = 0;
+
+  // 1. Exact per-instance GPU index masking in the resident arena (covers 100% of 64m & 256m
+  //    batched prop draws across opaque, cutout, Z-prepass, shadows, and reflections with zero
+  //    collateral damage to neighboring intact props).
+  if (arena_on()) {
+    std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
+    auto& state = g_smash_hide[this];
+    state.active_spheres.push_back({game_pos, r});
+    if (state.active_spheres.size() > 2048) {
+      state.active_spheres.erase(state.active_spheres.begin(), state.active_spheres.begin() + 512);
+    }
+
+    auto hide_in_list = [&](const std::vector<WorldGeometry::Draw>& draws, bool aabb_fallback) {
+      std::unordered_set<uint64_t> visited;
+      for (const auto& d : draws) {
+        if (!d.resident || d.index_count == 0 || !d.cull) continue;
+        if (!visited.insert(d.key).second) continue;
+        auto it = state.by_draw_key.find(d.key);
+        if (it == state.by_draw_key.end()) continue;
+        const auto* rd = gpu_world_->resident().find(d.key);
+        if (!rd) continue;
+        for (auto& sp : it->second) {
+          if (sp.hidden) continue;
+          const bool match = aabb_fallback ? span_matches_aabb_fallback(sp, game_pos, 0.85f)
+                                           : span_matches_origin(sp, game_pos, r);
+          if (match) {
+            sp.hidden = true;
+            gpu_world_->queue_index_zero(rd->index_base + sp.rel_index_offset, sp.index_count);
+            ++hidden_spans;
+          }
+        }
+      }
+    };
+
+    hide_in_list(world_draws_, false);
+    if (fading_on_) hide_in_list(fading_.draws, false);
+    if (hidden_spans == 0) {
+      hide_in_list(world_draws_, true);
+      if (fading_on_) hide_in_list(fading_.draws, true);
     }
   }
-  if (hidden > 0 && arena_on()) {
-    std::string table_err;
-    (void)build_gpu_table(table_err);
+
+  // 2. Fallback draw-level hiding for non-arena / CPU draws (or if no arena span matched).
+  size_t hidden_draws = 0;
+  if (!arena_on() || hidden_spans == 0) {
+    const float sx = float(double(game_pos[0]) - world_origin_[0]);
+    const float sy = game_pos[1];
+    const float sz = float(double(game_pos[2]) - world_origin_[1]);
+    for (auto& d : world_draws_) {
+      if (d.index_count == 0 || !d.cull) continue;
+      if (arena_on() && d.resident) {
+        // Never nuke a multi-prop 256m resident batch via draw-level hiding if it has tracked spans.
+        std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
+        auto it = g_smash_hide.find(this);
+        if (it != g_smash_hide.end() && it->second.by_draw_key.count(d.key)) continue;
+      }
+      const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+      const float ex = d.box_max[0] - d.box_min[0];
+      const float ey = d.box_max[1] - d.box_min[1];
+      const float ez = d.box_max[2] - d.box_min[2];
+      if (!is_smashable_prop_draw(flags, d.decal, ex, ey, ez)) continue;
+      const float cx = std::clamp(sx, d.box_min[0], d.box_max[0]);
+      const float cy = std::clamp(sy, d.box_min[1], d.box_max[1]);
+      const float cz = std::clamp(sz, d.box_min[2], d.box_max[2]);
+      const float dx = sx - cx, dy = sy - cy, dz = sz - cz;
+      if (dx * dx + dz * dz <= r * r && std::fabs(dy) <= r + 1.5f) {
+        d.hidden_index_count = d.index_count;
+        d.index_count = 0;
+        ++hidden_draws;
+      }
+    }
+    if (hidden_draws > 0 && arena_on()) {
+      std::string table_err;
+      (void)build_gpu_table(table_err);
+    }
   }
-  return hidden;
+  return hidden_spans + hidden_draws;
 }
 
 size_t Showroom::unhide_world_props_near(const std::array<float, 3>& game_pos, float radius_m) {
   if (world_draws_.empty() || radius_m <= 0.0f) return 0;
+  const float r = std::max(0.5f, radius_m);
+  size_t restored_spans = 0;
+
+  if (arena_on()) {
+    std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
+    if (auto sit = g_smash_hide.find(this); sit != g_smash_hide.end()) {
+      auto& state = sit->second;
+      state.active_spheres.erase(
+          std::remove_if(state.active_spheres.begin(), state.active_spheres.end(),
+                         [&](const HiddenSphereRec& hs) {
+                           const float dx = hs.pos[0] - game_pos[0];
+                           const float dy = hs.pos[1] - game_pos[1];
+                           const float dz = hs.pos[2] - game_pos[2];
+                           return (dx * dx + dz * dz <= r * r) && (std::fabs(dy) <= r + 1.6f);
+                         }),
+          state.active_spheres.end());
+
+      auto restore_in_list = [&](const std::vector<WorldGeometry::Draw>& draws) {
+        std::unordered_set<uint64_t> visited;
+        for (const auto& d : draws) {
+          if (!d.resident || d.index_count == 0 || !d.cull) continue;
+          if (!visited.insert(d.key).second) continue;
+          auto it = state.by_draw_key.find(d.key);
+          if (it == state.by_draw_key.end()) continue;
+          const auto* rd = gpu_world_->resident().find(d.key);
+          if (!rd) continue;
+          for (auto& sp : it->second) {
+            if (!sp.hidden) continue;
+            if (span_matches_origin(sp, game_pos, r) || span_matches_aabb_fallback(sp, game_pos, r)) {
+              sp.hidden = false;
+              gpu_world_->queue_index_restore(rd->index_base + sp.rel_index_offset, sp.saved_indices);
+              ++restored_spans;
+            }
+          }
+        }
+      };
+      restore_in_list(world_draws_);
+      if (fading_on_) restore_in_list(fading_.draws);
+    }
+  }
+
+  size_t restored_draws = 0;
   const float sx = float(double(game_pos[0]) - world_origin_[0]);
   const float sy = game_pos[1];
   const float sz = float(double(game_pos[2]) - world_origin_[1]);
-  const float r = std::max(0.5f, radius_m);
-  size_t restored = 0;
   for (auto& d : world_draws_) {
     if (d.index_count != 0 || d.hidden_index_count == 0 || !d.cull) continue;
     const float cx = std::clamp(sx, d.box_min[0], d.box_max[0]);
@@ -502,14 +774,14 @@ size_t Showroom::unhide_world_props_near(const std::array<float, 3>& game_pos, f
     if (dx * dx + dz * dz <= r * r && std::fabs(dy) <= r + 1.5f) {
       d.index_count = d.hidden_index_count;
       d.hidden_index_count = 0;
-      ++restored;
+      ++restored_draws;
     }
   }
-  if (restored > 0 && arena_on()) {
+  if (restored_draws > 0 && arena_on()) {
     std::string table_err;
     (void)build_gpu_table(table_err);
   }
-  return restored;
+  return restored_spans + restored_draws;
 }
 
 bool Showroom::build_gpu_table(std::string& error) {

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "world/road_follow.h"
@@ -317,6 +318,38 @@ void DriveSession::place_world() {
           host.showroom.set_skidmarks(asph_tris, rut_tris);
           std::vector<world::DebrisVertex> debris_tris;
           app.smashables.build_debris_mesh(debris_tris);
+          if (!debris_tris.empty()) {
+            // Ensure every real FH1 smashable debris texture record is resident in Showroom
+            // (almost all are already resident from the intact prop; decode & queue any rare debris-only ones).
+            static std::unordered_set<uint32_t> s_debris_tex_tried;
+            std::vector<std::shared_ptr<const WorldTextureData>> sync_uploads;
+            uint32_t prev_rec = world::kNoTexture;
+            for (const auto& dv : debris_tris) {
+              const uint32_t rec = dv.texture_record;
+              if (rec == world::kNoTexture || rec == prev_rec) continue;
+              prev_rec = rec;
+              if (host.showroom.has_world_texture(rec) || s_debris_tex_tried.count(rec)) continue;
+              s_debris_tex_tried.insert(rec);
+              fh1::WorldTexture wt;
+              if (app.smashables.read_texture(rec, wt)) {
+                auto td = std::make_shared<WorldTextureData>();
+                td->record = rec;
+                td->srgb = wt.format.gamma;
+                char tname[40];
+                std::snprintf(tname, sizeof tname, "debris:_rec_%u", rec);
+                td->texture.name = tname;
+                td->texture.format = cars::bake::TextureFormat(uint32_t(wt.blocks.format));
+                td->texture.swizzle = wt.blocks.swizzle;
+                for (auto& l : wt.blocks.levels) td->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
+                if (app.headless) sync_uploads.push_back(std::move(td));
+                else host.showroom.queue_deferred_world_texture(std::move(td));
+              }
+            }
+            if (!sync_uploads.empty()) {
+              std::string derr;
+              for (const auto& td : sync_uploads) (void)host.showroom.ensure_world_texture(td, derr);
+            }
+          }
           std::vector<carview::Showroom::ShowcaseVertex> showcase_tris;
           if (app.race && app.race->is_showcase()) {
             std::string sc_err;
