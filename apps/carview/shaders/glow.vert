@@ -71,7 +71,7 @@ void main() {
   vec3 right = normalize(cross(up_ref, view_dir));
   vec3 up = cross(view_dir, right);
   // Subtle perspective size boost at distance so distant headlights/streetlamps stay legible.
-  float r_eff = radius * (1.0 + clamp(dist * 0.004, 0.0, 1.8));
+  float r_eff = radius * (1.0 + clamp(dist * 0.003, 0.0, 1.2));
   vec3 world_p = center + (right * c.x + up * c.y) * r_eff;
 
   v_color = vec4(in_color_outer.rgb, alpha);
