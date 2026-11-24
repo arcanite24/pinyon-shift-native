@@ -36,11 +36,11 @@ layout(set = 0, binding = 5) uniform Optical {
   vec4 sun;           // xy sun_screen_uv, z sun_visibility [0..1], w god_ray_strength
   vec4 sun_color;     // rgb sun_scatter_color, w lens_flare_strength
   vec4 vig_top_col;   // rgb color, w opacity
-  vec4 vig_top_geom;  // xy center, zw radius
-  vec4 vig_top_rot;   // x cos(rot), y sin(rot), z feather, w unused
+  vec4 vig_top_geom;  // xy center, zw multiplicative scale (ScaleX, ScaleY)
+  vec4 vig_top_rot;   // x cos(rot), y sin(rot), z power, w unused
   vec4 vig_bot_col;   // rgb color, w opacity
-  vec4 vig_bot_geom;  // xy center, zw radius
-  vec4 vig_bot_rot;   // x cos(rot), y sin(rot), z feather, w unused
+  vec4 vig_bot_geom;  // xy center, zw multiplicative scale (ScaleX, ScaleY)
+  vec4 vig_bot_rot;   // x cos(rot), y sin(rot), z power, w unused
   vec4 texel_size;    // xy 1/w, 1/h, z time_sec, w frame_jitter [0..1]
   vec4 modern_p;      // x ao_strength, y lut_size, z lut_strength, w out_alpha
   vec4 sota_p;        // x tonemapper (0=Hable, 1=AgX, 2=GT, 3=PBRNeutral), y sscs_strength, z mblur_taps (0/9/13), w gtao_bent_strength
@@ -208,13 +208,20 @@ float cylinder_weight(float d, float v) {
   return 1.0 - smoothstep(0.95 * v, 1.05 * v, d);
 }
 
-float eval_rotated_vignette(vec2 uv, vec4 geom, vec4 rot) {
+// FH1 rotated elliptical vignette mask (SKY_AND_TOD.md §5.5 step 4):
+//   p = vignetteTransform * (screen_uv - center)
+//   m = clamp(pow(dot(p, p), power), 0, 1)
+// Vignette_Templates.xml ScaleX (0.01..0.6) and ScaleY (1.2..1.887) are multiplicative
+// transform factors (not inverse radii), and VignetteTop / VignetteBottom split across
+// the rotated horizon axis (half_sign = -1 for upper sky, +1 for lower ground).
+float eval_rotated_vignette(vec2 uv, vec4 geom, vec4 rot, float half_sign) {
   vec2 d = uv - geom.xy;
   vec2 r = vec2(rot.x * d.x + rot.y * d.y, -rot.y * d.x + rot.x * d.y);
-  vec2 rad = max(geom.zw, vec2(0.05));
-  vec2 vp = r / rad;
+  float half_w = smoothstep(-0.04, 0.04, r.y * half_sign);
+  vec2 scale = max(geom.zw, vec2(0.0));
+  vec2 vp = r * scale;
   float vig_power = max(rot.z, 0.25);
-  return clamp(pow(max(dot(vp, vp), 0.0), vig_power), 0.0, 1.0);
+  return clamp(pow(max(dot(vp, vp), 0.0), vig_power), 0.0, 1.0) * half_w;
 }
 
 float hash12(vec2 q) {
@@ -570,18 +577,20 @@ void main() {
 
   // Paired rotated elliptical VignetteTop + VignetteBottom (SKY_AND_TOD.md §5.5 step 4):
   // evaluated in sqrt (gamma-2) space with FH1's subtractive sky-tinting formula.
+  // VignetteTop tints the upper sky half; VignetteBottom grounds the lower road edge
+  // with intensity bounded to match retail MinIntensity (0.749..0.784).
   float vig_scale = clamp(p.mode.w, 0.0, 1.0);
   if ((oflags & 32u) != 0u && vig_scale > 0.001) {
     vec3 s = sqrt(max(t, vec3(0.0)));
     if (opt.vig_top_col.w > 0.001) {
-      float m_top = eval_rotated_vignette(v_uv, opt.vig_top_geom, opt.vig_top_rot);
-      float a_top = clamp(m_top * opt.vig_top_col.w * vig_scale, 0.0, 1.0);
+      float m_top = eval_rotated_vignette(v_uv, opt.vig_top_geom, opt.vig_top_rot, -1.0);
+      float a_top = clamp(m_top * opt.vig_top_col.w * vig_scale, 0.0, 0.65);
       vec3 target_top = clamp(s - vec3(1.0) + opt.vig_top_col.rgb, vec3(0.0), vec3(1.0));
       s = mix(s, target_top, a_top);
     }
     if (opt.vig_bot_col.w > 0.001) {
-      float m_bot = eval_rotated_vignette(v_uv, opt.vig_bot_geom, opt.vig_bot_rot);
-      float a_bot = clamp(m_bot * opt.vig_bot_col.w * vig_scale, 0.0, 1.0);
+      float m_bot = eval_rotated_vignette(v_uv, opt.vig_bot_geom, opt.vig_bot_rot, 1.0);
+      float a_bot = clamp(m_bot * opt.vig_bot_col.w * vig_scale, 0.0, 1.0) * 0.24;
       vec3 target_bot = clamp(s - vec3(1.0) + opt.vig_bot_col.rgb, vec3(0.0), vec3(1.0));
       s = mix(s, target_bot, a_bot);
     }
