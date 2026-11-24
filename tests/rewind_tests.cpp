@@ -435,6 +435,84 @@ void test_sampled_snapshot_bracket_for_visual_scrub() {
   CHECK(br_mid.alpha < br0.alpha || br_mid.snap_b != br0.snap_b);
 }
 
+void test_extra_state_and_invalid_anchor_rejection() {
+  const drive::FlatGround flat;
+  drive::Vehicle v(test_car());
+  drive::RewindBuffer rb;
+  rb.start_session(0.0);
+
+  drive::Input in;
+  in.throttle = 0.6;
+  // Drive to 9.95 s (just before 10.0 s first keyframe).
+  drive_for(v, flat, rb, 9.95, in);
+  CHECK(rb.keyframe_count() == 0);
+
+  // Place vehicle mid-air (all 4 wheels off ground): stream records, but NO keyframe captured.
+  v.place({0.0, 25.0, 100.0}, 0.0);
+  for (int i = 0; i < 60; ++i) {
+    v.step(in, flat);
+    const uint64_t sid = rb.record_step(v.time(), v.time(), v, make_cam(v.position().z), true);
+    CHECK(sid == 0u);
+  }
+  CHECK(rb.keyframe_count() == 0);
+
+  // Place vehicle upside-down (rolled over, up_y < 0.5): still refused as resume anchor.
+  v.place({0.0, 0.5, 100.0}, 0.0);
+  auto rolled_pose = v.pose();
+  rolled_pose.rot = {0.0, 0.0, 1.0, 0.0};  // 180 deg roll about Z -> up_y == -1.0
+  v.set_pose(rolled_pose);
+  CHECK(v.is_rolled_over());
+  CHECK(rb.record_step(v.time() + 0.1, v.time() + 0.1, v, make_cam(v.position().z), true) == 0u);
+  CHECK(rb.keyframe_count() == 0);
+
+  // Place upright on flat ground with populated RewindExtraState -> captures valid keyframe immediately.
+  v.place({0.0, 0.0, 100.0}, 0.0);
+  v.step({}, flat);
+  drive::RewindExtraState ex_kf;
+  ex_kf.rotor_heat = {0.65f, 0.70f, 0.30f, 0.35f};
+  ex_kf.prev_rumble_gear = 3;
+  ex_kf.cam_state = 2;
+  ex_kf.prev_audio_checkpoint = 7;
+  ex_kf.prev_audio_lap = 2;
+  ex_kf.speed_trap_state = {1, 0, 1};
+  ex_kf.pr_stunt_state = {2, 4};
+  ex_kf.signs_state = {0xFF, 0x0A};
+  const uint64_t sid = rb.record_step(11.0, 11.0, v, make_cam(v.position().z), true, 500, 2, 1.5, &ex_kf);
+  CHECK(sid != 0u);
+  CHECK(rb.keyframe_count() == 1);
+  CHECK(rb.keyframe(0).prev_rumble_gear == 3 && rb.keyframe(0).cam_state == 2);
+  CHECK(rb.keyframe(0).prev_audio_checkpoint == 7 && rb.keyframe(0).prev_audio_lap == 2);
+  CHECK(rb.keyframe(0).signs_state.size() == 2 && rb.keyframe(0).signs_state[1] == 0x0A);
+
+  // Trigger with distinct cancel extra state, test Cancel round-trip then Resume round-trip.
+  drive::RewindExtraState ex_cancel;
+  ex_cancel.rotor_heat = {0.9f, 0.9f, 0.8f, 0.8f};
+  ex_cancel.prev_rumble_gear = 5;
+  ex_cancel.cam_state = 4;
+  ex_cancel.prev_audio_checkpoint = 9;
+  ex_cancel.prev_audio_lap = 3;
+  ex_cancel.speed_trap_state = {1, 1, 1};
+  ex_cancel.pr_stunt_state = {5};
+  ex_cancel.signs_state = {0xFF, 0xFF};
+  CHECK(rb.trigger(12.5, 12.5, v, make_cam(v.position().z), 900, 3, 2.0, &ex_cancel));
+  drive::RewindExtraState out_ex;
+  CHECK(rb.cancel(v, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &out_ex));
+  CHECK(near(out_ex.rotor_heat[0], 0.9, 1e-5) && out_ex.prev_rumble_gear == 5 && out_ex.cam_state == 4);
+  CHECK(out_ex.prev_audio_checkpoint == 9 && out_ex.prev_audio_lap == 3);
+  CHECK(out_ex.speed_trap_state == ex_cancel.speed_trap_state && out_ex.pr_stunt_state == ex_cancel.pr_stunt_state &&
+        out_ex.signs_state == ex_cancel.signs_state);
+
+  CHECK(rb.trigger(12.5, 12.5, v, make_cam(v.position().z), 900, 3, 2.0, &ex_cancel));
+  for (int i = 0; i < 40; ++i) rb.update(0.05);
+  CHECK(rb.is_paused_at_keyframe());
+  drive::RewindExtraState res_ex;
+  CHECK(rb.resume(v, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &res_ex));
+  CHECK(near(res_ex.rotor_heat[1], 0.70, 1e-5) && res_ex.prev_rumble_gear == 3 && res_ex.cam_state == 2);
+  CHECK(res_ex.prev_audio_checkpoint == 7 && res_ex.prev_audio_lap == 2);
+  CHECK(res_ex.speed_trap_state == ex_kf.speed_trap_state && res_ex.pr_stunt_state == ex_kf.pr_stunt_state &&
+        res_ex.signs_state == ex_kf.signs_state);
+}
+
 }  // namespace
 
 int main() {
@@ -446,6 +524,7 @@ int main() {
   test_audio_and_hints();
   test_world_snapshot_ids_and_view_replay();
   test_sampled_snapshot_bracket_for_visual_scrub();
+  test_extra_state_and_invalid_anchor_rejection();
   if (failures) {
     std::printf("rewind_tests: %d failure(s)\n", failures);
     return 1;

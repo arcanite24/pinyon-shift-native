@@ -20,6 +20,7 @@
 // and CollisionBiasTraffic's even share read as the plain mass-weighted
 // split.
 #pragma once
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -47,6 +48,7 @@ struct BodiesOptions {
   // speed the hold aims at moves towards the target at these, as a
   // kinematic car's does.
   double accel_max = 4, decel_max = 6;
+  std::array<double, 4> gear_max_speed{12.0, 22.0, 34.0, 48.0};  // GearMaxSpeed1st..4th (m/s)
 };
 
 // The options from the traffic configuration (registry values).

@@ -26,10 +26,14 @@ bool RoadDiscovery::build(const traffic::NavMap& nav) {
   bits_.assign((size_t(node_count_) + 31u) / 32u, 0u);
   road_names_.clear();
   road_nodes_.clear();
+  road_segs_.clear();
   node_roads_.assign(node_count_, {});
+  node_segs_.assign(node_count_, {});
   segs_.clear();
   grid_.clear();
   discovered_roads_ = 0;
+  visited_node_count_ = 0;
+  visited_segment_count_ = 0;
 
   std::map<std::string, int> name_to_group;
   double max_x = -1e30, max_z = -1e30;
@@ -46,6 +50,7 @@ bool RoadDiscovery::build(const traffic::NavMap& nav) {
     if (inserted) {
       road_names_.push_back(dn);
       road_nodes_.emplace_back();
+      road_segs_.emplace_back();
     }
 
     const uint32_t nc = nav.ways[w].node_count;
@@ -63,10 +68,15 @@ bool RoadDiscovery::build(const traffic::NavMap& nav) {
     }
     for (uint32_t k = 0; k + 1 < nc; ++k) {
       const uint32_t a = nav.way_node(w, k), b = nav.way_node(w, k + 1);
-      if (a >= node_count_ || b >= node_count_) continue;
+      if (a >= node_count_ || b >= node_count_ || a == b) continue;
       const auto& na = nav.nodes[a];
       const auto& nb = nav.nodes[b];
-      segs_.push_back({a, b, na.x, na.z, nb.x, nb.z, grp});
+      const double len = std::hypot(double(nb.x) - double(na.x), double(nb.z) - double(na.z));
+      const uint32_t si = uint32_t(segs_.size());
+      segs_.push_back({a, b, na.x, na.z, nb.x, nb.z, len, grp});
+      road_segs_[size_t(grp)].push_back(si);
+      node_segs_[a].push_back(si);
+      node_segs_[b].push_back(si);
     }
   }
 
@@ -107,21 +117,47 @@ void RoadDiscovery::reset() {
   std::fill(bits_.begin(), bits_.end(), 0u);
   std::fill(road_discovered_.begin(), road_discovered_.end(), uint8_t{0});
   discovered_roads_ = 0;
+  visited_node_count_ = 0;
+  visited_segment_count_ = 0;
+}
+
+bool RoadDiscovery::is_road_complete(int road_group) const {
+  if (road_group < 0 || size_t(road_group) >= road_segs_.size()) return false;
+  const auto& rsegs = road_segs_[size_t(road_group)];
+  if (rsegs.empty()) {
+    const auto& rn = road_nodes_[size_t(road_group)];
+    if (rn.empty()) return false;
+    for (uint32_t n : rn) {
+      if (!is_node_discovered(n)) return false;
+    }
+    return true;
+  }
+  double unvisited_len = 0.0;
+  bool any_visited = false;
+  for (uint32_t si : rsegs) {
+    const auto& s = segs_[si];
+    if (is_node_discovered(s.a) && is_node_discovered(s.b)) {
+      any_visited = true;
+    } else {
+      unvisited_len += s.length;
+    }
+  }
+  return any_visited && unvisited_len <= kUnvisitedDistanceThreshold;
 }
 
 void RoadDiscovery::recompute_discovered_roads() {
   discovered_roads_ = 0;
+  visited_node_count_ = 0;
+  visited_segment_count_ = 0;
   std::fill(road_discovered_.begin(), road_discovered_.end(), uint8_t{0});
-  for (size_t g = 0; g < road_nodes_.size(); ++g) {
-    const size_t total = road_nodes_[g].size();
-    if (total == 0) continue;
-    size_t hit = 0;
-    for (uint32_t n : road_nodes_[g]) {
-      if (is_node_discovered(n)) ++hit;
-    }
-    // Require driving >= 65% of a road's nodes (min 2 for multi-node roads) to discover it.
-    const bool complete = (total <= 1) ? (hit >= 1) : (hit >= 2 && hit * 100 >= total * 65);
-    if (complete) {
+  for (uint32_t n = 0; n < node_count_; ++n) {
+    if (is_node_discovered(n)) ++visited_node_count_;
+  }
+  for (const auto& s : segs_) {
+    if (is_node_discovered(s.a) && is_node_discovered(s.b)) ++visited_segment_count_;
+  }
+  for (size_t g = 0; g < road_names_.size(); ++g) {
+    if (is_road_complete(int(g))) {
       road_discovered_[g] = 1;
       ++discovered_roads_;
     }
@@ -152,16 +188,15 @@ bool RoadDiscovery::mark_node(uint32_t node, std::vector<RoadDiscoveredEvent>& e
   const uint32_t mask = 1u << (node & 31u);
   if ((bits_[wi] & mask) != 0) return false;
   bits_[wi] |= mask;
+  ++visited_node_count_;
+  for (uint32_t si : node_segs_[node]) {
+    const auto& s = segs_[si];
+    const uint32_t other = (s.a == node) ? s.b : s.a;
+    if (is_node_discovered(other)) ++visited_segment_count_;
+  }
   for (int grp : node_roads_[node]) {
     if (grp >= 0 && size_t(grp) < road_discovered_.size() && !road_discovered_[size_t(grp)]) {
-      const auto& rn = road_nodes_[size_t(grp)];
-      const size_t total = rn.size();
-      size_t hit = 0;
-      for (uint32_t n : rn) {
-        if (is_node_discovered(n)) ++hit;
-      }
-      const bool complete = (total <= 1) ? (hit >= 1) : (hit >= 2 && hit * 100 >= total * 65);
-      if (complete) {
+      if (is_road_complete(grp)) {
         road_discovered_[size_t(grp)] = 1;
         ++discovered_roads_;
         events.push_back({road_names_[size_t(grp)], discovered_roads_, int(road_names_.size())});
@@ -185,15 +220,12 @@ std::vector<RoadDiscoveredEvent> RoadDiscovery::update(double car_x, double car_
     for (int gx = x0; gx <= x1; ++gx) {
       for (uint32_t si : grid_[size_t(gz) * size_t(nx_) + size_t(gx)]) {
         const auto& s = segs_[si];
-        const double dx = s.bx - s.ax, dz = s.bz - s.az, len2 = dx * dx + dz * dz;
-        double t = len2 > 0.0 ? ((car_x - s.ax) * dx + (car_z - s.az) * dz) / len2 : 0.0;
-        t = std::clamp(t, 0.0, 1.0);
-        const double px = s.ax + dx * t, pz = s.az + dz * t;
-        const double d2 = (car_x - px) * (car_x - px) + (car_z - pz) * (car_z - pz);
-        if (d2 <= r2) {
-          mark_node(s.a, events);
-          mark_node(s.b, events);
-        }
+        // Mark only individual endpoints actually within driving proximity `radius_m`
+        // (never blindly mark a far endpoint 79 m away just because the segment passes near).
+        const double da2 = (car_x - s.ax) * (car_x - s.ax) + (car_z - s.az) * (car_z - s.az);
+        if (da2 <= r2) mark_node(s.a, events);
+        const double db2 = (car_x - s.bx) * (car_x - s.bx) + (car_z - s.bz) * (car_z - s.bz);
+        if (db2 <= r2) mark_node(s.b, events);
       }
     }
   }

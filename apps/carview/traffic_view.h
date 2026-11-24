@@ -9,7 +9,9 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "drive/contact.h"
 #include "drive/lamps.h"
@@ -39,8 +41,11 @@ class TrafficView {
             std::string& error, bool race_mode = false);
   void set_hour(double hour) { population_->set_hour(hour); }
   double hour() const { return population_->hour(); }
+  // Registers Race AI opponents (e.g. from RaceView::after_step) so traffic
+  // brakes/yields for them and promotes nearby traffic cars to physics bodies.
+  void set_external_vehicles(std::vector<traffic::ExternalVehicle> vehicles);
   // One fixed step (drive::Vehicle::kStep), after the player's car's.
-  void step(drive::Vehicle& player);
+  void step(drive::Vehicle& player, std::span<const traffic::ExternalVehicle> obstacles = {});
   // Fraction of a step past the last one (1.0: as stepped).
   void set_blend(double alpha) { blend_ = alpha; }
   // The guests' loads and the host's instances for this frame (player's
@@ -105,11 +110,16 @@ class TrafficView {
   double blend_ = 1.0;
   std::map<uint32_t, TrafficPose> before_;
   std::map<uint32_t, drive::CarLampState> lamps_;
+  std::vector<traffic::ExternalVehicle> external_vehicles_;
+  int external_ttl_ = 0;
 };
 
 // Another car drawn with the host's camera: `guest`'s model where `body`
 // stands, in the player's car model frame.
 Showroom::Instance guest_instance(const cars::bake::CarInfo& player_info, const drive::Vehicle& player, Showroom& guest,
                                   const drive::Vehicle& body);
+// Same as guest_instance for an arbitrary world pose (e.g. translucent Rivals ghost car).
+Showroom::Instance guest_instance_pose(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
+                                       Showroom& guest, const drive::Vec3& world_pos, const drive::Quat& world_rot);
 
 }  // namespace carview

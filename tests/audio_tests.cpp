@@ -2213,6 +2213,31 @@ void phase_r2_1_audio_parity_checks() {
 
     fs::remove_all(tmp, ec);
   }
+
+  // Phase R2-4: Sat-Nav VO cue fallback uniqueness (kNearBearRight != kNearRight) & new retail cues.
+  {
+    std::vector<std::string> needles;
+    for (int i = 0; i < int(audio::SatNavCue::kCount); ++i) {
+      const std::string n = audio::satnav_cue_fsb_fallback(audio::SatNavCue(i));
+      CHECK(!n.empty());
+      for (const auto& prev : needles) CHECK(prev != n);
+      needles.push_back(n);
+    }
+    CHECK(std::string(audio::satnav_cue_fsb_fallback(audio::SatNavCue::kNearBearRight)) !=
+          std::string(audio::satnav_cue_fsb_fallback(audio::SatNavCue::kNearRight)));
+    audio::SatNavVoPlayer sn(48000);
+    audio::PcmSample clip;
+    clip.rate = 48000;
+    clip.data.assign(2400, 0.4f);
+    sn.set_clip(audio::SatNavCue::kExtendedLeft, clip);
+    sn.set_clip(audio::SatNavCue::kNextJuncRight, clip);
+    sn.set_clip(audio::SatNavCue::kFarDestination, clip);
+    sn.set_clip(audio::SatNavCue::kDestCannotBeSet, clip);
+    sn.trigger(audio::SatNavCue::kExtendedLeft);
+    sn.trigger(audio::SatNavCue::kDestCannotBeSet);  // high-priority interrupt
+    std::vector<float> buf(1200 * 2, 0.0f);
+    CHECK(sn.render(buf.data(), 1200));
+  }
 }
 
 }  // namespace

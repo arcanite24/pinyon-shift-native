@@ -19,7 +19,9 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <random>
+#include <span>
 #include <vector>
 
 #include "traffic/config.h"
@@ -39,6 +41,9 @@ struct Car {
   double avoid_offset = 0;  // lateral swerve away from an encroaching player (m)
   double speed = 0, target = 0;  // m/s
   double base_speed = 0;    // the road's speed with this car's variance
+  double accel = 0;         // longitudinal acceleration (m/s^2) for brake light threshold
+  int gear = 1;             // simulated gear (1..5) from GearMaxSpeed1st..4th or physics body
+  double rpm = 900.0;       // simulated engine RPM from GearMaxSpeed1st..4th or physics body
   int last_node = -1;       // the node it last passed (no turning back there)
   // The pose on the lane: the body frame's origin (ground height when the
   // host gives one) and the heading (atan2 of forward x, z).
@@ -69,10 +74,22 @@ struct Car {
   double up_y = 1.0;
 };
 
+struct ExternalVehicle {
+  P3 position{};
+  P3 velocity{};
+  bool race_ai = true;  // promotes nearby traffic to physics bodies so Race AI >30 m from player never ghosts through
+};
+
+// Simulates traffic gear (1..5) and engine RPM from speed and GearMaxSpeed1st..4th.
+void estimate_traffic_gear_rpm(double speed, const std::array<double, 4>& gear_max_speed, int& gear_out,
+                               double& rpm_out);
+
 struct PopulationStats {
   int spawned = 0, despawned = 0, initial = 0, overspawn_culled = 0;
   std::vector<double> spawn_distances, despawn_distances;
   int spawned_away = 0;
+  int spawned_behind = 0;
+  int convoys_spawned = 0;
 };
 
 class Population {
@@ -93,8 +110,14 @@ class Population {
   void set_available(std::vector<int64_t> models);
 
   // One tick: the player's position and velocity (world), dt in s. The
-  // first call places the initial cars.
-  void step(double dt, const P3& player, const P3& player_velocity);
+  // first call places the initial cars. Optional `player_heading` (rad;
+  // NaN derives heading from velocity when moving) gates behind-player
+  // spawns via BehindChance / BehindMaxSpeed. Optional `obstacles` (e.g.
+  // Race AI opponents in Street/Nemesis races) cause traffic to brake,
+  // yield at junctions, and promote to full physics near them.
+  void step(double dt, const P3& player, const P3& player_velocity,
+            double player_heading = std::numeric_limits<double>::quiet_NaN(),
+            std::span<const ExternalVehicle> obstacles = {});
 
   // Adds a car on a road (its id given here), placed on its lane.
   void add(Car car, int road, double s, int dir);
@@ -149,7 +172,7 @@ class Population {
   void rotate_models();
   void check_overspawn(const P3& player);
   double spawn_interval(double player_speed);
-  bool spawn(const P3& player, double player_speed, bool initial);
+  bool spawn(const P3& player, double player_speed, bool initial, bool has_heading, double fwd_x, double fwd_z);
   bool place(Car& car, int road, double s, int dir, int lane_index = 0);
   struct JunctionOption {
     int road = -1, index = 0, dir = 1;
@@ -158,7 +181,8 @@ class Population {
                             JunctionOption& out) const;
   bool next_junction(const Car& car, double max_dist, uint32_t& node_out, double& dist_out, P3& pos_out,
                      double& turn_angle_out) const;
-  void drive(Car& car, double dt, const P3& player, const P3& player_velocity);
+  void drive(Car& car, double dt, const P3& player, const P3& player_velocity,
+             std::span<const ExternalVehicle> obstacles);
   void sync_cursor(Car& car, double max_advance) const;
   void steer_kinematic(Car& car, const P3& aim, double dt) const;
   void advance(Car& car, double distance) const;

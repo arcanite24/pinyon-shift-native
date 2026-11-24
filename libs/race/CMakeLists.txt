@@ -11,6 +11,7 @@ add_library(shift_race STATIC
   src/rally.cpp
   src/rally_championship.cpp
   src/rally_codriver.cpp
+  src/rivals.cpp
   src/career.cpp
   src/campaign_flow.cpp)
 target_include_directories(shift_race PUBLIC include)

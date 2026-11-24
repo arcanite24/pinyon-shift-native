@@ -27,6 +27,37 @@ CameraView blend_camera_view(const CameraView& a, const CameraView& b, double t)
   return out;
 }
 
+void store_extra(RewindKeyframe& kf, const RewindExtraState* extra) {
+  if (!extra) return;
+  kf.rotor_heat = extra->rotor_heat;
+  kf.prev_rumble_gear = extra->prev_rumble_gear;
+  kf.cam_state = extra->cam_state;
+  kf.prev_audio_checkpoint = extra->prev_audio_checkpoint;
+  kf.prev_audio_lap = extra->prev_audio_lap;
+  kf.speed_trap_state = extra->speed_trap_state;
+  kf.pr_stunt_state = extra->pr_stunt_state;
+  kf.signs_state = extra->signs_state;
+}
+
+void load_extra(const RewindKeyframe& kf, RewindExtraState* out) {
+  if (!out) return;
+  out->rotor_heat = kf.rotor_heat;
+  out->prev_rumble_gear = kf.prev_rumble_gear;
+  out->cam_state = kf.cam_state;
+  out->prev_audio_checkpoint = kf.prev_audio_checkpoint;
+  out->prev_audio_lap = kf.prev_audio_lap;
+  out->speed_trap_state = kf.speed_trap_state;
+  out->pr_stunt_state = kf.pr_stunt_state;
+  out->signs_state = kf.signs_state;
+}
+
+bool vehicle_grounded(const Vehicle& vehicle) {
+  for (const auto& w : vehicle.wheels()) {
+    if (w.contact) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 RewindBuffer::RewindBuffer(const RewindConfig& config)
@@ -92,7 +123,7 @@ void RewindBuffer::prune_stream() {
 uint64_t RewindBuffer::record_step(double replay_time, double race_clock, const Vehicle& vehicle,
                                    const RewindCameraState& camera, bool capture_allowed,
                                    uint64_t skill_chain_score, int skill_chain_mult,
-                                   double skill_chain_timer) {
+                                   double skill_chain_timer, const RewindExtraState* extra) {
   if (state_ != RewindState::kIdle) return 0u;
 
   const double stream_dt = cfg_.stream_record_hz > 0.0 ? 1.0 / cfg_.stream_record_hz : 0.05;
@@ -110,8 +141,10 @@ uint64_t RewindBuffer::record_step(double replay_time, double race_clock, const 
     next_stream_time_ = replay_time + stream_dt;
   }
 
+  // Never capture an unrecoverable mid-air or rolled-over resume anchor.
+  const bool valid_anchor = capture_allowed && vehicle_grounded(vehicle) && !vehicle.is_rolled_over();
   uint64_t captured_id = 0u;
-  if (capture_allowed && replay_time >= next_capture_time_ - 1e-9) {
+  if (valid_anchor && replay_time >= next_capture_time_ - 1e-9) {
     RewindKeyframe kf(vehicle);
     captured_id = next_snapshot_id_++;
     kf.snapshot_id = captured_id;
@@ -121,6 +154,7 @@ uint64_t RewindBuffer::record_step(double replay_time, double race_clock, const 
     kf.skill_chain_score = skill_chain_score;
     kf.skill_chain_mult = skill_chain_mult;
     kf.skill_chain_timer = skill_chain_timer;
+    store_extra(kf, extra);
     push_keyframe(std::move(kf));
     next_capture_time_ = replay_time + cfg_.keyframe_interval_s;
     prune_stream();
@@ -136,7 +170,7 @@ bool RewindBuffer::can_trigger() const {
 
 bool RewindBuffer::trigger(double current_replay_time, double race_clock, const Vehicle& current_vehicle,
                            const RewindCameraState& current_camera, uint64_t skill_chain_score,
-                           int skill_chain_mult, double skill_chain_timer) {
+                           int skill_chain_mult, double skill_chain_timer, const RewindExtraState* extra) {
   if (!can_trigger()) return false;
 
   // Capture end-state snapshot so Cancel can return to the exact trigger point.
@@ -148,6 +182,7 @@ bool RewindBuffer::trigger(double current_replay_time, double race_clock, const 
   cancel_snapshot_->skill_chain_score = skill_chain_score;
   cancel_snapshot_->skill_chain_mult = skill_chain_mult;
   cancel_snapshot_->skill_chain_timer = skill_chain_timer;
+  store_extra(*cancel_snapshot_, extra);
 
   // Append exact trigger-point stream sample so reverse scrub starts seamlessly.
   if (stream_.empty() || current_replay_time > stream_.back().replay_time + 1e-6) {
@@ -256,7 +291,7 @@ bool RewindBuffer::rewind_further() {
 
 bool RewindBuffer::resume(Vehicle& out_vehicle, RewindCameraState* out_camera, double* out_replay_time,
                           double* out_race_clock, uint64_t* out_skill_score, int* out_skill_mult,
-                          uint64_t* out_snapshot_id, double* out_skill_timer) {
+                          uint64_t* out_snapshot_id, double* out_skill_timer, RewindExtraState* out_extra) {
   if (state_ != RewindState::kPausedAtKeyframe) return false;
   if (selected_slot_ < 0 || selected_slot_ >= int(keyframes_.size())) return false;
 
@@ -269,6 +304,7 @@ bool RewindBuffer::resume(Vehicle& out_vehicle, RewindCameraState* out_camera, d
   if (out_skill_mult) *out_skill_mult = kf.skill_chain_mult;
   if (out_snapshot_id) *out_snapshot_id = kf.snapshot_id;
   if (out_skill_timer) *out_skill_timer = kf.skill_chain_timer;
+  load_extra(kf, out_extra);
 
   // Truncate future keyframes and stream samples after the restored keyframe.
   const double restored_time = kf.replay_time;
@@ -292,7 +328,7 @@ bool RewindBuffer::resume(Vehicle& out_vehicle, RewindCameraState* out_camera, d
 
 bool RewindBuffer::cancel(Vehicle& out_vehicle, RewindCameraState* out_camera, double* out_replay_time,
                           double* out_race_clock, uint64_t* out_skill_score, int* out_skill_mult,
-                          uint64_t* out_snapshot_id, double* out_skill_timer) {
+                          uint64_t* out_snapshot_id, double* out_skill_timer, RewindExtraState* out_extra) {
   if (state_ != RewindState::kRewinding && state_ != RewindState::kPausedAtKeyframe) return false;
   if (!cancel_snapshot_.has_value()) return false;
 
@@ -305,6 +341,7 @@ bool RewindBuffer::cancel(Vehicle& out_vehicle, RewindCameraState* out_camera, d
   if (out_skill_mult) *out_skill_mult = kf.skill_chain_mult;
   if (out_snapshot_id) *out_snapshot_id = kf.snapshot_id;
   if (out_skill_timer) *out_skill_timer = kf.skill_chain_timer;
+  load_extra(kf, out_extra);
 
   playback_time_ = kf.replay_time;
   cancel_snapshot_.reset();

@@ -190,6 +190,60 @@ int main() {
     CHECK(near(out.left, 0.0) && near(out.right, 0.0));
   }
 
+  // CarToWorldCollision unit scaling aligned with LeftMotor x0 = 20.0 (not / 35.0),
+  // OnShift suppression for Neutral (0) / Reverse (-1), and <Wheel> + SteerTorque scaling.
+  {
+    const double scaled_light = drive::world_collision_rumble_input(12000.0, 1.0 / 120.0, 1400.0);
+    const double scaled_med = drive::world_collision_rumble_input(42000.0, 1.0 / 120.0, 1400.0);
+    CHECK(near(scaled_light, 20.0, 1e-4));
+    CHECK(near(scaled_med, 70.0, 1e-4));
+    rumble.reset();
+    drive::RumbleInput in;
+    in.car_to_world_force_n = 42000.0;
+    in.car_mass_kg = 1400.0;
+    const auto out_w = rumble.update(0.016, in);
+    CHECK(out_w.left >= 0.39 && out_w.right >= 0.45);
+
+    // Suppress OnShift when shifting into Neutral (0) or Reverse (-1).
+    CHECK(!drive::should_trigger_shift_rumble(1, 0));
+    CHECK(!drive::should_trigger_shift_rumble(1, -1));
+    CHECK(drive::should_trigger_shift_rumble(1, 2));
+    rumble.reset();
+    drive::RumbleInput sh_n;
+    sh_n.on_shift = true;
+    sh_n.gear = 0;
+    CHECK(near(rumble.update(0.016, sh_n).left, 0.0));
+    sh_n.gear = -1;
+    CHECK(near(rumble.update(0.016, sh_n).left, 0.0));
+    sh_n.gear = 2;
+    CHECK(near(rumble.update(0.016, sh_n).left, 0.25));
+
+    // <Wheel> rumble parsing & surface <SteerTorque> scaling.
+    const char* kWheelXml = R"xml(
+<RumbleDef>
+  <Wheel>
+    <SteerTorque value="0.8"/>
+    <SurfaceBumpiness>
+      <WheelMotor x0="0.0" y0="0.0" x1="0.5" y1="0.5" x2="1.0" y2="1.0"/>
+    </SurfaceBumpiness>
+    <OnShift>
+      <Motor rumble="0.20"/>
+    </OnShift>
+  </Wheel>
+</RumbleDef>
+)xml";
+    drive::RumbleConfig wcfg;
+    CHECK(drive::parse_controller_rumble(kWheelXml, wcfg, &err, /*wheel=*/true));
+    CHECK(wcfg.loaded && wcfg.is_wheel && near(wcfg.wheel_steer_torque_scale, 0.8));
+    drive::GamepadRumble wrumble;
+    wrumble.set_config(wcfg);
+    drive::RumbleInput win;
+    win.surface_bumpiness = 0.5;
+    win.surface_steer_torque_scale = 0.5;  // 0.5 curve * 0.8 wheel * 0.5 surface = 0.20
+    const auto wout = wrumble.update(0.016, win);
+    CHECK(near(wout.left, 0.20, 1e-4) && near(wout.right, 0.20, 1e-4));
+  }
+
   // Real ControllerRumble.xml from game files when SHIFT_GAME_ROOT is set.
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {
     cars::Install install;

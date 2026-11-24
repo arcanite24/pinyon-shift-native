@@ -24,6 +24,7 @@ enum class GpsTurnKind : uint8_t {
   kSharpRight,
   kUTurn,
   kArrive,
+  kRoundabout,
 };
 
 enum class GpsDestKind : uint8_t {
@@ -44,6 +45,9 @@ struct GpsTurn {
   GpsTurnKind kind = GpsTurnKind::kNone;
   double angle_rad = 0.0;  // signed: positive right, negative left
   double x = 0.0, z = 0.0;
+  bool at_junction = false;
+  bool is_roundabout = false;
+  GpsTurnKind exit_turn = GpsTurnKind::kNone;
 };
 
 struct GpsRoute {
@@ -79,11 +83,28 @@ struct GpsPromptEvent {
     kUTurn,
     kArrivedNear,
     kArrived,
+    kDestinationCannotBeSet,
+    kTurnExtended,
+    kTurnNextJunction,
+    kArrivedFar,
+    kArrivedExtended,
   };
   Kind kind = Kind::kNone;
   GpsTurnKind turn = GpsTurnKind::kNone;
   GpsDestKind dest_kind = GpsDestKind::kGeneric;
+  GpsTurnKind exit_turn = GpsTurnKind::kNone;
 };
+
+struct GpsLookahead {
+  double now_m = 50.0;
+  double near_m = 190.0;
+  double far_m = 420.0;
+  double extended_m = 800.0;
+};
+
+// Computes continuous, dead-zone-free Sat-Nav announcement thresholds scaled by
+// vehicle speed up to 200+ mph.
+GpsLookahead gps_lookahead_for_speed(double speed_mps);
 
 const char* gps_turn_label(GpsTurnKind k);
 
@@ -94,6 +115,8 @@ class GpsSolver {
   void build(const NavMap& nav);
   bool ready() const { return !adj_.empty() && !roads_.roads().empty(); }
   const Roads& roads() const { return roads_; }
+  size_t roundabout_node_count() const;
+  size_t uturn_node_count() const;
 
   // Nearest drivable road point within `max_distance` (m).
   RoadHit nearest_road(double x, double z, double max_distance = 1200.0) const;
@@ -123,6 +146,8 @@ class GpsSolver {
   Roads roads_;
   std::vector<uint8_t> drivable_road_;      // 1 if road_type in {dirt, b, a, freeway}
   std::vector<uint8_t> ignore_turn_node_;   // 1 if node tagged ignore_turn_flags=true
+  std::vector<uint8_t> roundabout_node_;    // 1 if node tagged sat_nav_junction=roundabout
+  std::vector<uint8_t> uturn_node_;         // 1 if node tagged uturn=<non-zero>
   std::vector<std::array<double, 2>> node_xz_;
   std::vector<std::vector<Edge>> adj_;
   std::vector<uint32_t> edge_to_node_;
@@ -164,9 +189,12 @@ class GpsNavigator {
   GpsGuidance guidance_{};
   double dest_x_ = 0.0, dest_z_ = 0.0;
   int last_seg_hint_ = 0;
+  int announced_ext_turn_ = -1;
   int announced_far_turn_ = -1;
   int announced_near_turn_ = -1;
   int announced_now_turn_ = -1;
+  bool announced_ext_dest_ = false;
+  bool announced_far_dest_ = false;
   bool announced_near_dest_ = false;
   double reroute_cooldown_ = 0.0;
   double uturn_cooldown_ = 0.0;

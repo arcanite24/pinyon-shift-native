@@ -45,7 +45,13 @@ Vec3 rotate_inverse(const Quat& q, const Vec3& v);
 struct SurfaceTyre {
   double rear_grip = 1, off_roadness = 0, off_road_peak_sa = 12;
   double handbrake_grip = 1, tcs_speed_scale = 1;
-  double max_steering_lock_cap = 1.0, steering_rate_mult = 1.0, aero_drag_scale = 1.0;
+  double max_steering_lock_cap = 0.0, steering_rate_mult = 1.0, aero_drag_scale = 1.0;
+  // Extended SurfaceTypes.xml drag, camera, steering torque & wall-friction properties.
+  double linear_drag = 0.0;              // <LinearDrag> surface linear damping rate (1/s)
+  double angular_drag = 0.0;             // <AngularDrag> surface angular damping rate (1/s)
+  double chase_cam_spring_mult = 1.0;    // <ChaseCamSpringMultiplier> chase camera spring scale
+  double steer_torque_scale = 1.0;       // <SteerTorque> surface steering/rumble torque scale
+  double car_world_coll_fric_mod = 1.0;  // <CarWorldCollFricMods> body-to-world friction scale
   // Friction/VelDepFriction (default: Asphalt 0..8 m/s, 0.01 long, 0.03 lat).
   double vel_peak0 = 0, vel_peak = 8;
   double vel_long0 = 0, vel_long = 0.01;
@@ -220,6 +226,19 @@ struct CarParams {
   // through the driveline): TorqueFreeLongFrictionScaleBrake x
   // GameFrictionScaleBraking, in place of the accel blend.
   double brake_friction_scale = 1.8;
+  // Compound / global tyre friction modifier (TireMod_FrictionScale), heating
+  // scale (HeatTireScale), and thermal grip curve (List_TireAffectCurve).
+  double tire_mod_friction_scale = 1.0;
+  double heat_tire_scale = 1.0;
+  struct TireAffectCurve {
+    double temp_min_c = 20.0;
+    double temp_max_c = 180.0;
+    std::vector<double> values;  // empty = default thermal window curve
+    double evaluate(double temp_c) const;
+  };
+  TireAffectCurve tire_affect_curve{};
+  // Static toe angle per axle in radians (Forza convention: + = toe-out, - = toe-in).
+  std::array<double, 2> static_toe_rad{0.0, 0.0};
 
   // Engine (SPEC-CAR-PHYSICS, Engine torque, forced induction and
   // GameTorqueScale).
@@ -434,6 +453,10 @@ struct Input {
   bool has_assist_lane = false;
   double assist_heading_error_rad = 0.0;
   double assist_lateral_offset_m = 0.0;
+  // Optional target speed (m/s) for Auto-Brake assist (assists_.braking == 0),
+  // usable in both races and free roam whenever provided.
+  bool has_auto_brake_target = false;
+  double auto_brake_target_speed = 0.0;
 };
 
 // Runtime driving assists matching ForzaProfile.sch enums
@@ -449,6 +472,9 @@ struct VehicleAssists {
 // Auto-Brake upstream helper (Braking == 0 / Assisted, SPEC-CAR-PHYSICS):
 // injects brake demand and cuts throttle when current_speed > target_speed.
 void apply_auto_brake(Input& in, double current_speed, double target_speed);
+// Computes a safe corner target speed (m/s) from signed road curvature (1/m)
+// for Auto-Brake assist in any mode (free roam or race).
+double auto_brake_target_for_curvature(double curvature_inv_m, double lateral_grip_g = 0.85, double max_speed = 90.0);
 
 // Per-wheel state for the renderer and the trace.
 struct WheelState {
@@ -610,6 +636,11 @@ class Vehicle {
   // Surface bumpiness rumble: max across grounded wheels of 2 * Bumpiness.Rumble
   // (COLLISION.md, Runtime SurfaceType evaluation; consumed by ControllerRumble).
   double surface_bump_rumble() const { return surface_bump_rumble_; }
+  double surface_chase_cam_spring_mult() const { return surf_chase_cam_spring_mult_; }
+  double surface_steer_torque_scale() const { return surf_steer_torque_scale_; }
+  double tyre_temp_c(int wheel) const {
+    return (wheel >= 0 && wheel < kWheels) ? tyre_temp_c_[size_t(wheel)] : 80.0;
+  }
   // True if a grounded wheel touched an IsHandOfGodTriggerSurface or fell
   // below water_floor_y (COLLISION.md); caller clears after respawning.
   bool hand_of_god_triggered() const { return hand_of_god_; }
@@ -677,9 +708,8 @@ class Vehicle {
   double driver_throttle_ = 0;  // the driver's effective drive throttle this step
   double slip_hist_[kWheels][8]{};
   int slip_pos_ = 0;
-  double tc_prev_ = 0;
   bool rev_matching_ = false;  // the clutch-out blend asks for the rev-match throttle
-  double launch_target_ = 0;   // the launch controller's engine target (rpm)         // the clutch torque in the last substep (N m, engine side)
+  double launch_target_ = 0;   // the launch controller's engine target (rpm)
   bool locked_ = false;        // the clutch is not slipping
   double engine_omega_ = 0;    // rad/s
   double abs_timer_[kWheels]{};
@@ -690,8 +720,10 @@ class Vehicle {
   double spring_ring_[kWheels][3]{};
   int spring_ring_pos_ = 0;
   double surface_bump_rumble_ = 0;
-  double surf_steer_lock_cap_ = 1.0;
+  double surf_steer_lock_cap_rad_ = 1e9;
   double surf_steer_rate_mult_ = 1.0;
+  double surf_chase_cam_spring_mult_ = 1.0;
+  double surf_steer_torque_scale_ = 1.0;
   double tyre_temp_c_[kWheels]{80.0, 80.0, 80.0, 80.0};
   bool hand_of_god_ = false;
   bool abs_flag_ = false;
@@ -700,6 +732,7 @@ class Vehicle {
   double tcs_amount_ = 0;
   double stm_amount_ = 0;
   bool shifted_without_clutch_ = false;
+  double manual_shift_dwell_ = 0;
   double trans_damage_ = 0;
   double stall_timer_ = 0;
   VehicleAssists assists_{};

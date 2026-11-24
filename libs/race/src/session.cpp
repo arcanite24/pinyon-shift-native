@@ -18,6 +18,104 @@ int faked_pi_offset(int64_t ordinal, bool flagged) {
   return (k & 1) ? k : -k;
 }
 
+AiUpgradeScales ai_upgrade_scales(double t) {
+  t = std::clamp(t, -1.0, 1.0);
+  AiUpgradeScales s;
+  s.t = t;
+  if (t >= 0.0) {
+    // SPEC-RACE-AI up: mass 1 - 0.1*t, torque 1 + 0.4*t, friction 1 + 0.20*t.
+    s.mass_scale = 1.0 - 0.1 * t;
+    s.torque_scale = 1.0 + 0.4 * t;
+    s.friction_scale = 1.0 + 0.20 * t;
+  } else {
+    // SPEC-RACE-AI down (u = |t|): mass 1 + 0.111*u, torque 1 - 0.286*u, friction 1 - 0.167*u.
+    const double u = -t;
+    s.mass_scale = 1.0 + (1.0 / 0.9 - 1.0) * u;
+    s.torque_scale = 1.0 - (1.0 - 1.0 / 1.4) * u;
+    s.friction_scale = 1.0 - (1.0 - 1.0 / 1.2) * u;
+  }
+  return s;
+}
+
+void apply_ai_upgrade(drive::CarParams& params, double t, int tuning_level) {
+  const AiUpgradeScales s = ai_upgrade_scales(t);
+  params.mass *= s.mass_scale;
+  params.torque_scale *= s.torque_scale;
+  for (int a = 0; a < 2; ++a) {
+    params.long_scale[size_t(a)] *= s.friction_scale;
+    params.lat_scale[size_t(a)] *= s.friction_scale;
+  }
+  const int lvl = std::clamp(tuning_level, 0, 3);
+  if (lvl > 0) {
+    // EventParticipants.TuningLevel (1=street, 2=sport, 3=race): progressive suspension
+    // damping/antiroll stiffening and tighter shift/final-drive gearing polish.
+    const double spring_k = 1.0 + 0.05 * double(lvl);
+    const double damp_k = 1.0 + 0.08 * double(lvl);
+    const double arb_k = 1.0 + 0.10 * double(lvl);
+    const double shift_k = 1.0 - 0.12 * double(lvl);
+    for (int a = 0; a < 2; ++a) {
+      params.spring_rate[size_t(a)] *= spring_k;
+      params.bump_rate[size_t(a)] *= damp_k;
+      params.rebound_rate[size_t(a)] *= damp_k;
+      params.antiroll_rate[size_t(a)] *= arb_k;
+    }
+    params.gear_shift_time *= shift_k;
+    params.clutch_in_time *= shift_k;
+    params.clutch_out_time *= shift_k;
+    params.rev_match_time *= shift_k;
+    params.final_drive *= (1.0 + 0.015 * double(lvl));
+  }
+}
+
+AiUpgradeScales solve_ai_upgrade(const drive::CarParams& stock, double stock_pi, double target_pi,
+                                 const std::function<double(const drive::CarParams&)>& rate_pi, int iterations) {
+  AiUpgradeScales out = ai_upgrade_scales(0.0);
+  out.rated_pi = stock_pi;
+  if (!rate_pi || std::fabs(target_pi - stock_pi) < 0.25) return out;
+  const bool up = target_pi > stock_pi;
+  const double far_t = up ? 1.0 : -1.0;
+  drive::CarParams far_p = stock;
+  apply_ai_upgrade(far_p, far_t, 0);
+  const double far_pi = rate_pi(far_p);
+  if ((up && far_pi <= target_pi) || (!up && far_pi >= target_pi)) {
+    out = ai_upgrade_scales(far_t);
+    out.rated_pi = far_pi;
+    return out;
+  }
+  // Bisect `iterations` (10) times between the low-PI end and high-PI end.
+  double lo = up ? 0.0 : -1.0;
+  double hi = up ? 1.0 : 0.0;
+  double best_t = 0.0;
+  double best_pi = stock_pi;
+  double best_err = std::fabs(stock_pi - target_pi);
+  const int iters = std::max(1, iterations);
+  for (int it = 0; it < iters; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    drive::CarParams pm = stock;
+    apply_ai_upgrade(pm, mid, 0);
+    const double mid_pi = rate_pi(pm);
+    const double err = std::fabs(mid_pi - target_pi);
+    if (err < best_err) {
+      best_err = err;
+      best_t = mid;
+      best_pi = mid_pi;
+    }
+    if (mid_pi > target_pi) hi = mid;
+    else lo = mid;
+  }
+  const double final_t = 0.5 * (lo + hi);
+  drive::CarParams pf = stock;
+  apply_ai_upgrade(pf, final_t, 0);
+  const double final_pi = rate_pi(pf);
+  if (std::fabs(final_pi - target_pi) <= best_err) {
+    best_t = final_t;
+    best_pi = final_pi;
+  }
+  out = ai_upgrade_scales(best_t);
+  out.rated_pi = best_pi;
+  return out;
+}
+
 std::vector<int> opponent_slots(int player, int opponents) {
   std::vector<int> out;
   for (int s = 0; int(out.size()) < opponents; ++s)
@@ -50,7 +148,18 @@ bool Session::all_finished() const {
 void Session::reset_done(size_t i) {
   Car& c = cars_[i];
   c.wrong = c.slow = c.off5 = c.off15 = c.rolled = 0;
+  c.reset_fade_out = 0.0;
+  c.reset_fade_in_timer = std::max(0.0, o_.reset_fade_in);
   c.no_collide_until = clock_ + 3.0;  // PostResetNonCollideTime
+}
+
+double Session::reset_fade_alpha(size_t i) const {
+  if (i >= cars_.size()) return 1.0;
+  const Car& c = cars_[i];
+  if (c.reset_fade_in_timer > 0.0 && o_.reset_fade_in > 1e-6) {
+    return std::clamp(1.0 - c.reset_fade_in_timer / o_.reset_fade_in, 0.0, 1.0);
+  }
+  return std::clamp(1.0 - c.reset_fade_out, 0.0, 1.0);
 }
 
 void Session::mark_lap_dirty(size_t i) {
@@ -103,13 +212,28 @@ void Session::step(double dt, std::span<const CarSample> s) {
       if (g >= 0) c.finish = std::max(0.0, t0 + g * dt);
     }
     // The interim automatic resets (every car).
+    if (c.reset_fade_in_timer > 0.0) c.reset_fade_in_timer = std::max(0.0, c.reset_fade_in_timer - dt);
     if (o_.resets && c.finish < 0) {
       const double mph = q.speed / 0.44704;
+      if (mph >= 5.0 || c.distance > 15.0) c.has_launched = true;
+      const bool start_grace = (i == o_.player_index) && (clock_ < o_.start_launch_grace) && !c.has_launched;
       c.rolled = q.up_y < 0.5 ? c.rolled + dt : 0;
       c.wrong = (q.heading_cos < 0.342 && mph > 40) ? c.wrong + dt : 0;
-      c.slow = mph < 5 ? c.slow + dt : 0;
-      c.off5 = q.off_route > 5 ? c.off5 + dt : 0;
-      c.off15 = q.off_route > 15 ? c.off15 + dt : 0;
+      c.slow = (!start_grace && mph < 5) ? c.slow + dt : 0;
+      c.off5 = q.off_route > o_.off_route_near ? c.off5 + dt : 0;
+      c.off15 = q.off_route > o_.off_route_far ? c.off15 + dt : 0;
+      // Track clean 2 s fade-out leading into any active reset trigger.
+      double min_rem = 1e9;
+      if (c.rolled > 0.0) min_rem = std::min(min_rem, std::max(0.0, o_.rollover_time - c.rolled));
+      if (c.wrong > 0.0) min_rem = std::min(min_rem, std::max(0.0, 3.0 - c.wrong));
+      if (c.slow > 0.0) min_rem = std::min(min_rem, std::max(0.0, 3.0 - c.slow));
+      if (c.off15 > 0.0) min_rem = std::min(min_rem, std::max(0.0, 3.0 - c.off15));
+      if (c.off5 > 0.0) min_rem = std::min(min_rem, std::max(0.0, 6.0 - c.off5));
+      if (o_.reset_fade_out > 1e-6 && min_rem < o_.reset_fade_out) {
+        c.reset_fade_out = std::clamp(1.0 - min_rem / o_.reset_fade_out, 0.0, 1.0);
+      } else {
+        c.reset_fade_out = 0.0;
+      }
       c.reason = c.rolled >= o_.rollover_time ? "rolled over"
                : c.wrong >= 3                 ? "wrong way"
                : c.slow >= 3                  ? "no progress"
@@ -117,6 +241,8 @@ void Session::step(double dt, std::span<const CarSample> s) {
                : c.off5 >= 6                  ? "5 m off"
                                               : "";
       if (*c.reason) resets_.push_back(i);
+    } else {
+      c.reset_fade_out = 0.0;
     }
   }
   const auto ord = order();
@@ -144,10 +270,15 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
   constexpr float kWidth = 2.05f;  // a car's width, m
   for (size_t i = 0; i < ai && i < n && i < lane.size(); ++i) {
     const LaneParams& p = params[std::min(i, params.size() - 1)];
+    const float aggro = p.aggression > 1.0f ? std::clamp(p.aggression * 0.1f, 0.0f, 1.0f)
+                                            : std::clamp(p.aggression, 0.0f, 1.0f);
     const float sep = kWidth + p.car_clearance + 0.25f;
     // Look further ahead at speed so overtaking initiates ~0.9 s before closing
-    // rather than stacking in a conga line behind kFollowRange.
-    const double pass_range = std::max<double>(p.trailing, std::min(32.0, 0.9 * std::max(0.0f, speed[i])));
+    // rather than stacking in a conga line behind kFollowRange; Passing_AggressionLevel
+    // scales overtaking range, speed-margin threshold, gap willingness, and lane rate.
+    const double base_pass_range = std::max<double>(p.trailing, std::min(32.0, 0.9 * std::max(0.0f, speed[i])));
+    const double pass_range = base_pass_range * (0.75 + 0.65 * double(aggro));
+    const float speed_margin = (1.0f - aggro) * 2.5f;
     size_t block = n;
     double best = 1e30;
     for (size_t j = 0; j < n; ++j) {
@@ -155,8 +286,8 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
       const double gap = progress[j] - progress[i];
       if (gap <= 0 || gap > pass_range || gap >= best) continue;
       if (std::fabs(cross[j] - cross[i]) > sep && std::fabs(cross[j] - lane[i]) > sep) continue;
-      // Trigger pass when faster OR close behind (even if follow-cap already matched speed).
-      if (speed[i] <= speed[j] && gap > p.trailing + 3.0) continue;
+      // Trigger pass when faster by aggression margin OR close behind.
+      if (speed[i] <= speed[j] + speed_margin && gap > p.trailing * (0.7 + 0.6 * double(aggro)) + 2.0) continue;
       block = j, best = gap;
     }
     double right = line.room(progress[i], true), left = line.room(progress[i], false);
@@ -183,12 +314,15 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
       const float cand_left = std::clamp(cross[block] - pass_l, min_lane, max_lane);
       const float room_r = cand_right - cross[block];
       const float room_l = cross[block] - cand_left;
-      // Keep current side if it has enough clearance; else take the wider side.
-      float side = lane[i] > 0.35f ? 1.0f : lane[i] < -0.35f ? -1.0f : 0.0f;
-      if (side > 0 && room_r < sep * 0.75f && room_l > room_r) side = -1.0f;
-      else if (side < 0 && room_l < sep * 0.75f && room_r > room_l) side = 1.0f;
-      if (side == 0) side = room_r >= room_l ? 1.0f : -1.0f;
-      target = side > 0 ? cand_right : cand_left;
+      const float min_pass_room = sep * (0.90f - 0.25f * aggro);
+      if (room_r >= min_pass_room || room_l >= min_pass_room) {
+        // Keep current side if it has enough clearance; else take the wider side.
+        float side = lane[i] > 0.35f ? 1.0f : lane[i] < -0.35f ? -1.0f : 0.0f;
+        if (side > 0 && room_r < sep * 0.75f && room_l > room_r) side = -1.0f;
+        else if (side < 0 && room_l < sep * 0.75f && room_r > room_l) side = 1.0f;
+        if (side == 0) side = room_r >= room_l ? 1.0f : -1.0f;
+        target = side > 0 ? cand_right : cand_left;
+      }
     }
     // Street/Nemesis live traffic avoidance: detect slower or oncoming traffic
     // ahead along the racing line and shift cleanly onto the wider side.
@@ -233,7 +367,8 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
       else target = std::min(target, push);
     }
     target = std::clamp(target, min_lane, max_lane);
-    const double eff_rate = dodging_traffic ? std::max(rate, 4.8) : rate;
+    const double aggro_rate = rate * (0.75 + 0.55 * double(aggro));
+    const double eff_rate = dodging_traffic ? std::max(aggro_rate, 4.8) : aggro_rate;
     const float step = float(eff_rate * dt);
     lane[i] += std::clamp(target - lane[i], -step, step);
     if (i < cap.size()) {

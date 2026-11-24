@@ -108,6 +108,9 @@ void DriveSession::fire_satnav_event(const traffic::GpsPromptEvent& gev) {
         if (gev.kind == K::kNone) return;
         audio::SatNavCue cue = audio::SatNavCue::kDestGeneric;
         bool play = true;
+        const T eff_turn = (gev.turn == T::kRoundabout)
+                               ? (gev.exit_turn != T::kNone ? gev.exit_turn : T::kBearRight)
+                               : gev.turn;
         switch (gev.kind) {
           case K::kDestinationSet:
             switch (gev.dest_kind) {
@@ -123,8 +126,11 @@ void DriveSession::fire_satnav_event(const traffic::GpsPromptEvent& gev) {
               default: cue = audio::SatNavCue::kDestGeneric; break;
             }
             break;
+          case K::kDestinationCannotBeSet: cue = audio::SatNavCue::kDestCannotBeSet; break;
           case K::kRecalculating: cue = audio::SatNavCue::kRecalculating; break;
           case K::kUTurn: cue = audio::SatNavCue::kUTurn; break;
+          case K::kArrivedExtended: cue = audio::SatNavCue::kExtendedDestination; break;
+          case K::kArrivedFar: cue = audio::SatNavCue::kFarDestination; break;
           case K::kArrivedNear: cue = audio::SatNavCue::kNearDestination; break;
           case K::kArrived:
             cue = audio::SatNavCue::kArrived;
@@ -132,35 +138,62 @@ void DriveSession::fire_satnav_event(const traffic::GpsPromptEvent& gev) {
                      carview::ui::rgba(74, 238, 97)};
             break;
           case K::kTurnNow:
-            switch (gev.turn) {
+            switch (eff_turn) {
               case T::kLeft: cue = audio::SatNavCue::kTurnLeft; break;
               case T::kRight: cue = audio::SatNavCue::kTurnRight; break;
               case T::kBearLeft: cue = audio::SatNavCue::kBearLeft; break;
               case T::kBearRight: cue = audio::SatNavCue::kBearRight; break;
               case T::kSharpLeft: cue = audio::SatNavCue::kSharpLeft; break;
               case T::kSharpRight: cue = audio::SatNavCue::kSharpRight; break;
+              case T::kUTurn: cue = audio::SatNavCue::kUTurn; break;
+              default: play = false; break;
+            }
+            break;
+          case K::kTurnNextJunction:
+            switch (eff_turn) {
+              case T::kLeft: cue = audio::SatNavCue::kNextJuncLeft; break;
+              case T::kRight: cue = audio::SatNavCue::kNextJuncRight; break;
+              case T::kBearLeft: cue = audio::SatNavCue::kNextJuncBearLeft; break;
+              case T::kBearRight: cue = audio::SatNavCue::kNextJuncBearRight; break;
+              case T::kSharpLeft: cue = audio::SatNavCue::kNextJuncSharpLeft; break;
+              case T::kSharpRight: cue = audio::SatNavCue::kNextJuncSharpRight; break;
+              case T::kUTurn: cue = audio::SatNavCue::kUTurn; break;
               default: play = false; break;
             }
             break;
           case K::kTurnNear:
-            switch (gev.turn) {
+            switch (eff_turn) {
               case T::kLeft: cue = audio::SatNavCue::kNearLeft; break;
               case T::kRight: cue = audio::SatNavCue::kNearRight; break;
               case T::kBearLeft: cue = audio::SatNavCue::kNearBearLeft; break;
               case T::kBearRight: cue = audio::SatNavCue::kNearBearRight; break;
               case T::kSharpLeft: cue = audio::SatNavCue::kNearSharpLeft; break;
               case T::kSharpRight: cue = audio::SatNavCue::kNearSharpRight; break;
+              case T::kUTurn: cue = audio::SatNavCue::kUTurn; break;
               default: play = false; break;
             }
             break;
           case K::kTurnFar:
-            switch (gev.turn) {
+            switch (eff_turn) {
               case T::kLeft: cue = audio::SatNavCue::kFarLeft; break;
               case T::kRight: cue = audio::SatNavCue::kFarRight; break;
               case T::kBearLeft: cue = audio::SatNavCue::kFarBearLeft; break;
               case T::kBearRight: cue = audio::SatNavCue::kFarBearRight; break;
               case T::kSharpLeft: cue = audio::SatNavCue::kFarSharpLeft; break;
               case T::kSharpRight: cue = audio::SatNavCue::kFarSharpRight; break;
+              case T::kUTurn: cue = audio::SatNavCue::kUTurn; break;
+              default: play = false; break;
+            }
+            break;
+          case K::kTurnExtended:
+            switch (eff_turn) {
+              case T::kLeft: cue = audio::SatNavCue::kExtendedLeft; break;
+              case T::kRight: cue = audio::SatNavCue::kExtendedRight; break;
+              case T::kBearLeft: cue = audio::SatNavCue::kExtendedBearLeft; break;
+              case T::kBearRight: cue = audio::SatNavCue::kExtendedBearRight; break;
+              case T::kSharpLeft: cue = audio::SatNavCue::kExtendedSharpLeft; break;
+              case T::kSharpRight: cue = audio::SatNavCue::kExtendedSharpRight; break;
+              case T::kUTurn: cue = audio::SatNavCue::kUTurn; break;
               default: play = false; break;
             }
             break;
@@ -208,33 +241,35 @@ void DriveSession::start_pr_stunt(const freeroam::PrStunt& st) {
 }
 
 bool DriveSession::free_roam_step() {
+        const drive::Vec3 pos_now = vehicle.position();
+        // Retail FH1 discovers driven Colorado roads in both free roam and active races.
+        if (app.road_discovery.ready()) {
+          for (const auto& rev : app.road_discovery.update(pos_now.x, pos_now.z)) {
+            char rb[96];
+            std::snprintf(rb, sizeof rb, "ROAD DISCOVERED  %d / %d", rev.discovered_count, rev.total_count);
+            std::string rname = rev.road_name;
+            for (char& ch : rname) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+            if (rname.rfind("ROAD_", 0) == 0 && rname.size() > 5) {
+              std::string num = rname.substr(5);
+              while (num.size() > 1 && num.front() == '0') num.erase(num.begin());
+              rname = "COLORADO ROAD #" + num;
+            } else {
+              for (char& ch : rname) {
+                if (ch == '_') ch = ' ';
+              }
+            }
+            popup = {rb, rname, vehicle.time(), double(rev.discovered_count) / double(std::max(1, rev.total_count)),
+                     carview::ui::rgba(74, 238, 97)};
+            app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
+            save_due = true;
+          }
+        }
         if (!app.race) {
-          const drive::Vec3 at = vehicle.position();
+          const drive::Vec3 at = pos_now;
           if (app.gps_nav.active()) {
             const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
             const double hdg = std::atan2(f.x, f.z);
             fire_satnav_event(app.gps_nav.update(at.x, at.z, hdg, std::fabs(vehicle.speed()), drive::Vehicle::kStep));
-          }
-          if (app.road_discovery.ready()) {
-            for (const auto& rev : app.road_discovery.update(at.x, at.z)) {
-              char rb[96];
-              std::snprintf(rb, sizeof rb, "ROAD DISCOVERED  %d / %d", rev.discovered_count, rev.total_count);
-              std::string rname = rev.road_name;
-              for (char& ch : rname) ch = char(std::toupper(static_cast<unsigned char>(ch)));
-              if (rname.rfind("ROAD_", 0) == 0 && rname.size() > 5) {
-                std::string num = rname.substr(5);
-                while (num.size() > 1 && num.front() == '0') num.erase(num.begin());
-                rname = "COLORADO ROAD #" + num;
-              } else {
-                for (char& ch : rname) {
-                  if (ch == '_') ch = ' ';
-                }
-              }
-              popup = {rb, rname, vehicle.time(), double(rev.discovered_count) / double(std::max(1, rev.total_count)),
-                       carview::ui::rgba(74, 238, 97)};
-              app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
-              save_due = true;
-            }
           }
           if (app.have_outposts) {
             const int disc_idx = app.outpost_progress.check_discovery(app.outposts, at.x, at.z);
@@ -465,6 +500,93 @@ bool DriveSession::step(const drive::Input& user_in) {
         const auto ai_t0 = std::chrono::steady_clock::now();
         step_physics_ms += std::chrono::duration<double, std::milli>(ai_t0 - ph_t0).count();
         if (traffic) traffic->step(vehicle);
+        // Free-roam Festival AI Racers & instant Head-to-Head point-to-point race.
+        // Stepped BEFORE SkillTracker so Festival AI collisions break the active skill chain
+        // on the exact frame they occur and apply visual damage + realistic angular impulse.
+        if (!app.race && festival_mgr) {
+          const drive::Vec3 fp = vehicle.position();
+          const drive::Vec3 ff = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          const double fh = std::atan2(ff.x, ff.z);
+          if (app.demo_h2h && !demo_h2h_started && vehicle.time() >= 3.0) {
+            demo_h2h_started = true;
+            const uint32_t fid = festival_mgr->spawn_ahead({fp.x, fp.y, fp.z}, fh, 18.0);
+            if (fid && festival_mgr->start_head_to_head({fp.x, fp.y, fp.z}, fh, vehicle.time(), fid)) {
+              club_pending.encounter_started = true;
+              app.audio_host.trigger_ui(audio::UiCue::kH2hGo);
+            }
+            if (app.have_prog_tables && app.career.driver_xp < 36000) {
+              race::apply_progression_xp(app.career, 36000, current_make_id(), 18000, app.prog_tables);
+            }
+            app.sponsor_banner_title = "SPONSORSHIP TIER 2: NEAR MISS";
+            app.sponsor_banner_detail = "+10,000 Cr  •  BONDURANT RACING SCHOOL";
+            app.sponsor_banner_at = vehicle.time();
+          }
+          freeroam::HeadToHeadResult hres;
+          if (festival_mgr->step(drive::Vehicle::kStep, vehicle.time(), {fp.x, fp.y, fp.z}, fh, vehicle.speed(),
+                                 &hres, traffic ? traffic->cars() : nullptr)) {
+            club_pending.encounter_completed = true;
+            club_pending.encounter_finish_place = hres.won ? 1 : 2;
+            app.audio_host.trigger_ui(hres.won ? audio::UiCue::kRaceFinish : audio::UiCue::kH2hLoss);
+            ++app.h2h_races;
+            if (hres.won) {
+              ++app.h2h_wins;
+              const int64_t hcr = slice12.trainer.pacing.scale_credits(hres.payout_credits);
+              app.career.credits = std::min<int64_t>(999999999, app.career.credits + hcr);
+              app.career.total_winnings += hcr;
+            } else {
+              // Retail FH1 does not deduct credits on Head-to-Head loss.
+              popup = {"HEAD-TO-HEAD LOST",
+                       "DEFEATED BY " + hres.opponent_name + "   +" + std::to_string(hres.popularity_points) + " FAME",
+                       vehicle.time(), -1, carview::ui::rgba(255, 72, 72)};
+            }
+            if (app.skill_tracker) app.skill_tracker->add_popularity(double(hres.popularity_points));
+            if (app.have_prog_tables) {
+              const int hxp = slice12.trainer.pacing.scale_points(hres.driver_xp);
+              race::apply_progression_xp(app.career, hxp, current_make_id(), hxp / 2, app.prog_tables);
+            }
+            std::printf("h2h: %s vs %s (+%lld Cr, +%d Fame)\n", hres.won ? "WON" : "LOST",
+                        hres.opponent_name.c_str(), (long long)hres.payout_credits, hres.popularity_points);
+            save_due = true;
+          }
+          // Car-to-car physics collision between player and nearby Festival AI / H2H cars.
+          {
+            const drive::Vec3 fv = vehicle.velocity();
+            const auto fcol = festival_mgr->resolve_player_collision(
+                {fp.x, fp.y, fp.z}, {fv.x, fv.y, fv.z}, vehicle.params().mass, drive::Vehicle::kStep);
+            if (fcol.hit && fcol.impulse_magnitude > 1.0) {
+              constexpr double kFestivalAngularImpulseScale = 0.55;
+              vehicle.apply_impulse({fcol.contact_point[0], fcol.contact_point[1], fcol.contact_point[2]},
+                                    {fcol.player_impulse[0], fcol.player_impulse[1], fcol.player_impulse[2]},
+                                    kFestivalAngularImpulseScale);
+              step_car_impact_accum = std::max(step_car_impact_accum, fcol.impulse_magnitude);
+              const double dv_f = fcol.impulse_magnitude / std::max(500.0, vehicle.params().mass);
+              if (dv_f > 0.8) {
+                audio::CollisionHit hit{};
+                hit.rel_speed_mps = float(dv_f);
+                hit.pos = {float(fcol.contact_point[0]), float(fcol.contact_point[1]), float(fcol.contact_point[2])};
+                hit.is_car_on_car = true;
+                hit.surface_hint = 1;
+                app.audio_host.trigger_collision(hit);
+                const drive::Vec3 rel{fcol.contact_point[0] - fp.x, fcol.contact_point[1] - fp.y,
+                                      fcol.contact_point[2] - fp.z};
+                const drive::Quat q = vehicle.orientation();
+                const drive::Quat qinv{-q.x, -q.y, -q.z, q.w};
+                const drive::Vec3 loc = drive::rotate(qinv, rel);
+                car_damage.record_impact(float(loc.x), float(loc.y), float(loc.z), float(dv_f));
+                if ((!app.bench || app.bench_full_fx) && dv_f > 2.5 && vehicle.time() - host.last_impact_vfx_time > 0.2) {
+                  host.last_impact_vfx_time = vehicle.time();
+                  const double ilen = std::max(1e-4, fcol.impulse_magnitude);
+                  const std::array<float, 3> cpos{float(fcol.contact_point[0]), float(fcol.contact_point[1]),
+                                                  float(fcol.contact_point[2])};
+                  const std::array<float, 3> cnrm{float(fcol.player_impulse[0] / ilen), 0.15f,
+                                                  float(fcol.player_impulse[2] / ilen)};
+                  const std::array<float, 3> cvel{float(fv.x), float(fv.y), float(fv.z)};
+                  host.particle_sys.spawn_collision_impact(cpos, cnrm, cvel, float(dv_f), true);
+                }
+              }
+            }
+          }
+        }
         if (app.race && host.streamer) {
           app.race->after_step(vehicle, *host.ground, host.streamer->centre_x(), host.streamer->centre_z(),
                            host.streamer->collision_radius(), traffic.get());
@@ -940,81 +1062,6 @@ bool DriveSession::step(const drive::Input& user_in) {
               std::printf("speed activity: %s %.1f mph%s\n", ev.label.c_str(), ev.speed_mph,
                           ev.is_new_pb ? " (NEW PB!)" : "");
               save_due = true;
-            }
-          }
-        }
-        // Free-roam Festival AI Racers & instant Head-to-Head point-to-point race.
-        if (!app.race && festival_mgr) {
-          const drive::Vec3 fp = vehicle.position();
-          const drive::Vec3 ff = drive::rotate(vehicle.orientation(), {0, 0, 1});
-          const double fh = std::atan2(ff.x, ff.z);
-          if (app.demo_h2h && !demo_h2h_started && vehicle.time() >= 3.0) {
-            demo_h2h_started = true;
-            const uint32_t fid = festival_mgr->spawn_ahead({fp.x, fp.y, fp.z}, fh, 18.0);
-            if (fid && festival_mgr->start_head_to_head({fp.x, fp.y, fp.z}, fh, vehicle.time(), fid)) {
-              club_pending.encounter_started = true;
-              app.audio_host.trigger_ui(audio::UiCue::kH2hGo);
-            }
-            if (app.have_prog_tables && app.career.driver_xp < 36000) {
-              race::apply_progression_xp(app.career, 36000, current_make_id(), 18000, app.prog_tables);
-            }
-            app.sponsor_banner_title = "SPONSORSHIP TIER 2: NEAR MISS";
-            app.sponsor_banner_detail = "+10,000 Cr  •  BONDURANT RACING SCHOOL";
-            app.sponsor_banner_at = vehicle.time();
-          }
-          freeroam::HeadToHeadResult hres;
-          if (festival_mgr->step(drive::Vehicle::kStep, vehicle.time(), {fp.x, fp.y, fp.z}, fh, vehicle.speed(),
-                                 &hres, traffic ? traffic->cars() : nullptr)) {
-            club_pending.encounter_completed = true;
-            club_pending.encounter_finish_place = hres.won ? 1 : 2;
-            app.audio_host.trigger_ui(hres.won ? audio::UiCue::kRaceFinish : audio::UiCue::kH2hLoss);
-            ++app.h2h_races;
-            if (hres.won) {
-              ++app.h2h_wins;
-              const int64_t hcr = slice12.trainer.pacing.scale_credits(hres.payout_credits);
-              app.career.credits = std::min<int64_t>(999999999, app.career.credits + hcr);
-              app.career.total_winnings += hcr;
-            } else if (hres.wager_credits > 0) {
-              // Risk-bearing H2H wager: losing deducts the staked wager from credits.
-              const int64_t loss = std::min(app.career.credits, hres.wager_credits);
-              app.career.credits = std::max<int64_t>(0, app.career.credits - loss);
-              popup = {"HEAD-TO-HEAD LOST",
-                       "WAGER LOST TO " + hres.opponent_name + "   -" + carview::thousands(loss) + " Cr",
-                       vehicle.time(), -1, carview::ui::rgba(255, 72, 72)};
-            }
-            if (app.skill_tracker) app.skill_tracker->add_popularity(double(hres.popularity_points));
-            if (app.have_prog_tables) {
-              const int hxp = slice12.trainer.pacing.scale_points(hres.driver_xp);
-              race::apply_progression_xp(app.career, hxp, current_make_id(), hxp / 2, app.prog_tables);
-            }
-            std::printf("h2h: %s vs %s (+%lld Cr, +%d Fame)\n", hres.won ? "WON" : "LOST",
-                        hres.opponent_name.c_str(), (long long)hres.payout_credits, hres.popularity_points);
-            save_due = true;
-          }
-          // Car-to-car physics collision between player and nearby Festival AI / H2H cars.
-          {
-            const drive::Vec3 fv = vehicle.velocity();
-            const auto fcol = festival_mgr->resolve_player_collision(
-                {fp.x, fp.y, fp.z}, {fv.x, fv.y, fv.z}, vehicle.params().mass, drive::Vehicle::kStep);
-            if (fcol.hit && fcol.impulse_magnitude > 1.0) {
-              vehicle.apply_impulse({fcol.contact_point[0], fcol.contact_point[1], fcol.contact_point[2]},
-                                    {fcol.player_impulse[0], fcol.player_impulse[1], fcol.player_impulse[2]}, 0.25);
-              step_car_impact_accum = std::max(step_car_impact_accum, fcol.impulse_magnitude);
-              const double dv_f = fcol.impulse_magnitude / std::max(500.0, vehicle.params().mass);
-              if (dv_f > 1.0) {
-                audio::CollisionHit hit{};
-                hit.rel_speed_mps = float(dv_f);
-                hit.pos = {float(fcol.contact_point[0]), float(fcol.contact_point[1]), float(fcol.contact_point[2])};
-                hit.is_car_on_car = true;
-                hit.surface_hint = 1;
-                app.audio_host.trigger_collision(hit);
-                const drive::Vec3 rel{fcol.contact_point[0] - fp.x, fcol.contact_point[1] - fp.y,
-                                      fcol.contact_point[2] - fp.z};
-                const drive::Quat q = vehicle.orientation();
-                const drive::Quat qinv{-q.x, -q.y, -q.z, q.w};
-                const drive::Vec3 loc = drive::rotate(qinv, rel);
-                car_damage.record_impact(float(loc.x), float(loc.y), float(loc.z), float(dv_f));
-              }
             }
           }
         }

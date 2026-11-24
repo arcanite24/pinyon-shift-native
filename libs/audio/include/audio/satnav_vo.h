@@ -30,6 +30,7 @@ enum class SatNavCue : uint8_t {
   kDestRaceCentral,
   kDestStreetRace,
   kDestReset,
+  kDestCannotBeSet,
   kRecalculating,
   kUTurn,
   kTurnLeft,
@@ -50,10 +51,27 @@ enum class SatNavCue : uint8_t {
   kFarBearRight,
   kFarSharpLeft,
   kFarSharpRight,
+  kExtendedLeft,
+  kExtendedRight,
+  kExtendedBearLeft,
+  kExtendedBearRight,
+  kExtendedSharpLeft,
+  kExtendedSharpRight,
+  kNextJuncLeft,
+  kNextJuncRight,
+  kNextJuncBearLeft,
+  kNextJuncBearRight,
+  kNextJuncSharpLeft,
+  kNextJuncSharpRight,
   kNearDestination,
+  kFarDestination,
+  kExtendedDestination,
   kArrived,
   kCount
 };
+
+// Returns the FSB fallback substring needle for `cue` (guaranteed distinct per cue).
+const char* satnav_cue_fsb_fallback(SatNavCue cue);
 
 class SatNavVoPlayer {
  public:

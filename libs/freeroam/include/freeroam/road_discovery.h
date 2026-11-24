@@ -23,6 +23,10 @@ struct RoadDiscoveredEvent {
 
 class RoadDiscovery {
  public:
+  // Retail GlobalRegistry UnvisitedDistanceThreshold: a road completes once the
+  // total length of its unvisited segments is <= 75.0 m (and >= 1 segment visited).
+  static constexpr double kUnvisitedDistanceThreshold = 75.0;
+
   // Indexes drawn roads and nodes from `nav`.
   bool build(const traffic::NavMap& nav);
   bool ready() const { return node_count_ > 0 && !road_names_.empty(); }
@@ -30,8 +34,13 @@ class RoadDiscovery {
   uint32_t node_count() const { return node_count_; }
   int total_roads() const { return int(road_names_.size()); }
   int discovered_count() const { return discovered_roads_; }
+  size_t visited_node_count() const { return visited_node_count_; }
+  size_t visited_segment_count() const { return visited_segment_count_; }
 
   bool is_node_discovered(uint32_t node) const;
+  bool is_segment_discovered(uint32_t a, uint32_t b) const {
+    return is_node_discovered(a) && is_node_discovered(b);
+  }
   bool is_road_discovered(int road_group) const;
   const std::vector<uint32_t>& words() const { return bits_; }
   const std::vector<std::string>& road_names() const { return road_names_; }
@@ -40,8 +49,9 @@ class RoadDiscovery {
   void load_words(uint32_t node_count, const std::vector<uint32_t>& words);
   void reset();
 
-  // Marks drawn road nodes/segments within `radius_m` of (car_x, car_z) as
-  // driven and returns any newly discovered named roads.
+  // Marks drawn road nodes within `radius_m` of (car_x, car_z) as driven
+  // (without prematurely marking far segment endpoints) and returns any
+  // newly discovered named roads.
   std::vector<RoadDiscoveredEvent> update(double car_x, double car_z, double radius_m = 28.0);
 
   // Encodes/decodes word bitset as compact lowercase hex for DriveSave.
@@ -52,9 +62,11 @@ class RoadDiscovery {
   struct DrawnSegment {
     uint32_t a = 0, b = 0;
     double ax = 0, az = 0, bx = 0, bz = 0;
+    double length = 0.0;
     int road_group = -1;
   };
 
+  bool is_road_complete(int road_group) const;
   bool mark_node(uint32_t node, std::vector<RoadDiscoveredEvent>& events);
   void recompute_discovered_roads();
 
@@ -62,9 +74,13 @@ class RoadDiscovery {
   std::vector<uint32_t> bits_;
   std::vector<std::string> road_names_;
   std::vector<std::vector<uint32_t>> road_nodes_;  // road_group -> node indices
+  std::vector<std::vector<uint32_t>> road_segs_;   // road_group -> segment indices in segs_
   std::vector<std::vector<int>> node_roads_;       // node -> incident road_group(s)
+  std::vector<std::vector<uint32_t>> node_segs_;   // node -> incident segment indices in segs_
   std::vector<uint8_t> road_discovered_;
   int discovered_roads_ = 0;
+  size_t visited_node_count_ = 0;
+  size_t visited_segment_count_ = 0;
 
   // Spatial grid over drawn road segments for fast per-frame updates.
   std::vector<DrawnSegment> segs_;

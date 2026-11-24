@@ -151,6 +151,8 @@ class MapView {
     double cx = 0.0, cz = 0.0;
     const freeroam::RoadDiscovery* road_disc = nullptr;
     int road_disc_count = -1;
+    size_t road_visited_nodes = 0;
+    size_t road_visited_segs = 0;
     uint32_t loaded_tiles_mask = 0;
     std::vector<uint8_t> rgba;
   };

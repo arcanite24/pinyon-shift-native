@@ -265,38 +265,125 @@ void DriveSession::init_session() {
             }
           }
           std::vector<freeroam::FestivalRacerSpec> roster;
-          for (const auto& [cid, media] : app.baked_ids) {
-            if (traffic_ids.count(cid) || media == app.car) continue;
-            freeroam::FestivalRacerSpec sp;
-            sp.car_id = cid;
-            sp.car_media = media;
+          if (!*app.car_names_loaded) carview::car_name("");
+          const auto ai_db = app.parts_db.get();
+          auto resolve_driver_name = [&](const std::string& raw_name, const std::string& first_name) -> std::string {
+            std::string resolved = raw_name;
+            if (!resolved.empty() && app.car_names) resolved = app.car_names->text(resolved);
+            if (resolved.empty() || fh1::StringTables::is_reference(resolved)) {
+              if (!raw_name.empty()) resolved = carview::game_text(raw_name);
+            }
+            if (resolved.empty() || fh1::StringTables::is_reference(resolved)) resolved = first_name;
+            return resolved;
+          };
+          auto fill_car_metrics = [&](freeroam::FestivalRacerSpec& sp, int64_t cid, double curb_weight_raw,
+                                      double db_pi_raw, int db_class_raw) {
+            if (curb_weight_raw > 0.0) {
+              const double kg = curb_weight_raw < 100.0 ? curb_weight_raw * 100.0 : curb_weight_raw;
+              sp.mass_kg = std::clamp(kg, 700.0, 3200.0);
+            }
             if (app.have_career_catalog) {
               if (const auto* cs = app.career_catalog.find_car(cid)) {
                 sp.pi = !app.class_bands.empty() ? garage::shown_index(cs->stock_pi, app.class_bands) : int(cs->stock_pi);
                 const int cl = !app.class_bands.empty() ? garage::class_of(cs->stock_pi, app.class_bands) : cs->stock_class;
                 if (cl >= 0 && size_t(cl) < app.class_bands.size()) sp.car_class = app.class_bands[size_t(cl)].name;
               }
+            } else if (db_pi_raw > 0.0) {
+              sp.pi = !app.class_bands.empty() ? garage::shown_index(db_pi_raw, app.class_bands)
+                                               : int(std::lround(db_pi_raw <= 1.5 ? db_pi_raw * 1000.0 : db_pi_raw));
+              const int cl = !app.class_bands.empty() ? garage::class_of(db_pi_raw, app.class_bands) : db_class_raw;
+              if (cl >= 0 && size_t(cl) < app.class_bands.size()) sp.car_class = app.class_bands[size_t(cl)].name;
             }
             if (sp.car_class.empty()) sp.car_class = "B";
-            roster.push_back(std::move(sp));
+          };
+
+          // Primary path: query curated retail FreeRoamDrivers (91 (AIPlayerId, CarId) pairs + AIPlayers names)
+          // from gamedb.slt so Showcase/Barn-Find/Unicorn/Boss cars do not spawn as generic roamers.
+          bool from_curated_table = false;
+          if (ai_db && ai_db->is_open()) {
+            ai_db->each(
+                "SELECT f.CarId, coalesce(a.Name, ''), coalesce(a.FirstName, ''), "
+                "coalesce(c.CurbWeight, 0.0), coalesce(c.PerformanceIndex, 0.0), coalesce(c.ClassID, 0) "
+                "FROM FreeRoamDrivers f "
+                "LEFT JOIN AIPlayers a ON a.Id = f.AIPlayerId "
+                "LEFT JOIN Data_Car c ON c.Id = f.CarId "
+                "ORDER BY f.Id",
+                {},
+                [&](sqlite3_stmt* st) {
+                  const int64_t cid = sqlite3_column_int64(st, 0);
+                  if (traffic_ids.count(cid)) return;
+                  auto it = app.baked_ids.find(cid);
+                  if (it == app.baked_ids.end() || lower_ascii(it->second) == lower_ascii(app.car)) return;
+                  const unsigned char* n0 = sqlite3_column_text(st, 1);
+                  const unsigned char* n1 = sqlite3_column_text(st, 2);
+                  const std::string raw_name = n0 ? reinterpret_cast<const char*>(n0) : "";
+                  const std::string first_name = n1 ? reinterpret_cast<const char*>(n1) : "";
+                  freeroam::FestivalRacerSpec sp;
+                  sp.car_id = cid;
+                  sp.car_media = it->second;
+                  sp.driver_name = resolve_driver_name(raw_name, first_name);
+                  fill_car_metrics(sp, cid, sqlite3_column_double(st, 3), sqlite3_column_double(st, 4),
+                                   sqlite3_column_int(st, 5));
+                  roster.push_back(std::move(sp));
+                },
+                nullptr);
+            from_curated_table = !roster.empty();
           }
+
+          // Fallback path (only when FreeRoamDrivers table is unavailable or has no baked cars):
+          // filter baked_ids to street-legal drivable non-Unicorn, non-Barn-Find cars.
+          if (roster.empty()) {
+            std::set<int64_t> excluded_ids = traffic_ids;
+            for (const auto& b : app.collectibles.barns) {
+              if (b.car_id > 0) excluded_ids.insert(b.car_id);
+            }
+            std::map<int64_t, double> car_curb_weight;
+            if (ai_db && ai_db->is_open()) {
+              ai_db->each(
+                  "SELECT Id, coalesce(CurbWeight, 0.0), coalesce(IsUnicorn, 0), "
+                  "coalesce(IsSelectable, 1), coalesce(IsDrivable, 1), coalesce(HasRaceLivery, 0) "
+                  "FROM Data_Car",
+                  {},
+                  [&](sqlite3_stmt* st) {
+                    const int64_t cid = sqlite3_column_int64(st, 0);
+                    car_curb_weight[cid] = sqlite3_column_double(st, 1);
+                    const int is_unicorn = sqlite3_column_int(st, 2);
+                    const int is_selectable = sqlite3_column_int(st, 3);
+                    const int is_drivable = sqlite3_column_int(st, 4);
+                    const int has_race_livery = sqlite3_column_int(st, 5);
+                    if (is_unicorn != 0 || is_selectable == 0 || is_drivable == 0 || has_race_livery != 0) {
+                      excluded_ids.insert(cid);
+                    }
+                  },
+                  nullptr);
+            }
+            for (const auto& [cid, media] : app.baked_ids) {
+              if (excluded_ids.count(cid) || lower_ascii(media) == lower_ascii(app.car)) continue;
+              freeroam::FestivalRacerSpec sp;
+              sp.car_id = cid;
+              sp.car_media = media;
+              const double cw = car_curb_weight.count(cid) ? car_curb_weight[cid] : 0.0;
+              fill_car_metrics(sp, cid, cw, 0.0, 0);
+              roster.push_back(std::move(sp));
+            }
+          }
+
           std::stable_sort(roster.begin(), roster.end(),
                            [&](const freeroam::FestivalRacerSpec& a, const freeroam::FestivalRacerSpec& b) {
                              return std::abs(a.pi - player_pi) < std::abs(b.pi - player_pi);
                            });
-          if (roster.size() > 16) roster.resize(16);
+          if (roster.size() > 24) roster.resize(24);
           if (!roster.empty()) {
             const size_t roster_n = roster.size();
             festival_mgr = std::make_unique<freeroam::FestivalManager>(festival_nav, festival_roads, fcfg, app.traffic_seed + 17);
             std::vector<std::string> ai_names;
-            if (!*app.car_names_loaded) carview::car_name("");
-            const auto ai_db = app.parts_db.get();
             if (race::load_ai_player_names(game_root, ai_names, app.car_names.get(), app.state_root, ai_db.get())) {
               festival_mgr->set_driver_names(std::move(ai_names));
             }
             festival_mgr->set_roster(std::move(roster));
             festival_mgr->set_hour(app.hour);
             festival_mgr->set_wristband_level(app.collected_wristband);
+            festival_mgr->set_player_pi(player_pi);
             festival_mgr->set_ground([&](double x, double z, double hint, double& y) {
               if (!host.ground) return false;
               drive::Hit h;
@@ -304,7 +391,8 @@ void DriveSession::init_session() {
               y = hint + 4 - h.distance;
               return true;
             });
-            std::printf("festival AI: roaming roster ready (%zu models)\n", roster_n);
+            std::printf("festival AI: roaming roster ready (%zu %s models, player PI %d)\n", roster_n,
+                        from_curated_table ? "curated FreeRoamDrivers" : "filtered fallback", player_pi);
           }
         }
       }

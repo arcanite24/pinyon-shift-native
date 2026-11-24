@@ -140,7 +140,12 @@ bool TrafficView::open(const std::filesystem::path& game_root, const drive::Grou
   return true;
 }
 
-void TrafficView::step(drive::Vehicle& player) {
+void TrafficView::set_external_vehicles(std::vector<traffic::ExternalVehicle> vehicles) {
+  external_vehicles_ = std::move(vehicles);
+  external_ttl_ = external_vehicles_.empty() ? 0 : 2;
+}
+
+void TrafficView::step(drive::Vehicle& player, std::span<const traffic::ExternalVehicle> obstacles) {
   if (!population_) return;
   std::map<uint32_t, TrafficPose> snap;
   for (const auto& c : population_->cars()) {
@@ -152,7 +157,12 @@ void TrafficView::step(drive::Vehicle& player) {
   }
   before_ = std::move(snap);
   const drive::Vec3 p = player.position(), v = player.velocity();
-  population_->step(drive::Vehicle::kStep, {p.x, p.y, p.z}, {v.x, v.y, v.z});
+  const drive::Vec3 fwd = drive::rotate(player.orientation(), {0, 0, 1});
+  const double heading = std::atan2(fwd.x, fwd.z);
+  const std::span<const traffic::ExternalVehicle> active_obs =
+      obstacles.empty() ? std::span<const traffic::ExternalVehicle>(external_vehicles_) : obstacles;
+  population_->step(drive::Vehicle::kStep, {p.x, p.y, p.z}, {v.x, v.y, v.z}, heading, active_obs);
+  if (external_ttl_ > 0 && --external_ttl_ == 0) external_vehicles_.clear();
   // The bodies' parameters come with the models: refresh them on the sim's
   // clock too, so a run that renders seldom (headless --every) still gets
   // bodies near the player.
@@ -335,9 +345,14 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     const bool is_new = !lamps_.count(c.id);
     drive::CarLampState& lstate = lamps_[c.id];
     drive::LampInputs lin;
-    lin.brake_cmd = (c.speed > c.target + 1.0 || (body && body->speed() < 0.2)) ? 1.0f : 0.0f;
+    const bool decel_braking =
+        (c.accel < -config_.brake_light_accel_threshold) || (c.speed > c.target + 1.0);
+    const bool stopped_braking = body ? (body->speed() < 0.2) : (c.speed < 0.5 && c.target < 0.5);
+    lin.brake_cmd = (decel_braking || stopped_braking) ? 1.0f : 0.0f;
     lin.brake_pedal = lin.brake_cmd;
-    lin.gear = body ? body->gear() : 1;
+    // drive::Vehicle::gear(): -1 = Reverse, 0 = Neutral, >= 1 = forward.
+    // drive::LampInputs::gear: 0 = Reverse, >= 1 = non-reverse.
+    lin.gear = body ? (body->gear() == -1 ? 0 : std::max(1, body->gear())) : 1;
     lin.tod_sec = population_->hour() * 3600.0;
     lin.dt = lamp_dt;
     lin.indicator_mode = c.hazard_on ? 3 : (c.turn_left ? 1 : (c.turn_right ? 2 : 0));
@@ -417,23 +432,27 @@ void TrafficView::restore_rewind(const RewindSnapshot& s) {
   lamps_at_ = population_ ? population_->time() : -1.0;
 }
 
-Showroom::Instance guest_instance(const cars::bake::CarInfo& player_info, const drive::Vehicle& player, Showroom& guest,
-                                  const drive::Vehicle& body) {
+Showroom::Instance guest_instance_pose(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
+                                       Showroom& guest, const drive::Vec3& world_pos, const drive::Quat& world_rot) {
   float pm[16];
   drive::model_to_world(player_info, player, pm);
   double pmd[16], world_to_player[16];
   to_double(pm, pmd);
   invert_affine(pmd, world_to_player);
   float gm[16];
-  drive::model_to_world(guest.car(), body.orientation(), {0, 0, 0}, gm);
+  drive::model_to_world(guest.car(), world_rot, {0, 0, 0}, gm);
   double gmd[16];
   to_double(gm, gmd);
-  const drive::Vec3 at = body.position();
-  gmd[12] += at.x, gmd[13] += at.y, gmd[14] += at.z;
+  gmd[12] += world_pos.x, gmd[13] += world_pos.y, gmd[14] += world_pos.z;
   Showroom::Instance in;
   in.car = &guest;
   multiply(world_to_player, gmd, in.model);
   return in;
+}
+
+Showroom::Instance guest_instance(const cars::bake::CarInfo& player_info, const drive::Vehicle& player, Showroom& guest,
+                                  const drive::Vehicle& body) {
+  return guest_instance_pose(player_info, player, guest, body.position(), body.orientation());
 }
 
 std::string TrafficView::summary() const {

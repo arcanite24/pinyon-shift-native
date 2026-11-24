@@ -292,8 +292,19 @@ CarTelemetry telemetry_from_vehicle(const Vehicle& v) {
     return static_cast<float>(std::fabs(a) >= std::fabs(b) ? a : b);
   };
   const float sign_flip = v.gear() < 0 ? -1.0f : 1.0f;
-  t.front_slip = max_mag(w[0].slip_ratio, w[1].slip_ratio) * sign_flip;
-  t.rear_slip = max_mag(w[2].slip_ratio, w[3].slip_ratio) * sign_flip;
+  const auto wheel_slip = [&](size_t idx) -> double {
+    if (!w[idx].contact) return 0.0;
+    const double sr = w[idx].slip_ratio * double(sign_flip);
+    const double sa = std::fabs(w[idx].slip_angle);
+    if (sr < -0.15) {
+      // Braking / lockup: preserve negative lock sign and include lateral scrub.
+      return -std::hypot(sr, sa * 0.5);
+    }
+    // Driving / drifting: combined longitudinal + lateral friction-circle slip.
+    return std::hypot(std::max(0.0, sr), sa);
+  };
+  t.front_slip = max_mag(wheel_slip(0), wheel_slip(1));
+  t.rear_slip = max_mag(wheel_slip(2), wheel_slip(3));
   t.abs_active = v.abs_active();
   t.driven_front = v.params().layout != CarParams::Layout::kRear;
   t.driven_rear = v.params().layout != CarParams::Layout::kFront;
@@ -322,56 +333,70 @@ TriggerEffects TriggerModel::step(const TriggerInputs& inputs, const Settings& s
     return out;
   }
   const float scale = float(std::clamp(settings.trigger_strength_pct, 25, 100)) / 100.0f;
-  const float brake = std::clamp(inputs.brake, 0.0f, 1.0f);
-  const float throttle = std::clamp(inputs.throttle, 0.0f, 1.0f);
+  const float raw_brake = std::clamp(inputs.brake, 0.0f, 1.0f);
+  const float raw_throttle = std::clamp(inputs.throttle, 0.0f, 1.0f);
   const CarTelemetry* car = inputs.telemetry && inputs.telemetry->valid ? inputs.telemetry : nullptr;
+  // In reverse (gear < 0), automatic pedal swap makes L2 drive backward and R2 brake.
+  const bool rev_swap = (car && car->gear < 0);
+  const float brake = rev_swap ? raw_throttle : raw_brake;
+  const float throttle = rev_swap ? raw_brake : raw_throttle;
 
+  TriggerEffect brake_fx = off();
   const TriggerEffect slope = slope_feedback(2, 8, level_1_to_8(0.15f, scale), level_1_to_8(1.0f, scale));
   if (car) {
     const float lock = std::max(0.0f, -std::min(car->front_slip, car->rear_slip));
     lock_ = smooth_60hz(lock_, lock, dt_s);
     abs_hold_s_ = car->abs_active ? 0.2 : std::max(0.0, abs_hold_s_ - dt_s);
     if (brake > 0.05f && abs_hold_s_ > 0.0) {
-      out.left = machine(2, 8, 1, std::clamp(int(std::lround(3.0f * scale)), 1, 3), 24, 1);
+      brake_fx = machine(2, 8, 1, std::clamp(int(std::lround(3.0f * scale)), 1, 3), 24, 1);
     } else if (brake > 0.05f && lock_ > kPastPeakSlip) {
-      out.left = vibration(2, level_1_to_8(1.0f, scale), 25);
+      brake_fx = vibration(2, level_1_to_8(1.0f, scale), 25);
     } else {
-      out.left = slope;
+      brake_fx = slope;
     }
   } else {
     const float buzz = brake > 0.1f ? inputs.motor_low : 0.0f;
     brake_buzz_ = smooth_60hz(brake_buzz_, buzz, dt_s);
     brake_buzzing_ = brake_buzz_ > (brake_buzzing_ ? 0.15f : 0.25f);
-    out.left = brake_buzzing_ ? vibration(2, level_1_to_8(brake_buzz_, scale), 25) : slope;
+    brake_fx = brake_buzzing_ ? vibration(2, level_1_to_8(brake_buzz_, scale), 25) : slope;
   }
 
-  if (settings.trigger_mode != TriggerMode::kFull) return out;
-
-  const TriggerEffect spring = feedback(1, level_1_to_8(0.1f, scale));
-  if (car) {
-    float spin = 0.0f;
-    if (car->driven_front) spin = std::max(spin, car->front_slip);
-    if (car->driven_rear) spin = std::max(spin, car->rear_slip);
-    slip_ = smooth_60hz(slip_, spin, dt_s);
-    const bool shifted = car->gear != last_gear_ && car->gear > 0 && last_gear_ > 0 && settings.gear_click;
-    last_gear_ = car->gear;
-    if (shifted) click_left_s_ = 0.1;
-    if (click_left_s_ > 0.0) {
-      click_left_s_ -= dt_s;
-      out.right = bow(4, 6, level_1_to_8(1.0f, scale), level_1_to_8(1.0f, scale));
-    } else if (spin_buzz(throttle > 0.1f ? slip_ : 0.0f, dt_s)) {
-      const float t = std::clamp((slip_ - kPastPeakSlip) / 3.0f, 0.0f, 1.0f);
-      out.right = vibration(3, level_1_to_8(0.05f + 0.15f * t, scale), 40);
+  TriggerEffect throttle_fx = off();
+  if (settings.trigger_mode == TriggerMode::kFull) {
+    const TriggerEffect spring = feedback(1, level_1_to_8(0.1f, scale));
+    if (car) {
+      float spin = 0.0f;
+      if (car->driven_front) spin = std::max(spin, car->front_slip);
+      if (car->driven_rear) spin = std::max(spin, car->rear_slip);
+      slip_ = smooth_60hz(slip_, spin, dt_s);
+      const bool shifted = car->gear != last_gear_ && car->gear > 0 && last_gear_ > 0 && settings.gear_click;
+      last_gear_ = car->gear;
+      if (shifted) click_left_s_ = 0.1;
+      if (click_left_s_ > 0.0) {
+        click_left_s_ -= dt_s;
+        throttle_fx = bow(4, 6, level_1_to_8(1.0f, scale), level_1_to_8(1.0f, scale));
+      } else if (spin_buzz(throttle > 0.1f ? slip_ : 0.0f, dt_s)) {
+        const float t = std::clamp((slip_ - kPastPeakSlip) / 3.0f, 0.0f, 1.0f);
+        throttle_fx = vibration(3, level_1_to_8(0.05f + 0.15f * t, scale), 40);
+      } else {
+        throttle_fx = spring;
+      }
     } else {
-      out.right = spring;
+      const float buzz = throttle > 0.1f ? inputs.motor_high : 0.0f;
+      throttle_buzz_ = smooth_60hz(throttle_buzz_, buzz, dt_s);
+      throttle_buzzing_ = throttle_buzz_ > (throttle_buzzing_ ? 0.3f : 0.4f);
+      throttle_fx = throttle_buzzing_
+                        ? vibration(3, level_1_to_8(0.05f + 0.15f * (throttle_buzz_ - 0.3f) / 0.7f, scale), 40)
+                        : spring;
     }
+  }
+
+  if (rev_swap) {
+    out.right = brake_fx;
+    out.left = throttle_fx;
   } else {
-    const float buzz = throttle > 0.1f ? inputs.motor_high : 0.0f;
-    throttle_buzz_ = smooth_60hz(throttle_buzz_, buzz, dt_s);
-    throttle_buzzing_ = throttle_buzz_ > (throttle_buzzing_ ? 0.3f : 0.4f);
-    out.right = throttle_buzzing_
-                    ? vibration(3, level_1_to_8(0.05f + 0.15f * (throttle_buzz_ - 0.3f) / 0.7f, scale), 40)
-                    : spring;
+    out.left = brake_fx;
+    out.right = throttle_fx;
   }
   return out;
 }

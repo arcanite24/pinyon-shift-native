@@ -10,7 +10,22 @@ namespace {
 
 constexpr double kLane = 2.2;
 constexpr double kDespawnDist = 420.0;
-constexpr double kPromptDist = 38.0;
+constexpr double kMphToMps = 0.44704;
+constexpr double kSharpTurnCos = 0.8191520442889918;  // cos(35 deg)
+
+double road_speed_mps(std::string_view rt) {
+  if (rt == "freeway") return 75.0 * kMphToMps;
+  if (rt == "a") return 60.0 * kMphToMps;
+  if (rt == "b") return 40.0 * kMphToMps;
+  if (rt == "dirt") return 35.0 * kMphToMps;
+  return 25.0 * kMphToMps;
+}
+
+double h2h_top_speed_mps(int pi) {
+  const double pi_d = std::clamp(double(pi), 100.0, 999.0);
+  // PI-scaled top speed (m/s): D-class ~41 m/s up to R1/hypercar ~108 m/s (no 58 m/s cap).
+  return std::clamp(34.0 + pi_d * 0.074, 40.0, 112.0);
+}
 
 double hdist(const traffic::P3& a, const traffic::P3& b) { return std::hypot(a.x - b.x, a.z - b.z); }
 
@@ -40,8 +55,8 @@ double wrap_angle(double a) {
 // Estimates realistic 6-speed gear-stepped engine RPM from vehicle speed (m/s).
 double estimate_rpm_for_speed(double speed_mps, int pi) {
   const double v = std::fabs(speed_mps);
-  const double top = std::clamp(58.0 + double(pi) * 0.045, 58.0, 105.0);
-  const double redline = std::clamp(6800.0 + double(pi) * 2.2, 6800.0, 8800.0);
+  const double top = h2h_top_speed_mps(pi);
+  const double redline = std::clamp(6800.0 + double(pi) * 2.2, 6800.0, 9200.0);
   const double idle = 900.0;
   if (v < 1.0) return idle;
   // 6 evenly spaced gear bands.
@@ -53,11 +68,21 @@ double estimate_rpm_for_speed(double speed_mps, int pi) {
 
 }  // namespace
 
-int64_t h2h_wager_credits(int pi, int wristband_level) {
-  const int64_t base = 1500 + std::clamp(wristband_level, 0, 6) * 750 + std::clamp(pi - 300, 0, 700) * 6;
-  // Round to nearest 500 CR.
-  return ((base + 250) / 500) * 500;
+int64_t h2h_reward_credits(int player_pi, int opponent_pi) {
+  constexpr int64_t kRewardBaseLevel = 5000;
+  constexpr int64_t kRewardPlayerHigherMultiplier = 10;
+  constexpr int64_t kRewardPlayerLowerMultiplier = 20;
+  const int64_t diff = int64_t(opponent_pi) - int64_t(player_pi);
+  int64_t reward = kRewardBaseLevel;
+  if (diff > 0) {
+    reward += diff * kRewardPlayerLowerMultiplier;
+  } else if (diff < 0) {
+    reward += diff * kRewardPlayerHigherMultiplier;
+  }
+  return std::max<int64_t>(500, reward);
 }
+
+int64_t h2h_wager_credits(int pi, int /*wristband_level*/) { return h2h_reward_credits(500, pi); }
 
 FestivalManager::FestivalManager(const traffic::NavMap& nav, const traffic::Roads& roads,
                                  const traffic::TrafficConfig& config, uint64_t seed)
@@ -451,22 +476,55 @@ uint32_t FestivalManager::spawn_ahead(const traffic::P3& player_pos, double play
 bool FestivalManager::build_h2h_route(const traffic::P3& start, double heading, double min_len, double max_len) {
   if (nav_.nodes.empty()) return false;
   struct Edge {
+    uint32_t id;
     uint32_t to;
     float len;
+    float cost_s;
+    float dx;
+    float dz;
+    bool wrong_way;
   };
   const size_t N = nav_.nodes.size();
   std::vector<std::vector<Edge>> adj(N);
   std::vector<uint8_t> on_road(N, 0);
+  std::vector<uint8_t> ignore_turn(N, 0);
+  for (uint32_t i = 0; i < N; ++i) {
+    if (nav_.node_tag(i, "ignore_turn_flags") == "true") ignore_turn[i] = 1;
+  }
+
+  std::vector<uint32_t> edge_to;
+  std::vector<std::array<float, 2>> edge_dir;
+  auto push_edge = [&](uint32_t u, uint32_t v, float len, float cost_s, bool wrong_way) {
+    const float dx = nav_.nodes[v].x - nav_.nodes[u].x;
+    const float dz = nav_.nodes[v].z - nav_.nodes[u].z;
+    const float inv = len > 1e-4f ? (1.0f / len) : 0.0f;
+    const float ux = dx * inv, uz = dz * inv;
+    const uint32_t eid = uint32_t(edge_to.size());
+    edge_to.push_back(v);
+    edge_dir.push_back({ux, uz});
+    adj[u].push_back({eid, v, len, cost_s, ux, uz, wrong_way});
+  };
+
   for (uint32_t w = 0; w < nav_.ways.size(); ++w) {
     const std::string_view rt = nav_.way_tag(w, "road_type");
-    if (rt.empty() || rt == "none") continue;
+    if (rt.empty() || rt == "none" || rt == "shortcut") continue;
+    if (nav_.way_tag(w, "ai_disabled") == "true") continue;
+    const bool oneway = (nav_.way_tag(w, "oneway") == "true" || nav_.way_tag(w, "oneway") == "1");
+    const double spd = road_speed_mps(rt);
     const uint32_t nc = nav_.ways[w].node_count;
     for (uint32_t k = 0; k + 1 < nc; ++k) {
       const uint32_t a = nav_.way_node(w, k), b = nav_.way_node(w, k + 1);
       if (a >= N || b >= N || a == b) continue;
       const float l = std::hypot(nav_.nodes[b].x - nav_.nodes[a].x, nav_.nodes[b].z - nav_.nodes[a].z);
-      adj[a].push_back({b, l});
-      adj[b].push_back({a, l});
+      if (l < 1e-4f) continue;
+      const float base_s = float(std::max(1e-4, double(l) / spd));
+      push_edge(a, b, l, base_s, false);
+      if (!oneway) {
+        push_edge(b, a, l, base_s, false);
+      } else {
+        // Retail OneWayMultiplier = 999.0: never treat one-way freeways as normal bidirectional edges.
+        push_edge(b, a, l, float(double(base_s) * kH2hOneWayMultiplier), true);
+      }
       on_road[a] = on_road[b] = 1;
     }
   }
@@ -479,48 +537,84 @@ bool FestivalManager::build_h2h_route(const traffic::P3& start, double heading, 
   }
   if (src == std::numeric_limits<uint32_t>::max() || best_d > 120.0) return false;
 
-  // Dijkstra outward up to max_len, preferring a destination ahead along heading.
-  std::vector<float> dist(N, std::numeric_limits<float>::infinity());
-  std::vector<uint32_t> prev(N, std::numeric_limits<uint32_t>::max());
-  using Q = std::pair<float, uint32_t>;
-  std::priority_queue<Q, std::vector<Q>, std::greater<Q>> q;
-  dist[src] = 0.0f;
-  q.push({0.0f, src});
   const double fx = std::sin(heading), fz = std::cos(heading);
-  uint32_t best_dst = std::numeric_limits<uint32_t>::max();
-  double best_score = -1e30;
-  while (!q.empty()) {
-    const auto [d, u] = q.top();
-    q.pop();
-    if (d > dist[u] || d > float(max_len)) continue;
-    if (d >= float(min_len)) {
-      const double dx = nav_.nodes[u].x - start.x, dz = nav_.nodes[u].z - start.z;
-      const double hd = std::max(1.0, std::hypot(dx, dz));
-      const double forward_align = (dx * fx + dz * fz) / hd;
-      const double score = forward_align * 1000.0 + double(d) * 0.2;
-      if (score > best_score) {
-        best_score = score;
-        best_dst = u;
+  const double optimal_len = std::clamp(kH2hOptimalLength, min_len, max_len);
+
+  auto run_search = [&](bool allow_wrong_way, std::vector<uint32_t>& out_chain) -> bool {
+    const uint32_t n_edges = uint32_t(edge_to.size());
+    const uint32_t kSeedState = n_edges;
+    const uint32_t n_states = n_edges + 1;
+    const float kInf = std::numeric_limits<float>::infinity();
+
+    std::vector<float> best_cost(n_states, kInf);
+    std::vector<float> state_phys(n_states, kInf);
+    std::vector<int> prev_state(n_states, -1);
+    using Q = std::pair<float, uint32_t>;
+    std::priority_queue<Q, std::vector<Q>, std::greater<Q>> q;
+
+    best_cost[kSeedState] = 0.0f;
+    state_phys[kSeedState] = 0.0f;
+    q.push({0.0f, kSeedState});
+
+    uint32_t best_dst_state = std::numeric_limits<uint32_t>::max();
+    double best_score = -1e30;
+
+    while (!q.empty()) {
+      const auto [cost_u, st] = q.top();
+      q.pop();
+      if (cost_u > best_cost[st]) continue;
+      const float phys_u = state_phys[st];
+      if (phys_u > float(max_len)) continue;
+
+      const uint32_t u = (st == kSeedState) ? src : edge_to[st];
+      const double in_dx = (st == kSeedState) ? fx : double(edge_dir[st][0]);
+      const double in_dz = (st == kSeedState) ? fz : double(edge_dir[st][1]);
+
+      if (st != kSeedState && phys_u >= float(min_len)) {
+        const double dx = nav_.nodes[u].x - start.x, dz = nav_.nodes[u].z - start.z;
+        const double hd = std::max(1.0, std::hypot(dx, dz));
+        const double forward_align = (dx * fx + dz * fz) / hd;
+        const double dist_err = std::fabs(double(phys_u) - optimal_len);
+        const double score = forward_align * 1200.0 - dist_err * 0.45 - double(cost_u) * 2.0;
+        if (score > best_score) {
+          best_score = score;
+          best_dst_state = st;
+        }
+      }
+
+      const bool ign_u = (u < N && ignore_turn[u] != 0);
+      for (const auto& e : adj[u]) {
+        if (e.wrong_way && !allow_wrong_way) continue;
+        const float n_phys = phys_u + e.len;
+        if (n_phys > float(max_len)) continue;
+        const double dot = in_dx * double(e.dx) + in_dz * double(e.dz);
+        const float turn_pen = (!ign_u && dot < kSharpTurnCos) ? float(kH2hTurnDelaySeconds) : 0.0f;
+        const float n_cost = cost_u + e.cost_s + turn_pen;
+        if (n_cost < best_cost[e.id]) {
+          best_cost[e.id] = n_cost;
+          state_phys[e.id] = n_phys;
+          prev_state[e.id] = int(st);
+          q.push({n_cost, e.id});
+        }
       }
     }
-    for (const auto& e : adj[u]) {
-      const float nd = d + e.len;
-      if (nd < dist[e.to] && nd <= float(max_len)) {
-        dist[e.to] = nd;
-        prev[e.to] = u;
-        q.push({nd, e.to});
-      }
+
+    if (best_dst_state == std::numeric_limits<uint32_t>::max()) return false;
+    out_chain.clear();
+    for (int cur = int(best_dst_state); cur >= 0; cur = prev_state[size_t(cur)]) {
+      const uint32_t u = (uint32_t(cur) == kSeedState) ? src : edge_to[size_t(cur)];
+      out_chain.push_back(u);
+      if (uint32_t(cur) == kSeedState) break;
     }
-  }
-  if (best_dst == std::numeric_limits<uint32_t>::max()) return false;
+    std::reverse(out_chain.begin(), out_chain.end());
+    return out_chain.size() >= 2;
+  };
 
   std::vector<uint32_t> chain;
-  for (uint32_t v = best_dst; v != std::numeric_limits<uint32_t>::max(); v = prev[v]) {
-    chain.push_back(v);
-    if (v == src) break;
+  // Legal one-way pass first; only fall back to heavily penalized wrong-way edges if isolated.
+  if (!run_search(false, chain)) {
+    if (!run_search(true, chain)) return false;
   }
-  std::reverse(chain.begin(), chain.end());
-  if (chain.size() < 2) return false;
 
   h2h_pts_.clear();
   h2h_s_.clear();
@@ -590,11 +684,11 @@ bool FestivalManager::start_head_to_head(const traffic::P3& player_pos, double p
   for (auto& c : cars_)
     if (c.id == target_id) opp = &c;
   if (!opp) return false;
-  if (!build_h2h_route(player_pos, player_heading, 1800.0, 3400.0)) return false;
+  if (!build_h2h_route(player_pos, player_heading, kH2hMinLength, kH2hMaxLength)) return false;
 
   h2h_active_ = true;
   h2h_car_id_ = opp->id;
-  h2h_wager_ = h2h_wager_credits(opp->spec.pi, wristband_level_);
+  h2h_wager_ = h2h_reward_credits(player_pi_, opp->spec.pi);
   h2h_elapsed_ = 0.0;
   h2h_player_s_ = project_on_h2h(player_pos.x, player_pos.z, 0.0);
   opp->in_h2h = true;
@@ -642,9 +736,11 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
   // Update all cars with cross-junction curvature lookahead braking, full
   // car-to-car separation & overtaking (Festival AI, Traffic, Player), smooth
   // Ackermann bicycle steering, knockback damping, and realistic velocity/RPM.
+  const uint32_t prev_prompt_id = prompt_id_;
   prompt_id_ = 0;
   prompt_dist_ = 1e9;
   const double pfx = std::sin(player_heading), pfz = std::cos(player_heading);
+  const auto prt = traffic::right_of(pfx, pfz);
   const double pvx = pfx * player_speed, pvz = pfz * player_speed;
 
   // Snapshot previous frame poses so inter-Festival avoidance is order-independent.
@@ -766,20 +862,27 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     car.knockback_vz *= kb_decay;
     if (std::hypot(car.knockback_vx, car.knockback_vz) < 0.05) car.knockback_vx = car.knockback_vz = 0.0;
 
-    const double max_lat_g = std::clamp(9.5 + double(car.spec.pi) * 0.0055, 9.5, 14.5);
+    const double pi_d = std::clamp(double(car.spec.pi), 100.0, 999.0);
+    const double mass_kg = std::clamp(car.spec.mass_kg > 100.0 ? car.spec.mass_kg : 1480.0, 700.0, 3200.0);
+    const double mass_factor = std::clamp(1480.0 / mass_kg, 0.70, 1.35);
+    const double max_lat_g = std::clamp(9.5 + pi_d * 0.0055, 9.5, 15.0);
+    car.turn_left = false;
+    car.turn_right = false;
+    car.reversing = false;
     if (car.in_h2h && h2h_active_ && car.id == h2h_car_id_) {
-      // Racing pace along the Head-to-Head nav route with curvature lookahead braking.
-      const double base_race_spd = std::clamp(34.0 + double(car.spec.pi) * 0.032, 32.0, 58.0);
+      // Racing pace along the Head-to-Head nav route scaled by opponent PI & car mass
+      // (no 58 m/s hypercar cap) with curvature lookahead braking.
+      const double base_race_spd = h2h_top_speed_mps(car.spec.pi);
       const double gap = car.h2h_progress - h2h_player_s_;
       double want_spd = base_race_spd;
       if (gap > 80.0) want_spd *= 0.88;
       else if (gap < -80.0) want_spd *= 1.10;
 
-      // Sample curvature over [10 m, 80 m] ahead along H2H route to brake cleanly into corners.
+      // Sample curvature over [10 m, 110 m] ahead along H2H route to brake cleanly into corners.
       double h_prev = car.heading, p_tmp = 0.0;
       double d_prev = 0.0;
       traffic::P3 pos_tmp{};
-      for (double look_d : {10.0, 22.0, 38.0, 58.0, 80.0}) {
+      for (double look_d : {10.0, 22.0, 38.0, 58.0, 82.0, 110.0}) {
         const double s1 = std::min(h2h_length_, car.h2h_progress + look_d);
         double h1 = h_prev;
         pose_on_h2h(s1, car.lateral, pos_tmp, h1, p_tmp);
@@ -798,14 +901,18 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
       }
       eval_avoidance(car, want_spd, 1.5);
       car.braking = want_spd < car.speed - 1.2;
-      car.speed += std::clamp(want_spd - car.speed, -13.0 * dt, 9.5 * dt);
+      const double pi_accel_base = std::clamp(3.8 + (pi_d - 100.0) * 0.0115, 3.8, 14.5);
+      const double speed_ratio = std::clamp(car.speed / std::max(base_race_spd, 1.0), 0.0, 1.0);
+      const double max_accel = std::max(1.8, pi_accel_base * mass_factor * (1.0 - 0.55 * speed_ratio * speed_ratio));
+      const double max_decel = std::clamp((10.5 + (pi_d - 100.0) * 0.006) * std::sqrt(mass_factor), 9.5, 17.5);
+      car.speed += std::clamp(want_spd - car.speed, -max_decel * dt, max_accel * dt);
       car.speed = std::max(0.0, car.speed);
 
       if (!car.pose_initialized) {
         pose_on_h2h(car.h2h_progress, car.lateral, car.position, car.heading, car.pitch);
         car.pose_initialized = true;
       }
-      const double look_d = std::clamp(car.speed * 0.55, 8.0, 32.0);
+      const double look_d = std::clamp(car.speed * 0.55, 8.0, 38.0);
       traffic::P3 aim{};
       double aim_h = car.heading, aim_p = 0.0;
       pose_on_h2h(std::min(h2h_length_, car.h2h_progress + look_d), car.lateral, aim, aim_h, aim_p);
@@ -825,12 +932,17 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
       }
       double h_prev = h0;
       double d_prev = 0.0;
+      double signed_turn_ahead = 0.0;
       for (double look_d : {8.0, 16.0, 26.0, 40.0, 58.0, 80.0}) {
         if (!sample_roaming_ahead(car, look_d, car.lateral, probe_p, probe_t)) break;
         const double h1 = std::atan2(probe_t[0], probe_t[1]);
         const double seg_d = std::max(1.0, look_d - d_prev);
+        const double dth_signed = wrap_angle(h1 - h0);
         const double dth_seg = std::fabs(wrap_angle(h1 - h_prev));
-        const double dth_tot = std::fabs(wrap_angle(h1 - h0));
+        const double dth_tot = std::fabs(dth_signed);
+        if (look_d <= 45.0 && std::fabs(dth_signed) > std::fabs(signed_turn_ahead)) {
+          signed_turn_ahead = dth_signed;
+        }
         const double kappa = std::max(dth_seg / seg_d, dth_tot / std::max(look_d, 1.0));
         if (kappa > 0.004 || dth_tot > 0.35) {
           double v_corner = std::sqrt((max_lat_g * 0.70) / std::max(kappa, 1e-4));
@@ -845,8 +957,13 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
         d_prev = look_d;
       }
       eval_avoidance(car, want_spd, kLane);
+      // Drive realistic turn indicators on lane changes or upcoming junction turns.
+      const double lat_delta = car.target_lateral - car.lateral;
+      if (lat_delta < -0.35 || signed_turn_ahead < -0.45) car.turn_left = true;
+      else if (lat_delta > 0.35 || signed_turn_ahead > 0.45) car.turn_right = true;
       car.braking = want_spd < car.speed - 1.0;
-      car.speed += std::clamp(want_spd - car.speed, -10.5 * dt, 6.0 * dt);
+      const double cruise_accel = std::clamp(5.0 + (pi_d - 300.0) * 0.005, 4.5, 8.5) * mass_factor;
+      car.speed += std::clamp(want_spd - car.speed, -10.5 * dt, cruise_accel * dt);
       car.speed = std::max(0.0, car.speed);
 
       const double look_d = std::clamp(car.speed * 0.65, 7.5, 28.0);
@@ -859,10 +976,26 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
         car.road = -1;
       }
       if (!h2h_active_ && car.road >= 0) {
+        // Retail Activity/RaceEncounter trigger box gates with gentle hysteresis once locked:
+        // MinActivationDistance=5 m, MaxActivationDistance=20 m, ActivationBoxWidth=5 m (|lat|<=2.5 m),
+        // same heading (dot > 0.85), MaxSpeedDifference=6.71 m/s (15 mph), MinTargetCarSpeed=11.18 m/s (25 mph).
+        const bool locked = (car.id == prev_prompt_id);
+        const double min_dist = locked ? 3.5 : kMinActivationDistance;
+        const double max_dist = locked ? 25.0 : kMaxActivationDistance;
+        const double half_w = locked ? 3.2 : kActivationBoxHalfWidth;
+        const double min_dot = locked ? 0.80 : kMinHeadingDot;
+        const double max_dv = locked ? 8.0 : kMaxSpeedDifference;
+        const double min_tgt_spd = locked ? 9.5 : kMinTargetCarSpeed;
+
         const double dx = car.position.x - player_pos.x, dz = car.position.z - player_pos.z;
         const double d = std::hypot(dx, dz);
         const double ahead = dx * pfx + dz * pfz;
-        if (d <= kPromptDist && ahead > -5.0 && d < prompt_dist_) {
+        const double lat = dx * prt[0] + dz * prt[1];
+        const double cfx = std::sin(car.heading), cfz = std::cos(car.heading);
+        const double heading_dot = pfx * cfx + pfz * cfz;
+        const double speed_diff = std::fabs(car.speed - std::fabs(player_speed));
+        if (ahead >= min_dist && ahead <= max_dist && std::fabs(lat) <= half_w &&
+            heading_dot > min_dot && car.speed >= min_tgt_spd && speed_diff <= max_dv && d < prompt_dist_) {
           prompt_dist_ = d;
           prompt_id_ = car.id;
         }
@@ -871,6 +1004,8 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     car.vx = (car.position.x - prev_pos.x) / dt;
     car.vy = (car.position.y - prev_pos.y) / dt;
     car.vz = (car.position.z - prev_pos.z) / dt;
+    const double v_along = car.vx * std::sin(car.heading) + car.vz * std::cos(car.heading);
+    car.reversing = (v_along < -0.5);
     car.rpm = estimate_rpm_for_speed(car.speed, car.spec.pi);
   }
 
@@ -924,8 +1059,11 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     for (auto& c : cars_)
       if (c.id == h2h_car_id_) opp = &c;
     const double d_fin_player = std::hypot(player_pos.x - h2h_finish_[0], player_pos.z - h2h_finish_[2]);
-    const bool player_done = h2h_player_s_ >= h2h_length_ - 18.0 || d_fin_player <= 22.0;
-    const bool opp_done = opp && opp->h2h_progress >= h2h_length_ - 10.0;
+    const double d_fin_opp =
+        opp ? std::hypot(opp->position.x - h2h_finish_[0], opp->position.z - h2h_finish_[2]) : 1e9;
+    const bool player_done = d_fin_player <= kH2hFinishTriggerRadius;
+    const bool opp_done =
+        opp && (d_fin_opp <= kH2hFinishTriggerRadius || opp->h2h_progress >= h2h_length_ - kH2hFinishTriggerRadius);
     if (player_done || opp_done) {
       HeadToHeadResult res;
       res.won = player_done;
@@ -959,7 +1097,7 @@ HeadToHeadHud FestivalManager::hud(double time) const {
         h.prompt_driver = c.spec.driver_name;
         h.prompt_car_class = c.spec.car_class;
         h.prompt_pi = c.spec.pi;
-        h.prompt_wager = h2h_wager_credits(c.spec.pi, wristband_level_);
+        h.prompt_wager = h2h_reward_credits(player_pi_, c.spec.pi);
         h.prompt_distance_m = prompt_dist_;
         break;
       }
@@ -1000,12 +1138,12 @@ FestivalCollisionImpulse FestivalManager::resolve_player_collision(const traffic
   FestivalCollisionImpulse out{};
   if (dt <= 0.0 || cars_.empty()) return out;
   const double m_player = std::max(500.0, player_mass_kg);
-  constexpr double kAiMass = 1480.0;
   constexpr double kHalfW = 0.98;
   constexpr double kHalfL = 2.25;
-  constexpr double kRestitution = 0.15;
+  constexpr double kRestitution = 0.35;
 
   for (auto& car : cars_) {
+    const double ai_mass = std::clamp(car.spec.mass_kg > 100.0 ? car.spec.mass_kg : 1480.0, 700.0, 3200.0);
     const double dy = std::fabs(player_pos.y - car.position.y);
     if (dy > 2.2) continue;
     const double dx = player_pos.x - car.position.x;
@@ -1037,7 +1175,7 @@ FestivalCollisionImpulse FestivalManager::resolve_player_collision(const traffic
     const double rvx = player_vel[0] - car.vx;
     const double rvz = player_vel[2] - car.vz;
     const double vn = rvx * nx + rvz * nz;
-    const double inv_m = 1.0 / m_player + 1.0 / kAiMass;
+    const double inv_m = 1.0 / m_player + 1.0 / ai_mass;
     // Push AI laterally/longitudinally out of overlap immediately.
     const double push_ai = pen * 0.55;
     car.position.x -= nx * push_ai;
@@ -1051,8 +1189,8 @@ FestivalCollisionImpulse FestivalManager::resolve_player_collision(const traffic
       // Pure positional separation impulse if already separating slowly.
       j_mag = std::min(pen * 2.5, 4.0) / inv_m;
     }
-    const double ai_dv_x = -(j_mag / kAiMass) * nx;
-    const double ai_dv_z = -(j_mag / kAiMass) * nz;
+    const double ai_dv_x = -(j_mag / ai_mass) * nx;
+    const double ai_dv_z = -(j_mag / ai_mass) * nz;
     car.knockback_vx += ai_dv_x;
     car.knockback_vz += ai_dv_z;
     const double kb_mag = std::hypot(car.knockback_vx, car.knockback_vz);
@@ -1060,6 +1198,10 @@ FestivalCollisionImpulse FestivalManager::resolve_player_collision(const traffic
       car.knockback_vx *= 25.0 / kb_mag;
       car.knockback_vz *= 25.0 / kb_mag;
     }
+    // Impart off-center yaw kick on AI car proportional to lever arm and lateral impulse.
+    const double ai_lat_imp = -(j_mag * (nx * rx + nz * rz));
+    const double ai_inertia = std::max(1200.0, ai_mass * 1.9);
+    car.yaw_rate = std::clamp(car.yaw_rate + (loc_f * ai_lat_imp * 0.55) / ai_inertia, -2.5, 2.5);
     car.speed = std::max(0.0, car.speed + ai_dv_x * fx + ai_dv_z * fz);
     if (j_mag > out.impulse_magnitude) {
       out.hit = true;

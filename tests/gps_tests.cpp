@@ -38,12 +38,17 @@ struct NavBuilder {
     map.values.push_back(v);
     return uint32_t(map.values.size() - 1);
   }
-  uint32_t add_node(float x, float z) {
+  uint32_t add_node(float x, float z, const std::vector<std::pair<std::string, std::string>>& node_tags = {}) {
     traffic::NavNode nd;
     nd.id = uint32_t(map.nodes.size() + 1);
     nd.x = x;
     nd.y = 0.0f;
     nd.z = z;
+    if (!node_tags.empty()) {
+      nd.tag_first = uint32_t(map.tags.size());
+      for (const auto& [k, v] : node_tags) map.tags.push_back({add_key(k), add_val(v)});
+      nd.tag_count = uint32_t(map.tags.size()) - nd.tag_first;
+    }
     map.nodes.push_back(nd);
     return uint32_t(map.nodes.size() - 1);
   }
@@ -266,6 +271,110 @@ void test_travel_time_and_turn_delay() {
   }
 }
 
+void test_r2_4_speed_scaling_roundabout_uturn_and_cues() {
+  // 1) Sat-Nav FSB fallback collision fix: kNearBearRight != kNearRight.
+  const std::string nr = audio::satnav_cue_fsb_fallback(audio::SatNavCue::kNearRight);
+  const std::string nbr = audio::satnav_cue_fsb_fallback(audio::SatNavCue::kNearBearRight);
+  check(!nr.empty() && !nbr.empty() && nr != nbr, "kNearBearRight FSB fallback does not collide with kNearRight");
+
+  // 2) Continuous speed-scaled thresholds (zero dead zones, scales up to 200 mph = 89.4 m/s).
+  const auto th_slow = traffic::gps_lookahead_for_speed(15.0);
+  const auto th_mid = traffic::gps_lookahead_for_speed(45.0);
+  const auto th_200 = traffic::gps_lookahead_for_speed(89.4);
+  check(th_slow.now_m < th_slow.near_m && th_slow.near_m < th_slow.far_m && th_slow.far_m < th_slow.extended_m,
+        "lookahead tiers strictly ordered");
+  check(th_200.now_m > th_mid.now_m && th_mid.now_m > th_slow.now_m, "now_m scales monotonically with speed");
+  check(th_200.far_m > 850.0 && th_200.extended_m > 1500.0, "200 mph lookahead scales to highway stopping horizon");
+
+  // 3) DestinationCannotBeSet when solver is missing or unready.
+  {
+    traffic::GpsNavigator empty_nav(nullptr);
+    const auto fail_ev = empty_nav.set_destination(100, 100, traffic::GpsDestKind::kGeneric, "NOPE", 0, 0);
+    check(fail_ev.kind == traffic::GpsPromptEvent::Kind::kDestinationCannotBeSet,
+          "invalid destination emits kDestinationCannotBeSet");
+  }
+
+  // 4) Extended, NextJunc, FarDestination, and closed dead zones (60 m and 200 m at 25 m/s).
+  {
+    NavBuilder b;
+    const uint32_t n0 = b.add_node(0, 0);
+    const uint32_t n1 = b.add_node(0, 800);       // junction 1: right turn east
+    const uint32_t n1_ext = b.add_node(0, 1000);  // makes n1 degree 3
+    const uint32_t n2 = b.add_node(160, 800);     // junction 2 (160 m later): left turn north -> NextJunc!
+    const uint32_t n2_ext = b.add_node(320, 800); // makes n2 degree 3
+    const uint32_t n3 = b.add_node(160, 1800);    // 1000 m final straight -> Extended/Far/Near dest
+    b.add_way({n0, n1, n1_ext}, "a", false, "North Hwy");
+    b.add_way({n1, n2, n2_ext}, "a", false, "Cross Link");
+    b.add_way({n2, n3}, "a", false, "Final Straight");
+
+    traffic::GpsSolver solver;
+    solver.build(b.map);
+    traffic::GpsNavigator nav(&solver);
+    nav.set_destination(160, 1790, traffic::GpsDestKind::kFestival, "FESTIVAL", 0, 10);
+
+    // 650 m before n1 at 25 m/s (th.far_m=420, th.extended_m=800) -> kTurnExtended!
+    const auto ext_ev = nav.update(0, 150, 0.0, 25.0, 0.05);
+    check(ext_ev.kind == traffic::GpsPromptEvent::Kind::kTurnExtended && ext_ev.turn == traffic::GpsTurnKind::kRight,
+          "extended turn prompt fires in far-horizon band");
+
+    // 200 m before n1 at 25 m/s (formerly 185..220 m dead zone!) -> kTurnFar!
+    const auto dz1_ev = nav.update(0, 600, 0.0, 25.0, 0.05);
+    check(dz1_ev.kind == traffic::GpsPromptEvent::Kind::kTurnFar, "200 m dead zone closed (fires kTurnFar)");
+
+    // 60 m before n1 at 25 m/s (formerly 50..65 m dead zone; th.now_m=57, th.near_m=190) -> kTurnNear!
+    const auto dz2_ev = nav.update(0, 740, 0.0, 25.0, 0.05);
+    check(dz2_ev.kind == traffic::GpsPromptEvent::Kind::kTurnNear, "60 m dead zone closed (fires kTurnNear)");
+
+    // Just after n1 on Cross Link (140 m before closely spaced junction n2) -> kTurnNextJunction!
+    const auto nj_ev = nav.update(20, 800, 1.57, 25.0, 0.05);
+    check(nj_ev.kind == traffic::GpsPromptEvent::Kind::kTurnNextJunction && nj_ev.turn == traffic::GpsTurnKind::kLeft,
+          "closely spaced second junction fires kTurnNextJunction");
+
+    // On Final Straight 350 m from destination -> kArrivedFar!
+    const auto fd_ev = nav.update(160, 1440, 0.0, 25.0, 0.05);
+    check(fd_ev.kind == traffic::GpsPromptEvent::Kind::kArrivedFar, "final approach fires kArrivedFar");
+  }
+
+  // 5) Roundabout (sat_nav_junction=roundabout) and U-turn (uturn=<id>) node tags.
+  {
+    NavBuilder b;
+    const uint32_t r0 = b.add_node(0, 0);
+    const uint32_t r1 = b.add_node(0, 200, {{"sat_nav_junction", "roundabout"}});
+    const uint32_t r2 = b.add_node(200, 200);
+    const uint32_t r3 = b.add_node(0, 400);  // junction branch
+    b.add_way({r0, r1, r3}, "a", false, "Roundabout Approach");
+    b.add_way({r1, r2}, "a", false, "Roundabout Exit");
+
+    // U-turn turnaround: north to (500, 200) tagged uturn=2, then reverses south to (510, 0).
+    const uint32_t u0 = b.add_node(500, 0);
+    const uint32_t u1 = b.add_node(500, 200, {{"uturn", "2"}});
+    const uint32_t u2 = b.add_node(510, 0);
+    b.add_way({u0, u1}, "a", true, "Divided NB");
+    b.add_way({u1, u2}, "a", true, "Divided SB");
+
+    traffic::GpsSolver solver;
+    solver.build(b.map);
+    check(solver.roundabout_node_count() == 1, "solver indexes sat_nav_junction=roundabout node");
+    check(solver.uturn_node_count() == 1, "solver indexes uturn-tagged node");
+
+    const auto rb_route = solver.solve(0, 10, 190, 200);
+    bool has_roundabout = false;
+    for (const auto& t : rb_route.turns) {
+      if (t.kind == traffic::GpsTurnKind::kRoundabout) has_roundabout = true;
+    }
+    check(has_roundabout, "route through sat_nav_junction=roundabout emits kRoundabout turn");
+    check(std::string(traffic::gps_turn_label(traffic::GpsTurnKind::kRoundabout)) == "ENTER ROUNDABOUT",
+          "roundabout turn label formatted");
+
+    const auto ut_route = solver.solve(500, 10, 510, 10);
+    bool has_uturn = false;
+    for (const auto& t : ut_route.turns) {
+      if (t.kind == traffic::GpsTurnKind::kUTurn) has_uturn = true;
+    }
+    check(has_uturn, "reversing route through uturn-tagged node emits kUTurn turn");
+  }
+}
+
 void test_colorado_nav_optional() {
   const char* gr = std::getenv("SHIFT_GAME_ROOT");
   if (!gr || !*gr) return;
@@ -277,13 +386,16 @@ void test_colorado_nav_optional() {
   check(traffic::read_nav(nav_path, nav, &err), "read real colorado.nav");
   traffic::GpsSolver solver;
   solver.build(nav);
+  check(solver.roundabout_node_count() == 11, "Colorado nav has 11 sat_nav_junction=roundabout nodes");
+  check(solver.uturn_node_count() >= 230, "Colorado nav indexes uturn-tagged nodes");
   // Festival (-610, -255) -> Red Rock Outpost (-5682, -5268)
   const auto route = solver.solve(-610.0, -255.0, -5682.0, -5268.0);
   check(route.valid, "real colorado.nav routes Festival -> Red Rock Outpost");
   check(route.total_length > 6000.0 && route.total_length < 25000.0, "real route distance plausible (6-25 km)");
   check(!route.turns.empty(), "real route extracts multiple turn instructions");
-  std::printf("colorado.nav GPS check: Festival -> Red Rock = %.1f km, %zu turns, %zu points\n",
-              route.total_length / 1000.0, route.turns.size(), route.points.size());
+  std::printf("colorado.nav GPS check: Festival -> Red Rock = %.1f km, %zu turns, %zu points (%zu roundabouts, %zu uturns)\n",
+              route.total_length / 1000.0, route.turns.size(), route.points.size(),
+              solver.roundabout_node_count(), solver.uturn_node_count());
 }
 
 }  // namespace
@@ -293,6 +405,7 @@ int main() {
   test_turns_reroute_and_arrival();
   test_travel_time_and_turn_delay();
   test_satnav_vo_ducking_and_save();
+  test_r2_4_speed_scaling_roundabout_uturn_and_cues();
   test_colorado_nav_optional();
   if (g_failed == 0) std::printf("gps_tests: PASS\n");
   return g_failed ? 1 : 0;

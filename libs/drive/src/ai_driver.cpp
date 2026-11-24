@@ -9,14 +9,16 @@
 namespace drive {
 
 RacingLine RacingLine::from_points(std::span<const float> xs, std::span<const float> zs, double lat_accel, double accel,
-                                   double decel, double max_speed) {
+                                   double decel, double max_speed, std::span<const float> grip) {
   RacingLine l;
   const size_t n = std::min(xs.size(), zs.size());
+  const bool has_grip = grip.size() >= n && n > 0;
   for (size_t i = 0; i < n; ++i) {
     if (!l.x.empty() && std::hypot(xs[i] - l.x.back(), zs[i] - l.z.back()) < 1e-3) continue;
     l.dist.push_back(l.x.empty() ? 0.0f : l.dist.back() + float(std::hypot(xs[i] - l.x.back(), zs[i] - l.z.back())));
     l.x.push_back(xs[i]);
     l.z.push_back(zs[i]);
+    if (has_grip) l.surface_grip.push_back(grip[i]);
   }
   const size_t m = l.size();
   l.speed.assign(m, float(max_speed));
@@ -361,7 +363,12 @@ double AiField::corner_at(size_t i, size_t j) const {
     const double kappa = line_.curvature[j];
     const double theta = kappa > 0 ? line_.bank_left[j] : -line_.bank_left[j];
     const double kv = std::min<double>(line_.curvature_v[j], 0.002);
-    v = float(ai_corner_speed(*capacity_[i], plan_c_[i], kappa, kv, theta, o_.max_speed));
+    double vc = ai_corner_speed(*capacity_[i], plan_c_[i], kappa, kv, theta, o_.max_speed);
+    const double grip = double(line_.grip_at(j));
+    if (std::fabs(kappa) > 1e-6 && std::fabs(grip - 1.0) > 1e-4) {
+      vc = std::min<double>(o_.max_speed, vc * std::sqrt(grip));
+    }
+    v = float(vc);
   }
   return v;
 }
@@ -401,23 +408,29 @@ double AiField::planned_speed(size_t i, double p) const {
       const double mean = (corner_at(i, j > 0 ? j - 1 : j) + vc + corner_at(i, std::min(j + 1, last))) / 3;
       const double vlim = std::max(0.001, std::min(carry, mean));
       if (j == j0 || j == 0) return vlim;
-      const double a = -ai_braking_left(B * c.braking[size_t(AiCapacity::index(vlim))], vlim, vc) - 9.81 * L.grade[j];
+      const double grip = double(L.grip_at(j));
+      const double a =
+          -ai_braking_left(B * c.braking[size_t(AiCapacity::index(vlim))] * grip, vlim, vc) - 9.81 * L.grade[j];
       carry = ai_brake_carry(vlim, a, L.dist[j] - L.dist[j - 1]);
     }
   }
   const double a = corner_[i], d = decel_[i];
   if (a <= 0 || L.radius.size() != L.size()) {
     const float vf = std::clamp(float((p - L.dist[s0]) / std::max(1e-6f, L.dist[s0 + 1] - L.dist[s0])), 0.0f, 1.0f);
-    return skill_[i] * (L.speed[s0] + vf * (L.speed[s0 + 1] - L.speed[s0]));
+    const double v0 = double(L.speed[s0]) * std::sqrt(double(L.grip_at(s0)));
+    const double v1 = double(L.speed[s0 + 1]) * std::sqrt(double(L.grip_at(s0 + 1)));
+    return skill_[i] * (v0 + vf * (v1 - v0));
   }
-  // v^2 = min over the points ahead of a x radius + 2 d x the distance to
-  // them, until the braking term alone passes the best.
+  // v^2 = min over the points ahead of a x grip x radius + 2 d x grip x ds,
+  // until the braking term alone passes the best.
   double best = double(o_.max_speed) * o_.max_speed;
+  double brake = 0.0;
   for (size_t s = s0 + 1; s < L.size(); ++s) {
-    const double ds = std::max(0.0, L.dist[s] - p);
-    const double brake = 2 * d * ds;
+    const double ds = std::max(0.0, L.dist[s] - (s == s0 + 1 ? p : double(L.dist[s - 1])));
+    const double g = double(L.grip_at(s));
+    brake += 2.0 * d * g * ds;
     if (brake >= best) break;
-    best = std::min(best, a * L.radius[s] + brake);
+    best = std::min(best, a * g * L.radius[s] + brake);
   }
   return std::sqrt(best);
 }

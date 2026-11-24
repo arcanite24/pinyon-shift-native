@@ -311,15 +311,37 @@ bool parse_camera_physics(std::string_view xml, CameraTuning& out, std::string* 
       else if (input == "CarCollision") l.input = CameraLayer::Input::kCarCollision;
       else if (input == "CarCollision_Longitudinal") l.input = CameraLayer::Input::kCarCollisionLongitudinal;
       else if (input == "CarCollision_Lateral") l.input = CameraLayer::Input::kCarCollisionLateral;
+      else if (input == "RollAngleDegrees") l.input = CameraLayer::Input::kRollDegrees;
+      else if (input == "Gs_Vertical") l.input = CameraLayer::Input::kGsVertical;
+      else if (input == "Gs") l.input = CameraLayer::Input::kGs;
+      else if (input == "RPM" || input == "NormalizedRPM" || input == "EngineRPM" || input == "EngineNormRPM")
+        l.input = CameraLayer::Input::kEngineNormRpm;
+      else if (input == "Steering" || input == "SteerAngle" || input == "SteeringAngle")
+        l.input = CameraLayer::Input::kSteering;
+      else if (input == "YawRate" || input == "AngularVelocityY") l.input = CameraLayer::Input::kYawRate;
+      else if (input == "SuspensionBias_Lateral") l.input = CameraLayer::Input::kSuspensionBiasLateral;
+      else if (input == "SuspensionBias") l.input = CameraLayer::Input::kSuspensionBias;
+      else if (input == "SurfaceBumpOffset" || input == "SurfaceBump") l.input = CameraLayer::Input::kSurfaceBump;
+      else if (input == "Throttle" || input == "Gas") l.input = CameraLayer::Input::kThrottle;
+      else if (input == "Brake") l.input = CameraLayer::Input::kBrake;
+      else if (input == "DriftAngle" || input == "SlipAngle") l.input = CameraLayer::Input::kDriftAngle;
+      else if (input == "GearShift" || input == "OnShift") l.input = CameraLayer::Input::kGearShift;
+      else if (input == "Boost" || input == "TurboBoost") l.input = CameraLayer::Input::kBoost;
+      else if (input == "Airborne" || input == "OffGround") l.input = CameraLayer::Input::kAirborne;
       else kept = false;
 
       if (output == "CarSpaceXYZOffset") l.output = CameraLayer::Output::kCarXYZ;
       else if (output == "CarSpaceYPROffset") l.output = CameraLayer::Output::kCarYPR;
       else if (output == "CameraSpaceXYZOffset") l.output = CameraLayer::Output::kCameraXYZ;
       else if (output == "CameraSpaceYPROffset") l.output = CameraLayer::Output::kCameraYPR;
+      else if (output == "CarSpaceXYZImpulse") l.output = CameraLayer::Output::kCarXYZImpulse;
       else if (output == "CarSpaceYPRImpulse") l.output = CameraLayer::Output::kCarYPRImpulse;
+      else if (output == "CameraSpaceXYZImpulse") l.output = CameraLayer::Output::kCameraXYZImpulse;
       else if (output == "CameraSpaceYPRImpulse") l.output = CameraLayer::Output::kCameraYPRImpulse;
+      else if (output == "TargetXYZOffset" || output == "LookAtXYZOffset" || output == "LookAtYOffset")
+        l.output = CameraLayer::Output::kTargetXYZ;
       else if (output == "FOV") l.output = CameraLayer::Output::kFov;
+      else if (output == "FOVImpulse" || output == "FovImpulse") l.output = CameraLayer::Output::kFovImpulse;
       else if (output == "SteeringWheel") l.output = CameraLayer::Output::kSteeringWheel;
       else kept = false;
 
@@ -427,6 +449,29 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
         break;
       case CameraLayer::Input::kCarCollisionLongitudinal: x = in.car_collision_longitudinal; break;
       case CameraLayer::Input::kCarCollisionLateral: x = in.car_collision_lateral; break;
+      case CameraLayer::Input::kRollDegrees: x = in.roll_degrees; break;
+      case CameraLayer::Input::kGsVertical: x = in.g_vertical; break;
+      case CameraLayer::Input::kGs:
+        x = std::sqrt(in.g_longitudinal * in.g_longitudinal + in.g_lateral * in.g_lateral +
+                      in.g_vertical * in.g_vertical);
+        break;
+      case CameraLayer::Input::kEngineNormRpm: x = in.engine_norm_rpm; break;
+      case CameraLayer::Input::kSteering: x = in.steer_input; break;
+      case CameraLayer::Input::kYawRate: x = in.yaw_rate; break;
+      case CameraLayer::Input::kSuspensionBiasLateral: x = in.suspension_bias_lateral; break;
+      case CameraLayer::Input::kSuspensionBias:
+        x = std::hypot(in.suspension_bias_longitudinal, in.suspension_bias_lateral);
+        break;
+      case CameraLayer::Input::kSurfaceBump:
+        x = std::max({std::fabs(in.surface_bump[0]), std::fabs(in.surface_bump[1]),
+                      std::fabs(in.surface_bump[2]), std::fabs(in.surface_bump[3])});
+        break;
+      case CameraLayer::Input::kThrottle: x = in.throttle; break;
+      case CameraLayer::Input::kBrake: x = in.brake; break;
+      case CameraLayer::Input::kDriftAngle: x = in.drift_angle_degrees; break;
+      case CameraLayer::Input::kGearShift: x = in.shift_impulse; break;
+      case CameraLayer::Input::kBoost: x = in.boost_norm; break;
+      case CameraLayer::Input::kAirborne: x = 1.0 - std::clamp(in.contact, 0.0, 1.0); break;
     }
     x = std::clamp(x, l.clamp_min, l.clamp_max);
     LayerState& st = layer_state_[i];
@@ -460,7 +505,9 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
     }
 
     const bool is_impulse =
-        l.output == CameraLayer::Output::kCarYPRImpulse || l.output == CameraLayer::Output::kCameraYPRImpulse;
+        l.output == CameraLayer::Output::kCarXYZImpulse || l.output == CameraLayer::Output::kCarYPRImpulse ||
+        l.output == CameraLayer::Output::kCameraXYZImpulse || l.output == CameraLayer::Output::kCameraYPRImpulse ||
+        l.output == CameraLayer::Output::kFovImpulse;
     if (is_impulse) {
       if (!st.started || dt >= kSettle) {
         st.x = 0;
@@ -499,13 +546,17 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
     const double v = st.x;
     std::array<double, 3>* xyz = nullptr;
     switch (l.output) {
-      case CameraLayer::Output::kCarXYZ: xyz = &out.car_xyz; break;
+      case CameraLayer::Output::kCarXYZ:
+      case CameraLayer::Output::kCarXYZImpulse: xyz = &out.car_xyz; break;
       case CameraLayer::Output::kCarYPR:
       case CameraLayer::Output::kCarYPRImpulse: xyz = &out.car_ypr; break;
-      case CameraLayer::Output::kCameraXYZ: xyz = &out.camera_xyz; break;
+      case CameraLayer::Output::kCameraXYZ:
+      case CameraLayer::Output::kCameraXYZImpulse: xyz = &out.camera_xyz; break;
       case CameraLayer::Output::kCameraYPR:
       case CameraLayer::Output::kCameraYPRImpulse: xyz = &out.camera_ypr; break;
-      case CameraLayer::Output::kFov: out.fov += l.param[0] * v; break;
+      case CameraLayer::Output::kTargetXYZ: xyz = &out.target_xyz; break;
+      case CameraLayer::Output::kFov:
+      case CameraLayer::Output::kFovImpulse: out.fov += l.param[0] * v; break;
       case CameraLayer::Output::kSteeringWheel: out.steering_wheel += l.param[0] * v * kDeg; break;
     }
     if (xyz)
@@ -696,7 +747,8 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
   const double height = pick("HeightOffset", t.height) + editor_.chase_height_m;
   const double radius = pick("RadiusOffset", t.radius) + editor_.chase_distance_m;
   const double target = pick("TargetYOffset", t.target);
-  const double stiff = std::clamp(editor_.chase_stiffness, 0.5, 2.0);
+  const double surf_spring = std::clamp(in.chase_cam_spring_mult > 0.0 ? in.chase_cam_spring_mult : 1.0, 0.1, 4.0);
+  const double stiff = std::clamp(editor_.chase_stiffness, 0.5, 2.0) * surf_spring;
   const double stiff_d = std::sqrt(stiff);  // preserves damping ratio
   const double fov_scale = std::clamp(editor_.chase_fov_scale, 0.8, 1.3);
   const V3 com = point(in.car_to_world, car_.com);
@@ -755,7 +807,8 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
   eye[1] = com[1] + height + c_ + h_;
   // The view's direction is the chase eye's to the look-at, not re-aimed
   // from the eye the layers move (SPEC-CAMERAS, How the layers compose).
-  const V3 look_at = add(com, {0, car_.box_max[1] - car_.com[1] + target + c_, 0});
+  const V3 look_at = add(add(com, {0, car_.box_max[1] - car_.com[1] + target + c_, 0}),
+                         vector(in.car_to_world, l.target_xyz));
   V3 f = normalise(add(look_at, mul(eye, -1)));
   // The layers' car-space offsets (the speed pull-back, the pitch lift),
   // plus camera-space offsets along the view's right/up/forward axes.
@@ -865,8 +918,10 @@ CameraView DriveCamera::on_car(const CameraInput& in, const LayerOut& l) {
     }
   }
   eye = add(eye, l.car_xyz);
-  // Looking back or to a side smoothly blends the eye to the box's rear or side
-  // (exact match at 0, +-pi/2, and +-pi without a discontinuous jump).
+  // Looking back or to a side: exterior on-car cameras (Hood/Bumper) smoothly
+  // blend the eye to the box's rear or side edge; Cockpit keeps the eye at the
+  // driver's head pivot inside the cabin on LookLeft/LookRight so turning the
+  // head never jumps into or outside the A-pillar.
   const double look = std::remainder(look_, 2 * kPi);
   const double alook = std::fabs(look);
   auto smoothstep = [](double e0, double e1, double x) {
@@ -879,7 +934,7 @@ CameraView DriveCamera::on_car(const CameraInput& in, const LayerOut& l) {
     const double back_z = car_.box_min[2] + kBoxInset;
     eye[2] = eye[2] + (back_z - eye[2]) * w_back;
   }
-  if (w_side > 0.0) {
+  if (w_side > 0.0 && mode_ != CameraMode::kCockpit) {
     const double side_x = (look > 0 ? 1.0 : -1.0) * (car_.box_max[0] - kBoxInset);
     eye[0] = eye[0] + (side_x - eye[0]) * w_side;
   }

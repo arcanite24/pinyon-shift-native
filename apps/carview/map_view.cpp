@@ -747,7 +747,7 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
         const double px = focal / ((pa.depth + pb.depth) / 2) * 9.0 * std::max(0.35, ls.line_size / widest);
         bool driven = true;
         if (scene.road_discovery && scene.road_discovery->ready() && s + 1 < roads_[r].nodes.size()) {
-          driven = scene.road_discovery->is_node_discovered(roads_[r].nodes[s]) ||
+          driven = scene.road_discovery->is_node_discovered(roads_[r].nodes[s]) &&
                    scene.road_discovery->is_node_discovered(roads_[r].nodes[s + 1]);
         }
         const Rgba undriven_col{std::max(182.0f, ls.edge.r), std::max(186.0f, ls.edge.g),
@@ -1055,10 +1055,14 @@ void MapView::render_pause_base(std::vector<uint8_t>& rgba, int width, int heigh
         for (size_t k = 1; k < npts; ++k) {
           const double curx = half_w + (road.points[k][0] - cx) * inv_scale;
           const double cury = half_h - (road.points[k][1] - cz) * inv_scale;
-          // Skip sub-pixel intermediate vertices when zoomed out to avoid redundant capsule draws.
+          // Skip sub-pixel intermediate vertices when zoomed out to avoid redundant capsule draws,
+          // while preserving visited/unvisited boundaries so newly driven road segments stay exact.
           if (k + 1 < npts) {
             const double ddx = curx - px, ddy = cury - py;
-            if (ddx * ddx + ddy * ddy < 2.25) continue;
+            const bool same_vis = !has_disc || k >= road.nodes.size() ||
+                                  (road_discovery->is_node_discovered(road.nodes[k]) ==
+                                   road_discovery->is_node_discovered(road.nodes[prev_k]));
+            if (same_vis && ddx * ddx + ddy * ddy < 2.25) continue;
           }
           const bool off = (px < -8 && curx < -8) || (px > width + 8 && curx > width + 8) ||
                            (py < -8 && cury < -8) || (py > height + 8 && cury > height + 8);
@@ -1068,7 +1072,7 @@ void MapView::render_pause_base(std::vector<uint8_t>& rgba, int width, int heigh
             } else {
               bool driven = true;
               if (has_disc && k < road.nodes.size()) {
-                driven = road_discovery->is_node_discovered(road.nodes[prev_k]) ||
+                driven = road_discovery->is_node_discovered(road.nodes[prev_k]) &&
                          road_discovery->is_node_discovered(road.nodes[k]);
               }
               cv.line(px, py, curx, cury, line, driven ? driven_col : undriven_col);
@@ -1089,9 +1093,10 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
   const double scale = map_scale(width, height, zoom);
   const double hi_blend = std::clamp((zoom - 1.8) / 1.7, 0.0, 1.0);
 
-  const int disc_count = (scene.road_discovery && scene.road_discovery->ready())
-                             ? scene.road_discovery->discovered_count()
-                             : -1;
+  const bool has_rd = scene.road_discovery && scene.road_discovery->ready();
+  const int disc_count = has_rd ? scene.road_discovery->discovered_count() : -1;
+  const size_t vis_nodes = has_rd ? scene.road_discovery->visited_node_count() : 0u;
+  const size_t vis_segs = has_rd ? scene.road_discovery->visited_segment_count() : 0u;
   const bool same_scale =
       base_cache_.width == width && base_cache_.height == height && std::fabs(scale - base_cache_.scale) <= scale * 1e-6;
   // When panning at steady zoom, cache a +256 px padded base map (background + roads)
@@ -1119,7 +1124,8 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
   double eff_cx = cx, eff_cz = cz;
   bool cache_hit = false;
   if (same_scale && !base_cache_.rgba.empty() && base_cache_.road_disc == scene.road_discovery &&
-      base_cache_.road_disc_count == disc_count && base_cache_.loaded_tiles_mask == tmask) {
+      base_cache_.road_disc_count == disc_count && base_cache_.road_visited_nodes == vis_nodes &&
+      base_cache_.road_visited_segs == vis_segs && base_cache_.loaded_tiles_mask == tmask) {
     const int ox = int(std::lround(base_cache_.pad + (cx - base_cache_.cx) / scale));
     const int oy = int(std::lround(base_cache_.pad - (cz - base_cache_.cz) / scale));
     if (ox >= 0 && ox <= 2 * base_cache_.pad && oy >= 0 && oy <= 2 * base_cache_.pad) {
@@ -1146,6 +1152,8 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     base_cache_.cz = cz;
     base_cache_.road_disc = scene.road_discovery;
     base_cache_.road_disc_count = disc_count;
+    base_cache_.road_visited_nodes = vis_nodes;
+    base_cache_.road_visited_segs = vis_segs;
     base_cache_.loaded_tiles_mask = tmask;
     if (want_pad == 0) {
       render_pause_base(out.rgba, width, height, scale, hi_blend, cx, cz, scene.road_discovery);

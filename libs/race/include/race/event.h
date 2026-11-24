@@ -79,6 +79,17 @@ struct Opponent {
   // (SPEC-RACE-AI, The opponents' cars: it chooses the paint; the match by
   // Sequence is ours, interim). 0: none.
   int64_t color_sequence = 0;
+  int tuning_level = 0;  // EventParticipants.TuningLevel (0=stock, 1=street, 2=sport, 3=race)
+  int livery_level = 0;  // EventParticipants.LiveryLevel
+};
+
+struct AiPlayerColor {
+  int64_t id = 0;
+  int64_t ai_player_id = 0;    // 0 if palette row is not bound to a specific AIPlayer
+  uint32_t rgb = 0;            // 0xRRGGBB sRGB
+  bool has_rgb = false;
+  bool metallic = false;
+  int64_t color_sequence = 0;  // optional Combo_Colors sequence when present
 };
 
 struct EventData {
@@ -104,10 +115,12 @@ struct EventData {
   std::vector<TemperamentRow> temperaments;
   std::vector<double> scoring;  // EventScoring credits by place (1-based at [0])
   std::vector<std::pair<int, int>> skill_adjustments;  // AISkillAdjustments (TimeRatio -> SkillAdjustment)
+  std::vector<AiPlayerColor> ai_player_colors;         // AIPlayerColors (159 rows on disc)
 
   const SkillRow* skill(int id) const;
   const RubberbandRow* rubberband(int id) const;
   const TemperamentRow* temperament(int id) const;
+  const AiPlayerColor* ai_player_color(const Opponent& opp) const;
 };
 
 // The database is <game_root>/media/db/gamedb.slt, or the merged v4+DLC
@@ -182,5 +195,10 @@ class CarNames {
 bool load_ai_player_names(const std::filesystem::path& game_root, std::vector<std::string>& out,
                           const CarNames* names = nullptr, const std::filesystem::path& state_root = {},
                           const cars::PartsDb* db = nullptr);
+
+// Loads AIPlayerColors rows from gamedb.slt (159 rows on the disc).
+bool load_ai_player_colors(const std::filesystem::path& game_root, std::vector<AiPlayerColor>& out,
+                           const std::filesystem::path& state_root = {},
+                           const cars::PartsDb* db = nullptr);
 
 }  // namespace race

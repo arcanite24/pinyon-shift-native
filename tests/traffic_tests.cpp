@@ -476,6 +476,131 @@ void test_traffic_behaviors() {
                 pop.cars().empty() ? -1.0 : pop.cars()[0].speed);
     CHECK(bodies.player_contacts() == 0);
   }
+  // 8. Retail AI/Traffic/Vehicle/* fade keys, BrakeLightAccelerationThreshold,
+  //    BehindChance, BehindMaxSpeed, and Festival/TrafficGroupSpawns parsing.
+  {
+    const char* kAiXml = R"(<AIOpenWorld>
+      <Settings name="freeroam">
+        <CarList numInitialTrafficCars="2" numInitialFestivalCars="1" maxLoadedTrafficModels="4">
+          <Car model="282"/>
+        </CarList>
+        <Densities>
+          <DensityList cartype="traffic">
+            <Density id="5" min="0.2" max="1.0" speed="35"/>
+          </DensityList>
+        </Densities>
+      </Settings>
+    </AIOpenWorld>)";
+    const char* kRegXml = R"(<Registry>
+      <Value id="AI/Traffic/Vehicle/FadeInTime" type="float" value="2.0"/>
+      <Value id="AI/Traffic/Vehicle/MinFullAlphaDistance" type="float" value="100.0"/>
+      <Value id="AI/Traffic/Vehicle/MaxFullAlphaDistance" type="float" value="150.0"/>
+      <Value id="AI/Traffic/Vehicle/BrakeLightAccelerationThreshold" type="float" value="0.70"/>
+      <Value id="AI/Spawning/BehindChance" type="float" value="0.40"/>
+      <Value id="AI/Spawning/BehindMaxSpeed" type="float" value="5.0"/>
+      <Value id="AI/Spawning/FestivalGroupSpawns" type="bool" value="true"/>
+      <Value id="AI/Spawning/TrafficGroupSpawns" type="bool" value="false"/>
+    </Registry>)";
+    traffic::TrafficConfig cfg;
+    std::string err;
+    CHECK(traffic::parse_traffic_config(kAiXml, kRegXml, cfg, &err));
+    CHECK(near(cfg.fade_in_time, 2.0, 1e-9));
+    CHECK(near(cfg.min_full_alpha_distance, 100.0, 1e-9));
+    CHECK(near(cfg.max_full_alpha_distance, 150.0, 1e-9));
+    CHECK(near(cfg.brake_light_accel_threshold, 0.70, 1e-9));
+    CHECK(near(cfg.behind_chance, 0.40, 1e-9));
+    CHECK(near(cfg.behind_max_speed, 5.0, 1e-9));
+    CHECK(cfg.festival_group_spawns);
+    CHECK(!cfg.traffic_group_spawns);
+  }
+  // 9. Behind-player spawn gating (BehindChance / BehindMaxSpeed) & 2-3 car traffic convoys.
+  {
+    const traffic::NavMap map = straight_road();  // z = 0..1000
+    traffic::Roads roads;
+    roads.build(map);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    c.spawn_in = 150.0;
+    c.spawn_out = 400.0;
+    c.interval_min = 0.05;
+    c.interval_med = 0.1;
+    c.interval_variance = 0.0;
+    c.behind_max_speed = 5.0;
+    c.behind_chance = 1.0;
+    c.traffic_group_spawns = false;
+    traffic::DensityEntry e;
+    e.id = 5, e.min = 1.5, e.max = 1.5, e.speed_mph = 30;
+    c.traffic[5] = e;
+    c.models = {{282, 0, false, false}};
+    // Moving at 15 m/s (> BehindMaxSpeed) heading +Z from z=500: spawns must be ahead (z > 500).
+    traffic::Population fast_pop(roads, c, 41);
+    for (int i = 0; i < 40; ++i) fast_pop.step(0.05, {0, 0, 500}, {0, 0, 15.0}, 0.0);
+    CHECK(fast_pop.stats().spawned > 0);
+    CHECK(fast_pop.stats().spawned_behind == 0);
+    // Parked (0 m/s <= BehindMaxSpeed) with BehindChance=1.0: spawns occur behind player.
+    traffic::Population slow_pop(roads, c, 43);
+    for (int i = 0; i < 40; ++i) slow_pop.step(0.05, {0, 0, 500}, {0, 0, 0.0}, 0.0);
+    CHECK(slow_pop.stats().spawned > 0);
+    CHECK(slow_pop.stats().spawned_behind == slow_pop.stats().spawned);
+    // Convoy spawning: with traffic_group_spawns=true and chance=1.0, spawns 2-3 car convoys.
+    c.traffic_group_spawns = true;
+    c.traffic_convoy_chance = 1.0;
+    traffic::Population convoy_pop(roads, c, 47);
+    for (int i = 0; i < 30; ++i) convoy_pop.step(0.05, {0, 0, 500}, {0, 0, 15.0}, 0.0);
+    CHECK(convoy_pop.stats().convoys_spawned > 0);
+    CHECK(convoy_pop.cars().size() >= 2);
+  }
+  // 10. Gear/RPM simulation from GearMaxSpeed1st..4th and Race AI obstacle braking + physics promotion >30 m.
+  {
+    const std::array<double, 4> gms{12.0, 22.0, 34.0, 48.0};
+    int g1 = 0, g3 = 0;
+    double r1 = 0, r3 = 0;
+    traffic::estimate_traffic_gear_rpm(8.0, gms, g1, r1);
+    traffic::estimate_traffic_gear_rpm(28.0, gms, g3, r3);
+    CHECK(g1 == 1 && r1 > 1500.0 && r1 < 5500.0);
+    CHECK(g3 == 3 && r3 > 1500.0 && r3 < 5500.0);
+
+    const traffic::NavMap map = straight_road();
+    traffic::Roads roads;
+    roads.build(map);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    c.high_lod_distance = 30.0;
+    traffic::DensityEntry e;
+    e.id = 5, e.speed_mph = 40;
+    c.traffic[5] = e;
+    c.models = {{282, 0, false, false}};
+    traffic::Population pop(roads, c, 53);
+    traffic::Car car;
+    car.model = 282;
+    car.base_speed = car.speed = car.target = 17.0;
+    pop.add(car, 0, 200, 1);  // 200 m away from player at z=0
+    drive::CarParams params;
+    const double r = 0.31;
+    params.wheel_centres = {drive::Vec3{-0.72, r, 1.15}, drive::Vec3{0.72, r, 1.15}, drive::Vec3{-0.72, r, -1.15},
+                            drive::Vec3{0.72, r, -1.15}};
+    params.tyre_radius = {r, r, r, r};
+    params.centre_of_mass = {0, 0.5, 0.05};
+    params.size = {1.64, 1.3, 3.9};
+    traffic::Bodies bodies(pop, [&](int64_t) { return &params; });
+    const drive::FlatGround flat;
+
+    // Without Race AI obstacle, traffic car at 200 m stays kinematic (body count 0).
+    pop.step(1.0 / 60.0, {0, 0, 0}, {0, 0, 0});
+    bodies.step(flat, nullptr);
+    CHECK(!pop.cars()[0].physics && bodies.count() == 0);
+    CHECK(pop.cars()[0].gear == 2 && pop.cars()[0].rpm > 1000.0);
+
+    // Place a stopped Race AI opponent 18 m ahead in the traffic car's lane (at z=218, >200 m from player).
+    const traffic::ExternalVehicle race_ai[1] = {{{2.2, 0.0, 218.0}, {0.0, 0.0, 0.0}, true}};
+    for (int i = 0; i < 15; ++i) {
+      pop.step(1.0 / 60.0, {0, 0, 0}, {0, 0, 0}, 0.0, race_ai);
+      bodies.step(flat, nullptr);
+    }
+    CHECK(pop.cars()[0].physics);        // promoted to full physics near Race AI >30 m from player!
+    CHECK(bodies.count() == 1);          // active physics body created so Race AI never ghosts through!
+    CHECK(pop.cars()[0].target < 10.0);  // traffic car brakes for the Race AI obstacle!
+  }
 }
 
 }  // namespace
@@ -635,6 +760,10 @@ int main() {
   CHECK(near(c.junction_max_collision_check_distance, 60.0, 1e-9));
   CHECK(near(c.avoid_max_offset, 5.0, 1e-4));
   CHECK(near(c.dead_hazard_delay, 1.4, 1e-9) && near(c.dead_reanimate_delay, 2.0, 1e-9));
+  CHECK(near(c.fade_in_time, 2.0, 1e-9) && near(c.min_full_alpha_distance, 100.0, 1e-9) &&
+        near(c.max_full_alpha_distance, 150.0, 1e-9));
+  CHECK(near(c.brake_light_accel_threshold, 0.70, 1e-4));
+  CHECK(near(c.behind_chance, 0.40, 1e-4) && near(c.behind_max_speed, 5.0, 1e-4));
 
   // Race-mode traffic settings (<Settings name="race">).
   traffic::TrafficConfig rc;

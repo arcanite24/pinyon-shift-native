@@ -30,6 +30,8 @@ enum class ControlAction {
   kRadioPrev,
   kRadioNext,
   kActivate,
+  kLookLeft,
+  kLookRight,
   kCount,
 };
 

@@ -82,15 +82,34 @@ struct CameraLayer {
     kCarCollision,
     kCarCollisionLongitudinal,
     kCarCollisionLateral,
+    kRollDegrees,
+    kGsVertical,
+    kGs,
+    kEngineNormRpm,
+    kSteering,
+    kYawRate,
+    kSuspensionBiasLateral,
+    kSuspensionBias,
+    kSurfaceBump,
+    kThrottle,
+    kBrake,
+    kDriftAngle,
+    kGearShift,
+    kBoost,
+    kAirborne,
   };
   enum class Output {
     kCarXYZ,
     kCarYPR,
     kCameraXYZ,
     kCameraYPR,
+    kCarXYZImpulse,
     kCarYPRImpulse,
+    kCameraXYZImpulse,
     kCameraYPRImpulse,
+    kTargetXYZ,
     kFov,
+    kFovImpulse,
     kSteeringWheel,
   };
   enum class Mapping { kConstantOne, kLinear, kPoints };
@@ -169,6 +188,17 @@ struct CameraInput {
   double suspension_bias_longitudinal = 0;
   double world_collision_longitudinal = 0, world_collision_lateral = 0;
   double car_collision_longitudinal = 0, car_collision_lateral = 0;
+  // Extended CameraPhysics.xml inputs & SurfaceTypes.xml ChaseCamSpringMultiplier.
+  double chase_cam_spring_mult = 1.0;
+  double roll_degrees = 0;
+  double g_vertical = 0;
+  double engine_norm_rpm = 0;
+  double steer_input = 0;
+  double suspension_bias_lateral = 0;
+  double throttle = 0, brake = 0;
+  double drift_angle_degrees = 0;
+  double shift_impulse = 0;
+  double boost_norm = 0;
   // The world's height under a point (for the chase clearance); empty: none.
   std::function<bool(double x, double y, double z, double& ground_y)> ground_below;
   // Horizontal wall / car-OBB obstacle raycast from look_at toward chase eye;
@@ -232,7 +262,7 @@ class DriveCamera {
     bool started = false;
   };
   struct LayerOut {
-    std::array<double, 3> car_xyz{}, car_ypr{}, camera_xyz{}, camera_ypr{};
+    std::array<double, 3> car_xyz{}, car_ypr{}, camera_xyz{}, camera_ypr{}, target_xyz{};
     double fov = 0;
     double steering_wheel = 0;  // rad
   };

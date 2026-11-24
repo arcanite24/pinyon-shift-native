@@ -16,6 +16,8 @@
 
 #include "cars/physics.h"
 #include "cars/sources.h"
+#include "drive/contact.h"
+#include "drive/dualsense.h"
 #include "drive/from_physics.h"
 #include "drive/profile_ground.h"
 #include "drive/vehicle.h"
@@ -372,9 +374,252 @@ void skidpad(const drive::CarParams& p) {
   }
 }
 
+void synthetic_r2_4_checks() {
+  auto make_synth = []() {
+    drive::CarParams p;
+    const double r = 0.32;
+    p.wheel_centres = {drive::Vec3{-0.78, r, 1.30}, drive::Vec3{0.78, r, 1.30},
+                       drive::Vec3{-0.79, r, -1.25}, drive::Vec3{0.79, r, -1.25}};
+    p.tyre_radius = {r, r, r, r};
+    p.centre_of_mass = {0, 0.5, 0.05};
+    return p;
+  };
+  struct CustomSurfaceGround : public drive::Ground {
+    drive::SurfaceTyre st;
+    drive::Vec3 n{0, 1, 0};
+    double g = 1.0;
+    bool raycast(const drive::Vec3& o, const drive::Vec3& d, double max_d, drive::Hit& hit) const override {
+      if (d.y >= -1e-9) return false;
+      const double t = -o.y / d.y;
+      if (t < 0 || t > max_d) return false;
+      hit.distance = t;
+      hit.normal = n;
+      hit.grip = g;
+      hit.tyre = st;
+      return true;
+    }
+  };
+  const drive::FlatGround flat;
+
+  // 1. SurfaceTypes: MaxSteeringLockCap in degrees, LinearDrag & AngularDrag,
+  //    CarWorldCollFricMods, and Springiness cutoffs.
+  {
+    auto p = make_synth();
+    p.max_steer = 42.0 * kPi / 180.0;
+    CustomSurfaceGround g_cap;
+    g_cap.st.max_steering_lock_cap = 20.0;  // 20 degrees (not normalized!)
+    g_cap.st.chase_cam_spring_mult = 0.7;
+    g_cap.st.steer_torque_scale = 0.6;
+    drive::Vehicle v(p);
+    for (int i = 0; i < 60; ++i) v.step({1.0, 0.0, 0.0, false}, g_cap);
+    CHECK(std::fabs(v.steer_angle() - 20.0 * kPi / 180.0) < 0.02);
+    CHECK(std::fabs(v.surface_chase_cam_spring_mult() - 0.7) < 1e-6);
+    CHECK(std::fabs(v.surface_steer_torque_scale() - 0.6) < 1e-6);
+
+    // LinearDrag & AngularDrag slow coasting speed and yaw spin.
+    CustomSurfaceGround g_mud;
+    g_mud.st.linear_drag = 2.0;
+    g_mud.st.angular_drag = 3.0;
+    drive::Vehicle v_dry(p), v_mud(p);
+    v_dry.launch({0, 0, 0}, 0, 25.0);
+    v_mud.launch({0, 0, 0}, 0, 25.0);
+    v_dry.set_velocity({0, 0, 25.0}, {0, 2.0, 0});
+    v_mud.set_velocity({0, 0, 25.0}, {0, 2.0, 0});
+    for (int i = 0; i < 60; ++i) {
+      v_dry.step({}, flat);
+      v_mud.step({}, g_mud);
+    }
+    CHECK(v_mud.speed() < v_dry.speed() - 5.0);
+    CHECK(std::fabs(v_mud.angular_velocity().y) < std::fabs(v_dry.angular_velocity().y) * 0.6);
+
+    // CarWorldCollFricMods scales body_contact_friction.
+    drive::Hit h_mod{};
+    h_mod.tyre.car_world_coll_fric_mod = 0.25;
+    const double mu_base = drive::body_contact_friction(drive::Hit{}, {0, 1, 0}, 0.6);
+    const double mu_mod = drive::body_contact_friction(h_mod, {0, 1, 0}, 0.6);
+    CHECK(std::fabs(mu_mod - mu_base * 0.25) < 1e-6);
+
+    // Springiness cutoffs: inactive below spring_speed_cutoff, active above.
+    CustomSurfaceGround g_spr;
+    g_spr.st.is_springy = true;
+    g_spr.st.spring_k = 20.0;
+    g_spr.st.spring_comp_d = 10.0;
+    g_spr.st.spring_reb_d = 10.0;
+    g_spr.st.spring_norm_y_cutoff = 0.707;
+    g_spr.st.spring_speed_cutoff = 10.0;
+    drive::Vehicle v_slow(p), v_fast(p);
+    v_slow.launch({0, 0, 0}, 0, 2.0);
+    v_fast.launch({0, 0, 0}, 0, 20.0);
+    for (int i = 0; i < 20; ++i) {
+      v_slow.step({}, g_spr);
+      v_fast.step({}, g_spr);
+    }
+    CHECK(std::isfinite(v_slow.position().y) && std::isfinite(v_fast.position().y));
+  }
+
+  // 2. Rally Suspension (Level == 4) lifts static ride height, CoM, and rest_length;
+  //    TireMod_FrictionScale, HeatTireScale, List_TireAffectCurve, and StaticToe wire cleanly.
+  {
+    cars::CarPhysics base_cp, rally_cp;
+    cars::PhysicsSettings ps;
+    base_cp.values["List_UpgradeCarBodyWeight.Mass"] = 1400.0;
+    base_cp.values["List_UpgradeCarBodyWeight.CMHeight"] = 0.48;
+    base_cp.values["List_UpgradeSpringDamper.Level"] = 0.0;
+    base_cp.values["List_TireCompound.TireMod_FrictionScale"] = 1.0;
+    base_cp.values["List_TireCompound.HeatTireScale"] = 1.0;
+    rally_cp = base_cp;
+    rally_cp.values["List_UpgradeSpringDamper.Level"] = 4.0;
+    rally_cp.values["List_TireCompound.TireMod_FrictionScale"] = 1.15;
+    rally_cp.values["List_TireCompound.HeatTireScale"] = 2.0;
+    rally_cp.curves["tire_affect"] = {0.85, 1.00, 0.90};
+    rally_cp.values["List_TireAffectCurve.MinTemp"] = 20.0;
+    rally_cp.values["List_TireAffectCurve.MaxTemp"] = 180.0;
+
+    drive::CarParams p_base = make_synth(), p_rally = make_synth();
+    drive::apply_physics(base_cp, ps, p_base);
+    drive::apply_physics(rally_cp, ps, p_rally);
+    CHECK(p_rally.centre_of_mass.y > p_base.centre_of_mass.y + 0.04);
+    CHECK(p_rally.rest_length > p_base.rest_length + 0.04);
+    CHECK(p_rally.sill_height > p_base.sill_height + 0.04);
+    CHECK(std::fabs(p_rally.tire_mod_friction_scale - 1.15) < 1e-6);
+    CHECK(std::fabs(p_rally.heat_tire_scale - 2.0) < 1e-6);
+    CHECK(drive::tyre_peak_mu(p_rally, 0, drive::TyrePeak::kLateral, 3500.0, 20.0) >
+          drive::tyre_peak_mu(p_base, 0, drive::TyrePeak::kLateral, 3500.0, 20.0) * 1.10);
+    CHECK(std::fabs(p_rally.tire_affect_curve.evaluate(100.0) - 1.00) < 1e-6);
+    CHECK(std::fabs(p_rally.tire_affect_curve.evaluate(20.0) - 0.85) < 1e-6);
+
+    // Static toe rotates front/rear wheel headings symmetrically (toe-out + / toe-in -).
+    drive::CarTune tune;
+    tune.front_toe_deg = 2.0;
+    tune.rear_toe_deg = -1.5;
+    drive::apply_tune(tune, base_cp, p_base);
+    drive::Vehicle v_toe(p_base);
+    v_toe.step({}, flat);
+    CHECK(v_toe.wheels()[0].steer < -0.02 && v_toe.wheels()[1].steer > 0.02);
+    CHECK(std::fabs(v_toe.wheels()[0].steer + v_toe.wheels()[1].steer) < 1e-9);
+    CHECK(v_toe.wheels()[2].steer > 0.02 && v_toe.wheels()[3].steer < -0.02);
+  }
+
+  // 3. Coupled zero-lag LSD: transfers torque on the very first step of a split-mu launch.
+  {
+    struct SplitMu : public drive::Ground {
+      bool raycast(const drive::Vec3& o, const drive::Vec3& d, double max_d, drive::Hit& hit) const override {
+        if (d.y >= -1e-9) return false;
+        const double t = -o.y / d.y;
+        if (t < 0 || t > max_d) return false;
+        hit.distance = t;
+        hit.normal = {0, 1, 0};
+        hit.grip = o.x < 0 ? 0.15 : 1.0;
+        return true;
+      }
+    } split;
+    auto p_open = make_synth();
+    p_open.layout = drive::CarParams::Layout::kRear;
+    p_open.torque_scale = 700.0;
+    p_open.rear_lsd = {0.0, 0.0, 50.0, 50.0};
+    auto p_lsd = p_open;
+    p_lsd.rear_lsd = {800.0, 0.0, 50.0, 50.0};
+    drive::Vehicle v_open(p_open), v_lsd(p_lsd);
+    v_open.set_ai_controls(true);
+    v_lsd.set_ai_controls(true);
+    v_open.launch({0, 0, 0}, 0, 5.0);
+    v_lsd.launch({0, 0, 0}, 0, 5.0);
+    // Single step: zero-lag coupled LSD immediately reduces left/right speed divergence.
+    v_open.step({0, 1.0, 0, false}, split);
+    v_lsd.step({0, 1.0, 0, false}, split);
+    const double dw_open = std::fabs(v_open.wheels()[2].omega - v_open.wheels()[3].omega);
+    const double dw_lsd = std::fabs(v_lsd.wheels()[2].omega - v_lsd.wheels()[3].omega);
+    CHECK(dw_open > 0.05 && dw_lsd < dw_open * 0.85);
+  }
+
+  // 4. Manual+Clutch shift dwell, handbrake disconnect, and race-free Auto-Brake assist.
+  {
+    auto p = make_synth();
+    p.layout = drive::CarParams::Layout::kRear;
+    drive::Vehicle v(p);
+    drive::VehicleAssists a;
+    a.shifting = 2;  // Manual + Clutch
+    v.set_assists(a);
+    v.launch({0, 0, 0}, 0, 20.0);
+    const int g0 = v.gear();
+    // Shift up with clutch: enters shift dwell (kGearChange) before smoothly re-engaging.
+    v.step({0, 0.5, 0, false, 1.0, +1}, flat);
+    CHECK(v.gear() == g0 + 1 && v.gear_state() == drive::Vehicle::GearState::kGearChange && v.clutch() == 0.0);
+    for (int i = 0; i < 40; ++i) v.step({0, 0.5, 0, false, 0.0, 0}, flat);
+    CHECK(v.gear_state() == drive::Vehicle::GearState::kEngaged && v.clutch() > 0.9);
+    // Handbrake in RWD Manual+Clutch disconnects the clutch so engine doesn't fight rear lock.
+    for (int i = 0; i < 20; ++i) v.step({0, 0.0, 0, true, 0.0, 0}, flat);
+    CHECK(v.clutch() < 0.05);
+
+    // Auto-Brake works directly on Vehicle::step without any race-only requirement.
+    drive::Vehicle v_ab(p);
+    drive::VehicleAssists a_ab;
+    a_ab.braking = 0;  // Assisted
+    v_ab.set_assists(a_ab);
+    v_ab.launch({0, 0, 0}, 0, 35.0);
+    drive::Input ab_in{0, 1.0, 0.0, false};
+    ab_in.has_auto_brake_target = true;
+    ab_in.auto_brake_target_speed = drive::auto_brake_target_for_curvature(0.05);  // ~13 m/s corner
+    for (int i = 0; i < 60; ++i) v_ab.step(ab_in, flat);
+    CHECK(v_ab.speed() < 32.0);
+  }
+
+  // 5. 3D OBB Contact: jumping over another car produces zero phantom mid-air collision.
+  {
+    auto p = make_synth();
+    drive::Vehicle low_car(p), high_car(p);
+    low_car.launch({0, 0, 0}, 0, 10.0);
+    high_car.launch({0, 3.0, 0}, 0, 10.0);  // 3 m directly above low_car
+    double imp = -1.0;
+    CHECK(!drive::car_contact(low_car, 0.2, high_car, 0.2, {}, &imp));
+    std::vector<drive::ContactBody> bodies{{&low_car, 0.2, 0}, {&high_car, 0.2, 0}};
+    CHECK(drive::resolve_contacts(bodies, {}) == 0);
+    // Same-elevation overlap still collides normally.
+    high_car.launch({0.5, 0.0, 1.0}, 0, -5.0);
+    CHECK(drive::resolve_contacts(bodies, {}) == 1);
+  }
+
+  // 6. DualSense: lateral slip included in telemetry & reverse pedal swap (L2=gas, R2=brake).
+  {
+    auto p = make_synth();
+    drive::Vehicle v(p);
+    v.launch({0, 0, 0}, 0, 28.0);
+    // Hard cornering without handbrake/wheelspin generates pure lateral slip.
+    for (int i = 0; i < 40; ++i) v.step({0.8, 0.1, 0.0, false}, flat);
+    const auto tel = drive::dualsense::telemetry_from_vehicle(v);
+    CHECK(tel.valid && (tel.front_slip > 0.3f || tel.rear_slip > 0.3f));
+
+    drive::dualsense::TriggerModel tm;
+    drive::dualsense::Settings ds_cfg;
+    ds_cfg.trigger_mode = drive::dualsense::TriggerMode::kFull;
+    ds_cfg.trigger_strength_pct = 100;
+    drive::dualsense::CarTelemetry rev_car;
+    rev_car.valid = true;
+    rev_car.gear = -1;
+    rev_car.driven_rear = true;
+    rev_car.abs_active = true;
+    rev_car.rear_slip = 2.5f;  // spinning while pressing L2 in reverse
+    drive::dualsense::TriggerInputs rev_in;
+    rev_in.driving = true;
+    rev_in.throttle = 0.8f;  // R2 = brake in reverse!
+    rev_in.brake = 0.9f;     // L2 = throttle in reverse!
+    rev_in.telemetry = &rev_car;
+    drive::dualsense::TriggerEffects fx{};
+    for (int i = 0; i < 5; ++i) fx = tm.step(rev_in, ds_cfg, 1.0 / 60.0);
+    // R2 receives ABS Machine pulse (family 6), L2 receives wheelspin Vibration (family 3).
+    CHECK(drive::dualsense::reported_family(fx.right) == 6);
+    CHECK(drive::dualsense::reported_family(fx.left) == 3);
+  }
+}
+
 }  // namespace
 
 int main() {
+  synthetic_r2_4_checks();
+  if (failures) {
+    std::printf("physics_tests: %d synthetic failure(s)\n", failures);
+    return 1;
+  }
   const char* root = std::getenv("SHIFT_GAME_ROOT");
   if (!root) {
     std::printf("physics_tests: SHIFT_GAME_ROOT not set, skipped\n");

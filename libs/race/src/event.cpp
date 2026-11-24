@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdlib>
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <mutex>
 
@@ -23,6 +26,127 @@ int64_t i64(sqlite3_stmt* s, int c) { return sqlite3_column_int64(s, c); }
 std::string txt(sqlite3_stmt* s, int c) {
   const auto* t = sqlite3_column_text(s, c);
   return t ? reinterpret_cast<const char*>(t) : "";
+}
+
+std::string lower_ascii(std::string s) {
+  for (char& ch : s) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+  return s;
+}
+
+uint32_t hsv_to_rgb24(double h, double s, double v) {
+  if (h > 1.0) h = std::fmod(h, 360.0) / 360.0;
+  h = std::fmod(std::fmod(h, 1.0) + 1.0, 1.0);
+  if (s > 1.0) s *= 0.01;
+  if (v > 1.0) v *= 0.01;
+  s = std::clamp(s, 0.0, 1.0);
+  v = std::clamp(v, 0.0, 1.0);
+  const double c = v * s;
+  const double hp = h * 6.0;
+  const double x = c * (1.0 - std::fabs(std::fmod(hp, 2.0) - 1.0));
+  double r = 0, g = 0, b = 0;
+  if (hp < 1.0) r = c, g = x;
+  else if (hp < 2.0) r = x, g = c;
+  else if (hp < 3.0) g = c, b = x;
+  else if (hp < 4.0) g = x, b = c;
+  else if (hp < 5.0) r = x, b = c;
+  else r = c, b = x;
+  const double m = v - c;
+  const uint32_t ri = uint32_t(std::clamp(std::lround((r + m) * 255.0), 0l, 255l));
+  const uint32_t gi = uint32_t(std::clamp(std::lround((g + m) * 255.0), 0l, 255l));
+  const uint32_t bi = uint32_t(std::clamp(std::lround((b + m) * 255.0), 0l, 255l));
+  return (ri << 16) | (gi << 8) | bi;
+}
+
+bool read_ai_player_colors(Db& db, std::vector<AiPlayerColor>& out) {
+  out.clear();
+  std::vector<std::string> cols;
+  std::string err;
+  if (!db.each("PRAGMA table_info(AIPlayerColors)", {}, [&](sqlite3_stmt* s) { cols.push_back(txt(s, 1)); }, &err) ||
+      cols.empty())
+    return false;
+  auto find_col = [&](std::initializer_list<const char*> names) -> std::string {
+    for (const char* want : names) {
+      for (const auto& c : cols) {
+        if (lower_ascii(c) == want) return c;
+      }
+    }
+    return {};
+  };
+  const std::string c_id = find_col({"id"});
+  const std::string c_ai = find_col({"aiplayerid", "aiplayer_id", "driverid", "playerid"});
+  const std::string c_rgb = find_col({"rgb", "colorrgb", "color", "primarycolor", "paintcolor", "color1"});
+  const std::string c_r = find_col({"r", "red", "colorr", "color_r"});
+  const std::string c_g = find_col({"g", "green", "colorg", "color_g"});
+  const std::string c_b = find_col({"b", "blue", "colorb", "color_b"});
+  const std::string c_h = find_col({"hue", "h", "colorhue", "paint_h"});
+  const std::string c_s = find_col({"saturation", "sat", "s", "colorsat", "paint_s"});
+  const std::string c_v = find_col({"brightness", "value", "val", "lightness", "l", "v", "paint_v"});
+  const std::string c_met = find_col({"metallic", "ismetallic"});
+  const std::string c_seq = find_col({"colorsequence", "sequence"});
+
+  std::string sql = "select ";
+  sql += c_id.empty() ? "rowid" : ("coalesce(" + c_id + ", 0)");
+  sql += ", " + (c_ai.empty() ? std::string("0") : ("coalesce(" + c_ai + ", 0)"));
+  sql += ", " + (c_rgb.empty() ? std::string("''") : ("coalesce(" + c_rgb + ", '')"));
+  sql += ", " + (c_r.empty() ? std::string("-1") : ("coalesce(" + c_r + ", -1)"));
+  sql += ", " + (c_g.empty() ? std::string("-1") : ("coalesce(" + c_g + ", -1)"));
+  sql += ", " + (c_b.empty() ? std::string("-1") : ("coalesce(" + c_b + ", -1)"));
+  sql += ", " + (c_h.empty() ? std::string("-1") : ("coalesce(" + c_h + ", -1)"));
+  sql += ", " + (c_s.empty() ? std::string("-1") : ("coalesce(" + c_s + ", -1)"));
+  sql += ", " + (c_v.empty() ? std::string("-1") : ("coalesce(" + c_v + ", -1)"));
+  sql += ", " + (c_met.empty() ? std::string("0") : ("coalesce(" + c_met + ", 0)"));
+  sql += ", " + (c_seq.empty() ? std::string("0") : ("coalesce(" + c_seq + ", 0)"));
+  sql += " from AIPlayerColors order by " + (c_id.empty() ? std::string("rowid") : c_id);
+
+  const bool ok = db.each(
+      sql, {},
+      [&](sqlite3_stmt* s) {
+        AiPlayerColor row;
+        row.id = i64(s, 0);
+        row.ai_player_id = i64(s, 1);
+        row.metallic = i64(s, 9) != 0;
+        row.color_sequence = i64(s, 10);
+        if (!c_rgb.empty()) {
+          const int ctype = sqlite3_column_type(s, 2);
+          if (ctype == SQLITE_INTEGER) {
+            row.rgb = uint32_t(i64(s, 2)) & 0xFFFFFFu;
+            row.has_rgb = true;
+          } else {
+            std::string raw = txt(s, 2);
+            if (!raw.empty()) {
+              const char* p = raw.c_str();
+              if (*p == '#') ++p;
+              else if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+              char* end = nullptr;
+              const bool hex_hint = (!raw.empty() && raw[0] == '#') || raw.find_first_of("abcdefABCDEFxX") != std::string::npos;
+              const unsigned long parsed = std::strtoul(p, &end, hex_hint ? 16 : 10);
+              if (end != p) {
+                row.rgb = uint32_t(parsed) & 0xFFFFFFu;
+                row.has_rgb = true;
+              }
+            }
+          }
+        } else if (!c_r.empty() && !c_g.empty() && !c_b.empty()) {
+          double rv = d(s, 3), gv = d(s, 4), bv = d(s, 5);
+          if (rv >= 0.0 && gv >= 0.0 && bv >= 0.0) {
+            if (rv <= 1.0 && gv <= 1.0 && bv <= 1.0) rv *= 255.0, gv *= 255.0, bv *= 255.0;
+            const uint32_t ri = uint32_t(std::clamp(std::lround(rv), 0l, 255l));
+            const uint32_t gi = uint32_t(std::clamp(std::lround(gv), 0l, 255l));
+            const uint32_t bi = uint32_t(std::clamp(std::lround(bv), 0l, 255l));
+            row.rgb = (ri << 16) | (gi << 8) | bi;
+            row.has_rgb = true;
+          }
+        } else if (!c_h.empty() && !c_s.empty() && !c_v.empty()) {
+          const double hv = d(s, 6), sv = d(s, 7), vv = d(s, 8);
+          if (hv >= 0.0 && sv >= 0.0 && vv >= 0.0) {
+            row.rgb = hsv_to_rgb24(hv, sv, vv);
+            row.has_rgb = true;
+          }
+        }
+        out.push_back(row);
+      },
+      &err);
+  return ok && !out.empty();
 }
 
 }  // namespace
@@ -74,6 +198,15 @@ const TemperamentRow* EventData::temperament(int id) const {
   for (const auto& r : temperaments)
     if (r.id == id) return &r;
   return nullptr;
+}
+const AiPlayerColor* EventData::ai_player_color(const Opponent& opp) const {
+  if (ai_player_colors.empty()) return nullptr;
+  if (opp.ai_player_id > 0) {
+    for (const auto& c : ai_player_colors)
+      if (c.ai_player_id == opp.ai_player_id) return &c;
+  }
+  const uint64_t key = opp.ai_player_id > 0 ? uint64_t(opp.ai_player_id) : uint64_t(std::max<int64_t>(0, opp.participant_id));
+  return &ai_player_colors[size_t(key % ai_player_colors.size())];
 }
 
 double stock_performance_index(const std::filesystem::path& game_root, const std::string& media,
@@ -151,28 +284,40 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  [&](sqlite3_stmt* s) { out.prize_car = i64(s, 0); }, error))
       return false;
   }
+  auto load_participant = [&](sqlite3_stmt* s, bool has_tuning_livery) {
+    Opponent o;
+    o.participant_id = i64(s, 0);
+    o.car_id = i64(s, 1);
+    o.car_media = txt(s, 2);
+    o.ai_player_id = i64(s, 3);
+    o.driver = txt(s, 4);
+    o.skill_modifier = int(i64(s, 5));
+    o.aggro_modifier = int(i64(s, 6));
+    o.rubberband_modifier = int(i64(s, 7));
+    o.performance_index = d(s, 8);
+    o.color_sequence = i64(s, 9);
+    if (has_tuning_livery) {
+      o.tuning_level = int(i64(s, 10));
+      o.livery_level = int(i64(s, 11));
+    }
+    out.opponents.push_back(std::move(o));
+  };
   if (!db.each("select p.ID, p.Ordinal, coalesce(c.MediaName, ''), p.AIPlayerID, coalesce(a.Name, ''), "
                "coalesce(a.SkillModifier, 0), coalesce(a.AggroModifier, 0), coalesce(a.RubberBandModifier, 0), "
-               "coalesce(c.PerformanceIndex, 0), coalesce(p.ColorSequence, 0) "
+               "coalesce(c.PerformanceIndex, 0), coalesce(p.ColorSequence, 0), "
+               "coalesce(p.TuningLevel, 0), coalesce(p.LiveryLevel, 0) "
                "from EventParticipants p left join AIPlayers a on a.Id = p.AIPlayerID "
                "left join Data_Car c on c.Id = p.Ordinal where p.EventID = ? order by p.ID",
-               {ev},
-               [&](sqlite3_stmt* s) {
-                 Opponent o;
-                 o.participant_id = i64(s, 0);
-                 o.car_id = i64(s, 1);
-                 o.car_media = txt(s, 2);
-                 o.ai_player_id = i64(s, 3);
-                 o.driver = txt(s, 4);
-                 o.skill_modifier = int(i64(s, 5));
-                 o.aggro_modifier = int(i64(s, 6));
-                 o.rubberband_modifier = int(i64(s, 7));
-                 o.performance_index = d(s, 8);
-                 o.color_sequence = i64(s, 9);
-                 out.opponents.push_back(std::move(o));
-               },
-               error))
-    return false;
+               {ev}, [&](sqlite3_stmt* s) { load_participant(s, true); }, nullptr)) {
+    out.opponents.clear();
+    if (!db.each("select p.ID, p.Ordinal, coalesce(c.MediaName, ''), p.AIPlayerID, coalesce(a.Name, ''), "
+                 "coalesce(a.SkillModifier, 0), coalesce(a.AggroModifier, 0), coalesce(a.RubberBandModifier, 0), "
+                 "coalesce(c.PerformanceIndex, 0), coalesce(p.ColorSequence, 0) "
+                 "from EventParticipants p left join AIPlayers a on a.Id = p.AIPlayerID "
+                 "left join Data_Car c on c.Id = p.Ordinal where p.EventID = ? order by p.ID",
+                 {ev}, [&](sqlite3_stmt* s) { load_participant(s, false); }, error))
+      return false;
+  }
   if (!db.each("select id, SoloLapping_BrakingMinimum, SoloLapping_BrakingMaximum, SoloLapping_CorneringMinimum, "
                "SoloLapping_CorneringMaximum, SoloLapping_DistBehindForMaxPerformance, SoloLapping_NominalTorqueScale, "
                "SoloLapping_FarBehindTorqueBoost, Rubberbands_id from AISkills order by id",
@@ -229,6 +374,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
   std::string adj_err;
   db.each("select TimeRatio, SkillAdjustment from AISkillAdjustments order by TimeRatio", {},
           [&](sqlite3_stmt* s) { out.skill_adjustments.emplace_back(int(i64(s, 0)), int(i64(s, 1))); }, &adj_err);
+  read_ai_player_colors(db, out.ai_player_colors);
   return true;
 }
 
@@ -405,6 +551,14 @@ bool load_ai_player_names(const std::filesystem::path& game_root, std::vector<st
           },
           nullptr);
   return !out.empty();
+}
+
+bool load_ai_player_colors(const std::filesystem::path& game_root, std::vector<AiPlayerColor>& out,
+                           const std::filesystem::path& state_root, const cars::PartsDb* db_in) {
+  out.clear();
+  Db db;
+  if (!db.open(game_root, state_root, db_in, nullptr)) return false;
+  return read_ai_player_colors(db, out);
 }
 
 }  // namespace race

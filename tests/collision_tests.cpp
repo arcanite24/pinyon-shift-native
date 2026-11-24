@@ -33,9 +33,86 @@ struct KeyHash {
   size_t operator()(const std::string& s) const { return std::hash<std::string>()(s); }
 };
 
+void test_surface_physics_extras_parser() {
+  const char* kXml = R"xml(
+<SurfaceTypesData>
+  <SurfaceTypesList>
+    <SurfaceType value="Asphalt"/>
+    <SurfaceType value="DeepMud"/>
+    <SurfaceType value="Guardrail"/>
+    <SurfaceType value="UndefinedKerb"/>
+  </SurfaceTypesList>
+  <CarWorldCollFricMods>
+    <Guardrail value="0.25"/>
+    <SoftWorld FrictionScale="1.6"/>
+  </CarWorldCollFricMods>
+  <CategoryToCategoryParams>
+    <Pair CategoryA="Car" CategoryB="HardWorld" Friction="0.18" Restitution="0.05"/>
+    <Car>
+      <SoftWorld Friction="0.65" Restitution="0.02"/>
+    </Car>
+  </CategoryToCategoryParams>
+  <SurfaceTypes>
+    <Asphalt Category="HardWorld">
+      <MaxSteeringLockCap value="90.0"/>
+      <LinearDrag value="0.0"/>
+      <AngularDrag value="0.0"/>
+      <ChaseCamSpringMultiplier value="1.0"/>
+      <SteerTorque value="1.0"/>
+    </Asphalt>
+    <DeepMud Category="SoftWorld">
+      <MaxSteeringLockCap value="25.0"/>
+      <LinearDrag value="1.8"/>
+      <AngularDrag value="1.2"/>
+      <ChaseCamSpringMultiplier value="0.65"/>
+      <SteerTorque value="0.55"/>
+      <Springiness>
+        <IsSpringy value="true"/>
+        <SpringK value="45.0"/>
+        <NormDepSpringNormYCutoff value="0.80"/>
+        <NormDepSpringSpeedCutoff value="6.0"/>
+      </Springiness>
+    </DeepMud>
+    <Guardrail Category="Metal">
+      <MaxSteeringLockCap value="0.0"/>
+    </Guardrail>
+  </SurfaceTypes>
+</SurfaceTypesData>
+)xml";
+  world::SurfaceTableExtras ex;
+  std::string err;
+  CHECK(world::parse_surface_physics_extras(kXml, ex, &err));
+  CHECK(ex.surfaces.size() == 4);
+  CHECK(ex.surfaces[0].defined && std::fabs(ex.surfaces[0].max_steering_lock_cap_deg - 90.0f) < 1e-4f);
+  // Retail stores MaxSteeringLockCap in degrees (25.0 deg), not normalized [0.35, 1.0].
+  CHECK(ex.surfaces[1].defined && std::fabs(ex.surfaces[1].max_steering_lock_cap_deg - 25.0f) < 1e-4f);
+  CHECK(std::fabs(ex.surfaces[1].linear_drag - 1.8f) < 1e-4f);
+  CHECK(std::fabs(ex.surfaces[1].angular_drag - 1.2f) < 1e-4f);
+  CHECK(std::fabs(ex.surfaces[1].chase_cam_spring_mult - 0.65f) < 1e-4f);
+  CHECK(std::fabs(ex.surfaces[1].steer_torque - 0.55f) < 1e-4f);
+  CHECK(std::fabs(ex.surfaces[1].car_world_coll_fric_mod - 1.6f) < 1e-4f);
+  CHECK(std::fabs(ex.surfaces[1].spring_norm_y_cutoff - 0.80f) < 1e-4f);
+  CHECK(std::fabs(ex.surfaces[1].spring_speed_cutoff - 6.0f) < 1e-4f);
+  CHECK(std::fabs(ex.surfaces[2].car_world_coll_fric_mod - 0.25f) < 1e-4f);
+  CHECK(!ex.surfaces[3].defined && std::fabs(ex.surfaces[3].max_steering_lock_cap_deg - 90.0f) < 1e-4f);
+
+  const auto* p_hard = ex.find_category_params("Car", "HardWorld");
+  const auto* p_hard_rev = ex.find_category_params("HardWorld", "Car");
+  CHECK(p_hard != nullptr && p_hard == p_hard_rev);
+  CHECK(p_hard && p_hard->has_friction && std::fabs(p_hard->friction - 0.18f) < 1e-4f);
+  CHECK(p_hard && p_hard->has_restitution && std::fabs(p_hard->restitution - 0.05f) < 1e-4f);
+  const auto* p_soft = ex.find_category_params("Car", "SoftWorld");
+  CHECK(p_soft != nullptr && std::fabs(p_soft->friction - 0.65f) < 1e-4f);
+}
+
 }  // namespace
 
 int main() {
+  test_surface_physics_extras_parser();
+  if (failures) {
+    std::printf("%d failure(s) in synthetic surface tests\n", failures);
+    return 1;
+  }
   const char* root = std::getenv("SHIFT_GAME_ROOT");
   if (!root) {
     std::printf("collision_tests: SHIFT_GAME_ROOT not set, skipped\n");

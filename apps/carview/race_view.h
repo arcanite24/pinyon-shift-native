@@ -17,6 +17,7 @@
 
 #include "drive/ai_driver.h"
 #include "drive/contact.h"
+#include "drive/lamps.h"
 #include "drive/vehicle.h"
 #include "garage/garage.h"
 #include "race/difficulty.h"
@@ -25,6 +26,7 @@
 #include "race/rally.h"
 #include "race/rally_codriver.h"
 #include "race/rewards.h"
+#include "race/rivals.h"
 #include "race/route.h"
 #include "race/session.h"
 #include "race/showcase.h"
@@ -201,6 +203,15 @@ class RaceView {
   double stage_finish_time() const { return session_ && session_->finished(player_index()) ? session_->car(player_index()).finish : -1.0; }
   race::RallyPaceNoteTracker& codriver() { return codriver_; }
   const race::RallyPaceNoteTracker& codriver() const { return codriver_; }
+  // Rivals / Time-Attack ghost playback & recording hooks.
+  void set_ghost(race::GhostRun run, Showroom* model = nullptr, float alpha = 0.42f);
+  void set_ghost_model(Showroom* model) { ghost_model_ = model; }
+  void clear_ghost();
+  bool has_ghost() const { return ghost_active_ && !ghost_run_.empty(); }
+  const race::GhostRun& ghost_run() const { return ghost_run_; }
+  bool ghost_sample(race::GhostSample& out) const;
+  void enable_ghost_recording(bool on);
+  const race::GhostRun& recorded_ghost() const { return recorded_ghost_; }
   std::string summary() const;
 
   // Full race-world rewind snapshot & restore (P0-4): captures every AI rival
@@ -215,6 +226,8 @@ class RaceView {
       double px = 0.0, pz = 0.0;
       bool far = false;
       float traction_cap = 1.0f;
+      drive::CarLampState lamps{};
+      bool lamps_initialized = false;
       AiCarState(const drive::Vehicle& v) : body(v) {}
     };
     race::Session::Snapshot session;
@@ -249,6 +262,13 @@ class RaceView {
     float traction_cap = 1;  // drive::ai_traction's state
     drive::AiCapacity capacity;  // the speed planner's tables (SPEC-RACE-AI)
     double upgrade_t = 0;        // AI car upgrades: > 0 up, < 0 down (fraction of the range)
+    int target_shown_pi = 0;     // faked target shown PI when UpgradeAI is active
+    int upgraded_shown_pi = 0;   // solved/upgraded shown PI displayed on HUD & standings
+    double upgraded_raw_pi = 0;  // solved/upgraded raw PI
+    bool has_ai_paint = false;   // AIPlayerColors sRGB->linear override when ColorSequence == 0
+    float ai_paint_rgb[3] = {1.0f, 1.0f, 1.0f};
+    drive::CarLampState lamps{}; // persistent per-AI lamp state (15-tick brake hold & headlamp stagger)
+    bool lamps_initialized = false;
   };
   void reset_car(drive::Vehicle& v, size_t i, const drive::Ground& near, double cx, double cz, double radius);
   std::string name_of(size_t i) const;
@@ -260,8 +280,9 @@ class RaceView {
   race::EventData event_;
   race::CarNames names_;
   race::Route route_;
-  // The class bands and the player's raw index, for the results table.
+  // The class bands, PI virtual-lap config, and the player's raw index.
   std::vector<garage::ClassBand> bands_;
+  garage::PiConfig pi_cfg_;
   double player_pi_ = -1;
   race::AiLineFile owt_;
   race::RaceLine line_;
@@ -318,6 +339,13 @@ class RaceView {
   std::vector<ReplayRow> replay_;
   std::optional<race::RaceAward> award_;
   race::ShowcaseOpponent showcase_;
+  // Active Rivals / Time-Attack ghost run and optional recording buffer.
+  race::GhostRun ghost_run_;
+  bool ghost_active_ = false;
+  float ghost_alpha_ = 0.42f;
+  Showroom* ghost_model_ = nullptr;
+  bool record_ghost_ = false;
+  race::GhostRun recorded_ghost_;
   // Persistent worker pool for parallel multi-car AI physics steps (zero per-step spawn cost).
   struct PhysicsStepPool;
   std::unique_ptr<PhysicsStepPool> step_pool_;

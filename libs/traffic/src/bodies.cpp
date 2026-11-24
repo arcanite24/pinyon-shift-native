@@ -25,6 +25,7 @@ BodiesOptions bodies_options(const TrafficConfig& c) {
   o.gains_length_max = c.gains_length_max;
   o.accel_max = c.accel_max;
   o.decel_max = c.decel_max;
+  o.gear_max_speed = c.gear_max_speed;
   return o;
 }
 
@@ -70,7 +71,9 @@ drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v, double
   const double max_step = kSteerRate * drive::Vehicle::kStep;
   prev_steer += std::clamp(want_steer - prev_steer, -max_step, max_step);
   in.steer = prev_steer;
-  speed_input(car.target, speed, o_, in);
+  double target = car.target;
+  if (o_.gear_max_speed[3] > 0.0) target = std::min(target, o_.gear_max_speed[3]);
+  speed_input(target, speed, o_, in);
   return in;
 }
 
@@ -132,11 +135,14 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
     if (c.physics) wanted.insert(c.id);
   for (auto it = bodies_.begin(); it != bodies_.end();)
     it = wanted.count(it->first) ? std::next(it) : bodies_.erase(it);
-  // Make the new ones on the move, from the lane pose.
+  // Make the new ones on the move, from the lane pose (verify ground exists first so
+  // Race AI promotions near streamed collision edges never drop a car through a hole).
   for (const auto& c : cars) {
     if (!c.physics || bodies_.count(c.id)) continue;
     const drive::CarParams* p = params_(c.model);
     if (!p) continue;
+    drive::Hit hit;
+    if (!ground.raycast({c.position.x, c.position.y + 4.0, c.position.z}, {0, -1, 0}, 12.0, hit)) continue;
     Body b;
     b.v = std::make_unique<drive::Vehicle>(*p);
     b.v->set_ai_controls(true);
@@ -202,6 +208,8 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
     const Vec3 u = drive::rotate(v.orientation(), {0, 1, 0});
     pop_.follow(i, {at.x, at.y, at.z}, std::atan2(f.x, f.z), v.speed(), u.y);
     cars[i].pitch = std::asin(std::clamp(f.y, -1.0, 1.0));
+    if (v.gear() > 0) cars[i].gear = v.gear();
+    if (v.rpm() > 100.0) cars[i].rpm = v.rpm();
   }
 }
 

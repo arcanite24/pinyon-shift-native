@@ -71,16 +71,39 @@ void parse_motor_pair(std::string_view section, std::string_view channel, Rumble
   std::string_view body;
   if (!find_section(section, channel, body)) return;
   std::map<std::string, std::string> a;
-  if (find_tag_attrs(body, "LeftMotor", a)) parse_curve(a, out.left);
-  if (find_tag_attrs(body, "RightMotor", a)) parse_curve(a, out.right);
+  bool any = false;
+  if (find_tag_attrs(body, "LeftMotor", a)) {
+    parse_curve(a, out.left);
+    any = true;
+  }
+  if (find_tag_attrs(body, "RightMotor", a)) {
+    parse_curve(a, out.right);
+    any = true;
+  }
+  if (!any && (find_tag_attrs(body, "WheelMotor", a) || find_tag_attrs(body, "Motor", a))) {
+    parse_curve(a, out.left);
+    parse_curve(a, out.right);
+  }
 }
 
 void parse_event_pair(std::string_view section, std::string_view channel, RumbleEventPair& out) {
   std::string_view body;
   if (!find_section(section, channel, body)) return;
   std::map<std::string, std::string> a;
-  if (find_tag_attrs(body, "LeftMotor", a)) out.left = parse_number(a, "rumble");
-  if (find_tag_attrs(body, "RightMotor", a)) out.right = parse_number(a, "rumble");
+  bool any = false;
+  if (find_tag_attrs(body, "LeftMotor", a)) {
+    out.left = parse_number(a, "rumble");
+    any = true;
+  }
+  if (find_tag_attrs(body, "RightMotor", a)) {
+    out.right = parse_number(a, "rumble");
+    any = true;
+  }
+  if (!any && (find_tag_attrs(body, "WheelMotor", a) || find_tag_attrs(body, "Motor", a))) {
+    const double v = parse_number(a, "rumble");
+    out.left = v;
+    out.right = v;
+  }
 }
 
 }  // namespace
@@ -123,8 +146,28 @@ bool parse_controller_rumble(std::string_view xml, RumbleConfig& out, std::strin
   parse_event_pair(section, "OnShift", out.on_shift);
   parse_event_pair(section, "OnEngineSputter", out.on_engine_sputter);
   parse_event_pair(section, "OnBackfire", out.on_backfire);
+  if (wheel) {
+    std::map<std::string, std::string> a;
+    if (find_tag_attrs(section, "SteerTorque", a) || find_tag_attrs(section, "SteerTorqueScale", a)) {
+      const double sc = parse_number(a, "value", parse_number(a, "scale", 1.0));
+      if (sc > 0.0) out.wheel_steer_torque_scale = sc;
+    }
+  }
+  out.is_wheel = wheel;
   out.loaded = true;
   return true;
+}
+
+double world_collision_rumble_input(double contact_force_n, double step_dt, double mass_kg) {
+  if (!(contact_force_n > 0.0) || !(step_dt > 0.0)) return 0.0;
+  // Convert body contact force (N) over a step into mass-normalized
+  // CarToWorldCollision curve units aligned with LeftMotor x0 = 20, x1 = 70, x2 = 350.
+  const double m_ref = 1400.0 / std::max(300.0, mass_kg);
+  return (contact_force_n * step_dt * m_ref) / 5.0;
+}
+
+bool should_trigger_shift_rumble(int prev_gear, int new_gear) {
+  return new_gear != prev_gear && new_gear > 0;
 }
 
 uint16_t RumbleOutput::left_u16() const {
@@ -184,11 +227,17 @@ RumbleOutput GamepadRumble::update(double dt, const RumbleInput& in) {
     return {};
   }
 
+  const double world_imp =
+      in.car_to_world_impulse > 0.0
+          ? in.car_to_world_impulse
+          : world_collision_rumble_input(in.car_to_world_force_n, 1.0 / 120.0, in.car_mass_kg);
+
   trigger_pulse(car_car_, in.car_to_car_impulse, cfg_.car_to_car_collision, cfg_.car_to_car_collision_time);
-  trigger_pulse(car_world_, in.car_to_world_impulse, cfg_.car_to_world_collision, cfg_.car_to_world_collision_time);
+  trigger_pulse(car_world_, world_imp, cfg_.car_to_world_collision, cfg_.car_to_world_collision_time);
   trigger_pulse(car_object_, in.car_to_object_impulse, cfg_.car_to_object_collision, cfg_.car_to_object_collision_time);
 
-  if (in.on_shift) shift_rem_ = kEventHold;
+  // Suppress OnShift rumble when shifting into Neutral (0) or Reverse (-1).
+  if (in.on_shift && in.gear > 0) shift_rem_ = kEventHold;
   if (in.on_engine_sputter) sputter_rem_ = kEventHold;
   if (in.on_backfire) backfire_rem_ = kEventHold;
 
@@ -196,6 +245,8 @@ RumbleOutput GamepadRumble::update(double dt, const RumbleInput& in) {
   // to zero at standstill so a parked car never hums or vibrates constantly.
   const double motion_gate =
       (in.speed_mps < 0.0) ? 1.0 : std::clamp((std::fabs(in.speed_mps) - 0.35) / 1.0, 0.0, 1.0);
+  const double wheel_scale = cfg_.is_wheel ? std::clamp(cfg_.wheel_steer_torque_scale, 0.0, 3.0) : 1.0;
+  const double surf_steer_scale = std::clamp(in.surface_steer_torque_scale, 0.0, 3.0) * wheel_scale;
 
   double left = 0.0, right = 0.0;
   auto add = [&](const RumbleMotorPair& pair, double val, double gain = 1.0) {
@@ -203,13 +254,13 @@ RumbleOutput GamepadRumble::update(double dt, const RumbleInput& in) {
     left += pair.left.evaluate(val) * gain;
     right += pair.right.evaluate(val) * gain;
   };
-  add(cfg_.engine_norm_rpm, in.engine_norm_rpm);
-  add(cfg_.transmission_rpm, in.transmission_rpm, motion_gate);
-  add(cfg_.tire_traction, in.tire_traction, motion_gate);
-  add(cfg_.tire_traction_front, in.tire_traction_front, motion_gate);
-  add(cfg_.tire_traction_rear, in.tire_traction_rear, motion_gate);
-  add(cfg_.air_friction, in.air_friction, motion_gate);
-  add(cfg_.surface_bumpiness, in.surface_bumpiness, motion_gate);
+  add(cfg_.engine_norm_rpm, in.engine_norm_rpm, wheel_scale);
+  add(cfg_.transmission_rpm, in.transmission_rpm, motion_gate * wheel_scale);
+  add(cfg_.tire_traction, in.tire_traction, motion_gate * surf_steer_scale);
+  add(cfg_.tire_traction_front, in.tire_traction_front, motion_gate * surf_steer_scale);
+  add(cfg_.tire_traction_rear, in.tire_traction_rear, motion_gate * surf_steer_scale);
+  add(cfg_.air_friction, in.air_friction, motion_gate * wheel_scale);
+  add(cfg_.surface_bumpiness, in.surface_bumpiness, motion_gate * surf_steer_scale);
 
   step_pulse(car_car_, dt, left, right);
   step_pulse(car_world_, dt, left, right);

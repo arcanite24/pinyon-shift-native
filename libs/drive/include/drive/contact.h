@@ -1,9 +1,10 @@
 // Car-to-car contact (ours until a spec covers it; SPEC-TRAFFIC's traffic
-// bodies use it): each car is its CarParams::size box on the ground plane
-// at its height band; two boxes that overlap are pushed apart by inverse
-// mass and given an impulse with restitution and friction at the deepest
-// corners. The contact normal is chosen with the boxes as they stood one
-// step before (centres moved back by their velocities), so a fast closing
+// bodies use it): each car is its 3D oriented CarParams::size box (with full
+// vertical Y extent and 3D SAT overlap test so jumping over another car never
+// causes phantom mid-air collisions). Two boxes that overlap are pushed apart
+// by inverse mass and given an impulse with restitution and friction at the
+// deepest corners. The contact normal is chosen with the boxes as they stood
+// one step before (centres moved back by their velocities), so a fast closing
 // pair that has sunk deep in one step is pushed back the way it came, not
 // through: no tunnelling while the closing travel in a step stays under the
 // boxes' combined size (about 500 km/h closing at 120 Hz for cars).

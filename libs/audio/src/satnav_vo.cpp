@@ -155,7 +155,72 @@ bool resolve_fev_suffix(const FevProject& proj, std::string_view suffix, std::fi
   return false;
 }
 
+struct CueSpec {
+  SatNavCue cue;
+  const char* metric_event;
+  const char* imperial_event;
+  const char* fsb_needle;
+};
+
+constexpr CueSpec kSatNavCueSpecs[] = {
+    {SatNavCue::kDestGeneric, "/SetDestination/DestinationSet_Generic", "/SetDestination/DestinationSet_Generic", "DestinationSet_Default"},
+    {SatNavCue::kDestFestival, "/SetDestination/DestinationSet_Festival", "/SetDestination/DestinationSet_Festival", "DestinationSet_Festival"},
+    {SatNavCue::kDestFestivalRace, "/SetDestination/DestinationSet_FestivalRace", "/SetDestination/DestinationSet_FestivalRace", "DestinationSet_FestivalRace"},
+    {SatNavCue::kDestShowcase, "/SetDestination/DestinationSet_Showcase", "/SetDestination/DestinationSet_Showcase", "DestinationSet_Showcase"},
+    {SatNavCue::kDestOutpost, "/SetDestination/DestinationSet_HorizonOutpost", "/SetDestination/DestinationSet_HorizonOutpost", "DestinationSet_HorizonOutpost"},
+    {SatNavCue::kDestWorkshop, "/SetDestination/DestinationSet_Workshop", "/SetDestination/DestinationSet_Workshop", "DestinationSet_Workshop"},
+    {SatNavCue::kDestAutoshow, "/SetDestination/DestinationSet_Autoshow", "/SetDestination/DestinationSet_Autoshow", "DestinationSet_Autoshow"},
+    {SatNavCue::kDestPaintShop, "/SetDestination/DestinationSet_Paintshop", "/SetDestination/DestinationSet_Paintshop", "DestinationSet_PaintShop"},
+    {SatNavCue::kDestRaceCentral, "/SetDestination/DestinationSet_RaceCentral", "/SetDestination/DestinationSet_RaceCentral", "DestinationSet_RaceCentral"},
+    {SatNavCue::kDestStreetRace, "/SetDestination/DestinationSet_StreetRace", "/SetDestination/DestinationSet_StreetRace", "DestinationSet_StreetRace"},
+    {SatNavCue::kDestReset, "/SetDestination/DestinationReset", "/SetDestination/DestinationReset", "DestinationReset"},
+    {SatNavCue::kDestCannotBeSet, "/SetDestination/DestinationCannotBeSet", "/SetDestination/DestinationCannotBeSet", "DestinationCannotBeSet"},
+    {SatNavCue::kRecalculating, "/Recalculating", "/Recalculating", "Recalculating"},
+    {SatNavCue::kUTurn, "/TurnAround", "/TurnAround", "UTurn"},
+    {SatNavCue::kTurnLeft, "/Left", "/Left", "left_Turn"},
+    {SatNavCue::kTurnRight, "/Right", "/Right", "Right_Turn"},
+    {SatNavCue::kBearLeft, "/BearLeft", "/BearLeft", "left_Bear"},
+    {SatNavCue::kBearRight, "/BearRight", "/BearRight", "Right_Bear"},
+    {SatNavCue::kSharpLeft, "/SharpLeft", "/SharpLeft", "left_Sharp"},
+    {SatNavCue::kSharpRight, "/SharpRight", "/SharpRight", "Right_Sharp"},
+    {SatNavCue::kNearLeft, "/Metric/NearLeftMetric", "/Imperial/NearLeft", "Metric_left_NearT"},
+    {SatNavCue::kNearRight, "/Metric/NearRightMetric", "/Imperial/NearRight", "Metric_Right_Near"},
+    {SatNavCue::kNearBearLeft, "/Metric/NearBearLeftMetric", "/Imperial/NearBearLeft", "Metric_left_NearB"},
+    {SatNavCue::kNearBearRight, "/Metric/NearBearRightMetric", "/Imperial/NearBearRight", "Metric_BearRight_Near"},
+    {SatNavCue::kNearSharpLeft, "/Metric/NearSharpLeftMetric", "/Imperial/NearSharpLeft", "Metric_left_Sharp"},
+    {SatNavCue::kNearSharpRight, "/Metric/NearSharpRightMetric", "/Imperial/NearSharpRight", "Metric_Right_Shar"},
+    {SatNavCue::kFarLeft, "/Metric/FarLeftMetric", "/Imperial/FarLeft", "Metric_left_FarTu"},
+    {SatNavCue::kFarRight, "/Metric/FarRightMetric", "/Imperial/FarRight", "Metric_Right_FarT"},
+    {SatNavCue::kFarBearLeft, "/Metric/FarBearLeftMetric", "/Imperial/FarBearLeft", "Metric_left_FarBe"},
+    {SatNavCue::kFarBearRight, "/Metric/FarBearRightMetric", "/Imperial/FarBearRight", "Metric_Right_FarB"},
+    {SatNavCue::kFarSharpLeft, "/Metric/FarSharpleftMetric", "/Imperial/FarSharpLeft", "Metric_left_FarSh"},
+    {SatNavCue::kFarSharpRight, "/Metric/FarSharpRightMetric", "/Imperial/FarSharpRight", "Metric_Right_FarS"},
+    {SatNavCue::kExtendedLeft, "/Metric/SatNav_Metric_Left_ExtendedTurn", "/Imperial/SatNav_Imperial_Left_ExtendedTurn", "Metric_Left_ExtendedTurn"},
+    {SatNavCue::kExtendedRight, "/Metric/SatNav_Metric_Right_ExtendedTurn", "/Imperial/SatNav_Imperial_Right_ExtendedTurn", "Metric_Right_ExtendedTurn"},
+    {SatNavCue::kExtendedBearLeft, "/Metric/SatNav_Metric_Left_ExtendedBear", "/Imperial/SatNav_Imperial_Left_ExtendedBear", "Metric_Left_ExtendedBear"},
+    {SatNavCue::kExtendedBearRight, "/Metric/SatNav_Metric_Right_ExtendedBear", "/Imperial/SatNav_Imperial_Right_ExtendedBear", "Metric_Right_ExtendedBear"},
+    {SatNavCue::kExtendedSharpLeft, "/Metric/SatNav_Metric_Left_ExtendedSharp", "/Imperial/SatNav_Imperial_Left_ExtendedSharp", "Metric_Left_ExtendedSharp"},
+    {SatNavCue::kExtendedSharpRight, "/Metric/SatNav_Metric_Right_ExtendedSharp", "/Imperial/SatNav_Imperial_Right_ExtendedSharp", "Metric_Right_ExtendedSharp"},
+    {SatNavCue::kNextJuncLeft, "/NextJuncLeft", "/NextJuncLeft", "left_NextJuncTurn"},
+    {SatNavCue::kNextJuncRight, "/NextJuncRight", "/NextJuncRight", "Right_NextJuncTurn"},
+    {SatNavCue::kNextJuncBearLeft, "/NextJuncBearLeft", "/NextJuncBearLeft", "left_NextJuncBear"},
+    {SatNavCue::kNextJuncBearRight, "/NextJuncBearRight", "/NextJuncBearRight", "Right_NextJuncBear"},
+    {SatNavCue::kNextJuncSharpLeft, "/NextJuncSharpLeft", "/NextJuncSharpLeft", "left_NextJuncSharp"},
+    {SatNavCue::kNextJuncSharpRight, "/NextJuncSharpRight", "/NextJuncSharpRight", "Right_NextJuncSharp"},
+    {SatNavCue::kNearDestination, "/Metric/NearDestination", "/Imperial/NearDestination", "Metric_Destinatio"},
+    {SatNavCue::kFarDestination, "/Metric/FarDestination", "/Imperial/FarDestination", "Metric_Destination_Far"},
+    {SatNavCue::kExtendedDestination, "/Metric/SatNav_Metric_Destination_ExtendedDefault", "/Imperial/SatNav_Imperial_Destination_ExtendedDefault", "Metric_Destination_Extended"},
+    {SatNavCue::kArrived, "/Destinations/Destination", "/Destinations/Destination", "Destination_Defau"},
+};
+
 }  // namespace
+
+const char* satnav_cue_fsb_fallback(SatNavCue cue) {
+  for (const auto& sp : kSatNavCueSpecs) {
+    if (sp.cue == cue) return sp.fsb_needle;
+  }
+  return "";
+}
 
 SatNavVoPlayer::SatNavVoPlayer(int out_rate) : rate_(std::max(8000, out_rate)) { clips_.fill(nullptr); }
 
@@ -227,64 +292,32 @@ bool SatNavVoPlayer::load(const std::filesystem::path& game_root, const std::fil
     if (read_bytes(default_fsb, bytes)) read_fsb4(bytes, fsb_samples, nullptr);
   }
 
-  struct CueSpec {
-    SatNavCue cue;
-    const char* metric_event;
-    const char* imperial_event;
-    const char* fsb_needle;
-  };
-  static constexpr CueSpec kSpecs[] = {
-      {SatNavCue::kDestGeneric, "/SetDestination/DestinationSet_Generic", "/SetDestination/DestinationSet_Generic", "DestinationSet_Default"},
-      {SatNavCue::kDestFestival, "/SetDestination/DestinationSet_Festival", "/SetDestination/DestinationSet_Festival", "DestinationSet_Festival"},
-      {SatNavCue::kDestFestivalRace, "/SetDestination/DestinationSet_FestivalRace", "/SetDestination/DestinationSet_FestivalRace", "DestinationSet_FestivalRace"},
-      {SatNavCue::kDestShowcase, "/SetDestination/DestinationSet_Showcase", "/SetDestination/DestinationSet_Showcase", "DestinationSet_Showcase"},
-      {SatNavCue::kDestOutpost, "/SetDestination/DestinationSet_HorizonOutpost", "/SetDestination/DestinationSet_HorizonOutpost", "DestinationSet_HorizonOutpost"},
-      {SatNavCue::kDestWorkshop, "/SetDestination/DestinationSet_Workshop", "/SetDestination/DestinationSet_Workshop", "DestinationSet_Workshop"},
-      {SatNavCue::kDestAutoshow, "/SetDestination/DestinationSet_Autoshow", "/SetDestination/DestinationSet_Autoshow", "DestinationSet_Autoshow"},
-      {SatNavCue::kDestPaintShop, "/SetDestination/DestinationSet_Paintshop", "/SetDestination/DestinationSet_Paintshop", "DestinationSet_PaintShop"},
-      {SatNavCue::kDestRaceCentral, "/SetDestination/DestinationSet_RaceCentral", "/SetDestination/DestinationSet_RaceCentral", "DestinationSet_RaceCentral"},
-      {SatNavCue::kDestStreetRace, "/SetDestination/DestinationSet_StreetRace", "/SetDestination/DestinationSet_StreetRace", "DestinationSet_StreetRace"},
-      {SatNavCue::kDestReset, "/SetDestination/DestinationReset", "/SetDestination/DestinationReset", "DestinationReset"},
-      {SatNavCue::kRecalculating, "/Recalculating", "/Recalculating", "Recalculating"},
-      {SatNavCue::kUTurn, "/TurnAround", "/TurnAround", "UTurn"},
-      {SatNavCue::kTurnLeft, "/Left", "/Left", "left_Turn"},
-      {SatNavCue::kTurnRight, "/Right", "/Right", "Right_Turn"},
-      {SatNavCue::kBearLeft, "/BearLeft", "/BearLeft", "left_Bear"},
-      {SatNavCue::kBearRight, "/BearRight", "/BearRight", "Right_Bear"},
-      {SatNavCue::kSharpLeft, "/SharpLeft", "/SharpLeft", "left_Sharp"},
-      {SatNavCue::kSharpRight, "/SharpRight", "/SharpRight", "Right_Sharp"},
-      {SatNavCue::kNearLeft, "/Metric/NearLeftMetric", "/Imperial/NearLeft", "Metric_left_NearT"},
-      {SatNavCue::kNearRight, "/Metric/NearRightMetric", "/Imperial/NearRight", "Metric_Right_Near"},
-      {SatNavCue::kNearBearLeft, "/Metric/NearBearLeftMetric", "/Imperial/NearBearLeft", "Metric_left_NearB"},
-      {SatNavCue::kNearBearRight, "/Metric/NearBearRightMetric", "/Imperial/NearBearRight", "Metric_Right_Near"},
-      {SatNavCue::kNearSharpLeft, "/Metric/NearSharpLeftMetric", "/Imperial/NearSharpLeft", "Metric_left_Sharp"},
-      {SatNavCue::kNearSharpRight, "/Metric/NearSharpRightMetric", "/Imperial/NearSharpRight", "Metric_Right_Shar"},
-      {SatNavCue::kFarLeft, "/Metric/FarLeftMetric", "/Imperial/FarLeft", "Metric_left_FarTu"},
-      {SatNavCue::kFarRight, "/Metric/FarRightMetric", "/Imperial/FarRight", "Metric_Right_FarT"},
-      {SatNavCue::kFarBearLeft, "/Metric/FarBearLeftMetric", "/Imperial/FarBearLeft", "Metric_left_FarBe"},
-      {SatNavCue::kFarBearRight, "/Metric/FarBearRightMetric", "/Imperial/FarBearRight", "Metric_Right_FarB"},
-      {SatNavCue::kFarSharpLeft, "/Metric/FarSharpleftMetric", "/Imperial/FarSharpLeft", "Metric_left_FarSh"},
-      {SatNavCue::kFarSharpRight, "/Metric/FarSharpRightMetric", "/Imperial/FarSharpRight", "Metric_Right_FarS"},
-      {SatNavCue::kNearDestination, "/Metric/NearDestination", "/Imperial/NearDestination", "Metric_Destinatio"},
-      {SatNavCue::kArrived, "/Destinations/Destination", "/Destinations/Destination", "Destination_Defau"},
-  };
-
   std::vector<DecodeJob> jobs;
-  for (const auto& sp : kSpecs) {
+  for (const auto& sp : kSatNavCueSpecs) {
     std::filesystem::path bank;
     uint32_t sub = 0;
     const char* ev_suffix = metric ? sp.metric_event : sp.imperial_event;
     bool ok = resolve_fev_suffix(proj, ev_suffix, bank, sub);
     if (!ok && metric) ok = resolve_fev_suffix(proj, sp.imperial_event, bank, sub);
     if (!ok && !fsb_samples.empty() && sp.fsb_needle) {
-      const std::string needle = lower_str(sp.fsb_needle);
-      for (uint32_t i = 0; i < fsb_samples.size(); ++i) {
-        if (lower_str(fsb_samples[i].name).find(needle) != std::string::npos) {
-          bank = default_fsb;
-          sub = i;
-          ok = true;
-          break;
+      auto find_needle = [&](std::string_view n) -> bool {
+        if (n.empty()) return false;
+        const std::string needle = lower_str(std::string(n));
+        for (uint32_t i = 0; i < fsb_samples.size(); ++i) {
+          if (lower_str(fsb_samples[i].name).find(needle) != std::string::npos) {
+            bank = default_fsb;
+            sub = i;
+            return true;
+          }
         }
+        return false;
+      };
+      ok = find_needle(sp.fsb_needle);
+      if (!ok && sp.cue == SatNavCue::kNearBearRight) {
+        ok = find_needle("BearRight_Near") || find_needle("Right_NearBear");
+      }
+      if (!ok && std::string_view(sp.fsb_needle).rfind("Metric_", 0) == 0) {
+        ok = find_needle(std::string_view(sp.fsb_needle).substr(7));
       }
     }
     if (ok && std::filesystem::exists(bank, ec)) jobs.push_back({sp.cue, bank, sub});
@@ -379,7 +412,8 @@ void SatNavVoPlayer::trigger(SatNavCue cue) {
 
   // High-priority interrupts clear stale queued turn calls and start cleanly.
   const bool interrupt = (cue == SatNavCue::kRecalculating || cue == SatNavCue::kArrived ||
-                          cue == SatNavCue::kDestReset || cue == SatNavCue::kUTurn);
+                          cue == SatNavCue::kDestReset || cue == SatNavCue::kDestCannotBeSet ||
+                          cue == SatNavCue::kUTurn);
   if (interrupt || !active_) {
     if (interrupt) pending_head_ = pending_tail_ = 0;
     active_ = true;

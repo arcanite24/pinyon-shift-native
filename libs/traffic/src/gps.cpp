@@ -72,6 +72,16 @@ GpsTurnKind classify_turn(double signed_rad) {
 
 }  // namespace
 
+GpsLookahead gps_lookahead_for_speed(double speed_mps) {
+  const double v = std::clamp(std::fabs(speed_mps), 0.0, 105.0);
+  GpsLookahead th;
+  th.now_m = std::clamp(22.0 + v * 1.4, 30.0, 160.0);
+  th.near_m = std::clamp(90.0 + v * 4.0, 110.0, 460.0);
+  th.far_m = std::clamp(220.0 + v * 8.0, 260.0, 960.0);
+  th.extended_m = std::clamp(450.0 + v * 14.0, 520.0, 1750.0);
+  return th;
+}
+
 const char* gps_turn_label(GpsTurnKind k) {
   switch (k) {
     case GpsTurnKind::kStraight: return "CONTINUE STRAIGHT";
@@ -83,9 +93,22 @@ const char* gps_turn_label(GpsTurnKind k) {
     case GpsTurnKind::kSharpRight: return "SHARP RIGHT";
     case GpsTurnKind::kUTurn: return "TURN AROUND";
     case GpsTurnKind::kArrive: return "DESTINATION AHEAD";
+    case GpsTurnKind::kRoundabout: return "ENTER ROUNDABOUT";
     case GpsTurnKind::kNone:
     default: return "";
   }
+}
+
+size_t GpsSolver::roundabout_node_count() const {
+  size_t c = 0;
+  for (uint8_t v : roundabout_node_) c += (v != 0);
+  return c;
+}
+
+size_t GpsSolver::uturn_node_count() const {
+  size_t c = 0;
+  for (uint8_t v : uturn_node_) c += (v != 0);
+  return c;
 }
 
 void GpsSolver::build(const NavMap& nav) {
@@ -95,6 +118,8 @@ void GpsSolver::build(const NavMap& nav) {
 
   drivable_road_.assign(rds.size(), 0);
   ignore_turn_node_.assign(n_nodes, 0);
+  roundabout_node_.assign(n_nodes, 0);
+  uturn_node_.assign(n_nodes, 0);
   node_xz_.resize(n_nodes);
   adj_.assign(n_nodes, {});
   edge_to_node_.clear();
@@ -103,6 +128,9 @@ void GpsSolver::build(const NavMap& nav) {
   for (size_t i = 0; i < n_nodes; ++i) {
     node_xz_[i] = {nav.nodes[i].x, nav.nodes[i].z};
     if (nav.node_tag(uint32_t(i), "ignore_turn_flags") == "true") ignore_turn_node_[i] = 1;
+    if (nav.node_tag(uint32_t(i), "sat_nav_junction") == "roundabout") roundabout_node_[i] = 1;
+    const std::string_view ut = nav.node_tag(uint32_t(i), "uturn");
+    if (!ut.empty() && ut != "0" && ut != "false") uturn_node_[i] = 1;
   }
 
   auto push_edge = [&](uint32_t u, uint32_t v, int ri, int seg, bool forward, double len, double cost,
@@ -422,9 +450,9 @@ void GpsSolver::extract_turns(GpsRoute& route, const std::vector<int>& point_nod
   route.turns.clear();
   if (route.points.size() < 3) return;
 
-  // Compute smoothed incoming/outgoing horizontal tangent ~18 m before/after vertex i.
-  auto dir_before = [&](size_t i) -> std::array<double, 2> {
-    const double target_s = std::max(0.0, route.s[i] - 18.0);
+  // Compute smoothed incoming/outgoing horizontal tangent `span_m` before/after vertex i.
+  auto dir_before = [&](size_t i, double span_m = 18.0) -> std::array<double, 2> {
+    const double target_s = std::max(0.0, route.s[i] - span_m);
     size_t j = i;
     while (j > 0 && route.s[j] > target_s) --j;
     const double dx = route.points[i].x - route.points[j].x;
@@ -432,8 +460,8 @@ void GpsSolver::extract_turns(GpsRoute& route, const std::vector<int>& point_nod
     const double len = std::hypot(dx, dz);
     return len > 1e-4 ? std::array<double, 2>{dx / len, dz / len} : std::array<double, 2>{0.0, 1.0};
   };
-  auto dir_after = [&](size_t i) -> std::array<double, 2> {
-    const double target_s = std::min(route.total_length, route.s[i] + 18.0);
+  auto dir_after = [&](size_t i, double span_m = 18.0) -> std::array<double, 2> {
+    const double target_s = std::min(route.total_length, route.s[i] + span_m);
     size_t j = i;
     while (j + 1 < route.points.size() && route.s[j] < target_s) ++j;
     const double dx = route.points[j].x - route.points[i].x;
@@ -444,13 +472,55 @@ void GpsSolver::extract_turns(GpsRoute& route, const std::vector<int>& point_nod
 
   for (size_t i = 1; i + 1 < route.points.size(); ++i) {
     const int nid = i < point_nodes.size() ? point_nodes[i] : -1;
-    if (nid >= 0 && size_t(nid) < ignore_turn_node_.size() && ignore_turn_node_[size_t(nid)]) continue;
+    const bool is_roundabout = nid >= 0 && size_t(nid) < roundabout_node_.size() && roundabout_node_[size_t(nid)] != 0;
+    const bool is_uturn_tag = nid >= 0 && size_t(nid) < uturn_node_.size() && uturn_node_[size_t(nid)] != 0;
+    if (!is_roundabout && !is_uturn_tag && nid >= 0 && size_t(nid) < ignore_turn_node_.size() &&
+        ignore_turn_node_[size_t(nid)]) {
+      continue;
+    }
 
     const bool is_junction = nid >= 0 && size_t(nid) < roads_.node_count() && roads_.degree(uint32_t(nid)) >= 3;
     const auto d0 = dir_before(i);
     const auto d1 = dir_after(i);
     const double ang = signed_turn(d0[0], d0[1], d1[0], d1[1]);
     const double deg = std::fabs(ang) * kDeg;
+
+    if (is_roundabout) {
+      // Sample wider 45 m entry/exit headings to determine roundabout exit direction for VO.
+      const auto d0w = dir_before(i, 45.0);
+      const auto d1w = dir_after(i, 45.0);
+      const double exit_ang = signed_turn(d0w[0], d0w[1], d1w[0], d1w[1]);
+      GpsTurnKind exit_kind = classify_turn(exit_ang);
+      if (exit_kind == GpsTurnKind::kStraight || exit_kind == GpsTurnKind::kNone) {
+        exit_kind = GpsTurnKind::kBearRight;
+      }
+      if (!route.turns.empty() && route.turns.back().is_roundabout && route.s[i] - route.turns.back().route_s < 65.0) {
+        continue;
+      }
+      route.turns.push_back(
+          {route.s[i], GpsTurnKind::kRoundabout, exit_ang, route.points[i].x, route.points[i].z, true, true, exit_kind});
+      continue;
+    }
+
+    if (is_uturn_tag) {
+      // Only announce a U-turn when the route actually reverses direction through the tagged node
+      // (either sharply at the node or across a two-segment median turnaround).
+      double wide_deg = deg;
+      if (deg >= 75.0 && deg < 115.0) {
+        const auto d0w = dir_before(i, 45.0);
+        const auto d1w = dir_after(i, 45.0);
+        wide_deg = std::fabs(signed_turn(d0w[0], d0w[1], d1w[0], d1w[1])) * kDeg;
+      }
+      if (deg >= 115.0 || wide_deg >= 135.0) {
+        if (!route.turns.empty() && route.turns.back().kind == GpsTurnKind::kUTurn &&
+            route.s[i] - route.turns.back().route_s < 55.0) {
+          continue;
+        }
+        route.turns.push_back({route.s[i], GpsTurnKind::kUTurn, ang, route.points[i].x, route.points[i].z, is_junction,
+                               false, GpsTurnKind::kUTurn});
+        continue;
+      }
+    }
 
     // Emit a turn at junctions when deflection >= 24 deg, or at sharp non-junction corners >= 58 deg.
     if ((!is_junction && deg < 58.0) || deg < 24.0) continue;
@@ -459,12 +529,15 @@ void GpsSolver::extract_turns(GpsRoute& route, const std::vector<int>& point_nod
 
     // Merge consecutive vertices belonging to the same junction within 30 m.
     if (!route.turns.empty() && route.s[i] - route.turns.back().route_s < 30.0) {
-      if (std::fabs(ang) > std::fabs(route.turns.back().angle_rad)) {
-        route.turns.back() = {route.s[i], kind, ang, route.points[i].x, route.points[i].z};
+      if (!route.turns.back().is_roundabout && route.turns.back().kind != GpsTurnKind::kUTurn &&
+          std::fabs(ang) > std::fabs(route.turns.back().angle_rad)) {
+        route.turns.back() = {route.s[i], kind, ang, route.points[i].x, route.points[i].z, is_junction, false,
+                              GpsTurnKind::kNone};
       }
       continue;
     }
-    route.turns.push_back({route.s[i], kind, ang, route.points[i].x, route.points[i].z});
+    route.turns.push_back(
+        {route.s[i], kind, ang, route.points[i].x, route.points[i].z, is_junction, false, GpsTurnKind::kNone});
   }
 }
 
@@ -485,9 +558,12 @@ GpsRoute GpsSolver::solve(double start_x, double start_z, double goal_x, double 
 
 void GpsNavigator::reset_prompt_milestones() {
   last_seg_hint_ = 0;
+  announced_ext_turn_ = -1;
   announced_far_turn_ = -1;
   announced_near_turn_ = -1;
   announced_now_turn_ = -1;
+  announced_ext_dest_ = false;
+  announced_far_dest_ = false;
   announced_near_dest_ = false;
   wrong_dir_time_ = 0.0;
 }
@@ -503,9 +579,13 @@ GpsPromptEvent GpsNavigator::set_destination(double dest_x, double dest_z, GpsDe
   reroute_cooldown_ = 1.0;
   uturn_cooldown_ = 2.0;
 
-  if (!solver_ || !solver_->ready()) return {};
+  if (!solver_ || !solver_->ready()) {
+    return {GpsPromptEvent::Kind::kDestinationCannotBeSet, GpsTurnKind::kNone, kind};
+  }
   route_ = solver_->solve(car_x, car_z, dest_x, dest_z);
-  if (!route_.valid) return {};
+  if (!route_.valid) {
+    return {GpsPromptEvent::Kind::kDestinationCannotBeSet, GpsTurnKind::kNone, kind};
+  }
 
   guidance_.active = true;
   guidance_.dist_to_dest_m = route_.total_length;
@@ -604,33 +684,59 @@ GpsPromptEvent GpsNavigator::update(double car_x, double car_z, double car_headi
     }
   }
 
+  // Continuous speed-scaled lookahead thresholds (zero dead zones, scales up to 200+ mph).
+  const GpsLookahead th = gps_lookahead_for_speed(speed_mps);
+
   if (next_idx >= 0) {
     const GpsTurn& t = route_.turns[size_t(next_idx)];
     const double d_turn = std::max(0.0, t.route_s - best_s);
     guidance_.next_turn = t.kind;
     guidance_.dist_to_turn_m = d_turn;
 
-    if (d_turn <= 50.0 && announced_now_turn_ != next_idx) {
+    if (d_turn <= th.now_m && announced_now_turn_ != next_idx) {
       announced_now_turn_ = next_idx;
       announced_near_turn_ = next_idx;
       announced_far_turn_ = next_idx;
-      return {GpsPromptEvent::Kind::kTurnNow, t.kind, guidance_.dest_kind};
+      announced_ext_turn_ = next_idx;
+      const auto ev_kind = (t.kind == GpsTurnKind::kUTurn) ? GpsPromptEvent::Kind::kUTurn : GpsPromptEvent::Kind::kTurnNow;
+      return {ev_kind, t.kind, guidance_.dest_kind, t.exit_turn};
     }
-    if (d_turn <= 185.0 && d_turn > 65.0 && announced_near_turn_ != next_idx) {
+    if (d_turn <= th.near_m && d_turn > th.now_m && announced_near_turn_ != next_idx) {
       announced_near_turn_ = next_idx;
       announced_far_turn_ = next_idx;
-      return {GpsPromptEvent::Kind::kTurnNear, t.kind, guidance_.dest_kind};
+      announced_ext_turn_ = next_idx;
+      const bool next_junc = t.at_junction && !t.is_roundabout && t.kind != GpsTurnKind::kUTurn && next_idx > 0 &&
+                             (t.route_s - route_.turns[size_t(next_idx - 1)].route_s) <= th.far_m;
+      const auto ev_kind = next_junc ? GpsPromptEvent::Kind::kTurnNextJunction : GpsPromptEvent::Kind::kTurnNear;
+      return {ev_kind, t.kind, guidance_.dest_kind, t.exit_turn};
     }
-    if (d_turn <= 420.0 && d_turn > 220.0 && announced_far_turn_ != next_idx) {
+    if (d_turn <= th.far_m && d_turn > th.near_m && announced_far_turn_ != next_idx) {
       announced_far_turn_ = next_idx;
-      return {GpsPromptEvent::Kind::kTurnFar, t.kind, guidance_.dest_kind};
+      announced_ext_turn_ = next_idx;
+      return {GpsPromptEvent::Kind::kTurnFar, t.kind, guidance_.dest_kind, t.exit_turn};
+    }
+    if (d_turn <= th.extended_m && d_turn > th.far_m && announced_ext_turn_ != next_idx) {
+      announced_ext_turn_ = next_idx;
+      return {GpsPromptEvent::Kind::kTurnExtended, t.kind, guidance_.dest_kind, t.exit_turn};
     }
   } else {
     guidance_.next_turn = GpsTurnKind::kArrive;
     guidance_.dist_to_turn_m = guidance_.dist_to_dest_m;
-    if (guidance_.dist_to_dest_m <= 220.0 && guidance_.dist_to_dest_m > kArrivalMeters && !announced_near_dest_) {
+    const double d_dest = guidance_.dist_to_dest_m;
+    if (d_dest <= th.near_m && d_dest > kArrivalMeters && !announced_near_dest_) {
       announced_near_dest_ = true;
+      announced_far_dest_ = true;
+      announced_ext_dest_ = true;
       return {GpsPromptEvent::Kind::kArrivedNear, GpsTurnKind::kArrive, guidance_.dest_kind};
+    }
+    if (d_dest <= th.far_m && d_dest > th.near_m && !announced_far_dest_) {
+      announced_far_dest_ = true;
+      announced_ext_dest_ = true;
+      return {GpsPromptEvent::Kind::kArrivedFar, GpsTurnKind::kArrive, guidance_.dest_kind};
+    }
+    if (d_dest <= th.extended_m && d_dest > th.far_m && !announced_ext_dest_) {
+      announced_ext_dest_ = true;
+      return {GpsPromptEvent::Kind::kArrivedExtended, GpsTurnKind::kArrive, guidance_.dest_kind};
     }
   }
   return {};

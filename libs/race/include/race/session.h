@@ -8,11 +8,13 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <span>
 #include <vector>
 
 #include "drive/ai_driver.h"
+#include "drive/vehicle.h"
 #include "race/route.h"
 
 namespace race {
@@ -27,6 +29,22 @@ std::vector<int> opponent_slots(int player_slot, int opponents);
 // 0, +1, -2, +3, -4), +5 on a flagged participant.
 int faked_pi_offset(int64_t ordinal, bool flagged = false);
 
+// SPEC-RACE-AI, AI car upgrades step 2: six scales moved together by signed
+// fraction t in [-1, 1] (up: mass 1-0.1t, torque 1+0.4t, friction 1+0.20t;
+// down: mass 1+0.111|t|, torque 1-0.286|t|, friction 1-0.167|t|), solved via
+// 10-iteration bisection (`AIAutoUpgrades\Iterations = 10`).
+struct AiUpgradeScales {
+  double t = 0.0;
+  double mass_scale = 1.0;
+  double torque_scale = 1.0;
+  double friction_scale = 1.0;
+  double rated_pi = 0.0;
+};
+AiUpgradeScales ai_upgrade_scales(double t);
+void apply_ai_upgrade(drive::CarParams& params, double t, int tuning_level = 0);
+AiUpgradeScales solve_ai_upgrade(const drive::CarParams& stock, double stock_pi, double target_pi,
+                                 const std::function<double(const drive::CarParams&)>& rate_pi, int iterations = 10);
+
 struct CarSample {
   double x0 = 0, z0 = 0, x1 = 0, z1 = 0;  // the body reference point before and after the step
   double speed = 0;                       // m/s along the car's forward
@@ -39,9 +57,15 @@ struct CarSample {
 class Session {
  public:
   struct Options {
-    double countdown = 6.0;      // s from the cutscene's start to the start signal
+    double countdown = 6.0;           // s from the cutscene's start to the start signal
     bool resets = true;
-    double rollover_time = 2.0;  // s with up_y < 0.5 before triggering rollover recovery
+    double rollover_time = 2.0;       // s with up_y < 0.5 before triggering rollover recovery
+    double off_route_near = 5.0;      // m off route for 6 s timer (widened to 12.0 m in Street/Nemesis)
+    double off_route_far = 15.0;      // m off route for 3 s timer (widened to 25.0 m in Street/Nemesis)
+    double start_launch_grace = 25.0; // s after start signal before resetting an unlaunched player
+    size_t player_index = size_t(-1); // car index given start-line launch grace (size_t(-1): none)
+    double reset_fade_out = 2.0;      // SPEC-EVENTS: 2 s fade out leading into reset
+    double reset_fade_in = 1.0;       // SPEC-EVENTS: 1 s fade in after reset_done
   };
   struct Car {
     int crossings = 0;
@@ -57,6 +81,9 @@ class Session {
     bool finish_held = false;  // a checkpoint race's earlier gate not passed yet
     bool lap_dirty = false;    // current lap invalidated (e.g. by Rewind)
     bool race_dirty = false;   // any lap in this race invalidated (e.g. by Rewind)
+    bool has_launched = false;       // true once car has moved off the grid after signal
+    double reset_fade_out = 0.0;     // [0..1] fade-out ramp before Hand-of-God trigger
+    double reset_fade_in_timer = 0.0;// s remaining in post-reset fade-in
   };
   struct Snapshot {
     std::vector<Car> cars;
@@ -94,6 +121,8 @@ class Session {
   // while held (an earlier checkpoint not passed).
   void hold_finish(size_t i, bool held) { cars_[i].finish_held = held; }
   bool collides(size_t i) const { return clock_ >= cars_[i].no_collide_until; }
+  // Visibility factor [0, 1] across Hand-of-God 2 s fade-out and 1 s post-reset fade-in.
+  double reset_fade_alpha(size_t i) const;
   // Marks car i's current lap & race uncertified (SPEC-REWIND section 5).
   void mark_lap_dirty(size_t i);
   // Full state snapshot/restore for Rewind rollback.
@@ -123,6 +152,7 @@ class Session {
 // one to pass.
 struct LaneParams {
   float trailing = 7, car_clearance = 0.3f, edge_clearance = 0.4f;
+  float aggression = 0.5f;  // AITemperaments.Passing_AggressionLevel (0..1; higher = more willing to pass)
 };
 // A live street-traffic car projected onto the racing line for race AI
 // overtaking and collision avoidance in Street & Nemesis races.

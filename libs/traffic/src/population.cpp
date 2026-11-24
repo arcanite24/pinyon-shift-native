@@ -30,6 +30,33 @@ uint64_t mix(uint64_t x) {
 
 }  // namespace
 
+void estimate_traffic_gear_rpm(double speed, const std::array<double, 4>& gear_max_speed, int& gear_out,
+                               double& rpm_out) {
+  const double v = std::max(0.0, speed);
+  const double g0 = std::max(4.0, gear_max_speed[0]);
+  const double g1 = std::max(g0 + 2.0, gear_max_speed[1]);
+  const double g2 = std::max(g1 + 2.0, gear_max_speed[2]);
+  const double g3 = std::max(g2 + 2.0, gear_max_speed[3]);
+  double frac = 0.0;
+  if (v < g0) {
+    gear_out = 1;
+    frac = v / g0;
+  } else if (v < g1) {
+    gear_out = 2;
+    frac = (v - g0 * 0.55) / std::max(1.0, g1 - g0 * 0.55);
+  } else if (v < g2) {
+    gear_out = 3;
+    frac = (v - g1 * 0.65) / std::max(1.0, g2 - g1 * 0.65);
+  } else if (v < g3) {
+    gear_out = 4;
+    frac = (v - g2 * 0.70) / std::max(1.0, g3 - g2 * 0.70);
+  } else {
+    gear_out = 5;
+    frac = (v - g3 * 0.75) / std::max(1.0, g3 * 0.45);
+  }
+  rpm_out = 850.0 + std::clamp(frac, 0.0, 1.0) * 4650.0;
+}
+
 Population::Population(const Roads& roads, const TrafficConfig& config, uint64_t seed)
     : roads_(roads), config_(config), rng_(seed) {
   for (const auto& m : config_.models) available_.push_back(m.id);
@@ -149,15 +176,27 @@ int64_t Population::pick_model(const DensityEntry& e) {
   return ok[std::min(ok.size() - 1, size_t(uniform(0, double(ok.size()))))];
 }
 
-bool Population::spawn(const P3& player, double player_speed, bool initial) {
+bool Population::spawn(const P3& player, double player_speed, bool initial, bool has_heading, double fwd_x,
+                       double fwd_z) {
   struct Candidate {
     int road;
     double s, weight;
+    bool behind = false;
   };
   std::vector<Candidate> cands;
   double total = 0;
   const double v = factor();
   const auto& roads = roads_.roads();
+  auto add_cand = [&](int ri, double s, double w) {
+    bool is_behind = false;
+    if (!initial && has_heading) {
+      const P3 pt = roads_.point_at(ri, s);
+      const double dot_fwd = (pt.x - player.x) * fwd_x + (pt.z - player.z) * fwd_z;
+      is_behind = dot_fwd < 0.0;
+    }
+    cands.push_back({ri, s, w, is_behind});
+    total += w;
+  };
   for (int ri = 0; ri < int(roads.size()); ++ri) {
     const Road& r = roads[size_t(ri)];
     const DensityEntry* e = entry(r);
@@ -169,7 +208,7 @@ bool Population::spawn(const P3& player, double player_speed, bool initial) {
       // distance and the spawn-in distance.
       for (double s = 0; s <= r.length; s += 10) {
         const double d = hdist(roads_.point_at(ri, s), player);
-        if (d >= config_.initial_min_distance && d <= config_.spawn_in) cands.push_back({ri, s, w}), total += w;
+        if (d >= config_.initial_min_distance && d <= config_.spawn_in) add_cand(ri, s, w);
       }
       continue;
     }
@@ -183,17 +222,53 @@ bool Population::spawn(const P3& player, double player_speed, bool initial) {
       for (double sign : {-1.0, 1.0}) {
         const double t = (-qb + sign * std::sqrt(disc)) / (2 * qa);
         if (t < 0 || t > 1) continue;
-        cands.push_back({ri, r.s[k] + t * (r.s[k + 1] - r.s[k]), w});
-        total += w;
+        add_cand(ri, r.s[k] + t * (r.s[k + 1] - r.s[k]), w);
       }
     }
   }
+  // Enforce BehindChance / BehindMaxSpeed when player heading is known:
+  // above BehindMaxSpeed, avoid behind-player spawns; at rest/slow speed,
+  // allow behind spawns with probability BehindChance.
+  std::vector<Candidate> pool;
+  double pool_total = 0.0;
+  if (!initial && has_heading && !cands.empty()) {
+    std::vector<Candidate> ahead_cands, behind_cands;
+    double ahead_w = 0.0, behind_w = 0.0;
+    for (const auto& x : cands) {
+      if (x.behind) {
+        behind_cands.push_back(x);
+        behind_w += x.weight;
+      } else {
+        ahead_cands.push_back(x);
+        ahead_w += x.weight;
+      }
+    }
+    if (player_speed > config_.behind_max_speed) {
+      if (!ahead_cands.empty()) {
+        pool = std::move(ahead_cands);
+        pool_total = ahead_w;
+      } else {
+        pool = std::move(cands);
+        pool_total = total;
+      }
+    } else if (!ahead_cands.empty() && !behind_cands.empty()) {
+      const bool pick_behind = uniform(0.0, 1.0) < std::clamp(config_.behind_chance, 0.0, 1.0);
+      pool = pick_behind ? std::move(behind_cands) : std::move(ahead_cands);
+      pool_total = pick_behind ? behind_w : ahead_w;
+    } else {
+      pool = std::move(cands);
+      pool_total = total;
+    }
+  } else {
+    pool = std::move(cands);
+    pool_total = total;
+  }
   const double gap = gap_needed(player_speed);
   // A few tries: a weighted pick, kept clear of the other cars.
-  for (int attempt = 0; attempt < 8 && total > 0; ++attempt) {
-    double pick = uniform(0, total);
-    const Candidate* c = &cands.back();
-    for (const auto& x : cands) {
+  for (int attempt = 0; attempt < 8 && pool_total > 0; ++attempt) {
+    double pick = uniform(0, pool_total);
+    const Candidate* c = &pool.back();
+    for (const auto& x : pool) {
       if (pick < x.weight) {
         c = &x;
         break;
@@ -228,6 +303,7 @@ bool Population::spawn(const P3& player, double player_speed, bool initial) {
     car.model = model;
     car.base_speed = road_speed(r) * (1 + config_.speed_variance * uniform(-1, 1));
     car.speed = car.target = car.base_speed;
+    estimate_traffic_gear_rpm(car.speed, config_.gear_max_speed, car.gear, car.rpm);
     const int lane_idx = (is_multilane(r) && uniform(0, 1) < 0.35) ? 1 : 0;
     if (!place(car, c->road, c->s, dir, lane_idx)) continue;
     const double d = hdist(car.position, player);
@@ -236,6 +312,7 @@ bool Population::spawn(const P3& player, double player_speed, bool initial) {
     } else {
       stats_.spawned++;
       stats_.spawn_distances.push_back(d);
+      if (has_heading && c->behind) stats_.spawned_behind++;
       if (!r.oneway) {
         // Away: its travel takes it farther from the player.
         std::array<double, 2> t;
@@ -245,6 +322,36 @@ bool Population::spawn(const P3& player, double player_speed, bool initial) {
       }
     }
     cars_.push_back(car);
+    // Occasional 2-3 car traffic convoys when TrafficGroupSpawns is active.
+    if (!initial && config_.traffic_group_spawns && double(cars_.size()) < target_ &&
+        uniform(0.0, 1.0) < std::clamp(config_.traffic_convoy_chance, 0.0, 1.0)) {
+      const int extra = uniform(0.0, 1.0) < 0.5 ? 1 : 2;
+      const double spacing = std::max(14.0, gap * 0.85);
+      int added = 0;
+      for (int k = 1; k <= extra && double(cars_.size()) < target_ + 0.5; ++k) {
+        const double fs = c->s - double(dir) * spacing * double(k);
+        if (fs < 2.0 || fs > r.length - 2.0) break;
+        const P3 fpt = roads_.point_at(c->road, fs);
+        bool fclear = true;
+        for (const auto& o : cars_) fclear &= hdist(o.position, fpt) >= 10.0;
+        if (!fclear) break;
+        const int64_t fmodel = pick_model(*e);
+        if (!fmodel) break;
+        Car follower;
+        follower.id = next_id_++;
+        follower.model = fmodel;
+        follower.base_speed = car.base_speed * (1.0 + 0.002 * uniform(-1.0, 1.0));
+        follower.speed = follower.target = follower.base_speed;
+        estimate_traffic_gear_rpm(follower.speed, config_.gear_max_speed, follower.gear, follower.rpm);
+        if (!place(follower, c->road, fs, dir, lane_idx)) break;
+        stats_.spawned++;
+        stats_.spawn_distances.push_back(hdist(follower.position, player));
+        if (has_heading && c->behind) stats_.spawned_behind++;
+        cars_.push_back(follower);
+        ++added;
+      }
+      if (added > 0) stats_.convoys_spawned++;
+    }
     return true;
   }
   return false;
@@ -564,9 +671,11 @@ bool Population::next_junction(const Car& car, double max_dist, uint32_t& node_o
   return false;
 }
 
-void Population::drive(Car& car, double dt, const P3& player, const P3& player_velocity) {
+void Population::drive(Car& car, double dt, const P3& player, const P3& player_velocity,
+                       std::span<const ExternalVehicle> obstacles) {
   const Road& r = roads_.roads()[size_t(car.road)];
   double target = car.base_speed;
+  if (config_.gear_max_speed[3] > config_.speed_min) target = std::min(target, config_.gear_max_speed[3]);
   // Bends ahead: the speed for each point's radius, reached at kBendDecel.
   {
     const double reach = car.speed * car.speed / (2 * kBendDecel) + 20;
@@ -595,7 +704,7 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
   }
   if (car.flash_cooldown > 0) car.flash_cooldown = std::max(0.0, car.flash_cooldown - dt);
 
-  // Junction approach: turn indicators and cross-traffic give-way checks.
+  // Junction approach: turn indicators, SpeedAtGivewayJunctions, and cross-traffic give-way checks.
   {
     uint32_t jnode = 0;
     double jdist = 0, turn_angle = 0;
@@ -608,17 +717,21 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
         car.turn_right = turn_angle > 0;
         car.indicator_hold = config_.time_to_keep_indicating;
       }
-      // Slow smoothly for junction turns well before entering the intersection.
+      // Slow smoothly to SpeedAtGivewayJunctions for junction turns or forced give-way intersections.
+      const double v_giveway = std::clamp(config_.giveway_speed, config_.speed_min, car.base_speed);
       if (std::fabs(turn_angle) > 0.30) {
         const double vturn =
-            std::clamp(16.0 - 7.0 * std::fabs(turn_angle), config_.speed_min, car.base_speed);
+            std::min(v_giveway, std::clamp(16.0 - 7.0 * std::fabs(turn_angle), config_.speed_min, car.base_speed));
         const double brk_d = std::max(0.0, jdist - 5.0);
         target = std::min(target, std::sqrt(vturn * vturn + 2.0 * kBendDecel * brk_d));
+      } else if (config_.junction_force_give_way && jdist < 30.0) {
+        const double brk_d = std::max(0.0, jdist - 4.0);
+        target = std::min(target, std::sqrt(v_giveway * v_giveway + 2.0 * kBendDecel * brk_d));
       }
-      // Give-way against approaching cross-traffic or player.
+      // Give-way against approaching cross-traffic, player, or Race AI opponents.
       if (jdist > 2.5 && !car.off_line) {
         const double t_me = jdist / std::max(2.0, car.speed);
-        auto check_cross = [&](const P3& op, double ovx, double ovz, bool is_player) {
+        auto check_cross = [&](const P3& op, double ovx, double ovz, bool priority) {
           const double dx = jpos.x - op.x, dz = jpos.z - op.z;
           const double od = std::hypot(dx, dz);
           if (od < 1.0 || od > config_.junction_max_collision_check_distance) return;
@@ -627,12 +740,12 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
           const double t_other = od / ov;
           const double gap = config_.junction_safe_time_gap;
           if (t_other < t_me + gap && t_me < t_other + gap) {
-            const bool yield = config_.junction_force_give_way || is_player || od < jdist - 2.0 ||
+            const bool yield = config_.junction_force_give_way || priority || od < jdist - 2.0 ||
                                (std::fabs(turn_angle) > 0.35 && od < jdist + 8.0);
             if (yield) {
               const double stop_d = std::max(0.0, jdist - 6.0);
               const double vstop = stop_d < 1.5 ? 0.0 : std::sqrt(2.0 * config_.decel_max * stop_d);
-              target = std::min(target, vstop);
+              target = std::min(target, std::min(vstop, v_giveway));
             }
           }
         };
@@ -641,11 +754,12 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
           check_cross(o.position, std::sin(o.heading) * o.speed, std::cos(o.heading) * o.speed, false);
         }
         check_cross(player, player_velocity.x, player_velocity.z, true);
+        for (const auto& obs : obstacles) check_cross(obs.position, obs.velocity.x, obs.velocity.z, true);
       }
     }
   }
 
-  // The car or player ahead in the lane: evaluated in the road-lane frame so a
+  // The car, player, or Race AI ahead in the lane: evaluated in the road-lane frame so a
   // temporarily yawed car recovering from a nudge does not false-brake for
   // vehicles parked off the shoulder, while accurately stopping for true
   // in-lane obstacles using kinematic stopping distance.
@@ -670,7 +784,7 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
     if (is_traffic && along < car.base_speed - 1.5) blocked_by_traffic = true;
     const bool oncoming_headon = !is_traffic && along < -1.0;
     if (oncoming_headon && d < need + 14.0) {
-      // Oncoming player directly in our lane: brake sharply while swerving aside.
+      // Oncoming player or Race AI directly in our lane: brake sharply while swerving aside.
       target = std::min(target, std::max(0.0, (d - 10.0) * 0.35));
       emergency_brake = true;
       return;
@@ -693,6 +807,9 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
           kLaneHalfWidth, true);
   }
   ahead(player, player_velocity.x, player_velocity.z, config_.player_search, kPlayerHalfWidth, false);
+  for (const auto& obs : obstacles) {
+    ahead(obs.position, obs.velocity.x, obs.velocity.z, config_.player_search, kPlayerHalfWidth, false);
+  }
 
   // Multi-lane freeway driving & LaneChangeBehavior.
   car.since_lane_change += dt;
@@ -715,6 +832,7 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
       for (const auto& o : cars_)
         if (o.id != car.id) check_lane(o.position);
       check_lane(player);
+      for (const auto& obs : obstacles) check_lane(obs.position);
       if (lane_clear) {
         car.lane_index = new_lane;
         car.since_lane_change = 0;
@@ -730,31 +848,39 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
   }
   car.target_lateral = lane_center(r, car.lane_index);
 
-  // Player swerve avoidance (MaxAvoidOffset / MaxAvoidDistance / MaxAvoidSpeed)
+  // Player / Race AI swerve avoidance (MaxAvoidOffset / MaxAvoidDistance / MaxAvoidSpeed)
   // and CollisionResponse headlight flashing on oncoming lane encroachments.
-  // Evaluated in road-tangent coordinates so avoid_offset always pushes away from the player.
+  // Evaluated in road-tangent coordinates so avoid_offset always pushes away from the encroacher.
   {
     double want_avoid = 0.0;
-    const double rx = player.x - (road_c.x + right[0] * car.target_lateral);
-    const double rz = player.z - (road_c.z + right[1] * car.target_lateral);
-    const double d = rx * fx + rz * fz, lat = rx * right[0] + rz * right[1];
-    const double along = player_velocity.x * fx + player_velocity.z * fz;
-    const double p_speed = std::hypot(player_velocity.x, player_velocity.z);
-    if (!car.off_line && d > 0 && d < config_.avoid_max_distance && std::fabs(lat) < 2.6) {
-      const bool oncoming = along < -1.0;
-      const bool slow_blocker = p_speed < config_.avoid_max_speed && d < 42.0 && std::fabs(lat) < 2.5;
-      if (oncoming || slow_blocker) {
-        const double dir_sign = lat <= 0.2 ? 1.0 : -1.0;
-        const double max_off = std::min(config_.avoid_max_offset, 2.2);
-        const double mag = std::clamp((2.6 - std::fabs(lat)) * 0.9, 0.5, max_off);
-        want_avoid = dir_sign * mag;
-        if (oncoming && car.flash_cooldown <= 0) {
-          car.flash_cooldown = config_.time_between_light_flashes;
-          if (uniform(0, 1) < config_.light_flash_chance) {
-            car.flash_timer = config_.light_flash_time;
-            car.flash_headlamps = true;
-          }
+    double best_d = 1e30;
+    bool flash_trigger = false;
+    auto check_avoid = [&](const P3& p, const P3& vel) {
+      const double rx = p.x - (road_c.x + right[0] * car.target_lateral);
+      const double rz = p.z - (road_c.z + right[1] * car.target_lateral);
+      const double d = rx * fx + rz * fz, lat = rx * right[0] + rz * right[1];
+      const double along = vel.x * fx + vel.z * fz;
+      const double p_speed = std::hypot(vel.x, vel.z);
+      if (!car.off_line && d > 0 && d < config_.avoid_max_distance && d < best_d && std::fabs(lat) < 2.6) {
+        const bool oncoming = along < -1.0;
+        const bool slow_blocker = p_speed < config_.avoid_max_speed && d < 42.0 && std::fabs(lat) < 2.5;
+        if (oncoming || slow_blocker) {
+          best_d = d;
+          const double dir_sign = lat <= 0.2 ? 1.0 : -1.0;
+          const double max_off = std::min(config_.avoid_max_offset, 2.2);
+          const double mag = std::clamp((2.6 - std::fabs(lat)) * 0.9, 0.5, max_off);
+          want_avoid = dir_sign * mag;
+          flash_trigger = oncoming;
         }
+      }
+    };
+    check_avoid(player, player_velocity);
+    for (const auto& obs : obstacles) check_avoid(obs.position, obs.velocity);
+    if (flash_trigger && car.flash_cooldown <= 0) {
+      car.flash_cooldown = config_.time_between_light_flashes;
+      if (uniform(0, 1) < config_.light_flash_chance) {
+        car.flash_timer = config_.light_flash_time;
+        car.flash_headlamps = true;
       }
     }
     const double avoid_step = 2.6 * dt;
@@ -772,9 +898,12 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
   }
   car.target = target;
   if (car.physics && bodies_ && car.body) return;  // the host's body moves it
+  const double prev_speed = car.speed;
   const double decel = emergency_brake ? config_.decel_max * 1.45 : config_.decel_max;
   if (target > car.speed) car.speed = std::min(target, car.speed + config_.accel_max * dt);
   else car.speed = std::max(target, car.speed - decel * dt);
+  car.accel = dt > 1e-6 ? (car.speed - prev_speed) / dt : 0.0;
+  estimate_traffic_gear_rpm(car.speed, config_.gear_max_speed, car.gear, car.rpm);
   if (!car.pose_initialized) pose(car);
   if (car.speed > 0.02) {
     const double look_d = std::clamp(car.speed * 0.70, 9.0, 22.0);
@@ -809,7 +938,10 @@ void Population::follow(size_t index, const P3& body, double heading, double spe
   }
   const double moved = (best_s - car.s) * car.dir;
   if (moved > 0) advance(car, moved);
+  const double inst_accel = (speed - car.speed) * 120.0;
+  car.accel += (inst_accel - car.accel) * 0.25;
   car.speed = speed;
+  estimate_traffic_gear_rpm(car.speed, config_.gear_max_speed, car.gear, car.rpm);
   car.position = body;
   car.heading = heading;
   // Off its line: well away from the lane or across it; back once close
@@ -825,9 +957,21 @@ void Population::follow(size_t index, const P3& body, double heading, double spe
   else car.off_line = lerr > 2.8 || herr > 0.85;
 }
 
-void Population::step(double dt, const P3& player, const P3& player_velocity) {
+void Population::step(double dt, const P3& player, const P3& player_velocity, double player_heading,
+                      std::span<const ExternalVehicle> obstacles) {
   time_ += dt;
   const double player_speed = std::hypot(player_velocity.x, player_velocity.z);
+  bool has_heading = false;
+  double fwd_x = 0.0, fwd_z = 1.0;
+  if (std::isfinite(player_heading)) {
+    has_heading = true;
+    fwd_x = std::sin(player_heading);
+    fwd_z = std::cos(player_heading);
+  } else if (player_speed > 0.5) {
+    has_heading = true;
+    fwd_x = player_velocity.x / player_speed;
+    fwd_z = player_velocity.z / player_speed;
+  }
   if (!started_) {
     started_ = true;
     rotate_models();
@@ -836,7 +980,7 @@ void Population::step(double dt, const P3& player, const P3& player_velocity) {
     measure(player);
     const int cap_init = target_ > 0 ? std::max(1, int(std::ceil(target_))) : 0;
     const int n = std::min({config_.initial_cars, config_.initial_max_cars, cap_init});
-    for (int i = 0; i < n; ++i) spawn(player, player_speed, true);
+    for (int i = 0; i < n; ++i) spawn(player, player_speed, true, has_heading, fwd_x, fwd_z);
     next_test_ = time_ + config_.density_test_interval;
     next_spawn_ = time_ + spawn_interval(player_speed);
   }
@@ -865,7 +1009,7 @@ void Population::step(double dt, const P3& player, const P3& player_velocity) {
   }
   if (time_ >= next_spawn_) {
     if (double(cars_.size()) < target_) {
-      const bool ok = spawn(player, player_speed, false);
+      const bool ok = spawn(player, player_speed, false, has_heading, fwd_x, fwd_z);
       next_spawn_ = time_ + (ok ? spawn_interval(player_speed) : config_.interval_min);
     } else {
       next_spawn_ = time_ + (target_ < 1.5 ? spawn_interval(player_speed) : config_.interval_min);
@@ -915,8 +1059,17 @@ void Population::step(double dt, const P3& player, const P3& player_velocity) {
                               ? 1.0
                               : std::clamp((d_out - pdist) / (d_out - config_.max_full_alpha_distance), 0.0, 1.0);
     car.alpha = float(t_fade * d_fade);
-    car.physics = car.off_line || pdist < config_.high_lod_distance;
-    if (car.road >= 0) drive(car, dt, player, player_velocity);
+    bool near_actor = pdist < config_.high_lod_distance;
+    if (!near_actor) {
+      for (const auto& obs : obstacles) {
+        if (obs.race_ai && hdist(car.position, obs.position) < config_.high_lod_distance) {
+          near_actor = true;
+          break;
+        }
+      }
+    }
+    car.physics = car.off_line || near_actor;
+    if (car.road >= 0) drive(car, dt, player, player_velocity, obstacles);
   }
 }
 

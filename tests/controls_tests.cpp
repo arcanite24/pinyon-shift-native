@@ -78,9 +78,19 @@ int main() {
     CHECK(kb.matches(drive::ControlAction::kThrottle, "W"));
     CHECK(kb.matches(drive::ControlAction::kThrottle, "up"));
     CHECK(kb.matches(drive::ControlAction::kSwitchCamera, "v"));
+    // Default LookLeft / LookRight bindings.
+    CHECK(kb.matches(drive::ControlAction::kLookLeft, "J"));
+    CHECK(kb.matches(drive::ControlAction::kLookLeft, "Keypad 4"));
+    CHECK(kb.matches(drive::ControlAction::kLookRight, "K"));
+    CHECK(kb.matches(drive::ControlAction::kLookRight, "Keypad 6"));
+    drive::ControlAction parsed_act;
+    CHECK(drive::parse_control_action("look-left", parsed_act) && parsed_act == drive::ControlAction::kLookLeft);
+    CHECK(drive::parse_control_action("look-right", parsed_act) && parsed_act == drive::ControlAction::kLookRight);
 
     kb.set_primary(drive::ControlAction::kThrottle, "I");
     kb.set_primary(drive::ControlAction::kSwitchCamera, "F1");
+    kb.set_primary(drive::ControlAction::kLookLeft, "U");
+    kb.set_primary(drive::ControlAction::kLookRight, "O");
     CHECK(kb.matches(drive::ControlAction::kThrottle, "I"));
     CHECK(!kb.matches(drive::ControlAction::kThrottle, "W"));
 
@@ -89,6 +99,8 @@ int main() {
     kb2.deserialize(s);
     CHECK(kb2.matches(drive::ControlAction::kThrottle, "I"));
     CHECK(kb2.matches(drive::ControlAction::kSwitchCamera, "F1"));
+    CHECK(kb2.matches(drive::ControlAction::kLookLeft, "U"));
+    CHECK(kb2.matches(drive::ControlAction::kLookRight, "O"));
   }
 
   // Persistence roundtrip through DriveSave.

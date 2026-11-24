@@ -186,6 +186,8 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     bands_.clear();
     std::string be;
     if (!garage::load_class_bands(root, bands_, &be)) bands_.clear();
+    std::string pe;
+    if (!garage::load_pi_config(root / "media" / "physics.zip", pi_cfg_, &pe)) pi_cfg_ = garage::synthetic_pi_config();
     player_pi_ = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car, state_root, o.parts_db);
   }
   stage_ = event.rfind("stage:", 0) == 0;
@@ -406,7 +408,14 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   const int cars = std::min(int(slots.size()), int(event_.opponents.size()) + 1);
   player_slot_ = race::player_slot(event_.player_grid_position, cars);
   const auto opp = race::opponent_slots(player_slot_, cars - 1);
-  session_ = std::make_unique<race::Session>(size_t(cars), circuit_, laps, *gate, finish);
+  race::Session::Options sopt;
+  sopt.player_index = size_t(cars - 1);  // start-line Hand-of-God launch grace (< 25 s && !has_launched)
+  if (street_ || race::event_uses_traffic(event_.career_type)) {
+    // Street & Nemesis open roads have wider shoulders/intersections than closed festival ribbons.
+    sopt.off_route_near = 12.0;
+    sopt.off_route_far = 25.0;
+  }
+  session_ = std::make_unique<race::Session>(size_t(cars), circuit_, laps, *gate, finish, sopt);
   // Upgraded closed-road festival packs run wider side-by-side (0.04); street
   // routes and stock showcase cars stay tighter to the line (0.08).
   const float off_slow = (event_.upgrade_ai && !street_) ? 0.04f : 0.08f;
@@ -421,6 +430,8 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     Car& c = cars_[k];
     c.who = event_.opponents[k];
     c.slot = opp[k];
+    c.lamps.rng_state = uint32_t(0x7A31C95Du ^ (uint32_t(k + 1) * 2654435761u));
+    c.upgraded_raw_pi = c.who.performance_index;
     c.setup = race::assign_driver_for_mode(event_.event_skill, event_.event_temperament, event_.event_rubberband,
                                            c.who.skill_modifier, c.who.aggro_modifier, c.who.rubberband_modifier,
                                            o.difficulty, o.ai_mode, event_);
@@ -438,24 +449,26 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     field_->place_near(cars_.size(), s.x, s.z, from, line_.gate_progress + 1);
     player_start_ = field_->progress(cars_.size());
   }
-  // SPEC-RACE-AI, AI car upgrades (interim until the PI lap): each AI aims
-  // at its faked PI (faked_target); t = gap / 240 up, gap / 170 down,
-  // capped at 1.
+  // SPEC-RACE-AI, AI car upgrades: compute each AI's faked target PI (solved via
+  // 10-iteration bisection over the PI.xml virtual lap once CarParams load in load_cars()).
   if (event_.upgrade_ai) {
-    std::vector<garage::ClassBand> bands;
+    std::vector<garage::ClassBand> bands = bands_;
     std::string be;
+    if (bands.empty()) garage::load_class_bands(root, bands, &be);
     double ppi = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car, state_root, o.parts_db);
     const int k = event_.target_class;
-    if (ppi > 0 && garage::load_class_bands(root, bands, &be) && k >= 1 && size_t(k) < bands.size()) {
+    if (ppi > 0 && k >= 1 && size_t(k) < bands.size()) {
       const int lo = int(bands[size_t(k - 1)].shown_max) + 1, hi = int(bands[size_t(k)].shown_max);
       const int P = garage::shown_index(ppi, bands);
       for (auto& c : cars_) {
         const int C = garage::shown_index(c.who.performance_index, bands);
         const int target = faked_target(
             P, C, lo, hi, race::faked_pi_offset(c.who.car_id, flagged_participant(event_.horizon_id, c.who.car_id)));
+        c.target_shown_pi = target;
+        c.upgraded_shown_pi = target;
         const int gap = target - C;
         c.upgrade_t = gap >= 0 ? std::min(1.0, gap / 240.0) : -std::min(1.0, -gap / 170.0);
-        std::printf("race: AI upgrade %-28s %d points, target %d (player %d, class %d to %d): t %+.2f\n",
+        std::printf("race: AI upgrade %-28s %d points, target %d (player %d, class %d to %d): init t %+.2f\n",
                     c.who.car_media.c_str(), C, target, P, lo, hi, c.upgrade_t);
       }
     } else {
@@ -488,8 +501,13 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   lane_params_.resize(n);
   for (size_t k = 0; k < cars_.size(); ++k) {
     if (const auto* t = event_.temperament(cars_[k].setup.temperament))
-      lane_params_[k] = {float(t->trailing_distance), float(t->car_clearance), float(t->edge_clearance)};
+      lane_params_[k] = {float(t->trailing_distance), float(t->car_clearance), float(t->edge_clearance),
+                         float(t->aggression)};
   }
+  recorded_ghost_.clear();
+  recorded_ghost_.event_id = event_.horizon_id;
+  recorded_ghost_.car_media = o.player_car;
+  if (player_pi_ > 0.0 && !bands_.empty()) recorded_ghost_.shown_pi = garage::shown_index(player_pi_, bands_);
   std::printf("race: %s, route %d (%s, %d lap%s, line %.0f m a lap), %d cars, player on slot %02d, %zu ribbon "
               "triangles\n",
               event.c_str(), event_.route_id, circuit_ ? "circuit" : "sprint", laps, laps == 1 ? "" : "s",
@@ -530,7 +548,12 @@ bool RaceView::post_race_spawn(double out[4]) const {
 }
 
 bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::string& error) {
-  // Identify unique opponent (car_media, color_sequence) pairs and CPU-load them in parallel.
+  // Identify unique opponent (car_media, effective color_sequence) pairs and CPU-load them in parallel.
+  auto effective_color_seq = [&](const race::Opponent& who) -> int64_t {
+    if (who.color_sequence > 0) return who.color_sequence;
+    if (const auto* col = event_.ai_player_color(who); col && col->color_sequence > 0) return col->color_sequence;
+    return 0;
+  };
   struct ModelSpec {
     std::string key;
     std::string media;
@@ -538,12 +561,13 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
   };
   std::vector<ModelSpec> specs;
   for (const auto& c : cars_) {
-    const std::string key = c.who.car_media + "#" + std::to_string(c.who.color_sequence);
+    const int64_t cseq = effective_color_seq(c.who);
+    const std::string key = c.who.car_media + "#" + std::to_string(cseq);
     if (models_.count(key)) continue;
     bool dup = false;
     for (const auto& s : specs)
       if (s.key == key) { dup = true; break; }
-    if (!dup) specs.push_back({key, c.who.car_media, c.who.color_sequence});
+    if (!dup) specs.push_back({key, c.who.car_media, cseq});
   }
   if (!specs.empty()) {
     struct LoadedSpec {
@@ -595,22 +619,53 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
       models_.emplace(specs[i].key, std::move(loaded[i].m));
     }
   }
+  auto srgb_to_lin = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
   for (auto& c : cars_) {
-    const std::string key = c.who.car_media + "#" + std::to_string(c.who.color_sequence);
+    const int64_t cseq = effective_color_seq(c.who);
+    const std::string key = c.who.car_media + "#" + std::to_string(cseq);
     c.model = models_[key].get();
+    c.has_ai_paint = false;
+    if (c.who.color_sequence <= 0) {
+      if (const auto* col = event_.ai_player_color(c.who); col && col->has_rgb && col->color_sequence <= 0) {
+        c.ai_paint_rgb[0] = srgb_to_lin(float((col->rgb >> 16) & 0xFFu) / 255.0f);
+        c.ai_paint_rgb[1] = srgb_to_lin(float((col->rgb >> 8) & 0xFFu) / 255.0f);
+        c.ai_paint_rgb[2] = srgb_to_lin(float(col->rgb & 0xFFu) / 255.0f);
+        c.has_ai_paint = true;
+      }
+    }
     std::vector<std::string> notes;
     drive::CarParams params = drive::params_for_baked_car(c.model->car(), bake_dir_, &notes);
     if (event_.upgrade_ai) {
-      // SPEC-RACE-AI, AI car upgrades: move mass, torque and tyre friction
-      // together toward target PI while keeping tyre grip inside the measured
-      // oracle band (~15.1-16.8 m/s^2 across classes).
-      const double t = c.upgrade_t;
-      const double m = t >= 0 ? 1 - 0.1 * t : 1 - 0.111 * t;
-      const double q = t >= 0 ? 1 + 0.4 * t : 1 + 0.22 * t;
-      const double f = t >= 0 ? 1 + 0.08 * t : 1 + 0.05 * t;
-      params.mass *= m;
-      params.torque_scale *= q;
-      for (int a = 0; a < 2; ++a) params.long_scale[size_t(a)] *= f, params.lat_scale[size_t(a)] *= f;
+      // SPEC-RACE-AI, AI car upgrades: retail scaling (1+0.20t / 1-0.167|t| tyre friction,
+      // 1+0.4t / 1-0.286|t| torque, 1-0.1t / 1+0.111|t| mass) solved via 10-iteration
+      // bisection against the PI.xml virtual lap, plus EventParticipants.TuningLevel polish.
+      if (c.target_shown_pi > 0 && !bands_.empty() && c.who.performance_index > 0.0) {
+        const double stock_raw = c.who.performance_index;
+        const int stock_shown = garage::shown_index(stock_raw, bands_);
+        const double stock_lap = garage::simulate_pi_lap(params, nullptr, pi_cfg_);
+        const double stock_lap_pi = garage::lap_time_to_pi(stock_lap, pi_cfg_);
+        auto raw_pi_for = [&](const drive::CarParams& cand) -> double {
+          const double lap = garage::simulate_pi_lap(cand, nullptr, pi_cfg_);
+          const double lap_pi = garage::lap_time_to_pi(lap, pi_cfg_);
+          return std::clamp(stock_raw + (lap_pi - stock_lap_pi), 0.001, 1.0);
+        };
+        auto shown_pi_for = [&](const drive::CarParams& cand) -> double {
+          return double(garage::shown_index(raw_pi_for(cand), bands_));
+        };
+        const race::AiUpgradeScales solved =
+            race::solve_ai_upgrade(params, double(stock_shown), double(c.target_shown_pi), shown_pi_for, 10);
+        c.upgrade_t = solved.t;
+        race::apply_ai_upgrade(params, c.upgrade_t, c.who.tuning_level);
+        c.upgraded_raw_pi = raw_pi_for(params);
+        c.upgraded_shown_pi = garage::shown_index(c.upgraded_raw_pi, bands_);
+        std::printf("race: AI bisect %-28s stock %d -> target %d, solved %d (t %+.3f, tune %d)\n",
+                    c.who.car_media.c_str(), stock_shown, c.target_shown_pi, c.upgraded_shown_pi, c.upgrade_t,
+                    c.who.tuning_level);
+      } else {
+        race::apply_ai_upgrade(params, c.upgrade_t, c.who.tuning_level);
+      }
+    } else if (c.who.tuning_level > 0) {
+      race::apply_ai_upgrade(params, 0.0, c.who.tuning_level);
     }
     c.body = std::make_unique<drive::Vehicle>(params);
     c.body->set_ai_controls(true);
@@ -628,6 +683,16 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     if (world::ground_height(ground, s.x, s.z, y + 5, gy)) y = gy;
     c.body->reset({s.x, y + 0.05, s.z}, std::atan2(s.fx, s.fz));
     c.px = s.x, c.pz = s.z;
+    // Initialize persistent AI lamps on the grid so headlamps match tod_sec immediately.
+    drive::LampInputs lin;
+    const int vg = c.body->gear();
+    lin.gear = (vg == -1) ? 0 : std::max(1, vg);
+    lin.tod_sec = double(tod_sec_);
+    lin.dt = float(drive::Vehicle::kStep);
+    lin.is_ai = true;
+    lin.snap_headlamps = true;
+    c.lamps.update(lin);
+    c.lamps_initialized = true;
   }
   // The ribbon against the collision: heights at the line's centre points
   // within 300 m of the player's slot (a car handed between the two should
@@ -1013,6 +1078,35 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     hole_steps_ += step_hole[k];
     far_steps_ += step_ribbon[k];
     if (step_bad[k]) reset_car(*cars_[k].body, k, near, cx, cz, radius);
+    // Update persistent per-AI CarLampState (15-tick brake hold, staggered dusk/dawn
+    // headlamps, and Reverse gear == -1 mapped to LampInputs::gear == 0).
+    if (cars_[k].body) {
+      drive::LampInputs lin;
+      const float brk = (k < inputs_.size()) ? float(inputs_[k].brake) : 0.0f;
+      lin.brake_cmd = brk;
+      lin.brake_pedal = brk;
+      const int vgear = cars_[k].body->gear();
+      lin.gear = (vgear == -1) ? 0 : std::max(1, vgear);
+      lin.tod_sec = double(tod_sec_);
+      lin.dt = float(drive::Vehicle::kStep);
+      lin.is_ai = true;
+      lin.snap_headlamps = !cars_[k].lamps_initialized;
+      cars_[k].lamps.update(lin);
+      cars_[k].lamps_initialized = true;
+    }
+  }
+  // Feed live Race AI opponents into Street/Nemesis TrafficView so traffic brakes/yields
+  // for Race AI and promotes traffic near Race AI (>30 m from player) into physics bodies.
+  if (traffic && n > 0) {
+    std::vector<traffic::ExternalVehicle> ext;
+    ext.reserve(n);
+    for (size_t k = 0; k < n; ++k) {
+      if (!cars_[k].body) continue;
+      const drive::Vec3 pos = cars_[k].body->position();
+      const drive::Vec3 vel = cars_[k].body->velocity();
+      ext.push_back({{pos.x, pos.y, pos.z}, {vel.x, vel.y, vel.z}, true});
+    }
+    traffic->set_external_vehicles(std::move(ext));
   }
   // Contacts (PhysicsSettings.ini [Collision], SPEC-RACE-AI Q55):
   // PlayerTorqueScale = 0.0, RaceCarTorqueScaleInRace = 0.2,
@@ -1141,6 +1235,27 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     if (session_->finished(i) && session_->car(i).finish > session_->clock() - drive::Vehicle::kStep - 1e-9)
       std::printf("race: t %.2f s: %s finished %s in %.3f s\n", session_->clock(), name_of(i).c_str(),
                   ordinal(session_->car(i).place), session_->car(i).finish);
+  // Record player Rivals / Time-Attack ghost samples when enabled.
+  if (record_ghost_ && session_->started()) {
+    const auto& me = session_->car(n);
+    const bool just_finished =
+        session_->finished(n) && me.finish > session_->clock() - drive::Vehicle::kStep - 1e-9;
+    if (!session_->finished(n) || just_finished) {
+      const drive::Vec3 p = player.position();
+      const drive::Quat q = player.orientation();
+      race::GhostSample gs;
+      gs.time = just_finished ? me.finish : session_->clock();
+      gs.x = p.x, gs.y = p.y, gs.z = p.z;
+      gs.qx = q.x, gs.qy = q.y, gs.qz = q.z, gs.qw = q.w;
+      gs.speed = player.speed();
+      gs.steer = float(player.steer_angle());
+      gs.brake = float(player.shaped_input().brake);
+      gs.gear = player.gear();
+      recorded_ghost_.record(gs, just_finished);
+      recorded_ghost_.clean = !me.race_dirty;
+      if (just_finished) recorded_ghost_.total_time = me.finish;
+    }
+  }
   // A stage's splits (StartLine + (FinishLine - StartLine) * SplitPoints_k),
   // Co-Driver pace-note gate crossings, and stage finish ranking.
   if (stage_ && session_->clock() >= 0.0 && !session_->finished(n)) {
@@ -1172,9 +1287,36 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   }
 }
 
+void RaceView::set_ghost(race::GhostRun run, Showroom* model, float alpha) {
+  ghost_run_ = std::move(run);
+  ghost_model_ = model;
+  ghost_alpha_ = std::clamp(alpha, 0.05f, 1.0f);
+  ghost_active_ = !ghost_run_.empty();
+}
+
+void RaceView::clear_ghost() {
+  ghost_run_.clear();
+  ghost_active_ = false;
+  ghost_model_ = nullptr;
+}
+
+bool RaceView::ghost_sample(race::GhostSample& out) const {
+  if (!ghost_active_ || ghost_run_.empty() || !session_ || !session_->started()) return false;
+  return ghost_run_.interpolate(session_->clock(), out);
+}
+
+void RaceView::enable_ghost_recording(bool on) {
+  record_ghost_ = on;
+  if (on) {
+    recorded_ghost_.clear();
+    recorded_ghost_.event_id = event_.horizon_id;
+    recorded_ghost_.car_media = o_.player_car;
+    if (player_pi_ > 0.0 && !bands_.empty()) recorded_ghost_.shown_pi = garage::shown_index(player_pi_, bands_);
+  }
+}
+
 void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
                          std::vector<Showroom::Instance>& out) const {
-  const bool night_lights = drive::CarLampState::tod_requests_headlamps(tod_sec_);
   for (size_t k = 0; k < cars_.size(); ++k) {
     const auto& c = cars_[k];
     if (!c.model || !c.body) continue;
@@ -1199,13 +1341,32 @@ void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Ve
       wposes[wi].omega = float(w.omega);
     }
     c.model->set_wheel_poses(wposes);
-    drive::CarLampState lstate;
-    lstate.headlamps_on = night_lights;
-    lstate.brake_on = (k < inputs_.size() && inputs_[k].brake > 0.1f);
-    lstate.reverse_on = (c.body->gear() == 0);
-    in.lamps = lstate.vectors();
+    if (c.has_ai_paint) {
+      in.paint_rgb[0] = c.ai_paint_rgb[0];
+      in.paint_rgb[1] = c.ai_paint_rgb[1];
+      in.paint_rgb[2] = c.ai_paint_rgb[2];
+      in.has_paint = true;
+    }
+    in.lamps = c.lamps.vectors();
     in.has_lamps = true;
     out.push_back(in);
+  }
+  // Rivals / Time-Attack translucent ghost car playback.
+  race::GhostSample gs;
+  if (ghost_sample(gs)) {
+    Showroom* ghost_sr = ghost_model_ ? ghost_model_ : find_loaded_model(ghost_run_.car_media);
+    if (ghost_sr) {
+      Showroom::Instance gin =
+          guest_instance_pose(player_info, player, *ghost_sr, {gs.x, gs.y, gs.z}, {gs.qx, gs.qy, gs.qz, gs.qw});
+      gin.fade_alpha = ghost_alpha_;
+      drive::CarLampState gl;
+      gl.headlamps_on = drive::CarLampState::tod_requests_headlamps(tod_sec_);
+      gl.brake_on = gs.brake > 0.1f;
+      gl.reverse_on = (gs.gear == -1);
+      gin.lamps = gl.vectors();
+      gin.has_lamps = true;
+      out.push_back(gin);
+    }
   }
 }
 
@@ -1298,12 +1459,21 @@ RaceHud RaceView::hud_info() const {
     r.finished = s.finished(i);
     r.time = s.car(i).finish;
     r.best_lap = s.car(i).best_lap;
-    // The results table's car and class (interim: the AI's stock index,
-    // not its upgraded one).
+    // Standings & results table car, class, and upgraded/faked PI.
     const std::string& media = r.player ? o_.player_car : cars_[i].who.car_media;
     r.car = names_.short_name(media);
-    const double raw = r.player ? player_pi_ : cars_[i].who.performance_index;
-    if (raw > 0 && !bands_.empty()) {
+    const double raw = r.player ? player_pi_
+                                : (cars_[i].upgraded_raw_pi > 0.0 ? cars_[i].upgraded_raw_pi : cars_[i].who.performance_index);
+    if (!r.player && cars_[i].upgraded_shown_pi > 0 && !bands_.empty()) {
+      r.pi = cars_[i].upgraded_shown_pi;
+      r.car_class = bands_.back().name;
+      for (const auto& b : bands_) {
+        if (r.pi <= int(b.shown_max)) {
+          r.car_class = b.name;
+          break;
+        }
+      }
+    } else if (raw > 0 && !bands_.empty()) {
       r.car_class = bands_[size_t(garage::class_of(raw, bands_))].name;
       r.pi = garage::shown_index(raw, bands_);
     }
@@ -1795,6 +1965,8 @@ RaceView::RewindSnapshot RaceView::capture_rewind() const {
     st.pz = c.pz;
     st.far = c.far;
     st.traction_cap = c.traction_cap;
+    st.lamps = c.lamps;
+    st.lamps_initialized = c.lamps_initialized;
     snap.cars.push_back(std::move(st));
   }
   snap.player_ai = player_ai_;
@@ -1835,6 +2007,8 @@ void RaceView::restore_rewind(const RewindSnapshot& s, bool mark_player_lap_dirt
     c.pz = st.pz;
     c.far = st.far;
     c.traction_cap = st.traction_cap;
+    c.lamps = st.lamps;
+    c.lamps_initialized = st.lamps_initialized;
   }
   player_ai_ = s.player_ai;
   next_checkpoint_ = s.next_checkpoint;

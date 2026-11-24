@@ -216,11 +216,29 @@ void DriveSession::place_world() {
           world_to_player[15] = 1.0;
 
           std::vector<Showroom::Instance> fmore;
-          const bool night_lamps =
-              drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec) || app.audio_host.in_tunnel();
+          const bool fest_in_tunnel = app.audio_host.in_tunnel();
           const float fdt = float(tod_frame_dt > 0.0 ? std::clamp(tod_frame_dt, 0.0, 0.25) : 1.0 / 60.0);
+          static const freeroam::FestivalManager* s_fest_lamp_owner = nullptr;
+          static std::map<uint32_t, drive::CarLampState> s_fest_lamps;
+          if (s_fest_lamp_owner != festival_mgr.get()) {
+            s_fest_lamp_owner = festival_mgr.get();
+            s_fest_lamps.clear();
+          }
+          {
+            std::unordered_set<uint32_t> alive_fids;
+            for (const auto& fc : festival_mgr->cars()) alive_fids.insert(fc.id);
+            for (auto it = s_fest_lamps.begin(); it != s_fest_lamps.end();) {
+              it = alive_fids.count(it->first) ? std::next(it) : s_fest_lamps.erase(it);
+            }
+          }
           static std::map<const Showroom*, float> s_fest_wheel_spin;
-          std::map<Showroom*, double> fest_wheel_speed;
+          struct FestWheelDrive {
+            double dist2 = 1e30;
+            double speed = 0.0;
+            double steer = 0.0;
+          };
+          std::map<Showroom*, FestWheelDrive> fest_wheels;
+          const drive::Vec3 ppos_f = vehicle.position();
           Showroom* fest_fallback = nullptr;
           for (const auto& [kname, gptr] : festival_guests) {
             if (gptr) {
@@ -273,10 +291,23 @@ void DriveSession::place_world() {
                 for (int kk = 0; kk < 4; ++kk) sum += world_to_player[kk * 4 + row] * gmd[col * 4 + kk];
                 inst.model[col * 4 + row] = float(sum);
               }
-            drive::CarLampState ls;
-            ls.headlamps_on = night_lamps;
-            ls.brake_on = fc.braking;
-            inst.lamps = ls.vectors();
+            // Persistent per-car CarLampState: 15-tick AI brake anti-flicker, staggered
+            // dusk/dawn headlamps, turn indicators, and reverse lights.
+            const bool is_new_lamp = !s_fest_lamps.count(fc.id);
+            drive::CarLampState& lstate = s_fest_lamps[fc.id];
+            if (is_new_lamp) lstate.rng_state = 0x9E3779B9u ^ (fc.id * 2654435761u);
+            drive::LampInputs lin{};
+            lin.brake_cmd = (fc.braking || fc.speed < 0.25) ? 1.0f : 0.0f;
+            lin.brake_pedal = lin.brake_cmd;
+            lin.gear = fc.reversing ? 0 : 1;
+            lin.tod_sec = app.tod_clock.tod_sec;
+            lin.dt = fdt;
+            lin.indicator_mode = fc.turn_left ? 1 : (fc.turn_right ? 2 : 0);
+            lin.light_override = fest_in_tunnel ? 1 : 0;
+            lin.is_ai = true;
+            lin.snap_headlamps = is_new_lamp || app.headless;
+            lstate.update(lin);
+            inst.lamps = lstate.vectors();
             inst.has_lamps = true;
             if (const auto& cols = guest_sr->car().colours; !cols.empty()) {
               const uint32_t rgb = cols[size_t(fc.id) % cols.size()].rgb;
@@ -287,13 +318,20 @@ void DriveSession::place_world() {
               inst.has_paint = true;
             }
             fmore.push_back(inst);
-            fest_wheel_speed[guest_sr] = std::max(fest_wheel_speed[guest_sr], fc.speed);
+            const double d2 = (fc.position.x - ppos_f.x) * (fc.position.x - ppos_f.x) +
+                              (fc.position.z - ppos_f.z) * (fc.position.z - ppos_f.z);
+            auto& fw = fest_wheels[guest_sr];
+            if (d2 < fw.dist2) {
+              fw.dist2 = d2;
+              fw.speed = fc.speed;
+              fw.steer = fc.steer_angle;
+            }
           }
           constexpr float kTwoPi = 6.28318530717958647692f;
-          for (const auto& [guest_sr, spd] : fest_wheel_speed) {
+          for (const auto& [guest_sr, fw] : fest_wheels) {
             const auto& rest = guest_sr->car().wheel_centres_body;
             const float radius = std::clamp(rest[0][1], 0.26f, 0.55f);
-            const float omega = float(spd) / radius;
+            const float omega = float(fw.speed) / radius;
             float& spin = s_fest_wheel_spin[guest_sr];
             spin = std::fmod(spin + omega * fdt, kTwoPi);
             if (spin < 0.0f) spin += kTwoPi;
@@ -302,7 +340,7 @@ void DriveSession::place_world() {
               wposes[wi].centre[0] = rest[size_t(wi)][0];
               wposes[wi].centre[1] = rest[size_t(wi)][1];
               wposes[wi].centre[2] = rest[size_t(wi)][2];
-              wposes[wi].steer = 0.0f;
+              wposes[wi].steer = (wi < 2) ? float(fw.steer) : 0.0f;
               wposes[wi].spin = spin;
               wposes[wi].omega = omega;
             }

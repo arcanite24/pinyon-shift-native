@@ -63,9 +63,15 @@ struct TrafficConfig {
   double look_ahead_time = 1, min_look_ahead = 5, traffic_search = 30, player_search = 60;
   double model_rotation_time = 30, overspawn_check_time = 4;
   double high_lod_distance = 30, medium_lod_distance = 120;
-  double fade_in_time = 1.0;              // AI/Spawning/FadeInTime (s)
-  double min_full_alpha_distance = 150.0; // AI/Spawning/MinFullAlphaDistance (m)
-  double max_full_alpha_distance = 320.0; // AI/Spawning/MaxFullAlphaDistance (m)
+  double fade_in_time = 2.0;                  // AI/Traffic/Vehicle/FadeInTime (s)
+  double min_full_alpha_distance = 100.0;     // AI/Traffic/Vehicle/MinFullAlphaDistance (m)
+  double max_full_alpha_distance = 150.0;     // AI/Traffic/Vehicle/MaxFullAlphaDistance (m)
+  double brake_light_accel_threshold = 0.70;  // AI/Traffic/Vehicle/BrakeLightAccelerationThreshold (m/s^2)
+  double behind_chance = 0.40;                // AI/Spawning/BehindChance
+  double behind_max_speed = 5.0;              // AI/Spawning/BehindMaxSpeed (m/s)
+  bool festival_group_spawns = true;          // AI/Spawning/FestivalGroupSpawns
+  bool traffic_group_spawns = true;           // AI/Spawning/TrafficGroupSpawns
+  double traffic_convoy_chance = 0.20;        // chance of a 2-3 car convoy when traffic_group_spawns is enabled
   double accel_max_input = 0.2, brake_max_input = 0.2;  // AI/Traffic/VehicleControls
   double steering_multiplier = 1.0;
   double giveway_speed = 6.0;  // AI/Traffic/Junctions/SpeedAtGivewayJunctions (m/s)

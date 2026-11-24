@@ -2,13 +2,16 @@
 // instant Head-to-Head point-to-point races on the Colorado nav road graph.
 //
 // Roaming Festival AI cars cruise Colorado's roads using the `festival`
-// DensityList (2..7 active cars, sports/performance roster matched to the
-// player's class). Pulling behind one within 35 m enables the instant
-// Head-to-Head challenge prompt; accepting builds a 2.0-3.5 km nav-graph
-// point-to-point route with a credit wager scaled by car class & wristband,
-// races the opponent to the finish gate, and awards credits + popularity.
+// DensityList (2..7 active cars, curated FreeRoamDrivers roster matched to the
+// player's class). Pulling behind one inside the retail activation box (5-20 m
+// ahead, +/-2.5 m lateral, same heading, <=15 mph speed diff, target >=25 mph)
+// enables the instant Head-to-Head challenge prompt; accepting builds a
+// 2.5-5.0 km (optimal 3.5 km) one-way-respecting nav-graph point-to-point
+// route, races the opponent to the 10 m radius finish gate, and awards
+// PI-differential credits + popularity (without deducting credits on loss).
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -29,6 +32,7 @@ struct FestivalRacerSpec {
   std::string driver_name;
   std::string car_class;
   int pi = 450;
+  double mass_kg = 1480.0;
 };
 
 struct FestivalAiCar {
@@ -49,6 +53,9 @@ struct FestivalAiCar {
   bool pose_initialized = false;
   double rpm = 2200.0;
   bool braking = false;
+  bool turn_left = false;
+  bool turn_right = false;
+  bool reversing = false;
   double knockback_vx = 0.0, knockback_vz = 0.0;
   bool in_h2h = false;
   double h2h_progress = 0.0;
@@ -101,12 +108,31 @@ struct HeadToHeadHud {
   double finish_at = -1e9;
 };
 
-// Computes credit wager for a Head-to-Head challenge by car PI and wristband tier (0..6).
+// Computes credit reward for a Head-to-Head challenge using retail PI-differential scaling:
+// RewardBaseLevel = 5000, RewardPlayerLowerMultiplier = 20 (player PI < opponent PI),
+// RewardPlayerHigherMultiplier = 10 (player PI > opponent PI).
+int64_t h2h_reward_credits(int player_pi, int opponent_pi);
+
+// Backwards-compatible wrapper using default baseline player PI (500).
 int64_t h2h_wager_credits(int pi, int wristband_level);
 
 class FestivalManager {
  public:
   using GroundHeight = std::function<bool(double x, double z, double y_hint, double& y)>;
+
+  // Retail Activity/RaceEncounter trigger-box & routing constants.
+  static constexpr double kMinActivationDistance = 5.0;       // m
+  static constexpr double kMaxActivationDistance = 20.0;      // m
+  static constexpr double kActivationBoxHalfWidth = 2.5;      // m (ActivationBoxWidth = 5 m)
+  static constexpr double kMinHeadingDot = 0.85;              // same driving direction
+  static constexpr double kMaxSpeedDifference = 6.71;         // m/s (15 mph)
+  static constexpr double kMinTargetCarSpeed = 11.18;         // m/s (25 mph)
+  static constexpr double kH2hMinLength = 2500.0;             // m
+  static constexpr double kH2hOptimalLength = 3500.0;         // m
+  static constexpr double kH2hMaxLength = 5000.0;             // m
+  static constexpr double kH2hFinishTriggerRadius = 10.0;     // m (EndPointTriggerDiameter = 20 m)
+  static constexpr double kH2hTurnDelaySeconds = 20.0;        // s
+  static constexpr double kH2hOneWayMultiplier = 999.0;       // wrong-way penalty multiplier
 
   FestivalManager(const traffic::NavMap& nav, const traffic::Roads& roads, const traffic::TrafficConfig& config,
                   uint64_t seed = 42);
@@ -116,6 +142,8 @@ class FestivalManager {
   void set_driver_names(std::vector<std::string> names);
   void set_hour(double hour) { hour_ = hour; }
   void set_wristband_level(int level) { wristband_level_ = level; }
+  void set_player_pi(int pi) { player_pi_ = std::clamp(pi, 100, 999); }
+  int player_pi() const { return player_pi_; }
 
   // Advances roaming Festival AI cars and any active Head-to-Head race with
   // corner curvature braking, traffic/player overtaking avoidance, and velocity/RPM telemetry.
@@ -214,6 +242,7 @@ class FestivalManager {
   uint32_t next_id_ = 1;
   double hour_ = 12.0;
   int wristband_level_ = 0;
+  int player_pi_ = 500;
   bool started_ = false;
   double next_spawn_ = 0.0;
 

@@ -210,9 +210,113 @@ void replay_chase(const drive::CameraTuning& t, const Built& b, const char* path
   CHECK(eye_rms < 0.04);
 }
 
+void test_cockpit_pivot_spring_mult_and_extra_layers() {
+  // 1. Cockpit LookLeft / LookRight rotates head yaw inside cabin without
+  // jumping to exterior bounding-box edge (eliminating A-pillar clipping).
+  drive::CameraTuning t;
+  t.chase[0].fov = 48.5;
+  t.chase[0].yaw_k = 30.0;
+  t.chase[0].yaw_d = 10.0;
+  t.chase[0].yaw_max_speed = 4.0;
+  t.chase[0].height_k = 40.0;
+  t.chase[0].height_d = 12.0;
+  t.driver_offset = {0.0, 0.21, -0.51};
+
+  drive::CameraCar car;
+  car.box_min = {-0.90, 0.0, -2.20};
+  car.box_max = {0.90, 1.35, 2.20};
+  car.com = {0.0, 0.48, 0.10};
+  car.steering_wheel = {-0.36, 0.72, 0.35};  // left-hand drive cabin seat
+
+  drive::DriveCamera cam;
+  cam.set_tuning(t);
+  cam.set_car(car);
+  cam.set_mode(drive::CameraMode::kCockpit);
+  auto in = parked(0.15);
+  const auto v_fwd = cam.update(1.0, in);
+  cam.set_look(-kPi / 2.0);
+  const auto v_left = cam.update(1.0, in);
+  cam.set_look(+kPi / 2.0);
+  const auto v_right = cam.update(1.0, in);
+  // Head stays inside cabin at steering_wheel + driver_offset X (-0.36), never
+  // jumping out to +-(box_max[0] - kBoxInset) = +-0.2904.
+  CHECK(near(v_left.eye[0], v_fwd.eye[0], 1e-6));
+  CHECK(near(v_right.eye[0], v_fwd.eye[0], 1e-6));
+  CHECK(v_left.forward[0] < -0.95 && v_right.forward[0] > 0.95);
+  CHECK(v_left.interior && v_right.interior);
+
+  // 2. ChaseCamSpringMultiplier scales chase spring stiffness smoothly.
+  drive::DriveCamera c_soft, c_stiff;
+  c_soft.set_tuning(t);
+  c_stiff.set_tuning(t);
+  c_soft.set_car(car);
+  c_stiff.set_car(car);
+  c_soft.set_mode(drive::CameraMode::kFollowLow);
+  c_stiff.set_mode(drive::CameraMode::kFollowLow);
+  auto in_soft = parked(0.15);
+  auto in_stiff = parked(0.15);
+  in_soft.chase_cam_spring_mult = 0.4;
+  in_stiff.chase_cam_spring_mult = 2.0;
+  (void)c_soft.update(1.0, in_soft);
+  (void)c_stiff.update(1.0, in_stiff);
+  in_soft.heading = 0.5;
+  in_stiff.heading = 0.5;
+  drive::CameraView vs{}, vf{};
+  for (int k = 0; k < 5; ++k) {
+    vs = c_soft.update(0.016, in_soft);
+    vf = c_stiff.update(0.016, in_stiff);
+  }
+  const double yaw_soft = std::atan2(vs.forward[0], vs.forward[2]);
+  const double yaw_stiff = std::atan2(vf.forward[0], vf.forward[2]);
+  CHECK(yaw_stiff > yaw_soft + 0.02);
+
+  // 3. Additional CameraPhysics.xml InputType / OutputType layers parse cleanly.
+  const char* kExtraXml = R"xml(
+<CameraPhysics>
+  <FollowCam >
+    <Layer Enabled="1" InputType="RollAngleDegrees" NoiseType="None" OutputType="CameraSpaceYPROffset"
+           InputToParamMapping="Linear" Param.x="0" Param.y="0" Param.z="0.5" Param.w="0" Sprung="0"/>
+    <Layer Enabled="1" InputType="EngineNormRPM" NoiseType="None" OutputType="TargetXYZOffset"
+           InputToParamMapping="Linear" Param.x="0" Param.y="0.2" Param.z="0" Param.w="0" Sprung="0"/>
+    <Layer Enabled="1" InputType="GearShift" NoiseType="None" OutputType="FOVImpulse"
+           InputToParamMapping="Linear" ImpulseInputSizeCutoff="0.5"
+           Param.x="8.0" Param.y="0" Param.z="0" Param.w="0" Sprung="1" SpringK="180" SpringDPercent="0.6"/>
+    <Layer Enabled="1" InputType="Airborne" NoiseType="None" OutputType="CameraSpaceXYZImpulse"
+           InputToParamMapping="Linear" ImpulseInputSizeCutoff="0.5"
+           Param.x="0" Param.y="0.5" Param.z="0" Param.w="0" Sprung="1" SpringK="150" SpringDPercent="0.6"/>
+    <Layer Enabled="1" InputType="DriftAngle" NoiseType="None" OutputType="CarSpaceXYZImpulse"
+           InputToParamMapping="Linear" ImpulseInputSizeCutoff="0.5"
+           Param.x="0.2" Param.y="0" Param.z="0" Param.w="0" Sprung="1" SpringK="150" SpringDPercent="0.6"/>
+  </FollowCam>
+  <FollowCam2 ></FollowCam2>
+  <DriverCam ></DriverCam>
+  <Hood ></Hood>
+  <BumperHigh ></BumperHigh>
+</CameraPhysics>
+)xml";
+  drive::CameraTuning ex_t = t;
+  std::string err;
+  CHECK(drive::parse_camera_physics(kExtraXml, ex_t, &err));
+  CHECK(ex_t.layers[0].size() == 5 && ex_t.layers_left_out[0] == 0);
+  drive::DriveCamera ex_cam;
+  ex_cam.set_tuning(ex_t);
+  ex_cam.set_car(car);
+  ex_cam.set_mode(drive::CameraMode::kFollowLow);
+  auto ein = parked(0.15);
+  auto base_v = ex_cam.update(1.0, ein);
+  ein.shift_impulse = 1.0;
+  auto shift_v = ex_cam.update(0.016, ein);
+  CHECK(std::fabs(shift_v.fov_degrees - base_v.fov_degrees) > 0.05);
+}
+
 }  // namespace
 
 int main() {
+  test_cockpit_pivot_spring_mult_and_extra_layers();
+  if (failures) {
+    std::printf("FAILED synthetic camera tests (%d failures)\n", failures);
+    return 1;
+  }
   const char* root = std::getenv("SHIFT_GAME_ROOT");
   if (!root) {
     std::printf("SHIFT_GAME_ROOT not set: skipped\n");

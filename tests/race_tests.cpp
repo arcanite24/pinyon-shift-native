@@ -16,6 +16,7 @@
 
 #include "cars/physics.h"
 #include "cars/sources.h"
+#include "drive/lamps.h"
 #include "drive/oracle_lap.h"
 #include "drive/save.h"
 #include "fh1data/archive.h"
@@ -27,6 +28,7 @@
 #include "race/rally.h"
 #include "race/race_line.h"
 #include "race/rewards.h"
+#include "race/rivals.h"
 #include "race/route.h"
 #include "race/session.h"
 #include "race/showcase.h"
@@ -512,6 +514,9 @@ void disc(const std::filesystem::path& root) {
   race::EventData fr22;
   CHECK(race::load_event(root, "FR22", race::Difficulty::kMed, fr22, &e));
   CHECK(fr22.route_id == 143 && fr22.laps == 4 && fr22.opponents.size() == 7 && fr22.player_grid_position == 6);
+  CHECK(fr22.ai_player_colors.size() == 159);
+  std::vector<race::AiPlayerColor> disc_colors;
+  CHECK(race::load_ai_player_colors(root, disc_colors) && disc_colors.size() == 159);
   int s50 = 0, s45 = 0, s51 = 0, rows_ok = 0;
   for (const auto& o : fr22.opponents) {
     const auto d = race::assign_driver(fr22.event_skill, fr22.event_temperament, fr22.event_rubberband, o.skill_modifier,
@@ -1035,6 +1040,223 @@ int main() {
       for (const auto& pt : line.points)
         if (pt.z > 80.0f && pt.z < 120.0f && pt.x > 7.0f) stayed_on_road = true;
       CHECK(stayed_on_road);
+    }
+
+    // R2-4: Retail AI Auto-Upgrade scaling (1+0.20t / 1-0.167|t| friction, 1-0.286|t| down torque),
+    // 10-iteration bisection, and EventParticipants.TuningLevel polish.
+    {
+      const auto up1 = race::ai_upgrade_scales(1.0);
+      CHECK(near(up1.mass_scale, 0.9, 1e-6));
+      CHECK(near(up1.torque_scale, 1.4, 1e-6));
+      CHECK(near(up1.friction_scale, 1.2, 1e-6));
+      const auto dn1 = race::ai_upgrade_scales(-1.0);
+      CHECK(near(dn1.mass_scale, 1.0 / 0.9, 1e-4));
+      CHECK(near(dn1.torque_scale, 1.0 / 1.4, 1e-4));    // ~0.7143 (1 - 0.2857)
+      CHECK(near(dn1.friction_scale, 1.0 / 1.2, 1e-4));  // ~0.8333 (1 - 0.1667)
+
+      drive::CarParams stock;
+      stock.mass = 1500.0;
+      stock.torque_scale = 400.0;
+      stock.long_scale = {1.0, 1.0};
+      stock.lat_scale = {1.0, 1.0};
+      auto synthetic_pi = [&](const drive::CarParams& p) -> double {
+        const double pwr_ratio = (p.torque_scale / stock.torque_scale) / (p.mass / stock.mass);
+        const double grip_ratio = 0.5 * (p.lat_scale[0] + p.lat_scale[1]);
+        return 450.0 + 180.0 * (pwr_ratio - 1.0) + 220.0 * (grip_ratio - 1.0);
+      };
+      const auto solved_up = race::solve_ai_upgrade(stock, 450.0, 520.0, synthetic_pi, 10);
+      CHECK(solved_up.t > 0.0 && solved_up.t < 1.0);
+      CHECK(near(solved_up.rated_pi, 520.0, 1.0));
+      const auto solved_dn = race::solve_ai_upgrade(stock, 450.0, 405.0, synthetic_pi, 10);
+      CHECK(solved_dn.t < 0.0 && solved_dn.t > -1.0);
+      CHECK(near(solved_dn.rated_pi, 405.0, 1.0));
+
+      drive::CarParams tuned = stock;
+      race::apply_ai_upgrade(tuned, 0.5, 3);
+      CHECK(near(tuned.mass, stock.mass * 0.95, 1e-6));
+      CHECK(near(tuned.torque_scale, stock.torque_scale * 1.20, 1e-6));
+      CHECK(near(tuned.lat_scale[0], 1.10, 1e-6));
+      CHECK(tuned.spring_rate[0] > stock.spring_rate[0]);
+      CHECK(tuned.bump_rate[0] > stock.bump_rate[0]);
+      CHECK(tuned.gear_shift_time < stock.gear_shift_time);
+    }
+
+    // R2-4: AIPlayerColors lookup & fallback selection.
+    {
+      race::EventData ev;
+      ev.ai_player_colors = {
+          {1, 10, 0xCC1122u, true, true, 0},
+          {2, 20, 0x1144AAu, true, false, 0},
+      };
+      race::Opponent a, b;
+      a.ai_player_id = 20;
+      b.ai_player_id = 99;
+      const auto* ca = ev.ai_player_color(a);
+      const auto* cb = ev.ai_player_color(b);
+      CHECK(ca && ca->rgb == 0x1144AAu);
+      CHECK(cb && cb->has_rgb);
+    }
+
+    // R2-4: Persistent AI CarLampState (15-tick brake hold, staggered headlamps, Reverse == -1 only).
+    {
+      drive::CarLampState ai_lamps;
+      ai_lamps.rng_state = 0x12345678u;
+      auto map_gear = [](int vgear) { return (vgear == -1) ? 0 : std::max(1, vgear); };
+      drive::LampInputs in;
+      in.is_ai = true;
+      in.snap_headlamps = true;
+      in.tod_sec = 12.0 * 3600.0;  // noon
+      in.brake_cmd = 1.0f;
+      in.brake_pedal = 1.0f;
+      in.gear = map_gear(0);  // Neutral: reverse lamp must stay OFF!
+      ai_lamps.update(in);
+      CHECK(ai_lamps.brake_on && !ai_lamps.reverse_on && !ai_lamps.headlamps_on);
+      // Release brake: persistent AI state holds brake lamp on for 15 ticks anti-flicker!
+      in.brake_cmd = 0.0f;
+      in.brake_pedal = 0.0f;
+      in.snap_headlamps = false;
+      ai_lamps.update(in);
+      CHECK(ai_lamps.brake_on);
+      for (int k = 0; k < 16; ++k) ai_lamps.update(in);
+      CHECK(!ai_lamps.brake_on);
+      // Reverse gear (-1 -> LampInputs::gear == 0): reverse lamp turns ON!
+      in.gear = map_gear(-1);
+      ai_lamps.update(in);
+      CHECK(ai_lamps.reverse_on);
+      // Dusk headlamps stagger on over ticks when snap_headlamps is false.
+      in.tod_sec = 20.0 * 3600.0;
+      bool turned_on = false;
+      for (int k = 0; k < 200; ++k) {
+        ai_lamps.update(in);
+        if (ai_lamps.headlamps_on) { turned_on = true; break; }
+      }
+      CHECK(turned_on);
+    }
+
+    // R2-4: Passing_AggressionLevel affects plan_lanes() overtaking willingness/rate.
+    {
+      drive::RacingLine rl;
+      for (int i = 0; i <= 40; ++i) {
+        rl.x.push_back(0.0f);
+        rl.y.push_back(0.0f);
+        rl.z.push_back(float(i * 10));
+        rl.dist.push_back(float(i * 10));
+        rl.radius.push_back(1e6f);
+        rl.speed.push_back(60.0f);
+        rl.room_left.push_back(5.5f);
+        rl.room_right.push_back(5.5f);
+      }
+      double prog[2] = {50.0, 62.0};
+      float cross[2] = {0.0f, 0.0f}, spd[2] = {22.0f, 20.5f};
+      float lane_passive[2] = {0.0f, 0.0f}, lane_aggro[2] = {0.0f, 0.0f};
+      race::LaneParams lp_passive[2] = {{7.0f, 0.3f, 0.4f, 0.0f}, {7.0f, 0.3f, 0.4f, 0.0f}};
+      race::LaneParams lp_aggro[2] = {{7.0f, 0.3f, 0.4f, 1.0f}, {7.0f, 0.3f, 0.4f, 1.0f}};
+      for (int s = 0; s < 30; ++s) {
+        race::plan_lanes(rl, prog, cross, spd, lp_passive, 1, lane_passive, 1.0 / 60.0, 2.0);
+        race::plan_lanes(rl, prog, cross, spd, lp_aggro, 1, lane_aggro, 1.0 / 60.0, 2.0);
+      }
+      CHECK(std::fabs(lane_aggro[0]) > std::fabs(lane_passive[0]) + 0.5f);
+    }
+
+    // R2-4: Hand-of-God start-line launch grace (< 25 s && !has_launched), widened Street
+    // off_route threshold (> 12 m), and 2 s fade-out / 1 s fade-in timer.
+    {
+      race::Gate start{0, 0, 0, 1, 20};
+      race::Session::Options sopt;
+      sopt.countdown = 0.0;
+      sopt.resets = true;
+      sopt.player_index = 0;
+      sopt.off_route_near = 12.0;
+      sopt.off_route_far = 25.0;
+      race::Session sess(1, false, 1, start, race::Gate{0, 1000, 0, 1, 20}, sopt);
+      race::CarSample cs{};
+      // Sitting at the start line without launching for 10 s: NO premature reset!
+      for (int k = 0; k < 100; ++k) {
+        sess.step(0.1, std::span(&cs, 1));
+        CHECK(sess.resets().empty());
+      }
+      CHECK(!sess.car(0).has_launched);
+      // Launch the car (>= 5 mph), then drive 8 m off-route (inside widened 12 m Street threshold): NO reset.
+      cs.speed = 10.0;
+      cs.off_route = 8.0;
+      for (int k = 0; k < 80; ++k) {
+        sess.step(0.1, std::span(&cs, 1));
+        CHECK(sess.resets().empty());
+      }
+      CHECK(sess.car(0).has_launched);
+      // Now stop dead: after 2 s fade-out starts (< 1.0), at 3 s reset triggers, then 1 s fade-in recovers!
+      cs.speed = 0.0;
+      cs.off_route = 0.0;
+      bool saw_fade_out = false, triggered = false;
+      for (int k = 0; k < 35; ++k) {
+        sess.step(0.1, std::span(&cs, 1));
+        if (sess.reset_fade_alpha(0) < 0.9) saw_fade_out = true;
+        if (!sess.resets().empty()) {
+          triggered = true;
+          sess.reset_done(0);
+          break;
+        }
+      }
+      CHECK(saw_fade_out && triggered);
+      CHECK(sess.reset_fade_alpha(0) < 0.1);  // starts faded right after reset_done
+      cs.speed = 15.0;
+      for (int k = 0; k < 12; ++k) sess.step(0.1, std::span(&cs, 1));
+      CHECK(near(sess.reset_fade_alpha(0), 1.0, 1e-6));  // fully faded back in after > 1 s
+    }
+
+    // R2-4: Rivals / GhostRun recording, interpolation, `.ghost` serialization,
+    // personal-best clean-lap preference, and Rally Rivals loaner IDs (1626..1635).
+    {
+      const auto loaners = race::rally_rivals_loaner_ids();
+      CHECK(loaners.size() == 10 && loaners.front() == 1626 && loaners.back() == 1635);
+      CHECK(race::is_rally_rivals_loaner(1626) && race::is_rally_rivals_loaner(1635));
+      CHECK(!race::is_rally_rivals_loaner(1625) && !race::is_rally_rivals_loaner(1636));
+
+      race::GhostRun run;
+      run.event_id = "FR22";
+      run.driver_name = "RivalOne";
+      run.car_media = "NIS_SkylineGTRVSpecII_02";
+      run.car_id = 445;
+      run.shown_pi = 500;
+      run.total_time = 2.0;
+      run.clean = true;
+      run.sample_interval = 0.5;
+      const double h90 = 0.5 * 3.14159265358979323846;
+      run.record({0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 10.0, 0.0f, 0.0f, 1}, true);
+      run.record({0.1, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 11.0, 0.0f, 0.0f, 1});  // throttled by 0.5 s cadence
+      CHECK(run.samples.size() == 1);
+      run.record({1.0, 10.0, 3.0, 20.0, 0.0, std::sin(h90 * 0.5), 0.0, std::cos(h90 * 0.5), 30.0, 0.2f, 0.5f, 3});
+      CHECK(run.samples.size() == 2);
+
+      race::GhostSample mid;
+      CHECK(run.interpolate(0.5, mid));
+      CHECK(near(mid.x, 5.0, 1e-4) && near(mid.y, 2.0, 1e-4) && near(mid.z, 10.0, 1e-4));
+      CHECK(near(mid.speed, 20.0, 1e-4));
+      const double qlen = std::sqrt(mid.qx * mid.qx + mid.qy * mid.qy + mid.qz * mid.qz + mid.qw * mid.qw);
+      CHECK(near(qlen, 1.0, 1e-5));
+      CHECK(near(mid.qy, std::sin(h90 * 0.25), 1e-4));
+
+      // Save & load `.ghost` file round-trip + clean-lap personal-best preference.
+      const auto tmp_dir = std::filesystem::temp_directory_path() / "shift_engine_ghost_test";
+      std::error_code ec;
+      std::filesystem::remove_all(tmp_dir, ec);
+      bool saved = false;
+      std::string gerr;
+      race::GhostRun dirty_fast = run;
+      dirty_fast.total_time = 1.5;
+      dirty_fast.clean = false;
+      CHECK(race::update_personal_best_ghost(tmp_dir, dirty_fast, &saved, &gerr) && saved);
+      // A clean slower run must beat a dirty faster run!
+      CHECK(race::update_personal_best_ghost(tmp_dir, run, &saved, &gerr) && saved);
+      // Another dirty faster run must NOT overwrite the clean run!
+      CHECK(race::update_personal_best_ghost(tmp_dir, dirty_fast, &saved, &gerr) && !saved);
+      // Verify file round-trip content.
+      race::GhostRun loaded;
+      CHECK(race::GhostRun::load(race::ghost_file_path(tmp_dir, "FR22"), loaded, &gerr));
+      CHECK(loaded.event_id == "FR22" && loaded.driver_name == "RivalOne" && loaded.car_id == 445 &&
+            loaded.shown_pi == 500 && loaded.clean && near(loaded.total_time, 2.0, 1e-4) &&
+            loaded.samples.size() == 2);
+      std::filesystem::remove_all(tmp_dir, ec);
     }
   }
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {

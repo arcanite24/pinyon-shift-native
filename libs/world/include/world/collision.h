@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -26,6 +27,42 @@ namespace world {
 constexpr uint8_t kSurfaceAsphalt = 0;
 constexpr uint8_t kSurfaceInvisible = 9;         // a solid wall, kept
 constexpr uint8_t kSurfaceCameraCollision = 49;  // the camera only, not the car
+
+// Extended per-surface properties parsed from SurfaceTypes.xml.
+struct SurfacePhysicsProps {
+  std::string name;
+  std::string category;
+  float max_steering_lock_cap_deg = 0.0f;  // degrees (0 = uncapped)
+  float linear_drag = 0.0f;                // <LinearDrag> (1/s)
+  float angular_drag = 0.0f;               // <AngularDrag> (1/s)
+  float chase_cam_spring_mult = 1.0f;      // <ChaseCamSpringMultiplier>
+  float steer_torque = 1.0f;               // <SteerTorque>
+  float car_world_coll_fric_mod = 1.0f;    // <CarWorldCollFricMods>
+  float spring_norm_y_cutoff = 0.707f;     // <Springiness><NormDepSpringNormYCutoff>
+  float spring_speed_cutoff = 4.0f;        // <Springiness><NormDepSpringSpeedCutoff>
+  bool defined = false;
+};
+
+struct CategoryCollisionParams {
+  std::string category_a;
+  std::string category_b;
+  float friction = 0.5f;
+  float restitution = 0.0f;
+  bool has_friction = false;
+  bool has_restitution = false;
+};
+
+struct SurfaceTableExtras {
+  std::vector<SurfacePhysicsProps> surfaces;
+  std::map<std::string, float> car_world_coll_fric_mods;  // lowercase name/category -> multiplier
+  std::vector<CategoryCollisionParams> category_params;
+
+  const CategoryCollisionParams* find_category_params(std::string_view cat_a, std::string_view cat_b) const;
+  float car_world_friction_mod(std::string_view surface_name, std::string_view category = {}) const;
+};
+
+// Parses extended SurfaceTypes.xml physics/camera/rumble/collision columns.
+bool parse_surface_physics_extras(std::string_view xml, SurfaceTableExtras& out, std::string* error = nullptr);
 
 struct CollisionMesh {
   std::vector<std::array<float, 3>> positions;  // three per triangle, game frame
@@ -51,6 +88,12 @@ class Collision {
 
   const fh1::ColIndex& index() const { return index_; }
   const std::vector<fh1::SurfaceType>& surfaces() const { return surfaces_; }
+  const SurfaceTableExtras& surface_extras() const { return surface_extras_; }
+  SurfacePhysicsProps surface_physics(int surface) const;
+  drive::SurfaceTyre surface_tyre(int surface) const;
+  const CategoryCollisionParams* category_collision_params(std::string_view cat_a, std::string_view cat_b) const {
+    return surface_extras_.find_category_params(cat_a, cat_b);
+  }
   std::string surface_name(int surface) const;
   // Engine choice until the tyre-model spec: grip = FrictionScale.
   float grip(int surface) const;
@@ -92,6 +135,7 @@ class Collision {
   fh1::ColIndex index_;
   std::unordered_set<uint32_t> occupied_cells_;
   std::vector<fh1::SurfaceType> surfaces_;
+  SurfaceTableExtras surface_extras_;
   std::map<uint32_t, Core> cache_;  // by record position
 };
 

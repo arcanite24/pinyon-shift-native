@@ -10,6 +10,7 @@
 // avoidance between cars.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -35,6 +36,13 @@ struct RacingLine {
   // (1/m, positive in a dip), the bank (rad, the left edge up) and the
   // grade (rise over run).
   std::vector<float> curvature, curvature_v, bank_left, grade;
+  // Optional, per point: surface friction scale (1.0 on dry asphalt, < 1.0 on
+  // dirt/gravel/grass). Defaults to 1.0f everywhere when empty.
+  std::vector<float> surface_grip;
+  float grip_at(size_t j) const {
+    if (surface_grip.size() != size() || j >= surface_grip.size()) return 1.0f;
+    return std::clamp(surface_grip[j], 0.1f, 2.0f);
+  }
   // Fills the four from x, y, z (and `lateral_y`, the left edge's rise
   // over the half width per point, when given; else no bank).
   void plan_geometry(std::span<const float> lateral_y = {});
@@ -45,7 +53,8 @@ struct RacingLine {
   // curvature under `max_speed`, then limited by `accel` forwards and
   // `decel` backwards along the line (m/s^2).
   static RacingLine from_points(std::span<const float> x, std::span<const float> z, double lat_accel = 9.0,
-                                double accel = 4.0, double decel = 8.0, double max_speed = 70.0);
+                                double accel = 4.0, double decel = 8.0, double max_speed = 70.0,
+                                std::span<const float> surface_grip = {});
   // From the oracle's lap: its path and its speed at each point.
   static RacingLine from_oracle(const OracleLine& line);
 

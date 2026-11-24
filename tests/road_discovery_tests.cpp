@@ -73,14 +73,30 @@ void test_synthetic_discovery_and_save() {
   check(rd.total_roads() == 2, "counts only drawn roads (2, excluding shortcut)");
   check(rd.discovered_count() == 0, "starts with 0 discovered roads");
 
-  auto ev1 = rd.update(0, 50);
+  auto ev0 = rd.update(0, 0);
+  check(ev0.empty(), "visiting only start node a0 does not complete 200 m Highway 1");
+  check(rd.is_node_discovered(a0) && !rd.is_node_discovered(a1),
+        "proximity marking does not prematurely mark far endpoint a1 100 m away");
+  check(rd.visited_node_count() == 1 && rd.visited_segment_count() == 0,
+        "visited_node_count tracks single node while visited_segment_count stays 0");
+
+  auto ev0b = rd.update(0, 100);
+  check(ev0b.empty(), "100 m unvisited segment remaining (> 75 m threshold) does not complete Highway 1");
+  check(rd.is_node_discovered(a0) && rd.is_node_discovered(a1) && !rd.is_node_discovered(a2),
+        "a0 and a1 marked discovered while a2 remains undiscovered");
+  check(rd.is_segment_discovered(a0, a1) && !rd.is_segment_discovered(a1, a2),
+        "segment discovered only when both endpoints are visited");
+  check(rd.visited_segment_count() == 1, "visited_segment_count increments once segment (a0,a1) completes");
+
+  auto ev1 = rd.update(0, 200);
   check(ev1.size() == 1 && ev1[0].road_name == "Highway 1" && ev1[0].discovered_count == 1 && ev1[0].total_count == 2,
-        "driving on Highway 1 discovers road 1/2");
-  check(rd.is_node_discovered(a0) && rd.is_node_discovered(a1), "segment endpoints marked discovered");
+        "driving full Highway 1 discovers road 1/2");
+  check(rd.is_node_discovered(a0) && rd.is_node_discovered(a1) && rd.is_node_discovered(a2),
+        "all Highway 1 nodes marked discovered");
   check(!rd.is_node_discovered(b0), "other road still undiscovered");
 
   // Re-driving same segment emits nothing.
-  auto ev1b = rd.update(0, 50);
+  auto ev1b = rd.update(0, 200);
   check(ev1b.empty(), "re-driving discovered segment emits no duplicate event");
 
   // Save & restore round-trip through DriveSave.
@@ -109,16 +125,62 @@ void test_synthetic_discovery_and_save() {
   check(rd2.discovered_count() == 1 && rd2.is_node_discovered(a0) && !rd2.is_node_discovered(b0),
         "restored RoadDiscovery matches saved bitset");
 
-  // Drive on Canyon Trail -> 2/2.
-  auto ev2 = rd2.update(300, 40);
+  // Drive on Canyon Trail (both endpoints) -> 2/2.
+  auto ev2a = rd2.update(300, 0);
+  check(ev2a.empty(), "touching one end of 100 m Canyon Trail does not complete it");
+  auto ev2 = rd2.update(300, 100);
   check(ev2.size() == 1 && ev2[0].road_name == "Canyon Trail" && ev2[0].discovered_count == 2,
-        "driving on second road brings count to 2/2");
+        "driving full second road brings count to 2/2");
 
   // SettingsPage treasure map toggle.
   carview::SettingsPage sp;
   sp.load({"--treasure-map"});
   check(sp.value("treasure map") == "on", "SettingsPage reads --treasure-map as on");
   check(sp.live_settings().treasure_map, "LiveSettings reports treasure_map=true");
+}
+
+void test_unvisited_distance_threshold_75m() {
+  // 1) Long highway (600 m = 6 x 100 m segments): driving 67% (400 m) leaves 200 m unvisited
+  //    (> 75 m UnvisitedDistanceThreshold) and MUST NOT complete prematurely.
+  // 2) Highway with final 60 m stub unvisited (<= 75 m) completes as soon as unvisited <= 75 m.
+  // 3) A 79 m segment does NOT mark its far endpoint when the car is 28 m from the start node.
+  NavBuilder b;
+  std::vector<uint32_t> long_nodes;
+  for (int i = 0; i <= 6; ++i) long_nodes.push_back(b.add_node(0.0f, float(i * 100)));
+  b.add_way(long_nodes, "freeway", "I-76 Long");
+
+  const uint32_t t0 = b.add_node(500, 0), t1 = b.add_node(500, 100), t2 = b.add_node(500, 200), t3 = b.add_node(500, 260);
+  b.add_way({t0, t1, t2, t3}, "a", "Stub 60m End");
+
+  const uint32_t p0 = b.add_node(900, 0), p1 = b.add_node(900, 79);
+  b.add_way({p0, p1}, "b", "Seg 79m");
+
+  freeroam::RoadDiscovery rd;
+  check(rd.build(b.map), "RoadDiscovery builds on threshold test map");
+
+  // Drive first 5 nodes (400 m of 600 m = 71% of nodes) on I-76 Long -> still 200 m unvisited -> NOT discovered!
+  for (int i = 0; i <= 4; ++i) {
+    auto ev = rd.update(0.0, double(i * 100));
+    check(ev.empty(), "600 m highway must not complete with >= 200 m unvisited");
+  }
+  check(rd.discovered_count() == 0, "600 m highway still undiscovered at 67% length");
+  check(rd.update(0.0, 500.0).empty(), "600 m highway must not complete with 100 m unvisited (> 75 m)");
+  auto fin_ev = rd.update(0.0, 600.0);
+  check(fin_ev.size() == 1 && fin_ev[0].road_name == "I-76 Long", "600 m highway completes once unvisited <= 75 m");
+
+  // Stub 60m End: drive t0 -> t1 -> t2 (200 m driven, only 60 m segment t2->t3 unvisited <= 75 m) -> completes!
+  check(rd.update(500.0, 0.0).empty(), "t0 alone does not complete Stub 60m End");
+  check(rd.update(500.0, 100.0).empty(), "t0->t1 leaves 160 m unvisited");
+  auto stub_ev = rd.update(500.0, 200.0);
+  check(stub_ev.size() == 1 && stub_ev[0].road_name == "Stub 60m End",
+        "road completes when remaining unvisited segment length is 60 m <= 75 m");
+
+  // 79 m segment: at (900, 20), p0 is 20 m away (<= 28 m) while p1 is 59 m away (> 28 m).
+  auto seg_ev = rd.update(900.0, 20.0, 28.0);
+  check(seg_ev.empty(), "79 m segment does not complete from near start");
+  check(rd.is_node_discovered(p0) && !rd.is_node_discovered(p1),
+        "79 m segment marks near endpoint p0 only, never far endpoint p1");
+  check(!rd.is_segment_discovered(p0, p1), "segment requires both endpoints visited");
 }
 
 void test_colorado_corpus_optional() {
@@ -170,6 +232,7 @@ void test_colorado_corpus_optional() {
 
 int main() {
   test_synthetic_discovery_and_save();
+  test_unvisited_distance_threshold_75m();
   test_colorado_corpus_optional();
   if (g_failed == 0) std::printf("road_discovery_tests: PASS\n");
   return g_failed ? 1 : 0;

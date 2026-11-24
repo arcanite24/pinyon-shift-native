@@ -21,9 +21,9 @@ void clamp_pair(double& inside, double& outside) {
 }
 
 constexpr const char* kActionNames[size_t(ControlAction::kCount)] = {
-    "steer-left", "steer-right", "throttle", "brake",     "handbrake",  "clutch",
-    "shift-up",   "shift-down",  "camera",   "look-back", "rewind",     "reset",
-    "map",        "radio-prev",  "radio-next", "activate",
+    "steer-left", "steer-right", "throttle",  "brake",      "handbrake",  "clutch",
+    "shift-up",   "shift-down",  "camera",    "look-back",  "rewind",     "reset",
+    "map",        "radio-prev",  "radio-next", "activate",  "look-left",  "look-right",
 };
 
 }  // namespace
@@ -172,6 +172,8 @@ KeyBindings KeyBindings::defaults() {
   set(ControlAction::kRadioPrev, "Comma");
   set(ControlAction::kRadioNext, "Period");
   set(ControlAction::kActivate, "E");
+  set(ControlAction::kLookLeft, "J", "Keypad 4");
+  set(ControlAction::kLookRight, "K", "Keypad 6");
   return kb;
 }
 

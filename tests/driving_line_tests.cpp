@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <vector>
 
+#include "drive/ai_driver.h"
 #include "drive/driving_line.h"
 
 namespace {
@@ -160,12 +161,69 @@ void test_backward_braking_and_mesh() {
   CHECK(near(mesh_full[0].y, 1.58, 1e-3));
 }
 
+void test_dirt_mixed_surface_ai_speed_planning() {
+  const auto car = test_car();
+  const auto cap = drive::ai_capacity(car);
+  drive::RacingLine asphalt = make_corner_line();
+  drive::RacingLine dirt = make_corner_line();
+  // Empty surface_grip defaults to 1.0f everywhere.
+  CHECK(near(asphalt.grip_at(0), 1.0, 1e-6));
+  // Dirt surface grip 0.64 -> sqrt(0.64) = 0.80 planned corner speed scaling.
+  dirt.surface_grip.assign(dirt.size(), 0.64f);
+  CHECK(near(dirt.grip_at(50), 0.64, 1e-5));
+
+  // 1. Capacity-table speed planner (set_planner): corner speed scales by sqrt(0.64) = 0.80
+  //    while straight-away top speed remains uncapped.
+  drive::AiField f_asph(asphalt, 1), f_dirt(dirt, 1);
+  f_asph.set_planner(0, &cap, 1.0f, 1.0f);
+  f_dirt.set_planner(0, &cap, 1.0f, 1.0f);
+  size_t apex_idx = 0;
+  double max_k = 0.0;
+  for (size_t j = 0; j < asphalt.size(); ++j) {
+    if (std::fabs(asphalt.curvature[j]) > max_k) {
+      max_k = std::fabs(asphalt.curvature[j]);
+      apex_idx = j;
+    }
+  }
+  CHECK(max_k > 0.01);
+  const double vc_asph = f_asph.corner_speed(0, apex_idx);
+  const double vc_dirt = f_dirt.corner_speed(0, apex_idx);
+  CHECK(near(vc_dirt / vc_asph, 0.80, 0.02));
+  // Straight point far before braking zone stays at max_speed on both.
+  CHECK(near(f_dirt.corner_speed(0, 5), f_asph.corner_speed(0, 5), 1e-3));
+  // Planned speed approaching apex is strictly lower on dirt.
+  CHECK(f_dirt.planned_speed(0, 190.0) < f_asph.planned_speed(0, 190.0) * 0.90);
+
+  // 2. Radius-limit planner (set_limits): scales corner speed by sqrt(surface_grip).
+  asphalt.radius.assign(asphalt.size(), 1000.0f);
+  dirt.radius.assign(dirt.size(), 1000.0f);
+  for (size_t j = 0; j < asphalt.size(); ++j) {
+    if (std::fabs(asphalt.curvature[j]) > 1e-4f) {
+      asphalt.radius[j] = 1.0f / std::fabs(asphalt.curvature[j]);
+      dirt.radius[j] = 1.0f / std::fabs(dirt.curvature[j]);
+    }
+  }
+  drive::AiField l_asph(asphalt, 1), l_dirt(dirt, 1);
+  l_asph.set_limits(0, 10.0f, 12.0f);
+  l_dirt.set_limits(0, 10.0f, 12.0f);
+  const double pl_asph = l_asph.planned_speed(0, 200.0);
+  const double pl_dirt = l_dirt.planned_speed(0, 200.0);
+  CHECK(near(pl_dirt / pl_asph, 0.80, 0.03));
+
+  // 3. Fallback line-speed path scales by sqrt(surface_grip).
+  drive::AiField s_asph(asphalt, 1), s_dirt(dirt, 1);
+  const double ps_asph = s_asph.planned_speed(0, 210.0);
+  const double ps_dirt = s_dirt.planned_speed(0, 210.0);
+  CHECK(near(ps_dirt / ps_asph, 0.80, 0.01));
+}
+
 }  // namespace
 
 int main() {
   test_color_band();
   test_braking_table();
   test_backward_braking_and_mesh();
+  test_dirt_mixed_surface_ai_speed_planning();
   if (failures) {
     std::printf("driving_line_tests: %d failure(s)\n", failures);
     return 1;

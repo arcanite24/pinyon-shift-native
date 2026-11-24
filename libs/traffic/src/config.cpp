@@ -67,9 +67,33 @@ void TrafficConfig::apply(const Registry& r) {
   g("AI/Traffic/VehicleManager/OverspawnCheckTime", overspawn_check_time);
   g("AI/Traffic/VehiclePosition/MaxHighLodDistance", high_lod_distance);
   g("AI/Traffic/VehiclePosition/MaxMediumLodDistance", medium_lod_distance);
-  g("AI/Spawning/FadeInTime", fade_in_time);
-  g("AI/Spawning/MinFullAlphaDistance", min_full_alpha_distance);
-  g("AI/Spawning/MaxFullAlphaDistance", max_full_alpha_distance);
+  auto g_or_leaf = [&](const char* exact, const char* leaf, double& v) {
+    if (const auto it = r.values.find(exact); it != r.values.end()) {
+      v = it->second;
+      return;
+    }
+    const std::string tail = std::string("/") + leaf;
+    for (const auto& [k, val] : r.values) {
+      if (k == leaf || (k.size() >= tail.size() && k.compare(k.size() - tail.size(), tail.size(), tail) == 0)) {
+        v = val;
+        return;
+      }
+    }
+  };
+  g("AI/Traffic/Vehicle/FadeInTime", fade_in_time);
+  g("AI/Traffic/Vehicle/MinFullAlphaDistance", min_full_alpha_distance);
+  g("AI/Traffic/Vehicle/MaxFullAlphaDistance", max_full_alpha_distance);
+  g_or_leaf("AI/Traffic/Vehicle/BrakeLightAccelerationThreshold", "BrakeLightAccelerationThreshold",
+            brake_light_accel_threshold);
+  g_or_leaf("AI/Spawning/BehindChance", "BehindChance", behind_chance);
+  g_or_leaf("AI/Spawning/BehindMaxSpeed", "BehindMaxSpeed", behind_max_speed);
+  double fgs = festival_group_spawns ? 1.0 : 0.0;
+  g_or_leaf("AI/Spawning/FestivalGroupSpawns", "FestivalGroupSpawns", fgs);
+  festival_group_spawns = fgs > 0.0;
+  double tgs = traffic_group_spawns ? 1.0 : 0.0;
+  g_or_leaf("AI/Spawning/TrafficGroupSpawns", "TrafficGroupSpawns", tgs);
+  traffic_group_spawns = tgs > 0.0;
+  if (tgs > 0.0 && tgs < 1.0) traffic_convoy_chance = tgs;
   g("AI/Traffic/VehicleControls/AccelMaxInput", accel_max_input);
   g("AI/Traffic/VehicleControls/BrakeMaxInput", brake_max_input);
   g("AI/Traffic/VehicleControls/SteeringMultiplier", steering_multiplier);
@@ -199,8 +223,13 @@ bool parse_traffic_config(std::string_view aiopenworld_xml, std::string_view reg
           parse_density_list(dl, out.festival);
   }
   Registry r;
-  for (const auto& v : reg.children)
-    if (audio::iequals(v.name, "Value") && v.has("id")) r.values[v.attr("id")] = v.number("value", 0);
+  for (const auto& v : reg.children) {
+    if (!audio::iequals(v.name, "Value") || !v.has("id")) continue;
+    const std::string raw = v.attr("value");
+    if (audio::iequals(raw, "true")) r.values[v.attr("id")] = 1.0;
+    else if (audio::iequals(raw, "false")) r.values[v.attr("id")] = 0.0;
+    else r.values[v.attr("id")] = v.number("value", 0);
+  }
   out.apply(r);
   return true;
 }

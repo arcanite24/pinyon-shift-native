@@ -260,23 +260,130 @@ int main() {
     traffic::TrafficConfig cfg;
     FestivalManager fm(nm, roads, cfg, 7);
     fm.set_driver_names({"Darius Flynt", "Ramona Cravache"});
-    fm.set_roster({{1219, "NIS_SkylineGTRVSpecII_02", "", "A", 540}});
-    const uint32_t fid = fm.spawn_ahead({0, 0, 100}, 0.0, 20.0);
+    fm.set_roster({{1219, "NIS_SkylineGTRVSpecII_02", "", "A", 540, 1560.0}});
+    fm.set_player_pi(500);
+    const uint32_t fid = fm.spawn_ahead({0, 0, 100}, 0.0, 14.0);
     CHECK(fid > 0);
-    fm.step(0.05, 1.0, {0, 0, 100}, 0.0, 20.0);
+    // Match AI speed (~39.5 m/s) inside retail activation box (5..20 m ahead, |lat| <= 2.5 m).
+    fm.step(0.05, 1.0, {2.2, 0, 100}, 0.0, 38.0);
     CHECK(fm.hud(1.0).prompt_visible && fm.hud(1.0).prompt_driver == "Darius Flynt" &&
-          fm.hud(1.0).prompt_wager == h2h_wager_credits(540, 0));
+          fm.hud(1.0).prompt_wager == h2h_reward_credits(500, 540));
     // Verify Festival AI velocity/RPM telemetry & player collision impulse.
     CHECK(!fm.cars().empty() && fm.cars()[0].rpm > 900.0);
     const auto fpos = fm.cars()[0].position;
     const auto col = fm.resolve_player_collision({fpos.x + 0.8, fpos.y, fpos.z - 0.5}, {-12.0, 0.0, 20.0}, 1500.0, 1.0 / 120.0);
     CHECK(col.hit && col.impulse_magnitude > 100.0);
-    CHECK(fm.start_head_to_head({0, 0, 100}, 0.0, 1.0, fid));
+    CHECK(fm.start_head_to_head({2.2, 0, 100}, 0.0, 1.0, fid));
     CHECK(fm.h2h_active() && fm.h2h_route().size() >= 10);
     const auto fin = fm.h2h_finish_pos();
     HeadToHeadResult hres;
-    CHECK(fm.step(0.05, 5.0, {fin[0], fin[1], fin[2]}, 0.0, 40.0, &hres));
-    CHECK(hres.won && hres.payout_credits == h2h_wager_credits(540, 0));
+    // Outside 10 m finish radius (EndPointTriggerDiameter = 20 m): must NOT finish yet.
+    CHECK(!fm.step(0.05, 4.9, {fin[0], fin[1], fin[2] - 15.0}, 0.0, 40.0, &hres));
+    // Inside 10 m finish radius: completes and pays PI-differential reward.
+    CHECK(fm.step(0.05, 5.0, {fin[0], fin[1], fin[2] - 6.0}, 0.0, 40.0, &hres));
+    CHECK(hres.won && hres.payout_credits == h2h_reward_credits(500, 540));
+  }
+
+  // R2-4 parity: Retail H2H PI-differential reward, trigger box gates + hysteresis,
+  // one-way freeway routing (2500-5000 m), and uncapped hypercar top speed.
+  {
+    // 1) PI-differential payout: base 5000, +20/PI vs higher opponent, -10/PI vs lower opponent.
+    CHECK(h2h_reward_credits(500, 500) == 5000);
+    CHECK(h2h_reward_credits(500, 650) == 8000);
+    CHECK(h2h_reward_credits(650, 500) == 3500);
+
+    // 2) Trigger box gates: distance [5,20], |lat|<=2.5, heading_dot>0.85, |dv|<=6.71, target>=11.18.
+    traffic::NavMap nm;
+    nm.keys = {"road_type", "traffic_density", "oneway"};
+    nm.values = {"freeway", "5", "true"};
+    // Two parallel one-way freeway carriageways (4000 m long):
+    //   x=0: northbound z=0 -> 4000 (oneway=true)
+    //   x=30: southbound z=4000 -> 0 (oneway=true)
+    // Connected at z=0 and z=4000.
+    for (uint32_t i = 0; i <= 40; ++i) {
+      traffic::NavNode nd;
+      nd.id = i;
+      nd.x = 0.0f;
+      nd.z = float(i * 100);
+      nm.nodes.push_back(nd);
+    }
+    for (uint32_t i = 0; i <= 40; ++i) {
+      traffic::NavNode nd;
+      nd.id = 41 + i;
+      nd.x = 30.0f;
+      nd.z = float((40 - i) * 100);
+      nm.nodes.push_back(nd);
+    }
+    nm.tags = {{0, 0}, {1, 1}, {2, 2}};  // freeway, density 5, oneway=true
+    traffic::NavWay w_nb;
+    w_nb.node_first = 0;
+    w_nb.node_count = 41;
+    w_nb.tag_first = 0;
+    w_nb.tag_count = 3;
+    for (uint32_t i = 0; i <= 40; ++i) nm.way_nodes.push_back(i);
+    traffic::NavWay w_sb;
+    w_sb.node_first = uint32_t(nm.way_nodes.size());
+    w_sb.node_count = 41;
+    w_sb.tag_first = 0;
+    w_sb.tag_count = 3;
+    for (uint32_t i = 0; i <= 40; ++i) nm.way_nodes.push_back(41 + i);
+    nm.ways = {w_nb, w_sb};
+    traffic::Roads roads;
+    roads.build(nm);
+    traffic::TrafficConfig cfg;
+    cfg.initial_festival_cars = 0;
+    cfg.min_festival = 1;
+    cfg.max_festival = 1;
+
+    FestivalManager fm(nm, roads, cfg, 99);
+    fm.set_player_pi(500);
+    fm.set_roster({{1006, "FER_FXX_05", "Hyper Rival", "R1", 950, 1155.0}});
+    const uint32_t cid = fm.spawn_ahead({0, 0, 200}, 0.0, 12.0);
+    CHECK(cid > 0 && fm.cars().size() == 1);
+    const double ai_spd = fm.cars()[0].speed;
+    // Wrong heading (facing south, pi rad): must NOT trigger.
+    fm.step(0.01, 1.0, {fm.cars()[0].position.x, 0, fm.cars()[0].position.z - 12.0}, 3.14159, ai_spd);
+    CHECK(!fm.hud(1.0).prompt_visible);
+    // Lateral offset > 2.5 m (4.0 m to the side): must NOT trigger.
+    fm.step(0.01, 1.01, {fm.cars()[0].position.x - 4.0, 0, fm.cars()[0].position.z - 12.0}, 0.0, ai_spd);
+    CHECK(!fm.hud(1.01).prompt_visible);
+    // Speed difference > 6.71 m/s (15 mph): must NOT trigger.
+    fm.step(0.01, 1.02, {fm.cars()[0].position.x, 0, fm.cars()[0].position.z - 12.0}, 0.0, ai_spd - 12.0);
+    CHECK(!fm.hud(1.02).prompt_visible);
+    // Too close (< 5 m): must NOT trigger.
+    fm.step(0.01, 1.03, {fm.cars()[0].position.x, 0, fm.cars()[0].position.z - 3.0}, 0.0, ai_spd);
+    CHECK(!fm.hud(1.03).prompt_visible);
+    // Too far (> 20 m): must NOT trigger.
+    fm.step(0.01, 1.04, {fm.cars()[0].position.x, 0, fm.cars()[0].position.z - 23.0}, 0.0, ai_spd);
+    CHECK(!fm.hud(1.04).prompt_visible);
+    // Inside retail box (12 m ahead, aligned, matched speed): MUST trigger!
+    fm.step(0.01, 1.05, {fm.cars()[0].position.x, 0, fm.cars()[0].position.z - 12.0}, 0.0, ai_spd);
+    CHECK(fm.hud(1.05).prompt_visible);
+    // Hysteresis once locked: holds briefly at 22.5 m, releases at 28 m.
+    fm.step(0.01, 1.06, {fm.cars()[0].position.x, 0, fm.cars()[0].position.z - 22.5}, 0.0, ai_spd);
+    CHECK(fm.hud(1.06).prompt_visible);
+    fm.step(0.01, 1.07, {fm.cars()[0].position.x, 0, fm.cars()[0].position.z - 28.0}, 0.0, ai_spd);
+    CHECK(!fm.hud(1.07).prompt_visible);
+
+    // 3) One-way freeway H2H routing: starting on northbound freeway must route north (2500-5000 m,
+    //    never backwards down the one-way carriageway) and hypercar accelerates past old 58 m/s cap!
+    const traffic::P3 start_p = {2.2, 0, 200};
+    CHECK(fm.start_head_to_head(start_p, 0.0, 2.0, cid));
+    const auto& r2d = fm.h2h_route();
+    CHECK(r2d.size() >= 25);
+    const double route_len = fm.hud(2.0).route_length_m;
+    CHECK(route_len >= 2500.0 && route_len <= 5000.0);
+    // Every consecutive point along the one-way northbound freeway progresses +Z.
+    bool strictly_legal_north = true;
+    for (size_t i = 1; i < r2d.size(); ++i) {
+      if (r2d[i][1] < r2d[i - 1][1] - 1.0) strictly_legal_north = false;
+    }
+    CHECK(strictly_legal_north);
+    // Step H2H for 6 seconds: PI 950 lightweight hypercar accelerates past old 58 m/s cap!
+    for (int k = 1; k <= 120; ++k) {
+      fm.step(0.05, 2.0 + k * 0.05, {2.2, 0, 200 + k * 2.5}, 0.0, 50.0);
+    }
+    CHECK(!fm.cars().empty() && fm.cars()[0].speed > 65.0);
   }
 
   // Festival AI smoothness across a 90-degree junction: bounded yaw rate & lateral accel,

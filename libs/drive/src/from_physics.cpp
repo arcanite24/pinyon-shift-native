@@ -221,6 +221,38 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
     p.bumpstop_damping[a] = get(sd + "BumpstopDamping", 2) * m;
     p.antiroll_rate[a] = get(ar + "DefSwaybarStiffness", p.antiroll_rate[a] / m) * m;
     p.antiroll_damping[a] = get(ar + "SwaybarDamping", 2) * m;
+    p.static_toe_rad[a] = std::clamp(car.get(sd + "StaticToe", 0.0), -5.0, 5.0) * kDeg;
+  }
+
+  // Rally Suspension (List_UpgradeSpringDamper.Level == 4): lift static ride
+  // height, suspension rest length, sill height, and centre of mass.
+  const int spring_level = int(std::llround(car.get("List_UpgradeSpringDamper.Level", 0.0)));
+  if (spring_level == 4) {
+    double lift_sum = 0.0;
+    int lift_n = 0;
+    for (int a = 0; a < 2; ++a) {
+      const std::string sd = a == 0 ? "FrontSpringDamper." : "RearSpringDamper.";
+      const std::string stock_k1 =
+          a == 0 ? "Data_CarBody.ModelFrontStockRideHeight" : "Data_CarBody.ModelRearStockRideHeight";
+      const std::string stock_k2 = a == 0 ? "Data_Car.FrontStockRideHeight" : "Data_Car.RearStockRideHeight";
+      if (car.has(sd + "DefRideHeight") && (car.has(stock_k1) || car.has(stock_k2))) {
+        const double stock_rh = car.has(stock_k1) ? car.get(stock_k1) : car.get(stock_k2);
+        lift_sum += (car.get(sd + "DefRideHeight") - stock_rh);
+        ++lift_n;
+      }
+    }
+    const double rally_lift =
+        (lift_n > 0 && lift_sum / double(lift_n) > 0.005) ? std::clamp(lift_sum / double(lift_n), 0.01, 0.25) : 0.05;
+    p.centre_of_mass.y += rally_lift;
+    p.rest_length += rally_lift;
+    p.sill_height += rally_lift;
+    for (int a = 0; a < 2; ++a) {
+      if (lift_n == 0) p.bump_travel[a] += rally_lift;
+      p.max_droop[a] = std::max(p.max_droop[a], 0.35);
+    }
+    const double cm_scale_rally = std::clamp(p.centre_of_mass.y / 0.4814, 0.55, 1.85);
+    p.longitudinal_pitch_arm = 0.27 * cm_scale_rally;
+    p.lateral_roll_arm = 0.28 * cm_scale_rally;
   }
 
   // Tyres.
@@ -274,6 +306,20 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.fix_slip1 = get("Data_Car.FixListingNormSlip1", 1);
   p.fix_steer0 = get("Data_Car.FixListingSteerAngle0", 0.5);
   p.fix_steer1 = get("Data_Car.FixListingSteerAngle1", 1);
+  // Compound/global tyre modifiers: TireMod_FrictionScale, HeatTireScale, List_TireAffectCurve.
+  p.tire_mod_friction_scale = std::clamp(car.get("List_TireCompound.TireMod_FrictionScale", 1.0) *
+                                             car.get("List_UpgradeTireCompound.TireMod_FrictionScale", 1.0) *
+                                             car.get("Data_Car.TireMod_FrictionScale", 1.0) *
+                                             s.get("TireMod_FrictionScale", 1.0),
+                                         0.1, 3.0);
+  p.heat_tire_scale =
+      std::clamp(car.get("List_TireCompound.HeatTireScale", 1.0) * s.get("HeatTireScale", 1.0), 0.0, 5.0);
+  if (const auto* ta = car.curve("tire_affect") ? car.curve("tire_affect") : car.curve("heat_affect");
+      ta && ta->size() >= 2) {
+    p.tire_affect_curve.values = *ta;
+    p.tire_affect_curve.temp_min_c = car.get("List_TireAffectCurve.MinTemp", 20.0);
+    p.tire_affect_curve.temp_max_c = car.get("List_TireAffectCurve.MaxTemp", 180.0);
+  }
 
   // Engine (SPEC-CAR-PHYSICS, Engine torque, forced induction and
   // GameTorqueScale).
@@ -619,6 +665,7 @@ void apply_tune(const CarTune& tune, const cars::CarPhysics& car, CarParams& p) 
     }
     if (toes[a] > -90.0) {
       const double t = std::clamp(toes[a], -5.0, 5.0);
+      p.static_toe_rad[a] = t * kDeg;
       // Excessive toe increases scrubbing drag / lowers straight-line speed slightly.
       p.long_scale[a] *= std::clamp(1.0 - 0.004 * std::fabs(t), 0.94, 1.0);
       if (a == 1 && t < 0) p.lat_scale[1] *= std::clamp(1.0 + 0.008 * std::min(1.5, -t), 1.0, 1.02);
