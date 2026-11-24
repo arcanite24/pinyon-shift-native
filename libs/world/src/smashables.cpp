@@ -34,6 +34,7 @@ struct DebrisModelVertex {
 struct DebrisSubmesh {
   uint32_t texture_record = kNoTexture;
   uint8_t cutout = 0;
+  uint8_t decal = 0;
   std::vector<DebrisModelVertex> tris;  // 3 verts per triangle
 };
 
@@ -122,21 +123,40 @@ bool decode_rmb_to_debris_model(const fh1::RenderModel& model, uint32_t member, 
       if (skipped_material(s.material)) continue;
       uint32_t albedo_rec = kNoTexture;
       uint8_t cutout = 0;
+      uint8_t decal = 0;
       fh1::RmbVertexLayout layout;
       std::array<float, 4> uv_scale{0.0f, 0.0f, 1.0f, 1.0f};
       if (s.material_index < model.materials.size()) {
         const fh1::RmbMaterial& mat = model.materials[s.material_index];
         const std::string& eff = mat.effect < model.effects.size() ? model.effects[mat.effect] : std::string{};
         if (eff == "UNDERGROUND") continue;
+        bool is_placeholder = false;
         const int32_t slot0 = !mat.slots.empty() ? mat.slots[0] : -2;
         if (slot0 >= 0 && texture_list && size_t(slot0) < texture_list->size()) {
           const uint32_t rec = (*texture_list)[size_t(slot0)];
           if (rec < table.textures.size()) {
-            if (table.textures[rec].id == kPlaceholderTextureId) continue;
-            albedo_rec = rec;
+            if (table.textures[rec].id == kPlaceholderTextureId) {
+              is_placeholder = true;
+            } else {
+              albedo_rec = rec;
+            }
+          }
+        }
+        if (is_placeholder) continue;
+        // Fallback: some multi-slot prop materials omit slot 0 (-1) and bind diffuse in a secondary slot.
+        if (albedo_rec == kNoTexture && texture_list) {
+          for (size_t k = 1; k < mat.slots.size(); ++k) {
+            const int32_t sk = mat.slots[k];
+            if (sk < 0 || size_t(sk) >= texture_list->size()) continue;
+            const uint32_t rec = (*texture_list)[size_t(sk)];
+            if (rec < table.textures.size() && table.textures[rec].id != kPlaceholderTextureId) {
+              albedo_rec = rec;
+              break;
+            }
           }
         }
         cutout = (effect_blend(eff) == Blend::kCoverage) ? 1u : 0u;
+        decal = (eff.find("DEPTHBIAS") != std::string::npos || eff.find("DECAL") != std::string::npos) ? 1u : 0u;
         layout = fh1::rmb_vertex_layout(eff, o.stride);
         if (first_submesh + si < model.uv_offset_scale.size()) {
           uv_scale = model.uv_offset_scale[first_submesh + si];
@@ -145,12 +165,13 @@ bool decode_rmb_to_debris_model(const fh1::RenderModel& model, uint32_t member, 
       const auto tri = fh1::rmb_triangle_list(s);
       if (tri.size() < 3) continue;
 
-      const uint64_t sm_key = (uint64_t(cutout) << 32) | uint64_t(albedo_rec);
+      const uint64_t sm_key = (uint64_t(decal) << 40) | (uint64_t(cutout) << 32) | uint64_t(albedo_rec);
       auto [it, added] = submesh_by_key.emplace(sm_key, out.submeshes.size());
       if (added) {
         DebrisSubmesh ds;
         ds.texture_record = albedo_rec;
         ds.cutout = cutout;
+        ds.decal = decal;
         out.submeshes.push_back(std::move(ds));
       }
       auto& dst = out.submeshes[it->second].tris;
@@ -195,6 +216,16 @@ bool decode_rmb_to_debris_model(const fh1::RenderModel& model, uint32_t member, 
           const float nz = e1[0] * e2[1] - e1[1] * e2[0];
           const float l = std::sqrt(nx * nx + ny * ny + nz * nz);
           if (l > 1e-6f) v0.normal = v1.normal = v2.normal = {nx / l, ny / l, nz / l};
+        }
+        if (decal != 0) {
+          // Offset coplanar DEPTHBIAS/DECAL sign-face meshes slightly outward along their
+          // normal so painted sign faces never z-fight with the backing plate in debris draws.
+          constexpr float kDecalLiftM = 0.003f;
+          for (DebrisModelVertex* dv : {&v0, &v1, &v2}) {
+            dv->pos[0] += dv->normal[0] * kDecalLiftM;
+            dv->pos[1] += dv->normal[1] * kDecalLiftM;
+            dv->pos[2] += dv->normal[2] * kDecalLiftM;
+          }
         }
         dst.push_back(v0);
         dst.push_back(v1);
@@ -1810,7 +1841,7 @@ void SmashableWorld::build_debris_mesh(std::vector<DebrisVertex>& out_tris) cons
         if (sm.tris.empty()) continue;
         std::vector<DebrisVertex>* dst = &untextured;
         if (sm.texture_record != kNoTexture) {
-          const uint64_t bkey = (uint64_t(sm.cutout) << 32) | uint64_t(sm.texture_record);
+          const uint64_t bkey = (uint64_t(sm.decal) << 40) | (uint64_t(sm.cutout) << 32) | uint64_t(sm.texture_record);
           dst = &batches[bkey];
         }
         dst->reserve(dst->size() + sm.tris.size());

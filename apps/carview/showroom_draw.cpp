@@ -17,6 +17,9 @@ struct DrivingLineAnchor {
   bool has_anchor = false;
   double prev_wx = 0.0;
   double prev_wz = 0.0;
+  double ref_wx = 0.0;
+  double ref_wz = 0.0;
+  double ref_s = 0.0;
   double base_s = 0.0;
 };
 
@@ -63,38 +66,133 @@ void Showroom::set_world_overlay(std::span<const WorldVertex> triangles) {
     return;
   }
 
-  constexpr float kLiftDropM = 0.074f;      // 0.10 m -> ~0.026 m (~2.6 cm) clean hover above asphalt
+  constexpr float kLiftDropM = 0.065f;      // 0.10 m -> ~0.035 m (~3.5 cm) crown-safe hover above asphalt
   constexpr float kTargetHalfW = 0.70f;     // sleek feathered-edge margin matching FH1 lane proportion
   constexpr double kChevronPitchM = 3.4;    // matches world_frag.glsl kChevronPitch
   constexpr double kWrapPeriodM = kChevronPitchM * 100.0;
 
   const size_t quad_count = tri_n / 6;
-  const double m0_ax = 0.5 * (double(overlay_cpu_[0].position[0]) + double(overlay_cpu_[1].position[0]));
-  const double m0_az = 0.5 * (double(overlay_cpu_[0].position[2]) + double(overlay_cpu_[1].position[2]));
-  const double m0_bx = 0.5 * (double(overlay_cpu_[5].position[0]) + double(overlay_cpu_[2].position[0]));
-  const double m0_bz = 0.5 * (double(overlay_cpu_[5].position[2]) + double(overlay_cpu_[2].position[2]));
-  const double wx = m0_ax + world_origin_[0];
-  const double wz = m0_az + world_origin_[1];
-  const double fx = m0_bx - m0_ax;
-  const double fz = m0_bz - m0_az;
-  const double flen = std::hypot(fx, fz);
+  struct QuadSpan {
+    double ax = 0.0, az = 0.0;
+    double bx = 0.0, bz = 0.0;
+    double loc_a = 0.0, loc_b = 0.0;
+    double seg_len = 0.0;
+    bool continuous = false;
+  };
+  std::vector<QuadSpan> spans(quad_count);
+  double s_local_accum = 0.0;
+  double prev_bx_l = 0.0;
+  double prev_bz_l = 0.0;
+  for (size_t q = 0; q < quad_count; ++q) {
+    const size_t base = q * 6;
+    const auto& al = overlay_cpu_[base + 0];
+    const auto& ar = overlay_cpu_[base + 1];
+    const auto& br = overlay_cpu_[base + 2];
+    const auto& bl = overlay_cpu_[base + 5];
+    const double ax = 0.5 * (double(al.position[0]) + double(ar.position[0]));
+    const double az = 0.5 * (double(al.position[2]) + double(ar.position[2]));
+    const double bx = 0.5 * (double(bl.position[0]) + double(br.position[0]));
+    const double bz = 0.5 * (double(bl.position[2]) + double(br.position[2]));
+    bool continuous = false;
+    if (q > 0) {
+      const double gap = std::hypot(ax - prev_bx_l, az - prev_bz_l);
+      if (gap > 0.02) {
+        s_local_accum += gap;
+      } else {
+        continuous = true;
+      }
+    }
+    const double seg_len = std::hypot(bx - ax, bz - az);
+    spans[q] = {ax, az, bx, bz, s_local_accum, s_local_accum + seg_len, seg_len, continuous};
+    s_local_accum += seg_len;
+    prev_bx_l = bx;
+    prev_bz_l = bz;
+  }
 
-  if (anchor.has_anchor && flen > 1e-4) {
-    const double dx = wx - anchor.prev_wx;
-    const double dz = wz - anchor.prev_wz;
-    const double step_dist = std::hypot(dx, dz);
-    if (step_dist < 40.0) {
-      const double ds = (dx * fx + dz * fz) / flen;
-      anchor.base_s = std::fmod(anchor.base_s + ds, kWrapPeriodM);
-      if (anchor.base_s < 0.0) anchor.base_s += kWrapPeriodM;
+  const double wx0 = spans[0].ax + world_origin_[0];
+  const double wz0 = spans[0].az + world_origin_[1];
+  const double fx0 = spans[0].bx - spans[0].ax;
+  const double fz0 = spans[0].bz - spans[0].az;
+  const double flen0 = std::hypot(fx0, fz0);
+
+  auto wrap_s = [&](double s) -> double {
+    double w = std::fmod(s, kWrapPeriodM);
+    if (w < 0.0) w += kWrapPeriodM;
+    return w;
+  };
+
+  bool matched_ref = false;
+  double ref_proj_local = 0.0;
+  if (anchor.has_anchor) {
+    const double rlx = anchor.ref_wx - world_origin_[0];
+    const double rlz = anchor.ref_wz - world_origin_[1];
+    double best_d2 = 1e30;
+    double best_s = 0.0;
+    for (size_t q = 0; q < quad_count; ++q) {
+      const auto& sp = spans[q];
+      const double vx = sp.bx - sp.ax;
+      const double vz = sp.bz - sp.az;
+      const double len2 = vx * vx + vz * vz;
+      double t = 0.0;
+      if (len2 > 1e-8) {
+        t = std::clamp(((rlx - sp.ax) * vx + (rlz - sp.az) * vz) / len2, 0.0, 1.0);
+      }
+      const double px = sp.ax + t * vx;
+      const double pz = sp.az + t * vz;
+      const double dx = rlx - px;
+      const double dz = rlz - pz;
+      const double d2 = dx * dx + dz * dz;
+      if (d2 < best_d2) {
+        best_d2 = d2;
+        best_s = sp.loc_a + t * sp.seg_len;
+      }
+    }
+    if (best_d2 <= 3.0 * 3.0) {
+      // Lock chevron phase directly to a fixed world-space reference point on the centerline:
+      // eliminates per-frame chord drift on curves and BrakingOnly/GPS re-slicing slip.
+      anchor.base_s = wrap_s(anchor.ref_s - best_s);
+      ref_proj_local = best_s;
+      matched_ref = true;
+    } else if (flen0 > 1e-4) {
+      const double dx = wx0 - anchor.prev_wx;
+      const double dz = wz0 - anchor.prev_wz;
+      const double step_dist = std::hypot(dx, dz);
+      if (step_dist < 40.0) {
+        const double ds = (dx * fx0 + dz * fz0) / flen0;
+        anchor.base_s = wrap_s(anchor.base_s + ds);
+      } else {
+        anchor.base_s = 0.0;
+      }
     } else {
       anchor.base_s = 0.0;
     }
   } else {
     anchor.base_s = 0.0;
   }
-  anchor.prev_wx = wx;
-  anchor.prev_wz = wz;
+
+  // Pick or advance the fixed world-space reference point ~22 m ahead along the strip
+  // whenever initializing, resetting, or approaching within 4 m of the current anchor.
+  if (!matched_ref || ref_proj_local < 4.0) {
+    const double target_s = std::min(s_local_accum * 0.5, 22.0);
+    double pick_lx = spans[0].ax;
+    double pick_lz = spans[0].az;
+    double pick_s = 0.0;
+    for (size_t q = 0; q < quad_count; ++q) {
+      const auto& sp = spans[q];
+      if (target_s <= sp.loc_b || q + 1 == quad_count) {
+        const double t = sp.seg_len > 1e-6 ? std::clamp((target_s - sp.loc_a) / sp.seg_len, 0.0, 1.0) : 0.0;
+        pick_lx = sp.ax + t * (sp.bx - sp.ax);
+        pick_lz = sp.az + t * (sp.bz - sp.az);
+        pick_s = sp.loc_a + t * sp.seg_len;
+        break;
+      }
+    }
+    anchor.ref_wx = pick_lx + world_origin_[0];
+    anchor.ref_wz = pick_lz + world_origin_[1];
+    anchor.ref_s = wrap_s(anchor.base_s + pick_s);
+  }
+  anchor.prev_wx = wx0;
+  anchor.prev_wz = wz0;
   anchor.has_anchor = true;
   anchor.active = true;
 
@@ -115,10 +213,9 @@ void Showroom::set_world_overlay(std::span<const WorldVertex> triangles) {
     right.position[1] -= kLiftDropM;
   };
 
-  double s_world = anchor.base_s;
-  double s_local = 0.0;
-  double prev_bx = m0_ax;
-  double prev_bz = m0_az;
+  WorldVertex prev_bl{};
+  WorldVertex prev_br{};
+  bool has_prev_edge = false;
   for (size_t q = 0; q < quad_count; ++q) {
     const size_t base = q * 6;
     WorldVertex al = overlay_cpu_[base + 0];
@@ -126,29 +223,39 @@ void Showroom::set_world_overlay(std::span<const WorldVertex> triangles) {
     WorldVertex br = overlay_cpu_[base + 2];
     WorldVertex bl = overlay_cpu_[base + 5];
 
-    const double ax = 0.5 * (double(al.position[0]) + double(ar.position[0]));
-    const double az = 0.5 * (double(al.position[2]) + double(ar.position[2]));
-    const double bx = 0.5 * (double(bl.position[0]) + double(br.position[0]));
-    const double bz = 0.5 * (double(bl.position[2]) + double(br.position[2]));
-    if (q > 0) {
-      const double gap = std::hypot(ax - prev_bx, az - prev_bz);
-      if (gap > 0.02) {
-        s_world += gap;
-        s_local += gap;
-      }
-    }
-    const double seg_len = std::hypot(bx - ax, bz - az);
-    const double s_a = s_world;
-    const double s_b = s_world + seg_len;
-    const double loc_a = s_local;
-    const double loc_b = s_local + seg_len;
-    s_world = s_b;
-    s_local = loc_b;
-    prev_bx = bx;
-    prev_bz = bz;
+    const auto& sp = spans[q];
+    const double s_a = anchor.base_s + sp.loc_a;
+    const double s_b = anchor.base_s + sp.loc_b;
+    const double loc_a = sp.loc_a;
+    const double loc_b = sp.loc_b;
 
     widen_edge(al, ar);
     widen_edge(bl, br);
+    if (has_prev_edge && sp.continuous) {
+      al.position[0] = prev_bl.position[0];
+      al.position[1] = prev_bl.position[1];
+      al.position[2] = prev_bl.position[2];
+      ar.position[0] = prev_br.position[0];
+      ar.position[1] = prev_br.position[1];
+      ar.position[2] = prev_br.position[2];
+    }
+    const float fx = float(sp.bx - sp.ax);
+    const float fz = float(sp.bz - sp.az);
+    if (fx * fx + fz * fz > 1e-6f) {
+      // Prevent inner-edge bowtie folding on tight hairpins so adjacent translucent quads
+      // never overlap and double-blend.
+      if ((bl.position[0] - al.position[0]) * fx + (bl.position[2] - al.position[2]) * fz < 0.0f) {
+        bl.position[0] = al.position[0];
+        bl.position[2] = al.position[2];
+      }
+      if ((br.position[0] - ar.position[0]) * fx + (br.position[2] - ar.position[2]) * fz < 0.0f) {
+        br.position[0] = ar.position[0];
+        br.position[2] = ar.position[2];
+      }
+    }
+    prev_bl = bl;
+    prev_br = br;
+    has_prev_edge = true;
 
     const float p_a = float(q) / float(quad_count);
     const float p_b = float(q + 1) / float(quad_count);

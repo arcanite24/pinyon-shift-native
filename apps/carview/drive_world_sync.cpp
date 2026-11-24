@@ -333,17 +333,17 @@ void DriveSession::place_world() {
           std::vector<world::DebrisVertex> debris_tris;
           app.smashables.build_debris_mesh(debris_tris);
           if (!debris_tris.empty()) {
-            // Ensure every real FH1 smashable debris texture record is resident in Showroom
-            // (almost all are already resident from the intact prop; decode & queue any rare debris-only ones).
-            static std::unordered_set<uint32_t> s_debris_tex_tried;
-            std::vector<std::shared_ptr<const WorldTextureData>> sync_uploads;
-            uint32_t prev_rec = world::kNoTexture;
+            // Ensure every real FH1 smashable debris texture record is immediately resident in
+            // Showroom before the first flying debris frame draws. Only remember permanent decode
+            // failures so textures evicted by the world LRU during long sessions are cleanly
+            // re-uploaded instead of falling back to flat grey untextured vertex colour.
+            static std::unordered_set<uint32_t> s_debris_tex_failed;
+            std::unordered_set<uint32_t> seen_this_frame;
+            std::string derr;
             for (const auto& dv : debris_tris) {
               const uint32_t rec = dv.texture_record;
-              if (rec == world::kNoTexture || rec == prev_rec) continue;
-              prev_rec = rec;
-              if (host.showroom.has_world_texture(rec) || s_debris_tex_tried.count(rec)) continue;
-              s_debris_tex_tried.insert(rec);
+              if (rec == world::kNoTexture || !seen_this_frame.insert(rec).second) continue;
+              if (host.showroom.has_world_texture(rec) || s_debris_tex_failed.count(rec)) continue;
               fh1::WorldTexture wt;
               if (app.smashables.read_texture(rec, wt)) {
                 auto td = std::make_shared<WorldTextureData>();
@@ -355,13 +355,10 @@ void DriveSession::place_world() {
                 td->texture.format = cars::bake::TextureFormat(uint32_t(wt.blocks.format));
                 td->texture.swizzle = wt.blocks.swizzle;
                 for (auto& l : wt.blocks.levels) td->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
-                if (app.headless) sync_uploads.push_back(std::move(td));
-                else host.showroom.queue_deferred_world_texture(std::move(td));
+                (void)host.showroom.ensure_world_texture(td, derr);
+              } else {
+                s_debris_tex_failed.insert(rec);
               }
-            }
-            if (!sync_uploads.empty()) {
-              std::string derr;
-              for (const auto& td : sync_uploads) (void)host.showroom.ensure_world_texture(td, derr);
             }
           }
           std::vector<carview::Showroom::ShowcaseVertex> showcase_tris;
