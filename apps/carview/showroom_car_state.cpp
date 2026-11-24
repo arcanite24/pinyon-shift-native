@@ -90,7 +90,25 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         std::printf("drawn %s/%s %s: x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f\n", model.name.c_str(), part.name.c_str(),
                     s.technique.c_str(), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
       }
-      indices_.insert(indices_.end(), s.indices.begin(), s.indices.end());
+      // When `transform` has a negative 3x3 determinant (e.g. body_to_model_ mirrors Z so
+      // det = -1 on all wheel/tyre/upgraded-brake draws), triangle winding is inverted in
+      // clip space and VK_CULL_MODE_BACK_BIT culls the outer faces of every tyre and rim.
+      // Flip triangle winding (i0, i2, i1) so outward faces stay front-facing under culling.
+      const float det3 = transform[0] * (transform[5] * transform[10] - transform[6] * transform[9]) -
+                         transform[4] * (transform[1] * transform[10] - transform[2] * transform[9]) +
+                         transform[8] * (transform[1] * transform[6] - transform[2] * transform[5]);
+      if (det3 < 0.0f) {
+        const size_t n = s.indices.size();
+        indices_.reserve(indices_.size() + n);
+        for (size_t k = 0; k + 2 < n; k += 3) {
+          indices_.push_back(s.indices[k]);
+          indices_.push_back(s.indices[k + 2]);
+          indices_.push_back(s.indices[k + 1]);
+        }
+        for (size_t k = (n / 3) * 3; k < n; ++k) indices_.push_back(s.indices[k]);
+      } else {
+        indices_.insert(indices_.end(), s.indices.begin(), s.indices.end());
+      }
       d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = d.push.tint[3] = 1.0f;
       std::memcpy(d.push.model, transform, sizeof d.push.model);
       d.wheel = pending_wheel_;
@@ -108,6 +126,12 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
                       d.lamp_channel == drive::LampChannel::kTailBrake2S ||
                       d.lamp_channel == drive::LampChannel::kTail);
       MaterialClass klass = cars::classify(s.technique, s.transparent, model.role);
+      // Tire models (TireC / per-car TireA*) can carry the transparent subsection flag in
+      // .shiftbake packs, which causes cars::classify() to return kGlass before checking kTyre.
+      // Force tyre techniques and Role::kTyre meshes to stay opaque rubber (kTyre).
+      if (model.role == Role::kTyre || technique == "tire" || technique == "sidewall" || technique == "tread") {
+        klass = MaterialClass::kTyre;
+      }
       if (klass == MaterialClass::kOpaque && d.lamp_channel != drive::LampChannel::kNone) {
         klass = (d.lamp_channel == drive::LampChannel::kGaugeBacklight ||
                  d.lamp_channel == drive::LampChannel::kDigitalGauge ||
@@ -335,6 +359,17 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
                         base_name == "bump_plastic" ? 0.78f :
                         base_name == "metal" ? 1.0f : 0.90f;
         d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = k;
+      } else if (klass == MaterialClass::kOpaque) {
+        // Underbody / chassis / frame / black trim / rubber trim techniques sample @atlas AO
+        // (often bright grey/white canvas) or have no slot0 texture; tag submat 18 so showroom.frag
+        // shades them as dark matte underbody charcoal instead of bright white.
+        const std::string pname_l = lower(part.name);
+        if (technique == "undercarriage" || technique == "underbody" || technique == "chassis" ||
+            technique == "frame" || technique == "black" || technique == "black_noocclude" ||
+            technique == "black_no_env" || technique == "rubber_trim" || technique == "weatherstrip" ||
+            pname_l.find("undercarriage") != std::string::npos || pname_l.find("underbody") != std::string::npos) {
+          submat_id = 18.0f;
+        }
       }
       d.push.params[0] = float(uint32_t(klass));
       d.push.params[1] = float(flags);

@@ -49,6 +49,9 @@ drive::Quat lane_orientation(double heading, double pitch) {
           y.w * t.z + y.x * t.y - y.y * t.x + y.z * t.w, y.w * t.w - y.x * t.x - y.y * t.y - y.z * t.z};
 }
 
+// Per-guest kinematic wheel spin accumulator (rad) for traffic cars without a live physics body.
+std::map<const Showroom*, float> g_traffic_wheel_spin;
+
 }  // namespace
 
 TrafficView::TrafficView(Renderer& renderer, Showroom& host, std::filesystem::path bake_dir, bool sync_loads)
@@ -60,7 +63,10 @@ TrafficView::~TrafficView() {
     if (g.loading.valid()) g.loading.wait();
   r_.wait_idle();  // one single device idle on shutdown instead of one per guest
   for (auto& [id, g] : guests_)
-    if (g.showroom) g.showroom->skip_wait_idle_on_destroy();
+    if (g.showroom) {
+      g_traffic_wheel_spin.erase(g.showroom.get());
+      g.showroom->skip_wait_idle_on_destroy();
+    }
   guests_.clear();
 }
 
@@ -162,7 +168,9 @@ void TrafficView::update_guests() {
         s->set_guest();
         if (host_env_view && host_env_sampler) s->set_shared_dynamic_env(host_env_view, host_env_sampler);
         std::string e;
-        if (!s->load(bake, media, ShowroomOptions{}, e)) {
+        ShowroomOptions opt{};
+        opt.game_root = root;
+        if (!s->load(bake, media, opt, e)) {
           std::fprintf(stderr, "carview: traffic model %s: %s\n", media.c_str(), e.c_str());
           return out;
         }
@@ -224,6 +232,7 @@ void TrafficView::update_guests() {
     // Retire dropped traffic GPU resources through the host's multi-frame retirement ring
     // instead of calling vkDeviceWaitIdle() on the render thread (eliminates 4.5-13.1 ms hitches).
     if (it->second.showroom) {
+      g_traffic_wheel_spin.erase(it->second.showroom.get());
       std::shared_ptr<Showroom> retired = std::move(it->second.showroom);
       retired->skip_wait_idle_on_destroy();
       host_.retire_deferred([g = std::move(retired)]() mutable { g.reset(); });
@@ -247,12 +256,29 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
   for (const auto& c : population_->cars()) alive_ids.insert(c.id);
   for (auto it = lamps_.begin(); it != lamps_.end();)
     it = alive_ids.count(it->first) ? std::next(it) : lamps_.erase(it);
+  // Fallback to any already-loaded traffic guest so an active traffic car whose own model
+  // is still async-loading or failed never drives around as an invisible obstacle.
+  Showroom* fallback_guest = nullptr;
+  for (const auto& [gid, gg] : guests_) {
+    if (gg.showroom) {
+      fallback_guest = gg.showroom.get();
+      break;
+    }
+  }
+  struct WheelDriver {
+    double dist2 = 1e30;
+    const drive::Vehicle* body = nullptr;
+    double speed = 0.0;
+  };
+  std::map<Showroom*, WheelDriver> wheel_drivers;
+  const drive::Vec3 player_pos = player.position();
   std::vector<Showroom::Instance> list;
   for (const auto& c : population_->cars()) {
     const float alpha = std::clamp(c.alpha, 0.0f, 1.0f);
     if (alpha <= 0.005f) continue;
     const auto it = guests_.find(c.model);
-    if (it == guests_.end() || !it->second.showroom) continue;
+    Showroom* guest_sr = (it != guests_.end() && it->second.showroom) ? it->second.showroom.get() : fallback_guest;
+    if (!guest_sr) continue;
     const drive::Vehicle* body = bodies_->body(c.id);
     TrafficPose pose{
         body ? body->position() : drive::Vec3{c.position.x, c.position.y, c.position.z},
@@ -263,17 +289,21 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
         pose = blend_traffic_pose(bit->second, pose, blend_);
       }
     }
-    const drive::Quat q = pose.rot;
     const drive::Vec3 at = pose.pos;
+    if (!std::isfinite(at.x) || !std::isfinite(at.y) || !std::isfinite(at.z)) continue;
+    drive::Quat q = pose.rot;
+    const double qn = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (!std::isfinite(qn) || qn < 1e-6) q = {0, 0, 0, 1};
+    else q = {q.x / qn, q.y / qn, q.z / qn, q.w / qn};
     // The guest's model frame to the world, relative to the player (the
     // translation in double).
     float gm[16];
-    drive::model_to_world(it->second.showroom->car(), q, {0, 0, 0}, gm);
+    drive::model_to_world(guest_sr->car(), q, {0, 0, 0}, gm);
     double gmd[16];
     to_double(gm, gmd);
     gmd[12] += at.x, gmd[13] += at.y, gmd[14] += at.z;
     Showroom::Instance in;
-    in.car = it->second.showroom.get();
+    in.car = guest_sr;
     multiply(world_to_player, gmd, in.model);
     in.fade_alpha = alpha;
     const bool is_new = !lamps_.count(c.id);
@@ -292,6 +322,48 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     in.lamps = lstate.vectors();
     in.has_lamps = true;
     list.push_back(in);
+
+    // Track nearest visible car of each guest model to drive its wheel spin & steer poses.
+    const double dx = at.x - player_pos.x, dy = at.y - player_pos.y, dz = at.z - player_pos.z;
+    const double d2 = dx * dx + dy * dy + dz * dz;
+    auto& wd = wheel_drivers[guest_sr];
+    if (d2 < wd.dist2) {
+      wd.dist2 = d2;
+      wd.body = body;
+      wd.speed = body ? body->speed() : c.speed;
+    }
+  }
+  constexpr float kTwoPi = 6.28318530717958647692f;
+  for (const auto& [guest_sr, wd] : wheel_drivers) {
+    WheelPose wposes[4]{};
+    if (wd.body) {
+      for (int wi = 0; wi < 4; ++wi) {
+        const auto& w = wd.body->wheels()[size_t(wi)];
+        wposes[wi].centre[0] = float(w.centre.x);
+        wposes[wi].centre[1] = float(w.centre.y);
+        wposes[wi].centre[2] = float(w.centre.z);
+        wposes[wi].steer = float(w.steer);
+        wposes[wi].spin = float(w.spin);
+        wposes[wi].omega = float(w.omega);
+      }
+      g_traffic_wheel_spin[guest_sr] = wposes[0].spin;
+    } else {
+      const auto& rest = guest_sr->car().wheel_centres_body;
+      const float radius = std::clamp(rest[0][1], 0.26f, 0.55f);
+      const float omega = float(wd.speed) / radius;
+      float& spin = g_traffic_wheel_spin[guest_sr];
+      spin = std::fmod(spin + omega * lamp_dt, kTwoPi);
+      if (spin < 0.0f) spin += kTwoPi;
+      for (int wi = 0; wi < 4; ++wi) {
+        wposes[wi].centre[0] = rest[size_t(wi)][0];
+        wposes[wi].centre[1] = rest[size_t(wi)][1];
+        wposes[wi].centre[2] = rest[size_t(wi)][2];
+        wposes[wi].steer = 0.0f;
+        wposes[wi].spin = spin;
+        wposes[wi].omega = omega;
+      }
+    }
+    guest_sr->set_wheel_poses(wposes);
   }
   drawn_ = list.size();
   host_.set_instances(std::move(list));
