@@ -143,6 +143,7 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       // Resolve slot 1 (with fallback for existing v3 .shiftbake packs whose slots[1] was empty).
       std::string slot1 = s.slots[1];
       if (slot1.empty()) {
+        const std::string pname_l = lower(part.name);
         if (klass == MaterialClass::kGauge && technique == "gauge_emissive") {
           slot1 = "car:interior_emissive_lod0.xds";
         } else if (klass == MaterialClass::kInterior || klass == MaterialClass::kGauge) {
@@ -152,6 +153,11 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
           slot1 = (s.lod == 0) ? "car:lights_lod0.xds" : "car:lights.xds";
         } else if (klass == MaterialClass::kCarbon) {
           slot1 = "shared:carbonfiber.xds";
+        } else if (klass == MaterialClass::kOpaque &&
+                   (technique == "undercarriage" || technique == "underbody" ||
+                    pname_l.find("undercarriage") != std::string::npos ||
+                    pname_l.find("underbody") != std::string::npos)) {
+          slot1 = "shared:undercarriage.xds";
         }
       } else if (klass == MaterialClass::kGauge && technique == "gauge_emissive") {
         // Prefer real backlit dial texture when available on gauge_emissive cluster faces.
@@ -195,10 +201,12 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         // paint (FORMAT-CARS, Factory liveries).
         if (stock_ && stock_->race_livery) flags |= kFlagRaceLivery;
       } else if (klass == MaterialClass::kCaliper) {
+        // FORMAT-CARS: Data_Car.CaliperRGBFront/Rear are passed directly as linear 0..1 floats
+        // (without sRGB linearization, which crushes red/gold Brembo calipers too dark).
         const uint32_t rgb = info.caliper_rgb[size_t(axle)];
-        d.push.tint[0] = srgb_to_linear(float((rgb >> 16) & 0xFF) / 255.0f);
-        d.push.tint[1] = srgb_to_linear(float((rgb >> 8) & 0xFF) / 255.0f);
-        d.push.tint[2] = srgb_to_linear(float(rgb & 0xFF) / 255.0f);
+        d.push.tint[0] = float((rgb >> 16) & 0xFF) / 255.0f;
+        d.push.tint[1] = float((rgb >> 8) & 0xFF) / 255.0f;
+        d.push.tint[2] = float(rgb & 0xFF) / 255.0f;
       }
       // A grille shows its Shared tile (slot 1) on the tiled UV0; the
       // alpha-tested techniques (FORMAT-CARS: grille1_alpha) cut it out.
@@ -313,7 +321,11 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
           (ends_with(technique, "_alpha") || technique.find("alpha") != std::string::npos)) {
         flags |= kFlagCutout;
       }
-      d.push.tint[3] = 1;
+      d.push.tint[3] = 1.0f;
+      if (klass == MaterialClass::kPaint && shader_settings_.loaded_from_xml) {
+        const auto& sp = (flags & kFlagMetallic) ? shader_settings_.metallic : shader_settings_.normal;
+        d.push.tint[3] = std::clamp(sp.paint_scale, 0.15f, 1.85f);
+      }
       // Sub-material variant ID encoded in params[2] for showroom.frag:
       // 1=outer_rim (chrome lip), 2=inner_rim/wheel_black (dark barrel), 3=rotor/brake/drum,
       // 4=hub, 5=cockpit metal/metal2, 6=defrost_lines, 9=non-window glass (interior/lamp lenses),
@@ -432,12 +444,16 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
 }
 
 void Showroom::set_braking(float glow) {
-  rotor_glow_ = std::clamp(glow, 0.0f, 1.0f);
+  const float g = std::clamp(glow, 0.0f, 1.0f);
   if (!lamp_state_active_) {
-    lamp_vectors_.dynamic_lights_amount[0] = rotor_glow_;
+    lamp_vectors_.dynamic_lights_amount[0] = g;
   }
   for (Draw& d : draws_)
-    if (d.brake_lamp) d.push.params[2] = glow;
+    if (d.brake_lamp) d.push.params[2] = g;
+}
+
+void Showroom::set_rotor_heat(float heat) {
+  rotor_glow_ = std::clamp(heat, 0.0f, 1.0f);
 }
 
 void Showroom::set_lamp_state(const drive::CarLampState& state) {
@@ -584,23 +600,47 @@ void Showroom::set_paint_spec(const cars::CarPaintSpec& paint) {
     frame_.paint_finish[i] = paint_finish_[i];
   }
 
+  auto paint_scale_for = [&](cars::PaintFinish f) -> float {
+    if (!shader_settings_.loaded_from_xml) return 1.0f;
+    switch (f) {
+      case cars::PaintFinish::kMetallic:
+      case cars::PaintFinish::kTwoTone:
+        return std::clamp(shader_settings_.metallic.paint_scale, 0.15f, 1.85f);
+      case cars::PaintFinish::kMatte:
+        return std::clamp(shader_settings_.matte.paint_scale, 0.15f, 1.85f);
+      default:
+        return std::clamp(shader_settings_.normal.paint_scale, 0.15f, 1.85f);
+    }
+  };
   for (auto& d : draws_) {
     const auto klass = MaterialClass(uint32_t(d.push.params[0] + 0.5f));
     if (klass == MaterialClass::kPaint) {
       const cars::PaintRegionSpec* reg = &paint.body;
-      if (paint.hood.active && d.part_name.rfind("hood", 0) == 0) reg = &paint.hood;
-      else if (paint.wing.active && d.part_name.rfind("wing", 0) == 0) reg = &paint.wing;
-      else if (paint.mirrors.active && d.part_name.find("mirror") != std::string::npos) reg = &paint.mirrors;
+      bool per_region = false;
+      if (paint.hood.active && d.part_name.rfind("hood", 0) == 0) {
+        reg = &paint.hood;
+        per_region = true;
+      } else if (paint.wing.active && d.part_name.rfind("wing", 0) == 0) {
+        reg = &paint.wing;
+        per_region = true;
+      } else if (paint.mirrors.active && d.part_name.find("mirror") != std::string::npos) {
+        reg = &paint.mirrors;
+        per_region = true;
+      }
       if (reg->active) {
         const auto lin = to_lin(reg->rgb);
         for (int k = 0; k < 3; ++k) d.push.tint[k] = lin[k];
+        d.push.tint[3] = paint_scale_for(reg->finish);
         uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
         const bool is_met = (reg->finish == cars::PaintFinish::kMetallic || reg->finish == cars::PaintFinish::kTwoTone);
         flags = is_met ? (flags | kFlagMetallic) : (flags & ~kFlagMetallic);
         flags &= ~kFlagRaceLivery;
         d.push.params[1] = float(flags);
+        // Encode per-region finish override (hood/wing/mirrors) in params[3] (+1 so 0 means body uniform).
+        d.push.params[3] = per_region ? float(int(reg->finish) + 1) : 0.0f;
       }
-    } else if (klass == MaterialClass::kRim && paint.rims.active && !options_.visual.wheel_is_chrome) {
+    } else if (klass == MaterialClass::kRim && paint.rims.active &&
+               !options_.visual.wheel_is_chrome && !options_.visual.wheel_is_stock) {
       const auto lin = to_lin(paint.rims.rgb);
       for (int k = 0; k < 3; ++k) d.push.tint[k] = lin[k];
     } else if (klass == MaterialClass::kCaliper && paint.calipers.active) {

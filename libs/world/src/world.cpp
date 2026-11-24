@@ -543,11 +543,38 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             const bool has_norm = mm.effect.find("_NORM") != std::string::npos;
             const bool has_ao = mm.effect.find("_AO") != std::string::npos;
             const bool has_lm = mm.effect.ends_with("_LM");
-            const bool has_emis = !has_lm && mm.effect.find("EMIS") != std::string::npos;
+            const bool has_emis = mm.effect.find("EMIS") != std::string::npos;
             const bool has_spec = mm.effect.find("_SPEC") != std::string::npos;
             if (vblend) weight_gain = constant(4)[0];
             if ((vblend && !decal) || splat || mm.effect.rfind("H_BLND1", 0) == 0) mm.tiling = constant(0);
-            if (road) mm.is_road = 1;
+            if (road) {
+              mm.is_road = 1;
+              if (!m.pixel_constants.empty()) {
+                auto c0 = constant(0);
+                for (float& v : c0)
+                  if (std::fabs(v) < 1e-4f || !std::isfinite(v)) v = 1.0f;
+                mm.tiling = c0;
+              }
+              const bool road_diff3 = mm.effect.find("DIFF3") != std::string::npos;
+              const bool road_diff2 = mm.effect.find("DIFF2") != std::string::npos;
+              if (road_diff2 || road_diff3) {
+                const uint32_t lb = file_slot(1);
+                if (lb != kNoTexture) {
+                  mm.layers = Layers::kVertexBlend;
+                  mm.layer_b = lb;
+                  if (road_diff3) {
+                    const uint32_t lc = file_slot(5);
+                    if (lc != kNoTexture) {
+                      mm.layer_c = lc;
+                      const auto c1 = constant(1);
+                      const float cx = std::fabs(c1[0]) > 1e-4f ? c1[0] : mm.tiling[2];
+                      const float cy = std::fabs(c1[1]) > 1e-4f ? c1[1] : mm.tiling[3];
+                      mm.tiling_c = {cx, cy};
+                    }
+                  }
+                }
+              }
+            }
             if (decal) {
               mm.layers = Layers::kVertexFade;
               decal_fade = true;
@@ -582,7 +609,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             if (has_norm && !mm.is_water) {
               mm.normal_map = prop_diff ? file_slot(1) : file_slot(3);
             }
-            if (has_ao && mm.layers != Layers::kVertexBlend) {
+            if (has_ao && (road || mm.layers != Layers::kVertexBlend)) {
               if (road && mm.effect.find("DIFF3") != std::string::npos &&
                   mm.effect.find("MODULATE") != std::string::npos) {
                 mm.ao_map = file_slot(4);
@@ -597,8 +624,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             if (has_lm) {
               mm.light_map = file_slot(7);
               if (m.pixel_constants.size() > 3) mm.emissive_force = std::clamp(m.pixel_constants[3][3], 0.0f, 1.0f);
-            } else if (has_emis) {
-              // Staggered dusk/dawn EmissiveMapSampler (slot 3 on prop emissive shaders, SKY_AND_TOD §6.2).
+            }
+            if (mm.light_map == kNoTexture && has_emis) {
+              // Staggered dusk/dawn EmissiveMapSampler (slot 3 on prop emissive shaders, SKY_AND_TOD §6.2),
+              // including dual _EMIS*_LM effects whose slot 7 Light_Map is empty/stubbed.
               const uint32_t em = file_slot(3);
               if (em != kNoTexture) {
                 mm.light_map = em;

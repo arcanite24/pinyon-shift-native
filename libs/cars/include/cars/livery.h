@@ -60,7 +60,8 @@ enum class LiveryPlaneKind : int {
   kRight = 3,      // right side
   kFront = 4,      // front bumper
   kRear = 5,       // rear bumper
-  kCount = 6,
+  kWing = 6,       // rear wing plane
+  kCount = 7,
 };
 
 const char* livery_plane_name(LiveryPlaneKind p);
@@ -79,6 +80,8 @@ struct VinylLayer {
   bool flip_x = false;
   bool flip_y = false;
   bool visible = true;
+  bool is_mask = false;  // Mask / Cutout layer: punches alpha through lower vinyl layers
+  int group_id = 0;      // 0 = ungrouped; >0 = Vinyl Group membership id
 };
 
 struct LiveryDocument {

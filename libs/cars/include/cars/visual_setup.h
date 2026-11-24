@@ -62,6 +62,8 @@ struct VisualSetup {
   int64_t wheel_id = 0;
   float brake_draw_offset = 0.0f;
   bool wheel_is_chrome = false;
+  bool wheel_is_stock = true;
+  int tire_compound_level = 0;  // 0=stock/street (TireA), 1=sport (TireB), >=2=race/rally (TireC)
   std::array<int64_t, 2> tyre_width_mm{0, 0};
   std::array<int64_t, 2> rim_inches{0, 0};
   std::string tyre_media_override;  // e.g. "tireatoy_fjcruiser_12"

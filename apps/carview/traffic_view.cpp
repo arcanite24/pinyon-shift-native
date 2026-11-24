@@ -324,6 +324,14 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     in.car = guest_sr;
     multiply(world_to_player, gmd, in.model);
     in.fade_alpha = alpha;
+    if (const auto& cols = guest_sr->car().colours; !cols.empty()) {
+      const uint32_t rgb = cols[size_t(c.id) % cols.size()].rgb;
+      auto to_lin = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+      in.paint_rgb[0] = to_lin(float((rgb >> 16) & 0xFF) / 255.0f);
+      in.paint_rgb[1] = to_lin(float((rgb >> 8) & 0xFF) / 255.0f);
+      in.paint_rgb[2] = to_lin(float(rgb & 0xFF) / 255.0f);
+      in.has_paint = true;
+    }
     const bool is_new = !lamps_.count(c.id);
     drive::CarLampState& lstate = lamps_[c.id];
     drive::LampInputs lin;

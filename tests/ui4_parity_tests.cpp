@@ -1888,7 +1888,7 @@ void test_round2_hud_minimap_gps_and_mouse_ux() {
   liv.open(nullptr, {}, 0, {}, liv_msg);
   carview::ui::List l_liv_paint, l_liv_vinyl;
   carview::draw_livery_editor_hud(l_liv_paint, 1280.0f, 720.0f, liv, "1995 VW Corrado VR6");
-  check(count_group(l_liv_paint, carview::ui::kHitTab) == 3, "Livery Editor emits 3 tab hit zones");
+  check(count_group(l_liv_paint, carview::ui::kHitTab) == 5, "Livery Editor emits 5 tab hit zones");
   check(count_group(l_liv_paint, carview::ui4::kHitRegion) == int(carview::PaintRegion::kCount),
         "Livery Editor emits all paint region hit zones");
   check(count_group(l_liv_paint, carview::ui4::kHitSwatch) == 72, "Livery Editor emits 72 color swatch hit zones");

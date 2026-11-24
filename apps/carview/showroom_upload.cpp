@@ -559,7 +559,14 @@ bool Showroom::upload(std::string& error) {
           const drive::LampShaderVectors& active_lamps = in.has_lamps ? in.lamps : g->lamp_vectors_;
           for (uint32_t ch = 0; ch < 30; ++ch) {
             if (ch == 0) {
-              ci.lamp_rgb[ch][0] = ci.lamp_rgb[ch][1] = ci.lamp_rgb[ch][2] = ci.lamp_rgb[ch][3] = 0.0f;
+              if (in.has_paint) {
+                ci.lamp_rgb[0][0] = in.paint_rgb[0];
+                ci.lamp_rgb[0][1] = in.paint_rgb[1];
+                ci.lamp_rgb[0][2] = in.paint_rgb[2];
+                ci.lamp_rgb[0][3] = 1.0f;
+              } else {
+                ci.lamp_rgb[0][0] = ci.lamp_rgb[0][1] = ci.lamp_rgb[0][2] = ci.lamp_rgb[0][3] = 0.0f;
+              }
             } else {
               const auto rgb = drive::evaluate_lamp_emission(static_cast<drive::LampChannel>(ch), active_lamps,
                                                              g->lamp_colors_);

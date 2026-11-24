@@ -291,6 +291,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           }
           host.showroom.set_wheel_poses(poses);
           host.showroom.set_braking(brake_glow(vehicle));
+          host.showroom.set_rotor_heat(rotor_heat);
           tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
           place_world();
           // 3D Driving / Braking Line ribbon on the road (SPEC-CAR-PHYSICS):
@@ -379,6 +380,33 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               }
             }
           }
+          HubRoom active_hub_room = HubRoom::kNone;
+          if (!app.show_title && !app.fmv_player.active() && !photo_mode.active() && !replay_viewer.active() &&
+              !trainer_freecam_active && !menu.open) {
+            if (autoshow.is_open()) active_hub_room = HubRoom::kAutoshow;
+            else if (shop.is_open()) active_hub_room = HubRoom::kWorkshop;
+            else if (paint_open) active_hub_room = HubRoom::kPaintShop;
+            else if (garage_open) active_hub_room = HubRoom::kGarage;
+          }
+          ShowroomFrame hub_cam_frame{};
+          if (active_hub_room != HubRoom::kNone) {
+            if (active_hub_room != last_hub_room) {
+              hub_cam = HubCamera{};
+              last_hub_room = active_hub_room;
+            }
+            if (active_hub_room == HubRoom::kWorkshop) {
+              hub_cam.set_focus(carview::focus_for_part_enum(shop.active_part_enum()));
+            } else if (active_hub_room == HubRoom::kPaintShop) {
+              hub_cam.set_focus(livery_editor.is_open() ? HubCameraFocus::kSide : HubCameraFocus::kTurntable);
+            } else {
+              hub_cam.set_focus(HubCameraFocus::kTurntable);
+            }
+            hub_cam.step(float(std::clamp(frame_dt, 0.0, 0.1)));
+            carview::build_hub_frame(active_hub_room, hub_cam, uint32_t(std::max(1, w)), uint32_t(std::max(1, h)),
+                                     hub_cam_frame, host.renderer.reverse_z());
+          } else {
+            last_hub_room = HubRoom::kNone;
+          }
           ShowroomFrame cam_frame =
               photo_mode.active()
                   ? camera_view_frame(photo_mode.camera().view(), info, vehicle, aspect, host.renderer.reverse_z(), &host.cam_proj)
@@ -386,6 +414,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                         ? camera_view_frame(fc_cam, info, vehicle, aspect, host.renderer.reverse_z(), &host.cam_proj)
                         : replay_viewer.active()
                         ? camera_view_frame(rv_cam, info, vehicle, aspect, host.renderer.reverse_z(), &host.cam_proj)
+                        : active_hub_room != HubRoom::kNone
+                        ? hub_cam_frame
                         : app.show_title
                         ? scenic_orbit_frame(info, vehicle, aspect,
                                              std::atan2(drive::rotate(vehicle.orientation(), {0, 0, 1}).x,
@@ -425,8 +455,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             w_jitter_uv_x = j[0] / float(std::max(1u, rex.w));
             w_jitter_uv_y = j[1] / float(std::max(1u, rex.h));
           }
-          if (photo_mode.active() || replay_viewer.active() || app.show_title || camp_cam_active ||
-              (app.race && grid_menu_open) || ceremony.active || rewind_scrub_view)
+          if (photo_mode.active() || replay_viewer.active() || active_hub_room != HubRoom::kNone || app.show_title ||
+              camp_cam_active || (app.race && grid_menu_open) || ceremony.active || rewind_scrub_view)
             host.showroom.set_draw_car(!replay_viewer.active() || replay_viewer.camera_mode() != carview::ReplayCameraMode::kBumper);
           host.renderer.set_photo_pt_accumulate(photo_mode.active() &&
                                            host.renderer.active_rt_mode() != carview::rt::RtMode::kOff);

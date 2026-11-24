@@ -143,6 +143,14 @@ void DriveSession::place_world() {
             ls.brake_on = fc.braking;
             inst.lamps = ls.vectors();
             inst.has_lamps = true;
+            if (const auto& cols = guest_sr->car().colours; !cols.empty()) {
+              const uint32_t rgb = cols[size_t(fc.id) % cols.size()].rgb;
+              auto to_lin = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+              inst.paint_rgb[0] = to_lin(float((rgb >> 16) & 0xFF) / 255.0f);
+              inst.paint_rgb[1] = to_lin(float((rgb >> 8) & 0xFF) / 255.0f);
+              inst.paint_rgb[2] = to_lin(float(rgb & 0xFF) / 255.0f);
+              inst.has_paint = true;
+            }
             fmore.push_back(inst);
             fest_wheel_speed[guest_sr] = std::max(fest_wheel_speed[guest_sr], fc.speed);
           }
@@ -305,16 +313,46 @@ void DriveSession::place_world() {
               ps = photo_mode.effects().apply_to_post(ps);
             }
             host.renderer.set_post_settings(ps);
-            if (!host.user_lut_active &&
-                (zone_idx != last_lut_zone || std::fabs(tod.day_color_grade - last_lut_day) > 0.005f ||
-                 std::fabs(tod.night_color_grade - last_lut_night) > 0.005f)) {
-              last_lut_zone = zone_idx;
-              last_lut_day = tod.day_color_grade;
-              last_lut_night = tod.night_color_grade;
-              const auto lut = world::ColorLut16::blend(app.tod_system.zones.day_lut_for(zone_idx),
-                                                        app.tod_system.zones.night_lut_for(zone_idx),
-                                                        tod.day_color_grade, tod.night_color_grade);
-              host.renderer.set_post_lut(lut.rgba);
+            if (!host.user_lut_active) {
+              if (!have_post_lut || zone_idx != last_lut_zone ||
+                  std::fabs(tod.day_color_grade - last_lut_day) > 0.005f ||
+                  std::fabs(tod.night_color_grade - last_lut_night) > 0.005f) {
+                last_lut_zone = zone_idx;
+                last_lut_day = tod.day_color_grade;
+                last_lut_night = tod.night_color_grade;
+                target_post_lut = world::ColorLut16::blend(app.tod_system.zones.day_lut_for(zone_idx),
+                                                           app.tod_system.zones.night_lut_for(zone_idx),
+                                                           tod.day_color_grade, tod.night_color_grade);
+                if (!have_post_lut || app.headless || tod_frame_dt <= 0.0) {
+                  cur_post_lut = target_post_lut;
+                  have_post_lut = true;
+                  post_lut_blending = false;
+                  host.renderer.set_post_lut(cur_post_lut.rgba);
+                } else {
+                  post_lut_blending = true;
+                }
+              }
+              if (post_lut_blending && have_post_lut && tod_frame_dt > 0.0) {
+                const float alpha = float(std::clamp(1.0 - std::exp(-tod_frame_dt / 1.2), 0.02, 1.0));
+                int max_diff = 0;
+                for (size_t i = 0; i < cur_post_lut.rgba.size(); ++i) {
+                  const int cur_v = cur_post_lut.rgba[i];
+                  const int dst_v = target_post_lut.rgba[i];
+                  const int diff = std::abs(dst_v - cur_v);
+                  if (diff > max_diff) max_diff = diff;
+                  if (diff > 0) {
+                    const float step = float(dst_v - cur_v) * alpha;
+                    int next_v = cur_v + int(std::lround(step));
+                    if (next_v == cur_v) next_v = cur_v + (dst_v > cur_v ? 1 : -1);
+                    cur_post_lut.rgba[i] = uint8_t(std::clamp(next_v, 0, 255));
+                  }
+                }
+                host.renderer.set_post_lut(cur_post_lut.rgba);
+                if (max_diff <= 1) {
+                  cur_post_lut = target_post_lut;
+                  post_lut_blending = false;
+                }
+              }
             }
           }
         } else {

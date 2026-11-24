@@ -490,14 +490,27 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
   const int pass_end = (pass_mode == 1) ? 1 : 2;
   for (Showroom* g : groups) {
     uint32_t solid_count = 0;
+    float min_inst_d2 = 1e18f;
     std::vector<float> fade_alphas;
-    for (const auto& in : instances_)
-      if (in.car == g && in.fade_alpha >= 0.99f && offset + solid_count < kMaxCarInstances) ++solid_count;
+    for (const auto& in : instances_) {
+      if (in.car != g) continue;
+      const float dx = in.model[12] - frame_.eye[0];
+      const float dy = in.model[13] - frame_.eye[1];
+      const float dz = in.model[14] - frame_.eye[2];
+      const float d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < min_inst_d2) min_inst_d2 = d2;
+      if (in.fade_alpha >= 0.99f && offset + solid_count < kMaxCarInstances) ++solid_count;
+    }
     for (const auto& in : instances_)
       if (in.car == g && in.fade_alpha < 0.99f && offset + solid_count + uint32_t(fade_alphas.size()) < kMaxCarInstances)
         fade_alphas.push_back(std::clamp(in.fade_alpha, 0.0f, 1.0f));
     const uint32_t total_count = solid_count + uint32_t(fade_alphas.size());
     if (total_count == 0 || g->draws_.empty() || g->material_sets_.empty()) continue;
+    // Distance-based runtime LOD detail culling for distant AI/traffic cars:
+    // beyond 55 m skip interior, gauges, calipers, and cockpit-only parts;
+    // beyond 145 m skip subtle mirror/emissive/trim overlays.
+    const bool lod_mid = min_inst_d2 > 55.0f * 55.0f;
+    const bool lod_far = min_inst_d2 > 145.0f * 145.0f;
     const VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
     vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -507,6 +520,12 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
         uint32_t bound_desc = UINT32_MAX;
         for (const auto& d : g->draws_) {
           if (d.glass != (pass == 1)) continue;
+          if (d.cockpit_role >= 0) continue;
+          if (lod_mid) {
+            const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
+            if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
+            if (lod_far && d.glass && d.is_cover) continue;
+          }
           ShowroomPush push = d.push;
           uint32_t flags = uint32_t(push.params[1] + 0.5f) | kFlagInstanced;
           flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;

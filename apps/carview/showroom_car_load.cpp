@@ -557,7 +557,15 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   // Keep shared_ loaded across hot car reloads when bake_dir / disc_root hasn't changed.
   if (shared_bake_dir_ != shared_key) {
     shared_ = {};
+    shader_settings_ = {};
     shared_bake_dir_.clear();
+  }
+  if (!shader_settings_.loaded_from_xml && !disc_root.empty()) {
+    const auto shared_zip = disc_root / "media" / "cars" / "Shared.zip";
+    std::error_code sec;
+    if (std::filesystem::is_regular_file(shared_zip, sec)) {
+      cars::load_shader_settings(shared_zip, shader_settings_, nullptr);
+    }
   }
   vertices_.clear();
   indices_.clear();
@@ -676,6 +684,11 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       info.tyre_texture_media = want_tyre;
       tyre_textures_ = tyre_;
     }
+  } else if (vis.active && want_tyre.empty() && info.tyre_texture_media == cars::kTyreTextures) {
+    // Select TireA (stock/street), TireB (sport), or TireC (race/rally) texture pack
+    // matching the fitted List_UpgradeCarBodyTireCompound upgrade level.
+    if (vis.tire_compound_level == 1) info.tyre_texture_media = "tireb";
+    else if (vis.tire_compound_level >= 2) info.tyre_texture_media = "tirec";
   }
 
   // Load rim: pre-baked .shiftbake first, then on-demand from disc/packages

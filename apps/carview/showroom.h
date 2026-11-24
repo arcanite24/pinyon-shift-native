@@ -464,6 +464,8 @@ class Showroom {
   // Full vehicle lamp state (CAR_LAMPS.md): headlights, DRLs, tail, brake,
   // reverse, indicators, side lights, numplate, and cockpit gauge backlights.
   void set_braking(float glow);
+  // Sets thermal brake rotor glow [0..1] independently of instantaneous brake pedal lamps.
+  void set_rotor_heat(float heat);
   void set_lamp_state(const drive::CarLampState& state);
   void set_lamp_vectors(const drive::LampShaderVectors& vectors);
   // Loads kind-5 .carbin lamp points and per-car ShaderSettings.xml from disc.
@@ -533,6 +535,8 @@ class Showroom {
     drive::LampShaderVectors lamps{};
     bool has_lamps = false;
     float fade_alpha = 1.0f;  // smooth traffic spawn/despawn fade [0..1]
+    bool has_paint = false;   // per-instance linear body paint colour override
+    float paint_rgb[3] = {1.0f, 1.0f, 1.0f};
   };
   void set_instances(std::vector<Instance> list);
   void add_instances(const std::vector<Instance>& more);
@@ -580,6 +584,8 @@ class Showroom {
                    bool fraction = false);
 
   const cars::bake::CarInfo& car() const { return car_.car; }
+  const ShowroomOptions& options() const { return options_; }
+  const cars::ShaderSettingsSet& shader_settings() const { return shader_settings_; }
   const std::vector<cars::bake::LiveryPlane>& livery_planes() const { return car_.livery; }
   const std::array<float, 3>& bounds_min() const { return bounds_min_; }
   const std::array<float, 3>& bounds_max() const { return bounds_max_; }
@@ -693,6 +699,7 @@ class Showroom {
   Renderer& r_;
   cars::bake::Bake car_, wheel_, tyre_, tyre_textures_, shared_;
   std::filesystem::path shared_bake_dir_;
+  cars::ShaderSettingsSet shader_settings_;
   ShowroomOptions options_;
   ShowroomFrame frame_{};
   float stripe_[4] = {1, 1, 1, 1};

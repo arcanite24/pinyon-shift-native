@@ -46,6 +46,17 @@ layout(set = 0, binding = 0) uniform Frame {
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
+layout(set = 0, binding = 3) uniform sampler2D headlight_cookie;
+struct HeadlightBeam {
+  mat4 proj;
+  vec4 origin_range;
+  vec4 dir_power;
+  vec4 color;
+};
+layout(set = 0, binding = 4) uniform Headlights {
+  vec4 count_night;
+  HeadlightBeam beams[16];
+} headlights;
 layout(set = 0, binding = 5) uniform sampler2D mirror_map;
 struct CarInstanceGpu {
   mat4 model;
@@ -589,8 +600,15 @@ void main() {
 
   if (klass == kPaint) {
     vec3 paint_col = draw_tint.rgb;
-    // Only apply player's Paint Shop finish override to non-instanced player car.
-    int finish = ((flags & kFlagInstanced) == 0u) ? int(frame.paint_finish.x + 0.5) : 0;
+    if ((flags & kFlagInstanced) != 0u && car_instances[v_instance].lamp_rgb[0].w > 0.5) {
+      paint_col = car_instances[v_instance].lamp_rgb[0].rgb;
+    }
+    // Only apply player's Paint Shop finish override to non-instanced player car;
+    // draw.params.w > 0.5 carries a per-region (hood/wing/mirrors) finish override.
+    int finish = ((flags & kFlagInstanced) == 0u)
+                     ? (draw.params.w > 0.5 ? int(draw.params.w + 0.5) - 1 : int(frame.paint_finish.x + 0.5))
+                     : 0;
+    float xml_paint_scale = clamp(draw_tint.a, 0.15, 1.85);
     if (finish == 1) {
       // Metallic Flake (ShaderSettings/Metallic.xml): multiscale anti-aliased sparkle + dual-lobe metallic depth.
       flake_boost = 1.0;
@@ -668,6 +686,10 @@ void main() {
 
     vec3 texel = (flags & kFlagStripe) != 0u ? t0.rgb * stripe_rgb : t0.rgb;
     base = mix(paint_col, texel, t0.a);
+    // Apply runtime Shared/ShaderSettings/{Normal,Metallic,Matte}.xml PaintScale when provided.
+    if ((flags & kFlagInstanced) == 0u && abs(xml_paint_scale - 1.0) > 0.01) {
+      paint_scale = xml_paint_scale;
+    }
     // Non-paint baked atlas details (badges, black trim) are not metallic flake.
     paint_metallic *= (1.0 - t0.a);
     paint_scale = mix(paint_scale, 1.0, t0.a);
@@ -960,10 +982,12 @@ void main() {
       gloss = 0.15;
       reflectivity = 0.03;
     } else if (submat == 18u) {
-      // Undercarriage / chassis / frame / black & rubber trim: dark matte charcoal modulated by
-      // @atlas AO (t0) so undersides never render bright white.
+      // Undercarriage / chassis / frame / black & rubber trim: sample Shared/undercarriage.xds
+      // when bound in slot 1, modulated by @atlas AO (t0) so undersides never render bright white.
       vec3 ao = (flags & kFlagNoSlot0) == 0u ? mix(vec3(0.35), clamp(t0.rgb, vec3(0.0), vec3(1.0)), 0.65) : vec3(1.0);
-      base = vec3(0.028, 0.030, 0.033) * ao;
+      vec3 uc = (flags & kFlagSlot1) != 0u ? mix(vec3(0.028, 0.030, 0.033), t1.rgb * 0.35, 0.70)
+                                           : vec3(0.028, 0.030, 0.033);
+      base = uc * ao;
       gloss = 0.10;
       reflectivity = 0.02;
     } else if ((flags & kFlagNoSlot0) != 0u) {
@@ -1068,6 +1092,34 @@ void main() {
     float ibl_amb = frame.sun_color.w >= 0.0 ? max(frame.car_light_top.w, 0.01) : 1.0;
     diffuse_light = sun_col * ndl * lit * mix(0.6, 1.0, occlusion) +
                     mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb * occlusion;
+    // Projected headlight beams illuminating other vehicles at night (CAR_LAMPS.md §5).
+    int hl_count = int(headlights.count_night.x + 0.5);
+    float hl_night = headlights.count_night.y;
+    if (hl_count > 0 && hl_night > 0.004) {
+      vec3 hl_sum = vec3(0.0);
+      for (int i = 0; i < hl_count && i < 16; ++i) {
+        vec3 origin = headlights.beams[i].origin_range.xyz;
+        float range = headlights.beams[i].origin_range.w;
+        vec3 to_p = v_position - origin;
+        float d2 = dot(to_p, to_p);
+        if (d2 >= range * range || d2 < 1.2) continue;
+        vec3 bdir = headlights.beams[i].dir_power.xyz;
+        if (dot(to_p, bdir) <= 0.35) continue;
+        vec4 c = headlights.beams[i].proj * vec4(v_position, 1.0);
+        if (c.w <= 0.1) continue;
+        vec2 buv = c.xy / c.w * 0.5 + 0.5;
+        if (buv.x <= 0.0 || buv.x >= 1.0 || buv.y <= 0.0 || buv.y >= 1.0) continue;
+        vec4 ck = texture(headlight_cookie, buv);
+        float pattern = max(max(ck.r, ck.g), ck.b) * max(ck.a, 0.25);
+        float dist = sqrt(d2);
+        float att = pow(clamp(1.0 - dist / range, 0.0, 1.0), 1.45);
+        float edge = smoothstep(0.0, 0.08, buv.x) * smoothstep(1.0, 0.92, buv.x) *
+                     smoothstep(0.0, 0.08, buv.y) * smoothstep(1.0, 0.92, buv.y);
+        float facing = max(dot(n, -to_p / dist), 0.0);
+        hl_sum += headlights.beams[i].color.rgb * pattern * att * edge * facing * headlights.beams[i].dir_power.w;
+      }
+      diffuse_light += hl_sum * hl_night * 0.85;
+    }
     direct_col = sun_col;
     // DynamicEnvLightmapDampner = 0.30 (0.50 for chrome per Normal.xml).
     float damp = (klass == kChrome) ? 0.50 : 0.35;

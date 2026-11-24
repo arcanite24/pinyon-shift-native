@@ -614,12 +614,126 @@ void test_polish_tint_and_livery_regions() {
   CHECK(!l2.items().empty());
 }
 
+void test_phase3_livery_and_paint_parity() {
+  carview::LiveryEditor ed;
+  std::string msg;
+  CHECK(ed.open(nullptr, {}, 445, {}, msg));
+
+  // Manufacturer & Previous Colors tabs.
+  std::vector<cars::bake::Colour> oem;
+  cars::bake::Colour c1{};
+  c1.sequence = 0;
+  c1.rgb = 0x1144CCu;
+  c1.metallic = true;
+  cars::bake::Colour c2{};
+  c2.sequence = 1;
+  c2.rgb = 0xEE2211u;
+  c2.metallic = false;
+  oem.push_back(c1);
+  oem.push_back(c2);
+  ed.set_manufacturer_colors(oem);
+  ed.set_tab(carview::EditorTab::kManufacturerColors);
+  ed.move_manufacturer_color(1);
+  ed.apply_manufacturer_color();
+  CHECK(ed.document().paint.body.rgb == 0xEE2211u);
+  CHECK(ed.document().paint.body.finish == cars::PaintFinish::kNormal);
+  CHECK(ed.previous_colors().size() >= 2);
+
+  // Stock rim refusal alongside chrome rim refusal.
+  ed.set_wheel_is_stock(true);
+  ed.set_region(carview::PaintRegion::kRims);
+  CHECK(ed.rims_paint_blocked());
+  const uint32_t rim_rgb_before = ed.document().paint.rims.rgb;
+  ed.step_hsv(0.2f, 0.0f, 0.0f);
+  CHECK(ed.document().paint.rims.rgb == rim_rgb_before);
+  ed.set_wheel_is_stock(false);
+  CHECK(!ed.rims_paint_blocked());
+  ed.step_hsv(0.2f, 0.0f, 0.0f);
+  CHECK(ed.document().paint.rims.active);
+
+  // Vinyl tools: Mirror L<->R, Copy/Paste, Mask/Cutout, Group, Flip, Skew, Alpha, Wing plane.
+  ed.set_tab(carview::EditorTab::kVinylLayers);
+  ed.add_vinyl_layer("@rect", 0xFF0000u);
+  ed.document().layers[0].plane = cars::LiveryPlaneKind::kLeft;
+  ed.document().layers[0].x = 0.25f;
+  ed.document().layers[0].rot_deg = 30.0f;
+  CHECK(ed.mirror_selected_layer());
+  CHECK(ed.document().layers.size() == 2);
+  CHECK(ed.document().layers[1].plane == cars::LiveryPlaneKind::kRight);
+  CHECK(std::fabs(ed.document().layers[1].x - 0.75f) < 1e-4f);
+  CHECK(ed.document().layers[1].flip_x);
+  CHECK(ed.copy_selected_layer());
+  CHECK(ed.has_clipboard());
+  CHECK(ed.paste_layer());
+  CHECK(ed.document().layers.size() == 3);
+  ed.toggle_layer_mask();
+  CHECK(ed.document().layers[ed.selected_layer()].is_mask);
+  ed.toggle_layer_group();
+  CHECK(ed.document().layers[ed.selected_layer()].group_id != 0);
+  ed.adjust_layer_skew(0.25f);
+  ed.adjust_layer_alpha(-0.25f);
+  ed.document().layers[ed.selected_layer()].plane = cars::LiveryPlaneKind::kWing;
+
+  // Mask/Cutout compositor + plane sub-rect clipping (no bleed outside plane bounds).
+  cars::LiveryDocument doc;
+  cars::bake::LiveryPlane top_plane{};
+  top_plane.name = "Top";
+  top_plane.valid = true;
+  top_plane.left = -512.0f;
+  top_plane.right = 0.0f;
+  top_plane.top = -512.0f;
+  top_plane.bottom = 0.0f;
+  std::vector<cars::bake::LiveryPlane> planes{top_plane};
+
+  cars::VinylLayer base_rect;
+  base_rect.shape_path = "@rect";
+  base_rect.plane = cars::LiveryPlaneKind::kTop;
+  base_rect.x = 0.5f;
+  base_rect.y = 0.5f;
+  base_rect.scale_x = 1.5f;  // Oversized intentionally to verify sub-rect clipping.
+  base_rect.scale_y = 1.5f;
+  base_rect.rgb = 0x00FF00u;
+  doc.layers.push_back(base_rect);
+
+  cars::VinylLayer cutout;
+  cutout.shape_path = "@rect";
+  cutout.plane = cars::LiveryPlaneKind::kTop;
+  cutout.x = 0.5f;
+  cutout.y = 0.5f;
+  cutout.scale_x = 0.3f;
+  cutout.scale_y = 0.3f;
+  cutout.is_mask = true;
+  doc.layers.push_back(cutout);
+
+  std::vector<uint8_t> rgba;
+  CHECK(cars::composite_livery(doc, nullptr, &planes, rgba, 128));
+  // Center of top_plane (32, 32) was punched out by mask layer -> alpha 0.
+  CHECK(rgba[(32 * 128 + 32) * 4 + 3] == 0);
+  // Corner inside top_plane (8, 8) remains green opaque -> alpha 255.
+  CHECK(rgba[(8 * 128 + 8) * 4 + 3] == 255);
+  // Outside top_plane (96, 96) must not bleed -> alpha 0.
+  CHECK(rgba[(96 * 128 + 96) * 4 + 3] == 0);
+
+  // Round-trip .liv preserves is_mask, group_id, and kWing.
+  const fs::path tmp_liv = fs::temp_directory_path() / "shift_phase3_livery_test.liv";
+  CHECK(ed.save(tmp_liv, nullptr));
+  carview::LiveryEditor ed2;
+  CHECK(ed2.open(nullptr, {}, 445, tmp_liv, msg));
+  CHECK(ed2.document().layers.size() == 3);
+  CHECK(ed2.document().layers[2].is_mask);
+  CHECK(ed2.document().layers[2].group_id != 0);
+  CHECK(ed2.document().layers[2].plane == cars::LiveryPlaneKind::kWing);
+  std::error_code ec;
+  fs::remove(tmp_liv, ec);
+}
+
 }  // namespace
 
 int main() {
   test_shader_settings_and_hsv();
   test_damage_and_settings();
   test_polish_tint_and_livery_regions();
+  test_phase3_livery_and_paint_parity();
   test_disc_livery_and_paint();
   maybe_capture_headless_screenshots();
   maybe_capture_gfx_parity_screenshots();

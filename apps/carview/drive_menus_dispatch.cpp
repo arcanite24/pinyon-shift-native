@@ -124,6 +124,9 @@ void DriveSession::open_paint() {
           livery_edit_path = liv_p;
           std::string msg;
           if (livery_editor.open(db_ptr, app.game_root_of(), cid, liv_p, msg)) {
+            livery_editor.set_manufacturer_colors(host.showroom.colours());
+            livery_editor.set_wheel_is_chrome(host.showroom.options().visual.wheel_is_chrome);
+            livery_editor.set_wheel_is_stock(host.showroom.options().visual.wheel_is_stock);
             paint_open = true;
             notice = msg;
             notice_until = vehicle.time() + 3.0;

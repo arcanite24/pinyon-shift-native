@@ -71,8 +71,13 @@ VinylMesh make_builtin_shape(const std::string& id) {
   return m;
 }
 
-void rasterize_triangle(std::vector<uint8_t>& rgba, uint32_t w, uint32_t h, float x0, float y0, float x1, float y1,
-                        float x2, float y2, uint8_t cr, uint8_t cg, uint8_t cb, float alpha) {
+// Rasterizes one triangle into a single-layer RGBA coverage buffer using clamped
+// additive coverage (capped at 255) so adjacent triangles sharing an internal edge
+// sum cleanly to full coverage (0.5 + 0.5 = 1.0) with zero diagonal seams and no
+// double-blending when the layer's alpha is applied once in the composite pass.
+void rasterize_triangle_layer(std::vector<uint8_t>& layer_rgba, uint32_t w, uint32_t h, float x0, float y0, float x1,
+                              float y1, float x2, float y2, uint8_t cr, uint8_t cg, uint8_t cb, float vert_alpha,
+                              int& dirty_x0, int& dirty_y0, int& dirty_x1, int& dirty_y1) {
   const float min_xf = std::floor(std::min({x0, x1, x2}));
   const float max_xf = std::ceil(std::max({x0, x1, x2}));
   const float min_yf = std::floor(std::min({y0, y1, y2}));
@@ -94,6 +99,11 @@ void rasterize_triangle(std::vector<uint8_t>& rgba, uint32_t w, uint32_t h, floa
   const float e1_len = std::max(1e-4f, std::hypot(x2 - x1, y2 - y1));
   const float e2_len = std::max(1e-4f, std::hypot(x0 - x2, y0 - y2));
 
+  dirty_x0 = std::min(dirty_x0, ix0);
+  dirty_y0 = std::min(dirty_y0, iy0);
+  dirty_x1 = std::max(dirty_x1, ix1);
+  dirty_y1 = std::max(dirty_y1, iy1);
+
   for (int py = iy0; py <= iy1; ++py) {
     const float fy = float(py) + 0.5f;
     for (int px = ix0; px <= ix1; ++px) {
@@ -104,18 +114,18 @@ void rasterize_triangle(std::vector<uint8_t>& rgba, uint32_t w, uint32_t h, floa
       const float dmin = std::min({d0, d1, d2});
       if (dmin < -0.6f) continue;
       const float cov = std::clamp(dmin + 0.5f, 0.0f, 1.0f);
-      const float sa = alpha * cov;
-      if (sa <= 1e-4f) continue;
+      const int add_u8 = int(std::clamp(std::lround(vert_alpha * cov * 255.0f), 0l, 255l));
+      if (add_u8 == 0) continue;
 
-      uint8_t* dst = &rgba[(size_t(py) * w + size_t(px)) * 4u];
-      const float da = float(dst[3]) / 255.0f;
-      const float oa = sa + da * (1.0f - sa);
-      if (oa > 1e-5f) {
-        dst[0] = uint8_t(std::clamp((float(cr) * sa + float(dst[0]) * da * (1.0f - sa)) / oa, 0.0f, 255.0f));
-        dst[1] = uint8_t(std::clamp((float(cg) * sa + float(dst[1]) * da * (1.0f - sa)) / oa, 0.0f, 255.0f));
-        dst[2] = uint8_t(std::clamp((float(cb) * sa + float(dst[2]) * da * (1.0f - sa)) / oa, 0.0f, 255.0f));
-        dst[3] = uint8_t(std::clamp(oa * 255.0f, 0.0f, 255.0f));
+      uint8_t* dst = &layer_rgba[(size_t(py) * w + size_t(px)) * 4u];
+      const int prev = int(dst[3]);
+      const int next = std::min(255, prev + add_u8);
+      if (add_u8 >= prev) {
+        dst[0] = cr;
+        dst[1] = cg;
+        dst[2] = cb;
       }
+      dst[3] = uint8_t(next);
     }
   }
 }
@@ -130,6 +140,7 @@ const char* livery_plane_name(LiveryPlaneKind p) {
     case LiveryPlaneKind::kRight: return "RIGHT SIDE";
     case LiveryPlaneKind::kFront: return "FRONT";
     case LiveryPlaneKind::kRear: return "REAR";
+    case LiveryPlaneKind::kWing: return "REAR WING";
     default: return "FULL BODY";
   }
 }
@@ -324,13 +335,17 @@ bool composite_livery(const LiveryDocument& doc, LiveryLibrary* lib, const std::
   if (size == 0 || size > 4096) return false;
   out_rgba.assign(size_t(size) * size * 4u, 0u);
 
-  // Determine UV sub-rectangle for a projection plane using Masks.xml planes if available.
-  auto plane_rect = [&](LiveryPlaneKind pk) -> std::array<float, 4> {
+  // Determine UV sub-rectangle + plane rotation using Masks.xml planes if available.
+  struct PlaneRegion {
+    float u0 = 0.0f, v0 = 0.0f, w = 1.0f, h = 1.0f, rot_deg = 0.0f;
+  };
+  auto plane_region = [&](LiveryPlaneKind pk) -> PlaneRegion {
     if (planes && !planes->empty() && pk != LiveryPlaneKind::kFullAtlas) {
       const char* want = pk == LiveryPlaneKind::kTop     ? "top"
                          : pk == LiveryPlaneKind::kLeft  ? "left"
                          : pk == LiveryPlaneKind::kRight ? "right"
                          : pk == LiveryPlaneKind::kFront ? "front"
+                         : pk == LiveryPlaneKind::kWing  ? "wing"
                                                          : "back";
       for (const auto& lp : *planes) {
         if (lp.valid && lower(lp.name).find(want) != std::string::npos) {
@@ -341,14 +356,15 @@ bool composite_livery(const LiveryDocument& doc, LiveryLibrary* lib, const std::
           const float w = std::fabs(u1 - u0);
           const float h = std::fabs(v1 - v0);
           if (w > 0.01f && h > 0.01f) {
-            return {std::min(u0, u1), std::min(v0, v1), w, h};
+            return {std::min(u0, u1), std::min(v0, v1), w, h, lp.rotation};
           }
         }
       }
     }
-    return {0.0f, 0.0f, 1.0f, 1.0f};
+    return {};
   };
 
+  std::vector<uint8_t> scratch(size_t(size) * size * 4u, 0u);
   for (const VinylLayer& layer : doc.layers) {
     if (!layer.visible || layer.alpha <= 1e-4f) continue;
     VinylMesh builtin;
@@ -368,9 +384,9 @@ bool composite_livery(const LiveryDocument& doc, LiveryLibrary* lib, const std::
     const float cy_m = 0.5f * (mesh->min_y + mesh->max_y);
     const float span_x = std::max(1e-4f, mesh->max_x - mesh->min_x);
     const float span_y = std::max(1e-4f, mesh->max_y - mesh->min_y);
-    const float rad = layer.rot_deg * (kPi / 180.0f);
+    const PlaneRegion pr = plane_region(layer.plane);
+    const float rad = (layer.rot_deg + pr.rot_deg) * (kPi / 180.0f);
     const float cr = std::cos(rad), sr = std::sin(rad);
-    const auto rect = plane_rect(layer.plane);
     const float fx = layer.flip_x ? -1.0f : 1.0f;
     const float fy = layer.flip_y ? -1.0f : 1.0f;
 
@@ -386,11 +402,12 @@ bool composite_livery(const LiveryDocument& doc, LiveryLibrary* lib, const std::
       const float sy = ny * layer.scale_y;
       const float rx = cr * sx - sr * sy;
       const float ry = sr * sx + cr * sy;
-      const float u = rect[0] + (layer.x + rx) * rect[2];
-      const float vv = rect[1] + (layer.y + ry) * rect[3];
+      const float u = pr.u0 + (layer.x + rx) * pr.w;
+      const float vv = pr.v0 + (layer.y + ry) * pr.h;
       return {u * float(size), vv * float(size)};
     };
 
+    int dx0 = int(size), dy0 = int(size), dx1 = -1, dy1 = -1;
     for (size_t i = 0; i + 2 < mesh->indices.size(); i += 3) {
       const VinylVertex& v0 = mesh->vertices[mesh->indices[i]];
       const VinylVertex& v1 = mesh->vertices[mesh->indices[i + 1]];
@@ -401,7 +418,7 @@ bool composite_livery(const LiveryDocument& doc, LiveryLibrary* lib, const std::
 
       // Multi-colour decals preserve per-vertex artwork colour; single-colour vinyls tint by layer.rgb.
       uint8_t r = lr, g = lg, b = lb;
-      float tri_a = layer.alpha;
+      float vert_a = 1.0f;
       if (mesh->is_decal) {
         const uint32_t c0 = v0.argb;
         const uint8_t vr = uint8_t((c0 >> 16) & 0xFF);
@@ -411,9 +428,42 @@ bool composite_livery(const LiveryDocument& doc, LiveryLibrary* lib, const std::
         r = uint8_t((uint32_t(vr) * lr) / 255u);
         g = uint8_t((uint32_t(vg) * lg) / 255u);
         b = uint8_t((uint32_t(vb) * lb) / 255u);
-        tri_a *= float(va) / 255.0f;
+        vert_a = float(va) / 255.0f;
       }
-      rasterize_triangle(out_rgba, size, size, p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], r, g, b, tri_a);
+      rasterize_triangle_layer(scratch, size, size, p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], r, g, b, vert_a, dx0,
+                               dy0, dx1, dy1);
+    }
+
+    // Clamp compositing to the plane's UV sub-rectangle so plane-local layers never bleed across seams.
+    if (dx0 <= dx1 && dy0 <= dy1) {
+      const int clip_x0 = std::max(dx0, int(std::floor(pr.u0 * float(size))));
+      const int clip_y0 = std::max(dy0, int(std::floor(pr.v0 * float(size))));
+      const int clip_x1 = std::min(dx1, int(std::ceil((pr.u0 + pr.w) * float(size))) - 1);
+      const int clip_y1 = std::min(dy1, int(std::ceil((pr.v0 + pr.h) * float(size))) - 1);
+      for (int py = dy0; py <= dy1; ++py) {
+        for (int px = dx0; px <= dx1; ++px) {
+          uint8_t* src = &scratch[(size_t(py) * size + size_t(px)) * 4u];
+          const uint8_t sa_u8 = src[3];
+          if (sa_u8 > 0 && px >= clip_x0 && px <= clip_x1 && py >= clip_y0 && py <= clip_y1) {
+            uint8_t* dst = &out_rgba[(size_t(py) * size + size_t(px)) * 4u];
+            const float sa = (float(sa_u8) / 255.0f) * std::clamp(layer.alpha, 0.0f, 1.0f);
+            if (layer.is_mask) {
+              // Mask/Cutout punches through lower vinyl alpha back to base car paint.
+              dst[3] = uint8_t(std::clamp(std::lround(float(dst[3]) * (1.0f - sa)), 0l, 255l));
+            } else {
+              const float da = float(dst[3]) / 255.0f;
+              const float oa = sa + da * (1.0f - sa);
+              if (oa > 1e-5f) {
+                dst[0] = uint8_t(std::clamp((float(src[0]) * sa + float(dst[0]) * da * (1.0f - sa)) / oa, 0.0f, 255.0f));
+                dst[1] = uint8_t(std::clamp((float(src[1]) * sa + float(dst[1]) * da * (1.0f - sa)) / oa, 0.0f, 255.0f));
+                dst[2] = uint8_t(std::clamp((float(src[2]) * sa + float(dst[2]) * da * (1.0f - sa)) / oa, 0.0f, 255.0f));
+                dst[3] = uint8_t(std::clamp(oa * 255.0f, 0.0f, 255.0f));
+              }
+            }
+          }
+          src[0] = src[1] = src[2] = src[3] = 0;
+        }
+      }
     }
   }
   return true;
@@ -445,7 +495,8 @@ bool save_livery_file(const std::filesystem::path& path, const LiveryDocument& d
   for (const auto& l : doc.layers) {
     out << "layer " << l.shape_path << " " << int(l.plane) << " " << l.x << " " << l.y << " " << l.scale_x << " "
         << l.scale_y << " " << l.rot_deg << " " << l.skew << " " << std::hex << l.rgb << std::dec << " " << l.alpha
-        << " " << (l.flip_x ? 1 : 0) << " " << (l.flip_y ? 1 : 0) << " " << (l.visible ? 1 : 0) << "\n";
+        << " " << (l.flip_x ? 1 : 0) << " " << (l.flip_y ? 1 : 0) << " " << (l.visible ? 1 : 0) << " "
+        << (l.is_mask ? 1 : 0) << " " << l.group_id << "\n";
   }
   return out.good();
 }
@@ -508,6 +559,9 @@ bool load_livery_file(const std::filesystem::path& path, LiveryDocument& out, st
       int pl = 0, fx = 0, fy = 0, vis = 1;
       if (ss >> l.shape_path >> pl >> l.x >> l.y >> l.scale_x >> l.scale_y >> l.rot_deg >> l.skew >> std::hex >>
           l.rgb >> std::dec >> l.alpha >> fx >> fy >> vis) {
+        int mask = 0, gid = 0;
+        if (ss >> mask) l.is_mask = mask != 0;
+        if (ss >> gid) l.group_id = gid;
         l.plane = LiveryPlaneKind(std::clamp(pl, 0, int(LiveryPlaneKind::kCount) - 1));
         l.flip_x = fx != 0;
         l.flip_y = fy != 0;

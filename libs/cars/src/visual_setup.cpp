@@ -239,8 +239,10 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
       out.wheel_media = lower(w.media_name);
       out.brake_draw_offset = float(w.brake_draw_offset);
       out.wheel_is_chrome = w.is_chrome;
+      out.wheel_is_stock = w.is_stock;
     }
   }
+  out.tire_compound_level = std::clamp(int(std::llround(phys.get("List_UpgradeCarBodyTireCompound.Level", 0.0))), 0, 4);
 
   // 4. Suspension ride height & camber (fitted SpringDamperPhysics + optional tuning).
   auto eval_rh = [&](const std::string& prefix, const std::string& stock_col, float norm) -> float {

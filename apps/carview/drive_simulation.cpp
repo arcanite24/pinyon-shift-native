@@ -336,6 +336,20 @@ bool DriveSession::step(const drive::Input& user_in) {
         }
         const drive::Input in = app.race ? app.race->player_input(vehicle, user_in, traffic.get()) : user_in;
         vehicle.step(in, *host.ground);
+        {
+          // Thermal brake rotor integrator: heats proportionally to brake pedal * speed
+          // above 3 m/s and cools exponentially with airflow (zero glow when parked).
+          const float spd = float(std::fabs(vehicle.speed()));
+          const float brk = float(std::clamp(in.brake, 0.0, 1.0));
+          const float dt_s = float(drive::Vehicle::kStep);
+          if (brk > 0.05f && spd > 3.0f) {
+            const float heat_rate = brk * std::clamp((spd - 3.0f) / 36.0f, 0.0f, 1.8f) * 0.48f;
+            rotor_heat = std::min(1.0f, rotor_heat + heat_rate * dt_s);
+          }
+          const float cool_tau = 5.5f / (1.0f + spd * 0.025f);
+          rotor_heat *= std::exp(-dt_s / std::max(0.8f, cool_tau));
+          if (rotor_heat < 0.002f) rotor_heat = 0.0f;
+        }
         if (app.race) app.race->replay_player(vehicle);
         {
           // A car that left the numbers (NaN) stops the run: a gather around

@@ -243,6 +243,10 @@ struct DriveSession {
 
   int last_lut_zone = -2;
   float last_lut_day = -1.0f, last_lut_night = -1.0f;
+  world::ColorLut16 cur_post_lut{};
+  world::ColorLut16 target_post_lut{};
+  bool have_post_lut = false;
+  bool post_lut_blending = false;
   double tod_frame_dt = 0.0;
   bool tod_cockpit_cam = false;
   bool live_motion_blur = true;
@@ -267,6 +271,9 @@ struct DriveSession {
 
   world::PostZoneBlender zone_blender;
   drive::CarLampState player_lamps;
+  float rotor_heat = 0.0f;  // thermal brake rotor glow [0..1] (heats under braking at speed, cools smoothly)
+  HubCamera hub_cam;
+  HubRoom last_hub_room = HubRoom::kNone;
   drive::CockpitAnimState cockpit_anim;
   float cockpit_steer_kick_rad = 0.0f;
   std::array<double, 4> cam_prev_wheel_comp{};

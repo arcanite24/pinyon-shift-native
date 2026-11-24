@@ -831,6 +831,13 @@ void main() {
         }
       } else {
         t = mix(t, b, v_colour.r);
+        if ((flags & kFlagRoad) != 0u && (flags & kFlagLayerC) != 0u) {
+          vec2 tc = unpackHalf2x16(floatBitsToUint(draw.params.w));
+          if (abs(tc.x) < 1e-4) tc.x = draw.tint.z;
+          if (abs(tc.y) < 1e-4) tc.y = draw.tint.w;
+          vec4 c = texture(layer_c, v_uv0 * tc);
+          t = mix(t, c, clamp(v_colour.g, 0.0, 1.0));
+        }
       }
     }
   } else if ((flags & kFlagVertexLit) != 0u) {
@@ -978,6 +985,9 @@ void main() {
       float n_a = texture(splat_map, v_uv0 * draw.tint.zw).a;
       float fade = clamp(0.5 + c4.x * (v_colour.a - 0.5) - c4.y * (n_a - 0.5), 0.0, 1.0);
       alpha = t.a * fade;
+    } else if ((flags & kFlagRoad) != 0u) {
+      // H_ROAD_*_BLEND_* samples Blend_A without multiplying by Blend_A.a (WORLD_MATERIALS.md:640).
+      alpha = clamp(v_colour.a, 0.0, 1.0);
     } else {
       alpha = t.a * ((flags & kFlagVertexFade) != 0u ? v_colour.r : v_colour.a);
     }

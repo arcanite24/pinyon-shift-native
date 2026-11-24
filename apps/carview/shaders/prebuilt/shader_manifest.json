@@ -34,7 +34,7 @@
     {
       "name": "world_frag.glsl",
       "kind": "header",
-      "lines": 999,
+      "lines": 1005,
       "uses_bda": false,
       "notes": []
     },
@@ -384,7 +384,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 3296,
+      "spirv_bytes": 3976,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [
@@ -2736,7 +2736,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 137908,
+      "spirv_bytes": 144360,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -2769,6 +2769,21 @@
           "count": 1,
           "name": "shadow_map",
           "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "headlight_cookie",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "headlights"
         },
         {
           "set": 0,
@@ -3825,7 +3840,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 105028,
+      "spirv_bytes": 105404,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4123,7 +4138,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 109804,
+      "spirv_bytes": 110324,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4315,7 +4330,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 106176,
+      "spirv_bytes": 106492,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4423,7 +4438,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 101544,
+      "spirv_bytes": 101716,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
