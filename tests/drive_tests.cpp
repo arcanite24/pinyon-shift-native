@@ -1016,6 +1016,62 @@ int main() {
     CHECK(drive::body_contact_friction(h_dirt, wall_n, 0.30) >= 0.45 - 1e-9);
     CHECK(drive::body_contact_damping_scale(h_dirt, wall_n) > 1.0);
   }
+  // 7) LAB-87: Automatic gearbox downshifts cleanly from high gear (5) to gear 1
+  //    when speed drops to 0 km/h (coasting or sudden stop) and never locks out throttle.
+  {
+    const auto p = test_car();
+    const drive::FlatGround flat;
+    drive::Vehicle v(p);
+    // Launch at 55 m/s (~198 km/h) so vehicle starts in high gear (gear 5).
+    v.launch({0, 0, 0}, 0, 55.0);
+    CHECK(v.gear() >= 4);
+    // Sudden stop (simulating crash/spinout stopping wheels in high gear).
+    v.set_velocity({0, 0, 0}, {0, 0, 0});
+    for (int i = 0; i < 60; ++i) v.step({0, 0, 0, false}, flat);
+    CHECK(v.gear() == 1);
+    // Pressing throttle must immediately drive the car forward without needing reset().
+    double max_thr = 0.0;
+    for (int i = 0; i < 120 * 2; ++i) {
+      v.step({0, 1.0, 0, false}, flat);
+      max_thr = std::max(max_thr, v.engine_throttle());
+    }
+    CHECK(v.speed() > 10.0);
+    CHECK(max_thr > 0.5);
+  }
+  // 8) LAB-87: Post-crash throttle recovery & soft wall/fence impact response
+  //    (no kClutchOut stall deadlock, no vertical launch or wild spin).
+  {
+    const auto p = test_car();
+    // Flat floor + angled vertical wall/fence across z = 20 m.
+    const float h = 200.0f;
+    drive::MeshGround arena({
+        // Ground plane y = 0
+        {-h, 0, -h}, {h, 0, h}, {h, 0, -h}, {-h, 0, -h}, {-h, 0, h}, {h, 0, h},
+        // Vertical wall at z = 20 (angled slightly)
+        {-30, 0, 20}, {30, 0, 22}, {30, 4, 22}, {-30, 0, 20}, {30, 4, 22}, {-30, 4, 20},
+    });
+    drive::Vehicle v(p);
+    v.launch({0, 0, 10.0}, 0.0, 28.0);  // ~100 km/h into angled wall
+    double max_y = 0.0, max_ang = 0.0;
+    for (int i = 0; i < 120; ++i) {
+      v.step({0, 0, 0, false}, arena);
+      max_y = std::max(max_y, v.position().y);
+      const auto a = v.angular_velocity();
+      max_ang = std::max(max_ang, std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z));
+    }
+    // Must not launch into the air or spin explosively.
+    CHECK(max_y < 1.5);
+    CHECK(max_ang < 6.0);
+    // After crashing and coming to a low speed, reverse away then drive forward:
+    // throttle must NEVER lock out and gearbox must recover cleanly to gear 1.
+    for (int i = 0; i < 120 * 2; ++i) v.step({0, 0, 1.0, false}, arena);
+    CHECK(v.gear() == -1);
+    CHECK(v.speed() < -1.0);
+    // Now press moderate throttle (0.4): must cleanly exit reverse to gear 1 and accelerate.
+    for (int i = 0; i < 120 * 2; ++i) v.step({-0.6, 0.4, 0, false}, arena);
+    CHECK(v.gear() >= 1);
+    CHECK(v.engine_throttle() > 0.2);
+  }
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

@@ -703,7 +703,8 @@ void DriveSession::run_window_loop() {
             ri.tire_traction = (fl_load + rl_load) > 1e-3 ? (fl_slip + rl_slip) / (fl_load + rl_load) : 0.0;
             ri.air_friction = std::clamp((vehicle.speed() * vehicle.speed()) / (80.0 * 80.0), 0.0, 1.0);
             // Surface bumpiness: use exact 2 * Bumpiness.Rumble from Vehicle
-            // when available, else fallback to off-roadness estimate, scaled by speed.
+            // when available, else fallback to off-road/rough surface estimate
+            // (0 on smooth asphalt so highway cruising never buzzes constantly).
             double bump_2x = vehicle.surface_bump_rumble();
             if (bump_2x <= 0.0) {
               double max_bump = 0.0;
@@ -711,34 +712,39 @@ void DriveSession::run_window_loop() {
               for (int wi = 0; wi < 4; ++wi) {
                 if (!ws[size_t(wi)].contact) continue;
                 const int si = ws[size_t(wi)].surface;
-                double bump = 0.02;
+                double bump = 0.0;
                 if (si >= 0 && size_t(si) < surfs.size()) {
                   const auto& sf = surfs[size_t(si)];
-                  if (sf.off_roadness > 0.0f) bump = 0.02 + 0.38 * sf.off_roadness;
-                  else if (sf.friction_scale < 0.95f) bump = 0.15;
+                  if (sf.off_roadness > 0.0f) bump = 0.04 + 0.36 * sf.off_roadness;
+                  else if (sf.friction_scale < 0.95f) bump = 0.14;
                 }
                 max_bump = std::max(max_bump, bump);
               }
               bump_2x = 2.0 * max_bump;
             }
-            ri.surface_bumpiness = bump_2x * (std::fabs(vehicle.speed()) / 22.352);
-            ri.car_to_car_impulse = frame_car_impact / 500.0;
-            ri.car_to_world_impulse = frame_world_impact / 500.0;
+            const double abs_speed = std::fabs(vehicle.speed());
+            ri.speed_mps = abs_speed;
+            ri.smooth = true;
+            ri.surface_bumpiness = bump_2x * (abs_speed / 22.352);
+            ri.car_to_car_impulse = frame_car_impact / 100.0;
+            // Convert body contact force (N) to step impulse (N*s) before mapping
+            // onto ControllerRumble.xml's CarToWorldCollision impulse curve.
+            ri.car_to_world_impulse = (frame_world_impact * drive::Vehicle::kStep) / 35.0;
             ri.car_to_object_impulse = frame_object_impact;
-            ri.on_shift = vehicle.gear() != prev_rumble_gear;
+            ri.on_shift = !sim_paused && (vehicle.gear() != prev_rumble_gear);
             prev_rumble_gear = vehicle.gear();
             ri.on_engine_sputter = (vehicle.rpm() >= vp.redline_rpm * 0.985 && vehicle.engine_throttle() > 0.5);
             const uint32_t cur_bf_rumble = app.audio_host.telemetry().backfire_count;
-            ri.on_backfire = cur_bf_rumble > prev_rumble_backfire;
+            ri.on_backfire = !sim_paused && (cur_bf_rumble > prev_rumble_backfire);
             prev_rumble_backfire = cur_bf_rumble;
             ri.paused = sim_paused;
             ri.enabled = rumble_enabled;
             ri.scale = rumble_scale;
             const auto ro = gamepad_rumble.update(frame_dt, ri);
             // Xbox One / Series Impulse Triggers: LT = front brake lock / ABS pulse,
-            // RT = rear traction loss / wheelspin.
+            // RT = rear traction loss / wheelspin (zero when stationary/paused).
             uint16_t lt_trig = 0, rt_trig = 0;
-            if (!sim_paused && rumble_enabled && rumble_scale > 0.0) {
+            if (!sim_paused && rumble_enabled && rumble_scale > 0.0 && abs_speed > 0.5) {
               const double front_lock = std::max({0.0, -ws[0].slip_ratio - 0.7, -ws[1].slip_ratio - 0.7});
               const double lt_f = std::clamp(
                   ((in.brake > 0.05 ? front_lock * 0.75 : 0.0) + (vehicle.abs_active() ? 0.55 : 0.0)) * rumble_scale,
@@ -753,6 +759,11 @@ void DriveSession::run_window_loop() {
             }
             rumble_low_f = ro.left_u16() / 65535.0;
             rumble_high_f = ro.right_u16() / 65535.0;
+          } else if (!pads.empty()) {
+            for (SDL_Gamepad* pad : pads) {
+              SDL_RumbleGamepad(pad, 0, 0, 0);
+              SDL_RumbleGamepadTriggers(pad, 0, 0, 0);
+            }
           }
           slice12.tick(vehicle, rig, pads, !sim_paused && !app.show_title, frame_dt, now,
                        uint32_t(now / 1000000ULL), rumble_low_f, rumble_high_f);
@@ -783,6 +794,7 @@ void DriveSession::run_window_loop() {
         slice12.shutdown(pads);
         for (SDL_Gamepad* pad : pads) {
           SDL_RumbleGamepad(pad, 0, 0, 0);
+          SDL_RumbleGamepadTriggers(pad, 0, 0, 0);
           SDL_CloseGamepad(pad);
         }
         app.audio_host.stop_device();

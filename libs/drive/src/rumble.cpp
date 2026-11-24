@@ -144,6 +144,8 @@ void GamepadRumble::reset() {
   shift_rem_ = 0;
   sputter_rem_ = 0;
   backfire_rem_ = 0;
+  smooth_left_ = 0;
+  smooth_right_ = 0;
 }
 
 void GamepadRumble::trigger_pulse(Pulse& p, double impulse, const RumbleMotorPair& amp, const RumbleMotorPair& time) {
@@ -178,7 +180,7 @@ void GamepadRumble::step_pulse(Pulse& p, double dt, double& out_left, double& ou
 RumbleOutput GamepadRumble::update(double dt, const RumbleInput& in) {
   dt = std::max(0.0, dt);
   if (!cfg_.loaded || in.paused || !in.enabled || in.scale <= 0.0) {
-    if (in.paused) reset();
+    reset();
     return {};
   }
 
@@ -190,43 +192,75 @@ RumbleOutput GamepadRumble::update(double dt, const RumbleInput& in) {
   if (in.on_engine_sputter) sputter_rem_ = kEventHold;
   if (in.on_backfire) backfire_rem_ = kEventHold;
 
+  // When speed_mps is provided (>= 0), smoothly gate road/slip/aero channels
+  // to zero at standstill so a parked car never hums or vibrates constantly.
+  const double motion_gate =
+      (in.speed_mps < 0.0) ? 1.0 : std::clamp((std::fabs(in.speed_mps) - 0.35) / 1.0, 0.0, 1.0);
+
   double left = 0.0, right = 0.0;
-  auto add = [&](const RumbleMotorPair& pair, double val) {
-    left += pair.left.evaluate(val);
-    right += pair.right.evaluate(val);
+  auto add = [&](const RumbleMotorPair& pair, double val, double gain = 1.0) {
+    if (gain <= 0.0) return;
+    left += pair.left.evaluate(val) * gain;
+    right += pair.right.evaluate(val) * gain;
   };
   add(cfg_.engine_norm_rpm, in.engine_norm_rpm);
-  add(cfg_.transmission_rpm, in.transmission_rpm);
-  add(cfg_.tire_traction, in.tire_traction);
-  add(cfg_.tire_traction_front, in.tire_traction_front);
-  add(cfg_.tire_traction_rear, in.tire_traction_rear);
-  add(cfg_.air_friction, in.air_friction);
-  add(cfg_.surface_bumpiness, in.surface_bumpiness);
+  add(cfg_.transmission_rpm, in.transmission_rpm, motion_gate);
+  add(cfg_.tire_traction, in.tire_traction, motion_gate);
+  add(cfg_.tire_traction_front, in.tire_traction_front, motion_gate);
+  add(cfg_.tire_traction_rear, in.tire_traction_rear, motion_gate);
+  add(cfg_.air_friction, in.air_friction, motion_gate);
+  add(cfg_.surface_bumpiness, in.surface_bumpiness, motion_gate);
 
   step_pulse(car_car_, dt, left, right);
   step_pulse(car_world_, dt, left, right);
   step_pulse(car_object_, dt, left, right);
 
   if (shift_rem_ > 0.0) {
-    left += cfg_.on_shift.left;
-    right += cfg_.on_shift.right;
+    const double env = in.smooth ? std::clamp(shift_rem_ / kEventHold, 0.0, 1.0) : 1.0;
+    left += cfg_.on_shift.left * env;
+    right += cfg_.on_shift.right * env;
     shift_rem_ = std::max(0.0, shift_rem_ - dt);
   }
   if (sputter_rem_ > 0.0) {
-    left += cfg_.on_engine_sputter.left;
-    right += cfg_.on_engine_sputter.right;
+    const double env = in.smooth ? std::clamp(sputter_rem_ / kEventHold, 0.0, 1.0) : 1.0;
+    left += cfg_.on_engine_sputter.left * env;
+    right += cfg_.on_engine_sputter.right * env;
     sputter_rem_ = std::max(0.0, sputter_rem_ - dt);
   }
   if (backfire_rem_ > 0.0) {
-    left += cfg_.on_backfire.left;
-    right += cfg_.on_backfire.right;
+    const double env = in.smooth ? std::clamp(backfire_rem_ / kEventHold, 0.0, 1.0) : 1.0;
+    left += cfg_.on_backfire.left * env;
+    right += cfg_.on_backfire.right * env;
     backfire_rem_ = std::max(0.0, backfire_rem_ - dt);
   }
 
   const double scale = std::clamp(in.scale, 0.0, 1.0);
+  double target_l = std::clamp(left * scale, 0.0, 1.0);
+  double target_r = std::clamp(right * scale, 0.0, 1.0);
+
+  if (in.smooth && dt > 0.0) {
+    // Asymmetric attack/release envelope: crisp attack (~30 ms) for impacts
+    // and curbs, smooth exponential release (~100 ms) so rumble never chatters
+    // or cuts abruptly, with a clean zero snap below 0.005.
+    auto env_step = [&](double cur, double tgt) {
+      const double tau = (tgt > cur) ? 0.030 : 0.100;
+      const double alpha = 1.0 - std::exp(-dt / tau);
+      double v = cur + (tgt - cur) * alpha;
+      if (tgt == 0.0 && v < 0.005) v = 0.0;
+      return std::clamp(v, 0.0, 1.0);
+    };
+    smooth_left_ = env_step(smooth_left_, target_l);
+    smooth_right_ = env_step(smooth_right_, target_r);
+    target_l = smooth_left_;
+    target_r = smooth_right_;
+  } else {
+    smooth_left_ = target_l;
+    smooth_right_ = target_r;
+  }
+
   RumbleOutput out;
-  out.left = std::clamp(left * scale, 0.0, 1.0);
-  out.right = std::clamp(right * scale, 0.0, 1.0);
+  out.left = target_l;
+  out.right = target_r;
   return out;
 }
 

@@ -860,15 +860,16 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
           continue;
 
         const auto& def = *pp.def;
+        const drive::Vec3 com = vehicle.centre_of_mass();
         if (!should_break(def, car_speed)) {
-          // Solid bounce against unbreakable or below-BreakSpeedMph prop.
+          // Soft inelastic bump against unbreakable or below-BreakSpeedMph prop.
           const float len = std::sqrt(px * px + pz * pz);
           if (len > 1e-4f) {
             const drive::Vec3 n{-double(px / len), 0.0, -double(pz / len)};
             const double vn = cvel.x * n.x + cvel.z * n.z;
             if (vn < 0.0) {
-              vehicle.translate(n * 0.06);
-              vehicle.apply_impulse(cpos, n * (-(1.2 * vn) * vehicle.params().mass), 0.15);
+              vehicle.translate(n * 0.04);
+              vehicle.apply_impulse(com, n * (-(1.05 * vn) * vehicle.params().mass), 0.05);
             }
           }
           continue;
@@ -885,12 +886,14 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
 
         const float prop_mass_kg = def.mass_kg();
         const float car_mass = float(std::max(500.0, vehicle.params().mass));
-        // Apply clamped momentum exchange (minimal speed loss on lightweight <=30 kg props per spec).
-        const float decel_frac = (def.mass <= 0.30f) ? std::min(0.025f, prop_mass_kg / (car_mass * 2.5f))
-                                                     : std::clamp(prop_mass_kg / (car_mass + prop_mass_kg), 0.02f, 0.25f);
+        // Apply brief, soft linear velocity damping on smash-through (FH1 feel:
+        // fences and light props absorb a tiny fraction of speed with zero pitch/spin kick).
+        float decel_frac = (def.mass <= 0.30f) ? std::min(0.025f, prop_mass_kg / (car_mass * 2.5f))
+                                               : std::clamp(prop_mass_kg / (car_mass + prop_mass_kg), 0.02f, 0.14f);
+        if (def.object_type_index == 0) decel_frac = std::min(decel_frac, 0.035f);
         if (car_speed > 0.5f) {
           const drive::Vec3 dv{-cvel.x * decel_frac, 0.0, -cvel.z * decel_frac};
-          vehicle.apply_impulse(cpos, dv * vehicle.params().mass, 0.05);
+          vehicle.apply_impulse(com, dv * vehicle.params().mass, 0.0);
         }
 
         const auto base_col = colour_for_prop(def.surface_type_index, def.object_type_index, pp.place.stem);

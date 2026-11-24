@@ -167,6 +167,29 @@ int main() {
     CHECK(near(out.left, 0.30) && near(out.right, 0.20));
   }
 
+  // LAB-87: Stationary gating (zero vibration when stopped even with residual slip/bumpiness)
+  // and smooth attack/release envelope decay.
+  {
+    rumble.reset();
+    drive::RumbleInput in;
+    in.speed_mps = 0.0;
+    in.smooth = true;
+    in.engine_norm_rpm = 0.0;
+    in.surface_bumpiness = 0.8;
+    in.tire_traction_front = 2.0;
+    in.tire_traction_rear = 2.0;
+    auto out = rumble.update(0.016, in);
+    CHECK(near(out.left, 0.0) && near(out.right, 0.0));
+
+    // Impact triggers smoothly and decays cleanly back to 0 when stopped.
+    in.car_to_world_impulse = 120.0;
+    auto hit0 = rumble.update(0.016, in);
+    CHECK(hit0.left > 0.0 && hit0.left < 0.8);  // smooth attack (no jarring 1-frame snap)
+    in.car_to_world_impulse = 0.0;
+    for (int i = 0; i < 80; ++i) out = rumble.update(0.016, in);
+    CHECK(near(out.left, 0.0) && near(out.right, 0.0));
+  }
+
   // Real ControllerRumble.xml from game files when SHIFT_GAME_ROOT is set.
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {
     cars::Install install;

@@ -76,6 +76,10 @@ struct RumbleInput {
   bool paused = false;
   bool enabled = true;
   double scale = 1.0;  // ControllerAdvancedOptions/RumbleScale, [0, 1]
+  // Optional vehicle speed (m/s) for stationary gating (< 0 means unspecified
+  // for legacy callers/tests) and smooth attack/decay envelope filtering.
+  double speed_mps = -1.0;
+  bool smooth = false;
 };
 
 struct RumbleOutput {
@@ -112,6 +116,8 @@ class GamepadRumble {
   double shift_rem_ = 0;
   double sputter_rem_ = 0;
   double backfire_rem_ = 0;
+  double smooth_left_ = 0;
+  double smooth_right_ = 0;
 };
 
 }  // namespace drive

@@ -83,11 +83,21 @@ void test_break_rules_and_pool() {
     drive::Vehicle v(cp);
     v.launch({0.0, 0.0, 2.5}, 0.0, 15.0);
     std::vector<world::SmashEvent> evs;
+    double speed_before = 0.0, speed_after = 0.0, ang_after = 0.0;
     for (int i = 0; i < 40 && evs.empty(); ++i) {
+      speed_before = v.speed();
       v.step({0.0, 0.5, 0.0, false}, g);
       sw2.step(v, g, float(drive::Vehicle::kStep), evs);
+      if (!evs.empty()) {
+        speed_after = v.speed();
+        const auto a = v.angular_velocity();
+        ang_after = std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+      }
     }
     CHECK(!evs.empty());
+    // Soft FH1-style fence smash-through: brief light velocity damping (< 5% loss), no dramatic spin/launch.
+    CHECK(speed_after > speed_before * 0.95);
+    CHECK(ang_after < 0.25);
     CHECK(sw2.broken_prop_count() == 1);
     const auto hp = sw2.broken_hidden_positions();
     CHECK(hp && hp->size() == 1 && (*hp)[0].radius >= 1.5f);

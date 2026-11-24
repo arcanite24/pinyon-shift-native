@@ -832,6 +832,16 @@ void Vehicle::update_gearbox(double dt) {
   const bool in_shift = state_ == GearState::kClutchIn || state_ == GearState::kGearChange ||
                         state_ == GearState::kRevMatch || state_ == GearState::kClutchOut;
 
+  auto auto_gear_for_speed = [&]() {
+    const double w_in = std::max(0.0, input_omega());
+    const double cap_rpm = p_.downshift_brake_fraction * red;
+    int best = 1;
+    for (int g = 1; g <= top; ++g) {
+      best = g;
+      if (w_in * ratio(g) * kRpm <= cap_rpm) break;
+    }
+    return best;
+  };
   // Manual (Shifting == 1): explicit shift requests, no auto-shifts or reverse swap.
   if (shifting_mode == 1) {
     pedal_swap_ = false;
@@ -860,11 +870,12 @@ void Vehicle::update_gearbox(double dt) {
       }
     } else {
       reverse_hold_time_ = 0;
-      if (gear_ == -1 && raw_.throttle > 0.5 && raw_.brake < 0.1 && v > -p_.reverse_select_speed) {
+      const double exit_rev_thr = v > -1.0 ? 0.08 : 0.25;
+      if (gear_ == -1 && raw_.throttle > exit_rev_thr && raw_.brake < 0.1 && v > -p_.reverse_select_speed) {
         gear_before_ = gear_;
         gear_ = target_gear_ = 1;
         pedal_swap_ = false;
-        shaped_.throttle = 0;
+        shaped_.throttle = std::clamp(raw_.throttle, 0.0, 1.0);
         shaped_.brake = 0;
         open();
       } else if (gear_ == 0) {
@@ -881,6 +892,13 @@ void Vehicle::update_gearbox(double dt) {
     case GearState::kOpen: {
       clutch_ = 0;
       engine_throttle_ = driver;
+      // In automatic mode with clutch open, always downshift to the right gear
+      // for current wheel speed (gear 1 when stopped/slow) so post-crash or
+      // post-spin stops never get stuck in a high gear.
+      if (shifting_mode == 0 && gear_ > 1) {
+        const int best = auto_gear_for_speed();
+        if (best < gear_) gear_ = target_gear_ = gear_before_ = best;
+      }
       if (drive_pedal > 0.1 && brake_pedal < 0.1) {
         const double s0 = idle + 0.2 * (start - idle);
         if (out_rpm() > p_.launch_max_output_rpm) {
@@ -895,9 +913,12 @@ void Vehicle::update_gearbox(double dt) {
     }
     case GearState::kLaunch: {
       engine_throttle_ = driver;
-      if (brake_pedal > 0.1) {
+      if (brake_pedal > 0.1 || drive_pedal < 0.05) {
         open();
         break;
+      }
+      if (shifting_mode == 0 && gear_ > 1) {
+        gear_ = target_gear_ = gear_before_ = 1;
       }
       const double tau = std::min(1.0, state_time_ / p_.launch_fall_time);
       const double high = lerp(start + 0.2 * (red - start), idle + 0.3 * (start - idle), tau);
@@ -920,11 +941,16 @@ void Vehicle::update_gearbox(double dt) {
     case GearState::kEngaged: {
       engine_throttle_ = driver;
       clutch_ = approach(clutch_, 1, 1 / p_.clutch_out_time, dt);
-      const double road = std::fabs(out_rpm());
-      if (road < 0.9 * idle) {
+      const double road_signed = out_rpm();
+      if (road_signed < 0.9 * idle) {
+        if (shifting_mode == 0 && gear_ > 1) {
+          const int best = auto_gear_for_speed();
+          if (best < gear_) gear_ = target_gear_ = gear_before_ = best;
+        }
         open();  // the engine would be dragged under idle (ours)
         break;
       }
+      const double road = road_signed;
       // Automatic shifts (SPEC-CAR-PHYSICS, Gears): disabled in Manual mode.
       if (shifting_mode == 0) {
         const double up_at = lerp(0.5, p_.upshift_fraction, std::clamp(drive_pedal, 0.0, 1.0)) * red;
@@ -934,8 +960,9 @@ void Vehicle::update_gearbox(double dt) {
           start_shift(gear_ + 1);
         } else if (gear_ > 1) {
           const double lower = road * ratio(gear_ - 1) / ratio(gear_);
+          const bool coast_down = (road < std::max(1.35 * idle, 0.22 * red)) && lower < 0.65 * red;
           if ((brake_pedal > 0.1 && lower < p_.downshift_brake_fraction * red) ||
-              (drive_pedal > 0.1 && road < 0.35 * red && lower < 0.75 * red))
+              (drive_pedal > 0.1 && road < 0.35 * red && lower < 0.75 * red) || coast_down)
             start_shift(gear_ - 1);
         }
       }
@@ -944,7 +971,7 @@ void Vehicle::update_gearbox(double dt) {
     case GearState::kClutchIn:
       engine_throttle_ = 0;  // the power cut
       locked_ = false;       // SPEC-CAR-PHYSICS: kClutchIn unlocks driveline immediately
-      clutch_ = std::max(0.0, clutch_ - dt / p_.clutch_in_time);
+      clutch_ = std::max(0.0, clutch_ - dt / std::max(1e-3, p_.clutch_in_time));
       if (clutch_ <= 0) enter(GearState::kGearChange);
       break;
     case GearState::kGearChange:
@@ -952,8 +979,14 @@ void Vehicle::update_gearbox(double dt) {
       clutch_ = 0;
       if (state_time_ >= p_.gear_shift_time - 1e-9) {
         gear_ = target_gear_;  // the gear number changes at the end
-        rev_matching_ = true;
-        enter(GearState::kRevMatch);
+        if (shifting_mode == 0 && gear_ > 1 && out_rpm() < 0.9 * idle) {
+          const int best = auto_gear_for_speed();
+          if (best < gear_) gear_ = target_gear_ = gear_before_ = best;
+          open();
+        } else {
+          rev_matching_ = true;
+          enter(GearState::kRevMatch);
+        }
       }
       break;
     case GearState::kRevMatch:
@@ -962,10 +995,20 @@ void Vehicle::update_gearbox(double dt) {
       if (state_time_ >= p_.rev_match_time - 1e-9) enter(GearState::kClutchOut);
       break;
     case GearState::kClutchOut: {
-      clutch_ = std::min(1.0, clutch_ + dt / p_.clutch_out_time);
+      if (out_rpm() < 0.9 * idle && rev_matching_) {
+        if (shifting_mode == 0 && gear_ > 1) {
+          const int best = auto_gear_for_speed();
+          if (best < gear_) gear_ = target_gear_ = gear_before_ = best;
+        }
+        open();
+        break;
+      }
+      clutch_ = std::min(1.0, clutch_ + dt / std::max(1e-3, p_.clutch_out_time));
       // Power comes back as the clutch closes: lerp(driver, the box's
       // request, c). Out of a launch the box asks for nothing of its own.
-      const double request = rev_matching_ ? rev_request() : driver;
+      // Never choke driver throttle when stopped/stalling.
+      const double request =
+          rev_matching_ ? std::max(rev_request(), out_rpm() < idle ? driver : 0.0) : driver;
       engine_throttle_ = lerp(driver, request, 1 - clutch_);
       if (clutch_ >= 1) enter(GearState::kEngaged);
       break;
@@ -1470,7 +1513,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
   if (omega_e <= w_stall) {
     lock_now = false;
     clutch_ = 0;
-    if (state_ == GearState::kEngaged) {
+    if (state_ == GearState::kEngaged || state_ == GearState::kClutchOut) {
       state_ = GearState::kOpen;
       state_time_ = 0;
     }
@@ -1553,10 +1596,20 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double depth = (reach - hit.distance) * -dot(dir, n);
     const Vec3 v = vel_ + cross(ang_, point - pos_);
     const double vn = dot(v, n);
+    const bool is_wall = std::fabs(n.y) < 0.65;
     const double damp_scale = body_contact_damping_scale(hit, n);
-    const double fn = kShare * std::max(0.0, p.mass * (p.body_stiffness * depth - (p.body_damping * damp_scale) * vn));
+    // Wall/barrier/fence contacts are heavily damped (inelastic) on rebound so
+    // the car glides/absorbs energy cleanly instead of bouncing or launching
+    // violently into the air on angled impacts.
+    const double spring_term = (is_wall && vn > 0.0) ? 0.35 * p.body_stiffness * depth : p.body_stiffness * depth;
+    const double eff_damp = is_wall ? std::max(p.body_damping * damp_scale, 22.0) : p.body_damping * damp_scale;
+    double fn = kShare * std::max(0.0, p.mass * (spring_term - eff_damp * vn));
+    if (is_wall) fn = std::min(fn, kShare * p.mass * 180.0);
     if (fn <= 0) continue;
     Vec3 f = n * fn;
+    if (is_wall && f.y > 0.0) {
+      f.y = std::min(f.y, kShare * p.mass * p.gravity * 1.5);
+    }
     const Vec3 vt = v - n * vn;
     const double vt_len = length(vt);
     if (vt_len > 1e-6) {
@@ -1565,7 +1618,17 @@ void Vehicle::substep(double dt, const Ground& ground) {
       f = f - vt * (ft / vt_len);
     }
     force = force + f;
-    torque = torque + cross(point - pos_, f);
+    Vec3 t_contact = cross(point - pos_, f);
+    if (is_wall) {
+      // Attenuate pitch/roll/yaw torque on wall/fence impacts so clipping a
+      // barrier deflects the car cleanly instead of flipping or pinball-spinning.
+      Vec3 t_loc = rotate_inverse(rot_, t_contact);
+      t_loc.x *= 0.20;
+      t_loc.y *= 0.35;
+      t_loc.z *= 0.20;
+      t_contact = rotate(rot_, t_loc);
+    }
+    torque = torque + t_contact;
     body_force_ += length(f);
     if (fn > strongest_.force) strongest_ = {centre + dir * hit.distance, n, fn, hit.surface, hit.triangle};
   }
@@ -1653,6 +1716,9 @@ void Vehicle::substep(double dt, const Ground& ground) {
   const Vec3 iw{inertia_.x * wl.x, inertia_.y * wl.y, inertia_.z * wl.z};
   const Vec3 gyro = cross(wl, iw);
   wl = wl + Vec3{(tl.x - gyro.x) / inertia_.x, (tl.y - gyro.y) / inertia_.y, (tl.z - gyro.z) / inertia_.z} * dt;
+  const double ang_mag = length(wl);
+  constexpr double kMaxAngVel = 10.0;  // rad/s: prevent violent post-crash spin explosions
+  if (ang_mag > kMaxAngVel) wl = wl * (kMaxAngVel / ang_mag);
   ang_ = rotate(rot_, wl);
   pos_ = pos_ + vel_ * dt;
   const Quat dq{ang_.x, ang_.y, ang_.z, 0};
