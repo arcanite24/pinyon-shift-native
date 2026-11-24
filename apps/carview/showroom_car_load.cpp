@@ -203,8 +203,18 @@ class DiscCarCache {
     return true;
   }
 
+  bool find_car_ref(const std::filesystem::path& game_root, const std::string& car_name,
+                    cars::FolderRef& out) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!ensure_init_locked(game_root, state_root_, nullptr)) return false;
+    auto ref = install_.find_car(car_name);
+    if (!ref) return false;
+    out = *ref;
+    return true;
+  }
+
  private:
-  static constexpr size_t kMaxCachedCars = 12;
+  static constexpr size_t kMaxCachedCars = 32;
   static constexpr size_t kMaxCachedWheels = 32;
 
   using LruList = std::list<std::pair<std::string, std::shared_ptr<const cars::bake::Bake>>>;
@@ -291,6 +301,27 @@ class DiscCarCache {
 };
 
 }  // namespace
+
+bool open_disc_car_folder(const std::filesystem::path& game_root, const std::string& car_name,
+                          cars::Folder& out) {
+  cars::FolderRef ref;
+  if (!game_root.empty() && DiscCarCache::instance().find_car_ref(game_root, car_name, ref)) {
+    if (out.open(ref, nullptr)) return true;
+  }
+  if (!game_root.empty() && !car_name.empty()) {
+    const std::string car_l = lower(car_name);
+    std::filesystem::path zip_path = game_root / "media" / "cars" / (car_l + ".zip");
+    if (!std::filesystem::exists(zip_path)) zip_path = game_root / "media" / "cars" / (car_name + ".zip");
+    if (std::filesystem::exists(zip_path)) {
+      cars::FolderRef fallback;
+      fallback.kind = cars::FolderRef::Kind::kArchive;
+      fallback.path = zip_path;
+      fallback.name = car_name;
+      if (out.open(fallback, nullptr)) return true;
+    }
+  }
+  return false;
+}
 
 void Showroom::set_disc_root(const std::filesystem::path& game_root, const std::filesystem::path& state_root) {
   DiscCarCache::instance().set_root(game_root, state_root);
@@ -557,8 +588,8 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   std::string err;
   const std::string car_name = lower(car);
   auto try_read_bake = [&](const std::filesystem::path& rel, bake::Bake& dst, std::string& out_err) -> bool {
-    if (bake_dir.empty()) return false;
-    const auto resolved = cars::mods::resolve(bake_dir / rel);
+    const auto resolved = bake_dir.empty() ? cars::mods::resolve_bake(rel) : cars::mods::resolve(bake_dir / rel);
+    if (resolved.empty()) return false;
     std::error_code ec;
     if (!std::filesystem::is_regular_file(resolved, ec)) return false;
     return bake::read_file(resolved, dst, &out_err);
@@ -709,30 +740,17 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       }
     }
     if (!has_emissive && !options_.game_root.empty()) {
-      const std::filesystem::path cars_dir = options_.game_root / "media" / "cars";
-      std::filesystem::path zip_path;
-      std::error_code ec;
-      const std::string want_zip = lower(info.media_name) + ".zip";
-      if (std::filesystem::is_directory(cars_dir, ec)) {
-        for (const auto& ent : std::filesystem::directory_iterator(cars_dir, ec)) {
-          if (ent.is_regular_file(ec) && lower(ent.path().filename().string()) == want_zip) {
-            zip_path = ent.path();
-            break;
-          }
-        }
-      }
-      if (!zip_path.empty()) {
-        if (auto arch = fh1::Archive::open(zip_path, nullptr)) {
-          auto rd = arch->read("interior_emissive_lod0.xds");
-          if (rd.ok()) {
-            auto xds = fh1::decode_xds(rd.data);
-            if (!xds.levels.empty() && !xds.levels[0].rgba.empty()) {
-              bake::Texture bt;
-              bt.name = "interior_emissive_lod0.xds";
-              bt.format = bake::TextureFormat::kRgba8;
-              bt.levels.push_back({xds.levels[0].width, xds.levels[0].height, std::move(xds.levels[0].rgba)});
-              car_.textures.push_back(std::move(bt));
-            }
+      cars::Folder folder;
+      if (open_disc_car_folder(options_.game_root, info.media_name, folder)) {
+        std::vector<uint8_t> bytes;
+        if (folder.read("interior_emissive_lod0.xds", bytes, nullptr)) {
+          auto xds = fh1::decode_xds(bytes);
+          if (!xds.levels.empty() && !xds.levels[0].rgba.empty()) {
+            bake::Texture bt;
+            bt.name = "interior_emissive_lod0.xds";
+            bt.format = bake::TextureFormat::kRgba8;
+            bt.levels.push_back({xds.levels[0].width, xds.levels[0].height, std::move(xds.levels[0].rgba)});
+            car_.textures.push_back(std::move(bt));
           }
         }
       }

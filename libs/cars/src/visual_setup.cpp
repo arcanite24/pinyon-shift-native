@@ -263,15 +263,17 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
   out.camber_rad[0] = float(cam_f) * kDegToRad;
   out.camber_rad[1] = float(cam_r) * kDegToRad;
 
-  // 5. CarTrackOffsets (base stock offset + upgrade offset when tyre width or wheel is upgraded).
+  // 5. CarTrackOffsets: base stock FrontOffset/RearOffset is already baked into
+  // CarInfo::track_outer (bake.cpp), so only store the additional upgrade delta here
+  // when tyre width or rim size is upgraded.
   CarTrackOffsetRow toff;
   if (query_track_offsets(db, car_id, toff, nullptr) && toff.found) {
     const bool upg_f = phys.get("List_UpgradeCarBodyTireWidthFront.Level", 0.0) > 0.0 ||
                        phys.get("List_UpgradeRimSizeFront.Level", 0.0) > 0.0;
     const bool upg_r = phys.get("List_UpgradeCarBodyTireWidthRear.Level", 0.0) > 0.0 ||
                        phys.get("List_UpgradeRimSizeRear.Level", 0.0) > 0.0;
-    out.track_offset_m[0] = float(toff.front_offset + (upg_f ? toff.upgrade_front_offset : 0.0));
-    out.track_offset_m[1] = float(toff.rear_offset + (upg_r ? toff.upgrade_rear_offset : 0.0));
+    out.track_offset_m[0] = float(upg_f ? toff.upgrade_front_offset : 0.0);
+    out.track_offset_m[1] = float(upg_r ? toff.upgrade_rear_offset : 0.0);
   }
 
   // 6. Upgraded brakes + caliper angles.

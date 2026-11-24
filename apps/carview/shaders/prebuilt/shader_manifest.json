@@ -53,8 +53,8 @@
       "prebuilt_spv": "apps/carview/shaders/prebuilt/bloom_down.frag.spv",
       "stage": "fragment",
       "entry_point": "main",
-      "spirv_version": "1.3",
-      "spirv_bytes": 15348,
+      "spirv_version": "1.6",
+      "spirv_bytes": 16572,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -64,7 +64,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "set0_b0",
+          "name": "src",
           "dim": "2D"
         },
         {
@@ -72,7 +72,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "set0_b3",
+          "name": "lum_adapt",
           "dim": "2D"
         }
       ],
@@ -100,8 +100,8 @@
       "prebuilt_spv": "apps/carview/shaders/prebuilt/bloom_up.frag.spv",
       "stage": "fragment",
       "entry_point": "main",
-      "spirv_version": "1.3",
-      "spirv_bytes": 3936,
+      "spirv_version": "1.6",
+      "spirv_bytes": 5068,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -111,7 +111,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "set0_b0",
+          "name": "src",
           "dim": "2D"
         },
         {
@@ -119,7 +119,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "set0_b1",
+          "name": "aux",
           "dim": "2D"
         }
       ],
@@ -724,7 +724,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 20164,
+      "spirv_bytes": 24404,
       "local_size": null,
       "push_constant_bytes": 48,
       "spec_constants": [
@@ -2736,7 +2736,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 137752,
+      "spirv_bytes": 137908,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -2892,7 +2892,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 12424,
+      "spirv_bytes": 12500,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -2961,7 +2961,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 14668,
+      "spirv_bytes": 17684,
       "local_size": null,
       "push_constant_bytes": 96,
       "spec_constants": [
@@ -3971,7 +3971,7 @@
       "prebuilt_spv": "apps/carview/shaders/prebuilt/world.vert.spv",
       "stage": "vertex",
       "entry_point": "main",
-      "spirv_version": "1.5",
+      "spirv_version": "1.6",
       "spirv_bytes": 16480,
       "local_size": null,
       "push_constant_bytes": 128,
@@ -4230,7 +4230,7 @@
       "prebuilt_spv": "apps/carview/shaders/prebuilt/world_gpu.vert.spv",
       "stage": "vertex",
       "entry_point": "main",
-      "spirv_version": "1.5",
+      "spirv_version": "1.6",
       "spirv_bytes": 18140,
       "local_size": null,
       "push_constant_bytes": 128,

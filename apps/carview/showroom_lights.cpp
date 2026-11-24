@@ -16,40 +16,33 @@ void Showroom::load_car_lamps(const std::filesystem::path& game_root, const std:
   lamp_points_.clear();
   lamp_colors_ = drive::LampColorTable{};
   if (game_root.empty() || car.empty()) return;
-  const std::string car_l = lower(car);
-  std::filesystem::path zip_path = game_root / "media" / "cars" / (car_l + ".zip");
-  if (!std::filesystem::exists(zip_path)) {
-    zip_path = game_root / "media" / "cars" / (car + ".zip");
-  }
-  if (!std::filesystem::exists(zip_path)) return;
-  std::string zerr;
-  auto ar = fh1::Archive::open(zip_path, &zerr);
-  if (!ar) return;
-  for (const auto& m : ar->members()) {
-    const std::string ml = lower(m.name);
+  cars::Folder folder;
+  if (!open_disc_car_folder(game_root, car, folder)) return;
+  for (const auto& name : folder.names()) {
+    const std::string ml = lower(name);
     if (ends_with(ml, "shadersettings.xml")) {
-      auto r = ar->read(m);
-      if (r.ok()) {
-        const std::string xml(reinterpret_cast<const char*>(r.data.data()), r.data.size());
+      std::vector<uint8_t> data;
+      if (folder.read(name, data, nullptr)) {
+        const std::string xml(reinterpret_cast<const char*>(data.data()), data.size());
         lamp_colors_.load_shader_settings_xml(xml);
       }
     } else if (ends_with(ml, ".carbin") && ml.find("_cockpit") == std::string::npos &&
                ml.find("_lod0") == std::string::npos && ml.find("_damage") == std::string::npos &&
                lamp_points_.empty()) {
-      auto r = ar->read(m);
-      if (r.ok()) {
-        auto pts = fh1::parse_carbin_lamp_points(r.data);
+      std::vector<uint8_t> data;
+      if (folder.read(name, data, nullptr)) {
+        auto pts = fh1::parse_carbin_lamp_points(data);
         if (!pts.empty()) lamp_points_ = std::move(pts);
       }
     }
   }
   if (lamp_points_.empty()) {
-    for (const auto& m : ar->members()) {
-      const std::string ml = lower(m.name);
+    for (const auto& name : folder.names()) {
+      const std::string ml = lower(name);
       if (ends_with(ml, ".carbin")) {
-        auto r = ar->read(m);
-        if (r.ok()) {
-          auto pts = fh1::parse_carbin_lamp_points(r.data);
+        std::vector<uint8_t> data;
+        if (folder.read(name, data, nullptr)) {
+          auto pts = fh1::parse_carbin_lamp_points(data);
           if (!pts.empty()) {
             lamp_points_ = std::move(pts);
             break;

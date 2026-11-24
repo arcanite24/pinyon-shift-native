@@ -2,6 +2,7 @@
 #pragma once
 
 #include "showroom.h"
+#include "cars/sources.h"
 
 #if defined(_MSC_VER)
 #pragma warning(push, 0)
@@ -242,5 +243,9 @@ std::string family_member(const std::string& name);
 bool stock_hidden(const std::string& member, const cars::bake::StockRow& stock);
 int32_t best_lod(const bake::Part& part);
 bool placeholder(const bake::Part& part);
+
+// Opens a car's archive/folder from base disc, Title Update v4, or DLC packages.
+bool open_disc_car_folder(const std::filesystem::path& game_root, const std::string& car_name,
+                          cars::Folder& out);
 
 }  // namespace carview

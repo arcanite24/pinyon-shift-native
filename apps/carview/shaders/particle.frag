@@ -35,6 +35,14 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 env_basis_x;
   vec4 env_basis_y;
   vec4 env_basis_z;
+  vec4 paint_two_tone;
+  vec4 paint_finish;
+  vec4 damage_dirt;
+  vec4 damage_zones;
+  vec4 car_sun_color;
+  mat4 shadow_matrix_mid;
+  vec4 shadow_mid_bias;
+  vec4 phase_b_params;
 } frame;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
 layout(set = 0, binding = 3) uniform sampler2D headlight_cookie;
@@ -67,21 +75,39 @@ layout(location = 4) in vec4 v_extra;
 
 layout(location = 0) out vec4 out_color;
 
-float sample_cascade(vec4 s, float x_off) {
-  vec2 uv = vec2((s.x * 0.5 + 0.5) * 0.5 + x_off, s.y * 0.5 + 0.5);
+float sample_cascade(vec4 s, float x_off, float inv_c) {
+  vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_c + x_off, s.y * 0.5 + 0.5);
   return texture(shadow_map, vec3(uv, s.z));
 }
 
 float particle_shadow(vec3 p) {
   if (frame.shadow.x < 0.5) return 1.0;
+  bool three_c = frame.shadow_mid_bias.y > 0.5;
+  float inv_c = three_c ? (1.0 / 3.0) : 0.5;
   vec4 sn = frame.shadow_matrix * vec4(p, 1.0);
   float edge_n = max(abs(sn.x), abs(sn.y));
   bool near_ok = edge_n < 1.0 && sn.z > 0.0 && sn.z < 1.0;
-  float lit_n = near_ok ? sample_cascade(sn, 0.0) : 1.0;
+  float lit_n = near_ok ? sample_cascade(sn, 0.0, inv_c) : 1.0;
+  if (three_c) {
+    if (near_ok && edge_n < 0.80) return mix(frame.shadow.z, 1.0, lit_n);
+    vec4 sm = frame.shadow_matrix_mid * vec4(p, 1.0);
+    float edge_m = max(abs(sm.x), abs(sm.y));
+    bool mid_ok = edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0;
+    float lit_m = mid_ok ? sample_cascade(sm, inv_c, inv_c) : 1.0;
+    if (near_ok) {
+      return mix(frame.shadow.z, 1.0, mix(lit_n, lit_m, smoothstep(0.80, 0.98, edge_n)));
+    }
+    if (mid_ok && edge_m < 0.80) return mix(frame.shadow.z, 1.0, lit_m);
+    vec4 sf = frame.shadow_matrix_far * vec4(p, 1.0);
+    float edge_f = max(abs(sf.x), abs(sf.y));
+    float lit_f = (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) ? sample_cascade(sf, 2.0 * inv_c, inv_c) : 1.0;
+    float bm = mid_ok ? smoothstep(0.80, 0.98, edge_m) : 1.0;
+    return mix(frame.shadow.z, 1.0, mix(lit_m, lit_f, bm));
+  }
   if (frame.shadow_far_bias.y > 0.5 && (!near_ok || edge_n > 0.78)) {
     vec4 sf = frame.shadow_matrix_far * vec4(p, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
-    float lit_f = (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) ? sample_cascade(sf, 0.5) : 1.0;
+    float lit_f = (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) ? sample_cascade(sf, 0.5, 0.5) : 1.0;
     float blend = near_ok ? smoothstep(0.78, 0.98, edge_n) : 1.0;
     return mix(frame.shadow.z, 1.0, mix(lit_n, lit_f, blend));
   }

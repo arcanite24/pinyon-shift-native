@@ -377,10 +377,11 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         std::string base_name = technique;
         while (!base_name.empty() && std::isdigit(static_cast<unsigned char>(base_name.back()))) base_name.pop_back();
         if (base_name == "metal") submat_id = 5.0f;
-        // Preserve authentic textured interior contrast without crushing dark leather/plastics to pitch black.
-        const float k = base_name == "mottled" ? 0.80f :
-                        base_name == "bump_plastic" ? 0.78f :
-                        base_name == "metal" ? 1.0f : 0.90f;
+        // FORMAT-CARS interior technique albedo scales (ShaderSettings defaults):
+        // mottled 0.35, bump_plastic 0.30, metal 0.85, plastic/cloth/leather/solid 0.50.
+        const float k = base_name == "mottled" ? 0.35f :
+                        base_name == "bump_plastic" ? 0.30f :
+                        base_name == "metal" ? 0.85f : 0.50f;
         d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = k;
       } else if (klass == MaterialClass::kOpaque) {
         // Underbody / chassis / frame / black trim / rubber trim techniques sample @atlas AO

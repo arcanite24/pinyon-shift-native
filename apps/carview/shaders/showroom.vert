@@ -94,10 +94,11 @@ void main() {
   vec3 wt = normalize(normal_matrix * t);
   vec3 wb = normalize(normal_matrix * b);
 
-  // Cosmetic impact-zone mesh dent deformation on body/paint/chrome/carbon/glass
-  // (model space: -Z is front, +Z is rear, -X is left, +X is right).
+  // Cosmetic impact-zone mesh dent deformation on player body/paint/chrome/carbon/glass
+  // (model space: -Z is front, +Z is rear, -X is left, +X is right). Never apply player
+  // damage zones onto instanced AI or traffic vehicles.
   uint klass = uint(draw.params.x + 0.5);
-  if (klass != 6u && klass != 7u && klass != 8u && klass != 11u) {
+  if ((flags & kFlagInstanced) == 0u && klass != 6u && klass != 7u && klass != 8u && klass != 11u) {
     float z_front = smoothstep(-0.75, -1.95, world.z) * frame.damage_zones.x;
     float z_rear = smoothstep(0.75, 1.95, world.z) * frame.damage_zones.y;
     float x_left = smoothstep(-0.55, -0.95, world.x) * frame.damage_zones.z;

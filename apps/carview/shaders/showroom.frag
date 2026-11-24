@@ -589,7 +589,8 @@ void main() {
 
   if (klass == kPaint) {
     vec3 paint_col = draw_tint.rgb;
-    int finish = int(frame.paint_finish.x + 0.5);
+    // Only apply player's Paint Shop finish override to non-instanced player car.
+    int finish = ((flags & kFlagInstanced) == 0u) ? int(frame.paint_finish.x + 0.5) : 0;
     if (finish == 1) {
       // Metallic Flake (ShaderSettings/Metallic.xml): multiscale anti-aliased sparkle + dual-lobe metallic depth.
       flake_boost = 1.0;
@@ -624,8 +625,8 @@ void main() {
       gloss = 0.97;
       reflectivity = 0.72;
     } else if (finish == 5) {
-      // Carbon Fiber weave special finish.
-      vec2 wuv = v_position.xz * 55.0 + v_position.yy * 55.0;
+      // Carbon Fiber weave special finish (evaluated in car-local space so weave stays locked).
+      vec2 wuv = v_local_pos.xz * 55.0 + v_local_pos.yy * 55.0;
       float weave = sin(wuv.x) * cos(wuv.y);
       paint_col = mix(paint_col * 0.22, paint_col * 0.52, 0.5 + 0.5 * weave);
       is_clearcoat = true;
@@ -634,8 +635,8 @@ void main() {
       gloss = 0.92;
       reflectivity = 0.047;
     } else if (finish == 6) {
-      // Wood grain special finish.
-      float ring = sin((v_position.z * 16.0 + fbm(v_position.xz * 6.0) * 4.0) * 3.14159);
+      // Wood grain special finish (car-local space).
+      float ring = sin((v_local_pos.z * 16.0 + fbm(v_local_pos.xz * 6.0) * 4.0) * 3.14159);
       paint_col = mix(paint_col * 0.45, paint_col * 1.05, 0.5 + 0.5 * ring);
       is_clearcoat = true;
       paint_metallic = 0.0;
@@ -643,9 +644,9 @@ void main() {
       gloss = 0.78;
       reflectivity = 0.047;
     } else if (finish == 7) {
-      // Camouflage special finish.
-      float c1 = fbm(v_position.xz * 3.2 + v_position.y * 2.4);
-      float c2 = fbm(v_position.xz * 5.8 - v_position.y * 3.1 + 7.3);
+      // Camouflage special finish (car-local space).
+      float c1 = fbm(v_local_pos.xz * 3.2 + v_local_pos.y * 2.4);
+      float c2 = fbm(v_local_pos.xz * 5.8 - v_local_pos.y * 3.1 + 7.3);
       vec3 dark_c = paint_col * 0.30;
       vec3 mid_c = mix(paint_col, frame.paint_two_tone.rgb, 0.6);
       paint_col = c1 < 0.42 ? dark_c : (c2 > 0.56 ? mid_c : paint_col);
@@ -721,7 +722,7 @@ void main() {
       alpha = is_red ? 0.65 : is_amber ? 0.45 : 0.16;
     } else {
       // FH1 Normal.xml <window>: GlassColor=(0.0, 0.10, 0.08, 0.29), FresnelIndex=4.35, FresnelScalar=0.70.
-      float wtint = clamp(frame.paint_finish.w, 0.0, 1.0);
+      float wtint = ((flags & kFlagInstanced) == 0u) ? clamp(frame.paint_finish.w, 0.0, 1.0) : 0.0;
       base = mix(vec3(0.0, 0.055, 0.045), vec3(0.002, 0.005, 0.004), wtint);
       reflectivity = 0.047;
       gloss = 0.97;
@@ -821,13 +822,15 @@ void main() {
       emissive = mark * lamp_boost * (kLinearOut ? 1.15 : 0.90);
       gloss = 0.32;
     } else if (klass == kInterior) {
-      // FH1 interior materials use a dark charcoal cabin base modulated by nodamage AO (t0),
-      // with interior_lod0.xds (t1) composited as crisp alpha-cutout button/badge decals (t1.a).
-      vec3 int_base = (submat == 5u) ? vec3(0.24, 0.25, 0.27) : vec3(0.034, 0.036, 0.040);
-      vec3 ao = (flags & kFlagNoSlot0) == 0u ? mix(vec3(0.45), t0.rgb, 0.72) : vec3(1.0);
-      vec3 mat_base = int_base * ao;
-      if ((flags & kFlagSlot1) != 0u) mat_base = mix(mat_base, t1.rgb * 0.85, t1.a);
-      base = mat_base * draw_tint.rgb;
+      // FORMAT-CARS: interior techniques sample interior_LOD0 (t1) directly scaled by
+      // per-technique draw_tint (0.3..0.5 plastic/cloth/leather, ~0.85 metal); they do not
+      // read body atlas slot0, and t1.a is 0 across diffuse areas so must not mask t1.rgb.
+      if ((flags & kFlagSlot1) != 0u) {
+        base = t1.rgb * draw_tint.rgb;
+      } else {
+        vec3 fallback_col = (submat == 5u) ? vec3(0.24, 0.25, 0.27) : vec3(0.045, 0.048, 0.052);
+        base = fallback_col * draw_tint.rgb;
+      }
       if (submat == 5u) {
         // Cockpit brushed metal / metal2 trim.
         metal = 0.60;
@@ -978,7 +981,9 @@ void main() {
 
   // Real FH1 damage_LOD0.xds impact scratches/scuffs & Shared/dirt_pattern + dirt_mask accumulation.
   // Only apply player damage/dirt to the player car (not instanced traffic/AI cars).
-  if ((flags & kFlagInstanced) == 0u && (klass == kPaint || klass == kOpaque || klass == kCarbon || klass == kRim)) {
+  if ((flags & kFlagInstanced) == 0u &&
+      (klass == kPaint || klass == kOpaque || klass == kCarbon || klass == kRim ||
+       (klass == kLamp && (flags & kFlagDamageMap) != 0u))) {
     float z_front = smoothstep(0.65, 1.95, -v_local_pos.z) * frame.damage_zones.x;
     float z_rear = smoothstep(0.65, 1.95, v_local_pos.z) * frame.damage_zones.y;
     float x_left = smoothstep(0.50, 0.95, -v_local_pos.x) * frame.damage_zones.z;
