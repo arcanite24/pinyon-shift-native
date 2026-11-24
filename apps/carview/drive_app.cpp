@@ -12,10 +12,12 @@
 #include "cars/mods.h"
 #include "drive/cameras.h"
 #include "drive/from_bake.h"
+#include "drive/from_physics.h"
 #include "drive_helpers.h"
 #include "gamepad_db.h"
 #include "profile/drive_save.h"
 #include "settings.h"
+#include "showroom.h"
 #include "slice12_runtime.h"
 
 namespace carview {
@@ -261,13 +263,22 @@ bool DriveApp::init(int& exit_code) {
     have_saved = drive::read_save(save_path, saved, &e);
     if (!have_saved && !e.empty()) std::fprintf(stderr, "carview: note: save ignored: %s\n", e.c_str());
   }
-  // The play folder tools/setup.py makes: play.txt ("game <root>", the
-  // extracted disc) with bake/, sound/ and world/colorado.index beside it.
-  // --play names it; otherwise a window looks in SHIFT_PLAY_DIR, the
+  auto resolve_colorado_dir = [](const std::filesystem::path& root) -> std::filesystem::path {
+    if (root.empty()) return {};
+    std::error_code ec;
+    const auto media = std::filesystem::is_directory(root / "media", ec) ? (root / "media") : root;
+    for (const char* name : {"Colorado", "colorado"}) {
+      const auto d = media / "tracks" / name;
+      if (std::filesystem::is_directory(d, ec)) return d;
+    }
+    return {};
+  };
+  // The play folder: play.txt ("game <root>", the extracted disc) with optional
+  // bake/, sound/ and world/colorado.index beside it. --play names it; otherwise
+  // (when --game is not explicitly given) looks in SHIFT_PLAY_DIR, the
   // executable's folder, then the user-data folder (SDL's pref path,
-  // shift-engine/play). It fills what the arguments left out (headless
-  // too when no --bake is given).
-  if ((!headless || bake_dir.empty()) && play_dir.empty()) {
+  // shift-engine/play).
+  if (game_root_given.empty() && (!headless || bake_dir.empty()) && play_dir.empty()) {
     std::vector<std::filesystem::path> where;
     if (const char* p = std::getenv("SHIFT_PLAY_DIR")) where.emplace_back(p);
     if (const char* b = SDL_GetBasePath()) where.emplace_back(b);
@@ -298,42 +309,60 @@ bool DriveApp::init(int& exit_code) {
       if (line.rfind("game ", 0) == 0) game = std::filesystem::path(line.substr(5));
     }
     if (!game.empty() && game.is_relative()) game = play_dir / game;
-    if (bake_dir.empty()) bake_dir = play_dir / "bake";
-    if (!sound_given) sound_dir = play_dir / "sound";
-    if (cache_path.empty()) cache_path = play_dir / "world" / "colorado.index";
+    if (game_root_given.empty() && !game.empty()) game_root_given = game;
     std::error_code ec;
-    if (world_dir.empty() && !game.empty())
-      world_dir = (std::filesystem::is_directory(game / "media", ec) ? game / "media" : game) / "tracks" / "colorado";
+    if (bake_dir.empty() && std::filesystem::is_directory(play_dir / "bake" / "cars", ec)) bake_dir = play_dir / "bake";
+    if (!sound_given && std::filesystem::is_directory(play_dir / "sound", ec)) sound_dir = play_dir / "sound";
+    if (cache_path.empty()) cache_path = play_dir / "world" / "colorado.index";
+    if (world_dir.empty() && !game.empty()) world_dir = resolve_colorado_dir(game);
     std::printf("play: %s\n", play_dir.string().c_str());
+  }
+  if (!game_root_given.empty()) {
+    if (world_dir.empty()) world_dir = resolve_colorado_dir(game_root_given);
+    if (cache_path.empty() && !world_dir.empty()) {
+      if (!play_dir.empty()) {
+        cache_path = play_dir / "world" / "colorado.index";
+      } else if (const auto udir = carview::default_user_dir(); !udir.empty()) {
+        cache_path = udir / "cache" / "colorado.index";
+      } else {
+        cache_path = std::filesystem::path("out") / "world" / "colorado.index";
+      }
+    }
+  }
+  if (!cache_path.empty() && cache_path.has_parent_path()) {
+    std::error_code cec;
+    std::filesystem::create_directories(cache_path.parent_path(), cec);
   }
   if (!headless) {
     std::error_code ec;
-    if (bake_dir.empty())
+    if (bake_dir.empty() && game_root_given.empty())
       for (const char* d : {"out/bake", "out/bake1"})
         if (std::filesystem::is_directory(std::filesystem::path(d) / "cars", ec)) {
           bake_dir = d;
           break;
         }
-    if (car.empty() && have_saved) {
-      std::error_code e2;
-      if (std::filesystem::exists(bake_dir / "cars" / (lower_ascii(saved.car) + ".shiftbake"), e2)) car = saved.car;
-    }
-    if (car.empty()) car = "NIS_SkylineGTRVSpecII_02";
     if (world_dir.empty()) {
       std::vector<std::filesystem::path> roots;
       if (const char* g = std::getenv("SHIFT_GAME_ROOT")) roots.emplace_back(g);
       roots.emplace_back("../horizon1-recomp/.local/game/base");
       for (const auto& r : roots) {
-        const auto d = (std::filesystem::is_directory(r / "media", ec) ? r / "media" : r) / "tracks" / "colorado";
-        if (std::filesystem::is_directory(d, ec)) {
+        const auto d = resolve_colorado_dir(r);
+        if (!d.empty()) {
           world_dir = d;
+          if (game_root_given.empty()) game_root_given = r;
           break;
         }
       }
     }
     if (!size_given) width = 1600, height = 900;
-    std::printf("drive: bake %s, car %s, world %s\n", bake_dir.empty() ? "(none found)" : bake_dir.string().c_str(),
-                car.c_str(), world_dir.empty() ? "(none: flat ground)" : world_dir.string().c_str());
+  }
+  state_root = [] {
+    const char* s = std::getenv("SHIFT_STATE_ROOT");
+    return s ? std::filesystem::path(s) : std::filesystem::path{};
+  }();
+  if (const auto groot = game_root_of(); !groot.empty()) {
+    Showroom::set_disc_root(groot, state_root);
+    drive::set_disc_physics_root(groot, state_root);
   }
   // Mods (cars/mod_manager.h): the window's from the user folder's mods/, a
   // headless run's only from --mods; --no-mods turns them off.
@@ -350,10 +379,6 @@ bool DriveApp::init(int& exit_code) {
   }
   // Colorado's own features (collectibles, the map, traffic) stay off in
   // another world (ColoradoDirt: SPEC-V4-CONTENT, no traffic on a stage).
-  state_root = [] {
-    const char* s = std::getenv("SHIFT_STATE_ROOT");
-    return s ? std::filesystem::path(s) : std::filesystem::path{};
-  }();
   // The parts database (the merged one: SHIFT_STATE_ROOT's packages when
   // set), opened in the background; opened early so load_ui_fonts and garage
   // setup overlap with the SQLite merge.
@@ -402,6 +427,31 @@ bool DriveApp::init(int& exit_code) {
   
   if (!save_path.empty()) garage_path = save_path.parent_path() / "garage.txt";
   baked_ids = bake_dir.empty() ? std::map<int64_t, std::string>{} : baked_car_ids(bake_dir);
+  std::vector<std::string> disc_cars;
+  if (baked_ids.empty()) {
+    if (const auto groot = game_root_of(); !groot.empty()) {
+      std::string disc_err;
+      if (Showroom::discover_disc_cars(groot, state_root, baked_ids, disc_cars, &disc_err)) {
+        std::printf("disc: discovered %zu cars (%zu Data_Car rows) directly from %s\n", disc_cars.size(),
+                    baked_ids.size(), groot.string().c_str());
+      } else if (!disc_err.empty()) {
+        std::fprintf(stderr, "carview: note: disc car discovery: %s\n", disc_err.c_str());
+      }
+    }
+  }
+  auto car_available = [&](const std::string& media) -> bool {
+    if (media.empty()) return false;
+    const std::string key = lower_ascii(media);
+    if (!bake_dir.empty()) {
+      std::error_code e2;
+      if (std::filesystem::exists(bake_dir / "cars" / (key + ".shiftbake"), e2)) return true;
+    }
+    if (!disc_cars.empty() && std::binary_search(disc_cars.begin(), disc_cars.end(), key)) return true;
+    for (const auto& [cid, m] : baked_ids)
+      if (lower_ascii(m) == key) return true;
+    return false;
+  };
+  if (car.empty() && have_saved && car_available(saved.car)) car = saved.car;
   // The profile import (FORMAT-PROFILE), with the cars the bake has.
   imported = false;
   if (!import_dir.empty() && have_saved && saved.owned_garage && !import_again) {
@@ -453,6 +503,18 @@ bool DriveApp::init(int& exit_code) {
   if (have_garage && !car_given)
     if (const garage::Car* gc = career_garage.selected_car())
       if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end()) car = it->second;
+  // Default car cleanly when no --car or save/garage car exists.
+  if (car.empty()) {
+    if (car_available("VIP_Viper_13")) car = "VIP_Viper_13";
+    else if (car_available("NIS_SkylineGTRVSpecII_02")) car = "NIS_SkylineGTRVSpecII_02";
+    else if (!disc_cars.empty()) car = disc_cars.front();
+    else if (!baked_ids.empty()) car = baked_ids.begin()->second;
+  }
+  if (!headless) {
+    std::printf("drive: bake %s, car %s, world %s\n",
+                bake_dir.empty() ? "(direct-from-disc)" : bake_dir.string().c_str(), car.c_str(),
+                world_dir.empty() ? "(none: flat ground)" : world_dir.string().c_str());
+  }
   // Class bands from the disc, and shared merged DB handle for career/race queries.
   
   
@@ -629,8 +691,8 @@ bool DriveApp::init(int& exit_code) {
     std::printf("save: %s, %s at %.1f %.1f %.1f\n", save_path.string().c_str(), saved.car.c_str(),
                 saved.position[0], saved.position[1], saved.position[2]);
   }
-  if (bake_dir.empty() || car.empty()) {
-    std::fprintf(stderr, "carview: no bake and car (no play folder found; see --play)\n");
+  if ((bake_dir.empty() && game_root_of().empty()) || car.empty()) {
+    std::fprintf(stderr, "carview: no game/bake and car (pass --game <dir> or --play <dir>)\n");
     drive_usage();
     exit_code = 2; return false;
   }
@@ -716,8 +778,13 @@ bool DriveApp::init(int& exit_code) {
   
   {
     std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(bake_dir / "cars", ec))
-      if (e.path().extension() == ".shiftbake") baked_cars.push_back(e.path().stem().string());
+    if (!bake_dir.empty()) {
+      for (const auto& e : std::filesystem::directory_iterator(bake_dir / "cars", ec))
+        if (e.path().extension() == ".shiftbake") baked_cars.push_back(e.path().stem().string());
+    }
+    if (baked_cars.empty() && !disc_cars.empty()) {
+      baked_cars = disc_cars;
+    }
     std::sort(baked_cars.begin(), baked_cars.end());
     for (const auto& c : baked_cars) all_baked.insert(lower_ascii(c));
     if (have_garage) {

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <set>
 
@@ -77,24 +78,40 @@ bool TrafficView::open(const std::filesystem::path& game_root, const drive::Grou
       !traffic::read_traffic_config(game_root, config_, &error, race_mode))
     return false;
   roads_.build(map_);
-  // The baked traffic models, by Data_Car.Id (the "car" line of the rows).
+  // The traffic models, by Data_Car.Id: from bake_dir when present, else
+  // directly from the game disc / DLC packages via Showroom's disc cache.
   std::error_code ec;
-  for (const auto& f : std::filesystem::directory_iterator(bake_dir_ / "cars", ec)) {
-    const std::string name = f.path().filename().string();
-    if (name.size() < 12 || name.substr(name.size() - 12) != ".physics.txt") continue;
-    std::ifstream in(f.path());
-    std::string line;
-    for (int k = 0; k < 4 && std::getline(in, line) && line.rfind("car ", 0) != 0; ++k) {
+  if (!bake_dir_.empty()) {
+    for (const auto& f : std::filesystem::directory_iterator(bake_dir_ / "cars", ec)) {
+      const std::string name = f.path().filename().string();
+      if (name.size() < 12 || name.substr(name.size() - 12) != ".physics.txt") continue;
+      std::ifstream in(f.path());
+      std::string line;
+      for (int k = 0; k < 4 && std::getline(in, line) && line.rfind("car ", 0) != 0; ++k) {
+      }
+      long long id = 0;
+      char media[128] = {};
+      if (std::sscanf(line.c_str(), "car %lld %127s", &id, media) != 2) continue;
+      for (const auto& m : config_.models)
+        if (m.id == id && std::filesystem::exists(bake_dir_ / "cars" / (name.substr(0, name.size() - 12) + ".shiftbake")))
+          media_[id] = media;
     }
-    long long id = 0;
-    char media[128] = {};
-    if (std::sscanf(line.c_str(), "car %lld %127s", &id, media) != 2) continue;
-    for (const auto& m : config_.models)
-      if (m.id == id && std::filesystem::exists(bake_dir_ / "cars" / (name.substr(0, name.size() - 12) + ".shiftbake")))
-        media_[id] = media;
+  }
+  if (media_.empty() && !game_root.empty()) {
+    const char* sr = std::getenv("SHIFT_STATE_ROOT");
+    std::map<int64_t, std::string> disc_ids;
+    std::vector<std::string> disc_media;
+    std::string disc_err;
+    if (Showroom::discover_disc_cars(game_root, sr ? std::filesystem::path(sr) : std::filesystem::path{},
+                                     disc_ids, disc_media, &disc_err)) {
+      for (const auto& m : config_.models) {
+        if (auto it = disc_ids.find(m.id); it != disc_ids.end()) media_[m.id] = it->second;
+      }
+    }
   }
   if (media_.empty()) {
-    error = "traffic: none of the freeroam traffic models is baked in " + bake_dir_.string();
+    error = "traffic: none of the freeroam traffic models is available" +
+            (bake_dir_.empty() ? std::string(" from disc") : (" in " + bake_dir_.string()));
     return false;
   }
   population_ = std::make_unique<traffic::Population>(roads_, config_, seed);

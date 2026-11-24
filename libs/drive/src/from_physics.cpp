@@ -5,8 +5,12 @@
 #include <cctype>
 #include <cmath>
 #include <fstream>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
 
+#include "cars/database.h"
+#include "cars/sources.h"
 #include "drive/from_bake.h"
 
 namespace drive {
@@ -20,7 +24,127 @@ double ramp(double x, double x0, double x1) {
   return std::clamp((x - x0) / (x1 - x0), 0.0, 1.0);
 }
 
+class DiscPhysicsCache {
+ public:
+  static DiscPhysicsCache& instance() {
+    static DiscPhysicsCache cache;
+    return cache;
+  }
+
+  void set_root(const std::filesystem::path& game_root, const std::filesystem::path& state_root) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (game_root_ == game_root && state_root_ == state_root) return;
+    game_root_ = game_root;
+    state_root_ = state_root;
+    initialized_ = false;
+    settings_ = {};
+    install_ = {};
+    parts_db_.reset();
+    by_id_.clear();
+    id_by_media_.clear();
+  }
+
+  bool load_settings(cars::PhysicsSettings& out_settings, std::string* error) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!ensure_init_locked(error)) return false;
+    out_settings = settings_;
+    return true;
+  }
+
+  bool load_car(int64_t car_id, const std::string& media_name, cars::CarPhysics& out_car,
+                cars::PhysicsSettings& out_settings, std::string* error) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!ensure_init_locked(error)) return false;
+    int64_t id = car_id;
+    if (id <= 0 && !media_name.empty()) {
+      const std::string key = cars::lower(media_name);
+      auto mit = id_by_media_.find(key);
+      if (mit != id_by_media_.end()) id = mit->second;
+    }
+    if (id <= 0) {
+      if (error) *error = "unknown car id for '" + media_name + "'";
+      return false;
+    }
+    if (auto it = by_id_.find(id); it != by_id_.end()) {
+      out_car = it->second;
+      out_settings = settings_;
+      return true;
+    }
+    cars::CarPhysics cp;
+    static const cars::FittedParts kNone;
+    std::string err;
+    if (!parts_db_ || !parts_db_->physics(id, kNone, cp, &err)) {
+      if (error) *error = err.empty() ? "car physics lookup failed" : err;
+      return false;
+    }
+    auto [ins, ok] = by_id_.emplace(id, std::move(cp));
+    out_car = ins->second;
+    out_settings = settings_;
+    return true;
+  }
+
+ private:
+  bool ensure_init_locked(std::string* error) {
+    if (initialized_) return true;
+    if (game_root_.empty()) {
+      if (error) *error = "no game root configured for disc physics";
+      return false;
+    }
+    std::string err;
+    if (!cars::discover_install(game_root_, state_root_, "", install_, &err)) {
+      if (error) *error = err;
+      return false;
+    }
+    const auto pzip = cars::mods::resolve(install_.media / "physics.zip");
+    if (!cars::load_physics_settings(pzip, settings_, &err)) {
+      if (error) *error = err;
+      return false;
+    }
+    auto db = std::make_unique<cars::PartsDb>();
+    if (!db->open(install_, &err)) {
+      if (error) *error = err;
+      return false;
+    }
+    cars::Database car_db;
+    if (cars::load_database(install_, car_db, nullptr)) {
+      std::map<std::string, const cars::CarRow*> chosen;
+      for (const auto& r : car_db.cars) {
+        const std::string key = cars::lower(r.media_name);
+        auto& slot = chosen[key];
+        if (!slot || (r.selectable && !slot->selectable)) slot = &r;
+      }
+      for (const auto& [k, r] : chosen) id_by_media_[k] = r->id;
+    }
+    parts_db_ = std::move(db);
+    initialized_ = true;
+    return true;
+  }
+
+  std::mutex mu_;
+  std::filesystem::path game_root_;
+  std::filesystem::path state_root_;
+  bool initialized_ = false;
+  cars::Install install_;
+  cars::PhysicsSettings settings_;
+  std::unique_ptr<cars::PartsDb> parts_db_;
+  std::unordered_map<int64_t, cars::CarPhysics> by_id_;
+  std::unordered_map<std::string, int64_t> id_by_media_;
+};
+
 }  // namespace
+
+void set_disc_physics_root(const std::filesystem::path& game_root, const std::filesystem::path& state_root) {
+  DiscPhysicsCache::instance().set_root(game_root, state_root);
+}
+
+bool load_disc_car_physics(int64_t car_id, const std::string& media_name, cars::CarPhysics& out_car,
+                           cars::PhysicsSettings& out_settings, std::string* error) {
+  return DiscPhysicsCache::instance().load_car(car_id, media_name, out_car, out_settings, error);
+}
+
+bool load_disc_physics_settings(cars::PhysicsSettings& out_settings, std::string* error) {
+  return DiscPhysicsCache::instance().load_settings(out_settings, error);
+}
 
 double sidewall_stretch(double width_mm, double aspect, const cars::PhysicsSettings& s) {
   const double h = width_mm * aspect / 100 / 1000;  // m
@@ -405,15 +529,28 @@ CarParams params_for_baked_car(const cars::bake::CarInfo& car, const std::filesy
                                std::vector<std::string>* notes) {
   std::string name = car.media_name;
   for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
-  const auto path = cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt"));
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    if (notes) notes->push_back("no " + path.string() + ": the synthetic car's physics (carbake --physics-only writes it)");
-    return params_from_bake(car);
+  if (!bake_dir.empty()) {
+    const auto path = cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt"));
+    std::ifstream in(path, std::ios::binary);
+    if (in) {
+      std::stringstream ss;
+      ss << in.rdbuf();
+      return params_for_car_text(car, ss.str(), notes);
+    }
   }
-  std::stringstream ss;
-  ss << in.rdbuf();
-  return params_for_car_text(car, ss.str(), notes);
+  cars::CarPhysics disc_rows;
+  cars::PhysicsSettings disc_settings;
+  std::string disc_err;
+  if (load_disc_car_physics(car.car_id, car.media_name, disc_rows, disc_settings, &disc_err)) {
+    CarParams p = params_from_bake(car);
+    apply_physics(disc_rows, disc_settings, p, notes);
+    return p;
+  }
+  if (notes) {
+    notes->push_back("no physics rows for " + car.media_name +
+                     (disc_err.empty() ? "" : " (" + disc_err + ")") + ": the synthetic car's physics");
+  }
+  return params_from_bake(car);
 }
 
 bool CarTune::is_default() const {
@@ -586,14 +723,23 @@ CarParams params_for_fitted_car(const cars::bake::CarInfo& car, const std::files
                                 const CarTune* tune) {
   std::string name = car.media_name;
   for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
-  std::ifstream in(cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt")), std::ios::binary);
   CarParams p = params_from_bake(car);
-  std::stringstream ss;
-  ss << in.rdbuf();
-  cars::CarPhysics stock;
   cars::PhysicsSettings settings;
-  std::string error;
-  if (!in || !cars::physics_from_text(ss.str(), stock, settings, &error)) {
+  bool have_settings = false;
+  if (!bake_dir.empty()) {
+    std::ifstream in(cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt")), std::ios::binary);
+    if (in) {
+      std::stringstream ss;
+      ss << in.rdbuf();
+      cars::CarPhysics stock;
+      std::string error;
+      have_settings = cars::physics_from_text(ss.str(), stock, settings, &error);
+    }
+  }
+  if (!have_settings) {
+    have_settings = load_disc_physics_settings(settings, nullptr);
+  }
+  if (!have_settings) {
     if (notes) notes->push_back("no physics settings for " + car.media_name + ": the synthetic car's physics");
     return p;
   }

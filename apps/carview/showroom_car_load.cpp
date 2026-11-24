@@ -1,7 +1,9 @@
 #include "showroom_internal.h"
 
 #include "cars/bake.h"
+#include "cars/database.h"
 #include "cars/mods.h"
+#include "cars/sources.h"
 #include "cars/texture_mods.h"
 
 #include <algorithm>
@@ -9,12 +11,296 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <list>
+#include <mutex>
 #include <regex>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace carview {
+
+namespace {
+
+// Thread-safe shared in-memory disc car/wheel/tyre/shared cache for zero-bake
+// direct-from-disc loading. Decodes Shared.zip and TireA/TireC once per session
+// and caches recently decoded wheels and cars in bounded LRUs so car swaps,
+// traffic spawning, and race opponent loading are fast and parallel-safe.
+class DiscCarCache {
+ public:
+  static DiscCarCache& instance() {
+    static DiscCarCache cache;
+    return cache;
+  }
+
+  void set_root(const std::filesystem::path& game_root, const std::filesystem::path& state_root) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (game_root_ == game_root && state_root_ == state_root) return;
+    game_root_ = game_root;
+    state_root_ = state_root;
+    reset_locked();
+  }
+
+  std::filesystem::path configured_game_root() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return game_root_;
+  }
+
+  bool discover_cars(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
+                     std::map<int64_t, std::string>& out_ids, std::vector<std::string>& out_media,
+                     std::string* error) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!ensure_init_locked(game_root, state_root, error)) return false;
+    out_ids.clear();
+    out_media.clear();
+    std::set<std::string> media_set;
+    for (const auto& [key, row] : chosen_) {
+      if (!install_.find_car(row->media_name)) continue;
+      media_set.insert(key);
+      for (const cars::CarRow* r : all_rows_[key]) {
+        out_ids[r->id] = r->media_name;
+      }
+    }
+    out_media.assign(media_set.begin(), media_set.end());
+    return !out_media.empty();
+  }
+
+  bool load_car(const std::filesystem::path& game_root, const std::string& car_name,
+                cars::bake::Bake& out, std::string* error) {
+    const std::string key = lower(car_name);
+    cars::FolderRef ref;
+    cars::CarRow chosen_row;
+    std::vector<cars::bake::StockRow> stock_rows;
+    std::string own_tyre;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (!ensure_init_locked(game_root, state_root_, error)) return false;
+      if (auto hit = lru_get(car_lru_, car_lru_map_, key)) {
+        out = *hit;
+        return true;
+      }
+      auto it = chosen_.find(key);
+      if (it == chosen_.end() || !it->second) {
+        if (error) *error = "car '" + car_name + "' not found in game database";
+        return false;
+      }
+      auto found = install_.find_car(it->second->media_name);
+      if (!found) {
+        if (error) *error = "car folder '" + it->second->media_name + "' not found on disc";
+        return false;
+      }
+      ref = *found;
+      chosen_row = *it->second;
+      // Match apps/carbake/main.cpp 1:1: baked row first, then all other Data_Car rows sharing this model.
+      const cars::CarRow* primary = it->second;
+      stock_rows.push_back({primary->id, primary->stock_parts, primary->removed_parts, primary->race_livery,
+                            primary->has_stock_body});
+      if (auto ait = all_rows_.find(key); ait != all_rows_.end()) {
+        for (const cars::CarRow* r : ait->second) {
+          if (r != primary) {
+            stock_rows.push_back({r->id, r->stock_parts, r->removed_parts, r->race_livery, r->has_stock_body});
+          }
+        }
+      }
+      const std::string candidate_tyre = std::string(cars::kTyreTextures) + key;
+      if (install_.find_wheel(candidate_tyre)) own_tyre = candidate_tyre;
+    }
+
+    auto decoded = std::make_shared<cars::bake::Bake>();
+    std::string err;
+    if (!cars::bake_car(ref, chosen_row, *decoded, &err)) {
+      if (error) *error = err;
+      return false;
+    }
+    if (!own_tyre.empty()) {
+      decoded->car.tyre_media = own_tyre;
+      decoded->car.tyre_texture_media = own_tyre;
+    }
+    decoded->car.stock_rows = std::move(stock_rows);
+
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      lru_put(car_lru_, car_lru_map_, key, decoded, kMaxCachedCars);
+    }
+    out = *decoded;
+    return true;
+  }
+
+  bool load_wheel(const std::filesystem::path& game_root, const std::string& wheel_media, bool tyre,
+                  cars::bake::Bake& out, std::string* error) {
+    const std::string key = lower(wheel_media);
+    const std::string cache_key = (tyre ? "t:" : "w:") + key;
+    cars::FolderRef ref;
+    bool have_ref = false;
+    std::filesystem::path eff_root;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (ensure_init_locked(game_root, state_root_, nullptr)) {
+        if (auto hit = lru_get(wheel_lru_, wheel_lru_map_, cache_key)) {
+          out = *hit;
+          return true;
+        }
+        if (auto found = install_.find_wheel(key)) {
+          ref = *found;
+          have_ref = true;
+        }
+      }
+      eff_root = !game_root.empty() ? game_root : game_root_;
+    }
+
+    auto decoded = std::make_shared<cars::bake::Bake>();
+    std::string err;
+    bool ok = false;
+    if (have_ref) {
+      ok = cars::bake_wheel(ref, tyre, *decoded, &err);
+    } else if (!eff_root.empty()) {
+      ok = cars::load_wheel_from_disc(eff_root, wheel_media, tyre, *decoded, &err);
+    } else {
+      err = "no game root for wheel " + wheel_media;
+    }
+    if (!ok) {
+      if (error) *error = err;
+      return false;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      lru_put(wheel_lru_, wheel_lru_map_, cache_key, decoded, kMaxCachedWheels);
+    }
+    out = *decoded;
+    return true;
+  }
+
+  bool load_shared(const std::filesystem::path& game_root, cars::bake::Bake& out, std::string* error) {
+    cars::FolderRef ref;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (!ensure_init_locked(game_root, state_root_, error)) return false;
+      if (shared_bake_) {
+        out = *shared_bake_;
+        return true;
+      }
+      auto it = install_.base_cars.find("shared");
+      if (it == install_.base_cars.end()) {
+        if (error) *error = "no media/cars/Shared.zip on disc";
+        return false;
+      }
+      ref = it->second;
+    }
+
+    auto decoded = std::make_shared<cars::bake::Bake>();
+    std::string err;
+    if (!cars::bake_shared(ref, *decoded, &err)) {
+      if (error) *error = err;
+      return false;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (!shared_bake_) shared_bake_ = decoded;
+      out = *shared_bake_;
+    }
+    return true;
+  }
+
+ private:
+  static constexpr size_t kMaxCachedCars = 12;
+  static constexpr size_t kMaxCachedWheels = 32;
+
+  using LruList = std::list<std::pair<std::string, std::shared_ptr<const cars::bake::Bake>>>;
+  using LruMap = std::unordered_map<std::string, LruList::iterator>;
+
+  static std::shared_ptr<const cars::bake::Bake> lru_get(LruList& lru, LruMap& map, const std::string& key) {
+    auto it = map.find(key);
+    if (it == map.end()) return nullptr;
+    lru.splice(lru.begin(), lru, it->second);
+    return it->second->second;
+  }
+
+  static void lru_put(LruList& lru, LruMap& map, const std::string& key,
+                      std::shared_ptr<const cars::bake::Bake> val, size_t max_entries) {
+    auto it = map.find(key);
+    if (it != map.end()) {
+      it->second->second = std::move(val);
+      lru.splice(lru.begin(), lru, it->second);
+      return;
+    }
+    lru.emplace_front(key, std::move(val));
+    map[key] = lru.begin();
+    while (lru.size() > max_entries) {
+      map.erase(lru.back().first);
+      lru.pop_back();
+    }
+  }
+
+  void reset_locked() {
+    initialized_ = false;
+    install_ = {};
+    db_ = {};
+    chosen_.clear();
+    all_rows_.clear();
+    shared_bake_.reset();
+    wheel_lru_.clear();
+    wheel_lru_map_.clear();
+    car_lru_.clear();
+    car_lru_map_.clear();
+  }
+
+  bool ensure_init_locked(const std::filesystem::path& req_game, const std::filesystem::path& req_state,
+                          std::string* error) {
+    const std::filesystem::path eff_game = !req_game.empty() ? req_game : game_root_;
+    const std::filesystem::path eff_state = !req_state.empty() ? req_state : state_root_;
+    if (eff_game.empty()) {
+      if (error) *error = "no game root configured for direct-from-disc loading";
+      return false;
+    }
+    if (initialized_ && game_root_ == eff_game && state_root_ == eff_state) return true;
+    reset_locked();
+    game_root_ = eff_game;
+    state_root_ = eff_state;
+    std::string err;
+    if (!cars::discover_install(game_root_, state_root_, "", install_, &err) ||
+        !cars::load_database(install_, db_, &err)) {
+      if (error) *error = err;
+      return false;
+    }
+    // One primary row per distinct media name: selectable first, then lowest Id (matches carbake).
+    for (const auto& r : db_.cars) {
+      const std::string key = cars::lower(r.media_name);
+      auto& slot = chosen_[key];
+      if (!slot || (r.selectable && !slot->selectable)) slot = &r;
+      all_rows_[key].push_back(&r);
+    }
+    initialized_ = true;
+    return true;
+  }
+
+  mutable std::mutex mu_;
+  std::filesystem::path game_root_;
+  std::filesystem::path state_root_;
+  bool initialized_ = false;
+  cars::Install install_;
+  cars::Database db_;
+  std::map<std::string, const cars::CarRow*> chosen_;
+  std::map<std::string, std::vector<const cars::CarRow*>> all_rows_;
+  std::shared_ptr<const cars::bake::Bake> shared_bake_;
+  LruList wheel_lru_;
+  LruMap wheel_lru_map_;
+  LruList car_lru_;
+  LruMap car_lru_map_;
+};
+
+}  // namespace
+
+void Showroom::set_disc_root(const std::filesystem::path& game_root, const std::filesystem::path& state_root) {
+  DiscCarCache::instance().set_root(game_root, state_root);
+}
+
+bool Showroom::discover_disc_cars(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
+                                  std::map<int64_t, std::string>& out_ids, std::vector<std::string>& out_media,
+                                  std::string* error) {
+  return DiscCarCache::instance().discover_cars(game_root, state_root, out_ids, out_media, error);
+}
 
 // The model's own name for a sheet, e.g. "tyre:sidewall" with tyre textures
 // "tirea" (or a car's own "tireatoy_fjcruiser_12") -> "sidewalla_clr.xds",
@@ -232,8 +518,13 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   wheel_ = {};
   tyre_ = {};
   tyre_textures_ = {};
-  // Keep shared_ loaded across hot car reloads when bake_dir hasn't changed.
-  if (shared_bake_dir_ != bake_dir) {
+  options_ = options;
+  const std::filesystem::path disc_root =
+      !options_.game_root.empty() ? options_.game_root : DiscCarCache::instance().configured_game_root();
+  if (options_.game_root.empty() && !disc_root.empty()) options_.game_root = disc_root;
+  const std::filesystem::path shared_key = !bake_dir.empty() ? bake_dir : disc_root;
+  // Keep shared_ loaded across hot car reloads when bake_dir / disc_root hasn't changed.
+  if (shared_bake_dir_ != shared_key) {
     shared_ = {};
     shared_bake_dir_.clear();
   }
@@ -263,12 +554,21 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   paint_finish_[1] = 0.25f;
   paint_finish_[2] = 0.0f;
   paint_finish_[3] = 0.0f;
-  options_ = options;
   std::string err;
   const std::string car_name = lower(car);
-  if (!bake::read_file(cars::mods::resolve(bake_dir / "cars" / (car_name + ".shiftbake")), car_, &err)) {
-    error = car_name + ": " + err;
-    return false;
+  auto try_read_bake = [&](const std::filesystem::path& rel, bake::Bake& dst, std::string& out_err) -> bool {
+    if (bake_dir.empty()) return false;
+    const auto resolved = cars::mods::resolve(bake_dir / rel);
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(resolved, ec)) return false;
+    return bake::read_file(resolved, dst, &out_err);
+  };
+  if (!try_read_bake(std::filesystem::path("cars") / (car_name + ".shiftbake"), car_, err)) {
+    std::string disc_err;
+    if (disc_root.empty() || !DiscCarCache::instance().load_car(disc_root, car_name, car_, &disc_err)) {
+      error = car_name + ": " + (!err.empty() ? err : (!disc_err.empty() ? disc_err : "not found"));
+      return false;
+    }
   }
   bake::CarInfo& info = car_.car;
   if (options_.match_rgb >= 0) {
@@ -334,53 +634,68 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
                               ? lower(vis.tyre_media_override)
                               : cars::per_car_tyre_media(info.media_name);
   if (!want_tyre.empty() && info.tyre_media == cars::kTyreModel) {
-    if (std::filesystem::exists(cars::mods::resolve(bake_dir / "wheels" / (want_tyre + ".shiftbake")))) {
+    std::error_code tec;
+    if (!bake_dir.empty() &&
+        std::filesystem::exists(cars::mods::resolve(bake_dir / "wheels" / (want_tyre + ".shiftbake")), tec)) {
       info.tyre_media = want_tyre;
       info.tyre_texture_media = want_tyre;
-    } else if (!options_.game_root.empty() &&
-               cars::load_wheel_from_disc(options_.game_root, want_tyre, true, tyre_, nullptr)) {
+    } else if (!disc_root.empty() &&
+               DiscCarCache::instance().load_wheel(disc_root, want_tyre, true, tyre_, nullptr)) {
       info.tyre_media = want_tyre;
       info.tyre_texture_media = want_tyre;
       tyre_textures_ = tyre_;
     }
   }
 
-  // Load rim: pre-baked .shiftbake first, then on-demand from media/wheels/<MediaName>.zip
-  // (covers all 285+ aftermarket rims in List_Wheels without requiring pre-baking).
-  if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.wheel_media + ".shiftbake")), wheel_, &err)) {
+  // Load rim: pre-baked .shiftbake first, then on-demand from disc/packages
+  // (covers zero-bake mode and all 285+ aftermarket rims in List_Wheels).
+  if (!try_read_bake(std::filesystem::path("wheels") / (info.wheel_media + ".shiftbake"), wheel_, err)) {
     std::string disc_err;
-    if (options_.game_root.empty() ||
-        !cars::load_wheel_from_disc(options_.game_root, info.wheel_media, false, wheel_, &disc_err)) {
+    if (disc_root.empty() ||
+        !DiscCarCache::instance().load_wheel(disc_root, info.wheel_media, false, wheel_, &disc_err)) {
       error = "wheel " + info.wheel_media + ": " + err + (disc_err.empty() ? "" : " (" + disc_err + ")");
       return false;
     }
   }
   if (tyre_.models.empty()) {
-    if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.tyre_media + ".shiftbake")), tyre_, &err)) {
+    if (!try_read_bake(std::filesystem::path("wheels") / (info.tyre_media + ".shiftbake"), tyre_, err)) {
       std::string disc_err;
-      if (options_.game_root.empty() ||
-          !cars::load_wheel_from_disc(options_.game_root, info.tyre_media, true, tyre_, &disc_err)) {
-        error = err;
+      if (disc_root.empty() ||
+          !DiscCarCache::instance().load_wheel(disc_root, info.tyre_media, true, tyre_, &disc_err)) {
+        error = !err.empty() ? err : disc_err;
         return false;
       }
     }
   }
   if (tyre_textures_.textures.empty()) {
-    if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.tyre_texture_media + ".shiftbake")),
-                         tyre_textures_, &err)) {
-      if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (std::string(cars::kTyreTextures) + ".shiftbake")),
-                           tyre_textures_, &err)) {
-        error = err;
+    if (info.tyre_texture_media == info.tyre_media && !tyre_.textures.empty()) {
+      tyre_textures_ = tyre_;
+    } else if (!try_read_bake(std::filesystem::path("wheels") / (info.tyre_texture_media + ".shiftbake"),
+                              tyre_textures_, err) &&
+               !try_read_bake(std::filesystem::path("wheels") / (std::string(cars::kTyreTextures) + ".shiftbake"),
+                              tyre_textures_, err)) {
+      std::string disc_err;
+      const bool ok_own =
+          !disc_root.empty() &&
+          DiscCarCache::instance().load_wheel(disc_root, info.tyre_texture_media, true, tyre_textures_, &disc_err);
+      const bool ok_shared =
+          ok_own || (!disc_root.empty() &&
+                     DiscCarCache::instance().load_wheel(disc_root, cars::kTyreTextures, true, tyre_textures_, &disc_err));
+      if (!ok_shared) {
+        error = !err.empty() ? err : disc_err;
         return false;
       }
     }
   }
   if (shared_.textures.empty()) {
-    if (!bake::read_file(cars::mods::resolve(bake_dir / "shared.shiftbake"), shared_, &err)) {
-      error = err;
-      return false;
+    if (!try_read_bake("shared.shiftbake", shared_, err)) {
+      std::string disc_err;
+      if (disc_root.empty() || !DiscCarCache::instance().load_shared(disc_root, shared_, &disc_err)) {
+        error = !err.empty() ? err : disc_err;
+        return false;
+      }
     }
-    shared_bake_dir_ = bake_dir;
+    shared_bake_dir_ = shared_key;
   }
 
   // On-demand load of car interior_emissive_LOD0.xds (real backlit speedometer/tachometer dials)

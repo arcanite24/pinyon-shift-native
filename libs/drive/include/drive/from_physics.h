@@ -30,9 +30,25 @@ double sidewall_stretch(double width_mm, double aspect, const cars::PhysicsSetti
 
 // A baked car's parameters: the bake's geometry, then the physics rows
 // carbake wrote beside it (<bake>/cars/<media name>.physics.txt) when they
-// are there. Without them the car is the synthetic one; `notes` says so.
+// are there, or directly from the game disc (gamedb.slt + media/physics.zip)
+// when set_disc_physics_root() has been configured. Without either, the car
+// is the synthetic one; `notes` says so.
 CarParams params_for_baked_car(const cars::bake::CarInfo& car, const std::filesystem::path& bake_dir,
                                std::vector<std::string>* notes = nullptr);
+
+// Configures the fallback game disc root (and optional state root for v4/DLC)
+// used for zero-bake in-memory physics loading when .physics.txt files are
+// absent. Thread-safe.
+void set_disc_physics_root(const std::filesystem::path& game_root,
+                           const std::filesystem::path& state_root = {});
+
+// Loads a stock car's CarPhysics rows and game-wide PhysicsSettings directly
+// from the configured disc root (cached in memory per car). Thread-safe.
+bool load_disc_car_physics(int64_t car_id, const std::string& media_name, cars::CarPhysics& out_car,
+                           cars::PhysicsSettings& out_settings, std::string* error = nullptr);
+
+// Loads the cached game-wide PhysicsSettings from media/physics.zip. Thread-safe.
+bool load_disc_physics_settings(cars::PhysicsSettings& out_settings, std::string* error = nullptr);
 
 // Player car-tuning sliders matching Career_Garage.Tuning_* (35 values).
 // A negative value (default -1.0) means stock / unmodified; non-negative or
