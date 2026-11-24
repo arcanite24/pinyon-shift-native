@@ -40,6 +40,7 @@ struct BakeOptions {
   std::vector<std::string> custom_cars;  // optional explicit car media names (overrides mode)
   unsigned max_threads = 0;              // 0 = auto thermal/core cap
   bool resume = true;                    // skip already-baked files
+  bool bake_cars = false;                // false = zero-bake direct-from-disc (only play.txt + world index)
   bool bake_world_index = true;
   bool bake_sounds = true;
   bool require_world_index = false;  // false = allow minimal/test trees without colorado/bin.zip

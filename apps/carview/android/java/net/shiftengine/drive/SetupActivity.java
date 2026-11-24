@@ -1,7 +1,8 @@
 // Standalone on-device Setup, Content, Mods & GPU Driver UI for Shift Drive.
 // Zero PC required: extracts Forza Horizon 1 .iso (or imports an extracted
 // folder), installs Title Update v4 / DLC STFS packages, manages .zip mods,
-// imports Mesa Turnip drivers, and runs the in-process baker on-device.
+// imports Mesa Turnip drivers, and builds the tiny Colorado world index for
+// zero-bake direct-from-disc play.
 // Fully navigable by touch AND gamepad (D-pad / A / B / Y / Start).
 package net.shiftengine.drive;
 
@@ -73,7 +74,6 @@ public class SetupActivity extends Activity {
 
     private Uri mPendingIsoUri = null;
     private String mPendingIsoName = null;
-    private boolean mFullRosterMode = false;
     private boolean mLogVisible = false;
     private boolean mReadyToPlay = false;
     private boolean mHasGameDisc = false;
@@ -86,7 +86,6 @@ public class SetupActivity extends Activity {
     private LinearLayout mPackagesList;
     private LinearLayout mModsList;
     private TextView mTurnipStatusText;
-    private CheckBox mFullRosterCheck;
     private ProgressBar mProgressBar;
     private TextView mStageLabel;
     private TextView mStageDetail;
@@ -96,7 +95,6 @@ public class SetupActivity extends Activity {
     private Button mBtnAddMod;
     private Button mBtnImportTurnip;
     private Button mBtnRunSetup;
-    private Button mBtnBakeFull;
     private Button mBtnCancel;
     private Button mBtnPlay;
     private Button mBtnToggleLog;
@@ -362,7 +360,7 @@ public class SetupActivity extends Activity {
         discCard.addView(mDiscStatusText);
 
         mDiscHintText = new TextView(this);
-        mDiscHintText.setText("Requires ~10 GB free storage for extracted media + baked cache.");
+        mDiscHintText.setText("Requires ~7 GB free storage for extracted media (cars stream directly from disc — no car bake).");
         mDiscHintText.setTextColor(COL_MUTED);
         mDiscHintText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         LinearLayout.LayoutParams dhlp = new LinearLayout.LayoutParams(
@@ -432,18 +430,10 @@ public class SetupActivity extends Activity {
         gpuCard.addView(mBtnImportTurnip);
         body.addView(gpuCard);
 
-        // ---- Section 5: Build & Play ----
+        // ---- Section 5: Index & Play ----
         LinearLayout buildCard = makeCard(
-                "5. Build & Play (On-Device Baker)",
-                "Fast Start bakes shared assets, Colorado world index, starter/campaign & traffic cars in minutes.");
-
-        mFullRosterCheck = new CheckBox(this);
-        mFullRosterCheck.setText("Bake Full Roster (all ~240 cars — slower, resumable)");
-        mFullRosterCheck.setTextColor(COL_TEXT);
-        mFullRosterCheck.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
-        mFullRosterCheck.setFocusable(true);
-        mFullRosterCheck.setOnCheckedChangeListener((btn, checked) -> mFullRosterMode = checked);
-        buildCard.addView(mFullRosterCheck);
+                "5. Index & Play (Direct-from-Disc)",
+                "Zero-bake setup: builds the tiny Colorado world index (~2 s) and writes play.txt. All cars stream directly from disc.");
 
         mStageLabel = new TextView(this);
         mStageLabel.setText("Idle");
@@ -473,12 +463,8 @@ public class SetupActivity extends Activity {
         buildCard.addView(mProgressBar);
 
         LinearLayout actionRow = makeHorizontalRow();
-        mBtnRunSetup = makeButton("Run Setup", COL_ACCENT_DARK, COL_ACCENT, true, v -> runSetupPipeline(mFullRosterMode));
+        mBtnRunSetup = makeButton("Run Setup", COL_ACCENT_DARK, COL_ACCENT, true, v -> runSetupPipeline());
         addRowSpacing(mBtnRunSetup, 10);
-
-        mBtnBakeFull = makeButton("Bake Full Roster (240 cars)", COL_BTN, COL_BTN_FOCUS, false,
-                v -> runSetupPipeline(true));
-        addRowSpacing(mBtnBakeFull, 10);
 
         mBtnCancel = makeButton("Cancel", Color.parseColor("#7F1D1D"), COL_ERR, false, v -> cancelActiveWork());
         mBtnCancel.setEnabled(false);
@@ -491,7 +477,6 @@ public class SetupActivity extends Activity {
         mBtnPlay.setEnabled(false);
 
         actionRow.addView(mBtnRunSetup);
-        actionRow.addView(mBtnBakeFull);
         actionRow.addView(mBtnCancel);
         actionRow.addView(mBtnToggleLog);
         actionRow.addView(mBtnPlay);
@@ -560,9 +545,7 @@ public class SetupActivity extends Activity {
             mBtnAddDlc.setEnabled(!busy);
             mBtnAddMod.setEnabled(!busy);
             mBtnImportTurnip.setEnabled(!busy);
-            mFullRosterCheck.setEnabled(!busy);
             mBtnRunSetup.setEnabled(!busy && (mHasGameDisc || mPendingIsoUri != null));
-            mBtnBakeFull.setEnabled(!busy && mHasGameDisc);
             mBtnCancel.setEnabled(busy);
             mBtnPlay.setEnabled(!busy && mReadyToPlay);
         });
@@ -636,7 +619,7 @@ public class SetupActivity extends Activity {
             tryTakePersistablePermission(uri);
             mPendingIsoUri = uri;
             mPendingIsoName = queryDisplayName(uri);
-            mDiscStatusText.setText("ISO selected: " + mPendingIsoName + " (tap Run Setup to extract & bake)");
+            mDiscStatusText.setText("ISO selected: " + mPendingIsoName + " (tap Run Setup to extract & index)");
             mDiscStatusText.setTextColor(COL_ACCENT);
             appendLog("Selected ISO: " + mPendingIsoName);
             setBusyState(false);
@@ -673,7 +656,7 @@ public class SetupActivity extends Activity {
         }
     }
 
-    private void runSetupPipeline(boolean fullRoster) {
+    private void runSetupPipeline() {
         if (!mBusy.compareAndSet(false, true)) return;
         setBusyState(true);
         mExecutor.execute(() -> {
@@ -700,23 +683,25 @@ public class SetupActivity extends Activity {
                     mPendingIsoName = null;
                 }
 
-                // Step B: Run in-process on-device baker
-                appendLog("Starting on-device bake (" + (fullRoster ? "Full Roster" : "Fast Start") + ")...");
+                // Step B: Build tiny Colorado world index & write play.txt (zero-bake direct-from-disc)
+                appendLog("Building Colorado world index & play.txt (zero-bake direct-from-disc)...");
                 String bakeJson = SetupBridge.nativeRunOnDeviceBake(
                         getGameDir().getAbsolutePath(),
                         getStateDir().getAbsolutePath(),
                         getPlayDir().getAbsolutePath(),
-                        fullRoster,
+                        false,
                         true,
                         mBridgeListener);
                 JSONObject bake = new JSONObject(bakeJson);
                 if (bake.optBoolean("ok", false)) {
-                    int total = bake.optInt("cars_baked", 0) + bake.optInt("cars_reused", 0);
-                    runOnUiThread(() -> updateProgressUi(
-                            1f, "Setup complete", total + " car(s) ready — tap PLAY to drive!"));
+                    int total = bake.optInt("cars_total_available", 0);
+                    String detail = total > 0
+                            ? total + " car(s) ready (direct from disc) — tap PLAY to drive!"
+                            : "Direct-from-disc setup ready — tap PLAY to drive!";
+                    runOnUiThread(() -> updateProgressUi(1f, "Setup complete", detail));
                 } else {
-                    String err = bake.optString("error", "Bake failed");
-                    runOnUiThread(() -> updateProgressUi(0f, "Bake stopped", err));
+                    String err = bake.optString("error", "Setup failed");
+                    runOnUiThread(() -> updateProgressUi(0f, "Setup stopped", err));
                 }
             } catch (Throwable t) {
                 appendLog("ERROR: " + t.getMessage());
@@ -750,7 +735,7 @@ public class SetupActivity extends Activity {
                 } else {
                     appendLog("Imported " + copied[0] + " file(s) into " + targetBase.getAbsolutePath());
                     runOnUiThread(() -> updateProgressUi(1f, "Folder imported",
-                            copied[0] + " files copied — tap Run Setup to bake"));
+                            copied[0] + " files copied — tap Run Setup to index"));
                 }
             } catch (Throwable t) {
                 appendLog("Folder import error: " + t.getMessage());
@@ -844,7 +829,7 @@ public class SetupActivity extends Activity {
                 }
                 final int count = installed;
                 runOnUiThread(() -> updateProgressUi(1f, "Updates & DLC updated",
-                        "Installed " + count + " package(s). Re-run Setup to bake new DLC cars."));
+                        "Installed " + count + " package(s). Updates & DLC cars stream directly from disc."));
             } catch (Throwable t) {
                 appendLog("STFS install error: " + t.getMessage());
             } finally {
@@ -942,8 +927,6 @@ public class SetupActivity extends Activity {
         mHasGameDisc = st.optBoolean("has_game_disc", false);
         mReadyToPlay = st.optBoolean("ready_to_play", false);
         int discCars = st.optInt("disc_car_count", 0);
-        int bakedCars = st.optInt("baked_car_count", 0);
-        boolean fullDone = st.optBoolean("full_roster_complete", false);
         boolean hasTurnip = st.optBoolean("has_turnip_driver", false);
 
         long freeBytes = st.optLong("free_storage_bytes", 0L);
@@ -960,10 +943,10 @@ public class SetupActivity extends Activity {
         GradientDrawable badgeBg = new GradientDrawable();
         badgeBg.setCornerRadius(dp(14));
         if (mReadyToPlay) {
-            mHeaderBadge.setText("READY (" + bakedCars + " CARS)");
+            mHeaderBadge.setText("READY (" + discCars + " CARS)");
             badgeBg.setColor(COL_OK_DARK);
         } else if (mHasGameDisc || mPendingIsoUri != null) {
-            mHeaderBadge.setText("NEEDS BAKE");
+            mHeaderBadge.setText("NEEDS INDEX");
             badgeBg.setColor(COL_ACCENT_DARK);
         } else {
             mHeaderBadge.setText("SETUP REQUIRED");
@@ -973,7 +956,7 @@ public class SetupActivity extends Activity {
 
         // Section 1: Disc status
         if (mPendingIsoUri != null) {
-            mDiscStatusText.setText("Queued ISO: " + mPendingIsoName + " (ready to extract & bake)");
+            mDiscStatusText.setText("Queued ISO: " + mPendingIsoName + " (ready to extract & index)");
             mDiscStatusText.setTextColor(COL_ACCENT);
         } else if (mHasGameDisc) {
             mDiscStatusText.setText("Verified Forza Horizon 1 disc (" + discCars + " car archives)");
@@ -1083,10 +1066,8 @@ public class SetupActivity extends Activity {
         }
 
         // Section 5: Buttons
-        mBtnBakeFull.setText(fullDone ? "Full Roster Baked (" + bakedCars + " cars)" : "Bake Full Roster (240 cars)");
         if (!mBusy.get()) {
             mBtnRunSetup.setEnabled(mHasGameDisc || mPendingIsoUri != null);
-            mBtnBakeFull.setEnabled(mHasGameDisc);
             mBtnPlay.setEnabled(mReadyToPlay);
         }
     }

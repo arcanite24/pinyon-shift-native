@@ -1,7 +1,8 @@
 // The Android app's launcher activity: verifies the on-device play folder
-// (play.txt + bake/shared.shiftbake + world/colorado.index), redirects to
-// SetupActivity automatically when not ready, configures Turnip / state / mods
-// environment paths, and launches Shift Drive under SDLActivity.
+// (play.txt pointing to a valid game root with media/db/gamedb.slt +
+// world/colorado.index), redirects to SetupActivity automatically when not
+// ready, configures Turnip / state / mods environment paths, and launches
+// Shift Drive under SDLActivity.
 package net.shiftengine.drive;
 
 import android.content.Intent;
@@ -14,9 +15,13 @@ import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.TextView;
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import org.libsdl.app.SDLActivity;
 
 public class DriveActivity extends SDLActivity {
@@ -130,7 +135,7 @@ public class DriveActivity extends SDLActivity {
     }
 
     // Adds a subtle, non-focusable corner pill so players can return to Setup
-    // anytime to add DLC, mods, Turnip driver, or bake the full 240-car roster.
+    // anytime to add DLC, mods, or a Turnip driver.
     private void attachSetupCornerButton() {
         if (mRedirectingToSetup) return;
         try {
@@ -184,8 +189,34 @@ public class DriveActivity extends SDLActivity {
     public boolean hasPlayFolder() {
         File play = getPlayDirectory();
         if (play == null) return false;
-        return new File(play, "play.txt").isFile()
-                && new File(play, "bake/shared.shiftbake").isFile()
-                && new File(play, "world/colorado.index").isFile();
+        File playTxt = new File(play, "play.txt");
+        File worldIndex = new File(play, "world/colorado.index");
+        if (!playTxt.isFile() || !worldIndex.isFile() || worldIndex.length() <= 0) {
+            return false;
+        }
+        File gameRoot = resolveGameRootFromPlayTxt(play, playTxt);
+        if (gameRoot == null) return false;
+        return new File(gameRoot, "media/db/gamedb.slt").isFile()
+                || new File(gameRoot, "Media/db/gamedb.slt").isFile();
+    }
+
+    private static File resolveGameRootFromPlayTxt(File playDir, File playTxt) {
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new FileInputStream(playTxt), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                while (!line.isEmpty() && (line.endsWith("\r") || line.endsWith(" "))) {
+                    line = line.substring(0, line.length() - 1);
+                }
+                if (line.startsWith("game ")) {
+                    String path = line.substring(5).trim();
+                    if (path.isEmpty()) return null;
+                    File f = new File(path);
+                    return f.isAbsolute() ? f : new File(playDir, path);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 }

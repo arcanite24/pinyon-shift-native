@@ -317,6 +317,8 @@ JNIEXPORT jstring JNICALL Java_net_shiftengine_drive_SetupBridge_nativeRunOnDevi
   opts.play_dir = std::filesystem::path(from_jstring(env, play_dir));
   opts.mode = (full_roster == JNI_TRUE) ? setup::baker::BakeMode::kFullRoster : setup::baker::BakeMode::kFastStart;
   opts.resume = (resume == JNI_TRUE);
+  opts.bake_cars = false;  // Zero-bake direct-from-disc: cars stream directly from extracted media
+  opts.bake_sounds = false;
   opts.require_world_index = true;
 
   setup::baker::BakeReport rep;
