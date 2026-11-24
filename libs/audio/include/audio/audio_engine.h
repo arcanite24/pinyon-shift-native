@@ -24,6 +24,7 @@
 #include "audio/mixer.h"
 #include "audio/radio.h"
 #include "audio/rt.h"
+#include "audio/runtime_radio.h"
 #include "audio/satnav_vo.h"
 #include "audio/sfx_engine.h"
 #include "audio/snapshots.h"
@@ -42,6 +43,11 @@ struct AudioTelemetry {
   bool radio_dj = true;
   bool user_music_active = false;
   std::array<char, 96> user_music_title{};
+  bool runtime_radio_active = false;
+  int runtime_radio_station = -1;
+  uint32_t runtime_radio_track_seq = 0;
+  std::array<char, 96> runtime_radio_title{};
+  std::array<char, 96> runtime_radio_artist{};
   float peak = 0.0f;
   float gain_reduction_db = 0.0f;
   uint64_t blocks_rendered = 0;
@@ -95,6 +101,7 @@ class AudioEngine {
   // Attaches `radio` (caller keeps `RadioData` and `Radio` alive until
   // AudioEngine is stopped/destroyed or detached with nullptr) and its player.
   void set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player);
+  void set_runtime_radio(std::unique_ptr<RuntimeRadioPlayer> player);
   void set_user_music(std::unique_ptr<UserMusicPlayer> player);
 
   // Lock-free FMV stereo PCM callback (called on audio thread when non-null).
@@ -146,6 +153,12 @@ class AudioEngine {
   void radio_trigger_immediate(std::string_view gameplay_event);
   void radio_trigger_festival_update(std::string_view gameplay_event);
 
+  // Runtime custom radio commands.
+  void runtime_radio_select(int station);
+  void runtime_radio_set_volume(float volume);
+  void runtime_radio_next();
+  void runtime_radio_prev();
+
   // Your Music commands.
   void user_music_enable(bool on);
   void user_music_set_shuffle(bool on);
@@ -175,6 +188,10 @@ class AudioEngine {
       kRadioSpecial,
       kRadioImmediate,
       kRadioFestivalUpdate,
+      kRuntimeRadioSelect,
+      kRuntimeRadioVolume,
+      kRuntimeRadioNext,
+      kRuntimeRadioPrev,
       kUserMusicEnable,
       kUserMusicShuffle,
       kUserMusicVolume,
@@ -186,6 +203,7 @@ class AudioEngine {
       kSwapCoDriver,
       kSwapVo,
       kSwapRadio,
+      kSwapRuntimeRadio,
       kSwapUserMusic,
       kTriggerCollision,
       kTriggerUi,
@@ -214,7 +232,7 @@ class AudioEngine {
     std::array<char, 64> text{};
   };
   struct Retired {
-    enum Kind : uint8_t { kEngine, kSfx, kSatNav, kCoDriver, kVo, kRadio, kUserMusic };
+    enum Kind : uint8_t { kEngine, kSfx, kSatNav, kCoDriver, kVo, kRadio, kRuntimeRadio, kUserMusic };
     Kind kind = kEngine;
     void* ptr = nullptr;
   };
@@ -254,6 +272,7 @@ class AudioEngine {
   VoPlayer* vo_ = nullptr;
   Radio* radio_ = nullptr;
   RadioPlayer* radio_player_ = nullptr;
+  RuntimeRadioPlayer* runtime_radio_ = nullptr;
   UserMusicPlayer* user_music_ = nullptr;
   EnvironmentalReverb reverb_;
   AmbienceBedPlayer ambience_bed_{48000};

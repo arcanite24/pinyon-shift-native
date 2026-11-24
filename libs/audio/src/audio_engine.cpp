@@ -31,6 +31,7 @@ AudioEngine::~AudioEngine() {
   delete codriver_;
   delete vo_;
   delete radio_player_;
+  delete runtime_radio_;
   delete user_music_;
 }
 
@@ -63,6 +64,7 @@ void AudioEngine::reclaim() {
       case Retired::kCoDriver: delete static_cast<CoDriverVoPlayer*>(r.ptr); break;
       case Retired::kVo: delete static_cast<VoPlayer*>(r.ptr); break;
       case Retired::kRadio: delete static_cast<RadioPlayer*>(r.ptr); break;
+      case Retired::kRuntimeRadio: delete static_cast<RuntimeRadioPlayer*>(r.ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(r.ptr); break;
     }
   }
@@ -176,6 +178,20 @@ void AudioEngine::set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player) {
       if (cmds_.push(c)) return;
     }
     delete static_cast<RadioPlayer*>(c.ptr1);
+  }
+}
+
+void AudioEngine::set_runtime_radio(std::unique_ptr<RuntimeRadioPlayer> player) {
+  Command c;
+  c.kind = Command::kSwapRuntimeRadio;
+  c.ptr0 = player.release();
+  if (!cmds_.push(c)) {
+    if (!running_.load(std::memory_order_acquire)) {
+      drain_commands();
+      reclaim();
+      if (cmds_.push(c)) return;
+    }
+    delete static_cast<RuntimeRadioPlayer*>(c.ptr0);
   }
 }
 
@@ -463,6 +479,32 @@ void AudioEngine::radio_set_volume(float volume) {
   enqueue(c);
 }
 
+void AudioEngine::runtime_radio_select(int station) {
+  Command c;
+  c.kind = Command::kRuntimeRadioSelect;
+  c.i0 = station;
+  enqueue(c);
+}
+
+void AudioEngine::runtime_radio_set_volume(float volume) {
+  Command c;
+  c.kind = Command::kRuntimeRadioVolume;
+  c.f0 = volume;
+  enqueue(c);
+}
+
+void AudioEngine::runtime_radio_next() {
+  Command c;
+  c.kind = Command::kRuntimeRadioNext;
+  enqueue(c);
+}
+
+void AudioEngine::runtime_radio_prev() {
+  Command c;
+  c.kind = Command::kRuntimeRadioPrev;
+  enqueue(c);
+}
+
 void AudioEngine::user_music_enable(bool on) {
   Command c;
   c.kind = Command::kUserMusicEnable;
@@ -513,6 +555,7 @@ void AudioEngine::retire_ptr(Retired::Kind kind, void* ptr) {
       case Retired::kCoDriver: delete static_cast<CoDriverVoPlayer*>(ptr); break;
       case Retired::kVo: delete static_cast<VoPlayer*>(ptr); break;
       case Retired::kRadio: delete static_cast<RadioPlayer*>(ptr); break;
+      case Retired::kRuntimeRadio: delete static_cast<RuntimeRadioPlayer*>(ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(ptr); break;
     }
   }
@@ -582,6 +625,18 @@ void AudioEngine::drain_commands() {
       case Command::kRadioFestivalUpdate:
         if (radio_) radio_->trigger_festival_update(c.text.data());
         break;
+      case Command::kRuntimeRadioSelect:
+        if (runtime_radio_) runtime_radio_->select_station(c.i0);
+        break;
+      case Command::kRuntimeRadioVolume:
+        if (runtime_radio_) runtime_radio_->set_volume(c.f0);
+        break;
+      case Command::kRuntimeRadioNext:
+        if (runtime_radio_) runtime_radio_->next_track();
+        break;
+      case Command::kRuntimeRadioPrev:
+        if (runtime_radio_) runtime_radio_->prev_track();
+        break;
       case Command::kUserMusicEnable:
         if (user_music_) user_music_->set_enabled(c.b0);
         break;
@@ -623,6 +678,10 @@ void AudioEngine::drain_commands() {
         retire_ptr(Retired::kRadio, radio_player_);
         radio_ = static_cast<Radio*>(c.ptr0);
         radio_player_ = static_cast<RadioPlayer*>(c.ptr1);
+        break;
+      case Command::kSwapRuntimeRadio:
+        retire_ptr(Retired::kRuntimeRadio, runtime_radio_);
+        runtime_radio_ = static_cast<RuntimeRadioPlayer*>(c.ptr0);
         break;
       case Command::kSwapUserMusic:
         retire_ptr(Retired::kUserMusic, user_music_);
@@ -717,12 +776,15 @@ void AudioEngine::render_block(float* out, int frames) {
 
   const bool on_title = snap_title_ >= 0 && mixer_.snapshots().active(snap_title_);
   const bool user_music_on = user_music_ && user_music_->active();
-  if (!on_title && (user_music_on || radio_player_)) {
+  const bool runtime_radio_on = !user_music_on && runtime_radio_ && runtime_radio_->active();
+  if (!on_title && (user_music_on || runtime_radio_on || radio_player_)) {
     auto& mbuf = bus_bufs_[int(Bus::kMusic)];
     std::fill(mbuf.begin(), mbuf.begin() + ptrdiff_t(samples), 0.0f);
     if (user_music_on) {
       // Your Music mutes the game's radio while keeping all other buses.
       user_music_->render(mbuf.data(), frames);
+    } else if (runtime_radio_on) {
+      runtime_radio_->render(mbuf.data(), frames);
     } else if (radio_player_) {
       radio_player_->set_dj_modifier(use_matrix_ ? double(matrix_.gain(Category::kDJModifier)) : 1.0);
       radio_player_->render(mbuf.data(), frames);
@@ -852,8 +914,9 @@ void AudioEngine::render_block(float* out, int frames) {
   }
 
   if (use_matrix_) {
-    const bool dj_now = !on_title && !user_music_on && radio_player_ && radio_player_->dj_speaking();
-    const bool fest_now = !on_title && !user_music_on && radio_player_ && radio_player_->festival_update_playing();
+    const bool dj_now = !on_title && !user_music_on && !runtime_radio_on && radio_player_ && radio_player_->dj_speaking();
+    const bool fest_now =
+        !on_title && !user_music_on && !runtime_radio_on && radio_player_ && radio_player_->festival_update_playing();
     if (fest_now != last_festival_update_ || dj_now != last_dj_speaking_) {
       last_festival_update_ = fest_now;
       last_dj_speaking_ = dj_now;
@@ -950,6 +1013,19 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
     const size_t n = std::min(title.size(), t.user_music_title.size() - 1);
     if (n > 0) std::memcpy(t.user_music_title.data(), title.data(), n);
     t.user_music_title[n] = '\0';
+  }
+  if (runtime_radio_) {
+    t.runtime_radio_active = runtime_radio_->active();
+    t.runtime_radio_station = runtime_radio_->selected_station();
+    t.runtime_radio_track_seq = runtime_radio_->track_seq();
+    const std::string_view title = runtime_radio_->current_title_view();
+    const size_t nt = std::min(title.size(), t.runtime_radio_title.size() - 1);
+    if (nt > 0) std::memcpy(t.runtime_radio_title.data(), title.data(), nt);
+    t.runtime_radio_title[nt] = '\0';
+    const std::string_view artist = runtime_radio_->current_artist_view();
+    const size_t na = std::min(artist.size(), t.runtime_radio_artist.size() - 1);
+    if (na > 0) std::memcpy(t.runtime_radio_artist.data(), artist.data(), na);
+    t.runtime_radio_artist[na] = '\0';
   }
   t.peak = use_matrix_ ? rms_stage_.peak() : mixer_.stage().peak();
   t.gain_reduction_db = use_matrix_ ? rms_stage_.gain_reduction_db() : mixer_.stage().gain_reduction_db();
