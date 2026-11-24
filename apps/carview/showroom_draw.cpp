@@ -66,9 +66,8 @@ void Showroom::set_world_overlay(std::span<const WorldVertex> triangles) {
     return;
   }
 
-  constexpr float kLiftDropM = 0.065f;      // 0.10 m -> ~0.035 m (~3.5 cm) crown-safe hover above asphalt
-  constexpr float kTargetHalfW = 0.70f;     // sleek feathered-edge margin matching FH1 lane proportion
-  constexpr double kChevronPitchM = 3.4;    // matches world_frag.glsl kChevronPitch
+  constexpr float kLiftDropM = 0.045f;      // 0.08 m -> ~0.035 m (~3.5 cm) crown-safe hover above asphalt
+  constexpr double kChevronPitchM = 2.6;    // matches world_frag.glsl kChevronPitch
   constexpr double kWrapPeriodM = kChevronPitchM * 100.0;
 
   const size_t quad_count = tri_n / 6;
@@ -196,19 +195,7 @@ void Showroom::set_world_overlay(std::span<const WorldVertex> triangles) {
   anchor.has_anchor = true;
   anchor.active = true;
 
-  auto widen_edge = [&](WorldVertex& left, WorldVertex& right) {
-    const float mx = 0.5f * (left.position[0] + right.position[0]);
-    const float mz = 0.5f * (left.position[2] + right.position[2]);
-    const float rx = 0.5f * (right.position[0] - left.position[0]);
-    const float rz = 0.5f * (right.position[2] - left.position[2]);
-    const float hw = std::hypot(rx, rz);
-    if (hw > 0.05f && hw < kTargetHalfW) {
-      const float scale = std::clamp(kTargetHalfW / hw, 1.0f, 1.35f);
-      left.position[0] = mx - rx * scale;
-      left.position[2] = mz - rz * scale;
-      right.position[0] = mx + rx * scale;
-      right.position[2] = mz + rz * scale;
-    }
+  auto seat_edge = [&](WorldVertex& left, WorldVertex& right) {
     left.position[1] -= kLiftDropM;
     right.position[1] -= kLiftDropM;
   };
@@ -229,8 +216,8 @@ void Showroom::set_world_overlay(std::span<const WorldVertex> triangles) {
     const double loc_a = sp.loc_a;
     const double loc_b = sp.loc_b;
 
-    widen_edge(al, ar);
-    widen_edge(bl, br);
+    seat_edge(al, ar);
+    seat_edge(bl, br);
     if (has_prev_edge && sp.continuous) {
       al.position[0] = prev_bl.position[0];
       al.position[1] = prev_bl.position[1];

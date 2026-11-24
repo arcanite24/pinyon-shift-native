@@ -13,14 +13,14 @@ Source playtest session: `out/playtests/20261124-143848/`
 | Category | Count | Open |
 |---|---:|---:|
 | [1. Critical Rendering, Flicker & UI Atlas Corruption](#1-critical-rendering-flicker--ui-atlas-corruption) | 5 | 0 |
-| [2. Performance, Stutters & Frame Drops](#2-performance-stutters--frame-drops) | 4 | 1 |
+| [2. Performance, Stutters & Frame Drops](#2-performance-stutters--frame-drops) | 4 | 0 |
 | [3. Audio & Lighting / Time-of-Day Bugs](#3-audio--lighting--time-of-day-bugs) | 3 | 0 |
 | [4. World Geometry, VFX, Crowds, Lights & Sky](#4-world-geometry-vfx-crowds-lights--sky) | 10 | 0 |
 | [5. Cars, Lamps, Driver Model & Showcase](#5-cars-lamps-driver-model--showcase) | 4 | 0 |
 | [6. Physics, Collision, Smashables & Camera](#6-physics-collision-smashables--camera) | 5 | 0 |
-| [7. World Map & Minimap Parity](#7-world-map--minimap-parity) | 5 | 5 |
+| [7. World Map & Minimap Parity](#7-world-map--minimap-parity) | 5 | 0 |
 | [8. HUD, Menus, Campaign & 1:1 UI/UX Parity](#8-hud-menus-campaign--11-uiux-parity) | 9 | 7 |
-| **Total** | **45** | **13** |
+| **Total** | **45** | **7** |
 
 ---
 
@@ -76,10 +76,10 @@ Source playtest session: `out/playtests/20261124-143848/`
   - **Evidence**: `bug_008.png` (`63 FPS`, `CPU 13.69 ms`, `GPU 4.82 ms`), `bug_009.png` (`57 FPS`, `CPU 11.37 ms`, `GPU 5.22 ms`), plus `summary.json` top hitches (`210–364 ms` while `paused: true, in_race: true`, `CPU 9.8–12.0 ms`).
   - **Fix (PT-A + PT-B)**: Fixed 120 Hz race CPU overhead (PT-A) plus cached spectator ground heights, prebuilt pools, 5-plane frustum culling, unique-vertex skinning, and `SpectatorFrameCache` pause skip so paused/crowd frames no longer rebuild 120k vertices every frame (PT-B).
 
-- [ ] **PT-09 — World Map panning performance is very poor**
+- [x] **PT-09 — World Map panning performance is very poor**
   - **Priority**: P1
   - **Evidence**: `bug_019.png` (`CPU 9.20 ms`, `GPU 9.88 ms`, `ui 5.36 ms`, `1% low 10 FPS`), `bug_022.png` (`ui 5.56 ms`, `GPU 7.12 ms`), plus `211–223 ms` hitches in `summary.json` while paused.
-  - **Suspected cause**: Full `3840x2071` CPU software re-rasterization of `app.map_view.pause_map(...)` + full-resolution RGBA upload to `renderer.set_overlay(...)` on every pan/zoom frame!
+  - **Fix (PT-D)**: Capped internal pause-map raster to `<= 1600x900` with 8-thread parallel stripes, SWAR bilinear upscale, cached `base_cache_.rgba`, persistent `Horizon.zip` handle, parallel tile decode, and `<= 320 px` minimap raster.
 
 ---
 
@@ -217,27 +217,30 @@ Source playtest session: `out/playtests/20261124-143848/`
 
 ## 7. World Map & Minimap Parity
 
-- [ ] **PT-32 — World Map black borders when scrolling near edges**
+- [x] **PT-32 — World Map black borders when scrolling near edges**
   - **Priority**: P1
   - **Evidence**: `bug_022.png` (`t=1122.1s`). Panning near Colorado's southwest edge exposes massive solid black void covering half the screen instead of clamping camera bounds to the map texture.
+  - **Fix (PT-D)**: Added `MapView::min_zoom()` and viewport-inset `MapView::clamp_camera()` wired into `MapCameraController` and `pause_map()` so zero black border void pixels can ever appear at any zoom or aspect ratio.
 
-- [ ] **PT-33 — Broken `"H"` / Horizon sign texture on World Map**
+- [x] **PT-33 — Broken `"H"` / Horizon sign texture on World Map**
   - **Priority**: P1
   - **Evidence**: `bug_019.png` (`t=825.8s`). Horizon icon in center-left of map has corrupted noisy blue/black pixels inside the hexagonal badge.
-  - **Suspected cause**: Wrong XDS format/swizzle decode or wrong alpha channel on that specific map icon texture.
+  - **Fix (PT-D)**: Fixed signed 32-bit integer overflow in `FastCanvas::icon()` / `FastCanvas::blit()` by promoting bilinear alpha-weighted sums to `uint64_t` with clamped rounded blending and skipping `_new` dynamic symbolizers.
 
-- [ ] **PT-34 — Selecting a GPS route on the map closes the map; keybinds/controller & UX not 1:1**
+- [x] **PT-34 — Selecting a GPS route on the map closes the map; keybinds/controller & UX not 1:1**
   - **Priority**: P1
   - **Evidence**: User report + `bug_019.png` / `bug_022.png` (notice bottom bar has duplicate `A SET GPS WAYPOINT` and `X SET / CLEAR GPS (G)` prompts!).
-  - **Required 1:1 behavior**: Setting a GPS destination with `A` should keep the map open so the player can inspect the generated route, toggle filter tabs cleanly with `LB`/`RB`, zoom smoothly with `LT`/`RT`, fast travel with `X` (when unlocked/eligible), and only close the map on `B` / `M` / `Back`.
+  - **Fix (PT-D)**: `A`/`Enter`/Left-Click sets or toggles GPS while keeping the map open; `X`/`F` handles Fast Travel / Enter / Clear GPS with zero prompt duplication; `Y`/`Tab` centers on car; `LB`/`RB` cycles all 7 filter tabs; `LT`/`RT` zooms smoothly; `B`/`M`/`Back` closes map.
 
-- [ ] **PT-35 — Minimap missing grey road outline / background in several segments**
+- [x] **PT-35 — Minimap missing grey road outline / background in several segments**
   - **Priority**: P2
   - **Evidence**: `bug_001.png`–`bug_005.png`, `bug_023.png`: minimap shows only the green GPS line and arrow with no grey road geometry underneath (unlike `bug_016.png` / `bug_024.png` where grey roads appear).
+  - **Fix (PT-D)**: Added segment subdivision + near-plane clipping (`draw_projected_segment`) in `MapView::minimap()`, widened road ribbons with crisp dark casing for discovered & undiscovered roads, and nested GPS/race routes cleanly inside road shoulders.
 
-- [ ] **PT-36 — Driving/Racing Line UX not 1:1 (transitions too harsh, oversized chevrons)**
+- [x] **PT-36 — Driving/Racing Line UX not 1:1 (transitions too harsh, oversized chevrons)**
   - **Priority**: P2
   - **Evidence**: User report + `bug_001.png`–`bug_005.png`, `bug_010.png`, `bug_020.png`, `bug_023.png`. Chevrons are overly wide/bright and snap abruptly between green/yellow/red instead of smooth retail FH1 braking-zone gradient ribbons.
+  - **Fix (PT-D)**: Added Gaussian curvature + display-speed smoothing (`sigma = 9.0 m`), corner-exit acceleration unwind, temporal `DrivingLineSmoother`, sleek `0.38 m` half-width ribbon with bumper/horizon smoothstep fades, and continuous feathered sRGB gradient chevrons in `world_frag.glsl`.
 
 ---
 

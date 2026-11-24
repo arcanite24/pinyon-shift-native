@@ -349,26 +349,18 @@ void DriveSession::start_new_career() {
 }
 
 bool DriveSession::map_marker_visible(const MapMarker& m) {
-          switch (map_filter) {
-            case MapFilter::kAll: return true;
-            case MapFilter::kEvents:
-              return m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite || m.kind == MapMarker::kH2hFinish;
-            case MapFilter::kStreetRaces: return m.kind == MapMarker::kStreetHub || m.icon_tag == "streetrace";
-            case MapFilter::kOutposts: return m.kind == MapMarker::kOutpost || m.kind == MapMarker::kFestivalSite;
-            case MapFilter::kCollectibles:
-              return m.icon_tag == "barnfind" || m.icon_tag == "barnfind_collected" ||
-                     m.icon_tag == "flyer" || m.icon_tag == "flyer_collected";
-            case MapFilter::kPrStunts:
-              return m.kind == MapMarker::kPrStunt || m.kind == MapMarker::kOutpost ||
-                     m.kind == MapMarker::kSpeedTrap || m.kind == MapMarker::kSpeedZone;
-            default: return true;
-          }
+          return map_marker_matches_filter(m, map_filter);
 }
 
 void DriveSession::update_map_selection() {
           map_selected_marker = -1;
           map_overlay = carview::MapOverlayHud{};
           if (!map_open) return;
+          if (map_w > 64 && map_h > 64) {
+            map_cam.set_viewport(map_w, map_h, &app.map_view);
+            map_zoom = std::max(map_zoom, app.map_view.min_zoom(map_w, map_h));
+            app.map_view.clamp_camera(map_w, map_h, map_zoom, map_cx, map_cz);
+          }
           map_overlay.active = true;
           map_overlay.active_filter = int(map_filter);
           map_overlay.filter_tabs.clear();
@@ -387,53 +379,54 @@ void DriveSession::update_map_selection() {
             if (d < best_d) best_d = d, map_selected_marker = int(i);
           }
           const drive::Vec3 at = vehicle.position();
+          const bool ft_anywhere = slice12.trainer.effective_fast_travel_anywhere();
+          double target_x = map_cx, target_z = map_cz;
           if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
             const auto& m = cached_map_markers[size_t(map_selected_marker)];
+            target_x = m.x;
+            target_z = m.z;
             map_overlay.title = m.title;
             map_overlay.subtitle = m.subtitle;
             map_overlay.distance_m = std::hypot(m.x - at.x, m.z - at.z);
-            if (m.kind == MapMarker::kEvent) map_overlay.action_hint = "ENTER EVENT";
-            else if (m.kind == MapMarker::kOutpost) {
-              const bool ft_free = slice12.trainer.effective_fast_travel_anywhere() ||
-                                   (app.have_outposts &&
-                                    app.outpost_progress.is_outpost_fast_travel_free(app.outposts, m.id));
-              const int64_t ft_fee = ft_free ? 0 : 10000LL;
-              map_overlay.action_hint =
-                  (m.discovered || slice12.trainer.effective_fast_travel_anywhere())
-                      ? (ft_fee > 0 ? ("FAST TRAVEL (" + carview::thousands(ft_fee) + " CR)") : "FAST TRAVEL (FREE)")
-                      : "SET GPS ROUTE";
-            } else if (m.kind == MapMarker::kPrStunt) map_overlay.action_hint = "START PR STUNT";
-            else map_overlay.action_hint = "ENTER";
           } else {
             bool matched_collectible = false;
-            if ((map_filter == MapFilter::kAll || map_filter == MapFilter::kCollectibles) && app.progress_loaded) {
+            const bool show_barns = map_filter == MapFilter::kAll || map_filter == MapFilter::kDiscovery;
+            const bool show_signs =
+                map_filter == MapFilter::kAll || map_filter == MapFilter::kSigns || map_filter == MapFilter::kDiscovery;
+            if ((show_barns || show_signs) && app.progress_loaded) {
               double best_cd = snap_r;
-              for (size_t bi = 0; bi < app.collectibles.barns.size(); ++bi) {
-                const auto& b = app.collectibles.barns[bi];
-                const int st = bi < app.progress.barns.size() ? app.progress.barns[bi].status : freeroam::kBarnNotSpawned;
-                const bool visible = (st == freeroam::kBarnFound || st == freeroam::kBarnRumour || map_overlay.treasure_map);
-                if (!visible) continue;
-                const double d = std::hypot(b.at.x - map_cx, b.at.z - map_cz);
-                if (d < best_cd) {
-                  best_cd = d;
-                  matched_collectible = true;
-                  map_overlay.title = st == freeroam::kBarnFound ? "BARN FIND (FOUND)" : "BARN FIND";
-                  map_overlay.subtitle = b.name;
-                  map_overlay.distance_m = std::hypot(b.at.x - at.x, b.at.z - at.z);
-                  map_overlay.action_hint = "SET GPS ROUTE";
+              if (show_barns) {
+                for (size_t bi = 0; bi < app.collectibles.barns.size(); ++bi) {
+                  const auto& b = app.collectibles.barns[bi];
+                  const int st = bi < app.progress.barns.size() ? app.progress.barns[bi].status : freeroam::kBarnNotSpawned;
+                  const bool visible = (st == freeroam::kBarnFound || st == freeroam::kBarnRumour || map_overlay.treasure_map);
+                  if (!visible) continue;
+                  const double d = std::hypot(b.at.x - map_cx, b.at.z - map_cz);
+                  if (d < best_cd) {
+                    best_cd = d;
+                    matched_collectible = true;
+                    target_x = b.at.x;
+                    target_z = b.at.z;
+                    map_overlay.title = st == freeroam::kBarnFound ? "BARN FIND (FOUND)" : "BARN FIND";
+                    map_overlay.subtitle = b.name;
+                    map_overlay.distance_m = std::hypot(b.at.x - at.x, b.at.z - at.z);
+                  }
                 }
               }
-              for (const auto& sign : app.collectibles.signs) {
-                const bool found = app.progress.signs_found.count(sign.id) > 0;
-                if (!found && !map_overlay.treasure_map) continue;
-                const double d = std::hypot(sign.at.x - map_cx, sign.at.z - map_cz);
-                if (d < best_cd) {
-                  best_cd = d;
-                  matched_collectible = true;
-                  map_overlay.title = found ? "DISCOUNT SIGN (SMASHED)" : "DISCOUNT SIGN";
-                  map_overlay.subtitle = "UPGRADE DISCOUNT COLLECTIBLE";
-                  map_overlay.distance_m = std::hypot(sign.at.x - at.x, sign.at.z - at.z);
-                  map_overlay.action_hint = "SET GPS ROUTE";
+              if (show_signs) {
+                for (const auto& sign : app.collectibles.signs) {
+                  const bool found = app.progress.signs_found.count(sign.id) > 0;
+                  if (!found && !map_overlay.treasure_map) continue;
+                  const double d = std::hypot(sign.at.x - map_cx, sign.at.z - map_cz);
+                  if (d < best_cd) {
+                    best_cd = d;
+                    matched_collectible = true;
+                    target_x = sign.at.x;
+                    target_z = sign.at.z;
+                    map_overlay.title = found ? "DISCOUNT SIGN (SMASHED)" : "DISCOUNT SIGN";
+                    map_overlay.subtitle = "UPGRADE DISCOUNT COLLECTIBLE";
+                    map_overlay.distance_m = std::hypot(sign.at.x - at.x, sign.at.z - at.z);
+                  }
                 }
               }
             }
@@ -441,12 +434,65 @@ void DriveSession::update_map_selection() {
               map_overlay.title = "COLORADO MAP";
               map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR FESTIVAL SITE";
               map_overlay.distance_m = std::hypot(map_cx - at.x, map_cz - at.z);
-              map_overlay.action_hint =
-                  slice12.trainer.effective_fast_travel_anywhere() ? "FAST TRAVEL HERE" : "SET GPS WAYPOINT";
             }
           }
+
+          // Retail FH1 1:1 button bar prompts with ZERO duplication between A and X:
+          // A / Enter / Left-Click: Set / Toggle GPS route (keeps map open!).
+          // X / F: Fast Travel (on eligible Outpost/Festival/trainer target), Enter if in range,
+          //        or Clear GPS / Center on Car cleanly.
           map_overlay.gps_active = app.gps_nav.active();
-          map_overlay.gps_hint = app.gps_nav.active() ? "SET / CLEAR GPS (G)" : "SET GPS ROUTE (G)";
+          const bool hovering_gps_dest =
+              app.gps_nav.active() &&
+              std::hypot(target_x - app.gps_nav.route().dest_x, target_z - app.gps_nav.route().dest_z) < 120.0;
+          if (app.race != nullptr) {
+            map_overlay.action_hint = "RACE ACTIVE";
+          } else {
+            map_overlay.action_hint = hovering_gps_dest ? "CLEAR GPS ROUTE" : "SET GPS ROUTE";
+          }
+
+          if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
+            const auto& m = cached_map_markers[size_t(map_selected_marker)];
+            const double player_dist = std::hypot(m.x - at.x, m.z - at.z);
+            if (m.kind == MapMarker::kOutpost) {
+              double disc_rad = 180.0;
+              if (app.have_outposts) {
+                if (const auto* op = app.outposts.find_outpost(m.id)) disc_rad = std::max(180.0, op->discovery_radius);
+              }
+              if (player_dist <= disc_rad) {
+                map_overlay.gps_hint = "ENTER OUTPOST";
+              } else if (m.discovered || ft_anywhere) {
+                const bool ft_free = ft_anywhere ||
+                                     (app.have_outposts &&
+                                      app.outpost_progress.is_outpost_fast_travel_free(app.outposts, m.id));
+                const int64_t ft_fee = ft_free ? 0 : 10000LL;
+                map_overlay.gps_hint =
+                    ft_fee > 0 ? ("FAST TRAVEL (" + carview::thousands(ft_fee) + " CR)") : "FAST TRAVEL (FREE)";
+              } else {
+                map_overlay.gps_hint = (app.gps_nav.active() && !hovering_gps_dest) ? "CLEAR GPS ROUTE" : "OUTPOST LOCKED";
+              }
+            } else if (m.kind == MapMarker::kFestivalSite) {
+              map_overlay.gps_hint = player_dist <= 180.0 ? "ENTER SITE" : "FAST TRAVEL (FREE)";
+            } else if (m.kind == MapMarker::kEvent && player_dist <= 180.0) {
+              map_overlay.gps_hint = "ENTER EVENT";
+            } else if (m.kind == MapMarker::kStreetHub && player_dist <= 180.0) {
+              map_overlay.gps_hint = "ENTER HUB";
+            } else if (m.kind == MapMarker::kPrStunt && player_dist <= 180.0) {
+              map_overlay.gps_hint = "START PR STUNT";
+            } else if (ft_anywhere) {
+              map_overlay.gps_hint = "FAST TRAVEL HERE";
+            } else if (app.gps_nav.active() && !hovering_gps_dest) {
+              map_overlay.gps_hint = "CLEAR GPS ROUTE";
+            } else {
+              map_overlay.gps_hint = "CENTER ON CAR";
+            }
+          } else if (ft_anywhere) {
+            map_overlay.gps_hint = "FAST TRAVEL HERE";
+          } else if (app.gps_nav.active() && !hovering_gps_dest) {
+            map_overlay.gps_hint = "CLEAR GPS ROUTE";
+          } else {
+            map_overlay.gps_hint = "CENTER ON CAR";
+          }
 }
 
 void DriveSession::open_map() {
@@ -457,10 +503,20 @@ void DriveSession::open_map() {
           }
           map_open = map_dirty = true;
           picking = false;
-          map_zoom = 2;
+          int win_w = int(app.width), win_h = int(app.height);
+          if (app.window) SDL_GetWindowSizeInPixels(app.window, &win_w, &win_h);
+          if (win_w > 64 && win_h > 64) {
+            map_w = win_w;
+            map_h = win_h;
+            map_cam.set_viewport(win_w, win_h, &app.map_view);
+          }
+          map_zoom = std::max(2.0, map_cam.min_zoom());
           map_cx = vehicle.position().x;
           map_cz = vehicle.position().z;
           map_cam.reset(map_cx, map_cz, map_zoom);
+          map_cx = map_cam.cx();
+          map_cz = map_cam.cz();
+          map_zoom = map_cam.zoom();
           for (int layer : {0, 1, 3}) host.renderer.set_overlay({}, 0, 0, 0, 0, layer);
           mm_size = 0;
           radio_popup_gpu = {};

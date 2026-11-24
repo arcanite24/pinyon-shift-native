@@ -1,6 +1,8 @@
 // Unit tests for drive::build_driving_line (SPEC-CAR-PHYSICS, "3D Driving / Braking Line").
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "drive/ai_driver.h"
@@ -217,6 +219,191 @@ void test_dirt_mixed_surface_ai_speed_planning() {
   CHECK(near(ps_dirt / ps_asph, 0.80, 0.01));
 }
 
+void test_smooth_gradient_entry_and_exit() {
+  const auto car = test_car();
+  const auto tbl = drive::BrakingTable::build(car);
+  const auto line = make_corner_line();
+
+  // Compute braking-heat scalar in [0, 1] matching world_frag.glsl reconstruction:
+  // 0 = pure green throttle, 0.5 = neutral yellow coast, 1 = pure red braking.
+  auto heat_of = [](const drive::DrivingLineColor& c) {
+    const double r = double(c.r) / 255.0;
+    const double g = double(c.g) / 255.0;
+    const double t_lo = std::clamp((r - 44.0 / 255.0) / ((192.0 - 44.0) / 255.0), 0.0, 1.0);
+    const double g_exp = (147.0 + (164.0 - 147.0) * t_lo) / 255.0;
+    const double t_hi = std::clamp((g_exp - g) / ((164.0 - 39.0) / 255.0), 0.0, 1.0);
+    return 0.5 * (t_lo + t_hi);
+  };
+
+  // Drive through entry, apex, and exit of the 25 m corner at 25 m/s so the line covers
+  // Green -> Yellow -> Red on entry AND Red -> Yellow -> Green on corner exit.
+  drive::DrivingLineOptions opt;
+  opt.fade_ends = false;
+  opt.ahead_m = 200.0;
+  std::vector<drive::DrivingLineSample> samples;
+  drive::build_driving_line(line, tbl, 140.0, 25.0, drive::DrivingLineMode::kFull, samples, opt);
+  CHECK(samples.size() > 80);
+
+  int max_rgb_delta = 0;
+  bool saw_entry_mid = false;
+  bool saw_exit_mid = false;
+  size_t peak_idx = 0;
+  double peak_heat = -1.0;
+  for (size_t i = 0; i < samples.size(); ++i) {
+    const double h = heat_of(samples[i].color);
+    if (h > peak_heat) {
+      peak_heat = h;
+      peak_idx = i;
+    }
+    if (i > 0) {
+      const auto& a = samples[i - 1].color;
+      const auto& b = samples[i].color;
+      const int dr = std::abs(int(b.r) - int(a.r));
+      const int dg = std::abs(int(b.g) - int(a.g));
+      const int db = std::abs(int(b.b) - int(a.b));
+      max_rgb_delta = std::max(max_rgb_delta, std::max(dr, std::max(dg, db)));
+    }
+  }
+  CHECK(peak_heat > 0.95);
+  // Bounded per-step RGB delta guarantees smooth transitions with zero abrupt binary jumps.
+  CHECK(max_rgb_delta <= 32);
+
+  // Entry heat is monotonically non-decreasing into the braking apex (within 1-step tolerance),
+  // and passes through intermediate yellow/amber tones before reaching red.
+  for (size_t i = 1; i <= peak_idx; ++i) {
+    const double h0 = heat_of(samples[i - 1].color);
+    const double h1 = heat_of(samples[i].color);
+    CHECK(h1 + 0.02 >= h0);
+    if (h1 > 0.25 && h1 < 0.75) saw_entry_mid = true;
+  }
+  // Exit heat unwinds monotonically back toward green through intermediate yellow/amber tones.
+  for (size_t i = peak_idx + 1; i < samples.size(); ++i) {
+    const double h0 = heat_of(samples[i - 1].color);
+    const double h1 = heat_of(samples[i].color);
+    CHECK(h1 <= h0 + 0.02);
+    if (h1 > 0.25 && h1 < 0.75) saw_exit_mid = true;
+  }
+  CHECK(saw_entry_mid);
+  CHECK(saw_exit_mid);
+}
+
+void test_near_far_fades_width_and_braking_only() {
+  const auto car = test_car();
+  const auto tbl = drive::BrakingTable::build(car);
+  const auto line = make_corner_line();
+
+  // Sleek retail FH1 default proportions: narrow ribbon, starts ahead of car (nothing behind).
+  drive::DrivingLineOptions opt;
+  CHECK(opt.half_width_m >= 0.32 && opt.half_width_m <= 0.44);
+  CHECK(opt.behind_m <= 1e-6);
+  CHECK(opt.near_fade_start_m >= 2.5 && opt.near_fade_end_m > opt.near_fade_start_m);
+  CHECK(opt.far_fade_m >= 25.0);
+
+  const double car_dist = 60.0;
+  std::vector<drive::DrivingLineSample> samples;
+  drive::build_driving_line(line, tbl, car_dist, 35.0, drive::DrivingLineMode::kFull, samples, opt);
+  CHECK(samples.size() > 80);
+
+  // Near-car clearance: samples at/under the car (ahead <= near_fade_start_m) stay invisible,
+  // then ramp monotonically to full opacity by near_fade_end_m.
+  CHECK(samples.front().color.a == 0);
+  uint8_t prev_near_a = 0;
+  bool reached_full = false;
+  for (const auto& s : samples) {
+    const double ahead = double(s.dist) - car_dist;
+    if (ahead <= opt.near_fade_start_m + 1e-3) {
+      CHECK(s.color.a == 0);
+    }
+    if (ahead <= opt.near_fade_end_m + opt.sample_step_m) {
+      CHECK(s.color.a >= prev_near_a);
+      prev_near_a = s.color.a;
+    }
+    if (ahead > opt.near_fade_end_m + 2.0 && ahead < opt.ahead_m - opt.far_fade_m - 2.0) {
+      if (s.color.a == 255) reached_full = true;
+    }
+  }
+  CHECK(reached_full);
+
+  // Far-horizon fade-out: monotonic decay to 0 at visible_end_d.
+  CHECK(samples.back().color.a == 0);
+  const double visible_end = std::min(line.length(), car_dist + opt.ahead_m);
+  uint8_t prev_far_a = 255;
+  for (const auto& s : samples) {
+    if (visible_end - double(s.dist) <= opt.far_fade_m) {
+      CHECK(s.color.a <= prev_far_a);
+      prev_far_a = s.color.a;
+    }
+  }
+
+  // Built ribbon mesh uses sleek width (~2 * half_width_m) and starts ahead of car bumper.
+  std::vector<drive::DrivingLineVertex> mesh;
+  drive::build_driving_line_mesh(samples, opt.half_width_m, opt.lift_m, mesh);
+  CHECK(mesh.size() >= 6 && mesh.size() % 6 == 0);
+  CHECK(mesh[0].z >= float(car_dist + opt.near_fade_start_m - opt.sample_step_m - 0.1));
+  const double quad_width = std::hypot(double(mesh[1].x - mesh[0].x), double(mesh[1].z - mesh[0].z));
+  CHECK(near(quad_width, 2.0 * opt.half_width_m, 1e-2));
+
+  // Braking Only with fade_ends = true hides pure throttle segments and glides smoothly
+  // into approaching braking zones without abrupt 0 -> 255 alpha pops.
+  drive::DrivingLineOptions bo_opt = opt;
+  bo_opt.ahead_m = 190.0;
+  std::vector<drive::DrivingLineSample> bo;
+  drive::build_driving_line(line, tbl, 50.0, 40.0, drive::DrivingLineMode::kBrakingOnly, bo, bo_opt);
+  CHECK(!bo.empty());
+  int max_bo_alpha_step = 0;
+  bool saw_bo_hidden = false;
+  bool saw_bo_fade_mid = false;
+  bool saw_bo_opaque_brake = false;
+  const double bo_end = std::min(line.length(), 50.0 + bo_opt.ahead_m);
+  for (size_t i = 0; i < bo.size(); ++i) {
+    const double ahead = double(bo[i].dist) - 50.0;
+    const double to_end = bo_end - double(bo[i].dist);
+    if (ahead > 10.0 && ahead < 40.0 && bo[i].color.a == 0) saw_bo_hidden = true;
+    if (ahead > bo_opt.near_fade_end_m && to_end > bo_opt.far_fade_m) {
+      if (bo[i].color.a > 20 && bo[i].color.a < 235) saw_bo_fade_mid = true;
+      if (bo[i].color.a == 255 && bo[i].color.r == 192 && bo[i].color.g == 39) saw_bo_opaque_brake = true;
+      if (i > 0 && double(bo[i - 1].dist) - 50.0 > bo_opt.near_fade_end_m) {
+        max_bo_alpha_step = std::max(max_bo_alpha_step, std::abs(int(bo[i].color.a) - int(bo[i - 1].color.a)));
+      }
+    }
+  }
+  CHECK(saw_bo_hidden);
+  CHECK(saw_bo_fade_mid);
+  CHECK(saw_bo_opaque_brake);
+  CHECK(max_bo_alpha_step <= 45);
+}
+
+void test_temporal_smoother() {
+  drive::DrivingLineSmoother sm;
+  // First sample initializes directly.
+  CHECK(near(sm.update(30.0, 1.0 / 60.0), 30.0, 1e-6));
+
+  // Rapid +-2.0 m/s throttle jitter at 60 Hz is damped so braking boundary cannot flash.
+  double min_out = 1e9, max_out = -1e9;
+  for (int f = 0; f < 60; ++f) {
+    const double jitter = (f % 2 == 0) ? 32.0 : 28.0;
+    const double v = sm.update(jitter, 1.0 / 60.0);
+    min_out = std::min(min_out, v);
+    max_out = std::max(max_out, v);
+  }
+  CHECK((max_out - min_out) < 0.6);
+
+  // Paused frame (dt == 0) holds exact smoothed speed without snapping.
+  const double before_pause = sm.speed_mps;
+  CHECK(near(sm.update(35.0, 0.0), before_pause, 1e-6));
+
+  // Accelerating toward a braking zone responds faster than lifting off throttle.
+  drive::DrivingLineSmoother sm_up, sm_down;
+  sm_up.update(30.0, 0.016);
+  sm_down.update(30.0, 0.016);
+  const double dv_up = sm_up.update(40.0, 0.05) - 30.0;
+  const double dv_down = 30.0 - sm_down.update(20.0, 0.05);
+  CHECK(dv_up > dv_down);
+
+  // Large teleport / respawn delta snaps immediately.
+  CHECK(near(sm.update(0.0, 1.0 / 60.0), 0.0, 1e-6));
+}
+
 }  // namespace
 
 int main() {
@@ -224,6 +411,9 @@ int main() {
   test_braking_table();
   test_backward_braking_and_mesh();
   test_dirt_mixed_surface_ai_speed_planning();
+  test_smooth_gradient_entry_and_exit();
+  test_near_far_fades_width_and_braking_only();
+  test_temporal_smoother();
   if (failures) {
     std::printf("driving_line_tests: %d failure(s)\n", failures);
     return 1;

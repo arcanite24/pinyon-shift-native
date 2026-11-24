@@ -375,6 +375,36 @@ void test_r2_4_speed_scaling_roundabout_uturn_and_cues() {
   }
 }
 
+void test_world_map_gps_toggle_and_clear() {
+  NavBuilder b;
+  const uint32_t n0 = b.add_node(0, 0);
+  const uint32_t n1 = b.add_node(0, 500);
+  const uint32_t n2 = b.add_node(500, 500);
+  b.add_way({n0, n1, n2}, "a", false, "Horizon Blvd");
+
+  traffic::GpsSolver solver;
+  solver.build(b.map);
+  traffic::GpsNavigator nav(&solver);
+
+  // Set GPS route from origin to (500, 500).
+  const auto ev_set = nav.set_destination(500.0, 500.0, traffic::GpsDestKind::kGeneric, "WAYPOINT", 0.0, 0.0);
+  check(ev_set.kind == traffic::GpsPromptEvent::Kind::kDestinationSet, "map GPS waypoint sets active route");
+  check(nav.active(), "navigator active after setting map GPS route");
+  std::vector<std::array<double, 2>> poly;
+  nav.remaining_polyline(poly);
+  check(poly.size() >= 2, "active map GPS route produces visible polyline");
+
+  // Re-selecting within 120 m of existing destination identifies toggle-off match, then clears cleanly.
+  const bool same_target =
+      nav.active() && std::hypot(490.0 - nav.route().dest_x, 510.0 - nav.route().dest_z) < 120.0;
+  check(same_target, "re-selecting near active GPS destination triggers toggle-clear");
+  nav.clear();
+  check(!nav.active(), "clearing GPS route deactivates navigator cleanly");
+  poly.clear();
+  nav.remaining_polyline(poly);
+  check(poly.empty(), "cleared GPS route produces empty polyline");
+}
+
 void test_colorado_nav_optional() {
   const char* gr = std::getenv("SHIFT_GAME_ROOT");
   if (!gr || !*gr) return;
@@ -393,6 +423,11 @@ void test_colorado_nav_optional() {
   check(route.valid, "real colorado.nav routes Festival -> Red Rock Outpost");
   check(route.total_length > 6000.0 && route.total_length < 25000.0, "real route distance plausible (6-25 km)");
   check(!route.turns.empty(), "real route extracts multiple turn instructions");
+  // Playtest bookmark coordinates: bug_001 (2303.92, 548.02) and bug_023 (-3025.10, -1727.87).
+  const auto r_b01 = solver.solve(2303.92, 548.02, -610.0, -255.0);
+  check(r_b01.valid && r_b01.points.size() >= 2, "real colorado.nav routes cleanly from bug_001 highway spawn");
+  const auto r_b23 = solver.solve(-3025.10, -1727.87, -610.0, -255.0);
+  check(r_b23.valid && r_b23.points.size() >= 2, "real colorado.nav routes cleanly from bug_023 road position");
   std::printf("colorado.nav GPS check: Festival -> Red Rock = %.1f km, %zu turns, %zu points (%zu roundabouts, %zu uturns)\n",
               route.total_length / 1000.0, route.turns.size(), route.points.size(),
               solver.roundabout_node_count(), solver.uturn_node_count());
@@ -406,6 +441,7 @@ int main() {
   test_travel_time_and_turn_delay();
   test_satnav_vo_ducking_and_save();
   test_r2_4_speed_scaling_roundabout_uturn_and_cues();
+  test_world_map_gps_toggle_and_clear();
   test_colorado_nav_optional();
   if (g_failed == 0) std::printf("gps_tests: PASS\n");
   return g_failed ? 1 : 0;

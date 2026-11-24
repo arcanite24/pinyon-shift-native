@@ -668,56 +668,73 @@ void main() {
       return;
     }
     if (draw.params.w > 1.5) {
-      // 1:1 Forza Horizon 1 3D chevron arrow ribbon (>>>):
+      // 1:1 Forza Horizon 1 3D driving/braking line:
+      // Sleek continuous feathered translucent ribbon with subtle world-locked forward chevrons.
       // v_uv0.x = lateral coordinate u in [-1, 1], v_uv0.y = world-locked arc length s (meters).
-      // Recover smooth green -> yellow -> red driving-line weights from drive::driving_line_color().
-      float t_gy = clamp((v_colour.r - 0.173) / (0.753 - 0.173), 0.0, 1.0);
-      float t_yr = clamp((0.643 - v_colour.g) / (0.643 - 0.153), 0.0, 1.0) * smoothstep(0.55, 0.95, t_gy);
 
-      // Authentic FH1 luminous palette in linear space:
-      // full throttle = crisp teal-green / cyan-green, coast = warm golden-yellow, braking = vivid crimson-red.
-      vec3 col_green = vec3(0.004, 0.76, 0.25);
-      vec3 col_yellow = vec3(1.00, 0.56, 0.006);
-      vec3 col_red = vec3(1.00, 0.008, 0.012);
-      vec3 base_lin = mix(mix(col_green, col_yellow, t_gy), col_red, t_yr);
+      // Recover a single monotonic, continuous braking-heat scalar u_heat in [0, 1] from
+      // drive::driving_line_color() (Green {44,147,44} -> Yellow {192,164,52} -> Red {192,39,52}),
+      // staying smooth and artifact-free across GPU-interpolated quads.
+      float t_lo = clamp((v_colour.r - 0.17255) / (0.75294 - 0.17255), 0.0, 1.0);
+      float g_expected = 0.57647 + 0.06667 * t_lo;
+      float t_hi = clamp((g_expected - v_colour.g) / (0.64314 - 0.15294), 0.0, 1.0);
+      float u_heat = 0.5 * (t_lo + t_hi);
 
-      vec3 hi_green = vec3(0.16, 0.98, 0.54);
-      vec3 hi_yellow = vec3(1.00, 0.88, 0.22);
-      vec3 hi_red = vec3(1.00, 0.26, 0.16);
-      vec3 core_lin = mix(mix(hi_green, hi_yellow, t_gy), hi_red, t_yr);
+      // Perceptually smooth 4-stop sRGB gradient (converted to linear afterward so yellow,
+      // amber-orange, and crimson red never snap abruptly under gamma encoding):
+      //   0.00 = crisp translucent FH1 emerald-teal throttle
+      //   0.48 = warm golden yellow coast/lift
+      //   0.74 = rich amber-orange early braking
+      //   1.00 = vivid crimson red full braking
+      vec3 srgb_green  = vec3(0.16, 0.74, 0.42);
+      vec3 srgb_yellow = vec3(0.95, 0.80, 0.18);
+      vec3 srgb_orange = vec3(0.97, 0.45, 0.10);
+      vec3 srgb_red    = vec3(0.92, 0.13, 0.15);
 
-      const float kChevronPitch = 3.4;   // meters between successive chevron arrows (grazing-angle clarity)
-      const float kChevronSweep = 1.48;  // sleek forward-pointing V-wing rearward sweep from apex
+      vec3 srgb_col = mix(srgb_green, srgb_yellow, smoothstep(0.00, 0.48, u_heat));
+      srgb_col = mix(srgb_col, srgb_orange, smoothstep(0.46, 0.76, u_heat));
+      srgb_col = mix(srgb_col, srgb_red,    smoothstep(0.72, 1.00, u_heat));
+
+      const float kChevronPitch = 2.6;   // meters between successive chevrons (matches showroom_draw.cpp)
+      const float kChevronSweep = 0.78;  // sleek shallow V-wing sweep matched to 0.38 m half-width
       float au = abs(v_uv0.x);
       float chev_s = v_uv0.y + au * kChevronSweep;
       float cell_u = chev_s / kChevronPitch;
       float phase = fract(cell_u);
 
-      float aa_s = max(fwidth(cell_u), 0.010);
-      float aa_u = max(fwidth(v_uv0.x), 0.012);
+      float aa_s = max(fwidth(cell_u), 0.012);
+      float aa_u = max(fwidth(v_uv0.x), 0.014);
 
-      // Forward-pointing V chevron with crisp leading and trailing edges, clean asphalt gaps,
-      // and tapered wing tips (static world-locked FH1 3D arrows; no trailing smear or wave).
-      float wing_taper = au * 0.075;
-      float back_edge = smoothstep(0.42 + wing_taper - aa_s * 0.75, 0.46 + wing_taper + aa_s * 0.75, phase);
-      float front_edge = 1.0 - smoothstep(0.84 - aa_s * 0.75, 0.88 + aa_s * 0.75, phase);
+      // Sleek feathered continuous translucent ribbon base (no hard rectangular edges).
+      float lat_ribbon = 1.0 - smoothstep(0.48 - aa_u, 0.94 + aa_u, au);
+      float spine_soft = 1.0 - smoothstep(0.0, 0.65, au);
+
+      // Crisp, understated forward-pointing directional chevron embedded inside the ribbon.
+      float wing_taper = au * 0.065;
+      float back_edge = smoothstep(0.54 + wing_taper - aa_s * 0.85, 0.59 + wing_taper + aa_s * 0.85, phase);
+      float front_edge = 1.0 - smoothstep(0.82 - aa_s * 0.85, 0.87 + aa_s * 0.85, phase);
       float chev_raw = back_edge * front_edge;
-      // Smoothly filter chevrons in the far distance so individual arrows never shimmer or moire.
-      float far_filter = smoothstep(0.20, 0.52, aa_s);
-      float chev_mask = mix(chev_raw, 0.42, far_filter);
+      // Smoothly filter chevrons in the far distance so arrows dissolve cleanly into the ribbon.
+      float far_filter = smoothstep(0.18, 0.48, aa_s);
+      float chev_mask = mix(chev_raw, 0.28, far_filter);
+      float chev_lat = 1.0 - smoothstep(0.62 - aa_u, 0.90 + aa_u, au);
+      float chev = chev_mask * chev_lat;
 
-      // Sleek feathered translucent lateral boundaries (never a hard rectangular ribbon edge).
-      float lat_core = 1.0 - smoothstep(0.62 - aa_u, 0.80 + aa_u, au);
+      // Subtle leading-edge chevron sheen (refined, never blown-out neon).
+      float lead_rim = smoothstep(0.68, 0.83, phase) * front_edge * (1.0 - far_filter) * chev_lat;
+      float highlight = clamp(lead_rim * 0.34 + chev * 0.14 + spine_soft * 0.08, 0.0, 0.45);
+      vec3 srgb_lit = mix(srgb_col, min(srgb_col + vec3(0.15, 0.15, 0.13), vec3(1.0)), highlight);
+      vec3 lin_col = pow(max(srgb_lit, vec3(0.0)), vec3(2.2));
+      float tod_gain = mix(1.0, 0.74, clamp(frame.sky_color.w, 0.0, 1.0));
 
-      // 3D beveled arrow core + luminous leading ridge.
-      float lead_rim = smoothstep(0.64, 0.84, phase) * front_edge * (1.0 - far_filter);
-      float spine_bevel = (1.0 - smoothstep(0.0, 0.52, au)) * chev_mask;
-
-      float highlight = clamp(lead_rim * 0.42 + spine_bevel * 0.18, 0.0, 0.55);
-      vec3 col = mix(base_lin, core_lin, highlight) * 1.05;
-      float shape_a = clamp(chev_mask * lat_core * 0.86, 0.0, 0.86);
+      // Continuous translucent ribbon + slightly stronger directional chevrons; braking zones
+      // gain modest extra presence over calm throttle segments for immediate readability.
+      float brake_presence = mix(1.0, 1.18, smoothstep(0.45, 0.90, u_heat));
+      float ribbon_a = lat_ribbon * (0.26 + 0.08 * spine_soft);
+      float chev_a = chev * 0.38;
+      float shape_a = clamp((ribbon_a + chev_a) * brake_presence, 0.0, 0.78);
       float a = shape_a * v_colour.a;
-      vec3 encoded = a > 0.004 ? out_rgb(col * draw.up.w) : vec3(0.0);
+      vec3 encoded = a > 0.004 ? out_rgb(lin_col * draw.up.w * tod_gain) : vec3(0.0);
       out_color = vec4(encoded * a, a);
       return;
     }

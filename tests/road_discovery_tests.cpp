@@ -1,15 +1,21 @@
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "drive/save.h"
+#include "freeroam/collectibles.h"
 #include "freeroam/road_discovery.h"
 #include "map_view.h"
 #include "profile/drive_save.h"
 #include "profile/profile.h"
 #include "settings_page.h"
+#include "traffic/gps.h"
 #include "traffic/nav.h"
 
 namespace {
@@ -183,6 +189,76 @@ void test_unvisited_distance_threshold_75m() {
   check(!rd.is_segment_discovered(p0, p1), "segment requires both endpoints visited");
 }
 
+void test_map_edge_clamping_internal_size_and_filters() {
+  // PT-09: 4K pause map renders at capped internal resolution <= 1600x900 preserving aspect.
+  const auto sz4k = carview::MapView::pause_internal_size(3840, 2071);
+  check(sz4k[0] <= 1600 && sz4k[1] <= 900 && sz4k[0] >= 1200 && sz4k[1] >= 600,
+        "4K pause_internal_size caps to <= 1600x900");
+  const double ar_in = 3840.0 / 2071.0, ar_out = double(sz4k[0]) / double(sz4k[1]);
+  check(std::fabs(ar_in - ar_out) < 0.01, "4K pause_internal_size preserves aspect ratio");
+  const auto sz720 = carview::MapView::pause_internal_size(1280, 720);
+  check(sz720[0] == 1280 && sz720[1] == 720, "720p pause_internal_size renders 1:1");
+
+  // PT-32: MapCameraController keeps visible viewport strictly inside Colorado texture bounds
+  // across 16:9, 4K (3840x2071), 21:9 ultrawide, and 4:3 aspect ratios at extreme pan & zoom-out.
+  const std::pair<int, int> viewports[] = {{1280, 720}, {3840, 2071}, {2560, 1080}, {1280, 960}};
+  const double west = freeroam::kMapWest;
+  const double east = freeroam::kMapWest + freeroam::kMapWidth;
+  const double south = freeroam::kMapNorth - freeroam::kMapHeight;
+  const double north = freeroam::kMapNorth;
+  for (const auto& [vw, vh] : viewports) {
+    carview::MapCameraController cam;
+    cam.set_viewport(vw, vh, nullptr);
+    cam.reset(-50000.0, -50000.0, 0.25);
+    check(cam.zoom() >= cam.min_zoom() - 1e-9, "camera zoom clamped >= min_zoom");
+    const double max_scale = std::min((freeroam::kMapWidth * 0.996) / double(vw),
+                                      (freeroam::kMapHeight * 0.996) / double(vh));
+    const double scale = max_scale * (cam.min_zoom() / cam.zoom());
+    const double hw = 0.5 * double(vw) * scale;
+    const double hh = 0.5 * double(vh) * scale;
+    check(cam.cx() - hw >= west - 1e-3 && cam.cx() + hw <= east + 1e-3,
+          "camera horizontal viewport stays inside Colorado bounds (SW clamp)");
+    check(cam.cz() - hh >= south - 1e-3 && cam.cz() + hh <= north + 1e-3,
+          "camera vertical viewport stays inside Colorado bounds (SW clamp)");
+
+    // Pan far NE and verify clamp + zeroed boundary velocity.
+    cam.reset(50000.0, 50000.0, 3.0);
+    const double scale3 = max_scale * (cam.min_zoom() / cam.zoom());
+    const double hw3 = 0.5 * double(vw) * scale3;
+    const double hh3 = 0.5 * double(vh) * scale3;
+    check(cam.cx() + hw3 <= east + 1e-3 && cam.cz() + hh3 <= north + 1e-3,
+          "camera NE clamp keeps viewport inside Colorado bounds at zoom 3x");
+    cam.step(1.0 / 60.0, 1.0, 1.0, 0.0, {});
+    check(cam.vx() == 0.0 && cam.vz() == 0.0, "velocity zeroes cleanly against map boundary");
+  }
+
+  // PT-34: All 7 retail World Map filter tabs classify markers accurately.
+  carview::MapMarker ev, op_disc, op_lock, sp, sh, sg;
+  ev.kind = carview::MapMarker::kEvent;
+  ev.icon_tag = "race";
+  op_disc.kind = carview::MapMarker::kOutpost;
+  op_disc.icon_tag = "gas_station";
+  op_disc.discovered = true;
+  op_lock.kind = carview::MapMarker::kOutpost;
+  op_lock.icon_tag = "gas_station";
+  op_lock.discovered = false;
+  sp.kind = carview::MapMarker::kSpeedTrap;
+  sp.icon_tag = "speed_camera_discovered";
+  sh.kind = carview::MapMarker::kEvent;
+  sh.icon_tag = "exhibition";
+  sg.icon_tag = "flyer";
+
+  check(carview::map_marker_matches_filter(ev, carview::MapFilter::kEvents), "events filter includes race");
+  check(!carview::map_marker_matches_filter(sh, carview::MapFilter::kEvents), "events filter separates showcases");
+  check(carview::map_marker_matches_filter(sh, carview::MapFilter::kShowcases), "showcases filter includes exhibition");
+  check(carview::map_marker_matches_filter(op_disc, carview::MapFilter::kOutposts), "outposts filter includes outposts");
+  check(carview::map_marker_matches_filter(sp, carview::MapFilter::kSpeed), "speed filter includes speed traps");
+  check(carview::map_marker_matches_filter(sg, carview::MapFilter::kSigns), "signs filter includes flyers");
+  check(carview::map_marker_matches_filter(op_lock, carview::MapFilter::kDiscovery) &&
+            !carview::map_marker_matches_filter(op_disc, carview::MapFilter::kDiscovery),
+        "discovery filter shows undiscovered outposts");
+}
+
 void test_colorado_corpus_optional() {
   const char* gr = std::getenv("SHIFT_GAME_ROOT");
   if (!gr || !*gr) return;
@@ -226,6 +302,123 @@ void test_colorado_corpus_optional() {
   check(img.width == 640 && img.height == 360, "high-res pause_map renders cleanly");
   check(mv.loaded_high_tiles() > 0, "high-res tiles decoded on zoomed render");
   std::printf("MapView high-res pyramid check: %d tile(s) cached at zoom 5x\n", mv.loaded_high_tiles());
+
+  // PT-32: Extreme SW pan + zoomed-out 4K render produces ZERO solid black void border pixels.
+  {
+    const auto edge_img = mv.pause_map(sc, 1600, 900, 0.5, -25000.0, -25000.0);
+    int void_px = 0;
+    for (int y : {0, 4, 895, 899}) {
+      for (int x = 0; x < 1600; x += 16) {
+        const uint8_t* p = &edge_img.rgba[(size_t(y) * 1600 + size_t(x)) * 4];
+        if (p[0] == 12 && p[1] == 12 && p[2] == 14) ++void_px;
+      }
+    }
+    for (int x : {0, 4, 1595, 1599}) {
+      for (int y = 0; y < 900; y += 16) {
+        const uint8_t* p = &edge_img.rgba[(size_t(y) * 1600 + size_t(x)) * 4];
+        if (p[0] == 12 && p[1] == 12 && p[2] == 14) ++void_px;
+      }
+    }
+    check(void_px == 0, "PT-32: extreme SW pan has zero black border void pixels");
+  }
+
+  // PT-33: Verify Horizon Outpost "H" icon (atlas cell 1,2) has valid RGBA and renders
+  // with undiscovered tint without signed-32-bit overflow electric-blue noise speckles.
+  {
+    const auto& atlas = mv.large_icons();
+    check(!atlas.rgba.empty() && atlas.width >= 256 && atlas.height >= 256, "MapIconSheet decoded");
+    const uint32_t cell = atlas.width / 8;
+    int opaque_px = 0;
+    for (uint32_t y = 2 * cell; y < 3 * cell; ++y) {
+      for (uint32_t x = 1 * cell; x < 2 * cell; ++x) {
+        const uint8_t* p = &atlas.rgba[(size_t(y) * atlas.width + x) * 4];
+        if (p[3] > 200) ++opaque_px;
+      }
+    }
+    check(opaque_px > 100, "PT-33: Horizon 'H' icon atlas cell (1,2) has valid opaque pixels");
+
+    carview::MapScene icon_sc = sc;
+    carview::MapMarker op;
+    op.kind = carview::MapMarker::kOutpost;
+    op.icon_tag = "gas_station";
+    op.id = "GasStation_Test";
+    op.x = -610.0;
+    op.z = -255.0;
+    op.discovered = false;
+    icon_sc.markers.push_back(op);
+    const auto icon_img = mv.pause_map(icon_sc, 640, 360, 6.0, op.x, op.z);
+    int blue_corrupt_px = 0;
+    for (int y = 180 - 36; y <= 180 + 36; ++y) {
+      for (int x = 320 - 36; x <= 320 + 36; ++x) {
+        const uint8_t* p = &icon_img.rgba[(size_t(y) * 640 + size_t(x)) * 4];
+        // Signed 32-bit overflow produced electric-blue pixels (B > 180 with R < 50) inside the greyscale-tinted "H".
+        if (int(p[2]) > 180 && int(p[2]) - int(p[0]) > 110) ++blue_corrupt_px;
+      }
+    }
+    check(blue_corrupt_px == 0, "PT-33: undiscovered Horizon 'H' icon renders cleanly with zero overflow artifacts");
+  }
+
+  // PT-35: Minimap at bug_001 (2303.92, 548.02) and bug_023 (-3025.10, -1727.87) with active
+  // green GPS route AND fresh undiscovered roads must show BOTH grey/white road shoulders and dark casing.
+  {
+    freeroam::RoadDiscovery fresh_rd;
+    fresh_rd.build(nav);
+    traffic::GpsSolver solver;
+    solver.build(nav);
+    const struct {
+      const char* tag;
+      double x, z, hdg, spd;
+    } cases[] = {
+        {"bug_001", 2303.92, 548.02, -3.0964, 5.0},
+        {"bug_023", -3025.10, -1727.87, -0.35, 37.5},
+    };
+    for (const auto& tc : cases) {
+      carview::MapScene msc;
+      msc.x = tc.x;
+      msc.z = tc.z;
+      msc.heading = tc.hdg;
+      msc.speed_mps = tc.spd;
+      msc.road_discovery = &fresh_rd;
+      const auto r = solver.solve(tc.x, tc.z, -610.0, -255.0);
+      for (const auto& pt : r.points) msc.gps_route.push_back({pt.x, pt.z});
+      const auto mm = mv.minimap(msc, 256);
+      int road_grey_px = 0, casing_dark_px = 0, gps_green_px = 0;
+      for (size_t i = 0; i < mm.rgba.size(); i += 4) {
+        const int r0 = mm.rgba[i], g0 = mm.rgba[i + 1], b0 = mm.rgba[i + 2], a0 = mm.rgba[i + 3];
+        if (a0 < 80) continue;
+        if (g0 > r0 + 55 && g0 > b0 + 40) {
+          ++gps_green_px;
+        } else if (r0 >= 135 && g0 >= 135 && b0 >= 135 && std::abs(r0 - g0) < 35) {
+          ++road_grey_px;
+        } else if (r0 < 45 && g0 < 45 && b0 < 50 && a0 >= 120) {
+          ++casing_dark_px;
+        }
+      }
+      check(gps_green_px > 40, "PT-35: minimap renders green GPS route at playtest coords");
+      check(road_grey_px > 80, "PT-35: minimap renders visible grey/white road ribbon underneath GPS route");
+      check(casing_dark_px > 60, "PT-35: minimap renders dark road outline casing underneath GPS route");
+      std::printf("PT-35 minimap check (%s): green=%d road_grey=%d casing=%d\n",
+                  tc.tag, gps_green_px, road_grey_px, casing_dark_px);
+    }
+  }
+
+  // PT-09: Cached 4K pause_map panning stays fast (zero 4K base re-rasterization on pan cache hits).
+  {
+    const auto prime = mv.pause_map(sc, 3840, 2071, 3.0, -610.0, -255.0);
+    check(prime.width == 3840 && prime.height == 2071, "PT-09: 4K pause_map outputs full 3840x2071 frame");
+    // Second call at steady zoom populates the padded internal base cache.
+    (void)mv.pause_map(sc, 3840, 2071, 3.0, -600.0, -255.0);
+    const auto t0 = std::chrono::steady_clock::now();
+    constexpr int kPanFrames = 8;
+    for (int f = 0; f < kPanFrames; ++f) {
+      const auto p = mv.pause_map(sc, 3840, 2071, 3.0, -600.0 + double(f + 1) * 18.0, -255.0);
+      check(p.width == 3840 && p.height == 2071, "PT-09: cached 4K pan frame dimensions match");
+    }
+    const double avg_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / double(kPanFrames);
+    std::printf("PT-09 cached 4K pause_map pan average: %.2f ms/frame\n", avg_ms);
+    check(avg_ms < 40.0, "PT-09: cached 4K pause_map panning stays well under 40 ms/frame even unoptimized");
+  }
 }
 
 }  // namespace
@@ -233,6 +426,7 @@ void test_colorado_corpus_optional() {
 int main() {
   test_synthetic_discovery_and_save();
   test_unvisited_distance_threshold_75m();
+  test_map_edge_clamping_internal_size_and_filters();
   test_colorado_corpus_optional();
   if (g_failed == 0) std::printf("road_discovery_tests: PASS\n");
   return g_failed ? 1 : 0;

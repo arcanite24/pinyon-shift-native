@@ -53,15 +53,38 @@ struct DrivingLineOptions {
   static constexpr double kGravity = 9.81;
   static constexpr double kBrakeStepS = 1.0 / 75.0;  // 0.0133333 s fixed step
 
-  double behind_m = 10.0;
-  double ahead_m = 180.0;
+  double behind_m = 0.0;
+  double ahead_m = 175.0;
   double brake_lookahead_m = 320.0;
-  double sample_step_m = 2.0;
-  double half_width_m = 0.55;
+  double sample_step_m = 1.5;
+  double half_width_m = 0.38;
   double lift_m = 0.08;
   double max_speed_mps = 110.0;
-  double safety_factor = 0.9;  // cornering safety factor (spec: 0.8..1.01, 0.9)
+  double safety_factor = 0.9;         // cornering safety factor (spec: 0.8..1.01, 0.9)
+  double exit_accel_mps2 = 6.0;       // corner-exit forward acceleration envelope for smooth colour unwind
+  double color_smooth_sigma_m = 9.0;  // spatial Gaussian smoothing sigma (m) on display target speed
+  double near_fade_start_m = 3.2;     // ahead of car center where ribbon fades in (clears front bumper)
+  double near_fade_end_m = 8.0;       // ahead of car center where ribbon reaches full opacity
+  double far_fade_m = 36.0;           // smooth fade-out distance at far horizon end
   bool fade_ends = true;
+};
+
+// Frame-rate-independent asymmetric temporal low-pass filter on effective car speed
+// for driving-line colour evaluation: responsive when accelerating toward a braking
+// zone, calm on brief throttle lifts or wheel-speed jitters so the line never flashes.
+struct DrivingLineSmoother {
+  double tau_up_s = 0.14;
+  double tau_down_s = 0.24;
+  double snap_delta_mps = 25.0;
+  double speed_mps = 0.0;
+  bool initialized = false;
+
+  void reset() {
+    speed_mps = 0.0;
+    initialized = false;
+  }
+
+  double update(double raw_speed_mps, double dt_s);
 };
 
 struct DrivingLineSample {

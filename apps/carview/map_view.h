@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,15 +27,20 @@
 #include "freeroam/road_discovery.h"
 #include "hud.h"
 
+namespace fh1 {
+class Archive;
+}
+
 namespace carview {
 
 enum class MapFilter : int {
   kAll = 0,
   kEvents,
-  kStreetRaces,
   kOutposts,
-  kCollectibles,
-  kPrStunts,
+  kSpeed,
+  kSigns,
+  kShowcases,
+  kDiscovery,
   kCount
 };
 
@@ -42,10 +48,11 @@ inline const char* map_filter_name(MapFilter f) {
   switch (f) {
     case MapFilter::kAll: return "ALL";
     case MapFilter::kEvents: return "EVENTS";
-    case MapFilter::kStreetRaces: return "STREET";
     case MapFilter::kOutposts: return "OUTPOSTS";
-    case MapFilter::kCollectibles: return "COLLECTIBLES";
-    case MapFilter::kPrStunts: return "PR STUNTS";
+    case MapFilter::kSpeed: return "SPEED";
+    case MapFilter::kSigns: return "SIGNS";
+    case MapFilter::kShowcases: return "SHOWCASES";
+    case MapFilter::kDiscovery: return "DISCOVERY";
     default: return "ALL";
   }
 }
@@ -63,6 +70,8 @@ struct MapMarker {
   bool discovered = true;  // false for undiscovered outposts
   int site_or_hub = 0;  // FestivalSite::Kind, StreetHub::id, or Outpost index
 };
+
+bool map_marker_matches_filter(const MapMarker& m, MapFilter f);
 
 struct MapScene {
   double x = 0, z = 0;  // the player, game frame
@@ -95,6 +104,11 @@ struct MapScene {
 
 class MapView {
  public:
+  MapView();
+  ~MapView();
+  MapView(MapView&&) noexcept;
+  MapView& operator=(MapView&&) noexcept;
+
   // Reads colorado.nav, the map profiles and Horizon.zip's map textures
   // under `game_root` (loading localized MapIconSheet for `lang` with EN fallback).
   bool open(const std::filesystem::path& game_root, std::string* error, const std::string& lang = "EN");
@@ -102,11 +116,19 @@ class MapView {
 
   // The minimap panel, size x size pixels.
   HudImage minimap(const MapScene& scene, int size) const;
-  // The pause map panel; `zoom` 1 shows every road, larger zooms in on
-  // (cx, cz).
+  // The pause map panel; `zoom` >= min_zoom fits strictly inside the authored
+  // Colorado map bounds with zero black borders, larger zooms in on (cx, cz).
   HudImage pause_map(const MapScene& scene, int width, int height, double zoom, double cx, double cz) const;
+  // Minimum zoom factor for (width, height) that keeps the full viewport inside
+  // the Colorado map texture bounds (zero black borders at any aspect ratio).
+  double min_zoom(int width, int height) const;
   // Metres per pixel at the given viewport size and zoom (matches pause_map).
   double map_scale(int width, int height, double zoom) const;
+  // Clamps (cx, cz) so the visible viewport at (width, height, zoom) stays
+  // strictly within Colorado's authored map texture bounds.
+  void clamp_camera(int width, int height, double zoom, double& cx, double& cz) const;
+  // Internal raster dimensions used by pause_map (capped <= 1600x900 for smooth 120 FPS panning).
+  static std::array<int, 2> pause_internal_size(int width, int height);
   // The middle of the road network (the pause map's first centre at zoom 1).
   std::array<double, 2> roads_centre() const { return {(min_x_ + max_x_) / 2, (min_z_ + max_z_) / 2}; }
 
@@ -136,6 +158,8 @@ class MapView {
   int loaded_high_tiles() const;
   // True when retail New.xds badge texture was loaded from Horizon.zip.
   bool has_new_badge() const { return !new_badge_.rgba.empty(); }
+  const Atlas& large_icons() const { return large_icons_; }
+  const Atlas& small_icons() const { return small_icons_; }
 
  private:
   void ensure_high_tiles(int c0, int c1, int r0, int r1) const;
@@ -158,9 +182,16 @@ class MapView {
     uint32_t loaded_tiles_mask = 0;
     std::vector<uint8_t> rgba;
   };
+  struct UpscaleLut {
+    int src_w = 0, dst_w = 0;
+    std::vector<int> x0, x1;
+    std::vector<uint16_t> fx;
+  };
   uint32_t high_tiles_mask() const;
   void render_pause_base(std::vector<uint8_t>& rgba, int w, int h, double scale, double hi_blend, double cx, double cz,
                          const freeroam::RoadDiscovery* road_discovery) const;
+  void upscale_pause_rgba(const std::vector<uint8_t>& src, int sw, int sh,
+                          std::vector<uint8_t>& dst, int dw, int dh) const;
 
   std::vector<Road> roads_;
   // A coarse grid of road segments for the minimap: (road, segment) by cell.
@@ -170,10 +201,13 @@ class MapView {
   Profile mini_, full_;
   Atlas small_icons_, large_icons_, background_, new_badge_;
   std::filesystem::path horizon_zip_path_;
+  mutable std::shared_ptr<fh1::Archive> horizon_zip_;
   static constexpr int kHighCols = 5, kHighRows = 3, kHighTileSize = 1024;
   mutable std::array<Atlas, 15> high_tiles_{};
   mutable std::array<uint8_t, 15> high_tile_state_{};  // 0 unloaded, 1 loaded, 2 failed
   mutable PauseBaseCache base_cache_;
+  mutable std::vector<uint8_t> work_rgba_;
+  mutable UpscaleLut upscale_lut_;
 };
 
 // Smooth, dt-integrated fullscreen map camera controller: continuous
@@ -181,6 +215,8 @@ class MapView {
 // interpolation, and gentle magnetic snap to nearby visible markers.
 class MapCameraController {
  public:
+  void set_viewport(int width, int height, const MapView* view = nullptr);
+  double min_zoom() const;
   void reset(double cx, double cz, double zoom = 2.0);
   void nudge_target_zoom(double factor);
   void pan_direct(double dx, double dz);
@@ -204,6 +240,8 @@ class MapCameraController {
   double vx_ = 0.0, vz_ = 0.0;
   double zoom_ = 2.0, target_zoom_ = 2.0;
   int snapped_marker_ = -1;
+  int view_w_ = 1600, view_h_ = 900;
+  const MapView* map_view_ = nullptr;
 };
 
 }  // namespace carview

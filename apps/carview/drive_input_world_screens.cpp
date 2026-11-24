@@ -387,7 +387,9 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
-            // 4. Interactive Pause Map (smooth continuous pan/zoom, magnetic snap & Enter/A to Fast Travel!).
+            // 4. Interactive Pause Map (1:1 retail FH1 controls: A/Enter/Click sets GPS
+            //    keeping the map open, X/F Fast Travels or clears GPS, Y/Tab centers on car,
+            //    LB/RB or Q/E cycles filters, LT/RT/wheel zooms, B/Esc/M/Back closes).
             if (map_open) {
               bool close = false;
               auto zoom_by = [&](double f) {
@@ -401,109 +403,25 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 map_dirty = true;
                 update_map_selection();
               };
-              auto map_activate = [&]() {
-                if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
-                  const MapMarker m = cached_map_markers[size_t(map_selected_marker)];
-                  close_map();
-                  if (m.kind == MapMarker::kEvent) {
-                    if (const auto* ev = app.career_catalog.find_event(m.id)) try_enter_event(*ev);
-                    return;
-                  }
-                  if (m.kind == MapMarker::kFestivalSite) {
-                    const auto kind = race::FestivalSite::Kind(m.site_or_hub);
-                    if (kind == race::FestivalSite::kRaceCentral) {
-                      if (!collect_next_wristband()) open_events_browser(0);
-                    } else if (kind == race::FestivalSite::kAutoshow) open_shop_or_autoshow(true);
-                    else if (kind == race::FestivalSite::kWorkshop) open_shop_or_autoshow(false);
-                    else if (kind == race::FestivalSite::kPaintShop) open_paint();
-                  } else if (m.kind == MapMarker::kStreetHub) {
-                    open_events_browser(m.site_or_hub);
-                  } else if (m.kind == MapMarker::kOutpost && app.have_outposts) {
-                    if (const auto* op = app.outposts.find_outpost(m.id)) {
-                      const drive::Vec3 at = vehicle.position();
-                      if (std::hypot(op->trigger.x - at.x, op->trigger.z - at.z) <= std::max(180.0, op->discovery_radius)) {
-                        open_outpost_hub(op->id);
-                      } else if (app.outpost_progress.is_outpost_discovered(op->id) ||
-                                 slice12.trainer.effective_fast_travel_anywhere()) {
-                        if (app.race != nullptr) {
-                          notice = "QUIT RACE TO FAST TRAVEL";
-                          notice_until = vehicle.time() + 3.0;
-                        } else {
-                          // Retail FH1 Fast Travel fee: FREE (0 CR) once all 3 PR Stunts at this
-                          // Outpost are completed (or Fast Travel Anywhere is enabled); otherwise
-                          // 10,000 CR (Discount Signs discount upgrades, not Fast Travel).
-                          const bool ft_free = slice12.trainer.effective_fast_travel_anywhere() ||
-                                               app.outpost_progress.is_outpost_fast_travel_free(app.outposts, op->id);
-                          const int64_t ft_fee = ft_free ? 0 : 10000LL;
-                          if (ft_fee > 0 && app.career.credits < ft_fee) {
-                            notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
-                            notice_until = vehicle.time() + 3.5;
-                            app.audio_host.trigger_ui(audio::UiCue::kError);
-                          } else {
-                            if (ft_fee > 0) {
-                              app.career.credits -= ft_fee;
-                              save_now("fast travel");
-                            }
-                            app.spawn[0] = op->spawn.x;
-                            app.spawn[1] = 0.0;
-                            app.spawn[2] = op->spawn.z;
-                            app.spawn[3] = std::atan2(op->spawn.z_axis[0], op->spawn.z_axis[2]);
-                            app.have_spawn = true;
-                            app.fast_travel = true;
-                            app.next_car = app.car;
-                            running = false;
-                          }
-                        }
-                      } else if (app.gps_solver.ready()) {
-                        fire_satnav_event(app.gps_nav.set_destination(op->trigger.x, op->trigger.z,
-                                                                  traffic::GpsDestKind::kOutpost, op->display_name,
-                                                                  at.x, at.z));
-                        notice = "DRIVE TO OUTPOST TO UNLOCK FAST TRAVEL";
-                        notice_until = vehicle.time() + 3.5;
-                      }
-                    }
-                  } else if (m.kind == MapMarker::kPrStunt && app.have_outposts) {
-                    if (const auto* st = app.outposts.find_stunt(m.id)) {
-                      if (app.race == nullptr) start_pr_stunt(*st);
-                    }
-                  }
-                  return;
-                }
-                if (app.race != nullptr) {
-                  close_map();
-                  notice = "QUIT RACE TO FAST TRAVEL";
-                  notice_until = vehicle.time() + 3.0;
-                  return;
-                }
-                if (!slice12.trainer.effective_fast_travel_anywhere()) {
-                  // Retail FH1: Fast Travel is Outpost-only; clicking open map sets GPS waypoint.
-                  if (app.gps_solver.ready()) {
-                    const drive::Vec3 at = vehicle.position();
-                    fire_satnav_event(app.gps_nav.set_destination(map_cx, map_cz, traffic::GpsDestKind::kGeneric,
-                                                                  "CUSTOM WAYPOINT", at.x, at.z));
-                    notice = "GPS WAYPOINT SET (FAST TRAVEL AT DISCOVERED OUTPOSTS)";
-                    notice_until = vehicle.time() + 3.5;
-                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                  }
-                  return;
-                }
-                // Trainer Fast Travel Anywhere enabled: teleport directly to map cursor.
-                close_map();
-                app.spawn[0] = map_cx, app.spawn[1] = 0.0, app.spawn[2] = map_cz, app.spawn[3] = 0.0;
-                app.have_spawn = true;
-                app.fast_travel = true;
-                app.next_car = app.car;
-                running = false;
-              };
-              auto map_set_gps = [&]() {
-                if (!app.gps_solver.ready() || app.race != nullptr) return;
+              auto map_center_on_car = [&]() {
                 const drive::Vec3 at = vehicle.position();
-                double tx = map_cx, tz = map_cz;
-                std::string label = "CUSTOM WAYPOINT";
-                traffic::GpsDestKind dk = traffic::GpsDestKind::kGeneric;
+                map_cam.reset(at.x, at.z, map_zoom);
+                map_cx = map_cam.cx();
+                map_cz = map_cam.cz();
+                map_zoom = map_cam.zoom();
+                map_dirty = true;
+                update_map_selection();
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              };
+              auto resolve_gps_target = [&](double& tx, double& tz, std::string& label, traffic::GpsDestKind& dk) {
+                tx = map_cx;
+                tz = map_cz;
+                label = "CUSTOM WAYPOINT";
+                dk = traffic::GpsDestKind::kGeneric;
                 if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
                   const auto& m = cached_map_markers[size_t(map_selected_marker)];
-                  tx = m.x, tz = m.z;
+                  tx = m.x;
+                  tz = m.z;
                   label = m.title;
                   if (m.kind == MapMarker::kEvent) {
                     dk = m.icon_tag == "exhibition" ? traffic::GpsDestKind::kShowcase
@@ -519,26 +437,230 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                     else if (sk == race::FestivalSite::kWorkshop) dk = traffic::GpsDestKind::kWorkshop;
                     else if (sk == race::FestivalSite::kPaintShop) dk = traffic::GpsDestKind::kPaintShop;
                   }
+                  return;
                 }
-                // Toggle off if pressing GPS again on the existing destination.
-                if (app.gps_nav.active() && std::hypot(tx - app.gps_nav.route().dest_x, tz - app.gps_nav.route().dest_z) < 120.0) {
+                const bool show_barns = map_filter == MapFilter::kAll || map_filter == MapFilter::kDiscovery;
+                const bool show_signs = map_filter == MapFilter::kAll || map_filter == MapFilter::kSigns ||
+                                        map_filter == MapFilter::kDiscovery;
+                if ((show_barns || show_signs) && app.progress_loaded) {
+                  const bool reveal = app.reveal || app.treasure_map_setting ||
+                                      slice12.trainer.effective_reveal_collectibles();
+                  double best_cd = 280.0 / std::max(0.5, map_zoom);
+                  if (show_barns) {
+                    for (size_t bi = 0; bi < app.collectibles.barns.size(); ++bi) {
+                      const auto& b = app.collectibles.barns[bi];
+                      const int st = bi < app.progress.barns.size() ? app.progress.barns[bi].status : freeroam::kBarnNotSpawned;
+                      if (st != freeroam::kBarnFound && st != freeroam::kBarnRumour && !reveal) continue;
+                      const double d = std::hypot(b.at.x - map_cx, b.at.z - map_cz);
+                      if (d < best_cd) {
+                        best_cd = d;
+                        tx = b.at.x;
+                        tz = b.at.z;
+                        label = b.name.empty() ? "BARN FIND" : b.name;
+                      }
+                    }
+                  }
+                  if (show_signs) {
+                    for (const auto& sign : app.collectibles.signs) {
+                      const bool found = app.progress.signs_found.count(sign.id) > 0;
+                      if (!found && !reveal) continue;
+                      const double d = std::hypot(sign.at.x - map_cx, sign.at.z - map_cz);
+                      if (d < best_cd) {
+                        best_cd = d;
+                        tx = sign.at.x;
+                        tz = sign.at.z;
+                        label = "DISCOUNT SIGN";
+                      }
+                    }
+                  }
+                }
+              };
+              auto map_set_gps = [&]() {
+                if (app.race != nullptr) {
+                  notice = "GPS UNAVAILABLE DURING RACE";
+                  notice_until = vehicle.time() + 2.5;
+                  app.audio_host.trigger_ui(audio::UiCue::kError);
+                  return;
+                }
+                if (!app.gps_solver.ready()) return;
+                const drive::Vec3 at = vehicle.position();
+                double tx = map_cx, tz = map_cz;
+                std::string label;
+                traffic::GpsDestKind dk = traffic::GpsDestKind::kGeneric;
+                resolve_gps_target(tx, tz, label, dk);
+                // Toggle off if pressing A/Enter/Click again on the active GPS destination;
+                // ALWAYS keep the World Map open so the player can inspect the GPS route!
+                if (app.gps_nav.active() &&
+                    std::hypot(tx - app.gps_nav.route().dest_x, tz - app.gps_nav.route().dest_z) < 120.0) {
                   app.gps_nav.clear();
                   app.audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
                 } else {
                   const auto gev = app.gps_nav.set_destination(tx, tz, dk, label, at.x, at.z);
                   fire_satnav_event(gev);
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
                 }
                 map_dirty = true;
                 update_map_selection();
               };
+              auto map_fast_travel_or_secondary = [&]() {
+                const drive::Vec3 at = vehicle.position();
+                const bool ft_anywhere = slice12.trainer.effective_fast_travel_anywhere();
+                double target_x = map_cx, target_z = map_cz;
+                std::string target_lbl;
+                traffic::GpsDestKind target_dk = traffic::GpsDestKind::kGeneric;
+                resolve_gps_target(target_x, target_z, target_lbl, target_dk);
+                const bool hovering_gps_dest =
+                    app.gps_nav.active() &&
+                    std::hypot(target_x - app.gps_nav.route().dest_x, target_z - app.gps_nav.route().dest_z) < 120.0;
+
+                if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
+                  const MapMarker m = cached_map_markers[size_t(map_selected_marker)];
+                  const double player_dist = std::hypot(m.x - at.x, m.z - at.z);
+                  if (m.kind == MapMarker::kOutpost && app.have_outposts) {
+                    if (const auto* op = app.outposts.find_outpost(m.id)) {
+                      if (player_dist <= std::max(180.0, op->discovery_radius)) {
+                        close_map();
+                        open_outpost_hub(op->id);
+                        return;
+                      }
+                      if (app.outpost_progress.is_outpost_discovered(op->id) || ft_anywhere) {
+                        if (app.race != nullptr) {
+                          notice = "QUIT RACE TO FAST TRAVEL";
+                          notice_until = vehicle.time() + 3.0;
+                          app.audio_host.trigger_ui(audio::UiCue::kError);
+                          return;
+                        }
+                        // Retail FH1 Fast Travel fee: FREE once all 3 PR Stunts at this Outpost
+                        // are completed (or Fast Travel Anywhere is enabled); otherwise 10,000 CR.
+                        const bool ft_free = ft_anywhere ||
+                                             app.outpost_progress.is_outpost_fast_travel_free(app.outposts, op->id);
+                        const int64_t ft_fee = ft_free ? 0 : 10000LL;
+                        if (ft_fee > 0 && app.career.credits < ft_fee) {
+                          notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
+                          notice_until = vehicle.time() + 3.5;
+                          app.audio_host.trigger_ui(audio::UiCue::kError);
+                          return;
+                        }
+                        if (ft_fee > 0) {
+                          app.career.credits -= ft_fee;
+                          save_now("fast travel");
+                        }
+                        close_map();
+                        app.spawn[0] = op->spawn.x;
+                        app.spawn[1] = 0.0;
+                        app.spawn[2] = op->spawn.z;
+                        app.spawn[3] = std::atan2(op->spawn.z_axis[0], op->spawn.z_axis[2]);
+                        app.have_spawn = true;
+                        app.fast_travel = true;
+                        app.next_car = app.car;
+                        running = false;
+                        return;
+                      }
+                      if (app.gps_nav.active() && !hovering_gps_dest) {
+                        app.gps_nav.clear();
+                        app.audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
+                        map_dirty = true;
+                        update_map_selection();
+                        return;
+                      }
+                      notice = "DRIVE TO OUTPOST TO UNLOCK FAST TRAVEL";
+                      notice_until = vehicle.time() + 3.5;
+                      app.audio_host.trigger_ui(audio::UiCue::kError);
+                      return;
+                    }
+                  } else if (m.kind == MapMarker::kFestivalSite) {
+                    if (player_dist <= 180.0) {
+                      close_map();
+                      const auto kind = race::FestivalSite::Kind(m.site_or_hub);
+                      if (kind == race::FestivalSite::kRaceCentral) {
+                        if (!collect_next_wristband()) open_events_browser(0);
+                      } else if (kind == race::FestivalSite::kAutoshow) open_shop_or_autoshow(true);
+                      else if (kind == race::FestivalSite::kWorkshop) open_shop_or_autoshow(false);
+                      else if (kind == race::FestivalSite::kPaintShop) open_paint();
+                      return;
+                    }
+                    if (app.race != nullptr) {
+                      notice = "QUIT RACE TO FAST TRAVEL";
+                      notice_until = vehicle.time() + 3.0;
+                      app.audio_host.trigger_ui(audio::UiCue::kError);
+                      return;
+                    }
+                    close_map();
+                    app.spawn[0] = m.x;
+                    app.spawn[1] = 0.0;
+                    app.spawn[2] = m.z;
+                    app.spawn[3] = 0.0;
+                    app.have_spawn = true;
+                    app.fast_travel = true;
+                    app.next_car = app.car;
+                    running = false;
+                    return;
+                  } else if (m.kind == MapMarker::kEvent && player_dist <= 180.0) {
+                    close_map();
+                    if (const auto* ev = app.career_catalog.find_event(m.id)) try_enter_event(*ev);
+                    return;
+                  } else if (m.kind == MapMarker::kStreetHub && player_dist <= 180.0) {
+                    close_map();
+                    open_events_browser(m.site_or_hub);
+                    return;
+                  } else if (m.kind == MapMarker::kPrStunt && player_dist <= 180.0 && app.have_outposts) {
+                    if (const auto* st = app.outposts.find_stunt(m.id)) {
+                      if (app.race == nullptr) {
+                        close_map();
+                        start_pr_stunt(*st);
+                      }
+                    }
+                    return;
+                  }
+                }
+
+                if (ft_anywhere) {
+                  if (app.race != nullptr) {
+                    notice = "QUIT RACE TO FAST TRAVEL";
+                    notice_until = vehicle.time() + 3.0;
+                    app.audio_host.trigger_ui(audio::UiCue::kError);
+                    return;
+                  }
+                  close_map();
+                  app.spawn[0] = target_x;
+                  app.spawn[1] = 0.0;
+                  app.spawn[2] = target_z;
+                  app.spawn[3] = 0.0;
+                  app.have_spawn = true;
+                  app.fast_travel = true;
+                  app.next_car = app.car;
+                  running = false;
+                  return;
+                }
+
+                if (app.gps_nav.active() && !hovering_gps_dest) {
+                  app.gps_nav.clear();
+                  app.audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  map_dirty = true;
+                  update_map_selection();
+                  return;
+                }
+
+                map_center_on_car();
+              };
+
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
-                if (!e.key.repeat && (k == SDLK_M || k == SDLK_ESCAPE)) close = true;
-                if (!e.key.repeat && (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE)) map_activate();
-                if (!e.key.repeat && k == SDLK_G) map_set_gps();
+                if (!e.key.repeat && (k == SDLK_M || k == SDLK_ESCAPE)) {
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  close = true;
+                }
+                if (!e.key.repeat && (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE || k == SDLK_G)) {
+                  map_set_gps();
+                }
+                if (!e.key.repeat && k == SDLK_F) map_fast_travel_or_secondary();
+                if (!e.key.repeat && k == SDLK_TAB) map_center_on_car();
                 if (!e.key.repeat && k == SDLK_C && app.gps_nav.active()) {
                   app.gps_nav.clear();
                   app.audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
                   map_dirty = true;
                   update_map_selection();
                 }
@@ -548,11 +670,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                   map_filter = MapFilter((int(map_filter) + int(MapFilter::kCount) - 1) % int(MapFilter::kCount));
                   map_dirty = true;
                   update_map_selection();
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
-                if (!e.key.repeat && (k == SDLK_E || k == SDLK_TAB)) {
+                if (!e.key.repeat && k == SDLK_E) {
                   map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
                   map_dirty = true;
                   update_map_selection();
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
                 // WASD / arrow panning is polled continuously each frame via MapCameraController (no discrete jumps!).
               }
@@ -580,7 +704,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 map_drag_start_y = e.button.y;
               }
               if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_RIGHT) {
-                screen_click_to_map(e.button.x, e.button.y);
+                app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                close = true;
               }
               if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT) {
                 const bool was_click = map_dragging && !map_drag_moved;
@@ -593,30 +718,33 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                     std::hypot(double(e.motion.x - map_drag_start_x), double(e.motion.y - map_drag_start_y)) > 6.0) {
                   map_drag_moved = true;
                 }
+                int win_w = map_w, win_h = map_h;
+                if (app.window) SDL_GetWindowSize(app.window, &win_w, &win_h);
+                const double dpi_x = (win_w > 64) ? (double(map_w) / double(win_w)) : 1.0;
+                const double dpi_y = (win_h > 64) ? (double(map_h) / double(win_h)) : 1.0;
                 const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
-                pan_by(-double(e.motion.xrel) * mpp, double(e.motion.yrel) * mpp);
+                pan_by(-double(e.motion.xrel) * dpi_x * mpp, double(e.motion.yrel) * dpi_y * mpp);
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_BACK)
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_BACK) {
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
                   close = true;
-                if (b == SDL_GAMEPAD_BUTTON_SOUTH) map_activate();
-                if (b == SDL_GAMEPAD_BUTTON_WEST) map_set_gps();
-                if (b == SDL_GAMEPAD_BUTTON_NORTH && app.gps_nav.active()) {
-                  app.gps_nav.clear();
-                  app.audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
-                  map_dirty = true;
-                  update_map_selection();
                 }
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) map_set_gps();
+                if (b == SDL_GAMEPAD_BUTTON_WEST) map_fast_travel_or_secondary();
+                if (b == SDL_GAMEPAD_BUTTON_NORTH) map_center_on_car();
                 if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
                   map_filter = MapFilter((int(map_filter) + int(MapFilter::kCount) - 1) % int(MapFilter::kCount));
                   map_dirty = true;
                   update_map_selection();
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
                 if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
                   map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
                   map_dirty = true;
                   update_map_selection();
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
                 // D-pad panning is polled continuously each frame via MapCameraController (no discrete jumps!).
               }

@@ -1118,6 +1118,15 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
 }
 
 void DriveSession::update_driving_line_overlay() {
+  struct DrivingLineOverlayState {
+    drive::DrivingLineSmoother speed_smoother;
+    double last_time_s = -1.0;
+    bool last_race = false;
+    drive::DrivingLineMode last_mode = drive::DrivingLineMode::kOff;
+  };
+  static std::unordered_map<const DriveSession*, DrivingLineOverlayState> dl_states;
+  auto& dl_state = dl_states[this];
+
   const bool want_race_dl = app.race && !grid_menu_open && !app.race->player_finished() &&
                             driving_line_mode != drive::DrivingLineMode::kOff;
   const bool want_gps_dl = !app.race && !app.show_title && !app.fmv_player.active() &&
@@ -1125,12 +1134,29 @@ void DriveSession::update_driving_line_overlay() {
                            app.gps_nav.active() && app.gps_nav.route().valid &&
                            app.gps_nav.route().points.size() >= 2;
   if (!want_race_dl && !want_gps_dl) {
+    dl_state.speed_smoother.reset();
+    dl_state.last_time_s = -1.0;
     host.showroom.set_world_overlay({});
     return;
   }
+
+  const double now_t = vehicle.time();
+  if (dl_state.last_race != want_race_dl || dl_state.last_mode != driving_line_mode ||
+      (dl_state.last_time_s >= 0.0 && now_t < dl_state.last_time_s - 0.01)) {
+    dl_state.speed_smoother.reset();
+  }
+  const double dt_s =
+      (dl_state.last_time_s >= 0.0 && now_t >= dl_state.last_time_s) ? (now_t - dl_state.last_time_s) : 0.0;
+  dl_state.last_time_s = now_t;
+  dl_state.last_race = want_race_dl;
+  dl_state.last_mode = driving_line_mode;
+
+  const double display_speed = dl_state.speed_smoother.update(std::max(0.0, vehicle.speed()), dt_s);
+  drive::DrivingLineOptions dl_opt{};
+
   if (want_race_dl) {
     drive::build_driving_line(app.race->racing_line(), braking_table, app.race->player_progress(),
-                              std::max(0.0, vehicle.speed()), driving_line_mode, dl_samples);
+                              display_speed, driving_line_mode, dl_samples, dl_opt);
   } else {
     const auto& gr = app.gps_nav.route();
     const double prog = app.gps_nav.guidance().route_progress_m;
@@ -1160,16 +1186,22 @@ void DriveSession::update_driving_line_overlay() {
       }
       const double local_prog = std::clamp(prog - slice_start_s, 0.0, gps_line.length());
       drive::build_driving_line(gps_line, braking_table, local_prog,
-                                std::max(0.0, vehicle.speed()), driving_line_mode, dl_samples);
+                                display_speed, driving_line_mode, dl_samples, dl_opt);
     } else {
       dl_samples.clear();
     }
   }
-  // Snap sample heights onto the live collision/road surface so the ribbon
+  // Snap visible sample heights onto the live collision/road surface so the ribbon
   // hugs hills and crowns crisply without dipping under asphalt or floating.
   if (host.ground && !dl_samples.empty()) {
     const double car_y = vehicle.position().y;
-    for (auto& s : dl_samples) {
+    const size_t n = dl_samples.size();
+    for (size_t i = 0; i < n; ++i) {
+      const bool needed = dl_samples[i].color.a > 0 ||
+                          (i > 0 && dl_samples[i - 1].color.a > 0) ||
+                          (i + 1 < n && dl_samples[i + 1].color.a > 0);
+      if (!needed) continue;
+      auto& s = dl_samples[i];
       const double probe_y = (std::fabs(double(s.y)) > 1e-3 ? double(s.y) : car_y) + 6.0;
       drive::Hit hit;
       if (host.ground->raycast({double(s.x), probe_y, double(s.z)}, {0.0, -1.0, 0.0}, 18.0, hit)) {
@@ -1177,7 +1209,7 @@ void DriveSession::update_driving_line_overlay() {
       }
     }
   }
-  drive::build_driving_line_mesh(dl_samples, 0.62, 0.10, dl_verts);
+  drive::build_driving_line_mesh(dl_samples, dl_opt.half_width_m, dl_opt.lift_m, dl_verts);
   overlay_verts.clear();
   overlay_verts.reserve(dl_verts.size());
   const double ox = host.showroom.world_origin_x();

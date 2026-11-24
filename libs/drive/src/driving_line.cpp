@@ -12,6 +12,12 @@ uint8_t lerp_u8(uint8_t a, uint8_t b, double t) {
   return uint8_t(std::clamp(std::lround(v), 0l, 255l));
 }
 
+double smoothstep01(double edge0, double edge1, double x) {
+  if (edge1 <= edge0) return x >= edge1 ? 1.0 : 0.0;
+  const double u = std::clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+  return u * u * (3.0 - 2.0 * u);
+}
+
 double sample_curvature(const RacingLine& line, size_t seg, double d) {
   const size_t n = line.size();
   if (n < 3) return 0.0;
@@ -55,7 +61,11 @@ DrivingLineColor driving_line_color(double v_target, double v_car, DrivingLineMo
   if (mode == DrivingLineMode::kOff) return {0, 0, 0, 0};
 
   const double dv = v_target - v_car;
-  const double t = std::clamp(std::fabs(dv) * 0.2, 0.0, 1.0);  // +-5.0 m/s band
+  const double u = std::clamp(std::fabs(dv) * 0.2, 0.0, 1.0);  // +-5.0 m/s band
+  // Blend linear with cubic Hermite smoothstep (exact at u = 0, 0.5, 1.0) so entry/exit
+  // into neutral yellow, full green, and full red glides smoothly without harsh kinks.
+  const double s = u * u * (3.0 - 2.0 * u);
+  const double t = 0.5 * u + 0.5 * s;
 
   if (dv <= 0.0) {
     // Too fast / braking: Yellow -> Red, full opacity.
@@ -77,7 +87,7 @@ DrivingLineColor driving_line_color(double v_target, double v_car, DrivingLineMo
     };
   }
 
-  // Braking Only: fade out accelerating segments via alpha attenuation while
+  // Braking Only: fade out accelerating segments via smooth alpha attenuation while
   // keeping Yellow/Red braking zones visible.
   return {
       kDrivingLineYellow.r,
@@ -85,6 +95,20 @@ DrivingLineColor driving_line_color(double v_target, double v_car, DrivingLineMo
       kDrivingLineYellow.b,
       uint8_t(std::clamp(std::lround(255.0 * (1.0 - t)), 0l, 255l)),
   };
+}
+
+double DrivingLineSmoother::update(double raw_speed_mps, double dt_s) {
+  const double raw = std::max(0.0, raw_speed_mps);
+  if (!initialized || std::fabs(raw - speed_mps) > snap_delta_mps || dt_s > 0.5) {
+    speed_mps = raw;
+    initialized = true;
+    return speed_mps;
+  }
+  if (dt_s <= 0.0) return speed_mps;
+  const double tau = (raw >= speed_mps) ? std::max(1e-3, tau_up_s) : std::max(1e-3, tau_down_s);
+  const double alpha = 1.0 - std::exp(-dt_s / tau);
+  speed_mps += (raw - speed_mps) * alpha;
+  return speed_mps;
 }
 
 BrakingTable BrakingTable::build(const CarParams& p) {
@@ -165,20 +189,32 @@ void build_driving_line(const RacingLine& line, const BrakingTable& table, doubl
   if (len <= 1e-3) return;
 
   const double step = std::max(0.5, opt.sample_step_m);
-  const double start_d = std::clamp(car_dist - opt.behind_m, 0.0, len);
+  const double behind = std::max(0.0, opt.behind_m);
+  const double start_d = std::clamp(car_dist - behind, 0.0, len);
   const double visible_end_d = std::clamp(car_dist + opt.ahead_m, start_d, len);
   const double total_end_d = std::clamp(visible_end_d + opt.brake_lookahead_m, visible_end_d, len);
   if (visible_end_d - start_d < 0.5) return;
+
+  // Include an upstream padding margin behind `start_d` aligned to `step` so curvature
+  // smoothing, corner-exit acceleration unwind, and display-speed Gaussian filtering
+  // stay symmetric and free of sliding-window edge wobble at the near end of the ribbon.
+  const double pad_behind_m = std::max(14.0, 2.5 * std::max(0.0, opt.color_smooth_sigma_m));
+  const double pad_steps = std::ceil(std::min(start_d, pad_behind_m) / step);
+  const double work_start_d = std::max(0.0, start_d - pad_steps * step);
 
   const double a_lat = std::max(1.0, table.lateral_mu * DrivingLineOptions::kGravity);
   const double safety = std::clamp(opt.safety_factor, 0.5, 1.25);
 
   std::vector<DrivingLineSample> work;
-  const size_t approx = size_t((total_end_d - start_d) / step) + 2;
+  std::vector<double> kappa_raw;
+  std::vector<double> grip;
+  const size_t approx = size_t((total_end_d - work_start_d) / step) + 2;
   work.reserve(approx);
+  kappa_raw.reserve(approx);
+  grip.reserve(approx);
 
-  size_t seg_hint = line.segment(start_d, 0);
-  for (double d = start_d; d <= total_end_d + 1e-6; d += step) {
+  size_t seg_hint = line.segment(work_start_d, 0);
+  for (double d = work_start_d; d <= total_end_d + 1e-6; d += step) {
     const double clamped_d = std::min(d, total_end_d);
     seg_hint = line.segment(clamped_d, seg_hint);
 
@@ -189,13 +225,6 @@ void build_driving_line(const RacingLine& line, const BrakingTable& table, doubl
     const double rx = std::cos(heading);
     const double rz = -std::sin(heading);
 
-    const double kappa = sample_curvature(line, seg_hint, clamped_d);
-    double v_corner = opt.max_speed_mps;
-    if (kappa > 1e-5) {
-      const double R = 1.0 / kappa;
-      v_corner = std::min(opt.max_speed_mps, safety * std::sqrt(a_lat * R));
-    }
-
     DrivingLineSample s;
     s.x = float(px);
     s.y = float(py);
@@ -203,16 +232,51 @@ void build_driving_line(const RacingLine& line, const BrakingTable& table, doubl
     s.right_x = float(rx);
     s.right_z = float(rz);
     s.dist = float(clamped_d);
-    s.v_corner = float(v_corner);
-    s.v_target = float(v_corner);
     work.push_back(s);
+    kappa_raw.push_back(sample_curvature(line, seg_hint, clamped_d));
+    grip.push_back(double(line.grip_at(seg_hint)));
     if (clamped_d >= total_end_d - 1e-6) break;
   }
 
   if (work.size() < 2) return;
 
-  // Backward braking integration along the spline at fixed step 1/75 s
-  // (0.0133333 s) against the car's 10-point speed-vs-deceleration table.
+  // 1. Spatially filter raw curvature with a gentle distance-weighted Gaussian kernel
+  //    (sigma = 2.5 m) so isolated GPS road-graph vertex kinks never flash spurious
+  //    braking blips while real corners preserve accurate apex speeds.
+  constexpr double kKappaSigmaM = 2.5;
+  constexpr double kKappaInv2Sig2 = 0.5 / (kKappaSigmaM * kKappaSigmaM);
+  constexpr double kKappaMaxRadM = 2.5 * kKappaSigmaM;
+  for (size_t i = 0; i < work.size(); ++i) {
+    const double di = double(work[i].dist);
+    double num = kappa_raw[i];
+    double den = 1.0;
+    for (size_t j = i; j-- > 0;) {
+      const double dd = di - double(work[j].dist);
+      if (dd > kKappaMaxRadM) break;
+      const double w = std::exp(-dd * dd * kKappaInv2Sig2);
+      num += w * kappa_raw[j];
+      den += w;
+    }
+    for (size_t j = i + 1; j < work.size(); ++j) {
+      const double dd = double(work[j].dist) - di;
+      if (dd > kKappaMaxRadM) break;
+      const double w = std::exp(-dd * dd * kKappaInv2Sig2);
+      num += w * kappa_raw[j];
+      den += w;
+    }
+    const double kappa = den > 1e-9 ? (num / den) : kappa_raw[i];
+    const double a_lat_local = std::max(1.0, a_lat * grip[i]);
+    double v_corner = opt.max_speed_mps;
+    if (kappa > 1e-5) {
+      const double R = 1.0 / kappa;
+      v_corner = std::min(opt.max_speed_mps, safety * std::sqrt(a_lat_local * R));
+    }
+    work[i].v_corner = float(v_corner);
+    work[i].v_target = float(v_corner);
+  }
+
+  // 2. Backward braking integration along the spline at fixed step 1/75 s
+  //    (0.0133333 s) against the car's 10-point speed-vs-deceleration table.
   constexpr double dt = DrivingLineOptions::kBrakeStepS;
   for (size_t i = work.size() - 1; i-- > 0;) {
     const double ds = double(work[i + 1].dist) - double(work[i].dist);
@@ -220,10 +284,11 @@ void build_driving_line(const RacingLine& line, const BrakingTable& table, doubl
       work[i].v_target = std::min(work[i].v_target, work[i + 1].v_target);
       continue;
     }
+    const double grip_i = grip[i];
     double v = double(work[i + 1].v_target);
     double rem = ds;
     while (rem > 1e-6 && v < opt.max_speed_mps) {
-      const double a = table.decel_at(v);
+      const double a = std::max(1.0, table.decel_at(v) * grip_i);
       const double step_ds = v * dt + 0.5 * a * dt * dt;
       if (step_ds >= rem) {
         v = std::sqrt(v * v + 2.0 * a * rem);
@@ -237,17 +302,83 @@ void build_driving_line(const RacingLine& line, const BrakingTable& table, doubl
     work[i].v_target = float(std::min(double(work[i].v_corner), v));
   }
 
-  // Emit only the visible window [start_d, visible_end_d] with colours.
+  // 3. Forward corner-exit acceleration envelope: prevents an instantaneous 1-sample
+  //    Red -> Green cliff right past an apex by unwinding target speed physically.
+  if (opt.exit_accel_mps2 > 0.0) {
+    const double a_exit_base = std::max(1.0, opt.exit_accel_mps2);
+    for (size_t i = 1; i < work.size(); ++i) {
+      const double ds = double(work[i].dist) - double(work[i - 1].dist);
+      if (ds <= 1e-6) continue;
+      const double a_exit = std::max(1.0, a_exit_base * grip[i]);
+      const double v_prev = double(work[i - 1].v_target);
+      const double v_up = std::min(opt.max_speed_mps, std::sqrt(v_prev * v_prev + 2.0 * a_exit * ds));
+      if (v_up < double(work[i].v_target)) {
+        work[i].v_target = float(v_up);
+      }
+    }
+  }
+
+  // 4. Spatial Gaussian filter on display target speed so braking-zone colour transitions
+  //    glide continuously across entry, apex, and exit without abrupt per-sample jumps,
+  //    while preserving exact physics `v_target` for auto-brake consumers.
+  std::vector<double> v_display(work.size());
+  if (opt.color_smooth_sigma_m > 0.1) {
+    const double sigma = opt.color_smooth_sigma_m;
+    const double inv_2sig2 = 0.5 / (sigma * sigma);
+    const double max_rad = 2.5 * sigma;
+    for (size_t i = 0; i < work.size(); ++i) {
+      const double di = double(work[i].dist);
+      double num = double(work[i].v_target);
+      double den = 1.0;
+      for (size_t j = i; j-- > 0;) {
+        const double dd = di - double(work[j].dist);
+        if (dd > max_rad) break;
+        const double w = std::exp(-dd * dd * inv_2sig2);
+        num += w * double(work[j].v_target);
+        den += w;
+      }
+      for (size_t j = i + 1; j < work.size(); ++j) {
+        const double dd = double(work[j].dist) - di;
+        if (dd > max_rad) break;
+        const double w = std::exp(-dd * dd * inv_2sig2);
+        num += w * double(work[j].v_target);
+        den += w;
+      }
+      v_display[i] = den > 1e-9 ? (num / den) : double(work[i].v_target);
+    }
+  } else {
+    for (size_t i = 0; i < work.size(); ++i) v_display[i] = double(work[i].v_target);
+  }
+
+  // 5. Emit only the visible window [start_d, visible_end_d] with smooth colours and
+  //    smoothstep near-car bumper clearance fade-in and far-horizon distance fade-out.
   out.reserve(work.size());
-  for (auto& s : work) {
+  double tail_d = visible_end_d;
+  for (size_t i = work.size(); i-- > 0;) {
+    const double di = double(work[i].dist);
+    if (di <= visible_end_d + 1e-3) {
+      tail_d = di;
+      break;
+    }
+  }
+  for (size_t i = 0; i < work.size(); ++i) {
+    auto s = work[i];
+    if (double(s.dist) < start_d - 1e-3) continue;
     if (double(s.dist) > visible_end_d + 1e-3) break;
-    s.color = driving_line_color(double(s.v_target), car_speed, mode);
+    s.color = driving_line_color(v_display[i], car_speed, mode);
     if (opt.fade_ends) {
       double end_alpha = 1.0;
-      const double from_start = double(s.dist) - start_d;
-      const double to_end = visible_end_d - double(s.dist);
-      if (from_start < 4.0) end_alpha = std::min(end_alpha, std::clamp(from_start / 4.0, 0.0, 1.0));
-      if (to_end < 20.0) end_alpha = std::min(end_alpha, std::clamp(to_end / 20.0, 0.0, 1.0));
+      if (behind <= 1e-6 && opt.near_fade_end_m > opt.near_fade_start_m) {
+        const double ahead = double(s.dist) - car_dist;
+        end_alpha = std::min(end_alpha, smoothstep01(opt.near_fade_start_m, opt.near_fade_end_m, ahead));
+      } else {
+        const double from_start = double(s.dist) - start_d;
+        end_alpha = std::min(end_alpha, smoothstep01(0.0, 4.0, from_start));
+      }
+      if (opt.far_fade_m > 1e-3) {
+        const double to_end = tail_d - double(s.dist);
+        end_alpha = std::min(end_alpha, smoothstep01(0.0, opt.far_fade_m, to_end));
+      }
       s.color.a = uint8_t(std::clamp(std::lround(double(s.color.a) * end_alpha), 0l, 255l));
     }
     out.push_back(s);

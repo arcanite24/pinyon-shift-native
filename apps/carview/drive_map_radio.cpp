@@ -224,14 +224,17 @@ void DriveSession::set_minimap(int height, bool force) {
         const double k = height / 720.0;
         const bool touch_vis = app.touch_controls.visible(vehicle.time());
         carview::TouchRect mm_safe, tach_safe;
-        int req_px = std::max(96, int(std::lround(180 * k)));
+        int display_px = std::max(96, int(std::lround(180 * k)));
         if (touch_vis) {
           carview::TouchControls::hud_safe_rects(float(app.width), float(height), mm_safe, tach_safe);
-          req_px = std::max(96, int(std::lround(std::min(mm_safe.w() * float(app.width), mm_safe.h() * float(height)))));
+          display_px = std::max(96, int(std::lround(std::min(mm_safe.w() * float(app.width), mm_safe.h() * float(height)))));
         }
+        // Cap minimap CPU raster size to 320 px on 4K displays (GPU bilinearly scales
+        // cleanly to `display_px`, saving 2.6x CPU & UI atlas space at 60 Hz).
+        const int req_px = std::clamp(display_px, 96, 320);
         HudImage img = app.map_view.minimap(map_scene(), req_px);
         if (carview::ui::atlas_update("minimap", img.width, img.height, img.rgba, mm_uv)) {
-          mm_size = float(img.width);
+          mm_size = float(display_px);
           if (touch_vis) {
             mm_x = mm_safe.x0 * float(app.width);
             mm_y = mm_safe.y1 * float(height) - mm_size;
