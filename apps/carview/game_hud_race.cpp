@@ -4,7 +4,7 @@ namespace carview::hud_detail {
 
 void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
   const float s = g.s;
-  static const SceneDraw sc(ui_scene("PRE_AND_POST_RACE"), true);
+  const SceneDraw sc = resolve_scene_draw("PRE_AND_POST_RACE", true);
   float tilt_rad = ui4::kTiltRad;
   if (sc.ok()) {
     if (const int rh = sc.find("RotationHelper"); rh >= 0) {
@@ -73,7 +73,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
   // 947_HUD's EndConditionBlock and PlaceBlock (E 48 current, E 26 slash
   // and total, E 16 label; right-aligned boxes end at their node); the
   // drop shadow is ours. Without the scene: the drawn blocks below.
-  static const SceneDraw sc(ui_scene("947_HUD"));
+  const SceneDraw sc = resolve_scene_draw("947_HUD");
   const int endcon = sc.find("EndConditionBlock"), placeblk = sc.find("PlaceBlock");
   const bool scened = endcon >= 0 && placeblk >= 0;
   auto stext = [&](const SceneFrame& f, int node, const std::string& t) {
@@ -129,6 +129,19 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
       pill(l, g.L(64), y - 5 * s, g.L(224), y + 19 * s, kPillGrey, true);
       l.text(g.L(74), y, rows[i].name, font(ui::Font::kB, 14 * s, kText));
       l.text(g.L(215), y, clock_ms(rows[i].t), font(ui::Font::kB, 14 * s, kText, Align::kRight));
+    }
+    // Live lap split delta display (-0.42s green / +0.31s red).
+    const bool derived_delta =
+        !r.has_lap_split_delta && r.circuit && r.best_lap > 0.0 && r.last_lap > 0.0 &&
+        std::fabs(r.last_lap - r.best_lap) > 0.004;
+    if (racing && (r.has_lap_split_delta || derived_delta)) {
+      const double delta = r.has_lap_split_delta ? r.lap_split_delta : (r.last_lap - r.best_lap);
+      const uint32_t dcol = delta <= 0.0 ? ui4::kGreen : ui4::kRed;
+      const float dy = g.T(ink[std::min<size_t>(rows.size(), 3)] + (rows.size() >= 4 ? 28.0f : 0.0f));
+      pill(l, g.L(64), dy - 5 * s, g.L(224), dy + 19 * s, ui4::kBrushBlack, true);
+      l.rect(g.L(64), dy - 5 * s, g.L(68), dy + 19 * s, dcol);
+      l.text(g.L(74), dy, "SPLIT", font(ui::Font::kB, 13.0f * s, ui4::kOffWhite));
+      l.text(g.L(215), dy, format_split_delta(delta), font(ui::Font::kE, 14.0f * s, dcol, Align::kRight));
     }
   }
   // Place: "PLACE 3/8".
@@ -258,12 +271,17 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
 // node turned by its own rotation; the rows' text from the session. The
 // scene's opacities are its intro's start (0): drawn at full.
 void results_table(ui::List& l, const RaceHud& r, const Layout& g) {
-  static const SceneDraw sc(ui_scene("H_POST_RACE_RESULTS"), true);
+  const SceneDraw sc = resolve_scene_draw("H_POST_RACE_RESULTS", true);
   const float s = g.s;
   ui4::button_bar(l, {{"B", str("HelpButtons", "IDS_Back", "BACK")}}, g.w, g.h);
   if (!sc.ok()) return;
   const SceneFrame f{0.5f * g.w - 640 * s, 0.5f * g.h - 360 * s, s};
-  sc.model(l, f, sc.find("BG_Noise"), 0.5f);
+  {
+    SceneBindings bgb;
+    bgb.ignore_zero_alpha = true;
+    bgb.opacity = 0.5f;
+    sc.draw_subtree(l, f, "BG_Noise", bgb);
+  }
   // The title on its tape: the tapes cropped to the text (ours: a 40 px
   // margin past the text, as the frame shows).
   const int tape = sc.find("TitleTape");
@@ -328,13 +346,160 @@ void results_table(ui::List& l, const RaceHud& r, const Layout& g) {
   }
 }
 
+namespace {
+
+struct PostRacePageTracker {
+  bool active = false;
+  int last_page = -1;
+  double last_finish_time = -1e9;
+  double entered_at = 0.0;
+};
+
+PostRacePageTracker& page_tracker() {
+  static PostRacePageTracker t;
+  return t;
+}
+
+// Crisp FH1 Career / Driver Level & Manufacturer Affinity XP breakdown panel
+// (rendered on the right half of Page 2 Points Earned, or full-screen on Page 4).
+void career_affinity_panel(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g, float x0, float y0,
+                           float x1, double page_elapsed, bool include_won_car_badge) {
+  const float s = g.s;
+  const int drv_lvl = std::max(1, r.driver_level > 0 ? r.driver_level : st.driver_level);
+  const int drv_xp_tot = r.driver_xp_total > 0 ? r.driver_xp_total : st.driver_xp;
+  const int drv_next = r.driver_next_xp > 0 ? r.driver_next_xp
+                       : st.driver_next_xp > 0 ? st.driver_next_xp
+                                               : std::max(1000, drv_lvl * 5000);
+  const int aff_lvl = std::max(0, r.affinity_level > 0 ? r.affinity_level : st.affinity_level);
+  const int aff_xp_tot = r.affinity_xp_total;
+  const int aff_next = r.affinity_next_xp > 0 ? r.affinity_next_xp : std::max(500, (aff_lvl + 1) * 2500);
+  const double aff_disc = r.affinity_discount_pct > 0.0 ? r.affinity_discount_pct : st.affinity_discount_pct;
+  const std::string gift_car = !r.gift_car_name.empty() ? r.gift_car_name
+                               : (include_won_car_badge ? r.won_car_name : std::string{});
+
+  const float anim = ease_in_time(page_elapsed, 0.25, 1.0);
+  const int shown_drv_gain = int(std::llround(double(std::max(0, r.driver_xp)) * anim));
+  const int shown_aff_gain = int(std::llround(double(std::max(0, r.affinity_xp)) * anim));
+  const int64_t shown_aff_cr = int64_t(std::llround(double(std::max<int64_t>(0, r.affinity_bonus_credits)) * anim));
+
+  const float card_h = (gift_car.empty() ? 276.0f : 344.0f) * s;
+  const float y1 = y0 + card_h;
+  Turn t(l, 0.5f * (x0 + x1), 0.5f * (y0 + y1), ui4::kTiltRad * 0.65f);
+  ui4::panel01(l, x0, y0, x1, y1, s, ui4::kCharcoalDark, ui4::kPink);
+
+  // Header brush strip.
+  ui4::brush(l, x0 - 6.0f * s, y0 + 10.0f * s, x1 + 6.0f * s, y0 + 44.0f * s, ui4::kPink);
+  l.text(x0 + 16.0f * s, y0 + 17.0f * s, "DRIVER LEVEL & AFFINITY XP",
+         ui4::style(ui::Font::kE, 17.5f * s, ui4::kWhite));
+
+  std::array<float, 4> bar_uv{};
+  const bool has_bar = ui_texture("KITPARTS/BARS/BARBASE26PX", bar_uv);
+  auto draw_xp_bar = [&](float bx0, float by0, float bx1, float by1, float prev_f, float cur_f, uint32_t col) {
+    if (has_bar) {
+      l.image(bx0, by0, bx1, by1, bar_uv, rgba(255, 255, 255, 38));
+    } else {
+      l.rect(bx0, by0, bx1, by1, ui4::kBrushBlack);
+    }
+    const float f = std::clamp(cur_f, 0.0f, 1.0f);
+    if (f > 0.005f) {
+      l.rect(bx0, by0 + 1.0f * s, bx0 + (bx1 - bx0) * f, by1 - 1.0f * s, col);
+      const float pf = std::clamp(prev_f, 0.0f, f);
+      if (pf > 0.005f) {
+        l.rect(bx0, by0 + 1.0f * s, bx0 + (bx1 - bx0) * pf, by1 - 1.0f * s, rgba(0, 0, 0, 72));
+      }
+    }
+  };
+
+  // Section 1: Driver Level + animated XP gain & progress bar.
+  float cy = y0 + 58.0f * s;
+  const float ix0 = x0 + 18.0f * s, ix1 = x1 - 18.0f * s;
+  char dl_buf[48], dx_buf[64];
+  std::snprintf(dl_buf, sizeof dl_buf, "DRIVER LEVEL %d", drv_lvl);
+  l.text(ix0, cy, dl_buf, ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite));
+  if (r.driver_xp > 0) {
+    std::snprintf(dx_buf, sizeof dx_buf, "+%s XP", thousands(shown_drv_gain).c_str());
+    l.text(ix1, cy, dx_buf, ui4::style(ui::Font::kE, 16.0f * s, ui4::kYellow, Align::kRight));
+  }
+  cy += 24.0f * s;
+  const double drv_after = double(std::max(0, drv_xp_tot));
+  const double drv_before = std::max(0.0, drv_after - double(std::max(0, r.driver_xp)));
+  const double drv_now = drv_before + (drv_after - drv_before) * anim;
+  const float drv_prev_f = drv_next > 0 ? float(std::clamp(drv_before / double(drv_next), 0.0, 1.0)) : 0.0f;
+  const float drv_cur_f = drv_next > 0 ? float(std::clamp(drv_now / double(drv_next), 0.0, 1.0)) : 1.0f;
+  draw_xp_bar(ix0, cy, ix1, cy + 13.0f * s, drv_prev_f, drv_cur_f, ui4::kYellow);
+  cy += 18.0f * s;
+  char drv_sub[64];
+  std::snprintf(drv_sub, sizeof drv_sub, "%s / %s XP TO LEVEL %d",
+                thousands(int64_t(std::llround(drv_now))).c_str(), thousands(drv_next).c_str(), drv_lvl + 1);
+  l.text(ix1, cy, drv_sub, ui4::style(ui::Font::kB, 11.0f * s, ui4::kDim, Align::kRight));
+
+  // Divider hairline.
+  cy += 22.0f * s;
+  l.rect(ix0, cy, ix1, cy + 1.0f * s, rgba(255, 255, 255, 32));
+  cy += 12.0f * s;
+
+  // Section 2: Manufacturer Affinity Make, Level, XP bar, Bonus CR & Upgrade Discount.
+  const std::string make_lbl = !r.affinity_make.empty() ? r.affinity_make : std::string("MANUFACTURER");
+  float aff_tx = ix0;
+  if (!r.affinity_make.empty() && ui4::manufacturer_logo(l, ix0, cy - 2.0f * s, ix0 + 34.0f * s, cy + 32.0f * s, r.affinity_make)) {
+    aff_tx = ix0 + 42.0f * s;
+  }
+  char al_buf[64];
+  std::snprintf(al_buf, sizeof al_buf, "%s AFFINITY  LVL %d", make_lbl.c_str(), aff_lvl);
+  ui::TextStyle ats = ui4::style(ui::Font::kE, 15.0f * s, ui4::kWhite);
+  ui4::fit_text(al_buf, ats, (ix1 - aff_tx) - 96.0f * s, 10.0f * s);
+  l.text(aff_tx, cy, al_buf, ats);
+  if (r.affinity_xp > 0) {
+    char ax_buf[48];
+    std::snprintf(ax_buf, sizeof ax_buf, "+%s XP", thousands(shown_aff_gain).c_str());
+    l.text(ix1, cy, ax_buf, ui4::style(ui::Font::kE, 15.0f * s, ui4::kBlue, Align::kRight));
+  }
+  cy += 24.0f * s;
+  const double aff_after = double(std::max(r.affinity_xp, aff_xp_tot));
+  const double aff_before = std::max(0.0, aff_after - double(std::max(0, r.affinity_xp)));
+  const double aff_now = aff_before + (aff_after - aff_before) * anim;
+  const float aff_prev_f = aff_next > 0 ? float(std::clamp(aff_before / double(aff_next), 0.0, 1.0)) : 0.0f;
+  const float aff_cur_f = aff_next > 0 ? float(std::clamp(aff_now / double(aff_next), 0.0, 1.0)) : 1.0f;
+  draw_xp_bar(ix0, cy, ix1, cy + 13.0f * s, aff_prev_f, aff_cur_f, ui4::kBlue);
+  cy += 20.0f * s;
+
+  // Affinity Bonus CR & Upgrade Discount strip.
+  const std::string cr = format_unit_label(str("UnitStrings", "IDS_Units_Credits", "Cr"), "Cr");
+  ui4::pill(l, ix0, cy, ix1, cy + 28.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
+  l.text(ix0 + 12.0f * s, cy + 7.0f * s, "AFFINITY BONUS", ui4::style(ui::Font::kB, 11.5f * s, ui4::kOffWhite));
+  char cr_buf[64];
+  std::snprintf(cr_buf, sizeof cr_buf, "+%s %s", thousands(shown_aff_cr).c_str(), cr.c_str());
+  l.text(ix1 - 12.0f * s, cy + 6.0f * s, cr_buf,
+         ui4::style(ui::Font::kE, 14.0f * s, shown_aff_cr > 0 ? ui4::kGreen : ui4::kDim, Align::kRight, true));
+  if (aff_disc > 0.5) {
+    char db[32];
+    std::snprintf(db, sizeof db, "%d%% OFF PARTS", int(std::lround(aff_disc)));
+    l.text(ix0 + 136.0f * s, cy + 7.5f * s, db, ui4::style(ui::Font::kE, 11.0f * s, ui4::kAmber));
+  }
+  cy += 36.0f * s;
+
+  // Section 3: Optional Gift Car Earned badge!
+  if (!gift_car.empty()) {
+    ui4::brush(l, ix0 - 4.0f * s, cy, ix1 + 4.0f * s, cy + 52.0f * s, ui4::kPink);
+    float gx = ix0 + 12.0f * s;
+    if (ui4::badge_icon(l, gx, cy + 8.0f * s, gx + 34.0f * s, cy + 42.0f * s, ui4::BadgeIconKind::kTrophy)) {
+      gx += 42.0f * s;
+    }
+    l.text(gx, cy + 7.0f * s, "GIFT CAR EARNED!", ui4::style(ui::Font::kE, 12.5f * s, ui4::kYellow));
+    ui::TextStyle gts = ui4::style(ui::Font::kE, 16.5f * s, ui4::kWhite, Align::kLeft, true);
+    ui4::fit_text(gift_car, gts, (ix1 - gx) - 10.0f * s, 10.0f * s);
+    l.text(gx, cy + 25.0f * s, gift_car, gts);
+  }
+}
+
+}  // namespace
+
 // (c) The wristband points page (SPEC-UI-LAYOUTS, the wristband points
 // banner, measured): POINTS EARNED on a black brush, the band's large
 // wristband, COLLECT IT FROM RACE CENTRAL on a light panel when a level is
-// reached (else the band's progress, ours), PLEASE WAIT bottom left. The
-// scene (H_POST_RACE_CAREER_POINTS) starts off screen and its animation is
-// not read: the frame's rects stand.
-void points_page(ui::List& l, const RaceHud& r, const Layout& g) {
+// reached (else the band's progress, ours), Career/Affinity XP breakdown on
+// the right, and PLEASE WAIT bottom left.
+void points_page(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g, double page_elapsed) {
   const float s = g.s;
   // The grainy dark panel behind the wristband (the frame: x 0-520, y 235-365).
   {
@@ -378,8 +543,8 @@ void points_page(ui::List& l, const RaceHud& r, const Layout& g) {
   } else if (r.band_after >= 0) {
     // Sharp H_POST_RACE_CAREER_POINTS wristband progress strip (TAPEHALF50PX / BARBASE26PX — ZERO rounded bar!).
     Turn tp(l, g.L(270), g.T(388));
-    const double since = r.clock - r.finish_time;
-    const float anim = ease_in_time(since, 0.8, 1.2);
+    // Measure elapsed time strictly from per-page entry time (never r.finish_time).
+    const float anim = ease_in_time(page_elapsed, 0.25, 1.15);
     const double from = r.band_up ? r.band_lo : r.band_before;
     const double now = from + (r.band_after - from) * anim;
     const uint32_t bc = band_colour(r.band_name);
@@ -415,6 +580,11 @@ void points_page(ui::List& l, const RaceHud& r, const Layout& g) {
       l.text(px1, by1 + 5 * s, "NEXT: " + r.band_next,
              ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim, Align::kRight));
     }
+  }
+  // Right-hand Career / Driver Level & Manufacturer Affinity XP breakdown panel.
+  if (r.driver_xp > 0 || r.affinity_xp > 0 || r.driver_level > 0 || r.affinity_level > 0 ||
+      r.affinity_bonus_credits > 0 || !r.gift_car_name.empty()) {
+    career_affinity_panel(l, r, st, g, g.R(646), g.T(156), g.R(1204), page_elapsed, false);
   }
   // PLEASE WAIT: rotating festival spinner + sharp HUDPILL01.
   std::array<float, 4> sp;
@@ -453,15 +623,21 @@ void won_car_page(ui::List& l, const RaceHud& r, const Layout& g) {
   ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
 }
 
-void results(ui::List& l, const RaceHud& r, const Layout& g) {
+void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g) {
   const float s = g.s;
-  const double since = r.clock - r.finish_time;
+  const double page_elapsed = post_race_page_elapsed(r);
+  if (r.results_page == 4) {
+    ui4::subtle_vignette(l, g.w, g.h, 0.28f);
+    career_affinity_panel(l, r, st, g, g.C(330), g.T(148), g.C(950), page_elapsed, true);
+    ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
+    return;
+  }
   if (r.results_page == 3 && !r.won_car_name.empty()) {
     won_car_page(l, r, g);
     return;
   }
   if (r.results_page == 2) {
-    points_page(l, r, g);
+    points_page(l, r, st, g, page_elapsed);
     return;
   }
   if (r.results_page == 0 && r.results_table) {
@@ -469,7 +645,7 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
     return;
   }
   if (r.results_page == 0) {
-    const float in = ease_in_time(since, 0, 0.35);
+    const float in = ease_in_time(page_elapsed, 0, 0.35);
     const float dx = (1 - in) * -120 * s;
     {
       Turn t(l, g.L(376) + dx, g.T(270));
@@ -525,6 +701,8 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
     rows.emplace_back("ASSISTS BONUS", assist_buf);
   }
   if (r.skills_bonus > 0) rows.emplace_back("SKILLS BONUS", thousands(r.skills_bonus) + " " + cr);
+  if (r.affinity_bonus_credits > 0)
+    rows.emplace_back("AFFINITY BONUS", thousands(r.affinity_bonus_credits) + " " + cr);
   if (r.nemesis_bonus > 0) rows.emplace_back("NEMESIS BONUS", thousands(r.nemesis_bonus) + " " + cr);
   if (r.bounty_bonus > 0) rows.emplace_back("BOUNTY BONUS", thousands(r.bounty_bonus) + " " + cr);
   if (r.driver_xp > 0) {
@@ -548,7 +726,8 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
   }
   // TOTAL and its value (out/oracle/ui/results-credits.png: wide left-bleeding dark
   // feathered brush behind TOTAL seamlessly meeting the hot pink total value brush!).
-  const float count = ease_in_time(since, 0.3, 1.0);
+  // Measured from per-page entry time so the cash tally animates freshly upon entering Page 1!
+  const float count = ease_in_time(page_elapsed, 0.2, 1.0);
   {
     Turn tn(l, g.L(295), g.T(418));
     ui4::brush(l, -28 * s, g.T(370), g.L(490), g.T(472), ui4::kBrushBlack, true);
@@ -741,7 +920,7 @@ void opponent_name_tags(ui::List& l, const std::vector<NameTagHud>& tags, const 
 }
 
 
-void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g) {
+void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g, bool metric_units) {
   if (!r.showcase || r.phase != RaceHud::kRacing) return;
   const float s = g.s;
   const float cx = 0.5f * g.w;
@@ -749,11 +928,11 @@ void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g) {
   const float x0 = cx - 0.5f * bw, x1 = cx + 0.5f * bw;
   const float y0 = g.T(24), y1 = y0 + bh;
   ui4::panel(l, x0, y0, x1, y1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  char gap_buf[48];
-  const int gm = int(std::llround(std::fabs(r.showcase_gap_m)));
-  std::snprintf(gap_buf, sizeof gap_buf, "%s %d M", r.showcase_gap_m >= 0 ? "AHEAD" : "BEHIND", gm);
+  const std::string gap_str =
+      (r.showcase_gap_m >= 0 ? std::string("AHEAD ") : std::string("BEHIND ")) +
+      format_distance_unit(std::fabs(r.showcase_gap_m), metric_units);
   l.text(x0 + 12 * s, y0 + 10 * s, "SHOWCASE  //  VS " + r.showcase_aircraft, font(ui::Font::kB, 13 * s, kText));
-  l.text(x1 - 12 * s, y0 + 10 * s, gap_buf,
+  l.text(x1 - 12 * s, y0 + 10 * s, gap_str,
          font(ui::Font::kE, 14 * s, r.showcase_gap_m >= 0 ? ui4::kGreen : ui4::kAmber, Align::kRight));
   const float tx0 = x0 + 14 * s, tx1 = x1 - 14 * s, ty = y0 + 35 * s, th = 8 * s;
   l.rect(tx0, ty, tx1, ty + th, rgba(255, 255, 255, 35));
@@ -765,5 +944,27 @@ void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g) {
   l.circle(px, ty + 6 * s, 5 * s, kText);
 }
 
-
 }  // namespace carview::hud_detail
+
+namespace carview {
+
+double post_race_page_elapsed(const RaceHud& r) {
+  if (r.page_enter_time >= 0.0) {
+    return std::max(0.0, r.clock - r.page_enter_time);
+  }
+  auto& t = hud_detail::page_tracker();
+  if (!t.active || t.last_page != r.results_page || std::fabs(t.last_finish_time - r.finish_time) > 1e-3 ||
+      r.clock < t.entered_at) {
+    t.active = true;
+    t.last_page = r.results_page;
+    t.last_finish_time = r.finish_time;
+    t.entered_at = r.clock;
+  }
+  return std::max(0.0, r.clock - t.entered_at);
+}
+
+void reset_post_race_page_timer() {
+  hud_detail::page_tracker() = {};
+}
+
+}  // namespace carview

@@ -216,6 +216,47 @@ bool save_graphics_backend_setting(const std::filesystem::path& settings_file,
                                    std::string_view backend_id,
                                    std::string* error = nullptr);
 
+struct GraphicsPresetChoice {
+  const char* id;     // "ultra", "high", "low", "smooth-60", "quality-30", "low-power"
+  const char* label;  // "Ultra", "High", "Low-Spec", "Smooth 60", "Quality 30", "Low Power"
+};
+inline constexpr int kGraphicsPresetCount = 6;
+inline constexpr GraphicsPresetChoice kGraphicsPresets[kGraphicsPresetCount] = {
+    {"ultra", "Ultra"},
+    {"high", "High"},
+    {"low", "Low-Spec"},
+    {"smooth-60", "Smooth 60"},
+    {"quality-30", "Quality 30"},
+    {"low-power", "Low Power"},
+};
+
+// Maps a preset name ("ultra", "high", "low", "smooth-60", "quality-30", "low-power", ...)
+// to the launcher preset selector index (0..kGraphicsPresetCount-1).
+int preset_index_for_name(std::string_view preset);
+const char* preset_name_for_index(int index);
+
+std::string load_graphics_preset_setting(const std::filesystem::path& settings_file);
+bool save_graphics_preset_setting(const std::filesystem::path& settings_file,
+                                  std::string_view preset_id,
+                                  std::string* error = nullptr);
+
+// Persists whether launcher UI sound feedback is enabled in settings.txt.
+bool load_launcher_sounds_setting(const std::filesystem::path& settings_file);
+bool save_launcher_sounds_setting(const std::filesystem::path& settings_file,
+                                  bool enabled,
+                                  std::string* error = nullptr);
+
+// Safe POSIX single-quote shell escaping (immune to spaces, quotes, $, backticks, metacharacters).
+std::string shell_quote_posix(std::string_view arg);
+
+// Splits a user-provided extra arguments string into argv tokens respecting single/double quotes.
+std::vector<std::string> split_command_args(std::string_view text);
+
+// Launches a detached process directly from an argv vector (fork/execvp on Unix, CreateProcessA on Windows).
+bool launch_detached_process(const std::vector<std::string>& args,
+                             const std::vector<std::pair<std::string, std::string>>& env_overrides = {},
+                             std::string* error = nullptr);
+
 // ---- 4. Add to Steam Shortcut Generator (Binary VDF) -----------------------
 
 struct SteamShortcutEntry {
@@ -499,10 +540,6 @@ std::optional<AvailableUpdate> select_github_update(std::string_view releases_js
                                                     std::string_view current_version,
                                                     std::string_view channel,
                                                     std::string_view platform_asset_name);
-
-// Maps a recommended preset name ("high", "low", "smooth-60", "quality-30", "low-power")
-// to the launcher preset selector index (0..4).
-int preset_index_for_name(std::string_view preset);
 
 struct UpdateCheckResult {
   bool ok = false;

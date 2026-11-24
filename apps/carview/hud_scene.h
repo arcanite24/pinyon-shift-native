@@ -20,6 +20,13 @@ namespace carview {
 // The scene by name (Scenes/ui4/<name>), or null; set by the app.
 void set_ui_scenes(std::function<const fh1::UiScene*(const std::string&)> load);
 const fh1::UiScene* ui_scene(const std::string& name);
+// Monotonic generation bumped whenever scenes or UI textures/atlas loaders change.
+uint64_t ui_scene_generation();
+void notify_ui_atlas_changed();
+
+class SceneDraw;
+// Resolves a SceneDraw for `name`, never permanently caching nullptr before atlas/scenes load.
+SceneDraw resolve_scene_draw(const std::string& name, bool turn = false);
 
 // Canvas (1280x720, y down) to screen: ox + x * s, oy + y * s.
 struct SceneFrame {
@@ -47,7 +54,8 @@ struct SceneBindings {
   bool ignore_zero_alpha = false;  // treat BSG opacity==0 as 1.0 unless overridden
   float opacity = 1.0f;            // global opacity multiplier
   float dx = 0.0f, dy = 0.0f;      // global canvas offset
-  float anim_time = -1.0f;         // >= 0 evaluates matching BGF keyframe tracks
+  float anim_time = -1.0f;         // >= 0 evaluates matching BGF tracks & animation channels
+  uint32_t state_hash = 0;         // != 0 applies matching BGF style state records
   uint32_t default_text_color = ui::rgba(255, 255, 255, 255);
   bool fit_text = true;
 
@@ -89,7 +97,7 @@ class SceneDraw {
   // colour. `tex_override` swaps the main texture. False when nothing could be drawn.
   bool model(ui::List& l, const SceneFrame& f, int node, float opacity = 1, float dx = 0, float dy = 0,
              float visible = 0, uint32_t tint = 0, std::string_view tex_override = {},
-             float extra_angle = 0.0f) const;
+             float extra_angle = 0.0f, float scale_x = 1.0f, float scale_y = 1.0f) const;
   // A text node's style (font resolved via fontmap.xml, size; the colour given).
   ui::TextStyle style(int node, const SceneFrame& f, uint32_t colour) const;
   // Draws `text` in a text node's box; returns the width drawn, canvas pixels.

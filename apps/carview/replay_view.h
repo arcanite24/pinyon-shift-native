@@ -41,8 +41,18 @@ enum class ReplayTelemetryPage : int {
 const char* replay_camera_name(ReplayCameraMode m);
 const char* replay_telemetry_page_name(ReplayTelemetryPage p);
 
+// Unit-aware telemetry formatters respecting metric (KM/H, BAR, kW, Nm, °C) vs imperial (MPH, PSI, HP, LB-FT, °F).
+std::string format_replay_speed(float speed_mps, bool metric_units);
+std::string format_replay_boost(float boost_psi, bool has_fi, bool metric_units);
+std::string format_replay_power(float power_kw, bool metric_units);
+std::string format_replay_torque(float torque_nm, bool metric_units);
+std::string format_replay_temp(float temp_c, bool metric_units);
+
 class ReplayViewer {
  public:
+  // Optional `_&<hash>` string-table resolver (e.g. `carview::game_text`) for localized Replay UI labels.
+  static void set_text_resolver(std::function<std::string(const std::string&)> fn);
+
   void open(drive::ReplayRecording rec, bool start_playing = true);
   void close();
   bool active() const { return active_; }
@@ -59,6 +69,8 @@ class ReplayViewer {
   ReplayTelemetryPage telemetry_page() const { return telemetry_page_; }
   bool repeat() const { return repeat_loop_; }
   bool ui_hidden() const { return ui_hidden_; }
+  bool metric_units() const { return metric_units_; }
+  void set_metric_units(bool metric) { metric_units_ = metric; }
 
   // Playback transport controls.
   void toggle_pause();
@@ -129,6 +141,7 @@ class ReplayViewer {
   ReplayTelemetryPage telemetry_page_ = ReplayTelemetryPage::kGeneral;
   bool repeat_loop_ = true;
   bool ui_hidden_ = false;
+  bool metric_units_ = true;
 
   // Orbit & track-side camera state.
   double orbit_yaw_ = 0.55;

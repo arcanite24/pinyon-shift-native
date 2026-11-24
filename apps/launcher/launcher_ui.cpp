@@ -377,15 +377,17 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
   const float seg_x0 = x0 + 24.0f * d + lbl_w;
   const float seg_x1 = x1 - 24.0f * d - right_btn_w - 12.0f * d;
 
-  // Row 1: Graphics Preset
+  // Row 1: Graphics Preset (Ultra, High, Low-Spec, Smooth 60, Quality 30, Low Power)
   const float r1_y = cfg_y + 44.0f * d;
   const float row_h = 32.0f * d;
   draw_text(l, x0 + 24.0f * d, text_y_center(r1_y, r1_y + row_h, 13.0f * d), "Preset", FontFace::kRegular,
             13.0f * d, kTextSecondary);
-  static constexpr const char* kPresetLabels[5] = {"High", "Low-Spec", "Smooth 60", "Quality 30", "Low Power"};
-  static constexpr const char* kPresetIds[5] = {"preset:0", "preset:1", "preset:2", "preset:3", "preset:4"};
-  draw_segmented(l, hits, st, seg_x0, r1_y, seg_x1, r1_y + row_h, kPresetLabels, kPresetIds, 5,
-                 std::clamp(st.selected_preset, 0, 4), d);
+  const char* preset_labels[kGraphicsPresetCount] = {};
+  for (int pi = 0; pi < kGraphicsPresetCount; ++pi) preset_labels[pi] = kGraphicsPresets[pi].label;
+  static constexpr const char* kPresetIds[kGraphicsPresetCount] = {
+      "preset:0", "preset:1", "preset:2", "preset:3", "preset:4", "preset:5"};
+  draw_segmented(l, hits, st, seg_x0, r1_y, seg_x1, r1_y + row_h, preset_labels, kPresetIds, kGraphicsPresetCount,
+                 std::clamp(st.selected_preset, 0, kGraphicsPresetCount - 1), d);
   draw_button(l, hits, st, "act:apply_rec", seg_x1 + 12.0f * d, r1_y, x1 - 24.0f * d, r1_y + row_h,
               "Use Recommended", d);
 
@@ -511,70 +513,115 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
   draw_page_header(l, x0, x1, y0, "Setup", d);
   const float top_y = y0 + 50.0f * d;
 
-  // Step 1: Disc Source (.iso or Extracted Folder)
-  const float c1_h = 138.0f * d;
+  // Step 1: Disc Source (.iso or Extracted Folder), State Root & Save Import
+  const float c1_h = 206.0f * d;
   draw_card(l, x0, top_y, x1, top_y + c1_h, d);
-  draw_text(l, x0 + 20.0f * d, top_y + 16.0f * d, "1. Game Disc (.iso or Folder)", FontFace::kSemiBold, 14.0f * d,
+  draw_text(l, x0 + 20.0f * d, top_y + 14.0f * d, "1. Game Disc & Data Paths", FontFace::kSemiBold, 14.0f * d,
             kTextPrimary);
 
   const float br_fold_w = 118.0f * d;
   const float br_iso_w = 104.0f * d;
-  draw_button(l, hits, st, "setup:browse_iso", x1 - 20.0f * d - br_fold_w - 8.0f * d - br_iso_w, top_y + 10.0f * d,
-              x1 - 20.0f * d - br_fold_w - 8.0f * d, top_y + 38.0f * d, "Browse .iso", d);
-  draw_button(l, hits, st, "setup:browse_folder", x1 - 20.0f * d - br_fold_w, top_y + 10.0f * d, x1 - 20.0f * d,
-              top_y + 38.0f * d, "Browse Folder", d);
+  draw_button(l, hits, st, "setup:browse_iso", x1 - 20.0f * d - br_fold_w - 8.0f * d - br_iso_w, top_y + 8.0f * d,
+              x1 - 20.0f * d - br_fold_w - 8.0f * d, top_y + 34.0f * d, "Browse .iso", d);
+  draw_button(l, hits, st, "setup:browse_folder", x1 - 20.0f * d - br_fold_w, top_y + 8.0f * d, x1 - 20.0f * d,
+              top_y + 34.0f * d, "Browse Folder", d);
 
-  draw_text(l, x0 + 20.0f * d, top_y + 42.0f * d,
-            "Drop a Forza Horizon .iso image or extracted disc folder onto this window, or paste a path.",
-            FontFace::kRegular, 12.5f * d, kTextSecondary, ui::Align::kLeft, cw - 40.0f * d);
+  const float row_y = top_y + 42.0f * d;
+  const float row_h = 30.0f * d;
+  const float lbl_col = 86.0f * d;
+  const float btn_run_w = 112.0f * d;
+  const float btn_ver_w = 82.0f * d;
+  const float box_x0 = x0 + 20.0f * d + lbl_col;
+  const float box_x1 = x1 - 20.0f * d - btn_run_w - btn_ver_w - 16.0f * d;
 
-  const float row_y = top_y + 66.0f * d;
-  const float row_h = 34.0f * d;
-  const float btn_run_w = 122.0f * d;
-  const float btn_ver_w = 92.0f * d;
-  const float box_x1 = x1 - 20.0f * d - btn_run_w - btn_ver_w - 18.0f * d;
-
+  draw_text(l, x0 + 20.0f * d, text_y_center(row_y, row_y + row_h, 12.0f * d), "Game root", FontFace::kRegular,
+            12.0f * d, kTextSecondary);
   const bool path_focused = st.focused_id == "setup:path";
-  hits.push_back({"setup:path", x0 + 20.0f * d, row_y, box_x1, row_y + row_h, true});
+  hits.push_back({"setup:path", box_x0, row_y, box_x1, row_y + row_h, true});
   const uint32_t box_border =
       path_focused ? kAccent : (st.disc_check.valid ? kGreen : (st.hovered_id == "setup:path" ? kBorderHover : kBorderSubtle));
-  draw_inset_box(l, x0 + 20.0f * d, row_y, box_x1, row_y + row_h, d, box_border);
+  draw_inset_box(l, box_x0, row_y, box_x1, row_y + row_h, d, box_border);
 
   std::string path_disp = st.disc_path_input;
   if (path_focused) path_disp.push_back('|');
   const bool empty_disp = st.disc_path_input.empty() && !path_focused;
-  draw_text(l, x0 + 32.0f * d, text_y_center(row_y, row_y + row_h, 12.5f * d),
-            empty_disp ? "Drop .iso image or disc folder, or click to type/paste path..." : path_disp,
-            empty_disp ? FontFace::kRegular : FontFace::kMono, 12.5f * d,
+  draw_text(l, box_x0 + 10.0f * d, text_y_center(row_y, row_y + row_h, 12.0f * d),
+            empty_disp ? "Drop .iso / disc folder, click Browse, or paste path..." : path_disp,
+            empty_disp ? FontFace::kRegular : FontFace::kMono, 12.0f * d,
             empty_disp ? kTextMuted : kTextPrimary,
-            ui::Align::kLeft, std::max(40.0f, box_x1 - x0 - 44.0f * d));
+            ui::Align::kLeft, std::max(40.0f, box_x1 - box_x0 - 20.0f * d));
 
-  draw_button(l, hits, st, "setup:verify", box_x1 + 9.0f * d, row_y, box_x1 + 9.0f * d + btn_ver_w, row_y + row_h,
+  draw_button(l, hits, st, "setup:verify", box_x1 + 8.0f * d, row_y, box_x1 + 8.0f * d + btn_ver_w, row_y + row_h,
               "Verify", d);
   if (st.setup_progress.running) {
-    draw_button(l, hits, st, "setup:cancel", box_x1 + 18.0f * d + btn_ver_w, row_y, x1 - 20.0f * d, row_y + row_h,
+    draw_button(l, hits, st, "setup:cancel", box_x1 + 16.0f * d + btn_ver_w, row_y, x1 - 20.0f * d, row_y + row_h,
                 "Cancel", d);
   } else {
-    draw_button(l, hits, st, "setup:run", box_x1 + 18.0f * d + btn_ver_w, row_y, x1 - 20.0f * d, row_y + row_h,
+    draw_button(l, hits, st, "setup:run", box_x1 + 16.0f * d + btn_ver_w, row_y, x1 - 20.0f * d, row_y + row_h,
                 "Run Setup", d, {.primary = true});
   }
 
+  // State root row with native folder picker + text/clipboard input fallback
+  const float st_row_y = row_y + row_h + 8.0f * d;
+  const float br_state_w = 104.0f * d;
+  const float st_box_x1 = x1 - 20.0f * d - br_state_w - 8.0f * d;
+  draw_text(l, x0 + 20.0f * d, text_y_center(st_row_y, st_row_y + row_h, 12.0f * d), "State root", FontFace::kRegular,
+            12.0f * d, kTextSecondary);
+  const bool st_focused = st.focused_id == "setup:state_path";
+  hits.push_back({"setup:state_path", box_x0, st_row_y, st_box_x1, st_row_y + row_h, true});
+  draw_inset_box(l, box_x0, st_row_y, st_box_x1, st_row_y + row_h, d,
+                 st_focused ? kAccent : (st.hovered_id == "setup:state_path" ? kBorderHover : kBorderSubtle));
+  std::string st_disp = st.state_path_input;
+  if (st_focused) st_disp.push_back('|');
+  const bool st_empty = st.state_path_input.empty() && !st_focused;
+  draw_text(l, box_x0 + 10.0f * d, text_y_center(st_row_y, st_row_y + row_h, 12.0f * d),
+            st_empty ? "Default user state folder (click Browse... or type path)" : st_disp,
+            st_empty ? FontFace::kRegular : FontFace::kMono, 12.0f * d,
+            st_empty ? kTextMuted : kTextPrimary,
+            ui::Align::kLeft, std::max(40.0f, st_box_x1 - box_x0 - 20.0f * d));
+  draw_button(l, hits, st, "setup:browse_state", st_box_x1 + 8.0f * d, st_row_y, x1 - 20.0f * d, st_row_y + row_h,
+              "Browse...", d);
+
+  // Save import row with native file & folder pickers + text/clipboard input fallback
+  const float sv_row_y = st_row_y + row_h + 8.0f * d;
+  const float br_sv_file_w = 104.0f * d;
+  const float br_sv_fold_w = 104.0f * d;
+  const float sv_box_x1 = x1 - 20.0f * d - br_sv_file_w - br_sv_fold_w - 16.0f * d;
+  draw_text(l, x0 + 20.0f * d, text_y_center(sv_row_y, sv_row_y + row_h, 12.0f * d), "Save import", FontFace::kRegular,
+            12.0f * d, kTextSecondary);
+  const bool sv_focused = st.focused_id == "setup:save_path";
+  hits.push_back({"setup:save_path", box_x0, sv_row_y, sv_box_x1, sv_row_y + row_h, true});
+  draw_inset_box(l, box_x0, sv_row_y, sv_box_x1, sv_row_y + row_h, d,
+                 sv_focused ? kAccent : (st.hovered_id == "setup:save_path" ? kBorderHover : kBorderSubtle));
+  std::string sv_disp = st.save_import_path;
+  if (sv_focused) sv_disp.push_back('|');
+  const bool sv_empty = st.save_import_path.empty() && !sv_focused;
+  draw_text(l, box_x0 + 10.0f * d, text_y_center(sv_row_y, sv_row_y + row_h, 12.0f * d),
+            sv_empty ? "Optional: save file or profile export folder to pass on launch..." : sv_disp,
+            sv_empty ? FontFace::kRegular : FontFace::kMono, 12.0f * d,
+            sv_empty ? kTextMuted : kTextPrimary,
+            ui::Align::kLeft, std::max(40.0f, sv_box_x1 - box_x0 - 20.0f * d));
+  draw_button(l, hits, st, "setup:browse_save_file", sv_box_x1 + 8.0f * d, sv_row_y,
+              sv_box_x1 + 8.0f * d + br_sv_file_w, sv_row_y + row_h, "Browse...", d);
+  draw_button(l, hits, st, "setup:browse_save_folder", sv_box_x1 + 16.0f * d + br_sv_file_w, sv_row_y,
+              x1 - 20.0f * d, sv_row_y + row_h, "Folder...", d);
+
   const uint32_t sum_col = st.disc_check.valid ? (st.disc_check.sufficient_space ? kGreen : kAmber) : kAmber;
-  l.circle(x0 + 26.0f * d, row_y + row_h + 18.5f * d, 3.8f * d, sum_col);
-  draw_text(l, x0 + 38.0f * d, row_y + row_h + 11.0f * d, st.disc_check.summary, FontFace::kRegular, 12.0f * d,
+  l.circle(x0 + 26.0f * d, sv_row_y + row_h + 15.5f * d, 3.8f * d, sum_col);
+  draw_text(l, x0 + 38.0f * d, sv_row_y + row_h + 8.0f * d, st.disc_check.summary, FontFace::kRegular, 12.0f * d,
             sum_col, ui::Align::kLeft, cw - 58.0f * d);
 
   // Step 2: Validation Checklist
-  const float c2_y = top_y + c1_h + 14.0f * d;
-  const float c2_h = 152.0f * d;
+  const float c2_y = top_y + c1_h + 12.0f * d;
+  const float c2_h = 132.0f * d;
   draw_card(l, x0, c2_y, x1, c2_y + c2_h, d);
-  draw_text(l, x0 + 20.0f * d, c2_y + 16.0f * d, "2. Verification Checklist", FontFace::kSemiBold, 14.0f * d,
+  draw_text(l, x0 + 20.0f * d, c2_y + 12.0f * d, "2. Verification Checklist", FontFace::kSemiBold, 14.0f * d,
             kTextPrimary);
   if (st.disc_check.looks_like_iso && !st.disc_check.iso_format.empty()) {
     const std::string iso_meta =
         "Format: " + st.disc_check.iso_format + "  \xC2\xB7  " + std::to_string(st.disc_check.iso_file_count) +
         " files  \xC2\xB7  " + fmt_size(st.disc_check.required_space_bytes) + " space req.";
-    draw_text(l, x1 - 20.0f * d, c2_y + 18.0f * d, iso_meta, FontFace::kMono, 11.5f * d,
+    draw_text(l, x1 - 20.0f * d, c2_y + 14.0f * d, iso_meta, FontFace::kMono, 11.5f * d,
               st.disc_check.valid && st.disc_check.sufficient_space ? kGreen : kAmber, ui::Align::kRight,
               cw * 0.62f);
   }
@@ -583,7 +630,7 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
   for (size_t i = 0; i < st.disc_check.items.size() && i < 6; ++i) {
     const auto& it = st.disc_check.items[i];
     const float cx = (i % 2 == 0) ? (x0 + 20.0f * d) : (x0 + 40.0f * d + col_w);
-    const float ry = c2_y + 46.0f * d + float(i / 2) * 32.0f * d;
+    const float ry = c2_y + 40.0f * d + float(i / 2) * 28.0f * d;
     const uint32_t dot = it.present ? kGreen : (it.required ? kRed : kTextMuted);
     l.circle(cx + 6.0f * d, ry + 8.0f * d, 4.0f * d, dot);
 
@@ -602,23 +649,28 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
               it.present ? kTextMuted : (it.required ? kRed : kTextMuted), ui::Align::kRight);
   }
   if (st.disc_check.items.empty()) {
-    draw_text(l, x0 + 20.0f * d, c2_y + 52.0f * d, "Select a .iso image or disc folder to inspect required files.",
+    draw_text(l, x0 + 20.0f * d, c2_y + 48.0f * d, "Select a .iso image or disc folder to inspect required files.",
               FontFace::kRegular, 12.5f * d, kTextMuted);
   }
 
   // Step 3: Instant Setup Options, Progress & Collapsible Log Viewer
-  const float c3_y = c2_y + c2_h + 14.0f * d;
+  const float c3_y = c2_y + c2_h + 12.0f * d;
   const float c3_h = std::max(140.0f * d, y1 - c3_y);
   draw_card(l, x0, c3_y, x1, c3_y + c3_h, d);
 
-  draw_text(l, x0 + 20.0f * d, c3_y + 18.0f * d, "3. Instant Setup & Log", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  draw_text(l, x0 + 20.0f * d, c3_y + 16.0f * d, "3. Instant Setup & Log", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
 
   // Right-aligned options & log toggle
   const float tog_w = 94.0f * d;
-  draw_button(l, hits, st, "setup:toggle_log", x1 - 20.0f * d - tog_w, c3_y + 12.0f * d, x1 - 20.0f * d,
-              c3_y + 40.0f * d, st.setup_log_expanded ? "Hide Log" : "Show Log", d);
-  draw_checkbox(l, hits, st, "setup:toggle_index", x1 - 20.0f * d - tog_w - 176.0f * d, c3_y + 12.0f * d,
-                168.0f * d, 28.0f * d, "Build world index", st.setup_build_index, d);
+  const float idx_w = 160.0f * d;
+  const float snd_w = 122.0f * d;
+  draw_button(l, hits, st, "setup:toggle_log", x1 - 20.0f * d - tog_w, c3_y + 10.0f * d, x1 - 20.0f * d,
+              c3_y + 38.0f * d, st.setup_log_expanded ? "Hide Log" : "Show Log", d);
+  draw_checkbox(l, hits, st, "setup:toggle_index", x1 - 20.0f * d - tog_w - 8.0f * d - idx_w, c3_y + 10.0f * d,
+                idx_w, 28.0f * d, "Build world index", st.setup_build_index, d);
+  draw_checkbox(l, hits, st, "setup:toggle_sounds",
+                x1 - 20.0f * d - tog_w - 8.0f * d - idx_w - 8.0f * d - snd_w, c3_y + 10.0f * d,
+                snd_w, 28.0f * d, "UI sounds", st.launcher_sounds_enabled, d);
 
   const float mode_y = c3_y + 42.0f * d;
   l.circle(x0 + 26.0f * d, mode_y + 7.5f * d, 3.6f * d, kGreen);
@@ -755,8 +807,10 @@ void draw_mods_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
                    std::vector<HitBox>& hits) {
   const float cw = x1 - x0;
   draw_page_header(l, x0, x1, y0, "Mods", d);
-  draw_button(l, hits, st, "mods:rescan", x1 - 224.0f * d, y0 - 2.0f * d, x1 - 126.0f * d, y0 + 28.0f * d, "Rescan", d);
-  draw_button(l, hits, st, "mods:install", x1 - 116.0f * d, y0 - 2.0f * d, x1, y0 + 28.0f * d, "Install", d,
+  draw_button(l, hits, st, "mods:rescan", x1 - 332.0f * d, y0 - 2.0f * d, x1 - 246.0f * d, y0 + 28.0f * d, "Rescan", d);
+  draw_button(l, hits, st, "mods:install_folder", x1 - 238.0f * d, y0 - 2.0f * d, x1 - 122.0f * d, y0 + 28.0f * d,
+              "Browse Folder", d);
+  draw_button(l, hits, st, "mods:install", x1 - 114.0f * d, y0 - 2.0f * d, x1, y0 + 28.0f * d, "Browse .zip", d,
               {.primary = true});
 
   const float top_y = y0 + 50.0f * d;
@@ -966,26 +1020,34 @@ void draw_radio_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
                  st.radio_cfg.replace_playlist ? 0 : 1, d);
   fy += 48.0f * d;
 
-  auto field_box = [&](std::string_view lbl, std::string_view val, bool mono, uint32_t col, uint32_t border = kBorderSubtle) {
+  auto field_box = [&](std::string_view lbl, std::string_view val, bool mono, uint32_t col,
+                       uint32_t border = kBorderSubtle, const char* browse_id = nullptr) {
     draw_text(l, x0 + 20.0f * d, fy, lbl, FontFace::kRegular, 12.0f * d, kTextSecondary);
     fy += 20.0f * d;
-    draw_inset_box(l, x0 + 20.0f * d, fy, left_x1 - 20.0f * d, fy + 34.0f * d, d, border);
+    const float br_w = browse_id ? 92.0f * d : 0.0f;
+    const float box_r = browse_id ? (left_x1 - 20.0f * d - br_w - 8.0f * d) : (left_x1 - 20.0f * d);
+    draw_inset_box(l, x0 + 20.0f * d, fy, box_r, fy + 34.0f * d, d, border);
     draw_text(l, x0 + 32.0f * d, text_y_center(fy, fy + 34.0f * d, 12.5f * d), val,
-              mono ? FontFace::kMono : FontFace::kRegular, 12.5f * d, col, ui::Align::kLeft, left_w - 64.0f * d);
+              mono ? FontFace::kMono : FontFace::kRegular, 12.5f * d, col, ui::Align::kLeft,
+              std::max(40.0f, box_r - (x0 + 44.0f * d)));
+    if (browse_id) {
+      draw_button(l, hits, st, browse_id, box_r + 8.0f * d, fy, left_x1 - 20.0f * d, fy + 34.0f * d, "Browse...", d);
+    }
     fy += 46.0f * d;
   };
 
   field_box("Music folder (MP3, WAV, FLAC, OGG)",
-            st.radio_cfg.music_folder.empty() ? "Drop a music folder onto this window" : st.radio_cfg.music_folder.string(),
+            st.radio_cfg.music_folder.empty() ? "Drop a music folder or click Browse..." : st.radio_cfg.music_folder.string(),
             !st.radio_cfg.music_folder.empty(),
-            st.radio_cfg.music_folder.empty() ? kTextMuted : kTextPrimary);
+            st.radio_cfg.music_folder.empty() ? kTextMuted : kTextPrimary,
+            kBorderSubtle, "radio:browse_music");
   field_box("Station display name",
             st.radio_cfg.custom_station_name.empty() ? "Keep stock station name" : st.radio_cfg.custom_station_name,
             false, st.radio_cfg.custom_station_name.empty() ? kTextMuted : kTextPrimary);
   field_box("Station logo PNG (210\xC3\x97" "100)",
-            st.radio_logo_check.message.empty() ? "Optional: drop a 210x100 PNG" : st.radio_logo_check.message,
+            st.radio_logo_check.message.empty() ? "Optional: drop or browse 210x100 PNG" : st.radio_logo_check.message,
             false, st.radio_logo_check.valid ? kGreen : kTextSecondary,
-            st.radio_logo_check.valid ? kGreen : kBorderSubtle);
+            st.radio_logo_check.valid ? kGreen : kBorderSubtle, "radio:browse_logo");
 
   const bool has_ff = !st.paths.ffmpeg_bin.empty();
   l.circle(x0 + 26.0f * d, fy + 8.0f * d, 4.0f * d, has_ff ? kGreen : kAmber);

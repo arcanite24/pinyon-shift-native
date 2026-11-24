@@ -33,7 +33,43 @@ std::string radio_logo_texture_path(const std::string& station_name, bool off) {
   return "HUD/RADIO/RS_BASSARENA";
 }
 
+std::string loc_str(std::string_view table, std::string_view id, const char* fallback) {
+  const uint32_t packed = (uint32_t(fh1::string_hash(table)) << 16) | uint32_t(fh1::string_hash(id));
+  const std::string ref = "_&" + std::to_string(packed);
+  const std::string resolved = game_text(ref);
+  if (!resolved.empty() && resolved != ref && resolved.rfind("_&", 0) != 0) return resolved;
+  return fallback;
+}
+
 }  // namespace
+
+bool looks_like_raw_key(std::string_view s) {
+  if (s.empty()) return true;
+  if (s.size() >= 2 && s[0] == '_' && s[1] == '&') return true;
+  bool has_non_ascii = false;
+  bool has_space = false;
+  bool all_ident_ascii = true;
+  for (char ch : s) {
+    const unsigned char u = static_cast<unsigned char>(ch);
+    if (u >= 0x80u) {
+      has_non_ascii = true;
+      break;
+    }
+    if (u == ' ' || u == '\t' || u == '\n') has_space = true;
+    if (!(std::isalnum(u) || u == '_' || u == ':' || u == '/' || u == '.' || u == '-')) {
+      all_ident_ascii = false;
+    }
+  }
+  // Strings containing non-ASCII UTF-8 bytes (JP, CHT, CHS, KO, Cyrillic, etc.)
+  // are localized human-readable text, never raw ASCII string-table keys.
+  if (has_non_ascii) return false;
+  if (s.rfind("IDS_", 0) == 0 || s.rfind("UI_", 0) == 0 || s.rfind("STR_", 0) == 0 ||
+      s.find(":IDS_") != std::string_view::npos || s.find("/IDS_") != std::string_view::npos) {
+    return true;
+  }
+  if (!has_space && all_ident_ascii) return true;
+  return false;
+}
 
 // ------------------------------------------------ GPU Vector-Font Radio Popup (947_HUD/RadioStation)
 
@@ -314,9 +350,10 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
     }
   }
 
-  std::vector<ui4::Prompt> bar = {{"A", "START EVENT"}, {"DPAD_LR", "BROWSE TICKETS"}};
+  std::vector<ui4::Prompt> bar = {{"A", loc_str("Activities", "IDS_EnterNow", "START EVENT")},
+                                  {"DPAD_LR", "BROWSE TICKETS"}};
   if (!is_hub) bar.push_back({"LB", "FILTER TAB"});
-  bar.push_back({"B", "BACK"});
+  bar.push_back({"B", loc_str("HelpButtons", "IDS_Back", "BACK")});
   ui4::button_bar(l, bar, screen_w, screen_h, 56.0f);
 }
 
@@ -479,7 +516,11 @@ void draw_outpost_hub_ui4(ui::List& l, float screen_w, float screen_h, std::stri
     }
   }
 
-  ui4::button_bar(l, {{"A", "SELECT"}, {"DPAD_LR", "BROWSE"}, {"B", "BACK"}}, screen_w, screen_h, 56.0f);
+  ui4::button_bar(l,
+                  {{"A", loc_str("HelpButtons", "IDS_Select", "SELECT")},
+                   {"DPAD_LR", "BROWSE"},
+                   {"B", loc_str("HelpButtons", "IDS_Back", "BACK")}},
+                  screen_w, screen_h, 56.0f);
 }
 
 void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const SettingsPage& page, bool live_overlay) {
@@ -521,8 +562,9 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
     ui4::TiltScope rot(l, 0.5f * screen_w, 0.5f * screen_h, tilt_rad);
 
     // 1. TitleTape (TAPECLIPON02 + SMUDGETAPE + CRISPTAPE + DIRTTILE01) + LB/RB category pills
+    const std::string opt_title = loc_str("PauseMenu", "IDS_Options", "OPTIONS");
     ui4::title_tape(l, s, 82.0f * s, 40.0f * s,
-                    live_overlay ? "LIVE SETTINGS" : ("OPTIONS  //  " + kTabs[size_t(std::clamp(cur_tab, 0, 4))]),
+                    live_overlay ? "LIVE SETTINGS" : (opt_title + "  //  " + kTabs[size_t(std::clamp(cur_tab, 0, 4))]),
                     ui4::kPink, 36.0f, 620.0f);
     ui4::tab_strip(l, s, 82.0f * s, 106.0f * s, screen_w - 82.0f * s, kTabs, cur_tab, true, ui4::kPink);
 
@@ -711,25 +753,28 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
     }
   }
 
-  const char* a_prompt = "TOGGLE / CHANGE";
-  if (sel_in_tab >= 0 && sel_in_tab < int(tab_rows.size())) {
-    const auto& sr = tab_rows[size_t(sel_in_tab)];
-    a_prompt = sr.is_save ? "SAVE & APPLY" : sr.is_rebind ? "REBIND KEY" : "TOGGLE / CHANGE";
-  }
+  const std::string a_prompt = [&]() -> std::string {
+    if (sel_in_tab >= 0 && sel_in_tab < int(tab_rows.size())) {
+      const auto& sr = tab_rows[size_t(sel_in_tab)];
+      if (sr.is_save) return loc_str("HelpButtons", "IDS_Save", "SAVE & APPLY");
+      if (sr.is_rebind) return "REBIND KEY";
+    }
+    return loc_str("HelpButtons", "IDS_Select", "TOGGLE / CHANGE");
+  }();
   ui4::button_bar(l,
                   {{"DPAD_LR", "CHANGE"},
                    {"LB", "CATEGORY"},
                    {"A", a_prompt},
                    {"X", "MODS"},
                    {"Y", "SAVES / SYNC"},
-                   {"B", "BACK"}},
+                   {"B", loc_str("HelpButtons", "IDS_Back", "BACK")}},
                   screen_w, screen_h, 56.0f);
 }
 
 // ------------------------------------------------ Animated Loading Screen (2_C_INI_LOADING)
 
 namespace {
-std::string resolve_loading_key(std::string_view key) {
+std::string resolve_loading_key(std::string_view key, bool allow_fallback_prettify = true) {
   if (key.empty()) return {};
   // Format in LoadingDefs.xml: "Tips:IDS_PopularityTitle"
   const size_t colon = key.find(':');
@@ -744,6 +789,9 @@ std::string resolve_loading_key(std::string_view key) {
   const std::string probe = std::string(tbl) + "/" + std::string(id);
   const std::string resolved = game_text(probe);
   if (!resolved.empty() && resolved != probe) return resolved;
+  // 3. If the XML already carries localized text rather than a raw key, keep it verbatim.
+  if (!looks_like_raw_key(key)) return std::string(key);
+  if (!allow_fallback_prettify) return {};
   // Clean human-readable fallback from "IDS_SpeedTrapTitle" -> "SPEED TRAP"
   std::string s(id);
   if (s.rfind("IDS_", 0) == 0) s = s.substr(4);
@@ -769,6 +817,13 @@ std::string resolve_loading_key(std::string_view key) {
   return out;
 }
 
+size_t utf8_char_len(std::string_view s, size_t pos) {
+  if (pos >= s.size()) return 0;
+  const unsigned char b = static_cast<unsigned char>(s[pos]);
+  size_t len = (b < 0x80u) ? 1u : ((b >> 5) == 0x6u) ? 2u : ((b >> 4) == 0xEu) ? 3u : ((b >> 3) == 0x1Eu) ? 4u : 1u;
+  return std::min(len, s.size() - pos);
+}
+
 std::vector<std::string> wrap_tip_lines(std::string_view text, const ui::TextStyle& ts, float max_w, int max_lines = 6) {
   std::vector<std::string> lines;
   std::string cur;
@@ -788,9 +843,25 @@ std::vector<std::string> wrap_tip_lines(std::string_view text, const ui::TextSty
     const std::string cand = cur.empty() ? word : (cur + " " + word);
     if (!cur.empty() && ui::List::measure(cand, ts) > max_w) {
       lines.push_back(cur);
-      cur = word;
+      cur.clear();
+    }
+    if (cur.empty() && ui::List::measure(word, ts) > max_w) {
+      // Long spaceless token (e.g. Japanese / Traditional Chinese loading tip): wrap by UTF-8 codepoint.
+      size_t wp = 0;
+      while (wp < word.size() && int(lines.size()) < max_lines) {
+        const size_t clen = utf8_char_len(word, wp);
+        const std::string ch = word.substr(wp, clen);
+        const std::string next = cur + ch;
+        if (!cur.empty() && ui::List::measure(next, ts) > max_w) {
+          lines.push_back(cur);
+          cur = ch;
+        } else {
+          cur = next;
+        }
+        wp += clen;
+      }
     } else {
-      cur = cand;
+      cur = cur.empty() ? word : (cur + " " + word);
     }
   }
   if (!cur.empty() && int(lines.size()) < max_lines) lines.push_back(cur);
@@ -830,23 +901,31 @@ bool LoadingScreen::load_definitions(const std::filesystem::path& game_root, con
 
   std::vector<std::string> new_titles;
   std::vector<std::string> new_msgs;
-  auto looks_like_raw_key = [](const std::string& s) {
-    return s.empty() || s.find(' ') == std::string::npos;
+  auto accept_tip = [](const std::string& ttl, const std::string& msg) {
+    if (looks_like_raw_key(msg) || msg == ttl) return false;
+    bool has_non_ascii = false;
+    for (char ch : msg) {
+      if (static_cast<unsigned char>(ch) >= 0x80u) {
+        has_non_ascii = true;
+        break;
+      }
+    }
+    return has_non_ascii ? (msg.size() >= 12) : (msg.size() >= 20);
   };
   for (const auto& t : parsed) {
     if (t.group != group_) continue;
-    const std::string ttl = resolve_loading_key(t.title_key);
-    const std::string msg = resolve_loading_key(t.message_key);
-    if (!looks_like_raw_key(msg) && msg != ttl && msg.size() >= 24) {
+    const std::string ttl = resolve_loading_key(t.title_key, true);
+    const std::string msg = resolve_loading_key(t.message_key, false);
+    if (accept_tip(ttl, msg)) {
       new_titles.push_back(ttl.empty() ? "FESTIVAL TIP" : ttl);
       new_msgs.push_back(msg);
     }
   }
   if (new_msgs.empty()) {
     for (const auto& t : parsed) {
-      const std::string ttl = resolve_loading_key(t.title_key);
-      const std::string msg = resolve_loading_key(t.message_key);
-      if (!looks_like_raw_key(msg) && msg != ttl && msg.size() >= 24) {
+      const std::string ttl = resolve_loading_key(t.title_key, true);
+      const std::string msg = resolve_loading_key(t.message_key, false);
+      if (accept_tip(ttl, msg)) {
         new_titles.push_back(ttl.empty() ? "FESTIVAL TIP" : ttl);
         new_msgs.push_back(msg);
         if (new_msgs.size() >= 12) break;
@@ -1008,7 +1087,7 @@ void LoadingScreen::draw(ui::List& l, float screen_w, float screen_h) const {
     if (sp_node >= 0) sc.model(l, f, sp_node, 1.0f, 0.0f, 0.0f, 0.0f, 0u, {}, -ang);
   }
   ui::TextStyle lw = ui4::style(ui::Font::kB, 11.0f * s, ui4::kOffWhite, ui::Align::kCenter);
-  l.text(sp_cx, sp_cy + 28.0f * s, "LOADING", lw);
+  l.text(sp_cx, sp_cy + 28.0f * s, loc_str("ScreenTitles", "IDS_Loading", "LOADING"), lw);
 }
 
 // ------------------------------------------------ Virtual On-Screen Keyboard
@@ -1200,7 +1279,12 @@ void OnScreenKeyboard::draw(ui::List& l, float screen_w, float screen_h) const {
     }
   }
 
-  ui4::button_bar(l, {{"A", "TYPE"}, {"X", "BACKSPACE"}, {"START", "DONE"}, {"B", "CANCEL"}}, screen_w, screen_h);
+  ui4::button_bar(l,
+                  {{"A", loc_str("HelpButtons", "IDS_Select", "TYPE")},
+                   {"X", "BACKSPACE"},
+                   {"START", loc_str("HelpButtons", "IDS_ContinueMenu", "DONE")},
+                   {"B", loc_str("HelpButtons", "IDS_Cancel", "CANCEL")}},
+                  screen_w, screen_h);
 }
 
 }  // namespace carview

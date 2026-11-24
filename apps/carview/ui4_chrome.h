@@ -240,10 +240,36 @@ void tab_strip(ui::List& l, float s, float x0, float y0, float max_x, const std:
                int active_idx, bool show_bumpers = true, uint32_t active_colour = kPink);
 
 // Controller glyph family shown in BUTTON_BAR_SCENE & menus (automatically switched
-// when a DualSense / DualShock 4 is active, defaulting to Xbox CONTROLLER/* textures).
-enum class GlyphSet : uint8_t { kXbox = 0, kPlayStation = 1 };
+// when a DualSense / DualShock 4 or keyboard is active, defaulting to Xbox CONTROLLER/* textures).
+enum class GlyphSet : uint8_t { kXbox = 0, kPlayStation = 1, kKeyboard = 2 };
 void set_glyph_set(GlyphSet set);
 GlyphSet glyph_set();
+
+// Returns the human-readable glyph/keycap label for a logical control button
+// ("A", "B", "X", "Y", "LB", "RB", "LT", "RT", "START", "BACK", "DPAD", "LS", "RS",
+// "ACCEPT", "MENU", "REWIND", "MAP", "CAMERA", "HORN", etc.) in the given or active GlyphSet.
+std::string glyph_label_for(std::string_view button, GlyphSet set);
+std::string glyph_label_for(std::string_view button);
+
+// Extracts the logical button token ("A", "B", "X", "Y", "LB", "RB", "LT", "RT",
+// "START", "BACK", "DPAD", "DPAD_UD", "DPAD_LR", "LS", "RS") from a retail
+// `CONTROLLER/*` texture key (empty string if `texture_key` is not a controller glyph).
+std::string controller_button_from_texture(std::string_view texture_key);
+
+// Draws a `CONTROLLER/*` texture through the active GlyphSet mapper (substituting
+// PlayStation Cross/Circle/Square/Triangle/L1/R1/L2/R2 or Keyboard keycaps cleanly).
+// Returns true if `texture_key` was recognized as a controller glyph and drawn.
+bool draw_controller_texture(ui::List& l, float x0, float y0, float x1, float y1, std::string_view texture_key,
+                             float alpha = 1.0f);
+
+// Syncs active controller layout preset (0..4) and handbrake/clutch swap state for
+// the visual Controls tab controller layout diagram.
+void set_controller_diagram_state(int layout_id, bool swap_handbrake_clutch);
+
+// Draws a visual FH1 controller layout diagram with mapped action callouts for
+// ControllerLayouts 0..4 (honouring `swap_handbrake_clutch` and active GlyphSet).
+void draw_controller_layout_diagram(ui::List& l, float x0, float y0, float x1, float y1, float s, int layout_id,
+                                    bool swap_handbrake_clutch, std::string_view highlight_action = {});
 
 // Bottom BUTTON_BAR_SCENE prompt strip with authentic CONTROLLER/* glyphs.
 void button_bar(ui::List& l, const std::vector<Prompt>& items, float screen_w, float screen_h,

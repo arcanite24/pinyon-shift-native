@@ -222,12 +222,177 @@ void test_replay_viewer_controls_cameras_and_hud() {
   check(!list.empty(), "ReplayViewer::build_hud emits timeline & telemetry UI shapes");
 }
 
+void test_real_telemetry_v3_and_units() {
+  // 1. Real physics telemetry capture via ReplayCarSample::from_vehicle + CarDamageState.
+  drive::CarParams params;
+  params.wheel_centres = {drive::Vec3{-0.8, 0.33, 1.35}, drive::Vec3{0.8, 0.33, 1.35},
+                          drive::Vec3{-0.8, 0.33, -1.35}, drive::Vec3{0.8, 0.33, -1.35}};
+  params.tyre_radius = {0.33, 0.33, 0.33, 0.33};
+  params.has_turbo = true;
+  params.boost_min_psi = 2.0;
+  params.boost_max_psi = 18.0;
+  drive::Vehicle veh(params);
+  drive::FlatGround ground(0.0);
+  veh.reset({0.0, 0.0, 0.0}, 0.0);
+  drive::Input inp{};
+  inp.throttle = 1.0;
+  inp.steer = 0.35;
+  for (int i = 0; i < 60; ++i) veh.step(inp, ground);
+
+  drive::CarDamageState dmg;
+  dmg.mode = drive::DamageMode::kSimulation;
+  dmg.engine_damage = 0.40f;
+  dmg.trans_damage = 0.25f;
+  dmg.suspension_damage = {0.30f, 0.10f, 0.20f, 0.05f};
+  dmg.aero_damage = 0.50f;
+  drive::CarLampState lamps{};
+
+  const drive::ReplayCarSample s_veh =
+      drive::ReplayCarSample::from_vehicle(0u, veh, lamps, inp.throttle, 0.0, 0.0, inp.steer, 1u, &dmg);
+  check(s_veh.engine_torque_nm > 10.0f, "from_vehicle records real positive engine torque");
+  check(s_veh.engine_power_kw > 5.0f, "from_vehicle records real positive engine power (kW)");
+  check(s_veh.boost_max_psi >= 17.5f, "from_vehicle records forced induction boost_max_psi");
+  check(std::fabs(s_veh.damage[0] - 0.40f) < 1e-4f, "from_vehicle records real engine damage");
+  check(s_veh.damage[1] >= 0.249f, "from_vehicle records real transmission damage");
+  check(std::fabs(s_veh.damage[2] - 0.30f) < 1e-4f, "from_vehicle records real suspension damage");
+  check(std::fabs(s_veh.damage[3] - 0.50f) < 1e-4f, "from_vehicle records real aero/body damage");
+  check(s_veh.wheel_compression[0] > 0.0f && s_veh.wheel_compression[0] <= 1.0f,
+        "from_vehicle records normalized wheel suspension compression");
+  check(s_veh.wheel_temp_c[0] >= 20.0f, "from_vehicle records real tyre temperature (deg C)");
+
+  // 2. Interpolation and v3 binary file round-trip preserve all extended telemetry fields.
+  drive::ReplayCarSample a = make_car(0, 0.0f, 0.0f, 0.0f, 0.0f, 20.0f, 4000.0f, 3);
+  a.wheel_slip[0] = 0.20f;
+  a.wheel_slip[1] = 0.40f;
+  a.wheel_slip[2] = 0.60f;
+  a.wheel_slip[3] = 0.80f;
+  a.wheel_compression[0] = 0.30f;
+  a.wheel_compression[1] = 0.50f;
+  a.wheel_compression[2] = 0.40f;
+  a.wheel_compression[3] = 0.60f;
+  a.wheel_temp_c[0] = 70.0f;
+  a.wheel_temp_c[1] = 75.0f;
+  a.wheel_temp_c[2] = 80.0f;
+  a.wheel_temp_c[3] = 85.0f;
+  a.damage[0] = 0.20f;
+  a.damage[1] = 0.10f;
+  a.damage[2] = 0.30f;
+  a.damage[3] = 0.40f;
+  a.engine_power_kw = 200.0f;
+  a.engine_torque_nm = 400.0f;
+  a.boost_psi = 8.0f;
+  a.boost_max_psi = 20.0f;
+
+  drive::ReplayCarSample b = a;
+  b.pos[2] = 20.0f;
+  b.wheel_slip[0] = 0.60f;
+  b.wheel_compression[0] = 0.70f;
+  b.wheel_temp_c[0] = 90.0f;
+  b.damage[0] = 0.60f;
+  b.engine_power_kw = 300.0f;
+  b.engine_torque_nm = 500.0f;
+  b.boost_psi = 16.0f;
+
+  drive::ReplayRecorder rec;
+  drive::ReplayMetadata meta;
+  meta.event_name = "TELEMETRY V3 TEST";
+  meta.roster = {{0, 1219, "NIS_SkylineGTRVSpecII_02", "PLAYER", true, false}};
+  rec.begin(meta, 120, false);
+  rec.record_frame(0.0, {a});
+  rec.record_frame(1.0, {b});
+  const auto snap = rec.snapshot();
+
+  drive::ReplayCarSample mid{};
+  check(snap.sample_car(0.5, 0, mid), "midpoint telemetry sample succeeds");
+  check(std::fabs(mid.wheel_slip[0] - 0.40f) < 1e-3f, "wheel_slip interpolates linearly");
+  check(std::fabs(mid.wheel_compression[0] - 0.50f) < 1e-3f, "wheel_compression interpolates linearly");
+  check(std::fabs(mid.wheel_temp_c[0] - 80.0f) < 1e-2f, "wheel_temp_c interpolates linearly");
+  check(std::fabs(mid.damage[0] - 0.40f) < 1e-3f, "damage interpolates linearly");
+  check(std::fabs(mid.engine_power_kw - 250.0f) < 1e-2f, "engine_power_kw interpolates linearly");
+  check(std::fabs(mid.engine_torque_nm - 450.0f) < 1e-2f, "engine_torque_nm interpolates linearly");
+  check(std::fabs(mid.boost_psi - 12.0f) < 1e-2f, "boost_psi interpolates linearly");
+
+  const auto tmp_dir = std::filesystem::temp_directory_path() / "shift_replay_v3_tests";
+  std::error_code ec;
+  std::filesystem::remove_all(tmp_dir, ec);
+  std::filesystem::path saved;
+  std::string err;
+  check(drive::save_replay_auto(tmp_dir, snap, saved, &err), "save_replay_auto v3 succeeds");
+  drive::ReplayRecording loaded;
+  check(drive::load_replay_file(saved, loaded, &err), "load_replay_file v3 succeeds");
+  check(loaded.frame_count() == 2 && !loaded.frames[0].cars.empty(), "v3 file restored 2 frames");
+  if (loaded.frame_count() == 2 && !loaded.frames[0].cars.empty()) {
+    const auto& lf = loaded.frames[0].cars[0];
+    check(std::fabs(lf.wheel_slip[3] - 0.80f) < 1e-4f, "v3 roundtrip preserves wheel_slip");
+    check(std::fabs(lf.wheel_compression[1] - 0.50f) < 1e-4f, "v3 roundtrip preserves wheel_compression");
+    check(std::fabs(lf.wheel_temp_c[2] - 80.0f) < 1e-3f, "v3 roundtrip preserves wheel_temp_c");
+    check(std::fabs(lf.damage[3] - 0.40f) < 1e-4f, "v3 roundtrip preserves damage");
+    check(std::fabs(lf.engine_power_kw - 200.0f) < 1e-3f, "v3 roundtrip preserves engine_power_kw");
+    check(std::fabs(lf.engine_torque_nm - 400.0f) < 1e-3f, "v3 roundtrip preserves engine_torque_nm");
+    check(std::fabs(lf.boost_psi - 8.0f) < 1e-3f && std::fabs(lf.boost_max_psi - 20.0f) < 1e-3f,
+          "v3 roundtrip preserves boost_psi and boost_max_psi");
+  }
+  std::filesystem::remove_all(tmp_dir, ec);
+
+  // 3. Metric vs Imperial telemetry formatting (KM/H vs MPH, BAR vs PSI, kW vs HP, Nm vs LB-FT, C vs F).
+  const std::string spd_kmh = carview::format_replay_speed(27.7778f, true);   // 100 km/h
+  const std::string spd_mph = carview::format_replay_speed(27.7778f, false);  // 62 mph
+  check(spd_kmh.find("100") != std::string::npos && spd_kmh.find("KM/H") != std::string::npos,
+        "metric replay speed formats as KM/H");
+  check(spd_mph.find("62") != std::string::npos && spd_mph.find("MPH") != std::string::npos,
+        "imperial replay speed formats as MPH");
+
+  const std::string bst_bar = carview::format_replay_boost(14.5038f, true, true);   // ~1.00 BAR
+  const std::string bst_psi = carview::format_replay_boost(14.5038f, true, false);  // 14.5 PSI
+  check(bst_bar.find("1.00") != std::string::npos && bst_bar.find("BAR") != std::string::npos,
+        "metric replay boost formats as BAR");
+  check(bst_psi.find("14.5") != std::string::npos && bst_psi.find("PSI") != std::string::npos,
+        "imperial replay boost formats as PSI");
+  check(carview::format_replay_boost(0.0f, false, true) == "N/A", "NA boost formats as N/A");
+
+  const std::string pwr_kw = carview::format_replay_power(200.0f, true);
+  const std::string pwr_hp = carview::format_replay_power(200.0f, false);
+  check(pwr_kw.find("200") != std::string::npos && pwr_kw.find("kW") != std::string::npos,
+        "metric replay power formats as kW");
+  check(pwr_hp.find("268") != std::string::npos && pwr_hp.find("HP") != std::string::npos,
+        "imperial replay power formats as HP");
+
+  const std::string trq_nm = carview::format_replay_torque(400.0f, true);
+  const std::string trq_lb = carview::format_replay_torque(400.0f, false);
+  check(trq_nm.find("400") != std::string::npos && trq_nm.find("Nm") != std::string::npos,
+        "metric replay torque formats as Nm");
+  check(trq_lb.find("295") != std::string::npos && trq_lb.find("LB-FT") != std::string::npos,
+        "imperial replay torque formats as LB-FT");
+
+  const std::string tmp_c = carview::format_replay_temp(100.0f, true);
+  const std::string tmp_f = carview::format_replay_temp(100.0f, false);
+  check(tmp_c.find("100") != std::string::npos && tmp_c.find("C") != std::string::npos,
+        "metric replay tyre temp formats in deg C");
+  check(tmp_f.find("212") != std::string::npos && tmp_f.find("F") != std::string::npos,
+        "imperial replay tyre temp formats in deg F");
+
+  // Exercise all 5 ReplayViewer telemetry pages under both metric and imperial modes.
+  carview::ReplayViewer viewer;
+  viewer.open(snap, true);
+  for (bool metric : {true, false}) {
+    viewer.set_metric_units(metric);
+    check(viewer.metric_units() == metric, "ReplayViewer stores metric_units flag");
+    for (int tp = 0; tp < int(carview::ReplayTelemetryPage::kCount); ++tp) {
+      viewer.set_telemetry_page(static_cast<carview::ReplayTelemetryPage>(tp));
+      carview::ui::List tl;
+      viewer.build_hud(tl, 1280.0f, 720.0f);
+      check(!tl.empty(), "ReplayViewer builds real telemetry HUD page cleanly");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
   test_ring_buffer_and_interpolation();
   test_file_roundtrip_and_crc();
   test_replay_viewer_controls_cameras_and_hud();
+  test_real_telemetry_v3_and_units();
   if (g_fails == 0) {
     std::printf("replay_tests: all passed\n");
     return 0;

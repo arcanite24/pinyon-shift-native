@@ -186,7 +186,7 @@ void render_fh1_dial(ui::List& l, const DriveHud& st, float cx, float cy, float 
     l.text(cx + 42.0f * s, cy + 23.0f * s, "STM", sts);
   }
 
-  // Optional Forced-Induction Boost PSI mini-bar tucked neatly below gear/assist row.
+  // Optional Forced-Induction Boost mini-bar (BAR when metric, PSI when imperial) tucked neatly below gear/assist row.
   if (st.has_boost && st.boost_max_psi > 0.5) {
     const float bf = float(std::clamp(st.boost_psi / st.boost_max_psi, 0.0, 1.0));
     const float bx0 = cx - 32.0f * s, bx1 = cx + 32.0f * s, by = cy + 44.0f * s;
@@ -194,8 +194,7 @@ void render_fh1_dial(ui::List& l, const DriveHud& st, float cx, float cy, float 
     if (bf > 0.01f) {
       l.rect(bx0, by, bx0 + (bx1 - bx0) * bf, by + 4.5f * s, bf > 0.85f ? kNeedleHot : rgba(48, 206, 255, 240));
     }
-    char btxt[24];
-    std::snprintf(btxt, sizeof btxt, "PSI %.1f", std::max(0.0, st.boost_psi));
+    const std::string btxt = format_boost_unit(st.boost_psi, st.metric_units);
     l.text(cx, by + 6.5f * s, btxt, font(ui::Font::kB, 8.2f * s, rgba(210, 226, 242, 220), Align::kCenter));
   }
 }
@@ -241,17 +240,23 @@ void render_digital_dial(ui::List& l, const DriveHud& st, const Layout& g) {
   if (!gear) std::snprintf(gb, sizeof gb, "%d", st.gear), gear = gb;
   l.rect(rx - 44.0f * s, y0 + 28.0f * s, rx - 8.0f * s, y0 + 64.0f * s, rgba(249, 0, 100, 230));
   l.text(rx - 26.0f * s, y0 + 34.0f * s, gear, font(ui::Font::kE, 24.0f * s, rgba(255, 255, 255, 255), Align::kCenter));
-  // Separate ABS / TCS / STM + Boost readout on left side.
-  l.text(x0 + 10.0f * s, y0 + 30.0f * s, "ABS",
+  // Separate ABS / TCS / STM + Boost bar/readout (BAR when metric, PSI when imperial) on left side.
+  l.text(x0 + 10.0f * s, y0 + 28.0f * s, "ABS",
          font(ui::Font::kB, 9.5f * s, st.abs ? rgba(240, 244, 252, 245) : rgba(110, 114, 122, 95)));
-  l.text(x0 + 10.0f * s, y0 + 44.0f * s, "TCS",
+  l.text(x0 + 10.0f * s, y0 + 41.0f * s, "TCS",
          font(ui::Font::kB, 9.5f * s, st.tcs ? rgba(255, 212, 56, 245) : rgba(110, 114, 122, 95)));
-  l.text(x0 + 10.0f * s, y0 + 58.0f * s, "STM",
+  l.text(x0 + 10.0f * s, y0 + 54.0f * s, "STM",
          font(ui::Font::kB, 9.5f * s, st.stm ? rgba(255, 148, 56, 245) : rgba(110, 114, 122, 95)));
   if (st.has_boost && st.boost_max_psi > 0.5) {
-    char bp[24];
-    std::snprintf(bp, sizeof bp, "%.1f PSI", std::max(0.0, st.boost_psi));
-    l.text(x0 + 10.0f * s, y0 + 72.0f * s, bp, font(ui::Font::kB, 9.0f * s, rgba(72, 212, 255, 235)));
+    const float bf = float(std::clamp(st.boost_psi / st.boost_max_psi, 0.0, 1.0));
+    const float bbx0 = x0 + 10.0f * s, bbx1 = x0 + 78.0f * s, bby = y0 + 67.0f * s;
+    l.rect(bbx0, bby, bbx1, bby + 3.5f * s, rgba(255, 255, 255, 36));
+    if (bf > 0.01f) {
+      l.rect(bbx0, bby, bbx0 + (bbx1 - bbx0) * bf, bby + 3.5f * s,
+             bf > 0.85f ? rgba(255, 36, 126, 245) : rgba(72, 212, 255, 240));
+    }
+    const std::string bp = format_boost_unit(st.boost_psi, st.metric_units);
+    l.text(x0 + 10.0f * s, y0 + 72.5f * s, bp, font(ui::Font::kB, 8.8f * s, rgba(72, 212, 255, 235)));
   }
 }
 
@@ -271,7 +276,7 @@ void dial_drawn(ui::List& l, const DriveHud& st, const Layout& g) {
 
 // The dial anchored from 947_HUD's GAUGE_ANALOG (with 1:1 FH1 visual styling).
 void dial(ui::List& l, const DriveHud& st, const Layout& g) {
-  static const SceneDraw sc(ui_scene("947_HUD"));
+  const SceneDraw sc = resolve_scene_draw("947_HUD");
   const int gauge = sc.find("GAUGE_ANALOG");
   const int ring = sc.find("MainBackRing", gauge);
   if (gauge < 0 || ring < 0) return dial_drawn(l, st, g);
@@ -329,7 +334,7 @@ void popup_card_drawn(ui::List& l, const DriveHud& st, const Layout& g, float li
 bool popup_card(ui::List& l, const DriveHud& st, const Layout& g, float lift_canvas) {
   const double age = st.time - st.popup_at;
   if (st.popup_title.empty() || age < 0 || age > kPopupSeconds) return false;
-  static const SceneDraw sc(ui_scene("H_BARN_FIND_HUD"));
+  const SceneDraw sc = resolve_scene_draw("H_BARN_FIND_HUD");
   const int tape = sc.find("DoubleTape");
   const int panel = sc.find("Panel", tape), panel2 = sc.find("Panel2", tape);
   const int title = sc.find("TEXT2", tape), body = sc.find("TEXT1", tape), icon = sc.find("MiscIcon", tape);
@@ -345,15 +350,28 @@ bool popup_card(ui::List& l, const DriveHud& st, const Layout& g, float lift_can
   const float tx = sc.at(title)[0];
   ui::TextStyle ts = sc.style(title, f, kText), bs = sc.style(body, f, kText);
   const float tw = std::max(ui::List::measure(st.popup_title, ts), ui::List::measure(st.popup_text, bs)) / g.s;
-  const float right = std::max(sc.at(sc.find("RightAnchor", tape))[0], tx + std::min(tw, sc.text_width(title)) + 30);
-  for (int p : {panel2, panel}) {
-    const float x0 = sc.rect(p)[0];
-    sc.model(l, f, p, a, 0, dy, right - x0);
+  const int right_anchor = sc.find("RightAnchor", tape);
+  const float anchor_x = right_anchor >= 0 ? sc.at(right_anchor)[0] : 917.0f;
+  const float right = std::max(anchor_x, tx + std::min(tw, sc.text_width(title) > 0 ? sc.text_width(title) : tw) + 30);
+
+  // Render DoubleTape subtree via SceneDraw::draw_subtree() with dynamic crop widths & bound text.
+  SceneBindings sb;
+  sb.ignore_zero_alpha = true;
+  sb.opacity = a;
+  sb.dy = dy;
+  sb.default_text_color = kText;
+  sb.index(panel2).visible_width = right - sc.rect(panel2)[0];
+  sb.index(panel).visible_width = right - sc.rect(panel)[0];
+  sb.index(title).text = st.popup_title;
+  if (!st.popup_text.empty()) sb.index(body).text = st.popup_text;
+  const int drawn = sc.draw_subtree(l, f, tape, sb);
+  if (drawn == 0) {
+    popup_card_drawn(l, st, g, lift_canvas);
+    return true;
   }
-  if (!sc.model(l, f, icon, a, 0, dy))
-    l.rect(f.x(489), f.y(614 + dy), f.x(521), f.y(646 + dy), ui::fade(kPink, a));
-  sc.text(l, f, title, st.popup_title, ui::fade(kText, a), 0, dy);
-  if (!st.popup_text.empty()) sc.text(l, f, body, st.popup_text, ui::fade(kText, a), 0, dy);
+  if (icon < 0) {
+    l.rect(f.x(489), f.y(614 + dy), f.x(521), f.y(646 + dy), ui::fade(st.popup_colour ? st.popup_colour : kPink, a));
+  }
   if (st.popup_progress >= 0) {
     const float bx0 = tx, bx1 = right - 30, by = 654 + dy;
     const float k = float(std::clamp(st.popup_progress, 0.0, 1.0)) * ease_in_time(age, 0.3, 0.8);
@@ -388,6 +406,7 @@ std::function<bool(const std::string&, std::array<float, 4>&)>& textures() {
 void set_ui_textures(std::function<bool(const std::string&, std::array<float, 4>&)> source) {
   textures() = source;
   ui4::set_texture_loader(std::move(source));
+  notify_ui_atlas_changed();
 }
 bool ui_texture(const std::string& path, std::array<float, 4>& uv) { return textures() && textures()(path, uv); }
 namespace {
@@ -540,6 +559,27 @@ std::string format_gap_unit(double meters, bool metric) {
     const double ft = meters * 3.28084;
     if (std::fabs(meters) >= 160.9344) std::snprintf(buf, sizeof buf, "%+.2f MI", meters / 1609.344);
     else std::snprintf(buf, sizeof buf, "%+.0f FT", ft);
+  }
+  return buf;
+}
+
+std::string format_boost_unit(double boost_psi, bool metric) {
+  char buf[32];
+  const double psi = std::max(0.0, boost_psi);
+  if (metric) {
+    std::snprintf(buf, sizeof buf, "%.2f BAR", psi * 0.06894757);
+  } else {
+    std::snprintf(buf, sizeof buf, "%.1f PSI", psi);
+  }
+  return buf;
+}
+
+std::string format_split_delta(double delta_s) {
+  char buf[32];
+  if (std::fabs(delta_s) < 0.005) {
+    std::snprintf(buf, sizeof buf, "+0.00s");
+  } else {
+    std::snprintf(buf, sizeof buf, "%+.2fs", delta_s);
   }
   return buf;
 }
@@ -724,7 +764,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   if (st.driving && !menu) {
     if (!st.name_tags.empty() && (!st.race || st.race->phase == RaceHud::kRacing))
       opponent_name_tags(l, st.name_tags, g);
-    if (st.world_marker && !st.race) world_marker_hud(l, *st.world_marker, g);
+    if (st.world_marker && !st.race) world_marker_hud(l, *st.world_marker, g, st.metric_units);
     if (st.gps && st.gps->active && !st.race) gps_turn_hud(l, *st.gps, g, st.metric_units);
     if (st.pr_stunt && st.pr_stunt->active && !st.race) pr_stunt_hud(l, *st.pr_stunt, g);
     if (st.h2h && !st.race) {
@@ -739,12 +779,15 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
       const RaceHud& r = *st.race;
+      if (r.phase != RaceHud::kFinished) reset_post_race_page_timer();
       if (r.phase == RaceHud::kGrid) event_card(l, r, g);
-      else if (r.phase == RaceHud::kFinished) results(l, r, g);
+      else if (r.phase == RaceHud::kFinished) results(l, r, st, g);
       else {
         race_hud(l, r, g);
-        showcase_hud(l, r, g);
+        showcase_hud(l, r, g, st.metric_units);
       }
+    } else {
+      reset_post_race_page_timer();
     }
     if (st.rally_stage && st.rally_stage->active) build_rally_pace_notes_hud(l, *st.rally_stage, w, h);
     if (progression_hud(l, st, g, bottom_lift)) bottom_lift += 94.0f;

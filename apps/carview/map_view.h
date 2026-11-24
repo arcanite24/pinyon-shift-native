@@ -134,6 +134,8 @@ class MapView {
 
   // Returns how many of the 15 high-res map tiles are currently cached in RAM.
   int loaded_high_tiles() const;
+  // True when retail New.xds badge texture was loaded from Horizon.zip.
+  bool has_new_badge() const { return !new_badge_.rgba.empty(); }
 
  private:
   void ensure_high_tiles(int c0, int c1, int r0, int r1) const;
@@ -166,7 +168,7 @@ class MapView {
   int nx_ = 0, nz_ = 0;
   std::vector<std::vector<std::pair<uint32_t, uint32_t>>> grid_;
   Profile mini_, full_;
-  Atlas small_icons_, large_icons_, background_;
+  Atlas small_icons_, large_icons_, background_, new_badge_;
   std::filesystem::path horizon_zip_path_;
   static constexpr int kHighCols = 5, kHighRows = 3, kHighTileSize = 1024;
   mutable std::array<Atlas, 15> high_tiles_{};

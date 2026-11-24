@@ -763,6 +763,42 @@ void test_baker_state_machine_and_inspect(const fs::path& tmp) {
   CHECK(!bad_rep.error.empty());
 }
 
+void test_android_setup_pill_layout_contract() {
+  // Verify the normalized top-center SETUP pill bounds stay completely disjoint from the
+  // top-right HUD block (position/timer/player bar) across 20:9, 16:9, and 4:3 displays.
+  struct Rect {
+    float x0, y0, x1, y1;
+  };
+  auto overlaps = [](const Rect& a, const Rect& b) {
+    return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+  };
+  const std::pair<float, float> displays[] = {{2400.0f, 1080.0f}, {1920.0f, 1080.0f}, {2048.0f, 1536.0f}};
+  for (const auto& [w, h] : displays) {
+    const float aspect = w / h;
+    const float pill_w = aspect >= 2.0f ? 0.072f : (aspect <= 1.5f ? 0.110f : 0.088f);
+    const Rect setup_pill{0.5f - pill_w * 0.5f, 0.008f, 0.5f + pill_w * 0.5f, 0.064f};
+    const Rect top_right_hud{aspect <= 1.5f ? 0.70f : 0.74f, 0.0f, 1.0f, 0.24f};
+    CHECK(!overlaps(setup_pill, top_right_hud));
+  }
+
+  // If the source tree is accessible from the test working directory, confirm DriveActivity.java
+  // anchors the SETUP pill to TOP | CENTER_HORIZONTAL rather than TOP | END.
+  const fs::path rel = fs::path("apps") / "carview" / "android" / "java" / "net" / "shiftengine" / "drive" /
+                       "DriveActivity.java";
+  fs::path probe = fs::current_path();
+  for (int depth = 0; depth < 4; ++depth) {
+    const fs::path cand = probe / rel;
+    if (fs::is_regular_file(cand)) {
+      const std::string src = read_text(cand);
+      CHECK(src.find("Gravity.TOP | Gravity.CENTER_HORIZONTAL") != std::string::npos);
+      CHECK(src.find("Gravity.TOP | Gravity.END") == std::string::npos);
+      break;
+    }
+    if (!probe.has_parent_path() || probe.parent_path() == probe) break;
+    probe = probe.parent_path();
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -775,6 +811,7 @@ int main() {
   test_stfs_pirs_live_and_con(tmp);
   test_mods_and_turnip_installer(tmp);
   test_baker_state_machine_and_inspect(tmp);
+  test_android_setup_pill_layout_contract();
 
   fs::remove_all(tmp, ec);
   if (g_failures != 0) {

@@ -750,6 +750,68 @@ int main() {
     CHECK(bright_digits >= 1);
   }
 
+  // 4. Phase R2-6 checks: BGF property targets + UiScene::geometry_of non-quad mesh + CONTROLLER/* glyph routing
+  //    + per-page Post-Race tally timing + BAR/PSI boost & lap split delta formatting.
+  {
+    CHECK(fh1::classify_bgf_property(fh1::bgf_attr::kPosX) == fh1::UiBgfPropTarget::kPosX);
+    CHECK(fh1::classify_bgf_property(fh1::bgf_attr::kScaleY) == fh1::UiBgfPropTarget::kScaleY);
+    CHECK(fh1::classify_bgf_property(fh1::bgf_attr::kRotation) == fh1::UiBgfPropTarget::kRotation);
+    CHECK(fh1::classify_bgf_property(fh1::bgf_attr::kAlpha) == fh1::UiBgfPropTarget::kAlpha);
+    CHECK(fh1::classify_bgf_property(0xDEADBEEFu, 0u) == fh1::UiBgfPropTarget::kUnknown);
+
+    // Non-quad UiGeometry mesh renders via SceneDraw::model() using UiScene::geometry_of().
+    fh1::UiScene sc;
+    fh1::UiObject mod;
+    mod.kind = fh1::UiObjectKind::kModel, mod.id = 10, mod.name = "TriMesh", mod.geometry = 0;
+    sc.objects.push_back(mod);
+    fh1::UiObject mat;
+    mat.kind = fh1::UiObjectKind::kMaterial, mat.id = 11, mat.colour = {1.0f, 0.2f, 0.5f, 1.0f};
+    sc.objects.push_back(mat);
+    fh1::UiGeometry tri;
+    tri.index = 0, tri.is_unit_quad = false;
+    tri.bounds_min = {-20, -20, 0}, tri.bounds_max = {20, 20, 0};
+    tri.vertices = {{0.0f, 20.0f}, {20.0f, -20.0f}, {-20.0f, -20.0f}};
+    sc.geometries.push_back(tri);
+    fh1::UiNode nd;
+    nd.parent = -1, nd.object = 10, nd.object_index = 0, nd.opacity = 1.0f, nd.alpha = 1.0f;
+    sc.nodes.push_back(nd);
+    carview::SceneDraw sd(&sc);
+    List l_tri;
+    CHECK(sd.draw_subtree(l_tri, {0, 0, 1}, 0) == 1);
+    CHECK(l_tri.items().size() == 3);  // 3 line edges from non-quad UiGeometry
+
+    // FBF model referencing CONTROLLER/A_BUTTON routes cleanly through PlayStation & Keyboard glyphs.
+    fh1::UiObject tex;
+    tex.kind = fh1::UiObjectKind::kTexture, tex.id = 12, tex.owner = 11;
+    tex.path = "GAME:\\MEDIA\\UI\\TEXTURES\\HORIZON\\CONTROLLER\\A_BUTTON.TGA";
+    tex.matrix[0] = 1.0f, tex.matrix[5] = 1.0f;
+    sc.objects.push_back(tex);
+    const auto prev_gs = carview::ui4::glyph_set();
+    carview::ui4::set_glyph_set(carview::ui4::GlyphSet::kPlayStation);
+    List l_ps;
+    CHECK(sd.model(l_ps, {0, 0, 1}, 0));
+    CHECK(l_ps.items().size() >= 3);  // disc + Cross lines
+    carview::ui4::set_glyph_set(carview::ui4::GlyphSet::kKeyboard);
+    List l_kb;
+    CHECK(sd.model(l_kb, {0, 0, 1}, 0));
+    CHECK(l_kb.items().size() >= 3);  // keycap rect + bezel + ENTER text
+    carview::ui4::set_glyph_set(prev_gs);
+
+    // Boost BAR/PSI + split delta + per-page post-race timer checks.
+    CHECK(carview::format_boost_unit(14.5037738, true) == "1.00 BAR");
+    CHECK(carview::format_boost_unit(14.5, false) == "14.5 PSI");
+    CHECK(carview::format_split_delta(-0.42) == "-0.42s");
+    CHECK(carview::format_split_delta(0.31) == "+0.31s");
+    carview::reset_post_race_page_timer();
+    carview::RaceHud rh;
+    rh.phase = carview::RaceHud::kFinished, rh.finish_time = 50.0, rh.clock = 55.0, rh.results_page = 0;
+    CHECK(std::fabs(carview::post_race_page_elapsed(rh)) < 1e-4);
+    rh.clock = 58.0, rh.results_page = 1;
+    CHECK(std::fabs(carview::post_race_page_elapsed(rh)) < 1e-4);
+    rh.clock = 58.6;
+    CHECK(std::fabs(carview::post_race_page_elapsed(rh) - 0.6) < 1e-4);
+  }
+
   if (const char* out = std::getenv("SHIFT_UI_SPECIMEN")) {
     const uint32_t W = 1280, H = 720;
     std::vector<uint8_t> img(size_t(W) * H * 4);

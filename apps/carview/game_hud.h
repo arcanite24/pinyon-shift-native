@@ -47,6 +47,19 @@ struct RaceHud {
   int wristband = 0;
   int driver_xp = 0, driver_level = 0, affinity_xp = 0, affinity_level = 0;
   int64_t affinity_bonus_credits = 0;
+  // Extended Career / Driver Level & Manufacturer Affinity breakdown for Post-Race UI.
+  int driver_xp_total = 0;
+  int driver_next_xp = 0;
+  std::string affinity_make;
+  int affinity_xp_total = 0;
+  int affinity_next_xp = 0;
+  double affinity_discount_pct = 0.0;
+  std::string gift_car_name;  // non-empty when a Driver Level / Affinity gift car was earned
+  // Live lap split delta vs best/target lap in seconds (<0 green/faster, >0 red/slower).
+  double lap_split_delta = 0.0;
+  bool has_lap_split_delta = false;
+  // Timestamp (matching r.clock) when the active results_page was entered (<0: auto-tracked).
+  double page_enter_time = -1.0;
   // Airborne Showcase live progress & gap (PLANE_RACE_001..007).
   bool showcase = false;
   std::string showcase_aircraft;
@@ -59,7 +72,7 @@ struct RaceHud {
   std::string band_name, band_next;
   bool band_up = false;  // true -> COLLECT IT FROM RACE CENTRAL
   bool wrong_way = false;
-  int results_page = 0;    // 0 FINISHED banner, 1 CASH REWARD, 2 POINTS EARNED, 3 NEW CAR WON
+  int results_page = 0;    // 0 FINISHED banner, 1 CASH REWARD, 2 POINTS & CAREER XP, 3 NEW CAR WON, 4 CAREER/AFFINITY XP
   bool results_table = false;
   int64_t balance = -1;
   std::string event_type;  // "FESTIVAL RACE", "STREET RACE", "SHOWCASE", etc.
@@ -298,6 +311,12 @@ std::string race_clock(double seconds);
 std::string format_speed_unit(double mph, bool metric, bool decimals = true);
 std::string format_distance_unit(double meters, bool metric);
 std::string format_gap_unit(double meters, bool metric);
+std::string format_boost_unit(double boost_psi, bool metric);
+std::string format_split_delta(double delta_s);
+// Elapsed seconds since entering the current post-race results page (measures from
+// r.page_enter_time when >= 0, else auto-tracks per-page entry time against r.clock).
+double post_race_page_elapsed(const RaceHud& r);
+void reset_post_race_page_timer();
 // Strips format placeholders (e.g. "{0} mph" -> "mph", "%s km/h" -> "km/h")
 // and falls back cleanly when the string table entry is empty or unresolved.
 std::string format_unit_label(std::string_view raw, std::string_view fallback);

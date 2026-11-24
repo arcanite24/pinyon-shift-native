@@ -60,6 +60,64 @@ const UiGeometry* UiScene::geometry_of(int node_index) const {
   return &geometries[o.geometry];
 }
 
+UiBgfPropTarget classify_bgf_property(uint32_t attr_hash, uint32_t raw_tag) {
+  using namespace bgf_attr;
+  switch (attr_hash) {
+    case kPosX:
+    case fnv1a_32("x"):
+    case fnv1a_32("pos.x"):
+    case fnv1a_32("translation.x"):
+      return UiBgfPropTarget::kPosX;
+    case kPosY:
+    case fnv1a_32("y"):
+    case fnv1a_32("pos.y"):
+    case fnv1a_32("translation.y"):
+      return UiBgfPropTarget::kPosY;
+    case kScaleX:
+    case fnv1a_32("sx"):
+      return UiBgfPropTarget::kScaleX;
+    case kScaleY:
+    case fnv1a_32("sy"):
+      return UiBgfPropTarget::kScaleY;
+    case kRotation:
+    case fnv1a_32("rotation.z"):
+    case fnv1a_32("angle"):
+      return UiBgfPropTarget::kRotation;
+    case kColorR:
+    case fnv1a_32("colour.r"):
+      return UiBgfPropTarget::kColorR;
+    case kColorG:
+    case fnv1a_32("colour.g"):
+      return UiBgfPropTarget::kColorG;
+    case kColorB:
+    case fnv1a_32("colour.b"):
+      return UiBgfPropTarget::kColorB;
+    case kColorRgba:
+    case fnv1a_32("colour"):
+    case fnv1a_32("tint"):
+      return UiBgfPropTarget::kColorRgba;
+    case kAlpha:
+    case fnv1a_32("opacity"):
+    case fnv1a_32("color.a"):
+    case fnv1a_32("colour.a"):
+      return UiBgfPropTarget::kAlpha;
+    default: break;
+  }
+  switch (raw_tag & 0xFFu) {
+    case 1u: return UiBgfPropTarget::kPosX;
+    case 2u: return UiBgfPropTarget::kPosY;
+    case 3u: return UiBgfPropTarget::kScaleX;
+    case 4u: return UiBgfPropTarget::kScaleY;
+    case 5u: return UiBgfPropTarget::kRotation;
+    case 6u: return UiBgfPropTarget::kColorR;
+    case 7u: return UiBgfPropTarget::kColorG;
+    case 8u: return UiBgfPropTarget::kColorB;
+    case 9u: return UiBgfPropTarget::kColorRgba;
+    case 10u: return UiBgfPropTarget::kAlpha;
+    default: return UiBgfPropTarget::kUnknown;
+  }
+}
+
 bool UiBgfDocument::has_contract(std::string_view type) const {
   for (const auto& c : contracts)
     if (c.type == type) return true;
@@ -452,7 +510,7 @@ bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string
     }
   }
 
-  // 4. Styles / States section (12 + child_count * 24 bytes per style).
+  // 4. Styles / States section (12 + state_count * 24 bytes per style).
   if (cursor + 4 <= data.size()) {
     const uint32_t st_declared = u32_at(cursor);
     cursor += 4;
@@ -462,10 +520,25 @@ bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string
       for (uint32_t i = 0; i < style_count && cursor + 12 <= st_end; ++i) {
         UiBgfStyle st;
         st.owner_item = u32_at(cursor);
+        st.style_id = u32_at(cursor + 4);
         st.state_count = u16_at(cursor + 10);
-        cursor += 12 + size_t(st.state_count) * 24;
-        if (cursor > st_end) break;
-        out.styles.push_back(st);
+        cursor += 12;
+        if (cursor + size_t(st.state_count) * 24 > st_end) break;
+        st.states.reserve(st.state_count);
+        for (uint16_t s = 0; s < st.state_count; ++s) {
+          UiBgfStateRecord rec;
+          rec.state_hash = u32_at(cursor);
+          rec.target_item = u32_at(cursor + 4);
+          rec.attr_hash = u32_at(cursor + 8);
+          rec.value_type = u32_at(cursor + 12);
+          rec.raw_value = u32_at(cursor + 16);
+          rec.value = f32_at(cursor + 16);
+          rec.extra = u32_at(cursor + 20);
+          rec.target = classify_bgf_property(rec.attr_hash, rec.value_type);
+          st.states.push_back(rec);
+          cursor += 24;
+        }
+        out.styles.push_back(std::move(st));
       }
       cursor = st_end;
     }
@@ -481,19 +554,28 @@ bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string
       for (uint32_t i = 0; i < track_count && cursor + 8 <= tr_end; ++i) {
         UiBgfTrack tr;
         tr.owner_item = u32_at(cursor);
+        tr.target_item = tr.owner_item;
         const uint32_t child_count = u32_at(cursor + 4);
         cursor += 8;
         for (uint32_t ch = 0; ch < child_count && cursor + 8 <= tr_end; ++ch) {
+          const uint32_t ch_attr = u32_at(cursor);
           const uint32_t key_count = u32_at(cursor + 4);
           cursor += 8;
           for (uint32_t k = 0; k < key_count && cursor + 20 <= tr_end; ++k) {
             UiBgfKeyframe kf;
             kf.target_item = u32_at(cursor);
             kf.attr_hash = u32_at(cursor + 4);
+            if (kf.attr_hash == 0) kf.attr_hash = ch_attr;
             kf.time = f32_at(cursor + 8);
             kf.raw_tag = u32_at(cursor + 12);
             kf.raw_value = u32_at(cursor + 16);
             kf.value = f32_at(cursor + 16);
+            kf.target = classify_bgf_property(kf.attr_hash, kf.raw_tag);
+            if (tr.target == UiBgfPropTarget::kUnknown && kf.target != UiBgfPropTarget::kUnknown) {
+              tr.target = kf.target;
+              tr.attr_hash = kf.attr_hash;
+            }
+            if (kf.target_item != 0 && tr.target_item == tr.owner_item) tr.target_item = kf.target_item;
             tr.keys.push_back(kf);
             cursor += 20;
           }
@@ -517,20 +599,55 @@ bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string
       out.animations.reserve(anim_count);
       for (uint32_t i = 0; i < anim_count && cursor + 33 <= anim_end; ++i) {
         UiBgfAnimation an;
+        an.name_hash = u32_at(cursor);
+        const float hdr_dur = f32_at(cursor + 8);
+        an.duration = (std::isfinite(hdr_dur) && hdr_dur > 0.0f && hdr_dur < 3600.0f) ? hdr_dur : 0.0f;
         an.owner_item = u32_at(cursor + 16);
+        an.flags = data[cursor + 28];
         an.track_count = u32_at(cursor + 29);
         cursor += 33;
+        an.channels.reserve(std::min<uint32_t>(an.track_count, 256u));
         for (uint32_t t = 0; t < an.track_count && cursor + 9 <= anim_end; ++t) {
+          UiBgfAnimChannel ch;
+          ch.attr_hash = u32_at(cursor);
+          ch.channel_tag = data[cursor + 4];
+          ch.target = classify_bgf_property(ch.attr_hash, ch.channel_tag);
           cursor += 5;
           const uint32_t kc = u32_at(cursor);
-          cursor += 4 + size_t(kc) * 8;
-          if (cursor + 4 > anim_end) break;
+          cursor += 4;
+          if (cursor + size_t(kc) * 8 > anim_end) break;
+          ch.keys.reserve(kc);
+          for (uint32_t k = 0; k < kc; ++k) {
+            UiBgfAnimKey ak;
+            ak.time = f32_at(cursor);
+            ak.raw_value = u32_at(cursor + 4);
+            ak.value = f32_at(cursor + 4);
+            if (std::isfinite(ak.time) && ak.time > an.duration) an.duration = ak.time;
+            ch.keys.push_back(ak);
+            cursor += 8;
+          }
+          if (cursor + 4 > anim_end) {
+            an.key_count += kc;
+            an.channels.push_back(std::move(ch));
+            break;
+          }
           const uint32_t ec = u32_at(cursor);
-          cursor += 4 + size_t(ec) * 4;
+          cursor += 4;
+          if (cursor + size_t(ec) * 4 > anim_end) {
+            an.key_count += kc;
+            an.channels.push_back(std::move(ch));
+            break;
+          }
+          ch.events.reserve(ec);
+          for (uint32_t e = 0; e < ec; ++e) {
+            ch.events.push_back(u32_at(cursor));
+            cursor += 4;
+          }
           an.key_count += kc;
           an.event_count += ec;
+          an.channels.push_back(std::move(ch));
         }
-        out.animations.push_back(an);
+        out.animations.push_back(std::move(an));
       }
     }
   }
@@ -551,6 +668,22 @@ float evaluate_bgf_track(const UiBgfTrack& track, float time_s, float fallback) 
     }
   }
   return track.keys.back().value;
+}
+
+float evaluate_bgf_anim_channel(const UiBgfAnimChannel& ch, float time_s, float fallback) {
+  if (ch.keys.empty()) return fallback;
+  if (time_s <= ch.keys.front().time) return ch.keys.front().value;
+  if (time_s >= ch.keys.back().time) return ch.keys.back().value;
+  for (size_t i = 0; i + 1 < ch.keys.size(); ++i) {
+    const auto& a = ch.keys[i];
+    const auto& b = ch.keys[i + 1];
+    if (time_s >= a.time && time_s <= b.time) {
+      const float span = b.time - a.time;
+      const float t = span > 1e-6f ? (time_s - a.time) / span : 0.0f;
+      return a.value + (b.value - a.value) * t;
+    }
+  }
+  return ch.keys.back().value;
 }
 
 std::vector<float> reflow_stacker(float origin, float step, int count) {

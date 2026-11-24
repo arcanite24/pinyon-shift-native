@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "drive/damage.h"
 #include "drive/lamps.h"
 #include "drive/vehicle.h"
 
@@ -63,9 +64,19 @@ struct ReplayCarSample {
   float wheel_omega[4] = {0, 0, 0, 0};
   float wheel_y[4] = {0, 0, 0, 0};
 
+  // Extended real physics telemetry (Replay v3; defaults remain valid for v1/v2 files).
+  float wheel_slip[4] = {0, 0, 0, 0};                      // combined normalised tyre slip (0=rolling, 1=peak, >1=sliding)
+  float wheel_compression[4] = {0.5f, 0.5f, 0.5f, 0.5f};   // normalised suspension compression [0=droop .. 1=bumpstop]
+  float wheel_temp_c[4] = {80.0f, 80.0f, 80.0f, 80.0f};    // tyre temperature (deg C)
+  float damage[4] = {0, 0, 0, 0};                          // mechanical/body damage [0=pristine .. 1=destroyed]: engine, trans, susp, aero/body
+  float engine_power_kw = 0.0f;                            // instantaneous engine power (kW)
+  float engine_torque_nm = 0.0f;                           // instantaneous engine torque (N*m)
+  float boost_psi = 0.0f;                                  // forced induction boost pressure (PSI; 0 for NA)
+  float boost_max_psi = 0.0f;                              // forced induction peak boost (PSI; 0 for NA)
+
   static ReplayCarSample from_vehicle(uint32_t slot, const Vehicle& v, const CarLampState& lamps,
                                       double throttle = 0.0, double brake = 0.0, double handbrake = 0.0,
-                                      double steer = 0.0, uint8_t place = 0);
+                                      double steer = 0.0, uint8_t place = 0, const CarDamageState* dmg = nullptr);
   void apply_to_pose(Vehicle::Pose& out_pose) const;
 };
 

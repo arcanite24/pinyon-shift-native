@@ -192,8 +192,19 @@ class HorizonPromoTracker {
   int total_cars_ = 240;
 };
 
-// Composites a crisp Forza Horizon / Shift Engine corner watermark onto RGBA8 pixels.
+// Optional retail/custom RGBA8 watermark image composited onto exported photos
+// when non-empty; pass empty `rgba` to restore the built-in high-resolution
+// antialiased "FORZA HORIZON" badge.
+void set_photo_watermark_image(uint32_t width, uint32_t height, std::vector<uint8_t> rgba);
+
+// Composites a crisp, high-resolution antialiased Forza Horizon corner watermark onto RGBA8 pixels.
 void stamp_photo_watermark(std::vector<uint8_t>& rgba, uint32_t width, uint32_t height);
+
+// Decodes a saved photo (.png/.bmp/.jpg) via stb_image and box-downsamples it
+// into an aspect-preserving RGBA8 thumbnail fitting within `max_w x max_h`.
+bool load_photo_thumbnail(const std::filesystem::path& path, uint32_t max_w, uint32_t max_h,
+                          std::vector<uint8_t>& out_rgba, uint32_t& out_w, uint32_t& out_h,
+                          uint32_t* src_w = nullptr, uint32_t* src_h = nullptr);
 
 // Writes an RGBA8 image to `<dir>/<prefix>-YYYYMMDD-HHMMSS[-N].png` using
 // stb_image_write, creating `<dir>` if needed. Stamps the Horizon watermark when `add_watermark` is true.
@@ -205,14 +216,24 @@ struct PhotoGalleryEntry {
   std::filesystem::path path;
   std::string filename;
   uint64_t size_bytes = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t thumb_width = 0;
+  uint32_t thumb_height = 0;
+  std::string thumb_key;
+  std::array<float, 4> thumb_uv{};
+  bool has_thumb = false;
+  bool thumb_tried = false;
 };
 
-// Lists saved PNG photos in `photos_dir` sorted newest-first.
+// Lists saved photos (.png/.bmp/.jpg/.jpeg) in `photos_dir` sorted newest-first.
 std::vector<PhotoGalleryEntry> list_photo_gallery(const std::filesystem::path& photos_dir);
 
 // Full Photo Mode state & HUD controller.
 class PhotoModeController {
  public:
+  // Optional `_&<hash>` string-table resolver (e.g. `carview::game_text`) for localized Photo Mode labels.
+  static void set_text_resolver(std::function<std::string(const std::string&)> fn);
   enum EffectRow : int {
     kPreset = 0,
     kShutterSpeed,
@@ -271,6 +292,9 @@ class PhotoModeController {
   bool gallery_delete_selected();
   const std::vector<PhotoGalleryEntry>& gallery_entries() const { return gallery_entries_; }
   int gallery_selected() const { return gallery_selected_; }
+  bool gallery_has_preview() const { return gallery_preview_valid_; }
+  uint32_t gallery_preview_width() const { return gallery_preview_w_; }
+  uint32_t gallery_preview_height() const { return gallery_preview_h_; }
 
   // Begins a multi-frame supersampled capture (4x Halton jitter).
   void begin_capture(uint32_t width, uint32_t height, int samples = 4);
@@ -301,10 +325,19 @@ class PhotoModeController {
   std::string last_saved_label_;
 
   // Saved Photo Gallery state.
+  bool ensure_entry_thumbnail(size_t idx) const;
+  bool ensure_selected_preview() const;
+
   bool gallery_open_ = false;
   std::filesystem::path gallery_dir_;
-  std::vector<PhotoGalleryEntry> gallery_entries_;
+  mutable std::vector<PhotoGalleryEntry> gallery_entries_;
   int gallery_selected_ = 0;
+  mutable std::filesystem::path gallery_preview_path_;
+  mutable std::string gallery_preview_key_;
+  mutable std::array<float, 4> gallery_preview_uv_{};
+  mutable uint32_t gallery_preview_w_ = 0;
+  mutable uint32_t gallery_preview_h_ = 0;
+  mutable bool gallery_preview_valid_ = false;
 };
 
 }  // namespace carview

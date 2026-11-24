@@ -1,6 +1,7 @@
 #include "drive_session.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -82,25 +83,83 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 const bool prev_metric = app.metric_units;
                 const std::string prev_lang = app.language;
                 app.metric_units = ls.metric_units;
-                if (!ls.language.empty() && ls.language != app.language) {
+                replay_viewer.set_metric_units(app.metric_units);
+                const bool lang_changed = !ls.language.empty() && ls.language != app.language;
+                if (lang_changed) {
                   app.language = ls.language;
                   app.race_options.language = app.language;
+                  const auto game_root = app.game_root_of();
+                  const cars::PartsDb* db =
+                      app.shared_db
+                          ? app.shared_db
+                          : ((app.parts_db.valid() &&
+                              app.parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                                 ? app.parts_db.get().get()
+                                 : nullptr);
+                  // 1. Reload .str string tables (also updates FMV Subtitles.str resolver live).
                   std::string le;
-                  if (app.car_names) app.car_names->load(app.game_root_of(), app.state_root, &le, app.language, app.shared_db);
-                  if (app.map_view.ready()) {
-                    app.map_view.open(app.game_root_of(), nullptr, app.language);
-                    minimap_at = -1;
+                  if (app.car_names) {
+                    *app.car_names_loaded = true;
+                    app.car_names->load(game_root, app.state_root, &le, app.language, db);
                   }
+                  // 2. Reload CJK bitmap font (or clear for Latin/Cyrillic) & mark UI atlas dirty.
                   if (fh1::CjkFont::language_needs_cjk(app.language)) {
                     auto cf = std::make_shared<fh1::CjkFont>();
-                    if (cf->load_for_language(app.game_root_of(), app.language, nullptr)) carview::ui::set_cjk_font(cf);
+                    if (cf->load_for_language(game_root, app.language, nullptr)) carview::ui::set_cjk_font(cf);
                   } else {
                     carview::ui::set_cjk_font(nullptr);
                   }
+                  // 3. Reload World Map labels & clear cached markers.
+                  if (app.map_view.ready()) {
+                    app.map_view.open(game_root, nullptr, app.language);
+                    minimap_at = -1;
+                  }
+                  cached_map_markers.clear();
+                  map_dirty = true;
+                  // 4. Reload SPA achievement strings in the new language while preserving unlock state.
+                  {
+                    fh1::SpaDatabase reloaded_spa;
+                    std::string spa_note;
+                    if (fh1::load_spa_packages(game_root, app.state_root, reloaded_spa, app.language, &spa_note)) {
+                      if (app.demo_achievements_png.empty() && !achievements_path.empty()) {
+                        achievements.save_state(achievements_path);
+                      }
+                      spa_db = std::move(reloaded_spa);
+                      achievements.init(spa_db);
+                      if (app.demo_achievements_png.empty() && !achievements_path.empty()) {
+                        achievements.load_state(achievements_path);
+                      }
+                      eval_achievements(false);
+                    }
+                  }
+                  // 5. Reload localized LoadingDefs.xml tips in the new language.
+                  loading_screen.load_definitions(game_root, loading_screen.group());
+                  // 6. Update Campaign / FMV subtitle & audio language configuration.
+                  app.campaign.configure(game_root, app.language, app.skip_intro_movies);
+                  // 7. Refresh cached localized menus, 1000 Club metadata, and Outpost hub strings.
+                  club_meta_built = false;
+                  sync_pause_labels();
+                  if (outpost_hub_open) rebuild_outpost_hub();
+                  // 8. Refresh VO & radio language bindings live (bypassing one-shot init guards).
+                  if (!app.audio_host.reload_vo(app.language)) {
+                    app.audio_host.init_vo(game_root, app.language);
+                  }
+                  if (app.radio_on) {
+                    const std::string saved_st = app.have_saved ? app.saved.radio_station : std::string{};
+                    if (!app.audio_host.reload_radio(app.language, saved_st)) {
+                      app.audio_host.init_radio(game_root, app.language, saved_st, !app.headless);
+                    }
+                  }
                   ui_atlas_synced = false;
+                } else {
+                  app.campaign.configure(app.game_root_of(), app.language, app.skip_intro_movies);
                 }
                 if (app.metric_units != prev_metric || app.language != prev_lang) {
-                  app.audio_host.reload_satnav(app.language, app.metric_units);
+                  if (!app.audio_host.reload_satnav(app.language, app.metric_units)) {
+                    const auto sfx_cache =
+                        !app.sound_dir.empty() ? app.sound_dir : (app.state_root / "sound-cache");
+                    app.audio_host.init_satnav(app.game_root_of(), sfx_cache, app.language, app.metric_units);
+                  }
                 }
                 live_photo_through_walls = ls.photo_through_walls;
                 live_photo_wider_limits = ls.photo_wider_limits;

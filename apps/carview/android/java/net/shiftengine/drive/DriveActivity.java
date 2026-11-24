@@ -134,8 +134,9 @@ public class DriveActivity extends SDLActivity {
         }
     }
 
-    // Adds a subtle, non-focusable corner pill so players can return to Setup
-    // anytime to add DLC, mods, or a Turnip driver.
+    // Adds a subtle, non-focusable pill anchored in the top-center safe bar so
+    // players can return to Setup anytime without colliding with the top-right
+    // HUD (position / timer / player bar), minimap, speedometer, or touch pads.
     private void attachSetupCornerButton() {
         if (mRedirectingToSetup) return;
         try {
@@ -143,17 +144,17 @@ public class DriveActivity extends SDLActivity {
             TextView pill = new TextView(this);
             pill.setText("SETUP");
             pill.setTextColor(Color.parseColor("#E2E8F0"));
-            pill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+            pill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f);
             pill.setFocusable(false);
             pill.setFocusableInTouchMode(false);
             pill.setAlpha(0.55f);
-            int px = Math.round(10 * d);
-            int py = Math.round(5 * d);
+            int px = Math.round(9 * d);
+            int py = Math.round(3 * d);
             pill.setPadding(px, py, px, py);
 
             GradientDrawable bg = new GradientDrawable();
             bg.setColor(Color.parseColor("#CC161B22"));
-            bg.setCornerRadius(14 * d);
+            bg.setCornerRadius(12 * d);
             bg.setStroke(Math.round(1 * d), Color.parseColor("#66F59E0B"));
             pill.setBackground(bg);
             pill.setOnClickListener(v -> {
@@ -163,9 +164,8 @@ public class DriveActivity extends SDLActivity {
 
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.gravity = Gravity.TOP | Gravity.END;
-            lp.topMargin = Math.round(10 * d);
-            lp.rightMargin = Math.round(12 * d);
+            lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+            lp.topMargin = Math.round(4 * d);
             getWindow().addContentView(pill, lp);
         } catch (Throwable ignored) {
         }

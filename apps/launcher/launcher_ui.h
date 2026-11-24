@@ -57,7 +57,7 @@ struct LauncherUiState {
   HardwareRecommendation hw_rec;
 
   // Play tab state
-  int selected_preset = 0;      // 0: high, 1: low, 2: smooth-60, 3: quality-30, 4: low-power
+  int selected_preset = 1;      // 0: ultra, 1: high, 2: low, 3: smooth-60, 4: quality-30, 5: low-power
   int selected_resolution = 0;  // 0..4 into kResolutionPresets
   int selected_backend = 0;     // 0..N into available_backend_choices()
   bool launch_fullscreen = false;
@@ -66,7 +66,10 @@ struct LauncherUiState {
 
   // Setup tab state
   std::string disc_path_input;
+  std::string state_path_input;
+  std::string save_import_path;
   DiscVerification disc_check;
+  bool launcher_sounds_enabled = true;
   bool setup_all_sounds = false;
   bool setup_build_index = true;
   bool setup_log_expanded = true;

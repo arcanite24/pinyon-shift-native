@@ -75,6 +75,54 @@ void print_usage() {
       "  shift-launcher --screenshot <out.png> [--game <dir>] [--tab <name>] [--width 1280] [--height 720] [--scale 1.0] [--demo]\n");
 }
 
+class LauncherUiAudio {
+ public:
+  void init() {
+    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) return;
+    SDL_AudioSpec spec{};
+    spec.format = SDL_AUDIO_F32;
+    spec.channels = 1;
+    spec.freq = 44100;
+    stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+    if (!stream_) return;
+    SDL_ResumeAudioStreamDevice(stream_);
+  }
+
+  void shutdown() {
+    if (stream_) {
+      SDL_DestroyAudioStream(stream_);
+      stream_ = nullptr;
+    }
+  }
+
+  void play_click(bool enabled) {
+    if (!enabled || !stream_) return;
+    push_tone(880.0f, 0.022f, 0.07f);
+  }
+
+  void play_confirm(bool enabled) {
+    if (!enabled || !stream_) return;
+    push_tone(660.0f, 0.024f, 0.075f);
+    push_tone(990.0f, 0.032f, 0.075f);
+  }
+
+ private:
+  void push_tone(float freq_hz, float duration_s, float gain) {
+    constexpr int kRate = 44100;
+    const int n = std::max(1, int(duration_s * float(kRate)));
+    std::vector<float> pcm(static_cast<size_t>(n));
+    constexpr float kTwoPi = 6.28318530718f;
+    for (int i = 0; i < n; ++i) {
+      const float t = float(i) / float(kRate);
+      const float env = std::exp(-t * 55.0f) * std::min(1.0f, float(i) / 48.0f);
+      pcm[size_t(i)] = std::sin(kTwoPi * freq_hz * t) * gain * env;
+    }
+    SDL_PutAudioStreamData(stream_, pcm.data(), int(pcm.size() * sizeof(float)));
+  }
+
+  SDL_AudioStream* stream_ = nullptr;
+};
+
 void open_folder_in_shell(const std::filesystem::path& dir, std::string& notice) {
   if (dir.empty()) {
     notice = "Play folder path is not set.";
@@ -84,14 +132,22 @@ void open_folder_in_shell(const std::filesystem::path& dir, std::string& notice)
   std::filesystem::create_directories(dir, ec);
 #ifdef _WIN32
   ShellExecuteA(nullptr, "open", dir.string().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-#elif defined(__APPLE__)
-  std::string cmd = "open \"" + dir.string() + "\" &";
-  std::system(cmd.c_str());
-#else
-  std::string cmd = "xdg-open \"" + dir.string() + "\" >/dev/null 2>&1 &";
-  std::system(cmd.c_str());
-#endif
   notice = "Opened " + dir.string();
+#elif defined(__APPLE__)
+  std::string err;
+  if (launcher::launch_detached_process({"open", dir.string()}, {}, &err)) {
+    notice = "Opened " + dir.string();
+  } else {
+    notice = "Failed to open folder: " + err;
+  }
+#else
+  std::string err;
+  if (launcher::launch_detached_process({"xdg-open", dir.string()}, {}, &err)) {
+    notice = "Opened " + dir.string();
+  } else {
+    notice = "Failed to open folder: " + err;
+  }
+#endif
 }
 
 std::string clean_pasted_path(std::string_view raw) {
@@ -114,7 +170,19 @@ void pop_utf8_char(std::string& s) {
   if (!s.empty()) s.pop_back();
 }
 
-enum class DialogKind { kBrowseIso, kBrowseFolder, kImportStfs, kImportContentFolder };
+enum class DialogKind {
+  kBrowseIso,
+  kBrowseFolder,
+  kBrowseStateRoot,
+  kBrowseSaveFile,
+  kBrowseSaveFolder,
+  kImportStfs,
+  kImportContentFolder,
+  kInstallModZip,
+  kInstallModFolder,
+  kBrowseRadioMusic,
+  kBrowseRadioLogo,
+};
 
 struct PendingDialogResult {
   DialogKind kind = DialogKind::kBrowseIso;
@@ -156,12 +224,20 @@ void refresh_all(launcher::LauncherUiState& st) {
   if (!st.play_cfg.game_root.empty() && st.disc_path_input.empty()) {
     st.disc_path_input = st.play_cfg.game_root.string();
   }
+  if (!st.play_cfg.state_root.empty()) {
+    st.paths.state_dir = st.play_cfg.state_root;
+  }
+  if (st.state_path_input.empty() && !st.paths.state_dir.empty()) {
+    st.state_path_input = st.paths.state_dir.string();
+  }
   st.disc_check = launcher::verify_disc_folder(st.disc_path_input, st.paths.play_dir);
   st.content_status = launcher::scan_content_packages(st.paths.state_dir, st.paths.mods_dir, st.paths.play_dir);
   st.mods = launcher::scan_mods(st.paths.mods_dir);
   st.save_iso = launcher::evaluate_save_isolation(st.mods);
   if (st.selected_mod >= int(st.mods.size())) st.selected_mod = std::max(0, int(st.mods.size()) - 1);
   st.wheel_cfg = launcher::load_wheel_settings(st.paths.settings_file);
+  st.selected_preset = launcher::preset_index_for_name(launcher::load_graphics_preset_setting(st.paths.settings_file));
+  st.launcher_sounds_enabled = launcher::load_launcher_sounds_setting(st.paths.settings_file);
   {
     const std::string be = launcher::load_graphics_backend_setting(st.paths.settings_file);
     const auto choices = launcher::available_backend_choices();
@@ -186,61 +262,65 @@ bool launch_carview(const launcher::LauncherUiState& st, std::string& notice) {
     notice = "carview binary not found beside shift-launcher.";
     return false;
   }
-  static constexpr const char* kPresetArgs[5] = {"high", "low", "smooth-60", "quality-30", "low-power"};
-  std::string cmd = "\"" + st.paths.carview_bin.string() + "\" --drive";
-  if (!st.paths.play_dir.empty()) cmd += " --play \"" + st.paths.play_dir.string() + "\"";
-  cmd += std::string(" --preset ") + kPresetArgs[std::clamp(st.selected_preset, 0, 4)];
+  const std::string preset_arg = launcher::preset_name_for_index(st.selected_preset);
+  std::vector<std::string> args = {st.paths.carview_bin.string(), "--drive"};
+  if (!st.paths.play_dir.empty()) {
+    args.push_back("--play");
+    args.push_back(st.paths.play_dir.string());
+  }
+  args.push_back("--preset");
+  args.push_back(preset_arg);
   const auto& res = launcher::kResolutionPresets[std::clamp(st.selected_resolution, 0, 4)];
   if (res.width > 0 && res.height > 0) {
-    cmd += " --width " + std::to_string(res.width) + " --height " + std::to_string(res.height);
+    args.push_back("--width");
+    args.push_back(std::to_string(res.width));
+    args.push_back("--height");
+    args.push_back(std::to_string(res.height));
   }
-  if (st.launch_fullscreen) cmd += " --fullscreen";
+  if (st.launch_fullscreen) args.push_back("--fullscreen");
   {
     const auto backends = launcher::available_backend_choices();
     if (!backends.empty()) {
       const auto& choice = backends[size_t(std::clamp(st.selected_backend, 0, int(backends.size()) - 1))];
       if (std::strcmp(choice.id, "auto") != 0) {
-        cmd += std::string(" --backend ") + choice.id;
+        args.push_back("--backend");
+        args.push_back(choice.id);
       }
     }
   }
-  if (!st.launch_car.empty()) cmd += " --car " + st.launch_car;
-  if (!st.extra_args.empty()) cmd += " " + st.extra_args;
-#ifdef _WIN32
-  std::string prev_state_root;
-  bool had_prev_state = false;
-  if (!st.paths.state_dir.empty()) {
-    char buf[4096];
-    const DWORD n = GetEnvironmentVariableA("SHIFT_STATE_ROOT", buf, DWORD(sizeof(buf)));
-    if (n > 0 && n < sizeof(buf)) {
-      prev_state_root.assign(buf, n);
-      had_prev_state = true;
+  if (!st.save_import_path.empty()) {
+    std::error_code ec;
+    const std::filesystem::path sp(st.save_import_path);
+    if (std::filesystem::is_directory(sp, ec)) {
+      args.push_back("--import-profile");
+      args.push_back(sp.string());
+    } else if (std::filesystem::is_regular_file(sp, ec)) {
+      args.push_back("--save");
+      args.push_back(sp.string());
     }
-    SetEnvironmentVariableA("SHIFT_STATE_ROOT", st.paths.state_dir.string().c_str());
   }
-  std::string cmd_line = cmd;
-  STARTUPINFOA si{};
-  si.cb = sizeof(si);
-  PROCESS_INFORMATION pi{};
-  const BOOL created = CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, FALSE,
-                                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
-  if (!st.paths.state_dir.empty()) {
-    SetEnvironmentVariableA("SHIFT_STATE_ROOT", had_prev_state ? prev_state_root.c_str() : nullptr);
+  if (!st.launch_car.empty()) {
+    args.push_back("--car");
+    args.push_back(st.launch_car);
   }
-  if (!created) {
-    notice = "Failed to launch carview.";
+  if (!st.extra_args.empty()) {
+    const auto extra = launcher::split_command_args(st.extra_args);
+    args.insert(args.end(), extra.begin(), extra.end());
+  }
+
+  std::vector<std::pair<std::string, std::string>> env;
+  const std::filesystem::path effective_state =
+      !st.state_path_input.empty() ? std::filesystem::path(st.state_path_input) : st.paths.state_dir;
+  if (!effective_state.empty()) {
+    env.emplace_back("SHIFT_STATE_ROOT", effective_state.string());
+  }
+
+  std::string err;
+  if (!launcher::launch_detached_process(args, env, &err)) {
+    notice = err.empty() ? "Failed to launch carview." : err;
     return false;
   }
-  CloseHandle(pi.hProcess);
-  CloseHandle(pi.hThread);
-#else
-  if (!st.paths.state_dir.empty()) {
-    cmd = "SHIFT_STATE_ROOT=\"" + st.paths.state_dir.string() + "\" " + cmd;
-  }
-  cmd += " &";
-  std::system(cmd.c_str());
-#endif
-  notice = "Launched carview (" + std::string(kPresetArgs[std::clamp(st.selected_preset, 0, 4)]) + " preset).";
+  notice = "Launched carview (" + preset_arg + " preset).";
   return true;
 }
 
@@ -466,6 +546,9 @@ int main(int argc, char** argv) {
   };
   rescan_joys();
 
+  LauncherUiAudio ui_audio;
+  ui_audio.init();
+
   launcher::SetupRunner setup_runner;
   launcher::ContentInstallRunner content_runner;
   launcher::WifiSyncServer wifi_server;
@@ -477,8 +560,16 @@ int main(int argc, char** argv) {
   carview::ui::List ui_list;
   std::vector<launcher::HitBox> hitboxes;
 
+  auto active_setup_text_field = [&]() -> std::string* {
+    if (state.active_tab != launcher::LauncherTab::kSetup) return nullptr;
+    if (state.focused_id == "setup:path") return &state.disc_path_input;
+    if (state.focused_id == "setup:state_path") return &state.state_path_input;
+    if (state.focused_id == "setup:save_path") return &state.save_import_path;
+    return nullptr;
+  };
+
   auto sync_text_input = [&]() {
-    const bool want = (state.active_tab == launcher::LauncherTab::kSetup && state.focused_id == "setup:path");
+    const bool want = active_setup_text_field() != nullptr;
     if (want && !text_input_active) {
       SDL_StartTextInput(window);
       text_input_active = true;
@@ -492,6 +583,40 @@ int main(int argc, char** argv) {
     state.disc_path_input = clean_pasted_path(p.string());
     state.disc_check = launcher::verify_disc_folder(state.disc_path_input, state.paths.play_dir);
     state.banner_notice = state.disc_check.summary;
+    state.active_tab = launcher::LauncherTab::kSetup;
+  };
+
+  auto apply_state_root = [&](const std::filesystem::path& p) {
+    const std::string cleaned = clean_pasted_path(p.string());
+    state.state_path_input = cleaned;
+    if (!cleaned.empty()) {
+      state.paths.state_dir = std::filesystem::path(cleaned);
+      if (state.play_cfg.game_root_valid && !state.play_cfg.game_root.empty()) {
+        launcher::write_play_config(state.paths.play_dir, state.play_cfg.game_root, state.paths.state_dir);
+      }
+      state.content_status = launcher::scan_content_packages(state.paths.state_dir, state.paths.mods_dir, state.paths.play_dir);
+      state.banner_notice = "State folder set to " + state.paths.state_dir.string();
+    } else {
+      state.banner_notice = "State folder cleared (will use default).";
+    }
+    state.active_tab = launcher::LauncherTab::kSetup;
+  };
+
+  auto apply_save_import_path = [&](const std::filesystem::path& p) {
+    state.save_import_path = clean_pasted_path(p.string());
+    if (state.save_import_path.empty()) {
+      state.banner_notice = "Cleared save import path.";
+    } else {
+      std::error_code ec;
+      const std::filesystem::path sp(state.save_import_path);
+      if (std::filesystem::is_directory(sp, ec)) {
+        state.banner_notice = "Save profile export folder selected: " + sp.filename().string();
+      } else if (std::filesystem::is_regular_file(sp, ec)) {
+        state.banner_notice = "Save file selected: " + sp.filename().string();
+      } else {
+        state.banner_notice = "Save import path set (verify path exists before Play): " + state.save_import_path;
+      }
+    }
     state.active_tab = launcher::LauncherTab::kSetup;
   };
 
@@ -512,8 +637,27 @@ int main(int argc, char** argv) {
   static constexpr SDL_DialogFileFilter kStfsFilters[1] = {
       {"Xbox 360 STFS Packages", "*"},
   };
+  static constexpr SDL_DialogFileFilter kSaveFilters[2] = {
+      {"Save / Profile Files", "bin;sav;dat;profile"},
+      {"All Files", "*"},
+  };
+  static constexpr SDL_DialogFileFilter kModZipFilters[2] = {
+      {"Mod ZIP Archives", "zip"},
+      {"All Files", "*"},
+  };
+  static constexpr SDL_DialogFileFilter kPngFilters[2] = {
+      {"PNG Images", "png"},
+      {"All Files", "*"},
+  };
 
   auto handle_click = [&](const std::string& id) {
+    const bool is_primary_act =
+        (id == "act:play" || id == "setup:run" || id == "wheel:save" || id == "radio:build" || id == "upd:apply");
+    if (id != "setup:toggle_sounds") {
+      if (is_primary_act) ui_audio.play_confirm(state.launcher_sounds_enabled);
+      else ui_audio.play_click(state.launcher_sounds_enabled);
+    }
+
     if (id.rfind("tab:", 0) == 0) {
       launcher::LauncherTab t;
       if (launcher::parse_tab_name(id.substr(4), t)) {
@@ -521,7 +665,11 @@ int main(int argc, char** argv) {
         state.focused_id.clear();
       }
     } else if (id.rfind("preset:", 0) == 0) {
-      state.selected_preset = std::clamp(std::atoi(id.c_str() + 7), 0, 4);
+      state.selected_preset = std::clamp(std::atoi(id.c_str() + 7), 0, launcher::kGraphicsPresetCount - 1);
+      const char* pname = launcher::preset_name_for_index(state.selected_preset);
+      launcher::save_graphics_preset_setting(state.paths.settings_file, pname);
+      state.banner_notice = std::string("Graphics preset set to ") +
+                            launcher::kGraphicsPresets[state.selected_preset].label + " (" + pname + ").";
     } else if (id.rfind("res:", 0) == 0) {
       state.selected_resolution = std::clamp(std::atoi(id.c_str() + 4), 0, 4);
     } else if (id.rfind("backend:", 0) == 0) {
@@ -554,24 +702,47 @@ int main(int argc, char** argv) {
         state.paths = launcher::resolve_launcher_paths(exe_dir, true);
         state.banner_notice = "Portable mode enabled.";
       }
+      state.state_path_input.clear();
       refresh_all(state);
     } else if (id == "act:apply_rec") {
       state.selected_preset = launcher::preset_index_for_name(state.hw_rec.carview_preset);
+      launcher::save_graphics_preset_setting(state.paths.settings_file,
+                                             launcher::preset_name_for_index(state.selected_preset));
       state.banner_notice = "Selected recommended preset: " + state.hw_rec.label;
-    } else if (id == "setup:path") {
-      state.focused_id = "setup:path";
+    } else if (id == "setup:path" || id == "setup:state_path" || id == "setup:save_path") {
+      state.focused_id = id;
     } else if (id == "setup:browse_iso") {
       auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowseIso};
       SDL_ShowOpenFileDialog(on_file_dialog_complete, ctx, window, kIsoFilters, 2, nullptr, false);
     } else if (id == "setup:browse_folder") {
       auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowseFolder};
       SDL_ShowOpenFolderDialog(on_file_dialog_complete, ctx, window, nullptr, false);
+    } else if (id == "setup:browse_state") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowseStateRoot};
+      const char* def_loc = state.state_path_input.empty() ? nullptr : state.state_path_input.c_str();
+      SDL_ShowOpenFolderDialog(on_file_dialog_complete, ctx, window, def_loc, false);
+    } else if (id == "setup:browse_save_file") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowseSaveFile};
+      const char* def_loc = state.save_import_path.empty() ? nullptr : state.save_import_path.c_str();
+      SDL_ShowOpenFileDialog(on_file_dialog_complete, ctx, window, kSaveFilters, 2, def_loc, false);
+    } else if (id == "setup:browse_save_folder") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowseSaveFolder};
+      const char* def_loc = state.save_import_path.empty() ? nullptr : state.save_import_path.c_str();
+      SDL_ShowOpenFolderDialog(on_file_dialog_complete, ctx, window, def_loc, false);
     } else if (id == "setup:verify") {
       state.disc_path_input = clean_pasted_path(state.disc_path_input);
       state.disc_check = launcher::verify_disc_folder(state.disc_path_input, state.paths.play_dir);
       state.banner_notice = state.disc_check.summary;
     } else if (id == "setup:toggle_sounds") {
-      state.setup_all_sounds = !state.setup_all_sounds;
+      state.launcher_sounds_enabled = !state.launcher_sounds_enabled;
+      state.setup_all_sounds = state.launcher_sounds_enabled;
+      launcher::save_launcher_sounds_setting(state.paths.settings_file, state.launcher_sounds_enabled);
+      if (state.launcher_sounds_enabled) {
+        ui_audio.play_confirm(true);
+        state.banner_notice = "Launcher UI sounds enabled.";
+      } else {
+        state.banner_notice = "Launcher UI sounds muted.";
+      }
     } else if (id == "setup:toggle_index") {
       state.setup_build_index = !state.setup_build_index;
     } else if (id == "setup:toggle_log") {
@@ -581,6 +752,8 @@ int main(int argc, char** argv) {
       state.banner_notice = "Cancelling setup...";
     } else if (id == "setup:run") {
       state.disc_path_input = clean_pasted_path(state.disc_path_input);
+      state.state_path_input = clean_pasted_path(state.state_path_input);
+      if (!state.state_path_input.empty()) state.paths.state_dir = std::filesystem::path(state.state_path_input);
       launcher::SetupOptions sopts;
       sopts.game_root = state.disc_path_input;
       sopts.state_root = state.paths.state_dir;
@@ -604,7 +777,11 @@ int main(int argc, char** argv) {
       state.mods = launcher::scan_mods(state.paths.mods_dir);
       state.save_iso = launcher::evaluate_save_isolation(state.mods);
     } else if (id == "mods:install") {
-      state.banner_notice = "Drag and drop a mod folder or .zip archive onto the window to install.";
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kInstallModZip};
+      SDL_ShowOpenFileDialog(on_file_dialog_complete, ctx, window, kModZipFilters, 2, nullptr, true);
+    } else if (id == "mods:install_folder") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kInstallModFolder};
+      SDL_ShowOpenFolderDialog(on_file_dialog_complete, ctx, window, nullptr, true);
     } else if (id.rfind("mod:sel:", 0) == 0) {
       state.selected_mod = std::atoi(id.c_str() + 8);
     } else if (id.rfind("mod:tog:", 0) == 0) {
@@ -638,6 +815,12 @@ int main(int argc, char** argv) {
       state.radio_cfg.replace_playlist = true;
     } else if (id == "radio:mode:extend") {
       state.radio_cfg.replace_playlist = false;
+    } else if (id == "radio:browse_music") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowseRadioMusic};
+      SDL_ShowOpenFolderDialog(on_file_dialog_complete, ctx, window, nullptr, false);
+    } else if (id == "radio:browse_logo") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowseRadioLogo};
+      SDL_ShowOpenFileDialog(on_file_dialog_complete, ctx, window, kPngFilters, 2, nullptr, false);
     } else if (id == "radio:build") {
       const auto r = launcher::build_custom_radio_mod(state.radio_cfg, state.play_cfg.game_root,
                                                       state.paths.mods_dir, state.paths.ffmpeg_bin);
@@ -782,15 +965,15 @@ int main(int argc, char** argv) {
       if (e.type == SDL_EVENT_QUIT) {
         running = false;
       } else if (e.type == SDL_EVENT_TEXT_INPUT) {
-        if (state.active_tab == launcher::LauncherTab::kSetup && state.focused_id == "setup:path" && e.text.text) {
+        if (std::string* field = active_setup_text_field(); field && e.text.text) {
           for (const char* p = e.text.text; *p; ++p) {
-            if (*p != '\r' && *p != '\n') state.disc_path_input.push_back(*p);
+            if (*p != '\r' && *p != '\n') field->push_back(*p);
           }
         }
       } else if (e.type == SDL_EVENT_KEY_DOWN) {
         const bool shift = (e.key.mod & SDL_KMOD_SHIFT) != 0;
         const bool ctrl = (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
-        const bool editing_path = (state.active_tab == launcher::LauncherTab::kSetup && state.focused_id == "setup:path");
+        std::string* editing_field = active_setup_text_field();
         if (ctrl && (e.key.key == SDLK_EQUALS || e.key.key == SDLK_PLUS || e.key.key == SDLK_KP_PLUS)) {
           user_zoom = std::clamp(user_zoom + 0.15f, 0.75f, 2.0f);
           state.banner_notice = "UI zoom: " + std::to_string(int(std::lround(user_zoom * 100.0f))) + "%";
@@ -804,18 +987,24 @@ int main(int argc, char** argv) {
           if (char* clip = SDL_GetClipboardText()) {
             const std::string pasted = clean_pasted_path(clip);
             SDL_free(clip);
-            if (!pasted.empty()) apply_disc_source(pasted);
+            if (!pasted.empty()) {
+              if (state.focused_id == "setup:state_path") apply_state_root(pasted);
+              else if (state.focused_id == "setup:save_path") apply_save_import_path(pasted);
+              else apply_disc_source(pasted);
+            }
           }
-        } else if (editing_path) {
+        } else if (editing_field) {
           if (e.key.key == SDLK_ESCAPE) {
             state.focused_id.clear();
           } else if (e.key.key == SDLK_BACKSPACE) {
-            if (ctrl) state.disc_path_input.clear();
-            else pop_utf8_char(state.disc_path_input);
+            if (ctrl) editing_field->clear();
+            else pop_utf8_char(*editing_field);
           } else if (e.key.key == SDLK_DELETE) {
-            state.disc_path_input.clear();
+            editing_field->clear();
           } else if (e.key.key == SDLK_RETURN) {
-            apply_disc_source(state.disc_path_input);
+            if (state.focused_id == "setup:state_path") apply_state_root(state.state_path_input);
+            else if (state.focused_id == "setup:save_path") apply_save_import_path(state.save_import_path);
+            else apply_disc_source(state.disc_path_input);
             state.focused_id.clear();
           } else if (e.key.key == SDLK_TAB) {
             cycle_focus(state, hitboxes, shift ? -1 : 1);
@@ -946,8 +1135,28 @@ int main(int argc, char** argv) {
       if (dr.cancelled || dr.paths.empty()) continue;
       if (dr.kind == DialogKind::kBrowseIso || dr.kind == DialogKind::kBrowseFolder) {
         apply_disc_source(dr.paths.front());
+      } else if (dr.kind == DialogKind::kBrowseStateRoot) {
+        apply_state_root(dr.paths.front());
+      } else if (dr.kind == DialogKind::kBrowseSaveFile || dr.kind == DialogKind::kBrowseSaveFolder) {
+        apply_save_import_path(dr.paths.front());
       } else if (dr.kind == DialogKind::kImportStfs || dr.kind == DialogKind::kImportContentFolder) {
         start_content_import(dr.paths);
+      } else if (dr.kind == DialogKind::kInstallModZip || dr.kind == DialogKind::kInstallModFolder) {
+        for (const auto& mp : dr.paths) {
+          launcher::install_mod_source(mp, state.paths.mods_dir, state.banner_notice);
+        }
+        state.mods = launcher::scan_mods(state.paths.mods_dir);
+        state.save_iso = launcher::evaluate_save_isolation(state.mods);
+        state.active_tab = launcher::LauncherTab::kMods;
+      } else if (dr.kind == DialogKind::kBrowseRadioMusic) {
+        state.radio_cfg.music_folder = dr.paths.front();
+        state.radio_tracks = launcher::scan_radio_music_folder(dr.paths.front());
+        state.radio_status = std::to_string(state.radio_tracks.size()) + " audio track(s) found.";
+        state.banner_notice = state.radio_status;
+      } else if (dr.kind == DialogKind::kBrowseRadioLogo) {
+        state.radio_cfg.logo_png_path = dr.paths.front();
+        state.radio_logo_check = launcher::validate_station_logo_png(dr.paths.front());
+        state.banner_notice = state.radio_logo_check.message;
       }
     }
 
@@ -998,6 +1207,7 @@ int main(int argc, char** argv) {
     SDL_Delay(16);
   }
 
+  ui_audio.shutdown();
   setup_runner.cancel();
   content_runner.cancel();
   wifi_server.stop();

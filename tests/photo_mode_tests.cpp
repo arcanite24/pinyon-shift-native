@@ -282,6 +282,108 @@ void test_png_write_and_hud_build() {
   }
 }
 
+void test_gallery_thumbnails_and_smooth_watermark() {
+  // 1. High-resolution antialiased "FORZA HORIZON" watermark produces smooth edge luminance gradients.
+  constexpr uint32_t W = 1280, H = 720;
+  std::vector<uint8_t> canvas(size_t(W) * H * 4, 24u);
+  for (size_t i = 3; i < canvas.size(); i += 4) canvas[i] = 255u;
+  carview::stamp_photo_watermark(canvas, W, H);
+
+  // Top-left corner must remain untouched.
+  check(canvas[0] == 24u && canvas[1] == 24u && canvas[2] == 24u, "smooth watermark leaves top-left photo untouched");
+  std::set<uint8_t> distinct_r;
+  int changed = 0;
+  for (uint32_t y = H / 2; y < H; ++y) {
+    for (uint32_t x = W / 2; x < W; ++x) {
+      const size_t idx = (size_t(y) * W + x) * 4;
+      if (canvas[idx] != 24u || canvas[idx + 1] != 24u || canvas[idx + 2] != 24u) {
+        ++changed;
+        distinct_r.insert(canvas[idx]);
+      }
+    }
+  }
+  check(changed > 2000, "smooth 720p watermark draws crisp high-res bottom-right badge");
+  check(distinct_r.size() >= 12,
+        "antialiased watermark produces smooth intermediate luminance shades (not 2-level 5x5 bitmap)");
+
+  // Custom retail/user watermark image override composites cleanly and resets cleanly.
+  std::vector<uint8_t> custom_wm(16u * 8u * 4u, 0u);
+  for (size_t i = 0; i < 16u * 8u; ++i) {
+    custom_wm[i * 4 + 0] = 249u;
+    custom_wm[i * 4 + 1] = 0u;
+    custom_wm[i * 4 + 2] = 100u;
+    custom_wm[i * 4 + 3] = 220u;
+  }
+  carview::set_photo_watermark_image(16u, 8u, custom_wm);
+  std::vector<uint8_t> custom_canvas(640u * 360u * 4u, 40u);
+  for (size_t i = 3; i < custom_canvas.size(); i += 4) custom_canvas[i] = 255u;
+  carview::stamp_photo_watermark(custom_canvas, 640u, 360u);
+  int pink_px = 0;
+  for (size_t i = 0; i < custom_canvas.size(); i += 4) {
+    if (custom_canvas[i] > 150u && custom_canvas[i + 1] < 40u) ++pink_px;
+  }
+  check(pink_px > 200, "custom watermark RGBA image composites cleanly");
+  carview::set_photo_watermark_image(0, 0, {});
+
+  // 2. Photo Gallery thumbnail decoding (.png + .bmp), preview texture upload, and UI kImage emission.
+  const auto tmp_dir = std::filesystem::temp_directory_path() / "shift_photo_thumbs_test";
+  std::error_code ec;
+  std::filesystem::remove_all(tmp_dir, ec);
+  std::filesystem::create_directories(tmp_dir, ec);
+
+  // Create a 320x180 gradient PNG and a 160x120 BMP in the gallery folder.
+  std::vector<uint8_t> img_png(320u * 180u * 4u, 255u);
+  for (uint32_t y = 0; y < 180u; ++y) {
+    for (uint32_t x = 0; x < 320u; ++x) {
+      const size_t i = (size_t(y) * 320u + x) * 4u;
+      img_png[i + 0] = uint8_t((x * 255u) / 319u);
+      img_png[i + 1] = uint8_t((y * 255u) / 179u);
+      img_png[i + 2] = 180u;
+      img_png[i + 3] = 255u;
+    }
+  }
+  std::filesystem::path saved_png;
+  std::string werr;
+  check(carview::write_photo_png(tmp_dir, img_png, 320u, 180u, "gallery_a", saved_png, &werr, true),
+        "write_photo_png creates gallery PNG");
+
+  const auto bmp_path = tmp_dir / "gallery_b.bmp";
+  std::vector<uint8_t> img_bmp(160u * 120u * 4u, 200u);
+  check(stbi_write_bmp(bmp_path.string().c_str(), 160, 120, 4, img_bmp.data()) != 0, "wrote gallery BMP");
+
+  const auto listed = carview::list_photo_gallery(tmp_dir);
+  check(listed.size() == 2, "list_photo_gallery discovers both .png and .bmp photos");
+
+  std::vector<uint8_t> thumb_rgba;
+  uint32_t tw = 0, th = 0, sw = 0, sh = 0;
+  check(carview::load_photo_thumbnail(saved_png, 160u, 90u, thumb_rgba, tw, th, &sw, &sh),
+        "load_photo_thumbnail decodes and downsamples PNG");
+  check(sw == 320u && sh == 180u && tw == 160u && th == 90u && thumb_rgba.size() == 160u * 90u * 4u,
+        "load_photo_thumbnail preserves 16:9 aspect ratio and original dimensions");
+
+  carview::PhotoModeController ctrl;
+  ctrl.enter({0, 0, 0}, 0.0, carview::PhotoLimits::from_settings(false, false));
+  ctrl.open_gallery(tmp_dir);
+  check(ctrl.gallery_open() && ctrl.gallery_entries().size() == 2, "Photo Gallery opens with 2 photos");
+  check(ctrl.gallery_has_preview() && ctrl.gallery_preview_width() > 0 && ctrl.gallery_preview_height() > 0,
+        "Photo Gallery loads decoded preview texture for selected photo");
+
+  carview::ui::List gal_list;
+  ctrl.build_hud(gal_list, 1280.0f, 720.0f);
+  int image_quads = 0;
+  for (const auto& it : gal_list.items()) {
+    if (it.kind == carview::ui::Kind::kImage) ++image_quads;
+  }
+  // 2 thumbnail quads + 1 large right-pane preview quad = at least 3 kImage quads!
+  check(image_quads >= 3, "Photo Gallery HUD emits kImage quads for decoded thumbnails and live preview");
+
+  ctrl.gallery_move(+1);
+  check(ctrl.gallery_selected() == 1 && ctrl.gallery_has_preview(),
+        "Moving gallery selection updates decoded preview texture cleanly");
+  ctrl.close_gallery();
+  std::filesystem::remove_all(tmp_dir, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -291,6 +393,7 @@ int main() {
   test_supersample_accumulator();
   test_horizon_promo_and_save_roundtrip();
   test_png_write_and_hud_build();
+  test_gallery_thumbnails_and_smooth_watermark();
   if (g_fails == 0) {
     std::printf("photo_mode_tests: all passed\n");
     return 0;

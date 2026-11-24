@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -43,8 +44,41 @@
 namespace launcher {
 namespace {
 
-int run_hidden_cmd_simple(const std::string& cmd) {
 #ifdef _WIN32
+std::string quote_arg_win32(std::string_view a) {
+  if (!a.empty() && a.find_first_of(" \t\n\v\"") == std::string_view::npos) {
+    return std::string(a);
+  }
+  std::string out = "\"";
+  size_t backslashes = 0;
+  for (char c : a) {
+    if (c == '\\') {
+      ++backslashes;
+    } else if (c == '"') {
+      out.append(backslashes * 2 + 1, '\\');
+      out.push_back('"');
+      backslashes = 0;
+    } else {
+      out.append(backslashes, '\\');
+      out.push_back(c);
+      backslashes = 0;
+    }
+  }
+  out.append(backslashes * 2, '\\');
+  out.push_back('"');
+  return out;
+}
+
+std::string build_win32_cmdline(const std::vector<std::string>& args) {
+  std::string cmd;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (i > 0) cmd += ' ';
+    cmd += quote_arg_win32(args[i]);
+  }
+  return cmd;
+}
+
+int run_hidden_cmd_win32(const std::string& cmd) {
   std::string mutable_cmd = cmd;
   STARTUPINFOA si{};
   si.cb = sizeof(si);
@@ -59,9 +93,48 @@ int run_hidden_cmd_simple(const std::string& cmd) {
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
   return int(exit_code);
-#else
-  return std::system(cmd.c_str());
+}
 #endif
+
+int run_process_sync(const std::vector<std::string>& args) {
+  if (args.empty()) return -1;
+#ifdef _WIN32
+  return run_hidden_cmd_win32(build_win32_cmdline(args));
+#else
+  std::vector<char*> argv;
+  argv.reserve(args.size() + 1);
+  for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+  argv.push_back(nullptr);
+
+  const pid_t pid = fork();
+  if (pid < 0) return -1;
+  if (pid == 0) {
+    const int devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+      dup2(devnull, STDIN_FILENO);
+      dup2(devnull, STDOUT_FILENO);
+      dup2(devnull, STDERR_FILENO);
+      if (devnull > STDERR_FILENO) close(devnull);
+    }
+    execvp(argv[0], argv.data());
+    _exit(127);
+  }
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0) {
+    if (errno != EINTR) return -1;
+  }
+  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
+}
+
+std::string escape_ps_single_quoted_local(std::string_view s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (char c : s) {
+    if (c == '\'') out += "''";
+    else out += c;
+  }
+  return out;
 }
 
 std::string lower_ascii(std::string_view s) {
@@ -187,14 +260,11 @@ int query_physical_cores() {
 }
 
 std::string quote_arg_shell(const std::string& a) {
-  if (a.find_first_of(" \t\"") == std::string::npos) return a;
-  std::string out = "\"";
-  for (char c : a) {
-    if (c == '"') out += "\\\"";
-    else out += c;
-  }
-  out += '"';
-  return out;
+#ifdef _WIN32
+  return quote_arg_win32(a);
+#else
+  return shell_quote_posix(a);
+#endif
 }
 
 uint32_t read_le32(const uint8_t* p) {
@@ -859,21 +929,72 @@ int SetupRunner::run_subprocess_logged(const std::vector<std::string>& args) {
   CloseHandle(pi.hThread);
   return int(exit_code);
 #else
-  std::string wrapped = cmd + " 2>&1";
-  FILE* pipe = popen(wrapped.c_str(), "r");
-  if (!pipe) {
+  int pipefd[2] = {-1, -1};
+  if (pipe(pipefd) != 0) {
+    append_log("ERROR: failed to create output pipe");
+    return -1;
+  }
+  std::vector<char*> argv;
+  argv.reserve(args.size() + 1);
+  for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+  argv.push_back(nullptr);
+
+  const pid_t pid = fork();
+  if (pid < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
     append_log("ERROR: failed to launch subprocess");
     return -1;
   }
-  char line[512];
-  while (std::fgets(line, sizeof line, pipe)) {
-    std::string s(line);
-    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
-    if (!s.empty()) append_log(s);
-    if (cancel_.load()) break;
+  if (pid == 0) {
+    close(pipefd[0]);
+    dup2(pipefd[1], STDOUT_FILENO);
+    dup2(pipefd[1], STDERR_FILENO);
+    close(pipefd[1]);
+    const int devnull = open("/dev/null", O_RDONLY);
+    if (devnull >= 0) {
+      dup2(devnull, STDIN_FILENO);
+      if (devnull > STDERR_FILENO) close(devnull);
+    }
+    execvp(argv[0], argv.data());
+    _exit(127);
   }
-  int status = pclose(pipe);
-  return WIFEXITED(status) ? WEXITSTATUS(status) : status;
+  close(pipefd[1]);
+
+  std::string pending;
+  char buf[1024];
+  for (;;) {
+    const ssize_t nread = read(pipefd[0], buf, sizeof(buf));
+    if (nread < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    if (nread == 0) break;
+    pending.append(buf, size_t(nread));
+    size_t pos = 0;
+    while (true) {
+      const size_t nl = pending.find('\n', pos);
+      if (nl == std::string::npos) break;
+      std::string line = pending.substr(pos, nl - pos);
+      while (!line.empty() && line.back() == '\r') line.pop_back();
+      if (!line.empty()) append_log(line);
+      pos = nl + 1;
+    }
+    if (pos > 0) pending.erase(0, pos);
+    if (cancel_.load()) {
+      kill(pid, SIGTERM);
+      break;
+    }
+  }
+  while (!pending.empty() && (pending.back() == '\r' || pending.back() == '\n')) pending.pop_back();
+  if (!pending.empty()) append_log(pending);
+  close(pipefd[0]);
+
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0) {
+    if (errno != EINTR) return -1;
+  }
+  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 #endif
 }
 
@@ -2144,12 +2265,12 @@ bool install_mod_source(const std::filesystem::path& source_folder_or_zip,
     std::filesystem::create_directories(dest, ec);
 #ifdef _WIN32
     const std::string cmd = "powershell -NoProfile -Command \"Expand-Archive -Force -LiteralPath '" +
-                            source_folder_or_zip.string() + "' -DestinationPath '" + dest.string() + "'\"";
+                            escape_ps_single_quoted_local(source_folder_or_zip.string()) + "' -DestinationPath '" +
+                            escape_ps_single_quoted_local(dest.string()) + "'\"";
+    if (run_hidden_cmd_win32(cmd) != 0) {
 #else
-    const std::string cmd = "unzip -oq " + quote_arg_shell(source_folder_or_zip.string()) + " -d " +
-                            quote_arg_shell(dest.string());
+    if (run_process_sync({"unzip", "-oq", source_folder_or_zip.string(), "-d", dest.string()}) != 0) {
 #endif
-    if (run_hidden_cmd_simple(cmd) != 0) {
       out_message = "Failed to extract mod ZIP: " + source_folder_or_zip.string();
       return false;
     }
@@ -2476,13 +2597,14 @@ RadioBuildResult build_custom_radio_mod(const RadioBuilderConfig& cfg,
     taken.insert(lower_ascii(sample_id));
 
     const auto mp3_out = temp_dir / (sample_id + ".mp3");
-    const std::string cmd = quote_arg_shell(ff.string()) +
-                            " -v error -y -nostdin -i " + quote_arg_shell(tr.path.string()) +
-                            " -vn -map_metadata -1 -ar 48000 -ac 2 -c:a libmp3lame -b:a 160k"
-                            " -write_xing 0 -id3v2_version 0 -write_id3v1 0 -f mp3 " +
-                            quote_arg_shell(mp3_out.string());
+    const std::vector<std::string> ff_args = {
+        ff.string(),        "-v",          "error",        "-y",       "-nostdin", "-i",
+        tr.path.string(),   "-vn",         "-map_metadata", "-1",      "-ar",      "48000",
+        "-ac",              "2",           "-c:a",         "libmp3lame", "-b:a",   "160k",
+        "-write_xing",      "0",           "-id3v2_version", "0",      "-write_id3v1", "0",
+        "-f",               "mp3",         mp3_out.string()};
     log("Encoding " + tr.title + " -> " + sample_id);
-    if (run_hidden_cmd_simple(cmd) != 0 || !std::filesystem::is_regular_file(mp3_out, ec)) {
+    if (run_process_sync(ff_args) != 0 || !std::filesystem::is_regular_file(mp3_out, ec)) {
       std::filesystem::remove_all(temp_dir, ec);
       res.message = "FFmpeg failed to encode: " + tr.path.filename().string();
       return res;
@@ -2856,14 +2978,7 @@ std::string escape_ps_single_quoted(std::string_view s) {
 }
 
 std::string escape_sh_single_quoted(std::string_view s) {
-  std::string out = "'";
-  out.reserve(s.size() + 8);
-  for (char c : s) {
-    if (c == '\'') out += "'\\''";
-    else out += c;
-  }
-  out += "'";
-  return out;
+  return shell_quote_posix(s);
 }
 
 bool is_safe_script_path(const std::filesystem::path& p) {
@@ -3074,13 +3189,18 @@ bool verify_update_sha256(const std::filesystem::path& file, std::string_view ex
 }
 
 int preset_index_for_name(std::string_view preset) {
-  const std::string p = lower_ascii(preset);
-  if (p == "high") return 0;
-  if (p == "low" || p == "low-spec-60") return 1;
-  if (p == "smooth-60") return 2;
-  if (p == "quality-30") return 3;
-  if (p == "low-power") return 4;
-  return 0;
+  const std::string p = lower_ascii(trim(preset));
+  if (p == "ultra") return 0;
+  if (p == "high" || p == "quality-60" || p == "performance-120") return 1;
+  if (p == "low" || p == "low-spec-60" || p == "balanced-40") return 2;
+  if (p == "smooth-60" || p == "smooth_60") return 3;
+  if (p == "quality-30" || p == "quality_30") return 4;
+  if (p == "low-power" || p == "low_power" || p == "ultra-low-30") return 5;
+  return 1;
+}
+
+const char* preset_name_for_index(int index) {
+  return kGraphicsPresets[std::clamp(index, 0, kGraphicsPresetCount - 1)].id;
 }
 
 namespace {
@@ -3161,20 +3281,57 @@ bool fetch_https_text(std::string_view url, std::string& out_text, std::string& 
   WinHttpCloseHandle(hSession);
   return ok;
 #else
-  const std::string cmd = "curl -fsSL --proto =https --max-time 10 -A \"shift-launcher/1.0\" " +
-                          escape_sh_single_quoted(url) + " 2>/dev/null";
-  FILE* fp = popen(cmd.c_str(), "r");
-  if (!fp) {
+  int pipefd[2] = {-1, -1};
+  if (pipe(pipefd) != 0) {
+    err = "pipe unavailable";
+    return false;
+  }
+  const std::string url_str(url);
+  const std::vector<std::string> args = {
+      "curl", "-fsSL", "--proto", "=https", "--max-time", "10", "-A", "shift-launcher/1.0", url_str};
+  std::vector<char*> argv;
+  argv.reserve(args.size() + 1);
+  for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+  argv.push_back(nullptr);
+
+  const pid_t pid = fork();
+  if (pid < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
     err = "curl unavailable";
     return false;
   }
+  if (pid == 0) {
+    close(pipefd[0]);
+    dup2(pipefd[1], STDOUT_FILENO);
+    close(pipefd[1]);
+    const int devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+      dup2(devnull, STDIN_FILENO);
+      dup2(devnull, STDERR_FILENO);
+      if (devnull > STDERR_FILENO) close(devnull);
+    }
+    execvp(argv[0], argv.data());
+    _exit(127);
+  }
+  close(pipefd[1]);
   char buf[4096];
   while (out_text.size() < max_bytes) {
-    const size_t n = std::fread(buf, 1, std::min(sizeof(buf), max_bytes - out_text.size()), fp);
+    const size_t want = std::min(sizeof(buf), max_bytes - out_text.size());
+    const ssize_t n = read(pipefd[0], buf, want);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
     if (n == 0) break;
-    out_text.append(buf, n);
+    out_text.append(buf, size_t(n));
   }
-  const int rc = pclose(fp);
+  close(pipefd[0]);
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0) {
+    if (errno != EINTR) break;
+  }
+  const int rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
   if (rc != 0 || out_text.empty()) {
     err = "download failed";
     return false;
@@ -3293,10 +3450,9 @@ bool download_https_url_to_file(std::string_view url, const std::filesystem::pat
   if (!ok) std::filesystem::remove(dest_file, ec);
   return ok;
 #else
-  const std::string cmd = "curl -fsSL --proto =https --max-time 120 -A \"shift-launcher/1.0\" -o " +
-                          escape_sh_single_quoted(dest_file.string()) + " " + escape_sh_single_quoted(url) +
-                          " >/dev/null 2>&1";
-  const int rc = run_hidden_cmd_simple(cmd);
+  const int rc = run_process_sync({
+      "curl", "-fsSL", "--proto", "=https", "--max-time", "120", "-A", "shift-launcher/1.0",
+      "-o", dest_file.string(), std::string(url)});
   if (rc != 0 || !std::filesystem::is_regular_file(dest_file, ec) || std::filesystem::file_size(dest_file, ec) == 0) {
     std::filesystem::remove(dest_file, ec);
     err = "HTTPS download failed";
@@ -3318,25 +3474,17 @@ bool unpack_update_archive(const std::filesystem::path& archive_path, const std:
     const std::string cmd = "powershell -NoProfile -Command \"Expand-Archive -Force -LiteralPath '" +
                             escape_ps_single_quoted(archive_path.string()) + "' -DestinationPath '" +
                             escape_ps_single_quoted(dest_dir.string()) + "'\"";
+    if (run_hidden_cmd_win32(cmd) != 0) {
 #else
-    const std::string cmd = "unzip -qo " + escape_sh_single_quoted(archive_path.string()) + " -d " +
-                            escape_sh_single_quoted(dest_dir.string()) + " >/dev/null 2>&1";
+    if (run_process_sync({"unzip", "-qo", archive_path.string(), "-d", dest_dir.string()}) != 0) {
 #endif
-    if (run_hidden_cmd_simple(cmd) != 0) {
       err = "failed to unpack ZIP archive";
       return false;
     }
     return true;
   }
   if (ends_with_local(low_name, ".tar.gz") || ends_with_local(low_name, ".tgz")) {
-#ifdef _WIN32
-    const std::string cmd = "tar -xzf " + quote_arg_shell(archive_path.string()) + " -C " +
-                            quote_arg_shell(dest_dir.string());
-#else
-    const std::string cmd = "tar -xzf " + escape_sh_single_quoted(archive_path.string()) + " -C " +
-                            escape_sh_single_quoted(dest_dir.string()) + " >/dev/null 2>&1";
-#endif
-    if (run_hidden_cmd_simple(cmd) != 0) {
+    if (run_process_sync({"tar", "-xzf", archive_path.string(), "-C", dest_dir.string()}) != 0) {
       err = "failed to unpack tar.gz archive";
       return false;
     }
@@ -3505,21 +3653,59 @@ bool fetch_github_releases_json(std::string_view repo, std::string& out_json, st
   WinHttpCloseHandle(hSession);
   return ok;
 #else
-  std::string cmd = "curl -fsSL --max-time 4 -H \"Accept: application/vnd.github+json\" -A \"shift-launcher/1.0\" "
-                    "\"https://api.github.com/repos/" + std::string(repo) + "/releases?per_page=10\" 2>/dev/null";
-  FILE* fp = popen(cmd.c_str(), "r");
-  if (!fp) {
+  int pipefd[2] = {-1, -1};
+  if (pipe(pipefd) != 0) {
+    err = "pipe unavailable";
+    return false;
+  }
+  const std::string url = "https://api.github.com/repos/" + std::string(repo) + "/releases?per_page=10";
+  const std::vector<std::string> args = {
+      "curl", "-fsSL", "--proto", "=https", "--max-time", "4",
+      "-H", "Accept: application/vnd.github+json", "-A", "shift-launcher/1.0", url};
+  std::vector<char*> argv;
+  argv.reserve(args.size() + 1);
+  for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+  argv.push_back(nullptr);
+
+  const pid_t pid = fork();
+  if (pid < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
     err = "offline or curl unavailable";
     return false;
   }
+  if (pid == 0) {
+    close(pipefd[0]);
+    dup2(pipefd[1], STDOUT_FILENO);
+    close(pipefd[1]);
+    const int devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+      dup2(devnull, STDIN_FILENO);
+      dup2(devnull, STDERR_FILENO);
+      if (devnull > STDERR_FILENO) close(devnull);
+    }
+    execvp(argv[0], argv.data());
+    _exit(127);
+  }
+  close(pipefd[1]);
   char buf[4096];
   constexpr size_t kMaxBytes = 512 * 1024;
   while (out_json.size() < kMaxBytes) {
-    const size_t n = std::fread(buf, 1, std::min(sizeof(buf), kMaxBytes - out_json.size()), fp);
+    const size_t want = std::min(sizeof(buf), kMaxBytes - out_json.size());
+    const ssize_t n = read(pipefd[0], buf, want);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
     if (n == 0) break;
-    out_json.append(buf, n);
+    out_json.append(buf, size_t(n));
   }
-  const int rc = pclose(fp);
+  close(pipefd[0]);
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0) {
+    if (errno != EINTR) break;
+  }
+  const int rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
   if (rc != 0 || out_json.empty()) {
     err = "offline or release feed unreachable";
     return false;
@@ -3769,6 +3955,236 @@ bool save_graphics_backend_setting(const std::filesystem::path& settings_file,
     for (const auto& l : lines) out << l << "\n";
   }
   return bool(out);
+}
+
+std::string load_graphics_preset_setting(const std::filesystem::path& settings_file) {
+  std::ifstream in(settings_file);
+  if (!in) return "high";
+  std::string found = "high";
+  for (std::string line; std::getline(in, line);) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#') continue;
+    if (line.rfind("--", 0) == 0) line = line.substr(2);
+    const size_t sp = line.find(' ');
+    if (sp == std::string::npos) continue;
+    const std::string key = lower_ascii(line.substr(0, sp));
+    if (key != "preset") continue;
+    const std::string val = lower_ascii(trim(line.substr(sp + 1)));
+    found = preset_name_for_index(preset_index_for_name(val));
+  }
+  return found;
+}
+
+bool save_graphics_preset_setting(const std::filesystem::path& settings_file,
+                                  std::string_view preset_id,
+                                  std::string* error) {
+  const std::string val = preset_name_for_index(preset_index_for_name(preset_id));
+  std::vector<std::string> lines;
+  if (std::ifstream in(settings_file); in) {
+    for (std::string line; std::getline(in, line);) {
+      std::string t = trim(line);
+      if (t.rfind("--", 0) == 0) t = t.substr(2);
+      const size_t sp = t.find(' ');
+      const std::string key = lower_ascii(sp == std::string::npos ? t : t.substr(0, sp));
+      if (key == "preset") continue;
+      lines.push_back(line);
+    }
+  }
+  lines.push_back("preset " + val);
+  std::error_code ec;
+  if (settings_file.has_parent_path()) std::filesystem::create_directories(settings_file.parent_path(), ec);
+  std::ofstream out(settings_file, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    if (error) *error = "Cannot write " + settings_file.string();
+    return false;
+  }
+  for (const auto& l : lines) out << l << "\n";
+  return bool(out);
+}
+
+bool load_launcher_sounds_setting(const std::filesystem::path& settings_file) {
+  std::ifstream in(settings_file);
+  if (!in) return true;
+  bool enabled = true;
+  for (std::string line; std::getline(in, line);) {
+    std::string t = trim(line);
+    if (t.empty()) continue;
+    if (t.rfind("# launcher-sounds ", 0) == 0 || t.rfind("# launcher_sounds ", 0) == 0) {
+      t = trim(t.substr(2));
+    } else if (t[0] == '#') {
+      continue;
+    }
+    if (t.rfind("--", 0) == 0) t = t.substr(2);
+    const size_t sp = t.find(' ');
+    if (sp == std::string::npos) continue;
+    const std::string key = lower_ascii(t.substr(0, sp));
+    if (key != "launcher-sounds" && key != "launcher_sounds") continue;
+    const std::string val = lower_ascii(trim(t.substr(sp + 1)));
+    if (val == "0" || val == "false" || val == "off" || val == "no") enabled = false;
+    else if (val == "1" || val == "true" || val == "on" || val == "yes") enabled = true;
+  }
+  return enabled;
+}
+
+bool save_launcher_sounds_setting(const std::filesystem::path& settings_file,
+                                  bool enabled,
+                                  std::string* error) {
+  std::vector<std::string> lines;
+  if (std::ifstream in(settings_file); in) {
+    for (std::string line; std::getline(in, line);) {
+      std::string t = trim(line);
+      if (t.rfind("# launcher-sounds ", 0) == 0 || t.rfind("# launcher_sounds ", 0) == 0) continue;
+      if (!t.empty() && t[0] != '#') {
+        std::string u = (t.rfind("--", 0) == 0) ? t.substr(2) : t;
+        const size_t sp = u.find(' ');
+        const std::string key = lower_ascii(sp == std::string::npos ? u : u.substr(0, sp));
+        if (key == "launcher-sounds" || key == "launcher_sounds") continue;
+      }
+      lines.push_back(line);
+    }
+  }
+  // Stored as a structured comment so carview::read_settings ignores it with zero warnings.
+  lines.push_back(std::string("# launcher-sounds ") + (enabled ? "1" : "0"));
+  std::error_code ec;
+  if (settings_file.has_parent_path()) std::filesystem::create_directories(settings_file.parent_path(), ec);
+  std::ofstream out(settings_file, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    if (error) *error = "Cannot write " + settings_file.string();
+    return false;
+  }
+  for (const auto& l : lines) out << l << "\n";
+  return bool(out);
+}
+
+std::string shell_quote_posix(std::string_view arg) {
+  std::string out = "'";
+  out.reserve(arg.size() + 8);
+  for (char c : arg) {
+    if (c == '\0') continue;
+    if (c == '\'') out += "'\\''";
+    else out += c;
+  }
+  out += "'";
+  return out;
+}
+
+std::vector<std::string> split_command_args(std::string_view text) {
+  std::vector<std::string> out;
+  std::string cur;
+  bool in_single = false;
+  bool in_double = false;
+  bool has_token = false;
+  for (size_t i = 0; i < text.size(); ++i) {
+    const char c = text[i];
+    if (in_single) {
+      if (c == '\'') in_single = false;
+      else cur.push_back(c);
+    } else if (in_double) {
+      if (c == '\\' && i + 1 < text.size() && (text[i + 1] == '"' || text[i + 1] == '\\')) {
+        cur.push_back(text[++i]);
+      } else if (c == '"') {
+        in_double = false;
+      } else {
+        cur.push_back(c);
+      }
+    } else if (std::isspace(static_cast<unsigned char>(c))) {
+      if (has_token) {
+        out.push_back(std::move(cur));
+        cur.clear();
+        has_token = false;
+      }
+    } else if (c == '\'') {
+      in_single = true;
+      has_token = true;
+    } else if (c == '"') {
+      in_double = true;
+      has_token = true;
+    } else if (c == '\\' && i + 1 < text.size() && std::isspace(static_cast<unsigned char>(text[i + 1]))) {
+      cur.push_back(text[++i]);
+      has_token = true;
+    } else {
+      cur.push_back(c);
+      has_token = true;
+    }
+  }
+  if (has_token) out.push_back(std::move(cur));
+  return out;
+}
+
+bool launch_detached_process(const std::vector<std::string>& args,
+                             const std::vector<std::pair<std::string, std::string>>& env_overrides,
+                             std::string* error) {
+  if (args.empty() || args[0].empty()) {
+    if (error) *error = "No executable specified.";
+    return false;
+  }
+#ifdef _WIN32
+  std::vector<std::pair<std::string, std::optional<std::string>>> saved_env;
+  saved_env.reserve(env_overrides.size());
+  for (const auto& [k, v] : env_overrides) {
+    if (k.empty()) continue;
+    char buf[4096];
+    const DWORD n = GetEnvironmentVariableA(k.c_str(), buf, DWORD(sizeof(buf)));
+    if (n > 0 && n < sizeof(buf)) saved_env.emplace_back(k, std::string(buf, n));
+    else saved_env.emplace_back(k, std::nullopt);
+    SetEnvironmentVariableA(k.c_str(), v.empty() ? nullptr : v.c_str());
+  }
+
+  std::string cmd_line = build_win32_cmdline(args);
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  const BOOL created = CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, FALSE,
+                                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+
+  for (auto it = saved_env.rbegin(); it != saved_env.rend(); ++it) {
+    SetEnvironmentVariableA(it->first.c_str(), it->second ? it->second->c_str() : nullptr);
+  }
+
+  if (!created) {
+    if (error) *error = "Failed to launch " + args[0];
+    return false;
+  }
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  return true;
+#else
+  std::vector<char*> argv;
+  argv.reserve(args.size() + 1);
+  for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+  argv.push_back(nullptr);
+
+  // Double-fork so the detached child is reparented to init/PID 1 and leaves no zombie.
+  const pid_t pid = fork();
+  if (pid < 0) {
+    if (error) *error = "Failed to fork process.";
+    return false;
+  }
+  if (pid == 0) {
+    setsid();
+    const pid_t grand = fork();
+    if (grand < 0) _exit(127);
+    if (grand > 0) _exit(0);
+
+    for (const auto& [k, v] : env_overrides) {
+      if (!k.empty()) setenv(k.c_str(), v.c_str(), 1);
+    }
+    const int devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+      dup2(devnull, STDIN_FILENO);
+      dup2(devnull, STDOUT_FILENO);
+      dup2(devnull, STDERR_FILENO);
+      if (devnull > STDERR_FILENO) close(devnull);
+    }
+    execvp(argv[0], argv.data());
+    _exit(127);
+  }
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0) {
+    if (errno != EINTR) break;
+  }
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+#endif
 }
 
 }  // namespace launcher

@@ -770,12 +770,41 @@ void test_wifi_sync_server_and_qr() {
 }
 
 void test_preset_mapping_and_cores() {
-  assert(launcher::preset_index_for_name("high") == 0);
-  assert(launcher::preset_index_for_name("low") == 1);
-  assert(launcher::preset_index_for_name("low-spec-60") == 1);
-  assert(launcher::preset_index_for_name("smooth-60") == 2);
-  assert(launcher::preset_index_for_name("quality-30") == 3);
-  assert(launcher::preset_index_for_name("low-power") == 4);
+  assert(launcher::preset_index_for_name("ultra") == 0);
+  assert(launcher::preset_index_for_name("ULTRA") == 0);
+  assert(launcher::preset_index_for_name("high") == 1);
+  assert(launcher::preset_index_for_name("low") == 2);
+  assert(launcher::preset_index_for_name("low-spec-60") == 2);
+  assert(launcher::preset_index_for_name("smooth-60") == 3);
+  assert(launcher::preset_index_for_name("quality-30") == 4);
+  assert(launcher::preset_index_for_name("low-power") == 5);
+  assert(std::string(launcher::preset_name_for_index(0)) == "ultra");
+  assert(std::string(launcher::preset_name_for_index(1)) == "high");
+  assert(std::string(launcher::preset_name_for_index(2)) == "low");
+  assert(std::string(launcher::preset_name_for_index(3)) == "smooth-60");
+  assert(std::string(launcher::preset_name_for_index(4)) == "quality-30");
+  assert(std::string(launcher::preset_name_for_index(5)) == "low-power");
+
+  // Preset persistence round-trip (including "ultra") preserving unrelated settings.txt lines.
+  const auto root = make_temp_dir("shift_launcher_preset_test");
+  const auto sf = root / "settings.txt";
+  {
+    std::ofstream f(sf);
+    f << "no-traffic\ngraphics_backend vulkan\n";
+  }
+  assert(launcher::load_graphics_preset_setting(sf) == "high");
+  assert(launcher::save_graphics_preset_setting(sf, "ultra"));
+  assert(launcher::load_graphics_preset_setting(sf) == "ultra");
+  assert(launcher::save_graphics_preset_setting(sf, "low-power"));
+  assert(launcher::load_graphics_preset_setting(sf) == "low-power");
+  assert(launcher::save_graphics_preset_setting(sf, "ultra"));
+  {
+    const std::string txt = read_binary_string(sf);
+    assert(txt.find("preset ultra") != std::string::npos);
+    assert(txt.find("no-traffic") != std::string::npos);
+    assert(txt.find("graphics_backend vulkan") != std::string::npos);
+  }
+  std::filesystem::remove_all(root);
 
   const auto hw = launcher::probe_hardware();
   assert(hw.physical_cores > 0);
@@ -784,8 +813,49 @@ void test_preset_mapping_and_cores() {
   if (hw.logical_threads >= 4 && (hw.logical_threads % 2) == 0) {
     assert(hw.physical_cores != (hw.logical_threads / 2) - 1);
   }
-  std::printf("  [ok] preset_index_for_name (all 5) & physical core count (%dC/%dT)\n", hw.physical_cores,
-              hw.logical_threads);
+  std::printf("  [ok] preset_index_for_name (all 6 incl. ultra), preset settings & physical core count (%dC/%dT)\n",
+              hw.physical_cores, hw.logical_threads);
+}
+
+void test_launcher_sounds_and_posix_quoting() {
+  // toggle_sounds persistence round-trip preserving unrelated settings.txt lines
+  const auto root = make_temp_dir("shift_launcher_sounds_test");
+  const auto sf = root / "settings.txt";
+  assert(launcher::load_launcher_sounds_setting(sf) == true);  // default on
+  {
+    std::ofstream f(sf);
+    f << "preset ultra\nno-traffic\n";
+  }
+  assert(launcher::save_launcher_sounds_setting(sf, false));
+  assert(launcher::load_launcher_sounds_setting(sf) == false);
+  {
+    const std::string txt = read_binary_string(sf);
+    assert(txt.find("# launcher-sounds 0") != std::string::npos);
+    assert(txt.find("preset ultra") != std::string::npos);
+    assert(txt.find("no-traffic") != std::string::npos);
+  }
+  assert(launcher::save_launcher_sounds_setting(sf, true));
+  assert(launcher::load_launcher_sounds_setting(sf) == true);
+  assert(launcher::load_graphics_preset_setting(sf) == "ultra");
+  std::filesystem::remove_all(root);
+
+  // shell_quote_posix edge cases: empty, spaces, single quotes, $, backticks, subshells, semicolons
+  assert(launcher::shell_quote_posix("") == "''");
+  assert(launcher::shell_quote_posix("plain") == "'plain'");
+  assert(launcher::shell_quote_posix("/path with spaces/Forza Horizon") == "'/path with spaces/Forza Horizon'");
+  assert(launcher::shell_quote_posix("O'Reilly's $HOME") == "'O'\\''Reilly'\\''s $HOME'");
+  assert(launcher::shell_quote_posix("`whoami`; $(rm -rf /)") == "'`whoami`; $(rm -rf /)'");
+  assert(launcher::shell_quote_posix("a\"b\\c|d&e") == "'a\"b\\c|d&e'");
+  assert(launcher::shell_quote_posix("'") == "''\\'''");
+
+  // split_command_args quoting edge cases
+  const auto toks = launcher::split_command_args("--hour 18 --car 'NIS Skyline' --save \"/tmp/my save.bin\"");
+  assert(toks.size() == 6);
+  assert(toks[0] == "--hour" && toks[1] == "18");
+  assert(toks[2] == "--car" && toks[3] == "NIS Skyline");
+  assert(toks[4] == "--save" && toks[5] == "/tmp/my save.bin");
+
+  std::printf("  [ok] toggle_sounds persistence, shell_quote_posix & split_command_args edge cases\n");
 }
 
 void test_graphics_backend_selector() {
@@ -1052,6 +1122,7 @@ int main() {
   test_zerobake_setup_runner();
   test_hardware_advisor();
   test_preset_mapping_and_cores();
+  test_launcher_sounds_and_posix_quoting();
   test_graphics_backend_selector();
   test_steam_vdf();
   test_mods_and_dlc();

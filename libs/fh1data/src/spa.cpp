@@ -85,14 +85,17 @@ bool parse_xstr(std::span<const uint8_t> block, std::map<uint16_t, std::string>&
 uint16_t spa_language_id(std::string_view code) {
   std::string up;
   for (char c : code) up += char(std::toupper(static_cast<unsigned char>(c)));
-  if (up == "JA" || up == "JP") return uint16_t(SpaLanguage::kJapanese);
-  if (up == "DE") return uint16_t(SpaLanguage::kGerman);
-  if (up == "FR") return uint16_t(SpaLanguage::kFrench);
-  if (up == "ES" || up == "MX") return uint16_t(SpaLanguage::kSpanish);
-  if (up == "IT") return uint16_t(SpaLanguage::kItalian);
-  if (up == "KO" || up == "KR") return uint16_t(SpaLanguage::kKorean);
-  if (up == "ZH" || up == "ZH-HANT" || up == "ZHT" || up == "TC") return uint16_t(SpaLanguage::kTraditionalChinese);
-  if (up == "PT" || up == "BR") return uint16_t(SpaLanguage::kPortuguese);
+  if (up == "JA" || up == "JP" || up == "JA-JP") return uint16_t(SpaLanguage::kJapanese);
+  if (up == "DE" || up == "DE-DE") return uint16_t(SpaLanguage::kGerman);
+  if (up == "FR" || up == "FR-FR") return uint16_t(SpaLanguage::kFrench);
+  if (up == "ES" || up == "MX" || up == "ES-ES" || up == "ES-MX") return uint16_t(SpaLanguage::kSpanish);
+  if (up == "IT" || up == "IT-IT") return uint16_t(SpaLanguage::kItalian);
+  if (up == "KO" || up == "KR" || up == "KO-KR") return uint16_t(SpaLanguage::kKorean);
+  if (up == "ZH" || up == "ZH-HANT" || up == "ZH-TW" || up == "ZH_TW" || up == "ZHT" || up == "CHT" || up == "TC" ||
+      up == "TW" || up == "CHS" || up == "ZHS" || up == "ZH-HANS" || up == "ZH-CN" || up == "SC") {
+    return uint16_t(SpaLanguage::kTraditionalChinese);
+  }
+  if (up == "PT" || up == "BR" || up == "PT-BR" || up == "PT-PT") return uint16_t(SpaLanguage::kPortuguese);
   if (up == "PL") return uint16_t(SpaLanguage::kPolish);
   if (up == "RU") return uint16_t(SpaLanguage::kRussian);
   if (up == "SV") return uint16_t(SpaLanguage::kSwedish);

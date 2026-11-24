@@ -1,20 +1,51 @@
 #include "photo_mode.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 
+#include <stb_image.h>
 #include <stb_image_write.h>
 
+#include "fh1data/stringtables.h"
 #include "ui4_chrome.h"
 
 namespace carview {
 namespace {
+
+std::function<std::string(const std::string&)>& photo_text_fn() {
+  static std::function<std::string(const std::string&)> fn;
+  return fn;
+}
+
+std::string loc_str(std::string_view table, std::string_view id, const char* fallback) {
+  if (const auto& fn = photo_text_fn()) {
+    const uint32_t packed = (uint32_t(fh1::string_hash(table)) << 16) | uint32_t(fh1::string_hash(id));
+    const std::string ref = "_&" + std::to_string(packed);
+    const std::string resolved = fn(ref);
+    if (!resolved.empty() && resolved != ref && resolved.rfind("_&", 0) != 0) return resolved;
+  }
+  return fallback;
+}
+
+struct CustomWatermarkImage {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::vector<uint8_t> rgba;
+};
+
+CustomWatermarkImage& custom_watermark_image() {
+  static CustomWatermarkImage img;
+  return img;
+}
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kDegToRad = kPi / 180.0;
@@ -464,81 +495,244 @@ PromoSpotResult HorizonPromoTracker::evaluate(const float m[16], const std::arra
 
 namespace {
 
-void blend_px(std::vector<uint8_t>& rgba, uint32_t w, uint32_t h, int x, int y, uint8_t r, uint8_t g, uint8_t b,
-              uint8_t a) {
+void blend_px_rgba(std::vector<uint8_t>& rgba, uint32_t w, uint32_t h, int x, int y, uint8_t r, uint8_t g, uint8_t b,
+                   uint8_t a) {
   if (x < 0 || y < 0 || x >= int(w) || y >= int(h) || a == 0) return;
   const size_t i = (size_t(y) * w + size_t(x)) * 4;
   const uint32_t alpha = a;
   const uint32_t inv = 255u - alpha;
-  rgba[i + 0] = uint8_t((rgba[i + 0] * inv + r * alpha) / 255u);
-  rgba[i + 1] = uint8_t((rgba[i + 1] * inv + g * alpha) / 255u);
-  rgba[i + 2] = uint8_t((rgba[i + 2] * inv + b * alpha) / 255u);
+  rgba[i + 0] = uint8_t((rgba[i + 0] * inv + r * alpha + 127u) / 255u);
+  rgba[i + 1] = uint8_t((rgba[i + 1] * inv + g * alpha + 127u) / 255u);
+  rgba[i + 2] = uint8_t((rgba[i + 2] * inv + b * alpha + 127u) / 255u);
   rgba[i + 3] = 255;
 }
 
-uint32_t wm_glyph_rows(char ch) {
-  // Compact 5x5 bitmap rows (5 bits per row, MSB left, 5 rows packed in 25 bits).
-  switch (ch) {
-    case 'A': return (0x0Eu << 20) | (0x11u << 15) | (0x1Fu << 10) | (0x11u << 5) | 0x11u;
-    case 'E': return (0x1Fu << 20) | (0x10u << 15) | (0x1Eu << 10) | (0x10u << 5) | 0x1Fu;
-    case 'F': return (0x1Fu << 20) | (0x10u << 15) | (0x1Eu << 10) | (0x10u << 5) | 0x10u;
-    case 'G': return (0x0Eu << 20) | (0x10u << 15) | (0x17u << 10) | (0x11u << 5) | 0x0Eu;
-    case 'H': return (0x11u << 20) | (0x11u << 15) | (0x1Fu << 10) | (0x11u << 5) | 0x11u;
-    case 'I': return (0x0Eu << 20) | (0x04u << 15) | (0x04u << 10) | (0x04u << 5) | 0x0Eu;
-    case 'N': return (0x11u << 20) | (0x19u << 15) | (0x15u << 10) | (0x13u << 5) | 0x11u;
-    case 'O': return (0x0Eu << 20) | (0x11u << 15) | (0x11u << 10) | (0x11u << 5) | 0x0Eu;
-    case 'R': return (0x1Eu << 20) | (0x11u << 15) | (0x1Eu << 10) | (0x14u << 5) | 0x13u;
-    case 'S': return (0x0Fu << 20) | (0x10u << 15) | (0x0Eu << 10) | (0x01u << 5) | 0x1Eu;
-    case 'T': return (0x1Fu << 20) | (0x04u << 15) | (0x04u << 10) | (0x04u << 5) | 0x04u;
-    case 'Z': return (0x1Fu << 20) | (0x02u << 15) | (0x04u << 10) | (0x08u << 5) | 0x1Fu;
-    case '/': return (0x01u << 20) | (0x02u << 15) | (0x04u << 10) | (0x08u << 5) | 0x10u;
-    default: return 0u;
+void composite_custom_watermark(std::vector<uint8_t>& dst, uint32_t dst_w, uint32_t dst_h,
+                                const CustomWatermarkImage& src) {
+  const float target_h = std::clamp(float(dst_h) * 0.085f, 24.0f, float(dst_h) * 0.25f);
+  const float aspect = float(src.width) / float(std::max(1u, src.height));
+  const uint32_t out_h = std::max(1u, uint32_t(std::lround(target_h)));
+  const uint32_t out_w = std::clamp(uint32_t(std::lround(target_h * aspect)), 1u, std::max(1u, dst_w - 16u));
+  const int margin = std::max(10, int(std::lround(float(dst_h) * 0.025f)));
+  const int x0 = int(dst_w) - int(out_w) - margin;
+  const int y0 = int(dst_h) - int(out_h) - margin;
+  if (x0 < 0 || y0 < 0) return;
+
+  for (uint32_t dy = 0; dy < out_h; ++dy) {
+    const float sy = (float(dy) + 0.5f) * float(src.height) / float(out_h) - 0.5f;
+    const int y_lo = std::clamp(int(std::floor(sy)), 0, int(src.height) - 1);
+    const int y_hi = std::clamp(y_lo + 1, 0, int(src.height) - 1);
+    const float fy = std::clamp(sy - float(y_lo), 0.0f, 1.0f);
+    for (uint32_t dx = 0; dx < out_w; ++dx) {
+      const float sx = (float(dx) + 0.5f) * float(src.width) / float(out_w) - 0.5f;
+      const int x_lo = std::clamp(int(std::floor(sx)), 0, int(src.width) - 1);
+      const int x_hi = std::clamp(x_lo + 1, 0, int(src.width) - 1);
+      const float fx = std::clamp(sx - float(x_lo), 0.0f, 1.0f);
+      const uint8_t* p00 = &src.rgba[(size_t(y_lo) * src.width + size_t(x_lo)) * 4];
+      const uint8_t* p10 = &src.rgba[(size_t(y_lo) * src.width + size_t(x_hi)) * 4];
+      const uint8_t* p01 = &src.rgba[(size_t(y_hi) * src.width + size_t(x_lo)) * 4];
+      const uint8_t* p11 = &src.rgba[(size_t(y_hi) * src.width + size_t(x_hi)) * 4];
+      const float w00 = (1.0f - fx) * (1.0f - fy);
+      const float w10 = fx * (1.0f - fy);
+      const float w01 = (1.0f - fx) * fy;
+      const float w11 = fx * fy;
+      const uint8_t r = uint8_t(std::clamp(std::lround(p00[0] * w00 + p10[0] * w10 + p01[0] * w01 + p11[0] * w11), 0l, 255l));
+      const uint8_t g = uint8_t(std::clamp(std::lround(p00[1] * w00 + p10[1] * w10 + p01[1] * w01 + p11[1] * w11), 0l, 255l));
+      const uint8_t b = uint8_t(std::clamp(std::lround(p00[2] * w00 + p10[2] * w10 + p01[2] * w01 + p11[2] * w11), 0l, 255l));
+      const uint8_t a = uint8_t(std::clamp(std::lround(p00[3] * w00 + p10[3] * w10 + p01[3] * w01 + p11[3] * w11), 0l, 255l));
+      blend_px_rgba(dst, dst_w, dst_h, x0 + int(dx), y0 + int(dy), r, g, b, a);
+    }
   }
 }
 
-void draw_wm_text(std::vector<uint8_t>& rgba, uint32_t w, uint32_t h, int x0, int y0, int scale,
-                  const std::string& text, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-  int cx = x0;
-  for (char ch : text) {
-    const uint32_t bits = wm_glyph_rows(ch);
-    for (int row = 0; row < 5; ++row) {
-      const uint32_t rb = (bits >> (20 - row * 5)) & 0x1Fu;
-      for (int col = 0; col < 5; ++col) {
-        if ((rb & (0x10u >> col)) == 0) continue;
-        for (int sy = 0; sy < scale; ++sy)
-          for (int sx = 0; sx < scale; ++sx)
-            blend_px(rgba, w, h, cx + col * scale + sx, y0 + row * scale + sy, r, g, b, a);
+void downsample_box_rgba(const uint8_t* src, uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh,
+                         std::vector<uint8_t>& out) {
+  out.resize(size_t(dw) * dh * 4);
+  if (sw == dw && sh == dh) {
+    std::memcpy(out.data(), src, out.size());
+    return;
+  }
+  const float sx_scale = float(sw) / float(dw);
+  const float sy_scale = float(sh) / float(dh);
+  for (uint32_t dy = 0; dy < dh; ++dy) {
+    const float fy0 = float(dy) * sy_scale;
+    const float fy1 = std::min(float(sh), float(dy + 1) * sy_scale);
+    const uint32_t y0 = std::min(sh - 1u, uint32_t(std::floor(fy0)));
+    const uint32_t y1 = std::min(sh, std::max(y0 + 1u, uint32_t(std::ceil(fy1))));
+    for (uint32_t dx = 0; dx < dw; ++dx) {
+      const float fx0 = float(dx) * sx_scale;
+      const float fx1 = std::min(float(sw), float(dx + 1) * sx_scale);
+      const uint32_t x0 = std::min(sw - 1u, uint32_t(std::floor(fx0)));
+      const uint32_t x1 = std::min(sw, std::max(x0 + 1u, uint32_t(std::ceil(fx1))));
+      double acc[4] = {0.0, 0.0, 0.0, 0.0};
+      double wsum = 0.0;
+      for (uint32_t sy = y0; sy < y1; ++sy) {
+        const double wy = std::max(0.0, double(std::min(fy1, float(sy + 1)) - std::max(fy0, float(sy))));
+        const uint8_t* row = src + size_t(sy) * sw * 4;
+        for (uint32_t sx = x0; sx < x1; ++sx) {
+          const double wx = std::max(0.0, double(std::min(fx1, float(sx + 1)) - std::max(fx0, float(sx))));
+          const double w = wx * wy;
+          const uint8_t* p = row + size_t(sx) * 4;
+          acc[0] += double(p[0]) * w;
+          acc[1] += double(p[1]) * w;
+          acc[2] += double(p[2]) * w;
+          acc[3] += double(p[3]) * w;
+          wsum += w;
+        }
+      }
+      uint8_t* q = &out[(size_t(dy) * dw + size_t(dx)) * 4];
+      if (wsum > 1e-9) {
+        for (int c = 0; c < 4; ++c) q[c] = uint8_t(std::clamp(std::lround(acc[c] / wsum), 0l, 255l));
+      } else {
+        const uint8_t* p = src + (size_t(y0) * sw + size_t(x0)) * 4;
+        std::memcpy(q, p, 4);
       }
     }
-    cx += 6 * scale;
   }
 }
 
 }  // namespace
 
+void set_photo_watermark_image(uint32_t width, uint32_t height, std::vector<uint8_t> rgba) {
+  auto& wm = custom_watermark_image();
+  if (width == 0 || height == 0 || rgba.size() < size_t(width) * height * 4) {
+    wm = CustomWatermarkImage{};
+    return;
+  }
+  wm.width = width;
+  wm.height = height;
+  wm.rgba = std::move(rgba);
+}
+
 void stamp_photo_watermark(std::vector<uint8_t>& rgba, uint32_t width, uint32_t height) {
   if (width < 120 || height < 60 || rgba.size() < size_t(width) * height * 4) return;
-  const int scale = std::clamp(int(height / 360u), 1, 4);
-  const std::string text = "FORZA HORIZON  //  SHIFT ENGINE";
-  const int tw = int(text.size()) * 6 * scale;
-  const int th = 5 * scale;
-  const int pad_x = 8 * scale;
-  const int pad_y = 5 * scale;
-  const int bw = tw + pad_x * 2 + 4 * scale;
-  const int bh = th + pad_y * 2;
-  const int x0 = int(width) - bw - 14 * scale;
-  const int y0 = int(height) - bh - 12 * scale;
+  const auto& custom_wm = custom_watermark_image();
+  if (custom_wm.width > 0 && custom_wm.height > 0 &&
+      custom_wm.rgba.size() >= size_t(custom_wm.width) * custom_wm.height * 4) {
+    composite_custom_watermark(rgba, width, height, custom_wm);
+    return;
+  }
+
+  // Smooth, resolution-independent antialiased "FORZA HORIZON" corner badge
+  // rasterized via carview::ui SDF/vector primitives directly over the bottom-right ROI.
+  const float s = std::clamp(float(height) / 720.0f, 0.45f, 4.0f);
+  const bool use_vfont = !ui::gpu_atlas_mode() && ui::vector_fonts_loaded();
+  const ui::Font main_font = use_vfont ? ui::Font::kE : ui::Font::kStroke;
+  const ui::Font sub_font = use_vfont ? ui::Font::kB : ui::Font::kStroke;
+
+  const std::string title_txt = "FORZA HORIZON";
+  const std::string sub_txt = "SHIFT ENGINE";
+
+  ui::TextStyle title_ts{};
+  title_ts.font = main_font;
+  title_ts.size = 18.0f * s;
+  title_ts.weight = 0.135f;
+  title_ts.slant = use_vfont ? 0.0f : 0.16f;
+  title_ts.tracking = 0.06f;
+  title_ts.color = ui::rgba(248, 250, 252, 238);
+
+  ui::TextStyle sub_ts{};
+  sub_ts.font = sub_font;
+  sub_ts.size = 10.5f * s;
+  sub_ts.weight = 0.115f;
+  sub_ts.slant = use_vfont ? 0.0f : 0.08f;
+  sub_ts.tracking = 0.08f;
+  sub_ts.color = ui::rgba(218, 255, 0, 224);
+
+  const float title_w = ui::List::measure(title_txt, title_ts);
+  const float sub_w = ui::List::measure(sub_txt, sub_ts);
+  const float shadow_pad = 10.0f * s;
+  const float stripe_w = 5.0f * s;
+  const float pad_l = 12.0f * s;
+  const float gap_w = 14.0f * s;
+  const float pad_r = 14.0f * s;
+  const float badge_w = stripe_w + pad_l + title_w + gap_w + sub_w + pad_r;
+  const float badge_h = 34.0f * s;
+
+  const uint32_t roi_w = std::min(width, std::max(1u, uint32_t(std::ceil(badge_w + shadow_pad * 2.0f))));
+  const uint32_t roi_h = std::min(height, std::max(1u, uint32_t(std::ceil(badge_h + shadow_pad * 2.0f))));
+  const int margin_x = std::max(8, int(std::lround(18.0f * s)));
+  const int margin_y = std::max(8, int(std::lround(14.0f * s)));
+  const int x0 = int(width) - int(roi_w) - margin_x;
+  const int y0 = int(height) - int(roi_h) - margin_y;
   if (x0 < 0 || y0 < 0) return;
 
-  // Translucent charcoal pill + Horizon pink accent stripe on left edge.
-  for (int y = y0; y < y0 + bh; ++y) {
-    for (int x = x0; x < x0 + bw; ++x) {
-      const bool accent = (x < x0 + 4 * scale);
-      blend_px(rgba, width, height, x, y, accent ? 245 : 14, accent ? 0 : 14, accent ? 96 : 18, accent ? 230 : 148);
+  // Copy target ROI from the exported photo so ui::rasterize blends smoothly over true scene pixels.
+  std::vector<uint8_t> roi(size_t(roi_w) * roi_h * 4);
+  for (uint32_t y = 0; y < roi_h; ++y) {
+    const uint8_t* src_row = &rgba[(size_t(y0 + int(y)) * width + size_t(x0)) * 4];
+    std::memcpy(&roi[size_t(y) * roi_w * 4], src_row, size_t(roi_w) * 4);
+  }
+
+  const float bx0 = shadow_pad;
+  const float by0 = shadow_pad;
+  const float bx1 = std::min(float(roi_w) - shadow_pad * 0.5f, bx0 + badge_w);
+  const float by1 = std::min(float(roi_h) - shadow_pad * 0.5f, by0 + badge_h);
+
+  ui::List wl;
+  // Soft drop shadow + translucent charcoal badge with Forza Horizon pink accent bar and hairline.
+  wl.shadow(bx0, by0 + 1.5f * s, bx1, by1 + 1.5f * s, ui::rgba(0, 0, 0, 125), 3.0f * s, 7.0f * s);
+  wl.rect(bx0, by0, bx1, by1, ui::rgba(14, 15, 20, 182), 2.5f * s, ui::rgba(10, 11, 15, 205));
+  wl.rect(bx0, by0, bx0 + stripe_w, by1, ui4::kPink, 1.5f * s);
+  wl.rect(bx0 + stripe_w, by1 - 2.0f * s, bx1, by1, ui::fade(ui4::kPink, 0.78));
+  wl.frame(bx0, by0, bx1, by1, ui::rgba(255, 255, 255, 36), std::max(1.0f, 1.0f * s), 2.5f * s);
+
+  const float tx = bx0 + stripe_w + pad_l;
+  const float ty = by0 + 0.5f * (badge_h - title_ts.size) - 0.5f * s;
+  ui::TextStyle title_sh = title_ts;
+  title_sh.color = ui::rgba(0, 0, 0, 150);
+  wl.text(tx + 1.2f * s, ty + 1.4f * s, title_txt, title_sh);
+  wl.text(tx, ty, title_txt, title_ts);
+
+  // Slanted Horizon pink divider between wordmark and engine tag.
+  const float div_x = tx + title_w + 0.5f * gap_w;
+  wl.line(div_x - 2.5f * s, by1 - 7.5f * s, div_x + 2.5f * s, by0 + 7.5f * s, std::max(1.4f, 1.8f * s), ui4::kPink);
+
+  const float sx = tx + title_w + gap_w;
+  const float sy = by0 + 0.5f * (badge_h - sub_ts.size);
+  ui::TextStyle sub_sh = sub_ts;
+  sub_sh.color = ui::rgba(0, 0, 0, 145);
+  wl.text(sx + 1.0f * s, sy + 1.1f * s, sub_txt, sub_sh);
+  wl.text(sx, sy, sub_txt, sub_ts);
+
+  ui::rasterize(wl.items(), roi, roi_w, roi_h);
+
+  for (uint32_t y = 0; y < roi_h; ++y) {
+    uint8_t* dst_row = &rgba[(size_t(y0 + int(y)) * width + size_t(x0)) * 4];
+    const uint8_t* src_row = &roi[size_t(y) * roi_w * 4];
+    for (uint32_t x = 0; x < roi_w; ++x) {
+      dst_row[x * 4 + 0] = src_row[x * 4 + 0];
+      dst_row[x * 4 + 1] = src_row[x * 4 + 1];
+      dst_row[x * 4 + 2] = src_row[x * 4 + 2];
+      dst_row[x * 4 + 3] = 255;
     }
   }
-  draw_wm_text(rgba, width, height, x0 + 4 * scale + pad_x + scale, y0 + pad_y + scale, scale, text, 0, 0, 0, 140);
-  draw_wm_text(rgba, width, height, x0 + 4 * scale + pad_x, y0 + pad_y, scale, text, 255, 255, 255, 232);
+}
+
+bool load_photo_thumbnail(const std::filesystem::path& path, uint32_t max_w, uint32_t max_h,
+                          std::vector<uint8_t>& out_rgba, uint32_t& out_w, uint32_t& out_h, uint32_t* src_w,
+                          uint32_t* src_h) {
+  out_rgba.clear();
+  out_w = 0;
+  out_h = 0;
+  if (path.empty() || max_w == 0 || max_h == 0) return false;
+  int iw = 0, ih = 0, ic = 0;
+  unsigned char* decoded = stbi_load(path.string().c_str(), &iw, &ih, &ic, 4);
+  if (!decoded || iw <= 0 || ih <= 0) {
+    if (decoded) stbi_image_free(decoded);
+    return false;
+  }
+  const uint32_t sw = uint32_t(iw);
+  const uint32_t sh = uint32_t(ih);
+  if (src_w) *src_w = sw;
+  if (src_h) *src_h = sh;
+
+  const double scale = std::min({1.0, double(max_w) / double(sw), double(max_h) / double(sh)});
+  out_w = std::max(1u, uint32_t(std::lround(double(sw) * scale)));
+  out_h = std::max(1u, uint32_t(std::lround(double(sh) * scale)));
+  downsample_box_rgba(decoded, sw, sh, out_w, out_h, out_rgba);
+  stbi_image_free(decoded);
+  return true;
 }
 
 bool write_photo_png(const std::filesystem::path& dir, const std::vector<uint8_t>& rgba, uint32_t width,
@@ -581,17 +775,22 @@ std::vector<PhotoGalleryEntry> list_photo_gallery(const std::filesystem::path& p
     if (!entry.is_regular_file(ec)) continue;
     auto ext = entry.path().extension().string();
     for (char& ch : ext) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-    if (ext != ".png") continue;
+    if (ext != ".png" && ext != ".bmp" && ext != ".jpg" && ext != ".jpeg") continue;
     PhotoGalleryEntry ge;
     ge.path = entry.path();
     ge.filename = entry.path().filename().string();
     ge.size_bytes = entry.file_size(ec);
+    ge.thumb_key = "photo_gallery/thumb/" + ge.filename + "#" + std::to_string(ge.size_bytes);
     out.push_back(std::move(ge));
   }
   std::sort(out.begin(), out.end(), [](const PhotoGalleryEntry& a, const PhotoGalleryEntry& b) {
     return a.filename > b.filename;  // newest timestamp first
   });
   return out;
+}
+
+void PhotoModeController::set_text_resolver(std::function<std::string(const std::string&)> fn) {
+  photo_text_fn() = std::move(fn);
 }
 
 void PhotoModeController::enter(const std::array<double, 3>& car_pos, double car_heading_rad,
@@ -617,18 +816,28 @@ void PhotoModeController::open_gallery(const std::filesystem::path& photos_dir) 
   gallery_dir_ = photos_dir;
   gallery_entries_ = list_photo_gallery(photos_dir);
   gallery_selected_ = 0;
+  gallery_preview_path_.clear();
+  gallery_preview_valid_ = false;
+  gallery_preview_w_ = 0;
+  gallery_preview_h_ = 0;
   gallery_open_ = true;
+  if (!gallery_entries_.empty()) {
+    ensure_entry_thumbnail(0);
+    ensure_selected_preview();
+  }
 }
 
 void PhotoModeController::gallery_move(int delta) {
   if (gallery_entries_.empty()) return;
   const int n = int(gallery_entries_.size());
   gallery_selected_ = ((gallery_selected_ + delta) % n + n) % n;
+  ensure_selected_preview();
 }
 
 void PhotoModeController::gallery_select(int idx) {
   if (gallery_entries_.empty()) return;
   gallery_selected_ = std::clamp(idx, 0, int(gallery_entries_.size()) - 1);
+  ensure_selected_preview();
 }
 
 bool PhotoModeController::gallery_delete_selected() {
@@ -640,8 +849,61 @@ bool PhotoModeController::gallery_delete_selected() {
     gallery_entries_.erase(gallery_entries_.begin() + gallery_selected_);
     if (gallery_selected_ >= int(gallery_entries_.size()))
       gallery_selected_ = std::max(0, int(gallery_entries_.size()) - 1);
+    gallery_preview_path_.clear();
+    gallery_preview_valid_ = false;
+    gallery_preview_w_ = 0;
+    gallery_preview_h_ = 0;
+    if (!gallery_entries_.empty()) ensure_selected_preview();
   }
   return removed;
+}
+
+bool PhotoModeController::ensure_entry_thumbnail(size_t idx) const {
+  if (idx >= gallery_entries_.size()) return false;
+  auto& ge = gallery_entries_[idx];
+  if (ge.has_thumb && ui::atlas_find(ge.thumb_key, ge.thumb_uv)) return true;
+  if (ge.thumb_tried && !ge.has_thumb) return false;
+  ge.thumb_tried = true;
+  std::vector<uint8_t> rgba;
+  uint32_t tw = 0, th = 0, sw = 0, sh = 0;
+  if (!load_photo_thumbnail(ge.path, 160u, 90u, rgba, tw, th, &sw, &sh)) {
+    ge.has_thumb = false;
+    return false;
+  }
+  ge.width = sw;
+  ge.height = sh;
+  ge.thumb_width = tw;
+  ge.thumb_height = th;
+  ge.has_thumb = ui::atlas_image(ge.thumb_key, tw, th, rgba, ge.thumb_uv, true);
+  return ge.has_thumb;
+}
+
+bool PhotoModeController::ensure_selected_preview() const {
+  if (gallery_entries_.empty() || gallery_selected_ < 0 || size_t(gallery_selected_) >= gallery_entries_.size()) {
+    gallery_preview_valid_ = false;
+    return false;
+  }
+  auto& ge = gallery_entries_[size_t(gallery_selected_)];
+  if (gallery_preview_valid_ && gallery_preview_path_ == ge.path &&
+      ui::atlas_find(gallery_preview_key_, gallery_preview_uv_)) {
+    return true;
+  }
+  gallery_preview_path_ = ge.path;
+  gallery_preview_key_ = "photo_gallery/preview/" + ge.filename + "#" + std::to_string(ge.size_bytes);
+  std::vector<uint8_t> rgba;
+  uint32_t pw = 0, ph = 0, sw = 0, sh = 0;
+  if (!load_photo_thumbnail(ge.path, 512u, 288u, rgba, pw, ph, &sw, &sh)) {
+    gallery_preview_valid_ = false;
+    gallery_preview_w_ = 0;
+    gallery_preview_h_ = 0;
+    return false;
+  }
+  if (ge.width == 0) ge.width = sw;
+  if (ge.height == 0) ge.height = sh;
+  gallery_preview_w_ = pw;
+  gallery_preview_h_ = ph;
+  gallery_preview_valid_ = ui::atlas_image(gallery_preview_key_, pw, ph, rgba, gallery_preview_uv_, true);
+  return gallery_preview_valid_;
 }
 
 void PhotoModeController::move_row(int delta) {
@@ -714,7 +976,7 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
 
   if (gallery_open_) {
     ui4::subtle_vignette(out, w, h, 0.40f);
-    ui4::title_banner(out, s, 56.0f * s, 28.0f * s, "PHOTO GALLERY",
+    ui4::title_banner(out, s, 56.0f * s, 28.0f * s, loc_str("PhotoMode", "IDS_PhotoGallery", "PHOTO GALLERY"),
                       std::to_string(gallery_entries_.size()) + " SAVED PHOTOS", true, 460.0f);
     const float bx0 = 56.0f * s, bx1 = w - 56.0f * s;
     const float by0 = 122.0f * s, by1 = h - 84.0f * s;
@@ -725,28 +987,105 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
       out.text(0.5f * w, 0.5f * h - 10.0f * s, "NO SAVED PHOTOS YET (PRESS ENTER / A IN PHOTO MODE TO SNAP)",
                ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
     } else {
-      const float row_h = 44.0f * s;
-      const int max_vis = std::max(1, int((by1 - by0 - 54.0f * s) / row_h));
+      const float content_top = by0 + 44.0f * s;
+      const float content_bot = by1 - 12.0f * s;
+      const float inner_w = (bx1 - bx0) - 28.0f * s;
+      const float list_x0 = bx0 + 12.0f * s;
+      const float list_x1 = list_x0 + inner_w * 0.44f;
+      const float prev_x0 = list_x1 + 16.0f * s;
+      const float prev_x1 = bx1 - 14.0f * s;
+
+      // Left pane: scrollable photo list with real decoded thumbnails.
+      const float row_h = 56.0f * s;
+      const int max_vis = std::max(1, int((content_bot - content_top) / row_h));
       const int start = std::clamp(gallery_selected_ - max_vis / 2, 0,
                                    std::max(0, int(gallery_entries_.size()) - max_vis));
       for (int i = start; i < int(gallery_entries_.size()) && i < start + max_vis; ++i) {
+        ensure_entry_thumbnail(size_t(i));
         const auto& ge = gallery_entries_[size_t(i)];
-        const float ry0 = by0 + 44.0f * s + float(i - start) * row_h;
-        const float ry1 = ry0 + row_h - 5.0f * s;
+        const float ry0 = content_top + float(i - start) * row_h;
+        const float ry1 = ry0 + row_h - 6.0f * s;
         const bool sel = (i == gallery_selected_);
-        out.add_hit(bx0 + 10.0f * s, ry0, bx1 - 10.0f * s, ry1, ui::kHitRow, i);
-        ui4::pill(out, bx0 + 10.0f * s, ry0, bx1 - 10.0f * s, ry1,
+        out.add_hit(list_x0, ry0, list_x1, ry1, ui::kHitRow, i);
+        ui4::pill(out, list_x0, ry0, list_x1, ry1,
                   sel ? ui4::kPink : ((i % 2 == 0) ? ui4::kPillGrey : rgba(24, 26, 32, 232)),
                   ui4::PillKind::kPill02, false, sel);
-        out.text(bx0 + 26.0f * s, ry0 + 11.0f * s, ge.filename,
-                 ui4::style(sel ? Font::kE : Font::kB, 13.5f * s, ui4::kWhite));
-        char szbuf[32];
-        std::snprintf(szbuf, sizeof szbuf, "%.0f KB", double(ge.size_bytes) / 1024.0);
-        out.text(bx1 - 26.0f * s, ry0 + 11.0f * s, szbuf,
-                 ui4::style(Font::kB, 12.0f * s, sel ? ui4::kYellow : ui4::kDim, Align::kRight));
+
+        // Decoded thumbnail slot (72x40 at 720p).
+        const float tx0 = list_x0 + 8.0f * s;
+        const float ty0 = ry0 + 5.0f * s;
+        const float tw_box = 72.0f * s;
+        const float th_box = (ry1 - ry0) - 10.0f * s;
+        out.rect(tx0, ty0, tx0 + tw_box, ty0 + th_box, rgba(10, 12, 16, 235));
+        if (ge.has_thumb) {
+          out.image(tx0, ty0, tx0 + tw_box, ty0 + th_box, ge.thumb_uv);
+        }
+        out.frame(tx0, ty0, tx0 + tw_box, ty0 + th_box, sel ? ui4::kYellow : rgba(255, 255, 255, 48), 1.2f * s);
+
+        const float text_x = tx0 + tw_box + 10.0f * s;
+        const float text_max_w = std::max(40.0f * s, list_x1 - text_x - 10.0f * s);
+        ui::TextStyle fts = ui4::style(sel ? Font::kE : Font::kB, 12.5f * s, ui4::kWhite);
+        ui4::fit_text(ge.filename, fts, text_max_w, 8.5f * s);
+        out.text(text_x, ry0 + 9.0f * s, ge.filename, fts);
+
+        char met_buf[64];
+        if (ge.width > 0 && ge.height > 0) {
+          std::snprintf(met_buf, sizeof met_buf, "%ux%u  •  %.0f KB", ge.width, ge.height,
+                        double(ge.size_bytes) / 1024.0);
+        } else {
+          std::snprintf(met_buf, sizeof met_buf, "%.0f KB", double(ge.size_bytes) / 1024.0);
+        }
+        out.text(text_x, ry0 + 28.0f * s, met_buf,
+                 ui4::style(Font::kB, 10.5f * s, sel ? ui4::kYellow : ui4::kDim));
       }
+
+      // Right pane: crisp aspect-preserving preview of the selected photo.
+      ensure_selected_preview();
+      const auto& sel_entry = gallery_entries_[size_t(std::clamp(gallery_selected_, 0, int(gallery_entries_.size()) - 1))];
+      const float prev_footer_h = 54.0f * s;
+      const float frame_y0 = content_top;
+      const float frame_y1 = content_bot - prev_footer_h;
+      out.rect(prev_x0, frame_y0, prev_x1, frame_y1, rgba(10, 12, 16, 240));
+      out.frame(prev_x0, frame_y0, prev_x1, frame_y1, ui4::kPink, 2.0f * s);
+
+      const float pad = 8.0f * s;
+      const float avail_w = std::max(16.0f, (prev_x1 - prev_x0) - 2.0f * pad);
+      const float avail_h = std::max(16.0f, (frame_y1 - frame_y0) - 2.0f * pad);
+      if (gallery_preview_valid_ && gallery_preview_w_ > 0 && gallery_preview_h_ > 0) {
+        const float img_aspect = float(gallery_preview_w_) / float(gallery_preview_h_);
+        float dw = avail_w;
+        float dh = dw / img_aspect;
+        if (dh > avail_h) {
+          dh = avail_h;
+          dw = dh * img_aspect;
+        }
+        const float ix0 = 0.5f * (prev_x0 + prev_x1 - dw);
+        const float iy0 = 0.5f * (frame_y0 + frame_y1 - dh);
+        out.image(ix0, iy0, ix0 + dw, iy0 + dh, gallery_preview_uv_);
+      } else {
+        out.text(0.5f * (prev_x0 + prev_x1), 0.5f * (frame_y0 + frame_y1) - 8.0f * s, "PREVIEW UNAVAILABLE",
+                 ui4::style(Font::kB, 13.0f * s, ui4::kDim, Align::kCenter));
+      }
+
+      // Preview metadata bar.
+      const float fy0 = frame_y1 + 6.0f * s;
+      ui4::pill(out, prev_x0, fy0, prev_x1, content_bot, ui4::kPillGrey, ui4::PillKind::kHud01);
+      ui::TextStyle pfn = ui4::style(Font::kE, 13.0f * s, ui4::kWhite);
+      ui4::fit_text(sel_entry.filename, pfn, (prev_x1 - prev_x0) - 110.0f * s, 9.0f * s);
+      out.text(prev_x0 + 12.0f * s, fy0 + 7.0f * s, sel_entry.filename, pfn);
+      char idx_buf[32];
+      std::snprintf(idx_buf, sizeof idx_buf, "%d / %zu", gallery_selected_ + 1, gallery_entries_.size());
+      out.text(prev_x1 - 12.0f * s, fy0 + 7.0f * s, idx_buf,
+               ui4::style(Font::kE, 13.0f * s, ui4::kYellow, Align::kRight));
+      char det_buf[96];
+      std::snprintf(det_buf, sizeof det_buf, "%ux%u PX  •  %.1f KB", sel_entry.width, sel_entry.height,
+                    double(sel_entry.size_bytes) / 1024.0);
+      out.text(prev_x0 + 12.0f * s, fy0 + 26.0f * s, det_buf, ui4::style(Font::kB, 11.0f * s, ui4::kOffWhite));
     }
-    ui4::button_bar(out, {{"X", "DELETE PHOTO"}, {"B", "BACK TO CAMERA"}}, w, h, 56.0f);
+    ui4::button_bar(out,
+                    {{"X", loc_str("HelpButtons", "IDS_Delete", "DELETE PHOTO")},
+                     {"B", loc_str("HelpButtons", "IDS_Back", "BACK TO CAMERA")}},
+                    w, h, 56.0f);
     return;
   }
   const uint32_t kGrid = rgba(255, 255, 255, 30);
@@ -792,10 +1131,11 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     const PromoSpotResult& promo = show_promo_banner ? last_promo_ : live_promo_;
 
     // Row 1: Compact pink PHOTO MODE + camera readout pill
-    char cam_info[128];
-    std::snprintf(cam_info, sizeof cam_info, "PHOTO MODE   •   FOV %.0f°   •   F/%.1f   •   %.1fm%s",
-                  camera_.fov_deg(), 1.4f + (1.0f - effects_.aperture / 100.0f) * 14.6f, effects_.focus_distance,
-                  camera_.limits().through_walls ? "   •   NO-CLIP" : "");
+    const std::string pm_hdr = loc_str("PauseMenu", "IDS_Photo", "PHOTO MODE");
+    char cam_info[160];
+    std::snprintf(cam_info, sizeof cam_info, "%s   •   FOV %.0f°   •   F/%.1f   •   %.1fm%s",
+                  pm_hdr.c_str(), camera_.fov_deg(), 1.4f + (1.0f - effects_.aperture / 100.0f) * 14.6f,
+                  effects_.focus_distance, camera_.limits().through_walls ? "   •   NO-CLIP" : "");
     ui4::pill(out, px0, py, px0 + 382.0f * s, py + 26.0f * s, ui4::kPink, ui4::PillKind::kHud01);
     ui::TextStyle cis = ui4::style(Font::kE, 12.0f * s, ui4::kWhite);
     ui4::fit_text(cam_info, cis, 358.0f * s, 8.5f * s);
@@ -839,10 +1179,11 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
 
     // Header PILL01 (#BFBFBF) + PILLCLIPON01
     ui4::pill(out, dx0, dy0, dx1, dy0 + 26.0f * s, rgba(0xBF, 0xBF, 0xBF, 240), ui4::PillKind::kMenu, false, true);
-    out.text(dx0 + 12.0f * s, dy0 + 6.0f * s, "CAMERA EFFECTS", ui4::style(Font::kD, 13.0f * s, ui4::kInk));
+    out.text(dx0 + 12.0f * s, dy0 + 6.0f * s, loc_str("PhotoMode", "IDS_Effects", "CAMERA EFFECTS"),
+             ui4::style(Font::kD, 13.0f * s, ui4::kInk));
 
     struct RowInfo {
-      const char* name;
+      std::string name;
       float norm;
       std::string value;
       bool is_bar;
@@ -858,26 +1199,26 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     std::snprintf(rbuf, sizeof rbuf, "%+.0f°", camera_.roll_deg());
 
     const RowInfo rows[kRowCount] = {
-        {"PRESET", 0.0f, photo_preset_name(effects_.preset), false},
-        {"SHUTTER", effects_.shutter_speed / 100.0f, fmt_pct(effects_.shutter_speed), true},
-        {"BLUR MODE", 0.0f, effects_.tracking_panning ? "TRACKING" : "PANNING", false},
-        {"APERTURE", effects_.aperture / 100.0f, fmt_pct(effects_.aperture), true},
-        {"FOCUS", (effects_.focus_distance - 1.5f) / 118.5f, fbuf, true},
-        {"EXPOSURE", effects_.exposure / 100.0f, fmt_pct(effects_.exposure), true},
-        {"CONTRAST", effects_.contrast / 100.0f, fmt_pct(effects_.contrast), true},
-        {"COLOUR", effects_.colour / 100.0f, fmt_pct(effects_.colour), true},
-        {"BRIGHTNESS", effects_.brightness / 100.0f, fmt_pct(effects_.brightness), true},
-        {"SEPIA", effects_.sepia / 100.0f, fmt_pct(effects_.sepia), true},
-        {"VIGNETTE", effects_.vignette / 100.0f, fmt_pct(effects_.vignette), true},
-        {"ZOOM / FOV",
+        {loc_str("PhotoMode", "IDS_Preset", "PRESET"), 0.0f, photo_preset_name(effects_.preset), false},
+        {loc_str("PhotoMode", "IDS_ShutterSpeed", "SHUTTER"), effects_.shutter_speed / 100.0f, fmt_pct(effects_.shutter_speed), true},
+        {loc_str("PhotoMode", "IDS_ShutterMode", "BLUR MODE"), 0.0f, effects_.tracking_panning ? "TRACKING" : "PANNING", false},
+        {loc_str("PhotoMode", "IDS_Aperture", "APERTURE"), effects_.aperture / 100.0f, fmt_pct(effects_.aperture), true},
+        {loc_str("PhotoMode", "IDS_Focus", "FOCUS"), (effects_.focus_distance - 1.5f) / 118.5f, fbuf, true},
+        {loc_str("PhotoMode", "IDS_Exposure", "EXPOSURE"), effects_.exposure / 100.0f, fmt_pct(effects_.exposure), true},
+        {loc_str("PhotoMode", "IDS_Contrast", "CONTRAST"), effects_.contrast / 100.0f, fmt_pct(effects_.contrast), true},
+        {loc_str("PhotoMode", "IDS_Color", "COLOUR"), effects_.colour / 100.0f, fmt_pct(effects_.colour), true},
+        {loc_str("PhotoMode", "IDS_Brightness", "BRIGHTNESS"), effects_.brightness / 100.0f, fmt_pct(effects_.brightness), true},
+        {loc_str("PhotoMode", "IDS_Sepia", "SEPIA"), effects_.sepia / 100.0f, fmt_pct(effects_.sepia), true},
+        {loc_str("PhotoMode", "IDS_Vignette", "VIGNETTE"), effects_.vignette / 100.0f, fmt_pct(effects_.vignette), true},
+        {loc_str("PhotoMode", "IDS_Zoom", "ZOOM / FOV"),
          float((camera_.limits().max_fov_deg - camera_.fov_deg()) /
                std::max(1.0, camera_.limits().max_fov_deg - camera_.limits().min_fov_deg)),
          zbuf, true},
-        {"ROLL / TILT",
+        {loc_str("PhotoMode", "IDS_Roll", "ROLL / TILT"),
          float((camera_.roll_deg() + camera_.limits().max_roll_deg) / (2.0 * camera_.limits().max_roll_deg)), rbuf,
          true},
-        {"WATERMARK", 0.0f, effects_.watermark ? "ON" : "OFF", false},
-        {"HIDE CAR", 0.0f, effects_.hide_car ? "ON" : "OFF", false},
+        {loc_str("PhotoMode", "IDS_Watermark", "WATERMARK"), 0.0f, effects_.watermark ? "ON" : "OFF", false},
+        {loc_str("PhotoMode", "IDS_HideCar", "HIDE CAR"), 0.0f, effects_.hide_car ? "ON" : "OFF", false},
     };
 
     const float list_top = dy0 + 30.0f * s;
@@ -928,14 +1269,14 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     out.rect(0, 0, w, h, rgba(255, 255, 255, uint8_t(alpha * 255.0f)));
   }
 
-  // Authentic FH1 BUTTON_BAR_SCENE bottom bar.
+  // Authentic FH1 BUTTON_BAR_SCENE bottom bar (localized via string tables with English fallbacks).
   ui4::button_bar(out,
-                  {{"A", "SNAP PHOTO"},
-                   {"Y", "EFFECTS"},
+                  {{"A", loc_str("PhotoMode", "IDS_TakePhoto", "SNAP PHOTO")},
+                   {"Y", loc_str("PhotoMode", "IDS_Effects", "EFFECTS")},
                    {"DPAD_LR", "ADJUST"},
-                   {"X", "AUTOFOCUS"},
-                   {"LB", "RESET"},
-                   {"B", "EXIT"}},
+                   {"X", loc_str("PhotoMode", "IDS_Autofocus", "AUTOFOCUS")},
+                   {"LB", loc_str("HelpButtons", "IDS_Reset", "RESET")},
+                   {"B", loc_str("HelpButtons", "IDS_Back", "EXIT")}},
                   w, h, 56.0f);
 }
 

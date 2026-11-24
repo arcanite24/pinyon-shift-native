@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <string>
@@ -16,6 +17,7 @@
 #include "cars/strings.h"
 #include "fh1data/archive.h"
 #include "fh1data/cjk_font.h"
+#include "fh1data/spa.h"
 #include "fh1data/stringtables.h"
 #include "fh1data/ui_scene.h"
 #include "fh1data/vfont.h"
@@ -170,6 +172,89 @@ void test_synthetic_cjk_and_widgets() {
   check(!kl.empty(), "OnScreenKeyboard::draw emits UI items");
   kb.confirm();
   check(kb.confirmed() && !kb.is_open(), "OnScreenKeyboard confirm closes and sets confirmed");
+}
+
+void test_cjk_loading_tips_and_spa_cht() {
+  // 1. looks_like_raw_key must reject raw ASCII keys and accept spaceless JP/CHT localized text.
+  check(carview::looks_like_raw_key(""), "looks_like_raw_key rejects empty string");
+  check(carview::looks_like_raw_key("IDS_PopularityTips"), "looks_like_raw_key rejects IDS_* key");
+  check(carview::looks_like_raw_key("UI_PAUSE_RESUME"), "looks_like_raw_key rejects UI_* key");
+  check(carview::looks_like_raw_key("STR_TIP_01"), "looks_like_raw_key rejects STR_* key");
+  check(carview::looks_like_raw_key("Tips:IDS_DriftTip"), "looks_like_raw_key rejects Tips:IDS_* key");
+  check(carview::looks_like_raw_key("snake_case_id"), "looks_like_raw_key rejects snake_case_id");
+  check(carview::looks_like_raw_key("_&123456"), "looks_like_raw_key rejects unresolved _& hash");
+
+  // Spaceless Japanese and Traditional Chinese loading tips must pass!
+  const std::string jp_tip =
+      "\xE3\x83\x89\xE3\x83\xAA\xE3\x83\x95\xE3\x83\x88\xE3\x82\x84\xE3\x83\x8B\xE3\x82\xA2\xE3\x83\x9F\xE3\x82\xB9"
+      "\xE3\x82\x92\xE9\x80\xA3\xE7\xB6\x9A\xE3\x81\x97\xE3\x81\xA6\xE6\xB1\xBA\xE3\x82\x81\xE3\x82\x8B\xE3\x81\xA8"
+      "\xE3\x82\xB9\xE3\x82\xAD\xE3\x83\xAB\xE5\x80\x8D\xE7\x8E\x87\xE3\x81\x8C\xE4\xB8\x8A\xE3\x81\x8C\xE3\x82\x8A"
+      "\xE3\x81\xBE\xE3\x81\x99\xE3\x80\x82";
+  const std::string cht_tip =
+      "\xE9\x80\xA3\xE7\xBA\x8C\xE6\x96\xBD\xE5\xB1\x95\xE7\x94\xA9\xE5\xB0\xBE\xE8\x88\x87\xE6\x93\xA6\xE8\xBA\xAB"
+      "\xE8\x80\x8C\xE9\x81\x8E\xE5\x8D\xB3\xE5\x8F\xAF\xE6\x8F\x90\xE9\xAB\x98\xE6\x8A\x80\xE8\xA1\x93\xE5\x80\x8D"
+      "\xE7\x8E\x87\xE3\x80\x82";
+  const std::string jp_title = "\xE3\x82\xB9\xE3\x82\xAD\xE3\x83\xAB\xE3\x81\xA8\xE4\xBA\xBA\xE6\xB0\x97";
+  const std::string cht_title = "\xE6\x8A\x80\xE8\xA1\x93\xE8\x88\x87\xE4\xBA\xBA\xE6\xB0\xA3";
+  check(!carview::looks_like_raw_key(jp_tip), "looks_like_raw_key accepts spaceless Japanese tip");
+  check(!carview::looks_like_raw_key(cht_tip), "looks_like_raw_key accepts spaceless Traditional Chinese tip");
+  check(!carview::looks_like_raw_key("Chain together drifts to build your Skill Multiplier."),
+        "looks_like_raw_key accepts English tip sentence");
+
+  // 2. End-to-end LoadingScreen::load_definitions with JP & CHT tips resolved via game_text().
+  const auto tmp_root = std::filesystem::temp_directory_path() / "shift_cjk_loading_tips_test";
+  std::error_code ec;
+  std::filesystem::remove_all(tmp_root, ec);
+  std::filesystem::create_directories(tmp_root / "media" / "ui", ec);
+  {
+    std::ofstream xml(tmp_root / "media" / "ui" / "LoadingDefs.xml", std::ios::binary);
+    xml << "<LoadingDefs>\n"
+           "  <LoadingGroup name=\"freeroam\">\n"
+           "    <Tip title=\"Tips:IDS_PopTitle\" message=\"Tips:IDS_PopTip\" />\n"
+           "  </LoadingGroup>\n"
+           "</LoadingDefs>\n";
+  }
+  const uint32_t kTitleHash = (uint32_t(fh1::string_hash("Tips")) << 16) | fh1::string_hash("IDS_PopTitle");
+  const uint32_t kTipHash = (uint32_t(fh1::string_hash("Tips")) << 16) | fh1::string_hash("IDS_PopTip");
+  const std::string title_ref = "_&" + std::to_string(kTitleHash);
+  const std::string tip_ref = "_&" + std::to_string(kTipHash);
+
+  carview::set_game_text([&](const std::string& ref) -> std::string {
+    if (ref == title_ref) return jp_title;
+    if (ref == tip_ref) return jp_tip;
+    return ref;
+  });
+  carview::LoadingScreen ls_jp;
+  check(ls_jp.load_definitions(tmp_root, "freeroam"), "LoadingScreen loads spaceless JP tip from LoadingDefs.xml");
+  check(ls_jp.current_tip() == jp_tip, "LoadingScreen retains resolved JP tip text");
+  check(ls_jp.current_tip_title() == jp_title, "LoadingScreen retains resolved JP tip title");
+  ls_jp.start("COLORADO");
+  carview::ui::List jl;
+  ls_jp.draw(jl, 1280.0f, 720.0f);
+  check(!jl.empty(), "LoadingScreen draws wrapped JP tip without error");
+
+  carview::set_game_text([&](const std::string& ref) -> std::string {
+    if (ref == title_ref) return cht_title;
+    if (ref == tip_ref) return cht_tip;
+    return ref;
+  });
+  carview::LoadingScreen ls_cht;
+  check(ls_cht.load_definitions(tmp_root, "freeroam"), "LoadingScreen loads spaceless CHT tip from LoadingDefs.xml");
+  check(ls_cht.current_tip() == cht_tip, "LoadingScreen retains resolved CHT tip text");
+  carview::set_game_text({});
+  std::filesystem::remove_all(tmp_root, ec);
+
+  // 3. SPA language ID resolution for Traditional/Simplified Chinese codes (CHT, ZHT, TW, CHS, ZHS).
+  const uint16_t kTcId = uint16_t(fh1::SpaLanguage::kTraditionalChinese);
+  check(fh1::spa_language_id("CHT") == kTcId, "spa_language_id(\"CHT\") maps to kTraditionalChinese (8)");
+  check(fh1::spa_language_id("cht") == kTcId, "spa_language_id(\"cht\") is case-insensitive");
+  check(fh1::spa_language_id("ZHT") == kTcId, "spa_language_id(\"ZHT\") maps to kTraditionalChinese");
+  check(fh1::spa_language_id("TW") == kTcId, "spa_language_id(\"TW\") maps to kTraditionalChinese");
+  check(fh1::spa_language_id("ZH-TW") == kTcId, "spa_language_id(\"ZH-TW\") maps to kTraditionalChinese");
+  check(fh1::spa_language_id("CHS") == kTcId, "spa_language_id(\"CHS\") maps to kTraditionalChinese");
+  check(fh1::spa_language_id("ZHS") == kTcId, "spa_language_id(\"ZHS\") maps to kTraditionalChinese");
+  check(fh1::spa_language_id("JP") == uint16_t(fh1::SpaLanguage::kJapanese), "spa_language_id(\"JP\") -> Japanese");
+  check(fh1::spa_language_id("KO") == uint16_t(fh1::SpaLanguage::kKorean), "spa_language_id(\"KO\") -> Korean");
 }
 
 std::string lookup_str(const fh1::StringTables& tbls, std::string_view table, std::string_view id,
@@ -530,6 +615,7 @@ int main() {
   test_bgf_track_and_stacker();
   test_multiline_and_style_tags();
   test_synthetic_cjk_and_widgets();
+  test_cjk_loading_tips_and_spa_cht();
 
   const char* env_root = std::getenv("SHIFT_GAME_ROOT");
   std::filesystem::path game_root =

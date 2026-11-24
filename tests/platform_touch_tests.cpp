@@ -39,8 +39,24 @@ void test_touch_layout_aspects() {
       assert(!carview::TouchControls::rects_overlap(mm, p));
       assert(!carview::TouchControls::rects_overlap(tach, p));
     }
+
+    // Android SETUP pill sits in the top-center safe bar and must NEVER overlap
+    // top-right HUD (position/timer/playerbar), top-left HUD, minimap, tachometer, or touch pads.
+    const carview::TouchRect setup_pill = carview::TouchControls::android_setup_pill_rect(w, h);
+    const carview::TouchRect tr_hud = carview::TouchControls::top_right_hud_rect(w, h);
+    const carview::TouchRect tl_hud = carview::TouchControls::top_left_hud_rect(w, h);
+    assert(setup_pill.x0 > 0.30f && setup_pill.x1 < 0.70f);
+    assert(setup_pill.y0 >= 0.0f && setup_pill.y1 < 0.10f);
+    assert(std::fabs(setup_pill.cx() - 0.5f) < 1e-4f);
+    assert(!carview::TouchControls::rects_overlap(setup_pill, tr_hud));
+    assert(!carview::TouchControls::rects_overlap(setup_pill, tl_hud));
+    assert(!carview::TouchControls::rects_overlap(setup_pill, mm));
+    assert(!carview::TouchControls::rects_overlap(setup_pill, tach));
+    for (const auto& p : pads) {
+      assert(!carview::TouchControls::rects_overlap(setup_pill, p));
+    }
   }
-  std::printf("  [ok] touch layout scaling & zero HUD/touch overlap across 20:9 phone, 16:9 Odin, 4:3 tablet\n");
+  std::printf("  [ok] touch layout scaling, Android SETUP pill & zero HUD/touch overlap across 20:9, 16:9, 4:3\n");
 }
 
 void test_touch_multitouch_buttons_and_pedals() {

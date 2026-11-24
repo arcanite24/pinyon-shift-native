@@ -23,10 +23,76 @@ GlyphSet& active_glyph_set() {
   return g;
 }
 
+struct ControlsDiagramSync {
+  bool controls_tab_active = false;
+  bool in_diagram = false;
+  int layout_id = 0;
+  bool swap_hb_clutch = false;
+  int pending_field = 0;  // 1 = controller layout, 2 = switch handbrake/clutch
+};
+
+ControlsDiagramSync& diagram_sync() {
+  static ControlsDiagramSync s;
+  return s;
+}
+
 std::string upper_copy(std::string_view sv) {
   std::string out(sv);
   for (char& c : out) c = char(std::toupper(static_cast<unsigned char>(c)));
   return out;
+}
+
+std::string keyboard_keycap_label(const std::string& u) {
+  if (u == "A" || u == "ACCEPT" || u == "CONFIRM" || u == "SELECT") return "ENTER";
+  if (u == "B" || u == "CANCEL") return "ESC";
+  if (u == "X") return "X";
+  if (u == "ACTIVATE") return "E";
+  if (u == "Y") return "Y";
+  if (u == "REWIND") return "R";
+  if (u == "LB") return "Q";
+  if (u == "RB") return "E";
+  if (u == "LT") return "-";
+  if (u == "RT") return "+";
+  if (u == "START" || u == "MENU" || u == "PAUSE") return "ESC";
+  if (u == "BACK" || u == "MAP") return "M";
+  if (u == "CAMERA") return "V";
+  if (u == "HORN") return "H";
+  if (u == "HANDBRAKE") return "SPACE";
+  if (u == "CLUTCH") return "SHIFT";
+  if (u == "DPAD" || u == "D-PAD") return "ARROWS";
+  if (u == "DPAD_UD") return "UP/DN";
+  if (u == "DPAD_LR") return "L/R";
+  if (u == "LS") return "WASD";
+  if (u == "RS") return "MOUSE";
+  return u;
+}
+
+bool draw_keyboard_glyph(ui::List& l, float cx, float cy, float r, const std::string& b, float alpha) {
+  const std::string u = upper_copy(b);
+  const std::string lbl = keyboard_keycap_label(u);
+  if (lbl.empty()) return false;
+  const float char_w = r * (lbl.size() > 3 ? 0.50f : 0.62f);
+  const float hw = std::max(r * 1.08f, float(lbl.size()) * char_w * 0.56f + r * 0.45f);
+  const float hh = r * 0.88f;
+  const float rad = std::max(2.0f, r * 0.24f);
+  // Subtle 3D keycap base bevel + crisp dark mechanical keycap top face.
+  l.rect(cx - hw, cy - hh + r * 0.14f, cx + hw, cy + hh + r * 0.18f, ui::fade(ui::rgba(10, 12, 16, 245), alpha), rad);
+  l.rect(cx - hw, cy - hh, cx + hw, cy + hh, ui::fade(ui::rgba(36, 40, 48, 246), alpha), rad);
+  // Semantic bottom highlight bar (green Accept, red Cancel, pink Menu/Map, amber Rewind).
+  uint32_t accent = ui::rgba(216, 222, 234, 210);
+  if (u == "A" || u == "ACCEPT" || u == "CONFIRM" || u == "SELECT") accent = kGreen;
+  else if (u == "B" || u == "CANCEL" || u == "START" || u == "MENU") accent = kRed;
+  else if (u == "BACK" || u == "MAP" || u == "HORN") accent = kPink;
+  else if (u == "Y" || u == "REWIND") accent = kAmber;
+  else if (u == "X" || u == "ACTIVATE" || u == "CAMERA") accent = kBlue;
+  l.rect(cx - hw + 2.0f, cy + hh - std::max(1.8f, r * 0.18f), cx + hw - 2.0f, cy + hh, ui::fade(accent, alpha));
+  l.frame(cx - hw, cy - hh, cx + hw, cy + hh, ui::fade(ui::rgba(226, 230, 238, 225), alpha),
+          std::max(1.1f, r * 0.12f), rad);
+  const float fsz = r * (lbl.size() >= 5 ? 0.72f : lbl.size() >= 3 ? 0.82f : 1.00f);
+  ui::TextStyle ts = style(ui::Font::kB, fsz, ui::fade(kWhite, alpha), ui::Align::kCenter);
+  fit_text(lbl, ts, (2.0f * hw) - 4.0f, r * 0.50f);
+  l.text(cx, cy - 0.52f * ts.size, lbl, ts);
+  return true;
 }
 
 bool draw_playstation_glyph(ui::List& l, float cx, float cy, float r, const std::string& b, float alpha) {
@@ -34,7 +100,7 @@ bool draw_playstation_glyph(ui::List& l, float cx, float cy, float r, const std:
   const float stroke = std::max(1.5f, r * 0.20f);
   const uint32_t disc = ui::fade(ui::rgba(28, 30, 36, 245), alpha);
   const uint32_t ring = ui::fade(ui::rgba(210, 214, 224, 210), alpha);
-  if (u == "A") {  // Cross (blue-tinted X)
+  if (u == "A" || u == "CROSS" || u == "ACCEPT") {  // Cross (blue-tinted X)
     l.circle(cx, cy, r, disc);
     const uint32_t col = ui::fade(ui::rgba(116, 178, 255, 255), alpha);
     const float d = r * 0.44f;
@@ -42,20 +108,20 @@ bool draw_playstation_glyph(ui::List& l, float cx, float cy, float r, const std:
     l.line(cx + d, cy - d, cx - d, cy + d, stroke, col);
     return true;
   }
-  if (u == "B") {  // Circle (coral-red O)
+  if (u == "B" || u == "CIRCLE" || u == "CANCEL") {  // Circle (coral-red O)
     l.circle(cx, cy, r, disc);
     const uint32_t col = ui::fade(ui::rgba(255, 108, 108, 255), alpha);
     l.arc(cx, cy, r * 0.48f, stroke, 0.0f, 6.2831853f, col, false);
     return true;
   }
-  if (u == "X") {  // Square (pink-violet box)
+  if (u == "X" || u == "SQUARE" || u == "ACTIVATE") {  // Square (pink-violet box)
     l.circle(cx, cy, r, disc);
     const uint32_t col = ui::fade(ui::rgba(232, 134, 214, 255), alpha);
     const float d = r * 0.44f;
     l.frame(cx - d, cy - d, cx + d, cy + d, col, stroke, 0.0f);
     return true;
   }
-  if (u == "Y") {  // Triangle (mint-green triangle)
+  if (u == "Y" || u == "TRIANGLE" || u == "REWIND") {  // Triangle (mint-green triangle)
     l.circle(cx, cy, r, disc);
     const uint32_t col = ui::fade(ui::rgba(82, 226, 174, 255), alpha);
     const float top_y = cy - r * 0.50f;
@@ -66,15 +132,25 @@ bool draw_playstation_glyph(ui::List& l, float cx, float cy, float r, const std:
     l.line(cx - half_w, bot_y, cx, top_y, stroke, col);
     return true;
   }
+  if (u == "DPAD" || u == "D-PAD" || u == "DPAD_UD" || u == "DPAD_LR") {
+    l.circle(cx, cy, r, disc);
+    const float arm = r * 0.58f;
+    const float thick = std::max(2.0f, r * 0.28f);
+    const uint32_t hi = ui::fade(kWhite, alpha);
+    const uint32_t lo = ui::fade(ui::rgba(130, 136, 148, 220), alpha);
+    l.line(cx, cy - arm, cx, cy + arm, thick, u == "DPAD_LR" ? lo : hi);
+    l.line(cx - arm, cy, cx + arm, cy, thick, u == "DPAD_UD" ? lo : hi);
+    return true;
+  }
   const char* ps_label = nullptr;
-  if (u == "LB") ps_label = "L1";
-  else if (u == "RB") ps_label = "R1";
-  else if (u == "LT") ps_label = "L2";
-  else if (u == "RT") ps_label = "R2";
-  else if (u == "LS") ps_label = "L3";
-  else if (u == "RS") ps_label = "R3";
-  else if (u == "START") ps_label = "OPT";
-  else if (u == "BACK") ps_label = "SHARE";
+  if (u == "LB" || u == "L1") ps_label = "L1";
+  else if (u == "RB" || u == "R1") ps_label = "R1";
+  else if (u == "LT" || u == "L2") ps_label = "L2";
+  else if (u == "RT" || u == "R2") ps_label = "R2";
+  else if (u == "LS" || u == "L3") ps_label = "L3";
+  else if (u == "RS" || u == "R3") ps_label = "R3";
+  else if (u == "START" || u == "MENU" || u == "OPT") ps_label = "OPT";
+  else if (u == "BACK" || u == "MAP" || u == "SHARE") ps_label = "SHARE";
   if (ps_label) {
     const std::string lbl(ps_label);
     const float hw = std::max(r * 1.35f, float(lbl.size()) * r * 0.42f + 4.0f);
@@ -197,6 +273,22 @@ ui::TextStyle style(ui::Font f, float size, uint32_t color, ui::Align align, boo
 }
 
 void fit_text(std::string_view text, ui::TextStyle& ts, float max_width, float min_size) {
+  auto& ds = diagram_sync();
+  if (ds.controls_tab_active && !ds.in_diagram) {
+    const std::string low = lower_copy(text);
+    if (low == "controller layout") {
+      ds.pending_field = 1;
+    } else if (low == "switch handbrake/clutch") {
+      ds.pending_field = 2;
+    } else if (ds.pending_field == 1 && low.rfind("layout ", 0) == 0 && low.size() >= 8) {
+      const int n = low[7] - '1';
+      if (n >= 0 && n < 5) ds.layout_id = n;
+      ds.pending_field = 0;
+    } else if (ds.pending_field == 2 && (low == "on" || low == "off")) {
+      ds.swap_hb_clutch = (low == "on");
+      ds.pending_field = 0;
+    }
+  }
   if (max_width <= 4.0f) return;
   while (ts.size > min_size && ui::List::measure(text, ts) > max_width) {
     ts.size *= 0.94f;
@@ -355,6 +447,16 @@ void panel01(ui::List& l, float x0, float y0, float x1, float y1, float s, uint3
   }
   if (header_accent != 0) {
     l.rect(x0 + 2.0f * s, y0 + 2.0f * s, x1 - 2.0f * s, y0 + 5.0f * s, header_accent);
+  }
+  auto& ds = diagram_sync();
+  if (ds.controls_tab_active && !ds.in_diagram && (x1 - x0) >= 240.0f * s && (y1 - y0) >= 180.0f * s) {
+    ds.controls_tab_active = false;
+    ds.pending_field = 0;
+    ds.in_diagram = true;
+    const float dy0 = y1 + 10.0f * s;
+    const float dy1 = dy0 + 206.0f * s;
+    draw_controller_layout_diagram(l, x0, dy0, x1, dy1, s, ds.layout_id, ds.swap_hb_clutch);
+    ds.in_diagram = false;
   }
 }
 
@@ -526,8 +628,223 @@ void title_banner(ui::List& l, float s, float x, float y, std::string_view title
 void set_glyph_set(GlyphSet set) { active_glyph_set() = set; }
 GlyphSet glyph_set() { return active_glyph_set(); }
 
+std::string glyph_label_for(std::string_view button, GlyphSet set) {
+  const std::string u = upper_copy(button);
+  if (set == GlyphSet::kKeyboard) {
+    return keyboard_keycap_label(u);
+  }
+  if (set == GlyphSet::kPlayStation) {
+    if (u == "A" || u == "ACCEPT" || u == "CROSS") return "CROSS";
+    if (u == "B" || u == "CANCEL" || u == "CIRCLE") return "CIRCLE";
+    if (u == "X" || u == "ACTIVATE" || u == "SQUARE") return "SQUARE";
+    if (u == "Y" || u == "REWIND" || u == "TRIANGLE") return "TRIANGLE";
+    if (u == "LB" || u == "L1") return "L1";
+    if (u == "RB" || u == "R1") return "R1";
+    if (u == "LT" || u == "L2") return "L2";
+    if (u == "RT" || u == "R2") return "R2";
+    if (u == "LS" || u == "L3") return "L3";
+    if (u == "RS" || u == "R3") return "R3";
+    if (u == "START" || u == "MENU") return "OPT";
+    if (u == "BACK" || u == "MAP") return "SHARE";
+    if (u == "DPAD" || u == "D-PAD" || u == "DPAD_UD" || u == "DPAD_LR") return "D-PAD";
+    return u;
+  }
+  if (u == "ACCEPT") return "A";
+  if (u == "CANCEL") return "B";
+  if (u == "ACTIVATE") return "X";
+  if (u == "REWIND") return "Y";
+  if (u == "MENU") return "START";
+  if (u == "MAP") return "BACK";
+  return u;
+}
+
+std::string glyph_label_for(std::string_view button) {
+  return glyph_label_for(button, active_glyph_set());
+}
+
+std::string controller_button_from_texture(std::string_view texture_key) {
+  std::string u = upper_copy(texture_key);
+  for (char& c : u)
+    if (c == '\\') c = '/';
+  const size_t pos = u.find("CONTROLLER/");
+  if (pos == std::string::npos) return {};
+  u = u.substr(pos + 11);
+  if (u.size() > 4 && (u.compare(u.size() - 4, 4, ".XDS") == 0 || u.compare(u.size() - 4, 4, ".TGA") == 0)) {
+    u.resize(u.size() - 4);
+  }
+  if (u == "A_BUTTON" || u == "BUTTON_A" || u == "A") return "A";
+  if (u == "B_BUTTON" || u == "BUTTON_B" || u == "B") return "B";
+  if (u == "X_BUTTON" || u == "BUTTON_X" || u == "X") return "X";
+  if (u == "Y_BUTTON" || u == "BUTTON_Y" || u == "Y") return "Y";
+  if (u == "LBUMPER" || u == "LB" || u == "L_BUMPER") return "LB";
+  if (u == "RBUMPER" || u == "RB" || u == "R_BUMPER") return "RB";
+  if (u == "LTRIGGER" || u == "LT" || u == "L_TRIGGER") return "LT";
+  if (u == "RTRIGGER" || u == "RT" || u == "R_TRIGGER") return "RT";
+  if (u == "START_BUTTON" || u == "START") return "START";
+  if (u == "BACK_BUTTON" || u == "BACK") return "BACK";
+  if (u == "D_PAD_UPDOWN") return "DPAD_UD";
+  if (u == "D_PAD_LEFT_RIGHT") return "DPAD_LR";
+  if (u == "D_PAD" || u == "DPAD") return "DPAD";
+  if (u == "L_THUMBSTICK" || u == "LTHUMBSTICK" || u == "LS") return "LS";
+  if (u == "RTHUMBSTICK" || u == "R_THUMBSTICK" || u == "RS") return "RS";
+  return {};
+}
+
+bool draw_controller_texture(ui::List& l, float x0, float y0, float x1, float y1, std::string_view texture_key,
+                             float alpha) {
+  const std::string btn = controller_button_from_texture(texture_key);
+  if (btn.empty()) return false;
+  const float cx = 0.5f * (x0 + x1);
+  const float cy = 0.5f * (y0 + y1);
+  const float r = 0.5f * std::min(x1 - x0, y1 - y0);
+  button_glyph(l, cx, cy, r, btn.c_str(), alpha);
+  return true;
+}
+
+void set_controller_diagram_state(int layout_id, bool swap_handbrake_clutch) {
+  auto& ds = diagram_sync();
+  ds.layout_id = std::clamp(layout_id, 0, 4);
+  ds.swap_hb_clutch = swap_handbrake_clutch;
+}
+
+void draw_controller_layout_diagram(ui::List& l, float x0, float y0, float x1, float y1, float s, int layout_id,
+                                    bool swap_handbrake_clutch, std::string_view highlight_action) {
+  if (x1 <= x0 || y1 <= y0) return;
+  const int id = std::clamp(layout_id, 0, 4);
+
+  // Authentic FH1 distressed PANEL01 backdrop (without triggering recursion).
+  auto& ds = diagram_sync();
+  const bool prev_in = ds.in_diagram;
+  ds.in_diagram = true;
+  panel01(l, x0, y0, x1, y1, s, kCharcoalDark, kPink);
+  ds.in_diagram = prev_in;
+
+  const float w = x1 - x0;
+  const float h = y1 - y0;
+  const float cx = x0 + 0.5f * w;
+
+  // Compact header bar with layout name & active glyph family tag.
+  const char* dev_tag = active_glyph_set() == GlyphSet::kPlayStation ? "DUALSENSE"
+                        : active_glyph_set() == GlyphSet::kKeyboard  ? "KEYBOARD"
+                                                                     : "GAMEPAD";
+  char hdr[64];
+  std::snprintf(hdr, sizeof hdr, "CONTROLLER LAYOUT %d%s", id + 1, swap_handbrake_clutch ? " (HB/CL SWAPPED)" : "");
+  pill(l, x0 + 8.0f * s, y0 + 8.0f * s, x1 - 8.0f * s, y0 + 28.0f * s, ui::rgba(0xBF, 0xBF, 0xBF, 238), PillKind::kMenu);
+  l.text(x0 + 16.0f * s, y0 + 13.0f * s, hdr, style(ui::Font::kD, 11.0f * s, kInk));
+  l.text(x1 - 16.0f * s, y0 + 13.5f * s, dev_tag, style(ui::Font::kE, 10.0f * s, kPink, ui::Align::kRight));
+
+  // Resolve layout 0..4 action mappings (matching drive::default_controller_layout).
+  struct SlotMap {
+    const char* lt;
+    const char* lb;
+    const char* rt;
+    const char* rb;
+    const char* a;
+    const char* b;
+    const char* x;
+    const char* y;
+  };
+  static constexpr SlotMap kLayouts[5] = {
+      {"BRAKE", "CLUTCH", "GAS", "CAMERA", "HANDBRAKE", "SHIFT UP", "SHIFT DN", "REWIND"},
+      {"BRAKE", "CLUTCH", "GAS", "CAMERA", "SHIFT DN", "HANDBRAKE", "SHIFT UP", "REWIND"},
+      {"BRAKE", "SHIFT DN", "GAS", "SHIFT UP", "CLUTCH", "HANDBRAKE", "REWIND", "CAMERA"},
+      {"SHIFT DN", "CLUTCH", "SHIFT UP", "CAMERA", "GAS", "HANDBRAKE", "BRAKE", "REWIND"},
+      {"GAS", "CAMERA", "BRAKE", "CLUTCH", "HANDBRAKE", "SHIFT UP", "SHIFT DN", "REWIND"},
+  };
+  auto maybe_swap = [&](const char* act) -> const char* {
+    if (!swap_handbrake_clutch) return act;
+    if (std::string_view(act) == "HANDBRAKE") return "CLUTCH";
+    if (std::string_view(act) == "CLUTCH") return "HANDBRAKE";
+    return act;
+  };
+  const SlotMap& lm = kLayouts[id];
+
+  // Center stylized vector gamepad silhouette (body, grips, sticks, D-pad, triggers, bumpers).
+  const float body_cy = y0 + 0.56f * h;
+  const float bw = std::min(126.0f * s, w * 0.34f);
+  const float bh = std::min(68.0f * s, h * 0.36f);
+  const float bx0 = cx - 0.5f * bw, bx1 = cx + 0.5f * bw;
+  const float by0 = body_cy - 0.5f * bh, by1 = body_cy + 0.5f * bh;
+
+  const uint32_t shell_col = ui::rgba(46, 50, 58, 245);
+  const uint32_t shell_rim = ui::rgba(190, 198, 212, 180);
+  const uint32_t dark_well = ui::rgba(18, 20, 26, 245);
+
+  // Triggers (top shoulders) + bumpers
+  l.rect(bx0 + bw * 0.08f, by0 - 11.0f * s, bx0 + bw * 0.30f, by0 - 1.0f * s, ui::rgba(62, 66, 76, 235), 3.0f * s);
+  l.rect(bx1 - bw * 0.30f, by0 - 11.0f * s, bx1 - bw * 0.08f, by0 - 1.0f * s, ui::rgba(62, 66, 76, 235), 3.0f * s);
+  // Left & right angled grips
+  l.circle(bx0 + bw * 0.16f, by1 - bh * 0.12f, bh * 0.38f, shell_col);
+  l.circle(bx1 - bw * 0.16f, by1 - bh * 0.12f, bh * 0.38f, shell_col);
+  // Main central chassis
+  l.rect(bx0, by0, bx1, by1 - bh * 0.18f, shell_col, 14.0f * s);
+  l.frame(bx0, by0, bx1, by1 - bh * 0.18f, shell_rim, 1.4f * s, 14.0f * s);
+  // Left stick + D-pad + Right stick
+  const float ls_x = bx0 + bw * 0.24f, ls_y = by0 + bh * 0.36f;
+  const float dp_x = bx0 + bw * 0.38f, dp_y = by0 + bh * 0.64f;
+  const float rs_x = bx1 - bw * 0.36f, rs_y = by0 + bh * 0.64f;
+  l.circle(ls_x, ls_y, 8.5f * s, dark_well);
+  l.circle(ls_x, ls_y, 5.5f * s, ui::rgba(92, 98, 110, 240));
+  l.circle(rs_x, rs_y, 8.5f * s, dark_well);
+  l.circle(rs_x, rs_y, 5.5f * s, ui::rgba(92, 98, 110, 240));
+  l.line(dp_x - 6.0f * s, dp_y, dp_x + 6.0f * s, dp_y, 3.0f * s, ui::rgba(190, 196, 208, 220));
+  l.line(dp_x, dp_y - 6.0f * s, dp_x, dp_y + 6.0f * s, 3.0f * s, ui::rgba(190, 196, 208, 220));
+  // Face diamond cluster on right side of gamepad
+  const float fc_x = bx1 - bw * 0.22f, fc_y = by0 + bh * 0.36f, fd = 7.2f * s;
+  button_glyph(l, fc_x, fc_y + fd, 4.2f * s, "A");
+  button_glyph(l, fc_x + fd, fc_y, 4.2f * s, "B");
+  button_glyph(l, fc_x - fd, fc_y, 4.2f * s, "X");
+  button_glyph(l, fc_x, fc_y - fd, 4.2f * s, "Y");
+
+  // Callout rows flanking left & right of the gamepad silhouette with leader lines!
+  const std::string hi_up = upper_copy(highlight_action);
+  auto draw_callout = [&](bool left_col, int row_i, const char* btn, const char* action_txt, float ax, float ay) {
+    const float row_y = y0 + 38.0f * s + float(row_i) * 26.5f * s;
+    const bool hi = !hi_up.empty() && upper_copy(action_txt).find(hi_up) != std::string::npos;
+    const uint32_t line_col = hi ? kYellow : ui::rgba(255, 255, 255, 78);
+    const uint32_t txt_col = hi ? kYellow : kWhite;
+    if (left_col) {
+      const float gx = x0 + 22.0f * s;
+      const float tx = x0 + 40.0f * s;
+      const float max_tx = bx0 - 10.0f * s;
+      l.line(max_tx + 2.0f * s, row_y + 7.0f * s, ax, ay, 1.1f * s, line_col);
+      button_glyph(l, gx, row_y + 7.0f * s, 8.2f * s, btn);
+      ui::TextStyle ts = style(ui::Font::kB, 10.5f * s, txt_col);
+      fit_text(action_txt, ts, std::max(36.0f * s, max_tx - tx), 7.5f * s);
+      l.text(tx, row_y + 1.5f * s, action_txt, ts);
+    } else {
+      const float gx = x1 - 22.0f * s;
+      const float tx = x1 - 40.0f * s;
+      const float min_tx = bx1 + 10.0f * s;
+      l.line(ax, ay, min_tx - 2.0f * s, row_y + 7.0f * s, 1.1f * s, line_col);
+      button_glyph(l, gx, row_y + 7.0f * s, 8.2f * s, btn);
+      ui::TextStyle ts = style(ui::Font::kB, 10.5f * s, txt_col, ui::Align::kRight);
+      fit_text(action_txt, ts, std::max(36.0f * s, tx - min_tx), 7.5f * s);
+      l.text(tx, row_y + 1.5f * s, action_txt, ts);
+    }
+  };
+
+  // Left callouts (LT, LB, LS, DPAD, BACK)
+  draw_callout(true, 0, "LT", maybe_swap(lm.lt), bx0 + bw * 0.16f, by0 - 6.0f * s);
+  draw_callout(true, 1, "LB", maybe_swap(lm.lb), bx0 + bw * 0.18f, by0 + 4.0f * s);
+  draw_callout(true, 2, "LS", "STEER", ls_x, ls_y);
+  draw_callout(true, 3, "DPAD_LR", "RADIO", dp_x, dp_y);
+  draw_callout(true, 4, "BACK", "MAP", cx - 10.0f * s, by0 + bh * 0.36f);
+
+  // Right callouts (RT, RB, Y, B, X, A)
+  draw_callout(false, 0, "RT", maybe_swap(lm.rt), bx1 - bw * 0.16f, by0 - 6.0f * s);
+  draw_callout(false, 1, "RB", maybe_swap(lm.rb), bx1 - bw * 0.18f, by0 + 4.0f * s);
+  draw_callout(false, 2, "Y", maybe_swap(lm.y), fc_x, fc_y - fd);
+  draw_callout(false, 3, "B", maybe_swap(lm.b), fc_x + fd, fc_y);
+  draw_callout(false, 4, "X", maybe_swap(lm.x), fc_x - fd, fc_y);
+  draw_callout(false, 5, "A", maybe_swap(lm.a), fc_x, fc_y + fd);
+}
+
 void button_glyph(ui::List& l, float cx, float cy, float r, const char* button, float alpha) {
   const std::string b = button ? std::string(button) : std::string("A");
+  if (active_glyph_set() == GlyphSet::kKeyboard && draw_keyboard_glyph(l, cx, cy, r, b, alpha)) {
+    return;
+  }
   if (active_glyph_set() == GlyphSet::kPlayStation && draw_playstation_glyph(l, cx, cy, r, b, alpha)) {
     return;
   }
@@ -561,6 +878,10 @@ void button_glyph(ui::List& l, float cx, float cy, float r, const char* button, 
 void tab_strip(ui::List& l, float s, float x0, float y0, float max_x, const std::vector<std::string>& tabs,
                int active_idx, bool show_bumpers, uint32_t active_colour) {
   if (tabs.empty()) return;
+  auto& ds = diagram_sync();
+  ds.controls_tab_active =
+      (active_idx >= 0 && active_idx < int(tabs.size()) && upper_copy(tabs[size_t(active_idx)]) == "CONTROLS");
+  ds.pending_field = 0;
   const float h = 30.0f * s;
   float cx = x0;
   if (show_bumpers) {
@@ -637,9 +958,19 @@ void button_bar(ui::List& l, const std::vector<Prompt>& items, float screen_w, f
     ui::TextStyle ts = style(ui::Font::kB, 14.0f * s, kWhite, ui::Align::kLeft, false);
     const float tw = ui::List::measure(item.label, ts);
     const std::string btn = item.button ? std::string(item.button) : std::string("A");
-    const bool wide_btn = (btn == "LB" || btn == "RB" || btn == "LT" || btn == "RT" || btn.size() > 2);
-    const float btn_pad = wide_btn ? 42.0f * s : 32.0f * s;
-    const float pw = tw + btn_pad + 18.0f * s;
+    const std::string eff_lbl = glyph_label_for(btn);
+    const float r = 10.5f * s;
+    float glyph_hw = r;
+    if (active_glyph_set() == GlyphSet::kKeyboard) {
+      const float char_w = r * (eff_lbl.size() > 3 ? 0.50f : 0.62f);
+      glyph_hw = std::max(r * 1.08f, float(eff_lbl.size()) * char_w * 0.56f + r * 0.45f);
+    } else if (btn == "LB" || btn == "RB" || btn == "LT" || btn == "RT" || btn.size() > 2 ||
+               (active_glyph_set() == GlyphSet::kPlayStation && (eff_lbl == "OPT" || eff_lbl == "SHARE"))) {
+      glyph_hw = std::max(r * 1.45f, float(eff_lbl.size()) * r * 0.42f + 4.0f);
+    }
+    const float gx = cx + 10.0f * s + glyph_hw;
+    const float btn_pad = 10.0f * s + 2.0f * glyph_hw + 6.0f * s;
+    const float pw = tw + btn_pad + 14.0f * s;
     if (cx + pw > screen_w - 40.0f * s) break;
 
     const float tilt = slot_tilts[idx % 7];
@@ -647,9 +978,8 @@ void button_bar(ui::List& l, const std::vector<Prompt>& items, float screen_w, f
     TiltScope slot_tilt(l, cx + 0.5f * pw, gy, tilt);
     l.add_hit(cx, base_y, cx + pw, base_y + h, kHitButton, idx);
     pill(l, cx, base_y, cx + pw, base_y + h, kPillGrey, PillKind::kMenu, true);
-    const float gx = cx + (wide_btn ? 20.0f : 16.0f) * s;
-    button_glyph(l, gx, gy, 10.5f * s, btn.c_str());
-    l.text(cx + btn_pad + 4.0f * s, gy - 0.5f * ts.size, item.label, ts);
+    button_glyph(l, gx, gy, r, btn.c_str());
+    l.text(cx + btn_pad, gy - 0.5f * ts.size, item.label, ts);
     cx += pw + 10.0f * s;
     ++idx;
   }

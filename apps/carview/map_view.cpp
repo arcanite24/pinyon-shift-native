@@ -237,6 +237,40 @@ struct Canvas {
         blend(x, y, col, px4[3]);
       }
   }
+  void blit(const MapView::Atlas& img, double cx, double cy, double draw_w, double draw_h, const MapView::Rgba& tint) {
+    if (img.rgba.empty() || img.width == 0 || img.height == 0 || draw_w < 1.0 || draw_h < 1.0) return;
+    const int x0 = std::max(0, int(std::floor(cx - draw_w * 0.5)));
+    const int x1 = std::min(w - 1, int(std::ceil(cx + draw_w * 0.5)));
+    const int y0 = std::max(0, int(std::floor(cy - draw_h * 0.5)));
+    const int y1 = std::min(h - 1, int(std::ceil(cy + draw_h * 0.5)));
+    for (int y = y0; y <= y1; ++y) {
+      const double v = (y + 0.5 - (cy - draw_h * 0.5)) / draw_h;
+      if (v < 0.0 || v >= 1.0) continue;
+      const double ty = std::clamp(v * img.height - 0.5, 0.0, double(img.height - 1));
+      const int iy = int(ty), iy1 = std::min(int(img.height) - 1, iy + 1);
+      const double fy = ty - iy;
+      for (int x = x0; x <= x1; ++x) {
+        const double u = (x + 0.5 - (cx - draw_w * 0.5)) / draw_w;
+        if (u < 0.0 || u >= 1.0) continue;
+        const double tx = std::clamp(u * img.width - 0.5, 0.0, double(img.width - 1));
+        const int ix = int(tx), ix1 = std::min(int(img.width) - 1, ix + 1);
+        const double fx = tx - ix;
+        float px4[4] = {0, 0, 0, 0};
+        for (int k = 0; k < 4; ++k) {
+          const int sx = (k & 1) ? ix1 : ix, sy = (k >> 1) ? iy1 : iy;
+          const double wgt = ((k & 1) ? fx : 1.0 - fx) * ((k >> 1) ? fy : 1.0 - fy);
+          const uint8_t* t = &img.rgba[(size_t(sy) * img.width + sx) * 4];
+          const float a = t[3] / 255.0f;
+          for (int ch = 0; ch < 3; ++ch) px4[ch] += float(wgt) * t[ch] * a;
+          px4[3] += float(wgt) * a;
+        }
+        if (px4[3] <= 0.004f) continue;
+        MapView::Rgba col{px4[0] / px4[3] * tint.r / 255.0f, px4[1] / px4[3] * tint.g / 255.0f,
+                          px4[2] / px4[3] * tint.b / 255.0f, tint.a};
+        blend(x, y, col, px4[3]);
+      }
+    }
+  }
   HudImage image() const {
     HudImage out;
     out.width = uint32_t(w);
@@ -485,6 +519,50 @@ struct FastCanvas {
       }
     }
   }
+  void blit(const MapView::Atlas& img, double cx, double cy, double draw_w, double draw_h, const MapView::Rgba& tint) {
+    if (img.rgba.empty() || img.width == 0 || img.height == 0 || draw_w < 1.0 || draw_h < 1.0) return;
+    if (cx + draw_w * 0.5 < 0.0 || cx - draw_w * 0.5 >= w || cy + draw_h * 0.5 < 0.0 || cy - draw_h * 0.5 >= h) return;
+    const int x0 = std::max(0, int(std::floor(cx - draw_w * 0.5)));
+    const int x1 = std::min(w - 1, int(std::ceil(cx + draw_w * 0.5)));
+    const int y0 = std::max(0, int(std::floor(cy - draw_h * 0.5)));
+    const int y1 = std::min(h - 1, int(std::ceil(cy + draw_h * 0.5)));
+    const int aw = int(img.width), ah = int(img.height);
+    const int tr = int(std::clamp(tint.r, 0.0f, 255.0f) + 0.5f);
+    const int tg = int(std::clamp(tint.g, 0.0f, 255.0f) + 0.5f);
+    const int tb = int(std::clamp(tint.b, 0.0f, 255.0f) + 0.5f);
+    const int ta = int(std::clamp(tint.a, 0.0f, 255.0f) + 0.5f);
+    if (ta <= 0) return;
+    const double ox = cx - draw_w * 0.5, oy = cy - draw_h * 0.5;
+    for (int y = y0; y <= y1; ++y) {
+      const double v = (y + 0.5 - oy) / draw_h;
+      if (v < 0.0 || v >= 1.0) continue;
+      const double ty = std::clamp(v * ah - 0.5, 0.0, double(ah - 1));
+      const int iy = int(ty), iy1 = std::min(ah - 1, iy + 1);
+      const int fy = int((ty - iy) * 256.0 + 0.5), ify = 256 - fy;
+      uint8_t* dst = &rgba[(size_t(y) * w + x0) * 4];
+      for (int x = x0; x <= x1; ++x, dst += 4) {
+        const double u = (x + 0.5 - ox) / draw_w;
+        if (u < 0.0 || u >= 1.0) continue;
+        const double tx = std::clamp(u * aw - 0.5, 0.0, double(aw - 1));
+        const int ix = int(tx), ix1 = std::min(aw - 1, ix + 1);
+        const int fx = int((tx - ix) * 256.0 + 0.5), ifx = 256 - fx;
+        const uint8_t* t00 = &img.rgba[(size_t(iy) * aw + ix) * 4];
+        const uint8_t* t10 = &img.rgba[(size_t(iy) * aw + ix1) * 4];
+        const uint8_t* t01 = &img.rgba[(size_t(iy1) * aw + ix) * 4];
+        const uint8_t* t11 = &img.rgba[(size_t(iy1) * aw + ix1) * 4];
+        const int a00 = t00[3], a10 = t10[3], a01 = t01[3], a11 = t11[3];
+        if ((a00 | a10 | a01 | a11) == 0) continue;
+        const int aw00 = ifx * ify * a00, aw10 = fx * ify * a10, aw01 = ifx * fy * a01, aw11 = fx * fy * a11;
+        const int asum = aw00 + aw10 + aw01 + aw11;
+        if (asum <= 65536) continue;
+        const int pr = (t00[0] * aw00 + t10[0] * aw10 + t01[0] * aw01 + t11[0] * aw11) / asum;
+        const int pg = (t00[1] * aw00 + t10[1] * aw10 + t01[1] * aw01 + t11[1] * aw11) / asum;
+        const int pb = (t00[2] * aw00 + t10[2] * aw10 + t01[2] * aw01 + t11[2] * aw11) / asum;
+        const int alpha256 = int((int64_t(asum >> 16) * ta) / 255);
+        if (alpha256 > 0) blend_px(dst, (pr * tr) / 255, (pg * tg) / 255, (pb * tb) / 255, alpha256);
+      }
+    }
+  }
 };
 
 // The icons a scene shows, in drawing order (profile groups by filter value).
@@ -603,6 +681,16 @@ bool MapView::open(const std::filesystem::path& game_root, std::string* error, c
   if ((lcode == "EN" || !read_texture(*zip, loc_large, large_icons_, nullptr)) &&
       !read_texture(*zip, "Map/icons/MapIcons/EN/MapIconSheet.xds", large_icons_, error)) {
     return false;
+  }
+  // Optional retail New.xds badge for uncompleted events (falls back to crisp vector "NEW" badge if absent).
+  new_badge_ = Atlas{};
+  const std::string loc_new = "Map/icons/MapIcons/" + lcode + "/New.xds";
+  if (lcode == "EN" || !read_texture(*zip, loc_new, new_badge_, nullptr)) {
+    if (!read_texture(*zip, "Map/icons/MapIcons/EN/New.xds", new_badge_, nullptr)) {
+      if (!read_texture(*zip, "Map/icons/New.xds", new_badge_, nullptr)) {
+        read_texture(*zip, "Icons/TicketStickerNew.xds", new_badge_, nullptr);
+      }
+    }
   }
   return true;
 }
@@ -807,33 +895,39 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       top_y = std::min(top_y, iy - ic.size * unit * 0.45);
       cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, iy, ic.size * unit, 0, tint);
     }
-    // Crisp FH1 pink "NEW" text badge above uncompleted events (SPEC-UI-LAYOUTS:69 — never a blank line!).
+    // Retail New.xds badge (or crisp FH1 pink "NEW" lettered badge fallback — never a blank line!).
     if (m.is_new) {
       const double sc = std::max(0.85, unit * 1.15);
-      const double bw = 20.0 * sc, bh = 8.5 * sc;
-      const double by = top_y - bh * 0.65;
-      cv.line(p.x - bw * 0.5, by, p.x + bw * 0.5, by, bh + 2.0, Rgba{12, 12, 16, 220});
-      cv.line(p.x - bw * 0.5, by, p.x + bw * 0.5, by, bh, Rgba{249, 0, 100, 250});
-      // Crisp micro-stroke "N E W" letters inside the pink badge.
-      const double h2 = 2.4 * sc, gw = 3.2 * sc, st = std::max(1.0, 0.95 * sc);
-      const Rgba wh{255, 255, 255, 255};
-      // N
-      const double nx = p.x - 6.6 * sc;
-      cv.line(nx, by + h2, nx, by - h2, st, wh);
-      cv.line(nx, by - h2, nx + gw, by + h2, st, wh);
-      cv.line(nx + gw, by + h2, nx + gw, by - h2, st, wh);
-      // E
-      const double ex = p.x - 1.6 * sc;
-      cv.line(ex, by - h2, ex, by + h2, st, wh);
-      cv.line(ex, by - h2, ex + gw, by - h2, st, wh);
-      cv.line(ex, by, ex + gw * 0.85, by, st, wh);
-      cv.line(ex, by + h2, ex + gw, by + h2, st, wh);
-      // W
-      const double wx = p.x + 3.4 * sc;
-      cv.line(wx, by - h2, wx + gw * 0.3, by + h2, st, wh);
-      cv.line(wx + gw * 0.3, by + h2, wx + gw * 0.65, by - h2 * 0.2, st, wh);
-      cv.line(wx + gw * 0.65, by - h2 * 0.2, wx + gw, by + h2, st, wh);
-      cv.line(wx + gw, by + h2, wx + gw * 1.3, by - h2, st, wh);
+      if (!new_badge_.rgba.empty() && new_badge_.height > 0) {
+        const double bh = 12.0 * sc;
+        const double aspect = std::clamp(double(new_badge_.width) / double(new_badge_.height), 0.75, 4.0);
+        cv.blit(new_badge_, p.x, top_y - bh * 0.55, bh * aspect, bh, Rgba{255, 255, 255, 255});
+      } else {
+        const double bw = 20.0 * sc, bh = 8.5 * sc;
+        const double by = top_y - bh * 0.65;
+        cv.line(p.x - bw * 0.5, by, p.x + bw * 0.5, by, bh + 2.0, Rgba{12, 12, 16, 220});
+        cv.line(p.x - bw * 0.5, by, p.x + bw * 0.5, by, bh, Rgba{249, 0, 100, 250});
+        // Crisp micro-stroke "N E W" letters inside the pink badge.
+        const double h2 = 2.4 * sc, gw = 3.2 * sc, st = std::max(1.0, 0.95 * sc);
+        const Rgba wh{255, 255, 255, 255};
+        // N
+        const double nx = p.x - 6.6 * sc;
+        cv.line(nx, by + h2, nx, by - h2, st, wh);
+        cv.line(nx, by - h2, nx + gw, by + h2, st, wh);
+        cv.line(nx + gw, by + h2, nx + gw, by - h2, st, wh);
+        // E
+        const double ex = p.x - 1.6 * sc;
+        cv.line(ex, by - h2, ex, by + h2, st, wh);
+        cv.line(ex, by - h2, ex + gw, by - h2, st, wh);
+        cv.line(ex, by, ex + gw * 0.85, by, st, wh);
+        cv.line(ex, by + h2, ex + gw, by + h2, st, wh);
+        // W
+        const double wx = p.x + 3.4 * sc;
+        cv.line(wx, by - h2, wx + gw * 0.3, by + h2, st, wh);
+        cv.line(wx + gw * 0.3, by + h2, wx + gw * 0.65, by - h2 * 0.2, st, wh);
+        cv.line(wx + gw * 0.65, by - h2 * 0.2, wx + gw, by + h2, st, wh);
+        cv.line(wx + gw, by + h2, wx + gw * 1.3, by - h2, st, wh);
+      }
     }
   }
   // Free-roam traffic vehicles: compact grey-white car dots on the minimap.
@@ -1240,8 +1334,34 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
       cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], sz, 0, tint);
     }
     if (m.is_new) {
-      const double oy = 18 * unit;
-      cv.line(p[0] - 8 * unit, p[1] - oy, p[0] + 8 * unit, p[1] - oy, 4.5 * unit, Rgba{245, 4, 92, 250});
+      const double oy = 20.0 * unit;
+      if (!new_badge_.rgba.empty() && new_badge_.height > 0) {
+        const double bh = 14.0 * unit;
+        const double aspect = std::clamp(double(new_badge_.width) / double(new_badge_.height), 0.75, 4.0);
+        cv.blit(new_badge_, p[0], p[1] - oy, bh * aspect, bh, Rgba{255, 255, 255, 255});
+      } else {
+        const double sc = std::max(0.95, unit * 1.10);
+        const double bw = 20.0 * sc, bh = 8.5 * sc;
+        const double by = p[1] - oy;
+        cv.line(p[0] - bw * 0.5, by, p[0] + bw * 0.5, by, bh + 2.0, Rgba{12, 12, 16, 220});
+        cv.line(p[0] - bw * 0.5, by, p[0] + bw * 0.5, by, bh, Rgba{249, 0, 100, 250});
+        const double h2 = 2.4 * sc, gw = 3.2 * sc, st = std::max(1.0, 0.95 * sc);
+        const Rgba wh{255, 255, 255, 255};
+        const double nx = p[0] - 6.6 * sc;
+        cv.line(nx, by + h2, nx, by - h2, st, wh);
+        cv.line(nx, by - h2, nx + gw, by + h2, st, wh);
+        cv.line(nx + gw, by + h2, nx + gw, by - h2, st, wh);
+        const double ex = p[0] - 1.6 * sc;
+        cv.line(ex, by - h2, ex, by + h2, st, wh);
+        cv.line(ex, by - h2, ex + gw, by - h2, st, wh);
+        cv.line(ex, by, ex + gw * 0.85, by, st, wh);
+        cv.line(ex, by + h2, ex + gw, by + h2, st, wh);
+        const double wx = p[0] + 3.4 * sc;
+        cv.line(wx, by - h2, wx + gw * 0.3, by + h2, st, wh);
+        cv.line(wx + gw * 0.3, by + h2, wx + gw * 0.65, by - h2 * 0.2, st, wh);
+        cv.line(wx + gw * 0.65, by - h2 * 0.2, wx + gw, by + h2, st, wh);
+        cv.line(wx + gw, by + h2, wx + gw * 1.3, by - h2, st, wh);
+      }
     }
   }
   // GPS destination marker on fullscreen map (Atlas 2,4 in bright green).

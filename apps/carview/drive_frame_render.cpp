@@ -385,7 +385,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 vst.scrape_intensity = 0.0f;
                 for (int wi = 0; wi < 4; ++wi) {
                   vst.wheels[size_t(wi)].wheel_rpm = float(rfc->wheel_omega[wi] * 9.5492966) * rate;
-                  vst.wheels[size_t(wi)].slip_combined = 0.0f;
+                  vst.wheels[size_t(wi)].slip_combined = rate > 0.0f ? rfc->wheel_slip[wi] : 0.0f;
                 }
               }
             } else if (rewind_audio_frozen) {
@@ -902,6 +902,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           }
 
           if (photo_mode.active()) {
+            PhotoModeController::set_text_resolver([](const std::string& ref) { return carview::game_text(ref); });
             float cfw[16];
             compute_clip_from_world(cam_frame, info, vehicle, cfw);
             photo_mode.update_live_promo_preview(
@@ -913,6 +914,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             host.renderer.set_ui(plist.items());
             for (int layer : {0, 1, 2, 3}) host.renderer.set_overlay({}, 0, 0, 0, 0, layer);
           } else if (replay_viewer.active() || replay_viewer.browser_open()) {
+            ReplayViewer::set_text_resolver([](const std::string& ref) { return carview::game_text(ref); });
+            replay_viewer.set_metric_units(app.metric_units);
             carview::ui::List rlist;
             replay_viewer.build_hud(rlist, float(w), float(h));
             upload_ui_atlas(host.renderer, !ui_atlas_synced);

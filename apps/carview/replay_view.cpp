@@ -3,11 +3,35 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string_view>
 
+#include "fh1data/stringtables.h"
 #include "ui4_chrome.h"
 
 namespace carview {
 namespace {
+
+std::function<std::string(const std::string&)>& replay_text_fn() {
+  static std::function<std::string(const std::string&)> fn;
+  return fn;
+}
+
+std::string loc_str(std::string_view table, std::string_view id, const char* fallback) {
+  if (const auto& fn = replay_text_fn()) {
+    const uint32_t packed = (uint32_t(fh1::string_hash(table)) << 16) | uint32_t(fh1::string_hash(id));
+    const std::string ref = "_&" + std::to_string(packed);
+    const std::string resolved = fn(ref);
+    if (!resolved.empty() && resolved != ref && resolved.rfind("_&", 0) != 0) return resolved;
+  }
+  return fallback;
+}
+
+std::string clean_unit_str(std::string s, const char* fallback) {
+  if (auto p = s.find("{0}"); p != std::string::npos) s.erase(p, 3);
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+  return s.empty() ? std::string(fallback) : s;
+}
 
 constexpr double kSpeedLadder[] = {-4.0, -2.0, -1.0, 0.25, 0.5, 1.0, 2.0, 4.0};
 constexpr int kSpeedCount = int(sizeof(kSpeedLadder) / sizeof(kSpeedLadder[0]));
@@ -40,7 +64,7 @@ std::string format_timecode(double s) {
 }
 
 std::string format_speed_pill(double speed, bool paused) {
-  if (paused) return "PAUSED";
+  if (paused) return loc_str("InGame", "IDS_Paused", "PAUSED");
   if (std::fabs(speed - 1.0) < 0.01) return "1.0x PLAY";
   if (std::fabs(speed - 0.5) < 0.01) return "0.5x SLOW";
   if (std::fabs(speed - 0.25) < 0.01) return "0.25x SLOW";
@@ -51,6 +75,69 @@ std::string format_speed_pill(double speed, bool paused) {
 }
 
 }  // namespace
+
+void ReplayViewer::set_text_resolver(std::function<std::string(const std::string&)> fn) {
+  replay_text_fn() = std::move(fn);
+}
+
+std::string format_replay_speed(float speed_mps, bool metric_units) {
+  const float spd = std::fabs(speed_mps);
+  char buf[48];
+  if (metric_units) {
+    const int val = int(std::lround(spd * 3.6f));
+    const std::string unit = clean_unit_str(loc_str("UnitStrings", "IDS_Units_KMH", "KM/H"), "KM/H");
+    std::snprintf(buf, sizeof buf, "%3d %s", val, unit.c_str());
+  } else {
+    const int val = int(std::lround(spd * 2.2369363f));
+    const std::string unit = clean_unit_str(loc_str("UnitStrings", "IDS_Units_MPH", "MPH"), "MPH");
+    std::snprintf(buf, sizeof buf, "%3d %s", val, unit.c_str());
+  }
+  return buf;
+}
+
+std::string format_replay_boost(float boost_psi, bool has_fi, bool metric_units) {
+  if (!has_fi) return "N/A";
+  const float psi = std::max(0.0f, boost_psi);
+  char buf[32];
+  if (metric_units) {
+    std::snprintf(buf, sizeof buf, "%.2f BAR", psi * 0.0689476f);
+  } else {
+    std::snprintf(buf, sizeof buf, "%.1f PSI", psi);
+  }
+  return buf;
+}
+
+std::string format_replay_power(float power_kw, bool metric_units) {
+  const float kw = std::max(0.0f, power_kw);
+  char buf[32];
+  if (metric_units) {
+    std::snprintf(buf, sizeof buf, "%.0f kW", kw);
+  } else {
+    std::snprintf(buf, sizeof buf, "%.0f HP", kw * 1.341022f);
+  }
+  return buf;
+}
+
+std::string format_replay_torque(float torque_nm, bool metric_units) {
+  const float nm = std::max(0.0f, torque_nm);
+  char buf[32];
+  if (metric_units) {
+    std::snprintf(buf, sizeof buf, "%.0f Nm", nm);
+  } else {
+    std::snprintf(buf, sizeof buf, "%.0f LB-FT", nm * 0.737562f);
+  }
+  return buf;
+}
+
+std::string format_replay_temp(float temp_c, bool metric_units) {
+  char buf[32];
+  if (metric_units) {
+    std::snprintf(buf, sizeof buf, "%.0f\xC2\xB0" "C", temp_c);
+  } else {
+    std::snprintf(buf, sizeof buf, "%.0f\xC2\xB0" "F", temp_c * 9.0f / 5.0f + 32.0f);
+  }
+  return buf;
+}
 
 const char* replay_camera_name(ReplayCameraMode m) {
   switch (m) {
@@ -439,12 +526,14 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
 
   if (browser_open_) {
     ui4::subtle_vignette(out, w, h, 0.35f);
-    ui4::title_banner(out, s, 56.0f * s, 28.0f * s, "SAVED REPLAYS", "HORIZON THEATRE", true, 440.0f);
+    ui4::title_banner(out, s, 56.0f * s, 28.0f * s, loc_str("Replay", "IDS_SavedReplays", "SAVED REPLAYS"),
+                      "HORIZON THEATRE", true, 440.0f);
     const float bx0 = 56.0f * s, bx1 = w - 56.0f * s;
     const float by0 = 122.0f * s, by1 = h - 84.0f * s;
     ui4::panel(out, bx0, by0, bx1, by1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
     ui4::offwhite_strip(out, bx0 + 14.0f * s, by0 + 10.0f * s, bx1 - 14.0f * s, by0 + 34.0f * s, s, false);
-    out.text(bx0 + 24.0f * s, by0 + 15.0f * s, "RECORDED SESSIONS", ui4::style(Font::kE, 13.0f * s, ui4::kInk));
+    out.text(bx0 + 24.0f * s, by0 + 15.0f * s, loc_str("Replay", "IDS_RecordedSessions", "RECORDED SESSIONS"),
+             ui4::style(Font::kE, 13.0f * s, ui4::kInk));
     if (browser_entries_.empty()) {
       out.text(0.5f * w, 0.5f * h - 10.0f * s, "NO SAVED REPLAYS YET (PRESS S IN REPLAY VIEWER TO SAVE)",
                ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
@@ -467,7 +556,10 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
                  ui4::style(Font::kB, 10.5f * s, sel ? ui4::kYellow : ui4::kDim));
       }
     }
-    ui4::button_bar(out, {{"A", "WATCH REPLAY"}, {"B", "CLOSE"}}, w, h, 56.0f);
+    ui4::button_bar(out,
+                    {{"A", loc_str("HelpButtons", "IDS_Select", "WATCH REPLAY")},
+                     {"B", loc_str("HelpButtons", "IDS_Back", "CLOSE")}},
+                    w, h, 56.0f);
     return;
   }
 
@@ -499,44 +591,49 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
   }
 
   // 2. Slim 926_REPLAY_HUD / 968_TELEMETRY right-hand HUDPILL01 strips + I_HUD_DAMAGE_* icon
-  //    (replaces the raw flat dark telemetry box!).
+  //    using real recorded/interpolated telemetry and respecting metric_units_.
   if (telemetry_ && focus) {
     const float rx1 = fx(1216.0f);
-    const float rx0 = fx(972.0f);
+    const float rx0 = fx(932.0f);
     float ry = fy(64.0f);
 
     // Speed + Gear slim HUDPILL01
     ui4::pill(out, rx0, ry, rx1, ry + 34.0f * s, ui4::kPillGrey, ui4::PillKind::kHud01);
-    const int kmh = int(std::lround(std::fabs(focus->speed_mps) * 3.6f));
-    char spd_buf[32];
-    std::snprintf(spd_buf, sizeof spd_buf, "%3d KM/H", kmh);
-    out.text(rx0 + 12.0f * s, ry + 7.0f * s, spd_buf, ui4::style(Font::kE, 19.0f * s, ui4::kWhite));
+    const std::string spd_str = format_replay_speed(focus->speed_mps, metric_units_);
+    out.text(rx0 + 12.0f * s, ry + 7.0f * s, spd_str, ui4::style(Font::kE, 19.0f * s, ui4::kWhite));
     const char gear_ch[2] = {focus->gear < 0 ? 'R' : focus->gear == 0 ? 'N' : char('0' + std::min<int>(focus->gear, 9)),
                              0};
     out.rect(rx1 - 36.0f * s, ry + 2.0f * s, rx1 - 4.0f * s, ry + 32.0f * s, ui4::kPink);
     out.text(rx1 - 20.0f * s, ry + 7.0f * s, gear_ch, ui4::style(Font::kE, 19.0f * s, ui4::kWhite, Align::kCenter));
     ry += 38.0f * s;
 
-    // RPM + Throttle + Brake + Steer slim HUDPILL02 rows (using STATBARFILL / BARBASE8PX).
-    auto telem_bar = [&](const char* lbl, float frac, uint32_t col, bool centered) {
+    // Real telemetry bar row: label | bar | right-aligned numeric/unit readout.
+    auto telem_bar = [&](const char* lbl, float frac, uint32_t col, bool centered, const std::string& val_txt) {
       ui4::pill(out, rx0, ry, rx1, ry + 22.0f * s, ui4::kPillGrey, ui4::PillKind::kHud02);
-      out.text(rx0 + 10.0f * s, ry + 5.0f * s, lbl, ui4::style(Font::kB, 11.0f * s, ui4::kDim));
-      const float bx0 = rx0 + 74.0f * s, bx1 = rx1 - 10.0f * s, by0 = ry + 7.0f * s, by1 = ry + 15.0f * s;
+      out.text(rx0 + 10.0f * s, ry + 5.0f * s, lbl, ui4::style(Font::kB, 10.5f * s, ui4::kDim));
+      const float bx0 = rx0 + 74.0f * s;
+      const float bx1 = val_txt.empty() ? (rx1 - 10.0f * s) : (rx1 - 74.0f * s);
+      const float by0 = ry + 7.0f * s, by1 = ry + 15.0f * s;
       out.rect(bx0, by0, bx1, by1, rgba(255, 255, 255, 28));
       if (centered) {
         const float mid = 0.5f * (bx0 + bx1);
         const float stx = mid + std::clamp(frac, -1.0f, 1.0f) * 0.5f * (bx1 - bx0);
         out.rect(std::min(mid, stx), by0, std::max(mid, stx), by1, col);
         out.line(mid, by0 - 1.0f * s, mid, by1 + 1.0f * s, 1.5f * s, ui4::kWhite);
-      } else if (frac > 0.01f) {
+      } else if (frac > 0.005f) {
         out.rect(bx0, by0, bx0 + (bx1 - bx0) * std::clamp(frac, 0.0f, 1.0f), by1, col);
+      }
+      if (!val_txt.empty()) {
+        out.text(rx1 - 8.0f * s, ry + 5.0f * s, val_txt,
+                 ui4::style(Font::kB, 10.5f * s, ui4::kWhite, Align::kRight, true));
       }
       ry += 25.0f * s;
     };
     // Page header pill (968_TELEMETRY cycleable pages: General / Friction / Suspension / Damage / Engine).
     ui4::pill(out, rx0, ry, rx1, ry + 22.0f * s, ui4::kPink, ui4::PillKind::kHud02);
-    char pbuf[64];
-    std::snprintf(pbuf, sizeof pbuf, "TELEMETRY %d/%d  •  %s", int(telemetry_page_) + 1,
+    const std::string tel_hdr = loc_str("Replay", "IDS_Telemetry", "TELEMETRY");
+    char pbuf[96];
+    std::snprintf(pbuf, sizeof pbuf, "%s %d/%d  •  %s", tel_hdr.c_str(), int(telemetry_page_) + 1,
                   int(ReplayTelemetryPage::kCount), replay_telemetry_page_name(telemetry_page_));
     out.text(rx0 + 10.0f * s, ry + 5.0f * s, pbuf, ui4::style(Font::kE, 10.5f * s, ui4::kWhite));
     ry += 25.0f * s;
@@ -545,44 +642,67 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
     const float thr_f = float(focus->throttle_u8) / 255.0f;
     const float brk_f = float(focus->brake_u8) / 255.0f;
     const float str_f = float(focus->steer_i8) / 127.0f;
+    auto fmt_pct = [](float f) {
+      char b[16];
+      std::snprintf(b, sizeof b, "%d%%", int(std::lround(std::clamp(f, 0.0f, 1.0f) * 100.0f)));
+      return std::string(b);
+    };
+    auto health_col = [](float h) { return h >= 0.75f ? ui4::kGreen : (h >= 0.40f ? ui4::kAmber : ui4::kRed); };
+
     if (telemetry_page_ == ReplayTelemetryPage::kGeneral) {
-      telem_bar("RPM", rpm_f, rpm_f > 0.88f ? ui4::kPink : ui4::kYellow, false);
-      telem_bar("THROTTLE", thr_f, ui4::kGreen, false);
-      telem_bar("BRAKE", brk_f, ui4::kRed, false);
-      telem_bar("STEER", str_f, ui4::kAmber, true);
+      char rbuf[24], sbuf[24];
+      std::snprintf(rbuf, sizeof rbuf, "%d", int(std::lround(std::max(0.0f, focus->rpm))));
+      std::snprintf(sbuf, sizeof sbuf, "%+d%%", int(std::lround(str_f * 100.0f)));
+      telem_bar("RPM", rpm_f, rpm_f > 0.88f ? ui4::kPink : ui4::kYellow, false, rbuf);
+      telem_bar("THROTTLE", thr_f, ui4::kGreen, false, fmt_pct(thr_f));
+      telem_bar("BRAKE", brk_f, ui4::kRed, false, fmt_pct(brk_f));
+      telem_bar("STEER", str_f, ui4::kAmber, true, sbuf);
     } else if (telemetry_page_ == ReplayTelemetryPage::kFriction) {
-      const float spd_n = std::clamp(std::fabs(focus->speed_mps) / 65.0f, 0.0f, 1.0f);
-      const float lat = std::fabs(str_f) * spd_n;
-      const float lon = std::max(thr_f * 0.65f, brk_f * 0.95f);
-      telem_bar("FL GRIP", std::clamp(0.25f + lat * 0.55f + brk_f * 0.35f, 0.0f, 1.0f), ui4::kYellow, false);
-      telem_bar("FR GRIP", std::clamp(0.25f + lat * 0.55f + brk_f * 0.35f, 0.0f, 1.0f), ui4::kYellow, false);
-      telem_bar("RL GRIP", std::clamp(0.22f + lat * 0.45f + thr_f * 0.55f, 0.0f, 1.0f), ui4::kPink, false);
-      telem_bar("RR GRIP", std::clamp(0.22f + lat * 0.45f + lon * 0.50f, 0.0f, 1.0f), ui4::kPink, false);
+      static constexpr const char* kWheelLbl[4] = {"FL TYRE", "FR TYRE", "RL TYRE", "RR TYRE"};
+      for (int i = 0; i < 4; ++i) {
+        const float slip = std::max(0.0f, focus->wheel_slip[i]);
+        const float norm = std::clamp(slip / 1.25f, 0.0f, 1.0f);
+        const uint32_t col = slip > 1.05f ? ui4::kPink : (slip > 0.65f ? ui4::kYellow : ui4::kGreen);
+        telem_bar(kWheelLbl[i], norm, col, false, format_replay_temp(focus->wheel_temp_c[i], metric_units_));
+      }
     } else if (telemetry_page_ == ReplayTelemetryPage::kSuspension) {
-      const float pitch_w = (brk_f - thr_f) * 0.28f;
-      const float roll_w = str_f * std::clamp(std::fabs(focus->speed_mps) / 40.0f, 0.0f, 1.0f) * 0.25f;
-      telem_bar("FL COMP", std::clamp(0.45f + pitch_w + roll_w, 0.05f, 1.0f), ui4::kAmber, false);
-      telem_bar("FR COMP", std::clamp(0.45f + pitch_w - roll_w, 0.05f, 1.0f), ui4::kAmber, false);
-      telem_bar("RL COMP", std::clamp(0.45f - pitch_w + roll_w, 0.05f, 1.0f), ui4::kYellow, false);
-      telem_bar("RR COMP", std::clamp(0.45f - pitch_w - roll_w, 0.05f, 1.0f), ui4::kYellow, false);
+      static constexpr const char* kCompLbl[4] = {"FL COMP", "FR COMP", "RL COMP", "RR COMP"};
+      for (int i = 0; i < 4; ++i) {
+        const float comp = std::clamp(focus->wheel_compression[i], 0.0f, 1.0f);
+        const uint32_t col = comp > 0.85f ? ui4::kPink : (i < 2 ? ui4::kAmber : ui4::kYellow);
+        telem_bar(kCompLbl[i], comp, col, false, fmt_pct(comp));
+      }
     } else if (telemetry_page_ == ReplayTelemetryPage::kDamage) {
-      telem_bar("ENGINE", 1.0f, ui4::kGreen, false);
-      telem_bar("TRANS", 1.0f, ui4::kGreen, false);
-      telem_bar("SUSP", 1.0f, ui4::kGreen, false);
-      telem_bar("AERO", 1.0f, ui4::kGreen, false);
+      static constexpr const char* kDmgLbl[4] = {"ENGINE", "TRANS", "SUSP", "AERO"};
+      for (int i = 0; i < 4; ++i) {
+        const float health = std::clamp(1.0f - focus->damage[i], 0.0f, 1.0f);
+        telem_bar(kDmgLbl[i], health, health_col(health), false, fmt_pct(health));
+      }
     } else {
-      telem_bar("RPM", rpm_f, rpm_f > 0.88f ? ui4::kPink : ui4::kYellow, false);
-      telem_bar("LOAD", std::clamp(thr_f * (0.35f + 0.65f * rpm_f), 0.0f, 1.0f), ui4::kGreen, false);
-      telem_bar("BOOST", std::clamp(thr_f * std::max(0.0f, rpm_f - 0.25f) * 1.35f, 0.0f, 1.0f), ui4::kAmber, false);
-      telem_bar("SPEED", std::clamp(std::fabs(focus->speed_mps) / 100.0f, 0.0f, 1.0f), ui4::kWhite, false);
+      const bool has_fi = focus->boost_max_psi > 0.5f;
+      const float pwr_f = std::clamp(std::max(0.0f, focus->engine_power_kw) / 600.0f, 0.0f, 1.0f);
+      const float trq_f = std::clamp(std::max(0.0f, focus->engine_torque_nm) / 800.0f, 0.0f, 1.0f);
+      const float bst_f = has_fi ? std::clamp(focus->boost_psi / focus->boost_max_psi, 0.0f, 1.0f) : 0.0f;
+      char rbuf[24];
+      std::snprintf(rbuf, sizeof rbuf, "%d", int(std::lround(std::max(0.0f, focus->rpm))));
+      telem_bar("POWER", pwr_f, ui4::kGreen, false, format_replay_power(focus->engine_power_kw, metric_units_));
+      telem_bar("TORQUE", trq_f, ui4::kYellow, false, format_replay_torque(focus->engine_torque_nm, metric_units_));
+      telem_bar("BOOST", bst_f, ui4::kAmber, false, format_replay_boost(focus->boost_psi, has_fi, metric_units_));
+      telem_bar("RPM", rpm_f, rpm_f > 0.88f ? ui4::kPink : ui4::kWhite, false, rbuf);
     }
 
-    // Slim 926_REPLAY_HUD / 968_TELEMETRY chassis status strip (I_HUD_DAMAGE_ENGINE glyph).
+    // Slim 926_REPLAY_HUD / 968_TELEMETRY chassis status strip (I_HUD_DAMAGE_ENGINE glyph) using real damage health.
+    const float avg_dmg =
+        0.25f * (focus->damage[0] + focus->damage[1] + focus->damage[2] + focus->damage[3]);
+    const float chassis_h = std::clamp(1.0f - avg_dmg, 0.0f, 1.0f);
+    const uint32_t ch_col = health_col(chassis_h);
+    char ch_buf[48];
+    std::snprintf(ch_buf, sizeof ch_buf, "CHASSIS & ENGINE  %d%%", int(std::lround(chassis_h * 100.0f)));
     std::array<float, 4> dmg_uv{};
     if (ui4::texture("T:I_MAP/I_HUD/I_HUD_DAMAGE_ENGINE", dmg_uv)) {
       ui4::pill(out, rx0, ry, rx1, ry + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kHud02);
-      out.image(rx0 + 8.0f * s, ry + 3.0f * s, rx0 + 26.0f * s, ry + 21.0f * s, dmg_uv, ui4::kGreen);
-      out.text(rx0 + 34.0f * s, ry + 5.0f * s, "CHASSIS & ENGINE  100%", ui4::style(Font::kB, 11.0f * s, ui4::kGreen));
+      out.image(rx0 + 8.0f * s, ry + 3.0f * s, rx0 + 26.0f * s, ry + 21.0f * s, dmg_uv, ch_col);
+      out.text(rx0 + 34.0f * s, ry + 5.0f * s, ch_buf, ui4::style(Font::kB, 11.0f * s, ch_col));
     }
   }
 
@@ -671,14 +791,14 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
     out.rect(head_x - 3.0f * s, sy0 - 3.0f * s, head_x + 3.0f * s, sy1 + 3.0f * s, ui4::kWhite);
   }
 
-  // Authentic BUTTON_BAR_SCENE bottom prompts.
+  // Authentic BUTTON_BAR_SCENE bottom prompts (localized via string tables with English fallbacks).
   ui4::button_bar(out,
-                  {{"A", "PLAY/PAUSE"},
-                   {"DPAD_LR", "SCRUB"},
-                   {"Y", "CAMERA"},
-                   {"X", "TELEMETRY"},
-                   {"LB", "PHOTO"},
-                   {"B", "EXIT"}},
+                  {{"A", loc_str("Replay", "IDS_PlayPause", "PLAY/PAUSE")},
+                   {"DPAD_LR", loc_str("Replay", "IDS_Scrub", "SCRUB")},
+                   {"Y", loc_str("Replay", "IDS_Camera", "CAMERA")},
+                   {"X", loc_str("Replay", "IDS_Telemetry", "TELEMETRY")},
+                   {"LB", loc_str("PauseMenu", "IDS_Photo", "PHOTO")},
+                   {"B", loc_str("HelpButtons", "IDS_Back", "EXIT")}},
                   w, h, 70.0f);
 }
 

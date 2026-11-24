@@ -69,6 +69,7 @@ class AudioHost {
   // attaches a RadioPlayer to AudioEngine.
   bool init_radio(const std::filesystem::path& game_root, std::string_view language, std::string_view saved_station,
                   bool non_blocking);
+  bool reload_radio(std::string_view language, std::string_view saved_station = {});
   // Configures runtime custom radio stations (<user>/radio_stations.json and <play>/radio_stations.json).
   void init_runtime_radio(const std::filesystem::path& user_dir, const std::filesystem::path& play_dir = {});
   audio::RuntimeRadioManager& runtime_radio_manager() { return runtime_radio_mgr_; }
@@ -89,6 +90,7 @@ class AudioHost {
   uint8_t map_tire_surface_group(std::string_view physics_surface) const;
   int16_t map_tire_surface_index(std::string_view physics_surface) const;
   bool init_vo(const std::filesystem::path& game_root, std::string_view language = "EN");
+  bool reload_vo(std::string_view language);
   bool init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir = {},
                       const std::filesystem::path& world_dir = {}, const std::filesystem::path& rally_package = {});
   const std::string& acoustics_world_key() const { return acoustics_world_key_; }
@@ -166,6 +168,8 @@ class AudioHost {
   std::unique_ptr<audio::Radio> radio_;
   bool radio_tried_ = false;
   bool radio_non_blocking_ = true;
+  std::filesystem::path radio_game_root_;
+  std::string radio_language_ = "EN";
 
   // Runtime custom radio station manager & unified station cycle.
   void ensure_runtime_radio_configured();
@@ -208,6 +212,8 @@ class AudioHost {
   bool has_codriver_ = false;
   bool vo_tried_ = false;
   bool has_vo_ = false;
+  std::filesystem::path vo_game_root_;
+  std::string vo_language_ = "EN";
   bool acoustics_tried_ = false;
   bool has_acoustics_ = false;
   bool rally_sfx_tried_ = false;

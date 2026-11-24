@@ -21,14 +21,18 @@ void draw_career_header(ui::List& l, const DriveHud& st, const Layout& g) {
 void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
   const float s = g.s;
   const bool pause = st.pause || st.menu_title == "paused";
-  static const SceneDraw pause_sc(ui_scene("925_PAUSE_MENU"), true);
+  const SceneDraw pause_sc = resolve_scene_draw("925_PAUSE_MENU", true);
   const SceneFrame pf{0.5f * g.w - 640 * s, 0.5f * g.h - 360 * s, s};
 
   // Retail 925_PAUSE_MENU keeps Colorado bright & crystal clear behind the tilted brushes,
   // with subtle BG_Noise (BGNOISE01 + BGNOISEMASK01 via 2-tex kImageMasked).
   if (pause && pause_sc.ok()) {
-    const int bg_noise = pause_sc.find("BG_Noise");
-    if (bg_noise >= 0) pause_sc.model(l, pf, bg_noise, 0.22f);
+    SceneBindings bg_bind;
+    bg_bind.ignore_zero_alpha = true;
+    bg_bind.opacity = 0.22f;
+    if (pause_sc.draw_subtree(l, pf, "BG_Noise", bg_bind) == 0) {
+      ui4::subtle_vignette(l, g.w, g.h, 0.16f);
+    }
   } else {
     ui4::subtle_vignette(l, g.w, g.h, pause ? 0.16f : 0.42f);
   }
@@ -175,7 +179,7 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
 // (e) Authentic Forza Horizon Title Screen (120_P_PRE_SPLASH parity).
 void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, double time) {
   const float s = g.s;
-  static const SceneDraw splash_sc(ui_scene("120_P_PRE_SPLASH"), true);
+  const SceneDraw splash_sc = resolve_scene_draw("120_P_PRE_SPLASH", true);
   // Keep live 3D Colorado & car crisp and open (subtle bottom edge vignette only).
   ui4::subtle_vignette(l, g.w, g.h, ts.menu_phase ? 0.28f : 0.18f);
 
@@ -184,7 +188,7 @@ void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, do
 
   if (!ts.menu_phase) {
     // 120_P_PRE_SPLASH splash phase: Forza Horizon logo cleanly in upper third
-    // + Start@(910, 560) with PILL30PXPINLEFT + CONTROLLER/A_BUTTON so hero car stays unobstructed.
+    // + Start@(910, 560) with PILL30PXPINLEFT + active Accept glyph so hero car stays unobstructed.
     if (have_logo) {
       const float lw = 540 * s, lh = 162 * s;
       l.image(0.5f * g.w - 0.5f * lw, g.T(64), 0.5f * g.w + 0.5f * lw, g.T(64) + lh, logo_uv);
@@ -195,7 +199,7 @@ void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, do
       ui4::brush(l, g.C(382), g.T(142), g.C(898), g.T(216), ui4::kPink, true);
       l.text(0.5f * g.w, g.T(151), "HORIZON", font(ui::Font::kE, 58 * s, kText, Align::kCenter));
     }
-    // 120_P_PRE_SPLASH Start@(910, 612) PILL30PXPINLEFT + CONTROLLER/A_BUTTON (cleanly below hero car).
+    // 120_P_PRE_SPLASH Start@(910, 612) PILL30PXPINLEFT + active Accept glyph (cleanly below hero car).
     float start_cx = g.R(910), start_cy = g.B(612);
     if (splash_sc.ok()) {
       if (const int sn = splash_sc.find("Start"); sn >= 0) {
@@ -205,9 +209,10 @@ void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, do
       }
     }
     const float pulse = 0.78f + 0.22f * float(std::cos(time * 3.4));
-    const std::string prompt = "PRESS [A] OR ENTER TO START";
+    const std::string prompt = "PRESS TO START";
     TextStyle ps = font(ui::Font::kB, 16 * s, ui::fade(kText, pulse));
-    const float pw = ui::List::measure(prompt, ps) + 64 * s;
+    const float glyph_pad = ui4::glyph_set() == ui4::GlyphSet::kKeyboard ? 72 * s : 44 * s;
+    const float pw = ui::List::measure(prompt, ps) + glyph_pad + 22 * s;
     const float px0 = std::clamp(start_cx - 0.5f * pw, g.L(80), g.w - pw - g.L(60));
     const float px1 = px0 + pw;
     const float py0 = start_cy - 19 * s, py1 = start_cy + 19 * s;
@@ -217,13 +222,10 @@ void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, do
     } else {
       ui4::pill(l, px0, py0, px1, py1, ui4::kPillGrey, ui4::PillKind::kMenu);
     }
-    std::array<float, 4> abtn;
     const float cy = 0.5f * (py0 + py1);
-    if (ui_texture("CONTROLLER/A_BUTTON", abtn))
-      l.image(px0 + 14 * s, cy - 11 * s, px0 + 36 * s, cy + 11 * s, abtn, ui::fade(rgba(255, 255, 255), pulse));
-    else
-      l.circle(px0 + 25 * s, cy, 9.5f * s, ui::fade(kGreen, pulse));
-    l.text(px0 + 44 * s, cy - 8.0f * s, prompt, ps);
+    const float gx = px0 + (ui4::glyph_set() == ui4::GlyphSet::kKeyboard ? 36 * s : 25 * s);
+    ui4::button_glyph(l, gx, cy, 10.5f * s, "A", pulse);
+    l.text(px0 + glyph_pad, cy - 8.0f * s, prompt, ps);
     l.add_hit(px0, py0, px1, py1, ui::kHitConfirm, 0);
     l.text(g.R(1210), g.B(672), "FORZA HORIZON  //  COLORADO FESTIVAL",
            font(ui::Font::kB, 12 * s, rgba(220, 224, 232, 190), Align::kRight));

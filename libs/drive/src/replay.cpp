@@ -13,12 +13,34 @@ namespace drive {
 namespace {
 
 constexpr char kReplayMagic[8] = {'S', 'H', 'F', 'T', 'R', 'E', 'P', 'L'};
-constexpr uint32_t kReplayVersion = 2;
+constexpr uint32_t kReplayVersion = 3;
 constexpr uint32_t kMaxFramesFile = 360000;   // 100 minutes at 60 Hz
 constexpr uint32_t kMaxCarsPerFrame = 128;
 constexpr uint32_t kMaxRosterEntries = 256;
 constexpr uint32_t kMaxMarkers = 1024;
 constexpr uint32_t kMaxStringBytes = 1024;
+
+struct ReplayCarSampleLegacyV2 {
+  uint32_t slot;
+  float pos[3];
+  float quat[4];
+  float vel[3];
+  float speed_mps;
+  float rpm;
+  float redline_rpm;
+  int8_t gear;
+  uint8_t throttle_u8;
+  uint8_t brake_u8;
+  uint8_t handbrake_u8;
+  int8_t steer_i8;
+  uint8_t race_place;
+  uint16_t lamp_bits;
+  float wheel_steer[4];
+  float wheel_spin[4];
+  float wheel_omega[4];
+  float wheel_y[4];
+};
+static_assert(sizeof(ReplayCarSampleLegacyV2) == 128);
 
 uint32_t crc32_bytes(const uint8_t* data, size_t len) {
   uint32_t crc = 0xFFFFFFFFu;
@@ -95,7 +117,15 @@ ReplayCarSample blend_car(const ReplayCarSample& a, const ReplayCarSample& b, fl
     out.wheel_spin[i] = lerp_angle(a.wheel_spin[i], b.wheel_spin[i], t);
     out.wheel_omega[i] = lerpf(a.wheel_omega[i], b.wheel_omega[i]);
     out.wheel_y[i] = lerpf(a.wheel_y[i], b.wheel_y[i]);
+    out.wheel_slip[i] = lerpf(a.wheel_slip[i], b.wheel_slip[i]);
+    out.wheel_compression[i] = lerpf(a.wheel_compression[i], b.wheel_compression[i]);
+    out.wheel_temp_c[i] = lerpf(a.wheel_temp_c[i], b.wheel_temp_c[i]);
+    out.damage[i] = lerpf(a.damage[i], b.damage[i]);
   }
+  out.engine_power_kw = lerpf(a.engine_power_kw, b.engine_power_kw);
+  out.engine_torque_nm = lerpf(a.engine_torque_nm, b.engine_torque_nm);
+  out.boost_psi = lerpf(a.boost_psi, b.boost_psi);
+  out.boost_max_psi = b.boost_max_psi > 0.0f ? b.boost_max_psi : a.boost_max_psi;
   return out;
 }
 
@@ -180,7 +210,7 @@ CarLampState unpack_replay_lamps(uint16_t bits) {
 
 ReplayCarSample ReplayCarSample::from_vehicle(uint32_t slot, const Vehicle& v, const CarLampState& lamps,
                                               double throttle, double brake, double handbrake, double steer,
-                                              uint8_t place) {
+                                              uint8_t place, const CarDamageState* dmg) {
   ReplayCarSample s;
   s.slot = slot;
   const Vec3 p = v.centre_of_mass();  // matches Vehicle::Pose::pos
@@ -208,11 +238,44 @@ ReplayCarSample ReplayCarSample::from_vehicle(uint32_t slot, const Vehicle& v, c
   s.lamp_bits = pack_replay_lamps(lamps);
   for (int i = 0; i < 4; ++i) {
     const auto& w = v.wheels()[size_t(i)];
+    const int axle = i < 2 ? 0 : 1;
     s.wheel_steer[i] = float(w.steer);
     s.wheel_spin[i] = float(w.spin);
     s.wheel_omega[i] = float(w.omega);
     s.wheel_y[i] = float(w.centre.y);
+    s.wheel_slip[i] = w.contact ? float(std::hypot(w.slip_ratio, w.slip_angle)) : 0.0f;
+    const double half_travel = std::max(0.04, v.params().bump_travel[size_t(axle)]);
+    s.wheel_compression[i] =
+        w.contact ? float(std::clamp(0.5 + 0.5 * (w.compression / half_travel), 0.0, 1.0)) : 0.0f;
+    s.wheel_temp_c[i] = float(v.tyre_temp_c(i));
   }
+  if (dmg != nullptr) {
+    s.damage[0] = std::clamp(dmg->engine_damage, 0.0f, 1.0f);
+    s.damage[1] = std::clamp(std::max(dmg->trans_damage, float(v.transmission_damage())), 0.0f, 1.0f);
+    s.damage[2] = std::clamp(
+        std::max({dmg->suspension_damage[0], dmg->suspension_damage[1], dmg->suspension_damage[2],
+                  dmg->suspension_damage[3]}),
+        0.0f, 1.0f);
+    s.damage[3] = std::clamp(
+        std::max({dmg->aero_damage, dmg->scratch_amount, dmg->zone_front, dmg->zone_rear, dmg->zone_left,
+                  dmg->zone_right}),
+        0.0f, 1.0f);
+  } else {
+    const auto& dm = v.damage_mods();
+    s.damage[0] = float(std::clamp((1.0 - dm.engine_torque) / 0.45, 0.0, 1.0));
+    s.damage[1] = float(std::clamp(std::max(v.transmission_damage(), dm.shift_time_add / 0.60), 0.0, 1.0));
+    const double min_susp =
+        std::min({dm.suspension_scale[0], dm.suspension_scale[1], dm.suspension_scale[2], dm.suspension_scale[3]});
+    s.damage[2] = float(std::clamp((1.0 - min_susp) / 0.42, 0.0, 1.0));
+    s.damage[3] = float(std::clamp((1.0 - dm.aero_downforce) / 0.50, 0.0, 1.0));
+  }
+  const double tq = v.engine_torque(v.rpm(), v.engine_throttle());
+  constexpr double kRpmToRadS = 3.14159265358979323846 / 30.0;
+  s.engine_torque_nm = float(tq);
+  s.engine_power_kw = float((tq * v.rpm() * kRpmToRadS) / 1000.0);
+  const bool has_fi = v.params().has_turbo || v.params().has_supercharger;
+  s.boost_psi = has_fi ? float(std::max(0.0, v.boost_psi())) : 0.0f;
+  s.boost_max_psi = has_fi ? float(std::max(1.0, v.params().boost_max_psi)) : 0.0f;
   return s;
 }
 
@@ -581,7 +644,33 @@ bool load_replay_file(const std::filesystem::path& path, ReplayRecording& out, s
     }
     out.frames[fi].cars.resize(car_n);
     for (uint32_t ci = 0; ci < car_n; ++ci) {
-      if (!r.pod(out.frames[fi].cars[ci])) {
+      if (version <= 2) {
+        ReplayCarSampleLegacyV2 legacy{};
+        if (!r.pod(legacy)) {
+          if (error) *error = "corrupt replay car sample";
+          return false;
+        }
+        auto& dst = out.frames[fi].cars[ci];
+        dst = ReplayCarSample{};
+        dst.slot = legacy.slot;
+        std::memcpy(dst.pos, legacy.pos, sizeof(dst.pos));
+        std::memcpy(dst.quat, legacy.quat, sizeof(dst.quat));
+        std::memcpy(dst.vel, legacy.vel, sizeof(dst.vel));
+        dst.speed_mps = legacy.speed_mps;
+        dst.rpm = legacy.rpm;
+        dst.redline_rpm = legacy.redline_rpm;
+        dst.gear = legacy.gear;
+        dst.throttle_u8 = legacy.throttle_u8;
+        dst.brake_u8 = legacy.brake_u8;
+        dst.handbrake_u8 = legacy.handbrake_u8;
+        dst.steer_i8 = legacy.steer_i8;
+        dst.race_place = legacy.race_place;
+        dst.lamp_bits = legacy.lamp_bits;
+        std::memcpy(dst.wheel_steer, legacy.wheel_steer, sizeof(dst.wheel_steer));
+        std::memcpy(dst.wheel_spin, legacy.wheel_spin, sizeof(dst.wheel_spin));
+        std::memcpy(dst.wheel_omega, legacy.wheel_omega, sizeof(dst.wheel_omega));
+        std::memcpy(dst.wheel_y, legacy.wheel_y, sizeof(dst.wheel_y));
+      } else if (!r.pod(out.frames[fi].cars[ci])) {
         if (error) *error = "corrupt replay car sample";
         return false;
       }

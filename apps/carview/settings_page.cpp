@@ -1783,4 +1783,61 @@ std::string SettingsPage::value(const std::string& name) const {
   return {};
 }
 
+drive::ControllerLayout SettingsPage::active_controller_layout() const {
+  const LiveSettings ls = live_settings();
+  return drive::apply_handbrake_clutch_swap(drive::default_controller_layout(ls.controls.layout_id),
+                                            ls.controls.switch_handbrake_clutch);
+}
+
+std::vector<SettingsPage::ControllerDiagramCallout> SettingsPage::controller_diagram_callouts() const {
+  const drive::ControllerLayout lay = active_controller_layout();
+  auto pretty_action = [](std::string_view raw) -> std::string {
+    if (raw == "Gas") return "GAS";
+    if (raw == "Brake") return "BRAKE";
+    if (raw == "Handbrake") return "HANDBRAKE";
+    if (raw == "Clutch") return "CLUTCH";
+    if (raw == "ShiftUp") return "SHIFT UP";
+    if (raw == "ShiftDown") return "SHIFT DOWN";
+    if (raw == "Rewind") return "REWIND";
+    if (raw == "SwitchCamera") return "CAMERA";
+    if (raw == "LookStraightBack") return "LOOK BACK";
+    if (raw == "Map") return "MAP";
+    if (raw == "RadioLeft" || raw == "RadioRight") return "RADIO";
+    return std::string(raw);
+  };
+  std::string sel_name;
+  if (row_ >= 0 && size_t(row_) < rows_.size()) sel_name = rows_[size_t(row_)].name;
+  else if (on_rebind_row()) sel_name = rebinds_[size_t(row_ - int(rows_.size()))].name;
+  for (char& c : sel_name) c = char(std::toupper(static_cast<unsigned char>(c)));
+
+  auto make = [&](const char* btn, std::string act, bool left) {
+    bool hi = false;
+    if (!sel_name.empty()) {
+      if (sel_name.find("HANDBRAKE") != std::string::npos && (act == "HANDBRAKE" || act == "CLUTCH")) hi = true;
+      else if (sel_name.find("CLUTCH") != std::string::npos && (act == "CLUTCH" || act == "HANDBRAKE")) hi = true;
+      else if (sel_name.find("THROTTLE") != std::string::npos && act == "GAS") hi = true;
+      else if (sel_name.find("BRAKE") != std::string::npos && act == "BRAKE") hi = true;
+      else if (sel_name.find("STEER") != std::string::npos && act == "STEER") hi = true;
+      else if (sel_name.find("REWIND") != std::string::npos && act == "REWIND") hi = true;
+      else if (sel_name.find("CAMERA") != std::string::npos && act == "CAMERA") hi = true;
+    }
+    return ControllerDiagramCallout{btn, std::move(act), left, hi};
+  };
+
+  return {
+      make("LT", pretty_action(lay.action_for(drive::PadControl::kLeftTrigger)), true),
+      make("LB", pretty_action(lay.action_for(drive::PadControl::kLeftShoulder)), true),
+      make("LS", "STEER", true),
+      make("DPAD_LR", "RADIO", true),
+      make("BACK", pretty_action(lay.action_for(drive::PadControl::kBack)), true),
+      make("RT", pretty_action(lay.action_for(drive::PadControl::kRightTrigger)), false),
+      make("RB", pretty_action(lay.action_for(drive::PadControl::kRightShoulder)), false),
+      make("Y", pretty_action(lay.action_for(drive::PadControl::kButtonY)), false),
+      make("B", pretty_action(lay.action_for(drive::PadControl::kButtonB)), false),
+      make("X", pretty_action(lay.action_for(drive::PadControl::kButtonX)), false),
+      make("A", pretty_action(lay.action_for(drive::PadControl::kButtonA)), false),
+      make("RS", pretty_action(lay.action_for(drive::PadControl::kRightStickClick)), false),
+  };
+}
+
 }  // namespace carview

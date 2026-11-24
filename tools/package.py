@@ -16,6 +16,8 @@ It holds no game data: setup bakes the player's own files into the play folder.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -60,6 +62,44 @@ def macos_info_plist(ver: str) -> str:
 """
 
 
+def moltenvk_icd_json(library_path: str) -> str:
+    manifest = {
+        "file_format_version": "1.0.0",
+        "ICD": {
+            "library_path": library_path,
+            "api_version": "1.2.0",
+            "is_portability_driver": True,
+        },
+    }
+    return json.dumps(manifest, indent=2) + "\n"
+
+
+def macos_launcher_wrapper() -> str:
+    return """#!/bin/sh
+set -eu
+MACOS_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+CONTENTS_DIR="$(dirname -- "$MACOS_DIR")"
+FW_DIR="$CONTENTS_DIR/Frameworks"
+ICD_FW="$FW_DIR/MoltenVK_icd.json"
+ICD_RES="$CONTENTS_DIR/Resources/vulkan/icd.d/MoltenVK_icd.json"
+if [ -f "$ICD_FW" ]; then
+  ICD_PATH="$ICD_FW"
+elif [ -f "$ICD_RES" ]; then
+  ICD_PATH="$ICD_RES"
+else
+  ICD_PATH=""
+fi
+if [ -n "$ICD_PATH" ]; then
+  export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-$ICD_PATH}"
+  export VK_DRIVER_FILES="${VK_DRIVER_FILES:-$ICD_PATH}"
+fi
+if [ -d "$FW_DIR" ]; then
+  export DYLD_FALLBACK_LIBRARY_PATH="$FW_DIR${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+fi
+exec "$MACOS_DIR/shift-launcher-bin" "$@"
+"""
+
+
 def find_built_program(build: Path, prog: str, subdir: str, exe: str) -> Path | None:
     for cand in (build / "apps" / subdir / (prog + exe), build / "apps" / prog / (prog + exe), build / (prog + exe)):
         if cand.is_file():
@@ -93,21 +133,37 @@ def main() -> int:
         bin_dir = app / "MacOS"
         fw_dir = app / "Frameworks"
         res_dir = app / "Resources"
+        icd_dir = res_dir / "vulkan" / "icd.d"
         bin_dir.mkdir(parents=True)
         fw_dir.mkdir(parents=True)
-        res_dir.mkdir(parents=True)
-        (app / "Info.plist").write_text(macos_info_plist(ver), encoding="utf-8")
+        icd_dir.mkdir(parents=True)
+        (app / "Info.plist").write_text(macos_info_plist(ver), encoding="utf-8", newline="\n")
         for prog, subdir in PROGRAMS:
             src = find_built_program(a.build, prog, subdir, exe)
             if not src:
                 print(f"package: missing {prog} in {a.build}")
                 return 1
-            shutil.copy2(src, bin_dir / src.name)
+            dst_name = "shift-launcher-bin" if prog == "shift-launcher" else src.name
+            shutil.copy2(src, bin_dir / dst_name)
+        wrapper = bin_dir / "shift-launcher"
+        wrapper.write_text(macos_launcher_wrapper(), encoding="utf-8", newline="\n")
+        os.chmod(wrapper, 0o755)
         if a.moltenvk:
             if not a.moltenvk.is_file():
                 print(f"package: missing --moltenvk file {a.moltenvk}")
                 return 1
             shutil.copy2(a.moltenvk, fw_dir / a.moltenvk.name)
+            # Bundle sibling Vulkan loader dylib if present next to libMoltenVK.dylib.
+            sibling_vk = a.moltenvk.parent / "libvulkan.1.dylib"
+            if sibling_vk.is_file() and sibling_vk.name != a.moltenvk.name:
+                shutil.copy2(sibling_vk, fw_dir / sibling_vk.name)
+            # Generate MoltenVK ICD manifests both next to the dylib and in standard bundle Resources/vulkan/icd.d/.
+            (fw_dir / "MoltenVK_icd.json").write_text(
+                moltenvk_icd_json(f"./{a.moltenvk.name}"), encoding="utf-8", newline="\n"
+            )
+            (icd_dir / "MoltenVK_icd.json").write_text(
+                moltenvk_icd_json(f"../../../Frameworks/{a.moltenvk.name}"), encoding="utf-8", newline="\n"
+            )
         gcdb = ROOT / "config" / "gamecontrollerdb.txt"
         if gcdb.is_file():
             shutil.copy2(gcdb, res_dir / gcdb.name)
@@ -145,7 +201,7 @@ def main() -> int:
         for f in sorted(stage.rglob("*")):
             if f.is_file():
                 info = zipfile.ZipInfo.from_file(f, f"{name}/{f.relative_to(stage).as_posix()}")
-                run = f.stem in prog_names or f.suffix in (".sh", ".py")
+                run = f.stem in prog_names or f.stem == "shift-launcher-bin" or f.suffix in (".sh", ".py")
                 info.external_attr = (0o100755 if run else 0o100644) << 16
                 info.create_system = 3
                 info.compress_type = zipfile.ZIP_DEFLATED

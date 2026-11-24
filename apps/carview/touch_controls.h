@@ -52,6 +52,7 @@ struct TouchLayout {
   TouchRect btn_rewind;
   TouchRect btn_radio;
   TouchRect btn_mode;     // cycles Buttons / Thumbstick / Tilt
+  TouchRect setup_pill;   // Android top-center safe-bar SETUP pill (clear of top-right HUD & touch pads)
 };
 
 struct TouchDriveOutput {
@@ -116,8 +117,13 @@ class TouchControls {
     lay.shift_up = {sh_x0, lay.brake.y0 - 0.012f, sh_x1, lay.brake.y0 - 0.012f + sh_h};
     lay.shift_down = {sh_x0, lay.shift_up.y1 + 0.014f, sh_x1, lay.shift_up.y1 + 0.014f + sh_h};
 
-    const float top_y0 = my;
-    const float top_y1 = my + 0.064f;
+    // Android SETUP pill sits in the top-center safe bar, clear of both the
+    // top-left and top-right driving HUD blocks and above the quick-action row.
+    const float pill_w = aspect >= 2.0f ? 0.072f : (aspect <= 1.5f ? 0.110f : 0.088f);
+    lay.setup_pill = {0.5f - pill_w * 0.5f, 0.008f, 0.5f + pill_w * 0.5f, 0.064f};
+
+    const float top_y0 = std::max(my, lay.setup_pill.y1 + 0.014f);
+    const float top_y1 = top_y0 + 0.064f;
     const float cw = aspect >= 2.0f ? 0.064f : 0.072f;
     const float cg = 0.010f;
     const float group_w = 6.0f * cw + 5.0f * cg;
@@ -135,6 +141,23 @@ class TouchControls {
   // tachometer when touch controls are visible (guaranteed clear of all pads).
   static inline bool rects_overlap(const TouchRect& a, const TouchRect& b) {
     return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+  }
+
+  // Normalized [0..1] bounding box reserved by the top-right HUD (position, timer, player bar).
+  static inline TouchRect top_right_hud_rect(float screen_w, float screen_h) {
+    const float aspect = (screen_h > 1.0f) ? (screen_w / screen_h) : (16.0f / 9.0f);
+    return {aspect <= 1.5f ? 0.70f : 0.74f, 0.0f, 1.0f, 0.24f};
+  }
+
+  // Normalized [0..1] bounding box reserved by the top-left HUD (laps, progress, filter bar).
+  static inline TouchRect top_left_hud_rect(float screen_w, float screen_h) {
+    const float aspect = (screen_h > 1.0f) ? (screen_w / screen_h) : (16.0f / 9.0f);
+    return {0.0f, 0.0f, aspect <= 1.5f ? 0.26f : 0.24f, 0.20f};
+  }
+
+  // Normalized [0..1] bounding box of the Android top-center SETUP pill.
+  static inline TouchRect android_setup_pill_rect(float screen_w, float screen_h) {
+    return compute_layout(screen_w, screen_h).setup_pill;
   }
 
   static inline void hud_safe_rects(float screen_w, float screen_h, TouchRect& minimap_out, TouchRect& tach_out) {

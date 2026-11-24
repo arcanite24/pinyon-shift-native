@@ -70,6 +70,12 @@ void draw_outpost_hub_ui4(ui::List& l, float screen_w, float screen_h, std::stri
 void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const SettingsPage& page,
                        bool live_overlay = false);
 
+// Returns true when `s` is empty or looks like an unresolved ASCII string-table
+// identifier key (`IDS_*`, `UI_*`, `STR_*`, `_&*`, `snake_case_id`). Strings
+// containing non-ASCII UTF-8 bytes (JP, CHT, CHS, KO, Cyrillic, accented Latin)
+// are localized human text and always return false.
+bool looks_like_raw_key(std::string_view s);
+
 // ------------------------------------------------ Animated Loading Screen
 
 class LoadingScreen {
@@ -83,6 +89,7 @@ class LoadingScreen {
   // LOADING/BGLOADINGIMAGES/* & LOADING/TIPIMAGES/* assets.
   bool load_definitions(const std::filesystem::path& game_root, const std::string& group = "freeroam");
   void set_group(const std::string& group) { group_ = group; }
+  const std::string& group() const { return group_; }
   void set_bg_index(int idx) { bg_idx_ = idx; }
   void set_tips(std::vector<std::string> tips);
   void set_progress(float p);

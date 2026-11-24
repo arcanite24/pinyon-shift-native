@@ -624,6 +624,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (app.rally_results_open) d.rally_results = &app.rally_results_state;
         d.touch_hud_active = app.touch_controls.visible(vehicle.time());
         d.metric_units = app.metric_units;
+        replay_viewer.set_metric_units(app.metric_units);
         d.subtitle_active = !app.campaign.is_cinematic_camera_active() &&
                             app.campaign.flow().dialogs().active() &&
                             !app.campaign.flow().dialogs().current().subtitle.empty();

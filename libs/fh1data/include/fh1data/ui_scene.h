@@ -103,9 +103,61 @@ struct UiBgfRelation {
   std::vector<uint32_t> children;
 };
 
+enum class UiBgfPropTarget : uint8_t {
+  kUnknown = 0,
+  kPosX,
+  kPosY,
+  kScaleX,
+  kScaleY,
+  kRotation,
+  kColorR,
+  kColorG,
+  kColorB,
+  kColorRgba,
+  kAlpha,
+};
+
+// Clean-room FNV-1a 32-bit property attribute hashes recognized by classify_bgf_property().
+namespace bgf_attr {
+inline constexpr uint32_t fnv1a_32(std::string_view s) {
+  uint32_t h = 2166136261u;
+  for (unsigned char c : s) {
+    h ^= c;
+    h *= 16777619u;
+  }
+  return h;
+}
+inline constexpr uint32_t kPosX = fnv1a_32("position.x");
+inline constexpr uint32_t kPosY = fnv1a_32("position.y");
+inline constexpr uint32_t kScaleX = fnv1a_32("scale.x");
+inline constexpr uint32_t kScaleY = fnv1a_32("scale.y");
+inline constexpr uint32_t kRotation = fnv1a_32("rotation");
+inline constexpr uint32_t kColorR = fnv1a_32("color.r");
+inline constexpr uint32_t kColorG = fnv1a_32("color.g");
+inline constexpr uint32_t kColorB = fnv1a_32("color.b");
+inline constexpr uint32_t kColorRgba = fnv1a_32("color");
+inline constexpr uint32_t kAlpha = fnv1a_32("alpha");
+}  // namespace bgf_attr
+
+// Maps a BGF attribute hash and/or channel tag byte to a semantic property target.
+UiBgfPropTarget classify_bgf_property(uint32_t attr_hash, uint32_t raw_tag = 0);
+
+struct UiBgfStateRecord {
+  uint32_t state_hash = 0;
+  uint32_t target_item = 0;
+  uint32_t attr_hash = 0;
+  uint32_t value_type = 0;
+  uint32_t raw_value = 0;
+  float value = 0.0f;
+  uint32_t extra = 0;
+  UiBgfPropTarget target = UiBgfPropTarget::kUnknown;
+};
+
 struct UiBgfStyle {
   uint32_t owner_item = 0;
   uint16_t state_count = 0;
+  uint32_t style_id = 0;
+  std::vector<UiBgfStateRecord> states;
 };
 
 struct UiBgfKeyframe {
@@ -115,11 +167,29 @@ struct UiBgfKeyframe {
   float value = 0.0f;
   uint32_t raw_tag = 0;
   uint32_t raw_value = 0;
+  UiBgfPropTarget target = UiBgfPropTarget::kUnknown;
 };
 
 struct UiBgfTrack {
   uint32_t owner_item = 0;
   std::vector<UiBgfKeyframe> keys;
+  uint32_t target_item = 0;
+  uint32_t attr_hash = 0;
+  UiBgfPropTarget target = UiBgfPropTarget::kUnknown;
+};
+
+struct UiBgfAnimKey {
+  float time = 0.0f;
+  float value = 0.0f;
+  uint32_t raw_value = 0;
+};
+
+struct UiBgfAnimChannel {
+  uint32_t attr_hash = 0;
+  uint8_t channel_tag = 0;
+  UiBgfPropTarget target = UiBgfPropTarget::kUnknown;
+  std::vector<UiBgfAnimKey> keys;
+  std::vector<uint32_t> events;
 };
 
 struct UiBgfAnimation {
@@ -127,6 +197,10 @@ struct UiBgfAnimation {
   uint32_t track_count = 0;
   uint32_t key_count = 0;
   uint32_t event_count = 0;
+  uint32_t name_hash = 0;
+  float duration = 0.0f;
+  uint8_t flags = 0;
+  std::vector<UiBgfAnimChannel> channels;
 };
 
 struct UiBgfDocument {
@@ -168,8 +242,9 @@ bool parse_ui_bsg(std::span<const uint8_t> data, UiScene& out, std::string* erro
 // tracks/keyframes, and animations.
 bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string* error);
 
-// Evaluates a BGF keyframe track linearly at `time_s`.
+// Evaluates a BGF keyframe track or animation channel linearly at `time_s`.
 float evaluate_bgf_track(const UiBgfTrack& track, float time_s, float fallback = 0.0f);
+float evaluate_bgf_anim_channel(const UiBgfAnimChannel& ch, float time_s, float fallback = 0.0f);
 
 // SUPER_STACKER reflow: computes packed Y (or X) positions for `count` visible
 // rows starting at `origin` with pitch `step` (negative for top-down in scene y-up

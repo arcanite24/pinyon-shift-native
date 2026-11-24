@@ -828,6 +828,7 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     rh.cars = 8;
     rh.clock = 152.0;
     rh.finish_time = 148.0;
+    rh.page_enter_time = 150.0;
     rh.base_credits = 8500;
     rh.mileage_bonus = 950;
     rh.difficulty_pct = 55;
@@ -2116,6 +2117,409 @@ void test_round3_subtitle_lift_upgrade_units_and_rewind_touch() {
   }
 }
 
+void test_round2_phase6_ui4_parity() {
+  // 1. BGF binary parser: state records & animation channels/events (pos X/Y, scale, rotation, color, alpha).
+  {
+    std::vector<uint8_t> buf(0x8C, 0);
+    std::memcpy(buf.data() + 6, "AnarkBGF", 8);
+    auto put_u32 = [](std::vector<uint8_t>& v, size_t off, uint32_t x) {
+      v[off + 0] = uint8_t((x >> 24) & 0xFF);
+      v[off + 1] = uint8_t((x >> 16) & 0xFF);
+      v[off + 2] = uint8_t((x >> 8) & 0xFF);
+      v[off + 3] = uint8_t(x & 0xFF);
+    };
+    auto push_u32 = [](std::vector<uint8_t>& v, uint32_t x) {
+      v.push_back(uint8_t((x >> 24) & 0xFF));
+      v.push_back(uint8_t((x >> 16) & 0xFF));
+      v.push_back(uint8_t((x >> 8) & 0xFF));
+      v.push_back(uint8_t(x & 0xFF));
+    };
+    auto push_u16 = [](std::vector<uint8_t>& v, uint16_t x) {
+      v.push_back(uint8_t((x >> 8) & 0xFF));
+      v.push_back(uint8_t(x & 0xFF));
+    };
+    auto push_f32 = [&](std::vector<uint8_t>& v, float f) {
+      uint32_t bits = 0;
+      std::memcpy(&bits, &f, 4);
+      push_u32(v, bits);
+    };
+    auto append_section = [&](const std::vector<uint8_t>& sec) {
+      push_u32(buf, uint32_t(sec.size()));
+      buf.insert(buf.end(), sec.begin(), sec.end());
+    };
+
+    constexpr uint32_t kItemHash = 0x11223344u;
+    constexpr uint32_t kFbfId = 42u;
+    constexpr uint32_t kStateHash = 0x55667788u;
+
+    put_u32(buf, 0x24, 1);  // element_count
+    put_u32(buf, 0x28, 0);  // wrapper_count
+    put_u32(buf, 0x2C, 0);  // property_count
+    put_u32(buf, 0x30, 0);  // relation_count
+    put_u32(buf, 0x3C, 0);  // identity_count
+    put_u32(buf, 0x44, 1);  // style_count
+    put_u32(buf, 0x4C, 1);  // track_count
+    put_u32(buf, 0x5C, 1);  // anim_count
+    put_u32(buf, 0x88, 0);  // identity section size = 0
+
+    // Section 2: Items (1 item mapping kItemHash -> FBF object 42).
+    std::vector<uint8_t> items_sec;
+    push_u32(items_sec, kItemHash);
+    push_u32(items_sec, 0);
+    push_u32(items_sec, kFbfId);
+    items_sec.push_back(4);  // kind = model
+    items_sec.push_back(0);  // flags
+    push_u32(items_sec, 0);  // property count
+    append_section(items_sec);
+
+    // Section 3: Relations (empty).
+    append_section({});
+
+    // Section 4: Styles / States (1 style with 2 state records: PosX + Alpha).
+    std::vector<uint8_t> style_sec;
+    push_u32(style_sec, kItemHash);
+    push_u32(style_sec, 7u);   // style_id
+    push_u16(style_sec, 0u);   // reserved
+    push_u16(style_sec, 2u);   // state_count
+    // Record 0: PosX = 64.0
+    push_u32(style_sec, kStateHash);
+    push_u32(style_sec, kItemHash);
+    push_u32(style_sec, fh1::bgf_attr::kPosX);
+    push_u32(style_sec, 1u);
+    push_f32(style_sec, 64.0f);
+    push_u32(style_sec, 0u);
+    // Record 1: Alpha = 0.5
+    push_u32(style_sec, kStateHash);
+    push_u32(style_sec, kItemHash);
+    push_u32(style_sec, fh1::bgf_attr::kAlpha);
+    push_u32(style_sec, 10u);
+    push_f32(style_sec, 0.5f);
+    push_u32(style_sec, 0u);
+    append_section(style_sec);
+
+    // Section 5: Tracks (1 track with PosX keyframes 0 -> 100 over 0..1s).
+    std::vector<uint8_t> track_sec;
+    push_u32(track_sec, kItemHash);
+    push_u32(track_sec, 1u);  // child_count
+    push_u32(track_sec, fh1::bgf_attr::kPosX);
+    push_u32(track_sec, 2u);  // key_count
+    // Key 0
+    push_u32(track_sec, kItemHash);
+    push_u32(track_sec, fh1::bgf_attr::kPosX);
+    push_f32(track_sec, 0.0f);
+    push_u32(track_sec, 1u);
+    push_f32(track_sec, 0.0f);
+    // Key 1
+    push_u32(track_sec, kItemHash);
+    push_u32(track_sec, fh1::bgf_attr::kPosX);
+    push_f32(track_sec, 1.0f);
+    push_u32(track_sec, 1u);
+    push_f32(track_sec, 100.0f);
+    append_section(track_sec);
+
+    // Section 6: Empty companion table.
+    append_section({});
+
+    // Section 7: Animations (1 anim with 2 channels: ScaleX 1->2 and Rotation 0->0.5, plus 1 event).
+    std::vector<uint8_t> anim_sec;
+    push_u32(anim_sec, 0xABCD0001u);  // name_hash
+    push_u32(anim_sec, 0u);
+    push_f32(anim_sec, 2.0f);         // duration
+    push_u32(anim_sec, 0u);
+    push_u32(anim_sec, kItemHash);    // owner_item at +16
+    push_u32(anim_sec, 0u);
+    push_u32(anim_sec, 0u);
+    anim_sec.push_back(1u);           // flags at +28
+    push_u32(anim_sec, 2u);           // track_count at +29
+    // Channel 0: ScaleX (2 keys, 1 event)
+    push_u32(anim_sec, fh1::bgf_attr::kScaleX);
+    anim_sec.push_back(3u);
+    push_u32(anim_sec, 2u);
+    push_f32(anim_sec, 0.0f);
+    push_f32(anim_sec, 1.0f);
+    push_f32(anim_sec, 1.0f);
+    push_f32(anim_sec, 2.0f);
+    push_u32(anim_sec, 1u);
+    push_u32(anim_sec, 0xCAFE0001u);
+    // Channel 1: Rotation (2 keys, 0 events)
+    push_u32(anim_sec, fh1::bgf_attr::kRotation);
+    anim_sec.push_back(5u);
+    push_u32(anim_sec, 2u);
+    push_f32(anim_sec, 0.0f);
+    push_f32(anim_sec, 0.0f);
+    push_f32(anim_sec, 1.0f);
+    push_f32(anim_sec, 0.5f);
+    push_u32(anim_sec, 0u);
+    append_section(anim_sec);
+
+    fh1::UiBgfDocument doc;
+    std::string err;
+    check(fh1::parse_ui_bgf(buf, doc, &err), "parse_ui_bgf parses full state records and animation bodies");
+    check(doc.styles.size() == 1 && doc.styles[0].states.size() == 2,
+          "BGF style parses 2 state records instead of skipping them");
+    check(doc.styles[0].states[0].target == fh1::UiBgfPropTarget::kPosX &&
+              std::fabs(doc.styles[0].states[0].value - 64.0f) < 1e-4f,
+          "BGF state record 0 stores PosX=64");
+    check(doc.styles[0].states[1].target == fh1::UiBgfPropTarget::kAlpha &&
+              std::fabs(doc.styles[0].states[1].value - 0.5f) < 1e-4f,
+          "BGF state record 1 stores Alpha=0.5");
+    check(doc.tracks.size() == 1 && doc.tracks[0].target == fh1::UiBgfPropTarget::kPosX,
+          "BGF track stores semantic PosX property target");
+    check(doc.animations.size() == 1 && doc.animations[0].channels.size() == 2,
+          "BGF animation parses channel bodies instead of skipping them");
+    check(doc.animations[0].channels[0].target == fh1::UiBgfPropTarget::kScaleX &&
+              doc.animations[0].channels[0].events.size() == 1 &&
+              doc.animations[0].channels[0].events[0] == 0xCAFE0001u,
+          "BGF animation channel 0 preserves ScaleX target and event payload");
+    check(std::fabs(fh1::evaluate_bgf_anim_channel(doc.animations[0].channels[0], 0.5f) - 1.5f) < 1e-4f,
+          "evaluate_bgf_anim_channel interpolates ScaleX cleanly");
+
+    // Verify SceneDraw::draw_subtree() applies PosX & ScaleX tracks WITHOUT corrupting node alpha!
+    fh1::UiScene sc;
+    sc.has_bgf = true;
+    sc.bgf = doc;
+    fh1::UiObject m;
+    m.kind = fh1::UiObjectKind::kModel;
+    m.id = kFbfId;
+    m.name = "AnimatedQuad";
+    m.geometry = 0;
+    sc.objects.push_back(m);
+    fh1::UiObject mat;
+    mat.kind = fh1::UiObjectKind::kMaterial;
+    mat.id = 43;
+    mat.colour = {1.0f, 1.0f, 1.0f, 1.0f};
+    sc.objects.push_back(mat);
+    fh1::UiGeometry geo;
+    geo.index = 0;
+    geo.bounds_min = {-50, -50, 0};
+    geo.bounds_max = {50, 50, 0};
+    geo.is_unit_quad = true;
+    sc.geometries.push_back(geo);
+    fh1::UiNode nd;
+    nd.parent = -1;
+    nd.object = kFbfId;
+    nd.object_index = 0;
+    nd.opacity = 1.0f;
+    nd.alpha = 1.0f;
+    nd.bounds_min = {-20, -10, 0};
+    nd.bounds_max = {20, 10, 0};
+    sc.nodes.push_back(nd);
+
+    carview::SceneDraw sd(&sc, true);
+    carview::SceneFrame sf{0.0f, 0.0f, 1.0f};
+    carview::SceneBindings sb;
+    sb.anim_time = 0.5f;  // PosX = +50, ScaleX = 1.5x, Rotation = 0.25 rad; Alpha must stay 1.0!
+    carview::ui::List l_sub;
+    check(sd.draw_subtree(l_sub, sf, 0, sb) == 1 && l_sub.items().size() == 1,
+          "SceneDraw::draw_subtree emits animated model");
+    if (!l_sub.items().empty()) {
+      const auto& inst = l_sub.items()[0];
+      const uint8_t alpha_byte = uint8_t((inst.color >> 24) & 0xFF);
+      const float cx = 0.5f * (inst.rect[0] + inst.rect[2]);
+      check(alpha_byte == 255, "Non-alpha BGF PosX/ScaleX tracks do NOT overwrite alpha");
+      check(std::fabs(cx - 690.0f) < 2.0f, "BGF PosX track shifts node X (+50px from 640 -> 690)");
+    }
+
+    // Verify resolve_scene_draw() never permanently caches nullptr before scenes load!
+    carview::set_ui_scenes([](const std::string&) -> const fh1::UiScene* { return nullptr; });
+    check(!carview::resolve_scene_draw("TEST_LAZY_SCENE").ok(), "resolve_scene_draw returns invalid before load");
+    carview::set_ui_scenes([&](const std::string& nm) -> const fh1::UiScene* {
+      return nm == "TEST_LAZY_SCENE" ? &sc : nullptr;
+    });
+    check(carview::resolve_scene_draw("TEST_LAZY_SCENE").ok(),
+          "resolve_scene_draw refreshes cleanly after scenes/atlas load");
+    carview::set_ui_scenes({});
+  }
+
+  // 2. kKeyboard & PlayStation glyph routing + CONTROLLER/* substitution + Controls tab visual diagram.
+  {
+    check(carview::ui4::glyph_label_for("A", carview::ui4::GlyphSet::kKeyboard) == "ENTER",
+          "kKeyboard maps Accept/A -> ENTER");
+    check(carview::ui4::glyph_label_for("B", carview::ui4::GlyphSet::kKeyboard) == "ESC",
+          "kKeyboard maps Back/B -> ESC");
+    check(carview::ui4::glyph_label_for("REWIND", carview::ui4::GlyphSet::kKeyboard) == "R",
+          "kKeyboard maps Rewind -> R");
+    check(carview::ui4::glyph_label_for("MAP", carview::ui4::GlyphSet::kKeyboard) == "M",
+          "kKeyboard maps Map -> M");
+    check(carview::ui4::glyph_label_for("CAMERA", carview::ui4::GlyphSet::kKeyboard) == "V",
+          "kKeyboard maps Camera -> V");
+    check(carview::ui4::glyph_label_for("HORN", carview::ui4::GlyphSet::kKeyboard) == "H",
+          "kKeyboard maps Horn -> H");
+    check(carview::ui4::glyph_label_for("A", carview::ui4::GlyphSet::kPlayStation) == "CROSS" &&
+              carview::ui4::glyph_label_for("LB", carview::ui4::GlyphSet::kPlayStation) == "L1" &&
+              carview::ui4::glyph_label_for("RT", carview::ui4::GlyphSet::kPlayStation) == "R2",
+          "kPlayStation maps A/LB/RT -> CROSS/L1/R2");
+    check(carview::ui4::controller_button_from_texture("CONTROLLER/A_BUTTON") == "A" &&
+              carview::ui4::controller_button_from_texture("CONTROLLER/LBUMPER") == "LB" &&
+              carview::ui4::controller_button_from_texture("CONTROLLER/RTRIGGER") == "RT",
+          "controller_button_from_texture extracts logical button names");
+
+    const auto prev_gs = carview::ui4::glyph_set();
+    carview::ui4::set_glyph_set(carview::ui4::GlyphSet::kPlayStation);
+    carview::ui::List l_ps;
+    check(carview::ui4::draw_controller_texture(l_ps, 10, 10, 42, 42, "CONTROLLER/A_BUTTON"),
+          "draw_controller_texture routes CONTROLLER/A_BUTTON to PlayStation Cross");
+    check(!l_ps.items().empty(), "PlayStation glyph emits vector geometry");
+
+    carview::ui4::set_glyph_set(carview::ui4::GlyphSet::kKeyboard);
+    carview::ui::List l_kb;
+    carview::ui4::button_bar(l_kb, {{"A", "SELECT"}, {"B", "BACK"}, {"REWIND", "REWIND"}, {"MAP", "MAP"}}, 1280, 720);
+    check(l_kb.items().size() > 20, "kKeyboard button_bar renders crisp keycap badges");
+
+    // Controls tab visual controller layout diagram + SettingsPage callouts.
+    carview::SettingsPage sp;
+    sp.load({"--controller-layout", "2", "--switch-handbrake-clutch"});
+    sp.open();
+    sp.select_tab(int(carview::SettingsPage::Tab::kControls));
+    const auto callouts = sp.controller_diagram_callouts();
+    check(callouts.size() >= 10, "SettingsPage::controller_diagram_callouts populates full layout mappings");
+    carview::ui::List l_ctrl_tab;
+    carview::draw_settings_ui4(l_ctrl_tab, 1280.0f, 720.0f, sp, false);
+    carview::ui::List l_disp_tab;
+    sp.select_tab(int(carview::SettingsPage::Tab::kDisplay));
+    carview::draw_settings_ui4(l_disp_tab, 1280.0f, 720.0f, sp, false);
+    check(l_ctrl_tab.items().size() > l_disp_tab.items().size() + 30,
+          "Controls tab renders visual controller layout diagram with callouts");
+    carview::ui4::set_glyph_set(prev_gs);
+  }
+
+  // 3. Per-page Post-Race tally timing & Career/Affinity XP breakdown screen.
+  {
+    carview::reset_post_race_page_timer();
+    carview::RaceHud r;
+    r.phase = carview::RaceHud::kFinished;
+    r.finish_time = 100.0;
+    r.clock = 104.0;
+    r.results_page = 0;
+    check(std::fabs(carview::post_race_page_elapsed(r) - 0.0) < 1e-4,
+          "Post-race page 0 starts elapsed timer at 0 upon entry");
+    r.clock = 108.0;
+    check(std::fabs(carview::post_race_page_elapsed(r) - 4.0) < 1e-4,
+          "Post-race page 0 advances elapsed timer with clock");
+    // Enter Page 1 (CASH REWARD) at clock=108.0 (8s after finish_time!): must start fresh at 0.0s!
+    r.results_page = 1;
+    check(std::fabs(carview::post_race_page_elapsed(r) - 0.0) < 1e-4,
+          "Post-race Page 1 cash tally measures from page entry time, NOT finish_time");
+    r.clock = 108.7;
+    check(std::fabs(carview::post_race_page_elapsed(r) - 0.7) < 1e-4,
+          "Post-race Page 1 advances smoothly for cash tally animation");
+    // Enter Page 2 (POINTS & CAREER/AFFINITY XP) at clock=112.0 -> fresh 0.0s!
+    r.clock = 112.0;
+    r.results_page = 2;
+    check(std::fabs(carview::post_race_page_elapsed(r) - 0.0) < 1e-4,
+          "Post-race Page 2 wristband & XP tally starts fresh at 0.0s");
+    // Explicit page_enter_time override works deterministically.
+    r.page_enter_time = 110.5;
+    check(std::fabs(carview::post_race_page_elapsed(r) - 1.5) < 1e-4,
+          "Explicit RaceHud::page_enter_time computes exact elapsed time");
+
+    // Render Career / Driver Level & Manufacturer Affinity XP panel on Page 2 & Page 4.
+    r.credits = 15000;
+    r.band_name = "BLUE WRISTBAND";
+    r.band_before = 8000;
+    r.band_after = 9200;
+    r.band_lo = 5000;
+    r.band_hi = 12000;
+    r.driver_level = 12;
+    r.driver_xp = 2400;
+    r.driver_xp_total = 44000;
+    r.driver_next_xp = 50000;
+    r.affinity_make = "Nissan";
+    r.affinity_level = 5;
+    r.affinity_xp = 1500;
+    r.affinity_xp_total = 9500;
+    r.affinity_next_xp = 12500;
+    r.affinity_bonus_credits = 4500;
+    r.affinity_discount_pct = 25.0;
+    r.gift_car_name = "1997 Mazda RX-7";
+    carview::DriveHud d;
+    d.driving = true;
+    d.race = &r;
+    carview::ui::List l_p2, l_p4;
+    carview::build_drive_hud(l_p2, d, 1280.0f, 720.0f);
+    r.results_page = 4;
+    carview::build_drive_hud(l_p4, d, 1280.0f, 720.0f);
+    check(l_p2.items().size() > 40 && l_p4.items().size() > 30,
+          "Post-Race Page 2 & Page 4 emit Career/Driver Level, Affinity XP, and Gift Car badge");
+  }
+
+  // 4. Boost BAR/PSI units, live lap split delta (-0.42s green / +0.31s red), imperial world marker & showcase units.
+  {
+    check(carview::format_boost_unit(14.5037738, true) == "1.00 BAR", "Metric boost formats in BAR");
+    check(carview::format_boost_unit(14.5, false) == "14.5 PSI", "Imperial boost formats in PSI");
+    check(carview::format_split_delta(-0.42) == "-0.42s", "Negative lap split delta formats as -0.42s");
+    check(carview::format_split_delta(0.31) == "+0.31s", "Positive lap split delta formats as +0.31s");
+
+    carview::RaceHud r;
+    r.phase = carview::RaceHud::kRacing;
+    r.circuit = true;
+    r.lap = 2;
+    r.laps = 3;
+    r.clock = 84.5;
+    r.lap_time = 24.5;
+    r.best_lap = 60.0;
+    r.has_lap_split_delta = true;
+    r.lap_split_delta = -0.42;
+    r.showcase = true;
+    r.showcase_aircraft = "P-51 MUSTANG";
+    r.showcase_gap_m = 400.0;
+    carview::DriveHud d;
+    d.driving = true;
+    d.metric_units = false;
+    d.speedo_mode = 1;  // digital dial
+    d.has_boost = true;
+    d.boost_psi = 14.5;
+    d.boost_max_psi = 18.0;
+    d.race = &r;
+    carview::ui::List l_fast, l_slow;
+    carview::build_drive_hud(l_fast, d, 1280.0f, 720.0f);
+    r.lap_split_delta = 0.31;
+    carview::build_drive_hud(l_slow, d, 1280.0f, 720.0f);
+    auto has_color = [](const carview::ui::List& l, uint32_t col) {
+      for (const auto& it : l.items())
+        if (it.color == col) return true;
+      return false;
+    };
+    check(has_color(l_fast, carview::ui4::kGreen), "Faster lap split delta (-0.42s) renders green");
+    check(has_color(l_slow, carview::ui4::kRed), "Slower lap split delta (+0.31s) renders red");
+  }
+
+  // 5. Achievements scroll_row_ wiring & non-emoji ASCII/vector badge output.
+  {
+    check(std::string(carview::achievement_status_badge_text(true, false)) == "[UNLOCKED]",
+          "Unlocked achievement badge uses crisp ASCII [UNLOCKED]");
+    check(std::string(carview::achievement_status_badge_text(false, false)) == "[LOCKED]",
+          "Locked achievement badge uses crisp ASCII [LOCKED]");
+    check(std::string(carview::achievement_status_badge_text(false, true)) == "[SECRET]",
+          "Secret achievement badge uses crisp ASCII [SECRET]");
+
+    fh1::SpaDatabase empty_spa;
+    carview::AchievementsSystem ach;
+    ach.init(empty_spa);
+    ach.open_screen();
+    check(ach.visible_count() >= 40 && ach.scroll_row() == 0, "Achievements starts at scroll_row=0 with 50 items");
+    // Move down 4 rows (row 0 -> 4): with 3 visible rows, scroll_row_ must advance smoothly to 2!
+    for (int i = 0; i < 4; ++i) ach.move_focus(0, +1);
+    check(ach.focus_index() == 20 && ach.scroll_row() == 2,
+          "Achievements move_focus scrolls smoothly row-by-row via scroll_row_");
+    carview::ui::List l_ach;
+    ach.build_screen_hud(l_ach, 1280.0f, 720.0f);
+    int min_hit_idx = 9999, max_hit_idx = -1;
+    for (const auto& hz : l_ach.hits()) {
+      if (hz.group == carview::ui::kHitRow) {
+        min_hit_idx = std::min(min_hit_idx, hz.index);
+        max_hit_idx = std::max(max_hit_idx, hz.index);
+      }
+    }
+    check(min_hit_idx == 10 && max_hit_idx == 24,
+          "Achievements build_screen_hud renders rows [scroll_row..scroll_row+2] (indices 10..24)");
+    // Jump near end via select_focus_index -> scroll_row_ follows cleanly.
+    ach.select_focus_index(ach.visible_count() - 1);
+    check(ach.scroll_row() == (ach.visible_count() + 4) / 5 - 3,
+          "Achievements select_focus_index updates scroll_row_ to show bottom row");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -2124,6 +2528,7 @@ int main() {
   test_units_mouse_and_banner_non_overlap();
   test_round2_hud_minimap_gps_and_mouse_ux();
   test_round3_subtitle_lift_upgrade_units_and_rewind_touch();
+  test_round2_phase6_ui4_parity();
 
   const char* root_env = std::getenv("SHIFT_GAME_ROOT");
   const char* shot_env = std::getenv("SHIFT_UI4_SCREENSHOT_DIR");

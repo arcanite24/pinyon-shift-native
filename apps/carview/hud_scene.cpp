@@ -14,6 +14,16 @@ std::function<const fh1::UiScene*(const std::string&)>& scenes() {
   return f;
 }
 
+uint64_t& scene_gen() {
+  static uint64_t g = 1;
+  return g;
+}
+
+std::unordered_map<std::string, std::pair<uint64_t, const fh1::UiScene*>>& resolved_cache() {
+  static std::unordered_map<std::string, std::pair<uint64_t, const fh1::UiScene*>> c;
+  return c;
+}
+
 // The texture's key for ui_texture: the Horizon.zip member without .xds,
 // or "T:" and the Textures.zip member.
 std::string texture_key(const std::string& path) {
@@ -34,10 +44,32 @@ uint32_t colour_of(const std::array<float, 4>& c, float alpha) {
 
 void set_ui_scenes(std::function<const fh1::UiScene*(const std::string&)> load) {
   scenes() = load;
+  ++scene_gen();
+  resolved_cache().clear();
   ui4::set_scene_loader(std::move(load));
 }
 
+uint64_t ui_scene_generation() { return scene_gen(); }
+
+void notify_ui_atlas_changed() {
+  ++scene_gen();
+  resolved_cache().clear();
+}
+
 const fh1::UiScene* ui_scene(const std::string& name) { return scenes() ? scenes()(name) : nullptr; }
+
+SceneDraw resolve_scene_draw(const std::string& name, bool turn) {
+  const uint64_t gen = scene_gen();
+  auto& cache = resolved_cache();
+  if (auto it = cache.find(name); it != cache.end() && it->second.first == gen && it->second.second != nullptr) {
+    return SceneDraw(it->second.second, turn);
+  }
+  const fh1::UiScene* sc = ui_scene(name);
+  if (sc != nullptr) {
+    cache[name] = {gen, sc};
+  }
+  return SceneDraw(sc, turn);
+}
 
 int SceneDraw::find(std::string_view name, int under) const {
   if (!sc_) return -1;
@@ -126,7 +158,8 @@ float SceneDraw::alpha(int node) const { return sc_ && node >= 0 ? sc_->nodes[si
 float SceneDraw::z_depth(int node) const { return sc_ && node >= 0 ? sc_->nodes[size_t(node)].z : 0; }
 
 bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity, float dx, float dy, float visible,
-                      uint32_t tint, std::string_view tex_override, float extra_angle) const {
+                      uint32_t tint, std::string_view tex_override, float extra_angle, float scale_x,
+                      float scale_y) const {
   if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return false;
   if (opacity <= 1e-4f) return false;
   const fh1::UiNode& n = sc_->nodes[size_t(node)];
@@ -143,7 +176,20 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
       ++ntex;
     } else break;
   }
+  const fh1::UiGeometry* geo = sc_->geometry_of(node);
   auto r = rect(node);
+  if (geo && (r[2] <= r[0] + 1e-4f || r[3] <= r[1] + 1e-4f)) {
+    const auto [cx_n, cy_n] = at(node);
+    r = {cx_n + geo->bounds_min[0] * n.sx, cy_n - geo->bounds_max[1] * n.sy, cx_n + geo->bounds_max[0] * n.sx,
+         cy_n - geo->bounds_min[1] * n.sy};
+  }
+  if (std::fabs(scale_x - 1.0f) > 1e-4f || std::fabs(scale_y - 1.0f) > 1e-4f) {
+    const float rcx = 0.5f * (r[0] + r[2]);
+    const float rcy = 0.5f * (r[1] + r[3]);
+    const float hwx = 0.5f * (r[2] - r[0]) * scale_x;
+    const float hwy = 0.5f * (r[3] - r[1]) * scale_y;
+    r = {rcx - hwx, rcy - hwy, rcx + hwx, rcy + hwy};
+  }
   r[0] += dx, r[2] += dx, r[1] += dy, r[3] += dy;
   // The node's own rotation (scene y up: counter-clockwise on screen).
   const float eff_angle = n.angle + extra_angle;
@@ -158,18 +204,41 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
   } unturn{l, turning};
   const uint32_t c = tint ? ui::fade(tint, opacity) : colour_of(mat ? mat->colour : std::array<float, 4>{1, 1, 1, 1}, opacity);
   if (!tex_override.empty()) {
+    if (ui4::glyph_set() != ui4::GlyphSet::kXbox &&
+        ui4::draw_controller_texture(l, f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), tex_override, opacity)) {
+      return true;
+    }
     std::array<float, 4> uv{};
     if (!ui_texture(std::string(tex_override), uv)) return false;
     l.image(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), uv, c);
     return true;
   }
   if (ntex == 0) {
+    if (geo && !geo->is_unit_quad && geo->vertices.size() >= 3) {
+      const auto [cx_n, cy_n] = at(node);
+      const float stroke = std::max(1.5f, 2.0f * f.s);
+      for (size_t vi = 0; vi < geo->vertices.size(); ++vi) {
+        const auto& a = geo->vertices[vi];
+        const auto& b = geo->vertices[(vi + 1) % geo->vertices.size()];
+        const float ax = f.x(cx_n + a[0] * n.sx * scale_x + dx);
+        const float ay = f.y(cy_n - a[1] * n.sy * scale_y + dy);
+        const float bx = f.x(cx_n + b[0] * n.sx * scale_x + dx);
+        const float by = f.y(cy_n - b[1] * n.sy * scale_y + dy);
+        l.line(ax, ay, bx, by, stroke, c);
+      }
+      return true;
+    }
     l.rect(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), c);
     return true;
   }
   if (ntex < 2) {
+    const std::string key = texture_key(tex[0]->path);
+    if (ui4::glyph_set() != ui4::GlyphSet::kXbox &&
+        ui4::draw_controller_texture(l, f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), key, opacity)) {
+      return true;
+    }
     std::array<float, 4> uv{};
-    if (!ui_texture(texture_key(tex[0]->path), uv)) return false;
+    if (!ui_texture(key, uv)) return false;
     const auto& m = tex[0]->matrix;
     auto U = [&](float u) { return uv[0] + (uv[2] - uv[0]) * u; };
     auto V = [&](float v) { return uv[1] + (uv[3] - uv[1]) * v; };
@@ -296,28 +365,104 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
   const size_t ncount = sc_->nodes.size();
   if (root_node >= int(ncount)) return 0;
 
-  // Map BGF keyframe tracks by FBF object id when anim_time >= 0.
-  std::unordered_map<uint32_t, float> bgf_alpha_override;
-  if (bindings.anim_time >= 0.0f && sc_->has_bgf && !sc_->bgf.tracks.empty()) {
+  // Evaluate BGF state records, keyframe tracks, and animation channels onto their real property targets.
+  struct BgfEval {
+    std::optional<float> alpha;
+    std::optional<float> dx;
+    std::optional<float> dy;
+    std::optional<float> scale_x;
+    std::optional<float> scale_y;
+    std::optional<float> rotation;
+    std::optional<float> color_r;
+    std::optional<float> color_g;
+    std::optional<float> color_b;
+    std::optional<uint32_t> color_rgba;
+  };
+  std::unordered_map<uint32_t, BgfEval> bgf_eval;
+  if (sc_->has_bgf && (bindings.anim_time >= 0.0f || bindings.state_hash != 0)) {
     std::unordered_map<uint32_t, uint32_t> hash_to_fbf;
     for (const auto& it : sc_->bgf.items) {
       if (it.value != 0) hash_to_fbf[it.name_hash] = it.value;
     }
-    for (const auto& tr : sc_->bgf.tracks) {
-      if (tr.keys.empty()) continue;
-      const auto it = hash_to_fbf.find(tr.owner_item);
-      if (it == hash_to_fbf.end()) continue;
-      const float val = fh1::evaluate_bgf_track(tr, bindings.anim_time, -1.0f);
-      if (val >= 0.0f && val <= 1.0f) bgf_alpha_override[it->second] = val;
+    auto apply_prop = [&](uint32_t item_hash, fh1::UiBgfPropTarget tgt, float val, uint32_t raw_val) {
+      if (tgt == fh1::UiBgfPropTarget::kUnknown) return;
+      const auto it = hash_to_fbf.find(item_hash);
+      if (it == hash_to_fbf.end()) return;
+      BgfEval& ev = bgf_eval[it->second];
+      switch (tgt) {
+        case fh1::UiBgfPropTarget::kAlpha: ev.alpha = std::clamp(val, 0.0f, 1.0f); break;
+        case fh1::UiBgfPropTarget::kPosX: ev.dx = val; break;
+        case fh1::UiBgfPropTarget::kPosY: ev.dy = val; break;
+        case fh1::UiBgfPropTarget::kScaleX: ev.scale_x = val; break;
+        case fh1::UiBgfPropTarget::kScaleY: ev.scale_y = val; break;
+        case fh1::UiBgfPropTarget::kRotation: ev.rotation = val; break;
+        case fh1::UiBgfPropTarget::kColorR: ev.color_r = std::clamp(val, 0.0f, 1.0f); break;
+        case fh1::UiBgfPropTarget::kColorG: ev.color_g = std::clamp(val, 0.0f, 1.0f); break;
+        case fh1::UiBgfPropTarget::kColorB: ev.color_b = std::clamp(val, 0.0f, 1.0f); break;
+        case fh1::UiBgfPropTarget::kColorRgba: ev.color_rgba = raw_val; break;
+        case fh1::UiBgfPropTarget::kUnknown: break;
+      }
+    };
+    if (bindings.state_hash != 0) {
+      for (const auto& st : sc_->bgf.styles) {
+        for (const auto& rec : st.states) {
+          if (rec.state_hash != bindings.state_hash) continue;
+          const auto tgt = rec.target != fh1::UiBgfPropTarget::kUnknown
+                               ? rec.target
+                               : fh1::classify_bgf_property(rec.attr_hash, rec.value_type);
+          const uint32_t target_h = rec.target_item != 0 ? rec.target_item : st.owner_item;
+          apply_prop(target_h, tgt, rec.value, rec.raw_value);
+        }
+      }
+    }
+    if (bindings.anim_time >= 0.0f) {
+      for (const auto& tr : sc_->bgf.tracks) {
+        if (tr.keys.empty()) continue;
+        // Group keyframes within a track by (target_item, property target).
+        std::unordered_map<uint64_t, std::vector<fh1::UiBgfKeyframe>> grouped;
+        for (const auto& kf : tr.keys) {
+          auto tgt = kf.target != fh1::UiBgfPropTarget::kUnknown
+                         ? kf.target
+                         : fh1::classify_bgf_property(kf.attr_hash, kf.raw_tag);
+          if (tgt == fh1::UiBgfPropTarget::kUnknown) tgt = tr.target;
+          if (tgt == fh1::UiBgfPropTarget::kUnknown) continue;
+          const uint32_t ih = kf.target_item != 0 ? kf.target_item : tr.owner_item;
+          const uint64_t gkey = (uint64_t(ih) << 8) | uint64_t(tgt);
+          grouped[gkey].push_back(kf);
+        }
+        for (const auto& [gkey, keys] : grouped) {
+          fh1::UiBgfTrack sub;
+          sub.keys = keys;
+          const float val = fh1::evaluate_bgf_track(sub, bindings.anim_time, 0.0f);
+          const uint32_t ih = uint32_t(gkey >> 8);
+          const auto tgt = static_cast<fh1::UiBgfPropTarget>(gkey & 0xFFu);
+          apply_prop(ih, tgt, val, keys.back().raw_value);
+        }
+      }
+      for (const auto& an : sc_->bgf.animations) {
+        for (const auto& ch : an.channels) {
+          if (ch.keys.empty()) continue;
+          const auto tgt = ch.target != fh1::UiBgfPropTarget::kUnknown
+                               ? ch.target
+                               : fh1::classify_bgf_property(ch.attr_hash, ch.channel_tag);
+          if (tgt == fh1::UiBgfPropTarget::kUnknown) continue;
+          const float val = fh1::evaluate_bgf_anim_channel(ch, bindings.anim_time, 0.0f);
+          apply_prop(an.owner_item, tgt, val, ch.keys.back().raw_value);
+        }
+      }
     }
   }
 
   // Parents precede children in BSG; propagate subtree membership, visibility,
-  // accumulated alpha, and group offsets in a single forward pass.
+  // accumulated alpha, offsets, scales, rotations, and colour overrides in a single forward pass.
   std::vector<uint8_t> in_sub(ncount, 0);
   std::vector<float> eff_alpha(ncount, 0.0f);
   std::vector<float> acc_dx(ncount, bindings.dx);
   std::vector<float> acc_dy(ncount, bindings.dy);
+  std::vector<float> acc_sx(ncount, 1.0f);
+  std::vector<float> acc_sy(ncount, 1.0f);
+  std::vector<float> acc_ang(ncount, 0.0f);
+  std::vector<uint32_t> bgf_tint(ncount, 0u);
   std::vector<const NodeOverride*> node_ov(ncount, nullptr);
 
   auto find_override = [&](int idx) -> const NodeOverride* {
@@ -347,18 +492,39 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
     node_ov[i] = ov;
     if (ov && ov->visible.has_value() && !*ov->visible) continue;
 
+    const auto bit = bgf_eval.find(n.object);
+    const BgfEval* bev = (bit != bgf_eval.end()) ? &bit->second : nullptr;
+
     const float parent_a = parent_in ? eff_alpha[size_t(n.parent)] : bindings.opacity;
     float local_a = n.opacity;
     if (bindings.ignore_zero_alpha && local_a <= 1e-4f) local_a = 1.0f;
-    if (auto ait = bgf_alpha_override.find(n.object); ait != bgf_alpha_override.end()) local_a = ait->second;
+    if (bev && bev->alpha.has_value()) local_a = *bev->alpha;
     float a = parent_a * local_a;
     if (ov && ov->alpha.has_value()) a = *ov->alpha * bindings.opacity;
     if (ov && ov->visible.has_value() && *ov->visible && a <= 1e-4f) a = bindings.opacity;
 
     in_sub[i] = 1;
     eff_alpha[i] = a;
-    acc_dx[i] = (parent_in ? acc_dx[size_t(n.parent)] : bindings.dx) + (ov ? ov->dx : 0.0f);
-    acc_dy[i] = (parent_in ? acc_dy[size_t(n.parent)] : bindings.dy) + (ov ? ov->dy : 0.0f);
+    acc_dx[i] = (parent_in ? acc_dx[size_t(n.parent)] : bindings.dx) + (ov ? ov->dx : 0.0f) +
+                (bev && bev->dx.has_value() ? *bev->dx : 0.0f);
+    acc_dy[i] = (parent_in ? acc_dy[size_t(n.parent)] : bindings.dy) + (ov ? ov->dy : 0.0f) +
+                (bev && bev->dy.has_value() ? *bev->dy : 0.0f);
+    acc_sx[i] = (parent_in ? acc_sx[size_t(n.parent)] : 1.0f) *
+                (bev && bev->scale_x.has_value() ? *bev->scale_x : 1.0f);
+    acc_sy[i] = (parent_in ? acc_sy[size_t(n.parent)] : 1.0f) *
+                (bev && bev->scale_y.has_value() ? *bev->scale_y : 1.0f);
+    acc_ang[i] = (parent_in ? acc_ang[size_t(n.parent)] : 0.0f) + (ov ? ov->extra_angle : 0.0f) +
+                 (bev && bev->rotation.has_value() ? *bev->rotation : 0.0f);
+    if (bev) {
+      if (bev->color_rgba.has_value()) {
+        bgf_tint[i] = *bev->color_rgba;
+      } else if (bev->color_r.has_value() || bev->color_g.has_value() || bev->color_b.has_value()) {
+        const uint8_t cr = uint8_t(std::lround(std::clamp(bev->color_r.value_or(1.0f), 0.0f, 1.0f) * 255.0f));
+        const uint8_t cg = uint8_t(std::lround(std::clamp(bev->color_g.value_or(1.0f), 0.0f, 1.0f) * 255.0f));
+        const uint8_t cb = uint8_t(std::lround(std::clamp(bev->color_b.value_or(1.0f), 0.0f, 1.0f) * 255.0f));
+        bgf_tint[i] = ui::rgba(cr, cg, cb, 255);
+      }
+    }
 
     if (a <= 1e-4f || n.object_index < 0) continue;
     const auto kind = sc_->objects[size_t(n.object_index)].kind;
@@ -381,15 +547,20 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
     const float a = std::clamp(eff_alpha[size_t(d.idx)], 0.0f, 1.0f);
     const float dx = acc_dx[size_t(d.idx)];
     const float dy = acc_dy[size_t(d.idx)];
+    const float sx = acc_sx[size_t(d.idx)];
+    const float sy = acc_sy[size_t(d.idx)];
+    const float ea = acc_ang[size_t(d.idx)];
     if (o.kind == fh1::UiObjectKind::kModel) {
       const float vis_w = (ov && ov->visible_width.has_value()) ? *ov->visible_width : 0.0f;
-      const uint32_t tint = (ov && ov->tint.has_value()) ? *ov->tint : 0u;
+      const uint32_t tint = (ov && ov->tint.has_value()) ? *ov->tint : bgf_tint[size_t(d.idx)];
       const std::string_view tex_ov = (ov && ov->texture.has_value()) ? std::string_view(*ov->texture) : std::string_view{};
-      const float ea = ov ? ov->extra_angle : 0.0f;
-      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea)) ++emitted;
+      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea, sx, sy)) ++emitted;
     } else if (o.kind == fh1::UiObjectKind::kText) {
       if (!ov || !ov->text.has_value() || ov->text->empty()) continue;
-      const uint32_t col = ui::fade(ov->tint.has_value() ? *ov->tint : bindings.default_text_color, a);
+      const uint32_t base_col = ov->tint.has_value() ? *ov->tint
+                                : bgf_tint[size_t(d.idx)] ? bgf_tint[size_t(d.idx)]
+                                                          : bindings.default_text_color;
+      const uint32_t col = ui::fade(base_col, a);
       if (text(l, f, d.idx, *ov->text, col, dx, dy, bindings.fit_text) > 0.0f) ++emitted;
     }
   }

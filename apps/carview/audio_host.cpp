@@ -409,11 +409,13 @@ double AudioHost::compute_custom_popup_alpha() const {
 bool AudioHost::init_radio(const std::filesystem::path& game_root, std::string_view language,
                            std::string_view saved_station, bool non_blocking) {
   radio_non_blocking_ = non_blocking;
+  if (!game_root.empty()) radio_game_root_ = game_root;
   ensure_runtime_radio_configured();
   if (!radio_tried_) {
     radio_tried_ = true;
+    radio_language_ = std::string(language.empty() ? "EN" : language);
     std::string why;
-    if (audio::load_radio(game_root, stock_radio_data_, &why, language)) {
+    if (audio::load_radio(game_root, stock_radio_data_, &why, radio_language_)) {
       radio_ = std::make_unique<audio::Radio>(stock_radio_data_, std::random_device{}(), cfg_.radio_dj);
       int start_station = stock_radio_data_.cycle.empty() ? -1 : stock_radio_data_.cycle[0];
       if (!saved_station.empty()) {
@@ -464,6 +466,28 @@ bool AudioHost::init_radio(const std::filesystem::path& game_root, std::string_v
     select_unified_station(0, false);
   }
   return has_radio();
+}
+
+bool AudioHost::reload_radio(std::string_view language, std::string_view saved_station) {
+  if (radio_game_root_.empty()) return false;
+  const std::string lang = std::string(language.empty() ? "EN" : language);
+  if (radio_ && lang == radio_language_) return true;
+  std::string current_station(saved_station);
+  if (current_station.empty() && radio_) {
+    const int sel = radio_->selected();
+    if (sel >= 0 && size_t(sel) < stock_radio_data_.stations.size()) {
+      current_station = stock_radio_data_.stations[size_t(sel)].name;
+    }
+  }
+  const bool was_running = engine_.running();
+  if (was_running) stop_device();
+  engine_.set_radio(nullptr, nullptr);
+  radio_.reset();
+  stock_radio_data_ = {};
+  radio_tried_ = false;
+  const bool ok = init_radio(radio_game_root_, lang, current_station, radio_non_blocking_);
+  if (was_running) start_device();
+  return ok;
 }
 
 std::string AudioHost::car_burble_bank() const {
@@ -617,17 +641,35 @@ bool AudioHost::init_codriver(const std::filesystem::path& rally_package_dir, co
 
 bool AudioHost::init_vo(const std::filesystem::path& game_root, std::string_view language) {
   if (game_root.empty()) return false;
+  vo_game_root_ = game_root;
   if (!vo_tried_) {
     vo_tried_ = true;
+    vo_language_ = std::string(language.empty() ? "EN" : language);
     auto vp = std::make_unique<audio::VoPlayer>(kAudioRate, true);
     std::string note;
-    if (vp->load(game_root, language, &note)) {
+    if (vp->load(game_root, vo_language_, &note)) {
       std::printf("%s\n", note.c_str());
       engine_.set_vo_player(std::move(vp));
       has_vo_ = true;
     }
   }
   return has_vo_;
+}
+
+bool AudioHost::reload_vo(std::string_view language) {
+  if (vo_game_root_.empty()) return false;
+  const std::string lang = std::string(language.empty() ? "EN" : language);
+  if (has_vo_ && lang == vo_language_) return true;
+  vo_language_ = lang;
+  auto vp = std::make_unique<audio::VoPlayer>(kAudioRate, true);
+  std::string note;
+  if (vp->load(vo_game_root_, vo_language_, &note)) {
+    std::printf("%s\n", note.c_str());
+    engine_.set_vo_player(std::move(vp));
+    has_vo_ = true;
+    return true;
+  }
+  return false;
 }
 
 bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,

@@ -118,6 +118,16 @@ class SettingsPage {
   std::string value(const std::string& name) const;
   void set_available_luts(const std::vector<std::string>& names);
 
+  // Visual Controls tab controller layout diagram callouts (pure data, no UI dependency).
+  struct ControllerDiagramCallout {
+    std::string button;      // "LT", "LB", "RT", "RB", "A", "B", "X", "Y", "LS", "RS", "DPAD_LR", "BACK"
+    std::string action;      // mapped action name ("BRAKE", "CLUTCH", "GAS", "HANDBRAKE", ...)
+    bool left_side = true;   // true: left column of diagram, false: right column
+    bool highlighted = false;
+  };
+  drive::ControllerLayout active_controller_layout() const;
+  std::vector<ControllerDiagramCallout> controller_diagram_callouts() const;
+
  private:
   struct Choice {
     std::string label;

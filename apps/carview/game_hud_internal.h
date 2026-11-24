@@ -179,25 +179,20 @@ inline void help_item(ui::List& l, const Layout& g, float x0, float x1, float y0
     l.rect(g.L(x0), Y(y0), g.L(x1), Y(y1), kBlack60);
   }
   const float cy = 0.5f * (Y(y0) + Y(y1) - 10 * s), cx = g.L(x0) + 16 * s;
-  std::array<float, 4> uv;
-  if (ui_texture(std::string("CONTROLLER/") + face + "_BUTTON", uv)) {
-    l.image(cx - 11 * s, cy - 11 * s, cx + 11 * s, cy + 11 * s, uv);
-  } else {
-    l.circle(cx, cy, 9.5f * s, colour);
-    l.text(cx, cy - 5 * s, face, font(ui::Font::kB, 10 * s, kInk, Align::kCenter));
-  }
+  (void)colour;
+  ui4::button_glyph(l, cx, cy, 10.5f * s, face);
   l.text(cx + 16 * s, cy - 7 * s, text, font(ui::Font::kB, 14 * s, kText));
 }
 
 // Race HUD builders (game_hud_race.cpp)
 void event_card(ui::List& l, const RaceHud& r, const Layout& g);
 void race_hud(ui::List& l, const RaceHud& r, const Layout& g);
-void results(ui::List& l, const RaceHud& r, const Layout& g);
+void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g);
 void opponent_name_tags(ui::List& l, const std::vector<NameTagHud>& tags, const Layout& g);
-void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g);
+void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g, bool metric_units);
 
 // Free-roam HUD builders (game_hud_freeroam.cpp)
-void world_marker_hud(ui::List& l, const WorldMarkerHud& wm, const Layout& g);
+void world_marker_hud(ui::List& l, const WorldMarkerHud& wm, const Layout& g, bool metric_units);
 void skill_chain_hud(ui::List& l, const SkillChainHud& sk, const Layout& g, double time);
 void ceremony_overlay(ui::List& l, const CeremonyHud& c, const Layout& g);
 void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool has_player_bar, bool metric_units);

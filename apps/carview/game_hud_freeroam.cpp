@@ -2,7 +2,7 @@
 
 namespace carview::hud_detail {
 
-void world_marker_hud(ui::List& l, const WorldMarkerHud& wm, const Layout& g) {
+void world_marker_hud(ui::List& l, const WorldMarkerHud& wm, const Layout& g, bool metric_units) {
   if (!wm.visible) return;
   const float s = g.s;
   const float mx = wm.in_range ? std::clamp(wm.screen_x, g.L(160), g.w - g.L(320)) : wm.screen_x;
@@ -34,23 +34,16 @@ void world_marker_hud(ui::List& l, const WorldMarkerHud& wm, const Layout& g) {
     const std::string ptxt = wm.prompt.empty() ? str("Activities", "IDS_EnterNow", "ENTER NOW") : wm.prompt;
     TextStyle ps = font(ui::Font::kE, 16.5f * s, ui4::kWhite);
     const float pw = ui::List::measure(ptxt, ps);
-    const float strip_w = pw + 42 * s;
+    const float strip_w = pw + 46 * s;
     const float sx0 = std::max(tx + 10 * s, tx + tw - strip_w + 4 * s);
     const float sy0 = my + 0.45f * ts.size + 3 * s;
     const float sy1 = sy0 + 27 * s;
     ui4::brush(l, sx0 - 4 * s, sy0, sx0 + strip_w, sy1, wm.eligible ? ui4::kPink : rgba(110, 110, 118, 230));
     l.text(sx0 + 8 * s, sy0 + 5 * s, ptxt, ps);
-    const float bx = sx0 + pw + 24 * s, by = 0.5f * (sy0 + sy1);
-    std::array<float, 4> xuv;
-    if (ui_texture("CONTROLLER/X_BUTTON", xuv)) {
-      l.image(bx - 10 * s, by - 10 * s, bx + 10 * s, by + 10 * s, xuv);
-    } else {
-      l.circle(bx, by, 9 * s, kBlue);
-      l.text(bx, by - 5 * s, "X", font(ui::Font::kB, 10 * s, kText, Align::kCenter));
-    }
+    const float bx = sx0 + pw + 26 * s, by = 0.5f * (sy0 + sy1);
+    ui4::button_glyph(l, bx, by, 10.0f * s, "X");
   } else if (wm.distance_m > 0) {
-    char db[24];
-    std::snprintf(db, sizeof db, "%.0f M", wm.distance_m);
+    const std::string db = format_distance_unit(wm.distance_m, metric_units);
     shadowed(l, tx, my + 0.5f * ts.size + 4 * s, db, font(ui::Font::kB, 12.5f * s, ui4::kOffWhite), s);
   }
 }
@@ -404,7 +397,53 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
     }
   }
 
-  // 4. Authentic BUTTON_BAR_SCENE bottom help strip + driven/undriven legend pill.
+  // 4. Crisp Pause Map Legend panel (compact 2-column FH1 legend tucked cleanly above bottom-left button bar).
+  {
+    const float lx0 = g.L(48), lx1 = g.L(328);
+    const float ly0 = g.B(506), ly1 = g.B(642);
+    ui4::panel(l, lx0, ly0, lx1, ly1, s, rgba(14, 16, 22, 218), 0, kMapPink, true);
+    ui4::pill(l, lx0 + 8 * s, ly0 + 6 * s, lx1 - 8 * s, ly0 + 26 * s, ui::rgba(0xBF, 0xBF, 0xBF, 238),
+              ui4::PillKind::kMenu);
+    l.text(lx0 + 16 * s, ly0 + 10.5f * s, "MAP LEGEND", font(ui::Font::kD, 11.5f * s, ui4::kInk));
+    l.text(lx1 - 14 * s, ly0 + 11.0f * s, "COLORADO", font(ui::Font::kE, 10.0f * s, kMapPink, Align::kRight));
+
+    struct LegendEntry {
+      const char* label;
+      uint32_t col;
+      bool is_line;
+      bool is_new_tag;
+    };
+    static constexpr LegendEntry kLegend[8] = {
+        {"FESTIVAL EVENT", rgba(249, 0, 100), false, false},
+        {"OUTPOST HUB", rgba(255, 146, 36), false, false},
+        {"STREET HUB", rgba(44, 140, 232), false, false},
+        {"PR STUNT", rgba(218, 255, 0), false, false},
+        {"BARN / SIGN", rgba(246, 206, 78), false, false},
+        {"NEW EVENT", rgba(249, 0, 100), false, true},
+        {"GPS ROUTE", rgba(74, 238, 97), true, false},
+        {"DRIVEN ROAD", rgba(252, 244, 214), true, false},
+    };
+    const float col_w = (lx1 - lx0 - 20 * s) * 0.5f;
+    for (int i = 0; i < 8; ++i) {
+      const int col = i % 2;
+      const int row = i / 2;
+      const float ex = lx0 + 14 * s + float(col) * col_w;
+      const float ey = ly0 + 34 * s + float(row) * 25.0f * s;
+      const auto& item = kLegend[i];
+      if (item.is_line) {
+        l.rect(ex, ey + 6 * s, ex + 16 * s, ey + 10.5f * s, item.col);
+      } else if (item.is_new_tag) {
+        l.rect(ex, ey + 2.5f * s, ex + 16 * s, ey + 13.5f * s, item.col);
+        l.text(ex + 8 * s, ey + 4.5f * s, "N", font(ui::Font::kE, 7.5f * s, ui4::kWhite, Align::kCenter));
+      } else {
+        l.circle(ex + 8 * s, ey + 8 * s, 5.5f * s, item.col);
+        l.circle(ex + 8 * s, ey + 8 * s, 2.2f * s, ui4::kWhite);
+      }
+      l.text(ex + 22 * s, ey + 3.0f * s, item.label, font(ui::Font::kB, 10.2f * s, ui4::kOffWhite));
+    }
+  }
+
+  // 5. Authentic BUTTON_BAR_SCENE bottom help strip + driven/undriven legend pill.
   ui4::button_bar(
       l,
       {{"A", mo.action_hint.empty() ? "FAST TRAVEL" : mo.action_hint},

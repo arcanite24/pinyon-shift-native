@@ -51,6 +51,8 @@ enum class AchievementSort : uint8_t {
 };
 
 const char* achievement_sort_label(AchievementSort s);
+// Clean ASCII badge text ("[UNLOCKED]" / "[LOCKED]" / "[SECRET]") — zero emojis.
+const char* achievement_status_badge_text(bool unlocked, bool secret);
 
 struct AchievementProgress {
   uint32_t current = 0;
@@ -174,13 +176,9 @@ class AchievementsSystem {
   void select_tab(AchievementCategory cat);
   void move_focus(int dx, int dy);
   int focus_index() const { return focus_index_; }
-  void select_focus_index(int idx) {
-    if (visible_.empty()) {
-      focus_index_ = 0;
-      return;
-    }
-    focus_index_ = std::clamp(idx, 0, int(visible_.size()) - 1);
-  }
+  int scroll_row() const { return scroll_row_; }
+  int visible_count() const { return int(visible_.size()); }
+  void select_focus_index(int idx);
   void cycle_sort();
   bool toggle_track_focused();
   void set_tracked_id(uint16_t id);
@@ -210,6 +208,7 @@ class AchievementsSystem {
  private:
   void rebuild_tabs();
   void rebuild_visible();
+  void clamp_scroll();
   bool ensure_icon_uv(uint32_t image_id, bool grey, std::array<float, 4>& uv) const;
 
   std::vector<AchievementEntry> entries_;
