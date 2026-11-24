@@ -604,6 +604,7 @@ def run_stage(
             "--save", str(save_file),
             "--campaign-stage", stage,
             "--run", "cruise",
+            "--speed", "90",
             "--seconds", f"{seconds:.2f}",
             "--capture-times", capture_times,
             "--size", size,
