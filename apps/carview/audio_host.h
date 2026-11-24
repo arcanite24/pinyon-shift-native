@@ -7,6 +7,7 @@
 #include <SDL3/SDL.h>
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -16,6 +17,7 @@
 #include "audio/audio_engine.h"
 #include "audio/bake.h"
 #include "audio/radio.h"
+#include "audio/runtime_radio.h"
 #include "audio/sources.h"
 #include "audio/user_music.h"
 #include "drive/save.h"
@@ -66,8 +68,12 @@ class AudioHost {
   // attaches a RadioPlayer to AudioEngine.
   bool init_radio(const std::filesystem::path& game_root, std::string_view language, std::string_view saved_station,
                   bool non_blocking);
+  // Configures runtime custom radio stations (<user>/radio_stations.json and <play>/radio_stations.json).
+  void init_runtime_radio(const std::filesystem::path& user_dir, const std::filesystem::path& play_dir = {});
+  audio::RuntimeRadioManager& runtime_radio_manager() { return runtime_radio_mgr_; }
+  const audio::RuntimeRadioManager& runtime_radio_manager() const { return runtime_radio_mgr_; }
   const audio::RadioData& radio_data() const { return radio_data_; }
-  bool has_radio() const { return radio_ != nullptr; }
+  bool has_radio() const { return radio_ != nullptr || !custom_stations_.empty(); }
 
   // Loads AudioMixerSnapshots/GlobalDSP/AudioEngineConfig + FEV/FSB4 SfxEngine
   // (async background FSB decode with disk cache).
@@ -95,7 +101,9 @@ class AudioHost {
   void stop_device();
   bool running() const { return engine_.running(); }
   void set_fmv_audio(audio::AudioEngine::FmvAudioFn fn, void* ctx) { engine_.set_fmv_audio(fn, ctx); }
-  bool has_audio() const { return has_car_ || has_sfx_ || has_satnav_ || radio_ != nullptr || user_music_ready_; }
+  bool has_audio() const {
+    return has_car_ || has_sfx_ || has_satnav_ || radio_ != nullptr || !custom_stations_.empty() || user_music_ready_;
+  }
 
   // Per-frame lock-free updates (main thread).
   void update_frame(const audio::EnginePlayer::Update& u, bool paused, bool menu_open, bool on_title,
@@ -144,10 +152,31 @@ class AudioHost {
   std::unique_ptr<audio::BakedSound> baked_sound_;
   bool has_car_ = false;
 
-  audio::RadioData radio_data_;
+  audio::RadioData stock_radio_data_;  // immutable after init_radio (referenced by audio-thread Radio)
+  audio::RadioData radio_data_;        // main-thread view: stock stations + enabled custom stations
   std::unique_ptr<audio::Radio> radio_;
   bool radio_tried_ = false;
   bool radio_non_blocking_ = true;
+
+  // Runtime custom radio station manager & unified station cycle.
+  void ensure_runtime_radio_configured();
+  void sync_runtime_radio(bool preserve_selection);
+  void select_unified_station(int unified_pos, bool show_popup);
+  double compute_custom_popup_alpha() const;
+
+  audio::RuntimeRadioManager runtime_radio_mgr_;
+  bool runtime_radio_configured_ = false;
+  std::vector<audio::RuntimeStation> custom_stations_;
+  std::vector<int> unified_cycle_;  // indices into radio_data_.stations
+  int unified_pos_ = 0;
+  int stock_off_station_ = -1;
+  int active_custom_idx_ = -1;      // index into custom_stations_, or -1 when stock/off
+  int active_custom_station_ = -1;  // index into radio_data_.stations
+  uint32_t last_custom_track_seq_ = 0;
+  std::chrono::steady_clock::time_point last_radio_poll_{};
+  std::chrono::steady_clock::time_point custom_popup_t0_{};
+  bool custom_popup_active_ = false;
+  int custom_popup_station_ = -1;
 
   std::filesystem::path music_dir_;
   bool user_music_ready_ = false;

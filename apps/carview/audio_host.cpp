@@ -130,7 +130,11 @@ void AudioHost::apply_config(const AudioConfig& cfg, const std::filesystem::path
   for (int b = 0; b < audio::kBuses; ++b) engine_.set_bus_level(audio::Bus(b), cfg_.bus_mix[size_t(b)]);
   engine_.radio_set_dj(cfg_.radio_dj);
   engine_.radio_set_volume(cfg_.radio_on ? cfg_.radio_volume : 0.0f);
+  engine_.runtime_radio_set_volume(cfg_.radio_on ? cfg_.radio_volume : 0.0f);
   engine_.set_satnav_enabled(cfg_.satnav_on);
+  if (!music_dir_.empty() && !runtime_radio_configured_) {
+    init_runtime_radio(music_dir_.parent_path());
+  }
   if (enabling_music && !music_dir_.empty()) init_user_music(music_dir_, user_music_non_blocking_);
   engine_.user_music_enable(cfg_.your_music);
   engine_.user_music_set_shuffle(cfg_.your_music_shuffle);
@@ -198,25 +202,221 @@ void AudioHost::clear_car() {
   has_car_ = false;
 }
 
+void AudioHost::init_runtime_radio(const std::filesystem::path& user_dir, const std::filesystem::path& play_dir) {
+  std::filesystem::path resolved_user = user_dir;
+  if (resolved_user.empty()) {
+    if (!music_dir_.empty()) resolved_user = music_dir_.parent_path();
+    else if (const char* sr = std::getenv("SHIFT_STATE_ROOT"); sr && *sr) resolved_user = sr;
+  }
+  std::filesystem::path resolved_play = play_dir;
+  if (resolved_play.empty()) {
+    if (const char* pd = std::getenv("SHIFT_PLAY_DIR"); pd && *pd) {
+      resolved_play = pd;
+    } else {
+      std::error_code ec;
+      resolved_play = std::filesystem::current_path(ec);
+    }
+  }
+  const std::filesystem::path user_cfg =
+      resolved_user.empty() ? std::filesystem::path{} : (resolved_user / "radio_stations.json");
+  const std::filesystem::path play_cfg =
+      resolved_play.empty() ? std::filesystem::path{} : (resolved_play / "radio_stations.json");
+  const std::filesystem::path cache_dir =
+      resolved_user.empty() ? std::filesystem::path{} : (resolved_user / "radio_cache");
+
+  runtime_radio_mgr_.configure(user_cfg, play_cfg, cache_dir);
+  runtime_radio_mgr_.reload();
+  runtime_radio_configured_ = true;
+  last_radio_poll_ = std::chrono::steady_clock::now();
+  sync_runtime_radio(true);
+}
+
+void AudioHost::ensure_runtime_radio_configured() {
+  if (!runtime_radio_configured_) init_runtime_radio({});
+}
+
+void AudioHost::sync_runtime_radio(bool preserve_selection) {
+  std::string prev_custom_id;
+  int prev_station_idx = -1;
+  if (preserve_selection) {
+    if (active_custom_idx_ >= 0 && size_t(active_custom_idx_) < custom_stations_.size()) {
+      prev_custom_id = custom_stations_[size_t(active_custom_idx_)].config.id;
+    } else if (!unified_cycle_.empty() && unified_pos_ >= 0 && size_t(unified_pos_) < unified_cycle_.size()) {
+      prev_station_idx = unified_cycle_[size_t(unified_pos_)];
+    }
+  }
+
+  custom_stations_ = runtime_radio_mgr_.enabled_stations();
+
+  // Rebuild main-thread radio_data_ view: stock stations + enabled custom stations.
+  radio_data_ = stock_radio_data_;
+  stock_off_station_ = -1;
+  std::vector<int> stock_music_cycle;
+  for (int idx : stock_radio_data_.cycle) {
+    if (idx >= 0 && size_t(idx) < stock_radio_data_.stations.size()) {
+      if (stock_radio_data_.stations[size_t(idx)].off) {
+        stock_off_station_ = idx;
+      } else {
+        stock_music_cycle.push_back(idx);
+      }
+    }
+  }
+
+  const int base_count = int(radio_data_.stations.size());
+  unified_cycle_ = stock_music_cycle;
+  for (size_t i = 0; i < custom_stations_.size(); ++i) {
+    const auto& cs = custom_stations_[i];
+    audio::RadioStation st;
+    st.name = cs.config.name;
+    st.off = false;
+    st.is_3d = false;
+    st.volume = double(cs.config.volume);
+    audio::RadioTrack placeholder;
+    if (!cs.tracks.empty()) {
+      placeholder.title = cs.tracks[0].title;
+      placeholder.artist = cs.tracks[0].artist;
+    } else if (cs.youtube_pending) {
+      placeholder.title = "Loading YouTube playlist...";
+      placeholder.artist = cs.config.genre;
+    } else {
+      placeholder.title = cs.config.genre.empty() ? "No tracks" : cs.config.genre;
+      placeholder.artist = cs.config.name;
+    }
+    st.tracks.push_back(std::move(placeholder));
+    const int st_idx = base_count + int(i);
+    radio_data_.stations.push_back(std::move(st));
+    unified_cycle_.push_back(st_idx);
+  }
+  if (stock_off_station_ >= 0) {
+    unified_cycle_.push_back(stock_off_station_);
+  } else if (!custom_stations_.empty()) {
+    audio::RadioStation off_st;
+    off_st.name = "Radio4_Silent";
+    off_st.off = true;
+    stock_off_station_ = int(radio_data_.stations.size());
+    radio_data_.stations.push_back(std::move(off_st));
+    unified_cycle_.push_back(stock_off_station_);
+  }
+  radio_data_.cycle = unified_cycle_;
+
+  // Build and install RuntimeRadioPlayer on AudioEngine.
+  if (!custom_stations_.empty()) {
+    auto player = std::make_unique<audio::RuntimeRadioPlayer>(kAudioRate, std::random_device{}(), radio_non_blocking_);
+    player->set_volume(cfg_.radio_on ? cfg_.radio_volume : 0.0f);
+    player->set_stations(custom_stations_, runtime_radio_mgr_.cache_dir());
+    engine_.set_runtime_radio(std::move(player));
+  } else {
+    engine_.set_runtime_radio(nullptr);
+  }
+
+  // Restore selection cleanly.
+  if (!prev_custom_id.empty()) {
+    int found_custom = -1;
+    for (size_t i = 0; i < custom_stations_.size(); ++i) {
+      if (custom_stations_[i].config.id == prev_custom_id) {
+        found_custom = int(i);
+        break;
+      }
+    }
+    if (found_custom >= 0) {
+      const int target_st = base_count + found_custom;
+      for (size_t p = 0; p < unified_cycle_.size(); ++p) {
+        if (unified_cycle_[p] == target_st) {
+          select_unified_station(int(p), false);
+          return;
+        }
+      }
+    }
+    // Custom station was removed or disabled: fall back to first station or off.
+    active_custom_idx_ = -1;
+    active_custom_station_ = -1;
+    if (!unified_cycle_.empty()) select_unified_station(0, false);
+  } else if (prev_station_idx >= 0) {
+    for (size_t p = 0; p < unified_cycle_.size(); ++p) {
+      if (unified_cycle_[p] == prev_station_idx) {
+        unified_pos_ = int(p);
+        break;
+      }
+    }
+  } else if (unified_pos_ < 0 || size_t(unified_pos_) >= unified_cycle_.size()) {
+    unified_pos_ = 0;
+  }
+}
+
+void AudioHost::select_unified_station(int unified_pos, bool show_popup) {
+  if (unified_cycle_.empty()) return;
+  const int n = int(unified_cycle_.size());
+  unified_pos_ = ((unified_pos % n) + n) % n;
+  const int st_idx = unified_cycle_[size_t(unified_pos_)];
+  const int stock_count = int(stock_radio_data_.stations.size());
+
+  if (st_idx >= stock_count && st_idx < stock_count + int(custom_stations_.size())) {
+    const int custom_idx = st_idx - stock_count;
+    active_custom_idx_ = custom_idx;
+    active_custom_station_ = st_idx;
+    if (radio_ && stock_off_station_ >= 0 && stock_off_station_ < stock_count) {
+      engine_.radio_select(stock_off_station_);
+    }
+    engine_.runtime_radio_select(custom_idx);
+    engine_.runtime_radio_set_volume(cfg_.radio_on ? cfg_.radio_volume : 0.0f);
+    if (show_popup) {
+      custom_popup_t0_ = std::chrono::steady_clock::now();
+      custom_popup_active_ = true;
+      custom_popup_station_ = st_idx;
+    }
+  } else {
+    active_custom_idx_ = -1;
+    active_custom_station_ = -1;
+    engine_.runtime_radio_select(-1);
+    if (radio_ && st_idx >= 0 && st_idx < stock_count) {
+      engine_.radio_select(st_idx);
+    }
+    if (show_popup) {
+      custom_popup_t0_ = std::chrono::steady_clock::now();
+      custom_popup_active_ = true;
+      custom_popup_station_ = st_idx;
+    } else {
+      custom_popup_active_ = false;
+    }
+  }
+}
+
+double AudioHost::compute_custom_popup_alpha() const {
+  if (!custom_popup_active_) return 0.0;
+  const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - custom_popup_t0_).count();
+  if (dt < 0.0 || dt >= audio::Radio::kPopupShow) return 0.0;
+  if (dt < audio::Radio::kPopupFade) return dt / audio::Radio::kPopupFade;
+  if (dt > audio::Radio::kPopupShow - audio::Radio::kPopupFade) {
+    return (audio::Radio::kPopupShow - dt) / audio::Radio::kPopupFade;
+  }
+  return 1.0;
+}
+
 bool AudioHost::init_radio(const std::filesystem::path& game_root, std::string_view language,
                            std::string_view saved_station, bool non_blocking) {
   radio_non_blocking_ = non_blocking;
+  ensure_runtime_radio_configured();
   if (!radio_tried_) {
     radio_tried_ = true;
     std::string why;
-    if (audio::load_radio(game_root, radio_data_, &why, language)) {
-      radio_ = std::make_unique<audio::Radio>(radio_data_, std::random_device{}(), cfg_.radio_dj);
-      int start_station = radio_data_.cycle.empty() ? -1 : radio_data_.cycle[0];
+    if (audio::load_radio(game_root, stock_radio_data_, &why, language)) {
+      radio_ = std::make_unique<audio::Radio>(stock_radio_data_, std::random_device{}(), cfg_.radio_dj);
+      int start_station = stock_radio_data_.cycle.empty() ? -1 : stock_radio_data_.cycle[0];
       if (!saved_station.empty()) {
         const int found = radio_->find_station(saved_station);
         if (found >= 0) start_station = found;
       }
       if (start_station >= 0) radio_->select(start_station);
-      std::printf("radio: %zu stations in the cycle, %zu tracks, %zu voice clips (%s)\n", radio_data_.cycle.size(),
-                  radio_data_.music.size(), radio_data_.vo.size(), radio_data_.language.c_str());
+      std::printf("radio: %zu stations in the cycle, %zu tracks, %zu voice clips (%s)\n",
+                  stock_radio_data_.cycle.size(), stock_radio_data_.music.size(), stock_radio_data_.vo.size(),
+                  stock_radio_data_.language.c_str());
     } else {
       std::fprintf(stderr, "carview: note: no radio: %s\n", why.c_str());
     }
+  }
+  sync_runtime_radio(false);
+  if (!custom_stations_.empty()) {
+    std::printf("runtime radio: %zu custom station(s) appended to cycle\n", custom_stations_.size());
   }
   if (radio_) {
     auto rp = std::make_unique<audio::RadioPlayer>(*radio_, kAudioRate, non_blocking);
@@ -235,9 +435,29 @@ bool AudioHost::init_radio(const std::filesystem::path& game_root, std::string_v
     add_loc("Radio8_3d_Paintshop", {-1080.0f, 0.0f, -190.0f}, 160.0f);
     if (!locs.empty()) rp->set_location_emitters(std::move(locs));
     engine_.set_radio(radio_.get(), std::move(rp));
-    return true;
   }
-  return false;
+  if (!saved_station.empty()) {
+    if (!radio_select_station_by_name(saved_station) && radio_) {
+      const int sel = radio_->selected();
+      for (size_t p = 0; p < unified_cycle_.size(); ++p) {
+        if (unified_cycle_[p] == sel) {
+          unified_pos_ = int(p);
+          break;
+        }
+      }
+    }
+  } else if (radio_) {
+    const int sel = radio_->selected();
+    for (size_t p = 0; p < unified_cycle_.size(); ++p) {
+      if (unified_cycle_[p] == sel) {
+        unified_pos_ = int(p);
+        break;
+      }
+    }
+  } else if (!custom_stations_.empty()) {
+    select_unified_station(0, false);
+  }
+  return has_radio();
 }
 
 std::string AudioHost::car_burble_bank() const {
@@ -432,7 +652,7 @@ void AudioHost::radio_trigger_festival_update(std::string_view gameplay_event) {
 }
 
 bool AudioHost::radio_select_station_by_name(std::string_view substr) {
-  if (!radio_ || substr.empty()) return false;
+  if (!has_radio() || substr.empty()) return false;
   auto lower = [](std::string_view sv) {
     std::string out(sv);
     for (char& c : out) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -441,8 +661,19 @@ bool AudioHost::radio_select_station_by_name(std::string_view substr) {
   const std::string want = lower(substr);
   for (size_t i = 0; i < radio_data_.stations.size(); ++i) {
     if (lower(radio_data_.stations[i].name).find(want) != std::string::npos) {
-      engine_.radio_select(int(i));
-      return true;
+      for (size_t p = 0; p < unified_cycle_.size(); ++p) {
+        if (unified_cycle_[p] == int(i)) {
+          select_unified_station(int(p), false);
+          return true;
+        }
+      }
+      if (radio_ && i < stock_radio_data_.stations.size()) {
+        active_custom_idx_ = -1;
+        active_custom_station_ = -1;
+        engine_.runtime_radio_select(-1);
+        engine_.radio_select(int(i));
+        return true;
+      }
     }
   }
   return false;
@@ -521,6 +752,17 @@ void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, 
   engine_.set_engine_input(u);
   engine_.set_snapshot(snap_title_, on_title);
 
+  // Hot-reload radio_stations.json and drain async YouTube playlist resolutions (~1 Hz).
+  if (runtime_radio_configured_) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_radio_poll_ >= std::chrono::seconds(1)) {
+      last_radio_poll_ = now;
+      if (runtime_radio_mgr_.poll_updates()) {
+        sync_runtime_radio(true);
+      }
+    }
+  }
+
   if (engine_.has_snapshot_matrix()) {
     if (loading != last_loading_) {
       last_loading_ = loading;
@@ -596,18 +838,30 @@ void AudioHost::set_satnav_enabled(bool on) {
 }
 
 void AudioHost::radio_press(int dir) {
-  if (!radio_) return;
-  engine_.radio_press(dir);
+  if (!has_radio()) return;
+  if (custom_stations_.empty() && radio_) {
+    engine_.radio_press(dir);
+    return;
+  }
+  if (unified_cycle_.empty()) return;
+  select_unified_station(unified_pos_ + (dir >= 0 ? 1 : -1), true);
 }
 
 bool AudioHost::handle_key(SDL_Keycode key, SDL_Keymod mod, std::string& notice) {
   if (key == SDLK_F9) {
     const bool shift = (mod & SDL_KMOD_SHIFT) != 0;
-    if (shift) engine_.user_music_prev();
-    else engine_.user_music_next();
     const auto tel = engine_.telemetry();
     if (tel.user_music_active) {
+      if (shift) engine_.user_music_prev();
+      else engine_.user_music_next();
       notice = std::string("your music: ") + (shift ? "previous track" : "next track");
+    } else if (active_custom_idx_ >= 0) {
+      if (shift) engine_.runtime_radio_prev();
+      else engine_.runtime_radio_next();
+      custom_popup_t0_ = std::chrono::steady_clock::now();
+      custom_popup_active_ = true;
+      custom_popup_station_ = active_custom_station_;
+      notice = std::string("custom radio: ") + (shift ? "previous track" : "next track");
     } else {
       notice = "your music: off (enable in settings, add mp3/wav to music folder)";
     }
@@ -616,7 +870,44 @@ bool AudioHost::handle_key(SDL_Keycode key, SDL_Keymod mod, std::string& notice)
   return false;
 }
 
-audio::AudioTelemetry AudioHost::telemetry() { return engine_.telemetry(); }
+audio::AudioTelemetry AudioHost::telemetry() {
+  audio::AudioTelemetry tel = engine_.telemetry();
+  if (active_custom_idx_ >= 0 && active_custom_station_ >= 0 &&
+      size_t(active_custom_station_) < radio_data_.stations.size()) {
+    auto& st = radio_data_.stations[size_t(active_custom_station_)];
+    if (st.tracks.empty()) st.tracks.emplace_back();
+    if (tel.runtime_radio_title[0] != '\0') {
+      st.tracks[0].title = tel.runtime_radio_title.data();
+      st.tracks[0].artist = tel.runtime_radio_artist.data();
+    }
+    if (tel.runtime_radio_track_seq != 0 && tel.runtime_radio_track_seq != last_custom_track_seq_) {
+      last_custom_track_seq_ = tel.runtime_radio_track_seq;
+      custom_popup_t0_ = std::chrono::steady_clock::now();
+      custom_popup_active_ = true;
+      custom_popup_station_ = active_custom_station_;
+    }
+    tel.radio_selected = active_custom_station_;
+    const double alpha = compute_custom_popup_alpha();
+    if (alpha > 0.0) {
+      tel.radio_popup.station = active_custom_station_;
+      tel.radio_popup.track = 0;
+      tel.radio_popup.alpha = alpha;
+    } else {
+      tel.radio_popup = {};
+    }
+  } else if (custom_popup_active_ && custom_popup_station_ >= 0 &&
+             size_t(custom_popup_station_) < radio_data_.stations.size()) {
+    const double alpha = compute_custom_popup_alpha();
+    if (alpha > 0.0 && tel.radio_popup.alpha < alpha) {
+      tel.radio_popup.station = custom_popup_station_;
+      tel.radio_popup.track = tel.radio_popup.station == custom_popup_station_ ? tel.radio_popup.track : -1;
+      tel.radio_popup.alpha = alpha;
+    } else if (alpha <= 0.0) {
+      custom_popup_active_ = false;
+    }
+  }
+  return tel;
+}
 
 void AudioHost::render_offline(const audio::EnginePlayer::Update& u, float* out, int frames) {
   engine_.set_engine_input(u);
@@ -624,8 +915,8 @@ void AudioHost::render_offline(const audio::EnginePlayer::Update& u, float* out,
 }
 
 void AudioHost::save_radio_state(drive::DriveSave& save) {
-  const auto tel = engine_.telemetry();
-  if (radio_ && tel.radio_selected >= 0 && size_t(tel.radio_selected) < radio_data_.stations.size()) {
+  const auto tel = telemetry();
+  if (has_radio() && tel.radio_selected >= 0 && size_t(tel.radio_selected) < radio_data_.stations.size()) {
     save.radio_station = radio_data_.stations[size_t(tel.radio_selected)].name;
   } else if (radio_) {
     save.radio_station = radio_->selected_name();
