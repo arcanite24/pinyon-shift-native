@@ -3,7 +3,7 @@
 //   -> FMV_01 Opening Montage
 //   -> SRT Viper GTS (VIP_Viper_13) highway drive to the Horizon Festival
 //      with Alice / Scott Tyler radio immediate beats & distance countdown
-//   -> VW Corrado VR6 (VW_Corrado_95) qualification race (FESTIVAL_FIRST, route 16)
+//   -> VW Corrado VR6 (VW_Corrado_95) qualification race (FESTIVAL_SECOND, route 16)
 //   -> Alice / Dak / Scott festival intro beats + WristbandGet ceremony FMV
 //   -> Autoshow hand-off & starter car/credits grant.
 // Cleanly supports per-stage skip & fast-forward for players and tests.
@@ -52,7 +52,7 @@ struct StoryAction {
   bool set_gps_target = false;
   std::array<double, 2> gps_xz{};
   bool launch_qualify_race = false;
-  int qualify_route_id = 16;  // FESTIVAL_FIRST_001
+  int qualify_route_id = 16;  // FESTIVAL_SECOND qualification route
   bool play_fmv = false;
   FmvMovieId fmv_id = FmvMovieId::kFmv01Opening;
   std::string radio_immediate_event;
@@ -70,7 +70,7 @@ class StoryIntro {
   static constexpr int kViperCarId = 1544;
   static constexpr const char* kCorradoMedia = "VW_Corrado_95";
   static constexpr int kCorradoCarId = 309;
-  static constexpr int kQualifyRouteId = 16;  // FESTIVAL_FIRST_001
+  static constexpr int kQualifyRouteId = 16;  // FESTIVAL_SECOND qualification route
   static constexpr double kFestivalArrivalRadiusM = 120.0;
 
   // Starts boot splash sequence (respects `skip_intro_movies` and

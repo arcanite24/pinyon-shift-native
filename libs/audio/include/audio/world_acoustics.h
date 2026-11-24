@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -114,6 +115,41 @@ struct AcousticsSample {
   bool is_rally_world = false;      // true when active world is Horizon Rally (ColoradoDirt)
 };
 
+// Trivially-copyable, zero-allocation RT acoustics handoff struct for
+// TripleBuffer transfer from the main thread to the audio render thread.
+struct RtReverbParams {
+  float decay_time_s = 1.2f;
+  float decay_hf_ratio = 1.0f;
+  float density_pct = 100.0f;
+  float diffusion_pct = 100.0f;
+  float dry_level_mb = 0.0f;
+  float room_level_mb = -800.0f;
+  float room_hf_level_mb = -1500.0f;
+  float reflections_level_mb = -3000.0f;
+  float reflections_delay_s = 0.0f;
+  float reverb_level_mb = 0.0f;
+  float reverb_delay_s = 0.0f;
+  float hf_reference_hz = 6260.0f;
+  float near_dry = 1.0f;
+  float near_wet = 0.0f;
+
+  static RtReverbParams from_template(const ReverbTemplate& t);
+};
+
+struct RtAcousticsSample {
+  RtReverbParams reverb{};
+  int reverb_template_idx = 0;
+  bool in_tunnel = false;
+  int ambience_template_idx = 0;
+  std::array<char, 48> ambience_snapshot{};
+  float festival_proximity = 0.0f;
+  float crowd_proximity = 0.0f;
+  bool is_rally_world = false;
+
+  static RtAcousticsSample from_sample(const AcousticsSample& s);
+  std::string_view ambience_snapshot_view() const;
+};
+
 bool parse_reverb_xml(std::string_view xml, std::vector<ReverbTemplate>& out, std::string* error = nullptr);
 bool parse_ambience_xml(std::string_view xml, std::vector<AmbienceTemplate>& out, std::string* error = nullptr);
 bool parse_ribbon_audio_xml(std::string_view xml, std::vector<AmbientEmitter3D>& out, std::string* error = nullptr);
@@ -159,19 +195,24 @@ class WorldAcousticsData {
 };
 
 // Lightweight real-time stereo algorithmic environmental reverb parameterized
-// by I3DL2 ReverbTemplate (4 stereo HF-damped combs + 2 allpasses + pre-delay).
+// by I3DL2 ReverbTemplate (early slap-back reflections driven by
+// reflections_level_mb + 4 stereo HF-damped combs + 2 allpasses + pre-delay).
 class EnvironmentalReverb {
  public:
   void prepare(int rate);
   void set_parameters(const ReverbTemplate& tmpl);
+  void set_parameters(const RtReverbParams& tmpl);
   void reset();
   // Processes `frames` interleaved stereo frames in place (blends dry + wet).
   void process(float* io, int frames);
-  // Renders only the wet reverb return from `in_stereo` into `out_wet_stereo`
-  // (interleaved stereo, overwritten). Returns false when reverb is silent.
+  // Renders only the wet reverb return (early reflections + late tail) from
+  // `in_stereo` into `out_wet_stereo` (interleaved stereo, overwritten).
+  // Returns false when reverb is silent.
   bool process_wet(const float* in_stereo, float* out_wet_stereo, int frames);
   float wet_gain() const { return wet_smooth_; }
   float dry_gain() const { return dry_smooth_; }
+  float early_gain() const { return early_smooth_; }
+  float target_early_gain() const { return target_early_; }
   float decay_time() const { return decay_time_; }
 
  private:
@@ -194,11 +235,17 @@ class EnvironmentalReverb {
   float decay_time_ = 1.2f;
   float target_wet_ = 0.0f;
   float target_dry_ = 1.0f;
+  float target_early_ = 0.0f;
   float wet_smooth_ = 0.0f;
   float dry_smooth_ = 1.0f;
+  float early_smooth_ = 0.0f;
   size_t predelay_samples_ = 0;
   std::vector<float> predelay_l_, predelay_r_;
   size_t predelay_idx_ = 0;
+  std::vector<float> early_l_, early_r_;
+  size_t early_idx_ = 0;
+  std::array<size_t, 4> early_taps_l_{};
+  std::array<size_t, 4> early_taps_r_{};
   std::array<Comb, 4> comb_l_, comb_r_;
   std::array<Allpass, 2> ap_l_, ap_r_;
 };
@@ -245,6 +292,8 @@ class AmbienceBedPlayer {
 
   void render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
               float tod_hour = 12.0f);
+  void render(const RtAcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
+              float tod_hour = 12.0f);
 
  private:
   struct LoadedBed {
@@ -258,13 +307,18 @@ class AmbienceBedPlayer {
   };
   void stop_worker();
   void stop_rally_worker();
+  void drain_bed_queue(SpscQueue<LoadedBed>& q);
   void drain_loaded();
 
   int rate_ = 48000;
   std::array<PcmSample*, int(AmbienceBedSlot::kCount)> beds_{};
   std::array<double, int(AmbienceBedSlot::kCount)> bed_phase_{};
   std::array<float, int(AmbienceBedSlot::kCount)> bed_gain_{};
+  // Separate SPSC queues per producer so worker_ and set_bed_sample() never race.
   SpscQueue<LoadedBed> loaded_q_{32};
+  SpscQueue<LoadedBed> direct_loaded_q_{32};
+  std::mutex direct_q_mu_;
+  std::mutex lifecycle_mu_;  // guards control-thread worker start/stop only (never locked on audio thread)
   std::atomic<bool> stop_worker_{false};
   std::thread worker_;
 

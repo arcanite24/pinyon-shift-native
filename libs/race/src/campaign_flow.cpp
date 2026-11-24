@@ -114,7 +114,7 @@ const std::vector<CharacterProfile>& all_characters() {
       {CharacterId::kDukeMaguire, "duke", "DUKE MAGUIRE", "BLUE WRISTBAND STAR RIVAL", pack_rgba(0x2C, 0x8C, 0xE8)},
       {CharacterId::kMarkoBaran, "marko", "MARKO BARAN", "PINK WRISTBAND STAR RIVAL", pack_rgba(0xF9, 0x00, 0x64)},
       {CharacterId::kZakiMalik, "zaki", "ZAKI MALIK", "ORANGE WRISTBAND STAR RIVAL", pack_rgba(0xFF, 0x7A, 0x00)},
-      {CharacterId::kHaleyHarper, "haley", "HALEY HARPER", "PURPLE WRISTBAND STAR RIVAL", pack_rgba(0xA4, 0x45, 0xF5)},
+      {CharacterId::kHaileyHarper, "hailey", "HAILEY HARPER", "PURPLE WRISTBAND STAR RIVAL", pack_rgba(0xA4, 0x45, 0xF5)},
   };
   return kChars;
 }
@@ -125,31 +125,31 @@ const CharacterProfile& character_profile(CharacterId id) {
   return idx < chars.size() ? chars[idx] : chars.front();
 }
 
-// ---- Wristband Milestones (Exact CareerWristbandLevels XP thresholds) ----
+// ---- Wristband Milestones (Exact CareerWristbandLevels XP thresholds & gamedb.slt event counts) ----
 
 const std::vector<WristbandMilestoneSpec>& wristband_milestones() {
   static const std::vector<WristbandMilestoneSpec> kBands = {
       {0, "yellow", "YELLOW WRISTBAND", "Yellow", 0, 1000, "FirstWristbandCollect", "NewWristbandUnlocked1",
        "AliceOpeningInterview2A",
-       "Welcome to the Horizon Festival! Yellow Wristband events, Race Central, and Dak's Garage are now open.", 8},
+       "Welcome to the Horizon Festival! Yellow Wristband events, Race Central, and Dak's Garage are now open.", 3},
       {1, "green", "GREEN WRISTBAND", "Green", 220, 1500, "GreenWristbandUnlock", "NewWristbandUnlocked2",
        "FestivalUpdateGreen",
-       "Green Wristband unlocked! Carson Street Race Hub, faster Colorado events, and your next Star Showdown await.", 10},
+       "Green Wristband unlocked! Carson Street Race Hub, faster Colorado events, and your next Star Showdown await.", 7},
       {2, "blue", "BLUE WRISTBAND", "Blue", 750, 2000, "BlueWristbandUnlock", "NewWristbandUnlocked3",
        "FestivalUpdateBlue",
-       "Blue Wristband unlocked! High-speed mountain passes and Duke Maguire's Star Showdown are now live.", 11},
+       "Blue Wristband unlocked! High-speed mountain passes and Duke Maguire's Star Showdown are now live.", 8},
       {3, "pink", "PINK WRISTBAND", "Pink", 1450, 2500, "PinkWristbandUnlock", "NewWristbandUnlocked4",
        "FestivalUpdatePink",
-       "Pink Wristband unlocked! Red Rock canyon series, Gladstone Street Hub, and Marko Baran's GT-R challenge await.", 12},
+       "Pink Wristband unlocked! Red Rock canyon series, Gladstone Street Hub, and Marko Baran's GT-R challenge await.", 9},
       {4, "orange", "ORANGE WRISTBAND", "Orange", 2500, 3000, "OrangeWristbandUnlock", "NewWristbandUnlocked5",
        "FestivalUpdateOrange",
        "Orange Wristband unlocked! Supercar qualifiers and Zaki Malik's Lexus LFA Star Showdown are open across Colorado.", 12},
       {5, "purple", "PURPLE WRISTBAND", "Purple", 4100, 4000, "PurpleWristbandUnlock", "NewWristbandUnlocked6",
        "FestivalUpdatePurple",
-       "Purple Wristband unlocked! Only the elite reach this tier — Observatory Street Hub and Haley Harper await.", 12},
+       "Purple Wristband unlocked! Only the elite reach this tier — Observatory Street Hub and Hailey Harper await.", 14},
       {6, "gold", "GOLD WRISTBAND", "Gold", 6400, 5000, "GoldWristbandUnlock", "NewWristbandUnlocked7",
        "FestivalUpdateGold",
-       "Gold Wristband unlocked! You have earned your place among Colorado's best — the Horizon Finale and Darius Flynt await!", 10},
+       "Gold Wristband unlocked! You have earned your place among Colorado's best — the Horizon Finale and Darius Flynt await!", 16},
   };
   return kBands;
 }
@@ -190,8 +190,8 @@ const std::vector<BossRivalSpec>& boss_rivals() {
        1260, "LEX_LFA_10", "2010 Lexus LFA", 4100, 30000, "NemesisEventUnlocked5", "NemesisPreRace5",
        "NemesisPostRaceWin5",
        "Listen to that V10 scream across Colorado. If you can catch the LFA before the dam, you win the pink slip.",
-       "You outran the LFA — respect! Take the keys and don't let Haley or Darius intimidate you.", false},
-      {5, 5, 245, "NR06", "haley", CharacterId::kHaleyHarper, "HALEY HARPER", "PURPLE WRISTBAND STAR",
+       "You outran the LFA — respect! Take the keys and don't let Hailey or Darius intimidate you.", false},
+      {5, 5, 245, "NR06", "hailey", CharacterId::kHaileyHarper, "HAILEY HARPER", "PURPLE WRISTBAND STAR",
        432, "SAL_S7_04", "2004 Saleen S7", 6400, 40000, "NemesisEventUnlocked6", "NemesisPreRace6",
        "NemesisPostRaceWin6",
        "One showdown stands between you and the Gold Wristband elite. Catch my Saleen S7 if you can!",
@@ -214,7 +214,8 @@ const BossRivalSpec* find_boss_by_event(std::string_view horizon_id) {
 }
 
 const BossRivalSpec* find_boss_by_key(std::string_view key) {
-  const std::string want = lower_ascii(key);
+  std::string want = lower_ascii(key);
+  if (want == "haley") want = "hailey";
   for (const auto& b : boss_rivals()) {
     if (want == b.key || want == lower_ascii(b.horizon_id)) return &b;
   }
@@ -527,8 +528,9 @@ bool CampaignFlow::is_blocking_gameplay() const {
          stage_ == CampaignStage::kShowcaseIntro || stage_ == CampaignStage::kShowcaseOutro ||
          stage_ == CampaignStage::kBossIntro || stage_ == CampaignStage::kBossVictory ||
          stage_ == CampaignStage::kBarnDiscovery || stage_ == CampaignStage::kBarnRestored ||
-         stage_ == CampaignStage::kRewardTally || stage_ == CampaignStage::kFinaleIntro ||
-         stage_ == CampaignStage::kFinaleVictory || stage_ == CampaignStage::kCredits;
+         stage_ == CampaignStage::kPreRaceGrid || stage_ == CampaignStage::kRewardTally ||
+         stage_ == CampaignStage::kFinaleIntro || stage_ == CampaignStage::kFinaleVictory ||
+         stage_ == CampaignStage::kCredits;
 }
 
 float CampaignFlow::hud_reveal_alpha() const {
@@ -633,7 +635,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.eyebrow = "HORIZON FESTIVAL REGISTRATION";
       cinematic_.headline = "YELLOW WRISTBAND UNLOCKED";
       cinematic_.subheadline = "1995 VOLKSWAGEN CORRADO VR6 ASSIGNED TO YOUR GARAGE";
-      cinematic_.detail_line = "8 YELLOW WRISTBAND EVENTS  •  RACE CENTRAL  •  DAK'S GARAGE  •  AUTOSHOW";
+      cinematic_.detail_line = "3 YELLOW WRISTBAND EVENTS  •  RACE CENTRAL  •  DAK'S GARAGE  •  AUTOSHOW";
       cinematic_.badge_text = "WRISTBAND TIER 1 / 7";
       cinematic_.colour_key = "Yellow";
       cinematic_.reward_car = "1995 Volkswagen Corrado VR6";
@@ -1258,9 +1260,6 @@ CampaignAction CampaignFlow::on_wristband_collected(int wristband_level, const s
         {"wb_collect_" + std::string(wb->key), CharacterId::kAliceHart, "", "", wb->vo_unlock_trigger, wb->radio_event,
          wb->announcement, 6.0, 8, true, true},
         &heard_dialogs_);
-    if (const BossRivalSpec* boss = find_boss_by_level(active_wristband_)) {
-      unlocked_bosses_.insert(boss->key);
-    }
   }
   act.save_requested = true;
   return act;
@@ -1313,6 +1312,7 @@ void CampaignFlow::on_wristband_points_changed(int points, int collected_wristba
 
 void CampaignFlow::check_boss_unlocks(int wristband_points, int collected_wristband) {
   for (const auto& boss : boss_rivals()) {
+    if (boss.is_finale_champion) continue;  // Darius (NEM_FINAL) unlocks only after winning HEADLINE_EVENT.
     if (unlocked_bosses_.count(boss.key) > 0) continue;
     if (collected_wristband >= boss.wristband_level && wristband_points >= boss.unlock_points) {
       unlocked_bosses_.insert(boss.key);
@@ -1392,7 +1392,7 @@ bool CampaignFlow::jump_to_cli_stage(std::string_view cli_stage, CampaignAction&
     else if (k == "wristband_orange") lvl = 4;
     else if (k == "wristband_purple") lvl = 5;
     else if (k == "wristband_gold") lvl = 6;
-    out_action = on_wristband_collected(lvl, lvl == 0 ? "1995 Volkswagen Corrado VR6" : "2012 Ford Mustang Boss 302", 10);
+    out_action = on_wristband_collected(lvl, lvl == 0 ? "1995 Volkswagen Corrado VR6" : "2012 Ford Mustang Boss 302", 0);
     stage_time_ = 1.8;
     dialogs_.update(1.2);
     return true;
@@ -1518,13 +1518,13 @@ void CampaignFlow::load_from(const CampaignSaveState& in) {
   heard_dialogs_.clear();
   heard_dialogs_.insert(in.heard_dialogs.begin(), in.heard_dialogs.end());
   unlocked_bosses_.clear();
-  unlocked_bosses_.insert(in.unlocked_bosses.begin(), in.unlocked_bosses.end());
+  for (const auto& b : in.unlocked_bosses) {
+    unlocked_bosses_.insert(lower_ascii(b) == "haley" ? std::string("hailey") : b);
+  }
   unlocked_showcases_.clear();
   unlocked_showcases_.insert(in.unlocked_showcases.begin(), in.unlocked_showcases.end());
   finale_complete_ = in.finale_complete;
-  pending_darius_showdown_ =
-      !finale_complete_ &&
-      (completed_cutscenes_.count("headline_event_won") > 0 || unlocked_bosses_.count("darius") > 0);
+  pending_darius_showdown_ = !finale_complete_ && completed_cutscenes_.count("headline_event_won") > 0;
 }
 
 CampaignObjective CampaignFlow::next_objective(int wristband_points, int collected_wristband, int pop_rank,

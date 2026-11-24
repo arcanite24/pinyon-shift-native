@@ -127,6 +127,8 @@ struct DriveApp : DriveConfig {
   bool new_career_save_pending = false;
   std::string pre_loaner_car;
   int64_t pre_loaner_garage_id = 0;
+  std::string pending_event_loaner_car;
+  bool pr_stunt_loaner_active = false;
 
   std::unique_ptr<RaceView> race;
   race::CareerRecord career;
@@ -208,6 +210,7 @@ struct DriveApp : DriveConfig {
 
   world::TodSystem tod_system;
   world::TodClock tod_clock;
+  double pre_race_tod_sec = -1.0;
   world::ParticleLibrary vfx_lib;
   world::SmashableWorld smashables;
   world::AnimatedWorldSystem world_anim;
@@ -249,6 +252,7 @@ struct DriveApp : DriveConfig {
   std::filesystem::path game_root_of() const;
   void write_career_garage();
   bool start_race(const std::string& id, std::string& why);
+  void restore_pre_race_tod();
   int current_pop_rank() const;
   std::vector<std::string> class_name_list() const;
   std::string award_garage_car(int64_t car_id, int colour_seq, bool select_it);

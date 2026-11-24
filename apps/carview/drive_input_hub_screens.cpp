@@ -778,6 +778,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 app.rally_results_open = false;
                 app.rally_session.retire();
                 app.rally_hub_open = true;
+                app.restore_pre_race_tod();
                 app.leave_race = true;
                 running = false;
               }
@@ -832,6 +833,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   app.rally_service_resume_after_reload = false;
                   app.rally_session.retire();
                   app.rally_hub_open = true;
+                  app.restore_pre_race_tod();
                   app.leave_race = true;
                   running = false;
                 }
@@ -950,13 +952,13 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
               };
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 if (e.key.key == SDLK_ESCAPE) { app.rally_hub_open = false; app.audio_host.trigger_ui(audio::UiCue::kCancel); }
-                else if (e.key.key == SDLK_UP || e.key.key == SDLK_W) { app.rally_hub_selected = (app.rally_hub_selected + n_items - 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_S) { app.rally_hub_selected = (app.rally_hub_selected + 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.key.key == SDLK_UP || e.key.key == SDLK_W || e.key.key == SDLK_LEFT || e.key.key == SDLK_A) { app.rally_hub_selected = (app.rally_hub_selected + n_items - 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_S || e.key.key == SDLK_RIGHT || e.key.key == SDLK_D) { app.rally_hub_selected = (app.rally_hub_selected + 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
                 else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) { app.audio_host.trigger_ui(audio::UiCue::kAccept); activate_rally(); }
               } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST || e.gbutton.button == SDL_GAMEPAD_BUTTON_START) { app.rally_hub_open = false; app.audio_host.trigger_ui(audio::UiCue::kCancel); }
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) { app.rally_hub_selected = (app.rally_hub_selected + n_items - 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { app.rally_hub_selected = (app.rally_hub_selected + 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP || e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT) { app.rally_hub_selected = (app.rally_hub_selected + n_items - 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN || e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) { app.rally_hub_selected = (app.rally_hub_selected + 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
                 else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) { app.audio_host.trigger_ui(audio::UiCue::kAccept); activate_rally(); }
               } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
                 carview::ui::HitZone hz{};

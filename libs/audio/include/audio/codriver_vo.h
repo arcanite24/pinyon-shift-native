@@ -48,9 +48,11 @@ class CoDriverVoPlayer {
   // Audio-thread controls (lock-free, no heap allocation in steady state).
   void set_enabled(bool on);
   bool enabled() const { return enabled_; }
-  void enqueue_cue(std::string_view cue_path);
+  void enqueue_cue(std::string_view cue_path, bool supersede = false);
+  void supersede_cue(std::string_view cue_path);
   void enqueue_id(int clip_id);
   void clear();
+  size_t pending_count() const;
   bool playing() const { return active_; }
   uint32_t completed_cue_count() const { return completed_cues_.load(std::memory_order_acquire); }
 

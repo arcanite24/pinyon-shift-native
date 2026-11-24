@@ -53,6 +53,11 @@ struct CareerEvent {
   int prize_car_colour = 0;          // Rewards_EventPrizes.RewardCarColorSequence
   int64_t prereq_event_id = 0;       // Rewards_EventUnlock prerequisite EventId (must win)
   shift::data::EventRestrictions restrictions;
+  int required_engine_placement = 0;  // 0 = any, 1 = Front, 2 = Mid, 3 = Rear
+  int required_cylinders = 0;         // 0 = any, else required cylinder count
+  bool has_tod_start = false;
+  double tod_start_sec = 0.0;         // Events.TimeOfDayStart (seconds since midnight [0..86400))
+  double tod_end_sec = 0.0;           // Events.TimeOfDayEnd (seconds since midnight [0..86400))
   bool has_trigger = false;
   std::array<double, 3> trigger_pos{};
   double trigger_radius = 25.0;
@@ -83,6 +88,8 @@ struct CarSpec {
   int base_cost = 0;
   double stock_pi = 0;
   int stock_class = 0;
+  int engine_placement = 0;  // Data_Car.EnginePlacementID (1=Front, 2=Mid, 3=Rear)
+  int cylinder_count = 0;    // resolved cylinder count from Data_Car.CylinderID -> List_Cylinders.Number
   shift::data::CarProperties props;
 };
 
@@ -100,6 +107,12 @@ struct CareerCatalog {
   std::vector<FestivalSite> sites;        // Festival locations (Race Central, Autoshow, Dak's Garage, Paint Shop)
   std::map<int64_t, CarSpec> cars;        // Data_Car by Id
   std::map<std::string, int64_t> car_id_by_media;  // lower-case MediaName -> Data_Car.Id
+  std::map<int, std::string> make_names;             // List_CarMake.ID -> display name
+  std::map<int, std::string> country_names;          // List_Country.CountryID -> name
+  std::map<int, std::string> region_names;           // List_Region.Id -> name
+  std::map<int, std::string> body_family_names;      // List_FamilyBody.Id -> name
+  std::map<int, std::string> model_family_names;     // List_FamilyModel.Id -> name
+  std::map<int, std::string> engine_placement_names; // List_EnginePlacement.ID -> name
 
   const CareerEvent* find_event(const std::string& horizon_id) const;
   const CareerEvent* find_event_by_id(int64_t event_id) const;
@@ -122,9 +135,11 @@ struct CareerCatalog {
 
   // Car eligibility check against TargetClass + EventRestrictions bucket 0.
   // When `any_car_override` is true (F10 Trainer), bypasses class & restriction checks.
+  // When `car_rally_upgraded` is true, marks the active garage car as having a Rally kit fitted.
   EligibilityResult check_eligibility(const CareerEvent& ev, int64_t car_id, int car_class_id,
                                       const std::vector<std::string>& class_names,
-                                      bool any_car_override = false) const;
+                                      bool any_car_override = false,
+                                      bool car_rally_upgraded = false) const;
 
   // Map icon tag for an event ("race", "exhibition", "streetrace", "nemesisrace").
   static const char* event_map_tag(const CareerEvent& ev);

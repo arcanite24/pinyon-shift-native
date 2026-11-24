@@ -322,6 +322,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                   cycle_difficulty(+1);
                 } else {  // QUIT RACE
                   grid_menu_open = false;
+                  app.restore_pre_race_tod();
                   app.leave_race = true;
                   running = false;
                 }
@@ -335,6 +336,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) confirm_grid();
                 else if (k == SDLK_ESCAPE) {
                   grid_menu_open = false;
+                  app.restore_pre_race_tod();
                   app.leave_race = true;
                   running = false;
                 }
@@ -348,6 +350,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_grid();
                 else if (b == SDL_GAMEPAD_BUTTON_EAST) {
                   grid_menu_open = false;
+                  app.restore_pre_race_tod();
                   app.leave_race = true;
                   running = false;
                 }
@@ -418,11 +421,12 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                           notice = "QUIT RACE TO FAST TRAVEL";
                           notice_until = vehicle.time() + 3.0;
                         } else {
-                          // Retail FH1 Fast Travel fee: 10,000 CR discounted by smashed Discount Signs
-                          // (0 CR when all 50 signs smashed or Fast Travel Anywhere trainer cheat is active).
-                          const int64_t ft_fee = slice12.trainer.effective_fast_travel_anywhere()
-                                                     ? 0
-                                                     : (10000LL * std::clamp(100 - discount(), 0, 100)) / 100LL;
+                          // Retail FH1 Fast Travel fee: FREE (0 CR) once all 3 PR Stunts at this
+                          // Outpost are completed (or Fast Travel Anywhere is enabled); otherwise
+                          // 10,000 CR (Discount Signs discount upgrades, not Fast Travel).
+                          const bool ft_free = slice12.trainer.effective_fast_travel_anywhere() ||
+                                               app.outpost_progress.is_outpost_fast_travel_free(app.outposts, op->id);
+                          const int64_t ft_fee = ft_free ? 0 : 10000LL;
                           if (ft_fee > 0 && app.career.credits < ft_fee) {
                             notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
                             notice_until = vehicle.time() + 3.5;
@@ -734,14 +738,29 @@ bool DriveSession::handle_events_and_outpost_event(const SDL_Event& e) {
                       notice = "QUIT RACE TO FAST TRAVEL";
                       notice_until = vehicle.time() + 3.0;
                     } else {
-                      app.spawn[0] = item.dest_x;
-                      app.spawn[1] = 0.0;
-                      app.spawn[2] = item.dest_z;
-                      app.spawn[3] = 0.0;
-                      app.have_spawn = true;
-                      app.fast_travel = true;
-                      app.next_car = app.car;
-                      running = false;
+                      const bool ft_free = (item.kind == OutpostHubItem::kFastTravelFestival) ||
+                                           slice12.trainer.effective_fast_travel_anywhere() ||
+                                           (app.have_outposts &&
+                                            app.outpost_progress.is_outpost_fast_travel_free(app.outposts, item.ref_id));
+                      const int64_t ft_fee = ft_free ? 0 : 10000LL;
+                      if (ft_fee > 0 && app.career.credits < ft_fee) {
+                        notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
+                        notice_until = vehicle.time() + 3.5;
+                        app.audio_host.trigger_ui(audio::UiCue::kError);
+                      } else {
+                        if (ft_fee > 0) {
+                          app.career.credits -= ft_fee;
+                          save_now("fast travel");
+                        }
+                        app.spawn[0] = item.dest_x;
+                        app.spawn[1] = 0.0;
+                        app.spawn[2] = item.dest_z;
+                        app.spawn[3] = 0.0;
+                        app.have_spawn = true;
+                        app.fast_travel = true;
+                        app.next_car = app.car;
+                        running = false;
+                      }
                     }
                     break;
                 }

@@ -74,6 +74,7 @@ const WristbandTierInfo& wristband_tier_info(int tier);
 // Snapshot of gameplay & career counters used for live unlock & progress checks.
 struct AchievementGameplayState {
   bool career_started = false;
+  bool finale_complete = false;
   int wristbands_earned = 0;       // 0..7
   int num_races = 0;
   int num_victories = 0;

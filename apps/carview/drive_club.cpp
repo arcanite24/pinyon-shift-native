@@ -103,7 +103,7 @@ void DriveSession::club_check() {
           std::string e;
           race::load_wristband_tables(app.game_root_of(), app.state_root, app.shared_db, app.wristbands, &e);
         }
-        if (app.wristbands.level_index(app.career.wristband_points) < 1 && !std::getenv("SHIFT_CLUB_ANY_BAND") && !app.demo_club)
+        if (app.collected_wristband < 1 && !std::getenv("SHIFT_CLUB_ANY_BAND") && !app.demo_club)
           return club_gate = "needs the green wristband", void();
         // The car driven: the selected garage row when it is this car, else
         // any garage row of this car (a --car pick).
@@ -204,8 +204,12 @@ void DriveSession::club_step() {
         if (app.race) {
           const auto& ev = app.race->event();
           s.event_id = ev.event_id;
-          s.career_event_style =
-              (ev.style == 2 || ev.career_type == 4) ? "street" : (ev.style == 1 ? "festival" : "none");
+          if (ev.style == 2 || ev.career_type == 4) s.career_event_style = "street";
+          else if (ev.style == 1) s.career_event_style = "festival";
+          else if (ev.style == 3 || ev.career_type == 7 || ev.career_type == 8) s.career_event_style = "showcase";
+          else if (ev.style == 5 || ev.career_type == 11) s.career_event_style = "showdown";
+          else if (ev.style == 6 || ev.career_type == 12) s.career_event_style = "finale";
+          else s.career_event_style = "none";
           s.event_hub.clear();
           if (app.have_career_catalog) {
             if (const auto* cev = app.career_catalog.find_event(ev.horizon_id); cev && cev->hub_id > 0) {

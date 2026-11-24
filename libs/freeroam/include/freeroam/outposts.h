@@ -10,6 +10,7 @@
 // - media/stringtables/EN.zip: GasStation.str, Missions.str, List_SpeedCameras.str
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -56,15 +57,19 @@ struct PrStunt {
   Placement gate_left;       // speed trap left post (kSpeed)
   Placement gate_right;      // speed trap right post (kSpeed)
   bool has_gate = false;
-  double target_mph = 0.0;      // kSpeed
-  int target_points = 0;        // kSkill
+  double target_mph = 0.0;      // kSpeed (easy/default)
+  int target_points = 0;        // kSkill (easy/default)
   double photo_radius = 50.0;   // kPhoto
-  double time_limit_s = 120.0;  // 0 = untimed
+  double time_limit_s = 120.0;  // 0 = untimed (easy/default)
+  // Retail XML difficulty tiers ([0]=easy, [1]=medium, [2]=hard), fallback to easy when absent.
+  std::array<double, 3> target_mph_tiers{};
+  std::array<int, 3> target_points_tiers{};
+  std::array<double, 3> time_limit_tiers{};
   int route_id = 0;
   int loaner_car_id = 0;
   int loaner_car_colour = 0;
   int64_t reward_credits = 5000;
-  int64_t reward_popularity = 2500;
+  int64_t reward_popularity = 5000;
 };
 
 struct OutpostCatalog {
@@ -102,6 +107,19 @@ struct OutpostProgress {
 
   int discovered_count(const OutpostCatalog& catalog) const;
   int completed_stunt_count(const OutpostCatalog& catalog) const;
+
+  // Caches outpost -> stunt IDs from `catalog` so `is_outpost_fast_travel_free(int)`
+  // can evaluate custom or retail outpost mission rosters.
+  void bind_catalog(const OutpostCatalog& catalog);
+
+  // True once all PR Stunts (3/3 in retail Colorado) at the outpost are completed,
+  // unlocking free fast travel to that Outpost.
+  bool is_outpost_fast_travel_free(int outpost_id) const;
+  bool is_outpost_fast_travel_free(const OutpostCatalog& catalog, int outpost_id) const;
+  bool is_outpost_fast_travel_free(const OutpostCatalog& catalog, std::string_view outpost_id) const;
+
+ private:
+  std::map<int, std::vector<std::string>> outpost_stunts_by_index_;
 };
 
 enum class PrStuntState {

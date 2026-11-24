@@ -107,6 +107,12 @@ const SkillConfig* SkillsData::find_skill(std::string_view id) const {
   return nullptr;
 }
 
+const FameLevel* SkillsData::find_fame_level(int rank) const {
+  for (const auto& lv : fame_levels)
+    if (lv.rank == rank) return &lv;
+  return nullptr;
+}
+
 int SkillsData::rank_for_points(double points) const {
   int rank = 250;
   for (const auto& lv : fame_levels)
@@ -147,7 +153,9 @@ bool parse_skills_data(std::string_view fame_xml, std::string_view feats_xml, st
     FameLevel fl;
     fl.rank = int(lv.number("rank", 250));
     fl.target = lv.number("target", 0);
-    out.fame_levels.push_back(fl);
+    fl.dialogue_event = lv.attr("dialogueEvent");
+    fl.radio_festival_update = lv.attr("radioFestivalUpdate");
+    out.fame_levels.push_back(std::move(fl));
   }
   std::sort(out.fame_levels.begin(), out.fame_levels.end(),
             [](const FameLevel& a, const FameLevel& b) { return a.target < b.target; });
@@ -515,7 +523,14 @@ void SkillTracker::bank_chain(double time, std::vector<SkillEvent>& out) {
   out.push_back({SkillEvent::kChainBanked, "SKILL CHAIN BANKED", "Bank", total, mult, rank_after, 0});
   if (rank_after < rank_before) {
     rank_up_at_ = time;
-    out.push_back({SkillEvent::kRankUp, "POPULARITY RANK UP", "Fame", 0, 1, rank_after, 0});
+    SkillEvent rank_ev{SkillEvent::kRankUp, "POPULARITY RANK UP", "Fame", 0, 1, rank_after, 0, 1};
+    for (const auto& lv : data_.fame_levels) {
+      if (lv.rank < rank_before && lv.rank >= rank_after) {
+        if (!lv.dialogue_event.empty()) rank_ev.dialogue_event = lv.dialogue_event;
+        if (!lv.radio_festival_update.empty()) rank_ev.radio_festival_update = lv.radio_festival_update;
+      }
+    }
+    out.push_back(std::move(rank_ev));
     for (size_t i = size_t(std::max(0, fame_claimed_)); i < data_.fame_tiers.size(); ++i) {
       if (rank_after <= data_.fame_tiers[i].rank_required) {
         fame_claimed_ = int(i + 1);

@@ -33,6 +33,7 @@ struct AudioConfig {
   float master_volume = 1.0f;
   bool mute = false;
   bool full_dynamic_range = false;
+  audio::PlaybackSystem playback_system = audio::PlaybackSystem::kHomeTheater;
   std::array<float, audio::kBuses> bus_mix{};
   bool your_music = false;
   bool your_music_shuffle = false;
@@ -86,6 +87,7 @@ class AudioHost {
                      std::string_view language = "EN");
   void set_ui_music(audio::AudioEngine::UiMusicMode mode);
   uint8_t map_tire_surface_group(std::string_view physics_surface) const;
+  int16_t map_tire_surface_index(std::string_view physics_surface) const;
   bool init_vo(const std::filesystem::path& game_root, std::string_view language = "EN");
   bool init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir = {},
                       const std::filesystem::path& world_dir = {}, const std::filesystem::path& rally_package = {});
@@ -124,12 +126,13 @@ class AudioHost {
   void trigger_vo(std::string_view trigger_id, bool interrupt = false);
   void skip_vo();
   void set_dialog_ducking(bool active);
-  void trigger_codriver(std::string_view cue_path);
+  void trigger_codriver(std::string_view cue_path, bool supersede = false);
   void clear_codriver();
   void radio_set_time_of_day(double hour);
   void radio_trigger_special(std::string_view gameplay_event);
   void radio_trigger_immediate(std::string_view gameplay_event);
   void radio_trigger_festival_update(std::string_view gameplay_event);
+  void radio_lock_viper_intro(bool lock);
   bool radio_select_station_by_name(std::string_view substr);
   void update_world_acoustics(float x, float y, float z, float heading_rad);
   void radio_press(int dir);
@@ -151,12 +154,11 @@ class AudioHost {
   int snap_menu_ = -1;
   int snap_title_ = -1;
   int snap_loading_ = -1;
-  int snap_dialog_duck_ = -1;
   bool last_dialog_duck_ = false;
 
   std::unique_ptr<audio::SoundFiles> sound_files_;
   bool sound_files_tried_ = false;
-  std::unique_ptr<audio::BakedSound> baked_sound_;
+  std::shared_ptr<audio::BakedSound> baked_sound_;
   bool has_car_ = false;
 
   audio::RadioData stock_radio_data_;  // immutable after init_radio (referenced by audio-thread Radio)
@@ -221,6 +223,7 @@ class AudioHost {
   bool have_on_title_ = false;
   bool last_in_race_ = false;
   bool last_rewinding_ = false;
+  bool last_countdown_active_ = false;
   int last_countdown_digit_ = -1;
   audio::CarDspMode last_dsp_mode_ = audio::CarDspMode::kOff;
 

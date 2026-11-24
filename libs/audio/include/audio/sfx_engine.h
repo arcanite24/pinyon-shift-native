@@ -41,6 +41,7 @@ struct WheelAudio {
   float wheel_rpm = 0.0f;
   float load = 1.0f;
   float bottom_out_force = 0.0f;
+  int16_t surface_index = -1;  // Tires.xml SurfaceIndex (>= 0 preserves distinct channels; -1 = derive from group)
 };
 
 struct ShowcaseAudioState {
@@ -98,9 +99,36 @@ struct VehicleAudioState {
   float turbo_vol_scale = 1.0f;
   float sc_vol_scale = 1.0f;
   float backfire_vol_scale = 1.0f;
+  float burble_vol_scale = 0.0f;
+  float exh_noise_vol_scale = 0.0f;
   float susp_vol_scale = 1.0f;
   float ev_vol_scale = 1.0f;
   int num_cylinders = 0;
+  // Mechanical damage levels (0..1) driving Damage.fev rattle/knock/misfire on Bus::kEngineDamage.
+  float engine_damage = 0.0f;
+  float drivetrain_damage = 0.0f;
+  // Per-car _HT.xml <Burble> overrun timer parameters (distinct from shift/decel Backfire).
+  float burble_min_time_ms = 110.0f;
+  float burble_max_time_ms = 280.0f;
+  float burble_min_norm_rpm = 0.25f;
+  float burble_max_norm_rpm = 0.95f;
+  float burble_silence_weight = 60.0f;
+  // Per-view _CMT.xml <OtherVolumes> isolation multipliers (applied when cockpit_view/follow active).
+  float view_wind_scale = 1.0f;
+  float view_tyre_scale = 1.0f;
+  float view_trans_scale = 1.0f;
+  float view_turbo_scale = 1.0f;
+  float view_sc_scale = 1.0f;
+  float view_backfire_scale = 1.0f;
+  float view_burble_scale = 1.0f;
+  float view_susp_scale = 1.0f;
+  float view_ambience_scale = 1.0f;
+  float view_other_cars_scale = 1.0f;
+  float view_damage_scale = 1.0f;
+  float view_exh_noise_scale = 1.0f;
+  float view_ev_scale = 1.0f;
+  float view_lfe_scale = 1.0f;
+  float view_refl_scale = 1.0f;
   uint8_t hub_ambience = 0;  // 0=None, 1=Autoshow, 2=Paintshop, 3=Workshop
   std::array<OtherCarAudio, kMaxOtherCars> other_cars{};
   ShowcaseAudioState showcase{};
@@ -159,6 +187,9 @@ enum class UiCue : uint8_t {
   kCarAdded,
   kH2hGo,
   kH2hLoss,
+  kRewindTapeStop,
+  kCountdownTick,
+  kWristbandUnlock,
 };
 
 enum class SfxSoundId : int {
@@ -309,6 +340,24 @@ enum class SfxSoundId : int {
   kCarLandingLight,
   kCarLandingHeavy,
   kCarLandingDirt,
+  // Phase R2-5 completeness: SurfaceChanges Leaves, Rewind TapeStop, CountdownTick,
+  // distinct Lap & Wristband UI stings, Burble overrun crackle pool, ExhNoise,
+  // Damage rattle/misfire, and multi-band ElectricMotor layers.
+  kSurfaceLeavesOn,
+  kSurfaceLeavesOff,
+  kRewindTapeStop,
+  kUiCountdownTick,
+  kUiLap,
+  kUiWristbandUnlock,
+  kBurblePop0,
+  kBurblePop1,
+  kBurblePop2,
+  kBurblePop3,
+  kExhNoise,
+  kEngineDamageLoop,
+  kEngineMisfire,
+  kElectricMotorMid,
+  kElectricMotorHigh,
   kCount
 };
 
@@ -332,9 +381,9 @@ class SfxEngine {
   // `Car_Landings.fev/.fsb` from a Rally package dir, audio dir, or `state_root`.
   bool load_rally_sfx(const std::filesystem::path& rally_root_or_state_root,
                       const std::filesystem::path& cache_dir, std::string* note = nullptr);
-  // Asynchronously reloads the 4-subsound exhaust burble bank on car change.
+  // Asynchronously reloads the exhaust burble / backfire bank on car change.
   void reload_burble_bank(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
-                          const std::string& burble_bank);
+                          const std::string& burble_bank, int burble_count = 0, int backfire_count = 0);
 
   // Injects a PCM sample directly (for unit tests without game data).
   void set_sample(SfxSoundId id, PcmSample sample);
@@ -345,8 +394,11 @@ class SfxEngine {
     traffic_rolloff_ = traffic;
   }
   void set_backfire_config(const BackfireConfig& cfg) { backfire_cfg_ = cfg; }
-  // Maps a physics surface name via Tires.xml (0=OnRoad, 1=OffRoad, 2=Grass, 3=Brick, 4=Trackway).
+  void set_tires_config(const TiresConfig& cfg) { tires_cfg_ = cfg; }
+  // Maps a physics surface name via Tires.xml (0=OnRoad, 1=OffRoad, 2=Grass, 3=Brick, 4=Trackway, 5=Mud).
   uint8_t map_surface_group(std::string_view physics_surface) const;
+  // Maps a physics surface name via Tires.xml to its distinct SurfaceIndex (-1 if unknown).
+  int16_t map_surface_index(std::string_view physics_surface) const;
 
   // Audio-thread trigger entry points (lock-free, no heap allocation).
   void trigger_collision(const CollisionHit& hit, const VehicleAudioState& st);
@@ -362,7 +414,10 @@ class SfxEngine {
   int active_one_shots() const;
   int loaded_sample_count() const;
   uint32_t backfire_count() const { return backfire_count_.load(std::memory_order_relaxed); }
+  uint32_t burble_count() const { return burble_count_.load(std::memory_order_relaxed); }
   SfxSoundId last_one_shot_id() const { return last_one_shot_id_.load(std::memory_order_acquire); }
+  float last_one_shot_gain() const { return last_one_shot_gain_.load(std::memory_order_acquire); }
+  float last_one_shot_pitch() const { return last_one_shot_pitch_.load(std::memory_order_acquire); }
 
  private:
   struct DecodeJob {
@@ -434,6 +489,10 @@ class SfxEngine {
   LoopVoice sc_voice_{};
   LoopVoice engine_lfe_voice_{};
   LoopVoice electric_voice_{};
+  LoopVoice electric_mid_voice_{};
+  LoopVoice electric_high_voice_{};
+  LoopVoice exh_noise_voice_{};
+  LoopVoice damage_voice_{};
   LoopVoice reflection_voice_{};
   LoopVoice scrape_voice_{};
   LoopVoice rewind_voice_{};
@@ -446,21 +505,31 @@ class SfxEngine {
   double showcase_synth_lfo_ = 0.0;
   float showcase_synth_lp_ = 0.0f;
   uint32_t showcase_synth_rng_ = 0x5A0C45E1u;
+  double damage_synth_phase_ = 0.0;
+  float damage_synth_lp_ = 0.0f;
+  uint32_t damage_synth_rng_ = 0xD4A6E109u;
+  double misfire_timer_s_ = 0.45;
 
   // Edge detection & timers (audio thread).
   SfxSoundId resolve_fallback(SfxSoundId preferred, SfxSoundId fallback) const;
   bool prev_shifting_ = false;
   bool prev_bov_open_ = false;
+  float prev_throttle_ = 0.0f;
   float prev_active_aero_ = 0.0f;
   double aero_cooldown_s_ = -10.0;
   std::array<uint8_t, 4> prev_wheel_surface_{0, 0, 0, 0};
+  std::array<int16_t, 4> prev_wheel_surface_idx_{-1, -1, -1, -1};
   std::array<double, 4> susp_cooldown_s_{0, 0, 0, 0};
   double time_s_ = 0.0;
   double last_collision_s_ = -10.0;
   double last_landing_s_ = -10.0;
   double backfire_timer_ms_ = 500.0;
+  double burble_timer_ms_ = 200.0;
   std::atomic<uint32_t> backfire_count_{0};
+  std::atomic<uint32_t> burble_count_{0};
   std::atomic<SfxSoundId> last_one_shot_id_{SfxSoundId::kCount};
+  std::atomic<float> last_one_shot_gain_{0.0f};
+  std::atomic<float> last_one_shot_pitch_{1.0f};
   std::mt19937 rng_{0x51C2u};
 
   static constexpr int kMaxOneShots = 24;

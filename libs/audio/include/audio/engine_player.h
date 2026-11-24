@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cmath>
+#include <memory>
 #include <vector>
 
 #include "audio/engine_sound.h"
@@ -35,13 +36,16 @@ class EnginePlayer {
   EnginePlayer(const EngineSound& sound, std::vector<std::vector<const PcmSample*>> pcm, int out_rate, double idle,
                double redline, const PcmSample* intake_chuff = nullptr);
 
+  // Optional lifetime pin (e.g. shared_ptr<const BakedSound>) kept alive until
+  // this EnginePlayer is destroyed after audio-thread retirement.
+  void attach_owner(std::shared_ptr<const void> owner) { owner_ = std::move(owner); }
   void set_intake_chuff(const PcmSample* chuff) { chuff_pcm_ = chuff; }
   void set(const Update& u);
   // Triggers the Expander envelope on group `group` (or on all Exhaust groups
   // when `group < 0`), called when an exhaust burble or backfire pops.
   void trigger_expander(int group = -1);
-  // Advances Expander timers by `dt` seconds (also advanced automatically by
-  // render()).
+  // Advances Expander & drivetrain-spring timers by `dt` seconds (also advanced
+  // automatically by render()).
   void advance_dsp(double dt);
 
   // Mixes `frames` stereo frames (interleaved L, R) into `out` (overwrites).
@@ -55,6 +59,9 @@ class EnginePlayer {
   double expander_state(size_t group) const;
   double peq_gain(size_t group) const;
   double load_peq_gain(size_t group) const;
+  double focus_peq_gain() const { return cur_focus_peq_gain_; }
+  double distortion_level() const { return cur_dist_level_; }
+  double drivetrain_spring_offset() const { return rpm_spring_offset_; }
   bool intake_chuff_active() const { return chuff_active_; }
 
  private:
@@ -147,6 +154,22 @@ class EnginePlayer {
   double chuff_left_ = 1, chuff_right_ = 1;
   bool have_prev_throttle_ = false;
   double prev_throttle_ = 0;
+
+  // Focus _ET.xml DSP state (drivetrain spring, FocusPEQ, Distortion, 3-band TrashDSP).
+  double spring_x1_ = 0.0, spring_v1_ = 0.0;
+  double spring_x2_ = 0.0, spring_v2_ = 0.0;
+  double rpm_spring_offset_ = 0.0;
+  double prev_spring_torque_ = 0.0;
+  bool have_spring_torque_ = false;
+  Biquad focus_peq_l_, focus_peq_r_;
+  double cur_focus_peq_gain_ = 1.0;
+  double cur_dist_level_ = 0.0;
+  double cur_dist_comp_ = 1.0;
+  double trash_lp1_[2]{0.0, 0.0};
+  double trash_lp2_[2]{0.0, 0.0};
+
+  // Optional pinned owner (e.g. BakedSound) released on main thread after audio-thread retirement.
+  std::shared_ptr<const void> owner_;
 };
 
 }  // namespace audio

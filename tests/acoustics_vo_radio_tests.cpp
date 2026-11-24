@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -324,12 +325,228 @@ void test_world_acoustics_and_reverb() {
   }
 }
 
+void test_phase_r2_5_acoustics_vo_radio_parity() {
+  // 1. EnvironmentalReverb early slap-back reflections driven by reflections_level_mb.
+  {
+    audio::ReverbTemplate rt_early{};
+    rt_early.near_dry = 1.0f;
+    rt_early.near_wet = 0.85f;
+    rt_early.room_level_mb = 0.0f;
+    rt_early.reflections_level_mb = 0.0f;      // strong early reflections
+    rt_early.reflections_delay_s = 0.010f;     // 10 ms initial slap-back
+    rt_early.reverb_level_mb = -10000.0f;      // isolate early reflections from late tail
+
+    audio::ReverbTemplate rt_muted = rt_early;
+    rt_muted.reflections_level_mb = -10000.0f;  // mute early reflections too
+
+    audio::EnvironmentalReverb rev_on, rev_off;
+    rev_on.prepare(48000);
+    rev_off.prepare(48000);
+    rev_on.set_parameters(rt_early);
+    rev_off.set_parameters(rt_muted);
+    // Prime parameter smoothing with one silent block.
+    std::vector<float> dummy_in(2400 * 2, 0.0f), dummy_out(2400 * 2, 0.0f);
+    rev_on.process_wet(dummy_in.data(), dummy_out.data(), 2400);
+    rev_off.process_wet(dummy_in.data(), dummy_out.data(), 2400);
+    check(rev_on.early_gain() > 0.05f, "EnvironmentalReverb computes non-zero early reflection gain");
+    check(rev_off.early_gain() < 1e-3f, "Muted reflections_level_mb zeroes early reflection gain");
+
+    std::vector<float> imp(3200 * 2, 0.0f), wet_on(3200 * 2, 0.0f), wet_off(3200 * 2, 0.0f);
+    imp[0] = 1.0f;
+    imp[1] = 1.0f;
+    check(rev_on.process_wet(imp.data(), wet_on.data(), 3200), "early-only reverb is active");
+    rev_off.process_wet(imp.data(), wet_off.data(), 3200);
+    double early_e_on = 0.0, early_e_off = 0.0;
+    for (size_t i = 400 * 2; i < 2800 * 2; ++i) {
+      early_e_on += double(wet_on[i]) * double(wet_on[i]);
+      early_e_off += double(wet_off[i]) * double(wet_off[i]);
+    }
+    check(early_e_on > 1e-3 && early_e_on > early_e_off * 100.0,
+          "EnvironmentalReverb early slap-back taps produce measurable reflections");
+  }
+
+  // 2. Bus::kCollision and Bus::kSuspension are included in EnvironmentalReverb send mix.
+  {
+    audio::AudioEngine eng(48000);
+    auto sfx = std::make_unique<audio::SfxEngine>(48000);
+    audio::PcmSample short_hit;
+    short_hit.rate = 48000;
+    short_hit.data.assign(240, 0.8f);  // 5 ms sharp impulse
+    sfx->set_sample(audio::SfxSoundId::kImpact3d, short_hit);
+    sfx->set_sample(audio::SfxSoundId::kCarLandingHeavy, short_hit);
+    eng.set_sfx_engine(std::move(sfx));
+
+    audio::AcousticsSample tun{};
+    tun.in_tunnel = true;
+    tun.reverb.near_dry = 1.0f;
+    tun.reverb.near_wet = 0.9f;
+    tun.reverb.decay_time_s = 2.6f;
+    tun.reverb.room_level_mb = -100.0f;
+    tun.reverb.reflections_level_mb = -200.0f;
+    tun.reverb.reverb_level_mb = 1200.0f;
+    eng.set_acoustics_sample(tun);
+    // Warm up reverb smoother.
+    std::vector<float> warm(2400 * 2, 0.0f);
+    eng.render_offline(warm.data(), 2400);
+
+    audio::CollisionHit ch{};
+    ch.rel_speed_mps = 20.0f;
+    ch.pos = {1.0f, 0.0f, 0.0f};
+    eng.trigger_collision(ch);
+    std::vector<float> out(4800 * 2, 0.0f);
+    eng.render_offline(out.data(), 4800);
+    // Dry 5 ms hit ends at frame 240; energy after frame 1500 (~31 ms) comes from reverb tail!
+    double col_tail = 0.0;
+    for (size_t i = 1500 * 2; i < out.size(); ++i) col_tail += double(out[i]) * double(out[i]);
+    check(col_tail > 1e-4, "Bus::kCollision feeds EnvironmentalReverb tail");
+
+    // Same for Bus::kSuspension landing hit.
+    std::vector<float> settle(24000 * 2, 0.0f);
+    eng.render_offline(settle.data(), 24000);
+    audio::LandingHit lh{};
+    lh.impact_speed_mps = 8.0f;
+    lh.air_time_s = 0.9f;
+    eng.trigger_landing(lh);
+    std::fill(out.begin(), out.end(), 0.0f);
+    eng.render_offline(out.data(), 4800);
+    double susp_tail = 0.0;
+    for (size_t i = 1500 * 2; i < out.size(); ++i) susp_tail += double(out[i]) * double(out[i]);
+    check(susp_tail > 1e-4, "Bus::kSuspension feeds EnvironmentalReverb tail");
+  }
+
+  // 3. AmbienceBedPlayer loop-boundary crossfade smoothing eliminates seam clicks.
+  {
+    audio::AmbienceBedPlayer amb(48000);
+    audio::PcmSample ramp;
+    ramp.rate = 48000;
+    ramp.data.resize(4096);
+    for (size_t i = 0; i < ramp.data.size(); ++i) {
+      ramp.data[i] = -0.8f + 1.6f * float(i) / float(ramp.data.size() - 1);  // huge 1.6 seam jump!
+    }
+    amb.set_bed_sample(audio::AmbienceBedSlot::kDefault, std::move(ramp));
+    audio::AcousticsSample ac{};
+    ac.ambience_snapshot = "DefaultLocation";
+    // Render across several full loop wraps.
+    std::vector<float> buf(16000 * 2, 0.0f);
+    amb.render(ac, 10.0f, buf.data(), 16000, 12.0f);
+    float max_step = 0.0f;
+    for (int f = 1; f < 16000; ++f) {
+      max_step = std::max(max_step, std::fabs(buf[2 * size_t(f)] - buf[2 * size_t(f - 1)]));
+    }
+    check(max_step < 0.02f, "AmbienceBedPlayer loop-boundary crossfade eliminates seam click");
+  }
+
+  // 4. Unified VO ducking: VoPlayer active status and set_dialog_ducking() never cancel each other.
+  {
+    const std::string snap_xml = R"(
+      <AudioMixerSnapshots>
+        <FreeRoam group="Gameplay">
+          <GameMusic active="1" destvolume="1.0"/>
+        </FreeRoam>
+        <VOPlaying group="VO" fadein="0.0" fadeout="0.0">
+          <GameMusic active="1" destvolume="0.25"/>
+        </VOPlaying>
+        <VONotPlaying group="VO" fadein="0.0" fadeout="0.0">
+          <GameMusic active="1" destvolume="1.0"/>
+        </VONotPlaying>
+      </AudioMixerSnapshots>
+    )";
+    audio::AudioEngine eng(48000);
+    check(eng.load_snapshot_matrix_xml(snap_xml), "loaded VO ducking snapshot matrix");
+    auto vp = std::make_unique<audio::VoPlayer>(48000, false);
+    vp->set_clip("intro_line", make_tone(48000, 2.0, 440.0, 0.4f));
+    eng.set_vo_player(std::move(vp));
+
+    std::vector<float> out(480 * 2, 0.0f);
+    eng.trigger_vo("intro_line");
+    eng.set_dialog_ducking(true);
+    eng.render_offline(out.data(), 480);
+    check(eng.matrix_bus_gain(audio::Bus::kMusic) < 0.35f, "VOPlaying ducks music while VO + dialog active");
+
+    // Clearing UI dialog ducking while VoPlayer is STILL speaking must NOT un-duck VO!
+    eng.set_dialog_ducking(false);
+    eng.render_offline(out.data(), 480);
+    check(eng.matrix_bus_gain(audio::Bus::kMusic) < 0.35f,
+          "set_dialog_ducking(false) does not cancel active VoPlayer ducking");
+
+    // Skipping VO now releases VOPlaying cleanly.
+    eng.skip_vo();
+    eng.render_offline(out.data(), 480);
+    check(eng.matrix_bus_gain(audio::Bus::kMusic) > 0.90f, "VONotPlaying restores music once both VO and dialog end");
+  }
+
+  // 5. Outpost & Street-Hub 3D radio bleed emitters alongside Festival stages.
+  {
+    const std::string sys_xml = R"(
+<RadioSystem>
+  <System maxTracksBetweenDJ="2" masterLevel="1.0" musicLevel="0.85" dialogueLevel="1.0" identLevel="0.3"
+          duckValue="0.3" duckFadeDownTime="0.1" duckFadeUpTime="0.5" stationChangeFadeTimeUser="0.25"
+          stationChangeFadeTimeNormal="1.25" HUDNewTrackDisplayDelayFreeRoam="2.0" />
+  <RadioStation name="Radio1">
+    <Playlist noRepeat="0"><MusicTrack name="T1" artist="A" fmodname="M0"/></Playlist>
+  </RadioStation>
+  <RadioStation name="Radio4_Silent" isOffStation="true" />
+  <RadioStation name="Radio5_3d_PreRace" isOffStation="false" volume="0.5" 3dPanLevel="1.0">
+    <Playlist noRepeat="0"><MusicTrack name="Pre" artist="A" fmodname="M0"/></Playlist>
+  </RadioStation>
+  <RadioStation name="Radio6_3d_Autoshow" isOffStation="false" volume="0.5" 3dPanLevel="1.0">
+    <Playlist noRepeat="0"><MusicTrack name="Auto" artist="A" fmodname="M0"/></Playlist>
+  </RadioStation>
+  <RadioStation name="Radio7_3d_Workshop" isOffStation="false" volume="0.5" 3dPanLevel="1.0">
+    <Playlist noRepeat="0"><MusicTrack name="Work" artist="A" fmodname="M0"/></Playlist>
+  </RadioStation>
+  <RadioStation name="Radio8_3d_Paintshop" isOffStation="false" volume="0.5" 3dPanLevel="1.0">
+    <Playlist noRepeat="0"><MusicTrack name="Paint" artist="A" fmodname="M0"/></Playlist>
+  </RadioStation>
+  <RadioStation name="Radio9_3d_Streetrace" isOffStation="false" volume="0.5" 3dPanLevel="1.0">
+    <Playlist noRepeat="0"><MusicTrack name="Street" artist="A" fmodname="M0"/></Playlist>
+  </RadioStation>
+</RadioSystem>)";
+    const std::string music_info = R"(
+<SoundBankInfoList>
+  <Bank Name="M0"><SoundBankInfo SoundBankIndex="0" FileLength="100000" OffsetEventStart="10000" OffsetIdentStart="95000"/></Bank>
+</SoundBankInfoList>)";
+    const std::string vo_info = R"(<SoundBankInfoList></SoundBankInfoList>)";
+    audio::RadioData rd;
+    std::string err;
+    check(audio::parse_radio(sys_xml, music_info, vo_info, rd, &err), "parsed 5 3D location stations");
+    audio::Radio radio(rd, 99, false);
+    const auto emitters = audio::default_colorado_location_emitters(radio);
+    check(emitters.size() == 14, "default_colorado_location_emitters covers Festival, Hubs, 3 Street Hubs & 6 Outposts");
+
+    const int street_idx = radio.find_station("Radio9_3d_Streetrace");
+    const int prerace_idx = radio.find_station("Radio5_3d_PreRace");
+    int street_hubs = 0, outposts = 0;
+    for (const auto& em : emitters) {
+      if (em.station == street_idx) ++street_hubs;
+      if (em.station == prerace_idx && em.max_distance < 200.0f) ++outposts;
+    }
+    check(street_hubs == 3, "all 3 Street Race Hubs registered on Radio9_3d_Streetrace");
+    check(outposts == 6, "all 6 Colorado Outposts registered with 3D radio bleed");
+
+    // Verify proximity math: listener at Carson Street Hub (-2100, 12, 1450) and Beaumont Outpost (-1120, 25, 2320)
+    // is well within emitter max_distance, whereas far away (10000, 0, 10000) is out of range of every emitter.
+    auto min_dist = [&](std::array<float, 3> p) {
+      float best = 1e9f;
+      for (const auto& em : emitters) {
+        const float dx = em.pos[0] - p[0], dy = em.pos[1] - p[1], dz = em.pos[2] - p[2];
+        best = std::min(best, std::sqrt(dx * dx + dy * dy + dz * dz));
+      }
+      return best;
+    };
+    check(min_dist({-2100.0f, 12.0f, 1450.0f}) < 1.0f, "Carson Street Hub emitter exact proximity");
+    check(min_dist({-1120.0f, 25.0f, 2320.0f}) < 1.0f, "Beaumont Outpost emitter exact proximity");
+    check(min_dist({10000.0f, 0.0f, 10000.0f}) > 5000.0f, "Far listener is outside all 3D emitters");
+  }
+}
+
 }  // namespace
 
 int main() {
   test_vo_player_and_skip_with_a();
   test_full_radio_depth_and_3d_stations();
   test_world_acoustics_and_reverb();
+  test_phase_r2_5_acoustics_vo_radio_parity();
   if (g_failures > 0) {
     std::fprintf(stderr, "acoustics_vo_radio_tests: %d failure(s)\n", g_failures);
     return 1;

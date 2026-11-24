@@ -61,6 +61,7 @@ enum class CharacterId : uint8_t {
   kMarkoBaran,
   kZakiMalik,
   kHaleyHarper,
+  kHaileyHarper = kHaleyHarper,
 };
 
 struct CharacterProfile {
@@ -86,7 +87,7 @@ struct WristbandMilestoneSpec {
   const char* vo_new_trigger = "";
   const char* radio_event = "";
   const char* announcement = "";
-  int unlocked_events_hint = 8;
+  int unlocked_events_hint = 3;
 };
 
 struct BossRivalSpec {

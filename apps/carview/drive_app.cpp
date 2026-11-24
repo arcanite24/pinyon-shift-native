@@ -22,8 +22,31 @@
 #include "slice12_runtime.h"
 
 namespace carview {
+namespace {
+
+template <typename EvT>
+bool extract_event_tod_start(const EvT& ev, double& out_tod_sec) {
+  if constexpr (requires { ev.has_tod_start; ev.tod_start_sec; }) {
+    if (ev.has_tod_start && ev.tod_start_sec >= 0.0) {
+      out_tod_sec = double(ev.tod_start_sec);
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 bool DriveApp::colorado_world() const { return world_dir.empty() || world::model_prefix(world_dir) == "coloradoout"; }
+
+void DriveApp::restore_pre_race_tod() {
+    if (pre_race_tod_sec >= 0.0) {
+      double sec = std::fmod(pre_race_tod_sec, 86400.0);
+      if (sec < 0.0) sec += 86400.0;
+      tod_clock.tod_sec = sec;
+      pre_race_tod_sec = -1.0;
+    }
+}
 
 std::filesystem::path DriveApp::game_root_of() const {
     return !game_root_given.empty() ? game_root_given : world_dir.parent_path().parent_path().parent_path();
@@ -45,6 +68,18 @@ bool DriveApp::start_race(const std::string& id, std::string& why) {
         garage::load_pi_config(pzip, race_pi_cfg, nullptr);
       }
     }
+    const std::string saved_car_before = car;
+    const std::string saved_pre_loaner = pre_loaner_car;
+    const int64_t saved_pre_loaner_gid = pre_loaner_garage_id;
+    if (!pending_event_loaner_car.empty()) {
+      const std::string loaner = pending_event_loaner_car;
+      pending_event_loaner_car.clear();
+      if (pre_loaner_car.empty()) {
+        pre_loaner_car = car;
+        pre_loaner_garage_id = career_garage.selected;
+      }
+      car = loaner;
+    }
     race_options.autopilot = race_auto < 0 ? headless : race_auto == 1;
     race_options.player_car = car;
     race_options.player_pi = carview::resolve_player_race_pi(
@@ -55,11 +90,31 @@ bool DriveApp::start_race(const std::string& id, std::string& why) {
     race_options.parts_db = shared_db;
     race_options.language = language;
     auto r = std::make_unique<carview::RaceView>(bake_dir);
-    if (!r->open(game_root_of(), id, race_options, why)) return false;
+    if (!r->open(game_root_of(), id, race_options, why)) {
+      car = saved_car_before;
+      pre_loaner_car = saved_pre_loaner;
+      pre_loaner_garage_id = saved_pre_loaner_gid;
+      return false;
+    }
     race = std::move(r);
     race->player_spawn(spawn);
     have_spawn = true;
     race_top_speed = 0;
+    double event_tod_sec = -1.0;
+    bool has_event_tod = extract_event_tod_start(race->event(), event_tod_sec);
+    if (!has_event_tod && have_career_catalog) {
+      if (const auto* cev = career_catalog.find_event(id)) {
+        has_event_tod = extract_event_tod_start(*cev, event_tod_sec);
+      }
+    }
+    if (has_event_tod && event_tod_sec >= 0.0) {
+      if (pre_race_tod_sec < 0.0) pre_race_tod_sec = tod_clock.tod_sec;
+      double sec = std::fmod(event_tod_sec, 86400.0);
+      if (sec < 0.0) sec += 86400.0;
+      tod_clock.tod_sec = sec;
+    } else if (pre_race_tod_sec >= 0.0) {
+      restore_pre_race_tod();
+    }
     if (wristbands.levels.empty()) {
       std::string e;
       if (!race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e))
@@ -660,7 +715,9 @@ bool DriveApp::init(int& exit_code) {
   h2h_wins = have_saved ? saved.h2h_wins : 0;
   
   
-  if (!world_dir.empty() && colorado_world()) {
+  const bool is_colorado_or_dirt =
+      colorado_world() || lower_ascii(world_dir.filename().string()) == "coloradodirt";
+  if (!world_dir.empty() && is_colorado_or_dirt) {
     std::string se;
     if (freeroam::load_speed_activities(game_root_of(), speed_data, &se)) {
       speed_tracker = std::make_unique<freeroam::SpeedActivityTracker>(speed_data);
@@ -671,6 +728,8 @@ bool DriveApp::init(int& exit_code) {
   collected_wristband = 0;
   if (have_saved && saved.collected_wristband >= 0) {
     collected_wristband = saved.collected_wristband;
+  } else if (have_saved && !saved.intro_completed && saved.collected_wristband < 0) {
+    collected_wristband = -1;
   } else if (have_career_catalog) {
     collected_wristband = std::max(0, career_catalog.earned_wristband(career.wristband_points));
   } else {
@@ -991,6 +1050,7 @@ bool DriveApp::handle_rally_world_switch() {
     rally_world_switch = 0;
     race.reset();
     race_event.clear();
+    restore_pre_race_tod();
     bool world_changed = false;
     if (dir > 0 && !rally_catalog.package_dir.empty()) {
       world_dir = rally_catalog.package_dir / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "Tracks" / "ColoradoDirt";
@@ -1001,6 +1061,15 @@ bool DriveApp::handle_rally_world_switch() {
       rally_hub_open = true;
       rally_hub_selected = 0;
       rally_notice.clear();
+      if (!speed_tracker) {
+        std::string se;
+        if (freeroam::load_speed_activities(game_root_of(), speed_data, &se)) {
+          speed_tracker = std::make_unique<freeroam::SpeedActivityTracker>(speed_data);
+          if (have_saved) speed_tracker->load_records(saved.speed_traps, saved.speed_zones);
+          std::printf("speed activities (ColoradoDirt): %zu traps, %zu zones loaded\n", speed_data.traps.size(),
+                      speed_data.zones.size());
+        }
+      }
       world_changed = true;
       std::printf("rally: switched world to ColoradoDirt (%s)\n", world_dir.string().c_str());
     } else if (dir < 0 && !colorado_world_dir.empty()) {

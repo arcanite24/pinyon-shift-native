@@ -8,6 +8,7 @@
 #include <fstream>
 #include <map>
 #include <sstream>
+#include <tuple>
 
 #include "audio/xml.h"
 #include "fh1data/archive.h"
@@ -185,6 +186,29 @@ void merge_str_from_zip(fh1::Archive& zip, std::string_view entry, fh1::StringTa
   dest = std::move(merged);
 }
 
+std::pair<int64_t, int64_t> retail_pr_stunt_rewards(PrStuntKind kind, int outpost_index) {
+  // Retail FH1 PR Stunt reward tiers across early (1-3), mid (4-7), and late (8-10) Outposts.
+  const int tier = (outpost_index >= 8) ? 2 : (outpost_index >= 4 ? 1 : 0);
+  switch (kind) {
+    case PrStuntKind::kSpeed: {
+      static constexpr int64_t kCr[3] = {5000, 10000, 15000};
+      static constexpr int64_t kPop[3] = {5000, 10000, 15000};
+      return {kCr[tier], kPop[tier]};
+    }
+    case PrStuntKind::kSkill: {
+      static constexpr int64_t kCr[3] = {7500, 12500, 15000};
+      static constexpr int64_t kPop[3] = {7500, 12500, 15000};
+      return {kCr[tier], kPop[tier]};
+    }
+    case PrStuntKind::kPhoto: {
+      static constexpr int64_t kCr[3] = {5000, 7500, 10000};
+      static constexpr int64_t kPop[3] = {5000, 7500, 10000};
+      return {kCr[tier], kPop[tier]};
+    }
+  }
+  return {5000, 5000};
+}
+
 }  // namespace
 
 const Outpost* OutpostCatalog::find_outpost(std::string_view id) const {
@@ -336,8 +360,22 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
     if (auto it = mission_to_outpost.find(lower(s.id)); it != mission_to_outpost.end()) s.outpost_id = it->second;
     s.route_id = extract_route_id(a);
     s.start_pos = extract_start_pos(s.route_id, s.outpost_id);
-    if (const auto* sp = a.child("Speed")) s.target_mph = sp->number("easy", 120.0);
-    if (const auto* tm = a.child("Time")) s.time_limit_s = tm->number("easy", 90.0);
+    if (const auto* sp = a.child("Speed")) {
+      const double easy = sp->number("easy", 120.0);
+      const double med = sp->has("medium") ? sp->number("medium", easy) : easy;
+      const double hard = sp->has("hard") ? sp->number("hard", easy) : easy;
+      s.target_mph = easy;
+      s.target_mph_tiers = {easy, med, hard};
+    }
+    if (const auto* tm = a.child("Time")) {
+      const double easy = tm->number("easy", 90.0);
+      const double med = tm->has("medium") ? tm->number("medium", easy) : easy;
+      const double hard = tm->has("hard") ? tm->number("hard", easy) : easy;
+      s.time_limit_s = easy;
+      s.time_limit_tiers = {easy, med, hard};
+    } else {
+      s.time_limit_tiers = {s.time_limit_s, s.time_limit_s, s.time_limit_s};
+    }
     if (const auto* car = a.child("Car")) {
       s.loaner_car_id = int(car->number("carID", 0));
       s.loaner_car_colour = int(car->number("carColour", 0));
@@ -364,13 +402,14 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
       s.instruction = resolve_str(mission_strings, desc->attr("instruction_text"));
     }
     const int num = parse_trailing_number(s.id);
+    const Outpost* parent_op = out.find_outpost(s.outpost_id);
+    const int op_idx = (parent_op && parent_op->index > 0) ? parent_op->index : num;
     s.title = cam_name.empty() ? ("Speed Trap #" + std::to_string(num) + " (" + std::to_string(int(std::lround(s.target_mph))) + " MPH)")
                                : cam_name;
     if (s.instruction.empty()) {
       s.instruction = "Hit " + std::to_string(int(std::lround(s.target_mph))) + " MPH through the speed trap";
     }
-    s.reward_credits = 5000 + int64_t(std::max(0, num - 1)) * 500;
-    s.reward_popularity = 2500;
+    std::tie(s.reward_credits, s.reward_popularity) = retail_pr_stunt_rewards(s.kind, op_idx);
     out.stunts.push_back(std::move(s));
   }
 
@@ -389,8 +428,22 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
       s.target_pos.y = dest->number("y", s.start_pos.y);
       s.target_pos.z = dest->number("z", s.start_pos.z);
     }
-    if (const auto* pop = a.child("Popularity")) s.target_points = int(pop->number("easy", 15000));
-    if (const auto* tm = a.child("TimeLimit")) s.time_limit_s = tm->number("easy", 120.0);
+    if (const auto* pop = a.child("Popularity")) {
+      const int easy = int(pop->number("easy", 15000));
+      const int med = pop->has("medium") ? int(pop->number("medium", double(easy))) : easy;
+      const int hard = pop->has("hard") ? int(pop->number("hard", double(easy))) : easy;
+      s.target_points = easy;
+      s.target_points_tiers = {easy, med, hard};
+    }
+    if (const auto* tm = a.child("TimeLimit")) {
+      const double easy = tm->number("easy", 120.0);
+      const double med = tm->has("medium") ? tm->number("medium", easy) : easy;
+      const double hard = tm->has("hard") ? tm->number("hard", easy) : easy;
+      s.time_limit_s = easy;
+      s.time_limit_tiers = {easy, med, hard};
+    } else {
+      s.time_limit_tiers = {s.time_limit_s, s.time_limit_s, s.time_limit_s};
+    }
     if (const auto* car = a.child("Car")) {
       s.loaner_car_id = int(car->number("carID", 0));
       s.loaner_car_colour = int(car->number("carColour", 0));
@@ -400,12 +453,13 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
       if (s.instruction.empty()) s.instruction = resolve_str(mission_strings, desc->attr("instruction_to_skills"));
     }
     const int num = parse_trailing_number(s.id);
+    const Outpost* parent_op = out.find_outpost(s.outpost_id);
+    const int op_idx = (parent_op && parent_op->index > 0) ? parent_op->index : num;
     s.title = format_int_commas(s.target_points) + " PTS Challenge #" + std::to_string(num);
     if (s.instruction.empty()) {
       s.instruction = "Earn " + format_int_commas(s.target_points) + " skill points before time expires";
     }
-    s.reward_credits = 6000 + int64_t(std::max(0, num - 1)) * 500;
-    s.reward_popularity = 3000;
+    std::tie(s.reward_credits, s.reward_popularity) = retail_pr_stunt_rewards(s.kind, op_idx);
     out.stunts.push_back(std::move(s));
   }
 
@@ -421,6 +475,15 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
     s.target_pos = s.start_pos;
     s.photo_radius = 50.0;
     s.time_limit_s = 180.0;  // generous 3-minute photo op timer
+    if (const auto* tm = a.child("TimeLimit")) {
+      const double easy = tm->number("easy", 180.0);
+      const double med = tm->has("medium") ? tm->number("medium", easy) : easy;
+      const double hard = tm->has("hard") ? tm->number("hard", easy) : easy;
+      s.time_limit_s = easy;
+      s.time_limit_tiers = {easy, med, hard};
+    } else {
+      s.time_limit_tiers = {s.time_limit_s, s.time_limit_s, s.time_limit_s};
+    }
     if (const auto* pz = a.child("PhotoZone")) {
       s.photo_radius = pz->number("radius", 50.0);
       const std::string node_name = lower(pz->attr("node_name"));
@@ -440,12 +503,13 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
       s.instruction = resolve_str(mission_strings, desc->attr("instruction_to_photo"));
     }
     const int num = parse_trailing_number(s.id);
+    const Outpost* parent_op = out.find_outpost(s.outpost_id);
+    const int op_idx = (parent_op && parent_op->index > 0) ? parent_op->index : num;
     s.title = location.empty() ? ("Landmark #" + std::to_string(num)) : location;
     if (s.instruction.empty()) {
       s.instruction = "Drive to the landmark and press [P] to take a photo";
     }
-    s.reward_credits = 4500 + int64_t(std::max(0, num - 1)) * 500;
-    s.reward_popularity = 2000;
+    std::tie(s.reward_credits, s.reward_popularity) = retail_pr_stunt_rewards(s.kind, op_idx);
     out.stunts.push_back(std::move(s));
   }
 
@@ -545,6 +609,7 @@ bool OutpostProgress::complete_stunt(const std::string& id) {
 }
 
 int OutpostProgress::check_discovery(const OutpostCatalog& catalog, double car_x, double car_z) {
+  if (outpost_stunts_by_index_.empty() && !catalog.outposts.empty()) bind_catalog(catalog);
   for (size_t i = 0; i < catalog.outposts.size(); ++i) {
     const Outpost& o = catalog.outposts[i];
     if (is_outpost_discovered(o.id)) continue;
@@ -574,24 +639,94 @@ int OutpostProgress::completed_stunt_count(const OutpostCatalog& catalog) const 
   return n;
 }
 
+void OutpostProgress::bind_catalog(const OutpostCatalog& catalog) {
+  outpost_stunts_by_index_.clear();
+  for (const auto& o : catalog.outposts) {
+    if (o.index <= 0) continue;
+    std::vector<std::string> ids = o.mission_ids;
+    if (ids.empty()) {
+      for (const PrStunt* st : catalog.stunts_for_outpost(o.id)) ids.push_back(st->id);
+    }
+    if (!ids.empty()) outpost_stunts_by_index_[o.index] = std::move(ids);
+  }
+}
+
+bool OutpostProgress::is_outpost_fast_travel_free(int outpost_id) const {
+  if (outpost_id <= 0) return false;
+  auto has_stunt = [&](std::string_view want) {
+    if (completed_pr_stunts.count(std::string(want)) > 0) return true;
+    const std::string lw = lower(std::string(want));
+    for (const auto& s : completed_pr_stunts) {
+      if (lower(s) == lw) return true;
+    }
+    return false;
+  };
+  if (auto it = outpost_stunts_by_index_.find(outpost_id);
+      it != outpost_stunts_by_index_.end() && !it->second.empty()) {
+    for (const auto& mid : it->second) {
+      if (!has_stunt(mid)) return false;
+    }
+    return true;
+  }
+  // Standalone retail fallback: Outpost N owns speedstunt_NN, prstunt_NN, photoshoot_NN.
+  char sp[32], pr[32], ph[32];
+  std::snprintf(sp, sizeof sp, "speedstunt_%02d", outpost_id);
+  std::snprintf(pr, sizeof pr, "prstunt_%02d", outpost_id);
+  std::snprintf(ph, sizeof ph, "photoshoot_%02d", outpost_id);
+  return has_stunt(sp) && has_stunt(pr) && has_stunt(ph);
+}
+
+bool OutpostProgress::is_outpost_fast_travel_free(const OutpostCatalog& catalog, int outpost_id) const {
+  for (const auto& o : catalog.outposts) {
+    if (o.index == outpost_id) return is_outpost_fast_travel_free(catalog, o.id);
+  }
+  return false;
+}
+
+bool OutpostProgress::is_outpost_fast_travel_free(const OutpostCatalog& catalog, std::string_view outpost_id) const {
+  const Outpost* op = catalog.find_outpost(outpost_id);
+  if (!op) return false;
+  auto has_stunt = [&](std::string_view want) {
+    if (completed_pr_stunts.count(std::string(want)) > 0) return true;
+    const std::string lw = lower(std::string(want));
+    for (const auto& s : completed_pr_stunts) {
+      if (lower(s) == lw) return true;
+    }
+    return false;
+  };
+  if (!op->mission_ids.empty()) {
+    for (const auto& mid : op->mission_ids) {
+      if (!has_stunt(mid)) return false;
+    }
+    return true;
+  }
+  const auto linked = catalog.stunts_for_outpost(op->id);
+  if (linked.empty()) return false;
+  for (const PrStunt* st : linked) {
+    if (!has_stunt(st->id)) return false;
+  }
+  return true;
+}
+
 void PrStuntSession::start(const PrStunt& stunt, int64_t baseline_skill_points, int difficulty_index) {
   stunt_ = stunt;
-  // Scale PR Stunt target by race difficulty (0=Easy .. 3=Insane) matching FH1 progression.
-  const int d = std::clamp(difficulty_index, 0, 3);
-  if (d > 0) {
-    if (stunt_.kind == PrStuntKind::kSpeed && stunt_.target_mph > 0.0) {
-      stunt_.target_mph = std::round(stunt_.target_mph + std::min(15.0, stunt_.target_mph * (0.04 * double(d))));
-    } else if (stunt_.kind == PrStuntKind::kSkill && stunt_.target_points > 0) {
-      stunt_.target_points = int(std::llround(double(stunt_.target_points) * (1.0 + 0.15 * double(d))));
-    }
+  // Select retail XML easy/medium/hard tier (0=Easy, 1=Medium, 2+=Hard) directly without fabricated multipliers.
+  const int tier = std::clamp(difficulty_index, 0, 2);
+  if (stunt_.kind == PrStuntKind::kSpeed && stunt_.target_mph_tiers[size_t(tier)] > 0.0) {
+    stunt_.target_mph = stunt_.target_mph_tiers[size_t(tier)];
+  } else if (stunt_.kind == PrStuntKind::kSkill && stunt_.target_points_tiers[size_t(tier)] > 0) {
+    stunt_.target_points = stunt_.target_points_tiers[size_t(tier)];
+  }
+  if (stunt_.time_limit_tiers[size_t(tier)] > 0.0) {
+    stunt_.time_limit_s = stunt_.time_limit_tiers[size_t(tier)];
   }
   state_ = PrStuntState::kActive;
   baseline_skill_points_ = baseline_skill_points;
   earned_skill_points_ = 0;
-  time_remaining_s_ = stunt.time_limit_s;
+  time_remaining_s_ = stunt_.time_limit_s;
   elapsed_s_ = 0.0;
   best_mph_ = 0.0;
-  distance_to_target_ = std::hypot(stunt.target_pos.x - stunt.start_pos.x, stunt.target_pos.z - stunt.start_pos.z);
+  distance_to_target_ = std::hypot(stunt_.target_pos.x - stunt_.start_pos.x, stunt_.target_pos.z - stunt_.start_pos.z);
   photo_hold_s_ = 0.0;
   in_target_zone_ = false;
 }

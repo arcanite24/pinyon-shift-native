@@ -13,6 +13,10 @@
 #include <string_view>
 #include <vector>
 
+namespace fh1 {
+struct StringTable;
+}
+
 namespace freeroam {
 
 struct SpeedGate {
@@ -23,15 +27,17 @@ struct SpeedGate {
 };
 
 struct SpeedTrapDef {
-  std::string id;          // e.g. "speed_camera_01"
-  int scoreboard_id = 0;   // 201+
+  std::string id;            // e.g. "speed_camera_01"
+  std::string display_name;  // localized retail name from List_SpeedCameras.str (or fallback)
+  int scoreboard_id = 0;     // 201+
   double min_speed_mph = 30.0;
   SpeedGate gate;
 };
 
 struct SpeedZoneDef {
-  std::string id;          // e.g. "average_speed_01"
-  int scoreboard_id = 0;   // 101+
+  std::string id;            // e.g. "average_speed_01"
+  std::string display_name;  // localized retail name from List_SpeedCameras.str (or fallback)
+  int scoreboard_id = 0;     // 101+
   double min_speed_mph = 30.0;
   SpeedGate gate1;
   SpeedGate gate2;
@@ -47,7 +53,8 @@ struct SpeedActivitiesData {
 };
 
 bool parse_speed_activities(std::string_view speed_camera_xml, std::string_view average_speed_xml,
-                            std::string_view gameobjs_xml, SpeedActivitiesData& out, std::string* error = nullptr);
+                            std::string_view gameobjs_xml, SpeedActivitiesData& out, std::string* error = nullptr,
+                            const fh1::StringTable* camera_strings = nullptr);
 bool load_speed_activities(const std::filesystem::path& game_root, SpeedActivitiesData& out,
                            std::string* error = nullptr);
 

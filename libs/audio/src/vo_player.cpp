@@ -389,6 +389,8 @@ void VoPlayer::stop_active() {
   active_ = false;
   active_trigger_.clear();
   pos_ = 0.0;
+  stalled_frames_ = 0;
+  seek_retries_ = 0;
 }
 
 void VoPlayer::start_next() {
@@ -459,32 +461,71 @@ bool VoPlayer::render(float* out, int frames) {
       return active_;
     }
     if (st->state() != PcmStream::kReady || !st->positioned()) {
-      return true;  // still loading on background worker
+      stalled_frames_ += frames;
+      if (stalled_frames_ > rate_ * 4) {
+        // Bounded stall guard so a failing/starved stream cannot hang VOPlaying forever.
+        start_next();
+        return active_;
+      }
+      return true;  // still loading/seeking on background worker
     }
     const double step = double(std::max(8000, st->rate())) / double(rate_);
     const int64_t rfrom = st->from();
     const int64_t rend = st->end();
+    bool ring_behind = false;
+    bool ring_starved = false;
     for (int i = 0; i < frames; ++i) {
       const int64_t a = int64_t(std::floor(pos_));
       if (a >= rend && st->source_done()) {
         start_next();
         break;
       }
-      if (a >= rfrom && a < rend) {
-        const float frac = float(pos_ - double(a));
-        float al = 0.0f, ar = 0.0f, bl = 0.0f, br = 0.0f;
-        st->sample(a, al, ar);
-        if (a + 1 < rend) {
-          st->sample(a + 1, bl, br);
-          al += (bl - al) * frac;
-          ar += (br - ar) * frac;
+      if (a < rfrom) {
+        // Ring window wrapped/advanced past pos_: recover by re-seeking or snapping
+        // cleanly instead of stalling forever in silence!
+        ring_behind = true;
+        break;
+      }
+      if (a >= rend) {
+        // Worker has not filled up to `a` yet.
+        ring_starved = true;
+        break;
+      }
+      const float frac = float(pos_ - double(a));
+      float al = 0.0f, ar = 0.0f, bl = 0.0f, br = 0.0f;
+      st->sample(a, al, ar);
+      if (a + 1 < rend) {
+        st->sample(a + 1, bl, br);
+        al += (bl - al) * frac;
+        ar += (br - ar) * frac;
+      }
+      out[2 * i] += al;
+      out[2 * i + 1] += ar;
+      pos_ += step;
+      stalled_frames_ = 0;
+      seek_retries_ = 0;
+    }
+    if (active_ && st) {
+      if (ring_behind) {
+        const int64_t cur = int64_t(std::floor(pos_));
+        if (seek_retries_ < 2) {
+          ++seek_retries_;
+          st->request(std::max<int64_t>(0, cur));
+        } else {
+          // After retry, snap forward to valid ring window start so playback always makes progress.
+          pos_ = double(rfrom);
+          seek_retries_ = 0;
         }
-        out[2 * i] += al;
-        out[2 * i + 1] += ar;
-        pos_ += step;
+      } else if (ring_starved) {
+        stalled_frames_ += frames;
+        st->hint(std::max<int64_t>(rfrom, int64_t(std::floor(pos_)) - 4));
+        if (stalled_frames_ > rate_ * 2) {
+          start_next();
+        }
+      } else {
+        st->hint(std::max<int64_t>(rfrom, int64_t(std::floor(pos_)) - 4));
       }
     }
-    if (active_ && st) st->hint(std::max<int64_t>(rfrom, int64_t(std::floor(pos_)) - 4));
     return active_;
   }
 

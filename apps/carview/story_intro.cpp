@@ -144,7 +144,7 @@ StoryAction StoryIntro::enter_stage(StoryStage next) {
 
     case StoryStage::kCorradoQualify:
       objective_title_ = "QUALIFICATION RACE";
-      objective_detail_ = "1995 VOLKSWAGEN CORRADO VR6 — FESTIVAL FIRST";
+      objective_detail_ = "1995 VOLKSWAGEN CORRADO VR6 — HORIZON QUALIFICATION";
       act.swap_car = true;
       act.car_media = kCorradoMedia;
       act.car_id = kCorradoCarId;

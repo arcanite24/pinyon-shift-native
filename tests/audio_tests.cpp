@@ -2240,6 +2240,321 @@ void phase_r2_1_audio_parity_checks() {
   }
 }
 
+void phase_r2_5_audio_completeness_checks() {
+  auto make_tone = [](double hz, int frames, int rate = 48000, float amp = 0.6f) {
+    audio::PcmSample s;
+    s.rate = rate;
+    s.data.resize(size_t(frames));
+    for (int i = 0; i < frames; ++i)
+      s.data[size_t(i)] = float(double(amp) * std::sin(2.0 * 3.14159265358979323846 * hz * double(i) / double(rate)));
+    return s;
+  };
+  auto rms = [](const std::vector<float>& buf) {
+    double acc = 0.0;
+    for (float v : buf) acc += double(v) * double(v);
+    return buf.empty() ? 0.0 : std::sqrt(acc / double(buf.size()));
+  };
+
+  // 1. HomespaceMusic, MenuMusic, and HomespaceAmbience are isolated from GameMusic (-13 dB) & AmbientStatic (-6 dB).
+  {
+    const std::string xml = R"(
+      <AudioMixerSnapshots>
+        <UIExterior group="Gameplay" fadein="0.0" fadeout="0.0">
+          <GameMusic active="1" destvolume="0.2239"/>
+          <HomespaceMusic active="1" destvolume="1.0"/>
+          <MenuMusic active="1" destvolume="1.0"/>
+          <AmbientStatic active="1" destvolume="0.5012"/>
+          <HomespaceAmbientDynamic active="1" destvolume="1.0"/>
+        </UIExterior>
+      </AudioMixerSnapshots>
+    )";
+    audio::SnapshotMatrix mat;
+    CHECK(mat.parse(xml));
+    mat.activate("UIExterior");
+    CHECK(near(mat.bus_gain(audio::Bus::kMusic), 0.2239, 1e-3));
+    CHECK(near(mat.bus_gain(audio::Bus::kHomespaceMusic), 1.0, 1e-3));
+    CHECK(near(mat.bus_gain(audio::Bus::kMenuMusic), 1.0, 1e-3));
+    CHECK(near(mat.bus_gain(audio::Bus::kAmbience), 0.5012, 1e-3));
+    CHECK(near(mat.bus_gain(audio::Bus::kHomespaceAmbience), 1.0, 1e-3));
+  }
+
+  // 2. Top-level UI bus sliders propagate cleanly to all child sub-buses.
+  {
+    audio::Mixer m;
+    m.prepare(48000);
+    m.set_bus_level(audio::Bus::kEngine, 0.40f);
+    CHECK(near(m.bus_level(audio::Bus::kTransmission), 0.40, 1e-4));
+    CHECK(near(m.bus_level(audio::Bus::kSupercharger), 0.40, 1e-4));
+    CHECK(near(m.bus_level(audio::Bus::kTurbo), 0.40, 1e-4));
+    CHECK(near(m.bus_level(audio::Bus::kBackfire), 0.40, 1e-4));
+    CHECK(near(m.bus_level(audio::Bus::kEngineDamage), 0.40, 1e-4));
+    m.set_bus_level(audio::Bus::kVo, 0.55f);
+    CHECK(near(m.bus_level(audio::Bus::kSatNav), 0.55, 1e-4));
+    CHECK(near(m.bus_level(audio::Bus::kRallyCoDriver), 0.55, 1e-4));
+    m.set_bus_level(audio::Bus::kMusic, 0.35f);
+    CHECK(near(m.bus_level(audio::Bus::kHomespaceMusic), 0.35, 1e-4));
+    CHECK(near(m.bus_level(audio::Bus::kMenuMusic), 0.35, 1e-4));
+    m.set_bus_level(audio::Bus::kAmbience, 0.50f);
+    CHECK(near(m.bus_level(audio::Bus::kHomespaceAmbience), 0.50, 1e-4));
+    CHECK(near(m.bus_level(audio::Bus::kCollision), 0.50, 1e-4));
+    m.set_bus_level(audio::Bus::kTyres, 0.65f);
+    CHECK(near(m.bus_level(audio::Bus::kSuspension), 0.65, 1e-4));
+
+    audio::AudioEngine eng(48000);
+    eng.set_bus_level(audio::Bus::kEngine, 0.45f);
+    eng.set_bus_level(audio::Bus::kVo, 0.60f);
+    CHECK(near(eng.bus_level(audio::Bus::kTurbo), 0.45, 1e-4));
+    CHECK(near(eng.bus_level(audio::Bus::kEngineDamage), 0.45, 1e-4));
+    CHECK(near(eng.bus_level(audio::Bus::kSatNav), 0.60, 1e-4));
+    CHECK(near(eng.bus_level(audio::Bus::kRallyCoDriver), 0.60, 1e-4));
+  }
+
+  // 3. PlaybackSystem curves (HomeTheater, TV, Headphones, CarAudio, FullDynamicRange) wired cleanly.
+  {
+    audio::MasterRmsStage st;
+    st.prepare(48000);
+    st.set_playback_system(audio::PlaybackSystem::kHomeTheater);
+    CHECK(st.playback_system() == audio::PlaybackSystem::kHomeTheater);
+    st.set_playback_system(audio::PlaybackSystem::kTv);
+    CHECK(st.playback_system() == audio::PlaybackSystem::kTv);
+    st.set_playback_system(audio::PlaybackSystem::kHeadphones);
+    CHECK(st.playback_system() == audio::PlaybackSystem::kHeadphones);
+    st.set_playback_system(audio::PlaybackSystem::kCarAudio);
+    CHECK(st.playback_system() == audio::PlaybackSystem::kCarAudio);
+    st.set_playback_system(audio::PlaybackSystem::kFullDynamicRange);
+    CHECK(st.playback_system() == audio::PlaybackSystem::kFullDynamicRange && st.full_dynamic_range());
+
+    audio::AudioEngine eng(48000);
+    eng.set_playback_system(audio::PlaybackSystem::kHeadphones);
+    std::vector<float> pcm(480 * 2, 0.0f);
+    eng.render_offline(pcm.data(), 480);
+    for (float v : pcm) CHECK(std::isfinite(v));
+  }
+
+  // 4. Cockpit _CMT.xml <OtherVolumes> & Focus _ET.xml DSP (drivetrain_spring, FocusPEQ, Distortion, TrashDSP).
+  {
+    const std::string et_xml = R"(
+      <Engine>
+        <EngineSettings audio_rpm_idle="900" audio_rpm_redline="7500"
+                        drivetrain_spring_enabled="1" drivetrain_springF1="14.0" drivetrain_damperR1="3.5"
+                        drivetrain_springF2="28.0" drivetrain_damperR2="6.0" drivetrain_scalar="2.0"
+                        drivetrain_clamp="400.0"/>
+        <VolumeAdjustments BurbleVolume="0.75"/>
+        <FocusPEQ Active="1" CenterFrequency="1200" Bandwidth="1.2" Gain="1.6"/>
+        <Distortion Active="1" Level="0.5" VolumeCompensate="0.85"/>
+        <TrashDSP Active="1" Cutoff1="350" Cutoff2="2400">
+          <Low inputgain="1.2" overdrive="0.4" mix="0.5" outputgain="1.0"/>
+          <Mid inputgain="1.1" overdrive="0.6" mix="0.4" outputgain="1.0"/>
+          <High inputgain="1.0" overdrive="0.3" mix="0.25" outputgain="1.0"/>
+        </TrashDSP>
+      </Engine>
+    )";
+    const std::string cmt_xml = R"(
+      <CarModelTuning>
+        <Listener>
+          <Basic>
+            <Cockpit>
+              <OtherVolumes Wind="0.35" Tires="0.40" Transmission="1.25" Turbo="0.80" Backfire="0.55" EngineDamage="1.15"/>
+            </Cockpit>
+            <Follow>
+              <OtherVolumes Wind="1.0" Tires="1.0" Transmission="1.0" Turbo="1.0" Backfire="1.0" EngineDamage="1.0"/>
+            </Follow>
+          </Basic>
+        </Listener>
+      </CarModelTuning>
+    )";
+    audio::XmlNode et_node, cmt_node;
+    std::string err;
+    CHECK(audio::parse_xml(et_xml, et_node, &err));
+    CHECK(audio::parse_xml(cmt_xml, cmt_node, &err));
+    audio::EngineSound es;
+    std::vector<audio::HarmonicRef> refs;
+    CHECK(audio::read_engine_tuning(et_node, es, refs, &err));
+    audio::read_model_tuning(cmt_node, es);
+    CHECK(es.drivetrain_spring.enabled && near(es.drivetrain_spring.spring_f1, 14.0, 1e-3));
+    CHECK(es.focus_peq.active && near(es.focus_peq.center_freq.eval({0.5, 0.5, 0.5, 0.0}), 1200.0, 1e-3));
+    CHECK(es.distortion.active);
+    CHECK(es.trash_dsp.active && near(es.trash_dsp.cutoff1_hz, 350.0, 1e-3));
+    CHECK(es.has_other_volumes);
+    CHECK(near(es.other_volumes[size_t(audio::View::kCockpit)].wind, 0.35, 1e-4));
+    CHECK(near(es.other_volumes[size_t(audio::View::kCockpit)].tires, 0.40, 1e-4));
+    CHECK(near(es.other_volumes[size_t(audio::View::kCockpit)].transmission, 1.25, 1e-4));
+    CHECK(near(es.burble_volume, 0.75, 1e-4));
+
+    // Add a synthetic loop group and verify EnginePlayer runs FocusPEQ/Distortion/TrashDSP + drivetrain spring cleanly.
+    audio::Group g;
+    g.name = "ExhaustL";
+    g.bank = "synth.fsb";
+    audio::Loop lp = loop(800, 3000, 8000);
+    lp.sample = 0;
+    g.loops.push_back(lp);
+    es.groups.push_back(g);
+    const audio::PcmSample tone = make_tone(180.0, 4800, 48000, 0.5f);
+    audio::EnginePlayer ep(es, {{&tone}}, 48000, 900.0, 7500.0);
+    ep.set({3000.0, 0.0, 0.0, 0.0, audio::View::kFollow});
+    std::vector<float> buf(960 * 2, 0.0f);
+    ep.render(buf.data(), 960);
+    // Sudden full-throttle torque step excites drivetrain spring oscillation!
+    ep.set({3400.0, 1.0, 1.0, 0.0, audio::View::kFollow});
+    ep.render(buf.data(), 960);
+    CHECK(rms(buf) > 0.02);
+    CHECK(std::fabs(ep.drivetrain_spring_offset()) > 0.1 || ep.distortion_level() > 0.1);
+    for (float v : buf) CHECK(std::isfinite(v));
+  }
+
+  // 5. Bus::kEngineDamage output (procedural fallback & bank sample), Burble vs Backfire, ExhNoise, Multi-band EV.
+  {
+    constexpr int kFrames = 2400;
+    std::array<std::vector<float>, audio::kBuses> bufs;
+    float* ptrs[audio::kBuses]{};
+    auto clear_bufs = [&]() {
+      for (int b = 0; b < audio::kBuses; ++b) {
+        bufs[size_t(b)].assign(kFrames * 2, 0.0f);
+        ptrs[b] = bufs[size_t(b)].data();
+      }
+    };
+
+    // 5a. Procedural fallback on Bus::kEngineDamage produces audible output even without Damage.fev loaded!
+    {
+      audio::SfxEngine sfx(48000);
+      audio::VehicleAudioState st{};
+      st.rpm = 3800.0f;
+      st.idle_rpm = 800.0f;
+      st.redline_rpm = 7500.0f;
+      st.engine_damage = 0.0f;
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kEngineDamage)]) < 1e-6);
+
+      st.engine_damage = 0.75f;
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kEngineDamage)]) > 0.01);
+    }
+
+    // 5b. Distinct Burble overrun crackle vs shift Backfire pop, ExhNoise, and Multi-band EV.
+    {
+      audio::SfxEngine sfx(48000);
+      sfx.set_sample(audio::SfxSoundId::kBurblePop0, make_tone(260.0, 2400));
+      sfx.set_sample(audio::SfxSoundId::kBackfirePop, make_tone(120.0, 2400));
+      sfx.set_sample(audio::SfxSoundId::kExhNoise, make_tone(780.0, 4800));
+      sfx.set_sample(audio::SfxSoundId::kElectricMotor, make_tone(320.0, 4800));
+      sfx.set_sample(audio::SfxSoundId::kElectricMotorMid, make_tone(640.0, 4800));
+      sfx.set_sample(audio::SfxSoundId::kElectricMotorHigh, make_tone(1280.0, 4800));
+
+      audio::VehicleAudioState st{};
+      st.rpm = 5600.0f;
+      st.idle_rpm = 800.0f;
+      st.redline_rpm = 7500.0f;
+      st.throttle = 0.85f;
+      st.backfire_level = 2;
+      st.exh_noise_vol_scale = 1.0f;
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      // High-RPM ExhNoise renders onto Bus::kEngine.
+      CHECK(rms(bufs[int(audio::Bus::kEngine)]) > 0.01);
+
+      // Upshift triggers immediate Backfire pop (distinct from Burble).
+      st.shifting = true;
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(sfx.backfire_count() >= 1);
+      CHECK(sfx.last_one_shot_id() == audio::SfxSoundId::kBackfirePop);
+
+      // Off-throttle overrun triggers Burble crackles cleanly.
+      st.shifting = false;
+      st.throttle = 0.0f;
+      st.burble_min_time_ms = 40.0f;
+      st.burble_max_time_ms = 60.0f;
+      st.burble_silence_weight = 0.0f;
+      for (int iter = 0; iter < 8; ++iter) {
+        clear_bufs();
+        sfx.render(st, ptrs, kFrames);
+      }
+      CHECK(sfx.burble_count() >= 1);
+
+      // Multi-band EV renders when is_electric = true.
+      st.is_electric = true;
+      st.speed_mph = 70.0f;
+      st.throttle = 0.8f;
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kEngine)]) > 0.02);
+    }
+
+    // 5c. SurfaceChanges.xml gain/pitch multipliers + Leaves_On + distinct UI cues (kLap, kWristbandUnlock, kRewindTapeStop, kCountdownTick).
+    {
+      audio::SfxEngine sfx(48000);
+      audio::TiresConfig tc;
+      CHECK(tc.parse_tires(
+          R"(<Tires><SurfaceMap PhysicsSurface="Asphalt" SurfaceIndex="0" Lod1EventGroup="OnRoad"/><SurfaceMap PhysicsSurface="Leaves" SurfaceIndex="51" Lod1EventGroup="Grass"/></Tires>)"));
+      CHECK(tc.parse_surface_changes(
+          R"(<SurfaceChanges><Surfaces Surface1="Asphalt" Surface2="Leaves"><S1toS2 Event="Leaves_On" Gain="1.4" Pitch="1.2"/></Surfaces></SurfaceChanges>)"));
+      sfx.set_tires_config(tc);
+      sfx.set_sample(audio::SfxSoundId::kSurfaceLeavesOn, make_tone(420.0, 2400));
+      sfx.set_sample(audio::SfxSoundId::kUiLap, make_tone(550.0, 2400));
+      sfx.set_sample(audio::SfxSoundId::kUiCheckpoint, make_tone(330.0, 2400));
+      sfx.set_sample(audio::SfxSoundId::kUiWristbandUnlock, make_tone(880.0, 2400));
+      sfx.set_sample(audio::SfxSoundId::kUiMenuOpen, make_tone(220.0, 2400));
+      sfx.set_sample(audio::SfxSoundId::kRewindTapeStop, make_tone(190.0, 2400));
+      sfx.set_sample(audio::SfxSoundId::kCountdown321, make_tone(440.0, 48000));
+      sfx.set_sample(audio::SfxSoundId::kUiCountdownTick, make_tone(980.0, 1200));
+
+      audio::VehicleAudioState st{};
+      st.speed_mph = 60.0f;
+      for (auto& w : st.wheels) {
+        w.surface_group = 0;
+        w.surface_index = 0;
+        w.load = 1.0f;
+      }
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      for (auto& w : st.wheels) {
+        w.surface_group = 2;
+        w.surface_index = 51;
+      }
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(sfx.last_one_shot_id() == audio::SfxSoundId::kSurfaceLeavesOn);
+      CHECK(near(sfx.last_one_shot_pitch(), 1.2, 1e-3));
+
+      // Distinct UI cues.
+      sfx.trigger_ui(audio::UiCue::kLap);
+      CHECK(sfx.last_one_shot_id() == audio::SfxSoundId::kUiLap);
+      sfx.trigger_ui(audio::UiCue::kWristbandUnlock);
+      CHECK(sfx.last_one_shot_id() == audio::SfxSoundId::kUiWristbandUnlock);
+      sfx.trigger_ui(audio::UiCue::kRewindTapeStop);
+      CHECK(sfx.last_one_shot_id() == audio::SfxSoundId::kRewindTapeStop);
+
+      // Countdown tick is suppressed while full kCountdown321 track is playing (prevents 3x stacking).
+      sfx.trigger_ui(audio::UiCue::kCountdown321);
+      CHECK(sfx.last_one_shot_id() == audio::SfxSoundId::kCountdown321);
+      sfx.trigger_ui(audio::UiCue::kCountdownTick);
+      CHECK(sfx.last_one_shot_id() == audio::SfxSoundId::kCountdown321);
+    }
+  }
+
+  // 6. CoDriverVoPlayer queue clear & gate supersede.
+  {
+    audio::CoDriverVoPlayer cd(48000);
+    cd.set_clip("left3", make_tone(500.0, 4800));
+    cd.set_clip("right2", make_tone(700.0, 4800));
+    cd.set_clip("hairpin", make_tone(900.0, 4800));
+    cd.enqueue_cue("left3");
+    cd.enqueue_cue("right2");
+    cd.enqueue_cue("left3");
+    std::vector<float> cd_buf(64 * 2, 0.0f);
+    CHECK(cd.render(cd_buf.data(), 64));
+    CHECK(cd.playing() && cd.pending_count() == 2);
+    // Newer gate supersedes pending queue cleanly (drops both stale queued clips and queues only "hairpin").
+    cd.supersede_cue("hairpin");
+    CHECK(cd.playing() && cd.pending_count() == 1);
+    // Rewind/clear drops both active and pending clips.
+    cd.clear();
+    CHECK(!cd.playing() && cd.pending_count() == 0);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -2258,6 +2573,7 @@ int main() {
   hitch_and_underrun_recovery_checks();
   phase2_parity_checks();
   phase_r2_1_audio_parity_checks();
+  phase_r2_5_audio_completeness_checks();
   r34_checks();
   std::printf("audio_tests: %d failures\n", failures);
   return failures ? 1 : 0;

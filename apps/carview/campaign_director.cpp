@@ -221,11 +221,13 @@ void CampaignDirector::on_popularity_rank_changed(int old_rank, int new_rank, Au
 
 bool CampaignDirector::is_cinematic_camera_active() const {
   const auto st = flow_.stage();
+  // Exclude kPreRaceGrid so the campaign flyby never bleeds into the live
+  // race grid orbit or pre-race countdown camera swoop.
   return st == race::CampaignStage::kFestivalRegistration || st == race::CampaignStage::kWristbandCeremony ||
          st == race::CampaignStage::kShowcaseIntro || st == race::CampaignStage::kShowcaseOutro ||
          st == race::CampaignStage::kBossIntro || st == race::CampaignStage::kBossVictory ||
          st == race::CampaignStage::kBarnDiscovery || st == race::CampaignStage::kBarnRestored ||
-         st == race::CampaignStage::kPreRaceGrid || st == race::CampaignStage::kPostRaceFinish ||
+         st == race::CampaignStage::kPostRaceFinish ||
          st == race::CampaignStage::kRewardTally || st == race::CampaignStage::kFinaleIntro ||
          st == race::CampaignStage::kFinaleVictory || st == race::CampaignStage::kCredits;
 }

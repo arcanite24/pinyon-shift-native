@@ -11,6 +11,7 @@
 #include "drive/save.h"
 #include "freeroam/skills.h"
 #include "race/career.h"
+#include "race/event.h"
 #include "race/rewards.h"
 
 namespace {
@@ -389,7 +390,14 @@ void test_real_disc_catalog() {
   const auto* fr02 = cat.find_event("FR02");
   const auto* fsec = cat.find_event("FESTIVAL_SECOND");
   CHECK(fr02 != nullptr && fr02->has_trigger);
+  CHECK(fr02 != nullptr && fr02->has_tod_start && fr02->tod_start_sec > 0.0);
   CHECK(fsec != nullptr && fsec->has_trigger);
+  {
+    race::EventData ev_data;
+    CHECK(race::load_event(root, "FR02", race::Difficulty::kMed, ev_data, &err));
+    CHECK(ev_data.has_tod_start && ev_data.tod_start_sec > 0.0);
+  }
+  CHECK(!cat.make_names.empty() && !cat.country_names.empty() && !cat.engine_placement_names.empty());
   const std::vector<std::string> classes = {"F", "E", "D", "C", "B", "A", "S", "R3", "R2", "R1", "U"};
   // Starter Corrado VR6 (Data_Car 309, Class D = 2, FWD) is eligible for opening FESTIVAL_SECOND;
   // FR02 requires AWD (ineligible in FWD Corrado, eligible in AWD car of class <= B);
@@ -428,6 +436,130 @@ void test_real_disc_catalog() {
   }
 }
 
+void test_r2_5_detailed_restrictions_and_fame_events() {
+  race::CareerCatalog cat;
+  cat.make_names[10] = "Ferrari";
+  cat.country_names[5] = "Japan";
+  cat.region_names[2] = "Europe";
+  cat.body_family_names[3] = "Coupe";
+  cat.model_family_names[7] = "Skyline";
+  cat.engine_placement_names[2] = "Mid";
+
+  race::CarSpec car;
+  car.car_id = 309;
+  car.media_name = "VW_Corrado_95";
+  car.stock_class = 2;
+  car.base_cost = 12000;
+  car.engine_placement = 1;  // Front
+  car.cylinder_count = 6;
+  car.props.year = 1995;
+  car.props.value = 12000;
+  car.props.make = 1;
+  car.props.country = 3;
+  car.props.region = 3;
+  car.props.body_family = 1;
+  car.props.model_family = 1;
+  car.props.drive_type = shift::data::kDriveFwd;
+  car.props.rally_upgraded = false;
+  cat.cars[309] = car;
+
+  race::CarSpec rally_car = car;
+  rally_car.car_id = 1626;
+  rally_car.props.rally_upgraded = true;
+  cat.cars[1626] = rally_car;
+
+  const std::vector<std::string> classes = {"F", "E", "D", "C", "B", "A", "S"};
+  auto check_reason = [&](const race::CareerEvent& ev, const char* must_contain) {
+    const auto res = cat.check_eligibility(ev, 309, 2, classes);
+    CHECK(!res.eligible);
+    CHECK(res.reason != "CAR DOES NOT MEET EVENT RESTRICTIONS");
+    CHECK(res.reason.find(must_contain) != std::string::npos);
+  };
+
+  // Make restriction
+  {
+    race::CareerEvent ev;
+    ev.restrictions.buckets[0].make = 10;
+    check_reason(ev, "FERRARI");
+  }
+  // Country restriction
+  {
+    race::CareerEvent ev;
+    ev.restrictions.buckets[0].country = 5;
+    check_reason(ev, "JAPAN");
+  }
+  // Region restriction
+  {
+    race::CareerEvent ev;
+    ev.restrictions.buckets[0].region = 2;
+    check_reason(ev, "EUROPE");
+  }
+  // Body Family restriction
+  {
+    race::CareerEvent ev;
+    ev.restrictions.buckets[0].body_family = 3;
+    check_reason(ev, "COUPE");
+  }
+  // Model Family restriction
+  {
+    race::CareerEvent ev;
+    ev.restrictions.buckets[0].model_family = 7;
+    check_reason(ev, "SKYLINE");
+  }
+  // Engine Placement restriction
+  {
+    race::CareerEvent ev;
+    ev.required_engine_placement = 2;
+    check_reason(ev, "MID-ENGINE");
+  }
+  // Cylinder Count restriction
+  {
+    race::CareerEvent ev;
+    ev.required_cylinders = 10;
+    check_reason(ev, "10-CYLINDER");
+  }
+  // Min Value restriction
+  {
+    race::CareerEvent ev;
+    ev.restrictions.buckets[0].value_min = 100000;
+    check_reason(ev, "100000");
+  }
+  // Rally Upgrade restriction (fails stock car, passes via CarSpec.props.rally_upgraded OR car_rally_upgraded override)
+  {
+    race::CareerEvent ev;
+    ev.restrictions.buckets[0].rally_upgraded = true;
+    check_reason(ev, "RALLY");
+    CHECK(cat.check_eligibility(ev, 1626, 2, classes).eligible);
+    CHECK(cat.check_eligibility(ev, 309, 2, classes, false, true).eligible);
+  }
+  // Multi-restriction event reports the ACTUAL failing field (not an already-passing drivetrain!).
+  {
+    race::CareerEvent ev;
+    ev.restrictions.buckets[0].drive_type = shift::data::kDriveFwd;  // passes (car is FWD)
+    ev.restrictions.buckets[0].value_min = 50000;                    // fails (car is 12,000 CR)
+    check_reason(ev, "50000");
+  }
+
+  // Fame.xml dialogueEvent & radioFestivalUpdate attributes parsed and surfaced on RankUp event.
+  const char* fame_xml = R"(
+    <Fame>
+      <Level rank="249" target="1000" dialogueEvent="FameRank249"/>
+      <Level rank="175" target="2000" dialogueEvent="FameRank175" radioFestivalUpdate="RadioPop175"/>
+    </Fame>)";
+  const char* feats_xml = R"(
+    <RaceFeats WorldCollisionThreshold="12" CarCollisionThreshold="12" MinSpeedToCancelFeats="10" DelayAfterCancelling="3">
+      <Air RetriggerDelay="0"><Grade LocString="IDS_Air4" Time="0.2" Fame="2500"/></Air>
+    </RaceFeats>)";
+  const char* sponsors_xml = R"(<SkillChallenges/>)";
+  freeroam::SkillsData sd;
+  std::string err;
+  CHECK(freeroam::parse_skills_data(fame_xml, feats_xml, sponsors_xml, sd, &err));
+  const auto* lv249 = sd.find_fame_level(249);
+  const auto* lv175 = sd.find_fame_level(175);
+  CHECK(lv249 != nullptr && lv249->dialogue_event == "FameRank249" && lv249->radio_festival_update.empty());
+  CHECK(lv175 != nullptr && lv175->dialogue_event == "FameRank175" && lv175->radio_festival_update == "RadioPop175");
+}
+
 }  // namespace
 
 int main() {
@@ -436,6 +568,7 @@ int main() {
   test_career_progression_rules();
   test_skills_and_popularity();
   test_skills_reset_session_clock();
+  test_r2_5_detailed_restrictions_and_fame_events();
   test_real_disc_catalog();
   std::printf("career_tests: %d failures\n", failures);
   return failures ? 1 : 0;

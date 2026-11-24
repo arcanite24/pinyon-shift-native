@@ -67,6 +67,18 @@ struct RallyWristbandDef {
   std::string thumbnail;  // "Yellow", "Green"
 };
 
+struct RallyProgress {
+  int championships_won_count = 0;
+  int podiums = 0;
+  int stages_completed = 0;
+  bool champion = false;
+
+  int championships_won() const { return championships_won_count; }
+  int podiums_count() const { return podiums; }
+  int stages_completed_total() const { return stages_completed; }
+  bool champion_unlocked() const { return champion; }
+};
+
 struct RallyCatalog {
   RallyHeatsDef heats;
   std::vector<RallyChampionshipDef> championships;  // hub order (series_id 1..7)
@@ -88,10 +100,17 @@ struct RallyCatalog {
   int next_wristband_xp(int level) const;
 
   // True when `event_id` is unlocked given Rally Heats completion, Rally XP,
-  // unlocked event IDs, and completed championship results.
+  // unlocked event IDs, and completed championship results (podium required for chain).
   bool is_championship_unlocked(int64_t event_id, int rally_xp, bool heats_done,
                                 const std::vector<int64_t>& event_unlocks,
                                 const std::vector<std::pair<int64_t, int>>& event_results) const;
+
+  // Reachable progression signals across all 7 championships / 28 stages (for achievements 211 & 215).
+  int championships_won(const drive::DriveSave& save) const;
+  int podiums_count(const drive::DriveSave& save) const;
+  int stages_completed_total(const drive::DriveSave& save) const;
+  bool champion_unlocked(const drive::DriveSave& save) const;
+  RallyProgress summarize_progress(const drive::DriveSave& save) const;
 
   // Championship credits payout for `place` (1..50), scaled by difficulty + assists %.
   static int64_t championship_credits(int64_t cash_prize, int place, int diff_pct = 0, int assists_pct = 0);

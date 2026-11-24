@@ -107,6 +107,36 @@ int group_number(const std::string& name) {
   return 2;  // ExhaustL and ExhaustR share the exhaust's settings
 }
 
+Param constant_param(double val) {
+  Param p;
+  p.present = true;
+  p.y = {val, val, val};
+  return p;
+}
+
+double first_attr_number(const XmlNode& node, std::initializer_list<const char*> names, double fallback) {
+  for (const char* nm : names) {
+    if (node.has(nm)) return node.number(nm, fallback);
+  }
+  return fallback;
+}
+
+PeqConfig read_focus_peq(const XmlNode* node) {
+  PeqConfig p;
+  if (!node) return p;
+  if (node->has("Active") && node->number("Active", 0) < 1) return p;
+  p.gain = read_param(node->child("Gain"));
+  p.center_freq = read_param(node->child("CenterFrequency"));
+  p.bandwidth = read_param(node->child("Bandwidth"));
+  if (!p.gain.present && node->has("Gain")) p.gain = constant_param(node->number("Gain", 1.0));
+  if (!p.center_freq.present && (node->has("CenterFrequency") || node->has("Center"))) {
+    p.center_freq = constant_param(first_attr_number(*node, {"CenterFrequency", "Center"}, 1000.0));
+  }
+  if (!p.bandwidth.present && node->has("Bandwidth")) p.bandwidth = constant_param(node->number("Bandwidth", 1.0));
+  p.active = p.gain.present && p.center_freq.present && p.bandwidth.present;
+  return p;
+}
+
 }  // namespace
 
 bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<HarmonicRef>& harmonics,
@@ -124,6 +154,13 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
       out.blowoff_level[size_t(k)] = std::clamp(int(s->number(pfx + "Level", k + 1)), 1, 3);
       out.blowoff_choice[size_t(k)] = std::clamp(int(s->number(pfx + "Choice", 1)), 1, 5);
     }
+    out.drivetrain_spring.enabled = s->number("drivetrain_spring_enabled", 0) >= 1.0;
+    out.drivetrain_spring.spring_f1 = std::clamp(s->number("drivetrain_springF1", 8.0), 0.5, 120.0);
+    out.drivetrain_spring.damper_r1 = std::clamp(s->number("drivetrain_damperR1", 0.5), 0.05, 50.0);
+    out.drivetrain_spring.spring_f2 = std::clamp(s->number("drivetrain_springF2", 16.0), 0.5, 120.0);
+    out.drivetrain_spring.damper_r2 = std::clamp(s->number("drivetrain_damperR2", 0.5), 0.05, 50.0);
+    out.drivetrain_spring.scalar = std::clamp(s->number("drivetrain_scalar", 1.0), 0.0, 20.0);
+    out.drivetrain_spring.clamp = std::clamp(s->number("drivetrain_clamp", 400.0), 0.0, 2500.0);
   }
   if (const XmlNode* v = engine.child("VolumeAdjustments")) {
     out.engine_volume = v->number("EngineVolume", 1);
@@ -137,6 +174,61 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
     out.burble_volume = v->number("BurbleVolume", 0);
   }
   out.global_volume = read_param(engine.child("GlobalCarVolume"));
+  const XmlNode* ht_root = engine.child("HarmonicTunings");
+  auto find_focus_dsp = [&](std::string_view tag) -> const XmlNode* {
+    if (ht_root) {
+      if (const XmlNode* n = ht_root->child(tag)) return n;
+      for (const char* eg : {"EmissionGroup2", "EmissionGroup1", "EmissionGroup0"}) {
+        if (const XmlNode* g = ht_root->child(eg)) {
+          if (const XmlNode* n = g->child(tag)) return n;
+        }
+      }
+    }
+    return engine.child(tag);
+  };
+  out.focus_peq = read_focus_peq(find_focus_dsp("FocusPEQ"));
+  if (const XmlNode* dist = find_focus_dsp("Distortion")) {
+    const bool active = !dist->has("Active") || dist->number("Active", 0) >= 1.0;
+    if (active) {
+      out.distortion.level = read_param(dist->child("DistortionLevel"));
+      if (!out.distortion.level.present) out.distortion.level = read_param(dist->child("Level"));
+      out.distortion.level_scalar =
+          std::clamp(first_attr_number(*dist, {"DistortionLevel", "Level", "Drive"}, 0.0), 0.0, 1.0);
+      out.distortion.volume_compensate =
+          std::clamp(first_attr_number(*dist, {"VolumeCompensate", "GainCompensate"}, 1.0), 0.1, 3.0);
+      out.distortion.active = out.distortion.level.present || out.distortion.level_scalar > 1e-4;
+    }
+  }
+  if (const XmlNode* trash = find_focus_dsp("TrashDSP")) {
+    const bool active = !trash->has("Active") || trash->number("Active", 0) >= 1.0;
+    if (active) {
+      out.trash_dsp.cutoff1_hz = std::clamp(trash->number("Cutoff1", 300.0), 40.0, 4000.0);
+      out.trash_dsp.cutoff2_hz =
+          std::clamp(trash->number("Cutoff2", 2500.0), out.trash_dsp.cutoff1_hz + 100.0, 14000.0);
+      static constexpr const char* kBandNames[3][3] = {
+          {"Low", "Band0", "Band1"},
+          {"Mid", "Band1", "Band2"},
+          {"High", "Band2", "Band3"},
+      };
+      bool any_band = false;
+      for (int bi = 0; bi < 3; ++bi) {
+        const XmlNode* bn = nullptr;
+        for (const char* nm : kBandNames[bi]) {
+          bn = trash->child(nm);
+          if (bn) break;
+        }
+        if (!bn && size_t(bi) < trash->children.size()) bn = &trash->children[size_t(bi)];
+        if (!bn) continue;
+        TrashBandConfig& tb = out.trash_dsp.bands[size_t(bi)];
+        tb.input_gain = std::clamp(first_attr_number(*bn, {"inputgain", "InputGain"}, 1.0), 0.0, 8.0);
+        tb.overdrive = std::clamp(first_attr_number(*bn, {"overdrive", "Overdrive"}, 0.0), 0.0, 1.0);
+        tb.mix = std::clamp(first_attr_number(*bn, {"mix", "Mix"}, 0.0), 0.0, 1.0);
+        tb.output_gain = std::clamp(first_attr_number(*bn, {"outputgain", "OutputGain"}, 1.0), 0.0, 4.0);
+        if (tb.mix > 1e-4 && tb.overdrive > 1e-4) any_band = true;
+      }
+      out.trash_dsp.active = any_band;
+    }
+  }
   const int in_lv = std::clamp(levels.intake, 0, 3);
   const int ex_lv = std::clamp(levels.exhaust, 0, 3);
   if (const XmlNode* chuff = engine.child("IntakeChuffVolume")) {
@@ -300,6 +392,30 @@ void read_model_tuning(const XmlNode& model, EngineSound& out) {
         g.pan_left[size_t(v)] = std::clamp(l, 0.0, 2.0);
         g.pan_right[size_t(v)] = std::clamp(r, 0.0, 2.0);
       }
+    }
+    if (const XmlNode* ov = view->child("OtherVolumes")) {
+      out.has_other_volumes = true;
+      ViewOtherVolumes& dst = out.other_volumes[size_t(v)];
+      auto clamp_vol = [](double val) { return std::clamp(val, 0.0, 2.5); };
+      dst.wind = clamp_vol(first_attr_number(*ov, {"Wind", "CarWind", "WindVolume"}, 1.0));
+      dst.tires = clamp_vol(first_attr_number(*ov, {"Tires", "Tire", "TiresVolume", "TireVolume"}, 1.0));
+      dst.transmission =
+          clamp_vol(first_attr_number(*ov, {"Transmission", "Trans", "TransmissionVolume"}, 1.0));
+      dst.turbo = clamp_vol(first_attr_number(*ov, {"Turbo", "TurboVolume"}, 1.0));
+      dst.supercharger =
+          clamp_vol(first_attr_number(*ov, {"SuperCharger", "Supercharger", "SuperChargerVolume"}, 1.0));
+      dst.backfire = clamp_vol(first_attr_number(*ov, {"Backfire", "BackfireVolume"}, 1.0));
+      dst.burble = clamp_vol(first_attr_number(*ov, {"Burble", "BurbleVolume"}, dst.backfire));
+      dst.suspension = clamp_vol(first_attr_number(*ov, {"Suspension", "SuspensionVolume"}, 1.0));
+      dst.engine_damage =
+          clamp_vol(first_attr_number(*ov, {"EngineDamage", "Damage", "EngineDamageVolume"}, 1.0));
+      dst.exhaust_noise =
+          clamp_vol(first_attr_number(*ov, {"ExhaustNoise", "ExhNoise", "ExhaustNoiseVolume"}, 1.0));
+      dst.electric_motor =
+          clamp_vol(first_attr_number(*ov, {"ElectricMotor", "Electric", "ElectricMotorVolume"}, 1.0));
+      dst.engine_lfe = clamp_vol(first_attr_number(*ov, {"EngineLFE", "LFE", "EngineLFEVolume"}, 1.0));
+      dst.reflections =
+          clamp_vol(first_attr_number(*ov, {"Reflections", "RoadsideReflections", "ReflectionsVolume"}, 1.0));
     }
   }
 }

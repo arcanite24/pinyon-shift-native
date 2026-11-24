@@ -7,6 +7,7 @@
 #include <cmath>
 #include <fstream>
 #include <functional>
+#include <set>
 #include <sstream>
 
 #include "audio/xml.h"
@@ -19,6 +20,56 @@ namespace {
 std::string lower_str(std::string s) {
   for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
   return s;
+}
+
+std::string upper_str(std::string s) {
+  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
+  return s;
+}
+
+bool is_str_ref(const std::string& s) { return s.size() >= 2 && s[0] == '_' && s[1] == '&'; }
+
+std::string split_camel_words(const std::string& s) {
+  std::string out;
+  auto up = [](char c) { return c >= 'A' && c <= 'Z'; };
+  auto low = [](char c) { return c >= 'a' && c <= 'z'; };
+  auto digit = [](char c) { return c >= '0' && c <= '9'; };
+  for (size_t i = 0; i < s.size(); ++i) {
+    const char c = s[i], p = i ? s[i - 1] : ' ', n = i + 1 < s.size() ? s[i + 1] : ' ';
+    const bool cut = i > 0 && ((up(c) && low(p)) || (up(c) && (up(p) || digit(p)) && low(n)) || (digit(c) && low(p)));
+    if (cut && !out.empty() && out.back() != ' ') out += ' ';
+    out += (c == '_') ? ' ' : c;
+  }
+  return out;
+}
+
+std::string extract_country_from_icon(const std::string& icon_path) {
+  const std::string low = lower_str(icon_path);
+  const size_t p0 = low.find("l_fla_");
+  if (p0 == std::string::npos) return {};
+  const size_t start = p0 + 6;
+  size_t end = low.find("_flag", start);
+  if (end == std::string::npos) end = low.find('.', start);
+  if (end == std::string::npos || end <= start) return {};
+  return split_camel_words(icon_path.substr(start, end - start));
+}
+
+std::string default_region_name(int region_id) {
+  switch (region_id) {
+    case 1: return "ASIA";
+    case 2: return "EUROPE";
+    case 3: return "NORTH AMERICA";
+    default: return {};
+  }
+}
+
+std::string default_engine_placement_name(int placement_id) {
+  switch (placement_id) {
+    case 1: return "FRONT";
+    case 2: return "MID";
+    case 3: return "REAR";
+    default: return {};
+  }
 }
 
 double col_d(sqlite3_stmt* s, int c) { return sqlite3_column_double(s, c); }
@@ -128,7 +179,7 @@ int CareerCatalog::best_place(const CareerEvent& ev, const CareerRecord& rec) co
 
 EligibilityResult CareerCatalog::check_eligibility(const CareerEvent& ev, int64_t car_id, int car_class_id,
                                                    const std::vector<std::string>& class_names,
-                                                   bool any_car_override) const {
+                                                   bool any_car_override, bool car_rally_upgraded) const {
   EligibilityResult r;
   if (ev.player_car_id > 0) {
     r.eligible = true;
@@ -147,33 +198,87 @@ EligibilityResult CareerCatalog::check_eligibility(const CareerEvent& ev, int64_
     r.reason = cname.empty() ? "CAR CLASS TOO HIGH FOR THIS EVENT" : "REQUIRES CLASS " + cname + " OR LOWER";
     return r;
   }
+  auto lookup_upper = [](const std::map<int, std::string>& m, int id) -> std::string {
+    auto it = m.find(id);
+    return (it != m.end() && !it->second.empty()) ? upper_str(it->second) : std::string{};
+  };
+
   const auto& bucket = ev.restrictions.buckets[0];
+  const CarSpec* spec = find_car(car_id);
   if (!bucket.empty()) {
-    const CarSpec* spec = find_car(car_id);
     if (!spec) {
       r.eligible = false;
-      r.reason = "CAR DOES NOT MEET EVENT RESTRICTIONS";
+      r.reason = "UNKNOWN VEHICLE CANNOT BE VERIFIED FOR EVENT RESTRICTIONS";
       return r;
     }
-    if (!shift::data::car_passes(bucket, spec->props)) {
+    shift::data::CarProperties eff_props = spec->props;
+    if (car_rally_upgraded) eff_props.rally_upgraded = true;
+    if (!shift::data::car_passes(bucket, eff_props)) {
       r.eligible = false;
-      if (bucket.drive_type) {
+      if (bucket.rally_upgraded && !eff_props.rally_upgraded) {
+        r.reason = "REQUIRES RALLY UPGRADE KIT";
+      } else if (bucket.make && eff_props.make != *bucket.make) {
+        const std::string name = lookup_upper(make_names, int(*bucket.make));
+        r.reason = name.empty() ? ("REQUIRES MAKE #" + std::to_string(*bucket.make)) : ("REQUIRES " + name);
+      } else if (bucket.country && eff_props.country != *bucket.country) {
+        const std::string name = lookup_upper(country_names, int(*bucket.country));
+        r.reason = name.empty() ? ("REQUIRES COUNTRY #" + std::to_string(*bucket.country))
+                                : ("REQUIRES CAR FROM " + name);
+      } else if (bucket.region && eff_props.region != *bucket.region) {
+        std::string name = lookup_upper(region_names, int(*bucket.region));
+        if (name.empty()) name = default_region_name(int(*bucket.region));
+        r.reason = name.empty() ? ("REQUIRES REGION #" + std::to_string(*bucket.region))
+                                : ("REQUIRES CAR FROM " + name);
+      } else if (bucket.body_family && eff_props.body_family != *bucket.body_family) {
+        const std::string name = lookup_upper(body_family_names, int(*bucket.body_family));
+        r.reason = name.empty() ? ("REQUIRES BODY FAMILY #" + std::to_string(*bucket.body_family))
+                                : ("REQUIRES " + name + " BODY STYLE");
+      } else if (bucket.model_family && eff_props.model_family != *bucket.model_family) {
+        const std::string name = lookup_upper(model_family_names, int(*bucket.model_family));
+        r.reason = name.empty() ? ("REQUIRES MODEL FAMILY #" + std::to_string(*bucket.model_family))
+                                : ("REQUIRES " + name + " MODEL FAMILY");
+      } else if (bucket.drive_type && eff_props.drive_type != *bucket.drive_type) {
         const char* dt = *bucket.drive_type == shift::data::kDriveFwd   ? "FWD"
                          : *bucket.drive_type == shift::data::kDriveRwd ? "RWD"
                                                                         : "AWD";
         r.reason = std::string("REQUIRES ") + dt + " DRIVETRAIN";
-      } else if (bucket.year_min || bucket.year_max) {
+      } else if ((bucket.year_min && eff_props.year < *bucket.year_min) ||
+                 (bucket.year_max && eff_props.year > *bucket.year_max)) {
         if (bucket.year_min && bucket.year_max)
           r.reason = "REQUIRES " + std::to_string(*bucket.year_min) + "-" + std::to_string(*bucket.year_max) + " MODEL";
         else if (bucket.year_min)
           r.reason = "REQUIRES " + std::to_string(*bucket.year_min) + " OR NEWER";
         else
           r.reason = "REQUIRES " + std::to_string(*bucket.year_max) + " OR OLDER";
-      } else if (bucket.value_max) {
-        r.reason = "REQUIRES CAR UNDER " + std::to_string(*bucket.value_max) + " CR";
+      } else if ((bucket.value_min && eff_props.value < *bucket.value_min) ||
+                 (bucket.value_max && eff_props.value > *bucket.value_max)) {
+        if (bucket.value_min && bucket.value_max)
+          r.reason = "REQUIRES CAR VALUED " + std::to_string(*bucket.value_min) + "-" +
+                     std::to_string(*bucket.value_max) + " CR";
+        else if (bucket.value_min)
+          r.reason = "REQUIRES CAR WORTH AT LEAST " + std::to_string(*bucket.value_min) + " CR";
+        else
+          r.reason = "REQUIRES CAR UNDER " + std::to_string(*bucket.value_max) + " CR";
       } else {
         r.reason = "CAR DOES NOT MEET EVENT RESTRICTIONS";
       }
+      return r;
+    }
+  }
+  if (ev.required_engine_placement > 0) {
+    if (!spec || spec->engine_placement != ev.required_engine_placement) {
+      r.eligible = false;
+      std::string pname = lookup_upper(engine_placement_names, ev.required_engine_placement);
+      if (pname.empty()) pname = default_engine_placement_name(ev.required_engine_placement);
+      r.reason = pname.empty() ? ("REQUIRES ENGINE PLACEMENT #" + std::to_string(ev.required_engine_placement))
+                               : ("REQUIRES " + pname + "-ENGINE CAR");
+      return r;
+    }
+  }
+  if (ev.required_cylinders > 0) {
+    if (!spec || spec->cylinder_count != ev.required_cylinders) {
+      r.eligible = false;
+      r.reason = "REQUIRES " + std::to_string(ev.required_cylinders) + "-CYLINDER ENGINE";
       return r;
     }
   }
@@ -283,16 +388,30 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
     return false;
 
   // 5. Playable career events (joined with Races & Tracks).
+  bool ev_has_tod_start = false, ev_has_tod_end = false;
+  {
+    std::string pragma_err;
+    db.each("PRAGMA table_info(Events)", {},
+            [&](sqlite3_stmt* s) {
+              const std::string col = lower_str(col_txt(s, 1));
+              if (col == "timeofdaystart") ev_has_tod_start = true;
+              else if (col == "timeofdayend") ev_has_tod_end = true;
+            },
+            &pragma_err);
+  }
+  const std::string ev_tod_start_expr = ev_has_tod_start ? "e.TimeOfDayStart" : "NULL";
+  const std::string ev_tod_end_expr = ev_has_tod_end ? "coalesce(e.TimeOfDayEnd, 0)" : "0";
   if (!db.each("select e.Id, coalesce(e.HorizonEventID, ''), coalesce(e.Name, ''), "
                "coalesce(e.RestrictionDescription, ''), coalesce(e.Level, 0), coalesce(e.CareerEventStyle, 0), "
                "coalesce(e.CareerTypeId, 0), coalesce(e.UnlockPointsReq, 0), coalesce(e.PopularityPointsReq, 0), "
                "coalesce(e.HubId, 0), coalesce(e.TargetClass, 0), coalesce(e.CashPrize, 0), "
                "coalesce(e.PlayerCarId, 0), r.NumLaps, t.RouteId, t.RibbonConfiguration, "
-               "(select count(*) from EventParticipants p where p.EventID = e.Id) "
-               "from Events e join Races r on r.EventId = e.Id join Tracks t on t.id = r.TrackId "
-               "where t.RibbonConfiguration >= 0 and e.CareerEventStyle > 0 "
-               "and t.EnvironmentId != 111 and e.CareerTypeId != 9 "
-               "order by e.Level, e.UnlockPointsReq, e.PopularityPointsReq desc, e.HorizonEventID",
+               "(select count(*) from EventParticipants p where p.EventID = e.Id), " +
+                   ev_tod_start_expr + ", " + ev_tod_end_expr +
+                   " from Events e join Races r on r.EventId = e.Id join Tracks t on t.id = r.TrackId "
+                   "where t.RibbonConfiguration >= 0 and e.CareerEventStyle > 0 "
+                   "and t.EnvironmentId != 111 and e.CareerTypeId != 9 "
+                   "order by e.Level, e.UnlockPointsReq, e.PopularityPointsReq desc, e.HorizonEventID",
                {},
                [&](sqlite3_stmt* s) {
                  CareerEvent ev;
@@ -313,6 +432,15 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
                  ev.route_id = int(col_i64(s, 14));
                  ev.ribbon = int(col_i64(s, 15));
                  ev.opponents = int(col_i64(s, 16));
+                 if (ev_has_tod_start && sqlite3_column_type(s, 17) != SQLITE_NULL) {
+                   const double start_sec = col_d(s, 17);
+                   const double end_sec = ev_has_tod_end ? col_d(s, 18) : 0.0;
+                   if (start_sec > 0.0 || end_sec > 0.0) {
+                     ev.has_tod_start = true;
+                     ev.tod_start_sec = std::fmod(std::fmod(start_sec, 86400.0) + 86400.0, 86400.0);
+                     ev.tod_end_sec = end_sec > 0.0 ? std::fmod(std::fmod(end_sec, 86400.0) + 86400.0, 86400.0) : 0.0;
+                   }
+                 }
                  if (auto it = prize_cars.find(ev.event_id); it != prize_cars.end()) {
                    ev.prize_car_id = it->second.first;
                    ev.prize_car_colour = it->second.second;
@@ -324,11 +452,105 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
                error))
     return false;
 
+  // 5b. Optional restriction display-name lookup tables (non-fatal when absent in minimal synthetic DBs).
+  out.region_names = {{1, "Asia"}, {2, "Europe"}, {3, "North America"}};
+  out.engine_placement_names = {{1, "Front"}, {2, "Mid"}, {3, "Rear"}};
+  std::map<int, int> cylinder_counts;
+  std::set<int64_t> stock_rally_cars;
+  {
+    std::string ignored;
+    if (!db.each("select ID, coalesce(DisplayName, ''), coalesce(IconPathBase, ''), coalesce(ManufacturerCode, '') "
+                 "from List_CarMake",
+                 {},
+                 [&](sqlite3_stmt* s) {
+                   const int id = int(col_i64(s, 0));
+                   const std::string disp = col_txt(s, 1);
+                   const std::string icon = col_txt(s, 2);
+                   const std::string code = col_txt(s, 3);
+                   if (!disp.empty() && !is_str_ref(disp)) out.make_names[id] = disp;
+                   else if (!icon.empty()) out.make_names[id] = split_camel_words(icon);
+                   else if (!code.empty()) out.make_names[id] = code;
+                 },
+                 &ignored)) {
+      db.each("select ID, coalesce(IconPathBase, ''), coalesce(ManufacturerCode, '') from List_CarMake", {},
+              [&](sqlite3_stmt* s) {
+                const int id = int(col_i64(s, 0));
+                const std::string icon = col_txt(s, 1);
+                const std::string code = col_txt(s, 2);
+                if (!icon.empty()) out.make_names[id] = split_camel_words(icon);
+                else if (!code.empty()) out.make_names[id] = code;
+              },
+              &ignored);
+    }
+    db.each("select CountryID, coalesce(Country, ''), coalesce(IconPath, '') from List_Country", {},
+            [&](sqlite3_stmt* s) {
+              const int id = int(col_i64(s, 0));
+              const std::string name = col_txt(s, 1);
+              if (!name.empty() && !is_str_ref(name)) {
+                out.country_names[id] = name;
+              } else {
+                const std::string from_icon = extract_country_from_icon(col_txt(s, 2));
+                if (!from_icon.empty()) out.country_names[id] = from_icon;
+              }
+            },
+            &ignored);
+    db.each("select Id, coalesce(DisplayName, '') from List_Region", {},
+            [&](sqlite3_stmt* s) {
+              const int id = int(col_i64(s, 0));
+              const std::string name = col_txt(s, 1);
+              if (!name.empty() && !is_str_ref(name)) out.region_names[id] = name;
+            },
+            &ignored);
+    db.each("select Id, coalesce(DisplayName, '') from List_FamilyBody", {},
+            [&](sqlite3_stmt* s) {
+              const int id = int(col_i64(s, 0));
+              const std::string name = col_txt(s, 1);
+              if (!name.empty() && !is_str_ref(name)) out.body_family_names[id] = name;
+            },
+            &ignored);
+    db.each("select Id, coalesce(DisplayName, '') from List_FamilyModel", {},
+            [&](sqlite3_stmt* s) {
+              const int id = int(col_i64(s, 0));
+              const std::string name = col_txt(s, 1);
+              if (!name.empty() && !is_str_ref(name)) out.model_family_names[id] = name;
+            },
+            &ignored);
+    db.each("select ID, coalesce(EnginePlacement, ''), coalesce(DisplayName, '') from List_EnginePlacement", {},
+            [&](sqlite3_stmt* s) {
+              const int id = int(col_i64(s, 0));
+              const std::string ep = col_txt(s, 1);
+              const std::string disp = col_txt(s, 2);
+              if (!disp.empty() && !is_str_ref(disp)) out.engine_placement_names[id] = disp;
+              else if (!ep.empty()) out.engine_placement_names[id] = ep;
+            },
+            &ignored);
+    db.each("select CylinderID, coalesce(Number, 0) from List_Cylinders", {},
+            [&](sqlite3_stmt* s) { cylinder_counts[int(col_i64(s, 0))] = int(col_i64(s, 1)); }, &ignored);
+    db.each("select Ordinal from List_UpgradeTireCompound where IsStock != 0 and (Level = 5 or TireCompoundID = 9)", {},
+            [&](sqlite3_stmt* s) { stock_rally_cars.insert(col_i64(s, 0)); }, &ignored);
+  }
+
   // 6. Car specs for restriction checks.
+  bool car_has_ep = false, car_has_cyl = false, car_has_rally = false;
+  {
+    std::string pragma_err;
+    db.each("PRAGMA table_info(Data_Car)", {},
+            [&](sqlite3_stmt* s) {
+              const std::string col = lower_str(col_txt(s, 1));
+              if (col == "engineplacementid") car_has_ep = true;
+              else if (col == "cylinderid") car_has_cyl = true;
+              else if (col == "rallyupgraded") car_has_rally = true;
+            },
+            &pragma_err);
+  }
+  const std::string car_ep_expr = car_has_ep ? "coalesce(EnginePlacementID, 0)" : "0";
+  const std::string car_cyl_expr = car_has_cyl ? "coalesce(CylinderID, 0)" : "0";
+  const std::string car_rally_expr = car_has_rally ? "coalesce(RallyUpgraded, 0)" : "0";
   if (!db.each("select Id, coalesce(MediaName, ''), coalesce(Year, 0), coalesce(BaseCost, 0), "
                "coalesce(PerformanceIndex, 0), coalesce(ClassID, 0), coalesce(MakeID, 0), "
                "coalesce(DriveTypeID, 0), coalesce(FamilyBodyId, 0), coalesce(FamilyModelId, 0), "
-               "coalesce(RegionId, 0), coalesce(CountryId, 0) from Data_Car",
+               "coalesce(RegionId, 0), coalesce(CountryId, 0), " +
+                   car_ep_expr + ", " + car_cyl_expr + ", " + car_rally_expr + " from Data_Car",
                {},
                [&](sqlite3_stmt* s) {
                  CarSpec cs;
@@ -345,6 +567,16 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
                  cs.props.model_family = uint16_t(std::max<int64_t>(0, col_i64(s, 9)));
                  cs.props.region = uint8_t(std::max<int64_t>(0, col_i64(s, 10)));
                  cs.props.country = uint8_t(std::max<int64_t>(0, col_i64(s, 11)));
+                 cs.engine_placement = int(std::max<int64_t>(0, col_i64(s, 12)));
+                 const int cyl_id = int(std::max<int64_t>(0, col_i64(s, 13)));
+                 if (auto it = cylinder_counts.find(cyl_id); it != cylinder_counts.end()) {
+                   cs.cylinder_count = it->second;
+                 } else {
+                   cs.cylinder_count = cyl_id;
+                 }
+                 const bool is_rally_twin = (cs.car_id >= 1626 && cs.car_id <= 1635);
+                 cs.props.rally_upgraded =
+                     is_rally_twin || (stock_rally_cars.count(cs.car_id) > 0) || (col_i64(s, 14) != 0);
                  if (!cs.media_name.empty()) out.car_id_by_media[lower_str(cs.media_name)] = cs.car_id;
                  out.cars[cs.car_id] = std::move(cs);
                },

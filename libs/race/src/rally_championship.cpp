@@ -188,14 +188,79 @@ bool RallyCatalog::is_championship_unlocked(int64_t event_id, int rally_xp, bool
   // Explicit unlock row (from Rewards_EventUnlock or imported profile).
   if (std::find(event_unlocks.begin(), event_unlocks.end(), event_id) != event_unlocks.end()) return true;
 
-  // Or unlocked because its predecessor championship in Rewards_EventUnlock has a recorded finish.
+  // Or unlocked because its predecessor championship in Rewards_EventUnlock has a podium finish (1st-3rd).
   for (const auto& prev : championships) {
     if (prev.unlocks_event_id == event_id) {
       for (const auto& [eid, place] : event_results)
-        if (eid == prev.event_id && place > 0) return true;
+        if (eid == prev.event_id && place >= 1 && place <= 3) return true;
     }
   }
   return false;
+}
+
+int RallyCatalog::championships_won(const drive::DriveSave& save) const {
+  int won = 0;
+  for (const auto& ch : championships) {
+    for (const auto& [eid, place] : save.event_results) {
+      if (eid == ch.event_id && place == 1) {
+        ++won;
+        break;
+      }
+    }
+  }
+  return won;
+}
+
+int RallyCatalog::podiums_count(const drive::DriveSave& save) const {
+  int podiums = 0;
+  for (const auto& ch : championships) {
+    for (const auto& [eid, place] : save.event_results) {
+      if (eid == ch.event_id && place >= 1 && place <= 3) {
+        ++podiums;
+        break;
+      }
+    }
+  }
+  return podiums;
+}
+
+int RallyCatalog::stages_completed_total(const drive::DriveSave& save) const {
+  std::set<int64_t> done;
+  for (const auto& [eid, place] : save.event_results) {
+    if (place > 0) done.insert(eid);
+  }
+  int stages = 0;
+  for (const auto& ch : championships) {
+    if (done.count(ch.event_id) > 0) {
+      stages += int(ch.stages.size());
+    } else {
+      for (const auto& st : ch.stages) {
+        if (done.count(st.event_id) > 0) ++stages;
+      }
+    }
+  }
+  return stages;
+}
+
+bool RallyCatalog::champion_unlocked(const drive::DriveSave& save) const {
+  const bool has_champion_band = (save.rally_level >= 1) || (wristband_for_xp(save.rally_xp) >= 1);
+  if (!has_champion_band) return false;
+  for (const auto& ch : championships) {
+    if (ch.unlocks_event_id != 0) continue;
+    for (const auto& [eid, place] : save.event_results) {
+      if (eid == ch.event_id && place >= 1 && place <= 3) return true;
+    }
+  }
+  return false;
+}
+
+RallyProgress RallyCatalog::summarize_progress(const drive::DriveSave& save) const {
+  RallyProgress p;
+  p.championships_won_count = championships_won(save);
+  p.podiums = podiums_count(save);
+  p.stages_completed = stages_completed_total(save);
+  p.champion = champion_unlocked(save);
+  return p;
 }
 
 int64_t RallyCatalog::championship_credits(int64_t cash_prize, int place, int diff_pct, int assists_pct) {
@@ -635,6 +700,17 @@ RallyChampionshipReward RallyChampionshipSession::finalize(const RallyCatalog& c
   save.num_rallies += 1;
   save.num_rally_stages += int(stages_.size());
 
+  // Look up previous best championship finish BEFORE upserting, so replay XP is capped to the delta.
+  int prev_best_place = 0;
+  if (!is_heats_) {
+    for (const auto& [eid, best] : save.event_results) {
+      if (eid == event_id_) {
+        prev_best_place = best;
+        break;
+      }
+    }
+  }
+
   // Record each stage result in Career_EventResults (and championship result).
   if (!is_heats_) {
     for (size_t s = 0; s < stages_.size() && s < drivers_[0].stage_times.size(); ++s) {
@@ -655,11 +731,13 @@ RallyChampionshipReward RallyChampionshipSession::finalize(const RallyCatalog& c
   save.total_winnings += rew.total_credits;
   save.rally_winnings += rew.total_credits;
 
-  // Rally XP & Wristband level (championships only; Heats and standalone stages add 0 XP).
+  // Rally XP & Wristband level (championships only; capped to improvement delta above previous best place).
   rew.old_rally_xp = save.rally_xp;
   rew.old_rally_level = save.rally_level;
   if (!is_heats_) {
-    rew.rally_xp_earned = catalog.points_for_place(rew.final_place);
+    const int prev_xp = prev_best_place > 0 ? catalog.points_for_place(prev_best_place) : 0;
+    const int new_xp = catalog.points_for_place(rew.final_place);
+    rew.rally_xp_earned = std::max(0, new_xp - prev_xp);
     save.rally_xp += rew.rally_xp_earned;
     if (rew.final_place == 1) save.num_rally_victories += 1;
   }
@@ -670,7 +748,7 @@ RallyChampionshipReward RallyChampionshipSession::finalize(const RallyCatalog& c
 
   // Unlock chain:
   // - RALLY_HEATS unlocks all 28 stages + MS_RALLY_05 (275) + RALLY_HEATS (279).
-  // - Championship unlocks its Rewards_EventUnlock target.
+  // - Championship unlocks its Rewards_EventUnlock target on a podium finish (1st-3rd).
   if (is_heats_) {
     if (add_unique_unlock(save.event_unlocks, event_id_)) rew.unlocked_events.push_back(event_id_);
     if (add_unique_unlock(save.event_unlocks, 275)) rew.unlocked_events.push_back(275);
@@ -680,9 +758,11 @@ RallyChampionshipReward RallyChampionshipSession::finalize(const RallyCatalog& c
       }
     }
   } else if (unlocks_event_id_ > 0) {
-    if (add_unique_unlock(save.event_unlocks, unlocks_event_id_)) rew.unlocked_events.push_back(unlocks_event_id_);
-  } else {
-    // Completed the final championship (MS_RALLY_02, Clear Springs).
+    if (rew.final_place >= 1 && rew.final_place <= 3) {
+      if (add_unique_unlock(save.event_unlocks, unlocks_event_id_)) rew.unlocked_events.push_back(unlocks_event_id_);
+    }
+  } else if (rew.final_place >= 1 && rew.final_place <= 3) {
+    // Completed the final championship (MS_RALLY_02, Clear Springs) on the podium.
     rew.champion_unlocked = true;
   }
 

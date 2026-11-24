@@ -148,13 +148,29 @@ bool TiresConfig::parse_surface_changes(std::string_view xml, std::string* error
   XmlNode root;
   if (!parse_xml(xml, root, error)) return false;
   changes.clear();
+  auto read_gain = [](const XmlNode& n) {
+    if (n.has("Gain")) return float(std::clamp(n.number("Gain", 1.0), 0.0, 4.0));
+    if (n.has("Volume")) return float(std::clamp(n.number("Volume", 1.0), 0.0, 4.0));
+    return 1.0f;
+  };
+  auto read_pitch = [](const XmlNode& n) {
+    return float(std::clamp(n.number("Pitch", 1.0), 0.25, 4.0));
+  };
   for (const auto& ch : root.children) {
     if (!iequals(ch.name, "Surfaces")) continue;
     SurfaceChangePair p;
     p.s1 = ch.attr("Surface1");
     p.s2 = ch.attr("Surface2");
-    if (const XmlNode* a = ch.child("S1toS2")) p.s1_to_s2 = a->attr("Event");
-    if (const XmlNode* b = ch.child("S2toS1")) p.s2_to_s1 = b->attr("Event");
+    if (const XmlNode* a = ch.child("S1toS2")) {
+      p.s1_to_s2 = a->attr("Event");
+      p.s1_to_s2_gain = read_gain(*a);
+      p.s1_to_s2_pitch = read_pitch(*a);
+    }
+    if (const XmlNode* b = ch.child("S2toS1")) {
+      p.s2_to_s1 = b->attr("Event");
+      p.s2_to_s1_gain = read_gain(*b);
+      p.s2_to_s1_pitch = read_pitch(*b);
+    }
     if (!p.s1.empty() && !p.s2.empty()) changes.push_back(std::move(p));
   }
   return !changes.empty();
@@ -233,13 +249,36 @@ const TireSurfaceEntry* TiresConfig::find_surface(std::string_view physics_surfa
   return surfaces.empty() ? nullptr : &surfaces[0];
 }
 
+const TireSurfaceEntry* TiresConfig::find_surface_by_index(int surface_index) const {
+  if (surface_index < 0) return nullptr;
+  for (const auto& s : surfaces)
+    if (s.surface_index == surface_index) return &s;
+  return nullptr;
+}
+
 std::string TiresConfig::surface_change_event(std::string_view from_surface, std::string_view to_surface) const {
+  return surface_change_spec(from_surface, to_surface).event;
+}
+
+SurfaceChangeSpec TiresConfig::surface_change_spec(std::string_view from_surface, std::string_view to_surface) const {
   if (iequals(from_surface, to_surface)) return {};
   for (const auto& c : changes) {
-    if (iequals(c.s1, from_surface) && iequals(c.s2, to_surface)) return c.s1_to_s2;
-    if (iequals(c.s2, from_surface) && iequals(c.s1, to_surface)) return c.s2_to_s1;
+    if (iequals(c.s1, from_surface) && iequals(c.s2, to_surface)) {
+      return {c.s1_to_s2, c.s1_to_s2_gain, c.s1_to_s2_pitch};
+    }
+    if (iequals(c.s2, from_surface) && iequals(c.s1, to_surface)) {
+      return {c.s2_to_s1, c.s2_to_s1_gain, c.s2_to_s1_pitch};
+    }
   }
   return {};
+}
+
+SurfaceChangeSpec TiresConfig::surface_change_spec_by_index(int from_idx, int to_idx) const {
+  if (from_idx == to_idx || from_idx < 0 || to_idx < 0) return {};
+  const auto* a = find_surface_by_index(from_idx);
+  const auto* b = find_surface_by_index(to_idx);
+  if (!a || !b) return {};
+  return surface_change_spec(a->physics_surface, b->physics_surface);
 }
 
 // ------------------------------------------------------ CollisionAudioConfig

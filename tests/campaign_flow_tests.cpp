@@ -316,6 +316,106 @@ void test_director_cameras_cli_stages_and_ui_raster() {
   }
 }
 
+void test_r2_5_campaign_parity() {
+  // 1. Exact boss spelling ("HAILEY HARPER") & retail gamedb.slt wristband event counts (70 Festival events total).
+  {
+    const auto& prof = race::character_profile(race::CharacterId::kHaileyHarper);
+    check(std::string(prof.display_name) == "HAILEY HARPER", "character profile uses HAILEY HARPER spelling");
+    const auto* hailey = race::find_boss_by_key("hailey");
+    const auto* hailey_legacy = race::find_boss_by_key("haley");
+    check(hailey != nullptr && std::string(hailey->rival_name) == "HAILEY HARPER", "boss rival uses HAILEY HARPER");
+    check(hailey_legacy == hailey, "legacy 'haley' lookup resolves cleanly to Hailey Harper");
+
+    const auto& bands = race::wristband_milestones();
+    const int expected_counts[7] = {3, 7, 8, 9, 12, 14, 16};
+    check(bands.size() == 7, "7 wristband tiers defined");
+    int total_wb_events = 0;
+    for (size_t i = 0; i < bands.size() && i < 7; ++i) {
+      check(bands[i].unlocked_events_hint == expected_counts[i], "retail gamedb.slt wristband event count matches");
+      total_wb_events += bands[i].unlocked_events_hint;
+    }
+    check(total_wb_events == 69, "69 wristband-tiered Festival events (+1 qualifier = 70 total)");
+    check(std::string(bands[5].announcement).find("Hailey Harper") != std::string::npos,
+          "Purple wristband announcement spells Hailey Harper correctly");
+
+    race::CampaignFlow reg_flow;
+    race::CampaignAction act;
+    check(reg_flow.jump_to_cli_stage("registration", act), "registration CLI stage works");
+    check(reg_flow.cinematic().detail_line.find("3 YELLOW WRISTBAND EVENTS") != std::string::npos,
+          "Festival registration cites 3 Yellow Wristband events (not fabricated 8)");
+  }
+
+  // 2. on_wristband_collected() must NOT prematurely unlock bosses; check_boss_unlocks() fires NemesisEventUnlocked1..6.
+  {
+    race::CampaignFlow flow;
+    flow.skip_onboarding_all();
+    flow.dialogs().clear();
+
+    const int thresholds[6] = {220, 750, 1450, 2500, 4100, 6400};
+    const char* keys[6] = {"ramona", "ali", "duke", "marko", "zaki", "hailey"};
+    const char* vo_ids[6] = {"NemesisEventUnlocked1", "NemesisEventUnlocked2", "NemesisEventUnlocked3",
+                             "NemesisEventUnlocked4", "NemesisEventUnlocked5", "NemesisEventUnlocked6"};
+
+    for (int lvl = 0; lvl < 6; ++lvl) {
+      flow.on_wristband_collected(lvl, "", 0);
+      flow.advance_or_skip();
+      flow.dialogs().clear();
+      check(flow.unlocked_bosses().count(keys[lvl]) == 0,
+            "on_wristband_collected does NOT prematurely insert boss into unlocked_bosses");
+
+      // Below unlock_points -> still locked.
+      flow.on_wristband_points_changed(thresholds[lvl] - 1, lvl);
+      check(flow.unlocked_bosses().count(keys[lvl]) == 0, "boss stays locked below unlock_points");
+
+      // Reaching unlock_points -> unlocks boss and queues NemesisEventUnlocked call-in!
+      flow.on_wristband_points_changed(thresholds[lvl], lvl);
+      check(flow.unlocked_bosses().count(keys[lvl]) == 1, "boss unlocks at exact unlock_points");
+      std::string vo, radio;
+      check(flow.dialogs().consume_pending_audio(vo, radio) && vo == vo_ids[lvl],
+            "NemesisEventUnlocked call-in fires when boss unlocks");
+    }
+
+    // Collecting Gold wristband (level 6) and reaching 10,000 pts must NOT prematurely unlock Darius before HEADLINE_EVENT win!
+    flow.on_wristband_collected(6, "", 0);
+    flow.advance_or_skip();
+    flow.on_wristband_points_changed(10000, 6);
+    check(flow.unlocked_bosses().count("darius") == 0, "Darius does NOT unlock before winning HEADLINE_EVENT");
+    check(!flow.pending_darius_showdown(), "pending_darius_showdown stays false before HEADLINE_EVENT win");
+
+    // Legacy save with 'darius' in unlocked_bosses but WITHOUT 'headline_event_won' must NOT activate Darius early!
+    race::CampaignSaveState legacy;
+    legacy.campaign_stage = "freeroam";
+    legacy.unlocked_bosses = {"ramona", "haley", "darius"};
+    legacy.finale_complete = false;
+    race::CampaignFlow loaded;
+    loaded.load_from(legacy);
+    check(!loaded.pending_darius_showdown(), "load_from does NOT set pending_darius_showdown without headline_event_won");
+    check(loaded.unlocked_bosses().count("hailey") == 1, "load_from normalizes legacy 'haley' boss key to 'hailey'");
+
+    // With 'headline_event_won' present, load_from sets pending_darius_showdown cleanly.
+    legacy.completed_cutscenes = {"headline_event_won"};
+    loaded.load_from(legacy);
+    check(loaded.pending_darius_showdown(), "load_from sets pending_darius_showdown when headline_event_won is recorded");
+  }
+
+  // 3. Pre-race grid cinematic blocks gameplay so event launch waits until flyby finishes/skips cleanly.
+  {
+    race::CampaignFlow flow;
+    flow.skip_onboarding_all();
+    race::CareerEvent fest_ev;
+    fest_ev.horizon_id = "FR02";
+    fest_ev.style = 1;
+    fest_ev.level = 0;
+    flow.on_enter_event(fest_ev);
+    check(flow.stage() == race::CampaignStage::kPreRaceGrid, "standard event enters kPreRaceGrid");
+    check(flow.is_cinematic_active(), "kPreRaceGrid has cinematic active");
+    check(flow.is_blocking_gameplay(), "kPreRaceGrid blocks gameplay so countdown does not start prematurely");
+    flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kFreeRoam && !flow.is_blocking_gameplay() && !flow.is_cinematic_active(),
+          "skipping kPreRaceGrid exits cleanly to FreeRoam with no camera bleed");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -324,6 +424,7 @@ int main() {
   test_dialog_queue_ducking_and_waveforms();
   test_save_load_roundtrip();
   test_director_cameras_cli_stages_and_ui_raster();
+  test_r2_5_campaign_parity();
   if (g_failures > 0) {
     std::fprintf(stderr, "campaign_flow_tests: %d failure(s)\n", g_failures);
     return 1;

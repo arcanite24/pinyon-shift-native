@@ -1227,7 +1227,7 @@ Run::Result Run::advance(const Node& n, State& st, const Signal& s) {
       const Location& a = locs_->at(n.start_loc);
       const Location& b = locs_->at(n.end_loc);
       if (!st.started) {
-        const bool in_a = a.inside_first(s.x, s.z);
+        const bool in_a = a.inside(s.x, s.z);
         if (in_a || !st.was_true) {
           st.was_true = in_a;
           return Result::kRunning;

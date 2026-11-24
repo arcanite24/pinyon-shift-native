@@ -97,6 +97,7 @@ race::RallyCatalog make_synthetic_catalog() {
   ch2.target_class = 5;
   ch2.cash_prize = 15000;
   ch2.unlocks_event_id = 272;
+  for (int s = 0; s < 4; ++s) ch2.stages[size_t(s)].event_id = 263 + s;
   cat.championships.push_back(ch2);
 
   race::RallyChampionshipDef ch_final = ch1;
@@ -108,6 +109,7 @@ race::RallyCatalog make_synthetic_catalog() {
   ch_final.cash_prize = 50000;
   ch_final.unlock_points_req = 310;
   ch_final.unlocks_event_id = 0;
+  for (int s = 0; s < 4; ++s) ch_final.stages[size_t(s)].event_id = 267 + s;
   cat.championships.push_back(ch_final);
 
   return cat;
@@ -348,10 +350,70 @@ void test_real_v4_corpus() {
               cat.championships.size(), total_stages, cd_map.by_id.size(), gates.size());
 }
 
+void test_r2_5_xp_delta_podium_unlock_and_helpers() {
+  const auto cat = make_synthetic_catalog();
+  drive::DriveSave save;
+  save.car = "SUB_WRXSTi_05";
+  save.event_unlocks.push_back(275);  // Beaumont unlocked after Heats
+
+  auto run_championship_with_place = [&](int64_t ev_id, int desired_place) {
+    race::RallyChampionshipSession s;
+    CHECK(s.start_championship(cat, ev_id, 1, 99, "PLAYER"));
+    for (int st = 0; st < 4; ++st) {
+      std::vector<double> ai(49, 120.0);
+      for (int i = 0; i < desired_place - 1 && i < 49; ++i) ai[size_t(i)] = 100.0;
+      const auto fin = s.record_stage_finish(cat, 110.0, ai);
+      if (!fin.championship_complete) CHECK(s.advance_from_service_area());
+    }
+    return s.finalize(cat, save, 0, 0);
+  };
+
+  // 1. Finishing 4th in Beaumont awards 4th-place XP (54) but does NOT unlock Montano Plains (podium required!).
+  const auto r_4th = run_championship_with_place(275, 4);
+  CHECK(r_4th.final_place == 4);
+  CHECK(r_4th.rally_xp_earned == cat.points_for_place(4) && save.rally_xp == 54);
+  CHECK(r_4th.unlocked_events.empty());
+  CHECK(!cat.is_championship_unlocked(274, save.rally_xp, true, save.event_unlocks, save.event_results));
+  CHECK(cat.championships_won(save) == 0 && cat.podiums_count(save) == 0 && cat.stages_completed_total(save) == 4);
+  CHECK(!cat.champion_unlocked(save));
+
+  // 2. Replaying Beaumont and finishing 5th awards 0 XP (no farming!).
+  const auto r_5th = run_championship_with_place(275, 5);
+  CHECK(r_5th.final_place == 5 && r_5th.rally_xp_earned == 0 && save.rally_xp == 54);
+  CHECK(!cat.is_championship_unlocked(274, save.rally_xp, true, save.event_unlocks, save.event_results));
+
+  // 3. Replaying Beaumont and finishing 2nd (podium!) awards ONLY the delta (57 - 54 = 3 XP) and unlocks Montano Plains!
+  const auto r_2nd = run_championship_with_place(275, 2);
+  CHECK(r_2nd.final_place == 2 && r_2nd.rally_xp_earned == 3 && save.rally_xp == 57);
+  CHECK(cat.is_championship_unlocked(274, save.rally_xp, true, save.event_unlocks, save.event_results));
+  CHECK(cat.championships_won(save) == 0 && cat.podiums_count(save) == 1);
+
+  // 4. Replaying Beaumont and winning 1st awards ONLY the delta (60 - 57 = 3 XP); replaying 1st again awards 0 XP!
+  const auto r_1st = run_championship_with_place(275, 1);
+  CHECK(r_1st.final_place == 1 && r_1st.rally_xp_earned == 3 && save.rally_xp == 60);
+  const auto r_1st_again = run_championship_with_place(275, 1);
+  CHECK(r_1st_again.final_place == 1 && r_1st_again.rally_xp_earned == 0 && save.rally_xp == 60);
+
+  // 5. Progression helpers (championships_won, podiums_count, stages_completed_total, champion_unlocked).
+  CHECK(cat.championships_won(save) == 1 && cat.podiums_count(save) == 1 && cat.stages_completed_total(save) == 4);
+  CHECK(!cat.champion_unlocked(save));
+
+  // Reach Champion Rally XP (310) and podium in final Clear Springs championship (272) -> champion_unlocked becomes true!
+  save.rally_xp = 310;
+  save.rally_level = cat.wristband_for_xp(save.rally_xp);
+  const auto r_final = run_championship_with_place(272, 1);
+  CHECK(r_final.champion_unlocked);
+  const auto prog = cat.summarize_progress(save);
+  CHECK(prog.championships_won() == 2 && prog.podiums_count() == 2 && prog.stages_completed_total() == 8 &&
+        prog.champion_unlocked());
+  CHECK(cat.champion_unlocked(save));
+}
+
 }  // namespace
 
 int main() {
   test_championship_standings_and_rewards();
+  test_r2_5_xp_delta_podium_unlock_and_helpers();
   test_restriction_0x80_and_rally_parts();
   test_codriver_pace_notes_and_audio();
   test_real_v4_corpus();

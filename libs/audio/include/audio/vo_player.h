@@ -104,6 +104,8 @@ class VoPlayer {
   int active_slot_ = -1;
   const PcmSample* active_mem_ = nullptr;
   double pos_ = 0.0;
+  int stalled_frames_ = 0;
+  int seek_retries_ = 0;
   uint32_t variant_rr_ = 0;
 };
 

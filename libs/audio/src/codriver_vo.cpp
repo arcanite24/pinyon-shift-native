@@ -446,8 +446,13 @@ void CoDriverVoPlayer::set_enabled(bool on) {
   if (!on) clear();
 }
 
-void CoDriverVoPlayer::enqueue_cue(std::string_view cue_path) {
+void CoDriverVoPlayer::enqueue_cue(std::string_view cue_path, bool supersede) {
   if (!enabled_) return;
+  if (supersede) {
+    // Drop queued older gate calls so the newly reached gate supersedes them cleanly.
+    pending_head_ = pending_tail_ = 0;
+    std::fill(std::begin(pending_), std::end(pending_), -1);
+  }
   const int cue_id = find_cue(cue_path);
   if (cue_id < 0) return;
   if (size_t(cue_id) < cue_variants_.size() && !cue_variants_[size_t(cue_id)].empty()) {
@@ -469,19 +474,31 @@ void CoDriverVoPlayer::enqueue_cue(std::string_view cue_path) {
   }
 }
 
+void CoDriverVoPlayer::supersede_cue(std::string_view cue_path) {
+  enqueue_cue(cue_path, true);
+}
+
 void CoDriverVoPlayer::enqueue_id(int clip_id) {
   if (!enabled_ || clip_id < 0 || size_t(clip_id) >= clips_.size()) return;
   const size_t next_tail = (pending_tail_ + 1) % kMaxPending;
-  if (next_tail == pending_head_) return;  // queue full
+  if (next_tail == pending_head_) {
+    // Supersede oldest stale queued cue rather than silently dropping newer pace notes.
+    pending_head_ = (pending_head_ + 1) % kMaxPending;
+  }
   pending_[pending_tail_] = clip_id;
   pending_tail_ = next_tail;
 }
 
 void CoDriverVoPlayer::clear() {
   pending_head_ = pending_tail_ = 0;
+  std::fill(std::begin(pending_), std::end(pending_), -1);
   active_ = false;
   active_id_ = -1;
   phase_ = 0.0;
+}
+
+size_t CoDriverVoPlayer::pending_count() const {
+  return (pending_tail_ + kMaxPending - pending_head_) % kMaxPending;
 }
 
 void CoDriverVoPlayer::start_next() {

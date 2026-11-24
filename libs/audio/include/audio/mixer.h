@@ -14,8 +14,9 @@
 namespace audio {
 
 // The category buses every sound belongs to.
-// First 8 indices preserve the player-facing mix buses; indices 8..16 separate
-// FH1's 22 AudioMixerSnapshots.xml subsystems so per-subsystem ducking works authentically.
+// First 8 indices preserve the player-facing mix buses; indices 8..19 separate
+// FH1's 22 AudioMixerSnapshots.xml subsystems (including HomespaceMusic,
+// MenuMusic, and HomespaceAmbientDynamic) so per-subsystem ducking works authentically.
 enum class Bus : int {
   kEngine = 0,
   kOtherCars,
@@ -34,11 +35,17 @@ enum class Bus : int {
   kCollision,
   kSatNav,
   kRallyCoDriver,
+  kHomespaceMusic,
+  kMenuMusic,
+  kHomespaceAmbience,
 };
-inline constexpr int kBuses = 17;
+inline constexpr int kBuses = 20;
+inline constexpr int kUiSliderBuses = 8;
 
 const char* bus_name(Bus b);
 bool bus_from_name(std::string_view name, Bus& out);  // case-insensitive
+// Returns the player-facing UI slider bus (0..7) that governs `b`.
+Bus bus_parent(Bus b);
 
 // A snapshot: each bus's level while it is fully applied, and the fade in
 // and back (seconds).
@@ -114,7 +121,11 @@ float soft_limit(float x);
 class Mixer {
  public:
   void prepare(int rate);
-  void set_bus_level(Bus b, float level) { user_[size_t(b)] = level < 0 ? 0 : level; }
+  // Sets a bus's user mix level (0..2). Setting one of the 8 player-facing UI
+  // slider buses also propagates to all of its child sub-buses (e.g. kEngine ->
+  // kTransmission/kSupercharger/kTurbo/kEngineDamage/kBackfire, kVo ->
+  // kSatNav/kRallyCoDriver, kMusic -> kHomespaceMusic/kMenuMusic).
+  void set_bus_level(Bus b, float level);
   float bus_level(Bus b) const { return user_[size_t(b)]; }
   void set_master(float v) { master_ = v < 0 ? 0 : v; }
   float master() const { return master_; }

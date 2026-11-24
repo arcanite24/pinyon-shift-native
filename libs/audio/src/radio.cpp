@@ -335,6 +335,26 @@ bool StationSchedule::queue_festival_update(std::string_view gameplay_event) {
   return true;
 }
 
+void StationSchedule::set_locked_playlist(std::vector<int> track_indices, double now_clock) {
+  locked_tracks_.clear();
+  for (int idx : track_indices) {
+    if (idx >= 0 && size_t(idx) < st_.tracks.size()) locked_tracks_.push_back(idx);
+  }
+  locked_cursor_ = 0;
+  if (locked_tracks_.empty()) return;
+  events_.clear();
+  const int first_t = locked_tracks_[0];
+  locked_cursor_ = 1;
+  const RadioClip& c = data_.music[size_t(st_.tracks[size_t(first_t)].clip)];
+  events_.push_back({RadioKind::kTrack, st_.tracks[size_t(first_t)].clip, first_t, now_clock, now_clock + c.length,
+                     next_id_++});
+}
+
+void StationSchedule::clear_locked_playlist() {
+  locked_tracks_.clear();
+  locked_cursor_ = 0;
+}
+
 const RadioEvent* StationSchedule::last_track() const {
   for (auto it = events_.rbegin(); it != events_.rend(); ++it)
     if (it->kind == RadioKind::kTrack) return &*it;
@@ -354,7 +374,13 @@ void StationSchedule::extend() {
     events_.push_back({RadioKind::kIdent, clip, -1, ident_at, ident_at + ic.length, next_id_++});
     next_at = ident_at + (ic.next_track > 0 ? ic.next_track : ic.length);
   }
-  const int t = pick_weighted_track();
+  int t = -1;
+  if (!locked_tracks_.empty()) {
+    t = locked_tracks_[locked_cursor_ % locked_tracks_.size()];
+    ++locked_cursor_;
+  } else {
+    t = pick_weighted_track();
+  }
   if (t < 0) return;
   const RadioClip& tc = data_.music[size_t(st_.tracks[size_t(t)].clip)];
   events_.push_back({RadioKind::kTrack, st_.tracks[size_t(t)].clip, t, next_at, next_at + tc.length, next_id_++});
@@ -514,7 +540,76 @@ bool Radio::trigger_festival_update(std::string_view gameplay_event) {
   return any;
 }
 
+bool Radio::lock_viper_intro_playlist() {
+  // Locate Bass Arena (Radio1 / station containing "Bass", or first music station with Levels/Language).
+  int target_station = -1;
+  for (int s : data_.cycle) {
+    if (s < 0 || size_t(s) >= data_.stations.size() || data_.stations[size_t(s)].off) continue;
+    const std::string nm = lower(data_.stations[size_t(s)].name);
+    if (nm.find("bass") != std::string::npos || nm == "radio1") {
+      target_station = s;
+      break;
+    }
+  }
+  if (target_station < 0) {
+    for (int s : data_.cycle) {
+      if (s >= 0 && size_t(s) < data_.stations.size() && !data_.stations[size_t(s)].off &&
+          !data_.stations[size_t(s)].tracks.empty()) {
+        target_station = s;
+        break;
+      }
+    }
+  }
+  if (target_station < 0) return false;
+  const auto& st = data_.stations[size_t(target_station)];
+  if (st.tracks.empty()) return false;
+
+  int idx_levels = -1, idx_language = -1;
+  for (size_t i = 0; i < st.tracks.size(); ++i) {
+    const std::string tlow = lower(st.tracks[i].title + " " + st.tracks[i].name);
+    if (idx_levels < 0 && tlow.find("levels") != std::string::npos) idx_levels = int(i);
+    if (idx_language < 0 && tlow.find("language") != std::string::npos) idx_language = int(i);
+  }
+  std::vector<int> locked;
+  if (idx_levels >= 0) locked.push_back(idx_levels);
+  if (idx_language >= 0 && idx_language != idx_levels) locked.push_back(idx_language);
+  if (locked.empty()) {
+    locked.push_back(0);
+    if (st.tracks.size() > 1) locked.push_back(1);
+  } else if (locked.size() == 1 && st.tracks.size() > 1) {
+    locked.push_back(locked[0] == 0 ? 1 : 0);
+  }
+
+  return lock_viper_intro_playlist(target_station, std::move(locked));
+}
+
+bool Radio::lock_viper_intro_playlist(int station, std::vector<int> track_indices) {
+  if (station < 0 || size_t(station) >= data_.stations.size()) return false;
+  const auto& st = data_.stations[size_t(station)];
+  if (st.off || st.tracks.empty() || track_indices.empty()) return false;
+  std::vector<int> valid;
+  for (int ti : track_indices) {
+    if (ti >= 0 && size_t(ti) < st.tracks.size()) valid.push_back(ti);
+  }
+  if (valid.empty()) return false;
+  select(station);
+  if (auto* sc = schedule(station)) {
+    sc->set_locked_playlist(std::move(valid), clock_);
+    if (const RadioEvent* t = sc->track_at(clock_)) seen_track_ = t->id;
+  }
+  viper_intro_locked_ = true;
+  return true;
+}
+
+void Radio::unlock_viper_intro_playlist() {
+  viper_intro_locked_ = false;
+  for (auto& sc : schedules_) {
+    if (sc) sc->clear_locked_playlist();
+  }
+}
+
 void Radio::press(int dir) {
+  if (viper_intro_locked_) return;
   const int n = int(data_.cycle.size());
   if (n == 0) return;
   select(data_.cycle[size_t(((pos_ + dir) % n + n) % n)]);
@@ -700,19 +795,26 @@ void RadioPlayer::render(float* out, int frames) {
       const int src_rate = st->rate();
       const double step = double(src_rate) / rate_;
       const double expect = std::max(0.0, (t0 + double(first) / rate_ - e.start) * src_rate);
-      if (std::fabs(expect - v->pos) > 0.05 * src_rate) {
+      const double drift = expect - v->pos;
+      double step_eff = step;
+      if (std::fabs(drift) > 0.25 * src_rate) {
+        // Large seek/station-switch jump: reposition cleanly and ramp up smoothly (zero click).
         v->pos = expect;
-        v->env = 0.0f;  // smoothly fade in after resync jump (zero click/pop)
+        v->env = 0.0f;
         const int64_t need = int64_t(std::floor(v->pos));
         if (need < st->from() || need > st->end() + 4096) {
           st->request(need);
           if (!non_blocking_) banks_->pool->wait_ready(v->slot);
           if (!st->positioned()) continue;
         }
+      } else if (std::fabs(drift) > 0.004 * src_rate) {
+        // Gentle PLL pull eliminates micro-drift without cutting audio or clicking.
+        const double pull = std::clamp(1.0 + drift / (0.35 * double(src_rate)), 0.985, 1.015);
+        step_eff = step * pull;
       }
       const int n = last - first;
       if (!non_blocking_) {
-        const int64_t want_end = int64_t(v->pos + step * n) + 2;
+        const int64_t want_end = int64_t(v->pos + step_eff * n) + 2;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
         while (!st->source_done() && st->end() < want_end && std::chrono::steady_clock::now() < deadline) {
           st->hint(std::max<int64_t>(st->from(), int64_t(std::floor(v->pos)) - 4));
@@ -730,8 +832,10 @@ void RadioPlayer::render(float* out, int frames) {
       const float env_up = 1.0f / std::max(1.0f, 0.008f * float(rate_));
       const float env_dn = 1.0f / std::max(1.0f, 0.004f * float(rate_));
       const float decay = 0.985f;
+      const double inv_rate = 1.0 / double(rate_);
+      constexpr double kEdgeFadeS = 0.008;
       bool missed = false;
-      for (int i = 0; i < n; ++i, v->pos += step) {
+      for (int i = 0; i < n; ++i, v->pos += step_eff) {
         const int64_t a = int64_t(std::floor(v->pos));
         if (a < rfrom || a >= rend) {
           missed = true;
@@ -755,10 +859,13 @@ void RadioPlayer::render(float* out, int frames) {
         if (!std::isfinite(al)) al = 0.0f;
         if (!std::isfinite(ar)) ar = 0.0f;
         v->env = std::min(1.0f, v->env + env_up);
+        const double rem_s = e.end - (t0 + double(first + i) * inv_rate);
+        const float edge_env = (rem_s < kEdgeFadeS) ? float(std::clamp(rem_s / kEdgeFadeS, 0.0, 1.0)) : 1.0f;
+        const float eff_env = v->env * edge_env;
         v->last_l = al;
         v->last_r = ar;
-        dst[2 * i] += float(gain) * al * v->env;
-        dst[2 * i + 1] += float(gain) * ar * v->env;
+        dst[2 * i] += float(gain) * al * eff_env;
+        dst[2 * i + 1] += float(gain) * ar * eff_env;
       }
       const int64_t cur = int64_t(std::floor(v->pos));
       if (missed && cur < rfrom) st->request(cur);
@@ -795,8 +902,50 @@ void RadioPlayer::render(float* out, int frames) {
   radio_.advance(dt, fading);
 }
 
+std::vector<LocationRadioEmitter> default_colorado_location_emitters(const Radio& radio) {
+  std::vector<LocationRadioEmitter> out;
+  const int pre_race = radio.find_station("Radio5_3d_PreRace");
+  const int autoshow = radio.find_station("Radio6_3d_Autoshow");
+  const int workshop = radio.find_station("Radio7_3d_Workshop");
+  const int paintshop = radio.find_station("Radio8_3d_Paintshop");
+  int streetrace = radio.find_station("Radio9_3d_Streetrace");
+  if (streetrace < 0) streetrace = pre_race;
+  const int outpost_st = pre_race >= 0 ? pre_race : autoshow;
+
+  auto push = [&](int st, std::array<float, 3> pos, float min_d, float max_d) {
+    if (st >= 0) out.push_back({st, pos, min_d, max_d});
+  };
+
+  // Horizon Festival main stages & hub areas.
+  push(pre_race, {-1468.0f, 26.0f, -345.0f}, 18.0f, 280.0f);
+  push(pre_race, {-1398.0f, 1.0f, -22.0f}, 16.0f, 240.0f);
+  push(autoshow, {-1020.0f, 0.0f, -260.0f}, 12.0f, 160.0f);
+  push(workshop, {-960.0f, 0.0f, -180.0f}, 12.0f, 160.0f);
+  push(paintshop, {-1080.0f, 0.0f, -190.0f}, 12.0f, 160.0f);
+
+  // Illegal Street Race Hubs (Carson, Gladstone, Red Rock).
+  push(streetrace, {-2100.0f, 12.0f, 1450.0f}, 14.0f, 190.0f);
+  push(streetrace, {900.0f, 18.0f, 2100.0f}, 14.0f, 190.0f);
+  push(streetrace, {-3200.0f, 35.0f, -2400.0f}, 14.0f, 190.0f);
+
+  // Horizon Outposts (Beaumont, Clear Springs, Finley Dam, Bunker, Montano Plains, Golf Course).
+  push(outpost_st, {-1120.0f, 25.0f, 2320.0f}, 12.0f, 145.0f);
+  push(outpost_st, {1640.0f, 30.0f, 680.0f}, 12.0f, 145.0f);
+  push(outpost_st, {2450.0f, 40.0f, -1520.0f}, 12.0f, 145.0f);
+  push(outpost_st, {-420.0f, 28.0f, -2680.0f}, 12.0f, 145.0f);
+  push(outpost_st, {1850.0f, 18.0f, -3100.0f}, 12.0f, 145.0f);
+  push(outpost_st, {-2650.0f, 22.0f, -620.0f}, 12.0f, 145.0f);
+  return out;
+}
+
 void RadioPlayer::set_location_emitters(std::vector<LocationRadioEmitter> emitters) {
   emitters_ = std::move(emitters);
+  emitter_gain_.assign(emitters_.size(), 0.0f);
+}
+
+void RadioPlayer::add_location_emitter(LocationRadioEmitter emitter) {
+  emitters_.push_back(emitter);
+  emitter_gain_.push_back(0.0f);
 }
 
 void RadioPlayer::set_listener(std::array<float, 3> pos, float heading_rad) {
@@ -806,6 +955,7 @@ void RadioPlayer::set_listener(std::array<float, 3> pos, float heading_rad) {
 
 void RadioPlayer::render_location_stations(float* out, int frames) {
   if (!out || frames <= 0 || emitters_.empty()) return;
+  if (emitter_gain_.size() != emitters_.size()) emitter_gain_.assign(emitters_.size(), 0.0f);
   for (auto& v : voices_) {
     if (v.location) v.used = false;
   }
@@ -815,26 +965,41 @@ void RadioPlayer::render_location_stations(float* out, int frames) {
   const double t1 = t0 + dt;
   const float rx = std::cos(listener_heading_);
   const float rz = -std::sin(listener_heading_);
+  const float gain_sm = 1.0f - std::exp(-1.0f / (0.045f * float(rate_)));
+  const float env_up = 1.0f / std::max(1.0f, 0.008f * float(rate_));
+  const float env_dn = 1.0f / std::max(1.0f, 0.006f * float(rate_));
 
-  for (const auto& em : emitters_) {
+  for (size_t ei = 0; ei < emitters_.size(); ++ei) {
+    const auto& em = emitters_[ei];
     if (em.station < 0 || size_t(em.station) >= data.stations.size()) continue;
     const float dx = em.pos[0] - listener_pos_[0];
     const float dy = em.pos[1] - listener_pos_[1];
     const float dz = em.pos[2] - listener_pos_[2];
     const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-    if (dist >= em.max_distance) continue;
     const float att =
-        dist <= em.min_distance ? 1.0f : std::clamp(1.0f - (dist - em.min_distance) / std::max(1.0f, em.max_distance - em.min_distance), 0.0f, 1.0f);
-    const float att2 = att * att;
+        dist >= em.max_distance
+            ? 0.0f
+            : (dist <= em.min_distance
+                   ? 1.0f
+                   : std::clamp(1.0f - (dist - em.min_distance) / std::max(1.0f, em.max_distance - em.min_distance),
+                                0.0f, 1.0f));
+    const float target_att2 = att * att;
+    float eg = emitter_gain_[ei];
+    if (target_att2 <= 1e-5f && eg <= 1e-5f) {
+      emitter_gain_[ei] = 0.0f;
+      continue;
+    }
     const auto& st_def = data.stations[size_t(em.station)];
     const float pan_raw = dist > 1e-3f ? std::clamp((dx * rx + dz * rz) / dist, -1.0f, 1.0f) : 0.0f;
     const float pan = pan_raw * float(std::clamp(st_def.pan_level_3d, 0.0, 1.0));
-    const float gl = float(st_def.volume * master * volume) * att2 * std::sqrt(0.5f * (1.0f - pan));
-    const float gr = float(st_def.volume * master * volume) * att2 * std::sqrt(0.5f * (1.0f + pan));
+    const float base_gain = float(st_def.volume * master * volume);
+    const float pan_l = std::sqrt(0.5f * (1.0f - pan));
+    const float pan_r = std::sqrt(0.5f * (1.0f + pan));
 
     StationSchedule* sched = radio_.schedule(em.station);
     if (!sched) continue;
     sched->audible(t0, t1 + 1.0, scratch_);
+    bool rendered_any = false;
     for (const auto& e : scratch_) {
       const bool now_audible = e.start < t1 && e.end > t0;
       const int first = now_audible ? std::clamp(int(std::ceil((e.start - t0) * rate_)), 0, frames) : 0;
@@ -851,19 +1016,56 @@ void RadioPlayer::render_location_stations(float* out, int frames) {
       if (st->state() != PcmStream::kReady || !st->positioned()) continue;
       const int src_rate = st->rate();
       const double step = double(src_rate) / double(rate_);
+      const double want_pos = (t0 + double(first) / rate_ - e.start) * double(src_rate);
+      const double drift = want_pos - v->pos;
+      if (std::fabs(drift) > double(src_rate) * 0.25) {
+        v->pos = want_pos;
+        v->env = 0.0f;
+      } else if (std::fabs(drift) > 0.5) {
+        v->pos += drift * 0.01;
+      }
       const int64_t rfrom = st->from(), rend = st->end();
       const int n = last - first;
+      float local_eg = eg;
       for (int i = 0; i < n; ++i, v->pos += step) {
+        local_eg += (target_att2 - local_eg) * gain_sm;
         const int64_t a = int64_t(std::floor(v->pos));
-        if (a < rfrom || a >= rend) continue;
-        float al = 0, ar = 0;
+        if (a < rfrom || a >= rend) {
+          if (v->env > 0.0f) {
+            v->env = std::max(0.0f, v->env - env_dn);
+            const float mono = 0.5f * (v->last_l + v->last_r) * v->env * base_gain * local_eg;
+            out[2 * (first + i)] += mono * pan_l;
+            out[2 * (first + i) + 1] += mono * pan_r;
+          }
+          continue;
+        }
+        const float frac = float(v->pos - double(a));
+        float al = 0, ar = 0, bl = 0, br = 0;
         st->sample(a, al, ar);
-        const float mono = 0.5f * (al + ar);
-        out[2 * (first + i)] += mono * gl;
-        out[2 * (first + i) + 1] += mono * gr;
+        if (a + 1 < rend) st->sample(a + 1, bl, br);
+        else {
+          bl = al;
+          br = ar;
+        }
+        const float sl = al + (bl - al) * frac;
+        const float sr = ar + (br - ar) * frac;
+        v->last_l = sl;
+        v->last_r = sr;
+        v->env = std::min(1.0f, v->env + env_up);
+        const float mono = 0.5f * (sl + sr) * v->env * base_gain * local_eg;
+        out[2 * (first + i)] += mono * pan_l;
+        out[2 * (first + i) + 1] += mono * pan_r;
+      }
+      if (!rendered_any) {
+        eg = local_eg;
+        rendered_any = true;
       }
       st->hint(std::max<int64_t>(rfrom, int64_t(std::floor(v->pos)) - 4));
     }
+    if (!rendered_any) {
+      for (int i = 0; i < frames; ++i) eg += (target_att2 - eg) * gain_sm;
+    }
+    emitter_gain_[ei] = eg;
   }
   for (auto it = voices_.begin(); it != voices_.end();) {
     if (it->location && !it->used) {

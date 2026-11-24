@@ -109,6 +109,9 @@ struct EventData {
   int prize_car_max_place = 1;  // Rewards_EventPrizes max finishing position (1 or 2)
   int target_class = 0;     // Events.TargetClass (CarClasses.Id)
   bool upgrade_ai = false;  // Events.UpgradeAI: the AI cars are auto-upgraded (SPEC-RACE-AI, open)
+  bool has_tod_start = false;
+  double tod_start_sec = 0.0;  // Events.TimeOfDayStart (seconds since midnight [0..86400))
+  double tod_end_sec = 0.0;    // Events.TimeOfDayEnd (seconds since midnight [0..86400))
   std::vector<Opponent> opponents;  // by ascending ID
   std::vector<SkillRow> skills;     // every AISkills row, by id
   std::vector<RubberbandRow> rubberbands;

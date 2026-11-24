@@ -395,7 +395,7 @@ void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, flo
     const std::string ready_txt =
         st.kit_status.is_rally_upgraded
             ? ("RALLY SPEC READY  •  " + resolve_rally_car_name(st.car_name) + "  •  TIRES / SUSPENSION / TRANS")
-            : ("RALLY KIT REQUIRED (0x80)  •  FIT RALLY TIRES (" + thousands(st.rally_kit_cost) + " Cr)");
+            : ("RALLY KIT REQUIRED  •  FIT RALLY KIT (TIRES/SUSP/GEARBOX) (" + thousands(st.rally_kit_cost) + " Cr)");
     out.text(f.x(104.0f), ry0 + 11.0f * u, ready_txt,
              ui4::style(ui::Font::kB, 13.5f * u, st.kit_status.is_rally_upgraded ? kRallyGreen : kRallyOrange));
   }
@@ -547,8 +547,12 @@ void build_rally_championship_results_screen(ui::List& out, const RallyChampResu
 
   // Authentic +3.0 deg tilted H_POST_RACE_RESULTS + H_POST_RACE_CREDITS_BREAKDOWN layout
   // (ZERO 8px/4px rounded kPanelAlt boxes!).
-  ui4::title_banner(out, u, f.x(76.0f), f.y(42.0f),
-                    st.is_heats ? "RALLY HEATS COMPLETE" : "CHAMPIONSHIP RESULTS", st.title, true, 600.0f);
+  const std::string banner_title =
+      st.champion_unlocked ? "HORIZON RALLY CHAMPION!"
+                           : (st.is_heats ? "RALLY HEATS COMPLETE" : "CHAMPIONSHIP RESULTS");
+  const std::string banner_sub =
+      st.champion_unlocked ? (st.title + "  •  GREEN RALLY WRISTBAND AWARDED") : st.title;
+  ui4::title_banner(out, u, f.x(76.0f), f.y(42.0f), banner_title, banner_sub, true, 600.0f);
 
   ui4::TiltScope tilt(out, f.x(640.0f), f.y(380.0f), ui4::kTiltRad);
 
@@ -645,6 +649,20 @@ void build_rally_championship_results_screen(ui::List& out, const RallyChampResu
     out.text(rx1 - 14.0f * u, y + 8.0f * u, rally_gap_str(r.gap_to_leader), ts);
   }
 
+  // Dedicated celebratory Rally Champion ceremony banner when the player claims the Rally Crown.
+  if (st.champion_unlocked) {
+    const float cy0 = f.y(572.0f);
+    const float cy1 = f.y(628.0f);
+    ui4::brush(out, lx0 - 12.0f * u, cy0, rx1 + 8.0f * u, cy1, ui4::kPink, true);
+    out.rect(lx0 - 12.0f * u, cy0, rx1 + 8.0f * u, cy0 + 4.0f * u, kRallyGold);
+    out.rect(lx0 - 12.0f * u, cy1 - 4.0f * u, rx1 + 8.0f * u, cy1, kRallyGold);
+    out.text(f.x(640.0f), cy0 + 9.0f * u, "HORIZON RALLY CHAMPION!",
+             ui4::style(ui::Font::kE, 22.0f * u, ui4::kYellow, ui::Align::kCenter, true));
+    out.text(f.x(640.0f), cy0 + 34.0f * u,
+             "GREEN RALLY WRISTBAND EARNED  •  COLORADO DIRT CONQUERED",
+             ui4::style(ui::Font::kB, 12.5f * u, kWhite, ui::Align::kCenter));
+  }
+
   out.unturn();
   ui4::button_bar(out, {{"A", "CONTINUE"}}, w, h);
 }
@@ -729,7 +747,7 @@ RallyHubState make_rally_hub_state(const race::RallyCatalog& catalog, const driv
         it.lock_reason = "COMPLETE PREVIOUS RALLY CHAMPIONSHIP";
     } else if (!rally_ok) {
       it.status_badge = "NEEDS RALLY KIT";
-      it.lock_reason = "RESTRICTION 0x80: FIT RALLY TIRES / RALLY KIT";
+      it.lock_reason = "FIT RALLY KIT (TIRES/SUSP/GEARBOX)";
     } else if (!class_ok) {
       it.status_badge = "CLASS > " + it.class_badge;
       it.lock_reason = "CAR EXCEEDS CLASS " + it.class_badge + " LIMIT";

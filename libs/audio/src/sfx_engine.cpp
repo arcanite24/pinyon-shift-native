@@ -249,6 +249,10 @@ bool synthesize_fallback_sfx(SfxSoundId id, int rate, PcmSample& out) {
     case SfxSoundId::kSurfaceDirtToHard:
       fill_tone(0.11, 130.0, 62.0, 0.42f, 6.0);
       return true;
+    case SfxSoundId::kSurfaceLeavesOn:
+    case SfxSoundId::kSurfaceLeavesOff:
+      fill_filtered_noise_loop(0.16, 0.46f, 0.22f, 0.36f, 34.0);
+      return true;
     case SfxSoundId::kTransWhine:
     case SfxSoundId::kTransWhineL1:
     case SfxSoundId::kTransWhineL2:
@@ -293,7 +297,32 @@ bool synthesize_fallback_sfx(SfxSoundId id, int rate, PcmSample& out) {
       fill_harmonic_loop(0.6, 58.0, 0.45f, 0.05f);
       return true;
     case SfxSoundId::kElectricMotor:
-      fill_harmonic_loop(0.5, 420.0, 0.28f, 0.04f);
+      fill_harmonic_loop(0.5, 280.0, 0.26f, 0.04f);
+      return true;
+    case SfxSoundId::kElectricMotorMid:
+      fill_harmonic_loop(0.5, 640.0, 0.22f, 0.03f);
+      return true;
+    case SfxSoundId::kElectricMotorHigh:
+      fill_harmonic_loop(0.5, 1380.0, 0.16f, 0.02f);
+      return true;
+    case SfxSoundId::kExhNoise:
+      fill_filtered_noise_loop(0.8, 0.28f, 0.10f, 0.34f, 11.0);
+      return true;
+    case SfxSoundId::kEngineDamageLoop: {
+      const size_t n = size_t(0.6 * double(rate));
+      out.data.resize(n);
+      float lp = 0.0f;
+      for (size_t i = 0; i < n; ++i) {
+        const double t = double(i) / double(rate);
+        const double cyc = std::fmod(t * 22.0, 1.0);
+        const float knock = float(std::exp(-28.0 * cyc) * std::sin(kTwoPi * 760.0 * t));
+        lp += (next_noise() - lp) * 0.32f;
+        out.data[i] = 0.38f * knock + 0.18f * lp;
+      }
+      return true;
+    }
+    case SfxSoundId::kEngineMisfire:
+      fill_tone(0.14, 155.0, 65.0, 0.48f, 9.0);
       return true;
     case SfxSoundId::kRoadsideReflection:
       fill_filtered_noise_loop(0.6, 0.24f, 0.16f, 0.30f, 5.0);
@@ -367,6 +396,21 @@ bool synthesize_fallback_sfx(SfxSoundId id, int rate, PcmSample& out) {
       }
       return true;
     }
+    case SfxSoundId::kBurblePop0:
+    case SfxSoundId::kBurblePop1:
+    case SfxSoundId::kBurblePop2:
+    case SfxSoundId::kBurblePop3: {
+      const size_t n = size_t(0.075 * double(rate));
+      out.data.resize(n);
+      float lp = 0.0f;
+      for (size_t i = 0; i < n; ++i) {
+        const double u = double(i) / double(n);
+        lp += (next_noise() - lp) * 0.36f;
+        out.data[i] = (lp * 0.65f + 0.22f * std::sin(float(kTwoPi * 165.0 * double(i) / double(rate)))) *
+                      float(std::exp(-14.0 * u));
+      }
+      return true;
+    }
     case SfxSoundId::kUiAccept:
       fill_tone(0.12, 660.0, 880.0, 0.35f, 6.0);
       return true;
@@ -385,12 +429,44 @@ bool synthesize_fallback_sfx(SfxSoundId id, int rate, PcmSample& out) {
     case SfxSoundId::kRewindTapeStart:
       fill_tone(0.22, 820.0, 260.0, 0.40f, 4.0);
       return true;
+    case SfxSoundId::kRewindTapeStop:
+      fill_tone(0.16, 260.0, 780.0, 0.40f, 5.0);
+      return true;
     case SfxSoundId::kRewindLoop:
       fill_harmonic_loop(0.5, 340.0, 0.22f, 0.35f);
       return true;
     case SfxSoundId::kCountdown321:
       fill_tone(0.24, 880.0, 880.0, 0.42f, 5.5);
       return true;
+    case SfxSoundId::kUiCountdownTick:
+      fill_tone(0.12, 880.0, 880.0, 0.38f, 8.5);
+      return true;
+    case SfxSoundId::kUiLap: {
+      const size_t n = size_t(0.26 * double(rate));
+      out.data.resize(n);
+      double ph = 0.0;
+      for (size_t i = 0; i < n; ++i) {
+        const double u = double(i) / double(n);
+        const double f = u < 0.45 ? 784.0 : 1046.5;
+        ph += kTwoPi * f / double(rate);
+        const float env = float(std::exp(-4.2 * u) * std::min(1.0, double(i) / 30.0));
+        out.data[i] = 0.40f * env * float(std::sin(ph) + 0.30 * std::sin(2.0 * ph));
+      }
+      return true;
+    }
+    case SfxSoundId::kUiWristbandUnlock: {
+      const size_t n = size_t(0.42 * double(rate));
+      out.data.resize(n);
+      double ph = 0.0;
+      for (size_t i = 0; i < n; ++i) {
+        const double u = double(i) / double(n);
+        const double f = u < 0.33 ? 523.25 : (u < 0.66 ? 659.25 : 1046.5);
+        ph += kTwoPi * f / double(rate);
+        const float env = float(std::exp(-2.8 * u) * std::min(1.0, double(i) / 30.0));
+        out.data[i] = 0.44f * env * float(std::sin(ph) + 0.35 * std::sin(1.5 * ph));
+      }
+      return true;
+    }
     case SfxSoundId::kSignSmash:
     case SfxSoundId::kUiSkillAward:
     case SfxSoundId::kAchievementReward:
@@ -702,7 +778,9 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
                  {SfxSoundId::kTireRollTrackway, "Tires/Tires/LOD1/Trackway/Roll_LF"},
                  {SfxSoundId::kTireSkidTrackway, "Tires/Tires/LOD1/Trackway/Skid_LF"},
                  {SfxSoundId::kSurfaceHardToHard, "Tires/Tires/SurfaceChanges/HardToHard"},
-                 {SfxSoundId::kSurfaceDirtToHard, "Tires/Tires/SurfaceChanges/DirtToHard"}});
+                 {SfxSoundId::kSurfaceDirtToHard, "Tires/Tires/SurfaceChanges/DirtToHard"},
+                 {SfxSoundId::kSurfaceLeavesOn, "Tires/Tires/SurfaceChanges/Leaves_On"},
+                 {SfxSoundId::kSurfaceLeavesOff, "Tires/Tires/SurfaceChanges/Leaves_Off"}});
   add_batch_fev("cars/Transmissions/Transmissions.fev",
                 {{SfxSoundId::kTransWhine, "Transmissions/Transmissions/L0"},
                  {SfxSoundId::kTransWhineL1, "Transmissions/Transmissions/L1"},
@@ -754,10 +832,11 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
                  {SfxSoundId::kEngineLfe8, "EngineLFE/EngineLFE/EngineLFE_8cyl"},
                  {SfxSoundId::kEngineLfe10, "EngineLFE/EngineLFE/EngineLFE_10cyl"},
                  {SfxSoundId::kEngineLfe12, "EngineLFE/EngineLFE/EngineLFE_12cyl"}});
-  // Missing FH1 FEV projects: ElectricEngine.fev (EVs like NIS_Leaf_11), Reflections.fev
-  // (canyon/guardrail slap-back reflections), and ActiveAero.fev (deploying wing/airbrake).
+  // Additional car subsystem FEV projects: ElectricEngine.fev (multi-band harmonic layers),
+  // ExhNoise.fev (high-RPM exhaust air-rush), Damage.fev (mechanical engine knock/rattle/misfire),
+  // Reflections.fev (canyon/guardrail slap-back), and ActiveAero.fev (deploying wing/airbrake).
   {
-    auto add_first_fev_or_fsb = [&](const char* fev_rel, SfxSoundId id) {
+    auto add_first_fev_or_fsb = [&](const char* fev_rel, SfxSoundId id) -> bool {
       const auto fev_path = cars::mods::resolve(audio_dir / fev_rel);
       FevProject proj;
       if (load_fev(fev_path, proj, nullptr)) {
@@ -766,7 +845,7 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
           uint32_t sub = 0;
           if (resolve_event_sample(proj, ev.path, bank, sub)) {
             jobs.push_back({id, bank, sub});
-            return;
+            return true;
           }
         }
       }
@@ -777,12 +856,108 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
         for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
           if (entry.is_regular_file(ec) && lower_str(entry.path().extension().string()) == ".fsb") {
             jobs.push_back({id, entry.path(), 0});
-            return;
+            return true;
           }
         }
       }
+      return false;
     };
-    add_first_fev_or_fsb("cars/ElectricMotor/ElectricEngine.fev", SfxSoundId::kElectricMotor);
+
+    // Multi-band ElectricEngine.fev: resolve up to 3 distinct harmonic pitch layers (low/mid/high).
+    {
+      static constexpr SfxSoundId kEvBands[3] = {SfxSoundId::kElectricMotor, SfxSoundId::kElectricMotorMid,
+                                                 SfxSoundId::kElectricMotorHigh};
+      const auto fev_path = cars::mods::resolve(audio_dir / "cars/ElectricMotor/ElectricEngine.fev");
+      std::vector<std::pair<std::filesystem::path, uint32_t>> ev_samples;
+      auto push_unique = [&](const std::filesystem::path& bank, uint32_t sub) {
+        if (ev_samples.size() >= 3) return;
+        for (const auto& p : ev_samples)
+          if (p.first == bank && p.second == sub) return;
+        ev_samples.emplace_back(bank, sub);
+      };
+      FevProject proj;
+      if (load_fev(fev_path, proj, nullptr)) {
+        for (const auto& sd : proj.sound_defs) {
+          for (const auto& en : sd.entries) {
+            if (en.entry_type == 0 && !en.wavebank_name.empty()) {
+              const auto bp = cars::mods::resolve(proj.dir / (en.wavebank_name + ".fsb"));
+              std::error_code ec;
+              if (std::filesystem::exists(bp, ec)) push_unique(bp, en.subsound_index);
+            }
+          }
+        }
+      }
+      if (ev_samples.empty()) {
+        std::error_code ec;
+        const auto dir = fev_path.parent_path();
+        if (std::filesystem::is_directory(dir, ec)) {
+          for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (entry.is_regular_file(ec) && lower_str(entry.path().extension().string()) == ".fsb") {
+              std::vector<uint8_t> raw;
+              std::vector<FsbSample> fsb_s;
+              const uint32_t n = (read_bytes(entry.path(), raw) && read_fsb4(raw, fsb_s, nullptr))
+                                     ? std::min<uint32_t>(3u, uint32_t(fsb_s.size()))
+                                     : 1u;
+              for (uint32_t bi = 0; bi < n; ++bi) push_unique(entry.path(), bi);
+              break;
+            }
+          }
+        }
+      }
+      for (size_t i = 0; i < ev_samples.size() && i < 3; ++i) {
+        jobs.push_back({kEvBands[i], ev_samples[i].first, ev_samples[i].second});
+      }
+    }
+
+    // ExhNoise.fev: high-RPM exhaust gas/air-rush layer.
+    if (!add_first_fev_or_fsb("cars/ExhNoise/ExhNoise.fev", SfxSoundId::kExhNoise)) {
+      add_first_fev_or_fsb("cars/ExhaustNoise/ExhNoise.fev", SfxSoundId::kExhNoise);
+    }
+
+    // Damage.fev: mechanical engine damage rattle/knock loop + misfire sputter.
+    {
+      const auto dmg_fev = cars::mods::resolve(audio_dir / "cars/Damage/Damage.fev");
+      bool have_dmg_loop = false, have_dmg_misfire = false;
+      FevProject proj;
+      if (load_fev(dmg_fev, proj, nullptr)) {
+        for (const auto& ev : proj.events) {
+          std::filesystem::path bank;
+          uint32_t sub = 0;
+          if (!resolve_event_sample(proj, ev.path, bank, sub)) continue;
+          const std::string lp = lower_str(ev.path);
+          if (!have_dmg_misfire && (lp.find("misfire") != std::string::npos || lp.find("knock") != std::string::npos ||
+                                    lp.find("sputter") != std::string::npos)) {
+            jobs.push_back({SfxSoundId::kEngineMisfire, bank, sub});
+            have_dmg_misfire = true;
+          } else if (!have_dmg_loop) {
+            jobs.push_back({SfxSoundId::kEngineDamageLoop, bank, sub});
+            have_dmg_loop = true;
+          } else if (!have_dmg_misfire) {
+            jobs.push_back({SfxSoundId::kEngineMisfire, bank, sub});
+            have_dmg_misfire = true;
+          }
+        }
+      }
+      if (!have_dmg_loop) {
+        std::error_code ec;
+        const auto dir = dmg_fev.parent_path();
+        if (std::filesystem::is_directory(dir, ec)) {
+          for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (entry.is_regular_file(ec) && lower_str(entry.path().extension().string()) == ".fsb") {
+              std::vector<uint8_t> raw;
+              std::vector<FsbSample> fsb_s;
+              const uint32_t n = (read_bytes(entry.path(), raw) && read_fsb4(raw, fsb_s, nullptr))
+                                     ? uint32_t(fsb_s.size())
+                                     : 1u;
+              jobs.push_back({SfxSoundId::kEngineDamageLoop, entry.path(), 0});
+              if (!have_dmg_misfire && n > 1) jobs.push_back({SfxSoundId::kEngineMisfire, entry.path(), 1});
+              break;
+            }
+          }
+        }
+      }
+    }
+
     add_first_fev_or_fsb("cars/Reflections/Reflections.fev", SfxSoundId::kRoadsideReflection);
     add_first_fev_or_fsb("cars/ActiveAero/ActiveAero.fev", SfxSoundId::kActiveAero);
   }
@@ -947,11 +1122,14 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
       add_ui(SfxSoundId::kUiMenuOpen, "MenuVisible", "UIInGame/UI/Nav/SidePanel");
       add_ui(SfxSoundId::kRewindTapeStart, "Skip", "UIInGame/UI/Mulligan/TapeStart");
       add_ui(SfxSoundId::kRewindLoop, "Rewind", "UIInGame/UI/Mulligan/TapeLoop");
+      add_ui(SfxSoundId::kRewindTapeStop, "RewindStop", "UIInGame/UI/Mulligan/TapeStop");
       add_ui(SfxSoundId::kSignSmash, "Hud_Collection", "UIInGame/UI/HorizonHud/COLLECTION");
       add_ui(SfxSoundId::kUiSkillAward, "Hud_SkillAward", "UIInGame/UI/HorizonHud/SKILL_AWARD");
       add_ui(SfxSoundId::kAchievementReward, "HUD_General_Notification_Reward",
              "UIInGame/UI/HorizonHud/HUD_General_Notification_Reward");
       add_ui(SfxSoundId::kUiSpeedCamera, "SpeedCamera", "UIInGame/UI/HorizonHud/SPEED_CAMERA");
+      add_ui(SfxSoundId::kUiLap, "Hud_Lap", "UIInGame/UI/HorizonHud/LAP");
+      add_ui(SfxSoundId::kUiWristbandUnlock, "WristbandUnlock", "UIInGame/UI/HorizonHud/WRISTBAND_UNLOCK");
       // General.fev -> General/SpeedCamera fallback when not in UIInGame.fev.
       {
         bool have_sc = false;
@@ -978,7 +1156,13 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
         std::vector<uint8_t> raw;
         std::vector<FsbSample> fsb_s;
         if (read_bytes(ui_fsb, raw) && read_fsb4(raw, fsb_s, nullptr)) {
+          auto has_ui_job = [&](SfxSoundId id) {
+            for (const auto& j : jobs)
+              if (j.id == id) return true;
+            return false;
+          };
           auto add_fsb_match = [&](SfxSoundId id, std::string_view needle) {
+            if (has_ui_job(id)) return;
             const std::string want = lower_str(std::string(needle));
             for (uint32_t si = 0; si < fsb_s.size(); ++si) {
               if (lower_str(fsb_s[si].name).find(want) != std::string::npos) {
@@ -987,8 +1171,12 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
               }
             }
           };
+          add_fsb_match(SfxSoundId::kRewindTapeStop, "tapestop");
           add_fsb_match(SfxSoundId::kUiCountdownGo, "countdowngo");
           add_fsb_match(SfxSoundId::kUiCheckpoint, "hud_checkpointpassed");
+          add_fsb_match(SfxSoundId::kUiLap, "hud_lap");
+          add_fsb_match(SfxSoundId::kUiLap, "lapcomplete");
+          add_fsb_match(SfxSoundId::kUiWristbandUnlock, "wristband");
           add_fsb_match(SfxSoundId::kUiRaceFinish, "racefinishstreet_st");
           add_fsb_match(SfxSoundId::kUiSkillMulti, "driving_skills_multi_slam");
           add_fsb_match(SfxSoundId::kUiSkillBank, "ds_bankpoints");
@@ -1022,10 +1210,12 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
         add_hub_amb(SfxSoundId::kHubAmbPaintshop, "tracks/uipaintshop/AMB_FA_Paintshop.fsb", "ambience");
         add_hub_amb(SfxSoundId::kHubAmbWorkshop, "tracks/uiworkshop/AMB_FA_Workshop.fsb", "ambience");
       }
-      // Race 3-2-1 countdown & Mulligan rewind loop discovery.
-      bool has_countdown = false, has_rew_loop = false;
-      for (const auto& j : jobs)
+      // Race 3-2-1 countdown & Mulligan rewind loop/stop discovery.
+      bool has_countdown = false, has_rew_loop = false, has_rew_stop = false;
+      for (const auto& j : jobs) {
         if (j.id == SfxSoundId::kRewindLoop) has_rew_loop = true;
+        if (j.id == SfxSoundId::kRewindTapeStop) has_rew_stop = true;
+      }
       for (const auto& ev : ui_fev.events) {
         const std::string lp = lower_str(ev.path);
         std::filesystem::path bank;
@@ -1034,8 +1224,13 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
             resolve_event_sample(ui_fev, ev.path, bank, sub)) {
           jobs.push_back({SfxSoundId::kCountdown321, bank, sub});
           has_countdown = true;
+        } else if (!has_rew_stop && lp.find("mulligan") != std::string::npos &&
+                   lp.find("tapestop") != std::string::npos && resolve_event_sample(ui_fev, ev.path, bank, sub)) {
+          jobs.push_back({SfxSoundId::kRewindTapeStop, bank, sub});
+          has_rew_stop = true;
         } else if (!has_rew_loop && lp.find("mulligan") != std::string::npos &&
-                   lp.find("tapestart") == std::string::npos && resolve_event_sample(ui_fev, ev.path, bank, sub)) {
+                   lp.find("tapestart") == std::string::npos && lp.find("tapestop") == std::string::npos &&
+                   resolve_event_sample(ui_fev, ev.path, bank, sub)) {
           jobs.push_back({SfxSoundId::kRewindLoop, bank, sub});
           has_rew_loop = true;
         }
@@ -1043,7 +1238,7 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
     }
   }
 
-  // Exhaust burble / backfire bank (up to 4 subsounds for randomized pop variety).
+  // Exhaust burble & backfire bank: partition overrun <Burble> crackles vs shift/decel <Backfire> pops.
   {
     const auto burble_dir = audio_dir / "cars" / "Engines" / "Soundbanks" / "Burbles";
     std::filesystem::path bpath;
@@ -1063,12 +1258,43 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
     if (!bpath.empty()) {
       std::vector<uint8_t> raw;
       std::vector<FsbSample> fsb_s;
-      const uint32_t count = (read_bytes(bpath, raw) && read_fsb4(raw, fsb_s, nullptr))
-                                 ? std::min<uint32_t>(4u, uint32_t(fsb_s.size()))
-                                 : 1u;
-      static constexpr SfxSoundId kBurbleIds[4] = {SfxSoundId::kBackfirePop, SfxSoundId::kBackfirePop1,
-                                                   SfxSoundId::kBackfirePop2, SfxSoundId::kBackfirePop3};
-      for (uint32_t bi = 0; bi < count; ++bi) jobs.push_back({kBurbleIds[bi], bpath, bi});
+      const uint32_t total =
+          (read_bytes(bpath, raw) && read_fsb4(raw, fsb_s, nullptr)) ? uint32_t(fsb_s.size()) : 1u;
+      std::vector<uint32_t> burble_subs;
+      std::vector<uint32_t> backfire_subs;
+      for (uint32_t si = 0; si < fsb_s.size(); ++si) {
+        const std::string nm = lower_str(fsb_s[si].name);
+        if (nm.find("burble") != std::string::npos || nm.find("overrun") != std::string::npos ||
+            nm.find("crackle") != std::string::npos) {
+          burble_subs.push_back(si);
+        } else if (nm.find("backfire") != std::string::npos || nm.find("pop") != std::string::npos ||
+                   nm.find("bang") != std::string::npos || nm.find("shift") != std::string::npos) {
+          backfire_subs.push_back(si);
+        }
+      }
+      if (burble_subs.empty() && backfire_subs.empty()) {
+        if (total >= 2) {
+          const uint32_t split = total / 2;
+          for (uint32_t si = 0; si < split; ++si) burble_subs.push_back(si);
+          for (uint32_t si = split; si < total; ++si) backfire_subs.push_back(si);
+        } else {
+          burble_subs.push_back(0);
+          backfire_subs.push_back(0);
+        }
+      } else {
+        if (burble_subs.empty()) burble_subs = backfire_subs;
+        if (backfire_subs.empty()) backfire_subs = burble_subs;
+      }
+      static constexpr SfxSoundId kBurbleIds[4] = {SfxSoundId::kBurblePop0, SfxSoundId::kBurblePop1,
+                                                   SfxSoundId::kBurblePop2, SfxSoundId::kBurblePop3};
+      static constexpr SfxSoundId kBackfireIds[4] = {SfxSoundId::kBackfirePop, SfxSoundId::kBackfirePop1,
+                                                     SfxSoundId::kBackfirePop2, SfxSoundId::kBackfirePop3};
+      for (uint32_t i = 0; i < std::min<uint32_t>(4u, uint32_t(burble_subs.size())); ++i) {
+        jobs.push_back({kBurbleIds[i], bpath, burble_subs[i]});
+      }
+      for (uint32_t i = 0; i < std::min<uint32_t>(4u, uint32_t(backfire_subs.size())); ++i) {
+        jobs.push_back({kBackfireIds[i], bpath, backfire_subs[i]});
+      }
     }
   }
 
@@ -1095,7 +1321,8 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
   }
 
   // Airborne Showcase aircraft audio from Triggerable_Events.fev / Triggerable_Events.fsb
-  // (P-51 Mustang, Biplane, Helicopter, Hot-Air Balloon, Stunt Jet).
+  // (P-51 Mustang, Biplane, Helicopter, Hot-Air Balloon; Jet only if a genuine jet asset exists,
+  // never aliased onto P-51 propeller audio).
   {
     const auto trig_dir = audio_dir / "Tracks" / "Colorado";
     const auto trig_fev_path = cars::mods::resolve(trig_dir / "Triggerable_Events.fev");
@@ -1109,10 +1336,10 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
         if (!have_p51 && lp.find("p51") != std::string::npos && resolve_event_sample(trig_fev, ev.path, bank, sub)) {
           jobs.push_back({SfxSoundId::kShowcaseP51, bank, sub});
           have_p51 = true;
-          if (!have_jet) {
-            jobs.push_back({SfxSoundId::kShowcaseJet, bank, sub});
-            have_jet = true;
-          }
+        } else if (!have_jet && (lp.find("jet") != std::string::npos || lp.find("turbine") != std::string::npos) &&
+                   resolve_event_sample(trig_fev, ev.path, bank, sub)) {
+          jobs.push_back({SfxSoundId::kShowcaseJet, bank, sub});
+          have_jet = true;
         } else if (!have_bi && lp.find("biplane") != std::string::npos &&
                    resolve_event_sample(trig_fev, ev.path, bank, sub)) {
           jobs.push_back({SfxSoundId::kShowcaseBiplane, bank, sub});
@@ -1121,7 +1348,7 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
                    resolve_event_sample(trig_fev, ev.path, bank, sub)) {
           jobs.push_back({SfxSoundId::kShowcaseHeli, bank, sub});
           have_heli = true;
-        } else if (!have_bal && (lp.find("balloon") != std::string::npos || lp.find("ballon") != std::string::npos) &&
+        } else if (!have_bal && (lp.find("balloon") != std::string::npos || lp.find("baloon") != std::string::npos) &&
                    resolve_event_sample(trig_fev, ev.path, bank, sub)) {
           jobs.push_back({SfxSoundId::kShowcaseBalloon, bank, sub});
           have_bal = true;
@@ -1130,7 +1357,7 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
     }
     const auto trig_fsb = cars::mods::resolve(trig_dir / "Triggerable_Events.fsb");
     std::error_code ec;
-    if (std::filesystem::exists(trig_fsb, ec) && (!have_p51 || !have_bi || !have_heli || !have_bal)) {
+    if (std::filesystem::exists(trig_fsb, ec) && (!have_p51 || !have_bi || !have_heli || !have_bal || !have_jet)) {
       std::vector<uint8_t> raw;
       std::vector<FsbSample> fsb_s;
       if (read_bytes(trig_fsb, raw) && read_fsb4(raw, fsb_s, nullptr)) {
@@ -1139,10 +1366,9 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
           if (!have_p51 && nm.find("p51") != std::string::npos) {
             jobs.push_back({SfxSoundId::kShowcaseP51, trig_fsb, i});
             have_p51 = true;
-            if (!have_jet) {
-              jobs.push_back({SfxSoundId::kShowcaseJet, trig_fsb, i});
-              have_jet = true;
-            }
+          } else if (!have_jet && (nm.find("jet") != std::string::npos || nm.find("turbine") != std::string::npos)) {
+            jobs.push_back({SfxSoundId::kShowcaseJet, trig_fsb, i});
+            have_jet = true;
           } else if (!have_bi && nm.find("biplane") != std::string::npos) {
             jobs.push_back({SfxSoundId::kShowcaseBiplane, trig_fsb, i});
             have_bi = true;
@@ -1343,7 +1569,7 @@ bool SfxEngine::load_rally_sfx(const std::filesystem::path& rally_root_or_state_
 }
 
 void SfxEngine::reload_burble_bank(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
-                                   const std::string& burble_bank) {
+                                   const std::string& burble_bank, int burble_count, int backfire_count) {
   if (game_root.empty() || burble_bank.empty()) return;
   std::lock_guard<std::mutex> lock(lifecycle_mu_);
   stop_burble_worker_.store(true, std::memory_order_release);
@@ -1357,12 +1583,50 @@ void SfxEngine::reload_burble_bank(const std::filesystem::path& game_root, const
   std::vector<DecodeJob> jobs;
   std::vector<uint8_t> raw;
   std::vector<FsbSample> fsb_s;
-  const uint32_t count = (read_bytes(bpath, raw) && read_fsb4(raw, fsb_s, nullptr))
-                             ? std::min<uint32_t>(4u, uint32_t(fsb_s.size()))
-                             : 1u;
-  static constexpr SfxSoundId kBurbleIds[4] = {SfxSoundId::kBackfirePop, SfxSoundId::kBackfirePop1,
-                                               SfxSoundId::kBackfirePop2, SfxSoundId::kBackfirePop3};
-  for (uint32_t bi = 0; bi < count; ++bi) jobs.push_back({kBurbleIds[bi], bpath, bi});
+  const uint32_t total =
+      (read_bytes(bpath, raw) && read_fsb4(raw, fsb_s, nullptr)) ? uint32_t(fsb_s.size()) : 1u;
+
+  std::vector<uint32_t> burble_subs;
+  std::vector<uint32_t> backfire_subs;
+  for (uint32_t si = 0; si < fsb_s.size(); ++si) {
+    const std::string nm = lower_str(fsb_s[si].name);
+    if (nm.find("burble") != std::string::npos || nm.find("overrun") != std::string::npos ||
+        nm.find("crackle") != std::string::npos) {
+      burble_subs.push_back(si);
+    } else if (nm.find("backfire") != std::string::npos || nm.find("pop") != std::string::npos ||
+               nm.find("bang") != std::string::npos || nm.find("shift") != std::string::npos) {
+      backfire_subs.push_back(si);
+    }
+  }
+  if (burble_subs.empty() && backfire_subs.empty()) {
+    if (burble_count > 0 && backfire_count > 0 && total > 1) {
+      const uint32_t nb = std::min<uint32_t>(uint32_t(burble_count), total - 1);
+      const uint32_t nf = std::min<uint32_t>(uint32_t(backfire_count), total - nb);
+      for (uint32_t si = 0; si < nb; ++si) burble_subs.push_back(si);
+      for (uint32_t si = nb; si < nb + nf; ++si) backfire_subs.push_back(si);
+    } else if (total >= 2) {
+      const uint32_t split = total / 2;
+      for (uint32_t si = 0; si < split; ++si) burble_subs.push_back(si);
+      for (uint32_t si = split; si < total; ++si) backfire_subs.push_back(si);
+    } else {
+      burble_subs.push_back(0);
+      backfire_subs.push_back(0);
+    }
+  } else {
+    if (burble_subs.empty()) burble_subs = backfire_subs;
+    if (backfire_subs.empty()) backfire_subs = burble_subs;
+  }
+
+  static constexpr SfxSoundId kBurbleIds[4] = {SfxSoundId::kBurblePop0, SfxSoundId::kBurblePop1,
+                                               SfxSoundId::kBurblePop2, SfxSoundId::kBurblePop3};
+  static constexpr SfxSoundId kBackfireIds[4] = {SfxSoundId::kBackfirePop, SfxSoundId::kBackfirePop1,
+                                                 SfxSoundId::kBackfirePop2, SfxSoundId::kBackfirePop3};
+  for (uint32_t i = 0; i < std::min<uint32_t>(4u, uint32_t(burble_subs.size())); ++i) {
+    jobs.push_back({kBurbleIds[i], bpath, burble_subs[i]});
+  }
+  for (uint32_t i = 0; i < std::min<uint32_t>(4u, uint32_t(backfire_subs.size())); ++i) {
+    jobs.push_back({kBackfireIds[i], bpath, backfire_subs[i]});
+  }
   if (jobs.empty()) return;
 
   stop_burble_worker_.store(false, std::memory_order_release);
@@ -1456,6 +1720,31 @@ void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, f
   slot->right = right;
   slot->pitch = std::clamp(pitch, 0.25f, 4.0f);
   last_one_shot_id_.store(id, std::memory_order_release);
+  last_one_shot_gain_.store(gain, std::memory_order_release);
+  last_one_shot_pitch_.store(slot->pitch, std::memory_order_release);
+}
+
+int16_t SfxEngine::map_surface_index(std::string_view physics_surface) const {
+  if (const auto* entry = tires_cfg_.find_surface(physics_surface)) {
+    return int16_t(entry->surface_index);
+  }
+  const std::string raw_low = lower_str(std::string(physics_surface));
+  if (raw_low.find("leaf") != std::string::npos || raw_low.find("leaves") != std::string::npos ||
+      raw_low.find("foliage") != std::string::npos) {
+    return 51;
+  }
+  if (raw_low.find("mud") != std::string::npos) return 20;
+  if (raw_low.find("grass") != std::string::npos) return 15;
+  if (raw_low.find("dirt") != std::string::npos || raw_low.find("gravel") != std::string::npos ||
+      raw_low.find("sand") != std::string::npos) {
+    return 10;
+  }
+  if (raw_low.find("brick") != std::string::npos || raw_low.find("cobble") != std::string::npos) return 30;
+  if (raw_low.find("wood") != std::string::npos || raw_low.find("track") != std::string::npos ||
+      raw_low.find("metal") != std::string::npos) {
+    return 40;
+  }
+  return 0;
 }
 
 uint8_t SfxEngine::map_surface_group(std::string_view physics_surface) const {
@@ -1565,7 +1854,20 @@ void SfxEngine::trigger_ui(UiCue cue) {
     case UiCue::kError: id = SfxSoundId::kUiError; break;
     case UiCue::kMenuOpen: id = SfxSoundId::kUiMenuOpen; gain = 0.55f; break;
     case UiCue::kRewindTapeStart: id = SfxSoundId::kRewindTapeStart; gain = 0.85f; break;
+    case UiCue::kRewindTapeStop:
+      id = resolve_fallback(SfxSoundId::kRewindTapeStop, SfxSoundId::kRewindTapeStart);
+      gain = 0.80f;
+      break;
     case UiCue::kCountdown321: id = SfxSoundId::kCountdown321; gain = 0.85f; break;
+    case UiCue::kCountdownTick: {
+      // Suppress individual digit ticks while the full 3-2-1 pre-race track is already playing.
+      for (const auto& o : one_shots_) {
+        if (o.active && o.id == SfxSoundId::kCountdown321) return;
+      }
+      id = resolve_fallback(SfxSoundId::kUiCountdownTick, SfxSoundId::kUiMove);
+      gain = 0.78f;
+      break;
+    }
     case UiCue::kCountdownGo:
       id = resolve_fallback(SfxSoundId::kUiCountdownGo, SfxSoundId::kCountdown321);
       gain = 0.90f;
@@ -1575,8 +1877,12 @@ void SfxEngine::trigger_ui(UiCue cue) {
       gain = 0.72f;
       break;
     case UiCue::kLap:
-      id = resolve_fallback(SfxSoundId::kUiCheckpoint, SfxSoundId::kAchievementReward);
+      id = resolve_fallback(SfxSoundId::kUiLap, SfxSoundId::kAchievementReward);
       gain = 0.85f;
+      break;
+    case UiCue::kWristbandUnlock:
+      id = resolve_fallback(SfxSoundId::kUiWristbandUnlock, SfxSoundId::kAchievementReward);
+      gain = 0.92f;
       break;
     case UiCue::kRaceFinish:
       id = resolve_fallback(SfxSoundId::kUiRaceFinish, SfxSoundId::kAchievementReward);
@@ -1683,16 +1989,28 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
   const double dt = double(frames) / double(rate_);
   time_s_ += dt;
 
+  // Per-camera / cockpit isolation scales from _CMT.xml <OtherVolumes>.
+  const float view_wind = safe_clamp_f(st.view_wind_scale, 0.0f, 2.5f, 1.0f);
+  const float view_tyre = safe_clamp_f(st.view_tyre_scale, 0.0f, 2.5f, 1.0f);
+  const float view_trans = safe_clamp_f(st.view_trans_scale, 0.0f, 2.5f, 1.0f);
+  const float view_turbo = safe_clamp_f(st.view_turbo_scale, 0.0f, 2.5f, 1.0f);
+  const float view_sc = safe_clamp_f(st.view_sc_scale, 0.0f, 2.5f, 1.0f);
+  const float view_backfire = safe_clamp_f(st.view_backfire_scale, 0.0f, 2.5f, 1.0f);
+  const float view_susp = safe_clamp_f(st.view_susp_scale, 0.0f, 2.5f, 1.0f);
+  const float view_amb = safe_clamp_f(st.view_ambience_scale, 0.0f, 2.5f, 1.0f);
+  const float view_other = safe_clamp_f(st.view_other_cars_scale, 0.0f, 2.5f, 1.0f);
+  const float view_damage = safe_clamp_f(st.view_damage_scale, 0.0f, 2.5f, 1.0f);
+
   // 1. Wind (Bus::kWind)
   if (float* wind_bus = buses[int(Bus::kWind)]) {
     const float sp = std::clamp((st.speed_mph - 12.0f) / 180.0f, 0.0f, 1.0f);
     const float music_duck = st.music_active ? 0.75f : 1.0f;
-    const float gain = 0.45f * std::pow(sp, 1.35f) * music_duck;
+    const float gain = 0.45f * std::pow(sp, 1.35f) * music_duck * view_wind;
     const float pitch = 0.75f + 0.55f * std::clamp(st.speed_mph / 200.0f, 0.0f, 1.0f);
     mix_loop(wind_voice_, SfxSoundId::kWind, gain, pitch, 0.707f, 0.707f, wind_bus, frames);
   }
 
-  // 2. Per-wheel 4-corner stereo-panned tyre roll/skid & surface changes (Bus::kTyres)
+  // 2. Per-wheel 4-corner stereo-panned tyre roll/skid, distinct SurfaceIndex timbre, & SurfaceChanges.xml (Bus::kTyres)
   {
     float* tyre_bus = buses[int(Bus::kTyres)];
     static constexpr float kWheelPanL[4] = {0.84f, 0.54f, 0.80f, 0.58f};
@@ -1759,44 +2077,103 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       const auto& wh = st.wheels[size_t(w)];
       const float pl = kWheelPanL[w];
       const float pr = kWheelPanR[w];
-      if (wh.surface_group != prev_wheel_surface_[size_t(w)] && st.speed_mph > 5.0f) {
-        const bool dirt_edge = (wh.surface_group == 1 || wh.surface_group == 2 ||
-                                prev_wheel_surface_[size_t(w)] == 1 || prev_wheel_surface_[size_t(w)] == 2);
-        const float g = 0.35f * std::clamp(st.speed_mph / 106.0f, 0.1f, 1.0f);
-        spawn_one_shot(dirt_edge ? SfxSoundId::kSurfaceDirtToHard : SfxSoundId::kSurfaceHardToHard, Bus::kTyres, g, pl,
-                       pr);
+      const int16_t cur_sidx = wh.surface_index;
+      const int16_t prev_sidx = prev_wheel_surface_idx_[size_t(w)];
+      const bool sidx_changed = (cur_sidx >= 0 && prev_sidx >= 0 && cur_sidx != prev_sidx);
+      const bool sgrp_changed = (wh.surface_group != prev_wheel_surface_[size_t(w)]);
+
+      if ((sidx_changed || sgrp_changed) && st.speed_mph > 5.0f) {
+        const float base_g = 0.35f * std::clamp(st.speed_mph / 106.0f, 0.1f, 1.0f) * view_tyre;
+        if (sidx_changed) {
+          const SurfaceChangeSpec spec = tires_cfg_.surface_change_spec_by_index(prev_sidx, cur_sidx);
+          if (!spec.event.empty()) {
+            const std::string ev_low = lower_str(spec.event);
+            if (ev_low != "silent" && ev_low != "none") {
+              SfxSoundId sc_id = SfxSoundId::kSurfaceHardToHard;
+              if (ev_low.find("leaves_on") != std::string::npos || ev_low.find("leaveson") != std::string::npos) {
+                sc_id = resolve_fallback(SfxSoundId::kSurfaceLeavesOn, SfxSoundId::kSurfaceDirtToHard);
+              } else if (ev_low.find("leaves_off") != std::string::npos ||
+                         ev_low.find("leavesoff") != std::string::npos) {
+                sc_id = resolve_fallback(SfxSoundId::kSurfaceLeavesOff, SfxSoundId::kSurfaceDirtToHard);
+              } else if (ev_low.find("dirt") != std::string::npos || ev_low.find("gravel") != std::string::npos ||
+                         ev_low.find("grass") != std::string::npos) {
+                sc_id = SfxSoundId::kSurfaceDirtToHard;
+              }
+              spawn_one_shot(sc_id, Bus::kTyres, base_g * std::clamp(spec.gain, 0.05f, 2.5f), pl, pr,
+                             std::clamp(spec.pitch, 0.5f, 2.0f));
+            }
+          } else {
+            const bool cur_leaves = (cur_sidx >= 51 && cur_sidx <= 55);
+            const bool prev_leaves = (prev_sidx >= 51 && prev_sidx <= 55);
+            if (cur_leaves && !prev_leaves) {
+              spawn_one_shot(resolve_fallback(SfxSoundId::kSurfaceLeavesOn, SfxSoundId::kSurfaceDirtToHard),
+                             Bus::kTyres, base_g, pl, pr);
+            } else if (prev_leaves && !cur_leaves) {
+              spawn_one_shot(resolve_fallback(SfxSoundId::kSurfaceLeavesOff, SfxSoundId::kSurfaceDirtToHard),
+                             Bus::kTyres, base_g, pl, pr);
+            } else {
+              const bool dirt_edge = (wh.surface_group == 1 || wh.surface_group == 2 ||
+                                      prev_wheel_surface_[size_t(w)] == 1 || prev_wheel_surface_[size_t(w)] == 2);
+              spawn_one_shot(dirt_edge ? SfxSoundId::kSurfaceDirtToHard : SfxSoundId::kSurfaceHardToHard, Bus::kTyres,
+                             base_g, pl, pr);
+            }
+          }
+        } else {
+          const bool dirt_edge = (wh.surface_group == 1 || wh.surface_group == 2 ||
+                                  prev_wheel_surface_[size_t(w)] == 1 || prev_wheel_surface_[size_t(w)] == 2);
+          spawn_one_shot(dirt_edge ? SfxSoundId::kSurfaceDirtToHard : SfxSoundId::kSurfaceHardToHard, Bus::kTyres,
+                         base_g, pl, pr);
+        }
       }
       prev_wheel_surface_[size_t(w)] = wh.surface_group;
+      if (cur_sidx >= 0) prev_wheel_surface_idx_[size_t(w)] = cur_sidx;
 
       // Suspension BottomOut (Bus::kSuspension -> fallback Bus::kEngine)
       if (wh.bottom_out_force > 0.002f && (time_s_ - susp_cooldown_s_[size_t(w)]) > 0.25) {
         susp_cooldown_s_[size_t(w)] = time_s_;
         const float sg = 0.6f * std::clamp(wh.bottom_out_force / 0.07f, 0.2f, 1.0f) *
-                         safe_clamp_f(st.susp_vol_scale, 0.0f, 2.5f, 1.0f);
+                         safe_clamp_f(st.susp_vol_scale, 0.0f, 2.5f, 1.0f) * view_susp;
         spawn_one_shot(SfxSoundId::kSuspensionBottom, buses[int(Bus::kSuspension)] ? Bus::kSuspension : Bus::kEngine,
                        sg, pl, pr);
       }
 
       if (tyre_bus) {
+        // Distinct SurfaceIndex character: preserve individual FH1 surface_index timbre even
+        // when two surfaces share an LOD1 group (e.g. SmoothTarmac vs RoughAsphalt vs Leaves).
+        float sidx_gain = 1.0f;
+        float sidx_pitch = 1.0f;
+        if (cur_sidx >= 0) {
+          if (cur_sidx >= 51 && cur_sidx <= 55) {
+            sidx_gain = 0.85f;
+            sidx_pitch = 1.12f + 0.02f * float(cur_sidx - 51);
+          } else {
+            const int bucket = cur_sidx % 7;
+            sidx_gain = 0.90f + 0.04f * float(bucket);
+            sidx_pitch = 0.92f + 0.03f * float(bucket);
+          }
+        }
         const float load_f = std::clamp(wh.load, 0.0f, 1.4f);
         const float w_speed_mph = wh.wheel_rpm > 1.0f ? std::max(st.speed_mph, wh.wheel_rpm * 0.065f) : st.speed_mph;
-        const float roll_g = 0.12f * std::clamp(w_speed_mph / 90.0f, 0.0f, 1.0f) * load_f;
-        const float roll_p = 0.65f + 0.75f * std::clamp(w_speed_mph / 130.0f, 0.0f, 1.0f) + 0.015f * float(w);
+        const float roll_g = 0.12f * std::clamp(w_speed_mph / 90.0f, 0.0f, 1.0f) * load_f * view_tyre * sidx_gain;
+        const float roll_p =
+            (0.65f + 0.75f * std::clamp(w_speed_mph / 130.0f, 0.0f, 1.0f) + 0.015f * float(w)) * sidx_pitch;
         mix_loop(tire_roll_voices_[size_t(w)], roll_for_surface(wh.surface_group), roll_g, roll_p, pl, pr, tyre_bus,
                  frames);
 
         const float slip = wh.slip_combined;
-        const float skid_g = (slip > 0.15f && st.speed_mph > 4.0f && load_f > 0.05f)
-                                 ? 0.24f * std::clamp((slip - 0.15f) / 0.85f, 0.0f, 1.0f) * std::min(1.2f, load_f)
-                                 : 0.0f;
-        const float skid_p = 0.85f + 0.30f * std::clamp(slip, 0.0f, 1.0f) + 0.012f * float(w);
+        const float skid_g =
+            (slip > 0.15f && st.speed_mph > 4.0f && load_f > 0.05f)
+                ? 0.24f * std::clamp((slip - 0.15f) / 0.85f, 0.0f, 1.0f) * std::min(1.2f, load_f) * view_tyre *
+                      sidx_gain
+                : 0.0f;
+        const float skid_p = (0.85f + 0.30f * std::clamp(slip, 0.0f, 1.0f) + 0.012f * float(w)) * sidx_pitch;
         mix_loop(tire_skid_voices_[size_t(w)], skid_for_surface(wh.surface_group), skid_g, skid_p, pl, pr, tyre_bus,
                  frames);
       }
     }
   }
 
-  // 3. Dedicated subsystem buses (Transmission, Turbo, Supercharger, Backfire) + FocusCar EngineLFE / ElectricMotor
+  // 3. Dedicated subsystem buses (Transmission, Turbo, Supercharger, EngineDamage, Backfire) + FocusCar EngineLFE / EV / ExhNoise
   {
     auto bus_or = [&](Bus preferred, Bus fallback) -> float* {
       return buses[int(preferred)] ? buses[int(preferred)] : buses[int(fallback)];
@@ -1806,6 +2183,8 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
     };
     const float rpm_span = std::max(500.0f, st.redline_rpm - st.idle_rpm);
     const float norm_rpm = std::clamp((st.rpm - st.idle_rpm) / rpm_span, 0.0f, 1.2f);
+    const bool shift_rising = st.shifting && !prev_shifting_;
+    const bool hard_liftoff = (prev_throttle_ > 0.55f && st.throttle < 0.08f);
 
     // Transmission whine (tier-matched L0..L3) + shift start/complete L0..L3 (Bus::kTransmission).
     if (float* trans_bus = bus_or(Bus::kTransmission, Bus::kEngine)) {
@@ -1817,14 +2196,14 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       static constexpr SfxSoundId kShiftDoneTiers[4] = {SfxSoundId::kShiftComplete, SfxSoundId::kShiftCompleteL1,
                                                         SfxSoundId::kShiftCompleteL2, SfxSoundId::kShiftCompleteL3};
       const SfxSoundId trans_id = resolve_fallback(kTransTiers[tlv], SfxSoundId::kTransWhine);
-      const float tv_scale = safe_clamp_f(st.trans_vol_scale, 0.0f, 2.5f, 1.0f);
-      const float sv_scale = safe_clamp_f(st.shift_vol_scale, 0.0f, 2.5f, 1.0f);
+      const float tv_scale = safe_clamp_f(st.trans_vol_scale, 0.0f, 2.5f, 1.0f) * view_trans;
+      const float sv_scale = safe_clamp_f(st.shift_vol_scale, 0.0f, 2.5f, 1.0f) * view_trans;
       const float trans_g = (0.04f + 0.06f * float(tlv)) * tv_scale * std::clamp(norm_rpm, 0.0f, 1.0f) *
                             (st.speed_mph > 2.0f ? 1.0f : 0.0f);
       const float trans_p = 0.55f + 1.15f * std::clamp(norm_rpm, 0.0f, 1.2f);
       mix_loop(trans_voice_, trans_id, trans_g, trans_p, 0.707f, 0.707f, trans_bus, frames);
       const Bus tbus = bus_id_or(Bus::kTransmission, Bus::kEngine);
-      if (st.shifting && !prev_shifting_)
+      if (shift_rising)
         spawn_one_shot(resolve_fallback(kShiftStartTiers[tlv], SfxSoundId::kShiftStart), tbus, 0.35f * sv_scale,
                        0.707f, 0.707f);
       if (!st.shifting && prev_shifting_)
@@ -1841,7 +2220,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       static constexpr SfxSoundId kTurboTiers[3] = {SfxSoundId::kTurboSpool, SfxSoundId::kTurboSpoolL2,
                                                     SfxSoundId::kTurboSpoolL3};
       const SfxSoundId turbo_id = resolve_fallback(kTurboTiers[tblv], SfxSoundId::kTurboSpool);
-      const float tb_scale = safe_clamp_f(st.turbo_vol_scale, 0.0f, 2.5f, 1.0f);
+      const float tb_scale = safe_clamp_f(st.turbo_vol_scale, 0.0f, 2.5f, 1.0f) * view_turbo;
       const float turbo_g = turbo_active ? 0.35f * tb_scale * std::clamp(st.turbo_norm_rpm, 0.0f, 1.0f) : 0.0f;
       const float turbo_p = 0.60f + 0.95f * std::clamp(st.turbo_norm_rpm, 0.0f, 1.2f);
       mix_loop(turbo_voice_, turbo_id, turbo_g, turbo_p, 0.707f, 0.707f, turbo_bus, frames);
@@ -1870,7 +2249,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       static constexpr SfxSoundId kCscTiers[3] = {SfxSoundId::kScCscL1, SfxSoundId::kScCscL2, SfxSoundId::kScCscL3};
       const SfxSoundId sc_id = resolve_fallback(st.sc_is_centrifugal ? kCscTiers[sclv] : kRootsTiers[sclv],
                                                 SfxSoundId::kScWhine);
-      const float sc_scale = safe_clamp_f(st.sc_vol_scale, 0.0f, 2.5f, 1.0f);
+      const float sc_scale = safe_clamp_f(st.sc_vol_scale, 0.0f, 2.5f, 1.0f) * view_sc;
       const float sc_g = sc_active
                              ? 0.40f * sc_scale * std::clamp(st.supercharger_norm_rpm, 0.0f, 1.0f) *
                                    (0.4f + 0.6f * st.throttle)
@@ -1879,7 +2258,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       mix_loop(sc_voice_, sc_id, sc_g, sc_p, 0.707f, 0.707f, sc_bus, frames);
     }
 
-    // EngineLFE low-frequency bass bed (per-cylinder variant) & ElectricEngine.fev EV inverter whine (Bus::kEngine).
+    // EngineLFE low-frequency bass bed, ExhNoise high-RPM gas rush, & multi-band ElectricEngine.fev (Bus::kEngine).
     if (float* eng_bus = buses[int(Bus::kEngine)]) {
       SfxSoundId lfe_id = SfxSoundId::kEngineLfeLoop;
       if (st.num_cylinders >= 12) lfe_id = resolve_fallback(SfxSoundId::kEngineLfe12, lfe_id);
@@ -1895,58 +2274,166 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       const float lfe_p = 0.70f + 0.65f * std::clamp(norm_rpm, 0.0f, 1.1f);
       mix_loop(engine_lfe_voice_, lfe_id, lfe_g, lfe_p, 0.707f, 0.707f, eng_bus, frames);
 
+      // ExhNoise.fev: high-RPM exhaust gas/air-rush layer on ICE cars.
+      const float exh_scale = safe_clamp_f(st.exh_noise_vol_scale, 0.0f, 2.5f, 1.0f) * view_backfire;
+      const float exh_rpm = std::clamp((norm_rpm - 0.25f) / 0.75f, 0.0f, 1.0f);
+      const float exh_g = st.is_electric ? 0.0f
+                                         : 0.22f * exh_scale * std::pow(exh_rpm, 1.35f) *
+                                               (0.35f + 0.65f * std::clamp(st.throttle, 0.0f, 1.0f));
+      const float exh_p = 0.72f + 0.85f * std::clamp(norm_rpm, 0.0f, 1.2f);
+      mix_loop(exh_noise_voice_, SfxSoundId::kExhNoise, exh_g, exh_p, 0.707f, 0.707f, eng_bus, frames);
+
+      // Multi-band ElectricEngine.fev: 3 harmonic pitch layers (low fundamental, mid gearset, high inverter whine).
       const float ev_scale = safe_clamp_f(st.ev_vol_scale, 0.0f, 2.5f, 1.0f);
-      const float ev_speed = std::clamp(st.speed_mph / 95.0f, 0.0f, 1.3f);
-      const float ev_g = st.is_electric
-                             ? (0.12f + 0.34f * std::clamp(st.throttle, 0.0f, 1.0f)) * ev_scale *
-                                   std::clamp(0.18f + 0.82f * std::max(ev_speed, norm_rpm), 0.0f, 1.0f)
-                             : 0.0f;
-      const float ev_p = 0.55f + 1.65f * std::clamp(std::max(ev_speed, norm_rpm), 0.0f, 1.25f);
-      mix_loop(electric_voice_, SfxSoundId::kElectricMotor, ev_g, ev_p, 0.707f, 0.707f, eng_bus, frames);
+      const float ev_drive = std::clamp(std::max(st.speed_mph / 95.0f, norm_rpm), 0.0f, 1.25f);
+      const float ev_load = 0.28f + 0.72f * std::clamp(st.throttle, 0.0f, 1.0f);
+      const float ev_lo_g =
+          st.is_electric ? (0.28f * ev_scale * ev_load * std::clamp(0.22f + 0.78f * ev_drive, 0.0f, 1.0f)) : 0.0f;
+      const float ev_mid_g =
+          st.is_electric ? (0.20f * ev_scale * ev_load * std::clamp((ev_drive - 0.12f) / 0.75f, 0.0f, 1.0f)) : 0.0f;
+      const float ev_hi_g =
+          st.is_electric ? (0.16f * ev_scale * (0.25f + 0.75f * std::clamp(st.throttle, 0.0f, 1.0f)) *
+                            std::clamp((ev_drive - 0.25f) / 0.80f, 0.0f, 1.0f))
+                         : 0.0f;
+      const float ev_lo_p = 0.55f + 1.35f * ev_drive;
+      const float ev_mid_p = 0.78f + 1.65f * ev_drive;
+      const float ev_hi_p = 1.05f + 1.95f * ev_drive;
+      const SfxSoundId ev_mid_id = resolve_fallback(SfxSoundId::kElectricMotorMid, SfxSoundId::kElectricMotor);
+      const SfxSoundId ev_hi_id = resolve_fallback(SfxSoundId::kElectricMotorHigh, SfxSoundId::kElectricMotor);
+      const float mid_p_mult = (ev_mid_id == SfxSoundId::kElectricMotor) ? 1.50f : 1.0f;
+      const float hi_p_mult = (ev_hi_id == SfxSoundId::kElectricMotor) ? 2.25f : 1.0f;
+      mix_loop(electric_voice_, SfxSoundId::kElectricMotor, ev_lo_g, ev_lo_p, 0.707f, 0.707f, eng_bus, frames);
+      mix_loop(electric_mid_voice_, ev_mid_id, ev_mid_g, ev_mid_p * mid_p_mult, 0.707f, 0.707f, eng_bus, frames);
+      mix_loop(electric_high_voice_, ev_hi_id, ev_hi_g, ev_hi_p * hi_p_mult, 0.707f, 0.707f, eng_bus, frames);
     }
 
-    // Exhaust backfire / overrun burble timer (randomized 4-subsound pool) + Expander coupling (Bus::kBackfire).
+    // Mechanical Engine Damage rattle/knock/misfire (Damage.fev + procedural fallback) on Bus::kEngineDamage.
+    if (float* dmg_bus = bus_or(Bus::kEngineDamage, Bus::kEngine)) {
+      const float dmg = std::clamp(std::max(st.engine_damage, st.drivetrain_damage * 0.7f), 0.0f, 1.0f);
+      const bool dmg_active = (!st.is_electric && dmg > 0.02f && st.rpm > 200.0f);
+      const float dmg_g = dmg_active ? (0.48f * dmg * view_damage * (0.35f + 0.65f * std::clamp(norm_rpm, 0.0f, 1.0f)))
+                                     : 0.0f;
+      const float dmg_p = 0.65f + 0.90f * std::clamp(norm_rpm, 0.0f, 1.2f);
+      const PcmSample* dmg_pcm = samples_[size_t(SfxSoundId::kEngineDamageLoop)];
+      if (dmg_pcm && !dmg_pcm->data.empty()) {
+        mix_loop(damage_voice_, SfxSoundId::kEngineDamageLoop, dmg_g, dmg_p, 0.707f, 0.707f, dmg_bus, frames);
+      } else if (dmg_active || damage_voice_.gain > 1e-4f) {
+        // Real-time procedural rod-knock + metallic rattle fallback when Damage.fev bank is absent.
+        constexpr double kTwoPi = 6.283185307179586;
+        const double crank_hz = std::clamp(double(st.rpm) / 60.0 * 0.5, 8.0, 140.0);
+        const double inv_rate = 1.0 / double(rate_);
+        for (int f = 0; f < frames; ++f) {
+          damage_voice_.gain += (dmg_g - damage_voice_.gain) * smooth_;
+          damage_synth_phase_ += kTwoPi * crank_hz * inv_rate;
+          if (damage_synth_phase_ > kTwoPi) damage_synth_phase_ -= kTwoPi;
+          damage_synth_rng_ ^= damage_synth_rng_ << 13;
+          damage_synth_rng_ ^= damage_synth_rng_ >> 17;
+          damage_synth_rng_ ^= damage_synth_rng_ << 5;
+          const float noise = float(int32_t(damage_synth_rng_)) * (1.0f / 2147483648.0f);
+          damage_synth_lp_ += (noise - damage_synth_lp_) * 0.22f;
+          const float knock = std::pow(std::max(0.0f, std::sin(float(damage_synth_phase_))), 6.0f);
+          const float sig = (0.65f * knock * std::sin(float(damage_synth_phase_ * 7.0)) +
+                             0.35f * (noise - damage_synth_lp_) * (0.4f + 0.6f * knock)) *
+                            damage_voice_.gain;
+          dmg_bus[2 * f] += sig * 0.707f;
+          dmg_bus[2 * f + 1] += sig * 0.707f;
+        }
+      }
+      if (dmg_active && dmg > 0.30f) {
+        misfire_timer_s_ -= dt;
+        if (misfire_timer_s_ <= 0.0) {
+          const double cadence = std::clamp(1.15 - 0.85 * double(dmg), 0.18, 1.15);
+          misfire_timer_s_ = cadence * (0.6 + 0.8 * std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
+          const Bus dbus = bus_id_or(Bus::kEngineDamage, Bus::kEngine);
+          const float mpitch = 0.88f + 0.24f * float(std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
+          spawn_one_shot(resolve_fallback(SfxSoundId::kEngineMisfire, SfxSoundId::kEngineDamageLoop), dbus,
+                         0.55f * dmg * view_damage, 0.707f, 0.707f, mpitch);
+        }
+      }
+    }
+
+    // Distinct off-throttle overrun <Burble> crackles vs shift/decel <Backfire> pops (Bus::kBackfire).
     if (bus_or(Bus::kBackfire, Bus::kEngine)) {
       const int bf_lv = std::clamp(st.backfire_level, 0, 3);
-      if (bf_lv > 0 && st.throttle < 0.05f && !st.is_electric) {
+      const Bus bbus = bus_id_or(Bus::kBackfire, Bus::kEngine);
+      auto pick_from_pool = [&](const SfxSoundId (&pool)[4], SfxSoundId fallback) -> SfxSoundId {
+        SfxSoundId avail[4];
+        int navail = 0;
+        for (SfxSoundId bid : pool) {
+          const auto* s = samples_[size_t(bid)];
+          if (s && !s->data.empty()) avail[navail++] = bid;
+        }
+        return navail > 0 ? avail[std::uniform_int_distribution<int>(0, navail - 1)(rng_)] : fallback;
+      };
+      static constexpr SfxSoundId kBackfirePool[4] = {SfxSoundId::kBackfirePop, SfxSoundId::kBackfirePop1,
+                                                      SfxSoundId::kBackfirePop2, SfxSoundId::kBackfirePop3};
+      static constexpr SfxSoundId kBurblePool[4] = {SfxSoundId::kBurblePop0, SfxSoundId::kBurblePop1,
+                                                    SfxSoundId::kBurblePop2, SfxSoundId::kBurblePop3};
+      const float bf_scale = safe_clamp_f(st.backfire_vol_scale, 0.0f, 2.5f, 1.0f) * view_backfire;
+      const float bu_scale = safe_clamp_f(st.burble_vol_scale, 0.0f, 2.5f, 1.0f) * view_backfire;
+
+      if (bf_lv > 0 && !st.is_electric) {
         const auto& lv = backfire_cfg_.levels[size_t(bf_lv)];
-        if (norm_rpm >= float(lv.min_norm_rpm) && norm_rpm <= float(lv.max_norm_rpm) && lv.max_time_ms > 0.0) {
-          backfire_timer_ms_ -= dt * 1000.0;
-          if (backfire_timer_ms_ <= 0.0) {
-            std::uniform_real_distribution<double> tdist(std::max(50.0, lv.min_time_ms),
-                                                         std::max(lv.min_time_ms + 10.0, lv.max_time_ms));
-            backfire_timer_ms_ = tdist(rng_);
-            std::uniform_real_distribution<double> sdist(0.0, 100.0);
-            if (sdist(rng_) >= lv.silence_weighting) {
-              static constexpr SfxSoundId kBurbles[4] = {SfxSoundId::kBackfirePop, SfxSoundId::kBackfirePop1,
-                                                         SfxSoundId::kBackfirePop2, SfxSoundId::kBackfirePop3};
-              SfxSoundId avail[4];
-              int navail = 0;
-              for (SfxSoundId bid : kBurbles) {
-                const auto* s = samples_[size_t(bid)];
-                if (s && !s->data.empty()) avail[navail++] = bid;
+        // Shift / hard throttle lift-off <Backfire> pop.
+        if ((shift_rising && norm_rpm >= 0.42f) || (hard_liftoff && norm_rpm >= 0.48f)) {
+          const SfxSoundId pop_id = pick_from_pool(kBackfirePool, SfxSoundId::kBackfirePop);
+          const float bg =
+              0.68f * bf_scale * float(lv.volume.present ? lv.volume.eval({norm_rpm, 0, 0, 1}) : 0.8);
+          const float bpitch = 0.90f + 0.18f * float(std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
+          spawn_one_shot(pop_id, bbus, bg, 0.707f, 0.707f, bpitch);
+          spawn_one_shot(SfxSoundId::kBackfireLfe, bbus, bg * 0.70f, 0.707f, 0.707f);
+          backfire_count_.fetch_add(1, std::memory_order_relaxed);
+          if (focus_engine) focus_engine->trigger_expander();
+        }
+
+        // Off-throttle overrun <Burble> crackle (lighter, faster cadence) & decel <Backfire> bangs.
+        if (st.throttle < 0.05f) {
+          const float bu_min_rpm = std::clamp(st.burble_min_norm_rpm, 0.05f, 0.95f);
+          const float bu_max_rpm = std::clamp(st.burble_max_norm_rpm, bu_min_rpm + 0.05f, 1.25f);
+          if (norm_rpm >= bu_min_rpm && norm_rpm <= bu_max_rpm) {
+            burble_timer_ms_ -= dt * 1000.0;
+            if (burble_timer_ms_ <= 0.0) {
+              const double min_ms = std::max(40.0, double(st.burble_min_time_ms));
+              const double max_ms = std::max(min_ms + 15.0, double(st.burble_max_time_ms));
+              burble_timer_ms_ = std::uniform_real_distribution<double>(min_ms, max_ms)(rng_);
+              if (std::uniform_real_distribution<double>(0.0, 100.0)(rng_) >= double(st.burble_silence_weight)) {
+                const SfxSoundId bu_id =
+                    pick_from_pool(kBurblePool, pick_from_pool(kBackfirePool, SfxSoundId::kBackfirePop));
+                const float bug = 0.36f * bu_scale * std::clamp(norm_rpm, 0.25f, 1.0f);
+                const float bup = 0.96f + 0.22f * float(std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
+                spawn_one_shot(bu_id, bbus, bug, 0.707f, 0.707f, bup);
+                burble_count_.fetch_add(1, std::memory_order_relaxed);
               }
-              const SfxSoundId pop_id =
-                  navail > 0 ? avail[std::uniform_int_distribution<int>(0, navail - 1)(rng_)] : SfxSoundId::kBackfirePop;
-              const float bf_scale = safe_clamp_f(st.backfire_vol_scale, 0.0f, 2.5f, 1.0f);
-              const float bg =
-                  0.60f * bf_scale * float(lv.volume.present ? lv.volume.eval({norm_rpm, 0, 0, 1}) : 0.7);
-              const float bpitch = 0.92f + 0.16f * float(std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
-              const Bus bbus = bus_id_or(Bus::kBackfire, Bus::kEngine);
-              spawn_one_shot(pop_id, bbus, bg, 0.707f, 0.707f, bpitch);
-              spawn_one_shot(SfxSoundId::kBackfireLfe, bbus, bg * 0.65f, 0.707f, 0.707f);
-              backfire_count_.fetch_add(1, std::memory_order_relaxed);
-              if (focus_engine) focus_engine->trigger_expander();
+            }
+          }
+          if (norm_rpm >= float(lv.min_norm_rpm) && norm_rpm <= float(lv.max_norm_rpm) && lv.max_time_ms > 0.0) {
+            backfire_timer_ms_ -= dt * 1000.0;
+            if (backfire_timer_ms_ <= 0.0) {
+              std::uniform_real_distribution<double> tdist(std::max(50.0, lv.min_time_ms),
+                                                           std::max(lv.min_time_ms + 10.0, lv.max_time_ms));
+              backfire_timer_ms_ = tdist(rng_);
+              std::uniform_real_distribution<double> sdist(0.0, 100.0);
+              if (sdist(rng_) >= lv.silence_weighting) {
+                const SfxSoundId pop_id = pick_from_pool(kBackfirePool, SfxSoundId::kBackfirePop);
+                const float bg =
+                    0.60f * bf_scale * float(lv.volume.present ? lv.volume.eval({norm_rpm, 0, 0, 1}) : 0.7);
+                const float bpitch = 0.92f + 0.16f * float(std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
+                spawn_one_shot(pop_id, bbus, bg, 0.707f, 0.707f, bpitch);
+                spawn_one_shot(SfxSoundId::kBackfireLfe, bbus, bg * 0.65f, 0.707f, 0.707f);
+                backfire_count_.fetch_add(1, std::memory_order_relaxed);
+                if (focus_engine) focus_engine->trigger_expander();
+              }
             }
           }
         }
       }
+      prev_throttle_ = st.throttle;
     }
 
     // ActiveAero.fev wing / airbrake deployment servo cue (Bus::kWind).
     if (std::fabs(st.active_aero_deploy - prev_active_aero_) > 0.25f && (time_s_ - aero_cooldown_s_) > 0.6) {
       aero_cooldown_s_ = time_s_;
-      const float ag = 0.36f * std::clamp(st.speed_mph / 110.0f, 0.35f, 1.0f);
+      const float ag = 0.36f * std::clamp(st.speed_mph / 110.0f, 0.35f, 1.0f) * view_wind;
       const float ap = st.active_aero_deploy > prev_active_aero_ ? 1.05f : 0.88f;
       spawn_one_shot(SfxSoundId::kActiveAero, bus_id_or(Bus::kWind, Bus::kEngine), ag, 0.707f, 0.707f, ap);
       prev_active_aero_ = st.active_aero_deploy;
@@ -1957,7 +2444,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       const float prox = std::clamp(st.reflection_proximity, 0.0f, 1.0f);
       const float refl_g = (prox > 0.05f && st.speed_mph > 15.0f)
                                ? 0.26f * prox * std::clamp((st.speed_mph - 15.0f) / 95.0f, 0.0f, 1.0f) *
-                                     (0.45f + 0.55f * std::clamp(st.throttle, 0.0f, 1.0f))
+                                     (0.45f + 0.55f * std::clamp(st.throttle, 0.0f, 1.0f)) * view_amb
                                : 0.0f;
       const float refl_p = 0.75f + 0.55f * std::clamp(st.speed_mph / 120.0f, 0.0f, 1.1f);
       mix_loop(reflection_voice_, SfxSoundId::kRoadsideReflection, refl_g, refl_p, 0.707f, 0.707f, refl_bus, frames);
@@ -1966,7 +2453,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
 
   // 3b. Continuous wall/car Scrape3D loop (Bus::kCollision -> fallback Bus::kAmbience) & Mulligan Rewind tape loop (Bus::kUi).
   if (float* col_bus = buses[int(Bus::kCollision)] ? buses[int(Bus::kCollision)] : buses[int(Bus::kAmbience)]) {
-    const float sc_g = st.scraping ? std::clamp(st.scrape_intensity, 0.15f, 1.0f) * 0.55f : 0.0f;
+    const float sc_g = st.scraping ? std::clamp(st.scrape_intensity, 0.15f, 1.0f) * 0.55f * view_amb : 0.0f;
     const float sc_p = 0.75f + 0.45f * std::clamp(st.speed_mph / 80.0f, 0.0f, 1.0f);
     mix_loop(scrape_voice_, SfxSoundId::kScrapeLoop, sc_g, sc_p, 0.707f, 0.707f, col_bus, frames);
   }
@@ -1974,7 +2461,10 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
     const float rw_g = st.rewinding ? 0.55f : 0.0f;
     mix_loop(rewind_voice_, SfxSoundId::kRewindLoop, rw_g, 1.0f, 0.707f, 0.707f, ui_bus, frames);
   }
-  if (float* amb_bus = buses[int(Bus::kAmbience)]) {
+  // Hub / Homespace ambience (Autoshow/Paintshop/Workshop) routes to Bus::kHomespaceAmbience
+  // (fallback Bus::kAmbience) so hub ambience is not erroneously ducked by -6 dB in UIExterior.
+  if (float* hub_bus =
+          buses[int(Bus::kHomespaceAmbience)] ? buses[int(Bus::kHomespaceAmbience)] : buses[int(Bus::kAmbience)]) {
     SfxSoundId hub_id = SfxSoundId::kHubAmbAutoshow;
     float hub_g = 0.0f;
     if (st.hub_ambience == 1) {
@@ -1987,7 +2477,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       hub_id = SfxSoundId::kHubAmbWorkshop;
       hub_g = 0.24f;
     }
-    mix_loop(hub_amb_voice_, hub_id, hub_g, 1.0f, 0.707f, 0.707f, amb_bus, frames);
+    mix_loop(hub_amb_voice_, hub_id, hub_g, 1.0f, 0.707f, 0.707f, hub_bus, frames);
   }
 
   // 4. 3D spatialized AI opponent (up to 4 distinct banks) & traffic car engines + near-miss Whoosh3D (Bus::kOtherCars)
@@ -2020,7 +2510,8 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       const SfxSoundId sid =
           car.is_traffic ? SfxSoundId::kTrafficCarLoop
                          : resolve_fallback(kOppBanks[car.variant & 3u], SfxSoundId::kOtherCarLoop);
-      mix_loop(other_voices_[size_t(i)], sid, 0.55f * atten, base_pitch * doppler, pl, pr, other_bus, frames);
+      mix_loop(other_voices_[size_t(i)], sid, 0.55f * atten * view_other, base_pitch * doppler, pl, pr, other_bus,
+               frames);
 
       // LOD2 3D tyre roll & cornering skid layer for nearby AI & traffic cars (Tires.fev).
       if (dist < 65.0f && car.speed_mph > 12.0f) {
@@ -2029,7 +2520,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
         const float slip_amt = safe_clamp_f(car.slip, 0.0f, 1.0f, 0.0f);
         const bool skidding = slip_amt > 0.35f;
         const SfxSoundId t_sid = skidding ? SfxSoundId::kTireSkidOnRoad : SfxSoundId::kTireRollOnRoad;
-        const float t_gain = (skidding ? (0.30f * slip_amt) : (0.16f * roll_amt)) * tire_atten;
+        const float t_gain = (skidding ? (0.30f * slip_amt) : (0.16f * roll_amt)) * tire_atten * view_other;
         const float t_pitch = std::clamp((0.72f + 0.55f * roll_amt) * doppler, 0.45f, 2.1f);
         mix_loop(other_tire_voices_[size_t(i)], t_sid, t_gain, t_pitch, pl, pr, other_bus, frames);
       } else {
@@ -2043,7 +2534,8 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       const float rel_speed = std::sqrt(rvx * rvx + rvy * rvy + rvz * rvz);
       if (dist < 10.0f && rel_speed > 20.0f && (time_s_ - whoosh_cooldown_s_[size_t(i)]) > 1.5) {
         whoosh_cooldown_s_[size_t(i)] = time_s_;
-        const float wg = 0.55f * std::clamp(rel_speed / 50.0f, 0.3f, 1.0f) * std::clamp(1.0f - dist / 12.0f, 0.2f, 1.0f);
+        const float wg = 0.55f * std::clamp(rel_speed / 50.0f, 0.3f, 1.0f) * std::clamp(1.0f - dist / 12.0f, 0.2f, 1.0f) *
+                         view_other;
         spawn_one_shot(SfxSoundId::kWhoosh3d, Bus::kOtherCars, wg, pl, pr, std::clamp(doppler, 0.75f, 1.35f));
       }
     }
@@ -2065,12 +2557,12 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
           0.12f * std::clamp(st.showcase.pitch, -0.5f, 0.8f);
       const float speed_mod = 0.85f + 0.30f * std::clamp(st.showcase.speed_mps / 80.0f, 0.0f, 1.2f);
       const float target_pitch = std::clamp(speed_mod * maneuver_mod * doppler, 0.45f, 2.2f);
-      const float target_gain = 0.72f * atten;
+      const float target_gain = 0.72f * atten * view_other;
 
       SfxSoundId sid = SfxSoundId::kShowcaseP51;
       switch (st.showcase.kind) {
         case 1: sid = SfxSoundId::kShowcaseBalloon; break;
-        case 2: sid = resolve_fallback(SfxSoundId::kShowcaseJet, SfxSoundId::kShowcaseP51); break;
+        case 2: sid = SfxSoundId::kShowcaseJet; break;  // Never alias Jet onto P-51 propeller audio
         case 3: sid = resolve_fallback(SfxSoundId::kShowcaseBiplane, SfxSoundId::kShowcaseP51); break;
         case 4: sid = resolve_fallback(SfxSoundId::kShowcaseHeli, SfxSoundId::kShowcaseP51); break;
         default: sid = SfxSoundId::kShowcaseP51; break;

@@ -177,7 +177,7 @@ std::optional<AchievementProgress> eval_condition(uint16_t id, const Achievement
     case 179: return counter(s.wristbands_earned, 5);
     case 180: return counter(s.wristbands_earned, 6);
     case 181: return counter(s.wristbands_earned, 7);
-    case 182: return counter(s.wristbands_earned, 7);
+    case 182: should_unlock = s.finale_complete; return std::nullopt;
     case 183: return counter(s.festival_races_won, 10);
     case 184: return counter(s.street_races_won, 10);
     case 185: return counter(s.num_victories, 50);
@@ -197,9 +197,9 @@ std::optional<AchievementProgress> eval_condition(uint16_t id, const Achievement
     case 208: return counter(s.rally_stages_done, 10);
     case 209: return counter(s.rally_victories, 3);
     case 210: return counter(s.rally_victories, 7);
-    case 211: return counter(s.rally_level, 5);
+    case 211: return counter(s.rally_stages_done, 4);
     case 214: return counter(s.rally_stages_done, 28);
-    case 215: return counter(s.rally_level, 10);
+    case 215: return counter((s.rally_level >= 1 || s.rally_victories >= 7) ? 1 : 0, 1);
     // 1000 Club (216-225)
     case 216: return counter(s.club_medals_total, 1);
     case 217: return counter(s.club_ferrari_cars, 14);
@@ -268,6 +268,7 @@ AchievementGameplayState AchievementGameplayState::from_drive_save(const drive::
                                                                    int roads_discovered_count, int race_encounters) {
   AchievementGameplayState st;
   st.career_started = save.career_started;
+  st.finale_complete = save.finale_complete;
   if (save.collected_wristband >= 0) {
     st.wristbands_earned = std::clamp(save.collected_wristband + 1, 0, 7);
   } else if (save.wristband_points > 0) {

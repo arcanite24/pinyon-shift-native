@@ -8,9 +8,11 @@ namespace audio {
 
 namespace {
 const char* const kBusNames[kBuses] = {
-    "Engine",       "OtherCars", "Tyres",      "Wind",        "Ambience", "Music",   "UI",
-    "VO",           "Transmission", "Supercharger", "Turbo",  "EngineDamage", "Backfire",
-    "Suspension",   "Collision", "SatNav",     "RallyCoDriver",
+    "Engine",         "OtherCars",      "Tyres",          "Wind",
+    "Ambience",       "Music",          "UI",             "VO",
+    "Transmission",   "Supercharger",   "Turbo",          "EngineDamage",
+    "Backfire",       "Suspension",     "Collision",      "SatNav",
+    "RallyCoDriver",  "HomespaceMusic", "MenuMusic",      "HomespaceAmbience",
 };
 
 bool ieq(std::string_view a, std::string_view b) {
@@ -30,6 +32,24 @@ bool bus_from_name(std::string_view name, Bus& out) {
       return true;
     }
   return false;
+}
+
+Bus bus_parent(Bus b) {
+  switch (b) {
+    case Bus::kTransmission:
+    case Bus::kSupercharger:
+    case Bus::kTurbo:
+    case Bus::kEngineDamage:
+    case Bus::kBackfire: return Bus::kEngine;
+    case Bus::kSuspension: return Bus::kTyres;
+    case Bus::kCollision:
+    case Bus::kHomespaceAmbience: return Bus::kAmbience;
+    case Bus::kHomespaceMusic:
+    case Bus::kMenuMusic: return Bus::kMusic;
+    case Bus::kSatNav:
+    case Bus::kRallyCoDriver: return Bus::kVo;
+    default: return b;
+  }
 }
 
 // ---------------------------------------------------------------- snapshots
@@ -71,7 +91,8 @@ float SnapshotMixer::level(Bus b) const {
 }
 
 void SnapshotMixer::add_defaults() {
-  auto make = [&](const char* name, float world, float music, float vo, float fade, float back) {
+  auto make = [&](const char* name, float world, float music, float homespace_music, float menu_music,
+                  float homespace_amb, float vo, float fade, float back) {
     Snapshot s;
     s.name = name;
     for (Bus b : {Bus::kEngine, Bus::kOtherCars, Bus::kTyres, Bus::kWind, Bus::kAmbience, Bus::kTransmission,
@@ -79,6 +100,9 @@ void SnapshotMixer::add_defaults() {
                   Bus::kCollision})
       s.dest[size_t(b)] = world;
     s.dest[size_t(Bus::kMusic)] = music;
+    s.dest[size_t(Bus::kHomespaceMusic)] = homespace_music;
+    s.dest[size_t(Bus::kMenuMusic)] = menu_music;
+    s.dest[size_t(Bus::kHomespaceAmbience)] = homespace_amb;
     s.dest[size_t(Bus::kVo)] = vo;
     s.dest[size_t(Bus::kSatNav)] = vo;
     s.dest[size_t(Bus::kRallyCoDriver)] = vo;
@@ -86,11 +110,11 @@ void SnapshotMixer::add_defaults() {
     s.return_fade = back;
     add(std::move(s));
   };
-  //            world music vo   fade  back
-  make("Paused", 0.0f, 0.25f, 0.5f, 0.15f, 0.3f);   // the pause fix: the world drops out, the music dips
-  make("Menu", 0.0f, 0.0f, 0.5f, 0.1f, 0.3f);       // a menu or page over the drive
-  make("Title", 0.0f, 0.0f, 1.0f, 0.1f, 0.5f);      // the title screen
-  make("Loading", 0.0f, 0.25f, 1.0f, 0.1f, 0.5f);   // spec: loading lowers the music
+  //            world music hmus  mmus  hamb  vo    fade   back
+  make("Paused",  0.0f, 0.25f, 0.25f, 1.0f, 0.0f, 0.5f, 0.15f, 0.3f);  // the pause fix: world drops out, music dips
+  make("Menu",    0.0f, 0.0f,  1.0f,  1.0f, 1.0f, 0.5f, 0.1f,  0.3f);  // menu/hub over the drive (keeps hub/menu music)
+  make("Title",   0.0f, 0.0f,  0.0f,  1.0f, 0.0f, 1.0f, 0.1f,  0.5f);  // title screen keeps MenuMusic at full level
+  make("Loading", 0.0f, 0.25f, 0.25f, 1.0f, 0.0f, 1.0f, 0.1f,  0.5f);  // loading lowers game music, keeps MenuMusic
 }
 
 // ------------------------------------------------------------------- master
@@ -147,6 +171,19 @@ void MasterStage::process(float* io, int frames) {
 void Mixer::prepare(int rate) {
   rate_ = std::max(8000, rate);
   stage_.prepare(rate_);
+}
+
+void Mixer::set_bus_level(Bus b, float level) {
+  const int bi = int(b);
+  if (bi < 0 || bi >= kBuses) return;
+  const float clamped = level < 0.0f ? 0.0f : level;
+  user_[size_t(bi)] = clamped;
+  // Propagate top-level UI mix sliders to all child sub-buses.
+  if (bi < kUiSliderBuses) {
+    for (int sub = kUiSliderBuses; sub < kBuses; ++sub) {
+      if (bus_parent(Bus(sub)) == b) user_[size_t(sub)] = clamped;
+    }
+  }
 }
 
 void Mixer::mix(const float* const* bus, int frames, float* out) {

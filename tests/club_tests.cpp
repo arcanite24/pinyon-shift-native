@@ -228,6 +228,51 @@ int main() {
     }
     CHECK(passed && run.failures() == 1 && crashes == 1);
   }
+  // R2-5: Symmetric a_to_b start_loc uses a.inside() (multi-transform start location starts from 2nd transform too!).
+  {
+    Locations multi_locs;
+    std::string merr;
+    const char* kMultiStartLocs =
+        "<NamedTransforms>\n"
+        "  <NamedTransform name='multi_start'>"
+        "    <Transform pos.x='0' pos.y='0' pos.z='0' radius='10'/>"
+        "    <Transform pos.x='500' pos.y='0' pos.z='500' radius='15'/>"
+        "  </NamedTransform>\n"
+        "  <NamedTransform name='goal'>"
+        "    <Transform pos.x='600' pos.y='0' pos.z='500' radius='15'/>"
+        "  </NamedTransform>\n"
+        "</NamedTransforms>\n";
+    CHECK(parse_named_transforms(kMultiStartLocs, multi_locs, &merr));
+    const char* kSymXml = R"(<car_challenges>
+      <display title="IDS_SYM_TRIP" description="IDS_SymTrip"/>
+      <a_to_b start_loc="multi_start" end_loc="goal">
+        <fail_when><timer is="more_equal" value="60"/></fail_when>
+      </a_to_b>
+    </car_challenges>)";
+    std::vector<Challenge> sym_cs;
+    CHECK(parse_challenges(kSymXml, sym_cs, &merr) && sym_cs.size() == 1);
+    if (sym_cs.size() == 1) {
+      Run run(sym_cs[0], multi_locs);
+      Signal s;
+      // Enter the SECOND transform of multi_start (500, 500), never visiting the first (0, 0).
+      s.time = 1.0;
+      s.x = 505.0;
+      s.z = 500.0;
+      CHECK(!run.step(s));
+      // Leave the second transform -> trip starts!
+      s.time = 2.0;
+      s.x = 530.0;
+      s.z = 500.0;
+      CHECK(!run.step(s));
+      CHECK(run.under_way(s));
+      // Arrive at goal (600, 500) -> trip passes!
+      s.time = 5.0;
+      s.x = 600.0;
+      s.z = 500.0;
+      CHECK(run.step(s));
+      CHECK(run.passed());
+    }
+  }
   // Long jump sequence.
   {
     Run run(cs[2], locs);

@@ -151,6 +151,10 @@ class StationSchedule {
   bool queue_special_dialogue(std::string_view gameplay_event);
   bool trigger_immediate_dialogue(std::string_view gameplay_event, double now_clock);
   bool queue_festival_update(std::string_view gameplay_event);
+  // Locks playback to an explicit ordered track list (e.g. Viper intro 2-track drive).
+  void set_locked_playlist(std::vector<int> track_indices, double now_clock);
+  void clear_locked_playlist();
+  bool has_locked_playlist() const { return !locked_tracks_.empty(); }
 
  private:
   void extend();  // schedules the ident, the next track and a DJ line
@@ -162,6 +166,8 @@ class StationSchedule {
   bool use_dj_ = true;
   double tod_hour_ = 12.0;
   int tracks_since_dj_ = 0;
+  std::vector<int> locked_tracks_;
+  size_t locked_cursor_ = 0;
   std::deque<int> pending_special_;   // vo clip indices
   std::deque<int> pending_festival_;  // vo clip indices
   std::deque<RadioEvent> events_;
@@ -197,6 +203,12 @@ class Radio {
   bool trigger_special_dialogue(std::string_view gameplay_event);
   bool trigger_immediate_dialogue(std::string_view gameplay_event);
   bool trigger_festival_update(std::string_view gameplay_event);
+  // Locks Radio to the Viper opening drive 2-track Bass Arena playlist
+  // ("Levels (Skrillex Remix)" -> "Language"), preventing D-pad station changes until unlocked.
+  bool lock_viper_intro_playlist();
+  bool lock_viper_intro_playlist(int station, std::vector<int> track_indices);
+  void unlock_viper_intro_playlist();
+  bool viper_intro_locked() const { return viper_intro_locked_; }
   double location_clock() const { return location_clock_; }
   // Advances the clock (while on, or with `run`: a station still fading
   // out) and the popup by `dt` seconds of output.
@@ -217,6 +229,7 @@ class Radio {
   std::vector<std::unique_ptr<StationSchedule>> schedules_;
   int pos_ = 0;
   bool dj_enabled_ = true;
+  bool viper_intro_locked_ = false;
   double clock_ = 0;
   double location_clock_ = 0;
   double since_festival_update_s_ = 0;
@@ -229,6 +242,10 @@ class Radio {
   uint64_t seen_track_ = ~0ull;  // the selected station's track last seen
   bool last_change_was_user_ = true;
 };
+
+// Returns canonical Colorado 3D radio bleed emitters: Festival stages, Autoshow,
+// Workshop, Paintshop, Street Race Hubs (Carson, Gladstone, Red Rock), and Outposts.
+std::vector<LocationRadioEmitter> default_colorado_location_emitters(const Radio& radio);
 
 // Plays a Radio: decodes the selected station's clips on a background
 // StreamPool worker (MPEG frames, padding dropped, dr_mp3), resampled to the
@@ -253,6 +270,8 @@ class RadioPlayer {
 
   // 3D location station emitters (Radio5_3d_PreRace..Radio9_3d_Streetrace).
   void set_location_emitters(std::vector<LocationRadioEmitter> emitters);
+  void add_location_emitter(LocationRadioEmitter emitter);
+  const std::vector<LocationRadioEmitter>& location_emitters() const { return emitters_; }
   void set_listener(std::array<float, 3> pos, float heading_rad);
   // Renders active 3D location stations near the listener into `out` (additive).
   void render_location_stations(float* out, int frames);
@@ -274,6 +293,7 @@ class RadioPlayer {
   bool dj_speaking_ = false;
   bool festival_update_playing_ = false;
   std::vector<LocationRadioEmitter> emitters_;
+  std::vector<float> emitter_gain_;
   std::array<float, 3> listener_pos_{};
   float listener_heading_ = 0.0f;
   std::vector<RadioEvent> scratch_;

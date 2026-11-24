@@ -477,6 +477,40 @@ void stream_pool_wav() {
   fs::remove(wav, ec);
 }
 
+void viper_intro_lock_and_emitters(const audio::RadioData& d) {
+  audio::Radio r(d, 123, true);
+  r.select(1);  // Beta has 2 valid tracks (0 and 1)
+  CHECK(!r.viper_intro_locked());
+  CHECK(r.lock_viper_intro_playlist(1, {0, 1}));
+  CHECK(r.viper_intro_locked());
+  CHECK(r.selected() == 1);
+
+  // While Viper intro playlist is locked, D-pad press cannot switch away.
+  r.press(1);
+  CHECK(r.selected() == 1);
+
+  // Scheduled music tracks on the locked station come exclusively from the 2-track subset.
+  std::vector<audio::RadioEvent> ev;
+  r.schedule(1)->audible(0.0, 500.0, ev);
+  int track_events = 0;
+  for (const auto& e : ev) {
+    if (e.kind == audio::RadioKind::kTrack) {
+      ++track_events;
+      CHECK(e.track == 0 || e.track == 1);
+    }
+  }
+  CHECK(track_events >= 2);
+
+  // Unlocking restores normal station switching.
+  r.unlock_viper_intro_playlist();
+  CHECK(!r.viper_intro_locked());
+  r.press(1);
+  CHECK(r.selected() != 1);
+
+  // Synthetic RadioData without 3D stations produces empty default_colorado_location_emitters.
+  CHECK(audio::default_colorado_location_emitters(r).empty());
+}
+
 }  // namespace
 
 int main() {
@@ -495,6 +529,7 @@ int main() {
   dj_and_station_lookup(d);
   mods_and_language();
   stream_pool_wav();
+  viper_intro_lock_and_emitters(d);
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) disc(root);
   else std::printf("SHIFT_GAME_ROOT not set: disc checks skipped\n");
   if (failures) std::printf("%d failure(s)\n", failures);

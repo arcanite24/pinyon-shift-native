@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -107,7 +108,7 @@ class AudioEngine {
   bool load_rally_vo(const std::filesystem::path& rally_root_or_state_root, std::string_view language = "EN",
                      std::string* note = nullptr);
   void reload_sfx_burble(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
-                         const std::string& burble_bank);
+                         const std::string& burble_bank, int burble_count = 0, int backfire_count = 0);
   // Attaches `radio` (caller keeps `RadioData` and `Radio` alive until
   // AudioEngine is stopped/destroyed or detached with nullptr) and its player.
   void set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player);
@@ -126,15 +127,18 @@ class AudioEngine {
   void set_satnav_enabled(bool on);
   void trigger_vo(std::string_view trigger_id, bool interrupt = false);
   void skip_vo();
-  void trigger_codriver(std::string_view cue_path);
+  void set_dialog_ducking(bool active);
+  void trigger_codriver(std::string_view cue_path, bool supersede = false);
   void clear_codriver();
 
   // Mixer controls (Sound Mix 0..2 per bus, master volume/mute, compressor).
   void set_bus_level(Bus b, float level);
+  float bus_level(Bus b) const;
   void set_master_volume(float volume);
   void set_mute(bool mute);
   void set_full_dynamic_range(bool on);
-  // Selects Home Theater (false, default 0.25 ratio) vs TV (true, 0.15 ratio) compressor profile.
+  // Selects playback speaker curve (HomeTheater, TV, Headphones, CarAudio, FullDynamicRange).
+  void set_playback_system(PlaybackSystem sys);
   void set_playback_system(bool tv_profile);
   // Built-in snapshot ids ("Paused", "Menu", "Title", "Loading"), or any
   // snapshot registered before start().
@@ -175,6 +179,7 @@ class AudioEngine {
   void radio_trigger_special(std::string_view gameplay_event);
   void radio_trigger_immediate(std::string_view gameplay_event);
   void radio_trigger_festival_update(std::string_view gameplay_event);
+  void radio_lock_viper_intro(bool lock);
 
   // Runtime custom radio commands.
   void runtime_radio_select(int station);
@@ -246,6 +251,8 @@ class AudioEngine {
       kUiMusicMode,
       kRadioRallyMode,
       kRallyWorld,
+      kDialogDuck,
+      kRadioViperLock,
     };
     Kind kind = kBusLevel;
     int i0 = 0;
@@ -277,6 +284,7 @@ class AudioEngine {
   int rate_ = 48000;
   Mixer mixer_;
   int snap_title_ = -1;
+  int snap_dialog_duck_ = -1;
 
   bool use_matrix_ = false;
   SnapshotMatrix matrix_;
@@ -284,19 +292,23 @@ class AudioEngine {
   std::array<CarBusEq, 9> car_eqs_;
   MasterRmsStage rms_stage_;
   std::array<float, kBuses> matrix_bus_smooth_{};
+  std::array<std::atomic<float>, kBuses> bus_levels_shadow_{};
   float matrix_master_smooth_ = 1.0f;
   float matrix_mute_smooth_ = 1.0f;
   bool last_dj_speaking_ = false;
   bool last_festival_update_ = false;
   bool last_satnav_playing_ = false;
   bool last_vo_playing_ = false;
+  bool dialog_duck_requested_ = false;
   bool last_in_tunnel_ = false;
-  std::string last_ambience_snap_;
+  std::array<char, 48> last_ambience_snap_{};
   bool satnav_enabled_ = true;
 
   // Owned/used exclusively by the audio thread while running.
   EnginePlayer* engine_ = nullptr;
   SfxEngine* sfx_ = nullptr;
+  std::mutex sfx_reload_mu_;
+  SfxEngine* sfx_control_ptr_ = nullptr;  // control-thread mirror valid until reclaimed
   SatNavVoPlayer* satnav_ = nullptr;
   CoDriverVoPlayer* codriver_ = nullptr;
   VoPlayer* vo_ = nullptr;
@@ -306,7 +318,7 @@ class AudioEngine {
   UserMusicPlayer* user_music_ = nullptr;
   EnvironmentalReverb reverb_;
   AmbienceBedPlayer ambience_bed_{48000};
-  AcousticsSample last_acoustics_{};
+  RtAcousticsSample last_acoustics_{};
   bool have_acoustics_ = false;
   float tod_hour_ = 12.0f;
 
@@ -350,7 +362,7 @@ class AudioEngine {
 
   TripleBuffer<EnginePlayer::Update> engine_in_;
   TripleBuffer<VehicleAudioState> veh_state_in_;
-  TripleBuffer<AcousticsSample> acoustics_in_;
+  TripleBuffer<RtAcousticsSample> acoustics_in_;
   TripleBuffer<AudioTelemetry> telemetry_buf_;
   SpscQueue<Command> cmds_{512};
   SpscQueue<Retired> retired_{64};

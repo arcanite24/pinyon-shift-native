@@ -16,8 +16,10 @@
 namespace freeroam {
 
 struct FameLevel {
-  int rank = 250;       // 249 down to 1
-  double target = 0.0;  // cumulative popularity points
+  int rank = 250;                    // 249 down to 1
+  double target = 0.0;               // cumulative popularity points
+  std::string dialogue_event;        // Fame.xml dialogueEvent trigger (empty if none)
+  std::string radio_festival_update; // Fame.xml radioFestivalUpdate trigger (empty if none)
 };
 
 struct FameSponsorTier {
@@ -74,6 +76,7 @@ struct SkillsData {
   std::vector<SponsorChallenge> sponsor_challenges;  // all 14 SponsorshipChallenges.xml categories
 
   const SkillConfig* find_skill(std::string_view id) const;
+  const FameLevel* find_fame_level(int rank) const;
   size_t skill_def_count() const { return all_skills.size(); }
 
   // Current popularity rank (250 down to 1) for cumulative `points`.
@@ -133,7 +136,9 @@ struct SkillEvent {
   int multiplier = 1;
   int rank = 250;
   int64_t credits = 0;
-  int grade = 1;          // 1=Standard, 2=Great, 3=Awesome, 4=Ultimate
+  int grade = 1;                     // 1=Standard, 2=Great, 3=Awesome, 4=Ultimate
+  std::string dialogue_event;        // populated on kRankUp from crossed Fame.xml Level
+  std::string radio_festival_update; // populated on kRankUp from crossed Fame.xml Level
 };
 
 struct SkillHudState {

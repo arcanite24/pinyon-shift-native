@@ -7,6 +7,7 @@
 
 #include "audio/xml.h"
 #include "fh1data/archive.h"
+#include "fh1data/stringtables.h"
 
 namespace freeroam {
 namespace {
@@ -56,14 +57,65 @@ bool crossed_gate(double x0, double z0, double x1, double z1, const SpeedGate& g
   return t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0;
 }
 
+std::string resolve_str(const fh1::StringTable* tbl, std::string_view key) {
+  if (!tbl || key.empty()) return {};
+  const auto* u16 = tbl->find(fh1::string_hash(key));
+  if (!u16) return {};
+  return fh1::utf16_to_utf8(*u16);
+}
+
 std::string pretty_speed_name(const std::string& id, bool is_zone) {
-  // Format "speed_camera_01" -> "SPEED TRAP 01", "average_speed_05" -> "SPEED ZONE 05".
+  // Fallback format when List_SpeedCameras.str is absent:
+  // "speed_camera_01" -> "SPEED TRAP 01", "average_speed_05" -> "SPEED ZONE 05".
   std::string num;
   for (size_t i = id.size(); i-- > 0;) {
     if (id[i] >= '0' && id[i] <= '9') num.insert(num.begin(), id[i]);
     else if (!num.empty()) break;
   }
   return (is_zone ? "SPEED ZONE " : "SPEED TRAP ") + (num.empty() ? id : num);
+}
+
+std::string resolve_speed_camera_name(const audio::XmlNode& act, const std::string& id, int scoreboard_id, bool is_zone,
+                                      const fh1::StringTable* camera_strings) {
+  if (camera_strings) {
+    auto try_key = [&](std::string_view key) -> std::string {
+      return key.empty() ? std::string{} : resolve_str(camera_strings, key);
+    };
+    for (const char* attr : {"nameDesc", "prompt", "mapDescription", "description", "displayName", "name_id"}) {
+      if (std::string s = try_key(act.attr(attr)); !s.empty()) return s;
+    }
+    for (const auto& ch : act.children) {
+      for (const char* attr : {"nameDesc", "prompt", "mapDescription", "description", "displayName"}) {
+        if (std::string s = try_key(ch.attr(attr)); !s.empty()) return s;
+      }
+    }
+    if (scoreboard_id > 0) {
+      const std::string sid = std::to_string(scoreboard_id);
+      if (std::string s = try_key("IDS_SpeedCamera_" + sid); !s.empty()) return s;
+      if (is_zone) {
+        if (std::string s = try_key("IDS_AverageSpeed_" + sid); !s.empty()) return s;
+        if (std::string s = try_key("IDS_SpeedZone_" + sid); !s.empty()) return s;
+      } else {
+        if (std::string s = try_key("IDS_SpeedTrap_" + sid); !s.empty()) return s;
+      }
+    }
+    if (std::string s = try_key(id); !s.empty()) return s;
+  }
+  return pretty_speed_name(id, is_zone);
+}
+
+std::string display_label_for(const SpeedTrapDef& t) {
+  return !t.display_name.empty() ? t.display_name : pretty_speed_name(t.id, false);
+}
+
+std::string display_label_for(const SpeedZoneDef& z) {
+  return !z.display_name.empty() ? z.display_name : pretty_speed_name(z.id, true);
+}
+
+bool load_str_from_zip(fh1::Archive& zip, std::string_view entry, fh1::StringTable& out) {
+  auto bytes = zip.read(entry);
+  if (!bytes.ok()) return false;
+  return fh1::parse_string_table(bytes.data, out, nullptr);
 }
 
 }  // namespace
@@ -81,7 +133,8 @@ const SpeedZoneDef* SpeedActivitiesData::find_zone(std::string_view id) const {
 }
 
 bool parse_speed_activities(std::string_view speed_camera_xml, std::string_view average_speed_xml,
-                            std::string_view gameobjs_xml, SpeedActivitiesData& out, std::string* error) {
+                            std::string_view gameobjs_xml, SpeedActivitiesData& out, std::string* error,
+                            const fh1::StringTable* camera_strings) {
   out = SpeedActivitiesData{};
   audio::XmlNode cam_xml, avg_xml, objs_xml;
   std::string why;
@@ -109,6 +162,7 @@ bool parse_speed_activities(std::string_view speed_camera_xml, std::string_view 
     SpeedTrapDef t;
     t.id = id;
     t.scoreboard_id = int(act.number("scoreboard_id", 0));
+    t.display_name = resolve_speed_camera_name(act, id, t.scoreboard_id, false, camera_strings);
     if (const auto* thr = act.child("SpeedThreshold")) t.min_speed_mph = thr->number("minimumSpeed", 30.0);
     t.gate = make_gate(il->second, ir->second);
     out.traps.push_back(std::move(t));
@@ -126,6 +180,7 @@ bool parse_speed_activities(std::string_view speed_camera_xml, std::string_view 
     SpeedZoneDef z;
     z.id = id;
     z.scoreboard_id = int(act.number("scoreboard_id", 0));
+    z.display_name = resolve_speed_camera_name(act, id, z.scoreboard_id, true, camera_strings);
     if (const auto* thr = act.child("SpeedThreshold")) z.min_speed_mph = thr->number("minimumSpeed", 30.0);
     z.gate1 = make_gate(il1->second, ir1->second);
     z.gate2 = make_gate(il2->second, ir2->second);
@@ -152,8 +207,15 @@ bool load_speed_activities(const std::filesystem::path& game_root, SpeedActiviti
   ss << go.rdbuf();
   const std::string objs_str = ss.str();
 
+  // Optional localized speed camera names from EN.zip:List_SpeedCameras.str (matching outposts.cpp).
+  fh1::StringTable cam_str;
+  if (auto en = fh1::Archive::open(game_root / "media" / "stringtables" / "EN.zip", nullptr)) {
+    load_str_from_zip(*en, "List_SpeedCameras.str", cam_str);
+  }
+
   auto sv = [](const std::vector<uint8_t>& d) { return std::string_view(reinterpret_cast<const char*>(d.data()), d.size()); };
-  return parse_speed_activities(sv(cam.data), sv(avg.data), objs_str, out, error);
+  return parse_speed_activities(sv(cam.data), sv(avg.data), objs_str, out, error,
+                                cam_str.keys.empty() ? nullptr : &cam_str);
 }
 
 SpeedActivityTracker::SpeedActivityTracker(const SpeedActivitiesData& data) : data_(data) {}
@@ -213,7 +275,7 @@ std::vector<SpeedActivityEvent> SpeedActivityTracker::step(double dt, double tim
         const bool pb = mph > prev + 0.05;
         if (pb) best_traps_[t.id] = mph;
         banner_is_zone_ = false;
-        banner_title_ = pretty_speed_name(t.id, false);
+        banner_title_ = display_label_for(t);
         banner_speed_ = mph;
         banner_best_ = std::max(prev, mph);
         banner_new_pb_ = pb;
@@ -242,7 +304,7 @@ std::vector<SpeedActivityEvent> SpeedActivityTracker::step(double dt, double tim
       const bool pb = avg_mph >= z.min_speed_mph && avg_mph > prev + 0.05;
       if (pb) best_zones_[z.id] = avg_mph;
       banner_is_zone_ = true;
-      banner_title_ = pretty_speed_name(z.id, true);
+      banner_title_ = display_label_for(z);
       banner_speed_ = avg_mph;
       banner_best_ = std::max(prev, avg_mph);
       banner_new_pb_ = pb;
@@ -253,7 +315,7 @@ std::vector<SpeedActivityEvent> SpeedActivityTracker::step(double dt, double tim
       active_zone_idx_ = -1;
       entry_gate_ = 0;
     } else if (zone_slow_t_ > 4.0 || zone_elapsed_ > 90.0 || d_mid > std::max(800.0, span * 1.5)) {
-      out.push_back({SpeedActivityEvent::kZoneCancelled, z.id, pretty_speed_name(z.id, true), 0.0, 0.0, false, false});
+      out.push_back({SpeedActivityEvent::kZoneCancelled, z.id, display_label_for(z), 0.0, 0.0, false, false});
       active_zone_idx_ = -1;
       entry_gate_ = 0;
     }
@@ -276,7 +338,7 @@ std::vector<SpeedActivityEvent> SpeedActivityTracker::step(double dt, double tim
         zone_dist_ = 0.0;
         zone_slow_t_ = 0.0;
         flash_at_ = time;
-        out.push_back({SpeedActivityEvent::kZoneEntered, z.id, pretty_speed_name(z.id, true), mph,
+        out.push_back({SpeedActivityEvent::kZoneEntered, z.id, display_label_for(z), mph,
                        best_zone_mph(z.id), false, true});
         break;
       }
@@ -290,7 +352,7 @@ SpeedActivityHud SpeedActivityTracker::hud(double time) const {
   SpeedActivityHud h;
   if (active_zone_idx_ >= 0 && size_t(active_zone_idx_) < data_.zones.size()) {
     h.zone_active = true;
-    h.active_zone_id = pretty_speed_name(data_.zones[size_t(active_zone_idx_)].id, true);
+    h.active_zone_id = display_label_for(data_.zones[size_t(active_zone_idx_)]);
     h.zone_elapsed_s = zone_elapsed_;
     h.zone_distance_m = zone_dist_;
     h.live_avg_mph = zone_elapsed_ > 0.05 ? (zone_dist_ / zone_elapsed_) * kMsToMph : 0.0;

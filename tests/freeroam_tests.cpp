@@ -576,6 +576,38 @@ int main() {
     st.award_named("Drift", 3, 3.0);  // Awesome -> increments count to 2 and claims tier 1
     CHECK(st.sponsor_progress().at("test_sponsor").claimed_tiers == 2);
   }
+  // R2-5 parity: Fame.xml dialogueEvent & radioFestivalUpdate propagate onto FameLevel and kRankUp SkillEvent.
+  {
+    const char* kFame = R"(<Fame>
+      <Level rank="249" target="1000" dialogueEvent="FameDialogue249"/>
+      <Level rank="175" target="2000" radioFestivalUpdate="RadioUpdate175"/>
+    </Fame>)";
+    const char* kFeats = R"(<RaceFeats WorldCollisionThreshold="12" CarCollisionThreshold="12" MinSpeedToCancelFeats="10" DelayAfterCancelling="3">
+      <Air><Grade LocString="IDS_Air4" Time="0.2" Fame="2500"/></Air>
+    </RaceFeats>)";
+    const char* kSpon = R"(<SkillChallenges/>)";
+    SkillsData sd;
+    std::string ferr;
+    CHECK(parse_skills_data(kFame, kFeats, kSpon, sd, &ferr));
+    CHECK(sd.find_fame_level(249) != nullptr && sd.find_fame_level(249)->dialogue_event == "FameDialogue249");
+    CHECK(sd.find_fame_level(175) != nullptr && sd.find_fame_level(175)->radio_festival_update == "RadioUpdate175");
+
+    SkillTracker tr(sd, 0.0, 0, 0, 0);
+    tr.award_named("Air", 4, 1.0);
+    SkillInput bank_in;
+    bank_in.dt = 0.1;
+    bank_in.time = 5.0;
+    bank_in.speed_ms = 25.0;
+    bank_in.forward_speed_ms = 25.0;
+    bool got_rank_meta = false;
+    for (const auto& ev : tr.step(bank_in)) {
+      if (ev.kind == SkillEvent::kRankUp && ev.rank == 175 &&
+          ev.dialogue_event == "FameDialogue249" && ev.radio_festival_update == "RadioUpdate175") {
+        got_rank_meta = true;
+      }
+    }
+    CHECK(got_rank_meta);
+  }
   if (failures) return 1;
   std::printf("freeroam_tests: all passed\n");
   return 0;

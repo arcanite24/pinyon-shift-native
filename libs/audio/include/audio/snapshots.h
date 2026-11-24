@@ -242,6 +242,16 @@ struct MasterDspConfig {
 // and soft saturator (SPEC-AUDIO-EVENTS Part 3).
 float master_saturate(float x, float level, float saturation, float gain);
 
+// Speaker/playback output profile governing the master RMS compressor curve
+// derived from AudioEngineConfig.xml.
+enum class PlaybackSystem : uint8_t {
+  kHomeTheater = 0,       // AudioEngineConfig.xml normal profile (ratio 0.25)
+  kTv = 1,                // AudioEngineConfig.xml TV profile (ratio 0.15)
+  kHeadphones = 2,        // Near-field gentle dynamics (wider threshold, gentler ratio)
+  kCarAudio = 3,          // Cabin-tuned dynamics (tighter threshold, slight makeup)
+  kFullDynamicRange = 4,  // Compressor bypassed (soft saturator/limiter only)
+};
+
 class MasterRmsStage {
  public:
   static constexpr int kBlockSize = 256;
@@ -249,9 +259,13 @@ class MasterRmsStage {
 
   void prepare(int rate);
   void set_config(const MasterDspConfig& cfg);
-  void set_tv_profile(bool tv) { tv_profile_ = tv; }
+  void set_playback_system(PlaybackSystem mode);
+  PlaybackSystem playback_system() const { return playback_system_; }
+  void set_tv_profile(bool tv) {
+    set_playback_system(tv ? PlaybackSystem::kTv : PlaybackSystem::kHomeTheater);
+  }
   void set_full_dynamic_range(bool on) { full_range_ = on; }
-  bool full_dynamic_range() const { return full_range_; }
+  bool full_dynamic_range() const { return full_range_ || playback_system_ == PlaybackSystem::kFullDynamicRange; }
 
   // Processes interleaved stereo (`channels = 2`) or 5.1 (`channels = 6`,
   // where channel index 3 is LFE and passes the compressor untouched).
@@ -265,7 +279,7 @@ class MasterRmsStage {
 
   MasterDspConfig cfg_{};
   int rate_ = 48000;
-  bool tv_profile_ = false;
+  PlaybackSystem playback_system_ = PlaybackSystem::kHomeTheater;
   bool full_range_ = false;
   std::array<float, kRmsBlocks> rms_ring_{};
   int rms_pos_ = 0;

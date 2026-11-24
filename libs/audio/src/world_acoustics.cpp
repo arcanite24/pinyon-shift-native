@@ -505,6 +505,47 @@ AcousticsSample WorldAcousticsData::evaluate(float x, float y, float z) const {
   return out;
 }
 
+// ------------------------------------------------ RtReverbParams / RtAcousticsSample
+
+RtReverbParams RtReverbParams::from_template(const ReverbTemplate& t) {
+  RtReverbParams r{};
+  r.decay_time_s = t.decay_time_s;
+  r.decay_hf_ratio = t.decay_hf_ratio;
+  r.density_pct = t.density_pct;
+  r.diffusion_pct = t.diffusion_pct;
+  r.dry_level_mb = t.dry_level_mb;
+  r.room_level_mb = t.room_level_mb;
+  r.room_hf_level_mb = t.room_hf_level_mb;
+  r.reflections_level_mb = t.reflections_level_mb;
+  r.reflections_delay_s = t.reflections_delay_s;
+  r.reverb_level_mb = t.reverb_level_mb;
+  r.reverb_delay_s = t.reverb_delay_s;
+  r.hf_reference_hz = t.hf_reference_hz;
+  r.near_dry = t.near_dry;
+  r.near_wet = t.near_wet;
+  return r;
+}
+
+RtAcousticsSample RtAcousticsSample::from_sample(const AcousticsSample& s) {
+  RtAcousticsSample out{};
+  out.reverb = RtReverbParams::from_template(s.reverb);
+  out.reverb_template_idx = s.reverb_template_idx;
+  out.in_tunnel = s.in_tunnel;
+  out.ambience_template_idx = s.ambience_template_idx;
+  const size_t n = std::min(s.ambience_snapshot.size(), out.ambience_snapshot.size() - 1);
+  if (n > 0) std::memcpy(out.ambience_snapshot.data(), s.ambience_snapshot.data(), n);
+  out.ambience_snapshot[n] = '\0';
+  out.festival_proximity = s.festival_proximity;
+  out.crowd_proximity = s.crowd_proximity;
+  out.is_rally_world = s.is_rally_world;
+  return out;
+}
+
+std::string_view RtAcousticsSample::ambience_snapshot_view() const {
+  const size_t len = strnlen(ambience_snapshot.data(), ambience_snapshot.size());
+  return std::string_view(ambience_snapshot.data(), len);
+}
+
 // ------------------------------------------------ EnvironmentalReverb
 
 float EnvironmentalReverb::Comb::tick(float in) {
@@ -546,6 +587,10 @@ void EnvironmentalReverb::prepare(int rate) {
   predelay_l_.assign(max_pre, 0.0f);
   predelay_r_.assign(max_pre, 0.0f);
   predelay_idx_ = 0;
+  const size_t max_early = size_t(std::max(128, int(0.14f * rate_)));
+  early_l_.assign(max_early, 0.0f);
+  early_r_.assign(max_early, 0.0f);
+  early_idx_ = 0;
   ReverbTemplate def{};
   set_parameters(def);
 }
@@ -563,15 +608,37 @@ void EnvironmentalReverb::reset() {
   for (auto& a : ap_r_) std::fill(a.buf.begin(), a.buf.end(), 0.0f);
   std::fill(predelay_l_.begin(), predelay_l_.end(), 0.0f);
   std::fill(predelay_r_.begin(), predelay_r_.end(), 0.0f);
+  std::fill(early_l_.begin(), early_l_.end(), 0.0f);
+  std::fill(early_r_.begin(), early_r_.end(), 0.0f);
 }
 
 void EnvironmentalReverb::set_parameters(const ReverbTemplate& tmpl) {
+  set_parameters(RtReverbParams::from_template(tmpl));
+}
+
+void EnvironmentalReverb::set_parameters(const RtReverbParams& tmpl) {
   decay_time_ = std::clamp(tmpl.decay_time_s, 0.15f, 6.0f);
-  // Compute room + reverb wet scale from I3DL2 millibels and NearWet.
+  // Compute room + late reverb wet scale from I3DL2 millibels and NearWet.
   const float room_lin = std::pow(10.0f, std::clamp(tmpl.room_level_mb, -6000.0f, 0.0f) / 2000.0f);
   const float rev_lin = std::pow(10.0f, std::clamp(tmpl.reverb_level_mb, -3000.0f, 1500.0f) / 2000.0f);
   target_wet_ = std::clamp(tmpl.near_wet * room_lin * std::min(rev_lin, 1.5f) * 0.45f, 0.0f, 0.65f);
   target_dry_ = std::clamp(tmpl.near_dry, 0.2f, 1.0f);
+
+  // Early slap-back reflections driven by I3DL2 reflections_level_mb and reflections_delay_s.
+  const float early_lin = std::pow(10.0f, std::clamp(tmpl.reflections_level_mb, -6000.0f, 1000.0f) / 2000.0f);
+  const float er_presence = tmpl.near_wet > 1e-3f ? std::max(tmpl.near_wet, 0.35f)
+                                                  : (tmpl.reflections_level_mb > -2400.0f ? 0.65f : 0.0f);
+  target_early_ = std::clamp(er_presence * room_lin * std::min(early_lin, 1.8f) * 0.55f, 0.0f, 0.65f);
+  if (!early_l_.empty()) {
+    const float base_s = std::clamp(tmpl.reflections_delay_s, 0.004f, 0.080f);
+    static constexpr float kTapOffL[4] = {0.0f, 0.0073f, 0.0157f, 0.0241f};
+    static constexpr float kTapOffR[4] = {0.0031f, 0.0113f, 0.0199f, 0.0293f};
+    const size_t max_tap = early_l_.size() - 1;
+    for (int t = 0; t < 4; ++t) {
+      early_taps_l_[size_t(t)] = std::clamp(size_t((base_s + kTapOffL[t]) * float(rate_)), size_t(1), max_tap);
+      early_taps_r_[size_t(t)] = std::clamp(size_t((base_s + kTapOffR[t]) * float(rate_)), size_t(1), max_tap);
+    }
+  }
 
   const float hf_damp = std::clamp(0.45f - 0.12f * tmpl.decay_hf_ratio + (-tmpl.room_hf_level_mb / 6000.0f) * 0.25f,
                                    0.08f, 0.78f);
@@ -590,15 +657,33 @@ void EnvironmentalReverb::set_parameters(const ReverbTemplate& tmpl) {
 
 void EnvironmentalReverb::process(float* io, int frames) {
   if (!io || frames <= 0 || comb_l_[0].buf.empty()) return;
-  if (target_wet_ < 1e-4f && wet_smooth_ < 1e-4f) return;
+  if (target_wet_ < 1e-4f && wet_smooth_ < 1e-4f && target_early_ < 1e-4f && early_smooth_ < 1e-4f) return;
 
   const float sm = 1.0f - std::exp(-1.0f / (0.04f * float(rate_)));
   const size_t pre_cap = predelay_l_.size();
+  const size_t er_cap = early_l_.size();
+  static constexpr float kErWeight[4] = {0.50f, -0.35f, 0.25f, -0.18f};
   for (int i = 0; i < frames; ++i) {
     wet_smooth_ += (target_wet_ - wet_smooth_) * sm;
     dry_smooth_ += (target_dry_ - dry_smooth_) * sm;
+    early_smooth_ += (target_early_ - early_smooth_) * sm;
     const float in_l = io[2 * i];
     const float in_r = io[2 * i + 1];
+
+    float er_l = 0.0f, er_r = 0.0f;
+    if (er_cap > 0) {
+      early_l_[early_idx_] = in_l;
+      early_r_[early_idx_] = in_r;
+      if (early_smooth_ > 1e-5f) {
+        for (int t = 0; t < 4; ++t) {
+          const size_t rl = (early_idx_ + er_cap - early_taps_l_[size_t(t)]) % er_cap;
+          const size_t rr = (early_idx_ + er_cap - early_taps_r_[size_t(t)]) % er_cap;
+          er_l += early_l_[rl] * kErWeight[t];
+          er_r += early_r_[rr] * kErWeight[t];
+        }
+      }
+      if (++early_idx_ >= er_cap) early_idx_ = 0;
+    }
 
     float pre_l = in_l, pre_r = in_r;
     if (pre_cap > 0) {
@@ -622,25 +707,43 @@ void EnvironmentalReverb::process(float* io, int frames) {
       wl = ap_l_[size_t(a)].tick(wl);
       wr = ap_r_[size_t(a)].tick(wr);
     }
-    io[2 * i] = in_l * dry_smooth_ + wl * wet_smooth_;
-    io[2 * i + 1] = in_r * dry_smooth_ + wr * wet_smooth_;
+    io[2 * i] = in_l * dry_smooth_ + er_l * early_smooth_ + wl * wet_smooth_;
+    io[2 * i + 1] = in_r * dry_smooth_ + er_r * early_smooth_ + wr * wet_smooth_;
   }
 }
 
 bool EnvironmentalReverb::process_wet(const float* in_stereo, float* out_wet_stereo, int frames) {
   if (!in_stereo || !out_wet_stereo || frames <= 0 || comb_l_[0].buf.empty()) return false;
-  if (target_wet_ < 1e-4f && wet_smooth_ < 1e-4f) {
+  if (target_wet_ < 1e-4f && wet_smooth_ < 1e-4f && target_early_ < 1e-4f && early_smooth_ < 1e-4f) {
     std::fill(out_wet_stereo, out_wet_stereo + size_t(frames) * 2, 0.0f);
     return false;
   }
 
   const float sm = 1.0f - std::exp(-1.0f / (0.04f * float(rate_)));
   const size_t pre_cap = predelay_l_.size();
+  const size_t er_cap = early_l_.size();
+  static constexpr float kErWeight[4] = {0.50f, -0.35f, 0.25f, -0.18f};
   for (int i = 0; i < frames; ++i) {
     wet_smooth_ += (target_wet_ - wet_smooth_) * sm;
     dry_smooth_ += (target_dry_ - dry_smooth_) * sm;
+    early_smooth_ += (target_early_ - early_smooth_) * sm;
     const float in_l = in_stereo[2 * i];
     const float in_r = in_stereo[2 * i + 1];
+
+    float er_l = 0.0f, er_r = 0.0f;
+    if (er_cap > 0) {
+      early_l_[early_idx_] = in_l;
+      early_r_[early_idx_] = in_r;
+      if (early_smooth_ > 1e-5f) {
+        for (int t = 0; t < 4; ++t) {
+          const size_t rl = (early_idx_ + er_cap - early_taps_l_[size_t(t)]) % er_cap;
+          const size_t rr = (early_idx_ + er_cap - early_taps_r_[size_t(t)]) % er_cap;
+          er_l += early_l_[rl] * kErWeight[t];
+          er_r += early_r_[rr] * kErWeight[t];
+        }
+      }
+      if (++early_idx_ >= er_cap) early_idx_ = 0;
+    }
 
     float pre_l = in_l, pre_r = in_r;
     if (pre_cap > 0) {
@@ -664,8 +767,8 @@ bool EnvironmentalReverb::process_wet(const float* in_stereo, float* out_wet_ste
       wl = ap_l_[size_t(a)].tick(wl);
       wr = ap_r_[size_t(a)].tick(wr);
     }
-    out_wet_stereo[2 * i] = wl * wet_smooth_;
-    out_wet_stereo[2 * i + 1] = wr * wet_smooth_;
+    out_wet_stereo[2 * i] = er_l * early_smooth_ + wl * wet_smooth_;
+    out_wet_stereo[2 * i + 1] = er_r * early_smooth_ + wr * wet_smooth_;
   }
   return true;
 }
@@ -720,6 +823,20 @@ void write_cached_amb(const std::filesystem::path& p, const PcmSample& s) {
   f.write(reinterpret_cast<char*>(s16.data()), std::streamsize(frames * 2));
 }
 
+void make_seamless_loop(PcmSample& pcm) {
+  const size_t n = pcm.data.size();
+  if (n < 1024) return;
+  const size_t max_xf = size_t(std::max(1, pcm.rate)) / 2;  // up to 0.5 s crossfade on 25 s beds
+  const size_t xfade = std::clamp<size_t>(std::min(n / 8, max_xf), 64, n / 4);
+  const size_t keep = n - xfade;
+  constexpr double kPi = 3.14159265358979323846;
+  for (size_t i = 0; i < xfade; ++i) {
+    const float w = 0.5f * (1.0f - float(std::cos(kPi * double(i) / double(xfade))));
+    pcm.data[i] = pcm.data[i] * w + pcm.data[keep + i] * (1.0f - w);
+  }
+  pcm.data.resize(keep);
+}
+
 bool decode_amb_subsound(const std::filesystem::path& bank_path, uint32_t subsound, const std::filesystem::path& ffmpeg,
                          const std::filesystem::path& temp_dir, PcmSample& out) {
   std::vector<uint8_t> bank_data;
@@ -734,6 +851,7 @@ bool decode_amb_subsound(const std::filesystem::path& bank_path, uint32_t subsou
     const auto span = std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes);
     if (decode_xma2_mono(s, span, out, nullptr)) {
       if (out.data.size() > kMaxAmbFrames) out.data.resize(kMaxAmbFrames);
+      make_seamless_loop(out);
       return true;
     }
     if (ffmpeg.empty()) return false;
@@ -766,6 +884,7 @@ bool decode_amb_subsound(const std::filesystem::path& bank_path, uint32_t subsou
     }
     std::filesystem::remove(in_p, ec);
     std::filesystem::remove(out_p, ec);
+    make_seamless_loop(out);
     return true;
   }
   auto src = make_fsb_mpeg_source(bank_path, s.offset, s.bytes, rate);
@@ -779,6 +898,7 @@ bool decode_amb_subsound(const std::filesystem::path& bank_path, uint32_t subsou
       for (int64_t i = 0; i < got && out.data.size() < kMaxAmbFrames; ++i)
         out.data.push_back(0.5f * (tmp[2 * i] + tmp[2 * i + 1]));
     }
+    if (!out.data.empty()) make_seamless_loop(out);
     return !out.data.empty();
   }
   return false;
@@ -896,26 +1016,32 @@ AmbienceBedPlayer::~AmbienceBedPlayer() {
 }
 
 void AmbienceBedPlayer::stop_worker() {
+  std::lock_guard<std::mutex> lk(lifecycle_mu_);
   stop_worker_.store(true, std::memory_order_release);
   if (worker_.joinable()) worker_.join();
 }
 
 void AmbienceBedPlayer::stop_rally_worker() {
+  std::lock_guard<std::mutex> lk(lifecycle_mu_);
   stop_rally_worker_.store(true, std::memory_order_release);
   if (rally_worker_.joinable()) rally_worker_.join();
 }
 
 void AmbienceBedPlayer::drain_loaded() {
-  LoadedBed lb;
-  while (loaded_q_.pop(lb)) {
-    const size_t idx = size_t(lb.slot);
-    if (idx < beds_.size()) {
-      delete beds_[idx];
-      beds_[idx] = lb.pcm;
-    } else {
-      delete lb.pcm;
+  auto drain_bed = [&](SpscQueue<LoadedBed>& q) {
+    LoadedBed lb;
+    while (q.pop(lb)) {
+      const size_t idx = size_t(lb.slot);
+      if (idx < beds_.size()) {
+        delete beds_[idx];
+        beds_[idx] = lb.pcm;
+      } else {
+        delete lb.pcm;
+      }
     }
-  }
+  };
+  drain_bed(loaded_q_);
+  drain_bed(direct_loaded_q_);
   auto drain_rally = [&](SpscQueue<LoadedRallyBed>& q) {
     LoadedRallyBed rb;
     while (q.pop(rb)) {
@@ -936,12 +1062,19 @@ void AmbienceBedPlayer::drain_loaded() {
 void AmbienceBedPlayer::set_bed_sample(AmbienceBedSlot slot, PcmSample pcm) {
   const size_t idx = size_t(slot);
   if (idx >= beds_.size()) return;
+  if (pcm.data.size() >= 1024 && std::fabs(pcm.data.back() - pcm.data.front()) > 0.02f) {
+    make_seamless_loop(pcm);
+  }
   auto* p = new PcmSample(std::move(pcm));
-  if (!loaded_q_.push({slot, p})) delete p;
+  std::lock_guard<std::mutex> lk(direct_q_mu_);
+  if (!direct_loaded_q_.push({slot, p})) delete p;
 }
 
 void AmbienceBedPlayer::set_rally_bed_sample(int region_idx, std::string_view region_name, PcmSample pcm) {
   if (region_idx < 0 || region_idx >= kMaxRallyRegions) return;
+  if (pcm.data.size() >= 1024 && std::fabs(pcm.data.back() - pcm.data.front()) > 0.02f) {
+    make_seamless_loop(pcm);
+  }
   LoadedRallyBed item{};
   item.region_idx = region_idx;
   const std::string tok = normalize_region_token(region_name);
@@ -949,6 +1082,7 @@ void AmbienceBedPlayer::set_rally_bed_sample(int region_idx, std::string_view re
   if (n > 0) std::memcpy(item.name.data(), tok.data(), n);
   item.name[n] = '\0';
   item.pcm = new PcmSample(std::move(pcm));
+  std::lock_guard<std::mutex> lk(direct_q_mu_);
   if (!rally_direct_q_.push(item)) delete item.pcm;
 }
 
@@ -1048,6 +1182,9 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
   const int queued = int(jobs.size());
   if (jobs.empty()) return 0;
 
+  std::lock_guard<std::mutex> lk(lifecycle_mu_);
+  stop_worker_.store(true, std::memory_order_release);
+  if (worker_.joinable()) worker_.join();
   stop_worker_.store(false, std::memory_order_release);
   worker_ = std::thread([this, jobs = std::move(jobs), cache_dir, game_root]() {
     const std::filesystem::path ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
@@ -1064,6 +1201,9 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
       const std::filesystem::path cf = amb_cache.empty() ? std::filesystem::path{} : (amb_cache / fname);
       auto pcm = std::make_unique<PcmSample>();
       bool ok = (!cf.empty() && read_cached_amb(cf, *pcm)) || read_cached_amb(prebaked_amb / fname, *pcm);
+      if (ok && pcm->data.size() >= 1024 && std::fabs(pcm->data.back() - pcm->data.front()) > 0.02f) {
+        make_seamless_loop(*pcm);
+      }
       if (!ok) {
         ok = decode_amb_subsound(j.bank, j.sub, ffmpeg, temp_dir, *pcm);
         if (ok && !cf.empty()) write_cached_amb(cf, *pcm);
@@ -1154,6 +1294,9 @@ int AmbienceBedPlayer::load_rally_from_disc(const std::filesystem::path& rally_r
   const int queued = int(jobs.size());
   if (jobs.empty()) return 0;
 
+  std::lock_guard<std::mutex> lk(lifecycle_mu_);
+  stop_rally_worker_.store(true, std::memory_order_release);
+  if (rally_worker_.joinable()) rally_worker_.join();
   stop_rally_worker_.store(false, std::memory_order_release);
   rally_worker_ = std::thread([this, jobs = std::move(jobs), cache_dir]() {
     const std::filesystem::path ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
@@ -1169,6 +1312,9 @@ int AmbienceBedPlayer::load_rally_from_disc(const std::filesystem::path& rally_r
       const std::filesystem::path cf = amb_cache.empty() ? std::filesystem::path{} : (amb_cache / fname);
       auto pcm = std::make_unique<PcmSample>();
       bool ok = !cf.empty() && read_cached_amb(cf, *pcm);
+      if (ok && pcm->data.size() >= 1024 && std::fabs(pcm->data.back() - pcm->data.front()) > 0.02f) {
+        make_seamless_loop(*pcm);
+      }
       if (!ok) {
         ok = decode_amb_subsound(j.bank, j.sub, ffmpeg, temp_dir, *pcm);
         if (ok && !cf.empty()) write_cached_amb(cf, *pcm);
@@ -1190,6 +1336,11 @@ int AmbienceBedPlayer::load_rally_from_disc(const std::filesystem::path& rally_r
 
 void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
                                float tod_hour) {
+  render(RtAcousticsSample::from_sample(sample), speed_mph, out_stereo, frames, tod_hour);
+}
+
+void AmbienceBedPlayer::render(const RtAcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
+                               float tod_hour) {
   if (!out_stereo || frames <= 0) return;
   drain_loaded();
 
@@ -1208,8 +1359,9 @@ void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, f
   const float fest_target = std::max(sample.festival_proximity, sample.crowd_proximity) * (1.0f + 0.15f * night_amt);
   const float nature_tod_scale = 1.0f - 0.25f * night_amt;
   const float sm = 1.0f - std::exp(-1.0f / (0.15f * float(rate_)));
+  const std::string_view snap_view = sample.ambience_snapshot_view();
 
-  // ColoradoDirt Rally world: select among the 13 regional AMB_*.fev/.fsb beds.
+  // ColoradoDirt Rally world: select among the 13 regional AMB_*.fev/.fsb beds without heap allocation.
   const bool use_rally_beds = rally_world_.load(std::memory_order_acquire) || sample.is_rally_world;
   if (use_rally_beds) {
     int first_loaded = -1;
@@ -1223,7 +1375,16 @@ void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, f
     }
     if (loaded_count > 0) {
       int active_r = -1;
-      const std::string want_tok = normalize_region_token(sample.ambience_snapshot);
+      char want_buf[48]{};
+      size_t want_len = 0;
+      for (char c : snap_view) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (std::isalnum(u) && want_len + 1 < sizeof(want_buf)) {
+          want_buf[want_len++] = char(std::tolower(u));
+        }
+      }
+      std::string_view want_tok(want_buf, want_len);
+      if (want_tok.size() > 3 && want_tok.substr(0, 3) == "amb") want_tok.remove_prefix(3);
       if (!want_tok.empty()) {
         for (int i = 0; i < kMaxRallyRegions; ++i) {
           if (!rally_beds_[size_t(i)] || rally_beds_[size_t(i)]->data.empty()) continue;
@@ -1310,10 +1471,10 @@ void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, f
 
   // Pick regional bed slot from active ambience snapshot.
   AmbienceBedSlot region = AmbienceBedSlot::kDefault;
-  if (sample.ambience_snapshot == "Mountains") region = AmbienceBedSlot::kMountains;
-  else if (sample.ambience_snapshot == "RedRock") region = AmbienceBedSlot::kRedRock;
-  else if (sample.ambience_snapshot == "MainTown") region = AmbienceBedSlot::kMainTown;
-  else if (sample.ambience_snapshot == "Festival") region = AmbienceBedSlot::kFestival;
+  if (snap_view == "Mountains") region = AmbienceBedSlot::kMountains;
+  else if (snap_view == "RedRock") region = AmbienceBedSlot::kRedRock;
+  else if (snap_view == "MainTown") region = AmbienceBedSlot::kMainTown;
+  else if (snap_view == "Festival") region = AmbienceBedSlot::kFestival;
 
   const PcmSample* active_reg_pcm = beds_[size_t(region)];
   if (!active_reg_pcm || active_reg_pcm->data.empty()) {
@@ -1367,10 +1528,10 @@ void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, f
 
   // Regional filter cutoff character (Mountains: brisk wind, RedRock: warm desert, Festival: crowd murmur).
   float lp_a = 0.04f;
-  if (sample.ambience_snapshot == "Mountains") lp_a = 0.07f;
-  else if (sample.ambience_snapshot == "RedRock") lp_a = 0.03f;
-  else if (sample.ambience_snapshot == "MainTown") lp_a = 0.055f;
-  else if (sample.ambience_snapshot == "Festival") lp_a = 0.09f;
+  if (snap_view == "Mountains") lp_a = 0.07f;
+  else if (snap_view == "RedRock") lp_a = 0.03f;
+  else if (snap_view == "MainTown") lp_a = 0.055f;
+  else if (snap_view == "Festival") lp_a = 0.09f;
 
   for (int i = 0; i < frames; ++i) {
     env_speed_ += (speed_target - env_speed_) * sm;

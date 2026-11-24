@@ -31,6 +31,16 @@ struct SurfaceChangePair {
   std::string s1, s2;
   std::string s1_to_s2;
   std::string s2_to_s1;
+  float s1_to_s2_gain = 1.0f;
+  float s1_to_s2_pitch = 1.0f;
+  float s2_to_s1_gain = 1.0f;
+  float s2_to_s1_pitch = 1.0f;
+};
+
+struct SurfaceChangeSpec {
+  std::string event;
+  float gain = 1.0f;
+  float pitch = 1.0f;
 };
 
 struct TiresConfig {
@@ -45,8 +55,12 @@ struct TiresConfig {
             const std::filesystem::path& state_root = {});
 
   const TireSurfaceEntry* find_surface(std::string_view physics_surface) const;
+  const TireSurfaceEntry* find_surface_by_index(int surface_index) const;
   // Returns the event name (e.g. "HardToHard", "DirtToHard", "Silent", or empty).
   std::string surface_change_event(std::string_view from_surface, std::string_view to_surface) const;
+  // Returns event name + gain/pitch multipliers from SurfaceChanges.xml.
+  SurfaceChangeSpec surface_change_spec(std::string_view from_surface, std::string_view to_surface) const;
+  SurfaceChangeSpec surface_change_spec_by_index(int from_idx, int to_idx) const;
 };
 
 struct CollisionEventSpec {

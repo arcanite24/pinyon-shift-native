@@ -128,11 +128,11 @@ Bus category_to_bus(Category c) {
     case Category::kCarWind: return Bus::kWind;
     case Category::kCollision: return Bus::kCollision;
     case Category::kAmbientStatic:
-    case Category::kAmbientDynamic:
-    case Category::kHomespaceAmbientDynamic: return Bus::kAmbience;
-    case Category::kGameMusic:
-    case Category::kHomespaceMusic:
-    case Category::kMenuMusic: return Bus::kMusic;
+    case Category::kAmbientDynamic: return Bus::kAmbience;
+    case Category::kHomespaceAmbientDynamic: return Bus::kHomespaceAmbience;
+    case Category::kGameMusic: return Bus::kMusic;
+    case Category::kHomespaceMusic: return Bus::kHomespaceMusic;
+    case Category::kMenuMusic: return Bus::kMenuMusic;
     case Category::kGameUI: return Bus::kUi;
     case Category::kVO:
     case Category::kDJModifier: return Bus::kVo;
@@ -496,6 +496,9 @@ float SnapshotMatrix::bus_gain(Bus b) const {
     case Bus::kCollision: return gain(Category::kCollision);
     case Bus::kSatNav: return gain(Category::kSatNav);
     case Bus::kRallyCoDriver: return gain(Category::kRallyCoDriver);
+    case Bus::kHomespaceMusic: return gain(Category::kHomespaceMusic);
+    case Bus::kMenuMusic: return gain(Category::kMenuMusic);
+    case Bus::kHomespaceAmbience: return gain(Category::kHomespaceAmbientDynamic);
   }
   return 1.0f;
 }
@@ -665,6 +668,8 @@ void MasterRmsStage::prepare(int rate) {
 
 void MasterRmsStage::set_config(const MasterDspConfig& cfg) { cfg_ = cfg; }
 
+void MasterRmsStage::set_playback_system(PlaybackSystem mode) { playback_system_ = mode; }
+
 float MasterRmsStage::gain_reduction_db() const {
   const float g = std::clamp(target_gain_, 1e-5f, 1.0f);
   return -20.0f * std::log10(g);
@@ -682,13 +687,51 @@ void MasterRmsStage::process(float* io, int frames, int channels) {
 }
 
 void MasterRmsStage::process_block(float* io, int n, int channels) {
-  const bool comp_bypass = full_range_ || (tv_profile_ ? cfg_.compressor_bypass_tv : cfg_.compressor_bypass);
-  const float level = tv_profile_ ? cfg_.compressor_level_tv : cfg_.compressor_level;
-  const float threshold = std::max(1e-5f, tv_profile_ ? cfg_.compressor_threshold_tv : cfg_.compressor_threshold);
-  const float attack = std::max(1e-4f, tv_profile_ ? cfg_.compressor_attack_tv : cfg_.compressor_attack);
-  const float release = std::max(1e-4f, tv_profile_ ? cfg_.compressor_release_tv : cfg_.compressor_release);
-  const float ratio = std::clamp(tv_profile_ ? cfg_.compressor_ratio_tv : cfg_.compressor_ratio, 0.0f, 1.0f);
-  const float makeup = tv_profile_ ? cfg_.compressor_gain_makeup_tv : cfg_.compressor_gain_makeup;
+  bool comp_bypass = full_range_ || playback_system_ == PlaybackSystem::kFullDynamicRange;
+  float level = cfg_.compressor_level;
+  float threshold = cfg_.compressor_threshold;
+  float attack = cfg_.compressor_attack;
+  float release = cfg_.compressor_release;
+  float ratio = cfg_.compressor_ratio;
+  float makeup = cfg_.compressor_gain_makeup;
+
+  switch (playback_system_) {
+    case PlaybackSystem::kTv:
+      comp_bypass = comp_bypass || cfg_.compressor_bypass_tv;
+      level = cfg_.compressor_level_tv;
+      threshold = cfg_.compressor_threshold_tv;
+      attack = cfg_.compressor_attack_tv;
+      release = cfg_.compressor_release_tv;
+      ratio = cfg_.compressor_ratio_tv;
+      makeup = cfg_.compressor_gain_makeup_tv;
+      break;
+    case PlaybackSystem::kHeadphones:
+      comp_bypass = comp_bypass || cfg_.compressor_bypass;
+      threshold = cfg_.compressor_threshold * 1.45f;
+      ratio = std::clamp(cfg_.compressor_ratio * 1.85f, 0.25f, 0.78f);
+      release = cfg_.compressor_release * 0.80f;
+      break;
+    case PlaybackSystem::kCarAudio:
+      comp_bypass = comp_bypass || cfg_.compressor_bypass_tv;
+      level = cfg_.compressor_level_tv;
+      threshold = cfg_.compressor_threshold_tv * 0.85f;
+      attack = cfg_.compressor_attack_tv * 0.85f;
+      release = cfg_.compressor_release_tv;
+      ratio = std::clamp(std::min(cfg_.compressor_ratio, cfg_.compressor_ratio_tv * 1.25f), 0.10f, 0.30f);
+      makeup = cfg_.compressor_gain_makeup_tv * 1.06f;
+      break;
+    case PlaybackSystem::kFullDynamicRange:
+      comp_bypass = true;
+      break;
+    case PlaybackSystem::kHomeTheater:
+    default:
+      comp_bypass = comp_bypass || cfg_.compressor_bypass;
+      break;
+  }
+  threshold = std::max(1e-5f, threshold);
+  attack = std::max(1e-4f, attack);
+  release = std::max(1e-4f, release);
+  ratio = std::clamp(ratio, 0.0f, 1.0f);
 
   double sum_sq = 0.0;
   int count = 0;

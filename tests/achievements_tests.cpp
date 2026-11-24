@@ -450,6 +450,52 @@ void test_achievements_system_and_persistence() {
     assert(!ssys.find(199)->is_masked_secret());
     assert(ssys.find(199)->display_name() == "Hidden Legend");
   }
+
+  // Round 2 parity: Achievements 181, 182, 211, and 215 are independently reachable.
+  {
+    fh1::SpaDatabase r2_db;
+    for (uint16_t id : {uint16_t(181), uint16_t(182), uint16_t(211), uint16_t(215)}) {
+      fh1::SpaAchievement sa;
+      sa.id = id;
+      sa.gamerscore = 50;
+      sa.label = "Ach #" + std::to_string(id);
+      r2_db.achievements.push_back(sa);
+    }
+    carview::AchievementsSystem r2_sys;
+    r2_sys.init(r2_db);
+
+    // 1. Gold Wristband (181) unlocks at 7 wristbands without unlocking Horizon Champion (182).
+    drive::DriveSave ds;
+    ds.collected_wristband = 6;  // 0..6 -> 7 wristbands earned
+    ds.finale_complete = false;
+    auto st = carview::AchievementGameplayState::from_drive_save(ds);
+    r2_sys.evaluate(st, false);
+    assert(r2_sys.find(181)->unlocked);
+    assert(!r2_sys.find(182)->unlocked);
+    assert(!r2_sys.find(211)->unlocked);
+    assert(!r2_sys.find(215)->unlocked);
+
+    // 2. Completing the Horizon Finale unlocks 182 independently.
+    ds.finale_complete = true;
+    st = carview::AchievementGameplayState::from_drive_save(ds);
+    r2_sys.evaluate(st, false);
+    assert(r2_sys.find(182)->unlocked);
+
+    // 3. Completing a 4-stage Rally championship unlocks 211 without requiring unreachable rally_level 5.
+    ds.has_rally = true;
+    ds.num_rally_stages = 4;
+    ds.rally_level = 0;
+    st = carview::AchievementGameplayState::from_drive_save(ds);
+    r2_sys.evaluate(st, false);
+    assert(r2_sys.find(211)->unlocked);
+    assert(!r2_sys.find(215)->unlocked);
+
+    // 4. Earning Horizon Rally Champion (rally_level == 1) unlocks 215 independently.
+    ds.rally_level = 1;
+    st = carview::AchievementGameplayState::from_drive_save(ds);
+    r2_sys.evaluate(st, false);
+    assert(r2_sys.find(215)->unlocked);
+  }
 }
 
 void test_optional_real_spa() {

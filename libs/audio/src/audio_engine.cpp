@@ -69,6 +69,20 @@ void sanitize_vehicle_state(VehicleAudioState& st) {
   st.scrape_intensity = safe_clamp_f(st.scrape_intensity, 0.0f, 1.0f, 0.0f);
   st.reflection_proximity = safe_clamp_f(st.reflection_proximity, 0.0f, 1.0f, 0.0f);
   st.active_aero_deploy = safe_clamp_f(st.active_aero_deploy, 0.0f, 1.0f, 0.0f);
+  st.engine_damage = safe_clamp_f(st.engine_damage, 0.0f, 1.0f, 0.0f);
+  st.drivetrain_damage = safe_clamp_f(st.drivetrain_damage, 0.0f, 1.0f, 0.0f);
+  st.burble_vol_scale = safe_clamp_f(st.burble_vol_scale, 0.0f, 2.5f, 1.0f);
+  st.exh_noise_vol_scale = safe_clamp_f(st.exh_noise_vol_scale, 0.0f, 2.5f, 1.0f);
+  st.view_wind_scale = safe_clamp_f(st.view_wind_scale, 0.0f, 2.5f, 1.0f);
+  st.view_tyre_scale = safe_clamp_f(st.view_tyre_scale, 0.0f, 2.5f, 1.0f);
+  st.view_trans_scale = safe_clamp_f(st.view_trans_scale, 0.0f, 2.5f, 1.0f);
+  st.view_turbo_scale = safe_clamp_f(st.view_turbo_scale, 0.0f, 2.5f, 1.0f);
+  st.view_sc_scale = safe_clamp_f(st.view_sc_scale, 0.0f, 2.5f, 1.0f);
+  st.view_backfire_scale = safe_clamp_f(st.view_backfire_scale, 0.0f, 2.5f, 1.0f);
+  st.view_susp_scale = safe_clamp_f(st.view_susp_scale, 0.0f, 2.5f, 1.0f);
+  st.view_ambience_scale = safe_clamp_f(st.view_ambience_scale, 0.0f, 2.5f, 1.0f);
+  st.view_other_cars_scale = safe_clamp_f(st.view_other_cars_scale, 0.0f, 2.5f, 1.0f);
+  st.view_damage_scale = safe_clamp_f(st.view_damage_scale, 0.0f, 2.5f, 1.0f);
   for (auto& w : st.wheels) {
     w.slip_combined = safe_clamp_f(w.slip_combined, 0.0f, 4.0f, 0.0f);
     w.wheel_rpm = safe_clamp_f(w.wheel_rpm, -10000.0f, 10000.0f, 0.0f);
@@ -116,10 +130,24 @@ AudioEngine::AudioEngine(int rate) : rate_(std::max(8000, rate)), ambience_bed_(
   mixer_.prepare(rate_);
   mixer_.snapshots().add_defaults();
   snap_title_ = mixer_.snapshots().find("Title");
+  {
+    Snapshot dd;
+    dd.name = "DialogDuck";
+    dd.dest[int(Bus::kMusic)] = 0.25f;
+    dd.dest[int(Bus::kEngine)] = 0.50f;
+    dd.dest[int(Bus::kOtherCars)] = 0.50f;
+    dd.dest[int(Bus::kTyres)] = 0.60f;
+    dd.dest[int(Bus::kWind)] = 0.55f;
+    dd.dest[int(Bus::kAmbience)] = 0.45f;
+    dd.fade = 0.18f;
+    dd.return_fade = 0.35f;
+    snap_dialog_duck_ = mixer_.snapshots().add(std::move(dd));
+  }
   for (auto& eq : car_eqs_) eq.prepare(rate_);
   rms_stage_.prepare(rate_);
   reverb_.prepare(rate_);
   matrix_bus_smooth_.fill(1.0f);
+  for (auto& s : bus_levels_shadow_) s.store(1.0f, std::memory_order_relaxed);
   // Pre-allocate stereo bus scratch buffers for up to 4096 frames so the
   // audio thread never allocates in steady state.
   for (auto& b : bus_bufs_) b.resize(4096 * 2, 0.0f);
@@ -257,11 +285,15 @@ void AudioEngine::set_ui_music(UiMusicMode mode) {
   enqueue(c);
 }
 
-void AudioEngine::set_playback_system(bool tv_profile) {
+void AudioEngine::set_playback_system(PlaybackSystem sys) {
   Command c;
   c.kind = Command::kPlaybackSystem;
-  c.b0 = tv_profile;
+  c.i0 = int(sys);
   enqueue(c);
+}
+
+void AudioEngine::set_playback_system(bool tv_profile) {
+  set_playback_system(tv_profile ? PlaybackSystem::kTv : PlaybackSystem::kHomeTheater);
 }
 
 void AudioEngine::start(Sink sink) {
@@ -292,7 +324,12 @@ void AudioEngine::reclaim() {
   while (retired_.pop(r)) {
     switch (r.kind) {
       case Retired::kEngine: delete static_cast<EnginePlayer*>(r.ptr); break;
-      case Retired::kSfx: delete static_cast<SfxEngine*>(r.ptr); break;
+      case Retired::kSfx: {
+        std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+        if (sfx_control_ptr_ == r.ptr) sfx_control_ptr_ = nullptr;
+        delete static_cast<SfxEngine*>(r.ptr);
+        break;
+      }
       case Retired::kSatNav: delete static_cast<SatNavVoPlayer*>(r.ptr); break;
       case Retired::kCoDriver: delete static_cast<CoDriverVoPlayer*>(r.ptr); break;
       case Retired::kVo: delete static_cast<VoPlayer*>(r.ptr); break;
@@ -325,6 +362,7 @@ void AudioEngine::set_engine_input(const EnginePlayer::Update& u) { engine_in_.w
 void AudioEngine::set_vehicle_state(const VehicleAudioState& st) { veh_state_in_.write(st); }
 
 void AudioEngine::set_engine_player(std::unique_ptr<EnginePlayer> player) {
+  reclaim();
   Command c;
   c.kind = Command::kSwapEngine;
   c.ptr0 = player.release();
@@ -339,16 +377,26 @@ void AudioEngine::set_engine_player(std::unique_ptr<EnginePlayer> player) {
 }
 
 void AudioEngine::set_sfx_engine(std::unique_ptr<SfxEngine> sfx) {
+  reclaim();
   Command c;
   c.kind = Command::kSwapSfx;
-  c.ptr0 = sfx.release();
+  SfxEngine* raw = sfx.release();
+  c.ptr0 = raw;
+  {
+    std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+    sfx_control_ptr_ = raw;
+  }
   if (!cmds_.push(c)) {
     if (!running_.load(std::memory_order_acquire)) {
       drain_commands();
       reclaim();
       if (cmds_.push(c)) return;
     }
-    delete static_cast<SfxEngine*>(c.ptr0);
+    {
+      std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+      if (sfx_control_ptr_ == raw) sfx_control_ptr_ = nullptr;
+    }
+    delete raw;
   }
 }
 
@@ -494,9 +542,10 @@ void AudioEngine::set_codriver_vo(std::unique_ptr<CoDriverVoPlayer> codriver) {
   }
 }
 
-void AudioEngine::trigger_codriver(std::string_view cue_path) {
+void AudioEngine::trigger_codriver(std::string_view cue_path, bool supersede) {
   Command c;
   c.kind = Command::kTriggerCoDriver;
+  c.b0 = supersede;
   const size_t n = std::min(cue_path.size(), c.text.size() - 1);
   std::memcpy(c.text.data(), cue_path.data(), n);
   c.text[n] = '\0';
@@ -509,7 +558,9 @@ void AudioEngine::clear_codriver() {
   enqueue(c);
 }
 
-void AudioEngine::set_acoustics_sample(const AcousticsSample& sample) { acoustics_in_.write(sample); }
+void AudioEngine::set_acoustics_sample(const AcousticsSample& sample) {
+  acoustics_in_.write(RtAcousticsSample::from_sample(sample));
+}
 
 void AudioEngine::set_listener_pose(std::array<float, 3> pos, float heading_rad) {
   Command c;
@@ -534,6 +585,13 @@ void AudioEngine::trigger_vo(std::string_view trigger_id, bool interrupt) {
 void AudioEngine::skip_vo() {
   Command c;
   c.kind = Command::kSkipVo;
+  enqueue(c);
+}
+
+void AudioEngine::set_dialog_ducking(bool active) {
+  Command c;
+  c.kind = Command::kDialogDuck;
+  c.b0 = active;
   enqueue(c);
 }
 
@@ -571,12 +629,35 @@ void AudioEngine::radio_trigger_festival_update(std::string_view gameplay_event)
   enqueue(c);
 }
 
+void AudioEngine::radio_lock_viper_intro(bool lock) {
+  Command c;
+  c.kind = Command::kRadioViperLock;
+  c.b0 = lock;
+  enqueue(c);
+}
+
 void AudioEngine::set_bus_level(Bus b, float level) {
+  const float clamped = std::clamp(level, 0.0f, 2.0f);
+  if (int(b) >= 0 && int(b) < kBuses) {
+    bus_levels_shadow_[size_t(b)].store(clamped, std::memory_order_release);
+    if (int(b) < kUiSliderBuses) {
+      for (int child = kUiSliderBuses; child < kBuses; ++child) {
+        if (bus_parent(Bus(child)) == b) {
+          bus_levels_shadow_[size_t(child)].store(clamped, std::memory_order_release);
+        }
+      }
+    }
+  }
   Command c;
   c.kind = Command::kBusLevel;
   c.i0 = int(b);
-  c.f0 = level;
+  c.f0 = clamped;
   enqueue(c);
+}
+
+float AudioEngine::bus_level(Bus b) const {
+  if (int(b) < 0 || int(b) >= kBuses) return 1.0f;
+  return bus_levels_shadow_[size_t(b)].load(std::memory_order_acquire);
 }
 
 void AudioEngine::set_master_volume(float volume) {
@@ -665,10 +746,11 @@ bool AudioEngine::load_rally_vo(const std::filesystem::path& rally_root_or_state
 }
 
 void AudioEngine::reload_sfx_burble(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
-                                    const std::string& burble_bank) {
-  if (running_.load(std::memory_order_acquire)) return;
-  drain_commands();
-  if (sfx_) sfx_->reload_burble_bank(game_root, cache_dir, burble_bank);
+                                    const std::string& burble_bank, int burble_count, int backfire_count) {
+  if (!running_.load(std::memory_order_acquire)) drain_commands();
+  std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+  SfxEngine* target = sfx_control_ptr_ ? sfx_control_ptr_ : (!running_.load(std::memory_order_acquire) ? sfx_ : nullptr);
+  if (target) target->reload_burble_bank(game_root, cache_dir, burble_bank, burble_count, backfire_count);
 }
 
 bool AudioEngine::load_mixer_configs(const std::filesystem::path& game_root, std::string* note,
@@ -862,8 +944,20 @@ void AudioEngine::drain_commands() {
         mixer_.stage().set_full_dynamic_range(c.b0);
         rms_stage_.set_full_dynamic_range(c.b0);
         break;
-      case Command::kPlaybackSystem:
-        rms_stage_.set_tv_profile(c.b0);
+      case Command::kPlaybackSystem: {
+        const auto ps = PlaybackSystem(std::clamp(c.i0, 0, int(PlaybackSystem::kFullDynamicRange)));
+        rms_stage_.set_playback_system(ps);
+        mixer_.stage().set_full_dynamic_range(ps == PlaybackSystem::kFullDynamicRange);
+        break;
+      }
+      case Command::kDialogDuck:
+        dialog_duck_requested_ = c.b0;
+        break;
+      case Command::kRadioViperLock:
+        if (radio_) {
+          if (c.b0) radio_->lock_viper_intro_playlist();
+          else radio_->unlock_viper_intro_playlist();
+        }
         break;
       case Command::kUiMusicMode:
         ui_music_mode_ = UiMusicMode(std::clamp(c.i0, 0, int(UiMusicMode::kPostRaceVictory)));
@@ -1021,7 +1115,7 @@ void AudioEngine::drain_commands() {
         if (satnav_) satnav_->set_enabled(satnav_enabled_);
         break;
       case Command::kTriggerCoDriver:
-        if (codriver_) codriver_->enqueue_cue(c.text.data());
+        if (codriver_) codriver_->enqueue_cue(c.text.data(), c.b0);
         break;
       case Command::kClearCoDriver:
         if (codriver_) codriver_->clear();
@@ -1083,7 +1177,7 @@ void AudioEngine::render_block(float* out, int frames) {
     sanitize_vehicle_state(vst);
     last_veh_state_ = vst;
   }
-  AcousticsSample ac{};
+  RtAcousticsSample ac{};
   if (acoustics_in_.read(ac)) {
     last_acoustics_ = ac;
     have_acoustics_ = true;
@@ -1142,7 +1236,10 @@ void AudioEngine::render_block(float* out, int frames) {
       ui_music_phase_ = 0.0;
       ui_music_gain_ = 0.0f;
     }
-    auto& mbuf = bus_bufs_[int(Bus::kMusic)];
+    // Route Homespace music to Bus::kHomespaceMusic and Menu/Title/Map/Loading music to Bus::kMenuMusic
+    // so they are never ducked by -13 dB alongside GameMusic in UIExterior / Menu snapshots.
+    const Bus ui_music_bus = (ui_music_mode_ == UiMusicMode::kHomespace) ? Bus::kHomespaceMusic : Bus::kMenuMusic;
+    auto& mbuf = bus_bufs_[int(ui_music_bus)];
     std::fill(mbuf.begin(), mbuf.begin() + ptrdiff_t(samples), 0.0f);
     const size_t total_f = ui_track->stereo.size() / 2;
     const double step = double(std::max(1, ui_track->rate)) / double(rate_);
@@ -1161,7 +1258,7 @@ void AudioEngine::render_block(float* out, int frames) {
       ui_music_phase_ += step;
       if (ui_music_phase_ >= double(total_f)) ui_music_phase_ = std::fmod(ui_music_phase_, double(total_f));
     }
-    buses[int(Bus::kMusic)] = mbuf.data();
+    buses[int(ui_music_bus)] = mbuf.data();
   } else if (!on_title && (user_music_on || runtime_radio_on || radio_player_)) {
     ui_music_cur_ = UiMusicMode::kNone;
     ui_music_gain_ = 0.0f;
@@ -1236,9 +1333,9 @@ void AudioEngine::render_block(float* out, int frames) {
 
   if (sfx_) {
     constexpr Bus kSfxBuses[] = {
-        Bus::kOtherCars,  Bus::kTyres,       Bus::kWind,         Bus::kAmbience, Bus::kUi,
-        Bus::kTransmission, Bus::kSupercharger, Bus::kTurbo, Bus::kEngineDamage, Bus::kBackfire,
-        Bus::kSuspension, Bus::kCollision,
+        Bus::kOtherCars,        Bus::kTyres,         Bus::kWind,         Bus::kAmbience, Bus::kUi,
+        Bus::kTransmission,     Bus::kSupercharger,  Bus::kTurbo,        Bus::kEngineDamage, Bus::kBackfire,
+        Bus::kSuspension,       Bus::kCollision,     Bus::kHomespaceAmbience,
     };
     for (Bus b : kSfxBuses) {
       auto& buf = bus_bufs_[int(b)];
@@ -1247,7 +1344,8 @@ void AudioEngine::render_block(float* out, int frames) {
       buses[int(b)] = buf.data();
     }
     sfx_buses[int(Bus::kEngine)] = bus_bufs_[int(Bus::kEngine)].data();
-    last_veh_state_.music_active = buses[int(Bus::kMusic)] != nullptr;
+    last_veh_state_.music_active = buses[int(Bus::kMusic)] != nullptr || buses[int(Bus::kHomespaceMusic)] != nullptr ||
+                                   buses[int(Bus::kMenuMusic)] != nullptr;
     sfx_->render(last_veh_state_, sfx_buses, frames, engine_);
   }
 
@@ -1297,14 +1395,15 @@ void AudioEngine::render_block(float* out, int frames) {
       car_eqs_[size_t(i)].process(bus_bufs_[int(kCarBuses[i])].data(), frames);
     }
   }
-  // Environmental reverb (colorado_reverb.xml I3DL2 zones) routed across focus
-  // car engine, subsystems, 3D opponent/traffic cars, and tyres via a shared wet send bus.
+  // Environmental reverb (colorado_reverb.xml I3DL2 zones + early reflections) routed across focus
+  // car engine, subsystems, 3D opponent/traffic cars, tyres, collisions, and suspension via a shared wet send bus.
   if (have_acoustics_) {
-    constexpr Bus kRevBuses[7] = {Bus::kEngine, Bus::kTransmission, Bus::kSupercharger, Bus::kTurbo,
-                                  Bus::kBackfire, Bus::kOtherCars, Bus::kTyres};
-    constexpr float kRevSend[7] = {1.0f, 0.85f, 0.85f, 0.85f, 1.0f, 0.85f, 0.65f};
+    constexpr Bus kRevBuses[9] = {Bus::kEngine,    Bus::kTransmission, Bus::kSupercharger,
+                                  Bus::kTurbo,     Bus::kBackfire,     Bus::kOtherCars,
+                                  Bus::kTyres,     Bus::kCollision,    Bus::kSuspension};
+    constexpr float kRevSend[9] = {1.0f, 0.85f, 0.85f, 0.85f, 1.0f, 0.85f, 0.65f, 0.90f, 0.70f};
     float active_w = 0.0f;
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 9; ++i)
       if (buses[int(kRevBuses[i])]) active_w += kRevSend[i];
     if (active_w > 0.0f) {
       if (reverb_send_buf_.size() < samples) {
@@ -1312,7 +1411,7 @@ void AudioEngine::render_block(float* out, int frames) {
         reverb_wet_buf_.resize(samples, 0.0f);
       }
       std::fill(reverb_send_buf_.begin(), reverb_send_buf_.begin() + ptrdiff_t(samples), 0.0f);
-      for (int i = 0; i < 7; ++i) {
+      for (int i = 0; i < 9; ++i) {
         const float* src = buses[int(kRevBuses[i])];
         if (!src) continue;
         const float sw = kRevSend[i];
@@ -1321,7 +1420,7 @@ void AudioEngine::render_block(float* out, int frames) {
       if (reverb_.process_wet(reverb_send_buf_.data(), reverb_wet_buf_.data(), frames)) {
         const float dry_g = reverb_.dry_gain();
         const float inv_w = 1.0f / active_w;
-        for (int i = 0; i < 7; ++i) {
+        for (int i = 0; i < 9; ++i) {
           if (!buses[int(kRevBuses[i])]) continue;
           float* dst = bus_bufs_[int(kRevBuses[i])].data();
           const float ret = kRevSend[i] * inv_w;
@@ -1330,6 +1429,9 @@ void AudioEngine::render_block(float* out, int frames) {
       }
     }
   }
+
+  // Unified VO ducking state: coherent union of active VoPlayer playback and UI dialog ducking.
+  const bool vo_duck_now = vo_now || dialog_duck_requested_;
 
   if (use_matrix_) {
     const bool dj_now = !on_title && !user_music_on && !runtime_radio_on && radio_player_ && radio_player_->dj_speaking();
@@ -1346,18 +1448,22 @@ void AudioEngine::render_block(float* out, int frames) {
       last_satnav_playing_ = satnav_now;
       matrix_.activate(satnav_now ? "SatNavPlaying" : "SatNavNotPlaying");
     }
-    if (vo_now != last_vo_playing_) {
-      last_vo_playing_ = vo_now;
-      matrix_.activate(vo_now ? "VOPlaying" : "VONotPlaying");
+    if (vo_duck_now != last_vo_playing_) {
+      last_vo_playing_ = vo_duck_now;
+      matrix_.activate(vo_duck_now ? "VOPlaying" : "VONotPlaying");
     }
     if (have_acoustics_) {
       if (last_acoustics_.in_tunnel != last_in_tunnel_) {
         last_in_tunnel_ = last_acoustics_.in_tunnel;
         matrix_.activate(last_in_tunnel_ ? "InTunnel" : "NotInTunnel");
       }
-      if (!last_acoustics_.ambience_snapshot.empty() && last_acoustics_.ambience_snapshot != last_ambience_snap_) {
-        last_ambience_snap_ = last_acoustics_.ambience_snapshot;
-        matrix_.activate(last_ambience_snap_);
+      const std::string_view snap_v = last_acoustics_.ambience_snapshot_view();
+      const std::string_view prev_v(last_ambience_snap_.data());
+      if (!snap_v.empty() && snap_v != prev_v) {
+        const size_t n = std::min(snap_v.size(), last_ambience_snap_.size() - 1);
+        std::memcpy(last_ambience_snap_.data(), snap_v.data(), n);
+        last_ambience_snap_[n] = '\0';
+        matrix_.activate(snap_v);
       }
     }
     std::fill(out, out + samples, 0.0f);
@@ -1365,7 +1471,8 @@ void AudioEngine::render_block(float* out, int frames) {
     for (int b = 0; b < kBuses; ++b) {
       // AudioMixerSnapshots.xml is the single source of truth in matrix mode;
       // do not double-stack legacy SnapshotMixer (Paused/Menu) gains on top.
-      const bool title_music = on_title && ui_music_active && Bus(b) == Bus::kMusic;
+      const bool title_music =
+          on_title && ui_music_active && (Bus(b) == Bus::kMenuMusic || Bus(b) == Bus::kHomespaceMusic);
       const float snap_g = (on_title && Bus(b) != Bus::kUi && !title_music) ? 0.0f : matrix_.bus_gain(Bus(b));
       const float target = mixer_.bus_level(Bus(b)) * snap_g;
       float& s = matrix_bus_smooth_[size_t(b)];
@@ -1395,6 +1502,10 @@ void AudioEngine::render_block(float* out, int frames) {
     matrix_.advance(dt);
     mixer_.snapshots().advance(dt);
   } else {
+    if (vo_duck_now != last_vo_playing_) {
+      last_vo_playing_ = vo_duck_now;
+      if (snap_dialog_duck_ >= 0) mixer_.snapshots().set_active(snap_dialog_duck_, vo_duck_now);
+    }
     mixer_.mix(buses, frames, out);
   }
   sanitize_output(out, frames);

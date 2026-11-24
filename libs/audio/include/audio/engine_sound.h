@@ -60,6 +60,51 @@ struct BurbleConfig {
   double silence_weighting = 100;
 };
 
+struct DrivetrainSpringConfig {
+  bool enabled = false;
+  double spring_f1 = 8.0, damper_r1 = 0.5;
+  double spring_f2 = 16.0, damper_r2 = 0.5;
+  double scalar = 1.0;
+  double clamp = 400.0;
+};
+
+struct DistortionConfig {
+  bool active = false;
+  Param level;
+  double level_scalar = 0.0;
+  double volume_compensate = 1.0;
+};
+
+struct TrashBandConfig {
+  double input_gain = 1.0;
+  double overdrive = 0.0;
+  double mix = 0.0;
+  double output_gain = 1.0;
+};
+
+struct TrashDspConfig {
+  bool active = false;
+  double cutoff1_hz = 300.0;
+  double cutoff2_hz = 2500.0;
+  std::array<TrashBandConfig, 3> bands{};
+};
+
+struct ViewOtherVolumes {
+  double wind = 1.0;
+  double tires = 1.0;
+  double transmission = 1.0;
+  double turbo = 1.0;
+  double supercharger = 1.0;
+  double backfire = 1.0;
+  double burble = 1.0;
+  double suspension = 1.0;
+  double engine_damage = 1.0;
+  double exhaust_noise = 1.0;
+  double electric_motor = 1.0;
+  double engine_lfe = 1.0;
+  double reflections = 1.0;
+};
+
 struct Loop {
   int bank_index = 0;  // wavebankindex
   int rpm_min = 0, rpm_sample = 1, rpm_max = 0;
@@ -105,6 +150,12 @@ struct EngineSound {
   int intake_chuff_sample = -1;
   BurbleConfig burble;
   double exhaust_noise_volume = 0;
+  DrivetrainSpringConfig drivetrain_spring;
+  PeqConfig focus_peq;
+  DistortionConfig distortion;
+  TrashDspConfig trash_dsp;
+  std::array<ViewOtherVolumes, kViews> other_volumes{};
+  bool has_other_volumes = false;
   std::vector<Group> groups;
 };
 

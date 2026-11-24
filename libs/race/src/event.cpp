@@ -228,10 +228,24 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
   out.horizon_id = horizon_id;
   static const char* kSuffix[] = {"Easy", "Med", "Hard", "Pro"};
   const std::string sfx = kSuffix[effective_db_difficulty(difficulty, ai_mode)];
+  bool has_tod_start_col = false, has_tod_end_col = false;
+  {
+    std::string pragma_err;
+    db.each("PRAGMA table_info(Events)", {},
+            [&](sqlite3_stmt* s) {
+              const std::string col = lower_ascii(txt(s, 1));
+              if (col == "timeofdaystart") has_tod_start_col = true;
+              else if (col == "timeofdayend") has_tod_end_col = true;
+            },
+            &pragma_err);
+  }
+  const std::string tod_start_expr = has_tod_start_col ? "TimeOfDayStart" : "NULL";
+  const std::string tod_end_expr = has_tod_end_col ? "coalesce(TimeOfDayEnd, 0)" : "0";
   bool found = false;
   if (!db.each("select Id, AISkill" + sfx + ", AITemperament" + sfx + ", AIRubberband" + sfx +
                    ", PlayerGridPosition, CashPrize, coalesce(Level, 0), coalesce(CareerEventStyle, 0), "
-                   "coalesce(CareerTypeId, 0), coalesce(UpgradeAI, 0), coalesce(TargetClass, 0), coalesce(Name, '') from Events where HorizonEventID = ?",
+                   "coalesce(CareerTypeId, 0), coalesce(UpgradeAI, 0), coalesce(TargetClass, 0), coalesce(Name, ''), " +
+                   tod_start_expr + ", " + tod_end_expr + " from Events where HorizonEventID = ?",
                {horizon_id},
                [&](sqlite3_stmt* s) {
                  found = true;
@@ -247,6 +261,15 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  out.upgrade_ai = i64(s, 9) != 0;
                  out.target_class = int(i64(s, 10));
                  out.name = txt(s, 11);
+                 if (has_tod_start_col && sqlite3_column_type(s, 12) != SQLITE_NULL) {
+                   const double start_sec = d(s, 12);
+                   const double end_sec = has_tod_end_col ? d(s, 13) : 0.0;
+                   if (start_sec > 0.0 || end_sec > 0.0) {
+                     out.has_tod_start = true;
+                     out.tod_start_sec = std::fmod(std::fmod(start_sec, 86400.0) + 86400.0, 86400.0);
+                     out.tod_end_sec = end_sec > 0.0 ? std::fmod(std::fmod(end_sec, 86400.0) + 86400.0, 86400.0) : 0.0;
+                   }
+                 }
                },
                error))
     return false;

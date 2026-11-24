@@ -241,11 +241,10 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
             notice_until = vehicle.time() + 4.5;
             return false;
           }
+          std::string event_loaner_media;
           if (elig.uses_loaner && elig.loaner_car_id > 0) {
             if (auto it = app.baked_ids.find(elig.loaner_car_id); it != app.baked_ids.end()) {
-              app.pre_loaner_car = app.car;
-              app.pre_loaner_garage_id = app.career_garage.selected;
-              app.car = it->second;
+              event_loaner_media = it->second;
             }
           }
           // Preserve the player's manually chosen difficulty tier (never silently revert Hard/Pro/Easy to Med).
@@ -261,6 +260,9 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
           events_page.close();
           const auto enter_action = app.campaign.on_enter_event(ev, app.fmv_player, &app.audio_host);
           apply_campaign_action(enter_action);
+          // Defer applying the loaner car until DriveApp::start_race() so Showcase intros never
+          // mutate app.car out from under the currently loaded free-roam vehicle mesh.
+          app.pending_event_loaner_car = event_loaner_media;
           if (app.campaign.is_blocking_gameplay() && !app.headless) {
             pending_event_launch = ev.horizon_id;
           } else if (running && app.next_event.empty()) {
@@ -274,15 +276,28 @@ void DriveSession::start_new_career() {
           app.career = race::CareerRecord{};
           app.career.credits = 0;
           app.career.wristband_points = 0;
-          app.collected_wristband = 0;
+          // Retail FH1 starts pre-wristband (-1, matching FESTIVAL_SECOND Level = -1);
+          // Yellow Wristband (0) and the starter Corrado VR6 are awarded upon Festival registration.
+          app.collected_wristband = -1;
           host.free_roam.reset();
           app.progress = freeroam::Progress{};
           app.progress_loaded = false;
+          app.outpost_progress = freeroam::OutpostProgress{};
+          app.pr_stunt_session.cancel();
+          app.pr_stunt_loaner_active = false;
+          if (app.speed_tracker) {
+            app.speed_tracker->load_records({}, {});
+            app.speed_tracker->reset_session_clock();
+          }
+          app.road_discovery.reset();
+          app.h2h_races = 0;
+          app.h2h_wins = 0;
+          promo_tracker.load({}, promo_tracker.total_cars());
           app.saved = drive::DriveSave{};
           app.saved.career_started = true;
           app.saved.intro_completed = false;
-          app.saved.owned_garage = true;
-          app.saved.collected_wristband = 0;
+          app.saved.owned_garage = false;
+          app.saved.collected_wristband = -1;
           app.saved.difficulty = int(app.race_options.difficulty);
           app.have_saved = true;
           if (app.have_skills_data) {
@@ -292,8 +307,9 @@ void DriveSession::start_new_career() {
           app.max_skills_car = 0;
           app.career_garage = garage::Garage{};
           app.have_garage = true;
-          app.award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
-          app.garage_picker();
+          app.write_career_garage();
+          app.have_garage = false;
+          app.pick_ids.clear();
           // Spawn directly on the verified Colorado Viper highway asphalt spawn and force
           // synchronous world-streamer regather on hot-reload before frame 1 renders.
           app.spawn[0] = race::CampaignFlow::kViperSpawnPos[0];
@@ -309,6 +325,9 @@ void DriveSession::start_new_career() {
           app.race.reset();
           app.race_event.clear();
           app.pre_loaner_car.clear();
+          app.pre_loaner_garage_id = 0;
+          app.pending_event_loaner_car.clear();
+          app.pre_race_tod_sec = -1.0;
           app.story_intro.reset();
           app.pending_handoff = {};
           app.pending_barn_restorations.clear();
@@ -336,7 +355,9 @@ bool DriveSession::map_marker_visible(const MapMarker& m) {
               return m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite || m.kind == MapMarker::kH2hFinish;
             case MapFilter::kStreetRaces: return m.kind == MapMarker::kStreetHub || m.icon_tag == "streetrace";
             case MapFilter::kOutposts: return m.kind == MapMarker::kOutpost || m.kind == MapMarker::kFestivalSite;
-            case MapFilter::kCollectibles: return false;
+            case MapFilter::kCollectibles:
+              return m.icon_tag == "barnfind" || m.icon_tag == "barnfind_collected" ||
+                     m.icon_tag == "flyer" || m.icon_tag == "flyer_collected";
             case MapFilter::kPrStunts:
               return m.kind == MapMarker::kPrStunt || m.kind == MapMarker::kOutpost ||
                      m.kind == MapMarker::kSpeedTrap || m.kind == MapMarker::kSpeedZone;
@@ -373,9 +394,10 @@ void DriveSession::update_map_selection() {
             map_overlay.distance_m = std::hypot(m.x - at.x, m.z - at.z);
             if (m.kind == MapMarker::kEvent) map_overlay.action_hint = "ENTER EVENT";
             else if (m.kind == MapMarker::kOutpost) {
-              const int64_t ft_fee = slice12.trainer.effective_fast_travel_anywhere()
-                                         ? 0
-                                         : (10000LL * std::clamp(100 - discount(), 0, 100)) / 100LL;
+              const bool ft_free = slice12.trainer.effective_fast_travel_anywhere() ||
+                                   (app.have_outposts &&
+                                    app.outpost_progress.is_outpost_fast_travel_free(app.outposts, m.id));
+              const int64_t ft_fee = ft_free ? 0 : 10000LL;
               map_overlay.action_hint =
                   (m.discovered || slice12.trainer.effective_fast_travel_anywhere())
                       ? (ft_fee > 0 ? ("FAST TRAVEL (" + carview::thousands(ft_fee) + " CR)") : "FAST TRAVEL (FREE)")
@@ -383,11 +405,45 @@ void DriveSession::update_map_selection() {
             } else if (m.kind == MapMarker::kPrStunt) map_overlay.action_hint = "START PR STUNT";
             else map_overlay.action_hint = "ENTER";
           } else {
-            map_overlay.title = "COLORADO MAP";
-            map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR FESTIVAL SITE";
-            map_overlay.distance_m = std::hypot(map_cx - at.x, map_cz - at.z);
-            map_overlay.action_hint =
-                slice12.trainer.effective_fast_travel_anywhere() ? "FAST TRAVEL HERE" : "SET GPS WAYPOINT";
+            bool matched_collectible = false;
+            if ((map_filter == MapFilter::kAll || map_filter == MapFilter::kCollectibles) && app.progress_loaded) {
+              double best_cd = snap_r;
+              for (size_t bi = 0; bi < app.collectibles.barns.size(); ++bi) {
+                const auto& b = app.collectibles.barns[bi];
+                const int st = bi < app.progress.barns.size() ? app.progress.barns[bi].status : freeroam::kBarnNotSpawned;
+                const bool visible = (st == freeroam::kBarnFound || st == freeroam::kBarnRumour || map_overlay.treasure_map);
+                if (!visible) continue;
+                const double d = std::hypot(b.at.x - map_cx, b.at.z - map_cz);
+                if (d < best_cd) {
+                  best_cd = d;
+                  matched_collectible = true;
+                  map_overlay.title = st == freeroam::kBarnFound ? "BARN FIND (FOUND)" : "BARN FIND";
+                  map_overlay.subtitle = b.name;
+                  map_overlay.distance_m = std::hypot(b.at.x - at.x, b.at.z - at.z);
+                  map_overlay.action_hint = "SET GPS ROUTE";
+                }
+              }
+              for (const auto& sign : app.collectibles.signs) {
+                const bool found = app.progress.signs_found.count(sign.id) > 0;
+                if (!found && !map_overlay.treasure_map) continue;
+                const double d = std::hypot(sign.at.x - map_cx, sign.at.z - map_cz);
+                if (d < best_cd) {
+                  best_cd = d;
+                  matched_collectible = true;
+                  map_overlay.title = found ? "DISCOUNT SIGN (SMASHED)" : "DISCOUNT SIGN";
+                  map_overlay.subtitle = "UPGRADE DISCOUNT COLLECTIBLE";
+                  map_overlay.distance_m = std::hypot(sign.at.x - at.x, sign.at.z - at.z);
+                  map_overlay.action_hint = "SET GPS ROUTE";
+                }
+              }
+            }
+            if (!matched_collectible) {
+              map_overlay.title = "COLORADO MAP";
+              map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR FESTIVAL SITE";
+              map_overlay.distance_m = std::hypot(map_cx - at.x, map_cz - at.z);
+              map_overlay.action_hint =
+                  slice12.trainer.effective_fast_travel_anywhere() ? "FAST TRAVEL HERE" : "SET GPS WAYPOINT";
+            }
           }
           map_overlay.gps_active = app.gps_nav.active();
           map_overlay.gps_hint = app.gps_nav.active() ? "SET / CLEAR GPS (G)" : "SET GPS ROUTE (G)";
@@ -577,10 +633,12 @@ void DriveSession::choose() {
           }
           if (act == PauseMenu::kQuitRace && app.race) {
             results_page = 0;
+            app.restore_pre_race_tod();
             app.leave_race = true;
             running = false;
           }
           if (act == PauseMenu::kQuitToTitle) {
+            app.pending_event_loaner_car.clear();
             save_now("title");
             app.show_title = true;
             app.title_menu_phase = true;
@@ -611,6 +669,7 @@ void DriveSession::race_continue() {
             app.spawn[0] = at.x, app.spawn[1] = at.y, app.spawn[2] = at.z, app.spawn[3] = std::atan2(f.x, f.z);
           }
           app.have_spawn = true;
+          app.restore_pre_race_tod();
           app.leave_race = true;
           running = false;
 }
@@ -631,6 +690,30 @@ void DriveSession::open_menu() {
 
 bool DriveSession::activate_world_trigger() {
           if (app.race) return false;
+          // ColoradoDirt free roam: drive into Rally Championship world trigger markers
+          // (MS_RALLY_01..07 parsed from rally_event_activations.xml).
+          if (!app.colorado_world() && app.rally_catalog.loaded) {
+            const drive::Vec3 at = vehicle.position();
+            int best_idx = -1;
+            double best_dist = 65.0;
+            for (size_t i = 0; i < app.rally_catalog.championships.size(); ++i) {
+              const auto& ch = app.rally_catalog.championships[i];
+              if (std::fabs(ch.trigger_x) < 1e-3 && std::fabs(ch.trigger_z) < 1e-3) continue;
+              const double d = std::hypot(ch.trigger_x - at.x, ch.trigger_z - at.z);
+              if (d <= best_dist) {
+                best_dist = d;
+                best_idx = int(i);
+              }
+            }
+            if (best_idx >= 0) {
+              // Rally Hub index 0 is RALLY_HEATS; indices 1..7 map directly to catalog.championships.
+              app.rally_hub_open = true;
+              app.rally_hub_selected = best_idx + 1;
+              app.rally_notice = app.rally_catalog.championships[size_t(best_idx)].name;
+              app.audio_host.trigger_ui(audio::UiCue::kAccept);
+              return true;
+            }
+          }
           if (!active_trigger.in_range) {
             if (festival_mgr && festival_mgr->hud(vehicle.time()).prompt_visible) {
               const drive::Vec3 fp = vehicle.position();

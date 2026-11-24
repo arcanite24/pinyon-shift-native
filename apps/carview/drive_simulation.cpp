@@ -219,6 +219,7 @@ void DriveSession::start_pr_stunt(const freeroam::PrStunt& st) {
               app.pre_loaner_car = app.car;
               app.pre_loaner_garage_id = app.career_garage.selected;
             }
+            app.pr_stunt_loaner_active = true;
             const drive::Vec3 curp = vehicle.position();
             const drive::Vec3 curf = drive::rotate(vehicle.orientation(), {0, 0, 1});
             app.spawn[0] = curp.x;
@@ -265,11 +266,45 @@ bool DriveSession::free_roam_step() {
           }
         }
         if (!app.race) {
+          app.restore_pre_race_tod();
           const drive::Vec3 at = pos_now;
+          auto restore_pr_stunt_loaner = [&]() {
+            if (!app.pr_stunt_loaner_active) return;
+            app.pr_stunt_loaner_active = false;
+            if (!app.pre_loaner_car.empty()) {
+              const std::string back_car = app.pre_loaner_car;
+              if (app.pre_loaner_garage_id > 0) app.career_garage.selected = app.pre_loaner_garage_id;
+              app.pre_loaner_car.clear();
+              app.pre_loaner_garage_id = 0;
+              if (lower_ascii(back_car) != lower_ascii(app.car)) {
+                const drive::Vec3 curp = vehicle.position();
+                const drive::Vec3 curf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                app.spawn[0] = curp.x;
+                app.spawn[1] = curp.y;
+                app.spawn[2] = curp.z;
+                app.spawn[3] = std::atan2(curf.x, curf.z);
+                app.have_spawn = true;
+                app.next_car = back_car;
+                app.car = back_car;
+                running = false;
+              }
+            }
+          };
           if (app.gps_nav.active()) {
             const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
             const double hdg = std::atan2(f.x, f.z);
             fire_satnav_event(app.gps_nav.update(at.x, at.z, hdg, std::fabs(vehicle.speed()), drive::Vehicle::kStep));
+          }
+          if (!app.colorado_world() && app.rally_catalog.loaded && !app.rally_hub_open &&
+              notice_until <= vehicle.time()) {
+            for (const auto& ch : app.rally_catalog.championships) {
+              if (std::fabs(ch.trigger_x) < 1e-3 && std::fabs(ch.trigger_z) < 1e-3) continue;
+              if (std::hypot(ch.trigger_x - at.x, ch.trigger_z - at.z) <= 55.0) {
+                notice = ch.name + "  •  PRESS [E / ENTER] TO ENTER";
+                notice_until = vehicle.time() + 1.5;
+                break;
+              }
+            }
           }
           if (app.have_outposts) {
             const int disc_idx = app.outpost_progress.check_discovery(app.outposts, at.x, at.z);
@@ -322,12 +357,19 @@ bool DriveSession::free_roam_step() {
                 app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
                 app.gps_nav.clear();
                 save_due = true;
+                restore_pr_stunt_loaner();
               } else if (st_state == freeroam::PrStuntState::kFailed) {
                 popup = {"PR STUNT FAILED", "TIME EXPIRED  •  RETRY AT THE HORIZON OUTPOST", vehicle.time(), -1,
                          carview::ui::rgba(255, 72, 72)};
                 app.gps_nav.clear();
+                restore_pr_stunt_loaner();
               }
+            } else if (app.pr_stunt_loaner_active) {
+              // PR stunt was cancelled (e.g. via Escape); restore player's car immediately.
+              restore_pr_stunt_loaner();
             }
+          } else if (app.pr_stunt_loaner_active && !app.pr_stunt_session.active()) {
+            restore_pr_stunt_loaner();
           }
         }
         if (!host.free_roam || app.campaign.flow().is_onboarding()) return false;
@@ -955,6 +997,7 @@ bool DriveSession::step(const drive::Input& user_in) {
             prev_race_place = cur_place;
           }
           const int64_t prev_max_skills = app.skill_tracker->max_skills_score();
+          int prev_pop_rank = app.skill_tracker->popularity_rank();
           for (const auto& sev : app.skill_tracker->step(si)) {
             if (sev.kind == freeroam::SkillEvent::kSkillAwarded) {
               club_pending.skills.push_back(
@@ -995,19 +1038,22 @@ bool DriveSession::step(const drive::Input& user_in) {
               app.sponsor_banner_at = vehicle.time();
               save_due = true;
             } else if (sev.kind == freeroam::SkillEvent::kRankUp) {
+              const int old_rank = std::max(prev_pop_rank, sev.rank + 1);
               app.audio_host.trigger_ui(audio::UiCue::kRankUp);
               app.audio_host.radio_trigger_festival_update("PopularityRankUp");
-              app.campaign.on_popularity_rank_changed(sev.rank + 1, sev.rank, &app.audio_host);
-              // Notify if a Showcase event unlocked at this rank!
+              app.campaign.on_popularity_rank_changed(old_rank, sev.rank, &app.audio_host);
+              // Notify if any Showcase event unlocked across a single- or multi-rank jump!
               if (app.have_career_catalog) {
                 for (const auto& cev : app.career_catalog.events)
-                  if (cev.style == 3 && cev.popularity_rank_req == sev.rank) {
+                  if (cev.style == 3 && cev.popularity_rank_req > 0 &&
+                      sev.rank <= cev.popularity_rank_req && cev.popularity_rank_req < old_rank) {
                     const std::string ename = carview::game_text(cev.name_ref);
                     popup = {"NEW SHOWCASE UNLOCKED!",
                              (!ename.empty() && ename.rfind("_&", 0) != 0 ? ename : cev.horizon_id), vehicle.time(), -1,
                              carview::ui::rgba(245, 4, 92)};
                   }
               }
+              prev_pop_rank = std::min(prev_pop_rank, sev.rank);
               save_due = true;
             }
           }
