@@ -9,42 +9,66 @@ namespace audio {
 namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kLn2 = 0.69314718055994530942;
+
+double safe_finite(double v, double fallback) { return std::isfinite(v) ? v : fallback; }
+double safe_clamp(double v, double lo, double hi, double fallback) {
+  if (!std::isfinite(v)) return fallback;
+  return std::clamp(v, lo, hi);
+}
 }  // namespace
 
 void EnginePlayer::Biquad::set_lowpass(double fc, double q, int rate) {
-  fc = std::clamp(fc, 20.0, 0.45 * double(rate));
-  q = std::clamp(q, 0.1, 12.0);
-  const double w0 = 2.0 * kPi * fc / double(rate);
+  const double sr = double(std::max(8000, rate));
+  fc = safe_clamp(fc, 20.0, 0.45 * sr, 0.45 * sr);
+  q = safe_clamp(q, 0.1, 12.0, 0.707);
+  const double w0 = 2.0 * kPi * fc / sr;
   const double cos_w0 = std::cos(w0);
   const double alpha = std::sin(w0) / (2.0 * q);
   const double a0 = 1.0 + alpha;
-  b0 = ((1.0 - cos_w0) * 0.5) / a0;
-  b1 = (1.0 - cos_w0) / a0;
-  b2 = ((1.0 - cos_w0) * 0.5) / a0;
-  a1 = (-2.0 * cos_w0) / a0;
-  a2 = (1.0 - alpha) / a0;
+  if (!(a0 > 1e-9) || !std::isfinite(a0)) {
+    set_bypass();
+    return;
+  }
+  tb0 = ((1.0 - cos_w0) * 0.5) / a0;
+  tb1 = (1.0 - cos_w0) / a0;
+  tb2 = ((1.0 - cos_w0) * 0.5) / a0;
+  ta1 = (-2.0 * cos_w0) / a0;
+  ta2 = (1.0 - alpha) / a0;
+  if (!std::isfinite(tb0) || !std::isfinite(tb1) || !std::isfinite(tb2) || !std::isfinite(ta1) || !std::isfinite(ta2)) {
+    set_bypass();
+    return;
+  }
   enabled = true;
 }
 
 void EnginePlayer::Biquad::set_peq(double fc, double bw_oct, double linear_gain, int rate) {
-  fc = std::clamp(fc, 20.0, 0.45 * double(rate));
-  bw_oct = std::clamp(bw_oct, 0.1, 6.0);
-  linear_gain = std::clamp(linear_gain, 0.05, 3.0);
+  const double sr = double(std::max(8000, rate));
+  fc = safe_clamp(fc, 20.0, 0.45 * sr, 1000.0);
+  bw_oct = safe_clamp(bw_oct, 0.1, 6.0, 1.0);
+  linear_gain = safe_clamp(linear_gain, 0.05, 3.0, 1.0);
   if (std::fabs(linear_gain - 1.0) < 1e-4) {
-    enabled = false;
+    set_bypass();
     return;
   }
   const double A = std::sqrt(linear_gain);
-  const double w0 = 2.0 * kPi * fc / double(rate);
+  const double w0 = 2.0 * kPi * fc / sr;
   const double sin_w0 = std::sin(w0);
   const double cos_w0 = std::cos(w0);
   const double alpha = sin_w0 > 1e-6 ? sin_w0 * std::sinh((kLn2 * 0.5) * bw_oct * (w0 / sin_w0)) : 1e-6;
   const double a0 = 1.0 + alpha / A;
-  b0 = (1.0 + alpha * A) / a0;
-  b1 = (-2.0 * cos_w0) / a0;
-  b2 = (1.0 - alpha * A) / a0;
-  a1 = (-2.0 * cos_w0) / a0;
-  a2 = (1.0 - alpha / A) / a0;
+  if (!(a0 > 1e-9) || !std::isfinite(a0)) {
+    set_bypass();
+    return;
+  }
+  tb0 = (1.0 + alpha * A) / a0;
+  tb1 = (-2.0 * cos_w0) / a0;
+  tb2 = (1.0 - alpha * A) / a0;
+  ta1 = (-2.0 * cos_w0) / a0;
+  ta2 = (1.0 - alpha / A) / a0;
+  if (!std::isfinite(tb0) || !std::isfinite(tb1) || !std::isfinite(tb2) || !std::isfinite(ta1) || !std::isfinite(ta2)) {
+    set_bypass();
+    return;
+  }
   enabled = true;
 }
 
@@ -124,18 +148,23 @@ void EnginePlayer::update_expander_state(size_t g, double dt_ms) {
 }
 
 void EnginePlayer::advance_dsp(double dt) {
-  if (dt <= 0.0) return;
-  const double dt_ms = dt * 1000.0;
+  if (!std::isfinite(dt) || dt <= 0.0) return;
+  const double dt_ms = std::min(dt, 10.0) * 1000.0;
   for (size_t g = 0; g < state_.size(); ++g) update_expander_state(g, dt_ms);
 }
 
 void EnginePlayer::set(const Update& u) {
   double n = 0;
-  audio_rpm_ = audio::audio_rpm(u.rpm, idle_, redline_, sound_.audio_rpm_idle, sound_.audio_rpm_redline, &n);
-  const double thr = std::clamp(u.throttle, 0.0, 1.0);
-  const double neg_in = u.neg_torque < 0 ? std::clamp(u.neg_torque, -1.0, 0.0) : std::clamp(u.neg_torque, 0.0, 1.0);
-  SoundInputs in{n, thr, std::clamp(u.pos_torque, 0.0, 1.0), neg_in};
-  const double global = sound_.global_volume.eval(in, neg_raises) * sound_.engine_volume * master;
+  const double safe_rpm = safe_clamp(u.rpm, 0.0, 32000.0, idle_);
+  audio_rpm_ = audio::audio_rpm(safe_rpm, idle_, redline_, sound_.audio_rpm_idle, sound_.audio_rpm_redline, &n);
+  if (!std::isfinite(audio_rpm_)) audio_rpm_ = sound_.audio_rpm_idle;
+  n = safe_clamp(n, -0.5, 2.0, 0.0);
+  const double thr = safe_clamp(u.throttle, 0.0, 1.0, 0.0);
+  const double pos_t = safe_clamp(u.pos_torque, 0.0, 1.0, 0.0);
+  const double raw_neg = safe_finite(u.neg_torque, 0.0);
+  const double neg_in = raw_neg < 0 ? std::clamp(raw_neg, -1.0, 0.0) : std::clamp(raw_neg, 0.0, 1.0);
+  SoundInputs in{n, thr, pos_t, neg_in};
+  const double global = safe_clamp(sound_.global_volume.eval(in, neg_raises) * sound_.engine_volume * master, 0.0, 16.0, 0.0);
   const size_t view = size_t(std::clamp(int(u.view), 0, kViews - 1));
 
   // IntakeChuff one-shot trigger (SPEC-ENGINE-SOUND): snap-open from idle
@@ -173,17 +202,17 @@ void EnginePlayer::set(const Update& u) {
 
     // 2nd-order resonant Lowpass.
     if (group.lowpass) {
-      const double fc = std::clamp(group.lowpass_cutoff.eval(in, neg_raises), 20.0, 0.45 * rate_);
+      const double fc = safe_clamp(group.lowpass_cutoff.eval(in, neg_raises), 20.0, 0.45 * rate_, 0.45 * rate_);
       const double q =
-          group.lowpass_resonance.present ? std::clamp(group.lowpass_resonance.eval(in, neg_raises), 0.1, 12.0) : 0.707;
+          group.lowpass_resonance.present ? safe_clamp(group.lowpass_resonance.eval(in, neg_raises), 0.1, 12.0, 0.707) : 0.707;
       st.lp.set_lowpass(fc, q, rate_);
     } else {
-      st.lp.enabled = false;
+      st.lp.set_bypass();
     }
 
     // PEQ with audio_rpm_idle_gain_reset linear blend on ExhaustL.
     if (group.peq.active) {
-      double pg = std::clamp(group.peq.gain.eval(in, neg_raises), 0.05, 3.0);
+      double pg = safe_clamp(group.peq.gain.eval(in, neg_raises), 0.05, 3.0, 1.0);
       if (iequals(group.name, "ExhaustL") && group.idle_gain_reset > sound_.audio_rpm_idle + 1.0 &&
           audio_rpm_ < group.idle_gain_reset - 1.0) {
         const double span = (group.idle_gain_reset - 1.0) - sound_.audio_rpm_idle;
@@ -196,19 +225,19 @@ void EnginePlayer::set(const Update& u) {
       st.peq.set_peq(fc, bw, pg, rate_);
     } else {
       st.cur_peq_gain = 1.0;
-      st.peq.enabled = false;
+      st.peq.set_bypass();
     }
 
     // LoadPEQ: interpolate CenterFrequency, Bandwidth, Gain from NegLoad to PosLoad by throttle.
     if (group.load_peq.active) {
       const bool hp = group.load_peq.pos_load.active;
       const bool hn = group.load_peq.neg_load.active;
-      const double pos_g = hp ? group.load_peq.pos_load.gain.eval(in, neg_raises) : 1.0;
-      const double neg_g = hn ? group.load_peq.neg_load.gain.eval(in, neg_raises) : 1.0;
-      const double pos_fc = hp ? group.load_peq.pos_load.center_freq.eval(in, neg_raises) : 400.0;
-      const double neg_fc = hn ? group.load_peq.neg_load.center_freq.eval(in, neg_raises) : pos_fc;
-      const double pos_bw = hp ? group.load_peq.pos_load.bandwidth.eval(in, neg_raises) : 1.0;
-      const double neg_bw = hn ? group.load_peq.neg_load.bandwidth.eval(in, neg_raises) : pos_bw;
+      const double pos_g = hp ? safe_finite(group.load_peq.pos_load.gain.eval(in, neg_raises), 1.0) : 1.0;
+      const double neg_g = hn ? safe_finite(group.load_peq.neg_load.gain.eval(in, neg_raises), 1.0) : 1.0;
+      const double pos_fc = hp ? safe_finite(group.load_peq.pos_load.center_freq.eval(in, neg_raises), 400.0) : 400.0;
+      const double neg_fc = hn ? safe_finite(group.load_peq.neg_load.center_freq.eval(in, neg_raises), pos_fc) : pos_fc;
+      const double pos_bw = hp ? safe_finite(group.load_peq.pos_load.bandwidth.eval(in, neg_raises), 1.0) : 1.0;
+      const double neg_bw = hn ? safe_finite(group.load_peq.neg_load.bandwidth.eval(in, neg_raises), pos_bw) : pos_bw;
       const double lg = neg_g + (pos_g - neg_g) * thr;
       const double lfc = neg_fc + (pos_fc - neg_fc) * thr;
       const double lbw = neg_bw + (pos_bw - neg_bw) * thr;
@@ -216,15 +245,16 @@ void EnginePlayer::set(const Update& u) {
       st.load_peq.set_peq(lfc, lbw, lg, rate_);
     } else {
       st.cur_load_peq_gain = 1.0;
-      st.load_peq.enabled = false;
+      st.load_peq.set_bypass();
     }
 
     const std::vector<double> fade = crossfade(group.loops, audio_rpm_);
     for (size_t i = 0; i < group.loops.size(); ++i) {
       Voice& v = st.voices[i];
       const PcmSample* pcm = pcm_[g][i];
-      v.target_gain = pcm ? fade[i] * group.loops[i].volume : 0;
-      if (pcm) v.target_step = std::max(0.0, pitch_ratio(group.loops[i], audio_rpm_)) * pcm->rate / rate_;
+      v.target_gain = pcm ? safe_clamp(fade[i] * group.loops[i].volume, 0.0, 8.0, 0.0) : 0.0;
+      if (pcm)
+        v.target_step = safe_clamp(std::max(0.0, pitch_ratio(group.loops[i], audio_rpm_)) * pcm->rate / rate_, 0.0, 16.0, 1.0);
       if (!v.active && v.target_gain > 0.001) {
         v.active = true;
         v.phase = 0;
@@ -258,20 +288,26 @@ void EnginePlayer::render(float* out, int frames) {
           continue;
         }
         v.step += (v.target_step - v.step) * smooth_;
+        if (!std::isfinite(v.step) || v.step < 0.0) v.step = 0.0;
+        if (!std::isfinite(v.phase) || v.phase < 0.0) v.phase = 0.0;
         const size_t k = size_t(v.phase);
         const double t = v.phase - double(k);
         const float a = pcm->data[k % n], b = pcm->data[(k + 1) % n];
-        sum += v.gain * (a + (b - a) * t);
+        const double sample = double(a) + (double(b) - double(a)) * t;
+        if (std::isfinite(sample) && std::isfinite(v.gain)) sum += v.gain * sample;
         v.phase += v.step;
         if (v.phase >= double(n)) v.phase = std::fmod(v.phase, double(n));
       }
       st.gain += (st.target_gain - st.gain) * smooth_;
-      double s = st.peq.tick(sum);
-      s = st.load_peq.tick(s);
-      s = st.lp.tick(s);
+      if (!std::isfinite(st.gain)) st.gain = 0.0;
+      double s = st.peq.tick(sum, smooth_);
+      s = st.load_peq.tick(s, smooth_);
+      s = st.lp.tick(s, smooth_);
       s *= st.gain;
-      out[2 * f] += float(s * st.left);
-      out[2 * f + 1] += float(s * st.right);
+      if (std::isfinite(s)) {
+        out[2 * f] += float(s * st.left);
+        out[2 * f + 1] += float(s * st.right);
+      }
     }
   }
   // Mix one-shot IntakeChuff if active.

@@ -49,10 +49,44 @@ bool Showroom::upload(std::string& error) {
              VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
           : 0u;
-  if (!r_.upload_buffer(vertices_.data(), vertices_.size() * sizeof(bake::Vertex),
-                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rt_geom_flags, vertex_buffer_) ||
-      !r_.upload_buffer(indices_.data(), indices_.size() * sizeof(uint32_t),
-                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rt_geom_flags, index_buffer_) ||
+  // Batch vertex + index upload into one staging buffer and a single submit_once
+  // to halve synchronous GPU fence waits when spawning cars / traffic / AI guests.
+  bool geom_uploaded = false;
+  {
+    const VkDeviceSize vb_bytes = vertices_.size() * sizeof(bake::Vertex);
+    const VkDeviceSize ib_bytes = indices_.size() * sizeof(uint32_t);
+    const VkDeviceSize ib_off = (vb_bytes + 15ull) & ~15ull;
+    const VkDeviceSize total_bytes = ib_off + ib_bytes;
+    Renderer::Buffer staging;
+    if (total_bytes > 0 &&
+        r_.create_buffer(total_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging)) {
+      void* mapped = nullptr;
+      if (vmaMapMemory(r_.allocator_, staging.allocation, &mapped) == VK_SUCCESS) {
+        auto* dst = static_cast<uint8_t*>(mapped);
+        if (vb_bytes > 0) std::memcpy(dst, vertices_.data(), size_t(vb_bytes));
+        if (ib_bytes > 0) std::memcpy(dst + ib_off, indices_.data(), size_t(ib_bytes));
+        vmaUnmapMemory(r_.allocator_, staging.allocation);
+        if (r_.create_buffer(vb_bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | rt_geom_flags,
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertex_buffer_) &&
+            r_.create_buffer(ib_bytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | rt_geom_flags,
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, index_buffer_)) {
+          geom_uploaded = r_.submit_once([&](VkCommandBuffer cmd) {
+            if (vb_bytes > 0) {
+              VkBufferCopy vc{0, 0, vb_bytes};
+              vkCmdCopyBuffer(cmd, staging.buffer, vertex_buffer_.buffer, 1, &vc);
+            }
+            if (ib_bytes > 0) {
+              VkBufferCopy ic{ib_off, 0, ib_bytes};
+              vkCmdCopyBuffer(cmd, staging.buffer, index_buffer_.buffer, 1, &ic);
+            }
+          });
+        }
+      }
+      r_.destroy_buffer(staging);
+    }
+  }
+  if (!geom_uploaded ||
       !r_.create_buffer(sizeof(ShowroomFrame),
                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, frame_buffer_) ||
@@ -324,6 +358,7 @@ bool Showroom::upload(std::string& error) {
   }
   if (guest_) return true;
   upload_ring_.r = &r_;
+  upload_budget_ms_ = 1.8;  // <= 2.0 ms/frame streaming upload budget (override via SHIFT_UPLOAD_BUDGET_MS)
   if (const char* ub = std::getenv("SHIFT_UPLOAD_BUDGET_MS"); ub && *ub) {
     const double v = std::atof(ub);
     if (v >= 0.0 && v <= 50.0) upload_budget_ms_ = v;
@@ -786,10 +821,14 @@ void Showroom::pump_deferred_uploads(VkCommandBuffer cmd) {
     }
     ring.capacity = kDefaultRingBytes;
   }
+  constexpr VkDeviceSize kMaxFrameBytes = 2ull << 20;  // 2 MiB/frame GPU transfer cap to prevent queue spikes
+  constexpr uint32_t kMaxTexturesPerFrame = 12;
   const auto budget_t0 = std::chrono::steady_clock::now();
   VkDeviceSize cursor = 0;
+  uint32_t uploaded_count = 0;
   for (;;) {
-    if (upload_budget_ms_ > 0.0) {
+    if (uploaded_count >= kMaxTexturesPerFrame) break;
+    if (upload_budget_ms_ > 0.0 && uploaded_count > 0) {
       const double elapsed_ms =
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - budget_t0).count();
       if (elapsed_ms >= upload_budget_ms_) break;
@@ -825,6 +864,7 @@ void Showroom::pump_deferred_uploads(VkCommandBuffer cmd) {
     VkDeviceSize kept = 0;
     for (uint32_t l = skip; l < levels; ++l) kept += item->texture.levels[l].data.size();
     const VkDeviceSize aligned_cursor = (cursor + 15ull) & ~15ull;
+    if (cursor > 0 && aligned_cursor + kept > kMaxFrameBytes) break;
     if (aligned_cursor + kept > ring.capacity) {
       if (cursor > 0) break;  // Defer to next frame so we never stall or exceed ring capacity.
       // Single texture larger than 4 MiB: grow this slot's ring buffer cleanly (slot fence already signaled).
@@ -858,8 +898,13 @@ void Showroom::pump_deferred_uploads(VkCommandBuffer cmd) {
       notes_.push_back("deferred world texture " + item->texture.name + ": " + why);
     } else {
       world_staging_bytes_.fetch_add(uint64_t(kept), std::memory_order_relaxed);
+      ++uploaded_count;
     }
     cursor = write_at;
+  }
+  if (uploaded_count > 0 && arena_on() && (gpu_table_white_ > 0 || gpu_table_layer_fallback_ > 0)) {
+    std::string table_err;
+    (void)build_gpu_table(table_err);
   }
 }
 

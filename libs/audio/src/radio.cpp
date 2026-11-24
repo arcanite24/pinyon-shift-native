@@ -568,7 +568,10 @@ struct RadioPlayer::Voice {
   uint64_t id = 0;
   int slot = -1;
   bool used = false;
-  double pos = 0;  // source frame of the next output frame
+  double pos = 0;   // source frame of the next output frame
+  float env = 0.0f; // smooth fade envelope across seek/underrun boundaries (zero clicks)
+  float last_l = 0.0f;
+  float last_r = 0.0f;
 };
 
 struct RadioPlayer::Banks {
@@ -637,7 +640,7 @@ RadioPlayer::Voice* RadioPlayer::voice_for(const RadioEvent& e, int64_t initial_
     const uint64_t key = (music ? (1ull << 32) : 0ull) | uint64_t(sample);
     slot = banks_->pool->acquire(key, std::max<int64_t>(0, initial_frame));
   }
-  voices_.push_back({e.id, slot, true, double(std::max<int64_t>(0, initial_frame))});
+  voices_.push_back({e.id, slot, true, double(std::max<int64_t>(0, initial_frame)), 0.0f, 0.0f, 0.0f});
   return &voices_.back();
 }
 
@@ -695,6 +698,7 @@ void RadioPlayer::render(float* out, int frames) {
       const double expect = std::max(0.0, (t0 + double(first) / rate_ - e.start) * src_rate);
       if (std::fabs(expect - v->pos) > 0.05 * src_rate) {
         v->pos = expect;
+        v->env = 0.0f;  // smoothly fade in after resync jump (zero click/pop)
         const int64_t need = int64_t(std::floor(v->pos));
         if (need < st->from() || need > st->end() + 4096) {
           st->request(need);
@@ -716,11 +720,21 @@ void RadioPlayer::render(float* out, int frames) {
                                                                      : lv.dialogue);
       float* dst = (e.kind == RadioKind::kTrack ? music : voice) + 2 * size_t(first);
       const int64_t rfrom = st->from(), rend = st->end();
+      const float env_up = 1.0f / std::max(1.0f, 0.008f * float(rate_));
+      const float env_dn = 1.0f / std::max(1.0f, 0.004f * float(rate_));
+      const float decay = 0.985f;
       bool missed = false;
       for (int i = 0; i < n; ++i, v->pos += step) {
         const int64_t a = int64_t(std::floor(v->pos));
         if (a < rfrom || a >= rend) {
           missed = true;
+          v->env = std::max(0.0f, v->env - env_dn);
+          v->last_l *= decay;
+          v->last_r *= decay;
+          if (v->env > 1e-5f) {
+            dst[2 * i] += float(gain) * v->last_l * v->env;
+            dst[2 * i + 1] += float(gain) * v->last_r * v->env;
+          }
           continue;
         }
         const double frac = v->pos - double(a);
@@ -731,8 +745,13 @@ void RadioPlayer::render(float* out, int frames) {
           al = float(al + (bl - al) * frac);
           ar = float(ar + (br - ar) * frac);
         }
-        dst[2 * i] += float(gain) * al;
-        dst[2 * i + 1] += float(gain) * ar;
+        if (!std::isfinite(al)) al = 0.0f;
+        if (!std::isfinite(ar)) ar = 0.0f;
+        v->env = std::min(1.0f, v->env + env_up);
+        v->last_l = al;
+        v->last_r = ar;
+        dst[2 * i] += float(gain) * al * v->env;
+        dst[2 * i + 1] += float(gain) * ar * v->env;
       }
       const int64_t cur = int64_t(std::floor(v->pos));
       if (missed && cur < rfrom) st->request(cur);

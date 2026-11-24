@@ -54,7 +54,8 @@ struct AudioTelemetry {
   double avg_block_ms = 0.0;
   double p95_block_ms = 0.0;
   double worst_block_ms = 0.0;
-  uint64_t stalls = 0;  // blocks that exceeded their real-time duration
+  uint64_t stalls = 0;     // blocks that exceeded their real-time duration
+  uint64_t underruns = 0;  // stream buffer underruns detected and smoothly recovered
   uint32_t backfire_count = 0;  // monotonic exhaust backfire pop counter (coupled to visual flames)
   bool satnav_playing = false;
   bool vo_playing = false;
@@ -240,6 +241,7 @@ class AudioEngine {
   void enqueue(const Command& c);
   void drain_commands();
   void retire_ptr(Retired::Kind kind, void* ptr);
+  void sanitize_output(float* out, int frames);
   void render_block(float* out, int frames);
   void publish_telemetry(double block_ms, double budget_ms);
   void thread_main();
@@ -302,6 +304,11 @@ class AudioEngine {
   double total_block_ms_ = 0.0;
   double worst_block_ms_ = 0.0;
   uint64_t stalls_ = 0;
+  uint64_t underruns_ = 0;
+  int recovery_fade_pos_ = 0;
+  int recovery_fade_len_ = 0;
+  int adaptive_extra_frames_ = 0;
+  int clean_blocks_since_underrun_ = 0;
   std::array<double, 256> recent_block_ms_{};
   size_t recent_block_pos_ = 0;
   size_t recent_block_count_ = 0;

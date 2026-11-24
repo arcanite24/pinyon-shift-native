@@ -16,8 +16,28 @@
 #include "audio/xml.h"
 #include "cars/mods.h"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace audio {
 namespace {
+
+inline float safe_clamp_f(float v, float lo, float hi, float fallback = 0.0f) {
+  return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback;
+}
+
+inline void lower_decoder_thread_priority() {
+#ifdef _WIN32
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
+}
 
 std::string lower_str(std::string s) {
   for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -935,6 +955,7 @@ void SfxEngine::reload_burble_bank(const std::filesystem::path& game_root, const
 
   stop_burble_worker_.store(false, std::memory_order_release);
   burble_worker_ = std::thread([this, jobs = std::move(jobs), cache_dir, game_root]() {
+    lower_decoder_thread_priority();
     const std::filesystem::path ffmpeg = find_ffmpeg();
     std::error_code tec;
     const std::filesystem::path sfx_cache = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / "sfx");
@@ -972,6 +993,7 @@ void SfxEngine::start_decoder_worker(std::vector<DecodeJob> jobs, std::filesyste
   stop_worker_.store(false, std::memory_order_release);
   worker_ = std::thread([this, jobs = std::move(jobs), cache_dir = std::move(cache_dir),
                          game_root = std::move(game_root)]() {
+    lower_decoder_thread_priority();
     const std::filesystem::path ffmpeg = find_ffmpeg();
     std::error_code ec;
     const std::filesystem::path sfx_cache = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / "sfx");
@@ -1083,30 +1105,41 @@ void SfxEngine::mix_loop(LoopVoice& v, SfxSoundId id, float target_gain, float t
                          float target_r, float* bus, int frames) {
   const size_t idx = size_t(id);
   const PcmSample* pcm = idx < samples_.size() ? samples_[idx] : nullptr;
-  if (!bus || !pcm || pcm->data.empty() || (target_gain <= 1e-4f && v.gain <= 1e-4f)) {
+  const float tg = safe_clamp_f(target_gain, 0.0f, 4.0f, 0.0f);
+  const float tl = safe_clamp_f(target_l, 0.0f, 2.0f, 0.707f);
+  const float tr = safe_clamp_f(target_r, 0.0f, 2.0f, 0.707f);
+  if (!std::isfinite(v.gain) || v.gain < 0.0f) v.gain = 0.0f;
+  if (!std::isfinite(v.pitch) || v.pitch < 0.25f) v.pitch = 1.0f;
+  if (!std::isfinite(v.left)) v.left = tl;
+  if (!std::isfinite(v.right)) v.right = tr;
+  if (!std::isfinite(v.phase) || v.phase < 0.0) v.phase = 0.0;
+  if (!bus || !pcm || pcm->data.empty() || (tg <= 1e-4f && v.gain <= 1e-4f)) {
     v.gain = 0.0f;
     return;
   }
   const size_t n = pcm->data.size();
   const double rate_ratio = double(std::max(1, pcm->rate)) / double(rate_);
-  const float p_clamped = std::clamp(target_pitch, 0.25f, 4.0f);
+  const float p_clamped = safe_clamp_f(target_pitch, 0.25f, 4.0f, 1.0f);
   for (int i = 0; i < frames; ++i) {
-    v.gain += (target_gain - v.gain) * smooth_;
+    v.gain += (tg - v.gain) * smooth_;
     v.pitch += (p_clamped - v.pitch) * smooth_;
-    v.left += (target_l - v.left) * smooth_;
-    v.right += (target_r - v.right) * smooth_;
+    v.left += (tl - v.left) * smooth_;
+    v.right += (tr - v.right) * smooth_;
     if (v.gain > 1e-5f) {
       const size_t k = size_t(v.phase);
       const double frac = v.phase - double(k);
       const float a = pcm->data[k % n];
       const float b = pcm->data[(k + 1) % n];
       const float s = (a + (b - a) * float(frac)) * v.gain;
-      bus[2 * i] += s * v.left;
-      bus[2 * i + 1] += s * v.right;
+      if (std::isfinite(s)) {
+        bus[2 * i] += s * v.left;
+        bus[2 * i + 1] += s * v.right;
+      }
     }
     v.phase += double(v.pitch) * rate_ratio;
     if (v.phase >= double(n)) v.phase = std::fmod(v.phase, double(n));
   }
+  if (v.gain < 1e-18f) v.gain = 0.0f;
 }
 
 void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int frames, EnginePlayer* focus_engine) {
@@ -1346,7 +1379,12 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
     for (int i = 0; i < VehicleAudioState::kMaxOtherCars; ++i) {
       const auto& car = st.other_cars[size_t(i)];
       if (!car.active) {
-        other_voices_[size_t(i)].gain = 0.0f;
+        if (other_voices_[size_t(i)].gain > 1e-4f) {
+          mix_loop(other_voices_[size_t(i)], SfxSoundId::kOtherCarLoop, 0.0f, other_voices_[size_t(i)].pitch,
+                   other_voices_[size_t(i)].left, other_voices_[size_t(i)].right, other_bus, frames);
+        } else {
+          other_voices_[size_t(i)].gain = 0.0f;
+        }
         continue;
       }
       const Vec3f lp = clamp_audio_position(st.listener_pos);
@@ -1477,7 +1515,17 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       continue;
     }
     const size_t n = pcm->data.size();
-    const double step = double(o.pitch) * double(std::max(1, pcm->rate)) / double(rate_);
+    const float o_gain = safe_clamp_f(o.gain, 0.0f, 4.0f, 0.0f);
+    const float o_pitch = safe_clamp_f(o.pitch, 0.25f, 4.0f, 1.0f);
+    const float o_left = safe_clamp_f(o.left, 0.0f, 2.0f, 0.707f);
+    const float o_right = safe_clamp_f(o.right, 0.0f, 2.0f, 0.707f);
+    if (!std::isfinite(o.phase) || o.phase < 0.0) {
+      o.active = false;
+      continue;
+    }
+    const double step = double(o_pitch) * double(std::max(1, pcm->rate)) / double(rate_);
+    const double attack_n = std::min<double>(64.0, double(n) * 0.125);
+    const double release_n = std::min<double>(64.0, double(n) * 0.125);
     for (int f = 0; f < frames; ++f) {
       const size_t k = size_t(o.phase);
       if (k >= n) {
@@ -1488,9 +1536,15 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
         const double frac = o.phase - double(k);
         const float a = pcm->data[k];
         const float b = (k + 1 < n) ? pcm->data[k + 1] : 0.0f;
-        const float s = (a + (b - a) * float(frac)) * o.gain;
-        bus[2 * f] += s * o.left;
-        bus[2 * f + 1] += s * o.right;
+        float env = 1.0f;
+        if (attack_n > 1.0 && o.phase < attack_n) env = float(o.phase / attack_n);
+        const double rem = double(n) - o.phase;
+        if (release_n > 1.0 && rem < release_n) env = std::min(env, float(std::max(0.0, rem / release_n)));
+        const float s = (a + (b - a) * float(frac)) * o_gain * env;
+        if (std::isfinite(s)) {
+          bus[2 * f] += s * o_left;
+          bus[2 * f + 1] += s * o_right;
+        }
       }
       o.phase += step;
     }
