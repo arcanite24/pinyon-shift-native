@@ -269,6 +269,8 @@ class RaceView {
     float ai_paint_rgb[3] = {1.0f, 1.0f, 1.0f};
     drive::CarLampState lamps{}; // persistent per-AI lamp state (15-tick brake hold & headlamp stagger)
     bool lamps_initialized = false;
+    std::string cached_driver_name;
+    std::string cached_car_name;
   };
   void reset_car(drive::Vehicle& v, size_t i, const drive::Ground& near, double cx, double cz, double radius);
   std::string name_of(size_t i) const;
@@ -325,6 +327,18 @@ class RaceView {
   std::vector<race::LaneParams> lane_params_;
   std::vector<race::CarSample> samples_;
   std::vector<drive::ContactBody> contacts_;
+  // Cached HUD/tag strings & planner parameters to avoid per-step lookups and cache invalidations.
+  std::string cached_event_name_;
+  std::string cached_player_car_name_;
+  std::vector<float> last_planner_c_;
+  std::vector<float> last_planner_b_;
+  // Reusable per-step scratch buffers (zero heap allocations on the 120 Hz step path).
+  std::vector<race::TrafficObstacle> traffic_obs_scratch_;
+  std::vector<drive::DraftCar> draft_pool_scratch_;
+  std::vector<drive::DraftCar> draft_leaders_scratch_;
+  std::vector<double> draft_leader_strength_scratch_;
+  std::vector<drive::DraftState> draft_follower_states_scratch_;
+  std::vector<uint8_t> step_ribbon_scratch_, step_hole_scratch_, step_bad_scratch_;
   int contact_count_ = 0, resets_ = 0, far_steps_ = 0, hole_steps_ = 0;
   double player_impulse_ = 0.0;
   std::array<float, 3> player_impulse_local_pos_{0.0f, 0.5f, 1.5f};

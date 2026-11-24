@@ -847,6 +847,7 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
   if (!upload_world_textures(apart, error)) return false;
   auto p = std::make_unique<PendingWorld>();
   p->staged = std::move(staged);
+  const bool had_world_before = !world_draws_.empty();
   if (p->staged.vertices && p->staged.indices) {
     const VkDeviceSize vb = p->staged.vertices->size, ib = p->staged.indices->size;
     VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -857,29 +858,9 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
     const bool arena = p->staged.arena && arena_on();
     std::vector<WorldGpu::Copy> arena_vertex_copies, arena_index_copies;
     if (arena && !place_world_arena(p->staged, arena_vertex_copies, arena_index_copies, error)) {
-      // Long-distance teleports (e.g. New Career / Fast Travel) can temporarily exceed the
-      // resident arena while old cells are still live. Flush old/fading draws and retry once.
-      r_.wait_idle();
-      drop_fading_world(true);
-      for (auto& d : world_draws_) {
-        if (d.resident) gpu_world_->resident().release(d.key, 0);
-      }
-      world_draws_.clear();
-      world_trees_.clear();
-      active_gpu_table_records_.clear();
-      gpu_table_missing_textures_.clear();
-      if (gpu_world_) {
-        std::string clear_err;
-        (void)gpu_world_->set_table({}, clear_err);
-      }
-      arena_vertex_copies.clear();
-      arena_index_copies.clear();
-      error.clear();
-      if (!place_world_arena(p->staged, arena_vertex_copies, arena_index_copies, error)) {
-        pending_world_ = std::move(p);
-        drop_pending_world();
-        return false;
-      }
+      pending_world_ = std::move(p);
+      drop_pending_world();
+      return false;
     }
     if (arena) {
       // build_textured_world() computes d.box_min/max in p->staged's own origin frame
@@ -960,8 +941,14 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
       return false;
     }
   }
+  const bool need_immediate_swap =
+      had_world_before && p->staged.arena && arena_on() && world_draws_.empty() && p->staged.vertices &&
+      p->staged.indices && !p->staged.draws.empty();
   pending_world_ = std::move(p);
   evict_world_textures();
+  // If place_world_arena() had to reset a full arena (clearing world_draws_), complete the
+  // short DMA fence immediately so the next rendered frame never flashes an empty sky.
+  if (need_immediate_swap) (void)poll_world(true, nullptr);
   return true;
 }
 
@@ -984,6 +971,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
     // new one does not is kept, dithered out; the rest of its references go (the arenas keep the content cached).
     const uint64_t tag = r_.frames_submitted();
     std::unordered_set<uint64_t> new_keys;
+    new_keys.reserve(p.staged.draws.size() * 2 + 16);
     for (const auto& d : p.staged.draws)
       if (d.resident) {
         new_keys.insert(d.key);
@@ -991,6 +979,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
       }
     install_world_prop_spans(p.staged);
     std::unordered_set<uint64_t> old_keys;
+    old_keys.reserve(world_draws_.size() * 2 + 16);
     for (const auto& d : world_draws_)
       if (d.resident) old_keys.insert(d.key);
     const bool fade = swap_fade_seconds_ > 0 && world_textured_ && !world_draws_.empty();
@@ -998,6 +987,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
     fading_.arena = true;
     fading_.origin[0] = world_origin_[0];
     fading_.origin[1] = world_origin_[1];
+    if (fade) fading_.draws.reserve(world_draws_.size() / 4 + 16);
     for (auto& d : world_draws_) {
       if (!d.resident) continue;
       if (fade && d.cull && !new_keys.count(d.key)) {

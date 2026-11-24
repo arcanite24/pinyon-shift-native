@@ -2555,6 +2555,248 @@ void phase_r2_5_audio_completeness_checks() {
   }
 }
 
+// PT-10 end-to-end regression: full AudioEngine pipeline initialized via
+// load_mixer_configs (retail-like AudioMixerSnapshots.xml + GlobalDSPConfig.xml +
+// AudioEngineConfig.xml), default bus sliders, Loading/UIExterior/Paused -> FreeRoam
+// transitions, and audible RMS > 0.01 on Engine, Radio/Music, SFX, UI, and FMV paths.
+void playtest_pt10_audible_pipeline_checks() {
+  namespace fs = std::filesystem;
+  const fs::path tmp_root = fs::temp_directory_path() / "shift-pt10-audio-e2e";
+  std::error_code ec;
+  fs::remove_all(tmp_root, ec);
+  fs::create_directories(tmp_root / "media" / "audio", ec);
+  fs::create_directories(tmp_root / "music", ec);
+
+  {
+    std::ofstream f(tmp_root / "media" / "audio" / "AudioMixerSnapshots.xml");
+    f << R"xml(<?xml version="1.0" encoding="utf-8"?>
+<MixSnapshots>
+  <DynamicsData>
+    <MusicHighpass fadeinrate="3.0" fadeoutrate="33.0" zonefilterlevel="200.0"/>
+    <CrashData threshold="50" drop="10"/>
+    <TopSpeedData threshold="0.70"/>
+  </DynamicsData>
+  <FreeRoam group="Gameplay">
+    <FocusCar active="1" destvolume="0.35" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <OppCar active="1" destvolume="0.35" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <Tire active="1" destvolume="0.30" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <CarWind active="1" destvolume="0.30" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <Collision active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <AmbientStatic active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <GameMusic active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <HomespaceMusic active="1" destvolume="0.8" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <MenuMusic active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <GameUI active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <VO active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <SatNav active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <DJModifier active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+  </FreeRoam>
+  <Loading group="Gameplay">
+    <FocusCar active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <OppCar active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <Tire active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <Collision active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <GameMusic active="1" destvolume="0.25" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <MenuMusic active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <GameUI active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+  </Loading>
+  <UIExterior group="Gameplay">
+    <FocusCar active="1" destvolume="0.175" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <OppCar active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <Tire active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <Collision active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <GameMusic active="1" destvolume="0.22" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <HomespaceMusic active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <MenuMusic active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <GameUI active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+  </UIExterior>
+  <Paused group="Gameplay">
+    <FocusCar active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <OppCar active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <Tire active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <Collision active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <GameMusic active="1" destvolume="0.25" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <MenuMusic active="1" destvolume="0.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+    <GameUI active="1" destvolume="1.0" fadetime="0.05" returntime="0" returnfadetime="0"/>
+  </Paused>
+  <LowSpeed group="Speed"><GameMusic active="1" destvolume="1.0"/></LowSpeed>
+  <AverageSpeedExit group="SpeedZones"><GameMusic active="1" destvolume="1.0"/></AverageSpeedExit>
+  <VONotPlaying group="VO"><FocusCar active="1" destvolume="1.0"/></VONotPlaying>
+  <NotInTunnel group="Reverb"><FocusCar active="1" destvolume="1.0"/></NotInTunnel>
+  <RadioNormal group="Radio"><FocusCar active="1" destvolume="1.0"/></RadioNormal>
+  <SatNavNotPlaying group="SatNav"><GameMusic active="1" destvolume="1.0"/></SatNavNotPlaying>
+</MixSnapshots>)xml";
+  }
+  {
+    std::ofstream f(tmp_root / "media" / "audio" / "GlobalDSPConfig.xml");
+    f << R"xml(<GlobalDSPConfig>
+  <RewindDSPConfig Bypass="false" Gain="0.30" Bandwidth="3.36" Center="3772.0"/>
+  <ThreeTwoOneDSPConfig Bypass="false" Gain="0.10" Bandwidth="2.0" Center="1500.0"/>
+  <CockpitDSPConfig Bypass="true" Bypass1="true" Bypass2="true" Bypass3="true"/>
+</GlobalDSPConfig>)xml";
+  }
+  {
+    std::ofstream f(tmp_root / "media" / "audio" / "AudioEngineConfig.xml");
+    f << R"xml(<AudioEngineConfig
+  compressorBypass="false" compressorLevel="1.0" compressorThreshold="0.1"
+  compressorAttack="0.05" compressorRelease="0.5" compressorRatio="0.25" compressorGainMakeup="1.0"
+  compressorBypassTV="false" compressorLevelTV="1.0" compressorThresholdTV="0.1"
+  compressorAttackTV="0.05" compressorReleaseTV="0.5" compressorRatioTV="0.15" compressorGainMakeupTV="1.0"
+  saturatorBypass="false" saturatorLevel="0.95" saturatorSaturation="0.90" saturatorGain="1.0"
+/>)xml";
+  }
+  write_tone_wav(tmp_root / "music" / "01_radio_like.wav", 48000, 48000, 330.0, 0.5);
+
+  auto rms_of = [](const std::vector<float>& pcm, size_t start_sample = 0) {
+    double sq = 0.0;
+    size_t n = 0;
+    for (size_t i = start_sample; i < pcm.size(); ++i) {
+      if (!std::isfinite(pcm[i])) return -1.0;
+      sq += double(pcm[i]) * double(pcm[i]);
+      ++n;
+    }
+    return n > 0 ? std::sqrt(sq / double(n)) : 0.0;
+  };
+  auto make_tone = [](double hz, int n, float amp = 0.6f) {
+    audio::PcmSample s;
+    s.rate = 48000;
+    s.data.resize(size_t(n));
+    for (int i = 0; i < n; ++i) s.data[size_t(i)] = amp * float(std::sin(2.0 * 3.14159265358979 * hz * i / 48000.0));
+    return s;
+  };
+
+  auto init_engine = [&](audio::AudioEngine& eng) {
+    std::string note;
+    CHECK(eng.load_mixer_configs(tmp_root, &note));
+    CHECK(eng.has_snapshot_matrix());
+    eng.set_master_volume(1.0f);
+    eng.set_mute(false);
+    eng.set_playback_system(audio::PlaybackSystem::kHomeTheater);
+    eng.set_full_dynamic_range(false);
+    for (int b = 0; b < audio::kUiSliderBuses; ++b) eng.set_bus_level(audio::Bus(b), 1.0f);
+    eng.activate_matrix_snapshot("FreeRoam");
+  };
+
+  // 1. Verify Loading -> FreeRoam, UIExterior -> FreeRoam, and Paused -> FreeRoam never trap buses in silence.
+  {
+    audio::AudioEngine eng(48000);
+    init_engine(eng);
+    std::vector<float> scratch(4800 * 2, 0.0f);
+    eng.activate_matrix_snapshot("Loading");
+    eng.render_offline(scratch.data(), 4800);  // 100 ms > 50 ms fade
+    CHECK(eng.matrix_bus_gain(audio::Bus::kEngine) < 0.05f);
+    eng.restore_gameplay_snapshot();
+    eng.render_offline(scratch.data(), 4800);
+    CHECK(eng.matrix_bus_gain(audio::Bus::kEngine) > 0.30f);
+
+    // UIExterior must be transient and restore FreeRoam (including Tire/Collision/GameMusic)!
+    eng.activate_matrix_snapshot("UIExterior");
+    eng.render_offline(scratch.data(), 4800);
+    CHECK(eng.matrix_bus_gain(audio::Bus::kTyres) < 0.05f);
+    CHECK(eng.matrix_bus_gain(audio::Bus::kMusic) < 0.30f);
+    eng.restore_gameplay_snapshot();
+    eng.render_offline(scratch.data(), 4800);
+    CHECK(eng.matrix_bus_gain(audio::Bus::kEngine) > 0.30f);
+    CHECK(eng.matrix_bus_gain(audio::Bus::kTyres) > 0.25f);
+    CHECK(eng.matrix_bus_gain(audio::Bus::kMusic) > 0.90f);
+
+    eng.activate_matrix_snapshot("Paused");
+    eng.render_offline(scratch.data(), 4800);
+    eng.restore_gameplay_snapshot();
+    eng.render_offline(scratch.data(), 4800);
+    CHECK(eng.matrix_bus_gain(audio::Bus::kEngine) > 0.30f);
+    CHECK(eng.matrix_bus_gain(audio::Bus::kMusic) > 0.90f);
+  }
+
+  // 2. Engine path produces audible RMS > 0.01 after Loading -> FreeRoam.
+  {
+    audio::AudioEngine eng(48000);
+    init_engine(eng);
+    audio::EngineSound es;
+    audio::Group g;
+    g.name = "EngineAmbient";
+    g.loops.push_back(loop(800, 2000, 8000));
+    es.groups.push_back(g);
+    audio::PcmSample eng_tone = make_tone(120.0, 4800, 0.7f);
+    auto ep = std::make_unique<audio::EnginePlayer>(
+        es, std::vector<std::vector<const audio::PcmSample*>>{{&eng_tone}}, 48000, 800, 7500);
+    ep->master = 0.6;
+    eng.set_engine_player(std::move(ep));
+    eng.set_engine_input({2200.0, 0.5, 0.4, 0.0, audio::View::kFollow});
+    eng.activate_matrix_snapshot("Loading");
+    std::vector<float> buf(9600 * 2, 0.0f);
+    eng.render_offline(buf.data(), 4800);
+    eng.restore_gameplay_snapshot();
+    eng.render_offline(buf.data(), 9600);
+    CHECK(rms_of(buf, 4800 * 2) > 0.01);
+  }
+
+  // 3. Music / Radio bus path produces audible RMS > 0.01 in FreeRoam.
+  {
+    audio::AudioEngine eng(48000);
+    init_engine(eng);
+    auto um = std::make_unique<audio::UserMusicPlayer>(tmp_root / "music", 48000, 7, false);
+    um->set_enabled(true);
+    um->set_volume(1.0f);
+    eng.set_user_music(std::move(um));
+    std::vector<float> buf(9600 * 2, 0.0f);
+    eng.render_offline(buf.data(), 9600);
+    CHECK(rms_of(buf, 2400 * 2) > 0.01);
+  }
+
+  // 4. SFX (collision) and UI cue paths each produce audible RMS > 0.01 in FreeRoam.
+  {
+    audio::AudioEngine eng(48000);
+    init_engine(eng);
+    auto sfx = std::make_unique<audio::SfxEngine>(48000);
+    sfx->set_sample(audio::SfxSoundId::kImpact3d, make_tone(180.0, 9600, 0.8f));
+    sfx->set_sample(audio::SfxSoundId::kUiAccept, make_tone(880.0, 9600, 0.8f));
+    eng.set_sfx_engine(std::move(sfx));
+
+    audio::CollisionHit hit{};
+    hit.rel_speed_mps = 18.0f;
+    hit.is_car_on_car = true;
+    eng.trigger_collision(hit);
+    std::vector<float> sfx_buf(4800 * 2, 0.0f);
+    eng.render_offline(sfx_buf.data(), 4800);
+    CHECK(rms_of(sfx_buf) > 0.01);
+
+    // Silence collision tail then verify UI cue independently.
+    std::vector<float> drain(14400 * 2, 0.0f);
+    eng.render_offline(drain.data(), 14400);
+    eng.trigger_ui(audio::UiCue::kAccept);
+    std::vector<float> ui_buf(4800 * 2, 0.0f);
+    eng.render_offline(ui_buf.data(), 4800);
+    CHECK(rms_of(ui_buf) > 0.01);
+  }
+
+  // 5. FMV audio callback produces audible RMS > 0.01 even under matrix mode.
+  {
+    audio::AudioEngine eng(48000);
+    init_engine(eng);
+    struct FmvGen {
+      int phase = 0;
+    } gen;
+    eng.set_fmv_audio(
+        [](void* ctx, float* out, int frames) -> int {
+          auto* g = static_cast<FmvGen*>(ctx);
+          for (int i = 0; i < frames; ++i) {
+            const float s = 0.4f * std::sin(2.0f * 3.14159265f * 440.0f * float(g->phase++) / 48000.0f);
+            out[2 * i] = s;
+            out[2 * i + 1] = s;
+          }
+          return frames;
+        },
+        &gen);
+    std::vector<float> fmv_buf(4800 * 2, 0.0f);
+    eng.render_offline(fmv_buf.data(), 4800);
+    CHECK(rms_of(fmv_buf) > 0.01);
+    eng.set_fmv_audio(nullptr, nullptr);
+  }
+
+  fs::remove_all(tmp_root, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -2574,6 +2816,7 @@ int main() {
   phase2_parity_checks();
   phase_r2_1_audio_parity_checks();
   phase_r2_5_audio_completeness_checks();
+  playtest_pt10_audible_pipeline_checks();
   r34_checks();
   std::printf("audio_tests: %d failures\n", failures);
   return failures ? 1 : 0;

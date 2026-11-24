@@ -142,6 +142,26 @@ void test_fmv_synthetic_and_audio_mix() {
             (fb1610[bot1610] > 15 || fb1610[bot1610 + 1] > 15 || fb1610[bot1610 + 2] > 15),
         "FMV fills 16:10 screen edge-to-edge without top/bottom black bars");
 
+  // On 3840x2071 (aspect 1.854, scaled 384x207), FMV cover-fills edge-to-edge with ZERO side bars
+  // and tags backdrop/video with kUiFlagFullscreen/kUiFlagFullscreenCover so 16:9 HUD lock never exposes 3D edges.
+  carview::ui::List list4k;
+  player.draw(list4k, 384.0f, 207.0f, {}, false);
+  bool saw_fs_bg = false, saw_fs_cover = false;
+  for (const auto& it : list4k.items()) {
+    if ((it.flags & carview::ui::kUiFlagFullscreen) != 0u) saw_fs_bg = true;
+    if ((it.flags & carview::ui::kUiFlagFullscreenCover) != 0u && std::fabs(it.r[0] - (16.0f / 9.0f)) < 0.01f)
+      saw_fs_cover = true;
+  }
+  check(saw_fs_bg && saw_fs_cover, "FmvPlayer::draw tags fullscreen backdrop and cover-fill video quad");
+  std::vector<uint8_t> fb4k(384u * 207u * 4u, 0);
+  carview::ui::rasterize(list4k.items(), fb4k, 384, 207);
+  auto is_lit = [&](uint32_t x, uint32_t y) {
+    const size_t idx = (size_t(y) * 384u + size_t(x)) * 4u;
+    return fb4k[idx] > 15 || fb4k[idx + 1] > 15 || fb4k[idx + 2] > 15;
+  };
+  check(is_lit(2, 103) && is_lit(381, 103) && is_lit(192, 2) && is_lit(192, 204),
+        "FMV fills 3840x2071 aspect (384x207) edge-to-edge with zero left/right/top/bottom bars");
+
   // Advance to completion.
   check(player.update(1.0), "synthetic FMV still active at 1.0s");
   check(!player.update(1.5), "synthetic FMV finishes after duration");
@@ -384,6 +404,38 @@ void test_menu_and_settings_pad_navigation() {
     check(nav.update(-0.95, 0.0, 1.00) == carview::MenuStickNav::Dir::kNone, "latched stick ignores pre-held steering");
     check(nav.update(0.0, 0.0, 1.05) == carview::MenuStickNav::Dir::kNone, "neutral clears latch");
     check(nav.update(-0.90, 0.0, 1.07) == carview::MenuStickNav::Dir::kLeft, "Left fires after latch cleared");
+  }
+
+  // 5. PT-11 regression: toggling Radio ON/OFF with --tod-preset 19 loaded must NOT change tod_preset_hour,
+  //    while stepping Time of Day itself DOES change tod_preset_hour.
+  {
+    carview::SettingsPage tod_sp;
+    tod_sp.load({"--tod-preset", "19"});
+    tod_sp.open();
+    const double initial_tod = tod_sp.live_settings().tod_preset_hour;
+    check(std::fabs(initial_tod - 19.0) < 1e-6, "SettingsPage loads --tod-preset 19");
+    tod_sp.select_tab(int(carview::SettingsPage::Tab::kAudio));
+    bool toggled_radio = false;
+    bool stepped_tod = false;
+    const auto rows = tod_sp.display_rows();
+    for (const auto& r : rows) {
+      if (r.name == "radio") {
+        tod_sp.select_row(r.flat_index);
+        const bool before_radio = tod_sp.live_settings().radio;
+        tod_sp.step(1);
+        check(tod_sp.live_settings().radio != before_radio, "stepping radio row toggles radio setting");
+        check(std::fabs(tod_sp.live_settings().tod_preset_hour - initial_tod) < 1e-6,
+              "toggling radio does not alter tod_preset_hour");
+        toggled_radio = true;
+      } else if (r.name == "time of day") {
+        tod_sp.select_row(r.flat_index);
+        tod_sp.step(1);
+        check(std::fabs(tod_sp.live_settings().tod_preset_hour - initial_tod) > 1e-6,
+              "stepping time of day row updates tod_preset_hour");
+        stepped_tod = true;
+      }
+    }
+    check(toggled_radio && stepped_tod, "located both radio and time of day rows in SettingsPage");
   }
 }
 

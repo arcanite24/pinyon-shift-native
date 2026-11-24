@@ -67,6 +67,28 @@ int faked_target(int P, int C, int lo, int hi, int r) {
   return std::clamp(t + r, lo, hi);
 }
 
+// O(log N) equivalent of drive::RacingLine::segment(distance, 0) for hot 120 Hz paths.
+size_t line_segment_fast(const drive::RacingLine& L, double distance) {
+  const size_t n = L.size();
+  if (n < 2) return 0;
+  const auto it =
+      std::upper_bound(L.dist.begin(), L.dist.end(), distance, [](double v, float d) { return v < double(d); });
+  if (it == L.dist.begin()) return 0;
+  return std::min(size_t((it - L.dist.begin()) - 1), n - 2);
+}
+
+void line_heading_and_room_fast(const drive::RacingLine& L, double distance, bool right, double& heading,
+                                double& room) {
+  heading = 0.0;
+  room = 1e9;
+  const size_t n = L.size();
+  if (n < 2) return;
+  const size_t s = line_segment_fast(L, distance);
+  heading = std::atan2(double(L.x[s + 1] - L.x[s]), double(L.z[s + 1] - L.z[s]));
+  const auto& r = right ? L.room_right : L.room_left;
+  if (r.size() == n) room = double(r[s]);
+}
+
 // The +5 flag (SPEC-RACE-AI; what sets it is open). Interim: the one
 // flagged car of each measured grid (EVENTS Grid).
 bool flagged_participant(const std::string& event, int64_t car) {
@@ -499,10 +521,19 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   states_.resize(n), inputs_.resize(n), progress_.resize(n), cross_.resize(n), speed_.resize(n), lanes_.assign(n, 0), caps_.assign(n, 1e9f);
   samples_.resize(n);
   lane_params_.resize(n);
+  last_planner_c_.assign(n, -1.0f);
+  last_planner_b_.assign(n, -1.0f);
+  cached_event_name_ = event_.name.empty() ? event_.horizon_id : names_.text(event_.name);
+  if (cached_event_name_.empty() || cached_event_name_.rfind("_&", 0) == 0) cached_event_name_ = event_.horizon_id;
+  cached_player_car_name_ = names_.short_name(o_.player_car);
   for (size_t k = 0; k < cars_.size(); ++k) {
     if (const auto* t = event_.temperament(cars_[k].setup.temperament))
       lane_params_[k] = {float(t->trailing_distance), float(t->car_clearance), float(t->edge_clearance),
                          float(t->aggression)};
+    cars_[k].cached_car_name = names_.short_name(cars_[k].who.car_media);
+    cars_[k].cached_driver_name = cars_[k].who.driver.empty() ? std::string() : names_.text(cars_[k].who.driver);
+    if (cars_[k].cached_driver_name.empty() || cars_[k].cached_driver_name.rfind("_&", 0) == 0)
+      cars_[k].cached_driver_name = cars_[k].cached_car_name;
   }
   recorded_ghost_.clear();
   recorded_ghost_.event_id = event_.horizon_id;
@@ -528,10 +559,13 @@ void RaceView::route_near(std::vector<std::array<double, 2>>& out) const {
   out.clear();
   if (!field_) return;
   const auto& L = line_.line;
+  if (L.dist.empty()) return;
   const double p = field_->progress(cars_.size());
-  const double to = std::min(p + 600, finish_progress_ > 0 ? finish_progress_ : L.length());
-  for (size_t i = 0; i < L.size(); ++i)
-    if (L.dist[i] >= p - 150 && L.dist[i] <= to) out.push_back({L.x[i], L.z[i]});
+  const double from = p - 150.0;
+  const double to = std::min(p + 600.0, finish_progress_ > 0 ? finish_progress_ : L.length());
+  auto it = std::lower_bound(L.dist.begin(), L.dist.end(), from, [](float d, double v) { return double(d) < v; });
+  for (size_t i = size_t(it - L.dist.begin()); i < L.size() && double(L.dist[i]) <= to; ++i)
+    out.push_back({L.x[i], L.z[i]});
 }
 
 void RaceView::opponent_positions(std::vector<std::array<double, 2>>& out) const {
@@ -633,6 +667,12 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
         c.has_ai_paint = true;
       }
     }
+  }
+  // Parallelize per-car physics parameter derivation, 10-iteration PI virtual-lap bisection,
+  // ai_capacity() table computation, and grid placement across worker threads.
+  std::vector<std::string> bisect_logs(cars_.size());
+  auto setup_one_car = [&](size_t idx) {
+    Car& c = cars_[idx];
     std::vector<std::string> notes;
     drive::CarParams params = drive::params_for_baked_car(c.model->car(), bake_dir_, &notes);
     if (event_.upgrade_ai) {
@@ -658,9 +698,11 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
         race::apply_ai_upgrade(params, c.upgrade_t, c.who.tuning_level);
         c.upgraded_raw_pi = raw_pi_for(params);
         c.upgraded_shown_pi = garage::shown_index(c.upgraded_raw_pi, bands_);
-        std::printf("race: AI bisect %-28s stock %d -> target %d, solved %d (t %+.3f, tune %d)\n",
-                    c.who.car_media.c_str(), stock_shown, c.target_shown_pi, c.upgraded_shown_pi, c.upgrade_t,
-                    c.who.tuning_level);
+        char buf[192];
+        std::snprintf(buf, sizeof buf, "race: AI bisect %-28s stock %d -> target %d, solved %d (t %+.3f, tune %d)\n",
+                      c.who.car_media.c_str(), stock_shown, c.target_shown_pi, c.upgraded_shown_pi, c.upgrade_t,
+                      c.who.tuning_level);
+        bisect_logs[idx] = buf;
       } else {
         race::apply_ai_upgrade(params, c.upgrade_t, c.who.tuning_level);
       }
@@ -693,6 +735,28 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     lin.snap_headlamps = true;
     c.lamps.update(lin);
     c.lamps_initialized = true;
+  };
+  const size_t setup_threads =
+      std::min<size_t>(cars_.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
+  if (setup_threads > 1 && cars_.size() >= 2) {
+    std::atomic<size_t> next_car{0};
+    std::vector<std::thread> workers;
+    workers.reserve(setup_threads);
+    for (size_t t = 0; t < setup_threads; ++t) {
+      workers.emplace_back([&]() {
+        for (;;) {
+          const size_t idx = next_car.fetch_add(1, std::memory_order_relaxed);
+          if (idx >= cars_.size()) break;
+          setup_one_car(idx);
+        }
+      });
+    }
+    for (auto& w : workers) w.join();
+  } else {
+    for (size_t idx = 0; idx < cars_.size(); ++idx) setup_one_car(idx);
+  }
+  for (const auto& line_log : bisect_logs) {
+    if (!line_log.empty()) std::fputs(line_log.c_str(), stdout);
   }
   // The ribbon against the collision: heights at the line's centre points
   // within 300 m of the player's slot (a car handed between the two should
@@ -721,8 +785,12 @@ void RaceView::clip_room(world::Collision& collision) {
   const size_t n = L.size();
   if (n < 2 || L.room_right.size() != n || L.room_left.size() != n) return;
   constexpr double kChunk = 100, kRadius = 90, kHalfCar = 1.0, kUp = 0.6;
+  struct WallTri {
+    float v[9];
+    float min_x, max_x, min_y, max_y, min_z, max_z;
+  };
   world::CollisionMesh mesh;
-  std::vector<std::array<float, 9>> walls;
+  std::vector<WallTri> walls;
   double chunk_at = -1e9;
   size_t clipped = 0;
   double worst = 0;
@@ -730,12 +798,18 @@ void RaceView::clip_room(world::Collision& collision) {
     const double d = L.dist[i];
     if (d - chunk_at > kChunk) {
       chunk_at = d;
-      double cx, cy, cz, ch;
-      L.pose(std::min(L.length(), d + 0.5 * kChunk), 0, cx, cy, cz, ch);
+      const size_t cs = line_segment_fast(L, std::min(L.length(), d + 0.5 * kChunk));
+      const double cf = std::clamp(
+          (std::min(L.length(), d + 0.5 * kChunk) - double(L.dist[cs])) /
+              std::max(1e-6, double(L.dist[cs + 1] - L.dist[cs])),
+          0.0, 1.0);
+      const double cx = double(L.x[cs]) + cf * double(L.x[cs + 1] - L.x[cs]);
+      const double cz = double(L.z[cs]) + cf * double(L.z[cs + 1] - L.z[cs]);
       mesh = {};
       std::string e;
       if (!collision.gather(cx, cz, kRadius, mesh, &e)) continue;
       walls.clear();
+      walls.reserve(mesh.triangles() / 4 + 16);
       for (size_t t = 0; t < mesh.triangles(); ++t) {
         if (!world::Collision::collides(mesh, t)) continue;
         const auto& a = mesh.positions[3 * t], &b = mesh.positions[3 * t + 1], &c = mesh.positions[3 * t + 2];
@@ -744,21 +818,41 @@ void RaceView::clip_room(world::Collision& collision) {
         const double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
         const double len = std::sqrt(nx * nx + ny * ny + nz * nz);
         if (len < 1e-9 || std::fabs(ny) / len > 0.64) continue;  // floors and ramps
-        walls.push_back({a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]});
+        WallTri wt;
+        wt.v[0] = a[0], wt.v[1] = a[1], wt.v[2] = a[2];
+        wt.v[3] = b[0], wt.v[4] = b[1], wt.v[5] = b[2];
+        wt.v[6] = c[0], wt.v[7] = c[1], wt.v[8] = c[2];
+        wt.min_x = std::min({a[0], b[0], c[0]});
+        wt.max_x = std::max({a[0], b[0], c[0]});
+        wt.min_y = std::min({a[1], b[1], c[1]});
+        wt.max_y = std::max({a[1], b[1], c[1]});
+        wt.min_z = std::min({a[2], b[2], c[2]});
+        wt.max_z = std::max({a[2], b[2], c[2]});
+        walls.push_back(wt);
       }
     }
-    double x, y, z, h;
-    L.pose(d, 0, x, y, z, h);
-    if (L.y.size() == n) y = L.y[i];
-    y += kUp;
+    const size_t seg = std::min(i, n - 2);
+    const double x = double(L.x[i]);
+    const double z = double(L.z[i]);
+    const double h = std::atan2(double(L.x[seg + 1] - L.x[seg]), double(L.z[seg + 1] - L.z[seg]));
+    const double y = (L.y.size() == n ? double(L.y[i]) : 0.0) + kUp;
     // Right of the line: heading 0 faces +z, positive towards +x.
     const double rx = std::cos(h), rz = -std::sin(h);
+    const float fy = float(y);
     for (int side = 0; side < 2; ++side) {
       float& room = side == 0 ? L.room_right[i] : L.room_left[i];
       const double sx = side == 0 ? rx : -rx, sz = side == 0 ? rz : -rz;
       const double reach = room + kHalfCar;
+      const float rmin_x = float(std::min(x, x + sx * reach)) - 0.05f;
+      const float rmax_x = float(std::max(x, x + sx * reach)) + 0.05f;
+      const float rmin_z = float(std::min(z, z + sz * reach)) - 0.05f;
+      const float rmax_z = float(std::max(z, z + sz * reach)) + 0.05f;
       double best = reach;
-      for (const auto& w : walls) {
+      for (const auto& wt : walls) {
+        if (fy < wt.min_y || fy > wt.max_y || wt.max_x < rmin_x || wt.min_x > rmax_x || wt.max_z < rmin_z ||
+            wt.min_z > rmax_z)
+          continue;
+        const float* w = wt.v;
         // Moller-Trumbore, the ray (x, y, z) + s (sx, 0, sz).
         const double e1x = w[3] - w[0], e1y = w[4] - w[1], e1z = w[5] - w[2];
         const double e2x = w[6] - w[0], e2y = w[7] - w[1], e2z = w[8] - w[2];
@@ -808,6 +902,17 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   }
   const bool is_nemesis = event_.career_type == 11 || event_.style == 5;
   const double player_prog = field_->progress(n);
+  if (last_planner_c_.size() != n + 1) {
+    last_planner_c_.assign(n + 1, -1.0f);
+    last_planner_b_.assign(n + 1, -1.0f);
+  }
+  auto update_car_planner = [&](size_t idx, const drive::AiCapacity* cap, float C, float B) {
+    if (std::fabs(C - last_planner_c_[idx]) <= 1e-4f && std::fabs(B - last_planner_b_[idx]) <= 1e-4f) return;
+    last_planner_c_[idx] = C;
+    last_planner_b_[idx] = B;
+    if (planner_fit_) field_->set_limits(idx, float(race::corner_accel(C)), float(race::brake_decel(B)));
+    else field_->set_planner(idx, cap, C, B);
+  };
   for (size_t k = 0; k < n; ++k) {
     states_[k] = drive::ai_state(*cars_[k].body);
     double C = cars_[k].ai.cornering(), B = cars_[k].ai.braking();
@@ -836,15 +941,10 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
         if (C > max_c) C = max_c;
       }
     }
-    if (planner_fit_) field_->set_limits(k, float(race::corner_accel(C)), float(race::brake_decel(B)));
-    else field_->set_planner(k, &cars_[k].capacity, float(C), float(B));
+    update_car_planner(k, &cars_[k].capacity, float(C), float(B));
   }
   states_[n] = drive::ai_state(player);
-  {
-    const float C = float(player_ai_.cornering()), B = float(player_ai_.braking());
-    if (planner_fit_) field_->set_limits(n, float(race::corner_accel(C)), float(race::brake_decel(B)));
-    else field_->set_planner(n, &player_capacity_, C, B);
-  }
+  update_car_planner(n, &player_capacity_, float(player_ai_.cornering()), float(player_ai_.braking()));
   // SHIFT_PLAN_DUMP=<file>: the player's corner pass per line point, once.
   if (const char* dump = std::getenv("SHIFT_PLAN_DUMP"); dump && !plan_dumped_ && !planner_fit_) {
     plan_dumped_ = true;
@@ -864,10 +964,17 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
       std::fclose(f);
     }
   }
+  // During the grid & pre-start countdown (before launch), all cars are held stationary on the
+  // grid and their AI inputs are overridden in after_step(). Skip the full lane-planning and
+  // 420 m braking-curve pass until 50 ms before GO so countdown stays at full framerate.
+  if (!session_->started() && session_->clock() < -0.05) {
+    for (auto& inp : inputs_) inp = drive::Input{};
+    return drive::Input{0, 0, 0.4, true};
+  }
   // Lanes from the last step's progress, then the field's pass.
   for (size_t k = 0; k <= n; ++k)
     progress_[k] = field_->progress(k), cross_[k] = field_->cross_track(k), speed_[k] = states_[k].speed;
-  std::vector<race::TrafficObstacle> traffic_obs;
+  traffic_obs_scratch_.clear();
   if (traffic && traffic->cars() && !traffic->cars()->empty()) {
     double min_p = progress_[0], max_p = progress_[0];
     for (size_t k = 1; k <= n; ++k)
@@ -883,14 +990,16 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
       const double cross = dx * rx + dz * rz;
       const double along_err = dx * std::sin(lh) + dz * std::cos(lh);
       if (std::fabs(along_err) > 12.0) continue;
-      const double room = std::min(12.0, line_.line.room(tp, cross > 0));
+      double dummy_h = 0.0, room_val = 1e9;
+      line_heading_and_room_fast(line_.line, tp, cross > 0, dummy_h, room_val);
+      const double room = std::min(12.0, room_val);
       if (std::fabs(cross) > room + 3.0) continue;
       const double dir_dot = std::sin(tc.heading) * std::sin(lh) + std::cos(tc.heading) * std::cos(lh);
-      traffic_obs.push_back({tp, float(cross), float(tc.speed), dir_dot < 0.0});
+      traffic_obs_scratch_.push_back({tp, float(cross), float(tc.speed), dir_dot < 0.0});
     }
   }
   race::plan_lanes(line_.line, progress_, cross_, speed_, lane_params_, n, lanes_, drive::Vehicle::kStep, 2.1, caps_,
-                   traffic_obs);
+                   traffic_obs_scratch_);
   for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]), field_->set_speed_cap(k, caps_[k]);
   field_->drive(states_, inputs_);
   // Held on the grid in first: brake under the reverse-select press (0.5) and the handbrake.
@@ -964,7 +1073,8 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
       dc.rear_df_coeff = v.params().aero_df_rear + v.params().aero_part_df_rear;
       return dc;
     };
-    std::vector<drive::DraftCar> pool;
+    auto& pool = draft_pool_scratch_;
+    pool.clear();
     pool.reserve(n + 1 + (traffic && traffic->cars() ? traffic->cars()->size() : 0));
     for (size_t k = 0; k < n; ++k) pool.push_back(to_draft_car(*cars_[k].body));
     pool.push_back(to_draft_car(player));
@@ -979,10 +1089,12 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
         pool.push_back(dc);
       }
     }
-    std::vector<drive::DraftCar> leaders;
+    auto& leaders = draft_leaders_scratch_;
     leaders.reserve(pool.size());
-    std::vector<double> leader_strength(n + 1, 0.0);
-    std::vector<drive::DraftState> follower_states(n + 1);
+    auto& leader_strength = draft_leader_strength_scratch_;
+    leader_strength.assign(n + 1, 0.0);
+    auto& follower_states = draft_follower_states_scratch_;
+    follower_states.resize(n + 1);
     for (size_t i = 0; i <= n; ++i) {
       leaders.clear();
       for (size_t j = 0; j < pool.size(); ++j) {
@@ -1020,7 +1132,12 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     const size_t workers = std::min<size_t>(n - 1, hw > 1 ? hw - 1 : 0);
     if (workers > 0) step_pool_ = std::make_unique<PhysicsStepPool>(workers);
   }
-  std::vector<uint8_t> step_ribbon(n, 0), step_hole(n, 0), step_bad(n, 0);
+  step_ribbon_scratch_.assign(n, 0);
+  step_hole_scratch_.assign(n, 0);
+  step_bad_scratch_.assign(n, 0);
+  auto& step_ribbon = step_ribbon_scratch_;
+  auto& step_hole = step_hole_scratch_;
+  auto& step_bad = step_bad_scratch_;
   auto step_ai_car = [&](size_t k) {
     Car& c = cars_[k];
     const drive::Vec3 at = c.body->position();
@@ -1052,13 +1169,21 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     const double ai_corner_grip = over_corner ? 1.0 : std::clamp(c.ai.cornering(), 1.0, max_grip);
     c.body->set_ai_grip(ai_corner_grip, ai_corner_grip);
     const double d = std::hypot(at.x - cx, at.z - cz);
+    const bool was_far = c.far;
     if (c.far && d < radius - 80) c.far = false;
     else if (!c.far && d > radius - 40) c.far = true;
     bool ribbon = c.far;
     if (!ribbon) {
-      double gy = 0;
-      ribbon = !world::ground_height(near, at.x, at.z, at.y + 3, gy) || gy < at.y - 10;
-      step_hole[k] = ribbon ? 1 : 0;
+      int grounded_wheels = 0;
+      for (const auto& w : c.body->wheels())
+        if (w.contact) ++grounded_wheels;
+      // Only probe for collision holes when returning from far ribbon or losing wheel contact;
+      // avoids 7 extra full-world BVH raycasts per 120 Hz step when cars are firmly grounded.
+      if (was_far || grounded_wheels < 2) {
+        double gy = 0;
+        ribbon = !world::ground_height(near, at.x, at.z, at.y + 3, gy) || gy < at.y - 10;
+        step_hole[k] = ribbon ? 1 : 0;
+      }
     }
     step_ribbon[k] = ribbon ? 1 : 0;
     c.before = c.body->pose();
@@ -1162,12 +1287,11 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     s.x0 = x0, s.z0 = z0, s.x1 = p.x, s.z1 = p.z;
     s.speed = v.speed();
     s.progress = field_->progress(i);
-    double lx, ly, lz, h;
-    line_.line.pose(s.progress, 0, lx, ly, lz, h);
+    const double cr = field_->cross_track(i);
+    double h = 0.0, room = 1e9;
+    line_heading_and_room_fast(line_.line, s.progress, cr > 0, h, room);
     const drive::AiCarState st = drive::ai_state(v);
     s.heading_cos = st.fwd_x * std::sin(h) + st.fwd_z * std::cos(h);
-    const double cr = field_->cross_track(i);
-    const double room = line_.line.room(s.progress, cr > 0);
     s.off_route = std::max(0.0, std::fabs(cr) - room);
     s.up_y = v.up_y();
   };
@@ -1380,9 +1504,8 @@ RaceHud RaceView::hud_info() const {
   if (!session_) return h;
   const size_t n = cars_.size();
   const auto& s = *session_;
-  // The event's name from the string tables; its id without one.
-  h.event = event_.name.empty() ? event_.horizon_id : names_.text(event_.name);
-  if (h.event.empty() || h.event.rfind("_&", 0) == 0) h.event = event_.horizon_id;
+  // The event's name from the string tables (cached in open()); its id without one.
+  h.event = cached_event_name_;
   switch (event_.style) {
     case 2: h.event_type = "STREET RACE"; break;
     case 3: h.event_type = "SHOWCASE"; break;
@@ -1452,16 +1575,14 @@ RaceHud RaceView::hud_info() const {
       }();
       r.name = me;
     } else {
-      r.name = cars_[i].who.driver.empty() ? std::string() : names_.text(cars_[i].who.driver);
-      if (r.name.empty() || r.name.rfind("_&", 0) == 0) r.name = names_.short_name(cars_[i].who.car_media);
+      r.name = cars_[i].cached_driver_name;
     }
     r.place = int(h.rows.size()) + 1;
     r.finished = s.finished(i);
     r.time = s.car(i).finish;
     r.best_lap = s.car(i).best_lap;
     // Standings & results table car, class, and upgraded/faked PI.
-    const std::string& media = r.player ? o_.player_car : cars_[i].who.car_media;
-    r.car = names_.short_name(media);
+    r.car = r.player ? cached_player_car_name_ : cars_[i].cached_car_name;
     const double raw = r.player ? player_pi_
                                 : (cars_[i].upgraded_raw_pi > 0.0 ? cars_[i].upgraded_raw_pi : cars_[i].who.performance_index);
     if (!r.player && cars_[i].upgraded_shown_pi > 0 && !bands_.empty()) {
@@ -1883,13 +2004,12 @@ void RaceView::opponent_tags(std::vector<OpponentTag>& out) const {
   if (!session_) return;
   const auto ord = session_->order();
   const size_t lead_idx = ord.empty() ? cars_.size() : ord[0];
+  out.reserve(cars_.size());
   for (size_t i = 0; i < cars_.size(); ++i) {
     if (!cars_[i].body) continue;
     const drive::Vec3 p = cars_[i].body->position();
     const drive::Vec3 v = cars_[i].body->velocity();
-    std::string nm = cars_[i].who.driver.empty() ? std::string() : names_.text(cars_[i].who.driver);
-    if (nm.empty() || nm.rfind("_&", 0) == 0) nm = names_.short_name(cars_[i].who.car_media);
-    out.push_back({p.x, p.y, p.z, cars_[i].body->speed(), std::move(nm), i == lead_idx, v.x, v.y, v.z,
+    out.push_back({p.x, p.y, p.z, cars_[i].body->speed(), cars_[i].cached_driver_name, i == lead_idx, v.x, v.y, v.z,
                    cars_[i].body->rpm()});
   }
 }
@@ -2022,6 +2142,8 @@ void RaceView::restore_rewind(const RewindSnapshot& s, bool mark_player_lap_dirt
   stage_place_ = s.stage_place;
   if (s.has_showcase && showcase_.active()) showcase_.restore(s.showcase);
   award_ = s.award;
+  last_planner_c_.assign(last_planner_c_.size(), -1.0f);
+  last_planner_b_.assign(last_planner_b_.size(), -1.0f);
   if (session_) codriver_.rewind_to(session_->clock());
 }
 

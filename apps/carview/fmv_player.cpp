@@ -1697,8 +1697,8 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
       current_frame_.size() < size_t(width_) * size_t(height_) * 4) {
     return;
   }
-  // Letterbox background.
-  l.rect(0, 0, screen_w, screen_h, ui::rgba(0, 0, 0, 255));
+  // Full-physical-viewport black backdrop (never exposes 3D world in 16:9 HUD-locked side strips).
+  l.fullscreen_backdrop(0, 0, screen_w, screen_h, ui::rgba(0, 0, 0, 255));
 
   std::array<float, 4> uv{};
   bool ok = false;
@@ -1722,20 +1722,20 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
       draw_uv[0] += trim;
       draw_uv[2] -= trim;
     } else if (scr_aspect > video_aspect * 1.005f) {
-      if (scr_aspect <= video_aspect * 1.18f) {
-        // Slight aspect difference: cover-fill cleanly with minimal vertical crop.
+      if (scr_aspect <= video_aspect * 1.25f) {
+        // Cover-fill cleanly with minimal vertical crop (covers 3840x2071, 17:9, 2:1 with zero side bars).
         const float keep = std::clamp(video_aspect / scr_aspect, 0.5f, 1.0f);
         const float trim = 0.5f * (1.0f - keep) * v_span;
         draw_uv[1] += trim;
         draw_uv[3] -= trim;
       } else {
-        // Wide ultrawide display: preserve full 16:9 vertical framing (centered pillarbox, no top/bottom bars).
+        // Wide ultrawide display: preserve full 16:9 vertical framing (centered pillarbox over full black backdrop).
         draw_w = screen_h * video_aspect;
       }
     }
     const float x0 = 0.5f * (screen_w - draw_w);
     const float y0 = 0.5f * (screen_h - draw_h);
-    l.image(x0, y0, x0 + draw_w, y0 + draw_h, draw_uv);
+    l.fullscreen_cover_image(x0, y0, x0 + draw_w, y0 + draw_h, draw_uv, uv, video_aspect);
   }
 
   const float s = screen_h / 720.0f;
@@ -1778,7 +1778,7 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
   }
   fade = std::clamp(fade, 0.0f, 1.0f);
   if (fade > 0.01f) {
-    l.rect(0, 0, screen_w, screen_h, ui::rgba(0, 0, 0, uint8_t(std::lround(fade * 255.0f))));
+    l.fullscreen_backdrop(0, 0, screen_w, screen_h, ui::rgba(0, 0, 0, uint8_t(std::lround(fade * 255.0f))));
   }
 }
 

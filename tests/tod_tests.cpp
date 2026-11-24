@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -446,6 +447,162 @@ void test_disc_assets_if_available() {
   check(sunset.close_back_bottom_power > 0.0f, "Colorado CloseCloudBottomPowerBack parsed");
   check(sunset.cube_sun_object_size > 0.0f && sunset.cube_atmo_haze_power > 0.0f, "Colorado Cube* curves parsed");
   check(sunset.light_rays_intensity > 0.1f, "Colorado LightRaysIntensity active at sunset");
+
+  // PT-12: Verify smoothed Colorado 24h traversal (including dawn, dusk, 20:00 A/B roll, and midnight)
+  // has no abrupt single-frame lighting, shadow, or tone-map jumps at 60 Hz.
+  world::TodClock drive_clk;
+  drive_clk.set_hour(19.0);
+  drive_clk.use_preset_b = false;
+  drive_clk.force_preset = false;
+  world::TodSmoother smoother;
+  const float dt = 1.0f / 60.0f;
+  world::TodState prev = smoother.update(sys.evaluate(drive_clk), dt, true);
+  float max_d_shadow = 0.0f, max_d_hl = 0.0f, max_d_dn = 0.0f, max_d_sky = 0.0f;
+  // Simulate across dusk -> night -> midnight -> dawn -> morning (~450 real seconds = ~13 game hours).
+  for (int step = 0; step < 450 * 60; ++step) {
+    const double spd = sys.active_preset(drive_clk).scalar("TimeSpeed", float(drive_clk.tod_sec / 60.0), 28.0f);
+    drive_clk.advance(dt, spd);
+    const world::TodState cur = smoother.update(sys.evaluate(drive_clk), dt, false);
+    max_d_shadow = std::max(max_d_shadow, std::fabs(cur.shadow_intensity - prev.shadow_intensity));
+    max_d_dn = std::max(max_d_dn, std::fabs(cur.day_night_post - prev.day_night_post));
+    max_d_sky = std::max(max_d_sky, std::fabs(cur.sky_gain - prev.sky_gain));
+    for (int c = 0; c < 3; ++c) {
+      max_d_hl = std::max(max_d_hl, std::fabs(cur.hl_top[size_t(c)] - prev.hl_top[size_t(c)]));
+    }
+    prev = cur;
+  }
+  check(max_d_shadow < 0.02f, "Colorado smoothed ShadowIntensity has no abrupt 60Hz jump");
+  check(max_d_hl < 0.02f, "Colorado smoothed HLTopColour has no abrupt 60Hz jump");
+  check(max_d_dn < 0.02f, "Colorado smoothed DayNightPostProcess has no abrupt 60Hz jump");
+  check(max_d_sky < 0.05f, "Colorado smoothed SkyGain has no abrupt 60Hz jump");
+}
+
+void test_smooth_tod_and_lut_transitions() {
+  // 1. Cyclic 24h curves wrap continuously across midnight (1439 -> 1440 / 0) with no step jump.
+  const std::string wrap_xml = R"xml(<TOD version="2">
+    <CloseCloudBottomAlpha numKeys="3">
+      <Key time="0.0" x="0.10"/>
+      <Key time="720.0" x="0.50"/>
+      <Key time="1439.0" x="0.90"/>
+    </CloseCloudBottomAlpha>
+    <CloseCloudBottomColourBack numKeys="2">
+      <Key time="0.0" r="0.10" g="0.20" b="0.30"/>
+      <Key time="1439.0" r="0.90" g="0.80" b="0.70"/>
+    </CloseCloudBottomColourBack>
+  </TOD>)xml";
+  world::TodPreset wp;
+  check(wp.load_xml(wrap_xml), "load cyclic midnight-wrap TOD XML");
+  const float before_mid = wp.scalar("CloseCloudBottomAlpha", 1439.5f);
+  const float at_mid = wp.scalar("CloseCloudBottomAlpha", 0.0f);
+  check(near(before_mid, 0.50f, 1e-3f), "cyclic curve interpolates smoothly across 1439..1440 midnight wrap");
+  float max_wrap_jump = 0.0f;
+  float prev_v = wp.scalar("CloseCloudBottomAlpha", 1438.5f);
+  for (int i = 1; i <= 120; ++i) {
+    const float m = std::fmod(1438.5f + float(i) * (2.0f / 120.0f), 1440.0f);
+    const float v = wp.scalar("CloseCloudBottomAlpha", m);
+    max_wrap_jump = std::max(max_wrap_jump, std::fabs(v - prev_v));
+    prev_v = v;
+  }
+  check(max_wrap_jump < 0.02f && near(at_mid, 0.10f, 1e-3f), "no discontinuity across 23:59 -> 00:00 wrap");
+
+  // 2. 20:00 A <-> B preset roll cross-fades smoothly over 30 real seconds instead of snapping in 1 frame.
+  const std::string preset_a_xml = R"xml(<TOD version="2">
+    <HLTopColour numKeys="2"><Key time="0.0" r="0.02" g="0.03" b="0.04"/><Key time="1439.0" r="0.02" g="0.03" b="0.04"/></HLTopColour>
+    <SkyGain numKeys="2"><Key time="0.0" x="1.2"/><Key time="1439.0" x="1.2"/></SkyGain>
+    <ShadowIntensity numKeys="4">
+      <Key time="0.0" x="-1.0"/><Key time="469.0" x="-0.3"/><Key time="470.0" x="1.0"/><Key time="1439.0" x="-1.0"/>
+    </ShadowIntensity>
+    <AtmosphereHazePower numKeys="4">
+      <Key time="0.0" x="5.0"/><Key time="1199.0" x="5.0"/><Key time="1200.0" x="100.0"/><Key time="1439.0" x="5.0"/>
+    </AtmosphereHazePower>
+  </TOD>)xml";
+  const std::string preset_b_xml = R"xml(<TOD version="2">
+    <HLTopColour numKeys="2"><Key time="0.0" r="0.20" g="0.25" b="0.30"/><Key time="1439.0" r="0.20" g="0.25" b="0.30"/></HLTopColour>
+    <SkyGain numKeys="2"><Key time="0.0" x="2.6"/><Key time="1439.0" x="2.6"/></SkyGain>
+    <ShadowIntensity numKeys="2"><Key time="0.0" x="0.0"/><Key time="1439.0" x="0.0"/></ShadowIntensity>
+  </TOD>)xml";
+  world::TodSystem sys;
+  check(sys.preset_a.load_xml(preset_a_xml), "load synthetic preset A");
+  check(sys.preset_b.load_xml(preset_b_xml), "load synthetic preset B");
+  sys.preset_b.merge_fallback(sys.preset_a);
+  sys.loaded_tod = true;
+
+  // Find a deterministic RNG seed that rolls B at 20:00.
+  world::TodClock clk;
+  for (uint32_t seed = 1; seed < 1000; ++seed) {
+    world::TodClock probe;
+    probe.rng_state = seed;
+    probe.use_preset_b = false;
+    probe.set_hour(19.99);
+    probe.advance(5.0, 40.0);
+    if (probe.use_preset_b) {
+      clk.rng_state = seed;
+      break;
+    }
+  }
+  clk.use_preset_b = false;
+  clk.set_hour(19.99);
+  const float sky_before = sys.evaluate(clk).sky_gain;
+  float max_sky_frame_jump = 0.0f;
+  float prev_sky = sky_before;
+  for (int f = 0; f < 40 * 60; ++f) {
+    clk.advance(1.0 / 60.0, 40.0);
+    const float cur_sky = sys.evaluate(clk).sky_gain;
+    max_sky_frame_jump = std::max(max_sky_frame_jump, std::fabs(cur_sky - prev_sky));
+    prev_sky = cur_sky;
+  }
+  check(clk.use_preset_b, "synthetic 20:00 roll selected preset B");
+  check(max_sky_frame_jump < 0.01f, "20:00 A->B preset crossfade has no single-frame SkyGain snap");
+  check(near(prev_sky, 2.6f, 0.02f), "20:00 A->B crossfade reaches preset B cleanly after 30s");
+
+  // 3. TodSmoother filters hard 1-minute ShadowIntensity (-0.3 -> +1.0) & haze steps smoothly.
+  world::TodClock dawn_clk;
+  dawn_clk.force_preset = true;
+  dawn_clk.set_hour(468.5 / 60.0);
+  world::TodSmoother sm;
+  const float dt60 = 1.0f / 60.0f;
+  world::TodState prev_s = sm.update(sys.evaluate(dawn_clk), dt60, true);
+  float max_shadow_jump = 0.0f;
+  for (int f = 0; f < 10 * 60; ++f) {
+    dawn_clk.advance(dt60, 40.0);
+    const world::TodState cur_s = sm.update(sys.evaluate(dawn_clk), dt60, false);
+    max_shadow_jump = std::max(max_shadow_jump, std::fabs(cur_s.shadow_intensity - prev_s.shadow_intensity));
+    prev_s = cur_s;
+  }
+  check(max_shadow_jump < 0.015f, "TodSmoother eliminates abrupt dawn ShadowIntensity pop");
+  check(prev_s.shadow_intensity > 0.90f, "TodSmoother converges smoothly to daytime ShadowIntensity");
+
+  // 4. ColorLutBlender is frame-rate independent (30 Hz vs 60 Hz vs 120 Hz match at t=1.0s, no 120 Hz snap).
+  const world::ColorLut16 lut_a = world::ColorLut16::identity();
+  world::ColorLut16 lut_b = world::ColorLut16::identity();
+  for (size_t i = 0; i < 4096; ++i) {
+    const size_t o = i * 4;
+    lut_b.rgba[o + 0] = uint8_t(std::min(255, int(lut_a.rgba[o + 0]) / 2 + 20));
+    lut_b.rgba[o + 2] = uint8_t(std::min(255, int(lut_a.rgba[o + 2]) / 2 + 120));
+  }
+  auto run_lut_blend = [&](int hz, float seconds) {
+    world::ColorLutBlender b;
+    b.snap(lut_a);
+    const int steps = int(std::lround(seconds * float(hz)));
+    const float step_dt = 1.0f / float(hz);
+    for (int i = 0; i < steps; ++i) b.update(lut_b, step_dt, 2.5f, false);
+    return b;
+  };
+  const auto b30 = run_lut_blend(30, 1.0f);
+  const auto b60 = run_lut_blend(60, 1.0f);
+  const auto b120 = run_lut_blend(120, 1.0f);
+  const auto s30 = b30.current.sample(0.5f, 0.5f, 0.5f);
+  const auto s60 = b60.current.sample(0.5f, 0.5f, 0.5f);
+  const auto s120 = b120.current.sample(0.5f, 0.5f, 0.5f);
+  check(near(s30[0], s120[0], 0.02f) && near(s60[2], s120[2], 0.02f),
+        "ColorLutBlender is frame-rate independent across 30/60/120 Hz");
+  // At t=1.0s with tau=2.5s, blend fraction is ~33% (must NOT have snapped to 100% at 120 Hz!).
+  const auto sa_mid = lut_a.sample(0.5f, 0.5f, 0.5f);
+  const auto sb_mid = lut_b.sample(0.5f, 0.5f, 0.5f);
+  const float expected_b = sa_mid[2] + (sb_mid[2] - sa_mid[2]) * (1.0f - std::exp(-1.0f / 2.5f));
+  check(near(s120[2], expected_b, 0.025f), "ColorLutBlender matches exact exponential progress at 120 Hz");
+  const auto b_done = run_lut_blend(60, 15.0f);
+  check(b_done.settled(lut_b, 1.0f), "ColorLutBlender converges cleanly to target LUT");
 }
 
 }  // namespace
@@ -456,6 +613,7 @@ int main() {
   test_exposure_and_lut();
   test_stars_and_zones();
   test_clouds_cube_scatter_and_color_settings();
+  test_smooth_tod_and_lut_transitions();
   test_disc_assets_if_available();
   if (g_failures == 0) std::printf("tod_tests: all checks passed\n");
   return g_failures ? 1 : 0;

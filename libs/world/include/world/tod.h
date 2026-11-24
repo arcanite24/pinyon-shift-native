@@ -186,6 +186,7 @@ struct TodClock {
   double speed_scale = 1.0;      // 0 = frozen, 1 = 30.5m day, 2 = 15m, 0.5 = 61m, etc.
   bool use_preset_b = false;
   bool force_preset = false;     // when true, disables 20:00 random A/B roll
+  double preset_blend = -1.0;    // <0: snap to use_preset_b; [0..1]: smooth A->B cross-fade
   uint32_t rng_state = 0x51A7E3C1u;
 
   void set_hour(double hour);
@@ -193,12 +194,28 @@ struct TodClock {
   void step_hours(double delta_hours);
   // Advances the clock by `dt` real seconds using `curve_time_speed` (game s / real s).
   void advance(double dt, double curve_time_speed);
+  // Smooth [0..1] blend weight toward TimeOfDayB (0 = Preset A, 1 = Preset B).
+  double preset_b_weight() const;
   // Lunar phase index [0..4] for Moon0..4.xds.
   int moon_phase() const { return ((day_count % 5) + 5) % 5; }
 };
 
 // Evaluates all curves of `preset` at `tod_sec`.
 TodState evaluate_tod(const TodPreset& preset, double tod_sec);
+// Smoothly interpolates all lighting, sky, cloud, fog, and post fields of two TodStates.
+TodState lerp_tod_state(const TodState& a, const TodState& b, float t);
+
+// Temporal smoother for TodState that filters abrupt 1-minute curve steps
+// (e.g. ShadowIntensity dawn/dusk transitions, haze steps, or preset switches)
+// with frame-rate-independent exponential smoothing.
+struct TodSmoother {
+  bool initialized = false;
+  TodState state{};
+
+  void reset() { initialized = false; }
+  const TodState& update(const TodState& target, float dt, bool snap = false,
+                         float tau_sec = 1.5f, float shadow_tau_sec = 2.5f);
+};
 
 // Track-wide post-processing, exposure, and shadow configuration from TrackSettings.xml.
 struct TrackPostConfig {
@@ -293,6 +310,22 @@ struct ColorLut16 {
 
   // Trilinear software lookup for unit tests (in/out in [0, 1]).
   std::array<float, 3> sample(float r, float g, float b) const;
+};
+
+// Frame-rate-independent float-precision 3D LUT cross-fader. Eliminates uint8
+// per-frame quantization snapping at high frame rates (120+ FPS) across
+// PostProcessingZones boundaries and dawn/dusk grading transitions.
+struct ColorLutBlender {
+  bool initialized = false;
+  std::array<float, ColorLut16::kByteSize> cur_f{};
+  ColorLut16 current = ColorLut16::identity();
+
+  void reset() { initialized = false; }
+  void snap(const ColorLut16& target);
+  // Advances `current` toward `target` with exponential time constant `tau_sec`.
+  // Returns true if `current.rgba` changed and should be re-uploaded to the GPU.
+  bool update(const ColorLut16& target, float dt, float tau_sec = 2.5f, bool force_snap = false);
+  bool settled(const ColorLut16& target, float eps = 0.25f) const;
 };
 
 // Regional post-processing zone from PostProcessingZones_Safe.xml.

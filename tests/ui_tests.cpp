@@ -812,6 +812,104 @@ int main() {
     CHECK(std::fabs(carview::post_race_page_elapsed(rh) - 0.6) < 1e-4);
   }
 
+  // 5. Phase PT-A regression tests (PT-01/PT-02/PT-03/PT-05):
+  //    4K glyph packing across A/B/D/E + Settings/HUD/Toast strings + 1280x720 fmv.frame + 1000x300 logo
+  //    never drops characters, never evicts glyphs, and never overwrites live same-frame transient artwork.
+  {
+    auto vf = std::make_shared<fh1::VFont>();
+    vf->space_width = 0.35f;
+    for (uint32_t cp = 33; cp < 127; ++cp) {
+      fh1::VFontGlyph g;
+      g.code_point = cp;
+      g.advance = 0.60f;
+      g.min_x = 0.05f;
+      g.max_x = 0.55f;
+      g.min_y = -0.15f;
+      g.max_y = 0.80f;
+      g.vertices = {{0.08f, 0.02f, 0.0f, 1.0f, 1.0f},
+                    {0.52f, 0.02f, 0.0f, 1.0f, 1.0f},
+                    {0.52f, 0.76f, 0.0f, 1.0f, 1.0f},
+                    {0.08f, 0.76f, 0.0f, 1.0f, 1.0f}};
+      g.indices = {0, 1, 2, 0, 2, 3};
+      vf->glyphs[cp] = std::move(g);
+    }
+    set_atlas_size(kAtlasSize);  // 4096x4096 desktop atlas
+    set_gpu_atlas_mode(true);
+    set_vector_fonts(vf, vf, vf, vf);
+    atlas_take_dirty_patches();
+
+    std::vector<uint8_t> fmv_px(1280u * 720u * 4u, 220);
+    std::vector<uint8_t> logo_px(1000u * 300u * 4u, 180);
+    const std::string ascii_all = [] {
+      std::string s;
+      for (char c = 33; c < 127; ++c) s.push_back(c);
+      return s;
+    }();
+    const std::string showcase_msg =
+        "New Showcase Event unlocked: MUSTANG VS MUSTANG (1970 Ford Mustang Boss 429 vs P-51 MUSTANG)!";
+    const float s4k = 2071.0f / 720.0f;
+
+    auto count_non_space = [](std::string_view sv) {
+      size_t n = 0;
+      for (char c : sv)
+        if (c != ' ') ++n;
+      return n;
+    };
+
+    for (int frame = 0; frame < 30; ++frame) {
+      std::array<float, 4> fmv_uv{}, logo_uv{};
+      CHECK(atlas_update("fmv.frame", 1280, 720, fmv_px, fmv_uv));
+      CHECK(atlas_image("E3/E3LARGELOGO", 1000, 300, logo_px, logo_uv));
+      // fmv.frame routes to transient band (>= kTransientY0), logo stays in persistent band (< kTransientY0).
+      CHECK(fmv_uv[1] * float(kAtlasSize) >= float(kTransientY0));
+      CHECK(logo_uv[1] * float(kAtlasSize) >= float(kGlyphRows));
+      CHECK(logo_uv[3] * float(kAtlasSize) <= float(kTransientY0));
+      // Never overlap vertically or horizontally.
+      CHECK(logo_uv[3] <= fmv_uv[1]);
+
+      List l;
+      size_t expected_glyphs = 0;
+      const Font fonts[4] = {Font::kA, Font::kB, Font::kD, Font::kE};
+      const float sizes[4] = {15.5f * s4k, 14.0f * s4k, 14.0f * s4k, 34.0f * s4k};
+      for (int fi = 0; fi < 4; ++fi) {
+        TextStyle ts{.size = sizes[fi], .color = rgba(255, 255, 255), .font = fonts[fi], .keep_case = true};
+        l.text(40.0f, 40.0f + float(fi) * 80.0f, ascii_all, ts);
+        expected_glyphs += count_non_space(ascii_all);
+      }
+      // Exact regression strings from PT-02 / PT-03 / PT-05.
+      const char* reg_strs[] = {"QUIT RACE", "PLACE 8/8", "One more thing.", showcase_msg.c_str(),
+                                "RADIO",     "SOUND",     "VOLUME",          "AUDIO OPTIONS"};
+      for (int ri = 0; ri < 8; ++ri) {
+        TextStyle ts{.size = (ri < 2 ? 32.0f : 14.5f) * s4k,
+                     .color = rgba(255, 255, 255),
+                     .font = (ri == 0) ? Font::kE : (ri >= 4 ? Font::kD : Font::kA),
+                     .keep_case = (ri == 2 || ri == 3)};
+        l.text(40.0f, 400.0f + float(ri) * 50.0f, reg_strs[ri], ts);
+        expected_glyphs += count_non_space(reg_strs[ri]);
+      }
+      CHECK(l.items().size() == expected_glyphs);
+      atlas_take_dirty_patches();
+    }
+    CHECK(atlas_glyph_evictions() == 0);
+
+    // Same-frame transient guard even on 2048x2048 atlas: a second oversized transient image
+    // in the SAME frame must NEVER wipe or overwrite an already-active fmv.frame shelf!
+    set_atlas_size(2048);
+    atlas_take_dirty_patches();
+    std::array<float, 4> fmv2048_uv{}, big_uv{};
+    CHECK(atlas_update("fmv.frame", 1280, 720, fmv_px, fmv2048_uv));
+    const bool big_ok = atlas_image("Loading/SameFrameConflict", 1000, 300, logo_px, big_uv, true);
+    CHECK(!big_ok);  // refuses mid-frame destructive clear_transient()
+    std::array<float, 4> fmv2048_after{};
+    CHECK(atlas_find("fmv.frame", fmv2048_after));
+    CHECK(fmv2048_after == fmv2048_uv);
+
+    set_vector_fonts(nullptr, nullptr, nullptr, nullptr);
+    set_gpu_atlas_mode(false);
+    set_atlas_size(kAtlasSize);
+    atlas_take_dirty();
+  }
+
   if (const char* out = std::getenv("SHIFT_UI_SPECIMEN")) {
     const uint32_t W = 1280, H = 720;
     std::vector<uint8_t> img(size_t(W) * H * 4);

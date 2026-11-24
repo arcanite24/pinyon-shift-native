@@ -480,7 +480,8 @@ bool DriveSession::step(const drive::Input& user_in) {
         }
         // SPEC-CAR-PHYSICS, Aerodynamic drafting in free roam (behind traffic & festival AI).
         if (!app.race) {
-          std::vector<drive::DraftCar> leaders;
+          thread_local std::vector<drive::DraftCar> leaders;
+          leaders.clear();
           if (traffic && traffic->cars()) {
             for (const auto& tc : *traffic->cars()) {
               if (tc.speed < 8.0) continue;
@@ -796,7 +797,8 @@ bool DriveSession::step(const drive::Input& user_in) {
         freeroam::SmashObjectType smashed_type = freeroam::SmashObjectType::kGeneric;
         // FORMAT-PHYSICS-DEFINITIONS: step 384-body smashable prop pool & barn doors.
         if (!app.bench || app.bench_full_fx) {
-          std::vector<world::SmashEvent> sm_events;
+          thread_local std::vector<world::SmashEvent> sm_events;
+          sm_events.clear();
           app.smashables.step(vehicle, *host.ground, float(drive::Vehicle::kStep), sm_events);
           for (const auto& sev : sm_events) {
             smashed_prop = true;
@@ -849,7 +851,21 @@ bool DriveSession::step(const drive::Input& user_in) {
           vin.car_forward = {float(vfwd.x), float(vfwd.y), float(vfwd.z)};
           vin.car_right = {float(vright.x), float(vright.y), float(vright.z)};
           vin.car_up = {float(vup.x), float(vup.y), float(vup.z)};
-          const auto local_tips = host.showroom.exhaust_tips_local();
+          struct ExhaustTipCache {
+            const Showroom* sr = nullptr;
+            std::string car;
+            size_t draws = 0;
+            std::vector<std::array<float, 3>> tips;
+          };
+          thread_local ExhaustTipCache tip_cache;
+          const size_t sr_draws = host.showroom.draw_count();
+          if (tip_cache.sr != &host.showroom || tip_cache.car != app.car || tip_cache.draws != sr_draws) {
+            tip_cache.sr = &host.showroom;
+            tip_cache.car = app.car;
+            tip_cache.draws = sr_draws;
+            tip_cache.tips = host.showroom.exhaust_tips_local();
+          }
+          const auto& local_tips = tip_cache.tips;
           if (!local_tips.empty()) {
             const size_t tip_n = std::min(local_tips.size(), vin.exhaust_tips.size());
             for (size_t ti = 0; ti < tip_n; ++ti) {

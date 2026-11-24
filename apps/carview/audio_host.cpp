@@ -929,14 +929,21 @@ void AudioHost::init_user_music(const std::filesystem::path& music_dir, bool non
 }
 
 void AudioHost::start_device() {
-  if (stream_ || !cfg_.sound || !has_audio()) return;
+  if (stream_ || engine_.running() || !cfg_.sound || !has_audio()) return;
+  last_device_try_tp_ = std::chrono::steady_clock::now();
   const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, kAudioRate};
   stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
   if (!stream_) {
-    std::fprintf(stderr, "carview: no audio device: %s\n", SDL_GetError());
+    if (!device_open_failed_) {
+      std::fprintf(stderr, "carview: no audio device: %s\n", SDL_GetError());
+    }
+    device_open_failed_ = true;
     return;
   }
-  SDL_ResumeAudioStreamDevice(stream_);
+  device_open_failed_ = false;
+  if (!SDL_ResumeAudioStreamDevice(stream_)) {
+    std::fprintf(stderr, "carview: failed to resume audio device: %s\n", SDL_GetError());
+  }
   audio::AudioEngine::Sink sink;
   sink.target_buffer_frames = int(0.10 * kAudioRate);  // 100 ms ahead for hitch-immune playback
   sink.block_frames = 480;                             // 10 ms render blocks
@@ -950,6 +957,22 @@ void AudioHost::start_device() {
     if (frames > 0) SDL_PutAudioStreamData(s, stereo, frames * 2 * int(sizeof(float)));
   };
   engine_.start(std::move(sink));
+}
+
+void AudioHost::ensure_device_started() {
+  if (stream_ || engine_.running() || !cfg_.sound || !has_audio()) return;
+  if ((SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO) == 0) return;
+  if (device_open_failed_) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_device_try_tp_ < std::chrono::seconds(2)) return;
+  }
+  start_device();
+}
+
+void AudioHost::set_fmv_audio(audio::AudioEngine::FmvAudioFn fn, void* ctx) {
+  has_fmv_audio_ = (fn != nullptr);
+  engine_.set_fmv_audio(fn, ctx);
+  if (has_fmv_audio_) ensure_device_started();
 }
 
 void AudioHost::start_benchmark_device() {
@@ -975,10 +998,43 @@ void AudioHost::stop_device() {
     SDL_DestroyAudioStream(stream_);
     stream_ = nullptr;
   }
+  device_open_failed_ = false;
+}
+
+void AudioHost::sync_gameplay_snapshot() {
+  if (!engine_.has_snapshot_matrix()) return;
+  const GameplayOverlay want = last_loading_     ? GameplayOverlay::kLoading
+                               : last_rewinding_ ? GameplayOverlay::kRewind
+                               : last_paused_    ? GameplayOverlay::kPaused
+                               : last_menu_      ? GameplayOverlay::kMenu
+                                                 : GameplayOverlay::kNone;
+  if (want != last_overlay_) {
+    last_overlay_ = want;
+    switch (want) {
+      case GameplayOverlay::kLoading: engine_.activate_matrix_snapshot("Loading"); break;
+      case GameplayOverlay::kRewind: engine_.activate_matrix_snapshot("Rewind"); break;
+      case GameplayOverlay::kPaused: engine_.activate_matrix_snapshot("Paused"); break;
+      case GameplayOverlay::kMenu: engine_.activate_matrix_snapshot("UIExterior"); break;
+      case GameplayOverlay::kNone:
+        if (last_in_race_ != applied_in_race_) {
+          applied_in_race_ = last_in_race_;
+          engine_.activate_matrix_snapshot(last_in_race_ ? "Race" : "FreeRoam");
+        } else {
+          engine_.restore_gameplay_snapshot();
+        }
+        break;
+    }
+  } else if (want == GameplayOverlay::kNone && last_in_race_ != applied_in_race_) {
+    applied_in_race_ = last_in_race_;
+    engine_.activate_matrix_snapshot(last_in_race_ ? "Race" : "FreeRoam");
+  }
 }
 
 void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, bool menu_open, bool on_title,
                              bool loading) {
+  // Ensure the SDL playback stream and audio render thread are running during interactive sessions
+  // (no-op when already started, in benchmark mode, or when SDL_INIT_AUDIO is not active).
+  ensure_device_started();
   audio::EnginePlayer::Update clean_u = u;
   if (!std::isfinite(clean_u.rpm)) clean_u.rpm = 0.0;
   if (!std::isfinite(clean_u.throttle)) clean_u.throttle = 0.0;
@@ -1002,22 +1058,11 @@ void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, 
     }
   }
 
+  last_loading_ = loading;
+  last_paused_ = paused;
+  last_menu_ = menu_open;
   if (engine_.has_snapshot_matrix()) {
-    if (loading != last_loading_) {
-      last_loading_ = loading;
-      if (loading) engine_.activate_matrix_snapshot("Loading");
-      else if (!paused && !menu_open && !last_rewinding_) engine_.restore_gameplay_snapshot();
-    }
-    if (paused != last_paused_) {
-      last_paused_ = paused;
-      if (paused && !last_rewinding_) engine_.activate_matrix_snapshot("Paused");
-      else if (!paused && !menu_open && !loading && !last_rewinding_) engine_.restore_gameplay_snapshot();
-    }
-    if (menu_open != last_menu_) {
-      last_menu_ = menu_open;
-      if (menu_open && !paused) engine_.activate_matrix_snapshot("UIExterior");
-      else if (!menu_open && !paused && !loading && !last_rewinding_) engine_.restore_gameplay_snapshot();
-    }
+    sync_gameplay_snapshot();
   } else {
     engine_.set_snapshot(snap_paused_, paused);
     engine_.set_snapshot(snap_menu_, menu_open);
@@ -1101,21 +1146,17 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
   // Rewind snapshot + TapeStart / TapeStop transitions (plus clearing stale Co-Driver queue).
   if (rewinding != last_rewinding_) {
     if (rewinding) {
-      if (engine_.has_snapshot_matrix()) engine_.activate_matrix_snapshot("Rewind");
       engine_.trigger_ui(audio::UiCue::kRewindTapeStart);
       clear_codriver();
     } else {
       engine_.trigger_ui(audio::UiCue::kRewindTapeStop);
-      if (engine_.has_snapshot_matrix() && !last_paused_ && !last_menu_ && !last_loading_) {
-        engine_.restore_gameplay_snapshot();
-      }
     }
   }
-  if (engine_.has_snapshot_matrix() && !rewinding && in_race != last_in_race_) {
-    last_in_race_ = in_race;
-    engine_.activate_matrix_snapshot(in_race ? "Race" : "FreeRoam");
-  }
   last_rewinding_ = rewinding;
+  last_in_race_ = in_race;
+  if (engine_.has_snapshot_matrix()) {
+    sync_gameplay_snapshot();
+  }
 
   const audio::CarDspMode dsp = rewinding          ? audio::CarDspMode::kRewind
                                 : countdown_active ? audio::CarDspMode::kCountdown

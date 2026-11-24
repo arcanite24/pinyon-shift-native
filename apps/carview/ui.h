@@ -48,6 +48,8 @@ static_assert(sizeof(Instance) == 96);
 
 inline constexpr uint32_t kMaskBorderTransparent = 1u << 0;  // addressing mode 4: transparent outside [0,1]
 inline constexpr uint32_t kMaskRepeat = 1u << 1;             // tiled pattern: fract(uv)
+inline constexpr uint32_t kUiFlagFullscreen = 1u << 2;       // expand to full physical viewport (ignores HUD 16:9 lock/safe-zone)
+inline constexpr uint32_t kUiFlagFullscreenCover = 1u << 3;  // full physical viewport cover-fill (m = full uv, r[0] = aspect)
 
 enum Kind : uint32_t {
   kRoundRect = 0,    // p: radius, stroke (0 fills), inset, -; q: softness; colour top to color2 bottom
@@ -200,6 +202,12 @@ class List {
   void arc(float cx, float cy, float radius, float width, float a0, float a1, uint32_t color, bool square = false);
   void image(float x0, float y0, float x1, float y1, std::array<float, 4> uv, uint32_t tint = rgba(255, 255, 255),
              float radius = 0);
+  // Full-viewport backdrop / cover-fill video quad: fills the physical screen
+  // edge-to-edge even when HUD 16:9 aspect lock or safe-zone margins are active.
+  void fullscreen_backdrop(float x0, float y0, float x1, float y1, uint32_t color);
+  void fullscreen_cover_image(float x0, float y0, float x1, float y1, std::array<float, 4> uv,
+                              std::array<float, 4> full_uv, float content_aspect,
+                              uint32_t tint = rgba(255, 255, 255));
   // An image quad centred at (cx, cy), half size hw x hh, turned `angle`
   // radians clockwise (y down).
   void image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv,

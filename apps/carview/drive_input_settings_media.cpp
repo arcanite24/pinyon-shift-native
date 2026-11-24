@@ -16,6 +16,7 @@ namespace carview {
 
 bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
             if (settings_page.is_open()) {
+              double prev_tod_preset_hour = settings_page.live_settings().tod_preset_hour;
               auto persist_settings_file = [&](std::string* why_out) -> bool {
                 std::string why;
                 const auto file = settings_path();
@@ -173,11 +174,13 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 app.race_options.assists = to_difficulty_assists(live_controls.assists, int(car_damage.mode));
                 if (app.race) app.race->set_assists(app.race_options.assists);
                 app.tod_clock.speed_scale = ls.day_length_scale;
-                if (ls.tod_preset_hour >= 0.0) {
+                if (ls.tod_preset_hour >= 0.0 && std::fabs(ls.tod_preset_hour - prev_tod_preset_hour) > 1e-6) {
                   app.tod_clock.set_hour(ls.tod_preset_hour);
                   if (traffic) traffic->set_hour(app.tod_clock.hour());
                   host.renderer.reset_auto_exposure();
                 }
+                prev_tod_preset_hour = ls.tod_preset_hour;
+                boot_live_settings.tod_preset_hour = ls.tod_preset_hour;
                 slice12.apply_live_settings(ls, rig, settings_path().parent_path());
                 slice12.sync_pad_capabilities(pads);
                 if (ls.graphics != host.active_graphics) {

@@ -1,6 +1,7 @@
 #include "renderer_internal.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "ui_frag_spv.h"
@@ -193,7 +194,7 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
   // Atlas uploads: staged, copied, back to sampled.
   if (!ui_puts_.empty()) {
     VkDeviceSize bytes = 0;
-    for (const auto& p : ui_puts_) bytes += p.rgba.size();
+    for (const auto& p : ui_puts_) bytes += (VkDeviceSize(p.rgba.size()) + 15) & ~VkDeviceSize(15);
     FrameSlot& fs = slot();
     if (fs.ui_staging.size < bytes) {
       // This slot's last frame is done (its fence): the buffer is free to replace.
@@ -207,6 +208,7 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
     }
     if (fs.ui_staging_mapped) {
       std::vector<VkBufferImageCopy> regions;
+      regions.reserve(ui_puts_.size());
       VkDeviceSize at = 0;
       for (const auto& p : ui_puts_) {
         std::memcpy(static_cast<uint8_t*>(fs.ui_staging_mapped) + at, p.rgba.data(), p.rgba.size());
@@ -216,7 +218,7 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
         r.imageOffset = {int32_t(p.x), int32_t(p.y), 0};
         r.imageExtent = {p.w, p.h, 1};
         regions.push_back(r);
-        at += p.rgba.size();
+        at += (VkDeviceSize(p.rgba.size()) + 15) & ~VkDeviceSize(15);
       }
       image_barrier(cmd, ui_atlas_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -227,12 +229,13 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+      ui_puts_.clear();
     }
-    ui_puts_.clear();
   } else {
-    // Release oversized transient UI staging buffers (> 2 MiB) once this slot's fence has passed.
+    // Release oversized transient UI staging buffers (> 8 MiB; keeps 1280x720 FMV staging hot)
+    // once this slot's fence has passed.
     FrameSlot& fs = slot();
-    if (fs.ui_staging.size > (2ULL << 20)) {
+    if (fs.ui_staging.size > (8ULL << 20)) {
       if (fs.ui_staging_mapped) vmaUnmapMemory(allocator_, fs.ui_staging.allocation);
       fs.ui_staging_mapped = nullptr;
       destroy_buffer(fs.ui_staging);
@@ -253,7 +256,70 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
       return;
     }
   }
-  std::memcpy(us.ui_instances_mapped, ui_items_.data(), size_t(bytes));
+  const float inv_w = 2.0f / float(std::max(1u, width));
+  const float inv_h = 2.0f / float(std::max(1u, height));
+  const float hud_scale = hud_layout_.virtual_w > 0 ? hud_layout_.scale : 1.0f;
+  const float off_x = hud_layout_.virtual_w > 0 ? hud_layout_.origin_x : 0.0f;
+  const float off_y = hud_layout_.virtual_w > 0 ? hud_layout_.origin_y : 0.0f;
+  const bool need_fullscreen_fixup =
+      hud_layout_.virtual_w > 0 &&
+      (off_x != 0.0f || off_y != 0.0f || hud_scale != 1.0f ||
+       std::fabs(hud_layout_.virtual_w - float(width)) > 0.5f ||
+       std::fabs(hud_layout_.virtual_h - float(height)) > 0.5f);
+  if (!need_fullscreen_fixup) {
+    std::memcpy(us.ui_instances_mapped, ui_items_.data(), size_t(bytes));
+  } else {
+    const float hs = std::max(1e-4f, hud_scale);
+    const float vx0 = -off_x / hs;
+    const float vy0 = -off_y / hs;
+    const float vx1 = (float(width) - off_x) / hs;
+    const float vy1 = (float(height) - off_y) / hs;
+    const float vw_phys = vx1 - vx0;
+    const float vh_phys = vy1 - vy0;
+    const float phys_aspect = float(width) / std::max(1.0f, float(height));
+    auto* dst = static_cast<ui::Instance*>(us.ui_instances_mapped);
+    for (size_t i = 0; i < ui_items_.size(); ++i) {
+      ui::Instance it = ui_items_[i];
+      if ((it.flags & ui::kUiFlagFullscreen) != 0u) {
+        it.rect[0] = vx0;
+        it.rect[1] = vy0;
+        it.rect[2] = vx1;
+        it.rect[3] = vy1;
+      } else if ((it.flags & ui::kUiFlagFullscreenCover) != 0u) {
+        const float video_aspect = it.r[0] > 0.01f ? it.r[0] : (16.0f / 9.0f);
+        float draw_w = vw_phys, draw_h = vh_phys;
+        float du0 = it.m[0], dv0 = it.m[1], du1 = it.m[2], dv1 = it.m[3];
+        const float u_span = du1 - du0;
+        const float v_span = dv1 - dv0;
+        if (phys_aspect < video_aspect) {
+          const float keep = std::clamp(phys_aspect / video_aspect, 0.25f, 1.0f);
+          const float trim = 0.5f * (1.0f - keep) * u_span;
+          du0 += trim;
+          du1 -= trim;
+        } else if (phys_aspect > video_aspect * 1.005f) {
+          if (phys_aspect <= video_aspect * 1.25f) {
+            const float keep = std::clamp(video_aspect / phys_aspect, 0.5f, 1.0f);
+            const float trim = 0.5f * (1.0f - keep) * v_span;
+            dv0 += trim;
+            dv1 -= trim;
+          } else {
+            draw_w = vh_phys * video_aspect;
+          }
+        }
+        const float cx = 0.5f * (vx0 + vx1);
+        const float cy = 0.5f * (vy0 + vy1);
+        it.rect[0] = cx - 0.5f * draw_w;
+        it.rect[1] = cy - 0.5f * draw_h;
+        it.rect[2] = cx + 0.5f * draw_w;
+        it.rect[3] = cy + 0.5f * draw_h;
+        it.q[0] = du0;
+        it.q[1] = dv0;
+        it.q[2] = du1;
+        it.q[3] = dv1;
+      }
+      dst[i] = it;
+    }
+  }
   image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 last_stage, last_access, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
@@ -277,11 +343,6 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
   vkCmdSetScissor(cmd, 0, 1, &scissor);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ui_layout_, 0, 1, &ui_set_, 0, nullptr);
-  const float inv_w = 2.0f / float(std::max(1u, width));
-  const float inv_h = 2.0f / float(std::max(1u, height));
-  const float hud_scale = hud_layout_.virtual_w > 0 ? hud_layout_.scale : 1.0f;
-  const float off_x = hud_layout_.virtual_w > 0 ? hud_layout_.origin_x : 0.0f;
-  const float off_y = hud_layout_.virtual_w > 0 ? hud_layout_.origin_y : 0.0f;
   const float xform[4] = {hud_scale * inv_w, hud_scale * inv_h, off_x * inv_w - 1.0f, off_y * inv_h - 1.0f};
   vkCmdPushConstants(cmd, ui_layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof xform, xform);
   VkDeviceSize zero = 0;

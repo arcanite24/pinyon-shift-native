@@ -472,7 +472,15 @@ void DriveSession::place_world() {
         float sun[3], up[3];
         rotate_direction(m, up_game, up);
         if (app.tod_system.loaded_tod) {
-          world::TodState tod = app.tod_system.evaluate(app.tod_clock);
+          const world::TodState raw_tod = app.tod_system.evaluate(app.tod_clock);
+          static const DriveWorldHost* s_tod_smooth_host = nullptr;
+          static world::TodSmoother s_tod_smoother;
+          const bool snap_tod = (s_tod_smooth_host != &host || app.headless);
+          if (s_tod_smooth_host != &host) s_tod_smooth_host = &host;
+          world::TodState tod =
+              (!snap_tod && tod_frame_dt <= 0.0 && s_tod_smoother.initialized)
+                  ? s_tod_smoother.state
+                  : s_tod_smoother.update(raw_tod, float(std::clamp(tod_frame_dt, 0.0, 0.25)), snap_tod);
           rotate_direction(m, tod.sun_dir.data(), sun);
           host.showroom.set_world_light(sun, up, 1.0f);
           host.showroom.set_shadow_direction(sun);
@@ -625,6 +633,10 @@ void DriveSession::place_world() {
             }
             host.renderer.set_post_settings(ps);
             if (!host.user_lut_active) {
+              static const DriveWorldHost* s_lut_host = nullptr;
+              static world::ColorLutBlender s_lut_blender;
+              const bool reset_lut = (s_lut_host != &host || !have_post_lut || app.headless || tod_frame_dt <= 0.0);
+              if (s_lut_host != &host) s_lut_host = &host;
               if (!have_post_lut || zone_idx != last_lut_zone ||
                   std::fabs(tod.day_color_grade - last_lut_day) > 0.005f ||
                   std::fabs(tod.night_color_grade - last_lut_night) > 0.005f) {
@@ -634,8 +646,9 @@ void DriveSession::place_world() {
                 target_post_lut = world::ColorLut16::blend(app.tod_system.zones.day_lut_for(zone_idx),
                                                            app.tod_system.zones.night_lut_for(zone_idx),
                                                            tod.day_color_grade, tod.night_color_grade);
-                if (!have_post_lut || app.headless || tod_frame_dt <= 0.0) {
-                  cur_post_lut = target_post_lut;
+                if (reset_lut) {
+                  s_lut_blender.snap(target_post_lut);
+                  cur_post_lut = s_lut_blender.current;
                   have_post_lut = true;
                   post_lut_blending = false;
                   host.renderer.set_post_lut(cur_post_lut.rgba);
@@ -644,23 +657,20 @@ void DriveSession::place_world() {
                 }
               }
               if (post_lut_blending && have_post_lut && tod_frame_dt > 0.0) {
-                const float alpha = float(std::clamp(1.0 - std::exp(-tod_frame_dt / 1.2), 0.02, 1.0));
-                int max_diff = 0;
-                for (size_t i = 0; i < cur_post_lut.rgba.size(); ++i) {
-                  const int cur_v = cur_post_lut.rgba[i];
-                  const int dst_v = target_post_lut.rgba[i];
-                  const int diff = std::abs(dst_v - cur_v);
-                  if (diff > max_diff) max_diff = diff;
-                  if (diff > 0) {
-                    const float step = float(dst_v - cur_v) * alpha;
-                    int next_v = cur_v + int(std::lround(step));
-                    if (next_v == cur_v) next_v = cur_v + (dst_v > cur_v ? 1 : -1);
-                    cur_post_lut.rgba[i] = uint8_t(std::clamp(next_v, 0, 255));
-                  }
+                const float zone_lerp_s =
+                    (zone_idx >= 0 && size_t(zone_idx) < app.tod_system.zones.zones.size())
+                        ? std::max(app.tod_system.zones.zones[size_t(zone_idx)].lerp_time, 1.0f)
+                        : 15.0f;
+                const float lut_tau = std::clamp(zone_lerp_s * 0.20f, 2.0f, 4.0f);
+                const float lut_dt = float(std::clamp(tod_frame_dt, 0.0, 0.25));
+                if (s_lut_blender.update(target_post_lut, lut_dt, lut_tau, false)) {
+                  cur_post_lut = s_lut_blender.current;
+                  host.renderer.set_post_lut(cur_post_lut.rgba);
                 }
-                host.renderer.set_post_lut(cur_post_lut.rgba);
-                if (max_diff <= 1) {
+                if (s_lut_blender.settled(target_post_lut, 0.25f)) {
+                  s_lut_blender.snap(target_post_lut);
                   cur_post_lut = target_post_lut;
+                  host.renderer.set_post_lut(cur_post_lut.rgba);
                   post_lut_blending = false;
                 }
               }

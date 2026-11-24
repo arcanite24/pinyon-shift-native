@@ -262,6 +262,24 @@ void List::image(float x0, float y0, float x1, float y1, std::array<float, 4> uv
                     tint, tint, kImage, 0});
 }
 
+void List::fullscreen_backdrop(float x0, float y0, float x1, float y1, uint32_t color) {
+  items_.push_back({{x0, y0, x1, y1}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, color, color,
+                    kRoundRect, kUiFlagFullscreen});
+}
+
+void List::fullscreen_cover_image(float x0, float y0, float x1, float y1, std::array<float, 4> uv,
+                                  std::array<float, 4> full_uv, float content_aspect, uint32_t tint) {
+  items_.push_back({{x0, y0, x1, y1},
+                    {0, 0, 0, 0},
+                    {uv[0], uv[1], uv[2], uv[3]},
+                    {content_aspect, 0, 0, 0},
+                    {full_uv[0], full_uv[1], full_uv[2], full_uv[3]},
+                    tint,
+                    tint,
+                    kImage,
+                    kUiFlagFullscreenCover});
+}
+
 void List::image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv, uint32_t tint) {
   if (hw <= 0 || hh <= 0) return;
   if (turn_a_ != 0) turned(cx, cy), angle += turn_a_;
@@ -351,7 +369,9 @@ struct VectorFonts {
   uint64_t glyph_evictions = 0;
   uint32_t image_x = 0, image_y = kGlyphRows, image_h = 0;  // persistent image shelf (glyph_rows..transient_y0)
   uint32_t trans_y_next = kTransientY0;
-  uint64_t frame_tick = 1;
+  // 0 until atlas_begin_frame() is called (offline CPU/test mode permits LRU eviction
+  // within a single call batch); live rendering increments this once per frame (1, 2, ...).
+  uint64_t frame_tick = 0;
   uint64_t lru_tick = 1;
   uint64_t transient_evictions = 0;
   std::vector<TransientShelf> trans_shelves;
@@ -424,7 +444,8 @@ bool is_auto_transient_key(const std::string& key) {
     up.push_back(char(std::toupper(static_cast<unsigned char>(key[i]))));
   return up.rfind("EVENTTICKETS/", 0) == 0 || up.rfind("T:THUMBNAILS/", 0) == 0 || up.rfind("LOADING/", 0) == 0 ||
          up.rfind("T:UI4/UPGRADES/", 0) == 0 || up.rfind("T:UI4/LOGOS/", 0) == 0 ||
-         up.rfind("T:UI4/DYNAMICLOADING/", 0) == 0 || up.rfind("SPONSORLOGOTILE/", 0) == 0;
+         up.rfind("T:UI4/DYNAMICLOADING/", 0) == 0 || up.rfind("SPONSORLOGOTILE/", 0) == 0 ||
+         up.rfind("FMV.", 0) == 0 || up.rfind("INSPECTOR.", 0) == 0;
 }
 
 }  // namespace
@@ -433,6 +454,7 @@ namespace {
 // Copies w x h pixels to (ax, ay) with one texel of edge padding all round,
 // so bilinear taps stay inside.
 void atlas_put(VectorFonts& v, uint32_t ax, uint32_t ay, uint32_t w, uint32_t h, std::span<const uint8_t> rgba) {
+  if (!w || !h || ax < 1 || ay < 1 || ax + w + 1 > v.atlas_size || ay + h + 1 > v.atlas_size) return;
   const uint32_t pw = w + 2, ph = h + 2;
   if (v.gpu_mode) {
     AtlasPatch patch;
@@ -517,7 +539,9 @@ bool atlas_alloc_transient(VectorFonts& v, const std::string& key, uint32_t w, u
   }
 
   // 3. LRU eviction: prefer recycling the oldest transient shelf not sampled
-  // by an in-flight GPU frame (last_frame + kAtlasInFlightGuard <= frame_tick).
+  // by an in-flight GPU frame (last_frame + kAtlasInFlightGuard <= frame_tick),
+  // falling back only to shelves from an earlier frame (NEVER evicting a shelf
+  // already referenced in the current frame!).
   int victim = -1;
   uint64_t oldest = UINT64_MAX;
   for (int pass = 0; pass < 2 && victim < 0; ++pass) {
@@ -525,6 +549,7 @@ bool atlas_alloc_transient(VectorFonts& v, const std::string& key, uint32_t w, u
       const auto& sh = v.trans_shelves[size_t(i)];
       if (sh.h < need_h) continue;
       if (pass == 0 && sh.last_frame + kAtlasInFlightGuard > v.frame_tick) continue;
+      if (pass == 1 && v.frame_tick > 0 && sh.last_frame >= v.frame_tick) continue;
       if (sh.last_tick < oldest) {
         oldest = sh.last_tick;
         victim = i;
@@ -552,8 +577,77 @@ bool atlas_alloc_transient(VectorFonts& v, const std::string& key, uint32_t w, u
     return true;
   }
 
-  // 4. Full transient compaction reset (e.g. allocating a tall 1280x720 loading backdrop).
-  // Never touches rows 0..glyph_rows (font glyphs) or glyph_rows..transient_y0 (persistent chrome).
+  // 4. Merge a contiguous run of idle transient shelves (plus trailing space when
+  // reaching the last shelf) so tall transient artwork (e.g. 1280x720 FMV/loading)
+  // can reclaim fragmented rows without touching any live current-frame shelf.
+  for (int pass = 0; pass < 2; ++pass) {
+    int best_lo = -1, best_hi = -1;
+    uint64_t best_max_tick = UINT64_MAX;
+    const int n_sh = int(v.trans_shelves.size());
+    for (int lo = 0; lo < n_sh; ++lo) {
+      uint32_t span_h = 0;
+      uint64_t max_tick = 0;
+      for (int hi = lo; hi < n_sh; ++hi) {
+        const auto& sh = v.trans_shelves[size_t(hi)];
+        if (pass == 0 && sh.last_frame + kAtlasInFlightGuard > v.frame_tick) break;
+        if (pass == 1 && v.frame_tick > 0 && sh.last_frame >= v.frame_tick) break;
+        span_h += sh.h;
+        max_tick = std::max(max_tick, sh.last_tick);
+        const uint32_t avail_h = span_h + (hi == n_sh - 1 ? (v.atlas_size - v.trans_y_next) : 0u);
+        if (avail_h >= need_h) {
+          if (max_tick < best_max_tick) {
+            best_max_tick = max_tick;
+            best_lo = lo;
+            best_hi = hi;
+          }
+          break;
+        }
+      }
+    }
+    if (best_lo >= 0) {
+      uint32_t merged_h = 0;
+      for (int i = best_lo; i <= best_hi; ++i) {
+        auto& sh = v.trans_shelves[size_t(i)];
+        merged_h += sh.h;
+        for (const auto& old_k : sh.keys) {
+          v.images.erase(old_k);
+          v.trans_key_shelf.erase(old_k);
+          ++v.transient_evictions;
+        }
+      }
+      const bool touches_end = (best_hi == n_sh - 1);
+      auto& dst = v.trans_shelves[size_t(best_lo)];
+      dst.keys.clear();
+      dst.h = touches_end ? need_h : merged_h;
+      dst.x = need_w;
+      dst.last_frame = v.frame_tick;
+      dst.last_tick = ++v.lru_tick;
+      dst.keys.push_back(key);
+      if (touches_end) v.trans_y_next = dst.y + dst.h;
+      const int removed = best_hi - best_lo;
+      if (removed > 0) {
+        v.trans_shelves.erase(v.trans_shelves.begin() + best_lo + 1, v.trans_shelves.begin() + best_hi + 1);
+        for (auto& [tk, si] : v.trans_key_shelf) {
+          if (si > best_hi) si -= removed;
+        }
+      }
+      const uint32_t ax = 1, ay = dst.y + 1;
+      atlas_put(v, ax, ay, w, h, rgba);
+      const float k = 1.0f / float(v.atlas_size);
+      uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
+      v.images[key] = uv;
+      v.trans_key_shelf[key] = best_lo;
+      return true;
+    }
+  }
+
+  // 5. Full transient compaction reset — ONLY when zero transient shelves were
+  // sampled on the current frame (so an already-queued quad in this frame never
+  // has its atlas texels overwritten before vkCmdDraw!). Never touches rows
+  // 0..glyph_rows (font glyphs) or glyph_rows..transient_y0 (persistent chrome).
+  for (const auto& sh : v.trans_shelves) {
+    if (v.frame_tick > 0 && sh.last_frame >= v.frame_tick) return false;
+  }
   v.clear_transient();
   TransientShelf sh;
   sh.y = v.trans_y_next;
@@ -590,7 +684,20 @@ bool atlas_update(const std::string& key, uint32_t w, uint32_t h, std::span<cons
       }
       return uv = u, true;
     }
-    v.images.erase(it);  // another size: a new place
+    v.images.erase(it);  // another size: release old transient key metadata before reallocating
+    if (auto sit = v.trans_key_shelf.find(key); sit != v.trans_key_shelf.end()) {
+      const int idx = sit->second;
+      v.trans_key_shelf.erase(sit);
+      if (idx >= 0 && size_t(idx) < v.trans_shelves.size()) {
+        auto& sh = v.trans_shelves[size_t(idx)];
+        sh.keys.erase(std::remove(sh.keys.begin(), sh.keys.end(), key), sh.keys.end());
+        if (sh.keys.empty()) {
+          sh.x = 0;
+          sh.last_frame = 0;
+          sh.last_tick = 0;
+        }
+      }
+    }
   }
   return atlas_image(key, w, h, rgba, uv);
 }
@@ -705,13 +812,16 @@ uint32_t next_code_point(std::string_view t, size_t& i, bool keep_case = false) 
 // px per em for a cap height of `size` px.
 float em_px(const fh1::VFont& f, float size) { return size / f.cap_height(); }
 
-// Quantized glyph raster sizes (bilinearly sampled on GPU): limits distinct
-// atlas bitmaps per font across HiDPI / 4K / fit_text screens so glyphs stay
-// hot in the glyph band with zero mid-frame evictions.
+// Quantized glyph raster sizes (bilinearly sampled on GPU): 6 crisp buckets
+// up to 64 px (never upscaling below 64 px) limit distinct atlas bitmaps per
+// font across 1080p/1440p/4K/fit_text screens so glyphs stay hot with zero
+// mid-frame evictions.
 int cached_px(float px) {
-  if (px <= 16.0f) return std::max(8, int(std::lround(px / 2.0f)) * 2);
-  if (px <= 32.0f) return int(std::lround(px / 4.0f)) * 4;
-  if (px <= 64.0f) return int(std::lround(px / 8.0f)) * 8;
+  if (px <= 12.0f) return 12;
+  if (px <= 18.0f) return 18;
+  if (px <= 26.0f) return 26;
+  if (px <= 38.0f) return 38;
+  if (px <= 52.0f) return 52;
   return 64;
 }
 
@@ -817,6 +927,64 @@ bool glyph_alloc_shelf(VectorFonts& v, uint32_t w, uint32_t h, const GlyphKey& k
     out_shelf = victim;
     return true;
   }
+
+  // 5. Merge a contiguous run of idle glyph shelves (plus trailing space when
+  // reaching the last shelf) so tall glyphs are never permanently starved when
+  // the glyph band was initially filled by shorter shelves.
+  int best_lo = -1, best_hi = -1;
+  uint64_t best_max_tick = UINT64_MAX;
+  const int n_sh = int(v.glyph_shelves.size());
+  for (int lo = 0; lo < n_sh; ++lo) {
+    uint32_t span_h = 0;
+    uint64_t max_tick = 0;
+    for (int hi = lo; hi < n_sh; ++hi) {
+      const auto& sh = v.glyph_shelves[size_t(hi)];
+      if (sh.last_frame + kAtlasInFlightGuard > v.frame_tick) break;
+      span_h += sh.h;
+      max_tick = std::max(max_tick, sh.last_tick);
+      const uint32_t avail_h = span_h + (hi == n_sh - 1 ? (v.glyph_rows - v.glyph_y_next) : 0u);
+      if (avail_h >= need_h) {
+        if (max_tick < best_max_tick) {
+          best_max_tick = max_tick;
+          best_lo = lo;
+          best_hi = hi;
+        }
+        break;
+      }
+    }
+  }
+  if (best_lo >= 0) {
+    uint32_t merged_h = 0;
+    for (int i = best_lo; i <= best_hi; ++i) {
+      auto& sh = v.glyph_shelves[size_t(i)];
+      merged_h += sh.h;
+      for (const auto& old_k : sh.keys) {
+        v.cache.erase(old_k);
+        ++v.glyph_evictions;
+      }
+    }
+    const bool touches_end = (best_hi == n_sh - 1);
+    auto& dst = v.glyph_shelves[size_t(best_lo)];
+    const uint32_t end_h = std::min(v.glyph_rows - dst.y, (need_h + 7u) & ~7u);
+    dst.keys.clear();
+    dst.h = touches_end ? std::max(need_h, end_h) : merged_h;
+    dst.x = need_w;
+    dst.last_frame = v.frame_tick;
+    dst.last_tick = ++v.lru_tick;
+    dst.keys.push_back(key);
+    if (touches_end) v.glyph_y_next = dst.y + dst.h;
+    const int removed = best_hi - best_lo;
+    if (removed > 0) {
+      v.glyph_shelves.erase(v.glyph_shelves.begin() + best_lo + 1, v.glyph_shelves.begin() + best_hi + 1);
+      for (auto& [ck, ce] : v.cache) {
+        if (ce.shelf > best_hi) ce.shelf -= removed;
+      }
+    }
+    out_ax = 0;
+    out_ay = dst.y;
+    out_shelf = best_lo;
+    return true;
+  }
   return false;
 }
 
@@ -838,7 +1006,7 @@ const VectorFonts::Entry* find_fallback_glyph(VectorFonts& v, int font, uint32_t
   return best;
 }
 
-const VectorFonts::Entry* glyph_entry(int font, uint32_t cp, int px) {
+const VectorFonts::Entry* glyph_entry(int font, uint32_t cp, int px, bool allow_step_down = true) {
   VectorFonts& v = vf();
   const auto key = std::make_tuple(font, cp, px);
   if (auto it = v.cache.find(key); it != v.cache.end()) {
@@ -860,7 +1028,16 @@ const VectorFonts::Entry* glyph_entry(int font, uint32_t cp, int px) {
   uint32_t ax = 0, ay = 0;
   int shelf_idx = -1;
   if (!glyph_alloc_shelf(v, uint32_t(w), uint32_t(h), key, ax, ay, shelf_idx)) {
-    return find_fallback_glyph(v, font, cp, px);
+    if (const auto* fb = find_fallback_glyph(v, font, cp, px)) return fb;
+    if (allow_step_down) {
+      static constexpr int kStepDown[] = {38, 26, 18, 12};
+      for (int smaller : kStepDown) {
+        if (smaller < px) {
+          if (const auto* se = glyph_entry(font, cp, smaller, false)) return se;
+        }
+      }
+    }
+    return nullptr;
   }
   std::vector<uint8_t> cov;
   fh1::rasterize_vfont_glyph(*g, k, float(-gx0), float(-gy0), cov, w, h);
@@ -1321,6 +1498,25 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
               if (scale == 1.0f && rs.stretch == 1.0f) gx = std::round(gx), gy = std::round(gy);
               image(gx, gy, gx + (e->u1 - e->u0) * sx, gy + (e->v1 - e->v0) * scale,
                     {e->u0 * inv, e->v0 * inv, e->u1 * inv, e->v1 * inv}, rs.color);
+            } else if (cp < 128) {
+              // Last-resort safety fallback: never drop an ASCII character into blank space.
+              if (const Glyph* sg = glyph(char(cp)); sg && sg->count) {
+                const float sk = rs.size / 10.0f;
+                const float sr = rs.weight * 10.0f;
+                const float gp = pen + sr * sk;
+                const float pad = (sr + 1.5f) * sk;
+                const float lean = rs.slant * 11.0f * sk;
+                items_.push_back({{gp - pad - std::max(0.0f, -lean), ly - pad,
+                                   gp + sg->width * sk + pad + std::max(0.0f, lean), ly + 10 * sk + pad + 1.5f * sk},
+                                  {gp, ly, sk, sr},
+                                  {float(sg->first), float(sg->count), rs.slant, 0},
+                                  {0, 0, 0, 0},
+                                  {0, 0, 0, 0},
+                                  rs.color,
+                                  rs.color,
+                                  kGlyph,
+                                  0});
+              }
             }
             pen += (g->advance * k + rs.tracking * rs.size) * rs.stretch;
           } else if (cp != ' ' && have_cjk && vf().cjk->has_glyph(cp)) {

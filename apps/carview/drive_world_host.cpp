@@ -9,7 +9,9 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "cars/visual_setup.h"
@@ -172,6 +174,50 @@ std::filesystem::path resolve_surface_types_source(const DriveApp& app,
   }
 
   return base_src;
+}
+
+struct LoadedCarRecord {
+  std::string car_media_low;
+  ShowroomOptions opts;
+};
+
+std::mutex g_loaded_cars_mutex;
+std::unordered_map<const DriveWorldHost*, LoadedCarRecord> g_loaded_cars;
+
+bool same_brake_spec(const cars::BrakeVisualSpec& a, const cars::BrakeVisualSpec& b) {
+  return a.size_in == b.size_in && a.type_id == b.type_id && a.pistons == b.pistons && a.level == b.level;
+}
+
+bool same_visual_setup(const cars::VisualSetup& a, const cars::VisualSetup& b) {
+  return a.active == b.active && a.shown_parts == b.shown_parts && a.removed_parts == b.removed_parts &&
+         a.has_exhaust_override == b.has_exhaust_override && a.exhaust_part == b.exhaust_part &&
+         a.wheel_media == b.wheel_media && a.wheel_id == b.wheel_id && a.brake_draw_offset == b.brake_draw_offset &&
+         a.rim_offset_front == b.rim_offset_front && a.rim_offset_rear == b.rim_offset_rear &&
+         a.wheel_is_chrome == b.wheel_is_chrome && a.wheel_is_stock == b.wheel_is_stock &&
+         a.wheel_is_exception == b.wheel_is_exception && a.wheel_is_paintable == b.wheel_is_paintable &&
+         a.tire_compound_level == b.tire_compound_level && a.tire_compound_id == b.tire_compound_id &&
+         a.tyre_width_mm == b.tyre_width_mm && a.rim_inches == b.rim_inches &&
+         a.stock_tyre_width_mm == b.stock_tyre_width_mm && a.stock_rim_inches == b.stock_rim_inches &&
+         a.stock_tyre_aspect == b.stock_tyre_aspect && a.tyre_media_override == b.tyre_media_override &&
+         a.paint_exceptions.found == b.paint_exceptions.found &&
+         a.paint_exceptions.no_mirrors == b.paint_exceptions.no_mirrors &&
+         a.paint_exceptions.no_windows == b.paint_exceptions.no_windows &&
+         a.paint_exceptions.no_hood == b.paint_exceptions.no_hood &&
+         a.paint_exceptions.no_paintable_wing == b.paint_exceptions.no_paintable_wing &&
+         a.front_bumper_level == b.front_bumper_level && a.rear_bumper_level == b.rear_bumper_level &&
+         a.rear_wing_level == b.rear_wing_level && a.spring_damper_level == b.spring_damper_level &&
+         a.has_rally_bodykit == b.has_rally_bodykit && a.has_rally_suspension == b.has_rally_suspension &&
+         a.has_rally_tires == b.has_rally_tires && a.ride_height_m == b.ride_height_m &&
+         a.track_offset_m == b.track_offset_m && a.camber_rad == b.camber_rad &&
+         same_brake_spec(a.brakes[0], b.brakes[0]) && same_brake_spec(a.brakes[1], b.brakes[1]) &&
+         a.caliper_angle_deg == b.caliper_angle_deg &&
+         a.has_caliper_angle_override == b.has_caliper_angle_override;
+}
+
+bool same_showroom_options(const ShowroomOptions& a, const ShowroomOptions& b) {
+  return a.colour == b.colour && a.match_rgb == b.match_rgb && a.match_sequence == b.match_sequence &&
+         a.livery_overlay == b.livery_overlay && a.all_variants == b.all_variants && a.car_id == b.car_id &&
+         a.game_root == b.game_root && same_visual_setup(a.visual, b.visual);
 }
 
 }  // namespace
@@ -839,6 +885,10 @@ bool DriveWorldHost::open_world_and_car() {
       } else {
         app.wait_all_world_assets();
       }
+  if (app.status == 0) {
+    std::lock_guard<std::mutex> lock(g_loaded_cars_mutex);
+    g_loaded_cars[this] = {lower_ascii(app.car), options};
+  }
   return app.status == 0;
 }
 
@@ -846,19 +896,83 @@ bool DriveWorldHost::hot_reload_car_and_world() {
         const auto t_hot0 = std::chrono::steady_clock::now();
         showroom.set_instances({});
         const ShowroomOptions hot_opts = build_car_options();
-        if (!showroom.reload_car(app.bake_dir, app.car, hot_opts, app.error)) {
-          std::fprintf(stderr, "carview: hot car switch %s: %s\n", app.car.c_str(), app.error.c_str());
-          app.status = 1;
-          return false;
+        const std::string car_low = lower_ascii(app.car);
+        bool need_car_reload = true;
+        {
+          std::lock_guard<std::mutex> lock(g_loaded_cars_mutex);
+          if (auto it = g_loaded_cars.find(this); it != g_loaded_cars.end()) {
+            if (it->second.car_media_low == car_low && same_showroom_options(it->second.opts, hot_opts)) {
+              need_car_reload = false;
+            }
+          }
         }
-        if (const auto groot = app.game_root_of(); !groot.empty()) showroom.load_car_lamps(groot, app.car);
+        const int want_route = app.gather_route_given ? app.gather_route : (app.race ? app.race->event().route_id : 0);
+        const double sx = app.have_spawn ? app.spawn[0] : start.x;
+        const double sz = app.have_spawn ? app.spawn[2] : start.z;
+        const double dist_origin = std::hypot(sx - showroom.world_origin_x(), sz - showroom.world_origin_z());
+        const bool need_regather =
+            streamer && !app.world_dir.empty() && (want_route != loaded_world_route || dist_origin > 120.0 || app.fast_travel);
+
+        // Pump an animated 60 FPS LoadingScreen in windowed mode whenever heavy car reload or
+        // world regather work is required so SDL events stay responsive and the window never freezes.
+        const bool hot_live_ui = (need_car_reload || need_regather) && !app.headless && !app.bench && app.window != nullptr;
+        LoadingScreen hot_loading;
+        bool hot_atlas_synced = false;
+        bool hot_cancelled = false;
+        auto hot_last_tp = std::chrono::steady_clock::now();
+        if (hot_live_ui) {
+          hot_loading.load_definitions(app.game_root_of(), app.race ? "race" : "freeroam");
+          const std::string load_title =
+              (app.race && !app.race_event.empty()) ? app.race_event : std::string("HORIZON COLORADO");
+          const std::string load_sub = app.race ? "LOADING EVENT" : (need_car_reload ? "LOADING VEHICLE" : "TRAVELING");
+          hot_loading.start(load_title, load_sub);
+          hot_loading.set_progress(0.08f);
+        }
+        auto pump_hot_frame = [&](float target_progress) {
+          if (!hot_live_ui || hot_cancelled) return;
+          SDL_Event ev;
+          while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_EVENT_QUIT) {
+              hot_cancelled = true;
+              app.status = 0;
+            }
+          }
+          if (hot_cancelled) return;
+          const auto now_tp = std::chrono::steady_clock::now();
+          const double dt = std::clamp(std::chrono::duration<double>(now_tp - hot_last_tp).count(), 0.001, 0.1);
+          hot_last_tp = now_tp;
+          hot_loading.update(dt);
+          hot_loading.set_progress(std::clamp(target_progress, 0.05f, 0.99f));
+          int bw = 0, bh = 0;
+          SDL_GetWindowSizeInPixels(app.window, &bw, &bh);
+          if (bw > 32 && bh > 32) {
+            ui::List list;
+            hot_loading.draw(list, float(bw), float(bh));
+            upload_ui_atlas(renderer, !hot_atlas_synced);
+            hot_atlas_synced = true;
+            renderer.set_ui(list.items());
+            std::string draw_err;
+            renderer.draw_frame(FrameConstants{}, draw_err);
+          }
+        };
+        pump_hot_frame(0.12f);
+
+        if (need_car_reload) {
+          if (!showroom.reload_car(app.bake_dir, app.car, hot_opts, app.error)) {
+            std::fprintf(stderr, "carview: hot car switch %s: %s\n", app.car.c_str(), app.error.c_str());
+            app.status = 1;
+            return false;
+          }
+          if (const auto groot = app.game_root_of(); !groot.empty()) showroom.load_car_lamps(groot, app.car);
+          {
+            std::lock_guard<std::mutex> lock(g_loaded_cars_mutex);
+            g_loaded_cars[this] = {car_low, hot_opts};
+          }
+          pump_hot_frame(need_regather ? 0.35f : 0.92f);
+        }
         // Re-gather only if the route changed or spawn teleported far from the resident world origin.
         if (streamer && !app.world_dir.empty()) {
-          const int want_route = app.gather_route_given ? app.gather_route : (app.race ? app.race->event().route_id : 0);
-          const double sx = app.have_spawn ? app.spawn[0] : start.x;
-          const double sz = app.have_spawn ? app.spawn[2] : start.z;
-          const double dist_origin = std::hypot(sx - showroom.world_origin_x(), sz - showroom.world_origin_z());
-          if (want_route != loaded_world_route || dist_origin > 120.0 || app.fast_travel) {
+          if (need_regather) {
             loaded_world_route = want_route;
             world_gather_options.route = want_route;
             if (!app.render_ground) collision.set_active_route(want_route);
@@ -913,7 +1027,25 @@ bool DriveWorldHost::hot_reload_car_and_world() {
               }
               return std::any(prepared);
             });
-            if (!streamer->update(sx, sz, nullptr, &app.error)) {
+            bool gather_ok = false;
+            if (hot_live_ui) {
+              std::string g_err;
+              auto fut_gather = std::async(std::launch::async, [&]() {
+                return streamer->update(sx, sz, nullptr, &g_err);
+              });
+              const auto g_t0 = std::chrono::steady_clock::now();
+              while (fut_gather.wait_for(std::chrono::milliseconds(16)) != std::future_status::ready) {
+                const float el = float(std::chrono::duration<double>(std::chrono::steady_clock::now() - g_t0).count());
+                const float frac = std::clamp(el / 1.5f, 0.0f, 0.95f);
+                pump_hot_frame(0.35f + 0.55f * frac);
+              }
+              gather_ok = fut_gather.get();
+              if (!gather_ok) app.error = g_err;
+            } else {
+              gather_ok = streamer->update(sx, sz, nullptr, &app.error);
+            }
+            if (hot_cancelled) return false;
+            if (!gather_ok) {
               std::fprintf(stderr, "carview: hot regather: %s\n", app.error.c_str());
               app.status = 1;
               return false;
@@ -931,6 +1063,7 @@ bool DriveWorldHost::hot_reload_car_and_world() {
               app.status = 1;
               return false;
             }
+            pump_hot_frame(0.98f);
           }
           if (app.have_spawn) {
             start = {app.spawn[0], app.spawn[1], app.spawn[2]};
@@ -939,13 +1072,18 @@ bool DriveWorldHost::hot_reload_car_and_world() {
         }
         const double hot_ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_hot0).count();
-        std::printf("carview: hot swap to %s in %.1f ms (world textures kept: %zu, gpu draws: %u)\n", app.car.c_str(),
-                    hot_ms, showroom.world_texture_count(), showroom.gpu_resident_draws());
+        std::printf("carview: hot swap to %s in %.1f ms (car %s, regather %s, world textures kept: %zu, gpu draws: %u)\n",
+                    app.car.c_str(), hot_ms, need_car_reload ? "reloaded" : "kept", need_regather ? "yes" : "no",
+                    showroom.world_texture_count(), showroom.gpu_resident_draws());
   return true;
 }
 
 void DriveWorldHost::run() {
-  if (!open_world_and_car()) return;
+  if (!open_world_and_car()) {
+    std::lock_guard<std::mutex> lock(g_loaded_cars_mutex);
+    g_loaded_cars.erase(this);
+    return;
+  }
   for (bool session_again = true; session_again && app.status == 0;) {
     session_again = false;
     if (!first_session) {
@@ -955,6 +1093,10 @@ void DriveWorldHost::run() {
     DriveSession session(app, *this);
     session.init_session();
     session.run(session_again);
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_loaded_cars_mutex);
+    g_loaded_cars.erase(this);
   }
   if (app.validation) std::printf("validation messages: %u\n", renderer.validation_messages());
   if (app.status == 0 && renderer.validation_messages()) app.status = 3;

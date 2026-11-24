@@ -162,7 +162,11 @@ SnapshotMatrix::SnapshotMatrix() { active_idx_.fill(-1); }
 
 bool SnapshotMatrix::is_transient_gameplay(std::string_view name) {
   return iequals(name, "Paused") || iequals(name, "PausedMultiplayer") || iequals(name, "Loading") ||
-         iequals(name, "Rewind");
+         iequals(name, "Rewind") || iequals(name, "UIExterior") || iequals(name, "UIInterior") ||
+         iequals(name, "PreEvent") || iequals(name, "Video") || iequals(name, "FadeOut") ||
+         iequals(name, "FadeOutQuick") || iequals(name, "FadeOutWristbandReward") ||
+         iequals(name, "Barnfind") || iequals(name, "OpeningCutscene") ||
+         iequals(name, "OpeningCutsceneIntroCar");
 }
 
 bool SnapshotMatrix::parse(std::string_view xml, std::string* error) {

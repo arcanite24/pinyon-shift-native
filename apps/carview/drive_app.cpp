@@ -475,7 +475,11 @@ bool DriveApp::init(int& exit_code) {
   // The career page's PNGs and the HUD: the game's fonts.
   const auto db_cat_t0 = std::chrono::steady_clock::now();
   if (career_png.empty() && map_png.empty()) {
+#ifdef __ANDROID__
     carview::ui::set_atlas_size(low_preset ? 2048u : Renderer::kUiAtlas);
+#else
+    carview::ui::set_atlas_size(Renderer::kUiAtlas);
+#endif
     carview::ui::set_gpu_atlas_mode(true);
   }
   if (!world_dir.empty() || !game_root_given.empty()) load_ui_fonts(game_root_of(), font_cache);

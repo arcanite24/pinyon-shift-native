@@ -339,7 +339,10 @@ void Showroom::evict_world_textures() {
     world_lru_.evict_unpinned(epoch, victims);
     if (victims.empty()) return;
     evicted_images.reserve(victims.size());
+    std::unordered_set<uint32_t> victim_set;
+    victim_set.reserve(victims.size() * 2 + 8);
     for (uint32_t record : victims) {
+      victim_set.insert(record);
       if (gpu_world_) gpu_world_->remove_texture(record);
       if (auto it = world_textures_.find(record); it != world_textures_.end()) {
         evicted_images.push_back(it->second);
@@ -349,11 +352,17 @@ void Showroom::evict_world_textures() {
         evicted_sets.push_back(it->second);
         world_sets_.erase(it);
       }
+    }
+    if (!world_layer_sets_.empty()) {
       for (auto it = world_layer_sets_.begin(); it != world_layer_sets_.end();) {
         const auto& k = it->first;
         bool match = false;
-        for (uint32_t r_id : k)
-          if (r_id == record) match = true;
+        for (uint32_t r_id : k) {
+          if (r_id != kNoWorldTexture && victim_set.count(r_id)) {
+            match = true;
+            break;
+          }
+        }
         if (match) {
           evicted_sets.push_back(it->second);
           it = world_layer_sets_.erase(it);
@@ -472,6 +481,8 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
   auto attempt = [&]() {
     vertex_copies.clear();
     index_copies.clear();
+    vertex_copies.reserve(st.draws.size());
+    index_copies.reserve(st.draws.size());
     for (size_t i = 0; i < st.draws.size(); ++i) {
       auto& d = st.draws[i];
       placed[i] = nullptr;
@@ -498,10 +509,54 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
     }
     return true;
   };
-  if (!attempt()) {
+  // Pre-flight capacity estimate (O(N), zero ResidentSet::evict_oldest linear scans).
+  // ResidentSet::place() evicts one entry at a time via an O(N) full-map scan when the arena
+  // is full, and evict_unreferenced() is O(N^2). When a dense gather cannot fit alongside the
+  // live world or would trigger hundreds of O(N) eviction scans, skip the doomed attempt and
+  // reset the arena in O(1) after a single wait_idle().
+  uint64_t need_v = 0, need_i = 0;
+  size_t new_draws = 0;
+  {
+    std::unordered_set<uint64_t> seen_new;
+    seen_new.reserve(st.draws.size() * 2 + 16);
+    for (const auto& d : st.draws) {
+      if (d.vertex_count == 0 || d.index_count == 0) continue;
+      if (res.contains(d.key)) continue;
+      if (seen_new.insert(d.key).second) {
+        need_v += d.vertex_count;
+        need_i += d.index_count;
+        ++new_draws;
+      }
+    }
+  }
+  const uint64_t cap_v = res.vertex_capacity();
+  const uint64_t cap_i = res.index_capacity();
+  const uint64_t used_v = res.vertex_used();
+  const uint64_t used_i = res.index_used();
+  const bool fits_free = (used_v + need_v <= cap_v) && (used_i + need_i <= cap_i);
+  bool skip_first_attempt = false;
+  if (!fits_free && new_draws > 0) {
+    // Release any completed swap-fade draws early before deciding whether an arena reset is needed.
+    if (fading_on_) drop_fading_world(false);
+    uint64_t live_v = 0, live_i = 0;
+    std::unordered_set<uint64_t> seen_live;
+    seen_live.reserve(world_draws_.size() * 2 + 16);
+    for (const auto& d : world_draws_) {
+      if (!d.resident) continue;
+      if (!seen_live.insert(d.key).second) continue;
+      if (const auto* rd = res.find(d.key)) {
+        live_v += rd->vertex_count;
+        live_i += rd->index_count;
+      }
+    }
+    const bool guaranteed_overflow = (live_v + need_v > cap_v) || (live_i + need_i > cap_i);
+    const bool heavy_evict_thrash = (uint64_t(new_draws) * uint64_t(res.count()) > 400000ULL);
+    skip_first_attempt = guaranteed_overflow || heavy_evict_thrash;
+  }
+  if (skip_first_attempt || !attempt()) {
     r_.wait_idle();
     drop_fading_world(true);
-    world_release_draws(world_draws_);
+    for (auto& d : world_draws_) d.resident = false;
     world_draws_.clear();
     world_trees_.clear();
     active_gpu_table_records_.clear();
@@ -510,8 +565,14 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
       std::string clear_err;
       (void)gpu_world_->set_table({}, clear_err);
     }
+    {
+      std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
+      if (auto it = g_smash_hide.find(this); it != g_smash_hide.end()) it->second.by_draw_key.clear();
+    }
     release_retired();
-    res.evict_unreferenced(r_.frames_done());
+    // O(1) full arena reset after wait_idle(): avoids O(N^2) evict_unreferenced() and
+    // eliminates the frames_submitted() > frames_done() tag mismatch that left old draws pinned.
+    res.reset(res.vertex_capacity(), res.index_capacity());
     if (!attempt()) {
       const auto& fd = st.draws[fail_idx];
       error = "world arena full (draw " + std::to_string(fail_idx) + "/" + std::to_string(st.draws.size()) +
@@ -744,7 +805,8 @@ bool Showroom::build_gpu_table(std::string& error) {
   const bool single_sample = r_.samples_ == VK_SAMPLE_COUNT_1_BIT;
   const bool instanced_trees = !world_trees_.empty();
   std::unordered_map<uint32_t, uint32_t> slot_cache;
-  slot_cache.reserve(512);
+  slot_cache.reserve(2048);
+  active_gpu_table_records_.reserve(1024);
   auto resolve_slot = [&](uint32_t record, bool& present) -> uint32_t {
     if (record == kNoWorldTexture) {
       present = true;

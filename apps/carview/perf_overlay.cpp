@@ -218,7 +218,9 @@ std::array<float, 4> perf_overlay_rect(const PerfInfo& info, float width, float 
   const float panel_w = std::min(392.0f * k, std::max(240.0f * k, width * 0.36f));
   const float panel_h =
       2.0f * pad_y + float(main_rows) * row_h + (pass_rows > 0 ? (6.0f * k + float(pass_rows) * pass_h) : 0.0f);
-  const float x0 = 12.0f * k;
+  // Anchor top-right so top-left FH1 banners ("DRIVE TO THE HORIZON FESTIVAL",
+  // "OPTIONS", "HORIZON AUTOSHOW", "REWARD TALLY", "START RACE") stay unobstructed.
+  const float x0 = std::max(12.0f * k, width - panel_w - 12.0f * k);
   const float y0 = 12.0f * k;
   return {x0, y0, x0 + panel_w, y0 + panel_h};
 }

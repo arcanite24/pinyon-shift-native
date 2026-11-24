@@ -118,9 +118,11 @@ class AudioHost {
   void start_benchmark_device();
   void stop_device();
   bool running() const { return engine_.running(); }
-  void set_fmv_audio(audio::AudioEngine::FmvAudioFn fn, void* ctx) { engine_.set_fmv_audio(fn, ctx); }
+  void set_fmv_audio(audio::AudioEngine::FmvAudioFn fn, void* ctx);
   bool has_audio() const {
-    return has_car_ || has_sfx_ || has_satnav_ || radio_ != nullptr || !custom_stations_.empty() || user_music_ready_;
+    return has_car_ || has_sfx_ || has_satnav_ || has_vo_ || has_codriver_ ||
+           has_acoustics_.load(std::memory_order_acquire) || has_fmv_audio_ || radio_ != nullptr ||
+           !custom_stations_.empty() || user_music_ready_;
   }
 
   // Per-frame lock-free updates (main thread).
@@ -158,9 +160,18 @@ class AudioHost {
   void save_radio_state(drive::DriveSave& save);
 
  private:
+  enum class GameplayOverlay : uint8_t { kNone = 0, kMenu, kPaused, kRewind, kLoading };
+  void ensure_device_started();
+  void sync_gameplay_snapshot();
+
   AudioConfig cfg_;
   audio::AudioEngine engine_{kAudioRate};
   SDL_AudioStream* stream_ = nullptr;
+  bool has_fmv_audio_ = false;
+  bool device_open_failed_ = false;
+  std::chrono::steady_clock::time_point last_device_try_tp_{};
+  GameplayOverlay last_overlay_ = GameplayOverlay::kNone;
+  bool applied_in_race_ = false;
 
   int snap_paused_ = -1;
   int snap_menu_ = -1;

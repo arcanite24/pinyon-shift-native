@@ -1189,7 +1189,7 @@ void AudioEngine::render_block(float* out, int frames) {
   if (FmvAudioFn fn = fmv_fn_.load(std::memory_order_acquire)) {
     std::fill(out, out + samples, 0.0f);
     void* ctx = fmv_ctx_.load(std::memory_order_acquire);
-    const int got = fn(ctx, out, frames);
+    const int got = std::clamp(fn(ctx, out, frames), 0, frames);
     const float g = mixer_.muted() ? 0.0f : mixer_.master();
     for (int i = 0; i < got * 2; ++i) out[i] *= g;
     sanitize_output(out, frames);
@@ -1471,9 +1471,14 @@ void AudioEngine::render_block(float* out, int frames) {
     for (int b = 0; b < kBuses; ++b) {
       // AudioMixerSnapshots.xml is the single source of truth in matrix mode;
       // do not double-stack legacy SnapshotMixer (Paused/Menu) gains on top.
+      // When UI music is explicitly playing on MenuMusic (Title/Loading/Map/Victory)
+      // or on the Title screen (HomespaceMusic), do not let FreeRoam/Loading/Paused's
+      // 0.0 MenuMusic cell silence it; user Music slider, master volume, and mute still apply.
+      const bool active_menu_music = ui_music_active && (Bus(b) == Bus::kMenuMusic);
       const bool title_music =
           on_title && ui_music_active && (Bus(b) == Bus::kMenuMusic || Bus(b) == Bus::kHomespaceMusic);
-      const float snap_g = (on_title && Bus(b) != Bus::kUi && !title_music) ? 0.0f : matrix_.bus_gain(Bus(b));
+      float snap_g = (on_title && Bus(b) != Bus::kUi && !title_music) ? 0.0f : matrix_.bus_gain(Bus(b));
+      if (active_menu_music || title_music) snap_g = std::max(snap_g, 1.0f);
       const float target = mixer_.bus_level(Bus(b)) * snap_g;
       float& s = matrix_bus_smooth_[size_t(b)];
       const float* in = buses[b];

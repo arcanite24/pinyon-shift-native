@@ -971,54 +971,64 @@ void DriveSession::run_window_loop() {
               if (replay_rec.active()) {
                 uint8_t pl_place = 0;
                 if (app.race) {
-                  const auto rh = app.race->hud_info();
-                  pl_place = uint8_t(std::clamp(rh.place, 0, 255));
-                  if (rh.lap > replay_last_lap) {
-                    replay_last_lap = rh.lap;
-                    replay_rec.add_marker(vehicle.time(), "LAP " + std::to_string(rh.lap));
+                  pl_place = uint8_t(std::clamp(app.race->player_place(), 0, 255));
+                  const int cur_lap = app.race->session().lap(app.race->player_index());
+                  if (cur_lap > replay_last_lap) {
+                    replay_last_lap = cur_lap;
+                    replay_rec.add_marker(vehicle.time(), "LAP " + std::to_string(cur_lap));
                   }
                   if (app.race->player_finished() && !replay_finish_marked) {
                     replay_finish_marked = true;
                     replay_rec.add_marker(vehicle.time(), "FINISH");
                   }
                 }
-                std::vector<drive::ReplayCarSample> rcars;
-                rcars.push_back(drive::ReplayCarSample::from_vehicle(
-                    0u, vehicle, player_lamps, in.throttle, in.brake, in.handbrake ? 1.0 : 0.0, in.steer, pl_place));
-                if (app.race) {
-                  std::vector<carview::RaceView::OpponentTag> otags;
-                  app.race->opponent_tags(otags);
-                  uint32_t slot = 1;
-                  for (const auto& ot : otags) {
-                    drive::ReplayCarSample os{};
-                    os.slot = slot++;
-                    os.pos[0] = float(ot.x), os.pos[1] = float(ot.y), os.pos[2] = float(ot.z);
-                    os.vel[0] = float(ot.vx), os.vel[1] = float(ot.vy), os.vel[2] = float(ot.vz);
-                    os.speed_mps = float(ot.speed);
-                    os.rpm = float(ot.rpm);
-                    const double hdg = std::atan2(ot.vx, ot.vz);
-                    os.quat[0] = float(std::cos(0.5 * hdg));
-                    os.quat[2] = float(std::sin(0.5 * hdg));
-                    rcars.push_back(os);
+                // ReplayRecorder samples at 60 Hz: skip assembling opponent/traffic sample vectors
+                // on intermediate 120 Hz steps that maybe_record() would immediately discard.
+                thread_local double s_last_replay_sample_t = -1e9;
+                thread_local std::vector<carview::RaceView::OpponentTag> s_replay_otags;
+                const double vtime = vehicle.time();
+                if (replay_rec.frame_count() == 0 || vtime < s_last_replay_sample_t ||
+                    vtime - s_last_replay_sample_t >= (1.0 / 60.0) - 1e-4) {
+                  std::vector<drive::ReplayCarSample> rcars;
+                  rcars.reserve(24);
+                  rcars.push_back(drive::ReplayCarSample::from_vehicle(
+                      0u, vehicle, player_lamps, in.throttle, in.brake, in.handbrake ? 1.0 : 0.0, in.steer, pl_place));
+                  if (app.race) {
+                    app.race->opponent_tags(s_replay_otags);
+                    uint32_t slot = 1;
+                    for (const auto& ot : s_replay_otags) {
+                      drive::ReplayCarSample os{};
+                      os.slot = slot++;
+                      os.pos[0] = float(ot.x), os.pos[1] = float(ot.y), os.pos[2] = float(ot.z);
+                      os.vel[0] = float(ot.vx), os.vel[1] = float(ot.vy), os.vel[2] = float(ot.vz);
+                      os.speed_mps = float(ot.speed);
+                      os.rpm = float(ot.rpm);
+                      const double hdg = std::atan2(ot.vx, ot.vz);
+                      os.quat[0] = float(std::cos(0.5 * hdg));
+                      os.quat[2] = float(std::sin(0.5 * hdg));
+                      rcars.push_back(os);
+                    }
+                  }
+                  if (traffic && traffic->cars()) {
+                    const drive::Vec3 pat = vehicle.position();
+                    uint32_t tslot = 100;
+                    for (const auto& tc : *traffic->cars()) {
+                      const double dx = tc.position.x - pat.x, dz = tc.position.z - pat.z;
+                      if (dx * dx + dz * dz > 160.0 * 160.0) continue;
+                      drive::ReplayCarSample ts{};
+                      ts.slot = tslot++;
+                      ts.pos[0] = float(tc.position.x), ts.pos[1] = float(tc.position.y), ts.pos[2] = float(tc.position.z);
+                      ts.speed_mps = float(tc.speed);
+                      ts.quat[0] = float(std::cos(0.5 * tc.heading));
+                      ts.quat[2] = float(std::sin(0.5 * tc.heading));
+                      rcars.push_back(ts);
+                      if (tslot >= 116) break;
+                    }
+                  }
+                  if (replay_rec.maybe_record(vtime, std::move(rcars))) {
+                    s_last_replay_sample_t = vtime;
                   }
                 }
-                if (traffic && traffic->cars()) {
-                  const drive::Vec3 pat = vehicle.position();
-                  uint32_t tslot = 100;
-                  for (const auto& tc : *traffic->cars()) {
-                    const double dx = tc.position.x - pat.x, dz = tc.position.z - pat.z;
-                    if (dx * dx + dz * dz > 160.0 * 160.0) continue;
-                    drive::ReplayCarSample ts{};
-                    ts.slot = tslot++;
-                    ts.pos[0] = float(tc.position.x), ts.pos[1] = float(tc.position.y), ts.pos[2] = float(tc.position.z);
-                    ts.speed_mps = float(tc.speed);
-                    ts.quat[0] = float(std::cos(0.5 * tc.heading));
-                    ts.quat[2] = float(std::sin(0.5 * tc.heading));
-                    rcars.push_back(ts);
-                    if (tslot >= 116) break;
-                  }
-                }
-                replay_rec.maybe_record(vehicle.time(), std::move(rcars));
               }
             }
             frame_world_impact = std::max(frame_world_impact, vehicle.body_contact_force());
