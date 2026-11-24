@@ -190,6 +190,20 @@ void DriveSession::run_window_loop() {
                     app.baked_cars.size());
   sync_pick();
   app.sync_picker = [this]() { sync_pick(); };
+  if (!app.record_session_dir.empty() && !app.playtest_recorder.active()) {
+    std::string rec_err;
+    if (app.playtest_recorder.start(app.record_session_dir, &rec_err)) {
+      std::printf("playtest: recording session to %s (F11 or Back+RB for bug capture)\n",
+                  app.playtest_recorder.session_dir().string().c_str());
+    } else {
+      std::fprintf(stderr, "carview: --record-session failed: %s\n", rec_err.c_str());
+    }
+  }
+  if (app.playtest_recorder.active()) host.renderer.set_gpu_timing(true);
+  bool playtest_bug_chord_prev = false;
+  bool playtest_bug_capture_waiting = false;
+  int playtest_bug_capture_retries = 0;
+  PlaytestFrameSample playtest_bug_sample{};
   while (running) {
     poll_sdl_events();
     if (!running) break;
@@ -202,6 +216,7 @@ void DriveSession::run_window_loop() {
     double rig_look = 0.0;
     sample_driving_input(in, rig_look);
           const uint64_t now = SDL_GetTicksNS();
+          const double raw_frame_ms = (now >= last_tick_ns) ? double(now - last_tick_ns) * 1e-6 : 0.0;
           const double frame_dt = std::min(0.25, double(now - last_tick_ns) * 1e-9);
           title_orbit_time += frame_dt;
           if (!handoff_applied && app.pending_handoff.active && !app.headless) {
@@ -792,8 +807,117 @@ void DriveSession::run_window_loop() {
             }
             SDL_SetWindowTitle(app.window, title);
           }
+    PlaytestFrameSample playtest_sample{};
+    bool playtest_have_sample = false;
+    if (app.playtest_recorder.active()) {
+      const drive::Vec3 vp = vehicle.position();
+      const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+      playtest_sample.t = app.playtest_recorder.elapsed_seconds();
+      playtest_sample.frame_ms = raw_frame_ms;
+      playtest_sample.cpu_ms = host.last_frame_cpu_ms;
+      playtest_sample.gpu_ms = host.renderer.gpu_frame_ms();
+      playtest_sample.x = vp.x;
+      playtest_sample.y = vp.y;
+      playtest_sample.z = vp.z;
+      playtest_sample.heading = std::atan2(vf.x, vf.z);
+      playtest_sample.speed_kmh = std::fabs(vehicle.speed()) * 3.6;
+      playtest_sample.gear = vehicle.gear();
+      playtest_sample.rpm = vehicle.rpm();
+      playtest_sample.car = app.car;
+      playtest_sample.tod_hour = app.tod_clock.hour();
+      playtest_sample.chunks_loaded =
+          host.streamer
+              ? uint32_t(host.streamer->stats().world_models + host.streamer->stats().far_models)
+              : host.showroom.gpu_resident_draws();
+      playtest_sample.paused = sim_paused;
+      playtest_sample.in_race = app.race != nullptr;
+      playtest_sample.audio_stalls = app.audio_host.telemetry().stalls;
+      playtest_sample.camera_mode =
+          have_rig ? drive::camera_mode_name(rig.mode()) : (app.front ? "front" : "chase");
+      playtest_sample.has_road_y = false;
+      if (host.ground && std::isfinite(vp.x) && std::isfinite(vp.y) && std::isfinite(vp.z)) {
+        drive::Hit ghit{};
+        if (host.ground->raycast({vp.x, vp.y + 2.2, vp.z}, {0.0, -1.0, 0.0}, 100.0, ghit)) {
+          playtest_sample.road_y = (vp.y + 2.2) - ghit.distance;
+          playtest_sample.has_road_y = true;
+        } else if (host.ground->raycast({vp.x, vp.y + 80.0, vp.z}, {0.0, -1.0, 0.0}, 160.0, ghit)) {
+          playtest_sample.road_y = (vp.y + 80.0) - ghit.distance;
+          playtest_sample.has_road_y = true;
+        }
+      }
+      playtest_have_sample = true;
+
+      bool bug_chord_now = false;
+      if (const bool* kb = SDL_GetKeyboardState(nullptr); kb && kb[SDL_SCANCODE_F11]) bug_chord_now = true;
+      if (!bug_chord_now) {
+        for (SDL_Gamepad* pad : pads) {
+          if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_BACK) &&
+              SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) {
+            bug_chord_now = true;
+            break;
+          }
+        }
+      }
+      if (bug_chord_now && !playtest_bug_chord_prev && !playtest_bug_capture_waiting &&
+          app.playtest_recorder.can_trigger_bug_mark(playtest_sample.t)) {
+        playtest_bug_sample = playtest_sample;
+        playtest_bug_capture_waiting = true;
+        playtest_bug_capture_retries = 0;
+      }
+      playtest_bug_chord_prev = bug_chord_now;
+
+      if (playtest_bug_capture_waiting && pending_shot == PendingShot::kNone && !host.renderer.capture_pending()) {
+        host.renderer.request_capture(true);
+      }
+    }
     if (!render_window_frame(now, frame_dt, menu_paused, trainer_freecam_active)) break;
+    if (playtest_have_sample) {
+      playtest_sample.cpu_ms = host.last_frame_cpu_ms;
+      playtest_sample.gpu_ms = host.renderer.gpu_frame_ms();
+      app.playtest_recorder.record_frame(playtest_sample);
+      if (playtest_bug_capture_waiting && pending_shot == PendingShot::kNone) {
+        std::vector<uint8_t> cap_rgba;
+        uint32_t cap_w = 0, cap_h = 0;
+        if (host.renderer.take_captured_frame(cap_rgba, cap_w, cap_h)) {
+          playtest_bug_sample.cpu_ms = playtest_sample.cpu_ms;
+          playtest_bug_sample.gpu_ms = playtest_sample.gpu_ms;
+          const std::string banner =
+              app.playtest_recorder.save_bug_bookmark(playtest_bug_sample, std::move(cap_rgba), cap_w, cap_h);
+          if (!banner.empty()) {
+            notice = banner;
+            notice_until = vehicle.time() + 2.0;
+            std::printf("playtest: %s\n", banner.c_str());
+          }
+          playtest_bug_capture_waiting = false;
+        } else if (++playtest_bug_capture_retries >= 5) {
+          const std::string banner = app.playtest_recorder.save_bug_bookmark(playtest_bug_sample, {}, 0, 0);
+          if (!banner.empty()) {
+            notice = banner;
+            notice_until = vehicle.time() + 2.0;
+            std::printf("playtest: %s\n", banner.c_str());
+          }
+          playtest_bug_capture_waiting = false;
+        }
+      }
+    }
   }
+        if (app.playtest_recorder.active()) {
+          const bool will_reload =
+              (app.status == 0 && (app.rally_world_switch != 0 || app.leave_race || !app.next_event.empty() ||
+                                   !app.next_car.empty() || hot_reload_car || app.again));
+          if (will_reload) {
+            app.playtest_recorder.flush();
+          } else {
+            app.playtest_recorder.finish();
+            const auto& sum = app.playtest_recorder.last_summary();
+            std::printf("playtest: finished (%llu frames, p50=%.2f ms, p95=%.2f ms, p99=%.2f ms, max=%.2f ms, "
+                        "hitches=%llu, ground_anomalies=%llu, bugs=%zu) -> %s\n",
+                        static_cast<unsigned long long>(sum.total_frames), sum.p50_ms, sum.p95_ms, sum.p99_ms,
+                        sum.max_ms, static_cast<unsigned long long>(sum.hitch_count),
+                        static_cast<unsigned long long>(sum.ground_anomaly_count), sum.bugs.size(),
+                        (app.playtest_recorder.session_dir() / "summary.json").string().c_str());
+          }
+        }
         app.sync_picker = nullptr;
         slice12.shutdown(pads);
         for (SDL_Gamepad* pad : pads) {

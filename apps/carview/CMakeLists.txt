@@ -172,6 +172,7 @@ set(carview_sources
   camera_editor.cpp
   trainer_overlay.cpp
   photo_mode.cpp
+  playtest_recorder.cpp
   replay_view.cpp
   achievements.cpp
   audio_host.cpp
