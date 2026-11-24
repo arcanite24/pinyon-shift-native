@@ -162,7 +162,21 @@ bool Showroom::upload(std::string& error) {
     batch.push_back({sd_p ? sd_p : &fb_dirt_p, sd_p != nullptr, &shared_dirt_pattern_, true});
     batch.push_back({sd_m ? sd_m : &fb_dirt_m, false, &shared_dirt_mask_, true});
     batch.push_back({sd_g ? sd_g : &fb_glass, false, &shared_glass_crack_, true});
+    // Per-car dirt_mask.xds (if present in the car archive/bake).
+    const bake::Texture* car_dm_tex = nullptr;
+    for (const auto& tx : car_.textures) {
+      const std::string tn = lower(tx.name);
+      if (tn == "dirt_mask.xds" || tn == "dirt_mask_lod0.xds") {
+        car_dm_tex = &tx;
+        break;
+      }
+    }
+    if (car_dm_tex) {
+      batch.push_back({car_dm_tex, false, &car_dirt_mask_, false});
+    }
     if (!upload_textures_batch(batch, error)) return false;
+    has_car_dirt_mask_ = (car_dm_tex != nullptr && car_dirt_mask_.view != VK_NULL_HANDLE);
+    sync_paint_shader_uniforms();
   }
   if (!upload_environment(error)) return false;
   if (!guest_ && !init_dynamic_reflections(error)) return false;
@@ -179,18 +193,57 @@ bool Showroom::upload(std::string& error) {
   }
   VK_TRY(vkCreateSampler(r_.device_, &sampler, nullptr, &sampler_), "vkCreateSampler");
 
-  // One material set per distinct (slot 0, slot 1, livery, normal_map, damage_map).
+  // One material set per distinct (slot 0, slot 1, livery, normal_map, damage_map),
+  // plus pre-allocated sets for alternate factory liveries and blur_rim wheel0..3.xds tiers.
+  std::vector<uint32_t> alt_atlas_indices;
+  for (const auto& col : car_.car.colours) {
+    for (const std::string& m : {col.atlas_lod0, col.atlas_lod}) {
+      if (m.empty()) continue;
+      if (auto it = texture_by_key_.find("car:" + m); it != texture_by_key_.end() && it->second != UINT32_MAX) {
+        if (std::find(alt_atlas_indices.begin(), alt_atlas_indices.end(), it->second) == alt_atlas_indices.end()) {
+          alt_atlas_indices.push_back(it->second);
+        }
+      }
+    }
+  }
+  std::array<uint32_t, 4> wheel_blur_tex{UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+  {
+    const char* const kWheelBlurNames[4] = {"wheel:wheel0.xds", "wheel:wheel1.xds", "wheel:wheel2.xds", "wheel:wheel3.xds"};
+    for (int t = 0; t < 4; ++t) {
+      if (auto it = texture_by_key_.find(kWheelBlurNames[t]); it != texture_by_key_.end()) {
+        wheel_blur_tex[size_t(t)] = it->second;
+      }
+    }
+  }
   for (auto& d : draws_) {
     auto [it, inserted] = descriptor_by_textures_.emplace(d.textures, uint32_t(descriptor_by_textures_.size()));
     d.descriptor = it->second;
+    if (d.uses_atlas) {
+      for (uint32_t alt_t0 : alt_atlas_indices) {
+        if (alt_t0 == d.textures[0]) continue;
+        std::array<uint32_t, 5> alt_k = d.textures;
+        alt_k[0] = alt_t0;
+        descriptor_by_textures_.emplace(alt_k, uint32_t(descriptor_by_textures_.size()));
+      }
+    }
+    if (d.is_blur_rim) {
+      for (int t = 0; t < 4; ++t) {
+        if (wheel_blur_tex[size_t(t)] != UINT32_MAX) {
+          std::array<uint32_t, 5> bk = d.textures;
+          bk[1] = wheel_blur_tex[size_t(t)];
+          auto [bit, binserted] = descriptor_by_textures_.emplace(bk, uint32_t(descriptor_by_textures_.size()));
+          d.blur_descriptors[size_t(t)] = bit->second;
+        }
+      }
+    }
   }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
-  // Frame/offscreen pool (kept alive across car hot-swaps, with spare sets for zero-stall rebinding).
-  const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 36},
-                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 208},
-                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16}};
+  // Frame/offscreen pool (kept alive across car hot-swaps, with generous spare sets for zero-stall rebinding).
+  const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 144},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 832},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets = 16;
+  pool.maxSets = 64;
   pool.poolSizeCount = 3;
   pool.pPoolSizes = sizes;
   VK_TRY(vkCreateDescriptorPool(r_.device_, &pool, nullptr, &pool_), "vkCreateDescriptorPool");
@@ -264,7 +317,9 @@ bool Showroom::upload(std::string& error) {
     VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo inst_buf{guest_ ? empty_inst_ssbo_.buffer : car_inst_buf_.buf.buffer, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo dirt_p{sampler_, shared_dirt_pattern_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo dirt_m{sampler_, shared_dirt_mask_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo dirt_m{
+        sampler_, (has_car_dirt_mask_ && car_dirt_mask_.view) ? car_dirt_mask_.view : shared_dirt_mask_.view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo gcrack{sampler_, shared_glass_crack_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet writes[12]{};
     for (int wi = 0; wi < 12; ++wi) {

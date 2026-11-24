@@ -257,6 +257,31 @@ void draw_club_active_strip(ui::List& out, int w, int h, const ClubActiveStrip& 
   }
 }
 
+CarClubEditorState& car_club_editor_state() {
+  static CarClubEditorState s_state;
+  return s_state;
+}
+
+std::string sanitize_club_name(const std::string& raw, size_t max_len) {
+  std::string out;
+  out.reserve(std::min(raw.size(), max_len));
+  bool prev_space = true;
+  for (unsigned char ch : raw) {
+    if (ch < 32 || ch > 126) continue;
+    if (std::isspace(ch)) {
+      if (!prev_space && out.size() < max_len) {
+        out.push_back(' ');
+        prev_space = true;
+      }
+    } else if (out.size() < max_len) {
+      out.push_back(char(ch));
+      prev_space = false;
+    }
+  }
+  while (!out.empty() && out.back() == ' ') out.pop_back();
+  return out;
+}
+
 std::string sanitize_club_tag(const std::string& raw) {
   std::string out;
   out.reserve(4);
@@ -267,6 +292,17 @@ std::string sanitize_club_tag(const std::string& raw) {
     }
   }
   return out;
+}
+
+bool toggle_club_shared_garage_car(std::vector<int64_t>& shared_garage_ids, int64_t garage_id) {
+  if (garage_id <= 0) return false;
+  auto it = std::find(shared_garage_ids.begin(), shared_garage_ids.end(), garage_id);
+  if (it != shared_garage_ids.end()) {
+    shared_garage_ids.erase(it);
+    return false;
+  }
+  shared_garage_ids.push_back(garage_id);
+  return true;
 }
 
 bool toggle_club_shared_car(std::vector<int>& shared_ids, int car_id) {
@@ -286,6 +322,23 @@ void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState&
   const float sx = W / 1280.0f, sy = H / 720.0f;
   const float s = std::min(sx, sy);
 
+  const auto& ed = car_club_editor_state();
+  auto row_is_shared = [&](size_t ci, const CarClubCarEntry& c) -> bool {
+    if (ed.has_garage_sync && ci < ed.row_garage_ids.size() && ed.row_garage_ids[ci] > 0) {
+      const int64_t gid = ed.row_garage_ids[ci];
+      return std::find(ed.shared_garage_ids.begin(), ed.shared_garage_ids.end(), gid) != ed.shared_garage_ids.end();
+    }
+    return c.shared;
+  };
+  auto row_is_borrowed = [&](size_t ci, const CarClubCarEntry& c) -> bool {
+    if (c.borrowed) return true;
+    const int64_t bg = st.borrowed_garage_id > 0 ? st.borrowed_garage_id : ed.borrowed_garage_id;
+    if (bg <= 0) return false;
+    if (c.garage_id > 0) return c.garage_id == bg;
+    if (ed.has_garage_sync && ci < ed.row_garage_ids.size()) return ed.row_garage_ids[ci] == bg;
+    return false;
+  };
+
   ui4::subtle_vignette(out, W, H, 0.36f);
   const std::string tag_disp = st.club_tag.empty() ? "NO TAG" : ("[" + st.club_tag + "]");
   const std::string name_disp = st.club_name.empty() ? "HORIZON CAR CLUB" : st.club_name;
@@ -299,8 +352,8 @@ void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState&
            ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
 
   int shared_count = 0;
-  for (const auto& c : st.cars)
-    if (c.shared) ++shared_count;
+  for (size_t ci = 0; ci < st.cars.size(); ++ci)
+    if (row_is_shared(ci, st.cars[ci])) ++shared_count;
 
   const int total_rows = 2 + int(st.cars.size());
   const float row_h = 40.0f * sy;
@@ -319,56 +372,84 @@ void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState&
               ui4::PillKind::kPill02, false, is_sel);
 
     if (i == 0) {
-      out.text(lx0 + 24.0f * sx, ry0 + 9.0f * sy, "CLUB NAME", ui4::style(ui::Font::kD, 13.0f * s, ui4::kWhite));
+      out.text(lx0 + 24.0f * sx, ry0 + 9.0f * sy, "CLUB NAME  [Y/E: EDIT]",
+               ui4::style(ui::Font::kD, 13.0f * s, ui4::kWhite));
       out.text(lx1 - 24.0f * sx, ry0 + 9.0f * sy, "< " + name_disp + " >",
                ui4::style(ui::Font::kE, 13.5f * s, is_sel ? ui4::kYellow : ui4::kWhite, ui::Align::kRight));
     } else if (i == 1) {
-      out.text(lx0 + 24.0f * sx, ry0 + 9.0f * sy, "CLUB TAG (4-CHAR)",
+      out.text(lx0 + 24.0f * sx, ry0 + 9.0f * sy, "CLUB TAG (4-CHAR)  [Y/E: EDIT]",
                ui4::style(ui::Font::kD, 13.0f * s, ui4::kWhite));
       out.text(lx1 - 24.0f * sx, ry0 + 9.0f * sy, "< " + tag_disp + " >",
                ui4::style(ui::Font::kE, 13.5f * s, is_sel ? ui4::kYellow : ui4::kWhite, ui::Align::kRight));
     } else {
-      const auto& c = st.cars[size_t(i - 2)];
+      const size_t ci = size_t(i - 2);
+      const auto& c = st.cars[ci];
+      const bool shared = row_is_shared(ci, c);
+      const bool borrowed = row_is_borrowed(ci, c);
       std::string lbl = c.class_pi.empty() ? c.display_name : ("[" + c.class_pi + "]  " + c.display_name);
       ui::TextStyle cs = ui4::style(ui::Font::kD, 13.0f * s, ui4::kWhite);
-      ui4::fit_text(lbl, cs, (lx1 - lx0) - 210.0f * sx, 9.0f * s);
+      ui4::fit_text(lbl, cs, (lx1 - lx0) - 220.0f * sx, 9.0f * s);
       out.text(lx0 + 24.0f * sx, ry0 + 9.0f * sy, lbl, cs);
-      const std::string badge = c.shared ? (c.active ? "SHARED • DRIVING" : "SHARED IN CLUB") : "PRIVATE";
+      const std::string badge = borrowed ? "BORROWED / DRIVING"
+                                : shared ? (c.active ? "SHARED / DRIVING" : "SHARED IN CLUB")
+                                         : "PRIVATE";
+      const uint32_t bcol = borrowed ? kCyan
+                            : shared ? (is_sel ? ui4::kYellow : ui4::kGreen)
+                                     : ui4::kDim;
       out.text(lx1 - 24.0f * sx, ry0 + 9.5f * sy, badge,
-               ui4::style(ui::Font::kE, 12.0f * s, c.shared ? (is_sel ? ui4::kYellow : ui4::kGreen) : ui4::kDim,
-                          ui::Align::kRight));
+               ui4::style(ui::Font::kE, 12.0f * s, bcol, ui::Align::kRight));
     }
   }
 
   // Right-hand Club Summary card
   const float rx0 = 784.0f * sx, rx1 = W - 72.0f * sx;
-  ui4::panel(out, rx0, ly0, rx1, ly0 + 290.0f * sy, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+  ui4::panel(out, rx0, ly0, rx1, ly0 + 305.0f * sy, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
   ui4::brush(out, rx0 - 6.0f * sx, ly0 + 12.0f * sy, rx1 + 6.0f * sx, ly0 + 48.0f * sy, ui4::kPink);
   out.text(rx0 + 18.0f * sx, ly0 + 19.0f * sy, tag_disp + "  " + name_disp,
            ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite));
   out.text(rx0 + 18.0f * sx, ly0 + 68.0f * sy,
            "SHARED GARAGE: " + std::to_string(shared_count) + " / " + std::to_string(st.cars.size()) + " CARS",
            ui4::style(ui::Font::kB, 13.5f * s, ui4::kYellow));
-  out.text(rx0 + 18.0f * sx, ly0 + 102.0f * sy, "YOUR 4-CHAR [TAG] APPEARS ON YOUR",
+  out.text(rx0 + 18.0f * sx, ly0 + 98.0f * sy, "PRESS [Y / E] ON NAME OR TAG TO",
            ui4::style(ui::Font::kB, 12.5f * s, ui4::kOffWhite));
-  out.text(rx0 + 18.0f * sx, ly0 + 122.0f * sy, "DRIVER STRIP AND RACE LEADERBOARDS.",
+  out.text(rx0 + 18.0f * sx, ly0 + 118.0f * sy, "TYPE A CUSTOM NAME OR 4-CHAR [TAG].",
            ui4::style(ui::Font::kB, 12.5f * s, ui4::kOffWhite));
-  out.text(rx0 + 18.0f * sx, ly0 + 162.0f * sy, "PRESS [A / ENTER] ON A CAR TO SHARE",
-           ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim));
-  out.text(rx0 + 18.0f * sx, ly0 + 182.0f * sy, "OR UNSHARE IT WITH THE CLUB GARAGE.",
-           ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim));
-  out.text(rx0 + 18.0f * sx, ly0 + 212.0f * sy, "PRESS [X / D] ON A SHARED CAR TO",
-           ui4::style(ui::Font::kB, 12.0f * s, ui4::kGreen));
-  out.text(rx0 + 18.0f * sx, ly0 + 232.0f * sy, "BORROW & DRIVE IT IMMEDIATELY.",
-           ui4::style(ui::Font::kB, 12.0f * s, ui4::kGreen));
+  out.text(rx0 + 18.0f * sx, ly0 + 154.0f * sy, "PRESS [A / ENTER] ON A CAR TO SHARE",
+           ui4::style(ui::Font::kB, 12.5f * s, ui4::kDim));
+  out.text(rx0 + 18.0f * sx, ly0 + 174.0f * sy, "THAT GARAGE BUILD WITH YOUR CLUB.",
+           ui4::style(ui::Font::kB, 12.5f * s, ui4::kDim));
+  out.text(rx0 + 18.0f * sx, ly0 + 206.0f * sy, "PRESS [X / D] ON A SHARED CAR TO",
+           ui4::style(ui::Font::kB, 12.5f * s, ui4::kGreen));
+  out.text(rx0 + 18.0f * sx, ly0 + 226.0f * sy, "BORROW & DRIVE (OR RETURN IT).",
+           ui4::style(ui::Font::kB, 12.5f * s, ui4::kGreen));
+
+  const int64_t borrowed_id = st.borrowed_garage_id > 0 ? st.borrowed_garage_id : ed.borrowed_garage_id;
+  if (borrowed_id > 0) {
+    ui4::pill(out, rx0 + 14.0f * sx, ly0 + 258.0f * sy, rx1 - 14.0f * sx, ly0 + 290.0f * sy, kCyan,
+              ui4::PillKind::kHud01);
+    out.text(0.5f * (rx0 + rx1), ly0 + 266.0f * sy, "BORROWING CLUB CAR #" + std::to_string(borrowed_id),
+             ui4::style(ui::Font::kE, 12.0f * s, ui4::kInk, ui::Align::kCenter));
+  }
 
   if (!st.notice.empty()) {
-    ui4::pill(out, rx0, ly0 + 306.0f * sy, rx1, ly0 + 340.0f * sy, ui4::kPink, ui4::PillKind::kHud01);
-    out.text(0.5f * (rx0 + rx1), ly0 + 315.0f * sy, st.notice,
+    ui4::pill(out, rx0, ly0 + 320.0f * sy, rx1, ly0 + 354.0f * sy, ui4::kPink, ui4::PillKind::kHud01);
+    out.text(0.5f * (rx0 + rx1), ly0 + 329.0f * sy, st.notice,
              ui4::style(ui::Font::kE, 12.5f * s, ui4::kWhite, ui::Align::kCenter));
   }
 
-  ui4::button_bar(out, {{"A", "TOGGLE / CYCLE"}, {"X", "DRIVE SHARED CAR"}, {"B", "CLOSE"}}, W, H, 72.0f);
+  ui4::button_bar(out,
+                  {{"A", "TOGGLE / CYCLE"},
+                   {"Y", "CUSTOM NAME / TAG"},
+                   {"X", borrowed_id > 0 ? "BORROW / RETURN" : "DRIVE SHARED CAR"},
+                   {"B", "CLOSE"}},
+                  W, H, 72.0f);
+
+  const OnScreenKeyboard* active_osk = (st.osk && st.osk->is_open()) ? st.osk
+                                       : ed.osk.is_open()            ? &ed.osk
+                                                                     : nullptr;
+  if (active_osk) {
+    active_osk->draw(out, W, H);
+  }
 }
 
 }  // namespace carview

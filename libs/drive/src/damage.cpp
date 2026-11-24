@@ -46,6 +46,70 @@ void CarDamageState::record_impact(float local_x, float local_y, float local_z, 
     else zone_rear = std::min(1.0f, zone_rear + sev);
   }
 
+  // 4-corner damage accumulation (car-local +X right, +Z forward):
+  // - Off-center front/rear impacts concentrate full severity on the struck corner
+  //   with zero bleed to the opposite corner past |x| >= 0.32 m, so a front-left
+  //   hit breaks only the FL headlight.
+  // - Center impacts distribute 0.55x severity to each corner, requiring a heavier
+  //   center hit to break both lamps simultaneously.
+  // - Side impacts near the front or rear quarter contribute proportionally to
+  //   the adjacent corner while mid-door scrapes leave corner lamps intact.
+  auto corner_lateral_weights = [](float lx, float& left_w, float& right_w) {
+    const float cx = std::clamp(lx / 0.45f, -1.0f, 1.0f);
+    if (cx < 0.0f) {
+      const float mag = -cx;
+      left_w = 0.55f + 0.45f * mag;
+      right_w = 0.55f * std::max(0.0f, 1.0f - mag * 1.4f);
+    } else if (cx > 0.0f) {
+      left_w = 0.55f * std::max(0.0f, 1.0f - cx * 1.4f);
+      right_w = 0.55f + 0.45f * cx;
+    } else {
+      left_w = 0.55f;
+      right_w = 0.55f;
+    }
+  };
+  if (front_hit || (!front_hit && !rear_hit && !left_hit && !right_hit && !roof_hit && local_z >= 0.0f)) {
+    float lw = 0.0f, rw = 0.0f;
+    corner_lateral_weights(local_x, lw, rw);
+    corner_fl = std::min(1.0f, corner_fl + sev * lw);
+    corner_fr = std::min(1.0f, corner_fr + sev * rw);
+  }
+  if (rear_hit || (!front_hit && !rear_hit && !left_hit && !right_hit && !roof_hit && local_z < 0.0f)) {
+    float lw = 0.0f, rw = 0.0f;
+    corner_lateral_weights(local_x, lw, rw);
+    corner_rl = std::min(1.0f, corner_rl + sev * lw);
+    corner_rr = std::min(1.0f, corner_rr + sev * rw);
+  }
+  if (left_hit && !front_hit && !rear_hit) {
+    if (local_z > 0.45f) {
+      const float z_w = std::clamp((local_z - 0.35f) / 1.0f, 0.0f, 0.75f);
+      corner_fl = std::min(1.0f, corner_fl + sev * z_w);
+    } else if (local_z < -0.45f) {
+      const float z_w = std::clamp((-local_z - 0.35f) / 1.0f, 0.0f, 0.75f);
+      corner_rl = std::min(1.0f, corner_rl + sev * z_w);
+    }
+  }
+  if (right_hit && !front_hit && !rear_hit) {
+    if (local_z > 0.45f) {
+      const float z_w = std::clamp((local_z - 0.35f) / 1.0f, 0.0f, 0.75f);
+      corner_fr = std::min(1.0f, corner_fr + sev * z_w);
+    } else if (local_z < -0.45f) {
+      const float z_w = std::clamp((-local_z - 0.35f) / 1.0f, 0.0f, 0.75f);
+      corner_rr = std::min(1.0f, corner_rr + sev * z_w);
+    }
+  }
+
+  // Deterministic part detachment & hood-ajar progression at high zone impact thresholds.
+  if (zone_front >= 0.85f) front_bumper_detached = true;
+  if (zone_rear >= 0.85f) rear_bumper_detached = true;
+  if (zone_rear >= 0.78f || zone_roof >= 0.70f) wing_detached = true;
+  if (zone_left >= 0.65f || corner_fl >= 0.85f) left_mirror_detached = true;
+  if (zone_right >= 0.65f || corner_fr >= 0.85f) right_mirror_detached = true;
+  if (zone_front > 0.55f) {
+    const float ajar = std::clamp((zone_front - 0.55f) / 0.35f, 0.0f, 1.0f);
+    hood_ajar = std::max(hood_ajar, ajar);
+  }
+
   // Windshield/glass cracks on moderate-to-hard front or roof hits.
   if ((front_hit || roof_hit) && impact_speed_mps > 8.5f) {
     glass_crack = std::min(1.0f, glass_crack + sev * 0.85f);
@@ -83,10 +147,11 @@ void CarDamageState::record_impact(float local_x, float local_y, float local_z, 
 
 void CarDamageState::step(double dt, double speed_mps, bool offroad, double throttle, double rpm_norm,
                           const std::array<double, 4>& wheel_slip) {
-  if (dt <= 0.0 || mode == DamageMode::kNone) return;
+  if (dt <= 0.0) return;
   const double v = std::fabs(speed_mps);
 
   // Dynamic body & tyre dirt/mud accumulation off-road; gradual dust shedding on tarmac.
+  // Active even when DamageMode == kNone (dirt is environmental, not collision damage).
   if (offroad && v > 1.5) {
     const double rate = std::min(1.0, v / 25.0);
     tyre_dirt = float(std::min(1.0, double(tyre_dirt) + dt * 0.14 * rate));

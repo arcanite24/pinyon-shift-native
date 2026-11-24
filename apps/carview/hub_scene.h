@@ -75,9 +75,9 @@ void build_hub_frame(HubRoom room, const HubCamera& cam, uint32_t width, uint32_
 // Background clear colour (sRGB 0..1) for each Festival Hub room.
 std::array<float, 3> hub_background_color(HubRoom room);
 
-// --- My Garage Browser (3D preview, sort/filter, 50% Sell Car) ---
+// --- My Garage Browser (3D preview, sort/filter, Favorites, 50% / 100 CR Sell Car) ---
 
-enum class GarageSort { kClass = 0, kMake, kValue, kDrivetrain, kPi, kCount };
+enum class GarageSort { kClass = 0, kMake, kValue, kDrivetrain, kPi, kYear, kCount };
 const char* garage_sort_name(GarageSort s);
 
 struct GarageEntry {
@@ -95,6 +95,19 @@ struct GarageEntry {
   int64_t sell_cr = 0;
   int colour_seq = 0;
   bool is_current = false;
+  bool favorite = false;
+  bool is_prize = false;
+  // 0..10 stat ratings & real specs readout (HP/kW, Torque, Weight, Displacement, Aspiration).
+  double speed_rating = 5.0;
+  double handling_rating = 5.0;
+  double accel_rating = 5.0;
+  double launch_rating = 5.0;
+  double braking_rating = 5.0;
+  double peak_power_kw = 0.0;
+  double peak_torque_nm = 0.0;
+  double curb_weight_kg = 0.0;
+  double displacement_cc = 0.0;
+  std::string aspiration;
 };
 
 class GarageBrowser {
@@ -105,7 +118,22 @@ class GarageBrowser {
     if (idx < visible_.size()) selected_ = idx;
   }
   void cycle_sort(int by = 1);
-  void cycle_class_filter(int by = 1);  // -1 = All, 1..9 = E..R1
+  void set_sort(GarageSort s) {
+    sort_ = s;
+    apply_filter_and_sort();
+  }
+  void cycle_class_filter(int by = 1);  // -1 = All, 0..10 = F..X
+  void set_class_filter(int cls) {
+    class_filter_ = (cls < 0 || cls > 10) ? -1 : cls;
+    selected_ = 0;
+    apply_filter_and_sort();
+  }
+  void toggle_favorites_filter();
+  void set_favorites_filter(bool on);
+  bool favorites_only() const { return favorites_only_; }
+  bool toggle_favorite_selected(garage::Garage& g, const cars::PartsDb* db,
+                                const std::vector<garage::ClassBand>& bands);
+
   GarageSort sort_mode() const { return sort_; }
   int class_filter() const { return class_filter_; }
 
@@ -113,7 +141,7 @@ class GarageBrowser {
   size_t selected_index() const { return selected_; }
   const GarageEntry* selected_entry() const { return selected_ < visible_.size() ? &visible_[selected_] : nullptr; }
 
-  // Sells the currently selected car for 50% value (refuses active or last car).
+  // Sells the currently selected car (100 CR for prize/gift cars, 50% for purchased; refuses active or last car).
   bool sell_selected(garage::Garage& g, const cars::PartsDb* db, const std::vector<garage::ClassBand>& bands,
                      int64_t& credits, std::string& message);
 
@@ -122,7 +150,8 @@ class GarageBrowser {
   std::vector<GarageEntry> all_;
   std::vector<GarageEntry> visible_;
   GarageSort sort_ = GarageSort::kClass;
-  int class_filter_ = -1;  // -1 = All
+  int class_filter_ = -1;  // -1 = All, 0..10 = F..X
+  bool favorites_only_ = false;
   size_t selected_ = 0;
 };
 
@@ -162,7 +191,8 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
                            const std::string& car_title, const std::string& notice = {}, bool metric_units = false);
 
 void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& browser,
-                     const std::vector<garage::ClassBand>& bands, int64_t credits, const std::string& notice = {});
+                     const std::vector<garage::ClassBand>& bands, int64_t credits, const std::string& notice = {},
+                     bool metric_units = false);
 
 void draw_barn_find_hud(ui::List& list, float w, float h, const BarnFindCard& card);
 

@@ -53,8 +53,9 @@ int DriveSession::affinity_discount_pct() {
 }
 
 int DriveSession::discount() {
-        const int signs_disc = freeroam::upgrade_discount(host.free_roam ? host.free_roam->signs_found() : int(app.saved.signs_found.size()));
-        return std::min(100, signs_disc + affinity_discount_pct());
+        // Retail FH1 discounts upgrade parts via Discount Signs (0..100%) only,
+        // without double-stacking Manufacturer Affinity on upgrade prices.
+        return freeroam::upgrade_discount(host.free_roam ? host.free_roam->signs_found() : int(app.saved.signs_found.size()));
 }
 
 void DriveSession::current_car_info(int64_t& out_car_id, int& out_class_id) {
@@ -689,6 +690,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           cc.club_name = app.saved.car_club_name;
           cc.club_tag = app.saved.car_club_tag;
           cc.selected = car_club_pick;
+          cc.borrowed_garage_id = app.have_garage ? app.career_garage.club_borrowed_garage_id : 0;
           cc.notice = car_club_notice;
           for (size_t ci = 0; ci < app.baked_cars.size(); ++ci) {
             carview::CarClubCarEntry ce;
@@ -696,6 +698,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             ce.display_name = carview::car_name(ce.media_name);
             ce.active = (ce.media_name == app.car);
             if (app.have_garage && ci < app.pick_ids.size()) {
+              ce.garage_id = app.pick_ids[ci];
               if (const garage::Car* gc = app.career_garage.find(app.pick_ids[ci])) {
                 ce.car_id = int(gc->car_id);
                 if (!app.class_bands.empty()) {
@@ -709,8 +712,14 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               if (const auto* sp = app.career_catalog.find_car_by_media(ce.media_name)) ce.car_id = int(sp->car_id);
             }
             if (ce.car_id <= 0) ce.car_id = int(ci + 1);
-            ce.shared = std::find(app.saved.car_club_shared.begin(), app.saved.car_club_shared.end(), ce.car_id) !=
-                        app.saved.car_club_shared.end();
+            if (app.have_garage && ce.garage_id > 0) {
+              const auto& sg = app.career_garage.club_shared_garage_ids;
+              ce.shared = std::find(sg.begin(), sg.end(), ce.garage_id) != sg.end();
+              ce.borrowed = (cc.borrowed_garage_id > 0 && ce.garage_id == cc.borrowed_garage_id);
+            } else {
+              ce.shared = std::find(app.saved.car_club_shared.begin(), app.saved.car_club_shared.end(), ce.car_id) !=
+                          app.saved.car_club_shared.end();
+            }
             cc.cars.push_back(std::move(ce));
           }
           list.clear();

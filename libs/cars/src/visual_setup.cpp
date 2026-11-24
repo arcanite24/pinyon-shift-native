@@ -100,6 +100,15 @@ bool query_aftermarket_wheels(const PartsDb& db, std::vector<WheelRow>& out, std
   db.each("SELECT Id, DisplayName FROM List_PartManufacturer", {},
           [&](sqlite3_stmt* st) { mfgs[sqlite3_column_int64(st, 0)] = col_text(st, 1); }, nullptr);
 
+  std::set<int64_t> wheel_exceptions;
+  db.each("SELECT WheelID FROM WheelExceptions", {},
+          [&](sqlite3_stmt* st) { wheel_exceptions.insert(sqlite3_column_int64(st, 0)); }, nullptr);
+
+  std::map<int64_t, double> wheel_norm_offsets;
+  db.each("SELECT Id, NormOffset FROM WheelNormOffsets", {},
+          [&](sqlite3_stmt* st) { wheel_norm_offsets[sqlite3_column_int64(st, 0)] = sqlite3_column_double(st, 1); },
+          nullptr);
+
   const std::string sql =
       std::string(
           "SELECT ID, MediaName, DisplayName, PartManufacturerID, Price, Mass, BrakeDrawOffset, IsStock, "
@@ -123,6 +132,9 @@ bool query_aftermarket_wheels(const PartsDb& db, std::vector<WheelRow>& out, std
         r.actual_color = col_text(st, 9);
         r.rgb = uint32_t(sqlite3_column_int64(st, 10));
         r.is_chrome = is_chrome_wheel(r.wheel_color, r.actual_color, r.media_name);
+        r.is_exception = wheel_exceptions.count(r.id) != 0;
+        r.is_paintable = !r.is_stock && !r.is_chrome && !r.is_exception;
+        if (auto it = wheel_norm_offsets.find(r.id); it != wheel_norm_offsets.end()) r.norm_offset = it->second;
         out.push_back(std::move(r));
       },
       error);
@@ -151,6 +163,16 @@ bool query_wheel_by_id(const PartsDb& db, int64_t wheel_id, WheelRow& out, std::
         found = true;
       },
       error);
+  if (ok && found) {
+    bool is_exc = false;
+    query_wheel_is_exception(db, wheel_id, is_exc, nullptr);
+    out.is_exception = is_exc;
+    out.is_paintable = !out.is_stock && !out.is_chrome && !out.is_exception;
+    float norm_off = 0.0f;
+    if (query_wheel_norm_offset(db, wheel_id, norm_off, nullptr)) {
+      out.norm_offset = double(norm_off);
+    }
+  }
   return ok && found;
 }
 
@@ -170,6 +192,45 @@ bool query_track_offsets(const PartsDb& db, int64_t car_id, CarTrackOffsetRow& o
   return ok;
 }
 
+bool query_wheel_norm_offset(const PartsDb& db, int64_t wheel_id, float& out_offset, std::string* error) {
+  out_offset = 0.0f;
+  if (wheel_id <= 0) return true;
+  return db.each(
+      "SELECT NormOffset FROM WheelNormOffsets WHERE Id = ? LIMIT 1", {std::to_string(wheel_id)},
+      [&](sqlite3_stmt* st) { out_offset = float(sqlite3_column_double(st, 0)); }, error);
+}
+
+bool query_wheel_is_exception(const PartsDb& db, int64_t wheel_id, bool& out_is_exception, std::string* error) {
+  out_is_exception = false;
+  if (wheel_id <= 0) return true;
+  return db.each(
+      "SELECT 1 FROM WheelExceptions WHERE WheelID = ? LIMIT 1", {std::to_string(wheel_id)},
+      [&](sqlite3_stmt*) { out_is_exception = true; }, error);
+}
+
+bool is_wheel_paintable(const PartsDb& db, int64_t wheel_id, std::string* error) {
+  if (wheel_id <= 0) return false;
+  WheelRow w;
+  if (!query_wheel_by_id(db, wheel_id, w, error)) return false;
+  return w.is_paintable;
+}
+
+bool car_paint_exceptions(const PartsDb& db, int64_t car_id, CarPaintExceptions& out, std::string* error) {
+  out = CarPaintExceptions{};
+  if (car_id <= 0) return true;
+  return db.each(
+      "SELECT NoMirrors, NoWindows, NoHood, NoPaintableWing FROM CarExceptions WHERE CarID = ? LIMIT 1",
+      {std::to_string(car_id)},
+      [&](sqlite3_stmt* st) {
+        out.found = true;
+        out.no_mirrors = sqlite3_column_int(st, 0) != 0;
+        out.no_windows = sqlite3_column_int(st, 1) != 0;
+        out.no_hood = sqlite3_column_int(st, 2) != 0;
+        out.no_paintable_wing = sqlite3_column_int(st, 3) != 0;
+      },
+      error);
+}
+
 bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& fit, VisualSetup& out,
                           std::string* error, float tune_front_rh_norm, float tune_rear_rh_norm,
                           float tune_front_camber_deg, float tune_rear_camber_deg) {
@@ -179,8 +240,9 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
 
   out.active = true;
   out.tyre_media_override = per_car_tyre_media(phys.media_name);
+  car_paint_exceptions(db, car_id, out.paint_exceptions, nullptr);
 
-  // 1. Visual body & exhaust parts from List_PartsStrings.
+  // 1. Visual body & exhaust parts from List_PartsStrings (incl. Rally Lv4 bodykits).
   // Query the database directly because some tables (RearWing, FrontBumper,
   // RearBumper, SideSkirt, Hood) store PartsStringId as SQLITE_TEXT while
   // others store it as SQLITE_INTEGER.
@@ -198,31 +260,42 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
     const char* ps_col;
     int key_kind;  // 0=car_id, 1=engine_id, 3=body_id
     bool is_exhaust;
+    int* level_dst;
   };
-  static constexpr PartStrSlot kSlots[] = {
-      {"List_UpgradeCarBodyFrontBumper", "CarBodyID", "PartsStringId", 3, false},
-      {"List_UpgradeCarBodyRearBumper", "CarBodyID", "PartsStringId", 3, false},
-      {"List_UpgradeCarBodySideSkirt", "CarBodyID", "PartsStringId", 3, false},
-      {"List_UpgradeCarBodyHood", "CarBodyID", "PartsStringId", 3, false},
-      {"List_UpgradeRearWing", "Ordinal", "PartsStringId", 0, false},
-      {"List_UpgradeCarBodyChassisStiffness", "CarbodyId", "PartsStringID", 3, false},
-      {"List_UpgradeCarBodyWeight", "CarBodyId", "PartsStringID", 3, false},
-      {"List_UpgradeEngineExhaust", "EngineID", "PartsStringID", 1, true},
+  const PartStrSlot kSlots[] = {
+      {"List_UpgradeCarBodyFrontBumper", "CarBodyID", "PartsStringId", 3, false, &out.front_bumper_level},
+      {"List_UpgradeCarBodyRearBumper", "CarBodyID", "PartsStringId", 3, false, &out.rear_bumper_level},
+      {"List_UpgradeCarBodySideSkirt", "CarBodyID", "PartsStringId", 3, false, nullptr},
+      {"List_UpgradeCarBodyHood", "CarBodyID", "PartsStringId", 3, false, nullptr},
+      {"List_UpgradeRearWing", "Ordinal", "PartsStringId", 0, false, &out.rear_wing_level},
+      {"List_UpgradeCarBodyChassisStiffness", "CarbodyId", "PartsStringID", 3, false, nullptr},
+      {"List_UpgradeCarBodyWeight", "CarBodyId", "PartsStringID", 3, false, nullptr},
+      {"List_UpgradeEngineExhaust", "EngineID", "PartsStringID", 1, true, nullptr},
   };
   for (const auto& sl : kSlots) {
     int64_t ps_id = 0;
+    int part_level = 0;
     auto fit_it = fit.find(sl.table);
     if (fit_it != fit.end() && fit_it->second >= 0) {
-      db.each(std::string("SELECT CAST(") + sl.ps_col + " AS INTEGER) FROM " + sl.table + " WHERE Id = ? LIMIT 1",
+      db.each(std::string("SELECT CAST(") + sl.ps_col + " AS INTEGER), Level FROM " + sl.table + " WHERE Id = ? LIMIT 1",
               {std::to_string(fit_it->second)},
-              [&](sqlite3_stmt* st) { ps_id = sqlite3_column_int64(st, 0); }, nullptr);
+              [&](sqlite3_stmt* st) {
+                ps_id = sqlite3_column_int64(st, 0);
+                part_level = sqlite3_column_int(st, 1);
+              },
+              nullptr);
     } else {
       const int64_t key_val = sl.key_kind == 0 ? car_id : sl.key_kind == 1 ? engine_id : body_id;
-      db.each(std::string("SELECT CAST(") + sl.ps_col + " AS INTEGER) FROM " + sl.table + " WHERE " + sl.key_col +
-                  " = ? AND IsStock = 1 ORDER BY Id LIMIT 1",
+      db.each(std::string("SELECT CAST(") + sl.ps_col + " AS INTEGER), Level FROM " + sl.table + " WHERE " +
+                  sl.key_col + " = ? AND IsStock = 1 ORDER BY Id LIMIT 1",
               {std::to_string(key_val)},
-              [&](sqlite3_stmt* st) { ps_id = sqlite3_column_int64(st, 0); }, nullptr);
+              [&](sqlite3_stmt* st) {
+                ps_id = sqlite3_column_int64(st, 0);
+                part_level = sqlite3_column_int(st, 1);
+              },
+              nullptr);
     }
+    if (sl.level_dst) *sl.level_dst = part_level;
     if (ps_id <= 0) continue;
     auto it = part_strings.find(ps_id);
     if (it == part_strings.end() || it->second.empty()) continue;
@@ -267,7 +340,7 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
   if (fr > 0) out.rim_inches[0] = fr;
   if (rr > 0) out.rim_inches[1] = rr;
 
-  // 3. Aftermarket wheel (List_Wheels) + BrakeDrawOffset.
+  // 3. Aftermarket wheel (List_Wheels) + BrakeDrawOffset + WheelNormOffsets + WheelExceptions.
   int64_t wheel_id = int64_t(std::llround(phys.get("Data_Car.StockWheelID", 0.0)));
   if (auto it = fit.find("List_Wheels"); it != fit.end() && it->second > 0) wheel_id = it->second;
   if (wheel_id > 0) {
@@ -276,11 +349,21 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
       out.wheel_id = w.id;
       out.wheel_media = lower(w.media_name);
       out.brake_draw_offset = float(w.brake_draw_offset);
+      out.rim_offset_front = float(w.norm_offset);
+      out.rim_offset_rear = float(w.norm_offset);
       out.wheel_is_chrome = w.is_chrome;
       out.wheel_is_stock = w.is_stock;
+      out.wheel_is_exception = w.is_exception;
+      out.wheel_is_paintable = w.is_paintable;
     }
   }
   out.tire_compound_level = std::clamp(int(std::llround(phys.get("List_UpgradeTireCompound.Level", 0.0))), 0, 5);
+  out.tire_compound_id = int(std::llround(phys.get("List_UpgradeTireCompound.TireCompoundID", 0.0)));
+  out.spring_damper_level = int(std::llround(phys.get("List_UpgradeSpringDamper.Level", 0.0)));
+  out.has_rally_bodykit =
+      (out.front_bumper_level == 4 || out.rear_bumper_level == 4 || out.rear_wing_level == 4);
+  out.has_rally_suspension = (out.spring_damper_level == 4);
+  out.has_rally_tires = (out.tire_compound_level == 5 || out.tire_compound_id == 9);
 
   // 4. Suspension ride height & camber (fitted SpringDamperPhysics + optional tuning).
   auto eval_rh = [&](const std::string& prefix, const std::string& stock_col, float norm) -> float {

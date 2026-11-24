@@ -118,6 +118,24 @@ void test_technique_classification_and_emission() {
   check(drive::classify_lamp_technique("gauge_emissive_alpha") == drive::LampChannel::kGaugeBacklight,
         "gauge_emissive_alpha -> kGaugeBacklight");
 
+  // Phase R2-3A rare lamp techniques.
+  check(drive::classify_lamp_technique("drlinlorange") == drive::LampChannel::kIndicatorLeft, "drlinlorange");
+  check(drive::classify_lamp_technique("drlinrorange") == drive::LampChannel::kIndicatorRight, "drlinrorange");
+  check(drive::classify_lamp_technique("drlinlwhite") == drive::LampChannel::kIndicatorLeft, "drlinlwhite");
+  check(drive::classify_lamp_technique("drlinrwhite") == drive::LampChannel::kIndicatorRight, "drlinrwhite");
+  check(drive::classify_lamp_technique("tail_light_on") == drive::LampChannel::kBrake, "tail_light_on");
+  check(drive::classify_lamp_technique("headlightl_lod0") == drive::LampChannel::kHeadOld, "headlightl_lod0");
+  check(drive::classify_lamp_technique("headlightr_lod0") == drive::LampChannel::kHeadOld, "headlightr_lod0");
+  check(drive::classify_lamp_technique("taillightl_lod0") == drive::LampChannel::kTailBrake2S, "taillightl_lod0");
+  check(drive::classify_lamp_technique("taillightr_lod0") == drive::LampChannel::kTailBrake2S, "taillightr_lod0");
+
+  // GaugeEmissiveScale parsing in LampColorTable::load_shader_settings_xml.
+  {
+    drive::LampColorTable ct;
+    ct.load_shader_settings_xml(R"(<ShaderSettings><gauge_emissive><GaugeEmissiveScale value="4.25"/></gauge_emissive></ShaderSettings>)");
+    check(std::fabs(ct.gauge_emissive - 4.25f) < 1e-4f, "LampColorTable parses GaugeEmissiveScale");
+  }
+
   drive::LampColorTable cols;
   drive::CarLampState st;
   drive::LampInputs in{};
@@ -183,6 +201,44 @@ void test_cockpit_animation_math() {
                      drive::CockpitAnimState::gauge_boost_psi(32.7, true), bmax);
   const float boost_full = anim.boost_norm;
   check(boost_vac < 0.25f && boost_full > 0.95f, "live turbo boost needle sweeps from vacuum to full boost");
+
+  // Phase R2-3A: speed-dependent steering lock scaling (CAR_LAMPS.md §7.1 & §8).
+  // Low speed (0 m/s, mult=12.0) yields ~2x cockpit wheel angle vs high speed (50 m/s, mult=6.0).
+  {
+    drive::CockpitAnimState low_v, high_v;
+    for (int i = 0; i < 120; ++i) {
+      low_v.update_steering(0.30f, 0.0f, 1.0f / 60.0f);
+      high_v.update_steering(0.30f, 50.0f, 1.0f / 60.0f);
+    }
+    // 0.30 * 12 * 0.75 = 2.70 rad; 0.30 * 6 * 0.75 = 1.35 rad.
+    check(std::fabs(low_v.wheel_rad - 2.70f) < 0.05f, "low-speed steering uses mult=12.0 * 0.75");
+    check(std::fabs(high_v.wheel_rad - 1.35f) < 0.05f, "high-speed steering tapers to mult=6.0 * 0.75");
+    check(low_v.wheel_rad > high_v.wheel_rad * 1.8f, "low-speed steering angle exceeds high-speed steering");
+  }
+
+  // Phase R2-3A: piecewise-linear <TickMark> calibration & power_norm gauge.
+  {
+    drive::CockpitAnimState cal_anim;
+    const char* tick_xml = R"(
+      <SpeedGauge>
+        <TickMark pos="0.0" val="0.0"/>
+        <TickMark pos="0.5" val="30.0"/>
+        <TickMark pos="1.0" val="100.0"/>
+      </SpeedGauge>)";
+    cal_anim.calibration.speed.min_val = 0.0f;
+    cal_anim.calibration.speed.max_val = 100.0f;
+    check(drive::parse_gauge_tick_marks_xml(tick_xml, cal_anim.calibration.speed), "parse <TickMark> XML");
+    cal_anim.calibration.has_speed = true;
+    cal_anim.update_gauges(15.0f, 100.0f, 4000.0f, 8000.0f, 0.0f, 20.0f, 0.5f, 150000.0f, 300000.0f, 0.0f);
+    // 15 m/s is halfway between 0 (pos 0.0) and 30 (pos 0.5) -> speed_norm == 0.25 (non-linear!).
+    check(std::fabs(cal_anim.speed_norm - 0.25f) < 1e-4f, "piecewise <TickMark> speed gauge lower segment");
+    check(std::fabs(cal_anim.power_norm - 0.50f) < 1e-4f, "power_norm evaluates linear power range");
+
+    cal_anim.update_gauges(65.0f, 100.0f, 6000.0f, 8000.0f, 0.0f, 20.0f, 0.5f, 300000.0f, 300000.0f, 0.0f);
+    // 65 m/s is halfway between 30 (pos 0.5) and 100 (pos 1.0) -> speed_norm == 0.75.
+    check(std::fabs(cal_anim.speed_norm - 0.75f) < 1e-4f, "piecewise <TickMark> speed gauge upper segment");
+    check(std::fabs(cal_anim.power_norm - 1.0f) < 1e-4f, "power_norm reaches 1.0 at max power");
+  }
 }
 
 void test_disc_lamp_points_if_available() {

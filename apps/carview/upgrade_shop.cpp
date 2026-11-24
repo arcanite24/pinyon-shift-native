@@ -195,12 +195,13 @@ bool UpgradeShop::open(const cars::PartsDb& db, garage::Garage& g, int64_t garag
   bands_ = bands;
   price_multiplier_ = std::clamp(price_multiplier, 0.25, 3.0);
   discount_percent_ = std::clamp(discount_percent, 0, 100);
+  signs_discount_override_ = false;
 
   if (!reload_slots(why)) return false;
 
-  // Build Auto Upgrade target classes (E=1 through R1=9).
+  // Build Auto Upgrade target classes (E=1 through R1=9, plus X=10).
   auto_targets_.clear();
-  for (int cls = 1; cls <= 9; ++cls) auto_targets_.push_back(cls);
+  for (int cls = 1; cls <= 10; ++cls) auto_targets_.push_back(cls);
   const garage::Car* car = garage_->find(garage_id_);
   auto_index_ = 0;
   if (car) {
@@ -427,7 +428,25 @@ bool UpgradeShop::reload_slots(std::string& why) {
     if (is_aspiration) {
       const bool has_stock = std::any_of(slot.parts.begin(), slot.parts.end(),
                                          [](const cars::PartRow& r) { return r.is_stock; });
-      if (has_stock) slot.category = ShopCategory::kEngine;
+      if (has_stock) {
+        slot.category = ShopCategory::kEngine;
+      } else {
+        // Explicit "REMOVE / NATURALLY ASPIRATED" option on aftermarket forced-induction conversion slots.
+        const bool engine_has_any_stock_fi = std::any_of(rows.begin(), rows.end(), [](const cars::PartRow& r) {
+          return r.is_stock &&
+                 (r.part_enum == 24 || r.part_enum == 25 || r.part_enum == 27 || r.part_enum == 28);
+        });
+        cars::PartRow na_row;
+        na_row.part_enum = s.part_enum;
+        na_row.table = s.table;
+        na_row.id = -1;
+        na_row.level = 0;
+        na_row.is_stock = true;
+        na_row.price = 0;
+        slot.parts.insert(slot.parts.begin(), na_row);
+        slot.part_names.insert(slot.part_names.begin(),
+                               engine_has_any_stock_fi ? "REMOVE CONVERSION" : "REMOVE / NATURALLY ASPIRATED");
+      }
     }
     slot.shown = fitted_index(slot);
     slots_.push_back(std::move(slot));
@@ -612,6 +631,7 @@ void UpgradeShop::move_part(int by) {
 
 bool UpgradeShop::fit(int discount_percent, int64_t& credits, std::string& message) {
   if (!garage_ || !db_) return false;
+  const int eff_disc = effective_discount_percent(discount_percent);
 
   if (category_ == ShopCategory::kAutoUpgrade) {
     if (!phys_settings_ || !pi_cfg_ || !bands_ || auto_index_ >= auto_targets_.size()) {
@@ -619,8 +639,8 @@ bool UpgradeShop::fit(int discount_percent, int64_t& credits, std::string& messa
       return false;
     }
     const auto plan = garage::plan_auto_upgrade(*garage_, *db_, garage_id_, auto_targets_[auto_index_],
-                                                discount_percent, *phys_settings_, *pi_cfg_, *bands_);
-    if (!garage::apply_auto_upgrade(*garage_, *db_, garage_id_, plan, discount_percent, credits, *phys_settings_,
+                                                eff_disc, *phys_settings_, *pi_cfg_, *bands_);
+    if (!garage::apply_auto_upgrade(*garage_, *db_, garage_id_, plan, eff_disc, credits, *phys_settings_,
                                     *pi_cfg_, *bands_, &message)) {
       return false;
     }
@@ -652,10 +672,10 @@ bool UpgradeShop::fit(int discount_percent, int64_t& credits, std::string& messa
 
   garage::PiResult pi_res;
   const garage::FitResult r =
-      garage::fit_part_full(*garage_, *db_, garage_id_, part, s.column.c_str(), discount_percent, credits,
+      garage::fit_part_full(*garage_, *db_, garage_id_, part, s.column.c_str(), eff_disc, credits,
                             phys_settings_, pi_cfg_, bands_, (phys_settings_ && pi_cfg_ && bands_) ? &pi_res : nullptr);
   if (!r.ok) {
-    message = "not enough CR (" + credits_text(garage::discounted_price(part.price, discount_percent)) + " CR)";
+    message = "not enough CR (" + credits_text(garage::discounted_price(part.price, eff_disc)) + " CR)";
     return false;
   }
 
@@ -663,8 +683,10 @@ bool UpgradeShop::fit(int discount_percent, int64_t& credits, std::string& messa
   visual_dirty_ = true;
   const std::string sname = s.display_label.empty() ? slot_name(s.column) : s.display_label;
   const std::string pname = s.shown < s.part_names.size() ? s.part_names[s.shown] : sname;
-  message = sname + " [" + pname + "]" +
-            (r.refit ? " refitted" : " bought for " + credits_text(r.charged) + " CR");
+  message = (part.id < 0)
+                ? "reverted to naturally aspirated"
+                : (sname + " [" + pname + "]" +
+                   (r.refit ? " refitted" : " bought for " + credits_text(r.charged) + " CR"));
 
   if (r.rekeyed) {
     std::string reload_err;
@@ -696,9 +718,9 @@ bool UpgradeShop::sell_shown_part(int64_t& credits, std::string& message) {
   const cars::PartRow& part = s.parts[s.shown];
   int64_t stock_id = -1;
   for (const auto& sp : s.parts)
-    if (sp.is_stock) { stock_id = sp.id; break; }
+    if (sp.is_stock && sp.id >= 0) { stock_id = sp.id; break; }
   const garage::SellPartResult sr =
-      garage::sell_part(*garage_, garage_id_, part.part_enum, part.id, stock_id, s.column.c_str(), credits);
+      garage::sell_part(*garage_, garage_id_, part.part_enum, part.id, stock_id, s.column.c_str(), credits, db_);
   if (!sr.ok) {
     message = sr.reason;
     return false;
@@ -709,9 +731,49 @@ bool UpgradeShop::sell_shown_part(int64_t& credits, std::string& message) {
     if (garage::Car* car = garage_->find(garage_id_))
       garage::refresh_car_pi(*car, *db_, *phys_settings_, *pi_cfg_, *bands_, nullptr, nullptr);
   }
-  refresh_current_and_preview();
   const std::string sname = s.display_label.empty() ? slot_name(s.column) : s.display_label;
+  std::string reload_err;
+  reload_slots(reload_err);
+  const auto new_idxs = category_slot_indices(category_);
+  if (!new_idxs.empty()) selected_in_cat_ = std::min(selected_in_cat_, new_idxs.size() - 1);
+  refresh_current_and_preview();
   message = "sold " + sname + " part for +" + credits_text(sr.payout) + " CR";
+  if (sr.orphans_removed > 0) {
+    message += " (+" + std::to_string(sr.orphans_removed) + " sub-parts removed)";
+  }
+  return true;
+}
+
+bool UpgradeShop::has_forced_induction_conversion_fitted() const {
+  const garage::Car* car = garage_ ? garage_->find(garage_id_) : nullptr;
+  if (!car) return false;
+  for (const auto& s : slots_) {
+    if (s.category != ShopCategory::kConversions) continue;
+    if (s.part_enum != 24 && s.part_enum != 25 && s.part_enum != 27 && s.part_enum != 28) continue;
+    const auto it = car->slots.find(s.column);
+    if (it != car->slots.end() && it->second > 0) return true;
+  }
+  return false;
+}
+
+bool UpgradeShop::revert_to_naturally_aspirated(std::string& message) {
+  if (!garage_ || !db_) return false;
+  if (!has_forced_induction_conversion_fitted()) {
+    message = "car is already naturally aspirated";
+    return false;
+  }
+  if (!garage::revert_to_naturally_aspirated(*garage_, db_, garage_id_, phys_settings_, pi_cfg_, bands_)) {
+    message = "unable to revert aspiration";
+    return false;
+  }
+  changed_ = true;
+  visual_dirty_ = true;
+  std::string reload_err;
+  reload_slots(reload_err);
+  const auto new_idxs = category_slot_indices(category_);
+  if (!new_idxs.empty()) selected_in_cat_ = std::min(selected_in_cat_, new_idxs.size() - 1);
+  refresh_current_and_preview();
+  message = "removed forced induction (naturally aspirated)";
   return true;
 }
 
@@ -793,19 +855,22 @@ std::vector<UpgradeShop::SlotView> UpgradeShop::visible_rows(int discount_percen
       char valbuf[64];
       std::snprintf(valbuf, sizeof valbuf, "%.2f %s", sl.value, sl.unit.c_str());
       v.part_label = valbuf;
-      v.state = sl.unlocked ? "TUNABLE" : "LOCKED (NEED RACE PART)";
+      v.unlock_hint = sl.unlock_hint;
+      v.state = sl.unlocked ? "TUNABLE"
+                            : (sl.unlock_hint.empty() ? "LOCKED (NEED RACE PART)" : ("LOCKED: " + sl.unlock_hint));
       v.fitted = sl.unlocked;
       out.push_back(std::move(v));
     }
     return out;
   }
+  const int eff_disc = effective_discount_percent(discount_percent);
   const auto idxs = category_slot_indices(category_);
   for (size_t idx : idxs) {
     const Slot& s = slots_[idx];
     const cars::PartRow& p = s.parts[std::min(s.shown, s.parts.size() - 1)];
     const bool is_fit = s.shown == fitted_index(s);
     const bool is_own = garage_ && garage_->owns_part(garage_id_, p.part_enum, p.id);
-    const int64_t disc_p = garage::discounted_price(p.price, discount_percent);
+    const int64_t disc_p = garage::discounted_price(p.price, eff_disc);
     SlotView v;
     v.label = s.display_label.empty() ? slot_name(s.column) : s.display_label;
     v.part_label = s.shown < s.part_names.size()
@@ -842,15 +907,16 @@ bool UpgradeShop::preview_visual(cars::VisualSetup& out) const {
 void UpgradeShop::fill(const std::vector<garage::ClassBand>& bands, int discount_percent, int64_t credits,
                        std::string& title, std::vector<std::string>& lines, int& selected) const {
   lines.clear();
+  const int eff_disc = effective_discount_percent(discount_percent);
   const garage::Car* car = garage_ ? garage_->find(garage_id_) : nullptr;
   char head[192];
   const double pi = has_preview_pi_ ? preview_pi_.raw_pi : (car ? car->performance_index : 0.0);
   std::snprintf(head, sizeof head, "upgrades [%s]  %s %d  %s CR  discount %d%%", shop_category_name(category_),
                 bands.empty() ? "?" : bands[size_t(garage::class_of(pi, bands))].name.c_str(),
-                garage::shown_index(pi, bands), credits_text(credits).c_str(), discount_percent);
+                garage::shown_index(pi, bands), credits_text(credits).c_str(), eff_disc);
   title = head;
 
-  const auto rows = visible_rows(discount_percent);
+  const auto rows = visible_rows(eff_disc);
   const int n = int(rows.size());
   const int sel = n > 0 ? int(std::min(selected_row(), rows.size() - 1)) : 0;
   const int first = std::clamp(sel - 3, 0, std::max(0, n - 7));

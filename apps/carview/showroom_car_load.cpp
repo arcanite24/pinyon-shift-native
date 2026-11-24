@@ -5,6 +5,7 @@
 #include "cars/mods.h"
 #include "cars/sources.h"
 #include "cars/texture_mods.h"
+#include "fh1data/xds.h"
 
 #include <algorithm>
 #include <cmath>
@@ -333,6 +334,162 @@ CarAnimEventsFlags parse_car_anim_events_xml(const std::string& xml) {
   return out;
 }
 
+struct ParsedCarAttribs {
+  std::array<float, 3> driver_hands_offset{0.0f, 0.0f, 0.0f};
+  float driver_hands_scale = 1.0f;
+  std::array<float, 3> wheel_pos_offset{0.0f, 0.0f, 0.0f};
+  float wheel_rot_offset_deg = 0.0f;
+  bool has_wheel_pos = false;
+  bool has_wheel_rot = false;
+  drive::CockpitGaugeCalibration gauges;
+};
+
+ParsedCarAttribs parse_car_attribs_xml(const std::string& xml) {
+  ParsedCarAttribs out;
+  const std::string lx = lower(xml);
+
+  auto read_attr_f = [](const std::string& tag, const char* key, float& dst) -> bool {
+    const std::string k = std::string(key) + "=\"";
+    size_t p = 0;
+    while ((p = tag.find(k, p)) != std::string::npos) {
+      if (p == 0 || std::isspace(static_cast<unsigned char>(tag[p - 1]))) {
+        char* stop = nullptr;
+        const float v = std::strtof(tag.c_str() + p + k.size(), &stop);
+        if (stop != tag.c_str() + p + k.size() && std::isfinite(v)) {
+          dst = v;
+          return true;
+        }
+        return false;
+      }
+      ++p;
+    }
+    return false;
+  };
+
+  auto read_tag_scalar = [&](const char* tag_name, float& dst) -> bool {
+    const std::string open = std::string("<") + tag_name;
+    size_t p = 0;
+    while ((p = lx.find(open, p)) != std::string::npos) {
+      const size_t after = p + open.size();
+      if (after < lx.size() &&
+          (std::isspace(static_cast<unsigned char>(lx[after])) || lx[after] == '/' || lx[after] == '>')) {
+        const size_t gt = lx.find('>', after);
+        if (gt == std::string::npos) break;
+        const std::string attrs = lx.substr(after, gt - after);
+        if (read_attr_f(attrs, "value", dst) || read_attr_f(attrs, "val", dst)) return true;
+        if (gt > after && lx[gt - 1] != '/') {
+          const size_t close = lx.find('<', gt + 1);
+          if (close != std::string::npos && close > gt + 1) {
+            char* stop = nullptr;
+            const std::string body = lx.substr(gt + 1, close - (gt + 1));
+            const float v = std::strtof(body.c_str(), &stop);
+            if (stop != body.c_str() && std::isfinite(v)) {
+              dst = v;
+              return true;
+            }
+          }
+        }
+      }
+      p = after;
+    }
+    return false;
+  };
+
+  auto read_tag_vec3 = [&](const char* tag_name, std::array<float, 3>& dst) -> bool {
+    const std::string open = std::string("<") + tag_name;
+    size_t p = 0;
+    while ((p = lx.find(open, p)) != std::string::npos) {
+      const size_t after = p + open.size();
+      if (after < lx.size() &&
+          (std::isspace(static_cast<unsigned char>(lx[after])) || lx[after] == '/' || lx[after] == '>')) {
+        const size_t gt = lx.find('>', after);
+        if (gt == std::string::npos) break;
+        const std::string attrs = lx.substr(after, gt - after);
+        bool got = false;
+        got |= read_attr_f(attrs, "x", dst[0]);
+        got |= read_attr_f(attrs, "y", dst[1]);
+        got |= read_attr_f(attrs, "z", dst[2]);
+        if (got) return true;
+        const size_t vp = attrs.find("value=\"");
+        if (vp != std::string::npos) {
+          float vx = 0, vy = 0, vz = 0;
+          if (std::sscanf(attrs.c_str() + vp + 7, "%f , %f , %f", &vx, &vy, &vz) == 3 ||
+              std::sscanf(attrs.c_str() + vp + 7, "%f %f %f", &vx, &vy, &vz) == 3) {
+            dst = {vx, vy, vz};
+            return true;
+          }
+        }
+      }
+      p = after;
+    }
+    return false;
+  };
+
+  read_tag_vec3("driverhandsoffset", out.driver_hands_offset);
+  read_tag_scalar("driverhandsoffsetx", out.driver_hands_offset[0]);
+  read_tag_scalar("driverhandsoffsety", out.driver_hands_offset[1]);
+  read_tag_scalar("driverhandsoffsetz", out.driver_hands_offset[2]);
+  {
+    std::array<float, 3> hs{1.0f, 1.0f, 1.0f};
+    if (read_tag_scalar("driverhandsscale", out.driver_hands_scale)) {
+      out.driver_hands_scale = std::clamp(out.driver_hands_scale, 0.5f, 1.6f);
+    } else if (read_tag_vec3("driverhandsscale", hs)) {
+      out.driver_hands_scale = std::clamp((hs[0] + hs[1] + hs[2]) / 3.0f, 0.5f, 1.6f);
+    }
+  }
+  out.has_wheel_pos |= read_tag_vec3("cockpitwheelpositionoffset", out.wheel_pos_offset);
+  out.has_wheel_pos |= read_tag_scalar("cockpitwheelpositionoffsetx", out.wheel_pos_offset[0]);
+  out.has_wheel_pos |= read_tag_scalar("cockpitwheelpositionoffsety", out.wheel_pos_offset[1]);
+  out.has_wheel_pos |= read_tag_scalar("cockpitwheelpositionoffsetz", out.wheel_pos_offset[2]);
+  out.has_wheel_rot |= read_tag_scalar("cockpitwheelrotationoffset", out.wheel_rot_offset_deg);
+
+  // Parse <Gauges><Speed/Tach/Fuel/Boost/Power> <TickMark> tables (CAR_LAMPS.md §7.2).
+  std::string_view gauge_scope = lx;
+  if (const size_t g0 = lx.find("<gauges"); g0 != std::string::npos) {
+    const size_t g1 = lx.find("</gauges>", g0);
+    if (g1 != std::string::npos) gauge_scope = std::string_view(lx).substr(g0, g1 - g0 + 9);
+  }
+  auto parse_gauge_block = [&](std::initializer_list<const char*> names, drive::GaugeConfig& cfg, bool& has_flag) {
+    for (const char* nm : names) {
+      const std::string open = std::string("<") + nm;
+      const std::string close = std::string("</") + nm + ">";
+      size_t p = 0;
+      while ((p = gauge_scope.find(open, p)) != std::string_view::npos) {
+        const size_t after = p + open.size();
+        if (after < gauge_scope.size() &&
+            (std::isspace(static_cast<unsigned char>(gauge_scope[after])) || gauge_scope[after] == '>')) {
+          const size_t end = gauge_scope.find(close, after);
+          if (end == std::string_view::npos) break;
+          const std::string_view blk = gauge_scope.substr(p, end - p + close.size());
+          if (drive::parse_gauge_tick_marks_xml(blk, cfg)) {
+            const size_t gt = blk.find('>');
+            const std::string head = gt != std::string_view::npos ? std::string(blk.substr(0, gt)) : std::string();
+            float mn = cfg.cal_points.front().second;
+            float mx = cfg.cal_points.back().second;
+            (void)read_attr_f(head, "min", mn);
+            (void)read_attr_f(head, "minval", mn);
+            (void)read_attr_f(head, "max", mx);
+            (void)read_attr_f(head, "maxval", mx);
+            cfg.min_val = mn;
+            cfg.max_val = mx;
+            has_flag = true;
+            return;
+          }
+          p = end + close.size();
+        } else {
+          p = after;
+        }
+      }
+    }
+  };
+  parse_gauge_block({"speed", "speedometer", "speedgauge"}, out.gauges.speed, out.gauges.has_speed);
+  parse_gauge_block({"tach", "tachometer", "rpm", "tachgauge"}, out.gauges.tach, out.gauges.has_tach);
+  parse_gauge_block({"fuel", "fuelgauge"}, out.gauges.fuel, out.gauges.has_fuel);
+  parse_gauge_block({"boost", "boostgauge"}, out.gauges.boost, out.gauges.has_boost);
+  parse_gauge_block({"power", "powergauge"}, out.gauges.power, out.gauges.has_power);
+  return out;
+}
+
 }  // namespace
 
 bool open_disc_car_folder(const std::filesystem::path& game_root, const std::string& car_name,
@@ -399,7 +556,9 @@ bool hidden_variant(const std::string& name, const std::set<std::string>& real) 
 // roll cage, and the exhausts, which no table names).
 std::string family_member(const std::string& name) {
   static const std::regex kVariant(
-      "(bumperf|bumperr|skirtl|skirtr|hood|wing)([a-z]|race)|hood(ps|ci)race|cagerace|exhaust[lr]?[a-z]");
+      "(bumperf|bumperr|bumperframef|bumperframer|skirtl|skirtr|hood|wing|wingendl|wingendr|wingcenter|wing[1-3]|"
+      "trunk|trunk1|grille|mirrorl|mirrorr)([a-z]|race)|"
+      "hood(ps|ci)race|cagerace|exhaust[lr]?[a-z]|(glass|lexan)[a-z0-9]*b");
   const std::string n = lower(name);
   const std::string base = n.substr(0, n.find('_'));
   return std::regex_match(base, kVariant) ? base : std::string();
@@ -442,7 +601,8 @@ bool stub_pool(const std::vector<bake::Vertex>& pool) {
 int32_t best_lod(const bake::Part& part) {
   std::set<int32_t> lods;
   for (const auto& s : part.subsections)
-    if (s.material != MaterialClass::kHidden && !s.indices.empty()) lods.insert(s.lod);
+    if ((s.material != MaterialClass::kHidden || cars::is_blur_rim_technique(s.technique)) && !s.indices.empty())
+      lods.insert(s.lod);
   // A LOD0 pool with under a quarter of the LOD1-5 pool's vertices is a
   // stand-in too (some rims: 74 against about 2,300).
   const bool lod0_coarse = lods.count(0) && lods.size() > 1 &&
@@ -472,7 +632,9 @@ Showroom::~Showroom() {
   r_.destroy_image(environment_);
   r_.destroy_image(shared_dirt_pattern_);
   r_.destroy_image(shared_dirt_mask_);
+  r_.destroy_image(car_dirt_mask_);
   r_.destroy_image(shared_glass_crack_);
+  r_.destroy_image(driver_tex_);
   r_.destroy_buffer(vertex_buffer_);
   r_.destroy_buffer(index_buffer_);
   r_.destroy_buffer(frame_buffer_);
@@ -613,6 +775,28 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   bounds_min_ = {};
   bounds_max_ = {};
   for (auto& rig : cockpit_rigs_) rig = {};
+  gauge_calibration_ = {};
+  car_shader_overrides_ = {};
+  active_paint_params_ = {};
+  car_has_crush_weights_ = false;
+  has_blur_rim_mesh_ = false;
+  has_car_dirt_mask_ = false;
+  driver_hands_offset_ = {0.0f, 0.0f, 0.0f};
+  driver_hands_scale_ = 1.0f;
+  car_attribs_wheel_pos_ = {0.0f, 0.0f, 0.0f};
+  car_attribs_wheel_rot_rad_ = 0.0f;
+  cockpit_wheel_pos_offset_ = {0.0f, 0.0f, 0.0f};
+  cockpit_wheel_rot_offset_rad_ = 0.0f;
+  mirror_origins_ = {std::array<float, 3>{-0.95f, 0.95f, 0.25f},
+                     std::array<float, 3>{0.0f, 1.18f, 0.25f},
+                     std::array<float, 3>{0.95f, 0.95f, 0.25f}};
+  mirror_origin_valid_ = {false, false, false};
+  dmg_front_bumper_detached_ = false;
+  dmg_rear_bumper_detached_ = false;
+  dmg_left_mirror_detached_ = false;
+  dmg_right_mirror_detached_ = false;
+  dmg_wing_detached_ = false;
+  dmg_hood_ajar_ = 0.0f;
   stock_ = nullptr;
   pending_wheel_ = -1;
   pending_spins_ = false;
@@ -621,6 +805,15 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     paint_two_tone_[i] = 0.0f;
     damage_dirt_[i] = 0.0f;
     damage_zones_[i] = 0.0f;
+    damage_corners_[i] = 0.0f;
+  }
+  for (int r = 0; r < 3; ++r) {
+    region_two_tone_[r][0] = region_two_tone_[r][1] = region_two_tone_[r][2] = 0.0f;
+    region_two_tone_[r][3] = 4.0f;
+    region_finish_[r][0] = 0.0f;
+    region_finish_[r][1] = 0.25f;
+    region_finish_[r][2] = 0.0f;
+    region_finish_[r][3] = 0.0f;
   }
   paint_finish_[0] = 0.0f;
   paint_finish_[1] = 0.25f;
@@ -759,9 +952,10 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     }
   } else if (vis.active) {
     // Select TireA (stock/street, <2), TireB (sport, ==2), or TireC (race/rally, >2)
-    // matching List_UpgradeTireCompound.Level; at TU4 Rally Level 5 prefer a dedicated
-    // rally tyre texture pack if present on disc, else TireC.
-    if (vis.tire_compound_level >= 5 && (try_load_tyre_tex_pack("tirerally") || try_load_tyre_tex_pack("tired"))) {
+    // matching List_UpgradeTireCompound.Level; at TU4 Rally Level 5 / TireCompoundID 9 prefer
+    // a dedicated rally tyre texture pack if present on disc, else TireC.
+    if ((vis.has_rally_tires || vis.tire_compound_level >= 5) &&
+        (try_load_tyre_tex_pack("tirerally") || try_load_tyre_tex_pack("tired"))) {
       // Dedicated rally tyre texture archive loaded.
     } else {
       const char letter = cars::tire_compound_texture_letter(vis.tire_compound_level);
@@ -820,21 +1014,29 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     shared_bake_dir_ = shared_key;
   }
 
-  // On-demand load of car interior_emissive_LOD0.xds (real backlit speedometer/tachometer dials)
-  // when not already stored in pre-baked .shiftbake packs.
+  // On-demand load of car interior_emissive_LOD0.xds, per-car dirt_mask.xds,
+  // CarAttribs.xml (DriverHandsOffset/Scale, CockpitWheel offsets, <Gauges> TickMarks),
+  // and per-car shader overrides (ColorShaderSettings1..17.xml, RimShaderSettings.xml,
+  // BrakeShaderSettings.xml, ShaderSettings.xml).
   {
     bool has_emissive = false;
+    bool has_dirt_mask = false;
     for (const auto& tx : car_.textures) {
-      if (lower(tx.name) == "interior_emissive_lod0.xds") {
-        has_emissive = true;
-        break;
-      }
+      const std::string tn = lower(tx.name);
+      if (tn == "interior_emissive_lod0.xds") has_emissive = true;
+      if (tn == "dirt_mask.xds" || tn == "dirt_mask_lod0.xds") has_dirt_mask = true;
     }
-    if (!has_emissive && !options_.game_root.empty()) {
+    if (!disc_root.empty()) {
+      cars::FolderRef ref;
+      const cars::ShaderFinishParams& base_fp = shader_settings_.normal;
+      if (DiscCarCache::instance().find_car_ref(disc_root, info.media_name, ref) &&
+          (ref.kind == cars::FolderRef::Kind::kArchive || ref.kind == cars::FolderRef::Kind::kDirectory)) {
+        cars::load_car_shader_overrides(ref.path, car_shader_overrides_, &base_fp, nullptr);
+      }
       cars::Folder folder;
-      if (open_disc_car_folder(options_.game_root, info.media_name, folder)) {
+      if (open_disc_car_folder(disc_root, info.media_name, folder)) {
         std::vector<uint8_t> bytes;
-        if (folder.read("interior_emissive_lod0.xds", bytes, nullptr)) {
+        if (!has_emissive && folder.read("interior_emissive_lod0.xds", bytes, nullptr)) {
           auto xds = fh1::decode_xds(bytes);
           if (!xds.levels.empty() && !xds.levels[0].rgba.empty()) {
             bake::Texture bt;
@@ -842,6 +1044,82 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
             bt.format = bake::TextureFormat::kRgba8;
             bt.levels.push_back({xds.levels[0].width, xds.levels[0].height, std::move(xds.levels[0].rgba)});
             car_.textures.push_back(std::move(bt));
+          }
+        }
+        if (!has_dirt_mask) {
+          for (const char* dm_name : {"dirt_mask.xds", "dirt_mask_lod0.xds"}) {
+            bytes.clear();
+            if (folder.read(dm_name, bytes, nullptr) && !bytes.empty()) {
+              fh1::XdsBlocks blocks;
+              if (fh1::extract_xds_blocks(bytes, blocks, nullptr) && !blocks.levels.empty()) {
+                bake::Texture bt;
+                bt.name = dm_name;
+                bt.format = bake::TextureFormat(uint32_t(blocks.format));
+                bt.swizzle = blocks.swizzle;
+                for (auto& l : blocks.levels) bt.levels.push_back({l.width, l.height, std::move(l.blocks)});
+                car_.textures.push_back(std::move(bt));
+                has_dirt_mask = true;
+                break;
+              }
+            }
+          }
+        }
+        bytes.clear();
+        if (folder.read("carattribs.xml", bytes, nullptr) && !bytes.empty()) {
+          const ParsedCarAttribs ca =
+              parse_car_attribs_xml(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+          driver_hands_offset_ = ca.driver_hands_offset;
+          driver_hands_scale_ = ca.driver_hands_scale;
+          if (ca.has_wheel_pos) {
+            car_attribs_wheel_pos_ = ca.wheel_pos_offset;
+            cockpit_wheel_pos_offset_ = ca.wheel_pos_offset;
+          }
+          if (ca.has_wheel_rot) {
+            car_attribs_wheel_rot_rad_ = ca.wheel_rot_offset_deg * (3.14159265358979323846f / 180.0f);
+            cockpit_wheel_rot_offset_rad_ = car_attribs_wheel_rot_rad_;
+          }
+          gauge_calibration_ = ca.gauges;
+        }
+        // DLC / package fallback when load_car_shader_overrides couldn't open a standalone zip.
+        if (!car_shader_overrides_.loaded_any) {
+          for (const auto& mname : folder.names()) {
+            const std::string ml = lower(mname);
+            if (!ends_with(ml, ".xml")) continue;
+            bytes.clear();
+            if (!folder.read(mname, bytes, nullptr) || bytes.empty()) continue;
+            const std::string_view xml_sv(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            if (ml == "rimshadersettings.xml") {
+              if (cars::parse_rim_shader_settings_xml(xml_sv, car_shader_overrides_.rim))
+                car_shader_overrides_.loaded_any = true;
+            } else if (ml == "brakeshadersettings.xml") {
+              cars::ShaderFinishParams bp = base_fp;
+              if (cars::parse_shader_settings_xml_technique(xml_sv, "caliper", bp) ||
+                  cars::parse_shader_settings_xml_technique(xml_sv, "brake", bp) ||
+                  cars::parse_shader_settings_xml(xml_sv, bp)) {
+                car_shader_overrides_.brake.params = bp;
+                car_shader_overrides_.brake.has_override = true;
+                car_shader_overrides_.loaded_any = true;
+              }
+            } else if (ml.rfind("colorshadersettings", 0) == 0 && ml.size() > 23) {
+              const std::string num_s = ml.substr(19, ml.size() - 23);
+              char* stop = nullptr;
+              const long idx = std::strtol(num_s.c_str(), &stop, 10);
+              if (stop == num_s.c_str() + num_s.size() && idx >= 1 && idx <= 64) {
+                cars::ShaderFinishParams fp = base_fp;
+                if (cars::parse_shader_settings_xml(xml_sv, fp)) {
+                  car_shader_overrides_.color_overrides[int(idx)] = fp;
+                  car_shader_overrides_.loaded_any = true;
+                }
+              }
+            } else if (ml == "shadersettings.xml") {
+              cars::ShaderFinishParams fp = base_fp;
+              if (cars::parse_shader_settings_xml(xml_sv, fp) &&
+                  fp.gauge_emissive_scale != base_fp.gauge_emissive_scale) {
+                car_shader_overrides_.gauge_emissive_scale = fp.gauge_emissive_scale;
+                car_shader_overrides_.has_gauge_emissive_override = true;
+                car_shader_overrides_.loaded_any = true;
+              }
+            }
           }
         }
       }
@@ -982,6 +1260,17 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
         cockpit_rigs_[0].valid = true;
         cockpit_rigs_[0].pivot = {float(mean[0]), float(mean[1]), float(mean[2])};
         cockpit_rigs_[0].axis = vnorm({0.0f, ay, az});
+        // Measure actual steering wheel rim grip radius perpendicular to the steering column axis.
+        float max_r = 0.0f;
+        for (const auto& v : *pool) {
+          const auto d = vsub(v.position, cockpit_rigs_[0].pivot);
+          const float proj = vdot(d, cockpit_rigs_[0].axis);
+          const std::array<float, 3> rad{d[0] - cockpit_rigs_[0].axis[0] * proj,
+                                         d[1] - cockpit_rigs_[0].axis[1] * proj,
+                                         d[2] - cockpit_rigs_[0].axis[2] * proj};
+          max_r = std::max(max_r, std::sqrt(vdot(rad, rad)));
+        }
+        cockpit_rigs_[0].radius = (max_r > 0.08f) ? std::clamp(max_r * 0.91f, 0.12f, 0.22f) : 0.165f;
       }
     }
     static const char* const kGauges[5] = {"speed", "tach", "fuel", "boost", "power"};
@@ -1386,7 +1675,9 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     };
     if (rim) {
       float m4[16];
-      wheel_matrix(rim_scale, 0, m4);
+      const float rim_norm_dx =
+          vis.active ? std::clamp(axle == 0 ? vis.rim_offset_front : vis.rim_offset_rear, -0.08f, 0.08f) : 0.0f;
+      wheel_matrix(rim_scale, rim_norm_dx, m4);
       const bake::Model sized = morphed(*rim, {w_rim, 0});
       std::vector<std::string> parts;
       for (const auto& p : sized.parts) parts.push_back(p.name);
@@ -1414,6 +1705,120 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   if (draws_.empty()) {
     error = car_name + ": nothing to draw";
     return false;
+  }
+
+  // Pre-register any alternate factory color/livery atlas textures in car_.car.colours so
+  // preview_colour() can swap Combo_Colors.BaseTexture instantaneously without GPU stalls.
+  if (car_.car.colours.size() > 1) {
+    std::set<std::string> alt_atlases;
+    for (const auto& col : car_.car.colours) {
+      if (!col.atlas_lod0.empty()) alt_atlases.insert(col.atlas_lod0);
+      if (!col.atlas_lod.empty()) alt_atlases.insert(col.atlas_lod);
+    }
+    for (const auto& member : alt_atlases) {
+      (void)texture_index("car:" + member, car_, true);
+    }
+  }
+
+  // Detect whether the wheel archive provided retail blur_rim / blur_lip geometry; if so,
+  // tag static 3D rim spokes with kFlagHasBlurMesh so they cross-fade cleanly to the blur disc.
+  has_blur_rim_mesh_ = false;
+  for (const auto& d : draws_) {
+    if (d.is_blur_rim) {
+      has_blur_rim_mesh_ = true;
+      break;
+    }
+  }
+  if (has_blur_rim_mesh_) {
+    for (auto& d : draws_) {
+      if (d.wheel < 0 || !d.spins || d.is_blur_rim) continue;
+      const auto kl = MaterialClass(uint32_t(d.push.params[0] + 0.5f));
+      const int sm = int(d.push.params[2] + 0.5f);
+      // Cross-fade outer spokes (kRim submat 0/1 or kChrome) while keeping inner barrel (2), rotor (3), hub (4) solid.
+      if ((kl == MaterialClass::kRim && sm != 2 && sm != 3 && sm != 4) || kl == MaterialClass::kChrome) {
+        d.is_static_spoke = true;
+        uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
+        fl |= kFlagHasBlurMesh;
+        d.push.params[1] = float(fl);
+      }
+    }
+  }
+
+  // Derive per-car left, center, and right cockpit mirror camera origins from actual mirror
+  // geometry bounds (mirrorLeft/mirrorMiddle/mirrorRight glass preferred, then mirrorL/R parts),
+  // falling back to scaled car bounding-box offsets only when a mirror part is absent.
+  {
+    std::array<std::array<double, 3>, 3> glass_sum{};
+    std::array<int, 3> glass_cnt{0, 0, 0};
+    std::array<std::array<double, 3>, 3> part_sum{};
+    std::array<int, 3> part_cnt{0, 0, 0};
+    for (const auto& d : draws_) {
+      if (d.wheel >= 0) continue;
+      const uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
+      const int sm = int(d.push.params[2] + 0.5f);
+      if ((fl & kFlagMirror) != 0u) {
+        const int band = (sm == 10) ? 0 : (sm == 12 ? 2 : 1);
+        for (int k = 0; k < 3; ++k) glass_sum[size_t(band)][size_t(k)] += double(d.centre[size_t(k)]);
+        ++glass_cnt[size_t(band)];
+      } else if (d.part_name.rfind("mirrorl", 0) == 0) {
+        for (int k = 0; k < 3; ++k) part_sum[0][size_t(k)] += double(d.centre[size_t(k)]);
+        ++part_cnt[0];
+      } else if (d.part_name.rfind("mirrorr", 0) == 0) {
+        for (int k = 0; k < 3; ++k) part_sum[2][size_t(k)] += double(d.centre[size_t(k)]);
+        ++part_cnt[2];
+      } else if (d.part_name.find("mirrormid") != std::string::npos ||
+                 d.part_name.find("mirrorcenter") != std::string::npos) {
+        for (int k = 0; k < 3; ++k) part_sum[1][size_t(k)] += double(d.centre[size_t(k)]);
+        ++part_cnt[1];
+      }
+    }
+    const float bw_x = have_bounds_ ? (bounds_max_[0] - bounds_min_[0]) : 1.85f;
+    const float bh_y = have_bounds_ ? (bounds_max_[1] - bounds_min_[1]) : 1.35f;
+    const float mid_x = have_bounds_ ? 0.5f * (bounds_min_[0] + bounds_max_[0]) : 0.0f;
+    const float mid_z = have_bounds_ ? 0.5f * (bounds_min_[2] + bounds_max_[2]) : 0.0f;
+    const std::array<std::array<float, 3>, 3> fallback = {
+        std::array<float, 3>{(have_bounds_ ? bounds_min_[0] : -0.92f) - 0.04f,
+                             (have_bounds_ ? bounds_min_[1] : 0.0f) + bh_y * 0.66f, mid_z - 0.12f},
+        std::array<float, 3>{mid_x, (have_bounds_ ? bounds_min_[1] : 0.0f) + bh_y * 0.82f, mid_z + 0.05f},
+        std::array<float, 3>{(have_bounds_ ? bounds_max_[0] : 0.92f) + 0.04f,
+                             (have_bounds_ ? bounds_min_[1] : 0.0f) + bh_y * 0.66f, mid_z - 0.12f},
+    };
+    (void)bw_x;
+    for (size_t b = 0; b < 3; ++b) {
+      if (glass_cnt[b] > 0) {
+        for (size_t k = 0; k < 3; ++k) mirror_origins_[b][k] = float(glass_sum[b][k] / double(glass_cnt[b]));
+        if (b == 0) mirror_origins_[b][0] -= 0.04f, mirror_origins_[b][2] += 0.08f;
+        else if (b == 2) mirror_origins_[b][0] += 0.04f, mirror_origins_[b][2] += 0.08f;
+        else mirror_origins_[b][2] += 0.10f;
+        mirror_origin_valid_[b] = true;
+      } else if (part_cnt[b] > 0) {
+        for (size_t k = 0; k < 3; ++k) mirror_origins_[b][k] = float(part_sum[b][k] / double(part_cnt[b]));
+        if (b == 0) mirror_origins_[b][0] -= 0.05f, mirror_origins_[b][2] += 0.10f;
+        else if (b == 2) mirror_origins_[b][0] += 0.05f, mirror_origins_[b][2] += 0.10f;
+        else mirror_origins_[b][2] += 0.10f;
+        mirror_origin_valid_[b] = true;
+      } else {
+        mirror_origins_[b] = fallback[b];
+        mirror_origin_valid_[b] = false;
+      }
+    }
+  }
+
+  // Initialize active shader finish parameters from Shared XML + per-car ColorShaderSettings/RimShaderSettings.
+  {
+    const auto& colours = car_.car.colours;
+    const bake::Colour* col = colours.empty() ? nullptr : &colours[std::min(options_.colour, colours.size() - 1)];
+    active_paint_params_ = (col && col->metallic) ? shader_settings_.metallic : shader_settings_.normal;
+    if (col) {
+      if (auto it = car_shader_overrides_.color_overrides.find(int(col->sequence));
+          it != car_shader_overrides_.color_overrides.end()) {
+        active_paint_params_ = it->second;
+      } else if (auto it2 = car_shader_overrides_.color_overrides.find(int(options_.colour + 1));
+                 it2 != car_shader_overrides_.color_overrides.end()) {
+        active_paint_params_ = it2->second;
+      }
+    }
+    sync_paint_shader_uniforms();
   }
   return true;
 }

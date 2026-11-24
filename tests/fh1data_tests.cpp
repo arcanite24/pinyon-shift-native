@@ -1226,7 +1226,7 @@ void test_bake_format() {
   CHECK(cars::classify("body", false, Role::kLod0) == MaterialClass::kPaint);
   CHECK(cars::classify("window", true, Role::kLod0) == MaterialClass::kGlass);
   CHECK(cars::classify("defrost_lines", false, Role::kLod0) == MaterialClass::kGlass);
-  CHECK(cars::classify("blur_rim", true, Role::kWheel) == MaterialClass::kHidden);
+  CHECK(cars::classify("blur_rim", true, Role::kWheel) == MaterialClass::kRim);
   CHECK(cars::classify("hub", false, Role::kWheel) == MaterialClass::kRim);
   CHECK(cars::classify("hub", false, Role::kRotor) == MaterialClass::kRim);
   CHECK(cars::classify("outer_rim", false, Role::kLod0) == MaterialClass::kRim);

@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -1179,6 +1181,111 @@ int main() {
           std::fabs(parsed.pending_barn_restorations[0].remaining_sec - 32.5f) < 1e-3f);
     CHECK(parsed.pending_barn_restorations[1].barn_id == 4 && parsed.pending_barn_restorations[1].car_id == 1089 &&
           std::fabs(parsed.pending_barn_restorations[1].remaining_sec - 12.25f) < 1e-3f);
+  }
+  // 12) R2-3A: FastTravelAnywhere / CoDriver / SavedCarHistory round-trip, atomic_write_file,
+  //     and corrupt-save automatic backup recovery (load_save_with_recovery).
+  {
+    namespace fs = std::filesystem;
+    drive::DriveSave ds;
+    ds.car = "NIS_SkylineGTRVSpecII_02";
+    ds.position = {10.0, 20.0, 30.0};
+    ds.heading = 0.5;
+    ds.fast_travel_anywhere = true;
+    ds.codriver_enabled = false;
+    ds.car_history.push_back({7, 445, 12345.5, 678.25, 45000, 1200, 9, 6, 8});
+    drive::DriveSave rt;
+    std::string err;
+    CHECK(drive::save_from_text(drive::save_to_text(ds), rt, &err));
+    CHECK(rt.fast_travel_anywhere && !rt.codriver_enabled);
+    CHECK(rt.car_history.size() == 1 && rt.car_history[0].garage_id == 7 && rt.car_history[0].car_id == 445 &&
+          std::fabs(rt.car_history[0].distance_driven - 12345.5) < 1e-3 &&
+          std::fabs(rt.car_history[0].time_driven - 678.25) < 1e-3 && rt.car_history[0].total_winnings == 45000 &&
+          rt.car_history[0].total_repairs == 1200 && rt.car_history[0].num_races == 9 &&
+          rt.car_history[0].num_victories == 6 && rt.car_history[0].num_podiums == 8);
+
+    std::error_code ec;
+    const fs::path root = fs::temp_directory_path(ec) / "shift_drive_atomic_recovery_test";
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+
+    // Atomic write creates target, overwrites cleanly, and leaves no stray .tmp file.
+    const fs::path target = root / "nested" / "atomic.txt";
+    CHECK(drive::atomic_write_file(target, "first-version", &err));
+    CHECK(fs::exists(target) && !fs::exists(fs::path(target).concat(".tmp")));
+    CHECK(drive::atomic_write_file(target, "second-version-longer", &err));
+    CHECK(fs::exists(target) && !fs::exists(fs::path(target).concat(".tmp")));
+    {
+      std::ifstream in(target, std::ios::binary);
+      const std::string got((std::istreambuf_iterator<char>(in)), {});
+      CHECK(got == "second-version-longer");
+    }
+
+    // Corrupt-save recovery: primary corrupt, newest snapshot corrupt, second-newest valid.
+    const fs::path save_path = root / "drive" / "save.txt";
+    const fs::path backups_dir = root / "backups" / "saves";
+    auto make_save = [](const std::string& car, int64_t cr) {
+      drive::DriveSave s;
+      s.car = car;
+      s.position = {1.0, 2.0, 3.0};
+      s.heading = 0.25;
+      s.credits = cr;
+      return s;
+    };
+    // Older valid snapshot (t=1700000100, 11000 cr)
+    const fs::path snap1 = backups_dir / "20261124-010000-start";
+    CHECK(drive::write_save(snap1 / "save.txt", make_save("VW_Corrado_95", 11000), &err));
+    CHECK(drive::atomic_write_file(snap1 / "backup.txt", "shift-save-backup 1\nreason start\ntime 1700000100\n", &err));
+    // Newer valid snapshot (t=1700000200, 22000 cr)
+    const fs::path snap2 = backups_dir / "20261124-020000-autosave";
+    CHECK(drive::write_save(snap2 / "save.txt", make_save("NIS_SkylineGTRVSpecII_02", 22000), &err));
+    CHECK(drive::atomic_write_file(snap2 / "backup.txt", "shift-save-backup 1\nreason autosave\ntime 1700000200\n", &err));
+    // Newest snapshot (t=1700000300) is corrupt/truncated and must be skipped!
+    const fs::path snap3 = backups_dir / "20261124-030000-exit";
+    CHECK(drive::atomic_write_file(snap3 / "save.txt", "TRUNCATED_CORRUPT_BACKUP", &err));
+    CHECK(drive::atomic_write_file(snap3 / "backup.txt", "shift-save-backup 1\nreason exit\ntime 1700000300\n", &err));
+
+    // Corrupt primary save.txt.
+    const std::string corrupt_payload = "CORRUPTED_PRIMARY_HALF_WRITTEN";
+    CHECK(drive::atomic_write_file(save_path, corrupt_payload, &err));
+
+    drive::DriveSave recovered;
+    fs::path from;
+    CHECK(drive::load_save_with_recovery(save_path, backups_dir, recovered, &from, &err));
+    CHECK(recovered.credits == 22000 && recovered.car == "NIS_SkylineGTRVSpecII_02");
+    CHECK(from == snap2 / "save.txt");
+    // Corrupt primary was preserved as save.txt.corrupt for inspection.
+    const fs::path corrupt_copy = fs::path(save_path).concat(".corrupt");
+    CHECK(fs::exists(corrupt_copy));
+    {
+      std::ifstream in(corrupt_copy, std::ios::binary);
+      const std::string kept((std::istreambuf_iterator<char>(in)), {});
+      CHECK(kept == corrupt_payload);
+    }
+    // Primary save.txt is now restored and loads directly without recovery!
+    drive::DriveSave reloaded;
+    fs::path from_again;
+    CHECK(drive::load_save_with_recovery(save_path, backups_dir, reloaded, &from_again, &err));
+    CHECK(reloaded.credits == 22000 && from_again.empty());
+    CHECK(!fs::exists(fs::path(save_path).concat(".tmp")));
+
+    // Empty 0-byte primary with sibling .bak fallback.
+    const fs::path bak_save = root / "bak_only" / "save.txt";
+    CHECK(drive::atomic_write_file(bak_save, "", &err));
+    CHECK(drive::write_save(fs::path(bak_save).concat(".bak"), make_save("AUD_SportQuattro_83", 33000), &err));
+    drive::DriveSave bak_rec;
+    fs::path bak_from;
+    CHECK(drive::load_save_with_recovery(bak_save, {}, bak_rec, &bak_from, &err));
+    CHECK(bak_rec.credits == 33000 && bak_rec.car == "AUD_SportQuattro_83" &&
+          bak_from == fs::path(bak_save).concat(".bak"));
+    CHECK(fs::exists(fs::path(bak_save).concat(".corrupt")));
+
+    // Missing primary with no backups -> false with empty error.
+    const fs::path missing_save = root / "empty" / "save.txt";
+    drive::DriveSave none_rec;
+    fs::path none_from;
+    CHECK(!drive::load_save_with_recovery(missing_save, root / "no_backups", none_rec, &none_from, &err) && err.empty());
+
+    fs::remove_all(root, ec);
   }
   if (failures) {
     std::printf("%d failure(s)\n", failures);

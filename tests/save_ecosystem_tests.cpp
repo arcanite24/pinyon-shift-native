@@ -28,6 +28,8 @@
 #include "fh1data/archive.h"
 #include "garage/garage.h"
 #include "profile/backup.h"
+#include "profile/drive_save.h"
+#include "profile/profile.h"
 #include "profile/profiles.h"
 #include "profile/sync.h"
 #include "profile/xenia_import.h"
@@ -567,6 +569,348 @@ void test_liveries_backup_and_sync() {
   }
 }
 
+// ---------------------------------------------------------------- 5. R2-3A Retail Profile Importer & Export
+
+std::vector<uint8_t> build_rich_retail_body() {
+  profile::Body body;
+  profile::set_field_int(body.fields, "Options/AudioVolume", 85, profile::Value::kU32);
+  profile::set_field_int(body.fields, "Main/Credits", 250000, profile::Value::kU32);
+  profile::set_field_int(body.fields, "Main/XP", 18500, profile::Value::kI32);
+  profile::set_field_int(body.fields, "Main/WristbandLevel", 4, profile::Value::kI32);
+  profile::set_field_int(body.fields, "Main/Level", 27, profile::Value::kI32);
+  profile::set_field_int(body.fields, "Main/CareerCar", 1, profile::Value::kI32);
+  profile::set_field_int(body.fields, "Main/UpgradeDiscount", 2, profile::Value::kU32);
+  profile::set_field_bool(body.fields, "Main/SatNav", true);
+  profile::set_field_bool(body.fields, "Main/FastTravelAnywhere", true);
+  profile::set_field_bool(body.fields, "Main/CoDriver", false);
+  profile::set_field_int(body.fields, "Main/NumRallies", 3, profile::Value::kI32);
+  profile::set_field_int(body.fields, "Main/NumRallyStages", 12, profile::Value::kI32);
+  profile::set_field_int(body.fields, "Main/CustomUnknownOption", 42, profile::Value::kU32);
+
+  auto push_be32 = [](std::vector<uint8_t>& v, uint32_t x) {
+    v.push_back(uint8_t(x >> 24));
+    v.push_back(uint8_t(x >> 16));
+    v.push_back(uint8_t(x >> 8));
+    v.push_back(uint8_t(x));
+  };
+  auto push_be64 = [&](std::vector<uint8_t>& v, uint64_t x) {
+    push_be32(v, uint32_t(x >> 32));
+    push_be32(v, uint32_t(x & 0xFFFFFFFFu));
+  };
+  auto push_f32 = [&](std::vector<uint8_t>& v, float f) {
+    uint32_t u = 0;
+    std::memcpy(&u, &f, 4);
+    push_be32(v, u);
+  };
+
+  profile::Block blk1;
+  blk1.version = 2;
+
+  profile::Record colorado;
+  colorado.name = "Colorado";
+  colorado.class_name = "CHorizonLocationState";
+  colorado.version = 2;
+  colorado.children.push_back({"flyer_001", "CFlyerState", 1, {1, 1}, {}});
+  colorado.children.push_back({"flyer_002", "CFlyerState", 1, {1, 1}, {}});
+  colorado.children.push_back({"flyer_003", "CFlyerState", 1, {0, 0}, {}});
+
+  // All 9 retail Colorado Speed Zones using CAverageSpeedState (6-byte payload: [1, 1, be_f32]).
+  for (int i = 1; i <= 9; ++i) {
+    char zname[32];
+    std::snprintf(zname, sizeof zname, "average_speed_%02d", i);
+    std::vector<uint8_t> zp = {1u, 1u};
+    push_f32(zp, 110.0f + float(i) * 5.5f);
+    colorado.children.push_back({zname, "CAverageSpeedState", 1, std::move(zp), {}});
+  }
+  // Secondary fallback CSpeedZoneState record.
+  {
+    std::vector<uint8_t> zp = {1u, 1u};
+    push_f32(zp, 132.25f);
+    colorado.children.push_back({"legacy_speed_zone_10", "CSpeedZoneState", 1, std::move(zp), {}});
+  }
+  // Speed Trap using CSpeedCameraState (6-byte payload).
+  {
+    std::vector<uint8_t> tp = {1u, 1u};
+    push_f32(tp, 178.5f);
+    colorado.children.push_back({"speed_camera_01", "CSpeedCameraState", 1, std::move(tp), {}});
+  }
+  // Road discovery bitset (64 nodes -> 2 u32 words).
+  {
+    std::vector<uint8_t> rp;
+    push_be32(rp, 64u);
+    push_be32(rp, 0xA5A500FFu);
+    push_be32(rp, 0x0000000Fu);
+    colorado.children.push_back({"RoadDiscovery", "CRoadDiscovery", 2, std::move(rp), {}});
+  }
+  // Unknown child record to verify preservation.
+  colorado.children.push_back({"UnknownActivity_01", "CUnknownActivityState", 1, {0x11, 0x22, 0x33}, {}});
+  blk1.records.push_back(std::move(colorado));
+
+  // Unknown record in Block 1 (e.g. Player0) to verify preservation.
+  blk1.records.push_back({"Player0", "CPlayerState", 13, {0xAA, 0xBB, 0xCC, 0xDD, 0xEE}, {}});
+
+  // 1000 Club record (CCarChallengeState v4) with 8-byte stride save_progress entries.
+  {
+    std::vector<uint8_t> cp;
+    push_be32(cp, 1u);     // 1 car
+    push_be32(cp, 445u);   // car_id
+    push_be32(cp, 3u);     // 3 challenges
+    // Challenge 0: 2 save_progress nodes -> 16 bytes (8 bytes each: u64 values 3 and 7)
+    push_be32(cp, 0x11223344u);
+    cp.push_back(0u);  // flag A
+    cp.push_back(0u);  // flag B
+    push_be32(cp, 16u);
+    push_be64(cp, 3ull);
+    push_be64(cp, 7ull);
+    // Challenge 1: 1 save_progress node -> 8 bytes as (u32 node_key, u32 count = 12)
+    push_be32(cp, 0x55667788u);
+    cp.push_back(0u);
+    cp.push_back(0u);
+    push_be32(cp, 8u);
+    push_be32(cp, 0xCAFEBABEu);
+    push_be32(cp, 12u);
+    // Challenge 2: completed (flag A = 1, flag B = 1), 0-byte blob
+    push_be32(cp, 0x99AABBCCu);
+    cp.push_back(1u);
+    cp.push_back(1u);
+    push_be32(cp, 0u);
+    // Trailing 4 bytes
+    cp.insert(cp.end(), {0xDEu, 0xADu, 0xBEu, 0xEFu});
+    blk1.records.push_back({"CCarChallengeState", "CCarChallengeState", 4, std::move(cp), {}});
+  }
+  body.blocks.push_back(std::move(blk1));
+
+  // Block 2 (Rally tail block) to verify preservation on round-trip.
+  profile::Block blk2;
+  blk2.version = 2;
+  blk2.records.push_back({"RallyAIState", "Rally::CRallyAIState", 1, {0x01, 0x02, 0x03, 0x04}, {}});
+  body.blocks.push_back(std::move(blk2));
+
+  // Trailing 0xBB padding bytes to verify verbatim preservation.
+  body.trailing_bytes = {0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB};
+  return profile::serialize_body(body);
+}
+
+void build_rich_player_db(const fs::path& db_path) {
+  std::error_code ec;
+  fs::create_directories(db_path.parent_path(), ec);
+  fs::remove(db_path, ec);
+  sqlite3* db = nullptr;
+  CHECK(sqlite3_open(db_path.string().c_str(), &db) == SQLITE_OK);
+  const char* sql =
+      "CREATE TABLE Career_Garage ("
+      "Id INTEGER PRIMARY KEY, CarId INTEGER, PerformanceIndex REAL, ClassID INTEGER, PartsValue INTEGER, "
+      "DefaultManufacturerColorIndex INTEGER, LiveryFileName TEXT, "
+      "Engine INTEGER, SingleTurbo INTEGER, TwinTurbo INTEGER, SuperchargerCSC INTEGER, WheelStyle INTEGER, "
+      "Tuning_frontTirePressure REAL, "
+      "DistanceDriven REAL, TimeDriven REAL, TotalWinnings INTEGER, TotalRepairs INTEGER, "
+      "NumVictories INTEGER, NumPodiums INTEGER, NumRaces INTEGER, CustomFlag INTEGER);"
+      "INSERT INTO Career_Garage VALUES ("
+      "1, 445, 0.725, 5, 14500, 2, 'liveries/1.liv', "
+      "445001, -1, -1, 445099, 102, 28.5, "
+      "54321.5, 1234.5, 90000, 500, 11, 14, 15, 777);"
+      "CREATE TABLE Career_PurchasedParts (GarageId INTEGER, PartEnum INTEGER, PartId INTEGER, ManufacturerId INTEGER, PricePaid INTEGER);"
+      "INSERT INTO Career_PurchasedParts VALUES (1, 27, 445099, 0, 14500);"
+      "CREATE TABLE Career_EventResults (EventId INTEGER, Place INTEGER, RivalsBeaten INTEGER);"
+      "INSERT INTO Career_EventResults VALUES (22, 1, 3);"
+      "CREATE TABLE Career_RaceResults (RaceId INTEGER, Place INTEGER);"
+      "INSERT INTO Career_RaceResults VALUES (143, 1);"
+      "CREATE TABLE CareerEventUnlocks (EventId INTEGER);"
+      "INSERT INTO CareerEventUnlocks VALUES (22);"
+      "CREATE TABLE CareerHubUnlocks (HubId INTEGER);"
+      "INSERT INTO CareerHubUnlocks VALUES (1);"
+      "CREATE TABLE LastUsedGarageId (Id INTEGER);"
+      "INSERT INTO LastUsedGarageId VALUES (1);"
+      "CREATE TABLE Career_AIHistory (AIPlayerId INTEGER, Wins INTEGER);"
+      "INSERT INTO Career_AIHistory VALUES (99, 7);";
+  CHECK(sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK);
+  sqlite3_close(db);
+}
+
+void test_retail_profile_importer_and_export() {
+  const fs::path root = fresh("retail_profile_r2_3a");
+  const fs::path src_dir = root / "retail_src";
+  const auto raw_body = build_rich_retail_body();
+  write_bytes(src_dir / "ForzaProfile.body", raw_body);
+  build_rich_player_db(src_dir / "PlayerDatabase.sqlite");
+  write_file(src_dir / "export.json", "{\"VersionFlags\": 2}\n");
+
+  // 1) Importer fixes: CAverageSpeedState (all 9 zones + fallback), 8-byte 1000 Club stride,
+  //    explicit -1 slots, FastTravelAnywhere, CoDriver, per-car history, and byte-exact body preservation.
+  profile::Imported imp;
+  std::string err;
+  CHECK(profile::import_profile(src_dir, imp, &err));
+  CHECK(imp.version_flags == 2);
+  CHECK(imp.fast_travel_anywhere);
+  CHECK(imp.has_codriver && !imp.codriver_on);
+  CHECK(imp.speed_zones.size() == 10);  // 9 CAverageSpeedState + 1 CSpeedZoneState fallback
+  CHECK(imp.speed_zones[0].first == "average_speed_01" && std::fabs(imp.speed_zones[0].second - 115.5) < 1e-2);
+  CHECK(imp.speed_zones[8].first == "average_speed_09" && std::fabs(imp.speed_zones[8].second - 159.5) < 1e-2);
+  CHECK(imp.speed_zones[9].first == "legacy_speed_zone_10" && std::fabs(imp.speed_zones[9].second - 132.25) < 1e-2);
+  CHECK(imp.speed_traps.size() == 1 && imp.speed_traps[0].first == "speed_camera_01" &&
+        std::fabs(imp.speed_traps[0].second - 178.5) < 1e-2);
+
+  // 8-byte stride 1000 Club save_progress: 16 bytes -> 2 entries {3, 7} (NOT 4 entries {0,3,0,7})!
+  CHECK(imp.club.size() == 1 && imp.club[0].car_id == 445 && imp.club[0].challenges == 3 && imp.club[0].done == 1);
+  CHECK(imp.club[0].progress.size() == 3);
+  CHECK(imp.club[0].progress[0].size() == 2 && imp.club[0].progress[0][0] == 3 && imp.club[0].progress[0][1] == 7);
+  CHECK(imp.club[0].progress[1].size() == 1 && imp.club[0].progress[1][0] == 12);
+  CHECK(imp.club[0].progress[2].empty());
+  CHECK(imp.club[0].flags_b.size() == 3 && !imp.club[0].flags_b[0] && imp.club[0].flags_b[2]);
+  CHECK(imp.club_trailing == std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+
+  // Per-car history imported on GarageCar.
+  CHECK(imp.garage.size() == 1);
+  CHECK(std::fabs(imp.garage[0].history.distance_driven - 54321.5) < 1e-2);
+  CHECK(std::fabs(imp.garage[0].history.time_driven - 1234.5) < 1e-2);
+  CHECK(imp.garage[0].history.total_winnings == 90000 && imp.garage[0].history.total_repairs == 500 &&
+        imp.garage[0].history.num_races == 15 && imp.garage[0].history.num_victories == 11 &&
+        imp.garage[0].history.num_podiums == 14);
+
+  // Explicit -1 slots survive to_garage!
+  garage::Garage g = profile::to_garage(imp);
+  CHECK(g.cars.size() == 1);
+  CHECK(g.cars[0].slots.count("SingleTurbo") == 1 && g.cars[0].slots.at("SingleTurbo") == -1);
+  CHECK(g.cars[0].slots.count("TwinTurbo") == 1 && g.cars[0].slots.at("TwinTurbo") == -1);
+  CHECK(g.cars[0].slots.count("SuperchargerCSC") == 1 && g.cars[0].slots.at("SuperchargerCSC") == 445099);
+  CHECK(g.cars[0].livery_file == "liveries/1.liv");
+
+  // Unknown blocks, unknown fields, and trailing 0xBB bytes round-trip byte-for-byte!
+  CHECK(profile::serialize_body(imp.body) == raw_body);
+
+  // to_drive_save preserves FastTravelAnywhere, CoDriver, per-car history, speed zones, and 1000 Club progress.
+  drive::DriveSave ds;
+  std::vector<std::string> notes;
+  profile::to_drive_save(imp, [](int64_t id) { return id == 445 ? std::string("NIS_SkylineGTRVSpecII_02") : std::string(); },
+                         ds, &notes);
+  CHECK(ds.fast_travel_anywhere && !ds.codriver_enabled);
+  CHECK(ds.speed_zones.size() == 10 && ds.speed_traps.size() == 1);
+  CHECK(ds.car_history.size() == 1 && ds.car_history[0].num_victories == 11);
+  CHECK(ds.club.size() == 1 && ds.club[0].progress[0] == std::vector<int>({3, 7}));
+
+  // 2) Fresh ForzaProfile export (no template) -> re-import round-trip!
+  ds.credits = 654321;
+  ds.wristband_points = 33000;
+  ds.collected_wristband = 5;
+  ds.signs_found.push_back("flyer_010");
+  ds.barns.push_back({"barnfind_01", 2, 12000.0, 15000.0});
+  ds.event_results.emplace_back(55, 1);
+  ds.speed_zones[0].second = 148.75;
+  ds.club[0].progress[0] = {5, 9};
+
+  const fs::path fresh_out = root / "exported_fresh";
+  CHECK(profile::export_forza_profile(ds, g, fresh_out, &err));
+  CHECK(!fs::exists(fresh_out / "ForzaProfile.body.tmp"));
+  CHECK(!fs::exists(fresh_out / "PlayerDatabase.sqlite.tmp"));
+
+  profile::Imported reimp_fresh;
+  CHECK(profile::import_profile(fresh_out, reimp_fresh, &err));
+  CHECK(reimp_fresh.credits == 654321 && reimp_fresh.xp == 33000 && reimp_fresh.wristband_level == 5);
+  CHECK(reimp_fresh.signs_found() == 3 && reimp_fresh.upgrade_discount == 3);
+  CHECK(reimp_fresh.barns_found() == 1);
+  CHECK(reimp_fresh.event_results.size() == 2);
+  CHECK(reimp_fresh.road_discovery_nodes == 64 && reimp_fresh.road_discovery_words.size() == 2 &&
+        reimp_fresh.road_discovery_words[0] == 0xA5A500FFu);
+  CHECK(reimp_fresh.fast_travel_anywhere && !reimp_fresh.codriver_on);
+  CHECK(reimp_fresh.speed_zones.size() == 10 && std::fabs(reimp_fresh.speed_zones[0].second - 148.75) < 1e-2);
+  // Verify exported speed zones use retail CAverageSpeedState class name!
+  int avg_speed_records = 0;
+  for (const auto& rec : reimp_fresh.body.blocks[0].records) {
+    if (rec.name == "Colorado") {
+      for (const auto& ch : rec.children)
+        if (ch.class_name == "CAverageSpeedState") ++avg_speed_records;
+    }
+  }
+  CHECK(avg_speed_records == 10);
+  // Verify 1000 Club exported with 8-byte stride (2 entries -> 16 bytes raw blob)!
+  CHECK(reimp_fresh.club.size() == 1 && reimp_fresh.club[0].progress[0] == std::vector<int>({5, 9}));
+  CHECK(reimp_fresh.club[0].raw_blobs[0].size() == 16);
+  // Verify -1 slots & per-car history survived SQLite export -> re-import!
+  garage::Garage g_fresh = profile::to_garage(reimp_fresh);
+  CHECK(g_fresh.cars.size() == 1 && g_fresh.cars[0].slots.at("SingleTurbo") == -1 &&
+        g_fresh.cars[0].slots.at("TwinTurbo") == -1 && g_fresh.cars[0].slots.at("SuperchargerCSC") == 445099);
+  CHECK(std::fabs(reimp_fresh.garage[0].history.distance_driven - 54321.5) < 1e-2 &&
+        reimp_fresh.garage[0].history.num_victories == 11);
+
+  // 3) Template-based ForzaProfile export preserves unknown fields, tail blocks, trailing bytes,
+  //    unknown garage columns, and untouched SQLite tables!
+  const fs::path templ_out = root / "exported_template";
+  profile::ExportOptions eopts;
+  eopts.template_folder = src_dir;
+  CHECK(profile::export_forza_profile(ds, g, templ_out, &err, eopts));
+
+  profile::Imported reimp_templ;
+  CHECK(profile::import_profile(templ_out, reimp_templ, &err));
+  CHECK(reimp_templ.credits == 654321);
+  // Unknown fields, Option struct, Block 1 Player0, Block 2 RallyAIState, trailing 0xBB bytes all preserved!
+  CHECK(profile::find(reimp_templ.body.fields, "Main/CustomUnknownOption") != nullptr &&
+        profile::find(reimp_templ.body.fields, "Main/CustomUnknownOption")->value.as_int() == 42);
+  CHECK(profile::find(reimp_templ.body.fields, "Options/AudioVolume") != nullptr &&
+        profile::find(reimp_templ.body.fields, "Options/AudioVolume")->value.as_int() == 85);
+  CHECK(reimp_templ.body.blocks.size() == 2 && reimp_templ.body.blocks[1].records.size() == 1 &&
+        reimp_templ.body.blocks[1].records[0].class_name == "Rally::CRallyAIState");
+  CHECK(reimp_templ.body.trailing_bytes.size() == 8 && reimp_templ.body.trailing_bytes[0] == 0xBB);
+  CHECK(reimp_templ.club_trailing == std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+  CHECK(reimp_templ.garage[0].columns.count("CustomFlag") == 1 && reimp_templ.garage[0].columns.at("CustomFlag") == 777);
+  // Untouched SQLite table Career_AIHistory survived template export!
+  {
+    sqlite3* db = nullptr;
+    CHECK(sqlite3_open_v2((templ_out / "PlayerDatabase.sqlite").string().c_str(), &db, SQLITE_OPEN_READONLY, nullptr) ==
+          SQLITE_OK);
+    sqlite3_stmt* st = nullptr;
+    CHECK(sqlite3_prepare_v2(db, "SELECT Wins FROM Career_AIHistory WHERE AIPlayerId = 99;", -1, &st, nullptr) ==
+          SQLITE_OK);
+    CHECK(sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int(st, 0) == 7);
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+  }
+}
+
+void test_corrupt_save_recovery_with_sha256() {
+  const fs::path root = fresh("corrupt_recovery_sha256");
+  profile::backup::Config cfg;
+  cfg.save_dir = root / "drive";
+  cfg.backups_dir = root / "backups" / "saves";
+  cfg.keep = 10;
+
+  std::string err;
+  write_sample_save(cfg.save_dir, "VW_Corrado_95", 10000);
+  CHECK(profile::backup::snapshot(cfg, "start", nullptr, &err, 1700300100));
+
+  write_sample_save(cfg.save_dir, "NIS_SkylineGTRVSpecII_02", 25000);
+  CHECK(profile::backup::snapshot(cfg, "autosave", nullptr, &err, 1700300200));
+
+  write_sample_save(cfg.save_dir, "AUD_SportQuattro_83", 40000);
+  profile::backup::Entry newest;
+  CHECK(profile::backup::snapshot(cfg, "exit", &newest, &err, 1700300300));
+
+  // Tamper with the newest snapshot using a parseable forged save (SHA-256 mismatch!).
+  drive::DriveSave forged;
+  forged.car = "FORGED_CAR";
+  forged.position = {0, 0, 0};
+  forged.heading = 0;
+  forged.credits = 999999;
+  CHECK(drive::write_save(newest.dir / "save.txt", forged, &err));
+
+  // Corrupt the primary save.txt.
+  const fs::path save_path = cfg.save_dir / "save.txt";
+  const std::string bad_bytes = "NOT_A_VALID_SAVE_FILE_POWER_CUT";
+  CHECK(drive::atomic_write_file(save_path, bad_bytes, &err));
+
+  drive::DriveSave recovered;
+  fs::path from;
+  CHECK(profile::backup::load_save_with_recovery(save_path, cfg.backups_dir, recovered, &from, &err));
+  // Must have skipped the tampered newest snapshot and restored the 25000 cr autosave!
+  CHECK(recovered.credits == 25000 && recovered.car == "NIS_SkylineGTRVSpecII_02");
+  CHECK(from.parent_path().filename().string().find("autosave") != std::string::npos);
+  // Corrupt primary preserved as save.txt.corrupt.
+  CHECK(read_file(cfg.save_dir / "save.txt.corrupt") == bad_bytes);
+  // Primary save.txt is restored cleanly with no stray .tmp.
+  drive::DriveSave check_reload;
+  CHECK(drive::read_save(save_path, check_reload, &err) && check_reload.credits == 25000);
+  CHECK(!fs::exists(cfg.save_dir / "save.txt.tmp"));
+}
+
 }  // namespace
 
 int main() {
@@ -580,6 +924,8 @@ int main() {
   test_save_sync();
   test_xenia_pinyon_import();
   test_liveries_backup_and_sync();
+  test_retail_profile_importer_and_export();
+  test_corrupt_save_recovery_with_sha256();
 
   fs::remove_all(g_root, ec);
   if (g_failed) {

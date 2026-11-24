@@ -797,6 +797,18 @@ CarStats compute_car_stats(const drive::CarParams& p, const cars::CarPhysics& ca
   s.launch_rating = std::clamp((10.5 - s.time_0_60_s) / 8.0 * 10.0 + launch_bonus, 1.0, 10.0);
   s.braking_rating = std::clamp((46.0 - s.brake_60_0_m) / 21.0 * 10.0, 1.0, 10.0);
 
+  // Displacement & Aspiration metadata for Garage / Upgrade Shop spec displays.
+  s.displacement_cc = car.get("List_UpgradeEngineDisplacement.Disp", 0.0);
+  if (p.has_turbo && p.has_supercharger) {
+    s.aspiration = "Twincharged";
+  } else if (p.has_turbo) {
+    s.aspiration = car.has("List_UpgradeEngineTwinTurbo.Id") ? "Twin Turbo" : "Turbo";
+  } else if (p.has_supercharger) {
+    s.aspiration = "Supercharged";
+  } else {
+    s.aspiration = "Naturally Aspirated";
+  }
+
   return s;
 }
 
@@ -811,27 +823,44 @@ PiResult compute_pi(const cars::CarPhysics& fitted_phys, const cars::PhysicsSett
   res.raw_lap_pi = lap_time_to_pi(res.lap_time_s, cfg, 0.0);
   res.stats = compute_car_stats(p_fit, fitted_phys);
 
-  // Stock-anchored PI delta (SPEC-GARAGE-UPGRADES): exact Data_Car.PerformanceIndex
-  // on stock cars, exact PI.xml virtual-lap time delta on upgraded cars.
+  // Physics-consistent stock-anchored PI mapping:
+  // - Exact Data_Car.PerformanceIndex when the car is stock (|dt| < 1e-6).
+  // - Strictly monotonic headroom mapping toward 1.0 as virtual-lap time approaches
+  //   MinPITimeSeconds (power-to-weight, grip, braking & aero), preventing stock-anchor
+  //   bias carry-over drift or premature saturation on heavily upgraded builds.
   if (stock_phys && stock_phys->has("Data_Car.PerformanceIndex")) {
-    const double p_stock = stock_phys->get("Data_Car.PerformanceIndex", res.raw_lap_pi);
+    const double p_stock = std::clamp(stock_phys->get("Data_Car.PerformanceIndex", res.raw_lap_pi), 0.005, 1.0);
     drive::CarParams p_stk;
     drive::geometry_from_physics(*stock_phys, p_stk);
     drive::apply_physics(*stock_phys, settings, p_stk);
     const double t_stock = simulate_pi_lap(p_stk, stock_phys, cfg);
-    const double span = std::max(1e-6, cfg.max_pi_time_s - cfg.min_pi_time_s);
     const double dt = t_stock - res.lap_time_s;
     if (std::fabs(dt) < 1e-6) {
       res.raw_pi = p_stock;
+    } else if (dt > 0.0) {
+      const double t_headroom = std::max(1.0, t_stock - cfg.min_pi_time_s);
+      const double u = std::clamp(dt / t_headroom, 0.0, 1.0);
+      res.raw_pi = std::clamp(p_stock + u * (1.0 - p_stock), 0.005, 1.0);
     } else {
-      res.raw_pi = std::clamp(p_stock + dt / span, 0.005, 1.0);
+      const double t_floor_room = std::max(1.0, cfg.max_pi_time_s - t_stock);
+      const double u = std::clamp((-dt) / t_floor_room, 0.0, 1.0);
+      res.raw_pi = std::clamp(p_stock * (1.0 - u), 0.005, 1.0);
     }
-    // Anchor stat ratings gently to Data_Car stock ratings when available so
-    // stock cars display exact database ratings and upgrades show real deltas.
+    // Monotonic headroom-anchored stat ratings: exact Data_Car ratings on stock cars,
+    // converging smoothly to 10.0 on heavily upgraded builds without bias capping.
     const CarStats s_stk = compute_car_stats(p_stk, *stock_phys);
     auto anchor = [](double fit_v, double stk_v, const cars::CarPhysics& sp, const char* key) {
-      if (!sp.has(key)) return fit_v;
-      return std::clamp(sp.get(key, fit_v) + (fit_v - stk_v), 0.0, 10.0);
+      if (!sp.has(key)) return std::clamp(fit_v, 0.0, 10.0);
+      const double db_stk = std::clamp(sp.get(key, fit_v), 0.0, 10.0);
+      if (std::fabs(fit_v - stk_v) < 1e-6) return db_stk;
+      if (fit_v > stk_v) {
+        const double denom = std::max(0.5, 10.0 - stk_v);
+        const double u = std::clamp((fit_v - stk_v) / denom, 0.0, 1.0);
+        return std::clamp(db_stk + u * (10.0 - db_stk), 0.0, 10.0);
+      }
+      const double denom = std::max(0.5, stk_v);
+      const double u = std::clamp(fit_v / denom, 0.0, 1.0);
+      return std::clamp(u * db_stk, 0.0, 10.0);
     };
     res.stats.speed_rating = anchor(res.stats.speed_rating, s_stk.speed_rating, *stock_phys, "Data_Car.SpeedRating");
     res.stats.handling_rating =

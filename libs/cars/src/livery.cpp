@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 
 #include "cars/bake.h"
 #include "cars/util.h"
@@ -650,26 +651,142 @@ bool save_livery_file(const std::filesystem::path& path, const LiveryDocument& d
   return out.good();
 }
 
-bool load_livery_file(const std::filesystem::path& path, LiveryDocument& out, std::string* error) {
+bool import_binary_livery_bytes(std::span<const uint8_t> data, const std::string& fallback_name,
+                                LiveryDocument& out, std::string* error) {
+  if (data.empty()) {
+    if (error) *error = "empty binary livery";
+    return false;
+  }
+  // Preserve caller's existing base car_id and paint metadata (e.g. factory
+  // Combo_Colors / DefaultManufacturerColorIndex) instead of clobbering with flat red.
+  const int64_t prior_car_id = out.car_id;
+  const CarPaintSpec prior_paint = out.paint;
   out = LiveryDocument{};
-  std::ifstream in(path, std::ios::binary);
+  out.name = fallback_name.empty() ? "Imported Livery" : fallback_name;
+  out.car_id = prior_car_id;
+  out.paint = prior_paint;
+  out.imported_binary = true;
+  out.binary_size_bytes = uint32_t(std::min<size_t>(data.size(), 0xFFFFFFFFu));
+
+  // Structured unencrypted binary .liv format ("FLIV" magic, big-endian):
+  //   0..3   : "FLIV"
+  //   4..7   : u32 version (1)
+  //   8..11  : u32 car_id (0 = keep caller's car_id)
+  //   12..15 : u32 body_rgb (0x00RRGGBB; bit 24 or flags bit 0 = body paint active)
+  //   16     : u8  body_finish (PaintFinish enum)
+  //   17     : u8  flags (bit 0 = body active, bit 1 = has sec_rgb, bit 2 = has tint)
+  //   18..19 : u16 layer_count
+  //   20..23 : u32 sec_rgb (optional, used if flags & 2)
+  //   24..27 : f32 window_tint (optional, used if flags & 4)
+  //   28..   : layer_count records, each:
+  //            u8 plane, u8 lflags (bit0=flip_x, bit1=flip_y, bit2=visible, bit3=is_mask),
+  //            u16 group_id, f32 x, y, scale_x, scale_y, rot_deg, skew,
+  //            u32 rgb, f32 alpha, u16 shape_len, char[shape_len] shape_path
+  if (data.size() >= 28 && std::memcmp(data.data(), "FLIV", 4) == 0) {
+    const uint8_t* b = data.data();
+    const uint32_t ver = be32(b + 4);
+    if (ver == 1) {
+      const uint32_t cid = be32(b + 8);
+      if (cid != 0) out.car_id = int64_t(cid);
+      const uint32_t body_rgb_raw = be32(b + 12);
+      const uint8_t finish_u8 = b[16];
+      const uint8_t flags = b[17];
+      const uint16_t layer_count = be16(b + 18);
+      const uint32_t sec_rgb_raw = be32(b + 20);
+      const float tint_raw = bef32(b + 24);
+      if ((flags & 0x01u) != 0u || (body_rgb_raw & 0x01000000u) != 0u) {
+        out.paint.body.active = true;
+        out.paint.body.rgb = body_rgb_raw & 0xFFFFFFu;
+        out.paint.body.finish =
+            PaintFinish(std::clamp(int(finish_u8), 0, int(PaintFinish::kCount) - 1));
+      }
+      if ((flags & 0x02u) != 0u) {
+        out.paint.body.sec_rgb = sec_rgb_raw & 0xFFFFFFu;
+      }
+      if ((flags & 0x04u) != 0u && std::isfinite(tint_raw)) {
+        out.paint.window_tint = std::clamp(tint_raw, 0.0f, 1.0f);
+      }
+
+      size_t off = 28;
+      constexpr size_t kFixedLayerBytes = 1 + 1 + 2 + 6 * 4 + 4 + 4 + 2;  // 38 bytes
+      for (uint16_t i = 0; i < layer_count && off + kFixedLayerBytes <= data.size(); ++i) {
+        const uint8_t plane_u8 = b[off + 0];
+        const uint8_t lf = b[off + 1];
+        const uint16_t gid = be16(b + off + 2);
+        const float lx = bef32(b + off + 4);
+        const float ly = bef32(b + off + 8);
+        const float lsx = bef32(b + off + 12);
+        const float lsy = bef32(b + off + 16);
+        const float lrot = bef32(b + off + 20);
+        const float lskew = bef32(b + off + 24);
+        const uint32_t lrgb = be32(b + off + 28) & 0xFFFFFFu;
+        const float lalpha = bef32(b + off + 32);
+        const uint16_t slen = be16(b + off + 36);
+        off += kFixedLayerBytes;
+        if (off + slen > data.size()) break;
+
+        VinylLayer l;
+        l.shape_path.assign(reinterpret_cast<const char*>(b + off), slen);
+        off += slen;
+        l.plane = LiveryPlaneKind(std::clamp(int(plane_u8), 0, int(LiveryPlaneKind::kCount) - 1));
+        l.flip_x = (lf & 0x01u) != 0u;
+        l.flip_y = (lf & 0x02u) != 0u;
+        l.visible = (lf & 0x04u) != 0u;
+        l.is_mask = (lf & 0x08u) != 0u;
+        l.group_id = int(gid);
+        l.x = std::isfinite(lx) ? lx : 0.5f;
+        l.y = std::isfinite(ly) ? ly : 0.5f;
+        l.scale_x = std::isfinite(lsx) ? lsx : 0.25f;
+        l.scale_y = std::isfinite(lsy) ? lsy : 0.25f;
+        l.rot_deg = std::isfinite(lrot) ? lrot : 0.0f;
+        l.skew = std::isfinite(lskew) ? lskew : 0.0f;
+        l.rgb = lrgb;
+        l.alpha = std::isfinite(lalpha) ? std::clamp(lalpha, 0.0f, 1.0f) : 1.0f;
+        out.layers.push_back(std::move(l));
+      }
+      return true;
+    }
+  }
+
+  // Opaque / encrypted retail binary .liv envelope: keep caller's base paint & car_id
+  // intact so the car renders with its saved factory colour instead of flat red.
+  return true;
+}
+
+bool load_livery_file(const std::filesystem::path& path, LiveryDocument& out, std::string* error) {
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
   if (!in) {
     if (error) *error = "cannot read " + path.string();
     return false;
   }
-  std::string line;
-  if (!std::getline(in, line)) {
+  const std::streamoff len = in.tellg();
+  if (len <= 0) {
     if (error) *error = "empty livery file";
     return false;
   }
-  if (!line.empty() && line.back() == '\r') line.pop_back();
-  if (line != "shift-livery 1") {
-    // Graceful import of opaque FH1 binary .liv files: preserve filename as name
-    // with default paint active so existing imported garage saves never fail.
-    out.name = path.stem().string();
-    return true;
+  in.seekg(0);
+  std::vector<uint8_t> raw(static_cast<size_t>(len));
+  if (!in.read(reinterpret_cast<char*>(raw.data()), len)) {
+    if (error) *error = "cannot read " + path.string();
+    return false;
   }
-  while (std::getline(in, line)) {
+
+  // Check for native text "shift-livery 1" header before touching `out`, so opaque
+  // binary .liv imports can preserve caller-supplied base paint and car_id metadata.
+  constexpr std::string_view kTextMagic = "shift-livery 1";
+  const bool is_text_livery =
+      raw.size() >= kTextMagic.size() &&
+      std::memcmp(raw.data(), kTextMagic.data(), kTextMagic.size()) == 0 &&
+      (raw.size() == kTextMagic.size() || raw[kTextMagic.size()] == '\n' || raw[kTextMagic.size()] == '\r');
+  if (!is_text_livery) {
+    return import_binary_livery_bytes(raw, path.stem().string(), out, error);
+  }
+
+  out = LiveryDocument{};
+  std::istringstream text_in(std::string(reinterpret_cast<const char*>(raw.data()), raw.size()));
+  std::string line;
+  std::getline(text_in, line);  // consume "shift-livery 1" header
+  while (std::getline(text_in, line)) {
     if (!line.empty() && line.back() == '\r') line.pop_back();
     std::istringstream ss(line);
     std::string tok;

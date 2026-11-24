@@ -332,7 +332,24 @@ void Showroom::update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const Showroo
   dep.pBufferMemoryBarriers = &b;
   vkCmdPipelineBarrier2(cmd, &dep);
   ShowroomFrame copy = f;
-  for (int k = 0; k < 4; ++k) copy.cockpit_mfd[k] = cockpit_mfd_[k];
+  for (int k = 0; k < 4; ++k) {
+    copy.cockpit_mfd[k] = cockpit_mfd_[k];
+    copy.cockpit_mfd_ext[k] = cockpit_mfd_ext_[k];
+    copy.damage_corners[k] = damage_corners_[k];
+    copy.paint_shader_a[k] = paint_shader_a_[k];
+    copy.paint_shader_b[k] = paint_shader_b_[k];
+    copy.paint_shader_c[k] = paint_shader_c_[k];
+    copy.paint_shader_d[k] = paint_shader_d_[k];
+    copy.rim_shader[k] = rim_shader_[k];
+    copy.rim_tint_dirt[k] = rim_tint_dirt_[k];
+  }
+  copy.cockpit_mfd_ext[3] = std::clamp(lamp_vectors_.dynamic_lights_2[0], 0.0f, 1.0f);
+  for (int r = 0; r < 3; ++r) {
+    for (int k = 0; k < 4; ++k) {
+      copy.region_two_tone[r][k] = region_two_tone_[r][k];
+      copy.region_finish[r][k] = region_finish_[r][k];
+    }
+  }
   vkCmdUpdateBuffer(cmd, buffer, 0, sizeof(ShowroomFrame), &copy);
   b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -372,21 +389,28 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
   if (pass_mode != 2) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque);
     r_.apply_vrs(cmd);
-    for (const auto& d : draws_)
+    for (const auto& d : draws_) {
+      if (d.detached) continue;
+      if (d.is_blur_rim) continue;
+      if (d.is_static_spoke && d.push.params[3] >= 0.85f) continue;
       if (!d.glass || opaque == glass) {
         draw(d);
         ++car_draws_;
       }
+    }
     if (opaque == glass) return;
     if (!guest_) r_.mark(cmd, "car_opaque");
     if (pass_mode == 1) return;
   } else if (opaque == glass) {
     return;
   }
-  // Glass last, far to near from the eye.
+  // Glass & blended blur_rim last, far to near from the eye.
   std::vector<const Draw*> sorted;
-  for (const auto& d : draws_)
+  for (const auto& d : draws_) {
+    if (d.detached) continue;
+    if (d.is_blur_rim && d.push.params[3] <= 0.05f) continue;
     if (d.glass) sorted.push_back(&d);
+  }
   auto distance = [&](const Draw* d) {
     float s = 0;
     for (int k = 0; k < 3; ++k) {
@@ -569,7 +593,8 @@ void Showroom::record_z_prepass(VkCommandBuffer cmd) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, car_z_prepass_);
     for (const auto& d : draws_) {
-      if (d.glass) continue;
+      if (d.glass || d.detached || d.is_blur_rim) continue;
+      if (d.is_static_spoke && d.push.params[3] > 0.45f) continue;
       vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(ShowroomPush), &d.push);
       vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
@@ -626,6 +651,9 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
         VkPipeline bound_p = VK_NULL_HANDLE;
         uint32_t bound_desc = UINT32_MAX;
         for (const auto& d : g->draws_) {
+          if (d.detached) continue;
+          if (d.is_blur_rim && d.push.params[3] <= 0.05f) continue;
+          if (d.is_static_spoke && d.push.params[3] >= 0.85f) continue;
           if (d.glass != (pass == 1)) continue;
           if (d.cockpit_role >= 0) continue;
           if (lod_mid) {
@@ -677,6 +705,7 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
         vkCmdSetBlendConstants(cmd, bc);
         const uint32_t inst_slot = slot_base + offset + solid_count + fi;
         for (const auto& d : g->draws_) {
+          if (d.detached || d.is_blur_rim) continue;
           if (d.glass && d.is_cover) continue;
           ShowroomPush push = d.push;
           uint32_t flags = uint32_t(push.params[1] + 0.5f) | kFlagInstanced;
@@ -709,6 +738,9 @@ void Showroom::record_instance(VkCommandBuffer cmd, const float m[16], const dri
   for (int pass = 0; pass < 2; ++pass) {
     VkPipeline bound_p = VK_NULL_HANDLE;
     for (const auto& d : draws_) {
+      if (d.detached) continue;
+      if (d.is_blur_rim && d.push.params[3] <= 0.05f) continue;
+      if (d.is_static_spoke && d.push.params[3] >= 0.85f) continue;
       if (d.glass != (pass == 1)) continue;
       ShowroomPush push = d.push;
       multiply(m, d.push.model, push.model);
@@ -750,29 +782,83 @@ void Showroom::record_instance(VkCommandBuffer cmd, const float m[16], const dri
 }
 
 void Showroom::record_instance_offscreen(VkCommandBuffer cmd, VkPipeline car_opaque, VkDescriptorSet view_frame_set,
-                                         const float m[16], const drive::LampShaderVectors* lamps) {
+                                         const float m[16], const drive::LampShaderVectors* lamps,
+                                         VkPipeline car_glass) {
   if (draws_.empty() || material_sets_.empty() || !car_opaque || !view_frame_set) return;
   const drive::LampShaderVectors& active_lamps = lamps ? *lamps : lamp_vectors_;
   VkDeviceSize zero = 0;
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
   vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &view_frame_set, 0, nullptr);
+  const int passes = (car_glass != VK_NULL_HANDLE) ? 2 : 1;
+  for (int pass = 0; pass < passes; ++pass) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass == 0 ? car_opaque : car_glass);
+    uint32_t bound_desc = UINT32_MAX;
+    for (const auto& d : draws_) {
+      if (d.detached || d.is_blur_rim) continue;
+      if (d.glass != (pass == 1)) continue;
+      if (d.cockpit_role >= 0) continue;
+      ShowroomPush push = d.push;
+      multiply(m, d.push.model, push.model);
+      if (d.lamp_channel != drive::LampChannel::kNone) {
+        const auto rgb = drive::evaluate_lamp_emission(d.lamp_channel, active_lamps, lamp_colors_);
+        if (rgb[0] > 1e-4f || rgb[1] > 1e-4f || rgb[2] > 1e-4f) {
+          push.tint[0] = rgb[0];
+          push.tint[1] = rgb[1];
+          push.tint[2] = rgb[2];
+          push.params[1] = float(uint32_t(push.params[1] + 0.5f) | kFlagLampEmissive);
+        }
+      }
+      if (d.descriptor != bound_desc) {
+        bound_desc = d.descriptor;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                                &material_sets_[d.descriptor], 0, nullptr);
+      }
+      vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ShowroomPush), &push);
+      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+    }
+  }
+}
+
+void Showroom::record_player_mirror_rear(VkCommandBuffer cmd, VkPipeline car_opaque, VkDescriptorSet view_frame_set,
+                                         float min_rear_z) {
+  if (draws_.empty() || material_sets_.empty() || !car_opaque || !view_frame_set) return;
+  VkDeviceSize zero = 0;
+  vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
+  vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, car_opaque);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &view_frame_set, 0, nullptr);
+  uint32_t bound_desc = UINT32_MAX;
   for (const auto& d : draws_) {
-    if (d.glass) continue;
+    if (d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0) continue;
+    const uint32_t klass = uint32_t(d.push.params[0] + 0.5f);
+    if (klass == 4u || klass == 5u) continue;  // kInterior, kGauge
+    const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+    if ((flags & kFlagMirror) != 0u) continue;
+    // Clip to rear bodywork past mirror plane so side mirrors see rear haunch/fender/wing without mirror/cabin blockage.
+    if (d.part_max[2] <= min_rear_z + 0.15f || d.centre[2] <= min_rear_z - 0.55f) continue;
+    const std::string pn = lower(d.part_name);
+    if (pn.rfind("mirror", 0) == 0 || pn.rfind("interior", 0) == 0 || pn.rfind("cockpit", 0) == 0 ||
+        pn.rfind("dash", 0) == 0 || pn.rfind("seat", 0) == 0 || pn.rfind("steering", 0) == 0 ||
+        pn.rfind("hood", 0) == 0 || pn.rfind("bumperf", 0) == 0) {
+      continue;
+    }
     ShowroomPush push = d.push;
-    multiply(m, d.push.model, push.model);
     if (d.lamp_channel != drive::LampChannel::kNone) {
-      const auto rgb = drive::evaluate_lamp_emission(d.lamp_channel, active_lamps, lamp_colors_);
+      const auto rgb = drive::evaluate_lamp_emission(d.lamp_channel, lamp_vectors_, lamp_colors_);
       if (rgb[0] > 1e-4f || rgb[1] > 1e-4f || rgb[2] > 1e-4f) {
         push.tint[0] = rgb[0];
         push.tint[1] = rgb[1];
         push.tint[2] = rgb[2];
-        push.params[1] = float(uint32_t(push.params[1] + 0.5f) | kFlagLampEmissive);
+        push.params[1] = float(flags | kFlagLampEmissive);
       }
     }
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
-                            &material_sets_[d.descriptor], 0, nullptr);
+    if (d.descriptor != bound_desc) {
+      bound_desc = d.descriptor;
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                              &material_sets_[d.descriptor], 0, nullptr);
+    }
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(ShowroomPush), &push);
     vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);

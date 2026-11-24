@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -72,6 +73,18 @@ struct SavedClubCar {
   std::vector<std::pair<uint32_t, bool>> challenges;  // key, completed
   // Optional per-challenge save_progress node counts (parallel to `challenges`).
   std::vector<std::vector<int>> progress;
+};
+
+struct SavedCarHistory {
+  int64_t garage_id = 0;
+  int64_t car_id = 0;
+  double distance_driven = 0.0;  // DistanceDriven (m)
+  double time_driven = 0.0;      // TimeDriven (s)
+  int64_t total_winnings = 0;
+  int64_t total_repairs = 0;
+  int64_t num_races = 0;
+  int64_t num_victories = 0;
+  int64_t num_podiums = 0;
 };
 
 struct DriveSave {
@@ -113,6 +126,8 @@ struct DriveSave {
   double radio_volume = 1.0;
   bool satnav_enabled = true;
   bool treasure_map = false;
+  bool fast_travel_anywhere = false;  // Main/FastTravelAnywhere (v4 token-store unlock)
+  bool codriver_enabled = true;       // Main/CoDriver (v4 Rally co-driver calls)
   double tod_sec = -1.0;  // <0: unset/default; [0, 86400): persisted Colorado time-of-day seconds
   // Roads Discovered (CRoadDiscovery bitset: node_count + ceil(node_count/32) words).
   uint32_t road_discovery_nodes = 0;
@@ -148,6 +163,7 @@ struct DriveSave {
   int num_rallies = 0, num_rally_stages = 0, num_rally_victories = 0, rally_xp = 0, rally_level = 0;
   int64_t rally_winnings = 0;
   std::vector<SavedClubCar> club;
+  std::vector<SavedCarHistory> car_history;
   // Offline Car Club (451_CLUB_SETTINGS: name, 4-char [TAG], shared Club Garage car IDs).
   std::string car_club_name;
   std::string car_club_tag;
@@ -160,6 +176,8 @@ struct DriveSave {
     has_rally = s.has_rally, num_rallies = s.num_rallies, num_rally_stages = s.num_rally_stages, club = s.club;
     num_rally_victories = s.num_rally_victories, rally_xp = s.rally_xp, rally_level = s.rally_level;
     rally_winnings = s.rally_winnings;
+    if (!fast_travel_anywhere && s.fast_travel_anywhere) fast_travel_anywhere = true;
+    if (car_history.empty()) car_history = s.car_history;
     if (car_club_name.empty()) car_club_name = s.car_club_name;
     if (car_club_tag.empty()) car_club_tag = s.car_club_tag;
     if (car_club_shared.empty()) car_club_shared = s.car_club_shared;
@@ -171,10 +189,38 @@ std::string save_to_text(const DriveSave& save);
 // car, position or heading.
 bool save_from_text(const std::string& text, DriveSave& out, std::string* error);
 
+// Atomically replaces `dst_path` with an already-written sibling temp file
+// `tmp_path` after flushing to storage (MoveFileExW with
+// MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH on Windows; fsync +
+// rename + parent-dir fsync on POSIX). Removes `tmp_path` on failure.
+bool atomic_replace_file(const std::filesystem::path& tmp_path, const std::filesystem::path& dst_path,
+                         std::string* error);
+
+// Atomically writes `data` (`size` bytes) to `path` via `<path>.tmp`,
+// flushing to storage before atomic replace. Creates parent directories
+// and removes `<path>.tmp` on failure. Reusable for save.txt, garage.txt,
+// and profile files.
+bool atomic_write_file(const std::filesystem::path& path, const void* data, size_t size, std::string* error);
+bool atomic_write_file(const std::filesystem::path& path, std::string_view text, std::string* error);
+
 // Reads `path`; false with an empty `error` when the file does not exist.
 bool read_save(const std::filesystem::path& path, DriveSave& out, std::string* error);
-// Writes through a temporary file renamed over `path`, so a crash leaves
-// the old save or the new one; creates the folder.
+// Writes through a temporary file flushed and atomically renamed over `path`,
+// so a crash leaves either the old save or the new one; creates the folder.
 bool write_save(const std::filesystem::path& path, const DriveSave& save, std::string* error);
+
+// Loads `save_path` into `out_save`. If the primary file is missing, empty, or
+// corrupt/unparseable, scans backup snapshots in `backup_dir` newest-first
+// (and any `<save_path>.bak` sibling), preserves any corrupt primary file as
+// `<save_path>.corrupt`, atomically restores the newest valid backup over
+// `save_path`, and reports its path in `recovered_from`.
+bool load_save_with_recovery(const std::filesystem::path& save_path, const std::filesystem::path& backup_dir,
+                             DriveSave& out_save, std::filesystem::path* recovered_from = nullptr,
+                             std::string* error = nullptr);
+
+// Convenience loader that tries `save_path` and automatically falls back to
+// `backup_dir` (or `<save_dir>/../backups/saves` if omitted) and `<save_path>.bak`.
+bool load_save_file(const std::filesystem::path& save_path, DriveSave& out_save, std::string* error = nullptr,
+                    const std::filesystem::path& backup_dir = {}, std::filesystem::path* recovered_from = nullptr);
 
 }  // namespace drive

@@ -101,7 +101,7 @@ std::vector<std::string> save_files(const fs::path& dir) {
   for (const auto& e : fs::directory_iterator(dir, ec)) {
     if (!e.is_regular_file(ec)) continue;
     const std::string n = e.path().filename().string();
-    if (n.ends_with(".tmp") || n == "mods.lock") continue;
+    if (n.ends_with(".tmp") || n.ends_with(".corrupt") || n == "mods.lock") continue;
     out.push_back(n);
   }
   const fs::path liv_dir = dir / "liveries";
@@ -291,21 +291,129 @@ bool restore(const Config& cfg, const std::string& id, std::string* error, int64
   for (const auto& it : items) {
     const fs::path dst =
         it.name == "achievements.txt" && !cfg.achievements.empty() ? cfg.achievements : cfg.save_dir / it.name;
-    fs::create_directories(dst.parent_path(), ec);
-    fs::path tmp = dst;
-    tmp += ".tmp";
-    if (!write_bytes(tmp, it.bytes)) {
-      if (error) *error = "cannot write " + tmp.string();
-      return false;
-    }
-    fs::rename(tmp, dst, ec);
-    if (ec) {
-      if (error) *error = "cannot replace " + dst.string() + ": " + ec.message();
+    if (!drive::atomic_write_file(dst, it.bytes.data(), it.bytes.size(), error)) {
       return false;
     }
   }
   rotate(cfg);
   return true;
+}
+
+bool load_save_with_recovery(const std::filesystem::path& save_path, const std::filesystem::path& backup_dir,
+                             drive::DriveSave& out_save, std::filesystem::path* recovered_from, std::string* error) {
+  if (recovered_from) recovered_from->clear();
+  if (error) error->clear();
+
+  std::string primary_err;
+  if (drive::read_save(save_path, out_save, &primary_err)) return true;
+
+  std::error_code ec;
+  const bool primary_existed = fs::exists(save_path, ec);
+  const std::string target_name = save_path.filename().empty() ? std::string("save.txt") : save_path.filename().string();
+
+  // First try SHA-256-verified rolling backup snapshots newest-first.
+  if (!backup_dir.empty() && fs::is_directory(backup_dir, ec)) {
+    Config scan_cfg;
+    scan_cfg.backups_dir = backup_dir;
+    for (const auto& entry : list(scan_cfg)) {
+      fs::path sf = entry.dir / target_name;
+      std::string sf_name = target_name;
+      if (!fs::is_regular_file(sf, ec) && target_name != "save.txt") {
+        sf = entry.dir / "save.txt";
+        sf_name = "save.txt";
+      }
+      if (!fs::is_regular_file(sf, ec)) continue;
+
+      // Verify manifest size + SHA-256 for this file if listed in backup.txt.
+      bool integrity_ok = true;
+      std::vector<uint8_t> bytes;
+      if (!read_bytes(sf, bytes)) continue;
+      {
+        std::ifstream mf(entry.dir / "backup.txt");
+        for (std::string line; std::getline(mf, line);) {
+          if (!line.empty() && line.back() == '\r') line.pop_back();
+          if (line.rfind("file ", 0) != 0) continue;
+          std::istringstream ls(line.substr(5));
+          std::string fname, sha;
+          uint64_t fsize = 0;
+          ls >> fname >> fsize >> sha;
+          if (fname == sf_name) {
+            if (bytes.size() != fsize || (!sha.empty() && detail::sha256_hex(bytes) != sha)) {
+              integrity_ok = false;
+            }
+            break;
+          }
+        }
+      }
+      if (!integrity_ok) continue;
+
+      drive::DriveSave cand_save;
+      std::string cand_err;
+      const std::string text(bytes.begin(), bytes.end());
+      if (!drive::save_from_text(text, cand_save, &cand_err)) continue;
+
+      if (primary_existed) {
+        std::vector<uint8_t> raw_corrupt;
+        (void)read_bytes(save_path, raw_corrupt);
+        fs::path corrupt_path = save_path;
+        corrupt_path += ".corrupt";
+        std::string cerr;
+        (void)drive::atomic_write_file(corrupt_path, raw_corrupt.data(), raw_corrupt.size(), &cerr);
+      }
+      if (!drive::write_save(save_path, cand_save, error)) return false;
+      out_save = std::move(cand_save);
+      if (recovered_from) *recovered_from = sf;
+      if (error) error->clear();
+      return true;
+    }
+  }
+
+  // Fall back to direct backup files / sibling `<save_path>.bak` via drive::load_save_with_recovery.
+  // Note: if `backup_dir` contained only tampered snapshots, don't let the non-SHA path
+  // pick a tampered snapshot; pass empty backup_dir when `backup_dir` has snapshot manifests,
+  // or check direct files + sibling `.bak` cleanly.
+  if (!backup_dir.empty() && fs::is_directory(backup_dir, ec)) {
+    struct FileCand {
+      fs::file_time_type mtime{};
+      std::string name;
+      fs::path file;
+    };
+    std::vector<FileCand> direct_files;
+    for (const auto& entry : fs::directory_iterator(backup_dir, ec)) {
+      if (!entry.is_regular_file(ec)) continue;
+      const std::string name = entry.path().filename().string();
+      if (name.empty() || name[0] == '.' || name == "backup.txt" || name.ends_with(".tmp") ||
+          name.ends_with(".corrupt"))
+        continue;
+      if (name.ends_with(".bak") || name.ends_with(".txt")) {
+        direct_files.push_back({entry.last_write_time(ec), name, entry.path()});
+      }
+    }
+    std::sort(direct_files.begin(), direct_files.end(), [](const FileCand& a, const FileCand& b) {
+      if (a.mtime != b.mtime) return a.mtime > b.mtime;
+      return a.name > b.name;
+    });
+    for (const auto& fc : direct_files) {
+      drive::DriveSave cand_save;
+      std::string cand_err;
+      if (!drive::read_save(fc.file, cand_save, &cand_err)) continue;
+      if (primary_existed) {
+        std::vector<uint8_t> raw_corrupt;
+        (void)read_bytes(save_path, raw_corrupt);
+        fs::path corrupt_path = save_path;
+        corrupt_path += ".corrupt";
+        std::string cerr;
+        (void)drive::atomic_write_file(corrupt_path, raw_corrupt.data(), raw_corrupt.size(), &cerr);
+      }
+      if (!drive::write_save(save_path, cand_save, error)) return false;
+      out_save = std::move(cand_save);
+      if (recovered_from) *recovered_from = fc.file;
+      if (error) error->clear();
+      return true;
+    }
+  }
+
+  return drive::load_save_with_recovery(save_path, {}, out_save, recovered_from, error);
 }
 
 bool AutoBackup::take(std::string_view reason, double now, int64_t utc) {

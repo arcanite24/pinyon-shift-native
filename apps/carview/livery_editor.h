@@ -3,6 +3,7 @@
 // Vinyl/Livery Editor (Livery.zip 1,372 shapes, 1024x1024 compositor, .liv I/O).
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -48,10 +49,19 @@ enum class ShapeCategory : int {
 };
 
 const char* shape_category_name(ShapeCategory cat);
+// Formats a 0-based manufacturer swatch index as 1-based "OEM #1" .. "OEM #N".
+std::string oem_swatch_label(size_t index);
 
 struct PreviousColorEntry {
   uint32_t rgb = 0xCC2222u;
   cars::PaintFinish finish = cars::PaintFinish::kNormal;
+};
+
+struct DesignCatalogEntry {
+  std::string name;
+  std::filesystem::path path;
+  int64_t car_id = 0;
+  size_t layer_count = 0;
 };
 
 class LiveryEditor {
@@ -90,14 +100,24 @@ class LiveryEditor {
   void select_previous_index(size_t idx);
   void move_previous_color(int by);
   void apply_previous_color();
+  // Resets all paint regions & window tint back to factory OEM paint (undoable).
+  void reset_to_factory_paint();
 
-  // Vinyl Layer Stack controls.
+  // Undo stack (Ctrl+Z / LB undo).
+  bool undo();
+  bool can_undo() const { return !undo_stack_.empty(); }
+  size_t undo_depth() const { return undo_stack_.size(); }
+  void clear_undo() { undo_stack_.clear(); }
+
+  // Vinyl Layer Stack controls (all transform/color/alpha/skew/flip ops act on
+  // every layer sharing `group_id` when the selected layer is grouped).
   void add_vinyl_layer(const std::string& shape_path = {}, uint32_t rgb = 0xFFFFFFu);
   void delete_selected_layer();
   void select_layer(int by);
   void select_layer_index(size_t idx);
   void move_layer_order(int by);
   void transform_layer(float dx, float dy, float dsx, float dsy, float drot);
+  void transform_layer_continuous(float dx, float dy, float dsx, float dsy, float drot, double now_s);
   void cycle_layer_shape(int by);
   void cycle_shape_category(int by);
   ShapeCategory shape_category() const { return shape_cat_; }
@@ -108,10 +128,33 @@ class LiveryEditor {
   void adjust_layer_alpha(float dalpha);
   void toggle_layer_mask();
   void toggle_layer_group();
+  bool duplicate_selected_layer();
   bool mirror_selected_layer();
   bool copy_selected_layer();
   bool paste_layer();
   bool has_clipboard() const { return clipboard_.has_value(); }
+
+  // Debounced / throttled GPU livery preview upload state (eliminates per-tick
+  // vkDeviceWaitIdle stalls during analog stick dragging).
+  void mark_vinyl_preview_dirty(double now_s);
+  bool needs_vinyl_preview_upload(double now_s) const;
+  bool has_pending_vinyl_preview() const { return vinyl_preview_pending_; }
+  void mark_vinyl_preview_uploaded(double now_s);
+  void set_preview_throttle_seconds(double sec) { preview_throttle_s_ = std::max(0.0, sec); }
+  double preview_throttle_seconds() const { return preview_throttle_s_; }
+
+  // Design Catalog (save/load list backed by `liveries/*.liv`).
+  void scan_design_catalog(const std::filesystem::path& liveries_dir);
+  const std::vector<DesignCatalogEntry>& design_catalog() const { return catalog_; }
+  size_t selected_design() const { return catalog_idx_; }
+  void move_design_selection(int by);
+  void select_design_index(size_t idx);
+  bool save_to_catalog(const std::filesystem::path& liveries_dir, const std::string& design_name,
+                       std::string* error = nullptr);
+  bool load_selected_design(std::string* error = nullptr);
+  bool catalog_open() const { return catalog_open_; }
+  void set_catalog_open(bool open) { catalog_open_ = open; }
+  void toggle_catalog() { catalog_open_ = !catalog_open_; }
 
   // Persistence (.liv) & 1024x1024 compositor.
   bool save(const std::filesystem::path& path, std::string* error = nullptr) const;
@@ -137,9 +180,17 @@ class LiveryEditor {
   bool rims_paint_blocked() const { return wheel_is_chrome_ || wheel_is_stock_; }
 
  private:
+  struct UndoSnapshot {
+    cars::LiveryDocument doc;
+    size_t layer_idx = 0;
+  };
+
   cars::PaintRegionSpec& active_region_spec();
   const cars::PaintRegionSpec& active_region_spec() const;
   void record_previous_color(uint32_t rgb, cars::PaintFinish finish);
+  void push_undo();
+  void push_undo_coalesced(double now_s);
+  void apply_transform_impl(float dx, float dy, float dsx, float dsy, float drot);
 
   bool open_ = false;
   bool dirty_ = false;
@@ -155,6 +206,16 @@ class LiveryEditor {
   std::vector<cars::bake::Colour> mfg_colors_;
   std::vector<PreviousColorEntry> prev_colors_;
   std::optional<cars::VinylLayer> clipboard_;
+  std::vector<UndoSnapshot> undo_stack_;
+  double last_continuous_undo_s_ = -1e9;
+  bool vinyl_preview_pending_ = false;
+  double last_vinyl_upload_s_ = -1e9;
+  double last_vinyl_dirty_s_ = -1e9;
+  double preview_throttle_s_ = 0.12;
+  std::vector<DesignCatalogEntry> catalog_;
+  size_t catalog_idx_ = 0;
+  bool catalog_open_ = false;
+  std::filesystem::path catalog_dir_;
   uint32_t next_group_id_ = 1;
   size_t special_idx_ = 0;
   size_t mfg_idx_ = 0;

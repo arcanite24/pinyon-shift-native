@@ -44,6 +44,18 @@ layout(set = 0, binding = 0) uniform Frame {
   mat4 shadow_matrix_mid;
   vec4 shadow_mid_bias;
   vec4 phase_b_params;
+  vec4 ambient_color;
+  vec4 cockpit_mfd;
+  vec4 cockpit_mfd_ext;
+  vec4 damage_corners;
+  vec4 paint_shader_a;
+  vec4 paint_shader_b;
+  vec4 paint_shader_c;
+  vec4 paint_shader_d;
+  vec4 region_two_tone[3];
+  vec4 region_finish[3];
+  vec4 rim_shader;
+  vec4 rim_tint_dirt;
 } frame;
 
 layout(push_constant) uniform Draw {
@@ -94,16 +106,20 @@ void main() {
   vec3 wt = normalize(normal_matrix * t);
   vec3 wb = normalize(normal_matrix * b);
 
-  // Cosmetic impact-zone mesh dent deformation on player body/paint/chrome/carbon/glass
-  // (model space: -Z is front, +Z is rear, -X is left, +X is right). Never apply player
-  // damage zones onto instanced AI or traffic vehicles.
+  // Cosmetic impact-zone mesh dent deformation ONLY on exterior crushable panels
+  // (kOpaque=0, kPaint=1, kLamp=3, kChrome=9, kCarbon=10; excludes kGlass=2, kInterior=4,
+  // kGauge=5, kTyre=6, kRim=7, kCaliper=8, kWorld=11). Weighted by per-vertex .carbin crush
+  // weight in_light.w when present, with clean fallback for legacy bakes without crush weights.
   uint klass = uint(draw.params.x + 0.5);
-  if ((flags & kFlagInstanced) == 0u && klass != 6u && klass != 7u && klass != 8u && klass != 11u) {
+  bool crushable_class = (klass == 0u || klass == 1u || klass == 3u || klass == 9u || klass == 10u);
+  if ((flags & kFlagInstanced) == 0u && crushable_class) {
     float z_front = smoothstep(-0.75, -1.95, world.z) * frame.damage_zones.x;
     float z_rear = smoothstep(0.75, 1.95, world.z) * frame.damage_zones.y;
     float x_left = smoothstep(-0.55, -0.95, world.x) * frame.damage_zones.z;
     float x_right = smoothstep(0.55, 0.95, world.x) * frame.damage_zones.w;
-    float dent = clamp(max(max(z_front, z_rear), max(x_left, x_right)), 0.0, 1.0);
+    bool has_car_crush = (uint(max(frame.rim_tint_dirt.w, 0.0) + 0.5) & 2u) != 0u;
+    float crush_w = (in_light.w > 0.003) ? in_light.w : (has_car_crush ? 0.0 : 0.65);
+    float dent = clamp(max(max(z_front, z_rear), max(x_left, x_right)), 0.0, 1.0) * crush_w;
     if (dent > 0.005) {
       float crumple = 0.65 + 0.35 * sin(world.x * 17.3 + world.z * 13.7 + world.y * 19.1);
       vec3 push_in = -wn * (dent * 0.068 * crumple);

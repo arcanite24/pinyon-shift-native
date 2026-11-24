@@ -2744,7 +2744,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 146268,
+      "spirv_bytes": 168456,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -2915,7 +2915,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 12500,
+      "spirv_bytes": 13852,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],

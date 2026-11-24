@@ -331,19 +331,103 @@ void DriveSession::place_world() {
           lin.gear = vehicle.gear();
           lin.tod_sec = app.tod_clock.tod_sec;
           lin.dt = float(tod_frame_dt > 0.0 ? tod_frame_dt : 1.0 / 60.0);
+          // Player turn-signal / hazard indicator controls (',' left, '.' right, '/' hazard)
+          // with steering-unwind self-cancel and automatic hazard flashers on rollover.
+          static const DriveSession* s_ind_session = nullptr;
+          static int s_ind_mode = 0;  // 0 off, 1 left, 2 right, 3 hazard
+          static bool s_prev_comma = false, s_prev_period = false, s_prev_slash = false;
+          static bool s_ind_turned = false;
+          if (s_ind_session != this) {
+            s_ind_session = this;
+            s_ind_mode = 0;
+            s_prev_comma = s_prev_period = s_prev_slash = false;
+            s_ind_turned = false;
+          }
+          const bool ui_blocking = menu.open || map_open || picking || paint_open || garage_open ||
+                                   outpost_hub_open || club_open || car_club_open || livery_editor.is_open() ||
+                                   shop.is_open() || autoshow.is_open() || photo_mode.active() ||
+                                   replay_viewer.active() || settings_live_overlay || app.show_title;
+          if (!app.headless && !ui_blocking) {
+            const SDL_Keymod mods = SDL_GetModState();
+            const bool no_ctrl = (mods & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) == 0;
+            if (const bool* kb = SDL_GetKeyboardState(nullptr); kb && no_ctrl) {
+              const bool c_now = kb[SDL_SCANCODE_COMMA];
+              const bool p_now = kb[SDL_SCANCODE_PERIOD];
+              const bool s_now = kb[SDL_SCANCODE_SLASH];
+              if (c_now && !s_prev_comma) {
+                s_ind_mode = (s_ind_mode == 1) ? 0 : 1;
+                s_ind_turned = false;
+              }
+              if (p_now && !s_prev_period) {
+                s_ind_mode = (s_ind_mode == 2) ? 0 : 2;
+                s_ind_turned = false;
+              }
+              if (s_now && !s_prev_slash) {
+                s_ind_mode = (s_ind_mode == 3) ? 0 : 3;
+                s_ind_turned = false;
+              }
+              s_prev_comma = c_now;
+              s_prev_period = p_now;
+              s_prev_slash = s_now;
+            }
+          } else {
+            s_prev_comma = s_prev_period = s_prev_slash = false;
+          }
+          const float road_steer = float(vehicle.wheels()[0].steer);
+          const float spd = float(std::max(0.0, vehicle.speed()));
+          // Self-cancel left/right turn indicator after completing a turn while moving.
+          if ((s_ind_mode == 1 || s_ind_mode == 2) && spd > 2.5f) {
+            const float signed_turn = (s_ind_mode == 1) ? road_steer : -road_steer;
+            if (signed_turn > 0.16f) s_ind_turned = true;
+            if (s_ind_turned && std::fabs(road_steer) < 0.05f) {
+              s_ind_mode = 0;
+              s_ind_turned = false;
+            }
+          }
+          lin.indicator_mode = vehicle.is_rolled_over() ? 3 : s_ind_mode;
           // Entering a tunnel automatically triggers daytime headlamps when in auto lamp mode.
           lin.light_override = (light_override == 0 && in_tunnel) ? 1 : light_override;
           lin.popup_open = app.headless ? 1.0f : host.showroom.popup_open();
           lin.snap_headlamps = app.headless;
           player_lamps.update(lin);
           host.showroom.set_lamp_state(player_lamps);
-          const float road_steer = float(vehicle.wheels()[0].steer);
-          const float spd = float(std::max(0.0, vehicle.speed()));
+
+          cockpit_anim.calibration = host.showroom.gauge_calibration();
           cockpit_anim.update_steering(road_steer, spd, lin.dt, cockpit_steer_kick_rad);
           const float redline = float(std::max(vehicle.params().redline_rpm, 6000.0));
           const float boost_gauge = drive::CockpitAnimState::gauge_boost_psi(vehicle.boost_psi(), cockpit_has_fi);
-          cockpit_anim.update_gauges(spd, cockpit_dial_max_speed, float(vehicle.rpm()), redline, boost_gauge,
-                                     cockpit_dial_max_boost, car_damage.fuel_fraction);
+          constexpr double kRpmToRadS = 6.28318530717958647692 / 60.0;
+          const double cur_rpm = std::max(0.0, vehicle.rpm());
+          const float power_w =
+              float(std::max(0.0, vehicle.engine_torque(cur_rpm, vehicle.engine_throttle()) * cur_rpm * kRpmToRadS));
+          float max_power_w = 0.0f;
+          {
+            const double r_min = std::max(500.0, vehicle.params().idle_rpm);
+            const double r_max = std::max(r_min + 500.0, double(redline));
+            constexpr int kSteps = 24;
+            for (int s = 0; s <= kSteps; ++s) {
+              const double r = r_min + (r_max - r_min) * (double(s) / double(kSteps));
+              const double p = vehicle.engine_torque(r, 1.0) * r * kRpmToRadS;
+              if (p > double(max_power_w)) max_power_w = float(p);
+            }
+          }
+          cockpit_anim.update_gauges(spd, cockpit_dial_max_speed, float(cur_rpm), redline, boost_gauge,
+                                     cockpit_dial_max_boost, car_damage.fuel_fraction,
+                                     power_w, max_power_w, 0.0f);
+          Showroom::CockpitTelemetry ctel{};
+          ctel.gear = vehicle.gear();
+          ctel.speed_mps = spd;
+          ctel.dial_max_speed_mps = cockpit_dial_max_speed;
+          ctel.metric_units = app.metric_units;
+          ctel.abs_active = vehicle.abs_active();
+          ctel.tcs_active = vehicle.tcs_active() || vehicle.stm_active();
+          ctel.handbrake_active = vehicle.shaped_input().handbrake;
+          ctel.high_beam = player_lamps.fullbeam_on;
+          ctel.turn_left = player_lamps.ind_left > 0.5f;
+          ctel.turn_right = player_lamps.ind_right > 0.5f;
+          ctel.shifting = vehicle.shifting();
+          ctel.dt = lin.dt;
+          host.showroom.set_cockpit_telemetry(ctel);
           host.showroom.set_cockpit_anim(cockpit_anim, tod_cockpit_cam);
         }
         const float up_game[3] = {0, 1, 0};

@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -35,6 +36,16 @@ struct ShaderFinishParams {
   float spec_power2 = 12.0f;
   float spec_amount3 = 2.0f;
   float spec_power3 = 4.0f;
+  // Extended retail paint & cockpit shader parameters (Normal/Metallic/Matte & per-car XMLs).
+  float spec_amount = 0.0f;
+  float spec_power = 75.0f;
+  float fresnel_index = 1.55f;
+  float fresnel_scalar = 0.90f;
+  std::array<float, 3> metal_color{0.0f, 0.0f, 1.0f};
+  float metal_power = 5.0f;
+  float metal_bias = 0.0f;
+  float metal_scale = 0.0f;
+  float gauge_emissive_scale = 3.0f;
 };
 
 struct ShaderSettingsSet {
@@ -42,6 +53,31 @@ struct ShaderSettingsSet {
   ShaderFinishParams metallic;
   ShaderFinishParams matte;
   bool loaded_from_xml = false;
+  float gauge_emissive_scale = 3.0f;
+};
+
+struct RimShaderParams {
+  float fresnel_index = 1.55f;
+  float fresnel_scalar = 0.90f;
+  float cube_scale = 1.0f;
+  std::array<float, 3> tint_color{1.0f, 1.0f, 1.0f};
+  bool has_override = false;
+};
+
+struct BrakeShaderParams {
+  ShaderFinishParams params;
+  bool has_override = false;
+};
+
+// Per-car shader overrides loaded from ColorShaderSettings1..17.xml,
+// RimShaderSettings.xml, BrakeShaderSettings.xml, and ShaderSettings.xml.
+struct CarShaderOverrides {
+  std::map<int, ShaderFinishParams> color_overrides;  // keyed by 1-based color sequence (1..17)
+  RimShaderParams rim;
+  BrakeShaderParams brake;
+  bool has_gauge_emissive_override = false;
+  float gauge_emissive_scale = 3.0f;
+  bool loaded_any = false;
 };
 
 struct SpecialColorRow {
@@ -77,12 +113,24 @@ struct CarPaintSpec {
   float window_tint = 0.0f;  // 0.0 = stock glass .. 1.0 = limo tint
 };
 
-// Parses a ShaderSettings/*.xml body block (<SpecularCubeScalar>, <PaintScale>, etc.).
+// Parses a ShaderSettings/*.xml body block (and optional <gauge_emissive> block),
+// overlaying any present tags onto `out` while preserving defaults for absent tags.
 bool parse_shader_settings_xml(std::string_view xml, ShaderFinishParams& out);
 
-// Loads Normal.xml, Metallic.xml, and Matte.xml from media/cars/Shared.zip.
+// Parses a specific <technique>...</technique> block from a ShaderSettings XML.
+bool parse_shader_settings_xml_technique(std::string_view xml, std::string_view technique, ShaderFinishParams& out);
+
+// Parses RimShaderSettings.xml (<rim_V2>, <rim>, <outer_rim>, or root).
+bool parse_rim_shader_settings_xml(std::string_view xml, RimShaderParams& out);
+
+// Loads Normal.xml, Metallic.xml, and Matte.xml from media/cars/Shared.zip (or unpacked dir).
 bool load_shader_settings(const std::filesystem::path& shared_zip, ShaderSettingsSet& out,
                           std::string* error = nullptr);
+
+// Loads per-car ColorShaderSettings1..17.xml, RimShaderSettings.xml, BrakeShaderSettings.xml,
+// and ShaderSettings.xml (GaugeEmissiveScale) from a car archive (.zip) or unpacked directory.
+bool load_car_shader_overrides(const std::filesystem::path& car_archive_or_dir, CarShaderOverrides& out,
+                               const ShaderFinishParams* base_finish = nullptr, std::string* error = nullptr);
 
 // Queries all 102 List_SpecialColors rows from PartsDb.
 bool query_special_colors(const PartsDb& db, std::vector<SpecialColorRow>& out, std::string* error = nullptr);

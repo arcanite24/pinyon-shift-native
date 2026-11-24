@@ -56,14 +56,26 @@ struct Block {
 struct Body {
   std::vector<Field> fields;
   std::vector<Block> blocks;
+  std::vector<uint8_t> trailing_bytes;  // trailing slack / 0xBB padding preserved verbatim
 };
 
 // Parses a profile body; false with `error` on a bad type byte or a field
 // or record that runs past the end. The blocks stop at fewer than 8 bytes
-// left or a 0xBB padding word.
+// left or a 0xBB padding word (any remaining bytes are preserved in `trailing_bytes`).
 bool parse_body(std::span<const uint8_t> bytes, Body& out, std::string* error);
+// Serializes a parsed or constructed profile body back to big-endian bytes,
+// preserving fields, record blocks, CHorizonLocationState children and trailing bytes.
+std::vector<uint8_t> serialize_body(const Body& body);
 // A field by path ("Main/Credits"), or null.
 const Field* find(const std::vector<Field>& fields, std::string_view path);
+Field* find_mut(std::vector<Field>& fields, std::string_view path);
+// Sets a scalar field by path, preserving its existing type if present or
+// creating missing structs/fields with `default_type`.
+void set_field_int(std::vector<Field>& fields, std::string_view path, int64_t value,
+                   Value::Type default_type = Value::kI32);
+void set_field_double(std::vector<Field>& fields, std::string_view path, double value,
+                      Value::Type default_type = Value::kFloat);
+void set_field_bool(std::vector<Field>& fields, std::string_view path, bool value);
 // A struct's field count, or 0.
 size_t field_count(const std::vector<Field>& fields, std::string_view path);
 
@@ -77,10 +89,20 @@ struct Barn {
   float rumour_at = 0, found_at = 0;  // m driven (the record has found first)
   uint32_t status = 3;  // 2: found and delivered (SPEC-FREEROAM-COLLECTIBLES)
 };
+struct CarHistory {
+  double distance_driven = 0.0;  // DistanceDriven (m)
+  double time_driven = 0.0;      // TimeDriven (s)
+  int64_t total_winnings = 0;
+  int64_t total_repairs = 0;
+  int64_t num_races = 0;
+  int64_t num_victories = 0;
+  int64_t num_podiums = 0;
+};
 struct GarageCar {
   int64_t id = 0, car_id = 0;
   double performance_index = 0;  // raw, (0, 1]
   int64_t class_id = 0, color_index = 0;
+  CarHistory history;
   // Every integer, float, and text column of the row by name (the part slots,
   // the tune, livery filename, GUID, and history), kept as read.
   std::map<std::string, int64_t> columns;
@@ -93,8 +115,10 @@ struct PurchasedPart {
 struct ClubCar {
   int64_t car_id = 0;
   int challenges = 0, done = 0;  // flag A set
-  std::vector<std::pair<uint32_t, bool>> keys;  // each challenge's key and flag A, in file order
-  std::vector<std::vector<int>> progress;       // optional per-challenge save_progress counters
+  std::vector<std::pair<uint32_t, bool>> keys;    // each challenge's key and flag A, in file order
+  std::vector<bool> flags_b;                      // flag B (online confirmation), parallel to `keys`
+  std::vector<std::vector<int>> progress;         // optional per-challenge save_progress counters (8-byte stride)
+  std::vector<std::vector<uint8_t>> raw_blobs;    // raw save_progress blob bytes, parallel to `keys`
 };
 
 // Everything M6 reads from a profile, with the parsed body kept whole.
@@ -116,6 +140,7 @@ struct Imported {
   std::vector<Sign> signs;
   std::vector<Barn> barns;
   std::vector<ClubCar> club;
+  std::vector<uint8_t> club_trailing;  // preserved trailing bytes of CCarChallengeState
   // CRoadDiscovery (Colorado): node count + ceil(node_count/32) uint32 words.
   uint32_t road_discovery_nodes = 0;
   std::vector<uint32_t> road_discovery_words;
@@ -125,6 +150,9 @@ struct Imported {
   std::vector<std::pair<std::string, double>> speed_traps;
   std::vector<std::pair<std::string, double>> speed_zones;
   bool satnav_on = true;
+  bool fast_travel_anywhere = false;  // Main/FastTravelAnywhere (v4)
+  bool has_codriver = false;
+  bool codriver_on = true;            // Main/CoDriver (v4)
   // PlayerDatabase.
   std::vector<GarageCar> garage;
   std::vector<PurchasedPart> parts;
@@ -143,6 +171,13 @@ struct Imported {
 // Reads an export folder; false with `error` on a missing body or database
 // (FORMAT-PROFILE: refuse) or a body that does not parse.
 bool import_profile(const std::filesystem::path& folder, Imported& out, std::string* error);
+
+// Writes a plaintext ForzaProfile export folder (`ForzaProfile.body`,
+// `PlayerDatabase.sqlite`, `export.json`, and optional package lists) atomically.
+// When `template_db` names an existing SQLite database, its schema and
+// non-career tables are preserved while career tables are updated.
+bool export_forza_profile(const Imported& p, const std::filesystem::path& out_folder, std::string* error,
+                          const std::filesystem::path& template_db = {});
 
 // The FORMAT-PROFILE Tests counts, in profile-export.py summary's keys.
 std::map<std::string, int64_t> summary(const Imported& p);

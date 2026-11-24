@@ -5,6 +5,7 @@
 // E..R1), and 35-slider Car Tuning. Recomputes PI & 5-stat diffs live.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -42,6 +43,15 @@ class UpgradeShop {
             const std::vector<garage::ClassBand>* bands = nullptr, double price_multiplier = 1.0,
             int discount_percent = 0);
   void set_discount_percent(int pct) { discount_percent_ = pct; }
+  // Retail FH1: upgrade discounts come from Discount Signs (0..100%) ONLY (never Affinity stacking).
+  void set_signs_discount_percent(int pct) {
+    signs_discount_override_ = true;
+    discount_percent_ = std::clamp(pct, 0, 100);
+  }
+  bool has_signs_discount_override() const { return signs_discount_override_; }
+  int effective_discount_percent(int passed_discount) const {
+    return signs_discount_override_ ? discount_percent_ : std::clamp(passed_discount, 0, 100);
+  }
   void close() { open_ = false; }
   bool is_open() const { return open_; }
 
@@ -63,8 +73,12 @@ class UpgradeShop {
   // Inspects / plans / installs the full Horizon Rally Conversion Kit (tyres, suspension, transmission, aero).
   garage::RallyKitPlan rally_kit_plan(int discount_percent, bool include_optional_aero = true) const;
   bool fit_rally_kit(int discount_percent, int64_t& credits, std::string& message, bool include_optional_aero = true);
-  // Sells an owned non-fitted non-stock part for 50% resale value.
+  // Sells an owned non-fitted non-stock part for 50% resale value (cleaning up orphaned sub-parts).
   bool sell_shown_part(int64_t& credits, std::string& message);
+  // True when the car has an aftermarket forced-induction conversion fitted.
+  bool has_forced_induction_conversion_fitted() const;
+  // Explicitly removes any fitted forced-induction conversion & intercooler (reverts to NA).
+  bool revert_to_naturally_aspirated(std::string& message);
   // Resets all tuning sliders back to stock defaults (when on Tuning tab).
   void reset_tuning();
 
@@ -90,6 +104,7 @@ class UpgradeShop {
     bool owned = false;
     bool is_stock = false;
     int part_enum = -1;
+    std::string unlock_hint;  // for locked Tuning sliders: required Level 3 (Race) part
   };
   std::vector<SlotView> visible_rows(int discount_percent) const;
   size_t selected_row() const;
@@ -131,6 +146,7 @@ class UpgradeShop {
   const std::vector<garage::ClassBand>* bands_ = nullptr;
   double price_multiplier_ = 1.0;
   int discount_percent_ = 0;
+  bool signs_discount_override_ = false;
 
   std::vector<Slot> slots_;
   ShopCategory category_ = ShopCategory::kEngine;

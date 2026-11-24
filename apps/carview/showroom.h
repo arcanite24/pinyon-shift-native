@@ -113,8 +113,28 @@ struct ShowroomFrame {
   float ambient_color[4] = {0.1717f, 0.2079f, 0.2229f, 1.0f};
   // Live cockpit digital MFD telemetry (x=speed_norm, y=tach_norm, z=fuel_norm, w=boost_norm).
   float cockpit_mfd[4] = {0.0f, 0.14f, 0.85f, 0.0f};
+  // Extended cockpit MFD & gauge lighting: x=gear (-1=R,0=N,1..8), y=speed_display, z=flags, w=headlight_amt.
+  float cockpit_mfd_ext[4] = {0.0f, 0.0f, 1.0f, 0.0f};
+  // 4-corner impact damage for independent FL/FR headlight and RL/RR taillight breakage.
+  float damage_corners[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  // Full retail ShaderFinishParams (Shared Normal/Metallic/Matte + per-car ColorShaderSettings1..17.xml).
+  float paint_shader_a[4] = {1.55f, 0.90f, 1.0f, 0.0f};   // fresnel_index, fresnel_scalar, spec_cube_scalar, spec_amount
+  float paint_shader_b[4] = {3.0f, 12.0f, 2.0f, 4.0f};    // spec_amount2, spec_power2, spec_amount3, spec_power3
+  float paint_shader_c[4] = {0.0f, 0.0f, 1.0f, 5.0f};     // metal_color.rgb, metal_power
+  float paint_shader_d[4] = {0.0f, 0.0f, 75.0f, 3.0f};    // metal_bias, metal_scale, spec_power, gauge_emissive_scale
+  // Per-region paint overrides (0=hood, 1=wing, 2=mirrors): secondary color/power and finish/scale/bias/active.
+  float region_two_tone[3][4] = {{0, 0, 0, 4.0f}, {0, 0, 0, 4.0f}, {0, 0, 0, 4.0f}};
+  float region_finish[3][4] = {{0, 0.25f, 0, 0}, {0, 0.25f, 0, 0}, {0, 0.25f, 0, 0}};
+  // Per-car RimShaderSettings.xml + dirt/crush feature flags.
+  float rim_shader[4] = {1.55f, 0.90f, 1.0f, 0.0f};       // fresnel_index, fresnel_scalar, cube_scale, has_override
+  float rim_tint_dirt[4] = {1.0f, 1.0f, 1.0f, 0.0f};      // rim_tint.rgb, bit0=car_dirt_mask bit1=car_crush_weights
 };
-static_assert(sizeof(ShowroomFrame) == 832);
+static_assert(sizeof(ShowroomFrame) == 1056);
+
+// Additional per-draw flags in ShowroomPush::params.y (exact float32 bits 0..23).
+inline constexpr uint32_t kFlagBlurRim = 4u;
+inline constexpr uint32_t kFlagCarbonTex = 4194304u;
+inline constexpr uint32_t kFlagHasBlurMesh = 8388608u;
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -307,6 +327,21 @@ class Showroom {
       frame_.paint_finish[i] = paint_finish_[i];
       frame_.damage_dirt[i] = damage_dirt_[i];
       frame_.damage_zones[i] = damage_zones_[i];
+      frame_.cockpit_mfd[i] = cockpit_mfd_[i];
+      frame_.cockpit_mfd_ext[i] = cockpit_mfd_ext_[i];
+      frame_.damage_corners[i] = damage_corners_[i];
+      frame_.paint_shader_a[i] = paint_shader_a_[i];
+      frame_.paint_shader_b[i] = paint_shader_b_[i];
+      frame_.paint_shader_c[i] = paint_shader_c_[i];
+      frame_.paint_shader_d[i] = paint_shader_d_[i];
+      frame_.rim_shader[i] = rim_shader_[i];
+      frame_.rim_tint_dirt[i] = rim_tint_dirt_[i];
+    }
+    for (int r = 0; r < 3; ++r) {
+      for (int i = 0; i < 4; ++i) {
+        frame_.region_two_tone[r][i] = region_two_tone_[r][i];
+        frame_.region_finish[r][i] = region_finish_[r][i];
+      }
     }
     if (custom_livery_active_) frame_.options[2] = 2.0f;
   }
@@ -482,6 +517,24 @@ class Showroom {
   // Living cockpit animation (steering wheel rotation, RPM/speed/fuel/boost/power
   // gauge needles, and cockpit mirror render pass enable).
   void set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpit_camera);
+  // Real cockpit MFD telemetry, warning indicators, and driver gear-shift/handbrake animations.
+  struct CockpitTelemetry {
+    int gear = 0;                    // -1=R, 0=N, 1..8
+    float speed_mps = 0.0f;          // live vehicle forward speed (m/s)
+    float dial_max_speed_mps = 80.0f;
+    bool metric_units = true;        // true=km/h, false=mph
+    bool abs_active = false;
+    bool tcs_active = false;
+    bool handbrake_active = false;
+    bool high_beam = false;
+    bool turn_left = false;
+    bool turn_right = false;
+    bool shifting = false;
+    float dt = 1.0f / 60.0f;
+  };
+  void set_cockpit_telemetry(const CockpitTelemetry& telemetry);
+  const drive::CockpitGaugeCalibration& gauge_calibration() const { return gauge_calibration_; }
+  const cars::CarShaderOverrides& car_shader_overrides() const { return car_shader_overrides_; }
   // CameraOverrides CockpitWheelPositionOffset{X,Y,Z} (body frame, m) and
   // CockpitWheelRotationOffset (deg) applied to the drawn steering wheel.
   void set_cockpit_wheel_offsets(std::array<float, 3> pos_offset_m, float rot_offset_deg);
@@ -734,15 +787,23 @@ class Showroom {
     uint32_t descriptor = 0;
     bool glass = false;
     bool is_cover = false;    // two-pass multiply+additive detail_glass_* lamp cover
+    bool is_blur_rim = false; // retail blur_rim / blur_lip / chrome_blur_* spinning disc
+    bool is_static_spoke = false;  // static 3D rim spokes cross-faded out when blur_rim is present
+    bool detached = false;    // hidden when detached by heavy zone impact
+    bool uses_atlas = false;  // originally sampled "@atlas" (for live factory livery swatch swap)
+    bool atlas_lod0 = true;
     bool brake_lamp = false;  // legacy brake lamp flag
     drive::LampChannel lamp_channel = drive::LampChannel::kNone;
     bool stripe_able = false;  // an exterior paint draw a striped colour row tints (FORMAT-CARS, Paint)
     std::string part_name;     // lower-case part name (for per-region painting: hood, wing, mirror)
     std::array<float, 3> centre{};  // car space, for sorting glass
+    std::array<float, 3> part_min{};
+    std::array<float, 3> part_max{};
+    std::array<uint32_t, 4> blur_descriptors{UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
     int wheel = -1;      // the corner a wheel, rotor or calliper draw follows
     bool spins = false;  // rims, tyres and rotors roll; callipers do not
     int8_t cockpit_role = -1;  // -1 none, 0 steering_wheel, 1 speed, 2 tach, 3 fuel, 4 boost, 5 power
-    int8_t anim_part = 0;      // 0 none, 1 active_spoiler, 2 popup_lamp, 3 front_bumper, 4 rear_bumper, 5 mirror_l, 6 mirror_r
+    int8_t anim_part = 0;      // 0 none, 1 active_spoiler, 2 popup_lamp, 3 front_bumper, 4 rear_bumper, 5 mirror_l, 6 mirror_r, 7 engine_vent, 8 wing_link, 9 popup_up, 10 popup_dn, 11 hood, 12 fixed_wing
     float rest_model[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float local[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};  // about the hub, body frame
   };
@@ -814,7 +875,13 @@ class Showroom {
   // `m` (a guest's instance; glass unsorted).
   void record_instance(VkCommandBuffer cmd, const float m[16], const drive::LampShaderVectors* lamps = nullptr);
   void record_instance_offscreen(VkCommandBuffer cmd, VkPipeline car_opaque, VkDescriptorSet view_frame_set,
-                                 const float m[16], const drive::LampShaderVectors* lamps = nullptr);
+                                 const float m[16], const drive::LampShaderVectors* lamps = nullptr,
+                                 VkPipeline car_glass = VK_NULL_HANDLE);
+  void record_player_mirror_rear(VkCommandBuffer cmd, VkPipeline car_opaque, VkDescriptorSet view_frame_set,
+                                 float min_rear_z);
+  void sync_paint_shader_uniforms();
+  void apply_damage_part_transforms(float time_sec);
+  bool load_driver_assets();
 
   bool guest_ = false;
   bool skip_wait_idle_on_destroy_ = false;
@@ -826,6 +893,10 @@ class Showroom {
   cars::bake::Bake car_, wheel_, tyre_, tyre_textures_, shared_;
   std::filesystem::path shared_bake_dir_;
   cars::ShaderSettingsSet shader_settings_;
+  cars::CarShaderOverrides car_shader_overrides_;
+  cars::ShaderFinishParams active_paint_params_;
+  bool car_has_crush_weights_ = false;
+  bool has_blur_rim_mesh_ = false;
   ShowroomOptions options_;
   ShowroomFrame frame_{};
   float stripe_[4] = {1, 1, 1, 1};
@@ -847,6 +918,8 @@ class Showroom {
   std::vector<GpuTexture> gpu_textures_;
   GpuTexture environment_;
   GpuTexture shared_dirt_pattern_, shared_dirt_mask_, shared_glass_crack_;
+  GpuTexture car_dirt_mask_;
+  bool has_car_dirt_mask_ = false;
   VkImageView bound_dyn_env_view_ = VK_NULL_HANDLE;
   VkSampler sampler_ = VK_NULL_HANDLE;
   Renderer::Buffer vertex_buffer_, index_buffer_, frame_buffer_;
@@ -1207,11 +1280,24 @@ class Showroom {
   GpuTexture showcase_tex_;
   VkDescriptorSet showcase_tex_set_ = VK_NULL_HANDLE;
   int showcase_tex_kind_ = -1;
-  static constexpr uint32_t kMaxDriverVerts = 2048;   // animated 3D seated driver + steering hands
+  static constexpr uint32_t kMaxDriverVerts = 32768;   // animated 3D seated driver + steering hands (Driver.zip .skinbin or procedural)
   DynBuffer driver_buf_;
   uint32_t driver_count_ = 0;
   uint32_t driver_hands_count_ = 0;  // leading vertices for forearms + gloved hands (visible in cockpit view)
   float driver_wheel_rad_ = 0.0f;
+  float driver_shift_blend_ = 0.0f;
+  float driver_shift_timer_ = 0.0f;
+  int driver_last_gear_ = 0;
+  float driver_handbrake_blend_ = 0.0f;
+  std::array<float, 3> driver_hands_offset_{0.0f, 0.0f, 0.0f};
+  float driver_hands_scale_ = 1.0f;
+  world::SpectatorMeshLod driver_body_mesh_;
+  world::SpectatorMeshLod driver_hands_mesh_;
+  world::SpectatorMeshLod driver_wristband_mesh_;
+  GpuTexture driver_tex_;
+  VkDescriptorSet driver_tex_set_ = VK_NULL_HANDLE;
+  bool driver_assets_tried_ = false;
+  bool driver_assets_loaded_ = false;
   float aero_deploy_smooth_ = 0.0f;
   float popup_open_smooth_ = 0.0f;
   bool cockpit_camera_active_ = false;
@@ -1230,11 +1316,22 @@ class Showroom {
     std::array<float, 3> axis{0, 0, 1};
     float ang_mid = 0.0f;
     float ang_max = 0.0f;
+    float radius = 0.165f;  // actual steering wheel grip radius (m)
   };
   CockpitRig cockpit_rigs_[6]{};  // 0 steering_wheel, 1 speed, 2 tach, 3 fuel, 4 boost, 5 power
+  drive::CockpitGaugeCalibration gauge_calibration_;
+  std::array<std::array<float, 3>, 3> mirror_origins_{
+      std::array<float, 3>{-0.95f, 0.95f, 0.25f},
+      std::array<float, 3>{0.0f, 1.18f, 0.25f},
+      std::array<float, 3>{0.95f, 0.95f, 0.25f},
+  };
+  std::array<bool, 3> mirror_origin_valid_{false, false, false};
   std::array<float, 3> cockpit_wheel_pos_offset_{0.0f, 0.0f, 0.0f};
   float cockpit_wheel_rot_offset_rad_ = 0.0f;
+  std::array<float, 3> car_attribs_wheel_pos_{0.0f, 0.0f, 0.0f};
+  float car_attribs_wheel_rot_rad_ = 0.0f;
   float cockpit_mfd_[4] = {0.0f, 0.14f, 0.85f, 0.0f};
+  float cockpit_mfd_ext_[4] = {0.0f, 0.0f, 1.0f, 0.0f};
   bool allocate_world_set(VkDescriptorSet& out, std::string& error);
   bool create_world_single_set(VkImageView view, VkDescriptorSet& out, std::string& error);
   void evict_world_textures();
@@ -1250,6 +1347,21 @@ class Showroom {
   float paint_finish_[4] = {0.0f, 0.25f, 0.0f, 0.0f};
   float damage_dirt_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   float damage_zones_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float damage_corners_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float paint_shader_a_[4] = {1.55f, 0.90f, 1.0f, 0.0f};
+  float paint_shader_b_[4] = {3.0f, 12.0f, 2.0f, 4.0f};
+  float paint_shader_c_[4] = {0.0f, 0.0f, 1.0f, 5.0f};
+  float paint_shader_d_[4] = {0.0f, 0.0f, 75.0f, 3.0f};
+  float region_two_tone_[3][4] = {{0, 0, 0, 4.0f}, {0, 0, 0, 4.0f}, {0, 0, 0, 4.0f}};
+  float region_finish_[3][4] = {{0, 0.25f, 0, 0}, {0, 0.25f, 0, 0}, {0, 0.25f, 0, 0}};
+  float rim_shader_[4] = {1.55f, 0.90f, 1.0f, 0.0f};
+  float rim_tint_dirt_[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+  bool dmg_front_bumper_detached_ = false;
+  bool dmg_rear_bumper_detached_ = false;
+  bool dmg_left_mirror_detached_ = false;
+  bool dmg_right_mirror_detached_ = false;
+  bool dmg_wing_detached_ = false;
+  float dmg_hood_ajar_ = 0.0f;
   bool custom_livery_active_ = false;
   GpuTexture custom_livery_img_;
   // Benchmark telemetry counters.

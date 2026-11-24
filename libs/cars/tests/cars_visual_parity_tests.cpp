@@ -315,6 +315,146 @@ void test_disc_tire_compound_camber_and_brakes() {
   CHECK(f40_masks.find_plane(cars::LiveryPlaneKind::kLeft) != nullptr);
   CHECK(f40_masks.find_plane(cars::LiveryPlaneKind::kRight) != nullptr);
   CHECK(f40_masks.find_plane(cars::LiveryPlaneKind::kTop) != nullptr);
+
+  // 4. Phase R2-3A: WheelNormOffsets, WheelExceptions, CarExceptions, and Rally Lv4 bodykits.
+  {
+    float off_314 = 0.0f, off_333 = 0.0f;
+    CHECK(cars::query_wheel_norm_offset(db, 314, off_314, &err));  // AME_TorqThrust
+    CHECK(std::fabs(off_314 - 0.015f) < 1e-4f);
+    CHECK(cars::query_wheel_norm_offset(db, 333, off_333, &err));  // ENK_RPF1
+    CHECK(std::fabs(off_333 - 0.030f) < 1e-4f);
+
+    bool exc_342 = false, exc_333 = true;
+    CHECK(cars::query_wheel_is_exception(db, 342, exc_342, &err));  // GRA_57C in WheelExceptions
+    CHECK(exc_342);
+    CHECK(!cars::is_wheel_paintable(db, 342, &err));
+    CHECK(cars::query_wheel_is_exception(db, 333, exc_333, &err));  // ENK_RPF1 not an exception
+    CHECK(!exc_333);
+    CHECK(cars::is_wheel_paintable(db, 333, &err));
+
+    cars::FittedParts fit_wheel;
+    fit_wheel["List_Wheels"] = 333;
+    cars::VisualSetup vis_w;
+    CHECK(cars::resolve_visual_setup(db, 309, fit_wheel, vis_w, &err));
+    CHECK(std::fabs(vis_w.rim_offset_front - 0.030f) < 1e-4f);
+    CHECK(std::fabs(vis_w.rim_offset_rear - 0.030f) < 1e-4f);
+    CHECK(!vis_w.wheel_is_exception && vis_w.wheel_is_paintable);
+
+    fit_wheel["List_Wheels"] = 342;
+    CHECK(cars::resolve_visual_setup(db, 309, fit_wheel, vis_w, &err));
+    CHECK(vis_w.wheel_is_exception && !vis_w.wheel_is_paintable);
+
+    cars::CarPaintExceptions ex247, ex249, ex251;
+    CHECK(cars::car_paint_exceptions(db, 247, ex247, &err));
+    CHECK(ex247.found && ex247.no_mirrors && !ex247.no_paintable_wing);
+    CHECK(cars::car_paint_exceptions(db, 249, ex249, &err));
+    CHECK(ex249.found && !ex249.no_mirrors && ex249.no_paintable_wing);
+    CHECK(cars::car_paint_exceptions(db, 251, ex251, &err));
+    CHECK(ex251.found && ex251.no_mirrors && ex251.no_paintable_wing);
+
+    // Level-4 bodykit resolution on car 251 (FrontBumper 251001 Lv4 -> bumperfz, RearBumper 251001 Lv4 -> bumperrz).
+    cars::FittedParts fit_lv4;
+    fit_lv4["List_UpgradeCarBodyFrontBumper"] = 251001;
+    fit_lv4["List_UpgradeCarBodyRearBumper"] = 251001;
+    cars::VisualSetup vis_lv4;
+    CHECK(cars::resolve_visual_setup(db, 251, fit_lv4, vis_lv4, &err));
+    CHECK(vis_lv4.front_bumper_level == 4 && vis_lv4.rear_bumper_level == 4);
+    CHECK(vis_lv4.has_rally_bodykit);
+    CHECK(std::find(vis_lv4.shown_parts.begin(), vis_lv4.shown_parts.end(), "bumperfz") != vis_lv4.shown_parts.end());
+    CHECK(std::find(vis_lv4.shown_parts.begin(), vis_lv4.shown_parts.end(), "bumperrz") != vis_lv4.shown_parts.end());
+    CHECK(vis_lv4.paint_exceptions.no_mirrors && vis_lv4.paint_exceptions.no_paintable_wing);
+  }
+
+  // 5. Phase R2-3A: Real disc carbin bake preserves per-vertex crush weights (damage_flag = 1).
+  {
+    cars::Database car_db;
+    CHECK(cars::load_database(install, car_db, &err));
+    const cars::CarRow* r34 = nullptr;
+    for (const auto& r : car_db.cars) {
+      if (r.id == 445) { r34 = &r; break; }
+    }
+    auto r34_ref = install.find_car("NIS_SkylineGTRVSpecII_02");
+    CHECK(r34 != nullptr && r34_ref.has_value());
+    if (r34 && r34_ref) {
+      cars::bake::Bake baked;
+      CHECK(cars::bake_car(*r34_ref, *r34, baked, &err));
+      bool saw_deform_gt0 = false, saw_rigid_zero = false;
+      for (const auto& m : baked.models) {
+        if (m.role != cars::bake::Role::kLod0) continue;
+        for (const auto& p : m.parts) {
+          if (p.name == "body") {
+            for (const auto& v : p.lod0_vertices) {
+              const float cw = cars::vertex_crush_weight(v);
+              if (cw > 0.5f) saw_deform_gt0 = true;
+              if (cw == 0.0f) saw_rigid_zero = true;
+            }
+          }
+        }
+      }
+      CHECK(saw_deform_gt0);
+      CHECK(saw_rigid_zero);
+    }
+  }
+}
+
+void test_bake_material_classes_blur_rim_and_crush_weights() {
+  using cars::bake::MaterialClass;
+  using cars::bake::Role;
+
+  // Extended paint techniques.
+  CHECK(cars::classify("body_3", false, Role::kLod0) == MaterialClass::kPaint);
+  CHECK(cars::classify("body_simple", false, Role::kExterior) == MaterialClass::kPaint);
+  CHECK(cars::classify("headlight_paint", false, Role::kLod0) == MaterialClass::kPaint);
+
+  // Spinning blur-rim restoration: NEVER kHidden and NEVER kGlass even when transparent=true.
+  CHECK(cars::classify("blur_rim", true, Role::kWheel) == MaterialClass::kRim);
+  CHECK(cars::classify("blur_lip", true, Role::kWheel) == MaterialClass::kRim);
+  CHECK(cars::classify("chrome_blur_rim", true, Role::kWheel) == MaterialClass::kChrome);
+  CHECK(cars::classify("chrome_blur_lip", true, Role::kWheel) == MaterialClass::kChrome);
+  CHECK(cars::classify_blur_rim("blur_rim") == cars::BlurRimKind::kBlurRim);
+  CHECK(cars::classify_blur_rim("chrome_blur_rim") == cars::BlurRimKind::kChromeBlurRim);
+  CHECK(cars::classify_blur_rim("blur_lip") == cars::BlurRimKind::kBlurLip);
+  CHECK(cars::classify_blur_rim("chrome_blur_lip") == cars::BlurRimKind::kChromeBlurLip);
+  CHECK(cars::is_blur_rim_technique("BLUR_RIM"));
+  CHECK(!cars::is_blur_rim_technique("rim"));
+
+  // Rare lamp techniques in bake classifier stay aligned with drive::classify_lamp_technique.
+  CHECK(cars::classify("headlightl_lod0", false, Role::kLod0) == MaterialClass::kLamp);
+  CHECK(cars::classify("headlightr_lod0", false, Role::kLod0) == MaterialClass::kLamp);
+  CHECK(cars::classify("taillightl_lod0", false, Role::kLod0) == MaterialClass::kLamp);
+  CHECK(cars::classify("taillightr_lod0", false, Role::kLod0) == MaterialClass::kLamp);
+
+  // Synthetic HEND3N crush-weight decoding test.
+  fh1::CarbinPart part{};
+  part.bounds = {0, 0, 0, -1.0f, -0.5f, -1.0f, 1.0f, 0.5f, 1.0f};  // |he| = sqrt(2.25) = 1.5 m
+  fh1::CarbinDamageBlock blk{};
+  blk.kind = 3;
+  blk.count = 3;
+  blk.stride = 4;
+  blk.extra = 1;
+  // 4-byte buffer id prefix + 3 HEND3N words:
+  // v0: (0, 0, 0) -> 0.0
+  // v1: z = +26/511 (~0.0509), disp = 0.0509 * 1.5 = 0.0763 m -> weight ~ 0.509
+  // v2: z = -100/511 (~-0.1957), disp = 0.2935 m -> clamped to 1.0
+  auto push_be32 = [](std::vector<uint8_t>& dst, uint32_t w) {
+    dst.push_back(uint8_t((w >> 24) & 0xFF));
+    dst.push_back(uint8_t((w >> 16) & 0xFF));
+    dst.push_back(uint8_t((w >> 8) & 0xFF));
+    dst.push_back(uint8_t(w & 0xFF));
+  };
+  push_be32(blk.table, 0x12345678u);  // buffer id
+  push_be32(blk.table, 0x00000000u);  // v0
+  push_be32(blk.table, (26u & 0x3FFu) << 22);  // v1
+  push_be32(blk.words, (uint32_t(-100) & 0x3FFu) << 22);  // v2
+  const auto weights = cars::decode_carbin_crush_weights(part, blk, 3);
+  CHECK(weights.size() == 3);
+  CHECK(weights[0] == 0.0f);
+  CHECK(weights[1] > 0.45f && weights[1] < 0.57f);
+  CHECK(std::fabs(weights[2] - 1.0f) < 1e-4f);
+
+  cars::bake::Vertex bv{};
+  bv.lighting[cars::kCrushWeightLightingChannel] = 128;
+  CHECK(std::fabs(cars::vertex_crush_weight(bv) - (128.0f / 255.0f)) < 1e-4f);
 }
 
 }  // namespace
@@ -322,6 +462,7 @@ void test_disc_tire_compound_camber_and_brakes() {
 int main() {
   test_livery_projection_yflip_aspect_mirror_and_mask();
   test_tire_rolling_radius_and_compound_mapping();
+  test_bake_material_classes_blur_rim_and_crush_weights();
   test_disc_tire_compound_camber_and_brakes();
   if (g_failed) {
     std::fprintf(stderr, "cars_visual_parity_tests: %d FAILED\n", g_failed);

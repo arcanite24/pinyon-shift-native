@@ -157,8 +157,11 @@ LampChannel classify_lamp_technique(std::string_view technique) {
   }
   // Running tail lamps.
   if (t == "taillightst" || t == "lights_gls_taillightst") return LampChannel::kTail;
-  // Two-stage tail/brake.
-  if (t == "taillight2s" || t == "lights_gls_taillight2s") return LampChannel::kTailBrake2S;
+  // Two-stage tail/brake (including rare per-side LOD0 taillight techniques).
+  if (t == "taillight2s" || t == "lights_gls_taillight2s" ||
+      t == "taillightl_lod0" || t == "taillightr_lod0") {
+    return LampChannel::kTailBrake2S;
+  }
   // Reverse.
   if (t == "reverse_light" || t == "reverse_light_lod0" || t == "lights_gls_reverse_light")
     return LampChannel::kReverse;
@@ -172,22 +175,25 @@ LampChannel classify_lamp_technique(std::string_view technique) {
   if (t == "brinr") return LampChannel::kBrakeIndRight;
   if (t == "lindtailside") return LampChannel::kTailBrakeIndLeft;
   if (t == "rindtailside") return LampChannel::kTailBrakeIndRight;
-  // Headlamps / high beam / fog.
-  if (t == "oldhead" || t == "lights_gls_oldhead") return LampChannel::kHeadOld;
+  // Headlamps / high beam / fog (including rare per-side LOD0 headlamp techniques).
+  if (t == "oldhead" || t == "lights_gls_oldhead" ||
+      t == "headlightl_lod0" || t == "headlightr_lod0") {
+    return LampChannel::kHeadOld;
+  }
   if (t == "xenonhead" || t == "lights_gls_xenonhead") return LampChannel::kHeadXenon;
   if (t == "hidhead" || t == "lights_gls_hidhead") return LampChannel::kHeadHid;
   if (t == "fullbeam" || t == "lights_gls_fullbeam") return LampChannel::kFullBeam;
   if (t == "fogwhite" || t == "lights_gls_fogwhite") return LampChannel::kFogWhite;
   if (t == "fogred" || t == "lights_gls_fogred") return LampChannel::kFogRed;
-  // DRLs.
+  // DRLs (including combined DRL/indicator variants drlinl* / drlinr*).
   if (t == "drlwhiteswitch") return LampChannel::kDrlWhiteSwitch;
   if (t == "drlwhite") return LampChannel::kDrlWhite;
   if (t == "drlred") return LampChannel::kDrlRed;
   if (t == "drlorange") return LampChannel::kDrlOrange;
   if (t == "drlbrakered") return LampChannel::kDrlBrakeRed;
   if (t == "drlbrakeorange") return LampChannel::kDrlBrakeOrange;
-  if (t.rfind("drlinl", 0) == 0) return LampChannel::kIndicatorLeft;
-  if (t.rfind("drlinr", 0) == 0) return LampChannel::kIndicatorRight;
+  if (t == "drlinlorange" || t == "drlinlwhite" || t.rfind("drlinl", 0) == 0) return LampChannel::kIndicatorLeft;
+  if (t == "drlinrorange" || t == "drlinrwhite" || t.rfind("drlinr", 0) == 0) return LampChannel::kIndicatorRight;
   // Side markers & number plate.
   if (t == "slorange") return LampChannel::kSideLightOrange;
   if (t == "slinlorange") return LampChannel::kSideIndLeft;
@@ -243,6 +249,30 @@ void LampColorTable::load_shader_settings_xml(std::string_view xml_text) {
   find_rgb("DRLOrangeColor", drl_orange);
   find_rgb("SideLightsOrangeColor", side_orange);
   find_rgb("NumberPlateLightColor", numplate);
+  // Parse optional GaugeEmissiveScale scalar (<GaugeEmissiveScale value="..."/>).
+  const std::string low = lower_str(xml_text);
+  const std::string needle = "<gaugeemissivescale";
+  size_t pos = 0;
+  while ((pos = low.find(needle, pos)) != std::string::npos) {
+    const size_t after = pos + needle.size();
+    if (after < low.size() && (low[after] == ' ' || low[after] == '\t' || low[after] == '/' || low[after] == '>')) {
+      const size_t end = low.find('>', after);
+      if (end != std::string::npos) {
+        const std::string tag = low.substr(after, end - after);
+        const std::string vk = "value=\"";
+        const size_t vp = tag.find(vk);
+        if (vp != std::string::npos) {
+          char* stop = nullptr;
+          const float val = std::strtof(tag.c_str() + vp + vk.size(), &stop);
+          if (stop != tag.c_str() + vp + vk.size() && val >= 0.0f) {
+            gauge_emissive = val;
+            break;
+          }
+        }
+      }
+    }
+    pos = after;
+  }
 }
 
 std::array<float, 3> evaluate_lamp_emission(LampChannel ch, const LampShaderVectors& v,
@@ -366,16 +396,72 @@ ResolvedLampGlow resolve_lamp_glow(const fh1::CarbinLampPoint& pt) {
   return out;
 }
 
-void CockpitAnimState::update_steering(float road_wheel_angle_rad, float /*speed_mps*/, float dt, float kick_rad) {
-  // Direct cockpit wheel lock scaled by GlobalCarAttribs.xml SteeringWheelAngleScale
-  // (authentic ~180..270 deg hand-over-hand lock, plus CameraPhysics SteeringWheel kick).
-  constexpr float kSteeringRackRatio = 6.5f;
+float GaugeConfig::evaluate(float value) const {
+  return CockpitAnimState::eval_gauge_norm(value, min_val, max_val, cal_points);
+}
+
+bool parse_gauge_tick_marks_xml(std::string_view xml, GaugeConfig& out) {
+  const std::string low = lower_str(xml);
+  std::vector<std::pair<float, float>> pts;
+  auto read_attr = [](const std::string& tag, const char* key, float& val) -> bool {
+    const std::string needle = std::string(key) + "=\"";
+    size_t p = 0;
+    while ((p = tag.find(needle, p)) != std::string::npos) {
+      if (p == 0 || std::isspace(static_cast<unsigned char>(tag[p - 1]))) {
+        char* stop = nullptr;
+        const float parsed = std::strtof(tag.c_str() + p + needle.size(), &stop);
+        if (stop != tag.c_str() + p + needle.size()) {
+          val = parsed;
+          return true;
+        }
+        return false;
+      }
+      p += 1;
+    }
+    return false;
+  };
+
+  size_t pos = 0;
+  const std::string open = "<tickmark";
+  while ((pos = low.find(open, pos)) != std::string::npos) {
+    const size_t after = pos + open.size();
+    if (after < low.size() && (std::isspace(static_cast<unsigned char>(low[after])) || low[after] == '/' ||
+                               low[after] == '>')) {
+      const size_t end = low.find('>', after);
+      if (end == std::string::npos) break;
+      const std::string tag = low.substr(after, end - after);
+      float npos = 0.0f, pval = 0.0f;
+      const bool got_pos = read_attr(tag, "pos", npos) || read_attr(tag, "position", npos) ||
+                           read_attr(tag, "norm", npos);
+      const bool got_val = read_attr(tag, "val", pval) || read_attr(tag, "value", pval);
+      if (got_pos && got_val) {
+        pts.emplace_back(std::clamp(npos, -1.0f, 1.0f), pval);
+      }
+      pos = end + 1;
+    } else {
+      pos = after;
+    }
+  }
+  if (pts.empty()) return false;
+  std::sort(pts.begin(), pts.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+  out.cal_points = std::move(pts);
+  return true;
+}
+
+void CockpitAnimState::update_steering(float road_wheel_angle_rad, float speed_mps, float dt, float kick_rad) {
+  // Speed-dependent steering lock scaling per CAR_LAMPS.md §7.1 & §8:
+  //   mult(v)    = lerp(12.0, 6.0, clamp((|v| - 0) / 50, 0, 1))
+  //   target_rad = road_wheel_angle_rad * mult(v) * SteeringWheelAngleScale + kick_rad
+  const float safe_dt = std::max(dt, 0.0f);
+  const float v_abs = std::fabs(speed_mps);
+  const float t = clamp01((v_abs - kSteerSpeedMinMps) / (kSteerSpeedMaxMps - kSteerSpeedMinMps));
+  const float mult = kSteerMultLowSpeed + t * (kSteerMultHighSpeed - kSteerMultLowSpeed);
   const float target =
-      std::clamp(road_wheel_angle_rad * kSteeringRackRatio * kSteeringWheelAngleScale + kick_rad, -kCockpitLockRad,
+      std::clamp(road_wheel_angle_rad * mult * kSteeringWheelAngleScale + kick_rad, -kCockpitLockRad,
                  kCockpitLockRad);
   const float max_rate = 720.0f * (3.14159265f / 180.0f);  // 720 deg/s slew limit
   const float gain = 16.0f;
-  const float step = std::clamp((target - wheel_rad) * gain * dt, -max_rate * dt, max_rate * dt);
+  const float step = std::clamp((target - wheel_rad) * gain * safe_dt, -max_rate * safe_dt, max_rate * safe_dt);
   wheel_rad = std::clamp(wheel_rad + step, -kCockpitLockRad, kCockpitLockRad);
 }
 
@@ -416,26 +502,54 @@ float CockpitAnimState::eval_gauge_norm(float value, float min_val, float max_va
     return span > 1e-6f ? clamp01((value - min_val) / span) : 0.0f;
   }
   float p0 = 0.0f, v0 = min_val;
-  for (const auto& [pos, val] : cal_points) {
+  for (const auto& [raw_pos, val] : cal_points) {
+    const float p1 = std::clamp(raw_pos, -1.0f, 1.0f);
     if (value <= val) {
       const float span = val - v0;
-      const float t = span > 1e-6f ? clamp01((value - v0) / span) : 0.0f;
-      return std::clamp(p0 + t * (pos - p0), -1.0f, 1.0f);
+      if (span <= 1e-6f) return p1;
+      const float t = clamp01((value - v0) / span);
+      return std::clamp(p0 + t * (p1 - p0), -1.0f, 1.0f);
     }
-    p0 = pos;
+    p0 = p1;
     v0 = val;
   }
   const float span = max_val - v0;
-  const float t = span > 1e-6f ? clamp01((value - v0) / span) : 0.0f;
+  if (span <= 1e-6f) return p0;
+  const float t = clamp01((value - v0) / span);
   return std::clamp(p0 + t * (1.0f - p0), -1.0f, 1.0f);
 }
 
 void CockpitAnimState::update_gauges(float speed_mps, float max_speed_mps, float rpm, float max_rpm,
-                                     float boost_psi, float max_boost_psi, float fuel_frac) {
-  speed_norm = eval_gauge_norm(std::max(speed_mps, 0.0f), 0.0f, std::max(max_speed_mps, 10.0f));
-  tach_norm = eval_gauge_norm(std::max(rpm, 0.0f), 0.0f, std::max(max_rpm, 1000.0f));
-  fuel_norm = clamp01(fuel_frac);
-  boost_norm = eval_gauge_norm(boost_psi, -14.7f, std::max(max_boost_psi, 5.0f));
+                                     float boost_psi, float max_boost_psi, float fuel_frac,
+                                     float power_w, float max_power_w, float min_power_w) {
+  if (calibration.has_speed) {
+    speed_norm = calibration.speed.evaluate(std::max(speed_mps, 0.0f));
+  } else {
+    speed_norm = eval_gauge_norm(std::max(speed_mps, 0.0f), 0.0f, std::max(max_speed_mps, 10.0f));
+  }
+  if (calibration.has_tach) {
+    tach_norm = calibration.tach.evaluate(std::max(rpm, 0.0f));
+  } else {
+    tach_norm = eval_gauge_norm(std::max(rpm, 0.0f), 0.0f, std::max(max_rpm, 1000.0f));
+  }
+  if (calibration.has_fuel) {
+    fuel_norm = calibration.fuel.evaluate(fuel_frac);
+  } else {
+    fuel_norm = clamp01(fuel_frac);
+  }
+  if (calibration.has_boost) {
+    boost_norm = calibration.boost.evaluate(boost_psi);
+  } else {
+    boost_norm = eval_gauge_norm(boost_psi, -14.7f, std::max(max_boost_psi, 5.0f));
+  }
+  const float scaled_power = power_w * kPowerGaugeScale;
+  if (calibration.has_power) {
+    power_norm = calibration.power.evaluate(scaled_power);
+  } else if (max_power_w > min_power_w) {
+    power_norm = eval_gauge_norm(scaled_power, min_power_w * kPowerGaugeScale, max_power_w * kPowerGaugeScale);
+  } else {
+    power_norm = 0.0f;
+  }
 }
 
 }  // namespace drive

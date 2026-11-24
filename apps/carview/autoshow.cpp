@@ -48,16 +48,46 @@ std::string pretty_make(const std::string& icon_base) {
   return out;
 }
 
+std::string resolve_localized_make(const std::string& disp_key, const std::string& icon_base,
+                                   const std::string& mfr_code) {
+  if (!disp_key.empty()) {
+    std::string loc = disp_key.rfind("_&", 0) == 0 ? game_text(disp_key) : disp_key;
+    if (!loc.empty() && loc.rfind("_&", 0) != 0) return loc;
+  }
+  std::string name = pretty_make(icon_base);
+  if (name.empty() || name == "Other") name = mfr_code;
+  return name.empty() ? std::string("Other") : name;
+}
+
 }  // namespace
 
+const char* autoshow_sort_name(AutoshowSort s) {
+  switch (s) {
+    case AutoshowSort::kPrice: return "PRICE";
+    case AutoshowSort::kYear: return "YEAR";
+    case AutoshowSort::kPi: return "PI";
+    case AutoshowSort::kName: return "NAME";
+    case AutoshowSort::kDefault:
+    default: return "CLASS";
+  }
+}
+
 bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked, std::string& why,
-                    int64_t credits, bool tutorial_first, bool include_hidden, double price_multiplier) {
+                    int64_t credits, bool tutorial_first, bool include_hidden, double price_multiplier,
+                    const garage::Garage* owned_garage) {
   open_ = false;
   tutorial_mode_ = tutorial_first;
   catalog_.clear();
   makes_.clear();
   visible_.clear();
   empty_reason_.clear();
+  sort_ = AutoshowSort::kDefault;
+  class_filter_ = -1;
+  drive_filter_ = 0;
+  all_cars_mode_ = false;
+  last_credits_ = credits;
+  owned_car_ids_.clear();
+  if (owned_garage) set_owned_cars(*owned_garage);
 
   std::vector<cars::DealerCar> all;
   if (!db.dealer(all, &why, include_hidden)) return false;
@@ -66,16 +96,22 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   pacing.enabled = std::fabs(price_multiplier - 1.0) > 1e-4;
   pacing.price_multiplier = price_multiplier;
 
-  // Load List_CarMake readable names.
+  // Load List_CarMake localized display names (falling back to IconPathBase / ManufacturerCode
+  // when DisplayName is absent on minimal synthetic DBs).
   std::map<int64_t, std::string> make_names;
-  db.each("SELECT ID, IconPathBase, ManufacturerCode FROM List_CarMake", {},
-          [&](sqlite3_stmt* st) {
-            const int64_t id = sqlite3_column_int64(st, 0);
-            std::string name = pretty_make(col_text(st, 1));
-            if (name.empty() || name == "Other") name = col_text(st, 2);
-            make_names[id] = name;
-          },
-          nullptr);
+  if (!db.each("SELECT ID, COALESCE(DisplayName, ''), IconPathBase, ManufacturerCode FROM List_CarMake", {},
+               [&](sqlite3_stmt* st) {
+                 const int64_t id = sqlite3_column_int64(st, 0);
+                 make_names[id] = resolve_localized_make(col_text(st, 1), col_text(st, 2), col_text(st, 3));
+               },
+               nullptr)) {
+    db.each("SELECT ID, IconPathBase, ManufacturerCode FROM List_CarMake", {},
+            [&](sqlite3_stmt* st) {
+              const int64_t id = sqlite3_column_int64(st, 0);
+              make_names[id] = resolve_localized_make("", col_text(st, 1), col_text(st, 2));
+            },
+            nullptr);
+  }
 
   // Load Data_Car extra display & rating fields.
   struct CarMeta {
@@ -179,7 +215,7 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   // Fallback if tutorial_mode filtered everything (e.g., neither 1323 nor 1009 baked).
   if (catalog_.empty() && tutorial_mode_) {
     tutorial_mode_ = false;
-    return open(db, baked, why, credits, false, include_hidden, price_multiplier);
+    return open(db, baked, why, credits, false, include_hidden, price_multiplier, owned_garage);
   }
   if (catalog_.empty()) {
     why = "no cars to buy";
@@ -187,8 +223,8 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   }
 
   // Build Make Carousel: "All Affordable" first (or "First Car" in tutorial),
-  // optional "Hidden & Showcase" tab when Hidden Cars unlock is active,
-  // followed by all makes with >= 1 buyable car sorted alphabetically.
+  // followed by "All Cars", optional "Hidden & Showcase" tab when Hidden Cars unlock is active,
+  // and all manufacturers with >= 1 buyable car sorted alphabetically.
   if (tutorial_mode_) {
     makes_.push_back({-2, "First Car", catalog_.size()});
   } else {
@@ -199,6 +235,7 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
       if (drive::is_hidden_car_id(c.dealer.id)) ++hidden_count;
     }
     makes_.push_back({-1, "All Affordable", affordable});
+    makes_.push_back({-4, "All Cars", catalog_.size()});
     if (include_hidden && hidden_count > 0) {
       makes_.push_back({-3, "Hidden & Showcase", hidden_count});
     }
@@ -220,10 +257,9 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   make_index_ = 0;
   selected_ = 0;
   colour_index_ = 0;
-  step_ = AutoshowStep::kCarSelect;
+  // Retail FH1 enters Autoshow on the Make Carousel (115_C_BUY_MFRSELECT) unless in tutorial mode.
+  step_ = (!tutorial_mode_ && makes_.size() > 1) ? AutoshowStep::kMakeSelect : AutoshowStep::kCarSelect;
   rebuild_visible(credits);
-  // If "All Affordable" is empty on open, stay open and display "no affordable cars"
-  // (user can press Left/Right on Make Carousel to browse all makes).
   open_ = true;
   return true;
 }
@@ -256,29 +292,70 @@ bool Autoshow::back_step() {
 }
 
 void Autoshow::rebuild_visible(int64_t credits) {
+  last_credits_ = credits;
   visible_.clear();
   empty_reason_.clear();
   if (makes_.empty()) return;
   const AutoshowMake& mk = makes_[std::min(make_index_, makes_.size() - 1)];
-  if (mk.make_id == -1) {
+  auto matches_filters = [&](const AutoshowCar& c) {
+    if (class_filter_ >= 0 && int(c.dealer.class_id) != class_filter_) return false;
+    if (drive_filter_ > 0 && c.drive_type_id != drive_filter_) return false;
+    return true;
+  };
+
+  if (all_cars_mode_ || mk.make_id == -4 || mk.make_id == -2) {
     for (const auto& c : catalog_)
-      if (c.dealer.base_cost <= credits) visible_.push_back(c);
-    if (visible_.empty()) empty_reason_ = "no affordable cars";
+      if (matches_filters(c)) visible_.push_back(c);
+  } else if (mk.make_id == -1) {
+    for (const auto& c : catalog_)
+      if (c.dealer.base_cost <= credits && matches_filters(c)) visible_.push_back(c);
+    if (visible_.empty() && class_filter_ < 0 && drive_filter_ == 0) empty_reason_ = "no affordable cars";
   } else if (mk.make_id == -3) {
     for (const auto& c : catalog_)
-      if (drive::is_hidden_car_id(c.dealer.id)) visible_.push_back(c);
-  } else if (mk.make_id == -2) {
-    visible_ = catalog_;
+      if (drive::is_hidden_car_id(c.dealer.id) && matches_filters(c)) visible_.push_back(c);
   } else {
     for (const auto& c : catalog_)
-      if (c.make_id == mk.make_id) visible_.push_back(c);
+      if (c.make_id == mk.make_id && matches_filters(c)) visible_.push_back(c);
   }
+
+  if (visible_.empty() && empty_reason_.empty()) {
+    empty_reason_ = "no matching cars";
+  }
+
+  if (sort_ != AutoshowSort::kDefault) {
+    auto name_of = [](const AutoshowCar& c) {
+      std::string n = car_name(c.dealer.media_name);
+      if (n.empty()) n = c.display_name;
+      return lower(n);
+    };
+    std::stable_sort(visible_.begin(), visible_.end(), [&](const AutoshowCar& a, const AutoshowCar& b) {
+      switch (sort_) {
+        case AutoshowSort::kPrice:
+          if (a.dealer.base_cost != b.dealer.base_cost) return a.dealer.base_cost < b.dealer.base_cost;
+          return a.dealer.performance_index < b.dealer.performance_index;
+        case AutoshowSort::kYear:
+          if (a.dealer.year != b.dealer.year) return a.dealer.year > b.dealer.year;
+          return a.dealer.performance_index > b.dealer.performance_index;
+        case AutoshowSort::kPi:
+          if (std::fabs(a.dealer.performance_index - b.dealer.performance_index) > 1e-6)
+            return a.dealer.performance_index > b.dealer.performance_index;
+          return a.dealer.base_cost < b.dealer.base_cost;
+        case AutoshowSort::kName:
+          return name_of(a) < name_of(b);
+        case AutoshowSort::kDefault:
+        default:
+          return false;
+      }
+    });
+  }
+
   selected_ = visible_.empty() ? 0 : std::min(selected_, visible_.size() - 1);
   colour_index_ = 0;
 }
 
 void Autoshow::move_make(int by, int64_t credits) {
   if (makes_.empty()) return;
+  all_cars_mode_ = false;
   const int n = int(makes_.size());
   make_index_ = size_t(((int(make_index_) + by) % n + n) % n);
   selected_ = 0;
@@ -287,9 +364,75 @@ void Autoshow::move_make(int by, int64_t credits) {
 
 void Autoshow::select_make(size_t index, int64_t credits) {
   if (makes_.empty()) return;
+  all_cars_mode_ = false;
   make_index_ = std::min(index, makes_.size() - 1);
   selected_ = 0;
   rebuild_visible(credits);
+}
+
+void Autoshow::toggle_all_cars(int64_t credits) {
+  if (tutorial_mode_) return;
+  all_cars_mode_ = !all_cars_mode_;
+  selected_ = 0;
+  rebuild_visible(credits);
+}
+
+void Autoshow::cycle_sort(int by) {
+  const int n = int(AutoshowSort::kCount);
+  sort_ = AutoshowSort(((int(sort_) + by) % n + n) % n);
+  selected_ = 0;
+  rebuild_visible(last_credits_);
+}
+
+void Autoshow::set_sort(AutoshowSort s) {
+  sort_ = s;
+  selected_ = 0;
+  rebuild_visible(last_credits_);
+}
+
+void Autoshow::cycle_class_filter(int by) {
+  static constexpr int kCycle[] = {-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+  constexpr int n = int(sizeof(kCycle) / sizeof(kCycle[0]));
+  int idx = 0;
+  for (int i = 0; i < n; ++i)
+    if (kCycle[i] == class_filter_) idx = i;
+  idx = ((idx + by) % n + n) % n;
+  class_filter_ = kCycle[idx];
+  selected_ = 0;
+  rebuild_visible(last_credits_);
+}
+
+void Autoshow::set_class_filter(int cls) {
+  class_filter_ = (cls < 0 || cls > 10) ? -1 : cls;
+  selected_ = 0;
+  rebuild_visible(last_credits_);
+}
+
+void Autoshow::cycle_drivetrain_filter(int by) {
+  constexpr int n = 4;  // 0=All, 1=FWD, 2=RWD, 3=AWD
+  drive_filter_ = ((drive_filter_ + by) % n + n) % n;
+  selected_ = 0;
+  rebuild_visible(last_credits_);
+}
+
+void Autoshow::set_drivetrain_filter(int dt) {
+  drive_filter_ = (dt >= 1 && dt <= 3) ? dt : 0;
+  selected_ = 0;
+  rebuild_visible(last_credits_);
+}
+
+void Autoshow::set_owned_cars(const garage::Garage& g) {
+  owned_car_ids_.clear();
+  for (const auto& c : g.cars) owned_car_ids_.insert(c.car_id);
+}
+
+bool Autoshow::prepare_test_drive(std::string& media, int64_t& car_id, int64_t& colour_seq) const {
+  const AutoshowCar* c = selected_car();
+  if (!c || c->dealer.media_name.empty()) return false;
+  media = c->dealer.media_name;
+  car_id = c->dealer.id;
+  colour_seq = selected_colour_sequence();
+  return true;
 }
 
 void Autoshow::move(int by) {
@@ -334,6 +477,34 @@ void Autoshow::move_colour(int by) {
   colour_index_ = size_t(((int(colour_index_) + by) % n + n) % n);
 }
 
+void Autoshow::select_colour_index(size_t idx) {
+  const AutoshowCar* c = selected_car();
+  if (!c || c->swatches.empty()) return;
+  colour_index_ = std::min(idx, c->swatches.size() - 1);
+}
+
+void Autoshow::swatch_window(size_t max_visible, size_t& first_out, size_t& count_out) const {
+  first_out = 0;
+  count_out = 0;
+  const AutoshowCar* c = selected_car();
+  if (!c || c->swatches.empty() || max_visible == 0) return;
+  const size_t total = c->swatches.size();
+  count_out = std::min(total, max_visible);
+  if (total <= count_out) {
+    first_out = 0;
+    return;
+  }
+  const size_t sel = std::min(colour_index_, total - 1);
+  const size_t half = count_out / 2;
+  if (sel <= half) {
+    first_out = 0;
+  } else if (sel + (count_out - half) >= total) {
+    first_out = total - count_out;
+  } else {
+    first_out = sel - half;
+  }
+}
+
 const AutoshowSwatch* Autoshow::selected_swatch() const {
   const AutoshowCar* c = selected_car();
   if (!c || c->swatches.empty()) return nullptr;
@@ -364,6 +535,7 @@ bool Autoshow::buy(const cars::PartsDb& db, garage::Garage& g, int64_t& credits,
   const int colour_seq = int(selected_colour_sequence());
   if (!garage::buy_car(g, c.id, c.base_cost, c.performance_index, int(c.class_id), colour_seq, stock, credits, &id))
     return false;
+  owned_car_ids_.insert(c.id);
   media = c.media_name;
   message = car_name(c.media_name) + " bought for " + credits_text(c.base_cost) + " CR";
   return true;

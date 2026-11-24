@@ -43,6 +43,16 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 phase_b_params;     // x car_detail, y rotor_glow, z frame_jitter, w ssr_active
   vec4 ambient_color;      // rgb TimeOfDayA AmbientColour, w ibl_ambient_scale
   vec4 cockpit_mfd;        // x speed_norm, y tach_norm, z fuel_norm, w boost_norm
+  vec4 cockpit_mfd_ext;    // x gear (-1=R,0=N,1..8), y speed_display, z flags, w headlight_amt
+  vec4 damage_corners;     // x corner_fl, y corner_fr, z corner_rl, w corner_rr
+  vec4 paint_shader_a;     // x fresnel_index, y fresnel_scalar, z spec_cube_scalar, w spec_amount
+  vec4 paint_shader_b;     // x spec_amount2, y spec_power2, z spec_amount3, w spec_power3
+  vec4 paint_shader_c;     // xyz metal_color, w metal_power
+  vec4 paint_shader_d;     // x metal_bias, y metal_scale, z spec_power, w gauge_emissive_scale
+  vec4 region_two_tone[3]; // 0=hood, 1=wing, 2=mirrors: rgb secondary linear, w two_tone_power
+  vec4 region_finish[3];   // 0=hood, 1=wing, 2=mirrors: x finish, y tt_scale, z tt_bias, w active
+  vec4 rim_shader;         // x fresnel_index, y fresnel_scalar, z cube_scale, w has_override
+  vec4 rim_tint_dirt;      // xyz rim_tint, w bit0=has_car_dirt_mask bit1=has_car_crush_weights
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
@@ -100,10 +110,11 @@ layout(location = 0) out vec4 out_color;
 
 const uint kOpaque = 0u, kPaint = 1u, kGlass = 2u, kLamp = 3u, kInterior = 4u, kGauge = 5u,
            kTyre = 6u, kRim = 7u, kCaliper = 8u, kChrome = 9u, kCarbon = 10u, kWorld = 11u;
-const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u,
+const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagBlurRim = 4u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u,
            kFlagRaceLivery = 128u, kFlagGrille = 256u, kFlagCutout = 512u, kFlagCover = 1024u,
            kFlagLampEmissive = 2048u, kFlagMirror = 4096u, kFlagInstanced = 8192u,
-           kFlagNormalMap = 524288u, kFlagNormalUv1 = 1048576u, kFlagDamageMap = 2097152u;
+           kFlagNormalMap = 524288u, kFlagNormalUv1 = 1048576u, kFlagDamageMap = 2097152u,
+           kFlagCarbonTex = 4194304u, kFlagHasBlurMesh = 8388608u;
 
 vec3 encode_srgb(vec3 c) {
   c = max(c, vec3(0.0));
@@ -410,7 +421,7 @@ vec3 env(vec3 dir, float lod) {
   return textureLod(static_environment, dir, lod).rgb * frame.options.y;
 }
 
-// Crisp procedural 7-segment digit evaluator (0..9, 10='N') in local cell p in [0,1]^2.
+// Crisp procedural 7-segment digit evaluator (0..9, 10='N', 11='r') in local cell p in [0,1]^2.
 float mfd_seg_h(vec2 p, vec2 c, float hw, float hh) {
   vec2 d = abs(p - c);
   return smoothstep(hh, hh * 0.45, d.y) * smoothstep(hw, hw * 0.72, d.x + d.y * 0.75);
@@ -421,8 +432,8 @@ float mfd_seg_v(vec2 p, vec2 c, float hw, float hh) {
 }
 float mfd_digit(vec2 p, int digit) {
   // Bit order: 0=top, 1=tr, 2=br, 3=bot, 4=bl, 5=tl, 6=mid
-  const int kMask[11] = int[11](0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F, 0x37);
-  int m = kMask[clamp(digit, 0, 10)];
+  const int kMask[12] = int[12](0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F, 0x37, 0x50);
+  int m = kMask[clamp(digit, 0, 11)];
   float v = 0.0;
   if ((m & 0x01) != 0) v = max(v, mfd_seg_h(p, vec2(0.50, 0.88), 0.34, 0.075));
   if ((m & 0x02) != 0) v = max(v, mfd_seg_v(p, vec2(0.84, 0.69), 0.09, 0.21));
@@ -439,6 +450,16 @@ vec3 eval_cockpit_mfd(vec2 muv) {
   float rpm_n = clamp(frame.cockpit_mfd.y, 0.08, 1.0);
   float fuel_n = clamp(frame.cockpit_mfd.z, 0.05, 1.0);
   float boost_n = clamp(frame.cockpit_mfd.w, 0.0, 1.0);
+  uint mfd_flags = uint(max(frame.cockpit_mfd_ext.z, 0.0) + 0.5);
+  bool has_live = (mfd_flags & 256u) != 0u;
+  bool is_metric = !has_live || ((mfd_flags & 1u) != 0u);
+  bool warn_abs = (mfd_flags & 2u) != 0u;
+  bool warn_tcs = (mfd_flags & 4u) != 0u;
+  bool warn_hb = (mfd_flags & 8u) != 0u;
+  bool ind_highbeam = (mfd_flags & 16u) != 0u;
+  bool ind_turn_l = (mfd_flags & 32u) != 0u;
+  bool ind_turn_r = (mfd_flags & 64u) != 0u;
+  bool shift_led = (mfd_flags & 128u) != 0u;
 
   // Dark sapphire-charcoal backlit OLED background with subtle radial vignette & horizontal scanlines.
   vec2 dc = muv - vec2(0.5);
@@ -446,7 +467,7 @@ vec3 eval_cockpit_mfd(vec2 muv) {
   float scan = 0.92 + 0.08 * sin(muv.y * 140.0);
   vec3 col = mix(vec3(0.012, 0.020, 0.034), vec3(0.032, 0.068, 0.115), bg_glow) * scan;
 
-  // Thin backlit outer frame border & header divider.
+  // Thin backlit outer frame border & header dividers.
   float bx = min(muv.x, 1.0 - muv.x);
   float by = min(muv.y, 1.0 - muv.y);
   float frame_line = smoothstep(0.028, 0.012, min(bx, by)) * step(0.006, min(bx, by));
@@ -455,31 +476,49 @@ vec3 eval_cockpit_mfd(vec2 muv) {
   float div_bot = smoothstep(0.014, 0.004, abs(muv.y - 0.24)) * step(0.05, muv.x) * step(muv.x, 0.95);
   col += vec3(0.12, 0.32, 0.46) * max(div_top, div_bot) * 0.55;
 
-  // Top zone (y in [0.76, 0.92]): 16-segment LED tachometer & shift-light bar.
-  if (muv.y > 0.75 && muv.y < 0.92 && muv.x > 0.06 && muv.x < 0.94) {
-    float tx = (muv.x - 0.06) / 0.88;
-    float seg_f = tx * 16.0;
-    float seg_idx = floor(seg_f);
-    float seg_loc = fract(seg_f);
-    float in_seg = step(0.12, seg_loc) * step(seg_loc, 0.88);
-    float seg_t = (seg_idx + 0.5) / 16.0;
-    float seg_h = mix(0.38, 1.0, seg_t);
-    float ty = (muv.y - 0.76) / 0.15;
-    if (in_seg > 0.5 && ty >= 0.0 && ty <= seg_h) {
-      bool lit = seg_t <= max(rpm_n, 0.12);
-      vec3 seg_col = seg_t > 0.84 ? vec3(1.15, 0.14, 0.08)
-                     : (seg_t > 0.68 ? vec3(1.05, 0.58, 0.06) : vec3(0.24, 0.86, 1.08));
-      col += lit ? seg_col * 0.95 : vec3(0.04, 0.08, 0.11);
+  // Top zone (y in [0.76, 0.92]): 16-segment LED tachometer & pulsing shift-light bar,
+  // flanked by left/right green turn-signal arrows.
+  if (muv.y > 0.76 && muv.y < 0.91) {
+    if (muv.x > 0.04 && muv.x < 0.11) {
+      vec2 ap = vec2((muv.x - 0.04) / 0.07, (muv.y - 0.76) / 0.15);
+      float tri = step(abs(ap.y - 0.5) * 1.4, ap.x);
+      col += ind_turn_l ? vec3(0.12, 1.15, 0.26) * tri * 1.1 : vec3(0.02, 0.05, 0.03) * tri;
+    } else if (muv.x > 0.89 && muv.x < 0.96) {
+      vec2 ap = vec2((muv.x - 0.89) / 0.07, (muv.y - 0.76) / 0.15);
+      float tri = step(abs(ap.y - 0.5) * 1.4, 1.0 - ap.x);
+      col += ind_turn_r ? vec3(0.12, 1.15, 0.26) * tri * 1.1 : vec3(0.02, 0.05, 0.03) * tri;
+    } else if (muv.x > 0.12 && muv.x < 0.88) {
+      float tx = (muv.x - 0.12) / 0.76;
+      float seg_f = tx * 16.0;
+      float seg_idx = floor(seg_f);
+      float seg_loc = fract(seg_f);
+      float in_seg = step(0.12, seg_loc) * step(seg_loc, 0.88);
+      float seg_t = (seg_idx + 0.5) / 16.0;
+      float seg_h = mix(0.38, 1.0, seg_t);
+      float ty = (muv.y - 0.76) / 0.15;
+      if (in_seg > 0.5 && ty >= 0.0 && ty <= seg_h) {
+        bool lit = seg_t <= max(rpm_n, 0.12);
+        vec3 seg_col = seg_t > 0.84 ? vec3(1.15, 0.14, 0.08)
+                       : (seg_t > 0.68 ? vec3(1.05, 0.58, 0.06) : vec3(0.24, 0.86, 1.08));
+        if (shift_led) {
+          float pulse = 0.65 + 0.35 * sin(frame.env_basis_x.w * 28.0);
+          seg_col = mix(seg_col, vec3(1.25, 0.12, 0.10), 0.75 * pulse);
+          lit = true;
+        }
+        col += lit ? seg_col * 0.95 : vec3(0.04, 0.08, 0.11);
+      }
     }
   }
 
-  // Center-left zone: 3-digit 7-segment speed readout (0..300 km/h).
-  int spd_val = int(clamp(floor(spd_n * 300.0 + 0.5), 0.0, 399.0));
+  // Center-left zone: 3-digit 7-segment authentic speed readout (km/h or MPH per user unit setting).
+  int spd_val = has_live
+                    ? int(clamp(floor(frame.cockpit_mfd_ext.y + 0.5), 0.0, 499.0))
+                    : int(clamp(floor(spd_n * 260.0 + 0.5), 0.0, 499.0));
   int d_h = (spd_val / 100) % 10;
   int d_t = (spd_val / 10) % 10;
   int d_o = spd_val % 10;
   if (muv.y > 0.28 && muv.y < 0.68 && muv.x > 0.08 && muv.x < 0.65) {
-    float ly = (muv.y - 0.30) / 0.36;
+    float ly = (muv.y - 0.32) / 0.34;
     if (ly >= 0.0 && ly <= 1.0) {
       float dig = 0.0;
       float ghost = 0.0;
@@ -498,24 +537,30 @@ vec3 eval_cockpit_mfd(vec2 muv) {
       }
       col += vec3(0.025, 0.05, 0.07) * ghost;
       col += vec3(0.76, 0.94, 1.05) * dig * 1.15;
+    } else if (muv.y > 0.285 && muv.y < 0.312 && muv.x >= 0.44 && muv.x <= 0.62) {
+      // Subtle unit bar indicator (cool cyan = KM/H, warm amber-white = MPH).
+      col += is_metric ? vec3(0.22, 0.72, 0.95) * 0.75 : vec3(0.95, 0.74, 0.36) * 0.75;
     }
   }
 
-  // Center-right zone: framed amber-red gear badge (N / 1..6).
+  // Center-right zone: framed real gear badge (r / N / 1..8 from live vehicle.gear()).
   if (muv.y > 0.28 && muv.y < 0.68 && muv.x > 0.70 && muv.x < 0.92) {
     vec2 gp = vec2((muv.x - 0.70) / 0.22, (muv.y - 0.28) / 0.40);
     float g_box = smoothstep(0.09, 0.04, min(min(gp.x, 1.0 - gp.x), min(gp.y, 1.0 - gp.y)));
-    col += vec3(0.85, 0.20, 0.08) * g_box * 0.55;
-    int gear = spd_val < 2 ? 10 : clamp(1 + int(spd_n * 5.4), 1, 6);
+    vec3 box_col = shift_led ? vec3(1.15, 0.12, 0.08) : vec3(0.85, 0.20, 0.08);
+    col += box_col * g_box * 0.55;
+    int raw_gear = has_live ? int(round(frame.cockpit_mfd_ext.x)) : 0;
+    int gear_glyph = (raw_gear < 0) ? 11 : (raw_gear == 0 ? 10 : clamp(raw_gear, 1, 9));
     vec2 dp = clamp((gp - vec2(0.16, 0.12)) / vec2(0.68, 0.76), vec2(0.0), vec2(1.0));
     if (gp.x > 0.16 && gp.x < 0.84 && gp.y > 0.12 && gp.y < 0.88) {
-      float gd = mfd_digit(dp, gear);
-      col += vec3(1.15, 0.34, 0.10) * gd * 1.25;
+      float gd = mfd_digit(dp, gear_glyph);
+      vec3 gcol = (raw_gear < 0) ? vec3(1.10, 0.82, 0.18) : vec3(1.15, 0.34, 0.10);
+      col += gcol * gd * 1.25;
     }
   }
 
-  // Bottom zone (y in [0.08, 0.20]): dual telemetry bars (left = fuel, right = boost/throttle).
-  if (muv.y > 0.09 && muv.y < 0.19) {
+  // Bottom zone (y in [0.06, 0.20]): fuel/boost bars + active warning lamps (ABS, TCS, Handbrake, HighBeam).
+  if (muv.y > 0.13 && muv.y < 0.20) {
     if (muv.x > 0.08 && muv.x < 0.46) {
       float fx = (muv.x - 0.08) / 0.38;
       col += fx <= fuel_n ? vec3(0.18, 0.78, 0.42) * 0.75 : vec3(0.03, 0.06, 0.08);
@@ -523,6 +568,17 @@ vec3 eval_cockpit_mfd(vec2 muv) {
       float px = (muv.x - 0.54) / 0.38;
       float bar = max(boost_n, rpm_n * 0.75);
       col += px <= bar ? vec3(0.98, 0.62, 0.14) * 0.80 : vec3(0.03, 0.06, 0.08);
+    }
+  } else if (muv.y > 0.05 && muv.y < 0.11) {
+    // 4 compact warning telltales: ABS (amber), TCS (amber), Handbrake (red), High Beam (blue).
+    if (muv.x > 0.10 && muv.x < 0.26) {
+      col += warn_abs ? vec3(1.15, 0.72, 0.08) * 0.95 : vec3(0.03, 0.04, 0.05);
+    } else if (muv.x > 0.32 && muv.x < 0.48) {
+      col += warn_tcs ? vec3(1.15, 0.66, 0.06) * 0.95 : vec3(0.03, 0.04, 0.05);
+    } else if (muv.x > 0.54 && muv.x < 0.70) {
+      col += warn_hb ? vec3(1.20, 0.12, 0.10) * 1.05 : vec3(0.03, 0.04, 0.05);
+    } else if (muv.x > 0.76 && muv.x < 0.92) {
+      col += ind_highbeam ? vec3(0.18, 0.58, 1.35) * 1.05 : vec3(0.03, 0.04, 0.05);
     }
   }
   return col;
@@ -603,14 +659,19 @@ void main() {
     if ((flags & kFlagInstanced) != 0u && car_instances[v_instance].lamp_rgb[0].w > 0.5) {
       paint_col = car_instances[v_instance].lamp_rgb[0].rgb;
     }
-    // Honor per-draw finish overrides (draw.params.w > 0.5) on all cars, honor
-    // frame.paint_finish.x on player & showroom/autoshow previews (frame.drive.w < 0.5),
-    // and keep full metallic flake (finish == 1) on instanced cars carrying kFlagMetallic.
-    int finish = (draw.params.w > 0.5)
-                     ? (int(draw.params.w + 0.5) - 1)
-                     : (((flags & kFlagInstanced) == 0u || frame.drive.w < 0.5)
-                            ? int(frame.paint_finish.x + 0.5)
-                            : (((flags & kFlagMetallic) != 0u) ? 1 : 0));
+    // Select per-region paint finish & two-tone overrides (1=hood, 2=wing, 3=mirrors) when active,
+    // falling back to per-draw override (draw.params.w > 0.5) or body-wide frame.paint_finish.
+    bool use_reg = ((flags & kFlagInstanced) == 0u || frame.drive.w < 0.5) &&
+                   submat >= 1u && submat <= 3u && frame.region_finish[submat - 1u].w > 0.5;
+    vec4 reg_fin = use_reg ? frame.region_finish[submat - 1u] : frame.paint_finish;
+    vec4 reg_tt = use_reg ? frame.region_two_tone[submat - 1u] : frame.paint_two_tone;
+    int finish = use_reg
+                     ? int(reg_fin.x + 0.5)
+                     : ((draw.params.w > 0.5)
+                            ? (int(draw.params.w + 0.5) - 1)
+                            : (((flags & kFlagInstanced) == 0u || frame.drive.w < 0.5)
+                                   ? int(frame.paint_finish.x + 0.5)
+                                   : (((flags & kFlagMetallic) != 0u) ? 1 : 0)));
     float xml_paint_scale = clamp(draw_tint.a, 0.15, 1.85);
     if (finish == 1) {
       // Metallic Flake (ShaderSettings/Metallic.xml): multiscale anti-aliased sparkle + dual-lobe metallic depth.
@@ -629,11 +690,11 @@ void main() {
       // Two-Tone Pearlescent (List_SpecialColors): refracted viewing angle inside clearcoat (IOR=1.55).
       float sin2_t = max(1.0 - nv * nv, 0.0) / (1.55 * 1.55);
       float cos_t = sqrt(max(1.0 - sin2_t, 0.0));
-      float tt_scale = max(frame.paint_finish.y, 0.15);
-      float tt_bias = frame.paint_finish.z;
-      float tt_pow = max(frame.paint_two_tone.w, 1.0);
+      float tt_scale = max(reg_fin.y, 0.15);
+      float tt_bias = reg_fin.z;
+      float tt_pow = max(reg_tt.w, 1.0);
       float fres = clamp(pow(1.0 - cos_t, clamp(tt_pow * 0.25, 0.8, 5.0)) * (1.35 + tt_scale * 2.2) + tt_bias, 0.0, 1.0);
-      paint_col = mix(paint_col, frame.paint_two_tone.rgb, fres);
+      paint_col = mix(paint_col, reg_tt.rgb, fres);
       flake_boost = 1.15;
       is_clearcoat = true;
       paint_metallic = 1.0;
@@ -646,10 +707,26 @@ void main() {
       gloss = 0.97;
       reflectivity = 0.72;
     } else if (finish == 5) {
-      // Carbon Fiber weave special finish (evaluated in car-local space so weave stays locked).
-      vec2 wuv = v_local_pos.xz * 55.0 + v_local_pos.yy * 55.0;
-      float weave = sin(wuv.x) * cos(wuv.y);
-      paint_col = mix(paint_col * 0.22, paint_col * 0.52, 0.5 + 0.5 * weave);
+      // Carbon Fiber weave special finish: sample authentic Shared/carbonfiber.xds +
+      // Shared/carbonfibernormal.xds in car-local triplanar space when bound, else procedural weave.
+      vec3 an_c = abs(n);
+      vec2 cuv = (an_c.y >= an_c.x && an_c.y >= an_c.z) ? v_local_pos.xz
+               : (an_c.x >= an_c.z)                     ? v_local_pos.zy
+                                                        : v_local_pos.xy;
+      if ((flags & kFlagCarbonTex) != 0u) {
+        vec2 cf_uv = cuv * 12.0;
+        vec3 cf_diff = texture(slot1, cf_uv).rgb;
+        vec2 cf_nm = (texture(normal_map, cf_uv).xy * 2.0 - 1.0) * 0.85;
+        float cf_nz = sqrt(max(1.0 - dot(cf_nm, cf_nm), 0.04));
+        n = normalize(T_frame * cf_nm.x + B_frame * cf_nm.y + n * cf_nz);
+        r = reflect(-view, n);
+        nv = clamp(dot(n, view), 0.0, 1.0);
+        paint_col = mix(cf_diff * 0.65, paint_col * cf_diff * 1.45, 0.72);
+      } else {
+        vec2 wuv = v_local_pos.xz * 55.0 + v_local_pos.yy * 55.0;
+        float weave = sin(wuv.x) * cos(wuv.y);
+        paint_col = mix(paint_col * 0.22, paint_col * 0.52, 0.5 + 0.5 * weave);
+      }
       is_clearcoat = true;
       paint_metallic = 0.20;
       paint_scale = 0.90;
@@ -669,13 +746,13 @@ void main() {
       float c1 = fbm(v_local_pos.xz * 3.2 + v_local_pos.y * 2.4);
       float c2 = fbm(v_local_pos.xz * 5.8 - v_local_pos.y * 3.1 + 7.3);
       vec3 dark_c = paint_col * 0.30;
-      vec3 mid_c = mix(paint_col, frame.paint_two_tone.rgb, 0.6);
+      vec3 mid_c = mix(paint_col, reg_tt.rgb, 0.6);
       paint_col = c1 < 0.42 ? dark_c : (c2 > 0.56 ? mid_c : paint_col);
       metal = 0.0;
       gloss = 0.18;
       reflectivity = 0.02;
     } else {
-      // FH1 stock paint (Normal.xml / Metallic.xml): always 2-layer clearcoat;
+      // FH1 stock paint (Normal.xml / Metallic.xml / ColorShaderSettings*.xml): 2-layer clearcoat;
       // metallic rows get PaintScale=0.5 + blurred metallic cube + dual flake lobes.
       is_clearcoat = true;
       reflectivity = 0.047;
@@ -684,6 +761,17 @@ void main() {
         paint_metallic = 1.0;
         paint_scale = 0.50;
         flake_boost = 0.72;
+      }
+    }
+
+    // Apply per-car ColorShaderSettings*.xml / ShaderSettings MetalColor flip-flop when active.
+    if ((flags & kFlagInstanced) == 0u && !use_reg && (finish == 0 || finish == 1 || finish == 2)) {
+      float m_scale = frame.paint_shader_d.y;
+      if (m_scale > 0.001) {
+        float m_pow = clamp(frame.paint_shader_c.w, 0.25, 16.0);
+        float m_bias = frame.paint_shader_d.x;
+        float m_t = clamp(pow(1.0 - nv, m_pow) * m_scale + m_bias, 0.0, 1.0);
+        paint_col = mix(paint_col, frame.paint_shader_c.rgb, m_t * (1.0 - t0.a));
       }
     }
 
@@ -747,11 +835,15 @@ void main() {
       alpha = is_red ? 0.65 : is_amber ? 0.45 : 0.16;
     } else {
       // FH1 Normal.xml <window>: GlassColor=(0.0, 0.10, 0.08, 0.29), FresnelIndex=4.35, FresnelScalar=0.70.
-      float wtint = ((flags & kFlagInstanced) == 0u) ? clamp(frame.paint_finish.w, 0.0, 1.0) : 0.0;
+      // Exclude front windshield (submat == 20, glassF) from heavy dark window tinting so cockpit
+      // view remains crisp and clear even at 100% window tint (max subtle optical tint ~0.14..0.22).
+      bool is_windshield = (submat == 20u);
+      float raw_wtint = ((flags & kFlagInstanced) == 0u) ? clamp(frame.paint_finish.w, 0.0, 1.0) : 0.0;
+      float wtint = is_windshield ? (raw_wtint * 0.15) : raw_wtint;
       base = mix(vec3(0.0, 0.055, 0.045), vec3(0.002, 0.005, 0.004), wtint);
       reflectivity = 0.047;
       gloss = 0.97;
-      alpha = mix(0.29, 0.88, wtint);
+      alpha = is_windshield ? mix(0.14, 0.22, raw_wtint) : mix(0.29, 0.88, wtint);
       if ((flags & kFlagLampEmissive) != 0u) {
         emissive = draw_tint.rgb;
       }
@@ -811,18 +903,29 @@ void main() {
     reflectivity = 0.3;
     gloss = 0.85;
     metal = 0.5;
-    // Broken corner lamp check (player car): heavy corner impact cracks lens & extinguishes bulb.
+    // Independent 4-corner lamp breakage check (player car): FL/FR headlights and RL/RR taillights
+    // break independently on off-center impacts using frame.damage_corners (threshold 0.45).
     float lamp_alive = 1.0;
-    if ((flags & kFlagInstanced) == 0u && frame.damage_dirt.w > 0.01) {
-      float lf = smoothstep(0.55, 1.75, -v_local_pos.z) * frame.damage_zones.x;
-      float lr = smoothstep(0.55, 1.75, v_local_pos.z) * frame.damage_zones.y;
-      float ll = smoothstep(0.35, 0.88, -v_local_pos.x) * frame.damage_zones.z;
-      float lri = smoothstep(0.35, 0.88, v_local_pos.x) * frame.damage_zones.w;
-      float corner_dmg = clamp(max(lf, lr) * 0.72 + max(ll, lri) * 0.35, 0.0, 1.0) * frame.damage_dirt.w;
-      if (corner_dmg > 0.52) {
-        lamp_alive = mix(1.0, 0.06, smoothstep(0.56, 0.82, corner_dmg));
-        base *= mix(1.0, 0.35, smoothstep(0.56, 0.85, corner_dmg));
-        gloss *= mix(1.0, 0.25, smoothstep(0.56, 0.85, corner_dmg));
+    if ((flags & kFlagInstanced) == 0u) {
+      bool is_front = (v_local_pos.z < 0.0);
+      bool is_left = (v_local_pos.x < 0.0);
+      float corner_dmg = is_front
+                             ? (is_left ? frame.damage_corners.x : frame.damage_corners.y)
+                             : (is_left ? frame.damage_corners.z : frame.damage_corners.w);
+      if (corner_dmg <= 0.001 && frame.damage_dirt.w > 0.01) {
+        float lf = smoothstep(0.55, 1.75, -v_local_pos.z) * frame.damage_zones.x;
+        float lr = smoothstep(0.55, 1.75, v_local_pos.z) * frame.damage_zones.y;
+        float ll = smoothstep(0.35, 0.88, -v_local_pos.x) * frame.damage_zones.z;
+        float lri = smoothstep(0.35, 0.88, v_local_pos.x) * frame.damage_zones.w;
+        corner_dmg = clamp(max(lf, lr) * 0.72 + max(ll, lri) * 0.35, 0.0, 1.0) * frame.damage_dirt.w;
+      }
+      if (corner_dmg >= 0.45) {
+        float shatter = smoothstep(0.45, 0.78, corner_dmg);
+        lamp_alive = 0.0;
+        base *= mix(0.55, 0.25, shatter);
+        gloss *= mix(0.45, 0.18, shatter);
+      } else if (corner_dmg > 0.22) {
+        lamp_alive = mix(1.0, 0.65, smoothstep(0.22, 0.45, corner_dmg));
       }
     }
     if ((flags & kFlagLampEmissive) != 0u) {
@@ -836,10 +939,16 @@ void main() {
   } else if (klass == kInterior || klass == kGauge) {
     if ((flags & kFlagCutout) != 0u && (flags & kFlagSlot1) != 0u && t1.a < 0.5) discard;
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : t0.rgb;
+    float head_amt = clamp(frame.cockpit_mfd_ext.w, 0.0, 1.0);
+    float gauge_scale = clamp(frame.paint_shader_d.w / 3.0, 0.0, 3.0);
     if (submat == 15u) {
-      // Illuminated analog gauge needle (speed_min/tach_min/fuel_min/boost_min): crisp backlit orange-red.
-      base = mix(vec3(0.85, 0.14, 0.03), base, 0.25);
-      emissive = vec3(0.95, 0.18, 0.04) * (kLinearOut ? 0.65 : 0.55);
+      // Analog gauge needle (speed_min/tach_min/fuel_min/boost_min): daytime painted needle,
+      // illuminated at night/dusk/tunnel proportional to HeadLightAmount * GaugeEmissiveScale.
+      base = mix(vec3(0.78, 0.12, 0.025), base, 0.25);
+      float needle_emit = (flags & kFlagLampEmissive) != 0u
+                              ? max(draw_tint.r, max(draw_tint.g, draw_tint.b)) * 0.35
+                              : (head_amt * gauge_scale);
+      emissive = vec3(0.95, 0.18, 0.04) * needle_emit * (kLinearOut ? 0.85 : 0.65);
       gloss = 0.35;
     } else if (submat == 16u) {
       // Active backlit digital cockpit MFD / cluster TFT display (RPM bar, speed, gear, telemetry).
@@ -853,12 +962,15 @@ void main() {
       gloss = 0.88;
       reflectivity = 0.06;
     } else if (submat == 17u) {
-      // Authentic FH1 interior_emissive_LOD0.xds backlit instrument cluster (speedo/tach/oil/fuel markings).
+      // Authentic FH1 interior_emissive_LOD0.xds backlit instrument cluster:
+      // unlit printed dial face in daylight, backlit via HeadLightAmount * GaugeEmissiveScale at night.
       vec3 dial_bg = (flags & kFlagNoSlot0) == 0u ? t0.rgb * 0.35 : vec3(0.015, 0.016, 0.018);
       vec3 mark = (flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.0);
-      base = max(dial_bg, mark * 0.65);
-      float lamp_boost = (flags & kFlagLampEmissive) != 0u ? max(0.75, max(draw_tint.r, max(draw_tint.g, draw_tint.b))) : 0.72;
-      emissive = mark * lamp_boost * (kLinearOut ? 1.15 : 0.90);
+      base = max(dial_bg, mark * 0.58);
+      float dial_emit = (flags & kFlagLampEmissive) != 0u
+                            ? max(draw_tint.r, max(draw_tint.g, draw_tint.b)) * 0.38
+                            : (head_amt * gauge_scale);
+      emissive = mark * dial_emit * (kLinearOut ? 1.15 : 0.90);
       gloss = 0.32;
     } else if (klass == kInterior) {
       // FORMAT-CARS: interior techniques sample interior_LOD0 (t1) directly scaled by
@@ -897,9 +1009,10 @@ void main() {
   } else if (klass == kTyre) {
     // BC3_SRGB already decodes sidewall/tread textures to linear in hardware (no extra pow(2.2)!).
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.035);
-    // Dynamic off-road tyre mud & dust coating (damage_dirt.y).
+    // Dynamic off-road tyre mud & dust coating (damage_dirt.y) evaluated in wheel-local space
+    // (v_local_pos) so mud rotates 1:1 with the spinning tyre instead of sliding across it!
     if (frame.damage_dirt.y > 0.01) {
-      float mud_n = fbm(v_position.xz * 18.0 + v_position.y * 14.0);
+      float mud_n = fbm(v_local_pos.yz * 18.0 + vec2(v_local_pos.x * 14.0, -v_local_pos.x * 11.0));
       float mud = clamp(frame.damage_dirt.y * (0.55 + 0.65 * mud_n), 0.0, 0.88);
       base = mix(base, vec3(0.16, 0.11, 0.065), mud);
     }
@@ -914,27 +1027,45 @@ void main() {
                      : (submat == 3u) ? vec3(0.36, 0.37, 0.39)
                      : (submat == 4u) ? vec3(0.46, 0.48, 0.52)
                                       : vec3(0.56, 0.58, 0.62);
-    vec3 rim_paint = (submat == 2u || submat == 3u) ? rim_default : (rim_default * draw_tint.rgb);
-    if ((flags & kFlagNoSlot0) == 0u) {
-      base = mix(rim_paint, t0.rgb, t0.a);
-    } else {
-      base = rim_paint;
-    }
+    vec3 rim_xml_tint = (frame.rim_shader.w > 0.5 && (flags & kFlagInstanced) == 0u) ? frame.rim_tint_dirt.rgb : vec3(1.0);
+    vec3 rim_paint = (submat == 2u || submat == 3u) ? rim_default : (rim_default * draw_tint.rgb * rim_xml_tint);
     float wblur = clamp(draw.params.w, 0.0, 1.0);
-    if (wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
-      vec2 duv = v_uv0 - vec2(0.5);
-      vec3 acc = base;
-      float span = wblur * 0.52;
-      for (int k = -3; k <= 3; ++k) {
-        if (k == 0) continue;
-        float a = float(k) * (span / 3.0);
-        float ca = cos(a), sa = sin(a);
-        vec2 ruv = vec2(0.5) + vec2(ca * duv.x - sa * duv.y, sa * duv.x + ca * duv.y);
-        vec4 s0 = texture(slot0, ruv);
-        acc += mix(rim_paint, s0.rgb, s0.a);
+    if ((flags & kFlagBlurRim) != 0u) {
+      // Retail blur_rim / blur_lip geometry textured with wheel0..3.xds on slot1:
+      // cross-fade cleanly in at speed and discard when wheel is stationary.
+      float blur_vis = smoothstep(0.05, 0.55, wblur);
+      if (blur_vis <= 0.004) discard;
+      vec4 btex = (flags & kFlagSlot1) != 0u ? t1 : t0;
+      base = mix(rim_paint, btex.rgb * draw_tint.rgb * rim_xml_tint, 0.85);
+      alpha = clamp(btex.a * blur_vis, 0.0, 1.0);
+      if (alpha <= 0.01) discard;
+    } else {
+      if ((flags & kFlagHasBlurMesh) != 0u && wblur > 0.45) {
+        // Cross-fade static 3D spokes out as retail blur_rim disc reaches full opacity.
+        float fade_out = smoothstep(0.45, 0.85, wblur);
+        if (fade_out >= 0.99 || ign_shadow() < fade_out) discard;
       }
-      base = mix(base, acc / 7.0, wblur * 0.92);
-      base = mix(base, vec3(dot(base, vec3(0.3, 0.59, 0.11))) * 1.08, wblur * 0.22);
+      if ((flags & kFlagNoSlot0) == 0u) {
+        base = mix(rim_paint, t0.rgb, t0.a);
+      } else {
+        base = rim_paint;
+      }
+      // Only run fallback UV-smear loop when wheel lacks retail blur_rim geometry.
+      if ((flags & kFlagHasBlurMesh) == 0u && wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
+        vec2 duv = v_uv0 - vec2(0.5);
+        vec3 acc = base;
+        float span = wblur * 0.52;
+        for (int k = -3; k <= 3; ++k) {
+          if (k == 0) continue;
+          float a = float(k) * (span / 3.0);
+          float ca = cos(a), sa = sin(a);
+          vec2 ruv = vec2(0.5) + vec2(ca * duv.x - sa * duv.y, sa * duv.x + ca * duv.y);
+          vec4 s0 = texture(slot0, ruv);
+          acc += mix(rim_paint, s0.rgb, s0.a);
+        }
+        base = mix(base, acc / 7.0, wblur * 0.92);
+        base = mix(base, vec3(dot(base, vec3(0.3, 0.59, 0.11))) * 1.08, wblur * 0.22);
+      }
     }
     if (submat == 1u) {
       // outer_rim (Tire/Normal.xml: PaintScale=0, CubeScale=1 pure chrome lip).
@@ -957,25 +1088,40 @@ void main() {
       gloss = 0.70;
       reflectivity = 0.35;
     } else {
-      // Standard painted/machined alloy rim spokes (Tire/Normal.xml).
-      gloss = mix(0.80, 0.90, clamp(draw.params.w, 0.0, 1.0));
+      // Standard painted/machined alloy rim spokes (Tire/Normal.xml + RimShaderSettings.xml).
+      gloss = mix(0.80, 0.90, wblur);
       metal = 0.66;
-      reflectivity = 0.42;
+      reflectivity = (frame.rim_shader.w > 0.5 && (flags & kFlagInstanced) == 0u)
+                         ? clamp(0.42 * frame.rim_shader.y * frame.rim_shader.z, 0.08, 0.90)
+                         : 0.42;
     }
   } else if (klass == kChrome) {
     float wblur = clamp(draw.params.w, 0.0, 1.0);
-    if (wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
-      vec2 duv = v_uv0 - vec2(0.5);
-      vec3 acc = t0.rgb;
-      float span = wblur * 0.52;
-      for (int k = -3; k <= 3; ++k) {
-        if (k == 0) continue;
-        float a = float(k) * (span / 3.0);
-        float ca = cos(a), sa = sin(a);
-        vec2 ruv = vec2(0.5) + vec2(ca * duv.x - sa * duv.y, sa * duv.x + ca * duv.y);
-        acc += texture(slot0, ruv).rgb;
+    if ((flags & kFlagBlurRim) != 0u) {
+      float blur_vis = smoothstep(0.05, 0.55, wblur);
+      if (blur_vis <= 0.004) discard;
+      vec4 btex = (flags & kFlagSlot1) != 0u ? t1 : t0;
+      base = mix(vec3(0.76, 0.78, 0.82), btex.rgb, 0.75);
+      alpha = clamp(btex.a * blur_vis, 0.0, 1.0);
+      if (alpha <= 0.01) discard;
+    } else {
+      if ((flags & kFlagHasBlurMesh) != 0u && wblur > 0.45) {
+        float fade_out = smoothstep(0.45, 0.85, wblur);
+        if (fade_out >= 0.99 || ign_shadow() < fade_out) discard;
       }
-      base = mix(base, acc / 7.0, wblur * 0.88);
+      if ((flags & kFlagHasBlurMesh) == 0u && wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
+        vec2 duv = v_uv0 - vec2(0.5);
+        vec3 acc = t0.rgb;
+        float span = wblur * 0.52;
+        for (int k = -3; k <= 3; ++k) {
+          if (k == 0) continue;
+          float a = float(k) * (span / 3.0);
+          float ca = cos(a), sa = sin(a);
+          vec2 ruv = vec2(0.5) + vec2(ca * duv.x - sa * duv.y, sa * duv.x + ca * duv.y);
+          acc += texture(slot0, ruv).rgb;
+        }
+        base = mix(base, acc / 7.0, wblur * 0.88);
+      }
     }
     gloss = 0.96;
     metal = 0.92;
@@ -1065,9 +1211,19 @@ void main() {
       float low_mask = 1.0 - smoothstep(0.02, 0.76, v_local_pos.y);
       vec2 dirt_uv = v_local_pos.xz * 0.75 + vec2(v_local_pos.y * 0.9, v_local_pos.y * 0.6);
       vec4 dpat = texture(shared_dirt_pattern, dirt_uv * 2.5);
-      vec4 dmsk = texture(shared_dirt_mask, dirt_uv * 1.2);
-      float m = clamp(max(dmsk.r, dmsk.a), 0.15, 1.0);
-      float dirt = clamp(frame.damage_dirt.x * (low_mask * 0.85 + 0.20) * m, 0.0, 0.88);
+      bool has_car_dirt = (uint(max(frame.rim_tint_dirt.w, 0.0) + 0.5) & 1u) != 0u;
+      float m = 0.5;
+      float dirt = 0.0;
+      if (has_car_dirt && (flags & kFlagNoSlot0) == 0u && klass != kRim) {
+        // Sample authentic per-car dirt_mask.xds on atlas UV0 for authored wheel-arch/rocker splatter.
+        vec4 dmsk = texture(shared_dirt_mask, v_uv0);
+        m = clamp(max(dmsk.r, max(dmsk.g, dmsk.a)), 0.05, 1.0);
+        dirt = clamp(frame.damage_dirt.x * mix(0.45, 1.05, low_mask) * m, 0.0, 0.90);
+      } else {
+        vec4 dmsk = texture(shared_dirt_mask, dirt_uv * 1.2);
+        m = clamp(max(dmsk.r, dmsk.a), 0.15, 1.0);
+        dirt = clamp(frame.damage_dirt.x * (low_mask * 0.85 + 0.20) * m, 0.0, 0.88);
+      }
       vec3 mud_col = mix(vec3(0.18, 0.12, 0.075), dpat.rgb * 0.45, 0.65);
       base = mix(base, mud_col, dirt);
       gloss = mix(gloss, 0.08, dirt * 0.92);
@@ -1175,24 +1331,36 @@ void main() {
     float nl_c = max(dot(n_coat, key), 0.0);
     float nh_c = max(dot(n_coat, h), 0.0);
 
-    // Layer 1 (Clearcoat): dielectric IOR=1.50 (F0=0.04) tuned for Forza Horizon 1 automotive
-    // clearcoat (rich paint saturation, controlled grazing reflection rather than chrome mirror).
-    float F_coat_v = clamp(0.040 + 0.48 * pow(1.0 - nv_c, 5.0), 0.040, 0.52) * coat_mask;
-    float F_coat_l = clamp(0.040 + 0.48 * pow(1.0 - nl_c, 5.0), 0.040, 0.52) * coat_mask;
-    float coat_env_scale = frame.drive.w > 0.5 ? 0.58 : 0.72;
+    // Layer 1 (Clearcoat): retail FresnelIndex/FresnelScalar/SpecularCubeScalar driven dielectric
+    // clearcoat (defaults 1.55 / 0.90 / 1.0 -> rich automotive saturation, controlled grazing mirror).
+    float p_fidx = clamp(frame.paint_shader_a.x, 1.0, 5.0);
+    float p_fscl = clamp(frame.paint_shader_a.y, 0.0, 1.5);
+    float p_cube = clamp(frame.paint_shader_a.z, 0.05, 2.0);
+    float fres_exp = clamp(3.45 + (p_fidx - 1.55) * 0.85, 2.2, 5.5);
+    float fres_gain = clamp(0.48 * (p_fscl / 0.90), 0.0, 0.78);
+    float F_coat_v = clamp(0.040 + fres_gain * pow(1.0 - nv_c, fres_exp), 0.040, 0.62) * coat_mask;
+    float F_coat_l = clamp(0.040 + fres_gain * pow(1.0 - nl_c, fres_exp), 0.040, 0.62) * coat_mask;
+    float coat_env_scale = (frame.drive.w > 0.5 ? 0.58 : 0.72) * p_cube;
     vec3 coat_refl = env(r_coat, 0.65) * frame.reflect_tint.rgb * occ_refl * coat_env_scale;
     float coat_ggx = ggx_d(nh_c, 0.065) * 0.022;
-    vec3 coat_spec = direct_col * coat_ggx * nl_c * lit * coat_mask;
+    float xml_spec1 = frame.paint_shader_a.w > 0.001
+                          ? pow(nh_c, clamp(frame.paint_shader_d.z, 8.0, 256.0)) * frame.paint_shader_a.w * 0.35
+                          : 0.0;
+    vec3 coat_spec = direct_col * (coat_ggx + xml_spec1) * nl_c * lit * coat_mask;
 
     // Layer 2 (Basecoat + Multiscale Anti-Aliased Metallic Flakes, energy-conserved by (1 - F_coat)).
     float base_atten_direct = (1.0 - F_coat_v) * (1.0 - F_coat_l);
     float base_atten_ibl = 1.0 - F_coat_v;
     vec3 basecoat = base * paint_scale * diffuse_light * base_atten_ibl;
     if (paint_metallic > 0.01) {
-      vec3 met_cube = env(r, 3.4) * frame.reflect_tint.rgb * occ_refl;
-      // Continuous dual-lobe metallic GGX sheen (converged baseline at all speeds & distances).
-      float lobe_mid = ggx_d(nh, 0.24) * 0.15;
-      float lobe_broad = ggx_d(nh, 0.48) * 0.24;
+      vec3 met_cube = env(r, 3.4) * frame.reflect_tint.rgb * occ_refl * p_cube;
+      // Continuous dual-lobe metallic GGX sheen scaled by ShaderSettings SpecAmount2/3 & SpecPower2/3.
+      float s2_gain = clamp(frame.paint_shader_b.x / 7.0, 0.25, 2.2);
+      float s2_alpha = clamp(sqrt(2.0 / max(frame.paint_shader_b.y + 2.0, 3.0)) * 0.52, 0.14, 0.45);
+      float s3_gain = clamp(frame.paint_shader_b.z / 6.0, 0.25, 2.2);
+      float s3_alpha = clamp(sqrt(2.0 / max(frame.paint_shader_b.w + 2.0, 3.0)) * 0.82, 0.28, 0.72);
+      float lobe_mid = ggx_d(nh, s2_alpha) * 0.15 * s2_gain;
+      float lobe_broad = ggx_d(nh, s3_alpha) * 0.24 * s3_gain;
       vec3 flake_tint = mix(base, vec3(0.95), 0.35);
       basecoat += base * met_cube * 0.36 * paint_metallic * base_atten_ibl;
       basecoat += base * direct_col * (lobe_mid + lobe_broad) * ndl * lit * paint_metallic * base_atten_direct;
@@ -1282,7 +1450,11 @@ void main() {
   }
   colour *= frame.options.x;
   float out_a = alpha;
-  if (kLinearOut && klass != kGlass && (flags & kFlagMirror) == 0u) {
+  if ((flags & kFlagBlurRim) != 0u) {
+    // Premultiplied alpha output for glass_ blended pipeline (ONE, ONE_MINUS_SRC_ALPHA).
+    colour *= alpha;
+    out_a = alpha;
+  } else if (kLinearOut && klass != kGlass && (flags & kFlagMirror) == 0u) {
     // Encode automotive surface gloss into HDR alpha for Phase B Hi-Z SSR (0 on matte/tyre/interior).
     if (is_clearcoat) {
       out_a = clamp(0.52 * coat_mask, 0.0, 0.58);

@@ -39,6 +39,8 @@ struct TuneSlider {
   // Current value in physical/display units; `tuned` false means stock default.
   double value = 0.5;
   bool tuned = false;
+  // Non-empty when locked: names the Level 3 (Race) part required to unlock this slider.
+  std::string unlock_hint;
 };
 
 // Builds the list of tuning sliders for `car` with ranges and unlock status

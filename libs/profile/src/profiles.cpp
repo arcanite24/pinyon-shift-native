@@ -6,6 +6,8 @@
 #include <sstream>
 #include <system_error>
 
+#include "drive/save.h"
+
 namespace profile::profiles {
 namespace fs = std::filesystem;
 
@@ -89,20 +91,7 @@ bool Manager::save(std::string* error) const {
   std::ostringstream s;
   s << "shift-profiles 1\nactive " << active_ << "\n";
   for (const auto& p : profiles_) s << "profile " << p.name << " " << p.gamertag << "\n";
-  std::error_code ec;
-  fs::create_directories(user_dir_, ec);
-  fs::path tmp = file();
-  tmp += ".tmp";
-  {
-    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-    if (!f || !(f << s.str())) {
-      if (error) *error = "cannot write " + tmp.string();
-      return false;
-    }
-  }
-  fs::rename(tmp, file(), ec);
-  if (ec && error) *error = "cannot replace " + file().string();
-  return !ec;
+  return drive::atomic_write_file(file(), s.str(), error);
 }
 
 const Profile& Manager::active() const {

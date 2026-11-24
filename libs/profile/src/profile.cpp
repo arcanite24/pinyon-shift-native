@@ -3,11 +3,17 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <functional>
 #include <set>
 #include <sstream>
+#include <system_error>
+
+#include "cars/physics.h"
+#include "drive/save.h"
 
 namespace profile {
 namespace {
@@ -142,6 +148,102 @@ struct Db {
   }
 };
 
+struct Writer {
+  std::vector<uint8_t> out;
+  void u8(uint8_t v) { out.push_back(v); }
+  void u32(uint32_t v) {
+    out.push_back(uint8_t(v >> 24));
+    out.push_back(uint8_t(v >> 16));
+    out.push_back(uint8_t(v >> 8));
+    out.push_back(uint8_t(v));
+  }
+  void u64(uint64_t v) {
+    u32(uint32_t(v >> 32));
+    u32(uint32_t(v & 0xFFFFFFFFu));
+  }
+  void bytes(const uint8_t* p, size_t n) { out.insert(out.end(), p, p + n); }
+  void str(std::string_view s) {
+    u32(uint32_t(s.size()));
+    out.insert(out.end(), s.begin(), s.end());
+  }
+};
+
+void write_fields(Writer& w, const std::vector<Field>& fields) {
+  w.u32(uint32_t(fields.size()));
+  for (const auto& f : fields) {
+    w.str(f.name);
+    w.u32(0x20u);
+    w.u32(0u);
+    w.u8(uint8_t(f.value.type));
+    switch (f.value.type) {
+      case Value::kBool:
+      case Value::kU8: w.u8(uint8_t(f.value.bits & 0xFFu)); break;
+      case Value::kU32:
+      case Value::kI32:
+      case Value::kFloat: w.u32(uint32_t(f.value.bits & 0xFFFFFFFFu)); break;
+      case Value::kU64: w.u64(f.value.bits); break;
+      case Value::kStruct: write_fields(w, f.value.fields); break;
+    }
+  }
+}
+
+void write_record(Writer& w, const Record& rec) {
+  w.str(rec.name);
+  w.str(rec.class_name);
+  w.u32(rec.version);
+  if (rec.class_name == "CHorizonLocationState") {
+    Writer cw;
+    cw.u32(uint32_t(rec.children.size()));
+    for (const auto& child : rec.children) write_record(cw, child);
+    w.u32(uint32_t(cw.out.size()));
+    w.bytes(cw.out.data(), cw.out.size());
+  } else {
+    w.u32(uint32_t(rec.payload.size()));
+    w.bytes(rec.payload.data(), rec.payload.size());
+  }
+}
+
+uint32_t float_bits(float f) {
+  uint32_t u = 0;
+  std::memcpy(&u, &f, 4);
+  return u;
+}
+
+Field& ensure_field(std::vector<Field>& fields, std::string_view path, Value::Type leaf_type) {
+  const auto slash = path.find('/');
+  const std::string_view head = path.substr(0, slash);
+  for (auto& f : fields) {
+    if (f.name == head) {
+      if (slash == std::string_view::npos) return f;
+      if (f.value.type != Value::kStruct) {
+        f.value.type = Value::kStruct;
+        f.value.bits = 0;
+        f.value.fields.clear();
+      }
+      return ensure_field(f.value.fields, path.substr(slash + 1), leaf_type);
+    }
+  }
+  Field created;
+  created.name = std::string(head);
+  if (slash == std::string_view::npos) {
+    created.value.type = leaf_type;
+    fields.push_back(std::move(created));
+    return fields.back();
+  }
+  created.value.type = Value::kStruct;
+  fields.push_back(std::move(created));
+  return ensure_field(fields.back().value.fields, path.substr(slash + 1), leaf_type);
+}
+
+bool is_valid_sql_ident(std::string_view s) {
+  if (s.empty() || s.size() > 128) return false;
+  if (!(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_')) return false;
+  for (char c : s) {
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int64_t Value::as_int() const {
@@ -191,7 +293,24 @@ bool parse_body(std::span<const uint8_t> bytes, Body& out, std::string* error) {
     }
     out.blocks.push_back(std::move(blk));
   }
+  if (r.at < bytes.size()) {
+    out.trailing_bytes.assign(bytes.begin() + std::ptrdiff_t(r.at), bytes.end());
+  }
   return true;
+}
+
+std::vector<uint8_t> serialize_body(const Body& body) {
+  Writer w;
+  write_fields(w, body.fields);
+  for (const auto& blk : body.blocks) {
+    w.u32(blk.version);
+    w.u32(uint32_t(blk.records.size()));
+    for (const auto& rec : blk.records) write_record(w, rec);
+  }
+  if (!body.trailing_bytes.empty()) {
+    w.bytes(body.trailing_bytes.data(), body.trailing_bytes.size());
+  }
+  return w.out;
 }
 
 const Field* find(const std::vector<Field>& fields, std::string_view path) {
@@ -203,6 +322,52 @@ const Field* find(const std::vector<Field>& fields, std::string_view path) {
       return f.value.type == Value::kStruct ? find(f.value.fields, path.substr(slash + 1)) : nullptr;
     }
   return nullptr;
+}
+
+Field* find_mut(std::vector<Field>& fields, std::string_view path) {
+  const auto slash = path.find('/');
+  const std::string_view head = path.substr(0, slash);
+  for (auto& f : fields)
+    if (f.name == head) {
+      if (slash == std::string_view::npos) return &f;
+      return f.value.type == Value::kStruct ? find_mut(f.value.fields, path.substr(slash + 1)) : nullptr;
+    }
+  return nullptr;
+}
+
+void set_field_int(std::vector<Field>& fields, std::string_view path, int64_t value, Value::Type default_type) {
+  Field& f = ensure_field(fields, path, default_type);
+  switch (f.value.type) {
+    case Value::kBool: f.value.bits = value != 0 ? 1u : 0u; break;
+    case Value::kU8: f.value.bits = uint64_t(uint8_t(value)); break;
+    case Value::kU32: f.value.bits = uint64_t(uint32_t(value)); break;
+    case Value::kI32: f.value.bits = uint64_t(uint32_t(int32_t(value))); break;
+    case Value::kU64: f.value.bits = uint64_t(value); break;
+    case Value::kFloat: f.value.bits = float_bits(float(value)); break;
+    case Value::kStruct:
+      f.value.type = default_type;
+      f.value.fields.clear();
+      f.value.bits = uint64_t(uint32_t(value));
+      break;
+  }
+}
+
+void set_field_double(std::vector<Field>& fields, std::string_view path, double value, Value::Type default_type) {
+  Field& f = ensure_field(fields, path, default_type);
+  if (f.value.type == Value::kFloat) {
+    f.value.bits = float_bits(float(value));
+  } else {
+    set_field_int(fields, path, int64_t(std::llround(value)), default_type);
+  }
+}
+
+void set_field_bool(std::vector<Field>& fields, std::string_view path, bool value) {
+  Field& f = ensure_field(fields, path, Value::kBool);
+  if (f.value.type == Value::kFloat) {
+    f.value.bits = float_bits(value ? 1.0f : 0.0f);
+  } else {
+    f.value.bits = value ? 1u : 0u;
+  }
 }
 
 size_t field_count(const std::vector<Field>& fields, std::string_view path) {
@@ -236,15 +401,19 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
     return false;
   }
   if (!parse_body(body, out.body, error)) return false;
-  // VersionFlags (export.json's, from the profile folder's file; missing: base).
+  // VersionFlags (export.json's, from the profile folder's file; fallback to top-level field; missing: base).
   {
     bool have = false;
     const auto j = read_file(folder / "export.json", have);
-    const std::string s(j.begin(), j.end());
-    const auto at = s.find("\"VersionFlags\"");
-    if (at != std::string::npos) {
-      const auto colon = s.find(':', at);
-      if (colon != std::string::npos) out.version_flags = uint32_t(std::strtoul(s.c_str() + colon + 1, nullptr, 10));
+    if (have) {
+      const std::string s(j.begin(), j.end());
+      const auto at = s.find("\"VersionFlags\"");
+      if (at != std::string::npos) {
+        const auto colon = s.find(':', at);
+        if (colon != std::string::npos) out.version_flags = uint32_t(std::strtoul(s.c_str() + colon + 1, nullptr, 10));
+      }
+    } else if (const Field* vf = find(out.body.fields, "VersionFlags")) {
+      out.version_flags = uint32_t(vf->value.as_int());
     }
   }
   const auto& fs = out.body.fields;
@@ -272,6 +441,11 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
   out.num_rally_victories = num("NumRallyVictories"), out.rally_winnings = num("RallyWinnings");
   out.rally_xp = num("RallyXP"), out.rally_level = num("RallyWristbandLevel");
   if (const Field* sn = find(fs, "Main/SatNav")) out.satnav_on = sn->value.as_int() != 0;
+  if (const Field* ft = find(fs, "Main/FastTravelAnywhere")) out.fast_travel_anywhere = ft->value.as_int() != 0;
+  if (const Field* cd = find(fs, "Main/CoDriver")) {
+    out.has_codriver = true;
+    out.codriver_on = cd->value.as_int() != 0;
+  }
 
   // The records: signs and barns under Colorado, the 1000 Club.
   for (const auto& blk : out.body.blocks)
@@ -310,7 +484,11 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
           if (c.class_name == "CMissionState" && c.payload.size() >= 2 && (c.payload[0] != 0 || c.payload[1] != 0)) {
             out.pr_stunts_completed.push_back(c.name);
           }
-          if ((c.class_name == "CSpeedCameraState" || c.class_name == "CSpeedZoneState") && c.payload.size() >= 5) {
+          // Speed traps (CSpeedCameraState) and speed zones (retail CAverageSpeedState,
+          // with CSpeedZoneState retained as secondary fallback).
+          const bool is_speed_trap = (c.class_name == "CSpeedCameraState");
+          const bool is_speed_zone = (c.class_name == "CAverageSpeedState" || c.class_name == "CSpeedZoneState");
+          if ((is_speed_trap || is_speed_zone) && c.payload.size() >= 5) {
             auto f32 = [&](size_t at) {
               const uint32_t u = uint32_t(c.payload[at]) << 24 | uint32_t(c.payload[at + 1]) << 16 |
                                  uint32_t(c.payload[at + 2]) << 8 | c.payload[at + 3];
@@ -318,9 +496,13 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
               std::memcpy(&f, &u, 4);
               return double(f);
             };
-            const double val = f32(c.payload.size() >= 8 ? 4 : 1);
-            if (val > 1.0 && val < 400.0) {
-              if (c.class_name == "CSpeedCameraState") out.speed_traps.emplace_back(c.name, val);
+            auto valid_speed = [](double v) { return std::isfinite(v) && v > 1.0 && v < 400.0; };
+            double val = 0.0;
+            if (c.payload.size() >= 8 && valid_speed(f32(4))) val = f32(4);
+            else if (c.payload.size() >= 6 && valid_speed(f32(2))) val = f32(2);
+            else if (valid_speed(f32(1))) val = f32(1);
+            if (valid_speed(val)) {
+              if (is_speed_trap) out.speed_traps.emplace_back(c.name, val);
               else out.speed_zones.emplace_back(c.name, val);
             }
           }
@@ -336,16 +518,29 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
           for (uint32_t j = 0; j < c && r.ok; ++j) {
             const uint32_t key = r.u32();  // an opaque hash of the definition
             const bool a = r.be(1) != 0;
-            r.be(1);  // flag B: the online confirmation
+            const bool b_flag = r.be(1) != 0;  // flag B: the online confirmation
             const uint32_t blob = r.u32();
             std::vector<int> prog_vals;
+            std::vector<uint8_t> raw_blob;
             if (r.need(blob)) {
               const size_t start_at = r.at;
-              if (blob >= 4 && (blob % 4) == 0 && blob <= 32) {
-                for (uint32_t off = 0; off < blob; off += 4) {
-                  const uint32_t v = uint32_t(r.b[start_at + off]) << 24 | uint32_t(r.b[start_at + off + 1]) << 16 |
-                                     uint32_t(r.b[start_at + off + 2]) << 8 | r.b[start_at + off + 3];
-                  if (v < 1000000u) prog_vals.push_back(int(v));
+              raw_blob.assign(r.b.begin() + std::ptrdiff_t(start_at), r.b.begin() + std::ptrdiff_t(start_at + blob));
+              // Retail 1000 Club save_progress nodes are serialized with an 8-byte stride.
+              if (blob >= 8 && (blob % 8) == 0 && blob <= 256) {
+                for (uint32_t off = 0; off < blob; off += 8) {
+                  const uint32_t hi = uint32_t(r.b[start_at + off]) << 24 | uint32_t(r.b[start_at + off + 1]) << 16 |
+                                      uint32_t(r.b[start_at + off + 2]) << 8 | r.b[start_at + off + 3];
+                  const uint32_t lo = uint32_t(r.b[start_at + off + 4]) << 24 |
+                                      uint32_t(r.b[start_at + off + 5]) << 16 | uint32_t(r.b[start_at + off + 6]) << 8 |
+                                      r.b[start_at + off + 7];
+                  const uint64_t u64 = (uint64_t(hi) << 32) | uint64_t(lo);
+                  if (u64 < 1000000ull) {
+                    prog_vals.push_back(int(u64));
+                  } else if (hi < 1000000u && lo == 0u) {
+                    prog_vals.push_back(int(hi));
+                  } else if (lo < 1000000u) {
+                    prog_vals.push_back(int(lo));
+                  }
                 }
               }
               r.at = start_at + blob;
@@ -353,9 +548,14 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
             ++car.challenges;
             car.done += a;
             car.keys.emplace_back(key, a);
+            car.flags_b.push_back(b_flag);
             car.progress.push_back(std::move(prog_vals));
+            car.raw_blobs.push_back(std::move(raw_blob));
           }
-          if (r.ok) out.club.push_back(car);
+          if (r.ok) out.club.push_back(std::move(car));
+        }
+        if (r.ok && r.left() > 0) {
+          out.club_trailing.assign(rec.payload.begin() + std::ptrdiff_t(r.at), rec.payload.end());
         }
       }
     }
@@ -387,9 +587,21 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
                      if (txt) g.texts[cname] = reinterpret_cast<const char*>(txt);
                    }
                  }
-                 auto col = [&](const char* k) { return g.columns.count(k) ? g.columns[k] : 0; };
-                 g.id = col("Id"), g.car_id = col("CarId"), g.performance_index = g.reals.count("PerformanceIndex") ? g.reals["PerformanceIndex"] : double(col("PerformanceIndex"));
+                 auto col = [&](const char* k) -> int64_t { return g.columns.count(k) ? g.columns[k] : 0; };
+                 auto real_col = [&](const char* k) -> double {
+                   if (g.reals.count(k)) return g.reals[k];
+                   if (g.columns.count(k)) return double(g.columns[k]);
+                   return 0.0;
+                 };
+                 g.id = col("Id"), g.car_id = col("CarId"), g.performance_index = real_col("PerformanceIndex");
                  g.class_id = col("ClassID"), g.color_index = col("DefaultManufacturerColorIndex");
+                 g.history.distance_driven = real_col("DistanceDriven");
+                 g.history.time_driven = real_col("TimeDriven");
+                 g.history.total_winnings = col("TotalWinnings");
+                 g.history.total_repairs = col("TotalRepairs");
+                 g.history.num_races = col("NumRaces");
+                 g.history.num_victories = col("NumVictories");
+                 g.history.num_podiums = col("NumPodiums");
                  out.garage.push_back(std::move(g));
                },
                error) ||
@@ -419,6 +631,331 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
   // (Disabled/00000002, V4_CONTENT), which is not a package.
   for (auto& name : read_lines(folder / "content-disabled.txt"))
     if (name != "00000002" && name != "0000000000000002") out.disabled_packages.push_back(name);
+  return true;
+}
+
+bool export_forza_profile(const Imported& p, const std::filesystem::path& out_folder, std::string* error,
+                          const std::filesystem::path& template_db) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::create_directories(out_folder, ec);
+  if (ec) {
+    if (error) *error = "cannot create " + out_folder.string() + ": " + ec.message();
+    return false;
+  }
+
+  // 1. Serialize and atomically write ForzaProfile.body.
+  const std::vector<uint8_t> body_bytes = serialize_body(p.body);
+  if (!drive::atomic_write_file(out_folder / "ForzaProfile.body", body_bytes.data(), body_bytes.size(), error)) {
+    return false;
+  }
+
+  // 2. Write PlayerDatabase.sqlite via temp file + SQLite transaction + atomic replace.
+  const fs::path db_dst = out_folder / "PlayerDatabase.sqlite";
+  const fs::path db_tmp = out_folder / "PlayerDatabase.sqlite.tmp";
+  fs::remove(db_tmp, ec);
+  const bool use_template = !template_db.empty() && fs::is_regular_file(template_db, ec);
+  if (use_template) {
+    fs::copy_file(template_db, db_tmp, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+      if (error) *error = "cannot copy template database " + template_db.string() + ": " + ec.message();
+      return false;
+    }
+  }
+  {
+    Db db;
+    auto fail_db = [&](const std::string& msg) {
+      if (db.db) {
+        sqlite3_close(db.db);
+        db.db = nullptr;
+      }
+      std::error_code rm_ec;
+      fs::remove(db_tmp, rm_ec);
+      if (error) *error = msg;
+      return false;
+    };
+    if (sqlite3_open_v2(db_tmp.string().c_str(), &db.db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) !=
+        SQLITE_OK) {
+      return fail_db("PlayerDatabase: cannot create " + db_tmp.string());
+    }
+    auto exec = [&](const std::string& sql) -> bool {
+      char* errmsg = nullptr;
+      const int rc = sqlite3_exec(db.db, sql.c_str(), nullptr, nullptr, &errmsg);
+      if (rc != SQLITE_OK) {
+        std::string msg = "PlayerDatabase: ";
+        msg += errmsg ? errmsg : sqlite3_errmsg(db.db);
+        if (errmsg) sqlite3_free(errmsg);
+        if (error) *error = msg;
+        return false;
+      }
+      return true;
+    };
+    if (!exec("PRAGMA journal_mode=DELETE;") || !exec("BEGIN IMMEDIATE;")) return fail_db(error ? *error : "");
+
+    if (!use_template) {
+      std::string create_garage =
+          "CREATE TABLE Career_Garage ("
+          "Id INTEGER PRIMARY KEY, CarId INTEGER, PerformanceIndex REAL, ClassID INTEGER, "
+          "PartsValue INTEGER, DefaultManufacturerColorIndex INTEGER, LiveryFileName TEXT, "
+          "DistanceDriven REAL, TimeDriven REAL, TotalWinnings INTEGER, TotalRepairs INTEGER, "
+          "NumVictories INTEGER, NumPodiums INTEGER, NumRaces INTEGER";
+      for (const auto& slot : cars::upgrade_slots()) {
+        create_garage += ", ";
+        create_garage += slot.column;
+        create_garage += " INTEGER";
+      }
+      create_garage += ", WheelStyle INTEGER);";
+      if (!exec(create_garage) ||
+          !exec("CREATE TABLE Career_PurchasedParts (GarageId INTEGER, PartEnum INTEGER, PartId INTEGER, "
+                "ManufacturerId INTEGER, PricePaid INTEGER);") ||
+          !exec("CREATE TABLE Career_EventResults (EventId INTEGER, Place INTEGER);") ||
+          !exec("CREATE TABLE Career_RaceResults (RaceId INTEGER, Place INTEGER);") ||
+          !exec("CREATE TABLE CareerEventUnlocks (EventId INTEGER);") ||
+          !exec("CREATE TABLE CareerHubUnlocks (HubId INTEGER);") ||
+          !exec("CREATE TABLE LastUsedGarageId (Id INTEGER);")) {
+        return fail_db(error ? *error : "");
+      }
+    }
+
+    // Discover Career_Garage columns and add any extra valid columns present in `p.garage`.
+    std::vector<std::string> garage_cols;
+    std::set<std::string> garage_col_set;
+    if (!db.each("PRAGMA table_info(Career_Garage)",
+                 [&](sqlite3_stmt* s) {
+                   const auto* cname = sqlite3_column_text(s, 1);
+                   if (cname) {
+                     std::string col(reinterpret_cast<const char*>(cname));
+                     garage_cols.push_back(col);
+                     garage_col_set.insert(col);
+                   }
+                 },
+                 error)) {
+      return fail_db(error ? *error : "");
+    }
+    auto ensure_garage_col = [&](const std::string& col, const char* sql_type) -> bool {
+      if (garage_col_set.count(col)) return true;
+      if (!is_valid_sql_ident(col)) return true;
+      if (!exec("ALTER TABLE Career_Garage ADD COLUMN " + col + " " + sql_type + ";")) return false;
+      garage_cols.push_back(col);
+      garage_col_set.insert(col);
+      return true;
+    };
+    for (const auto& g : p.garage) {
+      for (const auto& kv : g.columns)
+        if (!ensure_garage_col(kv.first, "INTEGER")) return fail_db(error ? *error : "");
+      for (const auto& kv : g.reals)
+        if (!ensure_garage_col(kv.first, "REAL")) return fail_db(error ? *error : "");
+      for (const auto& kv : g.texts)
+        if (!ensure_garage_col(kv.first, "TEXT")) return fail_db(error ? *error : "");
+    }
+
+    // Preserve RivalsBeaten from template Career_EventResults when present.
+    std::map<int64_t, int64_t> prev_rivals;
+    bool has_rivals_col = false;
+    (void)db.each("PRAGMA table_info(Career_EventResults)",
+                  [&](sqlite3_stmt* s) {
+                    const auto* cname = sqlite3_column_text(s, 1);
+                    if (cname && std::string_view(reinterpret_cast<const char*>(cname)) == "RivalsBeaten")
+                      has_rivals_col = true;
+                  },
+                  nullptr);
+    if (has_rivals_col) {
+      (void)db.each("SELECT EventId, RivalsBeaten FROM Career_EventResults",
+                    [&](sqlite3_stmt* s) { prev_rivals[sqlite3_column_int64(s, 0)] = sqlite3_column_int64(s, 1); },
+                    nullptr);
+    }
+
+    if (!exec("DELETE FROM Career_Garage;") || !exec("DELETE FROM Career_PurchasedParts;") ||
+        !exec("DELETE FROM Career_EventResults;") || !exec("DELETE FROM Career_RaceResults;") ||
+        !exec("DELETE FROM CareerEventUnlocks;") || !exec("DELETE FROM CareerHubUnlocks;") ||
+        !exec("DELETE FROM LastUsedGarageId;")) {
+      return fail_db(error ? *error : "");
+    }
+
+    // Insert Career_Garage rows.
+    if (!p.garage.empty() && !garage_cols.empty()) {
+      std::string ins = "INSERT INTO Career_Garage (";
+      std::string ph;
+      for (size_t i = 0; i < garage_cols.size(); ++i) {
+        if (i) ins += ", ", ph += ", ";
+        ins += garage_cols[i];
+        ph += "?";
+      }
+      ins += ") VALUES (" + ph + ");";
+      sqlite3_stmt* st = nullptr;
+      if (sqlite3_prepare_v2(db.db, ins.c_str(), -1, &st, nullptr) != SQLITE_OK) {
+        return fail_db("PlayerDatabase: " + std::string(sqlite3_errmsg(db.db)));
+      }
+      for (const auto& g : p.garage) {
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+        for (size_t i = 0; i < garage_cols.size(); ++i) {
+          const int idx = int(i + 1);
+          const std::string& col = garage_cols[i];
+          if (col == "Id") {
+            sqlite3_bind_int64(st, idx, g.id);
+          } else if (col == "CarId") {
+            sqlite3_bind_int64(st, idx, g.car_id);
+          } else if (col == "PerformanceIndex") {
+            sqlite3_bind_double(st, idx, g.performance_index);
+          } else if (col == "ClassID") {
+            sqlite3_bind_int64(st, idx, g.class_id);
+          } else if (col == "DefaultManufacturerColorIndex") {
+            sqlite3_bind_int64(st, idx, g.color_index);
+          } else if (auto it_t = g.texts.find(col); it_t != g.texts.end()) {
+            sqlite3_bind_text(st, idx, it_t->second.c_str(), int(it_t->second.size()), SQLITE_TRANSIENT);
+          } else if (auto it_r = g.reals.find(col); it_r != g.reals.end()) {
+            sqlite3_bind_double(st, idx, it_r->second);
+          } else if (auto it_c = g.columns.find(col); it_c != g.columns.end()) {
+            sqlite3_bind_int64(st, idx, it_c->second);
+          } else {
+            sqlite3_bind_null(st, idx);
+          }
+        }
+        if (sqlite3_step(st) != SQLITE_DONE) {
+          const std::string msg = "PlayerDatabase: insert Career_Garage: " + std::string(sqlite3_errmsg(db.db));
+          sqlite3_finalize(st);
+          return fail_db(msg);
+        }
+      }
+      sqlite3_finalize(st);
+    }
+
+    // Insert Career_PurchasedParts.
+    if (!p.parts.empty()) {
+      sqlite3_stmt* st = nullptr;
+      if (sqlite3_prepare_v2(
+              db.db,
+              "INSERT INTO Career_PurchasedParts (GarageId, PartEnum, PartId, ManufacturerId, PricePaid) VALUES (?,?,?,?,?);",
+              -1, &st, nullptr) != SQLITE_OK) {
+        return fail_db("PlayerDatabase: " + std::string(sqlite3_errmsg(db.db)));
+      }
+      for (const auto& part : p.parts) {
+        sqlite3_reset(st);
+        sqlite3_bind_int64(st, 1, part.garage_id);
+        sqlite3_bind_int64(st, 2, part.part_enum);
+        sqlite3_bind_int64(st, 3, part.part_id);
+        sqlite3_bind_int64(st, 4, part.manufacturer_id);
+        sqlite3_bind_int64(st, 5, part.price_paid);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+          const std::string msg = "PlayerDatabase: insert Career_PurchasedParts: " + std::string(sqlite3_errmsg(db.db));
+          sqlite3_finalize(st);
+          return fail_db(msg);
+        }
+      }
+      sqlite3_finalize(st);
+    }
+
+    // Insert Career_EventResults.
+    if (!p.event_results.empty()) {
+      const char* sql = has_rivals_col
+                            ? "INSERT INTO Career_EventResults (EventId, Place, RivalsBeaten) VALUES (?,?,?);"
+                            : "INSERT INTO Career_EventResults (EventId, Place) VALUES (?,?);";
+      sqlite3_stmt* st = nullptr;
+      if (sqlite3_prepare_v2(db.db, sql, -1, &st, nullptr) != SQLITE_OK) {
+        return fail_db("PlayerDatabase: " + std::string(sqlite3_errmsg(db.db)));
+      }
+      for (const auto& [eid, place] : p.event_results) {
+        sqlite3_reset(st);
+        sqlite3_bind_int64(st, 1, eid);
+        sqlite3_bind_int(st, 2, place);
+        if (has_rivals_col) {
+          auto it = prev_rivals.find(eid);
+          sqlite3_bind_int64(st, 3, it != prev_rivals.end() ? it->second : 0);
+        }
+        if (sqlite3_step(st) != SQLITE_DONE) {
+          const std::string msg = "PlayerDatabase: insert Career_EventResults: " + std::string(sqlite3_errmsg(db.db));
+          sqlite3_finalize(st);
+          return fail_db(msg);
+        }
+      }
+      sqlite3_finalize(st);
+    }
+
+    // Insert Career_RaceResults.
+    if (!p.race_results.empty()) {
+      sqlite3_stmt* st = nullptr;
+      if (sqlite3_prepare_v2(db.db, "INSERT INTO Career_RaceResults (RaceId, Place) VALUES (?,?);", -1, &st, nullptr) !=
+          SQLITE_OK) {
+        return fail_db("PlayerDatabase: " + std::string(sqlite3_errmsg(db.db)));
+      }
+      for (const auto& [rid, place] : p.race_results) {
+        sqlite3_reset(st);
+        sqlite3_bind_int64(st, 1, rid);
+        sqlite3_bind_int(st, 2, place);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+          const std::string msg = "PlayerDatabase: insert Career_RaceResults: " + std::string(sqlite3_errmsg(db.db));
+          sqlite3_finalize(st);
+          return fail_db(msg);
+        }
+      }
+      sqlite3_finalize(st);
+    }
+
+    // Insert CareerEventUnlocks and CareerHubUnlocks.
+    auto insert_ids = [&](const char* sql, const std::vector<int64_t>& ids) -> bool {
+      if (ids.empty()) return true;
+      sqlite3_stmt* st = nullptr;
+      if (sqlite3_prepare_v2(db.db, sql, -1, &st, nullptr) != SQLITE_OK) {
+        if (error) *error = "PlayerDatabase: " + std::string(sqlite3_errmsg(db.db));
+        return false;
+      }
+      for (int64_t id : ids) {
+        sqlite3_reset(st);
+        sqlite3_bind_int64(st, 1, id);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+          if (error) *error = "PlayerDatabase: " + std::string(sqlite3_errmsg(db.db));
+          sqlite3_finalize(st);
+          return false;
+        }
+      }
+      sqlite3_finalize(st);
+      return true;
+    };
+    if (!insert_ids("INSERT INTO CareerEventUnlocks (EventId) VALUES (?);", p.event_unlocks) ||
+        !insert_ids("INSERT INTO CareerHubUnlocks (HubId) VALUES (?);", p.hub_unlocks)) {
+      return fail_db(error ? *error : "");
+    }
+
+    // Insert LastUsedGarageId.
+    {
+      int64_t last_id = p.last_used_garage_id;
+      for (const auto& g : p.garage) last_id = std::max(last_id, g.id);
+      sqlite3_stmt* st = nullptr;
+      if (sqlite3_prepare_v2(db.db, "INSERT INTO LastUsedGarageId VALUES (?);", -1, &st, nullptr) != SQLITE_OK) {
+        return fail_db("PlayerDatabase: " + std::string(sqlite3_errmsg(db.db)));
+      }
+      sqlite3_bind_int64(st, 1, last_id);
+      if (sqlite3_step(st) != SQLITE_DONE) {
+        const std::string msg = "PlayerDatabase: insert LastUsedGarageId: " + std::string(sqlite3_errmsg(db.db));
+        sqlite3_finalize(st);
+        return fail_db(msg);
+      }
+      sqlite3_finalize(st);
+    }
+
+    if (!exec("COMMIT;")) return fail_db(error ? *error : "");
+    const int close_rc = sqlite3_close(db.db);
+    db.db = nullptr;
+    if (close_rc != SQLITE_OK) return fail_db("PlayerDatabase: failed to close " + db_tmp.string());
+  }
+
+  if (!drive::atomic_replace_file(db_tmp, db_dst, error)) return false;
+
+  // 3. Write export.json and optional content package lists atomically.
+  const std::string export_json = "{\"VersionFlags\": " + std::to_string(p.version_flags) + "}\n";
+  if (!drive::atomic_write_file(out_folder / "export.json", export_json, error)) return false;
+
+  if (!p.packages.empty()) {
+    std::string lines;
+    for (const auto& pkg : p.packages) lines += pkg + "\n";
+    if (!drive::atomic_write_file(out_folder / "content-packages.txt", lines, error)) return false;
+  }
+  if (!p.disabled_packages.empty()) {
+    std::string lines;
+    for (const auto& pkg : p.disabled_packages) lines += pkg + "\n";
+    if (!drive::atomic_write_file(out_folder / "content-disabled.txt", lines, error)) return false;
+  }
   return true;
 }
 

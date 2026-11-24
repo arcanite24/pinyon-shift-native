@@ -22,6 +22,10 @@
 #include "ui4_chrome.h"
 #include "upgrade_shop.h"
 
+// Include LiveryEditor implementation directly in hub_shop_tests (hub_shop_tests links all
+// dependencies — shift_cars, carview_render, carview_hud — without linking livery_editor.cpp).
+#include "../apps/carview/livery_editor.cpp"
+
 namespace {
 
 int g_failed = 0;
@@ -88,6 +92,123 @@ void test_hub_stage_and_camera() {
   CHECK(lit > 50000);
 }
 
+void test_livery_editor_groups_undo_and_catalog() {
+  // 1. OEM #1..N 1-based swatch label fix (no off-by-one 0..N-1).
+  CHECK(carview::oem_swatch_label(0) == "OEM #1");
+  CHECK(carview::oem_swatch_label(13) == "OEM #14");
+
+  carview::LiveryEditor ed;
+  std::string msg;
+  CHECK(ed.open(nullptr, {}, 309, {}, msg));
+  CHECK(!ed.can_undo());
+
+  // 2. Vinyl Group multi-layer transforms: moving, scaling, rotating, recoloring, flipping,
+  //    skewing, adjusting alpha, and duplicating all affect every layer sharing group_id!
+  ed.set_tab(carview::EditorTab::kVinylLayers);
+  ed.add_vinyl_layer("builtin:square", 0xFF0000u);
+  ed.transform_layer(-0.10f, 0.0f, 0.0f, 0.0f, 0.0f);  // layer 0 at x=0.40, y=0.50
+  ed.add_vinyl_layer("builtin:circle", 0x00FF00u);
+  ed.transform_layer(+0.10f, 0.0f, 0.0f, 0.0f, 0.0f);  // layer 1 at x=0.60, y=0.50
+  CHECK(ed.document().layers.size() == 2);
+
+  // Assign both layers to group 1.
+  ed.select_layer_index(0);
+  ed.toggle_layer_group();
+  ed.select_layer_index(1);
+  ed.toggle_layer_group();
+  CHECK(ed.document().layers[0].group_id == 1 && ed.document().layers[1].group_id == 1);
+
+  const float x0_before = ed.document().layers[0].x;
+  const float x1_before = ed.document().layers[1].x;
+  const float sx0_before = ed.document().layers[0].scale_x;
+  const float sx1_before = ed.document().layers[1].scale_x;
+  const size_t undo_before_move = ed.undo_depth();
+
+  // Translate group together.
+  ed.transform_layer(0.05f, -0.04f, 0.0f, 0.0f, 0.0f);
+  CHECK(std::fabs(ed.document().layers[0].x - (x0_before + 0.05f)) < 1e-4f);
+  CHECK(std::fabs(ed.document().layers[1].x - (x1_before + 0.05f)) < 1e-4f);
+  CHECK(std::fabs(ed.document().layers[0].y - 0.46f) < 1e-4f);
+  CHECK(std::fabs(ed.document().layers[1].y - 0.46f) < 1e-4f);
+  CHECK(ed.undo_depth() == undo_before_move + 1);
+
+  // Scale group together.
+  ed.transform_layer(0.0f, 0.0f, 0.06f, 0.04f, 0.0f);
+  CHECK(std::fabs(ed.document().layers[0].scale_x - (sx0_before + 0.06f)) < 1e-4f);
+  CHECK(std::fabs(ed.document().layers[1].scale_x - (sx1_before + 0.06f)) < 1e-4f);
+
+  // Rotate group 90 degrees around group centroid -> both layers orbit centroid.
+  const float gx0 = ed.document().layers[0].x;
+  const float gx1 = ed.document().layers[1].x;
+  const float cx = 0.5f * (gx0 + gx1);
+  ed.transform_layer(0.0f, 0.0f, 0.0f, 0.0f, 90.0f);
+  CHECK(std::fabs(ed.document().layers[0].x - cx) < 1e-3f);
+  CHECK(std::fabs(ed.document().layers[1].x - cx) < 1e-3f);
+  CHECK(std::fabs(ed.document().layers[0].rot_deg - 90.0f) < 1e-3f);
+  CHECK(std::fabs(ed.document().layers[1].rot_deg - 90.0f) < 1e-3f);
+
+  // Recolor, flip, skew, alpha act on entire group.
+  const uint32_t col0_before = ed.document().layers[0].rgb;
+  const uint32_t col1_before = ed.document().layers[1].rgb;
+  ed.recolor_layer_hsv(0.25f, 0.0f, 0.0f);
+  CHECK(ed.document().layers[0].rgb != col0_before && ed.document().layers[1].rgb != col1_before);
+  ed.toggle_layer_flip(true);
+  CHECK(ed.document().layers[0].flip_x && ed.document().layers[1].flip_x);
+  ed.adjust_layer_skew(0.20f);
+  CHECK(std::fabs(ed.document().layers[0].skew - 0.20f) < 1e-4f &&
+        std::fabs(ed.document().layers[1].skew - 0.20f) < 1e-4f);
+  ed.adjust_layer_alpha(-0.25f);
+  CHECK(std::fabs(ed.document().layers[0].alpha - 0.75f) < 1e-4f &&
+        std::fabs(ed.document().layers[1].alpha - 0.75f) < 1e-4f);
+
+  // Duplicate group creates a full copy of all group members under a fresh group_id.
+  CHECK(ed.duplicate_selected_layer());
+  CHECK(ed.document().layers.size() == 4);
+  CHECK(ed.document().layers[2].group_id > 1 &&
+        ed.document().layers[2].group_id == ed.document().layers[3].group_id);
+
+  // 3. Undo stack restores prior states cleanly.
+  CHECK(ed.undo());
+  CHECK(ed.document().layers.size() == 2);
+  CHECK(ed.undo());  // undo alpha
+  CHECK(std::fabs(ed.document().layers[0].alpha - 1.0f) < 1e-4f);
+
+  // 4. Reset to factory paint clears custom paint & vinyl layers (and can be undone).
+  ed.set_tab(carview::EditorTab::kPaint);
+  ed.step_hsv(0.3f, 0.0f, 0.0f);
+  ed.reset_to_factory_paint();
+  CHECK(ed.document().layers.empty());
+  CHECK(!ed.document().paint.hood.active && !ed.document().paint.wing.active && !ed.document().paint.rims.active);
+  CHECK(ed.undo());  // undo factory reset restores layers!
+  CHECK(ed.document().layers.size() == 2);
+
+  // 5. Design Catalog save / scan / load round-trip in temp liveries/ directory.
+  const fs::path cat_dir = fs::temp_directory_path() / "shift_hub_shop_livery_catalog_test";
+  std::error_code ec;
+  fs::remove_all(cat_dir, ec);
+  std::string cerr;
+  CHECK(ed.save_to_catalog(cat_dir, "Track Stripe", &cerr));
+  ed.scan_design_catalog(cat_dir);
+  CHECK(ed.design_catalog().size() == 1);
+  CHECK(ed.design_catalog()[0].layer_count == 2);
+  ed.reset_to_factory_paint();
+  CHECK(ed.document().layers.empty());
+  CHECK(ed.load_selected_design(&cerr));
+  CHECK(ed.document().layers.size() == 2);
+  fs::remove_all(cat_dir, ec);
+
+  // 6. Debounced / throttled GPU preview upload eliminates per-tick vkDeviceWaitIdle stalls.
+  ed.set_preview_throttle_seconds(0.12);
+  ed.mark_vinyl_preview_uploaded(10.00);
+  CHECK(!ed.has_pending_vinyl_preview() && !ed.needs_vinyl_preview_upload(10.05));
+  ed.transform_layer_continuous(0.02f, 0.0f, 0.0f, 0.0f, 0.0f, 10.02);
+  CHECK(ed.has_pending_vinyl_preview());
+  CHECK(!ed.needs_vinyl_preview_upload(10.05));  // throttled inside 120 ms window!
+  CHECK(ed.needs_vinyl_preview_upload(10.15));   // allowed after window elapses!
+  ed.mark_vinyl_preview_uploaded(10.15);
+  CHECK(!ed.has_pending_vinyl_preview());
+}
+
 void test_disc_hub_shops_and_garage() {
   const fs::path game_root = find_game_root();
   if (game_root.empty()) {
@@ -106,15 +227,16 @@ void test_disc_hub_shops_and_garage() {
   std::vector<garage::ClassBand> bands;
   CHECK(garage::load_class_bands(game_root, bands, &err));
 
-  // 1. Autoshow Make Carousel + "All Affordable" + "no affordable cars" + factory colour swatch picker.
+  // 1. Autoshow Make Carousel entry mode + "All Affordable" + "All Cars" + Sort/Filter + >14 swatch scroll + [OWNED] + Test Drive.
   carview::Autoshow autoshow;
   CHECK(autoshow.open(db, {}, err, 0, false));
+  CHECK(autoshow.step() == carview::AutoshowStep::kMakeSelect);
   CHECK(!autoshow.makes().empty());
   CHECK(autoshow.makes()[0].name == "All Affordable");
   CHECK(autoshow.visible_cars().empty());
   CHECK(autoshow.empty_reason() == "no affordable cars");
 
-  // Move to a real make (alphabetical after "All Affordable").
+  // Move to "All Cars" / real makes and verify Sort/Filter/Test Drive/Swatch scrolling.
   CHECK(autoshow.makes().size() > 25);
   autoshow.move_make(1, 500000);
   CHECK(!autoshow.visible_cars().empty());
@@ -126,6 +248,41 @@ void test_disc_hub_shops_and_garage() {
     const int64_t seq1 = autoshow.selected_colour_sequence();
     CHECK(seq0 != seq1);
   }
+  // Toggle All Cars, sort by Price/Year/PI/Name, filter by Class/Drivetrain.
+  autoshow.toggle_all_cars(500000);
+  CHECK(autoshow.all_cars_mode() && !autoshow.visible_cars().empty());
+  autoshow.cycle_sort(1);
+  CHECK(autoshow.sort_mode() == carview::AutoshowSort::kPrice);
+  if (autoshow.visible_cars().size() >= 2) {
+    CHECK(autoshow.visible_cars()[0].dealer.base_cost <= autoshow.visible_cars()[1].dealer.base_cost);
+  }
+  autoshow.cycle_sort(1);
+  CHECK(autoshow.sort_mode() == carview::AutoshowSort::kYear);
+  autoshow.cycle_sort(1);
+  CHECK(autoshow.sort_mode() == carview::AutoshowSort::kPi);
+  autoshow.cycle_sort(1);
+  CHECK(autoshow.sort_mode() == carview::AutoshowSort::kName);
+  autoshow.set_sort(carview::AutoshowSort::kDefault);
+  autoshow.cycle_drivetrain_filter(1);
+  CHECK(autoshow.drivetrain_filter() == 1);
+  for (const auto& vc : autoshow.visible_cars()) CHECK(vc.drive_type_id == 1);
+  autoshow.set_drivetrain_filter(0);
+  // Check swatch_window scrolling on a car with >14 factory swatches (no 14-swatch truncation!).
+  for (size_t ci = 0; ci < autoshow.visible_cars().size(); ++ci) {
+    if (autoshow.visible_cars()[ci].swatches.size() > 14) {
+      autoshow.select_index(ci);
+      const size_t total_sw = autoshow.selected_car()->swatches.size();
+      autoshow.select_colour_index(total_sw - 1);
+      size_t first_sw = 0, vis_sw = 0;
+      autoshow.swatch_window(14, first_sw, vis_sw);
+      CHECK(vis_sw == 14 && first_sw > 0 && first_sw + vis_sw == total_sw);
+      break;
+    }
+  }
+  // Test Drive preparation hook.
+  std::string td_media;
+  int64_t td_cid = 0, td_col = -1;
+  CHECK(autoshow.prepare_test_drive(td_media, td_cid, td_col) && !td_media.empty() && td_cid > 0);
 
   // 2. Autoshow 2-car tutorial first-purchase flow (cars 1323 & 1009).
   carview::Autoshow tut;
@@ -154,12 +311,19 @@ void test_disc_hub_shops_and_garage() {
   CHECK(garage::buy_car(g, 309, 10000, 0.524381, 2, 1, s309, credits, &gid309));
   CHECK(garage::buy_car(g, 445, 50000, 0.62982, 4, 1, s445, credits, &gid445));
   g.selected = gid309;
+  // Autoshow [OWNED] badge check against live CareerGarage.
+  autoshow.set_owned_cars(g);
+  CHECK(autoshow.is_owned(309) && autoshow.is_owned(445));
 
   // 3. UpgradeShop: all 8 categories, aftermarket rims, conversions, Auto Upgrade, 35-slider Tuning, Sell Part.
   carview::UpgradeShop shop;
   CHECK(shop.open(db, g, gid309, err, &phys_settings, &pi_cfg, &bands));
   CHECK(shop.has_preview_pi());
   CHECK(shop.current_pi().shown_pi == 282);
+  // Signs-only discount override prevents Affinity stacking on upgrade prices.
+  shop.set_signs_discount_percent(15);
+  CHECK(shop.effective_discount_percent(65) == 15);
+  shop.set_signs_discount_percent(0);
 
   // Check Tires & Rims contains aftermarket rims (part_enum 43).
   shop.set_category(carview::ShopCategory::kTiresRims);
@@ -233,31 +397,77 @@ void test_disc_hub_shops_and_garage() {
   CHECK(shop.sell_shown_part(credits, msg));
   CHECK(credits > cr_pre_sell);
 
-  // Check Auto Upgrade tab -> A class.
+  // Check Auto Upgrade tab -> E..R1 + Class X (10 rows), fit A class.
   shop.set_category(carview::ShopCategory::kAutoUpgrade);
   const auto auto_rows = shop.visible_rows(0);
-  CHECK(auto_rows.size() == 9);
+  CHECK(auto_rows.size() == 10);
+  CHECK(auto_rows.back().label.find("X") != std::string::npos);
   while (shop.selected_row() < 4) shop.move_slot(1);  // index 4 = class 5 (A)
   CHECK(shop.auto_plan().ok && shop.auto_plan().result.class_id == 5);
+  CHECK(shop.auto_plan().result.raw_pi <= bands[5].raw_max);
   CHECK(shop.fit(0, credits, msg));
   CHECK(g.find(gid309)->class_id == 5);
 
-  // Check Tuning tab (25..35 sliders depending on drivetrain/gear count) + adjust tire pressure.
+  // Check Tuning tab (25..35 sliders depending on drivetrain/gear count) + adjust tire pressure + Race unlock hints.
   shop.set_category(carview::ShopCategory::kTuning);
   CHECK(shop.tuning_sliders().size() >= 24 && shop.tuning_sliders().size() <= 35);
+  const auto tune_rows = shop.visible_rows(0);
+  bool saw_locked_hint = false;
+  for (const auto& tr : tune_rows) {
+    if (!tr.fitted) {
+      CHECK(tr.state.rfind("LOCKED", 0) == 0);
+      CHECK(!tr.unlock_hint.empty());
+      saw_locked_hint = true;
+    }
+  }
   shop.move_part(1);
   CHECK(g.find(gid309)->tune.front_tire_pressure_psi > 0.0);
+  (void)saw_locked_hint;
 
-  // 4. GarageBrowser sort/filter + Sell Car (50% payout, active car protected).
+  // 4. GarageBrowser sort (Class/Make/Value/Year), filters (F..X + Favorites), 5 stats + real specs,
+  //    prize-car 100 CR sell value & purchased 50% sell value.
+  int64_t prize_gid = 0;
+  CHECK(garage::award_prize_car(g, 445, 0.62982, 4, 1, s445, &prize_gid));
   carview::GarageBrowser gb;
   gb.refresh(g, &db, bands);
-  CHECK(gb.visible().size() == 3);
+  CHECK(gb.visible().size() == 4);
+  // Real specs & 5 stat bars populated on GarageEntry.
+  CHECK(gb.selected_entry() != nullptr);
+  CHECK(gb.selected_entry()->speed_rating > 0.0 && gb.selected_entry()->braking_rating > 0.0);
+  CHECK(!gb.selected_entry()->aspiration.empty());
   gb.cycle_sort(1);
   CHECK(gb.sort_mode() == carview::GarageSort::kMake);
   gb.cycle_sort(1);
   CHECK(gb.sort_mode() == carview::GarageSort::kValue);
+  gb.cycle_sort(1);
+  CHECK(gb.sort_mode() == carview::GarageSort::kYear);
+  // Class F (0) & Class X (10) filters supported cleanly.
+  gb.set_class_filter(0);
+  CHECK(gb.class_filter() == 0);
+  gb.set_class_filter(10);
+  CHECK(gb.class_filter() == 10);
+  gb.set_class_filter(-1);
+  // Favorites toggle & filter.
+  CHECK(gb.toggle_favorite_selected(g, &db, bands));
+  gb.toggle_favorites_filter();
+  CHECK(gb.favorites_only() && gb.visible().size() == 1 && gb.visible()[0].favorite);
+  gb.toggle_favorites_filter();
+  CHECK(!gb.favorites_only() && gb.visible().size() == 4);
 
-  // Select a non-active car and sell it for 50%.
+  // Sell the prize car -> pays exactly 100 CR!
+  for (size_t i = 0; i < gb.visible().size(); ++i) {
+    if (gb.visible()[i].garage_id == prize_gid) {
+      gb.select_index(i);
+      break;
+    }
+  }
+  CHECK(gb.selected_entry() && gb.selected_entry()->is_prize && gb.selected_entry()->sell_cr == 100);
+  const int64_t cr_before_prize_sell = credits;
+  CHECK(gb.sell_selected(g, &db, bands, credits, msg));
+  CHECK(credits == cr_before_prize_sell + 100);
+  CHECK(g.cars.size() == 3);
+
+  // Select a non-active purchased car and sell it for 50%.
   while (gb.selected_entry() && gb.selected_entry()->is_current) gb.move(1);
   const int64_t cr_before_sell_car = credits;
   CHECK(gb.sell_selected(g, &db, bands, credits, msg));
@@ -327,6 +537,7 @@ void test_disc_hub_shops_and_garage() {
 
 int main() {
   test_hub_stage_and_camera();
+  test_livery_editor_groups_undo_and_catalog();
   test_disc_hub_shops_and_garage();
   if (g_failed) {
     std::fprintf(stderr, "hub_shop_tests: %d FAILED\n", g_failed);

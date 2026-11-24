@@ -1,6 +1,7 @@
 #include "livery_editor.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
@@ -31,6 +32,10 @@ const char* shape_category_name(ShapeCategory cat) {
   }
 }
 
+std::string oem_swatch_label(size_t index) {
+  return "OEM #" + std::to_string(index + 1);
+}
+
 bool LiveryEditor::open(const cars::PartsDb* db, const std::filesystem::path& game_root, int64_t car_id,
                         const std::filesystem::path& liv_path, std::string& message) {
   doc_ = cars::LiveryDocument{};
@@ -40,6 +45,23 @@ bool LiveryEditor::open(const cars::PartsDb* db, const std::filesystem::path& ga
     cars::load_livery_file(liv_path, doc_, nullptr);
     doc_.car_id = car_id;
   }
+  undo_stack_.clear();
+  last_continuous_undo_s_ = -1e9;
+  vinyl_preview_pending_ = false;
+  last_vinyl_upload_s_ = -1e9;
+  last_vinyl_dirty_s_ = -1e9;
+  catalog_open_ = false;
+  catalog_.clear();
+  catalog_idx_ = 0;
+  if (!liv_path.empty() && liv_path.has_parent_path()) {
+    catalog_dir_ = liv_path.parent_path();
+    scan_design_catalog(catalog_dir_);
+  }
+  uint32_t max_gid = 0;
+  for (const auto& ly : doc_.layers) {
+    if (ly.group_id > 0 && uint32_t(ly.group_id) > max_gid) max_gid = uint32_t(ly.group_id);
+  }
+  next_group_id_ = max_gid + 1;
   plane_masks_.planes.clear();
   if (db && db->is_open()) {
     cars::query_special_colors(*db, specials_, nullptr);
@@ -122,9 +144,39 @@ void LiveryEditor::record_previous_color(uint32_t rgb, cars::PaintFinish finish)
   if (prev_colors_.size() > 16) prev_colors_.resize(16);
 }
 
+void LiveryEditor::push_undo() {
+  constexpr size_t kMaxUndoDepth = 64;
+  undo_stack_.push_back(UndoSnapshot{doc_, layer_idx_});
+  if (undo_stack_.size() > kMaxUndoDepth) {
+    undo_stack_.erase(undo_stack_.begin());
+  }
+}
+
+void LiveryEditor::push_undo_coalesced(double now_s) {
+  if (undo_stack_.empty() || (now_s - last_continuous_undo_s_) > 0.45) {
+    push_undo();
+  }
+  last_continuous_undo_s_ = now_s;
+}
+
+bool LiveryEditor::undo() {
+  if (undo_stack_.empty()) return false;
+  UndoSnapshot snap = std::move(undo_stack_.back());
+  undo_stack_.pop_back();
+  doc_ = std::move(snap.doc);
+  layer_idx_ = doc_.layers.empty() ? 0 : std::min(snap.layer_idx, doc_.layers.size() - 1);
+  if (region_ != PaintRegion::kWindowTint) {
+    cars::rgb_to_hsv(active_region_spec().rgb, cur_h_, cur_s_, cur_v_);
+  }
+  last_continuous_undo_s_ = -1e9;
+  dirty_ = true;
+  return true;
+}
+
 void LiveryEditor::move_finish(int by) {
   if (region_ == PaintRegion::kWindowTint) return;
   if (region_ == PaintRegion::kRims && rims_paint_blocked()) return;
+  push_undo();
   auto& spec = active_region_spec();
   const int n = int(cars::PaintFinish::kCount);
   spec.finish = cars::PaintFinish(((int(spec.finish) + by) % n + n) % n);
@@ -139,6 +191,7 @@ void LiveryEditor::step_hsv(float dh, float ds, float dv) {
     return;
   }
   if (region_ == PaintRegion::kRims && rims_paint_blocked()) return;
+  push_undo();
   cur_h_ = std::fmod(cur_h_ + dh + 1.0f, 1.0f);
   cur_s_ = std::clamp(cur_s_ + ds, 0.0f, 1.0f);
   cur_v_ = std::clamp(cur_v_ + dv, 0.0f, 1.0f);
@@ -150,6 +203,7 @@ void LiveryEditor::step_hsv(float dh, float ds, float dv) {
 }
 
 void LiveryEditor::step_window_tint(float delta) {
+  push_undo();
   doc_.paint.window_tint = std::clamp(doc_.paint.window_tint + delta, 0.0f, 1.0f);
   dirty_ = true;
 }
@@ -159,12 +213,14 @@ void LiveryEditor::set_swatch(int row, int col, int rows, int cols) {
   row = std::clamp(row, 0, rows - 1);
   col = std::clamp(col, 0, cols - 1);
   if (region_ == PaintRegion::kWindowTint) {
+    push_undo();
     const float t = (cols > 1) ? float(col) / float(cols - 1) : 0.5f;
     doc_.paint.window_tint = std::clamp(1.0f - t, 0.0f, 1.0f);
     dirty_ = true;
     return;
   }
   if (region_ == PaintRegion::kRims && rims_paint_blocked()) return;
+  push_undo();
   cur_h_ = float(col) / float(cols);
   cur_s_ = (row == 0) ? 0.0f : (0.35f + 0.21f * float(row));
   cur_v_ = (row == 0) ? ((cols > 1) ? float(col) / float(cols - 1) : 1.0f) : (1.0f - 0.16f * float(row - 1));
@@ -189,6 +245,7 @@ void LiveryEditor::move_special_color(int by) {
 void LiveryEditor::apply_special_color() {
   if (specials_.empty() || region_ == PaintRegion::kWindowTint) return;
   if (region_ == PaintRegion::kRims && rims_paint_blocked()) return;
+  push_undo();
   const auto& sc = specials_[std::min(special_idx_, specials_.size() - 1)];
   auto& spec = active_region_spec();
   spec.active = true;
@@ -224,6 +281,7 @@ void LiveryEditor::move_manufacturer_color(int by) {
 void LiveryEditor::apply_manufacturer_color() {
   if (mfg_colors_.empty() || region_ == PaintRegion::kWindowTint) return;
   if (region_ == PaintRegion::kRims && rims_paint_blocked()) return;
+  push_undo();
   const auto& mc = mfg_colors_[std::min(mfg_idx_, mfg_colors_.size() - 1)];
   auto& spec = active_region_spec();
   spec.active = true;
@@ -248,6 +306,7 @@ void LiveryEditor::move_previous_color(int by) {
 void LiveryEditor::apply_previous_color() {
   if (prev_colors_.empty() || region_ == PaintRegion::kWindowTint) return;
   if (region_ == PaintRegion::kRims && rims_paint_blocked()) return;
+  push_undo();
   const auto entry = prev_colors_[std::min(prev_idx_, prev_colors_.size() - 1)];
   auto& spec = active_region_spec();
   spec.active = true;
@@ -257,7 +316,28 @@ void LiveryEditor::apply_previous_color() {
   dirty_ = true;
 }
 
+void LiveryEditor::reset_to_factory_paint() {
+  push_undo();
+  doc_.paint = cars::CarPaintSpec{};
+  doc_.layers.clear();
+  layer_idx_ = 0;
+  vinyl_preview_pending_ = true;
+  if (!mfg_colors_.empty()) {
+    doc_.paint.body.active = true;
+    doc_.paint.body.rgb = mfg_colors_.front().rgb;
+    doc_.paint.body.finish = mfg_colors_.front().metallic ? cars::PaintFinish::kMetallic : cars::PaintFinish::kNormal;
+  } else {
+    doc_.paint.body.active = false;
+  }
+  doc_.paint.window_tint = 0.0f;
+  if (region_ != PaintRegion::kWindowTint) {
+    cars::rgb_to_hsv(active_region_spec().rgb, cur_h_, cur_s_, cur_v_);
+  }
+  dirty_ = true;
+}
+
 void LiveryEditor::add_vinyl_layer(const std::string& shape_path, uint32_t rgb) {
+  push_undo();
   cars::VinylLayer l;
   if (!shape_path.empty()) {
     l.shape_path = shape_path;
@@ -278,6 +358,7 @@ void LiveryEditor::add_vinyl_layer(const std::string& shape_path, uint32_t rgb) 
 
 void LiveryEditor::delete_selected_layer() {
   if (doc_.layers.empty()) return;
+  push_undo();
   doc_.layers.erase(doc_.layers.begin() + ptrdiff_t(std::min(layer_idx_, doc_.layers.size() - 1)));
   if (!doc_.layers.empty()) layer_idx_ = std::min(layer_idx_, doc_.layers.size() - 1);
   else layer_idx_ = 0;
@@ -299,24 +380,84 @@ void LiveryEditor::move_layer_order(int by) {
   if (doc_.layers.size() < 2) return;
   const int dst = std::clamp(int(layer_idx_) + by, 0, int(doc_.layers.size()) - 1);
   if (size_t(dst) == layer_idx_) return;
+  push_undo();
   std::swap(doc_.layers[layer_idx_], doc_.layers[size_t(dst)]);
   layer_idx_ = size_t(dst);
   dirty_ = true;
 }
 
+void LiveryEditor::apply_transform_impl(float dx, float dy, float dsx, float dsy, float drot) {
+  if (layer_idx_ >= doc_.layers.size()) return;
+  const int gid = doc_.layers[layer_idx_].group_id;
+  if (gid == 0) {
+    auto& l = doc_.layers[layer_idx_];
+    l.x = std::clamp(l.x + dx, 0.0f, 1.0f);
+    l.y = std::clamp(l.y + dy, 0.0f, 1.0f);
+    l.scale_x = std::clamp(l.scale_x + dsx, 0.02f, 2.0f);
+    l.scale_y = std::clamp(l.scale_y + dsy, 0.02f, 2.0f);
+    l.rot_deg = std::fmod(l.rot_deg + drot + 360.0f, 360.0f);
+    dirty_ = true;
+    return;
+  }
+
+  // Vinyl Group multi-layer transform: move, scale, and rotate all members
+  // sharing `group_id` cohesively around the group's centroid.
+  float cx = 0.0f, cy = 0.0f;
+  int count = 0;
+  for (const auto& ly : doc_.layers) {
+    if (ly.group_id == gid) {
+      cx += ly.x;
+      cy += ly.y;
+      ++count;
+    }
+  }
+  if (count <= 0) return;
+  cx /= float(count);
+  cy /= float(count);
+
+  const float pivot_sx = std::max(0.02f, doc_.layers[layer_idx_].scale_x);
+  const float pivot_sy = std::max(0.02f, doc_.layers[layer_idx_].scale_y);
+  const float rx = std::clamp(pivot_sx + dsx, 0.02f, 2.0f) / pivot_sx;
+  const float ry = std::clamp(pivot_sy + dsy, 0.02f, 2.0f) / pivot_sy;
+  const float rad = drot * (3.14159265358979323846f / 180.0f);
+  const float cs = std::cos(rad);
+  const float sn = std::sin(rad);
+
+  for (auto& ly : doc_.layers) {
+    if (ly.group_id != gid) continue;
+    float ox = (ly.x - cx) * rx;
+    float oy = (ly.y - cy) * ry;
+    if (std::fabs(drot) > 1e-5f) {
+      const float nx = ox * cs - oy * sn;
+      const float ny = ox * sn + oy * cs;
+      ox = nx;
+      oy = ny;
+    }
+    ly.x = std::clamp(cx + ox + dx, 0.0f, 1.0f);
+    ly.y = std::clamp(cy + oy + dy, 0.0f, 1.0f);
+    ly.scale_x = std::clamp(ly.scale_x * rx, 0.02f, 2.0f);
+    ly.scale_y = std::clamp(ly.scale_y * ry, 0.02f, 2.0f);
+    ly.rot_deg = std::fmod(ly.rot_deg + drot + 360.0f, 360.0f);
+  }
+  dirty_ = true;
+}
+
 void LiveryEditor::transform_layer(float dx, float dy, float dsx, float dsy, float drot) {
   if (layer_idx_ >= doc_.layers.size()) return;
-  auto& l = doc_.layers[layer_idx_];
-  l.x = std::clamp(l.x + dx, 0.0f, 1.0f);
-  l.y = std::clamp(l.y + dy, 0.0f, 1.0f);
-  l.scale_x = std::clamp(l.scale_x + dsx, 0.02f, 2.0f);
-  l.scale_y = std::clamp(l.scale_y + dsy, 0.02f, 2.0f);
-  l.rot_deg = std::fmod(l.rot_deg + drot + 360.0f, 360.0f);
-  dirty_ = true;
+  push_undo();
+  apply_transform_impl(dx, dy, dsx, dsy, drot);
+}
+
+void LiveryEditor::transform_layer_continuous(float dx, float dy, float dsx, float dsy, float drot, double now_s) {
+  if (layer_idx_ >= doc_.layers.size()) return;
+  push_undo_coalesced(now_s);
+  apply_transform_impl(dx, dy, dsx, dsy, drot);
+  mark_vinyl_preview_dirty(now_s);
 }
 
 void LiveryEditor::cycle_layer_shape(int by) {
   if (layer_idx_ >= doc_.layers.size()) return;
+  push_undo();
   static const char* kBuiltins[] = {"@rect", "@circle", "@star", "@chevron"};
   const size_t nv = lib_.vinyl_names().size();
   const size_t nd = lib_.decal_names().size();
@@ -349,47 +490,101 @@ void LiveryEditor::cycle_shape_category(int by) {
 
 void LiveryEditor::cycle_layer_plane(int by) {
   if (layer_idx_ >= doc_.layers.size()) return;
+  push_undo();
   const int n = int(cars::LiveryPlaneKind::kCount);
-  auto& l = doc_.layers[layer_idx_];
-  l.plane = cars::LiveryPlaneKind(((int(l.plane) + by) % n + n) % n);
+  const int gid = doc_.layers[layer_idx_].group_id;
+  if (gid == 0) {
+    auto& l = doc_.layers[layer_idx_];
+    l.plane = cars::LiveryPlaneKind(((int(l.plane) + by) % n + n) % n);
+  } else {
+    const auto next_plane = cars::LiveryPlaneKind(((int(doc_.layers[layer_idx_].plane) + by) % n + n) % n);
+    for (auto& ly : doc_.layers)
+      if (ly.group_id == gid) ly.plane = next_plane;
+  }
   dirty_ = true;
 }
 
 void LiveryEditor::recolor_layer_hsv(float dh, float ds, float dv) {
   if (layer_idx_ >= doc_.layers.size()) return;
-  float h = 0, s = 0, v = 0;
-  cars::rgb_to_hsv(doc_.layers[layer_idx_].rgb, h, s, v);
-  h = std::fmod(h + dh + 1.0f, 1.0f);
-  s = std::clamp(s + ds, 0.0f, 1.0f);
-  v = std::clamp(v + dv, 0.0f, 1.0f);
-  doc_.layers[layer_idx_].rgb = cars::hsv_to_rgb(h, s, v);
+  push_undo();
+  const int gid = doc_.layers[layer_idx_].group_id;
+  auto step_one = [&](cars::VinylLayer& ly) {
+    float h = 0, s = 0, v = 0;
+    cars::rgb_to_hsv(ly.rgb, h, s, v);
+    h = std::fmod(h + dh + 1.0f, 1.0f);
+    s = std::clamp(s + ds, 0.0f, 1.0f);
+    v = std::clamp(v + dv, 0.0f, 1.0f);
+    ly.rgb = cars::hsv_to_rgb(h, s, v);
+  };
+  if (gid == 0) {
+    step_one(doc_.layers[layer_idx_]);
+  } else {
+    for (auto& ly : doc_.layers)
+      if (ly.group_id == gid) step_one(ly);
+  }
   dirty_ = true;
 }
 
 void LiveryEditor::toggle_layer_flip(bool horizontal) {
   if (layer_idx_ >= doc_.layers.size()) return;
-  auto& l = doc_.layers[layer_idx_];
-  if (horizontal) l.flip_x = !l.flip_x;
-  else l.flip_y = !l.flip_y;
+  push_undo();
+  const int gid = doc_.layers[layer_idx_].group_id;
+  if (gid == 0) {
+    auto& l = doc_.layers[layer_idx_];
+    if (horizontal) l.flip_x = !l.flip_x;
+    else l.flip_y = !l.flip_y;
+  } else {
+    float cx = 0.0f, cy = 0.0f;
+    int count = 0;
+    for (const auto& ly : doc_.layers) {
+      if (ly.group_id == gid) { cx += ly.x; cy += ly.y; ++count; }
+    }
+    if (count > 0) { cx /= float(count); cy /= float(count); }
+    for (auto& ly : doc_.layers) {
+      if (ly.group_id != gid) continue;
+      if (horizontal) {
+        ly.flip_x = !ly.flip_x;
+        ly.x = std::clamp(2.0f * cx - ly.x, 0.0f, 1.0f);
+      } else {
+        ly.flip_y = !ly.flip_y;
+        ly.y = std::clamp(2.0f * cy - ly.y, 0.0f, 1.0f);
+      }
+    }
+  }
   dirty_ = true;
 }
 
 void LiveryEditor::adjust_layer_skew(float dskew) {
   if (layer_idx_ >= doc_.layers.size()) return;
-  auto& l = doc_.layers[layer_idx_];
-  l.skew = std::clamp(l.skew + dskew, -2.0f, 2.0f);
+  push_undo();
+  const int gid = doc_.layers[layer_idx_].group_id;
+  if (gid == 0) {
+    auto& l = doc_.layers[layer_idx_];
+    l.skew = std::clamp(l.skew + dskew, -2.0f, 2.0f);
+  } else {
+    for (auto& ly : doc_.layers)
+      if (ly.group_id == gid) ly.skew = std::clamp(ly.skew + dskew, -2.0f, 2.0f);
+  }
   dirty_ = true;
 }
 
 void LiveryEditor::adjust_layer_alpha(float dalpha) {
   if (layer_idx_ >= doc_.layers.size()) return;
-  auto& l = doc_.layers[layer_idx_];
-  l.alpha = std::clamp(l.alpha + dalpha, 0.05f, 1.0f);
+  push_undo();
+  const int gid = doc_.layers[layer_idx_].group_id;
+  if (gid == 0) {
+    auto& l = doc_.layers[layer_idx_];
+    l.alpha = std::clamp(l.alpha + dalpha, 0.05f, 1.0f);
+  } else {
+    for (auto& ly : doc_.layers)
+      if (ly.group_id == gid) ly.alpha = std::clamp(ly.alpha + dalpha, 0.05f, 1.0f);
+  }
   dirty_ = true;
 }
 
 void LiveryEditor::toggle_layer_mask() {
   if (layer_idx_ >= doc_.layers.size()) return;
+  push_undo();
   auto& l = doc_.layers[layer_idx_];
   l.is_mask = !l.is_mask;
   dirty_ = true;
@@ -397,6 +592,7 @@ void LiveryEditor::toggle_layer_mask() {
 
 void LiveryEditor::toggle_layer_group() {
   if (layer_idx_ >= doc_.layers.size()) return;
+  push_undo();
   auto& l = doc_.layers[layer_idx_];
   if (l.group_id != 0) {
     l.group_id = 0;
@@ -404,14 +600,44 @@ void LiveryEditor::toggle_layer_group() {
     l.group_id = doc_.layers[layer_idx_ - 1].group_id;
   } else {
     const uint32_t gid = next_group_id_++;
-    l.group_id = gid;
-    if (layer_idx_ > 0) doc_.layers[layer_idx_ - 1].group_id = gid;
+    l.group_id = int(gid);
+    if (layer_idx_ > 0) doc_.layers[layer_idx_ - 1].group_id = int(gid);
   }
   dirty_ = true;
 }
 
+bool LiveryEditor::duplicate_selected_layer() {
+  if (layer_idx_ >= doc_.layers.size()) return false;
+  push_undo();
+  const int gid = doc_.layers[layer_idx_].group_id;
+  if (gid == 0) {
+    cars::VinylLayer dup = doc_.layers[layer_idx_];
+    dup.x = std::clamp(dup.x + 0.03f, 0.0f, 1.0f);
+    dup.y = std::clamp(dup.y + 0.03f, 0.0f, 1.0f);
+    doc_.layers.insert(doc_.layers.begin() + ptrdiff_t(layer_idx_ + 1), dup);
+    layer_idx_ += 1;
+  } else {
+    const int new_gid = int(next_group_id_++);
+    std::vector<cars::VinylLayer> copies;
+    for (const auto& ly : doc_.layers) {
+      if (ly.group_id != gid) continue;
+      cars::VinylLayer dup = ly;
+      dup.group_id = new_gid;
+      dup.x = std::clamp(dup.x + 0.03f, 0.0f, 1.0f);
+      dup.y = std::clamp(dup.y + 0.03f, 0.0f, 1.0f);
+      copies.push_back(std::move(dup));
+    }
+    const size_t ins = doc_.layers.size();
+    doc_.layers.insert(doc_.layers.end(), copies.begin(), copies.end());
+    layer_idx_ = ins;
+  }
+  dirty_ = true;
+  return true;
+}
+
 bool LiveryEditor::mirror_selected_layer() {
   if (layer_idx_ >= doc_.layers.size()) return false;
+  push_undo();
   cars::VinylLayer mir = doc_.layers[layer_idx_];
   const float norm_rot = std::fmod(std::fmod(mir.rot_deg, 360.0f) + 360.0f, 360.0f);
   if (mir.plane == cars::LiveryPlaneKind::kLeft || mir.plane == cars::LiveryPlaneKind::kRight) {
@@ -451,6 +677,7 @@ bool LiveryEditor::copy_selected_layer() {
 
 bool LiveryEditor::paste_layer() {
   if (!clipboard_.has_value()) return false;
+  push_undo();
   cars::VinylLayer copy = *clipboard_;
   copy.x = std::clamp(copy.x + 0.03f, 0.0f, 1.0f);
   copy.y = std::clamp(copy.y + 0.03f, 0.0f, 1.0f);
@@ -466,12 +693,111 @@ bool LiveryEditor::paste_layer() {
   return true;
 }
 
+void LiveryEditor::mark_vinyl_preview_dirty(double now_s) {
+  vinyl_preview_pending_ = true;
+  last_vinyl_dirty_s_ = now_s;
+}
+
+bool LiveryEditor::needs_vinyl_preview_upload(double now_s) const {
+  if (!vinyl_preview_pending_) return false;
+  return (now_s - last_vinyl_upload_s_) >= preview_throttle_s_;
+}
+
+void LiveryEditor::mark_vinyl_preview_uploaded(double now_s) {
+  vinyl_preview_pending_ = false;
+  last_vinyl_upload_s_ = now_s;
+}
+
+void LiveryEditor::scan_design_catalog(const std::filesystem::path& liveries_dir) {
+  catalog_.clear();
+  catalog_idx_ = 0;
+  catalog_dir_ = liveries_dir;
+  if (liveries_dir.empty()) return;
+  std::error_code ec;
+  if (!std::filesystem::is_directory(liveries_dir, ec)) return;
+  for (const auto& entry : std::filesystem::directory_iterator(liveries_dir, ec)) {
+    if (!entry.is_regular_file(ec)) continue;
+    if (entry.path().extension() != ".liv") continue;
+    cars::LiveryDocument tmp;
+    if (!cars::load_livery_file(entry.path(), tmp, nullptr)) continue;
+    DesignCatalogEntry de;
+    de.path = entry.path();
+    de.name = tmp.name.empty() ? entry.path().stem().string() : tmp.name;
+    de.car_id = tmp.car_id;
+    de.layer_count = tmp.layers.size();
+    catalog_.push_back(std::move(de));
+  }
+  std::sort(catalog_.begin(), catalog_.end(),
+            [](const DesignCatalogEntry& a, const DesignCatalogEntry& b) { return a.name < b.name; });
+}
+
+void LiveryEditor::move_design_selection(int by) {
+  if (catalog_.empty()) return;
+  const int n = int(catalog_.size());
+  catalog_idx_ = size_t(((int(catalog_idx_) + by) % n + n) % n);
+}
+
+void LiveryEditor::select_design_index(size_t idx) {
+  if (catalog_.empty()) return;
+  catalog_idx_ = std::min(idx, catalog_.size() - 1);
+}
+
+bool LiveryEditor::save_to_catalog(const std::filesystem::path& liveries_dir, const std::string& design_name,
+                                   std::string* error) {
+  if (liveries_dir.empty()) {
+    if (error) *error = "no liveries directory";
+    return false;
+  }
+  std::string clean_name = design_name.empty() ? ("Design_" + std::to_string(doc_.car_id)) : design_name;
+  std::string stem;
+  for (unsigned char ch : clean_name) {
+    if (std::isalnum(ch) || ch == '-' || ch == '_') stem.push_back(char(ch));
+    else if (ch == ' ') stem.push_back('_');
+  }
+  if (stem.empty()) stem = "design";
+  doc_.name = clean_name;
+  const auto dst = liveries_dir / (stem + ".liv");
+  if (!cars::save_livery_file(dst, doc_, error)) return false;
+  scan_design_catalog(liveries_dir);
+  for (size_t i = 0; i < catalog_.size(); ++i) {
+    if (catalog_[i].path == dst) {
+      catalog_idx_ = i;
+      break;
+    }
+  }
+  return true;
+}
+
+bool LiveryEditor::load_selected_design(std::string* error) {
+  if (catalog_.empty() || catalog_idx_ >= catalog_.size()) {
+    if (error) *error = "no design selected";
+    return false;
+  }
+  push_undo();
+  const int64_t keep_car_id = doc_.car_id;
+  if (!cars::load_livery_file(catalog_[catalog_idx_].path, doc_, error)) {
+    undo_stack_.pop_back();
+    return false;
+  }
+  if (keep_car_id > 0) doc_.car_id = keep_car_id;
+  layer_idx_ = 0;
+  if (region_ != PaintRegion::kWindowTint) {
+    cars::rgb_to_hsv(active_region_spec().rgb, cur_h_, cur_s_, cur_v_);
+  }
+  dirty_ = true;
+  return true;
+}
+
 bool LiveryEditor::save(const std::filesystem::path& path, std::string* error) const {
   return cars::save_livery_file(path, doc_, error);
 }
 
 bool LiveryEditor::load(const std::filesystem::path& path, std::string* error) {
-  if (!cars::load_livery_file(path, doc_, error)) return false;
+  push_undo();
+  if (!cars::load_livery_file(path, doc_, error)) {
+    undo_stack_.pop_back();
+    return false;
+  }
   dirty_ = true;
   return true;
 }
@@ -745,9 +1071,8 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
         if (act) list.frame(bx, by - lift, bx + cw, by + bh - lift, ui4::kPink, 2.0f * s);
         list.rect(bx + 10.0f * s, by + 12.0f * s - lift, bx + cw - 10.0f * s, by + 62.0f * s - lift,
                   ui::rgba(uint8_t((c.rgb >> 16) & 0xFF), uint8_t((c.rgb >> 8) & 0xFF), uint8_t(c.rgb & 0xFF), 255));
-        char buf[48];
-        std::snprintf(buf, sizeof buf, "OEM #%d", int(c.sequence + 1));
-        list.text(bx + 10.0f * s, by + 70.0f * s - lift, buf,
+        const std::string oem_lbl = oem_swatch_label(size_t(i));
+        list.text(bx + 10.0f * s, by + 70.0f * s - lift, oem_lbl,
                   ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.0f * s, ui4::kWhite));
         list.text(bx + 10.0f * s, by + 88.0f * s - lift, c.metallic ? "METALLIC" : "GLOSS",
                   ui4::style(ui::Font::kB, 10.0f * s, act ? ui4::kYellow : ui4::kDim));
@@ -899,6 +1224,40 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
     }
   }
 
+  // Design Catalog modal overlay (liveries/*.liv save/load list).
+  if (editor.catalog_open()) {
+    const float cx0 = 86.0f * s, cy0 = 112.0f * s, cx1 = 500.0f * s, cy1 = 442.0f * s;
+    ui4::panel01(list, cx0, cy0, cx1, cy1, s, ui::rgba(16, 18, 24, 240), ui4::kPink);
+    list.text(cx0 + 16.0f * s, cy0 + 12.0f * s,
+              "DESIGN CATALOG (" + std::to_string(editor.design_catalog().size()) + ")",
+              ui4::style(ui::Font::kE, 14.0f * s, ui4::kPinkHi));
+    const auto& cat = editor.design_catalog();
+    if (cat.empty()) {
+      list.text(cx0 + 16.0f * s, cy0 + 48.0f * s, "NO SAVED DESIGNS IN liveries/",
+                ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim));
+    } else {
+      const int n = int(cat.size());
+      const int sel = int(std::min(editor.selected_design(), cat.size() - 1));
+      const int max_vis = std::min(n, 7);
+      const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
+      float ry = cy0 + 42.0f * s;
+      for (int i = first; i < first + max_vis; ++i) {
+        const bool act = (i == sel);
+        list.add_hit(cx0 + 10.0f * s, ry, cx1 - 10.0f * s, ry + 34.0f * s, ui::kHitRow, i);
+        ui4::pill(list, cx0 + 10.0f * s, ry, cx1 - 10.0f * s, ry + 34.0f * s,
+                  act ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kPill02, false, act);
+        list.text(cx0 + 20.0f * s, ry + 9.0f * s, cat[size_t(i)].name,
+                  ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.0f * s, ui4::kWhite));
+        list.text(cx1 - 20.0f * s, ry + 10.0f * s,
+                  std::to_string(cat[size_t(i)].layer_count) + " LAYERS",
+                  ui4::style(ui::Font::kB, 10.5f * s, act ? ui4::kYellow : ui4::kDim, ui::Align::kRight));
+        ry += 38.0f * s;
+      }
+    }
+    list.text(cx0 + 16.0f * s, cy1 - 24.0f * s, "[A/ENTER] LOAD   [S] SAVE COPY   [B/F2] CLOSE",
+              ui4::style(ui::Font::kB, 10.5f * s, ui4::kYellow));
+  }
+
   if (!notice.empty()) {
     ui4::brush(list, w - 420.0f * s, h - 68.0f * s, w - 56.0f * s, h - 38.0f * s, ui4::kPink);
     ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
@@ -906,12 +1265,14 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
     list.text(w - 68.0f * s, h - 60.0f * s, notice, ns);
   }
 
+  const std::string undo_lbl =
+      editor.can_undo() ? ("UNDO (" + std::to_string(editor.undo_depth()) + ")") : "TAB";
   ui4::button_bar(list,
                   {{"A", "SAVE LIVERY"},
-                   {"LB", "TAB"},
-                   {"DPAD_LR", vinyl_tab ? "TRANSFORM" : "FINISH / COLOR"},
-                   {"Y", "ADD VINYL"},
-                   {"X", "DELETE"},
+                   {"LB", vinyl_tab ? undo_lbl : "TAB"},
+                   {"DPAD_LR", vinyl_tab ? "LAYER / LT:MODS" : "FINISH / COLOR"},
+                   {"Y", vinyl_tab ? "ADD / LT:DUP" : "REGION"},
+                   {"X", vinyl_tab ? "DEL / LT:FLIP" : "RESET FACTORY"},
                    {"B", "BACK"}},
                   w, h, 56.0f);
 }

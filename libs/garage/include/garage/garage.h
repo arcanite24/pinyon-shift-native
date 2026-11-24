@@ -35,6 +35,8 @@ struct Car {
   drive::CarTune tune;                   // 35 Tuning_* sliders (default -1 / -100 = stock)
   std::string livery_file;               // optional relative livery path (e.g. "liveries/12.liv")
   CarStats cached_stats;                 // recomputed whenever parts change
+  bool favorite = false;                 // player favorite flag (persisted in garage.txt)
+  bool is_prize = false;                 // gift / prize / barn-find car (sells for 100 CR)
 };
 
 struct Bought {
@@ -48,12 +50,23 @@ struct Garage {
   std::vector<Bought> bought;
   int64_t last_id = 0;
   int64_t selected = 0;
+  // Car Club shared garage keyed by Career_Garage.Id (preserves custom builds & liveries)
+  // plus borrowed-car session persistence.
+  std::vector<int64_t> club_shared_garage_ids;
+  int64_t club_borrowed_garage_id = 0;
+  int64_t club_return_garage_id = 0;
 
   Car* find(int64_t id);
   const Car* find(int64_t id) const;
   const Car* selected_car() const;  // the selected row, else the lowest Id
   bool owns_part(int64_t garage_id, int part_enum, int64_t part_id) const;
   const Bought* find_bought(int64_t garage_id, int part_enum, int64_t part_id) const;
+
+  bool toggle_favorite(int64_t garage_id);
+  bool toggle_club_shared(int64_t garage_id);
+  bool is_club_shared(int64_t garage_id) const;
+  bool borrow_club_car(int64_t garage_id);
+  bool return_borrowed_club_car();
 };
 
 // The fitted rows of a car as the car loader takes them (table -> row Id).
@@ -63,6 +76,11 @@ cars::FittedParts fitted(const Car& car);
 // SPEC-GARAGE-UPGRADES, Prices and the sign discount: p' = floor((1 - d) p
 // + 0.5) in single precision with d = discount / 100; p when d is 0.
 int64_t discounted_price(int64_t price, int discount_percent);
+
+// Retail FH1 discounts upgrade parts via Discount Signs (0..100%) ONLY.
+// Manufacturer Affinity awards XP/cash bonuses and does NOT stack onto upgrade prices.
+int upgrade_discount_percent(int discount_signs_found, int affinity_discount_percent = 0);
+int64_t upgrade_part_price(int64_t price, int discount_signs_found, int affinity_discount_percent = 0);
 
 struct FitResult {
   bool ok = false;
@@ -83,6 +101,14 @@ FitResult fit_part_full(Garage& g, const cars::PartsDb& db, int64_t garage_id, c
                         const cars::PhysicsSettings* phys_settings = nullptr, const PiConfig* pi_cfg = nullptr,
                         const std::vector<ClassBand>* bands = nullptr, PiResult* pi_out = nullptr);
 
+// Explicitly removes any fitted forced-induction conversion (SingleTurbo, TwinTurbo,
+// SuperchargerCSC, SuperchargerDSC) and dependent Intercooler, reverting the car to
+// Naturally Aspirated (and refreshing PI when physics/PI tables are supplied).
+bool revert_to_naturally_aspirated(Garage& g, const cars::PartsDb* db, int64_t garage_id,
+                                   const cars::PhysicsSettings* phys_settings = nullptr,
+                                   const PiConfig* pi_cfg = nullptr,
+                                   const std::vector<ClassBand>* bands = nullptr, PiResult* pi_out = nullptr);
+
 // Recomputes and updates `car.performance_index`, `car.class_id`, and `car.cached_stats`.
 bool refresh_car_pi(Car& car, const cars::PartsDb& db, const cars::PhysicsSettings& phys_settings,
                     const PiConfig& pi_cfg, const std::vector<ClassBand>& bands, PiResult* out = nullptr,
@@ -92,9 +118,16 @@ bool refresh_car_pi(Car& car, const cars::PartsDb& db, const cars::PhysicsSettin
 bool buy_car(Garage& g, int64_t car_id, int64_t price, double performance_index, int class_id, int colour,
              const std::map<std::string, int64_t>& stock, int64_t& credits, int64_t* new_id = nullptr);
 
-// Selling cars (SPEC-GARAGE-UPGRADES, Selling): payout = floor(0.5 * (base_cost + parts_value)).
+// Awards a gift / prize / barn-find car (`is_prize = true`, sells for 100 CR).
+bool award_prize_car(Garage& g, int64_t car_id, double performance_index, int class_id, int colour,
+                     const std::map<std::string, int64_t>& stock, int64_t* new_id = nullptr, bool select_it = false);
+
+// Selling cars (SPEC-GARAGE-UPGRADES, Selling):
+// - Gift / prize / barn-find cars sell for 100 CR (retail FH1 rule).
+// - Purchased cars sell for floor(0.5 * (base_cost + parts_value)).
 // Refuses to sell the currently selected car (`g.selected`) or the last remaining car.
-int64_t sell_car_value(int64_t base_cost, int64_t parts_value);
+constexpr int64_t kPrizeCarSellValue = 100;
+int64_t sell_car_value(int64_t base_cost, int64_t parts_value, bool is_prize = false);
 struct SellCarResult {
   bool ok = false;
   int64_t payout = 0;
@@ -103,15 +136,17 @@ struct SellCarResult {
 SellCarResult sell_car(Garage& g, int64_t garage_id, int64_t base_cost, int64_t& credits);
 
 // Selling purchased parts (RestockingValueScale = 0.5 of PricePaid).
-// Refuses stock parts or unowned parts. If currently fitted, reverts slot to `stock_part_id`.
+// Refuses stock parts or unowned parts. If currently fitted, reverts slot to `stock_part_id`
+// and cleanly removes orphaned dependent sub-parts (e.g. engine/aspiration sub-parts).
 int64_t sell_part_value(int64_t price_paid);
 struct SellPartResult {
   bool ok = false;
   int64_t payout = 0;
+  int orphans_removed = 0;
   std::string reason;
 };
 SellPartResult sell_part(Garage& g, int64_t garage_id, int part_enum, int64_t part_id, int64_t stock_part_id,
-                         const char* column, int64_t& credits);
+                         const char* column, int64_t& credits, const cars::PartsDb* db = nullptr);
 
 // Auto Upgrade (UpgradeWizardParts / UpgradeWizardPartsRemoval / UpgradeWizardPowerRemoval).
 struct AutoUpgradeStep {
@@ -151,7 +186,9 @@ struct ClassBand {
 };
 int class_of(double raw, const std::vector<ClassBand>& bands);
 int shown_index(double raw, const std::vector<ClassBand>& bands);
-bool load_class_bands(const std::filesystem::path& game_root, std::vector<ClassBand>& out, std::string* error);
+bool load_class_bands(const cars::PartsDb& db, std::vector<ClassBand>& out, std::string* error = nullptr);
+bool load_class_bands(const std::filesystem::path& game_root, std::vector<ClassBand>& out, std::string* error,
+                      const std::filesystem::path& state_root = {}, const cars::PartsDb* shared_db = nullptr);
 
 std::string to_text(const Garage& g);
 bool from_text(const std::string& text, Garage& out, std::string* error);

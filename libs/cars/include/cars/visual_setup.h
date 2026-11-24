@@ -28,6 +28,17 @@ struct WheelRow {
   std::string actual_color;
   uint32_t rgb = 0;
   bool is_chrome = false;
+  bool is_exception = false;  // listed in WheelExceptions (non-paintable)
+  bool is_paintable = false;  // !is_stock && !is_chrome && !is_exception
+  double norm_offset = 0.0;   // WheelNormOffsets.NormOffset lateral normalization
+};
+
+struct CarPaintExceptions {
+  bool found = false;
+  bool no_mirrors = false;
+  bool no_windows = false;
+  bool no_hood = false;
+  bool no_paintable_wing = false;
 };
 
 struct CarTrackOffsetRow {
@@ -61,15 +72,33 @@ struct VisualSetup {
   std::string wheel_media;
   int64_t wheel_id = 0;
   float brake_draw_offset = 0.0f;
+  // Aftermarket rim lateral offset normalization from WheelNormOffsets.
+  float rim_offset_front = 0.0f;
+  float rim_offset_rear = 0.0f;
   bool wheel_is_chrome = false;
   bool wheel_is_stock = true;
+  bool wheel_is_exception = false;  // WheelExceptions (non-paintable)
+  bool wheel_is_paintable = false;  // !wheel_is_stock && !wheel_is_chrome && !wheel_is_exception
   int tire_compound_level = 0;  // 0=stock, 1=street (TireA), 2=sport (TireB), 3=race/5=rally (TireC/Rally)
+  int tire_compound_id = 0;     // List_UpgradeTireCompound.TireCompoundID (9 = Rally)
   std::array<int64_t, 2> tyre_width_mm{0, 0};
   std::array<int64_t, 2> rim_inches{0, 0};
   std::array<int64_t, 2> stock_tyre_width_mm{0, 0};
   std::array<int64_t, 2> stock_rim_inches{0, 0};
   std::array<int64_t, 2> stock_tyre_aspect{0, 0};
   std::string tyre_media_override;  // e.g. "tireatoy_fjcruiser_12"
+
+  // CarExceptions paint/region restrictions (NoMirrors, NoWindows, NoHood, NoPaintableWing).
+  CarPaintExceptions paint_exceptions{};
+
+  // Fitted upgrade levels & Rally Expansion visual flags (Lv4 bodykits/suspension, Lv5 Rally tires).
+  int front_bumper_level = 0;
+  int rear_bumper_level = 0;
+  int rear_wing_level = 0;
+  int spring_damper_level = 0;
+  bool has_rally_bodykit = false;     // FrontBumper / RearBumper / RearWing Lv4
+  bool has_rally_suspension = false;  // SpringDamper Lv4
+  bool has_rally_tires = false;       // TireCompound Lv5 (or TireCompoundID == 9)
 
   // Suspension stance & alignment.
   std::array<float, 2> ride_height_m{-1.0f, -1.0f};  // >= 0 overrides baked ride height
@@ -113,6 +142,22 @@ bool query_wheel_by_id(const PartsDb& db, int64_t wheel_id, WheelRow& out, std::
 
 // Reads CarTrackOffsets for `car_id` (if a row exists).
 bool query_track_offsets(const PartsDb& db, int64_t car_id, CarTrackOffsetRow& out, std::string* error = nullptr);
+
+// Reads WheelNormOffsets.NormOffset for `wheel_id` (sets out_offset = 0.0f if absent).
+bool query_wheel_norm_offset(const PartsDb& db, int64_t wheel_id, float& out_offset,
+                             std::string* error = nullptr);
+
+// Checks whether `wheel_id` is listed in WheelExceptions (30 non-paintable wheels).
+bool query_wheel_is_exception(const PartsDb& db, int64_t wheel_id, bool& out_is_exception,
+                              std::string* error = nullptr);
+
+// Returns true iff `wheel_id` is paintable in the Paint Shop (aftermarket, non-chrome,
+// and not listed in WheelExceptions).
+bool is_wheel_paintable(const PartsDb& db, int64_t wheel_id, std::string* error = nullptr);
+
+// Queries CarExceptions (NoMirrors, NoWindows, NoHood, NoPaintableWing) for `car_id`.
+bool car_paint_exceptions(const PartsDb& db, int64_t car_id, CarPaintExceptions& out,
+                          std::string* error = nullptr);
 
 // Resolves a car's complete VisualSetup from its fitted parts map and optional
 // tuning overrides (normalized ride height [0..1] across Min..Max or < 0 for

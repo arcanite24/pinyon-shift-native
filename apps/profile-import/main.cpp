@@ -177,6 +177,42 @@ int install(int argc, char** argv) {
   return 0;
 }
 
+int export_cmd(int argc, char** argv) {
+  if (argc < 4) {
+    std::fprintf(stderr, "usage: profile-import --export <save dir> <out folder> [--template DIR] [--v4]\n");
+    return 2;
+  }
+  const std::filesystem::path save_dir = argv[2];
+  const std::filesystem::path out_dir = argv[3];
+  profile::ExportOptions opts;
+  for (int i = 4; i < argc; ++i) {
+    const std::string a = argv[i];
+    auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
+    if (a == "--template") opts.template_folder = next();
+    else if (a == "--v4") opts.version_flags = 2;
+    else {
+      std::fprintf(stderr, "profile-import --export: unknown option %s\n", a.c_str());
+      return 2;
+    }
+  }
+  drive::DriveSave save;
+  std::string err;
+  if (!drive::load_save_file(save_dir / "save.txt", save, &err)) {
+    std::fprintf(stderr, "profile-import --export: %s\n",
+                 err.empty() ? "no save.txt found" : err.c_str());
+    return 1;
+  }
+  garage::Garage g;
+  (void)garage::read_garage(save_dir / "garage.txt", g, &err);
+  if (!profile::export_forza_profile(save, g, out_dir, &err, opts)) {
+    std::fprintf(stderr, "profile-import --export: %s\n", err.c_str());
+    return 1;
+  }
+  std::printf("exported %s -> %s (%lld credits, %zu garage cars, %zu signs)\n", save_dir.string().c_str(),
+              out_dir.string().c_str(), static_cast<long long>(save.credits), g.cars.size(), save.signs_found.size());
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -287,11 +323,13 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (argc >= 3 && std::string(argv[1]) == "--install") return install(argc, argv);
+  if (argc >= 3 && std::string(argv[1]) == "--export") return export_cmd(argc, argv);
   if (argc != 2) {
     std::fprintf(stderr,
                  "usage: profile-import <export folder> | --check <exports root>\n"
                  "       profile-import --install <export folder | export ZIP | Xenia/Pinyon folder>\n"
-                 "                      [--save-dir DIR] [--bake DIR] [--state-root DIR] [--replace]\n");
+                 "                      [--save-dir DIR] [--bake DIR] [--state-root DIR] [--replace]\n"
+                 "       profile-import --export <save dir> <out folder> [--template DIR] [--v4]\n");
     return 2;
   }
   profile::Imported p;

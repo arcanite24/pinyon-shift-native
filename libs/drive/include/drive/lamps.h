@@ -159,19 +159,51 @@ ResolvedLampGlow resolve_lamp_glow(const fh1::CarbinLampPoint& pt);
 
 struct CarParams;
 
+// Piecewise-linear analog gauge calibration (<TickMark> points, CAR_LAMPS.md §7.2).
+struct GaugeConfig {
+  float min_val = 0.0f;
+  float max_val = 1.0f;
+  // Pairs of (normalized_needle_pos, physical_value) sorted by physical_value ascending.
+  std::vector<std::pair<float, float>> cal_points;
+
+  float evaluate(float value) const;
+};
+
+struct CockpitGaugeCalibration {
+  GaugeConfig speed;
+  GaugeConfig tach;
+  GaugeConfig fuel;
+  GaugeConfig boost;
+  GaugeConfig power;
+  bool has_speed = false;
+  bool has_tach = false;
+  bool has_fuel = false;
+  bool has_boost = false;
+  bool has_power = false;
+};
+
+// Parses <TickMark pos="..." val="..."/> (or position/value attributes) from a gauge XML block.
+bool parse_gauge_tick_marks_xml(std::string_view xml, GaugeConfig& out);
+
 // Cockpit steering wheel and analog gauge needle math (CAR_LAMPS.md §7).
 struct CockpitAnimState {
   static constexpr float kSteeringWheelAngleScale = 0.75f;  // GlobalCarAttribs.xml
   static constexpr float kCockpitLockRad = 4.712389f;       // 270 deg half-lock
+  static constexpr float kSteerSpeedMinMps = 0.0f;          // CAR_LAMPS.md §7.1 & §8
+  static constexpr float kSteerSpeedMaxMps = 50.0f;
+  static constexpr float kSteerMultLowSpeed = 12.0f;
+  static constexpr float kSteerMultHighSpeed = 6.0f;
+  static constexpr float kPowerGaugeScale = 0.1341022f;     // CAR_LAMPS.md §7.2
   float wheel_rad = 0.0f;                                   // current cockpit steering wheel angle (rad)
   float speed_norm = 0.0f;                                  // [0..1]
   float tach_norm = 0.0f;                                   // [0..1]
   float fuel_norm = 0.85f;                                  // [0..1]
   float boost_norm = 0.0f;                                  // [0..1]
   float power_norm = 0.0f;                                  // [0..1]
+  CockpitGaugeCalibration calibration;                      // optional per-car <TickMark> tables
 
-  // Rate-limited steering wheel rotation from road wheel angle, optional max road lock,
-  // and CameraPhysics.xml SteeringWheel kickback (rad).
+  // Speed-dependent rate-limited steering wheel rotation (CAR_LAMPS.md §7.1)
+  // plus CameraPhysics.xml SteeringWheel kickback (rad).
   void update_steering(float road_wheel_angle_rad, float speed_mps, float dt, float kick_rad = 0.0f);
   // Estimates per-car speedometer dial top (m/s) from top-gear redline gearing.
   static float estimate_dial_max_speed_mps(const CarParams& vp);
@@ -183,7 +215,8 @@ struct CockpitAnimState {
   static float eval_gauge_norm(float value, float min_val, float max_val,
                                std::span<const std::pair<float, float>> cal_points = {});
   void update_gauges(float speed_mps, float max_speed_mps, float rpm, float max_rpm,
-                     float boost_psi = 0.0f, float max_boost_psi = 20.0f, float fuel_frac = 0.85f);
+                     float boost_psi = 0.0f, float max_boost_psi = 20.0f, float fuel_frac = 0.85f,
+                     float power_w = 0.0f, float max_power_w = 0.0f, float min_power_w = 0.0f);
 };
 
 }  // namespace drive

@@ -1,12 +1,29 @@
 #include "drive/save.h"
 
+#include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <iterator>
 #include <locale>
 #include <sstream>
 #include <system_error>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace drive {
 
@@ -69,6 +86,8 @@ std::string save_to_text(const DriveSave& s) {
            (s.radio_dj ? "1" : "0") + " " + num(s.radio_volume) + "\n";
   if (!s.satnav_enabled) out += "satnav 0\n";
   if (s.treasure_map) out += "treasure_map 1\n";
+  if (s.fast_travel_anywhere) out += "fast_travel_anywhere 1\n";
+  if (!s.codriver_enabled) out += "codriver 0\n";
   if (s.tod_sec >= 0.0 && std::isfinite(s.tod_sec)) out += "tod_sec " + num(std::fmod(s.tod_sec, 86400.0)) + "\n";
   if (!s.intro_completed) out += "intro_completed 0\n";
   if (!s.campaign_stage.empty()) out += "campaign_stage " + s.campaign_stage + "\n";
@@ -176,6 +195,12 @@ std::string save_to_text(const DriveSave& s) {
       }
     }
     out += "\n";
+  }
+  for (const auto& h : s.car_history) {
+    out += "car_history " + std::to_string(h.garage_id) + " " + std::to_string(h.car_id) + " " +
+           num(h.distance_driven) + " " + num(h.time_driven) + " " + std::to_string(h.total_winnings) + " " +
+           std::to_string(h.total_repairs) + " " + std::to_string(h.num_races) + " " +
+           std::to_string(h.num_victories) + " " + std::to_string(h.num_podiums) + "\n";
   }
   if (!s.car_club_name.empty()) out += "car_club_name " + s.car_club_name + "\n";
   if (!s.car_club_tag.empty()) out += "car_club_tag " + s.car_club_tag + "\n";
@@ -296,6 +321,12 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
     } else if (key == "treasure_map") {
       int v = 0;
       if (l >> v) out.treasure_map = (v != 0);
+    } else if (key == "fast_travel_anywhere") {
+      int v = 0;
+      if (l >> v) out.fast_travel_anywhere = (v != 0);
+    } else if (key == "codriver") {
+      int v = 1;
+      if (l >> v) out.codriver_enabled = (v != 0);
     } else if (key == "tod_sec") {
       double v = -1.0;
       if (l >> v && std::isfinite(v) && v >= 0.0 && v < 86400.0) out.tod_sec = v;
@@ -416,6 +447,14 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
         car.progress.push_back(std::move(prog));
       }
       out.club.push_back(std::move(car));
+    } else if (key == "car_history") {
+      SavedCarHistory h;
+      if (l >> h.garage_id >> h.car_id >> h.distance_driven >> h.time_driven >> h.total_winnings >> h.total_repairs >>
+          h.num_races >> h.num_victories >> h.num_podiums) {
+        if (!std::isfinite(h.distance_driven) || h.distance_driven < 0.0) h.distance_driven = 0.0;
+        if (!std::isfinite(h.time_driven) || h.time_driven < 0.0) h.time_driven = 0.0;
+        out.car_history.push_back(h);
+      }
     } else if (key == "car_club_name") {
       std::string rest;
       std::getline(l, rest);
@@ -475,6 +514,156 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
   return true;
 }
 
+bool atomic_replace_file(const std::filesystem::path& tmp_path, const std::filesystem::path& dst_path,
+                         std::string* error) {
+  std::error_code ec;
+  if (dst_path.has_parent_path()) std::filesystem::create_directories(dst_path.parent_path(), ec);
+#if defined(_WIN32)
+  // Best-effort flush of tmp_path before atomic replace.
+  {
+    HANDLE h = CreateFileW(tmp_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+      FlushFileBuffers(h);
+      CloseHandle(h);
+    }
+  }
+  BOOL moved = MoveFileExW(tmp_path.c_str(), dst_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+  if (!moved) {
+    const DWORD last_err = GetLastError();
+    if (last_err == ERROR_INVALID_PARAMETER || last_err == ERROR_NOT_SUPPORTED) {
+      moved = MoveFileExW(tmp_path.c_str(), dst_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    }
+  }
+  if (!moved) {
+    const DWORD last_err = GetLastError();
+    DeleteFileW(tmp_path.c_str());
+    return fail(error, "cannot replace " + dst_path.string() + " (win32 error " + std::to_string(last_err) + ")");
+  }
+  return true;
+#else
+  {
+    const int fd = ::open(tmp_path.c_str(), O_RDONLY);
+    if (fd >= 0) {
+      (void)::fsync(fd);
+      ::close(fd);
+    }
+  }
+  std::filesystem::rename(tmp_path, dst_path, ec);
+  if (ec) {
+    std::error_code rm_ec;
+    std::filesystem::remove(tmp_path, rm_ec);
+    return fail(error, "cannot replace " + dst_path.string() + ": " + ec.message());
+  }
+  if (dst_path.has_parent_path()) {
+    const int dfd = ::open(dst_path.parent_path().c_str(), O_RDONLY | O_DIRECTORY);
+    if (dfd >= 0) {
+      (void)::fsync(dfd);
+      ::close(dfd);
+    }
+  }
+  return true;
+#endif
+}
+
+bool atomic_write_file(const std::filesystem::path& path, const void* data, size_t size, std::string* error) {
+  std::error_code ec;
+  if (path.has_parent_path()) {
+    std::filesystem::create_directories(path.parent_path(), ec);
+    if (ec) return fail(error, "cannot create directory for " + path.string() + ": " + ec.message());
+  }
+  auto tmp = path;
+  tmp += ".tmp";
+  const auto* ptr = static_cast<const uint8_t*>(data);
+#if defined(_WIN32)
+  HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    return fail(error, "cannot write " + tmp.string() + " (win32 error " + std::to_string(GetLastError()) + ")");
+  }
+  size_t written = 0;
+  while (written < size) {
+    const DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - written, 16u * 1024u * 1024u));
+    DWORD n = 0;
+    if (!WriteFile(h, ptr + written, chunk, &n, nullptr) || n == 0) {
+      const DWORD last_err = GetLastError();
+      CloseHandle(h);
+      DeleteFileW(tmp.c_str());
+      return fail(error, "cannot write " + tmp.string() + " (win32 error " + std::to_string(last_err) + ")");
+    }
+    written += n;
+  }
+  if (!FlushFileBuffers(h)) {
+    const DWORD last_err = GetLastError();
+    CloseHandle(h);
+    DeleteFileW(tmp.c_str());
+    return fail(error, "cannot flush " + tmp.string() + " (win32 error " + std::to_string(last_err) + ")");
+  }
+  CloseHandle(h);
+  BOOL moved = MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+  if (!moved) {
+    const DWORD last_err = GetLastError();
+    if (last_err == ERROR_INVALID_PARAMETER || last_err == ERROR_NOT_SUPPORTED) {
+      moved = MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    }
+  }
+  if (!moved) {
+    const DWORD last_err = GetLastError();
+    DeleteFileW(tmp.c_str());
+    return fail(error, "cannot replace " + path.string() + " (win32 error " + std::to_string(last_err) + ")");
+  }
+  return true;
+#else
+  const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) return fail(error, "cannot write " + tmp.string() + ": " + std::strerror(errno));
+  size_t written = 0;
+  while (written < size) {
+    const ssize_t n = ::write(fd, ptr + written, size - written);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      const int err = errno;
+      ::close(fd);
+      ::unlink(tmp.c_str());
+      return fail(error, "cannot write " + tmp.string() + ": " + std::strerror(err));
+    }
+    if (n == 0) {
+      ::close(fd);
+      ::unlink(tmp.c_str());
+      return fail(error, "short write to " + tmp.string());
+    }
+    written += static_cast<size_t>(n);
+  }
+  if (::fsync(fd) != 0 && errno != EINVAL && errno != EROFS) {
+    const int err = errno;
+    ::close(fd);
+    ::unlink(tmp.c_str());
+    return fail(error, "cannot flush " + tmp.string() + ": " + std::strerror(err));
+  }
+  if (::close(fd) != 0) {
+    const int err = errno;
+    ::unlink(tmp.c_str());
+    return fail(error, "cannot close " + tmp.string() + ": " + std::strerror(err));
+  }
+  std::filesystem::rename(tmp, path, ec);
+  if (ec) {
+    std::error_code rm_ec;
+    std::filesystem::remove(tmp, rm_ec);
+    return fail(error, "cannot replace " + path.string() + ": " + ec.message());
+  }
+  if (path.has_parent_path()) {
+    const int dfd = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY);
+    if (dfd >= 0) {
+      (void)::fsync(dfd);
+      ::close(dfd);
+    }
+  }
+  return true;
+#endif
+}
+
+bool atomic_write_file(const std::filesystem::path& path, std::string_view text, std::string* error) {
+  return atomic_write_file(path, text.data(), text.size(), error);
+}
+
 bool read_save(const std::filesystem::path& path, DriveSave& out, std::string* error) {
   if (error) error->clear();
   std::error_code ec;
@@ -491,22 +680,143 @@ bool read_save(const std::filesystem::path& path, DriveSave& out, std::string* e
 }
 
 bool write_save(const std::filesystem::path& path, const DriveSave& save, std::string* error) {
+  return atomic_write_file(path, save_to_text(save), error);
+}
+
+bool load_save_with_recovery(const std::filesystem::path& save_path, const std::filesystem::path& backup_dir,
+                             DriveSave& out_save, std::filesystem::path* recovered_from, std::string* error) {
+  namespace fs = std::filesystem;
+  if (recovered_from) recovered_from->clear();
+  if (error) error->clear();
+
+  std::string primary_err;
+  if (read_save(save_path, out_save, &primary_err)) return true;
+
   std::error_code ec;
-  if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec);
-  auto tmp = path;
-  tmp += ".tmp";
-  {
-    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-    if (!f) return fail(error, "cannot write " + tmp.string());
-    f << save_to_text(save);
-    if (!f.flush()) return fail(error, "cannot write " + tmp.string());
+  const bool primary_existed = fs::exists(save_path, ec);
+  const std::string target_name = save_path.filename().empty() ? std::string("save.txt") : save_path.filename().string();
+
+  std::vector<fs::path> candidates;
+  if (!backup_dir.empty() && fs::is_directory(backup_dir, ec)) {
+    struct SnapCand {
+      bool has_time = false;
+      int64_t time = 0;
+      std::string id;
+      fs::path file;
+    };
+    struct FileCand {
+      fs::file_time_type mtime{};
+      std::string name;
+      fs::path file;
+    };
+    std::vector<SnapCand> snaps;
+    std::vector<FileCand> direct_files;
+    for (const auto& entry : fs::directory_iterator(backup_dir, ec)) {
+      const std::string name = entry.path().filename().string();
+      if (name.empty() || name[0] == '.') continue;
+      if (entry.is_directory(ec)) {
+        fs::path sf = entry.path() / target_name;
+        std::string sf_name = target_name;
+        if (!fs::is_regular_file(sf, ec) && target_name != "save.txt") {
+          sf = entry.path() / "save.txt";
+          sf_name = "save.txt";
+        }
+        if (!fs::is_regular_file(sf, ec)) continue;
+        SnapCand sc;
+        sc.id = name;
+        sc.file = sf;
+        bool size_ok = true;
+        if (fs::is_regular_file(entry.path() / "backup.txt", ec)) {
+          std::ifstream mf(entry.path() / "backup.txt");
+          for (std::string line; std::getline(mf, line);) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            std::istringstream ls(line);
+            std::string k;
+            ls >> k;
+            if (k == "time") {
+              if (ls >> sc.time) sc.has_time = true;
+            } else if (k == "file") {
+              std::string fname;
+              uint64_t fsize = 0;
+              if (ls >> fname >> fsize && fname == sf_name) {
+                const uint64_t actual = fs::file_size(sf, ec);
+                if (ec || actual != fsize) size_ok = false;
+              }
+            }
+          }
+        }
+        if (size_ok) snaps.push_back(std::move(sc));
+      } else if (entry.is_regular_file(ec)) {
+        if (name == "backup.txt" || name.ends_with(".tmp") || name.ends_with(".corrupt")) continue;
+        if (name.ends_with(".bak") || name.ends_with(".txt")) {
+          FileCand fc;
+          fc.mtime = entry.last_write_time(ec);
+          fc.name = name;
+          fc.file = entry.path();
+          direct_files.push_back(std::move(fc));
+        }
+      }
+    }
+    std::sort(snaps.begin(), snaps.end(), [](const SnapCand& a, const SnapCand& b) {
+      if (a.has_time != b.has_time) return a.has_time > b.has_time;
+      if (a.time != b.time) return a.time > b.time;
+      return a.id > b.id;
+    });
+    for (auto& s : snaps) candidates.push_back(std::move(s.file));
+    std::sort(direct_files.begin(), direct_files.end(), [](const FileCand& a, const FileCand& b) {
+      if (a.mtime != b.mtime) return a.mtime > b.mtime;
+      return a.name > b.name;
+    });
+    for (auto& f : direct_files) candidates.push_back(std::move(f.file));
   }
-  std::filesystem::rename(tmp, path, ec);
-  if (ec) {
-    std::filesystem::remove(tmp, ec);
-    return fail(error, "cannot replace " + path.string());
+
+  fs::path sibling_bak = save_path;
+  sibling_bak += ".bak";
+  if (fs::is_regular_file(sibling_bak, ec)) candidates.push_back(sibling_bak);
+
+  for (const auto& cand : candidates) {
+    DriveSave recovered;
+    std::string cand_err;
+    if (!read_save(cand, recovered, &cand_err)) continue;
+
+    if (primary_existed) {
+      std::string raw_corrupt;
+      {
+        std::ifstream cf(save_path, std::ios::binary);
+        if (cf) raw_corrupt.assign(std::istreambuf_iterator<char>(cf), {});
+      }
+      fs::path corrupt_path = save_path;
+      corrupt_path += ".corrupt";
+      std::string corrupt_err;
+      (void)atomic_write_file(corrupt_path, raw_corrupt, &corrupt_err);
+    }
+
+    std::string write_err;
+    if (!write_save(save_path, recovered, &write_err)) {
+      return fail(error, "recovered from " + cand.string() + " but failed to restore " + save_path.string() + ": " +
+                             write_err);
+    }
+    out_save = std::move(recovered);
+    if (recovered_from) *recovered_from = cand;
+    if (error) error->clear();
+    return true;
   }
-  return true;
+
+  if (primary_existed) {
+    return fail(error, primary_err.empty() ? ("corrupt save: " + save_path.string()) : primary_err);
+  }
+  return false;
+}
+
+bool load_save_file(const std::filesystem::path& save_path, DriveSave& out_save, std::string* error,
+                    const std::filesystem::path& backup_dir, std::filesystem::path* recovered_from) {
+  std::filesystem::path effective_backups = backup_dir;
+  if (effective_backups.empty() && save_path.has_parent_path() && save_path.parent_path().has_parent_path()) {
+    std::error_code ec;
+    const auto candidate = save_path.parent_path().parent_path() / "backups" / "saves";
+    if (std::filesystem::is_directory(candidate, ec)) effective_backups = candidate;
+  }
+  return load_save_with_recovery(save_path, effective_backups, out_save, recovered_from, error);
 }
 
 }  // namespace drive

@@ -79,6 +79,19 @@ uint32_t load_be32(const uint8_t* p) {
   return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | uint32_t(p[3]);
 }
 
+int32_t sign_extend_bits(uint32_t value, int bits) {
+  const uint32_t sign_bit = 1u << (bits - 1);
+  return int32_t((value ^ sign_bit) - sign_bit);
+}
+
+void apply_crush_weights(std::vector<bake::Vertex>& verts, const std::vector<float>& weights) {
+  for (size_t i = 0; i < verts.size(); ++i) {
+    const float w = i < weights.size() ? std::clamp(weights[i], 0.0f, 1.0f) : 0.0f;
+    verts[i].lighting[kCrushWeightLightingChannel] =
+        uint8_t(std::clamp(std::lround(w * 255.0f), 0L, 255L));
+  }
+}
+
 // A wheel or tyre pool's morph targets from its damage-tail block
 // (FORMAT-CARS, Damage tail): after the buffer id, per vertex one or two
 // targets of four half floats (a direction and a length, low half of each
@@ -141,6 +154,9 @@ void assign_slots(bake::Subsection& s, Role role, const std::set<std::string>& o
   };
   if (role == Role::kWheel) {
     s.slots[0] = own_ref("wheel_lod0.xds", "wheel.xds");
+    if (is_blur_rim_technique(t) && own.count("wheel0.xds")) {
+      s.slots[1] = "wheel:wheel0.xds";
+    }
     return;
   }
   if (role == Role::kTyre) {
@@ -212,6 +228,20 @@ bool parse_model(Folder& folder, const std::string& name, Role role, bake::Corne
     if ((role == Role::kWheel || role == Role::kTyre) && part.damage.size() == 2) {
       bp.lod_morphs = morph_targets(part, part.damage[0], bp.lod_vertices.size());
       bp.lod0_morphs = morph_targets(part, part.damage[1], bp.lod0_vertices.size());
+      apply_crush_weights(bp.lod_vertices, {});
+      apply_crush_weights(bp.lod0_vertices, {});
+    } else if (role != Role::kWheel && role != Role::kTyre && part.damage_flag == 1) {
+      const std::vector<float> lod_w =
+          part.damage.size() >= 1 ? decode_carbin_crush_weights(part, part.damage[0], bp.lod_vertices.size())
+                                  : std::vector<float>{};
+      const std::vector<float> lod0_w =
+          part.damage.size() >= 2 ? decode_carbin_crush_weights(part, part.damage[1], bp.lod0_vertices.size())
+                                  : std::vector<float>{};
+      apply_crush_weights(bp.lod_vertices, lod_w);
+      apply_crush_weights(bp.lod0_vertices, lod0_w);
+    } else {
+      apply_crush_weights(bp.lod_vertices, {});
+      apply_crush_weights(bp.lod0_vertices, {});
     }
     bp.subsections.reserve(part.subsections.size());
     for (size_t i = 0; i < part.subsections.size(); ++i) {
@@ -331,25 +361,77 @@ void bake_livery(Folder& folder, bake::Bake& out, std::vector<std::string>& note
 
 }  // namespace
 
+BlurRimKind classify_blur_rim(std::string_view technique) {
+  const std::string t = lower(std::string(technique));
+  if (t == "blur_rim") return BlurRimKind::kBlurRim;
+  if (t == "chrome_blur_rim") return BlurRimKind::kChromeBlurRim;
+  if (t == "blur_lip") return BlurRimKind::kBlurLip;
+  if (t == "chrome_blur_lip") return BlurRimKind::kChromeBlurLip;
+  return BlurRimKind::kNone;
+}
+
+bool is_blur_rim_technique(std::string_view technique) {
+  return classify_blur_rim(technique) != BlurRimKind::kNone;
+}
+
+float vertex_crush_weight(const bake::Vertex& v) {
+  return float(v.lighting[kCrushWeightLightingChannel]) / 255.0f;
+}
+
+std::vector<float> decode_carbin_crush_weights(const fh1::CarbinPart& part,
+                                               const fh1::CarbinDamageBlock& block,
+                                               size_t vertex_count) {
+  std::vector<float> out;
+  if (block.count != vertex_count || vertex_count == 0 || block.stride != 4) return out;
+  std::vector<uint8_t> bytes = block.table;
+  bytes.insert(bytes.end(), block.words.begin(), block.words.end());
+  const size_t body = size_t(block.count) * 4u;
+  if (bytes.size() < body) return out;
+  const size_t skip = bytes.size() - body;
+
+  const float hx = part.bounds[6];
+  const float hy = part.bounds[7];
+  const float hz = part.bounds[8];
+  float half_extent = std::sqrt(hx * hx + hy * hy + hz * hz);
+  if (!std::isfinite(half_extent) || half_extent < 1e-4f) half_extent = 1.0f;
+
+  out.resize(vertex_count, 0.0f);
+  for (size_t i = 0; i < vertex_count; ++i) {
+    const uint32_t w = load_be32(bytes.data() + skip + i * 4u);
+    // HEND3N packed signed 11-11-10 crush displacement vector in part-local units.
+    const float dx = float(sign_extend_bits(w & 0x7FFu, 11)) / 1023.0f;
+    const float dy = float(sign_extend_bits((w >> 11) & 0x7FFu, 11)) / 1023.0f;
+    const float dz = float(sign_extend_bits((w >> 22) & 0x3FFu, 10)) / 511.0f;
+    const float disp_m = std::sqrt(dx * dx + dy * dy + dz * dz) * half_extent;
+    out[i] = std::clamp(disp_m / kCrushWeightRefMeters, 0.0f, 1.0f);
+  }
+  return out;
+}
+
 MaterialClass classify(const std::string& technique, bool transparent, Role role) {
   (void)role;
   const std::string t = lower(technique);
-  if (t == "blur_rim" || t == "chrome_blur_rim") return MaterialClass::kHidden;
+  // Spinning-rim blur cards (cross-faded with wheel0..3.xds at speed): never kHidden or kGlass.
+  if (t == "blur_rim" || t == "blur_lip") return MaterialClass::kRim;
+  if (t == "chrome_blur_rim" || t == "chrome_blur_lip") return MaterialClass::kChrome;
   // Rear-window heater lines (69 base cars): translucent glass overlay, never opaque @atlas.
   if (t == "defrost_lines") return MaterialClass::kGlass;
   if (transparent) return MaterialClass::kGlass;
   if (t == "black_glass_breakable") return MaterialClass::kGlass;
   // Classify wheel/brake techniques regardless of model role so embedded rims/rotors
   // inside _lod0.carbin or kRotor never fall through to kOpaque.
-  if (t == "rim" || t == "inner_rim" || t == "outer_rim" || t == "wheel_black" || t == "blur_lip" ||
+  if (t == "rim" || t == "inner_rim" || t == "outer_rim" || t == "wheel_black" ||
       t == "hub" || t == "rotor" || t == "brake" || t == "drum")
     return MaterialClass::kRim;
   if (t == "tire" || t == "sidewall" || t == "tread") return MaterialClass::kTyre;
-  if (t == "body" || t == "body_2") return MaterialClass::kPaint;
+  if (t == "body" || t == "body_2" || t == "body_3" || t == "body_simple" || t == "headlight_paint")
+    return MaterialClass::kPaint;
   if (t == "caliper") return MaterialClass::kCaliper;
   static const std::set<std::string> kLampExact = {
-      "head_light", "head_light2", "hidhead", "oldhead", "xenonhead", "fullbeam",
-      "taillight2s", "taillightst", "drlwhite", "drlwhiteswitch", "drlred", "drlorange",
+      "head_light", "head_light2", "headlightl_lod0", "headlightr_lod0",
+      "hidhead", "oldhead", "xenonhead", "fullbeam",
+      "taillight2s", "taillightst", "taillightl_lod0", "taillightr_lod0",
+      "drlwhite", "drlwhiteswitch", "drlred", "drlorange",
       "drlbrakered", "drlbrakeorange", "slorange", "slinlorange", "slinrorange",
       "lindtailside", "rindtailside", "linred", "rinred", "brinl", "brinr",
       "brkreverse", "white_brake", "fogred", "fogwhite",
@@ -705,6 +787,8 @@ bool load_brake_model(const std::filesystem::path& game_root, int size_in, int t
     bp.bounds = part.bounds;
     for (const auto& v : part.lod_pool.vertices) bp.lod_vertices.push_back(bake_vertex(part, v));
     for (const auto& v : part.lod0_pool.vertices) bp.lod0_vertices.push_back(bake_vertex(part, v));
+    apply_crush_weights(bp.lod_vertices, {});
+    apply_crush_weights(bp.lod0_vertices, {});
     for (size_t i = 0; i < part.subsections.size(); ++i) {
       const fh1::CarbinSubsection& s = part.subsections[i];
       bake::Subsection bs;

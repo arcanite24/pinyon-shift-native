@@ -7,7 +7,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
 #include <vector>
@@ -67,16 +69,56 @@ void test_shader_settings_and_hsv() {
       <body>
         <SpecularCubeScalar value="1.000000"/>
         <PaintScale value="0.500000"/>
+        <SpecularAmount value="1.250000"/>
+        <SpecularPower value="48.000000"/>
         <SpecularAmount2 value="7.000000"/>
         <SpecularPower2 value="6.000000"/>
         <SpecularAmount3 value="6.000000"/>
         <SpecularPower3 value="4.000000"/>
+        <FresnelIndex value="1.350000"/>
+        <FresnelScalar value="0.450000"/>
+        <MetalColor r="0.200000" g="0.400000" b="0.800000" a="1.000000"/>
+        <MetalPower value="2.500000"/>
+        <MetalBias value="0.150000"/>
+        <MetalScale value="0.350000"/>
       </body>
+      <gauge_emissive>
+        <GaugeEmissiveScale value="3.500000"/>
+      </gauge_emissive>
     </ShaderSettings>)";
   cars::ShaderFinishParams fp;
   CHECK(cars::parse_shader_settings_xml(sample_xml, fp));
   CHECK(std::fabs(fp.paint_scale - 0.5f) < 1e-4f);
+  CHECK(std::fabs(fp.spec_amount - 1.25f) < 1e-4f);
+  CHECK(std::fabs(fp.spec_power - 48.0f) < 1e-4f);
   CHECK(std::fabs(fp.spec_amount2 - 7.0f) < 1e-4f);
+  CHECK(std::fabs(fp.spec_power2 - 6.0f) < 1e-4f);
+  CHECK(std::fabs(fp.spec_amount3 - 6.0f) < 1e-4f);
+  CHECK(std::fabs(fp.spec_power3 - 4.0f) < 1e-4f);
+  CHECK(std::fabs(fp.fresnel_index - 1.35f) < 1e-4f);
+  CHECK(std::fabs(fp.fresnel_scalar - 0.45f) < 1e-4f);
+  CHECK(std::fabs(fp.metal_color[0] - 0.2f) < 1e-4f && std::fabs(fp.metal_color[1] - 0.4f) < 1e-4f &&
+        std::fabs(fp.metal_color[2] - 0.8f) < 1e-4f);
+  CHECK(std::fabs(fp.metal_power - 2.5f) < 1e-4f);
+  CHECK(std::fabs(fp.metal_bias - 0.15f) < 1e-4f);
+  CHECK(std::fabs(fp.metal_scale - 0.35f) < 1e-4f);
+  CHECK(std::fabs(fp.gauge_emissive_scale - 3.5f) < 1e-4f);
+
+  // Absent tags preserve existing defaults on overlay.
+  cars::ShaderFinishParams partial = fp;
+  CHECK(cars::parse_shader_settings_xml("<body><PaintScale value=\"0.9\"/></body>", partial));
+  CHECK(std::fabs(partial.paint_scale - 0.9f) < 1e-4f);
+  CHECK(std::fabs(partial.fresnel_index - 1.35f) < 1e-4f);
+  CHECK(std::fabs(partial.metal_scale - 0.35f) < 1e-4f);
+
+  // RimShaderSettings XML parsing.
+  cars::RimShaderParams rim_p;
+  CHECK(cars::parse_rim_shader_settings_xml(
+      R"(<ShaderSettings><rim_V2><FresnelIndex value="1.75"/><FresnelScalar value="0.60"/><CubeScale value="2.0"/><TintColor r="0.4" g="0.5" b="0.6" a="1.0"/></rim_V2></ShaderSettings>)",
+      rim_p));
+  CHECK(rim_p.has_override);
+  CHECK(std::fabs(rim_p.fresnel_index - 1.75f) < 1e-4f && std::fabs(rim_p.fresnel_scalar - 0.60f) < 1e-4f);
+  CHECK(std::fabs(rim_p.cube_scale - 2.0f) < 1e-4f && std::fabs(rim_p.tint_color[2] - 0.6f) < 1e-4f);
 
   // HSV round-trip.
   for (uint32_t col : {0xFF0000u, 0x00FF00u, 0x0044FFu, 0xE89420u}) {
@@ -103,12 +145,64 @@ void test_damage_and_settings() {
   CHECK(sp.value("damage") == "none");
   CHECK(sp.live_settings().damage_mode == 0);
 
-  // None mode ignores impacts and dirt.
+  // None mode ignores impacts & mechanical wear, but STILL accumulates environmental dirt/mud.
   drive::CarDamageState d_none;
   d_none.mode = drive::DamageMode::kNone;
   d_none.record_impact(0.0f, 0.5f, 1.8f, 25.0f);
   d_none.step(5.0, 20.0, true, 1.0, 0.8, {0.2, 0.2, 0.2, 0.2});
-  CHECK(d_none.zone_front == 0.0f && d_none.body_dirt == 0.0f);
+  CHECK(d_none.zone_front == 0.0f && d_none.corner_fl == 0.0f && !d_none.front_bumper_detached);
+  CHECK(d_none.body_dirt > 0.1f && d_none.tyre_dirt > 0.3f);
+  CHECK(d_none.tyre_wear[0] == 0.0f && d_none.fuel_fraction == 1.0f);
+
+  // 4-corner independent lamp breakage:
+  // (a) Off-center front-left hit breaks ONLY FL headlight (FR stays intact).
+  {
+    drive::CarDamageState d_fl;
+    d_fl.mode = drive::DamageMode::kCosmetic;
+    d_fl.record_impact(-0.65f, 0.5f, 1.85f, 16.0f);
+    CHECK(d_fl.headlight_fl_broken());
+    CHECK(!d_fl.headlight_fr_broken());
+    CHECK(d_fl.corner_fr == 0.0f);
+    CHECK(!d_fl.taillight_rl_broken() && !d_fl.taillight_rr_broken());
+  }
+  // (b) Moderate front-center hit breaks neither; heavy center hit breaks both headlights.
+  {
+    drive::CarDamageState d_c;
+    d_c.mode = drive::DamageMode::kCosmetic;
+    d_c.record_impact(0.0f, 0.5f, 1.85f, 16.0f);
+    CHECK(!d_c.headlight_fl_broken() && !d_c.headlight_fr_broken());
+    CHECK(std::fabs(d_c.corner_fl - d_c.corner_fr) < 1e-4f);
+    d_c.record_impact(0.0f, 0.5f, 1.85f, 18.0f);
+    CHECK(d_c.headlight_fl_broken() && d_c.headlight_fr_broken());
+  }
+  // (c) Off-center rear-right hit breaks ONLY RR taillight.
+  {
+    drive::CarDamageState d_rr;
+    d_rr.mode = drive::DamageMode::kCosmetic;
+    d_rr.record_impact(0.60f, 0.5f, -1.90f, 16.5f);
+    CHECK(d_rr.taillight_rr_broken() && !d_rr.taillight_rl_broken());
+  }
+  // (d) Deterministic part detachment, hood_ajar, and clean reset().
+  {
+    drive::CarDamageState d_det;
+    d_det.mode = drive::DamageMode::kCosmetic;
+    d_det.record_impact(0.0f, 0.5f, 1.9f, 24.0f);
+    CHECK(d_det.hood_ajar > 0.2f);
+    d_det.record_impact(0.0f, 0.5f, 1.9f, 15.0f);
+    CHECK(d_det.front_bumper_detached && d_det.hood_ajar > 0.8f);
+    d_det.record_impact(0.0f, 0.5f, -1.9f, 28.0f);
+    d_det.record_impact(0.0f, 0.5f, -1.9f, 10.0f);
+    CHECK(d_det.rear_bumper_detached && d_det.wing_detached);
+    d_det.record_impact(-0.9f, 0.5f, 0.0f, 22.0f);
+    CHECK(d_det.left_mirror_detached && !d_det.right_mirror_detached);
+    d_det.record_impact(0.9f, 0.5f, 0.0f, 22.0f);
+    CHECK(d_det.right_mirror_detached);
+    d_det.reset();
+    CHECK(d_det.mode == drive::DamageMode::kCosmetic);
+    CHECK(!d_det.front_bumper_detached && !d_det.rear_bumper_detached && !d_det.wing_detached &&
+          !d_det.left_mirror_detached && !d_det.right_mirror_detached && d_det.hood_ajar == 0.0f &&
+          d_det.corner_fl == 0.0f && d_det.corner_fr == 0.0f && d_det.corner_rl == 0.0f && d_det.corner_rr == 0.0f);
+  }
 
   // Cosmetic mode dents zones, cracks glass, accumulates off-road mud, leaves physics untouched.
   drive::CarDamageState d_cos;
@@ -158,11 +252,43 @@ void test_disc_livery_and_paint() {
   cars::PartsDb db;
   CHECK(db.open(install, &err));
 
-  // 1. ShaderSettings XML from Shared.zip.
+  // 1. ShaderSettings XML from Shared.zip + per-car overrides (ColorShaderSettings, Rim, Brake).
   cars::ShaderSettingsSet ss;
   CHECK(cars::load_shader_settings(install.media / "cars" / "Shared.zip", ss, &err));
   CHECK(ss.loaded_from_xml);
+  CHECK(std::fabs(ss.normal.fresnel_index - 1.55f) < 1e-3f);
+  CHECK(std::fabs(ss.normal.fresnel_scalar - 0.90f) < 1e-3f);
+  CHECK(std::fabs(ss.gauge_emissive_scale - 3.0f) < 1e-3f);
   CHECK(std::fabs(ss.metallic.paint_scale - 0.5f) < 1e-4f);
+  CHECK(std::fabs(ss.metallic.fresnel_index - 1.55f) < 1e-3f);  // inherited from Normal.xml
+  CHECK(std::fabs(ss.matte.fresnel_scalar - 0.0f) < 1e-4f);
+  CHECK(std::fabs(ss.matte.metal_scale - 0.06f) < 1e-4f);
+
+  // Per-car ColorShaderSettings1..N.xml, RimShaderSettings.xml, BrakeShaderSettings.xml.
+  {
+    const fs::path r8gt = install.media / "cars" / "AUD_R8GT_11.zip";
+    if (fs::exists(r8gt)) {
+      cars::CarShaderOverrides ov;
+      CHECK(cars::load_car_shader_overrides(r8gt, ov, &ss.normal, &err));
+      CHECK(ov.color_overrides.count(1) == 1);
+      CHECK(std::fabs(ov.color_overrides.at(1).fresnel_scalar - 0.20f) < 1e-3f);
+      CHECK(std::fabs(ov.color_overrides.at(1).metal_scale - 0.10f) < 1e-3f);
+    }
+    const fs::path m6 = install.media / "cars" / "BMW_M6_13.zip";
+    if (fs::exists(m6)) {
+      cars::CarShaderOverrides ov;
+      CHECK(cars::load_car_shader_overrides(m6, ov, &ss.normal, &err));
+      CHECK(ov.rim.has_override);
+      CHECK(std::fabs(ov.rim.fresnel_index - 1.75f) < 1e-3f);
+      CHECK(std::fabs(ov.rim.cube_scale - 2.0f) < 1e-3f);
+    }
+    const fs::path evo6 = install.media / "cars" / "MIT_LancerEVOVIGSR_99.zip";
+    if (fs::exists(evo6)) {
+      cars::CarShaderOverrides ov;
+      CHECK(cars::load_car_shader_overrides(evo6, ov, &ss.normal, &err));
+      CHECK(ov.brake.has_override);
+    }
+  }
 
   // 2. List_SpecialColors (102 two-tone paints).
   std::vector<cars::SpecialColorRow> specials;
@@ -727,6 +853,86 @@ void test_phase3_livery_and_paint_parity() {
   CHECK(ed2.document().layers[2].plane == cars::LiveryPlaneKind::kWing);
   std::error_code ec;
   fs::remove(tmp_liv, ec);
+
+  // Phase R2-3A: Binary .liv import preserves caller base paint instead of defaulting to flat red,
+  // and parses structured FLIV header + layer records cleanly.
+  {
+    const fs::path bin_liv = fs::temp_directory_path() / "shift_r2_opaque_test.liv";
+    {
+      std::ofstream bf(bin_liv, std::ios::binary);
+      const uint8_t opaque[32] = {0x9A, 0x31, 0xF4, 0x02, 0x55, 0x77, 0xAA, 0xEE};
+      bf.write(reinterpret_cast<const char*>(opaque), sizeof(opaque));
+    }
+    cars::LiveryDocument opaque_doc;
+    opaque_doc.car_id = 309;
+    opaque_doc.paint.body.active = true;
+    opaque_doc.paint.body.rgb = 0x1A55CCu;
+    opaque_doc.paint.body.finish = cars::PaintFinish::kMetallic;
+    CHECK(cars::load_livery_file(bin_liv, opaque_doc, nullptr));
+    CHECK(opaque_doc.imported_binary);
+    CHECK(opaque_doc.binary_size_bytes == 32u);
+    CHECK(opaque_doc.car_id == 309);
+    CHECK(opaque_doc.paint.body.active);
+    CHECK(opaque_doc.paint.body.rgb == 0x1A55CCu);
+    CHECK(opaque_doc.paint.body.finish == cars::PaintFinish::kMetallic);
+    fs::remove(bin_liv, ec);
+
+    // Structured FLIV binary payload with body paint + 1 vinyl layer.
+    std::vector<uint8_t> fliv;
+    auto push_be32 = [&](uint32_t v) {
+      fliv.push_back(uint8_t((v >> 24) & 0xFF));
+      fliv.push_back(uint8_t((v >> 16) & 0xFF));
+      fliv.push_back(uint8_t((v >> 8) & 0xFF));
+      fliv.push_back(uint8_t(v & 0xFF));
+    };
+    auto push_be16 = [&](uint16_t v) {
+      fliv.push_back(uint8_t((v >> 8) & 0xFF));
+      fliv.push_back(uint8_t(v & 0xFF));
+    };
+    auto push_bef32 = [&](float f) {
+      uint32_t u = 0;
+      std::memcpy(&u, &f, 4);
+      push_be32(u);
+    };
+    fliv.insert(fliv.end(), {'F', 'L', 'I', 'V'});
+    push_be32(1u);            // version
+    push_be32(445u);          // car_id
+    push_be32(0x001188EEu);   // body_rgb
+    fliv.push_back(uint8_t(cars::PaintFinish::kMatte));
+    fliv.push_back(0x07u);    // flags: body active + sec_rgb + window_tint
+    push_be16(1u);            // 1 layer
+    push_be32(0x00FFD020u);   // sec_rgb
+    push_bef32(0.45f);        // window_tint
+    // Layer 0
+    fliv.push_back(uint8_t(cars::LiveryPlaneKind::kTop));
+    fliv.push_back(0x05u);    // flip_x | visible
+    push_be16(7u);            // group_id
+    push_bef32(0.40f);        // x
+    push_bef32(0.60f);        // y
+    push_bef32(0.30f);        // scale_x
+    push_bef32(0.15f);        // scale_y
+    push_bef32(45.0f);        // rot_deg
+    push_bef32(0.10f);        // skew
+    push_be32(0x00EEAA11u);   // rgb
+    push_bef32(0.85f);        // alpha
+    const std::string spath = "@stripe";
+    push_be16(uint16_t(spath.size()));
+    fliv.insert(fliv.end(), spath.begin(), spath.end());
+
+    cars::LiveryDocument fliv_doc;
+    CHECK(cars::import_binary_livery_bytes(fliv, "r34_custom", fliv_doc, nullptr));
+    CHECK(fliv_doc.imported_binary && fliv_doc.car_id == 445);
+    CHECK(fliv_doc.paint.body.active && fliv_doc.paint.body.rgb == 0x1188EEu);
+    CHECK(fliv_doc.paint.body.finish == cars::PaintFinish::kMatte);
+    CHECK(fliv_doc.paint.body.sec_rgb == 0xFFD020u);
+    CHECK(std::fabs(fliv_doc.paint.window_tint - 0.45f) < 1e-4f);
+    CHECK(fliv_doc.layers.size() == 1);
+    CHECK(fliv_doc.layers[0].shape_path == "@stripe");
+    CHECK(fliv_doc.layers[0].plane == cars::LiveryPlaneKind::kTop);
+    CHECK(fliv_doc.layers[0].flip_x && fliv_doc.layers[0].visible && !fliv_doc.layers[0].is_mask);
+    CHECK(fliv_doc.layers[0].group_id == 7 && fliv_doc.layers[0].rgb == 0xEEAA11u);
+    CHECK(std::fabs(fliv_doc.layers[0].rot_deg - 45.0f) < 1e-4f);
+  }
 }
 
 }  // namespace

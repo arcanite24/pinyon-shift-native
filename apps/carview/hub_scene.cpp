@@ -525,6 +525,7 @@ const char* garage_sort_name(GarageSort s) {
     case GarageSort::kValue: return "VALUE";
     case GarageSort::kDrivetrain: return "DRIVETRAIN";
     case GarageSort::kPi: return "PI";
+    case GarageSort::kYear: return "YEAR";
     default: return "CLASS";
   }
 }
@@ -537,30 +538,78 @@ void GarageBrowser::refresh(const garage::Garage& g, const cars::PartsDb* db,
     std::string media, display, make;
     int year = 0, drive = 2;
     int64_t base_cost = 0;
+    double speed = 5.0, handling = 5.0, accel = 5.0, launch = 5.0, braking = 5.0;
+    double power_kw = 0.0, torque_nm = 0.0, weight_kg = 0.0;
+    double disp_cc = 0.0;
+    std::string aspiration;
   };
   std::map<int64_t, Meta> metas;
   if (db && db->is_open()) {
-    db->each("SELECT ID, IconPathBase, ManufacturerCode FROM List_CarMake", {},
+    db->each("SELECT ID, COALESCE(DisplayName, ''), IconPathBase, ManufacturerCode FROM List_CarMake", {},
              [&](sqlite3_stmt* st) {
-               std::string n = col_text(st, 1);
+               const std::string dkey = col_text(st, 1);
+               std::string n;
+               if (!dkey.empty()) {
+                 n = (dkey.rfind("_&", 0) == 0) ? game_text(dkey) : dkey;
+                 if (n.rfind("_&", 0) == 0) n.clear();
+               }
                if (n.empty()) n = col_text(st, 2);
+               if (n.empty()) n = col_text(st, 3);
                make_names[sqlite3_column_int64(st, 0)] = n;
              },
              nullptr);
-    db->each("SELECT Id, MediaName, DisplayName, MakeID, Year, DriveTypeID, BaseCost FROM Data_Car", {},
-             [&](sqlite3_stmt* st) {
-               Meta m;
-               const int64_t id = sqlite3_column_int64(st, 0);
-               m.media = col_text(st, 1);
-               m.display = col_text(st, 2);
-               const int64_t mid = sqlite3_column_int64(st, 3);
-               if (auto it = make_names.find(mid); it != make_names.end()) m.make = it->second;
-               m.year = sqlite3_column_int(st, 4);
-               m.drive = sqlite3_column_int(st, 5);
-               m.base_cost = sqlite3_column_int64(st, 6);
-               metas[id] = std::move(m);
-             },
-             nullptr);
+    db->each(
+        "SELECT Id, MediaName, DisplayName, MakeID, Year, DriveTypeID, BaseCost, "
+        "SpeedRating, HandlingRating, AccelerationRating, LaunchRating, BrakingRating, "
+        "SimPeakPower, SimPeakTorque, CurbWeight FROM Data_Car",
+        {},
+        [&](sqlite3_stmt* st) {
+          Meta m;
+          const int64_t id = sqlite3_column_int64(st, 0);
+          m.media = col_text(st, 1);
+          m.display = col_text(st, 2);
+          const int64_t mid = sqlite3_column_int64(st, 3);
+          if (auto it = make_names.find(mid); it != make_names.end()) m.make = it->second;
+          m.year = sqlite3_column_int(st, 4);
+          m.drive = sqlite3_column_int(st, 5);
+          m.base_cost = sqlite3_column_int64(st, 6);
+          m.speed = sqlite3_column_double(st, 7);
+          m.handling = sqlite3_column_double(st, 8);
+          m.accel = sqlite3_column_double(st, 9);
+          m.launch = sqlite3_column_double(st, 10);
+          m.braking = sqlite3_column_double(st, 11);
+          // FH1 stores SimPeakPower in 0.1 kW, SimPeakTorque in 100 Nm, CurbWeight in 100 kg.
+          m.power_kw = sqlite3_column_double(st, 12) * 0.1;
+          m.torque_nm = sqlite3_column_double(st, 13) * 100.0;
+          m.weight_kg = sqlite3_column_double(st, 14) * 100.0;
+          m.aspiration = "Naturally Aspirated";
+          metas[id] = std::move(m);
+        },
+        nullptr);
+    // Stock engine displacement & aspiration lookup.
+    db->each(
+        "SELECT ue.Ordinal, "
+        "COALESCE((SELECT d.Disp FROM List_UpgradeEngineDisplacement d WHERE d.EngineID = ue.EngineID AND d.IsStock = 1 LIMIT 1), 0), "
+        "EXISTS(SELECT 1 FROM List_UpgradeEngineTwinTurbo t WHERE t.EngineID = ue.EngineID AND t.IsStock = 1), "
+        "EXISTS(SELECT 1 FROM List_UpgradeEngineSingleTurbo t WHERE t.EngineID = ue.EngineID AND t.IsStock = 1), "
+        "EXISTS(SELECT 1 FROM List_UpgradeEngineCSC t WHERE t.EngineID = ue.EngineID AND t.IsStock = 1) OR "
+        "EXISTS(SELECT 1 FROM List_UpgradeEngineDSC t WHERE t.EngineID = ue.EngineID AND t.IsStock = 1) "
+        "FROM List_UpgradeEngine ue WHERE ue.IsStock = 1",
+        {},
+        [&](sqlite3_stmt* st) {
+          const int64_t cid = sqlite3_column_int64(st, 0);
+          auto it = metas.find(cid);
+          if (it == metas.end()) return;
+          it->second.disp_cc = sqlite3_column_double(st, 1);
+          const bool has_tt = sqlite3_column_int(st, 2) != 0;
+          const bool has_st = sqlite3_column_int(st, 3) != 0;
+          const bool has_sc = sqlite3_column_int(st, 4) != 0;
+          if (has_tt) it->second.aspiration = "Twin Turbo";
+          else if (has_st) it->second.aspiration = "Turbo";
+          else if (has_sc) it->second.aspiration = "Supercharged";
+          else it->second.aspiration = "Naturally Aspirated";
+        },
+        nullptr);
   }
 
   for (const auto& c : g.cars) {
@@ -573,6 +622,8 @@ void GarageBrowser::refresh(const garage::Garage& g, const cars::PartsDb* db,
                                : garage::shown_index(c.performance_index, bands);
     e.colour_seq = c.colour;
     e.is_current = (c.id == g.selected);
+    e.favorite = c.favorite;
+    e.is_prize = c.is_prize;
     int64_t base_cost = 0;
     if (auto it = metas.find(c.car_id); it != metas.end()) {
       e.media_name = it->second.media;
@@ -581,12 +632,45 @@ void GarageBrowser::refresh(const garage::Garage& g, const cars::PartsDb* db,
       e.year = it->second.year;
       e.drive_type_id = it->second.drive;
       base_cost = it->second.base_cost;
+      e.speed_rating = it->second.speed;
+      e.handling_rating = it->second.handling;
+      e.accel_rating = it->second.accel;
+      e.launch_rating = it->second.launch;
+      e.braking_rating = it->second.braking;
+      e.peak_power_kw = it->second.power_kw;
+      e.peak_torque_nm = it->second.torque_nm;
+      e.curb_weight_kg = it->second.weight_kg;
+      e.displacement_cc = it->second.disp_cc;
+      e.aspiration = it->second.aspiration;
     } else {
       e.display_name = "Car #" + std::to_string(c.car_id);
       e.make_name = "Other";
+      e.aspiration = "Naturally Aspirated";
+    }
+    // Use real upgraded cached stats when available (populated by refresh_car_pi).
+    if (c.cached_stats.peak_power_kw > 0.0) {
+      e.speed_rating = c.cached_stats.speed_rating;
+      e.handling_rating = c.cached_stats.handling_rating;
+      e.accel_rating = c.cached_stats.accel_rating;
+      e.launch_rating = c.cached_stats.launch_rating;
+      e.braking_rating = c.cached_stats.braking_rating;
+      e.peak_power_kw = c.cached_stats.peak_power_kw;
+      e.peak_torque_nm = c.cached_stats.peak_torque_nm;
+      e.curb_weight_kg = c.cached_stats.curb_weight_kg;
+      if (c.cached_stats.displacement_cc > 0.0) e.displacement_cc = c.cached_stats.displacement_cc;
+      if (!c.cached_stats.aspiration.empty()) e.aspiration = c.cached_stats.aspiration;
+    } else {
+      // Reflect fitted aspiration conversion slots even before cached_stats is populated.
+      auto slot_pos = [&](const char* col) {
+        auto it = c.slots.find(col);
+        return it != c.slots.end() && it->second > 0;
+      };
+      if (slot_pos("TwinTurbo")) e.aspiration = "Twin Turbo";
+      else if (slot_pos("SingleTurbo")) e.aspiration = "Turbo";
+      else if (slot_pos("SuperchargerCSC") || slot_pos("SuperchargerDSC")) e.aspiration = "Supercharged";
     }
     e.value_cr = base_cost + c.parts_value;
-    e.sell_cr = garage::sell_car_value(base_cost, c.parts_value);
+    e.sell_cr = garage::sell_car_value(base_cost, c.parts_value, c.is_prize);
     all_.push_back(std::move(e));
   }
   apply_filter_and_sort();
@@ -596,6 +680,7 @@ void GarageBrowser::apply_filter_and_sort() {
   visible_.clear();
   for (const auto& e : all_) {
     if (class_filter_ >= 0 && e.class_id != class_filter_) continue;
+    if (favorites_only_ && !e.favorite) continue;
     visible_.push_back(e);
   }
   std::sort(visible_.begin(), visible_.end(), [&](const GarageEntry& a, const GarageEntry& b) {
@@ -612,6 +697,9 @@ void GarageBrowser::apply_filter_and_sort() {
       case GarageSort::kPi:
         if (a.raw_pi != b.raw_pi) return a.raw_pi > b.raw_pi;
         return a.garage_id < b.garage_id;
+      case GarageSort::kYear:
+        if (a.year != b.year) return a.year > b.year;
+        return a.raw_pi > b.raw_pi;
       case GarageSort::kClass:
       default:
         if (a.class_id != b.class_id) return a.class_id < b.class_id;
@@ -634,8 +722,8 @@ void GarageBrowser::cycle_sort(int by) {
 }
 
 void GarageBrowser::cycle_class_filter(int by) {
-  // Cycle: -1 (All), 1 (E), 2 (D), ..., 9 (R1).
-  static constexpr int kCycle[] = {-1, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+  // Cycle: -1 (All), 0 (F), 1 (E), 2 (D), ..., 9 (R1), 10 (X).
+  static constexpr int kCycle[] = {-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
   constexpr int n = int(sizeof(kCycle) / sizeof(kCycle[0]));
   int idx = 0;
   for (int i = 0; i < n; ++i)
@@ -644,6 +732,34 @@ void GarageBrowser::cycle_class_filter(int by) {
   class_filter_ = kCycle[idx];
   selected_ = 0;
   apply_filter_and_sort();
+}
+
+void GarageBrowser::toggle_favorites_filter() {
+  favorites_only_ = !favorites_only_;
+  selected_ = 0;
+  apply_filter_and_sort();
+}
+
+void GarageBrowser::set_favorites_filter(bool on) {
+  favorites_only_ = on;
+  selected_ = 0;
+  apply_filter_and_sort();
+}
+
+bool GarageBrowser::toggle_favorite_selected(garage::Garage& g, const cars::PartsDb* db,
+                                             const std::vector<garage::ClassBand>& bands) {
+  const GarageEntry* e = selected_entry();
+  if (!e) return false;
+  const int64_t target_id = e->garage_id;
+  const bool now_fav = g.toggle_favorite(target_id);
+  refresh(g, db, bands);
+  for (size_t i = 0; i < visible_.size(); ++i) {
+    if (visible_[i].garage_id == target_id) {
+      selected_ = i;
+      break;
+    }
+  }
+  return now_fav;
 }
 
 bool GarageBrowser::sell_selected(garage::Garage& g, const cars::PartsDb* db,
@@ -802,11 +918,41 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
   // Top-left PlayerBar (authentic 115/108/114 PlayerBar@(387,41), leaving center 3D car open!).
   const auto& makes = autoshow.makes();
   const std::string active_make =
-      makes.empty() ? std::string("AUTOSHOW") : makes[std::min(autoshow.selected_make_index(), makes.size() - 1)].name;
+      autoshow.all_cars_mode()
+          ? std::string("ALL CARS")
+          : (makes.empty() ? std::string("AUTOSHOW")
+                           : makes[std::min(autoshow.selected_make_index(), makes.size() - 1)].name);
   draw_hub_player_bar(list, s, credits,
                       autoshow.tutorial_mode() ? "FIRST CAR SELECTION"
                       : (step == AutoshowStep::kMakeSelect) ? "HORIZON AUTOSHOW"
                                                             : ("AUTOSHOW  //  " + active_make));
+
+  // Top-left Sort / Class / Drivetrain filter chips in Car Select mode (matches Garage HUD).
+  if (step == AutoshowStep::kCarSelect && !autoshow.tutorial_mode()) {
+    const std::string cfilt =
+        autoshow.class_filter() < 0
+            ? "ALL"
+            : (autoshow.class_filter() < int(bands.size()) ? bands[size_t(autoshow.class_filter())].name : "?");
+    const char* dfilt = autoshow.drivetrain_filter() == 1   ? "FWD"
+                        : autoshow.drivetrain_filter() == 2 ? "RWD"
+                        : autoshow.drivetrain_filter() == 3 ? "AWD"
+                                                            : "ALL";
+    ui4::TiltScope top_rot(list, 300.0f * s, 78.0f * s, tilt_rad * 0.6f);
+    const float py = 64.0f * s;
+    ui4::pill(list, 56.0f * s, py, 212.0f * s, py + 25.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
+    list.text(68.0f * s, py + 5.5f * s, "SORT: " + std::string(autoshow_sort_name(autoshow.sort_mode())),
+              ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+    ui4::pill(list, 218.0f * s, py, 352.0f * s, py + 25.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
+    list.text(230.0f * s, py + 5.5f * s, "CLASS: " + cfilt, ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+    ui4::pill(list, 358.0f * s, py, 488.0f * s, py + 25.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
+    list.text(370.0f * s, py + 5.5f * s, std::string("DRIVE: ") + dfilt,
+              ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+    if (autoshow.all_cars_mode()) {
+      ui4::brush(list, 494.0f * s, py, 596.0f * s, py + 25.0f * s, ui4::kPink);
+      list.text(545.0f * s, py + 5.5f * s, "ALL CARS",
+                ui4::style(ui::Font::kE, 11.5f * s, ui4::kWhite, ui::Align::kCenter));
+    }
+  }
 
   // Entire Autoshow UI sits inside RotationHelper@(640,360) tilted +3.0 deg!
   {
@@ -872,7 +1018,9 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
 
       if (sel_car) {
         const float sy0 = 562.0f * s, sy1 = 626.0f * s;
-        const size_t nsw = std::min<size_t>(sel_car->swatches.size(), 14);
+        size_t first_sw = 0, nsw = 0;
+        autoshow.swatch_window(14, first_sw, nsw);
+        const size_t total_sw = sel_car->swatches.size();
         const float sw_w = 46.0f * s, sw_h = 46.0f * s, sw_gap = 6.0f * s;
         float sx = 86.0f * s;
 
@@ -883,20 +1031,43 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
         const bool has_grad = ui4::texture("LIVERY/CAR_PAINT_LIST_GRADIENT", grad_uv);
         const uint32_t kFocusPink = ui::rgba(0xCF, 0x21, 0x69, 255);
 
-        ui4::pill(list, sx - 12.0f * s, sy0 - 8.0f * s, sx + float(std::max<size_t>(1, nsw)) * (sw_w + sw_gap) + 10.0f * s,
-                  sy1 + 6.0f * s, ui4::kPillGrey, ui4::PillKind::kPillBig);
+        const float strip_x0 = sx - 16.0f * s;
+        const float strip_x1 = sx + float(std::max<size_t>(1, nsw)) * (sw_w + sw_gap) + 14.0f * s;
+        ui4::pill(list, strip_x0, sy0 - 8.0f * s, strip_x1, sy1 + 6.0f * s, ui4::kPillGrey, ui4::PillKind::kPillBig);
         if (has_grad) {
-          list.image(sx - 12.0f * s, sy0 - 8.0f * s, sx + float(std::max<size_t>(1, nsw)) * (sw_w + sw_gap) + 10.0f * s,
-                     sy1 + 6.0f * s, grad_uv, ui::rgba(255, 255, 255, 42));
+          list.image(strip_x0, sy0 - 8.0f * s, strip_x1, sy1 + 6.0f * s, grad_uv, ui::rgba(255, 255, 255, 42));
         }
 
-        for (size_t i = 0; i < nsw; ++i) {
-          const auto& sw = sel_car->swatches[i];
+        // Scroll indicators when car has > 14 factory swatches (up to 31+ in retail FH1).
+        if (first_sw > 0) {
+          ui4::opt_arrow(list, strip_x0 + 6.0f * s, sy0 + 29.0f * s, 14.0f * s, -1, ui4::kPinkHi);
+        }
+        if (first_sw + nsw < total_sw) {
+          ui4::opt_arrow(list, strip_x1 - 8.0f * s, sy0 + 29.0f * s, 14.0f * s, +1, ui4::kPinkHi);
+        }
+
+        for (size_t k = 0; k < nsw; ++k) {
+          const size_t sw_idx = first_sw + k;
+          const auto& sw = sel_car->swatches[sw_idx];
           const uint32_t sw_col =
               ui::rgba(uint8_t((sw.rgb >> 16) & 0xFF), uint8_t((sw.rgb >> 8) & 0xFF), uint8_t(sw.rgb & 0xFF), 255);
-          const bool active = (i == autoshow.selected_colour_index());
+          const bool active = (sw_idx == autoshow.selected_colour_index());
           const float y_c = sy0 + 6.0f * s - (active ? 4.0f * s : 0.0f);
+          list.add_hit(sx, y_c, sx + sw_w, y_c + sw_h, ui4::kHitSwatch, int(sw_idx));
           list.rect(sx, y_c, sx + sw_w, y_c + sw_h, sw_col);
+          if (sw.has_stripe) {
+            const uint32_t st_col =
+                sw.stripe_rgb != 0
+                    ? ui::rgba(uint8_t((sw.stripe_rgb >> 16) & 0xFF), uint8_t((sw.stripe_rgb >> 8) & 0xFF),
+                               uint8_t(sw.stripe_rgb & 0xFF), 255)
+                    : ui4::kWhite;
+            // Twin racing stripe / factory livery band across the swatch chip.
+            list.rect(sx + sw_w * 0.36f, y_c, sx + sw_w * 0.48f, y_c + sw_h, st_col);
+            list.rect(sx + sw_w * 0.52f, y_c, sx + sw_w * 0.64f, y_c + sw_h, st_col);
+            list.rect(sx, y_c + sw_h - 9.0f * s, sx + sw_w, y_c + sw_h, ui::rgba(14, 16, 20, 200));
+            list.text(sx + 0.5f * sw_w, y_c + sw_h - 8.5f * s, "STRIPE",
+                      ui4::style(ui::Font::kE, 7.5f * s, ui4::kYellow, ui::Align::kCenter));
+          }
           if (sw.metallic && has_met) list.image(sx, y_c, sx + sw_w, y_c + sw_h, met_uv, ui::rgba(255, 255, 255, 96));
           else if (has_chip) list.image(sx, y_c, sx + sw_w, y_c + sw_h, chip_uv, ui::rgba(255, 255, 255, 68));
           if (active) {
@@ -910,6 +1081,20 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
             list.frame(sx, y_c, sx + sw_w, y_c + sw_h, ui::rgba(0, 0, 0, 125), 1.0f * s);
           }
           sx += sw_w + sw_gap;
+        }
+
+        // Swatch index counter & livery/stripe tag above the swatch strip.
+        if (total_sw > 0) {
+          char swb[64];
+          const auto* sel_sw = autoshow.selected_swatch();
+          std::snprintf(swb, sizeof swb, "COLOR %zu / %zu%s%s", autoshow.selected_colour_index() + 1, total_sw,
+                        (sel_sw && sel_sw->metallic) ? "  METALLIC" : "",
+                        (sel_sw && sel_sw->has_stripe) ? "  [STRIPE / LIVERY]" : "");
+          ui4::pill(list, strip_x0, sy0 - 34.0f * s, strip_x0 + 310.0f * s, sy0 - 12.0f * s, ui4::kBrushBlack,
+                    ui4::PillKind::kMenu);
+          list.text(strip_x0 + 12.0f * s, sy0 - 30.0f * s, swb,
+                    ui4::style(ui::Font::kB, 11.0f * s,
+                               (sel_sw && sel_sw->has_stripe) ? ui4::kYellow : ui4::kOffWhite));
         }
 
         // Right-aligned Price & Balance (114 x=836..1168, y=566..637)
@@ -968,10 +1153,12 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
         ui4::class_badge(list, cx1 - 92.0f * s, cy + 4.0f * s, 24.0f * s, cls_name, shown_pi, cls);
         cy += 36.0f * s;
 
-        // Compact Price & Swatch Preview PILL02 row
+        // Compact Price & [OWNED] badge row
         const bool affordable = credits >= sel_car->dealer.base_cost;
+        const bool is_owned = autoshow.is_owned(sel_car->dealer.id);
         ui4::offwhite_strip(list, cx0, cy, cx1, cy + 28.0f * s, s, true);
-        list.text(cx0 + 14.0f * s, cy + 7.0f * s, "AUTOSHOW PRICE", ui4::style(ui::Font::kB, 11.5f * s, ui4::kInk));
+        list.text(cx0 + 14.0f * s, cy + 7.0f * s, is_owned ? "AUTOSHOW PRICE  [OWNED]" : "AUTOSHOW PRICE",
+                  ui4::style(ui::Font::kB, 11.5f * s, is_owned ? ui::rgba(24, 128, 60) : ui4::kInk));
         list.text(cx1 - 14.0f * s, cy + 6.0f * s, ui4::format_credits(sel_car->dealer.base_cost),
                   ui4::style(ui::Font::kE, 15.5f * s, affordable ? ui4::kInk : ui4::kRed, ui::Align::kRight, true));
         cy += 36.0f * s;
@@ -1000,23 +1187,39 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
                   ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kCenter));
         cy += 30.0f * s;
 
-        // Compact Factory Swatch Preview chips (pressing Y/A steps into 114_C_BUY_BUYCAR_COLOR)
+        // Compact Factory Swatch Preview chips (scrolling window over all 1..31+ swatches)
         if (!sel_car->swatches.empty()) {
-          const size_t nsw = std::min<size_t>(sel_car->swatches.size(), 10);
+          size_t first_p = 0, nsw = 0;
+          autoshow.swatch_window(10, first_p, nsw);
           ui4::pill(list, cx0, cy, cx1, cy + 32.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
           list.text(cx0 + 12.0f * s, cy + 9.0f * s, "COLOR", ui4::style(ui::Font::kB, 11.0f * s, ui4::kDim));
           float sx = cx0 + 68.0f * s;
           std::array<float, 4> chip_uv{};
           const bool has_chip = ui4::texture("LIVERY/CAR_PAINT_GRID_CHIP", chip_uv);
-          for (size_t i = 0; i < nsw; ++i) {
-            const auto& sw = sel_car->swatches[i];
+          for (size_t k = 0; k < nsw; ++k) {
+            const size_t sw_idx = first_p + k;
+            const auto& sw = sel_car->swatches[sw_idx];
             const uint32_t col =
                 ui::rgba(uint8_t((sw.rgb >> 16) & 0xFF), uint8_t((sw.rgb >> 8) & 0xFF), uint8_t(sw.rgb & 0xFF), 255);
-            const bool act = (i == autoshow.selected_colour_index());
+            const bool act = (sw_idx == autoshow.selected_colour_index());
             list.rect(sx, cy + 6.0f * s, sx + 22.0f * s, cy + 26.0f * s, col);
+            if (sw.has_stripe) {
+              const uint32_t st_col =
+                  sw.stripe_rgb != 0
+                      ? ui::rgba(uint8_t((sw.stripe_rgb >> 16) & 0xFF), uint8_t((sw.stripe_rgb >> 8) & 0xFF),
+                                 uint8_t(sw.stripe_rgb & 0xFF), 255)
+                      : ui4::kWhite;
+              list.rect(sx + 8.0f * s, cy + 6.0f * s, sx + 14.0f * s, cy + 26.0f * s, st_col);
+            }
             if (has_chip) list.image(sx, cy + 6.0f * s, sx + 22.0f * s, cy + 26.0f * s, chip_uv, ui::rgba(255, 255, 255, 64));
             if (act) list.frame(sx - 2.0f * s, cy + 4.0f * s, sx + 24.0f * s, cy + 28.0f * s, ui4::kPink, 2.0f * s);
             sx += 26.0f * s;
+          }
+          if (sel_car->swatches.size() > 10) {
+            char mc[16];
+            std::snprintf(mc, sizeof mc, "%zu", sel_car->swatches.size());
+            list.text(cx1 - 8.0f * s, cy + 9.0f * s, mc,
+                      ui4::style(ui::Font::kB, 10.5f * s, ui4::kYellow, ui::Align::kRight));
           }
         }
       }
@@ -1061,6 +1264,12 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
           const int cpi = bands.empty() ? int(std::ceil(c.dealer.performance_index * 999.0))
                                         : garage::shown_index(c.dealer.performance_index, bands);
           ui4::class_badge(list, bx + 8.0f * s, bot_y + 8.0f * s - lift, 17.0f * s, cname_cls, cpi, cls);
+          if (autoshow.is_owned(c.dealer.id)) {
+            ui4::brush(list, bx + cw - 70.0f * s, bot_y + 7.0f * s - lift, bx + cw - 6.0f * s, bot_y + 24.0f * s - lift,
+                       ui4::kGreen);
+            list.text(bx + cw - 38.0f * s, bot_y + 10.5f * s - lift, "OWNED",
+                      ui4::style(ui::Font::kE, 9.5f * s, ui4::kInk, ui::Align::kCenter));
+          }
 
           std::string bname = car_name(c.dealer.media_name);
           if (bname.empty()) bname = c.display_name;
@@ -1094,9 +1303,16 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
   if (step == AutoshowStep::kMakeSelect) {
     ui4::button_bar(list, {{"A", "SELECT MAKE"}, {"DPAD_LR", "BROWSE"}, {"B", "EXIT"}}, w, h, 56.0f);
   } else if (step == AutoshowStep::kColorSelect) {
-    ui4::button_bar(list, {{"A", "BUY CAR"}, {"DPAD_LR", "FACTORY COLOR"}, {"B", "BACK TO CARS"}}, w, h, 56.0f);
+    ui4::button_bar(list,
+                    {{"A", "BUY CAR"}, {"X", "TEST DRIVE"}, {"DPAD_LR", "FACTORY COLOR"}, {"B", "BACK TO CARS"}},
+                    w, h, 56.0f);
   } else {
-    ui4::button_bar(list, {{"A", "CHOOSE COLOR / BUY"}, {"LB", "MAKE"}, {"Y", "FACTORY COLOR"}, {"B", "BACK"}},
+    ui4::button_bar(list,
+                    {{"A", "CHOOSE COLOR / BUY"},
+                     {"X", "TEST DRIVE"},
+                     {"LB", "MAKE"},
+                     {"Y", "FACTORY COLOR"},
+                     {"B", "BACK"}},
                     w, h, 56.0f);
   }
 }
@@ -1109,8 +1325,10 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
 
   const float tilt_rad = scene_tilt_rad("527_C_UPG_UPGRADES", "Group_BLADE");
 
+  const int eff_disc = shop.effective_discount_percent(discount_percent);
+
   // Top-left PlayerBar @(368, 41) + Discount tag — ZERO left vertical dark wall!
-  draw_hub_player_bar(list, s, credits, car_title.empty() ? "DAK'S GARAGE" : car_title, discount_percent);
+  draw_hub_player_bar(list, s, credits, car_title.empty() ? "DAK'S GARAGE" : car_title, eff_disc);
 
   // Slim top tilted category strip (LB / RB) tucked cleanly at y=62..90 so 3D car stays 100% open!
   static const std::vector<std::string> kCatTabs = {"ENGINE",     "PLATFORM",    "DRIVETRAIN", "TIRES/RIMS",
@@ -1264,6 +1482,11 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
         ui4::opt_slider(list, bx + 14.0f * s, blade_y + 92.0f * s - lift, bx + cw - 14.0f * s,
                         blade_y + 106.0f * s - lift, frac, s, !sl.unlocked ? ui4::kDim : (act ? ui4::kYellow : ui4::kPink),
                         act, def_f);
+        if (!sl.unlocked && !sl.unlock_hint.empty()) {
+          ui::TextStyle hs = ui4::style(ui::Font::kB, 9.5f * s, ui4::kAmber, ui::Align::kCenter);
+          ui4::fit_text(sl.unlock_hint, hs, cw - 20.0f * s, 7.5f * s);
+          list.text(bx + 0.5f * cw, blade_y + 114.0f * s - lift, sl.unlock_hint, hs);
+        }
         bx += cw + gap;
       }
 
@@ -1275,7 +1498,7 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
                 ui4::style(ui::Font::kD, 13.0f * s, ui4::kWhite, ui::Align::kCenter));
     } else {
       // Authentic 527_C_UPG_UPGRADES Bottom BIGPANE01 Part Carousel with 479 real UI4/Upgrades/*.xds part icons!
-      const auto rows = shop.visible_rows(discount_percent);
+      const auto rows = shop.visible_rows(eff_disc);
       const int n = int(rows.size());
       const int sel = n > 0 ? int(std::min(shop.selected_row(), rows.size() - 1)) : 0;
       const int count = std::min(n, 5);
@@ -1376,13 +1599,14 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
 }
 
 void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& browser,
-                     const std::vector<garage::ClassBand>& bands, int64_t credits, const std::string& notice) {
+                     const std::vector<garage::ClassBand>& bands, int64_t credits, const std::string& notice,
+                     bool metric_units) {
   const float s = h / 720.0f;
   ui4::subtle_vignette(list, w, h, 0.20f);
 
   const float tilt_rad = scene_tilt_rad("106_C_CAR_LIST", "RotationHelper");
 
-  // Top-left PlayerBar + Sort/Filter PILL01 chips (106_C_CAR_LIST)
+  // Top-left PlayerBar + Sort/Filter/Favorites PILL01 chips (106_C_CAR_LIST)
   draw_hub_player_bar(list, s, credits, "MY GARAGE  //  " + std::to_string(browser.visible().size()) + " CARS");
 
   const std::string filt = browser.class_filter() < 0
@@ -1391,72 +1615,127 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
                                       ? ("CLASS " + bands[size_t(browser.class_filter())].name)
                                       : "FILTERED");
   {
-    ui4::TiltScope top_rot(list, 260.0f * s, 78.0f * s, tilt_rad);
+    ui4::TiltScope top_rot(list, 310.0f * s, 78.0f * s, tilt_rad);
     const float pill_y = 64.0f * s;
-    ui4::pill(list, 56.0f * s, pill_y, 244.0f * s, pill_y + 26.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
+    ui4::pill(list, 56.0f * s, pill_y, 232.0f * s, pill_y + 26.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
     list.text(70.0f * s, pill_y + 6.0f * s, "SORT: " + std::string(garage_sort_name(browser.sort_mode())),
-              ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite));
-    ui4::pill(list, 252.0f * s, pill_y, 446.0f * s, pill_y + 26.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
-    list.text(266.0f * s, pill_y + 6.0f * s, "FILTER: " + filt, ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite));
+              ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite));
+    ui4::pill(list, 238.0f * s, pill_y, 418.0f * s, pill_y + 26.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
+    list.text(252.0f * s, pill_y + 6.0f * s, "FILTER: " + filt, ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite));
+    ui4::pill(list, 424.0f * s, pill_y, 580.0f * s, pill_y + 26.0f * s,
+              browser.favorites_only() ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
+    list.text(438.0f * s, pill_y + 6.0f * s, browser.favorites_only() ? "FAVORITES: ONLY" : "FAVORITES: ALL",
+              ui4::style(ui::Font::kB, 12.0f * s, browser.favorites_only() ? ui4::kYellow : ui4::kWhite));
   }
 
   // Entire Garage details & car carousel tilted +3.0 deg (106_C_CAR_LIST + 104_C_CAR_DETAILS)!
   {
     ui4::TiltScope rot(list, 0.5f * w, 0.5f * h, tilt_rad);
 
-    // 1. Right-hand 104_C_CAR_DETAILS floating pill card (#BFBFBF PILL01 header + PILLCLIPON01 + #212121 PILL02 rows + SCROLLINDICATOR)
+    // 1. Right-hand 104_C_CAR_DETAILS floating pill card (#BFBFBF PILL01 header + 5 stat bars + real specs)
     if (const GarageEntry* sel_e = browser.selected_entry()) {
-      const float rx1 = w - 58.0f * s;
-      const float rw = 394.0f * s;
+      const float rx1 = w - 56.0f * s;
+      const float rw = 408.0f * s;
       const float rx0 = rx1 - rw;
-      float cy = 44.0f * s;
+      float cy = 28.0f * s;
       const std::string cname =
           (bands.empty() || sel_e->class_id >= int(bands.size())) ? "?" : bands[size_t(sel_e->class_id)].name;
 
       // #BFBFBF PILL01 Header + PILLCLIPON01
-      ui4::pill(list, rx0, cy, rx1, cy + 30.0f * s, ui::rgba(0xBF, 0xBF, 0xBF, 242), ui4::PillKind::kMenu, false, true);
-      list.text(rx0 + 14.0f * s, cy + 7.5f * s, "CAR DETAILS", ui4::style(ui::Font::kD, 14.5f * s, ui4::kInk));
+      ui4::pill(list, rx0, cy, rx1, cy + 28.0f * s, ui::rgba(0xBF, 0xBF, 0xBF, 242), ui4::PillKind::kMenu, false, true);
+      list.text(rx0 + 14.0f * s, cy + 6.5f * s, "CAR DETAILS", ui4::style(ui::Font::kD, 14.0f * s, ui4::kInk));
+      float badge_r = rx1 - 6.0f * s;
       if (sel_e->is_current) {
-        ui4::brush(list, rx1 - 122.0f * s, cy + 3.0f * s, rx1 - 6.0f * s, cy + 27.0f * s, ui4::kPink);
-        list.text(rx1 - 64.0f * s, cy + 8.0f * s, "CURRENT CAR",
-                  ui4::style(ui::Font::kE, 11.5f * s, ui4::kWhite, ui::Align::kCenter));
+        ui4::brush(list, badge_r - 110.0f * s, cy + 3.0f * s, badge_r, cy + 25.0f * s, ui4::kPink);
+        list.text(badge_r - 55.0f * s, cy + 7.5f * s, "CURRENT CAR",
+                  ui4::style(ui::Font::kE, 10.5f * s, ui4::kWhite, ui::Align::kCenter));
+        badge_r -= 114.0f * s;
       }
-      cy += 34.0f * s;
+      if (sel_e->favorite) {
+        ui4::brush(list, badge_r - 58.0f * s, cy + 3.0f * s, badge_r, cy + 25.0f * s, ui4::kYellow);
+        list.text(badge_r - 29.0f * s, cy + 7.5f * s, "FAV",
+                  ui4::style(ui::Font::kE, 10.5f * s, ui4::kInk, ui::Align::kCenter));
+        badge_r -= 62.0f * s;
+      }
+      if (sel_e->is_prize) {
+        ui4::brush(list, badge_r - 62.0f * s, cy + 3.0f * s, badge_r, cy + 25.0f * s, ui4::kAmber);
+        list.text(badge_r - 31.0f * s, cy + 7.5f * s, "PRIZE",
+                  ui4::style(ui::Font::kE, 10.5f * s, ui4::kInk, ui::Align::kCenter));
+      }
+      cy += 31.0f * s;
 
-      // Car Name & Manufacturer badge row (104 Manufacturer badge + #F90064 PILL01 accent)
-      ui4::pill(list, rx0, cy, rx1, cy + 56.0f * s, ui4::kCharcoalDark, ui4::PillKind::kPillBig);
-      ui4::manufacturer_logo(list, rx1 - 76.0f * s, cy + 6.0f * s, rx1 - 12.0f * s, cy + 50.0f * s, sel_e->make_name);
-      list.text(rx0 + 14.0f * s, cy + 8.0f * s, std::to_string(sel_e->year) + "  " + sel_e->make_name,
-                ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim));
+      // Car Name, Make, Year & Class/PI row
+      ui4::pill(list, rx0, cy, rx1, cy + 50.0f * s, ui4::kCharcoalDark, ui4::PillKind::kPillBig);
+      ui4::manufacturer_logo(list, rx1 - 70.0f * s, cy + 5.0f * s, rx1 - 10.0f * s, cy + 45.0f * s, sel_e->make_name);
+      list.text(rx0 + 14.0f * s, cy + 6.0f * s,
+                std::to_string(sel_e->year) + "  " + sel_e->make_name + "  •  " + drive_label(sel_e->drive_type_id),
+                ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
       std::string sel_label = car_name(sel_e->media_name);
       if (sel_label.empty() || sel_label.rfind("_&", 0) == 0) sel_label = sel_e->display_name;
-      ui::TextStyle nm = ui4::style(ui::Font::kE, 19.5f * s, ui4::kWhite, ui::Align::kLeft, true);
-      ui4::fit_text(sel_label, nm, rw - 96.0f * s, 11.5f * s);
-      list.text(rx0 + 14.0f * s, cy + 26.0f * s, sel_label, nm);
-      cy += 60.0f * s;
+      ui::TextStyle nm = ui4::style(ui::Font::kE, 18.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+      ui4::fit_text(sel_label, nm, rw - 90.0f * s, 11.0f * s);
+      list.text(rx0 + 14.0f * s, cy + 23.0f * s, sel_label, nm);
+      cy += 53.0f * s;
 
-      // Floating #212121 PILL02 spec rows (28px pitch, matching 106_C_CAR_LIST)
-      auto detail_row = [&](std::string_view k, std::string_view v, uint32_t vcol, bool pink_bg = false) {
-        ui4::pill(list, rx0, cy, rx1, cy + 26.0f * s, pink_bg ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kPill02);
-        list.text(rx0 + 14.0f * s, cy + 6.0f * s, k,
-                  ui4::style(ui::Font::kD, 13.0f * s, pink_bg ? ui4::kWhite : ui4::kDim));
-        list.text(rx1 - 14.0f * s, cy + 6.0f * s, v,
-                  ui4::style(ui::Font::kB, 13.5f * s, vcol, ui::Align::kRight, true));
-        cy += 29.0f * s;
+      // Class & PI + Garage/Sell Value row
+      ui4::pill(list, rx0, cy, rx1, cy + 28.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
+      ui4::class_badge(list, rx0 + 10.0f * s, cy + 3.0f * s, 22.0f * s, cname, sel_e->shown_pi, sel_e->class_id);
+      const std::string sell_lbl =
+          (sel_e->is_prize ? "SELL (PRIZE): " : "SELL (50%): ") + ui4::format_credits(sel_e->sell_cr);
+      list.text(rx1 - 12.0f * s, cy + 7.0f * s, sell_lbl,
+                ui4::style(ui::Font::kB, 11.5f * s, ui4::kYellow, ui::Align::kRight, true));
+      cy += 31.0f * s;
+
+      // 5 Floating PILL02 0..10 Stat Bars (Speed, Handling, Accel, Launch, Braking)
+      const std::pair<const char*, double> gstats[5] = {
+          {"SPEED", sel_e->speed_rating},
+          {"HANDLING", sel_e->handling_rating},
+          {"ACCEL", sel_e->accel_rating},
+          {"LAUNCH", sel_e->launch_rating},
+          {"BRAKING", sel_e->braking_rating},
       };
+      for (int si = 0; si < 5; ++si) {
+        ui4::pill(list, rx0, cy, rx1, cy + 23.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
+        ui4::stat_bar(list, rx0 + 12.0f * s, cy + 1.5f * s, rw - 24.0f * s, 20.0f * s, gstats[si].first,
+                      gstats[si].second, gstats[si].second, false, s);
+        cy += 25.5f * s;
+      }
+      cy += 2.0f * s;
 
-      // Class & PI row
-      ui4::pill(list, rx0, cy, rx1, cy + 30.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
-      list.text(rx0 + 14.0f * s, cy + 8.0f * s, "PERFORMANCE CLASS", ui4::style(ui::Font::kD, 13.0f * s, ui4::kDim));
-      ui4::class_badge(list, rx1 - 92.0f * s, cy + 3.0f * s, 24.0f * s, cname, sel_e->shown_pi, sel_e->class_id);
-      cy += 33.0f * s;
+      // Real Specs Readout: Power, Torque, Weight, Displacement, Aspiration
+      auto spec_row = [&](std::string_view k, std::string_view v, uint32_t vcol) {
+        ui4::pill(list, rx0, cy, rx1, cy + 22.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
+        list.text(rx0 + 12.0f * s, cy + 5.0f * s, k, ui4::style(ui::Font::kD, 11.5f * s, ui4::kDim));
+        ui::TextStyle vs = ui4::style(ui::Font::kB, 12.0f * s, vcol, ui::Align::kRight, true);
+        ui4::fit_text(v, vs, rw - 135.0f * s, 8.5f * s);
+        list.text(rx1 - 12.0f * s, cy + 5.0f * s, v, vs);
+        cy += 24.5f * s;
+      };
+      char pwr_buf[64], wt_buf[64], disp_buf[48];
+      if (metric_units) {
+        std::snprintf(pwr_buf, sizeof pwr_buf, "%d kW  •  %d NM", int(std::lround(sel_e->peak_power_kw)),
+                      int(std::lround(sel_e->peak_torque_nm)));
+        std::snprintf(wt_buf, sizeof wt_buf, "%d KG", int(std::lround(sel_e->curb_weight_kg)));
+      } else {
+        std::snprintf(pwr_buf, sizeof pwr_buf, "%d HP  •  %d LB-FT",
+                      int(std::lround(sel_e->peak_power_kw * 1.34102)),
+                      int(std::lround(sel_e->peak_torque_nm * 0.737562)));
+        std::snprintf(wt_buf, sizeof wt_buf, "%d LBS", int(std::lround(sel_e->curb_weight_kg * 2.20462)));
+      }
+      if (sel_e->displacement_cc >= 100.0) {
+        std::snprintf(disp_buf, sizeof disp_buf, "%.1f L (%d CC)", sel_e->displacement_cc / 1000.0,
+                      int(std::lround(sel_e->displacement_cc)));
+      } else {
+        std::snprintf(disp_buf, sizeof disp_buf, "N/A");
+      }
+      spec_row("POWER / TORQUE", pwr_buf, ui4::kWhite);
+      spec_row("WEIGHT", wt_buf, ui4::kWhite);
+      spec_row("DISPLACEMENT", disp_buf, ui4::kWhite);
+      spec_row("ASPIRATION", sel_e->aspiration.empty() ? "Naturally Aspirated" : sel_e->aspiration, ui4::kOffWhite);
+      spec_row("GARAGE VALUE", ui4::format_credits(sel_e->value_cr), ui4::kWhite);
 
-      detail_row("DRIVETRAIN", drive_label(sel_e->drive_type_id), ui4::kWhite);
-      detail_row("GARAGE VALUE", ui4::format_credits(sel_e->value_cr), ui4::kWhite);
-      detail_row("SELL VALUE (50%)", ui4::format_credits(sel_e->sell_cr), ui4::kYellow);
-
-      // Authentic vertical SCROLLINDICATOR + SPEC_SHEEN2 beside details card
-      ui4::scroll_indicator(list, rx1 + 6.0f * s, 46.0f * s, rx1 + 14.0f * s, cy - 4.0f * s,
+      // Authentic vertical SCROLLINDICATOR beside details card
+      ui4::scroll_indicator(list, rx1 + 6.0f * s, 30.0f * s, rx1 + 14.0f * s, cy - 2.0f * s,
                             int(browser.selected_index()), 1, std::max(2, int(browser.visible().size())), s);
     }
 
@@ -1499,6 +1778,11 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
                      ui4::kPink);
           list.text(bx + cw - 40.0f * s, bot_y + 11.0f * s - lift, "ACTIVE",
                     ui4::style(ui::Font::kE, 10.0f * s, ui4::kWhite, ui::Align::kCenter));
+        } else if (e.favorite) {
+          ui4::brush(list, bx + cw - 52.0f * s, bot_y + 7.0f * s - lift, bx + cw - 6.0f * s, bot_y + 25.0f * s - lift,
+                     ui4::kYellow);
+          list.text(bx + cw - 29.0f * s, bot_y + 11.0f * s - lift, "FAV",
+                    ui4::style(ui::Font::kE, 10.0f * s, ui4::kInk, ui::Align::kCenter));
         }
 
         std::string card_label = car_name(e.media_name);
@@ -1530,7 +1814,12 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
   }
 
   ui4::button_bar(list,
-                  {{"A", "GET IN CAR"}, {"Y", "SORT"}, {"X", "FILTER"}, {"LB", "SELL CAR"}, {"B", "BACK"}},
+                  {{"A", "GET IN CAR"},
+                   {"Y", "SORT"},
+                   {"X", "FILTER"},
+                   {"RB", "FAVORITE"},
+                   {"LB", "SELL CAR"},
+                   {"B", "BACK"}},
                   w, h, 56.0f);
 }
 

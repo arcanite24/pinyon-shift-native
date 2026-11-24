@@ -169,6 +169,64 @@ static void test_synthetic_pi_and_tuning() {
   CHECK(std::fabs(tuned_p.brake_bias_slider - 0.55) < 1e-4);
   CHECK(std::fabs(tuned_p.rear_split - 0.75) < 1e-4);
 
+  // 3b. Retail FH1 Tuning Level 3 (Race) unlock gating & unlock hints.
+  {
+    cars::CarPhysics sport_phys = synth_phys;
+    sport_phys.values["List_UpgradeDrivetrainTransmission.Level"] = 2.0;  // Sport (must stay locked!)
+    sport_phys.values["List_UpgradeSpringDamper.Level"] = 2.0;
+    sport_phys.values["List_UpgradeAntiSwayFront.Level"] = 2.0;
+    sport_phys.values["List_UpgradeAntiSwayRear.Level"] = 2.0;
+    sport_phys.values["List_UpgradeBrakes.Level"] = 2.0;
+    sport_phys.values["List_UpgradeDrivetrainDifferential.Level"] = 2.0;
+    sport_phys.values["FrontBumperAero.Downforce1"] = 10.0;  // no aero range
+    sport_phys.values["RearWingAero.Downforce1"] = 20.0;
+
+    drive::CarTune locked_tune;
+    const auto sport_sliders = build_tune_sliders(sport_phys, locked_tune);
+    int tire_unlocked = 0, non_tire_locked = 0;
+    for (const auto& sl : sport_sliders) {
+      if (sl.category == TuneCategory::kTires) {
+        CHECK(sl.unlocked);
+        ++tire_unlocked;
+      } else {
+        CHECK(!sl.unlocked);
+        CHECK(!sl.unlock_hint.empty());
+        ++non_tire_locked;
+      }
+    }
+    CHECK(tire_unlocked == 2 && non_tire_locked >= 20);
+    // Attempting to modify a locked slider must fail and leave tune untouched.
+    CHECK(!set_tune_slider(locked_tune, sport_phys, "Tuning_finalDriveRatio", 4.10));
+    CHECK(!set_tune_slider(locked_tune, sport_phys, "Tuning_frontCamber", -2.0));
+    CHECK(!set_tune_slider(locked_tune, sport_phys, "Tuning_brakeBalance", 60.0));
+    CHECK(!set_tune_slider(locked_tune, sport_phys, "Tuning_centerTorque", 70.0));
+    CHECK(locked_tune.is_default());
+    // Tire pressure stays unlocked even on stock/sport parts.
+    CHECK(set_tune_slider(locked_tune, sport_phys, "Tuning_frontTirePressure", 31.0));
+  }
+
+  // 3c. Monotonic headroom PI calculation (stock exact, heavy upgrades converge smoothly without drift).
+  {
+    cars::PhysicsSettings pset;
+    cars::CarPhysics stk_phys = synth_phys;
+    stk_phys.values["Data_Car.PerformanceIndex"] = 0.50;
+    stk_phys.values["Data_Car.CurbWeight"] = 1450.0;
+    stk_phys.values["List_TorqueCurve.TorqueScale"] = 250.0;
+    const auto r_stock = compute_pi(stk_phys, pset, synth_cfg, bands, &stk_phys);
+    CHECK(std::fabs(r_stock.raw_pi - 0.50) < 1e-6);
+
+    cars::CarPhysics mid_phys = stk_phys;
+    mid_phys.values["List_TorqueCurve.TorqueScale"] = 410.0;
+    mid_phys.values["Data_Car.CurbWeight"] = 1320.0;
+    const auto r_mid = compute_pi(mid_phys, pset, synth_cfg, bands, &stk_phys);
+
+    cars::CarPhysics fast_phys = stk_phys;
+    fast_phys.values["List_TorqueCurve.TorqueScale"] = 680.0;
+    fast_phys.values["Data_Car.CurbWeight"] = 1150.0;
+    const auto r_fast = compute_pi(fast_phys, pset, synth_cfg, bands, &stk_phys);
+    CHECK(r_mid.raw_pi > r_stock.raw_pi && r_fast.raw_pi > r_mid.raw_pi && r_fast.raw_pi <= 1.0);
+  }
+
   // garage.txt v2 round-trip with tune and livery.
   g.cars[0].tune = tune;
   g.cars[0].livery_file = "liveries/1.liv";
@@ -214,6 +272,10 @@ static void test_disc_pi_conversions_and_auto_upgrade() {
   std::vector<ClassBand> bands;
   CHECK(load_class_bands(game_root, bands, &err));
   CHECK(bands.size() == 11);
+  // Merged DB overload must return the same 11 class bands including Class X (999).
+  std::vector<ClassBand> db_bands;
+  CHECK(load_class_bands(db, db_bands, &err));
+  CHECK(db_bands.size() == 11 && db_bands.back().name == "X" && int(db_bands.back().shown_max) == 999);
 
   // Stock cars must match Data_Car.PerformanceIndex exactly.
   for (auto [car_id, exp_cls, exp_shown] : {std::tuple<int64_t, int, int>{309, 2, 282},
@@ -285,8 +347,22 @@ static void test_disc_pi_conversions_and_auto_upgrade() {
     // Auto Downgrade Corrado back down to C class (class_id = 3, ceiling 0.5975 = C 400).
     auto down = plan_auto_upgrade(g2, db, gid2, 3, 0, phys_settings, pi_cfg, bands);
     CHECK(down.ok && down.result.class_id == 3 && down.result.shown_pi <= 400);
+    CHECK(down.result.raw_pi <= bands[3].raw_max);
     std::printf("  Corrado Auto Downgrade A -> C: %s %d (%zu steps)\n",
                 bands[size_t(down.result.class_id)].name.c_str(), down.result.shown_pi, down.steps.size());
+
+    // Auto Upgrade strict ceiling (zero spillover into next class) & Class X (10) support.
+    for (int target_cls : {3, 4, 5, 6, 10}) {
+      auto pcls = plan_auto_upgrade(g2, db, gid2, target_cls, 0, phys_settings, pi_cfg, bands);
+      CHECK(pcls.ok);
+      CHECK(pcls.result.class_id <= target_cls);
+      CHECK(pcls.result.raw_pi <= bands[size_t(target_cls)].raw_max);
+    }
+    // Mechanical target (C class) should not unnecessarily force visual aero bumpers/wings.
+    auto p_c_from_stock = plan_auto_upgrade(g, db, gid, 3, 0, phys_settings, pi_cfg, bands);
+    if (p_c_from_stock.ok) {
+      CHECK(p_c_from_stock.result.class_id <= 3 && p_c_from_stock.result.raw_pi <= bands[3].raw_max);
+    }
   }
 
   // Oracle check against user-modded PlayerDatabase.sqlite upgraded cars (if present).

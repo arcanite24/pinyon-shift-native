@@ -31,6 +31,8 @@
 #include <string_view>
 #include <vector>
 
+#include "drive/save.h"
+
 namespace profile::backup {
 
 struct Config {
@@ -62,6 +64,16 @@ size_t rotate(const Config& cfg);
 // Restores snapshot `id` over the save folder (after a before-restore
 // snapshot of the current files).
 bool restore(const Config& cfg, const std::string& id, std::string* error, int64_t now = -1);
+
+// Loads `save_path` into `out_save`. If the primary file is missing, empty, or
+// corrupt/unparseable, scans rolling snapshots under `backup_dir` newest-first
+// (verifying `backup.txt` SHA-256 digests when present so tampered snapshots
+// are rejected) and any `<save_path>.bak` sibling. Preserves any corrupt
+// primary file as `<save_path>.corrupt` and atomically restores the newest
+// valid backup over `save_path`.
+bool load_save_with_recovery(const std::filesystem::path& save_path, const std::filesystem::path& backup_dir,
+                             drive::DriveSave& out_save, std::filesystem::path* recovered_from = nullptr,
+                             std::string* error = nullptr);
 
 // "2026-11-22 19:32" (UTC) for the Save Backups page.
 std::string format_time(int64_t utc_seconds);

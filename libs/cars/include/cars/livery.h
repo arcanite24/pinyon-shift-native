@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -89,6 +90,8 @@ struct LiveryDocument {
   int64_t car_id = 0;
   CarPaintSpec paint;
   std::vector<VinylLayer> layers;
+  bool imported_binary = false;     // true when imported from a binary .liv payload
+  uint32_t binary_size_bytes = 0;   // byte size of imported binary .liv (0 for text format)
 };
 
 struct LiveryPlaneMask {
@@ -135,8 +138,14 @@ bool composite_livery(const LiveryDocument& doc, LiveryLibrary* lib, const std::
                       std::vector<uint8_t>& out_rgba, uint32_t size = 1024, const LiveryMaskSet* masks = nullptr);
 
 // Saves/loads a LiveryDocument to/from a .liv file (human-readable shift-livery 1
-// format, plus graceful import of raw FH1 binary .liv headers).
+// format, plus structured & opaque binary .liv import that preserves caller base paint).
 bool save_livery_file(const std::filesystem::path& path, const LiveryDocument& doc, std::string* error = nullptr);
 bool load_livery_file(const std::filesystem::path& path, LiveryDocument& out, std::string* error = nullptr);
+
+// Imports a raw binary .liv payload into `out`. Preserves `out.car_id` and `out.paint`
+// (instead of overwriting with default red) when the binary is an opaque/encrypted
+// envelope, and parses structured FLIV header + vinyl layer records when present.
+bool import_binary_livery_bytes(std::span<const uint8_t> data, const std::string& fallback_name,
+                                LiveryDocument& out, std::string* error = nullptr);
 
 }  // namespace cars

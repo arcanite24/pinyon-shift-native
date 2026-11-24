@@ -103,14 +103,22 @@ int autoshow_swatch_hit_index(const DriveApp& app, const Autoshow& autoshow, int
   const float sy0 = 562.0f * s - 22.0f * s;
   const float sy1 = 626.0f * s + 22.0f * s;
   if (uy < sy0 || uy > sy1) return -1;
-  const size_t nsw = std::min<size_t>(sel_car->swatches.size(), 14);
+  size_t first_sw = 0, nsw = 0;
+  autoshow.swatch_window(14, first_sw, nsw);
   const float sw_w = 46.0f * s, sw_gap = 6.0f * s;
   float sx = 86.0f * s;
   for (size_t i = 0; i < nsw; ++i) {
-    if (ux >= sx && ux <= sx + sw_w) return int(i);
+    if (ux >= sx && ux <= sx + sw_w) return int(first_sw + i);
     sx += sw_w + sw_gap;
   }
   return -1;
+}
+
+bool any_pad_trigger_held(const std::vector<SDL_Gamepad*>& pads, SDL_GamepadAxis axis) {
+  for (SDL_Gamepad* gp : pads) {
+    if (gp && SDL_GetGamepadAxis(gp, axis) > 12000) return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -198,6 +206,26 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 notice = smsg;
                 notice_until = vehicle.time() + 3.5;
               };
+              auto toggle_fav = [&]() {
+                if (!use_browser) return;
+                const cars::PartsDb* gdb =
+                    (app.parts_db.valid() && app.parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                        ? app.parts_db.get().get()
+                        : nullptr;
+                const bool now_fav = garage_browser.toggle_favorite_selected(app.career_garage, gdb, app.class_bands);
+                app.write_career_garage();
+                app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                notice = now_fav ? "ADDED TO FAVORITES" : "REMOVED FROM FAVORITES";
+                notice_until = vehicle.time() + 2.5;
+              };
+              auto toggle_fav_filter = [&]() {
+                if (!use_browser) return;
+                garage_sell_confirm_id = -1;
+                garage_browser.toggle_favorites_filter();
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+                notice = garage_browser.favorites_only() ? "FILTER: FAVORITES ONLY" : "FILTER: ALL GARAGE CARS";
+                notice_until = vehicle.time() + 2.5;
+              };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
                 if (k == SDLK_ESCAPE && !e.key.repeat) {
@@ -218,6 +246,10 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   garage_sell_confirm_id = -1;
                   garage_browser.cycle_class_filter(1);
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_F && !e.key.repeat && use_browser) {
+                  toggle_fav();
+                } else if (k == SDLK_V && !e.key.repeat && use_browser) {
+                  toggle_fav_filter();
                 } else if ((k == SDLK_DELETE || k == SDLK_BACKSPACE || k == SDLK_Q) && !e.key.repeat) {
                   try_sell();
                 } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
@@ -244,6 +276,10 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   garage_sell_confirm_id = -1;
                   garage_browser.cycle_class_filter(1);
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER && use_browser) {
+                  toggle_fav();
+                } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_STICK && use_browser) {
+                  toggle_fav_filter();
                 } else if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
                   try_sell();
                 } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
@@ -281,11 +317,33 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   app.audio_host.trigger_ui(audio::UiCue::kCancel);
                 } else if (e.button.button == SDL_BUTTON_LEFT && n > 0) {
                   carview::ui::HitZone hz{};
-                  if (ui_mouse_hit(e.button.x, e.button.y, hz) && hz.group == carview::ui::kHitRow &&
-                      hz.index >= 0 && size_t(hz.index) < n) {
-                    if (use_browser) garage_browser.select_index(size_t(hz.index));
-                    else garage_pick = size_t(hz.index);
-                    drive_selected();
+                  if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
+                    if (hz.group == carview::ui::kHitRow && hz.index >= 0 && size_t(hz.index) < n) {
+                      if (use_browser) garage_browser.select_index(size_t(hz.index));
+                      else garage_pick = size_t(hz.index);
+                      drive_selected();
+                    } else if (hz.group == carview::ui4::kHitButton) {
+                      if (hz.index == 0) drive_selected();
+                      else if (hz.index == 1 && use_browser) {
+                        garage_sell_confirm_id = -1;
+                        garage_browser.cycle_sort(1);
+                        app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      } else if (hz.index == 2 && use_browser) {
+                        garage_sell_confirm_id = -1;
+                        garage_browser.cycle_class_filter(1);
+                        app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      } else if (hz.index == 3 && use_browser) {
+                        toggle_fav();
+                      } else if (hz.index == 4) {
+                        try_sell();
+                      } else if (hz.index == 5) {
+                        garage_open = false;
+                        garage_sell_confirm_id = -1;
+                        app.hub_orbit_dragging = false;
+                        app.hub_orbit_dragged = false;
+                        app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                      }
+                    }
                   }
                 }
               }
@@ -298,6 +356,10 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
             // The upgrade shop takes the keys and buttons while open; leaving it
             // after a change rebuilds the car where it stands.
             if (shop.is_open()) {
+              // Retail FH1: upgrade discounts come from Discount Signs (0..100%) ONLY (never Affinity stacking).
+              const int signs_disc = garage::upgrade_discount_percent(
+                  host.free_roam ? host.free_roam->signs_found() : int(app.saved.signs_found.size()));
+              shop.set_signs_discount_percent(signs_disc);
               auto sync_shop_preview = [&]() {
                 if (!shop.visual_dirty()) return;
                 cars::VisualSetup pv;
@@ -355,11 +417,37 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
               };
               auto fit = [&]() {
                 std::string message;
-                const bool ok = shop.fit(discount(), app.career.credits, message);
+                const bool ok = shop.fit(signs_disc, app.career.credits, message);
                 app.audio_host.trigger_ui(ok ? audio::UiCue::kPurchase : audio::UiCue::kError);
                 notice = message;
                 notice_until = vehicle.time() + 3;
                 sync_shop_preview();
+              };
+              auto step_shop_part = [&](int dir) {
+                if (shop.category() == carview::ShopCategory::kTuning &&
+                    shop.selected_slider() < shop.tuning_sliders().size()) {
+                  const auto& sl = shop.tuning_sliders()[shop.selected_slider()];
+                  if (!sl.unlocked) {
+                    notice = sl.unlock_hint.empty() ? "LOCKED — FIT RACE PART TO UNLOCK" : sl.unlock_hint;
+                    notice_until = vehicle.time() + 3.0;
+                    app.audio_host.trigger_ui(audio::UiCue::kError);
+                    return;
+                  }
+                }
+                shop.move_part(dir);
+                sync_shop_preview();
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              };
+              auto revert_na_action = [&]() {
+                if (shop.category() == carview::ShopCategory::kConversions &&
+                    shop.has_forced_induction_conversion_fitted()) {
+                  std::string msg;
+                  const bool ok = shop.revert_to_naturally_aspirated(msg);
+                  app.audio_host.trigger_ui(ok ? audio::UiCue::kAccept : audio::UiCue::kError);
+                  notice = msg;
+                  notice_until = vehicle.time() + 3.0;
+                  sync_shop_preview();
+                }
               };
               auto x_action = [&]() {
                 if (shop.category() == carview::ShopCategory::kTuning) {
@@ -382,10 +470,11 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 if (k == SDLK_ESCAPE) { app.audio_host.trigger_ui(audio::UiCue::kCancel); leave_shop(); }
                 if (k == SDLK_UP || k == SDLK_W) { shop.move_slot(-1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                 if (k == SDLK_DOWN || k == SDLK_S) { shop.move_slot(1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                if (k == SDLK_LEFT || k == SDLK_A) { shop.move_part(-1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                if (k == SDLK_RIGHT || k == SDLK_D) { shop.move_part(1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                if (k == SDLK_LEFT || k == SDLK_A) { step_shop_part(-1); }
+                if (k == SDLK_RIGHT || k == SDLK_D) { step_shop_part(1); }
                 if (k == SDLK_Q) { shop.move_category(-1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                 if (k == SDLK_E) { shop.move_category(1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                if (k == SDLK_R) { revert_na_action(); }
                 if (k == SDLK_X) { x_action(); }
                 if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) { fit(); }
               }
@@ -397,10 +486,11 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 }
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) { shop.move_slot(-1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { shop.move_slot(1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) { shop.move_part(-1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) { shop.move_part(1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) { step_shop_part(-1); }
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) { step_shop_part(1); }
                 if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) { shop.move_category(-1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                 if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) { shop.move_category(1); sync_shop_preview(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                if (b == SDL_GAMEPAD_BUTTON_BACK) { revert_na_action(); }
                 if (b == SDL_GAMEPAD_BUTTON_WEST) { x_action(); }
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) { fit(); }
               }
@@ -453,6 +543,32 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
             // The Autoshow takes the keys and buttons while open; a purchase
             // drives the new car away from where this one stands.
             if (autoshow.is_open()) {
+              if (app.have_garage) autoshow.set_owned_cars(app.career_garage);
+              auto test_drive = [&]() {
+                std::string td_media;
+                int64_t td_cid = 0, td_col = 0;
+                if (!autoshow.prepare_test_drive(td_media, td_cid, td_col)) {
+                  app.audio_host.trigger_ui(audio::UiCue::kError);
+                  return;
+                }
+                app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                autoshow.close();
+                app.autoshow_buy_confirm = false;
+                app.hub_orbit_dragging = false;
+                app.hub_orbit_dragged = false;
+                app.pre_loaner_car = app.car;
+                app.pre_loaner_garage_id = app.career_garage.selected;
+                app.paint_car = td_media;
+                app.paint_sequence = td_col;
+                const drive::Vec3 at = vehicle.position();
+                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                app.spawn[0] = at.x, app.spawn[1] = at.y, app.spawn[2] = at.z, app.spawn[3] = std::atan2(f.x, f.z);
+                app.have_spawn = true;
+                app.next_car = td_media;
+                notice = "TEST DRIVING " + carview::car_name(td_media);
+                notice_until = vehicle.time() + 4.0;
+                running = false;
+              };
               auto buy = [&]() {
                 const auto db = app.parts_db.valid() ? app.parts_db.get() : nullptr;
                 std::string media, message = "no parts database";
@@ -518,11 +634,17 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
                   if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) { app.autoshow_buy_confirm = false; autoshow.move_colour(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                   if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { app.autoshow_buy_confirm = false; autoshow.move_colour(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_T) { test_drive(); }
                 } else {
                   if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) { autoshow.move(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                   if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { autoshow.move(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                   if (k == SDLK_Q) { autoshow.move_make(-1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                   if (k == SDLK_E) { autoshow.move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_TAB) { autoshow.toggle_all_cars(app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_R) { autoshow.cycle_sort(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_G) { autoshow.cycle_class_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_V) { autoshow.cycle_drivetrain_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_T) { test_drive(); }
                   if (k == SDLK_C) { app.autoshow_buy_confirm = false; autoshow.set_step(carview::AutoshowStep::kColorSelect); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
                 }
                 if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) { confirm_step(); }
@@ -536,11 +658,16 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
                   if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) { app.autoshow_buy_confirm = false; autoshow.move_colour(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                   if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { app.autoshow_buy_confirm = false; autoshow.move_colour(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_WEST) { test_drive(); }
                 } else {
                   if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) { autoshow.move(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                   if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { autoshow.move(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                   if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) { autoshow.move_make(-1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                   if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) { autoshow.move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_BACK) { autoshow.toggle_all_cars(app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_LEFT_STICK) { autoshow.cycle_sort(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_RIGHT_STICK) { autoshow.cycle_class_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_WEST) { test_drive(); }
                   if (b == SDL_GAMEPAD_BUTTON_NORTH) { app.autoshow_buy_confirm = false; autoshow.set_step(carview::AutoshowStep::kColorSelect); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
                 }
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) { confirm_step(); }
@@ -576,7 +703,22 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 } else if (e.button.button == SDL_BUTTON_LEFT) {
                   carview::ui::HitZone hz{};
                   const bool hit_ui = ui_mouse_hit(e.button.x, e.button.y, hz);
-                  if (hit_ui && hz.group == carview::ui::kHitRow && hz.index >= 0) {
+                  if (hit_ui && hz.group == carview::ui4::kHitButton) {
+                    if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
+                      if (hz.index == 0) confirm_step();
+                      else if (hz.index == 2) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
+                    } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
+                      if (hz.index == 0) confirm_step();
+                      else if (hz.index == 1) test_drive();
+                      else if (hz.index == 3) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
+                    } else {
+                      if (hz.index == 0) confirm_step();
+                      else if (hz.index == 1) test_drive();
+                      else if (hz.index == 2) { autoshow.move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                      else if (hz.index == 3) { app.autoshow_buy_confirm = false; autoshow.set_step(carview::AutoshowStep::kColorSelect); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
+                      else if (hz.index == 4) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
+                    }
+                  } else if (hit_ui && hz.group == carview::ui::kHitRow && hz.index >= 0) {
                     if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
                       autoshow.select_make(size_t(hz.index), app.career.credits);
                       confirm_step();
@@ -931,6 +1073,134 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
               static const std::vector<std::string> kClubTags = {"HRZN", "APEX", "ROCK", "PEAK", "FEST", "SHFT"};
               const int n_cars = int(app.baked_cars.size());
               const int total_rows = 2 + n_cars;
+              auto& cc_ed = carview::car_club_editor_state();
+              auto sync_club_editor = [&]() {
+                cc_ed.has_garage_sync = app.have_garage;
+                cc_ed.row_garage_ids.clear();
+                cc_ed.row_garage_ids.reserve(size_t(std::max(0, n_cars)));
+                for (int ci = 0; ci < n_cars; ++ci) {
+                  int64_t gid = 0;
+                  if (app.have_garage && size_t(ci) < app.pick_ids.size()) gid = app.pick_ids[size_t(ci)];
+                  cc_ed.row_garage_ids.push_back(gid);
+                }
+                if (app.have_garage) {
+                  cc_ed.shared_garage_ids = app.career_garage.club_shared_garage_ids;
+                  cc_ed.borrowed_garage_id = app.career_garage.club_borrowed_garage_id;
+                } else {
+                  cc_ed.shared_garage_ids.clear();
+                  cc_ed.borrowed_garage_id = 0;
+                }
+              };
+              sync_club_editor();
+
+              // Modal On-Screen Keyboard for custom Club Name & 4-char Tag entry.
+              if (cc_ed.osk.is_open()) {
+                auto commit_osk = [&]() {
+                  if (cc_ed.osk.confirmed()) {
+                    if (cc_ed.osk_target == carview::CarClubEditorState::OskTarget::kClubName) {
+                      const std::string clean = carview::sanitize_club_name(cc_ed.osk.text(), 24);
+                      if (!clean.empty()) {
+                        app.saved.car_club_name = clean;
+                        car_club_notice = "CLUB NAME: " + app.saved.car_club_name;
+                        save_now("car club");
+                      }
+                    } else if (cc_ed.osk_target == carview::CarClubEditorState::OskTarget::kClubTag) {
+                      app.saved.car_club_tag = carview::sanitize_club_tag(cc_ed.osk.text());
+                      car_club_notice = "CLUB TAG: [" + app.saved.car_club_tag + "]";
+                      save_now("car club");
+                    }
+                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                  } else {
+                    app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  }
+                  cc_ed.osk_target = carview::CarClubEditorState::OskTarget::kNone;
+                  if (app.window) SDL_StopTextInput(app.window);
+                };
+                if (e.type == SDL_EVENT_TEXT_INPUT && e.text.text) {
+                  for (const char* p = e.text.text; *p; ++p) {
+                    if (static_cast<unsigned char>(*p) >= 32 && static_cast<unsigned char>(*p) <= 126) {
+                      cc_ed.osk.type_char(*p);
+                    }
+                  }
+                } else if (e.type == SDL_EVENT_KEY_DOWN) {
+                  const SDL_Keycode k = e.key.key;
+                  if (k == SDLK_ESCAPE && !e.key.repeat) {
+                    cc_ed.osk.cancel();
+                    commit_osk();
+                  } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER) && !e.key.repeat) {
+                    cc_ed.osk.confirm();
+                    commit_osk();
+                  } else if (k == SDLK_BACKSPACE) {
+                    cc_ed.osk.backspace();
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (k == SDLK_LEFT) {
+                    cc_ed.osk.move(-1, 0);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (k == SDLK_RIGHT) {
+                    cc_ed.osk.move(1, 0);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (k == SDLK_UP) {
+                    cc_ed.osk.move(0, -1);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (k == SDLK_DOWN) {
+                    cc_ed.osk.move(0, 1);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  }
+                } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                  const auto b = e.gbutton.button;
+                  if (b == SDL_GAMEPAD_BUTTON_EAST) {
+                    cc_ed.osk.cancel();
+                    commit_osk();
+                  } else if (b == SDL_GAMEPAD_BUTTON_START) {
+                    cc_ed.osk.confirm();
+                    commit_osk();
+                  } else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) {
+                    cc_ed.osk.move(-1, 0);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
+                    cc_ed.osk.move(1, 0);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+                    cc_ed.osk.move(0, -1);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+                    cc_ed.osk.move(0, 1);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                    cc_ed.osk.press_selected();
+                    if (!cc_ed.osk.is_open()) commit_osk();
+                    else app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (b == SDL_GAMEPAD_BUTTON_WEST) {
+                    cc_ed.osk.backspace();
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (b == SDL_GAMEPAD_BUTTON_NORTH) {
+                    cc_ed.osk.type_char(' ');
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
+                    cc_ed.osk.toggle_shift();
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
+                    cc_ed.osk.toggle_symbols();
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  }
+                }
+                return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
+                        e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+              }
+
+              auto open_club_osk = [&](bool for_tag) {
+                if (for_tag) {
+                  cc_ed.osk_target = carview::CarClubEditorState::OskTarget::kClubTag;
+                  cc_ed.osk.open("EDIT CLUB TAG (4 CHARS)", app.saved.car_club_tag, 4,
+                                 carview::OnScreenKeyboard::Purpose::kLicensePlate);
+                } else {
+                  cc_ed.osk_target = carview::CarClubEditorState::OskTarget::kClubName;
+                  cc_ed.osk.open("EDIT CAR CLUB NAME", app.saved.car_club_name, 24,
+                                 carview::OnScreenKeyboard::Purpose::kGamertag);
+                }
+                if (app.window) SDL_StartTextInput(app.window);
+                app.audio_host.trigger_ui(audio::UiCue::kAccept);
+              };
               auto cycle_name = [&](int dir) {
                 int idx = 0;
                 for (int i = 0; i < int(kClubNames.size()); ++i)
@@ -948,6 +1218,11 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                 app.saved.car_club_tag = carview::sanitize_club_tag(kClubTags[size_t(idx)]);
                 car_club_notice = "CLUB TAG: [" + app.saved.car_club_tag + "]";
                 save_now("car club");
+              };
+              auto garage_id_at = [&](int ci) -> int64_t {
+                if (ci < 0 || ci >= n_cars) return 0;
+                if (app.have_garage && size_t(ci) < app.pick_ids.size()) return app.pick_ids[size_t(ci)];
+                return 0;
               };
               auto car_id_at = [&](int ci) -> int {
                 if (ci < 0 || ci >= n_cars) return 0;
@@ -967,18 +1242,73 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                   cycle_tag(dir);
                 } else {
                   const int ci = car_club_pick - 2;
-                  const int cid = car_id_at(ci);
-                  if (cid > 0) {
-                    const bool now_shared = carview::toggle_club_shared_car(app.saved.car_club_shared, cid);
-                    car_club_notice = (now_shared ? "SHARED TO CLUB: " : "REMOVED FROM CLUB: ") +
+                  const int64_t gid = garage_id_at(ci);
+                  if (app.have_garage && gid > 0) {
+                    const bool now_shared = app.career_garage.toggle_club_shared(gid);
+                    // Mirror instance IDs into profile club list for legacy summary display.
+                    app.saved.car_club_shared.clear();
+                    for (int64_t sgid : app.career_garage.club_shared_garage_ids) {
+                      app.saved.car_club_shared.push_back(int(sgid));
+                    }
+                    sync_club_editor();
+                    car_club_notice = (now_shared ? "SHARED TO CLUB (#" + std::to_string(gid) + "): "
+                                                  : "REMOVED FROM CLUB (#" + std::to_string(gid) + "): ") +
                                       carview::car_name(app.baked_cars[size_t(ci)]);
+                    app.write_career_garage();
                     save_now("car club");
+                  } else {
+                    const int cid = car_id_at(ci);
+                    if (cid > 0) {
+                      const bool now_shared = carview::toggle_club_shared_car(app.saved.car_club_shared, cid);
+                      car_club_notice = (now_shared ? "SHARED TO CLUB: " : "REMOVED FROM CLUB: ") +
+                                        carview::car_name(app.baked_cars[size_t(ci)]);
+                      save_now("car club");
+                    }
                   }
                 }
               };
               auto drive_shared_selected = [&]() {
                 if (car_club_pick < 2 || car_club_pick >= total_rows) return;
                 const int ci = car_club_pick - 2;
+                const int64_t gid = garage_id_at(ci);
+                if (app.have_garage && gid > 0) {
+                  if (app.career_garage.club_borrowed_garage_id == gid) {
+                    // Return borrowed car to the player's prior garage car.
+                    app.career_garage.return_borrowed_club_car();
+                    sync_club_editor();
+                    app.write_career_garage();
+                    save_now("car club");
+                    car_club_open = false;
+                    if (const garage::Car* ret = app.career_garage.selected_car()) {
+                      if (auto bit = app.baked_ids.find(ret->car_id);
+                          bit != app.baked_ids.end() && bit->second != app.car) {
+                        app.next_car = bit->second;
+                        running = false;
+                        return;
+                      }
+                    }
+                    notice = "RETURNED BORROWED CLUB CAR";
+                    notice_until = vehicle.time() + 2.5;
+                    return;
+                  }
+                  if (!app.career_garage.is_club_shared(gid)) {
+                    car_club_notice = "SHARE THIS GARAGE CAR FIRST TO BORROW IT";
+                    return;
+                  }
+                  app.career_garage.borrow_club_car(gid);
+                  sync_club_editor();
+                  app.write_career_garage();
+                  save_now("car club");
+                  car_club_open = false;
+                  if (app.baked_cars[size_t(ci)] != app.car) {
+                    app.next_car = app.baked_cars[size_t(ci)];
+                    running = false;
+                  } else {
+                    notice = "BORROWED CLUB CAR (#" + std::to_string(gid) + "): " + carview::car_name(app.car);
+                    notice_until = vehicle.time() + 2.5;
+                  }
+                  return;
+                }
                 const int cid = car_id_at(ci);
                 const bool is_shared = std::find(app.saved.car_club_shared.begin(), app.saved.car_club_shared.end(),
                                                  cid) != app.saved.car_club_shared.end();
@@ -989,7 +1319,6 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                 car_club_open = false;
                 if (app.baked_cars[size_t(ci)] != app.car) {
                   app.next_car = app.baked_cars[size_t(ci)];
-                  if (app.have_garage && size_t(ci) < app.pick_ids.size()) app.career_garage.selected = app.pick_ids[size_t(ci)];
                   running = false;
                 } else {
                   notice = "DRIVING CLUB CAR: " + carview::car_name(app.car);
@@ -1011,6 +1340,8 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                   if (car_club_pick < 2) { activate_row(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                 } else if (k == SDLK_RIGHT) {
                   if (car_club_pick < 2) { activate_row(+1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                } else if ((k == SDLK_Y || k == SDLK_E || k == SDLK_F2) && !e.key.repeat) {
+                  open_club_osk(car_club_pick == 1);
                 } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
                   activate_row(+1);
                   app.audio_host.trigger_ui(audio::UiCue::kAccept);
@@ -1036,6 +1367,8 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                 } else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT && car_club_pick < 2) {
                   activate_row(+1);
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_NORTH) {
+                  open_club_osk(car_club_pick == 1);
                 } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
                   activate_row(+1);
                   app.audio_host.trigger_ui(audio::UiCue::kAccept);
@@ -1061,12 +1394,13 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                   if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
                     if (hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < total_rows) {
                       car_club_pick = hz.index;
-                      activate_row(+1);
-                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                      if (hz.index < 2) open_club_osk(hz.index == 1);
+                      else { activate_row(+1); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
                     } else if (hz.group == carview::ui4::kHitButton) {
                       if (hz.index == 0) { activate_row(+1); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
-                      else if (hz.index == 1) { drive_shared_selected(); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
-                      else if (hz.index == 2) { car_club_open = false; app.audio_host.trigger_ui(audio::UiCue::kCancel); }
+                      else if (hz.index == 1) { open_club_osk(car_club_pick == 1); }
+                      else if (hz.index == 2) { drive_shared_selected(); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
+                      else if (hz.index == 3) { car_club_open = false; app.audio_host.trigger_ui(audio::UiCue::kCancel); }
                     }
                   }
                 }
@@ -1079,11 +1413,17 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
             }
             // Paint Shop & Vinyl/Livery Editor (LiveryEditor live preview + .liv persistence; legacy swatch fallback).
             if (paint_open && livery_editor.is_open()) {
+              auto liveries_dir = [&]() -> std::filesystem::path {
+                if (!livery_edit_path.empty() && livery_edit_path.has_parent_path()) return livery_edit_path.parent_path();
+                if (!app.save_path.empty()) return app.save_path.parent_path() / "liveries";
+                return std::filesystem::path("liveries");
+              };
               auto close_livery = [&](bool save_changes) {
                 if (save_changes) {
                   std::string lerr;
                   const bool ok = livery_editor.save(livery_edit_path, &lerr);
                   sync_livery_preview(!livery_editor.document().layers.empty());
+                  livery_editor.mark_vinyl_preview_uploaded(double(SDL_GetTicksNS()) * 1e-9);
                   if (ok && app.have_garage) {
                     if (const garage::Car* sel = app.career_garage.selected_car()) {
                       if (garage::Car* gc = app.career_garage.find(sel->id);
@@ -1116,6 +1456,128 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                 livery_editor.close();
                 paint_open = false;
               };
+              auto do_undo = [&]() {
+                if (livery_editor.undo()) {
+                  sync_livery_preview(!livery_editor.document().layers.empty());
+                  livery_editor.mark_vinyl_preview_uploaded(double(SDL_GetTicksNS()) * 1e-9);
+                  notice = "UNDID LAST EDIT (" + std::to_string(livery_editor.undo_depth()) + " LEFT)";
+                  notice_until = vehicle.time() + 2.0;
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                }
+              };
+              auto do_reset_factory = [&]() {
+                livery_editor.reset_to_factory_paint();
+                sync_livery_preview(true);
+                livery_editor.mark_vinyl_preview_uploaded(double(SDL_GetTicksNS()) * 1e-9);
+                notice = "RESET TO FACTORY PAINT";
+                notice_until = vehicle.time() + 2.5;
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              };
+              auto toggle_catalog = [&]() {
+                if (!livery_editor.catalog_open()) {
+                  livery_editor.scan_design_catalog(liveries_dir());
+                }
+                livery_editor.toggle_catalog();
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              };
+              auto save_catalog_copy = [&]() {
+                const auto dir = liveries_dir();
+                livery_editor.scan_design_catalog(dir);
+                const std::string dname =
+                    app.car + "_design_" + std::to_string(livery_editor.design_catalog().size() + 1);
+                std::string cerr;
+                if (livery_editor.save_to_catalog(dir, dname, &cerr)) {
+                  notice = "SAVED TO DESIGN CATALOG: " + dname;
+                  notice_until = vehicle.time() + 2.5;
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                } else {
+                  notice = "CATALOG SAVE FAILED: " + cerr;
+                  notice_until = vehicle.time() + 2.5;
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                }
+              };
+              auto load_catalog_selected = [&]() {
+                std::string cerr;
+                if (livery_editor.load_selected_design(&cerr)) {
+                  sync_livery_preview(!livery_editor.document().layers.empty());
+                  livery_editor.mark_vinyl_preview_uploaded(double(SDL_GetTicksNS()) * 1e-9);
+                  livery_editor.set_catalog_open(false);
+                  notice = "LOADED DESIGN FROM CATALOG";
+                  notice_until = vehicle.time() + 2.5;
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                } else if (!cerr.empty()) {
+                  notice = "LOAD FAILED: " + cerr;
+                  notice_until = vehicle.time() + 2.5;
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                }
+              };
+
+              // Design Catalog modal overlay input.
+              if (livery_editor.catalog_open()) {
+                if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                  const SDL_Keycode k = e.key.key;
+                  if (k == SDLK_ESCAPE || k == SDLK_F2) {
+                    livery_editor.set_catalog_open(false);
+                    app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  } else if (k == SDLK_UP || k == SDLK_W) {
+                    livery_editor.move_design_selection(-1);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (k == SDLK_DOWN || k == SDLK_S) {
+                    if (k == SDLK_S && (e.key.mod & SDL_KMOD_CTRL)) {
+                      save_catalog_copy();
+                    } else {
+                      livery_editor.move_design_selection(1);
+                      app.audio_host.trigger_ui(audio::UiCue::kMove);
+                    }
+                  } else if (k == SDLK_C) {
+                    save_catalog_copy();
+                  } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) {
+                    load_catalog_selected();
+                  }
+                } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                  const auto b = e.gbutton.button;
+                  if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_BACK) {
+                    livery_editor.set_catalog_open(false);
+                    app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  } else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+                    livery_editor.move_design_selection(-1);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+                    livery_editor.move_design_selection(1);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (b == SDL_GAMEPAD_BUTTON_NORTH) {
+                    save_catalog_copy();
+                  } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                    load_catalog_selected();
+                  }
+                } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                  carview::ui::HitZone hz{};
+                  if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow && hz.index >= 0 &&
+                      size_t(hz.index) < livery_editor.design_catalog().size() &&
+                      livery_editor.selected_design() != size_t(hz.index)) {
+                    livery_editor.select_design_index(size_t(hz.index));
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  }
+                } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                  if (e.button.button == SDL_BUTTON_RIGHT) {
+                    livery_editor.set_catalog_open(false);
+                    app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  } else if (e.button.button == SDL_BUTTON_LEFT) {
+                    carview::ui::HitZone hz{};
+                    if (ui_mouse_hit(e.button.x, e.button.y, hz) && hz.group == carview::ui::kHitRow && hz.index >= 0 &&
+                        size_t(hz.index) < livery_editor.design_catalog().size()) {
+                      livery_editor.select_design_index(size_t(hz.index));
+                      load_catalog_selected();
+                    }
+                  }
+                } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+                  livery_editor.move_design_selection(e.wheel.y > 0 ? -1 : 1);
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                }
+                return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
+                        e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+              }
+
               auto step_tab = [&](int dir) {
                 livery_editor.move_tab(dir);
                 app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -1177,7 +1639,22 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
               };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE && !e.key.repeat) close_livery(false);
+                const bool ctrl = (e.key.mod & SDL_KMOD_CTRL) != 0;
+                if (ctrl && k == SDLK_Z && !e.key.repeat) {
+                  do_undo();
+                } else if (ctrl && k == SDLK_D && !e.key.repeat &&
+                           livery_editor.tab() == carview::EditorTab::kVinylLayers) {
+                  if (livery_editor.duplicate_selected_layer()) {
+                    sync_livery_preview(true);
+                    notice = "LAYER DUPLICATED";
+                    notice_until = vehicle.time() + 2.0;
+                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                  }
+                } else if (k == SDLK_F2 && !e.key.repeat) {
+                  toggle_catalog();
+                } else if ((k == SDLK_F5 || k == SDLK_BACKSPACE) && !e.key.repeat) {
+                  do_reset_factory();
+                } else if (k == SDLK_ESCAPE && !e.key.repeat) close_livery(false);
                 else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) close_livery(true);
                 else if (k == SDLK_Q) step_tab(-1);
                 else if (k == SDLK_E || k == SDLK_TAB) step_tab(1);
@@ -1201,11 +1678,10 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                   if (livery_editor.tab() == carview::EditorTab::kVinylLayers) {
                     livery_editor.delete_selected_layer();
                     sync_livery_preview(true);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
                   } else {
-                    livery_editor.move_finish(1);
-                    sync_livery_preview(false);
+                    do_reset_factory();
                   }
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
                 } else if (livery_editor.tab() == carview::EditorTab::kVinylLayers) {
                   if (k == SDLK_J) { livery_editor.transform_layer(-0.04f, 0, 0, 0, 0); sync_livery_preview(true); }
                   else if (k == SDLK_L) { livery_editor.transform_layer(0.04f, 0, 0, 0, 0); sync_livery_preview(true); }
@@ -1225,7 +1701,12 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                   else if (k == SDLK_COMMA) { livery_editor.move_layer_order(-1); sync_livery_preview(true); }
                   else if (k == SDLK_PERIOD) { livery_editor.move_layer_order(1); sync_livery_preview(true); }
                   else if (k == SDLK_T && !e.key.repeat) { livery_editor.toggle_layer_mask(); sync_livery_preview(true); }
-                  else if (k == SDLK_0 && !e.key.repeat) { livery_editor.toggle_layer_group(); }
+                  else if (k == SDLK_0 && !e.key.repeat) {
+                    livery_editor.toggle_layer_group();
+                    notice = "TOGGLED VINYL GROUP";
+                    notice_until = vehicle.time() + 2.0;
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  }
                   else if (k == SDLK_Z && !e.key.repeat) { livery_editor.cycle_shape_category(1); sync_livery_preview(true); }
                   else if (k == SDLK_M && !e.key.repeat) {
                     if (livery_editor.mirror_selected_layer()) {
@@ -1252,64 +1733,121 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
+                const bool vinyl_tab = (livery_editor.tab() == carview::EditorTab::kVinylLayers);
+                const bool lt = any_pad_trigger_held(pads, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+                const bool rt = any_pad_trigger_held(pads, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
                 if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) close_livery(false);
-                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) close_livery(true);
-                else if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) step_tab(-1);
-                else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) step_tab(1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) step_lr(-1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) step_lr(1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) step_ud(-1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) step_ud(1);
-                else if (b == SDL_GAMEPAD_BUTTON_LEFT_STICK && livery_editor.tab() == carview::EditorTab::kVinylLayers) {
-                  livery_editor.cycle_layer_plane(1);
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                  if (lt) toggle_catalog();
+                  else close_livery(true);
+                } else if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
+                  if (vinyl_tab && livery_editor.can_undo()) do_undo();
+                  else step_tab(-1);
+                } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) step_tab(1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) {
+                  if (vinyl_tab && rt) { livery_editor.move_layer_order(-1); sync_livery_preview(true); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  else step_lr(-1);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
+                  if (vinyl_tab && rt) { livery_editor.move_layer_order(1); sync_livery_preview(true); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  else step_lr(1);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+                  if (vinyl_tab && rt) { livery_editor.adjust_layer_alpha(0.10f); sync_livery_preview(true); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  else step_ud(-1);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+                  if (vinyl_tab && rt) { livery_editor.adjust_layer_alpha(-0.10f); sync_livery_preview(true); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  else step_ud(1);
+                } else if (b == SDL_GAMEPAD_BUTTON_LEFT_STICK && vinyl_tab) {
+                  if (lt) livery_editor.toggle_layer_flip(false);
+                  else livery_editor.cycle_layer_plane(1);
                   sync_livery_preview(true);
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
-                } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_STICK && livery_editor.tab() == carview::EditorTab::kVinylLayers) {
-                  livery_editor.cycle_shape_category(1);
-                  sync_livery_preview(true);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
-                } else if (b == SDL_GAMEPAD_BUTTON_BACK && livery_editor.tab() == carview::EditorTab::kVinylLayers) {
-                  if (livery_editor.mirror_selected_layer()) {
+                } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_STICK && vinyl_tab) {
+                  if (lt) {
+                    livery_editor.toggle_layer_group();
+                    notice = "TOGGLED VINYL GROUP";
+                    notice_until = vehicle.time() + 2.0;
+                  } else {
+                    livery_editor.cycle_shape_category(1);
                     sync_livery_preview(true);
-                    notice = "LAYER MIRRORED ACROSS CAR";
-                    notice_until = vehicle.time() + 2.5;
-                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                  }
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_BACK) {
+                  if (vinyl_tab) {
+                    if (lt) {
+                      livery_editor.toggle_layer_mask();
+                      sync_livery_preview(true);
+                      app.audio_host.trigger_ui(audio::UiCue::kMove);
+                    } else if (livery_editor.mirror_selected_layer()) {
+                      sync_livery_preview(true);
+                      notice = "LAYER MIRRORED ACROSS CAR";
+                      notice_until = vehicle.time() + 2.5;
+                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                    }
+                  } else {
+                    toggle_catalog();
                   }
                 } else if (b == SDL_GAMEPAD_BUTTON_NORTH) {
-                  if (livery_editor.tab() == carview::EditorTab::kVinylLayers) {
-                    livery_editor.add_vinyl_layer();
-                    sync_livery_preview(true);
-                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                  if (vinyl_tab) {
+                    if (lt) {
+                      if (livery_editor.duplicate_selected_layer()) {
+                        sync_livery_preview(true);
+                        notice = "LAYER DUPLICATED";
+                        notice_until = vehicle.time() + 2.0;
+                        app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                      }
+                    } else {
+                      livery_editor.add_vinyl_layer();
+                      sync_livery_preview(true);
+                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                    }
                   } else {
                     step_region(1);
                   }
                 } else if (b == SDL_GAMEPAD_BUTTON_WEST) {
-                  if (livery_editor.tab() == carview::EditorTab::kVinylLayers) {
-                    livery_editor.delete_selected_layer();
+                  if (vinyl_tab) {
+                    if (lt) livery_editor.toggle_layer_flip(true);
+                    else livery_editor.delete_selected_layer();
                     sync_livery_preview(true);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
                   } else {
-                    livery_editor.move_finish(1);
-                    sync_livery_preview(false);
+                    do_reset_factory();
                   }
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
               }
               if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
                 if (livery_editor.tab() == carview::EditorTab::kVinylLayers) {
-                  const float v = float(e.gaxis.value) / 32767.0f;
-                  if (std::fabs(v) > 0.55f) {
-                    if (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTX) {
-                      livery_editor.transform_layer(v * 0.025f, 0, 0, 0, 0);
+                  const bool is_stick =
+                      (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTX || e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY ||
+                       e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHTX || e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHTY);
+                  if (is_stick) {
+                    const float v = float(e.gaxis.value) / 32767.0f;
+                    const double now_s = double(SDL_GetTicksNS()) * 1e-9;
+                    const bool lt = any_pad_trigger_held(pads, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+                    if (std::fabs(v) > 0.55f) {
+                      if (lt) {
+                        if (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTX) livery_editor.adjust_layer_skew(v * 0.08f);
+                        else if (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) livery_editor.adjust_layer_alpha(-v * 0.05f);
+                        else if (e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHTX) livery_editor.recolor_layer_hsv(v * 0.03f, 0, 0);
+                        else if (e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHTY) livery_editor.recolor_layer_hsv(0, 0, -v * 0.04f);
+                        livery_editor.mark_vinyl_preview_dirty(now_s);
+                      } else {
+                        if (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTX)
+                          livery_editor.transform_layer_continuous(v * 0.025f, 0, 0, 0, 0, now_s);
+                        else if (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY)
+                          livery_editor.transform_layer_continuous(0, v * 0.025f, 0, 0, 0, now_s);
+                        else if (e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHTX)
+                          livery_editor.transform_layer_continuous(0, 0, 0, 0, v * 8.0f, now_s);
+                        else if (e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHTY)
+                          livery_editor.transform_layer_continuous(0, 0, -v * 0.03f, -v * 0.03f, 0, now_s);
+                      }
+                      // Throttle GPU texture upload while dragging so vkDeviceWaitIdle never stalls every tick.
+                      if (livery_editor.needs_vinyl_preview_upload(now_s)) {
+                        sync_livery_preview(true);
+                        livery_editor.mark_vinyl_preview_uploaded(now_s);
+                      }
+                    } else if (std::fabs(v) <= 0.35f && livery_editor.has_pending_vinyl_preview()) {
                       sync_livery_preview(true);
-                    } else if (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) {
-                      livery_editor.transform_layer(0, v * 0.025f, 0, 0, 0);
-                      sync_livery_preview(true);
-                    } else if (e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHTX) {
-                      livery_editor.transform_layer(0, 0, 0, 0, v * 8.0f);
-                      sync_livery_preview(true);
-                    } else if (e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHTY) {
-                      livery_editor.transform_layer(0, 0, -v * 0.03f, -v * 0.03f, 0);
-                      sync_livery_preview(true);
+                      livery_editor.mark_vinyl_preview_uploaded(now_s);
                     }
                   }
                 } else {
@@ -1409,22 +1947,28 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                       }
                     } else if (hz.group == carview::ui4::kHitButton) {
                       if (hz.index == 0) close_livery(true);
-                      else if (hz.index == 1) step_tab(1);
-                      else if (hz.index == 3) {
-                        if (livery_editor.tab() != carview::EditorTab::kVinylLayers)
-                          livery_editor.set_tab(carview::EditorTab::kVinylLayers);
-                        livery_editor.add_vinyl_layer();
-                        sync_livery_preview(true);
-                        app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                      else if (hz.index == 1) {
+                        if (livery_editor.tab() == carview::EditorTab::kVinylLayers && livery_editor.can_undo()) {
+                          do_undo();
+                        } else {
+                          step_tab(1);
+                        }
+                      } else if (hz.index == 3) {
+                        if (livery_editor.tab() == carview::EditorTab::kVinylLayers) {
+                          livery_editor.add_vinyl_layer();
+                          sync_livery_preview(true);
+                          app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                        } else {
+                          step_region(1);
+                        }
                       } else if (hz.index == 4) {
                         if (livery_editor.tab() == carview::EditorTab::kVinylLayers) {
                           livery_editor.delete_selected_layer();
                           sync_livery_preview(true);
+                          app.audio_host.trigger_ui(audio::UiCue::kMove);
                         } else {
-                          livery_editor.move_finish(1);
-                          sync_livery_preview(false);
+                          do_reset_factory();
                         }
-                        app.audio_host.trigger_ui(audio::UiCue::kMove);
                       } else if (hz.index == 5) {
                         close_livery(false);
                       }

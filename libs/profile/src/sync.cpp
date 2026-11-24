@@ -13,6 +13,7 @@
 #include <sstream>
 #include <system_error>
 
+#include "drive/save.h"
 #include "sha256.h"
 
 namespace profile::sync {
@@ -47,16 +48,7 @@ bool read_bytes(const fs::path& p, std::vector<uint8_t>& out) {
 }
 
 bool write_atomic(const fs::path& p, const std::string& data) {
-  std::error_code ec;
-  fs::create_directories(p.parent_path(), ec);
-  fs::path tmp = p;
-  tmp += ".tmp";
-  {
-    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-    if (!f || !f.write(data.data(), std::streamsize(data.size()))) return false;
-  }
-  fs::rename(tmp, p, ec);
-  return !ec;
+  return drive::atomic_write_file(p, data, nullptr);
 }
 
 bool is_liv_file(const fs::path& p) {
@@ -82,7 +74,7 @@ std::vector<std::string> save_files(const fs::path& dir) {
   for (const auto& e : fs::directory_iterator(dir, ec)) {
     if (!e.is_regular_file(ec)) continue;
     const std::string n = e.path().filename().string();
-    if (n.ends_with(".tmp") || n == "mods.lock" || n.ends_with(".pre-import")) continue;
+    if (n.ends_with(".tmp") || n.ends_with(".corrupt") || n == "mods.lock" || n.ends_with(".pre-import")) continue;
     out.push_back(n);
   }
   const fs::path liv_dir = dir / "liveries";
@@ -221,13 +213,8 @@ bool import_remote(const Context& ctx, DeviceState& s, const Remote& r, std::str
   fs::create_directories(ctx.save_dir, ec);
   for (const auto& rel : save_files(stage)) {
     const fs::path dst = ctx.save_dir / rel;
-    fs::create_directories(dst.parent_path(), ec);
-    fs::path tmp = dst;
-    tmp += ".tmp";
-    fs::copy_file(stage / rel, tmp, fs::copy_options::overwrite_existing, ec);
-    if (!ec) fs::rename(tmp, dst, ec);
-    if (ec) {
-      if (error) *error = "cannot replace " + dst.string() + ": " + ec.message();
+    std::vector<uint8_t> bytes;
+    if (!read_bytes(stage / rel, bytes) || !drive::atomic_write_file(dst, bytes.data(), bytes.size(), error)) {
       fs::remove_all(stage, ec);
       return false;
     }

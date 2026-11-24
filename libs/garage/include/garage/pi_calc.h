@@ -66,6 +66,8 @@ struct CarStats {
   double brake_60_0_m = 0.0;         // m
   double lat_g_60 = 0.0;             // g
   double lat_g_120 = 0.0;            // g
+  double displacement_cc = 0.0;      // engine displacement in cc (0 if electric/unknown)
+  std::string aspiration;            // Naturally Aspirated / Turbo / Twin Turbo / Supercharged
 };
 
 struct PiResult {
