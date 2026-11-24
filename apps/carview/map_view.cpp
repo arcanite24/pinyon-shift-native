@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 
@@ -131,21 +132,42 @@ struct Canvas {
   }
   // An antialiased capsule from a to b, `width` pixels across.
   void line(double ax, double ay, double bx, double by, double width, const MapView::Rgba& c) {
-    const double r = width / 2;
-    const int x0 = std::max(0, int(std::floor(std::min(ax, bx) - r - 1)));
-    const int x1 = std::min(w - 1, int(std::ceil(std::max(ax, bx) + r + 1)));
-    const int y0 = std::max(0, int(std::floor(std::min(ay, by) - r - 1)));
-    const int y1 = std::min(h - 1, int(std::ceil(std::max(ay, by) + r + 1)));
+    const float r = float(width * 0.5);
+    const float r_out = r + 0.5f;
+    const float r_in = std::max(0.0f, r - 0.5f);
+    const float r_out2 = r_out * r_out;
+    const float r_in2 = r_in * r_in;
+    const int x0 = std::max(0, int(std::floor(std::min(ax, bx) - r_out)));
+    const int x1 = std::min(w - 1, int(std::ceil(std::max(ax, bx) + r_out)));
+    const int y0 = std::max(0, int(std::floor(std::min(ay, by) - r_out)));
+    const int y1 = std::min(h - 1, int(std::ceil(std::max(ay, by) + r_out)));
     if (x0 > x1 || y0 > y1) return;
-    const double dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
-    for (int y = y0; y <= y1; ++y)
-      for (int x = x0; x <= x1; ++x) {
-        const double px = x + 0.5 - ax, py = y + 0.5 - ay;
-        const double t = len2 > 0 ? std::clamp((px * dx + py * dy) / len2, 0.0, 1.0) : 0.0;
-        const double d = std::hypot(px - t * dx, py - t * dy);
-        const double cover = std::clamp(r + 0.5 - d, 0.0, 1.0);
-        if (cover > 0) blend(x, y, c, float(cover));
+    const float fax = float(ax), fay = float(ay);
+    const float dx = float(bx - ax), dy = float(by - ay);
+    const float len2 = dx * dx + dy * dy;
+    const float inv_len2 = len2 > 1e-6f ? (1.0f / len2) : 0.0f;
+    const bool use_strip = std::fabs(dy) > 0.5f;
+    const float slope = use_strip ? (dx / dy) : 0.0f;
+    const float hx = use_strip ? (r_out * std::sqrt(1.0f + slope * slope)) : 0.0f;
+    for (int y = y0; y <= y1; ++y) {
+      const float py_w = float(y) + 0.5f;
+      int rx0 = x0, rx1 = x1;
+      if (use_strip) {
+        const float x_mid = fax + (py_w - fay) * slope;
+        rx0 = std::max(x0, int(std::floor(x_mid - hx)));
+        rx1 = std::min(x1, int(std::ceil(x_mid + hx)));
       }
+      const float py = py_w - fay;
+      for (int x = rx0; x <= rx1; ++x) {
+        const float px = float(x) + 0.5f - fax;
+        const float t = len2 > 1e-6f ? std::clamp((px * dx + py * dy) * inv_len2, 0.0f, 1.0f) : 0.0f;
+        const float ex = px - t * dx, ey = py - t * dy;
+        const float d2 = ex * ex + ey * ey;
+        if (d2 >= r_out2) continue;
+        const float cover = (d2 <= r_in2) ? 1.0f : (r_out - std::sqrt(d2));
+        if (cover > 0.0f) blend(x, y, c, cover);
+      }
+    }
   }
   // A filled polygon (even-odd), four sub-rows a pixel for soft edges.
   void polygon(const std::vector<std::array<double, 2>>& pts, const MapView::Rgba& c) {
@@ -239,6 +261,232 @@ struct Canvas {
   }
 };
 
+// Direct opaque RGBA8 canvas for fullscreen World Map rendering: avoids
+// allocating/converting intermediate float RGB+alpha buffers and uses fixed-point
+// integer blending + tight scanline capsule rasterization.
+struct FastCanvas {
+  int w = 0, h = 0;
+  std::vector<uint8_t>& rgba;
+  FastCanvas(int width, int height, std::vector<uint8_t>& buf) : w(width), h(height), rgba(buf) {
+    rgba.resize(size_t(w) * h * 4);
+  }
+  void fill_rect_row(int y, int x0, int x1, uint8_t r, uint8_t g, uint8_t b) {
+    if (x0 >= x1) return;
+    uint8_t* p = &rgba[(size_t(y) * w + x0) * 4];
+    for (int x = x0; x < x1; ++x, p += 4) p[0] = r, p[1] = g, p[2] = b, p[3] = 255;
+  }
+  inline void blend_px(uint8_t* p, int cr, int cg, int cb, int a256) {
+    if (a256 >= 256) {
+      p[0] = uint8_t(cr);
+      p[1] = uint8_t(cg);
+      p[2] = uint8_t(cb);
+    } else if (a256 > 0) {
+      p[0] = uint8_t(int(p[0]) + (((cr - int(p[0])) * a256) >> 8));
+      p[1] = uint8_t(int(p[1]) + (((cg - int(p[1])) * a256) >> 8));
+      p[2] = uint8_t(int(p[2]) + (((cb - int(p[2])) * a256) >> 8));
+    }
+  }
+  void line(double ax, double ay, double bx, double by, double width, const MapView::Rgba& c) {
+    const float r = float(width * 0.5);
+    const float r_out = r + 0.5f;
+    const float r_in = std::max(0.0f, r - 0.5f);
+    const float r_out2 = r_out * r_out;
+    const float r_in2 = r_in * r_in;
+    const int x0 = std::max(0, int(std::floor(std::min(ax, bx) - r_out)));
+    const int x1 = std::min(w - 1, int(std::ceil(std::max(ax, bx) + r_out)));
+    const int y0 = std::max(0, int(std::floor(std::min(ay, by) - r_out)));
+    const int y1 = std::min(h - 1, int(std::ceil(std::max(ay, by) + r_out)));
+    if (x0 > x1 || y0 > y1) return;
+    const int cr = int(std::clamp(c.r, 0.0f, 255.0f) + 0.5f);
+    const int cg = int(std::clamp(c.g, 0.0f, 255.0f) + 0.5f);
+    const int cb = int(std::clamp(c.b, 0.0f, 255.0f) + 0.5f);
+    const float ca = std::clamp(c.a / 255.0f, 0.0f, 1.0f) * 256.0f;
+    const int ca_full = int(ca + 0.5f);
+    if (ca_full <= 0) return;
+    const float fax = float(ax), fay = float(ay);
+    const float dx = float(bx - ax), dy = float(by - ay);
+    const float len2 = dx * dx + dy * dy;
+    const float inv_len2 = len2 > 1e-6f ? (1.0f / len2) : 0.0f;
+    const bool use_strip = std::fabs(dy) > 0.5f;
+    const float slope = use_strip ? (dx / dy) : 0.0f;
+    const float hx = use_strip ? (r_out * std::sqrt(1.0f + slope * slope)) : 0.0f;
+    for (int y = y0; y <= y1; ++y) {
+      const float py_w = float(y) + 0.5f;
+      int rx0 = x0, rx1 = x1;
+      if (use_strip) {
+        const float x_mid = fax + (py_w - fay) * slope;
+        rx0 = std::max(x0, int(std::floor(x_mid - hx)));
+        rx1 = std::min(x1, int(std::ceil(x_mid + hx)));
+      }
+      if (rx0 > rx1) continue;
+      const float py = py_w - fay;
+      uint8_t* p = &rgba[(size_t(y) * w + rx0) * 4];
+      for (int x = rx0; x <= rx1; ++x, p += 4) {
+        const float px = float(x) + 0.5f - fax;
+        const float t = len2 > 1e-6f ? std::clamp((px * dx + py * dy) * inv_len2, 0.0f, 1.0f) : 0.0f;
+        const float ex = px - t * dx, ey = py - t * dy;
+        const float d2 = ex * ex + ey * ey;
+        if (d2 >= r_out2) continue;
+        if (d2 <= r_in2) {
+          blend_px(p, cr, cg, cb, ca_full);
+        } else {
+          const int a256 = int((r_out - std::sqrt(d2)) * ca + 0.5f);
+          if (a256 > 0) blend_px(p, cr, cg, cb, a256);
+        }
+      }
+    }
+  }
+  void polygon(const std::vector<std::array<double, 2>>& pts, const MapView::Rgba& c) {
+    if (pts.size() < 3) return;
+    double lo = 1e30, hi = -1e30, xlo = 1e30, xhi = -1e30;
+    for (const auto& p : pts) {
+      lo = std::min(lo, p[1]), hi = std::max(hi, p[1]);
+      xlo = std::min(xlo, p[0]), xhi = std::max(xhi, p[0]);
+    }
+    if (xhi < 0 || xlo >= w || hi < 0 || lo >= h) return;
+    const int y0 = std::max(0, int(std::floor(lo))), y1 = std::min(h - 1, int(std::ceil(hi)));
+    const int cr = int(std::clamp(c.r, 0.0f, 255.0f) + 0.5f);
+    const int cg = int(std::clamp(c.g, 0.0f, 255.0f) + 0.5f);
+    const int cb = int(std::clamp(c.b, 0.0f, 255.0f) + 0.5f);
+    const float ca = std::clamp(c.a / 255.0f, 0.0f, 1.0f) * 256.0f;
+    std::vector<float> cover(static_cast<size_t>(w));
+    std::vector<double> xs;
+    for (int y = y0; y <= y1; ++y) {
+      int min_x = w, max_x = -1;
+      for (int s = 0; s < 4; ++s) {
+        const double sy = y + (s + 0.5) / 4;
+        xs.clear();
+        for (size_t i = 0; i < pts.size(); ++i) {
+          const auto& a = pts[i];
+          const auto& b = pts[(i + 1) % pts.size()];
+          if ((a[1] <= sy) != (b[1] <= sy)) xs.push_back(a[0] + (sy - a[1]) / (b[1] - a[1]) * (b[0] - a[0]));
+        }
+        std::sort(xs.begin(), xs.end());
+        for (size_t k = 0; k + 1 < xs.size(); k += 2) {
+          const double l = std::max(0.0, xs[k]), r = std::min(double(w), xs[k + 1]);
+          const int xl = int(std::floor(l)), xr = std::min(w, int(std::ceil(r)));
+          if (xl < min_x) min_x = xl;
+          if (xr - 1 > max_x) max_x = xr - 1;
+          for (int x = xl; x < xr; ++x) {
+            const double in = std::min(r, x + 1.0) - std::max(l, double(x));
+            if (in > 0) cover[size_t(x)] += float(in) * 0.25f;
+          }
+        }
+      }
+      if (min_x <= max_x) {
+        uint8_t* p = &rgba[(size_t(y) * w + min_x) * 4];
+        for (int x = min_x; x <= max_x; ++x, p += 4) {
+          const float cv = cover[size_t(x)];
+          if (cv > 0.0f) {
+            cover[size_t(x)] = 0.0f;
+            blend_px(p, cr, cg, cb, int(std::min(1.0f, cv) * ca + 0.5f));
+          }
+        }
+      }
+    }
+  }
+  void icon(const MapView::Atlas& atlas, int cell_x, int cell_y, double cx, double cy, double size, double angle,
+            const MapView::Rgba& tint) {
+    if (atlas.rgba.empty() || size < 1.0) return;
+    const double r = (angle == 0.0) ? (size * 0.5 + 1.0) : (size * 0.75);
+    if (cx + r < 0.0 || cx - r >= w || cy + r < 0.0 || cy - r >= h) return;
+    const int x0 = std::max(0, int(std::floor(cx - r))), x1 = std::min(w - 1, int(std::ceil(cx + r)));
+    const int y0 = std::max(0, int(std::floor(cy - r))), y1 = std::min(h - 1, int(std::ceil(cy + r)));
+    const double cell = atlas.width / 8.0;
+    const int aw = int(atlas.width), ah = int(atlas.height);
+    const double tmin_x = cell_x * cell, tmax_x = (cell_x + 1) * cell - 1.0;
+    const double tmin_y = cell_y * cell, tmax_y = (cell_y + 1) * cell - 1.0;
+    const int tr = int(std::clamp(tint.r, 0.0f, 255.0f) + 0.5f);
+    const int tg = int(std::clamp(tint.g, 0.0f, 255.0f) + 0.5f);
+    const int tb = int(std::clamp(tint.b, 0.0f, 255.0f) + 0.5f);
+    const int ta = int(std::clamp(tint.a, 0.0f, 255.0f) + 0.5f);
+    if (ta <= 0) return;
+
+    if (angle == 0.0) {
+      const double inv_sz = 1.0 / size;
+      const double dtx = cell * inv_sz;
+      // Find tight [ix0, ix1] where u in [0, 1).
+      const int ix0 = std::max(x0, int(std::ceil(cx - size * 0.5 - 0.5)));
+      const int ix1 = std::min(x1, int(std::floor(cx + size * 0.5 - 0.5)));
+      if (ix0 > ix1) return;
+      const int64_t tx_min_fp = int64_t(std::llround(tmin_x * 65536.0));
+      const int64_t tx_max_fp = int64_t(std::llround(tmax_x * 65536.0));
+      const int64_t dtx_fp = int64_t(std::llround(dtx * 65536.0));
+      const double u_start = (ix0 + 0.5 - cx) * inv_sz + 0.5;
+      const int64_t tx_start_fp = int64_t(std::llround(((cell_x + u_start) * cell - 0.5) * 65536.0));
+      const int tr_scale = (tr * ta + 127) >> 8;
+      const int tg_scale = (tg * ta + 127) >> 8;
+      const int tb_scale = (tb * ta + 127) >> 8;
+      for (int y = y0; y <= y1; ++y) {
+        const double v = (y + 0.5 - cy) * inv_sz + 0.5;
+        if (v < 0.0 || v >= 1.0) continue;
+        const double ty = std::clamp((cell_y + v) * cell - 0.5, tmin_y, tmax_y);
+        const int iy = int(ty), iy1 = std::min(ah - 1, iy + 1);
+        const int fy = int((ty - iy) * 256.0 + 0.5), ify = 256 - fy;
+        const uint8_t* row0 = &atlas.rgba[size_t(iy) * aw * 4];
+        const uint8_t* row1 = &atlas.rgba[size_t(iy1) * aw * 4];
+        uint8_t* dst = &rgba[(size_t(y) * w + ix0) * 4];
+        int64_t tx_fp = tx_start_fp;
+        for (int x = ix0; x <= ix1; ++x, tx_fp += dtx_fp, dst += 4) {
+          const int64_t txc = std::clamp<int64_t>(tx_fp, tx_min_fp, tx_max_fp);
+          const int ix = int(txc >> 16), ix1_s = std::min(aw - 1, ix + 1);
+          const uint8_t* t00 = row0 + ix * 4;
+          const uint8_t* t10 = row0 + ix1_s * 4;
+          const uint8_t* t01 = row1 + ix * 4;
+          const uint8_t* t11 = row1 + ix1_s * 4;
+          const int a00 = t00[3], a10 = t10[3], a01 = t01[3], a11 = t11[3];
+          if ((a00 | a10 | a01 | a11) == 0) continue;
+          const int fx = int((txc >> 8) & 255), ifx = 256 - fx;
+          const int aw00 = ifx * ify * a00, aw10 = fx * ify * a10, aw01 = ifx * fy * a01, aw11 = fx * fy * a11;
+          const int asum = (aw00 + aw10 + aw01 + aw11) >> 16;  // 0..255
+          if (asum <= 1) continue;
+          // Premultiplied RGB in [0..255*255], shifted down to [0..255] with zero divisions!
+          const int pr = (t00[0] * aw00 + t10[0] * aw10 + t01[0] * aw01 + t11[0] * aw11) >> 24;
+          const int pg = (t00[1] * aw00 + t10[1] * aw10 + t01[1] * aw01 + t11[1] * aw11) >> 24;
+          const int pb = (t00[2] * aw00 + t10[2] * aw10 + t01[2] * aw01 + t11[2] * aw11) >> 24;
+          const int eff_a = (asum * ta + 128) >> 8;
+          const int inv_a = 256 - eff_a;
+          dst[0] = uint8_t(std::min(255, (dst[0] * inv_a + pr * tr_scale) >> 8));
+          dst[1] = uint8_t(std::min(255, (dst[1] * inv_a + pg * tg_scale) >> 8));
+          dst[2] = uint8_t(std::min(255, (dst[2] * inv_a + pb * tb_scale) >> 8));
+        }
+      }
+      return;
+    }
+
+    const double c = std::cos(angle), s = std::sin(angle);
+    const double inv_sz = 1.0 / size;
+    for (int y = y0; y <= y1; ++y) {
+      uint8_t* dst = &rgba[(size_t(y) * w + x0) * 4];
+      for (int x = x0; x <= x1; ++x, dst += 4) {
+        const double px = x + 0.5 - cx, py = y + 0.5 - cy;
+        const double u = (c * px + s * py) * inv_sz + 0.5, v = (-s * px + c * py) * inv_sz + 0.5;
+        if (u < 0.0 || v < 0.0 || u >= 1.0 || v >= 1.0) continue;
+        const double tx = std::clamp((cell_x + u) * cell - 0.5, tmin_x, tmax_x);
+        const double ty = std::clamp((cell_y + v) * cell - 0.5, tmin_y, tmax_y);
+        const int ix = int(tx), iy = int(ty);
+        const int ix1 = std::min(aw - 1, ix + 1), iy1 = std::min(ah - 1, iy + 1);
+        const int fx = int((tx - ix) * 256.0 + 0.5), fy = int((ty - iy) * 256.0 + 0.5);
+        const int ifx = 256 - fx, ify = 256 - fy;
+        const uint8_t* t00 = &atlas.rgba[(size_t(iy) * aw + ix) * 4];
+        const uint8_t* t10 = &atlas.rgba[(size_t(iy) * aw + ix1) * 4];
+        const uint8_t* t01 = &atlas.rgba[(size_t(iy1) * aw + ix) * 4];
+        const uint8_t* t11 = &atlas.rgba[(size_t(iy1) * aw + ix1) * 4];
+        const int a00 = t00[3], a10 = t10[3], a01 = t01[3], a11 = t11[3];
+        if ((a00 | a10 | a01 | a11) == 0) continue;
+        const int aw00 = ifx * ify * a00, aw10 = fx * ify * a10, aw01 = ifx * fy * a01, aw11 = fx * fy * a11;
+        const int asum = aw00 + aw10 + aw01 + aw11;
+        if (asum <= 65536) continue;
+        const int pr = (t00[0] * aw00 + t10[0] * aw10 + t01[0] * aw01 + t11[0] * aw11) / asum;
+        const int pg = (t00[1] * aw00 + t10[1] * aw10 + t01[1] * aw01 + t11[1] * aw11) / asum;
+        const int pb = (t00[2] * aw00 + t10[2] * aw10 + t01[2] * aw01 + t11[2] * aw11) / asum;
+        const int alpha256 = int((int64_t(asum >> 16) * ta) / 255);
+        if (alpha256 > 0) blend_px(dst, (pr * tr) / 255, (pg * tg) / 255, (pb * tb) / 255, alpha256);
+      }
+    }
+  }
+};
+
 // The icons a scene shows, in drawing order (profile groups by filter value).
 struct Mark {
   std::string key;
@@ -305,8 +553,13 @@ bool MapView::open(const std::filesystem::path& game_root, std::string* error) {
     Road road;
     road.style = int(it - std::begin(kRoadTypes));
     road.nodes = r.nodes;
+    road.min_x = road.min_z = 1e30;
+    road.max_x = road.max_z = -1e30;
+    road.points.reserve(r.points.size());
     for (const auto& p : r.points) {
       road.points.push_back({p.x, p.z});
+      road.min_x = std::min(road.min_x, p.x), road.max_x = std::max(road.max_x, p.x);
+      road.min_z = std::min(road.min_z, p.z), road.max_z = std::max(road.max_z, p.z);
       min_x_ = std::min(min_x_, p.x), max_x_ = std::max(max_x_, p.x);
       min_z_ = std::min(min_z_, p.z), max_z_ = std::max(max_z_, p.z);
     }
@@ -336,6 +589,7 @@ bool MapView::open(const std::filesystem::path& game_root, std::string* error) {
   horizon_zip_path_ = media / "ui" / "textures" / "Horizon.zip";
   high_tile_state_.fill(0);
   for (auto& t : high_tiles_) t = Atlas{};
+  base_cache_ = PauseBaseCache{};
   auto zip = fh1::Archive::open(horizon_zip_path_, &why);
   if (!zip) return fail(error, why);
   if (!read_texture(*zip, "Map/background/low-0-0.xds", background_, error)) return false;
@@ -613,133 +867,297 @@ double MapView::map_scale(int width, int height, double zoom) const {
   return std::max(span_x / std::max(1, width), span_z / std::max(1, height)) * 1.04 / zoom;
 }
 
-HudImage MapView::pause_map(const MapScene& scene, int width, int height, double zoom, double cx, double cz) const {
-  Canvas cv(width, height, {12, 12, 14, 255});
-  zoom = std::max(zoom, 0.25);
-  // Metres per pixel: zoom 1 fits the road network.
-  const double scale = map_scale(width, height, zoom);
-  auto to_screen = [&](double x, double z) {
-    return std::array<double, 2>{width / 2.0 + (x - cx) / scale, height / 2.0 - (z - cz) / scale};
-  };
+uint32_t MapView::high_tiles_mask() const {
+  uint32_t mask = 0;
+  for (size_t i = 0; i < high_tile_state_.size(); ++i)
+    if (high_tile_state_[i] == 1) mask |= (1u << i);
+  return mask;
+}
 
-  // Seamless 2-level map background pyramid: low-0-0.xds blended into the
-  // 5x3 high-c-r.xds (5120x3072) tiles as the player zooms in.
-  const double hi_blend = std::clamp((zoom - 1.8) / 1.7, 0.0, 1.0);
-  if (hi_blend > 0.0) {
-    const double wx0 = cx - (width * 0.5) * scale, wx1 = cx + (width * 0.5) * scale;
-    const double wz_top = cz + (height * 0.5) * scale, wz_bot = cz - (height * 0.5) * scale;
-    const double u0 = (wx0 - freeroam::kMapWest) / freeroam::kMapWidth;
-    const double u1 = (wx1 - freeroam::kMapWest) / freeroam::kMapWidth;
-    const double v0 = (freeroam::kMapNorth - wz_top) / freeroam::kMapHeight;
-    const double v1 = (freeroam::kMapNorth - wz_bot) / freeroam::kMapHeight;
-    ensure_high_tiles(int(std::floor(u0 * kHighCols)) - 1, int(std::floor(u1 * kHighCols)) + 1,
-                      int(std::floor(v0 * kHighRows)) - 1, int(std::floor(v1 * kHighRows)) + 1);
-  }
+void MapView::render_pause_base(std::vector<uint8_t>& rgba, int width, int height, double scale, double hi_blend,
+                                double cx, double cz, const freeroam::RoadDiscovery* road_discovery) const {
+  FastCanvas cv(width, height, rgba);
+  const double half_w = width * 0.5, half_h = height * 0.5;
+  const double inv_scale = 1.0 / scale;
+
+  // Seamless 2-level map background pyramid using 16.16 fixed-point scanline stepping.
   if (!background_.rgba.empty()) {
     const int bw = int(background_.width), bh = int(background_.height);
     const int hw = kHighCols * kHighTileSize, hh = kHighRows * kHighTileSize;
-    for (int y = 0; y < height; ++y) {
-      const double z = cz - (y + 0.5 - height / 2.0) * scale;
-      const double vn = (freeroam::kMapNorth - z) / freeroam::kMapHeight;
-      const double v = vn * bh - 0.5;
-      if (v < -0.5 || v > bh - 0.5) continue;
-      const int iy = std::clamp(int(std::floor(v)), 0, bh - 1), iy1 = std::min(bh - 1, iy + 1);
-      const double fy = std::clamp(v - iy, 0.0, 1.0);
+    const double un0 = (cx + (0.5 - half_w) * scale - freeroam::kMapWest) / freeroam::kMapWidth;
+    const double dun = scale / freeroam::kMapWidth;
+    const double u0 = un0 * bw - 0.5, du = dun * bw;
+    const double hu0 = un0 * hw - 0.5, dhu = dun * hw;
+    const int x_lo = std::clamp(int(std::ceil((-0.5 - u0) / du)), 0, width);
+    const int x_hi = std::clamp(int(std::floor((bw - 0.5 - u0) / du)) + 1, 0, width);
+    const int64_t u_start_fp = int64_t(std::llround((u0 + x_lo * du) * 65536.0));
+    const int64_t du_fp = int64_t(std::llround(du * 65536.0));
+    const int64_t u_max_fp = int64_t(bw - 1) << 16;
+    const int64_t hu_start_fp = int64_t(std::llround((hu0 + x_lo * dhu) * 65536.0));
+    const int64_t dhu_fp = int64_t(std::llround(dhu * 65536.0));
+    const int64_t hu_max_fp = int64_t(hw - 1) << 16;
+    const int kb256 = int(std::lround(std::clamp(hi_blend, 0.0, 1.0) * 256.0));
+    const int ikb256 = 256 - kb256;
+    const bool use_lo_only = kb256 <= 10;
+    const bool use_hi_only = kb256 >= 246;
 
-      const double hv = vn * hh - 0.5;
-      const int hiy = std::clamp(int(std::floor(hv)), 0, hh - 1), hiy1 = std::min(hh - 1, hiy + 1);
-      const double hfy = std::clamp(hv - hiy, 0.0, 1.0);
-
-      float* row = &cv.rgb[size_t(y) * width * 3];
-      for (int x = 0; x < width; ++x) {
-        const double wx = cx + (x + 0.5 - width / 2.0) * scale;
-        const double un = (wx - freeroam::kMapWest) / freeroam::kMapWidth;
-        const double u = un * bw - 0.5;
-        if (u < -0.5 || u > bw - 0.5) continue;
-        float lo_rgb[3];
-        if (hi_blend < 0.999) {
-          const int ix = std::clamp(int(std::floor(u)), 0, bw - 1), ix1 = std::min(bw - 1, ix + 1);
-          const double fx = std::clamp(u - ix, 0.0, 1.0);
-          const uint8_t* a = &background_.rgba[(size_t(iy) * bw + ix) * 4];
-          const uint8_t* b = &background_.rgba[(size_t(iy) * bw + ix1) * 4];
-          const uint8_t* c = &background_.rgba[(size_t(iy1) * bw + ix) * 4];
-          const uint8_t* d = &background_.rgba[(size_t(iy1) * bw + ix1) * 4];
-          for (int ch = 0; ch < 3; ++ch)
-            lo_rgb[ch] = float((a[ch] * (1 - fx) + b[ch] * fx) * (1 - fy) + (c[ch] * (1 - fx) + d[ch] * fx) * fy);
+    auto render_rows = [&](int y_begin, int y_end) {
+      for (int y = y_begin; y < y_end; ++y) {
+        const double z = cz - (y + 0.5 - half_h) * scale;
+        const double vn = (freeroam::kMapNorth - z) / freeroam::kMapHeight;
+        const double v = vn * bh - 0.5;
+        if (v < -0.5 || v > bh - 0.5 || x_lo >= x_hi) {
+          cv.fill_rect_row(y, 0, width, 12, 12, 14);
+          continue;
         }
-        bool got_hi = false;
-        float hi_rgb[3] = {0, 0, 0};
-        if (hi_blend > 0.0) {
-          const double hu = un * hw - 0.5;
-          const int hix = std::clamp(int(std::floor(hu)), 0, hw - 1), hix1 = std::min(hw - 1, hix + 1);
-          const double hfx = std::clamp(hu - hix, 0.0, 1.0);
-          uint8_t ha[3], hb[3], hc[3], hd[3];
-          if (sample_high_pixel(hix, hiy, ha) && sample_high_pixel(hix1, hiy, hb) &&
-              sample_high_pixel(hix, hiy1, hc) && sample_high_pixel(hix1, hiy1, hd)) {
-            for (int ch = 0; ch < 3; ++ch)
-              hi_rgb[ch] = float((ha[ch] * (1 - hfx) + hb[ch] * hfx) * (1 - hfy) +
-                                 (hc[ch] * (1 - hfx) + hd[ch] * hfx) * hfy);
-            got_hi = true;
+        if (x_lo > 0) cv.fill_rect_row(y, 0, x_lo, 12, 12, 14);
+        if (x_hi < width) cv.fill_rect_row(y, x_hi, width, 12, 12, 14);
+
+        const int iy = std::clamp(int(std::floor(v)), 0, bh - 1), iy1 = std::min(bh - 1, iy + 1);
+        const int fy = int(std::clamp(v - iy, 0.0, 1.0) * 256.0 + 0.5), ify = 256 - fy;
+        const uint8_t* lo_row0 = &background_.rgba[size_t(iy) * bw * 4];
+        const uint8_t* lo_row1 = &background_.rgba[size_t(iy1) * bw * 4];
+        uint8_t* dst = &rgba[(size_t(y) * width + x_lo) * 4];
+
+        if (use_lo_only) {
+          int64_t u_fp = u_start_fp;
+          for (int x = x_lo; x < x_hi; ++x, u_fp += du_fp, dst += 4) {
+            const int64_t uc = std::clamp<int64_t>(u_fp, 0, u_max_fp);
+            const int ix = int(uc >> 16), ix1 = std::min(bw - 1, ix + 1);
+            const int fx = int((uc >> 8) & 255), ifx = 256 - fx;
+            const uint8_t* a = lo_row0 + ix * 4;
+            const uint8_t* b = lo_row0 + ix1 * 4;
+            const uint8_t* c = lo_row1 + ix * 4;
+            const uint8_t* d = lo_row1 + ix1 * 4;
+            const int w00 = ifx * ify, w10 = fx * ify, w01 = ifx * fy, w11 = fx * fy;
+            dst[0] = uint8_t((a[0] * w00 + b[0] * w10 + c[0] * w01 + d[0] * w11 + 32768) >> 16);
+            dst[1] = uint8_t((a[1] * w00 + b[1] * w10 + c[1] * w01 + d[1] * w11 + 32768) >> 16);
+            dst[2] = uint8_t((a[2] * w00 + b[2] * w10 + c[2] * w01 + d[2] * w11 + 32768) >> 16);
+            dst[3] = 255;
           }
-        }
-        if (got_hi && hi_blend >= 0.999) {
-          row[x * 3] = hi_rgb[0], row[x * 3 + 1] = hi_rgb[1], row[x * 3 + 2] = hi_rgb[2];
-        } else if (got_hi) {
-          const float kb = float(hi_blend);
-          for (int ch = 0; ch < 3; ++ch) row[x * 3 + ch] = lo_rgb[ch] * (1.0f - kb) + hi_rgb[ch] * kb;
         } else {
-          if (hi_blend >= 0.999) {
-            const int ix = std::clamp(int(std::floor(u)), 0, bw - 1), ix1 = std::min(bw - 1, ix + 1);
-            const double fx = std::clamp(u - ix, 0.0, 1.0);
-            const uint8_t* a = &background_.rgba[(size_t(iy) * bw + ix) * 4];
-            const uint8_t* b = &background_.rgba[(size_t(iy) * bw + ix1) * 4];
-            const uint8_t* c = &background_.rgba[(size_t(iy1) * bw + ix) * 4];
-            const uint8_t* d = &background_.rgba[(size_t(iy1) * bw + ix1) * 4];
-            for (int ch = 0; ch < 3; ++ch)
-              lo_rgb[ch] = float((a[ch] * (1 - fx) + b[ch] * fx) * (1 - fy) + (c[ch] * (1 - fx) + d[ch] * fx) * fy);
+          const double hv = vn * hh - 0.5;
+          const int hiy = std::clamp(int(std::floor(hv)), 0, hh - 1), hiy1 = std::min(hh - 1, hiy + 1);
+          const int hfy = int(std::clamp(hv - hiy, 0.0, 1.0) * 256.0 + 0.5), ihfy = 256 - hfy;
+          const int tr0 = hiy >> 10, tr1 = hiy1 >> 10;
+          const int ly0 = hiy & 1023, ly1 = hiy1 & 1023;
+          const uint8_t* hi_row0[kHighCols];
+          const uint8_t* hi_row1[kHighCols];
+          for (int tc = 0; tc < kHighCols; ++tc) {
+            const size_t i0 = size_t(tr0 * kHighCols + tc);
+            const size_t i1 = size_t(tr1 * kHighCols + tc);
+            hi_row0[tc] = (high_tile_state_[i0] == 1) ? &high_tiles_[i0].rgba[size_t(ly0) * kHighTileSize * 4] : nullptr;
+            hi_row1[tc] = (high_tile_state_[i1] == 1) ? &high_tiles_[i1].rgba[size_t(ly1) * kHighTileSize * 4] : nullptr;
           }
-          row[x * 3] = lo_rgb[0], row[x * 3 + 1] = lo_rgb[1], row[x * 3 + 2] = lo_rgb[2];
+          int64_t u_fp = u_start_fp;
+          int64_t hu_fp = hu_start_fp;
+          for (int x = x_lo; x < x_hi; ++x, u_fp += du_fp, hu_fp += dhu_fp, dst += 4) {
+            const int64_t huc = std::clamp<int64_t>(hu_fp, 0, hu_max_fp);
+            const int hix = int(huc >> 16), hix1 = std::min(hw - 1, hix + 1);
+            const int tc0 = hix >> 10, tc1 = hix1 >> 10;
+            const uint8_t* r0a = hi_row0[tc0];
+            const uint8_t* r0b = hi_row0[tc1];
+            const uint8_t* r1a = hi_row1[tc0];
+            const uint8_t* r1b = hi_row1[tc1];
+            const bool got_hi = (r0a && r0b && r1a && r1b);
+            if (got_hi && use_hi_only) {
+              const int hfx = int((huc >> 8) & 255), ihfx = 256 - hfx;
+              const uint8_t* ha = r0a + (hix & 1023) * 4;
+              const uint8_t* hb = r0b + (hix1 & 1023) * 4;
+              const uint8_t* hc = r1a + (hix & 1023) * 4;
+              const uint8_t* hd = r1b + (hix1 & 1023) * 4;
+              const int w00 = ihfx * ihfy, w10 = hfx * ihfy, w01 = ihfx * hfy, w11 = hfx * hfy;
+              dst[0] = uint8_t((ha[0] * w00 + hb[0] * w10 + hc[0] * w01 + hd[0] * w11 + 32768) >> 16);
+              dst[1] = uint8_t((ha[1] * w00 + hb[1] * w10 + hc[1] * w01 + hd[1] * w11 + 32768) >> 16);
+              dst[2] = uint8_t((ha[2] * w00 + hb[2] * w10 + hc[2] * w01 + hd[2] * w11 + 32768) >> 16);
+              dst[3] = 255;
+              continue;
+            }
+            const int64_t uc = std::clamp<int64_t>(u_fp, 0, u_max_fp);
+            const int ix = int(uc >> 16), ix1 = std::min(bw - 1, ix + 1);
+            const int fx = int((uc >> 8) & 255), ifx = 256 - fx;
+            const uint8_t* a = lo_row0 + ix * 4;
+            const uint8_t* b = lo_row0 + ix1 * 4;
+            const uint8_t* c = lo_row1 + ix * 4;
+            const uint8_t* d = lo_row1 + ix1 * 4;
+            const int lw00 = ifx * ify, lw10 = fx * ify, lw01 = ifx * fy, lw11 = fx * fy;
+            const int lr = (a[0] * lw00 + b[0] * lw10 + c[0] * lw01 + d[0] * lw11 + 32768) >> 16;
+            const int lg = (a[1] * lw00 + b[1] * lw10 + c[1] * lw01 + d[1] * lw11 + 32768) >> 16;
+            const int lb = (a[2] * lw00 + b[2] * lw10 + c[2] * lw01 + d[2] * lw11 + 32768) >> 16;
+            if (got_hi) {
+              const int hfx = int((huc >> 8) & 255), ihfx = 256 - hfx;
+              const uint8_t* ha = r0a + (hix & 1023) * 4;
+              const uint8_t* hb = r0b + (hix1 & 1023) * 4;
+              const uint8_t* hc = r1a + (hix & 1023) * 4;
+              const uint8_t* hd = r1b + (hix1 & 1023) * 4;
+              const int hw00 = ihfx * ihfy, hw10 = hfx * ihfy, hw01 = ihfx * hfy, hw11 = hfx * hfy;
+              const int hr = (ha[0] * hw00 + hb[0] * hw10 + hc[0] * hw01 + hd[0] * hw11 + 32768) >> 16;
+              const int hg = (ha[1] * hw00 + hb[1] * hw10 + hc[1] * hw01 + hd[1] * hw11 + 32768) >> 16;
+              const int hb_c = (ha[2] * hw00 + hb[2] * hw10 + hc[2] * hw01 + hd[2] * hw11 + 32768) >> 16;
+              dst[0] = uint8_t((lr * ikb256 + hr * kb256 + 128) >> 8);
+              dst[1] = uint8_t((lg * ikb256 + hg * kb256 + 128) >> 8);
+              dst[2] = uint8_t((lb * ikb256 + hb_c * kb256 + 128) >> 8);
+            } else {
+              dst[0] = uint8_t(lr);
+              dst[1] = uint8_t(lg);
+              dst[2] = uint8_t(lb);
+            }
+            dst[3] = 255;
+          }
         }
       }
-    }
+    };
+
+    render_rows(0, height);
+  } else {
+    for (int y = 0; y < height; ++y) cv.fill_rect_row(y, 0, width, 12, 12, 14);
   }
 
-  // Roads: driven vs undriven shading (ColourSecondary vs ColourPrimary).
-  for (int pass = 0; pass < 2; ++pass)
+  // World-space viewport AABB for fast per-road culling.
+  const double pad_m = 12.0 * scale;
+  const double view_min_x = cx - half_w * scale - pad_m;
+  const double view_max_x = cx + half_w * scale + pad_m;
+  const double view_min_z = cz - half_h * scale - pad_m;
+  const double view_max_z = cz + half_h * scale + pad_m;
+  const bool has_disc = road_discovery && road_discovery->ready();
+
+  // Roads: AABB-culled, tight-band capsule rasterized with sub-pixel vertex decimation.
+  for (int pass = 0; pass < 2; ++pass) {
     for (int style = 0; style < kRoadTypeCount; ++style) {
       const auto st = full_.roads.find(kRoadTypes[style]);
       if (st == full_.roads.end()) continue;
       const LineStyle& ls = st->second;
-      const double line = std::clamp(ls.line_size * 0.9 / scale, 1.2, 7.0);
+      const double line = std::clamp(ls.line_size * 0.9 * inv_scale, 1.2, 7.0);
+      const Rgba driven_col{std::max(238.0f, ls.core.r), std::max(232.0f, ls.core.g), std::max(210.0f, ls.core.b),
+                            252.0f};
+      const Rgba undriven_col{106, 110, 120, 236};
+      const Rgba outline_col{14, 16, 20, 155};
       for (const auto& road : roads_) {
         if (road.style != style) continue;
-        auto prev = to_screen(road.points[0][0], road.points[0][1]);
-        for (size_t k = 1; k < road.points.size(); ++k) {
-          const auto cur = to_screen(road.points[k][0], road.points[k][1]);
-          const bool off = (prev[0] < -8 && cur[0] < -8) || (prev[0] > width + 8 && cur[0] > width + 8) ||
-                           (prev[1] < -8 && cur[1] < -8) || (prev[1] > height + 8 && cur[1] > height + 8);
-          if (!off) {
-            bool driven = true;
-            if (scene.road_discovery && scene.road_discovery->ready() && k < road.nodes.size()) {
-              driven = scene.road_discovery->is_node_discovered(road.nodes[k - 1]) ||
-                       scene.road_discovery->is_node_discovered(road.nodes[k]);
-            }
-            // Driven roads: crisp bright white-warm gold; undriven roads: clean muted slate-grey.
-            const Rgba driven_col{std::max(238.0f, ls.core.r), std::max(232.0f, ls.core.g),
-                                  std::max(210.0f, ls.core.b), 252.0f};
-            const Rgba seg_col = driven ? driven_col : Rgba{106, 110, 120, 236};
-            if (pass == 0) cv.line(prev[0], prev[1], cur[0], cur[1], line + 1.8, Rgba{14, 16, 20, 155});
-            else cv.line(prev[0], prev[1], cur[0], cur[1], line, seg_col);
+        if (road.max_x < view_min_x || road.min_x > view_max_x || road.max_z < view_min_z || road.min_z > view_max_z)
+          continue;
+        double px = half_w + (road.points[0][0] - cx) * inv_scale;
+        double py = half_h - (road.points[0][1] - cz) * inv_scale;
+        size_t prev_k = 0;
+        const size_t npts = road.points.size();
+        for (size_t k = 1; k < npts; ++k) {
+          const double curx = half_w + (road.points[k][0] - cx) * inv_scale;
+          const double cury = half_h - (road.points[k][1] - cz) * inv_scale;
+          // Skip sub-pixel intermediate vertices when zoomed out to avoid redundant capsule draws.
+          if (k + 1 < npts) {
+            const double ddx = curx - px, ddy = cury - py;
+            if (ddx * ddx + ddy * ddy < 2.25) continue;
           }
-          prev = cur;
+          const bool off = (px < -8 && curx < -8) || (px > width + 8 && curx > width + 8) ||
+                           (py < -8 && cury < -8) || (py > height + 8 && cury > height + 8);
+          if (!off) {
+            if (pass == 0) {
+              cv.line(px, py, curx, cury, line + 1.8, outline_col);
+            } else {
+              bool driven = true;
+              if (has_disc && k < road.nodes.size()) {
+                driven = road_discovery->is_node_discovered(road.nodes[prev_k]) ||
+                         road_discovery->is_node_discovered(road.nodes[k]);
+              }
+              cv.line(px, py, curx, cury, line, driven ? driven_col : undriven_col);
+            }
+          }
+          px = curx;
+          py = cury;
+          prev_k = k;
         }
       }
     }
+  }
+}
+
+HudImage MapView::pause_map(const MapScene& scene, int width, int height, double zoom, double cx, double cz) const {
+  zoom = std::max(zoom, 0.25);
+  // Metres per pixel: zoom 1 fits the road network.
+  const double scale = map_scale(width, height, zoom);
+  const double hi_blend = std::clamp((zoom - 1.8) / 1.7, 0.0, 1.0);
+
+  const int disc_count = (scene.road_discovery && scene.road_discovery->ready())
+                             ? scene.road_discovery->discovered_count()
+                             : -1;
+  const bool same_scale =
+      base_cache_.width == width && base_cache_.height == height && std::fabs(scale - base_cache_.scale) <= scale * 1e-6;
+  // When panning at steady zoom, cache a +256 px padded base map (background + roads)
+  // so subsequent pan frames copy the viewport in ~0.4 ms instead of re-rasterizing.
+  // Single-shot or active-zoom frames render exact width x height (pad = 0).
+  const int want_pad = same_scale ? std::min(256, std::max(width, height) / 2) : 0;
+
+  if (hi_blend > 0.0) {
+    const double hw_m = (width * 0.5 + want_pad) * scale;
+    const double hh_m = (height * 0.5 + want_pad) * scale;
+    const double u0 = (cx - hw_m - freeroam::kMapWest) / freeroam::kMapWidth;
+    const double u1 = (cx + hw_m - freeroam::kMapWest) / freeroam::kMapWidth;
+    const double v0 = (freeroam::kMapNorth - (cz + hh_m)) / freeroam::kMapHeight;
+    const double v1 = (freeroam::kMapNorth - (cz - hh_m)) / freeroam::kMapHeight;
+    ensure_high_tiles(int(std::floor(u0 * kHighCols)) - 1, int(std::floor(u1 * kHighCols)) + 1,
+                      int(std::floor(v0 * kHighRows)) - 1, int(std::floor(v1 * kHighRows)) + 1);
+  }
+  const uint32_t tmask = high_tiles_mask();
+
+  HudImage out;
+  out.width = uint32_t(width);
+  out.height = uint32_t(height);
+  out.rgba.resize(size_t(width) * height * 4);
+
+  double eff_cx = cx, eff_cz = cz;
+  bool cache_hit = false;
+  if (same_scale && !base_cache_.rgba.empty() && base_cache_.road_disc == scene.road_discovery &&
+      base_cache_.road_disc_count == disc_count && base_cache_.loaded_tiles_mask == tmask) {
+    const int ox = int(std::lround(base_cache_.pad + (cx - base_cache_.cx) / scale));
+    const int oy = int(std::lround(base_cache_.pad - (cz - base_cache_.cz) / scale));
+    if (ox >= 0 && ox <= 2 * base_cache_.pad && oy >= 0 && oy <= 2 * base_cache_.pad) {
+      const int cw = base_cache_.width + 2 * base_cache_.pad;
+      const size_t row_bytes = size_t(width) * 4;
+      for (int y = 0; y < height; ++y) {
+        std::memcpy(&out.rgba[size_t(y) * row_bytes],
+                    &base_cache_.rgba[(size_t(oy + y) * cw + ox) * 4], row_bytes);
+      }
+      eff_cx = base_cache_.cx + (ox - base_cache_.pad) * scale;
+      eff_cz = base_cache_.cz - (oy - base_cache_.pad) * scale;
+      cache_hit = true;
+    }
+  }
+
+  if (!cache_hit) {
+    const int cw = width + 2 * want_pad;
+    const int ch = height + 2 * want_pad;
+    base_cache_.width = width;
+    base_cache_.height = height;
+    base_cache_.pad = want_pad;
+    base_cache_.scale = scale;
+    base_cache_.cx = cx;
+    base_cache_.cz = cz;
+    base_cache_.road_disc = scene.road_discovery;
+    base_cache_.road_disc_count = disc_count;
+    base_cache_.loaded_tiles_mask = tmask;
+    if (want_pad == 0) {
+      render_pause_base(out.rgba, width, height, scale, hi_blend, cx, cz, scene.road_discovery);
+      base_cache_.rgba.clear();
+    } else {
+      render_pause_base(base_cache_.rgba, cw, ch, scale, hi_blend, cx, cz, scene.road_discovery);
+      const size_t row_bytes = size_t(width) * 4;
+      for (int y = 0; y < height; ++y) {
+        std::memcpy(&out.rgba[size_t(y) * row_bytes],
+                    &base_cache_.rgba[(size_t(want_pad + y) * cw + want_pad) * 4], row_bytes);
+      }
+    }
+  }
+
+  FastCanvas cv(width, height, out.rgba);
+  const double inv_scale = 1.0 / scale;
+  auto to_screen = [&](double x, double z) {
+    return std::array<double, 2>{width * 0.5 + (x - eff_cx) * inv_scale, height * 0.5 - (z - eff_cz) * inv_scale};
+  };
 
   // Free-roam GPS route line on fullscreen map (MapProfileFullscreen.xml "route": r=74 g=238 b=97).
   const auto& active_route = !scene.gps_route.empty() ? scene.gps_route : scene.route;
   if (active_route.size() >= 2) {
-    const double rw = std::clamp(14.0 / scale, 3.0, 9.0);
+    const double rw = std::clamp(14.0 * inv_scale, 3.0, 9.0);
     for (int pass = 0; pass < 2; ++pass) {
       auto prev = to_screen(active_route[0][0], active_route[0][1]);
       for (size_t i = 1; i < active_route.size(); ++i) {
@@ -761,6 +1179,7 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
       if (scene.progress->barns[i].status != freeroam::kBarnRumour) continue;
       const auto& b = scene.data->barns[i];
       std::vector<std::array<double, 2>> poly;
+      poly.reserve(96);
       for (int k = 0; k < 96; ++k) {
         const double t = 2 * kPi * k / 96;
         poly.push_back(to_screen(b.hint_x + b.hint_rx * std::cos(t), b.hint_z + b.hint_rz * std::sin(t)));
@@ -774,13 +1193,15 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     }
 
   // Icons lying flat; profile sizes in our pixels, growing a little with
-  // the zoom.
+  // the zoom (frustum-culled to viewport).
   const double unit = std::min(2.0, 0.8 + zoom * 0.2) * std::max(1.0, height / 900.0);
+  const double icon_pad = 96.0 * unit;
   for (const auto& m : marks(scene, true)) {
+    const auto p = to_screen(m.x, m.z);
+    if (p[0] < -icon_pad || p[0] > width + icon_pad || p[1] < -icon_pad || p[1] > height + icon_pad) continue;
     auto it = full_.icons.find(m.key);
     if (it == full_.icons.end()) it = full_.icons.find("gas_station");
     if (it == full_.icons.end()) continue;
-    const auto p = to_screen(m.x, m.z);
     const bool sel = m.marker_index >= 0 && m.marker_index == scene.selected_marker;
     if (sel) {
       // Bright pink halo around hovered/selected map marker.
@@ -806,21 +1227,25 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
   // GPS destination marker on fullscreen map (Atlas 2,4 in bright green).
   if (scene.has_gps_dest) {
     const auto dp = to_screen(scene.gps_dest_x, scene.gps_dest_z);
-    const double r = 18.0 * unit;
-    for (int k = 0; k < 24; ++k) {
-      const double a0 = 2 * kPi * k / 24, a1 = 2 * kPi * (k + 1) / 24;
-      cv.line(dp[0] + r * std::cos(a0), dp[1] + r * std::sin(a0), dp[0] + r * std::cos(a1), dp[1] + r * std::sin(a1),
-              3.0, Rgba{74, 238, 97, 255});
+    if (dp[0] >= -icon_pad && dp[0] <= width + icon_pad && dp[1] >= -icon_pad && dp[1] <= height + icon_pad) {
+      const double r = 18.0 * unit;
+      for (int k = 0; k < 24; ++k) {
+        const double a0 = 2 * kPi * k / 24, a1 = 2 * kPi * (k + 1) / 24;
+        cv.line(dp[0] + r * std::cos(a0), dp[1] + r * std::sin(a0), dp[0] + r * std::cos(a1), dp[1] + r * std::sin(a1),
+                3.0, Rgba{74, 238, 97, 255});
+      }
+      cv.icon(large_icons_, 2, 4, dp[0], dp[1] - 10.0 * unit, 52.0 * unit, 0, Rgba{74, 238, 97, 255});
     }
-    cv.icon(large_icons_, 2, 4, dp[0], dp[1] - 10.0 * unit, 52.0 * unit, 0, Rgba{74, 238, 97, 255});
   }
   for (const auto& f : scene.festival_ai) {
     const auto p = to_screen(f[0], f[1]);
+    if (p[0] < -20 || p[0] > width + 20 || p[1] < -20 || p[1] > height + 20) continue;
     cv.line(p[0], p[1], p[0], p[1], 13, Rgba{255, 255, 255, 235});
     cv.line(p[0], p[1], p[0], p[1], 9, Rgba{245, 0, 96, 255});
   }
   for (const auto& o : scene.opponents) {
     const auto p = to_screen(o[0], o[1]);
+    if (p[0] < -20 || p[0] > width + 20 || p[1] < -20 || p[1] > height + 20) continue;
     cv.line(p[0], p[1], p[0], p[1], 12, Rgba{20, 20, 20, 220});
     cv.line(p[0], p[1], p[0], p[1], 9, Rgba{230, 60, 50, 255});
   }
@@ -832,7 +1257,7 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
         cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], std::max(28.0, ic.size * unit), scene.heading, ic.colour);
     }
   }
-  return cv.image();
+  return out;
 }
 
 void MapCameraController::reset(double cx, double cz, double zoom) {

@@ -276,16 +276,18 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
             camp_cam_active = app.campaign.compute_camera({vp.x, vp.y, vp.z}, std::atan2(vf.x, vf.z), camp_cam);
           }
+          const bool pause_freeze = menu_paused && !app.show_title && !app.fmv_player.active() && !photo_mode.active() &&
+                                    !replay_viewer.active() && !trainer_freecam_active && !(app.race && grid_menu_open);
           // Smooth pre-race grid-to-drive camera swoop (CAMERAS.md:85, UI_LAYOUTS.md:121-125).
           drive::CameraView pre_race_cam{};
           bool pre_race_cam_active = false;
           if (pre_race_blend_t >= 0.0) {
-            pre_race_blend_t += frame_dt;
+            if (!pause_freeze) pre_race_blend_t += frame_dt;
             if (pre_race_blend_t >= 1.2) {
               pre_race_blend_t = -1.0;
             } else {
               // Step driving rig so target chase/cockpit view is live and settled.
-              (void)drive_frame(aspect, frame_dt);
+              if (!pause_freeze || !have_cam_view) (void)drive_frame(aspect, pause_freeze ? 0.0 : frame_dt);
               if (have_cam_view) {
                 const drive::Vec3 vp = vehicle.position();
                 const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
@@ -345,13 +347,17 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                               ? camera_view_frame(pre_race_cam, info, vehicle, aspect, host.renderer.reverse_z(), &host.cam_proj)
                               : (rewind_scrub_view && rewind_buf.sampled_camera(rw_cam))
                                     ? camera_view_frame(rw_cam, info, vehicle, aspect, host.renderer.reverse_z(), &host.cam_proj)
-                                    : drive_frame(aspect, frame_dt);
+                                    : (pause_freeze && have_rig && !app.front && have_cam_view)
+                                          ? camera_view_frame(last_cam_view, info, vehicle, aspect, host.renderer.reverse_z(),
+                                                              &host.cam_proj)
+                                          : drive_frame(aspect, pause_freeze ? 0.0 : frame_dt);
           float w_jitter_uv_x = 0.0f, w_jitter_uv_y = 0.0f;
+          const bool temporal_freeze = pause_freeze || rewind_buf.is_paused_at_keyframe();
           if (photo_mode.active() && photo_mode.accumulator().active()) {
             float jx = 0.0f, jy = 0.0f;
             photo_mode.accumulator().jitter_ndc(jx, jy);
             apply_ndc_jitter(cam_frame, jx, jy);
-          } else if (host.renderer.active_upscaler().temporal) {
+          } else if (host.renderer.active_upscaler().temporal && !temporal_freeze) {
             const auto rex = host.renderer.render_width()
                                  ? carview::modern::Extent{host.renderer.render_width(), host.renderer.render_height()}
                                  : host.renderer.expected_render_extent(uint32_t(w), uint32_t(h));
@@ -537,24 +543,62 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) pan_z -= 1.0;
               if (z_in > 0.06 || z_out > 0.06) zoom_rate += (z_in - z_out);
             }
-            std::vector<MapMarker> vis_markers;
-            vis_markers.reserve(cached_map_markers.size());
-            for (const auto& cm : cached_map_markers) {
-              if (map_marker_visible(cm)) vis_markers.push_back(cm);
-            }
-            if (!map_dragging && map_cam.step(frame_dt, pan_x, pan_z, zoom_rate, vis_markers)) {
-              map_cx = map_cam.cx();
-              map_cz = map_cam.cz();
-              map_zoom = map_cam.zoom();
-              map_dirty = true;
+            const bool map_cam_active = !map_dragging &&
+                                        (std::fabs(pan_x) > 1e-4 || std::fabs(pan_z) > 1e-4 || std::fabs(zoom_rate) > 1e-4 ||
+                                         std::fabs(map_cam.vx()) > 1e-4 || std::fabs(map_cam.vz()) > 1e-4 ||
+                                         std::fabs(map_cam.zoom() - map_cam.target_zoom()) > 1e-4);
+            if (map_cam_active) {
+              std::vector<MapMarker> vis_markers;
+              vis_markers.reserve(cached_map_markers.size());
+              for (const auto& cm : cached_map_markers) {
+                if (map_marker_visible(cm)) vis_markers.push_back(cm);
+              }
+              if (map_cam.step(frame_dt, pan_x, pan_z, zoom_rate, vis_markers)) {
+                map_cx = map_cam.cx();
+                map_cz = map_cam.cz();
+                map_zoom = map_cam.zoom();
+                map_dirty = true;
+              }
             }
             if (w != map_w || h != map_h) map_dirty = true;
             if (map_dirty && w > 64 && h > 64) {
               map_dirty = false;
               map_w = w, map_h = h;
-              MapScene ms = map_scene();
+              // Reuse cached_map_markers while paused on the World Map instead of rebuilding
+              // every career/outpost/event string via map_scene() on every pan frame.
+              MapScene ms;
+              if (!app.race && cached_map_markers.empty() && (app.have_career_catalog || app.have_outposts)) {
+                ms = map_scene();
+                cached_map_markers = ms.markers;
+              } else {
+                const drive::Vec3 at = vehicle.position();
+                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                ms.x = at.x;
+                ms.z = at.z;
+                ms.heading = std::atan2(f.x, f.z);
+                ms.speed_mps = std::fabs(vehicle.speed());
+                ms.data = app.progress_loaded ? &app.collectibles : nullptr;
+                ms.progress = app.progress_loaded ? &app.progress : nullptr;
+                ms.road_discovery = app.road_discovery.ready() ? &app.road_discovery : nullptr;
+                ms.reveal = app.reveal || app.treasure_map_setting || slice12.trainer.effective_reveal_collectibles();
+                if (app.race) {
+                  app.race->opponent_positions(ms.opponents);
+                  app.race->route_near(ms.route);
+                } else {
+                  if (app.gps_nav.active()) {
+                    app.gps_nav.remaining_polyline(ms.gps_route);
+                    ms.has_gps_dest = true;
+                    ms.gps_dest_x = app.gps_nav.route().snapped_dest_x;
+                    ms.gps_dest_z = app.gps_nav.route().snapped_dest_z;
+                  }
+                  if (festival_mgr) {
+                    for (const auto& fc : festival_mgr->cars()) ms.festival_ai.push_back({fc.position.x, fc.position.z});
+                    if (festival_mgr->h2h_active()) ms.route = festival_mgr->h2h_route();
+                  }
+                  ms.markers = cached_map_markers;
+                }
+              }
               ms.filter = map_filter;
-              cached_map_markers = ms.markers;
               update_map_selection();
               ms.selected_marker = map_selected_marker;
               // 100% edge-to-edge fullscreen viewport (0, 0, w, h) — zero outer borders!
