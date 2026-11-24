@@ -381,6 +381,9 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     } else if (a == "--help" || a == "-h") {
       drive_usage();
       exit_code = 0; return false;
+    } else if (bool settings_takes_val = false; carview::is_settings_option(a, &settings_takes_val)) {
+      // Valid settings.txt options applied at DriveSession boot (controls, assists, damage, Slice 12).
+      if (settings_takes_val) (void)next();
     } else {
       std::fprintf(stderr, "carview: unknown option %s\n", a.c_str());
       drive_usage();

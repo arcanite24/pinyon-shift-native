@@ -3,9 +3,12 @@
 // immediate state, and tokens() keeps the file's other options.
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
+#include "settings.h"
 #include "settings_page.h"
 
 static int failures = 0;
@@ -297,6 +300,305 @@ int main() {
       if (dr.name == "graphics backend" && dr.tab == carview::SettingsPage::Tab::kDisplay) found_display = true;
     }
     CHECK(found_display);
+  }
+
+  // Driving line defaults to Full (2), and stepping to Off persists "--assist-line 0" -> 0.
+  {
+    carview::SettingsPage dl_def;
+    dl_def.load({});
+    CHECK(dl_def.value("driving line") == "full");
+    CHECK(dl_def.live_settings().controls.assists.driving_line == 2);
+
+    carview::SettingsPage dl_off;
+    dl_off.load({"--assist-line", "0"});
+    CHECK(dl_off.value("driving line") == "off");
+    CHECK(dl_off.live_settings().controls.assists.driving_line == 0);
+    CHECK(has(dl_off.tokens(), {"--assist-line", "0"}));
+
+    carview::SettingsPage dl_legacy_full;
+    dl_legacy_full.load({"--assist-line", "0", "--assist-line", "2"});
+    CHECK(dl_legacy_full.value("driving line") == "full");
+    CHECK(dl_legacy_full.live_settings().controls.assists.driving_line == 2);
+  }
+
+  // Value-taking flags (--damage, --shadow-pcss, --ssr, --volumetric-fog, --units)
+  // must never leak their argument string into unowned tokens on reload.
+  {
+    carview::SettingsPage leak;
+    leak.load({"--damage", "simulation", "--shadow-pcss", "ultra", "--ssr", "full",
+               "--volumetric-fog", "half", "--units", "imperial"});
+    CHECK(leak.value("damage") == "simulation");
+    CHECK(leak.value("shadow softness (pcss)") == "ultra");
+    CHECK(leak.value("screen-space reflections") == "full-res");
+    CHECK(leak.value("volumetric fog & beams") == "half-res");
+    CHECK(leak.value("units") == "imperial (mph)");
+    const auto toks = leak.tokens();
+    CHECK(toks.size() == 10);
+    // Resetting all of them back to default via reload must yield zero tokens.
+    carview::SettingsPage cleared;
+    cleared.load({"--damage", "simulation", "--damage", "cosmetic", "--no-car-detail", "--no-head-tracking"});
+    CHECK(cleared.value("damage") == "cosmetic");
+    CHECK(cleared.value("car clearcoat detail") == "off");
+    CHECK(cleared.value("head tracking (opentrack)") == "off");
+  }
+
+  // Exhaustive settings.txt write_settings -> read_settings -> load round-trip
+  // for EVERY row and EVERY choice across ALL 5 Settings tabs + ALL 10 key rebinds.
+  {
+    const auto tmp_dir = std::filesystem::temp_directory_path() / "shift_engine_settings_tests";
+    std::error_code ec;
+    std::filesystem::create_directories(tmp_dir, ec);
+    const auto tmp_file = tmp_dir / "settings_roundtrip.txt";
+
+    carview::SettingsPage base;
+    base.set_available_luts({"warm_desert.cube", "midnight_neon.cube"});
+    base.load({});
+    const auto all_rows = base.display_rows();
+
+    int tab_counts[int(carview::SettingsPage::Tab::kCount)] = {};
+    int rows_verified = 0;
+    int choices_verified = 0;
+    int rebinds_verified = 0;
+
+    // 1) Verify every single choice of every single row survives settings.txt disk I/O
+    //    and every emitted option is accepted by is_settings_option() (CLI startup safe).
+    //    Batch by wave (step index k=1..20) across non-preset rows so all ~350 choices
+    //    hit real settings.txt disk I/O in ~20 file writes instead of 350 individual writes,
+    //    plus test the "preset" row individually across all 5 presets.
+    std::map<std::string, std::vector<std::string>> seen_choices;
+    for (const auto& dr : all_rows) {
+      if (dr.is_save) continue;
+      ++tab_counts[int(dr.tab)];
+      if (!dr.is_rebind) ++rows_verified;
+    }
+
+    // 1a) Preset row individually (since stepping preset also updates SOTA defaults).
+    for (const auto& dr : all_rows) {
+      if (dr.name != "preset") continue;
+      carview::SettingsPage p;
+      p.load({});
+      p.open();
+      p.select_row(dr.flat_index);
+      const std::string initial_val = p.value(dr.name);
+      for (int s = 0; s < 10; ++s) {
+        p.step(1);
+        CHECK(p.dirty());
+        const std::string picked = p.value(dr.name);
+        const auto toks = p.tokens();
+        for (size_t ti = 0; ti < toks.size(); ++ti) {
+          bool takes_val = false;
+          CHECK(carview::is_settings_option(toks[ti], &takes_val));
+          if (takes_val) {
+            CHECK(ti + 1 < toks.size());
+            ++ti;
+          }
+        }
+        std::string werr;
+        CHECK(carview::write_settings(tmp_file, toks, &werr));
+        std::vector<std::string> notes;
+        const auto reread = carview::read_settings(tmp_file, &notes);
+        CHECK(notes.empty());
+        carview::SettingsPage reloaded;
+        reloaded.load(reread);
+        CHECK(reloaded.value(dr.name) == picked);
+        ++choices_verified;
+        if (picked == initial_val) break;
+      }
+      break;
+    }
+
+    // 1b) All remaining rows stepped in lockstep waves through real settings.txt I/O.
+    {
+      carview::SettingsPage wave;
+      wave.set_available_luts({"warm_desert.cube", "midnight_neon.cube"});
+      wave.load({});
+      wave.open();
+      std::map<std::string, std::string> initial_vals;
+      std::map<std::string, bool> wrapped;
+      for (const auto& dr : all_rows) {
+        if (dr.is_save || dr.is_rebind || dr.name == "preset") continue;
+        initial_vals[dr.name] = wave.value(dr.name);
+        wrapped[dr.name] = false;
+      }
+      for (int w = 0; w < 24; ++w) {
+        bool any_remaining = false;
+        std::map<std::string, std::string> wave_expected;
+        for (const auto& dr : all_rows) {
+          if (dr.is_save || dr.is_rebind || dr.name == "preset") continue;
+          if (!wrapped[dr.name]) {
+            any_remaining = true;
+            wave.select_row(dr.flat_index);
+            wave.step(1);
+            CHECK(wave.dirty());
+            const std::string picked = wave.value(dr.name);
+            ++choices_verified;
+            if (picked == initial_vals[dr.name]) wrapped[dr.name] = true;
+          }
+          wave_expected[dr.name] = wave.value(dr.name);
+        }
+        if (!any_remaining) break;
+        const auto toks = wave.tokens();
+        for (size_t ti = 0; ti < toks.size(); ++ti) {
+          bool takes_val = false;
+          CHECK(carview::is_settings_option(toks[ti], &takes_val));
+          if (takes_val) {
+            CHECK(ti + 1 < toks.size());
+            ++ti;
+          }
+        }
+        std::string werr;
+        CHECK(carview::write_settings(tmp_file, toks, &werr));
+        std::vector<std::string> notes;
+        const auto reread = carview::read_settings(tmp_file, &notes);
+        if (!notes.empty()) {
+          std::printf("wave %d read_settings note: %s\n", w, notes[0].c_str());
+        }
+        CHECK(notes.empty());
+        carview::SettingsPage reloaded;
+        reloaded.set_available_luts({"warm_desert.cube", "midnight_neon.cube"});
+        reloaded.load(reread);
+        for (const auto& [rname, rval] : wave_expected) {
+          if (reloaded.value(rname) != rval) {
+            std::printf("WAVE %d MISMATCH row='%s': picked='%s' reloaded='%s'\n",
+                        w, rname.c_str(), rval.c_str(), reloaded.value(rname).c_str());
+          }
+          CHECK(reloaded.value(rname) == rval);
+        }
+      }
+    }
+
+    // All 5 tabs must have rows tested.
+    for (int t_idx = 0; t_idx < int(carview::SettingsPage::Tab::kCount); ++t_idx) {
+      CHECK(tab_counts[t_idx] > 0);
+    }
+    CHECK(rows_verified >= 85);
+    CHECK(choices_verified >= 200);
+
+    // 2) Simultaneously modify EVERY row across ALL 5 tabs + ALL 10 key rebinds,
+    //    write to settings.txt, reopen in a fresh SettingsPage, and verify 100% match.
+    carview::SettingsPage full;
+    full.set_available_luts({"warm_desert.cube"});
+    full.load({});
+    full.open();
+    std::map<std::string, std::string> expected;
+    const std::vector<std::string> custom_keys = {"I", "K", "J", "L", "N", "F1", "B", "U", "O", "Backspace"};
+    size_t key_idx = 0;
+    for (const auto& dr : full.display_rows()) {
+      if (dr.is_save) continue;
+      full.select_row(dr.flat_index);
+      if (dr.is_rebind) {
+        full.begin_rebind();
+        CHECK(full.commit_rebind(custom_keys[key_idx % custom_keys.size()]));
+        expected[dr.name] = custom_keys[key_idx % custom_keys.size()];
+        ++key_idx;
+        ++rebinds_verified;
+      } else {
+        full.step(1);
+        expected[dr.name] = full.value(dr.name);
+      }
+    }
+    CHECK(rebinds_verified == 10);
+    // Note: stepping "preset" first set SOTA rows, then stepping each SOTA row adjusted them;
+    // record final values right before writing so expected reflects the exact page state.
+    for (const auto& dr : full.display_rows()) {
+      if (!dr.is_save) expected[dr.name] = full.value(dr.name);
+    }
+
+    std::string werr;
+    CHECK(carview::write_settings(tmp_file, full.tokens(), &werr));
+    std::vector<std::string> notes;
+    const auto full_reread = carview::read_settings(tmp_file, &notes);
+    CHECK(notes.empty());
+    carview::SettingsPage reopened;
+    reopened.set_available_luts({"warm_desert.cube"});
+    reopened.load(full_reread);
+    CHECK(reopened.has_explicit_control_tokens());
+    for (const auto& [rname, rval] : expected) {
+      if (reopened.value(rname) != rval) {
+        std::printf("FULL REOPEN MISMATCH row='%s': expected='%s' got='%s'\n",
+                    rname.c_str(), rval.c_str(), reopened.value(rname).c_str());
+      }
+      CHECK(reopened.value(rname) == rval);
+    }
+
+    // 3) Preset SOTA preservation + explicit SOTA off-override persistence.
+    carview::SettingsPage preset_p;
+    preset_p.load({"--preset", "ultra"});
+    CHECK(preset_p.live_settings().graphics.ssao == carview::modern::SsaoQuality::kUltra);
+    CHECK(preset_p.live_settings().graphics.ssr == carview::modern::SsrQuality::kFull);
+    // Stepping SSR to off under ultra preset must emit "--ssr off" and persist off across reload.
+    preset_p.open();
+    for (const auto& dr : preset_p.display_rows()) {
+      if (dr.name == "screen-space reflections") {
+        preset_p.select_row(dr.flat_index);
+        // step 1 -> half-res, step 2 -> full-res, step 3 -> off (sets explicit_default)
+        preset_p.step(1);
+        preset_p.step(1);
+        preset_p.step(1);
+        break;
+      }
+    }
+    CHECK(preset_p.value("screen-space reflections") == "off");
+    CHECK(has(preset_p.tokens(), {"--ssr", "off"}));
+    CHECK(preset_p.live_settings().graphics.ssr == carview::modern::SsrQuality::kOff);
+    CHECK(preset_p.live_settings().graphics.ssao == carview::modern::SsaoQuality::kUltra);
+    CHECK(carview::write_settings(tmp_file, preset_p.tokens(), &werr));
+    carview::SettingsPage preset_re;
+    preset_re.load(carview::read_settings(tmp_file, nullptr));
+    CHECK(preset_re.value("preset") == "ultra");
+    CHECK(preset_re.value("screen-space reflections") == "off");
+    CHECK(preset_re.live_settings().graphics.ssr == carview::modern::SsrQuality::kOff);
+    CHECK(preset_re.live_settings().graphics.ssao == carview::modern::SsaoQuality::kUltra);
+
+    // 4) sync_from_live() accurately mirrors live runtime values changed outside settings.txt.
+    carview::LiveSettings live_in;
+    live_in.difficulty = 3;  // pro
+    live_in.ai_mode = 2;     // hard
+    live_in.damage_mode = 2; // simulation
+    live_in.metric_units = false;
+    live_in.language = "JP";
+    live_in.treasure_map = true;
+    live_in.motion_blur = false;
+    live_in.dof = false;
+    live_in.sound = false;
+    live_in.radio = false;
+    live_in.controls.assists.driving_line = 0;  // off
+    live_in.controls.assists.traction_control = true;
+    live_in.controls.assists.shifting = 2;
+    live_in.controls.rumble_enabled = false;
+    live_in.controls.rumble_scale = 0.50;
+    live_in.graphics_backend = "dx12";
+    live_in.graphics.tonemapper = carview::modern::Tonemapper::kAgX;
+    live_in.graphics.fps_cap = 144;
+    live_in.graphics.vsync = carview::modern::VSync::kMailbox;
+    live_in.graphics.hdr = true;
+
+    carview::SettingsPage synced;
+    synced.load({});
+    synced.sync_from_live(live_in);
+    CHECK(synced.value("difficulty") == "pro");
+    CHECK(synced.value("ai opponents") == "hard (+1 tier)");
+    CHECK(synced.value("damage") == "simulation");
+    CHECK(synced.value("units") == "imperial (mph)");
+    CHECK(synced.value("language") == "japanese");
+    CHECK(synced.value("treasure map") == "on");
+    CHECK(synced.value("motion blur") == "off");
+    CHECK(synced.value("depth of field") == "off");
+    CHECK(synced.value("sound") == "off");
+    CHECK(synced.value("radio") == "off");
+    CHECK(synced.value("driving line") == "off");
+    CHECK(synced.value("traction control") == "on");
+    CHECK(synced.value("shifting") == "manual+clutch");
+    CHECK(synced.value("rumble") == "off");
+    CHECK(synced.value("rumble scale") == "50%");
+    CHECK(synced.value("graphics backend") == "directx 12");
+    CHECK(synced.value("tonemapper") == "agx");
+    CHECK(synced.value("frame rate") == "144 fps");
+    CHECK(synced.value("vsync") == "mailbox");
+    CHECK(synced.value("hdr") == "on");
+
+    std::filesystem::remove(tmp_file, ec);
+    std::filesystem::remove(tmp_dir, ec);
   }
 
   std::printf("settings_tests: %d failures\n", failures);

@@ -2,9 +2,380 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
+#include <fstream>
+#include <map>
+
+#include "settings.h"
 
 namespace carview {
+namespace {
+
+struct Kept {
+  const char* key;
+  bool value;         // takes a value
+  const char* group;  // options that set the same thing: the last one stays
+};
+
+constexpr Kept kKept[] = {
+    {"preset", true, "preset"},
+    {"size", true, "size"},
+    {"msaa", true, "msaa"},
+    {"shadows", true, "shadows"},
+    {"bloom", false, "bloom"},
+    {"no-bloom", false, "bloom"},
+    {"no-post", false, "post"},
+    {"exposure", true, "exposure"},
+    {"no-sound", false, "sound"},
+    {"no-radio", false, "radio"},
+    {"traffic", false, "traffic"},
+    {"no-traffic", false, "traffic"},
+    {"difficulty", true, "difficulty"},
+    {"no-rubberband", false, "rubberband"},
+    {"camera", true, "camera"},
+    {"camera-effects", false, "camera-effects"},
+    {"no-camera-effects", false, "camera-effects"},
+    {"rumble", false, "rumble"},
+    {"no-rumble", false, "rumble"},
+    {"rumble-scale", true, "rumble-scale"},
+    {"controller-layout", true, "controller-layout"},
+    {"steer-dz-in", true, "steer-dz-in"},
+    {"steer-dz-out", true, "steer-dz-out"},
+    {"throttle-dz-in", true, "throttle-dz-in"},
+    {"throttle-dz-out", true, "throttle-dz-out"},
+    {"brake-dz-in", true, "brake-dz-in"},
+    {"brake-dz-out", true, "brake-dz-out"},
+    {"keys", true, "keys"},
+    {"assist-braking", true, "assist-braking"},
+    {"assist-steering", true, "assist-steering"},
+    {"assist-tcs", true, "assist-tcs"},
+    {"assist-stm", true, "assist-stm"},
+    {"assist-shifting", true, "assist-shifting"},
+    {"assist-line", true, "assist-line"},
+    {"assist-rewind", true, "assist-rewind"},
+    {"damage", true, "damage"},
+    {"hour", true, "hour"},
+    {"day-length", true, "day-length"},
+    {"tod-preset", true, "tod-preset"},
+    {"collectibles", false, "collectibles"},
+    {"no-collectibles", false, "collectibles"},
+    {"play", true, "play"},
+    {"no-mods", false, "mods"},
+    {"mods", true, "mods"},
+    {"language", true, "language"},
+    {"units", true, "units"},
+    {"skip-intro-movies", false, "skip-intro-movies"},
+    {"no-skip-intro-movies", false, "skip-intro-movies"},
+    {"start-in-single-player", false, "start-in-single-player"},
+    {"no-start-in-single-player", false, "start-in-single-player"},
+    {"skip-vo-with-a", false, "skip-vo-with-a"},
+    {"no-skip-vo-with-a", false, "skip-vo-with-a"},
+    {"master-volume", true, "master-volume"},
+    {"mute", false, "mute"},
+    {"full-dynamic-range", false, "full-dynamic-range"},
+    {"no-radio-dj", false, "radio-dj"},
+    {"radio-volume", true, "radio-volume"},
+    {"mix-engine", true, "mix-engine"},
+    {"mix-other-cars", true, "mix-other-cars"},
+    {"mix-tyres", true, "mix-tyres"},
+    {"mix-wind", true, "mix-wind"},
+    {"mix-ambience", true, "mix-ambience"},
+    {"mix-music", true, "mix-music"},
+    {"mix-ui", true, "mix-ui"},
+    {"mix-vo", true, "mix-vo"},
+    {"your-music", false, "your-music"},
+    {"your-music-shuffle", false, "your-music-shuffle"},
+    {"your-music-volume", true, "your-music-volume"},
+    {"photo-through-walls", false, "photo-through-walls"},
+    {"photo-wider-limits", false, "photo-wider-limits"},
+    {"motion-blur", false, "motion-blur"},
+    {"no-motion-blur", false, "motion-blur"},
+    {"dof", false, "dof"},
+    {"no-dof", false, "dof"},
+    {"ai-mode", true, "ai-mode"},
+    {"treasure-map", false, "treasure-map"},
+    {"no-treasure-map", false, "treasure-map"},
+    {"satnav", false, "satnav"},
+    {"no-satnav", false, "satnav"},
+    // Slice 12: Racing wheels / Separate Devices / DirectInput FFB.
+    {"wheel-sat", true, "wheel-sat"},
+    {"wheel-dz", true, "wheel-dz"},
+    {"wheel-curve", true, "wheel-curve"},
+    {"wheel-pedal-dz", true, "wheel-pedal-dz"},
+    {"wheel-separate", false, "wheel-separate"},
+    {"wheel-900-linear", false, "wheel-900-linear"},
+    {"wheel-steering", true, "wheel-steering"},
+    {"wheel-throttle", true, "wheel-throttle"},
+    {"wheel-brake", true, "wheel-brake"},
+    {"wheel-clutch", true, "wheel-clutch"},
+    {"wheel-handbrake", true, "wheel-handbrake"},
+    {"wheel-buttons", true, "wheel-buttons"},
+    {"wheel-ffb-mode", true, "wheel-ffb-mode"},
+    {"wheel-ffb-strength", true, "wheel-ffb-strength"},
+    {"wheel-ffb-invert", false, "wheel-ffb-invert"},
+    {"wheel-ffb-engine-rumble", true, "wheel-ffb-engine-rumble"},
+    {"wheel-ffb-road-rumble", true, "wheel-ffb-road-rumble"},
+    {"wheel-ffb-trace", false, "wheel-ffb-trace"},
+    // Slice 12: DualSense & Gyro Tilt Steering.
+    {"ds-triggers", true, "ds-triggers"},
+    {"ds-trigger-strength", true, "ds-trigger-strength"},
+    {"ds-gear-click", false, "ds-gear-click"},
+    {"ds-lightbar", true, "ds-lightbar"},
+    {"no-ds-player-leds", false, "ds-player-leds"},
+    {"gyro-steering", false, "gyro-steering"},
+    {"gyro-sensitivity", true, "gyro-sensitivity"},
+    // Slice 12: OpenTrack Head Tracking, Camera Editor & Immersive Camera.
+    {"head-tracking", false, "head-tracking"},
+    {"no-head-tracking", false, "head-tracking"},
+    {"head-tracking-port", true, "head-tracking-port"},
+    {"head-tracking-invert", true, "head-tracking-invert"},
+    {"chase-height", true, "chase-height"},
+    {"chase-distance", true, "chase-distance"},
+    {"chase-fov", true, "chase-fov"},
+    {"chase-stiffness", true, "chase-stiffness"},
+    {"driving-view", true, "driving-view"},
+    {"immersive-camera", true, "immersive-camera"},
+    {"immersive-gforce", true, "immersive-gforce"},
+    {"immersive-lean", true, "immersive-lean"},
+    {"immersive-shake", true, "immersive-shake"},
+    {"immersive-head", true, "immersive-head"},
+    // Slice 12: UDP Telemetry Out.
+    {"telemetry-udp", false, "telemetry-udp"},
+    {"telemetry-udp-format", true, "telemetry-udp-format"},
+    {"telemetry-udp-target", true, "telemetry-udp-target"},
+    {"telemetry-udp-moving-only", false, "telemetry-udp-moving-only"},
+    {"telemetry-probe", false, "telemetry-probe"},
+    // Slice 12: F10 Trainer, Festival Pacing & Hidden Cars.
+    {"trainer-cheats", false, "trainer-cheats"},
+    {"trainer-saved-road", true, "trainer-saved-road"},
+    {"festival-pacing", false, "festival-pacing"},
+    {"pacing-prices", true, "pacing-prices"},
+    {"pacing-rewards", true, "pacing-rewards"},
+    {"hidden-cars", false, "hidden-cars"},
+    // Slice 13B: Android Touch Controls & Turnip driver selection.
+    {"touch-controls", true, "touch-controls"},
+    {"touch-steer", true, "touch-steer"},
+    {"android-gpu-driver", true, "android-gpu-driver"},
+    // Slice 13A: Modding & Save Ecosystem.
+    {"sync-folder", true, "sync-folder"},
+    {"device-name", true, "device-name"},
+    {"profile", true, "profile"},
+    {"mods-native", false, "mods-native"},
+    // Slice 11: Modern Graphics & HDR.
+    {"render-scale", true, "render-scale"},
+    {"scene-540p", false, "scene-540p"},
+    {"no-scene-540p", false, "scene-540p"},
+    {"aa", true, "aa"},
+    {"ssao", true, "ssao"},
+    {"contact-shadows", true, "contact-shadows"},
+    {"tonemapper", true, "tonemapper"},
+    {"hex-tiling", false, "hex-tiling"},
+    {"no-hex-tiling", false, "hex-tiling"},
+    {"velocity-blur", true, "velocity-blur"},
+    {"shadow-pcss", true, "shadow-pcss"},
+    {"ssr", true, "ssr"},
+    {"volumetric-fog", true, "volumetric-fog"},
+    {"car-detail", false, "car-detail"},
+    {"no-car-detail", false, "car-detail"},
+    {"lut", true, "lut"},
+    {"lut-strength", true, "lut-strength"},
+    {"vrs", false, "vrs"},
+    {"no-vrs", false, "vrs"},
+    {"texture-cap", true, "texture-cap"},
+    {"vsync", true, "vsync"},
+    {"fps-cap", true, "fps-cap"},
+    {"output", true, "output"},
+    {"sharpening", true, "sharpening"},
+    {"frame-gen", true, "frame-gen"},
+    {"hdr", false, "hdr"},
+    {"no-hdr", false, "hdr"},
+    {"auto-hdr", false, "auto-hdr"},
+    {"no-auto-hdr", false, "auto-hdr"},
+    {"hdr-paper-white", true, "hdr-paper-white"},
+    {"hdr-highlights", true, "hdr-highlights"},
+    {"hdr-peak", true, "hdr-peak"},
+    {"hdr-compare", false, "hdr-compare"},
+    {"no-hdr-compare", false, "hdr-compare"},
+    {"hud-scale", true, "hud-scale"},
+    {"safe-zone", true, "safe-zone"},
+    {"hud-16-9", false, "hud-16-9"},
+    {"no-hud-16-9", false, "hud-16-9"},
+    // Hardware Ray Tracing & Path Tracing (RT-1..RT-4).
+    {"rt", true, "rt"},
+    {"rt-bounces", true, "rt-bounces"},
+    {"rt-spp", true, "rt-spp"},
+    {"rt-denoise", false, "rt-denoise"},
+    {"no-rt-denoise", false, "rt-denoise"},
+    // Multi-backend RHI selection (auto|vulkan|metal|dx12).
+    {"graphics_backend", true, "graphics_backend"},
+    {"backend", true, "graphics_backend"},
+};
+
+const Kept* kept(const std::string& key) {
+  for (const Kept& k : kKept)
+    if (key == k.key) return &k;
+  return nullptr;
+}
+
+bool parse_strict_number(const std::string& s, double& out) {
+  if (s.empty()) return false;
+  char* end = nullptr;
+  const double v = std::strtod(s.c_str(), &end);
+  if (end == s.c_str() || *end != '\0') return false;
+  out = v;
+  return true;
+}
+
+bool token_values_equal(const std::string& a, const std::string& b) {
+  if (a == b) return true;
+  double da = 0.0, db = 0.0;
+  if (parse_strict_number(a, da) && parse_strict_number(b, db)) {
+    return std::fabs(da - db) < 1e-4;
+  }
+  return false;
+}
+
+bool is_control_or_assist_flag(const std::string& t) {
+  return t == "--keys" || t == "--camera-effects" || t == "--no-camera-effects" || t == "--rumble" ||
+         t == "--no-rumble" || t == "--rumble-scale" || t == "--controller-layout" || t == "--steer-dz-in" ||
+         t == "--steer-dz-out" || t == "--throttle-dz-in" || t == "--throttle-dz-out" || t == "--brake-dz-in" ||
+         t == "--brake-dz-out" || t == "--assist-braking" || t == "--assist-steering" || t == "--assist-tcs" ||
+         t == "--assist-stm" || t == "--assist-shifting" || t == "--assist-line" || t == "--assist-rewind";
+}
+
+struct PresetSotaDefaults {
+  modern::SsaoQuality ssao = modern::SsaoQuality::kOff;
+  modern::ContactShadows contact_shadows = modern::ContactShadows::kOff;
+  bool hex_tiling = false;
+  modern::VelocityBlur velocity_blur = modern::VelocityBlur::kOff;
+  modern::ShadowPcss shadow_pcss = modern::ShadowPcss::kOff;
+  modern::SsrQuality ssr = modern::SsrQuality::kOff;
+  modern::VolumetricFog volumetric_fog = modern::VolumetricFog::kOff;
+  bool car_detail = false;
+};
+
+bool preset_sota_defaults(const std::string& preset_raw, PresetSotaDefaults& out) {
+  std::string p = preset_raw;
+  for (char& ch : p) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+  if (p == "ultra") {
+    out = {modern::SsaoQuality::kUltra, modern::ContactShadows::kUltra, true, modern::VelocityBlur::kHigh,
+           modern::ShadowPcss::kUltra,  modern::SsrQuality::kFull,      modern::VolumetricFog::kHalf, true};
+    return true;
+  }
+  if (p == "high" || p == "quality-60" || p == "performance-120") {
+    out = {modern::SsaoQuality::kHigh, modern::ContactShadows::kHigh, true, modern::VelocityBlur::kLow,
+           modern::ShadowPcss::kHigh,  modern::SsrQuality::kHalf,     modern::VolumetricFog::kQuarter, true};
+    return true;
+  }
+  if (p == "low" || p == "low-spec-60" || p == "balanced-40") {
+    out = {modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kOff,
+           modern::ShadowPcss::kLow,  modern::SsrQuality::kOff,     modern::VolumetricFog::kOff, false};
+    return true;
+  }
+  if (p == "smooth-60" || p == "smooth_60") {
+    out = {modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kOff,
+           modern::ShadowPcss::kOff,  modern::SsrQuality::kOff,     modern::VolumetricFog::kOff, false};
+    return true;
+  }
+  if (p == "quality-30" || p == "quality_30") {
+    out = {modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kLow,
+           modern::ShadowPcss::kLow,  modern::SsrQuality::kOff,     modern::VolumetricFog::kQuarter, false};
+    return true;
+  }
+  if (p == "low-power" || p == "low_power" || p == "ultra-low-30") {
+    out = {};
+    return true;
+  }
+  return false;
+}
+
+std::vector<std::string> explicit_off_tokens_for_row(const char* name) {
+  const std::string n(name);
+  if (n == "ambient occlusion") return {"--ssao", "off"};
+  if (n == "contact shadows") return {"--contact-shadows", "off"};
+  if (n == "terrain hex-tiling") return {"--no-hex-tiling"};
+  if (n == "velocity motion blur") return {"--velocity-blur", "off"};
+  if (n == "shadow softness (pcss)") return {"--shadow-pcss", "off"};
+  if (n == "screen-space reflections") return {"--ssr", "off"};
+  if (n == "volumetric fog & beams") return {"--volumetric-fog", "off"};
+  if (n == "car clearcoat detail") return {"--no-car-detail"};
+  return {};
+}
+
+}  // namespace
+
+bool is_settings_option(const std::string& arg, bool* takes_value) {
+  if (arg.rfind("--", 0) != 0) return false;
+  const Kept* k = kept(arg.substr(2));
+  if (!k) return false;
+  if (takes_value) *takes_value = k->value;
+  return true;
+}
+
+std::vector<std::string> read_settings(const std::filesystem::path& file, std::vector<std::string>* notes) {
+  std::vector<std::string> out;
+  std::ifstream in(file);
+  if (!in) return out;
+  int n = 0;
+  for (std::string line; std::getline(in, line);) {
+    ++n;
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+    size_t s = line.find_first_not_of(" \t");
+    if (s == std::string::npos || line[s] == '#') continue;
+    line = line.substr(s);
+    if (line.rfind("--", 0) == 0) line = line.substr(2);
+    const size_t sp = line.find(' ');
+    const std::string key = line.substr(0, sp);
+    std::string value;
+    if (sp != std::string::npos) {
+      const size_t vs = line.find_first_not_of(" \t", sp);
+      if (vs != std::string::npos) value = line.substr(vs);
+    }
+    const Kept* k = kept(key);
+    if (!k) {
+      if (notes) notes->push_back(file.string() + ":" + std::to_string(n) + ": not a setting (" + key + ")");
+      continue;
+    }
+    if (k->value == value.empty()) {
+      if (notes)
+        notes->push_back(file.string() + ":" + std::to_string(n) + ": " + key +
+                         (k->value ? " needs a value" : " takes no value"));
+      continue;
+    }
+    out.push_back("--" + key);
+    if (k->value) out.push_back(value);
+  }
+  return out;
+}
+
+bool write_settings(const std::filesystem::path& file, const std::vector<std::string>& args, std::string* error) {
+  // The last option of each group, in the order first seen.
+  std::vector<std::string> order;
+  std::map<std::string, std::string> line;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (args[i].rfind("--", 0) != 0) continue;
+    const Kept* k = kept(args[i].substr(2));
+    if (!k) continue;
+    std::string l = (std::string(k->group) == "graphics_backend") ? std::string("graphics_backend") : std::string(k->key);
+    if (k->value) {
+      if (i + 1 >= args.size()) break;
+      l += " " + args[++i];
+    }
+    if (!line.count(k->group)) order.push_back(k->group);
+    line[k->group] = l;
+  }
+  std::error_code ec;
+  if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path(), ec);
+  std::ofstream out(file, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    if (error) *error = "cannot write " + file.string();
+    return false;
+  }
+  out << "# shift-engine settings: one option per line, the command line wins (carview --help)\n";
+  for (const auto& g : order) out << line[g] << "\n";
+  return bool(out);
+}
 
 std::vector<SettingsPage::Row> SettingsPage::build() {
   auto mix_row = [](const char* name, const char* flag) -> Row {
@@ -127,7 +498,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"manual", {"--assist-shifting", "1"}},
         {"manual+clutch", {"--assist-shifting", "2"}}}},
       {"driving line",
-       {{"off", {}}, {"braking", {"--assist-line", "1"}}, {"full", {"--assist-line", "2"}}}},
+       {{"full", {}}, {"braking", {"--assist-line", "1"}}, {"off", {"--assist-line", "0"}}}},
       {"rewind", {{"on", {}}, {"off", {"--assist-rewind", "0"}}}},
       {"damage",
        {{"cosmetic", {}},
@@ -472,12 +843,23 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
   keys_ = drive::KeyBindings::defaults();
   other_.clear();
   capturing_ = false;
+  dirty_ = false;
+  has_explicit_controls_ = false;
   tab_ = Tab::kDisplay;
   row_ = 0;
   bool seen_540p = false;
+  auto reset_row = [&](const char* name) {
+    for (Row& r : rows_) {
+      if (std::string(r.name) == name) {
+        r.pick = 0;
+        break;
+      }
+    }
+  };
   for (size_t i = 0; i < tokens.size(); ++i) {
     const std::string& t = tokens[i];
     const bool has_value = i + 1 < tokens.size() && tokens[i + 1].rfind("--", 0) != 0;
+    if (is_control_or_assist_flag(t)) has_explicit_controls_ = true;
     if (t == "--keys" && has_value) {
       keys_.deserialize(tokens[i + 1]);
       ++i;
@@ -506,6 +888,13 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
       }
       continue;
     }
+    if (t == "--no-scene-540p") {
+      seen_540p = false;
+      for (Row& r : rows_) {
+        if (std::string(r.name) == "render scale" && r.pick == 2) r.pick = 0;
+      }
+      continue;
+    }
     if (t == "--lut" && has_value) {
       const std::string& lut_name = tokens[i + 1];
       for (Row& r : rows_) {
@@ -527,57 +916,89 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
       continue;
     }
     bool owned = false;
-    for (Row& r : rows_)
+    bool row_takes_value = false;
+    for (Row& r : rows_) {
+      bool row_owns_flag = false;
+      bool matched_choice = false;
       for (size_t c = 0; c < r.choices.size(); ++c) {
         const auto& w = r.choices[c].tokens;
         if (w.empty() || w[0] != t) continue;
-        if (w.size() == 1 || (w.size() >= 2 && has_value && w[1] == tokens[i + 1])) {
-          if (t == "--render-scale" && has_value && tokens[i + 1] == "1" && seen_540p) r.pick = 2;
-          else if (w.size() == 3 && !(t == "--render-scale" && has_value && tokens[i + 1] == "1" && seen_540p))
+        row_owns_flag = true;
+        if (w.size() >= 2) row_takes_value = true;
+        if (w.size() == 1 || (w.size() >= 2 && has_value && token_values_equal(w[1], tokens[i + 1]))) {
+          if (t == "--render-scale" && has_value && tokens[i + 1] == "1" && seen_540p) {
+            r.pick = 2;
+            matched_choice = true;
+          } else if (w.size() == 3 && !(t == "--render-scale" && has_value && tokens[i + 1] == "1" && seen_540p)) {
             continue;
-          else r.pick = c;
+          } else {
+            r.pick = c;
+            matched_choice = true;
+          }
           owned = true;
         } else if (w.size() >= 2 && has_value) {
           owned = true;
         }
       }
-    if (!owned && (t == "--traffic" || t == "--rumble" || t == "--camera-effects" ||
-                   t == "--motion-blur" || t == "--dof" || t == "--satnav" || t == "--no-treasure-map" ||
-                   t == "--no-skip-intro-movies" || t == "--no-start-in-single-player" ||
-                   t == "--skip-vo-with-a" || t == "--no-scene-540p" || t == "--no-vrs" ||
-                   t == "--no-hdr" || t == "--no-auto-hdr" || t == "--no-hdr-compare" ||
-                   t == "--hud-16-9" || t == "--no-hex-tiling" || t == "--rt-denoise")) owned = true;
+      // Explicit default values (e.g. "--assist-line 2", "--driving-view normal",
+      // "--chase-height 0.00", "--ssr off", "--render-scale 1" without --scene-540p) reset to pick 0.
+      if (row_owns_flag && !matched_choice && row_takes_value && has_value) {
+        if (!(t == "--render-scale" && tokens[i + 1] == "1" && seen_540p)) {
+          r.pick = 0;
+          if (!explicit_off_tokens_for_row(r.name).empty()) r.explicit_default = true;
+        }
+      } else if (row_owns_flag && matched_choice) {
+        r.explicit_default = false;
+      }
+    }
+    if (!owned) {
+      struct DefaultFlag {
+        const char* flag;
+        const char* row;
+      };
+      static constexpr DefaultFlag kResetFlags[] = {
+          {"--traffic", "traffic"},
+          {"--collectibles", "collectibles"},
+          {"--rumble", "rumble"},
+          {"--camera-effects", "camera effects"},
+          {"--motion-blur", "motion blur"},
+          {"--dof", "depth of field"},
+          {"--satnav", "satnav"},
+          {"--no-treasure-map", "treasure map"},
+          {"--no-skip-intro-movies", "skip intro movies"},
+          {"--no-start-in-single-player", "start in single player"},
+          {"--skip-vo-with-a", "skip vo with a"},
+          {"--no-vrs", "vrs shading"},
+          {"--no-hdr", "hdr"},
+          {"--no-auto-hdr", "windows auto-hdr"},
+          {"--no-hdr-compare", "hdr compare"},
+          {"--hud-16-9", "hud 16:9 lock"},
+          {"--no-hex-tiling", "terrain hex-tiling"},
+          {"--no-car-detail", "car clearcoat detail"},
+          {"--rt-denoise", "rt denoiser"},
+          {"--no-head-tracking", "head tracking (opentrack)"},
+      };
+      for (const auto& rf : kResetFlags) {
+        if (t == rf.flag) {
+          reset_row(rf.row);
+          if (!explicit_off_tokens_for_row(rf.row).empty()) {
+            for (Row& r : rows_) {
+              if (std::string(r.name) == rf.row) {
+                r.explicit_default = true;
+                break;
+              }
+            }
+          }
+          owned = true;
+          break;
+        }
+      }
+    }
+    bool opt_takes_value = false;
+    is_settings_option(t, &opt_takes_value);
     const bool takes_value =
-        has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" || t == "--ai-mode" || t == "--camera" ||
-                      t == "--size" || t == "--msaa" || t == "--exposure" || t == "--hour" || t == "--play" ||
-                      t == "--mods" || t == "--language" || t == "--rumble-scale" || t == "--controller-layout" ||
-                      t == "--steer-dz-in" || t == "--steer-dz-out" || t == "--throttle-dz-in" ||
-                      t == "--throttle-dz-out" || t == "--brake-dz-in" || t == "--brake-dz-out" ||
-                      t == "--assist-braking" || t == "--assist-steering" || t == "--assist-tcs" ||
-                      t == "--assist-stm" || t == "--assist-shifting" || t == "--assist-line" ||
-                      t == "--assist-rewind" || t == "--master-volume" || t == "--radio-volume" ||
-                      t == "--mix-engine" || t == "--mix-other-cars" || t == "--mix-tyres" || t == "--mix-wind" ||
-                      t == "--mix-ambience" || t == "--mix-music" || t == "--mix-ui" || t == "--mix-vo" ||
-                      t == "--your-music-volume" || t == "--day-length" || t == "--tod-preset" ||
-                      t == "--wheel-sat" || t == "--wheel-dz" || t == "--wheel-curve" || t == "--wheel-pedal-dz" ||
-                      t == "--wheel-steering" || t == "--wheel-throttle" || t == "--wheel-brake" ||
-                      t == "--wheel-clutch" || t == "--wheel-handbrake" || t == "--wheel-buttons" ||
-                      t == "--wheel-ffb-mode" || t == "--wheel-ffb-strength" || t == "--wheel-ffb-engine-rumble" ||
-                      t == "--wheel-ffb-road-rumble" || t == "--ds-triggers" || t == "--ds-trigger-strength" ||
-                      t == "--ds-lightbar" || t == "--gyro-sensitivity" || t == "--head-tracking-port" ||
-                      t == "--head-tracking-invert" || t == "--chase-height" || t == "--chase-distance" ||
-                      t == "--chase-fov" || t == "--chase-stiffness" || t == "--driving-view" ||
-                      t == "--immersive-camera" || t == "--immersive-gforce" || t == "--immersive-lean" ||
-                      t == "--immersive-shake" || t == "--immersive-head" || t == "--telemetry-udp-format" ||
-                      t == "--telemetry-udp-target" || t == "--trainer-saved-road" || t == "--pacing-prices" ||
-                      t == "--pacing-rewards" ||
-                      t == "--render-scale" || t == "--aa" || t == "--ssao" || t == "--contact-shadows" ||
-                      t == "--tonemapper" || t == "--velocity-blur" || t == "--lut" ||
-                      t == "--lut-strength" || t == "--texture-cap" || t == "--vsync" || t == "--fps-cap" ||
-                      t == "--output" || t == "--sharpening" || t == "--frame-gen" || t == "--hdr-paper-white" ||
-                      t == "--hdr-highlights" || t == "--hdr-peak" || t == "--hud-scale" || t == "--safe-zone" ||
-                      t == "--rt" || t == "--rt-bounces" || t == "--rt-spp" || t == "--units" ||
-                      t == "--backend" || t == "--graphics_backend");
+        has_value && (row_takes_value || opt_takes_value || t == "--size" || t == "--msaa" || t == "--exposure" ||
+                      t == "--hour" || t == "--play" || t == "--mods");
     if (!owned) {
       other_.push_back(t);
       if (takes_value) other_.push_back(tokens[i + 1]);
@@ -640,6 +1061,7 @@ std::vector<int> SettingsPage::tab_flat_indices(Tab t) const {
 void SettingsPage::open() {
   open_ = true;
   capturing_ = false;
+  dirty_ = false;
   tab_ = Tab::kDisplay;
   const auto indices = tab_flat_indices(tab_);
   row_ = indices.empty() ? 0 : indices.front();
@@ -666,6 +1088,56 @@ void SettingsPage::step(int by) {
   Row& r = rows_[size_t(row_)];
   const int n = int(r.choices.size());
   r.pick = size_t(((int(r.pick) + by) % n + n) % n);
+  r.explicit_default = (r.pick == 0 && !explicit_off_tokens_for_row(r.name).empty());
+  if (std::string(r.name) == "preset") {
+    const auto& pt = r.choices[r.pick].tokens;
+    PresetSotaDefaults pdef;
+    if (pt.size() == 2 && preset_sota_defaults(pt[1], pdef)) {
+      auto apply_sota_pick = [&](const char* rname, const std::string& val, bool is_flag_on) {
+        for (Row& sr : rows_) {
+          if (std::string(sr.name) != rname) continue;
+          sr.explicit_default = false;
+          if (!val.empty()) {
+            for (size_t c = 0; c < sr.choices.size(); ++c) {
+              if (sr.choices[c].tokens.size() >= 2 && sr.choices[c].tokens[1] == val) {
+                sr.pick = c;
+                return;
+              }
+            }
+          }
+          sr.pick = is_flag_on && sr.choices.size() > 1 ? 1 : 0;
+          return;
+        }
+      };
+      const char* ssao_s = pdef.ssao == modern::SsaoQuality::kLow ? "low"
+                           : pdef.ssao == modern::SsaoQuality::kMedium ? "medium"
+                           : pdef.ssao == modern::SsaoQuality::kHigh ? "high"
+                           : pdef.ssao == modern::SsaoQuality::kUltra ? "ultra"
+                                                                      : "";
+      apply_sota_pick("ambient occlusion", ssao_s, false);
+      apply_sota_pick("contact shadows",
+                      pdef.contact_shadows == modern::ContactShadows::kOff
+                          ? ""
+                          : modern::contact_shadows_name(pdef.contact_shadows),
+                      false);
+      apply_sota_pick("terrain hex-tiling", "", pdef.hex_tiling);
+      apply_sota_pick("velocity motion blur",
+                      pdef.velocity_blur == modern::VelocityBlur::kOff ? "" : modern::velocity_blur_name(pdef.velocity_blur),
+                      false);
+      apply_sota_pick("shadow softness (pcss)",
+                      pdef.shadow_pcss == modern::ShadowPcss::kOff ? "" : modern::shadow_pcss_name(pdef.shadow_pcss),
+                      false);
+      apply_sota_pick("screen-space reflections",
+                      pdef.ssr == modern::SsrQuality::kOff ? "" : modern::ssr_name(pdef.ssr), false);
+      apply_sota_pick("volumetric fog & beams",
+                      pdef.volumetric_fog == modern::VolumetricFog::kOff
+                          ? ""
+                          : modern::volumetric_fog_name(pdef.volumetric_fog),
+                      false);
+      apply_sota_pick("car clearcoat detail", "", pdef.car_detail);
+    }
+  }
+  dirty_ = true;
 }
 
 int SettingsPage::selected_in_tab() const {
@@ -735,6 +1207,7 @@ bool SettingsPage::commit_rebind(const std::string& key_name) {
   const auto& rb = rebinds_[size_t(row_) - rows_.size()];
   keys_.set_primary(rb.action, key_name);
   capturing_ = false;
+  dirty_ = true;
   return true;
 }
 
@@ -742,7 +1215,12 @@ std::vector<std::string> SettingsPage::tokens() const {
   std::vector<std::string> out = other_;
   for (const Row& r : rows_) {
     const auto& w = r.choices[r.pick].tokens;
-    out.insert(out.end(), w.begin(), w.end());
+    if (!w.empty()) {
+      out.insert(out.end(), w.begin(), w.end());
+    } else if (r.explicit_default) {
+      const auto off_toks = explicit_off_tokens_for_row(r.name);
+      out.insert(out.end(), off_toks.begin(), off_toks.end());
+    }
   }
   const std::string def_kb = drive::KeyBindings::defaults().serialize();
   const std::string cur_kb = keys_.serialize();
@@ -887,9 +1365,24 @@ LiveSettings SettingsPage::live_settings() const {
     const std::string gb = pick_val("graphics backend");
     ls.graphics_backend = gb.empty() ? "auto" : gb;
   }
+  ls.preset = pick_val("preset");
+  ls.shadows = pick_val("shadows");
+  {
+    const std::string bl = pick_label("bloom");
+    if (bl == "on") ls.bloom_mode = 1;
+    else if (bl == "off") ls.bloom_mode = 0;
+    else ls.bloom_mode = -1;
+  }
+  ls.traffic = pick_label("traffic") != "off";
+  ls.collectibles = pick_label("collectibles") != "off";
+
   // Apply fine-grained overrides written by Camera Editor / Trainer overlays in settings.txt.
   {
     const std::vector<std::string> toks = tokens();
+    // Apply preset SOTA graphics defaults first so explicit overrides win without
+    // losing preset defaults when an unrelated setting is toggled live.
+    bool ssao_explicit = false, sscs_explicit = false, hex_explicit = false, vel_explicit = false;
+    bool pcss_explicit = false, ssr_explicit = false, vol_explicit = false, detail_explicit = false;
     for (size_t i = 0; i < toks.size(); ++i) {
       const std::string& t = toks[i];
       auto next_v = [&]() -> std::string { return (i + 1 < toks.size()) ? toks[++i] : std::string{}; };
@@ -919,12 +1412,307 @@ LiveSettings SettingsPage::live_settings() const {
       } else if (t == "--trainer-saved-road") {
         ls.trainer_saved_road = drive::parse_road_point(next_v());
       } else {
+        if (t == "--ssao") ssao_explicit = true;
+        else if (t == "--contact-shadows") sscs_explicit = true;
+        else if (t == "--hex-tiling" || t == "--no-hex-tiling") hex_explicit = true;
+        else if (t == "--velocity-blur") vel_explicit = true;
+        else if (t == "--shadow-pcss") pcss_explicit = true;
+        else if (t == "--ssr") ssr_explicit = true;
+        else if (t == "--volumetric-fog") vol_explicit = true;
+        else if (t == "--car-detail" || t == "--no-car-detail") detail_explicit = true;
         modern::apply_graphics_option(ls.graphics, toks, i);
       }
+    }
+    PresetSotaDefaults pdef;
+    if (!ls.preset.empty() && preset_sota_defaults(ls.preset, pdef)) {
+      if (!ssao_explicit) ls.graphics.ssao = pdef.ssao;
+      if (!sscs_explicit) ls.graphics.contact_shadows = pdef.contact_shadows;
+      if (!hex_explicit) ls.graphics.hex_tiling = pdef.hex_tiling;
+      if (!vel_explicit) ls.graphics.velocity_blur = pdef.velocity_blur;
+      if (!pcss_explicit) ls.graphics.shadow_pcss = pdef.shadow_pcss;
+      if (!ssr_explicit) ls.graphics.ssr = pdef.ssr;
+      if (!vol_explicit) ls.graphics.volumetric_fog = pdef.volumetric_fog;
+      if (!detail_explicit) ls.graphics.car_detail = pdef.car_detail;
     }
     ls.graphics = modern::clamp_graphics(ls.graphics);
   }
   return ls;
+}
+
+void SettingsPage::sync_from_live(const LiveSettings& live) {
+  auto set_by_label = [&](const char* name, const std::string& label) {
+    for (Row& r : rows_) {
+      if (std::string(r.name) != name) continue;
+      for (size_t c = 0; c < r.choices.size(); ++c) {
+        if (r.choices[c].label == label) {
+          r.pick = c;
+          return;
+        }
+      }
+      return;
+    }
+  };
+  auto set_by_val = [&](const char* name, const std::string& val) {
+    for (Row& r : rows_) {
+      if (std::string(r.name) != name) continue;
+      if (val.empty()) {
+        r.pick = 0;
+        return;
+      }
+      for (size_t c = 0; c < r.choices.size(); ++c) {
+        const auto& w = r.choices[c].tokens;
+        if (w.size() >= 2 && token_values_equal(w[1], val)) {
+          r.pick = c;
+          return;
+        }
+      }
+      r.pick = 0;
+      return;
+    }
+  };
+  auto set_by_num = [&](const char* name, double val, double default_val) {
+    for (Row& r : rows_) {
+      if (std::string(r.name) != name) continue;
+      if (std::fabs(val - default_val) < 1e-4) {
+        r.pick = 0;
+        return;
+      }
+      for (size_t c = 1; c < r.choices.size(); ++c) {
+        const auto& w = r.choices[c].tokens;
+        double cv = 0.0;
+        if (w.size() >= 2 && parse_strict_number(w[1], cv) && std::fabs(cv - val) < 1e-4) {
+          r.pick = c;
+          return;
+        }
+      }
+      return;
+    }
+  };
+
+  if (live.camera_mode >= 0 && live.camera_mode < drive::kCameraModes) {
+    set_by_val("camera", std::to_string(live.camera_mode));
+  }
+  if (live.difficulty >= 0 && live.difficulty <= 4) {
+    static constexpr const char* kDiff[5] = {"easy", "med", "hard", "pro", "hard+"};
+    set_by_val("difficulty", kDiff[live.difficulty]);
+  }
+  set_by_val("ai opponents", live.ai_mode == 1 ? "fair" : live.ai_mode == 2 ? "hard" : "");
+  if (live.ai_mode == 0 && live.difficulty != 4) {
+    set_by_label("rubber-banding", live.rubberband ? "on" : "off");
+  }
+  set_by_label("traffic", live.traffic ? "on" : "off");
+  set_by_label("collectibles", live.collectibles ? "on" : "off");
+  set_by_label("radio", live.radio ? "on" : "off");
+  set_by_label("sound", live.sound ? "on" : "off");
+  set_by_label("satnav", live.satnav ? "on" : "off");
+  set_by_label("treasure map", live.treasure_map ? "on" : "off");
+  set_by_label("motion blur", live.motion_blur ? "on" : "off");
+  set_by_label("depth of field", live.dof ? "on" : "off");
+  set_by_label("skip intro movies", live.skip_intro_movies ? "on" : "off");
+  set_by_label("start in single player", live.start_in_single_player ? "on" : "off");
+  set_by_label("skip vo with a", live.skip_vo_with_a ? "on" : "off");
+  set_by_val("units", live.metric_units ? "" : "imperial");
+  set_by_val("language", (live.language.empty() || live.language == "EN") ? "" : live.language);
+  set_by_val("damage", live.damage_mode == 0 ? "none" : live.damage_mode == 2 ? "simulation" : "");
+  set_by_label("photo camera through walls", live.photo_through_walls ? "on" : "off");
+  set_by_label("wider photo limits", live.photo_wider_limits ? "on" : "off");
+
+  if (std::fabs(live.day_length_scale - 2.0) < 1e-3) set_by_val("day length", "15m");
+  else if (std::fabs(live.day_length_scale - 0.5) < 1e-3) set_by_val("day length", "60m");
+  else if (live.day_length_scale <= 1e-6) set_by_val("day length", "frozen");
+  else if (std::fabs(live.day_length_scale - (1827.9 / 86400.0)) < 1e-3) set_by_val("day length", "realtime");
+  else set_by_val("day length", "");
+
+  if (live.tod_preset_hour >= 0.0) set_by_num("time of day", live.tod_preset_hour, -1.0);
+
+  const auto& c = live.controls;
+  set_by_label("camera effects", c.camera_effects ? "on" : "off");
+  set_by_label("rumble", c.rumble_enabled ? "on" : "off");
+  set_by_num("rumble scale", c.rumble_scale, 1.0);
+  set_by_val("controller layout", c.layout_id == 0 ? "" : std::to_string(c.layout_id));
+  set_by_num("steer deadzone in", c.deadzones.steering_inside, 0.24);
+  set_by_num("steer deadzone out", c.deadzones.steering_outside, 0.95);
+  set_by_num("throttle deadzone in", c.deadzones.throttle_inside, 0.15);
+  set_by_num("throttle deadzone out", c.deadzones.throttle_outside, 0.90);
+  set_by_num("brake deadzone in", c.deadzones.brake_inside, 0.15);
+  set_by_num("brake deadzone out", c.deadzones.brake_outside, 0.95);
+  keys_ = c.keys;
+
+  set_by_val("braking", c.assists.braking == 1 ? "" : std::to_string(c.assists.braking));
+  set_by_val("steering", c.assists.steering == 1 ? "" : std::to_string(c.assists.steering));
+  set_by_label("traction control", c.assists.traction_control ? "on" : "off");
+  set_by_label("stability control", c.assists.stability_control ? "on" : "off");
+  set_by_val("shifting", c.assists.shifting == 0 ? "" : std::to_string(c.assists.shifting));
+  set_by_val("driving line", c.assists.driving_line == 2 ? "" : std::to_string(c.assists.driving_line));
+  set_by_label("rewind", c.assists.rewind ? "on" : "off");
+
+  if (!live.preset.empty()) set_by_val("preset", live.preset);
+  if (!live.shadows.empty()) set_by_val("shadows", live.shadows);
+  if (live.bloom_mode == 1) set_by_label("bloom", "on");
+  else if (live.bloom_mode == 0) set_by_label("bloom", "off");
+
+  set_by_val("graphics backend", (live.graphics_backend.empty() || live.graphics_backend == "auto") ? "" : live.graphics_backend);
+
+  // Slice 12 live state.
+  set_by_val("camera editor", live.camera_editor.driving_view == drive::DrivingView::kWheel
+                                  ? "wheel"
+                                  : (live.camera_editor.driving_view == drive::DrivingView::kReplay ? "replay" : ""));
+  set_by_num("chase height", live.camera_editor.chase_height_m, 0.0);
+  set_by_num("chase distance", live.camera_editor.chase_distance_m, 0.0);
+  set_by_num("chase fov", live.camera_editor.chase_fov_scale, 1.0);
+  set_by_num("chase stiffness", live.camera_editor.chase_stiffness, 1.0);
+  {
+    const auto ip = live.immersive_camera.detect_preset();
+    const char* iv = "";
+    if (ip == drive::ImmersivePreset::kSubtle) iv = "subtle";
+    else if (ip == drive::ImmersivePreset::kDefault) iv = "default";
+    else if (ip == drive::ImmersivePreset::kStrong) iv = "strong";
+    set_by_val("immersive camera", iv);
+  }
+  set_by_label("head tracking (opentrack)", live.head_tracking.enabled ? "on (udp 4242)" : "off");
+  set_by_num("wheel steering saturation", double(live.wheel_shaping.steering_saturation), 100.0);
+  set_by_label("wheel separate devices", live.wheel_separate_devices ? "on (multi-usb)" : "off");
+  set_by_label("wheel 900 deg linear", live.wheel_900_linear ? "on" : "off");
+  set_by_val("wheel force feedback", live.wheel_ffb.mode == drive::WheelFfbMode::kRumbleOnly
+                                         ? "rumble"
+                                         : (live.wheel_ffb.mode == drive::WheelFfbMode::kFull ? "full" : ""));
+  set_by_num("wheel ffb strength", double(live.wheel_ffb.strength_percent), 50.0);
+  set_by_label("wheel ffb invert", live.wheel_ffb.invert ? "on" : "off");
+  set_by_val("dualsense adaptive triggers",
+             live.dualsense.trigger_mode == drive::dualsense::TriggerMode::kBrake
+                 ? "brake"
+                 : (live.dualsense.trigger_mode == drive::dualsense::TriggerMode::kFull ? "full" : ""));
+  set_by_num("dualsense trigger strength", double(live.dualsense.trigger_strength_pct), 100.0);
+  set_by_label("dualsense gear click", live.dualsense.gear_click ? "on" : "off");
+  set_by_val("dualsense lightbar",
+             live.dualsense.lightbar_mode == drive::dualsense::LightbarMode::kRpm
+                 ? "rpm"
+                 : (live.dualsense.lightbar_mode == drive::dualsense::LightbarMode::kOff ? "off" : ""));
+  set_by_label("gyro tilt steering", live.dualsense.gyro_steering ? "on" : "off");
+  set_by_label("telemetry out (udp)", live.telemetry_udp.enabled ? "on (127.0.0.1:5300)" : "off");
+  set_by_val("telemetry format",
+             live.telemetry_udp.format == drive::telemetry::Format::kFh4Horizon ? "horizon" : "");
+  set_by_label("telemetry moving only", live.telemetry_udp.moving_only ? "on" : "off");
+  set_by_label("f10 trainer (cheats)", live.trainer_cheats ? "on (user-modded)" : "off");
+  set_by_label("festival pacing", live.festival_pacing.enabled ? "on (user-modded)" : "off");
+  set_by_num("pacing prices", live.festival_pacing.price_multiplier, 0.5);
+  set_by_num("pacing rewards", live.festival_pacing.reward_multiplier, 2.0);
+  set_by_label("hidden cars (autoshow)", live.hidden_cars ? "unlocked (4 cars)" : "off");
+
+  // Modern graphics settings.
+  const auto& g = live.graphics;
+  if (g.base_540p && g.scale == 1) set_by_label("render scale", "540p 1x");
+  else if (g.scale == 1) set_by_label("render scale", "1x (720p)");
+  else set_by_val("render scale", std::to_string(g.scale));
+
+  {
+    const char* up = "";
+    switch (g.upscaler) {
+      case modern::Upscaler::kCas: up = "cas"; break;
+      case modern::Upscaler::kFsr1: up = "fsr1"; break;
+      case modern::Upscaler::kFsr2: up = "fsr2"; break;
+      case modern::Upscaler::kFsr3: up = "fsr3"; break;
+      case modern::Upscaler::kDlss: up = "dlss"; break;
+      default: break;
+    }
+    set_by_val("output scaling", up);
+  }
+  set_by_num("sharpening", double(g.sharpening), 50.0);
+  set_by_val("anti-aliasing", g.aa == modern::AaMode::kFxaaWorld
+                                  ? "fxaa"
+                                  : (g.aa == modern::AaMode::kFxaaAll ? "fxaa-hud" : ""));
+  set_by_val("tonemapper",
+             g.tonemapper == modern::Tonemapper::kHable ? "" : modern::tonemapper_name(g.tonemapper));
+
+  // Only pin SOTA rows when no preset owns them or when they differ from the active preset defaults.
+  PresetSotaDefaults pdef;
+  const bool has_preset = !live.preset.empty() && preset_sota_defaults(live.preset, pdef);
+  if (!has_preset || g.ssao != pdef.ssao) {
+    const char* sv = "";
+    switch (g.ssao) {
+      case modern::SsaoQuality::kLow: sv = "low"; break;
+      case modern::SsaoQuality::kMedium: sv = "medium"; break;
+      case modern::SsaoQuality::kHigh: sv = "high"; break;
+      case modern::SsaoQuality::kUltra: sv = "ultra"; break;
+      default: break;
+    }
+    set_by_val("ambient occlusion", sv);
+  }
+  if (!has_preset || g.contact_shadows != pdef.contact_shadows) {
+    set_by_val("contact shadows", g.contact_shadows == modern::ContactShadows::kOff
+                                      ? ""
+                                      : modern::contact_shadows_name(g.contact_shadows));
+  }
+  if (!has_preset || g.hex_tiling != pdef.hex_tiling) {
+    set_by_label("terrain hex-tiling", g.hex_tiling ? "on" : "off");
+  }
+  if (!has_preset || g.velocity_blur != pdef.velocity_blur) {
+    set_by_val("velocity motion blur", g.velocity_blur == modern::VelocityBlur::kOff
+                                           ? ""
+                                           : modern::velocity_blur_name(g.velocity_blur));
+  }
+  if (!has_preset || g.shadow_pcss != pdef.shadow_pcss) {
+    set_by_val("shadow softness (pcss)",
+               g.shadow_pcss == modern::ShadowPcss::kOff ? "" : modern::shadow_pcss_name(g.shadow_pcss));
+  }
+  if (!has_preset || g.ssr != pdef.ssr) {
+    set_by_val("screen-space reflections", g.ssr == modern::SsrQuality::kOff ? "" : modern::ssr_name(g.ssr));
+  }
+  if (!has_preset || g.volumetric_fog != pdef.volumetric_fog) {
+    set_by_val("volumetric fog & beams", g.volumetric_fog == modern::VolumetricFog::kOff
+                                             ? ""
+                                             : modern::volumetric_fog_name(g.volumetric_fog));
+  }
+  if (!has_preset || g.car_detail != pdef.car_detail) {
+    set_by_label("car clearcoat detail", g.car_detail ? "on" : "off");
+  }
+
+  set_by_val("ray tracing", g.rt_mode == rt::RtMode::kOff ? "" : rt::rt_mode_name(g.rt_mode));
+  set_by_num("rt bounces", double(g.rt_bounces), 2.0);
+  set_by_num("rt samples", double(g.rt_spp), 1.0);
+  set_by_label("rt denoiser", g.rt_denoise ? "on (svgf)" : "off");
+
+  if (!g.lut.empty()) {
+    for (Row& r : rows_) {
+      if (std::string(r.name) != "colour lut") continue;
+      bool matched = false;
+      for (size_t idx = 0; idx < r.choices.size(); ++idx) {
+        if (r.choices[idx].tokens.size() == 2 && r.choices[idx].tokens[1] == g.lut) {
+          r.pick = idx;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        r.choices.push_back({g.lut, {"--lut", g.lut}});
+        r.pick = r.choices.size() - 1;
+      }
+      break;
+    }
+  } else {
+    set_by_label("colour lut", "none");
+  }
+  set_by_num("lut strength", double(g.lut_strength), 100.0);
+  set_by_label("vrs shading", g.vrs ? "on" : "off");
+  set_by_val("texture size", g.texture_cap == modern::TextureCap::kFull ? "" : std::to_string(int(g.texture_cap)));
+  set_by_val("vsync", g.vsync == modern::VSync::kMailbox
+                          ? "mailbox"
+                          : (g.vsync == modern::VSync::kImmediate ? "immediate" : ""));
+  if (g.fps_cap == 0) set_by_val("frame rate", "display");
+  else if (g.fps_cap == 60) set_by_val("frame rate", "");
+  else set_by_val("frame rate", std::to_string(g.fps_cap));
+  set_by_val("frame gen", g.frame_gen == modern::FrameGen::kFsr3
+                              ? "fsr3"
+                              : (g.frame_gen == modern::FrameGen::kDlss ? "dlss" : ""));
+  set_by_label("hdr", g.hdr ? "on" : "off");
+  set_by_label("windows auto-hdr", g.auto_hdr ? "on" : "off");
+  set_by_num("hdr paper white", double(g.paper_white), 203.0);
+  set_by_num("hdr highlights", double(g.hdr_highlights), 50.0);
+  set_by_num("hdr peak", double(g.peak_nits), 1000.0);
+  set_by_label("hdr compare", g.hdr_compare ? "on" : "off");
+  set_by_label("hud 16:9 lock", g.hud_lock_16_9 ? "on" : "off");
+  set_by_num("hud scale", double(g.hud_scale), 100.0);
+  set_by_num("safe zone", double(g.safe_zone), 0.0);
 }
 
 void SettingsPage::fill(std::string& title, std::vector<std::string>& lines, int& selected) const {

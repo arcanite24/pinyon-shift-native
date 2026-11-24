@@ -33,4 +33,8 @@ std::vector<std::string> read_settings(const std::filesystem::path& file, std::v
 // the last of each kept: --save-settings.
 bool write_settings(const std::filesystem::path& file, const std::vector<std::string>& args, std::string* error);
 
+// Returns true when `arg` (with leading "--") is a recognized settings.txt
+// option. When non-null, `takes_value` is set to true if it consumes a value.
+bool is_settings_option(const std::string& arg, bool* takes_value = nullptr);
+
 }  // namespace carview
