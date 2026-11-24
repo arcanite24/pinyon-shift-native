@@ -56,8 +56,12 @@ struct PlayConfig {
   std::filesystem::path game_root;
   std::filesystem::path state_root;
   int baked_car_count = 0;
+  int disc_car_count = 0;
+  bool game_root_valid = false;
   bool has_colorado_index = false;
   bool has_sound_dir = false;
+
+  bool is_ready() const { return game_root_valid || baked_car_count > 0; }
 };
 bool read_play_config(const std::filesystem::path& play_dir, PlayConfig& out);
 bool write_play_config(const std::filesystem::path& play_dir, const std::filesystem::path& game_root,
@@ -80,7 +84,7 @@ struct DiscVerification {
   std::string iso_format;              // "XISO", "XGD3", "XGD2", "XGD1" when looks_like_iso
   int iso_file_count = 0;              // files to extract from ISO (media/ tree)
   uint64_t iso_extract_bytes = 0;      // total bytes to extract from ISO
-  uint64_t required_space_bytes = 0;   // free space required for extraction + bake
+  uint64_t required_space_bytes = 0;   // free space required for extraction + caches
   std::filesystem::path resolved_root;
   int car_archive_count = 0;
   uint64_t free_space_bytes = 0;
@@ -136,8 +140,8 @@ struct SetupProgress {
   bool running = false;
   bool finished = false;
   bool success = false;
-  int stage_index = 0;   // 0..4
-  int stage_count = 4;
+  int stage_index = 0;   // 0..3
+  int stage_count = 2;
   float fraction = 0.0f; // 0..1
   std::string stage_label;
   std::string error_text;
@@ -159,15 +163,11 @@ class SetupRunner {
   void append_log(const std::string& line);
   void set_stage(int idx, const std::string& label, float frac);
   int run_subprocess_logged(const std::vector<std::string>& args);
-  bool launch_background_process(const std::vector<std::string>& args);
-  void stop_background_process();
 
   mutable std::mutex mu_;
   SetupProgress state_;
   std::atomic<bool> cancel_{false};
   std::thread worker_;
-  std::mutex bg_mu_;
-  std::vector<intptr_t> bg_procs_;  // Windows HANDLEs or POSIX pid_ts for background bake/soundbake
 };
 
 // ---- 3. Hardware Detection & Preset Recommendation -------------------------
