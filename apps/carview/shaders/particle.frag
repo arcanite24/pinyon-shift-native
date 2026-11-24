@@ -140,12 +140,19 @@ void main() {
   }
 
   vec4 tex = texture(particle_atlas, v_uv);
-  float alpha = tex.a * v_color.a;
   uint flags = uint(v_extra.z + 0.5);
   bool dynamic_light = (flags & 2u) != 0u;
   bool additive = (flags & 4u) != 0u;
+  float alpha = tex.a * v_color.a;
   if (additive) {
     alpha = max(tex.a, dot(tex.rgb, vec3(0.3333))) * v_color.a;
+  } else if (v_color.a < 0.95) {
+    // Soften radial alpha falloff on translucent smoke/dust plumes (e.g. BI_Dust_Small / tyre smoke)
+    // so stacked burst billboards stay wispy instead of forming sharp opaque cotton-ball edges,
+    // while leaving opaque cutout debris (leaves/splinters with v_color.a == 1) crisp.
+    float soft_tex_a = pow(clamp(tex.a, 0.0, 1.0), 1.45);
+    float stack_atten = dynamic_light ? 0.90 : 0.68;
+    alpha = soft_tex_a * v_color.a * stack_atten;
   }
   if (alpha <= 0.004) discard;
 
@@ -166,21 +173,30 @@ void main() {
   }
   if (alpha <= 0.003) discard;
 
-  vec3 col = tex.rgb * v_color.rgb;
-  if (dynamic_light && !additive) {
+  // Linearize XML sRGB particle vertex colour tint so non-additive dust/smoke/debris albedos
+  // match the linear HDR world lighting pipeline (particle_atlas is already SRGB-decoded).
+  vec3 tint_lin = additive ? v_color.rgb : pow(max(v_color.rgb, vec3(0.0)), vec3(2.2));
+  vec3 col = tex.rgb * tint_lin;
+  if (!additive) {
+    // All non-additive particles (including FH1 dynamic_lighting=0 dust puffs like BI_Dust_Small)
+    // receive ToD hemisphere + sun illumination, exposure, and atmospheric fog so dusk/night
+    // wreckage puffs never glow pure unlit white.
     vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : vec3(0.9695, 0.8358, 0.5840);
     vec3 sky_col = frame.sun_color.w >= 0.0 ? frame.sky_color.rgb : vec3(0.1687, 0.2229, 0.2746);
     vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : vec3(0.1788, 0.1729, 0.1024);
     float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
 
-    float sh = mix(1.0, particle_shadow(v_world_pos), shadow_scale * clamp(v_light.w, 0.0, 1.0));
-    float amb_w = clamp(v_light.x * 0.25 + 0.15, 0.05, 1.0);
-    float sun_w = clamp(v_light.y * 0.42, 0.25, 1.25);
-    float sky_w = clamp(v_light.z * 0.45, 0.25, 1.35);
+    float sh = dynamic_light
+                   ? mix(1.0, particle_shadow(v_world_pos), shadow_scale * clamp(v_light.w, 0.0, 1.0))
+                   : 1.0;
+    float amb_w = clamp(v_light.x * 0.25 + 0.12, 0.06, 0.85);
+    float sun_w = clamp(v_light.y * 0.36, 0.12, 1.05);
+    float sky_w = clamp(v_light.z * 0.38, 0.12, 1.10);
 
-    vec3 lit = (sky_col * 0.65 + gnd_col * 0.35) * (sky_w + amb_w) + sun_col * (sun_w * sh);
+    vec3 lit = (sky_col * 0.62 + gnd_col * 0.38) * (sky_w + amb_w) + sun_col * (sun_w * sh);
 
-    // Night headlight beam illumination scaled by HeadLightPower.
+    // Night headlight beam illumination scaled by HeadLightPower, softly shoulder-compressed
+    // so close impact puffs inside the headlight cones never blow out to solid white.
     int n_beams = int(headlights.count_night.x + 0.5);
     float night_s = headlights.count_night.y;
     float hl_pow = v_extra.y;
@@ -198,9 +214,10 @@ void main() {
         if (luv.x < 0.0 || luv.x > 1.0 || luv.y < 0.0 || luv.y > 1.0) continue;
         float cookie = texture(headlight_cookie, luv).r;
         float att = pow(clamp(1.0 - dist / range, 0.0, 1.0), 1.8);
-        hl_acc += headlights.beams[i].color.rgb * (cookie * att * headlights.beams[i].dir_power.w * 0.85);
+        hl_acc += headlights.beams[i].color.rgb * (cookie * att * headlights.beams[i].dir_power.w * 0.45);
       }
-      lit += hl_acc * (night_s * hl_pow);
+      vec3 hl_scaled = hl_acc * (night_s * clamp(hl_pow, 0.0, 1.5));
+      lit += hl_scaled / (vec3(1.0) + hl_scaled * 1.15);
     }
     col *= lit * push_c.sun_dir.w;
 
@@ -211,7 +228,7 @@ void main() {
       float fog_amt = clamp(1.0 - exp2(-max(eye_dist - fog_start, 0.0) * fog_dens), 0.0, 0.85);
       col = mix(col, frame.fog_color.rgb, fog_amt);
     }
-  } else if (additive) {
+  } else {
     col *= push_c.sun_dir.w * 2.2;
   }
 

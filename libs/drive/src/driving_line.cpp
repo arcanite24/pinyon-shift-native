@@ -260,21 +260,43 @@ void build_driving_line_mesh(const std::vector<DrivingLineSample>& samples, doub
   if (samples.size() < 2) return;
   const float hw = float(std::max(0.05, half_width_m));
   const float lift = float(lift_m);
-  out_triangles.reserve((samples.size() - 1) * 6);
 
+  // Precompute left/right ribbon edges and guard inner-edge vertices against backward folding
+  // on tight corners where the ribbon half-width exceeds the inner turn radius.
+  struct EdgePair {
+    float lx, lz;
+    float rx, rz;
+  };
+  std::vector<EdgePair> edges(samples.size());
+  for (size_t i = 0; i < samples.size(); ++i) {
+    const auto& s = samples[i];
+    edges[i] = {s.x - s.right_x * hw, s.z - s.right_z * hw, s.x + s.right_x * hw, s.z + s.right_z * hw};
+    if (i > 0) {
+      const float fx = s.x - samples[i - 1].x;
+      const float fz = s.z - samples[i - 1].z;
+      if (fx * fx + fz * fz > 1e-6f) {
+        if ((edges[i].lx - edges[i - 1].lx) * fx + (edges[i].lz - edges[i - 1].lz) * fz < 0.0f) {
+          edges[i].lx = edges[i - 1].lx;
+          edges[i].lz = edges[i - 1].lz;
+        }
+        if ((edges[i].rx - edges[i - 1].rx) * fx + (edges[i].rz - edges[i - 1].rz) * fz < 0.0f) {
+          edges[i].rx = edges[i - 1].rx;
+          edges[i].rz = edges[i - 1].rz;
+        }
+      }
+    }
+  }
+
+  out_triangles.reserve((samples.size() - 1) * 6);
   for (size_t i = 0; i + 1 < samples.size(); ++i) {
     const auto& a = samples[i];
     const auto& b = samples[i + 1];
     if (a.color.a == 0 && b.color.a == 0) continue;
 
-    const DrivingLineVertex al{a.x - a.right_x * hw, a.y + lift, a.z - a.right_z * hw,
-                               a.color.r, a.color.g, a.color.b, a.color.a};
-    const DrivingLineVertex ar{a.x + a.right_x * hw, a.y + lift, a.z + a.right_z * hw,
-                               a.color.r, a.color.g, a.color.b, a.color.a};
-    const DrivingLineVertex bl{b.x - b.right_x * hw, b.y + lift, b.z - b.right_z * hw,
-                               b.color.r, b.color.g, b.color.b, b.color.a};
-    const DrivingLineVertex br{b.x + b.right_x * hw, b.y + lift, b.z + b.right_z * hw,
-                               b.color.r, b.color.g, b.color.b, b.color.a};
+    const DrivingLineVertex al{edges[i].lx, a.y + lift, edges[i].lz, a.color.r, a.color.g, a.color.b, a.color.a};
+    const DrivingLineVertex ar{edges[i].rx, a.y + lift, edges[i].rz, a.color.r, a.color.g, a.color.b, a.color.a};
+    const DrivingLineVertex bl{edges[i + 1].lx, b.y + lift, edges[i + 1].lz, b.color.r, b.color.g, b.color.b, b.color.a};
+    const DrivingLineVertex br{edges[i + 1].rx, b.y + lift, edges[i + 1].rz, b.color.r, b.color.g, b.color.b, b.color.a};
 
     out_triangles.push_back(al);
     out_triangles.push_back(ar);
