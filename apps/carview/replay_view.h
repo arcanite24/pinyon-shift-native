@@ -24,10 +24,22 @@ enum class ReplayCameraMode : int {
   kBumper,
   kWheel,
   kCarRelative,
+  kCockpit,
+  kHood,
+  kCount
+};
+
+enum class ReplayTelemetryPage : int {
+  kGeneral = 0,
+  kFriction,
+  kSuspension,
+  kDamage,
+  kEngine,
   kCount
 };
 
 const char* replay_camera_name(ReplayCameraMode m);
+const char* replay_telemetry_page_name(ReplayTelemetryPage p);
 
 class ReplayViewer {
  public:
@@ -44,6 +56,8 @@ class ReplayViewer {
   ReplayCameraMode camera_mode() const { return cam_mode_; }
   uint32_t focus_slot() const { return focus_slot_; }
   bool telemetry_visible() const { return telemetry_; }
+  ReplayTelemetryPage telemetry_page() const { return telemetry_page_; }
+  bool repeat() const { return repeat_loop_; }
   bool ui_hidden() const { return ui_hidden_; }
 
   // Playback transport controls.
@@ -63,6 +77,10 @@ class ReplayViewer {
   void cycle_focus_car(int dir = +1);
   void toggle_telemetry() { telemetry_ = !telemetry_; }
   void set_telemetry(bool on) { telemetry_ = on; }
+  void cycle_telemetry_page(int dir = +1);
+  void set_telemetry_page(ReplayTelemetryPage p) { telemetry_page_ = p; }
+  void toggle_repeat() { repeat_loop_ = !repeat_loop_; }
+  void set_repeat(bool on) { repeat_loop_ = on; }
   void toggle_ui_hidden() { ui_hidden_ = !ui_hidden_; }
 
   // Advances playback clock, updates sampled cars, and steps camera state.
@@ -108,6 +126,8 @@ class ReplayViewer {
   ReplayCameraMode cam_mode_ = ReplayCameraMode::kTrackSide;
   uint32_t focus_slot_ = 0;
   bool telemetry_ = true;
+  ReplayTelemetryPage telemetry_page_ = ReplayTelemetryPage::kGeneral;
+  bool repeat_loop_ = true;
   bool ui_hidden_ = false;
 
   // Orbit & track-side camera state.

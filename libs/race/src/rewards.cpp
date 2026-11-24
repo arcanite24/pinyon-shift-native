@@ -263,10 +263,21 @@ double rewind_difficulty_bonus(bool rewind_on, int session_mode) {
 }
 
 double assist_difficulty_bonus(const DifficultyAssists& assists) {
-  // SPEC-REWIND section 7: Rewind OFF = +20%, ON = +0% (excluded in session mode 3).
-  // SPEC-EVENT-REWARDS Unknowns: remaining assists (ABS, TCS, STM, steering,
-  // shifting, driving line) are interim 0% until confirmed.
-  return rewind_difficulty_bonus(assists.rewind_on, assists.session_mode);
+  // Cumulative per-assist difficulty credit bonus:
+  // Rewind OFF = +20% (excluded in session mode 3), ABS OFF = +10%,
+  // Simulation Steering = +5%, STM OFF = +5%, Manual = +10% / Manual+Clutch = +15%,
+  // Driving Line Braking Only = +5% / OFF = +10%, Simulation Damage = +10%.
+  double bonus = rewind_difficulty_bonus(assists.rewind_on, assists.session_mode);
+  if (assists.braking >= 2) bonus += 0.10;
+  if (assists.steering >= 2) bonus += 0.05;
+  if (!assists.stm_on) bonus += 0.05;
+  if (assists.shifting == 1) bonus += 0.10;
+  else if (assists.shifting >= 2) bonus += 0.15;
+  if (assists.driving_line == 1) bonus += 0.05;
+  else if (assists.driving_line <= 0) bonus += 0.10;
+  if (assists.damage_mode >= 2) bonus += 0.10;
+  if (assists.tcs_on && bonus >= 0.05) bonus -= 0.05;
+  return std::max(0.0, bonus);
 }
 
 int assist_difficulty_bonus_percent(const DifficultyAssists& assists) {

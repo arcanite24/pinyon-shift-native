@@ -34,6 +34,8 @@ struct LiveSettings {
   bool start_in_single_player = false;
   bool skip_vo_with_a = true;
   bool metric_units = true;  // true: Metric (km/h, km/m), false: Imperial (MPH, mi/ft)
+  int hud_speedo_mode = 0;   // 0=Analog, 1=Digital, 2=Off
+  int minimap_mode = 0;      // 0=Rotating, 1=North-Up, 2=Off
   std::string language = "EN";
   bool photo_through_walls = false;
   bool photo_wider_limits = false;
@@ -104,6 +106,8 @@ class SettingsPage {
   // The file's tokens with the page's rows and key bindings applied (write_settings).
   std::vector<std::string> tokens() const;
   LiveSettings live_settings() const;
+  // Total FH1 difficulty + assists credit bonus percentage (0..135%).
+  int difficulty_credit_bonus_pct() const;
   // Syncs row picks from live runtime state (for settings changed outside settings.txt).
   void sync_from_live(const LiveSettings& live);
   bool dirty() const { return dirty_; }

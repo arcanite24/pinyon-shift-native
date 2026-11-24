@@ -332,6 +332,7 @@ void AchievementsSystem::init(const fh1::SpaDatabase& spa) {
       e.name = sa.label.empty() ? ("ACHIEVEMENT #" + std::to_string(sa.id)) : sa.label;
       e.description = sa.description;
       e.unachieved_description = sa.unachieved_description;
+      e.is_secret = !sa.show_unachieved();
       if (const auto* m = find_meta(sa.id)) {
         e.category = m->category;
         e.availability = m->availability;
@@ -704,6 +705,7 @@ bool AchievementsSystem::ensure_icon_uv(uint32_t image_id, bool grey, std::array
 void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const {
   if (!screen_open_) return;
 
+  const float s = h / 720.0f;
   const uint32_t earned = earned_gamerscore();
   const uint32_t total = total_gamerscore();
   const uint32_t avail = available_gamerscore();
@@ -718,16 +720,22 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
                 int(std::lround(pct * 100.0f * intro)));
   std::snprintf(cnt_buf, sizeof cnt_buf, "%d OF %d UNLOCKED", unlocked_count(), total_count());
 
-  ui4::TiltedBladeSpec spec;
-  spec.title = "ACHIEVEMENTS";
-  spec.eyebrow = "PINYON SHIFT // HORIZON";
-  spec.scene_hint = "H_FIXED_SETTING_LIST";
-  spec.status_kicker = std::string(tinfo.name);
-  spec.status_value = gs_buf;
-  spec.status_tag = cnt_buf;
-  spec.status_color = tinfo.colour;
+  ui4::subtle_vignette(out, w, h, 0.34f);
 
-  spec.tabs.reserve(tabs_.size());
+  // Top title tape + gamerscore summary pill.
+  ui4::title_tape(out, s, 64.0f * s, 30.0f * s, "ACHIEVEMENTS", ui4::kPink, 34.0f, 420.0f);
+  {
+    const float sx0 = w - 396.0f * s, sx1 = w - 56.0f * s, sy0 = 30.0f * s, sy1 = 84.0f * s;
+    ui4::pill(out, sx0, sy0, sx1, sy1, ui4::kPillGrey, ui4::PillKind::kHud01);
+    out.rect(sx0, sy0, sx0 + 5.0f * s, sy1, tinfo.colour);
+    out.text(sx0 + 16.0f * s, sy0 + 7.0f * s, std::string(tinfo.name) + " TIER  •  " + cnt_buf,
+             ui4::style(Font::kB, 11.5f * s, tinfo.colour));
+    out.text(sx0 + 16.0f * s, sy0 + 25.0f * s, gs_buf, ui4::style(Font::kE, 18.0f * s, ui4::kWhite));
+  }
+
+  // Category tab strip.
+  std::vector<std::string> tab_labels;
+  tab_labels.reserve(tabs_.size());
   for (AchievementCategory c : tabs_) {
     int c_done = 0, c_tot = 0;
     for (const auto& e : entries_) {
@@ -736,102 +744,184 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
         if (e.unlocked) ++c_done;
       }
     }
-    spec.tabs.push_back(std::string(achievement_category_label(c)) + " " + std::to_string(c_done) + "/" +
-                        std::to_string(c_tot));
+    tab_labels.push_back(std::string(achievement_category_label(c)) + " " + std::to_string(c_done) + "/" +
+                         std::to_string(c_tot));
   }
-  spec.active_tab = int(tab_idx_);
-  spec.list_header = std::string(achievement_category_label(active_tab())) + " ACHIEVEMENTS";
-  spec.list_header_right = "SORT: " + std::string(achievement_sort_label(sort_));
-  spec.empty_message = "No achievements in this category.";
-  spec.selected_index = focus_index_;
-  spec.max_visible = 9;
+  ui4::tab_strip(out, s, 64.0f * s, 94.0f * s, w - 64.0f * s, tab_labels, int(tab_idx_), true, ui4::kPink);
 
-  spec.rows.reserve(visible_.size());
-  for (size_t vi = 0; vi < visible_.size(); ++vi) {
-    const auto& e = entries_[visible_[vi]];
-    ui4::BladeRow r;
-    r.label = e.name;
-    const std::string& desc =
-        (!e.unlocked && !e.unachieved_description.empty()) ? e.unachieved_description : e.description;
-    r.subtitle = desc;
-    r.selected = (int(vi) == focus_index_);
-    // Authentic 64x64 SPA PNG icon when available, falling back to badge/trophy/padlock icon!
-    std::array<float, 4> icon_uv{};
-    if (ensure_icon_uv(e.image_id, !e.unlocked, icon_uv)) {
-      r.has_custom_icon = true;
-      r.custom_icon_uv = icon_uv;
+  // Authentic FH1 5x3 Achievement Tile Grid (matching move_focus kCols=5!) on left/center.
+  constexpr int kCols = 5;
+  constexpr int kRows = 3;
+  constexpr int kPerPage = kCols * kRows;
+  const int n = int(visible_.size());
+  const int cur_page = n > 0 ? (focus_index_ / kPerPage) : 0;
+  const int total_pages = std::max(1, (n + kPerPage - 1) / kPerPage);
+  const int page_start = cur_page * kPerPage;
+
+  const float gx0 = 64.0f * s, gy0 = 136.0f * s;
+  const float grid_w = 736.0f * s, grid_h = 496.0f * s;
+  ui4::panel(out, gx0, gy0, gx0 + grid_w, gy0 + grid_h, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+  ui4::offwhite_strip(out, gx0 + 12.0f * s, gy0 + 10.0f * s, gx0 + grid_w - 12.0f * s, gy0 + 34.0f * s, s, false);
+  out.text(gx0 + 22.0f * s, gy0 + 15.0f * s,
+           std::string(achievement_category_label(active_tab())) + "  •  PAGE " + std::to_string(cur_page + 1) + "/" +
+               std::to_string(total_pages),
+           ui4::style(Font::kE, 12.5f * s, ui4::kInk));
+  out.text(gx0 + grid_w - 22.0f * s, gy0 + 15.0f * s, "SORT: " + std::string(achievement_sort_label(sort_)),
+           ui4::style(Font::kB, 11.5f * s, ui4::kPink, Align::kRight));
+
+  if (visible_.empty()) {
+    out.text(gx0 + 0.5f * grid_w, gy0 + 0.5f * grid_h, "NO ACHIEVEMENTS IN THIS CATEGORY.",
+             ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
+  } else {
+    const float pad_x = 16.0f * s, pad_y = 44.0f * s;
+    const float gap = 10.0f * s;
+    const float cell_w = (grid_w - 2.0f * pad_x - float(kCols - 1) * gap) / float(kCols);
+    const float cell_h = (grid_h - pad_y - 16.0f * s - float(kRows - 1) * gap) / float(kRows);
+    for (int slot = 0; slot < kPerPage && (page_start + slot) < n; ++slot) {
+      const int vi = page_start + slot;
+      const auto& e = entries_[visible_[size_t(vi)]];
+      const int col = slot % kCols;
+      const int row = slot / kCols;
+      const float tx0 = gx0 + pad_x + float(col) * (cell_w + gap);
+      const float ty0 = gy0 + pad_y + float(row) * (cell_h + gap);
+      const float tx1 = tx0 + cell_w;
+      const float ty1 = ty0 + cell_h;
+      const bool sel = (vi == focus_index_);
+      out.add_hit(tx0, ty0, tx1, ty1, ui::kHitRow, vi);
+
+      const uint32_t bg = sel ? ui4::kPink : (e.unlocked ? rgba(36, 40, 48, 238) : rgba(20, 22, 27, 232));
+      out.rect(tx0, ty0, tx1, ty1, bg);
+      out.frame(tx0, ty0, tx1, ty1,
+                sel ? ui4::kYellow : (e.unlocked ? value_stripe_colour(e.gamerscore) : rgba(72, 76, 86, 170)),
+                sel ? 2.5f * s : 1.2f * s);
+
+      // Centered 64x64 SPA icon (or padlock/secret silhouette).
+      const float isz = std::min(62.0f * s, cell_h * 0.46f);
+      const float ix0 = 0.5f * (tx0 + tx1) - 0.5f * isz;
+      const float iy0 = ty0 + 12.0f * s;
+      std::array<float, 4> icon_uv{};
+      if (!e.is_masked_secret() && ensure_icon_uv(e.image_id, !e.unlocked, icon_uv)) {
+        out.image(ix0, iy0, ix0 + isz, iy0 + isz, icon_uv, ui4::kWhite);
+      } else {
+        out.rect(ix0, iy0, ix0 + isz, iy0 + isz, e.unlocked ? rgba(255, 200, 50, 44) : rgba(255, 255, 255, 16));
+        out.text(0.5f * (tx0 + tx1), iy0 + 0.32f * isz, e.is_masked_secret() ? "?" : (e.unlocked ? "★" : "🔒"),
+                 ui4::style(Font::kE, 20.0f * s, e.unlocked ? ui4::kYellow : ui4::kDim, Align::kCenter));
+      }
+
+      // Gamerscore corner pill.
+      char gp[16];
+      std::snprintf(gp, sizeof gp, "%uG", e.gamerscore);
+      out.rect(tx1 - 36.0f * s, ty0 + 4.0f * s, tx1 - 4.0f * s, ty0 + 20.0f * s,
+               e.unlocked ? value_stripe_colour(e.gamerscore) : rgba(14, 16, 20, 210));
+      out.text(tx1 - 20.0f * s, ty0 + 6.5f * s, gp,
+               ui4::style(Font::kE, 10.0f * s, e.unlocked ? ui4::kInk : ui4::kDim, Align::kCenter));
+
+      if (tracked_id_ == e.id && !e.unlocked) {
+        out.rect(tx0 + 4.0f * s, ty0 + 4.0f * s, tx0 + 44.0f * s, ty0 + 18.0f * s, ui4::kAmber);
+        out.text(tx0 + 24.0f * s, ty0 + 6.0f * s, "TRK",
+                 ui4::style(Font::kE, 8.5f * s, ui4::kInk, Align::kCenter));
+      } else if (e.is_new) {
+        out.rect(tx0 + 4.0f * s, ty0 + 4.0f * s, tx0 + 42.0f * s, ty0 + 18.0f * s, ui4::kYellow);
+        out.text(tx0 + 23.0f * s, ty0 + 6.0f * s, "NEW",
+                 ui4::style(Font::kE, 8.5f * s, ui4::kInk, Align::kCenter));
+      }
+
+      // Tile title (masked when secret & locked).
+      const std::string tname = e.display_name();
+      TextStyle tns = ui4::style(Font::kB, 11.0f * s, sel || e.unlocked ? ui4::kWhite : ui4::kOffWhite, Align::kCenter);
+      ui4::fit_text(tname, tns, cell_w - 12.0f * s, 8.0f * s);
+      out.text(0.5f * (tx0 + tx1), ty1 - 32.0f * s, tname, tns);
+
+      // Bottom progress bar or unlocked bar.
+      const float bx0 = tx0 + 8.0f * s, bx1 = tx1 - 8.0f * s, by0 = ty1 - 10.0f * s, by1 = ty1 - 5.0f * s;
+      out.rect(bx0, by0, bx1, by1, rgba(255, 255, 255, 26));
+      if (e.unlocked) {
+        out.rect(bx0, by0, bx1, by1, ui4::kGreen);
+      } else if (!e.is_masked_secret() && e.progress) {
+        out.rect(bx0, by0, bx0 + (bx1 - bx0) * e.progress->fraction(), by1, ui4::kYellow);
+      }
     }
-    r.badge_icon_kind = e.is_new     ? int(ui4::BadgeIconKind::kNew)
-                        : e.unlocked ? (e.gamerscore >= 30 ? int(ui4::BadgeIconKind::kGoldMedal)
-                                                           : int(ui4::BadgeIconKind::kTrophy))
-                                     : int(ui4::BadgeIconKind::kLocked);
-    char gpill[16];
-    std::snprintf(gpill, sizeof gpill, "%u G", e.gamerscore);
-    r.value = gpill;
-    r.value_color = e.unlocked ? value_stripe_colour(e.gamerscore) : ui4::kDim;
-    if (e.is_new) {
-      r.badge_tag = "NEW";
-      r.badge_color = ui4::kPink;
-    } else if (e.unlocked) {
-      r.badge_tag = "UNLOCKED";
-      r.badge_color = ui4::kGreen;
-    } else if (tracked_id_ == e.id) {
-      r.badge_tag = "TRACKED";
-      r.badge_color = ui4::kAmber;
-    } else if (!e.available()) {
-      r.badge_tag = "OFFLINE";
-      r.badge_color = rgba(70, 76, 88, 220);
-    }
-    spec.rows.push_back(std::move(r));
   }
 
-  // Compact right-hand DIRTMASKS/PANEL01 detail card (tightly sized — ZERO empty charcoal void!)
+  // Right-hand Achievement Details card.
   if (const auto* fe = focused_entry()) {
-    spec.detail_header = "ACHIEVEMENT DETAILS";
-    spec.detail_title = fe->name;
-    spec.detail_title_color = fe->unlocked ? ui4::kPink : ui4::kBrushBlack;
-    spec.detail_icon_kind = fe->unlocked ? int(ui4::BadgeIconKind::kTrophy) : int(ui4::BadgeIconKind::kLocked);
+    const float dx0 = gx0 + grid_w + 18.0f * s;
+    const float dx1 = w - 56.0f * s;
+    const float dy0 = gy0;
+    const float dy1 = gy0 + grid_h;
+    ui4::panel(out, dx0, dy0, dx1, dy1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+    ui4::brush(out, dx0 - 6.0f * s, dy0 + 12.0f * s, dx1 + 6.0f * s, dy0 + 48.0f * s,
+               fe->unlocked ? ui4::kPink : ui4::kBrushBlack);
+    TextStyle dts = ui4::style(Font::kE, 16.5f * s, ui4::kWhite);
+    const std::string dname = fe->display_name();
+    ui4::fit_text(dname, dts, (dx1 - dx0) - 28.0f * s, 10.5f * s);
+    out.text(dx0 + 16.0f * s, dy0 + 19.0f * s, dname, dts);
+
+    // Large detail icon
+    const float disz = 72.0f * s;
     std::array<float, 4> det_uv{};
-    if (ensure_icon_uv(fe->image_id, !fe->unlocked, det_uv)) {
-      spec.has_detail_icon_uv = true;
-      spec.detail_icon_uv = det_uv;
+    if (!fe->is_masked_secret() && ensure_icon_uv(fe->image_id, !fe->unlocked, det_uv)) {
+      out.image(dx0 + 16.0f * s, dy0 + 62.0f * s, dx0 + 16.0f * s + disz, dy0 + 62.0f * s + disz, det_uv, ui4::kWhite);
+    } else {
+      out.rect(dx0 + 16.0f * s, dy0 + 62.0f * s, dx0 + 16.0f * s + disz, dy0 + 62.0f * s + disz,
+               rgba(255, 255, 255, 20));
+      out.text(dx0 + 16.0f * s + 0.5f * disz, dy0 + 82.0f * s, fe->is_masked_secret() ? "?" : "G",
+               ui4::style(Font::kE, 26.0f * s, ui4::kDim, Align::kCenter));
     }
-    const std::string& desc =
-        (!fe->unlocked && !fe->unachieved_description.empty()) ? fe->unachieved_description : fe->description;
-    spec.detail_paragraphs.push_back(desc);
 
     const std::string status_str = fe->unlocked ? "UNLOCKED"
-                                   : !fe->available()
-                                       ? (fe->availability == AchievementAvailability::kNeedsRivals
-                                              ? "RIVALS (OFFLINE)"
-                                              : "XBOX LIVE (OFFLINE)")
-                                       : (tracked_id_ == fe->id ? "TRACKED ON HUD" : "LOCKED");
-    spec.detail_kvs.push_back({"GAMERSCORE", std::to_string(fe->gamerscore) + " G", value_stripe_colour(fe->gamerscore)});
-    spec.detail_kvs.push_back(
-        {"STATUS", status_str, fe->unlocked ? ui4::kGreen : (tracked_id_ == fe->id ? ui4::kYellow : ui4::kDim)});
-    spec.detail_kvs.push_back({"CATEGORY", achievement_category_label(fe->category), ui4::kWhite});
-    if (fe->unlocked && fe->unlock_utc > 0) {
-      spec.detail_kvs.push_back({"UNLOCKED ON", format_utc_date(fe->unlock_utc), ui4::kOffWhite});
+                                   : fe->is_masked_secret()
+                                       ? "SECRET (LOCKED)"
+                                       : !fe->available()
+                                             ? (fe->availability == AchievementAvailability::kNeedsRivals
+                                                    ? "RIVALS (OFFLINE)"
+                                                    : "XBOX LIVE (OFFLINE)")
+                                             : (tracked_id_ == fe->id ? "TRACKED ON HUD" : "LOCKED");
+    out.text(dx0 + 100.0f * s, dy0 + 68.0f * s, std::to_string(fe->gamerscore) + " G",
+             ui4::style(Font::kE, 22.0f * s, value_stripe_colour(fe->gamerscore)));
+    out.text(dx0 + 100.0f * s, dy0 + 96.0f * s, status_str,
+             ui4::style(Font::kE, 12.5f * s, fe->unlocked ? ui4::kGreen : (tracked_id_ == fe->id ? ui4::kYellow : ui4::kDim)));
+    out.text(dx0 + 100.0f * s, dy0 + 116.0f * s, achievement_category_label(fe->category),
+             ui4::style(Font::kB, 11.5f * s, ui4::kOffWhite));
+
+    // Wrapped description
+    const TextStyle desc_st = ui4::style(Font::kB, 13.0f * s, ui4::kWhite, Align::kLeft, true);
+    const auto dlines = wrap_lines(fe->display_description(), desc_st, (dx1 - dx0) - 32.0f * s, 5);
+    float py = dy0 + 154.0f * s;
+    for (const auto& dl : dlines) {
+      out.text(dx0 + 16.0f * s, py, dl, desc_st);
+      py += 20.0f * s;
     }
-    if (!fe->unlocked && fe->progress) {
+
+    if (fe->unlocked && fe->unlock_utc > 0) {
+      out.text(dx0 + 16.0f * s, py + 12.0f * s, "UNLOCKED ON: " + format_utc_date(fe->unlock_utc),
+               ui4::style(Font::kB, 11.5f * s, ui4::kOffWhite));
+    } else if (!fe->unlocked && !fe->is_masked_secret() && fe->progress) {
+      const float pby = std::max(py + 16.0f * s, dy0 + 278.0f * s);
       char pb[48];
       std::snprintf(pb, sizeof pb, "PROGRESS  %u / %u  (%d%%)", fe->progress->current, fe->progress->target,
                     int(std::lround(fe->progress->fraction() * 100.0f)));
-      spec.detail_progress = fe->progress->fraction();
-      spec.detail_progress_label = pb;
-      spec.detail_progress_color = ui4::kYellow;
+      out.text(dx0 + 16.0f * s, pby, pb, ui4::style(Font::kE, 12.0f * s, ui4::kYellow));
+      out.rect(dx0 + 16.0f * s, pby + 20.0f * s, dx1 - 16.0f * s, pby + 30.0f * s, rgba(255, 255, 255, 28));
+      out.rect(dx0 + 16.0f * s, pby + 20.0f * s,
+               dx0 + 16.0f * s + (dx1 - dx0 - 32.0f * s) * fe->progress->fraction(), pby + 30.0f * s, ui4::kYellow);
     }
+
     if (!almost_there_.empty()) {
       const auto& ae = entries_[almost_there_.front()];
-      spec.detail_footer = "ALMOST THERE: " + ae.name + " (" + std::to_string(ae.gamerscore) + "G)";
+      const std::string af = "ALMOST THERE: " + ae.display_name() + " (" + std::to_string(ae.gamerscore) + "G)";
+      TextStyle afs = ui4::style(Font::kB, 11.5f * s, ui4::kYellow);
+      ui4::fit_text(af, afs, (dx1 - dx0) - 32.0f * s, 8.5f * s);
+      out.text(dx0 + 16.0f * s, dy1 - 30.0f * s, af, afs);
     }
   }
 
-  spec.prompts = {{"A", "TRACK ON HUD"},
-                  {"LB", "CATEGORY"},
-                  {"Y", "SORT: " + std::string(achievement_sort_label(sort_))},
-                  {"B", "BACK"}};
-  ui4::tilted_blade_screen(out, w, h, spec);
+  ui4::button_bar(out,
+                  {{"A", "TRACK ON HUD"},
+                   {"LB", "CATEGORY"},
+                   {"Y", "SORT: " + std::string(achievement_sort_label(sort_))},
+                   {"B", "BACK"}},
+                  w, h, 64.0f);
 }
 
 void AchievementsSystem::build_hud_overlays(ui::List& out, float w, float h, bool show_track_chip) const {

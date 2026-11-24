@@ -190,12 +190,30 @@ void test_replay_viewer_controls_cameras_and_hud() {
   viewer.cycle_focus_car(+1);
   check(viewer.focus_slot() == 1, "cycle_focus_car switches to opponent slot 1");
 
-  // Exercise all 6 camera modes.
+  // Exercise all 8 camera modes (including Cockpit & Hood).
+  check(int(carview::ReplayCameraMode::kCount) == 8, "ReplayViewer exposes all 8 camera modes");
   for (int m = 0; m < int(carview::ReplayCameraMode::kCount); ++m) {
     viewer.set_camera_mode(static_cast<carview::ReplayCameraMode>(m));
     const auto cam = viewer.compute_camera(0.016, 0.2f, 0.1f, 0.0f);
     check(std::isfinite(cam.eye[0]) && std::isfinite(cam.forward[2]) && cam.fov_degrees > 10.0,
           "camera mode produces valid finite CameraView");
+    if (static_cast<carview::ReplayCameraMode>(m) == carview::ReplayCameraMode::kCockpit) {
+      check(cam.interior, "Cockpit replay camera sets interior flag");
+    }
+  }
+
+  // Phase 6B: DVR Repeat looping and 5-page Telemetry cycling.
+  viewer.set_repeat(true);
+  viewer.set_paused(false);
+  viewer.set_speed(1.0);
+  viewer.seek(viewer.duration() - 0.02);
+  viewer.update(0.05);
+  check(!viewer.paused() && viewer.time() < 0.1, "DVR Repeat loops playback back to 0.0s cleanly");
+  for (int tp = 0; tp < int(carview::ReplayTelemetryPage::kCount); ++tp) {
+    viewer.cycle_telemetry_page(+1);
+    carview::ui::List tlist;
+    viewer.build_hud(tlist, 1280.0f, 720.0f);
+    check(!tlist.empty(), "Replay telemetry page builds valid HUD");
   }
 
   // Verify HUD emits UI instances.

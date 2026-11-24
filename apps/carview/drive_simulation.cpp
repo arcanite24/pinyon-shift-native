@@ -219,7 +219,7 @@ bool DriveSession::free_roam_step() {
             }
           }
         }
-        if (!host.free_roam) return false;
+        if (!host.free_roam || app.campaign.flow().is_onboarding()) return false;
         freeroam::CarState cs;
         const drive::Vec3 at = vehicle.position();
         const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});

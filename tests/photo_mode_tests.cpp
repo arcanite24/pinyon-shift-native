@@ -216,6 +216,70 @@ void test_png_write_and_hud_build() {
     if (it.p[0] >= 1000.0f && it.p[1] >= 60.0f && it.p[1] <= 620.0f) ++right_items;
   }
   check(right_items >= 20, "516_I_EFFECTSMODE effects column is anchored on the right edge (x>=1000)");
+
+  // Phase 6B: Watermark stamping, Photo Gallery list/delete, wall collision raycast, and Car Club save persistence.
+  {
+    std::vector<uint8_t> img(640u * 360u * 4u, 32u);
+    carview::stamp_photo_watermark(img, 640, 360);
+    int changed_px = 0;
+    for (size_t i = 0; i < img.size(); i += 4) {
+      if (img[i] != 32u || img[i + 1] != 32u || img[i + 2] != 32u) ++changed_px;
+    }
+    check(changed_px > 200, "stamp_photo_watermark draws visible bottom-right watermark pixels");
+
+    const auto tmp_dir = std::filesystem::temp_directory_path() / "shift_photo_gallery_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmp_dir, ec);
+    std::filesystem::path saved_p;
+    std::string werr;
+    check(carview::write_photo_png(tmp_dir, img, 640, 360, "test", saved_p, &werr, true),
+          "write_photo_png with watermark succeeds");
+    ctrl.open_gallery(tmp_dir);
+    check(ctrl.gallery_open() && ctrl.gallery_entries().size() == 1, "Photo Gallery lists saved PNG");
+    carview::ui::List gal_list;
+    ctrl.build_hud(gal_list, 1280.0f, 720.0f);
+    check(!gal_list.empty(), "Photo Gallery HUD renders entries");
+    check(ctrl.gallery_delete_selected() && ctrl.gallery_entries().empty(), "Photo Gallery deletes selected photo");
+    ctrl.close_gallery();
+    std::filesystem::remove_all(tmp_dir, ec);
+
+    // Wall collision raycast stops camera before wall when through_walls == false.
+    carview::PhotoCamera wall_cam;
+    wall_cam.reset({0.0, 0.0, 0.0}, 0.0, carview::PhotoLimits::from_settings(false, false));
+    carview::PhotoCameraInput pin{};
+    wall_cam.step(0.016, pin, {}, [](const std::array<double, 3>&, const std::array<double, 3>&, double max_d,
+                                     double& hit_d) {
+      if (max_d > 2.0) {
+        hit_d = 2.0;
+        return true;
+      }
+      return false;
+    });
+    const double d_after = std::hypot(wall_cam.eye()[0], wall_cam.eye()[2]);
+    check(d_after <= 2.05, "wall_raycast clamps PhotoCamera inside wall clearance");
+
+    // Tracking vs Panning shutter blur boost differs cleanly.
+    carview::PhotoEffects pe;
+    pe.shutter_speed = 80.0f;
+    pe.tracking_panning = false;
+    const float pan_w = pe.wheel_blur_omega_boost();
+    pe.tracking_panning = true;
+    const float trk_w = pe.wheel_blur_omega_boost();
+    check(trk_w > pan_w, "Tracking mode gives stronger wheel blur boost than Panning");
+
+    // Car Club DriveSave round-trip.
+    drive::DriveSave cs;
+    cs.car = "NIS_SkylineGTRVSpecII_02";
+    cs.car_club_name = "COLORADO APEX";
+    cs.car_club_tag = "APEX";
+    cs.car_club_shared = {1219, 1031};
+    drive::DriveSave cs_out;
+    std::string serr;
+    check(drive::save_from_text(drive::save_to_text(cs), cs_out, &serr), "DriveSave with Car Club round-trips");
+    check(cs_out.car_club_name == "COLORADO APEX" && cs_out.car_club_tag == "APEX" &&
+              cs_out.car_club_shared.size() == 2 && cs_out.car_club_shared[0] == 1219,
+          "Car Club name, tag, and shared car IDs survive save round-trip");
+  }
 }
 
 }  // namespace

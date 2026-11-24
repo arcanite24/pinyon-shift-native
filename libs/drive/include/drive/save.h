@@ -141,6 +141,10 @@ struct DriveSave {
   int num_rallies = 0, num_rally_stages = 0, num_rally_victories = 0, rally_xp = 0, rally_level = 0;
   int64_t rally_winnings = 0;
   std::vector<SavedClubCar> club;
+  // Offline Car Club (451_CLUB_SETTINGS: name, 4-char [TAG], shared Club Garage car IDs).
+  std::string car_club_name;
+  std::string car_club_tag;
+  std::vector<int> car_club_shared;
   bool has_controls = false;
   ControlSettings controls;
   // Copies the carried fields (the ones the drive does not change) from `s`.
@@ -149,6 +153,9 @@ struct DriveSave {
     has_rally = s.has_rally, num_rallies = s.num_rallies, num_rally_stages = s.num_rally_stages, club = s.club;
     num_rally_victories = s.num_rally_victories, rally_xp = s.rally_xp, rally_level = s.rally_level;
     rally_winnings = s.rally_winnings;
+    if (car_club_name.empty()) car_club_name = s.car_club_name;
+    if (car_club_tag.empty()) car_club_tag = s.car_club_tag;
+    if (car_club_shared.empty()) car_club_shared = s.car_club_shared;
   }
 };
 

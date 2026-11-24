@@ -425,6 +425,31 @@ void test_achievements_system_and_persistence() {
   assert(reloaded.find(195)->unlock_utc == 1730000000);
   assert(reloaded.tracked_id() == 195);
   std::filesystem::remove(tmp, ec);
+
+  // Phase 6C: Secret achievement masking when locked + unmasking on unlock + 5x3 grid HUD.
+  {
+    fh1::SpaDatabase sdb;
+    fh1::SpaAchievement sec;
+    sec.id = 199;
+    sec.gamerscore = 25;
+    sec.flags = 0x0u;  // show_unachieved() == false -> secret achievement
+    sec.label = "Hidden Legend";
+    sec.description = "Find the hidden canyon jump.";
+    sdb.achievements.push_back(sec);
+    carview::AchievementsSystem ssys;
+    ssys.init(sdb);
+    const auto* e = ssys.find(199);
+    assert(e != nullptr && e->is_secret && e->is_masked_secret());
+    assert(e->display_name() == "SECRET ACHIEVEMENT");
+    assert(e->display_description().find("SECRET") != std::string::npos);
+    ssys.open_screen();
+    carview::ui::List grid_ui;
+    ssys.build_screen_hud(grid_ui, 1280.0f, 720.0f);
+    assert(!grid_ui.items().empty());
+    assert(ssys.unlock(199, 1730000100, false));
+    assert(!ssys.find(199)->is_masked_secret());
+    assert(ssys.find(199)->display_name() == "Hidden Legend");
+  }
 }
 
 void test_optional_real_spa() {

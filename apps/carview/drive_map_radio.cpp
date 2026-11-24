@@ -41,6 +41,7 @@ MapScene DriveSession::map_scene() {
         sc.x = at.x;
         sc.z = at.z;
         sc.heading = std::atan2(f.x, f.z);
+        sc.north_up = (live_minimap_mode == 1);
         sc.speed_mps = std::fabs(vehicle.speed());
         sc.data = app.progress_loaded ? &app.collectibles : nullptr;
         sc.progress = app.progress_loaded ? &app.progress : nullptr;
@@ -206,6 +207,10 @@ MapScene DriveSession::map_scene() {
 
 void DriveSession::set_minimap(int height, bool force) {
         if (!app.map_view.ready() || !host.streamer) return;
+        if (live_minimap_mode == 2) {
+          if (mm_size > 0) mm_size = 0;
+          return;
+        }
         // The results card: no minimap.
         if (app.race && app.race->player_finished()) {
           if (minimap_at > -2) mm_size = 0, minimap_at = -2;

@@ -135,7 +135,7 @@ drive::PadControl pad_control_from_button(Uint8 b);
 double pad_control_value(SDL_Gamepad* pad, drive::PadControl c, double dz_in, double dz_out);
 const char* difficulty_name(race::Difficulty d);
 const char* difficulty_label(race::Difficulty d);
-race::DifficultyAssists to_difficulty_assists(const drive::AssistSettings& assists);
+race::DifficultyAssists to_difficulty_assists(const drive::AssistSettings& assists, int damage_mode = 1);
 void apply_vehicle_assists(drive::Vehicle& vehicle, const drive::AssistSettings& assists);
 bool load_camera_rig(const std::filesystem::path& game_root, const std::filesystem::path& bake_dir,
                      const cars::bake::CarInfo& info, const drive::Vehicle& v, drive::DriveCamera& rig,

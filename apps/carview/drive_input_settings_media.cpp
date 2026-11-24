@@ -67,6 +67,12 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 if (!ls.graphics_backend.empty()) app.graphics_backend = ls.graphics_backend;
                 live_sound_enabled = ls.sound;
                 live_radio_enabled = ls.radio;
+                live_hud_speedo_mode = ls.hud_speedo_mode;
+                if (live_minimap_mode != ls.minimap_mode) {
+                  live_minimap_mode = ls.minimap_mode;
+                  minimap_at = -1;
+                  if (live_minimap_mode == 2) mm_size = 0;
+                }
                 app.treasure_map_setting = ls.treasure_map;
                 live_motion_blur = ls.motion_blur;
                 live_dof = ls.dof;
@@ -81,6 +87,10 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   app.race_options.language = app.language;
                   std::string le;
                   if (app.car_names) app.car_names->load(app.game_root_of(), app.state_root, &le, app.language, app.shared_db);
+                  if (app.map_view.ready()) {
+                    app.map_view.open(app.game_root_of(), nullptr, app.language);
+                    minimap_at = -1;
+                  }
                   if (fh1::CjkFont::language_needs_cjk(app.language)) {
                     auto cf = std::make_shared<fh1::CjkFont>();
                     if (cf->load_for_language(app.game_root_of(), app.language, nullptr)) carview::ui::set_cjk_font(cf);
@@ -101,7 +111,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 rewind_buf.set_enabled(live_controls.assists.rewind);
                 driving_line_mode =
                     static_cast<drive::DrivingLineMode>(std::clamp(live_controls.assists.driving_line, 0, 2));
-                app.race_options.assists = to_difficulty_assists(live_controls.assists);
+                app.race_options.assists = to_difficulty_assists(live_controls.assists, int(car_damage.mode));
                 if (app.race) app.race->set_assists(app.race_options.assists);
                 app.tod_clock.speed_scale = ls.day_length_scale;
                 if (ls.tod_preset_hour >= 0.0) {
@@ -623,9 +633,39 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   if (!app.race && app.pr_stunt_session.active()) pr_stunt_photo_pressed = true;
                 }
               };
+              if (photo_mode.gallery_open()) {
+                if (e.type == SDL_EVENT_KEY_DOWN) {
+                  const SDL_Keycode k = e.key.key;
+                  if ((k == SDLK_ESCAPE || k == SDLK_G) && !e.key.repeat) photo_mode.close_gallery();
+                  else if (k == SDLK_UP || k == SDLK_W) photo_mode.gallery_move(-1);
+                  else if (k == SDLK_DOWN || k == SDLK_S) photo_mode.gallery_move(+1);
+                  else if ((k == SDLK_DELETE || k == SDLK_X) && !e.key.repeat) photo_mode.gallery_delete_selected();
+                } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                  const auto b = e.gbutton.button;
+                  if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START) photo_mode.close_gallery();
+                  else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) photo_mode.gallery_move(-1);
+                  else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) photo_mode.gallery_move(+1);
+                  else if (b == SDL_GAMEPAD_BUTTON_WEST) photo_mode.gallery_delete_selected();
+                } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                  if (e.button.button == SDL_BUTTON_RIGHT) photo_mode.close_gallery();
+                  else if (e.button.button == SDL_BUTTON_LEFT) {
+                    carview::ui::HitZone hz{};
+                    if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
+                      if (hz.group == carview::ui::kHitRow && hz.index >= 0) photo_mode.gallery_select(hz.index);
+                      else if (hz.group == carview::ui4::kHitButton && hz.index == 0) photo_mode.gallery_delete_selected();
+                      else if (hz.group == carview::ui4::kHitButton && hz.index == 1) photo_mode.close_gallery();
+                    }
+                  }
+                } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+                  photo_mode.gallery_move(e.wheel.y > 0 ? -1 : +1);
+                }
+                return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
+                        e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+              }
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
                 if (k == SDLK_ESCAPE) photo_mode.exit();
+                else if (k == SDLK_G && !e.key.repeat) photo_mode.open_gallery(photos_dir);
                 else if (k == SDLK_TAB && !e.key.repeat) photo_mode.toggle_effects();
                 else if ((k == SDLK_H || k == SDLK_F2) && !e.key.repeat) photo_mode.toggle_ui_hidden();
                 else if (k == SDLK_UP) photo_mode.move_row(-1);
@@ -795,7 +835,16 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   else if (k == SDLK_M && !e.key.repeat) replay_viewer.set_slow_motion();
                   else if (k == SDLK_C && !e.key.repeat) replay_viewer.cycle_camera(+1);
                   else if (k == SDLK_V && !e.key.repeat) replay_viewer.cycle_focus_car(+1);
-                  else if (k == SDLK_T && !e.key.repeat) replay_viewer.toggle_telemetry();
+                  else if (k == SDLK_T && !e.key.repeat) {
+                    if (e.key.mod & SDL_KMOD_SHIFT) replay_viewer.toggle_telemetry();
+                    else if (!replay_viewer.telemetry_visible()) replay_viewer.set_telemetry(true);
+                    else if (replay_viewer.telemetry_page() == carview::ReplayTelemetryPage::kEngine)
+                      replay_viewer.set_telemetry(false);
+                    else replay_viewer.cycle_telemetry_page(+1);
+                  } else if (k == SDLK_R && !e.key.repeat) {
+                    replay_viewer.toggle_repeat();
+                    replay_viewer.set_notice(replay_viewer.repeat() ? "REPEAT: ON" : "REPEAT: OFF", 2.0);
+                  }
                   else if ((k == SDLK_H || k == SDLK_F2) && !e.key.repeat) replay_viewer.toggle_ui_hidden();
                   else if (k == SDLK_S && !e.key.repeat) {
                     std::filesystem::path saved_r;
@@ -837,8 +886,11 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                         else if (hz.index == 2) { replay_viewer.set_paused(true); }
                         else if (hz.index == 3) replay_viewer.trigger_fast_forward();
                         else if (hz.index == 4) replay_viewer.cycle_camera(+1);
-                        else if (hz.index == 5) replay_viewer.toggle_telemetry();
-                        else if (hz.index == 6) replay_viewer.seek_fraction(0.0);
+                        else if (hz.index == 5) replay_viewer.cycle_telemetry_page(+1);
+                        else if (hz.index == 6) {
+                          replay_viewer.toggle_repeat();
+                          replay_viewer.set_notice(replay_viewer.repeat() ? "REPEAT: ON" : "REPEAT: OFF", 2.0);
+                        }
                         app.audio_host.trigger_ui(audio::UiCue::kAccept);
                       } else if (hz.group == carview::ui4::kHitTimeline) {
                         int win_w = 0, win_h = 0;

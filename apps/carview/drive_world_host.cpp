@@ -377,7 +377,8 @@ bool DriveWorldHost::open_world_and_car() {
             if (!app.map_tried) {
               app.map_tried = true;
               std::string why;
-              if (!app.map_view.open(game_root, &why)) std::fprintf(stderr, "carview: note: no map: %s\n", why.c_str());
+              if (!app.map_view.open(game_root, &why, app.language))
+                std::fprintf(stderr, "carview: note: no map: %s\n", why.c_str());
               traffic::NavMap nav_for_gps;
               if (traffic::read_nav(game_root / "media" / "tracks" / "colorado" / "colorado.nav", nav_for_gps, nullptr)) {
                 app.gps_solver.build(nav_for_gps);

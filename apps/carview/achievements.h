@@ -122,12 +122,19 @@ struct AchievementEntry {
   std::string name;
   std::string description;
   std::string unachieved_description;
+  bool is_secret = false;
   bool unlocked = false;
   bool is_new = false;
   int64_t unlock_utc = 0;
   std::optional<AchievementProgress> progress;
 
   bool available() const { return unlocked || availability == AchievementAvailability::kAvailable; }
+  bool is_masked_secret() const { return is_secret && !unlocked; }
+  std::string display_name() const { return is_masked_secret() ? "SECRET ACHIEVEMENT" : name; }
+  std::string display_description() const {
+    if (is_masked_secret()) return "CONTINUE PLAYING TO UNLOCK THIS SECRET ACHIEVEMENT.";
+    return (!unlocked && !unachieved_description.empty()) ? unachieved_description : description;
+  }
 };
 
 struct AchievementToast {

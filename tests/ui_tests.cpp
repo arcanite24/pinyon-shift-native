@@ -228,23 +228,28 @@ void test_pause_menu() {
   // Free roam items & wrap-around.
   pm.show(false);
   const auto fr_items = pm.items();
-  CHECK(fr_items.size() == 15);
+  CHECK(fr_items.size() == 16);
   CHECK(fr_items.front() == carview::PauseMenu::kResume);
   CHECK(fr_items.back() == carview::PauseMenu::kQuitToTitle);
   {
     bool found_club = false;
+    bool found_car_club = false;
     bool found_achievements = false;
     bool found_rally = false;
     for (size_t i = 0; i + 1 < fr_items.size(); ++i) {
       if (fr_items[i] == carview::PauseMenu::kCareer && fr_items[i + 1] == carview::PauseMenu::kClub) found_club = true;
-      if (fr_items[i] == carview::PauseMenu::kClub && fr_items[i + 1] == carview::PauseMenu::kAchievements)
+      if (fr_items[i] == carview::PauseMenu::kClub && fr_items[i + 1] == carview::PauseMenu::kCarClub)
+        found_car_club = true;
+      if (fr_items[i] == carview::PauseMenu::kCarClub && fr_items[i + 1] == carview::PauseMenu::kAchievements)
         found_achievements = true;
       if (fr_items[i] == carview::PauseMenu::kRally) found_rally = true;
     }
     CHECK(found_club);
+    CHECK(found_car_club);
     CHECK(found_achievements);
     CHECK(found_rally);
     CHECK(pm.label(carview::PauseMenu::kClub) == "1000 CLUB");
+    CHECK(pm.label(carview::PauseMenu::kCarClub) == "CAR CLUB");
     CHECK(pm.label(carview::PauseMenu::kRally) == "HORIZON RALLY");
     CHECK(pm.label(carview::PauseMenu::kAchievements) == "ACHIEVEMENTS");
     CHECK(pm.label(carview::PauseMenu::kPhotoMode) == "PHOTO MODE");

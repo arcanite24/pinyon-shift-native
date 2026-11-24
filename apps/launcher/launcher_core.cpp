@@ -2639,10 +2639,12 @@ WheelBindingConfig load_wheel_settings(const std::filesystem::path& settings_fil
     else if (k == "brake-dz-out") cfg.brake.deadzone_out = float(std::atof(v.c_str()));
     else if (k == "rumble-scale") cfg.rumble_scale = float(std::atof(v.c_str()));
     else if (k == "controller-layout") cfg.controller_layout = std::atoi(v.c_str());
+    else if (k == "wheel-separate") cfg.separate_devices = true;
     else if (k == "wheel-separate-devices") cfg.separate_devices = (v == "1" || v == "true");
     else if (k == "wheel-degrees") cfg.steering_degrees = std::atoi(v.c_str());
+    else if (k == "wheel-ffb-strength") cfg.ffb_gain = float(std::atof(v.c_str()) / 100.0);
     else if (k == "wheel-ffb-gain") cfg.ffb_gain = float(std::atof(v.c_str()));
-    else if (k == "wheel-ffb-invert") cfg.ffb_invert = (v == "1" || v == "true");
+    else if (k == "wheel-ffb-invert") cfg.ffb_invert = v.empty() || v == "1" || v == "true";
     else if (k == "wheel-steer-axis") cfg.steer.axis_index = std::atoi(v.c_str());
     else if (k == "wheel-throttle-axis") cfg.throttle.axis_index = std::atoi(v.c_str());
     else if (k == "wheel-brake-axis") cfg.brake.axis_index = std::atoi(v.c_str());
@@ -2655,8 +2657,10 @@ WheelBindingConfig load_wheel_settings(const std::filesystem::path& settings_fil
 bool save_wheel_settings(const std::filesystem::path& settings_file, const WheelBindingConfig& cfg,
                          std::string* error) {
   static const std::set<std::string> kManagedKeys = {
-      "steer-dz-in", "steer-dz-out", "throttle-dz-in", "throttle-dz-out",
-      "brake-dz-in", "brake-dz-out", "rumble-scale", "controller-layout"};
+      "steer-dz-in",      "steer-dz-out",       "throttle-dz-in",   "throttle-dz-out",
+      "brake-dz-in",      "brake-dz-out",       "rumble-scale",     "controller-layout",
+      "wheel-separate",   "wheel-900-linear",   "wheel-ffb-mode",   "wheel-ffb-strength",
+      "wheel-ffb-invert"};
   std::vector<std::string> kept_lines;
   if (std::ifstream in(settings_file); in) {
     for (std::string line; std::getline(in, line);) {
@@ -2695,11 +2699,16 @@ bool save_wheel_settings(const std::filesystem::path& settings_file, const Wheel
   out << "brake-dz-in " << fmt_f(cfg.brake.deadzone_in) << "\n";
   out << "brake-dz-out " << fmt_f(cfg.brake.deadzone_out) << "\n";
   out << "rumble-scale " << fmt_f(cfg.rumble_scale) << "\n";
-  // Store wheel-specific metadata as structured comment directives so carview's strict settings.txt parser never warns.
-  out << "# wheel-separate-devices " << (cfg.separate_devices ? 1 : 0) << "\n";
+  // Emit real carview settings.txt flags so wheel configuration takes effect live in-game.
+  if (cfg.separate_devices) out << "wheel-separate\n";
+  if (cfg.steering_degrees >= 900) out << "wheel-900-linear\n";
+  if (cfg.ffb_gain > 0.01f) {
+    out << "wheel-ffb-mode full\n";
+    out << "wheel-ffb-strength " << std::clamp(int(std::lround(cfg.ffb_gain * 100.0f)), 5, 100) << "\n";
+  }
+  if (cfg.ffb_invert) out << "wheel-ffb-invert\n";
+  // Store launcher-only axis metadata as structured comment directives so carview never warns.
   out << "# wheel-degrees " << cfg.steering_degrees << "\n";
-  out << "# wheel-ffb-gain " << fmt_f(cfg.ffb_gain) << "\n";
-  out << "# wheel-ffb-invert " << (cfg.ffb_invert ? 1 : 0) << "\n";
   out << "# wheel-steer-axis " << cfg.steer.axis_index << "\n";
   out << "# wheel-throttle-axis " << cfg.throttle.axis_index << "\n";
   out << "# wheel-brake-axis " << cfg.brake.axis_index << "\n";

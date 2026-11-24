@@ -56,6 +56,9 @@ struct PhotoEffects {
   float brightness = 50.0f;       // 0..100 (50 = 0.0)
   float sepia = 0.0f;             // 0..100 (0 = off, 100 = full sepia)
   float vignette = 20.0f;         // 0..100 (0 = off, 100 = strong vignette)
+  bool tracking_panning = false;  // false = Panning (background blur), true = Tracking (chassis locked)
+  bool watermark = true;          // stamp Forza Horizon / Shift Engine watermark onto saved PNG
+  bool hide_car = false;          // hide player car during Photo Mode for landscape shots
   PhotoPreset preset = PhotoPreset::kDefault;
 
   void apply_preset(PhotoPreset p);
@@ -84,8 +87,14 @@ class PhotoCamera {
   void set_limits(const PhotoLimits& limits);
   const PhotoLimits& limits() const { return limits_; }
 
+  // Optional wall/obstacle raycast callback: given segment origin + unit dir + max_dist,
+  // returns true and writes `hit_dist` if solid geometry blocks the camera.
+  using WallRaycastFn = std::function<bool(const std::array<double, 3>& origin, const std::array<double, 3>& dir,
+                                           double max_dist, double& hit_dist)>;
+
   void step(double dt, const PhotoCameraInput& in,
-            const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below = {});
+            const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below = {},
+            const WallRaycastFn& wall_raycast = {});
   // Locks focus distance to distance between camera eye and `target`.
   float autofocus_distance(const std::array<double, 3>& target) const;
 
@@ -100,7 +109,8 @@ class PhotoCamera {
   void set_roll_deg(double deg);
 
  private:
-  void clamp_to_limits(const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below);
+  void clamp_to_limits(const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below,
+                       const WallRaycastFn& wall_raycast = {});
 
   PhotoLimits limits_{};
   std::array<double, 3> anchor_{0, 0, 0};
@@ -182,11 +192,23 @@ class HorizonPromoTracker {
   int total_cars_ = 240;
 };
 
+// Composites a crisp Forza Horizon / Shift Engine corner watermark onto RGBA8 pixels.
+void stamp_photo_watermark(std::vector<uint8_t>& rgba, uint32_t width, uint32_t height);
+
 // Writes an RGBA8 image to `<dir>/<prefix>-YYYYMMDD-HHMMSS[-N].png` using
-// stb_image_write, creating `<dir>` if needed.
+// stb_image_write, creating `<dir>` if needed. Stamps the Horizon watermark when `add_watermark` is true.
 bool write_photo_png(const std::filesystem::path& dir, const std::vector<uint8_t>& rgba, uint32_t width,
                      uint32_t height, const std::string& prefix, std::filesystem::path& out_path,
-                     std::string* error = nullptr);
+                     std::string* error = nullptr, bool add_watermark = false);
+
+struct PhotoGalleryEntry {
+  std::filesystem::path path;
+  std::string filename;
+  uint64_t size_bytes = 0;
+};
+
+// Lists saved PNG photos in `photos_dir` sorted newest-first.
+std::vector<PhotoGalleryEntry> list_photo_gallery(const std::filesystem::path& photos_dir);
 
 // Full Photo Mode state & HUD controller.
 class PhotoModeController {
@@ -194,6 +216,7 @@ class PhotoModeController {
   enum EffectRow : int {
     kPreset = 0,
     kShutterSpeed,
+    kShutterMode,
     kAperture,
     kFocusDistance,
     kExposure,
@@ -204,6 +227,8 @@ class PhotoModeController {
     kVignette,
     kZoomFov,
     kRollTilt,
+    kWatermark,
+    kHideCar,
     kRowCount
   };
 
@@ -234,7 +259,18 @@ class PhotoModeController {
   void autofocus(const std::array<double, 3>& target);
 
   void step(double dt, const PhotoCameraInput& input,
-            const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below = {});
+            const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below = {},
+            const PhotoCamera::WallRaycastFn& wall_raycast = {});
+
+  // Saved Photo Gallery overlay (browse & delete saved screenshots).
+  void open_gallery(const std::filesystem::path& photos_dir);
+  void close_gallery() { gallery_open_ = false; }
+  bool gallery_open() const { return gallery_open_; }
+  void gallery_move(int delta);
+  void gallery_select(int idx);
+  bool gallery_delete_selected();
+  const std::vector<PhotoGalleryEntry>& gallery_entries() const { return gallery_entries_; }
+  int gallery_selected() const { return gallery_selected_; }
 
   // Begins a multi-frame supersampled capture (4x Halton jitter).
   void begin_capture(uint32_t width, uint32_t height, int samples = 4);
@@ -263,6 +299,12 @@ class PhotoModeController {
   PromoSpotResult live_promo_{};
   PromoSpotResult last_promo_{};
   std::string last_saved_label_;
+
+  // Saved Photo Gallery state.
+  bool gallery_open_ = false;
+  std::filesystem::path gallery_dir_;
+  std::vector<PhotoGalleryEntry> gallery_entries_;
+  int gallery_selected_ = 0;
 };
 
 }  // namespace carview

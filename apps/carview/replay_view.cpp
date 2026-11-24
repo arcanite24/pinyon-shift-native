@@ -60,8 +60,27 @@ const char* replay_camera_name(ReplayCameraMode m) {
     case ReplayCameraMode::kBumper: return "BUMPER";
     case ReplayCameraMode::kWheel: return "WHEEL CAM";
     case ReplayCameraMode::kCarRelative: return "CAR-RELATIVE";
+    case ReplayCameraMode::kCockpit: return "COCKPIT";
+    case ReplayCameraMode::kHood: return "HOOD";
     default: return "CHASE";
   }
+}
+
+const char* replay_telemetry_page_name(ReplayTelemetryPage p) {
+  switch (p) {
+    case ReplayTelemetryPage::kGeneral: return "GENERAL";
+    case ReplayTelemetryPage::kFriction: return "FRICTION & TYRES";
+    case ReplayTelemetryPage::kSuspension: return "SUSPENSION";
+    case ReplayTelemetryPage::kDamage: return "DAMAGE";
+    case ReplayTelemetryPage::kEngine: return "ENGINE & DRIVE";
+    default: return "GENERAL";
+  }
+}
+
+void ReplayViewer::cycle_telemetry_page(int dir) {
+  const int n = int(ReplayTelemetryPage::kCount);
+  telemetry_page_ = static_cast<ReplayTelemetryPage>(((int(telemetry_page_) + dir) % n + n) % n);
+  telemetry_ = true;
 }
 
 void ReplayViewer::open(drive::ReplayRecording rec, bool start_playing) {
@@ -179,13 +198,23 @@ void ReplayViewer::update(double dt) {
     const double dur = rec_.duration();
     t_ += dt * speed_;
     if (t_ >= dur) {
-      t_ = dur;
-      paused_ = true;
+      if (repeat_loop_ && dur > 0.05) {
+        t_ = 0.0;
+        trackside_valid_ = false;
+      } else {
+        t_ = dur;
+        paused_ = true;
+      }
     } else if (t_ <= 0.0) {
       t_ = 0.0;
       if (speed_ < 0.0) {
-        paused_ = true;
-        speed_ = 1.0;
+        if (repeat_loop_ && dur > 0.05) {
+          t_ = dur;
+          trackside_valid_ = false;
+        } else {
+          paused_ = true;
+          speed_ = 1.0;
+        }
       }
     }
   }
@@ -317,6 +346,27 @@ drive::CameraView ReplayViewer::compute_camera(
       v.forward = normalize3({aim[0] - v.eye[0], aim[1] - v.eye[1], aim[2] - v.eye[2]}, fwd);
       v.up = {0.0, 1.0, 0.0};
       v.fov_degrees = 46.0;
+      break;
+    }
+    case ReplayCameraMode::kCockpit: {
+      // Driver eye position inside cockpit looking out the windscreen.
+      v.eye = {p[0] - right[0] * 0.36 - fwd[0] * 0.22 + up[0] * 1.12,
+               p[1] - right[1] * 0.36 - fwd[1] * 0.22 + up[1] * 1.12,
+               p[2] - right[2] * 0.36 - fwd[2] * 0.22 + up[2] * 1.12};
+      v.forward = fwd;
+      v.up = up;
+      v.fov_degrees = 52.0;
+      v.near_clip = 0.12;
+      v.interior = true;
+      return v;
+    }
+    case ReplayCameraMode::kHood: {
+      // Hood-mounted forward broadcast view.
+      v.eye = {p[0] + fwd[0] * 0.55 + up[0] * 1.14, p[1] + fwd[1] * 0.55 + up[1] * 1.14,
+               p[2] + fwd[2] * 0.55 + up[2] * 1.14};
+      v.forward = fwd;
+      v.up = up;
+      v.fov_degrees = 54.0;
       break;
     }
     default:
@@ -483,11 +533,49 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
       }
       ry += 25.0f * s;
     };
+    // Page header pill (968_TELEMETRY cycleable pages: General / Friction / Suspension / Damage / Engine).
+    ui4::pill(out, rx0, ry, rx1, ry + 22.0f * s, ui4::kPink, ui4::PillKind::kHud02);
+    char pbuf[64];
+    std::snprintf(pbuf, sizeof pbuf, "TELEMETRY %d/%d  •  %s", int(telemetry_page_) + 1,
+                  int(ReplayTelemetryPage::kCount), replay_telemetry_page_name(telemetry_page_));
+    out.text(rx0 + 10.0f * s, ry + 5.0f * s, pbuf, ui4::style(Font::kE, 10.5f * s, ui4::kWhite));
+    ry += 25.0f * s;
+
     const float rpm_f = std::clamp(focus->rpm / std::max(1000.0f, focus->redline_rpm), 0.0f, 1.0f);
-    telem_bar("RPM", rpm_f, rpm_f > 0.88f ? ui4::kPink : ui4::kYellow, false);
-    telem_bar("THROTTLE", float(focus->throttle_u8) / 255.0f, ui4::kGreen, false);
-    telem_bar("BRAKE", float(focus->brake_u8) / 255.0f, ui4::kRed, false);
-    telem_bar("STEER", float(focus->steer_i8) / 127.0f, ui4::kAmber, true);
+    const float thr_f = float(focus->throttle_u8) / 255.0f;
+    const float brk_f = float(focus->brake_u8) / 255.0f;
+    const float str_f = float(focus->steer_i8) / 127.0f;
+    if (telemetry_page_ == ReplayTelemetryPage::kGeneral) {
+      telem_bar("RPM", rpm_f, rpm_f > 0.88f ? ui4::kPink : ui4::kYellow, false);
+      telem_bar("THROTTLE", thr_f, ui4::kGreen, false);
+      telem_bar("BRAKE", brk_f, ui4::kRed, false);
+      telem_bar("STEER", str_f, ui4::kAmber, true);
+    } else if (telemetry_page_ == ReplayTelemetryPage::kFriction) {
+      const float spd_n = std::clamp(std::fabs(focus->speed_mps) / 65.0f, 0.0f, 1.0f);
+      const float lat = std::fabs(str_f) * spd_n;
+      const float lon = std::max(thr_f * 0.65f, brk_f * 0.95f);
+      telem_bar("FL GRIP", std::clamp(0.25f + lat * 0.55f + brk_f * 0.35f, 0.0f, 1.0f), ui4::kYellow, false);
+      telem_bar("FR GRIP", std::clamp(0.25f + lat * 0.55f + brk_f * 0.35f, 0.0f, 1.0f), ui4::kYellow, false);
+      telem_bar("RL GRIP", std::clamp(0.22f + lat * 0.45f + thr_f * 0.55f, 0.0f, 1.0f), ui4::kPink, false);
+      telem_bar("RR GRIP", std::clamp(0.22f + lat * 0.45f + lon * 0.50f, 0.0f, 1.0f), ui4::kPink, false);
+    } else if (telemetry_page_ == ReplayTelemetryPage::kSuspension) {
+      const float pitch_w = (brk_f - thr_f) * 0.28f;
+      const float roll_w = str_f * std::clamp(std::fabs(focus->speed_mps) / 40.0f, 0.0f, 1.0f) * 0.25f;
+      telem_bar("FL COMP", std::clamp(0.45f + pitch_w + roll_w, 0.05f, 1.0f), ui4::kAmber, false);
+      telem_bar("FR COMP", std::clamp(0.45f + pitch_w - roll_w, 0.05f, 1.0f), ui4::kAmber, false);
+      telem_bar("RL COMP", std::clamp(0.45f - pitch_w + roll_w, 0.05f, 1.0f), ui4::kYellow, false);
+      telem_bar("RR COMP", std::clamp(0.45f - pitch_w - roll_w, 0.05f, 1.0f), ui4::kYellow, false);
+    } else if (telemetry_page_ == ReplayTelemetryPage::kDamage) {
+      telem_bar("ENGINE", 1.0f, ui4::kGreen, false);
+      telem_bar("TRANS", 1.0f, ui4::kGreen, false);
+      telem_bar("SUSP", 1.0f, ui4::kGreen, false);
+      telem_bar("AERO", 1.0f, ui4::kGreen, false);
+    } else {
+      telem_bar("RPM", rpm_f, rpm_f > 0.88f ? ui4::kPink : ui4::kYellow, false);
+      telem_bar("LOAD", std::clamp(thr_f * (0.35f + 0.65f * rpm_f), 0.0f, 1.0f), ui4::kGreen, false);
+      telem_bar("BOOST", std::clamp(thr_f * std::max(0.0f, rpm_f - 0.25f) * 1.35f, 0.0f, 1.0f), ui4::kAmber, false);
+      telem_bar("SPEED", std::clamp(std::fabs(focus->speed_mps) / 100.0f, 0.0f, 1.0f), ui4::kWhite, false);
+    }
 
     // Slim 926_REPLAY_HUD / 968_TELEMETRY chassis status strip (I_HUD_DAMAGE_ENGINE glyph).
     std::array<float, 4> dmg_uv{};
@@ -523,7 +611,7 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
         {"T:UI4/HUD/DVR_BUTTON_FF", ">>", !paused_ && speed_ > 1.05},
         {"T:UI4/HUD/DVR_BUTTON_CAMERA", "CAM", false},
         {"T:UI4/HUD/DVR_BUTTON_TELEMETRY", "TEL", telemetry_},
-        {"T:UI4/HUD/DVR_BUTTON_REPEAT", "RPT", false},
+        {"T:UI4/HUD/DVR_BUTTON_REPEAT", "RPT", repeat_loop_},
     };
 
     // Backing PILL36PX strip behind DVR transport + timecode.

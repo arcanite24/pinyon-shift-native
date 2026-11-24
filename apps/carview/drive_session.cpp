@@ -304,6 +304,8 @@ void DriveSession::init_session() {
         if (init_settings.has_explicit_control_tokens() || !app.have_saved || !app.saved.has_controls)
           live_controls = init_ls.controls;
         car_damage.mode = drive::DamageMode(init_ls.damage_mode);
+        live_hud_speedo_mode = init_ls.hud_speedo_mode;
+        live_minimap_mode = init_ls.minimap_mode;
       }
       live_sound_enabled = app.audio_cfg.sound;
       live_radio_enabled = app.audio_cfg.radio_on;
@@ -367,7 +369,7 @@ void DriveSession::init_session() {
       rewind_buf.set_enabled(live_controls.assists.rewind);
       rewind_buf.start_session(vehicle.time());
       apply_vehicle_assists(vehicle, live_controls.assists);
-      app.race_options.assists = to_difficulty_assists(live_controls.assists);
+      app.race_options.assists = to_difficulty_assists(live_controls.assists, int(car_damage.mode));
       braking_table = drive::BrakingTable::build(vehicle.params());
       driving_line_mode =
           static_cast<drive::DrivingLineMode>(std::clamp(live_controls.assists.driving_line, 0, 2));
@@ -868,6 +870,9 @@ void DriveSession::save_now(const char* why) {
         if (app.have_saved) s.carry_from(app.saved);
         if (app.career.driver_level > 0) s.level = app.career.driver_level;
         s.club = app.saved.club;
+        s.car_club_name = app.saved.car_club_name;
+        s.car_club_tag = app.saved.car_club_tag;
+        s.car_club_shared = app.saved.car_club_shared;
         s.has_controls = true;
         s.controls = live_controls;
         std::string e;

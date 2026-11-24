@@ -10,7 +10,7 @@ void draw_career_header(ui::List& l, const DriveHud& st, const Layout& g) {
   cs.band_points = st.band_points;
   cs.band_hi = st.band_hi;
   cs.band_collect_ready = st.band_collect_ready;
-  cs.car_name = st.car_name;
+  cs.car_name = st.club_tag.empty() ? st.car_name : ("[" + st.club_tag + "] " + st.car_name);
   cs.car_class = st.car_class;
   cs.car_pi = st.car_pi;
   cs.credits = st.credits;

@@ -174,6 +174,13 @@ std::string save_to_text(const DriveSave& s) {
     }
     out += "\n";
   }
+  if (!s.car_club_name.empty()) out += "car_club_name " + s.car_club_name + "\n";
+  if (!s.car_club_tag.empty()) out += "car_club_tag " + s.car_club_tag + "\n";
+  if (!s.car_club_shared.empty()) {
+    out += "car_club_shared";
+    for (int id : s.car_club_shared) out += " " + std::to_string(id);
+    out += "\n";
+  }
   if (s.has_controls) {
     const auto& c = s.controls;
     out += "controls_layout " + std::to_string(c.layout_id) + "\n";
@@ -399,6 +406,19 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
         car.progress.push_back(std::move(prog));
       }
       out.club.push_back(std::move(car));
+    } else if (key == "car_club_name") {
+      std::string rest;
+      std::getline(l, rest);
+      while (!rest.empty() && (rest.front() == ' ' || rest.front() == '\t')) rest.erase(rest.begin());
+      out.car_club_name = rest;
+    } else if (key == "car_club_tag") {
+      std::string tag;
+      if (l >> tag) {
+        if (tag.size() > 4) tag.resize(4);
+        out.car_club_tag = tag;
+      }
+    } else if (key == "car_club_shared") {
+      for (int id = 0; l >> id;) out.car_club_shared.push_back(id);
     } else if (key == "controls_layout") {
       if (l >> out.controls.layout_id) out.has_controls = true;
     } else if (key == "controls_deadzones") {

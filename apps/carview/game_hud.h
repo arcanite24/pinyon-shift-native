@@ -159,6 +159,8 @@ struct MapOverlayHud {
   int roads_discovered = 0;
   int roads_total = 216;
   double zoom = 1.0;
+  double center_x = 0.0, center_z = 0.0;
+  double scale_mpp = 0.0;  // metres per pixel (>0 enables world-projected Colorado region labels)
   bool treasure_map = false;
 };
 
@@ -243,6 +245,13 @@ struct DriveHud {
   int gear = 1;
   bool abs = false;
   bool tcs = false;
+  bool stm = false;
+  bool has_boost = false;
+  double boost_psi = 0.0;
+  double boost_max_psi = 18.0;
+  int speedo_mode = 0;  // 0=Analog, 1=Digital, 2=Off
+  double barn_radar_proximity = 0.0;  // 0..1 pulsing barn find proximity radar inside rumor circle
+  std::string club_tag;               // optional 4-char Car Club [TAG]
   bool driving = true;
   bool touch_hud_active = false;  // compacts & lifts tach above Android touch pedals
   bool metric_units = true;       // true: km/h & km/m, false: MPH & mi/ft (global Units setting)

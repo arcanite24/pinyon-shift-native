@@ -56,7 +56,76 @@ void DriveSession::place_world() {
         host.showroom.set_world_transform(m);
         if (traffic) traffic->place(info, vehicle);
         else host.showroom.set_instances({});
-        if (app.race) {
+        if (replay_viewer.active() && replay_viewer.current_cars().size() > 1) {
+          // Multi-car Replay: place every recorded non-focused car onto guest Showrooms in player-local space.
+          host.showroom.set_instances({});
+          float pm[16];
+          drive::model_to_world(info, vehicle, pm);
+          double pmd[16];
+          for (int i = 0; i < 16; ++i) pmd[i] = pm[i];
+          const double a = pmd[0], b = pmd[4], c = pmd[8], d = pmd[1], e = pmd[5], f = pmd[9], g = pmd[2], h = pmd[6], k = pmd[10];
+          const double det = a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+          const double id = det != 0.0 ? 1.0 / det : 0.0;
+          const double inv[9] = {(e * k - f * h) * id, (c * h - b * k) * id, (b * f - c * e) * id,
+                                 (f * g - d * k) * id, (a * k - c * g) * id, (c * d - a * f) * id,
+                                 (d * h - e * g) * id, (b * g - a * h) * id, (a * e - b * d) * id};
+          double world_to_player[16]{};
+          for (int r = 0; r < 3; ++r)
+            for (int col = 0; col < 3; ++col) world_to_player[col * 4 + r] = inv[r * 3 + col];
+          for (int r = 0; r < 3; ++r)
+            world_to_player[12 + r] = -(inv[r * 3 + 0] * pmd[12] + inv[r * 3 + 1] * pmd[13] + inv[r * 3 + 2] * pmd[14]);
+          world_to_player[15] = 1.0;
+
+          std::vector<Showroom::Instance> rmore;
+          const uint32_t focus_slot = replay_viewer.focus_slot();
+          const bool night_lamps = drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec);
+          for (const auto& rc : replay_viewer.current_cars()) {
+            if (rc.slot == focus_slot) continue;
+            const auto* cinfo = replay_viewer.recording().find_car_info(rc.slot);
+            std::string media = (cinfo && !cinfo->car_media.empty()) ? cinfo->car_media : app.car;
+            auto it = festival_guests.find(media);
+            if (it == festival_guests.end() && festival_guests.size() < 24) {
+              auto gs = std::make_unique<Showroom>(host.renderer);
+              gs->set_guest();
+              if (host.showroom.dynamic_env_view() && host.showroom.dynamic_env_sampler()) {
+                gs->set_shared_dynamic_env(host.showroom.dynamic_env_view(), host.showroom.dynamic_env_sampler());
+              }
+              ShowroomOptions opt{};
+              opt.game_root = app.game_root_of();
+              std::string ge;
+              if (gs->load(app.bake_dir, media, opt, ge) && gs->upload(ge)) {
+                gs->load_car_lamps(app.game_root_of(), media);
+                it = festival_guests.emplace(media, std::move(gs)).first;
+              } else {
+                it = festival_guests.emplace(media, nullptr).first;
+              }
+            }
+            Showroom* guest_sr = (it != festival_guests.end() && it->second) ? it->second.get() : &host.showroom;
+            const drive::Quat q{double(rc.quat[1]), double(rc.quat[2]), double(rc.quat[3]), double(rc.quat[0])};
+            float gm[16];
+            drive::model_to_world(guest_sr->car(), q, {0, 0, 0}, gm);
+            double gmd[16];
+            for (int i = 0; i < 16; ++i) gmd[i] = gm[i];
+            gmd[12] += double(rc.pos[0]);
+            gmd[13] += double(rc.pos[1]);
+            gmd[14] += double(rc.pos[2]);
+            Showroom::Instance inst;
+            inst.car = guest_sr;
+            for (int col = 0; col < 4; ++col)
+              for (int row = 0; row < 4; ++row) {
+                double sum = 0.0;
+                for (int kk = 0; kk < 4; ++kk) sum += world_to_player[kk * 4 + row] * gmd[col * 4 + kk];
+                inst.model[col * 4 + row] = float(sum);
+              }
+            drive::CarLampState ls;
+            ls.headlamps_on = night_lamps;
+            ls.brake_on = rc.brake_u8 > 20;
+            inst.lamps = ls.vectors();
+            inst.has_lamps = true;
+            rmore.push_back(inst);
+          }
+          host.showroom.set_instances(std::move(rmore));
+        } else if (app.race) {
           app.race->set_tod_sec(float(app.tod_clock.tod_sec));
           std::vector<Showroom::Instance> more;
           app.race->instances(info, vehicle, more);

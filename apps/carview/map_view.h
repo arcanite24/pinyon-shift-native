@@ -68,6 +68,7 @@ struct MapScene {
   double x = 0, z = 0;  // the player, game frame
   double heading = 0;   // rad, 0 faces +z (north), positive turns towards +x (east)
   double speed_mps = 0; // player speed (m/s) for dynamic minimap zoom
+  bool north_up = false;  // true: north-up fixed minimap with rotating player arrow
   const freeroam::Collectibles* data = nullptr;
   const freeroam::Progress* progress = nullptr;
   const freeroam::RoadDiscovery* road_discovery = nullptr;
@@ -95,8 +96,8 @@ struct MapScene {
 class MapView {
  public:
   // Reads colorado.nav, the map profiles and Horizon.zip's map textures
-  // under `game_root`.
-  bool open(const std::filesystem::path& game_root, std::string* error);
+  // under `game_root` (loading localized MapIconSheet for `lang` with EN fallback).
+  bool open(const std::filesystem::path& game_root, std::string* error, const std::string& lang = "EN");
   bool ready() const { return !roads_.empty(); }
 
   // The minimap panel, size x size pixels.

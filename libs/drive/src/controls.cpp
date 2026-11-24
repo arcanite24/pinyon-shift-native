@@ -143,6 +143,16 @@ ControllerLayout default_controller_layout(int layout_id) {
   return l;
 }
 
+ControllerLayout apply_handbrake_clutch_swap(const ControllerLayout& layout, bool swap) {
+  if (!swap) return layout;
+  ControllerLayout out = layout;
+  for (size_t i = 1; i < size_t(PadControl::kCount); ++i) {
+    if (iequals(out.bindings[i], "Handbrake")) out.bindings[i] = "Clutch";
+    else if (iequals(out.bindings[i], "Clutch")) out.bindings[i] = "Handbrake";
+  }
+  return out;
+}
+
 KeyBindings KeyBindings::defaults() {
   KeyBindings kb;
   auto set = [&](ControlAction a, const char* p, const char* s = "") { kb.map[size_t(a)] = {p, s}; };

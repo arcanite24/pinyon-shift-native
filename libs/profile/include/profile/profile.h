@@ -81,10 +81,11 @@ struct GarageCar {
   int64_t id = 0, car_id = 0;
   double performance_index = 0;  // raw, (0, 1]
   int64_t class_id = 0, color_index = 0;
-  // Every integer column of the row by name (the part slots, the tune,
-  // the history), kept as read.
+  // Every integer, float, and text column of the row by name (the part slots,
+  // the tune, livery filename, GUID, and history), kept as read.
   std::map<std::string, int64_t> columns;
-  std::map<std::string, double> reals;  // the float columns (CurbWeight, the ratings)
+  std::map<std::string, double> reals;       // the float columns (CurbWeight, Tuning_*, ratings)
+  std::map<std::string, std::string> texts;  // the text columns (LiveryFileName, Guid, etc.)
 };
 struct PurchasedPart {
   int64_t garage_id = 0, part_enum = 0, part_id = 0, manufacturer_id = 0, price_paid = 0;
@@ -93,6 +94,7 @@ struct ClubCar {
   int64_t car_id = 0;
   int challenges = 0, done = 0;  // flag A set
   std::vector<std::pair<uint32_t, bool>> keys;  // each challenge's key and flag A, in file order
+  std::vector<std::vector<int>> progress;       // optional per-challenge save_progress counters
 };
 
 // Everything M6 reads from a profile, with the parsed body kept whole.
@@ -103,6 +105,8 @@ struct Imported {
   // Main/*: the career.
   int64_t credits = 0, xp = 0, wristband_level = 0, level = 0, career_car = 0, upgrade_discount = 0;
   int64_t total_winnings = 0, num_races = 0, num_victories = 0, num_podiums = 0;
+  double popularity = 0;
+  int64_t max_skills_score = 0, max_skills_car = 0, driver_xp = 0;
   double top_speed = 0;        // m/s
   double distance_driven = 0;  // TotalDistanceDriven, m
   double time_festival = 0, time_street = 0, time_exhibition = 0;  // TimeIn*Races, s
@@ -115,9 +119,11 @@ struct Imported {
   // CRoadDiscovery (Colorado): node count + ceil(node_count/32) uint32 words.
   uint32_t road_discovery_nodes = 0;
   std::vector<uint32_t> road_discovery_words;
-  // CGasStationState & CMissionState (Colorado).
+  // CGasStationState, CMissionState & speed activity PBs (Colorado).
   std::vector<std::string> outposts_discovered;
   std::vector<std::string> pr_stunts_completed;
+  std::vector<std::pair<std::string, double>> speed_traps;
+  std::vector<std::pair<std::string, double>> speed_zones;
   bool satnav_on = true;
   // PlayerDatabase.
   std::vector<GarageCar> garage;

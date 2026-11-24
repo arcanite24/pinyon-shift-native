@@ -160,7 +160,7 @@ void DriveSession::poll_sdl_events() {
                   app.show_title || app.title_menu_phase || app.fmv_player.active() || ceremony.active || grid_menu_open ||
                   menu.open || map_open || picking || events_page.is_open() || outpost_hub_open || garage_open ||
                   shop.is_open() || autoshow.is_open() || career_page.is_open() || settings_page.is_open() ||
-                  paint_open || club_open || app.rally_hub_open || app.rally_service_open || app.rally_results_open ||
+                  paint_open || club_open || car_club_open || app.rally_hub_open || app.rally_service_open || app.rally_results_open ||
                   photo_mode.active() || replay_viewer.active() || replay_viewer.browser_open() ||
                   achievements.screen_open() || mods_page.is_open() || save_page.is_open() ||
                   slice12.trainer_overlay.is_open() || rewind_buf.active() || (app.race && app.race->player_finished());
@@ -351,7 +351,8 @@ void DriveSession::poll_sdl_events() {
               }
             }
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-              const drive::ControllerLayout pad_layout = drive::default_controller_layout(live_controls.layout_id);
+              const drive::ControllerLayout pad_layout = drive::apply_handbrake_clutch_swap(
+                  drive::default_controller_layout(live_controls.layout_id), live_controls.switch_handbrake_clutch);
               const drive::PadControl pc = pad_control_from_button(e.gbutton.button);
               const std::string_view act = pad_layout.action_for(pc);
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) open_menu();
@@ -506,7 +507,8 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
           camera_pull.look_target =
               action_key_down(keys, live_controls.keys, drive::ControlAction::kLookBack) ? 3.14159265358979 : 0.0;
           rig_look = camera_pull.look_target;
-          const drive::ControllerLayout pad_layout = drive::default_controller_layout(live_controls.layout_id);
+          const drive::ControllerLayout pad_layout = drive::apply_handbrake_clutch_swap(
+              drive::default_controller_layout(live_controls.layout_id), live_controls.switch_handbrake_clutch);
           const auto& dz = live_controls.deadzones;
           const drive::PadControl gas_ctrl = pad_layout.control_for("Gas");
           const drive::PadControl brake_ctrl = pad_layout.control_for("Brake");

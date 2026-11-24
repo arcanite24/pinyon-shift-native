@@ -548,13 +548,39 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 if (e.wheel.y > 0) zoom_by(1.22);
                 else if (e.wheel.y < 0) zoom_by(1.0 / 1.22);
               }
+              auto screen_click_to_map = [&](float mx, float my) {
+                int win_w = 0, win_h = 0;
+                if (app.window) SDL_GetWindowSize(app.window, &win_w, &win_h);
+                if (win_w > 64 && win_h > 64 && map_w > 64 && map_h > 64) {
+                  const double sx = double(mx) * (double(map_w) / double(win_w));
+                  const double sy = double(my) * (double(map_h) / double(win_h));
+                  const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
+                  const double dx = (sx - 0.5 * double(map_w)) * mpp;
+                  const double dz = -(sy - 0.5 * double(map_h)) * mpp;
+                  pan_by(dx, dz);
+                  map_set_gps();
+                }
+              };
               if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
                 map_dragging = true;
+                map_drag_moved = false;
+                map_drag_start_x = e.button.x;
+                map_drag_start_y = e.button.y;
+              }
+              if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_RIGHT) {
+                screen_click_to_map(e.button.x, e.button.y);
               }
               if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT) {
+                const bool was_click = map_dragging && !map_drag_moved;
                 map_dragging = false;
+                map_drag_moved = false;
+                if (was_click) screen_click_to_map(e.button.x, e.button.y);
               }
               if (e.type == SDL_EVENT_MOUSE_MOTION && map_dragging && map_w > 64 && map_h > 64) {
+                if (!map_drag_moved &&
+                    std::hypot(double(e.motion.x - map_drag_start_x), double(e.motion.y - map_drag_start_y)) > 6.0) {
+                  map_drag_moved = true;
+                }
                 const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
                 pan_by(-double(e.motion.xrel) * mpp, double(e.motion.yrel) * mpp);
               }

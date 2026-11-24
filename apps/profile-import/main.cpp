@@ -118,13 +118,14 @@ std::map<int64_t, std::string> scan_baked_cars(const std::filesystem::path& bake
 
 int install(int argc, char** argv) {
   const std::filesystem::path src = argv[2];
-  std::filesystem::path save_dir, bake_dir, state_root;
+  std::filesystem::path save_dir, bake_dir, game_root, state_root;
   bool replace = false, v4_flag = false;
   for (int i = 3; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
     if (a == "--save-dir") save_dir = next();
     else if (a == "--bake") bake_dir = next();
+    else if (a == "--game") game_root = next();
     else if (a == "--state-root") state_root = next();
     else if (a == "--replace") replace = true;
     else if (a == "--v4") v4_flag = true;
@@ -138,7 +139,19 @@ int install(int argc, char** argv) {
   std::error_code ec;
   if (state_root.empty())
     if (const char* s = std::getenv("SHIFT_STATE_ROOT"); s && *s) state_root = s;
-  const auto baked = scan_baked_cars(bake_dir);
+  auto baked = scan_baked_cars(bake_dir);
+  if (baked.empty() && !game_root.empty()) {
+    cars::Install inst;
+    cars::PartsDb db;
+    std::string db_err;
+    std::vector<cars::DealerCar> dealers;
+    if (cars::discover_install(game_root, state_root, "", inst, &db_err) && db.open(inst, &db_err) &&
+        db.dealer(dealers, &db_err, true)) {
+      for (const auto& cr : dealers) {
+        if (cr.id > 0 && !cr.media_name.empty()) baked[cr.id] = cr.media_name;
+      }
+    }
+  }
   profile::import::Options opts;
   opts.save_dir = save_dir;
   opts.replace_existing = replace;

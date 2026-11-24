@@ -293,6 +293,38 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
     }
   }
 
+  // 1b. Subtle Colorado world region labels projected directly onto the World Map.
+  if (mo.scale_mpp > 0.01) {
+    struct RegionLabel {
+      const char* name;
+      double x, z;
+    };
+    static constexpr RegionLabel kRegions[] = {
+        {"HORIZON FESTIVAL", -1380.0, -180.0},
+        {"RED ROCK", -3200.0, -2400.0},
+        {"CARSON", -2100.0, 1450.0},
+        {"BOULDER", 1700.0, -3400.0},
+        {"FINLEY DAM", 2050.0, 950.0},
+        {"EAGLE RIDGE", -550.0, -4100.0},
+        {"BEAUMONT", 2450.0, -900.0},
+        {"GLADSTONE", 900.0, 2100.0},
+        {"MONTELLO", -3400.0, 800.0},
+        {"GOLF COURSE", -420.0, 1250.0},
+    };
+    const float half_w = 0.5f * g.w, half_h = 0.5f * g.h;
+    const float inv_mpp = float(1.0 / mo.scale_mpp);
+    const float lbl_sz = std::clamp(11.5f * s * float(std::sqrt(std::clamp(mo.zoom, 0.8, 3.0))), 10.0f * s, 16.5f * s);
+    for (const auto& reg : kRegions) {
+      const float sx = half_w + float(reg.x - mo.center_x) * inv_mpp;
+      const float sy = half_h - float(reg.z - mo.center_z) * inv_mpp;
+      if (sx < g.L(90) || sx > g.w - g.L(90) || sy < g.T(72) || sy > g.h - g.T(84)) continue;
+      TextStyle rsh = font(ui::Font::kE, lbl_sz, rgba(0, 0, 0, 175), Align::kCenter);
+      TextStyle rts = font(ui::Font::kE, lbl_sz, rgba(255, 255, 255, 192), Align::kCenter);
+      l.text(sx + 1.4f * s, sy + 1.4f * s, reg.name, rsh);
+      l.text(sx, sy, reg.name, rts);
+    }
+  }
+
   // 2. Compact non-intrusive top-left H_MAP filter bar & roads discovery pill
   //    (cycles cleanly via LB / RB without covering the right third of Colorado!).
   {
@@ -397,19 +429,55 @@ void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g, bool metric_u
   const float x0 = g.L(64), y0 = g.B(376), x1 = g.L(296), y1 = g.B(408);
   ui4::pill(l, x0, y0, x1, y1, ui4::kPillGrey, ui4::PillKind::kHud01);
   l.rect(x0, y0, x0 + 28 * s, y1, ui4::kGreen);
-  const char* glyph = "^";
-  switch (gps.turn_kind) {
-    case 2: glyph = "\\"; break;
-    case 3: glyph = "<"; break;
-    case 4: glyph = "<<"; break;
-    case 5: glyph = "/"; break;
-    case 6: glyph = ">"; break;
-    case 7: glyph = ">>"; break;
-    case 8: glyph = "U"; break;
-    case 9: glyph = "*"; break;
-    default: glyph = "^"; break;
+  // Crisp vector chevron/arrow SatNav turn icon (replaces ASCII ^/<</U).
+  {
+    const float ax = x0 + 14.0f * s, ay = 0.5f * (y0 + y1);
+    const float lw = 2.6f * s;
+    const uint32_t ink = ui4::kInk;
+    auto head = [&](float hx, float hy, float dx, float dy) {
+      const float px = -dy, py = dx;
+      l.line(hx, hy, hx - (dx * 4.5f - px * 3.8f) * s, hy - (dy * 4.5f - py * 3.8f) * s, lw, ink);
+      l.line(hx, hy, hx - (dx * 4.5f + px * 3.8f) * s, hy - (dy * 4.5f + py * 3.8f) * s, lw, ink);
+    };
+    switch (gps.turn_kind) {
+      case 2:  // slight left
+        l.line(ax + 2.0f * s, ay + 8.0f * s, ax + 2.0f * s, ay + 1.0f * s, lw, ink);
+        l.line(ax + 2.0f * s, ay + 1.0f * s, ax - 4.5f * s, ay - 6.0f * s, lw, ink);
+        head(ax - 4.5f * s, ay - 6.0f * s, -0.707f, -0.707f);
+        break;
+      case 3:  // left
+      case 4:  // sharp left
+        l.line(ax + 4.0f * s, ay + 8.0f * s, ax + 4.0f * s, ay - 2.0f * s, lw, ink);
+        l.line(ax + 4.0f * s, ay - 2.0f * s, ax - 6.0f * s, ay - (gps.turn_kind == 4 ? -3.0f : 2.0f) * s, lw, ink);
+        head(ax - 6.0f * s, ay - (gps.turn_kind == 4 ? -3.0f : 2.0f) * s, -1.0f, 0.0f);
+        break;
+      case 5:  // slight right
+        l.line(ax - 2.0f * s, ay + 8.0f * s, ax - 2.0f * s, ay + 1.0f * s, lw, ink);
+        l.line(ax - 2.0f * s, ay + 1.0f * s, ax + 4.5f * s, ay - 6.0f * s, lw, ink);
+        head(ax + 4.5f * s, ay - 6.0f * s, 0.707f, -0.707f);
+        break;
+      case 6:  // right
+      case 7:  // sharp right
+        l.line(ax - 4.0f * s, ay + 8.0f * s, ax - 4.0f * s, ay - 2.0f * s, lw, ink);
+        l.line(ax - 4.0f * s, ay - 2.0f * s, ax + 6.0f * s, ay - (gps.turn_kind == 7 ? -3.0f : 2.0f) * s, lw, ink);
+        head(ax + 6.0f * s, ay - (gps.turn_kind == 7 ? -3.0f : 2.0f) * s, 1.0f, 0.0f);
+        break;
+      case 8:  // U-turn
+        l.line(ax + 4.0f * s, ay + 8.0f * s, ax + 4.0f * s, ay - 2.0f * s, lw, ink);
+        l.arc(ax, ay - 2.0f * s, 4.0f * s, lw, 3.14159f, 6.28318f, ink, true);
+        l.line(ax - 4.0f * s, ay - 2.0f * s, ax - 4.0f * s, ay + 6.0f * s, lw, ink);
+        head(ax - 4.0f * s, ay + 6.0f * s, 0.0f, 1.0f);
+        break;
+      case 9:  // arrived
+        l.circle(ax, ay, 6.5f * s, ink);
+        l.circle(ax, ay, 3.0f * s, ui4::kGreen);
+        break;
+      default:  // straight
+        l.line(ax, ay + 8.0f * s, ax, ay - 7.0f * s, lw, ink);
+        head(ax, ay - 7.0f * s, 0.0f, -1.0f);
+        break;
+    }
   }
-  l.text(x0 + 14 * s, y0 + 6 * s, glyph, font(ui::Font::kE, 18 * s, ui4::kInk, Align::kCenter));
 
   const bool show_dist = should_show_gps_turn_distance(gps);
   const std::string line1 = gps.turn_text.empty() ? std::string("FOLLOW ROUTE") : gps.turn_text;

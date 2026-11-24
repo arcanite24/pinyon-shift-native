@@ -41,6 +41,7 @@ struct PauseMenu {
     kCareer,
     kRally,
     kClub,
+    kCarClub,
     kAchievements,
     kPhotoMode,
     kReplay,
@@ -63,7 +64,7 @@ struct PauseMenu {
       return {kResume, kRestartRace, kPhotoMode, kReplay, kMap, kDifficulty, kSettings, kQuitRace};
     }
     return {kResume, kMap, kEvents, kRally, kPhotoMode, kReplay, kGarage, kUpgrades, kPaint, kAutoshow, kCareer, kClub,
-            kAchievements, kSettings, kQuitToTitle};
+            kCarClub, kAchievements, kSettings, kQuitToTitle};
   }
   Action selected_action() const {
     const auto list = items();

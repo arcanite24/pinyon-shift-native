@@ -66,4 +66,30 @@ void draw_club_medal_ceremony(ui::List& out, int w, int h, const ClubMedalCeremo
 // Renders the compact live challenge-in-progress strip while driving.
 void draw_club_active_strip(ui::List& out, int w, int h, const ClubActiveStrip& strip);
 
+// Offline Car Club (451_CLUB_SETTINGS): club name, 4-char [TAG], and shared Club Garage.
+struct CarClubCarEntry {
+  int car_id = 0;
+  std::string media_name;
+  std::string display_name;
+  std::string class_pi;
+  bool shared = false;
+  bool active = false;
+};
+
+struct CarClubScreenState {
+  bool active = false;
+  std::string club_name;
+  std::string club_tag;
+  int selected = 0;  // 0: cycle preset/edit club, 1: cycle tag, 2+: garage cars
+  std::vector<CarClubCarEntry> cars;
+  std::string notice;
+};
+
+// Sanitize a Car Club tag to 1..4 uppercase ASCII alphanumeric characters.
+std::string sanitize_club_tag(const std::string& raw);
+// Toggle a car ID in the club's shared garage list (returns true if now shared).
+bool toggle_club_shared_car(std::vector<int>& shared_ids, int car_id);
+// Renders the Offline Car Club & Shared Club Garage UI4 screen.
+void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState& st);
+
 }  // namespace carview

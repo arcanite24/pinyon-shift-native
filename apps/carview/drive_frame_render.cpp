@@ -42,8 +42,9 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                app.rally_hub_open || app.rally_service_open);
           const bool pause_snapshot_active =
               !app.show_title && !app.fmv_player.active() &&
-              (menu.open || settings_page.is_open() || mods_page.is_open() || save_page.is_open() || club_open ||
+              (menu.open || settings_page.is_open() || mods_page.is_open() || save_page.is_open() || club_open || car_club_open ||
                slice12.trainer_overlay.is_open() || rewind_buf.is_rewinding() || rewind_buf.is_paused_at_keyframe() ||
+               (replay_viewer.active() && replay_viewer.paused()) ||
                (menu_paused && !exterior_ui_open && !photo_mode.active() && !replay_viewer.active() &&
                 !trainer_freecam_active));
           app.audio_host.update_frame(sound_inputs(cur_audio_view), pause_snapshot_active, exterior_ui_open,
@@ -272,6 +273,16 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               in_countdown = rh.phase == carview::RaceHud::kCountdown;
               countdown_digit = rh.digit;
             }
+            if (replay_viewer.active()) {
+              if (const auto* rfc = replay_viewer.focused_car()) {
+                const float rate = replay_viewer.paused() ? 0.0f : float(std::clamp(std::fabs(replay_viewer.speed()), 0.25, 2.0));
+                vst.speed_mph = float(std::fabs(rfc->speed_mps) * 2.2369363) * rate;
+                vst.rpm = std::clamp(rfc->rpm * rate, float(vp.idle_rpm) * 0.5f, float(vp.redline_rpm) * 1.15f);
+                vst.throttle = (float(rfc->throttle_u8) / 255.0f) * (rate > 0.0f ? 1.0f : 0.0f);
+                vst.gear = rfc->gear;
+                vst.shifting = false;
+              }
+            }
             app.audio_host.update_vehicle(vst, app.race != nullptr, rewind_buf.is_rewinding(), in_countdown, countdown_digit);
           }
           int w = 0, h = 0;
@@ -475,8 +486,12 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             w_jitter_uv_y = j[1] / float(std::max(1u, rex.h));
           }
           if (photo_mode.active() || replay_viewer.active() || active_hub_room != HubRoom::kNone || app.show_title ||
-              camp_cam_active || (app.race && grid_menu_open) || ceremony.active || rewind_scrub_view)
-            host.showroom.set_draw_car(!replay_viewer.active() || replay_viewer.camera_mode() != carview::ReplayCameraMode::kBumper);
+              camp_cam_active || (app.race && grid_menu_open) || ceremony.active || rewind_scrub_view) {
+            const bool hide_for_replay =
+                replay_viewer.active() && replay_viewer.camera_mode() == carview::ReplayCameraMode::kBumper;
+            const bool hide_for_photo = photo_mode.active() && photo_mode.effects().hide_car;
+            host.showroom.set_draw_car(!hide_for_replay && !hide_for_photo);
+          }
           host.renderer.set_photo_pt_accumulate(photo_mode.active() &&
                                            host.renderer.active_rt_mode() != carview::rt::RtMode::kOff);
           host.showroom.set_frame(cam_frame);
@@ -787,7 +802,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   if (photo_mode.accumulator().resolve(final_rgba, fw, fh)) {
                     std::filesystem::path saved_png;
                     std::string werr;
-                    if (carview::write_photo_png(photos_dir, final_rgba, fw, fh, "photo", saved_png, &werr)) {
+                    if (carview::write_photo_png(photos_dir, final_rgba, fw, fh, "photo", saved_png, &werr,
+                                                 photo_mode.effects().watermark)) {
                       float cfw[16];
                       compute_clip_from_world(cam_frame, info, vehicle, cfw);
                       const auto promo =

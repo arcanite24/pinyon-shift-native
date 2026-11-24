@@ -261,6 +261,9 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
   out.level = num("Level"), out.career_car = num("CareerCar"), out.upgrade_discount = num("UpgradeDiscount");
   out.total_winnings = num("TotalWinnings"), out.num_races = num("NumRaces");
   out.num_victories = num("NumVictories"), out.num_podiums = num("NumPodiums");
+  out.popularity = real("Popularity");
+  out.max_skills_score = num("MaxSkillsScore"), out.max_skills_car = num("MaxSkillsCar");
+  out.driver_xp = num("DriverXP");
   out.top_speed = real("TopSpeed"), out.distance_driven = real("TotalDistanceDriven");
   out.time_festival = real("TimeInFestivalRaces"), out.time_street = real("TimeInStreetRaces");
   out.time_exhibition = real("TimeInExhibitionRaces");
@@ -307,6 +310,20 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
           if (c.class_name == "CMissionState" && c.payload.size() >= 2 && (c.payload[0] != 0 || c.payload[1] != 0)) {
             out.pr_stunts_completed.push_back(c.name);
           }
+          if ((c.class_name == "CSpeedCameraState" || c.class_name == "CSpeedZoneState") && c.payload.size() >= 5) {
+            auto f32 = [&](size_t at) {
+              const uint32_t u = uint32_t(c.payload[at]) << 24 | uint32_t(c.payload[at + 1]) << 16 |
+                                 uint32_t(c.payload[at + 2]) << 8 | c.payload[at + 3];
+              float f = 0.0f;
+              std::memcpy(&f, &u, 4);
+              return double(f);
+            };
+            const double val = f32(c.payload.size() >= 8 ? 4 : 1);
+            if (val > 1.0 && val < 400.0) {
+              if (c.class_name == "CSpeedCameraState") out.speed_traps.emplace_back(c.name, val);
+              else out.speed_zones.emplace_back(c.name, val);
+            }
+          }
         }
       }
       if (rec.class_name == "CCarChallengeState") {
@@ -321,10 +338,22 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
             const bool a = r.be(1) != 0;
             r.be(1);  // flag B: the online confirmation
             const uint32_t blob = r.u32();
-            if (r.need(blob)) r.at += blob;
+            std::vector<int> prog_vals;
+            if (r.need(blob)) {
+              const size_t start_at = r.at;
+              if (blob >= 4 && (blob % 4) == 0 && blob <= 32) {
+                for (uint32_t off = 0; off < blob; off += 4) {
+                  const uint32_t v = uint32_t(r.b[start_at + off]) << 24 | uint32_t(r.b[start_at + off + 1]) << 16 |
+                                     uint32_t(r.b[start_at + off + 2]) << 8 | r.b[start_at + off + 3];
+                  if (v < 1000000u) prog_vals.push_back(int(v));
+                }
+              }
+              r.at = start_at + blob;
+            }
             ++car.challenges;
             car.done += a;
             car.keys.emplace_back(key, a);
+            car.progress.push_back(std::move(prog_vals));
           }
           if (r.ok) out.club.push_back(car);
         }
@@ -345,11 +374,19 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
   if (!db.each("select * from Career_Garage order by Id",
                [&](sqlite3_stmt* s) {
                  GarageCar g;
-                 for (int c = 0; c < sqlite3_column_count(s); ++c)
-                   if (sqlite3_column_type(s, c) == SQLITE_INTEGER)
-                     g.columns[sqlite3_column_name(s, c)] = sqlite3_column_int64(s, c);
-                   else if (sqlite3_column_type(s, c) == SQLITE_FLOAT)
-                     g.reals[sqlite3_column_name(s, c)] = sqlite3_column_double(s, c);
+                 for (int c = 0; c < sqlite3_column_count(s); ++c) {
+                   const int ctype = sqlite3_column_type(s, c);
+                   const char* cname = sqlite3_column_name(s, c);
+                   if (!cname) continue;
+                   if (ctype == SQLITE_INTEGER)
+                     g.columns[cname] = sqlite3_column_int64(s, c);
+                   else if (ctype == SQLITE_FLOAT)
+                     g.reals[cname] = sqlite3_column_double(s, c);
+                   else if (ctype == SQLITE_TEXT) {
+                     const auto* txt = sqlite3_column_text(s, c);
+                     if (txt) g.texts[cname] = reinterpret_cast<const char*>(txt);
+                   }
+                 }
                  auto col = [&](const char* k) { return g.columns.count(k) ? g.columns[k] : 0; };
                  g.id = col("Id"), g.car_id = col("CarId"), g.performance_index = g.reals.count("PerformanceIndex") ? g.reals["PerformanceIndex"] : double(col("PerformanceIndex"));
                  g.class_id = col("ClassID"), g.color_index = col("DefaultManufacturerColorIndex");

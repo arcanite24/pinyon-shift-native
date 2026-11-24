@@ -186,6 +186,7 @@ std::string PauseMenu::label(Action a) const {
     case kCareer: return "MY PROFILE";
     case kRally: return in_rally_world ? "RALLY HUB" : "HORIZON RALLY";
     case kClub: return "1000 CLUB";
+    case kCarClub: return "CAR CLUB";
     case kAchievements: return "ACHIEVEMENTS";
     case kPhotoMode: return "PHOTO MODE";
     case kReplay: return in_race ? "VIEW REPLAY" : "REPLAYS";

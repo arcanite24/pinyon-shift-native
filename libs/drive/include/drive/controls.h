@@ -84,6 +84,8 @@ struct ControllerLayout {
 constexpr int kControllerLayoutCount = 5;
 // Returns the built-in ControllerLayouts preset (id clamped to 0..4).
 ControllerLayout default_controller_layout(int layout_id);
+// Returns a copy of `layout` with Handbrake and Clutch bindings swapped when `swap` is true.
+ControllerLayout apply_handbrake_clutch_swap(const ControllerLayout& layout, bool swap);
 
 struct KeyBinding {
   std::string primary;
@@ -115,6 +117,7 @@ struct AssistSettings {
 
 struct ControlSettings {
   int layout_id = 0;
+  bool switch_handbrake_clutch = false;
   ControlDeadzones deadzones;
   bool rumble_enabled = true;
   double rumble_scale = 1.0;

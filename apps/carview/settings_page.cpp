@@ -40,6 +40,10 @@ constexpr Kept kKept[] = {
     {"no-rumble", false, "rumble"},
     {"rumble-scale", true, "rumble-scale"},
     {"controller-layout", true, "controller-layout"},
+    {"switch-handbrake-clutch", false, "switch-handbrake-clutch"},
+    {"no-switch-handbrake-clutch", false, "switch-handbrake-clutch"},
+    {"hud-speedo", true, "hud-speedo"},
+    {"minimap-mode", true, "minimap-mode"},
     {"steer-dz-in", true, "steer-dz-in"},
     {"steer-dz-out", true, "steer-dz-out"},
     {"throttle-dz-in", true, "throttle-dz-in"},
@@ -443,6 +447,9 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"layout 3", {"--controller-layout", "2"}},
         {"layout 4", {"--controller-layout", "3"}},
         {"layout 5", {"--controller-layout", "4"}}}},
+      {"switch handbrake/clutch", {{"off", {}}, {"on", {"--switch-handbrake-clutch"}}}},
+      {"speedometer", {{"analog", {}}, {"digital", {"--hud-speedo", "digital"}}, {"off", {"--hud-speedo", "off"}}}},
+      {"minimap", {{"rotating", {}}, {"north-up", {"--minimap-mode", "north-up"}}, {"off", {"--minimap-mode", "off"}}}},
       {"steer deadzone in",
        {{"24%", {}},
         {"0%", {"--steer-dz-in", "0.00"}},
@@ -977,6 +984,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
           {"--no-car-detail", "car clearcoat detail"},
           {"--rt-denoise", "rt denoiser"},
           {"--no-head-tracking", "head tracking (opentrack)"},
+          {"--no-switch-handbrake-clutch", "switch handbrake/clutch"},
       };
       for (const auto& rf : kResetFlags) {
         if (t == rf.flag) {
@@ -1034,10 +1042,12 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
   if (name == "difficulty" || name == "rubber-banding" || name == "traffic" || name == "collectibles" ||
       name == "treasure map" || name == "braking" || name == "steering" || name == "traction control" ||
       name == "stability control" || name == "shifting" || name == "driving line" || name == "rewind" ||
-      name == "damage" || name == "ai opponents" || name == "units" || name.rfind("telemetry", 0) == 0) {
+      name == "damage" || name == "ai opponents" || name == "units" || name == "speedometer" || name == "minimap" ||
+      name.rfind("telemetry", 0) == 0) {
     return SettingsPage::Tab::kGameplay;
   }
   if (name == "rumble" || name == "rumble scale" || name == "controller layout" ||
+      name == "switch handbrake/clutch" ||
       name.find("deadzone") != std::string::npos || name.rfind("wheel ", 0) == 0 ||
       name.rfind("dualsense ", 0) == 0 || name.rfind("gyro ", 0) == 0 || name.rfind("head tracking", 0) == 0) {
     return SettingsPage::Tab::kControls;
@@ -1278,6 +1288,12 @@ LiveSettings SettingsPage::live_settings() const {
   ls.skip_vo_with_a = pick_label("skip vo with a") != "off";
   ls.metric_units = pick_val("units") != "imperial";
   {
+    const std::string sp = pick_val("speedometer");
+    ls.hud_speedo_mode = (sp == "digital") ? 1 : (sp == "off") ? 2 : 0;
+    const std::string mm = pick_val("minimap");
+    ls.minimap_mode = (mm == "north-up") ? 1 : (mm == "off") ? 2 : 0;
+  }
+  {
     const std::string lg = pick_val("language");
     ls.language = lg.empty() ? "EN" : lg;
   }
@@ -1305,6 +1321,7 @@ LiveSettings SettingsPage::live_settings() const {
   c.rumble_scale = num_or("rumble scale", 1.0);
   const std::string lay = pick_val("controller layout");
   c.layout_id = lay.empty() ? 0 : std::atoi(lay.c_str());
+  c.switch_handbrake_clutch = pick_label("switch handbrake/clutch") == "on";
   c.deadzones.steering_inside = num_or("steer deadzone in", 0.24);
   c.deadzones.steering_outside = num_or("steer deadzone out", 0.95);
   c.deadzones.throttle_inside = num_or("throttle deadzone in", 0.15);
@@ -1439,6 +1456,32 @@ LiveSettings SettingsPage::live_settings() const {
   return ls;
 }
 
+int SettingsPage::difficulty_credit_bonus_pct() const {
+  const LiveSettings ls = live_settings();
+  const int diff_idx = ls.difficulty >= 0 ? ls.difficulty : 1;  // default Medium (+15%)
+  int ai_pct = 0;
+  switch (diff_idx) {
+    case 1: ai_pct = 15; break;
+    case 2: ai_pct = 30; break;
+    case 3: ai_pct = 45; break;
+    case 4: ai_pct = 60; break;
+    default: ai_pct = 0; break;
+  }
+  const auto& a = ls.controls.assists;
+  int assist_pct = 0;
+  if (!a.rewind) assist_pct += 20;
+  if (a.braking >= 2) assist_pct += 10;
+  if (a.steering >= 2) assist_pct += 5;
+  if (!a.stability_control) assist_pct += 5;
+  if (a.shifting == 1) assist_pct += 10;
+  else if (a.shifting >= 2) assist_pct += 15;
+  if (a.driving_line == 1) assist_pct += 5;
+  else if (a.driving_line <= 0) assist_pct += 10;
+  if (ls.damage_mode >= 2) assist_pct += 10;
+  if (a.traction_control && assist_pct >= 5) assist_pct -= 5;
+  return ai_pct + std::max(0, assist_pct);
+}
+
 void SettingsPage::sync_from_live(const LiveSettings& live) {
   auto set_by_label = [&](const char* name, const std::string& label) {
     for (Row& r : rows_) {
@@ -1512,6 +1555,8 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
   set_by_label("start in single player", live.start_in_single_player ? "on" : "off");
   set_by_label("skip vo with a", live.skip_vo_with_a ? "on" : "off");
   set_by_val("units", live.metric_units ? "" : "imperial");
+  set_by_val("speedometer", live.hud_speedo_mode == 1 ? "digital" : live.hud_speedo_mode == 2 ? "off" : "");
+  set_by_val("minimap", live.minimap_mode == 1 ? "north-up" : live.minimap_mode == 2 ? "off" : "");
   set_by_val("language", (live.language.empty() || live.language == "EN") ? "" : live.language);
   set_by_val("damage", live.damage_mode == 0 ? "none" : live.damage_mode == 2 ? "simulation" : "");
   set_by_label("photo camera through walls", live.photo_through_walls ? "on" : "off");
@@ -1530,6 +1575,7 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
   set_by_label("rumble", c.rumble_enabled ? "on" : "off");
   set_by_num("rumble scale", c.rumble_scale, 1.0);
   set_by_val("controller layout", c.layout_id == 0 ? "" : std::to_string(c.layout_id));
+  set_by_label("switch handbrake/clutch", c.switch_handbrake_clutch ? "on" : "off");
   set_by_num("steer deadzone in", c.deadzones.steering_inside, 0.24);
   set_by_num("steer deadzone out", c.deadzones.steering_outside, 0.95);
   set_by_num("throttle deadzone in", c.deadzones.throttle_inside, 0.15);

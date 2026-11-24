@@ -203,6 +203,9 @@ struct DriveSession {
   std::string club_gate;
   bool club_open = false;
   size_t club_pick = 0;
+  bool car_club_open = false;
+  int car_club_pick = 0;
+  std::string car_club_notice;
 
   SettingsPage settings_page;
   bool settings_live_overlay = false;
@@ -288,6 +291,8 @@ struct DriveSession {
   bool live_sound_enabled = true;
   bool live_radio_enabled = true;
   bool loaded_camera_effects = true;
+  int live_hud_speedo_mode = 0;  // 0=Analog, 1=Digital, 2=Off
+  int live_minimap_mode = 0;     // 0=Rotating, 1=North-Up, 2=Off
 
   WheelPose poses[4]{};
   CameraPull camera_pull;
@@ -383,7 +388,8 @@ struct DriveSession {
   bool show_hud = true;
   PauseMenu menu;
   double next_save = 30;
-  bool map_open = false, map_dirty = false, map_dragging = false;
+  bool map_open = false, map_dirty = false, map_dragging = false, map_drag_moved = false;
+  float map_drag_start_x = 0.0f, map_drag_start_y = 0.0f;
   double map_zoom = 2, map_cx = 0, map_cz = 0;
   MapFilter map_filter = MapFilter::kAll;
   MapCameraController map_cam;

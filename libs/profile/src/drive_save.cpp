@@ -1,5 +1,9 @@
 #include "profile/drive_save.h"
 
+#include <cstdio>
+
+#include "garage/tuning.h"
+
 namespace profile {
 
 void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>& media_of, drive::DriveSave& out,
@@ -27,6 +31,10 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   // The career (as is).
   out.credits = p.credits, out.total_winnings = p.total_winnings;
   out.wristband_points = int(p.xp);
+  out.popularity_points = p.popularity;
+  out.max_skills_score = p.max_skills_score;
+  out.max_skills_car = p.max_skills_car;
+  out.driver_xp = int(p.driver_xp);
   out.num_races = int(p.num_races), out.num_victories = int(p.num_victories), out.num_podiums = int(p.num_podiums);
   out.time_festival = p.time_festival, out.time_street = p.time_street, out.time_exhibition = p.time_exhibition;
   out.top_speed = p.top_speed;
@@ -40,6 +48,8 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   out.road_discovery_words = p.road_discovery_words;
   out.discovered_outposts = p.outposts_discovered;
   out.completed_pr_stunts = p.pr_stunts_completed;
+  out.speed_traps = p.speed_traps;
+  out.speed_zones = p.speed_zones;
   out.satnav_enabled = p.satnav_on;
   // Carried as is: the level, unlocks, Rally counters and the 1000 Club.
   out.level = int(p.level);
@@ -47,7 +57,7 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   out.has_rally = p.rally_fields, out.num_rallies = int(p.num_rallies), out.num_rally_stages = int(p.num_rally_stages);
   out.num_rally_victories = int(p.num_rally_victories), out.rally_winnings = p.rally_winnings;
   out.rally_xp = int(p.rally_xp), out.rally_level = int(p.rally_level);
-  for (const auto& c : p.club) out.club.push_back({c.car_id, c.keys});
+  for (const auto& c : p.club) out.club.push_back({c.car_id, c.keys, c.progress});
   // UpgradeDiscount: recomputed from the signs and compared.
   if (int64_t(p.signs_found()) != p.upgrade_discount)
     note("UpgradeDiscount " + std::to_string(p.upgrade_discount) + " but " + std::to_string(p.signs_found()) +
@@ -67,6 +77,20 @@ garage::Garage to_garage(const Imported& p) {
       if (auto it = r.columns.find(s.column); it != r.columns.end() && it->second >= 0) c.slots[s.column] = it->second;
     if (auto it = r.columns.find("WheelStyle"); it != r.columns.end() && it->second >= 0)
       c.slots["WheelStyle"] = it->second;
+    if (auto it = r.texts.find("LiveryFileName"); it != r.texts.end() && !it->second.empty())
+      c.livery_file = it->second;
+    for (const auto& [col, val] : r.reals) {
+      if (col.rfind("Tuning_", 0) == 0) {
+        char kv[96];
+        std::snprintf(kv, sizeof kv, "%s=%.6f", col.c_str(), val);
+        garage::parse_tune_token(kv, c.tune);
+      }
+    }
+    for (const auto& [col, val] : r.columns) {
+      if (col.rfind("Tuning_", 0) == 0) {
+        garage::parse_tune_token(col + "=" + std::to_string(val), c.tune);
+      }
+    }
     g.cars.push_back(std::move(c));
   }
   for (const auto& b : p.parts) g.bought.push_back({b.garage_id, int(b.part_enum), b.part_id, b.manufacturer_id, b.price_paid});

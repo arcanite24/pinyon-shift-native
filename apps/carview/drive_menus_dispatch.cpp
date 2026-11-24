@@ -484,6 +484,13 @@ void DriveSession::choose() {
             club_open = true;
             club_pick = 0;
           }
+          if (act == PauseMenu::kCarClub) {
+            if (app.saved.car_club_name.empty()) app.saved.car_club_name = "HORIZON DRIVERS";
+            if (app.saved.car_club_tag.empty()) app.saved.car_club_tag = "HRZN";
+            car_club_open = true;
+            car_club_pick = 0;
+            car_club_notice.clear();
+          }
           if (act == PauseMenu::kAchievements) {
             eval_achievements(false);
             achievements.open_screen();
@@ -511,6 +518,8 @@ void DriveSession::choose() {
             snap.start_in_single_player = app.start_in_single_player;
             snap.skip_vo_with_a = app.skip_vo_with_a;
             snap.metric_units = app.metric_units;
+            snap.hud_speedo_mode = live_hud_speedo_mode;
+            snap.minimap_mode = live_minimap_mode;
             if (!app.language.empty()) snap.language = app.language;
             snap.photo_through_walls = live_photo_through_walls;
             snap.photo_wider_limits = live_photo_wider_limits;

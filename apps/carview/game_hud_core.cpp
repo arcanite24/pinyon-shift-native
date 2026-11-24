@@ -170,12 +170,86 @@ void render_fh1_dial(ui::List& l, const DriveHud& st, float cx, float cy, float 
     }
   }
   if (!drew_assists) {
-    const uint32_t abs_col = st.abs ? ui::fade(rgba(232, 236, 244), 0.92f) : ui::fade(rgba(110, 114, 122), 0.36f);
-    const uint32_t tcs_col = st.tcs ? ui::fade(rgba(232, 236, 244), 0.92f) : ui::fade(rgba(110, 114, 122), 0.36f);
-    TextStyle ats = font(ui::Font::kB, 9.2f * s, abs_col, Align::kCenter);
-    l.text(cx + 3.0f * s, cy + 23.0f * s, "ABS", ats);
+    const uint32_t abs_col = st.abs ? ui::fade(rgba(232, 236, 244), 0.94f) : ui::fade(rgba(110, 114, 122), 0.36f);
+    const uint32_t tcs_col = st.tcs ? ui::fade(rgba(255, 212, 56), 0.96f) : ui::fade(rgba(110, 114, 122), 0.36f);
+    const uint32_t stm_col = st.stm ? ui::fade(rgba(255, 148, 56), 0.96f) : ui::fade(rgba(110, 114, 122), 0.36f);
+    TextStyle ats = font(ui::Font::kB, 8.6f * s, abs_col, Align::kCenter);
+    l.text(cx - 1.5f * s, cy + 23.0f * s, "ABS", ats);
     ats.color = tcs_col;
-    l.text(cx + 25.5f * s, cy + 23.0f * s, "TCS", ats);
+    l.text(cx + 17.5f * s, cy + 23.0f * s, "TCS", ats);
+    ats.color = stm_col;
+    l.text(cx + 36.5f * s, cy + 23.0f * s, "STM", ats);
+  } else if (st.stm) {
+    TextStyle sts = font(ui::Font::kB, 8.6f * s, ui::fade(rgba(255, 148, 56), 0.96f), Align::kCenter);
+    l.text(cx + 42.0f * s, cy + 23.0f * s, "STM", sts);
+  }
+
+  // Optional Forced-Induction Boost PSI mini-bar tucked neatly below gear/assist row.
+  if (st.has_boost && st.boost_max_psi > 0.5) {
+    const float bf = float(std::clamp(st.boost_psi / st.boost_max_psi, 0.0, 1.0));
+    const float bx0 = cx - 32.0f * s, bx1 = cx + 32.0f * s, by = cy + 44.0f * s;
+    l.rect(bx0, by, bx1, by + 4.5f * s, rgba(16, 18, 22, 165));
+    if (bf > 0.01f) {
+      l.rect(bx0, by, bx0 + (bx1 - bx0) * bf, by + 4.5f * s, bf > 0.85f ? kNeedleHot : rgba(48, 206, 255, 240));
+    }
+    char btxt[24];
+    std::snprintf(btxt, sizeof btxt, "PSI %.1f", std::max(0.0, st.boost_psi));
+    l.text(cx, by + 6.5f * s, btxt, font(ui::Font::kB, 8.2f * s, rgba(210, 226, 242, 220), Align::kCenter));
+  }
+}
+
+// Crisp Digital HUD tach/speedo mode (FH1 Settings -> HUD Speedometer: Digital).
+void render_digital_dial(ui::List& l, const DriveHud& st, const Layout& g) {
+  float s = g.s;
+  float rx = g.R(1214), by = g.B(668);
+  if (st.touch_hud_active) {
+    TouchRect mm_r, tach_r;
+    TouchControls::hud_safe_rects(g.w, g.h, mm_r, tach_r);
+    rx = tach_r.x1 * g.w;
+    by = tach_r.y1 * g.h;
+  }
+  const float bw = 208.0f * s, bh = 86.0f * s;
+  const float x0 = rx - bw, y0 = by - bh;
+  l.rect(x0, y0, rx, by, rgba(14, 16, 20, 175));
+  // Segmented RPM bar along top edge.
+  const double red = std::max(1000.0, st.redline_rpm);
+  const double top = std::max(10000.0, std::ceil(red * 1.1 / 2000.0) * 2000.0);
+  const float rpm_f = float(std::clamp(st.rpm / top, 0.0, 1.0));
+  const float red_f = float(std::clamp(red / top, 0.0, 1.0));
+  constexpr int kSegs = 24;
+  const float seg_w = (bw - 16.0f * s) / float(kSegs);
+  for (int i = 0; i < kSegs; ++i) {
+    const float t = float(i + 1) / float(kSegs);
+    const float sx0 = x0 + 8.0f * s + float(i) * seg_w;
+    const bool lit = rpm_f >= t - (0.5f / float(kSegs));
+    const bool is_red = t >= red_f;
+    const uint32_t col = lit ? (is_red ? rgba(249, 0, 100, 245) : rgba(245, 247, 252, 240))
+                             : (is_red ? rgba(110, 18, 52, 110) : rgba(72, 76, 86, 95));
+    l.rect(sx0, y0 + 8.0f * s, sx0 + seg_w - 2.0f * s, y0 + 20.0f * s, col);
+  }
+  // Speed + unit + gear.
+  const double disp_spd = st.metric_units ? std::fabs(st.kmh) : (std::fabs(st.kmh) * 0.62137119);
+  char sbuf[16];
+  std::snprintf(sbuf, sizeof sbuf, "%03d", std::min(999, int(std::lround(disp_spd))));
+  l.text(rx - 52.0f * s, y0 + 26.0f * s, sbuf, font(ui::Font::kE, 36.0f * s, rgba(250, 251, 255, 255), Align::kRight));
+  const std::string unit_lbl = st.metric_units ? "KM/H" : "MPH";
+  l.text(rx - 52.0f * s, y0 + 64.0f * s, unit_lbl, font(ui::Font::kB, 10.5f * s, rgba(210, 214, 224, 200), Align::kRight));
+  const char* gear = st.gear < 0 ? "R" : st.gear == 0 ? "N" : nullptr;
+  char gb[8];
+  if (!gear) std::snprintf(gb, sizeof gb, "%d", st.gear), gear = gb;
+  l.rect(rx - 44.0f * s, y0 + 28.0f * s, rx - 8.0f * s, y0 + 64.0f * s, rgba(249, 0, 100, 230));
+  l.text(rx - 26.0f * s, y0 + 34.0f * s, gear, font(ui::Font::kE, 24.0f * s, rgba(255, 255, 255, 255), Align::kCenter));
+  // Separate ABS / TCS / STM + Boost readout on left side.
+  l.text(x0 + 10.0f * s, y0 + 30.0f * s, "ABS",
+         font(ui::Font::kB, 9.5f * s, st.abs ? rgba(240, 244, 252, 245) : rgba(110, 114, 122, 95)));
+  l.text(x0 + 10.0f * s, y0 + 44.0f * s, "TCS",
+         font(ui::Font::kB, 9.5f * s, st.tcs ? rgba(255, 212, 56, 245) : rgba(110, 114, 122, 95)));
+  l.text(x0 + 10.0f * s, y0 + 58.0f * s, "STM",
+         font(ui::Font::kB, 9.5f * s, st.stm ? rgba(255, 148, 56, 245) : rgba(110, 114, 122, 95)));
+  if (st.has_boost && st.boost_max_psi > 0.5) {
+    char bp[24];
+    std::snprintf(bp, sizeof bp, "%.1f PSI", std::max(0.0, st.boost_psi));
+    l.text(x0 + 10.0f * s, y0 + 72.0f * s, bp, font(ui::Font::kB, 9.0f * s, rgba(72, 212, 255, 235)));
   }
 }
 
@@ -314,7 +388,36 @@ void set_ui_textures(std::function<bool(const std::string&, std::array<float, 4>
   ui4::set_texture_loader(std::move(source));
 }
 bool ui_texture(const std::string& path, std::array<float, 4>& uv) { return textures() && textures()(path, uv); }
-std::string game_text(const std::string& value) { return texts() ? texts()(value) : value; }
+std::string strip_ui_inline_tags(std::string s) {
+  // Strip retail inline font/icon markup such as {font='SYM'} or [UI.Flow...] without altering plain text.
+  std::string out;
+  out.reserve(s.size());
+  for (size_t i = 0; i < s.size();) {
+    if (s[i] == '{') {
+      const size_t close = s.find('}', i + 1);
+      if (close != std::string::npos && close - i < 48) {
+        i = close + 1;
+        continue;
+      }
+    } else if (s[i] == '[' && i + 4 < s.size() && s.compare(i, 4, "[UI.") == 0) {
+      const size_t close = s.find(']', i + 4);
+      if (close != std::string::npos && close - i < 64) {
+        i = close + 1;
+        continue;
+      }
+    }
+    out.push_back(s[i++]);
+  }
+  return out;
+}
+
+std::string game_text(const std::string& value) {
+  std::string resolved = texts() ? texts()(value) : value;
+  if (resolved.find('{') != std::string::npos || resolved.find("[UI.") != std::string::npos) {
+    resolved = strip_ui_inline_tags(std::move(resolved));
+  }
+  return resolved;
+}
 std::string car_name(const std::string& media) {
   std::string out = names() ? names()(media) : media;
   if (out.empty()) out = media;
@@ -594,7 +697,22 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     if (progression_hud(l, st, g, bottom_lift)) bottom_lift += 94.0f;
     if (popup_card(l, st, g, bottom_lift)) bottom_lift += 72.0f;
     const bool hide_dial = st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open);
-    if (!hide_dial) dial(l, st, g);
+    if (!hide_dial) {
+      if (st.speedo_mode == 1) render_digital_dial(l, st, g);
+      else if (st.speedo_mode == 0) dial(l, st, g);
+    }
+    // Pulsing Barn Find proximity radar badge above minimap when inside an active rumour circle.
+    if (st.barn_radar_proximity > 0.04 && !st.race) {
+      const float prox = float(std::clamp(st.barn_radar_proximity, 0.0, 1.0));
+      const float pulse_hz = 1.5f + 4.0f * prox;
+      const float pulse = 0.5f + 0.5f * std::sin(float(st.time) * 6.28318f * pulse_hz);
+      const float rx = g.L(92), ry = g.B(352);
+      l.circle(rx, ry, (10.0f + 7.0f * pulse) * s, ui::fade(rgba(255, 192, 42), 0.22f + 0.35f * prox * (1.0f - pulse)));
+      l.circle(rx, ry, 7.5f * s, rgba(255, 192, 42, 235));
+      l.text(rx + 18.0f * s, ry - 6.0f * s,
+             prox > 0.72f ? "BARN FIND NEARBY!" : "BARN RUMOUR ZONE",
+             font(ui::Font::kE, 12.0f * s, rgba(255, 212, 74, 245)));
+    }
   }
   if (!st.toast.empty() && !menu) {
     TextStyle ts = font(ui::Font::kB, 14 * s, kText, Align::kCenter);

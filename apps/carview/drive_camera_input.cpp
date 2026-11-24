@@ -291,7 +291,7 @@ void apply_vehicle_assists(drive::Vehicle& vehicle, const drive::AssistSettings&
   vehicle.set_assists(va);
 }
 
-race::DifficultyAssists to_difficulty_assists(const drive::AssistSettings& a) {
+race::DifficultyAssists to_difficulty_assists(const drive::AssistSettings& a, int damage_mode) {
   race::DifficultyAssists da;
   da.rewind_on = a.rewind;
   da.braking = a.braking;
@@ -300,6 +300,7 @@ race::DifficultyAssists to_difficulty_assists(const drive::AssistSettings& a) {
   da.stm_on = a.stability_control;
   da.shifting = a.shifting;
   da.driving_line = a.driving_line;
+  da.damage_mode = damage_mode;
   return da;
 }
 

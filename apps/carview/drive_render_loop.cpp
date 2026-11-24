@@ -420,7 +420,7 @@ void DriveSession::run_window_loop() {
                                    app.campaign.is_blocking_gameplay() || grid_menu_open || menu.open ||
                                    map_open || events_page.is_open() || outpost_hub_open || garage_open ||
                                    shop.is_open() || autoshow.is_open() || career_page.is_open() ||
-                                   settings_page.is_open() || paint_open || club_open || app.rally_hub_open ||
+                                   settings_page.is_open() || paint_open || club_open || car_club_open || app.rally_hub_open ||
                                    app.rally_service_open || app.rally_results_open || photo_mode.active() ||
                                    replay_viewer.active() || replay_viewer.browser_open() || achievements.screen_open() ||
                                    mods_page.is_open() || save_page.is_open() || slice12.trainer_overlay.is_open() ||
@@ -528,7 +528,17 @@ void DriveSession::run_window_loop() {
               gy = y - hit.distance;
               return true;
             };
-            photo_mode.step(frame_dt, pcin, gb);
+            auto wr = [&](const std::array<double, 3>& orig, const std::array<double, 3>& dir, double max_d,
+                          double& hit_d) {
+              drive::Hit hit;
+              if (!host.ground ||
+                  !host.ground->raycast({orig[0], orig[1], orig[2]}, {dir[0], dir[1], dir[2]}, max_d, hit)) {
+                return false;
+              }
+              hit_d = hit.distance;
+              return true;
+            };
+            photo_mode.step(frame_dt, pcin, gb, wr);
           }
           // Trainer Free Camera fly controls (active when F10 Trainer > World > Free Camera is ON).
                     if (trainer_freecam_active && !slice12.trainer_overlay.is_open() && !photo_mode.active()) {

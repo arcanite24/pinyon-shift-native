@@ -538,7 +538,7 @@ std::vector<Mark> marks(const MapScene& s, bool apply_filter) {
 
 }  // namespace
 
-bool MapView::open(const std::filesystem::path& game_root, std::string* error) {
+bool MapView::open(const std::filesystem::path& game_root, std::string* error, const std::string& lang) {
   const auto media = game_root / "media";
   traffic::NavMap nav;
   if (!traffic::read_nav(media / "tracks" / "colorado" / "colorado.nav", nav, error)) return false;
@@ -593,8 +593,17 @@ bool MapView::open(const std::filesystem::path& game_root, std::string* error) {
   auto zip = fh1::Archive::open(horizon_zip_path_, &why);
   if (!zip) return fail(error, why);
   if (!read_texture(*zip, "Map/background/low-0-0.xds", background_, error)) return false;
-  if (!read_texture(*zip, "Map/icons/MapIcons/EN/MapIconSheetSmall.xds", small_icons_, error)) return false;
-  if (!read_texture(*zip, "Map/icons/MapIcons/EN/MapIconSheet.xds", large_icons_, error)) return false;
+  const std::string lcode = lang.empty() ? std::string("EN") : lang;
+  const std::string loc_small = "Map/icons/MapIcons/" + lcode + "/MapIconSheetSmall.xds";
+  const std::string loc_large = "Map/icons/MapIcons/" + lcode + "/MapIconSheet.xds";
+  if ((lcode == "EN" || !read_texture(*zip, loc_small, small_icons_, nullptr)) &&
+      !read_texture(*zip, "Map/icons/MapIcons/EN/MapIconSheetSmall.xds", small_icons_, error)) {
+    return false;
+  }
+  if ((lcode == "EN" || !read_texture(*zip, loc_large, large_icons_, nullptr)) &&
+      !read_texture(*zip, "Map/icons/MapIcons/EN/MapIconSheet.xds", large_icons_, error)) {
+    return false;
+  }
   return true;
 }
 
@@ -658,7 +667,8 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   Canvas cv(size, size, {0, 0, 0, 0});
   cv.edge_fade = 0.34f;
   // Speed-responsive dynamic minimap zoom: pulls higher & further ahead as speed rises.
-  const double fx = std::sin(scene.heading), fz = std::cos(scene.heading);
+  const double map_heading = scene.north_up ? 0.0 : scene.heading;
+  const double fx = std::sin(map_heading), fz = std::cos(map_heading);
   const double rx = fz, rz = -fx;  // right of the heading (+X when facing +Z)
   const double speed_t = std::clamp(std::fabs(scene.speed_mps) / 67.0, 0.0, 1.0);
   const double kHeight = 108.0 + 88.0 * speed_t;
@@ -850,11 +860,13 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     cv.line(p.x, p.y, p.x, p.y, 15 * unit + 2, Rgba{120, 120, 125, 230});
     cv.line(p.x, p.y, p.x, p.y, 15 * unit - 1, Rgba{236, 236, 238, 255});
   }
-  // The player, heading up.
+  // The player: heading up in rotating mode, or compass-rotated in north-up mode.
   if (const auto it = mini_.icons.find("player_local"); it != mini_.icons.end()) {
     const P p = project(scene.x, scene.z);
+    const double player_angle = scene.north_up ? scene.heading : 0.0;
     // About 35 px at 720 lines, as the frames show.
-    for (const auto& ic : it->second) cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y, ic.size * unit * 1.8, 0, ic.colour);
+    for (const auto& ic : it->second)
+      cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y, ic.size * unit * 1.8, player_angle, ic.colour);
   }
   // No frame (SPEC-UI-LAYOUTS a).
   return cv.image();

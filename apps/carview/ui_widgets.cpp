@@ -536,9 +536,14 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
               false, true);
     l.text(lx0 + 16.0f * s, list_y0 + 7.0f * s, kTabs[size_t(std::clamp(cur_tab, 0, 4))] + " OPTIONS",
            ui4::style(ui::Font::kD, 13.5f * s, ui4::kInk));
-    l.text(lx0 + lw - 16.0f * s, list_y0 + 7.5f * s,
-           page.capturing_key() ? "PRESS ANY KEY TO BIND (ESC CANCELS)" : "CHANGES APPLY LIVE",
-           ui4::style(ui::Font::kB, 11.5f * s, page.capturing_key() ? ui4::kPink : ui4::kInk, ui::Align::kRight));
+    std::string header_right = page.capturing_key() ? "PRESS ANY KEY TO BIND (ESC CANCELS)" : "CHANGES APPLY LIVE";
+    uint32_t header_right_col = page.capturing_key() ? ui4::kPink : ui4::kInk;
+    if (!page.capturing_key() && cur_tab == 2) {
+      header_right = "DIFFICULTY BONUS: +" + std::to_string(page.difficulty_credit_bonus_pct()) + "% CR";
+      header_right_col = ui4::kPink;
+    }
+    l.text(lx0 + lw - 16.0f * s, list_y0 + 7.5f * s, header_right,
+           ui4::style(ui::Font::kB, 12.0f * s, header_right_col, ui::Align::kRight));
 
     const float row_pitch = 38.0f * s;
     const float row_h = 33.0f * s;

@@ -241,7 +241,33 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         dial_trail_last_rpm = st.rpm;
         dial_trail_last_t = d.time;
         d.kmh = st.kmh, d.rpm = st.rpm, d.rpm_rate = dial_trail_rate, d.redline_rpm = st.redline_rpm, d.gear = st.gear, d.abs = st.abs,
-        d.tcs = vehicle.tcs_active() || vehicle.stm_active();
+        d.tcs = vehicle.tcs_active(), d.stm = vehicle.stm_active();
+        d.has_boost = vehicle.params().has_turbo || vehicle.params().has_supercharger;
+        d.boost_psi = vehicle.boost_psi();
+        d.boost_max_psi = vehicle.params().boost_max_psi;
+        d.speedo_mode = live_hud_speedo_mode;
+        d.club_tag = app.saved.car_club_tag;
+        // Barn Find proximity radar: signal strength [0..1] when driving inside an active rumour circle.
+        if (!app.race && app.progress_loaded && !app.collectibles.barns.empty()) {
+          const drive::Vec3 vp = vehicle.position();
+          double best_prox = 0.0;
+          for (size_t bi = 0; bi < app.collectibles.barns.size(); ++bi) {
+            if (bi < app.progress.barns.size() && app.progress.barns[bi].status == freeroam::kBarnRumour) {
+              const auto& b = app.collectibles.barns[bi];
+              const double rx = std::max(80.0, b.hint_rx);
+              const double rz = std::max(80.0, b.hint_rz);
+              const double nx = (vp.x - b.hint_x) / rx;
+              const double nz = (vp.z - b.hint_z) / rz;
+              if (nx * nx + nz * nz <= 1.25) {
+                const double dist = std::hypot(vp.x - b.at.x, vp.z - b.at.z);
+                const double span = std::max(rx, rz);
+                const double prox = std::clamp(1.0 - dist / std::max(60.0, span), 0.08, 1.0);
+                best_prox = std::max(best_prox, prox);
+              }
+            }
+          }
+          d.barn_radar_proximity = best_prox;
+        }
         d.detail_title = std::move(detail_title);
         d.detail_lines = std::move(detail_lines);
         // Title Screen HUD (when active and settings isn't open over it).
@@ -275,7 +301,12 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           d.title_screen = &ts_hud;
         }
         if (ceremony.active) d.ceremony = &ceremony;
-        if (map_overlay.active) d.map_overlay = &map_overlay;
+        if (map_overlay.active) {
+          map_overlay.center_x = map_cx;
+          map_overlay.center_z = map_cz;
+          map_overlay.scale_mpp = (map_w > 64 && map_h > 64) ? app.map_view.map_scale(map_w, map_h, map_zoom) : 0.0;
+          d.map_overlay = &map_overlay;
+        }
         carview::SkillChainHud sk_hud;
         if (app.skill_tracker) {
           const auto sh = app.skill_tracker->hud();
@@ -641,7 +672,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         const bool campaign_hide_hud = app.campaign.is_blocking_gameplay() || pre_race_swoop_hide_hud;
         if (mm_size > 0 && !app.show_title && !ceremony.active && !campaign_hide_hud && !map_overlay.active &&
             !grid_menu_open && st.menu.empty() && !career_page.is_open() && !app.rally_hub_open &&
-            !app.rally_service_open && !app.rally_results_open && !club_open)
+            !app.rally_service_open && !app.rally_results_open && !club_open && !car_club_open)
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         if (!campaign_hide_hud) carview::build_drive_hud(list, d, float(width), float(height));
         // Brief white flash on confirming START RACE (CAMERAS.md:85, UI_LAYOUTS.md:121-125).
@@ -652,6 +683,38 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (club_open) {
           const auto club_sc = build_club_screen();
           carview::draw_club_screen(list, width, height, club_sc);
+        } else if (car_club_open) {
+          carview::CarClubScreenState cc;
+          cc.active = true;
+          cc.club_name = app.saved.car_club_name;
+          cc.club_tag = app.saved.car_club_tag;
+          cc.selected = car_club_pick;
+          cc.notice = car_club_notice;
+          for (size_t ci = 0; ci < app.baked_cars.size(); ++ci) {
+            carview::CarClubCarEntry ce;
+            ce.media_name = app.baked_cars[ci];
+            ce.display_name = carview::car_name(ce.media_name);
+            ce.active = (ce.media_name == app.car);
+            if (app.have_garage && ci < app.pick_ids.size()) {
+              if (const garage::Car* gc = app.career_garage.find(app.pick_ids[ci])) {
+                ce.car_id = int(gc->car_id);
+                if (!app.class_bands.empty()) {
+                  const std::string cls =
+                      app.class_bands[size_t(garage::class_of(gc->performance_index, app.class_bands))].name;
+                  ce.class_pi = cls + " " + std::to_string(garage::shown_index(gc->performance_index, app.class_bands));
+                }
+              }
+            }
+            if (ce.car_id <= 0 && app.have_career_catalog) {
+              if (const auto* sp = app.career_catalog.find_car_by_media(ce.media_name)) ce.car_id = int(sp->car_id);
+            }
+            if (ce.car_id <= 0) ce.car_id = int(ci + 1);
+            ce.shared = std::find(app.saved.car_club_shared.begin(), app.saved.car_club_shared.end(), ce.car_id) !=
+                        app.saved.car_club_shared.end();
+            cc.cars.push_back(std::move(ce));
+          }
+          list.clear();
+          carview::draw_car_club_screen(list, width, height, cc);
         } else if (!app.show_title && !ceremony.active && !campaign_hide_hud && !app.rally_hub_open &&
                    !app.rally_service_open && !app.rally_results_open && st.menu.empty()) {
           const auto cstrip = build_club_active_strip();
@@ -831,7 +894,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
                                      st.menu.empty() && !career_page.is_open() && !settings_page.is_open() &&
                                      !shop.is_open() && !autoshow.is_open() && !garage_open &&
                                      !events_page.is_open() && !outpost_hub_open && !paint_open && !club_open &&
-                                     !rewind_buf.active();
+                                     !car_club_open && !rewind_buf.active();
         achievements.build_hud_overlays(list, float(width), float(height), show_track_chip);
         if (show_track_chip) {
           app.touch_controls.build_overlay(list, float(width), float(height), vehicle.time());

@@ -597,6 +597,22 @@ int main() {
     CHECK(synced.value("vsync") == "mailbox");
     CHECK(synced.value("hdr") == "on");
 
+    // Phase 6A: Speedometer mode, North-Up minimap, Switch Handbrake/Clutch, and cumulative Difficulty CR % bonus.
+    carview::SettingsPage p6;
+    p6.load({"--hud-speedo", "digital", "--minimap-mode", "north-up", "--switch-handbrake-clutch",
+             "--difficulty", "pro", "--assist-braking", "2", "--assist-steering", "2", "--assist-stm", "0",
+             "--assist-shifting", "2", "--assist-line", "0", "--assist-rewind", "0", "--damage", "simulation"});
+    const auto p6_ls = p6.live_settings();
+    CHECK(p6_ls.hud_speedo_mode == 1);
+    CHECK(p6_ls.minimap_mode == 1);
+    CHECK(p6_ls.controls.switch_handbrake_clutch == true);
+    // Pro (+45) + ABS Off (+10) + Sim Steering (+5) + STM Off (+5) + M+C (+15) + Line Off (+10) + Sim Damage (+10) + Rewind Off (+20) = 120%
+    CHECK(p6.difficulty_credit_bonus_pct() == 120);
+    const auto base_lay = drive::default_controller_layout(0);
+    const auto swap_lay = drive::apply_handbrake_clutch_swap(base_lay, true);
+    CHECK(base_lay.control_for("Handbrake") == swap_lay.control_for("Clutch"));
+    CHECK(base_lay.control_for("Clutch") == swap_lay.control_for("Handbrake"));
+
     std::filesystem::remove(tmp_file, ec);
     std::filesystem::remove(tmp_dir, ec);
   }

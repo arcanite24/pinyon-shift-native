@@ -185,13 +185,16 @@ PostSettings PhotoEffects::apply_to_post(const PostSettings& base) const {
   // Shutter speed -> radial motion blur (preserving subject car via depth mask).
   const float sh = std::clamp(shutter_speed / 100.0f, 0.0f, 1.0f);
   out.motion_blur = sh > 0.02f;
-  out.motion_blur_strength = sh * 0.85f;
-  out.motion_blur_car_protect = std::clamp(focus_distance + 1.5f, 4.0f, 25.0f);
+  // Panning mode emphasizes background streak with tight car protection; Tracking mode locks stronger car-relative blur.
+  out.motion_blur_strength = sh * (tracking_panning ? 0.95f : 0.72f);
+  out.motion_blur_car_protect =
+      tracking_panning ? std::clamp(focus_distance + 2.5f, 5.0f, 28.0f) : std::clamp(focus_distance + 1.2f, 3.5f, 22.0f);
   return out;
 }
 
 float PhotoEffects::wheel_blur_omega_boost() const {
-  return std::clamp(shutter_speed / 100.0f, 0.0f, 1.0f) * 65.0f;
+  const float mult = tracking_panning ? 82.0f : 58.0f;
+  return std::clamp(shutter_speed / 100.0f, 0.0f, 1.0f) * mult;
 }
 
 void PhotoCamera::reset(const std::array<double, 3>& anchor, double car_heading_rad, const PhotoLimits& limits) {
@@ -223,7 +226,8 @@ void PhotoCamera::set_fov_deg(double deg) { fov_deg_ = std::clamp(deg, limits_.m
 void PhotoCamera::set_roll_deg(double deg) { roll_deg_ = std::clamp(deg, -limits_.max_roll_deg, limits_.max_roll_deg); }
 
 void PhotoCamera::clamp_to_limits(
-    const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below) {
+    const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below,
+    const WallRaycastFn& wall_raycast) {
   // Cylinder radius around anchor.
   const double dx = eye_[0] - anchor_[0];
   const double dz = eye_[2] - anchor_[2];
@@ -249,10 +253,28 @@ void PhotoCamera::clamp_to_limits(
   }
   if (max_y < min_y) max_y = min_y;
   eye_[1] = std::clamp(eye_[1], min_y, max_y);
+
+  // Wall/building collision sweep from anchor pivot to eye when through_walls is OFF.
+  if (!limits_.through_walls && wall_raycast) {
+    const std::array<double, 3> orig = {anchor_[0], anchor_[1] + 0.9, anchor_[2]};
+    const std::array<double, 3> delta = {eye_[0] - orig[0], eye_[1] - orig[1], eye_[2] - orig[2]};
+    const double dist = std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+    if (dist > 0.6) {
+      const std::array<double, 3> dir = {delta[0] / dist, delta[1] / dist, delta[2] / dist};
+      double hit_d = 0.0;
+      if (wall_raycast(orig, dir, dist, hit_d) && hit_d > 0.35 && hit_d < dist) {
+        const double safe_d = std::max(0.35, hit_d - 0.35);
+        eye_[0] = orig[0] + dir[0] * safe_d;
+        eye_[1] = std::max(min_y, orig[1] + dir[1] * safe_d);
+        eye_[2] = orig[2] + dir[2] * safe_d;
+      }
+    }
+  }
 }
 
 void PhotoCamera::step(double dt, const PhotoCameraInput& in,
-                       const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below) {
+                       const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below,
+                       const WallRaycastFn& wall_raycast) {
   dt = std::clamp(dt, 0.0, 0.1);
   if (dt <= 0.0) return;
 
@@ -277,7 +299,7 @@ void PhotoCamera::step(double dt, const PhotoCameraInput& in,
   }
   eye_[1] += double(in.move_up) * kElevSpeed * move_scale * dt;
 
-  clamp_to_limits(ground_below);
+  clamp_to_limits(ground_below, wall_raycast);
 }
 
 float PhotoCamera::autofocus_distance(const std::array<double, 3>& target) const {
@@ -440,11 +462,98 @@ PromoSpotResult HorizonPromoTracker::evaluate(const float m[16], const std::arra
   return res;
 }
 
+namespace {
+
+void blend_px(std::vector<uint8_t>& rgba, uint32_t w, uint32_t h, int x, int y, uint8_t r, uint8_t g, uint8_t b,
+              uint8_t a) {
+  if (x < 0 || y < 0 || x >= int(w) || y >= int(h) || a == 0) return;
+  const size_t i = (size_t(y) * w + size_t(x)) * 4;
+  const uint32_t alpha = a;
+  const uint32_t inv = 255u - alpha;
+  rgba[i + 0] = uint8_t((rgba[i + 0] * inv + r * alpha) / 255u);
+  rgba[i + 1] = uint8_t((rgba[i + 1] * inv + g * alpha) / 255u);
+  rgba[i + 2] = uint8_t((rgba[i + 2] * inv + b * alpha) / 255u);
+  rgba[i + 3] = 255;
+}
+
+uint32_t wm_glyph_rows(char ch) {
+  // Compact 5x5 bitmap rows (5 bits per row, MSB left, 5 rows packed in 25 bits).
+  switch (ch) {
+    case 'A': return (0x0Eu << 20) | (0x11u << 15) | (0x1Fu << 10) | (0x11u << 5) | 0x11u;
+    case 'E': return (0x1Fu << 20) | (0x10u << 15) | (0x1Eu << 10) | (0x10u << 5) | 0x1Fu;
+    case 'F': return (0x1Fu << 20) | (0x10u << 15) | (0x1Eu << 10) | (0x10u << 5) | 0x10u;
+    case 'G': return (0x0Eu << 20) | (0x10u << 15) | (0x17u << 10) | (0x11u << 5) | 0x0Eu;
+    case 'H': return (0x11u << 20) | (0x11u << 15) | (0x1Fu << 10) | (0x11u << 5) | 0x11u;
+    case 'I': return (0x0Eu << 20) | (0x04u << 15) | (0x04u << 10) | (0x04u << 5) | 0x0Eu;
+    case 'N': return (0x11u << 20) | (0x19u << 15) | (0x15u << 10) | (0x13u << 5) | 0x11u;
+    case 'O': return (0x0Eu << 20) | (0x11u << 15) | (0x11u << 10) | (0x11u << 5) | 0x0Eu;
+    case 'R': return (0x1Eu << 20) | (0x11u << 15) | (0x1Eu << 10) | (0x14u << 5) | 0x13u;
+    case 'S': return (0x0Fu << 20) | (0x10u << 15) | (0x0Eu << 10) | (0x01u << 5) | 0x1Eu;
+    case 'T': return (0x1Fu << 20) | (0x04u << 15) | (0x04u << 10) | (0x04u << 5) | 0x04u;
+    case 'Z': return (0x1Fu << 20) | (0x02u << 15) | (0x04u << 10) | (0x08u << 5) | 0x1Fu;
+    case '/': return (0x01u << 20) | (0x02u << 15) | (0x04u << 10) | (0x08u << 5) | 0x10u;
+    default: return 0u;
+  }
+}
+
+void draw_wm_text(std::vector<uint8_t>& rgba, uint32_t w, uint32_t h, int x0, int y0, int scale,
+                  const std::string& text, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+  int cx = x0;
+  for (char ch : text) {
+    const uint32_t bits = wm_glyph_rows(ch);
+    for (int row = 0; row < 5; ++row) {
+      const uint32_t rb = (bits >> (20 - row * 5)) & 0x1Fu;
+      for (int col = 0; col < 5; ++col) {
+        if ((rb & (0x10u >> col)) == 0) continue;
+        for (int sy = 0; sy < scale; ++sy)
+          for (int sx = 0; sx < scale; ++sx)
+            blend_px(rgba, w, h, cx + col * scale + sx, y0 + row * scale + sy, r, g, b, a);
+      }
+    }
+    cx += 6 * scale;
+  }
+}
+
+}  // namespace
+
+void stamp_photo_watermark(std::vector<uint8_t>& rgba, uint32_t width, uint32_t height) {
+  if (width < 120 || height < 60 || rgba.size() < size_t(width) * height * 4) return;
+  const int scale = std::clamp(int(height / 360u), 1, 4);
+  const std::string text = "FORZA HORIZON  //  SHIFT ENGINE";
+  const int tw = int(text.size()) * 6 * scale;
+  const int th = 5 * scale;
+  const int pad_x = 8 * scale;
+  const int pad_y = 5 * scale;
+  const int bw = tw + pad_x * 2 + 4 * scale;
+  const int bh = th + pad_y * 2;
+  const int x0 = int(width) - bw - 14 * scale;
+  const int y0 = int(height) - bh - 12 * scale;
+  if (x0 < 0 || y0 < 0) return;
+
+  // Translucent charcoal pill + Horizon pink accent stripe on left edge.
+  for (int y = y0; y < y0 + bh; ++y) {
+    for (int x = x0; x < x0 + bw; ++x) {
+      const bool accent = (x < x0 + 4 * scale);
+      blend_px(rgba, width, height, x, y, accent ? 245 : 14, accent ? 0 : 14, accent ? 96 : 18, accent ? 230 : 148);
+    }
+  }
+  draw_wm_text(rgba, width, height, x0 + 4 * scale + pad_x + scale, y0 + pad_y + scale, scale, text, 0, 0, 0, 140);
+  draw_wm_text(rgba, width, height, x0 + 4 * scale + pad_x, y0 + pad_y, scale, text, 255, 255, 255, 232);
+}
+
 bool write_photo_png(const std::filesystem::path& dir, const std::vector<uint8_t>& rgba, uint32_t width,
-                     uint32_t height, const std::string& prefix, std::filesystem::path& out_path, std::string* error) {
+                     uint32_t height, const std::string& prefix, std::filesystem::path& out_path, std::string* error,
+                     bool add_watermark) {
   if (width == 0 || height == 0 || rgba.size() < size_t(width) * height * 4) {
     if (error) *error = "invalid image buffer";
     return false;
+  }
+  std::vector<uint8_t> stamped;
+  const uint8_t* pixels = rgba.data();
+  if (add_watermark) {
+    stamped = rgba;
+    stamp_photo_watermark(stamped, width, height);
+    pixels = stamped.data();
   }
   std::error_code ec;
   if (!dir.empty()) std::filesystem::create_directories(dir, ec);
@@ -456,12 +565,33 @@ bool write_photo_png(const std::filesystem::path& dir, const std::vector<uint8_t
     std::snprintf(suffix, sizeof suffix, "-%02d.png", seq);
     candidate = dir / (pfx + "-" + tag + suffix);
   }
-  if (stbi_write_png(candidate.string().c_str(), int(width), int(height), 4, rgba.data(), int(width) * 4) == 0) {
+  if (stbi_write_png(candidate.string().c_str(), int(width), int(height), 4, pixels, int(width) * 4) == 0) {
     if (error) *error = "stbi_write_png failed for " + candidate.string();
     return false;
   }
   out_path = candidate;
   return true;
+}
+
+std::vector<PhotoGalleryEntry> list_photo_gallery(const std::filesystem::path& photos_dir) {
+  std::vector<PhotoGalleryEntry> out;
+  std::error_code ec;
+  if (photos_dir.empty() || !std::filesystem::exists(photos_dir, ec)) return out;
+  for (const auto& entry : std::filesystem::directory_iterator(photos_dir, ec)) {
+    if (!entry.is_regular_file(ec)) continue;
+    auto ext = entry.path().extension().string();
+    for (char& ch : ext) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    if (ext != ".png") continue;
+    PhotoGalleryEntry ge;
+    ge.path = entry.path();
+    ge.filename = entry.path().filename().string();
+    ge.size_bytes = entry.file_size(ec);
+    out.push_back(std::move(ge));
+  }
+  std::sort(out.begin(), out.end(), [](const PhotoGalleryEntry& a, const PhotoGalleryEntry& b) {
+    return a.filename > b.filename;  // newest timestamp first
+  });
+  return out;
 }
 
 void PhotoModeController::enter(const std::array<double, 3>& car_pos, double car_heading_rad,
@@ -479,7 +609,39 @@ void PhotoModeController::enter(const std::array<double, 3>& car_pos, double car
 
 void PhotoModeController::exit() {
   active_ = false;
+  gallery_open_ = false;
   accum_.cancel();
+}
+
+void PhotoModeController::open_gallery(const std::filesystem::path& photos_dir) {
+  gallery_dir_ = photos_dir;
+  gallery_entries_ = list_photo_gallery(photos_dir);
+  gallery_selected_ = 0;
+  gallery_open_ = true;
+}
+
+void PhotoModeController::gallery_move(int delta) {
+  if (gallery_entries_.empty()) return;
+  const int n = int(gallery_entries_.size());
+  gallery_selected_ = ((gallery_selected_ + delta) % n + n) % n;
+}
+
+void PhotoModeController::gallery_select(int idx) {
+  if (gallery_entries_.empty()) return;
+  gallery_selected_ = std::clamp(idx, 0, int(gallery_entries_.size()) - 1);
+}
+
+bool PhotoModeController::gallery_delete_selected() {
+  if (gallery_entries_.empty() || gallery_selected_ < 0 || size_t(gallery_selected_) >= gallery_entries_.size())
+    return false;
+  std::error_code ec;
+  const bool removed = std::filesystem::remove(gallery_entries_[size_t(gallery_selected_)].path, ec);
+  if (removed) {
+    gallery_entries_.erase(gallery_entries_.begin() + gallery_selected_);
+    if (gallery_selected_ >= int(gallery_entries_.size()))
+      gallery_selected_ = std::max(0, int(gallery_entries_.size()) - 1);
+  }
+  return removed;
 }
 
 void PhotoModeController::move_row(int delta) {
@@ -496,6 +658,7 @@ void PhotoModeController::adjust_row(int delta) {
       break;
     }
     case kShutterSpeed: effects_.shutter_speed = std::clamp(effects_.shutter_speed + d * 5.0f, 0.0f, 100.0f); break;
+    case kShutterMode: effects_.tracking_panning = !effects_.tracking_panning; break;
     case kAperture: effects_.aperture = std::clamp(effects_.aperture + d * 5.0f, 0.0f, 100.0f); break;
     case kFocusDistance: effects_.focus_distance = std::clamp(effects_.focus_distance + d * 0.5f, 1.5f, 120.0f); break;
     case kExposure: effects_.exposure = std::clamp(effects_.exposure + d * 4.0f, 0.0f, 100.0f); break;
@@ -506,6 +669,8 @@ void PhotoModeController::adjust_row(int delta) {
     case kVignette: effects_.vignette = std::clamp(effects_.vignette + d * 5.0f, 0.0f, 100.0f); break;
     case kZoomFov: camera_.set_fov_deg(camera_.fov_deg() - double(delta) * 2.0); break;
     case kRollTilt: camera_.set_roll_deg(camera_.roll_deg() + double(delta) * 2.5); break;
+    case kWatermark: effects_.watermark = !effects_.watermark; break;
+    case kHideCar: effects_.hide_car = !effects_.hide_car; break;
     default: break;
   }
 }
@@ -515,13 +680,14 @@ void PhotoModeController::autofocus(const std::array<double, 3>& target) {
 }
 
 void PhotoModeController::step(double dt, const PhotoCameraInput& input,
-                               const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below) {
+                               const std::function<bool(double x, double y, double z, double& ground_y)>& ground_below,
+                               const PhotoCamera::WallRaycastFn& wall_raycast) {
   if (!active_) return;
   time_ += dt;
   if (flash_timer_ > 0.0) flash_timer_ = std::max(0.0, flash_timer_ - dt);
   if (banner_timer_ > 0.0) banner_timer_ = std::max(0.0, banner_timer_ - dt);
-  if (!accum_.active()) {
-    camera_.step(dt, input, ground_below);
+  if (!accum_.active() && !gallery_open_) {
+    camera_.step(dt, input, ground_below, wall_raycast);
   }
 }
 
@@ -545,6 +711,44 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
   using ui::TextStyle;
 
   const float s = h / 720.0f;
+
+  if (gallery_open_) {
+    ui4::subtle_vignette(out, w, h, 0.40f);
+    ui4::title_banner(out, s, 56.0f * s, 28.0f * s, "PHOTO GALLERY",
+                      std::to_string(gallery_entries_.size()) + " SAVED PHOTOS", true, 460.0f);
+    const float bx0 = 56.0f * s, bx1 = w - 56.0f * s;
+    const float by0 = 122.0f * s, by1 = h - 84.0f * s;
+    ui4::panel(out, bx0, by0, bx1, by1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+    ui4::offwhite_strip(out, bx0 + 14.0f * s, by0 + 10.0f * s, bx1 - 14.0f * s, by0 + 34.0f * s, s, false);
+    out.text(bx0 + 24.0f * s, by0 + 15.0f * s, "LOCAL PHOTOS FOLDER", ui4::style(Font::kE, 13.0f * s, ui4::kInk));
+    if (gallery_entries_.empty()) {
+      out.text(0.5f * w, 0.5f * h - 10.0f * s, "NO SAVED PHOTOS YET (PRESS ENTER / A IN PHOTO MODE TO SNAP)",
+               ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
+    } else {
+      const float row_h = 44.0f * s;
+      const int max_vis = std::max(1, int((by1 - by0 - 54.0f * s) / row_h));
+      const int start = std::clamp(gallery_selected_ - max_vis / 2, 0,
+                                   std::max(0, int(gallery_entries_.size()) - max_vis));
+      for (int i = start; i < int(gallery_entries_.size()) && i < start + max_vis; ++i) {
+        const auto& ge = gallery_entries_[size_t(i)];
+        const float ry0 = by0 + 44.0f * s + float(i - start) * row_h;
+        const float ry1 = ry0 + row_h - 5.0f * s;
+        const bool sel = (i == gallery_selected_);
+        out.add_hit(bx0 + 10.0f * s, ry0, bx1 - 10.0f * s, ry1, ui::kHitRow, i);
+        ui4::pill(out, bx0 + 10.0f * s, ry0, bx1 - 10.0f * s, ry1,
+                  sel ? ui4::kPink : ((i % 2 == 0) ? ui4::kPillGrey : rgba(24, 26, 32, 232)),
+                  ui4::PillKind::kPill02, false, sel);
+        out.text(bx0 + 26.0f * s, ry0 + 11.0f * s, ge.filename,
+                 ui4::style(sel ? Font::kE : Font::kB, 13.5f * s, ui4::kWhite));
+        char szbuf[32];
+        std::snprintf(szbuf, sizeof szbuf, "%.0f KB", double(ge.size_bytes) / 1024.0);
+        out.text(bx1 - 26.0f * s, ry0 + 11.0f * s, szbuf,
+                 ui4::style(Font::kB, 12.0f * s, sel ? ui4::kYellow : ui4::kDim, Align::kRight));
+      }
+    }
+    ui4::button_bar(out, {{"X", "DELETE PHOTO"}, {"B", "BACK TO CAMERA"}}, w, h, 56.0f);
+    return;
+  }
   const uint32_t kGrid = rgba(255, 255, 255, 30);
   const uint32_t kBracket = rgba(255, 255, 255, 165);
 
@@ -631,7 +835,7 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     const float dx0 = w - 268.0f * s;  // canvas x = 1012 at 1280px!
     const float dx1 = w - 20.0f * s;   // canvas x = 1260
     const float dy0 = 36.0f * s;
-    const float row_pitch = 47.0f * s;
+    const float row_pitch = 38.0f * s;
 
     // Header PILL01 (#BFBFBF) + PILLCLIPON01
     ui4::pill(out, dx0, dy0, dx1, dy0 + 26.0f * s, rgba(0xBF, 0xBF, 0xBF, 240), ui4::PillKind::kMenu, false, true);
@@ -656,6 +860,7 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     const RowInfo rows[kRowCount] = {
         {"PRESET", 0.0f, photo_preset_name(effects_.preset), false},
         {"SHUTTER", effects_.shutter_speed / 100.0f, fmt_pct(effects_.shutter_speed), true},
+        {"BLUR MODE", 0.0f, effects_.tracking_panning ? "TRACKING" : "PANNING", false},
         {"APERTURE", effects_.aperture / 100.0f, fmt_pct(effects_.aperture), true},
         {"FOCUS", (effects_.focus_distance - 1.5f) / 118.5f, fbuf, true},
         {"EXPOSURE", effects_.exposure / 100.0f, fmt_pct(effects_.exposure), true},
@@ -671,36 +876,38 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
         {"ROLL / TILT",
          float((camera_.roll_deg() + camera_.limits().max_roll_deg) / (2.0 * camera_.limits().max_roll_deg)), rbuf,
          true},
+        {"WATERMARK", 0.0f, effects_.watermark ? "ON" : "OFF", false},
+        {"HIDE CAR", 0.0f, effects_.hide_car ? "ON" : "OFF", false},
     };
 
-    const float list_top = dy0 + 32.0f * s;
+    const float list_top = dy0 + 30.0f * s;
     for (int i = 0; i < kRowCount; ++i) {
       const float ry0 = list_top + float(i) * row_pitch;
-      const float ry1 = ry0 + 42.0f * s;
+      const float ry1 = ry0 + 34.0f * s;
       const bool sel = (i == selected_row_);
 
       // Floating PILL01 row (#212121, focused #F90064) — NO giant enclosing dark wall!
       out.add_hit(dx0, ry0, dx1, ry1, ui::kHitRow, i);
       ui4::pill(out, dx0, ry0, dx1, ry1, sel ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kMenu, false, sel);
 
-      out.text(dx0 + 12.0f * s, ry0 + 6.0f * s, rows[i].name,
-               ui4::style(sel ? Font::kD : Font::kB, 12.0f * s, sel ? ui4::kWhite : ui4::kOffWhite));
+      out.text(dx0 + 12.0f * s, ry0 + 4.5f * s, rows[i].name,
+               ui4::style(sel ? Font::kD : Font::kB, 11.0f * s, sel ? ui4::kWhite : ui4::kOffWhite));
       if (!rows[i].is_bar) {
         out.add_hit(dx0 + 96.0f * s, ry0, dx0 + 132.0f * s, ry1, ui::kHitStepLeft, i);
         out.add_hit(dx1 - 32.0f * s, ry0, dx1, ry1, ui::kHitStepRight, i);
-        ui4::opt_arrow(out, dx0 + 112.0f * s, ry0 + 28.0f * s, 12.0f * s, -1, sel ? ui4::kWhite : ui4::kDim);
-        ui4::opt_arrow(out, dx1 - 14.0f * s, ry0 + 28.0f * s, 12.0f * s, +1, sel ? ui4::kWhite : ui4::kDim);
-        ui::TextStyle vs = ui4::style(Font::kD, 12.5f * s, sel ? ui4::kYellow : ui4::kWhite, Align::kCenter);
-        ui4::fit_text(rows[i].value, vs, (dx1 - dx0) - 134.0f * s, 8.5f * s);
-        out.text(0.5f * (dx0 + 112.0f * s + dx1 - 14.0f * s), ry0 + 22.0f * s, rows[i].value, vs);
+        ui4::opt_arrow(out, dx0 + 112.0f * s, ry0 + 22.0f * s, 11.0f * s, -1, sel ? ui4::kWhite : ui4::kDim);
+        ui4::opt_arrow(out, dx1 - 14.0f * s, ry0 + 22.0f * s, 11.0f * s, +1, sel ? ui4::kWhite : ui4::kDim);
+        ui::TextStyle vs = ui4::style(Font::kD, 11.5f * s, sel ? ui4::kYellow : ui4::kWhite, Align::kCenter);
+        ui4::fit_text(rows[i].value, vs, (dx1 - dx0) - 134.0f * s, 8.0f * s);
+        out.text(0.5f * (dx0 + 112.0f * s + dx1 - 14.0f * s), ry0 + 16.5f * s, rows[i].value, vs);
       } else {
         const float sl_x0 = dx0 + 12.0f * s, sl_x1 = dx1 - 12.0f * s;
         const float sl_mid = 0.5f * (sl_x0 + sl_x1);
-        out.add_hit(sl_x0, ry1 - 18.0f * s, sl_mid, ry1, ui::kHitStepLeft, i);
-        out.add_hit(sl_mid, ry1 - 18.0f * s, sl_x1, ry1, ui::kHitStepRight, i);
-        out.text(dx1 - 12.0f * s, ry0 + 6.0f * s, rows[i].value,
-                 ui4::style(Font::kD, 12.5f * s, sel ? ui4::kYellow : ui4::kWhite, Align::kRight));
-        ui4::opt_slider(out, sl_x0, ry1 - 13.0f * s, sl_x1, ry1 - 5.0f * s, rows[i].norm, s,
+        out.add_hit(sl_x0, ry1 - 15.0f * s, sl_mid, ry1, ui::kHitStepLeft, i);
+        out.add_hit(sl_mid, ry1 - 15.0f * s, sl_x1, ry1, ui::kHitStepRight, i);
+        out.text(dx1 - 12.0f * s, ry0 + 4.5f * s, rows[i].value,
+                 ui4::style(Font::kD, 11.5f * s, sel ? ui4::kYellow : ui4::kWhite, Align::kRight));
+        ui4::opt_slider(out, sl_x0, ry1 - 11.0f * s, sl_x1, ry1 - 4.0f * s, rows[i].norm, s,
                         sel ? ui4::kYellow : ui4::kPink, sel);
       }
     }

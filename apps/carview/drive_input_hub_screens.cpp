@@ -702,6 +702,160 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
+            // Offline Car Club & Shared Club Garage (451_CLUB_SETTINGS).
+            if (car_club_open) {
+              static const std::vector<std::string> kClubNames = {
+                  "HORIZON DRIVERS", "COLORADO APEX", "RED ROCK RACERS", "PIKES PEAK CREW", "FESTIVAL LEGENDS",
+                  "SHIFT COLLECTIVE"};
+              static const std::vector<std::string> kClubTags = {"HRZN", "APEX", "ROCK", "PEAK", "FEST", "SHFT"};
+              const int n_cars = int(app.baked_cars.size());
+              const int total_rows = 2 + n_cars;
+              auto cycle_name = [&](int dir) {
+                int idx = 0;
+                for (int i = 0; i < int(kClubNames.size()); ++i)
+                  if (kClubNames[size_t(i)] == app.saved.car_club_name) idx = i;
+                idx = ((idx + dir) % int(kClubNames.size()) + int(kClubNames.size())) % int(kClubNames.size());
+                app.saved.car_club_name = kClubNames[size_t(idx)];
+                car_club_notice = "CLUB NAME: " + app.saved.car_club_name;
+                save_now("car club");
+              };
+              auto cycle_tag = [&](int dir) {
+                int idx = 0;
+                for (int i = 0; i < int(kClubTags.size()); ++i)
+                  if (kClubTags[size_t(i)] == app.saved.car_club_tag) idx = i;
+                idx = ((idx + dir) % int(kClubTags.size()) + int(kClubTags.size())) % int(kClubTags.size());
+                app.saved.car_club_tag = carview::sanitize_club_tag(kClubTags[size_t(idx)]);
+                car_club_notice = "CLUB TAG: [" + app.saved.car_club_tag + "]";
+                save_now("car club");
+              };
+              auto car_id_at = [&](int ci) -> int {
+                if (ci < 0 || ci >= n_cars) return 0;
+                if (app.have_garage && size_t(ci) < app.pick_ids.size()) {
+                  if (const garage::Car* gc = app.career_garage.find(app.pick_ids[size_t(ci)])) return int(gc->car_id);
+                }
+                if (app.have_career_catalog) {
+                  if (const auto* sp = app.career_catalog.find_car_by_media(app.baked_cars[size_t(ci)]))
+                    return int(sp->car_id);
+                }
+                return ci + 1;
+              };
+              auto activate_row = [&](int dir) {
+                if (car_club_pick == 0) {
+                  cycle_name(dir);
+                } else if (car_club_pick == 1) {
+                  cycle_tag(dir);
+                } else {
+                  const int ci = car_club_pick - 2;
+                  const int cid = car_id_at(ci);
+                  if (cid > 0) {
+                    const bool now_shared = carview::toggle_club_shared_car(app.saved.car_club_shared, cid);
+                    car_club_notice = (now_shared ? "SHARED TO CLUB: " : "REMOVED FROM CLUB: ") +
+                                      carview::car_name(app.baked_cars[size_t(ci)]);
+                    save_now("car club");
+                  }
+                }
+              };
+              auto drive_shared_selected = [&]() {
+                if (car_club_pick < 2 || car_club_pick >= total_rows) return;
+                const int ci = car_club_pick - 2;
+                const int cid = car_id_at(ci);
+                const bool is_shared = std::find(app.saved.car_club_shared.begin(), app.saved.car_club_shared.end(),
+                                                 cid) != app.saved.car_club_shared.end();
+                if (!is_shared) {
+                  car_club_notice = "SHARE THIS CAR FIRST TO BORROW IT";
+                  return;
+                }
+                car_club_open = false;
+                if (app.baked_cars[size_t(ci)] != app.car) {
+                  app.next_car = app.baked_cars[size_t(ci)];
+                  if (app.have_garage && size_t(ci) < app.pick_ids.size()) app.career_garage.selected = app.pick_ids[size_t(ci)];
+                  running = false;
+                } else {
+                  notice = "DRIVING CLUB CAR: " + carview::car_name(app.car);
+                  notice_until = vehicle.time() + 2.5;
+                }
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE && !e.key.repeat) {
+                  car_club_open = false;
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (k == SDLK_UP || k == SDLK_W) {
+                  car_club_pick = ((car_club_pick - 1) % total_rows + total_rows) % total_rows;
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_DOWN || k == SDLK_S) {
+                  car_club_pick = (car_club_pick + 1) % total_rows;
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_LEFT || k == SDLK_A) {
+                  if (car_club_pick < 2) { activate_row(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                } else if (k == SDLK_RIGHT) {
+                  if (car_club_pick < 2) { activate_row(+1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
+                  activate_row(+1);
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                } else if ((k == SDLK_D || k == SDLK_X) && !e.key.repeat) {
+                  drive_shared_selected();
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                }
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START) {
+                  car_club_open = false;
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+                  car_club_pick = ((car_club_pick - 1) % total_rows + total_rows) % total_rows;
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+                  car_club_pick = (car_club_pick + 1) % total_rows;
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT && car_club_pick < 2) {
+                  activate_row(-1);
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT && car_club_pick < 2) {
+                  activate_row(+1);
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                  activate_row(+1);
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                } else if (b == SDL_GAMEPAD_BUTTON_WEST) {
+                  drive_shared_selected();
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                }
+              }
+              if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                carview::ui::HitZone hz{};
+                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow &&
+                    hz.index >= 0 && hz.index < total_rows && car_club_pick != hz.index) {
+                  car_club_pick = hz.index;
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                }
+              }
+              if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                if (e.button.button == SDL_BUTTON_RIGHT) {
+                  car_club_open = false;
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (e.button.button == SDL_BUTTON_LEFT) {
+                  carview::ui::HitZone hz{};
+                  if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
+                    if (hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < total_rows) {
+                      car_club_pick = hz.index;
+                      activate_row(+1);
+                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                    } else if (hz.group == carview::ui4::kHitButton) {
+                      if (hz.index == 0) { activate_row(+1); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
+                      else if (hz.index == 1) { drive_shared_selected(); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
+                      else if (hz.index == 2) { car_club_open = false; app.audio_host.trigger_ui(audio::UiCue::kCancel); }
+                    }
+                  }
+                }
+              }
+              if (e.type == SDL_EVENT_MOUSE_WHEEL && total_rows > 0) {
+                car_club_pick = ((car_club_pick + (e.wheel.y > 0 ? -1 : 1)) % total_rows + total_rows) % total_rows;
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              }
+              return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+            }
             // Paint Shop & Vinyl/Livery Editor (LiveryEditor live preview + .liv persistence; legacy swatch fallback).
             if (paint_open && livery_editor.is_open()) {
               auto close_livery = [&](bool save_changes) {
