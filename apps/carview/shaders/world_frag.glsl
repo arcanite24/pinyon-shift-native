@@ -595,9 +595,10 @@ void main() {
       float aa_s = max(fwidth(cell_u), 0.010);
       float aa_u = max(fwidth(v_uv0.x), 0.012);
 
-      // Forward-pointing V chevron with razor-crisp leading edge, clean asphalt gaps, and tapered wing tips.
+      // Forward-pointing V chevron with crisp leading and trailing edges, clean asphalt gaps,
+      // and tapered wing tips (static world-locked FH1 3D arrows; no trailing smear or wave).
       float wing_taper = au * 0.075;
-      float back_edge = smoothstep(0.39 + wing_taper - aa_s * 1.1, 0.50 + wing_taper + aa_s * 0.6, phase);
+      float back_edge = smoothstep(0.42 + wing_taper - aa_s * 0.75, 0.46 + wing_taper + aa_s * 0.75, phase);
       float front_edge = 1.0 - smoothstep(0.84 - aa_s * 0.75, 0.88 + aa_s * 0.75, phase);
       float chev_raw = back_edge * front_edge;
       // Smoothly filter chevrons in the far distance so individual arrows never shimmer or moire.
@@ -606,21 +607,14 @@ void main() {
 
       // Sleek feathered translucent lateral boundaries (never a hard rectangular ribbon edge).
       float lat_core = 1.0 - smoothstep(0.62 - aa_u, 0.80 + aa_u, au);
-      float lat_glow = 1.0 - smoothstep(0.64, 0.96, au);
 
-      // 3D beveled arrow core + luminous leading ridge + soft subtle trailing glow + faint spine sheen.
+      // 3D beveled arrow core + luminous leading ridge.
       float lead_rim = smoothstep(0.64, 0.84, phase) * front_edge * (1.0 - far_filter);
       float spine_bevel = (1.0 - smoothstep(0.0, 0.52, au)) * chev_mask;
-      float tail_glow = smoothstep(0.22, 0.48, phase) * front_edge * lat_glow * 0.13 * (1.0 - far_filter);
-      float guide_sheen = exp(-au * au * 6.0) * 0.055;
-
-      // Subtle forward-flowing energy pulse along the driving direction.
-      float t_sec = frame.env_basis_x.w;
-      float pulse = 0.93 + 0.12 * (0.5 + 0.5 * sin((cell_u - t_sec * 1.55) * 6.2831853 * 0.25));
 
       float highlight = clamp(lead_rim * 0.42 + spine_bevel * 0.18, 0.0, 0.55);
-      vec3 col = mix(base_lin, core_lin, highlight) * (1.06 * pulse);
-      float shape_a = clamp(chev_mask * lat_core * 0.84 + tail_glow + guide_sheen, 0.0, 0.86);
+      vec3 col = mix(base_lin, core_lin, highlight) * 1.05;
+      float shape_a = clamp(chev_mask * lat_core * 0.86, 0.0, 0.86);
       float a = shape_a * v_colour.a;
       vec3 encoded = a > 0.004 ? out_rgb(col * draw.up.w) : vec3(0.0);
       out_color = vec4(encoded * a, a);
@@ -844,10 +838,10 @@ void main() {
   } else {
     t = vec4(draw.tint.rgb, 1.0);
   }
-  // Glow cards (interim, ours): the texture unlit, added over what is behind
-  // (alpha 0 under ONE, ONE_MINUS_SRC_ALPHA).
+  // Additive world effects (DIFF_GLOW_*, ADD_DIFF_OPAC_RGBA): unlit colour masked by alpha,
+  // added over what is behind (alpha 0 under ONE, ONE_MINUS_SRC_ALPHA).
   if (blend == kAdditive) {
-    out_color = vec4(out_rgb(t.rgb * draw.up.w), 0.0);
+    out_color = vec4(out_rgb(t.rgb * t.a * draw.up.w), 0.0);
     return;
   }
 #ifndef OPAQUE_NO_DISCARD
@@ -950,13 +944,15 @@ void main() {
   }
 
   // World night Light_Map (slot 7) & staggered dusk/dawn EmissiveMapSampler (slot 3) (SKY_AND_TOD §6.1-6.2):
+  // Light_Map holds baked incident night irradiance (billboard spotlights, outpost floodlights, patio lamps)
+  // and modulates surface albedo t.rgb; EmissiveMap (slot 3) is self-emission (lit windows / neon signs).
   // c3.w (emissive_force) encoded in fractional part of draw.params.z enables daytime interior/sign glow.
   float emissive_force = clamp((draw.params.z - floor(draw.params.z + 0.01)) / 0.45, 0.0, 1.0);
   if ((flags & kFlagLightMap) != 0u) {
     float lm_gain = max(frame.sky_color.w, emissive_force);
     if (lm_gain > 0.002) {
       vec3 lm = texture(light_map, v_uv2).rgb;
-      colour += lm * lm_gain * 1.4 * draw.up.w;
+      colour += t.rgb * lm * lm_gain * 1.4 * draw.up.w;
     }
   } else if ((flags & kFlagEmissiveMap) != 0u) {
     float lit_flag = step(v_emissive_thresh, frame.sky_color.w);

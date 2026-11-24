@@ -517,9 +517,9 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
       s.dir_inner[1] = 0.0f;
       s.dir_inner[2] = 0.0f;
       s.dir_inner[3] = -1.0f;  // omnidirectional
-      s.color_outer[0] = g.color[0] * 2.8f;
-      s.color_outer[1] = g.color[1] * 2.8f;
-      s.color_outer[2] = g.color[2] * 2.8f;
+      s.color_outer[0] = g.color[0] * 2.4f;
+      s.color_outer[1] = g.color[1] * 2.4f;
+      s.color_outer[2] = g.color[2] * 2.4f;
       s.color_outer[3] = -1.0f;
       s.extra[0] = 0.0f;  // headlight_glow_1.xds soft radial glow
       s.extra[1] = 0.25f;

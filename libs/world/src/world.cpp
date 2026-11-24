@@ -250,8 +250,8 @@ bool decal_effect(const std::string& e) {
 
 Blend effect_blend(const std::string& e) {
   auto starts = [&](const char* prefix) { return e.rfind(prefix, 0) == 0; };
-  if (starts("DIFF_GLOW")) return Blend::kAdditive;  // interim (ours), see Blend
-  if ((starts("H_ROAD") && e.find("_BLEND_") != std::string::npos) || starts("H_VBLND_DECAL") || is_water_effect(e))
+  if (starts("DIFF_GLOW") || starts("ADD_")) return Blend::kAdditive;
+  if ((starts("H_ROAD") && e.find("_BLEND") != std::string::npos) || starts("H_VBLND_DECAL") || is_water_effect(e))
     return Blend::kAlpha;
   // Props and trees drew with alpha to coverage in the frame; other effects
   // named _OPAC (vertex-blend cut-outs) are given it too (ours).
@@ -400,6 +400,35 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       if (model.uv_offset_scale.empty()) st.default_uv_models.insert(name);
     }
     size_t submesh_number = 0;  // in file order, for uvOffsetScale
+    // FH1 RMB command buffers emit uvOffsetScale (c0) draws grouped by render bucket:
+    // opaque/cutout submeshes first, then alpha/additive-blended submeshes second.
+    // On multi-object models whose objects have distinct UV scales (e.g. road tiles
+    // mixing H_ROAD_* opaque and H_ROAD_*_BLEND_* submeshes), file-order indexing
+    // assigns the wrong object's uvOffsetScale and tiles AO/Light_Map across the mesh.
+    std::vector<size_t> uv_draw_index;
+    if (options.render_data && !model.uv_offset_scale.empty()) {
+      size_t total_subs = 0;
+      for (const auto& obj : model.objects) total_subs += obj.submeshes.size();
+      uv_draw_index.resize(total_subs, 0);
+      size_t cursor = 0;
+      for (int pass = 0; pass < 2; ++pass) {
+        size_t g = 0;
+        for (const auto& obj : model.objects) {
+          for (const auto& sub : obj.submeshes) {
+            bool is_blended = false;
+            if (sub.material_index < model.materials.size()) {
+              const auto& mat_ref = model.materials[sub.material_index];
+              if (mat_ref.effect < model.effects.size()) {
+                const Blend b = effect_blend(model.effects[mat_ref.effect]);
+                is_blended = (b == Blend::kAlpha || b == Blend::kAdditive);
+              }
+            }
+            if ((pass == 1) == is_blended) uv_draw_index[g] = cursor++;
+            ++g;
+          }
+        }
+      }
+    }
     std::array<float, 3> instance{0, 0, 0};
     if (placement) {
       const auto q = placement->apply({0, 0, 0});
@@ -577,8 +606,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
                 if (m.pixel_constants.size() > 3) mm.emissive_force = std::clamp(m.pixel_constants[3][3], 0.0f, 1.0f);
               }
             }
-            if (has_spec && (prop_diff || road)) {
-              mm.spec_map = file_slot(has_norm ? 2 : 1);
+            if (has_spec && prop_diff) {
+              // Across all 173 FH1 track effects, SpecularMap on H_DIFF_SPEC_* is
+              // always slot 4 (slot 2 on *_REFL_* is the 6-face Cube_Map, e.g. 0x0d9d/0x2a9d).
+              mm.spec_map = file_slot(4);
             }
             auto [it, fresh] = material_index.emplace(mm.key(), uint32_t(out.materials.size()));
             if (fresh) out.materials.push_back(mm);
@@ -586,7 +617,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             layout = fh1::rmb_vertex_layout(mm.effect, o.stride);
             if (mm.effect.ends_with("_LM") || mm.effect.find("_AO") != std::string::npos)
               lightmap = layout.last_texcoord();
-            if (first_submesh + si < model.uv_offset_scale.size()) uv = model.uv_offset_scale[first_submesh + si];
+            const size_t uv_idx = (first_submesh + si < uv_draw_index.size())
+                                      ? uv_draw_index[first_submesh + si]
+                                      : (first_submesh + si);
+            if (uv_idx < model.uv_offset_scale.size()) uv = model.uv_offset_scale[uv_idx];
           } else {
             ++st.no_material;
             MeshMaterial none;
@@ -1033,31 +1067,30 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         }
         const auto it = index_of.find(impl_->prop_models->name_of(uint32_t(member)));
         add_triangles(*model, it != index_of.end() ? it->second : 0, &p.placement, nullptr, false, fade);
-        // Emit night streetlamp / festival / outpost glow sprites once per prop instance.
+        // Emit night streetlamp / floodlight fixture glow sprites once per prop instance.
+        // Match only actual light fixture props (never water towers, brick walls, signs,
+        // tents, gantries, or booths).
         if (options.render_data && fade != 1 && !prop_family_low.empty()) {
-          const bool is_lamp = prop_family_low.find("lamp") != std::string::npos ||
-                               prop_family_low.find("street") != std::string::npos ||
-                               prop_family_low.find("light") != std::string::npos ||
-                               prop_family_low.find("lantern") != std::string::npos;
-          const bool is_fest = prop_family_low.find("festival") != std::string::npos ||
-                               prop_family_low.find("stage") != std::string::npos ||
-                               prop_family_low.find("tower") != std::string::npos ||
-                               prop_family_low.find("outpost") != std::string::npos ||
-                               prop_family_low.find("gantry") != std::string::npos ||
-                               prop_family_low.find("booth") != std::string::npos;
-          if (is_lamp || is_fest) {
-            const float local_top = std::max(model->box_max[1] * 0.92f, 2.5f);
+          const bool is_streetlamp = prop_family_low.find("lamppost") != std::string::npos ||
+                                     prop_family_low.find("streetlight") != std::string::npos ||
+                                     prop_family_low.find("carpark_lights") != std::string::npos ||
+                                     prop_family_low.find("lightcasings") != std::string::npos;
+          const bool is_floodlight = prop_family_low.find("floodlight") != std::string::npos ||
+                                     prop_family_low.find("spotlight") != std::string::npos ||
+                                     prop_family_low.rfind("lights_lod", 0) == 0;
+          if (is_streetlamp || is_floodlight) {
+            const float local_top = std::max(model->box_max[1] * 0.94f, 0.35f);
             const auto gp = p.placement.apply({0.0f, local_top, 0.0f});
             WorldGlow wg;
             wg.position = {float(gp[0]), float(gp[1]), float(-gp[2])};
-            if (is_fest && !is_lamp) {
-              // Festival / outpost warm-magenta / gold stage glow.
-              wg.color = {1.0f, 0.58f, 0.82f};
-              wg.radius = 2.6f;
+            if (is_floodlight) {
+              // Outpost / festival stadium floodlight tower: crisp warm-white metal-halide glow.
+              wg.color = {1.0f, 0.96f, 0.88f};
+              wg.radius = (model->box_max[1] > 10.0f) ? 1.85f : 0.85f;
             } else {
-              // Streetlamp warm sodium-amber glow.
+              // Streetlamp / lamppost warm sodium-amber glow.
               wg.color = {1.0f, 0.78f, 0.42f};
-              wg.radius = 1.8f;
+              wg.radius = 1.25f;
             }
             // Deterministic per-instance threshold in [0.05, 0.90] for staggered dusk switch-on.
             const uint32_t h = uint32_t(std::llround(t[0] * 7.0)) * 2654435761u ^
