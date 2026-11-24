@@ -267,8 +267,21 @@ class Showroom {
 
   // Reads <bake>/cars/<car>.shiftbake, its wheel and tyre bakes and
   // <bake>/shared.shiftbake, and builds the draw list. CPU only.
+  // When bake_dir is empty or a .shiftbake file is missing, decodes directly
+  // from the game disc in memory via the shared thread-safe disc cache.
   bool load(const std::filesystem::path& bake_dir, const std::string& car,
             const ShowroomOptions& options, std::string& error);
+  // Configures the shared in-memory disc loader used when .shiftbake files are
+  // absent (zero-bake direct-from-disc mode). Thread-safe.
+  static void set_disc_root(const std::filesystem::path& game_root,
+                            const std::filesystem::path& state_root = {});
+  // Discovers all cars available directly from the game disc / DLC packages
+  // (Data_Car.Id -> MediaName and sorted distinct lower-case media names).
+  static bool discover_disc_cars(const std::filesystem::path& game_root,
+                                 const std::filesystem::path& state_root,
+                                 std::map<int64_t, std::string>& out_ids,
+                                 std::vector<std::string>& out_media,
+                                 std::string* error = nullptr);
   // Creates the pipelines and uploads geometry and textures; the renderer
   // must be initialised. Installs itself as the renderer's scene.
   bool upload(std::string& error);

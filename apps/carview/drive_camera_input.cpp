@@ -9,6 +9,7 @@
 #include <fstream>
 
 #include "cars/mods.h"
+#include "drive/from_physics.h"
 #include "render_modern.h"
 
 namespace carview {
@@ -317,16 +318,27 @@ bool load_camera_rig(const std::filesystem::path& game_root, const std::filesyst
       !cars::load_camera_files(install, ini, xml, &note, camera_effects) ||
       !drive::parse_camera_settings(ini, tuning, &note) || !drive::parse_camera_physics(xml, tuning, &note))
     return false;
-  // The box's z shift and the pristine box (the fallback) from the bake's rows.
+  // The box's z shift and the pristine box (the fallback) from the bake's rows
+  // or directly from the disc in zero-bake mode.
   cars::CarPhysics physics;
   cars::PhysicsSettings settings_unused;
   {
-    std::string name = lower_ascii(info.media_name);
-    std::ifstream in(cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt")), std::ios::binary);
-    std::stringstream ss;
-    ss << in.rdbuf();
-    std::string e;
-    if (!in || !cars::physics_from_text(ss.str(), physics, settings_unused, &e)) {
+    bool have_physics = false;
+    if (!bake_dir.empty()) {
+      std::string name = lower_ascii(info.media_name);
+      std::ifstream in(cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt")), std::ios::binary);
+      if (in) {
+        std::stringstream ss;
+        ss << in.rdbuf();
+        std::string e;
+        have_physics = cars::physics_from_text(ss.str(), physics, settings_unused, &e);
+      }
+    }
+    if (!have_physics) {
+      std::string e;
+      have_physics = drive::load_disc_car_physics(info.car_id, info.media_name, physics, settings_unused, &e);
+    }
+    if (!have_physics) {
       note = "no physics rows for " + info.media_name;
       return false;
     }
