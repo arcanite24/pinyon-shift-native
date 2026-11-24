@@ -142,7 +142,21 @@ class MapView {
     int style = 0;  // index into kRoadTypes
     std::vector<uint32_t> nodes;  // colorado.nav node indices
     std::vector<std::array<double, 2>> points;
+    double min_x = 0, max_x = 0, min_z = 0, max_z = 0;
   };
+  struct PauseBaseCache {
+    int width = 0, height = 0, pad = 0;
+    double scale = 0.0;
+    double cx = 0.0, cz = 0.0;
+    const freeroam::RoadDiscovery* road_disc = nullptr;
+    int road_disc_count = -1;
+    uint32_t loaded_tiles_mask = 0;
+    std::vector<uint8_t> rgba;
+  };
+  uint32_t high_tiles_mask() const;
+  void render_pause_base(std::vector<uint8_t>& rgba, int w, int h, double scale, double hi_blend, double cx, double cz,
+                         const freeroam::RoadDiscovery* road_discovery) const;
+
   std::vector<Road> roads_;
   // A coarse grid of road segments for the minimap: (road, segment) by cell.
   double cell_ = 400, min_x_ = 0, min_z_ = 0, max_x_ = 0, max_z_ = 0;
@@ -154,6 +168,7 @@ class MapView {
   static constexpr int kHighCols = 5, kHighRows = 3, kHighTileSize = 1024;
   mutable std::array<Atlas, 15> high_tiles_{};
   mutable std::array<uint8_t, 15> high_tile_state_{};  // 0 unloaded, 1 loaded, 2 failed
+  mutable PauseBaseCache base_cache_;
 };
 
 // Smooth, dt-integrated fullscreen map camera controller: continuous

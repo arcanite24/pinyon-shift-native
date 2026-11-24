@@ -104,12 +104,14 @@ ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& 
   // slide or spin does not whip the view; the look angle eases to its
   // target in 0.1 s. Headless frames (dt of a second or more) settle.
   double yaw_d = car_yaw;
+  bool first_pull = false;
   if (pull) {
-    if (!pull->started || dt <= 0) {
+    if (!pull->started) {
       pull->yaw = car_yaw;
       pull->look = pull->look_target;
       pull->started = true;
-    } else {
+      first_pull = true;
+    } else if (dt > 0) {
       pull->yaw += angle_to(pull->yaw, car_yaw) * (1 - std::exp(-dt / 0.2));
       pull->look += (pull->look_target - pull->look) * (1 - std::exp(-dt / 0.1));
     }
@@ -129,14 +131,17 @@ ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& 
                           : add(add(base, mul(dir, float(0.35 * size.z))), V3{0, 0.7f, 0});
   V3 eye_used = eye;
   if (ground && pull) {
-    const drive::Vec3 from{target.x, target.y, target.z};
-    const drive::Vec3 ray{double(eye.x) - target.x, double(eye.y) - target.y, double(eye.z) - target.z};
-    const double reach = std::sqrt(ray.x * ray.x + ray.y * ray.y + ray.z * ray.z);
-    double want = 1;
-    drive::Hit hit;
-    if (reach > 1e-6 && ground->raycast(from, ray * (1 / reach), reach, hit))
-      want = std::clamp((hit.distance - 0.2) / reach, 0.1, 1.0);
-    pull->fraction = want < pull->fraction ? want : pull->fraction + (want - pull->fraction) * std::min(1.0, dt * 3);
+    if (dt > 0 || first_pull) {
+      const drive::Vec3 from{target.x, target.y, target.z};
+      const drive::Vec3 ray{double(eye.x) - target.x, double(eye.y) - target.y, double(eye.z) - target.z};
+      const double reach = std::sqrt(ray.x * ray.x + ray.y * ray.y + ray.z * ray.z);
+      double want = 1;
+      drive::Hit hit;
+      if (reach > 1e-6 && ground->raycast(from, ray * (1 / reach), reach, hit))
+        want = std::clamp((hit.distance - 0.2) / reach, 0.1, 1.0);
+      pull->fraction =
+          want < pull->fraction ? want : pull->fraction + (want - pull->fraction) * std::min(1.0, std::max(0.0, dt) * 3);
+    }
     const float f = float(pull->fraction);
     eye_used = add(target, mul(V3{eye.x - target.x, eye.y - target.y, eye.z - target.z}, f));
   }
@@ -414,7 +419,9 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
   in.pitch_degrees = std::asin(std::clamp(fwd.y, -1.0, 1.0)) * 180 / 3.14159265358979323846;
   // The g layers' inputs: the body's acceleration over the frame along its
   // forward and right axes, gravity left out (SPEC-CAMERAS, Inputs).
-  accel.sample(vel, v.orientation(), dt, in.g_longitudinal, in.g_lateral);
+  if (dt > 0.0) {
+    accel.sample(vel, v.orientation(), dt, in.g_longitudinal, in.g_lateral);
+  }
   int down = 0;
   const double c = std::cos(info.pitch), s = std::sin(info.pitch);
   const drive::Vec3 vpos = v.position();
@@ -442,9 +449,9 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
       }
       if (prev_wheel_comp) {
         bump += (w.compression - (*prev_wheel_comp)[size_t(i)]);
-        (*prev_wheel_comp)[size_t(i)] = w.compression;
+        if (dt > 0.0) (*prev_wheel_comp)[size_t(i)] = w.compression;
       }
-    } else if (prev_wheel_comp) {
+    } else if (prev_wheel_comp && dt > 0.0) {
       (*prev_wheel_comp)[size_t(i)] = 0.0;
     }
     in.surface_bump[size_t(i)] = bump;
