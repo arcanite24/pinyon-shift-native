@@ -140,11 +140,66 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     }
   }
 
-  auto upload_rgba_image = [&](const uint8_t* pixels, uint32_t w, uint32_t h, bool srgb, GpuTexture& dst,
-                               const char* label) -> bool {
-    const VkDeviceSize bytes = VkDeviceSize(w) * h * 4;
+  auto upload_rgba_image_mips = [&](const uint8_t* pixels, uint32_t w, uint32_t h, uint32_t mip_levels, bool srgb,
+                                    GpuTexture& dst, const char* label) -> bool {
+    mip_levels = std::max(1u, mip_levels);
+    // Build sRGB-correct 2x2 box-filtered mip chain up to mip_levels (stops before cell boundaries merge).
+    std::vector<std::vector<uint8_t>> mips(mip_levels);
+    mips[0].assign(pixels, pixels + size_t(w) * h * 4);
+    uint32_t mw = w, mh = h;
+    auto u8_to_lin = [&](uint8_t v) -> float {
+      const float c = float(v) / 255.0f;
+      return srgb ? srgb_to_linear(c) : c;
+    };
+    auto lin_to_u8 = [&](float c) -> uint8_t {
+      c = std::clamp(c, 0.0f, 1.0f);
+      const float s = srgb ? (c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f) : c;
+      return uint8_t(std::clamp(std::lround(double(s) * 255.0), 0l, 255l));
+    };
+    for (uint32_t lvl = 1; lvl < mip_levels; ++lvl) {
+      const uint32_t nw = std::max(1u, mw / 2u);
+      const uint32_t nh = std::max(1u, mh / 2u);
+      mips[lvl].resize(size_t(nw) * nh * 4);
+      const uint8_t* src = mips[lvl - 1].data();
+      uint8_t* o = mips[lvl].data();
+      for (uint32_t y = 0; y < nh; ++y) {
+        const uint32_t sy0 = std::min(y * 2u, mh - 1u);
+        const uint32_t sy1 = std::min(sy0 + 1u, mh - 1u);
+        for (uint32_t x = 0; x < nw; ++x) {
+          const uint32_t sx0 = std::min(x * 2u, mw - 1u);
+          const uint32_t sx1 = std::min(sx0 + 1u, mw - 1u);
+          const uint8_t* p00 = src + (size_t(sy0) * mw + sx0) * 4;
+          const uint8_t* p10 = src + (size_t(sy0) * mw + sx1) * 4;
+          const uint8_t* p01 = src + (size_t(sy1) * mw + sx0) * 4;
+          const uint8_t* p11 = src + (size_t(sy1) * mw + sx1) * 4;
+          uint8_t* d = o + (size_t(y) * nw + x) * 4;
+          for (int c = 0; c < 3; ++c) {
+            const float avg = 0.25f * (u8_to_lin(p00[c]) + u8_to_lin(p10[c]) + u8_to_lin(p01[c]) + u8_to_lin(p11[c]));
+            d[c] = lin_to_u8(avg);
+          }
+          d[3] = uint8_t((uint32_t(p00[3]) + p10[3] + p01[3] + p11[3] + 2u) / 4u);
+        }
+      }
+      mw = nw;
+      mh = nh;
+    }
+
+    VkDeviceSize total_bytes = 0;
+    std::vector<VkBufferImageCopy> copies(mip_levels);
+    mw = w;
+    mh = h;
+    for (uint32_t lvl = 0; lvl < mip_levels; ++lvl) {
+      copies[lvl] = {};
+      copies[lvl].bufferOffset = total_bytes;
+      copies[lvl].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lvl, 0, 1};
+      copies[lvl].imageExtent = {mw, mh, 1};
+      total_bytes += mips[lvl].size();
+      mw = std::max(1u, mw / 2u);
+      mh = std::max(1u, mh / 2u);
+    }
+
     Renderer::Buffer staging;
-    if (!r_.create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+    if (!r_.create_buffer(total_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging)) {
       error = std::string(label) + " staging";
       return false;
@@ -155,10 +210,13 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
       error = std::string(label) + " map";
       return false;
     }
-    std::memcpy(mapped, pixels, size_t(bytes));
+    auto* mp = static_cast<uint8_t*>(mapped);
+    for (uint32_t lvl = 0; lvl < mip_levels; ++lvl) {
+      std::memcpy(mp + copies[lvl].bufferOffset, mips[lvl].data(), mips[lvl].size());
+    }
     vmaUnmapMemory(r_.allocator_, staging.allocation);
     const VkFormat fmt = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-    if (!r_.create_image(w, h, 1, fmt, VK_SAMPLE_COUNT_1_BIT,
+    if (!r_.create_image(w, h, mip_levels, fmt, VK_SAMPLE_COUNT_1_BIT,
                          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                          dst)) {
       r_.destroy_buffer(staging);
@@ -174,15 +232,13 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
       b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
       b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
       b.image = dst.image;
-      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mip_levels, 0, 1};
       VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
       dep.imageMemoryBarrierCount = 1;
       dep.pImageMemoryBarriers = &b;
       vkCmdPipelineBarrier2(cmd, &dep);
-      VkBufferImageCopy reg{};
-      reg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      reg.imageExtent = {w, h, 1};
-      vkCmdCopyBufferToImage(cmd, staging.buffer, dst.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
+      vkCmdCopyBufferToImage(cmd, staging.buffer, dst.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             uint32_t(copies.size()), copies.data());
       b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
       b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
       b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -194,6 +250,10 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     r_.destroy_buffer(staging);
     if (!ok) error = std::string(label) + " upload";
     return ok;
+  };
+  auto upload_rgba_image = [&](const uint8_t* pixels, uint32_t w, uint32_t h, bool srgb, GpuTexture& dst,
+                               const char* label) -> bool {
+    return upload_rgba_image_mips(pixels, w, h, 1u, srgb, dst, label);
   };
 
   if (!upload_rgba_image(atlas_rgba.data(), kParticleAtlasSize, kParticleAtlasSize, true, particle_atlas_,
@@ -235,11 +295,29 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     if (spectator_anim_.init(options_.game_root / "media", world::TrackPostConfig{}, &spec_err) &&
         spectator_anim_.catalog().has_3d_spectators()) {
       const auto& cat = spectator_anim_.catalog();
-      if (upload_rgba_image(cat.atlas_rgba.data(), world::SpectatorCatalog::kAtlasSize,
-                            world::SpectatorCatalog::kAtlasSize, true, spectator_atlas_, "spectator atlas") &&
-          create_world_single_set(spectator_atlas_.view, spectator_set_, spec_err) &&
+      if (upload_rgba_image_mips(cat.atlas_rgba.data(), world::SpectatorCatalog::kAtlasSize,
+                                 world::SpectatorCatalog::kAtlasSize, world::SpectatorCatalog::kAtlasMipLevels, true,
+                                 spectator_atlas_, "spectator atlas") &&
+          gpu_textures_.size() >= 2 && allocate_world_set(spectator_set_, spec_err) &&
           create_dyn_buffer(spectator_buf_, VkDeviceSize(kMaxSpectatorVerts) * sizeof(WorldVertex), spec_err)) {
-        // Authentic Spectators.zip 3D crowd atlas + dynamic vertex buffer ready.
+        // Bind mipmapped 2048x2048 spectator atlas to both binding 0 (albedo) and binding 3
+        // (light_map) so dusk/night festival & outpost floodlight bounce illuminates crowds cleanly.
+        const VkImageView white = gpu_textures_[0].view;
+        const VkImageView flat_n = flat_normal_tex_.view ? flat_normal_tex_.view : white;
+        const VkImageView views[8] = {spectator_atlas_.view, white, white, spectator_atlas_.view,
+                                      flat_n,                white, white, white};
+        VkDescriptorImageInfo imgs[8];
+        VkWriteDescriptorSet writes[8];
+        for (uint32_t b = 0; b < 8; ++b) {
+          imgs[b] = {sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+          writes[b] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+          writes[b].dstSet = spectator_set_;
+          writes[b].dstBinding = b;
+          writes[b].descriptorCount = 1;
+          writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+          writes[b].pImageInfo = &imgs[b];
+        }
+        vkUpdateDescriptorSets(r_.device_, 8, writes, 0, nullptr);
       }
     }
   }
@@ -729,16 +807,20 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
   }
 
   if (draw_spectators) {
-    bind_pipe(world_opaque_);
-    pc.params[0] = 0.0f;
     const auto eye = eye_in_scenery(world_transform_);
     const double eye_gx = world_origin_[0] + double(eye[0]);
     const double eye_gy = double(eye[1]);
     const double eye_gz = world_origin_[1] + double(eye[2]);
     const drive::Ground* active_ground = world_ground_ ? world_ground_ : world::AnimatedWorldSystem::last_ground();
     spectator_cpu_.clear();
-    spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, tod_real_time_, active_ground, spectator_cpu_);
-    const uint32_t n = uint32_t(std::min(spectator_cpu_.size(), size_t(kMaxSpectatorVerts)));
+    std::vector<std::array<float, 4>> shadow_discs;
+    spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, tod_real_time_, active_ground, spectator_cpu_,
+                                         &shadow_discs);
+    constexpr uint32_t kShadowSegs = 8;
+    const uint32_t max_shadow_verts = uint32_t(shadow_discs.size()) * kShadowSegs * 3u;
+    const uint32_t spec_cap =
+        (kMaxSpectatorVerts > max_shadow_verts) ? (kMaxSpectatorVerts - max_shadow_verts) : kMaxSpectatorVerts;
+    const uint32_t n = (uint32_t(std::min(spectator_cpu_.size(), size_t(spec_cap))) / 3u) * 3u;
     spectator_count_ = n;
     if (n > 0) {
       auto* dst = static_cast<WorldVertex*>(spectator_buf_.data());
@@ -758,16 +840,72 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
         o.normal[3] = 0;
         o.uv0[0] = v.uv[0];
         o.uv0[1] = v.uv[1];
+        o.uv2[0] = to_half(v.uv2[0]);
+        o.uv2[1] = to_half(v.uv2[1]);
         for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
       }
+
+      // Append soft ground contact shadow discs under each spectator's feet so crowds ground cleanly.
+      uint32_t shadow_verts = 0;
+      if (world_alpha_ && world_white_set_ && !shadow_discs.empty()) {
+        const float night_f = tod_active_ ? std::clamp(tod_state_.switch_on_lights, 0.0f, 1.0f) : 0.0f;
+        const uint8_t center_a = uint8_t(std::lround(112.0f * (1.0f - 0.58f * night_f)));
+        constexpr float kTwoPi = 6.283185307f;
+        for (const auto& d : shadow_discs) {
+          if (n + shadow_verts + kShadowSegs * 3u > kMaxSpectatorVerts) break;
+          const float cx = float(double(d[0]) - world_origin_[0]);
+          const float cy = d[1];
+          const float cz = float(double(d[2]) - world_origin_[1]);
+          const float rad = d[3];
+          for (uint32_t s = 0; s < kShadowSegs; ++s) {
+            const float a0 = kTwoPi * float(s) / float(kShadowSegs);
+            const float a1 = kTwoPi * float(s + 1u) / float(kShadowSegs);
+            WorldVertex vc{};
+            vc.position[0] = cx;
+            vc.position[1] = cy;
+            vc.position[2] = cz;
+            vc.normal[1] = 127;
+            vc.colour[3] = center_a;
+            WorldVertex v0 = vc;
+            v0.position[0] = cx + std::cos(a0) * rad;
+            v0.position[2] = cz + std::sin(a0) * rad;
+            v0.colour[3] = 0;
+            WorldVertex v1 = vc;
+            v1.position[0] = cx + std::cos(a1) * rad;
+            v1.position[2] = cz + std::sin(a1) * rad;
+            v1.colour[3] = 0;
+            dst[n + shadow_verts + 0] = vc;
+            dst[n + shadow_verts + 1] = v0;
+            dst[n + shadow_verts + 2] = v1;
+            shadow_verts += 3u;
+          }
+        }
+      }
+
       ++spectator_buf_.ver;
+      VkDeviceSize at = dyn_sync(spectator_buf_, VkDeviceSize(n + shadow_verts) * sizeof(WorldVertex));
+      vkCmdBindVertexBuffers(cmd, 0, 1, &spectator_buf_.buf.buffer, &at);
+
+      if (shadow_verts > 0) {
+        bind_pipe(world_alpha_);
+        const VkDescriptorSet ssets[2] = {frame_set_, world_white_set_};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, ssets, 0, nullptr);
+        pc.params[0] = 2.0f;     // kAlpha
+        pc.params[1] = 1024.0f;  // kFlagUnlitVertexColor
+        pc.params[3] = 1.0f;
+        vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof pc, &pc);
+        vkCmdDraw(cmd, shadow_verts, 1, n, 0);
+      }
+
+      bind_pipe(world_opaque_);
       const VkDescriptorSet sets[2] = {frame_set_, spectator_set_};
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
-      pc.params[1] = 1.0f;  // kFlagTextured
+      pc.params[0] = 0.0f;            // kOpaque
+      pc.params[1] = float(1u | 2048u);  // kFlagTextured | kFlagLightMap (dusk/night stage light bounce)
+      pc.params[3] = 1.0f;
       vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof pc, &pc);
-      VkDeviceSize at = dyn_sync(spectator_buf_, VkDeviceSize(n) * sizeof(WorldVertex));
-      vkCmdBindVertexBuffers(cmd, 0, 1, &spectator_buf_.buf.buffer, &at);
       vkCmdDraw(cmd, n, 1, 0, 0);
     }
   }
