@@ -603,6 +603,7 @@ def run_stage(
             "--no-sound",
             "--save", str(save_file),
             "--campaign-stage", stage,
+            "--run", "cruise",
             "--seconds", f"{seconds:.2f}",
             "--capture-times", capture_times,
             "--size", size,
