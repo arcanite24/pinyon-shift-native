@@ -101,10 +101,12 @@ class RallyPaceNoteTracker {
   size_t gate_count() const { return gates_.size(); }
   size_t fired_count() const;
 
-  // Advances with the car's position (game coordinates) and race clock `time_s`.
-  // Crossed gates enqueue their ordered audio cues & update HUD state.
+  // Advances with the car's position (game coordinates), race clock `time_s`,
+  // and optional speed (`speed_mps`, >= 0) for speed-scaled lookahead calling.
+  // Crossed gates enqueue their ordered audio cues (dropping stale queued cues
+  // from earlier gates so calls never lag corners behind) & update HUD state.
   // Rewinding (`time_s < last_time_s - 0.05`) un-fires gates crossed after `time_s`.
-  int observe(double time_s, double x, double z);
+  int observe(double time_s, double x, double z, double speed_mps = 0.0);
   // Explicit Rewind rollback: un-fires any gate crossed after `time_s` and clears queued audio.
   void rewind_to(double time_s);
 

@@ -280,12 +280,13 @@ void test_codriver_pace_notes_and_audio() {
   CHECK(tracker.observe(3.5, 0.0, 135.0) == 1);
   CHECK(tracker.fired_count() == 2);
 
-  // CoDriverVoPlayer renders onto Bus::kVo inside AudioEngine and reports vo_playing.
+  // CoDriverVoPlayer renders onto Bus::kVo inside AudioEngine, reports vo_playing,
+  // and increments codriver_completed_cues when the clip finishes.
   audio::AudioEngine eng(48000);
   auto cd = std::make_unique<audio::CoDriverVoPlayer>(48000);
   audio::PcmSample tone;
   tone.rate = 48000;
-  tone.data.assign(4800, 0.5f);
+  tone.data.assign(480, 0.5f);
   cd->set_clip("CoDriver/Turns/Left/HardLeft", std::move(tone));
   eng.set_codriver_vo(std::move(cd));
   eng.trigger_codriver("CoDriver/Turns/Left/HardLeft");
@@ -294,7 +295,20 @@ void test_codriver_pace_notes_and_audio() {
   float peak = 0.0f;
   for (float v : pcm) peak = std::max(peak, std::fabs(v));
   CHECK(peak > 0.1f);
-  CHECK(eng.telemetry().vo_playing);
+  // Render a second block so the 480-sample clip finishes and bumps completed_cues.
+  eng.render_offline(pcm.data(), 480);
+  CHECK(eng.telemetry().codriver_completed_cues >= 1u);
+
+  // Speed-scaled lookahead triggers gate 1 early at 50 m/s (lookahead ~13.5 m before z=50).
+  tracker.reset();
+  CHECK(tracker.observe(0.0, 0.0, 30.0, 50.0) == 0);
+  CHECK(tracker.observe(0.2, 0.0, 42.0, 50.0) == 1);  // crossed at z~36.5 with lookahead!
+  // Stale-call drop: crossing gate 2 before popping gate 1's 3 cues replaces them with gate 2's cues.
+  CHECK(tracker.pending_audio_cues() == 3);
+  CHECK(tracker.observe(1.5, 0.0, 125.0, 50.0) == 1);
+  CHECK(tracker.pending_audio_cues() == 3);
+  race::CoDriverAudioCue first_after_drop;
+  CHECK(tracker.pop_audio_cue(first_after_drop) && first_after_drop.cue == "Caution");
 }
 
 void test_real_v4_corpus() {

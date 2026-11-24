@@ -12,6 +12,7 @@
 #include "audio/fev.h"
 #include "audio/fsb4.h"
 #include "audio/stream.h"
+#include "audio/xma_decode.h"
 #include "cars/mods.h"
 
 namespace audio {
@@ -78,8 +79,10 @@ bool decode_fsb_clip(const std::filesystem::path& bank_path, uint32_t subsound, 
   if (s.offset + s.bytes > bank_data.size() || s.bytes == 0) return false;
   const int rate = s.rate > 0 ? s.rate : 48000;
   if (s.xma()) {
+    const auto span = std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes);
+    if (decode_xma2_mono(s, span, out, nullptr)) return true;
     if (ffmpeg.empty()) return false;
-    const auto wave = xma2_wave(s, std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes));
+    const auto wave = xma2_wave(s, span);
     const auto in_p = temp_dir / ("satnav_" + std::to_string(subsound) + ".wav");
     const auto out_p = temp_dir / ("satnav_" + std::to_string(subsound) + ".s16");
     std::error_code ec;
@@ -302,7 +305,7 @@ bool SatNavVoPlayer::load(const std::filesystem::path& game_root, const std::fil
 void SatNavVoPlayer::start_worker(std::vector<DecodeJob> jobs, std::filesystem::path cache_dir) {
   stop_worker_.store(false, std::memory_order_release);
   worker_ = std::thread([this, jobs = std::move(jobs), cache_dir = std::move(cache_dir)]() {
-    const std::filesystem::path ffmpeg = find_ffmpeg();
+    const std::filesystem::path ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
     std::error_code ec;
     const std::filesystem::path cdir = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / "satnav");
     const std::filesystem::path tmp = cdir.empty() ? std::filesystem::temp_directory_path(ec) : cdir;
@@ -350,48 +353,94 @@ void SatNavVoPlayer::set_enabled(bool on) {
   if (!enabled_) stop();
 }
 
+bool SatNavVoPlayer::start_next_pending() {
+  while (pending_head_ != pending_tail_) {
+    const SatNavCue next = pending_[pending_head_];
+    pending_head_ = (pending_head_ + 1) % kMaxPending;
+    const int idx = int(next);
+    if (idx >= 0 && idx < int(SatNavCue::kCount) && clips_[size_t(idx)] && !clips_[size_t(idx)]->data.empty()) {
+      active_ = true;
+      active_cue_ = next;
+      phase_ = 0.0;
+      return true;
+    }
+  }
+  active_ = false;
+  phase_ = 0.0;
+  return false;
+}
+
 void SatNavVoPlayer::trigger(SatNavCue cue) {
   drain_loaded();
   if (!enabled_) return;
   const int idx = int(cue);
   if (idx < 0 || idx >= int(SatNavCue::kCount)) return;
   if (!clips_[size_t(idx)] || clips_[size_t(idx)]->data.empty()) return;
-  active_ = true;
-  active_cue_ = cue;
-  phase_ = 0.0;
+
+  // High-priority interrupts clear stale queued turn calls and start cleanly.
+  const bool interrupt = (cue == SatNavCue::kRecalculating || cue == SatNavCue::kArrived ||
+                          cue == SatNavCue::kDestReset || cue == SatNavCue::kUTurn);
+  if (interrupt || !active_) {
+    if (interrupt) pending_head_ = pending_tail_ = 0;
+    active_ = true;
+    active_cue_ = cue;
+    phase_ = 0.0;
+    return;
+  }
+
+  // Avoid queuing duplicate back-to-back cues.
+  if (pending_head_ == pending_tail_ && active_cue_ == cue) return;
+  if (pending_head_ != pending_tail_) {
+    const size_t last = (pending_tail_ + kMaxPending - 1) % kMaxPending;
+    if (pending_[last] == cue) return;
+  }
+  const size_t next_tail = (pending_tail_ + 1) % kMaxPending;
+  if (next_tail == pending_head_) {
+    // Drop oldest queued turn cue so recent navigation prompts win.
+    pending_head_ = (pending_head_ + 1) % kMaxPending;
+  }
+  pending_[pending_tail_] = cue;
+  pending_tail_ = next_tail;
 }
 
 void SatNavVoPlayer::stop() {
+  pending_head_ = pending_tail_ = 0;
   active_ = false;
   phase_ = 0.0;
 }
 
 bool SatNavVoPlayer::render(float* vo_bus, int frames) {
   drain_loaded();
-  if (!enabled_ || !active_ || !vo_bus || frames <= 0) {
+  if (!enabled_ || !vo_bus || frames <= 0) {
     active_ = false;
     return false;
   }
-  const PcmSample* s = clips_[size_t(active_cue_)];
-  if (!s || s->data.empty() || s->rate <= 0) {
-    active_ = false;
-    return false;
-  }
-  const double step = double(s->rate) / double(rate_);
-  const size_t n = s->data.size();
-  for (int i = 0; i < frames; ++i) {
-    if (phase_ >= double(n - 1)) {
-      active_ = false;
-      break;
+  if (!active_ && !start_next_pending()) return false;
+
+  int i = 0;
+  while (i < frames && active_) {
+    const PcmSample* s = clips_[size_t(active_cue_)];
+    if (!s || s->data.empty() || s->rate <= 0) {
+      if (!start_next_pending()) break;
+      continue;
     }
-    const size_t p0 = size_t(phase_);
-    const float frac = float(phase_ - double(p0));
-    const float v = (s->data[p0] * (1.0f - frac) + s->data[p0 + 1] * frac) * gain_;
-    vo_bus[2 * i] += v;
-    vo_bus[2 * i + 1] += v;
-    phase_ += step;
+    const double step = double(s->rate) / double(rate_);
+    const size_t n = s->data.size();
+    while (i < frames) {
+      if (phase_ >= double(n - 1)) {
+        start_next_pending();
+        break;
+      }
+      const size_t p0 = size_t(phase_);
+      const float frac = float(phase_ - double(p0));
+      const float v = (s->data[p0] * (1.0f - frac) + s->data[p0 + 1] * frac) * gain_;
+      vo_bus[2 * i] += v;
+      vo_bus[2 * i + 1] += v;
+      phase_ += step;
+      ++i;
+    }
   }
-  return active_;
+  return active_ || i > 0;
 }
 
 int SatNavVoPlayer::loaded_clip_count() const {

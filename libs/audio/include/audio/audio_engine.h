@@ -57,6 +57,7 @@ struct AudioTelemetry {
   uint64_t stalls = 0;     // blocks that exceeded their real-time duration
   uint64_t underruns = 0;  // stream buffer underruns detected and smoothly recovered
   uint32_t backfire_count = 0;  // monotonic exhaust backfire pop counter (coupled to visual flames)
+  uint32_t codriver_completed_cues = 0;  // monotonic Co-Driver clip completion counter (HUD highlight sync)
   bool satnav_playing = false;
   bool vo_playing = false;
   bool in_tunnel = false;
@@ -124,11 +125,18 @@ class AudioEngine {
   void set_master_volume(float volume);
   void set_mute(bool mute);
   void set_full_dynamic_range(bool on);
+  // Selects Home Theater (false, default 0.25 ratio) vs TV (true, 0.15 ratio) compressor profile.
+  void set_playback_system(bool tv_profile);
   // Built-in snapshot ids ("Paused", "Menu", "Title", "Loading"), or any
   // snapshot registered before start().
   int register_snapshot(Snapshot snap);
   int find_snapshot(std::string_view name) const;
   void set_snapshot(int id, bool active);
+
+  // Menu / Title / Loading / Homespace / Map / Post-Race music from UIInGame_Streams.fsb.
+  enum class UiMusicMode : uint8_t { kNone = 0, kTitle, kHomespace, kLoading, kMap, kPostRaceVictory };
+  void init_ui_music(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir = {});
+  void set_ui_music(UiMusicMode mode);
 
   // Loads AudioMixerSnapshots.xml, GlobalDSPConfig.xml, and AudioEngineConfig.xml
   // from `game_root` (call before start()). When loaded, the 9x22 SnapshotMatrix,
@@ -220,6 +228,8 @@ class AudioEngine {
       kMatrixRestoreGameplay,
       kDynamicsSpeed,
       kCarBusDspMode,
+      kPlaybackSystem,
+      kUiMusicMode,
     };
     Kind kind = kBusLevel;
     int i0 = 0;
@@ -293,6 +303,26 @@ class AudioEngine {
   float music_hp_mix_ = 0.0f;
   float music_hp_prev_in_[2]{0.0f, 0.0f};
   float music_hp_prev_out_[2]{0.0f, 0.0f};
+
+  // Async in-process UIInGame_Streams.fsb music tracks (Title, Homespace, Loading, Map, PostRace).
+  struct StereoTrack {
+    int rate = 48000;
+    std::vector<float> stereo;
+  };
+  struct LoadedUiTrack {
+    UiMusicMode mode = UiMusicMode::kNone;
+    StereoTrack* track = nullptr;
+  };
+  void stop_ui_music_worker();
+  void drain_ui_music_loaded();
+  std::array<StereoTrack*, 6> ui_tracks_{};
+  UiMusicMode ui_music_mode_ = UiMusicMode::kNone;
+  UiMusicMode ui_music_cur_ = UiMusicMode::kNone;
+  double ui_music_phase_ = 0.0;
+  float ui_music_gain_ = 0.0f;
+  SpscQueue<LoadedUiTrack> ui_music_q_{16};
+  std::atomic<bool> stop_ui_music_{false};
+  std::thread ui_music_worker_;
 
   TripleBuffer<EnginePlayer::Update> engine_in_;
   TripleBuffer<VehicleAudioState> veh_state_in_;

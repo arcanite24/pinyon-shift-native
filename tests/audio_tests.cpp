@@ -1778,6 +1778,89 @@ void hitch_and_underrun_recovery_checks() {
   }
 }
 
+void phase2_parity_checks() {
+  // 1. SatNavVoPlayer FIFO queue plays back-to-back cues sequentially & interrupts on kRecalculating.
+  {
+    audio::SatNavVoPlayer sn(48000);
+    audio::PcmSample a, b, c;
+    a.rate = b.rate = c.rate = 48000;
+    a.data.assign(480, 0.25f);
+    b.data.assign(480, 0.50f);
+    c.data.assign(480, 0.80f);
+    sn.set_clip(audio::SatNavCue::kDestGeneric, a);
+    sn.set_clip(audio::SatNavCue::kTurnLeft, b);
+    sn.set_clip(audio::SatNavCue::kRecalculating, c);
+    sn.trigger(audio::SatNavCue::kDestGeneric);
+    sn.trigger(audio::SatNavCue::kTurnLeft);
+    std::vector<float> buf(480 * 2, 0.0f);
+    CHECK(sn.render(buf.data(), 480));
+    CHECK(std::fabs(buf[10] - 0.25f) < 0.05f);
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    CHECK(sn.render(buf.data(), 480));
+    CHECK(std::fabs(buf[10] - 0.50f) < 0.05f);
+    // Interrupting cue immediately takes over.
+    sn.trigger(audio::SatNavCue::kDestGeneric);
+    sn.trigger(audio::SatNavCue::kTurnLeft);
+    sn.trigger(audio::SatNavCue::kRecalculating);
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    CHECK(sn.render(buf.data(), 480));
+    CHECK(std::fabs(buf[10] - 0.80f) < 0.05f);
+  }
+
+  // 2. Tires.xml surface-group mapping.
+  {
+    audio::SfxEngine sfx(48000);
+    CHECK(sfx.map_surface_group("Asphalt") == 0);
+    CHECK(sfx.map_surface_group("Gravel") == 1);
+    CHECK(sfx.map_surface_group("Grass") == 2);
+    CHECK(sfx.map_surface_group("Cobblestone") == 3);
+    CHECK(sfx.map_surface_group("WoodBridge") == 4);
+  }
+
+  // 3. New UiCue stings render onto Bus::kUi.
+  {
+    audio::SfxEngine sfx(48000);
+    audio::PcmSample tone;
+    tone.rate = 48000;
+    tone.data.assign(480, 0.5f);
+    sfx.set_sample(audio::SfxSoundId::kUiCountdownGo, tone);
+    sfx.set_sample(audio::SfxSoundId::kUiSpeedCamera, tone);
+    sfx.set_sample(audio::SfxSoundId::kUiPhotoShutter, tone);
+    sfx.set_sample(audio::SfxSoundId::kUiPurchase, tone);
+    sfx.set_sample(audio::SfxSoundId::kUiCarAdded, tone);
+    sfx.set_sample(audio::SfxSoundId::kUiH2hGo, tone);
+    sfx.set_sample(audio::SfxSoundId::kUiH2hLoss, tone);
+    audio::VehicleAudioState vs{};
+    std::array<std::vector<float>, audio::kBuses> bufs;
+    float* ptrs[audio::kBuses]{};
+    for (int i = 0; i < audio::kBuses; ++i) {
+      bufs[size_t(i)].assign(480 * 2, 0.0f);
+      ptrs[i] = bufs[size_t(i)].data();
+    }
+    for (audio::UiCue cue : {audio::UiCue::kCountdownGo, audio::UiCue::kSpeedCamera, audio::UiCue::kPhotoShutter,
+                             audio::UiCue::kPurchase, audio::UiCue::kCarAdded, audio::UiCue::kH2hGo,
+                             audio::UiCue::kH2hLoss}) {
+      for (auto& b : bufs) std::fill(b.begin(), b.end(), 0.0f);
+      sfx.trigger_ui(cue);
+      sfx.render(vs, ptrs, 480);
+      double energy = 0.0;
+      for (float v : bufs[int(audio::Bus::kUi)]) energy += double(v) * double(v);
+      CHECK(energy > 0.1);
+    }
+  }
+
+  // 4. AudioEngine playback_system (TV vs Home Theater) is independent of full_dynamic_range.
+  {
+    audio::AudioEngine eng(48000);
+    eng.set_full_dynamic_range(true);
+    eng.set_playback_system(false);
+    eng.set_ui_music(audio::AudioEngine::UiMusicMode::kTitle);
+    std::vector<float> pcm(480 * 2, 0.0f);
+    eng.render_offline(pcm.data(), 480);
+    for (float v : pcm) CHECK(std::isfinite(v));
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1794,6 +1877,7 @@ int main() {
   user_music_checks();
   audio_thread_checks();
   hitch_and_underrun_recovery_checks();
+  phase2_parity_checks();
   r34_checks();
   std::printf("audio_tests: %d failures\n", failures);
   return failures ? 1 : 0;

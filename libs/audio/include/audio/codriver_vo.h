@@ -52,6 +52,7 @@ class CoDriverVoPlayer {
   void enqueue_id(int clip_id);
   void clear();
   bool playing() const { return active_; }
+  uint32_t completed_cue_count() const { return completed_cues_.load(std::memory_order_acquire); }
 
   // Mixes active Co-Driver call into interleaved stereo `vo_bus` (`frames`).
   // Returns true while any co-driver call is actively playing.
@@ -83,7 +84,11 @@ class CoDriverVoPlayer {
 
   std::vector<std::string> cue_paths_;
   std::unordered_map<std::string, int> path_to_id_;
+  std::vector<std::vector<int>> cue_variants_;  // indexed by cue_id -> clip_ids in clips_
+  std::vector<int> cue_last_variant_;           // last picked variant index per cue_id
+  uint32_t rng_state_ = 0x51a7c0deu;
   std::vector<PcmSample*> clips_;  // indexed by clip_id
+  std::atomic<uint32_t> completed_cues_{0};
 
   // Fixed-capacity queue of pending clip IDs (audio thread).
   static constexpr size_t kMaxPending = 64;

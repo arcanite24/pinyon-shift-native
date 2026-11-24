@@ -12,6 +12,7 @@
 #include "audio/fev.h"
 #include "audio/fsb4.h"
 #include "audio/stream.h"
+#include "audio/xma_decode.h"
 
 namespace audio {
 namespace {
@@ -82,8 +83,10 @@ bool decode_fsb_subsound(const std::vector<uint8_t>& bank_data, const std::vecto
   if (s.offset + s.bytes > bank_data.size() || s.bytes == 0) return false;
   const int rate = s.rate > 0 ? s.rate : 48000;
   if (s.xma()) {
+    const auto span = std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes);
+    if (decode_xma2_mono(s, span, out, nullptr)) return true;
     if (ffmpeg.empty()) return false;
-    const auto wave = xma2_wave(s, std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes));
+    const auto wave = xma2_wave(s, span);
     const auto in_p = temp_dir / ("codriver_" + std::to_string(subsound) + ".wav");
     const auto out_p = temp_dir / ("codriver_" + std::to_string(subsound) + ".s16");
     std::error_code ec;
@@ -175,7 +178,7 @@ void CoDriverVoPlayer::start_worker(std::vector<DecodeJob> jobs, std::filesystem
     const auto temp_dir = cache_dir.empty() ? (std::filesystem::temp_directory_path(ec) / "shift_codriver")
                                             : (cache_dir / "tmp");
     std::filesystem::create_directories(temp_dir, ec);
-    const auto ffmpeg = find_ffmpeg();
+    const auto ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
 
     std::filesystem::path cached_bank_path;
     std::vector<uint8_t> bank_data;
@@ -228,6 +231,8 @@ bool CoDriverVoPlayer::load(const std::filesystem::path& rally_package_dir, cons
   clips_.clear();
   cue_paths_.clear();
   path_to_id_.clear();
+  cue_variants_.clear();
+  cue_last_variant_.clear();
   clear();
 
   if (rally_package_dir.empty()) {
@@ -259,56 +264,80 @@ bool CoDriverVoPlayer::load(const std::filesystem::path& rally_package_dir, cons
 
   language_ = lang;
   std::vector<DecodeJob> jobs;
+  std::unordered_map<uint32_t, int> subsound_to_clip;
   for (const auto& ev : proj.events) {
-    uint32_t subsound = 0;
-    bool found_sub = false;
-    auto pick_from = [&](const std::vector<FevSoundInstance>& insts) {
+    std::vector<uint32_t> subsounds;
+    auto collect_from = [&](const std::vector<FevSoundInstance>& insts) {
       for (const auto& si : insts) {
         if (si.sound_def_index >= proj.sound_defs.size()) continue;
         for (const auto& e : proj.sound_defs[si.sound_def_index].entries) {
           if (e.entry_type == 0) {
-            subsound = e.subsound_index;
-            found_sub = true;
-            return;
+            if (std::find(subsounds.begin(), subsounds.end(), e.subsound_index) == subsounds.end()) {
+              subsounds.push_back(e.subsound_index);
+              if (subsounds.size() >= 6) return;
+            }
           }
         }
       }
     };
-    pick_from(ev.simple_instances);
+    collect_from(ev.simple_instances);
     for (const auto& layer : ev.layers)
-      if (!found_sub) pick_from(layer.instances);
-    if (!found_sub) continue;
+      if (subsounds.empty()) collect_from(layer.instances);
+    if (subsounds.empty()) continue;
 
     const std::string key = strip_project_prefix(ev.path);
     if (path_to_id_.count(key)) continue;
-    const int id = int(cue_paths_.size());
+    const int cue_id = int(cue_paths_.size());
     cue_paths_.push_back(key);
-    path_to_id_[key] = id;
-    clips_.push_back(nullptr);
-    jobs.push_back({id, fsb_path, subsound});
+    path_to_id_[key] = cue_id;
+    std::vector<int> variants;
+    for (uint32_t sub : subsounds) {
+      int clip_id = -1;
+      if (auto it = subsound_to_clip.find(sub); it != subsound_to_clip.end()) {
+        clip_id = it->second;
+      } else {
+        clip_id = int(clips_.size());
+        clips_.push_back(nullptr);
+        subsound_to_clip[sub] = clip_id;
+        jobs.push_back({clip_id, fsb_path, sub});
+      }
+      variants.push_back(clip_id);
+    }
+    cue_variants_.push_back(std::move(variants));
+    cue_last_variant_.push_back(-1);
   }
 
   const auto sub_cache = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / ("codriver_" + lang));
   start_worker(std::move(jobs), sub_cache);
   if (note) {
-    *note = "CoDriver VO (" + lang + "): " + std::to_string(cue_paths_.size()) + " cues indexed";
+    *note = "CoDriver VO (" + lang + "): " + std::to_string(cue_paths_.size()) + " cues (" +
+            std::to_string(clips_.size()) + " takes) indexed";
   }
   return !cue_paths_.empty();
 }
 
 void CoDriverVoPlayer::set_clip(std::string_view cue_path, PcmSample sample) {
   const std::string key = strip_project_prefix(cue_path);
-  int id = -1;
+  int cue_id = -1;
+  int clip_id = -1;
   if (auto it = path_to_id_.find(key); it != path_to_id_.end()) {
-    id = it->second;
-    delete clips_[size_t(id)];
+    cue_id = it->second;
+    if (cue_id >= 0 && size_t(cue_id) < cue_variants_.size() && !cue_variants_[size_t(cue_id)].empty()) {
+      clip_id = cue_variants_[size_t(cue_id)][0];
+      delete clips_[size_t(clip_id)];
+    }
   } else {
-    id = int(cue_paths_.size());
+    cue_id = int(cue_paths_.size());
     cue_paths_.push_back(key);
-    path_to_id_[key] = id;
+    path_to_id_[key] = cue_id;
+    clip_id = int(clips_.size());
     clips_.push_back(nullptr);
+    cue_variants_.push_back({clip_id});
+    cue_last_variant_.push_back(-1);
   }
-  clips_[size_t(id)] = new PcmSample(std::move(sample));
+  if (clip_id >= 0 && size_t(clip_id) < clips_.size()) {
+    clips_[size_t(clip_id)] = new PcmSample(std::move(sample));
+  }
 }
 
 int CoDriverVoPlayer::find_cue(std::string_view cue_path) const {
@@ -341,8 +370,25 @@ void CoDriverVoPlayer::set_enabled(bool on) {
 
 void CoDriverVoPlayer::enqueue_cue(std::string_view cue_path) {
   if (!enabled_) return;
-  const int id = find_cue(cue_path);
-  if (id >= 0) enqueue_id(id);
+  const int cue_id = find_cue(cue_path);
+  if (cue_id < 0) return;
+  if (size_t(cue_id) < cue_variants_.size() && !cue_variants_[size_t(cue_id)].empty()) {
+    const auto& vars = cue_variants_[size_t(cue_id)];
+    size_t pick = 0;
+    if (vars.size() > 1) {
+      rng_state_ ^= rng_state_ << 13;
+      rng_state_ ^= rng_state_ >> 17;
+      rng_state_ ^= rng_state_ << 5;
+      pick = size_t(rng_state_ % uint32_t(vars.size()));
+      if (int(pick) == cue_last_variant_[size_t(cue_id)]) {
+        pick = (pick + 1) % vars.size();
+      }
+      cue_last_variant_[size_t(cue_id)] = int(pick);
+    }
+    enqueue_id(vars[pick]);
+  } else {
+    enqueue_id(cue_id);
+  }
 }
 
 void CoDriverVoPlayer::enqueue_id(int clip_id) {
@@ -393,6 +439,7 @@ bool CoDriverVoPlayer::render(float* vo_bus, int frames) {
     while (written < frames) {
       const size_t idx = size_t(phase_);
       if (idx >= s->data.size()) {
+        completed_cues_.fetch_add(1u, std::memory_order_release);
         start_next();
         break;
       }

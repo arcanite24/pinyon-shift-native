@@ -358,13 +358,18 @@ void RallyPaceNoteTracker::rewind_to(double time_s) {
   last_time_ = time_s;
 }
 
-int RallyPaceNoteTracker::observe(double time_s, double x, double z) {
+int RallyPaceNoteTracker::observe(double time_s, double x, double z, double speed_mps) {
   if (!std::isfinite(time_s) || !std::isfinite(x) || !std::isfinite(z)) return 0;
 
   // Rewind handling: un-fire any gate crossed after `time_s`.
   if (has_prev_ && time_s < last_time_ - 0.05) {
     rewind_to(time_s);
   }
+
+  // Speed-scaled lookahead: call upcoming corners earlier at high speed so
+  // pace notes finish before braking point (0 m <= 20 m/s, ramping up to 22 m).
+  const double clamped_speed = std::isfinite(speed_mps) ? std::max(0.0, speed_mps) : 0.0;
+  const double lookahead_m = std::clamp((clamped_speed - 20.0) * 0.45, 0.0, 22.0);
 
   int triggered = 0;
   if (has_prev_) {
@@ -374,8 +379,8 @@ int RallyPaceNoteTracker::observe(double time_s, double x, double z) {
       for (size_t i = 0; i < gates_.size(); ++i) {
         if (fired_at_[i].has_value()) continue;
         const auto& g = gates_[i];
-        const double before = (prev_x_ - g.x) * g.fx + (prev_z_ - g.z) * g.fz;
-        const double after = (x - g.x) * g.fx + (z - g.z) * g.fz;
+        const double before = (prev_x_ - g.x) * g.fx + (prev_z_ - g.z) * g.fz + lookahead_m;
+        const double after = (x - g.x) * g.fx + (z - g.z) * g.fz + lookahead_m;
         if (before >= 0.0 || after < 0.0) continue;
         const double frac = -before / (after - before);
         const double cx = prev_x_ + frac * (x - prev_x_) - g.x;
@@ -387,6 +392,11 @@ int RallyPaceNoteTracker::observe(double time_s, double x, double z) {
       for (const auto& [frac, idx] : crossed) {
         const double cross_t = last_time_ + frac * std::max(0.0, time_s - last_time_);
         fired_at_[idx] = cross_t;
+        // Drop stale unplayed cues from earlier gates when entering a newer call
+        // so the co-driver never falls corners behind at race pace.
+        if (active_gate_ != int(idx) && !audio_queue_.empty()) {
+          audio_queue_.clear();
+        }
         active_gate_ = int(idx);
         active_since_ = cross_t;
         active_sample_idx_ = 0;

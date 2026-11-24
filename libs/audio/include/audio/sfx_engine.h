@@ -87,6 +87,16 @@ struct VehicleAudioState {
   bool is_electric = false;           // drives ElectricEngine.fev EV inverter/motor loop (e.g. NIS_Leaf_11)
   float reflection_proximity = 0.0f;  // 0..1 proximity to roadside walls/barriers/canyons (Reflections.fev)
   float active_aero_deploy = 0.0f;    // 0..1 active rear wing / airbrake deployment state (ActiveAero.fev)
+  // Per-car _ET.xml VolumeAdjustments & cylinder count (populated by AudioHost::load_car).
+  float trans_vol_scale = 1.0f;
+  float shift_vol_scale = 1.0f;
+  float turbo_vol_scale = 1.0f;
+  float sc_vol_scale = 1.0f;
+  float backfire_vol_scale = 1.0f;
+  float susp_vol_scale = 1.0f;
+  float ev_vol_scale = 1.0f;
+  int num_cylinders = 0;
+  uint8_t hub_ambience = 0;  // 0=None, 1=Autoshow, 2=Paintshop, 3=Workshop
   std::array<OtherCarAudio, kMaxOtherCars> other_cars{};
   ShowcaseAudioState showcase{};
 };
@@ -96,6 +106,7 @@ struct CollisionHit {
   Vec3f pos{};
   bool is_car_on_car = false;
   bool is_break = false;
+  uint8_t surface_hint = 0;  // 0=Asphalt/Concrete, 1=Car, 2=Dirt/Grass, 3=Metal/Guardrail, 4=Wood/Prop
 };
 
 enum class UiCue : uint8_t {
@@ -106,10 +117,23 @@ enum class UiCue : uint8_t {
   kMenuOpen,
   kRewindTapeStart,
   kCountdown321,
+  kCountdownGo,
+  kCheckpoint,
+  kLap,
+  kRaceFinish,
   kSignSmash,
   kSkillAward,
+  kSkillMultiplier,
+  kSkillBank,
+  kSkillBreak,
+  kRankUp,
   kAchievementReward,
   kSpeedCamera,
+  kPhotoShutter,
+  kPurchase,
+  kCarAdded,
+  kH2hGo,
+  kH2hLoss,
 };
 
 enum class SfxSoundId : int {
@@ -185,6 +209,36 @@ enum class SfxSoundId : int {
   kElectricMotor,
   kRoadsideReflection,
   kActiveAero,
+  kShiftStartL1,
+  kShiftStartL2,
+  kShiftStartL3,
+  kShiftCompleteL1,
+  kShiftCompleteL2,
+  kShiftCompleteL3,
+  kEngineLfe4,
+  kEngineLfe6,
+  kEngineLfe8,
+  kEngineLfe10,
+  kEngineLfe12,
+  kImpactCarOnCar,
+  kImpactDirt,
+  kImpactMetal,
+  kImpactWood,
+  kUiCountdownGo,
+  kUiCheckpoint,
+  kUiRaceFinish,
+  kUiSkillMulti,
+  kUiSkillBank,
+  kUiSkillBreak,
+  kUiRankUp,
+  kUiPhotoShutter,
+  kUiPurchase,
+  kUiCarAdded,
+  kUiH2hGo,
+  kUiH2hLoss,
+  kHubAmbAutoshow,
+  kHubAmbPaintshop,
+  kHubAmbWorkshop,
   kCount
 };
 
@@ -211,6 +265,8 @@ class SfxEngine {
     traffic_rolloff_ = traffic;
   }
   void set_backfire_config(const BackfireConfig& cfg) { backfire_cfg_ = cfg; }
+  // Maps a physics surface name via Tires.xml (0=OnRoad, 1=OffRoad, 2=Grass, 3=Brick, 4=Trackway).
+  uint8_t map_surface_group(std::string_view physics_surface) const;
 
   // Audio-thread trigger entry points (lock-free, no heap allocation).
   void trigger_collision(const CollisionHit& hit, const VehicleAudioState& st);
@@ -296,6 +352,7 @@ class SfxEngine {
   LoopVoice reflection_voice_{};
   LoopVoice scrape_voice_{};
   LoopVoice rewind_voice_{};
+  LoopVoice hub_amb_voice_{};
   std::array<LoopVoice, VehicleAudioState::kMaxOtherCars> other_voices_{};
   std::array<double, VehicleAudioState::kMaxOtherCars> whoosh_cooldown_s_{-10.0, -10.0, -10.0, -10.0, -10.0, -10.0};
   LoopVoice showcase_voice_{};

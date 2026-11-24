@@ -96,6 +96,7 @@ class SatNavVoPlayer {
   void start_worker(std::vector<DecodeJob> jobs, std::filesystem::path cache_dir);
   void stop_worker();
   void drain_loaded();
+  bool start_next_pending();
 
   int rate_ = 48000;
   bool enabled_ = true;
@@ -103,6 +104,11 @@ class SatNavVoPlayer {
   SatNavCue active_cue_ = SatNavCue::kDestGeneric;
   double phase_ = 0.0;
   float gain_ = 1.0f;
+
+  static constexpr size_t kMaxPending = 8;
+  std::array<SatNavCue, kMaxPending> pending_{};
+  size_t pending_head_ = 0;
+  size_t pending_tail_ = 0;
 
   std::array<PcmSample*, int(SatNavCue::kCount)> clips_{};
   SpscQueue<LoadedClip> loaded_q_{128};

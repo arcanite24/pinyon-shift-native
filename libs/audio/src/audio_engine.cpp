@@ -1,9 +1,18 @@
 #include "audio/audio_engine.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
+#include <iterator>
+#include <system_error>
+
+#include "audio/bake.h"
+#include "audio/fsb4.h"
+#include "audio/xma_decode.h"
+#include "cars/mods.h"
 
 #if defined(__SSE__) || defined(_M_X64) || defined(_M_IX86)
 #include <xmmintrin.h>
@@ -120,7 +129,13 @@ AudioEngine::AudioEngine(int rate) : rate_(std::max(8000, rate)), ambience_bed_(
 }
 
 AudioEngine::~AudioEngine() {
+  stop_ui_music_worker();
   stop();
+  drain_ui_music_loaded();
+  for (auto*& t : ui_tracks_) {
+    delete t;
+    t = nullptr;
+  }
   delete engine_;
   delete sfx_;
   delete satnav_;
@@ -129,6 +144,124 @@ AudioEngine::~AudioEngine() {
   delete radio_player_;
   delete runtime_radio_;
   delete user_music_;
+}
+
+void AudioEngine::stop_ui_music_worker() {
+  stop_ui_music_.store(true, std::memory_order_release);
+  if (ui_music_worker_.joinable()) ui_music_worker_.join();
+  stop_ui_music_.store(false, std::memory_order_release);
+}
+
+void AudioEngine::drain_ui_music_loaded() {
+  LoadedUiTrack lt{};
+  while (ui_music_q_.pop(lt)) {
+    const size_t idx = size_t(lt.mode);
+    if (idx < ui_tracks_.size()) {
+      delete ui_tracks_[idx];
+      ui_tracks_[idx] = lt.track;
+    } else {
+      delete lt.track;
+    }
+  }
+}
+
+void AudioEngine::init_ui_music(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir) {
+  stop_ui_music_worker();
+  if (game_root.empty()) return;
+  const auto bank_path = cars::mods::resolve(game_root / "media" / "audio" / "UI" / "UIInGame" / "UIInGame_Streams.fsb");
+  std::error_code ec;
+  if (!std::filesystem::exists(bank_path, ec)) return;
+  stop_ui_music_.store(false, std::memory_order_release);
+  ui_music_worker_ = std::thread([this, bank_path, cache_dir]() {
+    std::ifstream bf(bank_path, std::ios::binary);
+    if (!bf) return;
+    std::vector<uint8_t> raw((std::istreambuf_iterator<char>(bf)), std::istreambuf_iterator<char>());
+    std::vector<FsbSample> samples;
+    if (!read_fsb4(raw, samples, nullptr) || samples.empty()) return;
+    auto find_sub = [&](std::string_view needle) -> int {
+      std::string want(needle);
+      for (char& c : want) c = char(std::tolower(static_cast<unsigned char>(c)));
+      for (size_t i = 0; i < samples.size(); ++i) {
+        std::string nm = samples[i].name;
+        for (char& c : nm) c = char(std::tolower(static_cast<unsigned char>(c)));
+        if (nm.find(want) != std::string::npos) return int(i);
+      }
+      return -1;
+    };
+    struct Job {
+      UiMusicMode mode;
+      const char* name;
+      const char* cache_key;
+    };
+    static constexpr Job kJobs[] = {
+        {UiMusicMode::kTitle, "pressstart_music", "ui_title"},
+        {UiMusicMode::kHomespace, "multiplayer_autoshow_loop", "ui_homespace"},
+        {UiMusicMode::kLoading, "01_loadingscreen_band", "ui_loading"},
+        {UiMusicMode::kMap, "map_ambientbackgroundloop", "ui_map"},
+        {UiMusicMode::kPostRaceVictory, "cs_postrace_victory_cutscene", "ui_victory"},
+    };
+    const auto ff = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
+    const auto music_cache = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / "uimusic");
+    std::error_code tec;
+    if (!music_cache.empty()) std::filesystem::create_directories(music_cache, tec);
+    for (const auto& j : kJobs) {
+      if (stop_ui_music_.load(std::memory_order_acquire)) break;
+      const int sub = find_sub(j.name);
+      if (sub < 0) continue;
+      auto tr = std::make_unique<StereoTrack>();
+      bool ok = false;
+      const auto cf = music_cache.empty() ? std::filesystem::path{} : (music_cache / (std::string(j.cache_key) + ".s16st"));
+      if (!cf.empty()) {
+        std::ifstream cf_in(cf, std::ios::binary);
+        int32_t r = 0;
+        uint32_t n = 0;
+        if (cf_in.read(reinterpret_cast<char*>(&r), 4) && cf_in.read(reinterpret_cast<char*>(&n), 4) &&
+            r > 0 && n > 0 && n <= 48000u * 600u) {
+          std::vector<int16_t> s16(size_t(n) * 2);
+          if (cf_in.read(reinterpret_cast<char*>(s16.data()), std::streamsize(s16.size() * 2))) {
+            tr->rate = r;
+            tr->stereo.resize(s16.size());
+            for (size_t i = 0; i < s16.size(); ++i) tr->stereo[i] = float(s16[i]) / 32768.0f;
+            ok = true;
+          }
+        }
+      }
+      if (!ok) {
+        ok = decode_fsb_subsound_stereo(bank_path, uint32_t(sub), tr->stereo, tr->rate, ff, {});
+        if (ok && !cf.empty() && !tr->stereo.empty()) {
+          std::ofstream cf_out(cf, std::ios::binary | std::ios::trunc);
+          if (cf_out) {
+            const int32_t r = tr->rate;
+            const uint32_t n = uint32_t(tr->stereo.size() / 2);
+            cf_out.write(reinterpret_cast<const char*>(&r), 4);
+            cf_out.write(reinterpret_cast<const char*>(&n), 4);
+            std::vector<int16_t> s16(tr->stereo.size());
+            for (size_t i = 0; i < tr->stereo.size(); ++i)
+              s16[i] = int16_t(std::clamp(std::lround(double(tr->stereo[i]) * 32767.0), -32768l, 32767l));
+            cf_out.write(reinterpret_cast<const char*>(s16.data()), std::streamsize(s16.size() * 2));
+          }
+        }
+      }
+      if (ok && !tr->stereo.empty()) {
+        StereoTrack* raw_t = tr.release();
+        if (!ui_music_q_.push({j.mode, raw_t})) delete raw_t;
+      }
+    }
+  });
+}
+
+void AudioEngine::set_ui_music(UiMusicMode mode) {
+  Command c;
+  c.kind = Command::kUiMusicMode;
+  c.i0 = int(mode);
+  enqueue(c);
+}
+
+void AudioEngine::set_playback_system(bool tv_profile) {
+  Command c;
+  c.kind = Command::kPlaybackSystem;
+  c.b0 = tv_profile;
+  enqueue(c);
 }
 
 void AudioEngine::start(Sink sink) {
@@ -674,7 +807,12 @@ void AudioEngine::drain_commands() {
       case Command::kFullDynamicRange:
         mixer_.stage().set_full_dynamic_range(c.b0);
         rms_stage_.set_full_dynamic_range(c.b0);
-        rms_stage_.set_tv_profile(!c.b0);
+        break;
+      case Command::kPlaybackSystem:
+        rms_stage_.set_tv_profile(c.b0);
+        break;
+      case Command::kUiMusicMode:
+        ui_music_mode_ = UiMusicMode(std::clamp(c.i0, 0, int(UiMusicMode::kPostRaceVictory)));
         break;
       case Command::kSnapshot: mixer_.snapshots().set_active(c.i0, c.b0); break;
       case Command::kMatrixActivate:
@@ -913,10 +1051,44 @@ void AudioEngine::render_block(float* out, int frames) {
     buses[int(Bus::kEngine)] = bus_bufs_[int(Bus::kEngine)].data();
   }
 
+  drain_ui_music_loaded();
   const bool on_title = snap_title_ >= 0 && mixer_.snapshots().active(snap_title_);
   const bool user_music_on = user_music_ && user_music_->active();
   const bool runtime_radio_on = !user_music_on && runtime_radio_ && runtime_radio_->active();
-  if (!on_title && (user_music_on || runtime_radio_on || radio_player_)) {
+  const StereoTrack* ui_track =
+      (ui_music_mode_ != UiMusicMode::kNone && size_t(ui_music_mode_) < ui_tracks_.size())
+          ? ui_tracks_[size_t(ui_music_mode_)]
+          : nullptr;
+  const bool ui_music_active = (!user_music_on && ui_track && !ui_track->stereo.empty());
+  if (ui_music_active) {
+    if (ui_music_cur_ != ui_music_mode_) {
+      ui_music_cur_ = ui_music_mode_;
+      ui_music_phase_ = 0.0;
+      ui_music_gain_ = 0.0f;
+    }
+    auto& mbuf = bus_bufs_[int(Bus::kMusic)];
+    std::fill(mbuf.begin(), mbuf.begin() + ptrdiff_t(samples), 0.0f);
+    const size_t total_f = ui_track->stereo.size() / 2;
+    const double step = double(std::max(1, ui_track->rate)) / double(rate_);
+    const float ramp = 1.0f / (0.35f * float(rate_));
+    const float base_gain = (ui_music_mode_ == UiMusicMode::kMap) ? 0.50f : 0.72f;
+    for (int i = 0; i < frames; ++i) {
+      ui_music_gain_ = std::min(1.0f, ui_music_gain_ + ramp);
+      const size_t k = size_t(ui_music_phase_) % total_f;
+      const size_t k1 = (k + 1) % total_f;
+      const float frac = float(ui_music_phase_ - std::floor(ui_music_phase_));
+      const float gl = ui_track->stereo[2 * k] + (ui_track->stereo[2 * k1] - ui_track->stereo[2 * k]) * frac;
+      const float gr = ui_track->stereo[2 * k + 1] + (ui_track->stereo[2 * k1 + 1] - ui_track->stereo[2 * k + 1]) * frac;
+      const float g = base_gain * ui_music_gain_;
+      mbuf[2 * size_t(i)] = gl * g;
+      mbuf[2 * size_t(i) + 1] = gr * g;
+      ui_music_phase_ += step;
+      if (ui_music_phase_ >= double(total_f)) ui_music_phase_ = std::fmod(ui_music_phase_, double(total_f));
+    }
+    buses[int(Bus::kMusic)] = mbuf.data();
+  } else if (!on_title && (user_music_on || runtime_radio_on || radio_player_)) {
+    ui_music_cur_ = UiMusicMode::kNone;
+    ui_music_gain_ = 0.0f;
     auto& mbuf = bus_bufs_[int(Bus::kMusic)];
     std::fill(mbuf.begin(), mbuf.begin() + ptrdiff_t(samples), 0.0f);
     if (user_music_on) {
@@ -930,13 +1102,14 @@ void AudioEngine::render_block(float* out, int frames) {
     }
     // DynamicsData MusicHighpass (SPEC-AUDIO-EVENTS Part 3): smooth 1-pole HPF
     // on Bus::kMusic while AverageSpeedEnter is active in SnapshotGroup::kSpeedZones.
+    // fadeinrate / fadeoutrate are linear mix slew rates per second (3.0 / 33.0 s^-1).
     if (use_matrix_) {
       const auto& dyn = matrix_.dynamics();
       const bool hp_active = matrix_.active_name(SnapshotGroup::kSpeedZones) == "AverageSpeedEnter";
       const float target_mix = hp_active ? 1.0f : 0.0f;
       if (target_mix > 1e-4f || music_hp_mix_ > 1e-4f) {
-        const float fade_s = std::max(0.05f, hp_active ? dyn.music_hp_fadein : dyn.music_hp_fadeout);
-        const float mix_step = 1.0f / (fade_s * float(rate_));
+        const float rate_per_s = std::max(0.05f, hp_active ? dyn.music_hp_fadein : dyn.music_hp_fadeout);
+        const float mix_step = rate_per_s / float(rate_);
         const float fc = std::clamp(dyn.music_hp_cutoff, 20.0f, 4000.0f);
         const float rc = 1.0f / (2.0f * 3.14159265f * fc);
         const float alpha = rc / (rc + 1.0f / float(rate_));
@@ -993,7 +1166,8 @@ void AudioEngine::render_block(float* out, int frames) {
       auto& cbuf = bus_bufs_[int(Bus::kRallyCoDriver)];
       std::fill(cbuf.begin(), cbuf.begin() + ptrdiff_t(samples), 0.0f);
       if (codriver_->render(cbuf.data(), frames)) {
-        vo_now = true;
+        // Only fall back to VOPlaying when the v4 22nd RallyCoDriver category is absent.
+        if (!use_matrix_ || matrix_.category_count() < 22) vo_now = true;
         buses[int(Bus::kRallyCoDriver)] = cbuf.data();
       }
     }
@@ -1087,7 +1261,8 @@ void AudioEngine::render_block(float* out, int frames) {
     for (int b = 0; b < kBuses; ++b) {
       // AudioMixerSnapshots.xml is the single source of truth in matrix mode;
       // do not double-stack legacy SnapshotMixer (Paused/Menu) gains on top.
-      const float snap_g = (on_title && Bus(b) != Bus::kUi) ? 0.0f : matrix_.bus_gain(Bus(b));
+      const bool title_music = on_title && ui_music_active && Bus(b) == Bus::kMusic;
+      const float snap_g = (on_title && Bus(b) != Bus::kUi && !title_music) ? 0.0f : matrix_.bus_gain(Bus(b));
       const float target = mixer_.bus_level(Bus(b)) * snap_g;
       float& s = matrix_bus_smooth_[size_t(b)];
       const float* in = buses[b];
@@ -1177,6 +1352,7 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   t.stalls = stalls_;
   t.underruns = underruns_;
   t.backfire_count = sfx_ ? sfx_->backfire_count() : 0u;
+  t.codriver_completed_cues = codriver_ ? codriver_->completed_cue_count() : 0u;
   t.satnav_playing = satnav_ && satnav_->playing();
   t.vo_playing = (vo_ && vo_->playing()) || (codriver_ && codriver_->playing());
   t.in_tunnel = have_acoustics_ && last_acoustics_.in_tunnel;
