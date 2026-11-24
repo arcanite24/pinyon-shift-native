@@ -279,21 +279,94 @@ std::filesystem::path find_ffprobe_for(const std::filesystem::path& ffmpeg) {
   return {};
 }
 
-FILE* open_pipe_read(const std::string& cmd) {
+struct PipeProcess {
+  FILE* stream = nullptr;
 #ifdef _WIN32
-  std::string wrapped = "\"" + cmd + "\"";
-  return _popen(wrapped.c_str(), "rb");
-#else
-  return popen(cmd.c_str(), "r");
+  HANDLE process = nullptr;
 #endif
+};
+
+PipeProcess open_pipe_read(const std::string& cmd) {
+  PipeProcess out{};
+#ifdef _WIN32
+  SECURITY_ATTRIBUTES sa{};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+
+  HANDLE read_pipe = nullptr;
+  HANDLE write_pipe = nullptr;
+  if (!CreatePipe(&read_pipe, &write_pipe, &sa, 0)) return out;
+  SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+
+  HANDLE nul_in = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE nul_err = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_HIDE;
+  si.hStdInput = (nul_in != INVALID_HANDLE_VALUE) ? nul_in : nullptr;
+  si.hStdOutput = write_pipe;
+  si.hStdError = (nul_err != INVALID_HANDLE_VALUE) ? nul_err : nullptr;
+
+  PROCESS_INFORMATION pi{};
+  std::string cmd_mut = cmd;
+  const BOOL ok = CreateProcessA(nullptr, cmd_mut.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
+                                 &si, &pi);
+  CloseHandle(write_pipe);
+  if (nul_in != INVALID_HANDLE_VALUE) CloseHandle(nul_in);
+  if (nul_err != INVALID_HANDLE_VALUE) CloseHandle(nul_err);
+
+  if (!ok) {
+    CloseHandle(read_pipe);
+    return out;
+  }
+  CloseHandle(pi.hThread);
+  const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(read_pipe), _O_RDONLY | _O_BINARY);
+  if (fd < 0) {
+    CloseHandle(read_pipe);
+    TerminateProcess(pi.hProcess, 0);
+    CloseHandle(pi.hProcess);
+    return out;
+  }
+  out.stream = _fdopen(fd, "rb");
+  if (!out.stream) {
+    _close(fd);
+    TerminateProcess(pi.hProcess, 0);
+    CloseHandle(pi.hProcess);
+    return out;
+  }
+  out.process = pi.hProcess;
+#else
+  const std::string silent_cmd = cmd + " 2>/dev/null";
+  out.stream = popen(silent_cmd.c_str(), "r");
+#endif
+  return out;
 }
 
-void close_pipe(FILE* f) {
-  if (!f) return;
+void close_pipe(PipeProcess& p, bool abort_early = false) {
 #ifdef _WIN32
-  _pclose(f);
+  if (p.stream) {
+    std::fclose(p.stream);
+    p.stream = nullptr;
+  }
+  if (p.process) {
+    const DWORD wait_ms = abort_early ? 25u : 2000u;
+    if (WaitForSingleObject(p.process, wait_ms) == WAIT_TIMEOUT) {
+      TerminateProcess(p.process, 0);
+      WaitForSingleObject(p.process, 200u);
+    }
+    CloseHandle(p.process);
+    p.process = nullptr;
+  }
 #else
-  pclose(f);
+  (void)abort_early;
+  if (p.stream) {
+    pclose(p.stream);
+    p.stream = nullptr;
+  }
 #endif
 }
 
@@ -524,14 +597,14 @@ bool FmvPlayer::probe(const std::filesystem::path& wmv_path, FmvProbeInfo& out) 
   const auto ffprobe = find_ffprobe_for(ffmpeg);
   if (ffprobe.empty()) return false;
   const std::string cmd = quote_arg(ffprobe.string()) +
-                          " -v error -show_entries stream=codec_type,width,height,r_frame_rate,duration -of default=nw=1 " +
+                          " -v quiet -show_entries stream=codec_type,width,height,r_frame_rate,duration -of default=nw=1 " +
                           quote_arg(wmv_path.string());
-  FILE* pipe = open_pipe_read(cmd);
-  if (!pipe) return false;
+  PipeProcess pipe = open_pipe_read(cmd);
+  if (!pipe.stream) return false;
   std::string text;
   char buf[512];
-  while (size_t n = std::fread(buf, 1, sizeof buf, pipe)) text.append(buf, n);
-  close_pipe(pipe);
+  while (size_t n = std::fread(buf, 1, sizeof buf, pipe.stream)) text.append(buf, n);
+  close_pipe(pipe, false);
 
   std::istringstream ss(text);
   std::string line;
@@ -591,11 +664,11 @@ bool FmvPlayer::decode_frame_at(const std::filesystem::path& wmv_path, double ti
   }
   char tbuf[32];
   std::snprintf(tbuf, sizeof tbuf, "%.3f", std::max(0.0, time_s));
-  const std::string cmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v error -ss " + tbuf + " -i " +
+  const std::string cmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v quiet -ss " + tbuf + " -i " +
                           quote_arg(wmv_path.string()) + " -map 0:v:0 -vframes 1 -vf scale=" +
                           std::to_string(target_w) + ":" + std::to_string(target_h) + " -pix_fmt rgba -f rawvideo pipe:1";
-  FILE* pipe = open_pipe_read(cmd);
-  if (!pipe) {
+  PipeProcess pipe = open_pipe_read(cmd);
+  if (!pipe.stream) {
     if (error) *error = "failed to launch ffmpeg";
     return false;
   }
@@ -603,11 +676,11 @@ bool FmvPlayer::decode_frame_at(const std::filesystem::path& wmv_path, double ti
   out_rgba.resize(need);
   size_t got = 0;
   while (got < need) {
-    const size_t n = std::fread(out_rgba.data() + got, 1, need - got, pipe);
+    const size_t n = std::fread(out_rgba.data() + got, 1, need - got, pipe.stream);
     if (n == 0) break;
     got += n;
   }
-  close_pipe(pipe);
+  close_pipe(pipe, got < need);
   if (got < need) {
     out_rgba.clear();
     if (error) *error = "ffmpeg returned truncated frame (" + std::to_string(got) + "/" + std::to_string(need) + ")";
@@ -690,13 +763,13 @@ bool FmvPlayer::open(const std::filesystem::path& wmv_path, std::string_view lan
 #endif
 
   const std::string loop_flag = loop ? " -stream_loop -1" : "";
-  const std::string vcmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v error" + loop_flag + " -i " +
+  const std::string vcmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v quiet" + loop_flag + " -i " +
                            quote_arg(wmv_path.string()) + " -map 0:v:0 -vf scale=" + std::to_string(width_) + ":" +
                            std::to_string(height_) + " -pix_fmt rgba -f rawvideo pipe:1";
   video_thread_ = std::thread(&FmvPlayer::video_worker, this, vcmd, width_, height_, fps_);
 
   if (!loop && (!probed || info.has_audio)) {
-    const std::string acmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v error -i " +
+    const std::string acmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v quiet -i " +
                              quote_arg(wmv_path.string()) + " -map 0:a:" + std::to_string(std::max(0, audio_idx)) +
                              "? -ac 2 -ar " + std::to_string(kAudioRate) + " -f f32le pipe:1";
     audio_thread_ = std::thread(&FmvPlayer::audio_worker, this, acmd);
@@ -1034,8 +1107,8 @@ void FmvPlayer::mf_worker(std::filesystem::path wmv_path, int audio_idx, int tar
 #endif
 
 void FmvPlayer::video_worker(std::string cmd, int w, int h, double fps) {
-  FILE* pipe = open_pipe_read(cmd);
-  if (!pipe) {
+  PipeProcess pipe = open_pipe_read(cmd);
+  if (!pipe.stream) {
     video_eof_.store(true, std::memory_order_release);
     return;
   }
@@ -1055,7 +1128,7 @@ void FmvPlayer::video_worker(std::string cmd, int w, int h, double fps) {
       vf.rgba.resize(frame_bytes);
       size_t got = 0;
       while (got < frame_bytes && !stop_.load(std::memory_order_acquire)) {
-        const size_t n = std::fread(vf.rgba.data() + got, 1, frame_bytes - got, pipe);
+        const size_t n = std::fread(vf.rgba.data() + got, 1, frame_bytes - got, pipe.stream);
         if (n == 0) break;
         got += n;
       }
@@ -1070,13 +1143,13 @@ void FmvPlayer::video_worker(std::string cmd, int w, int h, double fps) {
   wait_slot:
     std::this_thread::sleep_for(std::chrono::milliseconds(4));
   }
-  close_pipe(pipe);
+  close_pipe(pipe, stop_.load(std::memory_order_acquire));
   video_eof_.store(true, std::memory_order_release);
 }
 
 void FmvPlayer::audio_worker(std::string cmd) {
-  FILE* pipe = open_pipe_read(cmd);
-  if (!pipe) {
+  PipeProcess pipe = open_pipe_read(cmd);
+  if (!pipe.stream) {
     audio_eof_.store(true, std::memory_order_release);
     return;
   }
@@ -1090,7 +1163,7 @@ void FmvPlayer::audio_worker(std::string cmd) {
       }
     }
     {
-      const size_t n = std::fread(buf, sizeof(float), kChunkFloats, pipe);
+      const size_t n = std::fread(buf, sizeof(float), kChunkFloats, pipe.stream);
       if (n == 0) break;
       std::lock_guard<std::mutex> lk(audio_mu_);
       audio_q_.insert(audio_q_.end(), buf, buf + n);
@@ -1099,7 +1172,7 @@ void FmvPlayer::audio_worker(std::string cmd) {
   wait_audio:
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  close_pipe(pipe);
+  close_pipe(pipe, stop_.load(std::memory_order_acquire));
   audio_eof_.store(true, std::memory_order_release);
 }
 

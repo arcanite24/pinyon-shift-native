@@ -2,10 +2,47 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
+#include <string_view>
+#include <utility>
 
+#include "cars/sources.h"
+#include "cars/strings.h"
 #include "db_util.h"
+#include "fh1data/stringtables.h"
 
 namespace race {
+namespace {
+
+std::string resolve_wristband_name(const std::string& raw, const std::string& thumbnail,
+                                   const fh1::StringTables* strings, size_t tier_index) {
+  if (!raw.empty() && !fh1::StringTables::is_reference(raw)) return raw;
+  if (strings && fh1::StringTables::is_reference(raw)) {
+    if (auto resolved = strings->resolve(raw);
+        resolved && !resolved->empty() && !fh1::StringTables::is_reference(*resolved)) {
+      return *resolved;
+    }
+  }
+  // Exact CareerWristbandLevels localization hashes from FH1 gamedb.slt.
+  static constexpr std::pair<std::string_view, const char*> kKnownHashes[] = {
+      {"_&2698127755", "Yellow"},
+      {"_&2698127627", "Green"},
+      {"_&2698127499", "Blue"},
+      {"_&2698127371", "Pink"},
+      {"_&2698128267", "Orange"},
+      {"_&2698128139", "Purple"},
+      {"_&2698128011", "Gold"},
+  };
+  for (const auto& [hash_ref, label] : kKnownHashes) {
+    if (raw == hash_ref) return label;
+  }
+  if (!thumbnail.empty() && !fh1::StringTables::is_reference(thumbnail)) return thumbnail;
+  static constexpr const char* kTierNames[] = {"Yellow", "Green", "Blue", "Pink", "Orange", "Purple", "Gold"};
+  if (tier_index < std::size(kTierNames)) return kTierNames[tier_index];
+  return raw;
+}
+
+}  // namespace
 
 Winnings winnings_for_career_type(int t) {
   if (t == 12) return Winnings::kWinnerTakesAll;
@@ -66,10 +103,44 @@ bool load_wristband_tables(const std::filesystem::path& root, const std::filesys
                },
                error))
     return false;
+  fh1::StringTables strings;
+  bool have_strings = false;
+  if (!root.empty()) {
+    cars::Install install;
+    std::string why;
+    if (cars::discover_install(root, state_root, "", install, &why) &&
+        cars::load_string_tables(install, strings, &why, "EN")) {
+      have_strings = true;
+    }
+  }
+  size_t tier_idx = 0;
+  std::string thumb_err;
+  if (db.each("select XP, coalesce(Name, ''), coalesce(NemesisBonus, 0), coalesce(Thumbnail, '') "
+              "from CareerWristbandLevels order by XP",
+              {},
+              [&](sqlite3_stmt* s) {
+                const auto* t = sqlite3_column_text(s, 1);
+                const auto* th = sqlite3_column_text(s, 3);
+                const std::string raw = t ? reinterpret_cast<const char*>(t) : "";
+                const std::string thumb = th ? reinterpret_cast<const char*>(th) : "";
+                out.levels.emplace_back(
+                    sqlite3_column_int(s, 0),
+                    resolve_wristband_name(raw, thumb, have_strings ? &strings : nullptr, tier_idx++));
+                out.nemesis_bonuses.push_back(sqlite3_column_int64(s, 2));
+              },
+              &thumb_err)) {
+    return true;
+  }
+  out.levels.clear();
+  out.nemesis_bonuses.clear();
+  tier_idx = 0;
   return db.each("select XP, coalesce(Name, ''), coalesce(NemesisBonus, 0) from CareerWristbandLevels order by XP", {},
                  [&](sqlite3_stmt* s) {
                    const auto* t = sqlite3_column_text(s, 1);
-                   out.levels.emplace_back(sqlite3_column_int(s, 0), t ? reinterpret_cast<const char*>(t) : "");
+                   const std::string raw = t ? reinterpret_cast<const char*>(t) : "";
+                   out.levels.emplace_back(
+                       sqlite3_column_int(s, 0),
+                       resolve_wristband_name(raw, "", have_strings ? &strings : nullptr, tier_idx++));
                    out.nemesis_bonuses.push_back(sqlite3_column_int64(s, 2));
                  },
                  error);

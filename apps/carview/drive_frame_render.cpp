@@ -12,6 +12,28 @@ namespace carview {
 
 bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_paused,
                                        bool trainer_freecam_active) {
+          // Ensure player vehicle starts cleanly snapped onto the road surface on race grid
+          // before the first camera/frame render (matches RaceView::load_cars AI ground snap).
+          if (app.race && host.ground && vehicle.time() <= 1e-6 && !app.race->session().started()) {
+            const drive::Vec3 vp = vehicle.position();
+            if (std::isfinite(vp.x) && std::isfinite(vp.y) && std::isfinite(vp.z)) {
+              drive::Hit ghit{};
+              double road_y = vp.y;
+              bool hit_ok = false;
+              if (host.ground->raycast({vp.x, vp.y + 5.0, vp.z}, {0.0, -1.0, 0.0}, 50.0, ghit)) {
+                road_y = (vp.y + 5.0) - ghit.distance;
+                hit_ok = true;
+              } else if (host.ground->raycast({vp.x, vp.y + 60.0, vp.z}, {0.0, -1.0, 0.0}, 120.0, ghit)) {
+                road_y = (vp.y + 60.0) - ghit.distance;
+                hit_ok = true;
+              }
+              if (hit_ok && std::fabs(vp.y - (road_y + 0.05)) > 0.35) {
+                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                vehicle.reset({vp.x, road_y + 0.05, vp.z}, std::atan2(f.x, f.z));
+                drawn_before = vehicle.pose();
+              }
+            }
+          }
           const audio::View cur_audio_view = audio_view();
           const bool exterior_ui_open =
               !app.show_title && !app.fmv_player.active() &&
@@ -497,6 +519,11 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           // Update projected Opponent Overhead Name Tags in races (race-hud.png),
           // Airborne Showcases, and free-roam Festival AI racers.
           name_tags.clear();
+          struct ProjectedTag {
+            double dist = 0.0;
+            NameTagHud tag;
+          };
+          std::vector<ProjectedTag> projected_tags;
           if (app.race && !grid_menu_open && !app.race->player_finished() && w > 0 && h > 0) {
             std::vector<carview::RaceView::OpponentTag> otags;
             app.race->opponent_tags(otags);
@@ -505,25 +532,40 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               const double d = std::hypot(ot.x - at.x, ot.z - at.z);
               if (d > 110.0) continue;
               float sx = 0, sy = 0;
-              if (project_world_point(cam_frame, info, vehicle, ot.x, ot.y + 1.85, ot.z, float(w), float(h), sx, sy))
-                name_tags.push_back({sx, sy, ot.name, ot.leader});
+              if (project_world_point(cam_frame, info, vehicle, ot.x, ot.y + 1.85, ot.z, float(w), float(h), sx, sy) &&
+                  sx >= 0.0f && sx <= float(w) && sy >= 0.0f && sy <= float(h))
+                projected_tags.push_back({d, {sx, sy, ot.name, ot.leader}});
             }
             carview::RaceView::OpponentTag stag;
             if (app.race->showcase_tag(stag)) {
+              const double d = std::hypot(stag.x - at.x, stag.z - at.z);
               float sx = 0, sy = 0;
-              if (project_world_point(cam_frame, info, vehicle, stag.x, stag.y, stag.z, float(w), float(h), sx, sy))
-                name_tags.push_back({sx, sy, stag.name, stag.leader});
+              if (project_world_point(cam_frame, info, vehicle, stag.x, stag.y, stag.z, float(w), float(h), sx, sy) &&
+                  sx >= 0.0f && sx <= float(w) && sy >= 0.0f && sy <= float(h))
+                projected_tags.push_back({d, {sx, sy, stag.name, stag.leader}});
             }
           } else if (!app.race && festival_mgr && w > 0 && h > 0) {
             const drive::Vec3 at = vehicle.position();
             for (const auto& fc : festival_mgr->cars()) {
-              if (std::hypot(fc.position.x - at.x, fc.position.z - at.z) > 120.0) continue;
+              const double d = std::hypot(fc.position.x - at.x, fc.position.z - at.z);
+              if (d > 105.0) continue;
               float sx = 0, sy = 0;
               if (project_world_point(cam_frame, info, vehicle, fc.position.x, fc.position.y + 1.85, fc.position.z,
-                                      float(w), float(h), sx, sy))
-                name_tags.push_back({sx, sy, "[" + fc.spec.car_class + " " + std::to_string(fc.spec.pi) + "] " + fc.spec.driver_name,
-                                     fc.in_h2h});
+                                      float(w), float(h), sx, sy) &&
+                  sx >= 0.0f && sx <= float(w) && sy >= 0.0f && sy <= float(h))
+                projected_tags.push_back(
+                    {d, {sx, sy, "[" + fc.spec.car_class + " " + std::to_string(fc.spec.pi) + "] " + fc.spec.driver_name,
+                         fc.in_h2h}});
             }
+          }
+          if (!projected_tags.empty()) {
+            std::sort(projected_tags.begin(), projected_tags.end(), [](const ProjectedTag& a, const ProjectedTag& b) {
+              if (a.tag.leader != b.tag.leader && std::fabs(a.dist - b.dist) < 5.0) return a.tag.leader;
+              return a.dist < b.dist;
+            });
+            const size_t keep = std::min<size_t>(projected_tags.size(), 10);
+            name_tags.reserve(keep);
+            for (size_t i = 0; i < keep; ++i) name_tags.push_back(std::move(projected_tags[i].tag));
           }
 
           if (photo_mode.active()) {

@@ -282,6 +282,28 @@ int64_t DriveSession::current_make_id() {
 
 bool DriveSession::step(const drive::Input& user_in) {
         const auto ph_t0 = std::chrono::steady_clock::now();
+        // Snap player vehicle onto live road surface before the first race physics step
+        // so elevated route transform Y values never drop the car onto the starting grid.
+        if (app.race && host.ground && vehicle.time() <= 1e-6 && !app.race->session().started()) {
+          const drive::Vec3 vp = vehicle.position();
+          if (std::isfinite(vp.x) && std::isfinite(vp.y) && std::isfinite(vp.z)) {
+            drive::Hit ghit{};
+            double road_y = vp.y;
+            bool hit_ok = false;
+            if (host.ground->raycast({vp.x, vp.y + 5.0, vp.z}, {0.0, -1.0, 0.0}, 50.0, ghit)) {
+              road_y = (vp.y + 5.0) - ghit.distance;
+              hit_ok = true;
+            } else if (host.ground->raycast({vp.x, vp.y + 60.0, vp.z}, {0.0, -1.0, 0.0}, 120.0, ghit)) {
+              road_y = (vp.y + 60.0) - ghit.distance;
+              hit_ok = true;
+            }
+            if (hit_ok && std::fabs(vp.y - (road_y + 0.05)) > 0.35) {
+              const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+              vehicle.reset({vp.x, road_y + 0.05, vp.z}, std::atan2(f.x, f.z));
+              drawn_before = vehicle.pose();
+            }
+          }
+        }
         // SPEC-CAR-PHYSICS, Aerodynamic drafting in free roam (behind traffic & festival AI).
         if (!app.race) {
           std::vector<drive::DraftCar> leaders;
@@ -440,11 +462,26 @@ bool DriveSession::step(const drive::Input& user_in) {
               }
             }
             const int lvl = app.wristbands.level_index(app.career.wristband_points);
+            std::string band_label = "no wristband";
+            if (lvl >= 0 && size_t(lvl) < app.wristbands.levels.size()) {
+              band_label = carview::game_text(app.wristbands.levels[size_t(lvl)].second);
+              if (band_label.empty() || band_label.rfind("_&", 0) == 0) {
+                if (const auto* ms = race::find_wristband_milestone(lvl)) {
+                  band_label = std::string(ms->colour_key) + " Wristband";
+                } else {
+                  band_label = "Wristband " + std::to_string(lvl + 1);
+                }
+              } else {
+                std::string low = band_label;
+                for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                if (low.find("wristband") == std::string::npos) band_label += " Wristband";
+              }
+            }
             std::printf("race: award %lld CR (base %lld, mileage %lld, diff +%d%% %lld, assists %lld, skills %lld, nemesis %lld), %d wristband points (total %d, %s), credits %lld%s%s\n",
                         (long long)a->credits, (long long)a->base_credits, (long long)a->mileage_bonus,
                         a->difficulty_pct, (long long)a->difficulty_bonus, (long long)a->assists_bonus,
                         (long long)a->skills_bonus, (long long)a->nemesis_bonus, a->wristband_points,
-                        app.career.wristband_points, lvl >= 0 ? app.wristbands.levels[size_t(lvl)].second.c_str() : "no wristband",
+                        app.career.wristband_points, band_label.c_str(),
                         (long long)app.career.credits, a->first_completion ? ", first completion" : "",
                         a->prize_car ? (", prize car " + std::to_string(a->prize_car)).c_str() : "");
             if (a->prize_car > 0) {
