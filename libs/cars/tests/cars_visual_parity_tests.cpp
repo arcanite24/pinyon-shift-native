@@ -20,6 +20,7 @@
 #include "cars/physics.h"
 #include "cars/sources.h"
 #include "cars/visual_setup.h"
+#include "fh1data/archive.h"
 
 namespace {
 
@@ -457,12 +458,144 @@ void test_bake_material_classes_blur_rim_and_crush_weights() {
   CHECK(std::fabs(cars::vertex_crush_weight(bv) - (128.0f / 255.0f)) < 1e-4f);
 }
 
+void test_pt23_pt24_pt25_playtest_fixes() {
+  // --- PT-23: Car lamp glow sprite evaluation (no floating red tail blobs while cruising) ---
+  {
+    fh1::CarbinLampPoint rear_tail_02{};
+    rear_tail_02.position = {-0.57f, 0.53f, -1.90f};
+    rear_tail_02.direction = {0.0f, 0.0f, -1.0f};
+    rear_tail_02.channel_mask = 0x02u;
+
+    fh1::CarbinLampPoint rear_halo_01{};
+    rear_halo_01.position = {-0.61f, 0.58f, -2.01f};
+    rear_halo_01.direction = {0.0f, 0.0f, -1.0f};
+    rear_halo_01.channel_mask = 0x01u;
+    rear_halo_01.lamp_kind = 4;
+
+    fh1::CarbinLampPoint brake_04{};
+    brake_04.position = {-0.57f, 0.53f, -1.89f};
+    brake_04.direction = {0.0f, 0.0f, -1.0f};
+    brake_04.channel_mask = 0x04u;
+
+    fh1::CarbinLampPoint front_head_01{};
+    front_head_01.position = {-0.50f, 0.35f, 1.89f};
+    front_head_01.direction = {0.0f, 0.0f, 1.0f};
+    front_head_01.channel_mask = 0x01u;
+
+    // Player car cruising at night (head=1, brake=0): ZERO red flare blobs on both 0x02 and rear 0x01!
+    const auto cruise_02 = cars::evaluate_car_lamp_glow_sprite(
+        rear_tail_02, 0.25f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, true, true, 5.0f, 1.0f);
+    const auto cruise_r01_corrado = cars::evaluate_car_lamp_glow_sprite(
+        rear_halo_01, 0.45f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, true, true, 5.0f, 1.0f);
+    const auto cruise_r01_viper = cars::evaluate_car_lamp_glow_sprite(
+        rear_halo_01, 0.59f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, false, true, 5.0f, 1.0f);
+    const auto cruise_04 = cars::evaluate_car_lamp_glow_sprite(
+        brake_04, 0.25f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, true, true, 5.0f, 1.0f);
+    CHECK(!cruise_02.emit);
+    CHECK(!cruise_r01_corrado.emit);
+    CHECK(!cruise_r01_viper.emit);
+    CHECK(!cruise_04.emit);
+
+    // Braking: dedicated 0x04 emits proportionally with tight housing radius (<= 0.16 m) & seated bias.
+    const auto brk_half = cars::evaluate_car_lamp_glow_sprite(
+        brake_04, 0.40f, 1.0f, 0.5f, 0.0f, 0.0f, 0.0f, true, true, 5.0f, 1.0f);
+    const auto brk_full = cars::evaluate_car_lamp_glow_sprite(
+        brake_04, 0.40f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, true, true, 5.0f, 1.0f);
+    CHECK(brk_half.emit && brk_full.emit);
+    CHECK(brk_full.intensity > brk_half.intensity * 1.8f);
+    CHECK(brk_full.radius_m >= 0.06f && brk_full.radius_m <= 0.16f);
+    CHECK(brk_full.view_bias_m <= 0.08f);
+
+    // Viper-style car (no 0x04 points): rear 0x01 lights cleanly as brake glow ONLY while braking.
+    const auto viper_brk = cars::evaluate_car_lamp_glow_sprite(
+        rear_halo_01, 0.59f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, false, true, 5.0f, 1.0f);
+    CHECK(viper_brk.emit && viper_brk.radius_m <= 0.16f && viper_brk.intensity > 2.0f);
+
+    // Front headlamp still emits crisply at night.
+    const auto head_ok = cars::evaluate_car_lamp_glow_sprite(
+        front_head_01, 0.60f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, true, true, 5.0f, 1.0f);
+    CHECK(head_ok.emit && head_ok.intensity > 4.0f);
+
+    // Nearby AI car cruising has no blob; distant AI car at night gets ultra-subtle pinpoint only.
+    const auto ai_near = cars::evaluate_car_lamp_glow_sprite(
+        rear_tail_02, 0.25f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, true, false, 18.0f, 1.0f);
+    const auto ai_far = cars::evaluate_car_lamp_glow_sprite(
+        rear_tail_02, 0.25f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, true, false, 85.0f, 1.0f);
+    CHECK(!ai_near.emit);
+    CHECK(ai_far.emit && ai_far.radius_m <= 0.095f && ai_far.intensity < 0.60f);
+  }
+
+  // --- PT-25: Active rear spoiler deployment bounds & pitch direction ---
+  {
+    // Stowed (deploy == 0): exact zero transform.
+    const auto stowed = cars::compute_active_wing_deploy(0.0f, 0.075f, 0.0f, false, false, false);
+    CHECK(stowed.lift_m == 0.0f && stowed.pitch_rad == 0.0f);
+
+    // Flush / strutless decklid spoiler (VW Corrado VR6): realistic bounded lift (<= 4.2 cm),
+    // negative pitch_rad (lifts trailing +Z edge for downforce), hinged near front mount.
+    const auto corrado = cars::compute_active_wing_deploy(1.0f, 0.075f, 0.0f, false, false, false);
+    CHECK(corrado.lift_m >= 0.020f && corrado.lift_m <= 0.042f);
+    CHECK(corrado.pitch_rad < -0.05f && corrado.pitch_rad > -0.18f);
+    CHECK(corrado.pivot_z_frac <= 0.25f);
+
+    // Linked pedestal active wing (Veyron / MP4-12C): blade + linkage stay tightly coupled.
+    const auto blade = cars::compute_active_wing_deploy(1.0f, 0.09f, 0.15f, true, false, false);
+    const auto link = cars::compute_active_wing_deploy(1.0f, 0.09f, 0.15f, true, true, false);
+    CHECK(blade.lift_m >= 0.042f && blade.lift_m <= 0.072f);
+    CHECK(blade.pitch_rad < -0.10f);
+    CHECK(link.lift_m > blade.lift_m * 0.80f && link.lift_m <= blade.lift_m);
+
+    // Independent body aero flaps (Huayra): minimal vertical shift, crisp hinged deflection.
+    const auto flap = cars::compute_active_wing_deploy(1.0f, 0.04f, 0.0f, false, false, true);
+    CHECK(flap.lift_m <= 0.01f && flap.pitch_rad < -0.20f && flap.pivot_z_frac <= 0.10f);
+  }
+
+  // --- PT-24: Driver.zip num_lods == 1 .skinbin layout verification (when disc available) ---
+  {
+    const fs::path game_root = find_game_root();
+    if (!game_root.empty() && fs::exists(game_root / "media" / "cars" / "Driver.zip")) {
+      std::string err;
+      auto arc = fh1::Archive::open(game_root / "media" / "cars" / "Driver.zip", &err);
+      CHECK(arc != nullptr);
+      if (arc) {
+        auto rd = arc->read("Driver01.skinbin");
+        CHECK(rd.ok() && rd.data.size() > 0x2c);
+        if (rd.ok() && rd.data.size() > 0x2c) {
+          auto be32 = [&](size_t off) -> uint32_t {
+            return (uint32_t(rd.data[off]) << 24) | (uint32_t(rd.data[off + 1]) << 16) |
+                   (uint32_t(rd.data[off + 2]) << 8) | uint32_t(rd.data[off + 3]);
+          };
+          const uint32_t num_lods = be32(0x04);
+          CHECK(num_lods == 1u);
+          const size_t vert_count_off = 0x18 + size_t(num_lods) * 8u;
+          const size_t verts_off = 0x20 + size_t(num_lods) * 8u;
+          const uint32_t vert_count = be32(vert_count_off);
+          const size_t idx_base = verts_off + size_t(vert_count) * 36u;
+          CHECK(vert_count > 1000u && idx_base + 4u <= rd.data.size());
+          const uint32_t total_idx = be32(idx_base);
+          CHECK(total_idx >= 3000u && idx_base + 4u + size_t(total_idx) * 2u <= rd.data.size());
+          // Confirm head bone (bone 2) and arm/hand bones (4, 5, 7, 8) are populated.
+          uint32_t head_verts = 0, arm_verts = 0;
+          for (uint32_t i = 0; i < vert_count; ++i) {
+            const uint8_t b0 = rd.data[verts_off + size_t(i) * 36u + 28u];
+            if (b0 == 2) ++head_verts;
+            if (b0 == 4 || b0 == 5 || b0 == 7 || b0 == 8) ++arm_verts;
+          }
+          CHECK(head_verts >= 500u);
+          CHECK(arm_verts >= 500u);
+        }
+      }
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
   test_livery_projection_yflip_aspect_mirror_and_mask();
   test_tire_rolling_radius_and_compound_mapping();
   test_bake_material_classes_blur_rim_and_crush_weights();
+  test_pt23_pt24_pt25_playtest_fixes();
   test_disc_tire_compound_camber_and_brakes();
   if (g_failed) {
     std::fprintf(stderr, "cars_visual_parity_tests: %d FAILED\n", g_failed);

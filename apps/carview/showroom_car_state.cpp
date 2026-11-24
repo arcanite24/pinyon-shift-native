@@ -2,6 +2,7 @@
 
 #include "cars/bake.h"
 #include "cars/texture_mods.h"
+#include "cars/visual_setup.h"
 
 #include <algorithm>
 #include <cmath>
@@ -650,15 +651,52 @@ void Showroom::set_animated_car_parts(float aero_deploy, float popup_open, float
     out[13] = py + dy - (c * py - s * pz);
     out[14] = pz - (s * py + c * pz);
   };
+  // Compute unified AABBs for main active rear wing (`winga`) and linkage sub-parts
+  // (`winga_arm*`, `winga_piston`, `winga_lower`, `winga_suspension`) so multi-subsection
+  // spoilers move rigidly around one hinge pivot with physically bounded strut travel.
+  bool has_winga_main = false;
+  bool has_wing_linkages = false;
+  std::array<float, 3> wing_min{1e9f, 1e9f, 1e9f}, wing_max{-1e9f, -1e9f, -1e9f};
+  std::array<float, 3> link_min{1e9f, 1e9f, 1e9f}, link_max{-1e9f, -1e9f, -1e9f};
+  for (const Draw& d : draws_) {
+    if (d.wheel >= 0 || d.cockpit_role >= 0) continue;
+    if (d.anim_part == 1 && d.part_name == "winga") {
+      has_winga_main = true;
+      for (size_t k = 0; k < 3; ++k) {
+        wing_min[k] = std::min(wing_min[k], d.part_min[k]);
+        wing_max[k] = std::max(wing_max[k], d.part_max[k]);
+      }
+    } else if (d.anim_part == 8) {
+      has_wing_linkages = true;
+      for (size_t k = 0; k < 3; ++k) {
+        link_min[k] = std::min(link_min[k], d.part_min[k]);
+        link_max[k] = std::max(link_max[k], d.part_max[k]);
+      }
+    }
+  }
+  const float wing_height_m = has_winga_main ? std::max(0.0f, wing_max[1] - wing_min[1]) : 0.0f;
+  const float link_height_m = has_wing_linkages ? std::max(0.0f, link_max[1] - link_min[1]) : 0.0f;
+
   for (Draw& d : draws_) {
     if (d.anim_part == 0 || d.wheel >= 0 || d.cockpit_role >= 0) continue;
     if (d.anim_part == 1) {
       if (dmg_wing_detached_) continue;
       // Active rear aero spoiler / airbrake / flaps (only on CarAnimationEvents RearWing or
-      // active-aero linkage cars): smoothly rises + pitches up at high speed or braking.
+      // active-aero linkage cars): smoothly deploys within realistic mount travel while keeping
+      // all subsections rigidly joined to the decklid hinge or linkages.
       if (aero_deploy_smooth_ > 0.002f) {
+        const bool is_flap_only = !has_winga_main;
+        const auto dep = cars::compute_active_wing_deploy(
+            aero_deploy_smooth_, wing_height_m, link_height_m, has_wing_linkages, false, is_flap_only);
+        const auto& bmin = is_flap_only ? d.part_min : wing_min;
+        const auto& bmax = is_flap_only ? d.part_max : wing_max;
+        const std::array<float, 3> pivot{
+            0.5f * (bmin[0] + bmax[0]),
+            bmin[1],
+            bmin[2] + (bmax[2] - bmin[2]) * dep.pivot_z_frac,
+        };
         float xform[16];
-        make_rot_x(d.centre, aero_deploy_smooth_ * 0.24f, aero_deploy_smooth_ * 0.085f, xform);
+        make_rot_x(pivot, dep.pitch_rad, dep.lift_m, xform);
         multiply(xform, d.rest_model, d.push.model);
       } else {
         std::memcpy(d.push.model, d.rest_model, sizeof d.push.model);
@@ -666,10 +704,18 @@ void Showroom::set_animated_car_parts(float aero_deploy, float popup_open, float
     } else if (d.anim_part == 8) {
       if (dmg_wing_detached_) continue;
       // Active rear wing linkage sub-parts (winga_arm*, winga_piston, winga_lower, winga_suspension):
-      // smoothly extend with the deployed wing so pistons/arms stay joined cleanly.
+      // extend smoothly with the deployed wing using the unified wing-mount pivot so arms/pistons
+      // remain visually connected at both the decklid socket and the spoiler underside.
       if (aero_deploy_smooth_ > 0.002f) {
+        const auto dep = cars::compute_active_wing_deploy(
+            aero_deploy_smooth_, wing_height_m, link_height_m, true, true, false);
+        const std::array<float, 3> pivot{
+            0.5f * (link_min[0] + link_max[0]),
+            link_min[1],
+            link_min[2] + (link_max[2] - link_min[2]) * dep.pivot_z_frac,
+        };
         float xform[16];
-        make_rot_x(d.centre, aero_deploy_smooth_ * 0.14f, aero_deploy_smooth_ * 0.055f, xform);
+        make_rot_x(pivot, dep.pitch_rad, dep.lift_m, xform);
         multiply(xform, d.rest_model, d.push.model);
       } else {
         std::memcpy(d.push.model, d.rest_model, sizeof d.push.model);
@@ -1326,6 +1372,8 @@ bool Showroom::reload_car(const std::filesystem::path& bake_dir, const std::stri
   lamp_state_active_ = false;
   lamp_vectors_ = {};
   driver_wheel_rad_ = 0.0f;
+  cockpit_camera_active_ = false;
+  update_driver_mesh(0.0f);
   // Rebind frame_set_ binding 9 to the new car's dirt_mask.xds (or Shared fallback) via a fresh set from pool_.
   if (pool_ && frame_layout_ && sampler_ && shared_dirt_mask_.view) {
     VkDescriptorSet fresh = VK_NULL_HANDLE;

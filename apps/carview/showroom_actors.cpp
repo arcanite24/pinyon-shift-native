@@ -164,20 +164,29 @@ bool Showroom::load_driver_assets() {
   std::string body_mem, hands_mem, band_mem, tex_mem;
   for (const auto& m : arc->members()) {
     const std::string ln = lower(m.name);
-    if (ends_with(ln, ".skinbin")) {
-      if (ln.find("driverhands01") != std::string::npos ||
-          (hands_mem.empty() && ln.find("hands") != std::string::npos)) {
+    const size_t slash = ln.find_last_of("/\\");
+    const std::string base = (slash == std::string::npos) ? ln : ln.substr(slash + 1);
+    if (ends_with(base, ".skinbin")) {
+      if (base == "driverhands01.skinbin" ||
+          (hands_mem.empty() && base.find("driverhands") != std::string::npos)) {
         hands_mem = m.name;
-      } else if (ln.find("driverwristband") != std::string::npos ||
-                 (band_mem.empty() && ln.find("wrist") != std::string::npos)) {
+      } else if (base == "driverwristband.skinbin" ||
+                 (band_mem.empty() && base.find("wrist") != std::string::npos)) {
         band_mem = m.name;
-      } else if (ln.find("driver01") != std::string::npos ||
-                 (body_mem.empty() && ln.find("driver") != std::string::npos)) {
+      } else if (base == "driver01.skinbin") {
+        body_mem = m.name;
+      } else if (body_mem.empty() && base == "driver02.skinbin") {
+        body_mem = m.name;
+      } else if (body_mem.empty() && base.rfind("driver", 0) == 0 &&
+                 base.find("temp") == std::string::npos && base.find("hands") == std::string::npos &&
+                 base.find("wrist") == std::string::npos && base.find("left") == std::string::npos) {
         body_mem = m.name;
       }
-    } else if (ends_with(ln, ".xds")) {
-      if (ln.find("driver01_d") != std::string::npos ||
-          (tex_mem.empty() && ln.find("driver") != std::string::npos && ln.find("_d.") != std::string::npos)) {
+    } else if (ends_with(base, ".xds")) {
+      if (base == "driver01_d.xds") {
+        tex_mem = m.name;
+      } else if (tex_mem.empty() && base.find("driver") != std::string::npos &&
+                 base.find("_d.") != std::string::npos) {
         tex_mem = m.name;
       }
     }
@@ -194,7 +203,7 @@ bool Showroom::load_driver_assets() {
   try_skin(hands_mem, driver_hands_mesh_);
   try_skin(band_mem, driver_wristband_mesh_);
 
-  if (driver_body_mesh_.vertices.empty() && driver_hands_mesh_.vertices.empty()) return false;
+  if (driver_body_mesh_.vertices.empty() || driver_body_mesh_.indices.size() < 3) return false;
 
   if (!tex_mem.empty() && driver_tex_set_ == VK_NULL_HANDLE) {
     const auto rd = arc->read(tex_mem);
@@ -391,58 +400,138 @@ void Showroom::update_driver_mesh(float wheel_rad) {
   const std::array<float, 3> r_el{(r_sh[0] + r_hand[0]) * 0.5f + 0.06f, (r_sh[1] + r_hand[1]) * 0.5f - 0.08f,
                                   (r_sh[2] + r_hand[2]) * 0.5f + 0.04f};
 
-  // Emit authentic skinned meshes from media/cars/Driver.zip when loaded!
-  if (driver_assets_loaded_) {
-    auto emit_skin_arms = [&](const world::SpectatorMeshLod& mesh) {
-      if (mesh.vertices.empty() || mesh.indices.size() < 3) return;
-      float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f, min_z = 1e9f, max_z = -1e9f;
-      for (const auto& v : mesh.vertices) {
-        min_x = std::min(min_x, v.pos[0]); max_x = std::max(max_x, v.pos[0]);
-        min_y = std::min(min_y, v.pos[1]); max_y = std::max(max_y, v.pos[1]);
-        min_z = std::min(min_z, v.pos[2]); max_z = std::max(max_z, v.pos[2]);
+  // Emit authentic skinned seated driver mesh from media/cars/Driver.zip (`Driver01.skinbin`)
+  // textured with `Driver01_D.xds` when loaded.
+  // Layout in `driver_buf_`:
+  //   [0 .. driver_hands_count_)        : left/right forearms & hands (cockpit camera ONLY draws this range,
+  //                                       cleanly hiding head/torso so interior view is never occluded).
+  //   [driver_hands_count_ .. driver_count_) : torso, shoulders, legs & full sculpted head (exterior / chase /
+  //                                       side / orbit / Autoshow cameras & AI cars draw [0 .. driver_count_)).
+  if (driver_assets_loaded_ && !driver_body_mesh_.vertices.empty() && driver_body_mesh_.indices.size() >= 3) {
+    const auto& mesh = driver_body_mesh_;
+    float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f, min_z = 1e9f, max_z = -1e9f;
+    std::array<double, 3> lh_sum{0, 0, 0}, rh_sum{0, 0, 0}, head_sum{0, 0, 0};
+    uint32_t lh_cnt = 0, rh_cnt = 0, head_cnt = 0;
+    float head_max_y = -1e9f;
+    float lh_min_z = 1e9f, lh_max_z = -1e9f;
+    float rh_min_z = 1e9f, rh_max_z = -1e9f;
+    for (const auto& v : mesh.vertices) {
+      min_x = std::min(min_x, v.pos[0]); max_x = std::max(max_x, v.pos[0]);
+      min_y = std::min(min_y, v.pos[1]); max_y = std::max(max_y, v.pos[1]);
+      min_z = std::min(min_z, v.pos[2]); max_z = std::max(max_z, v.pos[2]);
+      if (v.bone0 == 5) {
+        lh_sum[0] += v.pos[0]; lh_sum[1] += v.pos[1]; lh_sum[2] += v.pos[2];
+        ++lh_cnt;
+        lh_min_z = std::min(lh_min_z, v.pos[2]);
+        lh_max_z = std::max(lh_max_z, v.pos[2]);
+      } else if (v.bone0 == 8) {
+        rh_sum[0] += v.pos[0]; rh_sum[1] += v.pos[1]; rh_sum[2] += v.pos[2];
+        ++rh_cnt;
+        rh_min_z = std::min(rh_min_z, v.pos[2]);
+        rh_max_z = std::max(rh_max_z, v.pos[2]);
+      } else if (v.bone0 == 2) {
+        head_sum[0] += v.pos[0]; head_sum[1] += v.pos[1]; head_sum[2] += v.pos[2];
+        ++head_cnt;
+        head_max_y = std::max(head_max_y, v.pos[1]);
       }
-      const float mid_x = 0.5f * (min_x + max_x);
-      const float span_z = std::max(max_z - min_z, 0.08f);
-      const float mid_y = 0.5f * (min_y + max_y);
-      const float half_w = std::max(0.5f * (max_x - min_x), 0.12f);
+    }
+    const float src_cx = (head_cnt > 0) ? float(head_sum[0] / double(head_cnt)) : 0.5f * (min_x + max_x);
+    const std::array<float, 3> src_lh =
+        (lh_cnt > 0) ? std::array<float, 3>{float(lh_sum[0] / lh_cnt), float(lh_sum[1] / lh_cnt), lh_min_z + 0.08f}
+                     : std::array<float, 3>{src_cx - 0.19f, min_y + 0.56f * (max_y - min_y), min_z + 0.42f};
+    const std::array<float, 3> src_rh =
+        (rh_cnt > 0) ? std::array<float, 3>{float(rh_sum[0] / rh_cnt), float(rh_sum[1] / rh_cnt), rh_min_z + 0.08f}
+                     : std::array<float, 3>{src_cx + 0.19f, min_y + 0.56f * (max_y - min_y), min_z + 0.42f};
+    const float src_hand_y = 0.5f * (src_lh[1] + src_rh[1]);
+    const float src_hand_z = 0.5f * (src_lh[2] + src_rh[2]);
+    const float src_top_y = (head_cnt > 0) ? head_max_y : max_y;
 
-      auto map_arm_vert = [&](const world::SpectatorMeshLod::Vertex& v, std::array<float, 3>& out_p,
-                              std::array<float, 3>& out_n) {
-        const bool is_left = v.pos[0] < mid_x;
-        const auto& el = is_left ? l_el : r_el;
-        const auto& ha = is_left ? l_hand : r_hand;
-        const auto arm_dir = vsub(ha, el);
-        const float arm_len = std::max(std::sqrt(vdot(arm_dir, arm_dir)), 0.10f);
-        const auto fwd = vnorm(arm_dir);
-        const std::array<float, 3> up_ref = std::fabs(fwd[1]) < 0.9f ? std::array<float, 3>{0, 1, 0} : std::array<float, 3>{1, 0, 0};
-        const auto right = vnorm(vcross(up_ref, fwd));
-        const auto up = vcross(fwd, right);
-        const float tz = std::clamp((v.pos[2] - min_z) / span_z, 0.0f, 1.0f);
-        const float lx = (v.pos[0] - (is_left ? (mid_x - half_w * 0.55f) : (mid_x + half_w * 0.55f))) * hand_scale;
-        const float ly = (v.pos[1] - mid_y) * hand_scale;
-        const auto spine = vadd(el, vscale(fwd, tz * arm_len));
-        out_p = vadd(spine, vadd(vscale(right, lx), vscale(up, ly)));
-        out_n = vnorm(vadd(vscale(right, v.normal[0]), vadd(vscale(up, v.normal[1]), vscale(fwd, v.normal[2]))));
+    // Driver01.skinbin is already authored in car model coordinates (+X right, +Y up, -Z forward).
+    // Anchor its hand-grip plane directly to the car's steering wheel pivot and clamp roof clearance
+    // so the complete driver (torso + arms + head) sits naturally inside every coupe/supercar cabin.
+    const float scale = 0.92f;
+    float seat_dy = 0.0f;
+    if (have_bounds_) {
+      const float head_top_y = pivot[1] + (src_top_y - src_hand_y) * scale;
+      const float roof_limit = bounds_max_[1] - 0.075f;
+      if (head_top_y > roof_limit) {
+        seat_dy = -std::min(head_top_y - roof_limit, 0.12f);
+      }
+    }
+    auto map_rest = [&](const std::array<float, 3>& p) -> std::array<float, 3> {
+      return {
+          pivot[0] + (p[0] - src_cx) * scale,
+          pivot[1] + seat_dy + (p[1] - src_hand_y) * scale,
+          pivot[2] + (p[2] - src_hand_z) * scale,
       };
+    };
+    const auto rest_lh = map_rest(src_lh);
+    const auto rest_rh = map_rest(src_rh);
+    auto clamp_vec = [&](const std::array<float, 3>& v, float max_len) -> std::array<float, 3> {
+      const float l = std::sqrt(vdot(v, v));
+      return (l > max_len && l > 1e-6f) ? vscale(v, max_len / l) : v;
+    };
+    const auto dl = clamp_vec(vsub(l_hand, rest_lh), 0.28f);
+    const auto dr = clamp_vec(vsub(r_hand, rest_rh), 0.28f);
+    const float lh_span_z = std::max(lh_max_z - lh_min_z, 0.12f);
+    const float rh_span_z = std::max(rh_max_z - rh_min_z, 0.12f);
 
+    auto bone_disp = [&](uint8_t bone, const std::array<float, 3>& sp) -> std::array<float, 3> {
+      switch (bone) {
+        case 5: {  // left forearm & hand: blend from elbow (+Z) to wrist/grip (-Z) so elbow stays joined
+          const float t = std::clamp((lh_max_z - sp[2]) / lh_span_z, 0.0f, 1.0f);
+          return vscale(dl, 0.42f + 0.58f * t);
+        }
+        case 4: return vscale(dl, 0.36f);  // left upper arm
+        case 3: return vscale(dl, 0.10f);  // left shoulder
+        case 8: {  // right forearm & hand
+          const float t = std::clamp((rh_max_z - sp[2]) / rh_span_z, 0.0f, 1.0f);
+          return vscale(dr, 0.42f + 0.58f * t);
+        }
+        case 7: return vscale(dr, 0.36f);  // right upper arm
+        case 6: return vscale(dr, 0.10f);  // right shoulder
+        case 2: return {lean, 0.0f, 0.0f};         // head cornering lean
+        case 1: return {lean * 0.45f, 0.0f, 0.0f}; // upper torso lean
+        default: return {0.0f, 0.0f, 0.0f};
+      }
+    };
+
+    auto is_arm_bone = [](uint8_t b) { return b == 4 || b == 5 || b == 7 || b == 8; };
+    auto emit_pass = [&](bool arms_only) {
       const size_t n_idx = (mesh.indices.size() / 3u) * 3u;
       for (size_t i = 0; i < n_idx; i += 3) {
         if (count + 3 > kMaxDriverVerts) break;
-        const uint16_t tri[3] = {mesh.indices[i + 0], mesh.indices[i + 2], mesh.indices[i + 1]};  // CW for world_opaque_
-        if (tri[0] >= mesh.vertices.size() || tri[1] >= mesh.vertices.size() || tri[2] >= mesh.vertices.size())
-          continue;
+        const uint16_t i0 = mesh.indices[i + 0];
+        const uint16_t i1 = mesh.indices[i + 1];
+        const uint16_t i2 = mesh.indices[i + 2];
+        if (i0 >= mesh.vertices.size() || i1 >= mesh.vertices.size() || i2 >= mesh.vertices.size()) continue;
+        const bool tri_is_arm = is_arm_bone(mesh.vertices[i0].bone0) && is_arm_bone(mesh.vertices[i1].bone0) &&
+                                is_arm_bone(mesh.vertices[i2].bone0);
+        if (tri_is_arm != arms_only) continue;
+        // Positive-determinant transform in car space; flip parse_skinbin CCW -> CW for world_opaque_.
+        const uint16_t tri[3] = {i0, i2, i1};
         for (int k = 0; k < 3; ++k) {
           const auto& sv = mesh.vertices[tri[k]];
-          std::array<float, 3> mp{}, mn{};
-          map_arm_vert(sv, mp, mn);
+          const auto base_p = map_rest(sv.pos);
+          const float w0 = float(sv.weight0) / 255.0f;
+          const float w1 = float(sv.weight1) / 255.0f;
+          const float wsum = w0 + w1;
+          std::array<float, 3> disp{0.0f, 0.0f, 0.0f};
+          if (wsum > 1e-4f) {
+            const auto d0 = bone_disp(sv.bone0, sv.pos);
+            const auto d1 = (w1 > 0.0f) ? bone_disp(sv.bone1, sv.pos) : std::array<float, 3>{0, 0, 0};
+            disp = vscale(vadd(vscale(d0, w0), vscale(d1, w1)), 1.0f / wsum);
+          } else {
+            disp = bone_disp(sv.bone0, sv.pos);
+          }
           WorldVertex& o = dst[count++];
           o = WorldVertex{};
-          o.position[0] = mp[0];
-          o.position[1] = mp[1];
-          o.position[2] = mp[2];
-          o.normal[0] = snorm8(mn[0]);
-          o.normal[1] = snorm8(mn[1]);
-          o.normal[2] = snorm8(mn[2]);
+          o.position[0] = base_p[0] + disp[0];
+          o.position[1] = base_p[1] + disp[1];
+          o.position[2] = base_p[2] + disp[2];
+          o.normal[0] = snorm8(sv.normal[0]);
+          o.normal[1] = snorm8(sv.normal[1]);
+          o.normal[2] = snorm8(sv.normal[2]);
           o.uv0[0] = sv.uv[0];
           o.uv0[1] = sv.uv[1];
           o.colour[0] = o.colour[1] = o.colour[2] = o.colour[3] = 255;
@@ -450,47 +539,9 @@ void Showroom::update_driver_mesh(float wheel_rad) {
       }
     };
 
-    emit_skin_arms(driver_hands_mesh_);
-    emit_skin_arms(driver_wristband_mesh_);
+    emit_pass(true);
     driver_hands_count_ = count;
-
-    if (!driver_body_mesh_.vertices.empty() && driver_body_mesh_.indices.size() >= 3) {
-      float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f, min_z = 1e9f, max_z = -1e9f;
-      for (const auto& v : driver_body_mesh_.vertices) {
-        min_x = std::min(min_x, v.pos[0]); max_x = std::max(max_x, v.pos[0]);
-        min_y = std::min(min_y, v.pos[1]); max_y = std::max(max_y, v.pos[1]);
-        min_z = std::min(min_z, v.pos[2]); max_z = std::max(max_z, v.pos[2]);
-      }
-      const float mid_x = 0.5f * (min_x + max_x);
-      const float mid_z = 0.5f * (min_z + max_z);
-      const float h_src = std::max(max_y - min_y, 0.5f);
-      const float scale = std::clamp(0.82f / h_src, 0.55f, 1.35f);
-      const size_t n_idx = (driver_body_mesh_.indices.size() / 3u) * 3u;
-      for (size_t i = 0; i < n_idx; i += 3) {
-        if (count + 3 > kMaxDriverVerts) break;
-        const uint16_t tri[3] = {driver_body_mesh_.indices[i + 0], driver_body_mesh_.indices[i + 2],
-                                 driver_body_mesh_.indices[i + 1]};
-        if (tri[0] >= driver_body_mesh_.vertices.size() || tri[1] >= driver_body_mesh_.vertices.size() ||
-            tri[2] >= driver_body_mesh_.vertices.size())
-          continue;
-        for (int k = 0; k < 3; ++k) {
-          const auto& sv = driver_body_mesh_.vertices[tri[k]];
-          const float ty = std::clamp((sv.pos[1] - min_y) / h_src, 0.0f, 1.0f);
-          WorldVertex& o = dst[count++];
-          o = WorldVertex{};
-          // Mirror Z from game frame (+Z forward) into car model frame (-Z forward), adding subtle turn lean.
-          o.position[0] = chest[0] + (sv.pos[0] - mid_x) * scale + lean * ty;
-          o.position[1] = (chest[1] - 0.34f) + (sv.pos[1] - min_y) * scale;
-          o.position[2] = chest[2] - (sv.pos[2] - mid_z) * scale;
-          o.normal[0] = snorm8(sv.normal[0]);
-          o.normal[1] = snorm8(sv.normal[1]);
-          o.normal[2] = snorm8(-sv.normal[2]);
-          o.uv0[0] = sv.uv[0];
-          o.uv0[1] = sv.uv[1];
-          o.colour[0] = o.colour[1] = o.colour[2] = o.colour[3] = 255;
-        }
-      }
-    }
+    emit_pass(false);
     driver_count_ = count;
     if (driver_count_ > 0) {
       ++driver_buf_.ver;
@@ -500,7 +551,7 @@ void Showroom::update_driver_mesh(float wheel_rad) {
 
   // Improved procedural fallback driver when media/cars/Driver.zip is absent.
   auto push_ellipsoid = [&](const std::array<float, 3>& c, float rx, float ry, float rz,
-                            const std::array<uint8_t, 4>& col, int stacks = 5, int slices = 10) {
+                            const std::array<uint8_t, 4>& col, int stacks = 8, int slices = 14) {
     auto pt = [&](int st, int sl) -> std::array<float, 3> {
       const float phi = -0.5f * kPi + kPi * float(st) / float(stacks);
       const float th = 2.0f * kPi * float(sl) / float(slices);
@@ -513,11 +564,19 @@ void Showroom::update_driver_mesh(float wheel_rad) {
         const auto p10 = pt(st + 1, sl);
         const auto p11 = pt(st + 1, sl + 1);
         const auto p01 = pt(st, sl + 1);
-        if (st > 0) push_tri(p00, p10, p11, col);
-        if (st + 1 < stacks) push_tri(p00, p11, p01, col);
+        // At st == 0 (south pole), p00 == p01 so (p00, p10, p11) is the valid polar cap triangle.
+        // At st == stacks - 1 (north pole), p10 == p11 so (p00, p11, p01) is the valid polar cap triangle.
+        if (st + 1 < stacks) push_tri(p00, p10, p11, col);
+        if (st > 0) push_tri(p00, p11, p01, col);
       }
     }
   };
+
+  std::array<float, 3> head_clamped = head;
+  if (have_bounds_) {
+    const float roof_limit = bounds_max_[1] - 0.19f;
+    if (head_clamped[1] > roof_limit) head_clamped[1] = std::max(chest[1] + 0.18f, roof_limit);
+  }
 
   const std::array<uint8_t, 4> jacket{56, 66, 82, 255};
   const std::array<uint8_t, 4> cuff{38, 44, 54, 255};
@@ -536,8 +595,8 @@ void Showroom::update_driver_mesh(float wheel_rad) {
   push_limb(r_el, r_wrist, 0.038f * hand_scale, jacket);
   push_limb(l_wrist, l_hand, 0.032f * hand_scale, cuff);
   push_limb(r_wrist, r_hand, 0.032f * hand_scale, wristband);
-  push_ellipsoid(l_hand, 0.042f * hand_scale, 0.036f * hand_scale, 0.046f * hand_scale, glove, 4, 8);
-  push_ellipsoid(r_hand, 0.042f * hand_scale, 0.036f * hand_scale, 0.046f * hand_scale, glove, 4, 8);
+  push_ellipsoid(l_hand, 0.042f * hand_scale, 0.036f * hand_scale, 0.046f * hand_scale, glove, 6, 10);
+  push_ellipsoid(r_hand, 0.042f * hand_scale, 0.036f * hand_scale, 0.046f * hand_scale, glove, 6, 10);
   driver_hands_count_ = count;
 
   // Sculpted festival driver upper arms, torso, collar, neck, head, hair cap & sunglasses (exterior views).
@@ -545,10 +604,10 @@ void Showroom::update_driver_mesh(float wheel_rad) {
   push_limb(r_sh, r_el, 0.048f, jacket);
   push_box(chest, {0.19f, 0, 0}, {0, 0.21f, 0}, {0, 0, 0.105f}, jacket);
   push_box({chest[0], chest[1] + 0.16f, chest[2] - 0.02f}, {0.205f, 0, 0}, {0, 0.048f, 0}, {0, 0, 0.11f}, collar);
-  push_box({head[0], head[1] - 0.11f, head[2]}, {0.052f, 0, 0}, {0, 0.060f, 0}, {0, 0, 0.052f}, skin);
-  push_ellipsoid(head, 0.098f, 0.115f, 0.112f, skin, 5, 10);
-  push_ellipsoid({head[0], head[1] + 0.042f, head[2] + 0.015f}, 0.104f, 0.088f, 0.114f, hair, 5, 10);
-  push_ellipsoid({head[0], head[1] + 0.008f, head[2] - 0.084f}, 0.078f, 0.028f, 0.032f, shades, 3, 8);
+  push_box({head_clamped[0], head_clamped[1] - 0.11f, head_clamped[2]}, {0.052f, 0, 0}, {0, 0.060f, 0}, {0, 0, 0.052f}, skin);
+  push_ellipsoid(head_clamped, 0.098f, 0.115f, 0.112f, skin, 8, 14);
+  push_ellipsoid({head_clamped[0], head_clamped[1] + 0.042f, head_clamped[2] + 0.015f}, 0.104f, 0.088f, 0.114f, hair, 8, 14);
+  push_ellipsoid({head_clamped[0], head_clamped[1] + 0.008f, head_clamped[2] - 0.084f}, 0.078f, 0.028f, 0.032f, shades, 5, 10);
 
   driver_count_ = count;
   ++driver_buf_.ver;

@@ -416,4 +416,142 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
   return true;
 }
 
+CarLampGlowSpriteParams evaluate_car_lamp_glow_sprite(const fh1::CarbinLampPoint& pt, float resolved_radius_m,
+                                                      float head_amt, float brake_amt, float reverse_amt,
+                                                      float ind_left_amt, float ind_right_amt,
+                                                      bool car_has_dedicated_brake_points, bool is_player_car,
+                                                      float dist_to_eye_m, float night_factor) {
+  CarLampGlowSpriteParams out{};
+  const float head = std::clamp(head_amt, 0.0f, 1.0f);
+  const float brake = std::clamp(brake_amt, 0.0f, 1.0f);
+  const float rev = std::clamp(reverse_amt, 0.0f, 1.0f);
+  const float ind_l = std::clamp(ind_left_amt, 0.0f, 1.0f);
+  const float ind_r = std::clamp(ind_right_amt, 0.0f, 1.0f);
+  const float night = std::clamp(night_factor, 0.0f, 1.0f);
+
+  // Body frame: +Z forward, -Z rearward. Rear-facing points include both explicit
+  // channel 0x02 tail points and rear-facing channel 0x01 halo markers (sub=2, kind=4).
+  const bool is_rear_facing = (pt.position[2] < 0.0f) || (pt.direction[2] < -0.2f);
+  const bool has_head_bit = (pt.channel_mask & 0x01u) != 0u;
+  const bool has_tail_bit = (pt.channel_mask & 0x02u) != 0u;
+  const bool has_brake_bit = (pt.channel_mask & 0x04u) != 0u;
+  const bool has_ind_bit = (pt.channel_mask & 0x08u) != 0u;
+  const bool has_rev_bit = (pt.channel_mask & 0x10u) != 0u;
+
+  // 1. Dedicated brake glow points (0x04): strictly proportional to braking,
+  //    tight crisp housing glow rather than an oversized fuzzy ball.
+  if (has_brake_bit) {
+    if (brake > 0.01f) {
+      out.emit = true;
+      out.intensity = 2.6f * brake;
+      out.radius_m = std::clamp(resolved_radius_m * 0.24f, 0.06f, 0.16f);
+      out.view_bias_m = 0.06f;
+    }
+    return out;
+  }
+
+  // 2. Rear running tail light glow points (0x02, or rear-facing 0x01 halo markers):
+  //    - When cruising (brake == 0), running tail lights illuminate cleanly through their
+  //      emissive lens housing mesh with ZERO floating red circular flare blob on the
+  //      player car or nearby vehicles.
+  //    - On cars that omit 0x04 brake points (e.g. Viper), rear 0x01 points serve as crisp
+  //      proportional brake glows ONLY while braking > 0.
+  //    - For distant AI/traffic cars (> 42 m) at night, allow a single ultra-subtle pinpoint
+  //      so faraway tail lights stay legible down dark highways without any close-up blob.
+  if (has_tail_bit || (has_head_bit && is_rear_facing)) {
+    if (!car_has_dedicated_brake_points && brake > 0.01f) {
+      out.emit = true;
+      out.intensity = 2.6f * brake;
+      out.radius_m = std::clamp(resolved_radius_m * 0.22f, 0.06f, 0.15f);
+      out.view_bias_m = 0.06f;
+      return out;
+    }
+    const bool allow_distant_pinpoint =
+        !is_player_car && head > 0.01f && night > 0.35f && dist_to_eye_m > 42.0f &&
+        (has_tail_bit || !car_has_dedicated_brake_points);
+    if (allow_distant_pinpoint) {
+      const float t_dist = std::clamp((dist_to_eye_m - 42.0f) / 48.0f, 0.0f, 1.0f);
+      const float smooth_d = t_dist * t_dist * (3.0f - 2.0f * t_dist);
+      out.emit = true;
+      out.intensity = 0.55f * head * smooth_d * night;
+      out.radius_m = std::clamp(resolved_radius_m * 0.18f, 0.05f, 0.09f);
+      out.view_bias_m = 0.08f;
+    }
+    return out;
+  }
+
+  // 3. Front headlamp glow points (forward-facing 0x01).
+  if (has_head_bit) {
+    const float amt = (pt.side_flags & 0x80u) ? 1.0f : head;
+    if (amt > 0.01f) {
+      out.emit = true;
+      out.intensity = 5.4f * amt;
+      out.radius_m = std::clamp(resolved_radius_m * 0.26f, 0.08f, 0.38f);
+      out.view_bias_m = 0.12f;
+    }
+    return out;
+  }
+
+  // 4. Turn indicators (0x08) and reverse lamps (0x10).
+  float aux_amt = 0.0f;
+  if (has_ind_bit) {
+    if (pt.side_flags & 0x01u) aux_amt = std::max(aux_amt, ind_l);
+    if (pt.side_flags & 0x02u) aux_amt = std::max(aux_amt, ind_r);
+  }
+  if (has_rev_bit) {
+    aux_amt = std::max(aux_amt, rev);
+  }
+  if (aux_amt > 0.01f) {
+    out.emit = true;
+    out.intensity = 2.2f * aux_amt;
+    out.radius_m = std::clamp(resolved_radius_m * 0.26f, 0.06f, 0.16f);
+    out.view_bias_m = 0.06f;
+  }
+  return out;
+}
+
+ActiveWingDeployParams compute_active_wing_deploy(float deploy, float wing_height_m, float link_height_m,
+                                                  bool has_linkages, bool is_linkage_part, bool is_flap_only) {
+  ActiveWingDeployParams out{};
+  const float d = std::clamp(deploy, 0.0f, 1.0f);
+  if (d <= 0.002f) return out;
+
+  if (is_flap_only) {
+    // Independent hinged body aero flaps (e.g. 4-flap rear/front deck flaps):
+    // pivot cleanly about leading edge with minimal vertical offset.
+    out.lift_m = d * 0.004f;
+    out.pitch_rad = -d * 0.26f;
+    out.pivot_z_frac = 0.05f;
+    return out;
+  }
+
+  if (!has_linkages) {
+    // Recessed / flush decklid spoiler without separate linkage arm meshes
+    // (e.g. VW Corrado VR6, One-77, SL65): bound vertical lift strictly within
+    // the spoiler's own vertical thickness so the mount base stays seated in the
+    // decklid pockets while trailing-edge pitch delivers authentic ~4-6 cm lift.
+    const float safe_h = (wing_height_m > 0.01f) ? wing_height_m : 0.07f;
+    const float max_lift = std::clamp(safe_h * 0.40f, 0.022f, 0.042f);
+    out.lift_m = d * max_lift;
+    out.pitch_rad = -d * 0.11f;
+    out.pivot_z_frac = 0.22f;
+    return out;
+  }
+
+  // Pedestal / linkage active rear wings (Veyron, MP4-12C, LFA, SLS, Aventador):
+  // bound travel to linkage height and keep arms/pistons coupled to the blade.
+  const float safe_lh = (link_height_m > 0.02f) ? link_height_m : 0.12f;
+  const float blade_lift = d * std::clamp(safe_lh * 0.45f, 0.042f, 0.072f);
+  if (is_linkage_part) {
+    out.lift_m = blade_lift * 0.88f;
+    out.pitch_rad = -d * 0.06f;
+    out.pivot_z_frac = 0.35f;
+  } else {
+    out.lift_m = blade_lift;
+    out.pitch_rad = -d * 0.18f;
+    out.pivot_z_frac = 0.35f;
+  }
+  return out;
+}
+
 }  // namespace cars

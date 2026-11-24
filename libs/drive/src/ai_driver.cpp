@@ -235,11 +235,20 @@ RacingLine RacingLine::from_oracle(const OracleLine& line) {
 }
 
 size_t RacingLine::segment(double distance, size_t hint) const {
-  if (size() < 2) return 0;
-  size_t i = std::min(hint, size() - 2);
-  while (i > 0 && dist[i] > distance) --i;
-  while (i + 2 < size() && dist[i + 1] <= distance) ++i;
-  return i;
+  const size_t n = size();
+  if (n < 2) return 0;
+  // Fast O(1) check for sequential callers passing a valid segment hint.
+  const size_t last = n - 2;
+  if (hint <= last && double(dist[hint]) <= distance) {
+    if (hint == last || distance < double(dist[hint + 1])) return hint;
+    const size_t next = hint + 1;
+    if (next == last || distance < double(dist[next + 1])) return next;
+  }
+  // O(log N) binary search over cumulative arc length.
+  const auto it = std::upper_bound(dist.begin(), dist.end(), distance,
+                                   [](double val, float elem) { return val < double(elem); });
+  const size_t ub = size_t(it - dist.begin());
+  return ub <= 1 ? 0 : std::min(ub - 1, last);
 }
 
 void RacingLine::pose(double distance, double lane, double& px, double& py, double& pz, double& heading) const {

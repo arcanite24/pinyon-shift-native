@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <mutex>
 #include <numbers>
 #include <thread>
@@ -22,6 +23,7 @@
 #include "traffic/nav.h"
 #include "traffic_view.h"
 #include "world/collision.h"
+#include "world/vfx.h"
 
 namespace carview {
 
@@ -777,6 +779,34 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
                   dy[dy.size() / 2], dy.front(), dy.back());
     }
   }
+  if (showcase_.active()) {
+    const double probe_top_y = showcase_.pose().position[1] + 400.0;
+    constexpr double kProbeSpan = 750.0;
+    auto init_probe = [&](double px, double pz) -> std::optional<double> {
+      double best_y = -1e30;
+      bool found = false;
+      drive::Hit hit{};
+      if (ground.raycast({px, probe_top_y, pz}, {0.0, -1.0, 0.0}, kProbeSpan, hit)) {
+        const double hy = probe_top_y - hit.distance;
+        if (std::isfinite(hy)) {
+          best_y = hy;
+          found = true;
+        }
+      }
+      if (ribbon_) {
+        drive::Hit rhit{};
+        if (ribbon_->raycast({px, probe_top_y, pz}, {0.0, -1.0, 0.0}, kProbeSpan, rhit)) {
+          const double ry = probe_top_y - rhit.distance;
+          if (std::isfinite(ry) && (!found || ry > best_y)) {
+            best_y = ry;
+            found = true;
+          }
+        }
+      }
+      return found ? std::optional<double>(best_y) : std::nullopt;
+    };
+    showcase_.apply_initial_clearance(init_probe);
+  }
   return true;
 }
 
@@ -1351,7 +1381,37 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     cars_[k].ai.update(field_->progress(k) - field_->progress(n), session_->car(k).place - player_place);
   showcase_rumble_ = 0.0;
   if (showcase_.active()) {
-    showcase_.step(drive::Vehicle::kStep, session_->clock(), field_->progress(n));
+    const double near_r2 = radius > 0.0 ? radius * radius : 0.0;
+    const double probe_top_y = std::max(showcase_.pose().position[1], player.position().y) + 400.0;
+    constexpr double kProbeSpan = 750.0;
+    auto ground_probe = [&](double px, double pz) -> std::optional<double> {
+      double best_y = -1e30;
+      bool found = false;
+      const double dx = px - cx;
+      const double dz = pz - cz;
+      if (near_r2 <= 0.0 || (dx * dx + dz * dz) <= near_r2) {
+        drive::Hit hit{};
+        if (near.raycast({px, probe_top_y, pz}, {0.0, -1.0, 0.0}, kProbeSpan, hit)) {
+          const double hy = probe_top_y - hit.distance;
+          if (std::isfinite(hy)) {
+            best_y = hy;
+            found = true;
+          }
+        }
+      }
+      if (ribbon_) {
+        drive::Hit rhit{};
+        if (ribbon_->raycast({px, probe_top_y, pz}, {0.0, -1.0, 0.0}, kProbeSpan, rhit)) {
+          const double ry = probe_top_y - rhit.distance;
+          if (std::isfinite(ry) && (!found || ry > best_y)) {
+            best_y = ry;
+            found = true;
+          }
+        }
+      }
+      return found ? std::optional<double>(best_y) : std::nullopt;
+    };
+    showcase_.step(drive::Vehicle::kStep, session_->clock(), field_->progress(n), ground_probe);
     showcase_rumble_ = showcase_rumble_strength(player.position());
   }
   for (size_t i : session_->resets()) reset_car(i < n ? *cars_[i].body : player, i, near, cx, cz, radius);
@@ -1975,19 +2035,35 @@ void RaceView::build_showcase_mesh(std::vector<Showroom::ShowcaseVertex>& out) c
     add_loft({{-5.4, 0.0, 0.36, 0.36, 0.1}, {-4.7, 0.0, 0.44, 0.44, 0.9}}, 10, {255, 148, 28, 255});
   } else {
     add_fin(0.0, 0.22, 2.15, -3.2, -4.75, -4.15, -4.95, 0.11, trim);
-    // Spinning 4-blade (P-51) or 2-blade (Biplane) propeller.
+    if (!is_biplane) {
+      // Iconic P-51D Mustang red spinner cone, ventral radiator scoop, and twin Merlin V12 exhaust manifolds.
+      add_loft({{5.25, 0.0, 0.35, 0.35, 0.05}, {5.65, 0.0, 0.22, 0.22, 0.55}, {6.05, 0.0, 0.03, 0.03, 1.00}}, 10, trim);
+      add_loft({{-1.75, -0.68, 0.28, 0.22, 0.05}, {-0.55, -0.78, 0.42, 0.30, 0.50}, {0.55, -0.72, 0.36, 0.26, 0.95}},
+               8, fuse);
+      const std::array<uint8_t, 4> exhaust_metal{54, 48, 44, 255};
+      for (double sx : {-0.68, 0.68}) {
+        add_strut(sx, 0.14, 2.55, sx, 0.14, 3.65, 0.08, exhaust_metal);
+      }
+    }
+    // Spinning 4-blade (P-51) or 2-blade (Biplane) propeller with yellow safety tips.
     const int blades = is_biplane ? 2 : 4;
+    const std::array<uint8_t, 4> prop{36, 38, 44, 255};
+    const std::array<uint8_t, 4> prop_tip{236, 198, 42, 255};
     for (int b = 0; b < blades; ++b) {
       const double a = pose.rotor_angle + b * (2.0 * kPi / double(blades));
-      const double bx = std::cos(a) * 1.90, by = std::sin(a) * 1.90;
+      const double bx = std::cos(a) * 1.92, by = std::sin(a) * 1.92;
+      const double mx = bx * 0.84, my = by * 0.84;
       const double px = -std::sin(a) * 0.13, py = std::cos(a) * 0.13;
       const auto p0 = xform_pt(px, py, 5.55);
-      const auto p1 = xform_pt(bx + px * 0.7, by + py * 0.7, 5.55);
-      const auto p2 = xform_pt(bx - px * 0.7, by - py * 0.7, 5.55);
+      const auto p1 = xform_pt(mx + px * 0.78, my + py * 0.78, 5.55);
+      const auto p2 = xform_pt(mx - px * 0.78, my - py * 0.78, 5.55);
       const auto p3 = xform_pt(-px, -py, 5.55);
-      const std::array<uint8_t, 4> prop{36, 38, 44, 255};
-      push_flat_tri(p0, {0.05f, 0.1f}, p1, {0.95f, 0.1f}, p2, {0.95f, 0.9f}, prop);
-      push_flat_tri(p0, {0.05f, 0.1f}, p2, {0.95f, 0.9f}, p3, {0.05f, 0.9f}, prop);
+      push_flat_tri(p0, {0.05f, 0.1f}, p1, {0.80f, 0.1f}, p2, {0.80f, 0.9f}, prop);
+      push_flat_tri(p0, {0.05f, 0.1f}, p2, {0.80f, 0.9f}, p3, {0.05f, 0.9f}, prop);
+      const auto t1 = xform_pt(bx + px * 0.65, by + py * 0.65, 5.55);
+      const auto t2 = xform_pt(bx - px * 0.65, by - py * 0.65, 5.55);
+      push_flat_tri(p1, {0.80f, 0.1f}, t1, {0.95f, 0.1f}, t2, {0.95f, 0.9f}, prop_tip);
+      push_flat_tri(p1, {0.80f, 0.1f}, t2, {0.95f, 0.9f}, p2, {0.80f, 0.9f}, prop_tip);
     }
   }
 }
@@ -1997,6 +2073,110 @@ void RaceView::append_showcase_mesh(std::vector<world::DebrisVertex>& out) const
   build_showcase_mesh(sv);
   out.reserve(out.size() + sv.size());
   for (const auto& v : sv) out.push_back({v.pos, v.normal, v.rgba});
+}
+
+void RaceView::emit_showcase_vfx(world::ParticleSystem& particles, const world::ParticleLibrary& vfx_lib,
+                                 const drive::Vec3& player_pos, float dt) const {
+  if (!showcase_.active() || dt <= 0.0f) return;
+  const float step_dt = std::clamp(dt, 0.0f, 0.05f);
+  const auto& spec = showcase_.spec();
+  const auto& pose = showcase_.pose();
+  const double dx = pose.position[0] - player_pos.x;
+  const double dy = pose.position[1] - player_pos.y;
+  const double dz = pose.position[2] - player_pos.z;
+  const double dist_m = std::sqrt(dx * dx + dy * dy + dz * dz);
+  if (!std::isfinite(dist_m) || dist_m > 650.0) return;
+
+  const float dist_scale = float(std::clamp(1.0 - (dist_m - 360.0) / 290.0, 0.15, 1.0));
+  const auto anchors = race::compute_showcase_vfx_anchors(spec, pose);
+
+  auto pick_effect = [&](std::initializer_list<const char*> cands) -> std::string_view {
+    for (const char* name : cands) {
+      if (vfx_lib.find_effect(name)) return name;
+    }
+    return {};
+  };
+
+  const std::array<float, 3> fwd{float(anchors.forward[0]), float(anchors.forward[1]), float(anchors.forward[2])};
+  const std::array<float, 3> right{float(anchors.right[0]), float(anchors.right[1]), float(anchors.right[2])};
+  const std::array<float, 3> up{float(anchors.up[0]), float(anchors.up[1]), float(anchors.up[2])};
+  const std::array<float, 3> vel_exhaust{float(anchors.velocity[0] * 0.28), float(anchors.velocity[1] * 0.28),
+                                         float(anchors.velocity[2] * 0.28)};
+  const std::array<float, 3> vel_trail{float(anchors.velocity[0] * 0.16), float(anchors.velocity[1] * 0.16),
+                                       float(anchors.velocity[2] * 0.16)};
+
+  // 1. Twin Merlin V12 / turbine engine exhaust puffs along the fuselage flanks.
+  const std::string_view exhaust_eff = pick_effect({"smoke", "amb_housesmoke", "amb_handflare_smoke", "smokecollision"});
+  if (!exhaust_eff.empty() && anchors.exhaust_count > 0) {
+    if (spec.kind == race::ShowcaseAircraftKind::kHotAirBalloon) {
+      const std::array<float, 3> epos{float(anchors.exhaust_pos[0][0]), float(anchors.exhaust_pos[0][1]),
+                                      float(anchors.exhaust_pos[0][2])};
+      particles.emit_continuous(exhaust_eff, epos, {0.0f, 1.0f, 0.0f}, {0.0f, 1.2f, 0.0f}, step_dt,
+                                0.22f * dist_scale, 0x8A0100ull);
+    } else {
+      const float speed_t = float(std::clamp(pose.speed_mps / 55.0, 0.40, 1.15));
+      const float climb_boost = float(std::clamp(pose.pitch * 1.4, 0.0, 0.35));
+      const float ex_inten = std::clamp((0.34f * speed_t + climb_boost * 0.24f) * dist_scale, 0.12f, 0.60f);
+      for (int i = 0; i < anchors.exhaust_count; ++i) {
+        const float side = (anchors.exhaust_count == 2) ? (i == 0 ? -1.0f : 1.0f) : 0.0f;
+        const std::array<float, 3> epos{float(anchors.exhaust_pos[size_t(i)][0]),
+                                        float(anchors.exhaust_pos[size_t(i)][1]),
+                                        float(anchors.exhaust_pos[size_t(i)][2])};
+        const std::array<float, 3> edir{-fwd[0] * 0.92f + right[0] * (side * 0.24f) - up[0] * 0.08f,
+                                        -fwd[1] * 0.92f + right[1] * (side * 0.24f) - up[1] * 0.08f,
+                                        -fwd[2] * 0.92f + right[2] * (side * 0.24f) - up[2] * 0.08f};
+        particles.emit_continuous(exhaust_eff, epos, edir, vel_exhaust, step_dt, ex_inten, 0x8A0100ull + uint64_t(i));
+      }
+    }
+  }
+
+  // 2. Subtle translucent wingtip condensation / vortex trails during banked turns & high-speed pull-ups.
+  if (anchors.wingtip_count == 2 && pose.speed_mps > 24.0) {
+    const std::string_view vortex_eff = pick_effect({"smokerim0", "smoke", "amb_handflare_smoke"});
+    if (!vortex_eff.empty()) {
+      const float bank_t = float(std::clamp((std::fabs(pose.roll) - 0.10) / 0.48, 0.0, 1.0));
+      const float pull_t = float(std::clamp((pose.pitch - 0.06) / 0.30, 0.0, 1.0));
+      const float spd_t = float(std::clamp((pose.speed_mps - 24.0) / 36.0, 0.0, 1.0));
+      const float vortex_inten = std::clamp((0.14f + 0.34f * std::max(bank_t, pull_t)) * spd_t * dist_scale, 0.0f, 0.44f);
+      if (vortex_inten > 0.06f) {
+        const std::array<float, 3> vdir{-fwd[0], -fwd[1], -fwd[2]};
+        for (int i = 0; i < 2; ++i) {
+          const std::array<float, 3> wpos{float(anchors.wingtip_pos[size_t(i)][0]),
+                                          float(anchors.wingtip_pos[size_t(i)][1]),
+                                          float(anchors.wingtip_pos[size_t(i)][2])};
+          particles.emit_continuous(vortex_eff, wpos, vdir, vel_trail, step_dt, vortex_inten, 0x8A0200ull + uint64_t(i));
+        }
+      }
+    }
+  }
+
+  // 3. Low-altitude prop-wash / rotor-wash dust swirl when skimming within ~22 m of ground near the player.
+  if (spec.kind != race::ShowcaseAircraftKind::kHotAirBalloon && anchors.agl_m >= 0.5 && anchors.agl_m <= 22.0 &&
+      dist_m < 280.0) {
+    const std::string_view dust_eff = pick_effect({"dust1", "dirt1", "smoke"});
+    if (!dust_eff.empty()) {
+      const float wash_t = float(std::clamp((22.0 - anchors.agl_m) / 10.0, 0.0, 1.0));
+      const float near_t = float(std::clamp(1.0 - dist_m / 280.0, 0.0, 1.0));
+      const float wash_inten = std::clamp(wash_t * (0.38f + 0.42f * near_t), 0.0f, 0.78f);
+      if (wash_inten > 0.05f) {
+        const double swirl = pose.rotor_angle * 0.25;
+        const float radius = float(2.6 + 2.0 * (1.0 - double(wash_t)));
+        const float cs = float(std::cos(swirl));
+        const float sn = float(std::sin(swirl));
+        const float gy = float(anchors.ground_wash_pos[1]) + 0.35f;
+        for (int i = 0; i < 2; ++i) {
+          const float sgn = (i == 0) ? 1.0f : -1.0f;
+          const float ox = sgn * cs;
+          const float oz = sgn * sn;
+          const std::array<float, 3> gpos{float(anchors.ground_wash_pos[0]) + ox * radius, gy,
+                                          float(anchors.ground_wash_pos[2]) + oz * radius};
+          const std::array<float, 3> gdir{ox * 0.68f - fwd[0] * 0.35f, 0.52f, oz * 0.68f - fwd[2] * 0.35f};
+          particles.emit_continuous(dust_eff, gpos, gdir, {ox * 3.5f, 1.2f, oz * 3.5f}, step_dt, wash_inten,
+                                    0x8A0300ull + uint64_t(i));
+        }
+      }
+    }
+  }
 }
 
 void RaceView::opponent_tags(std::vector<OpponentTag>& out) const {

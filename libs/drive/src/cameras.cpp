@@ -420,9 +420,17 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
   const auto& layers = tuning_.layers[size_t(mode_)];
   if (layer_state_.size() != layers.size()) layer_state_.assign(layers.size(), {});
   LayerOut out;
+  LayerOut imp_out;
   for (size_t i = 0; i < layers.size(); ++i) {
     const CameraLayer& l = layers[i];
     double x = 1.0;
+    const bool is_collision_input =
+        l.input == CameraLayer::Input::kWorldCollision ||
+        l.input == CameraLayer::Input::kWorldCollisionLongitudinal ||
+        l.input == CameraLayer::Input::kWorldCollisionLateral ||
+        l.input == CameraLayer::Input::kCarCollision ||
+        l.input == CameraLayer::Input::kCarCollisionLongitudinal ||
+        l.input == CameraLayer::Input::kCarCollisionLateral;
     switch (l.input) {
       case CameraLayer::Input::kSpeedMph: x = std::fabs(in.speed) * kMph; break;
       case CameraLayer::Input::kSpeed: x = std::clamp(std::fabs(in.speed) * kMph / 200.0, 0.0, 1.0); break;
@@ -473,6 +481,20 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
       case CameraLayer::Input::kBoost: x = in.boost_norm; break;
       case CameraLayer::Input::kAirborne: x = 1.0 - std::clamp(in.contact, 0.0, 1.0); break;
     }
+    if (is_collision_input) {
+      // Distinguish light glancing / smashable fence hits from heavy solid-wall crashes:
+      // deadzone micro-scrapes and smoothly compress light-to-medium contacts.
+      const double ax = std::fabs(x);
+      const double sgn = x < 0.0 ? -1.0 : 1.0;
+      if (ax <= 2.5) {
+        x = 0.0;
+      } else {
+        const double excess = ax - 2.5;
+        const double light_scale = std::clamp(excess / 18.0, 0.0, 1.0);
+        const double shaped = excess * (0.18 + 0.82 * light_scale);
+        x = sgn * std::min(shaped, 60.0);
+      }
+    }
     x = std::clamp(x, l.clamp_min, l.clamp_max);
     LayerState& st = layer_state_[i];
     if (l.take_derivative) {
@@ -514,65 +536,101 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
         st.v = 0;
         st.impulse_timer = -1.0;
         st.pending_impulse = 0.0;
+        st.impulse_cooldown = 0.0;
+        st.prev_impulse_mag = 0.0;
       } else {
-        if (std::fabs(x) >= l.impulse_cutoff && std::fabs(s) > 1e-9) {
+        if (st.impulse_cooldown > 0.0) st.impulse_cooldown = std::max(0.0, st.impulse_cooldown - dt);
+        const double mag = std::fabs(x);
+        const double cutoff = std::max(l.impulse_cutoff, is_collision_input ? 0.5 : 0.0);
+        // Rising-edge + refractory cooldown (0.22 s) prevents multi-frame fence/wall
+        // scrapes at 120 FPS from stacking 15x-20x impulses into violent camera whips.
+        const bool can_fire =
+            (mag >= cutoff && std::fabs(s) > 1e-9) &&
+            (st.impulse_cooldown <= 0.0 || mag > st.prev_impulse_mag * 1.45);
+        if (can_fire) {
+          const double clamped_s = std::clamp(s, -3.5, 3.5);
           if (l.impulse_delay > 0.0) {
-            st.pending_impulse = s;
-            st.impulse_timer = l.impulse_delay;
+            if (st.impulse_timer < 0.0) {
+              st.pending_impulse = clamped_s;
+              st.impulse_timer = l.impulse_delay;
+            }
           } else {
-            st.v += s;
+            st.v = std::clamp(st.v + clamped_s, -4.5, 4.5);
           }
+          st.impulse_cooldown = 0.22;
+          st.prev_impulse_mag = mag;
+        } else if (mag < cutoff * 0.5) {
+          st.prev_impulse_mag = 0.0;
         }
         if (st.impulse_timer >= 0.0) {
           st.impulse_timer -= dt;
           if (st.impulse_timer <= 0.0) {
-            st.v += st.pending_impulse;
+            st.v = std::clamp(st.v + st.pending_impulse, -4.5, 4.5);
             st.pending_impulse = 0.0;
             st.impulse_timer = -1.0;
           }
         }
         const double k = l.spring_k > 0 ? l.spring_k : 100.0;
-        const double d_pct = l.spring_d_percent > 0 ? l.spring_d_percent : 0.7;
+        // Enforce crisp retail-FH1 damped spring recovery (damping ratio >= 0.75).
+        const double d_pct = std::max(0.75, l.spring_d_percent > 0 ? l.spring_d_percent : 0.80);
         spring_implicit(st.x, st.v, 0.0, k, d_pct * 2.0 * std::sqrt(k), dt);
+        st.x = std::clamp(st.x, -1.5, 1.5);
       }
     } else if (l.sprung && st.started) {
       // Damping SpringDPercent of critical (2 sqrt K): the spec's reading.
-      spring_implicit(st.x, st.v, s, l.spring_k, l.spring_d_percent * 2 * std::sqrt(l.spring_k), dt);
+      const double d_pct = is_collision_input ? std::max(0.75, l.spring_d_percent) : l.spring_d_percent;
+      spring_implicit(st.x, st.v, s, l.spring_k, d_pct * 2 * std::sqrt(l.spring_k), dt);
     } else {
       st.x = s;
       st.v = 0;
     }
     st.started = true;
     const double v = st.x;
+    LayerOut& target_out = (is_impulse || is_collision_input) ? imp_out : out;
     std::array<double, 3>* xyz = nullptr;
     switch (l.output) {
       case CameraLayer::Output::kCarXYZ:
-      case CameraLayer::Output::kCarXYZImpulse: xyz = &out.car_xyz; break;
+      case CameraLayer::Output::kCarXYZImpulse: xyz = &target_out.car_xyz; break;
       case CameraLayer::Output::kCarYPR:
-      case CameraLayer::Output::kCarYPRImpulse: xyz = &out.car_ypr; break;
+      case CameraLayer::Output::kCarYPRImpulse: xyz = &target_out.car_ypr; break;
       case CameraLayer::Output::kCameraXYZ:
-      case CameraLayer::Output::kCameraXYZImpulse: xyz = &out.camera_xyz; break;
+      case CameraLayer::Output::kCameraXYZImpulse: xyz = &target_out.camera_xyz; break;
       case CameraLayer::Output::kCameraYPR:
-      case CameraLayer::Output::kCameraYPRImpulse: xyz = &out.camera_ypr; break;
-      case CameraLayer::Output::kTargetXYZ: xyz = &out.target_xyz; break;
+      case CameraLayer::Output::kCameraYPRImpulse: xyz = &target_out.camera_ypr; break;
+      case CameraLayer::Output::kTargetXYZ: xyz = &target_out.target_xyz; break;
       case CameraLayer::Output::kFov:
-      case CameraLayer::Output::kFovImpulse: out.fov += l.param[0] * v; break;
+      case CameraLayer::Output::kFovImpulse: target_out.fov += l.param[0] * v; break;
       case CameraLayer::Output::kSteeringWheel: out.steering_wheel += l.param[0] * v * kDeg; break;
     }
     if (xyz)
       for (int k = 0; k < 3; ++k) (*xyz)[size_t(k)] += l.param[size_t(k)] * v;
   }
+  // Clamp accumulated collision & impulse offsets so minor fence/barrier hits produce
+  // crisp tactile feedback instead of wild camera swings.
+  const bool is_chase = (mode_ == CameraMode::kFollowLow || mode_ == CameraMode::kFollowHigh);
+  const double max_pos_kick = is_chase ? 0.22 : 0.14;
+  const double max_ang_kick = is_chase ? 3.2 : 4.2;
+  for (size_t k = 0; k < 3; ++k) {
+    out.car_xyz[k] += std::clamp(imp_out.car_xyz[k], -max_pos_kick, max_pos_kick);
+    out.camera_xyz[k] += std::clamp(imp_out.camera_xyz[k], -max_pos_kick, max_pos_kick);
+    out.target_xyz[k] += std::clamp(imp_out.target_xyz[k], -max_pos_kick, max_pos_kick);
+    out.car_ypr[k] += std::clamp(imp_out.car_ypr[k], -max_ang_kick, max_ang_kick);
+    out.camera_ypr[k] += std::clamp(imp_out.camera_ypr[k], -max_ang_kick, max_ang_kick);
+  }
+  out.fov += std::clamp(imp_out.fov, -3.0, 3.0);
   return out;
 }
 
 void DriveCamera::start(const CameraInput& in) {
   started_ = true;
+  has_started_once_ = true;
   layer_state_.clear();
   imm_g_long_ = 0;
   imm_g_lat_ = 0;
   imm_prev_g_long_ = in.g_longitudinal;
   imm_jolt_ = 0;
   imm_jolt_v_ = 0;
+  yaw_rate_smooth_ = 0;
   look_ = look_target_;
   if (mode_ == CameraMode::kFollowLow || mode_ == CameraMode::kFollowHigh) {
     const int i = mode_ == CameraMode::kFollowLow ? 0 : 1;
@@ -626,11 +684,13 @@ DriveCamera::LayerOut DriveCamera::step_immersive(double dt, const CameraInput& 
     const double gla_raw = std::clamp(in.g_lateral, -2.5, 2.5);
     imm_g_long_ += (gl_raw - imm_g_long_) * a;
     imm_g_lat_ += (gla_raw - imm_g_lat_) * a;
-    // Throttle/brake onset jolt from longitudinal G derivative.
-    const double dg = dt > 1e-5 ? std::clamp((gl_raw - imm_prev_g_long_) / dt, -25.0, 25.0) : 0.0;
+    // Throttle/brake onset jolt from longitudinal G derivative (clamped so sudden
+    // fence/barrier velocity spikes never whip the immersive camera).
+    const double dg = dt > 1e-5 ? std::clamp((gl_raw - imm_prev_g_long_) / dt, -18.0, 18.0) : 0.0;
     imm_prev_g_long_ = gl_raw;
-    if (std::fabs(dg) > 2.0) imm_jolt_v_ += std::clamp(dg * 0.015, -0.4, 0.4);
-    spring_implicit(imm_jolt_, imm_jolt_v_, 0.0, 65.0, 2.0 * 0.65 * std::sqrt(65.0), dt);
+    if (std::fabs(dg) > 2.5) imm_jolt_v_ = std::clamp(imm_jolt_v_ + std::clamp(dg * 0.010, -0.25, 0.25), -0.6, 0.6);
+    spring_implicit(imm_jolt_, imm_jolt_v_, 0.0, 65.0, 2.0 * 0.78 * std::sqrt(65.0), dt);
+    imm_jolt_ = std::clamp(imm_jolt_, -0.35, 0.35);
     imm_phase_ += dt;
   }
 
@@ -761,9 +821,14 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
   if (dt >= kSettle) {
     theta_ = in.heading;
     omega_ = 0;
+    yaw_rate_smooth_ = 0;
   } else {
+    // Smooth and bound car yaw-rate spikes so minor fence/barrier clips do not
+    // violently whip the chase camera yaw spring.
+    const double yr_clamped = std::clamp(in.yaw_rate, -2.2, 2.2);
+    yaw_rate_smooth_ += (yr_clamped - yaw_rate_smooth_) * (1.0 - std::exp(-dt * 16.0));
     const double e = std::remainder(in.heading - theta_, 2 * kPi);
-    omega_ += dt * in.contact * (t.yaw_k * stiff * e - t.yaw_d * stiff_d * (omega_ - t.yaw_car_damp * in.yaw_rate));
+    omega_ += dt * in.contact * (t.yaw_k * stiff * e - t.yaw_d * stiff_d * (omega_ - t.yaw_car_damp * yaw_rate_smooth_));
     omega_ = std::clamp(omega_, -t.yaw_max_speed, t.yaw_max_speed);
     theta_ = std::remainder(theta_ + dt * omega_, 2 * kPi);
   }
@@ -794,14 +859,16 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
     return std::clamp(-(up_car[0] * dx + up_car[2] * dz) / up_car[1], -kSlopeLimit * r, kSlopeLimit * r);
   };
   const double slope = slope_at(yaw);
-  // Swinging round on a slope moves h at once by the term's change.
-  if (dt < kSettle && sloped) h_ += slope - slope_at(old_yaw);
+  // Swinging round on a slope moves h smoothly (clamped per frame so brief fence/curb
+  // chassis tilts never jerk camera height by metres).
+  if (dt < kSettle && sloped) h_ += std::clamp(slope - slope_at(old_yaw), -0.25, 0.25);
   const double h_target = car_.box_max[1] - car_.com[1] + kEyeLift[i] + slope;
   if (dt >= kSettle || t.height_k <= 0) {
     h_ = h_target;
     h_rate_ = 0;
   } else {
     h_rate_ += dt * (t.height_k * stiff * (h_target - h_) - t.height_d * stiff_d * h_rate_);
+    h_rate_ = std::clamp(h_rate_, -4.5, 4.5);
     h_ += dt * h_rate_;
   }
   eye[1] = com[1] + height + c_ + h_;

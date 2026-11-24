@@ -1172,6 +1172,12 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const Vec3 probe = hard - down * p.probe_height;
     double compression = -droop_[i];
     w.contact = up.y > 0.2 && ground.raycast(probe, down, reach, hit);
+    // Reject steep wall/fence/bank triangles (normal.y < 0.65, > ~49.5 deg) from
+    // wheel suspension contact so brushing a barrier or bank never triggers a huge
+    // probe-height compression spike and catapults the car airborne.
+    if (w.contact && hit.normal.y < 0.65) {
+      w.contact = false;
+    }
     w.surface = w.contact ? hit.surface : -1;
     if (w.contact) {
       compression = p.rest_length - (hit.distance - p.probe_height - radius);
@@ -1241,8 +1247,15 @@ void Vehicle::substep(double dt, const Ground& ground) {
       double damper = rate[i] * (rate[i] > 0 ? p.bump_rate[a] : p.rebound_rate[a]) * susp_s;
       damper = std::clamp(damper, -p.rebound_damper_clamp[a], p.damper_clamp[a]);
       load = preload_[i] + p.spring_rate[a] * susp_s * compression + damper;
-      if (compression > p.bump_travel[a])
-        load += p.bumpstop_rate[a] * (compression - p.bump_travel[a]) + p.bumpstop_damping[a] * std::max(0.0, rate[i]);
+      if (compression > p.bump_travel[a]) {
+        const double over_comp = std::min(compression - p.bump_travel[a], 0.14);
+        const double bs_damp = std::min(p.bumpstop_damping[a] * std::max(0.0, rate[i]), p.damper_clamp[a]);
+        load += p.bumpstop_rate[a] * over_comp + bs_damp;
+      }
+      // Cap single-wheel vertical load to realistic hard-landing peak so a curb/lip
+      // compression jump cannot inject extreme upward impulse in a single substep.
+      const double max_wheel_load = std::max(4.0 * preload_[i], 1.1 * p.mass * p.gravity);
+      load = std::min(load, max_wheel_load);
     }
     w.load = load;
     w.centre = {p.wheel_centres[i].x, p.wheel_centres[i].y + std::min(compression, p.bump_travel[a]),
@@ -1763,6 +1776,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
   // point is scaled so that the eight corners carry what they did when they
   // were the only contacts.
   body_force_ = 0;
+  double body_fy_pos = 0.0;
+  bool had_wall_contact = false;
   constexpr int kPoints = 26;
   constexpr double kShare = 8.0 / kPoints;
   const Vec3 centre_local{0, p.sill_height + 0.5 * p.size.y, p.centre_of_mass.z};
@@ -1779,10 +1794,19 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (!ground.raycast(centre, dir, reach, hit)) continue;
     // The normal faces against the ray: out of the surface, towards the box.
     const Vec3 n = dot(hit.normal, dir) > 0 ? hit.normal * -1.0 : hit.normal;
-    const double depth = (reach - hit.distance) * -dot(dir, n);
+    const double depth = std::max(0.0, (reach - hit.distance) * -dot(dir, n));
     const Vec3 v = vel_ + cross(ang_, point - pos_);
-    const double vn = dot(v, n);
     const bool is_wall = std::fabs(n.y) < 0.65;
+    // Steep side-wall / barrier / fence / bank contacts deflect strictly horizontally
+    // (n_eff.y = 0) so angled guardrail or embankment clips never convert horizontal
+    // speed into an upward launch impulse.
+    Vec3 n_eff = n;
+    if (is_wall) {
+      const double nxz = std::hypot(n.x, n.z);
+      if (nxz <= 1e-4) continue;
+      n_eff = {n.x / nxz, 0.0, n.z / nxz};
+    }
+    const double vn = dot(v, n_eff);
     const double damp_scale = body_contact_damping_scale(hit, n);
     // Wall/barrier/fence contacts are heavily damped (inelastic) on rebound so
     // the car glides/absorbs energy cleanly instead of bouncing or launching
@@ -1790,18 +1814,27 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double spring_term = (is_wall && vn > 0.0) ? 0.35 * p.body_stiffness * depth : p.body_stiffness * depth;
     const double eff_damp = is_wall ? std::max(p.body_damping * damp_scale, 22.0) : p.body_damping * damp_scale;
     double fn = kShare * std::max(0.0, p.mass * (spring_term - eff_damp * vn));
-    if (is_wall) fn = std::min(fn, kShare * p.mass * 180.0);
+    fn = std::min(fn, kShare * p.mass * (is_wall ? 180.0 : 120.0));
     if (fn <= 0) continue;
-    Vec3 f = n * fn;
-    if (is_wall && f.y > 0.0) {
-      f.y = std::min(f.y, kShare * p.mass * p.gravity * 1.5);
-    }
-    const Vec3 vt = v - n * vn;
+    Vec3 f = n_eff * fn;
+    Vec3 vt = v - n_eff * vn;
+    if (is_wall) vt.y = 0.0;  // keep wall-glide friction purely horizontal
     const double vt_len = length(vt);
     if (vt_len > 1e-6) {
       const double mu = body_contact_friction(hit, n, p.body_friction);
       const double ft = std::min(mu * fn, p.mass / kPoints * vt_len / dt);
       f = f - vt * (ft / vt_len);
+    }
+    if (is_wall) {
+      if (f.y > 0.0) f.y = 0.0;
+      had_wall_contact = true;
+    } else if (f.y > 0.0) {
+      // Clamp cumulative upward body-contact force across all 26 points so low
+      // curbs or hard bottoming-out never launch the car skyward.
+      const double max_body_fy = p.mass * p.gravity * 3.0;
+      const double allow = std::max(0.0, max_body_fy - body_fy_pos);
+      if (f.y > allow) f.y = allow;
+      body_fy_pos += f.y;
     }
     force = force + f;
     Vec3 t_contact = cross(point - pos_, f);
@@ -1816,7 +1849,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
     }
     torque = torque + t_contact;
     body_force_ += length(f);
-    if (fn > strongest_.force) strongest_ = {centre + dir * hit.distance, n, fn, hit.surface, hit.triangle};
+    if (fn > strongest_.force) strongest_ = {centre + dir * hit.distance, n_eff, fn, hit.surface, hit.triangle};
   }
 
   // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): 3D body drag, lateral drag
@@ -1911,7 +1944,18 @@ void Vehicle::substep(double dt, const Ground& ground) {
   lateral_g_ = rotate_inverse(rot_, force * (1.0 / p.mass)).x / std::max(1.0, p.gravity);
 
   // Integrate (semi-implicit Euler).
+  const double prev_vy = vel_.y;
   vel_ = vel_ + force * (dt / p.mass);
+  // Clamp single-substep upward velocity delta from wall/obstacle body contacts
+  // so fence, curb, or steep-bank bumps never catapult the car airborne while
+  // preserving natural jump trajectories over real ramps/crests and landing arrest.
+  if (had_wall_contact) {
+    const double cap_vy = std::max(prev_vy, 0.0);
+    if (vel_.y > cap_vy) vel_.y = cap_vy;
+  } else if (body_force_ > 0.0) {
+    const double max_up_vy = std::max(prev_vy, 0.0) + 0.12;
+    if (vel_.y > max_up_vy) vel_.y = max_up_vy;
+  }
   const Vec3 tl = rotate_inverse(rot_, torque);
   Vec3 wl = rotate_inverse(rot_, ang_);
   const Vec3 iw{inertia_.x * wl.x, inertia_.y * wl.y, inertia_.z * wl.z};

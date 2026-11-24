@@ -493,12 +493,30 @@ void DriveSession::init_session() {
       host.showroom.set_wind(app.tod_system.post_config.wind_speed, app.tod_system.post_config.wind_amplitude);
       if (app.have_saved && app.saved.has_controls) live_controls = app.saved.controls;
       {
+        const auto raw_tokens = read_settings(settings_path(), nullptr);
         SettingsPage init_settings;
-        init_settings.load(read_settings(settings_path(), nullptr));
+        init_settings.load(raw_tokens);
         const LiveSettings init_ls = init_settings.live_settings();
-        if (init_settings.has_explicit_control_tokens() || !app.have_saved || !app.saved.has_controls)
+        const bool has_tcs_token = std::find(raw_tokens.begin(), raw_tokens.end(), "--assist-tcs") != raw_tokens.end();
+        const bool has_dmg_token = std::find(raw_tokens.begin(), raw_tokens.end(), "--damage") != raw_tokens.end();
+        const bool is_fresh_profile = !app.have_saved || !app.saved.has_controls;
+        if (save_due) {
+          // New Campaign (start_new_career): initialize exact retail FH1 Medium defaults
+          // (ABS ON, TCS ON, STM ON, Automatic, Normal steering, Rewind ON, Full line, Cosmetic damage).
           live_controls = init_ls.controls;
-        car_damage.mode = drive::DamageMode(init_ls.damage_mode);
+          live_controls.assists = drive::AssistSettings::retail_defaults();
+          car_damage.mode = drive::DamageMode::kCosmetic;
+        } else {
+          if (init_settings.has_explicit_control_tokens() || is_fresh_profile) {
+            live_controls = init_ls.controls;
+            if (!has_tcs_token) {
+              live_controls.assists.traction_control =
+                  is_fresh_profile ? true : app.saved.controls.assists.traction_control;
+            }
+          }
+          car_damage.mode = (!has_dmg_token && is_fresh_profile) ? drive::DamageMode::kCosmetic
+                                                                 : drive::DamageMode(init_ls.damage_mode);
+        }
         live_hud_speedo_mode = init_ls.hud_speedo_mode;
         live_minimap_mode = init_ls.minimap_mode;
       }
@@ -640,6 +658,8 @@ void DriveSession::init_session() {
       }
       grid_menu_open = app.race != nullptr && !app.headless && !app.bench && !app.race_options.autopilot;
       app.campaign_owns_post_race = false;
+      reset_ux = ResetToRoadState{};
+      reset_ux.seen_rig_restarts = rig.restart_count();
 }
 
 void DriveSession::run(bool& session_again) {

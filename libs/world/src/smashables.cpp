@@ -1906,17 +1906,19 @@ void SmashableWorld::step_barn_doors(drive::Vehicle& vehicle) {
         nz_l = (lz >= 0.0) ? 1.0 : -1.0;
         pen = car_r;
       }
-      const drive::Vec3 n_world{
-          nx_l * door.x_axis[0] + nz_l * door.z_axis[0],
-          0.0,
-          nx_l * door.x_axis[2] + nz_l * door.z_axis[2],
-      };
+      double nx_w = nx_l * door.x_axis[0] + nz_l * door.z_axis[0];
+      double nz_w = nx_l * door.x_axis[2] + nz_l * door.z_axis[2];
+      const double nw_len = std::hypot(nx_w, nz_w);
+      if (nw_len <= 1e-6) return;
+      nx_w /= nw_len;
+      nz_w /= nw_len;
+      const drive::Vec3 n_world{nx_w, 0.0, nz_w};
       vehicle.translate(n_world * (pen + 0.02));
       const drive::Vec3 v = vehicle.velocity();
       const double vn = v.x * n_world.x + v.z * n_world.z;
       if (vn < 0.0) {
-        const double j = -(1.25 * vn) * vehicle.params().mass;
-        vehicle.apply_impulse(cpos, n_world * j, 0.15);
+        const double j = -(1.15 * vn) * vehicle.params().mass;
+        vehicle.apply_impulse(vehicle.centre_of_mass(), n_world * j, 0.04);
       }
     };
 
@@ -2167,11 +2169,21 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
                 : nullptr;
 
         int spawned = 0;
-        const float impulse_scale = std::clamp(car_speed * 0.95f, 4.0f, 28.0f);
-        const float lift_scale = std::clamp(1.2f + car_speed * 0.14f, 1.4f, 5.2f);
-        const float spin_scale = std::clamp(3.0f + car_speed * 0.35f, 3.5f, 12.0f);
+        // Keep forward debris carry below vehicle speed and deflect laterally outward
+        // away from the car's centerline so knocked signs/poles tumble cleanly to the
+        // roadside instead of pacing the windshield or drifting into the chase camera lens.
+        const float impulse_scale = std::clamp(car_speed * 0.62f, 3.0f, 19.0f);
+        const float lift_scale = std::clamp(1.1f + car_speed * 0.09f, 1.3f, 3.6f);
+        const float spin_scale = std::clamp(4.5f + car_speed * 0.32f, 5.0f, 13.0f);
         const float dir_x = (car_speed > 0.5f) ? float(cvel.x) / car_speed : float(cfwd.x);
         const float dir_z = (car_speed > 0.5f) ? float(cvel.z) / car_speed : float(cfwd.z);
+        const float side_sign = (across >= 0.0f) ? 1.0f : -1.0f;
+        const float cright_x = float(cright.x);
+        const float cright_z = float(cright.z);
+        // Horizontal tumble axis perpendicular to impact velocity (pitches sign top away).
+        const float tumble_ax = -dir_z;
+        const float tumble_az = dir_x;
+        const float base_lat_kick = (is_sign_prop || is_pole_prop) ? 4.8f : 2.6f;
 
         auto setup_real_piece = [&](DynamicBody& b, int32_t rm, const PropPhysicsDef& piece_def) -> bool {
           if (rm < 0 || !impl_) return false;
@@ -2202,18 +2214,25 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
               std::max(0.025f, 0.5f * (dm.box_max[2] - dm.box_min[2])),
           };
           b.mass_kg = piece_def.mass_kg();
-          // Radial scatter outward from prop origin plus forward carry from the striking vehicle.
+          // Radial scatter + deterministic outward lateral deflection away from the car corridor.
           const float rx = float(com_world.x);
           const float rz = float(com_world.z);
           const float rlen = std::sqrt(rx * rx + rz * rz);
-          const float out_x = (rlen > 0.05f) ? (rx / rlen) * (1.2f + 1.4f * rand01()) : rand_sym() * 1.8f;
-          const float out_z = (rlen > 0.05f) ? (rz / rlen) * (1.2f + 1.4f * rand01()) : rand_sym() * 1.8f;
+          const float out_x = (rlen > 0.05f) ? (rx / rlen) * (1.0f + 1.2f * rand01()) : 0.0f;
+          const float out_z = (rlen > 0.05f) ? (rz / rlen) * (1.0f + 1.2f * rand01()) : 0.0f;
+          const float lat_v = side_sign * (base_lat_kick + 3.0f * rand01());
+          const float fwd_frac = 0.52f + 0.36f * rand01();
           b.vel = {
-              dir_x * impulse_scale * (0.65f + 0.50f * rand01()) + out_x + rand_sym() * 1.6f,
-              lift_scale * (0.55f + 0.70f * rand01()),
-              dir_z * impulse_scale * (0.65f + 0.50f * rand01()) + out_z + rand_sym() * 1.6f,
+              dir_x * impulse_scale * fwd_frac + cright_x * lat_v + out_x + rand_sym() * 1.1f,
+              lift_scale * (0.55f + 0.55f * rand01()),
+              dir_z * impulse_scale * fwd_frac + cright_z * lat_v + out_z + rand_sym() * 1.1f,
           };
-          b.omega = {rand_sym() * spin_scale, rand_sym() * spin_scale, rand_sym() * spin_scale};
+          const float tumble_spd = spin_scale * (0.65f + 0.55f * rand01());
+          b.omega = {
+              tumble_ax * tumble_spd + rand_sym() * 3.5f,
+              side_sign * (2.5f + 3.5f * rand01()),
+              tumble_az * tumble_spd + rand_sym() * 3.5f,
+          };
           b.colour = base_col;
           return true;
         };
@@ -2229,12 +2248,18 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
                   pp.place.pos[1] + std::max(0.25f, ch.aabb_centre_offset[1] + 0.5f) + rand01() * 0.45f,
                   pp.place.pos[2] + ch.aabb_centre_offset[2] + rand_sym() * 0.35f,
               };
+              const float lat_v = side_sign * (base_lat_kick + 2.8f * rand01());
               b.vel = {
-                  dir_x * impulse_scale * (0.65f + 0.65f * rand01()) + rand_sym() * 3.8f,
-                  lift_scale * (0.6f + 0.7f * rand01()),
-                  dir_z * impulse_scale * (0.65f + 0.65f * rand01()) + rand_sym() * 3.8f,
+                  dir_x * impulse_scale * (0.52f + 0.40f * rand01()) + cright_x * lat_v + rand_sym() * 1.6f,
+                  lift_scale * (0.55f + 0.60f * rand01()),
+                  dir_z * impulse_scale * (0.52f + 0.40f * rand01()) + cright_z * lat_v + rand_sym() * 1.6f,
               };
-              b.omega = {rand_sym() * spin_scale, rand_sym() * spin_scale, rand_sym() * spin_scale};
+              const float tumble_spd = spin_scale * (0.65f + 0.50f * rand01());
+              b.omega = {
+                  tumble_ax * tumble_spd + rand_sym() * 3.5f,
+                  side_sign * (2.5f + 3.5f * rand01()),
+                  tumble_az * tumble_spd + rand_sym() * 3.5f,
+              };
               if (is_pole_prop && !is_sign_prop) {
                 b.half_extents = {
                     std::clamp(ch.half_extents[0], 0.045f, 0.09f),
@@ -2270,12 +2295,18 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
               DynamicBody b;
               b.pos = {pp.place.pos[0] + rand_sym() * 0.25f, pp.place.pos[1] + 0.45f + float(ci) * 0.2f,
                        pp.place.pos[2] + rand_sym() * 0.25f};
+              const float lat_v = side_sign * (base_lat_kick + 2.8f * rand01());
               b.vel = {
-                  dir_x * impulse_scale * (0.7f + 0.5f * rand01()) + rand_sym() * 3.5f,
-                  lift_scale * (0.55f + 0.7f * rand01()),
-                  dir_z * impulse_scale * (0.7f + 0.5f * rand01()) + rand_sym() * 3.5f,
+                  dir_x * impulse_scale * (0.52f + 0.38f * rand01()) + cright_x * lat_v + rand_sym() * 1.5f,
+                  lift_scale * (0.55f + 0.55f * rand01()),
+                  dir_z * impulse_scale * (0.52f + 0.38f * rand01()) + cright_z * lat_v + rand_sym() * 1.5f,
               };
-              b.omega = {rand_sym() * spin_scale, rand_sym() * spin_scale, rand_sym() * spin_scale};
+              const float tumble_spd = spin_scale * (0.65f + 0.50f * rand01());
+              b.omega = {
+                  tumble_ax * tumble_spd + rand_sym() * 3.5f,
+                  side_sign * (2.5f + 3.5f * rand01()),
+                  tumble_az * tumble_spd + rand_sym() * 3.5f,
+              };
               if (def.object_type_index == 0) {
                 b.half_extents = {0.42f + 0.18f * rand01(), 0.07f + 0.03f * rand01(), 0.025f};
               } else if (is_sign_prop) {
@@ -2315,7 +2346,13 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
     }
   }
 
-  // 3. Integrate all active dynamic debris bodies (gravity, spin, ground bounce, despawn).
+  // 3. Integrate all active dynamic debris bodies (gravity, air drag, spin damping,
+  //    chase-camera corridor deflection, ground bounce, despawn).
+  const float lin_drag = std::exp(-1.35f * step_dt);
+  const float vert_drag = std::exp(-0.35f * step_dt);
+  const float ang_drag = std::exp(-0.65f * step_dt);
+  const float crx = float(cright.x), crz = float(cright.z);
+  const float cfx = float(cfwd.x), cfz = float(cfwd.z);
   size_t write = 0;
   for (size_t i = 0; i < dynamic_bodies_.size(); ++i) {
     DynamicBody& b = dynamic_bodies_[i];
@@ -2323,7 +2360,29 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
     if (b.age >= kDebrisDespawnSeconds) continue;
 
     if (!b.settled) {
-      b.vel[1] -= 9.81f * step_dt;
+      b.vel[0] *= lin_drag;
+      b.vel[2] *= lin_drag;
+      b.vel[1] = (b.vel[1] - 9.81f * step_dt) * vert_drag;
+      b.omega[0] *= ang_drag;
+      b.omega[1] *= ang_drag;
+      b.omega[2] *= ang_drag;
+
+      // Gently deflect airborne debris laterally out of the rear chase-camera sightline
+      // so broken signs never float directly in front of the camera lens.
+      const float dx_c = b.pos[0] - float(cpos.x);
+      const float dy_c = b.pos[1] - float(cpos.y);
+      const float dz_c = b.pos[2] - float(cpos.z);
+      const float d_along = dx_c * cfx + dz_c * cfz;
+      const float d_across = dx_c * crx + dz_c * crz;
+      if (d_along > -8.0f && d_along < 1.5f && std::fabs(d_across) < 2.2f && dy_c > -0.5f && dy_c < 3.8f) {
+        const float push_s = (d_across >= 0.0f) ? 1.0f : -1.0f;
+        const float push_dv = 14.0f * step_dt;
+        b.vel[0] += crx * push_s * push_dv;
+        b.vel[2] += crz * push_s * push_dv;
+        b.pos[0] += crx * push_s * (2.5f * step_dt);
+        b.pos[2] += crz * push_s * (2.5f * step_dt);
+      }
+
       b.pos[0] += b.vel[0] * step_dt;
       b.pos[1] += b.vel[1] * step_dt;
       b.pos[2] += b.vel[2] * step_dt;
@@ -2331,22 +2390,22 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
 
       const float min_h = std::min({b.half_extents[0], b.half_extents[1], b.half_extents[2]});
       drive::Hit hit;
-      if (ground.raycast({double(b.pos[0]), double(b.pos[1]) + 1.5, double(b.pos[2])}, {0, -1, 0}, 4.0, hit)) {
-        const float floor_y = float(double(b.pos[1]) + 1.5 - hit.distance) + min_h;
+      if (ground.raycast({double(b.pos[0]), double(b.pos[1]) + 2.5, double(b.pos[2])}, {0, -1, 0}, 8.0, hit)) {
+        const float floor_y = float(double(b.pos[1]) + 2.5 - hit.distance) + min_h;
         if (b.pos[1] < floor_y) {
           b.pos[1] = floor_y;
           if (b.vel[1] < -0.6f) {
-            b.vel[1] = -b.vel[1] * 0.34f;
+            b.vel[1] = -b.vel[1] * 0.28f;
           } else {
             b.vel[1] = 0.0f;
           }
-          b.vel[0] *= 0.72f;
-          b.vel[2] *= 0.72f;
-          b.omega[0] *= 0.68f;
-          b.omega[1] *= 0.68f;
-          b.omega[2] *= 0.68f;
+          b.vel[0] *= 0.68f;
+          b.vel[2] *= 0.68f;
+          b.omega[0] *= 0.60f;
+          b.omega[1] *= 0.60f;
+          b.omega[2] *= 0.60f;
           const float spd2 = b.vel[0] * b.vel[0] + b.vel[1] * b.vel[1] + b.vel[2] * b.vel[2];
-          if (spd2 < 0.08f && b.age > 0.6f) b.settled = true;
+          if (spd2 < 0.12f && b.age > 0.5f) b.settled = true;
         }
       }
     }

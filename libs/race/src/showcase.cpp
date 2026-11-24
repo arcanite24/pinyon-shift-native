@@ -33,24 +33,24 @@ void apply_visual_defaults(ShowcaseSpec& s) {
   switch (s.kind) {
     case ShowcaseAircraftKind::kMustangP51:
       s.display_name = "P-51 MUSTANG";
-      s.base_altitude_m = 22.0;
-      s.swoop_altitude_m = 12.0;
+      s.base_altitude_m = 26.0;
+      s.swoop_altitude_m = 15.0;
       s.lateral_sway_m = 15.0;
-      s.target_speed_mps = 50.0;
+      s.target_speed_mps = 52.0;
       s.scale = 1.45;
       break;
     case ShowcaseAircraftKind::kHelicopter:
       s.display_name = "HELICOPTER";
-      s.base_altitude_m = 19.0;
-      s.swoop_altitude_m = 9.5;
+      s.base_altitude_m = 21.0;
+      s.swoop_altitude_m = 12.5;
       s.lateral_sway_m = 12.0;
       s.target_speed_mps = 48.0;
       s.scale = 1.2;
       break;
     case ShowcaseAircraftKind::kBiplane:
       s.display_name = "BIPLANE";
-      s.base_altitude_m = 21.0;
-      s.swoop_altitude_m = 9.5;
+      s.base_altitude_m = 24.0;
+      s.swoop_altitude_m = 14.5;
       s.lateral_sway_m = 14.0;
       s.target_speed_mps = 46.0;
       s.scale = 1.15;
@@ -58,7 +58,7 @@ void apply_visual_defaults(ShowcaseSpec& s) {
     case ShowcaseAircraftKind::kHotAirBalloon:
       s.display_name = "HOT-AIR BALLOON";
       s.base_altitude_m = 36.0;
-      s.swoop_altitude_m = 18.0;
+      s.swoop_altitude_m = 22.0;
       s.lateral_sway_m = 10.0;
       s.target_speed_mps = 44.0;
       s.scale = 1.35;
@@ -66,10 +66,10 @@ void apply_visual_defaults(ShowcaseSpec& s) {
     case ShowcaseAircraftKind::kStuntJet:
     default:
       s.display_name = "SHOWCASE AIRCRAFT";
-      s.base_altitude_m = 24.0;
-      s.swoop_altitude_m = 10.0;
+      s.base_altitude_m = 26.0;
+      s.swoop_altitude_m = 15.0;
       s.lateral_sway_m = 15.0;
-      s.target_speed_mps = 48.0;
+      s.target_speed_mps = 50.0;
       s.scale = 1.15;
       break;
   }
@@ -587,6 +587,96 @@ double ShowcaseOpponent::frac_from_anim_time(double t, double* extra_rb_offset) 
   return std::clamp((t - spec_.cross_start_time_s) / dur, 0.0, 1.0);
 }
 
+std::array<double, 3> showcase_local_dir(const ShowcasePose& pose, double lx, double ly, double lz) {
+  const double cy = std::cos(pose.heading), sy = std::sin(pose.heading);
+  const double cp = std::cos(pose.pitch), sp = std::sin(pose.pitch);
+  const double cr = std::cos(pose.roll), sr = std::sin(pose.roll);
+  // Local (+X right, +Y up, +Z forward) -> game world rotation (roll, pitch, yaw).
+  const double x1 = lx * cr - ly * sr;
+  const double y1 = lx * sr + ly * cr;
+  const double z1 = lz;
+  const double x2 = x1;
+  const double y2 = y1 * cp + z1 * sp;
+  const double z2 = -y1 * sp + z1 * cp;
+  const double wx = x2 * cy + z2 * sy;
+  const double wy = y2;
+  const double wz = -x2 * sy + z2 * cy;
+  return {wx, wy, wz};
+}
+
+std::array<double, 3> showcase_local_point(const ShowcaseSpec& spec, const ShowcasePose& pose,
+                                           double lx, double ly, double lz) {
+  const double sc = spec.scale > 0.0 ? spec.scale : 1.0;
+  const auto d = showcase_local_dir(pose, lx * sc, ly * sc, lz * sc);
+  return {pose.position[0] + d[0], pose.position[1] + d[1], pose.position[2] + d[2]};
+}
+
+ShowcaseVfxAnchors compute_showcase_vfx_anchors(const ShowcaseSpec& spec, const ShowcasePose& pose) {
+  ShowcaseVfxAnchors a;
+  a.forward = showcase_local_dir(pose, 0.0, 0.0, 1.0);
+  a.right = showcase_local_dir(pose, 1.0, 0.0, 0.0);
+  a.up = showcase_local_dir(pose, 0.0, 1.0, 0.0);
+  a.velocity = {a.forward[0] * pose.speed_mps, a.forward[1] * pose.speed_mps, a.forward[2] * pose.speed_mps};
+  a.ground_wash_pos = {pose.position[0], pose.ground_y, pose.position[2]};
+  a.agl_m = std::max(0.0, pose.position[1] - pose.ground_y);
+
+  switch (spec.kind) {
+    case ShowcaseAircraftKind::kMustangP51:
+      // Twin Rolls-Royce Merlin V12 exhaust banks along the forward nose flanks.
+      a.exhaust_pos[0] = showcase_local_point(spec, pose, -0.68, 0.14, 3.05);
+      a.exhaust_pos[1] = showcase_local_point(spec, pose, 0.68, 0.14, 3.05);
+      a.exhaust_count = 2;
+      // Swept laminar wingtip trailing-edge vortex anchors (matches build_showcase_mesh span = 6.7).
+      a.wingtip_pos[0] = showcase_local_point(spec, pose, -6.70, 0.18, -0.15);
+      a.wingtip_pos[1] = showcase_local_point(spec, pose, 6.70, 0.18, -0.15);
+      a.wingtip_count = 2;
+      a.prop_hub_pos = showcase_local_point(spec, pose, 0.0, 0.0, 5.55);
+      break;
+    case ShowcaseAircraftKind::kBiplane:
+      a.exhaust_pos[0] = showcase_local_point(spec, pose, -0.66, 0.08, 2.85);
+      a.exhaust_pos[1] = showcase_local_point(spec, pose, 0.66, 0.08, 2.85);
+      a.exhaust_count = 2;
+      a.wingtip_pos[0] = showcase_local_point(spec, pose, -6.40, 1.48, 0.15);
+      a.wingtip_pos[1] = showcase_local_point(spec, pose, 6.40, 1.48, 0.15);
+      a.wingtip_count = 2;
+      a.prop_hub_pos = showcase_local_point(spec, pose, 0.0, 0.0, 5.55);
+      break;
+    case ShowcaseAircraftKind::kStuntJet:
+      a.exhaust_pos[0] = showcase_local_point(spec, pose, 0.0, 0.0, -5.45);
+      a.exhaust_count = 1;
+      a.wingtip_pos[0] = showcase_local_point(spec, pose, -5.90, -0.18, -3.20);
+      a.wingtip_pos[1] = showcase_local_point(spec, pose, 5.90, -0.18, -3.20);
+      a.wingtip_count = 2;
+      a.prop_hub_pos = showcase_local_point(spec, pose, 0.0, 0.0, 5.55);
+      break;
+    case ShowcaseAircraftKind::kHelicopter:
+      a.exhaust_pos[0] = showcase_local_point(spec, pose, -0.62, 0.55, -1.10);
+      a.exhaust_pos[1] = showcase_local_point(spec, pose, 0.62, 0.55, -1.10);
+      a.exhaust_count = 2;
+      a.wingtip_count = 0;
+      a.prop_hub_pos = showcase_local_point(spec, pose, 0.0, 1.55, 0.35);
+      break;
+    case ShowcaseAircraftKind::kHotAirBalloon:
+      a.exhaust_pos[0] = showcase_local_point(spec, pose, 0.0, 2.55, 0.0);
+      a.exhaust_count = 1;
+      a.wingtip_count = 0;
+      a.prop_hub_pos = showcase_local_point(spec, pose, 0.0, 2.35, 0.0);
+      break;
+  }
+  return a;
+}
+
+double ShowcaseOpponent::min_clearance_m() const {
+  switch (spec_.kind) {
+    case ShowcaseAircraftKind::kHotAirBalloon: return 22.0;
+    case ShowcaseAircraftKind::kHelicopter:    return 12.0;
+    case ShowcaseAircraftKind::kMustangP51:
+    case ShowcaseAircraftKind::kBiplane:
+    case ShowcaseAircraftKind::kStuntJet:
+    default:                                   return 14.0;
+  }
+}
+
 void ShowcaseOpponent::init(const ShowcaseSpec& spec, const drive::RacingLine& line, double start_progress,
                             double finish_progress, double expected_car_speed_mps) {
   spec_ = spec;
@@ -609,22 +699,65 @@ void ShowcaseOpponent::init(const ShowcaseSpec& spec, const drive::RacingLine& l
   active_ = line.size() >= 2;
   pose_ = ShowcasePose{};
   pose_.progress_m = start_p_ + 18.0;  // starts slightly ahead overhead for dramatic launch flyover
+  smoothed_pitch_ = 0.0;
+  smoothed_roll_ = 0.0;
+  altitude_initialized_ = false;
+  altitude_y_ = 0.0;
   if (active_) {
     double x, y, z, h;
     line_->pose(pose_.progress_m, 0.0, x, y, z, h);
-    pose_.position = {x, y + spec_.swoop_altitude_m + 4.0, z};
+    const double init_alt = std::max(min_clearance_m(), spec_.swoop_altitude_m) + 4.0;
+    pose_.position = {x, y + init_alt, z};
+    pose_.ground_y = y;
+    pose_.agl_m = init_alt;
     pose_.heading = prev_heading_ = h;
+    altitude_y_ = pose_.position[1];
   }
 }
 
-void ShowcaseOpponent::step(double dt, double race_clock, double player_progress) {
+void ShowcaseOpponent::apply_initial_clearance(const GroundHeightFn& ground_height) {
+  if (!active_ || !ground_height) return;
+  const double px = pose_.position[0];
+  const double pz = pose_.position[2];
+  const double fwd_x = std::sin(pose_.heading);
+  const double fwd_z = std::cos(pose_.heading);
+  const double right_x = std::cos(pose_.heading);
+  const double right_z = -std::sin(pose_.heading);
+  double max_g = pose_.ground_y;
+  double center_g = pose_.ground_y;
+  bool have_center = false;
+  for (double d : {0.0, 15.0, 30.0}) {
+    for (double lat : {-6.0, 0.0, 6.0}) {
+      if (auto gy = ground_height(px + fwd_x * d + right_x * lat, pz + fwd_z * d + right_z * lat);
+          gy && std::isfinite(*gy)) {
+        if (*gy > max_g) max_g = *gy;
+        if (d == 0.0 && lat == 0.0) {
+          center_g = std::max(center_g, *gy);
+          have_center = true;
+        }
+      }
+    }
+  }
+  const double min_y = max_g + min_clearance_m() + 2.0;
+  if (pose_.position[1] < min_y) {
+    pose_.position[1] = min_y;
+    altitude_y_ = min_y;
+  }
+  if (have_center) pose_.ground_y = center_g;
+  pose_.agl_m = std::max(0.0, pose_.position[1] - pose_.ground_y);
+}
+
+void ShowcaseOpponent::step(double dt, double race_clock, double player_progress, const GroundHeightFn& ground_height) {
   if (!active_ || !line_ || dt <= 0.0) return;
 
   // Spin propeller or rotor continuously (even during countdown).
-  const double rotor_rate = spec_.kind == ShowcaseAircraftKind::kHotAirBalloon ? 0.4 : 42.0;
+  const double rotor_rate = spec_.kind == ShowcaseAircraftKind::kHotAirBalloon
+                                ? 0.4
+                                : (spec_.kind == ShowcaseAircraftKind::kMustangP51 ? 54.0 : 42.0);
   pose_.rotor_angle = std::fmod(pose_.rotor_angle + rotor_rate * dt, 2.0 * kPi);
 
   const double run_len = std::max(1.0, finish_p_ - start_p_);
+  const double cruise_speed = run_len / std::max(1.0, nominal_duration_s_);
   const double finish_anim_t = use_xml_checkpoints_ ? cp_times_.back() : (spec_.cross_start_time_s + nominal_duration_s_);
 
   if (race_clock < 0.0) {
@@ -634,14 +767,14 @@ void ShowcaseOpponent::step(double dt, double race_clock, double player_progress
       const double frac = frac_from_anim_time(anim_time_);
       pose_.fraction = frac;
       pose_.progress_m = start_p_ + frac * run_len;
-      pose_.speed_mps = (run_len / std::max(1.0, nominal_duration_s_)) * anim_speed_mult_;
+      pose_.speed_mps = cruise_speed * anim_speed_mult_;
     } else {
       // Countdown dramatic low flyover approaching the start gate.
       const double approach = std::clamp((race_clock + 6.0) / 6.0, 0.0, 1.0);
       const double p = std::max(0.0, start_p_ - 45.0 * (1.0 - approach) + 14.0 * approach);
       pose_.progress_m = p;
       pose_.fraction = 0.0;
-      pose_.speed_mps = (run_len / std::max(1.0, nominal_duration_s_)) * 0.75;
+      pose_.speed_mps = cruise_speed * 0.75;
     }
   } else if (!pose_.finished) {
     double extra_rb = 0.0;
@@ -681,49 +814,166 @@ void ShowcaseOpponent::step(double dt, double race_clock, double player_progress
     }
   } else {
     // Victory/post-finish flypast beyond the finish line.
-    const double cruise = run_len / std::max(1.0, nominal_duration_s_);
-    pose_.progress_m = std::min(line_->length() - 5.0, pose_.progress_m + cruise * 0.8 * dt);
+    pose_.progress_m = std::min(line_->length() - 5.0, pose_.progress_m + cruise_speed * 0.8 * dt);
     pose_.fraction = 1.0;
+    pose_.speed_mps = cruise_speed * 0.8;
   }
 
-  const double p_clamped = std::clamp(pose_.progress_m, 0.0, line_->length());
-  double x = 0, y = 0, z = 0, h = 0;
-  line_->pose(p_clamped, 0.0, x, y, z, h);
-  double xf = 0, yf = 0, zf = 0, hf = 0;
-  line_->pose(std::min(line_->length(), p_clamped + 45.0), 0.0, xf, yf, zf, hf);
+  // Evaluate smooth woven horizontal flight path and forward heading tangent.
+  auto woven_at = [&](double prog, double& ox, double& oroad_y, double& oz, double& oh) {
+    const double pc = std::clamp(prog, 0.0, line_->length());
+    double lx = 0.0, ly = 0.0, lz = 0.0, lh = 0.0;
+    line_->pose(pc, 0.0, lx, ly, lz, lh);
+    const double f = std::clamp((pc - start_p_) / run_len, 0.0, 1.0);
+    const double w = spec_.lateral_sway_m * std::sin(f * 6.0 * kPi);
+    const double rx = std::cos(lh), rz = -std::sin(lh);
+    ox = lx + rx * w;
+    oroad_y = ly;
+    oz = lz + rz * w;
+    oh = lh;
+  };
 
-  // Smooth lateral S-curve weave & swoop altitude profile.
+  const double p_clamped = std::clamp(pose_.progress_m, 0.0, line_->length());
+  double target_x = 0.0, road_y = 0.0, target_z = 0.0, road_h = 0.0;
+  woven_at(p_clamped, target_x, road_y, target_z, road_h);
+  double ahead_x = 0.0, ahead_road_y = 0.0, ahead_z = 0.0, ahead_h = 0.0;
+  woven_at(std::min(line_->length(), p_clamped + 40.0), ahead_x, ahead_road_y, ahead_z, ahead_h);
+
+  const double dx = ahead_x - target_x;
+  const double dz = ahead_z - target_z;
+  const double fly_h = std::hypot(dx, dz) > 1e-3 ? std::atan2(dx, dz) : road_h;
+  const double dh = altitude_initialized_ ? wrap_angle(fly_h - prev_heading_) : 0.0;
+  prev_heading_ = fly_h;
+
+  // Terrain-clearance lookahead envelope:
+  // Probe current XZ + forward stations (+15, +30, +50, +70, +100, +130, +200 m along heading)
+  // with +/-6 m wingtip offsets on primary stations (0, 30, 70, 130, 200 m).
+  const double fwd_x = std::sin(fly_h), fwd_z = std::cos(fly_h);
+  const double right_x = std::cos(fly_h), right_z = -std::sin(fly_h);
+  const double min_clear = min_clearance_m();
+  const double lookahead_clear = min_clear + 1.5;
+
+  auto sample_station = [&](double d, bool with_wingtips, double* out_center_y) -> double {
+    double lx = 0.0, ly = 0.0, lz = 0.0, lh = 0.0;
+    line_->pose(std::min(line_->length(), p_clamped + d), 0.0, lx, ly, lz, lh);
+    double max_y = ly;
+    double center_y = ly;
+    if (ground_height) {
+      const double cx = target_x + fwd_x * d;
+      const double cz = target_z + fwd_z * d;
+      if (auto gy = ground_height(cx, cz); gy && std::isfinite(*gy)) {
+        if (*gy > max_y) max_y = *gy;
+        if (*gy > center_y) center_y = *gy;
+      }
+      if (with_wingtips) {
+        constexpr double kWingOffsetM = 6.0;
+        for (double lat : {-kWingOffsetM, kWingOffsetM}) {
+          if (auto gy = ground_height(cx + right_x * lat, cz + right_z * lat); gy && std::isfinite(*gy)) {
+            if (*gy > max_y) max_y = *gy;
+          }
+        }
+      }
+    }
+    if (out_center_y) *out_center_y = center_y;
+    return max_y;
+  };
+
+  double center_ground_y = road_y;
+  const double local_terrain_y = sample_station(0.0, true, &center_ground_y);
+
+  struct LookaheadSample {
+    double dist_m;
+    double terrain_y;
+  };
+  const std::array<LookaheadSample, 7> lookahead = {{
+      {15.0, sample_station(15.0, false, nullptr)},
+      {30.0, sample_station(30.0, true, nullptr)},
+      {50.0, sample_station(50.0, false, nullptr)},
+      {70.0, sample_station(70.0, true, nullptr)},
+      {100.0, sample_station(100.0, false, nullptr)},
+      {130.0, sample_station(130.0, true, nullptr)},
+      {200.0, sample_station(200.0, true, nullptr)},
+  }};
+
+  // Scenic swoop-and-climb envelope over local terrain (never below lookahead_clear on straights).
   const double frac = std::clamp((p_clamped - start_p_) / run_len, 0.0, 1.0);
-  const double weave = spec_.lateral_sway_m * std::sin(frac * 6.0 * kPi);
   const double swoop_env = std::pow(std::sin(frac * 2.0 * kPi), 2.0);
-  double alt = spec_.swoop_altitude_m + (spec_.base_altitude_m - spec_.swoop_altitude_m) * swoop_env;
+  const double swoop_lo = std::max(lookahead_clear, spec_.swoop_altitude_m);
+  const double swoop_hi = std::max(swoop_lo, spec_.base_altitude_m);
+  double alt = swoop_lo + (swoop_hi - swoop_lo) * swoop_env;
   if (spec_.kind == ShowcaseAircraftKind::kHotAirBalloon) {
     alt += 3.0 * std::sin(race_clock * 0.7);
   }
 
-  const double rx = std::cos(h), rz = -std::sin(h);
-  const double target_x = x + rx * weave;
-  const double target_z = z + rz * weave;
-  const double target_y = std::max(y, yf) + alt;
+  const double nominal_y = local_terrain_y + alt;
+  const double local_floor_y = local_terrain_y + min_clear;
 
-  const double dx = xf - x, dz = zf - z;
-  const double fly_h = std::hypot(dx, dz) > 1e-3 ? std::atan2(dx, dz) : h;
-  const double dh = wrap_angle(fly_h - prev_heading_);
-  prev_heading_ = fly_h;
+  if (!altitude_initialized_) {
+    altitude_y_ = std::max({nominal_y, local_floor_y, lookahead[0].terrain_y + min_clear});
+    smoothed_pitch_ = 0.0;
+    smoothed_roll_ = 0.0;
+    altitude_initialized_ = true;
+  } else {
+    const double horiz_speed = std::max({20.0, pose_.speed_mps, cruise_speed * 0.5});
 
-  pose_.position = {target_x, target_y, target_z};
+    // Compute anticipatory ridge-climb slope across the entire lookahead envelope.
+    double req_climb_slope = -1e9;
+    for (const auto& st : lookahead) {
+      const double req_y = st.terrain_y + lookahead_clear;
+      // Arrive at clearance slightly ahead of each terrain peak so ridge crests clear smoothly.
+      const double eff_d = std::max(8.0, st.dist_m - std::min(12.0, 0.35 * st.dist_m));
+      const double slope = (req_y - altitude_y_) / eff_d;
+      if (slope > req_climb_slope) req_climb_slope = slope;
+    }
+
+    const double nominal_slope = std::clamp((nominal_y - altitude_y_) / 70.0, -0.24, 0.35);
+    const double target_slope = std::max(nominal_slope, req_climb_slope);
+    const double clamped_slope = std::clamp(target_slope, -0.26, 0.58);
+    const double desired_pitch = std::atan(clamped_slope);
+
+    // Rate-limited smooth pitch damping so ridge climbs & swoops feel natural with zero snaps.
+    const double pitch_alpha = 1.0 - std::exp(-dt / 0.25);
+    const double max_dp = 1.6 * dt;
+    const double dp = std::clamp((desired_pitch - smoothed_pitch_) * pitch_alpha, -max_dp, max_dp);
+    smoothed_pitch_ = std::clamp(smoothed_pitch_ + dp, -0.28, 0.52);
+
+    double vy = horiz_speed * std::tan(smoothed_pitch_);
+    if (req_climb_slope > 0.0) {
+      const double needed_vy = horiz_speed * std::min(req_climb_slope, 1.5);
+      if (needed_vy > vy) {
+        vy += (needed_vy - vy) * 0.65;
+      }
+    }
+    altitude_y_ += vy * dt;
+
+    // Hard minimum terrain clearance guarantee: aircraft never intersects mountains/ridges.
+    if (altitude_y_ < local_floor_y) {
+      altitude_y_ = local_floor_y;
+    }
+  }
+
+  pose_.position = {target_x, altitude_y_, target_z};
+  pose_.ground_y = center_ground_y;
+  pose_.agl_m = std::max(0.0, altitude_y_ - center_ground_y);
   pose_.heading = fly_h;
+
+  const double yaw_rate = dh / std::max(0.01, dt);
   if (spec_.kind == ShowcaseAircraftKind::kHotAirBalloon) {
     pose_.pitch = 0.0;
     pose_.roll = 0.06 * std::sin(race_clock * 0.9);
   } else if (spec_.kind == ShowcaseAircraftKind::kHelicopter) {
-    pose_.pitch = -0.14;  // forward nose-down hover tilt
-    pose_.roll = std::clamp(dh / std::max(0.01, dt) * 0.35, -0.45, 0.45);
+    pose_.pitch = std::clamp(-0.14 + smoothed_pitch_ * 0.45, -0.24, 0.16);
+    const double target_roll = std::clamp(-yaw_rate * 0.40, -0.45, 0.45);
+    smoothed_roll_ += (target_roll - smoothed_roll_) * (1.0 - std::exp(-dt / 0.20));
+    pose_.roll = smoothed_roll_;
   } else {
-    pose_.pitch = std::clamp((yf - y) / 45.0, -0.25, 0.25);
-    const double bank_from_turn = std::clamp(dh / std::max(0.01, dt) * 0.55, -0.65, 0.65);
-    const double bank_from_weave = -0.28 * std::cos(frac * 6.0 * kPi);
-    pose_.roll = std::clamp(bank_from_turn + bank_from_weave, -0.75, 0.75);
+    pose_.pitch = smoothed_pitch_;
+    // Negative roll dips the +X right wing into right turns (dh > 0); positive roll banks left.
+    const double bank_from_turn = std::clamp(-yaw_rate * 0.65, -0.68, 0.68);
+    const double bank_from_weave = 0.24 * std::sin(frac * 6.0 * kPi);
+    const double target_roll = std::clamp(bank_from_turn + bank_from_weave, -0.78, 0.78);
+    smoothed_roll_ += (target_roll - smoothed_roll_) * (1.0 - std::exp(-dt / 0.20));
+    pose_.roll = smoothed_roll_;
   }
 }
 

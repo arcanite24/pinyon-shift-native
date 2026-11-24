@@ -845,6 +845,121 @@ int main() {
       balloon.init(parsed_xml[1], rl, 0.0, 1500.0);
       balloon.step(1.0, -3.0, 0.0);
       CHECK(balloon.anim_time() > 0.5 && near(balloon.near_rumble_strength(2.0), 0.0));
+
+      // PT-26: Terrain-clearance clamping & smooth ridge-climb pitch anticipation across a steep synthetic ridge.
+      auto ridge_ground = [](double x, double z) -> double {
+        double h = 10.0;
+        // Steep 90 m Colorado mountain ridge centered at z = 650 m (z in [500, 800]).
+        if (z > 500.0 && z < 800.0) {
+          const double t = 1.0 - std::fabs(z - 650.0) / 150.0;
+          h = std::max(h, 10.0 + 90.0 * t);
+        }
+        // Canyon wall on the +X flank along z in [900, 1100] to exercise +/-6 m wingtip clearance.
+        if (z > 900.0 && z < 1100.0 && x > 14.0) {
+          h = std::max(h, 45.0);
+        }
+        return h;
+      };
+      race::GroundHeightFn ridge_probe = [&](double x, double z) -> std::optional<double> {
+        return ridge_ground(x, z);
+      };
+      race::ShowcaseOpponent ridge_opp;
+      ridge_opp.init(p1, rl, 0.0, 1500.0);
+      ridge_opp.apply_initial_clearance(ridge_probe);
+      const double min_clear = ridge_opp.min_clearance_m();
+      CHECK(min_clear >= 12.0 && min_clear <= 18.0);
+      double max_anticipation_pitch = -1.0;
+      double max_step_dpitch = 0.0;
+      double max_alt_y = -1e9;
+      double post_ridge_y = 1e9;
+      double prev_pitch = 0.0;
+      bool have_prev_pitch = false;
+      bool clearance_ok = true;
+      bool finite_ok = true;
+      constexpr double kDt = 0.02;
+      race::ShowcaseOpponent::Snapshot mid_snap{};
+      bool captured_snap = false;
+      for (int s = 0; s < 1400; ++s) {
+        const double t = s * kDt;
+        ridge_opp.step(kDt, t, t * 50.0, ridge_probe);
+        const auto& pose = ridge_opp.pose();
+        if (!std::isfinite(pose.position[0]) || !std::isfinite(pose.position[1]) || !std::isfinite(pose.position[2]) ||
+            !std::isfinite(pose.heading) || !std::isfinite(pose.pitch) || !std::isfinite(pose.roll)) {
+          finite_ok = false;
+          break;
+        }
+        const double rx = std::cos(pose.heading), rz = -std::sin(pose.heading);
+        const double g_center = ridge_ground(pose.position[0], pose.position[2]);
+        const double g_left = ridge_ground(pose.position[0] - rx * 6.0, pose.position[2] - rz * 6.0);
+        const double g_right = ridge_ground(pose.position[0] + rx * 6.0, pose.position[2] + rz * 6.0);
+        const double g_max = std::max({g_center, g_left, g_right});
+        if (pose.position[1] < g_max + min_clear - 1e-6) clearance_ok = false;
+        if (pose.position[2] >= 320.0 && pose.position[2] < 495.0) {
+          max_anticipation_pitch = std::max(max_anticipation_pitch, pose.pitch);
+        }
+        if (have_prev_pitch) {
+          max_step_dpitch = std::max(max_step_dpitch, std::fabs(pose.pitch - prev_pitch));
+        }
+        prev_pitch = pose.pitch;
+        have_prev_pitch = true;
+        max_alt_y = std::max(max_alt_y, pose.position[1]);
+        if (pose.position[2] > 1180.0 && pose.position[2] < 1450.0) {
+          post_ridge_y = std::min(post_ridge_y, pose.position[1]);
+        }
+        if (s == 450) {
+          mid_snap = ridge_opp.snapshot();
+          captured_snap = true;
+        }
+      }
+      CHECK(finite_ok);
+      CHECK(clearance_ok);
+      CHECK(max_anticipation_pitch > 0.08);
+      CHECK(max_step_dpitch <= 1.6 * kDt + 1e-5);
+      CHECK(max_alt_y >= 100.0 + min_clear - 1e-6);
+      CHECK(post_ridge_y < max_alt_y - 25.0);
+      if (captured_snap) {
+        ridge_opp.restore(mid_snap);
+        CHECK(near(ridge_opp.pose().position[1], mid_snap.pose.position[1], 1e-9));
+        CHECK(near(ridge_opp.pose().pitch, mid_snap.pose.pitch, 1e-9));
+      }
+
+      // PT-26: World-space exhaust & wingtip VFX emitter anchors derived from aircraft pose.
+      {
+        race::ShowcasePose tp{};
+        tp.position = {120.0, 85.0, -340.0};
+        tp.heading = 0.7;
+        tp.pitch = 0.22;
+        tp.roll = -0.35;
+        tp.speed_mps = 55.0;
+        tp.ground_y = 68.0;
+        tp.agl_m = 17.0;
+        const auto anc = race::compute_showcase_vfx_anchors(p1, tp);
+        auto is_fin3 = [](const std::array<double, 3>& v) {
+          return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
+        };
+        auto dot3 = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+          return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        };
+        auto sub3 = [](const std::array<double, 3>& a, const std::array<double, 3>& b) -> std::array<double, 3> {
+          return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+        };
+        auto len3 = [&](const std::array<double, 3>& v) { return std::sqrt(dot3(v, v)); };
+
+        CHECK(anc.exhaust_count == 2 && anc.wingtip_count == 2);
+        CHECK(is_fin3(anc.forward) && is_fin3(anc.right) && is_fin3(anc.up) && is_fin3(anc.velocity));
+        CHECK(is_fin3(anc.exhaust_pos[0]) && is_fin3(anc.exhaust_pos[1]));
+        CHECK(is_fin3(anc.wingtip_pos[0]) && is_fin3(anc.wingtip_pos[1]));
+        CHECK(is_fin3(anc.prop_hub_pos) && is_fin3(anc.ground_wash_pos));
+        CHECK(near(len3(anc.forward), 1.0, 1e-6) && near(len3(anc.right), 1.0, 1e-6) && near(len3(anc.up), 1.0, 1e-6));
+        CHECK(near(dot3(anc.forward, anc.right), 0.0, 1e-6) && near(dot3(anc.forward, anc.up), 0.0, 1e-6));
+        CHECK(near(len3(sub3(anc.wingtip_pos[1], anc.wingtip_pos[0])), 2.0 * 6.70 * p1.scale, 1e-4));
+        CHECK(near(len3(sub3(anc.exhaust_pos[1], anc.exhaust_pos[0])), 2.0 * 0.68 * p1.scale, 1e-4));
+        CHECK(dot3(sub3(anc.exhaust_pos[0], tp.position), anc.forward) > 0.0);
+        CHECK(dot3(sub3(anc.exhaust_pos[1], anc.exhaust_pos[0]), anc.right) > 0.0);
+        CHECK(dot3(sub3(anc.wingtip_pos[1], anc.wingtip_pos[0]), anc.right) > 0.0);
+        CHECK(dot3(sub3(anc.prop_hub_pos, anc.exhaust_pos[0]), anc.forward) > 0.0);
+        CHECK(near(anc.agl_m, 17.0, 1e-6) && near(anc.ground_wash_pos[1], 68.0, 1e-6));
+      }
     }
 
     // Full post-race breakdown (Assists, Skills, Bounty, Nemesis) + Style-6 50k CR first-win override

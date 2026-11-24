@@ -1,5 +1,6 @@
 #include "showroom_internal.h"
 
+#include "cars/visual_setup.h"
 #include "fh1data/archive.h"
 #include "fh1data/xds.h"
 #include "glow_frag_spv.h"
@@ -422,26 +423,22 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
   std::vector<GlowSpriteGpu> sprites;
   sprites.reserve(256);
 
-  auto point_amt = [](const fh1::CarbinLampPoint& pt, const drive::LampShaderVectors& vecs) -> float {
-    float a = 0.0f;
-    if (pt.side_flags & 0x80u) a = 1.0f;
-    if (pt.channel_mask & 0x01u) a = std::max(a, vecs.dynamic_lights_2[0]);
-    if (pt.channel_mask & 0x02u) a = std::max(a, vecs.dynamic_lights_2[0] * 0.65f);
-    if (pt.channel_mask & 0x04u) a = std::max(a, vecs.dynamic_lights_amount[0]);
-    if (pt.channel_mask & 0x08u) {
-      if (pt.side_flags & 0x01u) a = std::max(a, vecs.dynamic_lights_amount[2]);
-      if (pt.side_flags & 0x02u) a = std::max(a, vecs.dynamic_lights_amount[3]);
-    }
-    if (pt.channel_mask & 0x10u) a = std::max(a, vecs.dynamic_lights_amount[1]);
-    return a;
-  };
-
   auto push_car_glows = [&](const float render_from_body[16], const std::vector<fh1::CarbinLampPoint>& pts,
                             const drive::LampShaderVectors& vecs, float max_dist, bool check_player_damage) {
+    bool has_dedicated_brake_pts = false;
+    for (const auto& pt : pts) {
+      if ((pt.channel_mask & 0x04u) != 0u) {
+        has_dedicated_brake_pts = true;
+        break;
+      }
+    }
+    const float head_amt = vecs.dynamic_lights_2[0];
+    const float brake_amt = vecs.dynamic_lights_amount[0];
+    const float rev_amt = vecs.dynamic_lights_amount[1];
+    const float ind_l_amt = vecs.dynamic_lights_amount[2];
+    const float ind_r_amt = vecs.dynamic_lights_amount[3];
     for (const auto& pt : pts) {
       if (sprites.size() >= kMaxGlowSprites) break;
-      float amt = point_amt(pt, vecs);
-      if (amt <= 0.01f) continue;
       if (check_player_damage && damage_dirt_[3] > 0.01f) {
         // Body frame: +Z front, -Z rear, -X left, +X right.
         const float z_dmg = (pt.position[2] >= 0.0f) ? damage_zones_[0] : damage_zones_[1];
@@ -451,30 +448,32 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
       }
       const auto g = drive::resolve_lamp_glow(pt);
       const auto p = transform_point(render_from_body, pt.position);
+      const float dx = p[0] - frame_.eye[0];
+      const float dy = p[1] - frame_.eye[1];
+      const float dz = p[2] - frame_.eye[2];
+      const float dist_to_eye = std::sqrt(dx * dx + dy * dy + dz * dz);
+      const auto eval = cars::evaluate_car_lamp_glow_sprite(
+          pt, g.radius_m, head_amt, brake_amt, rev_amt, ind_l_amt, ind_r_amt, has_dedicated_brake_pts,
+          check_player_damage, dist_to_eye, night_factor);
+      if (!eval.emit || eval.intensity <= 0.005f || eval.radius_m <= 0.001f) continue;
       const auto d = transform_dir(render_from_body, pt.direction);
       const float inner_cos = std::cos(g.inner_cone_deg * (3.14159265f / 180.0f));
       const float outer_cos = std::cos(g.outer_cone_deg * (3.14159265f / 180.0f));
-      // Unclamped HDR glow luminance (> 4.0) drives authentic FH1 crimson taillight & headlamp bloom.
-      const float gain = (pt.channel_mask & 0x01u) ? 5.8f
-                       : (pt.channel_mask & 0x04u) ? 6.2f
-                       : (pt.channel_mask & 0x02u) ? 5.8f
-                                                   : 2.5f;
-      const float r_scale = (pt.channel_mask & 0x01u) ? 0.26f : 0.45f;
       GlowSpriteGpu s{};
       s.pos_radius[0] = p[0];
       s.pos_radius[1] = p[1];
       s.pos_radius[2] = p[2];
-      s.pos_radius[3] = std::clamp(g.radius_m * r_scale, 0.08f, 0.45f);
+      s.pos_radius[3] = eval.radius_m;
       s.dir_inner[0] = d[0];
       s.dir_inner[1] = d[1];
       s.dir_inner[2] = d[2];
       s.dir_inner[3] = inner_cos;
-      s.color_outer[0] = g.color[0] * gain * amt;
-      s.color_outer[1] = g.color[1] * gain * amt;
-      s.color_outer[2] = g.color[2] * gain * amt;
+      s.color_outer[0] = g.color[0] * eval.intensity;
+      s.color_outer[1] = g.color[1] * eval.intensity;
+      s.color_outer[2] = g.color[2] * eval.intensity;
       s.color_outer[3] = outer_cos;
       s.extra[0] = float(std::clamp(g.texture_index - 1, 0, 6));
-      s.extra[1] = 0.16f;  // bias toward camera (m) to clear lamp lens & bumper lip
+      s.extra[1] = eval.view_bias_m;
       s.extra[2] = max_dist;
       s.extra[3] = 1.0f;
       sprites.push_back(s);

@@ -2,6 +2,7 @@
 // OpenTrack 48-byte UDP packet parser & timeout recenter, Live Camera Editor
 // & Immersive Camera pose math, FM7 311B & FH4/5 324B UDP telemetry binary
 // layouts & probe CSV, and Camera Editor UI4 overlay.
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -383,6 +384,119 @@ void test_camera_parity_layers_and_pullin() {
   check(cam.mode() == drive::CameraMode::kHood, "cycle() skips kCockpit when !has_cockpit_mesh");
 }
 
+void test_camera_collision_restraint_and_restart() {
+  // PT-28: Camera collision impulse layers distinguish light glancing fence scrapes
+  // from heavy solid-wall crashes, prevent multi-frame impulse stacking, bound total
+  // kick, recover crisply with damped spring, and clamp sudden chase yaw_rate spikes.
+  const std::string xml = R"(
+<CameraPhysics>
+  <FollowCam n="2">
+    <Layer Enabled="1" InputType="WorldCollision_Lateral" OutputType="CameraSpaceYPRImpulse"
+           NoiseType="None" InputToParamMapping="Linear"
+           Param.x="4.0" Param.y="5.0" Param.z="2.0" Param.w="0"
+           Sprung="1" SpringK="45.0" SpringDPercent="0.40" ImpulseInputSizeCutoff="0.8" />
+    <Layer Enabled="1" InputType="WorldCollision_Longitudinal" OutputType="CameraSpaceXYZImpulse"
+           NoiseType="None" InputToParamMapping="Linear"
+           Param.x="0.0" Param.y="0.3" Param.z="1.2" Param.w="0"
+           Sprung="1" SpringK="45.0" SpringDPercent="0.40" ImpulseInputSizeCutoff="0.8" />
+  </FollowCam>
+  <FollowCam2 n="0"></FollowCam2>
+  <DriverCam n="0"></DriverCam>
+  <Hood n="0"></Hood>
+  <BumperHigh n="0"></BumperHigh>
+</CameraPhysics>)";
+  drive::CameraTuning t;
+  t.chase[0].height = 0.6;
+  t.chase[0].radius = 1.2;
+  t.chase[0].fov = 52.0;
+  t.chase[0].yaw_k = 40.0;
+  t.chase[0].yaw_d = 12.0;
+  t.chase[0].height_k = 30.0;
+  t.chase[0].height_d = 10.0;
+  std::string err;
+  check(drive::parse_camera_physics(xml, t, &err), "parse_camera_physics accepts collision impulse layers");
+
+  drive::CameraCar car;
+  car.box_min = {-0.9, 0.0, -2.1};
+  car.box_max = {0.9, 1.3, 2.2};
+  car.com = {0.0, 0.5, 0.0};
+
+  drive::DriveCamera cam;
+  cam.set_tuning(t);
+  cam.set_car(car);
+  cam.set_mode(drive::CameraMode::kFollowLow);
+
+  drive::CameraInput in;
+  in.speed = 25.0;
+  const auto base = cam.update(1.0, in);
+
+  auto angle_deg = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+    const double d = std::clamp(a[0] * b[0] + a[1] * b[1] + a[2] * b[2], -1.0, 1.0);
+    return std::acos(d) * (180.0 / 3.14159265358979323846);
+  };
+  auto dist3 = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+    return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) +
+                     (a[2] - b[2]) * (a[2] - b[2]));
+  };
+
+  // Sustained light fence scrape for 20 frames at 120 FPS must NOT stack impulses.
+  double light_max_angle = 0.0;
+  double light_max_disp = 0.0;
+  for (int i = 0; i < 20; ++i) {
+    drive::CameraInput scrape = in;
+    scrape.world_collision_lateral = 6.0;
+    const auto v = cam.update(1.0 / 120.0, scrape);
+    light_max_angle = std::max(light_max_angle, angle_deg(v.forward, base.forward));
+    light_max_disp = std::max(light_max_disp, dist3(v.eye, base.eye));
+  }
+  check(light_max_angle > 0.05 && light_max_angle < 1.5,
+        "light fence scrape produces gentle bounded angular kick without stacking");
+  check(light_max_disp < 0.25, "light fence scrape keeps positional kick bounded");
+
+  // Smooth damped recovery back to neutral within 1.0 s.
+  drive::CameraView settled{};
+  for (int i = 0; i < 60; ++i) settled = cam.update(1.0 / 60.0, in);
+  check(angle_deg(settled.forward, base.forward) < 0.15, "camera angular kick recovers cleanly to neutral");
+  check(dist3(settled.eye, base.eye) < 0.03, "camera positional kick recovers cleanly to neutral");
+
+  // Heavy solid-wall impact feels stronger than a fence brush yet stays strictly clamped.
+  double heavy_max_angle = 0.0;
+  double heavy_max_disp = 0.0;
+  for (int i = 0; i < 12; ++i) {
+    drive::CameraInput crash = in;
+    if (i < 3) {
+      crash.world_collision_lateral = 35.0;
+      crash.world_collision_longitudinal = 45.0;
+    }
+    const auto v = cam.update(1.0 / 60.0, crash);
+    heavy_max_angle = std::max(heavy_max_angle, angle_deg(v.forward, base.forward));
+    heavy_max_disp = std::max(heavy_max_disp, dist3(v.eye, base.eye));
+  }
+  check(heavy_max_angle > light_max_angle * 1.4, "heavy wall impact has stronger tactile feedback than light scrape");
+  check(heavy_max_angle <= 3.6, "heavy wall angular kick stays strictly bounded");
+  check(heavy_max_disp <= 0.30, "heavy wall positional kick stays strictly bounded");
+
+  // Sudden fence-clip yaw_rate shock does not whip the chase camera wildly off-axis.
+  cam.restart();
+  cam.update(1.0, in);
+  double max_lat_whip = 0.0;
+  for (int i = 0; i < 6; ++i) {
+    drive::CameraInput whip = in;
+    whip.yaw_rate = 10.0;
+    const auto v = cam.update(1.0 / 60.0, whip);
+    max_lat_whip = std::max(max_lat_whip, std::fabs(v.eye[0]));
+  }
+  check(max_lat_whip < 1.2, "sudden yaw_rate shock does not whip chase camera wildly");
+
+  // PT-31 helper: restart_count() increments on restart() and clear_pending_restart()
+  // cancels the pending snap while preserving the monotonic counter.
+  const uint64_t before_r = cam.restart_count();
+  cam.restart();
+  check(cam.restart_count() == before_r + 1, "DriveCamera::restart_count increments on restart()");
+  cam.clear_pending_restart();
+  check(cam.restart_count() == before_r + 1, "clear_pending_restart preserves restart_count");
+}
+
 }  // namespace
 
 int main() {
@@ -390,6 +504,7 @@ int main() {
   test_camera_editor_and_immersive();
   test_udp_telemetry_layouts();
   test_camera_parity_layers_and_pullin();
+  test_camera_collision_restraint_and_restart();
   if (g_failures > 0) {
     std::fprintf(stderr, "camera_telemetry_tests: %d failure(s)\n", g_failures);
     return 1;

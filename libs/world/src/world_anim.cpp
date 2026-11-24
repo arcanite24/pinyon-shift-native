@@ -606,16 +606,29 @@ bool parse_skinbin(std::span<const uint8_t> data, SpectatorMeshLod& out, int pre
   for (auto& li : out.lod_indices) li.clear();
   out.has_stand_skeleton = false;
   out.has_sit_skeleton = false;
-  if (data.size() < 0x48) return false;
+  if (data.size() < 0x2c) return false;
   const uint8_t* p = data.data();
   const uint32_t num_lods = read_be32(p + 0x04);
-  const uint32_t lod0_cnt = read_be32(p + 0x14);
-  const uint32_t lod_off[4] = {0u, read_be16(p + 0x1c), read_be16(p + 0x24), read_be16(p + 0x2c)};
-  const uint32_t lod_cnt[4] = {lod0_cnt, read_be16(p + 0x1e), read_be16(p + 0x26), read_be16(p + 0x2e)};
-  const uint32_t vert_count = read_be32(p + 0x38);
-  if (vert_count == 0 || vert_count > 32768 || num_lods == 0 || num_lods > 8) return false;
+  if (num_lods == 0 || num_lods > 8) return false;
+  // Header layout: 0x14 + num_lods * 8 bytes of LOD table, followed by 0x04 marker,
+  // vertex count (at 0x18 + num_lods * 8), 0x04 marker, and vertex array (at 0x20 + num_lods * 8).
+  // Supports both 4-LOD spectator meshes (verts at 0x40) and 1-LOD driver meshes (verts at 0x28).
+  const size_t vert_count_off = 0x18 + size_t(num_lods) * 8u;
+  const size_t verts_off = 0x20 + size_t(num_lods) * 8u;
+  if (verts_off + 4 > data.size()) return false;
 
-  const size_t idx_base = 0x40 + size_t(vert_count) * 36;
+  uint32_t lod_off[4] = {0u, 0u, 0u, 0u};
+  uint32_t lod_cnt[4] = {0u, 0u, 0u, 0u};
+  lod_cnt[0] = read_be32(p + 0x14);
+  for (uint32_t l = 1; l < std::min<uint32_t>(num_lods, 4u); ++l) {
+    const size_t lo = 0x14 + size_t(l) * 8u;
+    lod_off[l] = read_be16(p + lo);
+    lod_cnt[l] = read_be16(p + lo + 2);
+  }
+  const uint32_t vert_count = read_be32(p + vert_count_off);
+  if (vert_count == 0 || vert_count > 32768) return false;
+
+  const size_t idx_base = verts_off + size_t(vert_count) * 36;
   if (idx_base + 4 > data.size()) return false;
   const uint32_t total_idx = read_be32(p + idx_base);
   if (total_idx < 3 || idx_base + 4 + size_t(total_idx) * 2 > data.size()) return false;
@@ -631,7 +644,7 @@ bool parse_skinbin(std::span<const uint8_t> data, SpectatorMeshLod& out, int pre
   uint8_t max_bone = 0;
 
   for (uint32_t i = 0; i < vert_count; ++i) {
-    const uint8_t* vp = p + 0x40 + size_t(i) * 36;
+    const uint8_t* vp = p + verts_off + size_t(i) * 36;
     auto& v = out.vertices[i];
     v.pos = {read_bef32(vp + 0), read_bef32(vp + 4), read_bef32(vp + 8)};
     v.normal = vnorm({read_bef32(vp + 12), read_bef32(vp + 16), read_bef32(vp + 20)});

@@ -8,6 +8,8 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -86,28 +88,56 @@ bool load_airborne_challenges(const std::filesystem::path& game_root, std::vecto
 ShowcaseSpec resolve_showcase_spec(int64_t event_id, std::string_view horizon_id,
                                    const std::vector<ShowcaseSpec>& xml_specs, int difficulty = 1);
 
+// Optional terrain elevation probe returning the highest solid surface Y (m) at world (x, z).
+using GroundHeightFn = std::function<std::optional<double>(double x, double z)>;
+
 struct ShowcasePose {
   std::array<double, 3> position{};  // world (x, y, z)
   double heading = 0.0;              // rad, 0 faces +z, positive toward +x
   double pitch = 0.0;                // rad, positive nose up
-  double roll = 0.0;                 // rad, banking into turns
+  double roll = 0.0;                 // rad, positive banks left (raises +X right wing)
   double rotor_angle = 0.0;          // spinning propeller / main rotor phase (rad)
   double progress_m = 0.0;           // distance along showcase racing line
   double fraction = 0.0;             // [0..1] fraction of route completed
   double speed_mps = 0.0;
+  double ground_y = 0.0;             // highest terrain elevation sampled beneath aircraft (m)
+  double agl_m = 0.0;                // altitude above ground directly beneath aircraft (m)
   bool finished = false;
   double finish_time = -1.0;
 };
+
+// World-space aircraft basis and VFX emitter attachment points derived from ShowcaseSpec + ShowcasePose.
+struct ShowcaseVfxAnchors {
+  std::array<double, 3> forward{0.0, 0.0, 1.0};   // unit forward (+Z local)
+  std::array<double, 3> right{1.0, 0.0, 0.0};     // unit right (+X local)
+  std::array<double, 3> up{0.0, 1.0, 0.0};        // unit up (+Y local)
+  std::array<double, 3> velocity{0.0, 0.0, 0.0};  // world velocity (m/s)
+  std::array<std::array<double, 3>, 2> exhaust_pos{};
+  int exhaust_count = 0;
+  std::array<std::array<double, 3>, 2> wingtip_pos{};
+  int wingtip_count = 0;
+  std::array<double, 3> prop_hub_pos{};
+  std::array<double, 3> ground_wash_pos{};
+  double agl_m = 0.0;
+};
+
+// Transforms local aircraft directions/points into game world space matching the 3D showcase mesh.
+std::array<double, 3> showcase_local_dir(const ShowcasePose& pose, double lx, double ly, double lz);
+std::array<double, 3> showcase_local_point(const ShowcaseSpec& spec, const ShowcasePose& pose,
+                                           double lx, double ly, double lz);
+ShowcaseVfxAnchors compute_showcase_vfx_anchors(const ShowcaseSpec& spec, const ShowcasePose& pose);
 
 class ShowcaseOpponent {
  public:
   void init(const ShowcaseSpec& spec, const drive::RacingLine& line, double start_progress, double finish_progress,
             double expected_car_speed_mps = 0.0);
-  void step(double dt, double race_clock, double player_progress);
+  void apply_initial_clearance(const GroundHeightFn& ground_height);
+  void step(double dt, double race_clock, double player_progress, const GroundHeightFn& ground_height = {});
 
   const ShowcaseSpec& spec() const { return spec_; }
   const ShowcasePose& pose() const { return pose_; }
   bool active() const { return active_; }
+  double min_clearance_m() const;
   double anim_time() const { return anim_time_; }
   double anim_speed_mult() const { return anim_speed_mult_; }
   // Signed gap in metres: positive when player is ahead of the aircraft.
@@ -122,13 +152,24 @@ class ShowcaseOpponent {
     double prev_heading = 0.0;
     double anim_time = 0.0;
     double anim_speed_mult = 1.0;
+    double altitude_y = 0.0;
+    double smoothed_pitch = 0.0;
+    double smoothed_roll = 0.0;
+    bool altitude_initialized = false;
   };
-  Snapshot snapshot() const { return {pose_, prev_heading_, anim_time_, anim_speed_mult_}; }
+  Snapshot snapshot() const {
+    return {pose_, prev_heading_, anim_time_, anim_speed_mult_, altitude_y_, smoothed_pitch_, smoothed_roll_,
+            altitude_initialized_};
+  }
   void restore(const Snapshot& s) {
     pose_ = s.pose;
     prev_heading_ = s.prev_heading;
     anim_time_ = s.anim_time;
     anim_speed_mult_ = s.anim_speed_mult;
+    altitude_y_ = s.altitude_y;
+    smoothed_pitch_ = s.smoothed_pitch;
+    smoothed_roll_ = s.smoothed_roll;
+    altitude_initialized_ = s.altitude_initialized;
   }
 
  private:
@@ -145,6 +186,10 @@ class ShowcaseOpponent {
   double anim_time_ = 0.0;
   double anim_speed_mult_ = 1.0;
   double prev_heading_ = 0.0;
+  double altitude_y_ = 0.0;
+  double smoothed_pitch_ = 0.0;
+  double smoothed_roll_ = 0.0;
+  bool altitude_initialized_ = false;
   bool use_xml_checkpoints_ = false;
   std::vector<double> cp_times_;
   std::vector<double> cp_fracs_;

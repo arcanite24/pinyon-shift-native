@@ -159,6 +159,29 @@ struct DriveSession {
     double dest_x = 0.0, dest_z = 0.0;
   };
 
+  // Retail FH1 smooth Reset-to-Road UX state machine:
+  // ~0.25 s fade-out -> safe road-centerline reposition with zero velocity & camera
+  // re-center -> ~0.30 s fade-in with ~2.5 s brief ghosting / traffic-collision immunity.
+  struct ResetToRoadState {
+    static constexpr double kFadeOutSec = 0.25;
+    static constexpr double kFadeInSec = 0.30;
+    static constexpr double kGhostSec = 2.50;
+
+    enum class Phase : uint8_t { kIdle = 0, kFadeOut, kFadeIn };
+    Phase phase = Phase::kIdle;
+    double elapsed_s = 0.0;
+    double ghost_remaining_s = 0.0;
+    drive::Vehicle::Pose target_pose{};
+    bool has_target_pose = false;
+    drive::Vehicle::Pose last_live_pose{};
+    bool has_last_live_pose = false;
+    uint64_t seen_rig_restarts = 0;
+    std::string pending_notice;
+
+    bool active() const { return phase != Phase::kIdle; }
+    bool ghost_active() const { return ghost_remaining_s > 0.0 || phase != Phase::kIdle; }
+  };
+
   DriveApp& app;
   DriveWorldHost& host;
   const cars::bake::CarInfo& info;
@@ -187,6 +210,7 @@ struct DriveSession {
 
   SafeReset safe_reset;
   bool safe_reset_ok = false;
+  ResetToRoadState reset_ux;
   ContactLog contact_log;
 
   drive::Vec3 last_finite{};

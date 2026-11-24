@@ -160,6 +160,24 @@ void test_technique_classification_and_emission() {
   check(drive::evaluate_lamp_emission(drive::LampChannel::kNumPlate, v_night, cols)[0] > 0.5f, "numplate on at night");
   check(drive::evaluate_lamp_emission(drive::LampChannel::kGaugeBacklight, v_night, cols)[0] > 1.0f,
         "gauge backlight on at night");
+
+  // PT-23: Night cruising (brake == 0) must keep brake-only channels strictly off while
+  // illuminating running tail/2S lens channels softly; braking vividly boosts both.
+  const auto tail_cruise = drive::evaluate_lamp_emission(drive::LampChannel::kTailBrake2S, v_night, cols);
+  const auto brake_cruise = drive::evaluate_lamp_emission(drive::LampChannel::kBrake, v_night, cols);
+  check(brake_cruise[0] == 0.0f && brake_cruise[1] == 0.0f && brake_cruise[2] == 0.0f,
+        "brake-only lamp channel off while cruising at night");
+  check(tail_cruise[0] > 0.2f && tail_cruise[0] < 1.0f,
+        "running tail light lens illuminates cleanly without overbright flare");
+
+  in.brake_cmd = 1.0f;
+  in.brake_pedal = 1.0f;
+  st.update(in);
+  const auto v_night_brake = st.vectors();
+  const auto tail_brake = drive::evaluate_lamp_emission(drive::LampChannel::kTailBrake2S, v_night_brake, cols);
+  const auto brake_on = drive::evaluate_lamp_emission(drive::LampChannel::kBrake, v_night_brake, cols);
+  check(brake_on[0] >= 1.8f, "brake-only / third brake light glows vividly under braking");
+  check(tail_brake[0] > tail_cruise[0] * 2.5f, "2S tail/brake intensifies vividly over running tail when braking");
 }
 
 void test_cockpit_animation_math() {
@@ -273,6 +291,39 @@ void test_disc_lamp_points_if_available() {
   const auto beam = drive::resolve_headlight_beam(pts, false);
   check(beam.valid && beam.origin_body[2] > 1.0f && beam.origin_body[1] > 0.3f,
         "R34 projected headlight beam origin sits at front nose (+Z, +Y)");
+
+  // PT-23 disc check: Viper rear lamp points carry rear-facing 0x01 markers without 0x04,
+  // while Corrado carries rear 0x01, 0x02, and dedicated 0x04 brake points.
+  if (std::filesystem::exists(game_root / "media/cars/VIP_Viper_13.zip")) {
+    auto varch = fh1::Archive::open(game_root / "media/cars/VIP_Viper_13.zip", &err);
+    if (varch) {
+      auto vrd = varch->read("VIP_Viper_13.carbin");
+      if (vrd.ok()) {
+        const auto vpts = fh1::parse_carbin_lamp_points(vrd.data);
+        int rear_01 = 0, brake_04 = 0;
+        for (const auto& p : vpts) {
+          if ((p.channel_mask & 0x01u) && (p.position[2] < 0.0f || p.direction[2] < -0.2f)) ++rear_01;
+          if (p.channel_mask & 0x04u) ++brake_04;
+        }
+        check(rear_01 >= 2 && brake_04 == 0, "Viper rear lamp points have rear-facing 0x01 without 0x04");
+      }
+    }
+  }
+  if (std::filesystem::exists(game_root / "media/cars/VW_Corrado_95.zip")) {
+    auto carch = fh1::Archive::open(game_root / "media/cars/VW_Corrado_95.zip", &err);
+    if (carch) {
+      auto crd = carch->read("VW_Corrado_95.carbin");
+      if (crd.ok()) {
+        const auto cpts = fh1::parse_carbin_lamp_points(crd.data);
+        int tail_02 = 0, brake_04 = 0;
+        for (const auto& p : cpts) {
+          if (p.channel_mask & 0x02u) ++tail_02;
+          if (p.channel_mask & 0x04u) ++brake_04;
+        }
+        check(tail_02 >= 2 && brake_04 >= 2, "Corrado has both 0x02 running tail and 0x04 brake points");
+      }
+    }
+  }
 
   // Verify showroom staticcarcubemap.xpr XPR2 untiling + LogLuv HDR decode (SHOWROOM_LIGHTING.md).
   const auto xpr_path = game_root / "media/tracks/uiautoshow/staticcarcubemap.xpr";

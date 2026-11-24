@@ -16,11 +16,11 @@ Source playtest session: `out/playtests/20261124-143848/`
 | [2. Performance, Stutters & Frame Drops](#2-performance-stutters--frame-drops) | 4 | 1 |
 | [3. Audio & Lighting / Time-of-Day Bugs](#3-audio--lighting--time-of-day-bugs) | 3 | 0 |
 | [4. World Geometry, VFX, Crowds, Lights & Sky](#4-world-geometry-vfx-crowds-lights--sky) | 10 | 0 |
-| [5. Cars, Lamps, Driver Model & Showcase](#5-cars-lamps-driver-model--showcase) | 4 | 4 |
-| [6. Physics, Collision, Smashables & Camera](#6-physics-collision-smashables--camera) | 5 | 5 |
+| [5. Cars, Lamps, Driver Model & Showcase](#5-cars-lamps-driver-model--showcase) | 4 | 0 |
+| [6. Physics, Collision, Smashables & Camera](#6-physics-collision-smashables--camera) | 5 | 0 |
 | [7. World Map & Minimap Parity](#7-world-map--minimap-parity) | 5 | 5 |
 | [8. HUD, Menus, Campaign & 1:1 UI/UX Parity](#8-hud-menus-campaign--11-uiux-parity) | 9 | 7 |
-| **Total** | **45** | **22** |
+| **Total** | **45** | **13** |
 
 ---
 
@@ -164,52 +164,54 @@ Source playtest session: `out/playtests/20261124-143848/`
 
 ## 5. Cars, Lamps, Driver Model & Showcase
 
-- [ ] **PT-23 — Tail lights have an always-on red spot / flare blob**
+- [x] **PT-23 — Tail lights have an always-on red spot / flare blob**
   - **Priority**: P1
   - **Evidence**: User screenshot 2, `bug_001.png`–`bug_005.png`, `bug_020.png`, `bug_023.png`–`bug_025.png`, `bug_029.png`. Bright circular red glow blobs float over both tail lights continuously (even when cruising/accelerating with zero braking).
-  - **Suspected cause**: Tail-light corona/flare sprite scale/alpha in `showroom_lights.cpp` (`carlights`) is far too bright/large on running tail lights instead of subtle lens illumination (and should intensify only on braking).
+  - **Fix (PT-C)**: Added `cars::evaluate_car_lamp_glow_sprite()` suppressing close/mid-range running tail-light halo sprites (`0x02` and rear `0x01`) while cruising so lenses glow cleanly, reserving proportional tight housing-seated glows for braking (`0x04`/fallback).
 
-- [ ] **PT-24 — Player driver model missing head / clipped inside cabin**
+- [x] **PT-24 — Player driver model missing head / clipped inside cabin**
   - **Priority**: P1
   - **Evidence**: `bug_010.png` (`t=532.5s`, side view of `VW_Corrado_95`), `bug_018.png` (side view of Beetle in Autoshow). Driver torso/red collar is visible but the head is missing/clipped or positioned incorrectly.
-  - **Suspected cause**: Driver head submesh skipped/culled (e.g., cockpit-camera head-hide flag stuck active in chase/external cameras, or missing head part load from `Driver.zip`).
+  - **Fix (PT-C)**: Generalized `world::parse_skinbin()` for `num_lods == 1` (`Driver01.skinbin`), loaded exact `Driver01.skinbin` + `Driver01_D.xds` facing forward with roof-clearance seating and hands/body triangle partitioning (cockpit vs external/Autoshow), and fixed swapped polar-cap guards in procedural fallback.
 
-- [ ] **PT-25 — Car rear spoiler floating detached behind the car**
+- [x] **PT-25 — Car rear spoiler floating detached behind the car**
   - **Priority**: P1
   - **Evidence**: `bug_023.png` (`t=1352.9s`, `-3025.10 1.24 -1727.87`, `VW_Corrado_95` at `135 km/h`). Corrado active rear wing deploys too high/detached with a visible gap behind the hatch.
-  - **Suspected cause**: Active aero deployment translation/pivot offset in `showroom_car_state.cpp` / `car_model.cpp` exceeds the Corrado's actual wing strut travel.
+  - **Fix (PT-C)**: Added `cars::compute_active_wing_deploy()` pivoting multi-subsection wings rigidly around a unified leading-mount hinge with aerodynamic negative downforce pitch (`-0.11 rad`) and decklid-bounded vertical travel (`2.2–4.2 cm` flush / `4.2–7.2 cm` pedestal-linked).
 
-- [ ] **PT-26 — Mustang vs Mustang (P-51 plane) Showcase not 1:1**
+- [x] **PT-26 — Mustang vs Mustang (P-51 plane) Showcase not 1:1**
   - **Priority**: P1
   - **Evidence**: User report during `PLANE_RACE_001` (`bug_027` session). Plane flies straight through mountains/terrain and has no exhaust/smoke/propeller particles.
-  - **Suspected cause**: Showcase aircraft spline/altitude in `libs/race/src/showcase.cpp` ignores terrain height clearance and does not emit particle trails from wingtips/exhaust.
+  - **Fix (PT-C)**: Added multi-station lookahead terrain-clearance flight envelope (`min_clearance_m()` + smooth anticipatory climb/descent pitch & coordinated bank), twin Merlin exhaust puffs, wingtip vortex trails, low-altitude prop-wash dust, and P-51D visual accents.
 
 ---
 
 ## 6. Physics, Collision, Smashables & Camera
 
-- [ ] **PT-27 — Physics launch car into the air on small fence/barrier crashes**
+- [x] **PT-27 — Physics launch car into the air on small fence/barrier crashes**
   - **Priority**: P0
   - **Evidence**: User report ("a small crash with a fence, launches the car on the air").
-  - **Suspected cause**: Impulse clamping / upward normal deflection or smashable/world-collision overlap response in `libs/drive/src/physics.cpp` & `world/collision.cpp` injecting excessive vertical velocity on thin fence triangles.
+  - **Fix (PT-C)**: Rejected steep side-wall/bank surfaces (`normal.y < 0.65`) from wheel suspension probes, clamped bumpstop over-compression/damping and single-wheel peak load, projected steep wall body-contact normals strictly horizontally (`n_eff.y = 0`), and clamped wall-contact upward `vel_.y` spikes.
 
-- [ ] **PT-28 — Camera moves too aggressively when crashing a fence**
+- [x] **PT-28 — Camera moves too aggressively when crashing a fence**
   - **Priority**: P1
   - **Evidence**: User report ("camera movements when crashing a fence, moves too aggressively").
-  - **Suspected cause**: Collision camera kick / `CameraPhysics` impulse scaling in `libs/drive/src/cameras.cpp` & `drive_frame_render.cpp` over-reacting to minor smashable/fence impacts.
+  - **Fix (PT-C)**: Added collision deadzone + light-vs-heavy shaping curve, rising-edge `0.22 s` refractory cooldown on impulse layers, damped spring recovery (`>= 0.75`), bounded total collision kick offsets, and chase yaw-rate/slope slew clamps in `DriveCamera`.
 
-- [ ] **PT-29 — Crashing a road sign emits a single giant floating sign/particle instead of natural debris**
+- [x] **PT-29 — Crashing a road sign emits a single giant floating sign/particle instead of natural debris**
   - **Priority**: P1
   - **Evidence**: `bug_012.png` (`t=620.8s`), `bug_013.png` (`t=622.1s`), `bug_014.png` (`t=624.7s`, `-1390..-1450`). Sign appears hugely oversized / hovers in front of the camera instead of breaking cleanly with realistic scale and splinter/spark particles.
+  - **Fix (PT-C)**: Added outward lateral deflection, impact-aligned tumble spin, air/spin drag, rear chase-camera corridor clearance, `2.15 m` near-lens debris cull in `showroom_vfx.cpp`, and metallic spark bursts on metal sign impacts.
 
-- [ ] **PT-30 — Default driving assists on New Campaign do not match retail 1:1**
+- [x] **PT-30 — Default driving assists on New Campaign do not match retail 1:1**
   - **Priority**: P1
   - **Evidence**: User report ("looks like we have no ABS/traction control/etc by default on new campaign"; also note `ABS` / `TCS` icons dimmed in speedometer on `bug_001`–`bug_029`).
-  - **Suspected cause**: Check default assist preset for New Campaign (`ABS = ON`, `TCS = ON`, `STM = ON`, `Shifting = Automatic`, `Braking = Assisted/ABS`, `Steering = Normal`, `Rewind = ON`, `Driving Line = Full` in retail FH1 Medium default).
+  - **Fix (PT-C)**: Added `drive::AssistSettings::retail_defaults()` (`ABS=ON`, `TCS=ON`, `STM=ON`, Automatic, Normal steering, Full driving line, Rewind ON, Cosmetic damage) applied on fresh profiles and `start_new_career()` while preserving customized saved settings.
 
-- [ ] **PT-31 — Reset-to-road (`R`) UX not 1:1**
+- [x] **PT-31 — Reset-to-road (`R`) UX not 1:1**
   - **Priority**: P2
   - **Evidence**: User report ("reset to road UX not 1:1"). Retail FH1 uses a smooth fade/reposition with brief ghosting/invulnerability and clean camera re-center rather than an abrupt teleport snap.
+  - **Fix (PT-C)**: Added `DriveSession::ResetToRoadState` with `0.25 s` fade-out -> clean road-centerline zero-velocity reposition + chase camera re-center -> `0.30 s` fade-in and `2.5 s` traffic/AI collision ghosting.
 
 ---
 

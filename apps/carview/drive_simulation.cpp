@@ -475,6 +475,79 @@ int64_t DriveSession::current_make_id() {
 
 bool DriveSession::step(const drive::Input& user_in) {
         const auto ph_t0 = std::chrono::steady_clock::now();
+        // PT-31: Retail FH1 smooth Reset-to-Road UX (~0.25 s fade-out -> safe centerline
+        // reposition with zero velocity & camera re-center -> ~0.30 s fade-in + 2.5 s ghosting).
+        auto begin_smooth_reset = [&](const drive::Vehicle::Pose& pre_pose, const drive::Vehicle::Pose& tgt_pose,
+                                      std::string msg) {
+          reset_ux.target_pose = tgt_pose;
+          reset_ux.target_pose.vel = {};
+          reset_ux.target_pose.ang = {};
+          reset_ux.has_target_pose = true;
+          reset_ux.phase = ResetToRoadState::Phase::kFadeOut;
+          reset_ux.elapsed_s = 0.0;
+          reset_ux.pending_notice = std::move(msg);
+          vehicle.set_pose(pre_pose);
+          drawn_before = pre_pose;
+          rig.clear_pending_restart();
+          if (!app.campaign.flow().transition().active) {
+            app.campaign.flow().transition().start(race::TransitionKind::kCrossFade,
+                                                   ResetToRoadState::kFadeOutSec + ResetToRoadState::kFadeInSec);
+          }
+        };
+        if (rig.restart_count() != reset_ux.seen_rig_restarts) {
+          reset_ux.seen_rig_restarts = rig.restart_count();
+          if (!app.headless && !app.bench && reset_ux.has_last_live_pose && vehicle.time() > 0.05 &&
+              reset_ux.phase == ResetToRoadState::Phase::kIdle) {
+            const drive::Vec3 cur_p = vehicle.position();
+            const drive::Vec3 prev_p =
+                reset_ux.last_live_pose.pos -
+                drive::rotate(reset_ux.last_live_pose.rot, vehicle.params().centre_of_mass);
+            if (std::hypot(cur_p.x - prev_p.x, cur_p.z - prev_p.z) < 200.0) {
+              begin_smooth_reset(reset_ux.last_live_pose, vehicle.pose(), "");
+            }
+          }
+        }
+        if (reset_ux.ghost_remaining_s > 0.0) {
+          reset_ux.ghost_remaining_s = std::max(0.0, reset_ux.ghost_remaining_s - drive::Vehicle::kStep);
+        }
+        bool hold_for_reset_fade = false;
+        if (reset_ux.phase == ResetToRoadState::Phase::kFadeOut) {
+          hold_for_reset_fade = true;
+          reset_ux.elapsed_s += drive::Vehicle::kStep;
+          // Calmly damp residual motion while fading out so the car does not keep tumbling.
+          const double damp = std::exp(-8.0 * drive::Vehicle::kStep);
+          const drive::Vec3 v_cur = vehicle.velocity();
+          const drive::Vec3 a_cur = vehicle.angular_velocity();
+          vehicle.set_velocity(v_cur * damp, a_cur * damp);
+          if (reset_ux.elapsed_s >= ResetToRoadState::kFadeOutSec) {
+            if (reset_ux.has_target_pose) {
+              vehicle.set_pose(reset_ux.target_pose);
+              vehicle.set_velocity({0.0, 0.0, 0.0}, {0.0, 0.0, 0.0});
+              drawn_before = vehicle.pose();
+            }
+            camera_pull = CameraPull{};
+            rig.restart();
+            rig_accel.reset();
+            reset_ux.seen_rig_restarts = rig.restart_count();
+            rewind_buf.reset_history(vehicle.time());
+            world_rewind_snaps.clear();
+            reset_ux.has_target_pose = false;
+            reset_ux.phase = ResetToRoadState::Phase::kFadeIn;
+            reset_ux.elapsed_s = 0.0;
+            reset_ux.ghost_remaining_s = ResetToRoadState::kGhostSec;
+            if (!reset_ux.pending_notice.empty()) {
+              notice = reset_ux.pending_notice;
+              notice_until = vehicle.time() + 2.5;
+              reset_ux.pending_notice.clear();
+            }
+          }
+        } else if (reset_ux.phase == ResetToRoadState::Phase::kFadeIn) {
+          reset_ux.elapsed_s += drive::Vehicle::kStep;
+          if (reset_ux.elapsed_s >= ResetToRoadState::kFadeInSec) {
+            reset_ux.phase = ResetToRoadState::Phase::kIdle;
+            reset_ux.elapsed_s = 0.0;
+          }
+        }
         // Snap player vehicle onto live road surface before the first race physics step
         // so elevated route transform Y values never drop the car onto the starting grid.
         if (app.race && host.ground && vehicle.time() <= 1e-6 && !app.race->session().started()) {
@@ -528,7 +601,12 @@ bool DriveSession::step(const drive::Input& user_in) {
           me.rear_df_coeff = vehicle.params().aero_df_rear + vehicle.params().aero_part_df_rear;
           vehicle.set_draft(drive::compute_follower_draft(me, leaders.data(), leaders.size()));
         }
-        const drive::Input in = app.race ? app.race->player_input(vehicle, user_in, traffic.get()) : user_in;
+        drive::Input eff_user_in = user_in;
+        if (hold_for_reset_fade) {
+          eff_user_in = drive::Input{};
+          eff_user_in.brake = 1.0;
+        }
+        const drive::Input in = app.race ? app.race->player_input(vehicle, eff_user_in, traffic.get()) : eff_user_in;
         vehicle.step(in, *host.ground);
         {
           // Thermal brake rotor integrator: heats proportionally to brake pedal * speed
@@ -561,7 +639,16 @@ bool DriveSession::step(const drive::Input& user_in) {
         log_contacts();
         const auto ai_t0 = std::chrono::steady_clock::now();
         step_physics_ms += std::chrono::duration<double, std::milli>(ai_t0 - ph_t0).count();
-        if (traffic) traffic->step(vehicle);
+        const bool reset_ghost_active = reset_ux.ghost_active();
+        if (traffic) {
+          const auto pre_traffic_pose = vehicle.pose();
+          traffic->step(vehicle);
+          if (reset_ghost_active && traffic->player_impulse() > 0.0) {
+            // Brief post-reset ghosting immunity (~2.5 s) keeps traffic from
+            // immediately rear-ending the player right after resetting to the road.
+            vehicle.set_pose(pre_traffic_pose);
+          }
+        }
         // Free-roam Festival AI Racers & instant Head-to-Head point-to-point race.
         // Stepped BEFORE SkillTracker so Festival AI collisions break the active skill chain
         // on the exact frame they occur and apply visual damage + realistic angular impulse.
@@ -610,8 +697,9 @@ bool DriveSession::step(const drive::Input& user_in) {
                         hres.opponent_name.c_str(), (long long)hres.payout_credits, hres.popularity_points);
             save_due = true;
           }
-          // Car-to-car physics collision between player and nearby Festival AI / H2H cars.
-          {
+          // Car-to-car physics collision between player and nearby Festival AI / H2H cars
+          // (suppressed during the brief post-reset ghosting immunity window).
+          if (!reset_ghost_active) {
             const drive::Vec3 fv = vehicle.velocity();
             const auto fcol = festival_mgr->resolve_player_collision(
                 {fp.x, fp.y, fp.z}, {fv.x, fv.y, fv.z}, vehicle.params().mass, drive::Vehicle::kStep);
@@ -849,6 +937,11 @@ bool DriveSession::step(const drive::Input& user_in) {
             bhit.pos = {sev.pos[0], sev.pos[1], sev.pos[2]};
             bhit.is_break = true;
             bhit.smash_material = classify_smash_material(stem_l, stype, bhit.surface_hint);
+            if (bhit.smash_material == audio::SmashMaterial::kMetal) {
+              host.particle_sys.spawn_collision_impact(
+                  {sev.pos[0], sev.pos[1] + 0.6f, sev.pos[2]}, {0.0f, 1.0f, 0.0f}, sev.impulse_vel,
+                  float(std::clamp(std::fabs(vehicle.speed()) * 0.45, 3.0, 12.0)), true);
+            }
             app.audio_host.trigger_collision(bhit);
             if (sev.object_type_index == 1) app.audio_host.trigger_ui(audio::UiCue::kSignSmash);
           }
@@ -1000,7 +1093,7 @@ bool DriveSession::step(const drive::Input& user_in) {
           si.wheel_spin = max_spin;
           const double mass = std::max(500.0, vehicle.params().mass);
           si.world_impact_ms = vehicle.strongest_body_contact().force * drive::Vehicle::kStep / mass;
-          const double traffic_imp_s = traffic ? traffic->player_impulse() : 0.0;
+          const double traffic_imp_s = (traffic && !reset_ghost_active) ? traffic->player_impulse() : 0.0;
           const double race_imp_s = app.race ? app.race->player_impulse() : 0.0;
           si.car_impact_ms = std::max({traffic_imp_s, race_imp_s, step_car_impact_accum}) / mass;
           si.smashed_object = smashed_prop;
@@ -1168,10 +1261,11 @@ bool DriveSession::step(const drive::Input& user_in) {
             g_rollover_state.rolled_s = 0.0;
           }
           g_rollover_state.last_sim_time = vehicle.time();
-          if (vehicle.is_rolled_over()) {
+          if (vehicle.is_rolled_over() && reset_ux.phase == ResetToRoadState::Phase::kIdle) {
             g_rollover_state.rolled_s += drive::Vehicle::kStep;
             if (g_rollover_state.rolled_s >= 2.0) {
               g_rollover_state.rolled_s = 0.0;
+              const auto pre_pose = vehicle.pose();
               const drive::Vec3 at = vehicle.position();
               double away = 0.0;
               world::Spawn sp{};
@@ -1189,9 +1283,8 @@ bool DriveSession::step(const drive::Input& user_in) {
                 placed = true;
               }
               if (placed) {
-                rig_accel.reset();
-                notice = "CAR ROLLED OVER — RESET TO ROAD";
-                notice_until = vehicle.time() + 3.0;
+                const auto tgt_pose = vehicle.pose();
+                begin_smooth_reset(pre_pose, tgt_pose, "CAR ROLLED OVER — RESET TO ROAD");
                 std::printf("t %.2f s: rollover recovery at %.1f %.1f %.1f (%.1f m to road)\n", vehicle.time(), at.x,
                             at.y, at.z, away);
               }
@@ -1208,7 +1301,8 @@ bool DriveSession::step(const drive::Input& user_in) {
           for (const auto& w : vehicle.wheels()) touching |= w.contact;
           const drive::Vec3 p = vehicle.position();
           if (touching || !have_touch) last_touch_y = p.y, have_touch = true;
-          else if (p.y < last_touch_y - 20) {
+          else if (p.y < last_touch_y - 20 && reset_ux.phase == ResetToRoadState::Phase::kIdle) {
+            const auto pre_pose = vehicle.pose();
             double away = 0;
             world::Spawn sp;
             const bool placed = (safe_reset_ok && safe_reset.place(*host.streamer, vehicle, &away)) ||
@@ -1216,12 +1310,21 @@ bool DriveSession::step(const drive::Input& user_in) {
             std::printf("t %.2f s: fell through the ground at %.1f %.1f %.1f (no collision there)%s\n", vehicle.time(),
                         p.x, p.y, p.z, placed ? ", put back on the road" : "");
             if (placed) {
-              rig_accel.reset();
-              notice = "off the world: put back on the road";
-              notice_until = vehicle.time() + 3;
+              if (!app.headless && !app.bench) {
+                const auto tgt_pose = vehicle.pose();
+                begin_smooth_reset(pre_pose, tgt_pose, "OFF THE WORLD — RESET TO ROAD");
+              } else {
+                rig_accel.reset();
+                notice = "off the world: put back on the road";
+                notice_until = vehicle.time() + 3;
+              }
             }
             last_touch_y = vehicle.position().y;
           }
+        }
+        if (reset_ux.phase == ResetToRoadState::Phase::kIdle) {
+          reset_ux.last_live_pose = vehicle.pose();
+          reset_ux.has_last_live_pose = true;
         }
         const auto st_t0 = std::chrono::steady_clock::now();
         step_ai_traffic_ms += std::chrono::duration<double, std::milli>(st_t0 - ai_t0).count();

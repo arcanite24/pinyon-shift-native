@@ -942,38 +942,81 @@ void Showroom::set_debris_mesh(const std::vector<world::DebrisVertex>& tris) {
   debris_batches_.clear();
   if (!vfx_ready_ || !debris_buf_.ready() || tris.empty()) return;
   // Keep vertex count a multiple of 3 (complete triangles).
-  const uint32_t n = uint32_t(std::min(tris.size(), size_t(kMaxDebrisVerts)) / 3u) * 3u;
-  if (n == 0) return;
+  const uint32_t max_in = uint32_t(std::min(tris.size(), size_t(kMaxDebrisVerts)) / 3u) * 3u;
+  if (max_in == 0) return;
+
+  // Camera near-lens exclusion sphere in scenery coordinates: cull debris triangles
+  // that drift right in front of the camera lens (< 2.15 m) so a smashed road sign
+  // can never hover giant across the viewport.
+  const auto cam_eye = eye_in_scenery(world_transform_);
+  const bool have_cam_eye =
+      std::isfinite(cam_eye[0]) && std::isfinite(cam_eye[1]) && std::isfinite(cam_eye[2]);
+  constexpr float kLensCullRadius2 = 2.15f * 2.15f;
+
   auto* dst = static_cast<WorldVertex*>(debris_buf_.data());
   auto snorm8 = [](float x) -> int8_t {
     return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
   };
-  for (uint32_t i = 0; i < n; ++i) {
-    const auto& v = tris[i];
-    WorldVertex& o = dst[i];
-    o = WorldVertex{};
-    o.position[0] = float(double(v.pos[0]) - world_origin_[0]);
-    o.position[1] = v.pos[1];
-    o.position[2] = float(double(v.pos[2]) - world_origin_[1]);
-    o.normal[0] = snorm8(v.normal[0]);
-    o.normal[1] = snorm8(v.normal[1]);
-    o.normal[2] = snorm8(v.normal[2]);
-    o.normal[3] = 0;
-    o.uv0[0] = v.uv[0];
-    o.uv0[1] = v.uv[1];
-    for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
-  }
-  for (uint32_t i = 0; i < n; i += 3u) {
+  uint32_t out_n = 0;
+  for (uint32_t i = 0; i < max_in; i += 3u) {
+    float p[3][3];
+    bool bad = false;
+    float min_d2 = 1e30f;
+    float cx = 0.0f, cy = 0.0f, cz = 0.0f;
+    for (int k = 0; k < 3; ++k) {
+      const auto& v = tris[i + uint32_t(k)];
+      p[k][0] = float(double(v.pos[0]) - world_origin_[0]);
+      p[k][1] = v.pos[1];
+      p[k][2] = float(double(v.pos[2]) - world_origin_[1]);
+      if (!std::isfinite(p[k][0]) || !std::isfinite(p[k][1]) || !std::isfinite(p[k][2])) {
+        bad = true;
+        break;
+      }
+      cx += p[k][0];
+      cy += p[k][1];
+      cz += p[k][2];
+      if (have_cam_eye) {
+        const float dx = p[k][0] - cam_eye[0];
+        const float dy = p[k][1] - cam_eye[1];
+        const float dz = p[k][2] - cam_eye[2];
+        min_d2 = std::min(min_d2, dx * dx + dy * dy + dz * dz);
+      }
+    }
+    if (bad) continue;
+    if (have_cam_eye) {
+      const float dx = cx * (1.0f / 3.0f) - cam_eye[0];
+      const float dy = cy * (1.0f / 3.0f) - cam_eye[1];
+      const float dz = cz * (1.0f / 3.0f) - cam_eye[2];
+      const float cd2 = dx * dx + dy * dy + dz * dz;
+      if (min_d2 < kLensCullRadius2 || cd2 < kLensCullRadius2) continue;
+    }
+
+    const uint32_t first_v = out_n;
+    for (int k = 0; k < 3; ++k) {
+      const auto& v = tris[i + uint32_t(k)];
+      WorldVertex& o = dst[out_n++];
+      o = WorldVertex{};
+      o.position[0] = p[k][0];
+      o.position[1] = p[k][1];
+      o.position[2] = p[k][2];
+      o.normal[0] = snorm8(v.normal[0]);
+      o.normal[1] = snorm8(v.normal[1]);
+      o.normal[2] = snorm8(v.normal[2]);
+      o.normal[3] = 0;
+      o.uv0[0] = v.uv[0];
+      o.uv0[1] = v.uv[1];
+      for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
+    }
     const uint32_t tex = tris[i].texture_record;
     const uint8_t cut = tris[i].cutout;
     if (!debris_batches_.empty() && debris_batches_.back().texture_record == tex &&
         debris_batches_.back().cutout == cut) {
       debris_batches_.back().vertex_count += 3u;
     } else {
-      debris_batches_.push_back({i, 3u, tex, cut});
+      debris_batches_.push_back({first_v, 3u, tex, cut});
     }
   }
-  debris_count_ = n;
+  debris_count_ = out_n;
   ++debris_buf_.ver;
 }
 

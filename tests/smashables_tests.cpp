@@ -373,6 +373,99 @@ void test_solid_festival_barriers_and_ground_height() {
   }
 }
 
+void test_road_sign_debris_and_barn_door_no_launch() {
+  // PT-29: Smashing a roadside sign launches tumbling debris laterally outward away from
+  // the car centerline, applies air drag & gravity so it never floats in the chase camera
+  // corridor, and bounces/settles onto the ground naturally.
+  {
+    world::SmashableWorld sw;
+    world::PropPhysicsDef sign{};
+    sign.object_type_index = 2;
+    sign.break_speed_mph = 5.0f;
+    sign.mass = 0.25f;
+    sign.bounding_radius = 1.2f;
+    world::CollObjPlacement pl{};
+    pl.physics_type = "CO_RoadSign.0.rmb";
+    pl.stem = "co_roadsign";
+    pl.pos = {-0.6f, 0.0f, 8.0f};  // left side of car path
+    sw.add_prop(pl, &sign);
+
+    drive::FlatGround ground(0.0);
+    drive::CarParams cp{};
+    drive::Vehicle car(cp);
+    car.launch({0.0, 0.0, 2.0}, 0.0, 24.0);
+
+    std::vector<world::SmashEvent> evs;
+    bool smashed = false;
+    bool entered_chase_lens_corridor = false;
+    float min_x = 0.0f;
+    float final_y = 0.0f;
+    float final_z = 0.0f;
+    std::vector<world::DebrisVertex> mesh;
+
+    for (int i = 0; i < 220; ++i) {
+      car.step({0.0, 0.4, 0.0, false}, ground);
+      evs.clear();
+      sw.step(car, ground, float(drive::Vehicle::kStep), evs);
+      if (!evs.empty()) smashed = true;
+      if (smashed && sw.active_dynamic_count() > 0) {
+        mesh.clear();
+        sw.build_debris_mesh(mesh);
+        if (!mesh.empty()) {
+          double sx = 0.0, sy = 0.0, sz = 0.0;
+          for (const auto& v : mesh) {
+            sx += v.pos[0];
+            sy += v.pos[1];
+            sz += v.pos[2];
+          }
+          const float cx = float(sx / double(mesh.size()));
+          const float cy = float(sy / double(mesh.size()));
+          const float cz = float(sz / double(mesh.size()));
+          min_x = std::min(min_x, cx);
+          final_y = cy;
+          final_z = cz;
+          const float dz = cz - float(car.position().z);
+          const float dx = std::fabs(cx - float(car.position().x));
+          if (dz < -1.5f && dz > -7.5f && dx < 1.1f && cy > 0.6f && cy < 3.2f) {
+            entered_chase_lens_corridor = true;
+          }
+        }
+      }
+    }
+    CHECK(smashed);
+    CHECK(sw.active_dynamic_count() >= 1);
+    CHECK(min_x < -2.0f);                           // kicked cleanly outward to the left roadside
+    CHECK(!entered_chase_lens_corridor);            // never floats in front of chase camera lens
+    CHECK(final_y < 1.6f);                          // pulled down by gravity toward ground
+    CHECK(final_z < float(car.position().z) - 8.0f);  // air drag drops debris well behind car
+  }
+
+  // PT-27: Hitting a closed barn door deflects strictly horizontally with zero upward launch.
+  {
+    world::SmashableWorld sw;
+    world::BarnDoorCollider door;
+    door.barn_name = "barnfind_pt27";
+    door.pos = {0.0f, 0.0f, 9.0f};
+    door.is_open = false;
+    sw.add_barn_door(door);
+
+    drive::FlatGround ground(0.0);
+    drive::CarParams cp{};
+    drive::Vehicle car(cp);
+    car.launch({0.0, 0.0, 3.0}, 0.0, 22.0);
+    std::vector<world::SmashEvent> evs;
+    double max_y = 0.0, max_vy = 0.0;
+    for (int i = 0; i < 80; ++i) {
+      car.step({0.0, 0.2, 0.0, false}, ground);
+      sw.step(car, ground, float(drive::Vehicle::kStep), evs);
+      max_y = std::max(max_y, car.position().y);
+      max_vy = std::max(max_vy, car.velocity().y);
+    }
+    CHECK(max_y < 1.2);
+    CHECK(max_vy < 0.8);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -380,6 +473,7 @@ int main() {
   test_barn_door_swap();
   test_smashables_rewind_restore();
   test_solid_festival_barriers_and_ground_height();
+  test_road_sign_debris_and_barn_door_no_launch();
   test_corpus();
   if (g_failures == 0) {
     std::printf("smashables_tests: all checks passed\n");

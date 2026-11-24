@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "cars/physics.h"
+#include "fh1data/carbin.h"
 
 namespace cars {
 
@@ -169,5 +170,32 @@ bool resolve_visual_setup(const PartsDb& db, int64_t car_id, const FittedParts& 
 // Brake rotor filename stem for List_BrakeType ID (1..5):
 // "drum", "rotor_steel", "rotor_drilled", "rotor_slotted", "rotor_carbon".
 const char* brake_type_stem(int type_id);
+
+// Resolved per-sprite car lamp glow parameters (clean separation of running tail
+// illumination on the lens mesh vs crisp proportional brake/headlamp glow sprites).
+struct CarLampGlowSpriteParams {
+  bool emit = false;
+  float intensity = 0.0f;    // HDR linear gain * channel activation
+  float radius_m = 0.0f;     // billboard world radius (metres)
+  float view_bias_m = 0.06f; // camera-ray offset (metres) to prevent lens Z-fighting
+};
+
+CarLampGlowSpriteParams evaluate_car_lamp_glow_sprite(const fh1::CarbinLampPoint& pt, float resolved_radius_m,
+                                                      float head_amt, float brake_amt, float reverse_amt,
+                                                      float ind_left_amt, float ind_right_amt,
+                                                      bool car_has_dedicated_brake_points, bool is_player_car,
+                                                      float dist_to_eye_m, float night_factor);
+
+// Physically bounded active rear wing / spoiler deployment transform parameters
+// in car model space (+Y up, -Z forward, +Z rearward; negative pitch_rad raises
+// the trailing +Z edge for downforce/airbrake while keeping mounts seated).
+struct ActiveWingDeployParams {
+  float lift_m = 0.0f;
+  float pitch_rad = 0.0f;
+  float pivot_z_frac = 0.25f;
+};
+
+ActiveWingDeployParams compute_active_wing_deploy(float deploy, float wing_height_m, float link_height_m,
+                                                  bool has_linkages, bool is_linkage_part, bool is_flap_only);
 
 }  // namespace cars

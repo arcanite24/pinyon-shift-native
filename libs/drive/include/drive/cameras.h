@@ -8,6 +8,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
@@ -234,7 +235,14 @@ class DriveCamera {
   void set_head_pose(const HeadPose& pose) { head_pose_ = pose; }
   const HeadPose& head_pose() const { return head_pose_; }
   // Starts the current camera again (a reset or a new car).
-  void restart() { started_ = false; }
+  void restart() {
+    started_ = false;
+    ++restart_count_;
+  }
+  uint64_t restart_count() const { return restart_count_; }
+  void clear_pending_restart() {
+    if (has_started_once_) started_ = true;
+  }
   // Steps the springs by dt (a dt over half a second settles them) and
   // places the camera.
   CameraView update(double dt, const CameraInput& in);
@@ -259,6 +267,7 @@ class DriveCamera {
     double env = 0, env_sign = 1.0;
     double noise_phase = 0;
     double impulse_timer = -1.0, pending_impulse = 0.0;
+    double impulse_cooldown = 0.0, prev_impulse_mag = 0.0;
     bool started = false;
   };
   struct LayerOut {
@@ -280,6 +289,8 @@ class DriveCamera {
   ImmersiveCameraConfig immersive_;
   HeadPose head_pose_;
   bool started_ = false;
+  bool has_started_once_ = false;
+  uint64_t restart_count_ = 0;
   std::vector<LayerState> layer_state_;
   // Immersive camera runtime springs/phases.
   double imm_g_long_ = 0, imm_g_lat_ = 0;
@@ -290,6 +301,7 @@ class DriveCamera {
   // slope_hold_: seconds since three or more wheels last touched.
   double look_old_ = 0;  // the look angle the eye stood at last frame
   double theta_ = 0, omega_ = 0, h_ = 0, h_rate_ = 0, c_ = 0, slope_hold_ = 0;
+  double yaw_rate_smooth_ = 0;  // slew-damped car yaw rate for crash-shock immunity
   double wall_pull_ = 1.0;  // damped horizontal obstacle pull-in fraction [0.2, 1.0]
   // The bumper's ground height, taken when it starts.
   double bumper_ground_ = 0;

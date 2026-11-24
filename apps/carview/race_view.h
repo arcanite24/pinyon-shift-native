@@ -46,6 +46,8 @@ struct PiConfig;
 
 namespace world {
 class Collision;
+class ParticleLibrary;
+class ParticleSystem;
 }
 
 namespace carview {
@@ -151,6 +153,8 @@ class RaceView {
   double showcase_rumble_strength(const drive::Vec3& player_pos) const;
   void build_showcase_mesh(std::vector<Showroom::ShowcaseVertex>& out) const;
   void append_showcase_mesh(std::vector<world::DebrisVertex>& out) const;
+  void emit_showcase_vfx(world::ParticleSystem& particles, const world::ParticleLibrary& vfx_lib,
+                         const drive::Vec3& player_pos, float dt) const;
   bool showcase_tag(OpponentTag& out) const;
   // Car-to-car collision impulse against race AI during the last step (N s) & player-local contact point.
   double player_impulse() const { return player_impulse_; }

@@ -413,6 +413,12 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               for (SDL_Gamepad* pad : pads) SDL_RumbleGamepad(pad, lo, hi, 100);
             }
           }
+          // Airborne Showcase aircraft VFX: twin Merlin V12 exhaust, wingtip vortex trails, and low-pass prop-wash dust.
+          if (app.race && app.race->is_showcase() && !menu_paused && !rewind_buf.active() && !app.headless &&
+              (!app.bench || app.bench_full_fx) && !app.show_title && !app.fmv_player.active()) {
+            app.race->emit_showcase_vfx(host.particle_sys, app.vfx_lib, vehicle.position(),
+                                        float(std::clamp(frame_dt, 0.0, 0.05)));
+          }
           int w = 0, h = 0;
           SDL_GetWindowSizeInPixels(app.window, &w, &h);
           // Pose car & camera BEFORE building projected world HUD markers and opponent name tags!

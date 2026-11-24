@@ -105,16 +105,20 @@ struct KeyBindings {
   void deserialize(std::string_view text);
 };
 
-// Driving assist toggles matching ForzaProfile.sch defaults
+// Driving assist toggles matching retail FH1 Medium defaults
 // (SPEC-CAR-PHYSICS, Assists and input shaping).
 struct AssistSettings {
-  int braking = 1;            // 0 Assisted (auto-brake), 1 ABS On, 2 ABS Off
-  int steering = 1;           // 0 Assisted, 1 Normal, 2 Simulation
-  bool traction_control = false;
-  bool stability_control = true;
-  int shifting = 0;           // 0 Automatic, 1 Manual, 2 Manual + Clutch
-  int driving_line = 2;       // 0 Off, 1 Braking Only, 2 Full
-  bool rewind = true;         // Rewind ON/OFF (REWIND.md: OFF adds +20% bonus)
+  int braking = 1;               // 0 Assisted (auto-brake), 1 ABS On, 2 ABS Off
+  int steering = 1;              // 0 Assisted, 1 Normal, 2 Simulation
+  bool traction_control = true;  // Retail FH1 default: TCS ON
+  bool stability_control = true; // Retail FH1 default: STM ON
+  int shifting = 0;              // 0 Automatic, 1 Manual, 2 Manual + Clutch
+  int driving_line = 2;          // 0 Off, 1 Braking Only, 2 Full
+  bool rewind = true;            // Rewind ON/OFF (REWIND.md: OFF adds +20% bonus)
+
+  static constexpr AssistSettings retail_defaults() {
+    return AssistSettings{1, 1, true, true, 0, 2, true};
+  }
 };
 
 struct ControlSettings {

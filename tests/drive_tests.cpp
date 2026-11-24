@@ -15,6 +15,7 @@
 #include "drive/mesh_ground.h"
 #include "drive/ai_driver.h"
 #include "drive/contact.h"
+#include "drive/controls.h"
 #include "drive/oracle_lap.h"
 #include "drive/save.h"
 #include "drive/vehicle.h"
@@ -1286,6 +1287,131 @@ int main() {
     CHECK(!drive::load_save_with_recovery(missing_save, root / "no_backups", none_rec, &none_from, &err) && err.empty());
 
     fs::remove_all(root, ec);
+  }
+  // 12) PT-27 (no vertical catapult on steep banks/curbs while preserving ramp climbs),
+  //     PT-30 (retail FH1 Medium default assists), and PT-A (O(log N) RacingLine::segment).
+  {
+    const auto p = test_car();
+    const float h = 200.0f;
+
+    // PT-27a: High-speed impact into a steep (~63 deg, normal.y ~ 0.45 < 0.65) roadside bank
+    // must deflect horizontally without catapulting the car into the air.
+    {
+      drive::MeshGround bank({
+          {-h, 0, -h}, {h, 0, h}, {h, 0, -h}, {-h, 0, -h}, {-h, 0, h}, {h, 0, h},
+          {-30, 0, 20}, {30, 3.0f, 21.5f}, {30, 0, 20},
+          {-30, 0, 20}, {-30, 3.0f, 21.5f}, {30, 3.0f, 21.5f},
+      });
+      drive::Vehicle v(p);
+      v.launch({0, 0, 8.0}, 0.12, 38.0);  // ~137 km/h angled into steep bank
+      double max_y = 0.0, max_vy = 0.0;
+      for (int i = 0; i < 150; ++i) {
+        v.step({0, 0.2, 0, false}, bank);
+        max_y = std::max(max_y, v.position().y);
+        max_vy = std::max(max_vy, v.velocity().y);
+      }
+      std::printf("pt27a bank: max_y=%.3f m, max_vy=%.3f m/s\n", max_y, max_vy);
+      CHECK(max_y < 1.0);
+      CHECK(max_vy < 3.2);
+    }
+
+    // PT-27b: Hitting an abrupt 0.35 m vertical curb/step must not inject a bumpstop
+    // damping spike that launches the car skyward.
+    {
+      drive::MeshGround curb({
+          {-h, 0, -h}, {h, 0, 12}, {h, 0, -h}, {-h, 0, -h}, {-h, 0, 12}, {h, 0, 12},
+          {-30, 0, 12}, {30, 0.35f, 12}, {30, 0, 12},
+          {-30, 0, 12}, {-30, 0.35f, 12}, {30, 0.35f, 12},
+          {-h, 0.35f, 12}, {h, 0.35f, h}, {h, 0.35f, 12},
+          {-h, 0.35f, 12}, {-h, 0.35f, h}, {h, 0.35f, h},
+      });
+      drive::Vehicle v(p);
+      v.launch({0, 0, 4.0}, 0.0, 25.0);
+      double max_y = 0.0, max_vy = 0.0;
+      for (int i = 0; i < 120; ++i) {
+        v.step({0, 0.4, 0, false}, curb);
+        max_y = std::max(max_y, v.position().y);
+        max_vy = std::max(max_vy, v.velocity().y);
+      }
+      std::printf("pt27b curb: max_y=%.3f m, max_vy=%.3f m/s\n", max_y, max_vy);
+      CHECK(max_y < 1.15);
+      CHECK(max_vy < 4.0);
+    }
+
+    // PT-27c: Natural 18-degree ramp (normal.y ~ 0.95 >= 0.65) still climbs and launches cleanly.
+    {
+      drive::MeshGround ramp({
+          {-h, 0, -h}, {h, 0, 10}, {h, 0, -h}, {-h, 0, -h}, {-h, 0, 10}, {h, 0, 10},
+          {-20, 0, 10}, {20, 3.8f, 22}, {20, 0, 10},
+          {-20, 0, 10}, {-20, 3.8f, 22}, {20, 3.8f, 22},
+      });
+      drive::Vehicle v(p);
+      v.launch({0, 0, 2.0}, 0.0, 28.0);
+      double max_y = 0.0, max_vy = 0.0;
+      for (int i = 0; i < 100; ++i) {
+        v.step({0, 0.8, 0, false}, ramp);
+        max_y = std::max(max_y, v.position().y);
+        max_vy = std::max(max_vy, v.velocity().y);
+      }
+      CHECK(max_y > 2.5);
+      CHECK(max_vy > 3.0);
+    }
+
+    // PT-30: Retail FH1 Medium default driving assists on fresh/new campaign profiles.
+    {
+      const drive::AssistSettings def{};
+      const drive::AssistSettings retail = drive::AssistSettings::retail_defaults();
+      CHECK(def.braking == 1 && retail.braking == 1);          // ABS ON
+      CHECK(def.steering == 1 && retail.steering == 1);        // Normal
+      CHECK(def.traction_control && retail.traction_control);  // TCS ON
+      CHECK(def.stability_control && retail.stability_control);  // STM ON
+      CHECK(def.shifting == 0 && retail.shifting == 0);        // Automatic
+      CHECK(def.driving_line == 2 && retail.driving_line == 2);  // Full
+      CHECK(def.rewind && retail.rewind);                      // Rewind ON
+    }
+
+    // Bonus PT-A: O(log N) RacingLine::segment() matches exact linear scan across
+    // below-start, knots, midpoints, duplicate distances, and past-end, with any hint.
+    {
+      drive::RacingLine line;
+      constexpr size_t kPts = 2000;
+      line.x.resize(kPts);
+      line.z.resize(kPts);
+      line.dist.resize(kPts);
+      line.speed.resize(kPts, 30.0f);
+      float acc = 0.0f;
+      for (size_t i = 0; i < kPts; ++i) {
+        if (i > 0 && i != 500) acc += 2.0f + float(i % 7) * 0.5f;  // duplicate knot at i==500
+        line.x[i] = 0.0f;
+        line.z[i] = acc;
+        line.dist[i] = acc;
+      }
+      auto ref_segment = [&](double d) -> size_t {
+        size_t s = 0;
+        while (s + 2 < line.size() && double(line.dist[s + 1]) <= d) ++s;
+        return s;
+      };
+      const double probes[] = {
+          -10.0,
+          0.0,
+          1.25,
+          double(line.dist[1]),
+          double(line.dist[499]) + 0.1,
+          double(line.dist[500]),  // duplicate knot
+          double(line.dist[1234]) + 0.75,
+          double(line.dist[kPts - 2]),
+          double(line.dist[kPts - 1]),
+          double(line.dist[kPts - 1]) + 100.0,
+      };
+      size_t sequential_hint = 0;
+      for (double d : probes) {
+        const size_t want = ref_segment(d);
+        CHECK(line.segment(d, 0) == want);
+        CHECK(line.segment(d, sequential_hint) == want);
+        CHECK(line.segment(d, kPts - 2) == want);
+        sequential_hint = want;
+      }
+    }
   }
   if (failures) {
     std::printf("%d failure(s)\n", failures);

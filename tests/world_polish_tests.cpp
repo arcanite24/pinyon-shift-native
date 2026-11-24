@@ -395,7 +395,7 @@ int main() {
       bin[off + 2] = uint8_t((v >> 8) & 0xFF);
       bin[off + 3] = uint8_t(v & 0xFF);
     };
-    set_be32(0x04, 1);  // num_lods
+    set_be32(0x04, 4);  // num_lods (4-LOD spectator layout: vert_count at 0x38, verts at 0x40)
     set_be32(0x14, 3);  // lod0_count
     set_be32(0x38, 3);  // vertex_count
 
@@ -425,7 +425,26 @@ int main() {
     CHECK(world::parse_skinbin(bin, mesh, 0));
     CHECK(mesh.vertices.size() == 3);
     CHECK(mesh.indices.size() == 3);
-    CHECK(mesh.indices[0] == 0 && mesh.indices[1] == 1 && mesh.indices[2] == 2);
+    if (mesh.indices.size() == 3) {
+      CHECK(mesh.indices[0] == 0 && mesh.indices[1] == 1 && mesh.indices[2] == 2);
+    }
+
+    // 1-LOD driver layout: vert_count at 0x20, verts at 0x28.
+    std::vector<uint8_t> bin1(0x28, 0);
+    auto set_be32_1 = [&](size_t off, uint32_t v) {
+      bin1[off + 0] = uint8_t((v >> 24) & 0xFF);
+      bin1[off + 1] = uint8_t((v >> 16) & 0xFF);
+      bin1[off + 2] = uint8_t((v >> 8) & 0xFF);
+      bin1[off + 3] = uint8_t(v & 0xFF);
+    };
+    set_be32_1(0x04, 1);
+    set_be32_1(0x14, 3);
+    set_be32_1(0x20, 3);
+    bin1.insert(bin1.end(), bin.begin() + 0x40, bin.end());
+    world::SpectatorMeshLod mesh1;
+    CHECK(world::parse_skinbin(bin1, mesh1, 0));
+    CHECK(mesh1.vertices.size() == 3);
+    CHECK(mesh1.indices.size() == 3);
 
     // Truncated buffer must fail cleanly.
     std::vector<uint8_t> bad(bin.begin(), bin.begin() + 32);
