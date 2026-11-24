@@ -962,8 +962,11 @@ WorldMemoryBudget choose_world_memory_budget(uint64_t device_local_bytes, bool l
     // 128-512 MiB vertex (scales with VRAM, e.g. ~160 MiB on 2 GB, 512 MiB on 6+ GB):
     // generous headroom for dense 11M-tri Horizon Festival gathers and 240 km/h streaming.
     b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 10, 128ULL << 20, 512ULL << 20);
-    b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 6, 192ULL << 20, 320ULL << 20);
-    b.texture_lru_count = 1536;
+    // Keep desktop LRU budget generous (up to 512 MiB on >= 8 GB GPUs and 3584 textures,
+    // staying comfortably within WorldGpu::kMaxTextures = 4096) so highway drives never thrash.
+    const uint64_t max_tex_bytes = (device_local_bytes >= (8ULL << 30)) ? (512ULL << 20) : (320ULL << 20);
+    b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 6, 192ULL << 20, max_tex_bytes);
+    b.texture_lru_count = 3584;
   }
   if (low_preset || reflection_rate <= 0.25f) {
     b.dyn_env_size = 128;

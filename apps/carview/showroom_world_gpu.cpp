@@ -12,18 +12,10 @@ namespace carview {
 
 namespace {
 
-// Per-prop-instance index spans recorded when prop draws are placed into the GPU arena.
+// Per-prop-instance index spans recorded off-thread in stage_world() from cached RAM.
 // Allows smashing a single fence panel / sign / pole inside a 64m or 256m merged draw
 // without hiding neighboring intact props or failing on wide/sloped cell AABBs.
-struct PropInstanceSpan {
-  float gx = 0.0f, gy = 0.0f, gz = 0.0f;  // prop placement origin (game frame)
-  float bmin[3] = {0.0f, 0.0f, 0.0f};     // world-space AABB (game frame)
-  float bmax[3] = {0.0f, 0.0f, 0.0f};
-  uint32_t rel_index_offset = 0;          // offset within this draw's index range
-  uint32_t index_count = 0;
-  bool hidden = false;
-  std::vector<uint32_t> saved_indices;    // original indices for lossless Rewind restore
-};
+using PropInstanceSpan = Showroom::StagedWorld::PropSpan;
 
 struct HiddenSphereRec {
   std::array<float, 3> pos{};
@@ -282,6 +274,14 @@ bool Showroom::reserve_world_texture(uint32_t record) {
   return true;
 }
 
+void Showroom::pin_prepare_records(const std::vector<uint32_t>& records) {
+  if (records.empty()) return;
+  std::lock_guard<std::mutex> lock(world_textures_mutex_);
+  for (uint32_t record : records) {
+    if (record != kNoWorldTexture) ++prepare_pins_[record];
+  }
+}
+
 void Showroom::release_prepare_pins(const std::vector<uint32_t>& records) {
   if (records.empty()) return;
   std::lock_guard<std::mutex> lock(world_textures_mutex_);
@@ -315,11 +315,22 @@ void Showroom::evict_world_textures() {
       if (d.spec_map != kNoWorldTexture) world_lru_.pin(d.spec_map, epoch);
     };
     for (const auto& d : world_draws_) pin_draw(d);
+    for (const auto& t : world_trees_)
+      if (t.texture != kNoWorldTexture) world_lru_.pin(t.texture, epoch);
+    for (uint32_t record : active_gpu_table_records_)
+      if (record != kNoWorldTexture) world_lru_.pin(record, epoch);
     if (fading_on_)
       for (const auto& d : fading_.draws) pin_draw(d);
     if (pending_world_) {
       for (const auto& d : pending_world_->staged.draws) pin_draw(d);
+      for (const auto& t : pending_world_->staged.trees)
+        if (t.texture != kNoWorldTexture) world_lru_.pin(t.texture, epoch);
       for (const auto& t : pending_world_->staged.textures)
+        if (t) world_lru_.pin(t->record, epoch);
+    }
+    {
+      std::lock_guard<std::mutex> qlock(deferred_uploads_mutex_);
+      for (const auto& t : deferred_world_textures_)
         if (t) world_lru_.pin(t->record, epoch);
     }
     for (const auto& [record, count] : prepare_pins_)
@@ -492,6 +503,13 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
     drop_fading_world(true);
     world_release_draws(world_draws_);
     world_draws_.clear();
+    world_trees_.clear();
+    active_gpu_table_records_.clear();
+    gpu_table_missing_textures_.clear();
+    if (gpu_world_) {
+      std::string clear_err;
+      (void)gpu_world_->set_table({}, clear_err);
+    }
     release_retired();
     res.evict_unreferenced(r_.frames_done());
     if (!attempt()) {
@@ -517,113 +535,36 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
     }
     d.resident = true;
   }
+  return true;
+}
 
-  // Build per-prop-instance index spans for all newly placed prop draws (64m & 256m merged cells)
-  // directly from WorldVertex::centre so smashing any single prop immediately zeroes ONLY its own
-  // triangles in the resident index arena (never hiding neighboring intact props).
-  if (st.vertices && st.indices && st.vertices->allocation && st.indices->allocation) {
-    void* v_raw = nullptr;
-    void* i_raw = nullptr;
-    if (vmaMapMemory(r_.allocator_, st.vertices->allocation, &v_raw) == VK_SUCCESS) {
-      if (vmaMapMemory(r_.allocator_, st.indices->allocation, &i_raw) == VK_SUCCESS) {
-        const auto* verts = static_cast<const WorldVertex*>(v_raw);
-        auto* idxs = static_cast<uint32_t*>(i_raw);
-        constexpr uint32_t kNonPropMask = 2u | 4u | 8u | 32u | 16384u | 32768u | 1048576u;
-
-        std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
-        auto& state = g_smash_hide[this];
-
-        for (size_t i = 0; i < st.draws.size(); ++i) {
-          const auto& d = st.draws[i];
-          const gpuworld::ResidentDraw* rd = placed[i];
-          if (!rd || d.index_count < 3) continue;
-          const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
-          const bool is_prop_draw =
-              (flags & (128u | 256u | 512u)) != 0u && (flags & kNonPropMask) == 0u && d.decal == 0u;
-          if (!is_prop_draw) continue;
-
-          auto existing = state.by_draw_key.find(d.key);
-          if (existing == state.by_draw_key.end()) {
-            std::vector<PropInstanceSpan> spans;
-            const uint32_t tri_count = d.index_count / 3;
-            const uint32_t base_idx = staged_first[i];
-            int64_t cur_qk = 0;
-            bool have_cur = false;
-            for (uint32_t t = 0; t < tri_count; ++t) {
-              const uint32_t i0 = idxs[size_t(base_idx) + t * 3 + 0];
-              const uint32_t i1 = idxs[size_t(base_idx) + t * 3 + 1];
-              const uint32_t i2 = idxs[size_t(base_idx) + t * 3 + 2];
-              const WorldVertex& v0 = verts[size_t(d.vertex_begin) + i0];
-              const WorldVertex& v1 = verts[size_t(d.vertex_begin) + i1];
-              const WorldVertex& v2 = verts[size_t(d.vertex_begin) + i2];
-              const float gx = float(st.origin_x) + v0.position[0] + float(v0.centre[0]) * 0.1f;
-              const float gy = v0.position[1] + float(v0.centre[1]) * 0.1f;
-              const float gz = float(st.origin_z) + v0.position[2] + float(v0.centre[2]) * 0.1f;
-              const int64_t qk = (int64_t(std::lround(gx * 2.0f)) * 73856093ll) ^
-                                 (int64_t(std::lround(gy * 2.0f)) * 19349663ll) ^
-                                 (int64_t(std::lround(gz * 2.0f)) * 83492791ll);
-              if (!have_cur || qk != cur_qk) {
-                PropInstanceSpan sp;
-                sp.gx = gx;
-                sp.gy = gy;
-                sp.gz = gz;
-                sp.bmin[0] = sp.bmax[0] = float(st.origin_x) + v0.position[0];
-                sp.bmin[1] = sp.bmax[1] = v0.position[1];
-                sp.bmin[2] = sp.bmax[2] = float(st.origin_z) + v0.position[2];
-                sp.rel_index_offset = t * 3;
-                sp.index_count = 0;
-                spans.push_back(std::move(sp));
-                cur_qk = qk;
-                have_cur = true;
-              }
-              auto& sp = spans.back();
-              sp.index_count += 3;
-              for (const WorldVertex* vp : {&v0, &v1, &v2}) {
-                const float wx = float(st.origin_x) + vp->position[0];
-                const float wy = vp->position[1];
-                const float wz = float(st.origin_z) + vp->position[2];
-                sp.bmin[0] = std::min(sp.bmin[0], wx);
-                sp.bmax[0] = std::max(sp.bmax[0], wx);
-                sp.bmin[1] = std::min(sp.bmin[1], wy);
-                sp.bmax[1] = std::max(sp.bmax[1], wy);
-                sp.bmin[2] = std::min(sp.bmin[2], wz);
-                sp.bmax[2] = std::max(sp.bmax[2], wz);
-              }
-            }
-            for (auto& sp : spans) {
-              sp.saved_indices.assign(idxs + size_t(base_idx) + sp.rel_index_offset,
-                                      idxs + size_t(base_idx) + sp.rel_index_offset + sp.index_count);
-              // Mask immediately inside staging buffer if this prop was already smashed before regather finished.
-              for (const auto& hs : state.active_spheres) {
-                if (span_matches_origin(sp, hs.pos, hs.radius)) {
-                  sp.hidden = true;
-                  std::memset(idxs + size_t(base_idx) + sp.rel_index_offset, 0,
-                              size_t(sp.index_count) * sizeof(uint32_t));
-                  break;
-                }
-              }
-            }
-            if (!spans.empty()) state.by_draw_key.emplace(d.key, std::move(spans));
-          } else if (!state.active_spheres.empty()) {
-            // Resident draw reused across regather: ensure any newly smashed spans are masked on GPU too.
-            for (auto& sp : existing->second) {
-              if (sp.hidden) continue;
-              for (const auto& hs : state.active_spheres) {
-                if (span_matches_origin(sp, hs.pos, hs.radius)) {
-                  sp.hidden = true;
-                  gpu_world_->queue_index_zero(rd->index_base + sp.rel_index_offset, sp.index_count);
-                  break;
-                }
-              }
-            }
+void Showroom::install_world_prop_spans(StagedWorld& st) {
+  if (!arena_on()) return;
+  std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
+  auto& state = g_smash_hide[this];
+  for (auto& [key, spans] : st.prop_spans) {
+    if (spans.empty()) continue;
+    auto it = state.by_draw_key.find(key);
+    if (it == state.by_draw_key.end()) {
+      auto [ins, ok] = state.by_draw_key.emplace(key, std::move(spans));
+      it = ins;
+    }
+    if (!state.active_spheres.empty()) {
+      const auto* rd = gpu_world_->resident().find(key);
+      if (!rd) continue;
+      for (auto& sp : it->second) {
+        if (sp.hidden) continue;
+        for (const auto& hs : state.active_spheres) {
+          if (span_matches_origin(sp, hs.pos, hs.radius)) {
+            sp.hidden = true;
+            gpu_world_->queue_index_zero(rd->index_base + sp.rel_index_offset, sp.index_count);
+            break;
           }
         }
-        vmaUnmapMemory(r_.allocator_, st.indices->allocation);
       }
-      vmaUnmapMemory(r_.allocator_, st.vertices->allocation);
     }
   }
-  return true;
+  st.prop_spans.clear();
 }
 
 // The table the culling pass reads: one row per resident opaque or cut-out draw,
@@ -794,15 +735,49 @@ bool Showroom::build_gpu_table(std::string& error) {
   for (auto& d : world_draws_) d.gpu = false;
   gpu_table_white_ = 0;
   gpu_table_layer_fallback_ = 0;
+  active_gpu_table_records_.clear();
+  gpu_table_missing_textures_.clear();
   if (!arena_on()) return true;
   std::vector<gpuworld::DrawGpu> rows;
   rows.reserve(world_draws_.size());
   uint32_t per_batch[gpuworld::kBatchCount] = {};
   const bool single_sample = r_.samples_ == VK_SAMPLE_COUNT_1_BIT;
   const bool instanced_trees = !world_trees_.empty();
-  auto have = [&](uint32_t record) { return record == kNoWorldTexture || gpu_world_->has_texture(record); };
-  auto slot = [&](uint32_t record, uint32_t fallback) {
-    return record != kNoWorldTexture && gpu_world_->has_texture(record) ? gpu_world_->texture_slot(record) : fallback;
+  std::unordered_map<uint32_t, uint32_t> slot_cache;
+  slot_cache.reserve(512);
+  auto resolve_slot = [&](uint32_t record, bool& present) -> uint32_t {
+    if (record == kNoWorldTexture) {
+      present = true;
+      return WorldGpu::kDefaultWhite;
+    }
+    if (auto cit = slot_cache.find(record); cit != slot_cache.end()) {
+      present = (cit->second != UINT32_MAX);
+      return present ? cit->second : WorldGpu::kDefaultWhite;
+    }
+    uint32_t s = UINT32_MAX;
+    if (gpu_world_->has_texture(record)) {
+      s = gpu_world_->texture_slot(record);
+    } else {
+      // Re-sync any texture that is resident in world_textures_ but missed a bindless slot earlier.
+      VkImageView view = VK_NULL_HANDLE;
+      {
+        std::lock_guard<std::mutex> lock(world_textures_mutex_);
+        if (auto it = world_textures_.find(record); it != world_textures_.end()) view = it->second.view;
+      }
+      if (view) {
+        const uint32_t added = gpu_world_->add_texture(record, view);
+        if (added != WorldGpu::kDefaultWhite) s = added;
+      }
+    }
+    slot_cache.emplace(record, s);
+    if (s != UINT32_MAX) {
+      active_gpu_table_records_.push_back(record);
+      present = true;
+      return s;
+    }
+    gpu_table_missing_textures_.insert(record);
+    present = false;
+    return WorldGpu::kDefaultWhite;
   };
   for (auto& d : world_draws_) {
     if (!d.resident || !d.cull || d.index_count == 0 || !gpuworld::in_gpu_batches(d.blend)) continue;
@@ -817,37 +792,82 @@ bool Showroom::build_gpu_table(std::string& error) {
     const bool lod_dither = (flags & (128u | 256u | 512u)) != 0u;
     const gpuworld::Batch batch = gpuworld::batch_of((d.blend == 0 && lod_dither) ? 1 : d.blend, d.decal != 0);
     if (per_batch[batch] >= WorldGpu::kMaxPerBatch) continue;  // left to the CPU loop
-    // A texture that did not upload: the draw falls back as the per-draw sets did.
+    bool has_tex0 = false, has_texb = false, has_splat = false, has_lmap = false;
+    bool has_nmap = false, has_ao = false, has_layc = false, has_spec = false;
+    const uint32_t s_tex0 = resolve_slot(d.texture, has_tex0);
+    const uint32_t s_texb = resolve_slot(d.texture_b, has_texb);
+    const uint32_t s_splat = resolve_slot(d.splat, has_splat);
+    const uint32_t s_lmap = resolve_slot(d.light_map, has_lmap);
+    const uint32_t s_nmap = resolve_slot(d.normal_map, has_nmap);
+    const uint32_t s_ao = resolve_slot(d.ao_map, has_ao);
+    const uint32_t s_layc = resolve_slot(d.layer_c, has_layc);
+    const uint32_t s_spec = resolve_slot(d.spec_map, has_spec);
+
+    gpuworld::DrawGpu row{};
+    for (int k = 0; k < 4; ++k) row.tint[k] = d.push.tint[k];
+
+    // A texture that did not upload: clear only the flags whose textures are missing.
     // Never draw a billboard without its cutout texture (would render as a solid opaque card).
-    if (!have(d.texture)) {
+    if (!has_tex0) {
       if ((flags & 32u) != 0u) {
         d.gpu = true;  // suppress fallback CPU draw as well
         continue;
       }
       if (d.texture != kNoWorldTexture) ++gpu_table_white_;
-      if (flags == 1) flags = 0;
-    } else if ((flags & 32768u) == 0u && d.texture_b != kNoWorldTexture && !(have(d.texture_b) && have(d.splat))) {
-      ++gpu_table_layer_fallback_;
-      flags = 1;
+      if ((flags & 1u) != 0u) {
+        constexpr uint32_t kAnyTexMask = 1u | 4u | 8u | 16384u | 2048u | 4096u | 8192u | 524288u | 2097152u |
+                                         4194304u | 8388608u;
+        const bool is_road = (flags & 1048576u) != 0u;
+        flags &= ~kAnyTexMask;
+        // Replace UV tiling in row.tint with a neutral road/terrain linear albedo instead of pure white.
+        if (is_road) {
+          row.tint[0] = 0.055f;
+          row.tint[1] = 0.054f;
+          row.tint[2] = 0.052f;
+        } else {
+          row.tint[0] = 0.13f;
+          row.tint[1] = 0.11f;
+          row.tint[2] = 0.085f;
+        }
+        row.tint[3] = 1.0f;
+      }
+    } else {
+      if ((flags & 4u) != 0u && (d.texture_b == kNoWorldTexture || !has_texb)) {
+        flags &= ~4u;
+        ++gpu_table_layer_fallback_;
+      }
+      if ((flags & 8u) != 0u &&
+          (d.texture_b == kNoWorldTexture || !has_texb || d.splat == kNoWorldTexture || !has_splat)) {
+        flags &= ~(8u | 16384u);
+        ++gpu_table_layer_fallback_;
+      }
+      if ((flags & 16384u) != 0u && (d.layer_c == kNoWorldTexture || !has_layc)) {
+        flags &= ~16384u;
+        ++gpu_table_layer_fallback_;
+      }
+      if ((flags & (2048u | 8388608u)) != 0u && (d.light_map == kNoWorldTexture || !has_lmap)) {
+        flags &= ~(2048u | 8388608u);
+      }
+      if (d.normal_map == kNoWorldTexture || !has_nmap) flags &= ~4096u;
+      if (d.ao_map == kNoWorldTexture || !has_ao) flags &= ~8192u;
+      if ((flags & 2097152u) != 0u && (d.splat == kNoWorldTexture || !has_splat)) flags &= ~2097152u;
+      if ((flags & 32768u) != 0u && (d.texture_b == kNoWorldTexture || !has_texb)) flags &= ~4194304u;
+      if (d.spec_map == kNoWorldTexture || !has_spec) flags &= ~524288u;
     }
-    if (d.normal_map == kNoWorldTexture || !have(d.normal_map)) flags &= ~4096u;
-    if ((flags & 32768u) != 0u && (d.texture_b == kNoWorldTexture || !have(d.texture_b))) flags &= ~4194304u;
-    if (d.spec_map == kNoWorldTexture || !have(d.spec_map)) flags &= ~524288u;
     if (d.blend == 1 && single_sample) flags |= 64u;  // cut-outs without MSAA: world.frag's alpha test
-    gpuworld::DrawGpu row{};
-    for (int k = 0; k < 4; ++k) row.tint[k] = d.push.tint[k];
     row.params[0] = d.push.params[0];
     row.params[1] = float(flags);
     row.params[2] = d.push.params[2];
     row.params[3] = d.push.params[3];
-    row.tex0[0] = slot(d.texture, WorldGpu::kDefaultWhite);
-    row.tex0[1] = slot(d.texture_b, WorldGpu::kDefaultWhite);
-    row.tex0[2] = slot(d.splat, WorldGpu::kDefaultWhite);
-    row.tex0[3] = slot(d.light_map, WorldGpu::kDefaultBlack);
-    row.tex1[0] = slot(d.normal_map, WorldGpu::kDefaultFlatNormal);
-    row.tex1[1] = slot(d.ao_map, WorldGpu::kDefaultWhite);
-    row.tex1[2] = slot(d.layer_c, WorldGpu::kDefaultWhite);
-    row.tex1[3] = (slot(d.spec_map, WorldGpu::kDefaultWhite) << 1u) | (d.fade_in ? 1u : 0u);
+    row.tex0[0] = (d.texture != kNoWorldTexture && has_tex0) ? s_tex0 : WorldGpu::kDefaultWhite;
+    row.tex0[1] = (d.texture_b != kNoWorldTexture && has_texb) ? s_texb : WorldGpu::kDefaultWhite;
+    row.tex0[2] = (d.splat != kNoWorldTexture && has_splat) ? s_splat : WorldGpu::kDefaultWhite;
+    row.tex0[3] = (d.light_map != kNoWorldTexture && has_lmap) ? s_lmap : WorldGpu::kDefaultBlack;
+    row.tex1[0] = (d.normal_map != kNoWorldTexture && has_nmap) ? s_nmap : WorldGpu::kDefaultFlatNormal;
+    row.tex1[1] = (d.ao_map != kNoWorldTexture && has_ao) ? s_ao : WorldGpu::kDefaultWhite;
+    row.tex1[2] = (d.layer_c != kNoWorldTexture && has_layc) ? s_layc : WorldGpu::kDefaultWhite;
+    const uint32_t spec_slot = (d.spec_map != kNoWorldTexture && has_spec) ? s_spec : WorldGpu::kDefaultWhite;
+    row.tex1[3] = (spec_slot << 1u) | (d.fade_in ? 1u : 0u);
     for (int k = 0; k < 3; ++k) row.box_min[k] = d.box_min[k], row.box_max[k] = d.box_max[k];
     row.draw[0] = d.index_count;
     row.draw[1] = d.first_index;
@@ -861,38 +881,49 @@ bool Showroom::build_gpu_table(std::string& error) {
   }
   std::vector<gpuworld::TreeInstanceGpu> gpu_trees;
   if (instanced_trees) {
-    std::unordered_map<uint32_t, uint32_t> tmpl_by_tex;
+    struct TreeTmpl {
+      uint32_t row_idx = 0;
+      uint32_t tex_slot = WorldGpu::kDefaultWhite;
+      bool valid = false;
+    };
+    std::unordered_map<uint32_t, TreeTmpl> tmpl_by_tex;
     gpu_trees.reserve(world_trees_.size());
     for (const auto& t : world_trees_) {
-      if (t.texture == kNoWorldTexture || !have(t.texture)) continue;
-      auto [it, added] = tmpl_by_tex.emplace(t.texture, uint32_t(rows.size()));
+      if (t.texture == kNoWorldTexture) continue;
+      auto [it, added] = tmpl_by_tex.emplace(t.texture, TreeTmpl{});
       if (added) {
-        gpuworld::DrawGpu row{};
-        uint32_t fl = 1u | 32u;
-        if (single_sample) fl |= 64u;
-        row.tint[0] = row.tint[1] = row.tint[2] = row.tint[3] = 1.0f;
-        row.params[0] = 1.0f;  // coverage
-        row.params[1] = float(fl);
-        row.params[3] = 1.0f;
-        row.tex0[0] = slot(t.texture, WorldGpu::kDefaultWhite);
-        row.tex0[1] = WorldGpu::kDefaultWhite;
-        row.tex0[2] = WorldGpu::kDefaultWhite;
-        row.tex0[3] = WorldGpu::kDefaultBlack;
-        row.tex1[0] = WorldGpu::kDefaultFlatNormal;
-        row.tex1[1] = WorldGpu::kDefaultWhite;
-        row.tex1[2] = WorldGpu::kDefaultWhite;
-        row.tex1[3] = WorldGpu::kDefaultWhite << 1u;
-        row.draw[0] = 0u;  // template-only row: skipped by world_cull.comp
-        row.draw[3] = gpuworld::kCutout;
-        rows.push_back(row);
+        bool present = false;
+        const uint32_t tslot = resolve_slot(t.texture, present);
+        if (present) {
+          it->second = {uint32_t(rows.size()), tslot, true};
+          gpuworld::DrawGpu row{};
+          uint32_t fl = 1u | 32u;
+          if (single_sample) fl |= 64u;
+          row.tint[0] = row.tint[1] = row.tint[2] = row.tint[3] = 1.0f;
+          row.params[0] = 1.0f;  // coverage
+          row.params[1] = float(fl);
+          row.params[3] = 1.0f;
+          row.tex0[0] = tslot;
+          row.tex0[1] = WorldGpu::kDefaultWhite;
+          row.tex0[2] = WorldGpu::kDefaultWhite;
+          row.tex0[3] = WorldGpu::kDefaultBlack;
+          row.tex1[0] = WorldGpu::kDefaultFlatNormal;
+          row.tex1[1] = WorldGpu::kDefaultWhite;
+          row.tex1[2] = WorldGpu::kDefaultWhite;
+          row.tex1[3] = WorldGpu::kDefaultWhite << 1u;
+          row.draw[0] = 0u;  // template-only row: skipped by world_cull.comp
+          row.draw[3] = gpuworld::kCutout;
+          rows.push_back(row);
+        }
       }
+      if (!it->second.valid) continue;
       gpuworld::TreeInstanceGpu gt{};
       gt.base_hw[0] = t.base[0], gt.base_hw[1] = t.base[1], gt.base_hw[2] = t.base[2], gt.base_hw[3] = t.half_width;
       gt.up_h[0] = t.up[0], gt.up_h[1] = t.up[1], gt.up_h[2] = t.up[2], gt.up_h[3] = t.height;
       for (int k = 0; k < 4; ++k) gt.uv_rect[k] = t.uv[k];
       gt.col_tex[0] = t.rgba8;
-      gt.col_tex[1] = slot(t.texture, WorldGpu::kDefaultWhite);
-      gt.col_tex[2] = it->second;
+      gt.col_tex[1] = it->second.tex_slot;
+      gt.col_tex[2] = it->second.row_idx;
       gpu_trees.push_back(gt);
     }
   }

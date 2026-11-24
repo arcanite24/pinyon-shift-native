@@ -22,6 +22,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <volk.h>
@@ -351,6 +352,17 @@ class Showroom {
       uint32_t texture;
     };
     std::vector<TreeRaw> trees;
+    struct PropSpan {
+      float gx = 0.0f, gy = 0.0f, gz = 0.0f;  // prop placement origin (game frame)
+      float bmin[3] = {0.0f, 0.0f, 0.0f};     // world-space AABB (game frame)
+      float bmax[3] = {0.0f, 0.0f, 0.0f};
+      uint32_t rel_index_offset = 0;          // offset within this draw's index range
+      uint32_t index_count = 0;
+      bool hidden = false;
+      std::vector<uint32_t> saved_indices;    // original indices for lossless Rewind restore
+    };
+    // Per-prop-draw smashable instance spans extracted off-thread in stage_world() from cached RAM.
+    std::vector<std::pair<uint64_t, std::vector<PropSpan>>> prop_spans;
   };
   // `origin_x/z`: what the geometry's positions are relative to, for the content keys of the GPU-driven world.
   bool stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error, double origin_x = 0,
@@ -548,6 +560,7 @@ class Showroom {
   bool has_world_texture(uint32_t record) const;
   bool ensure_world_texture(const std::shared_ptr<const WorldTextureData>& tex, std::string& error);
   bool reserve_world_texture(uint32_t record);
+  void pin_prepare_records(const std::vector<uint32_t>& records);
   // Live texture reload (mods, texture_mods.h): uploads `texture` for a
   // resident world texture record and points every set that samples it at
   // the new image (after the GPU is idle), then frees the old one. False
@@ -773,8 +786,11 @@ class Showroom {
   void record_world_cull(VkCommandBuffer cmd);
   bool place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& vertex_copies,
                          std::vector<WorldGpu::Copy>& index_copies, std::string& error);
+  void install_world_prop_spans(StagedWorld& st);
   size_t world_triangles_ = 0;
   size_t gpu_table_white_ = 0, gpu_table_layer_fallback_ = 0;
+  std::vector<uint32_t> active_gpu_table_records_;
+  std::unordered_set<uint32_t> gpu_table_missing_textures_;
   WorldDrawStats world_stats_;
   bool world_cull_ = true;
   float world_transform_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};

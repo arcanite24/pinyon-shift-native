@@ -562,9 +562,47 @@ bool WorldGpu::has_texture(uint32_t record) const {
   return texture_slots_.count(record) != 0;
 }
 
+void WorldGpu::reclaim_retired_slots_locked() {
+  if (retiring_slots_.empty() || !bindless_set_ || !r_.device_) return;
+  const uint64_t done = r_.frames_done();
+  std::vector<uint32_t> ready_slots;
+  size_t write = 0;
+  for (size_t i = 0; i < retiring_slots_.size(); ++i) {
+    const auto [tag, slot] = retiring_slots_[i];
+    if (tag <= done && !active_table_slots_.count(slot)) {
+      ready_slots.push_back(slot);
+    } else {
+      retiring_slots_[write++] = retiring_slots_[i];
+    }
+  }
+  retiring_slots_.resize(write);
+  if (ready_slots.empty()) return;
+  const VkDescriptorImageInfo info{VK_NULL_HANDLE, setup_.white, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  std::vector<VkWriteDescriptorSet> writes;
+  writes.reserve(ready_slots.size());
+  for (uint32_t slot : ready_slots) {
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = bindless_set_;
+    w.dstBinding = 1;
+    w.dstArrayElement = slot;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    w.pImageInfo = &info;
+    writes.push_back(w);
+  }
+  vkUpdateDescriptorSets(r_.device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
+  free_slots_.insert(free_slots_.end(), ready_slots.begin(), ready_slots.end());
+}
+
+void WorldGpu::reclaim_retired_slots() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  reclaim_retired_slots_locked();
+}
+
 uint32_t WorldGpu::add_texture(uint32_t record, VkImageView view) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (const auto it = texture_slots_.find(record); it != texture_slots_.end()) return it->second;
+  reclaim_retired_slots_locked();
   uint32_t slot;
   if (!free_slots_.empty()) {
     slot = free_slots_.back();
@@ -588,27 +626,18 @@ uint32_t WorldGpu::add_texture(uint32_t record, VkImageView view) {
 }
 
 void WorldGpu::remove_texture(uint32_t record) {
-  uint32_t slot;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = texture_slots_.find(record);
-    if (it == texture_slots_.end()) return;
-    slot = it->second;
-    texture_slots_.erase(it);
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = texture_slots_.find(record);
+  if (it == texture_slots_.end()) return;
+  const uint32_t slot = it->second;
+  texture_slots_.erase(it);
+  // Never recycle a bindless slot while the active DrawGpu/TreeInstanceGpu table still
+  // references it or while in-flight GPU frames may still sample it.
+  if (active_table_slots_.count(slot)) {
+    held_evicted_slots_.push_back(slot);
+  } else {
+    retiring_slots_.emplace_back(r_.frames_submitted(), slot);
   }
-  setup_.retire([this, slot] {
-    std::lock_guard<std::mutex> lock(mutex_);
-    VkDescriptorImageInfo info{VK_NULL_HANDLE, setup_.white, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w.dstSet = bindless_set_;
-    w.dstBinding = 1;
-    w.dstArrayElement = slot;
-    w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    w.pImageInfo = &info;
-    vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
-    free_slots_.push_back(slot);
-  });
 }
 
 bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string& error,
@@ -686,8 +715,38 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
     next.trees_count = tn;
     next.pending_upload = true;
   }
+  std::unordered_set<uint32_t> next_active;
+  auto record_slot = [&](uint32_t s) {
+    if (s >= 3u) next_active.insert(s);
+  };
+  for (uint32_t i = 0; i < n; ++i) {
+    const auto& row = rows[i];
+    for (uint32_t k = 0; k < 4; ++k) record_slot(row.tex0[k]);
+    for (uint32_t k = 0; k < 3; ++k) record_slot(row.tex1[k]);
+    record_slot(row.tex1[3] >> 1u);
+  }
+  for (uint32_t i = 0; i < tn; ++i) {
+    record_slot(trees[i].col_tex[1]);
+  }
   Generation old = generation_;
   generation_ = next;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    active_table_slots_.swap(next_active);
+    if (!held_evicted_slots_.empty()) {
+      const uint64_t tag = r_.frames_submitted();
+      size_t keep = 0;
+      for (uint32_t slot : held_evicted_slots_) {
+        if (active_table_slots_.count(slot)) {
+          held_evicted_slots_[keep++] = slot;
+        } else {
+          retiring_slots_.emplace_back(tag, slot);
+        }
+      }
+      held_evicted_slots_.resize(keep);
+    }
+    reclaim_retired_slots_locked();
+  }
   if (old.table.buffer || old.trees.buffer || old.table_staging.buffer || old.trees_staging.buffer || old.set) {
     setup_.retire([this, old]() mutable {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -698,6 +757,7 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
 }
 
 void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) {
+  reclaim_retired_slots();
   SlotBuffers& s = slots_[r_.frame_slot()];
   recorded_slot_ = r_.frame_slot();
   if (s.used && s.stats_mapped) {

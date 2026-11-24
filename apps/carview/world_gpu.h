@@ -12,6 +12,8 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "renderer.h"
@@ -67,6 +69,7 @@ class WorldGpu {
   bool has_texture(uint32_t record) const;
   uint32_t add_texture(uint32_t record, VkImageView view);
   void remove_texture(uint32_t record);
+  void reclaim_retired_slots();
   size_t texture_count() const { return texture_slots_.size(); }
 
   // ---- the table of draws and hardware-instanced tree sprites ----
@@ -141,8 +144,12 @@ class WorldGpu {
   VkDescriptorPool bindless_pool_ = VK_NULL_HANDLE, table_pool_ = VK_NULL_HANDLE, vis_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet bindless_set_ = VK_NULL_HANDLE;
   std::unordered_map<uint32_t, uint32_t> texture_slots_;
+  std::unordered_set<uint32_t> active_table_slots_;
+  std::vector<uint32_t> held_evicted_slots_;
+  std::vector<std::pair<uint64_t, uint32_t>> retiring_slots_;
   std::vector<uint32_t> free_slots_;
   uint32_t next_slot_ = 3;
+  void reclaim_retired_slots_locked();
   VkPipelineLayout layout_ = VK_NULL_HANDLE, cull_pipeline_layout_ = VK_NULL_HANDLE,
                    hiz_pipeline_layout_ = VK_NULL_HANDLE;
   VkPipeline opaque_ = VK_NULL_HANDLE, opaque_after_z_ = VK_NULL_HANDLE, opaque_dither_ = VK_NULL_HANDLE,
