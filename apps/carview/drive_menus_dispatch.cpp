@@ -413,6 +413,14 @@ void DriveSession::cycle_difficulty(int by) {
           app.race_options.difficulty = race::Difficulty(d);
           if (app.race) app.race->set_difficulty(app.race_options.difficulty);
           sync_pause_labels();
+          const auto sfile = settings_path();
+          if (!sfile.empty()) {
+            static constexpr const char* kDiffTokens[5] = {"easy", "med", "hard", "pro", "hard+"};
+            std::vector<std::string> toks = read_settings(sfile, nullptr);
+            toks.push_back("--difficulty");
+            toks.push_back(kDiffTokens[d]);
+            write_settings(sfile, toks, nullptr);
+          }
 }
 
 void DriveSession::choose() {
@@ -474,6 +482,45 @@ void DriveSession::choose() {
           if (act == PauseMenu::kReplay) open_replay_viewer(true);
           if (act == PauseMenu::kSettings) {
             settings_page.load(read_settings(settings_path(), nullptr));
+            LiveSettings snap = settings_page.live_settings();
+            snap.difficulty = int(app.race_options.difficulty);
+            snap.ai_mode = int(app.race_options.ai_mode);
+            snap.rubberband = app.race_options.rubberband;
+            snap.damage_mode = int(car_damage.mode);
+            snap.sound = live_sound_enabled;
+            snap.radio = live_radio_enabled;
+            snap.treasure_map = app.treasure_map_setting;
+            snap.motion_blur = live_motion_blur;
+            snap.dof = live_dof;
+            snap.skip_intro_movies = app.skip_intro_movies;
+            snap.start_in_single_player = app.start_in_single_player;
+            snap.skip_vo_with_a = app.skip_vo_with_a;
+            snap.metric_units = app.metric_units;
+            if (!app.language.empty()) snap.language = app.language;
+            snap.photo_through_walls = live_photo_through_walls;
+            snap.photo_wider_limits = live_photo_wider_limits;
+            snap.day_length_scale = app.tod_clock.speed_scale;
+            snap.controls = live_controls;
+            snap.controls.assists.driving_line = static_cast<int>(driving_line_mode);
+            snap.wheel_shaping = slice12.wheel_shaping;
+            snap.wheel_ffb = slice12.ffb_cfg;
+            snap.dualsense = slice12.ds_cfg;
+            snap.head_tracking = slice12.ht_cfg;
+            snap.camera_editor = slice12.cam_editor_cfg;
+            snap.immersive_camera = slice12.imm_cam_cfg;
+            snap.telemetry_udp = slice12.tel_cfg;
+            snap.trainer_cheats = slice12.trainer.config.cheats_enabled;
+            snap.festival_pacing = slice12.trainer.pacing;
+            snap.hidden_cars = slice12.trainer.hidden_cars;
+            if (!app.preset_name.empty() &&
+                (snap.preset.empty() ? (app.preset_name != "high") : (app.preset_name != snap.preset))) {
+              snap.preset = app.preset_name;
+            }
+            if (!app.shadows_flag.empty()) snap.shadows = app.shadows_flag;
+            if (app.bloom_flag >= 0) snap.bloom_mode = app.bloom_flag;
+            if (!app.graphics_backend.empty()) snap.graphics_backend = app.graphics_backend;
+            snap.graphics = host.active_graphics;
+            settings_page.sync_from_live(snap);
             settings_page.open();
           }
           if (act == PauseMenu::kCareer) {

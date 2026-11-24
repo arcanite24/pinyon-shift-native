@@ -55,6 +55,11 @@ struct LiveSettings {
   drive::FestivalPacingConfig festival_pacing;
   bool hidden_cars = false;
   std::string graphics_backend = "auto";
+  std::string preset;      // empty: default, else "low"|"high"|"ultra"|"low-power"
+  std::string shadows;     // empty: default, else "off"|"low"|"high"
+  int bloom_mode = -1;     // -1: default, 0: off, 1: on
+  bool traffic = true;
+  bool collectibles = true;
   modern::GraphicsSettings graphics;
 };
 
@@ -99,6 +104,11 @@ class SettingsPage {
   // The file's tokens with the page's rows and key bindings applied (write_settings).
   std::vector<std::string> tokens() const;
   LiveSettings live_settings() const;
+  // Syncs row picks from live runtime state (for settings changed outside settings.txt).
+  void sync_from_live(const LiveSettings& live);
+  bool dirty() const { return dirty_; }
+  void mark_clean() { dirty_ = false; }
+  bool has_explicit_control_tokens() const { return has_explicit_controls_; }
   void fill(std::string& title, std::vector<std::string>& lines, int& selected) const;
   // A row's shown choice, by its name ("difficulty", "key throttle"), for tests.
   std::string value(const std::string& name) const;
@@ -113,6 +123,7 @@ class SettingsPage {
     const char* name;
     std::vector<Choice> choices;
     size_t pick = 0;
+    bool explicit_default = false;
   };
   struct RebindRow {
     const char* name;
@@ -125,6 +136,8 @@ class SettingsPage {
   std::vector<std::string> lut_files_;
   bool open_ = false;
   bool capturing_ = false;
+  bool dirty_ = false;
+  bool has_explicit_controls_ = false;
   Tab tab_ = Tab::kDisplay;
   int row_ = 0;
   std::vector<int> tab_flat_indices(Tab t) const;

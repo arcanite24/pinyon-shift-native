@@ -15,6 +15,17 @@ namespace carview {
 
 bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
             if (settings_page.is_open()) {
+              auto persist_settings_file = [&](std::string* why_out) -> bool {
+                std::string why;
+                const auto file = settings_path();
+                if (file.empty()) {
+                  why = "no user folder";
+                } else if (!write_settings(file, settings_page.tokens(), &why)) {
+                  if (why.empty()) why = "not written";
+                }
+                if (why_out) *why_out = why;
+                return why.empty();
+              };
               auto apply_live = [&]() {
                 const LiveSettings ls = settings_page.live_settings();
                 live_controls = ls.controls;
@@ -23,8 +34,9 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 if (!rumble_enabled || rumble_scale <= 0.0) {
                   for (SDL_Gamepad* pad : pads) SDL_RumbleGamepad(pad, 0, 0, 0);
                 }
-                if (ls.camera_mode >= 0 && have_rig) {
-                  rig.set_mode(drive::CameraMode(std::clamp(ls.camera_mode, 0, drive::kCameraModes - 1)));
+                if (ls.camera_mode >= 0) {
+                  app.camera_mode = std::clamp(ls.camera_mode, 0, drive::kCameraModes - 1);
+                  if (have_rig) rig.set_mode(drive::CameraMode(app.camera_mode));
                 }
                 if (have_rig && ls.controls.camera_effects != loaded_camera_effects) {
                   const drive::CameraMode cur_mode = rig.mode();
@@ -35,13 +47,24 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                     loaded_camera_effects = ls.controls.camera_effects;
                   }
                 }
-                if (ls.difficulty >= 0 && ls.difficulty <= 4) app.race_options.difficulty = race::Difficulty(ls.difficulty);
+                if (ls.difficulty >= 0 && ls.difficulty <= 4) {
+                  app.race_options.difficulty = race::Difficulty(ls.difficulty);
+                  sync_pause_labels();
+                }
                 app.race_options.ai_mode = race::AiMode(std::clamp(ls.ai_mode, 0, 2));
                 app.race_options.rubberband = ls.rubberband;
                 if (app.race) {
                   app.race->set_difficulty(app.race_options.difficulty);
                   app.race->set_ai_mode(app.race_options.ai_mode);
                 }
+                car_damage.mode = drive::DamageMode(std::clamp(ls.damage_mode, 0, 2));
+                if (!ls.preset.empty()) {
+                  app.preset_name = ls.preset;
+                  app.low_preset = (ls.preset == "low" || ls.preset == "low-power");
+                }
+                app.shadows_flag = ls.shadows;
+                app.bloom_flag = ls.bloom_mode;
+                if (!ls.graphics_backend.empty()) app.graphics_backend = ls.graphics_backend;
                 live_sound_enabled = ls.sound;
                 live_radio_enabled = ls.radio;
                 app.treasure_map_setting = ls.treasure_map;
@@ -117,6 +140,22 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                     }
                   }
                 }
+                // Persist live changes immediately so closing via Back/Esc/B/F6 or reopening
+                // Settings always reloads the exact applied values instead of defaults.
+                std::string pwhy;
+                if (!persist_settings_file(&pwhy) && !pwhy.empty()) {
+                  notice = "settings: " + pwhy;
+                  notice_until = vehicle.time() + 4;
+                }
+              };
+              auto close_settings = [&]() {
+                if (settings_page.dirty()) {
+                  persist_settings_file(nullptr);
+                  if (!app.show_title) save_now("settings");
+                  settings_page.mark_clean();
+                }
+                settings_page.close();
+                settings_live_overlay = false;
               };
               auto confirm = [&]() {
                 if (settings_page.on_rebind_row()) {
@@ -130,13 +169,15 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 }
                 apply_live();
                 std::string why;
-                const auto file = settings_path();
-                if (file.empty()) why = "no user folder";
-                else if (!write_settings(file, settings_page.tokens(), &why)) why = why.empty() ? "not written" : why;
-                save_now("settings");
+                persist_settings_file(&why);
+                if (!app.show_title) save_now("settings");
+                settings_page.mark_clean();
                 notice = why.empty() ? "settings saved and applied" : "settings: " + why;
                 notice_until = vehicle.time() + 4;
-                if (why.empty()) settings_page.close();
+                if (why.empty()) {
+                  settings_page.close();
+                  settings_live_overlay = false;
+                }
               };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
@@ -151,8 +192,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   }
                 } else {
                   if ((k == SDLK_ESCAPE || k == SDLK_F6) && !e.key.repeat) {
-                    settings_page.close();
-                    settings_live_overlay = false;
+                    close_settings();
                     app.audio_host.trigger_ui(audio::UiCue::kCancel);
                   } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
                     app.audio_host.trigger_ui(audio::UiCue::kAccept);
@@ -197,8 +237,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
               } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && !settings_page.capturing_key()) {
                 const auto b = e.gbutton.button;
                 if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) {
-                  settings_page.close();
-                  settings_live_overlay = false;
+                  close_settings();
                   app.audio_host.trigger_ui(audio::UiCue::kCancel);
                 } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
                   app.audio_host.trigger_ui(audio::UiCue::kAccept);
@@ -246,8 +285,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 }
                 if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                   if (e.button.button == SDL_BUTTON_RIGHT) {
-                    settings_page.close();
-                    settings_live_overlay = false;
+                    close_settings();
                     app.audio_host.trigger_ui(audio::UiCue::kCancel);
                   } else if (e.button.button == SDL_BUTTON_LEFT) {
                     carview::ui::HitZone hz{};

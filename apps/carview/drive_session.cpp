@@ -274,11 +274,12 @@ void DriveSession::init_session() {
         SettingsPage init_settings;
         init_settings.load(read_settings(settings_path(), nullptr));
         const LiveSettings init_ls = init_settings.live_settings();
-        if (!app.have_saved || !app.saved.has_controls) live_controls = init_ls.controls;
+        if (init_settings.has_explicit_control_tokens() || !app.have_saved || !app.saved.has_controls)
+          live_controls = init_ls.controls;
         car_damage.mode = drive::DamageMode(init_ls.damage_mode);
       }
-      live_sound_enabled = true;
-      live_radio_enabled = true;
+      live_sound_enabled = app.audio_cfg.sound;
+      live_radio_enabled = app.audio_cfg.radio_on;
       loaded_camera_effects = live_controls.camera_effects;
       if (app.demo_achievements_png.empty()) eval_achievements(false);
       club_check();
