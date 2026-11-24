@@ -959,9 +959,9 @@ WorldMemoryBudget choose_world_memory_budget(uint64_t device_local_bytes, bool l
     b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 8, 96ULL << 20, 128ULL << 20);
     b.texture_lru_count = 768;
   } else {
-    // 128-160 MiB vertex + 32-40 MiB index: generous headroom for overlapping fading
-    // cells during 240 km/h streaming and long-distance teleports.
-    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 10, 128ULL << 20, 160ULL << 20);
+    // 128-512 MiB vertex (scales with VRAM, e.g. ~160 MiB on 2 GB, 512 MiB on 6+ GB):
+    // generous headroom for dense 11M-tri Horizon Festival gathers and 240 km/h streaming.
+    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 10, 128ULL << 20, 512ULL << 20);
     b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 6, 192ULL << 20, 320ULL << 20);
     b.texture_lru_count = 1536;
   }

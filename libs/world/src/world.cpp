@@ -853,6 +853,9 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       for (const auto& p : impl_->props.placements) {
         if (!p.has_object || p.object_id >= impl_->table.objects.size()) continue;
         const auto& t = p.placement.offset;
+        // Skip unplaced origin-sentinel records in Colorado_00.pvs (offset == {0,0,0})
+        // that otherwise dump ~9,700 props / 11M triangles whenever within prop_radius of (0,0,0).
+        if (std::fabs(t[0]) < 1e-3 && std::fabs(t[1]) < 1e-3 && std::fabs(t[2]) < 1e-3) continue;
         const double dx = t[0] - x, dz = t[2] - z;
         if (dx * dx + dz * dz > tree_r2) continue;
         if (options.route >= 0 && !fh1::shown_on_route(p.routes, options.route)) continue;
@@ -867,6 +870,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     std::map<uint32_t, uint32_t> distant_tree_mat;
     for (const auto& p : impl_->props.placements) {
       const auto& t = p.placement.offset;
+      if (std::fabs(t[0]) < 1e-3 && std::fabs(t[1]) < 1e-3 && std::fabs(t[2]) < 1e-3) continue;
       const double dx = t[0] - x, dz = t[2] - z, d2 = dx * dx + dz * dz;
       if (d2 > tree_r2) continue;
       const bool distant_tree_band = d2 > prop_r2;

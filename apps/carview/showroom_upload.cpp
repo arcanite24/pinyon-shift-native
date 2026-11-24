@@ -342,7 +342,7 @@ bool Showroom::upload(std::string& error) {
     uint64_t vb_bytes = mem_budget.vertex_arena_bytes;
     if (uint64_t mb = 0; parse_env_u64("SHIFT_WORLD_ARENA_MB", mb) && mb >= 16 && mb <= 2048) vb_bytes = mb << 20;
     gs.vertex_capacity = uint32_t(vb_bytes / sizeof(WorldVertex));
-    gs.index_capacity = gs.vertex_capacity * 3;
+    gs.index_capacity = gs.vertex_capacity * 4;
     gs.retire = [this](std::function<void()> f) { retire(std::move(f)); };
     auto gw = std::make_unique<WorldGpu>(r_);
     std::string gerr;

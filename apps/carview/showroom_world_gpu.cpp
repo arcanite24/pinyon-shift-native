@@ -457,6 +457,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
   for (size_t i = 0; i < st.draws.size(); ++i) staged_first[i] = st.draws[i].first_index;
   std::vector<const gpuworld::ResidentDraw*> placed(st.draws.size(), nullptr);
   const uint64_t generation = ++world_generation_;
+  size_t fail_idx = 0;
   auto attempt = [&]() {
     vertex_copies.clear();
     index_copies.clear();
@@ -469,6 +470,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
       if (!rd)
         rd = res.place(d.key, d.vertex_count, d.index_count, st.origin_x, st.origin_z, generation, r_.frames_done());
       if (!rd) {
+        fail_idx = i;
         for (size_t k = 0; k < i; ++k)
           if (placed[k]) res.release(st.draws[k].key, 0);
         return false;
@@ -493,7 +495,11 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
     release_retired();
     res.evict_unreferenced(r_.frames_done());
     if (!attempt()) {
-      error = "world arena full";
+      const auto& fd = st.draws[fail_idx];
+      error = "world arena full (draw " + std::to_string(fail_idx) + "/" + std::to_string(st.draws.size()) +
+              " v=" + std::to_string(fd.vertex_count) + " i=" + std::to_string(fd.index_count) +
+              " used=" + std::to_string(res.vertex_used()) + "/" + std::to_string(res.vertex_capacity()) +
+              " idx=" + std::to_string(res.index_used()) + "/" + std::to_string(res.index_capacity()) + ")";
       return false;
     }
   }
