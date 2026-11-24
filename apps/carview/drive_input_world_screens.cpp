@@ -418,14 +418,29 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                           notice = "QUIT RACE TO FAST TRAVEL";
                           notice_until = vehicle.time() + 3.0;
                         } else {
-                          app.spawn[0] = op->spawn.x;
-                          app.spawn[1] = 0.0;
-                          app.spawn[2] = op->spawn.z;
-                          app.spawn[3] = std::atan2(op->spawn.z_axis[0], op->spawn.z_axis[2]);
-                          app.have_spawn = true;
-                          app.fast_travel = true;
-                          app.next_car = app.car;
-                          running = false;
+                          // Retail FH1 Fast Travel fee: 10,000 CR discounted by smashed Discount Signs
+                          // (0 CR when all 50 signs smashed or Fast Travel Anywhere trainer cheat is active).
+                          const int64_t ft_fee = slice12.trainer.effective_fast_travel_anywhere()
+                                                     ? 0
+                                                     : (10000LL * std::clamp(100 - discount(), 0, 100)) / 100LL;
+                          if (ft_fee > 0 && app.career.credits < ft_fee) {
+                            notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
+                            notice_until = vehicle.time() + 3.5;
+                            app.audio_host.trigger_ui(audio::UiCue::kError);
+                          } else {
+                            if (ft_fee > 0) {
+                              app.career.credits -= ft_fee;
+                              save_now("fast travel");
+                            }
+                            app.spawn[0] = op->spawn.x;
+                            app.spawn[1] = 0.0;
+                            app.spawn[2] = op->spawn.z;
+                            app.spawn[3] = std::atan2(op->spawn.z_axis[0], op->spawn.z_axis[2]);
+                            app.have_spawn = true;
+                            app.fast_travel = true;
+                            app.next_car = app.car;
+                            running = false;
+                          }
                         }
                       } else if (app.gps_solver.ready()) {
                         fire_satnav_event(app.gps_nav.set_destination(op->trigger.x, op->trigger.z,
@@ -448,7 +463,19 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                   notice_until = vehicle.time() + 3.0;
                   return;
                 }
-                // Fast travel to map cursor location on Colorado.
+                if (!slice12.trainer.effective_fast_travel_anywhere()) {
+                  // Retail FH1: Fast Travel is Outpost-only; clicking open map sets GPS waypoint.
+                  if (app.gps_solver.ready()) {
+                    const drive::Vec3 at = vehicle.position();
+                    fire_satnav_event(app.gps_nav.set_destination(map_cx, map_cz, traffic::GpsDestKind::kGeneric,
+                                                                  "CUSTOM WAYPOINT", at.x, at.z));
+                    notice = "GPS WAYPOINT SET (FAST TRAVEL AT DISCOVERED OUTPOSTS)";
+                    notice_until = vehicle.time() + 3.5;
+                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                  }
+                  return;
+                }
+                // Trainer Fast Travel Anywhere enabled: teleport directly to map cursor.
                 close_map();
                 app.spawn[0] = map_cx, app.spawn[1] = 0.0, app.spawn[2] = map_cz, app.spawn[3] = 0.0;
                 app.have_spawn = true;

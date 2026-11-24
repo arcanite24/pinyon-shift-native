@@ -243,6 +243,10 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
               app.car = it->second;
             }
           }
+          // Wire dynamic AI difficulty (AISkillAdjustments) into career races when running in Stock mode.
+          if (app.race_options.ai_mode == race::AiMode::kStock && app.career.num_races > 0) {
+            app.race_options.difficulty = race::difficulty_from_dynamic_skill(app.dynamic_ai_skill);
+          }
           events_page.close();
           app.campaign.on_enter_event(ev, app.fmv_player, &app.audio_host);
           if (app.campaign.is_blocking_gameplay() && !app.headless) {
@@ -354,17 +358,22 @@ void DriveSession::update_map_selection() {
             map_overlay.subtitle = m.subtitle;
             map_overlay.distance_m = std::hypot(m.x - at.x, m.z - at.z);
             if (m.kind == MapMarker::kEvent) map_overlay.action_hint = "ENTER EVENT";
-            else if (m.kind == MapMarker::kOutpost)
-              map_overlay.action_hint = (m.discovered || slice12.trainer.effective_fast_travel_anywhere())
-                                            ? "FAST TRAVEL / HUB"
-                                            : "SET GPS ROUTE";
-            else if (m.kind == MapMarker::kPrStunt) map_overlay.action_hint = "START PR STUNT";
+            else if (m.kind == MapMarker::kOutpost) {
+              const int64_t ft_fee = slice12.trainer.effective_fast_travel_anywhere()
+                                         ? 0
+                                         : (10000LL * std::clamp(100 - discount(), 0, 100)) / 100LL;
+              map_overlay.action_hint =
+                  (m.discovered || slice12.trainer.effective_fast_travel_anywhere())
+                      ? (ft_fee > 0 ? ("FAST TRAVEL (" + carview::thousands(ft_fee) + " CR)") : "FAST TRAVEL (FREE)")
+                      : "SET GPS ROUTE";
+            } else if (m.kind == MapMarker::kPrStunt) map_overlay.action_hint = "START PR STUNT";
             else map_overlay.action_hint = "ENTER";
           } else {
             map_overlay.title = "COLORADO MAP";
             map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR FESTIVAL SITE";
             map_overlay.distance_m = std::hypot(map_cx - at.x, map_cz - at.z);
-            map_overlay.action_hint = "FAST TRAVEL HERE";
+            map_overlay.action_hint =
+                slice12.trainer.effective_fast_travel_anywhere() ? "FAST TRAVEL HERE" : "SET GPS WAYPOINT";
           }
           map_overlay.gps_active = app.gps_nav.active();
           map_overlay.gps_hint = app.gps_nav.active() ? "SET / CLEAR GPS (G)" : "SET GPS ROUTE (G)";

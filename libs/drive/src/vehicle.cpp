@@ -595,7 +595,7 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   // - Countersteer boost above rear slip threshold
   // - Acceleration-ramped angular velocity over SteerAccelTimeToMaxRate
   const double v_abs = std::fabs(speed());
-  const double lock = steer_lock();
+  const double lock = steer_lock() * std::clamp(surf_steer_lock_cap_, 0.35, 1.0);
   const double u_sw = assists_.steering == 2
                           ? ramp(v_abs, p_.sw_filter_corr_speed0, p_.sw_filter_corr_speed1)
                           : ramp(v_abs, p_.sw_filter_speed0, p_.sw_filter_speed1);
@@ -615,7 +615,8 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   const double u_spd = ramp(v_abs, p_.steer_slow_speed, p_.steer_fast_speed);
   const double speed_rate_scale = lerp(1.0, p_.steer_fast_rate_scale, u_spd);
   const double share = p_.max_steer > 0 ? std::clamp(lock / p_.max_steer, p_.steer_rate_min_share, 1.0) : 1.0;
-  double rate_use = centring ? p_.straighten_rate : p_.steer_rate * lerp(share, share * p_.steer_fast_rate_scale, u_spd);
+  double rate_use = (centring ? p_.straighten_rate : p_.steer_rate * lerp(share, share * p_.steer_fast_rate_scale, u_spd)) *
+                    std::clamp(surf_steer_rate_mult_, 0.35, 2.0);
   // Dynamic peak-slip tracking: in Normal/Assisted modes (and not during
   // handbrake drift initiation), when front tyres wash past peak lateral slip,
   // pull target angle smoothly toward peak front grip via SteerAngVelDynFindPeak.
@@ -994,7 +995,7 @@ void Vehicle::update_gearbox(double dt) {
     case GearState::kGearChange:
       engine_throttle_ = 0;
       clutch_ = 0;
-      if (state_time_ >= p_.gear_shift_time + damage_.shift_time_add - 1e-9) {
+      if (state_time_ >= p_.gear_shift_time + damage_.shift_time_add + 0.35 * trans_damage_ - 1e-9) {
         gear_ = target_gear_;  // the gear number changes at the end
         if (shifting_mode == 0 && gear_ > 1 && out_rpm() < 0.9 * idle) {
           const int best = auto_gear_for_speed();
@@ -1009,7 +1010,13 @@ void Vehicle::update_gearbox(double dt) {
     case GearState::kRevMatch:
       clutch_ = 0;
       engine_throttle_ = rev_request();
-      if (state_time_ >= p_.rev_match_time - 1e-9) enter(GearState::kClutchOut);
+      // Hold rev-match for at least rev_match_time; extend when transmission/shift damage
+      // slows synchronization until RPM converges or the damaged timeout elapses.
+      if (state_time_ >= p_.rev_match_time - 1e-9 &&
+          (std::fabs(rpm_now - std::clamp(out_rpm(), idle, red)) <= 180.0 ||
+           state_time_ >= p_.rev_match_time + damage_.shift_time_add + 0.25 * trans_damage_ - 1e-9)) {
+        enter(GearState::kClutchOut);
+      }
       break;
     case GearState::kClutchOut: {
       if (out_rpm() < 0.9 * idle && rev_matching_) {
@@ -1155,7 +1162,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (w.contact) {
       const double susp_s = damage_.suspension_scale[size_t(i)];
       double damper = rate[i] * (rate[i] > 0 ? p.bump_rate[a] : p.rebound_rate[a]) * susp_s;
-      damper = std::clamp(damper, -p.damper_clamp[a], p.damper_clamp[a]);
+      damper = std::clamp(damper, -p.rebound_damper_clamp[a], p.damper_clamp[a]);
       load = preload_[i] + p.spring_rate[a] * susp_s * compression + damper;
       if (compression > p.bump_travel[a])
         load += p.bumpstop_rate[a] * (compression - p.bump_travel[a]) + p.bumpstop_damping[a] * std::max(0.0, rate[i]);
@@ -1166,6 +1173,25 @@ void Vehicle::substep(double dt, const Ground& ground) {
   }
   spring_ring_pos_ = (spring_ring_pos_ + 1) % 3;
   surface_bump_rumble_ = max_bump_rumble;
+  // Track surface steering caps & aerodynamic drag scale across grounded wheels.
+  {
+    double lock_sum = 0.0, rate_sum = 0.0;
+    int gcount = 0;
+    for (int i = 0; i < kWheels; ++i) {
+      if (w_[i].contact) {
+        lock_sum += surf[i].max_steering_lock_cap;
+        rate_sum += surf[i].steering_rate_mult;
+        ++gcount;
+      }
+    }
+    if (gcount > 0) {
+      surf_steer_lock_cap_ = lock_sum / double(gcount);
+      surf_steer_rate_mult_ = rate_sum / double(gcount);
+    } else {
+      surf_steer_lock_cap_ = 1.0;
+      surf_steer_rate_mult_ = 1.0;
+    }
+  }
   // Anti-roll bars: equal and opposite on an axle's two wheels.
   for (int a = 0; a < 2; ++a) {
     const int l = 2 * a, r = 2 * a + 1;
@@ -1328,13 +1354,18 @@ void Vehicle::substep(double dt, const Ground& ground) {
     // excess over 1 is 1.1 x the front's.
     const double dirt = ai_ && dirt_rule_ ? std::clamp(1 + (a == 0 ? 0.5 : 0.55) * dirt_k_, 0.0, 2.0) : 1.0;
     const double ai = ai_grip_[a] * dirt;
+    // Thermal tyre affect curve (List_TireAffectCurve): optimal window ~75..100 C = 1.0,
+    // gradual falloff when severely overheated (>115 C) during sustained burnouts/drifts.
+    const double t_over = std::max(0.0, tyre_temp_c_[size_t(i)] - 110.0);
+    const double thermal_grip = 1.0 - std::clamp(t_over * 0.0022, 0.0, 0.14);
     // Braking friction on a slowed wheel, else the speed-blended accel
     // scale (SPEC-CAR-PHYSICS, Brakes: Braking friction).
-    double kx = grip[i] * rear * hb_grip * ai * p.long_scale[a] * p.long_misc_scale * damage_.tyre_grip[size_t(i)];
+    double kx = grip[i] * rear * hb_grip * ai * p.long_scale[a] * p.long_misc_scale * damage_.tyre_grip[size_t(i)] *
+                thermal_grip;
     kx *= slowing[i] ? (p.brake_friction_scale * (abs_off_boost ? p.abs_off_braking_friction_scale : 1.0))
                      : lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(vx[i]), p.accel_speed0, p.accel_speed1));
     double ky = grip[i] * rear * hb_grip * ai * p.lat_scale[a] * p.lat_compound_scale * p.long_misc_scale *
-                damage_.tyre_grip[size_t(i)];
+                damage_.tyre_grip[size_t(i)] * thermal_grip;
     // The rear-grip fix: g + d (1 - g), g the scale faded out by the
     // normalised slip angle, d by the road wheels' steer angle in degrees.
     if (a == 1) {
@@ -1588,6 +1619,12 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (!w.contact || w.load <= 0) w.fx = 0;
     w.omega = omega_new[i];
     w.spin = std::fmod(w.spin + w.omega * dt, 2 * kPi);
+    // Update dynamic tyre carcass temperature (C): heats from sustained slip energy, cools toward 75 C operating / 30 C ambient.
+    const double slip_mag = std::hypot(w.slip_ratio, w.slip_angle * 0.12);
+    const double heat_in = (w.contact && slip_mag > 0.35) ? (slip_mag - 0.35) * std::min(std::fabs(vx[i]) + 4.0, 40.0) * 0.45 : 0.0;
+    const double cool_target = 75.0;
+    const double cool_rate = (0.04 + 0.002 * std::fabs(vx[i])) * (tyre_temp_c_[size_t(i)] - cool_target);
+    tyre_temp_c_[size_t(i)] = std::clamp(tyre_temp_c_[size_t(i)] + (heat_in - cool_rate) * dt, 25.0, 175.0);
   }
 
   // Body contacts: 26 points on the box (corners, edge and face middles),
@@ -1660,11 +1697,23 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const Vec3 vl = rotate_inverse(rot_, vel_);
     const double hs = lerp(p.high_speed_drag_s0, p.high_speed_drag_s1,
                            ramp(std::fabs(vl.z), p.high_speed_drag_v0, p.high_speed_drag_v1));
+    double surf_aero_drag = 1.0;
+    {
+      double ssum = 0.0;
+      int sc = 0;
+      for (int i = 0; i < kWheels; ++i) {
+        if (w_[i].contact) {
+          ssum += surf[i].aero_drag_scale;
+          ++sc;
+        }
+      }
+      if (sc > 0) surf_aero_drag = std::clamp(ssum / double(sc), 0.5, 4.0);
+    }
     const double c_long = (vl.z >= 0 ? p.aero_drag_long * hs * draft_.body_drag +
                                            p.aero_part_drag_front * draft_.front_drag +
                                            p.aero_part_drag_rear * draft_.rear_drag
                                      : p.aero_drag_long * hs) *
-                          damage_.aero_drag;
+                          damage_.aero_drag * surf_aero_drag;
     const double fz = -sign(vl.z) * c_long * vl.z * vl.z;
     const double fy_drag = -sign(vl.y) * p.aero_drag_vert * vl.y * vl.y;
     const double fx_f = -sign(vl.x) * p.aero_drag_lat_front * vl.x * vl.x;

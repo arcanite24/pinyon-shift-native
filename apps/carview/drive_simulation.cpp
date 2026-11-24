@@ -99,9 +99,28 @@ void DriveSession::start_pr_stunt(const freeroam::PrStunt& st) {
           const auto sh = app.skill_tracker->hud();
           base_pts = int64_t(std::llround(sh.popularity_points)) + int64_t(sh.chain_points) * int64_t(sh.multiplier);
         }
-        app.pr_stunt_session.start(st, base_pts);
+        app.pr_stunt_session.start(st, base_pts, int(app.race_options.difficulty));
         pr_stunt_has_prev = false;
         pr_stunt_photo_pressed = false;
+        // Swap to the PR Stunt's required loaner car when specified (storing pre_loaner_car to restore after).
+        if (st.loaner_car_id > 0) {
+          if (auto it = app.baked_ids.find(st.loaner_car_id);
+              it != app.baked_ids.end() && lower_ascii(it->second) != lower_ascii(app.car)) {
+            if (app.pre_loaner_car.empty()) {
+              app.pre_loaner_car = app.car;
+              app.pre_loaner_garage_id = app.career_garage.selected;
+            }
+            const drive::Vec3 curp = vehicle.position();
+            const drive::Vec3 curf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+            app.spawn[0] = curp.x;
+            app.spawn[1] = curp.y;
+            app.spawn[2] = curp.z;
+            app.spawn[3] = std::atan2(curf.x, curf.z);
+            app.have_spawn = true;
+            app.next_car = it->second;
+            running = false;
+          }
+        }
         const drive::Vec3 at = vehicle.position();
         if (app.gps_solver.ready()) {
           fire_satnav_event(app.gps_nav.set_destination(st.target_pos.x, st.target_pos.z, traffic::GpsDestKind::kGeneric,
@@ -249,8 +268,6 @@ bool DriveSession::free_roam_step() {
               if (const auto* spec = app.career_catalog.find_car_by_media(app.car))
                 app.award_garage_car(spec->car_id, 0, true);
             }
-            const std::string awarded = app.award_garage_car(b.car_id, 0, false);
-            app.garage_picker();
             // The car's name: the Barnfind table's IDS_ key, by the id rule.
             std::string named = barn_car_label(b);
             if (!b.car_name_key.empty()) {
@@ -258,13 +275,14 @@ bool DriveSession::free_roam_step() {
               const std::string t = carview::game_text("_&" + std::to_string(ref));
               if (!t.empty() && t[0] != '_') named = t;
             }
-            if (named == barn_car_label(b) && !awarded.empty()) named = awarded;
-            std::snprintf(line, sizeof line, "barn find! %s is in the garage", named.c_str());
-            popup = {"BARN FIND!", named + " IS IN YOUR GARAGE", vehicle.time(), -1, carview::ui::rgba(70, 210, 100)};
+            // Real FH1 Barn Find flow: discovery sends the wreck to Dak's garage for restoration;
+            // the car is delivered into My Garage once Dak finishes restoring it.
+            std::snprintf(line, sizeof line, "barn find! dak is restoring %s", named.c_str());
+            popup = {"BARN FIND DISCOVERED!", "DAK IS RESTORING " + named, vehicle.time(), -1, carview::ui::rgba(70, 210, 100)};
             app.campaign.on_barn_find(true, b.name, named, &app.audio_host);
             app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
-            app.pending_barn_restorations.push_back({b.name, named, 45.0, 0.0});
-            std::printf("t %.2f s: %s found: %s (Data_Car %d) to the garage\n", vehicle.time(), b.name.c_str(),
+            app.pending_barn_restorations.push_back({b.name, named, b.car_id, 45.0, 0.0});
+            std::printf("t %.2f s: %s found: %s (Data_Car %d) sent to Dak for restoration\n", vehicle.time(), b.name.c_str(),
                         named.c_str(), b.car_id);
           }
           save_due = true;
@@ -868,6 +886,13 @@ bool DriveSession::step(const drive::Input& user_in) {
               const int64_t hcr = slice12.trainer.pacing.scale_credits(hres.payout_credits);
               app.career.credits = std::min<int64_t>(999999999, app.career.credits + hcr);
               app.career.total_winnings += hcr;
+            } else if (hres.wager_credits > 0) {
+              // Risk-bearing H2H wager: losing deducts the staked wager from credits.
+              const int64_t loss = std::min(app.career.credits, hres.wager_credits);
+              app.career.credits = std::max<int64_t>(0, app.career.credits - loss);
+              popup = {"HEAD-TO-HEAD LOST",
+                       "WAGER LOST TO " + hres.opponent_name + "   -" + carview::thousands(loss) + " Cr",
+                       vehicle.time(), -1, carview::ui::rgba(255, 72, 72)};
             }
             if (app.skill_tracker) app.skill_tracker->add_popularity(double(hres.popularity_points));
             if (app.have_prog_tables) {

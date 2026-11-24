@@ -358,8 +358,10 @@ RaceAward award_race(CareerRecord& r, int64_t event_id, int64_t race_id, int car
   else r.time_in_festival += race_time;
   r.top_speed = std::max(r.top_speed, top_speed);
   r.wristband_points += a.wristband_points;
-  // 4. The prize car, once, for place 1.
-  if (prize_car && place == 1 && std::find(r.prize_cars.begin(), r.prize_cars.end(), prize_car) == r.prize_cars.end()) {
+  // 4. The prize car, once, for finishing within Rewards_EventPrizes max placement (1st or 2nd).
+  const int max_prize_place = std::max(1, extras.prize_car_max_place);
+  if (prize_car && place >= 1 && place <= max_prize_place &&
+      std::find(r.prize_cars.begin(), r.prize_cars.end(), prize_car) == r.prize_cars.end()) {
     r.prize_cars.push_back(prize_car);
     a.prize_car = prize_car;
   }

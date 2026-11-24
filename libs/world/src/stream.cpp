@@ -144,6 +144,9 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
       t.off_road_peak_sa = s.off_road_peak_sa;
       t.handbrake_grip = s.handbrake_grip;
       t.tcs_speed_scale = s.tcs_speed_scale;
+      t.max_steering_lock_cap = s.max_steering_lock_cap;
+      t.steering_rate_mult = s.steering_rate_mult;
+      t.aero_drag_scale = s.aero_drag_scale;
       t.vel_peak0 = s.vel_peak0;
       t.vel_peak = s.vel_peak;
       t.vel_long0 = s.vel_long0;

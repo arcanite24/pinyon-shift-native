@@ -45,6 +45,7 @@ Vec3 rotate_inverse(const Quat& q, const Vec3& v);
 struct SurfaceTyre {
   double rear_grip = 1, off_roadness = 0, off_road_peak_sa = 12;
   double handbrake_grip = 1, tcs_speed_scale = 1;
+  double max_steering_lock_cap = 1.0, steering_rate_mult = 1.0, aero_drag_scale = 1.0;
   // Friction/VelDepFriction (default: Asphalt 0..8 m/s, 0.01 long, 0.03 lat).
   double vel_peak0 = 0, vel_peak = 8;
   double vel_long0 = 0, vel_long = 0.01;
@@ -180,7 +181,8 @@ struct CarParams {
   std::array<double, 2> spring_rate{60000, 50000};    // N/m
   std::array<double, 2> bump_rate{4000, 3500};        // N s/m, compressing
   std::array<double, 2> rebound_rate{6000, 5000};     // N s/m, extending
-  std::array<double, 2> damper_clamp{14000, 14000};   // N, the damper force's limit
+  std::array<double, 2> damper_clamp{14000, 14000};          // N, bump damper force limit
+  std::array<double, 2> rebound_damper_clamp{14000, 14000};  // N, rebound damper force limit
   std::array<double, 2> bump_travel{0.08, 0.08};      // m of compression from rest to the bump stop
   std::array<double, 2> max_droop{0.5, 0.5};          // m, extension limit from rest
   std::array<double, 2> bumpstop_rate{280000, 280000};  // N/m
@@ -676,6 +678,9 @@ class Vehicle {
   double spring_ring_[kWheels][3]{};
   int spring_ring_pos_ = 0;
   double surface_bump_rumble_ = 0;
+  double surf_steer_lock_cap_ = 1.0;
+  double surf_steer_rate_mult_ = 1.0;
+  double tyre_temp_c_[kWheels]{80.0, 80.0, 80.0, 80.0};
   bool hand_of_god_ = false;
   bool abs_flag_ = false;
   bool tcs_flag_ = false;

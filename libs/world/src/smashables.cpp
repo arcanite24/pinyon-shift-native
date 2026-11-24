@@ -1540,8 +1540,89 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
 
         const float along = px * float(cfwd.x) + pz * float(cfwd.z);
         const float across = px * float(cright.x) + pz * float(cright.z);
-        if (std::fabs(along) > half_l + pp.radius * 0.65f || std::fabs(across) > half_w + pp.radius * 0.65f)
-          continue;
+        bool hit_prop = false;
+        if (pp.def->shapes.empty()) {
+          hit_prop = std::fabs(along) <= half_l + pp.radius * 0.65f &&
+                     std::fabs(across) <= half_w + pp.radius * 0.65f;
+        } else {
+          // Test real PhysicsDefinitions.bin shapes (Sphere, OBB, ConvexHull) transformed
+          // into world space via pp.place orientation against the car OBB.
+          const auto& ax = pp.place.x_axis;
+          const auto& ay = pp.place.y_axis;
+          const auto& az = pp.place.z_axis;
+          auto to_world = [&](float lx, float ly, float lz) -> std::array<float, 3> {
+            return {pp.place.pos[0] + ax[0] * lx + ay[0] * ly + az[0] * lz,
+                    pp.place.pos[1] + ax[1] * lx + ay[1] * ly + az[1] * lz,
+                    pp.place.pos[2] + ax[2] * lx + ay[2] * ly + az[2] * lz};
+          };
+          for (const auto& sh : pp.def->shapes) {
+            if (sh.kind == PropShapeKind::kSphere) {
+              const auto sw = to_world(sh.sphere[0], sh.sphere[1], sh.sphere[2]);
+              const float r = std::max(0.15f, sh.sphere[3]);
+              if (std::fabs(sw[1] - float(cpos.y)) > 1.8f + r) continue;
+              const float rx = sw[0] - float(cpos.x), rz = sw[2] - float(cpos.z);
+              const float sa = rx * float(cfwd.x) + rz * float(cfwd.z);
+              const float sc = rx * float(cright.x) + rz * float(cright.z);
+              const float da = std::max(0.0f, std::fabs(sa) - half_l);
+              const float dc = std::max(0.0f, std::fabs(sc) - half_w);
+              if (da * da + dc * dc <= r * r) {
+                hit_prop = true;
+                break;
+              }
+            } else if (sh.kind == PropShapeKind::kObb) {
+              // 2D SAT in XZ between car OBB and prop OBB + vertical overlap check.
+              const auto& m = sh.transform;
+              const auto cw = to_world(m[12], m[13], m[14]);
+              const float hx = std::max(0.08f, sh.half_extents[0]);
+              const float hy = std::max(0.08f, sh.half_extents[1]);
+              const float hz = std::max(0.08f, sh.half_extents[2]);
+              if (std::fabs(cw[1] - float(cpos.y)) > 1.8f + hy) continue;
+              // Prop local X and Z axes transformed to world XZ.
+              const float ox_x = ax[0] * m[0] + ay[0] * m[1] + az[0] * m[2];
+              const float ox_z = ax[2] * m[0] + ay[2] * m[1] + az[2] * m[2];
+              const float oz_x = ax[0] * m[8] + ay[0] * m[9] + az[0] * m[10];
+              const float oz_z = ax[2] * m[8] + ay[2] * m[9] + az[2] * m[10];
+              const float dx_c = cw[0] - float(cpos.x), dz_c = cw[2] - float(cpos.z);
+              auto sat_sep = [&](float axis_x, float axis_z) -> bool {
+                const float l = std::hypot(axis_x, axis_z);
+                if (l < 1e-4f) return false;
+                const float ux = axis_x / l, uz = axis_z / l;
+                const float dist = std::fabs(dx_c * ux + dz_c * uz);
+                const float r_car = half_w * std::fabs(float(cright.x) * ux + float(cright.z) * uz) +
+                                    half_l * std::fabs(float(cfwd.x) * ux + float(cfwd.z) * uz);
+                const float r_obb = hx * std::fabs(ox_x * ux + ox_z * uz) +
+                                    hz * std::fabs(oz_x * ux + oz_z * uz);
+                return dist > r_car + r_obb;
+              };
+              if (!sat_sep(float(cright.x), float(cright.z)) && !sat_sep(float(cfwd.x), float(cfwd.z)) &&
+                  !sat_sep(ox_x, ox_z) && !sat_sep(oz_x, oz_z)) {
+                hit_prop = true;
+                break;
+              }
+            } else if (sh.kind == PropShapeKind::kConvexHull && !sh.hull_verts.empty()) {
+              const auto& m = sh.transform;
+              float min_a = 1e9f, max_a = -1e9f, min_c = 1e9f, max_c = -1e9f, min_y = 1e9f, max_y = -1e9f;
+              for (const auto& hv : sh.hull_verts) {
+                const float lx = m[0] * hv[0] + m[4] * hv[1] + m[8] * hv[2] + m[12];
+                const float ly = m[1] * hv[0] + m[5] * hv[1] + m[9] * hv[2] + m[13];
+                const float lz = m[2] * hv[0] + m[6] * hv[1] + m[10] * hv[2] + m[14];
+                const auto wv = to_world(lx, ly, lz);
+                const float rx = wv[0] - float(cpos.x), rz = wv[2] - float(cpos.z);
+                const float sa = rx * float(cfwd.x) + rz * float(cfwd.z);
+                const float sc = rx * float(cright.x) + rz * float(cright.z);
+                min_a = std::min(min_a, sa); max_a = std::max(max_a, sa);
+                min_c = std::min(min_c, sc); max_c = std::max(max_c, sc);
+                min_y = std::min(min_y, wv[1]); max_y = std::max(max_y, wv[1]);
+              }
+              if (max_a >= -half_l && min_a <= half_l && max_c >= -half_w && min_c <= half_w &&
+                  max_y >= float(cpos.y) - 0.6f && min_y <= float(cpos.y) + 1.8f) {
+                hit_prop = true;
+                break;
+              }
+            }
+          }
+        }
+        if (!hit_prop) continue;
 
         const auto& def = *pp.def;
         const drive::Vec3 com = vehicle.centre_of_mass();

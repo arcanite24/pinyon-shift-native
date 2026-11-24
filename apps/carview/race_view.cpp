@@ -370,6 +370,12 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
                          return a.performance_index > b.performance_index;
                        });
     }
+  } else {
+    // Stock-class grid sort: highest PI on pole even when UpgradeAI is false.
+    std::stable_sort(event_.opponents.begin(), event_.opponents.end(),
+                     [](const race::Opponent& a, const race::Opponent& b) {
+                       return a.performance_index > b.performance_index;
+                     });
   }
   const int cars = std::min(int(slots.size()), int(event_.opponents.size()) + 1);
   player_slot_ = race::player_slot(event_.player_grid_position, cars);
@@ -1293,6 +1299,7 @@ const race::RaceAward* RaceView::award(race::CareerRecord& career, const race::W
   const int place = showcase_.active() ? showcase_.player_place(field_->progress(n), true, c.finish) : c.place;
   race::RaceBonusInputs eff_extras = extras;
   if (eff_extras.assists_pct == 0) eff_extras.assists_pct = race::assist_difficulty_bonus_percent(o_.assists);
+  eff_extras.prize_car_max_place = std::max(eff_extras.prize_car_max_place, event_.prize_car_max_place);
   award_ = race::award_race(career, event_.event_id, event_.race_id, event_.career_type, event_.style, event_.level,
                             event_.cash_prize, racers, place, true, c.finish, top_speed, event_.prize_car, tables,
                             race::total_difficulty_bonus_percent(int(o_.difficulty), o_.assists), c.distance,

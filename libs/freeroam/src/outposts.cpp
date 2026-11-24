@@ -574,8 +574,17 @@ int OutpostProgress::completed_stunt_count(const OutpostCatalog& catalog) const 
   return n;
 }
 
-void PrStuntSession::start(const PrStunt& stunt, int64_t baseline_skill_points) {
+void PrStuntSession::start(const PrStunt& stunt, int64_t baseline_skill_points, int difficulty_index) {
   stunt_ = stunt;
+  // Scale PR Stunt target by race difficulty (0=Easy .. 3=Insane) matching FH1 progression.
+  const int d = std::clamp(difficulty_index, 0, 3);
+  if (d > 0) {
+    if (stunt_.kind == PrStuntKind::kSpeed && stunt_.target_mph > 0.0) {
+      stunt_.target_mph = std::round(stunt_.target_mph + std::min(15.0, stunt_.target_mph * (0.04 * double(d))));
+    } else if (stunt_.kind == PrStuntKind::kSkill && stunt_.target_points > 0) {
+      stunt_.target_points = int(std::llround(double(stunt_.target_points) * (1.0 + 0.15 * double(d))));
+    }
+  }
   state_ = PrStuntState::kActive;
   baseline_skill_points_ = baseline_skill_points;
   earned_skill_points_ = 0;
@@ -647,15 +656,7 @@ PrStuntState PrStuntSession::update(const PrStuntUpdate& u) {
           state_ = PrStuntState::kSucceeded;
           return state_;
         }
-        if (u.speed_mph < 8.0) {
-          photo_hold_s_ += dt;
-          if (photo_hold_s_ >= 1.5) {
-            state_ = PrStuntState::kSucceeded;
-            return state_;
-          }
-        } else {
-          photo_hold_s_ = 0.0;
-        }
+        photo_hold_s_ = std::min(1.5, photo_hold_s_ + dt);
       } else {
         photo_hold_s_ = 0.0;
       }
@@ -696,7 +697,7 @@ std::string PrStuntSession::status_line() const {
                     in_target_zone_ ? "   •   IN STUNT ZONE" : "");
       return buf;
     case PrStuntKind::kPhoto:
-      if (in_target_zone_) return "IN PHOTO ZONE   •   PRESS [P] OR STOP TO SNAP PHOTO";
+      if (in_target_zone_) return "IN PHOTO ZONE   •   OPEN PHOTO MODE OR PRESS [P] TO SNAP PHOTO";
       std::snprintf(buf, sizeof buf, "DRIVE TO LANDMARK   •   %.0f M AWAY", distance_to_target_);
       return buf;
   }

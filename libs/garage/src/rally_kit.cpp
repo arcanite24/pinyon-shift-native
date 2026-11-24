@@ -113,8 +113,10 @@ RallyKitStatus inspect_rally_kit(const Car& car, const cars::PartsDb& db) {
     }
   }
   st.has_optional_aero = st.optional_aero_total > 0;
-  st.is_rally_upgraded = st.has_rally_tyres;
   st.is_full_kit = st.has_rally_tyres && st.has_rally_suspension && st.has_rally_transmission;
+  // SPEC-V4-CONTENT: Horizon Rally 0x80 restriction requires all 3 core Rally parts
+  // (Rally tires, Rally suspension, and Rally transmission).
+  st.is_rally_upgraded = st.is_full_kit;
   return st;
 }
 

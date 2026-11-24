@@ -208,6 +208,10 @@ bool parse_surface_types(std::string_view xml, std::vector<SurfaceType>& out, st
     read_in(at, end, "OffRoadDryPeakSA", s.off_road_peak_sa);
     read_in(at, end, "HandbrakeGripMultiplier", s.handbrake_grip);
     read_in(at, end, "TCandStabilitySpeedMultiplier", s.tcs_speed_scale);
+    read_in(at, end, "MaxSteeringLockCap", s.max_steering_lock_cap);
+    read_in(at, end, "SteeringRateMultiplier", s.steering_rate_mult);
+    if (s.max_steering_lock_cap <= 0.0f) s.max_steering_lock_cap = 1.0f;
+    if (s.steering_rate_mult <= 0.0f) s.steering_rate_mult = 1.0f;
     read_bool_in(at, end, "IsPenaltySurface", s.is_penalty_surface);
     read_bool_in(at, end, "IsHandOfGodTriggerSurface", s.is_hand_of_god);
     read_bool_in(at, end, "ShouldSpark", s.should_spark);
@@ -282,6 +286,12 @@ bool parse_surface_types(std::string_view xml, std::vector<SurfaceType>& out, st
       read_in(g0, g1, "Scale", s.bump_scale);
       read_in(g0, g1, "Offset", s.bump_offset);
       read_in(g0, g1, "Rumble", s.bump_rumble);
+    }
+    if (sub_range("Aerodynamics", g0, g1)) {
+      float drag_s = 1.0f;
+      read_in(g0, g1, "DragScale", drag_s);
+      read_in(g0, g1, "DragMultiplier", drag_s);
+      if (drag_s > 0.0f) s.aero_drag_scale = drag_s;
     }
     if (sub_range("Springiness", g0, g1)) {
       read_bool_in(g0, g1, "IsSpringy", s.is_springy);

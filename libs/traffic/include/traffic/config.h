@@ -3,6 +3,7 @@
 // registry values of `GlobalRegistry.xml` (`AI/Spawning/...`,
 // `AI/Traffic/...`), both in `media/gametunablesettings.zip`.
 #pragma once
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -66,6 +67,9 @@ struct TrafficConfig {
   double min_full_alpha_distance = 150.0; // AI/Spawning/MinFullAlphaDistance (m)
   double max_full_alpha_distance = 320.0; // AI/Spawning/MaxFullAlphaDistance (m)
   double accel_max_input = 0.2, brake_max_input = 0.2;  // AI/Traffic/VehicleControls
+  double steering_multiplier = 1.0;
+  double giveway_speed = 6.0;  // AI/Traffic/Junctions/SpeedAtGivewayJunctions (m/s)
+  std::array<double, 4> gear_max_speed{12.0, 22.0, 34.0, 48.0};  // GearMaxSpeed1st..4th (m/s)
   // AI/Traffic/Junctions & Avoidance
   double junction_max_collision_check_distance = 60.0;
   double junction_safe_time_gap = 2.0;

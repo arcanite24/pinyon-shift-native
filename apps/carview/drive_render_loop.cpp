@@ -397,6 +397,14 @@ void DriveSession::run_window_loop() {
               if (app.pending_barn_restorations.front().elapsed_s >= app.pending_barn_restorations.front().ready_after_s) {
                 const auto br = app.pending_barn_restorations.front();
                 app.pending_barn_restorations.erase(app.pending_barn_restorations.begin());
+                if (br.car_id > 0) {
+                  app.award_garage_car(br.car_id, 0, false);
+                  app.garage_picker();
+                  save_now("barn restored");
+                }
+                popup = {"BARN FIND RESTORED!", br.car_name + " DELIVERED TO YOUR GARAGE", vehicle.time(), -1,
+                         carview::ui::rgba(74, 238, 97)};
+                app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
                 apply_campaign_action(app.campaign.on_barn_restored(br.barn_id, br.car_name, &app.audio_host));
               }
             }

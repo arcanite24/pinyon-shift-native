@@ -113,14 +113,15 @@ void RoadDiscovery::recompute_discovered_roads() {
   discovered_roads_ = 0;
   std::fill(road_discovered_.begin(), road_discovered_.end(), uint8_t{0});
   for (size_t g = 0; g < road_nodes_.size(); ++g) {
-    bool any = false;
+    const size_t total = road_nodes_[g].size();
+    if (total == 0) continue;
+    size_t hit = 0;
     for (uint32_t n : road_nodes_[g]) {
-      if (is_node_discovered(n)) {
-        any = true;
-        break;
-      }
+      if (is_node_discovered(n)) ++hit;
     }
-    if (any) {
+    // Require driving >= 65% of a road's nodes (min 2 for multi-node roads) to discover it.
+    const bool complete = (total <= 1) ? (hit >= 1) : (hit >= 2 && hit * 100 >= total * 65);
+    if (complete) {
       road_discovered_[g] = 1;
       ++discovered_roads_;
     }
@@ -153,9 +154,18 @@ bool RoadDiscovery::mark_node(uint32_t node, std::vector<RoadDiscoveredEvent>& e
   bits_[wi] |= mask;
   for (int grp : node_roads_[node]) {
     if (grp >= 0 && size_t(grp) < road_discovered_.size() && !road_discovered_[size_t(grp)]) {
-      road_discovered_[size_t(grp)] = 1;
-      ++discovered_roads_;
-      events.push_back({road_names_[size_t(grp)], discovered_roads_, int(road_names_.size())});
+      const auto& rn = road_nodes_[size_t(grp)];
+      const size_t total = rn.size();
+      size_t hit = 0;
+      for (uint32_t n : rn) {
+        if (is_node_discovered(n)) ++hit;
+      }
+      const bool complete = (total <= 1) ? (hit >= 1) : (hit >= 2 && hit * 100 >= total * 65);
+      if (complete) {
+        road_discovered_[size_t(grp)] = 1;
+        ++discovered_roads_;
+        events.push_back({road_names_[size_t(grp)], discovered_roads_, int(road_names_.size())});
+      }
     }
   }
   return true;

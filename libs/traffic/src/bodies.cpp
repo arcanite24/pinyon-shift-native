@@ -18,6 +18,7 @@ BodiesOptions bodies_options(const TrafficConfig& c) {
   BodiesOptions o;
   o.accel_max_input = c.accel_max_input;
   o.brake_max_input = c.brake_max_input;
+  o.steering_multiplier = c.steering_multiplier;
   o.gains_min = c.gains_min;
   o.gains_max = c.gains_max;
   o.gains_length_min = c.gains_length_min;
@@ -63,7 +64,8 @@ drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v, double
   const double v_eff = std::max(speed, 2.5);
   const double grip_lock = std::clamp(std::atan(wheelbase * 7.5 / (v_eff * v_eff)), 0.08, std::max(0.08, p.max_steer));
   delta = std::clamp(delta, -grip_lock, grip_lock);
-  const double want_steer = std::clamp(delta / std::max(0.05, p.max_steer), -1.0, 1.0);
+  const double want_steer =
+      std::clamp((delta * std::clamp(o_.steering_multiplier, 0.4, 2.0)) / std::max(0.05, p.max_steer), -1.0, 1.0);
   constexpr double kSteerRate = 2.6;  // full-lock units per second
   const double max_step = kSteerRate * drive::Vehicle::kStep;
   prev_steer += std::clamp(want_steer - prev_steer, -max_step, max_step);
@@ -178,7 +180,8 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
   step_player_ = 0;
   for (size_t i = 0; i < list.size(); ++i) {
     double j = 0;
-    if (player && collide(*player, 1.0, *list[i]->v, o_.torque_scale, &j)) {
+    // SPEC-TRAFFIC / PhysicsSettings.ini [Collision]: PlayerTorqueScale = 0.0.
+    if (player && collide(*player, 0.0, *list[i]->v, o_.torque_scale, &j)) {
       ++contacts_, ++player_contacts_;
       step_player_ = std::max(step_player_, j);
       list[i]->since_contact = 0;

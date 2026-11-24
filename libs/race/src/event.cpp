@@ -140,9 +140,17 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
     if (error) *error = "gamedb: event " + horizon_id + " has no race and track";
     return false;
   }
-  if (!db.each("select RewardCarId from Rewards_EventPrizes where EventId = ? order by Id limit 1", {ev},
-               [&](sqlite3_stmt* s) { out.prize_car = i64(s, 0); }, error))
-    return false;
+  if (!db.each("select RewardCarId, coalesce(Position, 1) from Rewards_EventPrizes where EventId = ? order by Id limit 1",
+               {ev},
+               [&](sqlite3_stmt* s) {
+                 out.prize_car = i64(s, 0);
+                 out.prize_car_max_place = std::max(1, int(i64(s, 1)));
+               },
+               nullptr)) {
+    if (!db.each("select RewardCarId from Rewards_EventPrizes where EventId = ? order by Id limit 1", {ev},
+                 [&](sqlite3_stmt* s) { out.prize_car = i64(s, 0); }, error))
+      return false;
+  }
   if (!db.each("select p.ID, p.Ordinal, coalesce(c.MediaName, ''), p.AIPlayerID, coalesce(a.Name, ''), "
                "coalesce(a.SkillModifier, 0), coalesce(a.AggroModifier, 0), coalesce(a.RubberBandModifier, 0), "
                "coalesce(c.PerformanceIndex, 0), coalesce(p.ColorSequence, 0) "

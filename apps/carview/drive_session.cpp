@@ -161,6 +161,19 @@ void DriveSession::init_session() {
           festival_roads.build(festival_nav);
           std::set<int64_t> traffic_ids;
           for (const auto& tm : fcfg.models) traffic_ids.insert(tm.id);
+          // Match roaming Festival AI roster dynamically to the player's current car PI/class.
+          int player_pi = 500;
+          if (app.have_garage) {
+            if (const garage::Car* sc = app.career_garage.selected_car()) {
+              player_pi = !app.class_bands.empty() ? garage::shown_index(sc->performance_index, app.class_bands)
+                                                   : int(sc->performance_index);
+            }
+          } else if (app.have_career_catalog) {
+            if (const auto* cs = app.career_catalog.find_car_by_media(app.car)) {
+              player_pi = !app.class_bands.empty() ? garage::shown_index(cs->stock_pi, app.class_bands)
+                                                   : int(cs->stock_pi);
+            }
+          }
           std::vector<freeroam::FestivalRacerSpec> roster;
           for (const auto& [cid, media] : app.baked_ids) {
             if (traffic_ids.count(cid) || media == app.car) continue;
@@ -176,8 +189,12 @@ void DriveSession::init_session() {
             }
             if (sp.car_class.empty()) sp.car_class = "B";
             roster.push_back(std::move(sp));
-            if (roster.size() >= 12) break;
           }
+          std::stable_sort(roster.begin(), roster.end(),
+                           [&](const freeroam::FestivalRacerSpec& a, const freeroam::FestivalRacerSpec& b) {
+                             return std::abs(a.pi - player_pi) < std::abs(b.pi - player_pi);
+                           });
+          if (roster.size() > 16) roster.resize(16);
           if (!roster.empty()) {
             const size_t roster_n = roster.size();
             festival_mgr = std::make_unique<freeroam::FestivalManager>(festival_nav, festival_roads, fcfg, app.traffic_seed + 17);

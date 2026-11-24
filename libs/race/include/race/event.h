@@ -95,6 +95,7 @@ struct EventData {
   int64_t race_id = 0;
   int level = 0, style = 0, career_type = 0;
   int64_t prize_car = 0;
+  int prize_car_max_place = 1;  // Rewards_EventPrizes max finishing position (1 or 2)
   int target_class = 0;     // Events.TargetClass (CarClasses.Id)
   bool upgrade_ai = false;  // Events.UpgradeAI: the AI cars are auto-upgraded (SPEC-RACE-AI, open)
   std::vector<Opponent> opponents;  // by ascending ID

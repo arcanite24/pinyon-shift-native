@@ -75,6 +75,9 @@ struct SurfaceType {
   float off_road_peak_sa = 12; // OffRoadDryPeakSA, degrees
   float handbrake_grip = 1;    // HandbrakeGripMultiplier
   float tcs_speed_scale = 1;   // TCandStabilitySpeedMultiplier
+  float max_steering_lock_cap = 1.0f;    // MaxSteeringLockCap (0..1 multiplier on steering lock)
+  float steering_rate_mult = 1.0f;       // SteeringRateMultiplier (surface steering speed scale)
+  float aero_drag_scale = 1.0f;          // Aerodynamics drag scale (e.g. deep water/mud drag)
   // Friction/VelDepFriction (SPEC-CAR-PHYSICS, Surface drag).
   float vel_peak0 = 0, vel_peak = 8;
   float vel_long0 = 0, vel_long = 0.01f;

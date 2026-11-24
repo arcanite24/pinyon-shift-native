@@ -190,10 +190,12 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.centre_of_mass.y = get("List_UpgradeCarBodyWeight.CMHeight", p.centre_of_mass.y);
   // CMLeftRight 0.5 is the centre; the side it measures from is our guess.
   p.centre_of_mass.x = (get("List_UpgradeCarBodyWeight.CMLeftRight", 0.5) - 0.5) * track;
-  // SPEC-CAR-PHYSICS scenario B, load transfer: the tyres' longitudinal
-  // forces pitch the body through a 0.27 m arm (measured fit, one car).
-  p.longitudinal_pitch_arm = 0.27;
-  p.lateral_roll_arm = 0.28;  // SPEC-CAR-PHYSICS, Check: the first corner (0.278 m)
+  // SPEC-CAR-PHYSICS scenario B, load transfer: scale pitch/roll arms from CMHeight
+  // (calibrated at R34 CMHeight 0.4814 m -> 0.27 m pitch / 0.28 m roll, scaling cleanly
+  // for low supercars and tall SUVs/trucks).
+  const double cm_scale = std::clamp(p.centre_of_mass.y / 0.4814, 0.55, 1.85);
+  p.longitudinal_pitch_arm = 0.27 * cm_scale;
+  p.lateral_roll_arm = 0.28 * cm_scale;
   p.inertia = {};
   p.inertia_box = {get("List_UpgradeCarBodyWeight.BlockDimX", p.inertia_box.x),
                    get("List_UpgradeCarBodyWeight.BlockDimY", p.inertia_box.y),
@@ -209,7 +211,9 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
     p.spring_rate[a] = get(sd + "DefSpringRate", p.spring_rate[a] / m) * m;
     p.bump_rate[a] = get(sd + "DefDampenBumpRate", p.bump_rate[a] / m) * m;
     p.rebound_rate[a] = get(sd + "DefDampenReboundRate", p.rebound_rate[a] / m) * m;
-    p.damper_clamp[a] = get(sd + "DampenBumpClamp", p.damper_clamp[a] / m) * m;
+    p.damper_clamp[a] = std::fabs(get(sd + "DampenBumpClamp", p.damper_clamp[a] / m)) * m;
+    const double reb_raw = std::fabs(get(sd + "DampenReboundClamp", p.damper_clamp[a] / m)) * m;
+    p.rebound_damper_clamp[a] = reb_raw > 1.0 ? reb_raw : p.damper_clamp[a];
     const double travel = get(sd + "DefRideHeight", 0.2) - get(sd + "MaxCompressHeight", 0.12);
     p.bump_travel[a] = travel > 0.02 ? travel : 0.08;
     p.max_droop[a] = get(sd + "MaxStretchDeltaFromRideHeight", 0.5);

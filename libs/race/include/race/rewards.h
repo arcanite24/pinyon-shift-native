@@ -162,6 +162,7 @@ struct RaceBonusInputs {
   int64_t bounty_bonus = 0;     // rival / bounty bonus credits
   int wristband_level = -1;     // current wristband level (-1: infer from record.wristband_points)
   double reward_multiplier = 1.0;  // Festival Pacing multiplier (0.5x..5.0x)
+  int prize_car_max_place = 1;     // Rewards_EventPrizes finishing place cutoff (1 or 2)
 };
 
 // One finished (or not-finished) race of an event with one race, applied

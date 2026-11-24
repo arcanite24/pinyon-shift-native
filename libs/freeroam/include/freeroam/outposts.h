@@ -125,7 +125,7 @@ struct PrStuntUpdate {
 // Live runtime tracker for an active Outpost PR Stunt.
 class PrStuntSession {
  public:
-  void start(const PrStunt& stunt, int64_t baseline_skill_points = 0);
+  void start(const PrStunt& stunt, int64_t baseline_skill_points = 0, int difficulty_index = 0);
   void cancel();
   PrStuntState update(const PrStuntUpdate& u);
 

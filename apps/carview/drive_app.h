@@ -71,6 +71,7 @@ struct DriveApp : DriveConfig {
   struct PendingBarnRestore {
     std::string barn_id;
     std::string car_name;
+    int64_t car_id = 0;
     double ready_after_s = 45.0;
     double elapsed_s = 0.0;
   };

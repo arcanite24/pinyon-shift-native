@@ -72,6 +72,12 @@ void TrafficConfig::apply(const Registry& r) {
   g("AI/Spawning/MaxFullAlphaDistance", max_full_alpha_distance);
   g("AI/Traffic/VehicleControls/AccelMaxInput", accel_max_input);
   g("AI/Traffic/VehicleControls/BrakeMaxInput", brake_max_input);
+  g("AI/Traffic/VehicleControls/SteeringMultiplier", steering_multiplier);
+  g("AI/Traffic/VehicleControls/GearMaxSpeed1st", gear_max_speed[0]);
+  g("AI/Traffic/VehicleControls/GearMaxSpeed2nd", gear_max_speed[1]);
+  g("AI/Traffic/VehicleControls/GearMaxSpeed3rd", gear_max_speed[2]);
+  g("AI/Traffic/VehicleControls/GearMaxSpeed4th", gear_max_speed[3]);
+  g("AI/Traffic/Junctions/SpeedAtGivewayJunctions", giveway_speed);
   g("AI/Traffic/Junctions/MaxCollisionCheckDistance", junction_max_collision_check_distance);
   g("AI/Traffic/CollisionAvoidance/Avoidance/JunctionManoeuvreSafeTimeGap", junction_safe_time_gap);
   double fgw = junction_force_give_way ? 1.0 : 0.0;
