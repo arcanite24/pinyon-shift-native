@@ -202,7 +202,12 @@ ShowroomOptions DriveWorldHost::build_car_options() {
 }
 
 bool DriveWorldHost::set_staged_world() {
-        auto prepared = std::any_cast<std::shared_ptr<Prepared>>(std::move(streamer->prepared()));
+        if (!streamer || !streamer->prepared().has_value()) {
+          app.error = "world staging buffers";
+          return false;
+        }
+        auto* prepared_ptr = std::any_cast<std::shared_ptr<Prepared>>(&streamer->prepared());
+        std::shared_ptr<Prepared> prepared = prepared_ptr ? std::move(*prepared_ptr) : std::shared_ptr<Prepared>{};
         streamer->prepared().reset();
         if (!prepared) {
           app.error = "world staging buffers";
@@ -306,25 +311,224 @@ bool DriveWorldHost::open_world_and_car() {
       if (std::filesystem::exists(xpr)) showroom.set_environment_xpr(xpr);
     }
     const auto car_load_t0 = std::chrono::steady_clock::now();
-    const bool car_loaded_ok = showroom.load(app.bake_dir, app.car, options, app.error);
+    std::string car_load_err;
+    auto fut_car_load = std::async(std::launch::async, [&]() {
+      return showroom.load(app.bake_dir, app.car, options, car_load_err);
+    });
     const auto vk_init_t0 = std::chrono::steady_clock::now();
-    const bool vk_init_ok = car_loaded_ok && renderer.init(render_options, app.error);
-    const auto car_up_t0 = std::chrono::steady_clock::now();
-    const bool car_up_ok = vk_init_ok && showroom.upload(app.error);
-    const auto car_up_t1 = std::chrono::steady_clock::now();
-    if (car_up_ok) {
-      const double load_ms = std::chrono::duration<double, std::milli>(vk_init_t0 - car_load_t0).count();
-      const double vk_ms = std::chrono::duration<double, std::milli>(car_up_t0 - vk_init_t0).count();
-      const double up_ms = std::chrono::duration<double, std::milli>(car_up_t1 - car_up_t0).count();
-      app.bench_startup.vulkan_init_ms = std::max(0.0, vk_ms - renderer.pipeline_compile_ms());
-      app.bench_startup.car_bake_load_ms = load_ms + std::max(0.0, up_ms - showroom.pipeline_compile_ms());
-    }
-    if (!car_up_ok) {
+    const bool vk_init_ok = renderer.init(render_options, app.error);
+    const auto vk_init_t1 = std::chrono::steady_clock::now();
+    if (!vk_init_ok) {
+      if (fut_car_load.valid()) fut_car_load.wait();
       std::fprintf(stderr, "carview: %s\n", app.error.c_str());
       app.status = 1;
       return false;
     }
-    if (app.status != 0) return false;
+
+    // Windowed boot: render an animated 60 FPS FH1 Loading Screen while pumping SDL events
+    // so the main thread NEVER blocks or triggers OS "Not Responding" during startup!
+    const bool boot_live_ui = !app.headless && !app.bench && app.window != nullptr;
+    LoadingScreen boot_loading;
+    bool boot_atlas_synced = false;
+    bool boot_cancelled = false;
+    auto boot_last_tp = std::chrono::steady_clock::now();
+    if (boot_live_ui) {
+      boot_loading.load_definitions(app.game_root_of(), "freeroam");
+      boot_loading.start("HORIZON COLORADO", "LOADING");
+      boot_loading.set_progress(0.08f);
+    }
+    auto pump_boot_frame = [&](float target_progress) {
+      if (!boot_live_ui || boot_cancelled) return;
+      SDL_Event ev;
+      while (SDL_PollEvent(&ev)) {
+        if (ev.type == SDL_EVENT_QUIT) {
+          boot_cancelled = true;
+          app.status = 0;
+        }
+      }
+      if (boot_cancelled) return;
+      const auto now_tp = std::chrono::steady_clock::now();
+      const double dt = std::clamp(std::chrono::duration<double>(now_tp - boot_last_tp).count(), 0.001, 0.1);
+      boot_last_tp = now_tp;
+      boot_loading.update(dt);
+      boot_loading.set_progress(std::clamp(target_progress, 0.05f, 0.99f));
+      int bw = 0, bh = 0;
+      SDL_GetWindowSizeInPixels(app.window, &bw, &bh);
+      if (bw > 32 && bh > 32) {
+        ui::List list;
+        boot_loading.draw(list, float(bw), float(bh));
+        upload_ui_atlas(renderer, !boot_atlas_synced);
+        boot_atlas_synced = true;
+        renderer.set_ui(list.items());
+        std::string draw_err;
+        renderer.draw_frame(FrameConstants{}, draw_err);
+      }
+    };
+    auto wait_future_pumping = [&](auto& fut, float p0, float p1) {
+      if (!fut.valid()) return;
+      const auto t_start = std::chrono::steady_clock::now();
+      while (fut.wait_for(std::chrono::milliseconds(boot_live_ui ? 16 : 50)) != std::future_status::ready) {
+        const float el = float(std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count());
+        const float frac = std::clamp(el / 2.0f, 0.0f, 0.95f);
+        pump_boot_frame(p0 + (p1 - p0) * frac);
+      }
+    };
+    pump_boot_frame(0.12f);
+
+    // Kick off world index, collision, collectibles, map/nav/outposts, and audio init IN PARALLEL
+    // right away so they overlap completely with car upload & pipeline creation!
+    const auto world_load_t0 = std::chrono::steady_clock::now();
+    std::string world_open_err, col_err, warning;
+    std::future<bool> fut_world_open, fut_col, fut_collectibles, fut_map_nav, fut_audio;
+    const bool have_world = !app.world_dir.empty();
+    const bool want_collectibles =
+        have_world && app.collectibles_on && (!app.bench || app.bench_full_fx) && !app.flat_world && app.colorado_world();
+    const bool want_audio =
+        have_world && app.sound && (!app.bench || app.bench_audio || app.bench_full_fx) &&
+        (!app.headless || !app.audio_out.empty() || app.bench_audio || app.bench_full_fx);
+    const auto groot_cached = app.game_root_of();
+    if (have_world) {
+      if (app.cache_path.empty()) {
+        app.cache_path = std::filesystem::path("out") / "world" /
+                         (world::model_prefix(app.world_dir).substr(0, world::model_prefix(app.world_dir).size() - 3) +
+                          ".index");
+      }
+      fut_world_open = std::async(std::launch::async, [&]() {
+        return colorado.open(app.world_dir, app.cache_path, &world_open_err);
+      });
+      if (!app.render_ground) {
+        const auto base_phys_zip =
+            (app.game_root_given.empty() ? app.world_dir.parent_path().parent_path() : groot_cached / "media") /
+            "physics.zip";
+        const auto phys_src = resolve_surface_types_source(app, base_phys_zip);
+        fut_col = std::async(std::launch::async, [&, phys_src]() {
+          return collision.open(app.world_dir, phys_src, &col_err, &warning);
+        });
+      }
+      if (want_collectibles) {
+        fut_collectibles = std::async(std::launch::async, [&, groot_cached]() {
+          if (app.collectibles.signs.empty()) {
+            std::string why;
+            if (!freeroam::load_collectibles(groot_cached, app.collectibles, &why)) {
+              std::fprintf(stderr, "carview: note: no collectibles: %s\n", why.c_str());
+              app.collectibles = {};
+              return false;
+            }
+          }
+          return !app.collectibles.signs.empty();
+        });
+        fut_map_nav = std::async(std::launch::async, [&, groot_cached]() {
+          if (!app.map_tried) {
+            app.map_tried = true;
+            std::string why;
+            if (!app.map_view.open(groot_cached, &why, app.language))
+              std::fprintf(stderr, "carview: note: no map: %s\n", why.c_str());
+            if (!app.shared_nav_loaded) {
+              app.shared_nav_loaded = traffic::read_nav(
+                  groot_cached / "media" / "tracks" / "colorado" / "colorado.nav", app.shared_nav, nullptr);
+            }
+            if (app.shared_nav_loaded) {
+              app.gps_solver.build(app.shared_nav);
+              if (app.road_discovery.build(app.shared_nav) && app.have_saved &&
+                  !app.saved.road_discovery_words.empty()) {
+                app.road_discovery.load_words(app.saved.road_discovery_nodes, app.saved.road_discovery_words);
+              }
+              if (app.road_discovery.ready()) {
+                std::printf("roads discovered: %d / %d\n", app.road_discovery.discovered_count(),
+                            app.road_discovery.total_roads());
+              }
+            }
+          }
+          if (!app.outposts_tried) {
+            app.outposts_tried = true;
+            std::string owhy;
+            if (freeroam::load_outposts(groot_cached, app.outposts, &owhy)) {
+              app.have_outposts = true;
+              std::printf("outposts: %zu outposts (%d discovered), %zu PR stunts (%d completed)\n",
+                          app.outposts.outposts.size(), app.outpost_progress.discovered_count(app.outposts),
+                          app.outposts.stunts.size(), app.outpost_progress.completed_stunt_count(app.outposts));
+            } else {
+              std::fprintf(stderr, "carview: note: no outposts: %s\n", owhy.c_str());
+            }
+          }
+          return true;
+        });
+      }
+      if (want_audio) {
+        const bool async_sc = !app.headless && !app.bench;
+        fut_audio = std::async(std::launch::async, [&, groot_cached, async_sc]() {
+          const auto aud_world_t0 = std::chrono::steady_clock::now();
+          if (app.radio_on &&
+              app.audio_host.init_radio(groot_cached, app.language, app.have_saved ? app.saved.radio_station : "",
+                                        !app.headless) &&
+              !app.radio_logos_tried) {
+            app.radio_logos_tried = true;
+            std::string zwhy;
+            if (auto zip = fh1::Archive::open(groot_cached / "media" / "ui" / "textures" / "Horizon.zip", &zwhy)) {
+              const std::pair<const char*, const char*> kLogos[] = {
+                  {"Radio1", "RS_BassArena"}, {"Radio2", "RS_Pulse"}, {"Radio3", "RS_2Eleven"},
+                  {"Radio4_Silent", "RS_Off"}};
+              for (const auto& [station, file] : kLogos) {
+                auto r = zip->read(std::string("Hud/Radio/") + file + ".xds");
+                if (!r.ok()) continue;
+                auto x = fh1::decode_xds(r.data);
+                if (x.levels.empty() || x.levels[0].rgba.empty()) continue;
+                app.radio_logos[station] = {std::move(x.levels[0].rgba), x.levels[0].width, x.levels[0].height};
+              }
+            }
+          }
+          if (!app.headless || app.bench_audio || app.bench_full_fx) {
+            app.audio_host.init_user_music(app.user_music_dir, true);
+            const auto sfx_cache = !app.sound_dir.empty() ? app.sound_dir : (app.state_root / "sound-cache");
+            app.audio_host.init_sfx(groot_cached, sfx_cache, app.audio_host.car_burble_bank(), app.state_root);
+            app.audio_host.init_satnav(groot_cached, sfx_cache, app.language, app.metric_units);
+            app.audio_host.init_vo(groot_cached, app.language);
+            app.audio_host.init_acoustics(groot_cached, sfx_cache, app.world_dir, app.rally_catalog.package_dir,
+                                          async_sc);
+            if (!app.colorado_world() && !app.rally_catalog.package_dir.empty()) {
+              app.audio_host.init_codriver(app.rally_catalog.package_dir, sfx_cache, app.language);
+            }
+          }
+          app.bench_startup.audio_load_ms +=
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_world_t0).count();
+          return true;
+        });
+      }
+    }
+
+    auto join_all_boot_futures = [&]() {
+      if (fut_car_load.valid()) fut_car_load.wait();
+      if (fut_world_open.valid()) fut_world_open.wait();
+      if (fut_col.valid()) fut_col.wait();
+      if (fut_collectibles.valid()) fut_collectibles.wait();
+      if (fut_map_nav.valid()) fut_map_nav.wait();
+      if (fut_audio.valid()) fut_audio.wait();
+    };
+
+    wait_future_pumping(fut_car_load, 0.12f, 0.25f);
+    const bool car_loaded_ok = fut_car_load.get();
+    if (!car_loaded_ok) app.error = car_load_err;
+    const auto car_up_t0 = std::chrono::steady_clock::now();
+    const bool car_up_ok = car_loaded_ok && showroom.upload(app.error);
+    const auto car_up_t1 = std::chrono::steady_clock::now();
+    if (car_up_ok) {
+      const double load_ms = std::chrono::duration<double, std::milli>(vk_init_t1 - car_load_t0).count();
+      const double vk_ms = std::chrono::duration<double, std::milli>(vk_init_t1 - vk_init_t0).count();
+      const double up_ms = std::chrono::duration<double, std::milli>(car_up_t1 - car_up_t0).count();
+      app.bench_startup.vulkan_init_ms = std::max(0.0, vk_ms - renderer.pipeline_compile_ms());
+      app.bench_startup.car_bake_load_ms = std::max(0.0, load_ms - vk_ms) + std::max(0.0, up_ms - showroom.pipeline_compile_ms());
+    }
+    if (!car_up_ok) {
+      join_all_boot_futures();
+      std::fprintf(stderr, "carview: %s\n", app.error.c_str());
+      app.status = 1;
+      return false;
+    }
+    if (app.status != 0) {
+      join_all_boot_futures();
+      return false;
+    }
+      pump_boot_frame(0.38f);
       renderer.set_hdr_pattern(app.cli_hdr_pattern, app.cli_hdr_pattern_nits);
       if (app.window) {
         if (const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(app.window))) {
@@ -340,6 +544,7 @@ bool DriveWorldHost::open_world_and_car() {
           std::fprintf(stderr, "carview: LUT note: %s\n", lut_err.c_str());
         }
       }
+      app.wait_tod_ready();
       if (app.tod_system.loaded_tod) {
         std::string sky_err;
         if (!showroom.upload_sky(app.tod_system.sky_assets, sky_err))
@@ -353,6 +558,7 @@ bool DriveWorldHost::open_world_and_car() {
           if (!showroom.upload_carlights(groot / "media", cl_err))
             std::fprintf(stderr, "carview: carlights upload note: %s\n", cl_err.c_str());
         }
+        app.wait_vfx_ready();
         std::string vfx_gpu_err;
         if (!showroom.init_vfx(&app.vfx_lib, vfx_gpu_err))
           std::fprintf(stderr, "carview: vfx gpu init note: %s\n", vfx_gpu_err.c_str());
@@ -360,6 +566,7 @@ bool DriveWorldHost::open_world_and_car() {
       // Persist the VkPipelineCache immediately after startup AOT pre-compilation
       // (not only on clean exit) so crashes or forced closes still retain warm caches.
       renderer.save_pipeline_cache();
+      pump_boot_frame(0.48f);
       // Pre-warm offscreen/RT render targets before Frame 0 to eliminate first-frame stalls.
       if (app.headless && app.width > 0 && app.height > 0) {
         std::string tw_err;
@@ -373,31 +580,21 @@ bool DriveWorldHost::open_world_and_car() {
       // SHIFT_PAINT_PREVIEW=i (debug): the paint page's live preview of
       // colour row i, as left and right show it.
       if (const char* pp = std::getenv("SHIFT_PAINT_PREVIEW")) showroom.preview_colour(size_t(std::atoi(pp)));
-      if (!app.world_dir.empty()) {
-        const auto world_load_t0 = std::chrono::steady_clock::now();
-        if (app.cache_path.empty()) app.cache_path = std::filesystem::path("out") / "world" / (world::model_prefix(app.world_dir).substr(0, world::model_prefix(app.world_dir).size() - 3) + ".index");
+      if (have_world) {
         world::Spawn sp;
-        std::string warning;
         const char* how = "";
-        std::string col_err;
-        std::future<bool> fut_col;
-        if (!app.render_ground) {
-          const auto base_phys_zip =
-              (app.game_root_given.empty() ? app.world_dir.parent_path().parent_path() : app.game_root_of() / "media") / "physics.zip";
-          const auto phys_src = resolve_surface_types_source(app, base_phys_zip);
-          fut_col = std::async(std::launch::async, [&, phys_src]() {
-            return collision.open(app.world_dir, phys_src, &col_err, &warning);
-          });
-        }
-        const bool world_ok = colorado.open(app.world_dir, app.cache_path, &app.error);
-        const bool col_ok = app.render_ground ? true : fut_col.get();
+        wait_future_pumping(fut_world_open, 0.48f, 0.56f);
+        if (!app.render_ground) wait_future_pumping(fut_col, 0.56f, 0.62f);
+        const bool world_ok = fut_world_open.valid() ? fut_world_open.get() : false;
+        const bool col_ok = app.render_ground ? true : (fut_col.valid() ? fut_col.get() : false);
         if (!world_ok) {
+          app.error = world_open_err;
           app.status = 1;
         } else if (!col_ok) {
           app.error = col_err;
           app.status = 1;
         } else {
-          if (!app.error.empty()) std::fprintf(stderr, "carview: note: %s\n", app.error.c_str());
+          if (!world_open_err.empty()) std::fprintf(stderr, "carview: note: %s\n", world_open_err.c_str());
           if (!warning.empty()) std::fprintf(stderr, "carview: note: %s", warning.c_str());
           app.error.clear();
           // SHIFT_SURFACES=1: the surface table (the numbers in traces and logs).
@@ -415,12 +612,6 @@ bool DriveWorldHost::open_world_and_car() {
           if (const char* fi = std::getenv("SHIFT_FAR_INNER")) gather_options.far_inner = std::atof(fi);
           if (!app.flat_world && !app.no_trees) gather_options.tree_radius = kTreeRadius;
           if (!app.flat_world) {
-            // Popping (ours): the gather reaches further and the props
-            // cross-fade by distance from the eye. The eye can be a regather
-            // step (plus the swap's lag) from the gather's centre, so the
-            // props fade out by kPropRadius - step - lag, where every gather
-            // still holds them, and LOD00 is gathered to the LOD band's end
-            // plus that much.
             const double prop_radius = app.low_preset ? kLowPropRadius : kPropRadius;
             gather_options.radius = app.low_preset ? kLowModelRadius : kModelRadius;
             gather_options.prop_radius = prop_radius;
@@ -428,34 +619,24 @@ bool DriveWorldHost::open_world_and_car() {
             showroom.set_world_fade(float(kPropLod0), float(kPropLodBand),
                                     float(prop_radius - kRegather - kSwapLag - kPropEdgeBand),
                                     float(prop_radius - kRegather - kSwapLag));
-            // SHIFT_WORLD_FADE="lod band start end" overrides them (checks).
             if (const char* e = std::getenv("SHIFT_WORLD_FADE")) {
               float f[4];
               if (std::sscanf(e, "%f %f %f %f", &f[0], &f[1], &f[2], &f[3]) == 4) showroom.set_world_fade(f[0], f[1], f[2], f[3]);
             }
-            // Headless frames repeat: their swaps stay instant.
             if (!app.headless || std::getenv("SHIFT_SWAP_FADE")) showroom.set_world_swap_fade(kSwapFadeSeconds);
           }
           // Free roam: found signs and each barn's other door variant are
           // left out of the gathers from the first one on.
-          if (app.collectibles_on && (!app.bench || app.bench_full_fx) && !app.flat_world && app.colorado_world()) {
-            const auto game_root = app.game_root_of();
-            if (app.collectibles.signs.empty()) {
-              std::string why;
-              if (!freeroam::load_collectibles(game_root, app.collectibles, &why)) {
-                std::fprintf(stderr, "carview: note: no collectibles: %s\n", why.c_str());
-                app.collectibles = {};
-              }
-            }
+          if (want_collectibles) {
+            wait_future_pumping(fut_collectibles, 0.62f, 0.66f);
+            if (fut_collectibles.valid()) (void)fut_collectibles.get();
+            app.wait_smash_ready();
             if (!app.collectibles.signs.empty()) {
               if (!app.progress_loaded) {
                 if (app.have_saved) progress_from_save(app.saved, app.collectibles, app.progress);
                 app.progress.total_distance += app.seed_distance;
                 app.progress_loaded = true;
               }
-              // SHIFT_LIST_SIGNS=1: each sign's id and position (for --spawn).
-              // Each also says whether car collision lies within 2 m of it
-              // (a sign is found by touching it).
               if (std::getenv("SHIFT_LIST_SIGNS")) {
                 int reachable = 0;
                 for (const auto& sg : app.collectibles.signs) {
@@ -504,107 +685,12 @@ bool DriveWorldHost::open_world_and_car() {
                           free_roam->signs_found(), app.collectibles.signs.size(), free_roam->barns_found(),
                           app.collectibles.barns.size(), app.progress.total_distance / 1000);
             }
-            if (!app.map_tried) {
-              app.map_tried = true;
-              std::string why;
-              if (!app.map_view.open(game_root, &why, app.language))
-                std::fprintf(stderr, "carview: note: no map: %s\n", why.c_str());
-              traffic::NavMap nav_for_gps;
-              if (traffic::read_nav(game_root / "media" / "tracks" / "colorado" / "colorado.nav", nav_for_gps, nullptr)) {
-                app.gps_solver.build(nav_for_gps);
-                if (app.road_discovery.build(nav_for_gps) && app.have_saved && !app.saved.road_discovery_words.empty()) {
-                  app.road_discovery.load_words(app.saved.road_discovery_nodes, app.saved.road_discovery_words);
-                }
-                if (app.road_discovery.ready()) {
-                  std::printf("roads discovered: %d / %d\n", app.road_discovery.discovered_count(),
-                              app.road_discovery.total_roads());
-                }
-              }
-            }
-            if (!app.outposts_tried) {
-              app.outposts_tried = true;
-              std::string owhy;
-              if (freeroam::load_outposts(game_root, app.outposts, &owhy)) {
-                app.have_outposts = true;
-                std::printf("outposts: %zu outposts (%d discovered), %zu PR stunts (%d completed)\n",
-                            app.outposts.outposts.size(), app.outpost_progress.discovered_count(app.outposts),
-                            app.outposts.stunts.size(), app.outpost_progress.completed_stunt_count(app.outposts));
-              } else {
-                std::fprintf(stderr, "carview: note: no outposts: %s\n", owhy.c_str());
-              }
-            }
-            if (app.has_cli_gps && !app.cli_gps_applied && app.gps_solver.ready()) {
-              app.cli_gps_applied = true;
-              const double sx0 = app.have_spawn ? app.spawn[0] : (app.near_given || app.render_ground ? app.near_x : world::kSpawnX);
-              const double sz0 = app.have_spawn ? app.spawn[2] : (app.near_given || app.render_ground ? app.near_z : world::kSpawnZ);
-              app.gps_nav.set_destination(app.cli_gps_x, app.cli_gps_z, traffic::GpsDestKind::kGeneric, "GPS WAYPOINT", sx0, sz0);
-            }
-            if (!app.cli_pr_stunt.empty() && !app.cli_pr_stunt_applied && app.have_outposts) {
-              app.cli_pr_stunt_applied = true;
-              if (const auto* st = app.outposts.find_stunt(app.cli_pr_stunt)) {
-                const int64_t base_pts = app.skill_tracker ? int64_t(std::llround(app.skill_tracker->popularity_points())) : 0;
-                app.pr_stunt_session.start(*st, base_pts);
-                if (app.gps_solver.ready()) {
-                  const double sx0 = app.have_spawn ? app.spawn[0] : (app.near_given || app.render_ground ? app.near_x : world::kSpawnX);
-                  const double sz0 = app.have_spawn ? app.spawn[2] : (app.near_given || app.render_ground ? app.near_z : world::kSpawnZ);
-                  app.gps_nav.set_destination(st->target_pos.x, st->target_pos.z, traffic::GpsDestKind::kGeneric,
-                                          st->title, sx0, sz0);
-                }
-              }
-            }
-          }
-          // The radio and Your Music: initialized once, streamed off-thread.
-          if (app.sound && (!app.bench || app.bench_audio || app.bench_full_fx) && (!app.headless || !app.audio_out.empty() || app.bench_audio || app.bench_full_fx)) {
-            const auto aud_world_t0 = std::chrono::steady_clock::now();
-            const auto game_root = app.game_root_of();
-            if (app.radio_on && app.audio_host.init_radio(game_root, app.language, app.have_saved ? app.saved.radio_station : "", !app.headless) &&
-                !app.radio_logos_tried) {
-              app.radio_logos_tried = true;
-              std::string zwhy;
-              if (auto zip = fh1::Archive::open(game_root / "media" / "ui" / "textures" / "Horizon.zip", &zwhy)) {
-                const std::pair<const char*, const char*> kLogos[] = {
-                    {"Radio1", "RS_BassArena"}, {"Radio2", "RS_Pulse"}, {"Radio3", "RS_2Eleven"},
-                    {"Radio4_Silent", "RS_Off"}};
-                for (const auto& [station, file] : kLogos) {
-                  auto r = zip->read(std::string("Hud/Radio/") + file + ".xds");
-                  if (!r.ok()) continue;
-                  auto x = fh1::decode_xds(r.data);
-                  if (x.levels.empty() || x.levels[0].rgba.empty()) continue;
-                  app.radio_logos[station] = {std::move(x.levels[0].rgba), x.levels[0].width, x.levels[0].height};
-                }
-              }
-            }
-            if (!app.headless || app.bench_audio || app.bench_full_fx) {
-              app.audio_host.init_user_music(app.user_music_dir, true);
-              const auto sfx_cache = !app.sound_dir.empty() ? app.sound_dir : (app.state_root / "sound-cache");
-              app.audio_host.init_sfx(game_root, sfx_cache, app.audio_host.car_burble_bank(), app.state_root);
-              app.audio_host.init_satnav(game_root, sfx_cache, app.language, app.metric_units);
-              app.audio_host.init_vo(game_root, app.language);
-              app.audio_host.init_acoustics(game_root, sfx_cache, app.world_dir, app.rally_catalog.package_dir);
-              if (!app.colorado_world() && !app.rally_catalog.package_dir.empty()) {
-                app.audio_host.init_codriver(app.rally_catalog.package_dir, sfx_cache, app.language);
-              }
-            }
-            if (fh1::CjkFont::language_needs_cjk(app.language) && !carview::ui::cjk_font_loaded()) {
-              auto cjk = std::make_shared<fh1::CjkFont>();
-              if (cjk->load_for_language(game_root, app.language, nullptr)) {
-                carview::ui::set_cjk_font(std::move(cjk));
-              }
-            }
-            app.bench_startup.audio_load_ms +=
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_world_t0).count();
           }
           loaded_world_route = active_route;
           world_gather_options = gather_options;
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
                                                        app.render_ground ? nullptr : &collision);
-          // Gathers after the first run on a worker in the window (and with
-          // --async-stream headless), with the scenery's draw data built
-          // there too; headless runs stay synchronous so they repeat.
           streamer->set_async(streamer_async);
-          // The worker builds the scenery's draw data and stages it in
-          // host-visible buffers; mid-drive textures stream through the
-          // ring-buffered <= 1.8 ms/frame uploader so 200 m boundaries never spike.
           streamer->set_prepare([this](const world::Mesh& mesh, double cx, double cz) {
             const bool async_mid_drive = streamer_async && streamer && streamer->gathers() >= 1;
             if (async_mid_drive) lower_stream_worker_priority();
@@ -613,8 +699,6 @@ bool DriveWorldHost::open_world_and_car() {
             std::vector<uint32_t> pin_records;
             WorldTriangles triangles = scenery(mesh, cx, cz);
             texture_loader.load(colorado, triangles, showroom, pin_records);
-            // Pin newly decoded textures too so evict_world_textures() can never evict a
-            // deferred-uploaded texture before this prepared gather swaps into world_draws_.
             {
               std::vector<uint32_t> new_pins;
               new_pins.reserve(triangles.textures.size());
@@ -658,7 +742,21 @@ bool DriveWorldHost::open_world_and_car() {
           const double sx = app.have_spawn ? app.spawn[0] : app.near_given || app.render_ground ? app.near_x : world::kSpawnX;
           const double sz = app.have_spawn ? app.spawn[2] : app.near_given || app.render_ground ? app.near_z : world::kSpawnZ;
           const double near[2] = {app.near_x, app.near_z};
-          if (!streamer->update(sx, sz, nullptr, &app.error)) {
+          // Run the initial world gather off the main thread in windowed mode while pumping
+          // the animated Loading Screen at 60 FPS so the window never freezes!
+          bool first_gather_ok = false;
+          if (boot_live_ui) {
+            std::string g_err;
+            auto fut_gather = std::async(std::launch::async, [&]() {
+              return streamer->update(sx, sz, nullptr, &g_err);
+            });
+            wait_future_pumping(fut_gather, 0.66f, 0.92f);
+            first_gather_ok = fut_gather.get();
+            if (!first_gather_ok) app.error = g_err;
+          } else {
+            first_gather_ok = streamer->update(sx, sz, nullptr, &app.error);
+          }
+          if (!first_gather_ok) {
             app.status = 1;
           } else {
             if (app.fast_travel) {
@@ -678,6 +776,46 @@ bool DriveWorldHost::open_world_and_car() {
             }
           }
         }
+        // Join remaining background boot tasks while still pumping the smooth loading UI.
+        wait_future_pumping(fut_map_nav, 0.92f, 0.95f);
+        if (fut_map_nav.valid()) (void)fut_map_nav.get();
+        if (want_collectibles) {
+          if (app.has_cli_gps && !app.cli_gps_applied && app.gps_solver.ready()) {
+            app.cli_gps_applied = true;
+            const double sx0 = app.have_spawn ? app.spawn[0] : (app.near_given || app.render_ground ? app.near_x : world::kSpawnX);
+            const double sz0 = app.have_spawn ? app.spawn[2] : (app.near_given || app.render_ground ? app.near_z : world::kSpawnZ);
+            app.gps_nav.set_destination(app.cli_gps_x, app.cli_gps_z, traffic::GpsDestKind::kGeneric, "GPS WAYPOINT", sx0, sz0);
+          }
+          if (!app.cli_pr_stunt.empty() && !app.cli_pr_stunt_applied && app.have_outposts) {
+            app.cli_pr_stunt_applied = true;
+            if (const auto* st = app.outposts.find_stunt(app.cli_pr_stunt)) {
+              const int64_t base_pts = app.skill_tracker ? int64_t(std::llround(app.skill_tracker->popularity_points())) : 0;
+              app.pr_stunt_session.start(*st, base_pts);
+              if (app.gps_solver.ready()) {
+                const double sx0 = app.have_spawn ? app.spawn[0] : (app.near_given || app.render_ground ? app.near_x : world::kSpawnX);
+                const double sz0 = app.have_spawn ? app.spawn[2] : (app.near_given || app.render_ground ? app.near_z : world::kSpawnZ);
+                app.gps_nav.set_destination(st->target_pos.x, st->target_pos.z, traffic::GpsDestKind::kGeneric,
+                                        st->title, sx0, sz0);
+              }
+            }
+          }
+        }
+        wait_future_pumping(fut_audio, 0.95f, 0.98f);
+        if (fut_audio.valid()) (void)fut_audio.get();
+        if (fh1::CjkFont::language_needs_cjk(app.language) && !carview::ui::cjk_font_loaded()) {
+          auto cjk = std::make_shared<fh1::CjkFont>();
+          if (cjk->load_for_language(groot_cached, app.language, nullptr)) {
+            carview::ui::set_cjk_font(std::move(cjk));
+          }
+        }
+        if (app.fut_anim_.valid()) {
+          wait_future_pumping(app.fut_anim_, 0.98f, 0.99f);
+          app.wait_anim_ready();
+        }
+        app.wait_all_world_assets();
+        if (boot_cancelled) {
+          return false;
+        }
         if (app.status == 0) {
           std::printf("spawn %s: %.3f %.3f %.3f heading %.4f rad\n", how, sp.position[0], sp.position[1],
                       sp.position[2], sp.heading);
@@ -696,9 +834,10 @@ bool DriveWorldHost::open_world_and_car() {
             showroom.set_background(0.42f, 0.55f, 0.72f);
         }
         if (app.status != 0) std::fprintf(stderr, "carview: %s\n", app.error.c_str());
-        app.bench_startup.world_load_ms = std::max(
-            0.0, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - world_load_t0).count() -
-                     app.bench_startup.audio_load_ms);
+        app.bench_startup.world_load_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - world_load_t0).count();
+      } else {
+        app.wait_all_world_assets();
       }
   return app.status == 0;
 }
@@ -787,7 +926,7 @@ bool DriveWorldHost::hot_reload_car_and_world() {
             }
             ground = &streamer->ground();
             follower.set_ground(&streamer->ground());
-            if (!set_staged_world()) {
+            if (!streamer->prepared().has_value() || !set_staged_world()) {
               std::fprintf(stderr, "carview: hot stage world: %s\n", app.error.c_str());
               app.status = 1;
               return false;

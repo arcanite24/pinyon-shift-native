@@ -197,6 +197,7 @@ struct DriveSession {
   bool save_due = false;
   bool skip_end_save = false;
   bool ui_atlas_synced = false;
+  bool pending_title_resume_gather = false;
 
   std::vector<ClubRun> club_runs;
   int64_t club_car = -1;

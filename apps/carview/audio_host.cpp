@@ -125,6 +125,7 @@ AudioHost::AudioHost() {
 }
 
 AudioHost::~AudioHost() {
+  if (acoustics_loader_.joinable()) acoustics_loader_.join();
   stop_device();
   clear_car();
 }
@@ -673,7 +674,8 @@ bool AudioHost::reload_vo(std::string_view language) {
 }
 
 bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
-                               const std::filesystem::path& world_dir, const std::filesystem::path& rally_package) {
+                               const std::filesystem::path& world_dir, const std::filesystem::path& rally_package,
+                               bool async_soundscapes) {
   if (game_root.empty()) return false;
   auto low = [](std::string s) {
     for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -688,9 +690,14 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
   if (!acoustics_tried_) {
     acoustics_tried_ = true;
     std::string note;
-    if (acoustics_.load_configs(game_root, &note)) {
+    bool ok = false;
+    {
+      std::lock_guard<std::mutex> lk(acoustics_mu_);
+      ok = acoustics_.load_configs(game_root, &note);
+    }
+    if (ok) {
       std::printf("%s\n", note.c_str());
-      has_acoustics_ = true;
+      has_acoustics_.store(true, std::memory_order_release);
     }
     const int beds = engine_.load_ambience_beds(game_root, cache_dir);
     if (beds > 0) {
@@ -700,9 +707,14 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
   if (!rally_acoustics_tried_ && !rally_package.empty()) {
     rally_acoustics_tried_ = true;
     std::string rnote;
-    if (acoustics_.load_rally_configs(rally_package, &rnote) && !rnote.empty()) {
+    bool rok = false;
+    {
+      std::lock_guard<std::mutex> lk(acoustics_mu_);
+      rok = acoustics_.load_rally_configs(rally_package, &rnote);
+    }
+    if (rok && !rnote.empty()) {
       std::printf("%s\n", rnote.c_str());
-      has_acoustics_ = true;
+      has_acoustics_.store(true, std::memory_order_release);
     }
     const int rbeds = engine_.load_rally_ambience_beds(rally_package, cache_dir);
     if (rbeds > 0) {
@@ -716,7 +728,13 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
   set_rally_world(is_rally);
 
   if (acoustics_world_key_ != world_key) {
-    acoustics_.clear_soundscapes();
+    if (acoustics_loader_.joinable()) acoustics_loader_.join();
+    uint64_t my_gen = 0;
+    {
+      std::lock_guard<std::mutex> lk(acoustics_mu_);
+      acoustics_.clear_soundscapes();
+      my_gen = ++acoustics_gen_;
+    }
     last_in_tunnel_ = false;
     acoustics_world_key_ = world_key;
     std::error_code ec;
@@ -747,15 +765,44 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
       archive_path = std::filesystem::exists(bin_lower, ec) ? bin_lower : bin_upper;
     }
     if (!archive_path.empty() && std::filesystem::exists(archive_path, ec)) {
-      const int tiles = acoustics_.load_soundscapes_from_archive(archive_path);
-      if (tiles > 0) {
-        has_acoustics_ = true;
-        std::printf("world acoustics (%s): loaded %d .soundscape tiles (%zu reverb zones, %zu ambience zones)\n",
-                    world_key.c_str(), tiles, acoustics_.reverb_zone_count(), acoustics_.ambience_zone_count());
+      if (async_soundscapes) {
+        audio::WorldAcousticsData base_copy;
+        {
+          std::lock_guard<std::mutex> lk(acoustics_mu_);
+          base_copy = acoustics_;
+        }
+        acoustics_loader_ = std::thread([this, archive_path, world_key, my_gen, data = std::move(base_copy)]() mutable {
+          const int tiles = data.load_soundscapes_from_archive(archive_path);
+          if (tiles > 0) {
+            std::lock_guard<std::mutex> lk(acoustics_mu_);
+            if (acoustics_gen_ == my_gen) {
+              const size_t rz = data.reverb_zone_count();
+              const size_t az = data.ambience_zone_count();
+              acoustics_ = std::move(data);
+              has_acoustics_.store(true, std::memory_order_release);
+              std::printf("world acoustics (%s): loaded %d .soundscape tiles (%zu reverb zones, %zu ambience zones)\n",
+                          world_key.c_str(), tiles, rz, az);
+            }
+          }
+        });
+      } else {
+        int tiles = 0;
+        size_t rz = 0, az = 0;
+        {
+          std::lock_guard<std::mutex> lk(acoustics_mu_);
+          tiles = acoustics_.load_soundscapes_from_archive(archive_path);
+          rz = acoustics_.reverb_zone_count();
+          az = acoustics_.ambience_zone_count();
+        }
+        if (tiles > 0) {
+          has_acoustics_.store(true, std::memory_order_release);
+          std::printf("world acoustics (%s): loaded %d .soundscape tiles (%zu reverb zones, %zu ambience zones)\n",
+                      world_key.c_str(), tiles, rz, az);
+        }
       }
     }
   }
-  return has_acoustics_;
+  return has_acoustics_.load(std::memory_order_acquire);
 }
 
 void AudioHost::trigger_vo(std::string_view trigger_id, bool interrupt) {
@@ -853,10 +900,13 @@ void AudioHost::update_world_acoustics(float x, float y, float z, float heading_
   last_acoustics_heading_ = heading_rad;
   last_acoustics_tp_ = now;
   if (radio_) engine_.set_listener_pose({x, y, z}, heading_rad);
-  if (has_acoustics_) {
-    const auto sample = acoustics_.evaluate(x, y, z);
-    last_in_tunnel_ = sample.in_tunnel;
-    engine_.set_acoustics_sample(sample);
+  if (has_acoustics_.load(std::memory_order_acquire)) {
+    std::unique_lock<std::mutex> lk(acoustics_mu_, std::try_to_lock);
+    if (lk.owns_lock()) {
+      const auto sample = acoustics_.evaluate(x, y, z);
+      last_in_tunnel_ = sample.in_tunnel;
+      engine_.set_acoustics_sample(sample);
+    }
   }
 }
 

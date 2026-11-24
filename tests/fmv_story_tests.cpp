@@ -114,7 +114,7 @@ void test_fmv_synthetic_and_audio_mix() {
   check(energy > 0.1, "AudioEngine mixes non-silent FMV PCM");
   eng.set_fmv_audio(nullptr, nullptr);
 
-  // Render FMV quad into ui::List and CPU-rasterize.
+  // Render FMV quad into ui::List and CPU-rasterize (verify fullscreen edge-to-edge without top/bottom black bars).
   carview::ui::List list;
   player.draw(list, 320.0f, 180.0f, "Welcome to Horizon!", true);
   check(!list.empty(), "FmvPlayer::draw emits UI items");
@@ -124,6 +124,23 @@ void test_fmv_synthetic_and_audio_mix() {
   for (size_t i = 0; i < fb.size(); i += 4)
     if (fb[i] > 10 || fb[i + 1] > 10 || fb[i + 2] > 10) ++non_black;
   check(non_black > 5000, "rasterized FMV frame has visible pixels");
+  // Top and bottom rows on 16:9 must contain live video pixels (no artificial cinema black bars).
+  const size_t top_px = (2u * 320u + 160u) * 4u;
+  const size_t bot_px = (177u * 320u + 160u) * 4u;
+  check((fb[top_px] > 15 || fb[top_px + 1] > 15 || fb[top_px + 2] > 15) &&
+            (fb[bot_px] > 15 || fb[bot_px + 1] > 15 || fb[bot_px + 2] > 15),
+        "FMV fills 16:9 screen edge-to-edge without top/bottom black bars");
+
+  // On 16:10 (taller than 16:9), FMV cover-fills top-to-bottom without top/bottom black bars.
+  carview::ui::List list1610;
+  player.draw(list1610, 320.0f, 200.0f, {}, false);
+  std::vector<uint8_t> fb1610(320u * 200u * 4u, 0);
+  carview::ui::rasterize(list1610.items(), fb1610, 320, 200);
+  const size_t top1610 = (2u * 320u + 160u) * 4u;
+  const size_t bot1610 = (197u * 320u + 160u) * 4u;
+  check((fb1610[top1610] > 15 || fb1610[top1610 + 1] > 15 || fb1610[top1610 + 2] > 15) &&
+            (fb1610[bot1610] > 15 || fb1610[bot1610 + 1] > 15 || fb1610[bot1610 + 2] > 15),
+        "FMV fills 16:10 screen edge-to-edge without top/bottom black bars");
 
   // Advance to completion.
   check(player.update(1.0), "synthetic FMV still active at 1.0s");

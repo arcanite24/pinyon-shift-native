@@ -208,7 +208,7 @@ void DriveSession::init_session() {
                                        ? app.rally_catalog.package_dir
                                        : (!app.state_root.empty() ? race::find_rally_package(app.state_root)
                                                                   : std::filesystem::path{});
-            app.audio_host.init_acoustics(game_root, sfx_cache, app.world_dir, rally_pkg);
+            app.audio_host.init_acoustics(game_root, sfx_cache, app.world_dir, rally_pkg, !app.headless && !app.bench);
             if (!app.colorado_world() && !rally_pkg.empty()) {
               app.audio_host.init_codriver(rally_pkg, sfx_cache, app.language);
             }
@@ -246,9 +246,12 @@ void DriveSession::init_session() {
         std::string ferr;
         traffic::TrafficConfig fcfg;
         const auto game_root = app.game_root_of();
-        if (traffic::read_nav(game_root / "media" / "tracks" / "colorado" / "colorado.nav", festival_nav, &ferr) &&
-            traffic::read_traffic_config(game_root, fcfg, &ferr, false)) {
-          festival_roads.build(festival_nav);
+        const bool nav_ready =
+            app.shared_nav_loaded
+                ? true
+                : traffic::read_nav(game_root / "media" / "tracks" / "colorado" / "colorado.nav", festival_nav, &ferr);
+        if (nav_ready && traffic::read_traffic_config(game_root, fcfg, &ferr, false)) {
+          festival_roads.build(app.shared_nav_loaded ? app.shared_nav : festival_nav);
           std::set<int64_t> traffic_ids;
           for (const auto& tm : fcfg.models) traffic_ids.insert(tm.id);
           // Match roaming Festival AI roster dynamically to the player's current car PI/class.

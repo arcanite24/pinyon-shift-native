@@ -45,6 +45,7 @@
 #include "save_sync_ui.h"
 #include "story_intro.h"
 #include "traffic/gps.h"
+#include "traffic/nav.h"
 #include "world/smashables.h"
 #include "world/tod.h"
 #include "world/vfx.h"
@@ -189,6 +190,8 @@ struct DriveApp : DriveConfig {
   bool progress_loaded = false;
   MapView map_view;
   bool map_tried = false;
+  traffic::NavMap shared_nav;
+  bool shared_nav_loaded = false;
   traffic::GpsSolver gps_solver;
   traffic::GpsNavigator gps_nav{&gps_solver};
   freeroam::RoadDiscovery road_discovery;
@@ -214,6 +217,11 @@ struct DriveApp : DriveConfig {
   world::ParticleLibrary vfx_lib;
   world::SmashableWorld smashables;
   world::AnimatedWorldSystem world_anim;
+  std::future<bool> fut_tod_;
+  std::future<bool> fut_vfx_;
+  std::future<bool> fut_smash_;
+  std::future<bool> fut_anim_;
+  bool anim_shared_bound_ = false;
 
   freeroam::club::ClubData club_data;
   bool club_tried = false, club_loaded = false;
@@ -260,6 +268,12 @@ struct DriveApp : DriveConfig {
   CareerBoard career_board(const CareerPage& page);
   size_t garage_picker();
   void reload_world_assets(bool init_anim);
+  void start_world_assets_async(bool init_anim);
+  void wait_tod_ready();
+  void wait_vfx_ready();
+  void wait_smash_ready();
+  void wait_anim_ready();
+  void wait_all_world_assets();
   bool handle_rally_world_switch();
   void shutdown();
 };

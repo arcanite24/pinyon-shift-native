@@ -157,34 +157,42 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                 if (idx == 0) {  // CONTINUE CAREER
                   app.show_title = false;
                   if (app.title_video.active()) app.title_video.close();
-                  loading_screen.load_definitions(app.game_root_of(), "freeroam");
-                  loading_screen.start("COLORADO FREE ROAM", "HORIZON FESTIVAL");
-                  loading_min_until = 0.65;
                   if (app.title_saved_resume_pending) {
                     app.title_saved_resume_pending = false;
+                    loading_screen.load_definitions(app.game_root_of(), "freeroam");
+                    loading_screen.start("COLORADO FREE ROAM", "HORIZON FESTIVAL");
+                    loading_min_until = 0.25;
                     if (host.streamer) {
                       std::string rerr;
-                      if (host.streamer->update(app.saved_resume_spawn[0], app.saved_resume_spawn[2], nullptr, &rerr)) {
+                      bool changed = false;
+                      const bool ok = host.streamer->update(app.saved_resume_spawn[0], app.saved_resume_spawn[2],
+                                                            &changed, &rerr);
+                      if (ok && changed && host.streamer->prepared().has_value()) {
+                        host.ground = &host.streamer->ground();
+                        host.follower.set_ground(&host.streamer->ground());
                         host.set_staged_world();
-                      }
-                      world::Spawn rsp;
-                      const char* rhow = nullptr;
-                      if (world::choose_spawn(*host.streamer, app.saved_resume_spawn, nullptr, nullptr, rsp, &rhow)) {
-                        vehicle.place({rsp.position[0], rsp.position[1] + 0.03, rsp.position[2]}, rsp.heading);
-                        // If the saved point sits inside an enclosure/wall, recover cleanly onto the nearest road.
-                        const drive::Vec3 vp = vehicle.position();
-                        const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
-                        drive::Hit wh;
-                        if (host.streamer->ground().raycast({vp.x, vp.y + 0.8, vp.z}, {0, 1, 0}, 3.5, wh) ||
-                            host.streamer->ground().raycast({vp.x, vp.y + 0.7, vp.z}, vf, 2.5, wh)) {
-                          world::recover(*host.streamer, vehicle);
+                        world::Spawn rsp;
+                        const char* rhow = nullptr;
+                        if (world::choose_spawn(*host.streamer, app.saved_resume_spawn, nullptr, nullptr, rsp, &rhow)) {
+                          vehicle.place({rsp.position[0], rsp.position[1] + 0.03, rsp.position[2]}, rsp.heading);
+                          const drive::Vec3 vp = vehicle.position();
+                          const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                          drive::Hit wh;
+                          if (host.streamer->ground().raycast({vp.x, vp.y + 0.8, vp.z}, {0, 1, 0}, 3.5, wh) ||
+                              host.streamer->ground().raycast({vp.x, vp.y + 0.7, vp.z}, vf, 2.5, wh)) {
+                            world::recover(*host.streamer, vehicle);
+                          }
                         }
+                        drawn_before = vehicle.pose();
+                      } else if (ok) {
+                        // Async gather is running off-thread: keep loading_screen animating at 60 FPS until ready.
+                        pending_title_resume_gather = true;
                       }
                     } else {
                       vehicle.place({app.saved_resume_spawn[0], app.saved_resume_spawn[1], app.saved_resume_spawn[2]},
                                     app.saved_resume_spawn[3]);
+                      drawn_before = vehicle.pose();
                     }
-                    drawn_before = vehicle.pose();
                   }
                 } else if (idx == 1) {  // NEW CAREER
                   if (has_save_opt) {

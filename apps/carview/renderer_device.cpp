@@ -161,31 +161,24 @@ bool Renderer::init(const Options& options, std::string& error) {
             ? requested_backend_
             : (!order.empty() ? order.front() : shift::rhi::BackendKind::Vulkan);
     if (target_probe == shift::rhi::BackendKind::D3D12 || target_probe == shift::rhi::BackendKind::Metal) {
+      // Fast adapter-only probe (avoids spinning up & tearing down a full second GPU device at startup).
       const auto adapters = shift::rhi::enumerate_adapters(target_probe);
-      std::string probe_err;
-      shift::rhi::DeviceDesc probe_desc{};
-      probe_desc.backend = target_probe;
-      probe_desc.enable_validation = false;
-      probe_desc.enable_ray_tracing = true;
-      probe_desc.enable_bindless = true;
-      probe_desc.app_name = "carview";
-      if (auto rhi_dev = shift::rhi::create_device(probe_desc, probe_err)) {
-        probed_rhi_backend_ = rhi_dev->backend();
-        probed_rhi_device_name_ = rhi_dev->caps().device_name;
-        const bool rt_ok = rhi_dev->caps().ray_query;
-        const bool bl_ok = rhi_dev->caps().bindless;
+      if (!adapters.empty()) {
+        probed_rhi_backend_ = adapters.front().backend;
+        probed_rhi_device_name_ = adapters.front().name;
+        const bool rt_ok = adapters.front().supports_ray_query;
         if (requested_backend_ == shift::rhi::BackendKind::D3D12 ||
             requested_backend_ == shift::rhi::BackendKind::Metal) {
           active_backend_label_ = std::string(backend_display_name(probed_rhi_backend_)) + " (RHI) / Vulkan 1.3";
         } else {
           active_backend_label_ = std::string("Vulkan 1.3 (") + backend_display_name(probed_rhi_backend_) + " ready)";
         }
-        std::fprintf(stderr, "[rhi] probed %s on %s (%zu adapter(s), RT=%s, bindless=%s); active frame graph: Vulkan 1.3\n",
+        std::fprintf(stderr, "[rhi] probed %s on %s (%zu adapter(s), RT=%s); active frame graph: Vulkan 1.3\n",
                      backend_display_name(probed_rhi_backend_), probed_rhi_device_name_.c_str(), adapters.size(),
-                     rt_ok ? "yes" : "no", bl_ok ? "yes" : "no");
+                     rt_ok ? "yes" : "no");
       } else if (requested_backend_ != shift::rhi::BackendKind::Auto) {
-        std::fprintf(stderr, "[rhi] requested %s unavailable (%s); falling back to Vulkan 1.3\n",
-                     backend_display_name(requested_backend_), probe_err.c_str());
+        std::fprintf(stderr, "[rhi] requested %s unavailable (no adapters); falling back to Vulkan 1.3\n",
+                     backend_display_name(requested_backend_));
       }
     }
   }

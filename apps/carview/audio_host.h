@@ -7,11 +7,14 @@
 #include <SDL3/SDL.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "audio/audio_engine.h"
@@ -92,10 +95,17 @@ class AudioHost {
   bool init_vo(const std::filesystem::path& game_root, std::string_view language = "EN");
   bool reload_vo(std::string_view language);
   bool init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir = {},
-                      const std::filesystem::path& world_dir = {}, const std::filesystem::path& rally_package = {});
+                      const std::filesystem::path& world_dir = {}, const std::filesystem::path& rally_package = {},
+                      bool async_soundscapes = false);
   const std::string& acoustics_world_key() const { return acoustics_world_key_; }
-  size_t acoustics_reverb_zones() const { return acoustics_.reverb_zone_count(); }
-  size_t acoustics_ambience_zones() const { return acoustics_.ambience_zone_count(); }
+  size_t acoustics_reverb_zones() const {
+    std::lock_guard<std::mutex> lk(acoustics_mu_);
+    return acoustics_.reverb_zone_count();
+  }
+  size_t acoustics_ambience_zones() const {
+    std::lock_guard<std::mutex> lk(acoustics_mu_);
+    return acoustics_.ambience_zone_count();
+  }
   bool in_tunnel() const { return last_in_tunnel_; }
   std::string car_burble_bank() const;
 
@@ -215,12 +225,15 @@ class AudioHost {
   std::filesystem::path vo_game_root_;
   std::string vo_language_ = "EN";
   bool acoustics_tried_ = false;
-  bool has_acoustics_ = false;
+  std::atomic<bool> has_acoustics_{false};
   bool rally_sfx_tried_ = false;
   bool rally_acoustics_tried_ = false;
   bool rally_world_ = false;
   bool last_radio_rally_mode_ = false;
   std::string acoustics_world_key_;
+  mutable std::mutex acoustics_mu_;
+  std::thread acoustics_loader_;
+  uint64_t acoustics_gen_ = 0;
   audio::WorldAcousticsData acoustics_;
   bool last_paused_ = false;
   bool last_menu_ = false;

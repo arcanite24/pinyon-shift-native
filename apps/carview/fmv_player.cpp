@@ -1712,21 +1712,33 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
     const float video_aspect = float(width_) / float(height_);
     const float scr_aspect = screen_w / std::max(1.0f, screen_h);
     float draw_w = screen_w, draw_h = screen_h;
-    if (scr_aspect > video_aspect) {
-      draw_w = screen_h * video_aspect;
-    } else {
-      draw_h = screen_w / video_aspect;
+    std::array<float, 4> draw_uv = uv;
+    const float u_span = uv[2] - uv[0];
+    const float v_span = uv[3] - uv[1];
+    if (scr_aspect < video_aspect) {
+      // Fill screen edge-to-edge without top/bottom black bars (symmetric horizontal cover crop).
+      const float keep = std::clamp(scr_aspect / video_aspect, 0.25f, 1.0f);
+      const float trim = 0.5f * (1.0f - keep) * u_span;
+      draw_uv[0] += trim;
+      draw_uv[2] -= trim;
+    } else if (scr_aspect > video_aspect * 1.005f) {
+      if (scr_aspect <= video_aspect * 1.18f) {
+        // Slight aspect difference: cover-fill cleanly with minimal vertical crop.
+        const float keep = std::clamp(video_aspect / scr_aspect, 0.5f, 1.0f);
+        const float trim = 0.5f * (1.0f - keep) * v_span;
+        draw_uv[1] += trim;
+        draw_uv[3] -= trim;
+      } else {
+        // Wide ultrawide display: preserve full 16:9 vertical framing (centered pillarbox, no top/bottom bars).
+        draw_w = screen_h * video_aspect;
+      }
     }
     const float x0 = 0.5f * (screen_w - draw_w);
     const float y0 = 0.5f * (screen_h - draw_h);
-    l.image(x0, y0, x0 + draw_w, y0 + draw_h, uv);
+    l.image(x0, y0, x0 + draw_w, y0 + draw_h, draw_uv);
   }
 
   const float s = screen_h / 720.0f;
-  // Cinema letterbox bars & smooth fade-in / fade-out envelope.
-  const float bar_h = 34.0f * s;
-  l.rect(0, 0, screen_w, bar_h, ui::rgba(0, 0, 0, 235));
-  l.rect(0, screen_h - bar_h, screen_w, screen_h, ui::rgba(0, 0, 0, 235));
 
   if (synthetic_ && !title_.empty()) {
     ui4::title_banner(l, s, 68.0f * s, 62.0f * s, title_, "HORIZON FESTIVAL CUTSCENE", true, 640.0f * s);

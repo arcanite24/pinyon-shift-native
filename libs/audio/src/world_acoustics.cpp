@@ -409,7 +409,7 @@ int WorldAcousticsData::load_soundscapes_from_archive(const std::filesystem::pat
   for (const auto& m : arc->members()) {
     const std::string low = lower_str(m.name);
     if (low.size() < 11 || low.compare(low.size() - 11, 11, ".soundscape") != 0) continue;
-    auto rd = arc->read(m.name);
+    auto rd = arc->read(m);
     if (!rd.ok()) continue;
     std::string_view sv(reinterpret_cast<const char*>(rd.data.data()), rd.data.size());
     SoundscapeTile tile;

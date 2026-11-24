@@ -250,6 +250,7 @@ size_t DriveApp::garage_picker() {
 
 bool DriveApp::init(int& exit_code) {
   exit_code = 0;
+  if (!record_session_dir.empty()) std::setvbuf(stdout, nullptr, _IONBF, 0);
   car_given = !car.empty();
   // The play test's defaults for a window: the bake in out/bake (or
   // out/bake1), the R34, Colorado from SHIFT_GAME_ROOT or the sibling
@@ -791,9 +792,12 @@ bool DriveApp::init(int& exit_code) {
     saved_resume_spawn[1] = saved.position[1];
     saved_resume_spawn[2] = saved.position[2];
     saved_resume_spawn[3] = saved.heading;
-    if (show_title && !cli_spawn_given && !world_dir.empty() && colorado_world()) {
-      // Showcase the title screen on the wide-open scenic Colorado Festival highway
-      // rather than inside a saved tent/building; CONTINUE CAREER restores the save spot.
+    const bool has_press_start_video =
+        !FmvPlayer::resolve_movie(game_root_of(), FmvMovieId::kPressStart, state_root).empty();
+    if (show_title && !cli_spawn_given && !world_dir.empty() && colorado_world() && !has_press_start_video) {
+      // Only showcase the scenic Colorado highway when PressStart.wmv is absent;
+      // when PressStart.wmv covers the title screen, load directly at the saved spot so
+      // CONTINUE CAREER enters the world instantaneously with zero re-gather.
       title_saved_resume_pending = true;
     } else {
       spawn[0] = saved.position[0], spawn[1] = saved.position[1], spawn[2] = saved.position[2];
@@ -990,58 +994,112 @@ bool DriveApp::init(int& exit_code) {
   }
   tod_clock.speed_scale = day_length_scale;
   colorado_world_dir = world_dir;
-  reload_world_assets(true);
+  start_world_assets_async(true);
 
   return true;
 }
 
-void DriveApp::reload_world_assets(bool init_anim) {
+void DriveApp::start_world_assets_async(bool init_anim) {
+  wait_all_world_assets();
   const auto groot = game_root_of();
-  std::future<bool> fut_vfx, fut_sm;
-  std::string vfx_err, sm_err, tod_err, anim_err;
+  const auto wdir = world_dir;
+  const auto cwdir = colorado_world_dir;
   if (!groot.empty()) {
     const auto media = groot / "media";
-    fut_vfx = std::async(std::launch::async, [&, media]() { return vfx_lib.load(media, world_dir, &vfx_err); });
-    fut_sm = std::async(std::launch::async, [&, media]() { return smashables.load(media, world_dir, &sm_err); });
+    fut_vfx_ = std::async(std::launch::async, [this, media, wdir]() {
+      std::string vfx_err;
+      return vfx_lib.load(media, wdir, &vfx_err);
+    });
+    fut_smash_ = std::async(std::launch::async, [this, media, wdir]() {
+      std::string sm_err;
+      return smashables.load(media, wdir, &sm_err);
+    });
   }
   tod_system = world::TodSystem{};
-  if (!world_dir.empty()) {
-    bool tod_ok = tod_system.load(world_dir, &tod_err);
-    if (!tod_ok && !colorado_world_dir.empty() && world_dir != colorado_world_dir) {
-      tod_ok = tod_system.load(colorado_world_dir, &tod_err);
-    }
-    if (tod_ok) {
+  if (!wdir.empty()) {
+    fut_tod_ = std::async(std::launch::async, [this, wdir, cwdir]() {
+      std::string tod_err;
+      bool tod_ok = tod_system.load(wdir, &tod_err);
+      if (!tod_ok && !cwdir.empty() && wdir != cwdir) {
+        tod_ok = tod_system.load(cwdir, &tod_err);
+      }
+      return tod_ok;
+    });
+  }
+  if (!groot.empty()) {
+    const auto media = groot / "media";
+    fut_anim_ = std::async(std::launch::async, [this, media, wdir, init_anim]() {
+      // Wait for ToD post_config? Only read post_config after wait_tod_ready or load with default if concurrent.
+      // world_anim reads pgeo/xds/crowds; post_config only supplies tint fallback, so use safe default here
+      // and update world_anim if needed.
+      std::string anim_err;
+      const decltype(tod_system.post_config) default_post{};
+      if (init_anim) {
+        return world_anim.init(media, default_post, &anim_err, wdir);
+      }
+      world_anim.set_world(media, wdir, default_post);
+      return true;
+    });
+    anim_shared_bound_ = false;
+  }
+}
+
+void DriveApp::wait_tod_ready() {
+  if (fut_tod_.valid()) {
+    if (fut_tod_.get()) {
       std::printf("tod: TimeOfDayA (%zu curves), zones %zu, LUTs %zu, sky %s (%zu stars)\n",
                   tod_system.preset_a.curves.size(), tod_system.zones.zones.size(), tod_system.zones.luts.size(),
                   tod_system.loaded_sky ? "realtimesky.zip" : "procedural", tod_system.sky_assets.stars.size());
     }
   }
-  if (!groot.empty()) {
-    if (init_anim) {
-      if (world_anim.init(groot / "media", tod_system.post_config, &anim_err, world_dir)) {
-        const auto& cat = world_anim.catalog();
-        std::printf(
-            "world_anim: %zu spectator models (%d angles, %zu sit), %zu anim clips, %zu crowdclasses, "
-            "%zu animated pgeo (%zu decoded) / %zu xds\n",
-            cat.models.size(), cat.num_sprite_angles, cat.sit_assets.size(), cat.anim_clips.size(),
-            cat.crowdclasses.size(), cat.animated_pgeos, cat.pgeo_objects.size(), cat.animated_xds);
-      }
-      world::AnimatedWorldSystem::set_shared(&world_anim);
-    } else {
-      world_anim.set_world(groot / "media", world_dir, tod_system.post_config);
-    }
-    if (fut_vfx.valid() && fut_vfx.get()) {
+}
+
+void DriveApp::wait_vfx_ready() {
+  if (fut_vfx_.valid()) {
+    if (fut_vfx_.get()) {
       std::printf("vfx: %zu effects, %zu xds textures, %zu world emitters, %zu smashable effects\n",
                   vfx_lib.effects().size(), vfx_lib.xds_count(), vfx_lib.world_emitters().size(),
                   vfx_lib.smashable_effects().size());
     }
-    if (fut_sm.valid() && fut_sm.get()) {
+  }
+}
+
+void DriveApp::wait_smash_ready() {
+  if (fut_smash_.valid()) {
+    if (fut_smash_.get()) {
       const auto c = smashables.definitions().counts();
       std::printf("smashables: %zu defs (%zu children), %zu CollObjects types, %zu placed props\n",
                   c.top_level, c.total_children, smashables.coll_object_types().size(),
                   smashables.placed_prop_count());
     }
   }
+}
+
+void DriveApp::wait_anim_ready() {
+  if (fut_anim_.valid()) {
+    if (fut_anim_.get() && !anim_shared_bound_) {
+      const auto& cat = world_anim.catalog();
+      std::printf(
+          "world_anim: %zu spectator models (%d angles, %zu sit), %zu anim clips, %zu crowdclasses, "
+          "%zu animated pgeo (%zu decoded) / %zu xds\n",
+          cat.models.size(), cat.num_sprite_angles, cat.sit_assets.size(), cat.anim_clips.size(),
+          cat.crowdclasses.size(), cat.animated_pgeos, cat.pgeo_objects.size(), cat.animated_xds);
+      world::AnimatedWorldSystem::set_shared(&world_anim);
+      anim_shared_bound_ = true;
+    }
+  }
+}
+
+void DriveApp::wait_all_world_assets() {
+  wait_tod_ready();
+  wait_vfx_ready();
+  wait_smash_ready();
+  wait_anim_ready();
+}
+
+void DriveApp::reload_world_assets(bool init_anim) {
+  start_world_assets_async(init_anim);
+  wait_all_world_assets();
 }
 
 bool DriveApp::handle_rally_world_switch() {
@@ -1101,6 +1159,7 @@ bool DriveApp::handle_rally_world_switch() {
 }
 
 void DriveApp::shutdown() {
+  wait_all_world_assets();
   carview::set_car_names({});
   carview::set_game_text({});
   carview::set_world_texture_session(nullptr);

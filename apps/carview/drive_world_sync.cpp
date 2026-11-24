@@ -915,7 +915,7 @@ void prime_world_and_snap_vehicle(DriveSession& s, std::array<double, 3> target_
         any_changed = any_changed || ch;
       }
       s.host.streamer->set_async(s.host.streamer_async);
-      if (any_changed) {
+      if (any_changed && s.host.streamer->prepared().has_value()) {
         s.host.ground = &s.host.streamer->ground();
         s.host.follower.set_ground(&s.host.streamer->ground());
         s.host.set_staged_world();

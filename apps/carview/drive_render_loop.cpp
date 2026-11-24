@@ -447,12 +447,45 @@ void DriveSession::run_window_loop() {
           } else if (app.title_video.active()) {
             app.title_video.close();
           }
+          if (pending_title_resume_gather) {
+            if (host.streamer) {
+              std::string rerr;
+              bool changed = false;
+              const bool ok = host.streamer->update(app.saved_resume_spawn[0], app.saved_resume_spawn[2], &changed, &rerr);
+              if (!ok || changed || !host.streamer->gathering()) {
+                if (ok && changed && host.streamer->prepared().has_value()) {
+                  host.ground = &host.streamer->ground();
+                  host.follower.set_ground(&host.streamer->ground());
+                  host.set_staged_world();
+                }
+                world::Spawn rsp;
+                const char* rhow = nullptr;
+                if (world::choose_spawn(*host.streamer, app.saved_resume_spawn, nullptr, nullptr, rsp, &rhow)) {
+                  vehicle.place({rsp.position[0], rsp.position[1] + 0.03, rsp.position[2]}, rsp.heading);
+                  const drive::Vec3 vp = vehicle.position();
+                  const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                  drive::Hit wh;
+                  if (host.streamer->ground().raycast({vp.x, vp.y + 0.8, vp.z}, {0, 1, 0}, 3.5, wh) ||
+                      host.streamer->ground().raycast({vp.x, vp.y + 0.7, vp.z}, vf, 2.5, wh)) {
+                    world::recover(*host.streamer, vehicle);
+                  }
+                }
+                drawn_before = vehicle.pose();
+                pending_title_resume_gather = false;
+              }
+            } else {
+              pending_title_resume_gather = false;
+            }
+          }
           if (loading_screen.active()) {
             loading_screen.update(frame_dt);
             const double elapsed = loading_screen.elapsed();
-            const double min_hold = std::max(0.45, loading_min_until);
-            loading_screen.set_progress(float(std::clamp(elapsed / min_hold, 0.05, 1.0)));
-            if (elapsed >= min_hold) {
+            const double min_hold = std::max(0.25, loading_min_until);
+            const bool waiting_world = pending_title_resume_gather || host.showroom.has_pending_world();
+            const float prog = waiting_world ? float(std::clamp(elapsed / (min_hold + 2.0), 0.10, 0.92))
+                                             : float(std::clamp(elapsed / min_hold, 0.05, 1.0));
+            loading_screen.set_progress(prog);
+            if (!waiting_world && elapsed >= min_hold) {
               loading_screen.stop();
             }
           }
