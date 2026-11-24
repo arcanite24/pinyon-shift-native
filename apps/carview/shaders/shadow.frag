@@ -18,6 +18,6 @@ layout(location = 2) in vec2 v_uv0;
 const uint kFlagTextured = 1u;
 
 void main() {
-  uint flags = uint(draw.params.y + 0.5);
+  uint flags = uint(round(draw.params.y));
   if ((flags & kFlagTextured) != 0u && texture(albedo, v_uv0 * draw.tint.xy).a < 0.5) discard;
 }

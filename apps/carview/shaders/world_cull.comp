@@ -74,7 +74,7 @@ void main() {
   const DrawGpu d = items[i];
   if (d.draw.x == 0u) return;  // template-only row (e.g. hardware-instanced trees)
   const uint batch = min(d.draw.w, 3u);
-  const uint flags = uint(d.params.y + 0.5);
+  const uint flags = uint(round(d.params.y));
   atomicAdd(counts[4 + batch], 1u);
   if (p.info.z != 0u) {
     for (int k = 0; k < 4; ++k) {

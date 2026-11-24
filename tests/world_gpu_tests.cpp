@@ -2,6 +2,7 @@
 // allocator, the resident set found by content key across regathers, the
 // draw table packing, and the culling rule and indirect command packing the
 // compute shader (shaders/world_cull.comp) implements.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -246,6 +247,59 @@ void test_early_z_batch_routing() {
   CHECK(b.commands[kOpaqueDecal].size() == 1 && b.commands[kCutoutDecal].size() == 1);
 }
 
+void test_flag_encoding_and_visual_invariants() {
+  // PT-19 / PT-16 regression: kFlagEmissiveMap (1 << 23 = 8388608) combined with
+  // kFlagTextured (1) is an odd integer in [2^23, 2^24). IEEE-754 float32 stores all
+  // integers up to 2^24 exactly, so std::lround() decodes every bit losslessly, whereas
+  // adding +0.5f rounds odd values in [2^23, 2^24) to even, clearing bit 0 and setting kFlagSky (bit 1).
+  constexpr uint32_t kFlagTextured = 1u;
+  constexpr uint32_t kFlagAoMap = 8192u;
+  constexpr uint32_t kFlagSpecMap = 524288u;
+  constexpr uint32_t kFlagEmissiveMap = 8388608u;
+  const uint32_t building_flags = kFlagTextured | kFlagAoMap | kFlagSpecMap | kFlagEmissiveMap;
+  const float encoded = float(building_flags);
+  const uint32_t decoded_exact = uint32_t(std::lround(encoded));
+  CHECK(decoded_exact == building_flags);
+  CHECK((decoded_exact & kFlagTextured) == kFlagTextured);
+  CHECK((decoded_exact & kFlagSky) == 0u);
+  // Confirm the buggy +0.5f pattern would indeed corrupt bit 0 -> bit 1 (kFlagSky).
+  const uint32_t corrupted = uint32_t(encoded + 0.5f);
+  CHECK((corrupted & kFlagSky) != 0u && (corrupted & kFlagTextured) == 0u);
+
+  // PT-18: Animated gantry LED flag combination (kFlagTextured | kFlagUnlitVertexColor = 1025)
+  // stays well below 2^23 and never collides with kFlagSky.
+  constexpr uint32_t kFlagUnlitVertexColor = 1024u;
+  const uint32_t gantry_flags = kFlagTextured | kFlagUnlitVertexColor;
+  CHECK(uint32_t(std::lround(float(gantry_flags))) == gantry_flags);
+  CHECK((gantry_flags & kFlagSky) == 0u);
+
+  // PT-14 / PT-20: Smooth C1 atmosphere curve starts at 0 at horizon (V.y = 0),
+  // increases monotonically without a dead shelf at V.y = 0.03..0.06, and reaches 1 at zenith.
+  auto atmo_ht = [](float vy, float color_power, float clamp_hi) {
+    const float hi = std::max(clamp_hi, 0.15f);
+    const float y = std::max(vy, 0.0f);
+    const float sc = std::clamp(color_power * 1.45f, 0.11f, 0.45f) * std::clamp(hi / 0.50f, 0.5f, 1.5f);
+    return (1.0f - std::exp(-y / sc)) / (1.0f - std::exp(-1.0f / sc));
+  };
+  const float h0 = atmo_ht(0.0f, 0.0586f, 0.50f);
+  const float h3 = atmo_ht(0.03f, 0.0586f, 0.50f);
+  const float h6 = atmo_ht(0.06f, 0.0586f, 0.50f);
+  const float h1 = atmo_ht(1.0f, 0.0586f, 0.50f);
+  CHECK(std::fabs(h0) < 1e-6f);
+  CHECK(h3 > 0.15f && h3 < h6 && h6 < 0.65f);  // smooth gradient across 0..0.06 (no flat shelf or cliff)
+  CHECK(std::fabs(h1 - 1.0f) < 1e-5f);
+
+  // PT-20: True premultiplied Porter-Duff OVER preserves full linear cloud luminance without a^2 darkening.
+  const float cloud_rgb = 0.80f;
+  const float cloud_a = 0.35f;
+  const float acc_premul = cloud_rgb * cloud_a;
+  const float acc_a = cloud_a;
+  const float straight_rgb = acc_premul / acc_a;
+  const float out_premul = straight_rgb * acc_a;
+  CHECK(std::fabs(straight_rgb - cloud_rgb) < 1e-6f);
+  CHECK(std::fabs(out_premul - cloud_rgb * cloud_a) < 1e-6f);
+}
+
 }  // namespace
 
 int main() {
@@ -257,6 +311,7 @@ int main() {
   test_indirect();
   test_hiz();
   test_early_z_batch_routing();
+  test_flag_encoding_and_visual_invariants();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

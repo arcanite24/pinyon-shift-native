@@ -498,8 +498,135 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
     push_car_glows(rfb, in.car->lamp_points_, in.lamps, 350.0f, false);
   }
 
-  // World streetlamp / outpost / festival glow sprites (gated by SwitchOnLights).
-  if (world_textured_ && night_factor > 0.01f && !world_glows_.empty()) {
+  // World streetlamp / outpost / festival glow sprites (gated cleanly by dusk/night ToD,
+  // validated once per world swap against actual loaded prop draw AABBs & terrain elevation
+  // so no detached or culled white orbs ever float in the sky).
+  const bool daytime_sky = tod_active_ && !tod_state_.is_moon && tod_state_.sun_dir[1] > 0.16f;
+  if (world_textured_ && !daytime_sky && night_factor > 0.14f && !world_glows_.empty()) {
+    struct ValidatedWorldGlow {
+      std::array<float, 3> position{};  // scenery space
+      std::array<float, 3> color{};
+      float radius = 0.45f;
+      float threshold = 0.35f;
+    };
+    struct ValidatedGlowCache {
+      const Showroom* owner = nullptr;
+      uint64_t world_gen = 0;
+      double origin_x = 0.0;
+      double origin_z = 0.0;
+      size_t raw_count = 0;
+      size_t draw_count = 0;
+      std::array<float, 3> first_pos{};
+      std::vector<ValidatedWorldGlow> glows;
+    };
+    static ValidatedGlowCache s_wg_cache;
+
+    const bool cache_hit = s_wg_cache.owner == this && s_wg_cache.world_gen == world_generation_ &&
+                           s_wg_cache.origin_x == world_origin_[0] && s_wg_cache.origin_z == world_origin_[1] &&
+                           s_wg_cache.raw_count == world_glows_.size() &&
+                           s_wg_cache.draw_count == world_draws_.size() &&
+                           s_wg_cache.first_pos == world_glows_[0].position;
+    if (!cache_hit) {
+      s_wg_cache.owner = this;
+      s_wg_cache.world_gen = world_generation_;
+      s_wg_cache.origin_x = world_origin_[0];
+      s_wg_cache.origin_z = world_origin_[1];
+      s_wg_cache.raw_count = world_glows_.size();
+      s_wg_cache.draw_count = world_draws_.size();
+      s_wg_cache.first_pos = world_glows_[0].position;
+      s_wg_cache.glows.clear();
+      s_wg_cache.glows.reserve(world_glows_.size());
+
+      const drive::Ground* active_ground = world_ground_ ? world_ground_ : world::AnimatedWorldSystem::last_ground();
+      // Collect visible prop draw AABBs (exclude huge far-ring/terrain slabs) once for fast fixture anchoring.
+      struct PropBox {
+        float bmin[3];
+        float bmax[3];
+        bool compact;
+      };
+      std::vector<PropBox> prop_boxes;
+      prop_boxes.reserve(world_draws_.size());
+      for (const auto& d : world_draws_) {
+        if (d.index_count == 0 || !d.cull) continue;
+        const float ex = d.box_max[0] - d.box_min[0];
+        const float ey = d.box_max[1] - d.box_min[1];
+        const float ez = d.box_max[2] - d.box_min[2];
+        if (ex > 320.0f || ez > 320.0f || ey > 35.0f || ey < 0.25f) continue;
+        const bool compact = (ex <= 24.0f && ez <= 24.0f);
+        prop_boxes.push_back({{d.box_min[0], d.box_min[1], d.box_min[2]},
+                              {d.box_max[0], d.box_max[1], d.box_max[2]},
+                              compact});
+      }
+
+      for (const auto& g : world_glows_) {
+        std::array<float, 3> pos = g.position;
+        if (!prop_boxes.empty()) {
+          bool anchored = false;
+          float best_below_top = -1e9f;
+          for (const auto& pb : prop_boxes) {
+            if (pos[0] < pb.bmin[0] - 1.5f || pos[0] > pb.bmax[0] + 1.5f ||
+                pos[2] < pb.bmin[2] - 1.5f || pos[2] > pb.bmax[2] + 1.5f) {
+              continue;
+            }
+            if (pos[1] >= pb.bmin[1] - 0.5f && pos[1] <= pb.bmax[1] + 0.8f) {
+              // Seat glow cleanly inside compact fixture tops rather than floating above the housing.
+              if (pb.compact && pos[1] > pb.bmax[1] - 0.18f) pos[1] = pb.bmax[1] - 0.18f;
+              anchored = true;
+              break;
+            }
+            if (pb.compact && pb.bmax[1] < pos[1] && pos[1] - pb.bmax[1] <= 6.0f && pb.bmax[1] > best_below_top) {
+              best_below_top = pb.bmax[1];
+            }
+          }
+          if (!anchored) {
+            if (best_below_top > -1e8f) {
+              pos[1] = best_below_top - 0.18f;
+              anchored = true;
+            } else {
+              // Skip orphaned glow sprites with no matching prop fixture geometry.
+              continue;
+            }
+          }
+        }
+
+        // Validate height above terrain so sky-pointing searchlight beam tips or floating boxes are dropped.
+        if (active_ground) {
+          drive::Hit h;
+          const double gx = world_origin_[0] + double(pos[0]);
+          const double gz = world_origin_[1] + double(pos[2]);
+          const double start_y = double(pos[1]) + 2.0;
+          if (active_ground->raycast({gx, start_y, gz}, {0.0, -1.0, 0.0}, 45.0, h)) {
+            const float gy = float(start_y - h.distance);
+            const float h_above = pos[1] - gy;
+            if (h_above > 17.5f || h_above < 1.0f) continue;
+          }
+        }
+
+        const bool is_floodlight = (g.color[2] > 0.70f);
+        ValidatedWorldGlow vg{};
+        vg.position = pos;
+        if (is_floodlight) {
+          // Warm metal-halide festival/outpost fixture tint (never sterile cyan-white UFO orb).
+          vg.color = {1.0f * 0.95f, 0.92f * 0.95f, 0.76f * 0.95f};
+          vg.radius = std::clamp(g.radius * 0.36f, 0.28f, 0.65f);
+        } else {
+          // Warm sodium-amber streetlamp halo.
+          vg.color = {g.color[0] * 1.15f, g.color[1] * 1.15f, g.color[2] * 1.15f};
+          vg.radius = std::clamp(g.radius * 0.42f, 0.28f, 0.56f);
+        }
+        vg.threshold = 0.16f + std::clamp(g.threshold, 0.0f, 1.0f) * 0.69f;
+        s_wg_cache.glows.push_back(vg);
+      }
+    }
+
+    // Sync world glow range to prop edge fade-out distance so glows never outlive culled poles.
+    const float max_glow_dist =
+        (world_fade_[3] > 30.0f) ? std::min(300.0f, world_fade_[3] - 10.0f) : 240.0f;
+    const float fade_start_dist =
+        (world_fade_[2] > 20.0f && world_fade_[2] < max_glow_dist) ? world_fade_[2] : (max_glow_dist * 0.65f);
+    const float max_glow_d2 = max_glow_dist * max_glow_dist;
+    const float dusk_env = std::clamp((night_factor - 0.14f) / 0.34f, 0.0f, 1.0f);
+
     struct WorldCand {
       float dist2;
       size_t idx;
@@ -507,23 +634,28 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
       std::array<float, 3> pos;
     };
     std::vector<WorldCand> wc;
-    wc.reserve(world_glows_.size());
-    for (size_t i = 0; i < world_glows_.size(); ++i) {
-      const auto& g = world_glows_[i];
-      const float fade = std::clamp((night_factor - g.threshold) / 0.14f, 0.0f, 1.0f);
-      if (fade <= 0.005f) continue;
+    wc.reserve(s_wg_cache.glows.size());
+    for (size_t i = 0; i < s_wg_cache.glows.size(); ++i) {
+      const auto& g = s_wg_cache.glows[i];
+      const float tod_fade = dusk_env * std::clamp((night_factor - g.threshold) / 0.16f, 0.0f, 1.0f);
+      if (tod_fade <= 0.005f) continue;
       const auto p = transform_point(world_transform_, g.position);
       const float dx = p[0] - frame_.eye[0];
       const float dy = p[1] - frame_.eye[1];
       const float dz = p[2] - frame_.eye[2];
       const float d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 > 420.0f * 420.0f) continue;
+      if (d2 > max_glow_d2) continue;
+      const float dist = std::sqrt(d2);
+      const float t_edge = std::clamp((dist - fade_start_dist) / std::max(max_glow_dist - fade_start_dist, 1.0f), 0.0f, 1.0f);
+      const float dist_fade = 1.0f - (t_edge * t_edge * (3.0f - 2.0f * t_edge));
+      const float fade = tod_fade * dist_fade;
+      if (fade <= 0.005f) continue;
       wc.push_back({d2, i, fade, p});
     }
     std::sort(wc.begin(), wc.end(), [](const WorldCand& a, const WorldCand& b) { return a.dist2 < b.dist2; });
     for (const auto& c : wc) {
       if (sprites.size() >= kMaxGlowSprites) break;
-      const auto& g = world_glows_[c.idx];
+      const auto& g = s_wg_cache.glows[c.idx];
       GlowSpriteGpu s{};
       s.pos_radius[0] = c.pos[0];
       s.pos_radius[1] = c.pos[1];
@@ -532,14 +664,14 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
       s.dir_inner[0] = 0.0f;
       s.dir_inner[1] = 0.0f;
       s.dir_inner[2] = 0.0f;
-      s.dir_inner[3] = -1.0f;  // omnidirectional
-      s.color_outer[0] = g.color[0] * 2.4f;
-      s.color_outer[1] = g.color[1] * 2.4f;
-      s.color_outer[2] = g.color[2] * 2.4f;
+      s.dir_inner[3] = -1.0f;  // omnidirectional world fixture glow
+      s.color_outer[0] = g.color[0];
+      s.color_outer[1] = g.color[1];
+      s.color_outer[2] = g.color[2];
       s.color_outer[3] = -1.0f;
-      s.extra[0] = 0.0f;  // headlight_glow_1.xds soft radial glow
-      s.extra[1] = 0.25f;
-      s.extra[2] = 420.0f;
+      s.extra[0] = 0.0f;
+      s.extra[1] = 0.08f;  // tight camera bias so halo stays seated on the fixture
+      s.extra[2] = max_glow_dist;
       s.extra[3] = c.fade;
       sprites.push_back(s);
     }

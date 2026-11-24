@@ -374,7 +374,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
     for (const auto& d : world_draws_) {
       if (!d.cull || d.blend >= 2) continue;
-      const uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
+      const uint32_t fl = uint32_t(std::lround(d.push.params[1]));
       if ((fl & (2u | 32768u)) != 0u) continue;  // skip sky dome & water planes
       if (outside(d) || near_lod_beyond(d, eye)) continue;
       // Skip LOD02 cells wholly inside the LOD00 midpoint radius (complements near_lod_beyond).

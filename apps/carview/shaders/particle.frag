@@ -72,6 +72,7 @@ layout(location = 1) in vec2 v_uv;
 layout(location = 2) in vec4 v_color;
 layout(location = 3) in vec4 v_light;
 layout(location = 4) in vec4 v_extra;
+layout(location = 5) in vec2 v_local_uv;
 
 layout(location = 0) out vec4 out_color;
 
@@ -145,6 +146,15 @@ void main() {
   bool additive = (flags & 4u) != 0u;
   uint tex2_slot = (flags >> 3u) & 0x1Fu;
 
+  // Compute local billboard radial falloff & primary mask BEFORE gradient tinting so
+  // gradient ramps or opaque-alpha textures never turn billboards into hard-edged solid squares.
+  vec2 qd = v_local_uv * 2.0 - 1.0;
+  float qr = length(qd);
+  float quad_radial = 1.0 - smoothstep(0.66, 0.98, qr);
+  float quad_border = smoothstep(1.0, 0.96, max(abs(qd.x), abs(qd.y)));
+  float base_luma = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
+  float base_peak = max(tex.r, max(tex.g, tex.b));
+
   // Decode packed soft-depth thickness and <Gradient> row index from v_extra.x when <Texture2> is bound.
   float raw_soft = v_extra.x;
   float soft_m = raw_soft;
@@ -153,7 +163,7 @@ void main() {
     soft_m = fract(raw_soft * 0.25) * 4.0;
     float grad_v = clamp((grad_q + 0.5) / 16.0, 0.03, 0.97);
     // Index along the selected horizontal gradient strip using primary texture luminance.
-    float grad_u = clamp(dot(tex.rgb, vec3(0.299, 0.587, 0.114)), 0.02, 0.98);
+    float grad_u = clamp(base_luma, 0.02, 0.98);
     // 10x10 particle atlas (2560x2560, 100 cells of 256x256).
     const float inv_grid = 1.0 / 10.0;
     const float pad = 1.5 / 2560.0;
@@ -163,15 +173,17 @@ void main() {
     tex.rgb = mix(tex.rgb, tex2.rgb, clamp(tex2.a, 0.65, 1.0));
   }
 
-  float alpha = tex.a * v_color.a;
+  float alpha = tex.a * v_color.a * quad_border;
   if (additive) {
-    alpha = max(tex.a, dot(tex.rgb, vec3(0.3333))) * v_color.a;
-  } else if (v_color.a < 0.95) {
-    // Soften radial alpha falloff on translucent smoke/dust plumes (e.g. BI_Dust_Small / tyre smoke)
-    // so stacked burst billboards stay wispy instead of forming sharp opaque cotton-ball edges,
-    // while leaving opaque cutout debris (leaves/splinters with v_color.a == 1) crisp.
-    float soft_tex_a = pow(clamp(tex.a, 0.0, 1.0), 1.45);
-    float stack_atten = dynamic_light ? 0.90 : 0.68;
+    // Require BOTH primary alpha and non-black primary RGB plus radial edge feathering so
+    // additive flare/smoke/spark quads never reveal sharp 90-degree corners under bloom.
+    float shape_mask = tex.a * smoothstep(0.005, 0.08, max(base_peak, 0.001));
+    alpha = shape_mask * quad_radial * v_color.a;
+  } else if (soft_m > 0.01 || v_color.a < 0.95) {
+    // Soften radial alpha falloff on translucent/soft smoke & dust plumes so stacked billboards
+    // stay wispy with zero square edges while opaque cutout debris (leaves/splinters) stays crisp.
+    float soft_tex_a = pow(clamp(tex.a, 0.0, 1.0), 1.45) * quad_radial;
+    float stack_atten = dynamic_light ? 0.85 : 0.62;
     alpha = soft_tex_a * v_color.a * stack_atten;
   }
   if (alpha <= 0.004) discard;

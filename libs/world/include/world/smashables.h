@@ -137,6 +137,18 @@ struct BarnDoorCollider {
   bool is_open = false;        // false = closed_coll_id active; true = open_coll_id active
 };
 
+// Solid unbreakable barrier / festival crowd-control barricade OBB collider (game frame).
+struct SolidBarrier {
+  std::array<float, 3> pos{};            // game-frame placement origin
+  std::array<float, 3> x_axis{1, 0, 0};  // unit local axes in game frame
+  std::array<float, 3> y_axis{0, 1, 0};
+  std::array<float, 3> z_axis{0, 0, 1};
+  std::array<float, 3> local_center{};   // OBB center in prop local game frame
+  std::array<float, 3> half_extents{1.25f, 0.75f, 0.20f};
+  std::vector<uint8_t> routes;           // empty = shown on every route; else route IDs (0 = free roam)
+  float radius = 1.5f;
+};
+
 struct SmashEvent {
   std::array<float, 3> pos{};
   std::array<float, 3> impulse_vel{};
@@ -196,12 +208,18 @@ class SmashableWorld {
   void set_definitions(PhysicsDefinitions defs) { defs_ = std::move(defs); }
   void add_prop(const CollObjPlacement& p, const PropPhysicsDef* explicit_def = nullptr);
   void add_barn_door(const BarnDoorCollider& door) { barn_doors_.push_back(door); }
+  void add_solid_barrier(const SolidBarrier& barrier);
 
-  // Steps prop collisions against `vehicle`, barn-door collision, and all active dynamic debris.
+  // Steps prop collisions against `vehicle`, barn-door & solid barrier collision, and all active dynamic debris.
   void step(drive::Vehicle& vehicle, const drive::Ground& ground, float dt, std::vector<SmashEvent>& events);
 
   // Explicitly shatters a discount sign (`Flyer`, 12 debris children) at `pos`.
   int spawn_flyer_shatter(const std::array<float, 3>& pos, const std::array<float, 3>& car_vel);
+  int spawn_flyer_shatter(const std::array<float, 3>& pos, const std::array<float, 3>& x_axis,
+                          const std::array<float, 3>& y_axis, const std::array<float, 3>& z_axis,
+                          const std::array<float, 3>& car_vel);
+  // Persists a broken external prop (e.g. smashed discount sign) in broken_hidden_positions().
+  void record_hidden_prop(const std::array<float, 3>& pos, float hide_radius);
 
   // Clears all flying debris and optionally restores broken props (e.g. on reset/rewind).
   void clear_debris();
@@ -225,6 +243,7 @@ class SmashableWorld {
   const std::vector<BarnDoorCollider>& barn_doors() const { return barn_doors_; }
   size_t placed_prop_count() const { return raw_xml_prop_count_ ? raw_xml_prop_count_ : props_.size(); }
   size_t unique_prop_count() const { return props_.size(); }
+  size_t solid_barrier_count() const { return solid_barriers_.size(); }
   size_t loaded_debris_model_count() const;
   size_t matched_global_index_count() const;
   size_t active_dynamic_count() const { return dynamic_bodies_.size(); }
@@ -236,6 +255,9 @@ class SmashableWorld {
 
   // Evaluates the BreakSpeedMph rule (exposed for unit tests).
   static bool should_break(const PropPhysicsDef& def, float impact_speed_mps);
+  // Classifies whether a static render model represents a solid unbreakable festival/crowd barrier.
+  static bool is_solid_barrier_model(std::string_view object_name, const std::array<float, 3>& box_min,
+                                     const std::array<float, 3>& box_max);
 
  private:
   struct Impl;
@@ -266,6 +288,7 @@ class SmashableWorld {
   void spawn_dynamic_body(const DynamicBody& body);
   std::array<uint8_t, 4> colour_for_prop(int32_t surface_type, int8_t object_type, std::string_view stem) const;
   void step_barn_doors(drive::Vehicle& vehicle);
+  void step_solid_barriers(drive::Vehicle& vehicle);
   static int64_t cell_key(float x, float z);
 
   std::unique_ptr<Impl> impl_;
@@ -276,6 +299,8 @@ class SmashableWorld {
   size_t raw_xml_prop_count_ = 0;
   int active_route_ = 0;
   std::unordered_map<int64_t, std::vector<uint32_t>> grid_;  // 25 m XZ spatial grid
+  std::vector<SolidBarrier> solid_barriers_;
+  std::unordered_map<int64_t, std::vector<uint32_t>> barrier_grid_;  // 25 m XZ spatial grid
   std::vector<DynamicBody> dynamic_bodies_;                  // capped at kMaxDynamicBodies (384)
   std::vector<BarnDoorCollider> barn_doors_;
   std::shared_ptr<std::vector<GatherOptions::HiddenSphere>> broken_positions_;

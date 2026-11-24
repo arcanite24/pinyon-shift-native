@@ -166,7 +166,7 @@ bool draw_visible(const DrawGpu& d, const CullView& view) {
       if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < 0) return false;
     }
   }
-  const uint32_t flags = uint32_t(d.params[1] + 0.5f);
+  const uint32_t flags = uint32_t(std::lround(d.params[1]));
   if (view.lod_reach > 0.0f && (flags & kFlagLodNear) != 0) {
     float d2 = 0;
     for (int i = 0; i < 3; ++i) {

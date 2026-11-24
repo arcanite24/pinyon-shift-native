@@ -759,7 +759,7 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       if (d2 > max_dist2) continue;
       if (d.blend == 1 && d2 > cutout_dist2) continue;
       if (outside(d)) continue;
-      const uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
+      const uint32_t fl = uint32_t(std::lround(d.push.params[1]));
       if ((fl & (2u | 32768u)) != 0u) continue;
       VkPipeline want_pipe = (d.blend == 1 && env_world_coverage_) ? env_world_coverage_ : env_world_opaque_;
       if (want_pipe != bound_pipe)

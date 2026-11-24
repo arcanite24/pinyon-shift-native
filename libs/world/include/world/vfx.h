@@ -316,11 +316,15 @@ class ParticleSystem {
     float alpha_scale = 1.0f;
     int anim_row = 0;
     int grad_row = 0;
+    bool world_ambient = false;
   };
 
   void spawn_one(const ParticleEffectDef& def, const std::array<float, 3>& pos,
                  const std::array<float, 3>& emit_dir, const std::array<float, 3>& emitter_vel,
-                 float intensity_scale, uint8_t child_depth = 0);
+                 float intensity_scale, uint8_t child_depth = 0, bool world_ambient = false);
+  void emit_world_continuous(const ParticleEffectDef& def, const std::array<float, 3>& pos,
+                             const std::array<float, 3>& emit_dir, float dt, float intensity_scale,
+                             uint64_t emitter_key, bool is_point_emitter);
   float rand01();
   float rand_sym();
 

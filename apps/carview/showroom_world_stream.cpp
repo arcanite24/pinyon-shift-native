@@ -197,7 +197,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     for (int i = 0; i < 3; ++i) d.box_min[i] = 1e30f, d.box_max[i] = -1e30f;
     float reach = 0;
     shared.clear();
-    const bool normalize_ccw = (mat.blend == 0 && !mat.is_water && !mat.anim_flag && !mat.is_grass && !billboard);
+    const bool normalize_ccw = (mat.blend == 0 && !mat.is_water && mat.anim_flag != 1 && !mat.is_grass && !billboard);
     for (size_t j = first; j < last; ++j) {
       const uint32_t t = cells[j].second;
       int corners[3] = {0, 1, 2};
@@ -320,8 +320,17 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
         flags |= 4194304u;  // world.frag kFlagWaterNormalB (LAKE_* slot 2 normal/foam map)
       }
     }
-    if (mat.anim_flag) {
-      flags |= 131072u;  // world.vert kFlagAnimFlag
+    if (mat.anim_flag == 1) {
+      flags |= 131072u;  // world.vert kFlagAnimFlag (waving cloth flag)
+    } else if (mat.anim_flag >= 2 && (flags & 1u) != 0u) {
+      // Animated unlit emissive LED display (2 = 8-row race countdown gantry, 3 = 8x2 flipbook).
+      // Combining kFlagTextured (1u) with kFlagUnlitVertexColor (1024u) keeps flags well below 2^23
+      // and works cleanly on both GPU-driven and CPU-driven world draw paths.
+      flags |= 1024u;
+      if (mat.layer_b != kNoWorldTexture) {
+        d.texture_b = mat.layer_b;
+        flags |= 4u;  // carry optional LED dot-matrix mask in layer_b
+      }
     }
     if (mat.is_grass) {
       flags |= 262144u;  // world.vert kFlagGrass
@@ -517,7 +526,7 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
   if (arena_on() && geometry.textured) {
     // Extract hardware-instanced tree sprite quads before index relocalization.
     for (const auto& d : out.draws) {
-      const uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
+      const uint32_t fl = uint32_t(std::lround(d.push.params[1]));
       if ((fl & 32u) == 0u || d.index_count < 6 || (d.index_count % 6) != 0) continue;
       for (uint32_t k = 0; k + 5 < d.index_count; k += 6) {
         const WorldVertex& v0 = geometry.textured_vertices[geometry.indices[size_t(d.first_index) + k + 0]];
@@ -594,7 +603,7 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
       std::unordered_set<uint64_t> seen_prop_keys;
       for (const auto& d : out.draws) {
         if (d.index_count < 3) continue;
-        const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+        const uint32_t flags = uint32_t(std::lround(d.push.params[1]));
         const bool is_prop_draw =
             (flags & (128u | 256u | 512u)) != 0u && (flags & kNonPropMask) == 0u && d.decal == 0u;
         if (!is_prop_draw) continue;

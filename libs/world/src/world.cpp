@@ -255,8 +255,29 @@ ResolvedMaterialSlots resolve_effect_material(
     mm.normal_map = file_slot_records[1];  // NormalMap A (only when file-backed)
     mm.layer_b = file_slot_records[2];     // NormalMap B / foam map (only when file-backed)
   }
-  if (has_tok("ANIM_FLAG") || has_tok("FLAG")) {
-    mm.anim_flag = 1;
+  if ((has_tok("ANIM_FLAG") || has_tok("FLAG")) && !has_tok("FLAGPOLE")) {
+    mm.anim_flag = kAnimFlagCloth;
+  }
+  if (has_tok("COUNTDOWN")) {
+    // Overhead race gantry 8-row LED countdown display (0:05..0:01, GO, Horizon Festival TV).
+    mm.anim_flag = kAnimCountdownLed;
+    mm.blend = Blend::kOpaque;
+    mm.layer_b = file_slot_records[1];
+    const float mask_rep = (pixel_constants.size() > 1 && std::isfinite(pixel_constants[1][0]) &&
+                            pixel_constants[1][0] > 1.0f)
+                               ? std::clamp(pixel_constants[1][0], 4.0f, 128.0f)
+                               : 24.0f;
+    mm.tiling = {1.0f, 1.0f, mask_rep, 1.0f};
+  } else if (has_tok("FLIPBOOK")) {
+    // 8x2 animated LED billboard / festival TV flipbook display.
+    mm.anim_flag = kAnimFlipbookLed;
+    mm.blend = Blend::kOpaque;
+    mm.layer_b = file_slot_records[1];
+    const float mask_rep = (pixel_constants.size() > 1 && std::isfinite(pixel_constants[1][0]) &&
+                            pixel_constants[1][0] > 1.0f)
+                               ? std::clamp(pixel_constants[1][0], 4.0f, 128.0f)
+                               : 20.0f;
+    mm.tiling = {1.0f, 1.0f, mask_rep, 2.0f};
   }
   constexpr uint32_t kGrassTextureId = 0x00005007u;
   if ((mm.albedo != kNoTexture && albedo_tex_id == kGrassTextureId) || has_tok("GRASS")) {
@@ -386,7 +407,7 @@ ResolvedMaterialSlots resolve_effect_material(
   }
 
   if (has_norm && !mm.is_water) {
-    mm.normal_map = prop_diff ? file_slot_records[1] : file_slot_records[3];
+    mm.normal_map = (prop_diff || starts("ANIM_FLAG_")) ? file_slot_records[1] : file_slot_records[3];
   }
 
   // Restore authored AO on all _AO effects including H_VBLND_*_AO* (file_slot_records already
@@ -632,9 +653,11 @@ Blend effect_blend(const std::string& e) {
   if (starts("DIFF_GLOW") || starts("ADD_")) return Blend::kAdditive;
   if ((starts("H_ROAD") && e.find("_BLEND") != std::string::npos) || starts("H_VBLND_DECAL") || is_water_effect(e))
     return Blend::kAlpha;
-  // Props and trees drew with alpha to coverage in the frame; other effects
-  // named _OPAC (vertex-blend cut-outs) are given it too (ours).
-  if (starts("H_DIFF") || starts("TREE_") || e.find("_OPAC") != std::string::npos) return Blend::kCoverage;
+  // Props, trees, curved cloth flags (ANIM_FLAG_*, excluding rigid ANIM_FLAGPOLE_*),
+  // bunting banners, and _OPAC cut-outs draw two-sided with alpha to coverage.
+  if (starts("H_DIFF") || starts("TREE_") || (starts("ANIM_FLAG_") && !starts("ANIM_FLAGPOLE")) ||
+      starts("BUNTING_") || e.find("_OPAC") != std::string::npos)
+    return Blend::kCoverage;
   return Blend::kOpaque;
 }
 

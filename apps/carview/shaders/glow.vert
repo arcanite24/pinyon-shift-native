@@ -26,6 +26,7 @@ layout(location = 3) in vec4 in_extra;       // x tex_index (0..6), y view_bias_
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_color;
 layout(location = 2) flat out int v_tex;
+layout(location = 3) flat out float v_world_corona;
 
 void main() {
   const vec2 corners[6] = vec2[6](
@@ -34,6 +35,7 @@ void main() {
   vec2 c = corners[gl_VertexIndex % 6];
   v_uv = c * 0.5 + 0.5;
   v_tex = clamp(int(in_extra.x + 0.5), 0, 6);
+  v_world_corona = 0.0;
 
   vec3 pos = in_pos_radius.xyz;
   float radius = in_pos_radius.w;
@@ -46,10 +48,12 @@ void main() {
   }
   vec3 view_dir = to_eye / dist;
 
-  // Angular cone falloff for directional car lamps (omnidirectional when dir == 0).
+  // Angular cone falloff for directional car lamps (omnidirectional when dir == 0 -> world fixture glow).
   float cone = 1.0;
   float dir_len2 = dot(in_dir_inner.xyz, in_dir_inner.xyz);
-  if (dir_len2 > 0.01) {
+  bool is_world_glow = (dir_len2 <= 0.01);
+  v_world_corona = is_world_glow ? 1.0 : 0.0;
+  if (!is_world_glow) {
     vec3 lamp_dir = in_dir_inner.xyz * inversesqrt(dir_len2);
     float cos_ang = dot(view_dir, lamp_dir);
     cone = smoothstep(in_color_outer.w, in_dir_inner.w, cos_ang);
@@ -70,8 +74,11 @@ void main() {
   vec3 up_ref = abs(view_dir.y) < 0.98 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
   vec3 right = normalize(cross(up_ref, view_dir));
   vec3 up = cross(view_dir, right);
-  // Subtle perspective size boost at distance so distant headlights/streetlamps stay legible.
-  float r_eff = radius * (1.0 + clamp(dist * 0.003, 0.0, 1.2));
+  // Keep distant world fixture halos tight and proportional instead of inflating into sky orbs;
+  // leave directional car lamp perspective scaling unchanged.
+  float dist_boost = is_world_glow ? (1.0 + clamp(dist * 0.0010, 0.0, 0.35))
+                                   : (1.0 + clamp(dist * 0.003, 0.0, 1.2));
+  float r_eff = radius * dist_boost;
   vec3 world_p = center + (right * c.x + up * c.y) * r_eff;
 
   v_color = vec4(in_color_outer.rgb, alpha);

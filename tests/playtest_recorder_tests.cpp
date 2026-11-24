@@ -387,6 +387,71 @@ void test_zero_hitch_overhead() {
   std::filesystem::remove_all(dir, ec);
 }
 
+void test_ground_anomaly_false_positive_filters() {
+  const auto dir = make_temp_session_dir("ga_filters");
+  PlaytestRecorder rec;
+  CHECK(rec.start(dir));
+
+  // 1. Paused pre-race-grid frame before physics road snap (PT-22 Cluster 1): NOT an anomaly.
+  {
+    auto s = make_base_sample(0.00, 16.0);
+    s.x = -950.95;
+    s.y = 1.60;
+    s.z = -519.02;
+    s.road_y = -4.135;
+    s.paused = true;
+    s.in_race = true;
+    CHECK(!PlaytestRecorder::is_ground_anomaly(s));
+    rec.record_frame(s);
+  }
+  // Paused frame with non-finite Y MUST still be flagged as an anomaly / non-finite.
+  {
+    auto s = make_base_sample(0.01, 16.0);
+    s.y = std::numeric_limits<double>::quiet_NaN();
+    s.paused = true;
+    CHECK(PlaytestRecorder::is_ground_anomaly(s));
+  }
+
+  // 2. Overhead canopy / bridge / leaning-wall raycast artifact (PT-22 Cluster 2):
+  //    car drives smoothly at y=137.0..137.5 on road_y=136.93 while +2.2 m downward probe
+  //    temporarily strikes an overhead structure at road_y=139.35 (dy=-2.05) -> NOT an anomaly!
+  {
+    auto s0 = make_base_sample(1.00, 8.3);
+    s0.x = -5830.55;
+    s0.y = 136.98;
+    s0.z = -2951.72;
+    s0.road_y = 136.925;
+    s0.in_race = true;
+    rec.record_frame(s0);
+
+    for (int i = 1; i <= 10; ++i) {
+      auto ov = make_base_sample(1.00 + 0.02 * i, 8.3);
+      ov.x = -5830.0;
+      ov.y = 137.30;
+      ov.z = -2951.72 - 1.5 * i;
+      ov.road_y = 139.35;  // +2.42 m upward jump into +2.2 m probe headroom!
+      ov.in_race = true;
+      rec.record_frame(ov);
+    }
+
+    // Genuine sink below the continuous road (road_y stays 136.925, car drops to 135.8) MUST still trigger!
+    auto sink = make_base_sample(1.30, 8.3);
+    sink.x = -5830.0;
+    sink.y = 135.80;
+    sink.z = -2968.0;
+    sink.road_y = 136.925;
+    sink.in_race = true;
+    rec.record_frame(sink);
+  }
+
+  CHECK(rec.finish());
+  const PlaytestSummary& sum = rec.last_summary();
+  CHECK(sum.ground_anomaly_count == 1);  // only the genuine sink frame, 0 false positives!
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -396,6 +461,7 @@ int main() {
   test_summary_percentiles();
   test_bug_bookmark_repro_cmd_and_debounce();
   test_zero_hitch_overhead();
+  test_ground_anomaly_false_positive_filters();
 
   if (failures == 0) {
     std::printf("playtest_recorder_tests: all checks passed\n");

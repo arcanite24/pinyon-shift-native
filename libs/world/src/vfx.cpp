@@ -27,7 +27,11 @@ std::string normalize_xds_name(std::string_view raw) {
   while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
   while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
   if (s.empty()) return {};
-  for (const std::string_view ext : {".xds", ".tga", ".dds"}) {
+  if (const size_t slash = s.find_last_of("/\\"); slash != std::string::npos) {
+    s = s.substr(slash + 1);
+  }
+  if (s.empty()) return {};
+  for (const std::string_view ext : {".xds", ".tga", ".dds", ".png", ".bmp"}) {
     if (s.size() > ext.size() && s.compare(s.size() - ext.size(), ext.size(), ext) == 0) {
       s.resize(s.size() - ext.size());
       break;
@@ -467,8 +471,19 @@ std::vector<std::string> expand_composite_effect(std::string_view effect_name) {
   if (low.find("substage") != std::string::npos) {
     return {"amb_confetti_smoke", "amb_substage_large_ambient_smoke"};
   }
+  if (low.find("flaregun") != std::string::npos) {
+    return {"amb_flaregun_redtrailsmoke", "amb_flaregun_sparks"};
+  }
   if (low.find("flare") != std::string::npos) {
-    return {"amb_handflare_smoke", "amb_flaregun_redtrailsmoke"};
+    // Ground road flares at event/outpost/showcase activation zones (`_Composite_Flare` / `_Composite_Flare_1..7`).
+    // Map to the matching ground flare glow + handflare smoke (never aerial flare-gun trail smoke).
+    std::string ground_flare = "amb_ground_flare";
+    if (low.size() >= 2 && low[low.size() - 2] == '_' &&
+        low.back() >= '1' && low.back() <= '7') {
+      ground_flare += '_';
+      ground_flare += low.back();
+    }
+    return {ground_flare, "amb_handflare_smoke"};
   }
   if (low.find("campfire") != std::string::npos) {
     return {"amb_fire_smoke"};
@@ -643,7 +658,7 @@ float ParticleSystem::rand_sym() { return rand01() * 2.0f - 1.0f; }
 
 void ParticleSystem::spawn_one(const ParticleEffectDef& def, const std::array<float, 3>& pos,
                                const std::array<float, 3>& emit_dir, const std::array<float, 3>& emitter_vel,
-                               float intensity_scale, uint8_t child_depth) {
+                               float intensity_scale, uint8_t child_depth, bool world_ambient) {
   if (particles_.size() >= kMaxParticles) {
     // FIFO oldest eviction so bursts never stall.
     particles_.erase(particles_.begin());
@@ -653,6 +668,7 @@ void ParticleSystem::spawn_one(const ParticleEffectDef& def, const std::array<fl
   p.tex_slot = resolve_texture_slot(def.texture_name);
   p.tex2_slot = resolve_texture_slot(def.texture2_name);
   p.child_depth = child_depth;
+  p.world_ambient = world_ambient;
   p.pos = pos;
   p.age = 0.0f;
   const float base_life = std::max(0.05f, def.life);
@@ -667,13 +683,17 @@ void ParticleSystem::spawn_one(const ParticleEffectDef& def, const std::array<fl
   const float spread_a = (def.off_axis_deg + rand_sym() * def.off_axis_var_deg) * kDegToRad;
   const float spread_p = (def.off_plane_deg + rand_sym() * def.off_plane_var_deg) * kDegToRad;
   const float az = rand01() * 2.0f * kPi;
-  const float cone_r = std::sin(std::clamp(std::fabs(spread_a) + std::fabs(spread_p) + 0.12f, 0.0f, 1.35f)) * rand01();
+  const float min_spread = world_ambient ? 0.24f : 0.12f;
+  const float cone_r =
+      std::sin(std::clamp(std::fabs(spread_a) + std::fabs(spread_p) + min_spread, 0.0f, 1.35f)) * rand01();
   auto dir = vec_norm({fwd[0] + (right[0] * std::cos(az) + up[0] * std::sin(az)) * cone_r,
                        fwd[1] + (right[1] * std::cos(az) + up[1] * std::sin(az)) * cone_r,
                        fwd[2] + (right[2] * std::cos(az) + up[2] * std::sin(az)) * cone_r},
                       fwd);
 
-  const float spd = std::max(0.0f, def.velocity * (1.0f + rand_sym() * std::clamp(def.velocity_var, 0.0f, 0.8f)));
+  const float raw_spd = std::max(0.0f, def.velocity * (1.0f + rand_sym() * std::clamp(def.velocity_var, 0.0f, 0.8f)));
+  // Keep ambient world smoke/flare plumes drifting gently instead of firing like vertical rockets.
+  const float spd = world_ambient ? std::min(raw_spd, 4.5f) : raw_spd;
   const float inh = std::clamp(def.motion_influence * 0.01f, 0.0f, 1.0f) * def.motion_multiplier;
   p.vel = {
       dir[0] * spd + emitter_vel[0] * inh,
@@ -697,6 +717,29 @@ void ParticleSystem::spawn_one(const ParticleEffectDef& def, const std::array<fl
     p.grad_row = int(rand01() * float(def.num_gradient_rows)) % def.num_gradient_rows;
   }
   particles_.push_back(p);
+}
+
+void ParticleSystem::emit_world_continuous(const ParticleEffectDef& def, const std::array<float, 3>& pos,
+                                           const std::array<float, 3>& emit_dir, float dt, float intensity_scale,
+                                           uint64_t emitter_key, bool is_point_emitter) {
+  if (dt <= 0.0f || intensity_scale <= 0.01f) return;
+  // Cap point/superspray world emitter spawn rates so stacked quads never blow out to solid white piles.
+  const float max_rate = is_point_emitter ? 8.5f : 14.0f;
+  const float rate = std::min(std::max(0.0f, def.quantity), max_rate) * std::clamp(intensity_scale, 0.0f, 1.25f);
+  float& acc = accumulators_[emitter_key];
+  acc += rate * dt;
+  const int to_spawn = std::min(int(acc), 6);
+  acc -= float(to_spawn);
+  if (acc > 2.0f) acc = 2.0f;
+  for (int i = 0; i < to_spawn; ++i) {
+    std::array<float, 3> p = pos;
+    if (is_point_emitter) {
+      p[0] += rand_sym() * 0.18f;
+      p[1] += rand01() * 0.12f;
+      p[2] += rand_sym() * 0.18f;
+    }
+    spawn_one(def, p, emit_dir, {0.0f, 0.0f, 0.0f}, intensity_scale, 0, true);
+  }
 }
 
 void ParticleSystem::spawn_burst(std::string_view effect_name, const std::array<float, 3>& pos,
@@ -899,9 +942,12 @@ void ParticleSystem::update_world_emitters(const std::array<float, 3>& focus_pos
       const auto expanded = expand_composite_effect(target_eff);
       for (const auto& ef_name : expanded) {
         const auto* def = lib_->find_effect(ef_name);
+        if (!def && ef_name.rfind("amb_ground_flare_", 0) == 0) def = lib_->find_effect("amb_ground_flare");
         if (!def || !def->active_at_hour(tod_hour)) continue;
-        const int burst_n = std::clamp(int(std::lround(std::max(4.0f, def->quantity * 0.4f))), 4, 18);
-        spawn_burst(ef_name, spawn_p, spawn_dir, {0, 0, 0}, burst_n, 1.0f);
+        const int burst_n = std::clamp(int(std::lround(std::max(4.0f, def->quantity * 0.4f))), 4, 14);
+        for (int b = 0; b < burst_n; ++b) {
+          spawn_one(*def, spawn_p, spawn_dir, {0, 0, 0}, 0.9f, 0, true);
+        }
       }
       continue;
     }
@@ -911,6 +957,7 @@ void ParticleSystem::update_world_emitters(const std::array<float, 3>& focus_pos
     const auto expanded = expand_composite_effect(em.effect);
     for (size_t k = 0; k < expanded.size(); ++k) {
       const auto* def = lib_->find_effect(expanded[k]);
+      if (!def && expanded[k].rfind("amb_ground_flare_", 0) == 0) def = lib_->find_effect("amb_ground_flare");
       if (!def || !def->active_at_hour(tod_hour)) continue;
       // Offset within emitter volume (Sphere / Box / Plane).
       std::array<float, 3> spawn_p = em.pos;
@@ -929,7 +976,8 @@ void ParticleSystem::update_world_emitters(const std::array<float, 3>& focus_pos
       const float dist_fade = 1.0f - std::clamp(std::sqrt(d2) / kMaxDist, 0.0f, 1.0f);
       const float scale = std::clamp(0.35f + 0.65f * dist_fade, 0.25f, 1.0f);
       const uint64_t key = 0x100000ull + (uint64_t(i) << 4) + uint64_t(k);
-      emit_continuous(expanded[k], spawn_p, em.y_axis, {0, 0, 0}, dt, scale, key);
+      const bool is_point = (em.volume == WorldEmitterVolume::kSuperspray);
+      emit_world_continuous(*def, spawn_p, em.y_axis, dt, scale, key, is_point);
     }
   }
 }
@@ -942,6 +990,7 @@ void ParticleSystem::step(float dt, const std::array<float, 3>& wind_dir, float 
     std::array<float, 3> pos;
     std::array<float, 3> vel;
     uint8_t depth;
+    bool world_ambient;
   };
   std::vector<ChildSpawnReq> child_spawns;
   size_t write = 0;
@@ -950,16 +999,27 @@ void ParticleSystem::step(float dt, const std::array<float, 3>& wind_dir, float 
     p.age += step_dt;
     if (!p.def || p.age >= p.life) {
       if (p.def && !p.def->child_spawn.empty() && p.child_depth < 2 && child_spawns.size() < 24) {
-        child_spawns.push_back({p.def->child_spawn, p.pos, p.vel, uint8_t(p.child_depth + 1)});
+        child_spawns.push_back({p.def->child_spawn, p.pos, p.vel, uint8_t(p.child_depth + 1), p.world_ambient});
       }
       continue;
     }
 
     // Gravity scale: positive XML values (60..300) represent downward gravity (~2..10 m/s^2);
-    // negative XML values (-0.5..-3.0) represent upward buoyancy for smoke/dust plumes.
+    // negative XML values represent gentle upward smoke buoyancy (clamped so smoke plumes never
+    // accelerate upward like a vertical rocket column).
     const float g_xml = p.def->gravity_strength;
-    const float accel_y = (g_xml >= 0.0f) ? (-g_xml * (9.81f / 300.0f)) : (-g_xml * 0.55f);
+    float accel_y = 0.0f;
+    if (g_xml >= 0.0f) {
+      accel_y = -g_xml * (9.81f / 300.0f);
+    } else if (g_xml >= -5.0f) {
+      accel_y = std::min(-g_xml * 0.40f, 2.0f);
+    } else {
+      accel_y = std::min(-g_xml * (9.81f / 300.0f), 2.2f);
+    }
     p.vel[1] += accel_y * step_dt;
+    if (p.world_ambient && g_xml <= 0.0f && p.vel[1] > 3.2f) {
+      p.vel[1] = 3.2f;
+    }
 
     // Exponential air friction drag.
     if (p.def->friction_strength > 0.001f) {
@@ -969,9 +1029,9 @@ void ParticleSystem::step(float dt, const std::array<float, 3>& wind_dir, float 
       p.vel[2] *= damp;
     }
 
-    // Gentle wind drift on lightweight smoke/dust/leaf particles (low positive gravity).
+    // Gentle wind drift & dispersion on lightweight smoke/dust/leaf particles (low positive gravity).
     if (g_xml <= 80.0f && wind_speed > 0.01f) {
-      const float w_inf = (g_xml <= 0.0f) ? 0.35f : 0.20f;
+      const float w_inf = (g_xml <= 0.0f) ? (p.world_ambient ? 0.55f : 0.35f) : 0.20f;
       p.vel[0] += wind_dir[0] * wind_speed * w_inf * step_dt;
       p.vel[2] += wind_dir[2] * wind_speed * w_inf * step_dt;
     }
@@ -991,7 +1051,7 @@ void ParticleSystem::step(float dt, const std::array<float, 3>& wind_dir, float 
       if (!cdef) continue;
       const int n = std::clamp(int(std::lround(std::max(3.0f, cdef->quantity * 0.25f))), 3, 12);
       for (int k = 0; k < n && particles_.size() < kMaxParticles; ++k) {
-        spawn_one(*cdef, cs.pos, {0.0f, 1.0f, 0.0f}, cs.vel, 1.0f, cs.depth);
+        spawn_one(*cdef, cs.pos, {0.0f, 1.0f, 0.0f}, cs.vel, 1.0f, cs.depth, cs.world_ambient);
       }
     }
   }
@@ -1030,8 +1090,9 @@ void ParticleSystem::build_sprites(const std::array<float, 3>& eye_game, std::ve
       }
       return std::max(cur, 0.015f);
     };
-    const float sx = eval_size(d.size_x, d.max_size_x, d.end_size_x, d.grow_for_x, d.shrink_for_x, u) * p.size_scale_x;
-    const float sy = eval_size(d.size_y, d.max_size_y, d.end_size_y, d.grow_for_y, d.shrink_for_y, u) * p.size_scale_y;
+    float sx = eval_size(d.size_x, d.max_size_x, d.end_size_x, d.grow_for_x, d.shrink_for_x, u) * p.size_scale_x;
+    float sy = eval_size(d.size_y, d.max_size_y, d.end_size_y, d.grow_for_y, d.shrink_for_y, u) * p.size_scale_y;
+    float max_scr = std::clamp(d.max_screen_size, 0.06f, 0.85f);
 
     // Evaluate 3-stop RGBA colour & alpha ramp (RGBStart -> RGBMid -> RGBEnd).
     const float f_in = std::clamp(d.fade_in_to, 0.01f, 0.95f);
@@ -1047,6 +1108,19 @@ void ParticleSystem::build_sprites(const std::array<float, 3>& eye_game, std::ve
       for (int c = 0; c < 4; ++c) rgba[c] = d.rgb_mid[c] + (d.rgb_end[c] - d.rgb_mid[c]) * k;
     }
     rgba[3] = std::clamp(rgba[3] * p.alpha_scale, 0.0f, 1.0f);
+
+    // Constrain world-ambient flare & festival emitters to authentic FH1 billboard scales
+    // so ground activation flares and smoke plumes never expand into giant overlapping sheets.
+    if (p.world_ambient) {
+      const bool is_flare = (d.name.find("flare") != std::string::npos);
+      const float max_dim = is_flare ? (d.additive ? 1.55f : 2.10f) : 4.0f;
+      sx = std::min(sx, max_dim);
+      sy = std::min(sy, max_dim);
+      max_scr = std::min(max_scr, is_flare ? 0.28f : 0.40f);
+      if (is_flare) {
+        rgba[3] *= d.additive ? 0.62f : 0.72f;
+      }
+    }
     if (rgba[3] <= 0.004f) continue;
 
     ParticleSprite sp;
@@ -1058,12 +1132,13 @@ void ParticleSystem::build_sprites(const std::array<float, 3>& eye_game, std::ve
     const bool is_soft = (d.shader_kind == ParticleShaderKind::kSoft ||
                           d.shader_kind == ParticleShaderKind::kAnimatedSoft ||
                           d.shader_kind == ParticleShaderKind::kAnimatedRowOnlySoft ||
-                          d.shader_kind == ParticleShaderKind::kGradientSoft);
+                          d.shader_kind == ParticleShaderKind::kGradientSoft ||
+                          p.world_ambient);
     sp.soft_depth_m = is_soft ? 0.55f : 0.0f;
     sp.rgba = rgba;
     sp.light_influence = d.light_influence;
     sp.headlight_power = d.headlight_power;
-    sp.max_screen_size = std::clamp(d.max_screen_size, 0.06f, 0.85f);
+    sp.max_screen_size = max_scr;
     sp.frames_x = std::max(1, d.num_frames_x);
     sp.frames_y = std::max(1, d.num_frames_y);
     if (d.shader_kind == ParticleShaderKind::kAnimatedRowOnly ||

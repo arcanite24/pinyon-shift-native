@@ -608,6 +608,75 @@ int main() {
     }
     CHECK(got_rank_meta);
   }
+  // PT-21: oriented ~4.1 m wide discount sign OBB, slow angled wing contact (bug_021),
+  // and high-speed swept anti-tunneling check.
+  {
+    const char* kFlyersWide = R"(<ActivityManager>
+      <Activity type="ActivityFlyers" name="flyer_037" />
+      <Activity type="ActivityFlyers" name="flyer_038" />
+    </ActivityManager>)";
+    const char* kObjsWide = R"(<?xml version="1.0" ?>
+    <GameObjs>
+      <Obj0 GameplayID="flyer_037">
+        <Pos x="-3399.242" y="7.986" z="-1347.967"/>
+        <Orientation>
+          <XAxis x="0.497470" y="0.0" z="0.867481"/>
+          <YAxis x="0.0" y="1.0" z="0.0"/>
+          <ZAxis x="-0.867481" y="0.0" z="0.497470"/>
+        </Orientation>
+      </Obj0>
+      <Obj1 GameplayID="flyer_038">
+        <Pos x="0.0" y="0.0" z="100.0"/>
+        <Orientation>
+          <XAxis x="1.0" y="0.0" z="0.0"/>
+          <YAxis x="0.0" y="1.0" z="0.0"/>
+          <ZAxis x="0.0" y="0.0" z="1.0"/>
+        </Orientation>
+      </Obj1>
+    </GameObjs>)";
+    Collectibles wdata;
+    std::string werr;
+    CHECK(parse_collectibles(kFlyersWide, "<ActivityManager/>", kObjsWide, wdata, &werr));
+    Progress wprog;
+    FreeRoam wfr(wdata, wprog);
+
+    // 1. Exact bug_021 car pose (5.10 km/h = 1.42 m/s clipped into flyer_037) MUST smash & hide it!
+    CarState c21;
+    c21.x = -3398.418;
+    c21.y = 7.988;
+    c21.z = -1348.457;
+    c21.forward_x = std::sin(2.3896);
+    c21.forward_z = std::cos(2.3896);
+    c21.half_width = 0.85;
+    c21.half_length = 2.05;
+    c21.speed = 5.10 / 3.6;
+    c21.moved = c21.speed / 120.0;
+    auto ev21 = wfr.step(c21);
+    CHECK(ev21.size() == 1 && ev21[0].kind == Event::kSignSmashed && ev21[0].index == 0);
+    CHECK(wfr.signs_found() == 1 && wfr.hidden()->count("flyer_037"));
+
+    // 2. Miss 3.5 m off the side of flyer_038 (outside car_hw + 2.05 m board half-width).
+    CarState c38;
+    c38.x = 3.5;
+    c38.y = 0.2;
+    c38.z = 100.0;
+    c38.forward_x = 0.0;
+    c38.forward_z = 1.0;
+    c38.half_width = 0.9;
+    c38.half_length = 2.1;
+    c38.speed = 20.0;
+    c38.moved = 0.2;
+    CHECK(wfr.step(c38).empty());
+
+    // 3. Wing hit at x = 2.2 m (car right edge clips billboard wing) while sweeping past z = 100 at high speed.
+    c38.x = 2.2;
+    c38.z = 103.5;  // already 3.5 m past the sign center, but moved 4.5 m this step -> swept OBB catches it!
+    c38.speed = 80.0;
+    c38.moved = 4.5;
+    auto ev38 = wfr.step(c38);
+    CHECK(ev38.size() == 1 && ev38[0].kind == Event::kSignSmashed && ev38[0].index == 1);
+    CHECK(wfr.signs_found() == 2 && wfr.hidden()->count("flyer_038"));
+  }
   if (failures) return 1;
   std::printf("freeroam_tests: all passed\n");
   return 0;

@@ -145,17 +145,64 @@ std::vector<Event> FreeRoam::step(const CarState& car) {
   bool changed = false;
   progress_.total_distance += std::max(0.0, car.moved);
 
-  // Signs: the car's footprint, grown by the sign's reach, holds the sign
-  // (interim break rule: contact above 1 m/s).
+  // Signs: 2D XZ OBB-vs-OBB overlap between the car's swept footprint and each
+  // sign's oriented billboard bounds (interim break rule: contact above 1 m/s).
   if (std::fabs(car.speed) > kSignBreakSpeed) {
-    const double fx = car.forward_x, fz = car.forward_z;
+    const double fl = std::hypot(car.forward_x, car.forward_z);
+    const double fx = fl > 1e-6 ? car.forward_x / fl : 0.0;
+    const double fz = fl > 1e-6 ? car.forward_z / fl : 1.0;
+    // Right axis in game frame (+Y up, +Z forward): right = (fz, -fx).
+    const double rx = fz, rz = -fx;
+    // Extend the car footprint backward along its travel direction by `car.moved`
+    // so fast vehicles cannot tunnel through thin billboard signs between steps.
+    const double sweep = std::clamp(car.moved, 0.0, 6.0);
+    const double travel_sign = car.speed >= 0.0 ? 1.0 : -1.0;
+    const double car_cx = car.x - fx * (0.5 * sweep * travel_sign);
+    const double car_cz = car.z - fz * (0.5 * sweep * travel_sign);
+    const double car_hl = std::max(0.5, car.half_length) + 0.5 * sweep;
+    const double car_hw = std::max(0.4, car.half_width);
+    const double max_r = car_hl + car_hw + kSignBoardHalfWidth + 1.0;
+    const double max_r2 = max_r * max_r;
+
     for (size_t i = 0; i < data_.signs.size(); ++i) {
       if (sign_found_[i]) continue;
       const Placement& p = data_.signs[i].at;
-      const double dx = p.x - car.x, dz = p.z - car.z;
-      if (dx * dx + dz * dz > 100 || std::fabs(p.y - car.y) > 3) continue;
-      const double along = dx * fx + dz * fz, across = dx * fz - dz * fx;
-      if (std::fabs(along) > car.half_length + kSignReach || std::fabs(across) > car.half_width + kSignReach) continue;
+      const double dx = p.x - car_cx, dz = p.z - car_cz;
+      if (dx * dx + dz * dz > max_r2 || std::fabs(p.y - car.y) > kSignHeightTolerance) continue;
+
+      // Sign horizontal board axes (local X = board width, local Z = board thickness).
+      double sx_x = p.x_axis[0], sx_z = p.x_axis[2];
+      const double sxl = std::hypot(sx_x, sx_z);
+      if (sxl > 1e-4) {
+        sx_x /= sxl;
+        sx_z /= sxl;
+      } else {
+        sx_x = 1.0;
+        sx_z = 0.0;
+      }
+      double sz_x = p.z_axis[0], sz_z = p.z_axis[2];
+      const double dot_xz = sz_x * sx_x + sz_z * sx_z;
+      sz_x -= dot_xz * sx_x;
+      sz_z -= dot_xz * sx_z;
+      const double szl = std::hypot(sz_x, sz_z);
+      if (szl > 1e-4) {
+        sz_x /= szl;
+        sz_z /= szl;
+      } else {
+        sz_x = -sx_z;
+        sz_z = sx_x;
+      }
+
+      auto separated = [&](double ax, double az) {
+        const double dist = std::fabs(dx * ax + dz * az);
+        const double r_car = car_hl * std::fabs(fx * ax + fz * az) + car_hw * std::fabs(rx * ax + rz * az);
+        const double r_sign =
+            kSignBoardHalfWidth * std::fabs(sx_x * ax + sx_z * az) +
+            kSignBoardHalfDepth * std::fabs(sz_x * ax + sz_z * az);
+        return dist > r_car + r_sign;
+      };
+      if (separated(fx, fz) || separated(rx, rz) || separated(sx_x, sx_z) || separated(sz_x, sz_z)) continue;
+
       sign_found_[i] = 1;
       progress_.signs_found.insert(data_.signs[i].id);
       events.push_back({Event::kSignSmashed, int(i)});

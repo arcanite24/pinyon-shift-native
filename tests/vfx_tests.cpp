@@ -551,6 +551,86 @@ void test_particle_atlas_capacity_and_gradient() {
   }
 }
 
+void test_world_flare_composite_and_bounds() {
+  // 1. Ground activation flares (_Composite_Flare / _Composite_Flare_1..7) must expand to ground flare +
+  //    handflare smoke (never aerial flare-gun trail smoke); _Composite_FlareGun expands to flaregun effects.
+  const auto f5 = world::expand_composite_effect("_Composite_Flare_5");
+  CHECK(f5.size() == 2);
+  CHECK(f5[0] == "amb_ground_flare_5");
+  CHECK(f5[1] == "amb_handflare_smoke");
+
+  const auto fbase = world::expand_composite_effect("_Composite_Flare");
+  CHECK(fbase.size() == 2);
+  CHECK(fbase[0] == "amb_ground_flare");
+  CHECK(fbase[1] == "amb_handflare_smoke");
+
+  const auto fgun = world::expand_composite_effect("_Composite_FlareGun");
+  CHECK(fgun.size() == 2);
+  CHECK(fgun[0] == "amb_flaregun_redtrailsmoke");
+
+  // 2. Texture path prefix normalization in particle XMLs.
+  const std::string xml = R"(
+<Effect Version="14" budget="120" lowerbudget="60">
+  <EmitterProperties type="SuperSpray">
+    <Quantity value="60.0" var="0.0"/>
+    <Velocity value="22.0" variation="0.0"/>
+    <Life value="4.0" variation="0.0"/>
+    <ParticleShaderType Version="3" value="_default"/>
+    <Size valueX="6.0" valueY="6.0" maxValueX="14.0" maxValueY="14.0" growforX="0.5" growforY="0.5"/>
+  </EmitterProperties>
+  <Behavior>
+    <Gravity strength="-45.0" decay="0.0"/>
+  </Behavior>
+  <Render>
+    <ParticleType value="BillboardedQuad" dynamic_lighting="1" max_screen_size="0.80">
+      <Texture value="Effects\GR_SmokeFlare_DIFF.tga"/>
+      <Material>
+        <BlendType value="alpha"/>
+        <RGBStart r="1.0" g="1.0" b="1.0" a="0.9"/>
+        <RGBMid r="1.0" g="1.0" b="1.0" a="0.9"/>
+        <RGBEnd r="1.0" g="1.0" b="1.0" a="0.0"/>
+      </Material>
+    </ParticleType>
+  </Render>
+</Effect>)";
+  world::ParticleEffectDef def;
+  CHECK(world::parse_particle_effect_xml(xml, "amb_handflare_smoke", def));
+  CHECK(def.texture_name == "gr_smokeflare_diff.xds");
+
+  // 3. Emit via update_world_emitters: verify bounded size, bounded upward buoyancy, and soft depth fade.
+  std::vector<world::WorldEmitter> wems;
+  CHECK(world::parse_particle_emitters_xml(R"(
+<ParticleEmitters>
+  <SimpleEmitter>
+    <Name value="fx_activationzone_test_1"/>
+    <Effect value="_Composite_Flare_5"/>
+    <Type value="Superspray"/>
+    <Position v.x="10.0" v.y="5.0" v.z="-20.0"/>
+    <Orientation>
+      <XAxis v.x="1" v.y="0" v.z="0"/>
+      <YAxis v.x="0" v.y="1" v.z="0"/>
+      <ZAxis v.x="0" v.y="0" v.z="1"/>
+    </Orientation>
+  </SimpleEmitter>
+</ParticleEmitters>)", wems));
+  CHECK(wems.size() == 1);
+
+  world::ParticleLibrary lib;
+  lib.add_effect(def);
+  world::ParticleSystem ps;
+  ps.set_library(&lib);
+  // Spawn directly via emit_continuous / step check on negative gravity buoyancy scaling:
+  ps.spawn_burst("amb_handflare_smoke", {10.0f, 5.0f, 20.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, 4, 1.0f);
+  for (int s = 0; s < 20; ++s) ps.step(0.05f);
+  std::vector<world::ParticleSprite> alpha, add;
+  ps.build_sprites({10.0f, 6.0f, 10.0f}, alpha, add);
+  CHECK(!alpha.empty());
+  // With clamped negative gravity (<= 2.2 m/s^2 instead of 24.75 m/s^2), vertical velocity stays reasonable.
+  for (const auto& sp : alpha) {
+    CHECK(sp.vel[1] < 26.0f);
+  }
+}
+
 void test_corpus_counts() {
   const char* env_root = std::getenv("SHIFT_GAME_ROOT");
   if (!env_root || !*env_root) return;
@@ -625,6 +705,28 @@ void test_corpus_counts() {
     CHECK(!cat.anim_clips.empty());
     CHECK(cat.has_impostor_sprites);
   }
+  // Verify world flare emitters stay bounded in billboard size & upward velocity (PT-15).
+  {
+    world::ParticleSystem wps;
+    wps.set_library(&lib);
+    // Focus directly on the Horizon Festival activation zone flare (`bug_005`).
+    const std::array<float, 3> focus{-355.6f, 4.1f, -193.9f};
+    for (int s = 0; s < 40; ++s) {
+      wps.update_world_emitters(focus, (s < 20) ? 7.25f : 22.5f, 0.05f);
+      wps.step(0.05f);
+    }
+    std::vector<world::ParticleSprite> wa, wadd;
+    wps.build_sprites({focus[0], focus[1] + 2.0f, focus[2] - 12.0f}, wa, wadd);
+    CHECK(!wa.empty() || !wadd.empty());
+    for (const auto& sp : wa) {
+      CHECK(sp.size_x <= 4.05f && sp.size_y <= 4.05f);
+      CHECK(sp.vel[1] <= 3.25f);
+      CHECK(sp.soft_depth_m > 0.0f);
+    }
+    for (const auto& sp : wadd) {
+      CHECK(sp.size_x <= 4.05f && sp.size_y <= 4.05f);
+    }
+  }
 }
 
 }  // namespace
@@ -636,6 +738,7 @@ int main() {
   test_pgeo_parsing_and_loading();
   test_rally_world_separation_and_sharing();
   test_particle_atlas_capacity_and_gradient();
+  test_world_flare_composite_and_bounds();
   test_corpus_counts();
   if (g_failures == 0) {
     std::printf("vfx_tests: all checks passed\n");

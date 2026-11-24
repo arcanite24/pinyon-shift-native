@@ -184,6 +184,15 @@ class PlaytestRecorder {
   bool have_audio_stalls_ = false;
   uint64_t last_audio_stalls_ = 0;
 
+  // Continuous road-surface tracker used to distinguish overhead canopy/bridge/wall
+  // raycast hits (road_y jumping sharply upward into the +2.2 m probe headroom while
+  // the car remains at road level) from genuine car sink / fall-through anomalies.
+  bool have_valid_road_y_ = false;
+  double last_valid_road_y_ = 0.0;
+  double last_valid_x_ = 0.0;
+  double last_valid_z_ = 0.0;
+  double last_valid_t_ = 0.0;
+
   std::vector<double> frame_ms_samples_;
   uint64_t hitch_count_ = 0;
   std::vector<PlaytestHitchEntry> top_hitches_;

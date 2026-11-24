@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -263,6 +264,32 @@ struct AnimatedWorldPlacement {
   std::array<uint8_t, 3> accent_rgb{42, 132, 214};
 };
 
+struct SpectatorFrustum {
+  // 5 inward-facing unit planes in scenery space (left, right, bottom, top, in-front):
+  // dot(n, p - origin) + d >= -radius to be visible.
+  std::array<std::array<float, 4>, 5> planes{};
+  double origin_x = 0.0;
+  double origin_z = 0.0;
+  bool active = false;
+};
+
+struct SpectatorFrameCache {
+  bool valid = false;
+  uint64_t world_gen = 0;
+  double origin_x = 0.0;
+  double origin_z = 0.0;
+  double eye_x = 0.0;
+  double eye_y = 0.0;
+  double eye_z = 0.0;
+  std::array<float, 3> cam_fwd{0.0f, 0.0f, 1.0f};
+  float time_sec = -1.0f;
+  float night_f = -1.0f;
+  float nearest_dist = 1e6f;
+  uint32_t spec_verts = 0;
+  uint32_t shadow_verts = 0;
+  std::vector<std::array<float, 4>> shadow_discs;
+};
+
 class AnimatedWorldSystem {
  public:
   AnimatedWorldSystem();
@@ -308,8 +335,24 @@ class AnimatedWorldSystem {
   void build_spectator_mesh(double eye_x, double eye_y, double eye_z, float time_sec, const drive::Ground* ground,
                             std::vector<SpectatorVertex>& out,
                             std::vector<std::array<float, 4>>* shadow_discs) const;
+  void build_spectator_mesh(double eye_x, double eye_y, double eye_z, float time_sec, const drive::Ground* ground,
+                            std::vector<SpectatorVertex>& out,
+                            std::vector<std::array<float, 4>>* shadow_discs,
+                            const SpectatorFrustum* frustum,
+                            float* out_nearest_dist = nullptr) const;
+
+  void invalidate_spectator_ground_cache() const;
+  size_t cached_spectator_ground_count() const;
+  SpectatorFrameCache& frame_cache() { return frame_cache_; }
+  const SpectatorFrameCache& frame_cache() const { return frame_cache_; }
+  void reset_frame_cache() { frame_cache_ = SpectatorFrameCache{}; }
 
  private:
+  struct CachedSpectatorGround {
+    float y = 0.0f;
+    bool valid = false;
+    bool culled = false;
+  };
   struct SharedState {
     SpectatorCatalog catalog;
     TrackPostConfig post_cfg;
@@ -319,6 +362,20 @@ class AnimatedWorldSystem {
     std::vector<FestivalFlagProp> flags;
     std::vector<CrowdCluster> crowds;
     std::vector<AnimatedWorldPlacement> pgeo_placements;
+
+    // Cached per-spectator ground heights & prebuilt catalog lookup pools (zero per-frame raycasts/allocs).
+    mutable std::mutex cache_mutex;
+    mutable const drive::Ground* cached_ground_ptr = nullptr;
+    mutable std::vector<std::vector<CachedSpectatorGround>> crowd_ground_cache;
+    mutable bool pools_ready = false;
+    mutable size_t pools_stand_count = 0;
+    mutable size_t pools_sit_count = 0;
+    mutable size_t pools_cc_count = 0;
+    mutable std::vector<size_t> all_stand_pool;
+    mutable std::vector<size_t> male_stand_pool;
+    mutable std::vector<size_t> all_sit_pool;
+    mutable std::vector<size_t> male_sit_pool;
+    mutable std::unordered_map<std::string, const SpectatorCrowdClass*> cc_by_low;
   };
 
   void populate_default_colorado();
@@ -327,6 +384,7 @@ class AnimatedWorldSystem {
   void populate_rally_world(const std::filesystem::path& media_dir, const std::filesystem::path& world_dir);
 
   std::shared_ptr<SharedState> state_;
+  SpectatorFrameCache frame_cache_{};
 };
 
 }  // namespace world

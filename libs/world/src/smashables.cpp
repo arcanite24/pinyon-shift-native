@@ -479,6 +479,101 @@ drive::Quat quat_integrate(const drive::Quat& q, const std::array<float, 3>& ome
   return quat_normalize(out);
 }
 
+// Fast header-only peek of a local-space .rmb.bin model: reads its header box
+// and first mesh object's name without decoding vertex or index buffers.
+bool peek_rmb_barrier_info(std::span<const uint8_t> bytes, std::array<float, 3>& box_min,
+                           std::array<float, 3>& box_max, std::string& first_name) {
+  if (bytes.size() < 180) return false;
+  try {
+    fh1::BeReader r(bytes);
+    if (r.u32() != 6u) return false;  // RenderModel kind == 6
+    box_min = {r.f32(), r.f32(), r.f32()};
+    r.skip(4);
+    box_max = {r.f32(), r.f32(), r.f32()};
+    r.skip(4);
+    r.skip(16 * 4 + 4 * 4);  // identity matrix + 4 header words
+    const uint32_t obj_count = r.u32();
+    if (obj_count == 0 || obj_count > 4096) return false;
+    if (r.u32() != 1u) return false;  // object tag
+    r.skip(48);                       // centre, -half_extent, half_extent
+    if (r.u32() != 1u) return false;  // object count word
+    const uint32_t nlen = r.u32();
+    if (nlen == 0 || nlen > 512 || nlen > r.remaining()) return false;
+    const auto raw = r.raw(nlen);
+    first_name.assign(reinterpret_cast<const char*>(raw.data()), raw.size());
+    while (!first_name.empty() && first_name.back() == '\0') first_name.pop_back();
+    return !first_name.empty();
+  } catch (...) {
+    return false;
+  }
+}
+
+// Resolves a 2D XZ Separating Axis Theorem (SAT) overlap between the vehicle OBB
+// and a solid unbreakable barrier OBB with a strictly horizontal push-out and
+// damped guardrail-style impulse (never injects upward velocity / vertical launch).
+bool resolve_car_obb_vs_solid_obb(drive::Vehicle& vehicle, const drive::Vec3& cpos, const drive::Vec3& cfwd,
+                                  const drive::Vec3& cright, float half_l, float half_w,
+                                  const std::array<float, 3>& bw, const std::array<float, 3>& ox,
+                                  const std::array<float, 3>& oy, const std::array<float, 3>& oz, float hx, float hy,
+                                  float hz) {
+  const float b_hy = std::fabs(ox[1]) * hx + std::fabs(oy[1]) * hy + std::fabs(oz[1]) * hz;
+  if (bw[1] + b_hy < float(cpos.y) - 0.35f || bw[1] - b_hy > float(cpos.y) + 1.75f) return false;
+
+  const float dx = float(cpos.x) - bw[0];
+  const float dz = float(cpos.z) - bw[2];
+  const float fx = float(cfwd.x), fz = float(cfwd.z);
+  const float rx = float(cright.x), rz = float(cright.z);
+
+  float min_pen = 1e9f;
+  float mtv_x = 0.0f, mtv_z = 0.0f;
+  bool found_axis = false;
+
+  auto test_axis = [&](float ax, float az) -> bool {
+    const float l = std::hypot(ax, az);
+    if (l < 1e-4f) return true;
+    const float ux = ax / l, uz = az / l;
+    const float signed_d = dx * ux + dz * uz;
+    const float r_car = half_w * std::fabs(rx * ux + rz * uz) + half_l * std::fabs(fx * ux + fz * uz);
+    const float r_obb = hx * std::fabs(ox[0] * ux + ox[2] * uz) + hy * std::fabs(oy[0] * ux + oy[2] * uz) +
+                        hz * std::fabs(oz[0] * ux + oz[2] * uz);
+    const float overlap = (r_car + r_obb) - std::fabs(signed_d);
+    if (overlap <= 0.0f) return false;
+    if (overlap < min_pen) {
+      min_pen = overlap;
+      found_axis = true;
+      if (signed_d >= 0.0f) {
+        mtv_x = ux;
+        mtv_z = uz;
+      } else {
+        mtv_x = -ux;
+        mtv_z = -uz;
+      }
+    }
+    return true;
+  };
+
+  if (!test_axis(rx, rz) || !test_axis(fx, fz) || !test_axis(ox[0], ox[2]) || !test_axis(oz[0], oz[2])) {
+    return false;
+  }
+  if (!found_axis) return false;
+
+  const drive::Vec3 n{double(mtv_x), 0.0, double(mtv_z)};
+  const double push = std::clamp(double(min_pen) + 0.015, 0.01, 0.65);
+  vehicle.translate(n * push);
+
+  const drive::Vec3 v = vehicle.velocity();
+  const double vn = v.x * n.x + v.z * n.z;
+  if (vn < 0.0) {
+    const double mass = std::max(500.0, vehicle.params().mass);
+    const double jn = -(1.08 * vn) * mass;
+    const drive::Vec3 t{-n.z, 0.0, n.x};
+    const double vt = v.x * t.x + v.z * t.z;
+    const double jt = std::clamp(-vt * mass * 0.18, -0.22 * jn, 0.22 * jn);
+    vehicle.apply_impulse(vehicle.centre_of_mass(), n * jn + t * jt, 0.04);
+  }
+  return true;
+}
+
 }  // namespace
 
 const PropPhysicsDef* PhysicsDefinitions::resolve_packed(uint32_t packed_id) const {
@@ -741,6 +836,46 @@ bool SmashableWorld::should_break(const PropPhysicsDef& def, float impact_speed_
   return (impact_speed_mps * impact_speed_mps) > (thresh * thresh) && impact_speed_mps > 0.1f;
 }
 
+bool SmashableWorld::is_solid_barrier_model(std::string_view object_name, const std::array<float, 3>& box_min,
+                                            const std::array<float, 3>& box_max) {
+  if (object_name.empty()) return false;
+  // Reject world-space or invalid/degenerate bounding boxes.
+  for (int k = 0; k < 3; ++k) {
+    if (!std::isfinite(box_min[size_t(k)]) || !std::isfinite(box_max[size_t(k)])) return false;
+    if (std::fabs(box_min[size_t(k)]) > 200.0f || std::fabs(box_max[size_t(k)]) > 200.0f) return false;
+    if (box_max[size_t(k)] < box_min[size_t(k)]) return false;
+  }
+  const float ex = box_max[0] - box_min[0];
+  const float ey = box_max[1] - box_min[1];
+  const float ez = box_max[2] - box_min[2];
+  const float max_xz = std::max(ex, ez);
+  const float min_xz = std::min(ex, ez);
+  // Barrier wall proportions: upright panel (0.5..3.0 m tall), 0.9..14 m long,
+  // <= 2.2 m thick, elongated rather than a square crate/bin/pole.
+  if (ey < 0.50f || ey > 3.0f) return false;
+  if (max_xz < 0.90f || max_xz > 14.0f) return false;
+  if (min_xz > 2.2f) return false;
+  if (max_xz / std::max(min_xz, 0.05f) < 1.35f) return false;
+
+  const std::string low = to_lower(object_name);
+  auto has = [&](std::string_view needle) { return low.find(needle) != std::string::npos; };
+
+  // Never classify smashable wooden/plastic/ranch fences or decorative props as solid barriers.
+  if (has("wood") || has("wooden") || has("plastic") || has("cone") || has("flag") || has("arch") ||
+      has("gantry") || has("tent") || has("stage") || has("grandstand") || has("bleacher") ||
+      has("trailer") || has("truck") || has("tree") || has("bush") || has("lamp") || has("light") ||
+      has("pole") || has("temp_") || has("arrow") || has("trigger") || has("marker") || has("ranch") ||
+      has("picket") || has("farm") || has("wire") || has("tape") || has("ribbon") || has("spectator") ||
+      has("sign") || has("flyer") || has("discount")) {
+    return false;
+  }
+
+  return has("barrier") || has("barricade") || has("crowdfence") || has("crowd_fence") ||
+         has("crowdrail") || has("crowd_rail") || has("chainlink") || has("chain_link") ||
+         has("metalfence") || has("metal_fence") || has("fest_fence") || has("festival_fence") ||
+         has("guardrail") || has("guard_rail") || has("safety_fence") || has("security_fence");
+}
+
 const PropPhysicsDef* SmashableWorld::match_definition(const CollObjPlacement& p) const {
   if (defs_.definitions.empty()) return nullptr;
   const std::string& st = p.stem;
@@ -915,6 +1050,8 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
   props_.clear();
   raw_xml_prop_count_ = 0;
   grid_.clear();
+  solid_barriers_.clear();
+  barrier_grid_.clear();
   dynamic_bodies_.clear();
   broken_positions_.reset();
   evictions_ = 0;
@@ -1013,7 +1150,8 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
       impl_->source_ready = true;
       impl_->prefix = model_prefix(world_dir);
 
-      // 1. Scan all .pvsz zones in parallel for smashable placements (extended && word < MaxGlobalIndex).
+      // 1. Scan all .pvsz zones in parallel for smashable placements (extended && word < MaxGlobalIndex)
+      //    and static placed props (potential festival crowd barriers / barricades).
       const auto pvsz_names = impl_->source.with_suffix(".pvsz");
       struct PvszSmash {
         uint32_t object_id = 0;
@@ -1026,8 +1164,19 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
         std::vector<uint8_t> routes;
         std::string name;
       };
+      struct PvszStatic {
+        uint32_t object_id = 0;
+        uint32_t member = 0;
+        std::array<float, 3> pos{};
+        std::array<float, 3> x_axis{1, 0, 0};
+        std::array<float, 3> y_axis{0, 1, 0};
+        std::array<float, 3> z_axis{0, 0, 1};
+        std::vector<uint8_t> routes;
+        std::string name;
+      };
       const uint32_t max_g = uint32_t(defs_.global_to_list.size());
       std::vector<std::vector<PvszSmash>> per_zone(pvsz_names.size());
+      std::vector<std::vector<PvszStatic>> per_zone_static(pvsz_names.size());
       {
         const size_t n = pvsz_names.size();
         const size_t threads = std::min<size_t>(n, std::max<size_t>(1, std::thread::hardware_concurrency()));
@@ -1042,22 +1191,45 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
                 !fh1::parse_pvsz(bytes, zone, nullptr, fh1::PvszStartRule::kMostRigid))
               continue;
             auto& dst = per_zone[zi];
+            auto& sdst = per_zone_static[zi];
             for (size_t k = 0; k < zone.ids.size() && k < zone.records.size(); ++k) {
               const auto& rec = zone.records[k];
-              if (!rec.extended || rec.word >= max_g) continue;
+              if (std::fabs(rec.position[0]) < 1e-3f && std::fabs(rec.position[1]) < 1e-3f &&
+                  std::fabs(rec.position[2]) < 1e-3f)
+                continue;
               const uint32_t oid = fh1::pvsz_object_id(zone.ids[k]);
-              PvszSmash s;
-              s.object_id = oid;
-              s.global_index = rec.word;
-              if (oid < impl_->table.objects.size()) s.intact_member = int32_t(impl_->table.objects[oid].member);
-              s.pos = rec.position;
-              // R_game = M * F (col0 = h0..2, col1 = h3..5, col2 = -h6..8 -> right-handed SO(3), det = +1).
-              s.x_axis = {rec.rotation[0], rec.rotation[1], rec.rotation[2]};
-              s.y_axis = {rec.rotation[3], rec.rotation[4], rec.rotation[5]};
-              s.z_axis = {-rec.rotation[6], -rec.rotation[7], -rec.rotation[8]};
-              s.routes = rec.extra;
-              s.name = to_lower(rec.name);
-              dst.push_back(std::move(s));
+              if (rec.extended && rec.word < max_g) {
+                PvszSmash s;
+                s.object_id = oid;
+                s.global_index = rec.word;
+                if (oid < impl_->table.objects.size()) s.intact_member = int32_t(impl_->table.objects[oid].member);
+                s.pos = rec.position;
+                // R_game = M * F (col0 = h0..2, col1 = h3..5, col2 = -h6..8 -> right-handed SO(3), det = +1).
+                s.x_axis = {rec.rotation[0], rec.rotation[1], rec.rotation[2]};
+                s.y_axis = {rec.rotation[3], rec.rotation[4], rec.rotation[5]};
+                s.z_axis = {-rec.rotation[6], -rec.rotation[7], -rec.rotation[8]};
+                s.routes = rec.extra;
+                s.name = to_lower(rec.name);
+                dst.push_back(std::move(s));
+              } else if (oid < impl_->table.objects.size()) {
+                const std::string low_name = rec.extended ? to_lower(rec.name) : std::string{};
+                if (low_name.rfind("bf_", 0) == 0 || low_name.rfind("flyer_", 0) == 0 ||
+                    low_name.rfind("speed_", 0) == 0 || low_name.rfind("average_", 0) == 0 ||
+                    low_name.rfind("barnfind_", 0) == 0 || low_name.rfind("e3_", 0) == 0 ||
+                    low_name.find("_node") != std::string::npos || low_name.find("_endnode") != std::string::npos) {
+                  continue;
+                }
+                PvszStatic st;
+                st.object_id = oid;
+                st.member = impl_->table.objects[oid].member;
+                st.pos = rec.position;
+                st.x_axis = {rec.rotation[0], rec.rotation[1], rec.rotation[2]};
+                st.y_axis = {rec.rotation[3], rec.rotation[4], rec.rotation[5]};
+                st.z_axis = {-rec.rotation[6], -rec.rotation[7], -rec.rotation[8]};
+                if (rec.extended) st.routes = rec.extra;
+                st.name = low_name;
+                sdst.push_back(std::move(st));
+              }
             }
           }
         };
@@ -1128,7 +1300,7 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
           const uint16_t list_idx = defs_.global_to_list[ps.global_index];
           if (list_idx < defs_.definitions.size()) {
             pp.def = &defs_.definitions[list_idx];
-            pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 2.5f);
+            pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 12.0f);
           }
           stem_to_global.try_emplace(pp.place.stem, pp.global_index);
           if (pp.intact_member >= 0) stem_to_intact.try_emplace(pp.place.stem, pp.intact_member);
@@ -1143,7 +1315,7 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
           const uint16_t list_idx = defs_.global_to_list[size_t(it->second)];
           if (list_idx < defs_.definitions.size()) {
             pp.def = &defs_.definitions[list_idx];
-            pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 2.5f);
+            pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 12.0f);
           }
           if (const auto mit = stem_to_intact.find(pp.place.stem); mit != stem_to_intact.end()) {
             pp.intact_member = mit->second;
@@ -1151,9 +1323,10 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
         }
       }
 
-      // Pass 3: include any unclaimed breakable .pvsz smashables not already in CollObjs.xml
-      // (skip Flyer signs owned by FreeRoam and BF_* barn doors owned by BarnDoorCollider).
+      // Pass 3: include unclaimed breakable .pvsz smashables not in CollObjs.xml, and register
+      // unclaimed unbreakable solid barriers (excluding Flyer signs, BF_* barn doors, and RaceActivation arches).
       std::unordered_set<int64_t> extra_seen;
+      std::unordered_set<int64_t> barrier_seen;
       for (size_t si = 0; si < pvsz_list.size(); ++si) {
         if (pvsz_claimed[si]) continue;
         const auto& ps = *pvsz_list[si];
@@ -1161,11 +1334,65 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
         const uint16_t list_idx = defs_.global_to_list[ps.global_index];
         if (list_idx >= defs_.definitions.size()) continue;
         const PropPhysicsDef& d = defs_.definitions[list_idx];
-        if (d.object_type_index == 1 || d.unbreakable()) continue;
+        if (d.object_type_index == 1 || d.object_type_index == 3) continue;
         const int64_t pos_key =
             (int64_t(std::lround(ps.pos[0] * 4.0f)) * 73856093ll) ^
             (int64_t(std::lround(ps.pos[1] * 4.0f)) * 19349663ll) ^
             (int64_t(std::lround(ps.pos[2] * 4.0f)) * 83492791ll);
+        if (d.unbreakable()) {
+          if (!barrier_seen.insert(pos_key).second) continue;
+          bool added_shape = false;
+          for (const auto& sh : d.shapes) {
+            if (sh.kind != PropShapeKind::kObb) continue;
+            const auto& m = sh.transform;
+            SolidBarrier sb;
+            sb.pos = {
+                ps.pos[0] + ps.x_axis[0] * m[12] + ps.y_axis[0] * m[13] + ps.z_axis[0] * m[14],
+                ps.pos[1] + ps.x_axis[1] * m[12] + ps.y_axis[1] * m[13] + ps.z_axis[1] * m[14],
+                ps.pos[2] + ps.x_axis[2] * m[12] + ps.y_axis[2] * m[13] + ps.z_axis[2] * m[14],
+            };
+            sb.x_axis = {
+                ps.x_axis[0] * m[0] + ps.y_axis[0] * m[1] + ps.z_axis[0] * m[2],
+                ps.x_axis[1] * m[0] + ps.y_axis[1] * m[1] + ps.z_axis[1] * m[2],
+                ps.x_axis[2] * m[0] + ps.y_axis[2] * m[1] + ps.z_axis[2] * m[2],
+            };
+            sb.y_axis = {
+                ps.x_axis[0] * m[4] + ps.y_axis[0] * m[5] + ps.z_axis[0] * m[6],
+                ps.x_axis[1] * m[4] + ps.y_axis[1] * m[5] + ps.z_axis[1] * m[6],
+                ps.x_axis[2] * m[4] + ps.y_axis[2] * m[5] + ps.z_axis[2] * m[6],
+            };
+            sb.z_axis = {
+                ps.x_axis[0] * m[8] + ps.y_axis[0] * m[9] + ps.z_axis[0] * m[10],
+                ps.x_axis[1] * m[8] + ps.y_axis[1] * m[9] + ps.z_axis[1] * m[10],
+                ps.x_axis[2] * m[8] + ps.y_axis[2] * m[9] + ps.z_axis[2] * m[10],
+            };
+            sb.local_center = {0.0f, 0.0f, 0.0f};
+            sb.half_extents = {
+                std::max(0.18f, sh.half_extents[0]),
+                std::max(0.35f, sh.half_extents[1]),
+                std::max(0.18f, sh.half_extents[2]),
+            };
+            sb.routes = ps.routes;
+            add_solid_barrier(sb);
+            added_shape = true;
+          }
+          if (!added_shape) {
+            SolidBarrier sb;
+            sb.pos = ps.pos;
+            sb.x_axis = ps.x_axis;
+            sb.y_axis = ps.y_axis;
+            sb.z_axis = ps.z_axis;
+            sb.local_center = d.aabb_centre_offset;
+            sb.half_extents = {
+                std::max(0.18f, d.half_extents[0]),
+                std::max(0.35f, d.half_extents[1]),
+                std::max(0.18f, d.half_extents[2]),
+            };
+            sb.routes = ps.routes;
+            add_solid_barrier(sb);
+          }
+          continue;
+        }
         if (!extra_seen.insert(pos_key).second) continue;
 
         PlacedProp pp;
@@ -1179,10 +1406,114 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
         pp.global_index = int32_t(ps.global_index);
         pp.intact_member = ps.intact_member;
         pp.routes = ps.routes;
-        pp.radius = std::clamp(d.bounding_radius, 0.35f, 2.5f);
+        pp.radius = std::clamp(d.bounding_radius, 0.35f, 12.0f);
         const uint32_t idx = uint32_t(props_.size());
         props_.push_back(std::move(pp));
         grid_[cell_key(ps.pos[0], ps.pos[2])].push_back(idx);
+      }
+
+      // Pass 4: register static .pvsz solid festival crowd barriers / barricades / chain-link fences
+      // whose render models are solid barriers not already covered by a breakable smashable prop.
+      {
+        std::unordered_map<uint32_t, PvszStatic> unique_static;
+        for (auto& zv : per_zone_static) {
+          for (auto& s : zv) unique_static.try_emplace(s.object_id, std::move(s));
+        }
+        per_zone_static.clear();
+
+        std::unordered_set<uint32_t> static_members_set;
+        for (const auto& [oid, s] : unique_static) static_members_set.insert(s.member);
+        std::vector<uint32_t> static_members(static_members_set.begin(), static_members_set.end());
+        std::sort(static_members.begin(), static_members.end());
+
+        struct BarrierModelBox {
+          std::array<float, 3> local_center{};
+          std::array<float, 3> half_extents{};
+          bool is_barrier = false;
+        };
+        std::vector<BarrierModelBox> scanned(static_members.size());
+        {
+          const size_t n = static_members.size();
+          const size_t threads = std::min<size_t>(n, std::max<size_t>(1, std::thread::hardware_concurrency()));
+          std::atomic<size_t> next{0};
+          auto worker = [&]() {
+            std::vector<uint8_t> buf;
+            for (;;) {
+              const size_t i = next.fetch_add(1, std::memory_order_relaxed);
+              if (i >= n) break;
+              const std::string mname = fh1::PropModels::member_name(static_members[i], impl_->prefix);
+              if (!impl_->source.contains(mname) || !impl_->source.read(mname, buf, nullptr)) continue;
+              std::array<float, 3> bmin{}, bmax{};
+              std::string obj_name;
+              if (!peek_rmb_barrier_info(buf, bmin, bmax, obj_name)) continue;
+              if (!is_solid_barrier_model(obj_name, bmin, bmax)) continue;
+              // Convert file-frame header box to local game frame (Z negated).
+              const float min_gz = -bmax[2];
+              const float max_gz = -bmin[2];
+              scanned[i].local_center = {0.5f * (bmin[0] + bmax[0]), 0.5f * (bmin[1] + bmax[1]),
+                                         0.5f * (min_gz + max_gz)};
+              scanned[i].half_extents = {
+                  std::max(0.18f, 0.5f * (bmax[0] - bmin[0])),
+                  std::max(0.35f, 0.5f * (bmax[1] - bmin[1])),
+                  std::max(0.18f, 0.5f * (max_gz - min_gz)),
+              };
+              scanned[i].is_barrier = true;
+            }
+          };
+          if (threads > 1 && n >= 8) {
+            std::vector<std::thread> pool;
+            pool.reserve(threads);
+            for (size_t t = 0; t < threads; ++t) pool.emplace_back(worker);
+            for (auto& w : pool) w.join();
+          } else {
+            worker();
+          }
+        }
+        std::unordered_map<uint32_t, BarrierModelBox> barrier_models;
+        for (size_t i = 0; i < static_members.size(); ++i) {
+          if (scanned[i].is_barrier) barrier_models.emplace(static_members[i], scanned[i]);
+        }
+
+        auto near_breakable_prop = [&](const std::array<float, 3>& p) -> bool {
+          const int32_t cx_c = int32_t(std::floor(p[0] / 25.0f));
+          const int32_t cz_c = int32_t(std::floor(p[2] / 25.0f));
+          for (int32_t dz = -1; dz <= 1; ++dz) {
+            for (int32_t dx = -1; dx <= 1; ++dx) {
+              const int64_t key = (int64_t(cx_c + dx) << 32) ^ uint32_t(cz_c + dz);
+              auto it = grid_.find(key);
+              if (it == grid_.end()) continue;
+              for (uint32_t idx : it->second) {
+                const auto& pp = props_[idx];
+                const float ddx = pp.place.pos[0] - p[0];
+                const float ddy = pp.place.pos[1] - p[1];
+                const float ddz = pp.place.pos[2] - p[2];
+                if (ddx * ddx + ddz * ddz <= 0.75f * 0.75f && std::fabs(ddy) <= 1.5f) return true;
+              }
+            }
+          }
+          return false;
+        };
+
+        for (const auto& [oid, st] : unique_static) {
+          const auto bit = barrier_models.find(st.member);
+          if (bit == barrier_models.end()) continue;
+          const int64_t pos_key =
+              (int64_t(std::lround(st.pos[0] * 4.0f)) * 73856093ll) ^
+              (int64_t(std::lround(st.pos[1] * 4.0f)) * 19349663ll) ^
+              (int64_t(std::lround(st.pos[2] * 4.0f)) * 83492791ll);
+          if (!barrier_seen.insert(pos_key).second) continue;
+          if (near_breakable_prop(st.pos)) continue;
+
+          SolidBarrier sb;
+          sb.pos = st.pos;
+          sb.x_axis = st.x_axis;
+          sb.y_axis = st.y_axis;
+          sb.z_axis = st.z_axis;
+          sb.local_center = bit->second.local_center;
+          sb.half_extents = bit->second.half_extents;
+          sb.routes = st.routes;
+          add_solid_barrier(sb);
+        }
       }
 
       // 2. Pre-decode all unique FH1 smashable child/intact .rmb.bin render models in parallel
@@ -1341,13 +1672,48 @@ void SmashableWorld::add_prop(const CollObjPlacement& p, const PropPhysicsDef* e
   pp.place = p;
   pp.def = explicit_def ? explicit_def : match_definition(p);
   if (pp.def) {
-    pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 2.5f);
+    pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 12.0f);
   } else {
     pp.radius = 0.75f;
   }
   const uint32_t idx = uint32_t(props_.size());
   props_.push_back(std::move(pp));
   grid_[cell_key(p.pos[0], p.pos[2])].push_back(idx);
+}
+
+void SmashableWorld::add_solid_barrier(const SolidBarrier& barrier) {
+  SolidBarrier b = barrier;
+  b.half_extents[0] = std::max(0.15f, b.half_extents[0]);
+  b.half_extents[1] = std::max(0.25f, b.half_extents[1]);
+  b.half_extents[2] = std::max(0.15f, b.half_extents[2]);
+  const float center_off = std::sqrt(b.local_center[0] * b.local_center[0] + b.local_center[1] * b.local_center[1] +
+                                     b.local_center[2] * b.local_center[2]);
+  const float he_r = std::sqrt(b.half_extents[0] * b.half_extents[0] + b.half_extents[1] * b.half_extents[1] +
+                               b.half_extents[2] * b.half_extents[2]);
+  b.radius = std::max(b.radius, center_off + he_r);
+
+  const uint32_t idx = uint32_t(solid_barriers_.size());
+  solid_barriers_.push_back(b);
+  const float r = b.radius;
+  const int32_t gx0 = int32_t(std::floor((b.pos[0] - r) / 25.0f));
+  const int32_t gx1 = int32_t(std::floor((b.pos[0] + r) / 25.0f));
+  const int32_t gz0 = int32_t(std::floor((b.pos[2] - r) / 25.0f));
+  const int32_t gz1 = int32_t(std::floor((b.pos[2] + r) / 25.0f));
+  for (int32_t gz = gz0; gz <= gz1; ++gz) {
+    for (int32_t gx = gx0; gx <= gx1; ++gx) {
+      const int64_t key = (int64_t(gx) << 32) ^ uint32_t(gz);
+      barrier_grid_[key].push_back(idx);
+    }
+  }
+}
+
+void SmashableWorld::record_hidden_prop(const std::array<float, 3>& pos, float hide_radius) {
+  const float r = std::clamp(hide_radius, 0.75f, 6.0f);
+  auto next_hidden = broken_positions_
+                         ? std::make_shared<std::vector<GatherOptions::HiddenSphere>>(*broken_positions_)
+                         : std::make_shared<std::vector<GatherOptions::HiddenSphere>>();
+  next_hidden->push_back({pos, r});
+  broken_positions_ = std::move(next_hidden);
 }
 
 void SmashableWorld::spawn_dynamic_body(const DynamicBody& body) {
@@ -1360,6 +1726,19 @@ void SmashableWorld::spawn_dynamic_body(const DynamicBody& body) {
 }
 
 int SmashableWorld::spawn_flyer_shatter(const std::array<float, 3>& pos, const std::array<float, 3>& car_vel) {
+  const float spd = std::sqrt(car_vel[0] * car_vel[0] + car_vel[2] * car_vel[2]);
+  const float dir_x = (spd > 0.5f) ? car_vel[0] / spd : 0.0f;
+  const float dir_z = (spd > 0.5f) ? car_vel[2] / spd : 1.0f;
+  // Align sign plane roughly perpendicular to striking direction when orientation isn't supplied.
+  const std::array<float, 3> x_axis{dir_z, 0.0f, -dir_x};
+  const std::array<float, 3> y_axis{0.0f, 1.0f, 0.0f};
+  const std::array<float, 3> z_axis{dir_x, 0.0f, dir_z};
+  return spawn_flyer_shatter(pos, x_axis, y_axis, z_axis, car_vel);
+}
+
+int SmashableWorld::spawn_flyer_shatter(const std::array<float, 3>& pos, const std::array<float, 3>& x_axis,
+                                        const std::array<float, 3>& y_axis, const std::array<float, 3>& z_axis,
+                                        const std::array<float, 3>& car_vel) {
   const auto* flyer_def = defs_.find_by_object_type(1);
   const int pieces = (flyer_def && !flyer_def->children.empty()) ? int(flyer_def->children.size()) : 12;
   const float spd = std::sqrt(car_vel[0] * car_vel[0] + car_vel[2] * car_vel[2]);
@@ -1376,9 +1755,7 @@ int SmashableWorld::spawn_flyer_shatter(const std::array<float, 3>& pos, const s
       break;
     }
   }
-  // Align sign plane roughly perpendicular to striking direction (looks natural if orientation isn't passed).
-  const float yaw = std::atan2(dir_x, dir_z);
-  const drive::Quat flyer_rot{0.0, std::sin(double(yaw) * 0.5), 0.0, std::cos(double(yaw) * 0.5)};
+  const drive::Quat flyer_rot = quat_from_basis(x_axis, y_axis, z_axis);
 
   for (int i = 0; i < pieces; ++i) {
     DynamicBody b;
@@ -1412,8 +1789,10 @@ int SmashableWorld::spawn_flyer_shatter(const std::array<float, 3>& pos, const s
       } else {
         const float row = float(i % 4) - 1.5f;
         const float col = float(i / 4) - 1.0f;
-        b.pos = {pos[0] + row * 0.22f + rand_sym() * 0.1f, pos[1] + 0.45f + col * 0.28f + 0.35f,
-                 pos[2] + rand_sym() * 0.2f};
+        const drive::Vec3 lo = drive::rotate(flyer_rot, {double(row * 0.45f), double(0.75f + col * 0.35f), 0.0});
+        b.pos = {pos[0] + float(lo.x) + rand_sym() * 0.1f, pos[1] + float(lo.y),
+                 pos[2] + float(lo.z) + rand_sym() * 0.1f};
+        b.rot = flyer_rot;
         b.half_extents = {
             std::clamp(ch.half_extents[0] * 0.55f, 0.10f, 0.28f),
             std::clamp(ch.half_extents[1] * 0.55f, 0.07f, 0.22f),
@@ -1424,8 +1803,10 @@ int SmashableWorld::spawn_flyer_shatter(const std::array<float, 3>& pos, const s
     } else {
       const float row = float(i % 4) - 1.5f;
       const float col = float(i / 4) - 1.0f;
-      b.pos = {pos[0] + row * 0.22f + rand_sym() * 0.1f, pos[1] + 0.45f + col * 0.28f + 0.35f,
-               pos[2] + rand_sym() * 0.2f};
+      const drive::Vec3 lo = drive::rotate(flyer_rot, {double(row * 0.45f), double(0.75f + col * 0.35f), 0.0});
+      b.pos = {pos[0] + float(lo.x) + rand_sym() * 0.1f, pos[1] + float(lo.y),
+               pos[2] + float(lo.z) + rand_sym() * 0.1f};
+      b.rot = flyer_rot;
       b.half_extents = {0.20f, 0.14f, 0.022f};
       b.mass_kg = 1.8f;
     }
@@ -1441,6 +1822,55 @@ int SmashableWorld::spawn_flyer_shatter(const std::array<float, 3>& pos, const s
     spawn_dynamic_body(b);
   }
   return pieces;
+}
+
+void SmashableWorld::step_solid_barriers(drive::Vehicle& vehicle) {
+  if (solid_barriers_.empty()) return;
+  drive::Vec3 cpos = vehicle.position();
+  const drive::Quat crot = vehicle.orientation();
+  const drive::Vec3 cfwd = drive::rotate(crot, {0, 0, 1});
+  const drive::Vec3 cright = drive::rotate(crot, {1, 0, 0});
+  const float half_w = float(std::max(0.8, vehicle.params().size.x * 0.5));
+  const float half_l = float(std::max(1.8, vehicle.params().size.z * 0.5));
+
+  const int32_t cx_cell = int32_t(std::floor(float(cpos.x) / 25.0f));
+  const int32_t cz_cell = int32_t(std::floor(float(cpos.z) / 25.0f));
+
+  thread_local std::vector<uint32_t> visited;
+  visited.clear();
+
+  for (int32_t dz = -1; dz <= 1; ++dz) {
+    for (int32_t dx = -1; dx <= 1; ++dx) {
+      const int64_t key = (int64_t(cx_cell + dx) << 32) ^ uint32_t(cz_cell + dz);
+      auto it = barrier_grid_.find(key);
+      if (it == barrier_grid_.end()) continue;
+      for (uint32_t idx : it->second) {
+        if (std::find(visited.begin(), visited.end(), idx) != visited.end()) continue;
+        visited.push_back(idx);
+        const auto& sb = solid_barriers_[idx];
+        if (active_route_ >= 0 && !fh1::shown_on_route(sb.routes, active_route_)) continue;
+        const float px = sb.pos[0] - float(cpos.x);
+        const float py = sb.pos[1] - float(cpos.y);
+        const float pz = sb.pos[2] - float(cpos.z);
+        if (std::fabs(py) > 4.5f) continue;
+        const float max_r = half_l + half_w + sb.radius + 0.5f;
+        if (px * px + pz * pz > max_r * max_r) continue;
+
+        const std::array<float, 3> bw{
+            sb.pos[0] + sb.x_axis[0] * sb.local_center[0] + sb.y_axis[0] * sb.local_center[1] +
+                sb.z_axis[0] * sb.local_center[2],
+            sb.pos[1] + sb.x_axis[1] * sb.local_center[0] + sb.y_axis[1] * sb.local_center[1] +
+                sb.z_axis[1] * sb.local_center[2],
+            sb.pos[2] + sb.x_axis[2] * sb.local_center[0] + sb.y_axis[2] * sb.local_center[1] +
+                sb.z_axis[2] * sb.local_center[2],
+        };
+        if (resolve_car_obb_vs_solid_obb(vehicle, cpos, cfwd, cright, half_l, half_w, bw, sb.x_axis, sb.y_axis,
+                                         sb.z_axis, sb.half_extents[0], sb.half_extents[1], sb.half_extents[2])) {
+          cpos = vehicle.position();
+        }
+      }
+    }
+  }
 }
 
 void SmashableWorld::step_barn_doors(drive::Vehicle& vehicle) {
@@ -1506,8 +1936,9 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
   if (dt <= 0.0f) return;
   const float step_dt = std::min(dt, 0.05f);
 
-  // 1. Barn-door open/closed physical collision swap.
+  // 1. Barn-door open/closed physical collision swap & solid unbreakable festival barriers.
   step_barn_doors(vehicle);
+  step_solid_barriers(vehicle);
 
   // 2. Broadphase check of nearby intact smashables against the car OBB.
   const drive::Vec3 cpos = vehicle.position();
@@ -1627,14 +2058,63 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
         const auto& def = *pp.def;
         const drive::Vec3 com = vehicle.centre_of_mass();
         if (!should_break(def, car_speed)) {
-          // Soft inelastic bump against unbreakable or below-BreakSpeedMph prop.
-          const float len = std::sqrt(px * px + pz * pz);
-          if (len > 1e-4f) {
-            const drive::Vec3 n{-double(px / len), 0.0, -double(pz / len)};
-            const double vn = cvel.x * n.x + cvel.z * n.z;
-            if (vn < 0.0) {
-              vehicle.translate(n * 0.04);
-              vehicle.apply_impulse(com, n * (-(1.05 * vn) * vehicle.params().mass), 0.05);
+          // Smooth horizontal OBB collision against unbreakable or below-BreakSpeedMph prop
+          // (strictly horizontal normal: stops/slides the car without vertical launch).
+          bool resolved = false;
+          const auto& ax = pp.place.x_axis;
+          const auto& ay = pp.place.y_axis;
+          const auto& az = pp.place.z_axis;
+          for (const auto& sh : def.shapes) {
+            if (sh.kind != PropShapeKind::kObb) continue;
+            const auto& m = sh.transform;
+            const std::array<float, 3> bw{
+                pp.place.pos[0] + ax[0] * m[12] + ay[0] * m[13] + az[0] * m[14],
+                pp.place.pos[1] + ax[1] * m[12] + ay[1] * m[13] + az[1] * m[14],
+                pp.place.pos[2] + ax[2] * m[12] + ay[2] * m[13] + az[2] * m[14],
+            };
+            const std::array<float, 3> ox{
+                ax[0] * m[0] + ay[0] * m[1] + az[0] * m[2],
+                ax[1] * m[0] + ay[1] * m[1] + az[1] * m[2],
+                ax[2] * m[0] + ay[2] * m[1] + az[2] * m[2],
+            };
+            const std::array<float, 3> oy{
+                ax[0] * m[4] + ay[0] * m[5] + az[0] * m[6],
+                ax[1] * m[4] + ay[1] * m[5] + az[1] * m[6],
+                ax[2] * m[4] + ay[2] * m[5] + az[2] * m[6],
+            };
+            const std::array<float, 3> oz{
+                ax[0] * m[8] + ay[0] * m[9] + az[0] * m[10],
+                ax[1] * m[8] + ay[1] * m[9] + az[1] * m[10],
+                ax[2] * m[8] + ay[2] * m[9] + az[2] * m[10],
+            };
+            resolved |= resolve_car_obb_vs_solid_obb(
+                vehicle, vehicle.position(), cfwd, cright, half_l, half_w, bw, ox, oy, oz,
+                std::max(0.15f, sh.half_extents[0]), std::max(0.25f, sh.half_extents[1]),
+                std::max(0.15f, sh.half_extents[2]));
+          }
+          if (!resolved) {
+            const std::array<float, 3> bw{
+                pp.place.pos[0] + ax[0] * def.aabb_centre_offset[0] + ay[0] * def.aabb_centre_offset[1] +
+                    az[0] * def.aabb_centre_offset[2],
+                pp.place.pos[1] + ax[1] * def.aabb_centre_offset[0] + ay[1] * def.aabb_centre_offset[1] +
+                    az[1] * def.aabb_centre_offset[2],
+                pp.place.pos[2] + ax[2] * def.aabb_centre_offset[0] + ay[2] * def.aabb_centre_offset[1] +
+                    az[2] * def.aabb_centre_offset[2],
+            };
+            resolved = resolve_car_obb_vs_solid_obb(
+                vehicle, vehicle.position(), cfwd, cright, half_l, half_w, bw, ax, ay, az,
+                std::max(0.18f, def.half_extents[0]), std::max(0.25f, def.half_extents[1]),
+                std::max(0.18f, def.half_extents[2]));
+          }
+          if (!resolved) {
+            const float len = std::sqrt(px * px + pz * pz);
+            if (len > 1e-4f) {
+              const drive::Vec3 n{-double(px / len), 0.0, -double(pz / len)};
+              const double vn = cvel.x * n.x + cvel.z * n.z;
+              if (vn < 0.0) {
+                vehicle.translate(n * 0.06);
+                vehicle.apply_impulse(com, n * (-(1.05 * vn) * vehicle.params().mass), 0.04);
+              }
             }
           }
           continue;

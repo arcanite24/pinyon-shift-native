@@ -703,7 +703,7 @@ size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, flo
         auto it = g_smash_hide.find(this);
         if (it != g_smash_hide.end() && it->second.by_draw_key.count(d.key)) continue;
       }
-      const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+      const uint32_t flags = uint32_t(std::lround(d.push.params[1]));
       const float ex = d.box_max[0] - d.box_min[0];
       const float ey = d.box_max[1] - d.box_min[1];
       const float ez = d.box_max[2] - d.box_min[2];
@@ -843,7 +843,7 @@ bool Showroom::build_gpu_table(std::string& error) {
   };
   for (auto& d : world_draws_) {
     if (!d.resident || !d.cull || d.index_count == 0 || !gpuworld::in_gpu_batches(d.blend)) continue;
-    uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+    uint32_t flags = uint32_t(std::lround(d.push.params[1]));
     if ((flags & 2u) != 0) continue;  // the sky dome
     if (instanced_trees && (flags & 32u) != 0) {
       d.gpu = true;  // drawn via single hardware-instanced tree pass

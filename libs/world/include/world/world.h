@@ -93,6 +93,12 @@ constexpr uint8_t kEmissiveNone = 0u;    // Light_Map only (slot 7 in light_map)
 constexpr uint8_t kEmissiveOnly = 1u;    // EmissiveMapSampler only (slot 3 in light_map)
 constexpr uint8_t kEmissiveDualLm = 2u;  // Dual _EMIS + _LM (slot 7 in light_map, slot 3 in layer_c)
 
+// Modes for MeshMaterial::anim_flag (copied through WorldTriangles::Material::anim_flag).
+constexpr uint8_t kAnimNone = 0u;
+constexpr uint8_t kAnimFlagCloth = 1u;     // ANIM_FLAG* waving cloth flag (excludes ANIM_FLAGPOLE*)
+constexpr uint8_t kAnimCountdownLed = 2u;  // H_DIFF_COUNTDOWN_NOLIGHT_MASKED* 8-row race gantry countdown
+constexpr uint8_t kAnimFlipbookLed = 3u;   // H_DIFF_FLIPBOOK_NOLIGHT_MASKED* 8x2 animated LED screen
+
 // Track-wide road specular and lightmap shading parameters from TrackSettings.xml
 // (<RoadSpecular> and <TrackLightMapParams>).
 struct TrackMaterialSettings {
@@ -135,7 +141,7 @@ struct MeshMaterial {
   float emissive_force = 0.0f;          // pixel constant 3 w on _LM / _EMIS effects
   uint8_t is_emissive_map = 0;          // kEmissiveNone / kEmissiveOnly / kEmissiveDualLm
   uint8_t is_water = 0;                 // LAKE_* water effect
-  uint8_t anim_flag = 0;                // ANIM_FLAG* waving cloth flag effect
+  uint8_t anim_flag = 0;                // kAnimNone / kAnimFlagCloth / kAnimCountdownLed / kAnimFlipbookLed
   uint8_t is_grass = 0;                 // _0x00005007 grass quad / grass shell effect
   uint8_t is_road = 0;                  // bitmask: kRoadSurface | kRoadNoise | kRoadModulate
   std::array<float, 2> decal_noise_c4{3.5f, 8.0f};  // H_VBLND_DECAL c4 xy (y < 0: _MASK), or RoadSpecular / TrackLightMapParams

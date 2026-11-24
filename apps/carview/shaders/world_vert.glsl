@@ -127,7 +127,10 @@ void main() {
 #else
   vec3 in_pos = in_position;
 #endif
-  uint flags = uint(draw.params.y + 0.5);
+  // Round-to-nearest without +0.5: IEEE-754 float32 is exact for all integer flag masks
+  // up to 2^24, whereas adding 0.5 to odd flags >= 2^23 (kFlagEmissiveMap | kFlagTextured)
+  // rounds to even, clearing kFlagTextured (bit 0) and spuriously setting kFlagSky (bit 1).
+  uint flags = uint(round(draw.params.y));
   v_fade = vec2(0.0);
   // Deterministic per-instance dusk/dawn switch-on threshold (ModelData.x in [0.06, 0.94])
   // derived from the prop's stable world-space centre so buildings illuminate staggered.
@@ -197,15 +200,18 @@ void main() {
   v_position = world.xyz;
   v_normal = dot(in_normal.xyz, in_normal.xyz) > 0.01 ? normal_matrix * in_normal.xyz : vec3(0.0);
   if ((flags & kFlagAnimFlag) != 0u) {
-    // Waving flag cloth displacement (ANIM_FLAG*): pin pole side (uv0.x ~ 0), ripple free edge.
+    // Waving flag cloth displacement (ANIM_FLAG*): pin pole side (uv0.x ~ 0 / low vertex-alpha weight),
+    // ripple free edge smoothly along a horizontal wind-perpendicular axis so curved feather flags never shred.
     float t = frame.env_basis_x.w;
-    float wspd = max(frame.env_basis_y.w, 0.8);
-    float wamp = clamp(frame.env_basis_z.w, 0.08, 0.65);
-    float pin = clamp(in_uv0.x, 0.0, 1.0);
-    float phase = dot(in_pos.xyz, vec3(1.7, 0.9, 1.3));
-    float wave = sin(t * (3.4 + wspd * 2.0) - phase) + 0.35 * sin(t * 7.2 - phase * 1.8);
-    vec3 wave_dir = length(v_normal) > 0.1 ? normalize(v_normal) : normalize(frame.env_basis_x.xyz);
-    world.xyz += wave_dir * (wave * pin * (0.14 + wamp * 0.35));
+    float wspd = clamp(max(frame.env_basis_y.w, 0.8), 0.8, 2.2);
+    float wamp = clamp(frame.env_basis_z.w, 0.05, 0.45);
+    float pin = clamp(in_uv0.x, 0.0, 1.0) * smoothstep(0.0, 0.25, max(in_colour.a, in_uv0.x));
+    float phase = dot(in_pos.xyz, vec3(1.15, 0.65, 0.95));
+    float wave = sin(t * (2.6 + wspd * 1.4) - phase) + 0.25 * sin(t * 5.4 - phase * 1.6);
+    vec3 horiz_n = vec3(v_normal.x, 0.0, v_normal.z);
+    vec3 fallback_dir = normalize(frame.env_basis_x.xyz * 0.78 + frame.env_basis_z.xyz * 0.62);
+    vec3 wave_dir = length(horiz_n) > 0.15 ? normalize(horiz_n) : fallback_dir;
+    world.xyz += wave_dir * (wave * pin * (0.04 + wamp * 0.12));
     v_position = world.xyz;
   } else if ((flags & kFlagGrass) != 0u) {
     // Wind-swaying grass quads (_0x00005007): top of blade sways along wind direction.

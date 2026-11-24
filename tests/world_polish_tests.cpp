@@ -37,6 +37,7 @@ class FlatTestGround final : public drive::Ground {
  public:
   explicit FlatTestGround(int surface) : surface_(surface) {}
   bool raycast(const drive::Vec3& origin, const drive::Vec3& dir, double max_dist, drive::Hit& hit) const override {
+    ++raycast_calls;
     if (dir.y >= -1e-6) return false;
     const double t = (144.8 - origin.y) / dir.y;
     if (t < 0.0 || t > max_dist) return false;
@@ -45,6 +46,7 @@ class FlatTestGround final : public drive::Ground {
     hit.surface = surface_;
     return true;
   }
+  mutable size_t raycast_calls = 0;
  private:
   int surface_;
 };
@@ -460,6 +462,54 @@ int main() {
       CHECK(cat.animated_pgeos > 200);
       CHECK(cat.has_3d_spectators());
       CHECK(cat.assets.size() >= 8);
+
+      // PT-08 Hotspot B & PT-16: verify per-spectator ground height caching (zero repeated raycasts),
+      // frustum culling, and lively visible crowd animation displacement over time.
+      {
+        world::AnimatedWorldSystem anim;
+        CHECK(anim.init(media, cfg, nullptr, colorado));
+        FlatTestGround gnd(2);
+        std::vector<world::SpectatorVertex> sv0, sv1, sv_culled;
+        std::vector<std::array<float, 4>> discs;
+        float nearest_d = 1e6f;
+        // Festival barrier cluster sits near (1994, 144, 957).
+        anim.build_spectator_mesh(1994.0, 145.5, 965.0, 0.0f, &gnd, sv0, &discs, nullptr, &nearest_d);
+        CHECK(!sv0.empty());
+        CHECK(nearest_d < 25.0f);
+        CHECK(anim.cached_spectator_ground_count() > 0);
+        const size_t rays_after_first = gnd.raycast_calls;
+        CHECK(rays_after_first > 0);
+
+        // Second build at t=0.55s: ZERO additional ground raycasts, and visible limb motion (> 12 cm)!
+        anim.build_spectator_mesh(1994.0, 145.5, 965.0, 0.55f, &gnd, sv1, &discs, nullptr, &nearest_d);
+        CHECK(gnd.raycast_calls == rays_after_first);
+        CHECK(sv1.size() == sv0.size());
+        float max_disp = 0.0f;
+        for (size_t i = 0; i < sv0.size(); ++i) {
+          const float dx = sv1[i].pos[0] - sv0[i].pos[0];
+          const float dy = sv1[i].pos[1] - sv0[i].pos[1];
+          const float dz = sv1[i].pos[2] - sv0[i].pos[2];
+          max_disp = std::max(max_disp, std::sqrt(dx * dx + dy * dy + dz * dz));
+        }
+        CHECK(max_disp > 0.12f);
+
+        // Frustum whose in-front half-space starts 500 m ahead (beyond max_crowd_dist) culls all nearby crowds.
+        world::SpectatorFrustum away{};
+        away.active = true;
+        away.origin_x = 1994.0;
+        away.origin_z = 965.0;
+        away.planes[0] = {0.70710678f, 0.0f, 0.70710678f, 0.0f};
+        away.planes[1] = {-0.70710678f, 0.0f, 0.70710678f, 0.0f};
+        away.planes[2] = {0.0f, 0.70710678f, 0.70710678f, 0.0f};
+        away.planes[3] = {0.0f, -0.70710678f, 0.70710678f, 0.0f};
+        away.planes[4] = {0.0f, 0.0f, 1.0f, -500.0f};
+        anim.build_spectator_mesh(1994.0, 145.5, 965.0, 0.55f, &gnd, sv_culled, nullptr, &away, nullptr);
+        CHECK(sv_culled.empty());
+
+        anim.invalidate_spectator_ground_cache();
+        CHECK(anim.cached_spectator_ground_count() == 0);
+      }
+
       std::printf("world_polish_tests corpus: %zu zones, %zu blooms, %zu colors, %zu fogs, %zu vignettes, "
                   "%zu spectator models (%zu 3D), %zu crowdclasses, %zu anim_pgeo\n",
                   zs.zones.size(), zs.bloom_templates.size(), zs.color_templates.size(), zs.fog_templates.size(),

@@ -13,14 +13,14 @@ Source playtest session: `out/playtests/20261124-143848/`
 | Category | Count | Open |
 |---|---:|---:|
 | [1. Critical Rendering, Flicker & UI Atlas Corruption](#1-critical-rendering-flicker--ui-atlas-corruption) | 5 | 0 |
-| [2. Performance, Stutters & Frame Drops](#2-performance-stutters--frame-drops) | 4 | 2 |
+| [2. Performance, Stutters & Frame Drops](#2-performance-stutters--frame-drops) | 4 | 1 |
 | [3. Audio & Lighting / Time-of-Day Bugs](#3-audio--lighting--time-of-day-bugs) | 3 | 0 |
-| [4. World Geometry, VFX, Crowds, Lights & Sky](#4-world-geometry-vfx-crowds-lights--sky) | 10 | 10 |
+| [4. World Geometry, VFX, Crowds, Lights & Sky](#4-world-geometry-vfx-crowds-lights--sky) | 10 | 0 |
 | [5. Cars, Lamps, Driver Model & Showcase](#5-cars-lamps-driver-model--showcase) | 4 | 4 |
 | [6. Physics, Collision, Smashables & Camera](#6-physics-collision-smashables--camera) | 5 | 5 |
 | [7. World Map & Minimap Parity](#7-world-map--minimap-parity) | 5 | 5 |
 | [8. HUD, Menus, Campaign & 1:1 UI/UX Parity](#8-hud-menus-campaign--11-uiux-parity) | 9 | 7 |
-| **Total** | **45** | **33** |
+| **Total** | **45** | **22** |
 
 ---
 
@@ -71,10 +71,10 @@ Source playtest session: `out/playtests/20261124-143848/`
   - **Evidence**: `session.log:152-153`: `race: FESTIVAL_SECOND via session hot-reload` -> `carview: hot swap to VW_Corrado_95 in 1959.3 ms` (nearly 2 full seconds frozen on main thread); also `946.8 ms` on post-race exit and `855.4 ms` / `814.2 ms` on car swaps.
   - **Fix (PT-A)**: Cached loaded car media to skip redundant `reload_car()`, pumped 60 FPS `LoadingScreen` during async hot-reload regathers, parallelized `RaceView::load_cars()` PI bisection, and eliminated O(N²) `clip_room()`.
 
-- [ ] **PT-08 — Severe FPS drop (`120 FPS -> ~57–63 FPS`) after race countdown and in Pause Menu**
+- [x] **PT-08 — Severe FPS drop (`120 FPS -> ~57–63 FPS`) after race countdown and in Pause Menu**
   - **Priority**: P0
   - **Evidence**: `bug_008.png` (`63 FPS`, `CPU 13.69 ms`, `GPU 4.82 ms`), `bug_009.png` (`57 FPS`, `CPU 11.37 ms`, `GPU 5.22 ms`), plus `summary.json` top hitches (`210–364 ms` while `paused: true, in_race: true`, `CPU 9.8–12.0 ms`).
-  - **Progress**: Hotspot A (120 Hz race CPU: O(log N) `line_segment_fast`, guarded `set_planner`, skipped countdown `plan_lanes` & redundant AI ground raycasts, 60 Hz replay sampling) fixed in PT-A; Hotspot B (`Showroom::record_debris_draw` rebuilding 120k spectator vertices every frame even while paused) scheduled in PT-B.
+  - **Fix (PT-A + PT-B)**: Fixed 120 Hz race CPU overhead (PT-A) plus cached spectator ground heights, prebuilt pools, 5-plane frustum culling, unique-vertex skinning, and `SpectatorFrameCache` pause skip so paused/crowd frames no longer rebuild 120k vertices every frame (PT-B).
 
 - [ ] **PT-09 — World Map panning performance is very poor**
   - **Priority**: P1
@@ -104,63 +104,61 @@ Source playtest session: `out/playtests/20261124-143848/`
 
 ## 4. World Geometry, VFX, Crowds, Lights & Sky
 
-- [ ] **PT-13 — Floating white light orbs in sky near Horizon Festival and outposts**
+- [x] **PT-13 — Floating white light orbs in sky near Horizon Festival and outposts**
   - **Priority**: P1
   - **Evidence**:
     - `bug_003.png` (`t=308.8s`, `-226.55 8.43 -299.84`): two bright white orbs floating high above the festival road.
     - `bug_004.png` (`-334.23 3.25 -215.94`): floating orb above streetlamp.
     - `bug_024.png` (`t=1406.2s`, `-1726.21 17.57 -3271.12`): glowing white orbs floating detached above Montano Plains outpost poles.
-  - **Suspected cause**: `WorldGlow` sprite positions or coordinate-frame/Y-offset mismatch when placing festival/outpost light glows, or lamp poles culled/missing while their glow sprites remain drawn.
+  - **Fix (PT-B)**: Anchored world glows to visible fixture prop AABBs with terrain clearance validation, synced draw/fade distance to `world_fade_[2..3]`, gated out bright daytime glows, and replaced harsh overbright spheres with soft atmospheric coronas.
 
-- [ ] **PT-14 — Horizon / distant terrain cutoff band near Festival**
+- [x] **PT-14 — Horizon / distant terrain cutoff band near Festival**
   - **Priority**: P1
   - **Evidence**: `bug_003.png`, `bug_010.png`, `bug_020.png`, `bug_021.png`, `bug_023.png`: stark bright/flat strip right along the horizon where distant mountains/far-ring cut off sharply against the sky dome.
-  - **Suspected cause**: Far-ring draw radius / fog-horizon color mismatch or sky horizon gradient discontinuity in `sky.frag` / `world.frag`.
+  - **Fix (PT-B)**: Replaced the dead-shelf atmosphere `pow` in `sky.frag` with a smooth C¹ horizon-to-zenith gradient anchored at `V.y = 0`, synchronized sky/world fog scatter (`8000 m`), and blended distant far-ring haze smoothly to `1.0`.
 
-- [ ] **PT-15 — Giant untextured square particle emitters at Festival / Crowd / Event spots**
+- [x] **PT-15 — Giant untextured square particle emitters at Festival / Crowd / Event spots**
   - **Priority**: P1
   - **Evidence**:
     - `bug_004.png` (`-334.23 3.25 -215.94`), `bug_005.png` (`-370.87 3.88 -199.35`)
     - `bug_025.png` (`-1423.89 43.12 -3610.82`, Recaro Rush)
     - `bug_029.png` (`-5424.29 73.58 -3174.18`, Mustang vs Mustang spot)
-    - All show huge overlapping translucent white square quads (`~10 m` wide) plus a vertical column of small square quads rising into the sky.
-  - **Suspected cause**: Particle atlas UV / missing soft-alpha texture fallback (falling back to solid white quad) and/or oversized world-emitter scale on flare/smoke/fireworks emitters in `showroom_vfx.cpp` / `world/vfx.cpp`.
+  - **Fix (PT-B)**: Fixed `_Composite_Flare*` expansion to ground flares, clamped negative buoyancy rocket acceleration, sanitized DXT1/RGB-only particle alpha masks, and added primary-luminance + circular `quad_radial` edge feathering in `particle.frag`.
 
-- [ ] **PT-16 — Static crowds, non-colliding festival barriers/fences, and missing event-site geometry**
+- [x] **PT-16 — Static crowds, non-colliding festival barriers/fences, and missing event-site geometry**
   - **Priority**: P1
   - **Evidence**: `bug_005.png` (`-370.87 3.88 -199.35`), `bug_008.png`, `bug_029.png` (`-5424.29 73.58 -3174.18`).
-    - Crowds are frozen in static poses (no animation playback).
-    - Barriers/fences beside crowds do not collide properly.
-    - Event entry spots look sparse/incomplete (missing tents/arches/props or culled by route/prop filter).
+  - **Fix (PT-B)**: Upgraded all standing/sitting crowd FK animations with lively cheering/clapping/waving/gaze tracking, registered unbreakable/static `.pvsz` festival crowd barriers with smooth horizontal SAT OBB collision, and restored 533 emissive buildings/booths + 146 flags/bunting.
 
-- [ ] **PT-17 — Broken/shredded geometry & alpha on tall curved Horizon feather flags and race lamps**
+- [x] **PT-17 — Broken/shredded geometry & alpha on tall curved Horizon feather flags and race lamps**
   - **Priority**: P1
   - **Evidence**: `bug_008.png` (`-949.98 -3.15 -586.79`), `bug_009.png` (`-950.74 -2.90 -595.72`), `bug_012.png`, `bug_013.png`. Right-side curved flags show only thin black poles with shredded red triangles floating in mid-air.
-  - **Suspected cause**: Wrong backface culling (flags are single-sided without `VK_CULL_MODE_NONE`), wrong cutout alpha threshold, or bad vertex-skinning / wind displacement on `.pgeo`/flag meshes.
+  - **Fix (PT-B)**: Routed `ANIM_FLAG_*` and `BUNTING_*` to two-sided `Blend::kCoverage`, excluded rigid `ANIM_FLAGPOLE_*` from cloth displacement, refined horizontal wind ripples, and added geometric face normals + back-face normal flipping.
 
-- [ ] **PT-18 — Static `"START"` and `"0:05"` gantry displays not animated on race start**
+- [x] **PT-18 — Static `"START"` and `"0:05"` gantry displays not animated on race start**
   - **Priority**: P2
   - **Evidence**: `bug_007.png` (`t=450.9s`, `-950.05 -3.51 -546.42`). Overhead race gantry shows frozen `"0:05"` LED panels and static `"START"` sign instead of counting down / switching to `GO` / race clock.
+  - **Fix (PT-B)**: Wired `h_diff_countdown_nolight_masked_1` and `h_diff_flipbook_nolight_masked_1` to live self-lit LED dot-matrix animation stepping cleanly through `0:05`..`0:01` -> pulsing green `GO` -> `HORIZON FESTIVAL TV` plus 16-frame festival TV flipbooks.
 
-- [ ] **PT-19 — Floating building roofs / canopies mid-air**
+- [x] **PT-19 — Floating building roofs / canopies mid-air**
   - **Priority**: P1
   - **Evidence**: `bug_016.png` (`t=745.6s`, `-3036.80 5.08 -1439.40`). Three dark roof canopies float high above the road with no walls/support pillars underneath.
-  - **Suspected cause**: Missing base building LOD/submesh, wrong prop height/transform, or props culled independently from their roof pieces.
+  - **Fix (PT-B)**: Replaced float32 `+ 0.5f` flag rounding (which rounded odd `kFlagEmissiveMap | kFlagTextured = 2^23 + 1` to `kFlagSky`, projecting 533 buildings into the sky dome!) with exact `round()` / `std::lround()` across all world shaders and CPU/GPU pipelines.
 
-- [ ] **PT-20 — Cloud texture transparency / horizon band artifacts**
+- [x] **PT-20 — Cloud texture transparency / horizon band artifacts**
   - **Priority**: P2
   - **Evidence**: `bug_020.png` (`t=870.6s`, `-3147.20 13.80 -1211.58`). Dark flat clouds with harsh transparency edges over a bright cyan-white strip along the horizon.
-  - **Suspected cause**: Cloud layer premultiplied vs straight alpha blending or `CloseCloudBottom*Back` / `SkyColour` curve evaluation at dusk/dawn in `showroom_sky.cpp` / `sky.frag`.
+  - **Fix (PT-B)**: Switched Mode 1 cloud compositing in `sky.frag` to true premultiplied linear Porter-Duff OVER (eliminating `rgb * a^2` dark halos), applied `SkyGain` + half-Lambert wrap, and feathered clouds smoothly into horizon mist.
 
-- [ ] **PT-21 — Upgrade discount signs do not break when hit**
+- [x] **PT-21 — Upgrade discount signs do not break when hit**
   - **Priority**: P1
   - **Evidence**: `bug_021.png` (`t=1052.8s`, `-3398.42 7.99 -1348.46`). Car sits clipped inside the Upgrade Discount billboard without breaking/collecting it.
-  - **Suspected cause**: Sign hitbox radius/height mismatch or collision/collectible trigger not firing on slow/angled contact or missing breakable mesh hide + debris burst.
+  - **Fix (PT-B)**: Lazily recreated `host.free_roam` after `start_new_career()` hot-reloads, upgraded sign detection to swept 2D XZ SAT OBB-vs-OBB with planar speed, immediately hid GPU billboard draws on hit, and added oriented shatter debris.
 
-- [ ] **PT-22 — `235` ground anomalies recorded during playtest**
+- [x] **PT-22 — `235` ground anomalies recorded during playtest**
   - **Priority**: P1
   - **Evidence**: `summary.json`: `"ground_anomaly_count": 235`.
-  - **Action**: Analyze `telemetry.jsonl` ground anomaly records to identify collision holes, bridge/seam drops, or false positives.
+  - **Fix (PT-B)**: Telemetry breakdown confirmed 0 collision holes (162 real PT-27 vertical-launch frames + 1 paused pre-race-grid frame + 72 overhead canopy/guardrail probe frames). Fixed `world::ground_height` steep-wall pass-through + hairline seam fallback and filtered paused/overhead false positives in `playtest_recorder.cpp`.
 
 ---
 

@@ -143,7 +143,8 @@ const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u, kAdditive = 3u;
 const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u,
            kFlagBillboard = 32u, kFlagAlphaTest = 64u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u,
            kFlagUnlitVertexColor = 1024u, kFlagLightMap = 2048u, kFlagNormalMap = 4096u, kFlagAoMap = 8192u,
-           kFlagLayerC = 16384u, kFlagWater = 32768u, kFlagVertexLit = 65536u, kFlagSpecMap = 524288u,
+           kFlagLayerC = 16384u, kFlagWater = 32768u, kFlagVertexLit = 65536u, kFlagAnimFlag = 131072u,
+           kFlagSpecMap = 524288u,
            kFlagRoad = 1048576u, kFlagDecalNoise = 2097152u, kFlagWaterNormalB = 4194304u,
            kFlagEmissiveMap = 8388608u;
 const uint kFlagRoadNoise = kFlagDecalNoise;       // bit 21 when kFlagRoad is set (splat_map = H_ROAD Noise)
@@ -277,8 +278,13 @@ vec3 apply_haze(vec3 colour, vec3 position, vec3 up, vec3 sun) {
     float h_span = max(frame.fog_params.z - frame.fog_params.y, 1.0);
     float h_u = clamp((world_y - frame.fog_params.y) / h_span, 0.0, 1.0);
     float h_smooth = h_u * h_u * (3.0 - 2.0 * h_u);
-    float fog_amt = clamp(fog_dist * (1.0 - h_smooth * frame.fog_params.w), 0.0, 0.92);
-    float sc_dist = clamp(d / 3500.0, 0.0, 1.0);
+    // Raise the maximum fog cap smoothly from 0.92 toward 1.0 across the far-ring boundary so
+    // distant UberLOD/MIDDIST mountain silhouettes merge cleanly into the sky horizon fog skirt.
+    float max_fog = mix(0.92, 1.0, smoothstep(3200.0, 7500.0, d));
+    float fog_amt = clamp(fog_dist * (1.0 - h_smooth * frame.fog_params.w), 0.0, max_fog);
+    float far_edge = smoothstep(6500.0, 11500.0, d);
+    fog_amt = max(fog_amt, far_edge);
+    float sc_dist = clamp(d / 8000.0, 0.0, 1.0);
     float sc_ang = pow(clamp(dot(view_dir, sun), 0.0, 1.0), max(frame.fog_scatter.w, 1.0));
     vec3 fog_col = mix(frame.fog_color.rgb, frame.fog_scatter.rgb, sc_dist * sc_ang);
     return colour * (1.0 - fog_amt) + fog_amt * fog_col;
@@ -576,7 +582,9 @@ void main() {
   draw.sun.w = (g_tex1.w & 1u) != 0u ? push.swap_pad.x : 2.0;
 #endif
   uint blend = uint(draw.params.x + 0.5);
-  uint flags = uint(draw.params.y + 0.5);
+  // Round-to-nearest without +0.5 so odd flag masks >= 2^23 (kFlagEmissiveMap | kFlagTextured)
+  // decode bit-for-bit identically without flipping bit 0 into kFlagSky (bit 1).
+  uint flags = uint(round(draw.params.y));
   if ((flags & kFlagSky) != 0u) {
     out_color = vec4(out_rgb(sky_grade(sky_colour(normalize(v_position), normalize(draw.up.xyz), normalize(draw.sun.xyz)))), 1.0);
     return;
@@ -598,8 +606,67 @@ void main() {
   // tilings, Blend_A's in xy and Blend_B's in zw; the weight is the vertex
   // colour's R (H_VBLND, baked from c4) or Splat's R (H_BLND2/3, uv1
   // pre-tiled). Blend_C is not drawn (its weight is not settled).
-  // Unlit premultiplied-alpha vertex colour overlay (e.g. 3D driving/braking line ribbon).
+  // Unlit premultiplied-alpha vertex colour overlay (e.g. 3D driving/braking line ribbon),
+  // OR animated unlit emissive LED gantry countdown / 8x2 flipbook display when kFlagTextured is set.
   if ((flags & kFlagUnlitVertexColor) != 0u) {
+    if ((flags & kFlagTextured) != 0u) {
+      vec3 up_led = normalize(draw.up.xyz);
+      vec3 sun_led = normalize(draw.sun.xyz);
+      float t_led = max(frame.env_basis_x.w, 0.0);
+      float mask_rep = clamp(draw.tint.z, 4.0, 128.0);
+      vec2 anim_uv = v_uv0;
+      float emissive_boost = 1.35;
+      if (draw.tint.w < 1.5) {
+        // 8-row vertical race start gantry countdown atlas:
+        // rows 0..4 = 0:05..0:01, rows 5..6 = green GO!, row 7 = Horizon Festival TV.
+        // Synced to the 6.0 s race start sequence (vehicle.time() starts at 0.0 on race entry).
+        int row_idx = 7;
+        float beat = 1.0;
+        if (t_led < 1.5) {
+          row_idx = 0;
+          beat = 1.0 + 0.30 * exp(-fract(t_led / 1.5) * 4.0);
+        } else if (t_led < 3.0) {
+          row_idx = 1;
+          beat = 1.0 + 0.30 * exp(-fract((t_led - 1.5) / 1.5) * 4.0);
+        } else if (t_led < 4.0) {
+          row_idx = 2;  // 0:03
+          beat = 1.05 + 0.38 * exp(-fract(t_led) * 4.5);
+        } else if (t_led < 5.0) {
+          row_idx = 3;  // 0:02
+          beat = 1.10 + 0.42 * exp(-fract(t_led) * 4.5);
+        } else if (t_led < 6.0) {
+          row_idx = 4;  // 0:01
+          beat = 1.15 + 0.48 * exp(-fract(t_led) * 4.5);
+        } else if (t_led < 10.5) {
+          // Energetic pulsing green GO banner for 4.5 s after launch.
+          row_idx = 5 + int(floor(fract(t_led * 2.5) * 2.0));
+          beat = 1.25 + 0.30 * sin(t_led * 15.707963);
+        } else {
+          // Live race / free-roam state: show Horizon Festival TV logo banner.
+          row_idx = 7;
+          beat = 0.95 + 0.08 * sin(t_led * 2.2);
+        }
+        anim_uv = vec2(v_uv0.x, fract(v_uv0.y + float(row_idx) * 0.125));
+        emissive_boost = 1.55 * beat;
+      } else {
+        // 8x2 (16-frame) animated festival TV / billboard flipbook display.
+        int frame_idx = int(mod(floor(t_led * 0.75), 16.0));
+        int col_i = frame_idx % 8;
+        int row_i = frame_idx / 8;
+        anim_uv = vec2(fract(v_uv0.x + float(col_i) * 0.125), fract(v_uv0.y + float(row_i) * 0.5));
+        emissive_boost = 1.30;
+      }
+      vec3 led_rgb = texture(albedo, anim_uv).rgb;
+      if ((flags & kFlagVertexBlend) != 0u) {
+        vec3 mask_rgb = texture(layer_b, v_uv0 * mask_rep).rgb;
+        float mask_luma = clamp(dot(mask_rgb, vec3(0.3333)), 0.0, 1.0);
+        led_rgb *= mix(0.62, 1.18, mask_luma);
+      }
+      vec3 led_col = led_rgb * emissive_boost * draw.up.w;
+      led_col = apply_haze(led_col, v_position, up_led, sun_led);
+      out_color = vec4(out_rgb(led_col), kLinearOut ? 0.0 : 1.0);
+      return;
+    }
     if (draw.params.w > 1.5) {
       // 1:1 Forza Horizon 1 3D chevron arrow ribbon (>>>):
       // v_uv0.x = lateral coordinate u in [-1, 1], v_uv0.y = world-locked arc length s (meters).
@@ -661,10 +728,22 @@ void main() {
     return;
   }
   vec3 up = normalize(draw.up.xyz);
-  vec3 n_geom = dot(v_normal, v_normal) > 1e-6 ? normalize(v_normal) : up;
   vec3 sun = normalize(draw.sun.xyz);
   vec3 view = normalize(frame.eye.xyz - v_position);
   float eye_dist = length(frame.eye.xyz - v_position);
+  vec3 n_geom;
+  if (dot(v_normal, v_normal) > 1e-6) {
+    n_geom = normalize(v_normal);
+  } else {
+    // Stride-32 flag cloth meshes store no vertex normal; derive geometric face normal cleanly.
+    vec3 fn = cross(dFdx(v_position), dFdy(v_position));
+    n_geom = dot(fn, fn) > 1e-10 ? normalize(fn) : up;
+  }
+  // Two-sided cloth flags & alpha-cutout props flip their shading normal when viewed from behind.
+  if ((blend == kCoverage || (flags & kFlagAnimFlag) != 0u) && (flags & kFlagBillboard) == 0u &&
+      dot(n_geom, view) < 0.0) {
+    n_geom = -n_geom;
+  }
   vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : kSunColour;
   vec3 sky_col = frame.sun_color.w >= 0.0 ? frame.sky_color.rgb : kSkyColour;
   vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : kGroundColour;
@@ -908,7 +987,7 @@ void main() {
   }
 #ifndef OPAQUE_NO_DISCARD
   // Execute cutout alpha-test before normal mapping, shadows, specular, and headlights.
-  if (blend == kCoverage && (flags & kFlagAlphaTest) != 0u && t.a < 0.5) discard;
+  if (blend == kCoverage && (flags & kFlagAlphaTest) != 0u && t.a < 0.42) discard;
 #endif
   // Tree sprites: soft linearize vertex tint without crushing distant conifers to black silhouettes.
   if ((flags & kFlagBillboard) != 0u) t.rgb *= 1.85 * pow(max(v_colour.rgb, vec3(0.0)), vec3(1.35));
@@ -1068,7 +1147,7 @@ void main() {
 #ifndef OPAQUE_NO_DISCARD
   if (blend == kCoverage) {
     // Alpha to coverage, sharpened to the texel edge (alpha-test discard ran early above).
-    alpha = clamp((t.a - 0.5) / max(fwidth(t.a), 1e-4) + 0.5, 0.0, 1.0);
+    alpha = clamp((t.a - 0.42) / max(fwidth(t.a), 1e-4) + 0.5, 0.0, 1.0);
   } else if (blend == kAlpha) {
     // H_VBLND_DECAL with Noise_Sampler (c4.y >= 0) or Mask (c4.y < 0):
     if ((flags & kFlagVertexFade) != 0u && (flags & kFlagDecalNoise) != 0u) {

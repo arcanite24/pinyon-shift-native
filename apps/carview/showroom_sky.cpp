@@ -54,9 +54,10 @@ void Showroom::apply_tod_to_frame() {
   frame_.fog_color[3] = t.fog_start;
 
   // Modulate atmospheric sun-scatter colour by Fog_Templates SunScatterStartDistance /
-  // SunScatterRampupDistance (SPEC-SKY-AND-TOD §4) evaluated at mid-horizon distance.
+  // SunScatterRampupDistance (SPEC-SKY-AND-TOD §4) at a shared horizon reference distance
+  // (8000 m) matching fill_sky_uniforms() so fogged distant terrain blends seamlessly into the sky.
   const float sc_dist_world =
-      std::clamp((3500.0f - t.fog_sun_scatter_start) / std::max(t.fog_sun_scatter_rampup, 1.0f), 0.15f, 1.0f);
+      std::clamp((8000.0f - t.fog_sun_scatter_start) / std::max(t.fog_sun_scatter_rampup, 1.0f), 0.15f, 1.0f);
   frame_.fog_scatter[0] = t.fog_color[0] + (t.fog_sun_scatter_color[0] - t.fog_color[0]) * sc_dist_world;
   frame_.fog_scatter[1] = t.fog_color[1] + (t.fog_sun_scatter_color[1] - t.fog_color[1]) * sc_dist_world;
   frame_.fog_scatter[2] = t.fog_color[2] + (t.fog_sun_scatter_color[2] - t.fog_color[2]) * sc_dist_world;
@@ -508,15 +509,17 @@ void Showroom::fill_sky_uniforms(const ShowroomFrame& view_frame, SkyUniforms& u
   u.close_back_bot_col[2] = t.close_back_bottom_color[2]; u.close_back_bot_col[3] = t.close_back_bottom_power;
 
   u.fog_color[0] = t.fog_color[0]; u.fog_color[1] = t.fog_color[1]; u.fog_color[2] = t.fog_color[2];
-  u.fog_color[3] = std::clamp(t.fog_sky_height_fade_start / 15000.0f, 0.0f, 0.25f);
+  // Anchor the sky horizon fog skirt at the geometric horizon (V.y = 0) with the same
+  // 8000 m scatter weight as apply_tod_to_frame() so far-ring terrain merges seamlessly.
+  u.fog_color[3] = 0.0f;
   const float sc_dist_sky =
-      std::clamp((15000.0f - t.fog_sun_scatter_start) / std::max(t.fog_sun_scatter_rampup, 1.0f), 0.15f, 1.0f);
+      std::clamp((8000.0f - t.fog_sun_scatter_start) / std::max(t.fog_sun_scatter_rampup, 1.0f), 0.15f, 1.0f);
   u.fog_scatter[0] = t.fog_color[0] + (t.fog_sun_scatter_color[0] - t.fog_color[0]) * sc_dist_sky;
   u.fog_scatter[1] = t.fog_color[1] + (t.fog_sun_scatter_color[1] - t.fog_color[1]) * sc_dist_sky;
   u.fog_scatter[2] = t.fog_color[2] + (t.fog_sun_scatter_color[2] - t.fog_color[2]) * sc_dist_sky;
   u.fog_scatter[3] = t.fog_sun_scatter_power;
-  u.fog_sky[0] = std::clamp(t.fog_sky_height_fade_end / 15000.0f, 0.05f, 0.35f);
-  u.fog_sky[1] = std::clamp(t.fog_density * 14.0f, 0.15f, 0.85f);
+  u.fog_sky[0] = std::clamp(t.fog_sky_height_fade_end / 12000.0f, 0.10f, 0.28f);
+  u.fog_sky[1] = std::clamp(0.75f + t.fog_density * 5.0f, 0.85f, 1.0f);
   u.fog_sky[2] = sky_has_textures_ ? 1.0f : 0.0f;
   u.fog_sky[3] = t.star_fade;
 }

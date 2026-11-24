@@ -85,8 +85,12 @@ constexpr double kRumourSpacing = 50000;
 // The interim break speed (m/s).
 constexpr double kSignBreakSpeed = 1.0;
 // How far the sign's own collision reaches past its placement point (m),
-// ours: the model's board is about this wide either side.
+// kept for backward compatibility; actual billboard board extents use the
+// oriented half-width and half-depth below (matching the ~4.1 m wide sign).
 constexpr double kSignReach = 0.6;
+constexpr double kSignBoardHalfWidth = 2.05;
+constexpr double kSignBoardHalfDepth = 0.45;
+constexpr double kSignHeightTolerance = 3.5;
 
 // The car for one step: where it is, which way it faces, its body's half
 // width and half length, its speed, and how far it moved.

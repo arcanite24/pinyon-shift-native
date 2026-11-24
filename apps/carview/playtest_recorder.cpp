@@ -63,8 +63,11 @@ bool PlaytestRecorder::has_non_finite(const PlaytestFrameSample& s) {
 
 bool PlaytestRecorder::is_ground_anomaly(const PlaytestFrameSample& s) {
   if (!std::isfinite(s.y)) return true;
-  if (!s.has_road_y) return !s.paused;
-  if (!std::isfinite(s.road_y)) return true;
+  if (s.has_road_y && !std::isfinite(s.road_y)) return true;
+  // Paused / menu / loading / pre-race-grid frames before physics snaps the car
+  // onto the road are not live driving ground anomalies.
+  if (s.paused) return false;
+  if (!s.has_road_y) return true;
   const double dy = s.y - s.road_y;
   return dy < kGroundBelowThresholdM || dy > kGroundAboveThresholdM;
 }
@@ -344,6 +347,11 @@ bool PlaytestRecorder::start(const std::filesystem::path& dir, std::string* erro
   last_periodic_t_ = -1e9;
   have_audio_stalls_ = false;
   last_audio_stalls_ = 0;
+  have_valid_road_y_ = false;
+  last_valid_road_y_ = 0.0;
+  last_valid_x_ = 0.0;
+  last_valid_z_ = 0.0;
+  last_valid_t_ = 0.0;
 
   frame_ms_samples_.clear();
   frame_ms_samples_.reserve(16384);
@@ -430,10 +438,47 @@ void PlaytestRecorder::record_frame(const PlaytestFrameSample& sample) {
   const bool hitch = is_hitch(sample.frame_ms);
   if (hitch) record_hitch(sample);
 
-  const bool ground_anom = is_ground_anomaly(sample);
+  const double sample_t = std::isfinite(sample.t) ? sample.t : last_sample_t_;
+
+  bool ground_anom = is_ground_anomaly(sample);
+  const bool finite_pos = std::isfinite(sample.x) && std::isfinite(sample.y) && std::isfinite(sample.z);
+  if (have_valid_road_y_ && finite_pos) {
+    const double dx = sample.x - last_valid_x_;
+    const double dz = sample.z - last_valid_z_;
+    if (dx * dx + dz * dz > 25.0 * 25.0 || (sample_t - last_valid_t_) > 2.0 || sample_t < last_valid_t_) {
+      have_valid_road_y_ = false;
+    }
+  }
+
+  bool overhead_probe_hit = false;
+  if (ground_anom && !sample.paused && finite_pos && sample.has_road_y && std::isfinite(sample.road_y)) {
+    const double dy = sample.y - sample.road_y;
+    // Detect overhead roof / bridge beam / leaning wall hit by the +2.2 m downward probe:
+    // road_y jumps sharply upward (> 1.0 m above the continuous road surface) into the
+    // probe headroom while the car itself stays at/above the continuous road.
+    if (dy < kGroundBelowThresholdM && have_valid_road_y_ &&
+        sample.road_y > last_valid_road_y_ + 1.0 &&
+        sample.y >= last_valid_road_y_ + kGroundBelowThresholdM &&
+        sample.road_y <= sample.y + 2.35) {
+      ground_anom = false;
+      overhead_probe_hit = true;
+      last_valid_x_ = sample.x;
+      last_valid_z_ = sample.z;
+      last_valid_t_ = sample_t;
+    }
+  }
+
+  if (!ground_anom && !overhead_probe_hit && !sample.paused && finite_pos && sample.has_road_y &&
+      std::isfinite(sample.road_y)) {
+    have_valid_road_y_ = true;
+    last_valid_road_y_ = sample.road_y;
+    last_valid_x_ = sample.x;
+    last_valid_z_ = sample.z;
+    last_valid_t_ = sample_t;
+  }
+
   if (ground_anom) ++ground_anomaly_count_;
 
-  const double sample_t = std::isfinite(sample.t) ? sample.t : last_sample_t_;
   const bool periodic = (last_periodic_t_ < -1e8) || ((sample_t - last_periodic_t_) >= kPeriodicIntervalSec - 1e-6);
 
   if (!hitch && !ground_anom && !non_finite && !audio_glitch && !periodic) return;

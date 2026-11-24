@@ -573,12 +573,76 @@ bool Collision::gather(double x, double z, double radius, CollisionMesh& out, st
 double spawn_heading() { return std::atan2(kSpawnForwardX, kSpawnForwardZ); }
 
 bool ground_height(const drive::Ground& ground, double x, double z, double from_y, double& y, drive::Hit* hit) {
-  drive::Hit h;
-  constexpr double kReach = 20;
-  if (!ground.raycast({x, from_y, z}, {0, -1, 0}, kReach, h)) return false;
-  y = from_y - h.distance;
-  if (hit) *hit = h;
-  return true;
+  constexpr double kReach = 20.0;
+  constexpr double kMinWalkableNormalY = 0.5;
+  constexpr double kStepPastEps = 0.02;
+  constexpr int kMaxSteepSteps = 8;
+
+  auto probe_column = [&](double px, double pz, double& walk_y, drive::Hit& walk_hit, bool& got_walk,
+                          double& first_y, drive::Hit& first_hit, bool& got_first) {
+    got_walk = false;
+    got_first = false;
+    double cur_y = from_y;
+    double rem = kReach;
+    for (int step = 0; step < kMaxSteepSteps && rem > 0.0; ++step) {
+      drive::Hit h{};
+      if (!ground.raycast({px, cur_y, pz}, {0, -1, 0}, rem, h)) break;
+      const double hy = cur_y - h.distance;
+      if (!got_first) {
+        got_first = true;
+        first_y = hy;
+        first_hit = h;
+      }
+      if (h.normal.y >= kMinWalkableNormalY) {
+        got_walk = true;
+        walk_y = hy;
+        walk_hit = h;
+        return;
+      }
+      const double advance = h.distance + kStepPastEps;
+      cur_y -= advance;
+      rem -= advance;
+    }
+  };
+
+  double walk_y = 0.0, first_y = 0.0;
+  drive::Hit walk_hit{}, first_hit{};
+  bool got_walk = false, got_first = false;
+  probe_column(x, z, walk_y, walk_hit, got_walk, first_y, first_hit, got_first);
+  if (got_walk) {
+    y = walk_y;
+    if (hit) *hit = walk_hit;
+    return true;
+  }
+
+  // Hairline triangle/tile seam fallback: probe 4 tiny XZ offsets (+/- 8 cm) for a walkable surface.
+  static constexpr double kSeamOffsets[4][2] = {{0.08, 0.0}, {-0.08, 0.0}, {0.0, 0.08}, {0.0, -0.08}};
+  bool found_seam = false;
+  double best_y = -1e30;
+  drive::Hit best_hit{};
+  for (const auto& off : kSeamOffsets) {
+    double sy = 0.0, sfy = 0.0;
+    drive::Hit sh{}, sfh{};
+    bool sw = false, sf = false;
+    probe_column(x + off[0], z + off[1], sy, sh, sw, sfy, sfh, sf);
+    if (sw && (!found_seam || sy > best_y)) {
+      found_seam = true;
+      best_y = sy;
+      best_hit = sh;
+    }
+  }
+  if (found_seam) {
+    y = best_y;
+    if (hit) *hit = best_hit;
+    return true;
+  }
+
+  if (got_first) {
+    y = first_y;
+    if (hit) *hit = first_hit;
+    return true;
+  }
+  return false;
 }
 
 }  // namespace world

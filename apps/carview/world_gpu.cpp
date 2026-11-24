@@ -747,7 +747,7 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
   for (uint32_t i = 0; i < n; ++i) {
     const auto& row = rows[i];
     if (row.draw[0] > 0u && row.draw[3] <= gpuworld::kOpaqueDecal) {
-      const uint32_t fl = uint32_t(row.params[1] + 0.5f);
+      const uint32_t fl = uint32_t(std::lround(row.params[1]));
       if ((fl & (128u | 256u | 512u)) != 0u) next.has_opaque_dither = true;
     }
     for (uint32_t k = 0; k < 4; ++k) record_slot(row.tex0[k]);

@@ -294,12 +294,92 @@ void test_smashables_rewind_restore() {
   CHECK(unhidden.size() == 1);
 }
 
+void test_solid_festival_barriers_and_ground_height() {
+  // PT-16: model classification separates solid festival crowd barriers from wooden fences & decorative props.
+  CHECK(world::SmashableWorld::is_solid_barrier_model("OBJ_FEST_CrowdBarrier_LOD00", {-1.3f, 0.0f, -0.15f},
+                                                      {1.3f, 1.15f, 0.15f}));
+  CHECK(world::SmashableWorld::is_solid_barrier_model("ChainLink_Fence_2_66m_LOD00", {-1.33f, 0.0f, -0.05f},
+                                                      {1.33f, 1.85f, 0.05f}));
+  CHECK(!world::SmashableWorld::is_solid_barrier_model("CO_WoodenBarrier_001_LOD00", {-1.3f, 0.0f, -0.15f},
+                                                       {1.3f, 1.15f, 0.15f}));
+  CHECK(!world::SmashableWorld::is_solid_barrier_model("OBJ_FEST_FlagTall_LOD00", {-0.6f, 0.0f, -0.1f},
+                                                       {0.6f, 5.5f, 0.1f}));
+  CHECK(!world::SmashableWorld::is_solid_barrier_model("Temp_Arrow_Pointer_LOD00", {-1.0f, 0.0f, -1.5f},
+                                                       {1.0f, 0.85f, 1.5f}));
+
+  // PT-16: solid festival crowd barrier stops the car smoothly along the barrier without launching it vertically.
+  world::SmashableWorld sw;
+  world::SolidBarrier bar;
+  bar.pos = {0.0f, 0.0f, 8.0f};
+  bar.local_center = {0.0f, 0.6f, 0.0f};
+  bar.half_extents = {2.6f, 0.6f, 0.22f};
+  bar.routes = {0};  // free-roam barrier
+  sw.add_solid_barrier(bar);
+  CHECK(sw.solid_barrier_count() == 1);
+
+  drive::FlatGround ground(0.0);
+  drive::CarParams cp{};
+  drive::Vehicle car(cp);
+  car.launch({0.0, 0.4, 3.0}, 0.0, 14.0);
+  std::vector<world::SmashEvent> evs;
+  double max_y = 0.0;
+  double max_vy = 0.0;
+  for (int i = 0; i < 80; ++i) {
+    car.step({0.0, 0.4, 0.0, false}, ground);
+    sw.step(car, ground, float(drive::Vehicle::kStep), evs);
+    CHECK(evs.empty());  // solid barrier must NOT shatter
+    max_y = std::max(max_y, car.position().y);
+    max_vy = std::max(max_vy, car.velocity().y);
+  }
+  CHECK(car.position().z < 7.8);  // stopped in front of z = 8 barrier
+  CHECK(max_y < 1.5);             // never launched into the air
+  CHECK(max_vy < 1.0);            // zero upward launch velocity
+
+  // Route-gated barrier must NOT block an unrelated event route.
+  sw.set_active_route(16);
+  car.launch({0.0, 0.4, 3.0}, 0.0, 14.0);
+  for (int i = 0; i < 80; ++i) {
+    car.step({0.0, 0.4, 0.0, false}, ground);
+    sw.step(car, ground, float(drive::Vehicle::kStep), evs);
+  }
+  CHECK(car.position().z > 9.5);
+
+  // PT-21: oriented flyer shatter + record_hidden_prop persists hidden sphere.
+  const int shards = sw.spawn_flyer_shatter({10.0f, 1.0f, 20.0f}, {0.5f, 0.0f, 0.866f}, {0.0f, 1.0f, 0.0f},
+                                            {-0.866f, 0.0f, 0.5f}, {12.0f, 0.0f, 0.0f});
+  CHECK(shards == 12);
+  sw.record_hidden_prop({10.0f, 1.0f, 20.0f}, 3.5f);
+  CHECK(sw.broken_prop_count() == 1);
+
+  // PT-22: world::ground_height skips steep vertical wall planes sitting over flat road
+  // and recovers cleanly across a hairline triangle seam.
+  {
+    // Two road triangles at y = 10.0 with a tiny 2 cm seam along x = 0, plus a steep wall
+    // triangle leaning over x = 0 at y = 12.1 (normal.y ~ 0.05).
+    std::vector<std::array<float, 3>> tris = {
+        // Steep wall triangle strictly spanning x in [-0.05, 0.05] over (0, 0) (normal.y ~ 0.04)
+        {-0.05f, 10.0f, -5.0f}, {-0.05f, 10.0f, 5.0f}, {0.05f, 12.5f, 0.0f},
+        // Road left of hairline seam (x in [-5, -0.01])
+        {-5.0f, 10.0f, -5.0f}, {-0.01f, 10.0f, 5.0f}, {-0.01f, 10.0f, -5.0f},
+        // Road right of hairline seam (x in [0.01, 5])
+        {0.01f, 10.0f, -5.0f}, {0.01f, 10.0f, 5.0f}, {5.0f, 10.0f, -5.0f},
+    };
+    drive::MeshGround mg(tris);
+    double gy = 0.0;
+    drive::Hit h{};
+    CHECK(world::ground_height(mg, 0.0, 0.0, 12.2, gy, &h));
+    CHECK(std::fabs(gy - 10.0) < 0.05);
+    CHECK(h.normal.y > 0.9);
+  }
+}
+
 }  // namespace
 
 int main() {
   test_break_rules_and_pool();
   test_barn_door_swap();
   test_smashables_rewind_restore();
+  test_solid_festival_barriers_and_ground_height();
   test_corpus();
   if (g_failures == 0) {
     std::printf("smashables_tests: all checks passed\n");

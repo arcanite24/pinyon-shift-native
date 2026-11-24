@@ -188,7 +188,7 @@ struct WorldTriangles {
     float emissive_force = 0.0f;
     uint8_t is_emissive_map = 0;
     uint8_t is_water = 0;
-    uint8_t anim_flag = 0;               // world::MeshMaterial::anim_flag (ANIM_FLAG*)
+    uint8_t anim_flag = 0;               // world::MeshMaterial::anim_flag (1=flag cloth, 2=countdown LED, 3=flipbook LED)
     uint8_t is_grass = 0;                // world::MeshMaterial::is_grass (_0x00005007)
     uint8_t is_road = 0;                 // world::MeshMaterial::is_road (H_ROAD*)
     uint8_t fade = 0;                    // world::MeshMaterial::fade: the distance cross-fade class

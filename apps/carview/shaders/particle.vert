@@ -51,13 +51,15 @@ layout(location = 1) out vec2 v_uv;
 layout(location = 2) out vec4 v_color;
 layout(location = 3) out vec4 v_light;
 layout(location = 4) out vec4 v_extra;  // x soft_depth_m, y headlight_power, z flags, w eye_dist
+layout(location = 5) out vec2 v_local_uv;
 
 void main() {
   const vec2 corners[6] = vec2[6](
       vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(0.5, 0.5),
       vec2(-0.5, -0.5), vec2(0.5, 0.5), vec2(-0.5, 0.5));
   vec2 c = corners[gl_VertexIndex % 6];
-  v_uv = in_uv_rect.xy + (c + 0.5) * in_uv_rect.zw;
+  v_local_uv = c + 0.5;
+  v_uv = in_uv_rect.xy + v_local_uv * in_uv_rect.zw;
 
   vec3 pos = in_pos_sx.xyz;
   vec3 to_eye = frame.eye.xyz - pos;
@@ -68,6 +70,7 @@ void main() {
     v_world_pos = pos;
     v_light = vec4(0.0);
     v_extra = vec4(0.0);
+    v_local_uv = vec2(0.0);
     return;
   }
 

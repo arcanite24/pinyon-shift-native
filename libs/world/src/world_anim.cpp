@@ -1322,6 +1322,24 @@ AnimatedWorldSystem* AnimatedWorldSystem::shared() {
 
 void AnimatedWorldSystem::share_from(const AnimatedWorldSystem& other) {
   if (other.state_) state_ = other.state_;
+  reset_frame_cache();
+}
+
+void AnimatedWorldSystem::invalidate_spectator_ground_cache() const {
+  std::lock_guard<std::mutex> lk(state_->cache_mutex);
+  state_->crowd_ground_cache.clear();
+  state_->cached_ground_ptr = nullptr;
+}
+
+size_t AnimatedWorldSystem::cached_spectator_ground_count() const {
+  std::lock_guard<std::mutex> lk(state_->cache_mutex);
+  size_t total = 0;
+  for (const auto& row : state_->crowd_ground_cache) {
+    for (const auto& entry : row) {
+      if (entry.valid) ++total;
+    }
+  }
+  return total;
 }
 
 void AnimatedWorldSystem::set_post_config(const TrackPostConfig& post_cfg) {
@@ -1359,6 +1377,13 @@ void AnimatedWorldSystem::set_world(const std::filesystem::path& media_dir, cons
   state_->flags.clear();
   state_->crowds.clear();
   state_->pgeo_placements.clear();
+  {
+    std::lock_guard<std::mutex> lk(state_->cache_mutex);
+    state_->crowd_ground_cache.clear();
+    state_->cached_ground_ptr = nullptr;
+    state_->pools_ready = false;
+  }
+  reset_frame_cache();
 
   if (state_->rally_world) {
     populate_rally_world(media_dir, world_dir);
@@ -2079,13 +2104,22 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
 
 void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, double eye_z, float time_sec,
                                                const drive::Ground* ground, std::vector<SpectatorVertex>& out) const {
-  build_spectator_mesh(eye_x, eye_y, eye_z, time_sec, ground, out, nullptr);
+  build_spectator_mesh(eye_x, eye_y, eye_z, time_sec, ground, out, nullptr, nullptr, nullptr);
 }
 
 void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, double eye_z, float time_sec,
                                                const drive::Ground* ground, std::vector<SpectatorVertex>& out,
                                                std::vector<std::array<float, 4>>* shadow_discs) const {
+  build_spectator_mesh(eye_x, eye_y, eye_z, time_sec, ground, out, shadow_discs, nullptr, nullptr);
+}
+
+void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, double eye_z, float time_sec,
+                                               const drive::Ground* ground, std::vector<SpectatorVertex>& out,
+                                               std::vector<std::array<float, 4>>* shadow_discs,
+                                               const SpectatorFrustum* frustum,
+                                               float* out_nearest_dist) const {
   (void)eye_y;
+  if (out_nearest_dist) *out_nearest_dist = 1e6f;
   const auto& cat = state_->catalog;
   const auto& crowds = state_->crowds;
   const auto& post_cfg = state_->post_cfg;
@@ -2097,17 +2131,32 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
   const float sprite_dist = std::clamp(post_cfg.crowd_sprite_distance, 25.0f, 115.0f);
   const float max_crowd_dist = std::max(120.0f, sprite_dist + 65.0f);
 
-  // Retail TrackSettings <Crowds> dark/light tint bounds, softly normalized into [0.68..1.0]
-  // so vertex colors match TrackSettings without over-darkening or blowing out albedo.
+  const bool use_frustum = (frustum != nullptr && frustum->active);
+  auto frustum_visible = [&](double gx, float gy, double gz, float radius) -> bool {
+    if (!use_frustum) return true;
+    const float sx = float(gx - frustum->origin_x);
+    const float sz = float(gz - frustum->origin_z);
+    for (const auto& pl : frustum->planes) {
+      if (pl[0] * sx + pl[1] * gy + pl[2] * sz + pl[3] < -radius) return false;
+    }
+    return true;
+  };
+
+  // Precompute normalized TrackSettings <Crowds> dark/light tint bounds once per call.
+  std::array<float, 3> tint_dark{}, tint_light{};
+  for (int ch = 0; ch < 3; ++ch) {
+    tint_dark[size_t(ch)] = std::clamp(0.72f + 0.28f * post_cfg.crowd_dark[ch], 0.55f, 1.0f) * 255.0f;
+    tint_light[size_t(ch)] = std::clamp(0.84f + 0.16f * std::min(post_cfg.crowd_light[ch], 1.5f), 0.75f, 1.0f) * 255.0f;
+  }
   auto eval_crowd_tint = [&](float ny) -> std::array<uint8_t, 4> {
     const float up_f = std::clamp(0.5f + 0.5f * ny, 0.0f, 1.0f);
-    std::array<uint8_t, 4> c{255, 255, 255, 255};
-    for (int ch = 0; ch < 3; ++ch) {
-      const float d_t = std::clamp(0.72f + 0.28f * post_cfg.crowd_dark[ch], 0.55f, 1.0f);
-      const float l_t = std::clamp(0.84f + 0.16f * std::min(post_cfg.crowd_light[ch], 1.5f), 0.75f, 1.0f);
-      c[size_t(ch)] = clamp_u8((d_t * (1.0f - up_f) + l_t * up_f) * 255.0f);
-    }
-    return c;
+    const float dn_f = 1.0f - up_f;
+    return {
+        clamp_u8(tint_dark[0] * dn_f + tint_light[0] * up_f),
+        clamp_u8(tint_dark[1] * dn_f + tint_light[1] * up_f),
+        clamp_u8(tint_dark[2] * dn_f + tint_light[2] * up_f),
+        255u,
+    };
   };
 
   struct GroundSample {
@@ -2117,7 +2166,7 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
     bool on_road = false;
     bool steep = false;
   };
-  auto sample_ground = [&](float x, float z, float fallback) -> GroundSample {
+  auto sample_ground_uncached = [&](float x, float z, float fallback) -> GroundSample {
     GroundSample gs{fallback, false, false, false, false};
     if (!ground) return gs;
     drive::Hit h;
@@ -2147,33 +2196,56 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
     return gs;
   };
 
-  // Pre-build standing and sitting male-only & full asset pools.
-  std::vector<size_t> all_stand_pool, male_stand_pool;
-  all_stand_pool.reserve(cat.assets.size());
-  male_stand_pool.reserve(cat.assets.size());
-  for (size_t a = 0; a < cat.assets.size(); ++a) {
-    all_stand_pool.push_back(a);
-    if (cat.assets[a].is_male) male_stand_pool.push_back(a);
-  }
-  if (male_stand_pool.empty()) male_stand_pool = all_stand_pool;
+  // Hold cache lock for fast cache/pool prep and per-spectator cached lookup.
+  std::lock_guard<std::mutex> cache_lock(state_->cache_mutex);
 
-  std::vector<size_t> all_sit_pool, male_sit_pool;
-  all_sit_pool.reserve(cat.sit_assets.size());
-  male_sit_pool.reserve(cat.sit_assets.size());
-  for (size_t a = 0; a < cat.sit_assets.size(); ++a) {
-    all_sit_pool.push_back(a);
-    if (cat.sit_assets[a].is_male) male_sit_pool.push_back(a);
-  }
-  if (male_sit_pool.empty()) male_sit_pool = all_sit_pool;
+  // Lazily build standing/sitting asset pools & crowdclass lookup once per catalog load.
+  if (!state_->pools_ready || state_->pools_stand_count != cat.assets.size() ||
+      state_->pools_sit_count != cat.sit_assets.size() || state_->pools_cc_count != cat.crowdclasses.size()) {
+    state_->all_stand_pool.clear();
+    state_->male_stand_pool.clear();
+    state_->all_stand_pool.reserve(cat.assets.size());
+    state_->male_stand_pool.reserve(cat.assets.size());
+    for (size_t a = 0; a < cat.assets.size(); ++a) {
+      state_->all_stand_pool.push_back(a);
+      if (cat.assets[a].is_male) state_->male_stand_pool.push_back(a);
+    }
+    if (state_->male_stand_pool.empty()) state_->male_stand_pool = state_->all_stand_pool;
 
-  // Map lower-case crowdclass name -> SpectatorCrowdClass for .anim.bin clip lookup.
-  std::unordered_map<std::string, const SpectatorCrowdClass*> cc_by_low;
-  cc_by_low.reserve(cat.crowdclasses.size());
-  for (const auto& cc : cat.crowdclasses) {
-    cc_by_low[lower_ascii(cc.name)] = &cc;
+    state_->all_sit_pool.clear();
+    state_->male_sit_pool.clear();
+    state_->all_sit_pool.reserve(cat.sit_assets.size());
+    state_->male_sit_pool.reserve(cat.sit_assets.size());
+    for (size_t a = 0; a < cat.sit_assets.size(); ++a) {
+      state_->all_sit_pool.push_back(a);
+      if (cat.sit_assets[a].is_male) state_->male_sit_pool.push_back(a);
+    }
+    if (state_->male_sit_pool.empty()) state_->male_sit_pool = state_->all_sit_pool;
+
+    state_->cc_by_low.clear();
+    state_->cc_by_low.reserve(cat.crowdclasses.size());
+    for (const auto& cc : cat.crowdclasses) {
+      state_->cc_by_low[lower_ascii(cc.name)] = &cc;
+    }
+    state_->pools_stand_count = cat.assets.size();
+    state_->pools_sit_count = cat.sit_assets.size();
+    state_->pools_cc_count = cat.crowdclasses.size();
+    state_->pools_ready = true;
   }
 
-  // Sort nearby clusters closest-first so high-detail near spectators are never truncated by GPU vertex cap.
+  // Reset cached spectator ground heights whenever the Ground pointer changes or crowd layout resizes.
+  if (ground != state_->cached_ground_ptr || state_->crowd_ground_cache.size() != crowds.size()) {
+    state_->cached_ground_ptr = ground;
+    state_->crowd_ground_cache.assign(crowds.size(), {});
+  }
+
+  const auto& all_stand_pool = state_->all_stand_pool;
+  const auto& male_stand_pool = state_->male_stand_pool;
+  const auto& all_sit_pool = state_->all_sit_pool;
+  const auto& male_sit_pool = state_->male_sit_pool;
+  const auto& cc_by_low = state_->cc_by_low;
+
+  // Sort nearby visible clusters closest-first so high-detail near spectators are never truncated by GPU vertex cap.
   struct ClusterRef {
     size_t idx;
     double dist2;
@@ -2184,10 +2256,15 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
   for (size_t ci = 0; ci < crowds.size(); ++ci) {
     const auto& cl = crowds[ci];
     const double mid = 0.5 * double(std::max(0, cl.count - 1)) * double(cl.spacing);
-    const double cdx = double(cl.origin[0]) + double(cl.dir_x) * mid - eye_x;
-    const double cdz = double(cl.origin[2]) + double(cl.dir_z) * mid - eye_z;
+    const double mid_x = double(cl.origin[0]) + double(cl.dir_x) * mid;
+    const double mid_z = double(cl.origin[2]) + double(cl.dir_z) * mid;
+    const double cdx = mid_x - eye_x;
+    const double cdz = mid_z - eye_z;
     const double d2 = cdx * cdx + cdz * cdz;
-    if (d2 <= cull_r * cull_r) active_clusters.push_back({ci, d2});
+    if (d2 > cull_r * cull_r) continue;
+    const float cl_radius = float(mid) + 3.5f;
+    if (!frustum_visible(mid_x, cl.origin[1] + 1.0f, mid_z, cl_radius)) continue;
+    active_clusters.push_back({ci, d2});
   }
   std::sort(active_clusters.begin(), active_clusters.end(),
             [](const ClusterRef& a, const ClusterRef& b) { return a.dist2 < b.dist2; });
@@ -2196,6 +2273,15 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
     return {float(slot % SpectatorCatalog::kAtlasGrid) * inv_grid,
             float(slot / SpectatorCatalog::kAtlasGrid) * inv_grid};
   };
+
+  // Thread-local scratch buffer for unique-vertex skinning (4-6x faster than per-index skinning).
+  thread_local std::vector<SpectatorVertex> tl_posed;
+  thread_local std::vector<uint32_t> tl_stamp;
+  thread_local uint32_t tl_gen = 1u;
+
+  float nearest_dist = 1e6f;
+  std::vector<const SpectatorAnimClip*> class_clips;
+  class_clips.reserve(16);
 
   for (const auto& cref : active_clusters) {
     const size_t ci = cref.idx;
@@ -2214,8 +2300,13 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
     const size_t pool_n = pool.size();
     if (pool_n == 0) continue;
 
+    auto& cl_ground_cache = state_->crowd_ground_cache[ci];
+    if (cl.count > 0 && cl_ground_cache.size() != size_t(cl.count)) {
+      cl_ground_cache.assign(size_t(cl.count), CachedSpectatorGround{});
+    }
+
     // Resolve `.anim.bin` clip list for this crowdclass from parsed spectators.xml.
-    std::vector<const SpectatorAnimClip*> class_clips;
+    class_clips.clear();
     if (const auto cc_it = cc_by_low.find(low_cc); cc_it != cc_by_low.end() && cc_it->second) {
       auto add_clips = [&](const std::vector<std::string>& names) {
         for (const auto& an : names) {
@@ -2275,15 +2366,35 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
       const float perp = r1 * 0.26f;
       const float px = cl.origin[0] + cl.dir_x * along - cl.face_x * perp;
       const float pz = cl.origin[2] + cl.dir_z * along - cl.face_z * perp;
-      const GroundSample gs = sample_ground(px, pz, cl.origin[1] + cl.dir_y * along);
-      if (gs.hit && (gs.blocked || gs.steep || (cl.require_offroad && gs.on_road))) continue;
-      const float py = gs.y;
 
+      // Distance cull BEFORE any ground raycast or skinning.
       const double dx = double(px) - eye_x;
       const double dz = double(pz) - eye_z;
       const double d2 = dx * dx + dz * dz;
       if (d2 > double(max_crowd_dist) * double(max_crowd_dist)) continue;
+
+      // Use cached ground height once probed with a real terrain hit (eliminates per-frame raycasts).
+      float py = cl.origin[1] + cl.dir_y * along;
+      auto& gcache = cl_ground_cache[size_t(i)];
+      if (gcache.valid) {
+        if (gcache.culled) continue;
+        py = gcache.y;
+      } else if (ground) {
+        const GroundSample gs = sample_ground_uncached(px, pz, py);
+        if (gs.hit) {
+          gcache.valid = true;
+          gcache.y = gs.y;
+          gcache.culled = (gs.blocked || gs.steep || (cl.require_offroad && gs.on_road));
+          if (gcache.culled) continue;
+          py = gs.y;
+        }
+      }
+
+      // Per-spectator frustum sphere test (generous 2.2 m margin so waving arms & shadow discs never pop).
+      if (!frustum_visible(double(px), py + 0.9f, double(pz), 2.2f)) continue;
+
       const float dist = float(std::sqrt(d2));
+      if (dist < nearest_dist) nearest_dist = dist;
 
       const auto& asset = active_assets[pool[(start_asset + size_t(i) * stride) % pool_n]];
       const auto diff_off = slot_uv_off(asset.atlas_slot);
@@ -2311,7 +2422,7 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         const float right_z = to_ex;
         const float half_w = 0.36f * scale;
         const float height = (is_sit_class ? 1.38f : 1.78f) * scale;
-        const float bob = std::sin(time_sec * (2.6f + r2) + r1 * 6.283f) * 0.03f;
+        const float bob = std::sin(time_sec * (3.2f + r2 * 1.4f) + r1 * 6.283f) * 0.06f;
         const float u0 = imp_off[0] + uv_pad * inv_grid;
         const float u1 = imp_off[0] + (1.0f - uv_pad) * inv_grid;
         const float v0 = imp_off[1] + uv_pad * inv_grid;
@@ -2336,50 +2447,55 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         continue;
       }
 
-      // Subtle living head gaze tracking toward the player car/camera when passing within 35 m in front.
+      // Living head gaze tracking toward the player car/camera when passing within 50 m in front.
       float gaze_yaw = 0.0f;
-      if (dist > 1.5f && dist < 35.0f) {
+      if (dist > 1.2f && dist < 50.0f) {
         const float to_ex = float(-dx) / dist;
         const float to_ez = float(-dz) / dist;
         const float fwd_dot = to_ex * syaw + to_ez * cyaw;
-        if (fwd_dot > 0.15f) {
+        if (fwd_dot > 0.05f) {
           // Local +X is character left = (cyaw, 0, -syaw).
           const float left_dot = to_ex * cyaw - to_ez * syaw;
           const float rel_ang = std::atan2(left_dot, fwd_dot);
-          const float w_dist = std::clamp((35.0f - dist) / 22.0f, 0.0f, 1.0f);
-          const float w_front = std::clamp((fwd_dot - 0.15f) / 0.45f, 0.0f, 1.0f);
-          gaze_yaw = std::clamp(rel_ang, -0.52f, 0.52f) * w_dist * w_front;
+          const float w_dist = std::clamp((50.0f - dist) / 30.0f, 0.0f, 1.0f);
+          const float w_front = std::clamp((fwd_dot - 0.05f) / 0.40f, 0.0f, 1.0f);
+          gaze_yaw = std::clamp(rel_ang, -0.65f, 0.65f) * w_dist * w_front;
         }
       }
 
-      // Derive per-spectator tempo, phase, and energy envelope from parsed `.anim.bin` clips.
-      float clip_dur = is_gig ? 2.1f : 3.4f;
-      float clip_energy = is_gig ? 0.90f : 0.65f;
+      // Derive per-spectator tempo, phase, and lively energy envelope from parsed `.anim.bin` clips,
+      // boosted naturally as the player car approaches within 35 m.
+      float clip_dur = is_gig ? 1.85f : 2.65f;
+      float clip_energy = is_gig ? 0.95f : 0.78f;
       if (!class_clips.empty()) {
         const auto* clip = class_clips[(h2 >> 8) % class_clips.size()];
-        clip_dur = std::clamp(clip->duration_sec, 0.8f, 12.0f);
-        clip_energy = clip->energy;
+        clip_dur = std::clamp(clip->duration_sec, 0.8f, 10.0f);
+        clip_energy = std::max(clip->energy, 0.55f);
       }
       const float phase = r1 * 6.2831853f;
       const float clip_cycle = (2.0f * kPi) / clip_dur;
-      const float freq = std::clamp(clip_cycle * (is_gig ? 1.5f : 1.25f) + 0.65f * r2, 1.6f, 4.8f);
-      const float env = (0.48f + 0.36f * clip_energy) +
-                        0.28f * std::sin(time_sec * (0.38f + 0.25f * r3) + phase * 2.1f);
+      const float freq = std::clamp(clip_cycle * (is_gig ? 1.65f : 1.45f) + 0.85f * r2, 2.2f, 5.4f);
+      const float prox_excite = 1.0f + 0.35f * std::clamp((35.0f - dist) / 25.0f, 0.0f, 1.0f);
+      const float env =
+          std::clamp(((0.70f + 0.35f * clip_energy) + 0.22f * std::sin(time_sec * (0.55f + 0.30f * r3) + phase * 2.1f)) *
+                         prox_excite,
+                     0.65f, 1.35f);
       const float beat = std::sin(time_sec * freq + phase);
+      const float beat_off = std::sin(time_sec * freq + phase + 0.75f);
       const float beat2 = std::sin(time_sec * (freq * 2.0f) + phase * 1.5f);
-      const float sway = std::cos(time_sec * (freq * 0.5f) + phase * 1.3f);
-      const float idle_look = std::sin(time_sec * (0.65f + 0.35f * r3) + phase * 1.7f) * 0.22f;
+      const float sway = std::cos(time_sec * (freq * 0.55f) + phase * 1.3f);
+      const float idle_look = std::sin(time_sec * (0.85f + 0.45f * r3) + phase * 1.7f) * 0.36f;
       const bool mirror = ((h3 >> 16) & 1u) != 0u;
 
-      // Choose from 8 authentic FH1 festival poses (balanced candid festival mix: ~45% cheering/waving,
-      // ~30% clapping/shoulder fist-pump/filming, ~25% barrier-lean/relaxed groove).
+      // Choose from 8 authentic FH1 festival poses (lively candid mix: cheering, fist-pumping,
+      // clapping, overhead waving, barrier wave-bursts, grooving/bouncing, and filming passing cars).
       const uint32_t style_roll = (h0 >> 16) % 10u;
       uint32_t style = 5u;
       if (is_gig) {
-        static constexpr uint32_t kGigStyles[10] = {0, 1, 2, 3, 6, 1, 2, 6, 7, 5};
+        static constexpr uint32_t kGigStyles[10] = {0, 1, 2, 3, 6, 1, 2, 6, 0, 3};
         style = kGigStyles[style_roll];
       } else {
-        static constexpr uint32_t kBarrierStyles[10] = {1, 2, 4, 5, 6, 7, 0, 4, 5, 3};
+        static constexpr uint32_t kBarrierStyles[10] = {1, 2, 4, 5, 6, 7, 0, 3, 4, 2};
         style = kBarrierStyles[style_roll];
       }
 
@@ -2389,37 +2505,45 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         std::array<Mat3, SpectatorCatalog::kSitBoneCount> local_r{};
         for (auto& m : local_r) m = mat3_id();
 
-        const float spine_pitch = 0.06f + 0.05f * beat * env;
-        const float spine_yaw = 0.08f * sway + gaze_yaw * 0.25f;
-        const float head_yaw = gaze_yaw * 0.75f + idle_look * 0.65f;
-        const float head_pitch = -0.04f + 0.05f * beat * env;
-        float l_up = 0.45f, l_out = 0.14f, l_twist = 0.36f, l_elbow = 1.05f;
-        float r_up = 0.45f, r_out = 0.14f, r_twist = 0.36f, r_elbow = 1.05f;
+        const float spine_pitch = 0.06f + 0.11f * beat * env;
+        const float spine_yaw = 0.16f * sway + gaze_yaw * 0.30f;
+        const float head_yaw = gaze_yaw * 0.80f + idle_look * 0.70f;
+        const float head_pitch = -0.04f + 0.12f * beat * env;
+        float l_up = 0.45f, l_out = 0.16f, l_twist = 0.36f, l_elbow = 1.05f;
+        float r_up = 0.45f, r_out = 0.16f, r_twist = 0.36f, r_elbow = 1.05f;
         if (style == 0u || style == 3u || style == 6u) {
-          const float pump = 0.28f * beat * env;
-          l_up = 1.85f + pump;
-          l_out = 0.30f + 0.07f * sway;
-          l_elbow = 1.05f - 0.22f * beat * env;
-          r_up = 1.78f - pump * 0.6f;
-          r_out = 0.28f - 0.07f * sway;
-          r_elbow = 1.08f + 0.18f * beat * env;
+          const float pump = 0.54f * beat * env;
+          l_up = 1.75f + pump;
+          l_out = 0.32f + 0.22f * sway * env;
+          l_elbow = 0.95f - 0.45f * beat * env;
+          r_up = 1.72f + 0.48f * beat_off * env;
+          r_out = 0.30f - 0.22f * sway * env;
+          r_elbow = 0.98f - 0.40f * beat_off * env;
         } else if (style == 2u) {
           const float clap = 0.5f + 0.5f * beat2;
-          l_up = 0.62f;
-          l_out = 0.08f + 0.14f * clap * env;
-          l_twist = 0.76f - 0.18f * clap * env;
-          l_elbow = 1.55f - 0.10f * clap * env;
-          r_up = 0.62f;
+          l_up = 0.68f + 0.14f * beat;
+          l_out = 0.04f + 0.32f * clap * env;
+          l_twist = 0.86f - 0.40f * clap * env;
+          l_elbow = 1.58f - 0.24f * clap * env;
+          r_up = l_up;
           r_out = l_out;
           r_twist = l_twist;
           r_elbow = l_elbow;
-        } else if (style == 1u) {
-          l_up = 1.95f + 0.26f * beat * env;
-          l_out = 0.26f;
-          l_elbow = 1.02f - 0.25f * beat * env;
-          r_up = 0.25f;
-          r_out = 0.16f;
-          r_elbow = 0.85f;
+        } else if (style == 1u || style == 4u) {
+          l_up = 1.65f + 0.62f * beat * env;
+          l_out = 0.28f + 0.16f * sway;
+          l_elbow = 1.18f - 0.55f * beat * env;
+          r_up = 0.30f + 0.24f * sway;
+          r_out = 0.18f;
+          r_elbow = 0.82f + 0.24f * beat;
+        } else {
+          // Seated groove / cheering sway.
+          l_up = 0.55f + 0.42f * sway * env;
+          l_out = 0.18f + 0.14f * beat;
+          l_elbow = 1.05f - 0.28f * sway;
+          r_up = 0.55f - 0.42f * sway * env;
+          r_out = 0.18f - 0.14f * beat;
+          r_elbow = 1.05f + 0.28f * sway;
         }
         if (mirror) {
           std::swap(l_up, r_up);
@@ -2463,132 +2587,140 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         std::array<Mat3, SpectatorCatalog::kStandBoneCount> local_r{};
         for (auto& m : local_r) m = mat3_id();
 
-        float hip_x = sway * 0.018f;
+        float hip_x = sway * 0.042f;
         float hip_z = 0.0f;
-        float knee_bend = 0.04f + 0.05f * (0.5f + 0.5f * beat) * env;
-        float spine_pitch = 0.04f;  // + = lean forward toward road
-        float spine_yaw = 0.06f * sway;
-        float spine_roll = 0.03f * sway;
-        float head_pitch = -0.02f + 0.04f * beat * env;
-        float head_yaw = gaze_yaw + idle_look * (1.0f - std::min(std::fabs(gaze_yaw) * 1.4f, 0.8f));
+        float hop_y = 0.0f;
+        float knee_bend = 0.06f + 0.14f * (0.5f + 0.5f * beat) * env;
+        float spine_pitch = 0.05f;  // + = lean forward toward road
+        float spine_yaw = 0.14f * sway;
+        float spine_roll = 0.08f * sway;
+        float head_pitch = -0.02f + 0.11f * beat * env;
+        float head_yaw = gaze_yaw + idle_look * (1.0f - std::min(std::fabs(gaze_yaw) * 1.2f, 0.75f));
 
-        // Left & right arm anatomical parameters (natural relaxed defaults — NEVER stiff T/A-pose).
-        float l_up = 0.14f, l_out = 0.07f, l_twist = 0.18f, l_elbow = 0.42f, l_wrist_z = 0.0f;
-        float r_up = 0.14f, r_out = 0.07f, r_twist = 0.18f, r_elbow = 0.42f, r_wrist_z = 0.0f;
+        // Left & right arm anatomical parameters (lively festival choreography — clearly animated from road).
+        float l_up = 0.24f, l_out = 0.10f, l_twist = 0.22f, l_elbow = 0.52f, l_wrist_z = 0.0f;
+        float r_up = 0.24f, r_out = 0.10f, r_twist = 0.22f, r_elbow = 0.52f, r_wrist_z = 0.0f;
 
         if (style == 0u) {
-          // 0: Enthusiastic double-arm concert cheer with naturally bent elbows (not stiff straight-up).
-          const float pump = 0.22f * beat * env;
-          l_up = 2.15f + pump;
-          l_out = 0.36f + 0.08f * sway;
-          l_twist = 0.32f;
-          l_elbow = 1.02f - 0.26f * beat * env;
-          r_up = 2.10f - pump * 0.7f;
-          r_out = 0.34f - 0.08f * sway;
-          r_twist = 0.32f;
-          r_elbow = 1.06f + 0.22f * beat * env;
-          spine_pitch = -0.04f + 0.04f * beat * env;
-          head_pitch = -0.08f + 0.05f * beat * env;
-          knee_bend = 0.06f + 0.08f * (0.5f + 0.5f * beat) * env;
+          // 0: Enthusiastic double-arm concert cheer with big vertical arm pumps & rhythmic bounce.
+          l_up = 1.85f + 0.58f * beat * env;
+          l_out = 0.36f + 0.18f * sway * env;
+          l_twist = 0.30f;
+          l_elbow = 0.92f - 0.48f * beat * env;
+          r_up = 1.80f + 0.54f * beat_off * env;
+          r_out = 0.34f - 0.18f * sway * env;
+          r_twist = 0.30f;
+          r_elbow = 0.96f - 0.44f * beat_off * env;
+          spine_pitch = -0.05f + 0.11f * beat * env;
+          spine_roll = 0.11f * sway * env;
+          head_pitch = -0.08f + 0.13f * beat * env;
+          knee_bend = 0.06f + 0.22f * (0.5f + 0.5f * beat) * env;
+          hop_y = std::max(0.0f, -beat) * 0.045f * env;
         } else if (style == 1u) {
-          // 1: One-arm concert fist pump + relaxed hip/side off-arm.
-          const float pump = 0.28f * beat * env;
-          l_up = 2.18f + pump;
-          l_out = 0.28f + 0.06f * sway;
-          l_twist = 0.34f;
-          l_elbow = 1.12f - 0.34f * beat * env;
-          r_up = 0.10f;
-          r_out = 0.15f;
+          // 1: Big one-arm concert fist pump + active off-arm swing & torso twist.
+          l_up = 1.65f + 0.68f * beat * env;
+          l_out = 0.28f + 0.14f * sway * env;
+          l_twist = 0.32f;
+          l_elbow = 1.28f - 0.60f * beat * env;
+          r_up = 0.24f + 0.28f * sway * env;
+          r_out = 0.16f + 0.08f * beat;
           r_twist = 0.35f;
-          r_elbow = 0.65f + 0.08f * sway;
-          spine_pitch = 0.02f - 0.03f * beat * env;
-          spine_yaw = -0.10f + 0.08f * sway;
-          head_pitch = -0.05f + 0.04f * beat * env;
-          knee_bend = 0.05f + 0.07f * (0.5f + 0.5f * beat) * env;
+          r_elbow = 0.72f + 0.26f * beat;
+          spine_pitch = 0.02f - 0.09f * beat * env;
+          spine_yaw = -0.10f + 0.18f * sway * env;
+          head_pitch = -0.06f + 0.12f * beat * env;
+          knee_bend = 0.06f + 0.18f * (0.5f + 0.5f * beat) * env;
         } else if (style == 2u) {
-          // 2: Rhythmic chest-height festival clapping (hands meet cleanly in front of sternum!).
-          const float clap = 0.5f + 0.5f * beat2;  // 0 = hands together, 1 = hands apart
-          l_up = 0.54f + 0.06f * beat * env;
-          l_out = 0.06f + 0.14f * clap * env;
-          l_twist = 0.78f - 0.18f * clap * env;
-          l_elbow = 1.58f - 0.10f * clap * env;
-          r_up = 0.54f + 0.06f * beat * env;
-          r_out = 0.06f + 0.14f * clap * env;
-          r_twist = 0.78f - 0.18f * clap * env;
-          r_elbow = 1.58f - 0.10f * clap * env;
-          spine_pitch = 0.08f + 0.03f * beat * env;
-          knee_bend = 0.05f + 0.06f * clap * env;
+          // 2: Rhythmic chest-height festival clapping (hands visibly open wide and clap together!).
+          const float clap = 0.5f + 0.5f * beat2;  // 0 = hands together, 1 = hands wide apart
+          l_up = 0.64f + 0.16f * beat * env;
+          l_out = 0.04f + 0.34f * clap * env;
+          l_twist = 0.88f - 0.44f * clap * env;
+          l_elbow = 1.62f - 0.28f * clap * env;
+          r_up = 0.64f + 0.16f * beat * env;
+          r_out = l_out;
+          r_twist = l_twist;
+          r_elbow = l_elbow;
+          spine_pitch = 0.08f + 0.08f * beat * env;
+          knee_bend = 0.06f + 0.16f * clap * env;
         } else if (style == 3u) {
-          // 3: Overhead two-hand side-to-side concert wave (soft bent elbows).
-          const float wave = 0.24f * sway * env;
-          l_up = 2.28f + 0.08f * beat;
-          l_out = 0.30f + wave;
-          l_twist = 0.24f;
-          l_elbow = 0.78f + 0.14f * std::fabs(sway);
-          l_wrist_z = wave * 0.55f;
-          r_up = 2.28f - 0.08f * beat;
-          r_out = 0.30f - wave;
-          r_twist = 0.24f;
-          r_elbow = 0.78f + 0.14f * std::fabs(sway);
-          r_wrist_z = -wave * 0.55f;
-          spine_roll = 0.09f * sway * env;
-          hip_x = 0.028f * sway;
+          // 3: Wide overhead two-hand side-to-side concert wave (sweeping arcs).
+          const float wave = 0.52f * sway * env;
+          l_up = 2.18f + 0.22f * beat * env;
+          l_out = 0.36f + wave;
+          l_twist = 0.22f;
+          l_elbow = 0.72f + 0.26f * std::fabs(sway);
+          l_wrist_z = wave * 0.65f;
+          r_up = 2.18f - 0.22f * beat * env;
+          r_out = 0.36f - wave;
+          r_twist = 0.22f;
+          r_elbow = 0.72f + 0.26f * std::fabs(sway);
+          r_wrist_z = -wave * 0.65f;
+          spine_roll = 0.18f * sway * env;
+          hip_x = 0.058f * sway * env;
+          knee_bend = 0.05f + 0.14f * (0.5f + 0.5f * beat) * env;
         } else if (style == 4u) {
-          // 4: Barrier lean & watch (torso slightly forward, forearms bent naturally, periodic wave).
-          const float cheer_burst = std::max(0.0f, std::sin(time_sec * 0.55f + phase * 1.9f));
-          spine_pitch = 0.15f - 0.06f * cheer_burst;
-          hip_z = 0.02f;
-          l_up = 0.34f + 1.65f * cheer_burst;
-          l_out = 0.12f + 0.16f * cheer_burst;
-          l_twist = 0.40f - 0.10f * cheer_burst;
-          l_elbow = 1.08f - 0.15f * cheer_burst + 0.18f * beat * cheer_burst;
-          r_up = 0.34f;
-          r_out = 0.12f;
+          // 4: Barrier lean & enthusiastic waving burst toward passing cars.
+          const float raw_burst = 0.5f + 0.5f * std::sin(time_sec * 1.15f + phase * 1.9f);
+          const float wave_t = raw_burst * raw_burst * (3.0f - 2.0f * raw_burst);
+          spine_pitch = 0.16f - 0.12f * wave_t + 0.06f * beat;
+          spine_yaw = gaze_yaw * 0.35f + 0.14f * sway;
+          hip_z = 0.025f;
+          l_up = 0.38f + 1.85f * wave_t;
+          l_out = 0.14f + 0.34f * wave_t + 0.32f * sway * wave_t;
+          l_twist = 0.40f - 0.14f * wave_t;
+          l_elbow = 1.12f - 0.36f * wave_t + 0.30f * beat * wave_t;
+          l_wrist_z = 0.45f * sway * wave_t;
+          r_up = 0.34f + 0.18f * sway;
+          r_out = 0.14f + 0.06f * beat;
           r_twist = 0.42f;
-          r_elbow = 1.05f + 0.08f * sway;
-          knee_bend = 0.07f;
+          r_elbow = 1.05f + 0.18f * sway;
+          knee_bend = 0.08f + 0.10f * (0.5f + 0.5f * beat);
         } else if (style == 5u) {
-          // 5: Relaxed festival groove & sway (natural standing weight shift, soft bent elbows).
-          l_up = 0.14f + 0.07f * sway;
-          l_out = 0.08f;
+          // 5: Festival groove & rhythmic sway with intermittent single-arm cheer.
+          const float cheer_w = std::clamp(std::sin(time_sec * 0.85f + phase * 1.4f) * 1.6f - 0.3f, 0.0f, 1.0f);
+          l_up = 0.28f + 0.32f * sway * env + 1.55f * cheer_w;
+          l_out = 0.12f + 0.22f * cheer_w + 0.14f * sway;
           l_twist = 0.26f;
-          l_elbow = 0.48f + 0.10f * beat;
-          r_up = 0.14f - 0.07f * sway;
-          r_out = 0.08f;
+          l_elbow = 0.65f + 0.30f * beat - 0.20f * cheer_w;
+          r_up = 0.28f - 0.32f * sway * env;
+          r_out = 0.12f + 0.08f * beat;
           r_twist = 0.26f;
-          r_elbow = 0.48f - 0.10f * beat;
-          spine_pitch = 0.05f;
-          spine_yaw = 0.12f * sway;
-          spine_roll = 0.05f * sway;
-          hip_x = 0.026f * sway;
-          knee_bend = 0.04f + 0.06f * (0.5f + 0.5f * beat);
+          r_elbow = 0.65f - 0.30f * beat;
+          spine_pitch = 0.05f + 0.07f * beat;
+          spine_yaw = 0.22f * sway * env;
+          spine_roll = 0.12f * sway * env;
+          hip_x = 0.055f * sway * env;
+          knee_bend = 0.06f + 0.18f * (0.5f + 0.5f * beat) * env;
         } else if (style == 6u) {
-          // 6: Energetic festival bounce / dual shoulder-height fist pump!
+          // 6: Energetic festival jump-bounce / dual shoulder-height fist pump!
           const float bounce = 0.5f + 0.5f * beat;
-          l_up = 1.68f + 0.34f * beat * env;
-          l_out = 0.28f + 0.06f * sway;
+          l_up = 1.38f + 0.64f * beat * env;
+          l_out = 0.30f + 0.14f * sway * env;
           l_twist = 0.26f;
-          l_elbow = 1.48f - 0.32f * beat * env;
-          r_up = 1.64f + 0.32f * beat * env;
-          r_out = 0.28f - 0.06f * sway;
+          l_elbow = 1.52f - 0.58f * beat * env;
+          r_up = 1.34f + 0.60f * beat_off * env;
+          r_out = 0.30f - 0.14f * sway * env;
           r_twist = 0.26f;
-          r_elbow = 1.48f - 0.30f * beat * env;
-          spine_pitch = 0.04f - 0.05f * beat * env;
-          knee_bend = 0.04f + 0.20f * (1.0f - bounce) * env;
+          r_elbow = 1.52f - 0.54f * beat_off * env;
+          spine_pitch = 0.04f - 0.12f * beat * env;
+          knee_bend = 0.05f + 0.28f * (1.0f - bounce) * env;
+          hop_y = std::max(0.0f, beat - 0.2f) * 0.06f * env;
         } else {
-          // 7: Holding phone / camera up to film passing cars + casual sway!
-          l_up = 0.92f + 0.05f * sway;
-          l_out = 0.08f;
+          // 7: Panning phone/camera to track passing cars + lively sway & gesture.
+          const float pan = gaze_yaw * 0.70f + 0.26f * sway;
+          l_up = 1.02f + 0.18f * sway + 0.12f * beat;
+          l_out = 0.10f + 0.08f * sway;
           l_twist = 0.72f;
-          l_elbow = 1.72f;
-          r_up = 0.88f - 0.04f * sway;
-          r_out = 0.08f;
+          l_elbow = 1.68f - 0.14f * beat;
+          r_up = 0.98f - 0.16f * sway + 0.12f * beat;
+          r_out = 0.10f - 0.08f * sway;
           r_twist = 0.72f;
-          r_elbow = 1.70f;
-          spine_yaw = gaze_yaw * 0.45f + 0.12f * sway;
-          spine_pitch = 0.06f;
-          head_yaw = gaze_yaw * 0.55f + 0.08f * sway;
-          knee_bend = 0.05f;
+          r_elbow = 1.66f + 0.14f * beat;
+          spine_yaw = pan;
+          spine_pitch = 0.06f + 0.06f * beat;
+          head_yaw = gaze_yaw * 0.85f + 0.18f * sway;
+          knee_bend = 0.06f + 0.10f * (0.5f + 0.5f * beat);
         }
 
         if (mirror) {
@@ -2602,9 +2734,9 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
           hip_x = -hip_x;
         }
 
-        // Exact foot-planted knee bounce vertical drop: pelvis drops strictly as knees flex.
+        // Exact foot-planted knee bounce vertical drop + subtle festival cheer hop.
         const float thigh_a = knee_bend * 0.55f;
-        const float hip_dy = -0.82f * (1.0f - std::cos(thigh_a));
+        const float hip_dy = -0.82f * (1.0f - std::cos(thigh_a)) + hop_y;
 
         // Legs (bones 2..7): symmetric soft knee flex keeping both feet flat on ground.
         local_r[2] = rot_x(-thigh_a);        // legL_upper
@@ -2620,8 +2752,8 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         local_r[18] = mat3_mul(rot_y(head_yaw * 0.65f), rot_x(head_pitch));
 
         // Clavicles (bones 10 L, 14 R): natural upward shoulder shrug when arms rise overhead.
-        const float l_shrug = std::clamp((l_up - 1.1f) / 1.6f, 0.0f, 1.0f) * 0.22f;
-        const float r_shrug = std::clamp((r_up - 1.1f) / 1.6f, 0.0f, 1.0f) * 0.22f;
+        const float l_shrug = std::clamp((l_up - 1.1f) / 1.6f, 0.0f, 1.0f) * 0.24f;
+        const float r_shrug = std::clamp((r_up - 1.1f) / 1.6f, 0.0f, 1.0f) * 0.24f;
         local_r[10] = rot_z(+l_shrug);
         local_r[14] = rot_z(-r_shrug);
 
@@ -2662,8 +2794,8 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
       }
 
       // Select crisp multi-LOD mesh by distance scaled to TrackSettings crowd_sprite_distance.
-      const float lod0_end = std::min(32.0f, sprite_dist * 0.55f);
-      const float lod1_end = std::min(68.0f, sprite_dist * 0.92f);
+      const float lod0_end = std::min(22.0f, sprite_dist * 0.45f);
+      const float lod1_end = std::min(50.0f, sprite_dist * 0.85f);
       const size_t lod_idx = (dist < lod0_end) ? 0u : ((dist < lod1_end) ? 1u : 2u);
       const auto& verts = asset.mesh.vertices;
       const auto& inds =
@@ -2676,70 +2808,88 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
       const size_t max_rig_bones = asset.mesh.has_sit_skeleton ? SpectatorCatalog::kSitBoneCount
                                                                : SpectatorCatalog::kStandBoneCount;
       const bool has_rig = asset.mesh.has_stand_skeleton || asset.mesh.has_sit_skeleton;
+      const float lm_u = lm_off[0] + 0.5f * inv_grid;
+
+      // Skin each unique vertex referenced by `inds` ONCE into thread-local scratch, then emit triangles.
+      if (tl_posed.size() < verts.size()) {
+        tl_posed.resize(verts.size());
+        tl_stamp.resize(verts.size(), 0u);
+      }
+      if (++tl_gen == 0u) {
+        std::fill(tl_stamp.begin(), tl_stamp.end(), 0u);
+        tl_gen = 1u;
+      }
+      const uint32_t cur_gen = tl_gen;
+
       out.reserve(out.size() + inds.size());
       for (uint16_t idx : inds) {
-        const auto& v = verts[idx];
-        // Normalize feet strictly to y=0 so every spectator sits/stands flush on the terrain surface.
-        const std::array<float, 3> bp{v.pos[0], v.pos[1] - asset.mesh.min_y, v.pos[2]};
-        std::array<float, 3> posed_p = bp;
-        std::array<float, 3> posed_n = v.normal;
+        if (tl_stamp[idx] != cur_gen) {
+          tl_stamp[idx] = cur_gen;
+          const auto& v = verts[idx];
+          // Normalize feet strictly to y=0 so every spectator sits/stands flush on the terrain surface.
+          const std::array<float, 3> bp{v.pos[0], v.pos[1] - asset.mesh.min_y, v.pos[2]};
+          std::array<float, 3> posed_p = bp;
+          std::array<float, 3> posed_n = v.normal;
 
-        if (has_rig && v.bone0 < max_rig_bones) {
-          const float w0 = float(v.weight0);
-          const float w1 = (v.bone1 < max_rig_bones) ? float(v.weight1) : 0.0f;
-          const float wsum = w0 + w1;
-          if (wsum > 1e-3f) {
-            const float a0 = w0 / wsum;
-            const float a1 = w1 / wsum;
-            std::array<float, 3> p0{}, n0{};
-            apply_bone_xform(bone_xf[v.bone0], bp, v.normal, p0, n0);
-            if (a1 > 0.004f) {
-              std::array<float, 3> p1{}, n1{};
-              apply_bone_xform(bone_xf[v.bone1], bp, v.normal, p1, n1);
-              for (int k = 0; k < 3; ++k) {
-                posed_p[k] = p0[k] * a0 + p1[k] * a1;
-                posed_n[k] = n0[k] * a0 + n1[k] * a1;
+          if (has_rig && v.bone0 < max_rig_bones) {
+            const float w0 = float(v.weight0);
+            const float w1 = (v.bone1 < max_rig_bones) ? float(v.weight1) : 0.0f;
+            const float wsum = w0 + w1;
+            if (wsum > 1e-3f) {
+              const float inv_w = 1.0f / wsum;
+              const float a0 = w0 * inv_w;
+              const float a1 = w1 * inv_w;
+              std::array<float, 3> p0{}, n0{};
+              apply_bone_xform(bone_xf[v.bone0], bp, v.normal, p0, n0);
+              if (a1 > 0.004f) {
+                std::array<float, 3> p1{}, n1{};
+                apply_bone_xform(bone_xf[v.bone1], bp, v.normal, p1, n1);
+                for (int k = 0; k < 3; ++k) {
+                  posed_p[k] = p0[k] * a0 + p1[k] * a1;
+                  posed_n[k] = n0[k] * a0 + n1[k] * a1;
+                }
+                posed_n = vnorm(posed_n);
+              } else {
+                posed_p = p0;
+                posed_n = n0;
               }
-              posed_n = vnorm(posed_n);
-            } else {
-              posed_p = p0;
-              posed_n = n0;
             }
+          } else {
+            // Fallback upper-body sway for synthetic meshes without a skeletal rig.
+            const float upper = std::clamp((bp[1] - 0.85f) / 0.85f, 0.0f, 1.0f);
+            const float mid = std::clamp((bp[1] - 0.12f) / 0.60f, 0.0f, 1.0f);
+            posed_p[0] += sway * 0.065f * upper;
+            posed_p[1] += (0.5f + 0.5f * beat) * 0.045f * mid;
+            posed_p[2] += beat * 0.050f * upper;
           }
-        } else {
-          // Fallback upper-body sway for synthetic meshes without a skeletal rig.
-          const float upper = std::clamp((bp[1] - 0.85f) / 0.85f, 0.0f, 1.0f);
-          const float mid = std::clamp((bp[1] - 0.12f) / 0.60f, 0.0f, 1.0f);
-          posed_p[0] += sway * 0.028f * upper;
-          posed_p[1] += (0.5f + 0.5f * beat) * 0.020f * mid;
-          posed_p[2] += beat * 0.022f * upper;
+
+          const float lx = posed_p[0] * scale;
+          const float ly = posed_p[1] * scale;
+          const float lz = posed_p[2] * scale;
+
+          const float wx = px + lx * cyaw + lz * syaw;
+          const float wy = py + ly;
+          const float wz = pz - lx * syaw + lz * cyaw;
+
+          const float nx = posed_n[0] * cyaw + posed_n[2] * syaw;
+          const float ny = posed_n[1];
+          const float nz = -posed_n[0] * syaw + posed_n[2] * cyaw;
+
+          const float cu = std::clamp(v.uv[0], uv_pad, 1.0f - uv_pad) * inv_grid;
+          const float cv = std::clamp(v.uv[1], uv_pad, 1.0f - uv_pad) * inv_grid;
+          const float u = diff_off[0] + cu;
+          const float tv = diff_off[1] + cv;
+          // Sample overhead vertical irradiance gradient cell by height (0 = head/top, 1 = shoes/bottom)
+          // plus subtle normal upward tilt so faces & shoulders catch stage spotlights cleanly.
+          const float h_norm = std::clamp(1.0f - bp[1] / 1.82f - posed_n[1] * 0.14f, 0.04f, 0.96f);
+          const float lm_v = lm_off[1] + h_norm * inv_grid;
+          tl_posed[idx] = {{wx, wy, wz}, {nx, ny, nz}, {u, tv}, eval_crowd_tint(ny), {lm_u, lm_v}};
         }
-
-        const float lx = posed_p[0] * scale;
-        const float ly = posed_p[1] * scale;
-        const float lz = posed_p[2] * scale;
-
-        const float wx = px + lx * cyaw + lz * syaw;
-        const float wy = py + ly;
-        const float wz = pz - lx * syaw + lz * cyaw;
-
-        const float nx = posed_n[0] * cyaw + posed_n[2] * syaw;
-        const float ny = posed_n[1];
-        const float nz = -posed_n[0] * syaw + posed_n[2] * cyaw;
-
-        const float cu = std::clamp(v.uv[0], uv_pad, 1.0f - uv_pad) * inv_grid;
-        const float cv = std::clamp(v.uv[1], uv_pad, 1.0f - uv_pad) * inv_grid;
-        const float u = diff_off[0] + cu;
-        const float tv = diff_off[1] + cv;
-        // Sample overhead vertical irradiance gradient cell by height (0 = head/top, 1 = shoes/bottom)
-        // plus subtle normal upward tilt so faces & shoulders catch stage spotlights cleanly.
-        const float h_norm = std::clamp(1.0f - bp[1] / 1.82f - posed_n[1] * 0.14f, 0.04f, 0.96f);
-        const float lm_u = lm_off[0] + 0.5f * inv_grid;
-        const float lm_v = lm_off[1] + h_norm * inv_grid;
-        out.push_back({{wx, wy, wz}, {nx, ny, nz}, {u, tv}, eval_crowd_tint(ny), {lm_u, lm_v}});
+        out.push_back(tl_posed[idx]);
       }
     }
   }
+  if (out_nearest_dist) *out_nearest_dist = nearest_dist;
 }
 
 }  // namespace world

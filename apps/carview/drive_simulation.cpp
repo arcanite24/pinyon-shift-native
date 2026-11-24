@@ -372,6 +372,13 @@ bool DriveSession::free_roam_step() {
             restore_pr_stunt_loaner();
           }
         }
+        // Recreate FreeRoam lazily if a new career reset cleared host.free_roam across a hot-reload.
+        if (!host.free_roam && app.colorado_world() && !app.collectibles.signs.empty()) {
+          host.free_roam = std::make_unique<freeroam::FreeRoam>(app.collectibles, app.progress);
+          app.progress_loaded = true;
+          if (host.streamer) host.streamer->set_hidden(host.hidden_sent = host.free_roam->hidden());
+          if (host.free_roam->hidden()) app.smashables.sync_barns_from_hidden(*host.free_roam->hidden());
+        }
         if (!host.free_roam || app.campaign.flow().is_onboarding()) return false;
         freeroam::CarState cs;
         const drive::Vec3 at = vehicle.position();
@@ -381,27 +388,39 @@ bool DriveSession::free_roam_step() {
         if (fl > 1e-6) cs.forward_x = f.x / fl, cs.forward_z = f.z / fl;
         cs.half_width = vehicle.params().size.x / 2;
         cs.half_length = vehicle.params().size.z / 2;
-        cs.speed = vehicle.speed();
-        cs.moved = std::fabs(vehicle.speed()) * drive::Vehicle::kStep;
+        const drive::Vec3 v_lin = vehicle.velocity();
+        const double planar_spd = std::hypot(v_lin.x, v_lin.z);
+        const double fwd_spd = vehicle.speed();
+        cs.speed = (std::fabs(fwd_spd) >= planar_spd) ? fwd_spd : (fwd_spd < 0.0 ? -planar_spd : planar_spd);
+        cs.moved = std::max(std::fabs(fwd_spd), planar_spd) * drive::Vehicle::kStep;
         bool sign_smashed_now = false;
         for (const auto& ev : host.free_roam->step(cs)) {
           char line[160];
           if (ev.kind == freeroam::Event::kSignSmashed) {
             sign_smashed_now = true;
+            const auto& sign_at = app.collectibles.signs[size_t(ev.index)].at;
+            const std::array<float, 3> sign_pos{float(sign_at.x), float(sign_at.y), float(sign_at.z)};
+            // Immediately hide the intact static billboard mesh on the GPU and persist across regathers.
+            host.showroom.hide_world_props_near(sign_pos, 3.5f);
+            app.smashables.record_hidden_prop(sign_pos, 3.5f);
+            if (host.streamer) host.streamer->set_hidden_positions(app.smashables.broken_hidden_positions());
             app.audio_host.trigger_ui(audio::UiCue::kSignSmash);
             audio::CollisionHit bhit{};
-            bhit.rel_speed_mps = float(std::fabs(vehicle.speed()));
-            bhit.pos = {float(at.x), float(at.y), float(at.z)};
+            bhit.rel_speed_mps = float(std::fabs(cs.speed));
+            bhit.pos = {sign_pos[0], sign_pos[1], sign_pos[2]};
             bhit.is_break = true;
             bhit.surface_hint = 3;
             bhit.smash_material = audio::SmashMaterial::kMetal;
             app.audio_host.trigger_collision(bhit);
             const drive::Vec3 vel_s = vehicle.velocity();
-            host.particle_sys.spawn_smashable_burst("flyer", {float(at.x), float(at.y + 0.7), float(at.z)},
+            host.particle_sys.spawn_smashable_burst("flyer", {sign_pos[0], sign_pos[1] + 0.8f, sign_pos[2]},
                                                {float(vel_s.x), float(vel_s.y + 2.5), float(vel_s.z)});
-            const auto& sign_at = app.collectibles.signs[size_t(ev.index)].at;
-            app.smashables.spawn_flyer_shatter({float(sign_at.x), float(sign_at.y), float(sign_at.z)},
-                                           {float(vel_s.x), float(vel_s.y), float(vel_s.z)});
+            app.smashables.spawn_flyer_shatter(
+                sign_pos,
+                {float(sign_at.x_axis[0]), float(sign_at.x_axis[1]), float(sign_at.x_axis[2])},
+                {float(sign_at.y_axis[0]), float(sign_at.y_axis[1]), float(sign_at.y_axis[2])},
+                {float(sign_at.z_axis[0]), float(sign_at.z_axis[1]), float(sign_at.z_axis[2])},
+                {float(vel_s.x), float(vel_s.y), float(vel_s.z)});
             const int n = host.free_roam->signs_found();
             std::snprintf(line, sizeof line, "discount sign %d/%zu - upgrades %d percent off", n, app.collectibles.signs.size(),
                           freeroam::upgrade_discount(n));

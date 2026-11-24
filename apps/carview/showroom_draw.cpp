@@ -1008,7 +1008,7 @@ std::array<float, 3> Showroom::eye_in_scenery(const float transform[16]) const {
 // A cell of prop LOD00 copies wholly past the LOD band from the eye: every
 // instance in it would be hidden (world.vert), so it is not drawn at all.
 bool Showroom::near_lod_beyond(const WorldGeometry::Draw& d, const std::array<float, 3>& eye) const {
-  if ((uint32_t(d.push.params[1] + 0.5f) & 128u) == 0 || world_fade_[1] <= 0) return false;
+  if ((uint32_t(std::lround(d.push.params[1])) & 128u) == 0 || world_fade_[1] <= 0) return false;
   float d2 = 0;
   for (int i = 0; i < 3; ++i) {
     const float v = std::max({d.box_min[i] - eye[size_t(i)], 0.0f, eye[size_t(i)] - d.box_max[i]});
@@ -1065,7 +1065,7 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       }
       ++world_stats_.drawn;
       world_stats_.indices += d.index_count;
-      const uint32_t draw_fl = uint32_t(d.push.params[1] + 0.5f);
+      const uint32_t draw_fl = uint32_t(std::lround(d.push.params[1]));
       const bool sky = draw_fl == 2;
       if (sky && sky_ready_) continue;
       if (group < 0 && !sky) {
@@ -1125,7 +1125,7 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
           // A blend/extra layer did not upload: keep slot 0 and surface flags, drop extra-map flags.
           constexpr uint32_t kExtraTexMask = 4u | 8u | 16384u | 2048u | 4096u | 8192u | 524288u | 2097152u | 4194304u |
                                              8388608u;
-          const uint32_t fl = uint32_t(push.params[1] + 0.5f) & ~kExtraTexMask;
+          const uint32_t fl = uint32_t(std::lround(push.params[1])) & ~kExtraTexMask;
           push.params[1] = float(fl);
           ++world_stats_.layer_fallback;
         }
@@ -1133,7 +1133,7 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       if (!set) {
         if (d.texture != kNoWorldTexture) ++world_stats_.white;
         set = world_white_set_;
-        const uint32_t fl = uint32_t(push.params[1] + 0.5f);
+        const uint32_t fl = uint32_t(std::lround(push.params[1]));
         if ((fl & 1u) != 0u) {
           // Texture missing or evicted: clear textured flags and replace UV tiling in push.tint
           // with a neutral road/terrain linear albedo instead of pure white (1, 1, 1).
@@ -1157,7 +1157,7 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
                                 0, nullptr);
       // Cut-outs without MSAA: world.frag's alpha test (flag 64).
       if (d.blend == 1 && r_.samples_ == VK_SAMPLE_COUNT_1_BIT)
-        push.params[1] = float(uint32_t(push.params[1] + 0.5f) | 64u);
+        push.params[1] = float(uint32_t(std::lround(push.params[1])) | 64u);
       world_draw_model(d, transform, push.model);
       std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
       push.uv0[3] = swap;  // world.frag's swap dither

@@ -135,12 +135,71 @@ void fill_soft_puff_cell(uint8_t* dst, uint32_t atlas_w, uint32_t cell_sz) {
       const float billow = 0.88f + 0.12f * std::sin(ang * 5.0f + r * 3.0f) * std::cos(ang * 3.0f - r * 2.0f);
       const float a = std::clamp(1.0f - r / billow, 0.0f, 1.0f);
       const float soft = a * a * (3.0f - 2.0f * a);
-      const uint8_t shade = uint8_t(std::clamp(210.0f + 45.0f * soft, 0.0f, 255.0f));
+      // Fade RGB to zero with alpha so corners are strictly black & transparent even under additive blending.
+      const uint8_t shade = uint8_t(std::clamp(soft * 255.0f, 0.0f, 255.0f));
       uint8_t* o = dst + (size_t(y) * atlas_w + size_t(x)) * 4;
       o[0] = shade;
       o[1] = shade;
       o[2] = shade;
       o[3] = uint8_t(std::clamp(soft * 245.0f, 0.0f, 255.0f));
+    }
+  }
+}
+
+// Ensures primary particle diffuse textures (DXT1 / RGB-only / missing alpha masks) always carry
+// a clean soft alpha mask so world smoke/flare emitters never render as hard-edged opaque squares.
+void sanitize_primary_particle_alpha(fh1::RgbaImage& img) {
+  if (img.width == 0 || img.height == 0 || img.rgba.size() < size_t(img.width) * img.height * 4) return;
+  const uint32_t w = img.width;
+  const uint32_t h = img.height;
+  uint8_t min_a = 255;
+  for (size_t i = 3; i < img.rgba.size(); i += 4) {
+    if (img.rgba[i] < min_a) min_a = img.rgba[i];
+  }
+  if (min_a < 245) return;  // Texture already provides an authored alpha channel.
+
+  // Measure average border luminance to distinguish black-background additive/smoke masks from solid fills.
+  double border_sum = 0.0;
+  uint32_t border_cnt = 0;
+  auto add_border = [&](uint32_t x, uint32_t y) {
+    const uint8_t* p = img.rgba.data() + (size_t(y) * w + x) * 4;
+    border_sum += double(std::max({p[0], p[1], p[2]})) / 255.0;
+    ++border_cnt;
+  };
+  for (uint32_t x = 0; x < w; ++x) {
+    add_border(x, 0);
+    if (h > 1) add_border(x, h - 1);
+  }
+  for (uint32_t y = 1; y + 1 < h; ++y) {
+    add_border(0, y);
+    if (w > 1) add_border(w - 1, y);
+  }
+  const float border_luma = (border_cnt > 0) ? float(border_sum / double(border_cnt)) : 0.0f;
+
+  for (uint32_t y = 0; y < h; ++y) {
+    const float ny = (float(y) + 0.5f) / float(h) * 2.0f - 1.0f;
+    for (uint32_t x = 0; x < w; ++x) {
+      const float nx = (float(x) + 0.5f) / float(w) * 2.0f - 1.0f;
+      const float r = std::sqrt(nx * nx + ny * ny);
+      const float edge = std::clamp(1.0f - (r - 0.62f) / 0.36f, 0.0f, 1.0f);
+      const float smooth_edge = edge * edge * (3.0f - 2.0f * edge);
+      uint8_t* p = img.rgba.data() + (size_t(y) * w + x) * 4;
+      if (border_luma < 0.22f) {
+        // Dark-border RGB-only particle texture (e.g. DXT1 glow/smoke): derive alpha from RGB luminance.
+        const float peak = float(std::max({p[0], p[1], p[2]})) / 255.0f;
+        const float norm = std::clamp((peak - border_luma) / std::max(1.0f - border_luma, 0.1f), 0.0f, 1.0f);
+        p[3] = uint8_t(std::clamp(norm * smooth_edge * 255.0f, 0.0f, 255.0f));
+      } else {
+        // Uniformly opaque texture with bright corners: apply billowy radial puff falloff.
+        const float ang = std::atan2(ny, nx);
+        const float billow = 0.88f + 0.12f * std::sin(ang * 5.0f + r * 3.0f) * std::cos(ang * 3.0f - r * 2.0f);
+        const float a = std::clamp(1.0f - r / billow, 0.0f, 1.0f);
+        const float soft = a * a * (3.0f - 2.0f * a);
+        p[0] = uint8_t(float(p[0]) * soft);
+        p[1] = uint8_t(float(p[1]) * soft);
+        p[2] = uint8_t(float(p[2]) * soft);
+        p[3] = uint8_t(std::clamp(soft * 245.0f, 0.0f, 255.0f));
+      }
     }
   }
 }
@@ -231,10 +290,11 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
       push_primary(xname);
     }
 
-    auto pack_tex = [&](const std::string& tname, uint16_t& slot, uint16_t slot_limit) {
+    auto pack_tex = [&](const std::string& tname, uint16_t& slot, uint16_t slot_limit, bool sanitize_alpha) {
       if (slot >= slot_limit || atlas_tex_slot_.count(tname)) return;
       fh1::RgbaImage img;
       if (lib->decode_texture(tname, img)) {
+        if (sanitize_alpha) sanitize_primary_particle_alpha(img);
         const uint32_t cx = slot % kExpandedAtlasGrid;
         const uint32_t cy = slot / kExpandedAtlasGrid;
         blit_cell_bilinear(img.rgba.data(), img.width, img.height, atlas_rgba.data(), kExpandedAtlasSize, cx, cy,
@@ -246,16 +306,16 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
 
     uint16_t grad_slot = 1;
     for (const auto& tname : grad_order) {
-      pack_tex(tname, grad_slot, uint16_t(kMaxTex2Slot + 1));
+      pack_tex(tname, grad_slot, uint16_t(kMaxTex2Slot + 1), false);
     }
     // Primary textures start right after the reserved <Texture2> range (slot 32..99),
     // and overflow any remaining slots cleanly into unused slots < 32 if ever needed.
     uint16_t prim_slot = uint16_t(kMaxTex2Slot + 1);
     for (const auto& tname : primary_order) {
       if (prim_slot < kExpandedAtlasMaxSlots) {
-        pack_tex(tname, prim_slot, kExpandedAtlasMaxSlots);
+        pack_tex(tname, prim_slot, kExpandedAtlasMaxSlots, true);
       } else if (grad_slot <= kMaxTex2Slot) {
-        pack_tex(tname, grad_slot, uint16_t(kMaxTex2Slot + 1));
+        pack_tex(tname, grad_slot, uint16_t(kMaxTex2Slot + 1), true);
       }
     }
   }
@@ -987,55 +1047,124 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
     const double eye_gx = world_origin_[0] + double(eye[0]);
     const double eye_gy = double(eye[1]);
     const double eye_gz = world_origin_[1] + double(eye[2]);
-    const drive::Ground* active_ground = world_ground_ ? world_ground_ : world::AnimatedWorldSystem::last_ground();
-    spectator_cpu_.clear();
-    std::vector<std::array<float, 4>> shadow_discs;
-    spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, tod_real_time_, active_ground, spectator_cpu_,
-                                         &shadow_discs);
-    constexpr uint32_t kShadowSegs = 8;
-    const uint32_t max_shadow_verts = uint32_t(shadow_discs.size()) * kShadowSegs * 3u;
-    const uint32_t spec_cap =
-        (kMaxSpectatorVerts > max_shadow_verts) ? (kMaxSpectatorVerts - max_shadow_verts) : kMaxSpectatorVerts;
-    const uint32_t n = (uint32_t(std::min(spectator_cpu_.size(), size_t(spec_cap))) / 3u) * 3u;
-    spectator_count_ = n;
-    if (n > 0) {
-      auto* dst = static_cast<WorldVertex*>(spectator_buf_.data());
-      auto snorm8 = [](float x) -> int8_t {
-        return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
-      };
-      for (uint32_t i = 0; i < n; ++i) {
-        const auto& v = spectator_cpu_[i];
-        WorldVertex& o = dst[i];
-        o = WorldVertex{};
-        o.position[0] = float(double(v.pos[0]) - world_origin_[0]);
-        o.position[1] = v.pos[1];
-        o.position[2] = float(double(v.pos[2]) - world_origin_[1]);
-        o.normal[0] = snorm8(v.normal[0]);
-        o.normal[1] = snorm8(v.normal[1]);
-        o.normal[2] = snorm8(v.normal[2]);
-        o.normal[3] = 0;
-        o.uv0[0] = v.uv[0];
-        o.uv0[1] = v.uv[1];
-        o.uv2[0] = to_half(v.uv2[0]);
-        o.uv2[1] = to_half(v.uv2[1]);
-        for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
-      }
+    const float night_f = tod_active_ ? std::clamp(tod_state_.switch_on_lights, 0.0f, 1.0f) : 0.0f;
 
-      // Append soft ground contact shadow discs under each spectator's feet so crowds ground cleanly.
+    // Extract 5 normalized scenery-space frustum planes (left, right, bottom, top, in-front)
+    // from view_projection * world_transform_ for tight cluster & spectator frustum culling.
+    world::SpectatorFrustum frustum{};
+    frustum.origin_x = world_origin_[0];
+    frustum.origin_z = world_origin_[1];
+    float clip[16];
+    for (int c = 0; c < 4; ++c) {
+      for (int r = 0; r < 4; ++r) {
+        float s = 0.0f;
+        for (int k = 0; k < 4; ++k) s += frame_.view_projection[k * 4 + r] * world_transform_[c * 4 + k];
+        clip[c * 4 + r] = s;
+      }
+    }
+    for (int c = 0; c < 4; ++c) {
+      const float x = clip[c * 4 + 0], y = clip[c * 4 + 1], w = clip[c * 4 + 3];
+      frustum.planes[0][size_t(c)] = w + x;
+      frustum.planes[1][size_t(c)] = w - x;
+      frustum.planes[2][size_t(c)] = w + y;
+      frustum.planes[3][size_t(c)] = w - y;
+      frustum.planes[4][size_t(c)] = w;
+    }
+    bool frustum_ok = true;
+    for (auto& pl : frustum.planes) {
+      const float len = std::sqrt(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2]);
+      if (len > 1e-6f) {
+        const float inv = 1.0f / len;
+        pl[0] *= inv;
+        pl[1] *= inv;
+        pl[2] *= inv;
+        pl[3] *= inv;
+      } else {
+        frustum_ok = false;
+      }
+    }
+    frustum.active = frustum_ok && world_cull_;
+    const std::array<float, 3> cam_fwd = frustum_ok
+        ? std::array<float, 3>{frustum.planes[4][0], frustum.planes[4][1], frustum.planes[4][2]}
+        : std::array<float, 3>{0.0f, 0.0f, 1.0f};
+
+    auto& cache = spectator_anim_.frame_cache();
+    const double cdx = eye_gx - cache.eye_x;
+    const double cdy = eye_gy - cache.eye_y;
+    const double cdz = eye_gz - cache.eye_z;
+    const double cam_move2 = cdx * cdx + cdy * cdy + cdz * cdz;
+    const float fwd_dot =
+        cam_fwd[0] * cache.cam_fwd[0] + cam_fwd[1] * cache.cam_fwd[1] + cam_fwd[2] * cache.cam_fwd[2];
+    const float dt_anim = std::fabs(tod_real_time_ - cache.time_sec);
+    // Throttle animated crowd rebuilds cleanly: 60 Hz close-up (<= 40 m), 25 Hz distant (> 40 m),
+    // and skip completely when paused (dt_anim == 0) with stationary camera/world!
+    const float min_interval = (cache.nearest_dist > 40.0f) ? (1.0f / 25.0f) : (1.0f / 60.0f);
+    const bool need_rebuild = !cache.valid || cache.world_gen != world_generation_ ||
+                              cache.origin_x != world_origin_[0] || cache.origin_z != world_origin_[1] ||
+                              std::fabs(night_f - cache.night_f) > 0.04f || cam_move2 > (2.5 * 2.5) ||
+                              fwd_dot < 0.96f || dt_anim >= min_interval;
+
+    if (need_rebuild) {
+      const drive::Ground* active_ground = world_ground_ ? world_ground_ : world::AnimatedWorldSystem::last_ground();
+      spectator_cpu_.clear();
+      cache.shadow_discs.clear();
+      float nearest_dist = 1e6f;
+      spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, tod_real_time_, active_ground, spectator_cpu_,
+                                           &cache.shadow_discs, &frustum, &nearest_dist);
+      constexpr uint32_t kShadowSegs = 8;
+      const uint32_t max_shadow_verts = uint32_t(cache.shadow_discs.size()) * kShadowSegs * 3u;
+      const uint32_t spec_cap =
+          (kMaxSpectatorVerts > max_shadow_verts) ? (kMaxSpectatorVerts - max_shadow_verts) : kMaxSpectatorVerts;
+      const uint32_t n = (uint32_t(std::min(spectator_cpu_.size(), size_t(spec_cap))) / 3u) * 3u;
       uint32_t shadow_verts = 0;
-      if (world_alpha_ && world_white_set_ && !shadow_discs.empty()) {
-        const float night_f = tod_active_ ? std::clamp(tod_state_.switch_on_lights, 0.0f, 1.0f) : 0.0f;
-        const uint8_t center_a = uint8_t(std::lround(112.0f * (1.0f - 0.58f * night_f)));
-        constexpr float kTwoPi = 6.283185307f;
-        for (const auto& d : shadow_discs) {
-          if (n + shadow_verts + kShadowSegs * 3u > kMaxSpectatorVerts) break;
-          const float cx = float(double(d[0]) - world_origin_[0]);
-          const float cy = d[1];
-          const float cz = float(double(d[2]) - world_origin_[1]);
-          const float rad = d[3];
-          for (uint32_t s = 0; s < kShadowSegs; ++s) {
-            const float a0 = kTwoPi * float(s) / float(kShadowSegs);
-            const float a1 = kTwoPi * float(s + 1u) / float(kShadowSegs);
+
+      if (n > 0) {
+        // Stage into cached CPU vector (`spectator_buf_.cpu`), then dyn_sync copies once into GPU memory.
+        auto* dst = static_cast<WorldVertex*>(spectator_buf_.data());
+        auto fast_snorm8 = [](float x) -> int8_t {
+          const int v = int(x * 127.0f + (x >= 0.0f ? 0.5f : -0.5f));
+          return int8_t(v < -127 ? -127 : (v > 127 ? 127 : v));
+        };
+        const double ox = world_origin_[0];
+        const double oz = world_origin_[1];
+        for (uint32_t i = 0; i < n; ++i) {
+          const auto& v = spectator_cpu_[i];
+          WorldVertex& o = dst[i];
+          o.position[0] = float(double(v.pos[0]) - ox);
+          o.position[1] = v.pos[1];
+          o.position[2] = float(double(v.pos[2]) - oz);
+          o.normal[0] = fast_snorm8(v.normal[0]);
+          o.normal[1] = fast_snorm8(v.normal[1]);
+          o.normal[2] = fast_snorm8(v.normal[2]);
+          o.normal[3] = 0;
+          o.uv0[0] = v.uv[0];
+          o.uv0[1] = v.uv[1];
+          o.uv1[0] = 0.0f;
+          o.uv1[1] = 0.0f;
+          o.colour[0] = v.rgba[0];
+          o.colour[1] = v.rgba[1];
+          o.colour[2] = v.rgba[2];
+          o.colour[3] = v.rgba[3];
+          o.centre[0] = o.centre[1] = o.centre[2] = o.centre[3] = 0;
+          o.uv2[0] = to_half(v.uv2[0]);
+          o.uv2[1] = to_half(v.uv2[1]);
+        }
+
+        // Append soft ground contact shadow discs under each spectator's feet so crowds ground cleanly.
+        if (world_alpha_ && world_white_set_ && !cache.shadow_discs.empty()) {
+          const uint8_t center_a = uint8_t(std::lround(112.0f * (1.0f - 0.58f * night_f)));
+          static constexpr std::array<float, kShadowSegs + 1> kCosSeg{{
+              1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f, 0.0f, 0.70710678f, 1.0f,
+          }};
+          static constexpr std::array<float, kShadowSegs + 1> kSinSeg{{
+              0.0f, 0.70710678f, 1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f, 0.0f,
+          }};
+          for (const auto& d : cache.shadow_discs) {
+            if (n + shadow_verts + kShadowSegs * 3u > kMaxSpectatorVerts) break;
+            const float cx = float(double(d[0]) - ox);
+            const float cy = d[1];
+            const float cz = float(double(d[2]) - oz);
+            const float rad = d[3];
             WorldVertex vc{};
             vc.position[0] = cx;
             vc.position[1] = cy;
@@ -1043,22 +1172,42 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
             vc.normal[1] = 127;
             vc.colour[3] = center_a;
             WorldVertex v0 = vc;
-            v0.position[0] = cx + std::cos(a0) * rad;
-            v0.position[2] = cz + std::sin(a0) * rad;
             v0.colour[3] = 0;
-            WorldVertex v1 = vc;
-            v1.position[0] = cx + std::cos(a1) * rad;
-            v1.position[2] = cz + std::sin(a1) * rad;
-            v1.colour[3] = 0;
-            dst[n + shadow_verts + 0] = vc;
-            dst[n + shadow_verts + 1] = v0;
-            dst[n + shadow_verts + 2] = v1;
-            shadow_verts += 3u;
+            WorldVertex v1 = v0;
+            for (uint32_t s = 0; s < kShadowSegs; ++s) {
+              v0.position[0] = cx + kCosSeg[s] * rad;
+              v0.position[2] = cz + kSinSeg[s] * rad;
+              v1.position[0] = cx + kCosSeg[s + 1u] * rad;
+              v1.position[2] = cz + kSinSeg[s + 1u] * rad;
+              dst[n + shadow_verts + 0] = vc;
+              dst[n + shadow_verts + 1] = v0;
+              dst[n + shadow_verts + 2] = v1;
+              shadow_verts += 3u;
+            }
           }
         }
+        ++spectator_buf_.ver;
       }
 
-      ++spectator_buf_.ver;
+      cache.valid = true;
+      cache.world_gen = world_generation_;
+      cache.origin_x = world_origin_[0];
+      cache.origin_z = world_origin_[1];
+      cache.eye_x = eye_gx;
+      cache.eye_y = eye_gy;
+      cache.eye_z = eye_gz;
+      cache.cam_fwd = cam_fwd;
+      cache.time_sec = tod_real_time_;
+      cache.night_f = night_f;
+      cache.nearest_dist = nearest_dist;
+      cache.spec_verts = n;
+      cache.shadow_verts = shadow_verts;
+    }
+
+    const uint32_t n = cache.spec_verts;
+    const uint32_t shadow_verts = cache.shadow_verts;
+    spectator_count_ = n;
+    if (n > 0) {
       VkDeviceSize at = dyn_sync(spectator_buf_, VkDeviceSize(n + shadow_verts) * sizeof(WorldVertex));
       vkCmdBindVertexBuffers(cmd, 0, 1, &spectator_buf_.buf.buffer, &at);
 
