@@ -202,15 +202,15 @@ std::optional<AchievementProgress> eval_condition(uint16_t id, const Achievement
     case 215: return counter(s.rally_level, 10);
     // 1000 Club (216-225)
     case 216: return counter(s.club_medals_total, 1);
-    case 217: return counter(s.club_cars_with_medal, 5);
-    case 218: return counter(s.club_cars_with_medal, 10);
-    case 219: return counter(s.club_cars_with_medal, 15);
-    case 220: return counter(s.club_cars_with_medal, 20);
-    case 221: return counter(s.club_cars_with_medal, 25);
-    case 222: return counter(s.club_medals_total, 25);
-    case 223: return counter(s.club_medals_total, 50);
-    case 224: return counter(s.club_medals_total, 75);
-    case 225: return counter(s.club_medals_total, 100);
+    case 217: return counter(s.club_ferrari_cars, 14);
+    case 218: return counter(s.club_million_cr_cars, 14);
+    case 219: return counter(s.club_shelby_cars, 3);
+    case 220: return counter(s.club_lamborghini_cars, 8);
+    case 221: return counter(s.club_nissan_cars, 7);
+    case 222: return counter(s.club_bmw_cars, 10);
+    case 223: return counter(s.club_british_cars, 20);
+    case 224: return counter(s.club_ford_cars, 13);
+    case 225: return counter(s.club_cars_with_medal, 146);
     default: return std::nullopt;
   }
 }
@@ -287,7 +287,7 @@ AchievementGameplayState AchievementGameplayState::from_drive_save(const drive::
   st.race_encounters_won = race_encounters;
   st.discount_signs_found = int(save.signs_found.size());
   for (const auto& b : save.barns) {
-    if (b.status <= 1) ++st.barns_found;
+    if (b.status == 2) ++st.barns_found;
   }
   st.roads_discovered = roads_discovered_count;
   st.outposts_discovered = int(save.discovered_outposts.size());

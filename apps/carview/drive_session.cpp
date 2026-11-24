@@ -875,6 +875,17 @@ void DriveSession::eval_achievements(bool toasts) {
         snap.promo_cars = promo_tracker.save_ids();
         const int roads_cnt = app.road_discovery.ready() ? app.road_discovery.discovered_count() : 0;
         auto ags = carview::AchievementGameplayState::from_drive_save(snap, roads_cnt, app.h2h_wins);
+        const auto cstats = club_medal_stats();
+        ags.club_medals_total = std::max(ags.club_medals_total, cstats.total_medals);
+        ags.club_cars_with_medal = std::max(ags.club_cars_with_medal, cstats.cars_with_medal);
+        ags.club_ferrari_cars = cstats.ferrari_cars;
+        ags.club_million_cr_cars = cstats.million_cr_cars;
+        ags.club_shelby_cars = cstats.shelby_cars;
+        ags.club_lamborghini_cars = cstats.lamborghini_cars;
+        ags.club_nissan_cars = cstats.nissan_cars;
+        ags.club_bmw_cars = cstats.bmw_cars;
+        ags.club_british_cars = cstats.british_cars;
+        ags.club_ford_cars = cstats.ford_cars;
         if (achievements.evaluate(ags, toasts) > 0 && app.demo_achievements_png.empty())
           achievements.save_state(achievements_path);
 }

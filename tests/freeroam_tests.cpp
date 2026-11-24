@@ -343,6 +343,25 @@ int main() {
     CHECK(h_after.active && h_after.chain_points == h_before.chain_points && h_after.multiplier == h_before.multiplier);
     CHECK(st.chain_remaining_s(11.5) > 2.0);
   }
+  // Phase 1 parity: Sponsor challenge active tier checks sc.tiers[claimed_tiers] (not always tiers[0]).
+  {
+    SkillsData sd;
+    sd.bank_timeout = 3.0;
+    sd.tag_award_interval = 0.0;
+    SponsorChallenge sc;
+    sc.id = "test_sponsor";
+    sc.type = "SkillChallenge";
+    sc.tiers = {{"Drift", 4, 1, 1000}, {"Drift", 1, 2, 5000}};  // tier 0: any grade x1; tier 1: Awesome (grade 3+) x2
+    sd.sponsor_challenges.push_back(sc);
+    SkillTracker st(sd, 0.0, 0);
+    st.award_named("Drift", 1, 1.0);  // Standard -> satisfies tier 0
+    CHECK(st.sponsor_progress().at("test_sponsor").claimed_tiers == 1);
+    st.award_named("Drift", 1, 2.0);  // Standard -> must NOT advance tier 1 (requires Awesome)
+    CHECK(st.sponsor_progress().at("test_sponsor").claimed_tiers == 1);
+    CHECK(st.sponsor_progress().at("test_sponsor").count == 1);
+    st.award_named("Drift", 3, 3.0);  // Awesome -> increments count to 2 and claims tier 1
+    CHECK(st.sponsor_progress().at("test_sponsor").claimed_tiers == 2);
+  }
   if (failures) return 1;
   std::printf("freeroam_tests: all passed\n");
   return 0;

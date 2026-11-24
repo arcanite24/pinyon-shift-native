@@ -572,6 +572,7 @@ struct RadioPlayer::Voice {
   float env = 0.0f; // smooth fade envelope across seek/underrun boundaries (zero clicks)
   float last_l = 0.0f;
   float last_r = 0.0f;
+  bool location = false;
 };
 
 struct RadioPlayer::Banks {
@@ -655,10 +656,13 @@ void RadioPlayer::render(float* out, int frames) {
   const double t0 = radio_.clock();
   // The clock runs while on, and while the last station fades to off.
   const double t1 = t0 + (sel >= 0 || fading ? dt : 0);
-  for (auto& v : voices_) v.used = false;
-  mix_.resize(4 * size_t(frames));
+  for (auto& v : voices_) {
+    if (!v.location) v.used = false;
+  }
+  mix_.resize(6 * size_t(frames));
   float* music = mix_.data();
   float* voice = mix_.data() + 2 * size_t(frames);
+  float* ident = mix_.data() + 4 * size_t(frames);
   const double fade_s = radio_.last_change_was_user() ? lv.change_fade : lv.change_fade_normal;
   const double fade_step = 1.0 / (std::max(0.01, fade_s) * rate_);
   const double vol = std::clamp(volume, 0.0, 2.0);
@@ -718,7 +722,10 @@ void RadioPlayer::render(float* out, int frames) {
       const double gain = lv.master * (e.kind == RadioKind::kTrack   ? lv.music
                                        : e.kind == RadioKind::kIdent ? lv.ident
                                                                      : lv.dialogue);
-      float* dst = (e.kind == RadioKind::kTrack ? music : voice) + 2 * size_t(first);
+      float* dst = (e.kind == RadioKind::kTrack   ? music
+                    : e.kind == RadioKind::kIdent ? ident
+                                                  : voice) +
+                   2 * size_t(first);
       const int64_t rfrom = st->from(), rend = st->end();
       const float env_up = 1.0f / std::max(1.0f, 0.008f * float(rate_));
       const float env_dn = 1.0f / std::max(1.0f, 0.004f * float(rate_));
@@ -769,13 +776,13 @@ void RadioPlayer::render(float* out, int frames) {
                                                      : std::min(duck_target, duck_ + duck_step);
       const double duck = int(s) == sel ? duck_ : 1.0;
       const float k = float(g * master * vol * st_vol);
-      out[2 * i] += k * float(music[2 * i] * duck + voice[2 * i] * dj_modifier_);
-      out[2 * i + 1] += k * float(music[2 * i + 1] * duck + voice[2 * i + 1] * dj_modifier_);
+      out[2 * i] += k * float(music[2 * i] * duck + ident[2 * i] + voice[2 * i] * dj_modifier_);
+      out[2 * i + 1] += k * float(music[2 * i + 1] * duck + ident[2 * i + 1] + voice[2 * i + 1] * dj_modifier_);
     }
     station_gain_[s] = g;
   }
   for (auto it = voices_.begin(); it != voices_.end();) {
-    if (!it->used) {
+    if (!it->location && !it->used) {
       release_voice(*it);
       it = voices_.erase(it);
     } else {
@@ -799,6 +806,9 @@ void RadioPlayer::set_listener(std::array<float, 3> pos, float heading_rad) {
 
 void RadioPlayer::render_location_stations(float* out, int frames) {
   if (!out || frames <= 0 || emitters_.empty()) return;
+  for (auto& v : voices_) {
+    if (v.location) v.used = false;
+  }
   const RadioData& data = radio_.data();
   const double t0 = radio_.location_clock();
   const double dt = double(frames) / double(rate_);
@@ -831,6 +841,7 @@ void RadioPlayer::render_location_stations(float* out, int frames) {
       const int last = now_audible ? std::clamp(int(std::ceil((e.end - t0) * rate_)), 0, frames) : 0;
       const double approx_start = now_audible ? std::max(0.0, (t0 + double(first) / rate_ - e.start) * 48000.0) : 0.0;
       Voice* v = voice_for(e, int64_t(approx_start));
+      v->location = true;
       v->used = true;
       if (!now_audible || last <= first || v->slot < 0) continue;
       PcmStream* st = banks_->pool->stream(v->slot);
@@ -852,6 +863,14 @@ void RadioPlayer::render_location_stations(float* out, int frames) {
         out[2 * (first + i) + 1] += mono * gr;
       }
       st->hint(std::max<int64_t>(rfrom, int64_t(std::floor(v->pos)) - 4));
+    }
+  }
+  for (auto it = voices_.begin(); it != voices_.end();) {
+    if (it->location && !it->used) {
+      release_voice(*it);
+      it = voices_.erase(it);
+    } else {
+      ++it;
     }
   }
 }

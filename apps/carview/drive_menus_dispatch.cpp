@@ -162,7 +162,7 @@ void DriveSession::open_shop_or_autoshow(bool is_autoshow) {
                                             slice12.trainer.hidden_cars, price_mult)
                             : shop.open(*db, app.career_garage,
                                         app.career_garage.selected_car() ? app.career_garage.selected_car()->id : 0, why,
-                                        &hub_phys_settings, &hub_pi_cfg, &app.class_bands, price_mult);
+                                        &hub_phys_settings, &hub_pi_cfg, &app.class_bands, price_mult, discount());
               }
             }
           }
@@ -311,11 +311,14 @@ void DriveSession::start_new_career() {
 bool DriveSession::map_marker_visible(const MapMarker& m) {
           switch (map_filter) {
             case MapFilter::kAll: return true;
-            case MapFilter::kEvents: return m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite;
+            case MapFilter::kEvents:
+              return m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite || m.kind == MapMarker::kH2hFinish;
             case MapFilter::kStreetRaces: return m.kind == MapMarker::kStreetHub || m.icon_tag == "streetrace";
             case MapFilter::kOutposts: return m.kind == MapMarker::kOutpost || m.kind == MapMarker::kFestivalSite;
             case MapFilter::kCollectibles: return false;
-            case MapFilter::kPrStunts: return m.kind == MapMarker::kPrStunt || m.kind == MapMarker::kOutpost;
+            case MapFilter::kPrStunts:
+              return m.kind == MapMarker::kPrStunt || m.kind == MapMarker::kOutpost ||
+                     m.kind == MapMarker::kSpeedTrap || m.kind == MapMarker::kSpeedZone;
             default: return true;
           }
 }
@@ -591,7 +594,21 @@ void DriveSession::open_menu() {
 }
 
 bool DriveSession::activate_world_trigger() {
-          if (app.race || !active_trigger.in_range) return false;
+          if (app.race) return false;
+          if (!active_trigger.in_range) {
+            if (festival_mgr && festival_mgr->hud(vehicle.time()).prompt_visible) {
+              const drive::Vec3 fp = vehicle.position();
+              const drive::Vec3 ff = drive::rotate(vehicle.orientation(), {0, 0, 1});
+              if (festival_mgr->start_head_to_head({fp.x, fp.y, fp.z}, std::atan2(ff.x, ff.z), vehicle.time())) {
+                club_pending.encounter_started = true;
+                notice = "HEAD-TO-HEAD RACE STARTED!";
+                notice_until = vehicle.time() + 2.5;
+                minimap_at = -1;
+                return true;
+              }
+            }
+            return false;
+          }
           if (active_trigger.kind == carview::WorldTrigger::kFestivalSite && active_trigger.site) {
             switch (active_trigger.site->kind) {
               case race::FestivalSite::kRaceCentral:

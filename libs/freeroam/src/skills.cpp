@@ -340,7 +340,10 @@ void SkillTracker::record_sponsor_skill(const std::string& canonical_id, int gra
   const int xml_grade = is_combo ? 0 : std::clamp(4 - grade, 0, 3);
   for (const auto& sc : data_.sponsor_challenges) {
     if (!audio::iequals(sc.type, "SkillChallenge") || sc.tiers.empty()) continue;
-    const std::string& req_skill = sc.tiers.front().skill;
+    auto& prog = sponsors_[sc.id];
+    const size_t active_idx = std::min(size_t(prog.claimed_tiers), sc.tiers.size() - 1);
+    const auto& active_tier = sc.tiers[active_idx];
+    const std::string& req_skill = active_tier.skill;
     bool matches = false;
     if (audio::iequals(req_skill, "Any")) matches = true;
     else if (audio::iequals(req_skill, "AnySkill")) matches = !is_combo;
@@ -348,8 +351,7 @@ void SkillTracker::record_sponsor_skill(const std::string& canonical_id, int gra
     else if (audio::iequals(req_skill, canonical_id)) matches = true;
     else if (audio::iequals(req_skill, "SideSwipe") && audio::iequals(canonical_id, "ESideSwipe")) matches = true;
     if (!matches) continue;
-    if (xml_grade > sc.tiers.front().grade) continue;
-    auto& prog = sponsors_[sc.id];
+    if (xml_grade > active_tier.grade) continue;
     ++prog.count;
     while (size_t(prog.claimed_tiers) < sc.tiers.size() &&
            prog.count >= sc.tiers[size_t(prog.claimed_tiers)].number) {
@@ -570,7 +572,8 @@ std::vector<SkillEvent> SkillTracker::step(const SkillInput& in) {
   // 1. Burnout & 2. Donut
   {
     const double spin_thr = data_.burnout.param_a > 0 ? data_.burnout.param_a : 10.0;
-    const double max_burn_mph = std::max(5.0, data_.burnout.param_b * kMsToMph);
+    // HorizonFeats.xml Burnout MaxSpeed is already in mph (SPEC-SKILLS-POPULARITY).
+    const double max_burn_mph = std::max(5.0, data_.burnout.param_b);
     const bool spinning = in.wheels_on_ground >= 2 && in.wheel_spin >= spin_thr && mph <= max_burn_mph;
     const bool turning_spin = in.wheels_on_ground >= 2 && in.wheel_spin >= spin_thr * 0.7 && mph <= 25.0 &&
                               std::fabs(in.yaw_rate) >= 1.2;

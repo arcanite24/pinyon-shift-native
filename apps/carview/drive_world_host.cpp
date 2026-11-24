@@ -14,6 +14,7 @@
 #include "cars/visual_setup.h"
 #include "display_hdr_win.h"
 #include "drive_session.h"
+#include "fh1data/cjk_font.h"
 #include "settings.h"
 #include "world_view.h"
 
@@ -444,10 +445,16 @@ bool DriveWorldHost::open_world_and_car() {
             if (!app.headless || app.bench_audio || app.bench_full_fx) {
               app.audio_host.init_user_music(app.user_music_dir, true);
               const auto sfx_cache = !app.sound_dir.empty() ? app.sound_dir : (app.state_root / "sound-cache");
-              app.audio_host.init_sfx(game_root, sfx_cache, app.audio_host.car_burble_bank());
-              app.audio_host.init_satnav(game_root, sfx_cache, app.language, true);
+              app.audio_host.init_sfx(game_root, sfx_cache, app.audio_host.car_burble_bank(), app.state_root);
+              app.audio_host.init_satnav(game_root, sfx_cache, app.language, app.metric_units);
               app.audio_host.init_vo(game_root, app.language);
               app.audio_host.init_acoustics(game_root, sfx_cache, app.world_dir, app.rally_catalog.package_dir);
+            }
+            if (fh1::CjkFont::language_needs_cjk(app.language) && !carview::ui::cjk_font_loaded()) {
+              auto cjk = std::make_shared<fh1::CjkFont>();
+              if (cjk->load_for_language(game_root, app.language, nullptr)) {
+                carview::ui::set_cjk_font(std::move(cjk));
+              }
             }
             app.bench_startup.audio_load_ms +=
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_world_t0).count();

@@ -281,7 +281,7 @@ void test_achievements_system_and_persistence() {
   save.top_speed = 95.0;  // ~212 mph
   save.total_distance = 180000.0;
   for (int i = 0; i < 75; ++i) save.signs_found.push_back("Sign_" + std::to_string(i));
-  for (int i = 0; i < 5; ++i) save.barns.push_back({"Barn_" + std::to_string(i), 0, 10.0, 20.0});
+  for (int i = 0; i < 5; ++i) save.barns.push_back({"Barn_" + std::to_string(i), 2, 10.0, 20.0});
   save.garage = {101, 102, 103, 104, 105};
   save.promo_cars = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
   save.discovered_outposts = {"GasStation_01", "GasStation_02", "GasStation_03"};
@@ -316,6 +316,42 @@ void test_achievements_system_and_persistence() {
 
   // Re-evaluating the same state unlocks 0 new achievements
   assert(sys.evaluate(ags, true) == 0);
+
+  // Phase 1 parity: 1000 Club IDs 217..225 use exact make/country/value/car-count thresholds.
+  {
+    fh1::SpaDatabase club_db;
+    for (uint16_t id = 216; id <= 225; ++id) {
+      fh1::SpaAchievement sa;
+      sa.id = id;
+      sa.gamerscore = 20;
+      sa.label = "Club #" + std::to_string(id);
+      club_db.achievements.push_back(sa);
+    }
+    carview::AchievementsSystem csys;
+    csys.init(club_db);
+    carview::AchievementGameplayState cs;
+    cs.club_medals_total = 1;
+    cs.club_ferrari_cars = 13;
+    cs.club_million_cr_cars = 14;
+    cs.club_shelby_cars = 3;
+    cs.club_lamborghini_cars = 7;
+    cs.club_nissan_cars = 7;
+    cs.club_bmw_cars = 10;
+    cs.club_british_cars = 19;
+    cs.club_ford_cars = 13;
+    cs.club_cars_with_medal = 145;
+    csys.evaluate(cs, false);
+    assert(csys.find(216)->unlocked);
+    assert(!csys.find(217)->unlocked && csys.find(217)->progress->target == 14);
+    assert(csys.find(218)->unlocked);
+    assert(csys.find(219)->unlocked);
+    assert(!csys.find(220)->unlocked && csys.find(220)->progress->target == 8);
+    assert(csys.find(221)->unlocked);
+    assert(csys.find(222)->unlocked);
+    assert(!csys.find(223)->unlocked && csys.find(223)->progress->target == 20);
+    assert(csys.find(224)->unlocked);
+    assert(!csys.find(225)->unlocked && csys.find(225)->progress->target == 146);
+  }
 
   // Toast expires after advancing time
   for (int i = 0; i < 300 && sys.active_toast() != nullptr; ++i) sys.update(0.25);

@@ -100,6 +100,14 @@ struct AchievementGameplayState {
   int rally_level = 0;
   int club_medals_total = 0;
   int club_cars_with_medal = 0;
+  int club_ferrari_cars = 0;
+  int club_million_cr_cars = 0;
+  int club_shelby_cars = 0;
+  int club_lamborghini_cars = 0;
+  int club_nissan_cars = 0;
+  int club_bmw_cars = 0;
+  int club_british_cars = 0;
+  int club_ford_cars = 0;
 
   static AchievementGameplayState from_drive_save(const drive::DriveSave& save, int roads_discovered_count = 0,
                                                   int race_encounters = 0);

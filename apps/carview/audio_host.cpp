@@ -466,14 +466,14 @@ std::string AudioHost::car_burble_bank() const {
 }
 
 bool AudioHost::init_sfx(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
-                         const std::string& burble_bank) {
+                         const std::string& burble_bank, const std::filesystem::path& state_root) {
   if (game_root.empty()) return false;
   if (!mixer_configs_tried_) {
     mixer_configs_tried_ = true;
     const bool was_running = engine_.running();
     if (was_running) stop_device();
     std::string mnote;
-    if (engine_.load_mixer_configs(game_root, &mnote)) {
+    if (engine_.load_mixer_configs(game_root, &mnote, state_root)) {
       std::printf("%s\n", mnote.c_str());
       engine_.activate_matrix_snapshot("FreeRoam");
     }

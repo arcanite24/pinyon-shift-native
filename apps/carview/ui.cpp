@@ -981,8 +981,19 @@ bool parse_style_tag(std::string_view tag, ui::Font base_font, uint32_t base_col
     ui::Font nf = base_font;
     if (v == "a" || v == "horizon_a") nf = ui::Font::kA;
     else if (v == "b" || v == "horizon_b") nf = ui::Font::kB;
+    else if (v == "c" || v == "horizon_c") nf = ui::Font::kC;
     else if (v == "d" || v == "horizon_d") nf = ui::Font::kD;
     else if (v == "e" || v == "horizon_e") nf = ui::Font::kE;
+    else if (v == "sym" || v == "horizon_sym" || v == "symbols") nf = ui::Font::kSym;
+    else if (v == "dg1" || v == "horizon_dg1") nf = ui::Font::kDg1;
+    else if (v == "dg2" || v == "horizon_dg2") nf = ui::Font::kDg2;
+    else if (v == "dg3" || v == "horizon_dg3") nf = ui::Font::kDg3;
+    else if (v == "dg4" || v == "horizon_dg4") nf = ui::Font::kDg4;
+    else if (v == "dg5" || v == "horizon_dg5") nf = ui::Font::kDg5;
+    else {
+      const ui::Font resolved = ui::resolve_font_name(v);
+      if (resolved != ui::Font::kAuto) nf = resolved;
+    }
     font_stack.push_back(nf);
     return true;
   }

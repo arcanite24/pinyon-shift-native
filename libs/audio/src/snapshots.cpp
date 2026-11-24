@@ -7,6 +7,8 @@
 
 #include "audio/xml.h"
 #include "cars/mods.h"
+#include "cars/sources.h"
+#include "fh1data/archive.h"
 
 namespace audio {
 namespace {
@@ -190,11 +192,28 @@ bool SnapshotMatrix::parse(std::string_view xml, std::string* error) {
   return true;
 }
 
-bool SnapshotMatrix::load(const std::filesystem::path& game_root, std::string* error) {
-  const auto path = cars::mods::resolve(game_root / "media" / "audio" / "AudioMixerSnapshots.xml");
-  const std::string text = read_text_file(path);
+bool SnapshotMatrix::load(const std::filesystem::path& game_root, std::string* error,
+                          const std::filesystem::path& state_root) {
+  // Prefer v4 title-update media.zip when present (adds the 22nd RallyCoDriver category),
+  // unless an explicit mod override exists for the base XML path.
+  const auto base_rel = game_root / "media" / "audio" / "AudioMixerSnapshots.xml";
+  const auto resolved = cars::mods::resolve(base_rel);
+  const bool mod_overridden = (resolved != base_rel);
+  if (!mod_overridden && !state_root.empty()) {
+    cars::Install inst;
+    if (cars::discover_install(game_root, state_root, {}, inst, nullptr) && !inst.v4_media_zip.empty()) {
+      if (auto z = fh1::Archive::open(inst.v4_media_zip, nullptr)) {
+        const auto rr = z->read("audio/AudioMixerSnapshots.xml");
+        if (rr.ok() && !rr.data.empty()) {
+          std::string_view sv(reinterpret_cast<const char*>(rr.data.data()), rr.data.size());
+          if (parse(sv, error)) return true;
+        }
+      }
+    }
+  }
+  const std::string text = read_text_file(resolved);
   if (text.empty()) {
-    if (error) *error = "cannot read " + path.string();
+    if (error) *error = "cannot read " + resolved.string();
     return false;
   }
   return parse(text, error);

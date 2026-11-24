@@ -183,7 +183,7 @@ const char* shop_category_name(ShopCategory cat) {
 
 bool UpgradeShop::open(const cars::PartsDb& db, garage::Garage& g, int64_t garage_id, std::string& why,
                        const cars::PhysicsSettings* phys_settings, const garage::PiConfig* pi_cfg,
-                       const std::vector<garage::ClassBand>* bands, double price_multiplier) {
+                       const std::vector<garage::ClassBand>* bands, double price_multiplier, int discount_percent) {
   open_ = false;
   changed_ = false;
   visual_dirty_ = false;
@@ -194,6 +194,7 @@ bool UpgradeShop::open(const cars::PartsDb& db, garage::Garage& g, int64_t garag
   pi_cfg_ = pi_cfg;
   bands_ = bands;
   price_multiplier_ = std::clamp(price_multiplier, 0.25, 3.0);
+  discount_percent_ = std::clamp(discount_percent, 0, 100);
 
   if (!reload_slots(why)) return false;
 
@@ -520,7 +521,7 @@ void UpgradeShop::refresh_current_and_preview() {
 
   if (category_ == ShopCategory::kAutoUpgrade) {
     if (auto_index_ < auto_targets_.size()) {
-      auto_plan_ = garage::plan_auto_upgrade(*garage_, *db_, garage_id_, auto_targets_[auto_index_], 0,
+      auto_plan_ = garage::plan_auto_upgrade(*garage_, *db_, garage_id_, auto_targets_[auto_index_], discount_percent_,
                                              *phys_settings_, *pi_cfg_, *bands_);
       if (auto_plan_.ok) preview_pi_ = auto_plan_.result;
     }
@@ -632,8 +633,10 @@ bool UpgradeShop::fit(int discount_percent, int64_t& credits, std::string& messa
   }
 
   if (category_ == ShopCategory::kTuning) {
-    reset_tuning();
-    message = "tuning reset to stock";
+    changed_ = true;
+    visual_dirty_ = true;
+    refresh_current_and_preview();
+    message = "tuning applied";
     return true;
   }
 

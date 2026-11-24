@@ -231,6 +231,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         st.redline_rpm = vehicle.params().redline_rpm;
         st.abs = vehicle.abs_active();
         carview::DriveHud d;
+        d.time = app.show_title ? title_orbit_time : vehicle.time();
         const double dial_dt = d.time - dial_trail_last_t;
         if (dial_trail_last_t >= 0.0 && dial_dt > 1e-4 && dial_dt < 0.5) {
           dial_trail_rate += (((st.rpm - dial_trail_last_rpm) / dial_dt) - dial_trail_rate) * std::min(1.0, dial_dt * 10.0);
@@ -241,7 +242,6 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         dial_trail_last_t = d.time;
         d.kmh = st.kmh, d.rpm = st.rpm, d.rpm_rate = dial_trail_rate, d.redline_rpm = st.redline_rpm, d.gear = st.gear, d.abs = st.abs,
         d.tcs = vehicle.tcs_active() || vehicle.stm_active();
-        d.time = app.show_title ? title_orbit_time : vehicle.time();
         d.detail_title = std::move(detail_title);
         d.detail_lines = std::move(detail_lines);
         // Title Screen HUD (when active and settings isn't open over it).
@@ -760,6 +760,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             cars::CarPaintSpec sw_paint{};
             bool have_sw_paint = false;
             if (const carview::AutoshowSwatch* sw = autoshow.selected_swatch()) {
+              sw_paint.body.active = true;
               sw_paint.body.rgb = sw->rgb;
               sw_paint.body.finish = sw->metallic ? cars::PaintFinish::kMetallic : cars::PaintFinish::kNormal;
               have_sw_paint = true;

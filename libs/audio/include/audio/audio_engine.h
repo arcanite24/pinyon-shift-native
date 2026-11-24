@@ -133,7 +133,8 @@ class AudioEngine {
   // Loads AudioMixerSnapshots.xml, GlobalDSPConfig.xml, and AudioEngineConfig.xml
   // from `game_root` (call before start()). When loaded, the 9x22 SnapshotMatrix,
   // CarBusEq, and MasterRmsStage drive the mix.
-  bool load_mixer_configs(const std::filesystem::path& game_root, std::string* note = nullptr);
+  bool load_mixer_configs(const std::filesystem::path& game_root, std::string* note = nullptr,
+                          const std::filesystem::path& state_root = {});
   bool load_snapshot_matrix_xml(std::string_view xml, std::string* error = nullptr);
   bool has_snapshot_matrix() const { return use_matrix_; }
   float matrix_bus_gain(Bus b) const { return matrix_.bus_gain(b); }

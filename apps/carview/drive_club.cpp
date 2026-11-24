@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <sqlite3.h>
+
 #include "cars/sources.h"
 
 namespace carview {
@@ -19,11 +21,29 @@ void DriveSession::club_ensure_meta() {
           if (nm.empty() || nm.rfind("_&", 0) == 0) nm = cev.horizon_id;
           club_event_names[cev.event_id] = std::move(nm);
         }
+        std::map<uint8_t, std::string> country_names;
+        if (app.shared_db) {
+          app.shared_db->each(
+              "SELECT CountryID, COALESCE(Country, ''), COALESCE(IconPath, '') FROM List_Country", {},
+              [&](sqlite3_stmt* st) {
+                const int64_t cid = sqlite3_column_int64(st, 0);
+                if (cid <= 0 || cid > 255) return;
+                const auto* cref = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
+                const auto* ipath = reinterpret_cast<const char*>(sqlite3_column_text(st, 2));
+                std::string nm = cref ? carview::game_text(cref) : std::string{};
+                if ((nm.empty() || nm.rfind("_&", 0) == 0) && ipath && *ipath) nm = ipath;
+                if (!nm.empty()) country_names[uint8_t(cid)] = std::move(nm);
+              },
+              nullptr);
+        }
         for (const auto& [cid, spec] : app.career_catalog.cars) {
           freeroam::club::CarMeta m;
           m.car_id = cid;
           m.base_cost = spec.base_cost;
           m.make = app.car_names->short_name(spec.media_name);
+          if (auto cit = country_names.find(spec.props.country); cit != country_names.end()) {
+            m.country = cit->second;
+          }
           club_car_meta[cid] = std::move(m);
         }
 }
@@ -49,10 +69,14 @@ drive::SavedClubCar* DriveSession::club_record() {
 void DriveSession::club_check() {
         club_runs.clear();
         club_car = -1;
-        const char* state = std::getenv("SHIFT_STATE_ROOT");
+        const std::filesystem::path state_path = !app.state_root.empty()
+                                                     ? app.state_root
+                                                     : (std::getenv("SHIFT_STATE_ROOT")
+                                                            ? std::filesystem::path(std::getenv("SHIFT_STATE_ROOT"))
+                                                            : std::filesystem::path{});
         if (!app.club_tried) {
           app.club_tried = true;
-          app.club_loaded = freeroam::club::load_club(state ? state : "", app.club_data, &app.club_why);
+          app.club_loaded = freeroam::club::load_club(state_path.string(), app.club_data, &app.club_why);
           if (app.club_loaded)
             std::printf("1000 club: %zu cars, %zu challenges (%zu measured), %zu locations\n",
                         app.club_data.cars.size(), app.club_data.challenges(), app.club_data.measured(),
@@ -61,7 +85,7 @@ void DriveSession::club_check() {
         if (!app.club_loaded) return club_gate = app.club_why, void();
         if (!app.colorado_world()) return club_gate = "the 1000 Club is in Colorado", void();
         bool owned = false;
-        for (const auto& p : cars::list_packs(state ? state : ""))
+        for (const auto& p : cars::list_packs(state_path))
           if (p.id == app.club_data.package) owned = p.owned();
         if (!owned) return club_gate = "the 1000 Club package is not enabled", void();
         if (app.wristbands.levels.empty() && !app.world_dir.empty()) {
@@ -164,9 +188,11 @@ void DriveSession::club_step() {
             }
           }
           const auto& pc = app.race->session().car(app.race->player_index());
-          // Before rolling off the start line, race_progress stays < 0 so wait-at-start challenges work cleanly.
-          const double raw_prog = app.race->session().started() ? (pc.distance > 0.5 ? pc.distance : -0.01) : -0.01;
-          s.race_progress = (raw_prog < 0.0 || std::fabs(vehicle.speed()) < 1.5 && pc.distance < 1.0) ? -0.01 : raw_prog;
+          const double total_m = std::max(1.0, app.race->racing_line().length() * std::max(1, app.race->session().laps()));
+          // Normalized [0..1] race progress; stays < 0 before rolling off start line so wait-at-start works.
+          const double frac = std::clamp(pc.distance / total_m, 0.0, 1.0);
+          const double raw_prog = app.race->session().started() ? (pc.distance > 0.5 ? frac : -0.01) : -0.01;
+          s.race_progress = (raw_prog < 0.0 || (std::fabs(vehicle.speed()) < 1.5 && pc.distance < 1.0)) ? -0.01 : raw_prog;
         } else {
           s.event_id = 0;
           s.event_hub.clear();

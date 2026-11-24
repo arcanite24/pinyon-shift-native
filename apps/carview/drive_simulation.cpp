@@ -455,6 +455,7 @@ bool DriveSession::step(const drive::Input& user_in) {
         if (smashed_sign) club_pending.smashables.push_back("sign");
         if (host.free_roam && host.free_roam->hidden()) app.smashables.sync_barns_from_hidden(*host.free_roam->hidden());
         bool smashed_prop = smashed_sign;
+        freeroam::SmashObjectType smashed_type = freeroam::SmashObjectType::kGeneric;
         // FORMAT-PHYSICS-DEFINITIONS: step 384-body smashable prop pool & barn doors.
         if (!app.bench || app.bench_full_fx) {
           std::vector<world::SmashEvent> sm_events;
@@ -465,8 +466,24 @@ bool DriveSession::step(const drive::Input& user_in) {
             // Hide intact static world prop immediately on smash and persist across regathers.
             host.showroom.hide_world_props_near(sev.pos, sev.hide_radius);
             if (host.streamer) host.streamer->set_hidden_positions(app.smashables.broken_hidden_positions());
-            club_pending.smashables.push_back(
-                freeroam::club::classify_smashable_type(sev.prop_stem, sev.object_type_index));
+            const std::string stype = freeroam::club::classify_smashable_type(sev.prop_stem, sev.object_type_index);
+            club_pending.smashables.push_back(stype);
+            const std::string stem_l = lower_ascii(sev.prop_stem);
+            if (stype == "fence" || stem_l.find("fence") != std::string::npos)
+              smashed_type = freeroam::SmashObjectType::kFence;
+            else if (stem_l.find("mailbox") != std::string::npos || stem_l.find("postbox") != std::string::npos)
+              smashed_type = freeroam::SmashObjectType::kMailbox;
+            else if (stem_l.find("roadclosed") != std::string::npos || stem_l.find("road_closed") != std::string::npos)
+              smashed_type = freeroam::SmashObjectType::kRoadClosedSign;
+            else if (stem_l.find("trash") != std::string::npos || stem_l.find("bin") != std::string::npos ||
+                     stem_l.find("garbage") != std::string::npos)
+              smashed_type = freeroam::SmashObjectType::kTrashCan;
+            else if (stem_l.find("log") != std::string::npos || stem_l.find("lumber") != std::string::npos)
+              smashed_type = freeroam::SmashObjectType::kLogPiles;
+            else if (stem_l.find("fruit") != std::string::npos || stem_l.find("produce") != std::string::npos)
+              smashed_type = freeroam::SmashObjectType::kFruitCart;
+            else if (stem_l.find("hydrant") != std::string::npos)
+              smashed_type = freeroam::SmashObjectType::kFireHydrant;
             host.particle_sys.spawn_smashable_burst(sev.prop_stem, sev.pos, sev.impulse_vel);
             audio::CollisionHit bhit{};
             bhit.rel_speed_mps = float(std::fabs(vehicle.speed()));
@@ -599,6 +616,7 @@ bool DriveSession::step(const drive::Input& user_in) {
           si.world_impact_ms = vehicle.strongest_body_contact().force * drive::Vehicle::kStep / mass;
           si.car_impact_ms = traffic ? traffic->player_impulse() / mass : 0.0;
           si.smashed_object = smashed_prop;
+          si.smashed_type = smashed_type;
           const drive::Vec3 at = vehicle.position();
           auto check_other = [&](double ox, double oz, double ospeed) {
             const double dx = ox - at.x, dz = oz - at.z;

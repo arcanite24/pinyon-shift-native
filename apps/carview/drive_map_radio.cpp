@@ -154,8 +154,10 @@ MapScene DriveSession::map_scene() {
               mm.completed = pb > 0.0;
               mm.is_new = !mm.completed;
               char sub[64];
-              if (pb > 0.0) std::snprintf(sub, sizeof sub, "SPEED TRAP  •  PB %.1f MPH", pb);
-              else std::snprintf(sub, sizeof sub, "SPEED TRAP  •  MIN %.0f MPH", t.min_speed_mph);
+              const double spd_scale = app.metric_units ? 1.609344 : 1.0;
+              const char* spd_unit = app.metric_units ? "KM/H" : "MPH";
+              if (pb > 0.0) std::snprintf(sub, sizeof sub, "SPEED TRAP  •  PB %.1f %s", pb * spd_scale, spd_unit);
+              else std::snprintf(sub, sizeof sub, "SPEED TRAP  •  MIN %.0f %s", t.min_speed_mph * spd_scale, spd_unit);
               mm.subtitle = sub;
               mm.x = t.gate.center[0];
               mm.z = t.gate.center[2];
@@ -171,7 +173,9 @@ MapScene DriveSession::map_scene() {
               mm.completed = pb > 0.0;
               mm.is_new = !mm.completed;
               char sub[64];
-              if (pb > 0.0) std::snprintf(sub, sizeof sub, "SPEED ZONE  •  PB %.1f MPH AVG", pb);
+              const double spd_scale = app.metric_units ? 1.609344 : 1.0;
+              const char* spd_unit = app.metric_units ? "KM/H" : "MPH";
+              if (pb > 0.0) std::snprintf(sub, sizeof sub, "SPEED ZONE  •  PB %.1f %s AVG", pb * spd_scale, spd_unit);
               else std::snprintf(sub, sizeof sub, "SPEED ZONE  •  AVG SPEED CHALLENGE");
               mm.subtitle = sub;
               mm.x = z.midpoint[0];

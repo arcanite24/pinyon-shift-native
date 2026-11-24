@@ -821,7 +821,7 @@ ClubMedalStats compute_medal_stats(const std::vector<std::pair<int64_t, int>>& m
         has_substr(mk, "austin") || has_substr(mk, "ascari") || has_substr(mk, "bowler") ||
         has_substr(mk, "caterham") || has_substr(mk, "eagle") || has_substr(mk, "joss");
     const bool british_country = (co == "uk" || has_substr(co, "brit") || has_substr(co, "united kingdom") ||
-                                  has_substr(co, "england"));
+                                  has_substr(co, "unitedkingdom") || has_substr(co, "england"));
     if (british_make || british_country) ++st.british_cars;
     if (it->second.base_cost >= 1000000) ++st.million_cr_cars;
   }

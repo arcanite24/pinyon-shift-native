@@ -39,7 +39,9 @@ class UpgradeShop {
   // and PI recompute on fit are active.
   bool open(const cars::PartsDb& db, garage::Garage& g, int64_t garage_id, std::string& why,
             const cars::PhysicsSettings* phys_settings = nullptr, const garage::PiConfig* pi_cfg = nullptr,
-            const std::vector<garage::ClassBand>* bands = nullptr, double price_multiplier = 1.0);
+            const std::vector<garage::ClassBand>* bands = nullptr, double price_multiplier = 1.0,
+            int discount_percent = 0);
+  void set_discount_percent(int pct) { discount_percent_ = pct; }
   void close() { open_ = false; }
   bool is_open() const { return open_; }
 
@@ -128,6 +130,7 @@ class UpgradeShop {
   const garage::PiConfig* pi_cfg_ = nullptr;
   const std::vector<garage::ClassBand>* bands_ = nullptr;
   double price_multiplier_ = 1.0;
+  int discount_percent_ = 0;
 
   std::vector<Slot> slots_;
   ShopCategory category_ = ShopCategory::kEngine;

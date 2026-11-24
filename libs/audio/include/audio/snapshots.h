@@ -91,7 +91,8 @@ class SnapshotMatrix {
   SnapshotMatrix();
 
   bool parse(std::string_view xml, std::string* error = nullptr);
-  bool load(const std::filesystem::path& game_root, std::string* error = nullptr);
+  bool load(const std::filesystem::path& game_root, std::string* error = nullptr,
+            const std::filesystem::path& state_root = {});
 
   int snapshot_count() const { return int(defs_.size()); }
   int category_count() const { return category_count_; }

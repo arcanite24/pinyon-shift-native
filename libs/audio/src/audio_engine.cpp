@@ -492,10 +492,11 @@ void AudioEngine::reload_sfx_burble(const std::filesystem::path& game_root, cons
   if (sfx_) sfx_->reload_burble_bank(game_root, cache_dir, burble_bank);
 }
 
-bool AudioEngine::load_mixer_configs(const std::filesystem::path& game_root, std::string* note) {
+bool AudioEngine::load_mixer_configs(const std::filesystem::path& game_root, std::string* note,
+                                     const std::filesystem::path& state_root) {
   if (running_.load(std::memory_order_acquire) || game_root.empty()) return false;
   std::string err;
-  const bool have_matrix = matrix_.load(game_root, &err);
+  const bool have_matrix = matrix_.load(game_root, &err, state_root);
   if (have_matrix) {
     use_matrix_ = true;
     for (int b = 0; b < kBuses; ++b) matrix_bus_smooth_[size_t(b)] = matrix_.bus_gain(Bus(b));

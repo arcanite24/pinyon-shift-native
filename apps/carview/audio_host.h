@@ -78,7 +78,7 @@ class AudioHost {
   // Loads AudioMixerSnapshots/GlobalDSP/AudioEngineConfig + FEV/FSB4 SfxEngine
   // (async background FSB decode with disk cache).
   bool init_sfx(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
-                const std::string& burble_bank = {});
+                const std::string& burble_bank = {}, const std::filesystem::path& state_root = {});
   bool init_satnav(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
                    std::string_view language = "EN", bool metric = true);
   bool init_codriver(const std::filesystem::path& rally_package_dir, const std::filesystem::path& cache_dir,
