@@ -1072,6 +1072,44 @@ int main() {
     CHECK(v.gear() >= 1);
     CHECK(v.engine_throttle() > 0.2);
   }
+  // 9) Phase 1 parity: DamageMods, linear wheel steer bypass, and RWD handbrake clutch open.
+  {
+    const auto p = test_car();
+    drive::FlatGround flat_g;
+    drive::Vehicle healthy(p), damaged(p);
+    healthy.reset({0, 0, 0}, 0.0);
+    damaged.reset({0, 0, 0}, 0.0);
+    drive::Vehicle::DamageMods dm{};
+    dm.engine_torque = 0.45;
+    dm.aero_drag = 1.4;
+    dm.steer_pull_rad = 0.08;
+    damaged.set_damage_mods(dm);
+    for (int i = 0; i < 120 * 3; ++i) {
+      healthy.step({0, 1.0, 0, false}, flat_g);
+      damaged.step({0, 1.0, 0, false}, flat_g);
+    }
+    CHECK(damaged.speed() < healthy.speed() * 0.85);
+    CHECK(std::fabs(damaged.position().x) > 0.5);
+
+    // Racing wheel linear_steer bypasses gamepad speed-narrowing at highway speed.
+    drive::Vehicle v_pad(p), v_wheel(p);
+    v_pad.launch({0, 0, 0}, 0.0, 45.0);
+    v_wheel.launch({0, 0, 0}, 0.0, 45.0);
+    drive::Input pad_in{0.5, 0.2, 0.0, false};
+    drive::Input whl_in{0.5, 0.2, 0.0, false};
+    whl_in.linear_steer = true;
+    for (int i = 0; i < 60; ++i) {
+      v_pad.step(pad_in, flat_g);
+      v_wheel.step(whl_in, flat_g);
+    }
+    CHECK(std::fabs(v_wheel.wheels()[0].steer) > std::fabs(v_pad.wheels()[0].steer) + 0.02);
+
+    // Handbrake on RWD disconnects clutch so the engine does not fight locked rear wheels.
+    drive::Vehicle v_hb(p);
+    v_hb.launch({0, 0, 0}, 0.0, 20.0);
+    for (int i = 0; i < 30; ++i) v_hb.step({0, 0.0, 0.0, true}, flat_g);
+    CHECK(v_hb.gear_state() == drive::Vehicle::GearState::kOpen && v_hb.clutch() < 0.05);
+  }
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

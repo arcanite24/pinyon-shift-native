@@ -147,6 +147,7 @@ struct DriveSession {
     bool has_skills = false;
     freeroam::SkillTracker::RewindSnapshot skills;
     world::SmashableWorld::RewindSnapshot smashables;
+    drive::CarDamageState car_damage;
   };
 
   struct OutpostHubItem {

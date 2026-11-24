@@ -185,21 +185,38 @@ void DriveSession::place_world() {
           const float redline = float(std::max(vehicle.params().redline_rpm, 6000.0));
           const float boost_gauge = drive::CockpitAnimState::gauge_boost_psi(vehicle.boost_psi(), cockpit_has_fi);
           cockpit_anim.update_gauges(spd, cockpit_dial_max_speed, float(vehicle.rpm()), redline, boost_gauge,
-                                     cockpit_dial_max_boost, 0.85f);
+                                     cockpit_dial_max_boost, car_damage.fuel_fraction);
           host.showroom.set_cockpit_anim(cockpit_anim, tod_cockpit_cam);
         }
         const float up_game[3] = {0, 1, 0};
         float sun[3], up[3];
         rotate_direction(m, up_game, up);
         if (app.tod_system.loaded_tod) {
-          const world::TodState tod = app.tod_system.evaluate(app.tod_clock);
+          world::TodState tod = app.tod_system.evaluate(app.tod_clock);
           rotate_direction(m, tod.sun_dir.data(), sun);
           host.showroom.set_world_light(sun, up, 1.0f);
           host.showroom.set_shadow_direction(sun);
           const drive::Vec3 vpos = vehicle.position();
+          const auto& cfg = app.tod_system.post_config;
+          const int zone_idx = app.tod_system.zones.find_zone(float(vpos.x), float(vpos.z));
+          const float step_dt = float(tod_frame_dt > 0.0 ? tod_frame_dt : (app.headless ? 10.0 : 1.0 / 60.0));
+          zone_blender.update(app.tod_system.zones, cfg, float(vpos.x), float(vpos.z), step_dt);
+          // Apply blended PostZone FogTemplate multipliers (Fog_Templates.xml) before uploading ToD UBO.
+          {
+            const auto& ft = zone_blender.fog;
+            for (int k = 0; k < 3; ++k) {
+              tod.fog_color[k] *= ft.color[k];
+              tod.fog_sun_scatter_color[k] *= ft.sun_scatter_color[k];
+            }
+            tod.fog_density *= ft.density;
+            tod.fog_start *= ft.start_distance;
+            tod.fog_sun_scatter_power *= ft.sun_scatter_power;
+            tod.fog_height_fade_amount *= ft.height_fade_amount;
+            tod.fog_height_fade_start *= ft.height_fade_start;
+            tod.fog_height_fade_end *= ft.height_fade_end;
+          }
           host.showroom.set_tod(tod, app.tod_clock.moon_phase(), float(vehicle.time()), float(vpos.y));
           if (app.post_on) {
-            const auto& cfg = app.tod_system.post_config;
             PostSettings ps = host.renderer.post_settings();
             const float dn = tod.day_night_post;
             for (int k = 0; k < 6; ++k) ps.hable[k] = cfg.hable_day[k] + dn * (cfg.hable_night[k] - cfg.hable_day[k]);
@@ -211,9 +228,6 @@ void DriveSession::place_world() {
             }
             if (const char* b = std::getenv("SHIFT_BALANCE"))
               std::sscanf(b, "%f,%f,%f", &ps.balance[0], &ps.balance[1], &ps.balance[2]);
-            const int zone_idx = app.tod_system.zones.find_zone(float(vpos.x), float(vpos.z));
-            const float step_dt = float(tod_frame_dt > 0.0 ? tod_frame_dt : (app.headless ? 10.0 : 1.0 / 60.0));
-            zone_blender.update(app.tod_system.zones, cfg, float(vpos.x), float(vpos.z), step_dt);
             const auto& bt = zone_blender.bloom;
             const auto& cs = zone_blender.color;
             const auto& vt = zone_blender.vig_top;
@@ -399,6 +413,7 @@ void DriveSession::capture_world_rewind(uint64_t snap_id) {
           ws.skills = app.skill_tracker->capture_rewind();
         }
         ws.smashables = app.smashables.capture_rewind();
+        ws.car_damage = car_damage;
         world_rewind_snaps[snap_id] = std::move(ws);
         prune_world_rewind();
 }
@@ -511,6 +526,19 @@ void DriveSession::restore_world_rewind(uint64_t snap_id, bool is_resume) {
           const auto unhidden = app.smashables.restore_rewind(ws.smashables);
           for (const auto& hs : unhidden) host.showroom.unhide_world_props_near(hs.pos, hs.radius);
           if (host.streamer) host.streamer->set_hidden_positions(app.smashables.broken_hidden_positions());
+          car_damage = ws.car_damage;
+          const drive::DamageMultipliers dm = car_damage.multipliers();
+          drive::Vehicle::DamageMods vdm;
+          vdm.engine_torque = dm.engine_torque;
+          vdm.shift_time_add = dm.shift_time_add;
+          vdm.brake_power = dm.brake_power;
+          vdm.aero_drag = dm.aero_drag;
+          vdm.aero_downforce = dm.aero_downforce;
+          vdm.tyre_grip = dm.tyre_grip;
+          vdm.suspension_scale = dm.suspension_scale;
+          vdm.steer_pull_rad = dm.steer_pull_rad;
+          vehicle.set_damage_mods(vdm);
+          host.showroom.set_damage_state(car_damage);
         } else {
           app.smashables.clear_debris();
         }

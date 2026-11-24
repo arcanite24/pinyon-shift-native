@@ -938,11 +938,13 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     }
     c.body->set_torque_factor(c.ai.torque() * (1 + boost + nem_torque));
     const bool over_corner = c.ai.state() == race::DriverAi::State::kRubberband && c.ai.mode() == 4;
+    const bool is_catchup = c.ai.state() == race::DriverAi::State::kCatchUp;
     const auto& bp = c.body->params();
     const double half_track = 0.5 * std::fabs(bp.wheel_centres[1].x - bp.wheel_centres[0].x);
     const double com_h = std::max(0.20, bp.centre_of_mass.y);
     const double max_grip = (half_track > 0.3 && (half_track / com_h) < 1.45) ? 1.0 : 1.25;
-    const double ai_corner_grip = over_corner ? 1.0 : std::clamp(c.ai.cornering(), 1.0, max_grip);
+    // SPEC-RACE-AI: catch-up pulls only planner (b', c'), never the tyre AI grip factor.
+    const double ai_corner_grip = (over_corner || is_catchup) ? 1.0 : std::clamp(c.ai.cornering(), 1.0, max_grip);
     c.body->set_ai_grip(ai_corner_grip, ai_corner_grip);
     const double d = std::hypot(at.x - cx, at.z - cz);
     if (c.far && d < radius - 80) c.far = false;
@@ -1017,12 +1019,11 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     for (size_t i = 0; i <= n; ++i) {
       const auto& q = samples_[i];
       size_t& k = next_checkpoint_[i];
-      // Crossed within the gate's reach, or (ours, the missed-checkpoint
-      // rule is open) carried past it along the line: a reset puts a car
-      // back on the line ahead, and a wide car can pass outside the reach.
-      if (session_->started() && k < last &&
-          (checkpoint_gates_[k].crossing(q.x0, q.z0, q.x1, q.z1) >= 0 || q.progress > checkpoint_progress_[k] + 10))
-        ++k;
+      // Player must cross checkpoint gate planes in order (SPEC-EVENTS); AI keeps
+      // a +10 m line-progress fallback so off-line AI avoidance never deadlocks a race.
+      const bool crossed = checkpoint_gates_[k].crossing(q.x0, q.z0, q.x1, q.z1) >= 0;
+      const bool ai_fallback = (i < n) && (q.progress > checkpoint_progress_[k] + 10);
+      if (session_->started() && k < last && (crossed || ai_fallback)) ++k;
       session_->hold_finish(i, k < last);
     }
   }
@@ -1113,6 +1114,18 @@ void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Ve
       in = guest_instance(player_info, player, *c.model, *c.body);
       c.body->set_pose(now);
     }
+    // Drive opponent wheel spin, steer, and suspension pose each frame.
+    WheelPose wposes[4]{};
+    for (int wi = 0; wi < 4; ++wi) {
+      const auto& w = c.body->wheels()[size_t(wi)];
+      wposes[wi].centre[0] = float(w.centre.x);
+      wposes[wi].centre[1] = float(w.centre.y);
+      wposes[wi].centre[2] = float(w.centre.z);
+      wposes[wi].steer = float(w.steer);
+      wposes[wi].spin = float(w.spin);
+      wposes[wi].omega = float(w.omega);
+    }
+    c.model->set_wheel_poses(wposes);
     drive::CarLampState lstate;
     lstate.headlamps_on = night_lights;
     lstate.brake_on = (k < inputs_.size() && inputs_[k].brake > 0.1f);

@@ -697,7 +697,21 @@ void DriveSession::run_window_loop() {
               }
               const std::array<double, 4> slips = {ws[0].slip_ratio, ws[1].slip_ratio, ws[2].slip_ratio, ws[3].slip_ratio};
               const double rpm_n = vehicle.rpm() / std::max(1000.0, vehicle.params().redline_rpm);
+              if (car_damage.mode == drive::DamageMode::kSimulation) {
+                car_damage.trans_damage = std::max(car_damage.trans_damage, float(vehicle.transmission_damage()));
+              }
               car_damage.step(drive::Vehicle::kStep, vehicle.speed(), offroad, step_in.throttle, rpm_n, slips);
+              const drive::DamageMultipliers dm = car_damage.multipliers();
+              drive::Vehicle::DamageMods vdm;
+              vdm.engine_torque = dm.engine_torque;
+              vdm.shift_time_add = dm.shift_time_add;
+              vdm.brake_power = dm.brake_power;
+              vdm.aero_drag = dm.aero_drag;
+              vdm.aero_downforce = dm.aero_downforce;
+              vdm.tyre_grip = dm.tyre_grip;
+              vdm.suspension_scale = dm.suspension_scale;
+              vdm.steer_pull_rad = dm.steer_pull_rad;
+              vehicle.set_damage_mods(vdm);
               host.showroom.set_damage_state(car_damage);
             }
             accumulator -= drive::Vehicle::kStep;

@@ -114,6 +114,17 @@ BrakingTable BrakingTable::build(const CarParams& p) {
   tbl.lateral_mu = std::max(0.3, front_share * mu_lat_f + (1.0 - front_share) * mu_lat_r);
 
   // 10-point speed-vs-deceleration table (0, 10, ..., 90 m/s).
+  // When per-car brake calibration is active, query Vehicle's exact Catmull-Rom
+  // decel table (6-pass load transfer + aero downforce) instead of fallback torques.
+  if (p.use_per_car_brakes) {
+    Vehicle probe(p);
+    const double a_max = std::max(1.0, probe.brake_max_decel());
+    for (int i = 0; i < kPoints; ++i) {
+      const double v = i * kSpeedStepMps;
+      tbl.decel_mps2[size_t(i)] = std::max(1.0, a_max * probe.decel_table_at(v));
+    }
+    return tbl;
+  }
   for (int i = 0; i < kPoints; ++i) {
     const double v = i * kSpeedStepMps;
     double a = 0.0;

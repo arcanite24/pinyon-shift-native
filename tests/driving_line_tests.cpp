@@ -98,6 +98,14 @@ void test_braking_table() {
   sticky.front_brake_torque *= 2.0;
   sticky.rear_brake_torque *= 2.0;
   const auto tbl_sticky = drive::BrakingTable::build(sticky);
+  // Per-car brake curve mode must use Vehicle::brake_max_decel() even when fallback torques are 0.
+  auto per_car = car;
+  per_car.use_per_car_brakes = true;
+  per_car.brake_torque_slider = 0.5;
+  per_car.front_brake_torque = 0.0;
+  per_car.rear_brake_torque = 0.0;
+  const auto tbl_pc = drive::BrakingTable::build(per_car);
+  CHECK(tbl_pc.decel_at(20.0) > 6.0);
   CHECK(tbl_sticky.decel_at(30.0) > tbl.decel_at(30.0));
 }
 

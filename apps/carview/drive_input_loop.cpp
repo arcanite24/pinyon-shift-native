@@ -362,8 +362,8 @@ void DriveSession::poll_sdl_events() {
               } else if (act == "Map") {
                 open_map();
               }
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH && act != "Rewind" && !rewind_buf.rewind_on_back() &&
-                  !(app.race && app.race->player_finished()) && !picking)
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH && act != "Rewind" && act != "SwitchCamera" &&
+                  !rewind_buf.rewind_on_back() && !(app.race && app.race->player_finished()) && !picking)
                 try_trigger_rewind();
               if (act == "RadioLeft") radio_press(-1);
               if (act == "RadioRight") radio_press(+1);
@@ -376,16 +376,22 @@ void DriveSession::poll_sdl_events() {
               if (picking && e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) browse(-1);
               if (picking && e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER && act != "SwitchCamera") browse(1);
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST && !(app.race && app.race->player_finished())) {
+                const bool has_prompt =
+                    picking || active_trigger.in_range ||
+                    (festival_mgr && !app.race && festival_mgr->hud(vehicle.time()).prompt_visible);
                 if (picking) take_pick();
-                else activate_world_trigger();
+                else if (has_prompt) activate_world_trigger();
               }
               if (app.race && app.race->player_finished() && !picking) {
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) race_continue();
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH) race_restart();
-                // X opens the RACE RESULTS table from the banner, B closes it.
+                // X opens the RACE RESULTS table from the banner; B closes it or opens Replay (SPEC-EVENT-REWARDS).
                 if (results_page == 0 && e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST) results_table = true;
                 if (results_page == 0 && e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) open_replay_viewer(false);
-                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) results_table = false;
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
+                  if (results_table) results_table = false;
+                  else if (results_page == 0) open_replay_viewer(false);
+                }
               }
             }
             if (app.race && app.race->player_finished() && !picking && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
@@ -507,6 +513,7 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
           const drive::PadControl clutch_ctrl = pad_layout.control_for("Clutch");
           drive::Input pad_in;
           bool pad_used = false;
+          bool pad_was_wheel = false;
           for (SDL_Gamepad* pad : pads) {
             auto axis = [&](SDL_GamepadAxis a) { return SDL_GetGamepadAxis(pad, a) / 32767.0; };
             const char* pname = SDL_GetGamepadName(pad);
@@ -539,6 +546,7 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
               pad_in.handbrake = handbrake;
               pad_in.clutch = clutch;
               pad_used = true;
+              pad_was_wheel = is_wheel_pad;
               app.touch_controls.notify_gamepad_input(vehicle.time());
               break;
             }
@@ -551,6 +559,9 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
           const carview::RawJoystickDriveOutput wheel_joy = slice12.sample_wheel_input();
           in = carview::merge_driving_inputs(kb_in, pad_in, pad_used, raw_joy.input, raw_joy.any_active,
                                              wheel_joy.input, wheel_joy.any_active);
+          if (wheel_joy.any_active || (pad_used && pad_was_wheel)) {
+            in.linear_steer = true;
+          }
           slice12.apply_gyro_input(in);
           // Apply Android multi-touch controls & edge-triggered HUD actions.
           app.touch_controls.set_gamepad_connected(!pads.empty() || slice12.has_any_raw_controller());
@@ -588,16 +599,25 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
               in.handbrake = in.handbrake || to.handbrake;
             }
           }
-          // Auto-Brake (Braking == 0 / Assisted, SPEC-CAR-PHYSICS): query the
-          // active racing line's lookahead target speed upstream of stepping.
+          // Auto-Brake (Braking == 0 / Assisted, SPEC-CAR-PHYSICS): always sample the
+          // active racing line's target speed AT/AHEAD of the car (not dl_samples.front(),
+          // which starts 10 m behind the car), rebuilding even when Driving Line is Off.
           if (!app.cruise && live_controls.assists.braking == 0 && app.race && !grid_menu_open && !app.race->player_finished()) {
-            if (dl_samples.empty()) {
-              drive::build_driving_line(app.race->racing_line(), braking_table, app.race->player_progress(),
+            const double car_prog = app.race->player_progress();
+            if (dl_samples.empty() || live_controls.assists.driving_line == 0) {
+              drive::build_driving_line(app.race->racing_line(), braking_table, car_prog,
                                         std::max(0.0, vehicle.speed()), drive::DrivingLineMode::kBrakingOnly,
                                         dl_samples);
             }
             if (!dl_samples.empty()) {
-              drive::apply_auto_brake(in, vehicle.speed(), dl_samples.front().v_target);
+              double v_target = dl_samples.back().v_target;
+              for (const auto& s : dl_samples) {
+                if (s.dist >= car_prog) {
+                  v_target = s.v_target;
+                  break;
+                }
+              }
+              drive::apply_auto_brake(in, vehicle.speed(), v_target);
             }
           }
           rig.set_look(rig_look);

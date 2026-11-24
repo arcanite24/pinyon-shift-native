@@ -578,7 +578,15 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   shaped_.handbrake = raw.handbrake;
   shaped_.clutch = std::clamp(raw.clutch, 0.0, 1.0);
   shaped_.shift = raw.shift;
+  shaped_.linear_steer = raw.linear_steer;
   handbrake_shaped_ = approach(handbrake_shaped_, raw.handbrake ? 1.0 : 0.0, p_.handbrake_rate, dt);
+  if (raw.linear_steer) {
+    // 900-degree racing wheel: direct linear steering to full road-wheel lock,
+    // bypassing gamepad speed-sensitive narrowing and stick shaping.
+    steer_angle_ = shaped_.steer * p_.max_steer;
+    steer_ang_vel_ = 0.0;
+    return;
+  }
   // Forza dynamic pad steering filter (SPEC-CAR-PHYSICS, Steering-at-speed filter
   // and Assisted / Normal / Simulation steering):
   // - SteeringWheelFilter speed-dependent stick shaping
@@ -913,7 +921,9 @@ void Vehicle::update_gearbox(double dt) {
     }
     case GearState::kLaunch: {
       engine_throttle_ = driver;
-      if (brake_pedal > 0.1 || drive_pedal < 0.05) {
+      const bool hb_disconnect = handbrake_shaped_ > 0.5 &&
+                                 (p_.layout == CarParams::Layout::kRear || p_.layout == CarParams::Layout::kAll);
+      if (brake_pedal > 0.1 || drive_pedal < 0.05 || hb_disconnect) {
         open();
         break;
       }
@@ -940,6 +950,13 @@ void Vehicle::update_gearbox(double dt) {
     }
     case GearState::kEngaged: {
       engine_throttle_ = driver;
+      // Pulling the handbrake disconnects driven rear wheels (RWD/AWD) via open clutch
+      // so rear lockup does not drag or stall the engine (SPEC-CAR-PHYSICS).
+      if (handbrake_shaped_ > 0.5 &&
+          (p_.layout == CarParams::Layout::kRear || p_.layout == CarParams::Layout::kAll)) {
+        open();
+        break;
+      }
       clutch_ = approach(clutch_, 1, 1 / p_.clutch_out_time, dt);
       const double road_signed = out_rpm();
       if (road_signed < 0.9 * idle) {
@@ -977,7 +994,7 @@ void Vehicle::update_gearbox(double dt) {
     case GearState::kGearChange:
       engine_throttle_ = 0;
       clutch_ = 0;
-      if (state_time_ >= p_.gear_shift_time - 1e-9) {
+      if (state_time_ >= p_.gear_shift_time + damage_.shift_time_add - 1e-9) {
         gear_ = target_gear_;  // the gear number changes at the end
         if (shifting_mode == 0 && gear_ > 1 && out_rpm() < 0.9 * idle) {
           const int best = auto_gear_for_speed();
@@ -1069,12 +1086,13 @@ void Vehicle::substep(double dt, const Ground& ground) {
     // points at one turn centre on the rear axle's line, steer_angle_ being
     // the angle of a wheel on the centre line.
     w.steer = 0;
-    if (a == 0 && std::fabs(steer_angle_) > 1e-9) {
+    const double eff_steer = std::clamp(steer_angle_ + damage_.steer_pull_rad, -p.max_steer, p.max_steer);
+    if (a == 0 && std::fabs(eff_steer) > 1e-9) {
       const double z_rear = 0.5 * (p.wheel_centres[2].z + p.wheel_centres[3].z);
       const double base = p.wheel_centres[i].z - z_rear;
-      const double centre_x = base / std::tan(steer_angle_);
+      const double centre_x = base / std::tan(eff_steer);
       w.steer = std::atan(base / (centre_x - p.wheel_centres[i].x));
-      if (w.steer * steer_angle_ < 0) w.steer += steer_angle_ > 0 ? kPi : -kPi;  // past 90 degrees
+      if (w.steer * eff_steer < 0) w.steer += eff_steer > 0 ? kPi : -kPi;  // past 90 degrees
     }
     Hit hit;
     const double reach = p.probe_height + p.rest_length + droop_[i] + radius;
@@ -1135,9 +1153,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
     off += !w.contact;
     double load = 0;
     if (w.contact) {
-      double damper = rate[i] * (rate[i] > 0 ? p.bump_rate[a] : p.rebound_rate[a]);
+      const double susp_s = damage_.suspension_scale[size_t(i)];
+      double damper = rate[i] * (rate[i] > 0 ? p.bump_rate[a] : p.rebound_rate[a]) * susp_s;
       damper = std::clamp(damper, -p.damper_clamp[a], p.damper_clamp[a]);
-      load = preload_[i] + p.spring_rate[a] * compression + damper;
+      load = preload_[i] + p.spring_rate[a] * susp_s * compression + damper;
       if (compression > p.bump_travel[a])
         load += p.bumpstop_rate[a] * (compression - p.bump_travel[a]) + p.bumpstop_damping[a] * std::max(0.0, rate[i]);
     }
@@ -1259,11 +1278,11 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (abs_timer_[i] > 0) abs_timer_[i] -= dt;
     w.brake = frac;
     if (p.use_per_car_brakes) {
-      double t_trace = frac * brake_const_[a];
+      double t_trace = frac * brake_const_[a] * damage_.brake_power;
       if (a == 1 && handbrake_shaped_ > 0) t_trace += handbrake_const_ * handbrake_shaped_;
       brake[i] = p.mass * (kKgf / 4.0) * p.tyre_radius[i] * t_trace;
     } else {
-      brake[i] = frac * (a == 0 ? p.front_brake_torque : p.rear_brake_torque);
+      brake[i] = frac * (a == 0 ? p.front_brake_torque : p.rear_brake_torque) * damage_.brake_power;
       if (a == 1 && shaped_.handbrake) brake[i] += p.handbrake_torque;
     }
     slowing[i] = brake_frac > 0 || brake[i] > 0 || tc_prev_ * G * weight_[i] * w.omega < 0;
@@ -1311,10 +1330,11 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double ai = ai_grip_[a] * dirt;
     // Braking friction on a slowed wheel, else the speed-blended accel
     // scale (SPEC-CAR-PHYSICS, Brakes: Braking friction).
-    double kx = grip[i] * rear * hb_grip * ai * p.long_scale[a] * p.long_misc_scale;
+    double kx = grip[i] * rear * hb_grip * ai * p.long_scale[a] * p.long_misc_scale * damage_.tyre_grip[size_t(i)];
     kx *= slowing[i] ? (p.brake_friction_scale * (abs_off_boost ? p.abs_off_braking_friction_scale : 1.0))
                      : lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(vx[i]), p.accel_speed0, p.accel_speed1));
-    double ky = grip[i] * rear * hb_grip * ai * p.lat_scale[a] * p.lat_compound_scale * p.long_misc_scale;
+    double ky = grip[i] * rear * hb_grip * ai * p.lat_scale[a] * p.lat_compound_scale * p.long_misc_scale *
+                damage_.tyre_grip[size_t(i)];
     // The rear-grip fix: g + d (1 - g), g the scale faded out by the
     // normalised slip angle, d by the road wheels' steer angle in degrees.
     if (a == 1) {
@@ -1404,7 +1424,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
   const double cap = G != 0 ? p.clutch_max_torque * p.clutch_torque_factor * clutch_ : 0;
   const double je = p.engine_inertia;
   const double te_raw = engine_torque(rpm(), drive_in);
-  const double te = te_raw > 0 ? te_raw * tcs_cut : te_raw;
+  const double te = te_raw > 0 ? te_raw * tcs_cut * damage_.engine_torque : te_raw;
   engine_torque_prev_ = te;
   const double reflected = G != 0 ? p.gearbox_inertia * G * G + p.driveline_inertia * p.final_drive * p.final_drive : 0;
   double j_eff[kWheels]{}, resist[kWheels]{};
@@ -1640,10 +1660,11 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const Vec3 vl = rotate_inverse(rot_, vel_);
     const double hs = lerp(p.high_speed_drag_s0, p.high_speed_drag_s1,
                            ramp(std::fabs(vl.z), p.high_speed_drag_v0, p.high_speed_drag_v1));
-    const double c_long = vl.z >= 0 ? p.aero_drag_long * hs * draft_.body_drag +
-                                          p.aero_part_drag_front * draft_.front_drag +
-                                          p.aero_part_drag_rear * draft_.rear_drag
-                                    : p.aero_drag_long * hs;
+    const double c_long = (vl.z >= 0 ? p.aero_drag_long * hs * draft_.body_drag +
+                                           p.aero_part_drag_front * draft_.front_drag +
+                                           p.aero_part_drag_rear * draft_.rear_drag
+                                     : p.aero_drag_long * hs) *
+                          damage_.aero_drag;
     const double fz = -sign(vl.z) * c_long * vl.z * vl.z;
     const double fy_drag = -sign(vl.y) * p.aero_drag_vert * vl.y * vl.y;
     const double fx_f = -sign(vl.x) * p.aero_drag_lat_front * vl.x * vl.x;
@@ -1652,8 +1673,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (vl.z > 0.1) {
       const double alpha_pitch = std::atan2(vl.y, vl.z);
       const double aoa = std::max(0.0, 1.0 - std::fabs(alpha_pitch) / std::max(0.05, p.aero_zero_df_rad));
-      df_f = (p.aero_df_front + p.aero_part_df_front) * aoa * vl.z * vl.z * draft_.front_df;
-      df_r = (p.aero_df_rear + p.aero_part_df_rear) * aoa * vl.z * vl.z * draft_.rear_df;
+      df_f = (p.aero_df_front + p.aero_part_df_front) * aoa * vl.z * vl.z * draft_.front_df * damage_.aero_downforce;
+      df_r = (p.aero_df_rear + p.aero_part_df_rear) * aoa * vl.z * vl.z * draft_.rear_df * damage_.aero_downforce;
     }
     const double z_f = 0.5 * (p.wheel_centres[0].z + p.wheel_centres[1].z) - com_local_.z;
     const double z_r = 0.5 * (p.wheel_centres[2].z + p.wheel_centres[3].z) - com_local_.z;

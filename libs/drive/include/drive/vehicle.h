@@ -424,6 +424,7 @@ struct Input {
   bool handbrake = false;
   double clutch = 0;
   int shift = 0;
+  bool linear_steer = false;  // true for 900-deg steering wheel: bypass gamepad speed narrowing
 };
 
 // Runtime driving assists matching ForzaProfile.sch enums
@@ -528,6 +529,19 @@ class Vehicle {
   // Runtime driving assists & transmission mode (SPEC-CAR-PHYSICS, Assists).
   void set_assists(const VehicleAssists& a) { assists_ = a; }
   const VehicleAssists& assists() const { return assists_; }
+  // Runtime Simulation-mode mechanical damage multipliers (all 1.0 / 0.0 by default).
+  struct DamageMods {
+    double engine_torque = 1.0;
+    double shift_time_add = 0.0;
+    double brake_power = 1.0;
+    double aero_drag = 1.0;
+    double aero_downforce = 1.0;
+    std::array<double, 4> tyre_grip{1.0, 1.0, 1.0, 1.0};
+    std::array<double, 4> suspension_scale{1.0, 1.0, 1.0, 1.0};
+    double steer_pull_rad = 0.0;
+  };
+  void set_damage_mods(const DamageMods& d) { damage_ = d; }
+  const DamageMods& damage_mods() const { return damage_; }
 
   const CarParams& params() const { return p_; }
   Vec3 position() const;  // the body frame's origin (on the ground at rest)
@@ -679,6 +693,7 @@ class Vehicle {
   std::array<double, 2> ai_grip_{1, 1};
   double time_ = 0;
   DraftState draft_{};
+  DamageMods damage_{};
   double body_force_ = 0;
   BodyContact strongest_;
 };
