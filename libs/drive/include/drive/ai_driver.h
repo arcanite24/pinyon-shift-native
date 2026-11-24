@@ -157,6 +157,9 @@ class AiField {
     // pad's speed-narrowed lock).
     bool slip_rule = false;
     float slip_lookahead_s = 1.0f;
+    // Maximum steering command rate (full-lock units per second, 0: unlimited).
+    // Prevents instant 1-tick front-wheel snaps when lanes or curvature change.
+    float steer_rate = 3.8f;
   };
   AiField(const RacingLine& line, size_t cars, const Options& options);
   AiField(const RacingLine& line, size_t cars) : AiField(line, cars, Options{}) {}
@@ -197,9 +200,11 @@ class AiField {
   struct Snapshot {
     std::vector<uint32_t> seg;
     std::vector<double> progress;
-    std::vector<float> lane, skill, cross, corner, decel, target, cap;
+    std::vector<float> lane, skill, cross, corner, decel, target, cap, prev_steer;
   };
-  Snapshot snapshot() const { return {seg_, progress_, lane_, skill_, cross_, corner_, decel_, target_, cap_}; }
+  Snapshot snapshot() const {
+    return {seg_, progress_, lane_, skill_, cross_, corner_, decel_, target_, cap_, prev_steer_};
+  }
   void restore(const Snapshot& s) {
     if (s.seg.size() != seg_.size()) return;
     seg_ = s.seg;
@@ -211,6 +216,7 @@ class AiField {
     decel_ = s.decel;
     target_ = s.target;
     cap_ = s.cap;
+    if (s.prev_steer.size() == prev_steer_.size()) prev_steer_ = s.prev_steer;
   }
   // The speed car i plans at `distance` along the line (m/s).
   double planned_speed(size_t i, double distance) const;
@@ -222,7 +228,7 @@ class AiField {
   Options o_;
   std::vector<uint32_t> seg_;
   std::vector<double> progress_;
-  std::vector<float> lane_, skill_, cross_, corner_, decel_, target_, cap_;
+  std::vector<float> lane_, skill_, cross_, corner_, decel_, target_, cap_, prev_steer_;
   // The planner's per car: the tables, C, B and the corner speeds by line
   // point for the current C (NaN: not computed yet).
   std::vector<const AiCapacity*> capacity_;

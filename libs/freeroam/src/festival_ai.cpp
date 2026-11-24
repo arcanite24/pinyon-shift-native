@@ -106,6 +106,96 @@ void FestivalManager::pose_roaming(FestivalAiCar& car) const {
   }
   car.position = p;
   car.heading = std::atan2(t[0], t[1]);
+  car.steer_angle = 0.0;
+  car.yaw_rate = 0.0;
+  car.pose_initialized = true;
+}
+
+bool FestivalManager::pick_roaming_branch(uint32_t car_id, int cur_road, int cur_dir, uint32_t node,
+                                          const std::array<double, 2>& in_tangent, BranchOption& out) const {
+  const auto& roads = roads_.roads();
+  auto is_paved = [](const std::string& t) { return t == "a" || t == "b" || t == "freeway"; };
+  const bool cur_paved = cur_road >= 0 && size_t(cur_road) < roads.size() && is_paved(roads[size_t(cur_road)].type);
+  const std::string cur_type =
+      (cur_road >= 0 && size_t(cur_road) < roads.size()) ? roads[size_t(cur_road)].type : std::string();
+
+  struct CandOpt {
+    BranchOption opt;
+    double cos_turn = 0.0;
+    bool paved = false;
+    bool same_type = false;
+    bool shortcut = false;
+  };
+  std::vector<CandOpt> cands;
+  for (const auto& [r2, i2] : roads_.at_node(node)) {
+    const auto& o = roads[size_t(r2)];
+    if (o.disabled || o.type == "none") continue;
+    const int n2 = int(o.points.size());
+    for (int d2 : {1, -1}) {
+      if (d2 > 0 && i2 + 1 >= n2) continue;
+      if (d2 < 0 && (i2 == 0 || o.oneway)) continue;
+      if (r2 == cur_road && d2 == -cur_dir) continue;
+      // Compute outgoing unit tangent over at least ~1 m if available.
+      int nk = std::clamp(i2 + d2, 0, n2 - 1);
+      double ox = o.points[size_t(nk)].x - o.points[size_t(i2)].x;
+      double oz = o.points[size_t(nk)].z - o.points[size_t(i2)].z;
+      double ol = std::hypot(ox, oz);
+      while (ol < 1.0 && nk + d2 >= 0 && nk + d2 < n2) {
+        nk += d2;
+        ox = o.points[size_t(nk)].x - o.points[size_t(i2)].x;
+        oz = o.points[size_t(nk)].z - o.points[size_t(i2)].z;
+        ol = std::hypot(ox, oz);
+      }
+      if (ol > 1e-6) ox /= ol, oz /= ol;
+      else ox = in_tangent[0], oz = in_tangent[1];
+      const double cos_turn = std::clamp(in_tangent[0] * ox + in_tangent[1] * oz, -1.0, 1.0);
+      cands.push_back({{r2, i2, d2}, cos_turn, is_paved(o.type), o.type == cur_type, o.type == "shortcut"});
+    }
+  }
+  if (cands.empty()) return false;
+
+  // Avoid abrupt acute turnbacks (>117 deg) whenever a forward/normal branch exists.
+  bool has_non_turnback = false;
+  for (const auto& c : cands)
+    if (c.cos_turn > -0.45) has_non_turnback = true;
+
+  // On paved roads, avoid randomly darting onto dirt shortcuts when paved continuations exist.
+  bool has_paved = false;
+  if (cur_paved) {
+    for (const auto& c : cands)
+      if (c.paved && (!has_non_turnback || c.cos_turn > -0.45)) has_paved = true;
+  }
+
+  std::vector<std::pair<BranchOption, uint64_t>> weighted;
+  uint64_t total_w = 0;
+  for (const auto& c : cands) {
+    if (has_non_turnback && c.cos_turn <= -0.45) continue;
+    if (has_paved && c.shortcut) continue;
+    uint64_t w = 1;
+    if (c.cos_turn > 0.80) w = 12;       // straight continuation (< 37 deg)
+    else if (c.cos_turn > 0.45) w = 4;   // gentle fork (37..63 deg)
+    else if (c.cos_turn > -0.15) w = 2;  // standard intersection turn (63..99 deg)
+    else w = 1;
+    if (c.opt.road == cur_road) w += 6;
+    else if (c.same_type) w += 3;
+    if (has_paved && !c.paved) w = 1;
+    weighted.push_back({c.opt, w});
+    total_w += w;
+  }
+  if (weighted.empty() || total_w == 0) {
+    out = cands.front().opt;
+    return true;
+  }
+  uint64_t pick = mix64(uint64_t(car_id) * 0x9e3779b97f4a7c15ull ^ uint64_t(node) ^ 0x517cc1b727220a95ull) % total_w;
+  for (const auto& [opt, w] : weighted) {
+    if (pick < w) {
+      out = opt;
+      return true;
+    }
+    pick -= w;
+  }
+  out = weighted.back().first;
+  return true;
 }
 
 void FestivalManager::advance_roaming(FestivalAiCar& car, double distance) const {
@@ -129,21 +219,15 @@ void FestivalManager::advance_roaming(FestivalAiCar& car, double distance) const
       if (to_node <= 0) car.s += car.dir * 1e-6;
       continue;
     }
-    struct Opt {
-      int road, idx, dir;
-    };
-    std::vector<Opt> opts;
-    for (const auto& [r2, i2] : roads_.at_node(node)) {
-      const auto& o = roads[size_t(r2)];
-      if (o.disabled || o.type == "none") continue;
-      for (int d2 : {1, -1}) {
-        if (d2 > 0 && i2 + 1 >= int(o.points.size())) continue;
-        if (d2 < 0 && (i2 == 0 || o.oneway)) continue;
-        if (r2 == car.road && d2 == -car.dir) continue;
-        opts.push_back({r2, i2, d2});
-      }
-    }
-    if (opts.empty()) {
+    // Incoming unit tangent approaching the node.
+    const int prev_k = std::clamp(k - car.dir, 0, n - 1);
+    double ix = r.points[size_t(k)].x - r.points[size_t(prev_k)].x;
+    double iz = r.points[size_t(k)].z - r.points[size_t(prev_k)].z;
+    const double il = std::hypot(ix, iz);
+    std::array<double, 2> in_t = il > 1e-6 ? std::array<double, 2>{ix / il, iz / il}
+                                           : std::array<double, 2>{std::sin(car.heading), std::cos(car.heading)};
+    BranchOption chosen;
+    if (!pick_roaming_branch(car.id, car.road, car.dir, node, in_t, chosen)) {
       if (r.oneway) {
         car.road = -1;
         return;
@@ -151,11 +235,113 @@ void FestivalManager::advance_roaming(FestivalAiCar& car, double distance) const
       car.dir = -car.dir;
       continue;
     }
-    const Opt& o = opts[size_t(mix64(uint64_t(car.id) * 0x9e3779b97f4a7c15ull ^ node) % opts.size())];
-    car.road = o.road;
-    car.dir = o.dir;
-    car.s = roads[size_t(o.road)].s[size_t(o.idx)] + o.dir * 1e-6;
+    car.road = chosen.road;
+    car.dir = chosen.dir;
+    car.s = roads[size_t(chosen.road)].s[size_t(chosen.idx)] + chosen.dir * 1e-6;
   }
+}
+
+bool FestivalManager::sample_roaming_ahead(const FestivalAiCar& car, double dist, double lateral,
+                                           traffic::P3& pos_out, std::array<double, 2>& tangent_out) const {
+  if (car.road < 0 || size_t(car.road) >= roads_.roads().size()) return false;
+  FestivalAiCar probe;
+  probe.id = car.id;
+  probe.road = car.road;
+  probe.dir = car.dir;
+  probe.s = car.s;
+  probe.heading = car.heading;
+  if (dist > 0.0) advance_roaming(probe, dist);
+  if (probe.road < 0 || size_t(probe.road) >= roads_.roads().size()) return false;
+  std::array<double, 2> t{};
+  const traffic::P3 c = roads_.point_at(probe.road, probe.s, nullptr, &t);
+  tangent_out = {t[0] * probe.dir, t[1] * probe.dir};
+  const auto rt = traffic::right_of(tangent_out[0], tangent_out[1]);
+  pos_out = {c.x + rt[0] * lateral, c.y, c.z + rt[1] * lateral};
+  return true;
+}
+
+void FestivalManager::sync_roaming_cursor(FestivalAiCar& car, double max_advance) const {
+  if (car.road < 0 || size_t(car.road) >= roads_.roads().size()) return;
+  const double span = std::max(8.0, max_advance);
+  double best_ds = 0.0;
+  double best_d2 = 1e30;
+  traffic::P3 pt{};
+  std::array<double, 2> tg{};
+  // Coarse scan along deterministic path (seamlessly crossing junctions).
+  constexpr double kCoarse = 0.75;
+  for (double ds = 0.0; ds <= span; ds += kCoarse) {
+    if (!sample_roaming_ahead(car, ds, car.lateral, pt, tg)) break;
+    const double dx = car.position.x - pt.x, dz = car.position.z - pt.z;
+    const double d2 = dx * dx + dz * dz;
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_ds = ds;
+    }
+  }
+  // Fine local refinement around best_ds.
+  const double lo = std::max(0.0, best_ds - kCoarse);
+  const double hi = std::min(span, best_ds + kCoarse);
+  for (double ds = lo; ds <= hi; ds += 0.15) {
+    if (!sample_roaming_ahead(car, ds, car.lateral, pt, tg)) break;
+    const double dx = car.position.x - pt.x, dz = car.position.z - pt.z;
+    const double d2 = dx * dx + dz * dz;
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_ds = ds;
+    }
+  }
+  if (best_ds > 1e-4) advance_roaming(car, best_ds);
+}
+
+void FestivalManager::steer_towards(FestivalAiCar& car, const traffic::P3& aim, double dt, double max_lat_g) const {
+  constexpr double kWheelbase = 2.65;
+  constexpr double kMaxSteer = 0.52;      // ~30 deg road wheel lock
+  constexpr double kMaxSteerRate = 2.2;   // rad/s road wheel slew limit
+  constexpr double kMaxYawRate = 1.65;    // rad/s hard ceiling
+  const double fx = std::sin(car.heading), fz = std::cos(car.heading);
+  const auto rt = traffic::right_of(fx, fz);
+  const double dx = aim.x - car.position.x;
+  const double dz = aim.z - car.position.z;
+  const double lx = dx * rt[0] + dz * rt[1];
+  const double lz = dx * fx + dz * fz;
+  const double ld = std::max(3.5, std::hypot(lx, lz));
+  const double alpha = std::atan2(lx, lz);
+  double target_steer = std::atan(2.0 * kWheelbase * std::sin(alpha) / ld);
+  // Speed-dependent lateral grip steering cap so high-speed lane changes never jerk.
+  const double v_eff = std::max(car.speed, 2.0);
+  const double grip_steer = std::clamp(std::atan(kWheelbase * max_lat_g / (v_eff * v_eff)), 0.06, kMaxSteer);
+  target_steer = std::clamp(target_steer, -grip_steer, grip_steer);
+  car.steer_angle += std::clamp(target_steer - car.steer_angle, -kMaxSteerRate * dt, kMaxSteerRate * dt);
+
+  double target_yaw = (car.speed / kWheelbase) * std::tan(car.steer_angle);
+  const double yaw_cap = std::min(kMaxYawRate, max_lat_g / std::max(car.speed, 4.0));
+  target_yaw = std::clamp(target_yaw, -yaw_cap, yaw_cap);
+  const double yaw_alpha = std::min(1.0, dt / 0.08);
+  car.yaw_rate += (target_yaw - car.yaw_rate) * yaw_alpha;
+  car.heading = wrap_angle(car.heading + car.yaw_rate * dt);
+
+  const double nfx = std::sin(car.heading), nfz = std::cos(car.heading);
+  car.position.x += (nfx * car.speed + car.knockback_vx) * dt;
+  car.position.z += (nfz * car.speed + car.knockback_vz) * dt;
+
+  // Smooth ground elevation & pitch tracking.
+  double y_hint = aim.y;
+  if (std::isfinite(car.position.y)) y_hint = 0.5 * (car.position.y + aim.y);
+  double y = y_hint;
+  if (ground_ && ground_(car.position.x, car.position.z, y_hint, y)) {
+    car.position.y = y;
+  } else {
+    car.position.y += (aim.y - car.position.y) * std::min(1.0, dt * 8.0);
+  }
+  double target_pitch = 0.0;
+  if (ground_) {
+    double yf = car.position.y, yb = car.position.y;
+    if (ground_(car.position.x + nfx * 1.4, car.position.z + nfz * 1.4, car.position.y, yf) &&
+        ground_(car.position.x - nfx * 1.4, car.position.z - nfz * 1.4, car.position.y, yb)) {
+      target_pitch = std::clamp(std::atan2(yf - yb, 2.8), -0.45, 0.45);
+    }
+  }
+  car.pitch += (target_pitch - car.pitch) * std::min(1.0, dt / 0.12);
 }
 
 bool FestivalManager::spawn_roaming(const traffic::P3& player, bool initial) {
@@ -170,15 +356,25 @@ bool FestivalManager::spawn_roaming(const traffic::P3& player, bool initial) {
   double total = 0.0;
   const double rmin = initial ? 45.0 : 180.0;
   const double rmax = initial ? 240.0 : 320.0;
+  constexpr double kMinFestivalSpawnGap = 42.0;
   for (int ri = 0; ri < int(roads.size()); ++ri) {
     const auto& r = roads[size_t(ri)];
-    if (r.disabled || r.type == "none" || r.points.size() < 2) continue;
+    if (r.disabled || r.type == "none" || r.type == "shortcut" || r.points.size() < 2) continue;
     double w = 0.2;
     if (const auto* fe = config_.festival_density(r.density)) w = traffic::density_at(*fe, v);
     if (w <= 0.0) continue;
     for (double s = 0; s <= r.length; s += 25.0) {
-      const double d = hdist(roads_.point_at(ri, s), player);
-      if (d >= rmin && d <= rmax) {
+      const traffic::P3 pt = roads_.point_at(ri, s);
+      const double d = hdist(pt, player);
+      if (d < rmin || d > rmax) continue;
+      bool clear = true;
+      for (const auto& other : cars_) {
+        if (hdist(other.position, pt) < kMinFestivalSpawnGap) {
+          clear = false;
+          break;
+        }
+      }
+      if (clear) {
         cands.push_back({ri, s, w});
         total += w;
       }
@@ -198,12 +394,27 @@ bool FestivalManager::spawn_roaming(const traffic::P3& player, bool initial) {
   const auto& r = roads[size_t(chosen->road)];
   FestivalAiCar car;
   car.id = next_id_++;
-  car.spec = roster_[size_t(rng_() % roster_.size())];
+  // Prefer a driver/car from the roster not currently active so duplicates don't clump.
+  std::vector<size_t> unused_roster;
+  for (size_t i = 0; i < roster_.size(); ++i) {
+    bool used = false;
+    for (const auto& other : cars_) {
+      if (other.spec.driver_name == roster_[i].driver_name) {
+        used = true;
+        break;
+      }
+    }
+    if (!used) unused_roster.push_back(i);
+  }
+  const size_t ridx =
+      !unused_roster.empty() ? unused_roster[size_t(rng_() % unused_roster.size())] : size_t(rng_() % roster_.size());
+  car.spec = roster_[ridx];
   car.road = chosen->road;
   car.s = chosen->s;
   car.dir = r.oneway ? 1 : (u01(rng_) < 0.5 ? 1 : -1);
   car.lateral = kLane;
-  car.base_speed = std::clamp(22.0 + double(car.spec.pi) * 0.02, 20.0, 38.0);
+  car.target_lateral = kLane;
+  car.base_speed = std::clamp(22.0 + double(car.spec.pi) * 0.02 + u01(rng_) * 3.0 - 1.5, 20.0, 38.0);
   car.speed = car.base_speed;
   pose_roaming(car);
   cars_.push_back(std::move(car));
@@ -428,39 +639,122 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     next_spawn_ = time + 5.0;
   }
 
-  // Update all cars with corner curvature lookahead braking, traffic/player
-  // overtaking lane selection, knockback damping, and realistic velocity/RPM.
+  // Update all cars with cross-junction curvature lookahead braking, full
+  // car-to-car separation & overtaking (Festival AI, Traffic, Player), smooth
+  // Ackermann bicycle steering, knockback damping, and realistic velocity/RPM.
   prompt_id_ = 0;
   prompt_dist_ = 1e9;
   const double pfx = std::sin(player_heading), pfz = std::cos(player_heading);
+  const double pvx = pfx * player_speed, pvz = pfz * player_speed;
+
+  // Snapshot previous frame poses so inter-Festival avoidance is order-independent.
+  struct OtherSnap {
+    uint32_t id = 0;
+    traffic::P3 pos{};
+    double vx = 0.0, vz = 0.0;
+    double speed = 0.0;
+  };
+  std::vector<OtherSnap> fest_snaps;
+  fest_snaps.reserve(cars_.size());
+  for (const auto& c : cars_) {
+    const double cfx = std::sin(c.heading), cfz = std::cos(c.heading);
+    fest_snaps.push_back({c.id, c.position, cfx * c.speed, cfz * c.speed, c.speed});
+  }
 
   auto eval_avoidance = [&](FestivalAiCar& car, double& want_spd, double default_lat) {
     const double fx = std::sin(car.heading), fz = std::cos(car.heading);
     const auto rt = traffic::right_of(fx, fz);
     car.target_lateral = default_lat;
     bool blocked_right = false, blocked_left = false;
-    auto check_obstacle = [&](const traffic::P3& op, double ospd) {
+    bool need_pass = false;
+    double nudge_lat = 0.0;
+
+    auto check_obstacle = [&](const traffic::P3& op, double ovx, double ovz, double ospd, bool is_festival,
+                              uint32_t other_id) {
       const double rx = op.x - car.position.x, rz = op.z - car.position.z;
       const double ahead = rx * fx + rz * fz;
-      if (ahead < 2.0 || ahead > 42.0) return;
       const double lat = rx * rt[0] + rz * rt[1];
-      if (std::fabs(lat) < 2.3) {
+      const double along = ovx * fx + ovz * fz;
+      const bool oncoming = along < -1.5;
+
+      // Oncoming vehicles in the left/overtaking lane block pulling out to pass.
+      if (oncoming && ahead > -4.0 && ahead < 75.0) {
+        if (lat < 0.8 && lat > -5.5) blocked_left = true;
+        if (lat > -0.8 && lat < 5.5 && ahead < 45.0) {
+          // Oncoming directly in our lane: pull right onto shoulder & brake.
+          blocked_left = true;
+          nudge_lat = std::max(nudge_lat, 1.2);
+          want_spd = std::min(want_spd, std::max(4.0, (ahead - 10.0) * 0.45));
+        }
+        return;
+      }
+
+      const double search = std::max(46.0, car.speed * 2.2);
+      if (ahead < -7.0 || ahead > search) return;
+
+      // Side-by-side / overlapping proximity guard (prevents fusing/clipping).
+      if (std::fabs(ahead) < 6.0 && std::fabs(lat) < 2.65) {
+        if (lat >= 0.0) blocked_right = true;
+        else blocked_left = true;
+        // Trailing car (or higher id if tied) yields speed & nudges away laterally.
+        const bool i_yield = (ahead > 0.25) || (std::fabs(ahead) <= 0.25 && is_festival && car.id > other_id);
+        if (i_yield) {
+          want_spd = std::min(want_spd, std::max(0.0, std::max(0.0, along) - 3.5));
+          nudge_lat += (lat >= 0.0 ? -1.4 : 1.4);
+        } else if (is_festival) {
+          nudge_lat += (lat >= 0.0 ? -0.6 : 0.6);
+        }
+        return;
+      }
+
+      if (ahead <= 0.0) {
+        // Adjacent car slightly behind us blocks changing into its lane.
+        if (lat < -0.5 && lat > -5.2) blocked_left = true;
+        else if (lat > 0.5 && lat < 5.2) blocked_right = true;
+        return;
+      }
+
+      // Same-lane vehicle ahead.
+      if (std::fabs(lat) < 2.55) {
         if (car.lateral >= 0.0) blocked_right = true;
         else blocked_left = true;
-        if (ahead < 22.0) want_spd = std::min(want_spd, std::max(4.0, ospd + (ahead - 8.0) * 0.4));
-      } else if (lat < -0.5 && lat > -5.0 && ahead < 30.0) {
+        if (along < want_spd - 1.5 || ahead < 22.0) need_pass = true;
+        const double v_lead = std::max(0.0, along);
+        const double safe_gap = std::max(10.0, car.speed * 0.95) + 6.0;
+        if (ahead < safe_gap) {
+          const double room = std::max(0.0, ahead - 9.0);
+          double v_safe = std::sqrt(v_lead * v_lead + 2.0 * 7.0 * room);
+          if (ahead < 11.0) v_safe = std::min(v_safe, std::max(0.0, v_lead - (11.0 - ahead) * 1.6));
+          want_spd = std::min(want_spd, v_safe);
+        } else if (ahead < safe_gap * 1.5 && v_lead < want_spd) {
+          want_spd = std::min(want_spd, v_lead + 2.0);
+        }
+      } else if (lat < -0.5 && lat > -5.2 && ahead < 34.0) {
         blocked_left = true;
-      } else if (lat > 0.5 && lat < 5.0 && ahead < 30.0) {
+      } else if (lat > 0.5 && lat < 5.2 && ahead < 34.0) {
         blocked_right = true;
       }
+      (void)ospd;
     };
-    if (traffic_cars) {
-      for (const auto& tc : *traffic_cars) check_obstacle(tc.position, tc.speed);
+
+    for (const auto& fs : fest_snaps) {
+      if (fs.id == car.id) continue;
+      check_obstacle(fs.pos, fs.vx, fs.vz, fs.speed, true, fs.id);
     }
-    if (!car.in_h2h) check_obstacle(player_pos, player_speed);
-    if (blocked_right && !blocked_left) car.target_lateral = -1.8;
-    else if (blocked_left && !blocked_right) car.target_lateral = default_lat;
-    const double lat_rate = car.in_h2h ? 4.2 : 2.8;
+    if (traffic_cars) {
+      for (const auto& tc : *traffic_cars) {
+        const double tfx = std::sin(tc.heading), tfz = std::cos(tc.heading);
+        check_obstacle(tc.position, tfx * tc.speed, tfz * tc.speed, tc.speed, false, 0);
+      }
+    }
+    if (!car.in_h2h) check_obstacle(player_pos, pvx, pvz, player_speed, false, 0);
+
+    if (need_pass && blocked_right && !blocked_left) car.target_lateral = -1.8;
+    else if (need_pass && blocked_left && !blocked_right) car.target_lateral = default_lat;
+    if (std::fabs(nudge_lat) > 1e-3) {
+      car.target_lateral = std::clamp(car.lateral + nudge_lat, -3.2, 3.6);
+    }
+    const double lat_rate = car.in_h2h ? 2.6 : 1.9;
     car.lateral += std::clamp(car.target_lateral - car.lateral, -lat_rate * dt, lat_rate * dt);
   };
 
@@ -472,7 +766,7 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     car.knockback_vz *= kb_decay;
     if (std::hypot(car.knockback_vx, car.knockback_vz) < 0.05) car.knockback_vx = car.knockback_vz = 0.0;
 
-    const double max_lat_g = std::clamp(10.5 + double(car.spec.pi) * 0.006, 10.5, 16.0);
+    const double max_lat_g = std::clamp(9.5 + double(car.spec.pi) * 0.0055, 9.5, 14.5);
     if (car.in_h2h && h2h_active_ && car.id == h2h_car_id_) {
       // Racing pace along the Head-to-Head nav route with curvature lookahead braking.
       const double base_race_spd = std::clamp(34.0 + double(car.spec.pi) * 0.032, 32.0, 58.0);
@@ -481,59 +775,90 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
       if (gap > 80.0) want_spd *= 0.88;
       else if (gap < -80.0) want_spd *= 1.10;
 
-      // Sample curvature over [15 m, 60 m] ahead along H2H route to brake into corners.
-      double h_now = car.heading, p_tmp = 0.0;
+      // Sample curvature over [10 m, 80 m] ahead along H2H route to brake cleanly into corners.
+      double h_prev = car.heading, p_tmp = 0.0;
+      double d_prev = 0.0;
       traffic::P3 pos_tmp{};
-      for (double look_d : {15.0, 32.0, 55.0}) {
+      for (double look_d : {10.0, 22.0, 38.0, 58.0, 80.0}) {
         const double s1 = std::min(h2h_length_, car.h2h_progress + look_d);
-        double h1 = h_now;
+        double h1 = h_prev;
         pose_on_h2h(s1, car.lateral, pos_tmp, h1, p_tmp);
-        const double dth = std::fabs(wrap_angle(h1 - h_now));
-        if (dth > 0.06 && look_d > 1.0) {
-          const double kappa = dth / look_d;
-          const double v_corner = std::sqrt(max_lat_g / std::max(kappa, 1e-4));
-          const double v_brake = std::sqrt(v_corner * v_corner + 2.0 * 10.5 * std::max(0.0, look_d - 8.0));
-          want_spd = std::min(want_spd, std::max(11.0, v_brake));
+        const double seg_d = std::max(1.0, look_d - d_prev);
+        const double dth_seg = std::fabs(wrap_angle(h1 - h_prev));
+        const double dth_tot = std::fabs(wrap_angle(h1 - car.heading));
+        const double kappa = std::max(dth_seg / seg_d, dth_tot / std::max(look_d, 1.0));
+        if (kappa > 0.004 || dth_tot > 0.45) {
+          double v_corner = std::sqrt((max_lat_g * 0.85) / std::max(kappa, 1e-4));
+          if (dth_tot > 0.75) v_corner = std::min(v_corner, std::clamp(20.0 - 6.0 * dth_tot, 9.0, 18.0));
+          const double v_brake = std::sqrt(v_corner * v_corner + 2.0 * 9.5 * std::max(0.0, look_d - 7.0));
+          want_spd = std::min(want_spd, std::max(9.0, v_brake));
         }
+        h_prev = h1;
+        d_prev = look_d;
       }
       eval_avoidance(car, want_spd, 1.5);
-      car.braking = want_spd < car.speed - 1.5;
+      car.braking = want_spd < car.speed - 1.2;
       car.speed += std::clamp(want_spd - car.speed, -13.0 * dt, 9.5 * dt);
       car.speed = std::max(0.0, car.speed);
-      car.h2h_progress += car.speed * dt;
-      pose_on_h2h(car.h2h_progress, car.lateral, car.position, car.heading, car.pitch);
-      car.position.x += car.knockback_vx * dt;
-      car.position.z += car.knockback_vz * dt;
+
+      if (!car.pose_initialized) {
+        pose_on_h2h(car.h2h_progress, car.lateral, car.position, car.heading, car.pitch);
+        car.pose_initialized = true;
+      }
+      const double look_d = std::clamp(car.speed * 0.55, 8.0, 32.0);
+      traffic::P3 aim{};
+      double aim_h = car.heading, aim_p = 0.0;
+      pose_on_h2h(std::min(h2h_length_, car.h2h_progress + look_d), car.lateral, aim, aim_h, aim_p);
+      steer_towards(car, aim, dt, max_lat_g);
+      const double proj_s = project_on_h2h(car.position.x, car.position.z, car.h2h_progress);
+      car.h2h_progress = std::max(car.h2h_progress, proj_s);
     } else if (car.road >= 0) {
+      if (!car.pose_initialized) pose_roaming(car);
       double want_spd = car.base_speed;
-      // Road curvature lookahead for roaming festival cars so they slow for hairpins.
-      const auto& r = roads_.roads()[size_t(car.road)];
-      std::array<double, 2> t0{};
-      roads_.point_at(car.road, car.s, nullptr, &t0);
-      const double h0 = std::atan2(t0[0] * car.dir, t0[1] * car.dir);
-      for (double look_d : {16.0, 36.0}) {
-        const double s_ahead = std::clamp(car.s + car.dir * look_d, 0.0, r.s.empty() ? 0.0 : r.s.back());
-        if (std::fabs(s_ahead - car.s) > 2.0) {
-          std::array<double, 2> t1{};
-          roads_.point_at(car.road, s_ahead, nullptr, &t1);
-          const double h1 = std::atan2(t1[0] * car.dir, t1[1] * car.dir);
-          const double dth = std::fabs(wrap_angle(h1 - h0));
-          if (dth > 0.08) {
-            const double kappa = dth / std::fabs(s_ahead - car.s);
-            const double v_corner = std::sqrt((max_lat_g * 0.85) / std::max(kappa, 1e-4));
-            want_spd = std::min(want_spd, std::max(9.0, v_corner));
+      // Cross-junction curvature & intersection turn lookahead so Festival AI
+      // smoothly brakes BEFORE bends and 90-degree junctions instead of snapping.
+      traffic::P3 probe_p{};
+      std::array<double, 2> probe_t{};
+      double h0 = car.heading;
+      if (sample_roaming_ahead(car, 0.0, car.lateral, probe_p, probe_t)) {
+        h0 = std::atan2(probe_t[0], probe_t[1]);
+      }
+      double h_prev = h0;
+      double d_prev = 0.0;
+      for (double look_d : {8.0, 16.0, 26.0, 40.0, 58.0, 80.0}) {
+        if (!sample_roaming_ahead(car, look_d, car.lateral, probe_p, probe_t)) break;
+        const double h1 = std::atan2(probe_t[0], probe_t[1]);
+        const double seg_d = std::max(1.0, look_d - d_prev);
+        const double dth_seg = std::fabs(wrap_angle(h1 - h_prev));
+        const double dth_tot = std::fabs(wrap_angle(h1 - h0));
+        const double kappa = std::max(dth_seg / seg_d, dth_tot / std::max(look_d, 1.0));
+        if (kappa > 0.004 || dth_tot > 0.35) {
+          double v_corner = std::sqrt((max_lat_g * 0.70) / std::max(kappa, 1e-4));
+          if (dth_tot > 0.65) {
+            // Sharp junction turn: slow realistically to ~7-11 m/s before turning in.
+            v_corner = std::min(v_corner, std::clamp(17.5 - 6.2 * dth_tot, 6.5, 14.0));
           }
+          const double v_brake = std::sqrt(v_corner * v_corner + 2.0 * 7.5 * std::max(0.0, d_prev - 4.0));
+          want_spd = std::min(want_spd, std::max(6.5, v_brake));
         }
+        h_prev = h1;
+        d_prev = look_d;
       }
       eval_avoidance(car, want_spd, kLane);
-      car.braking = want_spd < car.speed - 1.2;
-      car.speed += std::clamp(want_spd - car.speed, -9.5 * dt, 6.0 * dt);
+      car.braking = want_spd < car.speed - 1.0;
+      car.speed += std::clamp(want_spd - car.speed, -10.5 * dt, 6.0 * dt);
       car.speed = std::max(0.0, car.speed);
-      advance_roaming(car, car.speed * dt);
-      pose_roaming(car);
-      car.position.x += car.knockback_vx * dt;
-      car.position.z += car.knockback_vz * dt;
-      if (!h2h_active_) {
+
+      const double look_d = std::clamp(car.speed * 0.65, 7.5, 28.0);
+      traffic::P3 aim{};
+      std::array<double, 2> aim_t{};
+      if (sample_roaming_ahead(car, look_d, car.lateral, aim, aim_t)) {
+        steer_towards(car, aim, dt, max_lat_g);
+        sync_roaming_cursor(car, car.speed * dt * 3.0 + 12.0);
+      } else {
+        car.road = -1;
+      }
+      if (!h2h_active_ && car.road >= 0) {
         const double dx = car.position.x - player_pos.x, dz = car.position.z - player_pos.z;
         const double d = std::hypot(dx, dz);
         const double ahead = dx * pfx + dz * pfz;
@@ -547,6 +872,48 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     car.vy = (car.position.y - prev_pos.y) / dt;
     car.vz = (car.position.z - prev_pos.z) / dt;
     car.rpm = estimate_rpm_for_speed(car.speed, car.spec.pi);
+  }
+
+  // Final inter-Festival anti-overlap safety pass so converging cars at a
+  // junction can never visually fuse or drive inside each other.
+  constexpr double kMinBodyW = 2.15;
+  constexpr double kMinBodyL = 4.75;
+  for (size_t i = 0; i < cars_.size(); ++i) {
+    for (size_t j = i + 1; j < cars_.size(); ++j) {
+      auto& a = cars_[i];
+      auto& b = cars_[j];
+      const double dx = b.position.x - a.position.x;
+      const double dz = b.position.z - a.position.z;
+      const double dist = std::hypot(dx, dz);
+      if (dist > 5.2 || dist < 1e-5) continue;
+      const double fx = std::sin(a.heading), fz = std::cos(a.heading);
+      const auto rt = traffic::right_of(fx, fz);
+      const double loc_f = dx * fx + dz * fz;
+      const double loc_r = dx * rt[0] + dz * rt[1];
+      const double pen_f = kMinBodyL - std::fabs(loc_f);
+      const double pen_r = kMinBodyW - std::fabs(loc_r);
+      if (pen_f <= 0.0 || pen_r <= 0.0) continue;
+      double nx = 0.0, nz = 0.0, pen = 0.0;
+      if (pen_r < pen_f) {
+        const double sg = loc_r >= 0.0 ? 1.0 : -1.0;
+        nx = rt[0] * sg;
+        nz = rt[1] * sg;
+        pen = pen_r;
+      } else {
+        const double sg = loc_f >= 0.0 ? 1.0 : -1.0;
+        nx = fx * sg;
+        nz = fz * sg;
+        pen = pen_f;
+      }
+      const double push = std::min(pen * 0.5, 0.35);
+      a.position.x -= nx * push;
+      a.position.z -= nz * push;
+      b.position.x += nx * push;
+      b.position.z += nz * push;
+      // Gently slow the trailing car to rebuild clean spacing.
+      if (loc_f > 0.0) a.speed = std::min(a.speed, std::max(0.0, b.speed - 2.0));
+      else b.speed = std::min(b.speed, std::max(0.0, a.speed - 2.0));
+    }
   }
 
   // Active Head-to-Head progress & finish check.
@@ -688,6 +1055,11 @@ FestivalCollisionImpulse FestivalManager::resolve_player_collision(const traffic
     const double ai_dv_z = -(j_mag / kAiMass) * nz;
     car.knockback_vx += ai_dv_x;
     car.knockback_vz += ai_dv_z;
+    const double kb_mag = std::hypot(car.knockback_vx, car.knockback_vz);
+    if (kb_mag > 25.0) {
+      car.knockback_vx *= 25.0 / kb_mag;
+      car.knockback_vz *= 25.0 / kb_mag;
+    }
     car.speed = std::max(0.0, car.speed + ai_dv_x * fx + ai_dv_z * fz);
     if (j_mag > out.impulse_magnitude) {
       out.hit = true;

@@ -342,6 +342,7 @@ AiField::AiField(const RacingLine& line, size_t cars, const Options& options)
       decel_(cars, 0),
       target_(cars, 0),
       cap_(cars, 1e9f),
+      prev_steer_(cars, 0),
       capacity_(cars, nullptr),
       plan_c_(cars, 0),
       plan_b_(cars, 0),
@@ -372,6 +373,7 @@ void AiField::place_near(size_t i, double x, double z, double from, double to, f
 void AiField::set_progress(size_t i, double distance) {
   seg_[i] = uint32_t(line_.segment(distance, 0));
   progress_[i] = distance;
+  prev_steer_[i] = 0.0f;
 }
 
 double AiField::planned_speed(size_t i, double p) const {
@@ -425,6 +427,7 @@ void AiField::place(size_t i, double distance, float lane, float skill) {
   progress_[i] = distance;
   lane_[i] = lane;
   skill_[i] = skill;
+  prev_steer_[i] = 0.0f;
 }
 
 void AiField::start_pose(size_t i, double& x, double& z, double& heading) const {
@@ -485,12 +488,15 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     const float speed = std::fabs(c.speed);
     double look_dist = 0.0;
     if (o_.slip_rule) {
-      // SPEC-RACE-AI: T = 1.0 s unbounded speed lookahead + 4x stretch when
-      // drifting (dot(fwd, vel_dir) < 0.98).
+      // SPEC-RACE-AI: T = 1.0 s speed lookahead with a smooth ramp (no binary
+      // 1x/4x cliff!) when body slip grows past ~8-11 deg, bounded so tight
+      // canyon hairpins are never aimed across.
       const float v_mag = std::hypot(c.vel_x, c.vel_z);
       const float align = v_mag > 2.0f ? (c.vel_x * c.fwd_x + c.vel_z * c.fwd_z) / v_mag : 1.0f;
-      const double drift_mult = (v_mag > 5.0f && align < 0.98f) ? 4.0 : 1.0;
-      look_dist = std::max<double>(3.0, o_.slip_lookahead_s * speed * drift_mult);
+      const float slip_t = v_mag > 5.0f ? std::clamp((0.99f - align) / 0.06f, 0.0f, 1.0f) : 0.0f;
+      const double drift_mult = 1.0 + 2.5 * double(slip_t);
+      const double base_look = std::clamp<double>(o_.slip_lookahead_s * speed, 4.0, 48.0);
+      look_dist = std::min(80.0, base_look * drift_mult);
     } else {
       look_dist = std::clamp<double>(o_.lookahead_s * speed, double(o_.min_lookahead), 24.0);
     }
@@ -527,7 +533,18 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     }
     Input& in = inputs[i];
     in = Input{};
-    in.steer = c.steer_lock > 0 ? std::clamp(delta / c.steer_lock, -1.0f, 1.0f) : 0.0f;
+    const float raw_steer = c.steer_lock > 0 ? std::clamp(delta / c.steer_lock, -1.0f, 1.0f) : 0.0f;
+    float steer_out = raw_steer;
+    if (o_.steer_rate > 0.0f) {
+      const float vz_b = c.vel_x * c.fwd_x + c.vel_z * c.fwd_z;
+      const float vx_b = c.vel_x * c.fwd_z - c.vel_z * c.fwd_x;
+      const bool sliding = std::hypot(vx_b, vz_b) > 5.0f && vz_b > 1.0f && std::fabs(std::atan2(vx_b, vz_b)) > 0.12f;
+      const float rate = sliding ? o_.steer_rate * 1.6f : o_.steer_rate;
+      const float max_d = rate * float(Vehicle::kStep);
+      steer_out = prev_steer_[i] + std::clamp(raw_steer - prev_steer_[i], -max_d, max_d);
+    }
+    prev_steer_[i] = steer_out;
+    in.steer = steer_out;
     // Speed: the plan a little ahead. Past the line's end: stop.
     const double ahead = progress_[i] + o_.speed_lookahead_s * speed;
     // Slow down when far off its lane (approaching road edge / wall), not on

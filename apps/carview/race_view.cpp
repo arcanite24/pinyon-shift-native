@@ -784,7 +784,7 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
       traffic_obs.push_back({tp, float(cross), float(tc.speed), dir_dot < 0.0});
     }
   }
-  race::plan_lanes(line_.line, progress_, cross_, speed_, lane_params_, n, lanes_, drive::Vehicle::kStep, 3.2, caps_,
+  race::plan_lanes(line_.line, progress_, cross_, speed_, lane_params_, n, lanes_, drive::Vehicle::kStep, 2.1, caps_,
                    traffic_obs);
   for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]), field_->set_speed_cap(k, caps_[k]);
   field_->drive(states_, inputs_);
@@ -923,7 +923,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     drive::Input in = inputs_[k];
     // Held on the grid; revving from 3.09 s before the signal, clutch dropped at it.
     if (clock < 0) in = clock >= -3.09 ? drive::Input{0, 1, 1, true} : drive::Input{0, 0, 0.4, true};
-    else drive::ai_traction(*c.body, c.traction_cap, drive::Vehicle::kStep, in, true);
+    else drive::ai_traction(*c.body, c.traction_cap, drive::Vehicle::kStep, in, !slip_rule());
     const double from_slot = field_->progress(k) - c.start_progress;
     const double boost = race::start_boost(c.slot, int(grid_cars), from_slot);
     double nem_torque = 0.0;
