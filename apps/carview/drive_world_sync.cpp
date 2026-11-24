@@ -62,26 +62,58 @@ void DriveSession::place_world() {
           host.showroom.add_instances(more);
         } else if (festival_mgr && !festival_mgr->cars().empty()) {
           // Render roaming Festival AI racers & active H2H opponent as guest Showrooms.
+          // Compute world_to_player in double precision so kilometre-scale Colorado coordinates never jitter.
           float pm[16];
           drive::model_to_world(info, vehicle, pm);
-          float world_to_player[16];
-          invert_affine(pm, world_to_player);
+          double pmd[16];
+          for (int i = 0; i < 16; ++i) pmd[i] = pm[i];
+          const double a = pmd[0], b = pmd[4], c = pmd[8], d = pmd[1], e = pmd[5], f = pmd[9], g = pmd[2], h = pmd[6], k = pmd[10];
+          const double det = a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+          const double id = det != 0.0 ? 1.0 / det : 0.0;
+          const double inv[9] = {(e * k - f * h) * id, (c * h - b * k) * id, (b * f - c * e) * id,
+                                 (f * g - d * k) * id, (a * k - c * g) * id, (c * d - a * f) * id,
+                                 (d * h - e * g) * id, (b * g - a * h) * id, (a * e - b * d) * id};
+          double world_to_player[16]{};
+          for (int r = 0; r < 3; ++r)
+            for (int col = 0; col < 3; ++col) world_to_player[col * 4 + r] = inv[r * 3 + col];
+          for (int r = 0; r < 3; ++r)
+            world_to_player[12 + r] = -(inv[r * 3 + 0] * pmd[12] + inv[r * 3 + 1] * pmd[13] + inv[r * 3 + 2] * pmd[14]);
+          world_to_player[15] = 1.0;
+
           std::vector<Showroom::Instance> fmore;
           const bool night_lamps = drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec);
+          const float fdt = float(tod_frame_dt > 0.0 ? std::clamp(tod_frame_dt, 0.0, 0.25) : 1.0 / 60.0);
+          static std::map<const Showroom*, float> s_fest_wheel_spin;
+          std::map<Showroom*, double> fest_wheel_speed;
+          Showroom* fest_fallback = nullptr;
+          for (const auto& [kname, gptr] : festival_guests) {
+            if (gptr) {
+              fest_fallback = gptr.get();
+              break;
+            }
+          }
           for (const auto& fc : festival_mgr->cars()) {
+            if (!std::isfinite(fc.position.x) || !std::isfinite(fc.position.y) || !std::isfinite(fc.position.z)) continue;
             auto it = festival_guests.find(fc.spec.car_media);
-            if (it == festival_guests.end() && festival_guests.size() < 6) {
+            if (it == festival_guests.end() && festival_guests.size() < 24) {
               auto gs = std::make_unique<Showroom>(host.renderer);
               gs->set_guest();
+              if (host.showroom.dynamic_env_view() && host.showroom.dynamic_env_sampler()) {
+                gs->set_shared_dynamic_env(host.showroom.dynamic_env_view(), host.showroom.dynamic_env_sampler());
+              }
+              ShowroomOptions opt{};
+              opt.game_root = app.game_root_of();
               std::string ge;
-              if (gs->load(app.bake_dir, fc.spec.car_media, ShowroomOptions{}, ge) && gs->upload(ge)) {
+              if (gs->load(app.bake_dir, fc.spec.car_media, opt, ge) && gs->upload(ge)) {
                 gs->load_car_lamps(app.game_root_of(), fc.spec.car_media);
+                if (!fest_fallback) fest_fallback = gs.get();
                 it = festival_guests.emplace(fc.spec.car_media, std::move(gs)).first;
               } else {
                 it = festival_guests.emplace(fc.spec.car_media, nullptr).first;
               }
             }
-            if (it == festival_guests.end() || !it->second) continue;
+            Showroom* guest_sr = (it != festival_guests.end() && it->second) ? it->second.get() : fest_fallback;
+            if (!guest_sr) continue;
             const drive::Quat yq{0, std::sin(fc.heading * 0.5), 0, std::cos(fc.heading * 0.5)};
             const drive::Quat pq{std::sin(-fc.pitch * 0.5), 0, 0, std::cos(-fc.pitch * 0.5)};
             const drive::Quat q{
@@ -91,14 +123,19 @@ void DriveSession::place_world() {
                 yq.w * pq.w - yq.x * pq.x - yq.y * pq.y - yq.z * pq.z,
             };
             float gm[16];
-            drive::model_to_world(it->second->car(), q, {fc.position.x, fc.position.y, fc.position.z}, gm);
+            drive::model_to_world(guest_sr->car(), q, {0, 0, 0}, gm);
+            double gmd[16];
+            for (int i = 0; i < 16; ++i) gmd[i] = gm[i];
+            gmd[12] += fc.position.x;
+            gmd[13] += fc.position.y;
+            gmd[14] += fc.position.z;
             Showroom::Instance inst;
-            inst.car = it->second.get();
+            inst.car = guest_sr;
             for (int col = 0; col < 4; ++col)
               for (int row = 0; row < 4; ++row) {
-                float sum = 0;
-                for (int k = 0; k < 4; ++k) sum += world_to_player[k * 4 + row] * gm[col * 4 + k];
-                inst.model[col * 4 + row] = sum;
+                double sum = 0.0;
+                for (int kk = 0; kk < 4; ++kk) sum += world_to_player[kk * 4 + row] * gmd[col * 4 + kk];
+                inst.model[col * 4 + row] = float(sum);
               }
             drive::CarLampState ls;
             ls.headlamps_on = night_lamps;
@@ -106,6 +143,26 @@ void DriveSession::place_world() {
             inst.lamps = ls.vectors();
             inst.has_lamps = true;
             fmore.push_back(inst);
+            fest_wheel_speed[guest_sr] = std::max(fest_wheel_speed[guest_sr], fc.speed);
+          }
+          constexpr float kTwoPi = 6.28318530717958647692f;
+          for (const auto& [guest_sr, spd] : fest_wheel_speed) {
+            const auto& rest = guest_sr->car().wheel_centres_body;
+            const float radius = std::clamp(rest[0][1], 0.26f, 0.55f);
+            const float omega = float(spd) / radius;
+            float& spin = s_fest_wheel_spin[guest_sr];
+            spin = std::fmod(spin + omega * fdt, kTwoPi);
+            if (spin < 0.0f) spin += kTwoPi;
+            WheelPose wposes[4]{};
+            for (int wi = 0; wi < 4; ++wi) {
+              wposes[wi].centre[0] = rest[size_t(wi)][0];
+              wposes[wi].centre[1] = rest[size_t(wi)][1];
+              wposes[wi].centre[2] = rest[size_t(wi)][2];
+              wposes[wi].steer = 0.0f;
+              wposes[wi].spin = spin;
+              wposes[wi].omega = omega;
+            }
+            guest_sr->set_wheel_poses(wposes);
           }
           if (!fmore.empty()) host.showroom.add_instances(fmore);
         }

@@ -2735,8 +2735,8 @@
       "prebuilt_spv": "apps/carview/shaders/prebuilt/showroom.frag.spv",
       "stage": "fragment",
       "entry_point": "main",
-      "spirv_version": "1.6",
-      "spirv_bytes": 130088,
+      "spirv_version": "1.0",
+      "spirv_bytes": 132388,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -2752,14 +2752,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "environment",
+          "name": "set0_b1",
           "dim": "Cube"
         },
         {
@@ -2767,7 +2767,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_map",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -2775,7 +2775,7 @@
           "binding": 5,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "mirror_map",
+          "name": "set0_b5",
           "dim": "2D"
         },
         {
@@ -2783,7 +2783,7 @@
           "binding": 6,
           "type": "storage_buffer",
           "count": 1,
-          "name": "CarInstances",
+          "name": "set0_b6",
           "readonly": true
         },
         {
@@ -2791,7 +2791,7 @@
           "binding": 7,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "static_environment",
+          "name": "set0_b7",
           "dim": "Cube"
         },
         {
@@ -2799,7 +2799,7 @@
           "binding": 8,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shared_dirt_pattern",
+          "name": "set0_b8",
           "dim": "2D"
         },
         {
@@ -2807,7 +2807,7 @@
           "binding": 9,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shared_dirt_mask",
+          "name": "set0_b9",
           "dim": "2D"
         },
         {
@@ -2815,7 +2815,7 @@
           "binding": 10,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shared_glass_crack",
+          "name": "set0_b10",
           "dim": "2D"
         },
         {
@@ -2823,7 +2823,7 @@
           "binding": 11,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_depth_raw",
+          "name": "set0_b11",
           "dim": "2D"
         },
         {
@@ -2831,7 +2831,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "slot0",
+          "name": "set1_b0",
           "dim": "2D"
         },
         {
@@ -2839,7 +2839,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "slot1",
+          "name": "set1_b1",
           "dim": "2D"
         },
         {
@@ -2847,7 +2847,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "livery",
+          "name": "set1_b2",
           "dim": "2D"
         },
         {
@@ -2855,7 +2855,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "normal_map",
+          "name": "set1_b3",
           "dim": "2D"
         },
         {
@@ -2863,7 +2863,7 @@
           "binding": 4,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "damage_map",
+          "name": "set1_b4",
           "dim": "2D"
         }
       ],

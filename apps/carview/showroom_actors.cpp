@@ -345,6 +345,7 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
     const float dx = in.model[12] - frame_.eye[0];
     const float dy = in.model[13] - frame_.eye[1];
     const float dz = in.model[14] - frame_.eye[2];
+    if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz)) continue;
     if (dx * dx + dy * dy + dz * dz > 95.0f * 95.0f) continue;
     std::memcpy(pc.model, in.model, sizeof pc.model);
     vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,

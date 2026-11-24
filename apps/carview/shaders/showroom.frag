@@ -907,34 +907,73 @@ void main() {
     paint_scale = 0.85;
     reflectivity = 0.06;
     gloss = 0.88;
+  } else if (klass == kOpaque) {
+    if ((flags & kFlagGrille) != 0u) {
+      gloss = 0.25;
+      reflectivity = 0.04;
+    } else if ((flags & kFlagFlat) != 0u) {
+      gloss = 0.15;
+      reflectivity = 0.03;
+    } else if (submat == 18u) {
+      // Undercarriage / chassis / frame / black & rubber trim: dark matte charcoal modulated by
+      // @atlas AO (t0) so undersides never render bright white.
+      vec3 ao = (flags & kFlagNoSlot0) == 0u ? mix(vec3(0.35), clamp(t0.rgb, vec3(0.0), vec3(1.0)), 0.65) : vec3(1.0);
+      base = vec3(0.028, 0.030, 0.033) * ao;
+      gloss = 0.10;
+      reflectivity = 0.02;
+    } else if ((flags & kFlagNoSlot0) != 0u) {
+      // Untextured kOpaque fallback: dark matte charcoal instead of (1,1,1) white.
+      base = vec3(0.040, 0.042, 0.046);
+      gloss = 0.15;
+      reflectivity = 0.025;
+    } else if (t0.a < 0.10 && n_geom.y < -0.45) {
+      // Downward-facing unpainted underbody panels on @atlas: keep matte underbody charcoal.
+      base = vec3(0.030, 0.032, 0.035) * mix(vec3(0.40), clamp(t0.rgb, vec3(0.0), vec3(1.0)), 0.60);
+      gloss = 0.10;
+      reflectivity = 0.02;
+    }
   }
 
   // Real FH1 damage_LOD0.xds impact scratches/scuffs & Shared/dirt_pattern + dirt_mask accumulation.
-  if (klass == kPaint || klass == kOpaque || klass == kCarbon || klass == kRim) {
-    float z_front = smoothstep(-0.65, -1.95, v_position.z) * frame.damage_zones.x;
-    float z_rear = smoothstep(0.65, 1.95, v_position.z) * frame.damage_zones.y;
-    float x_left = smoothstep(-0.50, -0.95, v_position.x) * frame.damage_zones.z;
-    float x_right = smoothstep(0.50, 0.95, v_position.x) * frame.damage_zones.w;
+  // Only apply player damage/dirt to the player car (not instanced traffic/AI cars).
+  if ((flags & kFlagInstanced) == 0u && (klass == kPaint || klass == kOpaque || klass == kCarbon || klass == kRim)) {
+    float z_front = smoothstep(-0.65, -1.95, v_local_pos.z) * frame.damage_zones.x;
+    float z_rear = smoothstep(0.65, 1.95, v_local_pos.z) * frame.damage_zones.y;
+    float x_left = smoothstep(-0.50, -0.95, v_local_pos.x) * frame.damage_zones.z;
+    float x_right = smoothstep(0.50, 0.95, v_local_pos.x) * frame.damage_zones.w;
     float local_dmg = clamp(max(max(z_front, z_rear), max(x_left, x_right)), 0.0, 1.0);
     if (local_dmg > 0.02 && frame.damage_dirt.w > 0.01) {
       float dmg_amt = clamp(local_dmg * frame.damage_dirt.w, 0.0, 1.0);
+      // Directional scrape streaks along car-local panels for crisp scuff breakup.
+      vec2 scrape_uv = vec2(v_local_pos.z * 7.5 + v_local_pos.x * 3.0, v_local_pos.y * 22.0);
+      float streak = smoothstep(0.32, 0.78, fbm(scrape_uv));
+      float scratch_mask = 0.0;
+      vec3 dmg_col = vec3(0.14, 0.145, 0.155);
       if ((flags & kFlagDamageMap) != 0u) {
         vec4 dm = texture(damage_map, v_uv0);
-        float dmask = clamp(max(dm.a, length(dm.rgb - t0.rgb) * 1.4) * dmg_amt, 0.0, 0.95);
-        base = mix(base, dm.rgb, dmask);
-        gloss = mix(gloss, 0.15, dmask * 0.85);
-        coat_mask *= (1.0 - dmask * 0.90);
+        // Use alpha delta over t0.a (so BC1 alpha=1.0 never triggers solid blocks) and RGB delta.
+        float alpha_delta = clamp(dm.a - t0.a, 0.0, 1.0);
+        float color_delta = smoothstep(0.08, 0.38, length(dm.rgb - t0.rgb));
+        float tex_dmg = max(alpha_delta, color_delta);
+        scratch_mask = clamp(max(tex_dmg * 0.90, streak * 0.55) * dmg_amt, 0.0, 0.85);
+        // Clamp damage_map luminance so bright white/empty atlas canvas texels never paint white patches;
+        // expose dark charcoal primer and scuffed brushed bare metal instead.
+        vec3 dm_safe = min(dm.rgb, vec3(0.30));
+        vec3 bare_metal = mix(vec3(0.11, 0.115, 0.125), vec3(0.32, 0.34, 0.37), smoothstep(0.35, 0.78, scratch_mask));
+        dmg_col = mix(bare_metal, dm_safe * 0.80, color_delta * 0.55);
       } else {
         vec3 dp = texture(shared_dirt_pattern, v_uv0 * 4.0).rgb;
-        float scuff = clamp(dmg_amt * 0.85, 0.0, 0.90);
-        base = mix(base, mix(vec3(0.22), dp, 0.35), scuff);
-        gloss = mix(gloss, 0.14, scuff * 0.85);
-        coat_mask *= (1.0 - scuff * 0.90);
+        scratch_mask = clamp((0.35 + 0.65 * streak) * dmg_amt * 0.80, 0.0, 0.82);
+        dmg_col = mix(vec3(0.13, 0.135, 0.145), min(dp, vec3(0.32)), 0.35);
       }
+      base = mix(base, dmg_col, scratch_mask);
+      gloss = mix(gloss, 0.14, scratch_mask * 0.85);
+      metal = mix(metal, 0.42, smoothstep(0.45, 0.85, scratch_mask));
+      coat_mask *= (1.0 - scratch_mask * 0.92);
     }
     if (frame.damage_dirt.x > 0.01) {
-      float low_mask = smoothstep(0.76, 0.02, v_position.y);
-      vec2 dirt_uv = v_position.xz * 0.75 + vec2(v_position.y * 0.9, v_position.y * 0.6);
+      float low_mask = smoothstep(0.76, 0.02, v_local_pos.y);
+      vec2 dirt_uv = v_local_pos.xz * 0.75 + vec2(v_local_pos.y * 0.9, v_local_pos.y * 0.6);
       vec4 dpat = texture(shared_dirt_pattern, dirt_uv * 2.5);
       vec4 dmsk = texture(shared_dirt_mask, dirt_uv * 1.2);
       float m = clamp(max(dmsk.r, dmsk.a), 0.15, 1.0);
@@ -1018,11 +1057,13 @@ void main() {
     float nl_c = max(dot(n_coat, key), 0.0);
     float nh_c = max(dot(n_coat, h), 0.0);
 
-    // Layer 1 (Clearcoat): dielectric IOR=1.55 (F0=0.0465) with GGX tight clearcoat lobe.
-    float F_coat_v = clamp(0.0465 + 0.9035 * pow(1.0 - nv_c, 4.4), 0.0465, 0.95) * coat_mask;
-    float F_coat_l = clamp(0.0465 + 0.9035 * pow(1.0 - nl_c, 4.4), 0.0465, 0.95) * coat_mask;
-    vec3 coat_refl = env(r_coat, 0.0) * frame.reflect_tint.rgb * occ_refl;
-    float coat_ggx = ggx_d(nh_c, 0.042) * 0.038;
+    // Layer 1 (Clearcoat): dielectric IOR=1.50 (F0=0.04) tuned for Forza Horizon 1 automotive
+    // clearcoat (rich paint saturation, controlled grazing reflection rather than chrome mirror).
+    float F_coat_v = clamp(0.040 + 0.48 * pow(1.0 - nv_c, 5.0), 0.040, 0.52) * coat_mask;
+    float F_coat_l = clamp(0.040 + 0.48 * pow(1.0 - nl_c, 5.0), 0.040, 0.52) * coat_mask;
+    float coat_env_scale = frame.drive.w > 0.5 ? 0.58 : 0.72;
+    vec3 coat_refl = env(r_coat, 0.65) * frame.reflect_tint.rgb * occ_refl * coat_env_scale;
+    float coat_ggx = ggx_d(nh_c, 0.065) * 0.022;
     vec3 coat_spec = direct_col * coat_ggx * nl_c * lit * coat_mask;
 
     // Layer 2 (Basecoat + Multiscale Anti-Aliased Metallic Flakes, energy-conserved by (1 - F_coat)).
@@ -1030,12 +1071,12 @@ void main() {
     float base_atten_ibl = 1.0 - F_coat_v;
     vec3 basecoat = base * paint_scale * diffuse_light * base_atten_ibl;
     if (paint_metallic > 0.01) {
-      vec3 met_cube = env(r, 3.2) * frame.reflect_tint.rgb * occ_refl;
+      vec3 met_cube = env(r, 3.4) * frame.reflect_tint.rgb * occ_refl;
       // Continuous dual-lobe metallic GGX sheen (converged baseline at all speeds & distances).
-      float lobe_mid = ggx_d(nh, 0.24) * 0.22;
-      float lobe_broad = ggx_d(nh, 0.48) * 0.34;
-      vec3 flake_tint = mix(base, vec3(0.95), 0.38);
-      basecoat += base * met_cube * 0.56 * paint_metallic * base_atten_ibl;
+      float lobe_mid = ggx_d(nh, 0.24) * 0.15;
+      float lobe_broad = ggx_d(nh, 0.48) * 0.24;
+      vec3 flake_tint = mix(base, vec3(0.95), 0.35);
+      basecoat += base * met_cube * 0.36 * paint_metallic * base_atten_ibl;
       basecoat += base * direct_col * (lobe_mid + lobe_broad) * ndl * lit * paint_metallic * base_atten_direct;
       if (flake_boost > 0.01) {
         float glint = eval_multiscale_flake(v_local_pos, n, h, T_frame, B_frame, 220.0, frame.phase_b_params.x);
@@ -1125,7 +1166,7 @@ void main() {
   if (kLinearOut && klass != kGlass && (flags & kFlagMirror) == 0u) {
     // Encode automotive surface gloss into HDR alpha for Phase B Hi-Z SSR (0 on matte/tyre/interior).
     if (is_clearcoat) {
-      out_a = clamp(0.86 * coat_mask, 0.0, 0.92);
+      out_a = clamp(0.52 * coat_mask, 0.0, 0.58);
     } else if (klass == kChrome) {
       out_a = 0.95;
     } else if (klass == kRim) {
