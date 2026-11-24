@@ -360,11 +360,25 @@ bool run_on_device_bake(const BakeOptions& opts, const ProgressCallback& progres
   cars::Install install;
   cars::Database db;
   std::string err;
-  if (!cars::discover_install(opts.game_root, opts.state_root, {}, install, &err) ||
-      !cars::load_database(install, db, &err)) {
+  if (!cars::discover_install(opts.game_root, opts.state_root, {}, install, &err)) {
     report.error = "inspect failed: " + err;
     emit_log("ERROR: " + report.error);
     return false;
+  }
+  const bool db_loaded = cars::load_database(install, db, &err);
+  if (!db_loaded) {
+    if (opts.bake_cars) {
+      report.error = "inspect failed: " + err;
+      emit_log("ERROR: " + report.error);
+      return false;
+    }
+    if (!is_non_empty_file(install.media / "db" / "gamedb.slt")) {
+      report.error = "inspect failed: missing media/db/gamedb.slt";
+      emit_log("ERROR: " + report.error);
+      return false;
+    }
+    report.warnings.push_back("database inspect skipped in zero-bake mode: " + err);
+    err.clear();
   }
   if (is_cancelled()) {
     report.cancelled = true;
@@ -382,200 +396,212 @@ bool run_on_device_bake(const BakeOptions& opts, const ProgressCallback& progres
   std::vector<std::string> all_available;
   all_available.reserve(chosen_rows.size());
   for (const auto& [k, _] : chosen_rows) all_available.push_back(k);
-  report.cars_total_available = all_available.size();
+  report.cars_total_available = db_loaded ? all_available.size() : install.base_cars.size();
 
-  const std::vector<std::string> selected_cars = select_cars_for_mode(all_available, opts.mode, opts.custom_cars);
-  if (selected_cars.empty()) {
+  const std::vector<std::string> selected_cars =
+      opts.bake_cars ? select_cars_for_mode(all_available, opts.mode, opts.custom_cars) : std::vector<std::string>{};
+  if (opts.bake_cars && selected_cars.empty()) {
     report.error = "no cars matched in game database";
     return false;
   }
 
   const fs::path bake_dir = opts.play_dir / "bake";
   std::error_code ec;
-  fs::create_directories(bake_dir / "cars", ec);
-  fs::create_directories(bake_dir / "wheels", ec);
-  fs::create_directories(opts.play_dir / "world", ec);
-  fs::create_directories(opts.play_dir / "sound", ec);
+  if (opts.bake_world_index) fs::create_directories(opts.play_dir / "world", ec);
+  if (opts.bake_sounds) fs::create_directories(opts.play_dir / "sound", ec);
 
-  emit_log("Selected " + std::to_string(selected_cars.size()) + " of " + std::to_string(all_available.size()) +
-           " cars (" + (opts.mode == BakeMode::kFullRoster ? "Full Roster" : "Fast Start") + ")");
+  if (opts.bake_cars) {
+    fs::create_directories(bake_dir / "cars", ec);
+    fs::create_directories(bake_dir / "wheels", ec);
 
-  // Stage 2: Physics tables
-  emit_progress(Stage::kPhysics, 0, selected_cars.size(), 0.08f, "Extracting car physics", "physics.zip");
-  {
-    std::vector<int64_t> ids;
-    std::vector<std::string> keys;
-    for (const auto& k : selected_cars) {
-      ids.push_back(chosen_rows.at(k)->id);
-      keys.push_back(k);
-    }
-    cars::PhysicsSettings phys_settings;
-    std::vector<cars::CarPhysics> phys_rows;
-    if (!cars::load_physics_settings(install.media / "physics.zip", phys_settings, &err) ||
-        !cars::load_car_physics(install, ids, phys_rows, &err)) {
-      report.error = "physics extraction failed: " + err;
-      emit_log("ERROR: " + report.error);
-      return false;
-    }
-    for (size_t i = 0; i < phys_rows.size(); ++i) {
-      if (is_cancelled()) {
-        report.cancelled = true;
-        report.error = "bake cancelled";
-        return false;
+    emit_log("Selected " + std::to_string(selected_cars.size()) + " of " + std::to_string(all_available.size()) +
+             " cars (" + (opts.mode == BakeMode::kFullRoster ? "Full Roster" : "Fast Start") + ")");
+
+    // Stage 2: Physics tables
+    emit_progress(Stage::kPhysics, 0, selected_cars.size(), 0.08f, "Extracting car physics", "physics.zip");
+    {
+      std::vector<int64_t> ids;
+      std::vector<std::string> keys;
+      for (const auto& k : selected_cars) {
+        ids.push_back(chosen_rows.at(k)->id);
+        keys.push_back(k);
       }
-      const fs::path pfile = bake_dir / "cars" / (keys[i] + ".physics.txt");
-      if (opts.resume && is_non_empty_file(pfile)) continue;
-      if (!write_text_atomic(pfile, cars::physics_to_text(phys_rows[i], phys_settings), &err)) {
-        report.error = err;
-        return false;
-      }
-    }
-  }
-  emit_progress(Stage::kPhysics, selected_cars.size(), selected_cars.size(), 0.14f, "Car physics ready",
-                std::to_string(selected_cars.size()) + " cars");
-
-  // Build shared / wheel / tyre / car job queues
-  std::vector<BakeJob> base_jobs;
-  std::vector<BakeJob> car_jobs;
-  std::set<std::string> wheel_seen;
-
-  if (auto shared = install.base_cars.find("shared"); shared != install.base_cars.end()) {
-    base_jobs.push_back({BakeJob::Kind::kShared, "shared", shared->second, nullptr, {}, {}, "shared.shiftbake"});
-  } else {
-    report.error = "missing media/cars/Shared.zip";
-    return false;
-  }
-  for (const char* tyre : {cars::kTyreModel, cars::kTyreTextures}) {
-    if (auto t = install.find_wheel(tyre)) {
-      base_jobs.push_back({BakeJob::Kind::kTyre, tyre, *t, nullptr, {}, {}, fs::path("wheels") / (std::string(tyre) + ".shiftbake")});
-    } else {
-      report.warnings.push_back(std::string("missing tyre archive ") + tyre);
-    }
-  }
-
-  for (const std::string& key : selected_cars) {
-    const cars::CarRow* row = chosen_rows.at(key);
-    auto ref = install.find_car(row->media_name);
-    if (!ref) {
-      report.warnings.push_back("car archive missing for " + key);
-      continue;
-    }
-    BakeJob cj;
-    cj.kind = BakeJob::Kind::kCar;
-    cj.key = key;
-    cj.ref = *ref;
-    cj.row = row;
-    cj.rel_out = fs::path("cars") / (key + ".shiftbake");
-    for (const auto& r : db.cars) {
-      if (cars::lower(r.media_name) == key) cj.rows.push_back(&r);
-    }
-    const std::string own_tyre = std::string(cars::kTyreTextures) + key;
-    if (auto t = install.find_wheel(own_tyre)) {
-      cj.own_tyre = own_tyre;
-      if (wheel_seen.insert(own_tyre).second) {
-        base_jobs.push_back({BakeJob::Kind::kTyre, own_tyre, *t, nullptr, {}, {}, fs::path("wheels") / (own_tyre + ".shiftbake")});
-      }
-    }
-    car_jobs.push_back(std::move(cj));
-
-    const std::string wheel = cars::lower(row->wheel_media);
-    if (!wheel.empty() && wheel != cars::kTyreModel && wheel != cars::kTyreTextures && wheel_seen.insert(wheel).second) {
-      if (auto w = install.find_wheel(wheel)) {
-        base_jobs.push_back({BakeJob::Kind::kWheel, wheel, *w, nullptr, {}, {}, fs::path("wheels") / (wheel + ".shiftbake")});
-      } else {
-        report.warnings.push_back(key + ": missing wheel " + wheel);
-      }
-    }
-  }
-
-#ifdef __ANDROID__
-  constexpr bool kIsMobile = true;
-#else
-  constexpr bool kIsMobile = false;
-#endif
-  const unsigned workers = recommended_bake_threads(std::thread::hardware_concurrency(), kIsMobile, opts.max_threads);
-  emit_log("Baking with " + std::to_string(workers) + " worker thread(s)");
-
-  auto run_pool = [&](const std::vector<BakeJob>& jobs, Stage stage, float frac_lo, float frac_hi,
-                      const std::string& label, std::vector<JobOutcome>& outcomes) -> bool {
-    outcomes.assign(jobs.size(), {});
-    if (jobs.empty()) return true;
-
-    std::atomic<size_t> next{0};
-    std::atomic<size_t> done{0};
-    std::mutex cb_mu;
-
-    auto worker_fn = [&]() {
-      while (true) {
-        if (is_cancelled()) break;
-        const size_t idx = next.fetch_add(1, std::memory_order_relaxed);
-        if (idx >= jobs.size()) break;
-        execute_job(jobs[idx], bake_dir, opts.resume, outcomes[idx]);
-        const size_t finished = done.fetch_add(1, std::memory_order_relaxed) + 1;
-        const float f = frac_lo + (frac_hi - frac_lo) * (static_cast<float>(finished) / static_cast<float>(jobs.size()));
-        std::lock_guard<std::mutex> lk(cb_mu);
-        emit_progress(stage, finished, jobs.size(), f, label, jobs[idx].key);
-      }
-    };
-
-    const unsigned nthreads = std::min<unsigned>(workers, static_cast<unsigned>(jobs.size()));
-    std::vector<std::thread> threads;
-    threads.reserve(nthreads > 0 ? nthreads - 1 : 0);
-    for (unsigned t = 1; t < nthreads; ++t) threads.emplace_back(worker_fn);
-    worker_fn();
-    for (auto& th : threads) th.join();
-
-    return !is_cancelled();
-  };
-
-  // Stage 3: Shared assets, tyres, and wheels (0.14 -> 0.30)
-  emit_progress(Stage::kSharedAndWheels, 0, base_jobs.size(), 0.14f, "Baking shared assets & wheels", "shared");
-  std::vector<JobOutcome> base_outcomes;
-  if (!run_pool(base_jobs, Stage::kSharedAndWheels, 0.14f, 0.30f, "Baking shared assets & wheels", base_outcomes)) {
-    report.cancelled = true;
-    report.error = "bake cancelled";
-    return false;
-  }
-  for (size_t i = 0; i < base_outcomes.size(); ++i) {
-    if (!base_outcomes[i].ok) {
-      if (base_jobs[i].kind == BakeJob::Kind::kShared) {
-        report.error = base_outcomes[i].error;
+      cars::PhysicsSettings phys_settings;
+      std::vector<cars::CarPhysics> phys_rows;
+      if (!cars::load_physics_settings(install.media / "physics.zip", phys_settings, &err) ||
+          !cars::load_car_physics(install, ids, phys_rows, &err)) {
+        report.error = "physics extraction failed: " + err;
         emit_log("ERROR: " + report.error);
         return false;
       }
-      report.warnings.push_back(base_outcomes[i].error);
-    } else if (base_jobs[i].kind != BakeJob::Kind::kShared) {
-      ++report.wheels_baked;
+      for (size_t i = 0; i < phys_rows.size(); ++i) {
+        if (is_cancelled()) {
+          report.cancelled = true;
+          report.error = "bake cancelled";
+          return false;
+        }
+        const fs::path pfile = bake_dir / "cars" / (keys[i] + ".physics.txt");
+        if (opts.resume && is_non_empty_file(pfile)) continue;
+        if (!write_text_atomic(pfile, cars::physics_to_text(phys_rows[i], phys_settings), &err)) {
+          report.error = err;
+          return false;
+        }
+      }
     }
-  }
+    emit_progress(Stage::kPhysics, selected_cars.size(), selected_cars.size(), 0.14f, "Car physics ready",
+                  std::to_string(selected_cars.size()) + " cars");
 
-  // Stage 4: Car models (0.30 -> 0.78)
-  emit_progress(Stage::kCars, 0, car_jobs.size(), 0.30f, "Baking cars", "");
-  std::vector<JobOutcome> car_outcomes;
-  if (!run_pool(car_jobs, Stage::kCars, 0.30f, 0.78f, "Baking cars", car_outcomes)) {
-    report.cancelled = true;
-    report.error = "bake cancelled";
-    return false;
-  }
-  for (const auto& o : car_outcomes) {
-    if (!o.ok) {
-      report.warnings.push_back(o.error);
-    } else if (o.reused) {
-      ++report.cars_reused;
+    // Build shared / wheel / tyre / car job queues
+    std::vector<BakeJob> base_jobs;
+    std::vector<BakeJob> car_jobs;
+    std::set<std::string> wheel_seen;
+
+    if (auto shared = install.base_cars.find("shared"); shared != install.base_cars.end()) {
+      base_jobs.push_back({BakeJob::Kind::kShared, "shared", shared->second, nullptr, {}, {}, "shared.shiftbake"});
     } else {
-      ++report.cars_baked;
+      report.error = "missing media/cars/Shared.zip";
+      return false;
     }
+    for (const char* tyre : {cars::kTyreModel, cars::kTyreTextures}) {
+      if (auto t = install.find_wheel(tyre)) {
+        base_jobs.push_back(
+            {BakeJob::Kind::kTyre, tyre, *t, nullptr, {}, {}, fs::path("wheels") / (std::string(tyre) + ".shiftbake")});
+      } else {
+        report.warnings.push_back(std::string("missing tyre archive ") + tyre);
+      }
+    }
+
+    for (const std::string& key : selected_cars) {
+      const cars::CarRow* row = chosen_rows.at(key);
+      auto ref = install.find_car(row->media_name);
+      if (!ref) {
+        report.warnings.push_back("car archive missing for " + key);
+        continue;
+      }
+      BakeJob cj;
+      cj.kind = BakeJob::Kind::kCar;
+      cj.key = key;
+      cj.ref = *ref;
+      cj.row = row;
+      cj.rel_out = fs::path("cars") / (key + ".shiftbake");
+      for (const auto& r : db.cars) {
+        if (cars::lower(r.media_name) == key) cj.rows.push_back(&r);
+      }
+      const std::string own_tyre = std::string(cars::kTyreTextures) + key;
+      if (auto t = install.find_wheel(own_tyre)) {
+        cj.own_tyre = own_tyre;
+        if (wheel_seen.insert(own_tyre).second) {
+          base_jobs.push_back(
+              {BakeJob::Kind::kTyre, own_tyre, *t, nullptr, {}, {}, fs::path("wheels") / (own_tyre + ".shiftbake")});
+        }
+      }
+      car_jobs.push_back(std::move(cj));
+
+      const std::string wheel = cars::lower(row->wheel_media);
+      if (!wheel.empty() && wheel != cars::kTyreModel && wheel != cars::kTyreTextures && wheel_seen.insert(wheel).second) {
+        if (auto w = install.find_wheel(wheel)) {
+          base_jobs.push_back(
+              {BakeJob::Kind::kWheel, wheel, *w, nullptr, {}, {}, fs::path("wheels") / (wheel + ".shiftbake")});
+        } else {
+          report.warnings.push_back(key + ": missing wheel " + wheel);
+        }
+      }
+    }
+
+#ifdef __ANDROID__
+    constexpr bool kIsMobile = true;
+#else
+    constexpr bool kIsMobile = false;
+#endif
+    const unsigned workers = recommended_bake_threads(std::thread::hardware_concurrency(), kIsMobile, opts.max_threads);
+    emit_log("Baking with " + std::to_string(workers) + " worker thread(s)");
+
+    auto run_pool = [&](const std::vector<BakeJob>& jobs, Stage stage, float frac_lo, float frac_hi,
+                        const std::string& label, std::vector<JobOutcome>& outcomes) -> bool {
+      outcomes.assign(jobs.size(), {});
+      if (jobs.empty()) return true;
+
+      std::atomic<size_t> next{0};
+      std::atomic<size_t> done{0};
+      std::mutex cb_mu;
+
+      auto worker_fn = [&]() {
+        while (true) {
+          if (is_cancelled()) break;
+          const size_t idx = next.fetch_add(1, std::memory_order_relaxed);
+          if (idx >= jobs.size()) break;
+          execute_job(jobs[idx], bake_dir, opts.resume, outcomes[idx]);
+          const size_t finished = done.fetch_add(1, std::memory_order_relaxed) + 1;
+          const float f =
+              frac_lo + (frac_hi - frac_lo) * (static_cast<float>(finished) / static_cast<float>(jobs.size()));
+          std::lock_guard<std::mutex> lk(cb_mu);
+          emit_progress(stage, finished, jobs.size(), f, label, jobs[idx].key);
+        }
+      };
+
+      const unsigned nthreads = std::min<unsigned>(workers, static_cast<unsigned>(jobs.size()));
+      std::vector<std::thread> threads;
+      threads.reserve(nthreads > 0 ? nthreads - 1 : 0);
+      for (unsigned t = 1; t < nthreads; ++t) threads.emplace_back(worker_fn);
+      worker_fn();
+      for (auto& th : threads) th.join();
+
+      return !is_cancelled();
+    };
+
+    // Stage 3: Shared assets, tyres, and wheels (0.14 -> 0.30)
+    emit_progress(Stage::kSharedAndWheels, 0, base_jobs.size(), 0.14f, "Baking shared assets & wheels", "shared");
+    std::vector<JobOutcome> base_outcomes;
+    if (!run_pool(base_jobs, Stage::kSharedAndWheels, 0.14f, 0.30f, "Baking shared assets & wheels", base_outcomes)) {
+      report.cancelled = true;
+      report.error = "bake cancelled";
+      return false;
+    }
+    for (size_t i = 0; i < base_outcomes.size(); ++i) {
+      if (!base_outcomes[i].ok) {
+        if (base_jobs[i].kind == BakeJob::Kind::kShared) {
+          report.error = base_outcomes[i].error;
+          emit_log("ERROR: " + report.error);
+          return false;
+        }
+        report.warnings.push_back(base_outcomes[i].error);
+      } else if (base_jobs[i].kind != BakeJob::Kind::kShared) {
+        ++report.wheels_baked;
+      }
+    }
+
+    // Stage 4: Car models (0.30 -> 0.78)
+    emit_progress(Stage::kCars, 0, car_jobs.size(), 0.30f, "Baking cars", "");
+    std::vector<JobOutcome> car_outcomes;
+    if (!run_pool(car_jobs, Stage::kCars, 0.30f, 0.78f, "Baking cars", car_outcomes)) {
+      report.cancelled = true;
+      report.error = "bake cancelled";
+      return false;
+    }
+    for (const auto& o : car_outcomes) {
+      if (!o.ok) {
+        report.warnings.push_back(o.error);
+      } else if (o.reused) {
+        ++report.cars_reused;
+      } else {
+        ++report.cars_baked;
+      }
+    }
+    if (report.cars_baked + report.cars_reused == 0) {
+      report.error = "no cars were baked successfully";
+      return false;
+    }
+    emit_log("Cars ready: " + std::to_string(report.cars_baked) + " baked, " + std::to_string(report.cars_reused) +
+             " reused");
+  } else {
+    emit_log("Zero-bake direct-from-disc mode: skipping on-device car bake (" +
+             std::to_string(report.cars_total_available) + " cars stream directly from disc)");
   }
-  if (report.cars_baked + report.cars_reused == 0) {
-    report.error = "no cars were baked successfully";
-    return false;
-  }
-  emit_log("Cars ready: " + std::to_string(report.cars_baked) + " baked, " + std::to_string(report.cars_reused) +
-           " reused");
 
   // Stage 5: Colorado World Index (0.78 -> 0.90)
   if (opts.bake_world_index) {
-    emit_progress(Stage::kWorldIndex, 0, 1, 0.80f, "Building Colorado world index", "colorado.index");
+    emit_progress(Stage::kWorldIndex, 0, 1, opts.bake_cars ? 0.80f : 0.25f, "Building Colorado world index",
+                  "colorado.index");
     const fs::path colorado_dir = install.media / "tracks" / "colorado";
     const fs::path index_path = opts.play_dir / "world" / "colorado.index";
     if (fs::is_regular_file(colorado_dir / "bin.zip", ec)) {
@@ -606,7 +632,7 @@ bool run_on_device_bake(const BakeOptions& opts, const ProgressCallback& progres
   }
 
   // Stage 6: Engine sound prep (0.90 -> 0.96)
-  if (opts.bake_sounds) {
+  if (opts.bake_sounds && (!selected_cars.empty() || chosen_rows.count("nis_skylinegtrvspecii_02") > 0)) {
     emit_progress(Stage::kAudioPrep, 0, 1, 0.91f, "Preparing audio", "sound/");
     audio::SoundFiles sf;
     if (sf.open(install, &err)) {
@@ -633,7 +659,7 @@ bool run_on_device_bake(const BakeOptions& opts, const ProgressCallback& progres
     emit_progress(Stage::kAudioPrep, 1, 1, 0.96f, "Audio prepared", "sound/");
   }
 
-  // Stage 7: Write play.txt & bake-state.txt (0.96 -> 1.00)
+  // Stage 7: Write play.txt & optional bake-state.txt (0.96 -> 1.00)
   emit_progress(Stage::kFinalize, 0, 1, 0.97f, "Finalizing play folder", "play.txt");
   if (!write_play_txt(opts.play_dir, opts.game_root, &err)) {
     report.error = "failed writing play.txt: " + err;
@@ -641,26 +667,34 @@ bool run_on_device_bake(const BakeOptions& opts, const ProgressCallback& progres
   }
   report.play_txt_written = true;
 
-  // Count total baked cars on disk (cumulative across Fast Start + Full Roster resumes).
   size_t total_baked_on_disk = 0;
-  for (const auto& e : fs::directory_iterator(bake_dir / "cars", ec)) {
-    if (e.is_regular_file(ec) && e.path().extension() == ".shiftbake") ++total_baked_on_disk;
-  }
+  if (opts.bake_cars) {
+    // Count total baked cars on disk (cumulative across Fast Start + Full Roster resumes).
+    for (const auto& e : fs::directory_iterator(bake_dir / "cars", ec)) {
+      if (e.is_regular_file(ec) && e.path().extension() == ".shiftbake") ++total_baked_on_disk;
+    }
 
-  BakeStateRecord st;
-  st.mode = (opts.mode == BakeMode::kFullRoster) ? "full_roster" : "fast_start";
-  st.baked_cars = total_baked_on_disk;
-  st.total_available_cars = all_available.size();
-  st.has_shared = is_non_empty_file(bake_dir / "shared.shiftbake");
-  st.has_world_index = is_non_empty_file(opts.play_dir / "world" / "colorado.index");
-  st.complete = (total_baked_on_disk >= all_available.size());
-  write_bake_state(bake_dir, st, nullptr);
+    BakeStateRecord st;
+    st.mode = (opts.mode == BakeMode::kFullRoster) ? "full_roster" : "fast_start";
+    st.baked_cars = total_baked_on_disk;
+    st.total_available_cars = all_available.size();
+    st.has_shared = is_non_empty_file(bake_dir / "shared.shiftbake");
+    st.has_world_index = is_non_empty_file(opts.play_dir / "world" / "colorado.index");
+    st.complete = (total_baked_on_disk >= all_available.size());
+    write_bake_state(bake_dir, st, nullptr);
+  }
 
   report.elapsed_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   report.ok = true;
-  emit_progress(Stage::kDone, 1, 1, 1.0f, "Setup complete",
-                std::to_string(total_baked_on_disk) + " car(s) ready");
-  emit_log("On-device bake finished in " + std::to_string(static_cast<int>(report.elapsed_seconds)) + "s");
+  if (opts.bake_cars) {
+    emit_progress(Stage::kDone, 1, 1, 1.0f, "Setup complete",
+                  std::to_string(total_baked_on_disk) + " car(s) ready");
+    emit_log("On-device bake finished in " + std::to_string(static_cast<int>(report.elapsed_seconds)) + "s");
+  } else {
+    emit_progress(Stage::kDone, 1, 1, 1.0f, "Setup complete",
+                  std::to_string(report.cars_total_available) + " car(s) ready (direct from disc)");
+    emit_log("Zero-bake setup finished in " + std::to_string(static_cast<int>(report.elapsed_seconds)) + "s");
+  }
   return true;
 }
 
@@ -705,7 +739,7 @@ LibraryStatus inspect_library(const fs::path& play_dir, const fs::path& state_di
     st.full_roster_complete = rec.complete && st.baked_car_count >= rec.total_available_cars && rec.total_available_cars > 0;
   }
 
-  st.ready_to_play = st.has_play_txt && st.has_shared_bake && st.has_world_index && st.baked_car_count > 0;
+  st.ready_to_play = st.has_play_txt && st.has_game_disc && st.has_world_index;
 
   if (!state_dir.empty()) {
     st.has_v4 = is_non_empty_file(state_dir / "title-update-v4" / "media.zip");
@@ -723,9 +757,14 @@ LibraryStatus inspect_library(const fs::path& play_dir, const fs::path& state_di
   }
 
   if (st.ready_to_play) {
-    st.summary = "Ready to play (" + std::to_string(st.baked_car_count) + " cars baked)";
+    if (st.baked_car_count > 0) {
+      st.summary = "Ready to play (" + std::to_string(st.disc_car_count) + " cars on disc, " +
+                   std::to_string(st.baked_car_count) + " baked)";
+    } else {
+      st.summary = "Ready to play (" + std::to_string(st.disc_car_count) + " cars direct from disc)";
+    }
   } else if (st.has_game_disc) {
-    st.summary = "Game disc extracted (" + std::to_string(st.disc_car_count) + " cars) — ready to bake";
+    st.summary = "Game disc extracted (" + std::to_string(st.disc_car_count) + " cars) — ready to index";
   } else {
     st.summary = "Select your Forza Horizon .iso or extracted folder to begin";
   }

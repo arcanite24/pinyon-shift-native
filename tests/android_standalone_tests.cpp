@@ -664,7 +664,7 @@ void test_baker_state_machine_and_inspect(const fs::path& tmp) {
   const auto custom = setup::baker::select_cars_for_mode(avail, setup::baker::BakeMode::kFastStart, {"LAM_Miura_67"});
   CHECK(custom.size() == 1 && custom[0] == "lam_miura_67");
 
-  // 3. play.txt + bake-state.txt round-trip + inspect_library JSON
+  // 3. Zero-bake readiness (play.txt + game/media + world/colorado.index, ZERO bake/ dir!)
   const fs::path play_dir = tmp / "baker_play";
   const fs::path state_dir = tmp / "baker_state";
   const fs::path game_dir = play_dir / "game";
@@ -680,14 +680,50 @@ void test_baker_state_machine_and_inspect(const fs::path& tmp) {
   setup::xiso::ExtractReport xrep;
   CHECK(setup::xiso::extract_iso(*reader, game_dir, {}, nullptr, nullptr, xrep));
 
-  std::string err;
-  CHECK(setup::baker::write_play_txt(play_dir, game_dir, &err));
+  // Default BakeOptions uses zero-bake direct-from-disc mode (bake_cars == false).
+  setup::baker::BakeOptions zb_opts;
+  CHECK(!zb_opts.bake_cars);
+  zb_opts.game_root = game_dir;
+  zb_opts.state_root = state_dir;
+  zb_opts.play_dir = play_dir;
+  zb_opts.bake_world_index = false;  // synthetic bin.zip is not a real zip
+  zb_opts.bake_sounds = false;
+  setup::baker::BakeReport zb_rep;
+  CHECK(setup::baker::run_on_device_bake(zb_opts, nullptr, nullptr, nullptr, zb_rep));
+  CHECK(zb_rep.ok);
+  CHECK(zb_rep.play_txt_written);
+  CHECK(zb_rep.cars_baked == 0);
+  CHECK(zb_rep.cars_reused == 0);
+  CHECK(!fs::exists(play_dir / "bake"));
   CHECK(read_text(play_dir / "play.txt") == "game game\n");
 
-  // Write synthetic bake outputs + world index + bake state
+  // Without world/colorado.index, not ready yet
+  auto st_no_world = setup::baker::inspect_library(play_dir, state_dir);
+  CHECK(st_no_world.has_game_disc);
+  CHECK(st_no_world.has_play_txt);
+  CHECK(!st_no_world.has_world_index);
+  CHECK(!st_no_world.ready_to_play);
+
+  // With play.txt + game/media + world/colorado.index and ZERO bake/ dir -> ready_to_play == true!
+  write_bytes(play_dir / "world" / "colorado.index", {'s', 'h', 'i', 'f', 't'});
+  auto st_zb = setup::baker::inspect_library(play_dir, state_dir);
+  CHECK(st_zb.has_game_disc);
+  CHECK(st_zb.has_play_txt);
+  CHECK(st_zb.has_world_index);
+  CHECK(!st_zb.has_shared_bake);
+  CHECK(st_zb.baked_car_count == 0);
+  CHECK(!fs::exists(play_dir / "bake"));
+  CHECK(st_zb.ready_to_play);
+
+  const std::string zb_json = setup::baker::library_status_to_json(st_zb);
+  CHECK(zb_json.find("\"ready_to_play\":true") != std::string::npos);
+  CHECK(zb_json.find("\"has_shared_bake\":false") != std::string::npos);
+  CHECK(zb_json.find("\"baked_car_count\":0") != std::string::npos);
+
+  // 4. Optional legacy bake-state.txt round-trip + inspect_library with baked cars
+  std::string err;
   write_bytes(play_dir / "bake" / "shared.shiftbake", {1, 2, 3, 4});
   write_bytes(play_dir / "bake" / "cars" / "nis_skylinegtrvspecii_02.shiftbake", {5, 6, 7, 8});
-  write_bytes(play_dir / "world" / "colorado.index", {'s', 'h', 'i', 'f', 't'});
 
   setup::baker::BakeStateRecord rec;
   rec.mode = "fast_start";
