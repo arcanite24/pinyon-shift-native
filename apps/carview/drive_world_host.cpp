@@ -85,8 +85,9 @@ bool DriveWorldHost::set_staged_world() {
         // are still being drip-fed into the GPU at <= 1.8 ms/frame in windowed mode), never stall
         // on drop_pending_world -> vkWaitForFences. Queue the newest prepared world and hand it
         // over once the prior copy and deferred texture uploads finish.
+        const bool can_defer_world = !app.headless && streamer_async && streamer->gathers() > 1;
         const bool wait_deferred_tex = !app.bench && showroom.deferred_upload_queue_size() > 0;
-        if (streamer_async && streamer->gathers() > 1 && (showroom.has_pending_world() || wait_deferred_tex)) {
+        if (can_defer_world && (showroom.has_pending_world() || wait_deferred_tex)) {
           deferred_prepared_ = std::move(prepared);
           return true;
         }
@@ -481,11 +482,25 @@ bool DriveWorldHost::open_world_and_car() {
             std::vector<uint32_t> pin_records;
             WorldTriangles triangles = scenery(mesh, cx, cz);
             texture_loader.load(colorado, triangles, showroom, pin_records);
+            // Pin newly decoded textures too so evict_world_textures() can never evict a
+            // deferred-uploaded texture before this prepared gather swaps into world_draws_.
+            {
+              std::vector<uint32_t> new_pins;
+              new_pins.reserve(triangles.textures.size());
+              for (const auto& tex : triangles.textures) {
+                if (tex && tex->record != kNoWorldTexture) new_pins.push_back(tex->record);
+              }
+              if (!new_pins.empty()) {
+                showroom.pin_prepare_records(new_pins);
+                pin_records.insert(pin_records.end(), new_pins.begin(), new_pins.end());
+              }
+            }
             std::shared_ptr<const void> pin_guard(
                 reinterpret_cast<const void*>(1),
                 [this, pins = std::move(pin_records)](const void*) { showroom.release_prepare_pins(pins); });
             WorldGeometry geom = build_world(triangles);
-            if (async_mid_drive && !geom.textures.empty()) {
+            const bool defer_textures = async_mid_drive && (!app.headless || app.bench);
+            if (defer_textures && !geom.textures.empty()) {
               for (auto& tex : geom.textures) {
                 if (tex) showroom.queue_deferred_world_texture(std::move(tex));
               }
@@ -588,11 +603,23 @@ bool DriveWorldHost::hot_reload_car_and_world() {
               std::vector<uint32_t> pin_records;
               WorldTriangles triangles = scenery(mesh, cx, cz);
               texture_loader.load(colorado, triangles, showroom, pin_records);
+              {
+                std::vector<uint32_t> new_pins;
+                new_pins.reserve(triangles.textures.size());
+                for (const auto& tex : triangles.textures) {
+                  if (tex && tex->record != kNoWorldTexture) new_pins.push_back(tex->record);
+                }
+                if (!new_pins.empty()) {
+                  showroom.pin_prepare_records(new_pins);
+                  pin_records.insert(pin_records.end(), new_pins.begin(), new_pins.end());
+                }
+              }
               std::shared_ptr<const void> pin_guard(
                   reinterpret_cast<const void*>(1),
                   [this, pins = std::move(pin_records)](const void*) { showroom.release_prepare_pins(pins); });
               WorldGeometry geom = build_world(triangles);
-              if (async_mid_drive && !geom.textures.empty()) {
+              const bool defer_textures = async_mid_drive && (!app.headless || app.bench);
+              if (defer_textures && !geom.textures.empty()) {
                 for (auto& tex : geom.textures) {
                   if (tex) showroom.queue_deferred_world_texture(std::move(tex));
                 }

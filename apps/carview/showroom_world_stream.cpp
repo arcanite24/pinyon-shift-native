@@ -8,6 +8,7 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace carview {
 
@@ -490,6 +491,8 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
   out.triangles = geometry.triangles;
   out.textured = geometry.textured;
   out.textures = std::move(geometry.textures);
+  out.origin_x = origin_x;
+  out.origin_z = origin_z;
   if (geometry.indices.empty()) return true;
   if (arena_on() && geometry.textured) {
     // Extract hardware-instanced tree sprite quads before index relocalization.
@@ -557,6 +560,88 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
                                  sizeof wv - sizeof wv.position);
       }
       d.key = h;
+    }
+    // Extract per-prop-instance index spans off-thread from normal cached CPU RAM
+    // (never map/read back write-combined GPU staging buffers on the main thread).
+    // Only keep smashable-sized spans (<= 1500 triangles and <= 14 m AABB extent) so
+    // giant buildings/landmarks never allocate saved_indices or get accidentally hidden.
+    {
+      constexpr uint32_t kNonPropMask = 2u | 4u | 8u | 32u | 16384u | 32768u | 1048576u;
+      constexpr uint32_t kMaxSmashableSpanIndices = 1500u * 3u;
+      constexpr float kMaxSmashableSpanExtent = 14.0f;
+      const auto* verts = geometry.textured_vertices.data();
+      const auto* idxs = geometry.indices.data();
+      std::unordered_set<uint64_t> seen_prop_keys;
+      for (const auto& d : out.draws) {
+        if (d.index_count < 3) continue;
+        const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+        const bool is_prop_draw =
+            (flags & (128u | 256u | 512u)) != 0u && (flags & kNonPropMask) == 0u && d.decal == 0u;
+        if (!is_prop_draw) continue;
+        if (!seen_prop_keys.insert(d.key).second) continue;
+
+        std::vector<StagedWorld::PropSpan> raw_spans;
+        const uint32_t tri_count = d.index_count / 3;
+        const uint32_t base_idx = d.first_index;
+        int64_t cur_qk = 0;
+        bool have_cur = false;
+        for (uint32_t t = 0; t < tri_count; ++t) {
+          const uint32_t i0 = idxs[size_t(base_idx) + t * 3 + 0];
+          const uint32_t i1 = idxs[size_t(base_idx) + t * 3 + 1];
+          const uint32_t i2 = idxs[size_t(base_idx) + t * 3 + 2];
+          const WorldVertex& v0 = verts[size_t(d.vertex_begin) + i0];
+          const WorldVertex& v1 = verts[size_t(d.vertex_begin) + i1];
+          const WorldVertex& v2 = verts[size_t(d.vertex_begin) + i2];
+          const float gx = float(origin_x) + v0.position[0] + float(v0.centre[0]) * 0.1f;
+          const float gy = v0.position[1] + float(v0.centre[1]) * 0.1f;
+          const float gz = float(origin_z) + v0.position[2] + float(v0.centre[2]) * 0.1f;
+          const int64_t qk = (int64_t(std::lround(gx * 2.0f)) * 73856093ll) ^
+                             (int64_t(std::lround(gy * 2.0f)) * 19349663ll) ^
+                             (int64_t(std::lround(gz * 2.0f)) * 83492791ll);
+          if (!have_cur || qk != cur_qk) {
+            StagedWorld::PropSpan sp;
+            sp.gx = gx;
+            sp.gy = gy;
+            sp.gz = gz;
+            sp.bmin[0] = sp.bmax[0] = float(origin_x) + v0.position[0];
+            sp.bmin[1] = sp.bmax[1] = v0.position[1];
+            sp.bmin[2] = sp.bmax[2] = float(origin_z) + v0.position[2];
+            sp.rel_index_offset = t * 3;
+            sp.index_count = 0;
+            raw_spans.push_back(std::move(sp));
+            cur_qk = qk;
+            have_cur = true;
+          }
+          auto& sp = raw_spans.back();
+          sp.index_count += 3;
+          for (const WorldVertex* vp : {&v0, &v1, &v2}) {
+            const float wx = float(origin_x) + vp->position[0];
+            const float wy = vp->position[1];
+            const float wz = float(origin_z) + vp->position[2];
+            sp.bmin[0] = std::min(sp.bmin[0], wx);
+            sp.bmax[0] = std::max(sp.bmax[0], wx);
+            sp.bmin[1] = std::min(sp.bmin[1], wy);
+            sp.bmax[1] = std::max(sp.bmax[1], wy);
+            sp.bmin[2] = std::min(sp.bmin[2], wz);
+            sp.bmax[2] = std::max(sp.bmax[2], wz);
+          }
+        }
+        std::vector<StagedWorld::PropSpan> kept;
+        kept.reserve(raw_spans.size());
+        for (auto& sp : raw_spans) {
+          const float ex = sp.bmax[0] - sp.bmin[0];
+          const float ey = sp.bmax[1] - sp.bmin[1];
+          const float ez = sp.bmax[2] - sp.bmin[2];
+          if (sp.index_count == 0 || sp.index_count > kMaxSmashableSpanIndices ||
+              ex > kMaxSmashableSpanExtent || ey > kMaxSmashableSpanExtent || ez > kMaxSmashableSpanExtent) {
+            continue;
+          }
+          sp.saved_indices.assign(idxs + size_t(base_idx) + sp.rel_index_offset,
+                                  idxs + size_t(base_idx) + sp.rel_index_offset + sp.index_count);
+          kept.push_back(std::move(sp));
+        }
+        if (!kept.empty()) out.prop_spans.emplace_back(d.key, std::move(kept));
+      }
     }
   }
   Renderer& r = r_;
@@ -710,6 +795,7 @@ void Showroom::release_retired() {
       ++k;
     }
   }
+  if (gpu_world_) gpu_world_->reclaim_retired_slots();
 }
 
 void Showroom::stop_reaper() {
@@ -759,6 +845,13 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
         if (d.resident) gpu_world_->resident().release(d.key, 0);
       }
       world_draws_.clear();
+      world_trees_.clear();
+      active_gpu_table_records_.clear();
+      gpu_table_missing_textures_.clear();
+      if (gpu_world_) {
+        std::string clear_err;
+        (void)gpu_world_->set_table({}, clear_err);
+      }
       arena_vertex_copies.clear();
       arena_index_copies.clear();
       error.clear();
@@ -876,6 +969,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
         new_keys.insert(d.key);
         gpu_world_->resident().mark_valid(d.key);  // the copy is done (the fence above)
       }
+    install_world_prop_spans(p.staged);
     std::unordered_set<uint64_t> old_keys;
     for (const auto& d : world_draws_)
       if (d.resident) old_keys.insert(d.key);
@@ -912,6 +1006,9 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
         if (d.ao_map != kNoWorldTexture) world_lru_.touch(d.ao_map, world_frame_);
         if (d.layer_c != kNoWorldTexture) world_lru_.touch(d.layer_c, world_frame_);
         if (d.spec_map != kNoWorldTexture) world_lru_.touch(d.spec_map, world_frame_);
+      }
+      for (const auto& t : p.staged.trees) {
+        if (t.texture != kNoWorldTexture) world_lru_.touch(t.texture, world_frame_);
       }
     }
     const bool origin_changed = (world_origin_[0] != p.staged.origin_x || world_origin_[1] != p.staged.origin_z);

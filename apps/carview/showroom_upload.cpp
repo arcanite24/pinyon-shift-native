@@ -24,6 +24,9 @@ bool Showroom::upload(std::string& error) {
       if (uint64_t cnt = 0; parse_env_u64("SHIFT_WORLD_TEX_MAX_COUNT", cnt) &&
                             cnt <= std::numeric_limits<size_t>::max())
         max_count = size_t(cnt);
+      if (max_count > 0 && r_.gpu_driven_supported()) {
+        max_count = std::min<size_t>(max_count, WorldGpu::kMaxTextures - 128u);
+      }
       world_lru_.set_budget(max_bytes, max_count);
     }
   }
@@ -826,6 +829,8 @@ void Showroom::pump_deferred_uploads(VkCommandBuffer cmd) {
   const auto budget_t0 = std::chrono::steady_clock::now();
   VkDeviceSize cursor = 0;
   uint32_t uploaded_count = 0;
+  std::vector<uint32_t> uploaded_records;
+  uploaded_records.reserve(kMaxTexturesPerFrame);
   for (;;) {
     if (uploaded_count >= kMaxTexturesPerFrame) break;
     if (upload_budget_ms_ > 0.0 && uploaded_count > 0) {
@@ -898,13 +903,25 @@ void Showroom::pump_deferred_uploads(VkCommandBuffer cmd) {
       notes_.push_back("deferred world texture " + item->texture.name + ": " + why);
     } else {
       world_staging_bytes_.fetch_add(uint64_t(kept), std::memory_order_relaxed);
+      uploaded_records.push_back(item->record);
       ++uploaded_count;
     }
     cursor = write_at;
   }
-  if (uploaded_count > 0 && arena_on() && (gpu_table_white_ > 0 || gpu_table_layer_fallback_ > 0)) {
-    std::string table_err;
-    (void)build_gpu_table(table_err);
+  if (uploaded_count > 0 && arena_on()) {
+    bool needs_table_refresh = (gpu_table_white_ > 0 || gpu_table_layer_fallback_ > 0);
+    if (!needs_table_refresh && !gpu_table_missing_textures_.empty()) {
+      for (uint32_t rec : uploaded_records) {
+        if (gpu_table_missing_textures_.count(rec)) {
+          needs_table_refresh = true;
+          break;
+        }
+      }
+    }
+    if (needs_table_refresh) {
+      std::string table_err;
+      (void)build_gpu_table(table_err);
+    }
   }
 }
 
