@@ -8,6 +8,7 @@
 // stages", "Mix basics", "Rates and timing".
 #pragma once
 
+#include <cmath>
 #include <vector>
 
 #include "audio/engine_sound.h"
@@ -59,15 +60,54 @@ class EnginePlayer {
  private:
   struct Biquad {
     bool enabled = false;
+    bool primed = false;
     double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+    double tb0 = 1, tb1 = 0, tb2 = 0, ta1 = 0, ta2 = 0;
     double z1 = 0, z2 = 0;
     void set_lowpass(double fc, double q, int rate);
     void set_peq(double fc, double bw_oct, double linear_gain, int rate);
-    double tick(double x) {
-      if (!enabled) return x;
+    void set_bypass() {
+      enabled = false;
+      primed = false;
+      b0 = tb0 = 1.0;
+      b1 = b2 = a1 = a2 = 0.0;
+      tb1 = tb2 = ta1 = ta2 = 0.0;
+      z1 = z2 = 0.0;
+    }
+    double tick(double x, double smooth) {
+      if (!std::isfinite(x)) x = 0.0;
+      if (!enabled) {
+        z1 = 0.0;
+        z2 = 0.0;
+        primed = false;
+        return x;
+      }
+      if (!primed) {
+        b0 = tb0;
+        b1 = tb1;
+        b2 = tb2;
+        a1 = ta1;
+        a2 = ta2;
+        primed = true;
+      } else {
+        // Convex pole interpolation inside the Schur-Cohn stability triangle:
+        // guaranteed stable and click-free across abrupt RPM/throttle jumps.
+        b0 += (tb0 - b0) * smooth;
+        b1 += (tb1 - b1) * smooth;
+        b2 += (tb2 - b2) * smooth;
+        a1 += (ta1 - a1) * smooth;
+        a2 += (ta2 - a2) * smooth;
+      }
       const double y = b0 * x + z1;
       z1 = b1 * x - a1 * y + z2;
       z2 = b2 * x - a2 * y;
+      if (!std::isfinite(y) || !std::isfinite(z1) || !std::isfinite(z2) || std::fabs(y) > 1e4) {
+        z1 = 0.0;
+        z2 = 0.0;
+        return 0.0;
+      }
+      if (std::fabs(z1) < 1e-18) z1 = 0.0;
+      if (std::fabs(z2) < 1e-18) z2 = 0.0;
       return y;
     }
   };

@@ -200,10 +200,19 @@ class AudioHost {
   bool last_paused_ = false;
   bool last_menu_ = false;
   bool last_loading_ = false;
+  bool last_on_title_ = false;
+  bool have_on_title_ = false;
   bool last_in_race_ = false;
   bool last_rewinding_ = false;
   int last_countdown_digit_ = -1;
   audio::CarDspMode last_dsp_mode_ = audio::CarDspMode::kOff;
+
+  bool have_acoustics_sent_ = false;
+  std::array<float, 3> last_acoustics_pos_{0.0f, 0.0f, 0.0f};
+  float last_acoustics_heading_ = 0.0f;
+  std::chrono::steady_clock::time_point last_acoustics_tp_{};
+  bool have_tod_sent_ = false;
+  double last_tod_hour_ = -100.0;
 };
 
 }  // namespace carview

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1556,6 +1557,227 @@ void sfx_engine_checks() {
   }
 }
 
+// Simulates a 250 ms main-thread & stream-underrun hitch followed by 2 seconds
+// of full engine + SFX + reverb + biquad DSP audio, asserting zero NaNs, zero
+// clipping (|s| <= 1.0), smooth zero-click fade-in on underrun recovery, and
+// bounded per-sample derivative (zero crackle spikes).
+void hitch_and_underrun_recovery_checks() {
+  constexpr int kRate = 48000;
+  constexpr int kBlock = 480;  // 10 ms
+
+  // Build an engine sound with active resonant LP + PEQ + LoadPEQ biquads.
+  audio::EngineSound sound;
+  sound.audio_rpm_idle = 900.0;
+  sound.audio_rpm_redline = 8000.0;
+  audio::Group g;
+  g.name = "ExhaustL";
+  g.loops = {loop(500, 1500, 3500), loop(2500, 4500, 6500), loop(5500, 7200, 32000)};
+  g.lowpass = true;
+  g.lowpass_cutoff.present = true;
+  g.lowpass_cutoff.rpm = 1.0;
+  g.lowpass_cutoff.x = {0.0, 0.5, 1.0};
+  g.lowpass_cutoff.y = {450.0, 2200.0, 7500.0};
+  g.lowpass_resonance.present = true;
+  g.lowpass_resonance.throttle = 1.0;
+  g.lowpass_resonance.x = {0.0, 0.5, 1.0};
+  g.lowpass_resonance.y = {0.8, 3.0, 6.0};
+  g.peq.active = true;
+  g.peq.gain.present = true;
+  g.peq.gain.rpm = 1.0;
+  g.peq.gain.x = {0.0, 0.5, 1.0};
+  g.peq.gain.y = {1.2, 1.8, 2.2};
+  g.peq.center_freq.present = true;
+  g.peq.center_freq.rpm = 1.0;
+  g.peq.center_freq.x = {0.0, 0.5, 1.0};
+  g.peq.center_freq.y = {220.0, 800.0, 2400.0};
+  g.peq.bandwidth.present = true;
+  g.peq.bandwidth.x = {0.0, 0.5, 1.0};
+  g.peq.bandwidth.y = {0.8, 1.0, 1.2};
+  sound.groups.push_back(g);
+
+  audio::PcmSample loop_pcm;
+  loop_pcm.rate = kRate;
+  loop_pcm.data.resize(4800);
+  for (size_t i = 0; i < loop_pcm.data.size(); ++i) {
+    const double ph = 2.0 * 3.14159265358979 * 110.0 * double(i) / double(kRate);
+    loop_pcm.data[i] = float(0.45 * std::sin(ph) + 0.25 * std::sin(2.0 * ph) + 0.12 * std::sin(3.0 * ph));
+  }
+
+  // Part A: Deterministic offline 250 ms hitch (abrupt RPM/throttle/NaN jump)
+  // followed by 2 full seconds (96,000 frames) of audio rendering.
+  {
+    audio::AudioEngine eng(kRate);
+    auto ep = std::make_unique<audio::EnginePlayer>(
+        sound, std::vector<std::vector<const audio::PcmSample*>>{{&loop_pcm, &loop_pcm, &loop_pcm}}, kRate, 900.0,
+        8000.0);
+    ep->master = 0.7;
+    eng.set_engine_player(std::move(ep));
+    auto sfx = std::make_unique<audio::SfxEngine>(kRate);
+    sfx->populate_procedural_fallbacks();
+    eng.set_sfx_engine(std::move(sfx));
+    audio::AcousticsSample ac{};
+    ac.reverb.near_wet = 0.4f;
+    ac.reverb.decay_time_s = 1.8f;
+    eng.set_acoustics_sample(ac);
+
+    // Prime steady-state cruise audio (200 ms).
+    audio::EnginePlayer::Update u{2600.0, 0.35, 0.3, 0.0, audio::View::kFollow};
+    audio::VehicleAudioState vs{};
+    vs.speed_mph = 70.0f;
+    vs.rpm = 2600.0f;
+    vs.idle_rpm = 900.0f;
+    vs.redline_rpm = 8000.0f;
+    vs.throttle = 0.35f;
+    vs.forced_induction = 1;
+    vs.turbo_norm_rpm = 0.5f;
+    for (auto& w : vs.wheels) {
+      w.load = 1.0f;
+      w.slip_combined = 0.1f;
+    }
+    eng.set_engine_input(u);
+    eng.set_vehicle_state(vs);
+    std::vector<float> warmup(size_t(kRate / 5) * 2, 0.0f);
+    eng.render_offline(warmup.data(), kRate / 5);
+
+    // Simulate a 250 ms hitch with corrupt/NaN physics transient followed by
+    // abrupt full-throttle redline + high-slip recovery.
+    audio::EnginePlayer::Update bad_u{std::numeric_limits<double>::quiet_NaN(),
+                                      std::numeric_limits<double>::infinity(), -5.0, 99.0, audio::View::kCockpit};
+    audio::VehicleAudioState bad_vs = vs;
+    bad_vs.speed_mph = std::numeric_limits<float>::quiet_NaN();
+    bad_vs.rpm = std::numeric_limits<float>::infinity();
+    bad_vs.wheels[0].slip_combined = std::numeric_limits<float>::quiet_NaN();
+    eng.set_engine_input(bad_u);
+    eng.set_vehicle_state(bad_vs);
+    std::vector<float> hitch_blk(size_t(kBlock) * 2, 0.0f);
+    eng.render_offline(hitch_blk.data(), kBlock);
+
+    // Immediately snap to post-hitch aggressive driving and render 2 full seconds.
+    u = {7400.0, 1.0, 0.95, 0.0, audio::View::kFollow};
+    vs.speed_mph = 145.0f;
+    vs.rpm = 7400.0f;
+    vs.throttle = 1.0f;
+    vs.turbo_norm_rpm = 1.0f;
+    vs.wheels[2].slip_combined = 0.85f;
+    vs.wheels[3].slip_combined = 0.85f;
+    eng.set_engine_input(u);
+    eng.set_vehicle_state(vs);
+
+    constexpr int kPostFrames = kRate * 2;  // 2.0 seconds = 96,000 stereo frames
+    std::vector<float> post(size_t(kPostFrames) * 2, 0.0f);
+    for (int off = 0; off < kPostFrames; off += kBlock) {
+      if (off == kRate / 2) {
+        u = {3800.0, 0.0, 0.0, -0.7, audio::View::kCockpit};
+        vs.rpm = 3800.0f;
+        vs.throttle = 0.0f;
+        vs.backfire_level = 2;
+        eng.set_engine_input(u);
+        eng.set_vehicle_state(vs);
+      }
+      eng.render_offline(post.data() + size_t(off) * 2, kBlock);
+    }
+
+    int non_finite = 0;
+    int clipped = 0;
+    float max_abs = 0.0f;
+    float max_deriv = 0.0f;
+    double energy = 0.0;
+    for (float s : hitch_blk) {
+      if (!std::isfinite(s)) ++non_finite;
+      if (std::fabs(s) > 1.0001f) ++clipped;
+    }
+    for (int i = 0; i < kPostFrames; ++i) {
+      for (int ch = 0; ch < 2; ++ch) {
+        const float s = post[size_t(i) * 2 + size_t(ch)];
+        if (!std::isfinite(s)) ++non_finite;
+        const float a = std::fabs(s);
+        if (a > 1.0001f) ++clipped;
+        max_abs = std::max(max_abs, a);
+        energy += double(s) * double(s);
+        if (i > 0) {
+          const float prev = post[size_t(i - 1) * 2 + size_t(ch)];
+          max_deriv = std::max(max_deriv, std::fabs(s - prev));
+        }
+      }
+    }
+    std::printf("hitch recovery (offline 2s): non_finite=%d clipped=%d max_abs=%.4f max_deriv=%.4f rms=%.4f\n",
+                non_finite, clipped, max_abs, max_deriv, std::sqrt(energy / double(kPostFrames * 2)));
+    CHECK(non_finite == 0);
+    CHECK(clipped == 0);
+    CHECK(max_abs <= 1.0001f);
+    CHECK(max_deriv < 0.45f);
+    CHECK(std::sqrt(energy / double(kPostFrames * 2)) > 0.01);
+  }
+
+  // Part B: Real-time audio thread with a simulated 250 ms stream underrun hitch
+  // verifying smooth zero-click fade-in recovery, bounded catch-up, and clean output.
+  {
+    audio::AudioEngine eng(kRate);
+    auto ep = std::make_unique<audio::EnginePlayer>(
+        sound, std::vector<std::vector<const audio::PcmSample*>>{{&loop_pcm, &loop_pcm, &loop_pcm}}, kRate, 900.0,
+        8000.0);
+    ep->master = 0.7;
+    eng.set_engine_player(std::move(ep));
+    eng.set_engine_input({4200.0, 0.7, 0.6, 0.0, audio::View::kFollow});
+
+    std::atomic<int> virtual_queued{0};
+    std::atomic<bool> inject_underrun{false};
+    std::atomic<bool> saw_underrun_recovery{false};
+    std::atomic<float> recovery_first_sample{99.0f};
+    std::atomic<int> bad_samples{0};
+    std::atomic<int> clip_samples{0};
+    std::atomic<int> total_blocks{0};
+
+    audio::AudioEngine::Sink sink;
+    sink.target_buffer_frames = int(0.08 * kRate);  // 80 ms
+    sink.block_frames = kBlock;
+    sink.queued_frames = [&]() -> int {
+      if (inject_underrun.exchange(false, std::memory_order_acq_rel)) {
+        virtual_queued.store(0, std::memory_order_release);
+        saw_underrun_recovery.store(true, std::memory_order_release);
+        return 0;
+      }
+      return virtual_queued.load(std::memory_order_acquire);
+    };
+    sink.write = [&](const float* stereo, int frames) {
+      if (saw_underrun_recovery.exchange(false, std::memory_order_acq_rel) && frames > 0) {
+        recovery_first_sample.store(std::max(std::fabs(stereo[0]), std::fabs(stereo[1])), std::memory_order_release);
+      }
+      for (int i = 0; i < frames * 2; ++i) {
+        if (!std::isfinite(stereo[i])) bad_samples.fetch_add(1, std::memory_order_relaxed);
+        else if (std::fabs(stereo[i]) > 1.0001f) clip_samples.fetch_add(1, std::memory_order_relaxed);
+      }
+      virtual_queued.fetch_add(frames, std::memory_order_release);
+      total_blocks.fetch_add(1, std::memory_order_relaxed);
+    };
+
+    eng.start(std::move(sink));
+    const auto t_fill = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (total_blocks.load(std::memory_order_acquire) < 8 && std::chrono::steady_clock::now() < t_fill) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const int before_underrun = total_blocks.load(std::memory_order_acquire);
+    // Simulate a 250 ms hitch draining the hardware buffer completely to 0.
+    inject_underrun.store(true, std::memory_order_release);
+    const auto t_rec = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (total_blocks.load(std::memory_order_acquire) < before_underrun + 4 &&
+           std::chrono::steady_clock::now() < t_rec) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const auto tel = eng.telemetry();
+    eng.stop();
+
+    std::printf("hitch recovery (rt underrun): blocks=%d underruns=%llu first_rec=%.6f bad=%d clip=%d\n",
+                total_blocks.load(), (unsigned long long)tel.underruns, recovery_first_sample.load(),
+                bad_samples.load(), clip_samples.load());
+    CHECK(bad_samples.load() == 0);
+    CHECK(clip_samples.load() == 0);
+    CHECK(tel.underruns >= 1);
+    // Smooth half-cosine fade-in starts at exact 0.0 on the first recovered sample (zero pop).
+    CHECK(recovery_first_sample.load() < 1e-4f);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1571,6 +1793,7 @@ int main() {
   sfx_engine_checks();
   user_music_checks();
   audio_thread_checks();
+  hitch_and_underrun_recovery_checks();
   r34_checks();
   std::printf("audio_tests: %d failures\n", failures);
   return failures ? 1 : 0;

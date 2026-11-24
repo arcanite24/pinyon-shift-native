@@ -17,7 +17,34 @@
 #include "settings.h"
 #include "world_view.h"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
+#endif
+
 namespace carview {
+namespace {
+
+inline void lower_stream_worker_priority() {
+#ifdef _WIN32
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#else
+  SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_LOW);
+#endif
+}
+
+}  // namespace
 
 ShowroomOptions DriveWorldHost::build_car_options() {
       ShowroomOptions opts;
@@ -53,10 +80,12 @@ bool DriveWorldHost::set_staged_world() {
         }
         follower.set_points(std::move(prepared->road));
         showroom.set_world_glows(std::move(prepared->glows));
-        // If an async GPU world upload is still in flight, never call begin_world() yet
-        // (which would stall on drop_pending_world -> vkWaitForFences). Queue the newest
-        // prepared world and hand it over on the first frame after the previous copy finishes.
-        if (streamer_async && streamer->gathers() > 1 && showroom.has_pending_world()) {
+        // If an async GPU world upload is still in flight (or deferred textures for this ring
+        // are still being drip-fed into the GPU at <= 1.8 ms/frame in windowed mode), never stall
+        // on drop_pending_world -> vkWaitForFences. Queue the newest prepared world and hand it
+        // over once the prior copy and deferred texture uploads finish.
+        const bool wait_deferred_tex = !app.bench && showroom.deferred_upload_queue_size() > 0;
+        if (streamer_async && streamer->gathers() > 1 && (showroom.has_pending_world() || wait_deferred_tex)) {
           deferred_prepared_ = std::move(prepared);
           return true;
         }
@@ -74,7 +103,7 @@ bool DriveWorldHost::set_staged_world() {
 }
 
 bool DriveWorldHost::pump_deferred_world() {
-  if (!deferred_prepared_ || showroom.has_pending_world()) return true;
+  if (!deferred_prepared_ || showroom.has_pending_world() || showroom.deferred_upload_queue_size() > 0) return true;
   auto prepared = std::move(deferred_prepared_);
   if (!prepared || !prepared->staged) return true;
   return showroom.begin_world(std::move(*prepared->staged), app.error);
@@ -432,8 +461,11 @@ bool DriveWorldHost::open_world_and_car() {
           // there too; headless runs stay synchronous so they repeat.
           streamer->set_async(streamer_async);
           // The worker builds the scenery's draw data and stages it in
-          // host-visible buffers; the swap only copies them on the GPU.
+          // host-visible buffers; mid-drive textures stream through the
+          // ring-buffered <= 1.8 ms/frame uploader so 200 m boundaries never spike.
           streamer->set_prepare([this](const world::Mesh& mesh, double cx, double cz) {
+            const bool async_mid_drive = streamer_async && streamer && streamer->gathers() >= 1;
+            if (async_mid_drive) lower_stream_worker_priority();
             auto staged = std::make_shared<Showroom::StagedWorld>();
             std::string e;
             std::vector<uint32_t> pin_records;
@@ -442,7 +474,14 @@ bool DriveWorldHost::open_world_and_car() {
             std::shared_ptr<const void> pin_guard(
                 reinterpret_cast<const void*>(1),
                 [this, pins = std::move(pin_records)](const void*) { showroom.release_prepare_pins(pins); });
-            if (!showroom.stage_world(build_world(triangles), *staged, e, cx, cz)) staged.reset();
+            WorldGeometry geom = build_world(triangles);
+            if (async_mid_drive && !geom.textures.empty()) {
+              for (auto& tex : geom.textures) {
+                if (tex) showroom.queue_deferred_world_texture(std::move(tex));
+              }
+              geom.textures.clear();
+            }
+            if (!showroom.stage_world(std::move(geom), *staged, e, cx, cz)) staged.reset();
             if (staged) {
               staged->origin_x = cx;
               staged->origin_z = cz;
@@ -532,6 +571,8 @@ bool DriveWorldHost::hot_reload_car_and_world() {
                                                          app.render_ground ? nullptr : &collision);
             streamer->set_async(streamer_async);
             streamer->set_prepare([this](const world::Mesh& mesh, double cx, double cz) {
+              const bool async_mid_drive = streamer_async && streamer && streamer->gathers() >= 1;
+              if (async_mid_drive) lower_stream_worker_priority();
               auto staged = std::make_shared<Showroom::StagedWorld>();
               std::string e;
               std::vector<uint32_t> pin_records;
@@ -540,7 +581,14 @@ bool DriveWorldHost::hot_reload_car_and_world() {
               std::shared_ptr<const void> pin_guard(
                   reinterpret_cast<const void*>(1),
                   [this, pins = std::move(pin_records)](const void*) { showroom.release_prepare_pins(pins); });
-              if (!showroom.stage_world(build_world(triangles), *staged, e, cx, cz)) staged.reset();
+              WorldGeometry geom = build_world(triangles);
+              if (async_mid_drive && !geom.textures.empty()) {
+                for (auto& tex : geom.textures) {
+                  if (tex) showroom.queue_deferred_world_texture(std::move(tex));
+                }
+                geom.textures.clear();
+              }
+              if (!showroom.stage_world(std::move(geom), *staged, e, cx, cz)) staged.reset();
               if (staged) {
                 staged->origin_x = cx;
                 staged->origin_z = cz;

@@ -1,6 +1,7 @@
 #include "audio_host.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -636,7 +637,11 @@ void AudioHost::clear_codriver() {
 }
 
 void AudioHost::radio_set_time_of_day(double hour) {
-  if (radio_) engine_.radio_set_time_of_day(hour);
+  if (!radio_ || !std::isfinite(hour)) return;
+  if (have_tod_sent_ && std::fabs(hour - last_tod_hour_) < 0.05) return;
+  have_tod_sent_ = true;
+  last_tod_hour_ = hour;
+  engine_.radio_set_time_of_day(hour);
 }
 
 void AudioHost::radio_trigger_special(std::string_view gameplay_event) {
@@ -680,6 +685,23 @@ bool AudioHost::radio_select_station_by_name(std::string_view substr) {
 }
 
 void AudioHost::update_world_acoustics(float x, float y, float z, float heading_rad) {
+  if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(heading_rad)) return;
+  const auto now = std::chrono::steady_clock::now();
+  if (have_acoustics_sent_) {
+    const float dx = x - last_acoustics_pos_[0];
+    const float dy = y - last_acoustics_pos_[1];
+    const float dz = z - last_acoustics_pos_[2];
+    const float d2 = dx * dx + dy * dy + dz * dz;
+    const float dh = std::fabs(heading_rad - last_acoustics_heading_);
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_acoustics_tp_).count();
+    // Avoid 60-240 Hz SPSC command spam and per-frame emitter string allocations.
+    if (d2 < 0.25f && dh < 0.02f && elapsed_ms < 50) return;
+    if (elapsed_ms < 25 && d2 < 25.0f && dh < 0.15f) return;
+  }
+  have_acoustics_sent_ = true;
+  last_acoustics_pos_ = {x, y, z};
+  last_acoustics_heading_ = heading_rad;
+  last_acoustics_tp_ = now;
   if (radio_) engine_.set_listener_pose({x, y, z}, heading_rad);
   if (has_acoustics_) engine_.set_acoustics_sample(acoustics_.evaluate(x, y, z));
 }
@@ -712,12 +734,16 @@ void AudioHost::start_device() {
   }
   SDL_ResumeAudioStreamDevice(stream_);
   audio::AudioEngine::Sink sink;
-  sink.target_buffer_frames = int(0.06 * kAudioRate);  // 60 ms ahead
+  sink.target_buffer_frames = int(0.10 * kAudioRate);  // 100 ms ahead for hitch-immune playback
   sink.block_frames = 480;                             // 10 ms render blocks
   SDL_AudioStream* s = stream_;
-  sink.queued_frames = [s]() { return SDL_GetAudioStreamQueued(s) / int(2 * sizeof(float)); };
+  sink.queued_frames = [s]() {
+    const int bytes = SDL_GetAudioStreamQueued(s);
+    if (bytes < 0) return -1;
+    return bytes / int(2 * sizeof(float));
+  };
   sink.write = [s](const float* stereo, int frames) {
-    SDL_PutAudioStreamData(s, stereo, frames * 2 * int(sizeof(float)));
+    if (frames > 0) SDL_PutAudioStreamData(s, stereo, frames * 2 * int(sizeof(float)));
   };
   engine_.start(std::move(sink));
 }
@@ -749,8 +775,17 @@ void AudioHost::stop_device() {
 
 void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, bool menu_open, bool on_title,
                              bool loading) {
-  engine_.set_engine_input(u);
-  engine_.set_snapshot(snap_title_, on_title);
+  audio::EnginePlayer::Update clean_u = u;
+  if (!std::isfinite(clean_u.rpm)) clean_u.rpm = 0.0;
+  if (!std::isfinite(clean_u.throttle)) clean_u.throttle = 0.0;
+  if (!std::isfinite(clean_u.pos_torque)) clean_u.pos_torque = 0.0;
+  if (!std::isfinite(clean_u.neg_torque)) clean_u.neg_torque = 0.0;
+  engine_.set_engine_input(clean_u);
+  if (!have_on_title_ || on_title != last_on_title_) {
+    have_on_title_ = true;
+    last_on_title_ = on_title;
+    engine_.set_snapshot(snap_title_, on_title);
+  }
 
   // Hot-reload radio_stations.json and drain async YouTube playlist resolutions (~1 Hz).
   if (runtime_radio_configured_) {

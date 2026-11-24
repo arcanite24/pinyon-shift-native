@@ -5,7 +5,103 @@
 #include <cmath>
 #include <cstring>
 
+#if defined(__SSE__) || defined(_M_X64) || defined(_M_IX86)
+#include <xmmintrin.h>
+#if defined(__SSE3__) || defined(_M_X64) || defined(_MSC_VER)
+#include <pmmintrin.h>
+#endif
+#endif
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace audio {
+namespace {
+
+inline float safe_f(float v, float fallback = 0.0f) { return std::isfinite(v) ? v : fallback; }
+inline float safe_clamp_f(float v, float lo, float hi, float fallback = 0.0f) {
+  return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback;
+}
+inline double safe_clamp_d(double v, double lo, double hi, double fallback = 0.0) {
+  return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback;
+}
+
+void sanitize_engine_update(EnginePlayer::Update& u) {
+  u.rpm = safe_clamp_d(u.rpm, 0.0, 32000.0, 0.0);
+  u.throttle = safe_clamp_d(u.throttle, 0.0, 1.0, 0.0);
+  u.pos_torque = safe_clamp_d(u.pos_torque, 0.0, 1.0, 0.0);
+  u.neg_torque = safe_clamp_d(u.neg_torque, -1.0, 1.0, 0.0);
+}
+
+void sanitize_vec3(Vec3f& v, float limit = 20000.0f) {
+  v.x = safe_clamp_f(v.x, -limit, limit, 0.0f);
+  v.y = safe_clamp_f(v.y, -limit, limit, 0.0f);
+  v.z = safe_clamp_f(v.z, -limit, limit, 0.0f);
+}
+
+void sanitize_vehicle_state(VehicleAudioState& st) {
+  st.speed_mph = safe_clamp_f(st.speed_mph, 0.0f, 400.0f, 0.0f);
+  st.top_speed_mph = safe_clamp_f(st.top_speed_mph, 40.0f, 400.0f, 140.0f);
+  st.rpm = safe_clamp_f(st.rpm, 0.0f, 32000.0f, 800.0f);
+  st.idle_rpm = safe_clamp_f(st.idle_rpm, 100.0f, 5000.0f, 800.0f);
+  st.redline_rpm = safe_clamp_f(st.redline_rpm, st.idle_rpm + 500.0f, 32000.0f, 7500.0f);
+  st.throttle = safe_clamp_f(st.throttle, 0.0f, 1.0f, 0.0f);
+  st.clutch_pos = safe_clamp_f(st.clutch_pos, 0.0f, 1.0f, 0.0f);
+  st.turbo_psi = safe_clamp_f(st.turbo_psi, -15.0f, 60.0f, 0.0f);
+  st.turbo_norm_rpm = safe_clamp_f(st.turbo_norm_rpm, 0.0f, 1.5f, 0.0f);
+  st.supercharger_norm_rpm = safe_clamp_f(st.supercharger_norm_rpm, 0.0f, 1.5f, 0.0f);
+  st.scrape_intensity = safe_clamp_f(st.scrape_intensity, 0.0f, 1.0f, 0.0f);
+  st.reflection_proximity = safe_clamp_f(st.reflection_proximity, 0.0f, 1.0f, 0.0f);
+  st.active_aero_deploy = safe_clamp_f(st.active_aero_deploy, 0.0f, 1.0f, 0.0f);
+  for (auto& w : st.wheels) {
+    w.slip_combined = safe_clamp_f(w.slip_combined, 0.0f, 4.0f, 0.0f);
+    w.wheel_rpm = safe_clamp_f(w.wheel_rpm, -10000.0f, 10000.0f, 0.0f);
+    w.load = safe_clamp_f(w.load, 0.0f, 4.0f, 0.0f);
+    w.bottom_out_force = safe_clamp_f(w.bottom_out_force, 0.0f, 10.0f, 0.0f);
+  }
+  sanitize_vec3(st.listener_pos, 20000.0f);
+  sanitize_vec3(st.listener_vel, 300.0f);
+  sanitize_vec3(st.listener_right, 2.0f);
+  for (auto& oc : st.other_cars) {
+    if (!oc.active) continue;
+    sanitize_vec3(oc.pos, 20000.0f);
+    sanitize_vec3(oc.vel, 300.0f);
+    oc.rpm = safe_clamp_f(oc.rpm, 0.0f, 32000.0f, 1000.0f);
+    oc.speed_mph = safe_clamp_f(oc.speed_mph, 0.0f, 400.0f, 0.0f);
+  }
+  if (st.showcase.active) {
+    sanitize_vec3(st.showcase.pos, 20000.0f);
+    sanitize_vec3(st.showcase.vel, 400.0f);
+    st.showcase.speed_mps = safe_clamp_f(st.showcase.speed_mps, 0.0f, 400.0f, 0.0f);
+    st.showcase.bank = safe_clamp_f(st.showcase.bank, -3.15f, 3.15f, 0.0f);
+    st.showcase.pitch = safe_clamp_f(st.showcase.pitch, -1.58f, 1.58f, 0.0f);
+  }
+}
+
+void enable_audio_thread_rt_mode() {
+#if defined(__SSE__) || defined(_M_X64) || defined(_M_IX86)
+  _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+#if defined(_MM_SET_DENORMALS_ZERO_MODE)
+  _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+#endif
+#endif
+#ifdef _WIN32
+  // Keep audio synthesis ahead of background world texture/mesh decoding bursts
+  // so 200 m streaming rings cannot starve WASAPI and trigger crackling underruns.
+  if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+  }
+#endif
+}
+
+}  // namespace
 
 AudioEngine::AudioEngine(int rate) : rate_(std::max(8000, rate)), ambience_bed_(std::max(8000, rate)) {
   mixer_.prepare(rate_);
@@ -40,6 +136,10 @@ void AudioEngine::start(Sink sink) {
   sink_ = std::move(sink);
   sink_.block_frames = std::clamp(sink_.block_frames, 64, 4096);
   sink_.target_buffer_frames = std::max(sink_.block_frames, sink_.target_buffer_frames);
+  recovery_fade_pos_ = 0;
+  recovery_fade_len_ = 0;
+  adaptive_extra_frames_ = 0;
+  clean_blocks_since_underrun_ = 0;
   stop_.store(false, std::memory_order_release);
   running_.store(true, std::memory_order_release);
   thread_ = std::thread([this] { thread_main(); });
@@ -726,12 +826,48 @@ void AudioEngine::drain_commands() {
   }
 }
 
+void AudioEngine::sanitize_output(float* out, int frames) {
+  if (!out || frames <= 0) return;
+  bool saw_non_finite = false;
+  for (int i = 0; i < frames; ++i) {
+    float env = 1.0f;
+    if (recovery_fade_pos_ < recovery_fade_len_) {
+      // Smooth half-cosine fade-in after an underrun so recovered audio has zero click/pop.
+      const float t = float(recovery_fade_pos_) / float(recovery_fade_len_);
+      env = 0.5f - 0.5f * std::cos(3.14159265f * t);
+      ++recovery_fade_pos_;
+    }
+    for (int ch = 0; ch < 2; ++ch) {
+      float s = out[2 * size_t(i) + size_t(ch)];
+      if (!std::isfinite(s)) {
+        s = 0.0f;
+        saw_non_finite = true;
+      } else {
+        if (std::fabs(s) < 1e-20f) s = 0.0f;
+        s = std::clamp(soft_limit(s * env), -1.0f, 1.0f);
+      }
+      out[2 * size_t(i) + size_t(ch)] = s;
+    }
+  }
+  if (saw_non_finite) {
+    // Reset stateful filters/reverb/RMS stage so a bad upstream sample can never poison future blocks.
+    reverb_.reset();
+    rms_stage_.prepare(rate_);
+    music_hp_prev_in_[0] = music_hp_prev_in_[1] = 0.0f;
+    music_hp_prev_out_[0] = music_hp_prev_out_[1] = 0.0f;
+    for (auto& eq : car_eqs_) eq.prepare(rate_);
+  }
+}
+
 void AudioEngine::render_block(float* out, int frames) {
   if (frames <= 0) return;
   const auto t0 = std::chrono::steady_clock::now();
 
   VehicleAudioState vst{};
-  if (veh_state_in_.read(vst)) last_veh_state_ = vst;
+  if (veh_state_in_.read(vst)) {
+    sanitize_vehicle_state(vst);
+    last_veh_state_ = vst;
+  }
   AcousticsSample ac{};
   if (acoustics_in_.read(ac)) {
     last_acoustics_ = ac;
@@ -746,7 +882,8 @@ void AudioEngine::render_block(float* out, int frames) {
     void* ctx = fmv_ctx_.load(std::memory_order_acquire);
     const int got = fn(ctx, out, frames);
     const float g = mixer_.muted() ? 0.0f : mixer_.master();
-    for (int i = 0; i < got * 2; ++i) out[i] = soft_limit(out[i] * g);
+    for (int i = 0; i < got * 2; ++i) out[i] *= g;
+    sanitize_output(out, frames);
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     publish_telemetry(ms, 1000.0 * double(frames) / double(rate_));
     return;
@@ -758,6 +895,7 @@ void AudioEngine::render_block(float* out, int frames) {
 
   EnginePlayer::Update u{};
   if (engine_in_.read(u)) {
+    sanitize_engine_update(u);
     last_engine_in_ = u;
     have_engine_in_ = true;
     if (engine_) engine_->set(last_engine_in_);
@@ -805,8 +943,9 @@ void AudioEngine::render_block(float* out, int frames) {
           music_hp_mix_ = target_mix > music_hp_mix_ ? std::min(target_mix, music_hp_mix_ + mix_step)
                                                      : std::max(target_mix, music_hp_mix_ - mix_step);
           for (int ch = 0; ch < 2; ++ch) {
-            const float x = mbuf[2 * size_t(i) + size_t(ch)];
-            const float y = alpha * (music_hp_prev_out_[ch] + x - music_hp_prev_in_[ch]);
+            const float x = safe_f(mbuf[2 * size_t(i) + size_t(ch)], 0.0f);
+            float y = alpha * (music_hp_prev_out_[ch] + x - music_hp_prev_in_[ch]);
+            if (!std::isfinite(y) || std::fabs(y) < 1e-20f) y = 0.0f;
             music_hp_prev_in_[ch] = x;
             music_hp_prev_out_[ch] = y;
             mbuf[2 * size_t(i) + size_t(ch)] = x + (y - x) * music_hp_mix_;
@@ -971,13 +1110,14 @@ void AudioEngine::render_block(float* out, int frames) {
       out[2 * i + 1] *= g;
     }
     rms_stage_.process(out, frames, 2);
-    const double dt = double(frames) / double(rate_);
+    const double dt = std::min(double(frames) / double(rate_), 0.05);
     matrix_.update_dynamics(dt, last_veh_state_.speed_mph, last_veh_state_.top_speed_mph);
     matrix_.advance(dt);
     mixer_.snapshots().advance(dt);
   } else {
     mixer_.mix(buses, frames, out);
   }
+  sanitize_output(out, frames);
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   const double budget_ms = 1000.0 * double(frames) / double(rate_);
   publish_telemetry(ms, budget_ms);
@@ -1034,6 +1174,7 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   t.p95_block_ms = p95_ms;
   t.worst_block_ms = worst_block_ms_;
   t.stalls = stalls_;
+  t.underruns = underruns_;
   t.backfire_count = sfx_ ? sfx_->backfire_count() : 0u;
   t.satnav_playing = satnav_ && satnav_->playing();
   t.vo_playing = (vo_ && vo_->playing()) || (codriver_ && codriver_->playing());
@@ -1051,18 +1192,83 @@ void AudioEngine::render_offline(float* out, int frames) {
 }
 
 void AudioEngine::thread_main() {
+  enable_audio_thread_rt_mode();
+#ifdef _WIN32
+  // High-resolution waitable timer avoids Windows' default 15.6 ms sleep granularity,
+  // which otherwise lets the audio thread oversleep past a 40-60 ms stream buffer.
+  HANDLE hr_timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  auto sleep_ms = [hr_timer](int ms) {
+    if (hr_timer) {
+      LARGE_INTEGER due{};
+      due.QuadPart = -int64_t(ms) * 10000LL;
+      if (SetWaitableTimer(hr_timer, &due, 0, nullptr, nullptr, FALSE)) {
+        WaitForSingleObject(hr_timer, INFINITE);
+        return;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  };
+#else
+  auto sleep_ms = [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
+#endif
+
+  bool stream_started = false;
+  const int max_adaptive_extra = std::max(sink_.block_frames * 2, rate_ / 10);  // up to +100 ms headroom
+  const int fade_samples = std::max(64, int(0.006 * double(rate_)));            // 6 ms click-free recovery fade
+
   while (!stop_.load(std::memory_order_acquire)) {
     int queued = sink_.queued_frames ? sink_.queued_frames() : 0;
+    if (queued < 0) {
+      // Stream error or device disconnect: back off cleanly rather than busy-spinning.
+      sleep_ms(5);
+      continue;
+    }
+
+    if (stream_started && queued == 0) {
+      // Hardware buffer drained during a severe CPU/OS stall: smoothly fade in the
+      // recovered audio and temporarily widen buffer headroom to break any
+      // post-stutter underrun oscillation loop.
+      ++underruns_;
+      recovery_fade_pos_ = 0;
+      recovery_fade_len_ = fade_samples;
+      adaptive_extra_frames_ = std::min(max_adaptive_extra, adaptive_extra_frames_ + rate_ / 25);
+      clean_blocks_since_underrun_ = 0;
+    }
+
+    const int target = sink_.target_buffer_frames + adaptive_extra_frames_;
+    // Bound catch-up per wake-up so a stalled sink clock can never trigger an unbounded burst.
+    const int max_blocks_per_wake = std::max(2, (target + sink_.block_frames - 1) / sink_.block_frames + 2);
+    int blocks_written = 0;
     bool did_work = false;
-    while (!stop_.load(std::memory_order_acquire) && queued < sink_.target_buffer_frames) {
+    while (!stop_.load(std::memory_order_acquire) && queued < target && blocks_written < max_blocks_per_wake) {
       const int n = sink_.block_frames;
       render_block(out_buf_.data(), n);
       if (sink_.write) sink_.write(out_buf_.data(), n);
-      queued += n;
+      stream_started = true;
+      ++blocks_written;
       did_work = true;
+      if (adaptive_extra_frames_ > 0) {
+        if (++clean_blocks_since_underrun_ >= 300) {
+          adaptive_extra_frames_ = std::max(0, adaptive_extra_frames_ - sink_.block_frames);
+          clean_blocks_since_underrun_ = 250;
+        }
+      }
+      // Re-query real queued depth after each block: if this render was preempted
+      // during a CPU spike, an optimistic `queued += n` would under-fill the buffer
+      // and immediately cause another underrun on the next sleep.
+      if (sink_.queued_frames) {
+        const int now_q = sink_.queued_frames();
+        if (now_q < 0) break;
+        queued = now_q;
+      } else {
+        queued += n;
+      }
     }
-    if (!did_work) std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    if (!did_work) sleep_ms(2);
   }
+#ifdef _WIN32
+  if (hr_timer) CloseHandle(hr_timer);
+#endif
 }
 
 }  // namespace audio
