@@ -27,6 +27,7 @@ struct SpectatorVertex {
   std::array<float, 3> normal{};
   std::array<float, 2> uv{};
   std::array<uint8_t, 4> rgba{255, 255, 255, 255};
+  std::array<float, 2> uv2{0.9375f, 0.9375f};  // night stage/outpost lightmap UV into spectator atlas
 };
 
 struct SpectatorMeshLod {
@@ -50,17 +51,25 @@ struct SpectatorMeshLod {
     uint8_t weight1 = 0;
   };
   std::vector<Vertex> vertices;
-  std::vector<uint16_t> indices;  // outward-facing CCW triangles in game frame
+  std::vector<uint16_t> indices;  // preferred-LOD outward-facing CCW triangles in game frame
+  std::array<std::vector<uint16_t>, 3> lod_indices;  // LOD0 (near), LOD1 (mid), LOD2 (far)
   std::array<uint8_t, kMaxBones> bone_role{};
   std::array<std::array<float, 3>, kMaxBones> bone_centroid{};
   float min_y = 0.0f;
   bool has_arm_bones = false;
+  bool has_stand_skeleton = false;  // authentic 19-bone FH1 standing rig (bones 0..18)
 };
 
 struct SpectatorAsset {
   std::string name;
   SpectatorMeshLod mesh;
-  uint32_t atlas_slot = 0;  // cell index in 4x4 RGBA8 atlas
+  uint32_t atlas_slot = 0;  // cell index [0..19] in 8x8 RGBA8 atlas
+  bool is_male = true;
+};
+
+struct SpectatorStandBone {
+  int16_t parent = -1;
+  std::array<float, 3> bind_world{};
 };
 
 // Parses an FH1 Spectators.zip `.skinbin` skeletal mesh (big-endian).
@@ -86,9 +95,15 @@ struct SpectatorCrowdClass {
 };
 
 struct SpectatorCatalog {
-  static constexpr uint32_t kAtlasGrid = 4;
+  static constexpr uint32_t kAtlasGrid = 8;
   static constexpr uint32_t kAtlasCell = 256;
-  static constexpr uint32_t kAtlasSize = kAtlasGrid * kAtlasCell;  // 1024
+  static constexpr uint32_t kAtlasSize = kAtlasGrid * kAtlasCell;  // 2048
+  static constexpr uint32_t kAtlasMipLevels = 9;                   // 2048..8 (stops at 1x1 per cell, zero bleed)
+  static constexpr uint32_t kMaxDiffuseSlots = 20;                 // all 20 FH1 spectator textures (10M + 10F)
+  static constexpr uint32_t kNightLitSlot = 60;                    // warm overhead festival/outpost stage irradiance
+  static constexpr uint32_t kNightDimSlot = 61;                    // subtle roadside dusk/moonlight irradiance
+  static constexpr uint32_t kBlackSlot = 63;                       // pure black (unlit)
+  static constexpr size_t kStandBoneCount = 19;
 
   int num_sprite_angles = 10;
   bool sprites_both_sides = false;
@@ -98,6 +113,8 @@ struct SpectatorCatalog {
   std::vector<SpectatorCrowdClass> crowdclasses;
   std::vector<SpectatorAsset> assets;
   std::vector<uint8_t> atlas_rgba;
+  std::array<SpectatorStandBone, kStandBoneCount> stand_skeleton{};
+  bool has_stand_skeleton_data = false;
 
   // Member counts from retail archives (verification & telemetry).
   size_t spectators_anim_bins = 0;
@@ -149,9 +166,10 @@ struct CrowdCluster {
   float face_x = 0.0f;
   float face_z = 1.0f;
   int count = 12;
-  float spacing = 1.75f;
+  float spacing = 1.15f;
   std::string crowdclass = "GigCheer01";
   bool require_offroad = false;
+  bool stage_lit = false;  // illuminated by festival/outpost stage floodlights at dusk & night
 };
 
 // Wheel angular velocity (rad/s) -> rim/spoke motion blur blend [0..1].
@@ -190,6 +208,9 @@ class AnimatedWorldSystem {
   // positioned behind festival barriers in game-frame coordinates.
   void build_spectator_mesh(double eye_x, double eye_y, double eye_z, float time_sec, const drive::Ground* ground,
                             std::vector<SpectatorVertex>& out) const;
+  void build_spectator_mesh(double eye_x, double eye_y, double eye_z, float time_sec, const drive::Ground* ground,
+                            std::vector<SpectatorVertex>& out,
+                            std::vector<std::array<float, 4>>* shadow_discs) const;
 
  private:
   void populate_default_colorado();
