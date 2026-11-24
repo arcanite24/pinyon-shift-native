@@ -14,6 +14,7 @@ fetches these projects with CMake FetchContent, pinned in
 | [SQLite](https://www.sqlite.org) | `3.50.4` amalgamation (2025-07-30), SHA-256 pinned | reads the game database read-only (`event-restrictions-corpus`) | public domain |
 | [stb](https://github.com/nothings/stb) | `f58f558c` (2025-05-26) | `stb_image_write.h`, PNG output | MIT or public domain |
 | [dr_libs](https://github.com/mackron/dr_libs) | `mp3-0.7.4` (`aec2dd20`) | `dr_mp3.h`, the radio's MPEG decoding | public domain or MIT-0 |
+| [FFmpeg](https://github.com/wmarti/FFmpeg) | `0604b464c7` (FFmpeg 4.4) | `libavutil` + `wmaprodec.c` (`xma2`/`wmapro`) only: in-process XMA2 audio decoding | **LGPL-2.1** |
 
 ## libmspack
 

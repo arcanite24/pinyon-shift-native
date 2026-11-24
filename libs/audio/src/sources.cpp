@@ -100,10 +100,37 @@ bool SoundFiles::open(const cars::Install& install, std::string* error) {
     if (std::filesystem::exists(p, ec) && !add_archive(p, true, k)) return false;
   }
   add_banks(lod1_under(install.media), banks_);
+  auto add_loose_dir = [&](const std::filesystem::path& dir) {
+    std::error_code ec;
+    const auto media = child_nocase(dir, "Media");
+    if (media.empty()) return;
+    add_banks(lod1_under(media), banks_);
+    const auto audio_dir = child_nocase(media, "audio");
+    const auto cars_sub = child_nocase(audio_dir, "cars");
+    if (cars_sub.empty()) return;
+    const auto engines_sub = child_nocase(cars_sub, "Engines");
+    const std::filesystem::path dirs[3] = {
+        child_nocase(engines_sub, "EngineTuning"),
+        child_nocase(engines_sub, "HarmonicTuning"),
+        child_nocase(cars_sub, "CarModelTuning"),
+    };
+    for (int k = 0; k < 3; ++k) {
+      if (dirs[k].empty() || !std::filesystem::is_directory(dirs[k], ec)) continue;
+      for (const auto& e : std::filesystem::directory_iterator(dirs[k], ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        tunings_[k][lower_name(e.path().filename().string())] = {0, {}, e.path()};
+      }
+    }
+  };
   // The packages, in ascending priority (later wins), then v4.
   for (const auto& pkg : install.packages) {
     if (pkg.id == cars::kCommunityPackage) continue;
     for (const auto& zip : pkg.archives) {
+      std::error_code ec;
+      if (std::filesystem::is_directory(zip, ec)) {
+        add_loose_dir(zip);
+        continue;
+      }
       if (!add_archive(zip, false, 0)) return false;
       // Loose banks: <offer>_pri_<n>/Media/audio/cars/Engines/Soundbanks/LOD1/.
       std::filesystem::path loose = zip;
@@ -125,6 +152,15 @@ bool SoundFiles::read_tuning(TuningKind kind, const std::string& file, std::stri
   if (it == map.end()) {
     if (error) *error = "no tuning " + file;
     return false;
+  }
+  if (!it->second.loose_path.empty()) {
+    std::ifstream in(it->second.loose_path, std::ios::binary);
+    if (!in) {
+      if (error) *error = it->second.loose_path.string() + ": cannot open";
+      return false;
+    }
+    text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return true;
   }
   auto r = archives_[it->second.archive]->read(it->second.name);
   if (!r.ok()) {

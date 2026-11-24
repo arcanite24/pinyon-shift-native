@@ -1,5 +1,6 @@
 #include "cars/mods.h"
 #include "audio/bake.h"
+#include "audio/xma_decode.h"
 
 #include <algorithm>
 #include <atomic>
@@ -207,37 +208,60 @@ bool bake_engine_sound(SoundFiles& files, const std::string& media, const std::f
       const Job& job = jobs[idx];
       const FsbSample& s = job.info;
       const auto& data = bank_bytes.at(job.bank);
-      const auto wave = xma2_wave(s, std::span<const uint8_t>(data).subspan(size_t(s.offset), s.bytes));
-      const auto in_path = temp / ("in_" + std::to_string(idx) + ".wav");
-      const auto out_path = temp / ("out_" + std::to_string(idx) + ".s16");
-      std::error_code lec;
-      std::filesystem::remove(out_path, lec);
-      if (!write_file(in_path, wave.data(), wave.size())) {
-        std::lock_guard<std::mutex> lk(err_mu);
-        if (first_err.empty()) first_err = "cannot write " + in_path.string();
-        break;
-      }
-      std::string command = quoted(ffmpeg) + " -hide_banner -nostdin -v error -y -i " + quoted(in_path) +
-                            " -f s16le -acodec pcm_s16le " + quoted(out_path);
-      if (run_hidden_command(command) != 0) {
-        std::lock_guard<std::mutex> lk(err_mu);
-        if (first_err.empty()) first_err = "ffmpeg failed on " + job.bank + " " + std::to_string(job.sample);
-        break;
-      }
-      std::vector<uint8_t> pcm;
-      read_file(out_path, pcm);
+      const auto raw_span = std::span<const uint8_t>(data).subspan(size_t(s.offset), s.bytes);
       const size_t channels = std::max<size_t>(1, s.channels);
-      size_t frames = pcm.size() / (2 * channels);
+      std::vector<int16_t> inter_s16;
+      size_t frames = 0;
+      std::vector<float> inter_f32;
+      int dec_ch = 0, dec_rate = 0;
+      if (decode_xma2_interleaved(s, raw_span, inter_f32, dec_ch, dec_rate, nullptr) && !inter_f32.empty()) {
+        const size_t eff_ch = std::max<size_t>(1, size_t(dec_ch));
+        frames = inter_f32.size() / eff_ch;
+        inter_s16.resize(frames * channels, 0);
+        for (size_t f = 0; f < frames; ++f) {
+          for (size_t c = 0; c < channels; ++c) {
+            const float v = inter_f32[f * eff_ch + std::min(c, eff_ch - 1)];
+            inter_s16[f * channels + c] = int16_t(std::clamp(std::lround(double(v) * 32767.0), -32768l, 32767l));
+          }
+        }
+      } else {
+        if (ffmpeg.empty()) {
+          std::lock_guard<std::mutex> lk(err_mu);
+          if (first_err.empty()) first_err = "no XMA2 decoder available for " + job.bank + " " + std::to_string(job.sample);
+          break;
+        }
+        const auto wave = xma2_wave(s, raw_span);
+        const auto in_path = temp / ("in_" + std::to_string(idx) + ".wav");
+        const auto out_path = temp / ("out_" + std::to_string(idx) + ".s16");
+        std::error_code lec;
+        std::filesystem::remove(out_path, lec);
+        if (!write_file(in_path, wave.data(), wave.size())) {
+          std::lock_guard<std::mutex> lk(err_mu);
+          if (first_err.empty()) first_err = "cannot write " + in_path.string();
+          break;
+        }
+        std::string command = quoted(ffmpeg) + " -hide_banner -nostdin -v error -y -i " + quoted(in_path) +
+                              " -f s16le -acodec pcm_s16le " + quoted(out_path);
+        if (run_hidden_command(command) != 0) {
+          std::lock_guard<std::mutex> lk(err_mu);
+          if (first_err.empty()) first_err = "ffmpeg failed on " + job.bank + " " + std::to_string(job.sample);
+          break;
+        }
+        std::vector<uint8_t> pcm;
+        read_file(out_path, pcm);
+        frames = pcm.size() / (2 * channels);
+        inter_s16.resize(frames * channels, 0);
+        for (size_t i = 0; i < frames * channels; ++i) {
+          inter_s16[i] = int16_t(pcm[2 * i] | (pcm[2 * i + 1] << 8));
+        }
+      }
       const bool mismatch = frames != s.frames;
-      pcm.resize(size_t(s.frames) * 2 * channels, 0);  // exactly the declared length
+      inter_s16.resize(size_t(s.frames) * channels, 0);  // exactly the declared length
       frames = s.frames;
       double seam = 0;
       for (size_t c = 0; c < channels; ++c) {
         std::vector<int16_t> mono(frames);
-        for (size_t f = 0; f < frames; ++f) {
-          const size_t at = (f * channels + c) * 2;
-          mono[f] = int16_t(pcm[at] | pcm[at + 1] << 8);
-        }
+        for (size_t f = 0; f < frames; ++f) mono[f] = inter_s16[f * channels + c];
         if (frames > 1) seam = std::max(seam, std::fabs(mono.back() - mono.front()) / 32768.0);
         if (!write_file(dir / "pcm" / pcm_name(job.bank, job.sample, int(c)), mono.data(), mono.size() * 2)) {
           std::lock_guard<std::mutex> lk(err_mu);
@@ -380,9 +404,9 @@ bool decode_engine_sound_runtime(SoundFiles& files, const std::string& media, co
                                  BakedSound& out, std::string* error, UpgradeLevels levels,
                                  const std::filesystem::path& ffmpeg) {
   if (!cache_dir.empty() && load_baked_sound(cache_dir, media, out, nullptr, levels)) return true;
-  const std::filesystem::path ff = ffmpeg.empty() ? find_ffmpeg() : ffmpeg;
-  if (ff.empty()) {
-    if (error) *error = "no baked sound and ffmpeg not found for runtime XMA2 decode";
+  const std::filesystem::path ff = (ffmpeg.empty() && !has_inprocess_xma2_decoder()) ? find_ffmpeg() : ffmpeg;
+  if (ff.empty() && !has_inprocess_xma2_decoder()) {
+    if (error) *error = "no baked sound and no XMA2 decoder available for runtime decode";
     return false;
   }
   std::error_code ec;

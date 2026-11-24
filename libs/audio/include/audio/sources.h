@@ -39,8 +39,9 @@ class SoundFiles {
 
  private:
   struct Member {
-    size_t archive;
+    size_t archive = 0;
     std::string name;
+    std::filesystem::path loose_path;  // set when resolved from an extracted DLC directory
   };
   std::vector<std::unique_ptr<fh1::Archive>> archives_;
   std::map<std::string, Member> tunings_[3];  // lower-case file name

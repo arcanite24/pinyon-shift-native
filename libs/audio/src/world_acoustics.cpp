@@ -15,6 +15,7 @@
 #include "audio/fev.h"
 #include "audio/fsb4.h"
 #include "audio/stream.h"
+#include "audio/xma_decode.h"
 #include "audio/xml.h"
 #include "cars/mods.h"
 #include "fh1data/archive.h"
@@ -628,8 +629,13 @@ bool decode_amb_subsound(const std::filesystem::path& bank_path, uint32_t subsou
   const int rate = s.rate > 0 ? s.rate : 48000;
   constexpr size_t kMaxAmbFrames = 48000u * 25u;  // cap ambient bed decode to 25 s loop
   if (s.xma()) {
+    const auto span = std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes);
+    if (decode_xma2_mono(s, span, out, nullptr)) {
+      if (out.data.size() > kMaxAmbFrames) out.data.resize(kMaxAmbFrames);
+      return true;
+    }
     if (ffmpeg.empty()) return false;
-    const auto wave = xma2_wave(s, std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes));
+    const auto wave = xma2_wave(s, span);
     const auto in_p = temp_dir / ("amb_" + std::to_string(subsound) + ".wav");
     const auto out_p = temp_dir / ("amb_" + std::to_string(subsound) + ".s16");
     std::error_code ec;
@@ -830,7 +836,7 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
 
   stop_worker_.store(false, std::memory_order_release);
   worker_ = std::thread([this, jobs = std::move(jobs), cache_dir, game_root]() {
-    const std::filesystem::path ffmpeg = find_ffmpeg();
+    const std::filesystem::path ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
     std::error_code tec;
     const std::filesystem::path amb_cache = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / "ambience");
     const std::filesystem::path prebaked_amb = game_root / "play" / "sound" / "ambience";

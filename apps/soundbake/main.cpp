@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "audio/bake.h"
+#include "audio/xma_decode.h"
 #include "cars/database.h"
 
 namespace fs = std::filesystem;
@@ -45,8 +46,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "soundbake: --game-root, --out and --cars or --all are required\n");
     return 2;
   }
-  if (ffmpeg.empty()) ffmpeg = audio::find_ffmpeg();
-  if (ffmpeg.empty()) {
+  if (ffmpeg.empty() && !audio::has_inprocess_xma2_decoder()) ffmpeg = audio::find_ffmpeg();
+  if (ffmpeg.empty() && !audio::has_inprocess_xma2_decoder()) {
     std::fprintf(stderr, "soundbake: no ffmpeg found (install it, or pass --ffmpeg)\n");
     return 1;
   }

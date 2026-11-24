@@ -50,6 +50,8 @@ FetchContent_MakeAvailable(dr_libs)
 add_library(shift_dr_libs INTERFACE)
 target_include_directories(shift_dr_libs INTERFACE "${dr_libs_SOURCE_DIR}")
 
+include(FFmpegXma2)
+
 if(SHIFT_BUILD_CARVIEW)
   # Vulkan headers and the volk loader: no Vulkan SDK needed to build.
   FetchContent_Declare(vulkan_headers

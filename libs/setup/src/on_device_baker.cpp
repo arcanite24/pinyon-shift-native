@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "audio/bake.h"
+#include "audio/xma_decode.h"
 #include "audio/sources.h"
 #include "cars/bake.h"
 #include "cars/bake_format.h"
@@ -639,7 +640,7 @@ bool run_on_device_bake(const BakeOptions& opts, const ProgressCallback& progres
       const fs::path ffmpeg = audio::find_ffmpeg();
       const std::string hero = chosen_rows.count("nis_skylinegtrvspecii_02") ? "NIS_SkylineGTRVSpecII_02"
                                                                               : chosen_rows.at(selected_cars[0])->media_name;
-      if (!ffmpeg.empty()) {
+      if (!ffmpeg.empty() || audio::has_inprocess_xma2_decoder()) {
         audio::BakeReport ar;
         if (audio::bake_engine_sound(sf, hero, opts.play_dir / "sound", ffmpeg, ar, &err)) {
           ++report.sounds_prepared;
