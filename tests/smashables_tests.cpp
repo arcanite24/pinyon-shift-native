@@ -185,13 +185,43 @@ void test_corpus() {
     CHECK(ui_defs.definitions.empty());
   }
 
-  // Verify CollObjects.xml (31 types: 3 triggers, 28 physical) and CollObjs.xml (21,877 placements).
+  // Verify CollObjects.xml (31 types: 3 triggers, 28 physical) and CollObjs.xml (21,877 XML rows, deduplicated parents).
   CHECK(sw.coll_object_types().size() == 31);
   int triggers = 0;
   for (const auto& t : sw.coll_object_types())
     if (t.is_trigger) ++triggers;
   CHECK(triggers == 3);
   CHECK(sw.placed_prop_count() == 21877);
+  CHECK(sw.unique_prop_count() >= 5000 && sw.unique_prop_count() < 12000);
+  CHECK(sw.loaded_debris_model_count() >= 640);
+  CHECK(sw.matched_global_index_count() >= 4500);
+  std::printf("corpus 1:1 debris: unique_props=%zu matched_global=%zu rmb_models=%zu\n",
+              sw.unique_prop_count(), sw.matched_global_index_count(), sw.loaded_debris_model_count());
+
+  // Verify Flyer shatter uses real FH1 textured .rmb.bin shards (not 12 * 36 untextured boxes).
+  {
+    const int n = sw.spawn_flyer_shatter({1999.0f, 145.0f, 963.0f}, {20.0f, 0.0f, 0.0f});
+    CHECK(n == 12);
+    std::vector<world::DebrisVertex> mesh;
+    sw.build_debris_mesh(mesh);
+    CHECK(!mesh.empty() && (mesh.size() % 3) == 0);
+    size_t textured_verts = 0;
+    uint32_t sample_tex = world::kNoTexture;
+    for (const auto& dv : mesh) {
+      if (dv.texture_record != world::kNoTexture) {
+        ++textured_verts;
+        sample_tex = dv.texture_record;
+      }
+    }
+    CHECK(textured_verts == mesh.size());
+    CHECK(sample_tex != world::kNoTexture);
+    fh1::WorldTexture wt;
+    CHECK(sw.read_texture(sample_tex, wt));
+    CHECK(!wt.blocks.levels.empty());
+    std::printf("corpus flyer real .rmb.bin shatter: %zu verts (tex_rec=%u, %ux%u)\n",
+                mesh.size(), sample_tex, wt.blocks.levels[0].width, wt.blocks.levels[0].height);
+    sw.clear_debris();
+  }
 
   // Verify flyer_053 .fiz coverage fix: Collision::gather() returns ground at (6497.95, -227.24), y ≈ 91.70, surf 5.
   world::Collision col;

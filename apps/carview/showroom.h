@@ -545,6 +545,8 @@ class Showroom {
   // Main thread only: reads main-thread-owned retired/pool state alongside
   // world_textures_mutex_.
   WorldTextureStats world_texture_stats() const;
+  bool has_world_texture(uint32_t record) const;
+  bool ensure_world_texture(const std::shared_ptr<const WorldTextureData>& tex, std::string& error);
   bool reserve_world_texture(uint32_t record);
   // Live texture reload (mods, texture_mods.h): uploads `texture` for a
   // resident world texture record and points every set that samples it at
@@ -1029,9 +1031,16 @@ class Showroom {
   DynBuffer skid_rut_buf_;
   uint32_t skid_asphalt_count_ = 0;
   uint32_t skid_rut_count_ = 0;
-  static constexpr uint32_t kMaxDebrisVerts = 65536;  // smashable debris + animated world props/grass
+  static constexpr uint32_t kMaxDebrisVerts = 131072;  // smashable .rmb.bin debris + animated world props/grass
+  struct DebrisBatch {
+    uint32_t first_vertex = 0;
+    uint32_t vertex_count = 0;
+    uint32_t texture_record = kNoWorldTexture;
+    uint8_t cutout = 0;
+  };
   DynBuffer debris_buf_;
   uint32_t debris_count_ = 0;
+  std::vector<DebrisBatch> debris_batches_;
   static constexpr uint32_t kMaxSpectatorVerts = 131072;  // authentic Spectators.zip 3D festival crowds
   world::AnimatedWorldSystem spectator_anim_;
   const drive::Ground* world_ground_ = nullptr;

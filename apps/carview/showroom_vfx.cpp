@@ -626,8 +626,11 @@ void Showroom::set_skidmarks(const std::vector<world::SkidVertex>& asphalt_tris,
 
 void Showroom::set_debris_mesh(const std::vector<world::DebrisVertex>& tris) {
   debris_count_ = 0;
+  debris_batches_.clear();
   if (!vfx_ready_ || !debris_buf_.ready() || tris.empty()) return;
-  const uint32_t n = uint32_t(std::min(tris.size(), size_t(kMaxDebrisVerts)));
+  // Keep vertex count a multiple of 3 (complete triangles).
+  const uint32_t n = uint32_t(std::min(tris.size(), size_t(kMaxDebrisVerts)) / 3u) * 3u;
+  if (n == 0) return;
   auto* dst = static_cast<WorldVertex*>(debris_buf_.data());
   auto snorm8 = [](float x) -> int8_t {
     return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
@@ -643,7 +646,19 @@ void Showroom::set_debris_mesh(const std::vector<world::DebrisVertex>& tris) {
     o.normal[1] = snorm8(v.normal[1]);
     o.normal[2] = snorm8(v.normal[2]);
     o.normal[3] = 0;
+    o.uv0[0] = v.uv[0];
+    o.uv0[1] = v.uv[1];
     for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
+  }
+  for (uint32_t i = 0; i < n; i += 3u) {
+    const uint32_t tex = tris[i].texture_record;
+    const uint8_t cut = tris[i].cutout;
+    if (!debris_batches_.empty() && debris_batches_.back().texture_record == tex &&
+        debris_batches_.back().cutout == cut) {
+      debris_batches_.back().vertex_count += 3u;
+    } else {
+      debris_batches_.push_back({i, 3u, tex, cut});
+    }
   }
   debris_count_ = n;
   ++debris_buf_.ver;
@@ -657,9 +672,14 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
       spectator_set_ && spectator_buf_.ready() && spectator_anim_.catalog().has_3d_spectators();
   if (!draw_debris && !draw_spectators) return;
 
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
-  vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
-  r_.apply_vrs(cmd);
+  VkPipeline bound_pipe = VK_NULL_HANDLE;
+  auto bind_pipe = [&](VkPipeline p) {
+    if (p != bound_pipe) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_pipe = p);
+      vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
+      r_.apply_vrs(cmd);
+    }
+  };
 
   ShowroomPush pc{};
   std::memcpy(pc.model, world_transform_, sizeof pc.model);
@@ -675,17 +695,42 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
   pc.params[3] = 1.0f;
 
   if (draw_debris) {
-    const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
-    pc.params[1] = 65536.0f;  // kFlagVertexLit
-    vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof pc, &pc);
-    VkDeviceSize at = dyn_sync(debris_buf_, VkDeviceSize(debris_count_) * sizeof(WorldVertex));
+    const VkDeviceSize at = dyn_sync(debris_buf_, VkDeviceSize(debris_count_) * sizeof(WorldVertex));
     vkCmdBindVertexBuffers(cmd, 0, 1, &debris_buf_.buf.buffer, &at);
-    vkCmdDraw(cmd, debris_count_, 1, 0, 0);
+    const bool single_sample = r_.samples_ == VK_SAMPLE_COUNT_1_BIT;
+    for (const auto& b : debris_batches_) {
+      if (b.vertex_count == 0) continue;
+      VkDescriptorSet tex_set =
+          (b.texture_record != kNoWorldTexture) ? world_set(b.texture_record) : VK_NULL_HANDLE;
+      if (tex_set != VK_NULL_HANDLE) {
+        // Use two-sided world_coverage_ for real FH1 smashable .rmb.bin debris so thin sign boards,
+        // hollow planks, and cutout fence pieces render cleanly from both sides while tumbling.
+        bind_pipe(world_coverage_ ? world_coverage_ : world_opaque_);
+        const VkDescriptorSet sets[2] = {frame_set_, tex_set};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
+        uint32_t fl = 1u;  // kFlagTextured
+        if (b.cutout && single_sample) fl |= 64u;  // kFlagAlphaTest
+        pc.params[0] = b.cutout ? 1.0f : 0.0f;
+        pc.params[1] = float(fl);
+        vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof pc, &pc);
+        vkCmdDraw(cmd, b.vertex_count, 1, b.first_vertex, 0);
+      } else {
+        bind_pipe(world_opaque_);
+        const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
+        pc.params[0] = 0.0f;
+        pc.params[1] = 65536.0f;  // kFlagVertexLit
+        vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof pc, &pc);
+        vkCmdDraw(cmd, b.vertex_count, 1, b.first_vertex, 0);
+      }
+    }
   }
 
   if (draw_spectators) {
+    bind_pipe(world_opaque_);
+    pc.params[0] = 0.0f;
     const auto eye = eye_in_scenery(world_transform_);
     const double eye_gx = world_origin_[0] + double(eye[0]);
     const double eye_gy = double(eye[1]);
