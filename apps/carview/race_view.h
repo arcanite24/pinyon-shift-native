@@ -170,6 +170,10 @@ class RaceView {
   // The active racing line and player's progress along it (for the 3D driving/braking line).
   const drive::RacingLine& racing_line() const { return line_.line; }
   double player_progress() const { return field_ ? field_->progress(player_index()) : 0.0; }
+  int player_checkpoints_passed() const {
+    const size_t pi = player_index();
+    return pi < next_checkpoint_.size() ? int(next_checkpoint_[pi]) : 0;
+  }
   // The race's line (x, z) from 150 m behind the player to 600 m ahead,
   // up to the finish, for the minimap's route.
   void route_near(std::vector<std::array<double, 2>>& out) const;

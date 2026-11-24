@@ -490,6 +490,8 @@ bool AudioHost::init_sfx(const std::filesystem::path& game_root, const std::file
       engine_.set_sfx_engine(std::move(sfx));
       has_sfx_ = true;
     }
+    tires_cfg_.load(game_root, nullptr);
+    engine_.init_ui_music(game_root, cache_dir);
   }
   return has_sfx_;
 }
@@ -497,18 +499,74 @@ bool AudioHost::init_sfx(const std::filesystem::path& game_root, const std::file
 bool AudioHost::init_satnav(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
                             std::string_view language, bool metric) {
   if (game_root.empty()) return false;
+  satnav_game_root_ = game_root;
+  satnav_cache_dir_ = cache_dir;
+  satnav_language_ = std::string(language.empty() ? "EN" : language);
+  satnav_metric_ = metric;
   if (!satnav_tried_) {
     satnav_tried_ = true;
     auto sn = std::make_unique<audio::SatNavVoPlayer>(kAudioRate);
     sn->set_enabled(cfg_.satnav_on);
     std::string snote;
-    if (sn->load(game_root, cache_dir, language, metric, &snote)) {
+    if (sn->load(game_root, cache_dir, satnav_language_, satnav_metric_, &snote)) {
       std::printf("%s\n", snote.c_str());
       engine_.set_satnav_vo(std::move(sn));
       has_satnav_ = true;
     }
   }
   return has_satnav_;
+}
+
+bool AudioHost::reload_satnav(std::string_view language, bool metric) {
+  if (satnav_game_root_.empty()) return false;
+  const std::string lang = std::string(language.empty() ? "EN" : language);
+  if (has_satnav_ && lang == satnav_language_ && metric == satnav_metric_) return true;
+  satnav_language_ = lang;
+  satnav_metric_ = metric;
+  auto sn = std::make_unique<audio::SatNavVoPlayer>(kAudioRate);
+  sn->set_enabled(cfg_.satnav_on);
+  std::string snote;
+  if (sn->load(satnav_game_root_, satnav_cache_dir_, satnav_language_, satnav_metric_, &snote)) {
+    std::printf("%s\n", snote.c_str());
+    engine_.set_satnav_vo(std::move(sn));
+    has_satnav_ = true;
+    return true;
+  }
+  return false;
+}
+
+void AudioHost::set_ui_music(audio::AudioEngine::UiMusicMode mode) {
+  if (mode == last_ui_music_) return;
+  last_ui_music_ = mode;
+  engine_.set_ui_music(mode);
+}
+
+uint8_t AudioHost::map_tire_surface_group(std::string_view physics_surface) const {
+  auto low = [](std::string_view sv) {
+    std::string s(sv);
+    for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+  };
+  if (const auto* e = tires_cfg_.find_surface(physics_surface)) {
+    const std::string g = low(e->lod1_group);
+    if (g.find("offroad") != std::string::npos || g.find("dirt") != std::string::npos ||
+        g.find("gravel") != std::string::npos || g.find("sand") != std::string::npos) {
+      return 1;
+    }
+    if (g.find("grass") != std::string::npos) return 2;
+    if (g.find("brick") != std::string::npos || g.find("cobble") != std::string::npos) return 3;
+    if (g.find("trackway") != std::string::npos || g.find("wood") != std::string::npos) return 4;
+    return 0;
+  }
+  const std::string s = low(physics_surface);
+  if (s.find("grass") != std::string::npos) return 2;
+  if (s.find("dirt") != std::string::npos || s.find("gravel") != std::string::npos ||
+      s.find("sand") != std::string::npos || s.find("mud") != std::string::npos) {
+    return 1;
+  }
+  if (s.find("brick") != std::string::npos || s.find("cobble") != std::string::npos) return 3;
+  if (s.find("wood") != std::string::npos || s.find("track") != std::string::npos) return 4;
+  return 0;
 }
 
 bool AudioHost::init_codriver(const std::filesystem::path& rally_package_dir, const std::filesystem::path& cache_dir,
@@ -823,7 +881,19 @@ void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, 
 
 void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race, bool rewinding,
                                bool countdown_active, int countdown_digit) {
-  engine_.set_vehicle_state(st);
+  audio::VehicleAudioState eff = st;
+  if (baked_sound_) {
+    const auto& es = baked_sound_->loaded.sound;
+    eff.trans_vol_scale = float(es.transmission_volume);
+    eff.shift_vol_scale = float(es.shift_volume);
+    eff.turbo_vol_scale = float(es.turbo_volume);
+    eff.sc_vol_scale = float(es.supercharger_volume);
+    eff.backfire_vol_scale = float(es.backfire_volume);
+    eff.susp_vol_scale = float(es.suspension_volume);
+    eff.ev_vol_scale = float(es.electric_motor_volume);
+    eff.num_cylinders = es.num_cylinders;
+  }
+  engine_.set_vehicle_state(eff);
   if (engine_.has_snapshot_matrix()) {
     if (in_race != last_in_race_) {
       last_in_race_ = in_race;
@@ -853,8 +923,9 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
 
   if (countdown_active && countdown_digit != last_countdown_digit_) {
     last_countdown_digit_ = countdown_digit;
-    engine_.trigger_ui(audio::UiCue::kCountdown321);
+    engine_.trigger_ui(countdown_digit <= 0 ? audio::UiCue::kCountdownGo : audio::UiCue::kCountdown321);
   } else if (!countdown_active) {
+    if (last_countdown_digit_ == 1) engine_.trigger_ui(audio::UiCue::kCountdownGo);
     last_countdown_digit_ = -1;
   }
 }

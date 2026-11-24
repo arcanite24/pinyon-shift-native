@@ -81,8 +81,11 @@ class AudioHost {
                 const std::string& burble_bank = {}, const std::filesystem::path& state_root = {});
   bool init_satnav(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
                    std::string_view language = "EN", bool metric = true);
+  bool reload_satnav(std::string_view language, bool metric);
   bool init_codriver(const std::filesystem::path& rally_package_dir, const std::filesystem::path& cache_dir,
                      std::string_view language = "EN");
+  void set_ui_music(audio::AudioEngine::UiMusicMode mode);
+  uint8_t map_tire_surface_group(std::string_view physics_surface) const;
   bool init_vo(const std::filesystem::path& game_root, std::string_view language = "EN");
   bool init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir = {},
                       const std::filesystem::path& world_dir = {}, const std::filesystem::path& rally_package = {});
@@ -189,6 +192,12 @@ class AudioHost {
   std::filesystem::path sfx_cache_dir_;
   bool satnav_tried_ = false;
   bool has_satnav_ = false;
+  std::filesystem::path satnav_game_root_;
+  std::filesystem::path satnav_cache_dir_;
+  std::string satnav_language_ = "EN";
+  bool satnav_metric_ = true;
+  audio::TiresConfig tires_cfg_;
+  audio::AudioEngine::UiMusicMode last_ui_music_ = audio::AudioEngine::UiMusicMode::kNone;
   bool codriver_tried_ = false;
   bool has_codriver_ = false;
   bool vo_tried_ = false;

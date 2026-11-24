@@ -13,11 +13,41 @@ namespace carview {
 bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_paused,
                                        bool trainer_freecam_active) {
           const audio::View cur_audio_view = audio_view();
-          const bool any_menu_snapshot = menu_paused && !app.show_title && !app.fmv_player.active() && !photo_mode.active() &&
-                                         !replay_viewer.active() && !trainer_freecam_active;
-          app.audio_host.update_frame(sound_inputs(cur_audio_view),
-                                  menu_paused || rewind_buf.is_rewinding() || rewind_buf.is_paused_at_keyframe(),
-                                  any_menu_snapshot, app.show_title, false);
+          const bool exterior_ui_open =
+              !app.show_title && !app.fmv_player.active() &&
+              (autoshow.is_open() || shop.is_open() || paint_open || garage_open || events_page.is_open() ||
+               map_open || achievements.screen_open() || career_page.is_open() || outpost_hub_open ||
+               app.rally_hub_open || app.rally_service_open);
+          const bool pause_snapshot_active =
+              !app.show_title && !app.fmv_player.active() &&
+              (menu.open || settings_page.is_open() || mods_page.is_open() || save_page.is_open() || club_open ||
+               slice12.trainer_overlay.is_open() || rewind_buf.is_rewinding() || rewind_buf.is_paused_at_keyframe() ||
+               (menu_paused && !exterior_ui_open && !photo_mode.active() && !replay_viewer.active() &&
+                !trainer_freecam_active));
+          app.audio_host.update_frame(sound_inputs(cur_audio_view), pause_snapshot_active, exterior_ui_open,
+                                      app.show_title, loading_screen.active());
+          {
+            using UiMusic = audio::AudioEngine::UiMusicMode;
+            UiMusic ui_mus = UiMusic::kNone;
+            if (!app.fmv_player.active()) {
+              if (loading_screen.active()) {
+                ui_mus = UiMusic::kLoading;
+              } else if (app.show_title) {
+                ui_mus = UiMusic::kTitle;
+              } else if (map_open) {
+                ui_mus = UiMusic::kMap;
+              } else if (app.campaign.flow().stage() == race::CampaignStage::kPostRaceFinish ||
+                         app.campaign.flow().stage() == race::CampaignStage::kRewardTally ||
+                         app.campaign.flow().stage() == race::CampaignStage::kBossVictory ||
+                         app.campaign.flow().stage() == race::CampaignStage::kFinaleVictory) {
+                ui_mus = UiMusic::kPostRaceVictory;
+              } else if (autoshow.is_open() || shop.is_open() || paint_open || garage_open || events_page.is_open() ||
+                         outpost_hub_open || app.rally_hub_open || app.rally_service_open) {
+                ui_mus = UiMusic::kHomespace;
+              }
+            }
+            app.audio_host.set_ui_music(ui_mus);
+          }
           {
             audio::VehicleAudioState vst{};
             const auto& vp = vehicle.params();
@@ -47,7 +77,9 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             vst.trans_level = audio_trans_level;
             vst.turbo_level = audio_turbo_level;
             vst.sc_level = audio_sc_level;
-            vst.backfire_level = std::max(audio_upgrades.exhaust, vp.has_turbo ? 1 : 0);
+            vst.sc_is_centrifugal = audio_sc_is_centrifugal;
+            vst.backfire_level = std::max({audio_upgrades.exhaust, audio_camshaft_level, vp.has_turbo ? 1 : 0});
+            vst.hub_ambience = autoshow.is_open() ? 1 : (paint_open ? 2 : ((shop.is_open() || garage_open) ? 3 : 0));
             const auto& body_c = vehicle.strongest_body_contact();
             vst.scraping = body_c.force > 150.0 && vst.speed_mph > 4.0f;
             vst.scrape_intensity = vst.scraping ? float(std::clamp(body_c.force / 20000.0, 0.2, 1.0)) : 0.0f;
@@ -66,14 +98,40 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               uint8_t sgrp = 0;
               if (wstate.surface >= 0 && size_t(wstate.surface) < surfs.size()) {
                 const auto& sf = surfs[size_t(wstate.surface)];
-                if (sf.off_roadness > 0.5f) sgrp = 2;
-                else if (sf.off_roadness > 0.05f) sgrp = 1;
+                if (!sf.name.empty()) {
+                  sgrp = app.audio_host.map_tire_surface_group(sf.name);
+                } else if (sf.off_roadness > 0.5f) {
+                  sgrp = 2;
+                } else if (sf.off_roadness > 0.05f) {
+                  sgrp = 1;
+                }
               }
               wa.surface_group = sgrp;
             }
-            vst.listener_pos = {float(vpos.x), float(vpos.y), float(vpos.z)};
+            if (have_cam_view) {
+              const auto& cf = last_cam_view.forward;
+              const auto& cu = last_cam_view.up;
+              // Right-handed/left-handed basis: cross(up, forward) points right in our Y-up +Z-forward world.
+              double rx = cu[1] * cf[2] - cu[2] * cf[1];
+              double ry = cu[2] * cf[0] - cu[0] * cf[2];
+              double rz = cu[0] * cf[1] - cu[1] * cf[0];
+              const double rl = std::sqrt(rx * rx + ry * ry + rz * rz);
+              if (rl > 1e-6) {
+                rx /= rl;
+                ry /= rl;
+                rz /= rl;
+              } else {
+                rx = vright.x;
+                ry = vright.y;
+                rz = vright.z;
+              }
+              vst.listener_pos = {float(last_cam_view.eye[0]), float(last_cam_view.eye[1]), float(last_cam_view.eye[2])};
+              vst.listener_right = {float(rx), float(ry), float(rz)};
+            } else {
+              vst.listener_pos = {float(vpos.x), float(vpos.y), float(vpos.z)};
+              vst.listener_right = {float(vright.x), float(vright.y), float(vright.z)};
+            }
             vst.listener_vel = {float(vvel.x), float(vvel.y), float(vvel.z)};
-            vst.listener_right = {float(vright.x), float(vright.y), float(vright.z)};
             vst.cockpit_view = cur_audio_view == audio::View::kCockpit;
             vst.in_race = app.race != nullptr;
             vst.rewinding = rewind_buf.is_rewinding();

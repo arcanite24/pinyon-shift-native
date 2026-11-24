@@ -197,7 +197,8 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
               };
               auto fit = [&]() {
                 std::string message;
-                shop.fit(discount(), app.career.credits, message);
+                const bool ok = shop.fit(discount(), app.career.credits, message);
+                app.audio_host.trigger_ui(ok ? audio::UiCue::kPurchase : audio::UiCue::kError);
                 notice = message;
                 notice_until = vehicle.time() + 3;
               };
@@ -216,7 +217,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   app.audio_host.trigger_ui(ok ? audio::UiCue::kAccept : audio::UiCue::kCancel);
                   notice = smsg, notice_until = vehicle.time() + 3;
                 }
-                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) { app.audio_host.trigger_ui(audio::UiCue::kAccept); fit(); }
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) { fit(); }
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
@@ -236,7 +237,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   app.audio_host.trigger_ui(ok ? audio::UiCue::kAccept : audio::UiCue::kCancel);
                   notice = smsg, notice_until = vehicle.time() + 3;
                 }
-                if (b == SDL_GAMEPAD_BUTTON_SOUTH) { app.audio_host.trigger_ui(audio::UiCue::kAccept); fit(); }
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) { fit(); }
               }
               if (e.type == SDL_EVENT_MOUSE_MOTION) {
                 carview::ui::HitZone hz{};
@@ -263,7 +264,6 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                       app.audio_host.trigger_ui(audio::UiCue::kMove);
                     } else if (hz.group == carview::ui::kHitRow && hz.index >= 0) {
                       shop.select_row(size_t(hz.index));
-                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
                       fit();
                     }
                   }
@@ -285,7 +285,12 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 const bool bought = db && autoshow.buy(*db, app.career_garage, app.career.credits, media, message);
                 notice = message;
                 notice_until = vehicle.time() + 4;
-                if (!bought) return;
+                if (!bought) {
+                  app.audio_host.trigger_ui(audio::UiCue::kError);
+                  return;
+                }
+                app.audio_host.trigger_ui(audio::UiCue::kPurchase);
+                app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
                 autoshow.close();
                 app.garage_picker();
                 app.write_career_garage();

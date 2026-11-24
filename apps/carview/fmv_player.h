@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -29,6 +30,9 @@ enum class FmvMovieId {
   kFmv02Ceremony,
   kFmv04Credits,
   kWristbandGet,
+  kRallyBgLoop,
+  kRallyForzaTone,
+  kClubIntro,
 };
 
 struct FmvCatalogEntry {
@@ -79,27 +83,33 @@ class FmvPlayer {
   FmvPlayer(const FmvPlayer&) = delete;
   FmvPlayer& operator=(const FmvPlayer&) = delete;
 
-  // Discovers the disc's movies under `game_root/media/ui/videos/`.
-  static std::vector<FmvCatalogEntry> discover_movies(const std::filesystem::path& game_root);
+  // Discovers the disc's movies under `game_root/media/ui/videos/` and optional DLC packages under `state_root`.
+  static std::vector<FmvCatalogEntry> discover_movies(const std::filesystem::path& game_root,
+                                                      const std::filesystem::path& state_root = {});
   // Resolves a specific movie ID to its file on disk (handling fallbacks such
-  // as WristbandGet.wmv -> FMV_02.wmv on base discs).
-  static std::filesystem::path resolve_movie(const std::filesystem::path& game_root, FmvMovieId id);
-  // Probes video dimensions, frame rate, and duration via ffprobe (returns
-  // false if ffprobe is unavailable or the file cannot be probed).
+  // as WristbandGet.wmv -> FMV_02.wmv on base discs and DLCZips movies under `state_root`).
+  static std::filesystem::path resolve_movie(const std::filesystem::path& game_root, FmvMovieId id,
+                                             const std::filesystem::path& state_root = {});
+  // Sets a global `_&<id>` text resolver (e.g. `carview::game_text`) so FMV
+  // subtitles pull authentic localized strings from `Subtitles.str`.
+  using SubtitleResolver = std::function<std::string(const std::string&)>;
+  static void set_subtitle_resolver(SubtitleResolver fn);
+  // True when an in-process platform WMV decoder (Windows Media Foundation) is available.
+  static bool has_native_wmv_decoder();
+  // Probes video dimensions, frame rate, and duration (in-process MF on Windows for .wmv, else ffprobe).
   static bool probe(const std::filesystem::path& wmv_path, FmvProbeInfo& out);
-  // Synchronously decodes one RGBA frame at `time_s` using FFmpeg (used for
-  // unit tests, thumbnails, and headless screenshot verification).
+  // Synchronously decodes one RGBA frame at `time_s` (in-process MF on Windows for .wmv, else FFmpeg).
   static bool decode_frame_at(const std::filesystem::path& wmv_path, double time_s, int target_w, int target_h,
                               std::vector<uint8_t>& out_rgba, std::string* error = nullptr);
 
-  // Starts streaming video and audio from `wmv_path` (or `.bik` movie via FFmpeg).
-  bool open(const std::filesystem::path& wmv_path, std::string_view language = "EN", int target_w = 640,
-            int target_h = 360, std::string* error = nullptr, bool loop = false);
-  // Opens a canonical movie ID from `game_root` (checking `media/movies/*.bik` and
-  // `media/ui/videos/*.wmv`), or falls back gracefully to a stylized synthetic cutscene
-  // when the movie file is absent in minimal fixtures.
+  // Starts streaming video and audio from `wmv_path` (in-process MF on Windows for `.wmv`, or FFmpeg).
+  bool open(const std::filesystem::path& wmv_path, std::string_view language = "EN", int target_w = 1280,
+            int target_h = 720, std::string* error = nullptr, bool loop = false);
+  // Opens a canonical movie ID from `game_root` / `state_root`, or falls back
+  // gracefully to a stylized synthetic cutscene when absent in minimal fixtures.
   bool open_or_fallback(const std::filesystem::path& game_root, FmvMovieId id, std::string_view language = "EN",
-                        int target_w = 640, int target_h = 360, double fallback_duration_s = 6.0);
+                        int target_w = 1280, int target_h = 720, double fallback_duration_s = 6.0,
+                        const std::filesystem::path& state_root = {});
   // Opens a deterministic synthetic video/audio stream (for tests without game
   // assets or when FFmpeg is absent).
   void open_synthetic(int w, int h, double fps, double duration_s, std::string title = "FMV");
@@ -143,6 +153,9 @@ class FmvPlayer {
 
   void video_worker(std::string cmd, int w, int h, double fps);
   void audio_worker(std::string cmd);
+#ifdef _WIN32
+  void mf_worker(std::filesystem::path wmv_path, int audio_idx, int target_w, int target_h, bool loop);
+#endif
   void render_synthetic_frame(double t, std::vector<uint8_t>& rgba) const;
 
   bool active_ = false;

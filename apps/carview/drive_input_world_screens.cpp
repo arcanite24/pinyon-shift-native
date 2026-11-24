@@ -111,6 +111,11 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
               if (skip_key || skip_pad || skip_mouse) {
                 app.fmv_player.skip();
                 app.audio_host.set_fmv_audio(nullptr, nullptr);
+                if (title_attract_playing) {
+                  title_attract_playing = false;
+                  title_idle_s = 0.0;
+                  if (!app.no_title) app.show_title = true;
+                }
               }
               return true;
             }
@@ -130,6 +135,10 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
             }
             // 1. Title Screen input (when settings isn't open on top of it).
             if (app.show_title && !settings_page.is_open()) {
+              if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                  e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                title_idle_s = 0.0;
+              }
               const bool has_save_opt =
                   app.have_saved && (app.saved.career_started || app.saved.owned_garage || app.career.num_races > 0 || app.career.credits > 0);
               const int item_count = has_save_opt ? 5 : 4;
@@ -148,6 +157,9 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                 if (idx == 0) {  // CONTINUE CAREER
                   app.show_title = false;
                   if (app.title_video.active()) app.title_video.close();
+                  loading_screen.load_definitions(app.game_root_of(), "freeroam");
+                  loading_screen.start("COLORADO FREE ROAM", "HORIZON FESTIVAL");
+                  loading_min_until = 0.65;
                   if (app.title_saved_resume_pending) {
                     app.title_saved_resume_pending = false;
                     if (host.streamer) {

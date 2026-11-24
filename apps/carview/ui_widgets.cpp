@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "events_page.h"
+#include "fh1data/stringtables.h"
 #include "game_hud.h"
 #include "settings_page.h"
 #include "ui4_chrome.h"
@@ -729,7 +730,12 @@ std::string resolve_loading_key(std::string_view key) {
   const size_t colon = key.find(':');
   const std::string_view tbl = colon != std::string_view::npos ? key.substr(0, colon) : std::string_view("Tips");
   const std::string_view id = colon != std::string_view::npos ? key.substr(colon + 1) : key;
-  // Try direct lookup via game_text("Tips/IDS_...") if bound, else format readable title from IDS_ name.
+  // 1. Authentic StringTables resolution via `_&((hash(table) << 16) | hash(id))`.
+  const uint32_t packed = (uint32_t(fh1::string_hash(tbl)) << 16) | uint32_t(fh1::string_hash(id));
+  const std::string ref = "_&" + std::to_string(packed);
+  const std::string by_hash = game_text(ref);
+  if (!by_hash.empty() && by_hash != ref && by_hash.rfind("_&", 0) != 0) return by_hash;
+  // 2. Direct probe fallback for synthetic/test resolvers keyed by "Tips/IDS_...".
   const std::string probe = std::string(tbl) + "/" + std::string(id);
   const std::string resolved = game_text(probe);
   if (!resolved.empty() && resolved != probe) return resolved;

@@ -333,6 +333,7 @@ void DriveSession::poll_sdl_events() {
                   const drive::Vec3 ff = drive::rotate(vehicle.orientation(), {0, 0, 1});
                   if (festival_mgr->start_head_to_head({fp.x, fp.y, fp.z}, std::atan2(ff.x, ff.z), vehicle.time())) {
                     club_pending.encounter_started = true;
+                    app.audio_host.trigger_ui(audio::UiCue::kH2hGo);
                     notice = "HEAD-TO-HEAD RACE STARTED!";
                     notice_until = vehicle.time() + 2.5;
                     minimap_at = -1;

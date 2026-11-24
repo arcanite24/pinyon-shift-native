@@ -14,20 +14,249 @@
 
 #include "audio/bake.h"
 #include "audio/xml.h"
+#include "fh1data/stringtables.h"
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <io.h>
 #include <fcntl.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <mferror.h>
+#include <objbase.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "mfplat.lib")
+#pragma comment(lib, "mfreadwrite.lib")
+#pragma comment(lib, "mfuuid.lib")
+#pragma comment(lib, "ole32.lib")
+#endif
 #endif
 
 namespace carview {
 namespace {
+
+std::mutex& subtitle_resolver_mutex() {
+  static std::mutex mu;
+  return mu;
+}
+
+FmvPlayer::SubtitleResolver& subtitle_resolver_fn() {
+  static FmvPlayer::SubtitleResolver fn;
+  return fn;
+}
 
 std::string upper_str(std::string_view s) {
   std::string out(s);
   for (char& c : out) c = char(std::toupper(static_cast<unsigned char>(c)));
   return out;
 }
+
+std::string lower_str(std::string_view s) {
+  std::string out(s);
+  for (char& c : out) c = char(std::tolower(static_cast<unsigned char>(c)));
+  return out;
+}
+
+bool is_wmv_path(const std::filesystem::path& p) {
+  return lower_str(p.extension().string()) == ".wmv";
+}
+
+#ifdef _WIN32
+struct MfSessionGuard {
+  bool com_ok = false;
+  bool mf_ok = false;
+  MfSessionGuard() {
+    const HRESULT hr_com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    com_ok = SUCCEEDED(hr_com);
+    if (SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET))) mf_ok = true;
+  }
+  ~MfSessionGuard() {
+    if (mf_ok) MFShutdown();
+    if (com_ok) CoUninitialize();
+  }
+};
+
+void convert_bgra_to_rgba_scaled(const uint8_t* src, int src_w, int src_h, int src_stride,
+                                 uint8_t* dst, int dst_w, int dst_h) {
+  const bool flip_y = src_stride < 0;
+  const int abs_stride = flip_y ? -src_stride : src_stride;
+  const uint8_t* base = flip_y ? (src + int64_t(src_h - 1) * int64_t(abs_stride)) : src;
+  for (int y = 0; y < dst_h; ++y) {
+    const int sy = (src_h == dst_h) ? y : int((int64_t(y) * src_h) / dst_h);
+    const uint8_t* row = flip_y ? (base - int64_t(sy) * int64_t(abs_stride))
+                                : (base + int64_t(sy) * int64_t(abs_stride));
+    uint8_t* out = dst + size_t(y) * size_t(dst_w) * 4;
+    if (src_w == dst_w) {
+      for (int x = 0; x < dst_w; ++x) {
+        out[4 * x + 0] = row[4 * x + 2];
+        out[4 * x + 1] = row[4 * x + 1];
+        out[4 * x + 2] = row[4 * x + 0];
+        out[4 * x + 3] = 255;
+      }
+    } else {
+      for (int x = 0; x < dst_w; ++x) {
+        const int sx = int((int64_t(x) * src_w) / dst_w);
+        out[4 * x + 0] = row[4 * sx + 2];
+        out[4 * x + 1] = row[4 * sx + 1];
+        out[4 * x + 2] = row[4 * sx + 0];
+        out[4 * x + 3] = 255;
+      }
+    }
+  }
+}
+
+bool mf_create_reader(const std::filesystem::path& wmv_path, IMFSourceReader** out_reader) {
+  *out_reader = nullptr;
+  IMFAttributes* attrs = nullptr;
+  if (FAILED(MFCreateAttributes(&attrs, 2))) return false;
+  attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+  attrs->SetUINT32(MF_READWRITE_DISABLE_CONVERTERS, FALSE);
+  const HRESULT hr = MFCreateSourceReaderFromURL(wmv_path.wstring().c_str(), attrs, out_reader);
+  attrs->Release();
+  return SUCCEEDED(hr) && *out_reader != nullptr;
+}
+
+bool mf_probe_wmv(const std::filesystem::path& wmv_path, FmvProbeInfo& out) {
+  MfSessionGuard guard;
+  if (!guard.mf_ok) return false;
+  IMFSourceReader* reader = nullptr;
+  if (!mf_create_reader(wmv_path, &reader)) return false;
+
+  IMFMediaType* vtype = nullptr;
+  if (SUCCEEDED(reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &vtype)) && vtype) {
+    UINT32 w = 0, h = 0;
+    if (SUCCEEDED(MFGetAttributeSize(vtype, MF_MT_FRAME_SIZE, &w, &h))) {
+      out.width = int(w);
+      out.height = int(h);
+    }
+    UINT32 num = 0, den = 0;
+    if (SUCCEEDED(MFGetAttributeRatio(vtype, MF_MT_FRAME_RATE, &num, &den)) && num > 0 && den > 0) {
+      out.fps = double(num) / double(den);
+    }
+    vtype->Release();
+  }
+
+  PROPVARIANT dur_var;
+  PropVariantInit(&dur_var);
+  if (SUCCEEDED(reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &dur_var))) {
+    if (dur_var.vt == VT_UI8) out.duration_s = double(dur_var.uhVal.QuadPart) * 1e-7;
+    else if (dur_var.vt == VT_I8) out.duration_s = double(dur_var.hVal.QuadPart) * 1e-7;
+    PropVariantClear(&dur_var);
+  }
+
+  for (DWORD s = 0; s < 32; ++s) {
+    IMFMediaType* st = nullptr;
+    const HRESULT hr = reader->GetNativeMediaType(s, 0, &st);
+    if (hr == MF_E_INVALIDSTREAMNUMBER) break;
+    if (SUCCEEDED(hr) && st) {
+      GUID major{};
+      if (SUCCEEDED(st->GetMajorType(&major)) && major == MFMediaType_Audio) {
+        out.has_audio = true;
+        ++out.audio_streams;
+      }
+      st->Release();
+    }
+  }
+  reader->Release();
+  return out.width > 0 && out.height > 0;
+}
+
+bool mf_decode_frame_wmv(const std::filesystem::path& wmv_path, double time_s, int target_w, int target_h,
+                         std::vector<uint8_t>& out_rgba, std::string* error) {
+  MfSessionGuard guard;
+  if (!guard.mf_ok) {
+    if (error) *error = "Media Foundation unavailable";
+    return false;
+  }
+  IMFSourceReader* reader = nullptr;
+  if (!mf_create_reader(wmv_path, &reader)) {
+    if (error) *error = "Media Foundation failed to open " + wmv_path.string();
+    return false;
+  }
+  reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
+  reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
+
+  IMFMediaType* rgb_type = nullptr;
+  if (FAILED(MFCreateMediaType(&rgb_type))) {
+    reader->Release();
+    return false;
+  }
+  rgb_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+  rgb_type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+  const HRESULT set_hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, rgb_type);
+  rgb_type->Release();
+  if (FAILED(set_hr)) {
+    reader->Release();
+    if (error) *error = "Media Foundation RGB32 setup failed";
+    return false;
+  }
+
+  int src_w = target_w, src_h = target_h, stride = target_w * 4;
+  IMFMediaType* cur = nullptr;
+  if (SUCCEEDED(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &cur)) && cur) {
+    UINT32 w = 0, h = 0;
+    if (SUCCEEDED(MFGetAttributeSize(cur, MF_MT_FRAME_SIZE, &w, &h)) && w > 0 && h > 0) {
+      src_w = int(w);
+      src_h = int(h);
+    }
+    UINT32 st_u32 = 0;
+    if (SUCCEEDED(cur->GetUINT32(MF_MT_DEFAULT_STRIDE, &st_u32))) {
+      stride = int(static_cast<int32_t>(st_u32));
+    } else {
+      stride = src_w * 4;
+    }
+    cur->Release();
+  }
+
+  if (time_s > 0.0) {
+    PROPVARIANT pos;
+    PropVariantInit(&pos);
+    pos.vt = VT_I8;
+    pos.hVal.QuadPart = LONGLONG(time_s * 1e7);
+    reader->SetCurrentPosition(GUID_NULL, pos);
+    PropVariantClear(&pos);
+  }
+
+  bool got_frame = false;
+  for (int attempt = 0; attempt < 30; ++attempt) {
+    DWORD flags = 0;
+    LONGLONG ts = 0;
+    IMFSample* sample = nullptr;
+    const HRESULT hr = reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &ts, &sample);
+    if (FAILED(hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) {
+      if (sample) sample->Release();
+      break;
+    }
+    if (!sample) continue;
+    IMFMediaBuffer* buf = nullptr;
+    if (SUCCEEDED(sample->ConvertToContiguousBuffer(&buf)) && buf) {
+      BYTE* data = nullptr;
+      DWORD cur_len = 0;
+      if (SUCCEEDED(buf->Lock(&data, nullptr, &cur_len)) && data &&
+          cur_len >= DWORD(std::abs(stride) * src_h)) {
+        out_rgba.resize(size_t(target_w) * size_t(target_h) * 4);
+        convert_bgra_to_rgba_scaled(data, src_w, src_h, stride, out_rgba.data(), target_w, target_h);
+        got_frame = true;
+        buf->Unlock();
+      }
+      buf->Release();
+    }
+    sample->Release();
+    if (got_frame) break;
+  }
+
+  reader->Release();
+  if (!got_frame && error) *error = "Media Foundation decoded no video frame";
+  return got_frame;
+}
+#endif
 
 std::string read_text_file(const std::filesystem::path& p) {
   std::ifstream f(p, std::ios::binary);
@@ -82,6 +311,9 @@ std::string movie_relpath(FmvMovieId id) {
     case FmvMovieId::kFmv02Ceremony: return "FMV_02.wmv";
     case FmvMovieId::kFmv04Credits: return "FMV_04.wmv";
     case FmvMovieId::kWristbandGet: return "WristbandGet.wmv";
+    case FmvMovieId::kRallyBgLoop: return "Splash_Intros/BgLoop.wmv";
+    case FmvMovieId::kRallyForzaTone: return "Splash_Intros/Forza_Tone_Rally.wmv";
+    case FmvMovieId::kClubIntro: return "Splash_Intros/car_challenges_intro.wmv";
   }
   return "FMV_01.wmv";
 }
@@ -98,6 +330,9 @@ const char* movie_label(FmvMovieId id) {
     case FmvMovieId::kFmv02Ceremony: return "Wristband Ceremony";
     case FmvMovieId::kFmv04Credits: return "Credits";
     case FmvMovieId::kWristbandGet: return "Wristband Unlocked";
+    case FmvMovieId::kRallyBgLoop: return "Horizon Rally Background";
+    case FmvMovieId::kRallyForzaTone: return "Horizon Rally Intro";
+    case FmvMovieId::kClubIntro: return "1000 Club Intro";
   }
   return "FMV";
 }
@@ -165,13 +400,29 @@ bool parse_fmv_subtitles(std::string_view xml, std::vector<FmvSubtitleCue>& out)
 
 FmvPlayer::~FmvPlayer() { close(); }
 
-std::vector<FmvCatalogEntry> FmvPlayer::discover_movies(const std::filesystem::path& game_root) {
+void FmvPlayer::set_subtitle_resolver(SubtitleResolver fn) {
+  std::lock_guard<std::mutex> lk(subtitle_resolver_mutex());
+  subtitle_resolver_fn() = std::move(fn);
+}
+
+bool FmvPlayer::has_native_wmv_decoder() {
+#ifdef _WIN32
+  return true;
+#else
+  return false;
+#endif
+}
+
+std::vector<FmvCatalogEntry> FmvPlayer::discover_movies(const std::filesystem::path& game_root,
+                                                        const std::filesystem::path& state_root) {
   static constexpr std::pair<FmvMovieId, bool> kCatalog[] = {
-      {FmvMovieId::kT10MsCombined, true}, {FmvMovieId::kMsgsLogo, true},
-      {FmvMovieId::kDolbyCorona, true},   {FmvMovieId::kForzaIntro, true},
-      {FmvMovieId::kForzaTone, true},     {FmvMovieId::kPressStart, false},
-      {FmvMovieId::kFmv01Opening, false}, {FmvMovieId::kFmv02Ceremony, false},
-      {FmvMovieId::kFmv04Credits, false}, {FmvMovieId::kWristbandGet, false},
+      {FmvMovieId::kT10MsCombined, true},   {FmvMovieId::kMsgsLogo, true},
+      {FmvMovieId::kDolbyCorona, true},     {FmvMovieId::kForzaIntro, true},
+      {FmvMovieId::kForzaTone, true},       {FmvMovieId::kPressStart, false},
+      {FmvMovieId::kFmv01Opening, false},   {FmvMovieId::kFmv02Ceremony, false},
+      {FmvMovieId::kFmv04Credits, false},   {FmvMovieId::kWristbandGet, false},
+      {FmvMovieId::kRallyBgLoop, false},    {FmvMovieId::kRallyForzaTone, true},
+      {FmvMovieId::kClubIntro, true},
   };
   std::vector<FmvCatalogEntry> out;
   std::error_code ec;
@@ -180,38 +431,83 @@ std::vector<FmvCatalogEntry> FmvPlayer::discover_movies(const std::filesystem::p
     e.id = id;
     e.name = movie_label(id);
     e.is_boot_splash = splash;
-    e.path = resolve_movie(game_root, id);
+    e.path = resolve_movie(game_root, id, state_root);
     e.exists = !e.path.empty() && std::filesystem::exists(e.path, ec);
     out.push_back(std::move(e));
   }
   return out;
 }
 
-std::filesystem::path FmvPlayer::resolve_movie(const std::filesystem::path& game_root, FmvMovieId id) {
-  if (game_root.empty()) return {};
+std::filesystem::path FmvPlayer::resolve_movie(const std::filesystem::path& game_root, FmvMovieId id,
+                                               const std::filesystem::path& state_root) {
   std::error_code ec;
-  const auto vid_dir = game_root / "media" / "ui" / "videos";
-  const auto mov_dir = game_root / "media" / "movies";
   const std::filesystem::path rel = movie_relpath(id);
   const std::string stem = rel.stem().string();
-  // Prefer authentic disc WMV or BIK movie if present under media/ui/videos or media/movies.
-  const std::filesystem::path candidates[] = {
-      vid_dir / rel,
-      mov_dir / (stem + ".bik"),
-      vid_dir / (stem + ".bik"),
-      mov_dir / rel.filename(),
-  };
-  for (const auto& c : candidates) {
-    if (std::filesystem::exists(c, ec)) return c;
-  }
-  if (id == FmvMovieId::kWristbandGet) {
-    const std::filesystem::path fbs[] = {
-        vid_dir / "FMV_02.wmv",
-        mov_dir / "FMV_02.bik",
-        mov_dir / "WristbandGet.bik",
+  const std::string fname_low = lower_str(rel.filename().string());
+
+  if (!game_root.empty()) {
+    const auto vid_dir = game_root / "media" / "ui" / "videos";
+    const auto mov_dir = game_root / "media" / "movies";
+    // Prefer authentic disc WMV or BIK movie if present under media/ui/videos or media/movies.
+    const std::filesystem::path candidates[] = {
+        vid_dir / rel,
+        mov_dir / (stem + ".bik"),
+        vid_dir / (stem + ".bik"),
+        mov_dir / rel.filename(),
     };
-    for (const auto& fb : fbs) {
-      if (std::filesystem::exists(fb, ec)) return fb;
+    for (const auto& c : candidates) {
+      if (std::filesystem::exists(c, ec)) return c;
+    }
+    if (id == FmvMovieId::kWristbandGet) {
+      const std::filesystem::path fbs[] = {
+          vid_dir / "FMV_02.wmv",
+          mov_dir / "FMV_02.bik",
+          mov_dir / "WristbandGet.bik",
+      };
+      for (const auto& fb : fbs) {
+        if (std::filesystem::exists(fb, ec)) return fb;
+      }
+    }
+  }
+
+  // Search extracted DLC packages under `state_root` (Rally & 1000 Club intro/background WMVs).
+  auto scan_dlc_root = [&](const std::filesystem::path& dlc_root) -> std::filesystem::path {
+    if (dlc_root.empty() || !std::filesystem::is_directory(dlc_root, ec)) return {};
+    for (const auto& pkg : std::filesystem::directory_iterator(dlc_root, ec)) {
+      if (!pkg.is_directory(ec)) continue;
+      const auto dlczips = pkg.path() / "Media" / "DLCZips";
+      if (!std::filesystem::is_directory(dlczips, ec)) continue;
+      for (const auto& zdir : std::filesystem::directory_iterator(dlczips, ec)) {
+        if (!zdir.is_directory(ec)) continue;
+        const auto vdir = zdir.path() / "Media" / "UI" / "Videos";
+        const std::filesystem::path direct[] = {
+            vdir / rel,
+            vdir / "Splash_Intros" / rel.filename(),
+            vdir / rel.filename(),
+        };
+        for (const auto& c : direct) {
+          if (std::filesystem::exists(c, ec)) return c;
+        }
+        // Case-insensitive scan inside Splash_Intros when running on case-sensitive filesystems.
+        const auto sdir = vdir / "Splash_Intros";
+        if (std::filesystem::is_directory(sdir, ec)) {
+          for (const auto& f : std::filesystem::directory_iterator(sdir, ec)) {
+            if (lower_str(f.path().filename().string()) == fname_low) return f.path();
+          }
+        }
+      }
+    }
+    return {};
+  };
+
+  if (!state_root.empty()) {
+    const std::filesystem::path dlc_roots[] = {
+        state_root / "user" / "0000000000000000" / "4D5309C9" / "00000002",
+        state_root / "00000002",
+        state_root,
+    };
+    for (const auto& r : dlc_roots) {
+      if (auto hit = scan_dlc_root(r); !hit.empty()) return hit;
     }
   }
   return {};
@@ -221,6 +517,9 @@ bool FmvPlayer::probe(const std::filesystem::path& wmv_path, FmvProbeInfo& out) 
   out = FmvProbeInfo{};
   std::error_code ec;
   if (wmv_path.empty() || !std::filesystem::exists(wmv_path, ec)) return false;
+#ifdef _WIN32
+  if (is_wmv_path(wmv_path) && mf_probe_wmv(wmv_path, out)) return true;
+#endif
   const auto ffmpeg = audio::find_ffmpeg();
   const auto ffprobe = find_ffprobe_for(ffmpeg);
   if (ffprobe.empty()) return false;
@@ -278,13 +577,18 @@ bool FmvPlayer::decode_frame_at(const std::filesystem::path& wmv_path, double ti
     if (error) *error = "FMV file not found: " + wmv_path.string();
     return false;
   }
+  target_w = std::max(16, target_w);
+  target_h = std::max(16, target_h);
+#ifdef _WIN32
+  if (is_wmv_path(wmv_path) && mf_decode_frame_wmv(wmv_path, time_s, target_w, target_h, out_rgba, error)) {
+    return true;
+  }
+#endif
   const auto ffmpeg = audio::find_ffmpeg();
   if (ffmpeg.empty()) {
     if (error) *error = "ffmpeg executable not found";
     return false;
   }
-  target_w = std::max(16, target_w);
-  target_h = std::max(16, target_h);
   char tbuf[32];
   std::snprintf(tbuf, sizeof tbuf, "%.3f", std::max(0.0, time_s));
   const std::string cmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v error -ss " + tbuf + " -i " +
@@ -320,10 +624,19 @@ bool FmvPlayer::open(const std::filesystem::path& wmv_path, std::string_view lan
     if (error) *error = "FMV not found: " + wmv_path.string();
     return false;
   }
-  const auto ffmpeg = audio::find_ffmpeg();
-  if (ffmpeg.empty()) {
-    if (error) *error = "ffmpeg not found";
-    return false;
+
+#ifdef _WIN32
+  const bool use_mf = is_wmv_path(wmv_path);
+#else
+  const bool use_mf = false;
+#endif
+  std::filesystem::path ffmpeg;
+  if (!use_mf) {
+    ffmpeg = audio::find_ffmpeg();
+    if (ffmpeg.empty()) {
+      if (error) *error = "ffmpeg not found";
+      return false;
+    }
   }
 
   FmvProbeInfo info;
@@ -368,6 +681,14 @@ bool FmvPlayer::open(const std::filesystem::path& wmv_path, std::string_view lan
   frame_serial_ = 1;
   uploaded_serial_ = 0;
 
+#ifdef _WIN32
+  if (use_mf) {
+    if (loop || (probed && !info.has_audio)) audio_eof_.store(true, std::memory_order_release);
+    video_thread_ = std::thread(&FmvPlayer::mf_worker, this, wmv_path, audio_idx, width_, height_, loop);
+    return true;
+  }
+#endif
+
   const std::string loop_flag = loop ? " -stream_loop -1" : "";
   const std::string vcmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v error" + loop_flag + " -i " +
                            quote_arg(wmv_path.string()) + " -map 0:v:0 -vf scale=" + std::to_string(width_) + ":" +
@@ -386,9 +707,10 @@ bool FmvPlayer::open(const std::filesystem::path& wmv_path, std::string_view lan
 }
 
 bool FmvPlayer::open_or_fallback(const std::filesystem::path& game_root, FmvMovieId id, std::string_view language,
-                                 int target_w, int target_h, double fallback_duration_s) {
+                                 int target_w, int target_h, double fallback_duration_s,
+                                 const std::filesystem::path& state_root) {
   movie_id_ = id;
-  const auto path = resolve_movie(game_root, id);
+  const auto path = resolve_movie(game_root, id, state_root);
   if (!path.empty() && open(path, language, target_w, target_h, nullptr)) {
     movie_id_ = id;
     return true;
@@ -443,15 +765,48 @@ void FmvPlayer::skip() {
 }
 
 int FmvPlayer::current_subtitle_index() const {
-  int idx = -1;
-  for (const auto& c : subtitles_) {
-    if (clock_s_ >= c.start_s && clock_s_ < c.start_s + 5.0) idx = c.index;
+  for (size_t i = 0; i < subtitles_.size(); ++i) {
+    const double start = subtitles_[i].start_s;
+    const double end = (i + 1 < subtitles_.size())
+                           ? std::min(subtitles_[i + 1].start_s, start + 6.5)
+                           : (start + 5.5);
+    if (clock_s_ >= start && clock_s_ < end) return subtitles_[i].index;
   }
-  return idx;
+  return -1;
 }
 
 std::string FmvPlayer::current_subtitle_text() const {
   if (!active_) return {};
+  int idx = current_subtitle_index();
+  if (idx < 0 && synthetic_) {
+    idx = int(clock_s_ / 3.0);
+  }
+  if (idx < 0) return {};
+
+  const char* prefix = nullptr;
+  if (movie_id_ == FmvMovieId::kFmv01Opening || title_ == "FMV_01") prefix = "IDS_FMV_01_";
+  else if (movie_id_ == FmvMovieId::kFmv02Ceremony || movie_id_ == FmvMovieId::kWristbandGet || title_ == "FMV_02")
+    prefix = "IDS_FMV_02_";
+  else if (movie_id_ == FmvMovieId::kFmv04Credits || title_ == "FMV_04") prefix = "IDS_FMV_04_";
+  else return {};
+
+  // 1. Resolve authentic localized subtitle from `Subtitles.str` (e.g. IDS_FMV_01_0..17).
+  SubtitleResolver fn;
+  {
+    std::lock_guard<std::mutex> lk(subtitle_resolver_mutex());
+    fn = subtitle_resolver_fn();
+  }
+  if (fn) {
+    const std::string key = std::string(prefix) + std::to_string(idx);
+    const uint32_t packed = (uint32_t(fh1::string_hash("Subtitles")) << 16) | uint32_t(fh1::string_hash(key));
+    const std::string ref = "_&" + std::to_string(packed);
+    const std::string resolved = fn(ref);
+    if (!resolved.empty() && resolved != ref && resolved.rfind("_&", 0) != 0) {
+      return resolved;
+    }
+  }
+
+  // 2. Synthetic / fixture fallback when no StringTables are loaded.
   static const char* kFmv01Lines[] = {
       "SCOTT TYLER: Welcome to Colorado — the Horizon Festival is officially underway!",
       "ALICE HART: Cars, music, and the greatest open roads in America. Only 250 festival passes remain!",
@@ -465,23 +820,218 @@ std::string FmvPlayer::current_subtitle_text() const {
       "ALICE HART: Colorado has a new Horizon Champion — thank you for making this the greatest Festival ever!",
       "SCOTT TYLER: Turn up the radio and keep driving — the roads of Horizon Colorado are yours forever!",
   };
-
-  int idx = current_subtitle_index();
-  if (idx < 0 && synthetic_) {
-    idx = int(clock_s_ / 3.0);
-  }
-  if (idx < 0) return {};
   if (movie_id_ == FmvMovieId::kFmv01Opening || title_ == "FMV_01") {
     return kFmv01Lines[size_t(idx) % std::size(kFmv01Lines)];
   }
   if (movie_id_ == FmvMovieId::kFmv02Ceremony || movie_id_ == FmvMovieId::kWristbandGet || title_ == "FMV_02") {
     return kFmv02Lines[size_t(idx) % std::size(kFmv02Lines)];
   }
-  if (movie_id_ == FmvMovieId::kFmv04Credits || title_ == "FMV_04") {
-    return kFmv04Lines[size_t(idx) % std::size(kFmv04Lines)];
-  }
-  return {};
+  return kFmv04Lines[size_t(idx) % std::size(kFmv04Lines)];
 }
+
+#ifdef _WIN32
+void FmvPlayer::mf_worker(std::filesystem::path wmv_path, int audio_idx, int target_w, int target_h, bool loop) {
+  MfSessionGuard guard;
+  if (!guard.mf_ok) {
+    video_eof_.store(true, std::memory_order_release);
+    audio_eof_.store(true, std::memory_order_release);
+    return;
+  }
+  IMFSourceReader* reader = nullptr;
+  if (!mf_create_reader(wmv_path, &reader)) {
+    video_eof_.store(true, std::memory_order_release);
+    audio_eof_.store(true, std::memory_order_release);
+    return;
+  }
+
+  reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
+  reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
+
+  DWORD video_stream_id = DWORD(-1);
+  DWORD audio_stream_id = DWORD(-1);
+  int audio_seen = 0;
+  for (DWORD s = 0; s < 32; ++s) {
+    IMFMediaType* st = nullptr;
+    const HRESULT hr = reader->GetNativeMediaType(s, 0, &st);
+    if (hr == MF_E_INVALIDSTREAMNUMBER) break;
+    if (SUCCEEDED(hr) && st) {
+      GUID major{};
+      if (SUCCEEDED(st->GetMajorType(&major))) {
+        if (major == MFMediaType_Video && video_stream_id == DWORD(-1)) {
+          video_stream_id = s;
+        } else if (major == MFMediaType_Audio) {
+          if (audio_stream_id == DWORD(-1) || audio_seen == audio_idx) {
+            audio_stream_id = s;
+          }
+          ++audio_seen;
+        }
+      }
+      st->Release();
+    }
+  }
+
+  IMFMediaType* rgb_type = nullptr;
+  if (SUCCEEDED(MFCreateMediaType(&rgb_type))) {
+    rgb_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    rgb_type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+    reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, rgb_type);
+    rgb_type->Release();
+  }
+
+  int src_w = target_w, src_h = target_h, stride = target_w * 4;
+  IMFMediaType* vcur = nullptr;
+  if (SUCCEEDED(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &vcur)) && vcur) {
+    UINT32 w = 0, h = 0;
+    if (SUCCEEDED(MFGetAttributeSize(vcur, MF_MT_FRAME_SIZE, &w, &h)) && w > 0 && h > 0) {
+      src_w = int(w);
+      src_h = int(h);
+    }
+    UINT32 st_u32 = 0;
+    if (SUCCEEDED(vcur->GetUINT32(MF_MT_DEFAULT_STRIDE, &st_u32))) {
+      stride = int(static_cast<int32_t>(st_u32));
+    } else {
+      stride = src_w * 4;
+    }
+    vcur->Release();
+  }
+
+  bool have_audio = false;
+  if (!loop && audio_stream_id != DWORD(-1)) {
+    reader->SetStreamSelection(audio_stream_id, TRUE);
+    IMFMediaType* pcm_type = nullptr;
+    if (SUCCEEDED(MFCreateMediaType(&pcm_type))) {
+      pcm_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+      pcm_type->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float);
+      pcm_type->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+      pcm_type->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, kAudioRate);
+      pcm_type->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 32);
+      pcm_type->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 8);
+      pcm_type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, kAudioRate * 8);
+      if (SUCCEEDED(reader->SetCurrentMediaType(audio_stream_id, nullptr, pcm_type))) {
+        have_audio = true;
+      } else {
+        reader->SetStreamSelection(audio_stream_id, FALSE);
+      }
+      pcm_type->Release();
+    }
+  }
+  if (!have_audio) audio_eof_.store(true, std::memory_order_release);
+
+  const size_t dst_bytes = size_t(target_w) * size_t(target_h) * 4;
+  double pts_offset = 0.0;
+  double last_pts = 0.0;
+  bool v_eof = false;
+  bool a_eof = !have_audio;
+
+  while (!stop_.load(std::memory_order_acquire)) {
+    bool v_full = false;
+    bool a_full = false;
+    {
+      std::lock_guard<std::mutex> lk(video_mu_);
+      v_full = video_q_.size() >= 6;
+    }
+    if (have_audio) {
+      std::lock_guard<std::mutex> lk(audio_mu_);
+      a_full = audio_q_.size() >= size_t(kAudioRate) * 2;
+    } else {
+      a_full = true;
+    }
+    if (v_full && a_full) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      continue;
+    }
+
+    // Prefer reading the stream whose queue has room so neither starves.
+    DWORD want_stream = MF_SOURCE_READER_ANY_STREAM;
+    if (v_full && !a_full && !a_eof) want_stream = audio_stream_id;
+    else if (a_full && !v_full && !v_eof) want_stream = video_stream_id;
+
+    DWORD actual_stream = 0;
+    DWORD flags = 0;
+    LONGLONG ts = 0;
+    IMFSample* sample = nullptr;
+    const HRESULT hr = reader->ReadSample(want_stream, 0, &actual_stream, &flags, &ts, &sample);
+    if (FAILED(hr)) {
+      if (sample) sample->Release();
+      break;
+    }
+    if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
+      if (actual_stream == video_stream_id) {
+        IMFMediaType* cur = nullptr;
+        if (SUCCEEDED(reader->GetCurrentMediaType(video_stream_id, &cur)) && cur) {
+          UINT32 w = 0, h = 0;
+          if (SUCCEEDED(MFGetAttributeSize(cur, MF_MT_FRAME_SIZE, &w, &h)) && w > 0 && h > 0) {
+            src_w = int(w);
+            src_h = int(h);
+          }
+          UINT32 st_u32 = 0;
+          if (SUCCEEDED(cur->GetUINT32(MF_MT_DEFAULT_STRIDE, &st_u32))) {
+            stride = int(static_cast<int32_t>(st_u32));
+          } else {
+            stride = src_w * 4;
+          }
+          cur->Release();
+        }
+      }
+    }
+    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
+      if (sample) sample->Release();
+      if (actual_stream == video_stream_id) v_eof = true;
+      else if (actual_stream == audio_stream_id) a_eof = true;
+      else { v_eof = true; a_eof = true; }
+      if (v_eof && a_eof) {
+        if (loop) {
+          PROPVARIANT pos;
+          PropVariantInit(&pos);
+          pos.vt = VT_I8;
+          pos.hVal.QuadPart = 0;
+          if (SUCCEEDED(reader->SetCurrentPosition(GUID_NULL, pos))) {
+            PropVariantClear(&pos);
+            pts_offset = last_pts + (1.0 / std::max(1.0, fps_));
+            v_eof = false;
+            a_eof = !have_audio;
+            continue;
+          }
+          PropVariantClear(&pos);
+        }
+        break;
+      }
+      continue;
+    }
+    if (!sample) continue;
+
+    IMFMediaBuffer* buf = nullptr;
+    if (SUCCEEDED(sample->ConvertToContiguousBuffer(&buf)) && buf) {
+      BYTE* data = nullptr;
+      DWORD cur_len = 0;
+      if (SUCCEEDED(buf->Lock(&data, nullptr, &cur_len)) && data && cur_len > 0) {
+        if (actual_stream == video_stream_id && cur_len >= DWORD(std::abs(stride) * src_h)) {
+          VideoFrame vf;
+          const double raw_pts = std::max(0.0, double(ts) * 1e-7);
+          vf.pts = pts_offset + raw_pts;
+          last_pts = std::max(last_pts, vf.pts);
+          vf.rgba.resize(dst_bytes);
+          convert_bgra_to_rgba_scaled(data, src_w, src_h, stride, vf.rgba.data(), target_w, target_h);
+          std::lock_guard<std::mutex> lk(video_mu_);
+          video_q_.push_back(std::move(vf));
+        } else if (have_audio && actual_stream == audio_stream_id) {
+          const size_t n_floats = cur_len / sizeof(float);
+          const float* fptr = reinterpret_cast<const float*>(data);
+          std::lock_guard<std::mutex> lk(audio_mu_);
+          audio_q_.insert(audio_q_.end(), fptr, fptr + n_floats);
+        }
+        buf->Unlock();
+      }
+      buf->Release();
+    }
+    sample->Release();
+  }
+
+  reader->Release();
+  video_eof_.store(true, std::memory_order_release);
+  audio_eof_.store(true, std::memory_order_release);
+}
+#endif
 
 void FmvPlayer::video_worker(std::string cmd, int w, int h, double fps) {
   FILE* pipe = open_pipe_read(cmd);

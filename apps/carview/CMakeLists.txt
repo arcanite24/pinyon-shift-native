@@ -109,7 +109,9 @@ target_compile_definitions(carview_render PUBLIC
   SHIFT_BUILD_CONFIG="$<IF:$<BOOL:$<CONFIG>>,$<CONFIG>,${CMAKE_BUILD_TYPE}>"
   $<$<BOOL:${SHIFT_ENABLE_RAY_TRACING}>:SHIFT_ENABLE_RAY_TRACING=1>)
 target_link_libraries(carview_render PUBLIC fh1data shift_cars shift_drive shift_world shift_rhi shift_volk shift_vma SDL3::SDL3-static)
-if(NOT WIN32)
+if(WIN32)
+  target_link_libraries(carview_render PUBLIC mfplat mfreadwrite mfuuid ole32)
+else()
   find_package(Threads REQUIRED)
   target_link_libraries(carview_render PUBLIC Threads::Threads)
 endif()

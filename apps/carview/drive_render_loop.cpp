@@ -294,21 +294,62 @@ void DriveSession::run_window_loop() {
             if (!app.fmv_player.update(frame_dt, true)) {
               app.audio_host.set_fmv_audio(nullptr, nullptr);
               host.renderer.reset_auto_exposure();
+              if (title_attract_playing) {
+                title_attract_playing = false;
+                title_idle_s = 0.0;
+                if (!app.no_title) app.show_title = true;
+              }
             }
           }
           // Authentic PressStart.wmv seamless looping animated title screen backdrop when present & decodable;
           // otherwise falls back seamlessly to the live 3D Colorado Festival scenic overlook.
+          // After 53 s idle on Press Start (retail attract timer), launch Forza_Tone.wmv / FMV_01.wmv.
           if (app.show_title && !app.fmv_player.active() && !app.headless) {
             if (!app.title_video_tried) {
               app.title_video_tried = true;
-              const auto mp = carview::FmvPlayer::resolve_movie(app.game_root_of(), carview::FmvMovieId::kPressStart);
-              if (!mp.empty()) app.title_video.open(mp, app.language, 960, 540, nullptr, true);
+              const auto mp = carview::FmvPlayer::resolve_movie(app.game_root_of(), carview::FmvMovieId::kPressStart,
+                                                                app.state_root);
+              if (!mp.empty()) app.title_video.open(mp, app.language, 1280, 720, nullptr, true);
             }
             if (app.title_video.active()) {
               app.title_video.update(frame_dt, false);
             }
+            if (!app.title_menu_phase && !settings_page.is_open()) {
+              title_idle_s += frame_dt;
+              if (title_idle_s >= 53.0) {
+                title_idle_s = 0.0;
+                auto ap = carview::FmvPlayer::resolve_movie(app.game_root_of(), carview::FmvMovieId::kForzaTone,
+                                                            app.state_root);
+                if (ap.empty()) {
+                  ap = carview::FmvPlayer::resolve_movie(app.game_root_of(), carview::FmvMovieId::kFmv01Opening,
+                                                         app.state_root);
+                }
+                if (!ap.empty() && app.fmv_player.open(ap, app.language, 1280, 720)) {
+                  if (app.title_video.active()) app.title_video.close();
+                  app.title_video_tried = false;
+                  title_attract_playing = true;
+                  app.show_title = false;
+                  app.audio_host.set_fmv_audio(
+                      [](void* ctx, float* out, int fr) {
+                        return static_cast<carview::FmvPlayer*>(ctx)->read_audio(out, fr);
+                      },
+                      &app.fmv_player);
+                }
+              }
+            } else {
+              title_idle_s = 0.0;
+            }
           } else if (app.title_video.active()) {
             app.title_video.close();
+          }
+          if (loading_screen.active()) {
+            loading_screen.update(frame_dt);
+            const double elapsed = loading_screen.elapsed();
+            const double min_hold = std::max(0.45, loading_min_until);
+            loading_screen.set_progress(float(std::clamp(elapsed / min_hold, 0.05, 1.0)));
+            if (elapsed >= min_hold) {
+              loading_screen.stop();
+            }
           }
           if (app.story_intro.stage() == carview::StoryStage::kBootSplash) {
             const drive::Vec3 vp = vehicle.position();
@@ -367,7 +408,7 @@ void DriveSession::run_window_loop() {
             app.audio_host.radio_set_time_of_day(app.tod_clock.hour());
           }
           const bool trainer_freecam_active = slice12.trainer.effective_free_camera();
-          const bool menu_paused = app.show_title || app.fmv_player.active() || ceremony.active ||
+          const bool menu_paused = app.show_title || app.fmv_player.active() || loading_screen.active() || ceremony.active ||
                                    app.campaign.is_blocking_gameplay() || grid_menu_open || menu.open ||
                                    map_open || events_page.is_open() || outpost_hub_open || garage_open ||
                                    shop.is_open() || autoshow.is_open() || career_page.is_open() ||

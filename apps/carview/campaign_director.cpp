@@ -89,7 +89,7 @@ void CampaignDirector::dispatch_action_media(const race::CampaignAction& act, Fm
   if (act.play_fmv) {
     const FmvMovieId mid = movie_for_cutscene(act.fmv_cutscene);
     const double fb_dur = act.fmv_cutscene == race::CutsceneKind::kFinaleCreditsFmv ? 16.0 : 8.0;
-    if (fmv.open_or_fallback(game_root_, mid, language_, 640, 360, fb_dur) && audio) {
+    if (fmv.open_or_fallback(game_root_, mid, language_, 1280, 720, fb_dur) && audio) {
       audio->set_fmv_audio(
           [](void* ctx, float* out, int frames) { return static_cast<FmvPlayer*>(ctx)->read_audio(out, frames); },
           &fmv);

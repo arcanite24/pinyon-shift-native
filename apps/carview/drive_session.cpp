@@ -28,7 +28,8 @@ drive::CarParams build_session_vehicle_params(DriveApp& app, DriveWorldHost& hos
                                               const cars::bake::CarInfo& info,
                                               audio::UpgradeLevels& audio_upgrades,
                                               int& audio_trans_level, int& audio_turbo_level,
-                                              int& audio_sc_level,
+                                              int& audio_sc_level, bool& audio_sc_is_centrifugal,
+                                              int& audio_camshaft_level,
                                               std::vector<std::string>& physics_notes) {
         if (app.have_garage && app.parts_db.valid())
           if (const garage::Car* gc = app.career_garage.selected_car())
@@ -42,8 +43,14 @@ drive::CarParams build_session_vehicle_params(DriveApp& app, DriveWorldHost& hos
                 audio_upgrades.intake = int(rows.get("List_UpgradeEngineIntake.Level", 0));
                 audio_upgrades.exhaust = int(rows.get("List_UpgradeEngineExhaust.Level", 0));
                 audio_trans_level = int(rows.get("List_UpgradeDrivetrainTransmission.Level", 0));
-                audio_turbo_level = int(rows.get("List_UpgradeEngineTurboSingle.Level", 0));
-                audio_sc_level = int(rows.get("List_UpgradeEngineCSC.Level", 0));
+                audio_turbo_level = std::max({int(rows.get("List_UpgradeEngineTurboSingle.Level", 0)),
+                                              int(rows.get("List_UpgradeEngineTurboTwin.Level", 0)),
+                                              int(rows.get("List_UpgradeEngineTurboQuad.Level", 0))});
+                const int csc_lvl = int(rows.get("List_UpgradeEngineCSC.Level", 0));
+                const int dsc_lvl = int(rows.get("List_UpgradeEngineDSC.Level", 0));
+                audio_sc_level = std::max(csc_lvl, dsc_lvl);
+                audio_sc_is_centrifugal = (csc_lvl > 0 && csc_lvl >= dsc_lvl);
+                audio_camshaft_level = int(rows.get("List_UpgradeEngineCamshaft.Level", 0));
                 std::printf("garage: car %lld (%s) with its parts, %.0f kg (%.1f s)\n", (long long)gc->id,
                             it->second.c_str(), rows.get("List_UpgradeCarBodyWeight.Mass", 0),
                             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
@@ -61,7 +68,8 @@ DriveSession::DriveSession(DriveApp& a, DriveWorldHost& h)
       host(h),
       info(h.showroom.car()),
       vehicle(build_session_vehicle_params(a, h, h.showroom.car(), audio_upgrades, audio_trans_level,
-                                           audio_turbo_level, audio_sc_level, physics_notes)),
+                                           audio_turbo_level, audio_sc_level, audio_sc_is_centrifugal,
+                                           audio_camshaft_level, physics_notes)),
       race_models{a.race.get()},
       festival_guard{&h.showroom, &festival_guests},
       save_due(a.new_career_save_pending),
@@ -203,6 +211,8 @@ void DriveSession::init_session() {
         if (!contact_log.f) std::fprintf(stderr, "carview: cannot write %s\n", app.contacts_log_path.string().c_str());
       }
       app.new_career_save_pending = false;
+      FmvPlayer::set_subtitle_resolver(carview::game_text);
+      loading_screen.load_definitions(app.game_root_of(), app.race ? "festivalevent" : "freeroam");
       settings_page.set_available_luts(scan_lut_files(carview::settings_path().parent_path()));
       slice12.save_tree_label = (app.slice12_modded_save || app.mods_session.isolation().isolated) ? "user-modded" : "user";
       boot_live_settings = {};

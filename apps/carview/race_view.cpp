@@ -1072,7 +1072,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   // Co-Driver pace-note gate crossings, and stage finish ranking.
   if (stage_ && session_->clock() >= 0.0 && !session_->finished(n)) {
     const auto& pos = player.position();
-    codriver_.observe(session_->clock(), pos.x, pos.z);
+    codriver_.observe(session_->clock(), pos.x, pos.z, std::fabs(player.speed()));
   }
   if (have_stage_track_ && stage_place_ == 0) {
     if (session_->finished(n)) {

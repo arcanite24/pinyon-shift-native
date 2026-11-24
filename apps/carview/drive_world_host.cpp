@@ -449,6 +449,9 @@ bool DriveWorldHost::open_world_and_car() {
               app.audio_host.init_satnav(game_root, sfx_cache, app.language, app.metric_units);
               app.audio_host.init_vo(game_root, app.language);
               app.audio_host.init_acoustics(game_root, sfx_cache, app.world_dir, app.rally_catalog.package_dir);
+              if (!app.colorado_world() && !app.rally_catalog.package_dir.empty()) {
+                app.audio_host.init_codriver(app.rally_catalog.package_dir, sfx_cache, app.language);
+              }
             }
             if (fh1::CjkFont::language_needs_cjk(app.language) && !carview::ui::cjk_font_loaded()) {
               auto cjk = std::make_shared<fh1::CjkFont>();

@@ -634,7 +634,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         }
         carview::ui::List list;
         if (app.show_title && !settings_page.is_open() && app.title_video.active()) {
-          app.title_video.draw(list, float(width), float(height));
+          app.title_video.draw(list, float(width), float(height), {}, false);
         }
         // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally/Club screens, campaign cinematics, and grid menu.
         const bool pre_race_swoop_hide_hud = pre_race_blend_t >= 0.0 && pre_race_blend_t < 0.85;
@@ -683,6 +683,10 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           list.clear();
           app.fmv_player.draw(list, float(width), float(height), {}, true, app.campaign.skip_hold_progress());
           carview::campaign_ui::draw_transition(list, app.campaign.flow().transition(), float(width), float(height));
+        }
+        if (loading_screen.active()) {
+          list.clear();
+          loading_screen.draw(list, float(width), float(height));
         }
         if (rewind_buf.active()) {
           carview::build_rewind_overlay(list, float(width), float(height), rewind_buf.is_rewinding(),

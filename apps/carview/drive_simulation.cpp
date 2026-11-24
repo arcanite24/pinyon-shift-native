@@ -240,6 +240,7 @@ bool DriveSession::free_roam_step() {
             popup = {"BARN FIND RUMOUR", "A CLASSIC IS HIDING NEARBY.  M FOR THE MAP", vehicle.time(), -1,
                      carview::ui::rgba(70, 210, 100)};
             app.campaign.on_barn_find(false, app.collectibles.barns[size_t(ev.index)].name, "", &app.audio_host);
+            app.audio_host.radio_trigger_special("BarnFindRumor");
             std::printf("t %.2f s: %s rumour at %.1f km driven\n", vehicle.time(),
                         app.collectibles.barns[size_t(ev.index)].name.c_str(), app.progress.total_distance / 1000);
           } else {
@@ -261,6 +262,7 @@ bool DriveSession::free_roam_step() {
             std::snprintf(line, sizeof line, "barn find! %s is in the garage", named.c_str());
             popup = {"BARN FIND!", named + " IS IN YOUR GARAGE", vehicle.time(), -1, carview::ui::rgba(70, 210, 100)};
             app.campaign.on_barn_find(true, b.name, named, &app.audio_host);
+            app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
             app.pending_barn_restorations.push_back({b.name, named, 45.0, 0.0});
             std::printf("t %.2f s: %s found: %s (Data_Car %d) to the garage\n", vehicle.time(), b.name.c_str(),
                         named.c_str(), b.car_id);
@@ -334,16 +336,38 @@ bool DriveSession::step(const drive::Input& user_in) {
           app.race->after_step(vehicle, *host.ground, host.streamer->centre_x(), host.streamer->centre_z(),
                            host.streamer->collision_radius(), traffic.get());
           const bool r_started = app.race->session().started();
-          if (r_started && !club_race_was_started) club_pending.event_started = true;
+          if (r_started && !club_race_was_started) {
+            club_pending.event_started = true;
+            prev_audio_checkpoint = app.race->player_checkpoints_passed();
+            prev_audio_lap = int(app.race->session().car(app.race->player_index()).laps.size());
+          }
           club_race_was_started = r_started;
           const auto& pc = app.race->session().car(app.race->player_index());
           const bool r_finished = (pc.finish >= 0.0);
+          if (r_started) {
+            const int cur_cp = app.race->player_checkpoints_passed();
+            if (cur_cp > prev_audio_checkpoint && !r_finished) {
+              app.audio_host.trigger_ui(audio::UiCue::kCheckpoint);
+            }
+            prev_audio_checkpoint = cur_cp;
+            const int cur_lap = int(pc.laps.size());
+            if (cur_lap > prev_audio_lap && !r_finished) {
+              app.audio_host.trigger_ui(audio::UiCue::kLap);
+            }
+            prev_audio_lap = cur_lap;
+          }
           if (r_finished && !club_race_was_finished) {
             club_pending.event_completed = true;
             club_pending.event_finish_place = pc.place;
+            app.audio_host.trigger_ui(audio::UiCue::kRaceFinish);
           }
           club_race_was_finished = r_finished;
           if (app.race->is_stage()) {
+            const uint32_t cd_done = app.audio_host.telemetry().codriver_completed_cues;
+            while (prev_codriver_completed < cd_done) {
+              ++prev_codriver_completed;
+              app.race->codriver().on_audio_cue_finished(app.race->session().clock());
+            }
             race::CoDriverAudioCue cd_cue;
             while (app.race->codriver().pop_audio_cue(cd_cue)) {
               app.audio_host.trigger_codriver(cd_cue.group + "/" + cd_cue.cue);
@@ -489,6 +513,14 @@ bool DriveSession::step(const drive::Input& user_in) {
             bhit.rel_speed_mps = float(std::fabs(vehicle.speed()));
             bhit.pos = {sev.pos[0], sev.pos[1], sev.pos[2]};
             bhit.is_break = true;
+            if (stem_l.find("wood") != std::string::npos || stem_l.find("fence") != std::string::npos ||
+                stem_l.find("log") != std::string::npos || stem_l.find("fruit") != std::string::npos) {
+              bhit.surface_hint = 4;
+            } else if (stem_l.find("metal") != std::string::npos || stem_l.find("hydrant") != std::string::npos ||
+                       stem_l.find("mailbox") != std::string::npos || stem_l.find("trash") != std::string::npos ||
+                       stem_l.find("pole") != std::string::npos || stem_l.find("sign") != std::string::npos) {
+              bhit.surface_hint = 3;
+            }
             app.audio_host.trigger_collision(bhit);
             if (sev.object_type_index == 1) app.audio_host.trigger_ui(audio::UiCue::kSignSmash);
           }
@@ -648,9 +680,21 @@ bool DriveSession::step(const drive::Input& user_in) {
             if (sev.kind == freeroam::SkillEvent::kSkillAwarded) {
               club_pending.skills.push_back(
                   {sev.skill_id, freeroam::club::skill_tracker_grade_to_club_grade(sev.grade)});
-            } else if (sev.kind == freeroam::SkillEvent::kChainBanked ||
-                       sev.kind == freeroam::SkillEvent::kChainLost) {
+              const int cur_mult = int(app.skill_tracker->hud().multiplier);
+              if (cur_mult > prev_audio_skill_mult) {
+                app.audio_host.trigger_ui(audio::UiCue::kSkillMultiplier);
+              } else {
+                app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
+              }
+              prev_audio_skill_mult = std::max(1, cur_mult);
+            } else if (sev.kind == freeroam::SkillEvent::kChainBanked) {
               club_pending.skill_chain_completed = true;
+              app.audio_host.trigger_ui(audio::UiCue::kSkillBank);
+              prev_audio_skill_mult = 1;
+            } else if (sev.kind == freeroam::SkillEvent::kChainLost) {
+              club_pending.skill_chain_completed = true;
+              app.audio_host.trigger_ui(audio::UiCue::kSkillBreak);
+              prev_audio_skill_mult = 1;
             }
             if (sev.kind == freeroam::SkillEvent::kFameSponsor && sev.credits > 0) {
               const int64_t scr = slice12.trainer.pacing.scale_credits(sev.credits);
@@ -672,6 +716,8 @@ bool DriveSession::step(const drive::Input& user_in) {
               app.sponsor_banner_at = vehicle.time();
               save_due = true;
             } else if (sev.kind == freeroam::SkillEvent::kRankUp) {
+              app.audio_host.trigger_ui(audio::UiCue::kRankUp);
+              app.audio_host.radio_trigger_festival_update("PopularityRankUp");
               app.campaign.on_popularity_rank_changed(sev.rank + 1, sev.rank, &app.audio_host);
               // Notify if a Showcase event unlocked at this rank!
               if (app.have_career_catalog) {
@@ -721,6 +767,7 @@ bool DriveSession::step(const drive::Input& user_in) {
           for (const auto& ev : speed_evs) {
             if (ev.kind == freeroam::SpeedActivityEvent::kTrapTriggered ||
                 ev.kind == freeroam::SpeedActivityEvent::kZoneCompleted) {
+              app.audio_host.trigger_ui(audio::UiCue::kSpeedCamera);
               const bool is_zone = (ev.kind == freeroam::SpeedActivityEvent::kZoneCompleted);
               int sb_id = 0;
               if (is_zone) {
@@ -749,6 +796,7 @@ bool DriveSession::step(const drive::Input& user_in) {
             const uint32_t fid = festival_mgr->spawn_ahead({fp.x, fp.y, fp.z}, fh, 18.0);
             if (fid && festival_mgr->start_head_to_head({fp.x, fp.y, fp.z}, fh, vehicle.time(), fid)) {
               club_pending.encounter_started = true;
+              app.audio_host.trigger_ui(audio::UiCue::kH2hGo);
             }
             if (app.have_prog_tables && app.career.driver_xp < 36000) {
               race::apply_progression_xp(app.career, 36000, current_make_id(), 18000, app.prog_tables);
@@ -762,6 +810,7 @@ bool DriveSession::step(const drive::Input& user_in) {
                                  &hres, traffic ? traffic->cars() : nullptr)) {
             club_pending.encounter_completed = true;
             club_pending.encounter_finish_place = hres.won ? 1 : 2;
+            app.audio_host.trigger_ui(hres.won ? audio::UiCue::kRaceFinish : audio::UiCue::kH2hLoss);
             ++app.h2h_races;
             if (hres.won) {
               ++app.h2h_wins;

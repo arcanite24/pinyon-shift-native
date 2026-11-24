@@ -167,6 +167,12 @@ struct DriveSession {
   std::vector<std::string> physics_notes;
   audio::UpgradeLevels audio_upgrades{};
   int audio_trans_level = 0, audio_turbo_level = 0, audio_sc_level = 0;
+  bool audio_sc_is_centrifugal = false;
+  int audio_camshaft_level = 0;
+  int prev_audio_checkpoint = 0;
+  int prev_audio_lap = 0;
+  int prev_audio_skill_mult = 1;
+  uint32_t prev_codriver_completed = 0;
   drive::Vehicle vehicle;
 
   std::vector<float> audio_track;
@@ -325,6 +331,10 @@ struct DriveSession {
   double pre_race_blend_t = -1.0;
   int grid_menu_selected = 0;
   double title_orbit_time = 0.0;
+  double title_idle_s = 0.0;
+  bool title_attract_playing = false;
+  LoadingScreen loading_screen;
+  double loading_min_until = -1.0;
   WorldTrigger active_trigger;
   WorldMarkerHud world_marker;
   std::vector<NameTagHud> name_tags;

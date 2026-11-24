@@ -73,6 +73,8 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 app.skip_intro_movies = ls.skip_intro_movies;
                 app.start_in_single_player = ls.start_in_single_player;
                 app.skip_vo_with_a = ls.skip_vo_with_a;
+                const bool prev_metric = app.metric_units;
+                const std::string prev_lang = app.language;
                 app.metric_units = ls.metric_units;
                 if (!ls.language.empty() && ls.language != app.language) {
                   app.language = ls.language;
@@ -86,6 +88,9 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                     carview::ui::set_cjk_font(nullptr);
                   }
                   ui_atlas_synced = false;
+                }
+                if (app.metric_units != prev_metric || app.language != prev_lang) {
+                  app.audio_host.reload_satnav(app.language, app.metric_units);
                 }
                 live_photo_through_walls = ls.photo_through_walls;
                 live_photo_wider_limits = ls.photo_wider_limits;
@@ -611,6 +616,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 int cw = 0, ch = 0;
                 SDL_GetWindowSizeInPixels(app.window, &cw, &ch);
                 if (cw > 0 && ch > 0) {
+                  app.audio_host.trigger_ui(audio::UiCue::kPhotoShutter);
                   photo_mode.begin_capture(uint32_t(cw), uint32_t(ch), 4);
                   pending_shot = PendingShot::kPhotoMode;
                   host.renderer.request_capture(false);

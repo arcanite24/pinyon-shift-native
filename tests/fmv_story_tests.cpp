@@ -1,12 +1,17 @@
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "audio/audio_engine.h"
 #include "drive/save.h"
+#include "fh1data/stringtables.h"
 #include "fmv_player.h"
 #include "hud.h"
 #include "settings.h"
@@ -98,8 +103,11 @@ void test_fmv_synthetic_and_audio_mix() {
 }
 
 void test_fmv_real_wmv_if_available() {
-  const std::filesystem::path sample =
+  std::filesystem::path sample =
       "../horizon1-recomp/.local/game/base/media/ui/videos/splash_intros/Dolby_Corona_Intro.wmv";
+  if (const char* gr = std::getenv("SHIFT_GAME_ROOT"); gr && *gr) {
+    sample = std::filesystem::path(gr) / "media" / "ui" / "videos" / "splash_intros" / "Dolby_Corona_Intro.wmv";
+  }
   std::error_code ec;
   if (!std::filesystem::exists(sample, ec)) return;  // optional on machines without disc
   carview::FmvProbeInfo info;
@@ -110,12 +118,33 @@ void test_fmv_real_wmv_if_available() {
   std::vector<uint8_t> rgba;
   std::string err;
   check(carview::FmvPlayer::decode_frame_at(sample, 4.0, 320, 180, rgba, &err),
-        "FFmpeg decodes frame from Dolby_Corona_Intro.wmv");
+        "in-process/FFmpeg decodes frame from Dolby_Corona_Intro.wmv");
   check(rgba.size() == 320u * 180u * 4u, "decoded WMV frame has expected byte count");
   int lit = 0;
   for (size_t i = 0; i < rgba.size(); i += 4)
     if (rgba[i] > 12 || rgba[i + 1] > 12 || rgba[i + 2] > 12) ++lit;
   check(lit > 1000, "decoded WMV frame is non-blank");
+
+  // Also test streaming playback (video + audio) of real WMV with no external ffmpeg on Windows.
+  carview::FmvPlayer stream;
+  check(stream.open(sample, "EN", 640, 360, &err, false), "FmvPlayer::open streams Dolby_Corona_Intro.wmv");
+  for (int i = 0; i < 40 && stream.active(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    stream.update(0.05, false);
+    int non_black = 0;
+    const auto& fr = stream.current_frame();
+    for (size_t k = 0; k < fr.size(); k += 16)
+      if (fr[k] > 8 || fr[k + 1] > 8 || fr[k + 2] > 8) ++non_black;
+    if (non_black > 200) break;
+  }
+  std::vector<float> audio_out(480 * 2, 0.0f);
+  int got_audio = 0;
+  for (int i = 0; i < 20 && got_audio == 0; ++i) {
+    got_audio = stream.read_audio(audio_out.data(), 480);
+    if (got_audio == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  check(got_audio > 0, "FmvPlayer streams real WMV audio frames");
+  stream.close();
 }
 
 void test_story_intro_state_machine() {
@@ -312,12 +341,52 @@ void test_menu_and_settings_pad_navigation() {
   }
 }
 
+void test_fmv_subtitles_and_dlc_discovery() {
+  // Verify localized Subtitles.str key resolution via fh1::string_hash("Subtitles") + IDS_FMV_01_0.
+  const uint32_t expected_packed =
+      (uint32_t(fh1::string_hash("Subtitles")) << 16) | uint32_t(fh1::string_hash("IDS_FMV_01_0"));
+  const std::string expected_ref = "_&" + std::to_string(expected_packed);
+  carview::FmvPlayer::set_subtitle_resolver([&](const std::string& ref) -> std::string {
+    if (ref == expected_ref) return "LOCALIZED_FMV_01_LINE_0";
+    return ref;
+  });
+  carview::FmvPlayer p;
+  p.open_synthetic(320, 180, 30.0, 5.0, "FMV_01");
+  check(p.current_subtitle_text() == "LOCALIZED_FMV_01_LINE_0",
+        "FmvPlayer resolves localized Subtitles.str entry via IDS_FMV_01_0 hash");
+  carview::FmvPlayer::set_subtitle_resolver(nullptr);
+
+  // Verify DLC movie resolution under state_root (Rally & 1000 Club).
+  std::error_code ec;
+  const auto tmp = std::filesystem::temp_directory_path(ec) / "shift_fmv_dlc_test";
+  std::filesystem::remove_all(tmp, ec);
+  const auto rally_dir = tmp / "user" / "0000000000000000" / "4D5309C9" / "00000002" / "RALLY_PKG" / "Media" /
+                         "DLCZips" / "1600_pri_65" / "Media" / "UI" / "Videos" / "Splash_Intros";
+  const auto club_dir = tmp / "user" / "0000000000000000" / "4D5309C9" / "00000002" / "CLUB_PKG" / "Media" /
+                        "DLCZips" / "2700_pri_65" / "Media" / "UI" / "Videos" / "Splash_Intros";
+  std::filesystem::create_directories(rally_dir, ec);
+  std::filesystem::create_directories(club_dir, ec);
+  {
+    std::ofstream(rally_dir / "BgLoop.wmv") << "stub";
+    std::ofstream(rally_dir / "Forza_Tone_Rally.wmv") << "stub";
+    std::ofstream(club_dir / "car_challenges_intro.wmv") << "stub";
+  }
+  check(!carview::FmvPlayer::resolve_movie({}, carview::FmvMovieId::kRallyBgLoop, tmp).empty(),
+        "resolve_movie finds Rally BgLoop.wmv in state_root DLCZips");
+  check(!carview::FmvPlayer::resolve_movie({}, carview::FmvMovieId::kRallyForzaTone, tmp).empty(),
+        "resolve_movie finds Rally Forza_Tone_Rally.wmv in state_root DLCZips");
+  check(!carview::FmvPlayer::resolve_movie({}, carview::FmvMovieId::kClubIntro, tmp).empty(),
+        "resolve_movie finds 1000 Club car_challenges_intro.wmv in state_root DLCZips");
+  std::filesystem::remove_all(tmp, ec);
+}
+
 }  // namespace
 
 int main() {
   test_fmv_def_and_subtitles();
   test_fmv_synthetic_and_audio_mix();
   test_fmv_real_wmv_if_available();
+  test_fmv_subtitles_and_dlc_discovery();
   test_story_intro_state_machine();
   test_pinyon_boot_switches_and_save();
   test_menu_and_settings_pad_navigation();
