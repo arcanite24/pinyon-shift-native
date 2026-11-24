@@ -379,15 +379,27 @@ void test_disc_verifier() {
   assert(via_media.valid);
   assert(via_media.resolved_root == disc);
 
-  // play.txt roundtrip
+  // play.txt roundtrip & zero-bake readiness (ready without any bake/cars/*.shiftbake)
   const auto play = root / "play";
   assert(launcher::write_play_config(play, disc));
   launcher::PlayConfig pc;
   assert(launcher::read_play_config(play, pc));
   assert(pc.game_root == disc);
+  assert(pc.game_root_valid);
+  assert(pc.disc_car_count == 1);
+  assert(pc.baked_car_count == 0);
+  assert(pc.is_ready());
+
+  // play.txt pointing to an invalid/missing disc is NOT ready
+  const auto bad_play = root / "bad_play";
+  assert(launcher::write_play_config(bad_play, root / "missing_disc"));
+  launcher::PlayConfig bad_pc;
+  assert(launcher::read_play_config(bad_play, bad_pc));
+  assert(!bad_pc.game_root_valid);
+  assert(!bad_pc.is_ready());
 
   std::filesystem::remove_all(root);
-  std::printf("  [ok] disc verifier & play.txt\n");
+  std::printf("  [ok] disc verifier & zero-bake play.txt readiness\n");
 }
 
 void test_hardware_advisor() {
@@ -793,7 +805,7 @@ void test_iso_probe_and_setup_extraction() {
   }
   assert(prog.finished);
   assert(prog.success);
-  assert(prog.stage_count == 5);
+  assert(prog.stage_count == 3);
   assert(prog.fraction == 1.0f);
   bool saw_iso_log = false;
   for (const auto& line : prog.log_lines) {
@@ -804,9 +816,69 @@ void test_iso_probe_and_setup_extraction() {
   launcher::PlayConfig pc;
   assert(launcher::read_play_config(play_dir, pc));
   assert(pc.game_root == play_dir / "game");
+  assert(pc.game_root_valid);
+  assert(pc.disc_car_count == 1);
+  assert(pc.baked_car_count == 0);
+  assert(pc.is_ready());
+  assert(!std::filesystem::exists(play_dir / "bake"));
 
   std::filesystem::remove_all(root);
   std::printf("  [ok] XISO/GDFX probe, direct extract, cancel & SetupRunner worker\n");
+}
+
+void test_zerobake_setup_runner() {
+  const auto root = make_temp_dir("shift_launcher_zerobake_test");
+  const auto disc = root / "disc";
+  const auto play_dir = root / "play";
+  std::filesystem::create_directories(disc / "media" / "tracks" / "colorado");
+  std::filesystem::create_directories(disc / "media" / "db");
+  std::filesystem::create_directories(disc / "media" / "cars");
+  {
+    std::ofstream(disc / "media" / "tracks" / "colorado" / "bin.zip") << "zip";
+    std::ofstream(disc / "media" / "db" / "gamedb.slt") << "dbdata";
+    std::ofstream(disc / "media" / "cars" / "VIP_Viper_13.zip") << "car";
+    std::ofstream(disc / "media" / "cars" / "NIS_SkylineGTRVSpecII_02.zip") << "car2";
+  }
+
+  // Zero-bake SetupRunner must succeed with NO carbake/soundbake binaries and create NO bake/ or sound/ dirs.
+  launcher::LauncherPaths paths = launcher::resolve_launcher_paths(root, true, "windows");
+  paths.carbake_bin.clear();
+  paths.soundbake_bin.clear();
+  paths.carview_bin.clear();
+
+  launcher::SetupOptions sopts;
+  sopts.game_root = disc;
+  sopts.state_root = paths.state_dir;
+  sopts.play_dir = play_dir;
+  sopts.build_index = false;
+  sopts.skip_bake = false;
+
+  launcher::SetupRunner runner;
+  assert(runner.start(paths, sopts));
+  launcher::SetupProgress prog;
+  for (int i = 0; i < 400; ++i) {
+    prog = runner.snapshot();
+    if (prog.finished) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  assert(prog.finished);
+  assert(prog.success);
+  assert(prog.stage_count == 2);
+  assert(prog.fraction == 1.0f);
+  assert(prog.stage_label == "Game Ready");
+  assert(!std::filesystem::exists(play_dir / "bake"));
+  assert(!std::filesystem::exists(play_dir / "sound"));
+
+  launcher::PlayConfig pc;
+  assert(launcher::read_play_config(play_dir, pc));
+  assert(pc.game_root == disc);
+  assert(pc.game_root_valid);
+  assert(pc.disc_car_count == 2);
+  assert(pc.baked_car_count == 0);
+  assert(pc.is_ready());
+
+  std::filesystem::remove_all(root);
+  std::printf("  [ok] zero-bake SetupRunner (no carbake/soundbake, instant Game Ready)\n");
 }
 
 void test_stfs_tu_v4_and_dlc_install() {
@@ -906,6 +978,7 @@ int main() {
   test_portable_paths();
   test_disc_verifier();
   test_iso_probe_and_setup_extraction();
+  test_zerobake_setup_runner();
   test_hardware_advisor();
   test_preset_mapping_and_cores();
   test_graphics_backend_selector();

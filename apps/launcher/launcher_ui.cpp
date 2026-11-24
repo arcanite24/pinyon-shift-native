@@ -326,7 +326,7 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
   const float hero_h = 124.0f * d;
   draw_card(l, x0, top_y, x1, top_y + hero_h, d);
 
-  const bool ready = st.play_cfg.baked_car_count > 0;
+  const bool ready = st.play_cfg.is_ready();
   const float play_w = 160.0f * d;
   const float play_h = 46.0f * d;
   const float play_x0 = x1 - 24.0f * d - play_w;
@@ -339,9 +339,13 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
   // Readiness line with subtle status dot
   const float sy = top_y + 56.0f * d;
   l.circle(x0 + 29.0f * d, sy + 7.5f * d, 4.0f * d, ready ? kGreen : kAmber);
+  const std::string car_info =
+      st.play_cfg.disc_car_count > 0
+          ? (std::to_string(st.play_cfg.disc_car_count) + " cars (direct-from-disc)")
+          : "Direct-from-disc streaming";
   const std::string ready_str =
-      ready ? ("Ready  \xC2\xB7  " + std::to_string(st.play_cfg.baked_car_count) + " cars baked  \xC2\xB7  " +
-               (st.play_cfg.has_colorado_index ? "Colorado world index" : "World index missing"))
+      ready ? ("Ready  \xC2\xB7  " + car_info + "  \xC2\xB7  " +
+               (st.play_cfg.has_colorado_index ? "Colorado world index" : "World index builds on launch"))
             : "Game files not configured yet  \xC2\xB7  Open Setup to select your disc folder";
   draw_text(l, x0 + 40.0f * d, sy, ready_str, FontFace::kRegular, 13.5f * d, ready ? kTextPrimary : kAmber,
             ui::Align::kLeft, text_max_w - 16.0f * d);
@@ -602,12 +606,12 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
               FontFace::kRegular, 12.5f * d, kTextMuted);
   }
 
-  // Step 3: Build Options, Progress & Collapsible Log Viewer
+  // Step 3: Instant Setup Options, Progress & Collapsible Log Viewer
   const float c3_y = c2_y + c2_h + 14.0f * d;
   const float c3_h = std::max(140.0f * d, y1 - c3_y);
   draw_card(l, x0, c3_y, x1, c3_y + c3_h, d);
 
-  draw_text(l, x0 + 20.0f * d, c3_y + 18.0f * d, "3. Build & Log", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  draw_text(l, x0 + 20.0f * d, c3_y + 18.0f * d, "3. Instant Setup & Log", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
 
   // Right-aligned options & log toggle
   const float tog_w = 94.0f * d;
@@ -615,10 +619,14 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
               c3_y + 40.0f * d, st.setup_log_expanded ? "Hide Log" : "Show Log", d);
   draw_checkbox(l, hits, st, "setup:toggle_index", x1 - 20.0f * d - tog_w - 176.0f * d, c3_y + 12.0f * d,
                 168.0f * d, 28.0f * d, "Build world index", st.setup_build_index, d);
-  draw_checkbox(l, hits, st, "setup:toggle_sounds", x1 - 20.0f * d - tog_w - 360.0f * d, c3_y + 12.0f * d,
-                176.0f * d, 28.0f * d, "Bake all car sounds", st.setup_all_sounds, d);
 
-  const float prog_y = c3_y + 52.0f * d;
+  const float mode_y = c3_y + 42.0f * d;
+  l.circle(x0 + 26.0f * d, mode_y + 7.5f * d, 3.6f * d, kGreen);
+  draw_text(l, x0 + 38.0f * d, mode_y,
+            "Direct-from-disc streaming \xE2\x80\x94 no 5.6 GB car bake required",
+            FontFace::kRegular, 12.0f * d, kTextSecondary, ui::Align::kLeft, cw - 58.0f * d);
+
+  const float prog_y = c3_y + 66.0f * d;
   const std::string stg = st.setup_progress.stage_label.empty() ? "Idle" : st.setup_progress.stage_label;
   draw_text(l, x0 + 20.0f * d, prog_y, stg, FontFace::kRegular, 12.5f * d, kTextPrimary, ui::Align::kLeft,
             cw - 110.0f * d);
@@ -628,7 +636,7 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
   draw_progress_bar(l, x0 + 20.0f * d, prog_y + 22.0f * d, cw - 40.0f * d, 8.0f * d,
                     st.setup_progress.fraction, st.setup_progress.success ? kGreen : kAccent, d);
 
-  const float log_y0 = prog_y + 42.0f * d;
+  const float log_y0 = prog_y + 40.0f * d;
   const float log_y1 = c3_y + c3_h - 16.0f * d;
   if (st.setup_log_expanded && log_y1 - log_y0 > 36.0f * d) {
     draw_inset_box(l, x0 + 20.0f * d, log_y0, x1 - 20.0f * d, log_y1, d);
@@ -643,7 +651,7 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
                 ui::Align::kLeft, cw - 74.0f * d);
     }
     if (total == 0) {
-      draw_text(l, x0 + 32.0f * d, log_y0 + 10.0f * d, "No build output yet.", FontFace::kMono, 11.5f * d, kTextMuted);
+      draw_text(l, x0 + 32.0f * d, log_y0 + 10.0f * d, "No setup output yet.", FontFace::kMono, 11.5f * d, kTextMuted);
     }
     draw_scrollbar(l, x1 - 30.0f * d, log_y0 + 6.0f * d, log_y1 - 6.0f * d, start, vis, total, d);
   } else {
@@ -1390,9 +1398,11 @@ void populate_demo_state(LauncherUiState& st) {
   st.paths.state_dir = "D:/ShiftEngine/data/state";
   st.paths.path_length_warning.clear();
 
-  st.play_cfg.baked_car_count = 240;
+  st.play_cfg.baked_car_count = 0;
+  st.play_cfg.disc_car_count = 240;
+  st.play_cfg.game_root_valid = true;
   st.play_cfg.has_colorado_index = true;
-  st.play_cfg.has_sound_dir = true;
+  st.play_cfg.has_sound_dir = false;
   st.play_cfg.game_root = "D:/ForzaHorizon/disc";
 
   if (!st.hw_info.gpu) {
@@ -1416,11 +1426,11 @@ void populate_demo_state(LauncherUiState& st) {
   st.disc_check.iso_format = "XGD3";
   st.disc_check.iso_file_count = 312;
   st.disc_check.iso_extract_bytes = 7420000000ull;
-  st.disc_check.required_space_bytes = st.disc_check.iso_extract_bytes + (4ull << 30);
+  st.disc_check.required_space_bytes = st.disc_check.iso_extract_bytes + (512ull << 20);
   st.disc_check.car_archive_count = 240;
   st.disc_check.free_space_bytes = 128ull << 30;
   st.disc_check.sufficient_space = true;
-  st.disc_check.summary = "XGD3 ISO verified (312 files, 240 cars, 6.9 GB extract, 10.9 GB req., 128.0 GB free).";
+  st.disc_check.summary = "XGD3 ISO verified (312 files, 240 cars, 6.9 GB extract, 7.4 GB req., 128.0 GB free).";
   st.disc_check.items = {
       {"Colorado World Archive", "media/tracks/colorado/bin.zip", true, true, 1200000000ull, ""},
       {"Game Database (gamedb.slt)", "media/db/gamedb.slt", true, true, 18400000ull, ""},
@@ -1431,15 +1441,15 @@ void populate_demo_state(LauncherUiState& st) {
   };
   st.setup_progress.fraction = 1.0f;
   st.setup_progress.success = true;
-  st.setup_progress.stage_label = "Complete (XGD3 ISO extracted, 240 cars and Colorado index built)";
+  st.setup_progress.stage_label = "Game Ready (XGD3 ISO extracted, Colorado index & AOT shaders cached)";
   st.setup_progress.log_lines = {
       "ISO verified (XGD3): D:/ForzaHorizon/Forza_Horizon.iso",
       "[ISO] 7076.3 / 7076.3 MB (312/312) media/tracks/colorado/bin.zip",
       "Disc verified: D:/ShiftEngine/data/play/game",
-      "carbake: 240 cars written to play/bake/cars",
-      "soundbake: engine loops written (48 kHz stereo)",
-      "colorado.index written (3,201 collision tiles)",
-      "Setup complete.",
+      "Wrote D:/ShiftEngine/data/play/play.txt",
+      "Colorado world index ready (3,201 models).",
+      "AOT shader pipelines cached.",
+      "Game ready in 1.6s (direct-from-disc streaming \xE2\x80\x94 no car bake required).",
   };
 
   // Demo Content (DLC/v4/UDLC/XE)
@@ -1528,7 +1538,7 @@ void populate_demo_state(LauncherUiState& st) {
       "Server started on 192.168.1.42:47615 (code 482917)",
       "UDP discovery listening on port 47616",
       "192.168.1.88 paired and fetched manifest",
-      "Serving play/bake/cars (240 files)",
+      "Serving play/world & disc media",
   };
 }
 
@@ -1589,7 +1599,7 @@ void build_launcher_ui(ui::List& l, const LauncherUiState& st, float width, floa
   // Quiet Sidebar Bottom Status
   const float sb_foot_y = height - 62.0f * d;
   draw_divider(l, 16.0f * d, sb_foot_y - 10.0f * d, sidebar_w - 16.0f * d, d);
-  const bool ready = st.play_cfg.baked_car_count > 0;
+  const bool ready = st.play_cfg.is_ready();
   l.circle(24.0f * d, sb_foot_y + 9.0f * d, 3.8f * d, ready ? kGreen : kAmber);
   draw_text(l, 34.0f * d, sb_foot_y + 1.0f * d, ready ? "Game ready" : "Setup required", FontFace::kSemiBold,
             12.0f * d, kTextPrimary);
