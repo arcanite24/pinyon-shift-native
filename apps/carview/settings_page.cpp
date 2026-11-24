@@ -845,7 +845,7 @@ LiveSettings SettingsPage::live_settings() const {
   const std::string shf = pick_val("shifting");
   c.assists.shifting = shf.empty() ? 0 : std::atoi(shf.c_str());
   const std::string ln = pick_val("driving line");
-  c.assists.driving_line = ln.empty() ? 0 : std::atoi(ln.c_str());
+  c.assists.driving_line = ln.empty() ? 2 : std::atoi(ln.c_str());
   c.assists.rewind = pick_label("rewind") != "off";
   // Slice 12 live settings.
   ls.camera_editor.chase_height_m = num_or("chase height", 0.0);

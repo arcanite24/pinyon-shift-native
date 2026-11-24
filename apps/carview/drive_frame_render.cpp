@@ -213,32 +213,9 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           host.showroom.set_braking(brake_glow(vehicle));
           tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
           place_world();
-          // 3D Driving / Braking Line ribbon on the road (SPEC-CAR-PHYSICS).
-          if (app.race && !grid_menu_open && !app.race->player_finished() &&
-              driving_line_mode != drive::DrivingLineMode::kOff) {
-            drive::build_driving_line(app.race->racing_line(), braking_table, app.race->player_progress(),
-                                      std::max(0.0, vehicle.speed()), driving_line_mode, dl_samples);
-            drive::build_driving_line_mesh(dl_samples, 0.55, 0.08, dl_verts);
-            overlay_verts.clear();
-            overlay_verts.reserve(dl_verts.size());
-            const double ox = host.showroom.world_origin_x();
-            const double oz = host.showroom.world_origin_z();
-            for (const auto& dv : dl_verts) {
-              carview::WorldVertex wv{};
-              wv.position[0] = float(double(dv.x) - ox);
-              wv.position[1] = dv.y;
-              wv.position[2] = float(double(dv.z) - oz);
-              wv.normal[1] = 127;
-              wv.colour[0] = dv.r;
-              wv.colour[1] = dv.g;
-              wv.colour[2] = dv.b;
-              wv.colour[3] = dv.a;
-              overlay_verts.push_back(wv);
-            }
-            host.showroom.set_world_overlay(overlay_verts);
-          } else {
-            host.showroom.set_world_overlay({});
-          }
+          // 3D Driving / Braking Line ribbon on the road (SPEC-CAR-PHYSICS):
+          // active during both races and free-roam / intro-drive GPS routes.
+          update_driving_line_overlay();
           const float aspect = h > 0 ? float(w) / float(h) : 1.0f;
           drive::CameraView rw_cam{};
           drive::CameraView rv_cam{};
@@ -695,6 +672,86 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             }
           }
   return true;
+}
+
+void DriveSession::update_driving_line_overlay() {
+  const bool want_race_dl = app.race && !grid_menu_open && !app.race->player_finished() &&
+                            driving_line_mode != drive::DrivingLineMode::kOff;
+  const bool want_gps_dl = !app.race && !app.show_title && !app.fmv_player.active() &&
+                           driving_line_mode != drive::DrivingLineMode::kOff &&
+                           app.gps_nav.active() && app.gps_nav.route().valid &&
+                           app.gps_nav.route().points.size() >= 2;
+  if (!want_race_dl && !want_gps_dl) {
+    host.showroom.set_world_overlay({});
+    return;
+  }
+  if (want_race_dl) {
+    drive::build_driving_line(app.race->racing_line(), braking_table, app.race->player_progress(),
+                              std::max(0.0, vehicle.speed()), driving_line_mode, dl_samples);
+  } else {
+    const auto& gr = app.gps_nav.route();
+    const double prog = app.gps_nav.guidance().route_progress_m;
+    const double win_lo = std::max(0.0, prog - 25.0);
+    const double win_hi = prog + 320.0;
+    std::vector<float> gx, gz;
+    std::vector<double> gy;
+    double slice_start_s = 0.0;
+    bool have_start = false;
+    const size_t npts = gr.points.size();
+    for (size_t i = 0; i < npts; ++i) {
+      const double si = (i < gr.s.size()) ? gr.s[i] : 0.0;
+      if (si < win_lo && i + 1 < npts && ((i + 1 < gr.s.size()) ? gr.s[i + 1] : 0.0) < win_lo) continue;
+      if (!have_start) {
+        slice_start_s = si;
+        have_start = true;
+      }
+      gx.push_back(float(gr.points[i].x));
+      gy.push_back(gr.points[i].y);
+      gz.push_back(float(gr.points[i].z));
+      if (si > win_hi && gx.size() >= 3) break;
+    }
+    if (gx.size() >= 2) {
+      drive::RacingLine gps_line = drive::RacingLine::from_points(gx, gz);
+      if (gps_line.y.size() == gy.size()) {
+        for (size_t i = 0; i < gy.size(); ++i) gps_line.y[i] = float(gy[i]);
+      }
+      const double local_prog = std::clamp(prog - slice_start_s, 0.0, gps_line.length());
+      drive::build_driving_line(gps_line, braking_table, local_prog,
+                                std::max(0.0, vehicle.speed()), driving_line_mode, dl_samples);
+    } else {
+      dl_samples.clear();
+    }
+  }
+  // Snap sample heights onto the live collision/road surface so the ribbon
+  // hugs hills and crowns crisply without dipping under asphalt or floating.
+  if (host.ground && !dl_samples.empty()) {
+    const double car_y = vehicle.position().y;
+    for (auto& s : dl_samples) {
+      const double probe_y = (std::fabs(double(s.y)) > 1e-3 ? double(s.y) : car_y) + 6.0;
+      drive::Hit hit;
+      if (host.ground->raycast({double(s.x), probe_y, double(s.z)}, {0.0, -1.0, 0.0}, 18.0, hit)) {
+        s.y = float(probe_y - hit.distance);
+      }
+    }
+  }
+  drive::build_driving_line_mesh(dl_samples, 0.62, 0.10, dl_verts);
+  overlay_verts.clear();
+  overlay_verts.reserve(dl_verts.size());
+  const double ox = host.showroom.world_origin_x();
+  const double oz = host.showroom.world_origin_z();
+  for (const auto& dv : dl_verts) {
+    carview::WorldVertex wv{};
+    wv.position[0] = float(double(dv.x) - ox);
+    wv.position[1] = dv.y;
+    wv.position[2] = float(double(dv.z) - oz);
+    wv.normal[1] = 127;
+    wv.colour[0] = dv.r;
+    wv.colour[1] = dv.g;
+    wv.colour[2] = dv.b;
+    wv.colour[3] = dv.a;
+    overlay_verts.push_back(wv);
+  }
+  host.showroom.set_world_overlay(overlay_verts);
 }
 
 }  // namespace carview

@@ -213,8 +213,12 @@ void Streamer::take(Gathered&& g) {
 
 bool Streamer::update(double x, double z, bool* changed, std::string* error) {
   if (changed) *changed = false;
-  // A finished background gather: swap it in.
-  if (job_.valid() && job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+  const double dist = (gathers_ > 0) ? std::hypot(x - cx_, z - cz_) : 0.0;
+  // Never let a fast car outrun the loaded collision mesh while an async gather is in flight.
+  const double hard_edge = std::max(regather_ + 80.0, collision_radius_ - 140.0);
+  const bool must_wait_job = job_.valid() && gathers_ > 0 && dist >= hard_edge;
+  // A finished background gather (or one we must wait for before leaving collision): swap it in.
+  if (job_.valid() && (must_wait_job || job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)) {
     auto g = job_.get();
     if (!g->ok) {
       if (error) *error = g->error;
@@ -234,9 +238,17 @@ bool Streamer::update(double x, double z, bool* changed, std::string* error) {
     options_.hidden_positions = pending_hidden_positions_;
     has_pending_hidden_positions_ = false;
   }
-  if (!forced && gathers_ > 0 && std::hypot(x - cx_, z - cz_) <= regather_) return true;
+  if (!forced && gathers_ > 0 && dist <= regather_) return true;
   if (async_ && gathers_ > 0) {
-    job_ = std::async(std::launch::async, [this, x, z] { return gather_now(x, z); });
+    // Lead the gather center slightly ahead along the travel vector so a fast car
+    // stays centered inside the new collision bubble when the async gather finishes.
+    double gx = x, gz = z;
+    if (!forced && dist > 50.0) {
+      const double lead = std::min(150.0, collision_radius_ * 0.20);
+      gx += (x - cx_) / dist * lead;
+      gz += (z - cz_) / dist * lead;
+    }
+    job_ = std::async(std::launch::async, [this, gx, gz] { return gather_now(gx, gz); });
     return true;
   }
   auto g = gather_now(x, z);

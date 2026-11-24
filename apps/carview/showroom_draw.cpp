@@ -579,18 +579,20 @@ void Showroom::record_world_opaque(VkCommandBuffer cmd) {
 }
 
 void Showroom::record_world_blended(VkCommandBuffer cmd) {
-  if (!world_textured_ || world_draws_.empty() || material_sets_.empty()) return;
+  if (!world_textured_ || material_sets_.empty()) return;
   const float swap = current_world_swap_;
-  world_bind_buffers(cmd, false);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
-  record_world_textured(cmd, world_draws_, world_transform_, swap, false, 2);
-  if (fading_on_) {
-    const float dx = float(fading_.origin[0] - world_origin_[0]), dz = float(fading_.origin[1] - world_origin_[1]);
-    float m[16];
-    std::memcpy(m, world_transform_, sizeof m);
-    for (int r = 0; r < 4; ++r) m[12 + r] += world_transform_[r] * dx + world_transform_[8 + r] * dz;
-    world_bind_buffers(cmd, true);
-    record_world_textured(cmd, fading_.draws, m, 3.0f + swap, true, 2);
+  if (!world_draws_.empty()) {
+    world_bind_buffers(cmd, false);
+    record_world_textured(cmd, world_draws_, world_transform_, swap, false, 2);
+    if (fading_on_) {
+      const float dx = float(fading_.origin[0] - world_origin_[0]), dz = float(fading_.origin[1] - world_origin_[1]);
+      float m[16];
+      std::memcpy(m, world_transform_, sizeof m);
+      for (int r = 0; r < 4; ++r) m[12 + r] += world_transform_[r] * dx + world_transform_[8 + r] * dz;
+      world_bind_buffers(cmd, true);
+      record_world_textured(cmd, fading_.draws, m, 3.0f + swap, true, 2);
+    }
   }
   if (overlay_count_ >= 3 && overlay_vertices_.buffer && world_alpha_ && world_white_set_) {
     VkDeviceSize off = 0;
@@ -603,11 +605,12 @@ void Showroom::record_world_blended(VkCommandBuffer cmd) {
     ShowroomPush push{};
     std::memcpy(push.model, world_transform_, sizeof push.model);
     std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
+    push.uv0[3] = 2.0f;  // swap = none (world_frag.glsl reads draw.sun.w)
     std::memcpy(push.uv1, world_up_, sizeof push.uv1);
     push.tint[0] = push.tint[1] = push.tint[2] = push.tint[3] = 1.0f;
     push.params[0] = 2.0f;     // kAlpha
     push.params[1] = 1024.0f;  // kFlagUnlitVertexColor
-    push.params[2] = 2.0f;     // no swap dither
+    push.params[2] = 0.0f;     // near world (must NOT be >0.5 or world_vert pushes >=550m as UberLOD)
     push.params[3] = 1.0f;
     vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(ShowroomPush), &push);

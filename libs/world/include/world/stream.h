@@ -32,7 +32,7 @@ class Streamer {
   // `collision`: the ground source (null: the render-triangle stand-in),
   // loaded within `collision_radius` of the centre.
   Streamer(World& world, GatherOptions options, double regather_distance = 200, Collision* collision = nullptr,
-           double collision_radius = 450);
+           double collision_radius = 750);
   ~Streamer();
   // Gathers on the first call and whenever (x, z) is more than the
   // regather distance from the last centre. `changed`: whether the mesh

@@ -240,6 +240,7 @@ void DriveSession::run_window_loop() {
             app.campaign_new_career_pending = false;
             app.show_title = false;
             app.story_intro.reset();
+            host.renderer.reset_auto_exposure();
             std::array<double, 3> gate = {-1360.0, 2.0, -210.0};
             if (const auto* rc = app.have_career_catalog ? app.career_catalog.find_site(race::FestivalSite::kRaceCentral) : nullptr)
               gate = rc->pos;
@@ -275,7 +276,10 @@ void DriveSession::run_window_loop() {
             }
           }
           if (app.fmv_player.active()) {
-            if (!app.fmv_player.update(frame_dt, true)) app.audio_host.set_fmv_audio(nullptr, nullptr);
+            if (!app.fmv_player.update(frame_dt, true)) {
+              app.audio_host.set_fmv_audio(nullptr, nullptr);
+              host.renderer.reset_auto_exposure();
+            }
           }
           // Authentic PressStart.wmv seamless looping animated title screen backdrop when present & decodable;
           // otherwise falls back seamlessly to the live 3D Colorado Festival scenic overlook.

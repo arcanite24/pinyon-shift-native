@@ -53,8 +53,8 @@
       "prebuilt_spv": "apps/carview/shaders/prebuilt/bloom_down.frag.spv",
       "stage": "fragment",
       "entry_point": "main",
-      "spirv_version": "1.6",
-      "spirv_bytes": 16016,
+      "spirv_version": "1.3",
+      "spirv_bytes": 15348,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -64,7 +64,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -72,7 +72,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "lum_adapt",
+          "name": "set0_b3",
           "dim": "2D"
         }
       ],
@@ -100,8 +100,8 @@
       "prebuilt_spv": "apps/carview/shaders/prebuilt/bloom_up.frag.spv",
       "stage": "fragment",
       "entry_point": "main",
-      "spirv_version": "1.6",
-      "spirv_bytes": 4576,
+      "spirv_version": "1.3",
+      "spirv_bytes": 3936,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -111,7 +111,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -119,7 +119,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "aux",
+          "name": "set0_b1",
           "dim": "2D"
         }
       ],
@@ -876,8 +876,8 @@
       "prebuilt_spv": "apps/carview/shaders/prebuilt/post.frag.spv",
       "stage": "fragment",
       "entry_point": "main",
-      "spirv_version": "1.6",
-      "spirv_bytes": 64688,
+      "spirv_version": "1.3",
+      "spirv_bytes": 47680,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -887,7 +887,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -895,7 +895,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "aux",
+          "name": "set0_b1",
           "dim": "2D"
         },
         {
@@ -903,7 +903,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "lut3d",
+          "name": "set0_b2",
           "dim": "3D"
         },
         {
@@ -911,7 +911,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "lum_adapt",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -919,7 +919,7 @@
           "binding": 4,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b4",
           "dim": "2D"
         },
         {
@@ -927,14 +927,14 @@
           "binding": 5,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "opt"
+          "name": "set0_b5"
         },
         {
           "set": 0,
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "ao_tex",
+          "name": "set0_b6",
           "dim": "2D"
         },
         {
@@ -942,7 +942,7 @@
           "binding": 7,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "sscs_tex",
+          "name": "set0_b7",
           "dim": "2D"
         },
         {
@@ -950,7 +950,7 @@
           "binding": 8,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "motion_tex",
+          "name": "set0_b8",
           "dim": "2D"
         },
         {
@@ -958,7 +958,7 @@
           "binding": 9,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "mblur_neighbor_tex",
+          "name": "set0_b9",
           "dim": "2D"
         },
         {
@@ -966,7 +966,7 @@
           "binding": 10,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "ssr_tex",
+          "name": "set0_b10",
           "dim": "2D"
         },
         {
@@ -974,7 +974,7 @@
           "binding": 11,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "vol_tex",
+          "name": "set0_b11",
           "dim": "2D"
         }
       ],

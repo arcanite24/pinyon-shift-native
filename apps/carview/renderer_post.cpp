@@ -443,17 +443,27 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
   }
 
+  auto finite_or = [](float v, float fallback) -> float { return std::isfinite(v) ? v : fallback; };
+  const float safe_exposure = std::clamp(finite_or(s.exposure, 0.8f), -6.0f, 6.0f);
+  const float safe_white = std::clamp(finite_or(s.white, 4.0f), 0.25f, 64.0f);
+  const float safe_bloom_cutoff = std::clamp(finite_or(s.bloom_cutoff, 1.0f), 0.05f, 32.0f);
+  const float safe_bloom_scale = std::clamp(finite_or(s.bloom_scale, 0.25f), 0.0f, 4.0f);
+  const float safe_adapt_alpha = std::clamp(finite_or(s.adapt_alpha, 0.05f), 0.005f, 1.0f);
   const uint32_t flags = (s.bloom ? 1u : 0u) | (s.lut_enabled ? 2u : 0u) | (s.auto_exposure ? 4u : 0u);
   struct {
     float mode[4], abc[4], def[4], desat[4], bloom[4], balance[4], exp_keys[4], exp_ev[4];
   } push = {{0, 0, 0, 0},
-            {s.hable[0], s.hable[1], s.hable[2], s.white},
-            {s.hable[3], s.hable[4], s.hable[5], s.exposure},
-            {s.luminance[0], s.luminance[1], s.luminance[2], s.desaturate},
-            {s.bloom_cutoff, s.bloom_scale, float(flags), s.bloom_lower_grad},
-            {s.balance[0], s.balance[1], s.balance[2], s.bloom_upper_grad},
-            {s.exp_keys[0], s.exp_keys[1], s.exp_keys[2], s.exp_keys[3]},
-            {s.exp_ev[0], s.exp_ev[1], s.exp_ev[2], s.exp_ev[3]}};
+            {finite_or(s.hable[0], 0.22f), finite_or(s.hable[1], 0.30f), finite_or(s.hable[2], 0.10f), safe_white},
+            {finite_or(s.hable[3], 0.20f), finite_or(s.hable[4], 0.01f), finite_or(s.hable[5], 0.30f), safe_exposure},
+            {finite_or(s.luminance[0], 0.2125f), finite_or(s.luminance[1], 0.7154f), finite_or(s.luminance[2], 0.0721f),
+             std::clamp(finite_or(s.desaturate, 0.0f), 0.0f, 1.0f)},
+            {safe_bloom_cutoff, safe_bloom_scale, float(flags), std::max(finite_or(s.bloom_lower_grad, 0.0f), 0.0f)},
+            {finite_or(s.balance[0], 1.0f), finite_or(s.balance[1], 1.0f), finite_or(s.balance[2], 1.0f),
+             std::max(finite_or(s.bloom_upper_grad, 1.0f), 0.01f)},
+            {finite_or(s.exp_keys[0], 0.5f), finite_or(s.exp_keys[1], 4.0f), finite_or(s.exp_keys[2], 16.0f),
+             finite_or(s.exp_keys[3], 64.0f)},
+            {finite_or(s.exp_ev[0], 1.0f), finite_or(s.exp_ev[1], 0.0f), finite_or(s.exp_ev[2], -0.8f),
+             finite_or(s.exp_ev[3], -1.6f)}};
   static_assert(sizeof(push) == 128);
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
@@ -500,7 +510,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     pass(lum_16_.view, 16, 16, post_quarter_, post_sets_[0], 3, 0.25f / 16.0f, 0.25f / 16.0f);
     to_read(lum_16_);
     to_write(lum_adapt_[0]);
-    const float alpha = lum_reset_ ? 1.0f : s.adapt_alpha;
+    const float alpha = lum_reset_ ? 1.0f : safe_adapt_alpha;
     lum_reset_ = false;
     pass(lum_adapt_[0].view, 1, 1, post_quarter_, post_sets_[1], 4, 0, 0, alpha);
     // Copy adapted 1x1 luminance into lum_adapt_[1] for next frame, leave lum_adapt_[0] readable.
@@ -564,8 +574,17 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     }
     mark(cmd, "bloom");
   } else if (bloom_b_[0].image) {
-    to_write(bloom_b_[0]);
-    to_read(bloom_b_[0]);
+    // Explicitly clear bloom_b_[0] to black when bloom is skipped so uninitialized VRAM
+    // can never leak into the composite pass as a white flash.
+    const VkClearColorValue zero_col{{0.0f, 0.0f, 0.0f, 0.0f}};
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    image_barrier(cmd, bloom_b_[0].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, read_stage, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    vkCmdClearColorImage(cmd, bloom_b_[0].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero_col, 1, &range);
+    image_barrier(cmd, bloom_b_[0].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                  VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stage, read);
   }
 
   // 3. Final composite (scene + McGuire MBlur + XeGTAO + SSCS + bloom -> exposure -> selected tonemapper -> LUT -> display).
