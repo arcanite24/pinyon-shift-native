@@ -36,6 +36,7 @@
 #include "garage/pi_calc.h"
 #include "map_view.h"
 #include "mods_page.h"
+#include "playtest_recorder.h"
 #include "race/career.h"
 #include "race/rally_championship.h"
 #include "race_view.h"
@@ -220,6 +221,7 @@ struct DriveApp : DriveConfig {
   std::string rally_notice;
 
   int pose_shot_counter = 0;
+  PlaytestRecorder playtest_recorder;
 
   bool init(int& exit_code);
   bool colorado_world() const;

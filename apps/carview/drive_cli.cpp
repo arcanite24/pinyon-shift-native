@@ -46,6 +46,8 @@ void drive_usage() {
                "  report:  F12 in the window saves carview-pose-N.txt (car, position, heading, hour, camera;\n"
                "           its spawn line goes back in as --spawn x y z heading); the title shows the position\n"
                "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near)\n"
+               "           --record-session <dir> (or SHIFT_RECORD_SESSION=<dir>: zero-hitch playtest telemetry,\n"
+               "           F11 / Back+RB bug bookmark screenshot + JSON repro, exit summary.json)\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
                "           --headless --out prefix.png --audio-out file.wav --bench --world-reference file.json\n"
                "           --bench-scenario noon_cruise|midnight_lights|cockpit_mirrors|race_pack|autoshow_studio|ui4_heavy|cold_boot_switch\n"
@@ -144,6 +146,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     if (a == "--story-intro") { story_intro_cli = true; continue; }
     if (a == "--campaign-stage") { cli_campaign_stage = next(); continue; }
     if (a == "--telemetry-json") { telemetry_json_path = next(); continue; }
+    if (a == "--record-session") { record_session_dir = next(); continue; }
     if (a == "--capture-times") { capture_times_csv = next(); continue; }
     if (a == "--fmv") { cli_fmv_path = next(); continue; }
     if (a == "--mods") { mods_root = next(); mods_off = false; continue; }
@@ -385,6 +388,11 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       std::fprintf(stderr, "carview: unknown option %s\n", a.c_str());
       drive_usage();
       exit_code = 2; return false;
+    }
+  }
+  if (record_session_dir.empty()) {
+    if (const char* env_rec = std::getenv("SHIFT_RECORD_SESSION"); env_rec && *env_rec) {
+      record_session_dir = env_rec;
     }
   }
   // Apply scalable Phase A + B SOTA defaults per graphics preset unless explicitly overridden via CLI/settings.
