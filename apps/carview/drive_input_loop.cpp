@@ -54,6 +54,11 @@ void DriveSession::poll_sdl_events() {
             // continue guards; ZERO wait_idle and ZERO swapchain recreate on focus gain).
             if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
               host.renderer.set_window_focused(false);
+              gamepad_rumble.reset();
+              for (SDL_Gamepad* pad : pads) {
+                SDL_RumbleGamepad(pad, 0, 0, 0);
+                SDL_RumbleGamepadTriggers(pad, 0, 0, 0);
+              }
               slice12.on_sdl_event(e, pads);
             } else if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
               window_minimized = false;
@@ -64,6 +69,11 @@ void DriveSession::poll_sdl_events() {
               host.frame_pacer.reset();
             } else if (e.type == SDL_EVENT_WINDOW_MINIMIZED) {
               window_minimized = true;
+              gamepad_rumble.reset();
+              for (SDL_Gamepad* pad : pads) {
+                SDL_RumbleGamepad(pad, 0, 0, 0);
+                SDL_RumbleGamepadTriggers(pad, 0, 0, 0);
+              }
             } else if (e.type == SDL_EVENT_WINDOW_RESTORED || e.type == SDL_EVENT_WINDOW_EXPOSED) {
               window_minimized = false;
               window_occluded = false;
