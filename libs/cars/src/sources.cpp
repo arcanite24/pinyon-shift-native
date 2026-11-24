@@ -1,6 +1,7 @@
 #include "cars/sources.h"
 
 #include "cars/mod_manager.h"
+#include "cars/mods.h"
 
 #include <algorithm>
 #include <cctype>
@@ -91,7 +92,7 @@ bool Folder::open(const FolderRef& ref, std::string* error) {
     for (const auto& [n, _] : files_) names_.push_back(n);
     return true;
   }
-  archive_ = fh1::Archive::open(ref.path, error);
+  archive_ = fh1::Archive::open(mods::resolve(ref.path), error);
   if (!archive_) return false;
   for (const auto& m : archive_->members()) {
     std::string n = normal(m.name);
@@ -265,18 +266,36 @@ bool discover_install(const fs::path& game_root, const fs::path& state_root, con
       p.id = folder.filename().string();
       if (modmgr::package_hidden(p.id)) continue;  // community UDLC unless mounted, mods' hide_dlc
       std::vector<fs::path> archives;
+      std::vector<fs::path> loose_dirs;
       const fs::path zips = folder / "Media" / "DLCZips";
       for (const auto& e : fs::directory_iterator(zips, ec)) {
         const std::string fname = e.path().filename().string();
-        if (e.is_regular_file() && lower(e.path().extension().string()) == ".zip" &&
-            lower(fname).find("_pri_") != std::string::npos && is_content_archive(fname))
+        if (lower(fname).find("_pri_") == std::string::npos || !is_content_archive(fname)) continue;
+        if (e.is_regular_file() && lower(e.path().extension().string()) == ".zip") {
           archives.push_back(e.path());
+        } else if (e.is_directory()) {
+          loose_dirs.push_back(e.path());
+        }
+      }
+      // Also support loose <offer>_pri_<p>/ folders placed directly under Media/ or package root (e.g. UDLC 729_pri_99/).
+      for (const fs::path& probe_dir : {folder / "Media", folder}) {
+        std::error_code pec;
+        for (const auto& e : fs::directory_iterator(probe_dir, pec)) {
+          if (!e.is_directory()) continue;
+          const std::string fname = e.path().filename().string();
+          if (lower(fname).find("_pri_") != std::string::npos && is_content_archive(fname))
+            loose_dirs.push_back(e.path());
+        }
       }
       std::sort(archives.begin(), archives.end(), [](const fs::path& a, const fs::path& b) {
         const uint32_t pa = priority_of(a.stem().string()), pb = priority_of(b.stem().string());
         return pa != pb ? pa < pb : a < b;
       });
-      p.priority = archives.empty() ? 0 : UINT32_MAX;
+      std::sort(loose_dirs.begin(), loose_dirs.end(), [](const fs::path& a, const fs::path& b) {
+        const uint32_t pa = priority_of(a.filename().string()), pb = priority_of(b.filename().string());
+        return pa != pb ? pa < pb : a < b;
+      });
+      p.priority = (archives.empty() && loose_dirs.empty()) ? 0 : UINT32_MAX;
       for (const auto& zip : archives) {
         std::string why;
         auto archive = fh1::Archive::open(zip, &why);
@@ -299,6 +318,35 @@ bool discover_install(const fs::path& game_root, const fs::path& state_root, con
         base.path = zip;
         base.origin = p.id;
         scan_names(names, spelled, base, p);
+      }
+      for (const auto& offer : loose_dirs) {
+        p.priority = std::min(p.priority, priority_of(offer.filename().string()));
+        p.archives.push_back(offer);
+        const size_t merges_before = p.merges.size();
+        std::vector<std::string> names, spelled;
+        std::error_code rec;
+        for (const auto& e : fs::recursive_directory_iterator(offer, rec)) {
+          const std::string rel = fs::relative(e.path(), offer).generic_string();
+          spelled.push_back(rel + (e.is_directory() ? "/" : ""));
+          names.push_back(normal(spelled.back()));
+        }
+        std::vector<size_t> order(names.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return names[a] < names[b]; });
+        std::vector<std::string> n2, s2;
+        for (size_t i : order) {
+          n2.push_back(names[i]);
+          s2.push_back(spelled[i]);
+        }
+        FolderRef base;
+        base.kind = FolderRef::Kind::kDirectory;
+        base.path = offer;
+        base.origin = p.id;
+        scan_names(n2, s2, base, p);
+        for (size_t mi = merges_before; mi < p.merges.size(); ++mi) {
+          p.merges[mi].first = p.merges[mi].first / p.merges[mi].second;
+          p.merges[mi].second.clear();
+        }
       }
       if (p.priority == UINT32_MAX) p.priority = 0;
       packages.push_back(std::move(p));

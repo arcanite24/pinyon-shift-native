@@ -205,18 +205,36 @@ bool launch_carview(const launcher::LauncherUiState& st, std::string& notice) {
   if (!st.launch_car.empty()) cmd += " --car " + st.launch_car;
   if (!st.extra_args.empty()) cmd += " " + st.extra_args;
 #ifdef _WIN32
+  std::string prev_state_root;
+  bool had_prev_state = false;
+  if (!st.paths.state_dir.empty()) {
+    char buf[4096];
+    const DWORD n = GetEnvironmentVariableA("SHIFT_STATE_ROOT", buf, DWORD(sizeof(buf)));
+    if (n > 0 && n < sizeof(buf)) {
+      prev_state_root.assign(buf, n);
+      had_prev_state = true;
+    }
+    SetEnvironmentVariableA("SHIFT_STATE_ROOT", st.paths.state_dir.string().c_str());
+  }
   std::string cmd_line = cmd;
   STARTUPINFOA si{};
   si.cb = sizeof(si);
   PROCESS_INFORMATION pi{};
-  if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, FALSE,
-                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+  const BOOL created = CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, FALSE,
+                                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+  if (!st.paths.state_dir.empty()) {
+    SetEnvironmentVariableA("SHIFT_STATE_ROOT", had_prev_state ? prev_state_root.c_str() : nullptr);
+  }
+  if (!created) {
     notice = "Failed to launch carview.";
     return false;
   }
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
 #else
+  if (!st.paths.state_dir.empty()) {
+    cmd = "SHIFT_STATE_ROOT=\"" + st.paths.state_dir.string() + "\" " + cmd;
+  }
   cmd += " &";
   std::system(cmd.c_str());
 #endif

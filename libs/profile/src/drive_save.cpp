@@ -65,6 +65,8 @@ garage::Garage to_garage(const Imported& p) {
     if (auto it = r.columns.find("PartsValue"); it != r.columns.end()) c.parts_value = it->second;
     for (const auto& s : cars::upgrade_slots())
       if (auto it = r.columns.find(s.column); it != r.columns.end() && it->second >= 0) c.slots[s.column] = it->second;
+    if (auto it = r.columns.find("WheelStyle"); it != r.columns.end() && it->second >= 0)
+      c.slots["WheelStyle"] = it->second;
     g.cars.push_back(std::move(c));
   }
   for (const auto& b : p.parts) g.bought.push_back({b.garage_id, int(b.part_enum), b.part_id, b.manufacturer_id, b.price_paid});

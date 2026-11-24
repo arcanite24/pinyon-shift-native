@@ -529,13 +529,16 @@ CarParams params_for_baked_car(const cars::bake::CarInfo& car, const std::filesy
                                std::vector<std::string>* notes) {
   std::string name = car.media_name;
   for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
-  if (!bake_dir.empty()) {
-    const auto path = cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt"));
-    std::ifstream in(path, std::ios::binary);
-    if (in) {
-      std::stringstream ss;
-      ss << in.rdbuf();
-      return params_for_car_text(car, ss.str(), notes);
+  {
+    const auto rel = std::filesystem::path("cars") / (name + ".physics.txt");
+    const auto path = bake_dir.empty() ? cars::mods::resolve_bake(rel) : cars::mods::resolve(bake_dir / rel);
+    if (!path.empty()) {
+      std::ifstream in(path, std::ios::binary);
+      if (in) {
+        std::stringstream ss;
+        ss << in.rdbuf();
+        return params_for_car_text(car, ss.str(), notes);
+      }
     }
   }
   cars::CarPhysics disc_rows;
@@ -726,14 +729,18 @@ CarParams params_for_fitted_car(const cars::bake::CarInfo& car, const std::files
   CarParams p = params_from_bake(car);
   cars::PhysicsSettings settings;
   bool have_settings = false;
-  if (!bake_dir.empty()) {
-    std::ifstream in(cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt")), std::ios::binary);
-    if (in) {
-      std::stringstream ss;
-      ss << in.rdbuf();
-      cars::CarPhysics stock;
-      std::string error;
-      have_settings = cars::physics_from_text(ss.str(), stock, settings, &error);
+  {
+    const auto rel = std::filesystem::path("cars") / (name + ".physics.txt");
+    const auto path = bake_dir.empty() ? cars::mods::resolve_bake(rel) : cars::mods::resolve(bake_dir / rel);
+    if (!path.empty()) {
+      std::ifstream in(path, std::ios::binary);
+      if (in) {
+        std::stringstream ss;
+        ss << in.rdbuf();
+        cars::CarPhysics stock;
+        std::string error;
+        have_settings = cars::physics_from_text(ss.str(), stock, settings, &error);
+      }
     }
   }
   if (!have_settings) {

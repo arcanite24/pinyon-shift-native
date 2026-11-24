@@ -41,6 +41,10 @@ void activate(const std::vector<Mod>& mods, const std::filesystem::path& bake_di
 // relative to the bake or sound folder.
 std::filesystem::path resolve(const std::filesystem::path& p);
 
+// First enabled mod's file under `bake/<rel>` (even in zero-bake mode when
+// `bake_dir` is empty), or empty path if no mod overrides it.
+std::filesystem::path resolve_bake(const std::filesystem::path& rel);
+
 // The active mods' names, the winner first.
 const std::vector<std::string>& active();
 

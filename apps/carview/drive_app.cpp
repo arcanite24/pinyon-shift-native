@@ -297,6 +297,7 @@ bool DriveApp::init(int& exit_code) {
         break;
       }
   }
+  std::filesystem::path play_state;
   if (!play_dir.empty()) {
     std::ifstream in(play_dir / "play.txt");
     if (!in) {
@@ -307,12 +308,22 @@ bool DriveApp::init(int& exit_code) {
     for (std::string line; std::getline(in, line);) {
       while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
       if (line.rfind("game ", 0) == 0) game = std::filesystem::path(line.substr(5));
+      else if (line.rfind("state ", 0) == 0) play_state = std::filesystem::path(line.substr(6));
     }
     if (!game.empty() && game.is_relative()) game = play_dir / game;
+    if (!play_state.empty() && play_state.is_relative()) play_state = play_dir / play_state;
     if (game_root_given.empty() && !game.empty()) game_root_given = game;
     std::error_code ec;
     if (bake_dir.empty() && std::filesystem::is_directory(play_dir / "bake" / "cars", ec)) bake_dir = play_dir / "bake";
-    if (!sound_given && std::filesystem::is_directory(play_dir / "sound", ec)) sound_dir = play_dir / "sound";
+    if (!sound_given) {
+      if (std::filesystem::is_directory(play_dir / "sound", ec)) {
+        sound_dir = play_dir / "sound";
+      } else {
+        // Zero-bake play folder: route runtime sound cache to state_root/sound-cache
+        // or play_dir/sound-cache instead of relative CWD "out/sound".
+        sound_dir = !play_state.empty() ? (play_state / "sound-cache") : (play_dir / "sound-cache");
+      }
+    }
     if (cache_path.empty()) cache_path = play_dir / "world" / "colorado.index";
     if (world_dir.empty() && !game.empty()) world_dir = resolve_colorado_dir(game);
     std::printf("play: %s\n", play_dir.string().c_str());
@@ -356,10 +367,15 @@ bool DriveApp::init(int& exit_code) {
     }
     if (!size_given) width = 1600, height = 900;
   }
-  state_root = [] {
+  state_root = [&] {
     const char* s = std::getenv("SHIFT_STATE_ROOT");
-    return s ? std::filesystem::path(s) : std::filesystem::path{};
+    if (s && *s) return std::filesystem::path(s);
+    return play_state;
   }();
+  if (!sound_given && sound_dir == "out/sound" && !state_root.empty()) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(sound_dir, ec)) sound_dir = state_root / "sound-cache";
+  }
   if (const auto groot = game_root_of(); !groot.empty()) {
     Showroom::set_disc_root(groot, state_root);
     drive::set_disc_physics_root(groot, state_root);

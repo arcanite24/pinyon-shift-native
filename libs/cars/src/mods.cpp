@@ -13,6 +13,7 @@ struct Layer {
   std::vector<std::filesystem::path> over;  // the mods' matching folders, the winner first
 };
 std::vector<Layer> g_layers;
+std::vector<std::filesystem::path> g_bake_over;
 std::vector<std::string> g_active;
 
 // `p` relative to `base`, or empty when outside it.
@@ -61,6 +62,7 @@ std::vector<Mod> list(const std::filesystem::path& root) {
 void activate(const std::vector<Mod>& mods, const std::filesystem::path& bake_dir,
               const std::filesystem::path& sound_dir, const std::filesystem::path& game_root) {
   g_layers.clear();
+  g_bake_over.clear();
   g_active.clear();
   Layer bake{bake_dir, {}}, sound{sound_dir, {}};
   Layer media{game_root.empty() ? std::filesystem::path{} : game_root / "media", {}};
@@ -80,6 +82,7 @@ void activate(const std::vector<Mod>& mods, const std::filesystem::path& bake_di
       radio.over.push_back(m.dir / "radio"), any = true;
     if (any) g_active.push_back(m.name);
   }
+  g_bake_over = bake.over;
   if (!bake.over.empty()) g_layers.push_back(std::move(bake));
   if (!sound.over.empty()) g_layers.push_back(std::move(sound));
   // Check more specific radio/ before media/ so either mod layout works.
@@ -98,6 +101,16 @@ std::filesystem::path resolve(const std::filesystem::path& p) {
     }
   }
   return p;
+}
+
+std::filesystem::path resolve_bake(const std::filesystem::path& rel) {
+  if (rel.empty() || g_bake_over.empty()) return {};
+  std::error_code ec;
+  for (const auto& o : g_bake_over) {
+    const auto q = o / rel;
+    if (std::filesystem::exists(q, ec)) return q;
+  }
+  return {};
 }
 
 const std::vector<std::string>& active() { return g_active; }

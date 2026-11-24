@@ -147,6 +147,30 @@ struct Merged {
   ~Merged() { sqlite3_close(db); }
 };
 
+bool apply_merge_bytes(sqlite3* db, const std::vector<std::string>& main_tables,
+                       const std::vector<uint8_t>& bytes, const std::string& origin,
+                       std::map<int64_t, std::string>* added_by, std::string* error) {
+  if (!exec(db, "ATTACH DATABASE ':memory:' AS m", error) || !deserialize(db, "m", bytes, error))
+    return false;
+  for (const std::string& table : tables(db, "m")) {
+    if (!std::binary_search(main_tables.begin(), main_tables.end(), table)) continue;
+    const auto ours = columns(db, "main", table);
+    std::string list;
+    for (const std::string& c : columns(db, "m", table)) {
+      if (std::find(ours.begin(), ours.end(), c) == ours.end()) continue;
+      list += (list.empty() ? "" : ",") + quote(c);
+    }
+    if (list.empty()) continue;
+    if (!exec(db, "INSERT OR REPLACE INTO main." + quote(table) + " (" + list + ") SELECT " + list +
+                      " FROM m." + quote(table),
+              error))
+      return false;
+    if (added_by && table == "Data_Car")
+      for (int64_t id : car_ids(db, "m")) (*added_by)[id] = origin;
+  }
+  return exec(db, "DETACH DATABASE m", error);
+}
+
 bool open_merged(const Install& install, Merged& m, std::string* error) {
   std::vector<uint8_t> base_bytes, v4_bytes;
   // A mod may replace the disc's database whole (the XE mod does).
@@ -166,6 +190,16 @@ bool open_merged(const Install& install, Merged& m, std::string* error) {
   }
   sqlite3* db = m.db;
   if (!deserialize(db, "main", v4_bytes, error)) return false;
+  const auto main_tables = tables(db, "main");
+  // SPEC-V4-CONTENT: apply Title Update v4's patch merge onto v4's gamedb.slt
+  // before counting v4 rows or applying DLC packages.
+  if (!install.v4_media_zip.empty()) {
+    std::vector<uint8_t> patch_bytes;
+    if (read_member(install.v4_media_zip, "db/patch/1401000_merge.slt", patch_bytes, nullptr)) {
+      if (!apply_merge_bytes(db, main_tables, patch_bytes, "v4-patch", nullptr, error)) return false;
+      m.merges_applied.push_back("v4:db/patch/1401000_merge.slt");
+    }
+  }
   if (!exec(db, "ATTACH DATABASE ':memory:' AS base", error) ||
       !deserialize(db, "base", base_bytes, error))
     return false;
@@ -173,30 +207,11 @@ bool open_merged(const Install& install, Merged& m, std::string* error) {
   m.v4_ids = car_ids(db, "main");
   if (!exec(db, "DETACH DATABASE base", error)) return false;
 
-  const auto main_tables = tables(db, "main");
   for (const Package& p : install.packages) {
     for (const auto& [where, member] : p.merges) {
       std::vector<uint8_t> bytes;
       if (!read_member(where, member, bytes, error)) return false;
-      if (!exec(db, "ATTACH DATABASE ':memory:' AS m", error) || !deserialize(db, "m", bytes, error))
-        return false;
-      for (const std::string& table : tables(db, "m")) {
-        if (!std::binary_search(main_tables.begin(), main_tables.end(), table)) continue;
-        const auto ours = columns(db, "main", table);
-        std::string list;
-        for (const std::string& c : columns(db, "m", table)) {
-          if (std::find(ours.begin(), ours.end(), c) == ours.end()) continue;
-          list += (list.empty() ? "" : ",") + quote(c);
-        }
-        if (list.empty()) continue;
-        if (!exec(db, "INSERT OR REPLACE INTO main." + quote(table) + " (" + list + ") SELECT " + list +
-                          " FROM m." + quote(table),
-                  error))
-          return false;
-        if (table == "Data_Car")
-          for (int64_t id : car_ids(db, "m")) m.added_by[id] = p.id;
-      }
-      if (!exec(db, "DETACH DATABASE m", error)) return false;
+      if (!apply_merge_bytes(db, main_tables, bytes, p.id, &m.added_by, error)) return false;
       m.merges_applied.push_back(p.id + ":" + (member.empty() ? where.filename().string() : member));
     }
   }
@@ -698,8 +713,8 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
       for (const std::string a : {"Front", "Rear"}) {
         const std::string w = "List_UpgradeCarBodyTireWidth" + a + "." + a + "TireWidth";
         const std::string r = "List_UpgradeRimSize" + a + "." + a + "WheelDiameter";
-        if (fit.count("List_UpgradeCarBodyTireWidth" + a) && car.has(w)) v["Data_Car." + a + "TireWidthMM"] = car.get(w);
-        if (fit.count("List_UpgradeRimSize" + a) && car.has(r)) v["Data_Car." + a + "WheelDiameterIN"] = car.get(r);
+        if (eff.count("List_UpgradeCarBodyTireWidth" + a) && car.has(w)) v["Data_Car." + a + "TireWidthMM"] = car.get(w);
+        if (eff.count("List_UpgradeRimSize" + a) && car.has(r)) v["Data_Car." + a + "WheelDiameterIN"] = car.get(r);
       }
     }
     // Resolve List_AeroPhysics for the stock or fitted front bumper and rear wing

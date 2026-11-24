@@ -65,6 +65,9 @@ cars::FittedParts fitted(const Car& car) {
       f[s.table] = -1;
     }
   }
+  if (auto it = car.slots.find("WheelStyle"); it != car.slots.end() && it->second > 0) {
+    f["List_Wheels"] = it->second;
+  }
   return f;
 }
 

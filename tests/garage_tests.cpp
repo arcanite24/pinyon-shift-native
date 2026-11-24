@@ -39,6 +39,8 @@ int main() {
   r = fit_part(g, 1, brakes, "Brakes", 85, credits);
   CHECK(r.ok && r.refit && r.charged == 0 && credits == 58500 && g.bought.size() == 1 && g.cars[0].parts_value == 1500);
   CHECK(fitted(g.cars[0]).at("List_UpgradeBrakes") == 309003);
+  g.cars[0].slots["WheelStyle"] = 5007;
+  CHECK(fitted(g.cars[0]).at("List_Wheels") == 5007);
 
   // Buying a car.
   {
