@@ -613,7 +613,10 @@ not run yet (Q145).
   every `List_CarMake.Profile` is "N/A"; the engine's Hidden & Showcase tab
   is a text tile after the makes.
 - **Rooms.** Each room is the engine's studio stage, the Autoshow's dark
-  (Q129).
+  (Q129: the rooms' tracks cannot be drawn under the menu yet). The
+  workshop, the paint shop and the Autoshow's colour select aim with the
+  disc's camera presets (`UICarTargetCameraPresets.xml`); the Autoshow's
+  standard view and the garage keep the engine's turntable (Q129).
 - **Rows.** The workshop's order (Q131); the paint booth's vinyl rows open
   the livery editor (Q132); TEAM CREDITS shows a notice (Q134). OPTIONS's
   VIDEO opens the engine's DISPLAY page (Q135).

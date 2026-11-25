@@ -1100,6 +1100,13 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                     : (active_hub_room == HubRoom::kPaintShop)
                           ? (livery_editor.is_open() ? HubCameraFocus::kSide : HubCameraFocus::kTurntable)
                           : HubCameraFocus::kTurntable;
+            // The disc's camera preset for the screen (UICarTargetCameraPresets.xml),
+            // else the engine's focus.
+            const std::string_view want_preset = carview::hub_camera_preset_name(
+                active_hub_room, active_hub_room == HubRoom::kWorkshop ? shop.active_part_enum() : -1,
+                livery_editor.is_open(), false);
+            const carview::CarCameraPreset* preset = hub_preset(want_preset);
+            static std::string s_last_hub_preset;
             const bool room_changed = (active_hub_room != last_hub_room);
             if (room_changed) {
               hub_cam = HubCamera{};
@@ -1107,10 +1114,15 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             }
             // Only reset camera focus when the hub screen, part focus, or highlighted car changes,
             // preserving smooth turntable auto-orbit and manual right-stick inspection.
-            if (room_changed || desired_focus != s_last_hub_focus || cur_preview_car != s_last_hub_car) {
-              hub_cam.set_focus(desired_focus);
+            if (room_changed || desired_focus != s_last_hub_focus || cur_preview_car != s_last_hub_car ||
+                want_preset != s_last_hub_preset) {
+              if (preset)
+                hub_cam.set_preset(*preset);
+              else
+                hub_cam.set_focus(desired_focus);
               s_last_hub_focus = desired_focus;
               s_last_hub_car = cur_preview_car;
+              s_last_hub_preset = std::string(want_preset);
             }
             const float hub_dt = float(std::clamp(frame_dt, 0.0, 0.1));
             for (SDL_Gamepad* pad : pads) {

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -748,6 +750,19 @@ void DriveSession::open_options_page(carview::OptionsPage p) {
           options_snapshot = settings_page.tokens();
           const auto& rows = carview::options_rows(p);
           if (!rows.empty() && *rows[0].id) settings_page.select_id(rows[0].id);
+}
+
+const carview::CarCameraPreset* DriveSession::hub_preset(std::string_view name) {
+          if (name.empty()) return nullptr;
+          if (!hub_cam_presets_read) {
+            hub_cam_presets_read = true;
+            std::ifstream in(app.game_root_of() / "media" / "UICarTargetCameraPresets.xml", std::ios::binary);
+            if (in) {
+              const std::string xml((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+              hub_cam_presets = carview::parse_car_camera_presets(xml);
+            }
+          }
+          return carview::find_car_camera_preset(hub_cam_presets, name);
 }
 
 void DriveSession::open_stats() {

@@ -373,6 +373,10 @@ struct DriveSession {
   drive::CarLampState player_lamps;
   float rotor_heat = 0.0f;  // thermal brake rotor glow [0..1] (heats under braking at speed, cools smoothly)
   HubCamera hub_cam;
+  // media/UICarTargetCameraPresets.xml, read on first use (MENU-03).
+  std::vector<carview::CarCameraPreset> hub_cam_presets;
+  bool hub_cam_presets_read = false;
+  const carview::CarCameraPreset* hub_preset(std::string_view name);
   HubRoom last_hub_room = HubRoom::kNone;
   drive::CockpitAnimState cockpit_anim;
   float cockpit_steer_kick_rad = 0.0f;

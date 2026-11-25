@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <set>
 #include <string>
 #include <utility>
@@ -75,6 +77,52 @@ void test_hub_stage_and_camera() {
   CHECK(carview::focus_for_part_enum(9) == carview::HubCameraFocus::kRear);
   CHECK(carview::focus_for_part_enum(34) == carview::HubCameraFocus::kFront);
   CHECK(carview::focus_for_part_enum(36) == carview::HubCameraFocus::kHood);
+
+  // UICarTargetCameraPresets.xml's presets (MENU-03): parsed, found by name
+  // (the every-car entry, not a car's own), and turned into the hub
+  // camera's yaw, pitch, distance and aim (the game's +Z front mirrored).
+  {
+    const char* xml =
+        "<UICarTargetCameraPresets>\n"
+        "  <Preset name=\"Upgrades_Main\" ordinal=\"-1\" posx=\"2.650493\" posy=\"1.588644\" posz=\"3.833663\" "
+        "facex=\"-0.495232\" facey=\"-0.283441\" facez=\"-0.821223\" fov=\"23.499622\" allowZoom=\"0\"/>\n"
+        "  <Preset name=\"Wing\" ordinal=\"1124\" posx=\"1\" posy=\"2\" posz=\"3\" facex=\"0\" facey=\"0\" "
+        "facez=\"-1\" fov=\"45\" allowZoom=\"1\"/>\n"
+        "  <Preset name=\"Wing\" ordinal=\"-1\" posx=\"0\" posy=\"0\" posz=\"4\" facex=\"0\" facey=\"0\" "
+        "facez=\"-1\" fov=\"30\" allowZoom=\"1\"/>\n"
+        "</UICarTargetCameraPresets>\n";
+    const auto presets = carview::parse_car_camera_presets(xml);
+    CHECK(presets.size() == 3);
+    const carview::CarCameraPreset* wing = carview::find_car_camera_preset(presets, "Wing");
+    CHECK(wing && wing->ordinal == -1 && std::fabs(wing->fov - 30.0f) < 1e-4f && wing->allow_zoom);
+    const carview::CarCameraPreset* main_p = carview::find_car_camera_preset(presets, "Upgrades_Main");
+    CHECK(main_p && !main_p->allow_zoom);
+    if (main_p) {
+      carview::HubCamera cam;
+      cam.set_preset(*main_p);
+      CHECK(std::fabs(cam.target_yaw - 0.543f) < 0.01f);
+      CHECK(std::fabs(cam.target_pitch - 0.287f) < 0.01f);
+      CHECK(std::fabs(cam.target_dist - 4.91f) < 0.02f);
+      CHECK(!cam.auto_orbit);
+      // The eye the camera puts back is the preset's, Z mirrored.
+      const float cp = std::cos(cam.target_pitch), sp = std::sin(cam.target_pitch);
+      const float eye[3] = {cam.target_pos[0] + cam.target_dist * cp * std::sin(cam.target_yaw),
+                            cam.target_pos[1] + cam.target_dist * sp,
+                            cam.target_pos[2] - cam.target_dist * cp * std::cos(cam.target_yaw)};
+      CHECK(std::fabs(eye[0] - 2.650493f) < 0.01f && std::fabs(eye[1] - 1.588644f) < 0.01f &&
+            std::fabs(eye[2] + 3.833663f) < 0.01f);
+      for (int i = 0; i < 40; ++i) cam.step(0.1f);
+      CHECK(std::fabs(cam.fov_deg - 23.5f) < 0.05f);
+    }
+    using carview::HubRoom;
+    CHECK(carview::hub_camera_preset_name(HubRoom::kWorkshop, 34, false, false) == "Upgrades_FrontBumper");
+    CHECK(carview::hub_camera_preset_name(HubRoom::kWorkshop, 14, false, false) == "Upgrades_Engine_Front");
+    CHECK(carview::hub_camera_preset_name(HubRoom::kWorkshop, -1, false, false) == "Upgrades_Main");
+    CHECK(carview::hub_camera_preset_name(HubRoom::kPaintShop, -1, true, false) == "LiveryPaintMenu_Body");
+    CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, true) == "CarColorSel");
+    CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, false).empty());
+    CHECK(carview::hub_camera_preset_name(HubRoom::kGarage, -1, false, false).empty());
+  }
 
   // Barn Find Restoration Card UI rasterization.
   carview::BarnFindCard card;
@@ -228,6 +276,23 @@ void test_disc_hub_shops_and_garage() {
   CHECK(garage::load_pi_config(install.media / "physics.zip", pi_cfg, &err));
   std::vector<garage::ClassBand> bands;
   CHECK(garage::load_class_bands(game_root, bands, &err));
+
+  // The disc's camera presets: every name the hub asks for is there.
+  {
+    std::ifstream in(game_root / "media" / "UICarTargetCameraPresets.xml", std::ios::binary);
+    CHECK(bool(in));
+    const std::string xml((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const auto presets = carview::parse_car_camera_presets(xml);
+    CHECK(presets.size() == 28);
+    using carview::HubRoom;
+    for (int part : {-1, 4, 9, 14, 20, 31, 34, 35, 36, 40})
+      CHECK(carview::find_car_camera_preset(
+                presets, carview::hub_camera_preset_name(HubRoom::kWorkshop, part, false, false)) != nullptr);
+    for (bool editor : {false, true})
+      CHECK(carview::find_car_camera_preset(
+                presets, carview::hub_camera_preset_name(HubRoom::kPaintShop, -1, editor, false)) != nullptr);
+    CHECK(carview::find_car_camera_preset(presets, "CarColorSel") != nullptr);
+  }
 
   // 1. Autoshow Make Carousel entry mode + "All Affordable" + "All Cars" + Sort/Filter + >14 swatch scroll + [OWNED] + Test Drive.
   carview::Autoshow autoshow;

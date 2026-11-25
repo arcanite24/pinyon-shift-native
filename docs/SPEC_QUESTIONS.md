@@ -3137,6 +3137,39 @@ booth keep their colours. Needed: how the title loads a room's track
 under the menu (which track per screen, the car's placement in it) and
 which preset each screen's camera uses.
 
+The rooms' tracks: each is a small track folder like Colorado's
+(`bin.zip` of 8.6 to 16.1 MB, one PVS zone, a one-cell `.hex`, a
+collision box about the origin, empty `GameObjs.xml`, `CollObjs.xml` and
+post zones, no time of day). `World::open` and `Collision::open` take any
+track folder, so reading them is not the obstacle; drawing one under the
+menu is: room models within 200 m of the origin count as local and are
+not gathered (`rmb_is_world_space`), placements at the origin are dropped
+(a Colorado filter), and a second world's texture numbers would collide
+with Colorado's in the GPU world (one world per host). A room needs a
+full world swap (as the Rally's ColoradoDirt does, seconds per entry) or a
+second world channel, and its interior shaders (`H_INT_*`,
+`HS_SKY_DIFF_HDRI_*`) are unchecked. The car's place in a room is not in
+its data (the empty `GameObjs.xml`); the presets suggest the origin. So
+the rooms stay the studio stage (MENU-02).
+
+The camera presets: `media/UICarTargetCameraPresets.xml` (loose on the
+disc) has 28 presets under 27 names (`LiveryLayerSelect_Wing` twice: one
+for every car, one for car 1124), each an eye (`posx/y/z`) and look
+direction (`facex/y/z`) in the car's frame (+Z front), a field of view, X
+and Y angle limits and `allowZoom`. The engine reads them
+(`parse_car_camera_presets`) and aims the hub camera with them: the
+workshop's `Upgrades_*` by the selected part, the paint shop's
+`LiveryMainMenu` and `LiveryPaintMenu_Body` (editor), and the Autoshow's
+colour select `CarColorSel`. The field of view is taken as vertical. Open:
+- the Autoshow's standard view: `HorizonAutoshow` puts the eye 4.8 m from
+  the car, but every reference dump has the live camera 6.58 m off
+  (AUTOSHOW_REFERENCE.md), so the engine keeps its own camera there and in
+  the garage;
+- the angle limits and zoom (not applied; the engine's orbit limits stay),
+  the `LiveryLayerSelect_*` and `LiveryPaintMenu_*` per region, and which
+  preset the workshop uses for a mid- or rear-engined car's engine parts
+  (`Upgrades_Engine_Rear`).
+
 ## Q130 (UI, not blocking): MY GARAGE on 108, the manufacturer select on 115, and their help bars
 
 No capture shows the garage's own list; the parity run that should have
