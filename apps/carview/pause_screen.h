@@ -70,6 +70,11 @@ void fill_pause_screen(const PauseMenu& menu, double now, PauseScreenHud& out);
 inline constexpr double kPauseFadeSeconds = 0.10;
 inline constexpr float kPauseFocusScale = 1.21f;
 
+// Binds a scene's PlayerBar (the pause menu's and H_MAP's share its node
+// names): the wristband objective, the car and the credits. `band_texture`:
+// WRISTBANDS/<COLOUR>; empty: from the HUD.
+void bind_pause_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& band_texture);
+
 // Draws the pause screens over the game (null scene: nothing, false).
 bool draw_pause_screen(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float w, float h);
 

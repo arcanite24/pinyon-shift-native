@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+#include "freeroam/fast_travel.h"
+#include "map_screen.h"
+
 namespace carview {
 
 namespace {
@@ -102,6 +105,18 @@ void DriveSession::radio_press(int dir) {
         app.audio_host.radio_press(dir);
 }
 
+namespace {
+// A speed trap's popup line: "PB: 192.42 km/h" (map_popup_speedtrap_orig.png).
+std::string speed_pb_line(double mph, bool metric) {
+  char v[32];
+  std::snprintf(v, sizeof v, "%.2f", metric ? mph * 1.609344 : mph);
+  const std::string unit =
+      metric ? carview::format1(carview::text_of({"UnitStrings", "IDS_Units_KmPerHour", 0, "{0} km/h"}), v)
+             : carview::format1(carview::text_of({"UnitStrings", "IDS_Units_Mph", 0, "{0} mph"}), v);
+  return carview::text_of({"Activities", "IDS_PB", 0, "PB"}) + ": " + unit;
+}
+}  // namespace
+
 MapScene DriveSession::map_scene() {
         MapScene sc;
         const drive::Vec3 at = vehicle.position();
@@ -147,6 +162,18 @@ MapScene DriveSession::map_scene() {
             mm.is_new = site.kind == race::FestivalSite::kRaceCentral &&
                         app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband) >= 0;
             mm.site_or_hub = int(site.kind);
+            {
+              // The popup: InGame IDS_Festival_<site>_Line1 / _Line2.
+              const char* key = site.kind == race::FestivalSite::kAutoshow    ? "AS"
+                                : site.kind == race::FestivalSite::kWorkshop  ? "WS"
+                                : site.kind == race::FestivalSite::kPaintShop ? "PS"
+                                                                              : "RC";
+              const std::string l1 = std::string("IDS_Festival_") + key + "_Line1";
+              const std::string l2 = std::string("IDS_Festival_") + key + "_Line2";
+              const std::string t1 = carview::text_of({"InGame", l1, 0, ""});
+              if (!t1.empty()) mm.title = t1;
+              mm.popup_line = carview::text_of({"InGame", l2, 0, ""});
+            }
             sc.markers.push_back(std::move(mm));
           }
           for (const auto& hub : app.career_catalog.hubs) {
@@ -155,8 +182,23 @@ MapScene DriveSession::map_scene() {
             mm.kind = MapMarker::kStreetHub;
             mm.icon_tag = "streetrace";
             mm.id = "HUB_" + std::to_string(hub.id);
-            mm.title = "STREET RACE HUB " + std::to_string(hub.id);
-            mm.subtitle = "ILLEGAL STREET RACING";
+            mm.popup_line = carview::game_text(hub.name_ref);
+            if (mm.popup_line.empty() || mm.popup_line.rfind("_&", 0) == 0) mm.popup_line = "HUB " + std::to_string(hub.id);
+            mm.title = mm.popup_line;
+            mm.subtitle = mm.popup_line;
+            {
+              const int rank_now = app.current_pop_rank();
+              for (const auto& hev : app.career_catalog.events) {
+                if (hev.hub_id != hub.id || hev.style != 2) continue;
+                const int place = app.career_catalog.best_place(hev, app.career);
+                int pip = int(carview::MapPip::kUnavailable);
+                if (place >= 1 && place <= 3) pip = place;  // gold, silver, bronze
+                else if (app.career_catalog.is_event_unlocked(hev, app.career, app.collected_wristband, rank_now))
+                  pip = int(carview::MapPip::kAvailable);
+                mm.pips.push_back(pip);
+                if (mm.pips.size() >= 10) break;
+              }
+            }
             mm.x = hub.trigger_pos[0], mm.z = hub.trigger_pos[2];
             mm.site_or_hub = hub.id;
             sc.markers.push_back(std::move(mm));
@@ -191,6 +233,13 @@ MapScene DriveSession::map_scene() {
                 det += "  •  WIN " + carview::car_name(pcs->media_name);
             }
             mm.detail_line = std::move(det);
+            if (ev.target_class > 0 && size_t(ev.target_class) < app.class_bands.size())
+              mm.class_name = app.class_bands[size_t(ev.target_class)].name;
+            if (const int pts = app.wristbands.points_for(ev.level, 1); pts > 0)
+              mm.points = carview::format1(carview::text_of({"UnitStrings", "IDS_Units_PTS", 0, "{0} PTS"}),
+                                           carview::thousands(pts));
+            mm.money = carview::format1(carview::text_of(carview::map_text::kCredits),
+                                        carview::thousands(int64_t(ev.cash_prize)));
             mm.x = ev.trigger_pos[0], mm.z = ev.trigger_pos[2];
             sc.markers.push_back(std::move(mm));
           }
@@ -216,31 +265,14 @@ MapScene DriveSession::map_scene() {
               mm.x = op.trigger.x;
               mm.z = op.trigger.z;
               mm.site_or_hub = op.index;
+              mm.popup_line = mm.title;
+              for (const auto& mid : op.mission_ids)
+                mm.pips.push_back(app.outpost_progress.is_stunt_completed(mid) ? int(carview::MapPip::kGold)
+                                                                               : int(carview::MapPip::kAvailable));
+              mm.discount = std::to_string(freeroam::outpost_discount_percent(int(op.mission_ids.size()), done_st)) + "%";
               sc.markers.push_back(std::move(mm));
             }
-            for (const auto& st : app.outposts.stunts) {
-              MapMarker mm;
-              mm.kind = MapMarker::kPrStunt;
-              mm.icon_tag = st.kind == freeroam::PrStuntKind::kSpeed ? "speed_camera_discovered" : "exhibition";
-              mm.id = st.id;
-              mm.title = st.title;
-              mm.completed = app.outpost_progress.is_stunt_completed(st.id);
-              mm.is_new = !mm.completed;
-              mm.subtitle = std::string(freeroam::pr_stunt_kind_name(st.kind)) + "  •  " +
-                            carview::thousands(st.reward_credits) + " Cr";
-              if (st.kind == freeroam::PrStuntKind::kSpeed) {
-                mm.detail_line = "TARGET: " + carview::format_speed_unit(st.target_mph, app.metric_units, false) +
-                                 "  •  +" + carview::thousands(st.reward_popularity) + " POP";
-              } else if (st.kind == freeroam::PrStuntKind::kSkill) {
-                mm.detail_line = "TARGET: " + carview::thousands(st.target_points) + " SKILL PTS  •  +" +
-                                 carview::thousands(st.reward_popularity) + " POP";
-              } else {
-                mm.detail_line = "PHOTO CHALLENGE  •  +" + carview::thousands(st.reward_popularity) + " POP";
-              }
-              mm.x = st.target_pos.x;
-              mm.z = st.target_pos.z;
-              sc.markers.push_back(std::move(mm));
-            }
+            // PR stunts have no map icon (the original shows only the outpost).
           }
           if (app.speed_tracker) {
             for (const auto& t : app.speed_data.traps) {
@@ -259,6 +291,7 @@ MapScene DriveSession::map_scene() {
               else std::snprintf(sub, sizeof sub, "SPEED TRAP  •  MIN %.0f %s", t.min_speed_mph * spd_scale, spd_unit);
               mm.subtitle = sub;
               mm.detail_line = "PASS CAMERA AT TOP SPEED TO SET A PERSONAL BEST";
+              if (pb > 0.0) mm.popup_line = speed_pb_line(pb, app.metric_units);
               mm.x = t.gate.center[0];
               mm.z = t.gate.center[2];
               sc.markers.push_back(std::move(mm));
@@ -279,6 +312,7 @@ MapScene DriveSession::map_scene() {
               else std::snprintf(sub, sizeof sub, "SPEED ZONE  •  AVG SPEED CHALLENGE");
               mm.subtitle = sub;
               mm.detail_line = "MAINTAIN HIGH AVERAGE SPEED BETWEEN BOTH GATES";
+              if (pb > 0.0) mm.popup_line = speed_pb_line(pb, app.metric_units);
               mm.x = z.midpoint[0];
               mm.z = z.midpoint[2];
               sc.markers.push_back(std::move(mm));

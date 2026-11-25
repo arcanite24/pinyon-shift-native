@@ -439,6 +439,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
             //    LB/RB or Q/E cycles filters, LT/RT/wheel zooms, B/Esc/M/Back closes).
             if (map_open) {
               bool close = false;
+              // The scene-driven map's filter popup, dialogs, LB and X first.
+              if (map_screen_event(e)) return true;
               auto zoom_by = [&](double f) {
                 map_cam.nudge_target_zoom(f);
                 map_dirty = true;
@@ -461,8 +463,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 app.audio_host.trigger_ui(audio::UiCue::kMove);
               };
               auto resolve_gps_target = [&](double& tx, double& tz, std::string& label, traffic::GpsDestKind& dk) {
-                tx = map_cx;
-                tz = map_cz;
+                tx = map_px;
+                tz = map_pz;
                 label = "CUSTOM WAYPOINT";
                 dk = traffic::GpsDestKind::kGeneric;
                 if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
@@ -486,9 +488,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                   }
                   return;
                 }
-                const bool show_barns = map_filter == MapFilter::kAll || map_filter == MapFilter::kDiscovery;
-                const bool show_signs = map_filter == MapFilter::kAll || map_filter == MapFilter::kSigns ||
-                                        map_filter == MapFilter::kDiscovery;
+                const bool show_barns = map_filter.shows(MapCategory::kBarnFind);
+                const bool show_signs = map_filter.shows(MapCategory::kDiscountSign);
                 if ((show_barns || show_signs) && app.progress_loaded) {
                   const bool reveal = app.reveal || app.treasure_map_setting ||
                                       slice12.trainer.effective_reveal_collectibles();
@@ -537,8 +538,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 resolve_gps_target(tx, tz, label, dk);
                 // Toggle off if pressing A/Enter/Click again on the active GPS destination;
                 // ALWAYS keep the World Map open so the player can inspect the GPS route!
-                if (app.gps_nav.active() &&
-                    std::hypot(tx - app.gps_nav.route().dest_x, tz - app.gps_nav.route().dest_z) < 120.0) {
+                if (app.gps_nav.active()) {
                   app.gps_nav.clear();
                   app.audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
                   app.audio_host.trigger_ui(audio::UiCue::kCancel);
@@ -714,13 +714,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 if (k == SDLK_EQUALS || k == SDLK_PLUS || k == SDLK_KP_PLUS) zoom_by(1.35);
                 if (k == SDLK_MINUS || k == SDLK_KP_MINUS) zoom_by(1 / 1.35);
                 if (!e.key.repeat && k == SDLK_Q) {
-                  map_filter = MapFilter((int(map_filter) + int(MapFilter::kCount) - 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
                 if (!e.key.repeat && k == SDLK_E) {
-                  map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -750,8 +750,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
                   map_dragging = false;
                   map_drag_moved = false;
-                  if (hz.group == carview::ui::kHitTab && hz.index >= 0 && hz.index < int(MapFilter::kCount)) {
-                    map_filter = MapFilter(hz.index);
+                  if (hz.group == carview::ui::kHitTab && hz.index >= 0 && hz.index < kMapFilterRows) {
+                    map_filter.toggle(MapFilterRow(hz.index));
                     map_dirty = true;
                     update_map_selection();
                     app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -764,7 +764,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                     } else if (hz.index == 1) {
                       map_fast_travel_or_secondary();
                     } else if (hz.index == 2) {
-                      map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                      map_filter_open = true;
                       map_dirty = true;
                       update_map_selection();
                       app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -817,13 +817,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 if (b == SDL_GAMEPAD_BUTTON_WEST) map_fast_travel_or_secondary();
                 if (b == SDL_GAMEPAD_BUTTON_NORTH) map_center_on_car();
                 if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
-                  map_filter = MapFilter((int(map_filter) + int(MapFilter::kCount) - 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
                 if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
-                  map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);

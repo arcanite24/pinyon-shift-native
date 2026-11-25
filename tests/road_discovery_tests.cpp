@@ -11,6 +11,7 @@
 #include "drive/save.h"
 #include "freeroam/collectibles.h"
 #include "freeroam/road_discovery.h"
+#include "map_cursor.h"
 #include "map_view.h"
 #include "profile/drive_save.h"
 #include "profile/profile.h"
@@ -248,15 +249,66 @@ void test_map_edge_clamping_internal_size_and_filters() {
   sh.icon_tag = "exhibition";
   sg.icon_tag = "flyer";
 
-  check(carview::map_marker_matches_filter(ev, carview::MapFilter::kEvents), "events filter includes race");
-  check(!carview::map_marker_matches_filter(sh, carview::MapFilter::kEvents), "events filter separates showcases");
-  check(carview::map_marker_matches_filter(sh, carview::MapFilter::kShowcases), "showcases filter includes exhibition");
-  check(carview::map_marker_matches_filter(op_disc, carview::MapFilter::kOutposts), "outposts filter includes outposts");
-  check(carview::map_marker_matches_filter(sp, carview::MapFilter::kSpeed), "speed filter includes speed traps");
-  check(carview::map_marker_matches_filter(sg, carview::MapFilter::kSigns), "signs filter includes flyers");
-  check(carview::map_marker_matches_filter(op_lock, carview::MapFilter::kDiscovery) &&
-            !carview::map_marker_matches_filter(op_disc, carview::MapFilter::kDiscovery),
-        "discovery filter shows undiscovered outposts");
+  // The original's 12 check rows (map_filter.h): one row each, OR'd with
+  // New / Not Won; facilities have no row.
+  using carview::MapFilterRow;
+  auto only = [](std::initializer_list<MapFilterRow> rows) {
+    carview::MapFilterSet f;
+    f.toggle(MapFilterRow::kAll);  // A on All unticks every row
+    for (auto r : rows) f.toggle(r);
+    return f;
+  };
+  carview::MapMarker site;
+  site.kind = carview::MapMarker::kFestivalSite;
+  site.icon_tag = "workshop";
+  ev.completed = true, sh.completed = true;
+  check(carview::map_marker_matches_filter(ev, carview::MapFilterSet{}), "all rows ticked: events show");
+  check(carview::map_marker_matches_filter(ev, only({MapFilterRow::kFestivalEvents})), "festival events row: races");
+  check(!carview::map_marker_matches_filter(sh, only({MapFilterRow::kFestivalEvents})),
+        "festival events row: not showcases");
+  check(carview::map_marker_matches_filter(sh, only({MapFilterRow::kShowcases})), "showcases row: exhibitions");
+  check(carview::map_marker_matches_filter(op_disc, only({MapFilterRow::kOutposts})), "outposts row: outposts");
+  check(carview::map_marker_matches_filter(sp, only({MapFilterRow::kSpeedCameras})), "speed cameras row: traps");
+  check(!carview::map_marker_matches_filter(sp, only({MapFilterRow::kOutposts})), "outposts row: no traps");
+  check(carview::map_marker_matches_filter(site, only({})), "facilities always show");
+  carview::MapMarker fresh = ev;
+  fresh.completed = false, fresh.is_new = true;
+  check(carview::map_marker_matches_filter(fresh, only({MapFilterRow::kNew})), "new row: new events");
+  check(carview::map_marker_matches_filter(fresh, only({MapFilterRow::kNotWon})), "not won row: unwon events");
+  check(!carview::map_marker_matches_filter(ev, only({MapFilterRow::kNotWon})), "not won row: not won ones");
+  {
+    carview::MapFilterSet f;
+    check(f.all_ticked() && f.ticked[0], "filter: every row ticked at first");
+    f.toggle(MapFilterRow::kAll);
+    bool none = true;
+    for (bool t : f.ticked) none = none && !t;
+    check(none, "filter: A on All unticks every row");
+    f.toggle(MapFilterRow::kStarShowdowns);
+    check(f.is_ticked(MapFilterRow::kStarShowdowns) && !f.is_ticked(MapFilterRow::kAll), "filter: one row ticked");
+    for (int i = 1; i < carview::kMapFilterRows; ++i)
+      if (!f.ticked[size_t(i)]) f.toggle(MapFilterRow(i));
+    check(f.is_ticked(MapFilterRow::kAll), "filter: All ticks itself when every row is");
+    check(std::string(carview::map_filter_string_id(MapFilterRow::kDiscountSigns)) == "IDS_Filter_Flyers" &&
+              std::string(carview::map_filter_string_id(MapFilterRow::kStarShowdowns)) == "IDS_Filter_NemesisRaces",
+          "filter: the rows' InGame ids");
+  }
+  {
+    // The free cursor: moves over a still map, scrolls past the edge zone.
+    carview::MapCursor c;
+    auto s = c.step(0.1, 1.0f, 0.0f);
+    check(std::abs(c.x - 689.0f) < 0.5f && s[0] == 0.0f, "cursor: 490 px/s, no scroll inside the zone");
+    for (int i = 0; i < 10; ++i) s = c.step(0.1, 1.0f, 0.0f);
+    check(std::abs(c.x - 830.0f) < 0.5f && std::abs(s[0] - 47.0f) < 0.5f, "cursor: held at 190 px, scrolls 470 px/s");
+    c.absorb(1000.0f, 0.0f);
+    check(c.x == carview::MapCursor::kMaxX, "cursor: what the map cannot take moves it to the edge");
+    s = c.step(0.1, 0.0f, -1.0f, true);
+    check(std::abs(c.y - (360.0f - 22.05f)) < 0.5f, "cursor: slower over an icon");
+    const double z0 = 2.0;
+    double z = z0;
+    for (int i = 0; i < 60; ++i) z = carview::MapZoom::step(z, z0, 1.0, 1.0 / 60);
+    check(std::abs(z - z0 * carview::MapZoom::kMaxIn) < 1e-9, "zoom: RS up to 2.6x within a second");
+    check(carview::MapZoom::step(z0, z0, -1.0, 1.0) == z0, "zoom: the opening scale is the furthest out");
+  }
 }
 
 void test_colorado_corpus_optional() {

@@ -939,8 +939,6 @@ void DriveSession::finalize_session(bool& session_again) {
           map_overlay = carview::MapOverlayHud{};
           map_overlay.active = true;
           map_overlay.active_filter = 0;
-          for (int fi = 0; fi < int(MapFilter::kCount); ++fi)
-            map_overlay.filter_tabs.push_back(map_filter_name(MapFilter(fi)));
           map_overlay.roads_discovered = app.road_discovery.ready() ? app.road_discovery.discovered_count() : 0;
           map_overlay.roads_total = app.road_discovery.ready() ? app.road_discovery.total_roads() : 216;
           map_overlay.zoom = app.cli_map_zoom;

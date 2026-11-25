@@ -366,6 +366,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               }
             }
           }
+          map_screen_fill();
+          map_overlay.screen = &map_screen_hud;
           d.map_overlay = &map_overlay;
         }
         carview::SkillChainHud sk_hud;

@@ -598,9 +598,8 @@ struct Mark {
 
 std::vector<Mark> marks(const MapScene& s, bool apply_filter) {
   std::vector<Mark> out;
-  const bool show_signs = !apply_filter || s.filter == MapFilter::kAll || s.filter == MapFilter::kSigns ||
-                          s.filter == MapFilter::kDiscovery;
-  const bool show_barns = !apply_filter || s.filter == MapFilter::kAll || s.filter == MapFilter::kDiscovery;
+  const bool show_signs = !apply_filter || s.filter.shows(MapCategory::kDiscountSign);
+  const bool show_barns = !apply_filter || s.filter.shows(MapCategory::kBarnFind);
   if (s.data && s.progress) {
     if (show_signs) {
       for (const auto& sign : s.data->signs) {
@@ -628,25 +627,53 @@ std::vector<Mark> marks(const MapScene& s, bool apply_filter) {
 
 }  // namespace
 
-bool map_marker_matches_filter(const MapMarker& m, MapFilter f) {
-  if (f == MapFilter::kAll) return true;
-  switch (f) {
-    case MapFilter::kEvents:
-      return (m.kind == MapMarker::kEvent && m.icon_tag != "exhibition") || m.kind == MapMarker::kStreetHub ||
-             m.kind == MapMarker::kFestivalSite || m.kind == MapMarker::kH2hFinish;
-    case MapFilter::kOutposts:
-      return m.kind == MapMarker::kOutpost || m.kind == MapMarker::kFestivalSite;
-    case MapFilter::kSpeed:
-      return m.kind == MapMarker::kSpeedTrap || m.kind == MapMarker::kSpeedZone || m.kind == MapMarker::kPrStunt;
-    case MapFilter::kSigns:
-      return m.icon_tag == "flyer" || m.icon_tag == "flyer_collected";
-    case MapFilter::kShowcases:
-      return m.icon_tag == "exhibition" || (m.kind == MapMarker::kEvent && m.icon_tag == "nemesisrace");
-    case MapFilter::kDiscovery:
-      return (m.kind == MapMarker::kOutpost && !m.discovered) || m.icon_tag == "barnfind" ||
-             m.icon_tag == "barnfind_collected" || m.icon_tag == "flyer" || m.icon_tag == "flyer_collected";
-    default: return true;
+// A separable box blur of `passes` passes (about a Gaussian), radius r px.
+static void box_blur_rgba(std::vector<uint8_t>& px, int w, int h, int r, int passes) {
+  if (w <= 0 || h <= 0 || r <= 0 || px.size() < size_t(w) * h * 4) return;
+  std::vector<uint8_t> tmp(px.size());
+  const int n = 2 * r + 1;
+  auto pass = [&](const std::vector<uint8_t>& src, std::vector<uint8_t>& dst, bool horiz) {
+    const int lines = horiz ? h : w, len = horiz ? w : h;
+    for (int li = 0; li < lines; ++li) {
+      auto at = [&](int i) -> size_t {
+        i = std::clamp(i, 0, len - 1);
+        return horiz ? (size_t(li) * w + i) * 4 : (size_t(i) * w + li) * 4;
+      };
+      int acc[4] = {0, 0, 0, 0};
+      for (int i = -r; i <= r; ++i)
+        for (int c = 0; c < 4; ++c) acc[c] += src[at(i) + c];
+      for (int i = 0; i < len; ++i) {
+        const size_t o = at(i);
+        for (int c = 0; c < 4; ++c) dst[o + c] = uint8_t(acc[c] / n);
+        const size_t add = at(i + r + 1), sub = at(i - r);
+        for (int c = 0; c < 4; ++c) acc[c] += int(src[add + c]) - int(src[sub + c]);
+      }
+    }
+  };
+  for (int k = 0; k < passes; ++k) {
+    pass(px, tmp, true);
+    pass(tmp, px, false);
   }
+}
+
+MapCategory map_marker_category(const MapMarker& m) {
+  switch (m.kind) {
+    case MapMarker::kEvent:
+      if (m.icon_tag == "exhibition") return MapCategory::kShowcase;
+      if (m.icon_tag == "nemesisrace") return MapCategory::kStarShowdown;
+      return MapCategory::kFestivalEvent;
+    case MapMarker::kStreetHub: return MapCategory::kStreetRaceHub;
+    case MapMarker::kOutpost: return MapCategory::kOutpost;
+    case MapMarker::kSpeedTrap:
+    case MapMarker::kSpeedZone: return MapCategory::kSpeedCamera;
+    default: return MapCategory::kAlways;
+  }
+}
+
+bool map_marker_matches_filter(const MapMarker& m, const MapFilterSet& f) {
+  const MapCategory c = map_marker_category(m);
+  const bool event = m.kind == MapMarker::kEvent || m.kind == MapMarker::kStreetHub;
+  return f.shows(c, m.is_new, event && !m.completed, false);
 }
 
 MapView::MapView() = default;
@@ -1650,7 +1677,7 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
 
   // Rumour circles (MapProfileFullscreen.xml): translucent warm purple/magenta search zone
   // with crisp dashed magenta/warm-white rim!
-  if ((scene.filter == MapFilter::kAll || scene.filter == MapFilter::kDiscovery) && scene.data && scene.progress)
+  if (scene.filter.shows(MapCategory::kBarnFind) && scene.data && scene.progress)
     for (size_t i = 0; i < scene.data->barns.size() && i < scene.progress->barns.size(); ++i) {
       if (scene.progress->barns[i].status != freeroam::kBarnRumour) continue;
       const auto& b = scene.data->barns[i];
@@ -1691,20 +1718,15 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     auto it = full_.icons.find(m.key);
     if (it == full_.icons.end()) it = full_.icons.find("gas_station");
     if (it == full_.icons.end()) continue;
+    // The icon under the cursor grows and the others dim
+    // (map_popup_outpost_orig.png); its ring is H_MAP's lock-on.
     const bool sel = m.marker_index >= 0 && m.marker_index == scene.selected_marker;
-    if (sel) {
-      // Bright pink halo around hovered/selected map marker.
-      const double r = 24.0 * unit;
-      for (int k = 0; k < 24; ++k) {
-        const double a0 = 2 * kPi * k / 24, a1 = 2 * kPi * (k + 1) / 24;
-        cv.line(p[0] + r * std::cos(a0), p[1] + r * std::sin(a0), p[0] + r * std::cos(a1), p[1] + r * std::sin(a1), 3.0,
-                Rgba{245, 4, 92, 255});
-      }
-    }
+    const bool dim = scene.selected_marker >= 0 && !sel;
     for (const auto& ic : it->second) {
       Rgba tint = ic.colour;
       if (!m.discovered) tint = {140, 145, 155, tint.a * 0.7f};
       else if (m.completed && m.marker_index >= 0) tint.a *= 0.65f;
+      if (dim) tint.a *= 0.6f;
       const double sz = ic.size * unit * (sel ? 1.25 : 1.0);
       cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], sz, 0, tint);
     }
@@ -1773,6 +1795,7 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     }
   }
 
+  if (scene.blur) box_blur_rgba(draw_buf, rw, rh, std::max(2, rh / 180), 3);
   if (needs_upscale) {
     upscale_pause_rgba(work_rgba_, rw, rh, out.rgba, width, height);
   }

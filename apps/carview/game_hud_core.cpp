@@ -1,5 +1,6 @@
 #include "game_hud_internal.h"
 #include "hud_screen.h"
+#include "map_screen.h"
 #include "pause_screen.h"
 #include "touch_controls.h"
 
@@ -972,6 +973,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     return;
   }
   if (st.map_overlay && st.map_overlay->active) {
+    if (st.map_overlay->screen && draw_map_screen(l, st, *st.map_overlay->screen, w, h)) return;
     const bool has_bar = st.credits >= 0 || !st.car_name.empty();
     map_overlay_hud(l, *st.map_overlay, g, has_bar, st.metric_units);
     if (has_bar) draw_career_header(l, st, g);

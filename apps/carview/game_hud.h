@@ -451,8 +451,11 @@ struct GpsHud {
 
 // Interactive Pause Map overlay card (hovered destination info, filter tabs,
 // roads discovered counter, and legend/help bar).
+struct MapScreenHud;
 struct MapOverlayHud {
   bool active = false;
+  // The scene-driven map (map_screen.h); null: the interim overlay below.
+  const MapScreenHud* screen = nullptr;
   std::string title;
   std::string subtitle;
   std::string detail_line;      // rich event / PR stunt / barn find rumour metadata line

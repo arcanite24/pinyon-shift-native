@@ -124,6 +124,7 @@ add_library(carview_hud STATIC
   help_bar_screen.cpp
   hud_scene.cpp
   hud_screen.cpp
+  map_screen.cpp
   pause_screen.cpp
   rally_hub.cpp
   scene_screen.cpp)
@@ -149,6 +150,7 @@ set(carview_sources
   drive_world_sync.cpp
   drive_hud_sync.cpp
   drive_map_radio.cpp
+  drive_map_screen.cpp
   drive_menus_dispatch.cpp
   drive_benchmark_runner.cpp
   drive_headless_runner.cpp
