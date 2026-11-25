@@ -173,7 +173,7 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                   if (app.title_video.active()) app.title_video.close();
                   if (app.title_saved_resume_pending) {
                     app.title_saved_resume_pending = false;
-                    loading_screen.load_definitions(app.game_root_of(), "freeroam");
+                    loading_screen.load_definitions(app.game_root_of(), "freeroam", app.state_root);
                     loading_screen.start("COLORADO FREE ROAM", "HORIZON FESTIVAL");
                     loading_min_until = 0.25;
                     if (host.streamer) {

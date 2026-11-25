@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -104,6 +105,12 @@ struct ViperConvoyState {
 
 ViperConvoyState g_viper_convoy;
 
+// A uniform [0, 1) draw for a RadioDJRequests delay window.
+double radio_jitter() {
+  static std::mt19937 rng{std::random_device{}()};
+  return std::uniform_real_distribution<double>(0.0, 1.0)(rng);
+}
+
 void apply_popularity_with_events(DriveSession& s, double pts) {
   if (!s.app.skill_tracker || pts <= 0.0) return;
   int prev_pop_rank = s.app.skill_tracker->popularity_rank();
@@ -123,7 +130,8 @@ void apply_popularity_with_events(DriveSession& s, double pts) {
     } else if (sev.kind == freeroam::SkillEvent::kRankUp) {
       const int old_rank = std::max(prev_pop_rank, sev.rank + 1);
       s.app.audio_host.trigger_ui(audio::UiCue::kRankUp);
-      s.app.audio_host.radio_trigger_festival_update("PopularityRankUp");
+      // Fame.xml radioFestivalUpdate of the level crossed (FestivalUpdateSkillLevel<rank>).
+      if (!sev.radio_festival_update.empty()) s.app.audio_host.radio_trigger_festival_update(sev.radio_festival_update);
       s.app.campaign.on_popularity_rank_changed(old_rank, sev.rank, &s.app.audio_host);
       if (s.app.have_career_catalog) {
         for (const auto& cev : s.app.career_catalog.events) {
@@ -541,11 +549,18 @@ bool DriveSession::free_roam_step() {
             popup = {"BARN FIND RUMOUR", "A CLASSIC IS HIDING NEARBY.  M FOR THE MAP", vehicle.time(), -1,
                      carview::ui::rgba(70, 210, 100)};
             app.campaign.on_barn_find(false, app.collectibles.barns[size_t(ev.index)].name, "", &app.audio_host);
-            app.audio_host.radio_trigger_special("BarnFindRumor");
+            // The barn's RadioDJRequests (barnfinds.xml): the location hint now, the
+            // disabled "spotted" reminder inside its window while the rumour stands.
+            for (const auto& rq : app.collectibles.barns[size_t(ev.index)].radio_requests) {
+              const double d = rq.delay_min_s + (rq.delay_max_s - rq.delay_min_s) * radio_jitter();
+              if (rq.immediate) app.audio_host.radio_trigger_immediate(rq.event);
+              else app.audio_host.radio_schedule_special(rq.event, rq.enabled ? rq.delay_min_s : d);
+            }
             std::printf("t %.2f s: %s rumour at %.1f km driven\n", vehicle.time(),
                         app.collectibles.barns[size_t(ev.index)].name.c_str(), app.progress.total_distance / 1000);
           } else {
             const auto& b = app.collectibles.barns[size_t(ev.index)];
+            for (const auto& rq : b.radio_requests) app.audio_host.radio_cancel_scheduled(rq.event);
             if (!app.have_garage && app.have_career_catalog) {
               if (const auto* spec = app.career_catalog.find_car_by_media(app.car))
                 app.award_garage_car(spec->car_id, 0, true);
@@ -1171,8 +1186,27 @@ bool DriveSession::step(const drive::Input& user_in) {
                   finish_standings);
               apply_campaign_action(camp_act);
               app.campaign_owns_post_race = true;
+              // radiodj.xml: a wristband tier's festival results queue its "after n events" update.
+              if (cev && cev->style == 1) app.audio_host.radio_festival_event_finished(cev->level, pl);
             }
             save_due = true;  // the window saves the award at once
+          }
+        }
+        // game_free_roam_flow.xml: a wristband ready to collect enters radiodj.special_wristband
+        // (CongratsWinnersOfWristband<n>), once per wristband.
+        if (!app.race && app.have_career_catalog) {
+          const int ready = app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband);
+          if (ready >= 0) app.audio_host.radio_wristband_ready(ready);
+          // A street race hub's RadioDJRequests special (StreetRaceOwnerHub<n>) when it unlocks.
+          if (std::fabs(vehicle.time() - app.street_hub_radio_check_at) >= 1.0) {
+            app.street_hub_radio_check_at = vehicle.time();
+            for (const auto& hub : app.career_catalog.hubs) {
+              const bool open = app.career_catalog.is_hub_unlocked(hub, app.career, app.collected_wristband);
+              auto [it, first] = app.street_hub_radio_unlocked.try_emplace(hub.id, open);
+              if (!first && open && !it->second)
+                for (const auto& ev : hub.radio_specials) app.audio_host.radio_trigger_special(ev);
+              it->second = open;
+            }
           }
         }
         const bool smashed_sign = free_roam_step();
@@ -1446,7 +1480,7 @@ bool DriveSession::step(const drive::Input& user_in) {
             } else if (sev.kind == freeroam::SkillEvent::kRankUp) {
               const int old_rank = std::max(prev_pop_rank, sev.rank + 1);
               app.audio_host.trigger_ui(audio::UiCue::kRankUp);
-              app.audio_host.radio_trigger_festival_update("PopularityRankUp");
+              if (!sev.radio_festival_update.empty()) app.audio_host.radio_trigger_festival_update(sev.radio_festival_update);
               app.campaign.on_popularity_rank_changed(old_rank, sev.rank, &app.audio_host);
               // Notify if any Showcase event unlocked across a single- or multi-rank jump!
               if (app.have_career_catalog) {

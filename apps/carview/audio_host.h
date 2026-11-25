@@ -20,6 +20,7 @@
 #include "audio/audio_engine.h"
 #include "audio/bake.h"
 #include "audio/radio.h"
+#include "audio/radio_dj.h"
 #include "audio/runtime_radio.h"
 #include "audio/sources.h"
 #include "audio/user_music.h"
@@ -153,6 +154,17 @@ class AudioHost {
   void radio_trigger_special(std::string_view gameplay_event);
   void radio_trigger_immediate(std::string_view gameplay_event);
   void radio_trigger_festival_update(std::string_view gameplay_event);
+  // The DJ lines the game's flow data asks for (audio/radio_dj.h):
+  // radiodj.xml's wristband behaviours and the activities' RadioDJRequests.
+  void radio_cue(const audio::RadioDjCue& cue);
+  void radio_wristband_awarded(int level);  // Race Central awarded wristband `level` (0 based)
+  void radio_wristband_ready(int level);    // wristband `level` became ready to collect
+  void radio_festival_event_finished(int event_level, int position);
+  // A special line `delay_s` seconds from now (wall clock), dropped by
+  // radio_cancel_scheduled; the radio's queue takes it when due.
+  void radio_schedule_special(std::string_view gameplay_event, double delay_s);
+  void radio_cancel_scheduled(std::string_view gameplay_event);
+  const audio::RadioDjRules& radio_dj_rules() const { return radio_dj_rules_; }
   void radio_lock_viper_intro(bool lock);
   bool radio_select_station_by_name(std::string_view substr);
   void update_world_acoustics(float x, float y, float z, float heading_rad);
@@ -209,6 +221,16 @@ class AudioHost {
   bool radio_non_blocking_ = true;
   std::filesystem::path radio_game_root_;
   std::string radio_language_ = "EN";
+  audio::RadioDjRules radio_dj_rules_;
+  audio::RadioDjWristbands radio_dj_wristbands_{&radio_dj_rules_};
+  struct ScheduledRadioLine {
+    std::string event;
+    std::chrono::steady_clock::time_point due;
+  };
+  std::vector<ScheduledRadioLine> radio_scheduled_;
+  std::vector<std::string> radio_missed_;  // names already reported missing
+  // Reports (once per name) a trigger RadioSystem.xml has no line for.
+  void note_radio_miss(audio::RadioChannel channel, std::string_view gameplay_event);
 
   // Runtime custom radio station manager & unified station cycle.
   void ensure_runtime_radio_configured();

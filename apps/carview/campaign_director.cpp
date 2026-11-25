@@ -110,7 +110,7 @@ void CampaignDirector::dispatch_action_media(const race::CampaignAction& act, Fm
       audio->radio_select_station_by_name("Bass");
     }
     audio->radio_lock_viper_intro(true);
-    audio->radio_trigger_immediate("AliceOpeningInterview1");
+    audio->radio_trigger_immediate(audio::kViperOpeningRadioEvent);
   }
   if (act.intro_completed && audio) {
     audio->radio_lock_viper_intro(false);
@@ -247,6 +247,8 @@ race::CampaignAction CampaignDirector::on_wristband_collected(int wristband_leve
   auto act = flow_.on_wristband_collected(wristband_level, bonus_car_name, newly_unlocked_events);
   if (audio) audio->trigger_ui(audio::UiCue::kWristbandUnlock);
   dispatch_action_media(act, fmv, audio);
+  // race_central.xml award_wristband -> radiodj.festival_wristband.
+  if (audio) audio->radio_wristband_awarded(wristband_level);
   return act;
 }
 

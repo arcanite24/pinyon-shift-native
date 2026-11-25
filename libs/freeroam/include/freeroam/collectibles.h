@@ -34,6 +34,16 @@ struct Sign {
   Placement at;
 };
 
+// One <RadioDJRequests> line of an activity (SPEC-RADIO): a RadioSystem.xml
+// gameplayEvent for a station's special (or immediate) dialogue, with its
+// delay window in seconds.
+struct RadioRequest {
+  bool immediate = false;
+  std::string event;
+  double delay_min_s = 0, delay_max_s = 0;
+  bool enabled = true, top_priority = false;
+};
+
 struct Barn {
   std::string name;     // barnfind_01 ...
   std::string trigger;  // lower case GameplayID of the derelict car (TriggerZone object)
@@ -47,6 +57,9 @@ struct Barn {
   std::string open_id, closed_id, open_coll_id, closed_coll_id;
   int car_id = 0;            // UnlockCar id (Data_Car)
   std::string car_name_key;  // UnlockCar stringTableNameId
+  // BarnFindLocationHint<n> (enabled, no delay) and BarnFindSpotted<n>
+  // (disabled, 600-1200 s); n is the barn's own, not its activity number.
+  std::vector<RadioRequest> radio_requests;
 };
 
 struct Collectibles {

@@ -143,22 +143,22 @@ void draw_club_screen(ui::List& out, int w, int h, const ClubScreenState& st) {
                 st.stats.cars_with_medal);
 
   ui4::TiltedBladeSpec spec;
-  spec.title = loc_str("1000Club", "IDS_Title", "1000 CLUB");
+  spec.title = loc_str("CarChallenges", "IDS_PauseMenu_CarChallenges", "1000 CLUB");
   spec.eyebrow = car_hdr;
   spec.scene_hint = "H_FIXED_SETTING_LIST";
-  spec.status_kicker = loc_str("1000Club", "IDS_Horizon1000Club", "HORIZON 1000 CLUB");
+  spec.status_kicker = std::string("HORIZON 1000 CLUB");
   spec.status_value = status_val;
   spec.status_tag = status_tag;
   spec.status_color = kGold;
-  spec.list_header = loc_str("1000Club", "IDS_CarChallenges", "CAR CHALLENGES");
-  spec.list_header_right = st.challenges_begun ? loc_str("1000Club", "IDS_ChallengesActive", "CHALLENGES ACTIVE")
-                                               : loc_str("1000Club", "IDS_ReadyToBegin", "READY TO BEGIN");
+  spec.list_header = loc_str("CarChallenges", "IDS_CurrentChallenges", "CAR CHALLENGES");
+  spec.list_header_right = st.challenges_begun ? std::string("CHALLENGES ACTIVE")
+                                               : std::string("READY TO BEGIN");
   spec.selected_index = st.selected;
   spec.max_visible = 7;
 
   if (!st.gate_reason.empty()) {
     spec.empty_message = st.gate_reason;
-    spec.detail_header = loc_str("1000Club", "IDS_Locked", "1000 CLUB LOCKED");
+    spec.detail_header = std::string("1000 CLUB LOCKED");
     spec.detail_title = "GREEN WRISTBAND REQUIRED";
     spec.detail_title_color = ui4::kAmber;
     spec.detail_icon_kind = int(ui4::BadgeIconKind::kLocked);
@@ -224,9 +224,9 @@ void draw_club_screen(ui::List& out, int w, int h, const ClubScreenState& st) {
     spec.detail_footer = "Complete challenges in each garage car to earn Gold Medals and unlock 1000 Club Achievements.";
   }
 
-  if (!st.challenges_begun) spec.prompts.push_back({"A", loc_str("1000Club", "IDS_BeginChallenges", "BEGIN CHALLENGES IN THIS CAR")});
-  else spec.prompts.push_back({"A", loc_str("1000Club", "IDS_ChallengesActive", "CHALLENGES ACTIVE")});
-  spec.prompts.push_back({"DPAD", loc_str("HelpButtons", "IDS_Inspect", "INSPECT")});
+  if (!st.challenges_begun) spec.prompts.push_back({"A", loc_str("CarChallenges", "IDS_Option_BeginChallenges", "BEGIN CHALLENGES IN THIS CAR")});
+  else spec.prompts.push_back({"A", std::string("CHALLENGES ACTIVE")});
+  spec.prompts.push_back({"DPAD", std::string("INSPECT")});
   spec.prompts.push_back({"B", loc_str("HelpButtons", "IDS_Back", "RETURN TO DRIVE")});
   ui4::tilted_blade_screen(out, W, H, spec);
 }
@@ -397,7 +397,7 @@ void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState&
     out.rect(sx0, sy0, sx1, sy0 + 48.0f * sy, ui::rgba(14, 16, 22, 238));
     ui4::pill(out, sx0, sy0, sx1, sy0 + 48.0f * sy, ui4::kCharcoalDark, ui4::PillKind::kPillBig, false, true);
     out.rect(sx0, sy0, sx0 + 5.0f * sx, sy0 + 48.0f * sy, ui4::kPink);
-    out.text(sx0 + 16.0f * sx, sy0 + 7.0f * sy, loc_str("Clubs", "IDS_ClubGarage", "CLUB GARAGE"),
+    out.text(sx0 + 16.0f * sx, sy0 + 7.0f * sy, loc_str("Clan", "IDS_ClubGarage_Title", "CLUB GARAGE"),
              ui4::style(ui::Font::kB, 10.0f * s, ui4::kOffWhite));
     out.text(sx1 - 14.0f * sx, sy0 + 7.0f * sy, tag_disp,
              ui4::style(ui::Font::kE, 10.5f * s, ui4::kYellow, ui::Align::kRight));
@@ -417,7 +417,7 @@ void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState&
     const float ew = ui::List::measure(eye, es);
     ui4::brush(out, 74.0f * sx, 32.0f * sy, 74.0f * sx + ew + 34.0f * sx, 56.0f * sy, ui4::kBrushBlack);
     out.text(90.0f * sx, 36.5f * sy, eye, es);
-    ui4::title_tape(out, s, 80.0f * sx, 54.0f * sy, loc_str("Clubs", "IDS_CarClub", "CAR CLUB"), ui4::kPink, 34.0f, 540.0f);
+    ui4::title_tape(out, s, 80.0f * sx, 54.0f * sy, loc_str("Clan", "IDS_My_Clan", "CAR CLUB"), ui4::kPink, 34.0f, 540.0f);
 
     const float lx0 = 78.0f * sx;
     const float lw = 696.0f * sx;
@@ -429,7 +429,7 @@ void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState&
     ui4::pill(out, lx0, content_y, lx1, content_y + 28.0f * sy, ui::rgba(0xBF, 0xBF, 0xBF, 242), ui4::PillKind::kMenu,
               false, true);
     out.text(lx0 + 16.0f * sx, content_y + 7.0f * sy,
-             loc_str("Clubs", "IDS_ClubSettings", "CLUB SETTINGS & SHARED GARAGE"),
+             std::string("CLUB SETTINGS & SHARED GARAGE"),
              ui4::style(ui::Font::kD, 13.0f * s, ui4::kInk));
     out.text(lx1 - 16.0f * sx, content_y + 7.5f * sy,
              std::to_string(st.cars.size()) + " CARS",
@@ -455,7 +455,7 @@ void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState&
 
       if (i == 0 || i == 1) {
         const std::string row_lbl =
-            (i == 0) ? loc_str("Clubs", "IDS_ClubName", "CLUB NAME") : loc_str("Clubs", "IDS_ClubTag", "CLUB TAG");
+            (i == 0) ? loc_str("Clan", "IDS_Clan_Name", "CLUB NAME") : loc_str("Clan", "IDS_Clan_Tag", "CLUB TAG");
         const std::string& row_val = (i == 0) ? name_disp : tag_disp;
         out.text(lx0 + 18.0f * sx, ry0 + 0.5f * (row_h - 14.0f * s), row_lbl,
                  ui4::style(ui::Font::kD, 14.0f * s, ui4::kWhite));
@@ -510,7 +510,7 @@ void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState&
     ui4::panel01(out, rx0, content_y, rx1, content_y + card_h, s, ui4::kCharcoalDark, ui4::kPink);
     ui4::pill(out, rx0 + 8.0f * sx, content_y + 8.0f * sy, rx1 - 8.0f * sx, content_y + 32.0f * sy,
               ui::rgba(0xBF, 0xBF, 0xBF, 240), ui4::PillKind::kMenu);
-    out.text(rx0 + 18.0f * sx, content_y + 13.5f * sy, loc_str("Clubs", "IDS_ClubOverview", "CLUB OVERVIEW"),
+    out.text(rx0 + 18.0f * sx, content_y + 13.5f * sy, std::string("CLUB OVERVIEW"),
              ui4::style(ui::Font::kD, 12.0f * s, ui4::kInk));
     ui4::brush(out, rx0 - 4.0f * sx, content_y + 38.0f * sy, rx1 + 4.0f * sx, content_y + 72.0f * sy, ui4::kPink);
     ui::TextStyle hts = ui4::style(ui::Font::kE, 15.5f * s, ui4::kWhite);
@@ -553,10 +553,10 @@ void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState&
   }
 
   ui4::button_bar(out,
-                  {{"A", loc_str("Clubs", "IDS_ToggleShare", "TOGGLE / CYCLE")},
-                   {"Y", loc_str("Clubs", "IDS_EditNameTag", "EDIT NAME / TAG")},
-                   {"X", borrowed_id > 0 ? loc_str("Clubs", "IDS_ReturnCar", "BORROW / RETURN")
-                                         : loc_str("Clubs", "IDS_DriveShared", "DRIVE SHARED CAR")},
+                  {{"A", std::string("TOGGLE / CYCLE")},
+                   {"Y", std::string("EDIT NAME / TAG")},
+                   {"X", borrowed_id > 0 ? std::string("BORROW / RETURN")
+                                         : std::string("DRIVE SHARED CAR")},
                    {"B", loc_str("HelpButtons", "IDS_Back", "CLOSE")}},
                   W, H, 72.0f);
 

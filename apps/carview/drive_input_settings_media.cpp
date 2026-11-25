@@ -136,7 +136,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                     }
                   }
                   // 5. Reload localized LoadingDefs.xml tips in the new language.
-                  loading_screen.load_definitions(game_root, loading_screen.group());
+                  loading_screen.load_definitions(game_root, loading_screen.group(), app.state_root);
                   // 6. Update Campaign / FMV subtitle & audio language configuration.
                   app.campaign.configure(game_root, app.language, app.skip_intro_movies);
                   // 7. Refresh cached localized menus, 1000 Club metadata, and Outpost hub strings.

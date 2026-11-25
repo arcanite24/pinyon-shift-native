@@ -7,6 +7,7 @@
 #include <map>
 #include <sstream>
 
+#include "audio/radio_dj.h"
 #include "audio/xml.h"
 #include "fh1data/archive.h"
 
@@ -89,6 +90,11 @@ bool parse_collectibles(std::string_view flyers_xml, std::string_view barns_xml,
     b.closed_coll_id = lower(doors->attr("closed_coll_id"));
     b.car_id = int(car->number("id"));
     b.car_name_key = car->attr("stringTableNameId");
+    if (const auto* dj = a.child("RadioDJRequests")) {
+      for (const auto& r : audio::parse_radio_dj_requests(*dj))
+        b.radio_requests.push_back({r.channel == audio::RadioChannel::kImmediate, r.event, r.delay_min_s, r.delay_max_s,
+                                    r.enabled, r.top_priority});
+    }
     out.barns.push_back(std::move(b));
   }
   if (out.signs.empty()) return fail(error, "Flyers.xml lists no signs");

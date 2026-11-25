@@ -159,8 +159,8 @@ void render_fh1_dial(ui::List& l, const DriveHud& st, float cx, float cy, float 
   TextStyle unit_ts = font(ui::Font::kA, 9.5f * s, rgba(218, 222, 230, 175), Align::kCenter);
   unit_ts.keep_case = true;
   const std::string unit_lbl = st.metric_units
-                                   ? format_unit_label(str("UnitStrings", "IDS_Units_KMH", "km/h"), "km/h")
-                                   : format_unit_label(str("UnitStrings", "IDS_Units_MPH", "mph"), "mph");
+                                   ? format_unit_label(str("Activities", "IDS_KmPerHour", "km/h"), "km/h")
+                                   : format_unit_label(str("Activities", "IDS_Mph", "mph"), "mph");
   l.text(cx, cy - 35.0f * s, unit_lbl, unit_ts);
 
   const double disp_spd = st.metric_units ? std::fabs(st.kmh) : (std::fabs(st.kmh) * 0.62137119);
@@ -817,20 +817,20 @@ void build_rewind_overlay(ui::List& list, float w, float h, bool rewinding, bool
   const float sf = h / 720.0f;
   (void)ui_scene("921_I_REWIND");
   ui4::subtle_vignette(list, w, h, 0.35f);
-  const std::string base_rewind = str("InGame", "IDS_Rewind", "REWIND");
+  const std::string base_rewind = str("HelpButtons", "IDS_Mulligan", "REWIND");
   std::string rw_title = base_rewind;
   std::vector<ui4::Prompt> rw_prompts;
   if (rewinding) {
-    rw_title = loop_rewind ? (base_rewind + "ING FURTHER") : str("InGame", "IDS_Rewinding", "REWINDING");
+    rw_title = loop_rewind ? (base_rewind + "ING FURTHER") : str("HelpButtons", "IDS_REWINDING", "REWINDING");
     rw_prompts = {{"B", str("HelpButtons", "IDS_Cancel", "CANCEL")}};
   } else if (paused_at_keyframe) {
     rw_title = base_rewind + " PAUSED";
     if (at_oldest_slot) {
-      rw_prompts = {{"A", str("InGame", "IDS_Resume", "RESUME")},
+      rw_prompts = {{"A", str("HelpButtons", "IDS_Resume", "RESUME")},
                     {"X", "VIEW REPLAY"},
                     {"B", str("HelpButtons", "IDS_Cancel", "CANCEL")}};
     } else {
-      rw_prompts = {{"A", str("InGame", "IDS_Resume", "RESUME")},
+      rw_prompts = {{"A", str("HelpButtons", "IDS_Resume", "RESUME")},
                     {"Y", "REWIND FURTHER"},
                     {"X", "VIEW REPLAY"},
                     {"B", str("HelpButtons", "IDS_Cancel", "CANCEL")}};

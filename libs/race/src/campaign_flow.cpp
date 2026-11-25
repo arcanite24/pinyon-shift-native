@@ -172,6 +172,8 @@ const CharacterProfile& character_profile(CharacterId id) {
 }
 
 // ---- Wristband Milestones (Exact CareerWristbandLevels XP thresholds & gamedb.slt event counts) ----
+// radio_event: an immediate DJ line; the later wristbands' DJ lines come from
+// radiodj.xml (AudioHost::radio_wristband_awarded), not from here.
 
 const std::vector<WristbandMilestoneSpec>& wristband_milestones() {
   static const std::vector<WristbandMilestoneSpec> kBands = {
@@ -179,22 +181,22 @@ const std::vector<WristbandMilestoneSpec>& wristband_milestones() {
        "AliceOpeningInterview2A",
        "Welcome to the Horizon Festival! Yellow Wristband events, Race Central, and Dak's Garage are now open.", 3},
       {1, "green", "GREEN WRISTBAND", "Green", 220, 1500, "GreenWristbandUnlock", "NewWristbandUnlocked2",
-       "FestivalUpdateGreen",
+       "",
        "Green Wristband unlocked! Carson Street Race Hub, faster Colorado events, and your next Star Showdown await.", 7},
       {2, "blue", "BLUE WRISTBAND", "Blue", 750, 2000, "BlueWristbandUnlock", "NewWristbandUnlocked3",
-       "FestivalUpdateBlue",
+       "",
        "Blue Wristband unlocked! High-speed mountain passes and Duke Maguire's Star Showdown are now live.", 8},
       {3, "pink", "PINK WRISTBAND", "Pink", 1450, 2500, "PinkWristbandUnlock", "NewWristbandUnlocked4",
-       "FestivalUpdatePink",
+       "",
        "Pink Wristband unlocked! Red Rock canyon series, Gladstone Street Hub, and Marko Baran's GT-R challenge await.", 9},
       {4, "orange", "ORANGE WRISTBAND", "Orange", 2500, 3000, "OrangeWristbandUnlock", "NewWristbandUnlocked5",
-       "FestivalUpdateOrange",
+       "",
        "Orange Wristband unlocked! Supercar qualifiers and Zaki Malik's Lexus LFA Star Showdown are open across Colorado.", 12},
       {5, "purple", "PURPLE WRISTBAND", "Purple", 4100, 4000, "PurpleWristbandUnlock", "NewWristbandUnlocked6",
-       "FestivalUpdatePurple",
+       "",
        "Purple Wristband unlocked! Only the elite reach this tier — Observatory Street Hub and Hailey Harper await.", 14},
       {6, "gold", "GOLD WRISTBAND", "Gold", 6400, 5000, "GoldWristbandUnlock", "NewWristbandUnlocked7",
-       "FestivalUpdateGold",
+       "",
        "Gold Wristband unlocked! You have earned your place among Colorado's best — the Horizon Finale and Darius Flynt await!", 16},
   };
   return kBands;
