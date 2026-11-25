@@ -557,6 +557,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"damage",
        {{"cosmetic", {}},
         {"none", {"--damage", "none"}},
+        {"limited", {"--damage", "limited"}},
         {"simulation", {"--damage", "simulation"}}}},
       vol_row("master volume", "--master-volume"),
       {"mute", {{"off", {}}, {"on", {"--mute"}}}},
@@ -1383,6 +1384,7 @@ LiveSettings SettingsPage::live_settings() const {
   const std::string dmg = pick_val("damage");
   if (dmg == "none") ls.damage_mode = 0;
   else if (dmg == "simulation") ls.damage_mode = 2;
+  else if (dmg == "limited") ls.damage_mode = 3;  // Q102
   else ls.damage_mode = 1;
   ls.photo_through_walls = pick_label("photo camera through walls") == "on";
   ls.photo_wider_limits = pick_label("wider photo limits") == "on";
@@ -1560,7 +1562,7 @@ int SettingsPage::difficulty_credit_bonus_pct() const {
   else if (a.shifting >= 2) assist_pct += 15;
   if (a.driving_line == 1) assist_pct += 5;
   else if (a.driving_line <= 0) assist_pct += 10;
-  if (ls.damage_mode >= 2) assist_pct += 10;
+  if (ls.damage_mode == 2) assist_pct += 10;
   if (a.traction_control && assist_pct >= 5) assist_pct -= 5;
   return ai_pct + std::max(0, assist_pct);
 }
@@ -1645,7 +1647,10 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
   set_by_label("names over cars", live.hud.names_over_cars ? "on" : "off");
   set_by_label("popularity and skills", live.hud.popularity_skills ? "on" : "off");
   set_by_val("language", (live.language.empty() || live.language == "EN") ? "" : live.language);
-  set_by_val("damage", live.damage_mode == 0 ? "none" : live.damage_mode == 2 ? "simulation" : "");
+  set_by_val("damage", live.damage_mode == 0   ? "none"
+                       : live.damage_mode == 2 ? "simulation"
+                       : live.damage_mode == 3 ? "limited"
+                                               : "");
   set_by_label("photo camera through walls", live.photo_through_walls ? "on" : "off");
   set_by_label("wider photo limits", live.photo_wider_limits ? "on" : "off");
 

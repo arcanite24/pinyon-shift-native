@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "drive/ai_driver.h"
@@ -104,6 +105,17 @@ void build_driving_line(const RacingLine& line, const BrakingTable& table, doubl
                         double car_speed, DrivingLineMode mode,
                         std::vector<DrivingLineSample>& out,
                         const DrivingLineOptions& opt = {});
+
+// Assisted braking's target speed (Braking == 0; SPEC-CAR-PHYSICS
+// "Auto-Brake", FEEL-14): the driving line's v_target at `car_dist`, from the
+// car's own braking table, as the Braking Only line computes it. False when
+// the line is too short to give one.
+bool auto_brake_target(const RacingLine& line, const BrakingTable& table, double car_dist, double car_speed,
+                       double& v_target);
+// The same on a path that starts at the car (free roam: a GPS route or a
+// road ahead), given as points in the game frame.
+bool auto_brake_target_on_path(std::span<const float> x, std::span<const float> z, const BrakingTable& table,
+                               double car_speed, double& v_target);
 
 struct DrivingLineVertex {
   float x = 0.0f, y = 0.0f, z = 0.0f;

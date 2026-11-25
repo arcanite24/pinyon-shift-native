@@ -22,7 +22,7 @@ add_library(shift_drive STATIC
   src/telemetry_udp.cpp
   src/trainer.cpp)
 target_include_directories(shift_drive PUBLIC include)
-target_link_libraries(shift_drive PUBLIC shift_cars)
+target_link_libraries(shift_drive PUBLIC shift_cars PRIVATE shift_sqlite3)
 if(WIN32)
   target_link_libraries(shift_drive PRIVATE dinput8 dxguid ws2_32)
 endif()

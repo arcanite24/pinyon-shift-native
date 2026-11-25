@@ -140,4 +140,108 @@ bool MeshGround::raycast(const Vec3& origin, const Vec3& dir, double max_distanc
   return true;
 }
 
+namespace {
+
+// The point of triangle abc nearest p (Ericson, Real-Time Collision
+// Detection, 5.1.5).
+Vec3 closest_on_triangle(const Vec3& p, const Vec3& a, const Vec3& b, const Vec3& c) {
+  const Vec3 ab = b - a, ac = c - a, ap = p - a;
+  const double d1 = dot(ab, ap), d2 = dot(ac, ap);
+  if (d1 <= 0 && d2 <= 0) return a;
+  const Vec3 bp = p - b;
+  const double d3 = dot(ab, bp), d4 = dot(ac, bp);
+  if (d3 >= 0 && d4 <= d3) return b;
+  const double vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) return a + ab * (d1 / (d1 - d3));
+  const Vec3 cp = p - c;
+  const double d5 = dot(ab, cp), d6 = dot(ac, cp);
+  if (d6 >= 0 && d5 <= d6) return c;
+  const double vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) return a + ac * (d2 / (d2 - d6));
+  const double va = d3 * d6 - d5 * d4;
+  if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+  const double denom = 1 / (va + vb + vc);
+  return a + ab * (vb * denom) + ac * (vc * denom);
+}
+
+}  // namespace
+
+void MeshGround::sphere_contacts(const Vec3& inside, const SphereQuery* spheres, int n, SphereHit* hits) const {
+  for (int i = 0; i < n; ++i) hits[i] = {};
+  if (nodes_.empty() || n <= 0) return;
+  // One gather for all the spheres: the box around them and `inside`.
+  double lo[3] = {inside.x, inside.y, inside.z}, hi[3] = {inside.x, inside.y, inside.z};
+  for (int i = 0; i < n; ++i) {
+    const double c[3] = {spheres[i].centre.x, spheres[i].centre.y, spheres[i].centre.z};
+    for (int k = 0; k < 3; ++k) {
+      lo[k] = std::min(lo[k], c[k] - spheres[i].radius);
+      hi[k] = std::max(hi[k], c[k] + spheres[i].radius);
+    }
+  }
+  thread_local std::vector<uint32_t> near;
+  near.clear();
+  uint32_t stack[64];
+  int top = 0;
+  stack[top++] = 0;
+  while (top > 0) {
+    const Node& node = nodes_[stack[--top]];
+    bool overlap = true;
+    for (int k = 0; k < 3 && overlap; ++k) overlap = node.lo[size_t(k)] <= hi[k] && node.hi[size_t(k)] >= lo[k];
+    if (!overlap) continue;
+    if (node.count == 0) {
+      if (top + 2 > 64) continue;
+      stack[top++] = node.left;
+      stack[top++] = node.right;
+      continue;
+    }
+    for (uint32_t j = node.first; j < node.first + node.count; ++j) near.push_back(order_[j]);
+  }
+  for (const uint32_t t : near) {
+    const auto& fa = positions_[t * 3];
+    const auto& fb = positions_[t * 3 + 1];
+    const auto& fc = positions_[t * 3 + 2];
+    const Vec3 a{fa[0], fa[1], fa[2]}, b{fb[0], fb[1], fb[2]}, c{fc[0], fc[1], fc[2]};
+    Vec3 nt = cross(b - a, c - a);
+    const double len = std::sqrt(dot(nt, nt));
+    if (len < 1e-12) continue;
+    nt = nt * (1 / len);
+    // The face the body is on.
+    if (dot(inside - a, nt) < 0) nt = nt * -1.0;
+    for (int i = 0; i < n; ++i) {
+      const Vec3 centre = spheres[i].centre;
+      const double r = spheres[i].radius;
+      const Vec3 q = closest_on_triangle(centre, a, b, c);
+      const Vec3 dq = centre - q;
+      const double d2 = dot(dq, dq);
+      const double side = dot(centre - a, nt);
+      double depth = 0;
+      Vec3 normal = nt;
+      if (side >= 0) {
+        if (d2 >= r * r) continue;
+        const double d = std::sqrt(d2);
+        depth = r - d;
+        if (d > 1e-6) normal = dq * (1 / d);
+      } else {
+        // The centre is behind the face: pushed back only when the way from
+        // `inside` crosses this triangle.
+        const double s0 = dot(inside - a, nt);
+        const double f = s0 / (s0 - side);
+        const Vec3 x = inside + (centre - inside) * f;
+        const Vec3 qx = closest_on_triangle(x, a, b, c);
+        if (dot(x - qx, x - qx) > 1e-8) continue;
+        depth = r - side;
+      }
+      SphereHit& h = hits[i];
+      if (depth <= h.depth) continue;
+      h.point = q;
+      h.normal = normal;
+      h.depth = depth;
+      h.grip = grip_[size_t(t)];
+      h.surface = surface_.size() == grip_.size() ? int(surface_[size_t(t)]) : -1;
+      h.triangle = t;
+      h.tyre = h.surface >= 0 && size_t(h.surface) < tyres_.size() ? tyres_[size_t(h.surface)] : SurfaceTyre{};
+    }
+  }
+}
+
 }  // namespace drive

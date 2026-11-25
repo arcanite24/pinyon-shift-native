@@ -148,6 +148,18 @@ void test_raw_joystick_and_wheel_calibration() {
     CHECK(out.input.throttle > 0.95);
     CHECK(out.input.brake == 0.0);
   }
+
+  // 5. A wheel takes WheelAdvancedOptions' window (FEEL-18): steering inside
+  //    0.01 and outside 0.95, so a 0.2 turn is not lost to the pad's 0.24.
+  {
+    carview::RawJoystickSnapshot wheel_turn;
+    wheel_turn.rest_axes = {0, 32767, 32767};
+    wheel_turn.axes = {int16_t(0.2 * 32767), 32767, 32767};
+    const auto out = carview::sample_wheel_joystick(wheel_turn, ws);
+    CHECK(std::fabs(out.input.steer - (0.2 - 0.01) / 0.94) < 1e-3);
+    wheel_turn.axes = {int16_t(0.005 * 32767), 32767, 32767};
+    CHECK(carview::sample_wheel_joystick(wheel_turn, ws).input.steer == 0.0);
+  }
 }
 
 void test_keyboard_acceleration_regression() {

@@ -262,15 +262,20 @@ RawJoystickDriveOutput sample_wheel_joystick(const RawJoystickSnapshot& snap,
   RawJoystickDriveOutput out;
   const size_t n_axes = snap.axes.size();
   if (n_axes == 0) return out;
+  // WheelAdvancedOptions' dead zones (FEEL-18), then the engine's shaping.
+  static const drive::ControlDeadzones kWheelDz = drive::ControlDeadzones::wheel_defaults();
   const double raw_s = std::clamp(double(snap.axis_or(0) - snap.rest_or(0)) / 32767.0, -1.0, 1.0);
-  const double shaped_s = drive::shape_wheel_steering(raw_s, shaping);
+  const double shaped_s = drive::shape_wheel_steering(
+      drive::apply_deadzone_signed(raw_s, kWheelDz.steering_inside, kWheelDz.steering_outside), shaping);
   double shaped_t = 0.0;
   double shaped_b = 0.0;
   if (n_axes >= 2) {
-    shaped_t = calibrated_wheel_pedal(snap.axis_or(1), snap.rest_or(1), shaping);
+    shaped_t = drive::apply_deadzone_unsigned(calibrated_wheel_pedal(snap.axis_or(1), snap.rest_or(1), shaping),
+                                              kWheelDz.throttle_inside, kWheelDz.throttle_outside);
   }
   if (n_axes >= 3) {
-    shaped_b = calibrated_wheel_pedal(snap.axis_or(2), snap.rest_or(2), shaping);
+    shaped_b = drive::apply_deadzone_unsigned(calibrated_wheel_pedal(snap.axis_or(2), snap.rest_or(2), shaping),
+                                              kWheelDz.brake_inside, kWheelDz.brake_outside);
   }
   out.input.steer = shaped_s;
   out.input.throttle = shaped_t;

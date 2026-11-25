@@ -69,11 +69,15 @@ struct SurfaceTyre {
   double spring_norm_y_cutoff = 0.707, spring_speed_cutoff = 4.0;
   bool is_penalty_surface = false;
   bool is_hand_of_god = false;
-  // Per-surface body-to-world wall collision hints from CategoryToCategoryParams / material class
-  // (negative = unspecified; falls back to surface off-roadness / default wall glide).
-  double wall_friction = -1.0;        // sliding friction mu for wall/barrier contacts
-  double wall_restitution = -1.0;     // rebound restitution [0..1] (0 = inelastic, higher = elastic tire wall)
-  double wall_damping_scale = -1.0;   // normal damping scale (>1 absorbs energy e.g. tire wall/dirt, <1 crisp glide)
+  // The car-body contact with this surface: surfaceTypes.xml's
+  // CategoryToCategoryParams row for Car and the surface's Category, or the
+  // Default/Default row (SPEC_QUESTIONS Q101). elasticity is as written
+  // (the impulse is 1 + elasticity times the closing speed's);
+  // low_speed_friction < 0: the row has none, so no low-speed blend.
+  double coll_elasticity = 0.1;
+  double coll_friction = 0.5;
+  double coll_low_speed_friction = -1.0;
+  double coll_noise_freq = 0, coll_noise_in0 = 0, coll_noise_in1 = 0, coll_noise_add0 = 0, coll_noise_add1 = 0;
 };
 
 // Evaluates procedural surface Bumpiness height and horizontal gradient at
@@ -92,15 +96,32 @@ struct Hit {
   SurfaceTyre tyre;
   int64_t triangle = -1;  // the ground's triangle index, when it has one
 };
-// Per-surface body-contact friction, damping scale & restitution (low-friction wall glide on
-// guardrails/concrete vs heavier absorption & bounce on tire walls / dirt banks).
-double body_contact_friction(const Hit& hit, const Vec3& normal, double default_friction);
-double body_contact_damping_scale(const Hit& hit, const Vec3& normal);
-double body_contact_restitution(const Hit& hit, const Vec3& normal);
+// A body sphere against the ground: the deepest surface it overlaps.
+// normal: out of the surface, towards the side the query's `inside` point
+// is on; depth: how far the sphere is in along it; point: the surface
+// point nearest the sphere's centre.
+struct SphereHit {
+  Vec3 point{}, normal{0, 1, 0};
+  double depth = 0;
+  double grip = 1;
+  int surface = -1;
+  SurfaceTyre tyre;
+  int64_t triangle = -1;
+};
+struct SphereQuery {
+  Vec3 centre{};
+  double radius = 0;
+};
 class Ground {
  public:
   virtual ~Ground() = default;
   virtual bool raycast(const Vec3& origin, const Vec3& dir, double max_distance, Hit& hit) const = 0;
+  // For each of `n` spheres, whether it overlaps the ground (`hits[i].depth`
+  // > 0), seen from `inside`, a point within the car's body: a surface the
+  // centre has passed through, the way from `inside`, still pushes it back
+  // towards `inside`. The default casts two rays per sphere (from `inside`
+  // through the centre, and down through it); MeshGround tests triangles.
+  virtual void sphere_contacts(const Vec3& inside, const SphereQuery* spheres, int n, SphereHit* hits) const;
 };
 // The plane y = height.
 class FlatGround : public Ground {
@@ -176,16 +197,35 @@ struct CarParams {
   Vec3 size{1.8, 1.3, 4.3};         // the body contacts' box, m (ours)
   double gravity = 9.8;             // the spec's weight: 15.6 x 9.8
   double airborne_gravity_scale = 1.15, per_tyre_off_gravity_scale = 1.05;
-  // Body contacts (ours, until the collision spec gives the car's shape):
-  // 26 points on the box from the sill to the roof (corners, edge and face
-  // middles), each probed by a ray from the box's centre, are pushed out of
-  // whatever surface they pass along its normal by a stiff damped spring
-  // with friction. The constants are per corner: the force per point is
-  // scaled by 8/26.
+  // The body box: what traffic, smashables and the camera see of the car,
+  // and the source of the stand-in spheres when the car has no MAXData.
   double sill_height = 0.25;      // m above the ground at rest
-  double body_stiffness = 150;    // N/m per kg of mass, per corner
-  double body_damping = 12;       // N s/m per kg of mass, per corner
-  double body_friction = 0.6;
+
+  // Body-to-world contact (SPEC_QUESTIONS Q100, Q101): the car's collision
+  // spheres against the world, solved as impulses with a positional push-out.
+  struct CollSphere {
+    Vec3 centre{};       // car frame (y = 0 the ground at rest, z from mid-wheelbase)
+    double radius = 0;
+    int flags = 0;       // MAXData Flags: bit 0 a ground sphere
+  };
+  struct BodyCollision {
+    std::vector<CollSphere> spheres;  // empty: spheres from the box (stand-in)
+    // PhysicsSettings.ini: spheres stay this far above the wheels' ground.
+    double min_above_ground = 0.11;         // CarCollSphereMinDistAboveGround
+    double ground_min_above_ground = 0.4;   // CarGroundCollSphereMinDistAboveGround
+    // Collision\FrictionLowSpeedMph / FrictionHighSpeedMph: the blend from
+    // the pair's LowSpeedFrictionCoefficient to its FrictionCoefficient.
+    double friction_low_mph = 10, friction_high_mph = 40;
+    // CarObjWorldCollTorqueScalePitch / Yaw / Roll: the contact angular
+    // impulse's body-frame x, y, z scales.
+    Vec3 world_torque_scale{0.55, 0.65, 0.55};
+    // GimbalLock: a tilt spring past GimbalCosAngle0 and a reflection of the
+    // tilting spin past GimbalCosAngle1.
+    bool gimbal_on = true;
+    double gimbal_cos0 = 0.87, gimbal_cos1 = 0.82, gimbal_k = 50;
+    double gimbal_d_compress = 5, gimbal_d_rebound = 0, gimbal_elasticity = 0.2;
+  };
+  BodyCollision body_collision{};
 
   // Suspension per axle (0 front, 1 rear). The wheel rests where the bake
   // stands it; the spring is preloaded to carry the static load there and
@@ -637,9 +677,11 @@ class Vehicle {
   struct DamageMods {
     double engine_torque = 1.0;
     double shift_time_add = 0.0;
+    double shift_time_scale = 1.0;  // the GearBox part (Q102)
     double brake_power = 1.0;
     double aero_drag = 1.0;
     double aero_downforce = 1.0;
+    double aero_downforce_front = 1.0, aero_downforce_rear = 1.0;  // on top of aero_downforce
     std::array<double, 4> tyre_grip{1.0, 1.0, 1.0, 1.0};
     std::array<double, 4> suspension_scale{1.0, 1.0, 1.0, 1.0};
     double steer_pull_rad = 0.0;
@@ -693,12 +735,13 @@ class Vehicle {
   // lock narrows with speed; see shape_input).
   double steer_lock() const;
   double time() const { return time_; }
-  // The body contacts' total force in the last substep (N): 0 while only
-  // the tyres touch the ground.
+  // The body contacts' impulse in the last substep over its length (N): 0
+  // while only the tyres touch the ground.
   double body_contact_force() const { return body_force_; }
-  // The strongest single body contact over the last step (all substeps):
-  // where the ray met the surface, its normal and the Hit's surface and
-  // triangle. force 0: none.
+  // The strongest body contact over the last step (all substeps): the
+  // deepest contact's surface point, normal, surface and triangle in the
+  // substep whose impulse was largest, force that impulse over the
+  // substep (N). force 0: none closing.
   struct BodyContact {
     Vec3 point{}, normal{};
     double force = 0;
@@ -747,6 +790,10 @@ class Vehicle {
 
  private:
   void substep(double dt, const Ground& ground);
+  // The body spheres against the ground after the velocity step (Q100, Q101).
+  void body_contacts(double dt, const Ground& ground);
+  // GimbalLock: the tilt spring and spin reflection past the cos angles (Q101).
+  void gimbal_lock(double dt);
   void shape_input(const Input& raw, double dt);
   void update_gearbox(double dt);
   void update_boost(double dt, double throttle, double rpm_now);

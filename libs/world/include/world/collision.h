@@ -43,13 +43,22 @@ struct SurfacePhysicsProps {
   bool defined = false;
 };
 
+// A CategoryToCategoryParams <Node Category0 Category1 ...> row: the
+// contact's FrictionCoefficient, LowSpeedFrictionCoefficient and Elasticity
+// and its friction noise (FrictionNoiseFreqScale; FrictionNoiseInputNoise0/1
+// mapped onto FrictionNoiseOutputFricAdd0/1). restitution is Elasticity as
+// written: the contact's impulse is (1 + Elasticity) times the closing
+// speed's, so negative values are real (SPEC_QUESTIONS Q101).
 struct CategoryCollisionParams {
   std::string category_a;
   std::string category_b;
   float friction = 0.5f;
   float restitution = 0.0f;
+  float low_speed_friction = 0.0f;
+  float noise_freq = 0.0f, noise_in0 = 0.0f, noise_in1 = 0.0f, noise_add0 = 0.0f, noise_add1 = 0.0f;
   bool has_friction = false;
   bool has_restitution = false;
+  bool has_low_speed_friction = false;
 };
 
 struct SurfaceTableExtras {
@@ -64,12 +73,6 @@ struct SurfaceTableExtras {
 // Parses extended SurfaceTypes.xml physics/camera/rumble/collision columns.
 bool parse_surface_physics_extras(std::string_view xml, SurfaceTableExtras& out, std::string* error = nullptr);
 
-// Resolves per-surface wall sliding friction, rebound restitution, and normal damping
-// scale from CategoryToCategoryParams (Car vs category/surface) and material class
-// (guardrail low-friction glide vs tire-wall higher damping/restitution vs soft dirt).
-void resolve_wall_collision_hints(const SurfaceTableExtras& extras, std::string_view surface_name,
-                                  std::string_view category, double& wall_friction, double& wall_restitution,
-                                  double& wall_damping_scale);
 
 struct CollisionMesh {
   std::vector<std::array<float, 3>> positions;  // three per triangle, game frame

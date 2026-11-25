@@ -64,6 +64,13 @@ int main() {
     d.steering_outside = 0.50;
     d.clamp_valid();
     CHECK(d.steering_inside < d.steering_outside && d.steering_outside <= 1.0);
+    // WheelAdvancedOptions defaults (FEEL-18).
+    const auto w = drive::ControlDeadzones::wheel_defaults();
+    CHECK(near(w.steering_inside, 0.01) && near(w.steering_outside, 0.95));
+    CHECK(near(w.throttle_inside, 0.15) && near(w.throttle_outside, 1.00));
+    CHECK(near(w.brake_inside, 0.15) && near(w.brake_outside, 0.95));
+    CHECK(near(w.clutch_inside, 0.15) && near(w.clutch_outside, 0.90));
+    CHECK(near(w.handbrake_inside, 0.10) && near(w.handbrake_outside, 1.00));
   }
 
   // Controller layout presets 0..4 (ControllerLayouts).

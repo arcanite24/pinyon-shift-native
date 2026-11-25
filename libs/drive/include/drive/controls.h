@@ -49,6 +49,10 @@ struct ControlDeadzones {
   double handbrake_inside = 0.10, handbrake_outside = 1.00;
 
   void clamp_valid();
+  // A racing wheel's own window, ForzaProfile.sch WheelAdvancedOptions
+  // (FEEL-18): steering 0.01/0.95, throttle 0.15/1.00, brake 0.15/0.95,
+  // clutch 0.15/0.90, handbrake 0.10/1.00.
+  static ControlDeadzones wheel_defaults();
 };
 
 // Rescales an axis from [inside, outside] to [0, 1] and clamps.

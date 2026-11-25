@@ -60,7 +60,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   app.race->set_difficulty(app.race_options.difficulty);
                   app.race->set_ai_mode(app.race_options.ai_mode);
                 }
-                car_damage.mode = drive::DamageMode(std::clamp(ls.damage_mode, 0, 2));
+                car_damage.mode = drive::DamageMode(std::clamp(ls.damage_mode, 0, 3));
                 if (!ls.preset.empty()) {
                   app.preset_name = ls.preset;
                   app.low_preset = (ls.preset == "low" || ls.preset == "low-power");

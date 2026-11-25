@@ -10,6 +10,7 @@
 
 #include "cars/bake_format.h"
 #include "cars/physics.h"
+#include "drive/damage.h"
 #include "drive/vehicle.h"
 
 namespace drive {
@@ -46,6 +47,11 @@ void set_disc_physics_root(const std::filesystem::path& game_root,
 // from the configured disc root (cached in memory per car). Thread-safe.
 bool load_disc_car_physics(int64_t car_id, const std::string& media_name, cars::CarPhysics& out_car,
                            cars::PhysicsSettings& out_settings, std::string* error = nullptr);
+
+// gamedb.slt's List_DamageModDef rows from the configured disc root, by
+// DamageModName into `out` (DamagePart order; rows not found keep their
+// value). Thread-safe.
+bool load_disc_damage_mod_defs(std::array<DamageModDef, kDamagePartCount>& out, std::string* error = nullptr);
 
 // Loads the cached game-wide PhysicsSettings from media/physics.zip. Thread-safe.
 bool load_disc_physics_settings(cars::PhysicsSettings& out_settings, std::string* error = nullptr);

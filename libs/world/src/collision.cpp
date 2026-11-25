@@ -213,43 +213,24 @@ bool parse_surface_physics_extras(std::string_view xml, SurfaceTableExtras& out,
             CategoryCollisionParams cp;
             cp.category_a = cat_a;
             cp.category_b = cat_b;
-            cp.has_friction = xml_attr_float_any(xml, lt, {"Friction", "FrictionScale", "SlidingFriction"}, cp.friction);
-            cp.has_restitution = xml_attr_float_any(xml, lt, {"Restitution", "Bounce", "Elasticity"}, cp.restitution);
+            cp.has_friction = xml_attr_float_any(xml, lt, {"FrictionCoefficient", "Friction"}, cp.friction);
+            cp.has_restitution = xml_attr_float_any(xml, lt, {"Elasticity", "Restitution"}, cp.restitution);
+            cp.has_low_speed_friction =
+                xml_attr_float_any(xml, lt, {"LowSpeedFrictionCoefficient"}, cp.low_speed_friction);
+            xml_attr_float_any(xml, lt, {"FrictionNoiseFreqScale"}, cp.noise_freq);
+            xml_attr_float_any(xml, lt, {"FrictionNoiseInputNoise0"}, cp.noise_in0);
+            xml_attr_float_any(xml, lt, {"FrictionNoiseInputNoise1"}, cp.noise_in1);
+            xml_attr_float_any(xml, lt, {"FrictionNoiseOutputFricAdd0"}, cp.noise_add0);
+            xml_attr_float_any(xml, lt, {"FrictionNoiseOutputFricAdd1"}, cp.noise_add1);
             if (!self_closing) {
               const size_t close_tag = xml.find("</" + tag_name + ">", gt);
               if (close_tag != std::string_view::npos && close_tag < c1) {
-                if (!cp.has_friction) cp.has_friction = xml_read_float(xml, gt, close_tag, "Friction", cp.friction);
-                if (!cp.has_restitution) {
-                  cp.has_restitution = xml_read_float(xml, gt, close_tag, "Restitution", cp.restitution) ||
-                                       xml_read_float(xml, gt, close_tag, "Bounce", cp.restitution);
-                }
                 pos = close_tag + tag_name.size() + 3;
                 out.category_params.push_back(std::move(cp));
                 continue;
               }
             }
             out.category_params.push_back(std::move(cp));
-          } else if (stack.size() == 1) {
-            // Nested form: <CategoryA><CategoryB Friction="..." Restitution="..."/></CategoryA>
-            CategoryCollisionParams cp;
-            cp.category_a = stack.back();
-            cp.category_b = tag_name;
-            cp.has_friction = xml_attr_float_any(xml, lt, {"Friction", "FrictionScale", "SlidingFriction"}, cp.friction);
-            cp.has_restitution = xml_attr_float_any(xml, lt, {"Restitution", "Bounce", "Elasticity"}, cp.restitution);
-            if (!self_closing) {
-              const size_t close_tag = xml.find("</" + tag_name + ">", gt);
-              if (close_tag != std::string_view::npos && close_tag < c1) {
-                if (!cp.has_friction) cp.has_friction = xml_read_float(xml, gt, close_tag, "Friction", cp.friction);
-                if (!cp.has_restitution) {
-                  cp.has_restitution = xml_read_float(xml, gt, close_tag, "Restitution", cp.restitution) ||
-                                       xml_read_float(xml, gt, close_tag, "Bounce", cp.restitution);
-                }
-                if (cp.has_friction || cp.has_restitution) out.category_params.push_back(std::move(cp));
-                pos = close_tag + tag_name.size() + 3;
-                continue;
-              }
-            }
-            if (cp.has_friction || cp.has_restitution) out.category_params.push_back(std::move(cp));
           } else if (!self_closing) {
             stack.push_back(tag_name);
           }
@@ -322,54 +303,6 @@ bool parse_surface_physics_extras(std::string_view xml, SurfaceTableExtras& out,
     if (explicit_mod != 1.0f) s.car_world_coll_fric_mod = explicit_mod;
   }
   return true;
-}
-
-void resolve_wall_collision_hints(const SurfaceTableExtras& extras, std::string_view surface_name,
-                                  std::string_view category, double& wall_friction, double& wall_restitution,
-                                  double& wall_damping_scale) {
-  wall_friction = -1.0;
-  wall_restitution = -1.0;
-  wall_damping_scale = -1.0;
-
-  // 1. Explicit CategoryToCategoryParams pair (Car vs category or surface name).
-  const CategoryCollisionParams* cp = nullptr;
-  if (!category.empty()) cp = extras.find_category_params("Car", category);
-  if (!cp && !surface_name.empty()) cp = extras.find_category_params("Car", surface_name);
-  if (cp) {
-    if (cp->has_friction) wall_friction = std::clamp(double(cp->friction), 0.02, 2.0);
-    if (cp->has_restitution) wall_restitution = std::clamp(double(cp->restitution), 0.0, 0.85);
-  }
-
-  // 2. Material-class defaults for fields not explicitly specified in CategoryToCategoryParams.
-  const std::string nm = lower_ascii(surface_name);
-  const std::string ct = lower_ascii(category);
-  auto has_any = [&](std::initializer_list<const char*> needles) {
-    for (const char* n : needles) {
-      if (nm.find(n) != std::string::npos || ct.find(n) != std::string::npos) return true;
-    }
-    return false;
-  };
-  if (has_any({"tire", "tyre", "rubber", "hay", "straw", "foam", "cushion"})) {
-    if (wall_friction < 0.0) wall_friction = 0.38;
-    if (wall_restitution < 0.0) wall_restitution = 0.28;
-    wall_damping_scale = 1.35;
-  } else if (has_any({"guardrail", "armco", "metal", "steel", "rail", "aluminum", "iron"})) {
-    if (wall_friction < 0.0) wall_friction = 0.08;
-    if (wall_restitution < 0.0) wall_restitution = 0.04;
-    wall_damping_scale = 0.85;
-  } else if (has_any({"dirt", "mud", "sand", "snow", "grass", "gravel", "softworld", "earth", "soil"})) {
-    if (wall_friction < 0.0) wall_friction = 0.48;
-    if (wall_restitution < 0.0) wall_restitution = 0.02;
-    wall_damping_scale = 1.30;
-  } else if (has_any({"wood", "fence", "timber", "plastic", "plywood"})) {
-    if (wall_friction < 0.0) wall_friction = 0.22;
-    if (wall_restitution < 0.0) wall_restitution = 0.08;
-    wall_damping_scale = 1.05;
-  } else if (has_any({"concrete", "stone", "rock", "brick", "wall", "hardworld", "jersey", "asphalt"})) {
-    if (wall_friction < 0.0) wall_friction = 0.14;
-    if (wall_restitution < 0.0) wall_restitution = 0.06;
-    wall_damping_scale = 0.92;
-  }
 }
 
 struct Collision::Impl {
@@ -472,8 +405,19 @@ drive::SurfaceTyre Collision::surface_tyre(int surface) const {
     t.car_world_coll_fric_mod = ex.car_world_coll_fric_mod;
     t.spring_norm_y_cutoff = ex.spring_norm_y_cutoff;
     t.spring_speed_cutoff = ex.spring_speed_cutoff;
-    resolve_wall_collision_hints(surface_extras_, ex.name, ex.category, t.wall_friction, t.wall_restitution,
-                                 t.wall_damping_scale);
+    const CategoryCollisionParams* cp =
+        ex.category.empty() ? nullptr : surface_extras_.find_category_params("Car", ex.category);
+    if (!cp) cp = surface_extras_.find_category_params("Default", "Default");
+    if (cp) {
+      if (cp->has_restitution) t.coll_elasticity = cp->restitution;
+      if (cp->has_friction) t.coll_friction = cp->friction;
+      t.coll_low_speed_friction = cp->has_low_speed_friction ? double(cp->low_speed_friction) : -1.0;
+      t.coll_noise_freq = cp->noise_freq;
+      t.coll_noise_in0 = cp->noise_in0;
+      t.coll_noise_in1 = cp->noise_in1;
+      t.coll_noise_add0 = cp->noise_add0;
+      t.coll_noise_add1 = cp->noise_add1;
+    }
   }
   return t;
 }

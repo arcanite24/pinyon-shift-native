@@ -726,6 +726,7 @@ void DriveSession::init_session() {
           car_damage.mode = (!has_dmg_token && is_fresh_profile) ? drive::DamageMode::kCosmetic
                                                                  : drive::DamageMode(init_ls.damage_mode);
         }
+        drive::load_disc_damage_mod_defs(car_damage.mod_defs, nullptr);  // List_DamageModDef (Q102)
         live_hud_speedo_mode = init_ls.hud_speedo_mode;
         live_minimap_mode = init_ls.minimap_mode;
         live_hud = init_ls.hud;

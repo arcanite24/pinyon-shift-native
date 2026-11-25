@@ -574,6 +574,72 @@ bool resolve_car_obb_vs_solid_obb(drive::Vehicle& vehicle, const drive::Vec3& cp
   return true;
 }
 
+
+// A body sphere against a fixed box (centre, unit axes, half extents) or
+// sphere: the push out along the contact normal (FEEL-21).
+struct ContactBox {
+  drive::Vec3 c, u[3];
+  double h[3];
+};
+
+bool sphere_vs_box(const drive::Vec3& s, double r, const ContactBox& b, drive::SphereHit& out) {
+  const drive::Vec3 d = s - b.c;
+  double l[3];
+  bool inside = true;
+  drive::Vec3 q = b.c;
+  for (int k = 0; k < 3; ++k) {
+    l[k] = drive::dot(d, b.u[k]);
+    const double lc = std::clamp(l[k], -b.h[k], b.h[k]);
+    if (lc != l[k]) inside = false;
+    q = q + b.u[k] * lc;
+  }
+  if (!inside) {
+    const drive::Vec3 n = s - q;
+    const double dist = std::sqrt(drive::dot(n, n));
+    if (dist >= r || dist < 1e-9) return false;
+    out.normal = n * (1.0 / dist);
+    out.depth = r - dist;
+    out.point = q;
+    return true;
+  }
+  // The centre is inside: out through the nearest face.
+  int k_best = 0;
+  double gap_best = 1e30;
+  for (int k = 0; k < 3; ++k) {
+    const double gap = b.h[k] - std::fabs(l[k]);
+    if (gap < gap_best) gap_best = gap, k_best = k;
+  }
+  out.normal = b.u[k_best] * (l[k_best] < 0 ? -1.0 : 1.0);
+  out.depth = r + gap_best;
+  out.point = s + out.normal * gap_best;
+  return true;
+}
+
+bool sphere_vs_sphere(const drive::Vec3& s, double r, const drive::Vec3& c, double rc, drive::SphereHit& out) {
+  const drive::Vec3 d = s - c;
+  const double dist = std::sqrt(drive::dot(d, d));
+  if (dist >= r + rc) return false;
+  out.normal = dist > 1e-9 ? d * (1.0 / dist) : drive::Vec3{0, 1, 0};
+  out.depth = r + rc - dist;
+  out.point = c + out.normal * rc;
+  return true;
+}
+
+drive::SurfaceTyre contact_tyre(const CategoryCollisionParams* cp, double e, double mu, double low) {
+  drive::SurfaceTyre t;
+  t.coll_elasticity = cp && cp->has_restitution ? double(cp->restitution) : e;
+  t.coll_friction = cp && cp->has_friction ? double(cp->friction) : mu;
+  t.coll_low_speed_friction = cp ? (cp->has_low_speed_friction ? double(cp->low_speed_friction) : -1.0) : low;
+  if (cp) {
+    t.coll_noise_freq = cp->noise_freq;
+    t.coll_noise_in0 = cp->noise_in0;
+    t.coll_noise_in1 = cp->noise_in1;
+    t.coll_noise_add0 = cp->noise_add0;
+    t.coll_noise_add1 = cp->noise_add1;
+  }
+  return t;
+}
+
 }  // namespace
 
 const PropPhysicsDef* PhysicsDefinitions::resolve_packed(uint32_t packed_id) const {
@@ -994,7 +1060,132 @@ struct SmashableWorld::Impl {
   }
 };
 
-SmashableWorld::SmashableWorld() : impl_(std::make_unique<Impl>()) {}
+SmashableWorld::SmashableWorld() : impl_(std::make_unique<Impl>()) { set_contact_params(nullptr, nullptr); }
+
+void SmashableWorld::set_contact_params(const CategoryCollisionParams* prop, const CategoryCollisionParams* barrier) {
+  // Shipped rows: Smashable/Car mu 0.5, Elasticity 0.3; Car/GuardRail mu
+  // 0.5, low-speed 0.1, Elasticity -0.9.
+  prop_contact_ = contact_tyre(prop, 0.3, 0.5, -1.0);
+  barrier_contact_ = contact_tyre(barrier, -0.9, 0.5, 0.1);
+}
+
+void SmashableWorld::add_sphere_contacts(const drive::Vec3& inside, double car_speed_mps,
+                                         const drive::SphereQuery* spheres, int n, drive::SphereHit* hits) const {
+  if (n <= 0) return;
+  thread_local std::vector<ContactBox> boxes;
+  thread_local std::vector<int> box_kind;  // 0 prop, 1 barrier
+  thread_local std::vector<std::array<double, 5>> balls;  // centre, radius, kind
+  boxes.clear();
+  box_kind.clear();
+  balls.clear();
+  const float car_speed = float(car_speed_mps);
+  const int32_t cx_cell = int32_t(std::floor(float(inside.x) / 25.0f));
+  const int32_t cz_cell = int32_t(std::floor(float(inside.z) / 25.0f));
+  auto vec = [](const std::array<float, 3>& a) { return drive::Vec3{a[0], a[1], a[2]}; };
+  for (int32_t dz = -1; dz <= 1; ++dz) {
+    for (int32_t dx = -1; dx <= 1; ++dx) {
+      const int64_t key = (int64_t(cx_cell + dx) << 32) ^ uint32_t(cz_cell + dz);
+      if (auto it = grid_.find(key); it != grid_.end()) {
+        for (uint32_t idx : it->second) {
+          const auto& pp = props_[idx];
+          if (pp.broken || !pp.def) continue;
+          if (active_route_ >= 0 && !fh1::shown_on_route(pp.routes, active_route_)) continue;
+          if (should_break(*pp.def, car_speed)) continue;  // step() breaks it instead
+          const drive::Vec3 pos = vec(pp.place.pos);
+          const drive::Vec3 rel = pos - inside;
+          const double reach = 6.0 + std::max(pp.radius, pp.def->bounding_radius);
+          if (drive::dot(rel, rel) > reach * reach) continue;
+          const drive::Vec3 ax = vec(pp.place.x_axis), ay = vec(pp.place.y_axis), az = vec(pp.place.z_axis);
+          auto to_world = [&](double lx, double ly, double lz) { return pos + ax * lx + ay * ly + az * lz; };
+          auto dir_world = [&](double lx, double ly, double lz) {
+            const drive::Vec3 v = ax * lx + ay * ly + az * lz;
+            const double l = std::sqrt(drive::dot(v, v));
+            return l > 1e-9 ? v * (1.0 / l) : drive::Vec3{1, 0, 0};
+          };
+          const auto& def = *pp.def;
+          if (def.shapes.empty()) {
+            ContactBox b;
+            b.c = to_world(def.aabb_centre_offset[0], def.aabb_centre_offset[1], def.aabb_centre_offset[2]);
+            b.u[0] = ax, b.u[1] = ay, b.u[2] = az;
+            for (int k = 0; k < 3; ++k) b.h[k] = std::max(0.05f, def.half_extents[size_t(k)]);
+            boxes.push_back(b);
+            box_kind.push_back(0);
+            continue;
+          }
+          for (const auto& sh : def.shapes) {
+            const auto& m = sh.transform;
+            if (sh.kind == PropShapeKind::kSphere) {
+              const drive::Vec3 sc = to_world(sh.sphere[0], sh.sphere[1], sh.sphere[2]);
+              balls.push_back({sc.x, sc.y, sc.z, std::max(0.02, double(sh.sphere[3])), 0});
+            } else if (sh.kind == PropShapeKind::kObb) {
+              ContactBox b;
+              b.c = to_world(m[12], m[13], m[14]);
+              b.u[0] = dir_world(m[0], m[1], m[2]);
+              b.u[1] = dir_world(m[4], m[5], m[6]);
+              b.u[2] = dir_world(m[8], m[9], m[10]);
+              for (int k = 0; k < 3; ++k) b.h[k] = std::max(0.02f, sh.half_extents[size_t(k)]);
+              boxes.push_back(b);
+              box_kind.push_back(0);
+            } else if (sh.kind == PropShapeKind::kConvexHull && !sh.hull_verts.empty()) {
+              // Interim (Q106): a hull meets the car as its box in the prop's frame.
+              double lo[3] = {1e30, 1e30, 1e30}, hi[3] = {-1e30, -1e30, -1e30};
+              for (const auto& hv : sh.hull_verts) {
+                const double l[3] = {m[0] * hv[0] + m[4] * hv[1] + m[8] * hv[2] + m[12],
+                                     m[1] * hv[0] + m[5] * hv[1] + m[9] * hv[2] + m[13],
+                                     m[2] * hv[0] + m[6] * hv[1] + m[10] * hv[2] + m[14]};
+                for (int k = 0; k < 3; ++k) lo[k] = std::min(lo[k], l[k]), hi[k] = std::max(hi[k], l[k]);
+              }
+              ContactBox b;
+              b.c = to_world(0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2]));
+              b.u[0] = ax, b.u[1] = ay, b.u[2] = az;
+              for (int k = 0; k < 3; ++k) b.h[k] = std::max(0.02, 0.5 * (hi[k] - lo[k]));
+              boxes.push_back(b);
+              box_kind.push_back(0);
+            }
+          }
+        }
+      }
+      if (auto it = barrier_grid_.find(key); it != barrier_grid_.end()) {
+        for (uint32_t idx : it->second) {
+          const auto& sb = solid_barriers_[idx];
+          if (active_route_ >= 0 && !fh1::shown_on_route(sb.routes, active_route_)) continue;
+          const drive::Vec3 pos = vec(sb.pos);
+          const drive::Vec3 rel = pos - inside;
+          const double reach = 6.0 + sb.radius;
+          if (drive::dot(rel, rel) > reach * reach) continue;
+          ContactBox b;
+          b.u[0] = vec(sb.x_axis), b.u[1] = vec(sb.y_axis), b.u[2] = vec(sb.z_axis);
+          b.c = pos + b.u[0] * sb.local_center[0] + b.u[1] * sb.local_center[1] + b.u[2] * sb.local_center[2];
+          for (int k = 0; k < 3; ++k) b.h[k] = sb.half_extents[size_t(k)];
+          // A barrier cell can list it more than once; one box is enough.
+          bool dup = false;
+          for (size_t j = 0; j < boxes.size() && !dup; ++j)
+            dup = box_kind[j] == 1 && drive::dot(boxes[j].c - b.c, boxes[j].c - b.c) < 1e-8;
+          if (dup) continue;
+          boxes.push_back(b);
+          box_kind.push_back(1);
+        }
+      }
+    }
+  }
+  if (boxes.empty() && balls.empty()) return;
+  for (int i = 0; i < n; ++i) {
+    const drive::Vec3& sc = spheres[i].centre;
+    const double r = spheres[i].radius;
+    for (size_t j = 0; j < boxes.size(); ++j) {
+      drive::SphereHit h;
+      if (!sphere_vs_box(sc, r, boxes[j], h) || h.depth <= hits[i].depth) continue;
+      h.tyre = box_kind[j] == 1 ? barrier_contact_ : prop_contact_;
+      hits[i] = h;
+    }
+    for (const auto& bl : balls) {
+      drive::SphereHit h;
+      if (!sphere_vs_sphere(sc, r, {bl[0], bl[1], bl[2]}, bl[3], h) || h.depth <= hits[i].depth) continue;
+      h.tyre = prop_contact_;
+      hits[i] = h;
+    }
+  }
+}
 SmashableWorld::~SmashableWorld() = default;
 SmashableWorld::SmashableWorld(SmashableWorld&&) noexcept = default;
 SmashableWorld& SmashableWorld::operator=(SmashableWorld&&) noexcept = default;
@@ -1581,6 +1772,18 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
               std::string_view(reinterpret_cast<const char*>(res.data.data()), res.data.size()), smash_types_);
         }
       }
+      // The contact rows for intact props and barriers (FEEL-21).
+      if (auto res = z->read("surfacetypes.xml"); res.ok()) {
+        SurfaceTableExtras extras;
+        if (parse_surface_physics_extras(
+                std::string_view(reinterpret_cast<const char*>(res.data.data()), res.data.size()), extras,
+                nullptr)) {
+          const auto* prop = extras.find_category_params("Smashable", "Car");
+          const auto* barrier = extras.find_category_params("Car", "GuardRail");
+          set_contact_params(prop, barrier);
+          contact_rows_loaded_ = prop && barrier;
+        }
+      }
     }
   }
   return true;
@@ -1851,55 +2054,6 @@ int SmashableWorld::spawn_flyer_shatter(const std::array<float, 3>& pos, const s
   return pieces;
 }
 
-void SmashableWorld::step_solid_barriers(drive::Vehicle& vehicle) {
-  if (solid_barriers_.empty()) return;
-  drive::Vec3 cpos = vehicle.position();
-  const drive::Quat crot = vehicle.orientation();
-  const drive::Vec3 cfwd = drive::rotate(crot, {0, 0, 1});
-  const drive::Vec3 cright = drive::rotate(crot, {1, 0, 0});
-  const float half_w = float(std::max(0.8, vehicle.params().size.x * 0.5));
-  const float half_l = float(std::max(1.8, vehicle.params().size.z * 0.5));
-
-  const int32_t cx_cell = int32_t(std::floor(float(cpos.x) / 25.0f));
-  const int32_t cz_cell = int32_t(std::floor(float(cpos.z) / 25.0f));
-
-  thread_local std::vector<uint32_t> visited;
-  visited.clear();
-
-  for (int32_t dz = -1; dz <= 1; ++dz) {
-    for (int32_t dx = -1; dx <= 1; ++dx) {
-      const int64_t key = (int64_t(cx_cell + dx) << 32) ^ uint32_t(cz_cell + dz);
-      auto it = barrier_grid_.find(key);
-      if (it == barrier_grid_.end()) continue;
-      for (uint32_t idx : it->second) {
-        if (std::find(visited.begin(), visited.end(), idx) != visited.end()) continue;
-        visited.push_back(idx);
-        const auto& sb = solid_barriers_[idx];
-        if (active_route_ >= 0 && !fh1::shown_on_route(sb.routes, active_route_)) continue;
-        const float px = sb.pos[0] - float(cpos.x);
-        const float py = sb.pos[1] - float(cpos.y);
-        const float pz = sb.pos[2] - float(cpos.z);
-        if (std::fabs(py) > 4.5f) continue;
-        const float max_r = half_l + half_w + sb.radius + 0.5f;
-        if (px * px + pz * pz > max_r * max_r) continue;
-
-        const std::array<float, 3> bw{
-            sb.pos[0] + sb.x_axis[0] * sb.local_center[0] + sb.y_axis[0] * sb.local_center[1] +
-                sb.z_axis[0] * sb.local_center[2],
-            sb.pos[1] + sb.x_axis[1] * sb.local_center[0] + sb.y_axis[1] * sb.local_center[1] +
-                sb.z_axis[1] * sb.local_center[2],
-            sb.pos[2] + sb.x_axis[2] * sb.local_center[0] + sb.y_axis[2] * sb.local_center[1] +
-                sb.z_axis[2] * sb.local_center[2],
-        };
-        if (resolve_car_obb_vs_solid_obb(vehicle, cpos, cfwd, cright, half_l, half_w, bw, sb.x_axis, sb.y_axis,
-                                         sb.z_axis, sb.half_extents[0], sb.half_extents[1], sb.half_extents[2])) {
-          cpos = vehicle.position();
-        }
-      }
-    }
-  }
-}
-
 void SmashableWorld::step_barn_doors(drive::Vehicle& vehicle) {
   if (barn_doors_.empty()) return;
   const drive::Vec3 cpos = vehicle.position();
@@ -1965,9 +2119,9 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
   if (dt <= 0.0f) return;
   const float step_dt = std::min(dt, 0.05f);
 
-  // 1. Barn-door open/closed physical collision swap & solid unbreakable festival barriers.
+  // 1. Barn-door open/closed physical collision swap (the solid barriers push
+  //    through add_sphere_contacts).
   step_barn_doors(vehicle);
-  step_solid_barriers(vehicle);
 
   // 2. Broadphase check of nearby intact smashables against the car OBB.
   const drive::Vec3 cpos = vehicle.position();
@@ -2086,66 +2240,9 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
 
         const auto& def = *pp.def;
         const drive::Vec3 com = vehicle.centre_of_mass();
+        // Below BreakSpeedMph the prop is a fixed body in the car's own
+        // contact solve (add_sphere_contacts, FEEL-21).
         if (!should_break(def, car_speed)) {
-          // Smooth horizontal OBB collision against unbreakable or below-BreakSpeedMph prop
-          // (strictly horizontal normal: stops/slides the car without vertical launch).
-          bool resolved = false;
-          const auto& ax = pp.place.x_axis;
-          const auto& ay = pp.place.y_axis;
-          const auto& az = pp.place.z_axis;
-          for (const auto& sh : def.shapes) {
-            if (sh.kind != PropShapeKind::kObb) continue;
-            const auto& m = sh.transform;
-            const std::array<float, 3> bw{
-                pp.place.pos[0] + ax[0] * m[12] + ay[0] * m[13] + az[0] * m[14],
-                pp.place.pos[1] + ax[1] * m[12] + ay[1] * m[13] + az[1] * m[14],
-                pp.place.pos[2] + ax[2] * m[12] + ay[2] * m[13] + az[2] * m[14],
-            };
-            const std::array<float, 3> ox{
-                ax[0] * m[0] + ay[0] * m[1] + az[0] * m[2],
-                ax[1] * m[0] + ay[1] * m[1] + az[1] * m[2],
-                ax[2] * m[0] + ay[2] * m[1] + az[2] * m[2],
-            };
-            const std::array<float, 3> oy{
-                ax[0] * m[4] + ay[0] * m[5] + az[0] * m[6],
-                ax[1] * m[4] + ay[1] * m[5] + az[1] * m[6],
-                ax[2] * m[4] + ay[2] * m[5] + az[2] * m[6],
-            };
-            const std::array<float, 3> oz{
-                ax[0] * m[8] + ay[0] * m[9] + az[0] * m[10],
-                ax[1] * m[8] + ay[1] * m[9] + az[1] * m[10],
-                ax[2] * m[8] + ay[2] * m[9] + az[2] * m[10],
-            };
-            resolved |= resolve_car_obb_vs_solid_obb(
-                vehicle, vehicle.position(), cfwd, cright, half_l, half_w, bw, ox, oy, oz,
-                std::max(0.15f, sh.half_extents[0]), std::max(0.25f, sh.half_extents[1]),
-                std::max(0.15f, sh.half_extents[2]));
-          }
-          if (!resolved) {
-            const std::array<float, 3> bw{
-                pp.place.pos[0] + ax[0] * def.aabb_centre_offset[0] + ay[0] * def.aabb_centre_offset[1] +
-                    az[0] * def.aabb_centre_offset[2],
-                pp.place.pos[1] + ax[1] * def.aabb_centre_offset[0] + ay[1] * def.aabb_centre_offset[1] +
-                    az[1] * def.aabb_centre_offset[2],
-                pp.place.pos[2] + ax[2] * def.aabb_centre_offset[0] + ay[2] * def.aabb_centre_offset[1] +
-                    az[2] * def.aabb_centre_offset[2],
-            };
-            resolved = resolve_car_obb_vs_solid_obb(
-                vehicle, vehicle.position(), cfwd, cright, half_l, half_w, bw, ax, ay, az,
-                std::max(0.18f, def.half_extents[0]), std::max(0.25f, def.half_extents[1]),
-                std::max(0.18f, def.half_extents[2]));
-          }
-          if (!resolved) {
-            const float len = std::sqrt(px * px + pz * pz);
-            if (len > 1e-4f) {
-              const drive::Vec3 n{-double(px / len), 0.0, -double(pz / len)};
-              const double vn = cvel.x * n.x + cvel.z * n.z;
-              if (vn < 0.0) {
-                vehicle.translate(n * 0.06);
-                vehicle.apply_impulse(com, n * (-(1.05 * vn) * vehicle.params().mass), 0.04);
-              }
-            }
-          }
           continue;
         }
 

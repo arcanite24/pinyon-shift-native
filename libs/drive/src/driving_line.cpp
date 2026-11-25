@@ -439,4 +439,26 @@ void build_driving_line_mesh(const std::vector<DrivingLineSample>& samples, doub
   }
 }
 
+bool auto_brake_target(const RacingLine& line, const BrakingTable& table, double car_dist, double car_speed,
+                       double& v_target) {
+  std::vector<DrivingLineSample> samples;
+  build_driving_line(line, table, car_dist, std::max(0.0, car_speed), DrivingLineMode::kBrakingOnly, samples);
+  if (samples.empty()) return false;
+  v_target = samples.back().v_target;
+  for (const auto& s : samples) {
+    if (s.dist >= car_dist) {
+      v_target = s.v_target;
+      break;
+    }
+  }
+  return true;
+}
+
+bool auto_brake_target_on_path(std::span<const float> x, std::span<const float> z, const BrakingTable& table,
+                               double car_speed, double& v_target) {
+  if (x.size() < 2 || x.size() != z.size()) return false;
+  const RacingLine line = RacingLine::from_points(x, z);
+  return auto_brake_target(line, table, 0.0, car_speed, v_target);
+}
+
 }  // namespace drive

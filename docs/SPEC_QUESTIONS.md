@@ -1991,6 +1991,21 @@ Open points:
   yaw rate on the same stretch is smooth. Needed: nothing from the spec.
   The exemption comes off once the load chatter is fixed.
 
+  Re-measured with the sphere body solver (Q100, Q101). Without the mod
+  the AI laps in 39.246 s. With the full mod it no longer finishes: it
+  spins braking into the turn at about 855 m and stops at 904 of 1199 m
+  (DNF after 77.6 s). Logged per substep, the chatter is still there
+  (single wheels swing by 10 to 40 kN within 0.1 s from 24 s on, and the
+  raw yaw torque by +-50 kN m). What turns it into the spin is the
+  interim wheel load cap of Q101, max(4 x preload, 1.1 m g): at 855 m the
+  right-hand wheels hit it, the rear goes light and the car spins. With
+  that cap removed (the 0.14 m bump-stop cap kept) the AI finishes with
+  the mod in 41.532 s (+7.09 %, cross-track max 5.34 m); removing only
+  the 0.14 m cap still DNFs. Without the mod, removing both caps leaves
+  the lap at 39.258 s. The exemption stays until the load cap can go,
+  which needs the kerb step of Q101 solved first; the 7 % that remains
+  is the chatter.
+
 ## Q69 (FEEL-16/17, not blocking): the pad steering filter's law
 
 The engine's pad filter is now the parts SPEC-CAR-PHYSICS names, plus
@@ -2012,6 +2027,15 @@ Still ours (interim):
 - **SteerAngVelDynFindPeak (10 deg/s).** It is unused unless the helpers
   are on.
 - **SlowSpeed and FastSpeed units.** They are read as m/s (FEEL-17).
+  Every car ships SlowSpeed 1.0, FastSpeed 120.0 and FastRateScale 1.0.
+  In the engine the two speeds only blend the rate toward FastRateScale,
+  so with the shipped rows the unit changes nothing today. It matters
+  once the lock law is the spec's u_spd narrowing toward MinMaxAngle:
+  120 m/s, 120 mph (53.6 m/s) and 120 km/h (33.3 m/s) give very
+  different curves. The oracle lap cannot settle it, since the AI
+  bypasses the pad filter. The name has no unit suffix, while the
+  tables that use mph say so (FrictionLowSpeedMph,
+  MaxForwardVelShiftReverseMPH).
 
 Needed: the pad filter's narrowing law (which G it queries), the unit of
 NormRearSlipAngleToCountersteer, and what DynFindPeak drives. A trace of
@@ -2240,3 +2264,293 @@ grandstand, tanoy and speakers.
 Needed: how the game resolves a placement's `eventName` to an event (a
 project or group prefix it strips, or a remap table), and where the
 regional banks are.
+
+## Q100 (FEEL-19/20, not blocking): the car's collision spheres
+
+The original collides the car body with the world through collision
+spheres, not a box. MAXData.xml `Collision/CollSpheres` lists them per car
+(the R34 has 32: twenty Flags 2 spheres of radius 0.16 to 0.34 m around the
+body, twelve Flags 1 spheres of radius 0.05 m at the corners and roof).
+
+**Engine reading:**
+
+- `cars::load_car_collision_spheres` reads the list from the car archive.
+  `apply_physics` moves it into our car frame: y from the box's `MinY` (the
+  ground under the stock ride height), z from `BottomCenterWheelbasePos`.
+  Bakes carry no MAXData, so the disc supplies the spheres; a car without
+  any uses a stand-in set on the body box (ours: eight corners and six face
+  middles, radius 0.15 m).
+- Each step the spheres are raised so their bottoms stay
+  `CarCollSphereMinDistAboveGround` (0.11 m) above the lowest wheel's
+  ground, or `CarGroundCollSphereMinDistAboveGround` (0.4 m) for spheres
+  with Flags bit 0. This follows the original's per-step lift, which reads
+  each wheel's position. On flat road no sphere touches the ground.
+
+Still interim:
+
+- **Scales.** `PosScale` (0.995) and `RadiusScale` (1.35) are not applied.
+  The car's `physicsdefinition.bin` holds the runtime sphere list
+  unscaled, with hand moves for some cars (the R34's side spheres sit at
+  y 0.41, x 0.66, and its nose and tail spheres about 0.29 m further out).
+  That file's header is not decoded, so MAXData's list is used.
+- **The lift's second term.** The original takes the lower of the wheels'
+  ground and a body field; only the wheels' term is read.
+
+Needed: the physicsdefinition.bin sphere block's header, and the body
+field in the lift.
+
+## Q101 (FEEL-19/20/21, PT-27, not blocking): the body-to-world contact
+
+PT-27's fence launches came from the engine's 26-point penalty box: stiff
+springs that turned any slanted surface into an upward force, then clamped.
+The original solves contacts as impulses.
+
+**Engine reading (decoded):**
+
+- **Contacts.** Up to 16 sphere contacts, the deepest. MeshGround tests the
+  triangles near the car once per step for all spheres. A face is pushed
+  from the side the body's centre is on, so a sphere that passes through a
+  one-sided fence is still pushed back. Other grounds use two rays per
+  sphere.
+- **Push-out.** The body is moved out along the contacts' normals, each
+  contact adding only the depth the push so far leaves. Only the position
+  changes; the velocity is untouched. Wheel compression moves with the
+  body, so the dampers see no rate.
+- **Impulses.** These are computed from the velocities after the step's
+  forces. For each contact closing on its surface:
+  - The normal impulse is `j = -(1 + e) vn / (1/m + n . ((I^-1 (r x n)) x r))`,
+    where `e` is the pair's `Elasticity` as written. Car/HardWorld's −0.9
+    removes a tenth of the closing speed per substep, and the push-out
+    keeps the car outside.
+  - The friction impulse is `mu * min(j, m * 7 mph)`. It acts against the
+    slide direction, and below 5 m/s it is scaled by 0.2 per m/s of sliding
+    speed.
+  - `mu` blends `LowSpeedFrictionCoefficient` into `FrictionCoefficient`
+    over `Collision\FrictionLowSpeedMph..FrictionHighSpeedMph` (10..40 mph)
+    of the contact point's speed.
+- **Combining.** The impulses and their moments are averaged over the
+  closing contacts. The moment is scaled per body axis by
+  `CarObjWorldCollTorqueScalePitch/Yaw/Roll` (0.55, 0.65, 0.55), then both
+  are applied.
+- **Pair rows.** Surfaces take surfaceTypes.xml's CategoryToCategoryParams
+  row for Car and their Category, or Default/Default when there is none.
+- **GimbalLock.** Past `GimbalCosAngle0` (0.87) of tilt, a spring acts on
+  the spin about the horizontal tilt axis: rate `GimbalSpringK` (50),
+  damped by `DCompress` (5) when the tilt grows and `DRebound` (0) when it
+  shrinks. Past `GimbalCosAngle1` (0.82), spin that tilts further is first
+  reflected with `GimbalAngImpulseElasticity` (0.2). This replaces the
+  10 rad/s spin cap.
+- **Q67.** `last_body_impact` keeps its meaning. A contact that begins
+  after a step or more with none is an impact, and its speed is the
+  largest closing speed then. `strongest_body_contact().force` is the
+  substep's impulse over its length.
+
+**Removed (PT-27):**
+
+- the flattened wall normals;
+- the wall damping floor and rebound factor;
+- the force caps per point (180 and 120 × mass share) and on the summed
+  upward force (3 m g);
+- the horizontal-only wall friction;
+- the wall torque factors (0.20, 0.35, 0.20);
+- the vertical-velocity clamps after any contact;
+- the 10 rad/s spin cap;
+- the wheels' rejection of normals under 0.65.
+
+With Car/HardWorld:
+
+| Test | Result |
+|---|---|
+| Fence at 25 km/h | 0.03 m/s up, nose 2 cm in, one impact |
+| Wall head-on at 150 km/h | stopped in 0.1 m, 1.1 m/s up, 0.4 m/s rebound |
+| Wall glance at 20 deg, 108 km/h | keeps 24 m/s along the wall |
+| PT-27 bank | 1.0 m, 1.3 m/s up |
+| PT-27 0.35 m kerb at 90 km/h | 0.7 m, 2.7 m/s up |
+
+Still interim:
+
+- **Suspension clamps.** The bump stop's 0.14 m over-compression cap and
+  the wheel load cap `max(4 x preload, 1.1 m g)` stay. A raycast wheel
+  meeting a step higher than its axle jumps onto it in one substep.
+  Without the caps, the 0.35 m kerb at 90 km/h throws the car 2.3 m up at
+  6.2 m/s. The original's wheel query on such steps is not decoded.
+- **Rate.** The contact runs every substep (359 Hz). That the original's
+  contact chain runs at the same rate is assumed.
+- **Friction noise.** The pair's friction noise (`FrictionNoiseFreqScale`,
+  input to output range) is loaded but not applied, because its noise
+  function is not decoded.
+- **Low-speed blend.** The blend's car-side gate (a body flag) is taken
+  as always on.
+- **Smashables.** Props below their break speed still use the engine's
+  own OBB push (smashables.cpp), not this solver with the Smashable/Car
+  row.
+
+Needed: the wheel query's treatment of steep faces and steps, the friction
+noise function, and the contact chain's tick.
+
+## Q102 (FEEL-05/07/23, not blocking): damage difficulties and List_DamageModDef
+
+The original's damage difficulties are Cosmetic, Limited and Simulation
+(EDamageDifficulty; GameOptionValues 19 Cosmetic and 20 Limited, in that
+order). gamedb.slt `List_DamageModDef` has one row per part, for GearBox,
+Driveline, Steering, BodyDrag, Front/RearDownforce, Brakes, Tires,
+Suspension, Engine and Motor. The Lobby's damage option also sets fuel
+depletion and tyre wear. The rows' consumer is not decoded.
+
+**Engine reading (ours, on the rows' columns):**
+
+- **Modes.** `DamageMode` gains Limited (stored as 3). The stored 0
+  (None, ours), 1 (Cosmetic) and 2 (Simulation) keep their meaning for
+  saves, and only Simulation earns the +10% reward. The settings row
+  offers limited.
+- **Parts.** Under Limited and Simulation, each body impact damages each
+  part as follows:
+  - The impact in mph is first varied by ±`RandomImpact`.
+  - At or past `DamageMinImpact`, the damage added runs from `DamageMin`
+    to `DamageMax` across `DamageMinImpact..DamageMaxImpact`.
+  - The damage applies with a chance that runs from `ProbabilityMin` to
+    `ProbabilityMax` across `ProbabilityMinImpact..MaxImpact`.
+  - Limited adds half.
+  - The part's effect runs from `ModZeroDamage` to `ModFullDamage` across
+    its damage:
+    - Engine and Motor: torque;
+    - GearBox: shift time;
+    - BodyDrag: drag;
+    - Front and Rear Downforce: the downforce at each end;
+    - Brakes: brake torque;
+    - Suspension: rates;
+    - Steering: degrees of pull, towards the side of the hit.
+- **Rows.** The rows come from the disc (`load_disc_damage_mod_defs`),
+  with the shipped values as the fallback.
+- **Impacts.** carview records one impact per body impact at its closing
+  speed (`last_body_impact`), no longer once per frame of contact force.
+- **Sputter and audio.** `engine_damage` is the Engine/Motor part's
+  damage, so the sputter rumble (`EngineDamageLevelStartSputter` 0.3) and
+  the audio's damage sounds follow these rows.
+- **Wear and fuel.** Tyre wear and fuel burn only in Simulation.
+
+Still interim:
+
+- the impact unit (mph of closing speed);
+- the random roll;
+- Limited's half share;
+- the application to every part regardless of where the car is hit;
+- the Driveline part, which has no effect;
+- Steering's pull side;
+- the wear and fuel rates;
+- the cosmetic zone and lamp model;
+- the settings page, which still lists the engine's none and presets
+  that use it (Q71).
+
+Needed: the List_DamageModDef consumer (impact unit, location and roll),
+Limited's rule, and the original's settings rows.
+
+## Q103 (FEEL-14, not blocking): Assisted braking's gain
+
+SPEC-CAR-PHYSICS confirms the pipeline: with `AutoBrakeOn` (Braking 0)
+the controller reads the racing line's lookahead target speed and adds
+brake (and cuts throttle) while the car is faster than it. The engine
+now takes that target from the driving line everywhere
+(`drive::auto_brake_target`): in races on the racing line, and in free
+roam on the GPS route or the road ahead, built from the car's own
+10-point braking table. The fixed 0.85 g corner rule and 7.5 m/s^2
+braking that free roam used are gone.
+
+Still interim (the spec marks the gain "probable"):
+
+- the margin: nothing below 0.5 m/s over the target;
+- the gain: brake (excess - 0.5) / 8, throttle cut over (excess - 0.5)
+  / 3, both clamped to 0..1;
+- the free-roam path: the GPS route or the nearest road's centre line
+  ahead, which the original may not use.
+
+Needed: the auto-brake's threshold and gain constants, from a trace
+through a few corners with Braking set to Assisted.
+
+## Q104 (FEEL-18, not blocking): racing-wheel dead zones
+
+ForzaProfile.sch keeps a wheel's dead zones apart from a pad's:
+WheelAdvancedOptions has steering 0.01/0.95, throttle 0.15/1.00, brake
+0.15/0.95, clutch 0.15/0.90 and handbrake 0.10/1.00, against
+ControllerAdvancedOptions' 0.24/0.95 steering. The engine gave a wheel
+only its own WheelShaping (saturation, curve, skip), with the pad's
+pedal window. A wheel, whether SDL sees it as a gamepad or as a raw
+joystick, now takes WheelAdvancedOptions' window
+(`ControlDeadzones::wheel_defaults`) before the shaping, whose defaults
+change nothing.
+
+Still interim:
+
+- the rescale itself, linear from inside to outside per axis, as for the
+  pad (the pre-curve is open, SPEC-CAR-PHYSICS);
+- whether the original applies the pad's steering dead zone radially;
+- the wheel window is the profile default; the settings page has no
+  rows for it;
+- WheelShaping, which the original does not have, stays as a user
+  option, and the Separate Devices path keeps its own per-axis dead
+  zones.
+
+Needed: the input manager's dead-zone rescale and its wheel rows.
+
+## Q105 (FEEL-08, not blocking): thresholds beside the tyre law
+
+The tyre law follows SPEC-CAR-PHYSICS, but four thresholds next to it
+are the engine's. None of them is in the spec or the car data:
+
+- **VelDepFriction's fade-in.** The surface drag is scaled by
+  min(1, |v| / 0.2 m/s) per wheel axis, and runs only when the car has
+  aero drag (`aero_drag_long > 0`). The spec confirms the slew-clamped
+  `-sign(v) * coeff * N`, not the fade or the gate.
+- **Bearing drag in the air.** A wheel off the ground loses spin as
+  `omega *= 1 - 0.5 dt`.
+- **RWD launch assist.** Below 11 m/s on a RWD car's rear wheels, slip
+  past 1.7 is cut to 0.35 of its excess, fading out from 5 to 11 m/s.
+  The spec gives only "damps slip > 1.7 below ~5..11 m/s". The player
+  only; the AI skips it.
+- **Gravity per off-ground tyre.** Gravity is scaled by
+  PerTyreOffGravityScale to the power of the number of wheels off the
+  ground (all four: AirborneGravityScale). The settings name the
+  constant, not whether it multiplies per tyre or adds.
+
+Needed: the launch assist's gain, and how the per-tyre gravity scale
+combines. Both are visible in a standing-start trace of a RWD car and a
+trace of a car with one or two wheels off a kerb.
+
+## Q106 (FEEL-21, not blocking): props the car does not break
+
+A prop breaks when the car's speed is above its BreakSpeedMph
+(FORMAT-PHYSICS-DEFINITIONS); below that, and for an unbreakable prop,
+the engine used to push the car out horizontally with its own impulse
+(1.08 restitution, 0.22 friction, a 0.65 m push cap), so a fence or
+post hit had no pitch and no rebound of the original's kind. The props
+now join the car's body solve (Q101) as fixed bodies:
+`world::SmashableGround` adds their PhysicsDefinitions shapes (spheres
+and OBBs) to the ground's sphere contacts, with the
+CategoryToCategoryParams Smashable/Car row (mu 0.5, Elasticity 0.3).
+The solid barriers go the same way with the Car/GuardRail row.
+
+Still interim:
+
+- **Solid barriers by name.** Which static models are solid is still
+  chosen from their names and proportions; the original's rule for
+  static objects' collision is not decoded.
+- **Convex hulls** meet the car as their box in the prop's frame.
+- **Fixed bodies.** An unbroken prop does not move; its Mass is unused
+  until it breaks.
+- **The break test** reads the car's speed at the start of its step,
+  not the contact's closing speed.
+- **Only the player's car** meets the props; AI and traffic cars still
+  pass through them, as before.
+- **Barn doors** keep the old horizontal push.
+- **The smash-through slow-down** on a break is the engine's.
+- **Low hard props.** The wheels' rays do not see props, so a box lower
+  than the body spheres' centres is met by the spheres' edges and the
+  Elasticity 0.3 row. A 0.3 m unbreakable box hit at 25 m/s lifts the
+  car 0.30 m more than its own settling, at 1.09 m/s up (0.89 m and
+  3.8 m/s on another approach; the HardWorld row gives 0.16 m and
+  0.40 m/s and lets the car slide over). The shipped
+  PhysicsDefinitions have no such prop: the five that are unbreakable or
+  break above 27 mph all reach 1.06 m or more.
+
+Needed: the static-object collision rule, and whether an unbroken prop
+is fixed or a heavy dynamic body.

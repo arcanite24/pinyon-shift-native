@@ -11,6 +11,7 @@
 
 #include "cars/database.h"
 #include "cars/sources.h"
+#include <sqlite3.h>
 #include "drive/from_bake.h"
 
 namespace drive {
@@ -42,6 +43,30 @@ class DiscPhysicsCache {
     parts_db_.reset();
     by_id_.clear();
     id_by_media_.clear();
+  }
+
+  bool load_damage_mods(std::array<DamageModDef, kDamagePartCount>& out, std::string* error) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!ensure_init_locked(error)) return false;
+    int rows = 0;
+    const bool ok = parts_db_->each(
+        "SELECT DamageModName, ModZeroDamage, ModFullDamage, DamageMinImpact, DamageMaxImpact, DamageMin, DamageMax, "
+        "RandomImpact, ProbabilityMinImpact, ProbabilityMaxImpact, ProbabilityMin, ProbabilityMax "
+        "FROM List_DamageModDef",
+        {},
+        [&](sqlite3_stmt* st) {
+          const auto* name = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+          const int part = damage_part_by_name(name);
+          if (part < 0) return;
+          DamageModDef& d = out[size_t(part)];
+          double* f[11] = {&d.mod_zero, &d.mod_full, &d.damage_min_impact, &d.damage_max_impact,
+                           &d.damage_min, &d.damage_max, &d.random_impact, &d.probability_min_impact,
+                           &d.probability_max_impact, &d.probability_min, &d.probability_max};
+          for (int k = 0; k < 11; ++k) *f[k] = sqlite3_column_double(st, k + 1);
+          ++rows;
+        },
+        error);
+    return ok && rows > 0;
   }
 
   bool load_settings(cars::PhysicsSettings& out_settings, std::string* error) {
@@ -76,6 +101,11 @@ class DiscPhysicsCache {
     if (!parts_db_ || !parts_db_->physics(id, kNone, cp, &err)) {
       if (error) *error = err.empty() ? "car physics lookup failed" : err;
       return false;
+    }
+    {
+      cars::CarCollisionSpheres spheres;
+      if (cars::load_car_collision_spheres(install_, cp.media_name, spheres, nullptr))
+        cars::put_collision_spheres(spheres, cp);
     }
     auto [ins, ok] = by_id_.emplace(id, std::move(cp));
     out_car = ins->second;
@@ -140,6 +170,10 @@ void set_disc_physics_root(const std::filesystem::path& game_root, const std::fi
 bool load_disc_car_physics(int64_t car_id, const std::string& media_name, cars::CarPhysics& out_car,
                            cars::PhysicsSettings& out_settings, std::string* error) {
   return DiscPhysicsCache::instance().load_car(car_id, media_name, out_car, out_settings, error);
+}
+
+bool load_disc_damage_mod_defs(std::array<DamageModDef, kDamagePartCount>& out, std::string* error) {
+  return DiscPhysicsCache::instance().load_damage_mods(out, error);
 }
 
 bool load_disc_physics_settings(cars::PhysicsSettings& out_settings, std::string* error) {
@@ -607,6 +641,35 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.physics_hz = s.get("CarPhysicsUpdateHz", 359);
   p.sputter_start_damage = s.get("EngineDamageLevelStartSputter", p.sputter_start_damage);
   p.sputter_max_per_sec = s.get("EngineDamageMaxSputtersPerSec", p.sputter_max_per_sec);
+
+  // Body-to-world contact (SPEC_QUESTIONS Q100, Q101).
+  auto& bc = p.body_collision;
+  bc.min_above_ground = s.get("CarCollSphereMinDistAboveGround", bc.min_above_ground);
+  bc.ground_min_above_ground = s.get("CarGroundCollSphereMinDistAboveGround", bc.ground_min_above_ground);
+  bc.friction_low_mph = s.get("Collision\\FrictionLowSpeedMph", bc.friction_low_mph);
+  bc.friction_high_mph = s.get("Collision\\FrictionHighSpeedMph", bc.friction_high_mph);
+  bc.world_torque_scale = {s.get("CarObjWorldCollTorqueScalePitch", bc.world_torque_scale.x),
+                           s.get("CarObjWorldCollTorqueScaleYaw", bc.world_torque_scale.y),
+                           s.get("CarObjWorldCollTorqueScaleRoll", bc.world_torque_scale.z)};
+  bc.gimbal_on = s.get("GimbalLock\\GimbalLockOn", bc.gimbal_on ? 1 : 0) != 0;
+  bc.gimbal_cos0 = s.get("GimbalLock\\GimbalCosAngle0", bc.gimbal_cos0);
+  bc.gimbal_cos1 = s.get("GimbalLock\\GimbalCosAngle1", bc.gimbal_cos1);
+  bc.gimbal_k = s.get("GimbalLock\\GimbalSpringK", bc.gimbal_k);
+  bc.gimbal_d_compress = s.get("GimbalLock\\GimbalSpringDCompress", bc.gimbal_d_compress);
+  bc.gimbal_d_rebound = s.get("GimbalLock\\GimbalSpringDRebound", bc.gimbal_d_rebound);
+  bc.gimbal_elasticity = s.get("GimbalLock\\GimbalAngImpulseElasticity", bc.gimbal_elasticity);
+  // MAXData's spheres into our frame: y from the box's bottom (the ground
+  // at the stock ride height), z from mid-wheelbase.
+  if (const auto* sph = car.curve("MAXData.CollSpheres"); sph && sph->size() >= 5) {
+    const double y0 = car.get("MAXData.BoundingBox.MinY", 0.0);
+    const double z0 = car.get("MAXData.BottomCenterWheelbasePos.z", 0.0);
+    bc.spheres.clear();
+    for (size_t i = 0; i + 5 <= sph->size(); i += 5) {
+      const auto* v = sph->data() + i;
+      if (!(v[3] > 0)) continue;
+      bc.spheres.push_back({{v[0], v[1] - y0, v[2] - z0}, v[3], int(std::lround(v[4]))});
+    }
+  }
 }
 
 CarParams params_for_car_text(const cars::bake::CarInfo& car, const std::string& text, std::vector<std::string>* notes);
@@ -847,12 +910,19 @@ CarParams params_for_car_text(const cars::bake::CarInfo& car, const std::string&
   }
   // Bakes written before the AutoSteerOverrides row was joined lack the
   // car's STM window: take that row from the disc's database.
-  if (!rows.has("AutoSteerOverrides.STMSlipMin") && rows.has("Data_Car.AutoSteerOverrideID")) {
+  // Bakes carry no MAXData: the collision spheres come from the disc too.
+  const bool need_steer = !rows.has("AutoSteerOverrides.STMSlipMin") && rows.has("Data_Car.AutoSteerOverrideID");
+  const bool need_spheres = rows.curve("MAXData.CollSpheres") == nullptr;
+  if (need_steer || need_spheres) {
     cars::CarPhysics disc;
     cars::PhysicsSettings unused;
-    if (load_disc_car_physics(car.car_id, car.media_name, disc, unused, nullptr))
+    if (load_disc_car_physics(car.car_id, car.media_name, disc, unused, nullptr)) {
       for (const auto& [k, v] : disc.values)
-        if (k.rfind("AutoSteerOverrides.", 0) == 0) rows.values[k] = v;
+        if ((need_steer && k.rfind("AutoSteerOverrides.", 0) == 0) || (need_spheres && k.rfind("MAXData.", 0) == 0))
+          rows.values[k] = v;
+      if (need_spheres)
+        if (const auto* sph = disc.curve("MAXData.CollSpheres")) rows.curves["MAXData.CollSpheres"] = *sph;
+    }
   }
   apply_physics(rows, settings, p, notes);
   return p;

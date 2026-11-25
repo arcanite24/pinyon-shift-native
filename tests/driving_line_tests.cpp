@@ -406,6 +406,41 @@ void test_temporal_smoother() {
 
 }  // namespace
 
+void test_auto_brake_target() {
+  // FEEL-14: Assisted braking's target is the driving line's, from the car's
+  // own braking table, not a fixed 0.85 g / 7.5 m/s^2 corner rule.
+  const auto car = test_car();
+  const auto tbl = drive::BrakingTable::build(car);
+  auto weak = tbl;
+  for (double& d : weak.decel_mps2) d *= 0.5;
+  const auto line = make_corner_line();
+  double v_strong = 0, v_weak = 0, v_far = 0;
+  CHECK(drive::auto_brake_target(line, tbl, 150.0, 40.0, v_strong));
+  CHECK(drive::auto_brake_target(line, weak, 150.0, 40.0, v_weak));
+  CHECK(drive::auto_brake_target(line, tbl, 10.0, 40.0, v_far));
+  std::printf("auto-brake target 50 m before the corner: %.2f m/s (table), %.2f m/s (half decel); 190 m: %.2f\n",
+              v_strong, v_weak, v_far);
+  CHECK(v_weak < v_strong - 2.0);  // a weaker-braking car is asked to slow sooner
+  CHECK(v_far > v_strong);
+  // At the corner the target is the corner speed, whatever the table.
+  double v_apex = 0, v_apex_weak = 0;
+  CHECK(drive::auto_brake_target(line, tbl, 215.0, 20.0, v_apex));
+  CHECK(drive::auto_brake_target(line, weak, 215.0, 20.0, v_apex_weak));
+  CHECK(std::fabs(v_apex - v_apex_weak) < 1.0 && v_apex < 25.0);
+  // The free-roam form: the same path given as points from the car.
+  std::vector<float> xs, zs;
+  for (size_t i = 0; i < line.size(); ++i) {
+    if (line.dist[i] < 150.0) continue;
+    xs.push_back(line.x[i]);
+    zs.push_back(line.z[i]);
+  }
+  double v_path = 0;
+  CHECK(drive::auto_brake_target_on_path(xs, zs, tbl, 40.0, v_path));
+  CHECK(std::fabs(v_path - v_strong) < 3.0);
+  std::vector<float> one{0.0f};
+  CHECK(!drive::auto_brake_target_on_path(one, one, tbl, 40.0, v_path));
+}
+
 int main() {
   test_color_band();
   test_braking_table();
@@ -414,6 +449,7 @@ int main() {
   test_smooth_gradient_entry_and_exit();
   test_near_far_fades_width_and_braking_only();
   test_temporal_smoother();
+  test_auto_brake_target();
   if (failures) {
     std::printf("driving_line_tests: %d failure(s)\n", failures);
     return 1;
