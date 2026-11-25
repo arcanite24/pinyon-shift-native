@@ -64,6 +64,10 @@ inline constexpr StringRef kOk{"Workshop", "IDS_BarnFindCollect", 0, "OK"};
 // The manufacturer select (115_C_BUY_MFRSELECT).
 inline constexpr StringRef kAvailable{"carflow", "IDS_Num_Available", 0, "{0} AVAILABLE"};
 inline constexpr StringRef kAffordableCars{"HelpButtons", "IDS_AffordableCars", 0, "ALL AFFORDABLE CARS"};
+inline constexpr StringRef kNoneAffordableTitle{"carflow", "IDS_No_Affordable_Title", 0, "NONE AFFORDABLE"};
+inline constexpr StringRef kNoneAffordableMessage{
+    "carflow", "IDS_No_Affordable_Msg", 0,
+    "There are currently no affordable cars. Continue racing to earn more credits."};
 }  // namespace car_list_text
 
 // A tile's state: the scene's own icons (Ready_Icon, Not_Ready_Icon,
@@ -147,6 +151,7 @@ struct MakeListHud {
   std::string info_text;
   std::vector<std::pair<std::string, std::string>> prompts;  // (button, label)
   std::string notice;
+  CarListPopup popup;  // NONE AFFORDABLE
 };
 
 const std::vector<const char*>& make_list_nodes();

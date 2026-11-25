@@ -588,6 +588,7 @@ struct DriveSession {
   // The Autoshow's manufacturer select on 115_C_BUY_MFRSELECT.
   void fill_make_list(carview::MakeListHud& out);
   bool make_list_drawn = false;
+  bool make_none_affordable = false;  // Y with nothing affordable: NONE AFFORDABLE
   // MY GARAGE and BARN FINDS on 108 (garage_barn_finds picks the list).
   void fill_garage_list(carview::CarListHud& out);
   bool garage_show_specs = true;  // Y TOGGLE

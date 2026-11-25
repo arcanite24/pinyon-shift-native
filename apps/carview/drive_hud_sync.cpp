@@ -1090,6 +1090,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           // the other steps keep the engine's pages).
           car_list_drawn = false;
           make_list_drawn = false;
+          if (autoshow.step() != carview::AutoshowStep::kMakeSelect) make_none_affordable = false;
           if (autoshow.step() == carview::AutoshowStep::kCarSelect && !autoshow.buy_confirm_open()) {
             carview::CarListHud cl;
             fill_autoshow_list(cl);

@@ -214,6 +214,9 @@ void DriveSession::fill_make_list(carview::MakeListHud& out) {
   out.prompts = {{"A", carview::text_of(t::kSelect)},
                  {"B", carview::text_of(t::kBack)},
                  {"Y", carview::text_of(t::kAffordableCars)}};
+  if (make_none_affordable)
+    out.popup = {true, carview::text_of(t::kNoneAffordableTitle), carview::text_of(t::kNoneAffordableMessage),
+                 {{"A", carview::text_of(t::kOk)}}};
 }
 
 bool DriveSession::is_barn_car(int64_t car_id) const {

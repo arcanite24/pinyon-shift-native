@@ -878,17 +878,42 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
               // 115's strip holds the makes alone (the engine's page lists
               // All Affordable and All Cars with them); its Y lists the
               // affordable cars.
+              // (make_list_drawn is the last frame's; the step is now's.)
+              const bool on_115 = make_list_drawn && autoshow.step() == carview::AutoshowStep::kMakeSelect;
               auto move_mk = [&](int by) {
-                if (make_list_drawn)
+                if (on_115)
                   autoshow.move_strip_make(by, app.career.credits);
                 else
                   autoshow.move_make(by, app.career.credits);
                 app.audio_host.trigger_ui(audio::UiCue::kMove);
               };
+              // Nothing affordable: carflow's NONE AFFORDABLE popup.
               auto affordable = [&]() {
+                for (const auto& mk : autoshow.makes()) {
+                  if (mk.make_id == -1 && mk.car_count == 0) {
+                    make_none_affordable = true;
+                    app.audio_host.trigger_ui(audio::UiCue::kError);
+                    return;
+                  }
+                }
                 autoshow.select_affordable(app.career.credits);
                 confirm_step();
               };
+              if (on_115 && make_none_affordable) {
+                const bool close =
+                    (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
+                     (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE ||
+                      e.key.key == SDLK_ESCAPE || e.key.key == SDLK_BACKSPACE)) ||
+                    (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                     (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH || e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST ||
+                      e.gbutton.button == SDL_GAMEPAD_BUTTON_START)) ||
+                    (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+                if (close) {
+                  make_none_affordable = false;
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                }
+                return true;
+              }
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode k = e.key.key;
                 if (k == SDLK_ESCAPE) {
@@ -897,7 +922,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 } else if (autoshow.buy_confirm_open()) {
                   if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) confirm_step();
                 } else {
-                  if (k == SDLK_Y && make_list_drawn) {
+                  if (k == SDLK_Y && on_115) {
                     affordable();
                   } else if (k == SDLK_Y) {
                     toggle_specs_or_cam();
@@ -938,7 +963,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 } else if (autoshow.buy_confirm_open()) {
                   if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_step();
                 } else {
-                  if (b == SDL_GAMEPAD_BUTTON_NORTH && make_list_drawn) {
+                  if (b == SDL_GAMEPAD_BUTTON_NORTH && on_115) {
                     affordable();
                   } else if (b == SDL_GAMEPAD_BUTTON_NORTH) {
                     toggle_specs_or_cam();
@@ -1011,7 +1036,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                     if (autoshow.buy_confirm_open()) {
                       if (hz.index == 0) confirm_step();
                       else if (hz.index == 1) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
-                    } else if (make_list_drawn) {
+                    } else if (on_115) {
                       // 115's help bar: A SELECT, B BACK, Y ALL AFFORDABLE CARS.
                       if (hz.index == 0) confirm_step();
                       else if (hz.index == 1) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }

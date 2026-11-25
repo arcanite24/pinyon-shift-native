@@ -2805,6 +2805,9 @@ B BACK, Y ALL AFFORDABLE CARS (`HelpButtons IDS_AffordableCars`). Guesses:
   `List_CarMake.Profile`, but every profile on the disc is "N/A", so the
   panel is not shown.
 - The tiles' DLC, NEW and lock icons are not shown.
+- Y with nothing affordable opens carflow's NONE AFFORDABLE popup
+  (`IDS_No_Affordable_Title`, `IDS_No_Affordable_Msg`) with A OK, and the
+  strip stays.
 
 Needed: a capture of the manufacturer select, its help bar, what the info
 panel shows, and where the cursor starts.

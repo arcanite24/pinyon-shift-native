@@ -474,6 +474,11 @@ bool draw_make_list(ui::List& l, const DriveHud& st, const MakeListHud& m, float
   }
   draw_notice(l, m.notice, w, h);
   std::vector<ui4::Prompt> prompts;
+  if (m.popup.open) {
+    for (const auto& [b, label] : m.popup.prompts) prompts.push_back({b.c_str(), label});
+    draw_message_popup(l, m.popup.title, m.popup.message, prompts, w, h);
+    return true;
+  }
   for (const auto& [b, label] : m.prompts) prompts.push_back({b.c_str(), label});
   ui4::button_bar(l, prompts, w, h);
   return true;

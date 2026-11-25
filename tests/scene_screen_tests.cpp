@@ -826,6 +826,13 @@ int main() {
       carview::ui::List l2;
       check(carview::draw_make_list(l2, d, ml, float(W), float(H)), "draw make list with a profile");
       check(l2.items().size() > l.items().size(), "115: the profile's panel draws");
+      // Y with nothing affordable.
+      ml.popup = {true, carview::text_of(kNoneAffordableTitle), carview::text_of(kNoneAffordableMessage),
+                  {{"A", carview::text_of(kOk)}}};
+      check(ml.popup.title == "NONE AFFORDABLE", "115's popup: " + ml.popup.title);
+      carview::ui::List l3;
+      check(carview::draw_make_list(l3, d, ml, float(W), float(H)), "draw make list with NONE AFFORDABLE");
+      check(l3.items().size() > l2.items().size(), "115: the popup draws over the strip");
     }
   }
 
