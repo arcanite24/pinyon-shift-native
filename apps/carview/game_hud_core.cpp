@@ -1013,7 +1013,10 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       render_world_labels_and_nameplates(l, show_tags ? st.name_tags : kEmptyTags, active_wm, st.race != nullptr, w, h,
                                          st.metric_units);
     }
-    if (st.gps && st.gps->active && !st.race) gps_turn_hud(l, *st.gps, g, st.metric_units);
+    // The route's next turn: DirectionArrows, else the drawn banner.
+    if (st.gps && st.gps->active && !st.race && should_show_gps_turn_banner(*st.gps) &&
+        !draw_hud_direction_arrow(l, *st.gps, w, h, g.s))
+      gps_turn_hud(l, *st.gps, g, st.metric_units);
     if (st.pr_stunt && st.pr_stunt->active && !st.race) pr_stunt_hud(l, *st.pr_stunt, g);
     if (st.h2h && !st.race) {
       const float used = h2h_hud(l, *st.h2h, g, st.metric_units, bottom_lift);

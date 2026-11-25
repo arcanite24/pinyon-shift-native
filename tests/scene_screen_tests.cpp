@@ -206,6 +206,9 @@ int main() {
                  "ComboIcon", "PopularityBar", "PopularityBar/ValueScale/Stars", "ValueScale/ValueType",
                  "ValueType/TEXT_LEVEL", "ValueType/TEXT_LEVEL_SUFFIX", "CircleFlash", "Flash_SmokeRing",
                  "Flash_SmokeRing2",
+                 // The route's next turn.
+                 "DirectionArrows/graphics/Component/Background", "DirectionArrows/graphics/Component/Group/bg2",
+                 "DirectionArrows/TEXT_JUNCTION",
                  // The event prompt.
                  "ActivationPrompt/All", "All/Title", "All/Event_Name", "All/Call_to_Action", "Call_to_Action/Default",
                  "Call_to_Action/Locked",
@@ -644,6 +647,59 @@ int main() {
     check(std::fabs(wd - 75.0f) < 5.0f, "name tag: BISHOP is about 75 px wide (" + std::to_string(wd) + ")");
   }
 
+  // The route's next turn on DirectionArrows (16_race_hud_orig.png's
+  // hairpin): the dark box at 617..663 x 199..251 and the turn's cell of
+  // DIRECTION_ARROWS, a left turn mirrored from the right-hand cells.
+  {
+    using carview::direction_arrow_cell;
+    check(direction_arrow_cell(0).cell == 0 && direction_arrow_cell(1).cell == 0 && direction_arrow_cell(9).cell == 5 &&
+              direction_arrow_cell(8).cell == 4 && !direction_arrow_cell(8).mirror,
+          "arrow: ahead, the destination and the U-turn's cells");
+    check(direction_arrow_cell(6).cell == 2 && !direction_arrow_cell(6).mirror && direction_arrow_cell(3).cell == 2 &&
+              direction_arrow_cell(3).mirror && direction_arrow_cell(2).cell == 1 && direction_arrow_cell(2).mirror &&
+              direction_arrow_cell(7).cell == 3 && direction_arrow_cell(4).cell == 3 && direction_arrow_cell(4).mirror,
+          "arrow: a left turn is the right turn's cell mirrored");
+    auto hzt = fh1::Archive::open(game_root / "media" / "ui" / "textures" / "Horizon.zip", nullptr);
+    check(hzt && hzt->read("HUD/MASKS/DIRECTION_ARROWS.xds").ok() && hzt->read("DIRTMASKS/HUD/DIRECTIONARROWBG.xds").ok(),
+          "arrow: its textures");
+    // Every texture at the whole of a unit atlas, to read the drawn cells.
+    carview::set_ui_textures([](const std::string&, std::array<float, 4>& uv) {
+      uv = {0.0f, 0.0f, 1.0f, 1.0f};
+      return true;
+    });
+    auto images = [](int kind, bool recalculating) {
+      carview::GpsHud g;
+      g.active = true, g.turn_kind = kind, g.recalculating = recalculating;
+      carview::ui::List l;
+      const bool ok = carview::draw_hud_direction_arrow(l, g, 1280.0f, 720.0f, 1.0f);
+      std::vector<carview::ui::Instance> out;
+      for (const auto& it : l.items())
+        if (it.kind == carview::ui::kImage || it.kind == carview::ui::kImageMasked) out.push_back(it);
+      return std::make_pair(ok, out);
+    };
+    const auto [ok_r, right] = images(6, false);
+    const auto [ok_l, left] = images(3, false);
+    const auto [ok_c, recalc] = images(6, true);
+    check(ok_r && right.size() == 2 && left.size() == 2, "arrow: the box and the arrow");
+    if (right.size() == 2 && left.size() == 2) {
+      const auto& box = right[0];
+      const auto& ar = right[1];
+      const auto& al = left[1];
+      check(std::fabs(box.rect[0] - 606.0f) < 2.0f && std::fabs(box.rect[2] - 674.0f) < 2.0f &&
+                std::fabs(box.rect[1] - 185.0f) < 2.0f && std::fabs(box.rect[3] - 264.0f) < 2.0f,
+            "arrow: the box's rect (606..674 x 185..264)");
+      check(std::fabs(ar.rect[0] - 614.0f) < 2.0f && std::fabs(ar.rect[2] - 666.0f) < 2.0f &&
+                std::fabs(ar.rect[1] - 206.0f) < 2.0f && std::fabs(ar.rect[3] - 244.0f) < 2.0f,
+            "arrow: the arrow's rect (614..666 x 206..244)");
+      check(std::fabs(ar.q[0] - 2.0f / 6.0f) < 1e-4f && std::fabs(ar.q[2] - 3.0f / 6.0f) < 1e-4f,
+            "arrow: turn right is the third cell");
+      check(std::fabs(al.q[0] - 3.0f / 6.0f) < 1e-4f && std::fabs(al.q[2] - 2.0f / 6.0f) < 1e-4f,
+            "arrow: turn left is the third cell mirrored");
+    }
+    check(ok_c && recalc.empty(), "arrow: nothing while the route recalculates");
+    carview::set_ui_textures(nullptr);
+  }
+
   // 5. Optional renders.
   if (const char* shot_env = std::getenv("SHIFT_SCENE_SCREEN_SHOT_DIR"); shot_env && *shot_env) {
     const std::filesystem::path out_dir = shot_env;
@@ -764,6 +820,14 @@ int main() {
     prompt_d.kmh = 0, prompt_d.rpm = 900, prompt_d.gear = 1;
     prompt_d.world_marker = &wm;
     hud_shot("hud_prompt.png", "09_event_marker_prompt_orig.png", prompt_d);
+
+    // The route's next turn (DirectionArrows) over the original's hairpin.
+    carview::GpsHud uturn;
+    uturn.active = uturn.confirmed_uturn = true;
+    uturn.turn_kind = 8, uturn.dist_to_turn_m = 80.0, uturn.dist_to_dest_m = 900.0;
+    carview::DriveHud arrow_d = roam;
+    arrow_d.gps = &uturn;
+    hud_shot("hud_direction_arrow.png", "16_race_hud_orig.png", arrow_d);
 
     // A sprint (16_race_hud_orig.png) and a circuit (the oracle's
     // race-hud-notification.png, by absolute path in SHIFT_SCENE_SCREEN_ORACLE).

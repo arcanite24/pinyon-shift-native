@@ -350,7 +350,15 @@ destinations, and an outpost must be discovered (Q90).
   scene's. The icons' open and pulse animations and the barn rumour's
   reveal animation are not ported, and travel keeps the loading screen
   without the original's fast travel camera.
-- **Not ported.** `DirectionArrows`; the notifications' tape slide (they
+- **Route arrow.** A route's next turn is `DirectionArrows` at the top
+  centre (`draw_hud_direction_arrow`): the dark box (`DIRECTIONARROWBG`,
+  which the scene leaves at alpha 0) and the turn's cell of
+  `DIRECTION_ARROWS` (ahead, bear, turn, sharp, U-turn, destination; a left
+  turn mirrors the right-hand cell), placed as `16_race_hud_orig.png`'s
+  hairpin. The engine's turn line and distance go; `TEXT_JUNCTION` stays
+  empty, a recalculating route shows nothing, and the race's corner arrows
+  are not wired (Q153). Without the scene the old banner draws.
+- **Not ported.** The notifications' tape slide (they
   fade); the Show me! action (hidden, no action behind it); the ghosts and
   rewind message toggles (the engine has neither element).
 - **Engine wording kept.** The outpost and hub prompts, the locked prompt's

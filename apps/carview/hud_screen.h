@@ -22,6 +22,7 @@
 namespace carview {
 
 struct DriveHud;
+struct GpsHud;
 struct RaceHud;
 struct SkillChainHud;
 struct WorldMarkerHud;
@@ -98,6 +99,25 @@ std::string event_name_without_sponsor(std::string name, std::string_view sponso
 // bar with the reason when the car is not eligible).
 bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, float s);
 bool hud_prompt_available();
+
+// --- The route's next turn (DirectionArrows) -------------------------------
+
+// A cell of DIRECTION_ARROWS (six across: 0 ahead, 1 bear right, 2 turn
+// right, 3 sharp right, 4 U-turn left, 5 the destination) and whether it is
+// drawn mirrored (a left turn from the right-hand cells).
+struct DirectionArrowCell {
+  int cell = 0;
+  bool mirror = false;
+};
+inline constexpr int kDirectionArrowCells = 6;
+// The cell for a GpsHud::turn_kind (traffic::GpsTurnKind).
+DirectionArrowCell direction_arrow_cell(int turn_kind);
+// The route's next turn at the top centre: DirectionArrows' dark box
+// (DIRECTIONARROWBG) and the turn's DIRECTION_ARROWS cell, as
+// 16_race_hud_orig.png shows a hairpin. TEXT_JUNCTION stays empty and a
+// recalculating route shows nothing (Q153). False when the scene or its
+// nodes are missing.
+bool draw_hud_direction_arrow(ui::List& l, const GpsHud& gps, float w, float h, float s);
 
 // The start (I_321_Go): the original shows no count on screen (the start
 // gantry's LEDs count 0:05..0:01, world.frag on the race clock); at the

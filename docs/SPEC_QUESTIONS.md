@@ -3459,6 +3459,22 @@ own).
 Needed: a capture after A on an event's ticket, and one of X on a
 street-race hub.
 
+## Q153 (HUD-04, HUD-00, not blocking): the route arrow's text, timing and race use
+
+A route's next turn now draws `947_HUD`'s `DirectionArrows` (the
+`DIRECTIONARROWBG` box and the turn's `DIRECTION_ARROWS` cell) where
+`16_race_hud_orig.png` shows a hairpin in a race, in place of the engine's
+turn banner. Not known: what `TEXT_JUNCTION` (horizon_d 13, 56 px under
+the box) says (a distance, a road name, or nothing on PC), so it stays
+empty; how far ahead of a turn the arrow shows and how it fades in (the
+box rests at alpha 0); whether a recalculating route shows anything (the
+engine shows nothing); and which corners get an arrow in a race, so the
+race's corner arrows are not drawn. The minimap's `Details/TEXT_DISTANCE`
+with `SATNAVDEST` (the distance to the destination) is not bound either.
+
+Needed: a free-roam capture with a route set, approaching a junction, and
+the rule the race uses to pick its corners.
+
 ## Q155 (INTRO-13, VIS-03, not blocking): what skips a movie
 
 The boot splashes skip on a B tap in the recorded title steps, and the
