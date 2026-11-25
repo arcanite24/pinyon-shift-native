@@ -239,7 +239,7 @@ void DriveSession::map_screen_fill() {
         for (size_t i = 0; i < app.collectibles.barns.size() && p.kind == MapPopupKind::kNone; ++i) {
           const auto& b = app.collectibles.barns[i];
           const int st = i < app.progress.barns.size() ? app.progress.barns[i].status : freeroam::kBarnNotSpawned;
-          if (st != freeroam::kBarnFound && !reveal) continue;
+          if (!freeroam::barn_discovered(st) && !reveal) continue;
           const auto c = to_canvas(b.at.x, b.at.z);
           if (!near(c)) continue;
           p.kind = MapPopupKind::kSimple;
