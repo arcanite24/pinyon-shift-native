@@ -227,6 +227,7 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                 } else if (idx == 3) {  // SETTINGS
                   settings_page.load(read_settings(settings_path(), nullptr));
                   settings_page.open();
+                  options_page = carview::OptionsPage::kNone;  // the engine's page, not an option page
                 } else if (idx == 4) {  // QUIT
                   running = false;
                 }

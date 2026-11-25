@@ -349,8 +349,9 @@ flow files) as plain steps, with the timings measured on the captures;
   (Assists.str, InGame.str), the pink bar on the selected row, the row's
   description, DIFFICULTY's TOTAL RACE BONUS, and A SAVE, B CANCEL (the
   rows as they were when the page opened), Y RESET TO DEFAULT (the page's
-  rows only). The engine's other rows (STABILITY CONTROL, its HUD extras)
-  stay on its own pages, behind OPTIONS's X ENGINE SETTINGS.
+  rows only; GAME DIFFICULTY then follows the assists it reset). The
+  engine's other rows (STABILITY CONTROL, its HUD extras) stay on its own
+  pages, behind OPTIONS's X ENGINE SETTINGS.
 - **Popups.** `draw_message_popup` draws `H_MESSAGE_POPUP` with a title, a
   wrapped message and its own help bar (STAY IN CAR, and the garage's
   COLLECT CAR, NOT READY, NOT DISCOVERED and CAN'T SELL BARN FIND).

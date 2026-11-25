@@ -2875,6 +2875,6 @@ Still open:
   CUSTOM; the engine's preset steps EASY, MEDIUM, HARD, EXPERT and shows
   CUSTOM, with no PRO.
 - The defaults RESET TO DEFAULT restores (the engine uses its rows'
-  defaults).
+  defaults, and GAME DIFFICULTY follows the reset assists).
 - OPPONENT DIFFICULTY's values (the capture shows MEDIUM; AIDiff.str has
   EASY, NORMAL, HARD).

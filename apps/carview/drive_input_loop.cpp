@@ -156,6 +156,7 @@ void DriveSession::poll_sdl_events() {
               } else if (sc == carview::PlatformShortcut::kSettings) {
                 settings_page.load(read_settings(settings_path(), nullptr));
                 settings_page.open();
+                options_page = carview::OptionsPage::kNone;  // the engine's page, not an option page
                 settings_live_overlay = true;
                 app.audio_host.trigger_ui(audio::UiCue::kMenuOpen);
                 continue;
@@ -320,6 +321,7 @@ void DriveSession::poll_sdl_events() {
                 } else {
                   settings_page.load(read_settings(settings_path(), nullptr));
                   settings_page.open();
+                  options_page = carview::OptionsPage::kNone;  // the engine's page, not an option page
                   settings_live_overlay = true;
                 }
                 app.audio_host.trigger_ui(audio::UiCue::kMenuOpen);
