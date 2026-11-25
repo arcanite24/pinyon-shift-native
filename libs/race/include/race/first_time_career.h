@@ -187,11 +187,13 @@ class FirstTimeCareer {
   static constexpr std::array<double, 3> kViperStart = {-1361.97, 47.32, 1881.99};
   static constexpr double kViperHeading = 94.07;
   static constexpr int kInitialDriveRoute = 170;
-  // CSetDestForInitialDrive's three points: the sat-nav goes through the
-  // first two to the last, near the diner.
+  // CSetDestForInitialDrive's three points: the sat-nav goes through two
+  // to the last, near the diner. In route order (interim, Q66): from the
+  // opening's road CO-20 passes (1552, 1436) about 490 m before
+  // (1881, 1077); the other order sends the car there and back.
   static constexpr std::array<std::array<double, 3>, 3> kInitialDrivePoints = {{
-      {1881.06, 153.76, 1076.59},
       {1552.28, 168.99, 1435.91},
+      {1881.06, 153.76, 1076.59},
       {1576.62, 119.08, -1839.37},
   }};
   static constexpr std::array<double, 3> kInitialDriveDestination = kInitialDrivePoints[2];
