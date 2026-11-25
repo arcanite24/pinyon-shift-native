@@ -9,6 +9,7 @@
 
 #include "drive_session.h"
 #include "freeroam/fast_travel.h"
+#include "hud_screen.h"
 
 namespace carview {
 namespace {
@@ -208,9 +209,13 @@ void DriveSession::map_screen_fill() {
         p.title = m.title;
         break;
     }
-    // X on a destination: the fee.
+    // X on a destination: the fee (FAST TRAVEL (0 Cr) at a festival site,
+    // map_popup_garage_orig.png); on the site the player is at, X enters
+    // it as in the world (Q192).
     int64_t cost = 0;
-    if (map_travel_quote(m, cost))
+    if (map_marker_is_here(m))
+      x_label = carview::text_of(carview::hud_text::kEnterNow);
+    else if (map_travel_quote(m, cost))
       x_label = format1(text_of(map_text::kFastTravelButton), format1(text_of(map_text::kCredits), thousands(cost)));
   } else {
     // The player (their name over the arrow, map_open_orig.png), then a
@@ -302,6 +307,11 @@ bool DriveSession::map_travel_quote(const MapMarker& m, int64_t& cost) {
   if (!q.eligible()) return false;
   cost = q.cost;
   return true;
+}
+
+bool DriveSession::map_marker_is_here(const MapMarker& m) const {
+  return m.kind == MapMarker::kFestivalSite && !app.race && active_trigger.kind == carview::WorldTrigger::kFestivalSite &&
+         active_trigger.in_range && active_trigger.site && int(active_trigger.site->kind) == m.site_or_hub;
 }
 
 int64_t DriveSession::outpost_travel_fee(const std::string& outpost_id) {
@@ -477,6 +487,12 @@ bool DriveSession::map_screen_event(const SDL_Event& e) {
     return true;
   }
   if (k == Key::kX) {
+    if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size() &&
+        map_marker_is_here(cached_map_markers[size_t(map_selected_marker)])) {
+      close_map();
+      activate_world_trigger();
+      return true;
+    }
     map_fast_travel_request();
     if (map_dialog != MapDialog::kNone) {
       map_dirty = true;
