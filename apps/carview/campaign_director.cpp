@@ -59,7 +59,14 @@ void CampaignDirector::configure(const std::filesystem::path& game_root, std::st
   skip_intro_movies_ = skip_intro_movies;
 }
 
-void CampaignDirector::load_from_save(const drive::DriveSave& save) {
+void CampaignDirector::load_from_save(const drive::DriveSave& in, int popularity_rank) {
+  drive::DriveSave seeded;
+  const bool from_profile = in.owned_garage;
+  if (from_profile) {
+    seeded = in;
+    race::seed_imported_campaign(seeded, popularity_rank);
+  }
+  const drive::DriveSave& save = from_profile ? seeded : in;
   race::CampaignSaveState st;
   st.campaign_stage = save.campaign_stage;
   st.completed_cutscenes = save.completed_cutscenes;

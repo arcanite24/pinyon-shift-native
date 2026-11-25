@@ -879,7 +879,8 @@ void DriveSession::run_window_loop() {
                                : std::max(0, app.wristbands.level_index(app.career.wristband_points)));
                 app.max_skills_car = disk_save.max_skills_car;
                 app.treasure_map_setting = disk_save.treasure_map;
-                app.campaign.load_from_save(disk_save);
+                app.campaign.load_from_save(
+                    disk_save, app.have_skills_data ? app.skills_data.rank_for_points(disk_save.popularity_points) : 0);
                 if (disk_save.tod_sec >= 0.0 && disk_save.tod_sec < 86400.0) app.tod_clock.tod_sec = disk_save.tod_sec;
                 app.outpost_progress.discovered_outposts.clear();
                 app.outpost_progress.discovered_outposts.insert(disk_save.discovered_outposts.begin(),

@@ -23,6 +23,7 @@
 #include "garage/garage.h"
 #include "profile/drive_save.h"
 #include "profile/profile.h"
+#include "profile/xenia_import.h"
 #include "race/campaign_flow.h"
 #include "race/rewards.h"
 
@@ -182,6 +183,9 @@ void test_sponsorship_codec() {
   CHECK(f.popularity_points == 1689100 && f.challenges.size() == 15);
   CHECK(f.find("Fame")->tiers_claimed == 5 && f.find("King")->tiers_claimed == 1);
   CHECK(!profile::decode_sponsorship_state(std::vector<uint8_t>{1, 2, 3}, f));
+  // A layout the reader does not know is kept as is.
+  const std::vector<uint8_t> odd = {1, 2, 3};
+  CHECK(profile::encode_sponsorship_state(odd, up) == odd);
 }
 
 // ---- 2. Import: the real Main fields and SponsorshipState.
@@ -384,17 +388,73 @@ void test_export_round_trip() {
   CHECK(!profile::find(fb.body.fields, "Main/Popularity") && !profile::find(fb.body.fields, "Main/DriverXP"));
 }
 
-// ---- 7. The rank a popularity reaches gates the showcases (Fame ladder).
-void test_rank_from_points() {
+// ---- 7. The rank a popularity reaches gates the showcases (Fame ladder),
+// and the Fame tiers already claimed are not paid again.
+freeroam::SkillsData synthetic_ladder() {
   freeroam::SkillsData sk;
   // A ladder of 249 targets like Fame.xml's shape: rank r at (250 - r) * 10,000.
   for (int r = 249; r >= 1; --r) sk.fame_levels.push_back({r, double(250 - r) * 10000.0, "", ""});
+  for (int req : {225, 200, 175, 150, 125, 100, 75, 50, 25, 1}) sk.fame_tiers.push_back({req, 5000});
+  return sk;
+}
+
+size_t fame_payouts(const std::vector<freeroam::SkillEvent>& evs) {
+  return size_t(std::count_if(evs.begin(), evs.end(), [](const freeroam::SkillEvent& e) {
+    return e.kind == freeroam::SkillEvent::kFameSponsor;
+  }));
+}
+
+void test_rank_from_points() {
+  const freeroam::SkillsData sk = synthetic_ladder();
   CHECK(sk.rank_for_points(0) == 250);
   CHECK(sk.rank_for_points(1350000) == 115);
   race::CampaignImportInputs in;
   in.popularity_rank = sk.rank_for_points(1350000);
   const auto st = race::infer_campaign_state(in);
   CHECK(st.unlocked_showcases.size() == 6);
+  // Rank 115 with its 5 tiers claimed: the next rank-up pays nothing.
+  freeroam::SkillTracker kept(sk, 1355000.0, 5);
+  const auto evs = kept.add_popularity(10000.0, 1.0);
+  CHECK(kept.popularity_rank() == 114 && fame_payouts(evs) == 0 && kept.fame_rewards_claimed() == 5);
+  // With the tiers lost (the old import), the same rank-up re-pays all five.
+  freeroam::SkillTracker lost(sk, 1355000.0, 0);
+  CHECK(fame_payouts(lost.add_popularity(10000.0, 1.0)) == 5);
+}
+
+// ---- 8. The in-app import writes save.txt; its reload rebuilds the mirror.
+void test_import_run_then_reload() {
+  const fs::path src = scratch("run_src");
+  const auto spons = sponsorship_payload(1689100, 26.79f, {{"Drift", 10, 800}, {"Fame", 8, 0}});
+  write_export(src, build_body(12580, 6, 0, 8, spons), {{167, 1}, {169, 1}, {79, 1}}, {101, 59});
+  const fs::path saves = scratch("run_saves");
+  profile::import::Options opts;
+  opts.save_dir = saves;
+  const auto res = profile::import::run(src, opts);
+  CHECK(res.ok);
+  drive::DriveSave disk;
+  std::string err;
+  CHECK(drive::read_save(saves / "save.txt", disk, &err));
+  CHECK(disk.owned_garage && disk.popularity_points == 1689100.0 && disk.fame_rewards_claimed == 8);
+  CHECK(disk.collected_wristband == 6 && disk.intro_completed && disk.level == 1);
+  CHECK(disk.sponsors.size() == 1 && disk.sponsors[0].id == "Drift" && disk.sponsors[0].claimed == 10);
+  // What CampaignDirector::load_from_save does for an owned_garage save.
+  const int rank = synthetic_ladder().rank_for_points(1689100.0);
+  race::seed_imported_campaign(disk, rank);
+  CHECK(disk.finale_complete && disk.unlocked_bosses.size() == 7);
+  race::CampaignFlow flow;
+  race::CampaignSaveState st;
+  st.campaign_stage = disk.campaign_stage, st.completed_cutscenes = disk.completed_cutscenes;
+  st.heard_dialogs = disk.heard_dialogs, st.unlocked_bosses = disk.unlocked_bosses;
+  st.unlocked_showcases = disk.unlocked_showcases, st.finale_complete = disk.finale_complete;
+  flow.load_from(st);
+  flow.on_wristband_points_changed(disk.wristband_points, disk.collected_wristband);
+  flow.on_popularity_rank_changed(rank + 1, rank);
+  CHECK(flow.finale_complete() && pending_dialog(flow) == 0);
+  // Seeding twice changes nothing (every load path seeds).
+  drive::DriveSave again = disk;
+  race::seed_imported_campaign(again, rank);
+  CHECK(again.heard_dialogs == disk.heard_dialogs && again.unlocked_showcases == disk.unlocked_showcases);
+  CHECK(again.unlocked_bosses == disk.unlocked_bosses && again.completed_cutscenes == disk.completed_cutscenes);
 }
 
 }  // namespace
@@ -407,6 +467,7 @@ int main() {
   test_driver_level();
   test_export_round_trip();
   test_rank_from_points();
+  test_import_run_then_reload();
   if (g_failures) {
     std::printf("save_import_tests: %d failure(s)\n", g_failures);
     return 1;

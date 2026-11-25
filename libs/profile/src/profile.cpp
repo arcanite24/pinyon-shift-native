@@ -462,7 +462,11 @@ std::vector<uint8_t> encode_sponsorship_state(std::span<const uint8_t> payload, 
   uint32_t points = 0;
   std::vector<SponsorChildSpan> children;
   std::vector<uint8_t> out;
-  if (payload.empty() || !walk_sponsorship(payload, points, children)) {
+  if (!payload.empty() && !walk_sponsorship(payload, points, children)) {
+    // A layout this reader does not know (another version): kept as is.
+    return std::vector<uint8_t>(payload.begin(), payload.end());
+  }
+  if (payload.empty()) {
     // A fresh record: the reference saves' header words and every id.
     std::vector<SponsorshipChallenge> all;
     for (const char* id : kSponsorIds) {

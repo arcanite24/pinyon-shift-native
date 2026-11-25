@@ -151,7 +151,8 @@ uint32_t popularity_points_from_sponsorship_state(std::span<const uint8_t> paylo
 // replaced; children absent from `payload` are appended (count updated),
 // every other byte is kept. An empty `payload` gets a fresh record with the
 // header layout of the reference saves (word 0, f32 0, 2) and the 15
-// SponsorshipChallenges.xml ids.
+// SponsorshipChallenges.xml ids; a payload that does not parse (an unknown
+// layout) is returned unchanged.
 std::vector<uint8_t> encode_sponsorship_state(std::span<const uint8_t> payload, const SponsorshipState& st);
 
 // Everything M6 reads from a profile, with the parsed body kept whole.

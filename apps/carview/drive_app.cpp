@@ -640,14 +640,15 @@ bool DriveApp::init(int& exit_code) {
   // An original profile stores no campaign mirror: rebuild it from the
   // imported career (bosses, showcases by popularity rank, finale, the
   // one-shot lines already passed) so nothing replays or relocks (PROG-15).
-  if (imported) {
-    const int pop_rank = have_skills_data ? skills_data.rank_for_points(saved.popularity_points) : 0;
-    race::seed_imported_campaign(saved, pop_rank);
+  // CampaignDirector::load_from_save does the same on every load path.
+  const int saved_pop_rank =
+      have_saved && have_skills_data ? skills_data.rank_for_points(saved.popularity_points) : 0;
+  if (have_saved && saved.owned_garage) race::seed_imported_campaign(saved, saved_pop_rank);
+  if (imported)
     std::printf("import: popularity %.0f (rank %d), wristband %d collected, %zu bosses, %zu showcases, finale %s\n",
-                saved.popularity_points, pop_rank, saved.collected_wristband, saved.unlocked_bosses.size(),
+                saved.popularity_points, saved_pop_rank, saved.collected_wristband, saved.unlocked_bosses.size(),
                 saved.unlocked_showcases.size(), saved.finale_complete ? "won" : "open");
-  }
-  if (have_saved) campaign.load_from_save(saved);
+  if (have_saved) campaign.load_from_save(saved, saved_pop_rank);
   title_menu_phase = cli_title_menu;
   if (!race_event.empty()) {
     if (world_dir.empty()) {
