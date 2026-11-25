@@ -149,8 +149,10 @@ void DriveSession::rebuild_outpost_hub() {
           item.dest_x = other.spawn.x;
           item.dest_z = other.spawn.z;
           const double dist_m = std::hypot(item.dest_x - at.x, item.dest_z - at.z);
+          const int64_t ft_cost = app.outpost_progress.fast_travel_cost(app.outposts, other.id, app.fast_travel_tuning);
           const std::string dist_line =
-              "DISTANCE: " + carview::format_distance_unit(dist_m, app.metric_units) + "   •   UNLOCKED";
+              "DISTANCE: " + carview::format_distance_unit(dist_m, app.metric_units) + "   •   " +
+              (ft_cost <= 0 ? std::string("FREE FAST TRAVEL") : carview::thousands(ft_cost) + " CR");
           item.detail_title = other.display_name;
           item.detail_lines = {"FAST TRAVEL DIRECTLY TO THIS REGIONAL", "HORIZON OUTPOST", dist_line};
           outpost_hub_items.push_back(std::move(item));

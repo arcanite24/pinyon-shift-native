@@ -186,29 +186,6 @@ void merge_str_from_zip(fh1::Archive& zip, std::string_view entry, fh1::StringTa
   dest = std::move(merged);
 }
 
-std::pair<int64_t, int64_t> retail_pr_stunt_rewards(PrStuntKind kind, int outpost_index) {
-  // Retail FH1 PR Stunt reward tiers across early (1-3), mid (4-7), and late (8-10) Outposts.
-  const int tier = (outpost_index >= 8) ? 2 : (outpost_index >= 4 ? 1 : 0);
-  switch (kind) {
-    case PrStuntKind::kSpeed: {
-      static constexpr int64_t kCr[3] = {5000, 10000, 15000};
-      static constexpr int64_t kPop[3] = {5000, 10000, 15000};
-      return {kCr[tier], kPop[tier]};
-    }
-    case PrStuntKind::kSkill: {
-      static constexpr int64_t kCr[3] = {7500, 12500, 15000};
-      static constexpr int64_t kPop[3] = {7500, 12500, 15000};
-      return {kCr[tier], kPop[tier]};
-    }
-    case PrStuntKind::kPhoto: {
-      static constexpr int64_t kCr[3] = {5000, 7500, 10000};
-      static constexpr int64_t kPop[3] = {5000, 7500, 10000};
-      return {kCr[tier], kPop[tier]};
-    }
-  }
-  return {5000, 5000};
-}
-
 }  // namespace
 
 const Outpost* OutpostCatalog::find_outpost(std::string_view id) const {
@@ -402,14 +379,11 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
       s.instruction = resolve_str(mission_strings, desc->attr("instruction_text"));
     }
     const int num = parse_trailing_number(s.id);
-    const Outpost* parent_op = out.find_outpost(s.outpost_id);
-    const int op_idx = (parent_op && parent_op->index > 0) ? parent_op->index : num;
     s.title = cam_name.empty() ? ("Speed Trap #" + std::to_string(num) + " (" + std::to_string(int(std::lround(s.target_mph))) + " MPH)")
                                : cam_name;
     if (s.instruction.empty()) {
       s.instruction = "Hit " + std::to_string(int(std::lround(s.target_mph))) + " MPH through the speed trap";
     }
-    std::tie(s.reward_credits, s.reward_popularity) = retail_pr_stunt_rewards(s.kind, op_idx);
     out.stunts.push_back(std::move(s));
   }
 
@@ -453,13 +427,10 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
       if (s.instruction.empty()) s.instruction = resolve_str(mission_strings, desc->attr("instruction_to_skills"));
     }
     const int num = parse_trailing_number(s.id);
-    const Outpost* parent_op = out.find_outpost(s.outpost_id);
-    const int op_idx = (parent_op && parent_op->index > 0) ? parent_op->index : num;
     s.title = format_int_commas(s.target_points) + " PTS Challenge #" + std::to_string(num);
     if (s.instruction.empty()) {
       s.instruction = "Earn " + format_int_commas(s.target_points) + " skill points before time expires";
     }
-    std::tie(s.reward_credits, s.reward_popularity) = retail_pr_stunt_rewards(s.kind, op_idx);
     out.stunts.push_back(std::move(s));
   }
 
@@ -503,13 +474,10 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
       s.instruction = resolve_str(mission_strings, desc->attr("instruction_to_photo"));
     }
     const int num = parse_trailing_number(s.id);
-    const Outpost* parent_op = out.find_outpost(s.outpost_id);
-    const int op_idx = (parent_op && parent_op->index > 0) ? parent_op->index : num;
     s.title = location.empty() ? ("Landmark #" + std::to_string(num)) : location;
     if (s.instruction.empty()) {
       s.instruction = "Drive to the landmark and press [P] to take a photo";
     }
-    std::tie(s.reward_credits, s.reward_popularity) = retail_pr_stunt_rewards(s.kind, op_idx);
     out.stunts.push_back(std::move(s));
   }
 
@@ -706,6 +674,34 @@ bool OutpostProgress::is_outpost_fast_travel_free(const OutpostCatalog& catalog,
     if (!has_stunt(st->id)) return false;
   }
   return true;
+}
+
+namespace {
+std::vector<std::string> outpost_stunt_ids(const OutpostCatalog& catalog, const Outpost& op) {
+  if (!op.mission_ids.empty()) return op.mission_ids;
+  std::vector<std::string> ids;
+  for (const PrStunt* st : catalog.stunts_for_outpost(op.id)) ids.push_back(st->id);
+  return ids;
+}
+}  // namespace
+
+int OutpostProgress::stunts_at(const OutpostCatalog& catalog, std::string_view outpost_id) const {
+  const Outpost* op = catalog.find_outpost(outpost_id);
+  return op ? int(outpost_stunt_ids(catalog, *op).size()) : 0;
+}
+
+int OutpostProgress::completed_stunts_at(const OutpostCatalog& catalog, std::string_view outpost_id) const {
+  const Outpost* op = catalog.find_outpost(outpost_id);
+  if (!op) return 0;
+  int done = 0;
+  for (const auto& id : outpost_stunt_ids(catalog, *op)) done += is_stunt_completed(id) ? 1 : 0;
+  return done;
+}
+
+int64_t OutpostProgress::fast_travel_cost(const OutpostCatalog& catalog, std::string_view outpost_id,
+                                          const FastTravelTuning& tuning) const {
+  if (!catalog.find_outpost(outpost_id)) return -1;
+  return freeroam::fast_travel_cost(tuning, completed_stunts_at(catalog, outpost_id), stunts_at(catalog, outpost_id));
 }
 
 void PrStuntSession::start(const PrStunt& stunt, int64_t baseline_skill_points, int difficulty_index) {

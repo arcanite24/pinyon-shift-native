@@ -6,7 +6,8 @@ add_library(shift_freeroam STATIC
   src/outposts.cpp
   src/road_discovery.cpp
   src/skills.cpp
-  src/speed_zones.cpp)
+  src/speed_zones.cpp
+  src/tunables.cpp)
 target_include_directories(shift_freeroam PUBLIC include)
 target_link_libraries(shift_freeroam PUBLIC shift_traffic PRIVATE fh1data shift_audio)
 if(MSVC)

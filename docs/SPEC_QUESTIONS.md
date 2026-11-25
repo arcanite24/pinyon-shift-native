@@ -2240,3 +2240,49 @@ grandstand, tanoy and speakers.
 Needed: how the game resolves a placement's `eventName` to an event (a
 project or group prefix it strips, or a remap table), and where the
 regional banks are.
+
+## Q114 (PROG-07, not blocking): rewards for speed traps and speed zones
+
+PR stunts and outpost discovery pay nothing in the title: no credits, no
+popularity. Completing a stunt only raises the outpost's fast-travel
+discount. Both are decoded.
+
+For speed traps and speed zones the evidence is weaker:
+- the trap handler's own body makes no popularity call;
+- `HorizonFeats.xml` has no speed-trap skill;
+- the credits setter has no caller in trap code.
+
+But the handler's listener loop and two of its callees were not read, and
+the speed-zone (average speed) handlers were not opened. The engine now
+pays nothing for either (it used to pay +500 popularity on a new best and
++150 otherwise).
+
+Needed: whether a trap or zone result adds popularity or credits anywhere
+(a listener on the trap event, or the zone's completion path).
+
+## Q115 (PROG-08, not blocking): the star driver and the payout's early exits
+
+BEAT THE STAR pays `CareerWristbandLevels.NemesisBonus` of the event's
+`Level` when the event is a festival race (CareerEventStyle 1) and the
+player places strictly ahead of the star. Both conditions are decoded.
+
+What remains open:
+- **Who the star is.** The payout takes the first participant whose
+  driver object answers true to one virtual query, and that query's
+  function was not found. The grid builder reads `AIPlayers.Nemesis` for
+  each `EventParticipants` row and seats flagged drivers at
+  `Events.NemesisGridPosition`, so the engine takes the first
+  `AIPlayers.Nemesis` driver in the field as the star. This is inferred.
+- **The star's place.** The engine reads the star's running place when the
+  player crosses the line. The title probably reads the same field, but
+  this is not confirmed.
+- **Early exits.** The payout returns with nothing in two cases, and what
+  each one means is not known:
+  - a setup flag is set and a ratio of two player-car values reaches a
+    threshold;
+  - another setup flag is clear and a byte on the player object is set.
+
+  Neither one is the DNF check. The engine has neither exit.
+
+Needed: the virtual query's function, and what the two early exits stand
+for.

@@ -296,9 +296,9 @@ void test_r2_5_outpost_tiers_fast_travel_and_speed_camera_names() {
     check(sess.stunt().target_points == 22500 && std::fabs(sess.time_remaining_s() - 85.0) < 1e-6,
           "Skill PRStunt Hard uses exact XML hard attributes");
 
-    // Retail tiered rewards scale cleanly from early (Outpost 1) to late (Outpost 9).
-    check(sp1->reward_credits == 5000 && sp1->reward_popularity == 5000, "early Outpost Speed Stunt retail tier");
-    check(sp9->reward_credits == 15000 && sp9->reward_popularity == 15000, "late Outpost Speed Stunt retail tier");
+    // PR stunts pay nothing (the title only raises the fast-travel discount).
+    check(sp1->reward_credits == 0 && sp1->reward_popularity == 0, "early Outpost Speed Stunt pays nothing");
+    check(sp9->reward_credits == 0 && sp9->reward_popularity == 0, "late Outpost Speed Stunt pays nothing");
   }
 
   // 2. Free fast travel unlocks strictly once all 3 PR Stunts at an Outpost are completed.
@@ -315,6 +315,29 @@ void test_r2_5_outpost_tiers_fast_travel_and_speed_camera_names() {
   check(prog.is_outpost_fast_travel_free(cat, "GasStation_01"),
         "catalog string-id is_outpost_fast_travel_free true at 3/3 stunts");
   check(!prog.is_outpost_fast_travel_free(2), "other outposts remain paid");
+
+  // The fast-travel price over the outpost's completed stunts (disc tuning).
+  {
+    const freeroam::FastTravelTuning ft;
+    freeroam::OutpostProgress p2;
+    check(p2.stunts_at(cat, "GasStation_01") == 3, "outpost 1 has 3 PR stunts");
+    check(p2.fast_travel_cost(cat, "GasStation_01", ft) == 10000, "0/3 stunts: 10,000 CR");
+    p2.complete_stunt("speedstunt_01");
+    check(p2.fast_travel_cost(cat, "GasStation_01", ft) == 7500, "1/3 stunts: 7,500 CR");
+    p2.complete_stunt("prstunt_01");
+    check(p2.fast_travel_cost(cat, "GasStation_01", ft) == 5000, "2/3 stunts: 5,000 CR");
+    p2.complete_stunt("photoshoot_01");
+    check(p2.fast_travel_cost(cat, "GasStation_01", ft) == 0, "3/3 stunts: free");
+    check(p2.fast_travel_cost(cat, "NoSuchOutpost", ft) == -1, "unknown outpost: -1");
+    // The title's formula on other tuning: trunc of the discount, never below 0.
+    freeroam::FastTravelTuning odd;
+    odd.total_cost = 999;
+    odd.discount = {0.0, 0.333, 1.5, 0.75};
+    check(freeroam::fast_travel_cost(odd, 1, 3) == 999 - 332, "trunc(999 * 0.333) off");
+    check(freeroam::fast_travel_cost(odd, 2, 3) == 0, "a discount above 1 is free, not negative");
+    check(freeroam::fast_travel_cost(odd, 3, 3) == 0, "all stunts done: free");
+    check(freeroam::fast_travel_cost(odd, 3, 4) == 250, "3 of 4 stunts: Discount_3");
+  }
 
   // 3. Localized retail Speed Trap & Speed Zone names from List_SpeedCameras.str.
   const char* cam_xml = R"(<ActivityManager>

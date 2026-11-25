@@ -220,6 +220,10 @@ struct DriveApp : DriveConfig {
   freeroam::RoadDiscovery road_discovery;
   freeroam::OutpostCatalog outposts;
   freeroam::OutpostProgress outpost_progress;
+  // GlobalRegistry.xml Activities/Outposts (the fast-travel price) and
+  // Activities/BarnFinds; the disc's values until the registry loads.
+  freeroam::FastTravelTuning fast_travel_tuning;
+  freeroam::BarnFindTuning barn_tuning;
   freeroam::PrStuntSession pr_stunt_session;
   bool have_outposts = false;
   bool outposts_tried = false;

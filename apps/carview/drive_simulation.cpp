@@ -490,7 +490,8 @@ bool DriveSession::free_roam_step() {
             const int disc_idx = app.outpost_progress.check_discovery(app.outposts, at.x, at.z);
             if (disc_idx >= 0 && size_t(disc_idx) < app.outposts.outposts.size()) {
               const auto& op = app.outposts.outposts[size_t(disc_idx)];
-              apply_popularity_with_events(*this, 500.0);
+              // Discovery only unlocks the fast-travel destination: no
+              // credits or popularity in the original.
               const int dc = app.outpost_progress.discovered_count(app.outposts);
               popup = Popup::notify(NotifyKind::kOutpostDiscovered, vehicle.time());
               std::printf("t %.2f s: outpost %s discovered (%d/%zu)\n", vehicle.time(), op.display_name.c_str(), dc,
@@ -538,19 +539,21 @@ bool DriveSession::free_roam_step() {
               const auto st_state = app.pr_stunt_session.update(psu);
               if (st_state == freeroam::PrStuntState::kSucceeded) {
                 const auto& st = app.pr_stunt_session.stunt();
+                // A PR stunt pays nothing in the original (first time or
+                // repeat): completing it raises the outpost's fast-travel
+                // discount, which the success popup reports.
                 const bool first_time = app.outpost_progress.complete_stunt(st.id);
-                const int64_t raw_cr = first_time ? st.reward_credits : st.reward_credits / 4;
-                const int64_t cr = slice12.trainer.pacing.scale_credits(raw_cr);
-                const int64_t pop = first_time ? st.reward_popularity : st.reward_popularity / 4;
-                app.career.credits += cr;
-                app.career.total_winnings += cr;
-                apply_popularity_with_events(*this, double(pop));
                 const NotifyKind done = st.kind == freeroam::PrStuntKind::kSpeed   ? NotifyKind::kSpeedStuntDone
                                         : st.kind == freeroam::PrStuntKind::kPhoto ? NotifyKind::kPhotoShootDone
                                                                                    : NotifyKind::kSkillStuntDone;
-                popup = Popup::notify(done, vehicle.time(), {}, {"+" + carview::thousands(cr)});
-                std::printf("t %.2f s: %s +%lld Cr +%lld popularity\n", vehicle.time(), st.title.c_str(),
-                            static_cast<long long>(cr), static_cast<long long>(pop));
+                const int64_t ft_cost =
+                    app.outpost_progress.fast_travel_cost(app.outposts, st.outpost_id, app.fast_travel_tuning);
+                std::vector<std::string> done_lines;
+                if (ft_cost >= 0) done_lines.push_back("FAST TRAVEL " + (ft_cost == 0 ? std::string("FREE")
+                                                                                      : carview::thousands(ft_cost) + " CR"));
+                popup = Popup::notify(done, vehicle.time(), {}, done_lines);
+                std::printf("t %.2f s: %s done%s, fast travel %lld CR\n", vehicle.time(), st.title.c_str(),
+                            first_time ? "" : " (repeat)", static_cast<long long>(ft_cost));
                 app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
                 app.gps_nav.clear();
                 save_due = true;
@@ -1527,7 +1530,8 @@ bool DriveSession::step(const drive::Input& user_in) {
               if (ev.is_new_pb && app.legacy_fm4_progression && app.have_prog_tables) {
                 race::apply_progression_xp(app.career, 750, current_make_id(), 350, app.prog_tables);
               }
-              apply_popularity_with_events(*this, ev.is_new_pb ? 500.0 : 150.0);
+              // Speed traps and zones rank the speed on the leaderboards;
+              // no popularity is paid for them (probable, SPEC Q114).
               std::printf("speed activity: %s %.1f mph%s\n", ev.label.c_str(), ev.speed_mph,
                           ev.is_new_pb ? " (NEW PB!)" : "");
               save_due = true;

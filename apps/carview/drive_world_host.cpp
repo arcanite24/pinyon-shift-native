@@ -492,6 +492,14 @@ bool DriveWorldHost::open_world_and_car() {
           if (!app.outposts_tried) {
             app.outposts_tried = true;
             std::string owhy;
+            freeroam::Registry reg;
+            std::string rwhy;
+            if (freeroam::load_registry(groot_cached, reg, &rwhy)) {
+              app.fast_travel_tuning = freeroam::FastTravelTuning::from(reg);
+              app.barn_tuning = freeroam::BarnFindTuning::from(reg);
+            } else {
+              std::fprintf(stderr, "carview: note: no tunable registry: %s\n", rwhy.c_str());
+            }
             if (freeroam::load_outposts(groot_cached, app.outposts, &owhy)) {
               app.have_outposts = true;
               std::printf("outposts: %zu outposts (%d discovered), %zu PR stunts (%d completed)\n",
