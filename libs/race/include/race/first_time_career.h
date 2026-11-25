@@ -53,13 +53,17 @@ bool parse_ftc_stage(std::string_view name, FtcStage& out);
 int ftc_title_stage(FtcStage stage);
 
 // H_OPENING_TITLES' cards in order: Microsoft, Turn 10, Playground, the
-// Horizon logo. The scene's PLAY animation (33 s from ShowOpeningCredits)
-// keys each card four times (Q164). The alpha rises between the first two
-// keys, holds, and falls between the last two (the key values are not
-// decoded). Returns 0 outside a card's keys and for an unknown card.
+// Horizon logo. The scene's PLAY slide (33 s from ShowOpeningCredits) keys
+// each card's opacity curve four times (Q164; read from the curves,
+// docs/UI_SCENE_ANIMATION.md). The alpha rises between the first two keys,
+// holds, and falls between the last two: the curves' values are all 0, so
+// the ramp is inferred (Q186). Returns 0 outside a card's keys and for an
+// unknown card.
 inline constexpr int kOpeningTitleCards = 4;
 inline constexpr double kOpeningTitlesLength = 33.0;
 float opening_title_alpha(int card, double t);
+// The same ramp over any four key times (seconds), e.g. the scene's own.
+float opening_title_alpha(const std::array<double, 4>& keys, double t);
 
 // The presentation states the flow scripts (state_definitions.xml).
 enum class FtcFadeKind : uint8_t {

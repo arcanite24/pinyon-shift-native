@@ -81,15 +81,20 @@ int ftc_title_stage(FtcStage stage) {
 }
 
 float opening_title_alpha(int card, double t) {
-  // Seconds from ShowOpeningCredits: fade in, held, fade out (Q164).
-  static constexpr double kKeys[kOpeningTitleCards][4] = {
+  // Seconds from ShowOpeningCredits: fade in, held, fade out (Q164; the
+  // PLAY slide's opacity curves, H_OPENING_TITLES.bgf).
+  static constexpr std::array<double, 4> kKeys[kOpeningTitleCards] = {
       {4.5, 5.0, 8.0, 8.5},
       {12.0, 12.5, 15.5, 16.0},
-      {18.621, 19.121, 22.121, 22.633},
-      {28.165, 28.657, 31.665, 32.157},
+      {18.621, 19.121, 22.121, 22.621},
+      {28.165, 28.665, 31.665, 32.165},
   };
   if (card < 0 || card >= kOpeningTitleCards) return 0.0f;
-  const double* k = kKeys[card];
+  return opening_title_alpha(kKeys[card], t);
+}
+
+float opening_title_alpha(const std::array<double, 4>& k, double t) {
+  if (!(k[0] < k[1] && k[1] <= k[2] && k[2] < k[3])) return 0.0f;
   if (t <= k[0] || t >= k[3]) return 0.0f;
   if (t < k[1]) return float((t - k[0]) / (k[1] - k[0]));
   if (t <= k[2]) return 1.0f;

@@ -522,8 +522,18 @@ void test_opening_titles() {
         "Turn 10 from 12 s");
   check(race::opening_title_alpha(2, 20.0) == 1.0f && race::opening_title_alpha(3, 30.0) == 1.0f,
         "Playground, then the Horizon logo");
-  check(race::opening_title_alpha(3, 32.2) == 0.0f && 32.157 < race::kOpeningTitlesLength,
+  check(race::opening_title_alpha(3, 32.2) == 0.0f && 32.165 < race::kOpeningTitlesLength,
         "the logo leaves before the animation ends");
+  // The curves' times: Playground's last key 22.621 s, the logo's 28.665 s
+  // and 32.165 s.
+  check(race::opening_title_alpha(2, 22.62) > 0.0f && race::opening_title_alpha(2, 22.625) == 0.0f,
+        "Playground leaves at 22.621 s");
+  check(near(race::opening_title_alpha(3, 28.415), 0.5f) && near(race::opening_title_alpha(3, 31.915), 0.5f),
+        "the logo's ramps are half a second");
+  check(near(race::opening_title_alpha(std::array<double, 4>{1, 2, 3, 4}, 1.5), 0.5f) &&
+            race::opening_title_alpha(std::array<double, 4>{1, 2, 3, 4}, 2.5) == 1.0f &&
+            race::opening_title_alpha(std::array<double, 4>{4, 3, 2, 1}, 2.5) == 0.0f,
+        "the ramp over any four keys; out of order: none");
   check(race::opening_title_alpha(-1, 6.0) == 0.0f && race::opening_title_alpha(4, 6.0) == 0.0f,
         "unknown cards are hidden");
   for (double t = 0.0; t < race::kOpeningTitlesLength; t += 0.05) {

@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "fh1data/stringtables.h"
+#include "fh1data/ui_scene.h"
+#include "hud_scene.h"
 #include "ui4_chrome.h"
 
 namespace carview::ftc_ui {
@@ -106,15 +108,47 @@ void coloured_line(ui::List& l, float cx, float y, std::string_view text, ui::Te
 // timed by the scene's PLAY animation (race::opening_title_alpha, Q164).
 // Interim: the cards are centred and the shadow layers are not drawn; the
 // scene's placement is not read yet.
+// The cards' key times (seconds) from the scene's PLAY slide: each card
+// layer's enabled opacity curve. False without the scene or a card's curve.
+bool scene_card_keys(std::array<std::array<double, 4>, race::kOpeningTitleCards>& out) {
+  const fh1::UiScene* sc = ui_scene("H_OPENING_TITLES");
+  if (!sc || !sc->has_bgf || !sc->bgf.has_timeline) return false;
+  static constexpr const char* kLayers[] = {"_Microsoft", "_Turn10", "_Playground", "_Horizon"};
+  const auto& d = sc->bgf;
+  const int play = d.find_slide(0, "PLAY");
+  if (play < 0) return false;
+  for (int c = 0; c < race::kOpeningTitleCards; ++c) {
+    bool found = false;
+    for (const auto& tr : d.slides[size_t(play)].tracks) {
+      if (tr.item >= d.items.size()) continue;
+      const int oi = sc->find_object(d.items[tr.item].value);
+      if (oi < 0 || sc->objects[size_t(oi)].name != kLayers[c]) continue;
+      for (const auto& r : tr.refs) {
+        if (r.action || !r.enabled || r.index >= d.curves.size()) continue;
+        const auto& cv = d.curves[r.index];
+        if (cv.attr != fh1::ui_attr::kOpacity || cv.keys.size() != 4) continue;
+        for (size_t k = 0; k < 4; ++k) out[size_t(c)][k] = cv.keys[k].time_ms / 1000.0;
+        found = true;
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
 void draw_opening_titles(ui::List& l, double t, float w, float h) {
   static constexpr const char* kCards[] = {"OPENINGTITLES/TITLEMICROSOFT", "OPENINGTITLES/TITLETURN10",
                                            "OPENINGTITLES/TITLEPLAYGROUND", "OPENINGTITLES/HORIZONLOGO"};
   static_assert(std::size(kCards) == race::kOpeningTitleCards);
+  // The timing from the scene's own curves when it is there (the table in
+  // race::opening_title_alpha otherwise).
+  std::array<std::array<double, 4>, race::kOpeningTitleCards> keys{};
+  const bool from_scene = scene_card_keys(keys);
   int i = 0;
   float a = 0.0f;
   for (int c = 0; c < race::kOpeningTitleCards && a <= 0.0f; ++c) {
     i = c;
-    a = race::opening_title_alpha(c, t);
+    a = from_scene ? race::opening_title_alpha(keys[size_t(c)], t) : race::opening_title_alpha(c, t);
   }
   if (a <= 0.0f) return;
   std::array<float, 4> uv{};

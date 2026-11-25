@@ -414,7 +414,8 @@ if(SHIFT_BUILD_CARVIEW)
     ../apps/carview/audio_host.cpp
     ../apps/carview/fmv_player.cpp)
   target_include_directories(campaign_flow_tests PRIVATE ../apps/carview)
-  target_link_libraries(campaign_flow_tests PRIVATE carview_render shift_race shift_cutscene shift_audio shift_drive shift_cars)
+  target_link_libraries(campaign_flow_tests PRIVATE carview_render carview_hud shift_race shift_cutscene shift_audio shift_drive
+                        shift_cars)
   add_test(NAME campaign_flow_tests COMMAND campaign_flow_tests)
 
   add_executable(ui4_cjk_l10n_tests ui4_cjk_l10n_tests.cpp
