@@ -532,6 +532,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           race_hud.screen = race_screens.screen();
           race_hud.screen_t = race_screens.elapsed();
           race_hud.stay_car = app.event_car_name;
+          race_hud.rival_name = race_rival_name;
+          race_hud.rival_reward = race_rival_reward;
           if (const auto* cev = app.have_career_catalog ? app.career_catalog.find_event(app.race_event) : nullptr) {
             race_hud.title = race::resolve_event_display_title(cev);
             race_hud.event_type = carview::event_type_text(cev->style);

@@ -30,6 +30,7 @@ race_flow::Kind race_kind(const DriveApp& app) {
 
 void DriveSession::open_event_summary(const race::CareerEvent& ev) {
   event_car_selected = 0;
+  event_car_specs = true;
   event_car_media.clear();
   event_summary_hud = event_ticket(ev, &event_cars);
   summary_event = &ev;
@@ -41,20 +42,20 @@ void DriveSession::open_event_summary(const race::CareerEvent& ev) {
 }
 
 EventSummaryHud DriveSession::event_ticket(const race::CareerEvent& ev,
-                                           std::vector<std::pair<std::string, std::string>>* cars) {
+                                           std::vector<EventCar>* cars) {
   int64_t cid = 0;
   int clid = 2;
   current_car_info(cid, clid);
   const auto names = app.class_name_list();
   const auto elig = app.career_catalog.check_eligibility(ev, cid, clid, names, slice12.trainer.effective_any_car());
   // Car select lists the garage's eligible cars (ShowRegisterEventCarScreen).
-  std::vector<std::pair<std::string, std::string>> eligible_cars;
+  std::vector<EventCar> eligible_cars;
   if (!elig.eligible && app.have_garage) {
     for (const auto& gc : app.career_garage.cars) {
       const int gcls = app.class_bands.empty() ? gc.class_id : garage::class_of(gc.performance_index, app.class_bands);
       if (!app.career_catalog.check_eligibility(ev, gc.car_id, gcls, names).eligible) continue;
       if (auto it = app.baked_ids.find(gc.car_id); it != app.baked_ids.end())
-        eligible_cars.push_back({carview::car_name(it->second), it->second});
+        eligible_cars.push_back({carview::car_name(it->second), it->second, gc.car_id, gc.performance_index});
     }
   }
 
@@ -114,7 +115,7 @@ void DriveSession::event_summary_accept() {
       return;
     case S::kCarSelect:
       if (event_cars.empty()) return;
-      event_car_media = event_cars[size_t(std::clamp(event_car_selected, 0, int(event_cars.size()) - 1))].second;
+      event_car_media = event_cars[size_t(std::clamp(event_car_selected, 0, int(event_cars.size()) - 1))].media;
       app.audio_host.trigger_ui(audio::UiCue::kAccept);
       entry_screens.next();
       return;
@@ -144,6 +145,12 @@ void DriveSession::event_summary_move(int by) {
 }
 
 void DriveSession::event_summary_restrictions() {
+  if (entry_screens.screen() == S::kCarSelect) {
+    // Y TOGGLE: the selected car's panel.
+    event_car_specs = !event_car_specs;
+    app.audio_host.trigger_ui(audio::UiCue::kMove);
+    return;
+  }
   if (entry_screens.screen() != S::kEventSummary) return;
   summary_restrictions = !summary_restrictions;
   app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -167,8 +174,28 @@ void DriveSession::update_race_screens(double dt) {
   event_summary_hud.t = vehicle.time() - summary_opened_at;
   event_summary_hud.restrictions_view = summary_restrictions;
   event_summary_hud.cars.clear();
-  for (const auto& c : event_cars) event_summary_hud.cars.push_back(c.first);
+  for (const auto& c : event_cars) event_summary_hud.cars.push_back(c.name);
   event_summary_hud.car_selected = event_car_selected;
+  // Car select on the car list (108_C_BUY_CARSELECT, 11_car_select_orig.png).
+  if (entry_screens.screen() == S::kCarSelect) {
+    namespace t = carview::car_list_text;
+    CarListHud& cl = event_summary_hud.car_list;
+    cl = CarListHud{};
+    cl.title = text_of(t::kCarSelect);
+    for (const auto& c : event_cars) {
+      CarTile tile;
+      tile.car_id = c.car_id;
+      cl.tiles.push_back(std::move(tile));
+    }
+    cl.selected = std::clamp(event_car_selected, 0, std::max(0, int(event_cars.size()) - 1));
+    if (!event_cars.empty() && event_car_specs) {
+      const auto& c = event_cars[size_t(cl.selected)];
+      cl.details = car_list_details(c.car_id, c.raw_pi);
+    }
+    // interim (SPEC_QUESTIONS Q97): the original's X CAR LIST and SEARCH are
+    // not built; A, B and Y TOGGLE are.
+    cl.prompts = {{"A", text_of(t::kSelect)}, {"B", text_of(t::kBack)}, {"Y", text_of(t::kToggle)}};
+  }
   event_summary_hud.fade =
       entry_screens.screen() == S::kEntryFade ? std::clamp(entry_screens.elapsed() / race_flow::timing::kEntryFade, 0.0, 1.0)
                                               : 0.0;
@@ -210,9 +237,10 @@ void DriveSession::grid_menu_accept() {
       }
       return;
     case GridRow::kDifficulty:
-      // interim (SPEC_QUESTIONS Q97): the original opens its difficulty
-      // screen; the engine steps the difficulty here.
-      cycle_difficulty(+1);
+      // The original's difficulty screen (300_I_OPT_ASSISTS_DIFFICULTY):
+      // A SAVE, B CANCEL back to the grid; its rows reach the race live.
+      app.audio_host.trigger_ui(audio::UiCue::kAccept);
+      open_options_page(carview::OptionsPage::kDifficulty);
       return;
     case GridRow::kOptions:
       app.audio_host.trigger_ui(audio::UiCue::kAccept);

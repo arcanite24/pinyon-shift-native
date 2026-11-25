@@ -344,16 +344,12 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 const SDL_Keycode k = e.key.key;
                 if (k == SDLK_UP || k == SDLK_W) move(-1);
                 else if (k == SDLK_DOWN || k == SDLK_S) move(+1);
-                else if (on_menu && grid_menu_selected == 1 && (k == SDLK_LEFT || k == SDLK_A)) cycle_difficulty(-1);
-                else if (on_menu && grid_menu_selected == 1 && (k == SDLK_RIGHT || k == SDLK_D)) cycle_difficulty(+1);
                 else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) accept();
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) move(-1);
                 else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) move(+1);
-                else if (on_menu && grid_menu_selected == 1 && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) cycle_difficulty(-1);
-                else if (on_menu && grid_menu_selected == 1 && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) cycle_difficulty(+1);
                 else if (b == SDL_GAMEPAD_BUTTON_SOUTH) accept();
               }
               if (on_menu && e.type == SDL_EVENT_MOUSE_MOTION) {
@@ -791,16 +787,16 @@ bool DriveSession::handle_events_and_outpost_event(const SDL_Event& e) {
                 if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) event_summary_accept();
                 else if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE) event_summary_back();
                 else if (k == SDLK_Y || k == SDLK_TAB) event_summary_restrictions();
-                else if (k == SDLK_UP || k == SDLK_W) event_summary_move(-1);
-                else if (k == SDLK_DOWN || k == SDLK_S) event_summary_move(+1);
+                else if (k == SDLK_UP || k == SDLK_W || k == SDLK_LEFT || k == SDLK_A) event_summary_move(-1);
+                else if (k == SDLK_DOWN || k == SDLK_S || k == SDLK_RIGHT || k == SDLK_D) event_summary_move(+1);
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) event_summary_accept();
                 else if (b == SDL_GAMEPAD_BUTTON_EAST) event_summary_back();
                 else if (b == SDL_GAMEPAD_BUTTON_NORTH) event_summary_restrictions();
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) event_summary_move(-1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) event_summary_move(+1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP || b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) event_summary_move(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN || b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) event_summary_move(+1);
               }
               if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                 if (e.button.button == SDL_BUTTON_LEFT) event_summary_accept();

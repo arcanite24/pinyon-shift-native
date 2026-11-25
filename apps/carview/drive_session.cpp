@@ -871,6 +871,21 @@ void DriveSession::init_session() {
         else if (const auto* ev = app.career_catalog.find_event(app.race_event))
           pf.kind = race_flow::kind_of_style(ev->style);
         pf.restart = app.race_restart;
+        // prerace_nemesis: a star driver (AIPlayers.Nemesis) in the field;
+        // the callout names the first and its BEAT THE STAR reward.
+        race_rival_name.clear();
+        race_rival_reward = 0;
+        {
+          const auto& ev = app.race->event();
+          const size_t field_ai = std::min(ev.opponents.size(), app.race->player_index());
+          for (size_t k = 0; k < field_ai; ++k) {
+            if (!ev.opponents[k].nemesis) continue;
+            pf.nemesis_in_event = true;
+            race_rival_name = carview::game_text(ev.opponents[k].driver);
+            if (ev.style == 1) race_rival_reward = app.wristbands.nemesis_bonus_for(ev.level);
+            break;
+          }
+        }
         race_screens.start(race_flow::pre_steps(pf));
         grid_menu_selected = 0;
       }

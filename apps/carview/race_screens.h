@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include "car_list_screen.h"
 #include "race_flow.h"
 #include "scene_screen.h"
 #include "ui4_chrome.h"
@@ -79,6 +80,7 @@ inline constexpr StringRef kFinished{"InGame", {}, 0x7709, "FINISHED"};
 inline constexpr StringRef kCashReward{"ScreenTitles", {}, 0x6AF5, "CASH REWARD"};
 inline constexpr StringRef kFinishedPlace{"OnlineRewards", {}, 0x8D0D, "FINISHED {0}"};
 inline constexpr StringRef kMileageBonus{"OnlineRewards", {}, 0x3FA3, "MILEAGE BONUS"};
+inline constexpr StringRef kBeatTheStar{"OnlineRewards", "IDS_Nemesis_Bonus_Heading", 0, "BEAT THE STAR"};
 inline constexpr StringRef kDifficultyBonus{"OnlineRewards", {}, 0x7EFF, "DIFFICULTY & ASSISTS BONUS"};
 inline constexpr StringRef kTotal{"InGame", {}, 0xE27D, "TOTAL"};
 inline constexpr StringRef kBalance{"OnlineRewards", {}, 0x7130, "BALANCE:"};
@@ -136,6 +138,7 @@ struct EventSummaryHud {
   race_flow::Screen screen = race_flow::Screen::kEventSummary;  // or kCarSelect / kEntryFade
   std::vector<std::string> cars;  // car select's rows
   int car_selected = 0;
+  CarListHud car_list;  // car select on 108_C_BUY_CARSELECT
   double fade = 0;  // the entry fade's black (0..1)
 };
 

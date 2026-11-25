@@ -451,7 +451,7 @@ int main() {
           &kHeadlineRace, &kStarShowdown, &kCircuit, &kPointToPoint, &kAsphalt, &kMixedSurface, &kOffRoad,
           &kTwoWords, &kPointsAvailable, &kEntryRestrictions, &kClassOrBelow, &kCarProvided, &kBestFinish, &kBeat,
           &kReward, &kCurrentCarEligible, &kGarageCarsEligible, &kNoCarsEligible, &kPts, &kNoRestrictions,
-          &kCredits, &kFinished, &kCashReward, &kFinishedPlace, &kMileageBonus, &kDifficultyBonus, &kTotal,
+          &kCredits, &kFinished, &kCashReward, &kFinishedPlace, &kMileageBonus, &kBeatTheStar, &kDifficultyBonus, &kTotal,
           &kBalance, &kPlace, &kPointsEarned, &kPointsN, &kCollectIt, &kWristbandUnlocked, &kPointsToNext,
           &kPointToNext, &kPleaseWait, &kYouWonACar, &kStayInCar, &kStayInCarQ, &kCarSelectTitle})
       check_ref(*r, "race screen " + std::string(r->fallback));

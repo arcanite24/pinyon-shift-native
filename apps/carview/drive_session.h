@@ -451,12 +451,23 @@ struct DriveSession {
   // (race_screens).
   race_flow::Flow entry_screens;
   race_flow::Flow race_screens;
+  // The pre-race rival callout (prerace_nemesis): the field's first star
+  // driver (AIPlayers.Nemesis) and its BEAT THE STAR reward.
+  std::string race_rival_name;
+  int64_t race_rival_reward = 0;
   const race::CareerEvent* summary_event = nullptr;
   bool summary_restrictions = false;
   EventSummaryHud event_summary_hud;
   double summary_opened_at = 0;
-  std::vector<std::pair<std::string, std::string>> event_cars;  // car select: (name, media)
+  // Car select (108_C_BUY_CARSELECT): the garage's cars that qualify.
+  struct EventCar {
+    std::string name, media;
+    int64_t car_id = 0;
+    double raw_pi = -1;
+  };
+  std::vector<EventCar> event_cars;
   int event_car_selected = 0;
+  bool event_car_specs = true;  // Y TOGGLE: the selected car's panel
   std::string event_car_media;  // the car chosen for the event
   bool stay_in_car_pending = false;
   std::string stay_in_car_name, stay_in_car_media;  double title_orbit_time = 0.0;
@@ -694,7 +705,7 @@ struct DriveSession {
   // The event's ticket (H_EVENT_SUMMARY's values) for the current car; with
   // `cars`, the garage's cars that can enter it when the current one cannot.
   EventSummaryHud event_ticket(const race::CareerEvent& ev,
-                               std::vector<std::pair<std::string, std::string>>* cars = nullptr);
+                               std::vector<EventCar>* cars = nullptr);
   void close_event_summary();
   void event_summary_accept();
   void event_summary_back();
