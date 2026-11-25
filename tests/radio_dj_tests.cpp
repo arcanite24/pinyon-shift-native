@@ -126,7 +126,7 @@ std::vector<RadioDjCue> engine_literal_cues() {
   std::vector<RadioDjCue> out;
   out.push_back({RadioChannel::kImmediate, audio::kViperOpeningRadioEvent});
   for (const auto& wb : race::wristband_milestones())
-    if (wb.radio_event && *wb.radio_event) out.push_back({RadioChannel::kImmediate, wb.radio_event});
+    if (!wb.radio_event.empty()) out.push_back({RadioChannel::kImmediate, wb.radio_event});
   for (auto st : {carview::StoryStage::kBootSplash, carview::StoryStage::kOpeningFmv, carview::StoryStage::kViperDrive,
                   carview::StoryStage::kCorradoQualify, carview::StoryStage::kFestivalIntroBeats,
                   carview::StoryStage::kAutoshowHandoff})

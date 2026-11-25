@@ -659,6 +659,16 @@ bool DriveApp::init(int& exit_code) {
     if (!have_career_catalog && !e.empty()) std::fprintf(stderr, "carview: note: no career catalog: %s\n", e.c_str());
     if (have_career_catalog) campaign.set_career_catalog(&career_catalog);
     e.clear();
+    // The campaign's wristband, Star Showdown and Showcase tables.
+    race::CampaignTablesLoad tl;
+    if (race::load_campaign_tables(game_root_of(), state_root, shared_db,
+                                   [](std::string_view ref) { return carview::game_text(std::string(ref)); }, &tl,
+                                   &e))
+      std::printf("campaign: %d wristbands, %d star showdowns, %d showcases from the disc (%d captions missing)\n",
+                  tl.wristbands, tl.bosses, tl.showcases, tl.captions_missing);
+    else if (!e.empty())
+      std::fprintf(stderr, "carview: note: built-in campaign tables: %s\n", e.c_str());
+    e.clear();
     have_skills_data = freeroam::load_skills_data(game_root_of(), skills_data, &e);
     if (!have_skills_data && !e.empty()) std::fprintf(stderr, "carview: note: no skills data: %s\n", e.c_str());
     e.clear();

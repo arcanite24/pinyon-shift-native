@@ -2311,3 +2311,24 @@ GlobalRegistry `Activities/BarnFinds`. Five points are still open:
 
 Needed: what the two predicates test, the timer behind the idle check, and
 the value behind the ready check.
+
+## Q117 (PROG-03, not blocking): campaign captions with no shipped text
+
+The wristband, Star Showdown and Showcase tables now come from the disc:
+gamedb.slt for the numbers, airborne_challenges.xml for the opponents and
+the string tables for the names. The title voices these moments, and the
+string tables hold no text for the lines the engine shows around them, so
+those lines are blank or interim:
+
+- **Blank:** the wristband announcement, the Star Showdown challenge and
+  victory lines, and the Showcase intro and victory lines. Their dialogue
+  cues still play the VO.
+- **Interim:** the campaign cinematics' eyebrows, detail lines and badges
+  (for example "HORIZON STAR SHOWDOWN • 1-ON-1 PINK SLIP"), and the unlock
+  subtitles ("Star Showdown unlocked! ..."). Each is engine text.
+- **Casing:** names go in as the string tables hold them ("Hailey Harper",
+  "Manic MINI"). Only captions built from an all-capitals format are in
+  capitals ("{0} WRISTBAND" gives "PURPLE WRISTBAND").
+
+Needed: which of these screens the title draws, what text each one shows,
+and whether the UI changes the case.

@@ -43,6 +43,9 @@ struct ShowcaseSpec {
   std::string horizon_id;
   ShowcaseAircraftKind kind = ShowcaseAircraftKind::kMustangP51;
   std::string display_name;       // e.g. "P-51 MUSTANG"
+  // <Opponent LocStringPilotName>: the AirChallenges string naming the
+  // opponent ("IDS_Pilot2" -> "Plane"); empty for the built-in specs.
+  std::string pilot_name_ids;
   std::string anim_pgeo;          // e.g. "ANIM_Showcase_Event_Helicopter_Race.pgeo"
   std::string anim_in_race;       // in-race animation name
   double base_altitude_m = 26.0;  // cruise height above road

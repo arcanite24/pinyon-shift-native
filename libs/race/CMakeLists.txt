@@ -15,6 +15,7 @@ add_library(shift_race STATIC
   src/rivals.cpp
   src/career.cpp
   src/campaign_flow.cpp
+  src/campaign_tables.cpp
   src/first_time_career.cpp
   src/driving_tutor.cpp)
 target_include_directories(shift_race PUBLIC include)

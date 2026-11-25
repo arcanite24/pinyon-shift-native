@@ -12,10 +12,14 @@
 
 #include "cars/physics.h"
 #include "cars/sources.h"
+#include "cars/strings.h"
+#include "fh1data/stringtables.h"
 #include "freeroam/collectibles.h"
+#include "freeroam/skills.h"
 #include "freeroam/tunables.h"
 #include "garage/garage.h"
 #include "garage/pi_calc.h"
+#include "race/campaign_flow.h"
 #include "race/career.h"
 #include "race/event.h"
 
@@ -250,6 +254,100 @@ int corpus() {
     for (const auto& b : prog.barns) rumours += b.status == freeroam::kBarnRumour;
     std::printf("barn finds: %zu, spawn rows %d, rumours after one tick past 200 mi: %d\n", col.barns.size(),
                 spawn_rows, rumours);
+  }
+
+  // The campaign tables from the disc, with its English strings, equal the
+  // built-in copy field for field (the copy is what runs without a disc).
+  {
+    cars::Install install;
+    fh1::StringTables strings;
+    std::string serr;
+    const bool sok = cars::discover_install(game, "", "", install, &serr) &&
+                     cars::load_string_tables(install, strings, &serr);
+    CHECK(sok);
+    if (!sok) std::printf("strings: %s\n", serr.c_str());
+    race::reset_campaign_tables();
+    const auto bands0 = race::wristband_milestones();
+    const auto bosses0 = race::boss_rivals();
+    const auto shows0 = race::showcase_milestones();
+    race::CampaignTablesLoad tl;
+    const bool tok = race::load_campaign_tables(
+        game, {}, nullptr,
+        [&](std::string_view ref) {
+          auto t = strings.resolve(ref);
+          return t ? *t : std::string();
+        },
+        &tl, &serr);
+    CHECK(tok);
+    if (!tok) std::printf("campaign tables: %s\n", serr.c_str());
+    CHECK(tl.wristbands == 7 && tl.bosses == 7 && tl.showcases == 10 && tl.captions_missing == 0);
+    const auto& bands = race::wristband_milestones();
+    const auto& bosses = race::boss_rivals();
+    const auto& shows = race::showcase_milestones();
+    int diffs = 0;
+    auto same = [&](bool eq, const std::string& what) {
+      if (!eq) {
+        ++diffs;
+        std::printf("campaign table differs from the disc: %s\n", what.c_str());
+      }
+    };
+    CHECK(bands.size() == bands0.size() && bosses.size() == bosses0.size() && shows.size() == shows0.size());
+    for (size_t i = 0; i < bands.size() && i < bands0.size(); ++i) {
+      const auto &a = bands[i], &b = bands0[i];
+      same(a.level == b.level && a.key == b.key && a.display_name == b.display_name && a.colour_key == b.colour_key &&
+               a.xp_threshold == b.xp_threshold && a.nemesis_bonus == b.nemesis_bonus &&
+               a.vo_unlock_trigger == b.vo_unlock_trigger && a.vo_new_trigger == b.vo_new_trigger &&
+               a.radio_event == b.radio_event && a.announcement == b.announcement &&
+               a.unlocked_events_hint == b.unlocked_events_hint,
+           "wristband " + a.display_name + " / " + b.display_name);
+    }
+    for (size_t i = 0; i < bosses.size() && i < bosses0.size(); ++i) {
+      const auto &a = bosses[i], &b = bosses0[i];
+      same(a.index == b.index && a.wristband_level == b.wristband_level && a.event_id == b.event_id &&
+               a.horizon_id == b.horizon_id && a.key == b.key && a.character == b.character &&
+               a.rival_name == b.rival_name && a.rival_title == b.rival_title && a.car_id == b.car_id &&
+               a.car_media == b.car_media && a.car_display == b.car_display && a.unlock_points == b.unlock_points &&
+               a.cash_prize == b.cash_prize && a.vo_unlocked == b.vo_unlocked && a.vo_pre_race == b.vo_pre_race &&
+               a.vo_post_win == b.vo_post_win && a.challenge_line == b.challenge_line &&
+               a.victory_line == b.victory_line && a.is_finale_champion == b.is_finale_champion,
+           "star showdown " + a.horizon_id + " (" + a.rival_name + ", " + a.car_display + ")");
+      // The pink slip is the event's prize car in the catalog too.
+      if (const auto* ev = cat.find_event(a.horizon_id)) CHECK(ev->prize_car_id == a.car_id);
+    }
+    for (size_t i = 0; i < shows.size() && i < shows0.size(); ++i) {
+      const auto &a = shows[i], &b = shows0[i];
+      same(a.index == b.index && a.event_id == b.event_id && a.horizon_id == b.horizon_id &&
+               a.display_name == b.display_name && a.opponent_label == b.opponent_label &&
+               a.popularity_rank_req == b.popularity_rank_req && a.loaner_car_id == b.loaner_car_id &&
+               a.loaner_car_media == b.loaner_car_media && a.loaner_car_display == b.loaner_car_display &&
+               a.cash_prize == b.cash_prize && a.airborne == b.airborne && a.intro_line == b.intro_line &&
+               a.victory_line == b.victory_line,
+           "showcase " + a.horizon_id + " (" + a.display_name + ", " + a.opponent_label + ", " +
+               a.loaner_car_display + ")");
+    }
+    CHECK(diffs == 0);
+    std::printf("campaign tables: %d wristbands, %d star showdowns, %d showcases, %d captions missing, %d diffs\n",
+                tl.wristbands, tl.bosses, tl.showcases, tl.captions_missing, diffs);
+    race::reset_campaign_tables();
+  }
+
+  // The chain multiplier on the disc's skills: five single skills show X1.4
+  // (the oracle frame's "583 X1.4"), and 41 cap it at X5.0.
+  {
+    freeroam::SkillsData sd;
+    std::string kerr;
+    const bool kok = freeroam::load_skills_data(game, sd, &kerr);
+    CHECK(kok);
+    if (!kok) std::printf("skills: %s\n", kerr.c_str());
+    freeroam::SkillTracker t(sd, 0.0, 0);
+    for (int i = 1; i <= 5; ++i) t.award_named(i % 2 ? "Drift" : "NearMiss", 1, 1.0 + i * 0.01);
+    const float m5 = t.chain_multiplier();
+    for (int i = 6; i <= 45; ++i) t.award_named(i % 2 ? "Drift" : "NearMiss", 1, 1.0 + i * 0.01);
+    const float m45 = t.chain_multiplier();
+    CHECK(std::fabs(m5 - 1.4f) < 1e-5f);
+    CHECK(std::fabs(m45 - 5.0f) < 1e-5f);
+    CHECK(freeroam::banked_chain_points(583, m5) == 816);
+    std::printf("chain multiplier on the disc's skills: X%.1f at 5, X%.1f at 45\n", m5, m45);
   }
 
   std::printf("progression_tests --corpus: %d failures\n", failures);

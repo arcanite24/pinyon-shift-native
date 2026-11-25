@@ -376,7 +376,7 @@ void test_r2_5_campaign_parity() {
     check(std::string(prof.display_name) == "HAILEY HARPER", "character profile uses HAILEY HARPER spelling");
     const auto* hailey = race::find_boss_by_key("hailey");
     const auto* hailey_legacy = race::find_boss_by_key("haley");
-    check(hailey != nullptr && std::string(hailey->rival_name) == "HAILEY HARPER", "boss rival uses HAILEY HARPER");
+    check(hailey != nullptr && hailey->rival_name == "Hailey Harper", "boss rival is Events.Name 'Hailey Harper'");
     check(hailey_legacy == hailey, "legacy 'haley' lookup resolves cleanly to Hailey Harper");
 
     const auto& bands = race::wristband_milestones();
@@ -388,8 +388,9 @@ void test_r2_5_campaign_parity() {
       total_wb_events += bands[i].unlocked_events_hint;
     }
     check(total_wb_events == 69, "69 wristband-tiered Festival events (+1 qualifier = 70 total)");
-    check(std::string(bands[5].announcement).find("Hailey Harper") != std::string::npos,
-          "Purple wristband announcement spells Hailey Harper correctly");
+    // No shipped caption for the ceremony: the announcement is empty.
+    check(bands[5].announcement.empty(), "no invented wristband announcement");
+    check(bands[5].display_name == "PURPLE WRISTBAND", "Scoreboard '{0} WRISTBAND' with the level's name");
 
     race::CampaignFlow reg_flow;
     race::CampaignAction act;
@@ -598,8 +599,7 @@ void test_r3_e1_campaign_parity() {
   {
     int airborne_count = 0;
     for (const auto& sc : race::showcase_milestones()) {
-      auto contains_jet = [](const char* s) {
-        if (!s) return false;
+      auto contains_jet = [](const std::string& s) {
         std::string u(s);
         for (char& c : u) c = char(std::toupper(static_cast<unsigned char>(c)));
         return u.find("STUNT JET") != std::string::npos || u.find("JET FIGHTER") != std::string::npos;
@@ -611,8 +611,7 @@ void test_r3_e1_campaign_parity() {
       ++airborne_count;
       const race::ShowcaseSpec spec = race::showcase_spec_for(sc.horizon_id);
       check(spec.event_id == sc.event_id, "Airborne Showcase event_id matches showcase.cpp 1:1");
-      check(std::string(sc.opponent_label) == spec.display_name,
-            "Airborne Showcase opponent_label matches showcase.cpp aircraft display_name 1:1");
+      check(!sc.opponent_label.empty(), "Airborne Showcase names its AirChallenges pilot");
     }
     check(airborne_count == 7, "all 7 Airborne Showcases verified against showcase.cpp");
     const auto* sc4 = race::find_showcase_by_event("PLANE_RACE_004");
@@ -620,11 +619,15 @@ void test_r3_e1_campaign_parity() {
     const auto* sc3 = race::find_showcase_by_event("PLANE_RACE_003");
     const auto* sc6 = race::find_showcase_by_event("PLANE_RACE_006");
     const auto* sc5 = race::find_showcase_by_event("PLANE_RACE_005");
-    check(sc4 && std::string(sc4->opponent_label) == "HOT-AIR BALLOON", "PLANE_RACE_004 is Hot-Air Balloon");
-    check(sc2 && std::string(sc2->opponent_label) == "HELICOPTER", "PLANE_RACE_002 is Helicopter");
-    check(sc3 && std::string(sc3->opponent_label) == "BIPLANE", "PLANE_RACE_003 is Biplane");
-    check(sc6 && std::string(sc6->opponent_label) == "P-51 MUSTANG", "PLANE_RACE_006 is P-51 Mustang");
-    check(sc5 && std::string(sc5->opponent_label) == "HELICOPTER", "PLANE_RACE_005 is Helicopter");
+    // airborne_challenges.xml's <Opponent LocStringPilotName> in AirChallenges.
+    check(sc4 && sc4->opponent_label == "Balloon", "PLANE_RACE_004 races IDS_Pilot4 Balloon");
+    check(sc2 && sc2->opponent_label == "Chopper", "PLANE_RACE_002 races IDS_Pilot3 Chopper");
+    check(sc3 && sc3->opponent_label == "Biplane", "PLANE_RACE_003 races IDS_Pilot1 Biplane");
+    check(sc6 && sc6->opponent_label == "Plane", "PLANE_RACE_006 races IDS_Pilot2 Plane");
+    check(sc5 && sc5->opponent_label == "Chopper", "PLANE_RACE_005 races IDS_Pilot3 Chopper");
+    const auto* mini = race::find_showcase_by_event("EXHIBITION_FEST_003");
+    check(mini && mini->display_name == "Manic MINI" && mini->opponent_label.empty() && !mini->airborne,
+          "an exhibition Showcase is named by its ShortName and has no single opponent");
   }
 
   // 2. R3-CAM-03: Real RaceFinishStanding entries preserved verbatim without fabricating bosses or +0.92s gaps.
