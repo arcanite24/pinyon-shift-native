@@ -174,9 +174,25 @@ int main() {
     freeroam::SpeedActivitiesData dirt;
     std::string serr;
     check(freeroam::load_speed_activities(game_root, dirt, &serr, dirt_dir), "ColoradoDirt speed activities: " + serr);
-    check(dirt.traps.size() == 22 && dirt.zones.size() == 9,
-          "ColoradoDirt: 22 traps and 9 zones (" + std::to_string(dirt.traps.size()) + ", " +
-              std::to_string(dirt.zones.size()) + ")");
+    check(dirt.traps.size() == 22 && dirt.zones.size() == 9, "ColoradoDirt: 22 traps and 9 zones (" +
+                                                                 std::to_string(dirt.traps.size()) + ", " +
+                                                                 std::to_string(dirt.zones.size()) + ")");
+    // Against the disc's Colorado set: the ids, scoreboards and minimum
+    // speeds that differ.
+    freeroam::SpeedActivitiesData base;
+    check(freeroam::load_speed_activities(game_root, base, &serr), "Colorado speed activities: " + serr);
+    int differ = 0;
+    for (const auto& t : dirt.traps) {
+      const auto* b = base.find_trap(t.id);
+      if (!b || b->min_speed_mph != t.min_speed_mph || b->scoreboard_id != t.scoreboard_id) ++differ;
+    }
+    for (const auto& z : dirt.zones) {
+      const auto* b = base.find_zone(z.id);
+      if (!b || b->min_speed_mph != z.min_speed_mph || b->scoreboard_id != z.scoreboard_id) ++differ;
+    }
+    // Found: the package's set names the same 22 traps and 9 zones with the
+    // same scoreboards and minimum speeds as the disc's (SPEC_QUESTIONS Q146).
+    check(differ == 0, "ColoradoDirt's traps and zones match Colorado's (" + std::to_string(differ) + " differ)");
   }
 
   // 4. Optional renders.

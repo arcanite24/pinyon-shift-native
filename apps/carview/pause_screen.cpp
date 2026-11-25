@@ -155,7 +155,9 @@ void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float 
   if (list >= 0) sc.at(list).dx = kListDx, sc.at(list).dy = kListDy;
 
   const int n = int(ps.rows.size());
-  constexpr int kSlots = 7;
+  // The scene's nine rows (Button0..8): the packages' 1000 CLUB and HORIZON
+  // RALLY make nine (club_pause.png); the rest stay hidden.
+  constexpr int kSlots = 9;
   const int first = window_first(ps.selected, n, kSlots);
   for (int slot = 0; slot < kSlots; ++slot) {
     const int btn = sc.node("Button" + std::to_string(slot));

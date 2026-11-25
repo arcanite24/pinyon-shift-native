@@ -2891,6 +2891,11 @@ interim:
   first medal until the hub is opened.
 - The Autoshow and garage show no per-car medals (`car_medals()` is the
   hook; those screens are another branch's).
+- Visible artifacts left: the achievement ticket shows no car picture
+  (its middle covers the picture drawn under the scene); the achievements
+  screen's rows overlap and its DescriptionBox panel is a dark block; the
+  details screen's rows are all pink and its titles overlap, with two dark
+  bars at the bottom right; the current-car ticket's picture overhangs it.
 
 Needed: captures of the hub after a medal (three tickets), the
 achievements and details screens, and a car list with several cars; the
@@ -2923,3 +2928,17 @@ Needed: the intro race's event and car, the VO cue order
 (`Rally_DialogueScript_EN.xml` keys the flow plays), the first Autoshow's
 car filter, and which profile flags (HasSeenInitialIntro,
 HasSeenFirstTicket) each step sets, from the recomp's generated v4 code.
+
+## Q146 (V4-18, not blocking): ColoradoDirt's speed traps and their records
+
+The Rally world now reads the package's own `gamemodes/ColoradoDirt`
+`speed_camera.xml` and `average_speed.xml`. They name the same 22 traps
+and 9 zones as the disc's Colorado set, with the same scoreboard ids and
+minimum speeds (`club_rally_corpus_tests` checks this), and ColoradoDirt
+ships no GameObjs, so the gates are Colorado's. The engine keeps one set
+of best speeds for both worlds, where the profile has a separate
+ColoradoDirt block (22 cameras, 9 zones).
+
+Needed: whether the original keeps Rally-world speed records apart from
+Colorado's (and shows them on separate scoreboards), and where
+ColoradoDirt's gates come from if not Colorado's GameObjs.

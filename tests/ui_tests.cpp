@@ -254,9 +254,11 @@ void test_pause_menu() {
   CHECK(pm.screen == PM::Screen::kExtras && pm.selected == 0);
   {
     const auto ex = pm.extras();
-    for (PM::Action a : {PM::kEvents, PM::kRally, PM::kGarage, PM::kUpgrades, PM::kPaint, PM::kAutoshow, PM::kClub,
-                         PM::kCarClub, PM::kAchievements, PM::kReplay})
+    for (PM::Action a : {PM::kEvents, PM::kGarage, PM::kUpgrades, PM::kPaint, PM::kAutoshow, PM::kCarClub,
+                         PM::kAchievements, PM::kReplay})
       CHECK(std::find(ex.begin(), ex.end(), a) != ex.end());
+    // Without the packages neither row shows (V4-22).
+    for (PM::Action a : {PM::kRally, PM::kClub}) CHECK(std::find(ex.begin(), ex.end(), a) == ex.end());
     CHECK(pm.rows() == ex);
     CHECK(pm.selected_action() == PM::kEvents);
   }

@@ -91,14 +91,14 @@ struct PauseMenu {
     for (Action a : {kSettings, kPhotoMode, kMessageCentre, kSponsorChallenges, kCareer, kQuitToTitle}) v.push_back(a);
     return v;
   }
-  // The engine's own screens (EXTRAS); a package's row stays here when the
-  // package is not installed (the engine says why it is closed).
+  // The engine's own screens (EXTRAS). Without a package neither of its rows
+  // shows anywhere (V4-22); in the Rally world the hub (the engine's
+  // overlay, V4-11) stays reachable here.
   std::vector<Action> extras() const {
     if (in_race) return {kReplay, kDifficulty, kSettings};
     std::vector<Action> v = {kEvents};
-    if (!has_rally) v.push_back(kRally);
+    if (in_rally_world && has_rally) v.push_back(kRally);
     for (Action a : {kGarage, kUpgrades, kPaint, kAutoshow}) v.push_back(a);
-    if (!has_club) v.push_back(kClub);
     for (Action a : {kCarClub, kAchievements, kReplay}) v.push_back(a);
     return v;
   }

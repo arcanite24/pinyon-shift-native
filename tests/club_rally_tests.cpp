@@ -256,6 +256,18 @@ void test_pause_rows() {
   check(pm.items()[1] == PM::kRally, "rally only: HORIZON RALLY after MAP");
   pm.in_rally_world = true;
   check(pm.items()[1] == PM::kSettings, "the rally world has no package rows");
+  {
+    pm.has_rally = true;
+    const auto rx = pm.extras();
+    check(std::find(rx.begin(), rx.end(), PM::kRally) != rx.end(), "the rally world keeps its hub in the extras");
+    pm.has_rally = false;
+    pm.in_rally_world = false;
+    const auto nx = pm.extras();
+    check(std::find(nx.begin(), nx.end(), PM::kRally) == nx.end() &&
+              std::find(nx.begin(), nx.end(), PM::kClub) == nx.end(),
+          "no packages: no Rally or 1000 Club row anywhere");
+    pm.in_rally_world = true;
+  }
   pm.show(true);
   check(pm.items().front() == PM::kRestartRace, "racing rows unchanged");
 }
