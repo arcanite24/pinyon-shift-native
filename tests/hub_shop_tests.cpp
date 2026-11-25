@@ -3,12 +3,14 @@
 // 8-category UpgradeShop with Conversions/Auto-Upgrade/35-slider Tuning/50%
 // Sell Part & live PI/5-stat diffs, GarageBrowser sort/filter/Sell Car, 3D hub
 // studio plinth + drop-shadow stage, and Barn Find restoration card HUD).
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "autoshow.h"
@@ -531,12 +533,211 @@ void test_disc_hub_shops_and_garage() {
   std::printf("  hub UI instances: make=%zu car=%zu color=%zu workshop=%zu tuning=%zu garage=%zu\n",
               l_make.items().size(), l_car.items().size(), l_col.items().size(), l2_parts.items().size(),
               l2_tune.items().size(), l3.items().size());
+
+  // 6. PT-43 Autoshow UX/UI parity checks: non-clipping rendered hit zones & UI instances,
+  //    live spec comparison deltas, manufacturer/model/paint+finish/caliper navigation,
+  //    and affordable/unaffordable purchase guards.
+  {
+    // Verify emitted UI hit zones and draw rects stay strictly outside hero_car_viewport across all 3 steps!
+    auto check_non_clipping_draw = [&](carview::AutoshowStep st, bool show_specs) {
+      autoshow.set_step(st);
+      autoshow.set_buy_confirm_open(false);
+      autoshow.set_show_specs(show_specs);
+      carview::ui::List lst;
+      carview::draw_autoshow_hud(lst, 1280.0f, 720.0f, autoshow, bands, credits);
+      const bool show_filters = (st == carview::AutoshowStep::kCarSelect && !autoshow.tutorial_mode());
+      const auto lo = carview::compute_autoshow_layout(1280.0f, 720.0f, st, show_specs, show_filters);
+      CHECK(lo.hero_car_viewport.valid());
+      CHECK(lo.hero_car_viewport.width() >= 760.0f);
+      CHECK(lo.hero_car_viewport.height() >= 360.0f);
+      CHECK(!lst.hits().empty());
+      for (const auto& hz : lst.hits()) {
+        carview::AutoshowRect r{hz.x0, hz.y0, hz.x1, hz.y1};
+        CHECK(!r.intersects(lo.hero_car_viewport));
+      }
+      for (const auto& it : lst.items()) {
+        carview::AutoshowRect r{it.rect[0], it.rect[1], it.rect[2], it.rect[3]};
+        CHECK(!r.intersects(lo.hero_car_viewport));
+      }
+    };
+    autoshow.set_step(carview::AutoshowStep::kMakeSelect);
+    autoshow.select_make(1, credits);  // "All Cars"
+    check_non_clipping_draw(carview::AutoshowStep::kMakeSelect, true);
+    check_non_clipping_draw(carview::AutoshowStep::kMakeSelect, false);
+    check_non_clipping_draw(carview::AutoshowStep::kCarSelect, true);
+    check_non_clipping_draw(carview::AutoshowStep::kCarSelect, false);
+    check_non_clipping_draw(carview::AutoshowStep::kColorSelect, true);
+    check_non_clipping_draw(carview::AutoshowStep::kColorSelect, false);
+    autoshow.set_show_specs(true);
+
+    // Spec comparison delta calculation against explicit baseline & live Garage current car.
+    carview::AutoshowComparisonStats base{};
+    base.valid = true;
+    base.car_id = 309;
+    base.display_name = "1995 VW Corrado VR6";
+    base.class_id = 2;
+    base.shown_pi = 282;
+    base.raw_pi = 0.524381;
+    base.speed_rating = 4.2;
+    base.handling_rating = 4.5;
+    base.accel_rating = 4.0;
+    base.launch_rating = 4.1;
+    base.braking_rating = 4.3;
+    base.peak_power_kw = 132.0;
+    base.peak_torque_nm = 235.0;
+    base.curb_weight_kg = 1240.0;
+    autoshow.set_comparison_car(base);
+    const carview::AutoshowCar* cand = autoshow.selected_car();
+    CHECK(cand != nullptr);
+    if (cand) {
+      const auto delta = autoshow.compare_car(*cand, bands);
+      CHECK(delta.has_baseline);
+      const int cand_pi = garage::shown_index(cand->dealer.performance_index, bands);
+      const int base_pi = garage::shown_index(base.raw_pi, bands);
+      CHECK(delta.pi_delta == cand_pi - base_pi);
+      CHECK(std::fabs(delta.speed_delta - (cand->speed_rating - base.speed_rating)) < 1e-6);
+      CHECK(std::fabs(delta.handling_delta - (cand->handling_rating - base.handling_rating)) < 1e-6);
+      CHECK(std::fabs(delta.accel_delta - (cand->accel_rating - base.accel_rating)) < 1e-6);
+      CHECK(std::fabs(delta.launch_delta - (cand->launch_rating - base.launch_rating)) < 1e-6);
+      CHECK(std::fabs(delta.braking_delta - (cand->braking_rating - base.braking_rating)) < 1e-6);
+      CHECK(std::fabs(delta.power_kw_delta - (cand->peak_power_kw - base.peak_power_kw)) < 1e-6);
+      CHECK(std::fabs(delta.torque_nm_delta - (cand->peak_torque_nm - base.peak_torque_nm)) < 1e-6);
+      CHECK(std::fabs(delta.weight_kg_delta - (cand->curb_weight_kg - base.curb_weight_kg)) < 1e-6);
+    }
+
+    // Manufacturer/model page jumps, breadcrumbs, paint finishes, and caliper options.
+    autoshow.set_step(carview::AutoshowStep::kMakeSelect);
+    CHECK(autoshow.breadcrumb_text() == "MANUFACTURERS");
+    const size_t mk0 = autoshow.selected_make_index();
+    autoshow.page_move_make(1, credits, 6);
+    CHECK(autoshow.selected_make_index() != mk0);
+    autoshow.select_make(1, credits);  // "All Cars"
+    CHECK(!autoshow.advance_step());
+    CHECK(autoshow.step() == carview::AutoshowStep::kCarSelect);
+    CHECK(autoshow.breadcrumb_text().find("MANUFACTURERS  >  ") == 0);
+    if (autoshow.visible_cars().size() > 5) {
+      const size_t c0 = autoshow.selected_index();
+      autoshow.page_move_car(1, 5);
+      CHECK(autoshow.selected_index() != c0);
+    }
+    if (autoshow.selected_car() && !autoshow.selected_car()->swatches.empty()) {
+      CHECK(!autoshow.advance_step());
+      CHECK(autoshow.step() == carview::AutoshowStep::kColorSelect);
+      CHECK(autoshow.breadcrumb_text().find("SELECT PAINT") != std::string::npos);
+
+      autoshow.cycle_paint_finish(1);
+      CHECK(autoshow.paint_finish() == carview::AutoshowPaintFinish::kGloss);
+      autoshow.set_paint_finish(carview::AutoshowPaintFinish::kMatte);
+      autoshow.cycle_caliper_option(1);
+      CHECK(autoshow.selected_caliper().active);
+      const cars::CarPaintSpec pspec = autoshow.preview_paint_spec();
+      CHECK(pspec.body.active && pspec.body.finish == cars::PaintFinish::kMatte);
+      CHECK(pspec.calipers.active && pspec.calipers.rgb == autoshow.selected_caliper().rgb);
+    }
+
+    // Affordable / unaffordable purchase guards.
+    const carview::AutoshowCar* buy_target = autoshow.selected_car();
+    CHECK(buy_target != nullptr);
+    if (buy_target) {
+      const int64_t cost = buy_target->dealer.base_cost;
+      const int64_t poor_cr = std::max<int64_t>(0, cost - 1);
+      CHECK(!autoshow.can_afford_selected(poor_cr));
+      CHECK(autoshow.credits_shortfall(poor_cr) == cost - poor_cr);
+      std::string guard_msg;
+      CHECK(!autoshow.request_buy_confirm(poor_cr, guard_msg));
+      CHECK(!autoshow.buy_confirm_open());
+      CHECK(guard_msg.find("INSUFFICIENT") != std::string::npos);
+
+      int64_t poor_wallet = poor_cr;
+      const size_t garage_before = g.cars.size();
+      std::string fail_media, fail_msg;
+      CHECK(!autoshow.buy(db, g, poor_wallet, fail_media, fail_msg));
+      CHECK(poor_wallet == poor_cr);
+      CHECK(g.cars.size() == garage_before);
+
+      const int64_t rich_cr = cost + 50000;
+      CHECK(autoshow.can_afford_selected(rich_cr));
+      CHECK(autoshow.credits_shortfall(rich_cr) == 0);
+      CHECK(autoshow.request_buy_confirm(rich_cr, guard_msg));
+      CHECK(autoshow.buy_confirm_open());
+      CHECK(autoshow.breadcrumb_text().find("CONFIRM PURCHASE") != std::string::npos);
+
+      // Confirm modal emits both kHitConfirm and kHitCancel hit zones.
+      carview::ui::List l_modal;
+      carview::draw_autoshow_hud(l_modal, 1280.0f, 720.0f, autoshow, bands, rich_cr);
+      bool saw_confirm = false, saw_cancel = false;
+      for (const auto& hz : l_modal.hits()) {
+        if (hz.group == carview::ui::kHitConfirm) saw_confirm = true;
+        if (hz.group == carview::ui::kHitCancel) saw_cancel = true;
+      }
+      CHECK(saw_confirm && saw_cancel);
+
+      // Backing out closes the confirmation modal cleanly before leaving Color Select.
+      CHECK(autoshow.back_step());
+      CHECK(!autoshow.buy_confirm_open());
+      CHECK(autoshow.step() == carview::AutoshowStep::kColorSelect);
+    }
+  }
+}
+
+void test_autoshow_layout_and_studio_camera() {
+  // 1. Bright Horizon Autoshow studio background & lighting (no gloomy dark flat void).
+  const auto bg = carview::hub_background_color(carview::HubRoom::kAutoshow);
+  CHECK(bg[0] >= 0.70f && bg[1] >= 0.70f && bg[2] >= 0.75f);
+
+  // 2. Smooth exponential camera transitions between Overview 3/4, Close Paint, manual orbit, and idle resume.
+  carview::HubCamera cam;
+  cam.set_focus(carview::HubCameraFocus::kTurntable);
+  const float overview_dist = cam.target_dist;
+  cam.set_focus(carview::HubCameraFocus::kPaint);
+  CHECK(cam.target_dist < overview_dist);  // closer paint angle
+  const float start_dist = cam.distance;
+  cam.step(0.15f);
+  CHECK(cam.distance < start_dist && cam.distance > cam.target_dist);  // smooth exponential damping, no snap!
+  cam.nudge_orbit(0.4f, 0.1f);
+  CHECK(!cam.auto_orbit && cam.user_orbited);
+  // Advance past idle delay -> gentle auto-orbit resumes cleanly.
+  for (int i = 0; i < 40; ++i) cam.step(0.1f);
+  CHECK(cam.auto_orbit);
+
+  // Framing lens shift smoothly damps and updates Autoshow projection matrix.
+  cam.set_framing(0.11f, 0.16f);
+  for (int i = 0; i < 20; ++i) cam.step(0.05f);
+  CHECK(std::fabs(cam.lens_shift_x - 0.11f) < 0.01f);
+  CHECK(std::fabs(cam.lens_shift_y - 0.16f) < 0.01f);
+  carview::ShowroomFrame as_frame{};
+  carview::build_hub_frame(carview::HubRoom::kAutoshow, cam, 1280, 720, as_frame, false);
+  CHECK(as_frame.drive[3] == 0.0f);
+  CHECK(as_frame.options[0] >= 0.50f && as_frame.options[0] <= 0.65f);
+  CHECK(as_frame.options[1] >= 0.95f);
+
+  // 3. Non-clipping layout geometry across 16:9, 21:9, and 4K resolutions & all steps.
+  const std::pair<float, float> resolutions[] = {
+      {1280.0f, 720.0f}, {1920.0f, 1080.0f}, {2560.0f, 1080.0f}, {3840.0f, 2160.0f}};
+  for (auto [rw, rh] : resolutions) {
+    for (auto st : {carview::AutoshowStep::kMakeSelect, carview::AutoshowStep::kCarSelect,
+                    carview::AutoshowStep::kColorSelect}) {
+      for (bool specs : {true, false}) {
+        const auto lo = carview::compute_autoshow_layout(rw, rh, st, specs, st == carview::AutoshowStep::kCarSelect);
+        CHECK(lo.hero_car_viewport.valid());
+        CHECK(!lo.top_bar.intersects(lo.hero_car_viewport));
+        CHECK(!lo.filter_bar.intersects(lo.hero_car_viewport));
+        CHECK(!lo.spec_card.intersects(lo.hero_car_viewport));
+        CHECK(!lo.rail_header.intersects(lo.hero_car_viewport));
+        CHECK(!lo.carousel_rail.intersects(lo.hero_car_viewport));
+        CHECK(!lo.swatch_strip.intersects(lo.hero_car_viewport));
+        CHECK(!lo.finish_strip.intersects(lo.hero_car_viewport));
+        CHECK(!lo.button_bar.intersects(lo.hero_car_viewport));
+      }
+    }
+  }
 }
 
 }  // namespace
 
 int main() {
   test_hub_stage_and_camera();
+  test_autoshow_layout_and_studio_camera();
   test_livery_editor_groups_undo_and_catalog();
   test_disc_hub_shops_and_garage();
   if (g_failed) {

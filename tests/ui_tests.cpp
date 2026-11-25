@@ -910,6 +910,253 @@ int main() {
     atlas_take_dirty();
   }
 
+  // 6. Phase PT-E HUD & World-Label parity tests (PT-37, PT-38, PT-40):
+  //    Nameplate distance LOD + race cap + 2D de-overlapping vs world markers,
+  //    Popularity badge ring interpolation + rank-up flip/pop/flash animation,
+  //    and high-contrast ROAD DISCOVERED banner with zero stray yellow artifacts.
+  {
+    // PT-37a: Smooth distance scaling (1.0 -> 0.78) and alpha fade (full <= 45m -> 0 by 160m).
+    const auto lod_near = carview::compute_name_tag_lod(18.0);
+    const auto lod_45 = carview::compute_name_tag_lod(45.0);
+    const auto lod_mid = carview::compute_name_tag_lod(100.0);
+    const auto lod_far = carview::compute_name_tag_lod(165.0);
+    CHECK(lod_near.visible && std::fabs(lod_near.scale - 1.0f) < 1e-3f && std::fabs(lod_near.alpha - 1.0f) < 1e-3f);
+    CHECK(lod_45.visible && std::fabs(lod_45.alpha - 1.0f) < 1e-3f && lod_45.scale < 1.0f && lod_45.scale > 0.78f);
+    CHECK(lod_mid.visible && lod_mid.alpha > 0.20f && lod_mid.alpha < 0.80f && lod_mid.scale < lod_45.scale);
+    CHECK(!lod_far.visible && lod_far.alpha == 0.0f && std::fabs(lod_far.scale - 0.78f) < 1e-3f);
+
+    // PT-37b: 7-car packed race straightaway never stacks into a 7-box vertical wall and has zero overlap.
+    std::vector<carview::NameTagHud> pack;
+    const char* drivers[7] = {"GUY GILBERT", "ADAM BARR", "SCOTT ROCKFELD", "ALEX DARROW",
+                              "LAWRENCE LAM", "JED BROWN", "TERRY ADAMS"};
+    const double dists[7] = {18.0, 24.0, 30.0, 36.0, 42.0, 52.0, 64.0};
+    for (int i = 0; i < 7; ++i) {
+      carview::NameTagHud nt;
+      nt.screen_x = 640.0f + float((i % 3) - 1) * 8.0f;
+      nt.screen_y = 310.0f - float(i) * 4.0f;
+      nt.name = drivers[i];
+      nt.leader = (i == 0);
+      nt.distance_m = dists[i];
+      nt.car_class = "D";
+      nt.pi = 260 + i * 5;
+      pack.push_back(nt);
+    }
+    std::vector<carview::ResolvedNameTag> resolved_pack;
+    carview::layout_world_labels(pack, nullptr, /*in_race=*/true, 1280.0f, 720.0f, resolved_pack);
+    CHECK(!resolved_pack.empty() && resolved_pack.size() <= 5);
+    float min_y0 = 720.0f, max_y1 = 0.0f;
+    for (size_t i = 0; i < resolved_pack.size(); ++i) {
+      min_y0 = std::min(min_y0, resolved_pack[i].y0);
+      max_y1 = std::max(max_y1, resolved_pack[i].y1);
+      for (size_t j = i + 1; j < resolved_pack.size(); ++j) {
+        const bool ov = (resolved_pack[i].x0 < resolved_pack[j].x1) && (resolved_pack[i].x1 > resolved_pack[j].x0) &&
+                        (resolved_pack[i].y0 < resolved_pack[j].y1) && (resolved_pack[i].y1 > resolved_pack[j].y0);
+        CHECK(!ov);
+      }
+    }
+    CHECK((max_y1 - min_y0) < 90.0f);  // compact cluster, never a 7-box vertical wall into the sky
+
+    // PT-37c: WorldMarker ("MONTANO PLAINS") vs Festival AI nameplate ("[C 395] JAMIE CAMPBELL") never collide.
+    carview::WorldMarkerHud wm;
+    wm.visible = true;
+    wm.in_range = false;
+    wm.is_festival = true;
+    wm.screen_x = 560.0f;
+    wm.screen_y = 285.0f;
+    wm.distance_m = 141.0;
+    wm.title = "MONTANO PLAINS";
+    carview::NameTagHud jamie;
+    jamie.screen_x = 640.0f;
+    jamie.screen_y = 288.0f;
+    jamie.name = "[C 395] JAMIE CAMPBELL";
+    jamie.distance_m = 38.0;
+    std::vector<carview::ResolvedNameTag> resolved_fr;
+    carview::WorldMarkerLayout wm_box{};
+    carview::layout_world_labels({jamie}, &wm, /*in_race=*/false, 1280.0f, 720.0f, resolved_fr, &wm_box);
+    CHECK(wm_box.visible);
+    CHECK(resolved_fr.size() == 1);
+    if (!resolved_fr.empty()) {
+      CHECK(resolved_fr[0].has_badge && resolved_fr[0].car_class == "C" && resolved_fr[0].pi_text == "395");
+      const bool hit_wm = (resolved_fr[0].x0 < wm_box.x1) && (resolved_fr[0].x1 > wm_box.x0) &&
+                          (resolved_fr[0].y0 < wm_box.y1) && (resolved_fr[0].y1 > wm_box.y0);
+      CHECK(!hit_wm);
+    }
+    // Rasterize combined free-roam world marker + car nameplate cleanly.
+    {
+      carview::DriveHud d;
+      d.driving = true;
+      d.world_marker = &wm;
+      d.name_tags = {jamie};
+      check_hud_screen(d);
+    }
+
+    // PT-38: Popularity badge smooth radial ring interpolation, rank-up flip/pop/flash, and skill pulse.
+    {
+      carview::PopularityBadgeAnimator anim;
+      carview::SkillChainHud sk;
+      sk.active = true;
+      sk.chain_points = 500;
+      sk.multiplier = 2;
+      sk.last_skill = "SPEED";
+      sk.last_points = 100;
+      sk.last_skill_at = 10.0;
+      sk.popularity_rank = 250;
+      sk.popularity_progress = 0.10;
+      anim.update(sk, 10.0);
+      anim.apply(sk);
+      CHECK(std::fabs(sk.pop_anim_progress - 0.10) < 1e-3);
+
+      // Jump progress to 0.85 -> ring interpolates smoothly instead of snapping instantaneously.
+      sk.popularity_progress = 0.85;
+      anim.update(sk, 10.05);
+      anim.apply(sk);
+      CHECK(sk.pop_anim_progress > 0.12 && sk.pop_anim_progress < 0.65);
+      for (int step = 0; step < 30; ++step) {
+        anim.update(sk, 10.10 + double(step) * 0.05);
+      }
+      anim.apply(sk);
+      CHECK(sk.pop_anim_progress > 0.82 && sk.pop_anim_progress <= 0.851);
+
+      // Rank-up 250 -> 249: elastic scale pop (1.0 -> 1.24 -> 1.0), vertical flip, and magenta/gold flash sweep.
+      sk.active = false;
+      sk.popularity_rank = 249;
+      sk.popularity_progress = 0.15;
+      sk.rank_up_at = 12.0;
+      anim.update(sk, 12.0);
+      anim.apply(sk);
+      const auto f_start = carview::evaluate_popularity_badge_anim(sk, 12.0);
+      CHECK(f_start.display_rank == 250);
+
+      anim.update(sk, 12.15);
+      anim.update(sk, 12.30);  // u ~ 0.22 (scale pop peak)
+      anim.apply(sk);
+      const auto f_peak = carview::evaluate_popularity_badge_anim(sk, 12.30);
+      CHECK(f_peak.disc_scale >= 1.20f && f_peak.disc_scale <= 1.25f);
+      CHECK(f_peak.ring_flash_alpha > 0.70f);
+
+      anim.update(sk, 12.48);  // u ~ 0.36 (mid vertical card-flip)
+      anim.apply(sk);
+      const auto f_mid = carview::evaluate_popularity_badge_anim(sk, 12.48);
+      CHECK(f_mid.text_scale_y < 0.75f);
+
+      // Rasterize mid-celebration popularity badge cleanly.
+      {
+        carview::DriveHud d;
+        d.driving = true;
+        d.skills = &sk;
+        d.time = 12.48;
+        check_hud_screen(d);
+      }
+
+      anim.update(sk, 12.75);  // u ~ 0.56 (new rank rolled in)
+      anim.apply(sk);
+      const auto f_new = carview::evaluate_popularity_badge_anim(sk, 12.75);
+      CHECK(f_new.display_rank == 249);
+
+      for (int step = 0; step < 16; ++step) anim.update(sk, 12.80 + double(step) * 0.05);
+      anim.apply(sk);
+      const auto f_done = carview::evaluate_popularity_badge_anim(sk, 13.55);
+      CHECK(std::fabs(f_done.disc_scale - 1.0f) < 0.02f);
+      CHECK(f_done.display_rank == 249);
+      CHECK(f_done.ring_flash_alpha < 0.02f);
+
+      // Active skill chain / banking pulse glow.
+      sk.active = true;
+      sk.last_skill_at = 14.0;
+      const auto f_pulse = carview::evaluate_popularity_badge_anim(sk, 14.08);
+      CHECK(f_pulse.skill_pulse_alpha > 0.35f && f_pulse.disc_scale > 1.01f);
+    }
+
+    // PT-40: High-contrast ROAD DISCOVERED banner + zero stray yellow artifact even if H_BARN_FIND_HUD is loaded.
+    {
+      const auto p1 = carview::split_popup_title_counter("ROAD DISCOVERED  2 / 216");
+      CHECK(p1.label == "ROAD DISCOVERED" && p1.counter == "2 / 216");
+      const auto p2 = carview::split_popup_title_counter("DISCOUNT SIGN 12/100");
+      CHECK(p2.label == "DISCOUNT SIGN" && p2.counter == "12/100");
+      const auto p3 = carview::split_popup_title_counter("ROAD DISCOVERED");
+      CHECK(p3.label == "ROAD DISCOVERED" && p3.counter.empty());
+
+      // Install a mock H_BARN_FIND_HUD containing a zero-alpha bright yellow rect to ensure it cannot leak.
+      static fh1::UiScene mock_barn = [] {
+        fh1::UiScene sc;
+        auto add_o = [&](fh1::UiObjectKind k, uint32_t id, const char* nm) {
+          fh1::UiObject o;
+          o.kind = k, o.id = id, o.name = nm;
+          sc.objects.push_back(o);
+        };
+        add_o(fh1::UiObjectKind::kGroup, 1, "DoubleTape");
+        add_o(fh1::UiObjectKind::kModel, 2, "Panel");
+        add_o(fh1::UiObjectKind::kModel, 3, "Panel2");
+        add_o(fh1::UiObjectKind::kText, 4, "TEXT2");
+        add_o(fh1::UiObjectKind::kText, 5, "TEXT1");
+        add_o(fh1::UiObjectKind::kModel, 6, "StrayYellowTag");
+        fh1::UiObject ym;
+        ym.kind = fh1::UiObjectKind::kMaterial, ym.id = 7, ym.name = "YellowMat";
+        ym.colour = {0.95f, 0.98f, 0.05f, 1.0f};
+        sc.objects.push_back(ym);
+        auto add_n = [&](int parent, uint32_t oid, float x, float y, float alpha) {
+          fh1::UiNode n;
+          n.parent = parent, n.object = oid, n.x = x, n.y = y, n.opacity = alpha, n.alpha = alpha;
+          n.bounds_min = {-40, -12, 0}, n.bounds_max = {40, 12, 0};
+          sc.nodes.push_back(n);
+          return int(sc.nodes.size()) - 1;
+        };
+        const int root = add_n(-1, 1, 640, -630, 1.0f);
+        add_n(root, 2, 640, -630, 1.0f);
+        add_n(root, 3, 640, -630, 1.0f);
+        add_n(root, 4, 540, -620, 1.0f);
+        add_n(root, 5, 540, -640, 1.0f);
+        add_n(root, 6, 700, -592, 0.0f);
+        for (auto& n : sc.nodes)
+          for (size_t i = 0; i < sc.objects.size(); ++i)
+            if (sc.objects[i].id == n.object) n.object_index = int(i);
+        return sc;
+      }();
+      carview::set_ui_scenes([&](const std::string& nm) -> const fh1::UiScene* {
+        return nm == "H_BARN_FIND_HUD" ? &mock_barn : nullptr;
+      });
+
+      carview::DriveHud d;
+      d.driving = true;
+      d.speedo_mode = 2;  // isolate popup banner rasterization
+      d.time = 2.0;
+      d.popup_title = "ROAD DISCOVERED  2 / 216";
+      d.popup_text = "COLORADO ROAD #88";
+      d.popup_at = 1.0;
+      d.popup_progress = 2.0 / 216.0;
+      d.popup_colour = rgba(74, 238, 97);
+
+      List l_pop;
+      carview::build_drive_hud(l_pop, d, 1280.0f, 720.0f);
+      std::vector<uint8_t> pop_px;
+      rasterize(l_pop.items(), pop_px, 1280, 720);
+
+      size_t bright_white = 0;
+      size_t magenta_accent = 0;
+      size_t stray_yellow = 0;
+      for (uint32_t y = 520; y < 680; ++y) {
+        for (uint32_t x = 380; x < 900; ++x) {
+          const size_t idx = (size_t(y) * 1280u + x) * 4u;
+          const uint8_t r = pop_px[idx + 0];
+          const uint8_t g = pop_px[idx + 1];
+          const uint8_t b = pop_px[idx + 2];
+          const uint8_t a = pop_px[idx + 3];
+          if (a < 140) continue;
+          if (y >= 595 && y <= 665) {
+            if (r > 215 && g > 215 && b > 215) ++bright_white;
+            if (r > 190 && g < 75 && b > 70) ++magenta_accent;
+          }
+          if (r > 200 && g > 200 && b < 60) ++stray_yellow;
+        }
+      }
+      CHECK(bright_white > 80);    // crisp high-contrast white ROAD DISCOVERED + 2 / 216 text
+      CHECK(magenta_accent > 80);  // bright Horizon magenta/pink accent stripe + counter chip
+      CHECK(stray_yellow == 0);    // zero stray bright yellow rectangle above or on banner
+
+      carview::set_ui_scenes({});
+    }
+  }
+
   if (const char* out = std::getenv("SHIFT_UI_SPECIMEN")) {
     const uint32_t W = 1280, H = 720;
     std::vector<uint8_t> img(size_t(W) * H * 4);

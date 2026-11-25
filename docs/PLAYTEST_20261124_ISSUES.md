@@ -19,8 +19,8 @@ Source playtest session: `out/playtests/20261124-143848/`
 | [5. Cars, Lamps, Driver Model & Showcase](#5-cars-lamps-driver-model--showcase) | 4 | 0 |
 | [6. Physics, Collision, Smashables & Camera](#6-physics-collision-smashables--camera) | 5 | 0 |
 | [7. World Map & Minimap Parity](#7-world-map--minimap-parity) | 5 | 0 |
-| [8. HUD, Menus, Campaign & 1:1 UI/UX Parity](#8-hud-menus-campaign--11-uiux-parity) | 9 | 7 |
-| **Total** | **45** | **7** |
+| [8. HUD, Menus, Campaign & 1:1 UI/UX Parity](#8-hud-menus-campaign--11-uiux-parity) | 9 | 0 |
+| **Total** | **45** | **0** |
 
 ---
 
@@ -246,34 +246,40 @@ Source playtest session: `out/playtests/20261124-143848/`
 
 ## 8. HUD, Menus, Campaign & 1:1 UI/UX Parity
 
-- [ ] **PT-37 — Car nameplates and world hub/event labels not 1:1 parity**
+- [x] **PT-37 — Car nameplates and world hub/event labels not 1:1 parity**
   - **Priority**: P1
   - **Evidence**: `bug_001.png`, `bug_002.png` (`S 700 CHARLIE HERB`, `S 692 PETER HOUSTON`), `bug_007.png`–`bug_009.png` (vertical stack of 7 huge boxes blocking the road ahead), `bug_024.png` (`MONTANO PLAINS` overlapping `C 395 JAMIE CAMPBELL`), `bug_025.png`, `bug_029.png`.
-  - **Notes**: Needs authentic FH1 compact pill sizing, distance fade/LOD, non-overlapping layout, and proper hub/event marker styling.
+  - **Fix (PT-E)**: Replaced fixed-size sky-stacking boxes with compact FH1 translucent pills + class/PI micro-badges, hexagonal world hub/event markers, smooth distance scale/alpha LOD (`45..160 m`), race cap of 5 closest tags, and unified 2D screen-space overlap resolution.
 
-- [ ] **PT-38 — Popularity Rank (`250TH`) HUD badge is not animated**
+- [x] **PT-38 — Popularity Rank (`250TH`) HUD badge is not animated**
   - **Priority**: P2
   - **Evidence**: User report + `bug_002.png`, `bug_003.png`, `bug_012.png`, `bug_020.png`, `bug_024.png`, `bug_026.png`. Badge pops in/out statically instead of FH1's smooth radial ring fill, rank-up flip/spin, and skill-chain pop animations.
+  - **Fix (PT-E)**: Added `PopularityBadgeAnimator` & `evaluate_popularity_badge_anim()` driving smooth exponential radial ring fill, elastic `1.24x` rank-up pop + vertical rank-flip (`250TH -> 249TH`), magenta/gold ring flash sweep, and active skill-chain pulse.
 
-- [ ] **PT-39 — Start Race pre-race screen not 1:1 parity**
+- [x] **PT-39 — Start Race pre-race screen not 1:1 parity**
   - **Priority**: P2
   - **Evidence**: `bug_006.png` (`t=425.6s`). Missing authentic FH1 pre-race grid layout, event details/opponents/difficulty/assists submenus, and camera orbit polish (plus `"UIT RACE"` missing glyph from PT-03).
+  - **Fix (PT-E)**: Upgraded `event_card()` with localized event titles, pink/dark metadata strip, `ui4::opt_arrow` Difficulty row, and context-sensitive right-hand `DIRTMASKS/PANEL01` card displaying the live Starting Grid / Opponent Lineup (`POS`, `DRIVER`, `CLASS/PI`), 5-tier AI Difficulty + CR bonus breakdown, and Event Briefing.
 
-- [ ] **PT-40 — Road Discovered banner texture is dark and unreadable (+ yellow artifact under car)**
+- [x] **PT-40 — Road Discovered banner texture is dark and unreadable (+ yellow artifact under car)**
   - **Priority**: P1
   - **Evidence**: `bug_011.png` (`t=565.8s`, `-706.06 45.86 -1525.05`). Bottom `ROAD DISCOVERED 2 / 216` bar renders dark charcoal text on a dark grunge plate (almost invisible), and a stray bright yellow rectangle appears beneath the car's rear bumper.
+  - **Fix (PT-E)**: Replaced the `H_BARN_FIND_HUD` `ignore_zero_alpha = true` FBF path (which forced hidden zero-alpha yellow quads visible under the bumper) with a high-contrast angled FH1 discovery ribbon featuring crisp white bold text, magenta `#F90064` accent/counter chip, road icon, and animated progress bar.
 
-- [ ] **PT-41 — Starter car selection after intro qualification race is not 1:1**
+- [x] **PT-41 — Starter car selection after intro qualification race is not 1:1**
   - **Priority**: P1
   - **Evidence**: `bug_018.png` (`t=789.1s`). After finishing the Corrado intro race, game drops directly into the generic Autoshow `MANUFACTURERS` screen (showing VW Beetle) instead of FH1's curated starter car / Dak & Alice onboarding flow.
+  - **Fix (PT-E)**: Made `kFestivalRegistration` blocking with a dedicated Alice & Dak **WELCOME TO HORIZON • FIRST FESTIVAL CAR** onboarding card, armed `starter_autoshow_onboarding()` on handoff, and opened Autoshow directly into price-sorted `"All Affordable"` starter picks (with Alice/Dak banner & Corrado Free Roam exit).
 
-- [ ] **PT-42 — Post-Race Finish / Reward Tally screen not 1:1 parity**
+- [x] **PT-42 — Post-Race Finish / Reward Tally screen not 1:1 parity**
   - **Priority**: P1
   - **Evidence**: `bug_027.png` (`t=1801.9s`, `FOR_MustangBOSS429_70`). Displays raw internal ID `PLANE_RACE_001` at top-left, combines credits/wristband/popularity/prize-car into a single custom dashboard instead of FH1's sequential animated Post-Race screens (`FINISHED` -> `RACE RESULTS` -> `CR EARNED` -> `POINTS EARNED` / `POPULARITY` / `PRIZE CAR`), and overlaps top-left title with perf overlay.
+  - **Fix (PT-E)**: Added `race::resolve_event_display_title()` (bound to localized stringtables; `PLANE_RACE_001` -> `MUSTANG VS MUSTANG`) and implemented retail FH1's sequential animated 3-stage Post-Race flow (`RACE RESULTS` leaderboard -> `CREDITS EARNED` rolling count-up -> `WRISTBAND & POPULARITY` + `PRIZE CAR AWARDED` celebration).
 
-- [ ] **PT-43 — Autoshow UX/UI not 1:1 parity**
+- [x] **PT-43 — Autoshow UX/UI not 1:1 parity**
   - **Priority**: P1
   - **Evidence**: `bug_028.png` (`t=1855.3s`, `31,330 Cr`). Dark flat backdrop (`67 FPS`), manufacturer cards clip against car, missing authentic FH1 Autoshow UI4 carousel/grid, spec comparison, lighting/reflections, and showroom camera transitions.
+  - **Fix (PT-E)**: Brightened the Autoshow studio to a cool-white cyclorama with reflective turntable, overhead softboxes, smooth shift-lens & `kPaint` camera transitions, cut stage tessellation/per-frame scans for high FPS, enforced strict non-clipping `AutoshowLayout` (bottom horizontal carousel rail, right-docked 5-bar live spec comparison with deltas, factory/custom finish & caliper strip, and purchase confirmation guard).
 
 - [x] **PT-44 — Top-left objective banner overlaps the Performance Overlay (`F3`) and lacks proper left-margin / styling**
   - **Priority**: P2

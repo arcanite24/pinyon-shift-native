@@ -38,6 +38,8 @@ enum class HubCameraFocus {
   kRoof,
   kSide,
   kInterior,
+  kPaint,
+  kRearThreeQuarter,
 };
 
 const char* hub_room_name(HubRoom room);
@@ -46,17 +48,27 @@ HubCameraFocus focus_for_part_enum(int part_enum);
 // Smooth turntable camera for 3D Festival Hub screens.
 struct HubCamera {
   float yaw = 0.62f;        // radians (front 3/4 view)
-  float pitch = 0.17f;      // radians above horizon
-  float distance = 4.9f;    // metres from target
-  float target[3] = {0.0f, 0.55f, 0.0f};
+  float pitch = 0.16f;      // radians above horizon
+  float distance = 5.15f;   // metres from target
+  float target[3] = {0.0f, 0.54f, 0.0f};
   float target_yaw = 0.62f;
-  float target_pitch = 0.17f;
-  float target_dist = 4.9f;
-  float target_pos[3] = {0.0f, 0.55f, 0.0f};
+  float target_pitch = 0.16f;
+  float target_dist = 5.15f;
+  float target_pos[3] = {0.0f, 0.54f, 0.0f};
+  float lens_shift_x = 0.0f;
+  float lens_shift_y = 0.0f;
+  float target_lens_shift_x = 0.0f;
+  float target_lens_shift_y = 0.0f;
+  bool has_explicit_framing = false;
   bool auto_orbit = true;
-  float orbit_speed = 0.18f;  // rad/s slow showroom turntable rotation
+  float orbit_speed = 0.16f;      // rad/s slow showroom turntable rotation
+  float idle_orbit_delay = 3.5f;  // seconds of idle before resuming gentle auto-orbit
+  float manual_idle_s = 0.0f;
+  bool user_orbited = false;
+  float orbit_blend = 1.0f;
 
   void set_focus(HubCameraFocus focus);
+  void set_framing(float shift_x, float shift_y);
   void nudge_orbit(float dyaw, float dpitch, float ddist = 0.0f);
   void step(float dt);
 };
@@ -181,6 +193,39 @@ UpgradeSpecStrings format_upgrade_spec_strings(const garage::CarStats& cur, cons
                                                bool metric_units);
 std::string format_autoshow_spec_line(double peak_power_kw, double peak_torque_nm, double curb_weight_kg,
                                       bool metric_units);
+
+// Non-clipping canonical layout geometry for the Horizon Autoshow HUD.
+// Guarantees every UI surface stays strictly outside `hero_car_viewport`.
+struct AutoshowRect {
+  float x0 = 0.0f;
+  float y0 = 0.0f;
+  float x1 = 0.0f;
+  float y1 = 0.0f;
+  float width() const { return x1 - x0; }
+  float height() const { return y1 - y0; }
+  bool valid() const { return x1 > x0 && y1 > y0; }
+  bool intersects(const AutoshowRect& o) const {
+    return valid() && o.valid() && x0 < o.x1 && x1 > o.x0 && y0 < o.y1 && y1 > o.y0;
+  }
+};
+
+struct AutoshowLayout {
+  float scale = 1.0f;
+  AutoshowRect top_bar{};
+  AutoshowRect filter_bar{};
+  AutoshowRect hero_car_viewport{};
+  AutoshowRect spec_card{};
+  bool spec_card_visible = false;
+  AutoshowRect rail_header{};
+  AutoshowRect carousel_rail{};
+  AutoshowRect swatch_strip{};
+  AutoshowRect finish_strip{};
+  AutoshowRect button_bar{};
+  AutoshowRect confirm_modal{};
+};
+
+AutoshowLayout compute_autoshow_layout(float w, float h, AutoshowStep step, bool show_specs,
+                                       bool show_filters);
 
 void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autoshow,
                        const std::vector<garage::ClassBand>& bands, int64_t credits,

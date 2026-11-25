@@ -1,6 +1,105 @@
 #include "game_hud_internal.h"
+#include "race/campaign_flow.h"
+
+#include <cstdlib>
 
 namespace carview::hud_detail {
+
+namespace {
+
+std::string resolve_hud_event_title(const RaceHud& r) {
+  std::string loc;
+  if (!r.event.empty()) {
+    const std::string gt = game_text(r.event);
+    if (!gt.empty() && gt != r.event) loc = gt;
+  }
+  return race::resolve_event_display_title(r.event, loc);
+}
+
+struct ParsedGridDifficulty {
+  bool found = false;
+  int tier_index = 1;  // 0..4 (EASY, MED, HARD, PRO, HARD+)
+  std::string tier_name = "MED";
+  int bonus_pct = 15;
+};
+
+ParsedGridDifficulty parse_grid_difficulty(const RaceHud& r) {
+  ParsedGridDifficulty out;
+  out.bonus_pct = r.difficulty_pct > 0 ? std::max(0, r.difficulty_pct - r.assists_pct) : 15;
+  for (const auto& item : r.grid_menu) {
+    std::string up = item;
+    for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
+    if (up.find("DIFFICULTY") == std::string::npos) continue;
+    out.found = true;
+    if (up.find("HARD+") != std::string::npos) {
+      out.tier_index = 4;
+      out.tier_name = "HARD+";
+    } else if (up.find("PRO") != std::string::npos) {
+      out.tier_index = 3;
+      out.tier_name = "PRO";
+    } else if (up.find("HARD") != std::string::npos) {
+      out.tier_index = 2;
+      out.tier_name = "HARD";
+    } else if (up.find("EASY") != std::string::npos) {
+      out.tier_index = 0;
+      out.tier_name = "EASY";
+    } else {
+      out.tier_index = 1;
+      out.tier_name = "MED";
+    }
+    const size_t plus = up.find('+');
+    const size_t pct = plus != std::string::npos ? up.find('%', plus) : std::string::npos;
+    if (plus != std::string::npos && pct != std::string::npos && pct > plus + 1) {
+      out.bonus_pct = std::max(0, std::atoi(up.substr(plus + 1, pct - plus - 1).c_str()));
+    }
+    break;
+  }
+  return out;
+}
+
+bool menu_item_is_difficulty(std::string_view item) {
+  std::string up(item);
+  for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
+  return up.find("DIFFICULTY") != std::string::npos;
+}
+
+bool menu_item_is_quit(std::string_view item) {
+  std::string up(item);
+  for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
+  return up.find("QUIT") != std::string::npos || up.find("EXIT") != std::string::npos;
+}
+
+void draw_race_post_stage_pills(ui::List& l, const Layout& g, int active_stage_idx) {
+  const float s = g.s;
+  static constexpr const char* kLabels[3] = {"1  RACE RESULTS", "2  CREDITS EARNED", "3  WRISTBAND & REWARDS"};
+  const float py = g.T(32);
+  const float ph = 24.0f * s;
+  const float gap = 8.0f * s;
+  float widths[3]{};
+  float total_w = 0.0f;
+  for (int i = 0; i < 3; ++i) {
+    widths[i] = std::max(122.0f * s, ui::List::measure(kLabels[i], font(ui::Font::kE, 11.0f * s, kText)) + 22.0f * s);
+    total_w += widths[i];
+  }
+  total_w += gap * 2.0f;
+  float x = g.w - 54.0f * s - total_w;
+  Turn t(l, x + 0.5f * total_w, py + 0.5f * ph, ui4::kTiltRad * 0.45f);
+  for (int i = 0; i < 3; ++i) {
+    const bool act = (i == active_stage_idx);
+    const bool done = (i < active_stage_idx);
+    if (act) {
+      ui4::brush(l, x - 3.0f * s, py - 2.0f * s, x + widths[i] + 3.0f * s, py + ph + 2.0f * s, ui4::kPink, false);
+    } else {
+      ui4::pill(l, x, py, x + widths[i], py + ph, done ? ui4::kRowAlt : ui4::kBrushBlack, ui4::PillKind::kHud01);
+      if (done) l.rect(x, py + ph - 2.5f * s, x + widths[i], py + ph, ui4::kYellow);
+    }
+    l.text(x + 0.5f * widths[i], py + 6.0f * s, kLabels[i],
+           font(ui::Font::kE, 11.0f * s, act ? kText : (done ? ui4::kYellow : ui4::kDim), Align::kCenter));
+    x += widths[i] + gap;
+  }
+}
+
+}  // namespace
 
 void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
   const float s = g.s;
@@ -12,43 +111,73 @@ void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
       if (std::fabs(a) > 1e-3f) tilt_rad = a;
     }
   }
-  // Lift the card slightly when the grid menu's help bar sits beneath it.
-  const float lift = r.grid_menu_open ? 34.0f : 0.0f;
-  // Full-bleed-left pink brush with event name, overlapping black MiniTape with event type.
+  const std::string event_title = resolve_hud_event_title(r);
+  const std::string event_type =
+      !r.event_type.empty() ? r.event_type : str("CareerEventUI", "IDS_TitleFestivalRace", "FESTIVAL RACE");
+  const ParsedGridDifficulty diff = parse_grid_difficulty(r);
+  const int total_bonus_pct = diff.bonus_pct + std::max(0, r.assists_pct);
+
+  // Lift the bottom-left event banner cleanly above the button bar.
+  const float lift = r.grid_menu_open ? 44.0f : 0.0f;
+  // Full-bleed-left pink brush with localized event title, overlapping black MiniTape with event type + metadata strip.
   {
-    l.turn(g.L(484), g.B(597 - lift), tilt_rad);
-    ui4::brush(l, -24 * s, g.B(547 - lift), g.L(968), g.B(647 - lift), ui4::kPink, true);
-    TextStyle ns = font(ui::Font::kE, 47 * s, kText);
-    fit(r.event, ns, g.L(940) - g.L(100), 20 * s);
-    l.text(g.L(100), g.B(588 - lift) + (47 * s - ns.size) * 0.5f, r.event, ns);
+    l.turn(g.L(484), g.B(585 - lift), tilt_rad);
+    ui4::brush(l, -24 * s, g.B(538 - lift), g.L(820), g.B(632 - lift), ui4::kPink, true);
+    TextStyle ns = font(ui::Font::kE, 44 * s, kText);
+    fit(event_title, ns, g.L(792) - g.L(96), 20 * s);
+    l.text(g.L(96), g.B(576 - lift) + (44 * s - ns.size) * 0.5f, event_title, ns);
+
+    // Crisp dark event metadata strip directly beneath the pink title banner.
+    std::string meta = r.showcase
+                           ? ("SHOWCASE  •  VS " + (r.showcase_aircraft.empty() ? std::string("AIRCRAFT") : r.showcase_aircraft))
+                           : (r.circuit ? ("CIRCUIT  •  " + std::to_string(std::max(1, r.laps)) +
+                                           (r.laps == 1 ? " LAP" : " LAPS"))
+                                        : std::string("POINT-TO-POINT SPRINT"));
+    meta += "  •  " + std::to_string(std::max(1, r.cars)) + (r.cars == 1 ? " DRIVER" : " DRIVERS");
+    if (!r.band_name.empty()) meta += "  •  " + r.band_name;
+    if (r.base_credits > 0) meta += "  •  1ST: " + thousands(r.base_credits) + " CR";
+    TextStyle ms = font(ui::Font::kB, 13.0f * s, ui4::kOffWhite);
+    fit(meta, ms, g.L(740) - g.L(96), 9.5f * s);
+    const float mw = std::clamp(ui::List::measure(meta, ms) + 34.0f * s, 320.0f * s, 720.0f * s);
+    ui4::pill(l, g.L(84), g.B(634 - lift), g.L(84) + mw, g.B(660 - lift), ui4::kCharcoalDark, ui4::PillKind::kHud01);
+    l.rect(g.L(84), g.B(634 - lift), g.L(88), g.B(660 - lift), ui4::kYellow);
+    l.text(g.L(98), g.B(640 - lift), meta, ms);
     l.unturn();
   }
   {
-    l.turn(g.L(257), g.B(562 - lift), tilt_rad);
-    const std::string type =
-        !r.event_type.empty() ? r.event_type : str("CareerEventUI", "IDS_TitleFestivalRace", "FESTIVAL RACE");
-    TextStyle ts = font(ui::Font::kE, 36 * s, kText);
-    fit(type, ts, g.L(440) - g.L(100), 18 * s);
-    const float tw = ui::List::measure(type, ts);
-    ui4::brush(l, g.L(75), g.B(535 - lift), std::max(g.L(420), g.L(100) + tw + 34 * s), g.B(588 - lift),
+    l.turn(g.L(257), g.B(550 - lift), tilt_rad);
+    TextStyle ts = font(ui::Font::kE, 32 * s, kText);
+    fit(event_type, ts, g.L(440) - g.L(96), 16 * s);
+    const float tw = ui::List::measure(event_type, ts);
+    ui4::brush(l, g.L(72), g.B(522 - lift), std::max(g.L(380), g.L(96) + tw + 34 * s), g.B(570 - lift),
                ui4::kBrushBlack, false);
-    l.text(g.L(100), g.B(544 - lift) + (36 * s - ts.size) * 0.5f, type, ts);
+    l.text(g.L(96), g.B(530 - lift) + (32 * s - ts.size) * 0.5f, event_type, ts);
     l.unturn();
   }
   if (!r.grid_menu_open || r.grid_menu.empty()) return;
-  // Tilted left-side Grid Menu (PRE_AND_POST_RACE MENU / race-grid.png: strictly fixed row pitch & dimensions).
+
+  // Tilted left-side FH1 Pre-Race Action Menu (preserving exact row indices & hit zones for mouse/pad/keyboard).
+  const bool on_diff_row = r.grid_selected >= 0 && size_t(r.grid_selected) < r.grid_menu.size() &&
+                           menu_item_is_difficulty(r.grid_menu[size_t(r.grid_selected)]);
+  const bool on_quit_row = r.grid_selected >= 0 && size_t(r.grid_selected) < r.grid_menu.size() &&
+                           menu_item_is_quit(r.grid_menu[size_t(r.grid_selected)]);
   l.turn(g.L(226), g.T(195), tilt_rad);
   for (size_t i = 0; i < r.grid_menu.size(); ++i) {
     const bool sel = int(i) == r.grid_selected;
-    const float bottom = g.T(210 + 52.0f * float(i));
-    const std::string& item = r.grid_menu[i];
-    TextStyle it = font(ui::Font::kE, 35 * s, kText);
-    fit(item, it, g.L(680), 14 * s);
-    const float tw = ui::List::measure(item, it);
-    const float bx0 = g.L(152);
-    const float by0 = bottom - it.size - 7 * s;
-    const float bx1 = std::max(g.L(340), g.L(184) + tw + 32 * s);
-    const float by1 = bottom + 6 * s;
+    const bool is_diff = menu_item_is_difficulty(r.grid_menu[i]);
+    const float bottom = g.T(204 + 54.0f * float(i));
+    std::string label = r.grid_menu[i];
+    if (is_diff) {
+      label = "DIFFICULTY: " + diff.tier_name + "  +" + std::to_string(diff.bonus_pct) + "% CR";
+    }
+    TextStyle it = font(ui::Font::kE, 32 * s, kText);
+    fit(label, it, g.L(480), 14 * s);
+    const float tw = ui::List::measure(label, it);
+    const float arrow_pad = is_diff ? 46.0f * s : 0.0f;
+    const float bx0 = g.L(122);
+    const float by0 = bottom - it.size - 8 * s;
+    const float bx1 = std::max(g.L(340), g.L(152) + tw + arrow_pad + 34 * s);
+    const float by1 = bottom + 7 * s;
     l.add_hit(bx0, by0, bx1, by1, ui::kHitRow, int(i));
     if (sel) {
       std::array<float, 4> clip_uv{};
@@ -59,11 +188,155 @@ void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
     } else {
       ui4::brush(l, bx0, by0, bx1, by1, ui4::kBrushBlack, false);
     }
-    l.text(g.L(184), bottom - it.size, item, it);
+    if (is_diff) {
+      const float mid_y = 0.5f * (by0 + by1);
+      ui4::opt_arrow(l, g.L(144), mid_y, 14.0f * s, -1, sel ? ui4::kYellow : ui4::kDim);
+      l.text(g.L(162), bottom - it.size, label, it);
+      ui4::opt_arrow(l, bx1 - 18.0f * s, mid_y, 14.0f * s, +1, sel ? ui4::kYellow : ui4::kDim);
+    } else {
+      l.text(g.L(152), bottom - it.size, label, it);
+    }
   }
   l.unturn();
-  // Match retail race-grid.png: only A SELECT on Grid Menu (prevents accidental race quits).
-  ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_Select", "SELECT")}}, g.w, g.h);
+
+  // Right-hand FH1 Pre-Race Info Card (Event Details + Current Difficulty Bonus OR Starting Grid / Opponent Lineup).
+  // Anchored neatly on the right edge (x=834..1224) so the hero car stays cleanly framed in center view!
+  {
+    const float cx0 = g.R(834);
+    const float cx1 = g.R(1224);
+    const float cy0 = g.T(96);
+    const float card_h = on_diff_row ? 316.0f * s : (on_quit_row ? 214.0f * s : 374.0f * s);
+    Turn rt(l, 0.5f * (cx0 + cx1), cy0 + 0.5f * card_h, tilt_rad * 0.55f);
+    ui4::panel01(l, cx0, cy0, cx1, cy0 + card_h, s, ui4::kCharcoalDark, ui4::kPink);
+
+    const std::string card_hdr = on_diff_row ? "DIFFICULTY & REWARDS"
+                                 : on_quit_row ? "EVENT BRIEFING"
+                                               : "STARTING GRID  •  LINEUP";
+    ui4::brush(l, cx0 - 6.0f * s, cy0 + 10.0f * s, cx1 + 6.0f * s, cy0 + 42.0f * s, ui4::kPink, false);
+    l.text(cx0 + 16.0f * s, cy0 + 16.0f * s, card_hdr, font(ui::Font::kE, 16.5f * s, kText));
+
+    float y = cy0 + 54.0f * s;
+    const float ix0 = cx0 + 16.0f * s;
+    const float ix1 = cx1 - 16.0f * s;
+
+    // Player car & difficulty bonus summary strip (always visible at top of right info card).
+    if (!r.grid_car_info.empty()) {
+      ui4::offwhite_strip(l, ix0, y, ix1, y + 26.0f * s, s, false);
+      TextStyle cs = font(ui::Font::kE, 12.5f * s, ui4::kInk);
+      cs.keep_case = true;
+      fit(r.grid_car_info, cs, (ix1 - ix0) - 20.0f * s, 9.5f * s);
+      l.text(ix0 + 10.0f * s, y + 6.5f * s, r.grid_car_info, cs);
+      y += 34.0f * s;
+    }
+
+    if (on_diff_row) {
+      // 5-tier AI Difficulty selector bar (EASY / MED / HARD / PRO / HARD+).
+      l.text(ix0, y, "AI OPPONENT DIFFICULTY  (< / > TO ADJUST)", font(ui::Font::kB, 11.0f * s, ui4::kDim));
+      y += 18.0f * s;
+      static constexpr const char* kTiers[5] = {"EASY", "MED", "HARD", "PRO", "HARD+"};
+      const float gap = 5.0f * s;
+      const float tw = ((ix1 - ix0) - gap * 4.0f) / 5.0f;
+      for (int ti = 0; ti < 5; ++ti) {
+        const float tx0 = ix0 + float(ti) * (tw + gap);
+        const bool active_t = (ti == diff.tier_index);
+        l.rect(tx0, y, tx0 + tw, y + 26.0f * s, active_t ? ui4::kPink : ui4::kRowAlt);
+        if (active_t) l.rect(tx0, y + 23.0f * s, tx0 + tw, y + 26.0f * s, ui4::kYellow);
+        l.text(tx0 + 0.5f * tw, y + 6.5f * s, kTiers[ti],
+               font(ui::Font::kE, 11.5f * s, active_t ? kText : ui4::kDim, Align::kCenter));
+      }
+      y += 38.0f * s;
+
+      // Live CR Bonus Breakdown.
+      auto kv_row = [&](const std::string& k, const std::string& v, uint32_t vcol, bool alt) {
+        if (alt) l.rect(ix0, y - 3.0f * s, ix1, y + 22.0f * s, ui4::kRowAlt);
+        l.text(ix0 + 8.0f * s, y + 2.0f * s, k, font(ui::Font::kB, 12.0f * s, ui4::kOffWhite));
+        l.text(ix1 - 8.0f * s, y + 1.0f * s, v, font(ui::Font::kE, 13.5f * s, vcol, Align::kRight));
+        y += 26.0f * s;
+      };
+      kv_row("AI DIFFICULTY BONUS", "+" + std::to_string(diff.bonus_pct) + "% CR", ui4::kYellow, false);
+      kv_row("DRIVING ASSISTS BONUS",
+             r.assists_pct > 0 ? ("+" + std::to_string(r.assists_pct) + "% CR") : "STANDARD (0%)",
+             r.assists_pct > 0 ? ui4::kGreen : ui4::kDim, true);
+      if (r.base_credits > 0) {
+        kv_row("1ST PLACE BASE PURSE", thousands(r.base_credits) + " CR", kText, false);
+      }
+      y += 6.0f * s;
+      ui4::brush(l, ix0 - 2.0f * s, y, ix1 + 2.0f * s, y + 34.0f * s, ui4::kBrushBlack, false);
+      l.rect(ix0 - 2.0f * s, y, ix0 + 3.0f * s, y + 34.0f * s, ui4::kYellow);
+      l.text(ix0 + 12.0f * s, y + 9.0f * s, "TOTAL REWARD BONUS", font(ui::Font::kE, 13.0f * s, kText));
+      l.text(ix1 - 12.0f * s, y + 7.0f * s, "+" + std::to_string(total_bonus_pct) + "% CR",
+             font(ui::Font::kE, 18.0f * s, ui4::kYellow, Align::kRight));
+    } else if (on_quit_row) {
+      l.text(ix0, y, "EVENT: " + event_title, font(ui::Font::kE, 14.0f * s, kText));
+      y += 24.0f * s;
+      l.text(ix0, y, "DIFFICULTY BONUS: +" + std::to_string(total_bonus_pct) + "% CR (" + diff.tier_name + ")",
+             font(ui::Font::kB, 12.0f * s, ui4::kYellow));
+      y += 28.0f * s;
+      l.rect(ix0, y, ix1, y + 1.0f * s, rgba(255, 255, 255, 30));
+      y += 12.0f * s;
+      l.text(ix0, y, "EXIT BACK TO COLORADO FREE ROAM", font(ui::Font::kB, 12.5f * s, ui4::kOffWhite));
+      l.text(ix0, y + 19.0f * s, "NO WRISTBAND OR CREDIT PENALTY", font(ui::Font::kB, 11.0f * s, ui4::kDim));
+    } else {
+      // Starting Grid / Opponent Lineup + Difficulty Bonus summary chip!
+      ui4::pill(l, ix0, y, ix1, y + 24.0f * s, ui4::kBrushBlack, ui4::PillKind::kHud01);
+      l.text(ix0 + 10.0f * s, y + 5.0f * s,
+             r.circuit ? ("CIRCUIT  •  " + std::to_string(std::max(1, r.laps)) + " LAPS")
+                       : (r.showcase ? "HORIZON SHOWCASE" : "POINT-TO-POINT"),
+             font(ui::Font::kB, 11.5f * s, ui4::kOffWhite));
+      l.text(ix1 - 10.0f * s, y + 4.5f * s, diff.tier_name + "  +" + std::to_string(total_bonus_pct) + "% CR",
+             font(ui::Font::kE, 12.0f * s, ui4::kYellow, Align::kRight));
+      y += 30.0f * s;
+
+      // Column headers for Starting Grid.
+      l.text(ix0 + 4.0f * s, y, "POS", font(ui::Font::kB, 10.5f * s, ui4::kDim));
+      l.text(ix0 + 36.0f * s, y, "DRIVER", font(ui::Font::kB, 10.5f * s, ui4::kDim));
+      l.text(ix1 - 4.0f * s, y, "CLASS / PI", font(ui::Font::kB, 10.5f * s, ui4::kDim, Align::kRight));
+      y += 16.0f * s;
+
+      if (r.showcase) {
+        const float rh = 34.0f * s;
+        l.rect(ix0, y, ix1, y + rh, ui4::kRowHighlight);
+        l.rect(ix0, y, ix0 + 4.0f * s, y + rh, ui4::kPink);
+        l.text(ix0 + 10.0f * s, y + 8.0f * s, "1", font(ui::Font::kE, 14.0f * s, ui4::kYellow));
+        l.text(ix0 + 36.0f * s, y + 9.0f * s, "YOU (LOANER SHOWCASE CAR)", font(ui::Font::kE, 12.5f * s, kText));
+        y += rh + 6.0f * s;
+        l.rect(ix0, y, ix1, y + rh, ui4::kRowAlt);
+        l.rect(ix0, y, ix0 + 4.0f * s, y + rh, ui4::kAmber);
+        l.text(ix0 + 10.0f * s, y + 8.0f * s, "VS", font(ui::Font::kE, 13.0f * s, ui4::kAmber));
+        l.text(ix0 + 36.0f * s, y + 9.0f * s,
+               r.showcase_aircraft.empty() ? std::string("SHOWCASE CHALLENGER") : r.showcase_aircraft,
+               font(ui::Font::kE, 12.5f * s, ui4::kYellow));
+      } else if (!r.rows.empty()) {
+        const size_t n_show = std::min<size_t>(r.rows.size(), 8);
+        const float rh = 27.0f * s;
+        for (size_t k = 0; k < n_show; ++k) {
+          const auto& row = r.rows[k];
+          const uint32_t bg = row.player ? ui4::kRowHighlight : ((k % 2 == 1) ? ui4::kRowAlt : rgba(20, 22, 28, 170));
+          l.rect(ix0, y, ix1, y + rh - 2.0f * s, bg);
+          if (row.player) l.rect(ix0, y, ix0 + 4.0f * s, y + rh - 2.0f * s, ui4::kPink);
+          l.text(ix0 + 10.0f * s, y + 5.5f * s, std::to_string(row.place > 0 ? row.place : int(k + 1)),
+                 font(ui::Font::kE, 12.5f * s, row.player ? ui4::kYellow : ui4::kOffWhite));
+          TextStyle dts = font(row.player ? ui::Font::kE : ui::Font::kB, 12.0f * s, row.player ? kText : ui4::kOffWhite);
+          dts.keep_case = true;
+          fit(row.name, dts, (ix1 - ix0) - 122.0f * s, 9.0f * s);
+          l.text(ix0 + 36.0f * s, y + 6.0f * s, row.name, dts);
+          if (!row.car_class.empty() && row.pi > 0) {
+            ui4::class_badge(l, ix1 - 62.0f * s, y + 3.0f * s, 19.0f * s, row.car_class, row.pi);
+          }
+          y += rh;
+        }
+      } else {
+        l.text(ix0 + 8.0f * s, y + 8.0f * s,
+               std::to_string(std::max(1, r.cars)) + " COMPETITORS ON STARTING GRID",
+               font(ui::Font::kB, 12.5f * s, ui4::kOffWhite));
+      }
+    }
+  }
+
+  std::vector<ui4::Prompt> prompts = {{"A", str("HelpButtons", "IDS_Select", "SELECT")}};
+  if (on_diff_row) prompts.push_back({"DPAD_LR", "ADJUST DIFFICULTY"});
+  prompts.push_back({"B", "QUIT RACE"});
+  ui4::button_bar(l, prompts, g.w, g.h);
 }
 
 // (b2) The race HUD: laps (or the distance), the timers, place, standings.
@@ -273,8 +546,66 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
 void results_table(ui::List& l, const RaceHud& r, const Layout& g) {
   const SceneDraw sc = resolve_scene_draw("H_POST_RACE_RESULTS", true);
   const float s = g.s;
+  const std::string event_title = resolve_hud_event_title(r);
   ui4::button_bar(l, {{"B", str("HelpButtons", "IDS_Back", "BACK")}}, g.w, g.h);
-  if (!sc.ok()) return;
+  if (!sc.ok()) {
+    // Crisp FH1 tilted fallback leaderboard when H_POST_RACE_RESULTS scene is unavailable.
+    ui4::subtle_vignette(l, g.w, g.h, 0.36f);
+    draw_race_post_stage_pills(l, g, 0);
+    const float tx0 = g.L(88), ty0 = g.T(84), tw = g.R(1192) - tx0;
+    Turn t(l, tx0 + 0.5f * tw, ty0 + 220.0f * s, ui4::kTiltRad * 0.45f);
+    ui4::title_banner(l, s, tx0, ty0, str("ScreenTitles", "IDS_PostRace_RaceResults", "RACE RESULTS"),
+                      (!r.event_type.empty() ? r.event_type : std::string("FESTIVAL RACE")) + "  •  " + event_title,
+                      true, tw);
+    const float py0 = ty0 + 78.0f * s;
+    const size_t nrows = std::min<size_t>(r.rows.size(), 8);
+    const float row_h = 38.0f * s;
+    const float panel_h = 46.0f * s + float(std::max<size_t>(nrows, 1)) * row_h + 14.0f * s;
+    ui4::panel(l, tx0, py0, tx0 + tw, py0 + panel_h, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+    ui4::offwhite_strip(l, tx0 + 10.0f * s, py0 + 8.0f * s, tx0 + tw - 10.0f * s, py0 + 38.0f * s, s, false);
+    const float c_pos = tx0 + 24.0f * s;
+    const float c_drv = tx0 + 84.0f * s;
+    const float c_cls = tx0 + 350.0f * s;
+    const float c_car = tx0 + 440.0f * s;
+    const float c_lap = tx0 + tw - 210.0f * s;
+    const float c_tot = tx0 + tw - 22.0f * s;
+    const TextStyle hs = font(ui::Font::kE, 13.0f * s, ui4::kInk);
+    l.text(c_pos, py0 + 16.0f * s, "POS", hs);
+    l.text(c_drv, py0 + 16.0f * s, "DRIVER", hs);
+    l.text(c_cls, py0 + 16.0f * s, "CLASS", hs);
+    l.text(c_car, py0 + 16.0f * s, "CAR", hs);
+    l.text(c_lap, py0 + 16.0f * s, "BEST LAP", font(ui::Font::kE, 13.0f * s, ui4::kInk, Align::kRight));
+    l.text(c_tot, py0 + 16.0f * s, "TIME / GAP", font(ui::Font::kE, 13.0f * s, ui4::kInk, Align::kRight));
+
+    float ry = py0 + 46.0f * s;
+    for (size_t i = 0; i < nrows; ++i) {
+      const RaceHudRow& row = r.rows[i];
+      const uint32_t bg = row.player ? ui4::kRowHighlight : ((i % 2 == 1) ? ui4::kRowAlt : rgba(20, 22, 28, 190));
+      l.rect(tx0 + 10.0f * s, ry, tx0 + tw - 10.0f * s, ry + row_h - 4.0f * s, bg);
+      if (row.player) l.rect(tx0 + 10.0f * s, ry, tx0 + 15.0f * s, ry + row_h - 4.0f * s, ui4::kPink);
+      l.text(c_pos, ry + 8.0f * s, std::to_string(row.place),
+             font(ui::Font::kE, 16.0f * s, row.place == 1 ? ui4::kYellow : kText));
+      TextStyle ds = font(row.player ? ui::Font::kE : ui::Font::kB, 14.5f * s, kText);
+      ds.keep_case = true;
+      fit(row.name, ds, (c_cls - c_drv) - 16.0f * s, 10.0f * s);
+      l.text(c_drv, ry + 9.0f * s, row.name, ds);
+      if (!row.car_class.empty() && row.pi >= 0) {
+        ui4::class_badge(l, c_cls, ry + 6.0f * s, 22.0f * s, row.car_class, row.pi);
+      }
+      TextStyle cs = font(ui::Font::kB, 13.5f * s, ui4::kOffWhite);
+      cs.keep_case = true;
+      fit(row.car, cs, (c_lap - 110.0f * s) - c_car, 10.0f * s);
+      l.text(c_car, ry + 9.5f * s, row.car, cs);
+      l.text(c_lap, ry + 9.0f * s, row.best_lap > 0 ? clock_ms(row.best_lap) : "--:--.---",
+             font(ui::Font::kB, 13.0f * s, ui4::kDim, Align::kRight));
+      const std::string tstr = row.finished ? clock_ms(row.time)
+                                            : (row.gap > 0.05 ? gap_ms(row.gap) : std::string("--:--.---"));
+      l.text(c_tot, ry + 8.5f * s, tstr,
+             font(ui::Font::kE, 14.0f * s, row.place == 1 ? ui4::kYellow : kText, Align::kRight));
+      ry += row_h;
+    }
+    return;
+  }
   const SceneFrame f{0.5f * g.w - 640 * s, 0.5f * g.h - 360 * s, s};
   {
     SceneBindings bgb;
@@ -501,6 +832,21 @@ void career_affinity_panel(ui::List& l, const RaceHud& r, const DriveHud& st, co
 // the right, and PLEASE WAIT bottom left.
 void points_page(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g, double page_elapsed) {
   const float s = g.s;
+  const std::string event_title = resolve_hud_event_title(r);
+  const std::string event_type = !r.event_type.empty() ? r.event_type : std::string("FESTIVAL RACE");
+  ui4::subtle_vignette(l, g.w, g.h, 0.28f);
+  draw_race_post_stage_pills(l, g, 2);
+
+  // Localized event eyebrow above Wristband & Popularity title.
+  {
+    Turn t(l, g.L(320), g.T(128));
+    const std::string eye = event_type + "  •  " + event_title;
+    TextStyle es = font(ui::Font::kB, 14.0f * s, ui4::kYellow);
+    fit(eye, es, g.L(520), 10.0f * s);
+    const float ew = std::clamp(ui::List::measure(eye, es) + 30.0f * s, 220.0f * s, 520.0f * s);
+    ui4::brush(l, g.L(92), g.T(114), g.L(92) + ew, g.T(142), ui4::kBrushBlack, false);
+    l.text(g.L(106), g.T(121), eye, es);
+  }
   // The grainy dark panel behind the wristband (the frame: x 0-520, y 235-365).
   {
     Turn t(l, g.L(260), g.T(300), -0.03f);
@@ -511,10 +857,10 @@ void points_page(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout
   {
     Turn t(l, g.L(339), g.T(192));
     brush(l, g.L(95), g.T(156), g.L(585), g.T(229), kBrush);
-    const std::string title = str("PostRaceFlow", "IDS_PointsEarned", "POINTS EARNED");
-    TextStyle ts = font(ui::Font::kE, 56 * s, kText);
-    fit(title, ts, g.L(570) - g.L(108), 24 * s);
-    l.text(g.L(108), g.T(166) + (56 * s - ts.size) * 0.5f, title, ts);
+    const std::string title = str("PostRaceFlow", "IDS_PointsEarned", "WRISTBAND & POPULARITY");
+    TextStyle ts = font(ui::Font::kE, 44 * s, kText);
+    fit(title, ts, g.L(570) - g.L(108), 22 * s);
+    l.text(g.L(108), g.T(168) + (44 * s - ts.size) * 0.5f, title, ts);
   }
   // The band's texture by the colour in its name (HORIZON\WRISTBANDS\<colour>XL).
   std::string lower, band;
@@ -581,30 +927,75 @@ void points_page(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout
              ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim, Align::kRight));
     }
   }
-  // Right-hand Career / Driver Level & Manufacturer Affinity XP breakdown panel.
-  if (r.driver_xp > 0 || r.affinity_xp > 0 || r.driver_level > 0 || r.affinity_level > 0 ||
-      r.affinity_bonus_credits > 0 || !r.gift_car_name.empty()) {
-    career_affinity_panel(l, r, st, g, g.R(646), g.T(156), g.R(1204), page_elapsed, false);
+
+  // Popularity Rank standing strip beneath Wristband progress.
+  {
+    const float pop_x0 = g.L(98), pop_x1 = g.L(464), pop_y0 = g.T(442), pop_y1 = g.T(518);
+    Turn pt(l, 0.5f * (pop_x0 + pop_x1), 0.5f * (pop_y0 + pop_y1), ui4::kTiltRad * 0.5f);
+    ui4::panel(l, pop_x0, pop_y0, pop_x1, pop_y1, s, ui4::kCharcoalDark, 0, ui4::kYellow, true);
+    l.text(pop_x0 + 16.0f * s, pop_y0 + 10.0f * s, "POPULARITY RANK", font(ui::Font::kB, 11.5f * s, ui4::kDim));
+    l.text(pop_x0 + 16.0f * s, pop_y0 + 29.0f * s, "#" + std::to_string(std::clamp(st.popularity_rank, 1, 250)),
+           font(ui::Font::kE, 34.0f * s, ui4::kYellow));
+    l.text(pop_x1 - 16.0f * s, pop_y0 + 38.0f * s, "FESTIVAL STANDING",
+           font(ui::Font::kE, 14.0f * s, ui4::kGreen, Align::kRight));
   }
-  // PLEASE WAIT: rotating festival spinner + sharp HUDPILL01.
-  std::array<float, 4> sp;
-  if (ui_texture("COMMON/LOADSPINNER", sp) || ui_texture("LOADING/LOADINGSPINNER50PX", sp)) {
-    l.image_rotated(g.L(86), g.B(664), 24 * s, 24 * s, float(r.clock * 2.8), sp, ui4::kWhite);
+
+  // Right-hand Career / Driver Level & Manufacturer Affinity XP panel + Prize Car Awarded showcase card.
+  const bool has_xp_panel = (r.driver_xp > 0 || r.affinity_xp > 0 || r.driver_level > 0 || r.affinity_level > 0 ||
+                             r.affinity_bonus_credits > 0 || !r.gift_car_name.empty());
+  if (has_xp_panel) {
+    career_affinity_panel(l, r, st, g, g.R(646), g.T(146), g.R(1204), page_elapsed, !r.won_car_name.empty());
+  } else if (!r.won_car_name.empty()) {
+    const float px0 = g.R(646), px1 = g.R(1204), py0 = g.T(166), py1 = g.T(366);
+    Turn wt(l, 0.5f * (px0 + px1), 0.5f * (py0 + py1), ui4::kTiltRad * 0.55f);
+    ui4::panel(l, px0, py0, px1, py1, s, ui4::kCharcoalDark, ui4::kYellow, ui4::kPink, true);
+    ui4::brush(l, px0 - 6.0f * s, py0 + 12.0f * s, px1 + 6.0f * s, py0 + 50.0f * s, ui4::kPink, false);
+    float tx = px0 + 18.0f * s;
+    if (ui4::badge_icon(l, tx, py0 + 16.0f * s, tx + 28.0f * s, py0 + 44.0f * s, ui4::BadgeIconKind::kTrophy)) {
+      tx += 36.0f * s;
+    }
+    l.text(tx, py0 + 21.0f * s, "PRIZE CAR AWARDED!", font(ui::Font::kE, 18.0f * s, ui4::kYellow));
+    TextStyle ns = font(ui::Font::kE, 26.0f * s, kText);
+    ns.keep_case = true;
+    fit(r.won_car_name, ns, (px1 - px0) - 36.0f * s, 14.0f * s);
+    l.text(px0 + 20.0f * s, py0 + 70.0f * s, r.won_car_name, ns);
+    ui4::offwhite_strip(l, px0 + 18.0f * s, py0 + 122.0f * s, px1 - 18.0f * s, py0 + 154.0f * s, s, false);
+    l.text(px0 + 30.0f * s, py0 + 131.0f * s, "DELIVERED TO YOUR HORIZON GARAGE", font(ui::Font::kE, 13.0f * s, ui4::kInk));
   }
-  ui4::pill(l, g.L(112), g.B(652), g.L(242), g.B(680), ui4::kPillGrey, ui4::PillKind::kHud01);
-  l.text(g.L(122), g.B(659), str("Main", "IDS_Please_Wait_Title", "PLEASE WAIT"), font(ui::Font::kB, 14.5f * s, kText));
+
+  // Final-stage action bar when no separate won-car page follows, else CONTINUE.
+  if (r.won_car_name.empty()) {
+    ui4::button_bar(l,
+                    {{"A", "CONTINUE TO FREE ROAM"},
+                     {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART RACE")},
+                     {"V", "WATCH REPLAY"}},
+                    g.w, g.h);
+  } else {
+    ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
+  }
 }
 
 // (c4) Prize Car Won screen (H_POST_RACE_WON_CAR style).
 void won_car_page(ui::List& l, const RaceHud& r, const Layout& g) {
   const float s = g.s;
+  const std::string event_title = resolve_hud_event_title(r);
   ui4::subtle_vignette(l, g.w, g.h, 0.30f);
+  draw_race_post_stage_pills(l, g, 2);
+  {
+    Turn t(l, g.L(340), g.T(148));
+    const std::string eye = (!r.event_type.empty() ? r.event_type : std::string("SHOWCASE")) + "  •  " + event_title;
+    TextStyle es = font(ui::Font::kB, 14.0f * s, ui4::kYellow);
+    fit(eye, es, g.L(560), 10.0f * s);
+    const float ew = std::clamp(ui::List::measure(eye, es) + 30.0f * s, 220.0f * s, 560.0f * s);
+    ui4::brush(l, g.L(92), g.T(134), g.L(92) + ew, g.T(162), ui4::kBrushBlack, false);
+    l.text(g.L(106), g.T(141), eye, es);
+  }
   {
     Turn t(l, g.L(340), g.T(215));
     TextStyle ts = font(ui::Font::kE, 48 * s, kText);
-    const float tw = ui::List::measure("NEW CAR WON!", ts);
+    const float tw = ui::List::measure("PRIZE CAR AWARDED!", ts);
     brush(l, g.L(92), g.T(178), std::max(g.L(560), g.L(112) + tw + 38 * s), g.T(250), kBrush);
-    l.text(g.L(112), g.T(188), "NEW CAR WON!", ts);
+    l.text(g.L(112), g.T(188), "PRIZE CAR AWARDED!", ts);
   }
   {
     Turn t(l, g.L(440), g.T(310));
@@ -617,19 +1008,27 @@ void won_car_page(ui::List& l, const RaceHud& r, const Layout& g) {
   }
   {
     Turn t(l, g.L(280), g.T(398));
-    ui4::offwhite_strip(l, g.L(105), g.T(378), g.L(470), g.T(418), s, true);
-    l.text(g.L(122), g.T(389), "ADDED TO YOUR GARAGE", font(ui::Font::kB, 18 * s, kDark));
+    ui4::offwhite_strip(l, g.L(105), g.T(378), g.L(510), g.T(418), s, true);
+    l.text(g.L(122), g.T(389), "DELIVERED TO YOUR HORIZON GARAGE", font(ui::Font::kB, 17 * s, kDark));
   }
-  ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
+  ui4::button_bar(l,
+                  {{"A", "CONTINUE TO FREE ROAM"},
+                   {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART RACE")},
+                   {"V", "WATCH REPLAY"}},
+                  g.w, g.h);
 }
 
 void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g) {
   const float s = g.s;
   const double page_elapsed = post_race_page_elapsed(r);
+  const std::string event_title = resolve_hud_event_title(r);
+  const std::string event_type = !r.event_type.empty() ? r.event_type : std::string("FESTIVAL RACE");
+
   if (r.results_page == 4) {
     ui4::subtle_vignette(l, g.w, g.h, 0.28f);
+    draw_race_post_stage_pills(l, g, 2);
     career_affinity_panel(l, r, st, g, g.C(330), g.T(148), g.C(950), page_elapsed, true);
-    ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
+    ui4::button_bar(l, {{"A", "CONTINUE TO FREE ROAM"}}, g.w, g.h);
     return;
   }
   if (r.results_page == 3 && !r.won_car_name.empty()) {
@@ -644,44 +1043,110 @@ void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g)
     results_table(l, r, g);
     return;
   }
+  // Stage 1 — RACE RESULTS: FH1 magenta 1ST PLACE / FINISHED header + compact podium leaderboard table!
   if (r.results_page == 0) {
+    ui4::subtle_vignette(l, g.w, g.h, 0.28f);
+    draw_race_post_stage_pills(l, g, 0);
     const float in = ease_in_time(page_elapsed, 0, 0.35);
-    const float dx = (1 - in) * -120 * s;
+    const float dx = (1 - in) * -100 * s;
+    const int place = r.stage ? r.stage_place : r.place;
     {
-      Turn t(l, g.L(376) + dx, g.T(270));
-      brush(l, dx, g.T(204), g.L(753) + dx, g.T(337), kPink);
-      const int place = r.stage ? r.stage_place : r.place;
+      Turn t(l, g.L(360) + dx, g.T(152));
+      brush(l, dx, g.T(106), g.L(660) + dx, g.T(196), kPink);
       char p[16];
-      std::snprintf(p, sizeof p, "%d%s ", place, place_suffix(place));
+      std::snprintf(p, sizeof p, "%d%s ", std::max(1, place), place_suffix(std::max(1, place)));
       const std::string text = p + str("InGame", "IDS_Place", "PLACE");
-      TextStyle ps = font(ui::Font::kE, 80 * s, kText);
-      fit(text, ps, g.L(735) - g.L(95), 30 * s);
-      l.text(g.L(95) + dx, g.T(230) + (80 * s - ps.size) * 0.5f, text, ps);
+      TextStyle ps = font(ui::Font::kE, 64 * s, kText);
+      fit(text, ps, g.L(630) - g.L(88), 28 * s);
+      l.text(g.L(88) + dx, g.T(122) + (64 * s - ps.size) * 0.5f, text, ps);
     }
     {
-      Turn t(l, g.L(229) + dx, g.T(200));
-      brush(l, g.L(75) + dx, g.T(167), g.L(383) + dx, g.T(233), kBrush);
-      TextStyle fs = font(ui::Font::kE, 45 * s, kText);
-      fit(str("InGame", "IDS_Finished", "FINISHED"), fs, g.L(372) - g.L(85), 20 * s);
-      l.text(g.L(85) + dx, g.T(171), str("InGame", "IDS_Finished", "FINISHED"), fs);
+      Turn t(l, g.L(290) + dx, g.T(96));
+      const std::string eye = str("InGame", "IDS_Finished", "FINISHED") + "  •  " + event_type + "  •  " + event_title;
+      TextStyle fs = font(ui::Font::kE, 22 * s, ui4::kYellow);
+      fit(eye, fs, g.L(660), 12 * s);
+      const float fw = std::clamp(ui::List::measure(eye, fs) + 34 * s, g.L(320), g.L(680));
+      brush(l, g.L(72) + dx, g.T(76), g.L(72) + dx + fw, g.T(114), kBrush);
+      l.text(g.L(88) + dx, g.T(84) + (22 * s - fs.size) * 0.5f, eye, fs);
+    }
+    // Podium / Leaderboard table directly on Stage 1 (POS, DRIVER, CAR / PI, TIME / GAP).
+    if (!r.rows.empty()) {
+      const float tx0 = g.L(72) + dx * 0.5f;
+      const float ty0 = g.T(214);
+      const float tw = g.L(760);
+      const size_t nrows = std::min<size_t>(r.rows.size(), 8);
+      const float row_h = 33.0f * s;
+      const float panel_h = 38.0f * s + float(nrows) * row_h + 14.0f * s;
+      Turn tb(l, tx0 + 0.5f * tw, ty0 + 0.5f * panel_h, ui4::kTiltRad * 0.45f);
+      ui4::panel(l, tx0, ty0, tx0 + tw, ty0 + panel_h, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+      ui4::offwhite_strip(l, tx0 + 10.0f * s, ty0 + 8.0f * s, tx0 + tw - 10.0f * s, ty0 + 34.0f * s, s, false);
+      const float c_pos = tx0 + 22.0f * s;
+      const float c_drv = tx0 + 74.0f * s;
+      const float c_car = tx0 + 300.0f * s;
+      const float c_time = tx0 + tw - 20.0f * s;
+      const TextStyle hs = font(ui::Font::kE, 12.0f * s, ui4::kInk);
+      l.text(c_pos, ty0 + 14.5f * s, "POS", hs);
+      l.text(c_drv, ty0 + 14.5f * s, "DRIVER", hs);
+      l.text(c_car, ty0 + 14.5f * s, "CAR / PI", hs);
+      l.text(c_time, ty0 + 14.5f * s, "TIME / GAP", font(ui::Font::kE, 12.0f * s, ui4::kInk, Align::kRight));
+
+      float ry = ty0 + 40.0f * s;
+      for (size_t i = 0; i < nrows; ++i) {
+        const RaceHudRow& row = r.rows[i];
+        const uint32_t bg = row.player ? ui4::kRowHighlight : ((i % 2 == 1) ? ui4::kRowAlt : rgba(20, 22, 28, 185));
+        l.rect(tx0 + 10.0f * s, ry, tx0 + tw - 10.0f * s, ry + row_h - 4.0f * s, bg);
+        if (row.player) l.rect(tx0 + 10.0f * s, ry, tx0 + 15.0f * s, ry + row_h - 4.0f * s, ui4::kPink);
+        l.text(c_pos, ry + 6.5f * s, std::to_string(row.place),
+               font(ui::Font::kE, 14.5f * s, row.place == 1 ? ui4::kYellow : (row.player ? ui4::kPinkHi : kText)));
+        TextStyle ds = font(row.player ? ui::Font::kE : ui::Font::kB, 13.5f * s, kText);
+        ds.keep_case = true;
+        fit(row.name, ds, (c_car - c_drv) - 14.0f * s, 9.5f * s);
+        l.text(c_drv, ry + 7.5f * s, row.name, ds);
+
+        float cx = c_car;
+        if (!row.car_class.empty() && row.pi >= 0) {
+          ui4::class_badge(l, cx, ry + 4.5f * s, 20.0f * s, row.car_class, row.pi);
+          cx += 62.0f * s;
+        }
+        TextStyle cs = font(ui::Font::kB, 12.5f * s, row.player ? kText : ui4::kDim);
+        cs.keep_case = true;
+        fit(row.car, cs, (c_time - cx) - 102.0f * s, 9.0f * s);
+        l.text(cx, ry + 8.0f * s, row.car, cs);
+
+        const std::string tstr = row.finished ? clock_ms(row.time)
+                                              : (row.gap > 0.05 ? gap_ms(row.gap) : std::string("FINISHED"));
+        l.text(c_time, ry + 7.5f * s, tstr,
+               font(ui::Font::kE, 13.0f * s, row.place == 1 ? ui4::kYellow : ui4::kOffWhite, Align::kRight));
+        ry += row_h;
+      }
     }
     ui4::button_bar(l,
                     {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")},
-                     {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART")},
+                     {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART RACE")},
                      {"X", str("InGame", "IDS_RaceResultsMenu", "RACE RESULTS")},
-                     {"V", "VIEW REPLAY"}},
+                     {"V", "WATCH REPLAY"}},
                     g.w, g.h);
     return;
   }
-  // The cash reward (oracle results-credits.png).
+  // Stage 2 — CREDITS EARNED (animated rolling count-up + updated balance).
   ui4::subtle_vignette(l, g.w, g.h, 0.25f);
+  draw_race_post_stage_pills(l, g, 1);
   {
-    Turn t(l, g.L(313), g.T(180));
-    brush(l, g.L(98), g.T(141), g.L(529), g.T(218), kBrush);
-    TextStyle ts = font(ui::Font::kE, 57 * s, kText);
-    const std::string title = str("ScreenTitles", "IDS_PostRace_Winnings", "CASH REWARD");
-    fit(title, ts, g.L(519) - g.L(108), 24 * s);
-    l.text(g.L(108), g.T(151), title, ts);
+    Turn t(l, g.L(313), g.T(114));
+    const std::string eye = event_type + "  •  " + event_title;
+    TextStyle es = font(ui::Font::kB, 14.0f * s, ui4::kYellow);
+    fit(eye, es, g.L(520), 10.0f * s);
+    const float ew = std::clamp(ui::List::measure(eye, es) + 30.0f * s, 240.0f * s, 520.0f * s);
+    ui4::brush(l, g.L(98), g.T(100), g.L(98) + ew, g.T(128), ui4::kBrushBlack, false);
+    l.text(g.L(112), g.T(107), eye, es);
+  }
+  {
+    Turn t(l, g.L(313), g.T(176));
+    brush(l, g.L(98), g.T(138), g.L(540), g.T(214), kBrush);
+    TextStyle ts = font(ui::Font::kE, 52 * s, kText);
+    const std::string title = str("ScreenTitles", "IDS_PostRace_Winnings", "CREDITS EARNED");
+    fit(title, ts, g.L(530) - g.L(108), 24 * s);
+    l.text(g.L(108), g.T(150) + (52 * s - ts.size) * 0.5f, title, ts);
   }
   const std::string cr = format_unit_label(str("UnitStrings", "IDS_Units_Credits", "Cr"), "Cr");
   char line[64], diff_buf[32], assist_buf[32], xp_buf[64];
@@ -712,22 +1177,24 @@ void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g)
   }
   const float row_step = rows.size() > 4 ? 24.0f : 28.0f;
   for (size_t i = 0; i < rows.size(); ++i) {
+    const float rev = ease_in_time(page_elapsed, 0.08 + double(i) * 0.12, 0.28);
+    if (rev <= 0.01f) continue;
+    const float rx_off = (1.0f - rev) * 24.0f * s;
     const float y = g.T(234 + row_step * float(i));
-    const TextStyle ls = font(ui::Font::kB, (rows.size() > 5 ? 16 : 20) * s, kText);
-    TextStyle vs = font(ui::Font::kE, (rows.size() > 5 ? 15 : 18) * s, kText);
+    const TextStyle ls = font(ui::Font::kB, (rows.size() > 5 ? 16 : 20) * s, ui::fade(kText, rev));
+    TextStyle vs = font(ui::Font::kE, (rows.size() > 5 ? 15 : 18) * s, ui::fade(kText, rev));
     vs.keep_case = true;
     const float lw = ui::List::measure(rows[i].first, ls), vw = ui::List::measure(rows[i].second, vs);
     Turn t(l, g.L(148) + 0.5f * lw, y + 10 * s);
-    brush(l, g.L(140), y - 4 * s, g.L(148) + lw + 6 * s, y + 22 * s, kBrush);
-    l.text(g.L(148), y, rows[i].first, ls);
-    const float vx = g.L(148) + lw + 10 * s;
-    brush(l, vx - 4 * s, y - 2 * s, vx + vw + 6 * s, y + 20 * s, kPink);
+    brush(l, g.L(140) + rx_off, y - 4 * s, g.L(148) + lw + 6 * s + rx_off, y + 22 * s, ui::fade(kBrush, rev));
+    l.text(g.L(148) + rx_off, y, rows[i].first, ls);
+    const float vx = g.L(148) + lw + 10 * s + rx_off;
+    brush(l, vx - 4 * s, y - 2 * s, vx + vw + 6 * s, y + 20 * s, ui::fade(kPink, rev));
     l.text(vx, y + 1 * s, rows[i].second, vs);
   }
-  // TOTAL and its value (out/oracle/ui/results-credits.png: wide left-bleeding dark
-  // feathered brush behind TOTAL seamlessly meeting the hot pink total value brush!).
-  // Measured from per-page entry time so the cash tally animates freshly upon entering Page 1!
+  // TOTAL and rolling UPDATED BALANCE measured from per-page entry time!
   const float count = ease_in_time(page_elapsed, 0.2, 1.0);
+  const int64_t shown_earned = int64_t(std::llround(double(r.credits) * count));
   {
     Turn tn(l, g.L(295), g.T(418));
     ui4::brush(l, -28 * s, g.T(370), g.L(490), g.T(472), ui4::kBrushBlack, true);
@@ -740,18 +1207,20 @@ void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g)
   ui4::brush(l, g.L(476), g.T(360), g.L(880), g.T(464), ui4::kPink, true);
   TextStyle vs = font(ui::Font::kE, 70 * s, kText, Align::kRight);
   vs.keep_case = true;
-  const std::string total = thousands(int64_t(std::llround(double(r.credits) * count))) + " " + cr;
+  const std::string total = thousands(shown_earned) + " " + cr;
   fit(total, vs, g.L(860) - g.L(490), 30 * s);
   l.text(g.L(860), g.T(377) + (70 * s - vs.size) * 0.5f, total, vs);
   l.unturn();
   if (r.balance >= 0) {
+    const int64_t bal_start = std::max<int64_t>(0, r.balance - r.credits);
+    const int64_t shown_bal = bal_start + shown_earned;
     Turn tb(l, g.L(280), g.T(497));
-    ui4::offwhite_strip(l, g.L(150), g.T(475), g.L(410), g.T(520), s, true);
+    ui4::offwhite_strip(l, g.L(150), g.T(475), g.L(440), g.T(520), s, true);
     TextStyle bs = font(ui::Font::kB, 16 * s, kDark);
     l.text(g.L(162), g.T(490), str("OnlineRewards", "IDS_Balance", "BALANCE"), bs);
     bs.align = Align::kRight;
     bs.keep_case = true;  // "117,881 Cr" as shown
-    l.text(g.L(398), g.T(490), thousands(r.balance) + " " + cr, bs);
+    l.text(g.L(426), g.T(490), thousands(shown_bal) + " " + cr, bs);
   }
   ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
 }

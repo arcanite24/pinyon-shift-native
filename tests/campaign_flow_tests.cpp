@@ -146,15 +146,17 @@ void test_minute0_to_endgame_state_machine() {
     check(flow.reward_tally().next_unlock_headline.find("DARIUS FLYNT") != std::string::npos,
           "HEADLINE_EVENT tally announces Darius Flynt Showdown unlock");
 
-    // Advance PostRaceFinish -> RewardTally -> FreeRoam (must NOT enter FinaleVictory/Credits yet!).
-    flow.advance_or_skip();  // -> RewardTally
-    flow.advance_or_skip();  // finish tally animation
-    flow.advance_or_skip();  // -> FreeRoam
+    // Advance PostRaceFinish (Stage 1) -> RewardTally Stage 2 (Credits) -> Stage 3 (Wristband/Pop) -> FreeRoam!
+    flow.advance_or_skip();  // Stage 1 -> Stage 2 (Credits)
+    flow.advance_or_skip();  // finish Stage 2 animation
+    flow.advance_or_skip();  // Stage 2 -> Stage 3 (Wristband & Popularity)
+    flow.advance_or_skip();  // finish Stage 3 animation
+    flow.advance_or_skip();  // -> FreeRoam (must NOT enter FinaleVictory/Credits yet!)
     check(flow.stage() == race::CampaignStage::kFreeRoam,
           "HEADLINE_EVENT win returns to FreeRoam so player can race Darius Flynt");
     const auto obj = flow.next_objective(10000, 6, 5);
     check(obj.valid && obj.title.find("DARIUS FLYNT") != std::string::npos,
-          "next_objective routes directly to Darius Flynt NEM_FINAL showdown");
+          "next_objective routes directly to Darius Flynt showroom challenge");
 
     // Verify pending_darius_showdown persists across save/load round-trip.
     race::CampaignSaveState saved_mid;
@@ -164,7 +166,7 @@ void test_minute0_to_endgame_state_machine() {
     check(restored_mid.pending_darius_showdown() && !restored_mid.finale_complete(),
           "pending_darius_showdown persists cleanly across save/load");
   }
-  // 9. Star Showdown & Darius Flynt Finale (NEM_FINAL) -> PostRaceFinish -> RewardTally -> FinaleVictory -> Credits -> FreeRoam!
+  // 9. Star Showdown & Darius Flynt Finale (NEM_FINAL) -> Stage 1 Results -> Stage 2 Credits -> Stage 3 Wristband -> FinaleVictory -> Credits -> FreeRoam!
   {
     race::CareerEvent finale_ev;
     finale_ev.horizon_id = "NEM_FINAL";
@@ -182,22 +184,34 @@ void test_minute0_to_endgame_state_machine() {
     aw.credits = 65000;
     aw.wristband_points = 0;
     flow.on_race_finished(&finale_ev, aw, 1, 2, 5, 1, 300000, 365000, 10000, 6, "2010 Ferrari 599XX");
-    check(flow.stage() == race::CampaignStage::kPostRaceFinish, "race finish enters PostRaceFinish camera");
+    check(flow.stage() == race::CampaignStage::kPostRaceFinish && flow.is_blocking_gameplay(),
+          "race finish enters blocking Stage 1 PostRaceFinish (Race Results)");
     flow.advance_or_skip();
-    check(flow.stage() == race::CampaignStage::kRewardTally, "PostRaceFinish transitions to RewardTally");
+    check(flow.stage() == race::CampaignStage::kRewardTally &&
+              flow.reward_tally().stage == race::PostRaceStage::kCreditsEarned,
+          "PostRaceFinish transitions to Stage 2 Credits Earned");
     check(flow.reward_tally().active, "RewardTally active");
 
-    // Step RewardTally partway and verify animated rolling values.
-    flow.update(1.5, {0.0, 0.0}, false, false);
+    // Step Stage 2 partway and verify animated rolling credits.
+    flow.update(1.0, {0.0, 0.0}, false, false);
     check(flow.reward_tally().displayed_credits() > 0 && flow.reward_tally().displayed_credits() < 65000,
-          "credits counter rolls smoothly");
-    check(flow.reward_tally().displayed_pop_rank() < 5 && flow.reward_tally().displayed_pop_rank() >= 1,
-          "popularity rank climbs smoothly");
+          "credits counter rolls smoothly on Stage 2");
 
-    // First skip completes tally animation; second skip transitions to FinaleVictory.
+    // First skip completes Stage 2 animation; second skip advances to Stage 3 (Wristband & Popularity + Prize Car).
     flow.advance_or_skip();
-    check(flow.reward_tally().animation_done(), "first skip finishes tally animation");
-    check(flow.reward_tally().displayed_credits() == 65000, "tally finishes at full credits");
+    check(flow.reward_tally().stage_animation_done(), "first skip finishes Stage 2 credits animation");
+    check(flow.reward_tally().displayed_credits() == 65000, "Stage 2 finishes at full credits");
+    flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kRewardTally &&
+              flow.reward_tally().stage == race::PostRaceStage::kWristbandAndPrize,
+          "next continue advances to Stage 3 Wristband & Popularity + Prize Car");
+
+    // Step Stage 3 partway and verify animated popularity climb.
+    flow.update(0.75, {0.0, 0.0}, false, false);
+    check(flow.reward_tally().displayed_pop_rank() < 5 && flow.reward_tally().displayed_pop_rank() >= 1,
+          "popularity rank climbs smoothly on Stage 3");
+    flow.advance_or_skip();
+    check(flow.reward_tally().animation_done(), "skip completes Stage 3 animation");
     flow.advance_or_skip();
     check(flow.stage() == race::CampaignStage::kFinaleVictory, "Finale win enters FinaleVictory");
     check(flow.finale_complete() && !flow.pending_darius_showdown(),
@@ -416,6 +430,135 @@ void test_r2_5_campaign_parity() {
   }
 }
 
+void test_pt_e_campaign_and_post_race_parity() {
+  // 1. PT-39 & PT-42: Localized event title resolution NEVER displays raw internal DB keys.
+  {
+    check(race::resolve_event_display_title("PLANE_RACE_001") == "MUSTANG VS MUSTANG",
+          "PLANE_RACE_001 resolves to MUSTANG VS MUSTANG (never raw key)");
+    check(race::resolve_event_display_title("FESTIVAL_SECOND") == "HORIZON QUALIFIER",
+          "FESTIVAL_SECOND resolves to HORIZON QUALIFIER");
+    check(race::resolve_event_display_title("FR05") == "FESTIVAL RACE 05",
+          "FR05 resolves to FESTIVAL RACE 05");
+    check(race::resolve_event_display_title("SR03") == "STREET RACE 03",
+          "SR03 resolves to STREET RACE 03");
+    check(race::resolve_event_display_title("RED_ROCK_RUN_001") == "RED ROCK RUN",
+          "snake_case fallback prettifies cleanly");
+
+    race::set_campaign_text_resolver([](std::string_view ref) -> std::string {
+      if (ref == "_&123456") return "Mustang vs. Mustang";
+      return std::string(ref);
+    });
+    race::CareerEvent sc_ev;
+    sc_ev.horizon_id = "PLANE_RACE_001";
+    sc_ev.name_ref = "_&123456";
+    sc_ev.style = 3;
+    check(race::resolve_event_display_title(&sc_ev) == "Mustang vs. Mustang",
+          "localized stringtable name_ref takes priority over fallback");
+    race::set_campaign_text_resolver({});
+
+    race::CampaignFlow flow;
+    flow.skip_onboarding_all();
+    race::CareerEvent raw_fr;
+    raw_fr.horizon_id = "FR05";
+    raw_fr.style = 1;
+    flow.on_enter_event(raw_fr);
+    check(flow.cinematic().headline == "FESTIVAL RACE 05",
+          "Pre-race grid cinematic never shows raw FR05 internal key");
+    flow.advance_or_skip();
+
+    // Post-race sequential flow for PLANE_RACE_001 Showcase with prize car.
+    race::CareerEvent plane_ev;
+    plane_ev.horizon_id = "PLANE_RACE_001";
+    plane_ev.style = 3;
+    race::RaceAward aw;
+    aw.base_credits = 5000;
+    aw.mileage_bonus = 330;
+    aw.difficulty_pct = 15;
+    aw.difficulty_bonus = 800;
+    aw.skills_bonus = 2700;
+    aw.credits = 8830;
+    aw.wristband_points = 0;
+    flow.on_race_finished(&plane_ev, aw, 1, 2, 250, 247, 22500, 31330, 30, 0, "1970 Ford Mustang Boss 429");
+    check(flow.reward_tally().event_title == "MUSTANG VS MUSTANG",
+          "Showcase reward tally resolves PLANE_RACE_001 to MUSTANG VS MUSTANG");
+    check(flow.reward_tally().event_title.find("PLANE_RACE") == std::string::npos,
+          "Raw PLANE_RACE_001 never leaks into reward_tally.event_title");
+    check(flow.reward_tally().results_rows.size() == 2,
+          "Showcase Stage 1 populates 2-entry podium standings (YOU vs P-51 MUSTANG)");
+
+    carview::campaign_ui::DrawContext ctx;
+    ctx.screen_w = 1280.0f;
+    ctx.screen_h = 720.0f;
+
+    // Render Stage 1 (RACE RESULTS).
+    carview::ui::List l1;
+    carview::campaign_ui::draw(l1, flow, ctx);
+    check(l1.items().size() > 25, "Stage 1 RACE RESULTS renders rich UI4 podium table");
+
+    // Advance -> Stage 2 (CREDITS EARNED).
+    flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kRewardTally &&
+              flow.reward_tally().stage == race::PostRaceStage::kCreditsEarned,
+          "Stage 1 advances to Stage 2 CREDITS EARNED");
+    flow.update(1.5, {0.0, 0.0}, false, false);
+    carview::ui::List l2;
+    carview::campaign_ui::draw(l2, flow, ctx);
+    check(l2.items().size() > 25, "Stage 2 CREDITS EARNED renders rolling breakdown & balance");
+
+    // Advance -> Stage 3 (WRISTBAND & POPULARITY + PRIZE CAR AWARDED).
+    flow.advance_or_skip();  // snap Stage 2
+    flow.advance_or_skip();  // enter Stage 3
+    check(flow.reward_tally().stage == race::PostRaceStage::kWristbandAndPrize,
+          "Stage 2 advances to Stage 3 WRISTBAND & POPULARITY + PRIZE CAR");
+    flow.update(1.2, {0.0, 0.0}, false, false);
+    carview::ui::List l3;
+    carview::campaign_ui::draw(l3, flow, ctx);
+    check(l3.items().size() > 25, "Stage 3 renders Wristband, Popularity & Prize Car Awarded card");
+
+    flow.advance_or_skip();  // snap Stage 3
+    flow.advance_or_skip();  // -> kShowcaseOutro
+    check(flow.stage() == race::CampaignStage::kShowcaseOutro,
+          "Winning Showcase exits Stage 3 cleanly into ShowcaseOutro");
+  }
+
+  // 2. PT-41: Starter car onboarding after qualification race (First Festival Car / Welcome to Autoshow).
+  {
+    race::CampaignFlow flow;
+    flow.start_new_career(true);
+    flow.advance_or_skip();  // Viper -> Qualify
+    check(flow.stage() == race::CampaignStage::kQualifyRace, "onboarding enters QualifyRace");
+    flow.update(0.2, {-1360.0, -210.0}, false, true);  // Finish Corrado qualification race
+    check(flow.stage() == race::CampaignStage::kFestivalRegistration,
+          "finishing qualification race enters kFestivalRegistration");
+    check(flow.is_blocking_gameplay(),
+          "kFestivalRegistration blocks gameplay so A/Enter advances cleanly without premature Autoshow");
+    check(flow.cinematic().eyebrow.find("FIRST FESTIVAL CAR") != std::string::npos,
+          "FestivalRegistration displays First Festival Car onboarding framing");
+    check(flow.cinematic().subheadline.find("CORRADO") != std::string::npos &&
+              flow.cinematic().subheadline.find("15,000 CR") != std::string::npos,
+          "FestivalRegistration highlights starter VW Corrado VR6 and 15,000 Cr bonus");
+
+    carview::ui::List lreg;
+    carview::campaign_ui::DrawContext ctx;
+    ctx.screen_w = 1280.0f;
+    ctx.screen_h = 720.0f;
+    carview::campaign_ui::draw(lreg, flow, ctx);
+    check(lreg.items().size() > 30, "FestivalRegistration renders Welcome to Autoshow & Yellow Wristband card");
+
+    auto act = flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kFreeRoam && act.open_autoshow && act.grant_starter &&
+              act.collect_yellow_wristband,
+          "advancing registration hands off to curated starter Autoshow + Yellow Wristband");
+    check(flow.starter_autoshow_onboarding(),
+          "starter_autoshow_onboarding flag armed for curated Autoshow launch");
+    check(flow.consume_starter_autoshow_onboarding() && !flow.starter_autoshow_onboarding(),
+          "consume_starter_autoshow_onboarding returns true once then clears");
+    const auto obj = flow.next_objective(30, 0, 250);
+    check(obj.valid && obj.title.find("GREEN WRISTBAND") != std::string::npos,
+          "post-onboarding Free Roam activates Green Wristband objective even with 30 qualifier pts");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -425,6 +568,7 @@ int main() {
   test_save_load_roundtrip();
   test_director_cameras_cli_stages_and_ui_raster();
   test_r2_5_campaign_parity();
+  test_pt_e_campaign_and_post_race_parity();
   if (g_failures > 0) {
     std::fprintf(stderr, "campaign_flow_tests: %d failure(s)\n", g_failures);
     return 1;

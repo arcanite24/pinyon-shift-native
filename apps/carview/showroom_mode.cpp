@@ -13,6 +13,7 @@
 #include <SDL3/SDL.h>
 
 #include "gamepad_db.h"
+#include "hub_scene.h"
 #include "reference.h"
 #include "renderer.h"
 #include "showroom.h"
@@ -311,11 +312,16 @@ int run_showroom(int argc, char** argv) {
         }
       } else {
         std::printf("device: %s (%ux MSAA)\n", renderer.device_name().c_str(), renderer.samples());
+        const auto studio_bg = hub_background_color(HubRoom::kAutoshow);
+        showroom.set_background(studio_bg[0], studio_bg[1], studio_bg[2]);
         bool dragging = false, running = true;
-        float zoom = 1.0f;
+        float zoom = 1.0f, target_zoom = 1.0f;
+        Orbit target_orbit = orbit;
+        float idle_s = 0.0f;
         std::vector<SDL_Gamepad*> pads;
         uint64_t last = SDL_GetTicksNS();
         for (uint32_t n = 0; running && (!max_frames || n < max_frames); ++n) {
+          bool manual_input = false;
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
             switch (e.type) {
@@ -332,11 +338,15 @@ int run_showroom(int argc, char** argv) {
                 break;
               case SDL_EVENT_MOUSE_MOTION:
                 if (dragging) {
-                  orbit.yaw -= e.motion.xrel * 0.3f;
-                  orbit.pitch = std::clamp(orbit.pitch + e.motion.yrel * 0.3f, -85.0f, 85.0f);
+                  target_orbit.yaw -= e.motion.xrel * 0.3f;
+                  target_orbit.pitch = std::clamp(target_orbit.pitch + e.motion.yrel * 0.3f, -85.0f, 85.0f);
+                  manual_input = true;
                 }
                 break;
-              case SDL_EVENT_MOUSE_WHEEL: zoom = std::clamp(zoom * std::pow(0.9f, e.wheel.y), 0.2f, 5.0f); break;
+              case SDL_EVENT_MOUSE_WHEEL:
+                target_zoom = std::clamp(target_zoom * std::pow(0.9f, e.wheel.y), 0.2f, 5.0f);
+                manual_input = true;
+                break;
               case SDL_EVENT_GAMEPAD_ADDED:
                 if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) pads.push_back(pad);
                 break;
@@ -344,19 +354,31 @@ int run_showroom(int argc, char** argv) {
             }
           }
           const uint64_t now = SDL_GetTicksNS();
-          const float dt = float(now - last) * 1e-9f;
+          const float dt = std::clamp(float(now - last) * 1e-9f, 0.0f, 0.1f);
           last = now;
           for (SDL_Gamepad* pad : pads) {
             auto axis = [&](SDL_GamepadAxis a) {
               const float v = SDL_GetGamepadAxis(pad, a) / 32767.0f;
               return std::fabs(v) < 0.15f ? 0.0f : v;
             };
-            orbit.yaw -= (axis(SDL_GAMEPAD_AXIS_LEFTX) + axis(SDL_GAMEPAD_AXIS_RIGHTX)) * 120 * dt;
-            orbit.pitch = std::clamp(
-                orbit.pitch + (axis(SDL_GAMEPAD_AXIS_LEFTY) + axis(SDL_GAMEPAD_AXIS_RIGHTY)) * 90 * dt, -85.0f, 85.0f);
+            const float dx = axis(SDL_GAMEPAD_AXIS_LEFTX) + axis(SDL_GAMEPAD_AXIS_RIGHTX);
+            const float dy = axis(SDL_GAMEPAD_AXIS_LEFTY) + axis(SDL_GAMEPAD_AXIS_RIGHTY);
             const float z = axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER) - axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-            zoom = std::clamp(zoom * std::pow(2.0f, z * dt), 0.2f, 5.0f);
+            if (std::fabs(dx) > 1e-3f || std::fabs(dy) > 1e-3f || std::fabs(z) > 1e-3f) manual_input = true;
+            target_orbit.yaw -= dx * 120.0f * dt;
+            target_orbit.pitch = std::clamp(target_orbit.pitch + dy * 90.0f * dt, -85.0f, 85.0f);
+            target_zoom = std::clamp(target_zoom * std::pow(2.0f, z * dt), 0.2f, 5.0f);
           }
+          if (manual_input || dragging) {
+            idle_s = 0.0f;
+          } else {
+            idle_s += dt;
+            if (idle_s >= 3.5f) target_orbit.yaw += 9.0f * dt;
+          }
+          const float alpha = 1.0f - std::exp(-8.0f * dt);
+          orbit.yaw += (target_orbit.yaw - orbit.yaw) * alpha;
+          orbit.pitch += (target_orbit.pitch - orbit.pitch) * alpha;
+          zoom += (target_zoom - zoom) * alpha;
           int w = 0, h = 0;
           SDL_GetWindowSizeInPixels(window, &w, &h);
           Orbit view = orbit;

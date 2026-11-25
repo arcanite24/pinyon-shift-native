@@ -99,17 +99,22 @@ int autoshow_swatch_hit_index(const DriveApp& app, const Autoshow& autoshow, int
   const float uy = my * sy_scale;
   const float w = float(std::max(1, last_ui_w));
   const float h = float(std::max(1, last_ui_h));
-  const float s = std::min(w / 1280.0f, h / 720.0f);
-  const float sy0 = 562.0f * s - 22.0f * s;
-  const float sy1 = 626.0f * s + 22.0f * s;
-  if (uy < sy0 || uy > sy1) return -1;
+  const AutoshowLayout lo =
+      compute_autoshow_layout(w, h, AutoshowStep::kColorSelect, autoshow.show_specs(), false);
+  if (!lo.swatch_strip.valid() || uy < lo.swatch_strip.y0 || uy > lo.swatch_strip.y1) return -1;
   size_t first_sw = 0, nsw = 0;
   autoshow.swatch_window(14, first_sw, nsw);
-  const float sw_w = 46.0f * s, sw_gap = 6.0f * s;
-  float sx = 86.0f * s;
+  if (nsw == 0) return -1;
+  const float s = lo.scale;
+  const float pad_lr = 24.0f * s;
+  const float sw_gap = 6.0f * s;
+  const float avail_w = std::max(80.0f * s, lo.swatch_strip.width() - 2.0f * pad_lr);
+  const float sw_w = std::min(48.0f * s, (avail_w - sw_gap * float(std::max<size_t>(1, nsw) - 1)) /
+                                             float(std::max<size_t>(1, nsw)));
+  float cx = lo.swatch_strip.x0 + pad_lr;
   for (size_t i = 0; i < nsw; ++i) {
-    if (ux >= sx && ux <= sx + sw_w) return int(first_sw + i);
-    sx += sw_w + sw_gap;
+    if (ux >= cx && ux <= cx + sw_w) return int(first_sw + i);
+    cx += sw_w + sw_gap;
   }
   return -1;
 }
@@ -544,6 +549,53 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
             // drives the new car away from where this one stands.
             if (autoshow.is_open()) {
               if (app.have_garage) autoshow.set_owned_cars(app.career_garage);
+              auto sync_autoshow_camera = [&](bool snap_step_focus) {
+                hub_cam.set_framing(autoshow.show_specs() ? 0.11f : 0.0f, 0.16f);
+                if (!snap_step_focus) return;
+                if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
+                  hub_cam.set_focus(carview::HubCameraFocus::kPaint);
+                } else {
+                  static constexpr carview::HubCameraFocus kPresets[5] = {
+                      carview::HubCameraFocus::kTurntable,
+                      carview::HubCameraFocus::kPaint,
+                      carview::HubCameraFocus::kFront,
+                      carview::HubCameraFocus::kRearThreeQuarter,
+                      carview::HubCameraFocus::kSide,
+                  };
+                  hub_cam.set_focus(kPresets[std::clamp(autoshow.camera_preset(), 0, 4)]);
+                }
+              };
+              auto apply_autoshow_paint = [&]() {
+                const carview::AutoshowCar* sel_as = autoshow.selected_car();
+                if (!sel_as) return;
+                const cars::CarPaintSpec spec = autoshow.preview_paint_spec();
+                if (!spec.body.active && !spec.calipers.active) return;
+                const std::string& target_media = sel_as->dealer.media_name;
+                if (!target_media.empty() && target_media != app.car) {
+                  if (auto it = festival_guests.find(target_media); it != festival_guests.end() && it->second) {
+                    it->second->set_paint_spec(spec);
+                  }
+                } else {
+                  host.showroom.set_paint_spec(spec);
+                }
+              };
+              auto toggle_specs_or_cam = [&]() {
+                autoshow.toggle_specs();
+                sync_autoshow_camera(false);
+                notice = autoshow.show_specs() ? "SPECS PANEL: SHOWN" : "SPECS PANEL: HIDDEN (CLEAN VIEW)";
+                notice_until = vehicle.time() + 2.0;
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              };
+              auto cycle_cam = [&]() {
+                autoshow.cycle_camera_preset();
+                sync_autoshow_camera(true);
+                static constexpr const char* kCamNames[5] = {
+                    "CAMERA: HERO 3/4", "CAMERA: PAINT CLOSE-UP", "CAMERA: FRONT", "CAMERA: REAR 3/4",
+                    "CAMERA: PROFILE"};
+                notice = kCamNames[std::clamp(autoshow.camera_preset(), 0, 4)];
+                notice_until = vehicle.time() + 2.0;
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              };
               auto test_drive = [&]() {
                 std::string td_media;
                 int64_t td_cid = 0, td_col = 0;
@@ -576,6 +628,8 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 notice = message;
                 notice_until = vehicle.time() + 4;
                 if (!bought) {
+                  app.autoshow_buy_confirm = false;
+                  autoshow.set_buy_confirm_open(false);
                   app.audio_host.trigger_ui(audio::UiCue::kError);
                   return;
                 }
@@ -598,23 +652,37 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
               auto confirm_step = [&]() {
                 if (autoshow.step() != carview::AutoshowStep::kColorSelect) {
                   app.autoshow_buy_confirm = false;
-                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                  autoshow.advance_step();
-                  return;
+                  autoshow.set_buy_confirm_open(false);
+                  const bool ready_direct = autoshow.advance_step();
+                  if (!ready_direct) {
+                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                    sync_autoshow_camera(true);
+                    return;
+                  }
                 }
-                if (!app.autoshow_buy_confirm) {
+                if (!autoshow.buy_confirm_open()) {
+                  std::string msg;
+                  if (!autoshow.request_buy_confirm(app.career.credits, msg)) {
+                    app.autoshow_buy_confirm = false;
+                    notice = msg;
+                    notice_until = vehicle.time() + 4.0;
+                    app.audio_host.trigger_ui(audio::UiCue::kError);
+                    return;
+                  }
                   app.autoshow_buy_confirm = true;
-                  notice = "CONFIRM PURCHASE? [A/Click: BUY] [B/Esc: CANCEL]";
+                  notice = msg;
                   notice_until = vehicle.time() + 12.0;
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
                   return;
                 }
                 app.autoshow_buy_confirm = false;
+                autoshow.set_buy_confirm_open(false);
                 buy();
               };
               auto cancel_step = [&]() {
-                if (app.autoshow_buy_confirm) {
+                if (autoshow.buy_confirm_open() || app.autoshow_buy_confirm) {
                   app.autoshow_buy_confirm = false;
+                  autoshow.set_buy_confirm_open(false);
                   notice = "PURCHASE CANCELLED";
                   notice_until = vehicle.time() + 2.5;
                   return;
@@ -623,54 +691,85 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   autoshow.close();
                   app.hub_orbit_dragging = false;
                   app.hub_orbit_dragged = false;
+                } else {
+                  sync_autoshow_camera(true);
                 }
               };
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
-                if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
-                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) { autoshow.move_make(-1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { autoshow.move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
-                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) { app.autoshow_buy_confirm = false; autoshow.move_colour(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { app.autoshow_buy_confirm = false; autoshow.move_colour(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_T) { test_drive(); }
+                if (k == SDLK_ESCAPE) {
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  cancel_step();
+                } else if (autoshow.buy_confirm_open()) {
+                  if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) confirm_step();
                 } else {
-                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) { autoshow.move(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { autoshow.move(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_Q) { autoshow.move_make(-1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_E) { autoshow.move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_TAB) { autoshow.toggle_all_cars(app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_R) { autoshow.cycle_sort(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_G) { autoshow.cycle_class_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_V) { autoshow.cycle_drivetrain_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (k == SDLK_T) { test_drive(); }
-                  if (k == SDLK_C) { app.autoshow_buy_confirm = false; autoshow.set_step(carview::AutoshowStep::kColorSelect); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
+                  if (k == SDLK_Y) {
+                    toggle_specs_or_cam();
+                  } else if (k == SDLK_C) {
+                    cycle_cam();
+                  } else if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
+                    if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) { autoshow.move_make(-1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { autoshow.move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_Q || k == SDLK_PAGEUP) { autoshow.page_move_make(-1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_E || k == SDLK_PAGEDOWN) { autoshow.page_move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
+                    if (k == SDLK_LEFT || k == SDLK_A) { app.autoshow_buy_confirm = false; autoshow.move_colour(-1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_RIGHT || k == SDLK_D) { app.autoshow_buy_confirm = false; autoshow.move_colour(1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_UP || k == SDLK_W) { autoshow.cycle_caliper_option(-1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_DOWN || k == SDLK_S) { autoshow.cycle_caliper_option(1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_Q) { autoshow.cycle_paint_finish(-1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_E) { autoshow.cycle_paint_finish(1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_T || k == SDLK_X) { test_drive(); }
+                  } else {
+                    if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) { autoshow.move(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { autoshow.move(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_Q || k == SDLK_PAGEUP) { autoshow.page_move_car(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_E || k == SDLK_PAGEDOWN) { autoshow.page_move_car(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_TAB) { autoshow.toggle_all_cars(app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_X || k == SDLK_R) { autoshow.cycle_sort(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_G) { autoshow.cycle_class_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_V) { autoshow.cycle_drivetrain_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_T) { test_drive(); }
+                  }
+                  if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) { confirm_step(); }
                 }
-                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) { confirm_step(); }
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
-                if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) { autoshow.move_make(-1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { autoshow.move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) { app.autoshow_buy_confirm = false; autoshow.move_colour(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { app.autoshow_buy_confirm = false; autoshow.move_colour(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (b == SDL_GAMEPAD_BUTTON_WEST) { test_drive(); }
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) {
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  cancel_step();
+                } else if (autoshow.buy_confirm_open()) {
+                  if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_step();
                 } else {
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) { autoshow.move(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { autoshow.move(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) { autoshow.move_make(-1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) { autoshow.move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (b == SDL_GAMEPAD_BUTTON_BACK) { autoshow.toggle_all_cars(app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (b == SDL_GAMEPAD_BUTTON_LEFT_STICK) { autoshow.cycle_sort(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (b == SDL_GAMEPAD_BUTTON_RIGHT_STICK) { autoshow.cycle_class_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                  if (b == SDL_GAMEPAD_BUTTON_WEST) { test_drive(); }
-                  if (b == SDL_GAMEPAD_BUTTON_NORTH) { app.autoshow_buy_confirm = false; autoshow.set_step(carview::AutoshowStep::kColorSelect); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
+                  if (b == SDL_GAMEPAD_BUTTON_NORTH) {
+                    toggle_specs_or_cam();
+                  } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_STICK) {
+                    cycle_cam();
+                  } else if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
+                    if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) { autoshow.move_make(-1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { autoshow.move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) { autoshow.page_move_make(-1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) { autoshow.page_move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
+                    if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) { app.autoshow_buy_confirm = false; autoshow.move_colour(-1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) { app.autoshow_buy_confirm = false; autoshow.move_colour(1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) { autoshow.cycle_caliper_option(-1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { autoshow.cycle_caliper_option(1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) { autoshow.cycle_paint_finish(-1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) { autoshow.cycle_paint_finish(1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_WEST) { test_drive(); }
+                  } else {
+                    if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) { autoshow.move(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { autoshow.move(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) { autoshow.page_move_car(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) { autoshow.page_move_car(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_BACK) { autoshow.toggle_all_cars(app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_WEST) { autoshow.cycle_sort(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (b == SDL_GAMEPAD_BUTTON_LEFT_STICK) { autoshow.cycle_class_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                  }
+                  if (b == SDL_GAMEPAD_BUTTON_SOUTH) { confirm_step(); }
                 }
-                if (b == SDL_GAMEPAD_BUTTON_SOUTH) { confirm_step(); }
               }
               if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
                 handle_hub_orbit_input(app, hub_cam, e, false, true);
@@ -679,17 +778,19 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 if (handle_hub_orbit_input(app, hub_cam, e, false, false)) {
                   return true;
                 }
-                carview::ui::HitZone hz{};
-                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow && hz.index >= 0) {
-                  if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
-                    if (autoshow.selected_make_index() != size_t(hz.index)) {
-                      autoshow.select_make(size_t(hz.index), app.career.credits);
-                      app.audio_host.trigger_ui(audio::UiCue::kMove);
-                    }
-                  } else if (autoshow.step() == carview::AutoshowStep::kCarSelect) {
-                    if (autoshow.selected_index() != size_t(hz.index)) {
-                      autoshow.select_index(size_t(hz.index));
-                      app.audio_host.trigger_ui(audio::UiCue::kMove);
+                if (!autoshow.buy_confirm_open()) {
+                  carview::ui::HitZone hz{};
+                  if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow && hz.index >= 0) {
+                    if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
+                      if (autoshow.selected_make_index() != size_t(hz.index)) {
+                        autoshow.select_make(size_t(hz.index), app.career.credits);
+                        app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      }
+                    } else if (autoshow.step() == carview::AutoshowStep::kCarSelect) {
+                      if (autoshow.selected_index() != size_t(hz.index)) {
+                        autoshow.select_index(size_t(hz.index));
+                        app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      }
                     }
                   }
                 }
@@ -703,22 +804,48 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 } else if (e.button.button == SDL_BUTTON_LEFT) {
                   carview::ui::HitZone hz{};
                   const bool hit_ui = ui_mouse_hit(e.button.x, e.button.y, hz);
-                  if (hit_ui && hz.group == carview::ui4::kHitButton) {
-                    if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
+                  if (hit_ui && hz.group == carview::ui::kHitConfirm) {
+                    confirm_step();
+                  } else if (hit_ui && hz.group == carview::ui::kHitCancel) {
+                    app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                    cancel_step();
+                  } else if (hit_ui && hz.group == carview::ui4::kHitButton) {
+                    if (autoshow.buy_confirm_open()) {
                       if (hz.index == 0) confirm_step();
-                      else if (hz.index == 2) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
+                      else if (hz.index == 1) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
+                    } else if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
+                      if (hz.index == 0) confirm_step();
+                      else if (hz.index == 1) { autoshow.page_move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                      else if (hz.index == 2) toggle_specs_or_cam();
+                      else if (hz.index == 3) cycle_cam();
+                      else if (hz.index == 4) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
                     } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
                       if (hz.index == 0) confirm_step();
                       else if (hz.index == 1) test_drive();
-                      else if (hz.index == 3) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
+                      else if (hz.index == 2) { autoshow.cycle_paint_finish(1); apply_autoshow_paint(); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                      else if (hz.index == 3) toggle_specs_or_cam();
+                      else if (hz.index == 4) cycle_cam();
+                      else if (hz.index == 5) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
                     } else {
                       if (hz.index == 0) confirm_step();
-                      else if (hz.index == 1) test_drive();
-                      else if (hz.index == 2) { autoshow.move_make(1, app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                      else if (hz.index == 3) { app.autoshow_buy_confirm = false; autoshow.set_step(carview::AutoshowStep::kColorSelect); app.audio_host.trigger_ui(audio::UiCue::kAccept); }
-                      else if (hz.index == 4) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
+                      else if (hz.index == 1) { autoshow.cycle_sort(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                      else if (hz.index == 2) toggle_specs_or_cam();
+                      else if (hz.index == 3) { autoshow.page_move_car(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                      else if (hz.index == 4) cycle_cam();
+                      else if (hz.index == 5) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
                     }
-                  } else if (hit_ui && hz.group == carview::ui::kHitRow && hz.index >= 0) {
+                  } else if (!autoshow.buy_confirm_open() && hit_ui && hz.group == carview::ui::kHitTab) {
+                    if (hz.index == 0) autoshow.cycle_sort(1);
+                    else if (hz.index == 1) autoshow.cycle_class_filter(1);
+                    else if (hz.index == 2) autoshow.cycle_drivetrain_filter(1);
+                    else if (hz.index == 3) autoshow.toggle_all_cars(app.career.credits);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (!autoshow.buy_confirm_open() && hit_ui && hz.group == carview::ui4::kHitRegion) {
+                    if (hz.index == 0) autoshow.cycle_paint_finish(1);
+                    else if (hz.index == 1) autoshow.cycle_caliper_option(1);
+                    apply_autoshow_paint();
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (!autoshow.buy_confirm_open() && hit_ui && hz.group == carview::ui::kHitRow && hz.index >= 0) {
                     if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
                       autoshow.select_make(size_t(hz.index), app.career.credits);
                       confirm_step();
@@ -726,7 +853,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                       autoshow.select_index(size_t(hz.index));
                       confirm_step();
                     }
-                  } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
+                  } else if (!autoshow.buy_confirm_open() && autoshow.step() == carview::AutoshowStep::kColorSelect) {
                     int sw_idx = (hit_ui && hz.group == carview::ui4::kHitSwatch && hz.index >= 0)
                                      ? hz.index
                                      : autoshow_swatch_hit_index(app, autoshow, last_ui_w, last_ui_h, e.button.x,
@@ -735,10 +862,10 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                       // Clicking a color swatch previews that color only — never triggers immediate purchase!
                       const int delta = sw_idx - int(autoshow.selected_colour_index());
                       if (delta != 0) autoshow.move_colour(delta);
+                      apply_autoshow_paint();
                       app.autoshow_buy_confirm = false;
                       app.audio_host.trigger_ui(audio::UiCue::kMove);
                     } else {
-                      // Begin showroom orbit drag; if released without dragging, opens/accepts Buy Confirmation.
                       handle_hub_orbit_input(app, hub_cam, e, false, false);
                     }
                   } else if (!hit_ui) {
@@ -747,17 +874,12 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 }
               }
               if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-                const bool was_dragging = app.hub_orbit_dragging;
-                const bool moved = handle_hub_orbit_input(app, hub_cam, e, false, false);
-                if (e.button.button == SDL_BUTTON_LEFT && was_dragging && !moved &&
-                    autoshow.step() == carview::AutoshowStep::kColorSelect) {
-                  confirm_step();
-                }
+                handle_hub_orbit_input(app, hub_cam, e, false, false);
               }
-              if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+              if (e.type == SDL_EVENT_MOUSE_WHEEL && !autoshow.buy_confirm_open()) {
                 const int dir = e.wheel.y > 0 ? -1 : 1;
                 if (autoshow.step() == carview::AutoshowStep::kMakeSelect) autoshow.move_make(dir, app.career.credits);
-                else if (autoshow.step() == carview::AutoshowStep::kColorSelect) { app.autoshow_buy_confirm = false; autoshow.move_colour(dir); }
+                else if (autoshow.step() == carview::AutoshowStep::kColorSelect) { app.autoshow_buy_confirm = false; autoshow.move_colour(dir); apply_autoshow_paint(); }
                 else autoshow.move(dir);
                 app.audio_host.trigger_ui(audio::UiCue::kMove);
               }

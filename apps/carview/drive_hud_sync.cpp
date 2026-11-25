@@ -309,6 +309,10 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           d.map_overlay = &map_overlay;
         }
         carview::SkillChainHud sk_hud;
+        static carview::PopularityBadgeAnimator s_pop_anim;
+        if (app.show_title || !app.skill_tracker) {
+          s_pop_anim.reset();
+        }
         if (app.skill_tracker) {
           const auto sh = app.skill_tracker->hud();
           sk_hud.active = sh.active;
@@ -323,6 +327,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           sk_hud.popularity_rank = sh.popularity_rank;
           sk_hud.popularity_progress = sh.popularity_progress;
           sk_hud.rank_up_at = sh.rank_up_at;
+          s_pop_anim.update(sk_hud, d.time);
+          s_pop_anim.apply(sk_hud);
           d.skills = &sk_hud;
         }
         if (world_marker.visible && !app.race) d.world_marker = &world_marker;
@@ -432,6 +438,64 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               race_hud.band_name = carview::game_text(app.wristbands.levels[size_t(la)].second);
             if (race_hud.band_hi > 0) race_hud.band_next = carview::game_text(app.wristbands.levels[size_t(cur_i + 1)].second);
             race_hud.band_up = pending >= 0;
+          }
+        }
+        // Populate exact world distance and class/PI metadata on projected car nameplates
+        // for smooth FH1 distance scaling/fading and compact class+PI micro-badges (PT-37).
+        if (!d.name_tags.empty()) {
+          auto eq_icase = [](std::string_view a, std::string_view b) {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+              unsigned char ca = static_cast<unsigned char>(a[i]);
+              unsigned char cb = static_cast<unsigned char>(b[i]);
+              if (ca >= 'A' && ca <= 'Z') ca = static_cast<unsigned char>(ca + 32);
+              if (cb >= 'A' && cb <= 'Z') cb = static_cast<unsigned char>(cb + 32);
+              if (ca != cb) return false;
+            }
+            return true;
+          };
+          const drive::Vec3 at = vehicle.position();
+          if (app.race) {
+            std::vector<carview::RaceView::OpponentTag> otags;
+            app.race->opponent_tags(otags);
+            carview::RaceView::OpponentTag stag;
+            const bool has_stag = app.race->showcase_tag(stag);
+            for (auto& nt : d.name_tags) {
+              if (nt.distance_m < 0.0) {
+                for (const auto& ot : otags) {
+                  if (eq_icase(ot.name, nt.name)) {
+                    nt.distance_m = std::hypot(ot.x - at.x, ot.z - at.z);
+                    break;
+                  }
+                }
+                if (nt.distance_m < 0.0 && has_stag && eq_icase(stag.name, nt.name)) {
+                  nt.distance_m = std::hypot(stag.x - at.x, stag.z - at.z);
+                }
+              }
+              if (nt.car_class.empty() || nt.pi <= 0) {
+                for (const auto& row : race_hud.rows) {
+                  if (!row.player && eq_icase(row.name, nt.name)) {
+                    if (!row.car_class.empty()) nt.car_class = row.car_class;
+                    if (row.pi > 0) nt.pi = row.pi;
+                    break;
+                  }
+                }
+              }
+            }
+          } else if (festival_mgr) {
+            for (auto& nt : d.name_tags) {
+              if (nt.distance_m >= 0.0 && !nt.car_class.empty() && nt.pi > 0) continue;
+              for (const auto& fc : festival_mgr->cars()) {
+                const std::string full =
+                    "[" + fc.spec.car_class + " " + std::to_string(fc.spec.pi) + "] " + fc.spec.driver_name;
+                if (eq_icase(full, nt.name) || eq_icase(fc.spec.driver_name, nt.name)) {
+                  nt.distance_m = std::hypot(fc.position.x - at.x, fc.position.z - at.z);
+                  if (nt.car_class.empty()) nt.car_class = fc.spec.car_class;
+                  if (nt.pi <= 0) nt.pi = fc.spec.pi;
+                  break;
+                }
+              }
+            }
           }
         }
         if (!race_line) d.toast = banner;

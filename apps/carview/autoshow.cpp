@@ -61,6 +61,19 @@ std::string resolve_localized_make(const std::string& disp_key, const std::strin
 
 }  // namespace
 
+const char* autoshow_paint_finish_name(AutoshowPaintFinish f) {
+  switch (f) {
+    case AutoshowPaintFinish::kGloss: return "GLOSS";
+    case AutoshowPaintFinish::kMetallic: return "METALLIC";
+    case AutoshowPaintFinish::kMatte: return "MATTE";
+    case AutoshowPaintFinish::kTwoTone: return "TWO-TONE";
+    case AutoshowPaintFinish::kChrome: return "CHROME";
+    case AutoshowPaintFinish::kCarbon: return "CARBON";
+    case AutoshowPaintFinish::kFactory:
+    default: return "FACTORY";
+  }
+}
+
 const char* autoshow_sort_name(AutoshowSort s) {
   switch (s) {
     case AutoshowSort::kPrice: return "PRICE";
@@ -85,9 +98,16 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   class_filter_ = -1;
   drive_filter_ = 0;
   all_cars_mode_ = false;
+  show_specs_ = true;
+  buy_confirm_open_ = false;
+  camera_preset_ = 0;
+  paint_finish_ = AutoshowPaintFinish::kFactory;
+  caliper_index_ = 0;
+  comparison_car_ = {};
+  last_garage_selected_id_ = -1;
+  last_garage_size_ = 0;
   last_credits_ = credits;
   owned_car_ids_.clear();
-  if (owned_garage) set_owned_cars(*owned_garage);
 
   std::vector<cars::DealerCar> all;
   if (!db.dealer(all, &why, include_hidden)) return false;
@@ -257,6 +277,7 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   make_index_ = 0;
   selected_ = 0;
   colour_index_ = 0;
+  if (owned_garage) set_owned_cars(*owned_garage);
   // Retail FH1 enters Autoshow on the Make Carousel (115_C_BUY_MFRSELECT) unless in tutorial mode.
   step_ = (!tutorial_mode_ && makes_.size() > 1) ? AutoshowStep::kMakeSelect : AutoshowStep::kCarSelect;
   rebuild_visible(credits);
@@ -267,11 +288,13 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
 bool Autoshow::advance_step() {
   if (step_ == AutoshowStep::kMakeSelect) {
     step_ = AutoshowStep::kCarSelect;
+    buy_confirm_open_ = false;
     return false;
   }
   if (step_ == AutoshowStep::kCarSelect) {
     if (selected_car() && !selected_car()->swatches.empty()) {
       step_ = AutoshowStep::kColorSelect;
+      buy_confirm_open_ = false;
       return false;
     }
     return true;
@@ -280,6 +303,10 @@ bool Autoshow::advance_step() {
 }
 
 bool Autoshow::back_step() {
+  if (buy_confirm_open_) {
+    buy_confirm_open_ = false;
+    return true;
+  }
   if (step_ == AutoshowStep::kColorSelect) {
     step_ = AutoshowStep::kCarSelect;
     return true;
@@ -289,6 +316,28 @@ bool Autoshow::back_step() {
     return true;
   }
   return false;
+}
+
+std::string Autoshow::breadcrumb_text() const {
+  if (tutorial_mode_) {
+    if (buy_confirm_open_) return "FIRST CAR  >  SELECT PAINT  >  CONFIRM PURCHASE";
+    if (step_ == AutoshowStep::kColorSelect) return "FIRST CAR  >  SELECT PAINT";
+    return "FIRST CAR SELECTION";
+  }
+  const std::string mk =
+      all_cars_mode_ ? std::string("ALL CARS")
+                     : (makes_.empty() ? std::string("ALL")
+                                       : makes_[std::min(make_index_, makes_.size() - 1)].name);
+  if (step_ == AutoshowStep::kMakeSelect) {
+    return "MANUFACTURERS";
+  }
+  if (step_ == AutoshowStep::kCarSelect) {
+    return "MANUFACTURERS  >  " + mk;
+  }
+  if (buy_confirm_open_) {
+    return "MANUFACTURERS  >  " + mk + "  >  SELECT PAINT  >  CONFIRM PURCHASE";
+  }
+  return "MANUFACTURERS  >  " + mk + "  >  SELECT PAINT";
 }
 
 void Autoshow::rebuild_visible(int64_t credits) {
@@ -351,6 +400,13 @@ void Autoshow::rebuild_visible(int64_t credits) {
 
   selected_ = visible_.empty() ? 0 : std::min(selected_, visible_.size() - 1);
   colour_index_ = 0;
+  reset_paint_overrides();
+}
+
+void Autoshow::reset_paint_overrides() {
+  paint_finish_ = AutoshowPaintFinish::kFactory;
+  caliper_index_ = 0;
+  buy_confirm_open_ = false;
 }
 
 void Autoshow::move_make(int by, int64_t credits) {
@@ -360,6 +416,12 @@ void Autoshow::move_make(int by, int64_t credits) {
   make_index_ = size_t(((int(make_index_) + by) % n + n) % n);
   selected_ = 0;
   rebuild_visible(credits);
+}
+
+void Autoshow::page_move_make(int pages, int64_t credits, int page_size) {
+  if (makes_.empty() || pages == 0) return;
+  const int step = std::max(1, page_size) * pages;
+  move_make(step, credits);
 }
 
 void Autoshow::select_make(size_t index, int64_t credits) {
@@ -422,8 +484,84 @@ void Autoshow::set_drivetrain_filter(int dt) {
 }
 
 void Autoshow::set_owned_cars(const garage::Garage& g) {
+  // Fast path: avoid heap allocations on high-rate UI/mouse events when garage did not change.
+  bool unchanged = (g.cars.size() == last_garage_size_ && g.selected == last_garage_selected_id_ &&
+                    !g.cars.empty() && owned_car_ids_.size() <= g.cars.size());
+  if (unchanged) {
+    for (const auto& c : g.cars) {
+      if (owned_car_ids_.count(c.car_id) == 0) {
+        unchanged = false;
+        break;
+      }
+    }
+  }
+  if (unchanged && (comparison_car_.valid || !g.selected_car())) return;
+
   owned_car_ids_.clear();
   for (const auto& c : g.cars) owned_car_ids_.insert(c.car_id);
+  last_garage_size_ = g.cars.size();
+  last_garage_selected_id_ = g.selected;
+
+  // Populate live spec comparison baseline from the player's currently active garage car.
+  if (const garage::Car* cur = g.selected_car()) {
+    AutoshowComparisonStats cmp{};
+    cmp.valid = true;
+    cmp.car_id = cur->car_id;
+    cmp.class_id = cur->class_id;
+    cmp.raw_pi = cur->performance_index;
+    cmp.shown_pi = int(std::ceil(cur->performance_index * 999.0));
+    for (const auto& entry : catalog_) {
+      if (entry.dealer.id == cur->car_id) {
+        cmp.display_name = car_name(entry.dealer.media_name);
+        if (cmp.display_name.empty()) cmp.display_name = entry.display_name;
+        cmp.drive_type_id = entry.drive_type_id;
+        cmp.speed_rating = entry.speed_rating;
+        cmp.handling_rating = entry.handling_rating;
+        cmp.accel_rating = entry.accel_rating;
+        cmp.launch_rating = entry.launch_rating;
+        cmp.braking_rating = entry.braking_rating;
+        cmp.peak_power_kw = entry.peak_power_kw;
+        cmp.peak_torque_nm = entry.peak_torque_nm;
+        cmp.curb_weight_kg = entry.curb_weight_kg;
+        break;
+      }
+    }
+    if (cur->cached_stats.peak_power_kw > 0.0) {
+      cmp.speed_rating = cur->cached_stats.speed_rating;
+      cmp.handling_rating = cur->cached_stats.handling_rating;
+      cmp.accel_rating = cur->cached_stats.accel_rating;
+      cmp.launch_rating = cur->cached_stats.launch_rating;
+      cmp.braking_rating = cur->cached_stats.braking_rating;
+      cmp.peak_power_kw = cur->cached_stats.peak_power_kw;
+      cmp.peak_torque_nm = cur->cached_stats.peak_torque_nm;
+      cmp.curb_weight_kg = cur->cached_stats.curb_weight_kg;
+    }
+    if (cmp.display_name.empty()) cmp.display_name = "CURRENT CAR";
+    comparison_car_ = std::move(cmp);
+  }
+}
+
+AutoshowSpecDelta Autoshow::compare_car(const AutoshowCar& car,
+                                        const std::vector<garage::ClassBand>& bands) const {
+  AutoshowSpecDelta out{};
+  if (!comparison_car_.valid) return out;
+  out.has_baseline = true;
+  const int cand_pi = bands.empty() ? int(std::ceil(car.dealer.performance_index * 999.0))
+                                    : garage::shown_index(car.dealer.performance_index, bands);
+  const int base_pi =
+      (comparison_car_.raw_pi > 0.0 && !bands.empty())
+          ? garage::shown_index(comparison_car_.raw_pi, bands)
+          : comparison_car_.shown_pi;
+  out.pi_delta = cand_pi - base_pi;
+  out.speed_delta = car.speed_rating - comparison_car_.speed_rating;
+  out.handling_delta = car.handling_rating - comparison_car_.handling_rating;
+  out.accel_delta = car.accel_rating - comparison_car_.accel_rating;
+  out.launch_delta = car.launch_rating - comparison_car_.launch_rating;
+  out.braking_delta = car.braking_rating - comparison_car_.braking_rating;
+  out.power_kw_delta = car.peak_power_kw - comparison_car_.peak_power_kw;
+  out.torque_nm_delta = car.peak_torque_nm - comparison_car_.peak_torque_nm;
+  out.weight_kg_delta = car.curb_weight_kg - comparison_car_.curb_weight_kg;
+  return out;
 }
 
 bool Autoshow::prepare_test_drive(std::string& media, int64_t& car_id, int64_t& colour_seq) const {
@@ -440,6 +578,13 @@ void Autoshow::move(int by) {
   const int n = int(visible_.size());
   selected_ = size_t(((int(selected_) + by) % n + n) % n);
   colour_index_ = 0;
+  reset_paint_overrides();
+}
+
+void Autoshow::page_move_car(int pages, int page_size) {
+  if (visible_.empty() || pages == 0) return;
+  const int step = std::max(1, page_size) * pages;
+  move(step);
 }
 
 void Autoshow::jump_class(int by) {
@@ -450,16 +595,19 @@ void Autoshow::jump_class(int by) {
       if (visible_[k].dealer.class_id != now) {
         selected_ = k;
         colour_index_ = 0;
+        reset_paint_overrides();
         return;
       }
     selected_ = 0;
     colour_index_ = 0;
+    reset_paint_overrides();
   } else {
     size_t k = selected_;
     while (k > 0 && visible_[k - 1].dealer.class_id == now) --k;
     if (k != selected_) {
       selected_ = k;
       colour_index_ = 0;
+      reset_paint_overrides();
       return;
     }
     if (k == 0) k = visible_.size();
@@ -467,6 +615,7 @@ void Autoshow::jump_class(int by) {
     while (k > 0 && visible_[k - 1].dealer.class_id == before) --k;
     selected_ = k;
     colour_index_ = 0;
+    reset_paint_overrides();
   }
 }
 
@@ -475,12 +624,14 @@ void Autoshow::move_colour(int by) {
   if (!c || c->swatches.empty()) return;
   const int n = int(c->swatches.size());
   colour_index_ = size_t(((int(colour_index_) + by) % n + n) % n);
+  buy_confirm_open_ = false;
 }
 
 void Autoshow::select_colour_index(size_t idx) {
   const AutoshowCar* c = selected_car();
   if (!c || c->swatches.empty()) return;
   colour_index_ = std::min(idx, c->swatches.size() - 1);
+  buy_confirm_open_ = false;
 }
 
 void Autoshow::swatch_window(size_t max_visible, size_t& first_out, size_t& count_out) const {
@@ -517,6 +668,116 @@ int64_t Autoshow::selected_colour_sequence() const {
   return 0;
 }
 
+void Autoshow::cycle_paint_finish(int by) {
+  const int n = int(AutoshowPaintFinish::kCount);
+  paint_finish_ = AutoshowPaintFinish(((int(paint_finish_) + by) % n + n) % n);
+  buy_confirm_open_ = false;
+}
+
+void Autoshow::set_paint_finish(AutoshowPaintFinish f) {
+  const int v = std::clamp(int(f), 0, int(AutoshowPaintFinish::kCount) - 1);
+  paint_finish_ = AutoshowPaintFinish(v);
+  buy_confirm_open_ = false;
+}
+
+const std::vector<AutoshowCaliperOption>& Autoshow::caliper_options() {
+  static const std::vector<AutoshowCaliperOption> kOpts = {
+      {"STOCK", false, 0x000000u},
+      {"CRIMSON", true, 0xCC1820u},
+      {"YELLOW", true, 0xF2C618u},
+      {"COBALT", true, 0x1A6ED8u},
+      {"GOLD", true, 0xC89828u},
+      {"SILVER", true, 0xC8CDD6u},
+      {"OBSIDIAN", true, 0x181A1Eu},
+  };
+  return kOpts;
+}
+
+void Autoshow::cycle_caliper_option(int by) {
+  const int n = int(caliper_options().size());
+  caliper_index_ = size_t(((int(caliper_index_) + by) % n + n) % n);
+  buy_confirm_open_ = false;
+}
+
+void Autoshow::set_caliper_index(size_t idx) {
+  const auto& opts = caliper_options();
+  if (!opts.empty()) caliper_index_ = std::min(idx, opts.size() - 1);
+  buy_confirm_open_ = false;
+}
+
+const AutoshowCaliperOption& Autoshow::selected_caliper() const {
+  const auto& opts = caliper_options();
+  return opts[std::min(caliper_index_, opts.size() - 1)];
+}
+
+cars::CarPaintSpec Autoshow::preview_paint_spec() const {
+  cars::CarPaintSpec spec{};
+  if (const AutoshowSwatch* sw = selected_swatch()) {
+    spec.body.active = true;
+    spec.body.rgb = sw->rgb;
+    switch (paint_finish_) {
+      case AutoshowPaintFinish::kGloss: spec.body.finish = cars::PaintFinish::kNormal; break;
+      case AutoshowPaintFinish::kMetallic: spec.body.finish = cars::PaintFinish::kMetallic; break;
+      case AutoshowPaintFinish::kMatte: spec.body.finish = cars::PaintFinish::kMatte; break;
+      case AutoshowPaintFinish::kTwoTone:
+        spec.body.finish = cars::PaintFinish::kTwoTone;
+        spec.body.sec_rgb = sw->has_stripe && sw->stripe_rgb != 0 ? sw->stripe_rgb : 0xDCE4F2u;
+        break;
+      case AutoshowPaintFinish::kChrome: spec.body.finish = cars::PaintFinish::kChrome; break;
+      case AutoshowPaintFinish::kCarbon: spec.body.finish = cars::PaintFinish::kCarbon; break;
+      case AutoshowPaintFinish::kFactory:
+      default:
+        spec.body.finish = sw->metallic ? cars::PaintFinish::kMetallic : cars::PaintFinish::kNormal;
+        break;
+    }
+  }
+  const auto& cal = selected_caliper();
+  if (cal.active) {
+    spec.calipers.active = true;
+    spec.calipers.rgb = cal.rgb;
+    spec.calipers.finish = cars::PaintFinish::kMetallic;
+  }
+  return spec;
+}
+
+void Autoshow::set_camera_preset(int preset) {
+  constexpr int kPresets = 5;
+  camera_preset_ = ((preset % kPresets) + kPresets) % kPresets;
+}
+
+void Autoshow::cycle_camera_preset() {
+  set_camera_preset(camera_preset_ + 1);
+}
+
+bool Autoshow::can_afford_selected(int64_t credits) const {
+  const AutoshowCar* entry = selected_car();
+  return entry != nullptr && credits >= entry->dealer.base_cost;
+}
+
+int64_t Autoshow::credits_shortfall(int64_t credits) const {
+  const AutoshowCar* entry = selected_car();
+  if (!entry || credits >= entry->dealer.base_cost) return 0;
+  return entry->dealer.base_cost - credits;
+}
+
+bool Autoshow::request_buy_confirm(int64_t credits, std::string& message) {
+  const AutoshowCar* entry = selected_car();
+  if (!entry) {
+    buy_confirm_open_ = false;
+    message = empty_reason_.empty() ? "NO CAR SELECTED" : empty_reason_;
+    return false;
+  }
+  if (credits < entry->dealer.base_cost) {
+    buy_confirm_open_ = false;
+    message = "INSUFFICIENT CREDITS — NEED " + credits_text(entry->dealer.base_cost) + " CR (" +
+              credits_text(entry->dealer.base_cost - credits) + " CR SHORT)";
+    return false;
+  }
+  buy_confirm_open_ = true;
+  message = "CONFIRM PURCHASE FOR " + credits_text(entry->dealer.base_cost) + " CR";
+  return true;
+}
+
 bool Autoshow::buy(const cars::PartsDb& db, garage::Garage& g, int64_t& credits, std::string& media,
                    std::string& message) {
   const AutoshowCar* entry = selected_car();
@@ -527,6 +788,7 @@ bool Autoshow::buy(const cars::PartsDb& db, garage::Garage& g, int64_t& credits,
   const cars::DealerCar& c = entry->dealer;
   if (credits < c.base_cost) {
     message = "insufficient CR: " + credits_text(c.base_cost) + " CR";
+    buy_confirm_open_ = false;
     return false;
   }
   std::map<std::string, int64_t> stock;
@@ -536,6 +798,7 @@ bool Autoshow::buy(const cars::PartsDb& db, garage::Garage& g, int64_t& credits,
   if (!garage::buy_car(g, c.id, c.base_cost, c.performance_index, int(c.class_id), colour_seq, stock, credits, &id))
     return false;
   owned_car_ids_.insert(c.id);
+  buy_confirm_open_ = false;
   media = c.media_name;
   message = car_name(c.media_name) + " bought for " + credits_text(c.base_cost) + " CR";
   return true;

@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -137,6 +138,16 @@ const BossRivalSpec* find_boss_by_level(int wristband_level);
 const std::vector<ShowcaseMilestoneSpec>& showcase_milestones();
 const ShowcaseMilestoneSpec* find_showcase_by_event(std::string_view horizon_id);
 
+// Optional localized string-table resolver callback (e.g. bound to carview::game_text).
+void set_campaign_text_resolver(std::function<std::string(std::string_view)> resolver);
+
+// Resolves a clean human-readable display title for an event, ensuring raw internal
+// database keys (e.g. PLANE_RACE_001, FR05, FESTIVAL_SECOND) are never displayed.
+std::string resolve_event_display_title(std::string_view raw_id_or_title,
+                                        std::string_view localized_override = {});
+std::string resolve_event_display_title(const CareerEvent* ev,
+                                        std::string_view localized_override = {});
+
 // ---- Cutscene Catalog ----
 enum class CutsceneKind : uint8_t {
   kNone = 0,
@@ -236,10 +247,29 @@ struct TransitionState {
   float wipe_edge() const;
 };
 
-// ---- Animated Post-Race & Milestone Reward Tally ----
+// ---- Animated Sequential Post-Race & Milestone Reward Tally ----
+enum class PostRaceStage : uint8_t {
+  kRaceResults = 0,        // Stage 1: RACE RESULTS podium & standings table
+  kCreditsEarned = 1,      // Stage 2: CREDITS EARNED animated breakdown + balance
+  kWristbandAndPrize = 2,  // Stage 3: WRISTBAND & POPULARITY + PRIZE CAR AWARDED
+};
+
+struct RewardTallyRow {
+  int place = 1;
+  std::string driver;
+  std::string car;
+  std::string car_class;
+  int pi = 0;
+  double time_s = -1.0;
+  double gap_s = -1.0;
+  bool player = false;
+};
+
 struct RewardTallyState {
   bool active = false;
+  PostRaceStage stage = PostRaceStage::kCreditsEarned;
   double elapsed_s = 0.0;
+  double stage_elapsed_s = 0.0;
   double duration_s = 4.4;
   std::string event_title;
   std::string event_category;
@@ -248,6 +278,7 @@ struct RewardTallyState {
   bool is_boss = false;
   bool is_showcase = false;
   bool is_finale = false;
+  std::vector<RewardTallyRow> results_rows;
 
   // Credit breakdown lines
   int64_t base_credits = 0;
@@ -289,7 +320,12 @@ struct RewardTallyState {
 
   void update(double dt);
   void skip_to_end();
-  bool animation_done() const { return !active || elapsed_s >= duration_s; }
+  // Advances from current stage to next sequential stage (returns false when already on final stage).
+  bool advance_stage();
+  double stage_duration_s() const;
+  bool stage_animation_done() const { return !active || stage_elapsed_s >= stage_duration_s(); }
+  bool is_final_stage() const { return stage == PostRaceStage::kWristbandAndPrize; }
+  bool animation_done() const { return !active || (is_final_stage() && stage_animation_done()); }
 
   int64_t displayed_credits() const;
   int64_t displayed_balance() const;
@@ -448,6 +484,12 @@ class CampaignFlow {
   const std::set<std::string>& unlocked_showcases() const { return unlocked_showcases_; }
   bool finale_complete() const { return finale_complete_; }
   bool pending_darius_showdown() const { return pending_darius_showdown_; }
+  bool starter_autoshow_onboarding() const { return starter_autoshow_onboarding_; }
+  bool consume_starter_autoshow_onboarding() {
+    const bool v = starter_autoshow_onboarding_;
+    starter_autoshow_onboarding_ = false;
+    return v;
+  }
   int credits_scroll_line_count() const;
 
   CampaignObjective next_objective(int wristband_points, int collected_wristband, int pop_rank,
@@ -471,6 +513,7 @@ class CampaignFlow {
   int active_showcase_idx_ = -1;
   bool pending_finale_credits_ = false;
   bool pending_darius_showdown_ = false;
+  bool starter_autoshow_onboarding_ = false;
 
   std::array<double, 3> viper_spawn_ = kViperSpawnPos;
   double viper_heading_ = kViperSpawnHeading;

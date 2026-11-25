@@ -52,6 +52,7 @@
 #include "hud_scene.h"
 #include "livery_editor.h"
 #include "map_view.h"
+#include "race/campaign_flow.h"
 #include "race/event.h"
 #include "photo_mode.h"
 #include "replay_view.h"
@@ -2520,6 +2521,134 @@ void test_round2_phase6_ui4_parity() {
   }
 }
 
+void test_pt_e_race_screens_parity() {
+  // 1. Localized event display title resolution (PT-39 & PT-42): zero raw internal IDs.
+  check(race::resolve_event_display_title("PLANE_RACE_001") == "MUSTANG VS MUSTANG",
+        "PLANE_RACE_001 never shown raw");
+  check(race::resolve_event_display_title("FESTIVAL_SECOND") == "HORIZON QUALIFIER",
+        "FESTIVAL_SECOND resolves cleanly");
+  check(race::resolve_event_display_title("FR05") == "FESTIVAL RACE 05",
+        "FR05 resolves cleanly");
+
+  // 2. PT-39: Pre-Race screen renders Starting Grid / Opponent Lineup & live Difficulty & Rewards card.
+  {
+    carview::RaceHud r;
+    r.phase = carview::RaceHud::kGrid;
+    r.event = "FESTIVAL_SECOND";
+    r.event_type = "FESTIVAL RACE";
+    r.circuit = true;
+    r.laps = 3;
+    r.cars = 8;
+    r.base_credits = 12000;
+    r.difficulty_pct = 30;
+    r.assists_pct = 15;
+    r.band_name = "YELLOW WRISTBAND";
+    r.grid_menu_open = true;
+    r.grid_menu = {"START RACE", "< DIFFICULTY: HARD (+30%) >", "QUIT RACE"};
+    r.grid_car_info = "1995 VW Corrado VR6  [C 380]";
+    for (int i = 1; i <= 8; ++i) {
+      carview::RaceHudRow row;
+      row.place = i;
+      row.player = (i == 8);
+      row.name = row.player ? "PLAYER" : ("RIVAL " + std::to_string(i));
+      row.car = row.player ? "1995 VW Corrado VR6" : "2010 Abarth 500";
+      row.car_class = "C";
+      row.pi = 380 + i;
+      r.rows.push_back(std::move(row));
+    }
+
+    carview::DriveHud d;
+    d.driving = true;
+    d.race = &r;
+
+    // Row 0 (START RACE): renders action menu + right-hand Starting Grid / Opponent Lineup card.
+    r.grid_selected = 0;
+    carview::ui::List l_grid;
+    carview::build_drive_hud(l_grid, d, 1280.0f, 720.0f);
+    int row_hits = 0;
+    for (const auto& hz : l_grid.hits()) {
+      if (hz.group == carview::ui::kHitRow) ++row_hits;
+    }
+    check(row_hits == 3, "Pre-race grid menu registers exact hit zones for all 3 rows");
+    check(l_grid.items().size() > 60, "Pre-race Start Race view emits Event Header + Starting Grid lineup card");
+
+    // Row 1 (DIFFICULTY): switches right-hand card to 5-tier Difficulty & Rewards breakdown.
+    r.grid_selected = 1;
+    carview::ui::List l_diff;
+    carview::build_drive_hud(l_diff, d, 1280.0f, 720.0f);
+    check(l_diff.items().size() > 45, "Pre-race Difficulty view emits 5-tier Difficulty & Rewards card");
+
+    // Row 2 (QUIT RACE): renders Event Briefing card cleanly.
+    r.grid_selected = 2;
+    carview::ui::List l_quit;
+    carview::build_drive_hud(l_quit, d, 1280.0f, 720.0f);
+    check(l_quit.items().size() > 30, "Pre-race Quit Race view emits Event Briefing card");
+  }
+
+  // 3. PT-42: Sequential Post-Race screens (Stage 1 Race Results -> Stage 2 Credits Earned -> Stage 3 Wristband & Prize Car).
+  {
+    carview::reset_post_race_page_timer();
+    carview::RaceHud r;
+    r.phase = carview::RaceHud::kFinished;
+    r.event = "PLANE_RACE_001";
+    r.event_type = "SHOWCASE";
+    r.place = 1;
+    r.cars = 2;
+    r.clock = 95.5;
+    r.finish_time = 94.0;
+    r.page_enter_time = 94.5;
+    r.base_credits = 5000;
+    r.mileage_bonus = 330;
+    r.difficulty_pct = 15;
+    r.difficulty_bonus = 800;
+    r.skills_bonus = 2700;
+    r.credits = 8830;
+    r.balance = 31330;
+    r.band_name = "YELLOW WRISTBAND";
+    r.band_next = "GREEN WRISTBAND";
+    r.band_before = 30;
+    r.band_after = 30;
+    r.band_lo = 0;
+    r.band_hi = 220;
+    r.won_car_name = "1970 Ford Mustang Boss 429";
+    r.rows = {
+        {"YOU", 1, true, true, 94.0, 0.0, "1970 Ford Mustang Boss 429", "C", 390, -1.0},
+        {"P-51 MUSTANG", 2, false, true, 95.4, 1.4, "P-51D WARBIRD", "S", 750, -1.0},
+    };
+
+    carview::DriveHud d;
+    d.driving = true;
+    d.popularity_rank = 247;
+    d.race = &r;
+
+    // Stage 1: RACE RESULTS + podium table.
+    r.results_page = 0;
+    r.results_table = false;
+    carview::ui::List l_s1;
+    carview::build_drive_hud(l_s1, d, 1280.0f, 720.0f);
+    check(l_s1.items().size() > 45, "Post-race Stage 1 renders 1ST PLACE header + podium leaderboard table");
+
+    // Full results_table fallback works even without H_POST_RACE_RESULTS scene loaded.
+    r.results_table = true;
+    carview::ui::List l_tbl;
+    carview::build_drive_hud(l_tbl, d, 1280.0f, 720.0f);
+    check(l_tbl.items().size() > 35, "Post-race results_table renders fallback leaderboard without scene");
+    r.results_table = false;
+
+    // Stage 2: CREDITS EARNED rolling breakdown + updated balance.
+    r.results_page = 1;
+    carview::ui::List l_s2;
+    carview::build_drive_hud(l_s2, d, 1280.0f, 720.0f);
+    check(l_s2.items().size() > 40, "Post-race Stage 2 renders CREDITS EARNED animated tally & balance");
+
+    // Stage 3: WRISTBAND & POPULARITY + PRIZE CAR AWARDED showcase card.
+    r.results_page = 2;
+    carview::ui::List l_s3;
+    carview::build_drive_hud(l_s3, d, 1280.0f, 720.0f);
+    check(l_s3.items().size() > 45, "Post-race Stage 3 renders Wristband, Popularity & Prize Car Awarded card");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -2529,6 +2658,7 @@ int main() {
   test_round2_hud_minimap_gps_and_mouse_ux();
   test_round3_subtitle_lift_upgrade_units_and_rewind_touch();
   test_round2_phase6_ui4_parity();
+  test_pt_e_race_screens_parity();
 
   const char* root_env = std::getenv("SHIFT_GAME_ROOT");
   const char* shot_env = std::getenv("SHIFT_UI4_SCREENSHOT_DIR");

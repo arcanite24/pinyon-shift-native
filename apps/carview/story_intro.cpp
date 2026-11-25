@@ -96,10 +96,10 @@ void StoryIntro::populate_beats_for(StoryStage s) {
          "You made it! Here is your official Yellow Wristband — welcome to the Horizon Festival!",
          -1.0, 0.2, 5.0},
         {"DAK", "", "1040BarnFindAtWorkshop",
-         "I'm Dak — bring your rides to the Horizon Garage anytime for upgrades, tuning, or barn find restorations.",
+         "I'm Dak — your 1995 VW Corrado VR6 is parked in your garage with a 15,000 Cr bonus. Bring it by anytime for upgrades or barn finds!",
          -1.0, 5.5, 5.5},
-        {"SCOTT TYLER", "AliceOpeningInterview1", "",
-         "Head over to the Autoshow to pick up your festival ride and hit the Colorado roads!",
+        {"ALICE HART", "AliceOpeningInterview1", "",
+         "Step into the Horizon Autoshow to check out curated affordable starter rides, or keep your Corrado VR6 and chase your Green Wristband!",
          -1.0, 11.2, 5.0},
     };
   }
@@ -165,14 +165,16 @@ StoryAction StoryIntro::enter_stage(StoryStage next) {
       break;
 
     case StoryStage::kAutoshowHandoff:
-      objective_title_ = "HORIZON AUTOSHOW";
-      objective_detail_ = "CHOOSE YOUR FESTIVAL RIDE";
+      objective_title_ = "FIRST FESTIVAL CAR";
+      objective_detail_ = "WELCOME TO THE AUTOSHOW — KEEP YOUR CORRADO VR6 OR PICK A CURATED STARTER RIDE";
       act.swap_car = true;
       act.car_media = kCorradoMedia;
       act.car_id = kCorradoCarId;
       act.grant_starter = true;
       act.open_autoshow = true;
       act.intro_finished = true;
+      act.onboarding_banner =
+          "WELCOME TO HORIZON AUTOSHOW — 1995 VW CORRADO VR6 IN GARAGE + 15,000 CR STARTER BONUS";
       stage_ = StoryStage::kCompleted;
       break;
 

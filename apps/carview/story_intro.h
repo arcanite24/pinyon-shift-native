@@ -61,6 +61,7 @@ struct StoryAction {
   bool grant_starter = false;
   bool enter_title_screen = false;
   bool intro_finished = false;
+  std::string onboarding_banner;
 };
 
 class StoryIntro {

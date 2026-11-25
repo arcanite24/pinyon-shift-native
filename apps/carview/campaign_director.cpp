@@ -328,14 +328,27 @@ bool CampaignDirector::compute_camera(const std::array<double, 3>& car_pos, doub
       return true;
     }
 
+    case race::CampaignStage::kPostRaceFinish:
+      // Smooth heroic podium sweep framing the winning car on the right while Stage 1 RACE RESULTS displays on the left.
+      p0 = local_to_world(car_pos, car_heading, -4.4, 1.45, 5.4);
+      p1 = local_to_world(car_pos, car_heading, -2.0, 1.35, 5.8);
+      p2 = local_to_world(car_pos, car_heading, 2.8, 1.40, 4.9);
+      p3 = local_to_world(car_pos, car_heading, 5.2, 1.65, 2.2);
+      l0 = local_to_world(car_pos, car_heading, -0.8, 0.72, 0.3);
+      l1 = local_to_world(car_pos, car_heading, -0.8, 0.72, 0.2);
+      l2 = local_to_world(car_pos, car_heading, -0.6, 0.74, 0.0);
+      l3 = local_to_world(car_pos, car_heading, -0.6, 0.76, -0.2);
+      fov = 42.0;
+      break;
+
     default:
-      // Post-race finish & reward tally hero orbit.
-      p0 = local_to_world(car_pos, car_heading, 5.0, 1.65, 4.6);
-      p1 = local_to_world(car_pos, car_heading, 5.8, 1.55, 0.4);
-      p2 = local_to_world(car_pos, car_heading, 3.6, 1.50, -4.8);
-      p3 = local_to_world(car_pos, car_heading, -3.2, 1.75, -5.0);
-      l0 = l1 = l2 = l3 = local_to_world(car_pos, car_heading, 0.0, 0.75, 0.0);
-      fov = 44.0;
+      // Post-race Reward Tally hero orbit keeping the player's car framed cleanly beside sequential reward cards.
+      p0 = local_to_world(car_pos, car_heading, 5.0, 1.60, 4.8);
+      p1 = local_to_world(car_pos, car_heading, 5.8, 1.50, 0.6);
+      p2 = local_to_world(car_pos, car_heading, 3.8, 1.45, -4.6);
+      p3 = local_to_world(car_pos, car_heading, -2.8, 1.70, -5.0);
+      l0 = l1 = l2 = l3 = local_to_world(car_pos, car_heading, -0.5, 0.75, 0.0);
+      fov = 43.0;
       break;
   }
 

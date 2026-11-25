@@ -293,90 +293,119 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
   render_fh1_dial(l, st, cx, cy, s, &sc, &f, gauge, ring);
 }
 
-// The discovery card (the interim of SPEC-UI-LAYOUTS: an E line on a pink
-// brush, a B line under it, top centre): drops in, holds, fades.
-void popup_card_drawn(ui::List& l, const DriveHud& st, const Layout& g, float lift_canvas) {
-  const double age = st.time - st.popup_at;
-  if (st.popup_title.empty() || age < 0 || age > kPopupSeconds) return;
-  const float s = g.s;
-  const float in = ease_in_time(age, 0, 0.3);
-  const float a = in * (1 - clamp01((age - (kPopupSeconds - 0.5)) / 0.5));
-  TextStyle ts = font(ui::Font::kB, 16 * s, ui::fade(kText, a));
-  TextStyle body = font(ui::Font::kB, 12 * s, ui::fade(kText, a));
-  fit(st.popup_title, ts, g.w - g.C(560) - 40 * s, 9 * s);
-  const float tw = std::max(ui::List::measure(st.popup_title, ts), ui::List::measure(st.popup_text, body));
-  const float x0 = g.C(450), x1 = std::max(g.C(917), g.C(532) + tw + 30 * s);
-  const float dy = ((1 - in) * 20 - lift_canvas) * s;
-  const float y0 = g.B(599) + dy, y1 = g.B(663) + dy;
-  std::array<float, 4> uv;
-  if (ui_texture("DIRTMASKS/HUD/HUDPANEL02", uv)) {
-    const float texel = (y1 - y0) / 64.0f, cap = 24 * texel, du = (uv[2] - uv[0]) / 1024.0f;
-    const uint32_t c = ui::fade(kPillGrey, a);
-    l.image(x0, y0, x1 - cap, y1, {uv[0], uv[1], uv[0] + du * std::min((x1 - cap - x0) / texel, 1000.0f), uv[3]}, c);
-    l.image(x1 - cap, y0, x1, y1, {uv[2] - du * 24, uv[1], uv[2], uv[3]}, c);
-  } else {
-    l.rect(x0, y0 + 4 * s, x1, y1 - 6 * s, ui::fade(kBlack60, a));
-  }
-  if (ui_texture("ICONS/NOTIFICATION/MISCTEMP", uv))
-    l.image(g.C(473), g.B(598) + dy, g.C(537), g.B(662) + dy, uv, ui::fade(rgba(255, 255, 255), a));
-  else
-    l.rect(g.C(489), g.B(614) + dy, g.C(521), g.B(646) + dy, ui::fade(st.popup_colour ? st.popup_colour : kPink, a));
-  l.text(g.C(532) + 10 * s, g.B(620) - 0.5f * ts.size + dy, st.popup_title, ts);
-  if (!st.popup_text.empty()) l.text(g.C(532) + 10 * s, g.B(643) - 0.5f * body.size + dy, st.popup_text, body);
-  if (st.popup_progress >= 0) {
-    const float bx0 = g.C(542), bx1 = x1 - 30 * s, by = g.B(654) + dy;
-    const float k = float(std::clamp(st.popup_progress, 0.0, 1.0)) * ease_in_time(age, 0.3, 0.8);
-    l.rect(bx0, by, bx1, by + 3 * s, ui::fade(rgba(255, 255, 255, 50), a));
-    l.rect(bx0, by, bx0 + (bx1 - bx0) * k, by + 3 * s, ui::fade(st.popup_colour ? st.popup_colour : kPink, a));
-  }
-}
-
+// High-contrast retail FH1 discovery/notification ribbon (PT-40):
+// Dark translucent angled Horizon ribbon with bright magenta/pink accent stripe,
+// crisp pure WHITE bold title, bright counter chip (e.g. "2 / 216"), crisp subtitle,
+// animated progress fill bar, and smooth slide-in/fade-out animation.
+// Avoids H_BARN_FIND_HUD's DoubleTape zero-alpha hidden nodes (which caused dark-on-dark
+// unreadable text and a stray yellow rectangle above the banner).
 bool popup_card(ui::List& l, const DriveHud& st, const Layout& g, float lift_canvas) {
   const double age = st.time - st.popup_at;
-  if (st.popup_title.empty() || age < 0 || age > kPopupSeconds) return false;
-  const SceneDraw sc = resolve_scene_draw("H_BARN_FIND_HUD");
-  const int tape = sc.find("DoubleTape");
-  const int panel = sc.find("Panel", tape), panel2 = sc.find("Panel2", tape);
-  const int title = sc.find("TEXT2", tape), body = sc.find("TEXT1", tape), icon = sc.find("MiscIcon", tape);
-  if (panel < 0 || panel2 < 0 || title < 0 || body < 0) {
-    popup_card_drawn(l, st, g, lift_canvas);
-    return true;
-  }
-  const float in = ease_in_time(age, 0, 0.3);
-  const float a = in * (1 - clamp01((age - (kPopupSeconds - 0.5)) / 0.5));
-  // Bottom-centre anchored, lifted cleanly above active subtitles / stacked banners.
-  const SceneFrame f{0.5f * g.w - 640 * g.s, g.h - 720 * g.s, g.s};
-  const float dy = (1 - in) * 20 - lift_canvas;
-  const float tx = sc.at(title)[0];
-  ui::TextStyle ts = sc.style(title, f, kText), bs = sc.style(body, f, kText);
-  const float tw = std::max(ui::List::measure(st.popup_title, ts), ui::List::measure(st.popup_text, bs)) / g.s;
-  const int right_anchor = sc.find("RightAnchor", tape);
-  const float anchor_x = right_anchor >= 0 ? sc.at(right_anchor)[0] : 917.0f;
-  const float right = std::max(anchor_x, tx + std::min(tw, sc.text_width(title) > 0 ? sc.text_width(title) : tw) + 30);
+  if (st.popup_title.empty() || age < 0.0 || age > kPopupSeconds) return false;
+  const float s = g.s;
+  const float in = ease_in_time(age, 0.0, 0.28);
+  const float out = 1.0f - clamp01((age - (kPopupSeconds - 0.5)) / 0.5);
+  const float a = in * out;
+  if (a <= 0.01f) return false;
 
-  // Render DoubleTape subtree via SceneDraw::draw_subtree() with dynamic crop widths & bound text.
-  SceneBindings sb;
-  sb.ignore_zero_alpha = true;
-  sb.opacity = a;
-  sb.dy = dy;
-  sb.default_text_color = kText;
-  sb.index(panel2).visible_width = right - sc.rect(panel2)[0];
-  sb.index(panel).visible_width = right - sc.rect(panel)[0];
-  sb.index(title).text = st.popup_title;
-  if (!st.popup_text.empty()) sb.index(body).text = st.popup_text;
-  const int drawn = sc.draw_subtree(l, f, tape, sb);
-  if (drawn == 0) {
-    popup_card_drawn(l, st, g, lift_canvas);
-    return true;
+  const PopupTitleParts parts = split_popup_title_counter(st.popup_title);
+  const std::string& label_txt = parts.label.empty() ? st.popup_title : parts.label;
+  const bool is_road_popup = label_txt.find("ROAD") != std::string::npos;
+  const uint32_t accent =
+      is_road_popup ? ui4::kPink : (st.popup_colour ? st.popup_colour : ui4::kPink);
+
+  TextStyle title_ts = font(ui::Font::kE, 16.5f * s, ui::fade(ui4::kWhite, a));
+  TextStyle cnt_ts = font(ui::Font::kE, 14.5f * s, ui::fade(ui4::kWhite, a), Align::kCenter);
+  TextStyle body_ts = font(ui::Font::kB, 12.0f * s, ui::fade(rgba(224, 228, 238, 245), a));
+
+  const float cnt_w = parts.counter.empty() ? 0.0f : (ui::List::measure(parts.counter, cnt_ts) + 18.0f * s);
+  const float max_label_w = 340.0f * s - (cnt_w > 0.0f ? (cnt_w + 12.0f * s) : 0.0f);
+  fit(label_txt, title_ts, std::max(140.0f * s, max_label_w), 10.5f * s);
+  fit(st.popup_text, body_ts, 340.0f * s, 9.0f * s);
+
+  const float label_w = ui::List::measure(label_txt, title_ts);
+  const float body_w = st.popup_text.empty() ? 0.0f : ui::List::measure(st.popup_text, body_ts);
+  const float top_row_w = label_w + (cnt_w > 0.0f ? (14.0f * s + cnt_w) : 0.0f);
+  const float content_w = std::max(top_row_w, body_w);
+  const float bw = std::clamp(content_w + 86.0f * s, 384.0f * s, 488.0f * s);
+
+  const float cx = 0.5f * g.w;
+  const float slide_y = (1.0f - in) * 18.0f * s;
+  const float y0 = g.B(600.0f - lift_canvas) + slide_y;
+  const float y1 = g.B(660.0f - lift_canvas) + slide_y;
+  const float x0 = cx - 0.5f * bw;
+  const float x1 = cx + 0.5f * bw;
+
+  Turn tilt(l, cx, 0.5f * (y0 + y1), ui4::kTiltRad * 0.35f);
+
+  // Soft drop shadow + high-contrast dark translucent Horizon ribbon backing (radius 0 + solid color turns as angled quad).
+  l.shadow(x0, y0 + 2.0f * s, x1, y1 + 4.0f * s, ui::fade(rgba(0, 0, 0, 165), a), 2.0f * s, 10.0f * s);
+  l.rect(x0, y0, x1, y1, ui::fade(rgba(12, 14, 20, 232), a));
+  // Crisp top sheen hairline + bottom depth edge.
+  l.rect(x0, y0, x1, y0 + 1.2f * s, ui::fade(rgba(255, 255, 255, 48), a));
+  l.rect(x0, y1 - 1.5f * s, x1, y1, ui::fade(rgba(0, 0, 0, 110), a));
+  // Bright Horizon magenta/pink left accent stripe.
+  l.rect(x0, y0, x0 + 6.0f * s, y1, ui::fade(accent, a));
+  l.rect(x0 + 6.0f * s, y0, x0 + 7.2f * s, y1, ui::fade(rgba(255, 255, 255, 85), a));
+
+  // Crisp icon badge on left (clean vector road/discovery chevron — never an opaque yellow box).
+  const float icx = x0 + 30.0f * s;
+  const float icy = 0.5f * (y0 + y1) - (st.popup_progress >= 0.0 ? 2.0f * s : 0.0f);
+  l.circle(icx, icy, 15.5f * s, ui::fade(rgba(255, 255, 255, 18), a));
+  l.arc(icx, icy, 15.0f * s, 2.0f * s, 0.0f, 6.28318f, ui::fade(accent, a * 0.95f));
+  if (is_road_popup) {
+    // Crisp converging road perspective lanes + center dashes inside badge.
+    l.line(icx - 7.5f * s, icy + 7.5f * s, icx - 2.6f * s, icy - 7.5f * s, 2.0f * s, ui::fade(ui4::kWhite, a));
+    l.line(icx + 7.5f * s, icy + 7.5f * s, icx + 2.6f * s, icy - 7.5f * s, 2.0f * s, ui::fade(ui4::kWhite, a));
+    l.line(icx, icy + 6.5f * s, icx, icy + 2.0f * s, 1.5f * s, ui::fade(accent, a));
+    l.line(icx, icy - 1.5f * s, icx, icy - 5.5f * s, 1.5f * s, ui::fade(accent, a));
+  } else {
+    // Crisp double chevron badge for general notifications.
+    l.line(icx - 5.0f * s, icy - 5.0f * s, icx + 2.0f * s, icy, 2.2f * s, ui::fade(ui4::kWhite, a));
+    l.line(icx - 5.0f * s, icy + 5.0f * s, icx + 2.0f * s, icy, 2.2f * s, ui::fade(ui4::kWhite, a));
+    l.line(icx + 1.0f * s, icy - 4.0f * s, icx + 6.5f * s, icy, 1.8f * s, ui::fade(accent, a));
+    l.line(icx + 1.0f * s, icy + 4.0f * s, icx + 6.5f * s, icy, 1.8f * s, ui::fade(accent, a));
   }
-  if (icon < 0) {
-    l.rect(f.x(489), f.y(614 + dy), f.x(521), f.y(646 + dy), ui::fade(st.popup_colour ? st.popup_colour : kPink, a));
+
+  // High-contrast WHITE bold title + bright counter chip.
+  const float tx = x0 + 56.0f * s;
+  const float title_y = y0 + (st.popup_text.empty() ? 19.0f * s : 11.0f * s);
+  {
+    TextStyle sh = title_ts;
+    sh.color = ui::fade(rgba(0, 0, 0, 200), a);
+    l.text(tx + 1.4f * s, title_y + 1.4f * s, label_txt, sh);
+    l.text(tx, title_y, label_txt, title_ts);
   }
-  if (st.popup_progress >= 0) {
-    const float bx0 = tx, bx1 = right - 30, by = 654 + dy;
-    const float k = float(std::clamp(st.popup_progress, 0.0, 1.0)) * ease_in_time(age, 0.3, 0.8);
-    l.rect(f.x(bx0), f.y(by), f.x(bx1), f.y(by + 3), ui::fade(rgba(255, 255, 255, 50), a));
-    l.rect(f.x(bx0), f.y(by), f.x(bx0 + (bx1 - bx0) * k), f.y(by + 3), ui::fade(st.popup_colour ? st.popup_colour : kPink, a));
+  if (!parts.counter.empty()) {
+    const float cx1 = x1 - 14.0f * s;
+    const float cx0 = cx1 - cnt_w;
+    const float cy0 = y0 + 9.0f * s;
+    const float cy1 = cy0 + 22.0f * s;
+    l.rect(cx0, cy0, cx1, cy1, ui::fade(accent, a * 0.96f));
+    TextStyle csh = cnt_ts;
+    csh.color = ui::fade(rgba(0, 0, 0, 150), a);
+    const float cty = cy0 + 0.5f * ((cy1 - cy0) - cnt_ts.size);
+    l.text(0.5f * (cx0 + cx1) + 1.0f * s, cty + 1.0f * s, parts.counter, csh);
+    l.text(0.5f * (cx0 + cx1), cty, parts.counter, cnt_ts);
+  }
+  if (!st.popup_text.empty()) {
+    const float by = y0 + 33.5f * s;
+    TextStyle bsh = body_ts;
+    bsh.color = ui::fade(rgba(0, 0, 0, 185), a);
+    l.text(tx + 1.2f * s, by + 1.2f * s, st.popup_text, bsh);
+    l.text(tx, by, st.popup_text, body_ts);
+  }
+
+  // Crisp bottom progress bar track + animated magenta/pink fill.
+  if (st.popup_progress >= 0.0) {
+    const float bx0 = tx, bx1 = x1 - 14.0f * s, by = y1 - 8.5f * s, bh = 4.0f * s;
+    const float fill_frac = float(std::clamp(st.popup_progress, 0.0, 1.0)) * ease_in_time(age, 0.20, 0.75);
+    l.rect(bx0, by, bx1, by + bh, ui::fade(rgba(255, 255, 255, 46), a));
+    const float fw = std::max(fill_frac > 0.001f ? 4.0f * s : 0.0f, (bx1 - bx0) * fill_frac);
+    if (fw > 0.5f) {
+      l.rect(bx0, by, bx0 + fw, by + bh, ui::fade(accent, a));
+      l.rect(bx0 + fw - 2.0f * s, by, bx0 + fw, by + bh, ui::fade(ui4::kWhite, a * 0.90f));
+    }
   }
   return true;
 }
@@ -724,6 +753,38 @@ void build_rewind_overlay(ui::List& list, float w, float h, bool rewinding, bool
   ui4::button_bar(list, rw_prompts, w, h);
 }
 
+PopupTitleParts split_popup_title_counter(std::string_view title) {
+  auto trim = [](std::string_view v) {
+    while (!v.empty() && std::isspace(static_cast<unsigned char>(v.front()))) v.remove_prefix(1);
+    while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back()))) v.remove_suffix(1);
+    return v;
+  };
+  title = trim(title);
+  const size_t slash = title.rfind('/');
+  if (slash != std::string_view::npos && slash > 0 && slash + 1 < title.size()) {
+    size_t r = slash + 1;
+    while (r < title.size() && title[r] == ' ') ++r;
+    const size_t den_start = r;
+    while (r < title.size() && std::isdigit(static_cast<unsigned char>(title[r]))) ++r;
+    const bool has_den = (r > den_start) && (r == title.size());
+
+    size_t l = slash;
+    while (l > 0 && title[l - 1] == ' ') --l;
+    const size_t num_end = l;
+    while (l > 0 && std::isdigit(static_cast<unsigned char>(title[l - 1]))) --l;
+    const bool has_num = (num_end > l);
+
+    if (has_num && has_den && l > 0 && std::isspace(static_cast<unsigned char>(title[l - 1]))) {
+      const std::string_view lbl = trim(title.substr(0, l));
+      const std::string_view cnt = trim(title.substr(l));
+      if (!lbl.empty() && !cnt.empty()) {
+        return {std::string(lbl), std::string(cnt)};
+      }
+    }
+  }
+  return {std::string(title), {}};
+}
+
 float drive_hud_dial_height(float h) { return (720 - 587 + 88) * (h / 720.0f); }
 
 void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
@@ -762,9 +823,13 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   float bottom_lift = compute_subtitle_bottom_lift(st.subtitle_active, st.subtitle_lines, st.subtitle_box_h_canvas);
   // The driving HUD hides under a menu (SPEC-UI-LAYOUTS d).
   if (st.driving && !menu) {
-    if (!st.name_tags.empty() && (!st.race || st.race->phase == RaceHud::kRacing))
-      opponent_name_tags(l, st.name_tags, g);
-    if (st.world_marker && !st.race) world_marker_hud(l, *st.world_marker, g, st.metric_units);
+    const bool show_tags = !st.name_tags.empty() && (!st.race || st.race->phase == RaceHud::kRacing);
+    const WorldMarkerHud* active_wm = (st.world_marker && st.world_marker->visible && !st.race) ? st.world_marker : nullptr;
+    if (show_tags || active_wm) {
+      static const std::vector<NameTagHud> kEmptyTags;
+      render_world_labels_and_nameplates(l, show_tags ? st.name_tags : kEmptyTags, active_wm, st.race != nullptr, w, h,
+                                         st.metric_units);
+    }
     if (st.gps && st.gps->active && !st.race) gps_turn_hud(l, *st.gps, g, st.metric_units);
     if (st.pr_stunt && st.pr_stunt->active && !st.race) pr_stunt_hud(l, *st.pr_stunt, g);
     if (st.h2h && !st.race) {

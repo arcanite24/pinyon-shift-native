@@ -70,6 +70,169 @@ std::string format_dist(double m, bool metric) {
   return buf;
 }
 
+const char* ordinal_suffix(int place) {
+  const int m100 = place % 100;
+  if (m100 >= 11 && m100 <= 13) return "TH";
+  switch (place % 10) {
+    case 1: return "ST";
+    case 2: return "ND";
+    case 3: return "RD";
+    default: return "TH";
+  }
+}
+
+std::string format_gap_s(double gap) {
+  char buf[32];
+  std::snprintf(buf, sizeof buf, "+%.2fs", std::max(0.0, gap));
+  return buf;
+}
+
+std::string format_clock_s(double sec) {
+  if (sec < 0.0) return "--:--.--";
+  const int64_t ms = int64_t(std::llround(sec * 1000.0));
+  char buf[32];
+  std::snprintf(buf, sizeof buf, "%02lld:%02lld.%02lld", (long long)(ms / 60000), (long long)((ms / 1000) % 60),
+                (long long)((ms % 1000) / 10));
+  return buf;
+}
+
+void draw_post_race_stage_pills(ui::List& l, float screen_w, float s, int active_stage_idx) {
+  static constexpr const char* kStages[3] = {"1  RACE RESULTS", "2  CREDITS EARNED", "3  WRISTBAND & REWARDS"};
+  const float py = 36.0f * s;
+  const float ph = 26.0f * s;
+  const float gap = 8.0f * s;
+  float total_w = 0.0f;
+  float widths[3]{};
+  for (int i = 0; i < 3; ++i) {
+    widths[i] = std::max(126.0f * s, ui::List::measure(kStages[i], ui4::style(ui::Font::kE, 11.5f * s, ui4::kWhite)) + 24.0f * s);
+    total_w += widths[i];
+  }
+  total_w += gap * 2.0f;
+  float x = screen_w - 58.0f * s - total_w;
+  ui4::TiltScope tilt(l, x + 0.5f * total_w, py + 0.5f * ph, ui4::kTiltRad * 0.45f);
+  for (int i = 0; i < 3; ++i) {
+    const bool act = (i == active_stage_idx);
+    const bool done = (i < active_stage_idx);
+    if (act) {
+      ui4::brush(l, x - 3.0f * s, py - 2.0f * s, x + widths[i] + 3.0f * s, py + ph + 2.0f * s, ui4::kPink, false);
+    } else {
+      ui4::pill(l, x, py, x + widths[i], py + ph, done ? ui4::kRowAlt : ui4::kBrushBlack, ui4::PillKind::kHud01);
+      if (done) l.rect(x, py + ph - 2.5f * s, x + widths[i], py + ph, ui4::kYellow);
+    }
+    l.text(x + 0.5f * widths[i], py + 6.5f * s, kStages[i],
+           ui4::style(ui::Font::kE, 11.5f * s, act ? ui4::kWhite : (done ? ui4::kYellow : ui4::kDim),
+                      ui::Align::kCenter));
+    x += widths[i] + gap;
+  }
+}
+
+void draw_post_race_results_stage(ui::List& l, const race::RewardTallyState& tally, float screen_w, float screen_h,
+                                  double anim_t) {
+  const float s = screen_h / 720.0f;
+  const float enter = float(race::ease_out_cubic(std::clamp(anim_t / 0.42, 0.0, 1.0)));
+  ui4::subtle_vignette(l, screen_w, screen_h, 0.34f * enter);
+  draw_post_race_stage_pills(l, screen_w, s, 0);
+
+  const std::string clean_title = race::resolve_event_display_title(tally.event_title);
+  const std::string category = tally.event_category.empty() ? std::string("FESTIVAL RACE") : tally.event_category;
+  const int pl = std::max(1, tally.place);
+  const std::string place_str = std::to_string(pl) + ordinal_suffix(pl) + " PLACE";
+
+  const float lx0 = 58.0f * s + (1.0f - enter) * (-72.0f * s);
+  const float ly0 = 62.0f * s;
+  const float table_w = std::min(740.0f * s, screen_w - 136.0f * s);
+
+  {
+    ui4::TiltScope tilt(l, lx0 + 0.5f * table_w, ly0 + 220.0f * s, ui4::kTiltRad * 0.50f);
+
+    // Iconic FH1 FINISHED black eyebrow + hot-pink 1ST PLACE banner + localized event subtitle.
+    const std::string eye = "FINISHED  •  " + category + "  •  " + clean_title;
+    ui::TextStyle eye_ts = ui4::style(ui::Font::kB, 14.0f * s, ui4::kYellow);
+    ui4::fit_text(eye, eye_ts, table_w - 28.0f * s, 10.0f * s);
+    const float ew = std::clamp(ui::List::measure(eye, eye_ts) + 34.0f * s, 280.0f * s, table_w);
+    ui4::brush(l, lx0 - 6.0f * s, ly0, lx0 + ew, ly0 + 28.0f * s, ui4::kBrushBlack, false);
+    l.text(lx0 + 14.0f * s, ly0 + 7.0f * s, eye, eye_ts);
+
+    ui::TextStyle pl_ts = ui4::style(ui::Font::kE, 46.0f * s, ui4::kWhite);
+    const float pw = std::clamp(ui::List::measure(place_str, pl_ts) + 54.0f * s, 320.0f * s, 540.0f * s);
+    ui4::brush(l, lx0 - 12.0f * s, ly0 + 30.0f * s, lx0 + pw, ly0 + 92.0f * s, ui4::kPink, true, enter);
+    l.text(lx0 + 16.0f * s, ly0 + 39.0f * s, place_str, pl_ts);
+
+    // RACE RESULTS podium & standings leaderboard table.
+    const float ty0 = ly0 + 108.0f * s;
+    const size_t row_count = std::min<size_t>(tally.results_rows.size(), 8);
+    const float row_h = 34.0f * s;
+    const float header_h = 30.0f * s;
+    const float panel_h = header_h + float(std::max<size_t>(row_count, 1)) * row_h + 22.0f * s;
+    ui4::panel(l, lx0, ty0, lx0 + table_w, ty0 + panel_h, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+
+    // Off-white FH1 column header strip.
+    ui4::offwhite_strip(l, lx0 + 10.0f * s, ty0 + 8.0f * s, lx0 + table_w - 10.0f * s, ty0 + 8.0f * s + header_h, s,
+                        false);
+    const float col_pos = lx0 + 24.0f * s;
+    const float col_drv = lx0 + 84.0f * s;
+    const float col_car = lx0 + 310.0f * s;
+    const float col_time = lx0 + table_w - 22.0f * s;
+    const auto hdr_ts = ui4::style(ui::Font::kE, 12.5f * s, ui4::kInk);
+    l.text(col_pos, ty0 + 15.5f * s, "POS", hdr_ts);
+    l.text(col_drv, ty0 + 15.5f * s, "DRIVER", hdr_ts);
+    l.text(col_car, ty0 + 15.5f * s, "CAR / CLASS", hdr_ts);
+    l.text(col_time, ty0 + 15.5f * s, "TIME / GAP", ui4::style(ui::Font::kE, 12.5f * s, ui4::kInk, ui::Align::kRight));
+
+    float ry = ty0 + header_h + 14.0f * s;
+    if (tally.results_rows.empty()) {
+      l.rect(lx0 + 10.0f * s, ry, lx0 + table_w - 10.0f * s, ry + row_h - 4.0f * s, ui4::kRowHighlight);
+      l.rect(lx0 + 10.0f * s, ry, lx0 + 15.0f * s, ry + row_h - 4.0f * s, ui4::kPink);
+      l.text(col_pos, ry + 7.0f * s, std::to_string(pl), ui4::style(ui::Font::kE, 15.0f * s, ui4::kYellow));
+      l.text(col_drv, ry + 7.0f * s, "YOU", ui4::style(ui::Font::kE, 14.5f * s, ui4::kWhite));
+      l.text(col_car, ry + 7.5f * s, clean_title, ui4::style(ui::Font::kB, 13.0f * s, ui4::kOffWhite));
+      l.text(col_time, ry + 7.0f * s, "FINISHED", ui4::style(ui::Font::kE, 13.5f * s, ui4::kYellow, ui::Align::kRight));
+    } else {
+      for (size_t i = 0; i < row_count; ++i) {
+        const auto& row = tally.results_rows[i];
+        const float r_rev = float(race::ease_out_cubic(std::clamp((anim_t - 0.10 - double(i) * 0.06) / 0.25, 0.0, 1.0)));
+        const float slide = (1.0f - r_rev) * 20.0f * s;
+        const uint32_t row_bg = row.player ? ui4::kRowHighlight : ((i % 2 == 1) ? ui4::kRowAlt : ui::rgba(22, 24, 30, 185));
+        l.rect(lx0 + 10.0f * s + slide, ry, lx0 + table_w - 10.0f * s + slide, ry + row_h - 4.0f * s,
+               with_alpha(row_bg, r_rev));
+        if (row.player) {
+          l.rect(lx0 + 10.0f * s + slide, ry, lx0 + 15.0f * s + slide, ry + row_h - 4.0f * s,
+                 with_alpha(ui4::kPink, r_rev));
+        }
+
+        const uint32_t pos_col = row.place == 1 ? ui4::kYellow : (row.player ? ui4::kPinkHi : ui4::kWhite);
+        l.text(col_pos + slide, ry + 6.5f * s, std::to_string(row.place),
+               ui4::style(ui::Font::kE, 15.5f * s, with_alpha(pos_col, r_rev)));
+
+        ui::TextStyle dts = ui4::style(row.player ? ui::Font::kE : ui::Font::kB, 14.0f * s,
+                                       with_alpha(row.player ? ui4::kWhite : ui4::kOffWhite, r_rev));
+        ui4::fit_text(row.driver, dts, (col_car - col_drv) - 14.0f * s, 10.0f * s);
+        l.text(col_drv + slide, ry + 7.5f * s, row.driver, dts);
+
+        float cx = col_car + slide;
+        if (!row.car_class.empty() && row.pi > 0) {
+          ui4::class_badge(l, cx, ry + 5.0f * s, 20.0f * s, row.car_class, row.pi);
+          cx += 62.0f * s;
+        }
+        ui::TextStyle cts = ui4::style(ui::Font::kB, 12.5f * s, with_alpha(row.player ? ui4::kWhite : ui4::kDim, r_rev),
+                                       ui::Align::kLeft, true);
+        ui4::fit_text(row.car, cts, (col_time - cx) - 108.0f * s, 9.5f * s);
+        l.text(cx, ry + 8.0f * s, row.car, cts);
+
+        const std::string t_str = row.time_s > 0.0
+                                      ? format_clock_s(row.time_s)
+                                      : (row.place == 1 ? std::string("WINNER") : format_gap_s(row.gap_s));
+        l.text(col_time + slide, ry + 7.5f * s, t_str,
+               ui4::style(ui::Font::kE, 13.5f * s,
+                          with_alpha(row.place == 1 ? ui4::kYellow : ui4::kOffWhite, r_rev), ui::Align::kRight));
+        ry += row_h;
+      }
+    }
+  }
+
+  ui4::button_bar(l, {{"A", "CONTINUE"}}, screen_w, screen_h, 70.0f);
+}
+
 }  // namespace
 
 void draw_objective_tracker(ui::List& l, const race::CampaignFlow& flow, const DrawContext& ctx) {
@@ -222,17 +385,18 @@ void draw_cinematic_overlay(ui::List& l, const race::CampaignFlow& flow, const D
 
   // Wristband Ceremony / Festival Registration Hero Presentation.
   if (st == race::CampaignStage::kWristbandCeremony || st == race::CampaignStage::kFestivalRegistration) {
+    const bool is_registration = (st == race::CampaignStage::kFestivalRegistration);
     ui4::subtle_vignette(l, w, h, 0.35f * enter);
     const float cx = 0.5f * w;
-    const float card_w = 720.0f * s;
+    const float card_w = 740.0f * s;
     const float card_x0 = cx - 0.5f * card_w;
-    const float card_y0 = 112.0f * s + (1.0f - enter) * 24.0f * s;
+    const float card_y0 = (is_registration ? 86.0f : 112.0f) * s + (1.0f - enter) * 24.0f * s;
 
     {
-      ui4::TiltScope tilt(l, cx, card_y0 + 140.0f * s, ui4::kTiltRad * 0.55f);
+      ui4::TiltScope tilt(l, cx, card_y0 + 160.0f * s, ui4::kTiltRad * 0.55f);
       // Eyebrow strip.
       ui::TextStyle eye_ts = ui4::style(ui::Font::kB, 14.0f * s, ui4::kWhite, ui::Align::kCenter);
-      const float ew = std::max(260.0f * s, ui::List::measure(cin.eyebrow, eye_ts) + 40.0f * s);
+      const float ew = std::clamp(ui::List::measure(cin.eyebrow, eye_ts) + 40.0f * s, 260.0f * s, card_w);
       ui4::brush(l, cx - 0.5f * ew, card_y0, cx + 0.5f * ew, card_y0 + 28.0f * s, ui4::kBrushBlack, false);
       l.text(cx, card_y0 + 7.0f * s, cin.eyebrow, eye_ts);
 
@@ -247,7 +411,7 @@ void draw_cinematic_overlay(ui::List& l, const race::CampaignFlow& flow, const D
 
       // Center distressed wristband showcase card with real WRISTBANDS/<COLOR>XL artwork.
       const float py0 = card_y0 + 102.0f * s;
-      const float py1 = py0 + 186.0f * s;
+      const float py1 = py0 + 190.0f * s;
       ui4::panel(l, card_x0, py0, card_x0 + card_w, py1, s, ui4::kCharcoalDark, cin.accent_rgba, 0, true);
 
       std::array<float, 4> wb_uv{};
@@ -271,28 +435,52 @@ void draw_cinematic_overlay(ui::List& l, const race::CampaignFlow& flow, const D
       const float max_tw = (card_x0 + card_w) - tx - 24.0f * s;
       // Tier pill sized cleanly to label text.
       ui::TextStyle badge_ts = ui4::style(ui::Font::kE, 14.0f * s, ui4::kInk);
+      ui4::fit_text(cin.badge_text, badge_ts, max_tw - 24.0f * s, 10.5f * s);
       const float badge_w = std::min(max_tw, std::max(180.0f * s, ui::List::measure(cin.badge_text, badge_ts) + 30.0f * s));
       ui4::offwhite_strip(l, tx, py0 + 22.0f * s, tx + badge_w, py0 + 48.0f * s, s, false);
       l.text(tx + 12.0f * s, py0 + 28.0f * s, cin.badge_text, badge_ts);
 
       // Subheadline & unlock description.
-      ui::TextStyle sh_ts = ui4::style(ui::Font::kE, 16.5f * s, ui4::kYellow);
-      ui4::fit_text(cin.subheadline, sh_ts, max_tw, 12.0f * s);
-      l.text(tx, py0 + 60.0f * s, cin.subheadline, sh_ts);
+      ui::TextStyle sh_ts = ui4::style(ui::Font::kE, 16.0f * s, ui4::kYellow);
+      ui4::fit_text(cin.subheadline, sh_ts, max_tw, 11.5f * s);
+      l.text(tx, py0 + 58.0f * s, cin.subheadline, sh_ts);
       if (!cin.detail_line.empty()) {
-        ui::TextStyle det_ts = ui4::style(ui::Font::kA, 13.8f * s, ui4::kWhite, ui::Align::kLeft, true);
-        l.text(tx, py0 + 88.0f * s, wrap_lines(cin.detail_line, det_ts, max_tw), det_ts);
+        ui::TextStyle det_ts = ui4::style(ui::Font::kA, 13.5f * s, ui4::kWhite, ui::Align::kLeft, true);
+        l.text(tx, py0 + 84.0f * s, wrap_lines(cin.detail_line, det_ts, max_tw), det_ts);
       }
       if (!cin.reward_car.empty()) {
-        const std::string rtext = "GARAGE REWARD: " + upper_ascii(cin.reward_car);
+        const std::string rtext = "STARTER GARAGE RIDE: " + upper_ascii(cin.reward_car);
         ui::TextStyle r_ts = ui4::style(ui::Font::kE, 13.0f * s, ui4::kWhite);
-        ui4::fit_text(rtext, r_ts, max_tw - 24.0f * s, 10.5f * s);
+        ui4::fit_text(rtext, r_ts, max_tw - 24.0f * s, 10.0f * s);
         ui4::pill(l, tx, py1 - 44.0f * s, card_x0 + card_w - 24.0f * s, py1 - 14.0f * s, ui4::kPink,
                   ui4::PillKind::kHud01);
         l.text(tx + 12.0f * s, py1 - 36.0f * s, rtext, r_ts);
       }
+
+      // Dedicated First Festival Car / Welcome to the Autoshow onboarding guidance card (PT-41).
+      if (is_registration) {
+        const float gy0 = py1 + 14.0f * s;
+        const float gy1 = gy0 + 106.0f * s;
+        ui4::panel(l, card_x0, gy0, card_x0 + card_w, gy1, s, ui4::kBrushBlack, 0, ui4::kPink, true);
+        l.text(card_x0 + 22.0f * s, gy0 + 12.0f * s, "WELCOME TO THE AUTOSHOW  •  ALICE HART & DAK STEWART",
+               ui4::style(ui::Font::kE, 14.5f * s, ui4::kPinkHi));
+        const std::string guide =
+            "Your entry Yellow Wristband is official and your 1995 VW Corrado VR6 is parked in your garage alongside a 15,000 Cr starter bonus. Next up: browse curated affordable starter cars in the Horizon Autoshow, or press B there anytime to hit Colorado Free Roam and chase your Green Wristband!";
+        ui::TextStyle gts = ui4::style(ui::Font::kA, 13.2f * s, ui4::kOffWhite, ui::Align::kLeft, true);
+        l.text(card_x0 + 22.0f * s, gy0 + 36.0f * s, wrap_lines(guide, gts, card_w - 44.0f * s), gts);
+      }
     }
-    ui4::button_bar(l, {{"A", "CONTINUE"}, {"G", "SET GPS TO NEXT EVENT"}}, w, h, 70.0f);
+    if (is_registration) {
+      ui4::button_bar(l, {{"A", "OPEN STARTER AUTOSHOW"}, {"G", "SET GPS TO FIRST EVENT"}}, w, h, 70.0f);
+    } else {
+      ui4::button_bar(l, {{"A", "CONTINUE"}, {"G", "SET GPS TO NEXT EVENT"}}, w, h, 70.0f);
+    }
+    return;
+  }
+
+  // Stage 1 Post-Race Finish: Full FH1 RACE RESULTS podium/leaderboard screen (PT-42).
+  if (st == race::CampaignStage::kPostRaceFinish) {
+    draw_post_race_results_stage(l, flow.reward_tally(), w, h, flow.stage_time());
     return;
   }
 
@@ -384,140 +572,239 @@ void draw_cinematic_overlay(ui::List& l, const race::CampaignFlow& flow, const D
 
 void draw_reward_tally(ui::List& l, const race::RewardTallyState& tally, float screen_w, float screen_h) {
   if (!tally.active) return;
-  const float s = screen_h / 720.0f;
-  const float enter = float(race::ease_out_cubic(std::clamp(tally.elapsed_s / 0.45, 0.0, 1.0)));
 
-  ui4::subtle_vignette(l, screen_w, screen_h, 0.36f * enter);
-
-  // Left Column: Animated Cash Reward Breakdown & Rolling Balance.
-  const float lx0 = 64.0f * s + (1.0f - enter) * (-64.0f * s);
-  const float ly0 = 68.0f * s;
-  const float lw = 540.0f * s;
-  {
-    ui4::TiltScope tilt(l, lx0 + 0.5f * lw, ly0 + 220.0f * s, ui4::kTiltRad * 0.55f);
-    ui4::title_banner(l, s, lx0, ly0, "REWARD TALLY", tally.event_category + "  •  " + tally.event_title, true, lw);
-
-    const float py0 = ly0 + 76.0f * s;
-    const float py1 = py0 + 340.0f * s;
-    ui4::panel(l, lx0, py0, lx0 + lw, py1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-
-    struct LineItem {
-      std::string label;
-      int64_t amount;
-      uint32_t col;
-    };
-    std::vector<LineItem> rows;
-    rows.push_back({"EVENT PRIZE (" + std::to_string(tally.place) + " / " + std::to_string(tally.total_cars) + ")",
-                    tally.base_credits, ui4::kWhite});
-    if (tally.mileage_bonus > 0) rows.push_back({"MILEAGE BONUS", tally.mileage_bonus, ui4::kWhite});
-    if (tally.difficulty_bonus > 0)
-      rows.push_back({"DIFFICULTY BONUS (+" + std::to_string(tally.difficulty_pct) + "%)", tally.difficulty_bonus,
-                      ui4::kYellow});
-    if (tally.assists_bonus > 0)
-      rows.push_back({"ASSISTS BONUS (+" + std::to_string(tally.assists_pct) + "%)", tally.assists_bonus, ui4::kYellow});
-    if (tally.skills_bonus > 0) rows.push_back({"SKILLS & STYLE BONUS", tally.skills_bonus, ui4::kGreen});
-    if (tally.nemesis_bonus > 0) rows.push_back({"STAR SHOWDOWN BONUS", tally.nemesis_bonus, ui4::kAmber});
-
-    float ry = py0 + 18.0f * s;
-    for (size_t i = 0; i < rows.size(); ++i) {
-      const float rev = tally.row_reveal(int(i));
-      if (rev <= 0.01f) continue;
-      const float rx = lx0 + 20.0f * s + (1.0f - rev) * 28.0f * s;
-      if (i % 2 == 1) {
-        l.rect(lx0 + 12.0f * s, ry - 4.0f * s, lx0 + lw - 12.0f * s, ry + 26.0f * s,
-               with_alpha(ui4::kRowAlt, rev * 0.7f));
-      }
-      l.text(rx, ry, rows[i].label, ui4::style(ui::Font::kB, 14.0f * s, with_alpha(ui4::kDim, rev)));
-      l.text(lx0 + lw - 22.0f * s, ry, "+" + ui4::format_credits(rows[i].amount),
-             ui4::style(ui::Font::kE, 15.0f * s, with_alpha(rows[i].col, rev), ui::Align::kRight));
-      ry += 34.0f * s;
-    }
-
-    // Rolling Total Credits Won + Rolling Bank Balance.
-    const float tot_y = py1 - 102.0f * s;
-    ui4::brush(l, lx0 + 14.0f * s, tot_y, lx0 + lw - 14.0f * s, tot_y + 42.0f * s, ui4::kPink, false);
-    l.text(lx0 + 28.0f * s, tot_y + 11.0f * s, "TOTAL CREDITS EARNED", ui4::style(ui::Font::kE, 15.0f * s, ui4::kWhite));
-    l.text(lx0 + lw - 28.0f * s, tot_y + 8.0f * s, "+" + ui4::format_credits(tally.displayed_credits()),
-           ui4::style(ui::Font::kE, 22.0f * s, ui4::kYellow, ui::Align::kRight));
-
-    ui4::offwhite_strip(l, lx0 + 14.0f * s, tot_y + 48.0f * s, lx0 + lw - 14.0f * s, tot_y + 84.0f * s, s, false);
-    l.text(lx0 + 28.0f * s, tot_y + 57.0f * s, "NEW BALANCE", ui4::style(ui::Font::kB, 14.0f * s, ui4::kInk));
-    l.text(lx0 + lw - 28.0f * s, tot_y + 55.0f * s, ui4::format_credits(tally.displayed_balance()),
-           ui4::style(ui::Font::kE, 18.0f * s, ui4::kInk, ui::Align::kRight));
+  // Stage 1: RACE RESULTS podium & standings screen.
+  if (tally.stage == race::PostRaceStage::kRaceResults) {
+    draw_post_race_results_stage(l, tally, screen_w, screen_h, tally.stage_elapsed_s);
+    return;
   }
 
-  // Right Column: Animated Wristband Progress Bar + Popularity Rank Climb + Next-Unlock Toast.
-  const float rx0 = lx0 + lw + 42.0f * s;
-  const float rw = screen_w - rx0 - 64.0f * s;
-  const float ry0 = 104.0f * s;
-  {
-    ui4::TiltScope tilt(l, rx0 + 0.5f * rw, ry0 + 180.0f * s, ui4::kTiltRad * 0.45f);
+  const float s = screen_h / 720.0f;
+  const float enter = float(race::ease_out_cubic(std::clamp(tally.stage_elapsed_s / 0.42, 0.0, 1.0)));
+  const std::string clean_title = race::resolve_event_display_title(tally.event_title);
+  const std::string category = tally.event_category.empty() ? std::string("FESTIVAL RACE") : tally.event_category;
 
-    // 1. Wristband Points Card with tier-up flash!
-    const float wb_h = 166.0f * s;
+  ui4::subtle_vignette(l, screen_w, screen_h, 0.34f * enter);
+
+  // Stage 2: CREDITS EARNED (focused animated rolling credits & updated balance).
+  if (tally.stage == race::PostRaceStage::kCreditsEarned) {
+    draw_post_race_stage_pills(l, screen_w, s, 1);
+
+    const float lx0 = 60.0f * s + (1.0f - enter) * (-64.0f * s);
+    const float ly0 = 64.0f * s;
+    const float lw = 580.0f * s;
+    {
+      ui4::TiltScope tilt(l, lx0 + 0.5f * lw, ly0 + 230.0f * s, ui4::kTiltRad * 0.52f);
+      ui4::title_banner(l, s, lx0, ly0, "CREDITS EARNED", category + "  •  " + clean_title, true, lw);
+
+      const float py0 = ly0 + 80.0f * s;
+      const float py1 = py0 + 372.0f * s;
+      ui4::panel(l, lx0, py0, lx0 + lw, py1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+
+      struct LineItem {
+        std::string label;
+        int64_t amount;
+        uint32_t col;
+      };
+      const int pl = std::max(1, tally.place);
+      std::vector<LineItem> rows;
+      rows.push_back({"BASE PURSE  (" + std::to_string(pl) + ordinal_suffix(pl) + " / " +
+                          std::to_string(std::max(1, tally.total_cars)) + ")",
+                      tally.base_credits, ui4::kWhite});
+      if (tally.mileage_bonus > 0) rows.push_back({"MILEAGE BONUS", tally.mileage_bonus, ui4::kOffWhite});
+      if (tally.difficulty_bonus > 0)
+        rows.push_back({"DIFFICULTY BONUS (+" + std::to_string(tally.difficulty_pct) + "%)", tally.difficulty_bonus,
+                        ui4::kYellow});
+      if (tally.assists_bonus > 0)
+        rows.push_back({"ASSISTS BONUS (+" + std::to_string(tally.assists_pct) + "%)", tally.assists_bonus, ui4::kYellow});
+      if (tally.skills_bonus > 0) rows.push_back({"SKILLS & STYLE BONUS", tally.skills_bonus, ui4::kGreen});
+      if (tally.nemesis_bonus > 0) rows.push_back({"NEMESIS / SHOWDOWN BONUS", tally.nemesis_bonus, ui4::kAmber});
+
+      float ry = py0 + 20.0f * s;
+      const float row_pitch = rows.size() > 5 ? 32.0f * s : 36.0f * s;
+      for (size_t i = 0; i < rows.size(); ++i) {
+        const float rev = tally.row_reveal(int(i));
+        if (rev <= 0.01f) continue;
+        const float rx = lx0 + 22.0f * s + (1.0f - rev) * 28.0f * s;
+        if (i % 2 == 1) {
+          l.rect(lx0 + 12.0f * s, ry - 4.0f * s, lx0 + lw - 12.0f * s, ry + row_pitch - 8.0f * s,
+                 with_alpha(ui4::kRowAlt, rev * 0.72f));
+        }
+        l.text(rx, ry, rows[i].label, ui4::style(ui::Font::kB, 14.5f * s, with_alpha(ui4::kOffWhite, rev)));
+        const int64_t shown_row = int64_t(std::llround(double(rows[i].amount) * double(rev)));
+        l.text(lx0 + lw - 24.0f * s, ry, "+" + ui4::format_credits(shown_row),
+               ui4::style(ui::Font::kE, 16.0f * s, with_alpha(rows[i].col, rev), ui::Align::kRight));
+        ry += row_pitch;
+      }
+
+      // Rolling Total Credits Earned + Updated Balance strip.
+      const float tot_y = py1 - 108.0f * s;
+      ui4::brush(l, lx0 + 12.0f * s, tot_y, lx0 + lw - 12.0f * s, tot_y + 46.0f * s, ui4::kPink, false);
+      l.text(lx0 + 28.0f * s, tot_y + 13.0f * s, "TOTAL CREDITS EARNED",
+             ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite));
+      l.text(lx0 + lw - 28.0f * s, tot_y + 9.0f * s, "+" + ui4::format_credits(tally.displayed_credits()),
+             ui4::style(ui::Font::kE, 24.0f * s, ui4::kYellow, ui::Align::kRight));
+
+      ui4::offwhite_strip(l, lx0 + 12.0f * s, tot_y + 52.0f * s, lx0 + lw - 12.0f * s, tot_y + 90.0f * s, s, false);
+      l.text(lx0 + 28.0f * s, tot_y + 62.0f * s, "UPDATED BALANCE", ui4::style(ui::Font::kB, 14.5f * s, ui4::kInk));
+      l.text(lx0 + lw - 28.0f * s, tot_y + 59.0f * s, ui4::format_credits(tally.displayed_balance()),
+             ui4::style(ui::Font::kE, 20.0f * s, ui4::kInk, ui::Align::kRight));
+    }
+
+    // Subtle compact finish position emblem on right so hero car stays unobstructed in center-right.
+    {
+      const int pl = std::max(1, tally.place);
+      const float rx1 = screen_w - 58.0f * s;
+      const float rx0 = rx1 - 244.0f * s;
+      const float ry0 = 96.0f * s;
+      ui4::TiltScope rt(l, 0.5f * (rx0 + rx1), ry0 + 44.0f * s, ui4::kTiltRad * 0.45f);
+      ui4::panel01(l, rx0, ry0, rx1, ry0 + 88.0f * s, s, ui4::kCharcoalDark, ui4::kPink);
+      l.text(rx0 + 16.0f * s, ry0 + 14.0f * s, "FINISH POSITION", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+      l.text(rx0 + 16.0f * s, ry0 + 36.0f * s, std::to_string(pl) + ordinal_suffix(pl) + " PLACE",
+             ui4::style(ui::Font::kE, 28.0f * s, pl == 1 ? ui4::kYellow : ui4::kWhite));
+    }
+
+    ui4::button_bar(l, {{"A", tally.stage_animation_done() ? "CONTINUE" : "SKIP TALLY"}}, screen_w, screen_h, 70.0f);
+    return;
+  }
+
+  // Stage 3: WRISTBAND & POPULARITY (+ PRIZE CAR AWARDED showcase card when a prize car was won!).
+  draw_post_race_stage_pills(l, screen_w, s, 2);
+
+  const float lx0 = 60.0f * s + (1.0f - enter) * (-56.0f * s);
+  const float ly0 = 64.0f * s;
+  const float lw = 560.0f * s;
+  {
+    ui4::TiltScope tilt(l, lx0 + 0.5f * lw, ly0 + 225.0f * s, ui4::kTiltRad * 0.50f);
+    ui4::title_banner(l, s, lx0, ly0, "WRISTBAND & POPULARITY", category + "  •  " + clean_title, false, lw);
+
+    // 1. Wristband Progression Card with real WRISTBANDS/<COLOR>XL artwork & animated bar.
+    const float wb_y0 = ly0 + 80.0f * s;
+    const float wb_h = 204.0f * s;
     const float flash = tally.tier_up_flash();
     const uint32_t wb_col = ui4::wristband_colour(tally.wb_current_name);
     const uint32_t top_acc = flash > 0.05f ? ui4::kYellow : wb_col;
-    ui4::panel(l, rx0, ry0, rx0 + rw, ry0 + wb_h, s, ui4::kCharcoalDark, top_acc, 0, true);
+    ui4::panel(l, lx0, wb_y0, lx0 + lw, wb_y0 + wb_h, s, ui4::kCharcoalDark, top_acc, 0, true);
     if (flash > 0.05f) {
-      l.rect(rx0, ry0, rx0 + rw, ry0 + wb_h, with_alpha(ui4::kYellow, flash * 0.16f));
+      l.rect(lx0, wb_y0, lx0 + lw, wb_y0 + wb_h, with_alpha(ui4::kYellow, flash * 0.16f));
     }
 
-    l.text(rx0 + 20.0f * s, ry0 + 16.0f * s, "WRISTBAND PROGRESSION",
-           ui4::style(ui::Font::kB, 13.0f * s, ui4::kDim));
-    l.text(rx0 + rw - 20.0f * s, ry0 + 14.0f * s, "+" + std::to_string(tally.wb_points_earned) + " PTS",
-           ui4::style(ui::Font::kE, 18.0f * s, ui4::kYellow, ui::Align::kRight));
-    l.text(rx0 + 20.0f * s, ry0 + 40.0f * s, tally.wb_current_name,
-           ui4::style(ui::Font::kE, 22.0f * s, wb_col));
+    // Extract wristband colour key for WRISTBANDS/<COLOR>XL texture.
+    std::string wb_key;
+    const std::string low_wb = [&]() {
+      std::string out = tally.wb_current_name;
+      for (char& c : out) c = char(std::tolower(static_cast<unsigned char>(c)));
+      return out;
+    }();
+    for (const char* k : {"yellow", "green", "blue", "pink", "orange", "purple", "gold"}) {
+      if (low_wb.find(k) != std::string::npos) {
+        wb_key = upper_ascii(k);
+        break;
+      }
+    }
+    std::array<float, 4> wb_uv{};
+    float info_x0 = lx0 + 22.0f * s;
+    if (!wb_key.empty() &&
+        (ui4::texture("WRISTBANDS/" + wb_key + "XL", wb_uv) || ui4::texture("WRISTBANDS/" + wb_key, wb_uv))) {
+      l.image(lx0 + 16.0f * s, wb_y0 + 18.0f * s, lx0 + 148.0f * s, wb_y0 + 112.0f * s, wb_uv);
+      info_x0 = lx0 + 162.0f * s;
+    }
+
+    l.text(info_x0, wb_y0 + 18.0f * s, "WRISTBAND PROGRESSION", ui4::style(ui::Font::kB, 12.5f * s, ui4::kDim));
+    l.text(lx0 + lw - 20.0f * s, wb_y0 + 16.0f * s, "+" + std::to_string(tally.wb_points_earned) + " PTS",
+           ui4::style(ui::Font::kE, 19.0f * s, tally.wb_points_earned > 0 ? ui4::kYellow : ui4::kDim, ui::Align::kRight));
+    ui::TextStyle wb_ts = ui4::style(ui::Font::kE, 23.0f * s, wb_col);
+    ui4::fit_text(tally.wb_current_name, wb_ts, (lx0 + lw - 20.0f * s) - info_x0, 14.0f * s);
+    l.text(info_x0, wb_y0 + 42.0f * s, tally.wb_current_name, wb_ts);
+    l.text(info_x0, wb_y0 + 74.0f * s,
+           tally.wb_tier_up ? "COLLECT NEXT WRISTBAND AT RACE CENTRAL" : ("NEXT: " + tally.wb_next_name),
+           ui4::style(ui::Font::kB, 12.5f * s, tally.wb_tier_up ? ui4::kYellow : ui4::kOffWhite));
 
     // Animated Wristband Fill Bar.
-    const float bx0 = rx0 + 20.0f * s;
-    const float bx1 = rx0 + rw - 20.0f * s;
-    const float by0 = ry0 + 82.0f * s;
-    const float by1 = by0 + 22.0f * s;
+    const float bx0 = lx0 + 22.0f * s;
+    const float bx1 = lx0 + lw - 22.0f * s;
+    const float by0 = wb_y0 + 124.0f * s;
+    const float by1 = by0 + 24.0f * s;
     const float frac = tally.wb_bar_fraction();
     l.rect(bx0, by0, bx1, by1, ui::rgba(255, 255, 255, 34));
     l.rect(bx0, by0, bx0 + (bx1 - bx0) * frac, by1, tally.wb_tier_up ? ui4::kYellow : ui4::kPink);
     l.text(bx0, by1 + 10.0f * s, std::to_string(tally.displayed_wb_points()) + " PTS",
-           ui4::style(ui::Font::kE, 14.0f * s, ui4::kWhite));
+           ui4::style(ui::Font::kE, 15.0f * s, ui4::kWhite));
     l.text(bx1, by1 + 10.0f * s,
            tally.wb_tier_up ? ("TIER UP!  ->  " + tally.wb_next_name)
-                            : ("NEXT: " + tally.wb_next_name + " (" + std::to_string(tally.wb_tier_hi) + " PTS)"),
-           ui4::style(ui::Font::kB, 13.0f * s, tally.wb_tier_up ? ui4::kYellow : ui4::kDim, ui::Align::kRight));
+                            : ("TARGET: " + std::to_string(tally.wb_tier_hi) + " PTS"),
+           ui4::style(ui::Font::kB, 13.5f * s, tally.wb_tier_up ? ui4::kYellow : ui4::kDim, ui::Align::kRight));
 
-    // 2. Popularity Rank Climb Card.
-    const float pop_y = ry0 + wb_h + 18.0f * s;
-    const float pop_h = 98.0f * s;
-    ui4::panel(l, rx0, pop_y, rx0 + rw, pop_y + pop_h, s, ui4::kCharcoalDark, 0, ui4::kYellow, true);
-    l.text(rx0 + 20.0f * s, pop_y + 14.0f * s, "POPULARITY RANK CLIMB",
+    // 2. Popularity Rank Progression Card.
+    const float pop_y = wb_y0 + wb_h + 18.0f * s;
+    const float pop_h = 112.0f * s;
+    ui4::panel(l, lx0, pop_y, lx0 + lw, pop_y + pop_h, s, ui4::kCharcoalDark, 0, ui4::kYellow, true);
+    l.text(lx0 + 22.0f * s, pop_y + 14.0f * s, "POPULARITY RANK PROGRESSION",
            ui4::style(ui::Font::kB, 13.0f * s, ui4::kDim));
     const int cur_rank = tally.displayed_pop_rank();
     const int climbed = std::max(0, tally.pop_rank_before - tally.pop_rank_after);
-    l.text(rx0 + 20.0f * s, pop_y + 38.0f * s, "#" + std::to_string(cur_rank),
-           ui4::style(ui::Font::kE, 36.0f * s, ui4::kYellow));
-    l.text(rx0 + rw - 20.0f * s, pop_y + 44.0f * s,
-           climbed > 0 ? ("+" + std::to_string(climbed) + " RANKS GAINED") : "FESTIVAL STANDING",
-           ui4::style(ui::Font::kE, 16.0f * s, ui4::kGreen, ui::Align::kRight));
+    l.text(lx0 + 22.0f * s, pop_y + 38.0f * s, "#" + std::to_string(cur_rank),
+           ui4::style(ui::Font::kE, 42.0f * s, ui4::kYellow));
+    l.text(lx0 + lw - 22.0f * s, pop_y + 42.0f * s,
+           climbed > 0 ? ("+" + std::to_string(climbed) + " RANKS CLIMBED") : "FESTIVAL STANDING",
+           ui4::style(ui::Font::kE, 17.0f * s, climbed > 0 ? ui4::kGreen : ui4::kOffWhite, ui::Align::kRight));
+    if (climbed > 0) {
+      l.text(lx0 + lw - 22.0f * s, pop_y + 68.0f * s,
+             "PREVIOUS RANK #" + std::to_string(tally.pop_rank_before) + "  ->  #" + std::to_string(tally.pop_rank_after),
+             ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim, ui::Align::kRight));
+    }
+  }
 
-    // 3. Next-Unlock Toast & Auto-GPS Prompt Card.
+  // Right Column: PRIZE CAR AWARDED showcase celebration card + Next Campaign Objective card.
+  const float rx0 = lx0 + lw + 40.0f * s;
+  const float rw = screen_w - rx0 - 58.0f * s;
+  float cur_ry = 144.0f * s;
+  if (rw >= 240.0f * s) {
+    ui4::TiltScope rtilt(l, rx0 + 0.5f * rw, cur_ry + 160.0f * s, ui4::kTiltRad * 0.45f);
+
+    if (!tally.prize_car_name.empty()) {
+      const float ph = 186.0f * s;
+      ui4::panel(l, rx0, cur_ry, rx0 + rw, cur_ry + ph, s, ui4::kCharcoalDark, ui4::kYellow, ui4::kPink, true);
+      ui4::brush(l, rx0 - 6.0f * s, cur_ry + 12.0f * s, rx0 + rw + 6.0f * s, cur_ry + 50.0f * s, ui4::kPink, false);
+      float hx = rx0 + 18.0f * s;
+      if (ui4::badge_icon(l, hx, cur_ry + 16.0f * s, hx + 28.0f * s, cur_ry + 44.0f * s, ui4::BadgeIconKind::kTrophy)) {
+        hx += 36.0f * s;
+      }
+      l.text(hx, cur_ry + 21.0f * s, "PRIZE CAR AWARDED!", ui4::style(ui::Font::kE, 18.0f * s, ui4::kYellow));
+
+      ui::TextStyle car_ts = ui4::style(ui::Font::kE, 25.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+      ui4::fit_text(tally.prize_car_name, car_ts, rw - 38.0f * s, 14.0f * s);
+      l.text(rx0 + 20.0f * s, cur_ry + 68.0f * s, tally.prize_car_name, car_ts);
+
+      ui4::offwhite_strip(l, rx0 + 18.0f * s, cur_ry + 118.0f * s, rx0 + rw - 18.0f * s, cur_ry + 150.0f * s, s, false);
+      l.text(rx0 + 30.0f * s, cur_ry + 127.0f * s, "DELIVERED TO YOUR HORIZON GARAGE",
+             ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
+      l.text(rx0 + 20.0f * s, cur_ry + 158.0f * s, "SWITCH CARS ANYTIME IN MY GARAGE OR AT OUTPOSTS",
+             ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+      cur_ry += ph + 18.0f * s;
+    }
+
     if (!tally.next_unlock_headline.empty() || tally.has_next_gps) {
-      const float ny = pop_y + pop_h + 18.0f * s;
-      const float nh = 102.0f * s;
-      ui4::panel(l, rx0, ny, rx0 + rw, ny + nh, s, ui4::kBrushBlack, ui4::kPink, 0, true);
+      const float nh = 114.0f * s;
+      ui4::panel(l, rx0, cur_ry, rx0 + rw, cur_ry + nh, s, ui4::kBrushBlack, ui4::kPink, 0, true);
       const std::string hdr =
           !tally.next_unlock_headline.empty() ? tally.next_unlock_headline : "NEXT CAMPAIGN OBJECTIVE";
       const std::string det =
           !tally.next_unlock_detail.empty() ? tally.next_unlock_detail : ("GPS READY: " + tally.next_gps_label);
-      l.text(rx0 + 20.0f * s, ny + 16.0f * s, hdr, ui4::style(ui::Font::kE, 18.0f * s, ui4::kPinkHi));
-      l.text(rx0 + 20.0f * s, ny + 44.0f * s, det, ui4::style(ui::Font::kB, 13.5f * s, ui4::kWhite));
+      ui::TextStyle hts = ui4::style(ui::Font::kE, 17.5f * s, ui4::kPinkHi);
+      ui4::fit_text(hdr, hts, rw - 36.0f * s, 12.0f * s);
+      l.text(rx0 + 20.0f * s, cur_ry + 16.0f * s, hdr, hts);
+      ui::TextStyle dts = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite);
+      ui4::fit_text(det, dts, rw - 36.0f * s, 10.0f * s);
+      l.text(rx0 + 20.0f * s, cur_ry + 44.0f * s, det, dts);
       if (tally.has_next_gps) {
-        l.text(rx0 + 20.0f * s, ny + 70.0f * s, "PRESS [G] TO AUTO-SET GPS TO " + tally.next_gps_label,
+        l.text(rx0 + 20.0f * s, cur_ry + 76.0f * s, "PRESS [G] TO AUTO-SET GPS TO " + tally.next_gps_label,
                ui4::style(ui::Font::kB, 12.5f * s, ui4::kYellow));
       }
     }
   }
 
-  std::vector<ui4::Prompt> prompts = {{"A", tally.animation_done() ? "CONTINUE" : "SKIP TALLY"}};
+  std::vector<ui4::Prompt> prompts = {{"A", tally.stage_animation_done() ? "CONTINUE TO FREE ROAM" : "SKIP ANIMATION"}};
   if (tally.has_next_gps) prompts.push_back({"G", "SET GPS TO NEXT OBJECTIVE"});
   ui4::button_bar(l, prompts, screen_w, screen_h, 70.0f);
 }

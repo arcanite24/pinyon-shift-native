@@ -1,57 +1,601 @@
 #include "game_hud_internal.h"
 
-namespace carview::hud_detail {
+namespace carview {
 
-void world_marker_hud(ui::List& l, const WorldMarkerHud& wm, const Layout& g, bool metric_units) {
-  if (!wm.visible) return;
-  const float s = g.s;
-  const float mx = wm.in_range ? std::clamp(wm.screen_x, g.L(160), g.w - g.L(320)) : wm.screen_x;
-  const float my = wm.in_range ? std::clamp(wm.screen_y, g.T(120), g.h - g.T(185)) : wm.screen_y;
-  if (mx < -100 || mx > g.w + 100 || my < -80 || my > g.h + 80) return;
+namespace {
 
-  // Clean white circular event/festival badge (matching hud-freeroam-event-marker.png).
-  const float r = (wm.in_range ? 20.0f : 15.0f) * s;
-  l.circle(mx + 1.5f * s, my + 2.0f * s, r + 1.0f * s, rgba(0, 0, 0, 145));
-  l.circle(mx, my, r, ui4::kWhite);
-  l.circle(mx, my, r - 3.2f * s, rgba(24, 26, 30, 235));
-  l.text(mx, my - (wm.in_range ? 9.5f : 7.5f) * s, wm.is_festival ? "H" : "!",
-         font(ui::Font::kE, (wm.in_range ? 18 : 14) * s, ui4::kWhite, Align::kCenter));
+inline float smoothstep01(float t) {
+  const float x = std::clamp(t, 0.0f, 1.0f);
+  return x * x * (3.0f - 2.0f * x);
+}
 
-  // Slightly tilted large white italic title with crisp drop shadow (NO dark subtitle box!).
-  const float tx = mx + r + 10 * s;
-  Turn t(l, tx + 110 * s, my, ui4::kTiltRad * 0.45f);
-  TextStyle ts = font(ui::Font::kE, (wm.in_range ? 32 : 22) * s, ui4::kWhite);
-  fit(wm.title, ts, g.L(420), 15 * s);
-  const float tw = ui::List::measure(wm.title, ts);
-  // Crisp multi-sample drop shadow for bright sky readability (just like retail FH1).
-  TextStyle sh = ts;
-  sh.color = rgba(0, 0, 0, 185);
-  l.text(tx + 2.0f * s, my - 0.55f * ts.size + 2.0f * s, wm.title, sh);
-  l.text(tx, my - 0.55f * ts.size, wm.title, ts);
+inline bool boxes_overlap(float ax0, float ay0, float ax1, float ay1, float bx0, float by0, float bx1, float by1,
+                          float pad_x, float pad_y) {
+  return (ax0 - pad_x < bx1) && (ax1 + pad_x > bx0) && (ay0 - pad_y < by1) && (ay1 + pad_y > by0);
+}
 
-  if (wm.in_range) {
-    // Compact #F90064 ENTER NOW [X] strip tucked flush beneath the right half of the title.
-    const std::string ptxt = wm.prompt.empty() ? str("Activities", "IDS_EnterNow", "ENTER NOW") : wm.prompt;
-    TextStyle ps = font(ui::Font::kE, 16.5f * s, ui4::kWhite);
-    const float pw = ui::List::measure(ptxt, ps);
-    const float strip_w = pw + 46 * s;
-    const float sx0 = std::max(tx + 10 * s, tx + tw - strip_w + 4 * s);
-    const float sy0 = my + 0.45f * ts.size + 3 * s;
-    const float sy1 = sy0 + 27 * s;
-    ui4::brush(l, sx0 - 4 * s, sy0, sx0 + strip_w, sy1, wm.eligible ? ui4::kPink : rgba(110, 110, 118, 230));
-    l.text(sx0 + 8 * s, sy0 + 5 * s, ptxt, ps);
-    const float bx = sx0 + pw + 26 * s, by = 0.5f * (sy0 + sy1);
-    ui4::button_glyph(l, bx, by, 10.0f * s, "X");
-  } else if (wm.distance_m > 0) {
-    const std::string db = format_distance_unit(wm.distance_m, metric_units);
-    shadowed(l, tx, my + 0.5f * ts.size + 4 * s, db, font(ui::Font::kB, 12.5f * s, ui4::kOffWhite), s);
+void draw_hexagon_outline(ui::List& l, float cx, float cy, float r, float thickness, uint32_t col) {
+  constexpr float kPi = 3.14159265f;
+  float vx[6], vy[6];
+  for (int i = 0; i < 6; ++i) {
+    const float a = -0.5f * kPi + float(i) * (kPi / 3.0f);
+    vx[i] = cx + r * std::cos(a);
+    vy[i] = cy + r * std::sin(a);
+  }
+  for (int i = 0; i < 6; ++i) {
+    const int j = (i + 1) % 6;
+    l.line(vx[i], vy[i], vx[j], vy[j], thickness, col);
   }
 }
 
+void compute_world_marker_layout(const WorldMarkerHud* wm, const hud_detail::Layout& g, WorldMarkerLayout& out) {
+  out = {};
+  if (!wm || !wm->visible) return;
+  const float s = g.s;
+  float scale = 1.0f;
+  float alpha = 1.0f;
+  if (!wm->in_range) {
+    const double d = std::max(0.0, wm->distance_m);
+    if (d > 380.0) return;
+    scale = 1.0f - 0.20f * smoothstep01(float((d - 35.0) / 245.0));
+    if (d > 160.0) alpha = 1.0f - smoothstep01(float((d - 160.0) / 220.0));
+    if (alpha <= 0.03f) return;
+  }
+
+  const float mx = wm->in_range ? std::clamp(wm->screen_x, g.L(120), g.w - g.L(300)) : wm->screen_x;
+  const float my = wm->in_range ? std::clamp(wm->screen_y, g.T(105), g.h - g.T(175)) : wm->screen_y;
+  if (mx < -90.0f * s || mx > g.w + 90.0f * s || my < -70.0f * s || my > g.h + 70.0f * s) return;
+
+  const float hex_r = (wm->in_range ? 18.0f : 14.0f) * s * scale;
+  const float tx = mx + hex_r + 9.0f * s * scale;
+  ui::TextStyle ts = hud_detail::font(ui::Font::kE, (wm->in_range ? 25.0f : 18.5f) * s * scale, ui4::kWhite);
+  hud_detail::fit(wm->title, ts, g.L(360) * scale, 12.0f * s * scale);
+  const float tw = ui::List::measure(wm->title, ts);
+
+  float bottom_y = my + std::max(hex_r + 6.0f * s * scale, 0.5f * ts.size + 4.0f * s * scale);
+  float right_x = tx + tw + 6.0f * s * scale;
+  if (wm->in_range) {
+    const std::string ptxt =
+        wm->prompt.empty() ? hud_detail::str("Activities", "IDS_EnterNow", "ENTER NOW") : wm->prompt;
+    const ui::TextStyle ps = hud_detail::font(ui::Font::kE, 15.0f * s, ui4::kWhite);
+    const float pw = ui::List::measure(ptxt, ps);
+    const float strip_w = pw + 44.0f * s;
+    const float sx0 = std::max(tx + 6.0f * s, tx + tw - strip_w + 4.0f * s);
+    right_x = std::max(right_x, sx0 + strip_w);
+    bottom_y = std::max(bottom_y, my + 0.48f * ts.size + 29.0f * s);
+  } else if (wm->distance_m > 0.0) {
+    bottom_y = std::max(bottom_y, my + 0.48f * ts.size + 20.0f * s * scale);
+  }
+
+  out.visible = true;
+  out.anchor_x = mx;
+  out.anchor_y = my;
+  out.scale = scale;
+  out.alpha = alpha;
+  out.x0 = mx - hex_r - 3.0f * s * scale;
+  out.y0 = my - std::max(hex_r, 0.58f * ts.size) - 3.0f * s * scale;
+  out.x1 = right_x;
+  out.y1 = bottom_y;
+}
+
+}  // namespace
+
+NameTagLod compute_name_tag_lod(double distance_m) {
+  if (distance_m < 0.0) return {1.0f, 1.0f, true};
+  const float t_scale = smoothstep01(float((distance_m - 20.0) / 120.0));
+  const float scale = 1.0f - 0.22f * t_scale;  // 1.0x close -> 0.78x far
+  if (distance_m <= 45.0) return {scale, 1.0f, true};
+  if (distance_m >= 160.0) return {scale, 0.0f, false};
+  const float t_fade = smoothstep01(float((distance_m - 45.0) / 115.0));
+  const float alpha = 1.0f - t_fade;
+  return {scale, alpha, alpha > 0.03f};
+}
+
+void layout_world_labels(const std::vector<NameTagHud>& tags, const WorldMarkerHud* world_marker, bool in_race,
+                         float w, float h, std::vector<ResolvedNameTag>& out_tags, WorldMarkerLayout* out_marker) {
+  out_tags.clear();
+  const float s = h / 720.0f;
+  const hud_detail::Layout g{w, h, s};
+
+  WorldMarkerLayout wm_layout{};
+  if (world_marker && !in_race) compute_world_marker_layout(world_marker, g, wm_layout);
+  if (out_marker) *out_marker = wm_layout;
+  if (tags.empty()) return;
+
+  const float margin_x = 22.0f * s;
+  const float top_limit = 22.0f * s;
+  const float bottom_limit = h - 104.0f * s;
+  const float pad_x = 5.0f * s;
+  const float pad_y = 4.0f * s;
+
+  struct Candidate {
+    ResolvedNameTag tag;
+    double distance_m = -1.0;
+    float pill_w = 0.0f;
+    float pill_h = 0.0f;
+  };
+  std::vector<Candidate> cands;
+  cands.reserve(tags.size());
+
+  for (size_t i = 0; i < tags.size(); ++i) {
+    const auto& t = tags[i];
+    if (t.name.empty()) continue;
+    if (t.screen_x < 28.0f * s || t.screen_x > w - 28.0f * s || t.screen_y < 26.0f * s || t.screen_y > bottom_limit)
+      continue;
+
+    const NameTagLod lod = compute_name_tag_lod(t.distance_m);
+    if (!lod.visible) continue;
+
+    Candidate c;
+    c.distance_m = t.distance_m;
+    c.tag.source_index = i;
+    c.tag.orig_x = t.screen_x;
+    c.tag.orig_y = t.screen_y;
+    c.tag.scale = lod.scale;
+    c.tag.alpha = lod.alpha;
+    c.tag.leader = t.leader;
+    c.tag.driver = t.name;
+
+    // Parse "[<CLASS> <PI>] <DRIVER>" prefix or use explicit NameTagHud class/PI fields.
+    if (t.name.size() >= 6 && t.name.front() == '[') {
+      const size_t close = t.name.find(']');
+      if (close != std::string::npos && close > 2) {
+        const std::string inside = t.name.substr(1, close - 1);
+        const size_t sp = inside.find(' ');
+        if (sp != std::string::npos && sp > 0 && sp + 1 < inside.size()) {
+          std::string cls = inside.substr(0, sp);
+          std::string pi = inside.substr(sp + 1);
+          size_t rest_pos = close + 1;
+          while (rest_pos < t.name.size() && t.name[rest_pos] == ' ') ++rest_pos;
+          const std::string drv = t.name.substr(rest_pos);
+          if (!drv.empty()) {
+            c.tag.has_badge = true;
+            c.tag.car_class = std::move(cls);
+            c.tag.pi_text = std::move(pi);
+            c.tag.driver = drv;
+          }
+        }
+      }
+    }
+    if (!c.tag.has_badge && !t.car_class.empty() && t.pi > 0) {
+      c.tag.has_badge = true;
+      c.tag.car_class = t.car_class;
+      c.tag.pi_text = std::to_string(t.pi);
+    }
+
+    const float sc = lod.scale;
+    const float pill_h = 17.5f * s * sc;
+    ui::TextStyle nts = hud_detail::font(ui::Font::kB, 9.8f * s * sc, ui4::kWhite);
+    hud_detail::fit(c.tag.driver, nts, 140.0f * s * sc, 7.6f * s * sc);
+    const float name_w = ui::List::measure(c.tag.driver, nts);
+
+    float pill_w = 0.0f;
+    if (c.tag.has_badge) {
+      const float bh = pill_h - 4.0f * s * sc;
+      c.tag.cls_w = (c.tag.car_class.size() > 1 ? 16.5f : 13.5f) * s * sc;
+      c.tag.pi_w = std::max(21.0f * s * sc, bh * 1.65f);
+      c.tag.badge_w = c.tag.cls_w + c.tag.pi_w;
+      pill_w = 4.5f * s * sc + c.tag.badge_w + 6.0f * s * sc + name_w + 7.5f * s * sc;
+    } else {
+      const float star_w = c.tag.leader ? ui::List::measure("* ", nts) : 0.0f;
+      pill_w = 4.0f * s * sc + 5.5f * s * sc + star_w + name_w + 7.5f * s * sc;
+    }
+
+    const float half_w = 0.5f * pill_w;
+    const float cx = std::clamp(t.screen_x, margin_x + half_w, std::max(margin_x + half_w, w - margin_x - half_w));
+    c.pill_w = pill_w;
+    c.pill_h = pill_h;
+    c.tag.x0 = cx - half_w;
+    c.tag.x1 = cx + half_w;
+    c.tag.y1 = t.screen_y - 5.0f * s * sc;
+    c.tag.y0 = c.tag.y1 - pill_h;
+    cands.push_back(std::move(c));
+  }
+
+  // Closest cars first (in races cap to 5 closest visible cars so a pack never blocks the track).
+  std::sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) {
+    const bool ha = a.distance_m >= 0.0;
+    const bool hb = b.distance_m >= 0.0;
+    if (ha && hb) {
+      if (std::fabs(a.distance_m - b.distance_m) > 1.5) return a.distance_m < b.distance_m;
+    } else if (ha != hb) {
+      return ha;
+    } else if (std::fabs(a.tag.orig_y - b.tag.orig_y) > 1.0f) {
+      return a.tag.orig_y > b.tag.orig_y;
+    }
+    if (a.tag.leader != b.tag.leader) return a.tag.leader;
+    return a.tag.source_index < b.tag.source_index;
+  });
+
+  const size_t max_tags = in_race ? 5u : 6u;
+  if (cands.size() > max_tags) cands.resize(max_tags);
+
+  struct Obstacle {
+    float x0, y0, x1, y1;
+    bool is_marker = false;
+  };
+  std::vector<Obstacle> obstacles;
+  obstacles.reserve(cands.size() + 1);
+  if (wm_layout.visible) {
+    obstacles.push_back({wm_layout.x0, wm_layout.y0, wm_layout.x1, wm_layout.y1, true});
+  }
+
+  auto hits_any = [&](float x0, float y0, float x1, float y1, bool& hit_marker_only, float& min_obs_y0) -> bool {
+    bool hit = false;
+    bool hit_car = false;
+    min_obs_y0 = y0;
+    for (const auto& ob : obstacles) {
+      if (boxes_overlap(x0, y0, x1, y1, ob.x0, ob.y0, ob.x1, ob.y1, pad_x, pad_y)) {
+        hit = true;
+        if (!ob.is_marker) hit_car = true;
+        min_obs_y0 = std::min(min_obs_y0, ob.y0);
+      }
+    }
+    hit_marker_only = hit && !hit_car;
+    return hit;
+  };
+
+  out_tags.reserve(cands.size());
+  for (auto& c : cands) {
+    auto& tag = c.tag;
+    bool marker_only = false;
+    float min_obs_y0 = tag.y0;
+    if (!hits_any(tag.x0, tag.y0, tag.x1, tag.y1, marker_only, min_obs_y0)) {
+      if (tag.y0 >= top_limit) {
+        obstacles.push_back({tag.x0, tag.y0, tag.x1, tag.y1, false});
+        out_tags.push_back(std::move(tag));
+      }
+      continue;
+    }
+
+    // Bounded gentle nudge search (small upward clearance or modest lateral offset).
+    // Never stacks 5-7 boxes into a vertical wall blocking the road!
+    const float max_up = (marker_only ? 2.4f : 1.35f) * c.pill_h;
+    const float base_x0 = tag.x0, base_y0 = tag.y0, base_x1 = tag.x1, base_y1 = tag.y1;
+    const float base_cx = 0.5f * (base_x0 + base_x1);
+
+    // Direction away from the first colliding obstacle center.
+    float push_dir = 1.0f;
+    for (const auto& ob : obstacles) {
+      if (boxes_overlap(base_x0, base_y0, base_x1, base_y1, ob.x0, ob.y0, ob.x1, ob.y1, pad_x, pad_y)) {
+        push_dir = (base_cx < 0.5f * (ob.x0 + ob.x1)) ? -1.0f : 1.0f;
+        break;
+      }
+    }
+
+    const float clear_up = std::max(0.0f, base_y1 - (min_obs_y0 - pad_y));
+    const std::array<std::pair<float, float>, 9> tries = {{
+        {0.0f, -clear_up},
+        {push_dir * 32.0f * s, 0.0f},
+        {-push_dir * 32.0f * s, 0.0f},
+        {push_dir * 58.0f * s, 0.0f},
+        {-push_dir * 58.0f * s, 0.0f},
+        {push_dir * 36.0f * s, -std::min(clear_up, c.pill_h * 1.15f)},
+        {-push_dir * 36.0f * s, -std::min(clear_up, c.pill_h * 1.15f)},
+        {0.0f, -std::min(max_up, clear_up + c.pill_h * 0.5f)},
+        {push_dir * 76.0f * s, -std::min(max_up, c.pill_h * 0.9f)},
+    }};
+
+    bool placed = false;
+    for (const auto& [dx, dy] : tries) {
+      if (-dy > max_up + 0.5f) continue;
+      const float nx0 = base_x0 + dx, nx1 = base_x1 + dx;
+      const float ny0 = base_y0 + dy, ny1 = base_y1 + dy;
+      if (nx0 < margin_x || nx1 > w - margin_x || ny0 < top_limit || ny1 > bottom_limit) continue;
+      bool tmp_mo = false;
+      float tmp_y = 0.0f;
+      if (!hits_any(nx0, ny0, nx1, ny1, tmp_mo, tmp_y)) {
+        tag.x0 = nx0;
+        tag.x1 = nx1;
+        tag.y0 = ny0;
+        tag.y1 = ny1;
+        tag.alpha *= 0.88f;  // subtle fade for gently nudged background tag
+        obstacles.push_back({tag.x0, tag.y0, tag.x1, tag.y1, false});
+        out_tags.push_back(std::move(tag));
+        placed = true;
+        break;
+      }
+    }
+    (void)placed;  // deeply occluded background tags are gracefully suppressed
+  }
+}
+
+void render_world_labels_and_nameplates(ui::List& l, const std::vector<NameTagHud>& tags,
+                                        const WorldMarkerHud* world_marker, bool in_race, float w, float h,
+                                        bool metric_units) {
+  const float s = h / 720.0f;
+  const hud_detail::Layout g{w, h, s};
+  std::vector<ResolvedNameTag> resolved;
+  WorldMarkerLayout wm_layout{};
+  layout_world_labels(tags, world_marker, in_race, w, h, resolved, &wm_layout);
+
+  // 1. Draw car nameplates back-to-front (farther/nudged first, closest on top).
+  for (auto it = resolved.rbegin(); it != resolved.rend(); ++it) {
+    const auto& b = *it;
+    const float sc = b.scale;
+    const float a = std::clamp(b.alpha, 0.0f, 1.0f);
+    if (a <= 0.03f) continue;
+    const float pill_h = b.y1 - b.y0;
+
+    // Subtle pointer tick anchored directly beneath the pill pointing toward the car roof.
+    const float tip_x = std::clamp(b.orig_x, b.x0 + 8.0f * s * sc, b.x1 - 8.0f * s * sc);
+    const float tick_h = 3.8f * s * sc;
+    const float tick_hw = 3.5f * s * sc;
+    const uint32_t accent =
+        b.leader ? ui4::kPink : (b.has_badge ? ui4::class_colour_by_name(b.car_class) : ui::rgba(220, 226, 236));
+    l.line(tip_x - tick_hw, b.y1, tip_x, b.y1 + tick_h, 1.4f * s * sc, ui::fade(accent, a * 0.85f));
+    l.line(tip_x + tick_hw, b.y1, tip_x, b.y1 + tick_h, 1.4f * s * sc, ui::fade(accent, a * 0.85f));
+
+    // Sleek compact translucent FH1 pill backing + subtle top edge sheen + crisp left accent.
+    l.rect(b.x0 + 1.0f * s, b.y0 + 1.5f * s, b.x1 + 1.0f * s, b.y1 + 1.5f * s, ui::fade(ui::rgba(0, 0, 0, 96), a));
+    l.rect(b.x0, b.y0, b.x1, b.y1, ui::fade(ui::rgba(14, 16, 22, 174), a), 1.5f * s * sc,
+           ui::fade(ui::rgba(8, 10, 14, 194), a));
+    l.rect(b.x0, b.y0, b.x1, b.y0 + 0.9f * s, ui::fade(ui::rgba(255, 255, 255, 38), a));
+    l.rect(b.x0, b.y0, b.x0 + 2.5f * s * sc, b.y1, ui::fade(accent, a * 0.95f));
+
+    ui::TextStyle name_ts =
+        hud_detail::font(ui::Font::kB, 9.8f * s * sc, ui::fade(b.leader ? ui4::kYellow : ui4::kWhite, a));
+    hud_detail::fit(b.driver, name_ts, 140.0f * s * sc, 7.6f * s * sc);
+    float tx = b.x0 + 4.5f * s * sc;
+    if (b.has_badge) {
+      const float by0 = b.y0 + 2.0f * s * sc;
+      const float by1 = b.y1 - 2.0f * s * sc;
+      const float bh = by1 - by0;
+      const uint32_t cls_col = ui4::class_colour_by_name(b.car_class);
+      l.rect(tx, by0, tx + b.cls_w, by1, ui::fade(cls_col, a));
+      l.rect(tx + b.cls_w, by0, tx + b.badge_w, by1, ui::fade(ui4::kWhite, a));
+
+      const bool light_cls = (b.car_class == "C" || b.car_class == "c" || b.car_class == "X" || b.car_class == "x");
+      ui::TextStyle cs = hud_detail::font(ui::Font::kE, bh * 0.68f, ui::fade(light_cls ? ui4::kInk : ui4::kWhite, a),
+                                          ui::Align::kCenter);
+      hud_detail::fit(b.car_class, cs, b.cls_w - 1.5f * s * sc, bh * 0.42f);
+      l.text(tx + 0.5f * b.cls_w, by0 + 0.5f * (bh - cs.size), b.car_class, cs);
+
+      ui::TextStyle ps = hud_detail::font(ui::Font::kB, bh * 0.64f, ui::fade(ui4::kInk, a), ui::Align::kCenter);
+      hud_detail::fit(b.pi_text, ps, b.pi_w - 1.5f * s * sc, bh * 0.40f);
+      l.text(tx + b.cls_w + 0.5f * b.pi_w, by0 + 0.5f * (bh - ps.size), b.pi_text, ps);
+
+      tx += b.badge_w + 6.0f * s * sc;
+      l.text(tx, b.y0 + 0.5f * (pill_h - name_ts.size), b.driver, name_ts);
+    } else {
+      tx += 5.5f * s * sc;
+      const std::string text = (b.leader ? "* " : "") + b.driver;
+      l.text(tx, b.y0 + 0.5f * (pill_h - name_ts.size), text, name_ts);
+    }
+  }
+
+  // 2. Draw active World Hub / Outpost / Event Marker cleanly on top (guaranteed non-overlapping).
+  if (world_marker && wm_layout.visible && !in_race) {
+    const WorldMarkerHud& wm = *world_marker;
+    const float sc = wm_layout.scale;
+    const float a = std::clamp(wm_layout.alpha, 0.0f, 1.0f);
+    const float mx = wm_layout.anchor_x;
+    const float my = wm_layout.anchor_y;
+    const float hex_r = (wm.in_range ? 18.0f : 14.0f) * s * sc;
+    const uint32_t rim_col = wm.in_range ? (wm.eligible ? ui4::kPink : ui::rgba(148, 152, 162))
+                                         : (wm.is_festival ? ui4::kAmber : ui4::kPink);
+
+    // FH1 hexagonal marker icon with dark translucent interior, crisp white+accent hex rim, and bottom chevron.
+    l.circle(mx + 1.2f * s, my + 1.8f * s, hex_r + 1.5f * s * sc, ui::fade(ui::rgba(0, 0, 0, 145), a));
+    l.circle(mx, my, hex_r - 1.5f * s * sc, ui::fade(ui::rgba(16, 18, 24, 220), a));
+    draw_hexagon_outline(l, mx, my, hex_r, 2.4f * s * sc, ui::fade(ui4::kWhite, a));
+    draw_hexagon_outline(l, mx, my, hex_r - 2.6f * s * sc, 1.3f * s * sc, ui::fade(rim_col, a));
+    // Compact downward chevron beneath the hexagon pointing to the world trigger.
+    const float chev_y = my + hex_r + 2.0f * s * sc;
+    l.line(mx - 4.5f * s * sc, chev_y, mx, chev_y + 4.2f * s * sc, 1.8f * s * sc, ui::fade(rim_col, a));
+    l.line(mx + 4.5f * s * sc, chev_y, mx, chev_y + 4.2f * s * sc, 1.8f * s * sc, ui::fade(rim_col, a));
+    l.text(mx, my - (wm.in_range ? 8.5f : 6.8f) * s * sc, wm.is_festival ? "H" : "!",
+           hud_detail::font(ui::Font::kE, (wm.in_range ? 16.5f : 13.0f) * s * sc, ui::fade(ui4::kWhite, a),
+                            ui::Align::kCenter));
+
+    // Compact uppercase FH1 tilted title with crisp drop shadow.
+    const float tx = mx + hex_r + 9.0f * s * sc;
+    hud_detail::Turn t(l, tx + 96.0f * s * sc, my, ui4::kTiltRad * 0.40f);
+    ui::TextStyle ts = hud_detail::font(ui::Font::kE, (wm.in_range ? 25.0f : 18.5f) * s * sc, ui::fade(ui4::kWhite, a));
+    hud_detail::fit(wm.title, ts, g.L(360) * sc, 12.0f * s * sc);
+    const float tw = ui::List::measure(wm.title, ts);
+    ui::TextStyle sh = ts;
+    sh.color = ui::fade(ui::rgba(0, 0, 0, 195), a);
+    l.text(tx + 1.8f * s, my - 0.55f * ts.size + 1.8f * s, wm.title, sh);
+    l.text(tx, my - 0.55f * ts.size, wm.title, ts);
+
+    if (wm.in_range) {
+      const std::string ptxt =
+          wm.prompt.empty() ? hud_detail::str("Activities", "IDS_EnterNow", "ENTER NOW") : wm.prompt;
+      ui::TextStyle ps = hud_detail::font(ui::Font::kE, 15.0f * s, ui4::kWhite);
+      const float pw = ui::List::measure(ptxt, ps);
+      const float strip_w = pw + 44.0f * s;
+      const float sx0 = std::max(tx + 6.0f * s, tx + tw - strip_w + 4.0f * s);
+      const float sy0 = my + 0.44f * ts.size + 3.0f * s;
+      const float sy1 = sy0 + 25.0f * s;
+      ui4::brush(l, sx0 - 4.0f * s, sy0, sx0 + strip_w, sy1, wm.eligible ? ui4::kPink : ui::rgba(110, 110, 118, 230));
+      l.text(sx0 + 8.0f * s, sy0 + 4.5f * s, ptxt, ps);
+      ui4::button_glyph(l, sx0 + pw + 25.0f * s, 0.5f * (sy0 + sy1), 9.5f * s, "X");
+    } else if (wm.distance_m > 0.0) {
+      const std::string db = format_distance_unit(wm.distance_m, metric_units);
+      ui::TextStyle dts = hud_detail::font(ui::Font::kB, 11.2f * s * sc, ui::fade(ui4::kOffWhite, a));
+      const float dw = ui::List::measure(db, dts);
+      const float dy0 = my + 0.46f * ts.size + 2.5f * s * sc;
+      const float dy1 = dy0 + 16.0f * s * sc;
+      l.rect(tx - 2.0f * s * sc, dy0, tx + dw + 12.0f * s * sc, dy1, ui::fade(ui::rgba(14, 16, 22, 165), a));
+      l.rect(tx - 2.0f * s * sc, dy0, tx + 1.0f * s * sc, dy1, ui::fade(rim_col, a));
+      l.text(tx + 5.0f * s * sc, dy0 + 0.5f * (dy1 - dy0 - dts.size), db, dts);
+    }
+  }
+}
+
+void PopularityBadgeAnimator::reset() {
+  initialized = false;
+  last_rank = 250;
+  prev_rank = 250;
+  last_chain_points = 0;
+  last_banked_at = -1e9;
+  anim_progress = 0.0;
+  rank_anim_t = 1.0;
+  last_time = -1.0;
+}
+
+void PopularityBadgeAnimator::update(const SkillChainHud& sk, double time) {
+  constexpr double kRankAnimDuration = 1.35;
+  const double clamped_target = std::clamp(sk.popularity_progress, 0.0, 1.0);
+  if (!initialized || time < last_time - 0.5) {
+    initialized = true;
+    last_rank = sk.popularity_rank;
+    prev_rank = sk.popularity_rank;
+    last_chain_points = sk.chain_points;
+    last_banked_at = sk.banked_at;
+    anim_progress = clamped_target;
+    const double since_rank = time - sk.rank_up_at;
+    if (since_rank >= 0.0 && since_rank < kRankAnimDuration) {
+      rank_anim_t = std::clamp(since_rank / kRankAnimDuration, 0.0, 1.0);
+      prev_rank = sk.popularity_rank + 1;
+    } else {
+      rank_anim_t = 1.0;
+    }
+    last_time = time;
+    return;
+  }
+
+  const double dt = std::clamp(time - last_time, 0.0, 0.25);
+  last_time = time;
+
+  // Detect rank improvement (FH1 popularity ranks count down: 250 -> 249 -> ... -> 1).
+  bool rank_just_started = false;
+  if (sk.popularity_rank < last_rank) {
+    prev_rank = last_rank;
+    last_rank = sk.popularity_rank;
+    rank_anim_t = 0.0;
+    anim_progress = 0.0;  // sweep freshly into the new rank's ring after flash
+    rank_just_started = true;
+  } else if (sk.popularity_rank > last_rank) {
+    // Save swap / reset to a higher rank number.
+    prev_rank = sk.popularity_rank;
+    last_rank = sk.popularity_rank;
+    rank_anim_t = 1.0;
+    anim_progress = clamped_target;
+  }
+
+  if (!rank_just_started && rank_anim_t < 1.0) {
+    rank_anim_t = std::min(1.0, rank_anim_t + dt / kRankAnimDuration);
+  }
+
+  // Smooth exponential interpolation of the radial progress ring (never snaps instantaneously).
+  const double rate = (rank_anim_t < 0.35) ? 3.5 : 6.0;
+  const double blend = 1.0 - std::exp(-dt * rate);
+  anim_progress += (clamped_target - anim_progress) * blend;
+  if (std::fabs(clamped_target - anim_progress) < 1e-4) anim_progress = clamped_target;
+
+  last_chain_points = sk.chain_points;
+  last_banked_at = sk.banked_at;
+}
+
+void PopularityBadgeAnimator::apply(SkillChainHud& sk) const {
+  if (!initialized) return;
+  sk.prev_popularity_rank = prev_rank;
+  sk.pop_anim_progress = std::clamp(anim_progress, 0.0, 1.0);
+  sk.pop_rank_anim_t = std::clamp(rank_anim_t, 0.0, 1.0);
+}
+
+PopularityBadgeAnimFrame evaluate_popularity_badge_anim(const SkillChainHud& sk, double time) {
+  constexpr float kPi = 3.14159265f;
+  constexpr double kRankAnimDuration = 1.35;
+  PopularityBadgeAnimFrame out;
+  out.display_rank = sk.popularity_rank;
+
+  const double since_bank = time - sk.banked_at;
+  const double since_rank = time - sk.rank_up_at;
+  const double since_skill = time - sk.last_skill_at;
+
+  // 1. Radial progress fill (prefer live interpolated pop_anim_progress, else smooth banking sweep).
+  double prog = (sk.pop_anim_progress >= 0.0) ? std::clamp(sk.pop_anim_progress, 0.0, 1.0)
+                                              : std::clamp(sk.popularity_progress, 0.0, 1.0);
+  if (sk.pop_anim_progress < 0.0 && since_bank >= 0.0 && since_bank < 0.85) {
+    const float k = smoothstep01(float(since_bank / 0.85));
+    prog *= double(0.25f + 0.75f * k);
+  }
+  out.radial_progress = float(std::clamp(prog, 0.05, 1.0));
+
+  // 2. Rank-up celebration phase u in [0..1] (1.0 = idle).
+  float u = 1.0f;
+  if (sk.pop_rank_anim_t >= 0.0) {
+    u = std::clamp(float(sk.pop_rank_anim_t), 0.0f, 1.0f);
+  } else if (since_rank >= 0.0 && since_rank < kRankAnimDuration) {
+    u = std::clamp(float(since_rank / kRankAnimDuration), 0.0f, 1.0f);
+  }
+
+  if (u < 0.999f) {
+    // Elastic scale pop: 1.0 -> 1.24 -> 1.0.
+    if (u <= 0.22f) {
+      const float k = u / 0.22f;
+      out.disc_scale = 1.0f + 0.24f * std::sin(k * 0.5f * kPi);
+    } else {
+      const float v = (u - 0.22f) / 0.78f;
+      out.disc_scale = 1.0f + 0.24f * std::exp(-5.0f * v) * std::cos(v * 2.0f * kPi * 1.15f) * (1.0f - v);
+    }
+
+    // Vertical card-flip / roll transition from old rank to new rank (e.g. 250TH -> 249TH).
+    const int old_rank = (sk.prev_popularity_rank > 0 && sk.prev_popularity_rank != sk.popularity_rank)
+                             ? sk.prev_popularity_rank
+                             : (sk.popularity_rank + 1);
+    const float fp = std::clamp((u - 0.08f) / 0.56f, 0.0f, 1.0f);
+    out.flip_phase = fp;
+    if (u < 0.08f) {
+      out.display_rank = old_rank;
+    } else if (fp < 0.5f) {
+      const float h = fp * 2.0f;
+      out.display_rank = old_rank;
+      out.text_scale_y = std::max(0.12f, std::cos(h * 0.5f * kPi));
+      out.text_offset_y = -9.5f * h;
+      out.text_alpha = std::clamp(1.0f - 0.75f * h * h, 0.15f, 1.0f);
+    } else if (u < 0.64f) {
+      const float h = (fp - 0.5f) * 2.0f;
+      out.display_rank = sk.popularity_rank;
+      out.text_scale_y = std::max(0.12f, std::sin(h * 0.5f * kPi));
+      out.text_offset_y = 9.5f * (1.0f - h);
+      out.text_alpha = std::clamp(0.25f + 0.75f * h, 0.25f, 1.0f);
+    } else {
+      out.display_rank = sk.popularity_rank;
+    }
+
+    // Glowing FH1 magenta/gold ring flash sweep.
+    const float flash_in = std::sin(std::clamp(u / 0.16f, 0.0f, 1.0f) * 0.5f * kPi);
+    const float flash_out = 1.0f - smoothstep01((u - 0.20f) / 0.80f);
+    out.ring_flash_alpha = std::clamp(flash_in * flash_out, 0.0f, 1.0f);
+    out.ring_flash_angle = -0.5f * kPi + u * (3.0f * kPi);
+  }
+
+  // 3. Subtle pulse/glow when an active skill chain is increasing or banking.
+  if (sk.active) {
+    const float skill_kick =
+        (since_skill >= 0.0 && since_skill < 0.45) ? (1.0f - hud_detail::ease_in_time(since_skill, 0.0, 0.45)) : 0.0f;
+    const float breath = 0.16f + 0.12f * (0.5f + 0.5f * std::sin(float(time) * 6.5f));
+    const float mult_boost = std::min(0.24f, float(std::max(0, sk.multiplier - 1)) * 0.06f);
+    out.skill_pulse_alpha = std::clamp(breath + mult_boost + 0.42f * skill_kick, 0.0f, 0.92f);
+    out.disc_scale = std::max(out.disc_scale, 1.0f + 0.055f * skill_kick);
+  }
+  if (since_bank >= 0.0 && since_bank < 1.2) {
+    const float bu = float(since_bank / 1.2);
+    const float bank_kick = std::sin(std::clamp(bu / 0.18f, 0.0f, 1.0f) * 0.5f * kPi) *
+                            (1.0f - smoothstep01((bu - 0.18f) / 0.82f));
+    out.skill_pulse_alpha = std::max(out.skill_pulse_alpha, 0.72f * bank_kick);
+    out.disc_scale = std::max(out.disc_scale, 1.0f + 0.10f * bank_kick);
+  }
+
+  return out;
+}
+
+}  // namespace carview
+
+namespace carview::hud_detail {
+
+void world_marker_hud(ui::List& l, const WorldMarkerHud& wm, const Layout& g, bool metric_units) {
+  render_world_labels_and_nameplates(l, {}, &wm, false, g.w, g.h, metric_units);
+}
+
 // (g) 947_HUD/PopularityBar & 947_HUD/DrivingSkill (exact match to out/oracle/ui/race-hud.png):
-// Bright silver-white POPULARITYBARBACKGROUND disc (NO black cover circle!), #DAFF00 radial
-// progress ring, BLACK italic rank number with inline superscript ("165TH"), and clean
-// drop-shadowed #DAFF00 score + white X1.0 + skill callout beneath.
+// Animated silver-white POPULARITYBARBACKGROUND disc with smooth interpolated radial ring,
+// elastic rank-up scale pop + vertical card-flip transition + magenta/gold flash sweep,
+// and subtle active skill / banking pulse glow.
 void skill_chain_hud(ui::List& l, const SkillChainHud& sk, const Layout& g, double time) {
   const double since_bank = time - sk.banked_at;
   const double since_lost = time - sk.lost_at;
@@ -59,46 +603,89 @@ void skill_chain_hud(ui::List& l, const SkillChainHud& sk, const Layout& g, doub
   const bool show_bank = since_bank >= 0 && since_bank < 3.5;
   const bool show_lost = since_lost >= 0 && since_lost < 2.2;
   const bool show_rank = since_rank >= 0 && since_rank < 4.0;
-  if (!sk.active && !show_bank && !show_lost && !show_rank) return;
+  const bool rank_anim_active = (sk.pop_rank_anim_t >= 0.0 && sk.pop_rank_anim_t < 0.999);
+  if (!sk.active && !show_bank && !show_lost && !show_rank && !rank_anim_active) return;
 
+  const PopularityBadgeAnimFrame anim = evaluate_popularity_badge_anim(sk, time);
   const float s = g.s;
+  const float bs = s * anim.disc_scale;
   const float cx = g.C(640), cy = g.T(62);
-  const float r = 34 * s;
+  const float r = 34.0f * bs;
   constexpr uint32_t kSkillYellow = ui4::kYellow;
+  constexpr uint32_t kRankGold = ui4::kAmber;
+
+  // 0. Expanding outer glow halo during active skill chain / banking pulse or rank-up flash.
+  if (anim.ring_flash_alpha > 0.02f) {
+    const float expand = (1.0f - anim.ring_flash_alpha) * 14.0f * s;
+    l.circle(cx, cy, r + 8.0f * s + expand, ui::fade(ui4::kPink, anim.ring_flash_alpha * 0.24f));
+    l.arc(cx, cy, r + 4.0f * s + expand * 0.65f, 3.2f * s, 0.0f, 6.28318f,
+          ui::fade(kRankGold, anim.ring_flash_alpha * 0.55f));
+  } else if (anim.skill_pulse_alpha > 0.02f) {
+    l.circle(cx, cy, r + (4.5f + 3.5f * anim.skill_pulse_alpha) * s,
+             ui::fade(kSkillYellow, anim.skill_pulse_alpha * 0.22f));
+  }
 
   // 1. 947_HUD/PopularityBar textures: shadow -> opaque silver-white centre disc ->
-  //    POPULARITYBARBACKGROUND rim -> #DAFF00 radial fill -> highlight (matches race-hud.png!).
+  //    POPULARITYBARBACKGROUND rim -> smooth radial fill -> magenta/gold flash sweep -> highlight.
   std::array<float, 4> psh{}, pbg{}, phi{};
   if (ui_texture("HUD/POPULARITYBAR/POPULARITYBARSHADOW", psh)) {
-    l.image(cx - 42 * s, cy - 42 * s, cx + 42 * s, cy + 42 * s, psh, rgba(0, 0, 0, 165));
+    l.image(cx - 42.0f * bs, cy - 42.0f * bs, cx + 42.0f * bs, cy + 42.0f * bs, psh, rgba(0, 0, 0, 165));
   }
-  l.circle(cx, cy, r - 1.5f * s, rgba(226, 228, 232, 236));
-  l.circle(cx, cy, r - 6.5f * s, rgba(242, 244, 248, 246));
+  l.circle(cx, cy, r - 1.5f * bs, rgba(226, 228, 232, 236));
+  l.circle(cx, cy, r - 6.5f * bs, rgba(242, 244, 248, 246));
   if (ui_texture("HUD/POPULARITYBAR/POPULARITYBARBACKGROUND", pbg)) {
-    l.image(cx - 38 * s, cy - 38 * s, cx + 38 * s, cy + 38 * s, pbg, ui4::kWhite);
-  }
-  // Radial progress ring along the outer groove of POPULARITYBARBACKGROUND.
-  const float sweep = float(std::clamp(sk.popularity_progress, 0.05, 1.0)) * 6.28318f;
-  l.arc(cx, cy, r - 4.0f * s, 4.8f * s, -1.5708f, -1.5708f + sweep, show_rank ? ui4::kPink : kSkillYellow, true);
-  if (ui_texture("HUD/POPULARITYBAR/POPULARITYBARHIGHLIGHT", phi)) {
-    l.image(cx - 38 * s, cy - 38 * s, cx + 38 * s, cy + 38 * s, phi, rgba(255, 255, 255, 110));
+    l.image(cx - 38.0f * bs, cy - 38.0f * bs, cx + 38.0f * bs, cy + 38.0f * bs, pbg, ui4::kWhite);
   }
 
-  // BLACK italic rank number with inline superscript suffix ("165TH") cleanly inside inner disc!
+  // Smoothly interpolated radial progress ring along the outer groove.
+  const float sweep = anim.radial_progress * 6.28318f;
+  const uint32_t ring_col = (show_rank || anim.ring_flash_alpha > 0.1f) ? ui4::kPink : kSkillYellow;
+  l.arc(cx, cy, r - 4.0f * bs, 4.8f * bs, -1.5708f, -1.5708f + sweep, ring_col, true);
+
+  // Subtle leading tip pulse when skill chain is active or banking.
+  if (anim.skill_pulse_alpha > 0.05f && anim.ring_flash_alpha <= 0.05f) {
+    const float head_a = -1.5708f + sweep;
+    const float tail_a = std::max(-1.5708f, head_a - 0.55f);
+    l.arc(cx, cy, r - 4.0f * bs, 5.4f * bs, tail_a, head_a, ui::fade(ui4::kWhite, anim.skill_pulse_alpha * 0.45f), true);
+  }
+
+  // Glowing FH1 magenta/gold ring flash sweep on rank-up celebration.
+  if (anim.ring_flash_alpha > 0.02f) {
+    const float fa = anim.ring_flash_alpha;
+    const float a0 = anim.ring_flash_angle - 1.55f;
+    const float a1 = anim.ring_flash_angle;
+    l.arc(cx, cy, r - 4.0f * bs, 6.2f * bs, a0, a1, ui::fade(ui4::kPink, fa * 0.85f), true);
+    l.arc(cx, cy, r - 4.0f * bs, 4.2f * bs, a1 - 0.72f, a1, ui::fade(kRankGold, fa * 0.95f), true);
+    l.arc(cx, cy, r - 4.0f * bs, 2.4f * bs, a1 - 0.24f, a1, ui::fade(ui4::kWhite, fa * 0.98f), true);
+  }
+
+  if (ui_texture("HUD/POPULARITYBAR/POPULARITYBARHIGHLIGHT", phi)) {
+    l.image(cx - 38.0f * bs, cy - 38.0f * bs, cx + 38.0f * bs, cy + 38.0f * bs, phi,
+            rgba(255, 255, 255, uint8_t(110 + int(anim.ring_flash_alpha * 95.0f))));
+  }
+
+  // BLACK italic rank number with inline superscript suffix ("250TH" -> "249TH" vertical flip/roll).
   char rbuf[16];
-  std::snprintf(rbuf, sizeof rbuf, "%d", sk.popularity_rank);
-  const char* suf = place_suffix(sk.popularity_rank);
-  const float rsz = sk.popularity_rank >= 100 ? 15.5f : 19.0f;
-  const float ssz = sk.popularity_rank >= 100 ? 8.8f : 10.5f;
-  TextStyle num_ts = font(ui::Font::kE, rsz * s, ui4::kBrushBlack);
-  TextStyle suf_ts = font(ui::Font::kE, ssz * s, ui4::kBrushBlack);
+  std::snprintf(rbuf, sizeof rbuf, "%d", anim.display_rank);
+  const char* suf = place_suffix(anim.display_rank);
+  const float base_rsz = (anim.display_rank >= 100 ? 15.5f : 19.0f) * bs;
+  const float base_ssz = (anim.display_rank >= 100 ? 8.8f : 10.5f) * bs;
+  const float rsz_y = std::max(2.0f * bs, base_rsz * anim.text_scale_y);
+  const float ssz_y = std::max(1.5f * bs, base_ssz * anim.text_scale_y);
+  const uint32_t rank_col = ui::fade(ui4::kBrushBlack, anim.text_alpha);
+  TextStyle num_ts = font(ui::Font::kE, rsz_y, rank_col);
+  TextStyle suf_ts = font(ui::Font::kE, ssz_y, rank_col);
+  // Preserve horizontal width while foreshortening vertically for authentic card-flip feel.
+  const float flip_stretch = 1.0f / std::max(0.32f, anim.text_scale_y);
+  num_ts.stretch = flip_stretch;
+  suf_ts.stretch = flip_stretch;
   const float nw = ui::List::measure(rbuf, num_ts);
   const float sw = ui::List::measure(suf, suf_ts);
-  const float total_w = nw + sw + 1.0f * s;
+  const float total_w = nw + sw + 1.0f * bs;
   const float tx0 = cx - 0.5f * total_w;
-  const float ty = cy - 0.52f * num_ts.size;
+  const float ty = cy - 0.52f * num_ts.size + anim.text_offset_y * bs;
   l.text(tx0, ty, rbuf, num_ts);
-  l.text(tx0 + nw + 1.0f * s, ty + 1.5f * s, suf, suf_ts);
+  l.text(tx0 + nw + 1.0f * bs, ty + 1.5f * bs * anim.text_scale_y, suf, suf_ts);
 
   // 2. 947_HUD/DrivingSkill: #DAFF00 score + white X1.0 + clean drop-shadowed skill callout
   //    (optional CRISPTAPESKILLS + SKILLICONSET, ZERO dark rectangle behind the skill name!).
@@ -114,8 +701,9 @@ void skill_chain_hud(ui::List& l, const SkillChainHud& sk, const Layout& g, doub
 
     // Subtle CRISPTAPESKILLS/CIRCLEFLASH glow when chaining high scores.
     std::array<float, 4> flash_uv{}, icon_uv{};
-    if (ui_texture("HUD/DRIVINGSKILLS/CIRCLEFLASH", flash_uv) && sk.multiplier >= 2) {
-      l.image(cx - 28 * s, cy - 28 * s, cx + 28 * s, cy + 28 * s, flash_uv, ui::fade(kSkillYellow, 0.28f));
+    if (ui_texture("HUD/DRIVINGSKILLS/CIRCLEFLASH", flash_uv) && (sk.multiplier >= 2 || anim.skill_pulse_alpha > 0.35f)) {
+      const float fa = std::clamp(0.18f + 0.25f * anim.skill_pulse_alpha, 0.15f, 0.45f);
+      l.image(cx - 28 * bs, cy - 28 * bs, cx + 28 * bs, cy + 28 * bs, flash_uv, ui::fade(kSkillYellow, fa));
     }
 
     shadowed(l, sx0, g.T(102), pts_buf, pts_ts, s);

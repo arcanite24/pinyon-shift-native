@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 namespace race {
 namespace {
@@ -22,6 +23,47 @@ std::string upper_ascii(std::string_view s) {
   std::string out(s);
   for (char& c : out) c = char(std::toupper(static_cast<unsigned char>(c)));
   return out;
+}
+
+std::string trim_ascii(std::string_view s) {
+  size_t b = 0;
+  while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
+  size_t e = s.size();
+  while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+  return std::string(s.substr(b, e - b));
+}
+
+bool looks_like_internal_event_key(std::string_view s) {
+  if (s.empty()) return true;
+  if (s.rfind("_&", 0) == 0) return true;
+  const std::string up = upper_ascii(s);
+  if (up.find('_') != std::string::npos) {
+    bool all_key_chars = true;
+    for (char c : up) {
+      if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) {
+        all_key_chars = false;
+        break;
+      }
+    }
+    if (all_key_chars) return true;
+  }
+  // Short coded keys like FR05, SR03, NR02, ST01, PR04.
+  if (up.size() >= 3 && up.size() <= 6) {
+    size_t alpha_n = 0;
+    while (alpha_n < up.size() && std::isalpha(static_cast<unsigned char>(up[alpha_n]))) ++alpha_n;
+    size_t digit_n = 0;
+    while (alpha_n + digit_n < up.size() && std::isdigit(static_cast<unsigned char>(up[alpha_n + digit_n]))) ++digit_n;
+    if (alpha_n >= 2 && alpha_n <= 3 && digit_n >= 1 && alpha_n + digit_n == up.size()) {
+      const std::string pfx = up.substr(0, alpha_n);
+      if (pfx == "FR" || pfx == "SR" || pfx == "NR" || pfx == "ST" || pfx == "PR" || pfx == "EV") return true;
+    }
+  }
+  return false;
+}
+
+std::function<std::string(std::string_view)>& text_resolver_slot() {
+  static std::function<std::string(std::string_view)> fn;
+  return fn;
 }
 
 }  // namespace
@@ -285,6 +327,119 @@ const ShowcaseMilestoneSpec* find_showcase_by_event(std::string_view horizon_id)
   return nullptr;
 }
 
+void set_campaign_text_resolver(std::function<std::string(std::string_view)> resolver) {
+  text_resolver_slot() = std::move(resolver);
+}
+
+std::string resolve_event_display_title(std::string_view raw_id_or_title, std::string_view localized_override) {
+  auto clean_candidate = [](std::string_view candidate) -> std::string {
+    const std::string trimmed = trim_ascii(candidate);
+    if (trimmed.empty() || trimmed.rfind("_&", 0) == 0) return {};
+    if (looks_like_internal_event_key(trimmed)) return {};
+    return trimmed;
+  };
+
+  if (std::string loc = clean_candidate(localized_override); !loc.empty()) return loc;
+
+  const std::string trimmed = trim_ascii(raw_id_or_title);
+  if (trimmed.empty()) return "HORIZON EVENT";
+
+  // If raw_id_or_title is a string-table reference (`_&...`), resolve it via the bound callback first.
+  if (trimmed.rfind("_&", 0) == 0) {
+    if (const auto& fn = text_resolver_slot()) {
+      if (std::string loc = clean_candidate(fn(trimmed)); !loc.empty()) return loc;
+    }
+    return "HORIZON EVENT";
+  }
+
+  const std::string up = upper_ascii(trimmed);
+  if (const ShowcaseMilestoneSpec* sc = find_showcase_by_event(up)) {
+    return sc->display_name;
+  }
+  if (const BossRivalSpec* boss = find_boss_by_event(up)) {
+    if (boss->is_finale_champion) return "CHAMPION VS CHAMPION: DARIUS FLYNT";
+    return std::string("STAR SHOWDOWN: ") + boss->rival_name;
+  }
+  if (up == "FESTIVAL_FIRST") return "HORIZON HEATS";
+  if (up == "FESTIVAL_SECOND" || up == "FESTIVAL_INTRO") return "HORIZON QUALIFIER";
+  if (up == "HEADLINE_EVENT") return "HORIZON FESTIVAL FINALE";
+  if (up == "STREET_INTRO") return "STREET RACE QUALIFIER";
+
+  // Already a clean human-readable title (not an internal key).
+  if (!looks_like_internal_event_key(trimmed)) return trimmed;
+
+  // Short coded keys (FR05, SR03, NR02, ST01, PR04).
+  {
+    size_t alpha_n = 0;
+    while (alpha_n < up.size() && std::isalpha(static_cast<unsigned char>(up[alpha_n]))) ++alpha_n;
+    size_t digit_n = 0;
+    while (alpha_n + digit_n < up.size() && std::isdigit(static_cast<unsigned char>(up[alpha_n + digit_n]))) ++digit_n;
+    if (alpha_n >= 2 && alpha_n <= 3 && digit_n >= 1 && alpha_n + digit_n == up.size()) {
+      const std::string pfx = up.substr(0, alpha_n);
+      const std::string num = up.substr(alpha_n);
+      if (pfx == "FR") return "FESTIVAL RACE " + num;
+      if (pfx == "SR") return "STREET RACE " + num;
+      if (pfx == "NR") return "STAR SHOWDOWN " + num;
+      if (pfx == "ST") return "STREET TOUR " + num;
+      if (pfx == "PR") return "PR STUNT " + num;
+      if (pfx == "EV") return "HORIZON EVENT " + num;
+    }
+  }
+
+  // Generic snake_case internal key prettification (e.g. RED_ROCK_RUN_001 -> RED ROCK RUN).
+  std::vector<std::string> tokens;
+  size_t pos = 0;
+  while (pos < up.size()) {
+    while (pos < up.size() && up[pos] == '_') ++pos;
+    size_t end = up.find('_', pos);
+    if (end == std::string::npos) end = up.size();
+    if (end > pos) tokens.push_back(up.substr(pos, end - pos));
+    pos = end;
+  }
+  if (tokens.size() >= 2) {
+    const auto& last = tokens.back();
+    bool all_digits = !last.empty();
+    for (char c : last) {
+      if (!std::isdigit(static_cast<unsigned char>(c))) {
+        all_digits = false;
+        break;
+      }
+    }
+    if (all_digits) {
+      const int n = std::atoi(last.c_str());
+      if (n <= 1 && tokens.size() >= 3) {
+        tokens.pop_back();
+      } else {
+        tokens.back() = std::to_string(n);
+      }
+    }
+  }
+  std::string pretty;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (i > 0) pretty.push_back(' ');
+    pretty += tokens[i];
+  }
+  return pretty.empty() ? std::string("HORIZON EVENT") : pretty;
+}
+
+std::string resolve_event_display_title(const CareerEvent* ev, std::string_view localized_override) {
+  if (!ev) return resolve_event_display_title("", localized_override);
+  if (!localized_override.empty()) {
+    std::string loc = resolve_event_display_title(ev->horizon_id, localized_override);
+    if (!loc.empty()) return loc;
+  }
+  if (!ev->name_ref.empty()) {
+    if (const auto& fn = text_resolver_slot()) {
+      const std::string resolved = fn(ev->name_ref);
+      if (!resolved.empty() && resolved != ev->name_ref && resolved.rfind("_&", 0) != 0 &&
+          !looks_like_internal_event_key(resolved)) {
+        return trim_ascii(resolved);
+      }
+    }
+  }
+  return resolve_event_display_title(ev->horizon_id, {});
+}
+
 const char* cutscene_id_name(CutsceneKind kind) {
   switch (kind) {
     case CutsceneKind::kNone: return "none";
@@ -446,17 +601,49 @@ float TransitionState::wipe_edge() const {
 
 // ---- RewardTallyState ----
 
+double RewardTallyState::stage_duration_s() const {
+  switch (stage) {
+    case PostRaceStage::kRaceResults: return 1.2;
+    case PostRaceStage::kCreditsEarned: return 2.25;
+    case PostRaceStage::kWristbandAndPrize: return 1.85;
+  }
+  return 2.0;
+}
+
 void RewardTallyState::update(double dt) {
   if (!active) return;
-  elapsed_s = std::min(duration_s + 2.0, elapsed_s + std::max(0.0, dt));
+  const double step = std::max(0.0, dt);
+  elapsed_s = std::min(duration_s + 10.0, elapsed_s + step);
+  stage_elapsed_s = std::min(stage_duration_s() + 10.0, stage_elapsed_s + step);
 }
 
 void RewardTallyState::skip_to_end() {
-  if (active) elapsed_s = duration_s;
+  if (!active) return;
+  stage_elapsed_s = std::max(stage_elapsed_s, stage_duration_s());
+  if (is_final_stage()) {
+    elapsed_s = std::max(elapsed_s, duration_s);
+  }
+}
+
+bool RewardTallyState::advance_stage() {
+  if (!active) return false;
+  if (stage == PostRaceStage::kRaceResults) {
+    stage = PostRaceStage::kCreditsEarned;
+    stage_elapsed_s = 0.0;
+    return true;
+  }
+  if (stage == PostRaceStage::kCreditsEarned) {
+    stage = PostRaceStage::kWristbandAndPrize;
+    stage_elapsed_s = 0.0;
+    return true;
+  }
+  return false;
 }
 
 int64_t RewardTallyState::displayed_credits() const {
-  const double p = ease_out_cubic(std::clamp((elapsed_s - 0.35) / 1.85, 0.0, 1.0));
+  if (stage == PostRaceStage::kWristbandAndPrize) return total_credits;
+  const double t = (stage == PostRaceStage::kCreditsEarned) ? stage_elapsed_s : elapsed_s;
+  const double p = ease_out_cubic(std::clamp((t - 0.25) / 1.80, 0.0, 1.0));
   return int64_t(std::llround(double(total_credits) * p));
 }
 
@@ -465,13 +652,19 @@ int64_t RewardTallyState::displayed_balance() const {
 }
 
 int RewardTallyState::displayed_pop_rank() const {
-  const double p = ease_out_cubic(std::clamp((elapsed_s - 1.1) / 1.4, 0.0, 1.0));
+  const double t = (stage == PostRaceStage::kWristbandAndPrize) ? stage_elapsed_s : elapsed_s;
+  const double p = (stage == PostRaceStage::kWristbandAndPrize)
+                       ? ease_out_cubic(std::clamp((t - 0.25) / 1.35, 0.0, 1.0))
+                       : ease_out_cubic(std::clamp((t - 1.1) / 1.4, 0.0, 1.0));
   const double r = double(pop_rank_before) + double(pop_rank_after - pop_rank_before) * p;
   return int(std::lround(r));
 }
 
 int RewardTallyState::displayed_wb_points() const {
-  const double p = ease_out_cubic(std::clamp((elapsed_s - 1.6) / 1.6, 0.0, 1.0));
+  const double t = (stage == PostRaceStage::kWristbandAndPrize) ? stage_elapsed_s : elapsed_s;
+  const double p = (stage == PostRaceStage::kWristbandAndPrize)
+                       ? ease_out_cubic(std::clamp((t - 0.20) / 1.45, 0.0, 1.0))
+                       : ease_out_cubic(std::clamp((t - 1.6) / 1.6, 0.0, 1.0));
   return wb_before + int(std::lround(double(wb_after - wb_before) * p));
 }
 
@@ -484,14 +677,16 @@ float RewardTallyState::wb_bar_fraction() const {
 
 float RewardTallyState::tier_up_flash() const {
   if (!wb_tier_up || !active) return 0.0f;
-  if (elapsed_s < 2.6) return 0.0f;
-  const double t = elapsed_s - 2.6;
-  return float(0.5 + 0.5 * std::sin(t * 7.5)) * float(std::clamp(1.0 - t * 0.12, 0.35, 1.0));
+  const double t_ref = (stage == PostRaceStage::kWristbandAndPrize) ? (stage_elapsed_s - 1.25) : (elapsed_s - 2.6);
+  if (t_ref < 0.0) return 0.0f;
+  return float(0.5 + 0.5 * std::sin(t_ref * 7.5)) * float(std::clamp(1.0 - t_ref * 0.12, 0.35, 1.0));
 }
 
 float RewardTallyState::row_reveal(int row_idx) const {
-  const double start = 0.20 + double(std::max(0, row_idx)) * 0.18;
-  return float(ease_out_cubic(std::clamp((elapsed_s - start) / 0.35, 0.0, 1.0)));
+  if (stage == PostRaceStage::kWristbandAndPrize) return 1.0f;
+  const double t = (stage == PostRaceStage::kCreditsEarned) ? stage_elapsed_s : elapsed_s;
+  const double start = 0.15 + double(std::max(0, row_idx)) * 0.16;
+  return float(ease_out_cubic(std::clamp((t - start) / 0.32, 0.0, 1.0)));
 }
 
 // ---- CampaignFlow ----
@@ -524,11 +719,12 @@ bool CampaignFlow::is_cinematic_active() const {
 }
 
 bool CampaignFlow::is_blocking_gameplay() const {
-  return stage_ == CampaignStage::kOpeningCutscene || stage_ == CampaignStage::kWristbandCeremony ||
-         stage_ == CampaignStage::kShowcaseIntro || stage_ == CampaignStage::kShowcaseOutro ||
-         stage_ == CampaignStage::kBossIntro || stage_ == CampaignStage::kBossVictory ||
-         stage_ == CampaignStage::kBarnDiscovery || stage_ == CampaignStage::kBarnRestored ||
-         stage_ == CampaignStage::kPreRaceGrid || stage_ == CampaignStage::kRewardTally ||
+  return stage_ == CampaignStage::kOpeningCutscene || stage_ == CampaignStage::kFestivalRegistration ||
+         stage_ == CampaignStage::kWristbandCeremony || stage_ == CampaignStage::kShowcaseIntro ||
+         stage_ == CampaignStage::kShowcaseOutro || stage_ == CampaignStage::kBossIntro ||
+         stage_ == CampaignStage::kBossVictory || stage_ == CampaignStage::kBarnDiscovery ||
+         stage_ == CampaignStage::kBarnRestored || stage_ == CampaignStage::kPreRaceGrid ||
+         stage_ == CampaignStage::kPostRaceFinish || stage_ == CampaignStage::kRewardTally ||
          stage_ == CampaignStage::kFinaleIntro || stage_ == CampaignStage::kFinaleVictory ||
          stage_ == CampaignStage::kCredits;
 }
@@ -557,6 +753,7 @@ CampaignAction CampaignFlow::start_new_career(bool skip_movies, std::array<doubl
   finale_complete_ = false;
   pending_finale_credits_ = false;
   pending_darius_showdown_ = false;
+  starter_autoshow_onboarding_ = false;
   completed_cutscenes_.clear();
   heard_dialogs_.clear();
   unlocked_bosses_.clear();
@@ -632,11 +829,12 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.kind = CutsceneKind::kWristbandStageCinematic;
       cinematic_.duration_s = 14.5;
       cinematic_.letterbox_amount = 1.0f;
-      cinematic_.eyebrow = "HORIZON FESTIVAL REGISTRATION";
-      cinematic_.headline = "YELLOW WRISTBAND UNLOCKED";
-      cinematic_.subheadline = "1995 VOLKSWAGEN CORRADO VR6 ASSIGNED TO YOUR GARAGE";
-      cinematic_.detail_line = "3 YELLOW WRISTBAND EVENTS  •  RACE CENTRAL  •  DAK'S GARAGE  •  AUTOSHOW";
-      cinematic_.badge_text = "WRISTBAND TIER 1 / 7";
+      cinematic_.eyebrow = "WELCOME TO HORIZON  •  FIRST FESTIVAL CAR";
+      cinematic_.headline = "YELLOW WRISTBAND EARNED";
+      cinematic_.subheadline = "1995 VOLKSWAGEN CORRADO VR6 ASSIGNED  •  15,000 CR STARTER BONUS";
+      cinematic_.detail_line =
+          "3 YELLOW WRISTBAND EVENTS UNLOCKED — KEEP YOUR CORRADO VR6 OR PICK A CURATED AFFORDABLE STARTER RIDE AT THE AUTOSHOW.";
+      cinematic_.badge_text = "WRISTBAND TIER 1 / 7  •  WELCOME TO AUTOSHOW";
       cinematic_.colour_key = "Yellow";
       cinematic_.reward_car = "1995 Volkswagen Corrado VR6";
       cinematic_.accent_rgba = pack_rgba(0xFF, 0xD6, 0x00);
@@ -660,12 +858,12 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
           &heard_dialogs_);
       dialogs_.enqueue(
           {"m0_dak_garage", CharacterId::kDakStewart, "", "", "WorkshopFirstTime", "",
-           "Name's Dak. That Corrado VR6 is all yours — bring it by the Horizon Garage anytime for upgrades or barn finds.",
+           "Name's Dak. That 1995 VW Corrado VR6 is all yours — head into the Autoshow next to check out curated starter rides or drive straight out to Colorado!",
            5.5, 6, true, false},
           &heard_dialogs_);
       dialogs_.enqueue(
           {"m0_holly_events", CharacterId::kHollyCruz, "", "", "FIrstYellowEventOnMap", "",
-           "I've set your GPS to your first Yellow Wristband event. Win races, climb the Popularity ladder, and take on the stars!",
+           "I've set your GPS for your Green Wristband climb. Win Yellow Wristband events, build Popularity, and challenge Ramona Cravache!",
            5.5, 5, true, false},
           &heard_dialogs_);
       act.save_requested = true;
@@ -824,18 +1022,22 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
 
     case CampaignStage::kPostRaceFinish:
       cinematic_.kind = CutsceneKind::kPostRaceFinishCam;
-      cinematic_.duration_s = 3.8;
-      cinematic_.letterbox_amount = 0.85f;
-      cinematic_.eyebrow = "CHEQUERED FLAG";
+      cinematic_.duration_s = 12.0;
+      cinematic_.letterbox_amount = 0.72f;
+      cinematic_.eyebrow = "RACE RESULTS";
       cinematic_.headline = "RACE FINISHED";
       cinematic_.subheadline = "CALCULATING FESTIVAL REWARDS";
-      cinematic_.badge_text = "FINISH";
-      cinematic_.accent_rgba = pack_rgba(0xDA, 0xFF, 0x00);
+      cinematic_.badge_text = "STAGE 1 / 3";
+      cinematic_.accent_rgba = pack_rgba(0xF9, 0x00, 0x64);
+      tally_.stage = PostRaceStage::kRaceResults;
+      tally_.stage_elapsed_s = 0.0;
       break;
 
     case CampaignStage::kRewardTally:
       tally_.active = true;
       tally_.elapsed_s = 0.0;
+      tally_.stage = PostRaceStage::kCreditsEarned;
+      tally_.stage_elapsed_s = 0.0;
       break;
 
     case CampaignStage::kFinaleVictory:
@@ -945,6 +1147,7 @@ CampaignAction CampaignFlow::update(double dt, std::array<double, 2> player_xz, 
       if (stage_time_ >= cinematic_.duration_s && !dialogs_.active()) {
         mark_cutscene_done(CutsceneKind::kWristbandCeremonyFmv);
         mark_cutscene_done(CutsceneKind::kWristbandStageCinematic);
+        starter_autoshow_onboarding_ = true;
         auto out = enter_stage(CampaignStage::kFreeRoam, TransitionKind::kBrushWipe);
         out.intro_completed = true;
         out.grant_starter = true;
@@ -953,6 +1156,11 @@ CampaignAction CampaignFlow::update(double dt, std::array<double, 2> player_xz, 
         out.set_gps = true;
         out.gps_label = "RACE CENTRAL  •  YELLOW WRISTBAND EVENTS";
         out.gps_xz = {festival_gate_[0], festival_gate_[2]};
+        dialogs_.enqueue(
+            {"m0_autoshow_welcome", CharacterId::kAliceHart, "", "", "", "",
+             "Welcome to the Horizon Autoshow! Your 1995 VW Corrado VR6 is already in your garage — pick an affordable starter car with your 15,000 Cr or press B to hit Colorado Free Roam!",
+             7.5, 7, true, false},
+            &heard_dialogs_);
         return out;
       }
       break;
@@ -1023,6 +1231,7 @@ CampaignAction CampaignFlow::advance_or_skip() {
     case CampaignStage::kFestivalRegistration: {
       mark_cutscene_done(CutsceneKind::kWristbandCeremonyFmv);
       mark_cutscene_done(CutsceneKind::kWristbandStageCinematic);
+      starter_autoshow_onboarding_ = true;
       auto out = enter_stage(CampaignStage::kFreeRoam, TransitionKind::kBrushWipe);
       out.intro_completed = true;
       out.grant_starter = true;
@@ -1031,14 +1240,23 @@ CampaignAction CampaignFlow::advance_or_skip() {
       out.set_gps = true;
       out.gps_label = "RACE CENTRAL  •  YELLOW WRISTBAND EVENTS";
       out.gps_xz = {festival_gate_[0], festival_gate_[2]};
+      dialogs_.enqueue(
+          {"m0_autoshow_welcome", CharacterId::kAliceHart, "", "", "", "",
+           "Welcome to the Horizon Autoshow! Your 1995 VW Corrado VR6 is already in your garage — pick an affordable starter car with your 15,000 Cr or press B to hit Colorado Free Roam!",
+           7.5, 7, true, false},
+          &heard_dialogs_);
       return out;
     }
     case CampaignStage::kPostRaceFinish:
       mark_cutscene_done(CutsceneKind::kPostRaceFinishCam);
       return enter_stage(CampaignStage::kRewardTally, TransitionKind::kSlideLeft);
     case CampaignStage::kRewardTally:
-      if (!tally_.animation_done()) {
+      if (!tally_.stage_animation_done()) {
         tally_.skip_to_end();
+        return {};
+      }
+      if (tally_.advance_stage()) {
+        transition_.start(TransitionKind::kSlideLeft, 0.35, "");
         return {};
       }
       if (tally_.is_finale && tally_.place == 1) {
@@ -1104,7 +1322,7 @@ CampaignAction CampaignFlow::on_enter_event(const CareerEvent& ev) {
       cinematic_.eyebrow = "HORIZON FESTIVAL FINALE  •  CHAMPIONSHIP QUALIFIER";
       cinematic_.headline = "HORIZON FESTIVAL FINALE";
       cinematic_.subheadline = "DEFEAT THE TOP FINALISTS TO CHALLENGE DARIUS FLYNT";
-      cinematic_.detail_line = "WIN THE FINALE TO UNLOCK THE CHAMPION VS CHAMPION SHOWDOWN (NEM_FINAL)";
+      cinematic_.detail_line = "WIN THE FINALE TO UNLOCK THE CHAMPION VS CHAMPION SHOWDOWN";
       cinematic_.badge_text = "FESTIVAL FINALE";
     } else {
       cinematic_.headline = "DARIUS FLYNT";
@@ -1120,7 +1338,7 @@ CampaignAction CampaignFlow::on_enter_event(const CareerEvent& ev) {
     return enter_stage(CampaignStage::kShowcaseIntro, TransitionKind::kBrushWipe);
   }
   auto act = enter_stage(CampaignStage::kPreRaceGrid, TransitionKind::kSlideLeft);
-  cinematic_.headline = ev.horizon_id;
+  cinematic_.headline = resolve_event_display_title(&ev);
   cinematic_.subheadline = CareerCatalog::event_style_label(ev);
   return act;
 }
@@ -1139,9 +1357,10 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
 
   tally_ = RewardTallyState{};
   tally_.active = true;
+  tally_.stage = PostRaceStage::kRaceResults;
   tally_.place = std::max(1, place);
   tally_.total_cars = std::max(1, total_cars);
-  tally_.event_title = ev ? ev->horizon_id : "HORIZON EVENT";
+  tally_.event_title = resolve_event_display_title(ev);
   tally_.event_category = ev ? CareerCatalog::event_style_label(*ev) : "FESTIVAL RACE";
   tally_.base_credits = award.base_credits;
   tally_.mileage_bonus = award.mileage_bonus;
@@ -1177,8 +1396,11 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
   }
 
   bool triggered_darius_unlock = false;
+  const ShowcaseMilestoneSpec* matched_sc = nullptr;
+  const BossRivalSpec* matched_boss = nullptr;
   if (ev) {
     if (const BossRivalSpec* b = find_boss_by_event(ev->horizon_id)) {
+      matched_boss = b;
       tally_.is_boss = true;
       active_boss_idx_ = b->index;
       if (b->is_finale_champion && place == 1) {
@@ -1188,7 +1410,7 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
       }
     } else if (ev->style == 6 || upper_ascii(ev->horizon_id) == "HEADLINE_EVENT") {
       // Winning the Horizon Festival Finale unlocks Darius Flynt's 1-on-1 Champion vs Champion
-      // Showdown (NEM_FINAL) rather than skipping straight to Credits!
+      // Showdown rather than skipping straight to Credits!
       if (place == 1) {
         pending_darius_showdown_ = true;
         triggered_darius_unlock = true;
@@ -1196,14 +1418,61 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
         completed_cutscenes_.insert("headline_event_won");
       }
     } else if (const ShowcaseMilestoneSpec* sc = find_showcase_by_event(ev->horizon_id)) {
+      matched_sc = sc;
       tally_.is_showcase = true;
       active_showcase_idx_ = sc->index;
     }
   }
 
+  // Populate default podium standings rows for Stage 1 (RACE RESULTS) so every event
+  // (Showcase, Boss Showdown, Festival/Street) shows an authentic leaderboard table.
+  tally_.results_rows.clear();
+  if (matched_sc) {
+    RewardTallyRow player_row{tally_.place, "YOU", matched_sc->loaner_car_display, "S", 0, -1.0,
+                              tally_.place == 1 ? 0.0 : 1.45, true};
+    RewardTallyRow opp_row{tally_.place == 1 ? 2 : 1, matched_sc->opponent_label,
+                           matched_sc->airborne ? "AIRBORNE CHALLENGER" : "SHOWCASE FIELD", "", 0, -1.0,
+                           tally_.place == 1 ? 1.45 : 0.0, false};
+    if (tally_.place == 1) {
+      tally_.results_rows.push_back(std::move(player_row));
+      tally_.results_rows.push_back(std::move(opp_row));
+    } else {
+      tally_.results_rows.push_back(std::move(opp_row));
+      tally_.results_rows.push_back(std::move(player_row));
+    }
+  } else if (matched_boss) {
+    RewardTallyRow player_row{tally_.place, "YOU", "FESTIVAL CHALLENGER", "", 0, -1.0,
+                              tally_.place == 1 ? 0.0 : 0.85, true};
+    RewardTallyRow rival_row{tally_.place == 1 ? 2 : 1, matched_boss->rival_name, matched_boss->car_display, "", 0,
+                             -1.0, tally_.place == 1 ? 0.85 : 0.0, false};
+    if (tally_.place == 1) {
+      tally_.results_rows.push_back(std::move(player_row));
+      tally_.results_rows.push_back(std::move(rival_row));
+    } else {
+      tally_.results_rows.push_back(std::move(rival_row));
+      tally_.results_rows.push_back(std::move(player_row));
+    }
+  } else {
+    static constexpr const char* kFieldDrivers[8] = {"RAMONA CRAVACHE", "ALI HOWARD",   "DUKE MAGUIRE",
+                                                     "MARKO BARAN",     "ZAKI MALIK",   "HAILEY HARPER",
+                                                     "DARIUS FLYNT",    "HORIZON RIVAL"};
+    const int n = std::clamp(tally_.total_cars, 1, 8);
+    int ai_idx = 0;
+    for (int p = 1; p <= n; ++p) {
+      const bool is_me = (p == tally_.place);
+      RewardTallyRow row;
+      row.place = p;
+      row.player = is_me;
+      row.driver = is_me ? "YOU" : kFieldDrivers[ai_idx++ % 8];
+      row.car = is_me ? "YOUR VEHICLE" : tally_.event_category;
+      row.gap_s = p == 1 ? 0.0 : double(p - 1) * 0.92;
+      tally_.results_rows.push_back(std::move(row));
+    }
+  }
+
   if (triggered_darius_unlock) {
     tally_.next_unlock_headline = "DARIUS FLYNT SHOWDOWN UNLOCKED!";
-    tally_.next_unlock_detail = "FACE DARIUS FLYNT IN THE CHAMPION VS CHAMPION SHOWDOWN (NEM_FINAL)";
+    tally_.next_unlock_detail = "FACE DARIUS FLYNT IN THE CHAMPION VS CHAMPION SHOWDOWN";
   } else if (tally_.wb_tier_up) {
     tally_.next_unlock_headline = tally_.wb_next_name + " READY!";
     tally_.next_unlock_detail = "RETURN TO RACE CENTRAL TO COLLECT YOUR WRISTBAND";
@@ -1226,7 +1495,7 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
   if (triggered_darius_unlock) {
     dialogs_.enqueue(
         {"darius_challenge_headline", CharacterId::kDariusFlynt, "", "", "PostFinalRace", "",
-         "Not bad, rookie. You took the Horizon Finale — now meet me one-on-one in NEM_FINAL for the crown and my Ferrari 599XX.",
+         "Not bad, rookie. You took the Horizon Finale — now meet me one-on-one in the Champion vs Champion Showdown for the crown and my Ferrari 599XX.",
          6.5, 10, false, true});
   } else if (place == 1) {
     dialogs_.enqueue(
@@ -1241,8 +1510,14 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
   }
 
   auto act = enter_stage(CampaignStage::kPostRaceFinish, TransitionKind::kCrossFade);
-  cinematic_.headline = place == 1 ? "1ST PLACE VICTORY!" : (std::to_string(place) + " PLACE FINISH");
-  cinematic_.subheadline = tally_.event_title + "  •  " + tally_.event_category;
+  auto ord = [](int p) -> const char* {
+    if (p % 100 >= 11 && p % 100 <= 13) return "TH";
+    return p % 10 == 1 ? "ST" : p % 10 == 2 ? "ND" : p % 10 == 3 ? "RD" : "TH";
+  };
+  cinematic_.eyebrow = "RACE RESULTS  •  " + tally_.event_category;
+  cinematic_.headline = std::to_string(tally_.place) + ord(tally_.place) + " PLACE";
+  cinematic_.subheadline = tally_.event_title;
+  cinematic_.badge_text = "STAGE 1 / 3  •  FINISHED";
   act.save_requested = true;
   return act;
 }
@@ -1397,7 +1672,8 @@ bool CampaignFlow::jump_to_cli_stage(std::string_view cli_stage, CampaignAction&
     dialogs_.update(1.2);
     return true;
   }
-  if (k == "reward_tally" || k == "tally") {
+  if (k == "reward_tally" || k == "tally" || k == "reward_tally_credits" || k == "reward_tally_wristband" ||
+      k == "reward_tally_results") {
     RaceAward aw;
     aw.base_credits = 18000;
     aw.mileage_bonus = 2400;
@@ -1413,9 +1689,23 @@ bool CampaignFlow::jump_to_cli_stage(std::string_view cli_stage, CampaignAction&
     ev.horizon_id = "RED ROCK CANYON RUN";
     ev.style = 1;
     out_action = on_race_finished(&ev, aw, 1, 8, 224, 198, 84500, 120650, 790, 1, "2012 Nissan GT-R Black Edition");
-    stage_ = CampaignStage::kRewardTally;
-    tally_.active = true;
-    tally_.elapsed_s = 3.2;  // animated partway through tier-up flash!
+    if (k == "reward_tally_results") {
+      stage_ = CampaignStage::kPostRaceFinish;
+      tally_.stage = PostRaceStage::kRaceResults;
+      tally_.stage_elapsed_s = 1.0;
+    } else if (k == "reward_tally_wristband") {
+      stage_ = CampaignStage::kRewardTally;
+      tally_.active = true;
+      tally_.stage = PostRaceStage::kWristbandAndPrize;
+      tally_.stage_elapsed_s = 1.6;
+      tally_.elapsed_s = 3.2;
+    } else {
+      stage_ = CampaignStage::kRewardTally;
+      tally_.active = true;
+      tally_.stage = PostRaceStage::kCreditsEarned;
+      tally_.stage_elapsed_s = 1.8;
+      tally_.elapsed_s = 3.2;
+    }
     return true;
   }
   if (k == "showcase" || k == "showcase_intro") {
@@ -1568,12 +1858,12 @@ CampaignObjective CampaignFlow::next_objective(int wristband_points, int collect
     return obj;
   }
 
-  // 2. Champion vs Champion Showdown (Darius Flynt, NEM_FINAL) after winning HEADLINE_EVENT!
+  // 2. Champion vs Champion Showdown (Darius Flynt) after winning HEADLINE_EVENT!
   if (!finale_complete_ && pending_darius_showdown_) {
     obj.valid = true;
     obj.title = "CHAMPION VS CHAMPION: DARIUS FLYNT";
-    obj.detail = "BEAT DARIUS FLYNT IN NEM_FINAL FOR THE HORIZON CROWN & FERRARI 599XX";
-    obj.gps_label = "DARIUS FLYNT SHOWDOWN  •  NEM_FINAL";
+    obj.detail = "BEAT DARIUS FLYNT FOR THE HORIZON CROWN & 2010 FERRARI 599XX";
+    obj.gps_label = "CHAMPION VS CHAMPION  •  DARIUS FLYNT";
     obj.is_urgent = true;
     if (catalog) {
       if (const CareerEvent* dev = catalog->find_event("NEM_FINAL"); dev && dev->has_trigger) {

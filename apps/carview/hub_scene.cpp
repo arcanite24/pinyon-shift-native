@@ -250,39 +250,92 @@ void HubCamera::set_focus(HubCameraFocus focus) {
       target_pos[1] = 0.82f;
       target_pos[2] = 0.05f;
       auto_orbit = false;
+      user_orbited = false;
+      manual_idle_s = 0.0f;
+      break;
+    case HubCameraFocus::kPaint:
+      target_yaw = 0.80f;
+      target_pitch = 0.21f;
+      target_dist = 4.15f;
+      target_pos[0] = 0.0f;
+      target_pos[1] = 0.58f;
+      target_pos[2] = -0.14f;
+      auto_orbit = true;
+      orbit_speed = 0.10f;
+      user_orbited = false;
+      manual_idle_s = 0.0f;
+      orbit_blend = 1.0f;
+      break;
+    case HubCameraFocus::kRearThreeQuarter:
+      target_yaw = 2.48f;
+      target_pitch = 0.17f;
+      target_dist = 5.05f;
+      target_pos[0] = 0.0f;
+      target_pos[1] = 0.55f;
+      target_pos[2] = 0.0f;
+      auto_orbit = false;
+      user_orbited = false;
+      manual_idle_s = 0.0f;
       break;
     case HubCameraFocus::kTurntable:
     default:
       target_yaw = 0.62f;
-      target_pitch = 0.17f;
-      target_dist = 4.85f;
+      target_pitch = 0.16f;
+      target_dist = 5.15f;
       target_pos[0] = 0.0f;
-      target_pos[1] = 0.56f;
+      target_pos[1] = 0.54f;
       target_pos[2] = 0.0f;
       auto_orbit = true;
+      orbit_speed = 0.16f;
+      user_orbited = false;
+      manual_idle_s = 0.0f;
+      orbit_blend = 1.0f;
       break;
   }
 }
 
+void HubCamera::set_framing(float shift_x, float shift_y) {
+  has_explicit_framing = true;
+  target_lens_shift_x = std::clamp(shift_x, -0.35f, 0.35f);
+  target_lens_shift_y = std::clamp(shift_y, -0.35f, 0.35f);
+}
+
 void HubCamera::nudge_orbit(float dyaw, float dpitch, float ddist) {
   auto_orbit = false;
+  user_orbited = true;
+  manual_idle_s = 0.0f;
+  orbit_blend = 0.0f;
   target_yaw += dyaw;
   target_pitch = std::clamp(target_pitch + dpitch, 0.04f, 1.18f);
   target_dist = std::clamp(target_dist + ddist, 2.3f, 8.5f);
 }
 
 void HubCamera::step(float dt) {
-  if (auto_orbit) target_yaw += orbit_speed * dt;
-  const float alpha = 1.0f - std::exp(-6.5f * std::max(0.0f, dt));
+  const float safe_dt = std::max(0.0f, dt);
+  if (user_orbited && !auto_orbit && idle_orbit_delay > 0.0f) {
+    manual_idle_s += safe_dt;
+    if (manual_idle_s >= idle_orbit_delay) {
+      auto_orbit = true;
+      user_orbited = false;
+      orbit_blend = 0.0f;
+    }
+  }
+  if (auto_orbit) {
+    orbit_blend = std::min(1.0f, orbit_blend + safe_dt * 0.85f);
+    target_yaw += orbit_speed * orbit_blend * safe_dt;
+  }
+  const float alpha = 1.0f - std::exp(-7.0f * safe_dt);
   yaw += (target_yaw - yaw) * alpha;
   pitch += (target_pitch - pitch) * alpha;
   distance += (target_dist - distance) * alpha;
   for (int i = 0; i < 3; ++i) target[i] += (target_pos[i] - target[i]) * alpha;
+  lens_shift_x += (target_lens_shift_x - lens_shift_x) * alpha;
+  lens_shift_y += (target_lens_shift_y - lens_shift_y) * alpha;
 }
 
 std::array<float, 3> hub_background_color(HubRoom room) {
   switch (room) {
-    case HubRoom::kAutoshow: return {0.14f, 0.16f, 0.20f};   // crisp Colorado pavilion slate
+    case HubRoom::kAutoshow: return {0.74f, 0.78f, 0.84f};   // bright Horizon Autoshow pavilion cyclorama
     case HubRoom::kWorkshop: return {0.12f, 0.11f, 0.10f};   // Dak's warm industrial garage
     case HubRoom::kPaintShop: return {0.16f, 0.17f, 0.19f};  // neutral colour-true paint booth
     case HubRoom::kGarage: return {0.09f, 0.11f, 0.15f};     // Horizon festival bay
@@ -293,12 +346,19 @@ std::array<float, 3> hub_background_color(HubRoom room) {
 
 WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l, float floor_y) {
   WorldTriangles wt;
-  // Choose floor, plinth, accent ring, and shadow fan colours per Festival room.
+  // Choose floor, plinth, accent ring, and cyclorama colours per Festival room.
+  const bool is_autoshow = (room == HubRoom::kAutoshow);
   std::array<float, 3> floor_col = {0.18f, 0.19f, 0.22f};
   std::array<float, 3> plinth_col = {0.26f, 0.27f, 0.30f};
   std::array<float, 3> ring_col = {0.92f, 0.36f, 0.08f};  // Horizon signature coral-orange trim
   std::array<float, 3> wall_col = {0.11f, 0.12f, 0.15f};
-  if (room == HubRoom::kWorkshop) {
+  if (is_autoshow) {
+    // Bright, crisp Horizon Autoshow architectural showroom floor & cool-white cyclorama.
+    floor_col = {0.54f, 0.58f, 0.64f};
+    plinth_col = {0.68f, 0.72f, 0.77f};
+    ring_col = {0.96f, 0.12f, 0.44f};  // Horizon Autoshow magenta architectural accent
+    wall_col = {0.72f, 0.76f, 0.82f};
+  } else if (room == HubRoom::kWorkshop) {
     floor_col = {0.16f, 0.15f, 0.14f};
     plinth_col = {0.22f, 0.21f, 0.20f};
     ring_col = {0.95f, 0.62f, 0.12f};
@@ -315,7 +375,18 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
     wall_col = {0.11f, 0.08f, 0.05f};
   }
 
-  auto add_group = [&](std::array<float, 3> col) -> uint8_t {
+  // Lean 48-segment circular stage cuts per-frame studio debris vertex uploads ~2x while
+  // staying smoothly curved (~1,150 tris, well above the >= 200 stage quality threshold).
+  constexpr int kSegs = 48;
+  wt.positions.reserve(size_t(kSegs) * 28u * 3u);
+  wt.normals.reserve(size_t(kSegs) * 28u * 3u);
+  wt.group.reserve(size_t(kSegs) * 28u);
+
+  auto clamp_col = [](std::array<float, 3> c) -> std::array<float, 3> {
+    return {std::clamp(c[0], 0.0f, 1.0f), std::clamp(c[1], 0.0f, 1.0f), std::clamp(c[2], 0.0f, 1.0f)};
+  };
+  auto add_group = [&](std::array<float, 3> raw_col) -> uint8_t {
+    const auto col = clamp_col(raw_col);
     for (size_t i = 0; i < wt.colours.size(); ++i)
       if (wt.colours[i] == col) return uint8_t(i);
     wt.colours.push_back(col);
@@ -338,11 +409,11 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
     push_tri_n(a, b, c, kUp, kUp, kUp, col);
   };
 
-  // 1. Outer studio floor disc (radius 18 m, 96 segments with 3 radial vignette bands).
-  constexpr int kSegs = 96;
+  // 1. Outer glossy showroom floor disc (radius 18 m with 3 softbox reflection sheen bands).
   const float y_outer = floor_y - 0.025f;
   const float floor_rings[4] = {3.25f, 7.2f, 12.6f, 18.0f};
-  const float floor_shades[3] = {1.00f, 0.78f, 0.56f};
+  const float floor_shades[3] = {is_autoshow ? 1.10f : 1.00f, is_autoshow ? 0.96f : 0.78f,
+                                 is_autoshow ? 0.82f : 0.56f};
   for (int ring = 0; ring < 3; ++ring) {
     const std::array<float, 3> rcol{floor_col[0] * floor_shades[ring], floor_col[1] * floor_shades[ring],
                                     floor_col[2] * floor_shades[ring]};
@@ -359,29 +430,36 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
     }
   }
 
-  // 2. Turntable plinth disc (radius 3.15 m) + glowing accent rim ring (3.15..3.25 m).
+  // 2. Polished turntable plinth disc (radius 3.12 m) + inner sheen halo + architectural accent rim.
   const float y_plinth = floor_y - 0.008f;
+  const std::array<float, 3> plinth_inner =
+      is_autoshow ? std::array<float, 3>{plinth_col[0] * 1.12f, plinth_col[1] * 1.12f, plinth_col[2] * 1.10f}
+                  : plinth_col;
   for (int i = 0; i < kSegs; ++i) {
     const float a0 = 2.0f * kPi * float(i) / float(kSegs);
     const float a1 = 2.0f * kPi * float(i + 1) / float(kSegs);
-    const float r_in = 0.0f, r_mid = 3.12f, r_out = 3.24f;
-    std::array<float, 3> c0{r_in, y_plinth, 0.0f};
+    const float r_sheen = 2.35f, r_mid = 3.12f, r_out = 3.24f;
+    std::array<float, 3> c0{0.0f, y_plinth, 0.0f};
+    std::array<float, 3> s0{r_sheen * std::cos(a0), y_plinth, r_sheen * std::sin(a0)};
+    std::array<float, 3> s1{r_sheen * std::cos(a1), y_plinth, r_sheen * std::sin(a1)};
     std::array<float, 3> m0{r_mid * std::cos(a0), y_plinth, r_mid * std::sin(a0)};
     std::array<float, 3> m1{r_mid * std::cos(a1), y_plinth, r_mid * std::sin(a1)};
     std::array<float, 3> o0{r_out * std::cos(a0), y_plinth + 0.002f, r_out * std::sin(a0)};
     std::array<float, 3> o1{r_out * std::cos(a1), y_plinth + 0.002f, r_out * std::sin(a1)};
-    push_tri(c0, m0, m1, plinth_col);
+    push_tri(c0, s0, s1, plinth_inner);
+    push_tri(s0, m0, m1, plinth_col);
+    push_tri(s0, m1, s1, plinth_col);
     push_tri(m0, o0, o1, ring_col);
     push_tri(m0, o1, m1, ring_col);
   }
 
   // 3. Elliptical soft drop-shadow floor fan directly under the car's footprint
   //    (3 concentric rings fading from deep ambient occlusion under the chassis
-  //    to the plinth tone outside the tyres).
+  //    to the polished plinth tone outside the tyres).
   const float sx = std::max(0.75f, car_half_w * 1.06f);
   const float sz = std::max(1.65f, car_half_l * 1.04f);
   const float scales[4] = {0.0f, 0.72f, 1.00f, 1.24f};
-  const float darks[3] = {0.08f, 0.26f, 0.62f};
+  const float darks[3] = {is_autoshow ? 0.07f : 0.08f, is_autoshow ? 0.25f : 0.26f, is_autoshow ? 0.64f : 0.62f};
   const float y_sh = floor_y - 0.003f;
   for (int ring = 0; ring < 3; ++ring) {
     std::array<float, 3> col = {plinth_col[0] * darks[ring], plinth_col[1] * darks[ring],
@@ -408,10 +486,11 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
     }
   }
 
-  // 4. Smooth 96-segment studio cyclorama wall (radius 17.5 m, height 8.5 m) with inward smooth
-  //    vertex normals and subtle studio light-box gradient bands + horizon accent trim.
-  const float wall_y[5] = {y_outer, y_outer + 0.8f, y_outer + 3.2f, y_outer + 5.8f, y_outer + 8.5f};
-  const float wall_shades[4] = {0.72f, 1.08f, 0.92f, 0.62f};
+  // 4. Smooth studio cyclorama wall (radius 17.5 m, height 8.5 m) with inward smooth
+  //    vertex normals and bright studio softbox gradient bands + horizon architectural trim.
+  const float wall_y[5] = {y_outer, y_outer + 0.85f, y_outer + 3.2f, y_outer + 5.8f, y_outer + 8.5f};
+  const float wall_shades[4] = {is_autoshow ? 0.86f : 0.72f, is_autoshow ? 1.06f : 1.08f,
+                                is_autoshow ? 1.18f : 0.92f, is_autoshow ? 0.96f : 0.62f};
   for (int band = 0; band < 4; ++band) {
     const std::array<float, 3> bcol{wall_col[0] * wall_shades[band], wall_col[1] * wall_shades[band],
                                     wall_col[2] * wall_shades[band]};
@@ -422,8 +501,8 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
       const float c0 = std::cos(a0), s0 = std::sin(a0);
       const float c1 = std::cos(a1), s1 = std::sin(a1);
       const float r = 17.5f;
-      const std::array<float, 3> n0{-c0, 0.08f, -s0};
-      const std::array<float, 3> n1{-c1, 0.08f, -s1};
+      const std::array<float, 3> n0{-c0, 0.14f, -s0};
+      const std::array<float, 3> n1{-c1, 0.14f, -s1};
       std::array<float, 3> b0{r * c0, yb, r * s0};
       std::array<float, 3> b1{r * c1, yb, r * s1};
       std::array<float, 3> t0{r * c0, yt, r * s0};
@@ -432,13 +511,15 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
       push_tri_n(b0, t1, b1, n0, n1, n1, bcol);
     }
   }
-  // Subtle Horizon studio light-strip band around upper studio truss.
+  // Luminous Horizon studio architectural light-strip band around upper pavilion cove.
   {
-    const std::array<float, 3> strip_col{wall_col[0] * 1.45f + ring_col[0] * 0.14f,
-                                         wall_col[1] * 1.45f + ring_col[1] * 0.14f,
-                                         wall_col[2] * 1.45f + ring_col[2] * 0.14f};
+    const std::array<float, 3> strip_col =
+        is_autoshow ? std::array<float, 3>{0.98f, 0.97f, 0.95f}
+                    : std::array<float, 3>{wall_col[0] * 1.45f + ring_col[0] * 0.14f,
+                                           wall_col[1] * 1.45f + ring_col[1] * 0.14f,
+                                           wall_col[2] * 1.45f + ring_col[2] * 0.14f};
     const float r = 17.38f;
-    const float yb = y_outer + 3.15f, yt = y_outer + 3.30f;
+    const float yb = y_outer + 3.15f, yt = y_outer + 3.38f;
     for (int i = 0; i < kSegs; ++i) {
       const float a0 = 2.0f * kPi * float(i) / float(kSegs);
       const float a1 = 2.0f * kPi * float(i + 1) / float(kSegs);
@@ -448,6 +529,23 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
       const std::array<float, 3> n1{-c1, 0.0f, -s1};
       push_tri_n({r * c0, yb, r * s0}, {r * c0, yt, r * s0}, {r * c1, yt, r * s1}, n0, n0, n1, strip_col);
       push_tri_n({r * c0, yb, r * s0}, {r * c1, yt, r * s1}, {r * c1, yb, r * s1}, n0, n1, n1, strip_col);
+    }
+  }
+
+  // 5. Overhead warm-white architectural studio softbox ceiling strips in the Autoshow pavilion.
+  if (is_autoshow) {
+    const std::array<float, 3> softbox_col{0.98f, 0.97f, 0.95f};
+    const std::array<float, 3> kDown{0.0f, -1.0f, 0.0f};
+    const float y_ceil = floor_y + 5.8f;
+    const float strip_xs[3] = {-3.2f, 0.0f, 3.2f};
+    for (float sx_c : strip_xs) {
+      const float hw_s = 0.55f, hl_s = 5.4f;
+      std::array<float, 3> p0{sx_c - hw_s, y_ceil, -hl_s};
+      std::array<float, 3> p1{sx_c + hw_s, y_ceil, -hl_s};
+      std::array<float, 3> p2{sx_c + hw_s, y_ceil, hl_s};
+      std::array<float, 3> p3{sx_c - hw_s, y_ceil, hl_s};
+      push_tri_n(p0, p2, p1, kDown, kDown, kDown, softbox_col);
+      push_tri_n(p0, p3, p2, kDown, kDown, kDown, softbox_col);
     }
   }
 
@@ -466,7 +564,22 @@ void build_hub_frame(HubRoom room, const HubCamera& cam, uint32_t width, uint32_
   float view[16], proj[16], vp[16];
   build_look_at(eye, cam.target, view);
   const float aspect = height > 0 ? float(width) / float(height) : (16.0f / 9.0f);
-  build_perspective(38.0f * (kPi / 180.0f), aspect, 0.1f, 120.0f, reverse_z, proj);
+  const float fov_deg = (room == HubRoom::kAutoshow) ? 36.0f : 38.0f;
+  build_perspective(fov_deg * (kPi / 180.0f), aspect, 0.1f, 120.0f, reverse_z, proj);
+
+  // Subtle architectural shift-lens framing in the Autoshow pavilion keeps the hero car
+  // cleanly elevated above the bottom carousel rail and balanced left of the right spec card
+  // without tilting vertical lines.
+  if (room == HubRoom::kAutoshow) {
+    const float sx = cam.has_explicit_framing ? cam.lens_shift_x : 0.11f;
+    const float sy = cam.has_explicit_framing ? cam.lens_shift_y : 0.16f;
+    proj[8] += sx;
+    proj[9] += sy;
+  } else if (cam.has_explicit_framing) {
+    proj[8] += cam.lens_shift_x;
+    proj[9] += cam.lens_shift_y;
+  }
+
   mul4(proj, view, vp);
 
   std::copy_n(vp, 16, out.view_projection);
@@ -500,7 +613,26 @@ void build_hub_frame(HubRoom room, const HubCamera& cam, uint32_t width, uint32_
   out.tint[0] = out.tint[1] = out.tint[2] = out.tint[3] = 1.0f;
   out.reflect_tint[0] = out.reflect_tint[1] = out.reflect_tint[2] = out.reflect_tint[3] = 1.0f;
 
-  if (room == HubRoom::kWorkshop) {
+  if (room == HubRoom::kAutoshow) {
+    // Bright Horizon Autoshow studio lighting: overhead warm softbox key + crisp rim/fill
+    // accenting body contours + glossy studio reflections without clipping white paint.
+    out.key_light[0] = 0.38f;
+    out.key_light[1] = 0.84f;
+    out.key_light[2] = -0.39f;
+    out.key_light[3] = 0.82f;
+    out.fill_light[0] = -0.68f;
+    out.fill_light[1] = 0.42f;
+    out.fill_light[2] = 0.60f;
+    out.fill_light[3] = 0.28f;
+    out.options[0] = 0.56f;
+    out.options[1] = 1.05f;
+    out.tint[0] = 1.02f;
+    out.tint[1] = 1.00f;
+    out.tint[2] = 0.97f;
+    out.reflect_tint[0] = 0.98f;
+    out.reflect_tint[1] = 1.00f;
+    out.reflect_tint[2] = 1.04f;
+  } else if (room == HubRoom::kWorkshop) {
     out.tint[0] = 1.04f;
     out.tint[1] = 0.98f;
     out.tint[2] = 0.91f;
@@ -809,15 +941,27 @@ void draw_bigpane_card(ui::List& list, float x0, float y0, float x1, float y1, f
 }
 
 // Extracts +3.0 deg RotationHelper angle from a loaded scene (falling back to ui4::kTiltRad).
+// Cached by scene pointer + node name to avoid per-frame scene-graph scans at 120 FPS.
 float scene_tilt_rad(const char* scene_name, const char* root_node = "RotationHelper") {
-  if (const fh1::UiScene* sc_ptr = ui4::scene(scene_name)) {
-    SceneDraw sc(sc_ptr, true);
-    if (const int n = sc.find(root_node); n >= 0) {
-      const float a = -sc.angle(n);
-      if (std::fabs(a) > 1e-3f && std::fabs(a) < 0.25f) return a;
-    }
+  const fh1::UiScene* sc_ptr = ui4::scene(scene_name);
+  if (!sc_ptr) return ui4::kTiltRad;
+  struct CacheEntry {
+    const fh1::UiScene* ptr = nullptr;
+    const char* node = nullptr;
+    float angle = ui4::kTiltRad;
+  };
+  static std::vector<CacheEntry> s_cache;
+  for (const auto& e : s_cache) {
+    if (e.ptr == sc_ptr && e.node == root_node) return e.angle;
   }
-  return ui4::kTiltRad;
+  float result = ui4::kTiltRad;
+  SceneDraw sc(sc_ptr, true);
+  if (const int n = sc.find(root_node); n >= 0) {
+    const float a = -sc.angle(n);
+    if (std::fabs(a) > 1e-3f && std::fabs(a) < 0.25f) result = a;
+  }
+  if (s_cache.size() < 32) s_cache.push_back({sc_ptr, root_node, result});
+  return result;
 }
 
 // Top-left PlayerBar (108/115/527 authentic top-left @(387,41) credits + optional discount/tag).
@@ -903,32 +1047,400 @@ std::string format_autoshow_spec_line(double peak_power_kw, double peak_torque_n
   return spec;
 }
 
+AutoshowLayout compute_autoshow_layout(float w, float h, AutoshowStep step, bool show_specs,
+                                       bool show_filters) {
+  AutoshowLayout lo{};
+  const float s = std::max(0.25f, h / 720.0f);
+  lo.scale = s;
+  const float mx = 40.0f * s;
+
+  lo.top_bar = {mx, 16.0f * s, std::max(mx + 200.0f * s, w - mx), 76.0f * s};
+
+  if (show_filters && step == AutoshowStep::kCarSelect) {
+    lo.filter_bar = {mx, 82.0f * s, std::min(w - mx, mx + 560.0f * s), 106.0f * s};
+  }
+
+  lo.button_bar = {mx, h - 68.0f * s, std::max(mx + 200.0f * s, w - mx), h - 34.0f * s};
+  lo.carousel_rail = {mx, h - 182.0f * s, std::max(mx + 200.0f * s, w - mx), h - 74.0f * s};
+  lo.rail_header = {mx, h - 208.0f * s, std::max(mx + 200.0f * s, w - mx), h - 185.0f * s};
+
+  if (step == AutoshowStep::kColorSelect) {
+    const float fin_w = std::min(308.0f * s, std::max(210.0f * s, lo.carousel_rail.width() * 0.27f));
+    const float gap = 12.0f * s;
+    lo.swatch_strip = {lo.carousel_rail.x0, lo.carousel_rail.y0,
+                       std::max(lo.carousel_rail.x0 + 180.0f * s, lo.carousel_rail.x1 - fin_w - gap),
+                       lo.carousel_rail.y1};
+    lo.finish_strip = {lo.swatch_strip.x1 + gap, lo.carousel_rail.y0, lo.carousel_rail.x1, lo.carousel_rail.y1};
+  }
+
+  lo.spec_card_visible = show_specs;
+  if (show_specs) {
+    const float spec_w = std::min(344.0f * s, std::max(270.0f * s, w * 0.275f));
+    const float sx1 = w - mx;
+    const float sx0 = std::max(mx + 260.0f * s, sx1 - spec_w);
+    const float sy0 = 84.0f * s;
+    const float sy1 = std::min(lo.rail_header.y0 - 16.0f * s, 492.0f * s);
+    lo.spec_card = {sx0, sy0, sx1, std::max(sy0 + 120.0f * s, sy1)};
+  }
+
+  const float hero_top = (lo.filter_bar.valid() ? lo.filter_bar.y1 : lo.top_bar.y1) + 10.0f * s;
+  const float hero_bot = std::max(hero_top + 60.0f * s, lo.rail_header.y0 - 12.0f * s);
+  const float hero_right = show_specs ? std::max(mx + 160.0f * s, lo.spec_card.x0 - 16.0f * s) : (w - mx);
+  lo.hero_car_viewport = {mx, hero_top, hero_right, hero_bot};
+
+  const float mw = std::min(510.0f * s, w - 2.0f * mx);
+  const float mh = 268.0f * s;
+  const float mx0 = 0.5f * (w - mw);
+  const float my0 = std::clamp(0.5f * (hero_top + hero_bot - mh), lo.top_bar.y1 + 14.0f * s,
+                               std::max(lo.top_bar.y1 + 14.0f * s, lo.rail_header.y0 - mh - 12.0f * s));
+  lo.confirm_modal = {mx0, my0, mx0 + mw, my0 + mh};
+  return lo;
+}
+
+namespace {
+
+void draw_autoshow_rail_card(ui::List& list, float x0, float y0, float x1, float y1, float s, bool active) {
+  // Sleek translucent Horizon Autoshow bottom-rail card with high contrast on the bright studio floor.
+  list.rect(x0 + 2.0f * s, y0 + 3.0f * s, x1 + 2.0f * s, y1 + 3.0f * s, ui::rgba(0, 0, 0, 88));
+  const uint32_t bg = active ? ui::rgba(28, 16, 28, 238) : ui::rgba(16, 18, 24, 214);
+  list.rect(x0, y0, x1, y1, bg);
+  std::array<float, 4> noise_uv{};
+  if (ui4::texture("DIRTMASKS/BGNOISE01", noise_uv)) {
+    list.image(x0, y0, x1, y1, noise_uv, ui::rgba(255, 255, 255, active ? 22 : 14));
+  }
+  if (active) {
+    list.rect(x0, y0, x1, y0 + 3.5f * s, ui4::kPink);
+    list.frame(x0, y0, x1, y1, ui4::kPink, 2.0f * s);
+  } else {
+    list.rect(x0, y0, x1, y0 + 1.5f * s, ui::rgba(255, 255, 255, 42));
+    list.frame(x0, y0, x1, y1, ui::rgba(255, 255, 255, 24), 1.0f * s);
+  }
+}
+
+void draw_autoshow_spec_card(ui::List& list, const AutoshowLayout& lo, const Autoshow& autoshow,
+                             const std::vector<garage::ClassBand>& bands, int64_t credits, bool metric_units) {
+  if (!lo.spec_card_visible || !lo.spec_card.valid()) return;
+  const float s = lo.scale;
+  const float rx0 = lo.spec_card.x0;
+  const float rx1 = lo.spec_card.x1;
+  const float rw = lo.spec_card.width();
+  float cy = lo.spec_card.y0;
+
+  const AutoshowCar* sel_car = autoshow.selected_car();
+  if (!sel_car) {
+    ui4::panel(list, rx0, cy, rx1, cy + 94.0f * s, s, ui::rgba(16, 18, 24, 224), ui4::kAmber, 0, true);
+    list.text(0.5f * (rx0 + rx1), cy + 36.0f * s,
+              autoshow.empty_reason().empty() ? "NO CARS AVAILABLE" : autoshow.empty_reason(),
+              ui4::style(ui::Font::kE, 16.0f * s, ui4::kAmber, ui::Align::kCenter));
+    return;
+  }
+
+  const bool affordable = credits >= sel_car->dealer.base_cost;
+  const bool is_owned = autoshow.is_owned(sel_car->dealer.id);
+  const float card_h = affordable ? 364.0f * s : 394.0f * s;
+  const float card_y1 = std::min(lo.spec_card.y1, cy + card_h);
+  ui4::panel(list, rx0, cy, rx1, card_y1, s, ui::rgba(16, 18, 24, 226), ui4::kPink, 0, true);
+
+  const int cls = bands.empty() ? int(sel_car->dealer.class_id)
+                                : garage::class_of(sel_car->dealer.performance_index, bands);
+  const std::string cls_name = (bands.empty() || cls >= int(bands.size())) ? "?" : bands[size_t(cls)].name;
+  const int shown_pi = bands.empty() ? int(std::ceil(sel_car->dealer.performance_index * 999.0))
+                                     : garage::shown_index(sel_car->dealer.performance_index, bands);
+
+  // 1. Header: Magenta accent strip + Year + Model Name + Make Logo
+  std::string cname = car_name(sel_car->dealer.media_name);
+  if (cname.empty()) cname = sel_car->display_name;
+  list.rect(rx0, cy + 4.0f * s, rx1, cy + 36.0f * s, ui::rgba(249, 0, 100, 220));
+  ui::TextStyle nm = ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite);
+  ui4::fit_text(cname, nm, rw - 24.0f * s, 10.0f * s);
+  list.text(rx0 + 12.0f * s, cy + 11.0f * s + 0.5f * (16.0f * s - nm.size), cname, nm);
+  cy += 42.0f * s;
+
+  // 2. Class/PI Badge + PI Delta vs Current Car + Drivetrain + Make Logo
+  const AutoshowSpecDelta delta = autoshow.compare_car(*sel_car, bands);
+  ui4::class_badge(list, rx0 + 12.0f * s, cy + 2.0f * s, 24.0f * s, cls_name, shown_pi, cls);
+
+  if (delta.has_baseline && delta.pi_delta != 0) {
+    char dpb[24];
+    std::snprintf(dpb, sizeof dpb, "%+d PI", delta.pi_delta);
+    const uint32_t pcol = delta.pi_delta > 0 ? ui4::kGreen : ui4::kRed;
+    const float px0 = rx0 + 102.0f * s;
+    list.rect(px0, cy + 4.0f * s, px0 + 62.0f * s, cy + 24.0f * s, ui::rgba(10, 12, 16, 210));
+    list.frame(px0, cy + 4.0f * s, px0 + 62.0f * s, cy + 24.0f * s, pcol, 1.2f * s);
+    list.text(px0 + 31.0f * s, cy + 8.0f * s, dpb,
+              ui4::style(ui::Font::kE, 11.5f * s, pcol, ui::Align::kCenter));
+  }
+
+  // Drivetrain pill + Make badge right-aligned
+  const char* dt = drive_label(sel_car->drive_type_id);
+  const float dtx1 = rx1 - 12.0f * s;
+  const float dtx0 = dtx1 - 46.0f * s;
+  list.rect(dtx0, cy + 4.0f * s, dtx1, cy + 24.0f * s, ui::rgba(255, 255, 255, 24));
+  list.text(0.5f * (dtx0 + dtx1), cy + 8.0f * s, dt,
+            ui4::style(ui::Font::kE, 11.5f * s, ui4::kWhite, ui::Align::kCenter));
+
+  if (is_owned) {
+    const float ox1 = dtx0 - 6.0f * s;
+    const float ox0 = ox1 - 58.0f * s;
+    list.rect(ox0, cy + 4.0f * s, ox1, cy + 24.0f * s, ui4::kGreen);
+    list.text(0.5f * (ox0 + ox1), cy + 8.0f * s, "OWNED",
+              ui4::style(ui::Font::kE, 10.5f * s, ui4::kInk, ui::Align::kCenter));
+  }
+  cy += 32.0f * s;
+
+  // 3. Subtitle / Comparison Baseline Header
+  std::string sub_txt;
+  if (delta.has_baseline) {
+    sub_txt = "VS CURRENT: " + autoshow.comparison_car().display_name;
+  } else {
+    sub_txt = std::to_string(sel_car->dealer.year) + "  " + sel_car->make_name + "  •  FACTORY SPECS";
+  }
+  ui::TextStyle subs = ui4::style(ui::Font::kB, 10.5f * s, delta.has_baseline ? ui4::kYellow : ui4::kDim);
+  ui4::fit_text(sub_txt, subs, rw - 24.0f * s, 8.5f * s);
+  list.text(rx0 + 12.0f * s, cy + 2.0f * s, sub_txt, subs);
+  cy += 18.0f * s;
+  list.rect(rx0 + 12.0f * s, cy, rx1 - 12.0f * s, cy + 1.0f * s, ui::rgba(255, 255, 255, 32));
+  cy += 6.0f * s;
+
+  // 4. 5 Crisp FH1 Horizontal Stat Bars with Color-Coded Delta vs Player's Current Car
+  const auto& cmp = autoshow.comparison_car();
+  const struct {
+    const char* name;
+    double base_v;
+    double cand_v;
+  } stats[5] = {
+      {"SPEED", delta.has_baseline ? cmp.speed_rating : sel_car->speed_rating, sel_car->speed_rating},
+      {"HANDLING", delta.has_baseline ? cmp.handling_rating : sel_car->handling_rating, sel_car->handling_rating},
+      {"ACCELERATION", delta.has_baseline ? cmp.accel_rating : sel_car->accel_rating, sel_car->accel_rating},
+      {"LAUNCH", delta.has_baseline ? cmp.launch_rating : sel_car->launch_rating, sel_car->launch_rating},
+      {"BRAKING", delta.has_baseline ? cmp.braking_rating : sel_car->braking_rating, sel_car->braking_rating},
+  };
+  for (int si = 0; si < 5; ++si) {
+    list.rect(rx0 + 10.0f * s, cy, rx1 - 10.0f * s, cy + 22.0f * s,
+              (si % 2 == 0) ? ui::rgba(255, 255, 255, 10) : ui::rgba(255, 255, 255, 4));
+    ui4::stat_bar(list, rx0 + 14.0f * s, cy + 1.0f * s, rw - 28.0f * s, 20.0f * s, stats[si].name, stats[si].base_v,
+                  stats[si].cand_v, delta.has_baseline, s);
+    cy += 25.0f * s;
+  }
+  cy += 4.0f * s;
+
+  // 5. Compact Technical Specs Grid: POWER, TORQUE, WEIGHT, DRIVETRAIN
+  const float col_gap = 8.0f * s;
+  const float half_w = 0.5f * (rw - 24.0f * s - col_gap);
+  const float lx0 = rx0 + 12.0f * s;
+  const float rcx0 = lx0 + half_w + col_gap;
+
+  char pwr_buf[48], trq_buf[48], wt_buf[48];
+  if (metric_units) {
+    std::snprintf(pwr_buf, sizeof pwr_buf, "%d kW", int(std::lround(sel_car->peak_power_kw)));
+    std::snprintf(trq_buf, sizeof trq_buf, "%d NM", int(std::lround(sel_car->peak_torque_nm)));
+    std::snprintf(wt_buf, sizeof wt_buf, "%d KG", int(std::lround(sel_car->curb_weight_kg)));
+  } else {
+    std::snprintf(pwr_buf, sizeof pwr_buf, "%d HP", int(std::lround(sel_car->peak_power_kw * 1.34102)));
+    std::snprintf(trq_buf, sizeof trq_buf, "%d LB-FT", int(std::lround(sel_car->peak_torque_nm * 0.737562)));
+    std::snprintf(wt_buf, sizeof wt_buf, "%d LBS", int(std::lround(sel_car->curb_weight_kg * 2.20462)));
+  }
+
+  auto delta_col = [&](double d, bool lower_is_better = false) -> uint32_t {
+    if (!delta.has_baseline || std::fabs(d) < 0.5) return ui4::kWhite;
+    const bool better = lower_is_better ? (d < 0.0) : (d > 0.0);
+    return better ? ui4::kGreen : ui4::kRed;
+  };
+
+  auto draw_kv_cell = [&](float cx, float y, float cw_c, const char* k, const char* v, uint32_t vcol) {
+    list.rect(cx, y, cx + cw_c, y + 32.0f * s, ui::rgba(255, 255, 255, 14));
+    list.text(cx + 8.0f * s, y + 4.0f * s, k, ui4::style(ui::Font::kB, 9.5f * s, ui4::kDim));
+    ui::TextStyle vs = ui4::style(ui::Font::kE, 13.5f * s, vcol, ui::Align::kLeft, true);
+    ui4::fit_text(v, vs, cw_c - 16.0f * s, 9.5f * s);
+    list.text(cx + 8.0f * s, y + 15.5f * s, v, vs);
+  };
+
+  draw_kv_cell(lx0, cy, half_w, "POWER", pwr_buf, delta_col(delta.power_kw_delta));
+  draw_kv_cell(rcx0, cy, half_w, "TORQUE", trq_buf, delta_col(delta.torque_nm_delta));
+  cy += 36.0f * s;
+  draw_kv_cell(lx0, cy, half_w, "WEIGHT", wt_buf, delta_col(delta.weight_kg_delta, true));
+  draw_kv_cell(rcx0, cy, half_w, "DRIVETRAIN", dt, ui4::kWhite);
+  cy += 40.0f * s;
+
+  // 6. Price Bar + Affordability Guard
+  ui4::offwhite_strip(list, lx0, cy, rx1 - 12.0f * s, cy + 30.0f * s, s, false);
+  list.text(lx0 + 10.0f * s, cy + 8.0f * s, "PRICE", ui4::style(ui::Font::kE, 12.5f * s, ui4::kInk));
+  list.text(rx1 - 22.0f * s, cy + 6.5f * s, ui4::format_credits(sel_car->dealer.base_cost),
+            ui4::style(ui::Font::kE, 16.0f * s, affordable ? ui4::kInk : ui4::kRed, ui::Align::kRight, true));
+  cy += 34.0f * s;
+
+  if (!affordable && cy + 24.0f * s <= card_y1) {
+    const int64_t short_cr = autoshow.credits_shortfall(credits);
+    list.rect(lx0, cy, rx1 - 12.0f * s, cy + 24.0f * s, ui::rgba(190, 32, 36, 230));
+    const std::string warn = "INSUFFICIENT CREDITS (-" + ui4::format_credits(short_cr) + ")";
+    ui::TextStyle ws = ui4::style(ui::Font::kE, 11.0f * s, ui4::kWhite, ui::Align::kCenter);
+    ui4::fit_text(warn, ws, rw - 32.0f * s, 8.5f * s);
+    list.text(0.5f * (lx0 + rx1 - 12.0f * s), cy + 6.5f * s, warn, ws);
+  }
+}
+
+void draw_autoshow_confirm_modal(ui::List& list, float w, float h, const AutoshowLayout& lo, const Autoshow& autoshow,
+                                 const std::vector<garage::ClassBand>& bands, int64_t credits) {
+  const AutoshowCar* sel_car = autoshow.selected_car();
+  if (!sel_car || !lo.confirm_modal.valid()) return;
+  const float s = lo.scale;
+  // Soft focus scrim strictly when confirmation modal is active.
+  list.rect(0.0f, 0.0f, w, h, ui::rgba(8, 10, 14, 118));
+
+  const float x0 = lo.confirm_modal.x0, y0 = lo.confirm_modal.y0;
+  const float x1 = lo.confirm_modal.x1, y1 = lo.confirm_modal.y1;
+  const float mw = lo.confirm_modal.width();
+  ui4::panel(list, x0, y0, x1, y1, s, ui::rgba(18, 20, 26, 246), ui4::kPink, 0, true);
+
+  // Magenta header
+  list.rect(x0, y0 + 4.0f * s, x1, y0 + 40.0f * s, ui4::kPink);
+  list.text(x0 + 18.0f * s, y0 + 12.0f * s, "CONFIRM PURCHASE", ui4::style(ui::Font::kE, 19.0f * s, ui4::kWhite));
+
+  float cy = y0 + 52.0f * s;
+  std::string cname = car_name(sel_car->dealer.media_name);
+  if (cname.empty()) cname = sel_car->display_name;
+  ui::TextStyle cn = ui4::style(ui::Font::kE, 20.0f * s, ui4::kWhite);
+  ui4::fit_text(cname, cn, mw - 130.0f * s, 12.0f * s);
+  list.text(x0 + 18.0f * s, cy, cname, cn);
+
+  const int cls = bands.empty() ? int(sel_car->dealer.class_id)
+                                : garage::class_of(sel_car->dealer.performance_index, bands);
+  const std::string cls_name = (bands.empty() || cls >= int(bands.size())) ? "?" : bands[size_t(cls)].name;
+  const int shown_pi = bands.empty() ? int(std::ceil(sel_car->dealer.performance_index * 999.0))
+                                     : garage::shown_index(sel_car->dealer.performance_index, bands);
+  ui4::class_badge(list, x1 - 104.0f * s, cy - 2.0f * s, 23.0f * s, cls_name, shown_pi, cls);
+  cy += 28.0f * s;
+
+  // Chosen Paint Swatch + Finish & Caliper summary
+  if (const AutoshowSwatch* sw = autoshow.selected_swatch()) {
+    const uint32_t sw_col =
+        ui::rgba(uint8_t((sw->rgb >> 16) & 0xFF), uint8_t((sw->rgb >> 8) & 0xFF), uint8_t(sw->rgb & 0xFF), 255);
+    list.rect(x0 + 18.0f * s, cy + 1.0f * s, x0 + 38.0f * s, cy + 19.0f * s, sw_col);
+    list.frame(x0 + 18.0f * s, cy + 1.0f * s, x0 + 38.0f * s, cy + 19.0f * s, ui4::kWhite, 1.0f * s);
+  }
+  const std::string paint_desc = std::string("FINISH: ") + autoshow_paint_finish_name(autoshow.paint_finish()) +
+                                 "   •   CALIPERS: " + autoshow.selected_caliper().name;
+  list.text(x0 + 46.0f * s, cy + 3.0f * s, paint_desc, ui4::style(ui::Font::kB, 12.0f * s, ui4::kOffWhite));
+  cy += 28.0f * s;
+
+  // Cost breakdown rows
+  const int64_t price = sel_car->dealer.base_cost;
+  const bool affordable = credits >= price;
+  const int64_t after_cr = credits - price;
+
+  auto row = [&](const char* k, const std::string& v, uint32_t vc) {
+    list.rect(x0 + 18.0f * s, cy, x1 - 18.0f * s, cy + 25.0f * s, ui::rgba(255, 255, 255, 12));
+    list.text(x0 + 28.0f * s, cy + 5.5f * s, k, ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim));
+    list.text(x1 - 28.0f * s, cy + 5.0f * s, v,
+              ui4::style(ui::Font::kE, 14.0f * s, vc, ui::Align::kRight, true));
+    cy += 28.0f * s;
+  };
+  row("VEHICLE PRICE", ui4::format_credits(price), ui4::kWhite);
+  row("CURRENT BALANCE", ui4::format_credits(credits), ui4::kOffWhite);
+  row("BALANCE AFTER PURCHASE",
+      affordable ? ui4::format_credits(after_cr) : ("INSUFFICIENT (-" + ui4::format_credits(price - credits) + ")"),
+      affordable ? ui4::kGreen : ui4::kRed);
+
+  // Confirm & Cancel action buttons
+  const float btn_y0 = y1 - 52.0f * s;
+  const float btn_y1 = y1 - 16.0f * s;
+  const float bw = 0.5f * (mw - 48.0f * s);
+  const float bx_ok = x0 + 18.0f * s;
+  const float bx_no = bx_ok + bw + 12.0f * s;
+
+  if (affordable) {
+    list.add_hit(bx_ok, btn_y0, bx_ok + bw, btn_y1, ui::kHitConfirm, 0);
+    list.rect(bx_ok, btn_y0, bx_ok + bw, btn_y1, ui4::kPink);
+    list.text(bx_ok + 0.5f * bw, btn_y0 + 10.0f * s, "BUY & DRIVE",
+              ui4::style(ui::Font::kE, 15.0f * s, ui4::kWhite, ui::Align::kCenter));
+  } else {
+    list.rect(bx_ok, btn_y0, bx_ok + bw, btn_y1, ui::rgba(70, 32, 36, 200));
+    list.text(bx_ok + 0.5f * bw, btn_y0 + 10.0f * s, "INSUFFICIENT CR",
+              ui4::style(ui::Font::kE, 14.0f * s, ui4::kDim, ui::Align::kCenter));
+  }
+
+  list.add_hit(bx_no, btn_y0, bx_no + bw, btn_y1, ui::kHitCancel, 0);
+  list.rect(bx_no, btn_y0, bx_no + bw, btn_y1, ui::rgba(36, 40, 48, 230));
+  list.frame(bx_no, btn_y0, bx_no + bw, btn_y1, ui::rgba(255, 255, 255, 65), 1.2f * s);
+  list.text(bx_no + 0.5f * bw, btn_y0 + 10.0f * s, "CANCEL",
+            ui4::style(ui::Font::kE, 15.0f * s, ui4::kWhite, ui::Align::kCenter));
+}
+
+}  // namespace
+
 void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autoshow,
                        const std::vector<garage::ClassBand>& bands, int64_t credits, const std::string& notice,
                        bool metric_units) {
-  const float s = h / 720.0f;
-  ui4::subtle_vignette(list, w, h, 0.20f);
-
   const AutoshowStep step = autoshow.step();
-  const char* scene_name = (step == AutoshowStep::kMakeSelect)  ? "115_C_BUY_MFRSELECT"
-                           : (step == AutoshowStep::kColorSelect) ? "114_C_BUY_BUYCAR_COLOR"
-                                                                  : "108_C_BUY_CARSELECT";
-  const float tilt_rad = scene_tilt_rad(scene_name, "RotationHelper");
+  const bool show_filters = (step == AutoshowStep::kCarSelect && !autoshow.tutorial_mode());
+  const AutoshowLayout lo = compute_autoshow_layout(w, h, step, autoshow.show_specs(), show_filters);
+  const float s = lo.scale;
 
-  // Top-left PlayerBar (authentic 115/108/114 PlayerBar@(387,41), leaving center 3D car open!).
   const auto& makes = autoshow.makes();
   const std::string active_make =
       autoshow.all_cars_mode()
           ? std::string("ALL CARS")
           : (makes.empty() ? std::string("AUTOSHOW")
                            : makes[std::min(autoshow.selected_make_index(), makes.size() - 1)].name);
-  draw_hub_player_bar(list, s, credits,
-                      autoshow.tutorial_mode() ? "FIRST CAR SELECTION"
-                      : (step == AutoshowStep::kMakeSelect) ? "HORIZON AUTOSHOW"
-                                                            : ("AUTOSHOW  //  " + active_make));
 
-  // Top-left Sort / Class / Drivetrain filter chips in Car Select mode (matches Garage HUD).
-  if (step == AutoshowStep::kCarSelect && !autoshow.tutorial_mode()) {
+  // ---- 1. Top Bar: FH1 Magenta Header + Breadcrumb (Left) & Car Count + Credits (Top-Right) ----
+  {
+    const float tx0 = lo.top_bar.x0;
+    const float ty0 = lo.top_bar.y0;
+    const float tx1 = lo.top_bar.x1;
+
+    // Magenta-accented HORIZON AUTOSHOW title header
+    const std::string hdr_title = autoshow.tutorial_mode() ? "HORIZON AUTOSHOW  //  FIRST CAR" : "HORIZON AUTOSHOW";
+    ui::TextStyle hts = ui4::style(ui::Font::kE, 20.0f * s, ui4::kWhite);
+    const float hdr_w = std::min(380.0f * s, std::max(240.0f * s, ui::List::measure(hdr_title, hts) + 34.0f * s));
+    ui4::fit_text(hdr_title, hts, hdr_w - 24.0f * s, 12.0f * s);
+    ui4::brush(list, tx0 - 4.0f * s, ty0, tx0 + hdr_w, ty0 + 32.0f * s, ui4::kPink);
+    list.text(tx0 + 12.0f * s, ty0 + 6.0f * s, hdr_title, hts);
+
+    // Breadcrumb trail directly beneath header (MANUFACTURERS -> <MAKE> -> SELECT PAINT -> CONFIRM PURCHASE)
+    const std::string crumb = autoshow.breadcrumb_text();
+    const float by0 = ty0 + 36.0f * s;
+    const float by1 = lo.top_bar.y1;
+    ui::TextStyle bcs = ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite);
+    const float max_crumb_w = std::max(220.0f * s, lo.top_bar.width() - 340.0f * s);
+    ui4::fit_text(crumb, bcs, max_crumb_w - 24.0f * s, 9.0f * s);
+    const float cw_b = std::min(max_crumb_w, ui::List::measure(crumb, bcs) + 26.0f * s);
+    list.rect(tx0, by0, tx0 + cw_b, by1, ui::rgba(16, 18, 24, 214));
+    list.rect(tx0, by0, tx0 + 3.5f * s, by1, ui4::kPink);
+    list.text(tx0 + 12.0f * s, by0 + 5.5f * s, crumb, bcs);
+
+    // Top-right Credits Balance + Car Count aligned cleanly with right margin (`tx1 = w - 40*s`)
+    const float cr_w = 166.0f * s;
+    const float cr_x0 = tx1 - cr_w;
+    ui4::offwhite_strip(list, cr_x0, ty0 + 2.0f * s, tx1, ty0 + 32.0f * s, s, true);
+    ui::TextStyle crs = ui4::style(ui::Font::kE, 16.0f * s, ui4::kInk, ui::Align::kRight, true);
+    const std::string cr_str = ui4::format_credits(credits);
+    ui4::fit_text(cr_str, crs, cr_w - 20.0f * s, 10.0f * s);
+    list.text(tx1 - 12.0f * s, ty0 + 8.5f * s, cr_str, crs);
+
+    // Car count pill immediately left of Credits strip
+    char cnt_buf[48];
+    if (step == AutoshowStep::kMakeSelect) {
+      size_t total_cars = 0;
+      for (const auto& mk : makes)
+        if (mk.make_id == -4) total_cars = mk.car_count;
+      if (total_cars == 0 && !makes.empty()) total_cars = makes[0].car_count;
+      std::snprintf(cnt_buf, sizeof cnt_buf, "%zu MAKES  •  %zu CARS", makes.size(), total_cars);
+    } else {
+      std::snprintf(cnt_buf, sizeof cnt_buf, "%zu %s", autoshow.visible_cars().size(),
+                    autoshow.visible_cars().size() == 1 ? "CAR" : "CARS");
+    }
+    ui::TextStyle cnts = ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite, ui::Align::kCenter);
+    const float cnt_w = std::clamp(ui::List::measure(cnt_buf, cnts) + 24.0f * s, 84.0f * s, 210.0f * s);
+    const float cnt_x1 = cr_x0 - 8.0f * s;
+    const float cnt_x0 = cnt_x1 - cnt_w;
+    list.rect(cnt_x0, ty0 + 2.0f * s, cnt_x1, ty0 + 32.0f * s, ui::rgba(16, 18, 24, 218));
+    list.rect(cnt_x0, ty0 + 2.0f * s, cnt_x1, ty0 + 4.0f * s, ui4::kPink);
+    list.text(0.5f * (cnt_x0 + cnt_x1), ty0 + 10.0f * s, cnt_buf, cnts);
+  }
+
+  // ---- 2. Compact Top-Left Sort / Class / Drivetrain Filter Bar (Car Select only) ----
+  if (lo.filter_bar.valid()) {
     const std::string cfilt =
         autoshow.class_filter() < 0
             ? "ALL"
@@ -937,325 +1449,255 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
                         : autoshow.drivetrain_filter() == 2 ? "RWD"
                         : autoshow.drivetrain_filter() == 3 ? "AWD"
                                                             : "ALL";
-    ui4::TiltScope top_rot(list, 300.0f * s, 78.0f * s, tilt_rad * 0.6f);
-    const float py = 64.0f * s;
-    ui4::pill(list, 56.0f * s, py, 212.0f * s, py + 25.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
-    list.text(68.0f * s, py + 5.5f * s, "SORT: " + std::string(autoshow_sort_name(autoshow.sort_mode())),
-              ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
-    ui4::pill(list, 218.0f * s, py, 352.0f * s, py + 25.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
-    list.text(230.0f * s, py + 5.5f * s, "CLASS: " + cfilt, ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
-    ui4::pill(list, 358.0f * s, py, 488.0f * s, py + 25.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
-    list.text(370.0f * s, py + 5.5f * s, std::string("DRIVE: ") + dfilt,
-              ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
-    if (autoshow.all_cars_mode()) {
-      ui4::brush(list, 494.0f * s, py, 596.0f * s, py + 25.0f * s, ui4::kPink);
-      list.text(545.0f * s, py + 5.5f * s, "ALL CARS",
-                ui4::style(ui::Font::kE, 11.5f * s, ui4::kWhite, ui::Align::kCenter));
-    }
+    const float fy0 = lo.filter_bar.y0;
+    const float fy1 = lo.filter_bar.y1;
+    float fx = lo.filter_bar.x0;
+    auto chip = [&](int tab_idx, const std::string& label, float cw_chip, bool highlight) {
+      list.add_hit(fx, fy0, fx + cw_chip, fy1, ui::kHitTab, tab_idx);
+      list.rect(fx, fy0, fx + cw_chip, fy1, highlight ? ui4::kPink : ui::rgba(16, 18, 24, 212));
+      list.frame(fx, fy0, fx + cw_chip, fy1, highlight ? ui4::kPinkHi : ui::rgba(255, 255, 255, 36), 1.0f * s);
+      list.text(fx + 0.5f * cw_chip, fy0 + 6.0f * s, label,
+                ui4::style(ui::Font::kB, 11.0f * s, ui4::kWhite, ui::Align::kCenter));
+      fx += cw_chip + 6.0f * s;
+    };
+    chip(0, "SORT: " + std::string(autoshow_sort_name(autoshow.sort_mode())), 136.0f * s,
+         autoshow.sort_mode() != AutoshowSort::kDefault);
+    chip(1, "CLASS: " + cfilt, 112.0f * s, autoshow.class_filter() >= 0);
+    chip(2, std::string("DRIVE: ") + dfilt, 114.0f * s, autoshow.drivetrain_filter() > 0);
+    chip(3, autoshow.all_cars_mode() ? "ALL CARS: ON" : "ALL CARS", 104.0f * s, autoshow.all_cars_mode());
   }
 
-  // Entire Autoshow UI sits inside RotationHelper@(640,360) tilted +3.0 deg!
+  // ---- 3. Right-Docked Spec Comparison Card (Strictly outside Center Hero Car Viewport) ----
+  draw_autoshow_spec_card(list, lo, autoshow, bands, credits, metric_units);
+
+  // ---- 4. Bottom Horizontal FH1 Carousel Rail (Strictly Below Hero Car Viewport) ----
   {
-    ui4::TiltScope rot(list, 0.5f * w, 0.5f * h, tilt_rad);
+    const float rx0 = lo.carousel_rail.x0;
+    const float rx1 = lo.carousel_rail.x1;
+    const float ry0 = lo.carousel_rail.y0;
+    const float ry1 = lo.carousel_rail.y1;
+    const float rail_h = lo.carousel_rail.height();
+
+    // Sleek Rail Header strip (section label + page hint + sel/total counter)
+    const float hy0 = lo.rail_header.y0;
+    const float hy1 = lo.rail_header.y1;
+    std::string rail_title =
+        (step == AutoshowStep::kMakeSelect)  ? "MANUFACTURERS"
+        : (step == AutoshowStep::kColorSelect) ? "FACTORY PAINT  &  FINISH"
+                                               : (autoshow.tutorial_mode() ? "FIRST CAR MODELS" : (active_make + "  MODELS"));
+    list.rect(rx0, hy0, rx0 + 230.0f * s, hy1, ui::rgba(16, 18, 24, 216));
+    list.rect(rx0, hy0, rx0 + 4.0f * s, hy1, ui4::kPink);
+    ui::TextStyle rts = ui4::style(ui::Font::kE, 12.0f * s, ui4::kWhite);
+    ui4::fit_text(rail_title, rts, 212.0f * s, 9.0f * s);
+    list.text(rx0 + 12.0f * s, hy0 + 5.0f * s, rail_title, rts);
 
     if (step == AutoshowStep::kMakeSelect) {
-      // ---- 115_C_BUY_MFRSELECT: Lower-left TitleTapeText@(91,435) + Bottom Manufacturer Logo Carousel ----
-      ui4::title_tape(list, s, 88.0f * s, 424.0f * s, "AUTOSHOW  //  MANUFACTURERS", ui4::kBrushBlack, 36.0f, 560.0f);
-
       if (!makes.empty()) {
-        const float strip_y = 492.0f * s;
-        const float card_h = 128.0f * s;
         const int n = int(makes.size());
         const int sel = int(autoshow.selected_make_index());
         const int count = std::min(n, 6);
         const int first = std::clamp(sel - count / 2, 0, std::max(0, n - count));
-        const float left_x = 68.0f * s, right_x = w - 68.0f * s, gap = 12.0f * s;
-        const float cw = (right_x - left_x - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
 
-        float bx = left_x;
+        // Counter on right end of rail header
+        char cur[40];
+        std::snprintf(cur, sizeof cur, "%d / %d", sel + 1, n);
+        list.rect(rx1 - 86.0f * s, hy0, rx1, hy1, ui::rgba(16, 18, 24, 216));
+        list.text(rx1 - 43.0f * s, hy0 + 5.0f * s, cur,
+                  ui4::style(ui::Font::kE, 12.0f * s, ui4::kWhite, ui::Align::kCenter));
+
+        const float arrow_pad = 22.0f * s;
+        const float strip_x0 = rx0 + arrow_pad;
+        const float strip_x1 = rx1 - arrow_pad;
+        const float gap = 10.0f * s;
+        const float cw = (strip_x1 - strip_x0 - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
+
+        if (first > 0) ui4::opt_arrow(list, rx0 + 9.0f * s, ry0 + 0.5f * rail_h, 16.0f * s, -1, ui4::kPinkHi);
+        if (first + count < n) ui4::opt_arrow(list, rx1 - 9.0f * s, ry0 + 0.5f * rail_h, 16.0f * s, +1, ui4::kPinkHi);
+
+        float bx = strip_x0;
         for (int i = first; i < first + count; ++i) {
           const auto& mk = makes[size_t(i)];
           const bool act = (i == sel);
-          const float lift = 0.0f;
-          list.add_hit(bx, strip_y - lift, bx + cw, strip_y + card_h - lift, ui::kHitRow, i);
-          draw_bigpane_card(list, bx, strip_y - lift, bx + cw, strip_y + card_h - lift, s, act);
+          list.add_hit(bx, ry0, bx + cw, ry1, ui::kHitRow, i);
+          draw_autoshow_rail_card(list, bx, ry0, bx + cw, ry1, s, act);
 
-          const float lh = 64.0f * s;
-          const float lw = std::min(cw - 24.0f * s, lh * 1.45f);
+          const float lh = 52.0f * s;
+          const float lw = std::min(cw - 24.0f * s, lh * 1.55f);
           const float lx0 = bx + 0.5f * (cw - lw);
-          const float ly0 = strip_y + 12.0f * s - lift;
+          const float ly0 = ry0 + 10.0f * s;
           if (!ui4::manufacturer_logo(list, lx0, ly0, lx0 + lw, ly0 + lh, mk.name,
-                                      act ? ui4::kWhite : ui::rgba(220, 224, 232, 225))) {
-            ui::TextStyle ms = ui4::style(ui::Font::kE, 18.0f * s, act ? ui4::kWhite : ui4::kDim, ui::Align::kCenter);
-            ui4::fit_text(mk.name, ms, cw - 16.0f * s, 10.0f * s);
-            list.text(bx + 0.5f * cw, strip_y + 36.0f * s - lift, mk.name, ms);
+                                      act ? ui4::kWhite : ui::rgba(222, 226, 234, 225))) {
+            ui::TextStyle ms = ui4::style(ui::Font::kE, 16.0f * s, act ? ui4::kWhite : ui4::kOffWhite, ui::Align::kCenter);
+            ui4::fit_text(mk.name, ms, cw - 16.0f * s, 9.5f * s);
+            list.text(bx + 0.5f * cw, ry0 + 28.0f * s, mk.name, ms);
           }
 
-          ui::TextStyle nm = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kCenter);
+          ui::TextStyle nm = ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kCenter);
           ui4::fit_text(mk.name, nm, cw - 14.0f * s, 8.5f * s);
-          list.text(bx + 0.5f * cw, strip_y + 84.0f * s - lift, mk.name, nm);
+          list.text(bx + 0.5f * cw, ry0 + 68.0f * s, mk.name, nm);
 
-          list.text(bx + 0.5f * cw, strip_y + 104.0f * s - lift,
-                    std::to_string(mk.car_count) + (mk.car_count == 1 ? " CAR" : " CARS"),
-                    ui4::style(ui::Font::kB, 11.0f * s, act ? ui4::kYellow : ui4::kDim, ui::Align::kCenter));
+          list.text(bx + 0.5f * cw, ry0 + 86.0f * s,
+                    std::to_string(mk.car_count) + (mk.car_count == 1 ? " MODEL" : " MODELS"),
+                    ui4::style(ui::Font::kB, 10.5f * s, act ? ui4::kYellow : ui4::kDim, ui::Align::kCenter));
           bx += cw + gap;
         }
-
-        // TEXT_CURSOR @(652, 608.7)
-        char cur[32];
-        std::snprintf(cur, sizeof cur, "%d / %d", sel + 1, n);
-        ui4::pill(list, 0.5f * w - 58.0f * s, strip_y + card_h + 6.0f * s, 0.5f * w + 58.0f * s,
-                  strip_y + card_h + 28.0f * s, ui4::kBrushBlack, ui4::PillKind::kMenu);
-        list.text(0.5f * w, strip_y + card_h + 11.0f * s, cur,
-                  ui4::style(ui::Font::kD, 14.0f * s, ui4::kWhite, ui::Align::kCenter));
       }
     } else if (step == AutoshowStep::kColorSelect) {
-      // ---- 114_C_BUY_BUYCAR_COLOR: Bottom +3.0 deg Factory Color Swatch Strip (y=567..641) ----
       const AutoshowCar* sel_car = autoshow.selected_car();
-      std::string cname = sel_car ? car_name(sel_car->dealer.media_name) : std::string("AUTOSHOW");
-      if (sel_car && cname.empty()) cname = sel_car->display_name;
-      ui4::title_tape(list, s, 88.0f * s, 488.0f * s, "FACTORY COLOR  //  " + cname, ui4::kBrushBlack, 30.0f, 760.0f);
-
       if (sel_car) {
-        const float sy0 = 562.0f * s, sy1 = 626.0f * s;
-        size_t first_sw = 0, nsw = 0;
-        autoshow.swatch_window(14, first_sw, nsw);
-        const size_t total_sw = sel_car->swatches.size();
-        const float sw_w = 46.0f * s, sw_h = 46.0f * s, sw_gap = 6.0f * s;
-        float sx = 86.0f * s;
+        // Left part of bottom rail: Factory Color Swatch Strip
+        const float sx0 = lo.swatch_strip.x0;
+        const float sx1 = lo.swatch_strip.x1;
+        list.rect(sx0, ry0, sx1, ry1, ui::rgba(16, 18, 24, 222));
+        list.rect(sx0, ry0, sx1, ry0 + 2.5f * s, ui4::kPink);
 
         std::array<float, 4> chip_uv{}, met_uv{}, focus_uv{}, grad_uv{};
         const bool has_chip = ui4::texture("LIVERY/CAR_PAINT_GRID_CHIP", chip_uv);
         const bool has_met = ui4::texture("LIVERY/CAR_PAINT_GRID_METALLIC", met_uv);
         const bool has_focus = ui4::texture("LIVERY/CAR_PAINT_GRID_FOCUS", focus_uv);
         const bool has_grad = ui4::texture("LIVERY/CAR_PAINT_LIST_GRADIENT", grad_uv);
-        const uint32_t kFocusPink = ui::rgba(0xCF, 0x21, 0x69, 255);
-
-        const float strip_x0 = sx - 16.0f * s;
-        const float strip_x1 = sx + float(std::max<size_t>(1, nsw)) * (sw_w + sw_gap) + 14.0f * s;
-        ui4::pill(list, strip_x0, sy0 - 8.0f * s, strip_x1, sy1 + 6.0f * s, ui4::kPillGrey, ui4::PillKind::kPillBig);
         if (has_grad) {
-          list.image(strip_x0, sy0 - 8.0f * s, strip_x1, sy1 + 6.0f * s, grad_uv, ui::rgba(255, 255, 255, 42));
+          list.image(sx0, ry0, sx1, ry1, grad_uv, ui::rgba(255, 255, 255, 34));
         }
 
-        // Scroll indicators when car has > 14 factory swatches (up to 31+ in retail FH1).
-        if (first_sw > 0) {
-          ui4::opt_arrow(list, strip_x0 + 6.0f * s, sy0 + 29.0f * s, 14.0f * s, -1, ui4::kPinkHi);
-        }
-        if (first_sw + nsw < total_sw) {
-          ui4::opt_arrow(list, strip_x1 - 8.0f * s, sy0 + 29.0f * s, 14.0f * s, +1, ui4::kPinkHi);
+        size_t first_sw = 0, nsw = 0;
+        autoshow.swatch_window(14, first_sw, nsw);
+        const size_t total_sw = sel_car->swatches.size();
+
+        // Swatch status label in header
+        if (total_sw > 0) {
+          char swb[72];
+          const auto* sel_sw = autoshow.selected_swatch();
+          std::snprintf(swb, sizeof swb, "COLOR %zu / %zu%s%s", autoshow.selected_colour_index() + 1, total_sw,
+                        (sel_sw && sel_sw->metallic) ? "  •  METALLIC" : "",
+                        (sel_sw && sel_sw->has_stripe) ? "  •  STRIPE" : "");
+          list.rect(rx1 - 246.0f * s, hy0, rx1, hy1, ui::rgba(16, 18, 24, 216));
+          list.text(rx1 - 12.0f * s, hy0 + 5.0f * s, swb,
+                    ui4::style(ui::Font::kB, 11.0f * s,
+                               (sel_sw && sel_sw->has_stripe) ? ui4::kYellow : ui4::kOffWhite, ui::Align::kRight));
         }
 
+        const float pad_lr = 24.0f * s;
+        const float sw_gap = 6.0f * s;
+        const float avail_w = std::max(80.0f * s, (sx1 - sx0) - 2.0f * pad_lr);
+        const float sw_w = std::min(48.0f * s, (avail_w - sw_gap * float(std::max<size_t>(1, nsw) - 1)) /
+                                                   float(std::max<size_t>(1, nsw)));
+        const float sw_h = std::min(52.0f * s, rail_h - 32.0f * s);
+        const float sw_y0 = ry0 + 0.5f * (rail_h - sw_h);
+
+        if (first_sw > 0) ui4::opt_arrow(list, sx0 + 11.0f * s, ry0 + 0.5f * rail_h, 14.0f * s, -1, ui4::kPinkHi);
+        if (first_sw + nsw < total_sw)
+          ui4::opt_arrow(list, sx1 - 11.0f * s, ry0 + 0.5f * rail_h, 14.0f * s, +1, ui4::kPinkHi);
+
+        float cx = sx0 + pad_lr;
         for (size_t k = 0; k < nsw; ++k) {
           const size_t sw_idx = first_sw + k;
           const auto& sw = sel_car->swatches[sw_idx];
           const uint32_t sw_col =
               ui::rgba(uint8_t((sw.rgb >> 16) & 0xFF), uint8_t((sw.rgb >> 8) & 0xFF), uint8_t(sw.rgb & 0xFF), 255);
           const bool active = (sw_idx == autoshow.selected_colour_index());
-          const float y_c = sy0 + 6.0f * s - (active ? 4.0f * s : 0.0f);
-          list.add_hit(sx, y_c, sx + sw_w, y_c + sw_h, ui4::kHitSwatch, int(sw_idx));
-          list.rect(sx, y_c, sx + sw_w, y_c + sw_h, sw_col);
+          const float y_c = sw_y0 - (active ? 3.0f * s : 0.0f);
+          list.add_hit(cx, y_c, cx + sw_w, y_c + sw_h, ui4::kHitSwatch, int(sw_idx));
+          list.rect(cx, y_c, cx + sw_w, y_c + sw_h, sw_col);
           if (sw.has_stripe) {
             const uint32_t st_col =
                 sw.stripe_rgb != 0
                     ? ui::rgba(uint8_t((sw.stripe_rgb >> 16) & 0xFF), uint8_t((sw.stripe_rgb >> 8) & 0xFF),
                                uint8_t(sw.stripe_rgb & 0xFF), 255)
                     : ui4::kWhite;
-            // Twin racing stripe / factory livery band across the swatch chip.
-            list.rect(sx + sw_w * 0.36f, y_c, sx + sw_w * 0.48f, y_c + sw_h, st_col);
-            list.rect(sx + sw_w * 0.52f, y_c, sx + sw_w * 0.64f, y_c + sw_h, st_col);
-            list.rect(sx, y_c + sw_h - 9.0f * s, sx + sw_w, y_c + sw_h, ui::rgba(14, 16, 20, 200));
-            list.text(sx + 0.5f * sw_w, y_c + sw_h - 8.5f * s, "STRIPE",
-                      ui4::style(ui::Font::kE, 7.5f * s, ui4::kYellow, ui::Align::kCenter));
+            list.rect(cx + sw_w * 0.36f, y_c, cx + sw_w * 0.48f, y_c + sw_h, st_col);
+            list.rect(cx + sw_w * 0.52f, y_c, cx + sw_w * 0.64f, y_c + sw_h, st_col);
           }
-          if (sw.metallic && has_met) list.image(sx, y_c, sx + sw_w, y_c + sw_h, met_uv, ui::rgba(255, 255, 255, 96));
-          else if (has_chip) list.image(sx, y_c, sx + sw_w, y_c + sw_h, chip_uv, ui::rgba(255, 255, 255, 68));
+          if (sw.metallic && has_met) list.image(cx, y_c, cx + sw_w, y_c + sw_h, met_uv, ui::rgba(255, 255, 255, 92));
+          else if (has_chip) list.image(cx, y_c, cx + sw_w, y_c + sw_h, chip_uv, ui::rgba(255, 255, 255, 64));
           if (active) {
             if (has_focus) {
-              list.image(sx - 4.0f * s, y_c - 4.0f * s, sx + sw_w + 4.0f * s, y_c + sw_h + 4.0f * s, focus_uv,
-                         kFocusPink);
+              list.image(cx - 3.0f * s, y_c - 3.0f * s, cx + sw_w + 3.0f * s, y_c + sw_h + 3.0f * s, focus_uv,
+                         ui4::kPink);
             }
-            list.frame(sx - 3.0f * s, y_c - 3.0f * s, sx + sw_w + 3.0f * s, y_c + sw_h + 3.0f * s, kFocusPink, 3.0f * s);
-            list.frame(sx - 1.0f * s, y_c - 1.0f * s, sx + sw_w + 1.0f * s, y_c + sw_h + 1.0f * s, ui4::kWhite, 1.5f * s);
+            list.frame(cx - 2.5f * s, y_c - 2.5f * s, cx + sw_w + 2.5f * s, y_c + sw_h + 2.5f * s, ui4::kPink, 2.5f * s);
+            list.frame(cx - 1.0f * s, y_c - 1.0f * s, cx + sw_w + 1.0f * s, y_c + sw_h + 1.0f * s, ui4::kWhite, 1.0f * s);
           } else {
-            list.frame(sx, y_c, sx + sw_w, y_c + sw_h, ui::rgba(0, 0, 0, 125), 1.0f * s);
+            list.frame(cx, y_c, cx + sw_w, y_c + sw_h, ui::rgba(0, 0, 0, 140), 1.0f * s);
           }
-          sx += sw_w + sw_gap;
+          cx += sw_w + sw_gap;
         }
 
-        // Swatch index counter & livery/stripe tag above the swatch strip.
-        if (total_sw > 0) {
-          char swb[64];
-          const auto* sel_sw = autoshow.selected_swatch();
-          std::snprintf(swb, sizeof swb, "COLOR %zu / %zu%s%s", autoshow.selected_colour_index() + 1, total_sw,
-                        (sel_sw && sel_sw->metallic) ? "  METALLIC" : "",
-                        (sel_sw && sel_sw->has_stripe) ? "  [STRIPE / LIVERY]" : "");
-          ui4::pill(list, strip_x0, sy0 - 34.0f * s, strip_x0 + 310.0f * s, sy0 - 12.0f * s, ui4::kBrushBlack,
-                    ui4::PillKind::kMenu);
-          list.text(strip_x0 + 12.0f * s, sy0 - 30.0f * s, swb,
-                    ui4::style(ui::Font::kB, 11.0f * s,
-                               (sel_sw && sel_sw->has_stripe) ? ui4::kYellow : ui4::kOffWhite));
+        // Right part of bottom rail: Open-Engine Finish & Caliper Options!
+        if (lo.finish_strip.valid()) {
+          const float fx0 = lo.finish_strip.x0;
+          const float fx1 = lo.finish_strip.x1;
+          list.rect(fx0, ry0, fx1, ry1, ui::rgba(16, 18, 24, 224));
+          list.rect(fx0, ry0, fx1, ry0 + 2.5f * s, ui4::kPink);
+
+          const float row_h = 40.0f * s;
+          const float r1_y0 = ry0 + 10.0f * s;
+          const float r2_y0 = r1_y0 + row_h + 8.0f * s;
+
+          // Finish selector (kHitRegion index 0)
+          list.add_hit(fx0 + 8.0f * s, r1_y0, fx1 - 8.0f * s, r1_y0 + row_h, ui4::kHitRegion, 0);
+          list.rect(fx0 + 8.0f * s, r1_y0, fx1 - 8.0f * s, r1_y0 + row_h, ui::rgba(255, 255, 255, 16));
+          list.text(fx0 + 16.0f * s, r1_y0 + 5.0f * s, "FINISH  [LB/RB]", ui4::style(ui::Font::kB, 9.5f * s, ui4::kDim));
+          list.text(fx0 + 16.0f * s, r1_y0 + 19.0f * s, autoshow_paint_finish_name(autoshow.paint_finish()),
+                    ui4::style(ui::Font::kE, 14.0f * s,
+                               autoshow.paint_finish() == AutoshowPaintFinish::kFactory ? ui4::kWhite : ui4::kYellow));
+          ui4::opt_arrow(list, fx1 - 22.0f * s, r1_y0 + 0.5f * row_h, 12.0f * s, +1, ui4::kPinkHi);
+
+          // Caliper selector (kHitRegion index 1)
+          const auto& cal = autoshow.selected_caliper();
+          list.add_hit(fx0 + 8.0f * s, r2_y0, fx1 - 8.0f * s, r2_y0 + row_h, ui4::kHitRegion, 1);
+          list.rect(fx0 + 8.0f * s, r2_y0, fx1 - 8.0f * s, r2_y0 + row_h, ui::rgba(255, 255, 255, 16));
+          list.text(fx0 + 16.0f * s, r2_y0 + 5.0f * s, "CALIPERS  [UP/DN]", ui4::style(ui::Font::kB, 9.5f * s, ui4::kDim));
+          if (cal.active) {
+            const uint32_t ccol = ui::rgba(uint8_t((cal.rgb >> 16) & 0xFF), uint8_t((cal.rgb >> 8) & 0xFF),
+                                           uint8_t(cal.rgb & 0xFF), 255);
+            list.rect(fx0 + 16.0f * s, r2_y0 + 20.0f * s, fx0 + 30.0f * s, r2_y0 + 33.0f * s, ccol);
+            list.frame(fx0 + 16.0f * s, r2_y0 + 20.0f * s, fx0 + 30.0f * s, r2_y0 + 33.0f * s, ui4::kWhite, 1.0f * s);
+          }
+          list.text(fx0 + (cal.active ? 36.0f : 16.0f) * s, r2_y0 + 19.0f * s, cal.name,
+                    ui4::style(ui::Font::kE, 14.0f * s, cal.active ? ui4::kYellow : ui4::kWhite));
+          ui4::opt_arrow(list, fx1 - 22.0f * s, r2_y0 + 0.5f * row_h, 12.0f * s, +1, ui4::kPinkHi);
         }
-
-        // Right-aligned Price & Balance (114 x=836..1168, y=566..637)
-        const float px0 = w - 344.0f * s, px1 = w - 68.0f * s;
-        const bool affordable = credits >= sel_car->dealer.base_cost;
-        ui4::pill(list, px0, sy0 - 4.0f * s, px1, sy0 + 26.0f * s, ui4::kPink, ui4::PillKind::kPill26);
-        list.text(px0 + 14.0f * s, sy0 + 3.0f * s, "PRICE", ui4::style(ui::Font::kD, 14.0f * s, ui4::kWhite));
-        list.text(px1 - 14.0f * s, sy0 + 3.0f * s, ui4::format_credits(sel_car->dealer.base_cost),
-                  ui4::style(ui::Font::kE, 15.0f * s, affordable ? ui4::kWhite : ui4::kYellow, ui::Align::kRight, true));
-
-        ui4::offwhite_strip(list, px0, sy0 + 30.0f * s, px1, sy0 + 58.0f * s, s, true);
-        list.text(px0 + 14.0f * s, sy0 + 36.0f * s, "BALANCE", ui4::style(ui::Font::kB, 13.0f * s, ui4::kInk));
-        list.text(px1 - 14.0f * s, sy0 + 36.0f * s, ui4::format_credits(credits),
-                  ui4::style(ui::Font::kB, 15.0f * s, ui4::kInk, ui::Align::kRight, true));
       }
     } else {
-      // ---- 108_C_BUY_CARSELECT: Tilted Right Stat Card + Lower-Left TitleTape + Bottom BIGPANE01 Carousel ----
-      const AutoshowCar* sel_car = autoshow.selected_car();
-
-      // Right-hand tilted +3.0 deg Stat Card (108_C_BUY_CARSELECT x=815..1220, y=38..434; NO giant flat wall!)
-      const float cx0 = w - 432.0f * s, cx1 = w - 58.0f * s;
-      const float cw_card = cx1 - cx0;
-      float cy = 40.0f * s;
-
-      if (!sel_car) {
-        ui4::panel01(list, cx0, cy, cx1, cy + 96.0f * s, s, ui4::kCharcoalDark, ui4::kAmber);
-        list.text(0.5f * (cx0 + cx1), cy + 38.0f * s,
-                  autoshow.empty_reason().empty() ? "NO CARS AVAILABLE" : autoshow.empty_reason(),
-                  ui4::style(ui::Font::kE, 18.0f * s, ui4::kAmber, ui::Align::kCenter));
-      } else {
-        const int cls = bands.empty() ? int(sel_car->dealer.class_id)
-                                      : garage::class_of(sel_car->dealer.performance_index, bands);
-        const std::string cls_name = (bands.empty() || cls >= int(bands.size())) ? "?" : bands[size_t(cls)].name;
-        const int shown_pi = bands.empty() ? int(std::ceil(sel_car->dealer.performance_index * 999.0))
-                                           : garage::shown_index(sel_car->dealer.performance_index, bands);
-
-        // TEXT_CAR_NAME pill + TEXT_MANUFACTURER + PICLASS badge (108 top block y=40..124)
-        std::string cname = car_name(sel_car->dealer.media_name);
-        if (cname.empty()) cname = sel_car->display_name;
-        ui4::brush(list, cx0 - 8.0f * s, cy, cx1 + 4.0f * s, cy + 34.0f * s, ui4::kPink);
-        ui::TextStyle nm = ui4::style(ui::Font::kD, 17.5f * s, ui4::kWhite);
-        ui4::fit_text(cname, nm, cw_card - 26.0f * s, 11.0f * s);
-        list.text(cx0 + 12.0f * s, cy + 8.0f * s + 0.5f * (17.5f * s - nm.size), cname, nm);
-        cy += 36.0f * s;
-
-        ui4::pill(list, cx0, cy, cx1, cy + 32.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02, false, true);
-        float mfx = cx0 + 12.0f * s;
-        if (ui4::manufacturer_logo(list, cx0 + 10.0f * s, cy + 4.0f * s, cx0 + 44.0f * s, cy + 28.0f * s,
-                                   sel_car->make_name)) {
-          mfx = cx0 + 50.0f * s;
-        }
-        list.text(mfx, cy + 8.0f * s,
-                  std::to_string(sel_car->dealer.year) + "  " + sel_car->make_name + "  •  " +
-                      drive_label(sel_car->drive_type_id),
-                  ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite));
-        ui4::class_badge(list, cx1 - 92.0f * s, cy + 4.0f * s, 24.0f * s, cls_name, shown_pi, cls);
-        cy += 36.0f * s;
-
-        // Compact Price & [OWNED] badge row
-        const bool affordable = credits >= sel_car->dealer.base_cost;
-        const bool is_owned = autoshow.is_owned(sel_car->dealer.id);
-        ui4::offwhite_strip(list, cx0, cy, cx1, cy + 28.0f * s, s, true);
-        list.text(cx0 + 14.0f * s, cy + 7.0f * s, is_owned ? "AUTOSHOW PRICE  [OWNED]" : "AUTOSHOW PRICE",
-                  ui4::style(ui::Font::kB, 11.5f * s, is_owned ? ui::rgba(24, 128, 60) : ui4::kInk));
-        list.text(cx1 - 14.0f * s, cy + 6.0f * s, ui4::format_credits(sel_car->dealer.base_cost),
-                  ui4::style(ui::Font::kE, 15.5f * s, affordable ? ui4::kInk : ui4::kRed, ui::Align::kRight, true));
-        cy += 36.0f * s;
-
-        // 5 Floating PILL02 Stat Rows with DIRTTEXTURES/STATBARFILL & STATBAREMPTY (27px pitch, y=148..288)
-        const std::pair<const char*, double> stats[5] = {
-            {"SPEED", sel_car->speed_rating},
-            {"HANDLING", sel_car->handling_rating},
-            {"ACCELERATION", sel_car->accel_rating},
-            {"LAUNCH", sel_car->launch_rating},
-            {"BRAKING", sel_car->braking_rating},
-        };
-        for (int si = 0; si < 5; ++si) {
-          ui4::pill(list, cx0, cy, cx1, cy + 25.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
-          ui4::stat_bar(list, cx0 + 12.0f * s, cy + 2.0f * s, cw_card - 24.0f * s, 21.0f * s, stats[si].first,
-                        stats[si].second, stats[si].second, false, s);
-          cy += 28.0f * s;
-        }
-        cy += 4.0f * s;
-
-        // Compact Power / Torque / Weight PILL26PX telemetry row
-        const std::string spec =
-            format_autoshow_spec_line(sel_car->peak_power_kw, sel_car->peak_torque_nm, sel_car->curb_weight_kg, metric_units);
-        ui4::pill(list, cx0, cy, cx1, cy + 26.0f * s, ui4::kBrushBlack, ui4::PillKind::kPill26);
-        list.text(0.5f * (cx0 + cx1), cy + 6.0f * s, spec,
-                  ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kCenter));
-        cy += 30.0f * s;
-
-        // Compact Factory Swatch Preview chips (scrolling window over all 1..31+ swatches)
-        if (!sel_car->swatches.empty()) {
-          size_t first_p = 0, nsw = 0;
-          autoshow.swatch_window(10, first_p, nsw);
-          ui4::pill(list, cx0, cy, cx1, cy + 32.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
-          list.text(cx0 + 12.0f * s, cy + 9.0f * s, "COLOR", ui4::style(ui::Font::kB, 11.0f * s, ui4::kDim));
-          float sx = cx0 + 68.0f * s;
-          std::array<float, 4> chip_uv{};
-          const bool has_chip = ui4::texture("LIVERY/CAR_PAINT_GRID_CHIP", chip_uv);
-          for (size_t k = 0; k < nsw; ++k) {
-            const size_t sw_idx = first_p + k;
-            const auto& sw = sel_car->swatches[sw_idx];
-            const uint32_t col =
-                ui::rgba(uint8_t((sw.rgb >> 16) & 0xFF), uint8_t((sw.rgb >> 8) & 0xFF), uint8_t(sw.rgb & 0xFF), 255);
-            const bool act = (sw_idx == autoshow.selected_colour_index());
-            list.rect(sx, cy + 6.0f * s, sx + 22.0f * s, cy + 26.0f * s, col);
-            if (sw.has_stripe) {
-              const uint32_t st_col =
-                  sw.stripe_rgb != 0
-                      ? ui::rgba(uint8_t((sw.stripe_rgb >> 16) & 0xFF), uint8_t((sw.stripe_rgb >> 8) & 0xFF),
-                                 uint8_t(sw.stripe_rgb & 0xFF), 255)
-                      : ui4::kWhite;
-              list.rect(sx + 8.0f * s, cy + 6.0f * s, sx + 14.0f * s, cy + 26.0f * s, st_col);
-            }
-            if (has_chip) list.image(sx, cy + 6.0f * s, sx + 22.0f * s, cy + 26.0f * s, chip_uv, ui::rgba(255, 255, 255, 64));
-            if (act) list.frame(sx - 2.0f * s, cy + 4.0f * s, sx + 24.0f * s, cy + 28.0f * s, ui4::kPink, 2.0f * s);
-            sx += 26.0f * s;
-          }
-          if (sel_car->swatches.size() > 10) {
-            char mc[16];
-            std::snprintf(mc, sizeof mc, "%zu", sel_car->swatches.size());
-            list.text(cx1 - 8.0f * s, cy + 9.0f * s, mc,
-                      ui4::style(ui::Font::kB, 10.5f * s, ui4::kYellow, ui::Align::kRight));
-          }
-        }
-      }
-
-      // Lower-left TitleTapeText @(91.2, 434.8) right above bottom car carousel!
-      const std::string tape_lbl =
-          autoshow.tutorial_mode() ? "CHOOSE YOUR FIRST CAR" : ("AUTOSHOW  //  " + active_make);
-      ui4::title_tape(list, s, 88.0f * s, 424.0f * s, tape_lbl, ui4::kBrushBlack, 34.0f, 560.0f);
-
-      // Bottom Tilted BIGPANE01 Car Carousel (y=490..620)
+      // ---- kCarSelect: Bottom Horizontal FH1 Model Carousel Rail ----
       const auto& vis = autoshow.visible_cars();
       if (!vis.empty()) {
-        const float bot_y = 490.0f * s;
-        const float card_ch = 114.0f * s;
         const int n = int(vis.size());
         const int sel = int(autoshow.selected_index());
         const int count = std::min(n, 5);
         const int first = std::clamp(sel - count / 2, 0, std::max(0, n - count));
-        const float gap = 12.0f * s;
-        const float left_x = 68.0f * s, right_x = w - 68.0f * s;
-        const float cw = (right_x - left_x - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
-        float bx = left_x;
+
+        char cur[40];
+        std::snprintf(cur, sizeof cur, "%d / %d", sel + 1, n);
+        list.rect(rx1 - 86.0f * s, hy0, rx1, hy1, ui::rgba(16, 18, 24, 216));
+        list.text(rx1 - 43.0f * s, hy0 + 5.0f * s, cur,
+                  ui4::style(ui::Font::kE, 12.0f * s, ui4::kWhite, ui::Align::kCenter));
+
+        const float arrow_pad = 22.0f * s;
+        const float strip_x0 = rx0 + arrow_pad;
+        const float strip_x1 = rx1 - arrow_pad;
+        const float gap = 10.0f * s;
+        const float cw = (strip_x1 - strip_x0 - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
+
+        if (first > 0) ui4::opt_arrow(list, rx0 + 9.0f * s, ry0 + 0.5f * rail_h, 16.0f * s, -1, ui4::kPinkHi);
+        if (first + count < n) ui4::opt_arrow(list, rx1 - 9.0f * s, ry0 + 0.5f * rail_h, 16.0f * s, +1, ui4::kPinkHi);
+
+        float bx = strip_x0;
         for (int i = first; i < first + count; ++i) {
           const auto& c = vis[size_t(i)];
           const bool act = (i == sel);
-          const float lift = 0.0f;
-          list.add_hit(bx, bot_y - lift, bx + cw, bot_y + card_ch - lift, ui::kHitRow, i);
-          draw_bigpane_card(list, bx, bot_y - lift, bx + cw, bot_y + card_ch - lift, s, act);
+          const bool affordable = credits >= c.dealer.base_cost;
+          list.add_hit(bx, ry0, bx + cw, ry1, ui::kHitRow, i);
+          draw_autoshow_rail_card(list, bx, ry0, bx + cw, ry1, s, act);
 
-          const float th_h = 60.0f * s;
-          const float th_w = th_h * 1.95f;
+          const float th_h = 54.0f * s;
+          const float th_w = std::min(cw - 16.0f * s, th_h * 1.95f);
           const float th_x0 = bx + 0.5f * (cw - th_w);
-          const float th_y0 = bot_y + 8.0f * s - lift;
+          const float th_y0 = ry0 + 8.0f * s;
           if (!ui4::car_thumbnail(list, th_x0, th_y0, th_x0 + th_w, th_y0 + th_h, c.dealer.id)) {
-            ui4::manufacturer_logo(list, bx + cw * 0.5f - 24.0f * s, th_y0 + 10.0f * s, bx + cw * 0.5f + 24.0f * s,
-                                   th_y0 + 48.0f * s, c.make_name, ui::rgba(255, 255, 255, 160));
+            ui4::manufacturer_logo(list, bx + 0.5f * cw - 22.0f * s, th_y0 + 8.0f * s, bx + 0.5f * cw + 22.0f * s,
+                                   th_y0 + 44.0f * s, c.make_name, ui::rgba(255, 255, 255, 175));
           }
 
           const int cls =
@@ -1263,57 +1705,78 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
           const std::string cname_cls = (bands.empty() || cls >= int(bands.size())) ? "?" : bands[size_t(cls)].name;
           const int cpi = bands.empty() ? int(std::ceil(c.dealer.performance_index * 999.0))
                                         : garage::shown_index(c.dealer.performance_index, bands);
-          ui4::class_badge(list, bx + 8.0f * s, bot_y + 8.0f * s - lift, 17.0f * s, cname_cls, cpi, cls);
+          ui4::class_badge(list, bx + 8.0f * s, ry0 + 7.0f * s, 16.0f * s, cname_cls, cpi, cls);
+
           if (autoshow.is_owned(c.dealer.id)) {
-            ui4::brush(list, bx + cw - 70.0f * s, bot_y + 7.0f * s - lift, bx + cw - 6.0f * s, bot_y + 24.0f * s - lift,
-                       ui4::kGreen);
-            list.text(bx + cw - 38.0f * s, bot_y + 10.5f * s - lift, "OWNED",
-                      ui4::style(ui::Font::kE, 9.5f * s, ui4::kInk, ui::Align::kCenter));
+            list.rect(bx + cw - 56.0f * s, ry0 + 7.0f * s, bx + cw - 6.0f * s, ry0 + 22.0f * s, ui4::kGreen);
+            list.text(bx + cw - 31.0f * s, ry0 + 9.5f * s, "OWNED",
+                      ui4::style(ui::Font::kE, 9.0f * s, ui4::kInk, ui::Align::kCenter));
           }
 
           std::string bname = car_name(c.dealer.media_name);
           if (bname.empty()) bname = c.display_name;
-          ui::TextStyle cs = ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
-          ui4::fit_text(bname, cs, cw - 16.0f * s, 8.5f * s);
-          list.text(bx + 8.0f * s, bot_y + 72.0f * s - lift, bname, cs);
+          const std::string yr_name =
+              (c.dealer.year > 0 && bname.find(std::to_string(c.dealer.year)) == std::string::npos)
+                  ? (std::to_string(c.dealer.year) + " " + bname)
+                  : bname;
+          ui::TextStyle cs = ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite, ui::Align::kLeft, true);
+          ui4::fit_text(yr_name, cs, cw - 16.0f * s, 8.5f * s);
+          list.text(bx + 8.0f * s, ry0 + 67.0f * s, yr_name, cs);
 
-          ui::TextStyle ps = ui4::style(ui::Font::kB, 11.5f * s, act ? ui4::kYellow : ui4::kDim, ui::Align::kLeft, true);
-          list.text(bx + 8.0f * s, bot_y + 92.0f * s - lift, ui4::format_credits(c.dealer.base_cost), ps);
+          const uint32_t pcol = !affordable ? ui4::kRed : (act ? ui4::kYellow : ui4::kOffWhite);
+          ui::TextStyle ps = ui4::style(ui::Font::kE, 11.5f * s, pcol, ui::Align::kLeft, true);
+          list.text(bx + 8.0f * s, ry0 + 86.0f * s, ui4::format_credits(c.dealer.base_cost), ps);
           bx += cw + gap;
         }
-
-        // TEXT_CURSOR @(652, 608.7)
-        char cur[32];
-        std::snprintf(cur, sizeof cur, "%d / %d", sel + 1, n);
-        ui4::pill(list, 0.5f * w - 52.0f * s, bot_y + card_ch + 4.0f * s, 0.5f * w + 52.0f * s,
-                  bot_y + card_ch + 24.0f * s, ui4::kBrushBlack, ui4::PillKind::kMenu);
-        list.text(0.5f * w, bot_y + card_ch + 7.5f * s, cur,
-                  ui4::style(ui::Font::kD, 13.0f * s, ui4::kWhite, ui::Align::kCenter));
+      } else {
+        list.rect(rx0, ry0, rx1, ry1, ui::rgba(16, 18, 24, 212));
+        list.text(0.5f * (rx0 + rx1), ry0 + 44.0f * s,
+                  autoshow.empty_reason().empty() ? "NO MATCHING VEHICLES" : autoshow.empty_reason(),
+                  ui4::style(ui::Font::kE, 16.0f * s, ui4::kAmber, ui::Align::kCenter));
       }
     }
   }
 
-  if (!notice.empty()) {
-    ui4::brush(list, w - 420.0f * s, h - 68.0f * s, w - 56.0f * s, h - 38.0f * s, ui4::kPink);
-    ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
-    ui4::fit_text(notice, ns, 340.0f * s, 9.0f * s);
-    list.text(w - 68.0f * s, h - 60.0f * s, notice, ns);
+  // ---- 5. Purchase Confirmation Modal (when active) ----
+  if (autoshow.buy_confirm_open()) {
+    draw_autoshow_confirm_modal(list, w, h, lo, autoshow, bands, credits);
   }
 
-  if (step == AutoshowStep::kMakeSelect) {
-    ui4::button_bar(list, {{"A", "SELECT MAKE"}, {"DPAD_LR", "BROWSE"}, {"B", "EXIT"}}, w, h, 56.0f);
+  // ---- 6. Optional Toast Notice (docked bottom-right cleanly above bottom margin) ----
+  if (!notice.empty()) {
+    const float nw = 380.0f * s;
+    ui4::brush(list, w - nw - 40.0f * s, lo.button_bar.y0 - 2.0f * s, w - 40.0f * s, lo.button_bar.y1 - 2.0f * s,
+               ui4::kPink);
+    ui::TextStyle ns = ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kRight);
+    ui4::fit_text(notice, ns, nw - 24.0f * s, 9.0f * s);
+    list.text(w - 52.0f * s, lo.button_bar.y0 + 7.0f * s, notice, ns);
+  }
+
+  // ---- 7. Bottom Controller / Keyboard Button Bar ----
+  if (autoshow.buy_confirm_open()) {
+    ui4::button_bar(list, {{"A", "CONFIRM BUY"}, {"B", "CANCEL"}}, w, h, 40.0f);
+  } else if (step == AutoshowStep::kMakeSelect) {
+    ui4::button_bar(list,
+                    {{"A", "SELECT MAKE"}, {"LB", "PAGE"}, {"Y", "SPECS / CAM"}, {"RS", "ORBIT"}, {"B", "EXIT"}},
+                    w, h, 40.0f);
   } else if (step == AutoshowStep::kColorSelect) {
     ui4::button_bar(list,
-                    {{"A", "BUY CAR"}, {"X", "TEST DRIVE"}, {"DPAD_LR", "FACTORY COLOR"}, {"B", "BACK TO CARS"}},
-                    w, h, 56.0f);
+                    {{"A", "BUY CAR"},
+                     {"X", "TEST DRIVE"},
+                     {"LB", "FINISH"},
+                     {"Y", "SPECS / CAM"},
+                     {"RS", "ORBIT"},
+                     {"B", "BACK"}},
+                    w, h, 40.0f);
   } else {
     ui4::button_bar(list,
-                    {{"A", "CHOOSE COLOR / BUY"},
-                     {"X", "TEST DRIVE"},
-                     {"LB", "MAKE"},
-                     {"Y", "FACTORY COLOR"},
+                    {{"A", "SELECT PAINT"},
+                     {"X", "SORT / FILTER"},
+                     {"Y", "SPECS / CAM"},
+                     {"LB", "PAGE"},
+                     {"RS", "ORBIT"},
                      {"B", "BACK"}},
-                    w, h, 56.0f);
+                    w, h, 40.0f);
   }
 }
 

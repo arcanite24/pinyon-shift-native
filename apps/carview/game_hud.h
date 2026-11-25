@@ -127,14 +127,97 @@ struct SkillChainHud {
   int popularity_rank = 250;
   double popularity_progress = 0.0;
   double rank_up_at = -1e9;
+  // Smooth animation channels (populated by PopularityBadgeAnimator or derived from time).
+  int prev_popularity_rank = -1;     // rank prior to most recent rank-up (<0: infer rank + 1)
+  double pop_anim_progress = -1.0;   // smoothly interpolated radial arc [0..1] (<0: derive)
+  double pop_rank_anim_t = -1.0;     // normalized rank-up celebration phase [0..1] (<0: derive)
 };
 
-// Projected overhead opponent name tag in races (race-hud.png).
+// Stateful animator for the Popularity Rank HUD disc (smooth ring fill, rank-up flip/pop, skill pulse).
+struct PopularityBadgeAnimator {
+  bool initialized = false;
+  int last_rank = 250;
+  int prev_rank = 250;
+  int last_chain_points = 0;
+  double last_banked_at = -1e9;
+  double anim_progress = 0.0;
+  double rank_anim_t = 1.0;
+  double last_time = -1.0;
+
+  void reset();
+  void update(const SkillChainHud& sk, double time);
+  void apply(SkillChainHud& sk) const;
+};
+
+struct PopularityBadgeAnimFrame {
+  float radial_progress = 0.05f;
+  float disc_scale = 1.0f;
+  float flip_phase = 1.0f;
+  int display_rank = 250;
+  float text_scale_y = 1.0f;
+  float text_offset_y = 0.0f;
+  float text_alpha = 1.0f;
+  float ring_flash_alpha = 0.0f;
+  float ring_flash_angle = -1.5708f;
+  float skill_pulse_alpha = 0.0f;
+};
+
+PopularityBadgeAnimFrame evaluate_popularity_badge_anim(const SkillChainHud& sk, double time);
+
+// Projected overhead opponent / Festival AI car name tag (race-hud.png).
 struct NameTagHud {
   float screen_x = 0, screen_y = 0;
   std::string name;
   bool leader = false;
+  double distance_m = -1.0;  // world distance in meters (<0 if caller did not populate)
+  std::string car_class;     // optional class letter ("E".."X")
+  int pi = -1;               // optional PI rating (>0)
 };
+
+struct NameTagLod {
+  float scale = 1.0f;
+  float alpha = 1.0f;
+  bool visible = true;
+};
+NameTagLod compute_name_tag_lod(double distance_m);
+
+struct ResolvedNameTag {
+  size_t source_index = 0;
+  float orig_x = 0.0f, orig_y = 0.0f;
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+  float scale = 1.0f;
+  float alpha = 1.0f;
+  float badge_w = 0.0f;
+  float cls_w = 0.0f;
+  float pi_w = 0.0f;
+  bool leader = false;
+  bool has_badge = false;
+  std::string car_class;
+  std::string pi_text;
+  std::string driver;
+};
+
+struct WorldMarkerLayout {
+  bool visible = false;
+  float anchor_x = 0.0f, anchor_y = 0.0f;
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+  float scale = 1.0f;
+  float alpha = 1.0f;
+};
+
+void layout_world_labels(const std::vector<NameTagHud>& tags, const WorldMarkerHud* world_marker, bool in_race,
+                         float w, float h, std::vector<ResolvedNameTag>& out_tags,
+                         WorldMarkerLayout* out_marker = nullptr);
+
+void render_world_labels_and_nameplates(ui::List& l, const std::vector<NameTagHud>& tags,
+                                        const WorldMarkerHud* world_marker, bool in_race, float w, float h,
+                                        bool metric_units);
+
+struct PopupTitleParts {
+  std::string label;
+  std::string counter;
+};
+PopupTitleParts split_popup_title_counter(std::string_view title);
 
 // Celebratory overlay for Wristband Collection at Race Central.
 struct CeremonyHud {

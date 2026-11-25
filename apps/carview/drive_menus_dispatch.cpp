@@ -161,14 +161,63 @@ void DriveSession::open_shop_or_autoshow(bool is_autoshow) {
             if (app.parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
               why = "no parts database";
               if (const auto db = app.parts_db.get()) {
-                const bool tutorial_first = !app.imported && app.career_garage.cars.size() <= 1 && app.career.wristband_points == 0;
+                const bool onboarding_handoff = app.campaign.flow().consume_starter_autoshow_onboarding();
+                const bool first_starter_visit =
+                    !app.imported && app.career_garage.cars.size() <= 1 && app.collected_wristband <= 0 &&
+                    app.career.wristband_points <= 50;
+                const bool tutorial_first = is_autoshow && (onboarding_handoff || first_starter_visit);
                 const double price_mult = slice12.trainer.pacing.effective_price_multiplier();
-                ready = is_autoshow
-                            ? autoshow.open(*db, app.all_baked, why, app.career.credits, tutorial_first,
-                                            slice12.trainer.hidden_cars, price_mult)
-                            : shop.open(*db, app.career_garage,
-                                        app.career_garage.selected_car() ? app.career_garage.selected_car()->id : 0, why,
-                                        &hub_phys_settings, &hub_pi_cfg, &app.class_bands, price_mult, discount());
+                if (is_autoshow) {
+                  ready = autoshow.open(*db, app.all_baked, why, app.career.credits, tutorial_first,
+                                        slice12.trainer.hidden_cars, price_mult, &app.career_garage);
+                  if (ready && tutorial_first) {
+                    bool any_affordable_tut = false;
+                    if (autoshow.tutorial_mode()) {
+                      for (const auto& c : autoshow.visible_cars()) {
+                        if (c.dealer.base_cost <= app.career.credits) {
+                          any_affordable_tut = true;
+                          break;
+                        }
+                      }
+                    }
+                    // If the 2-car tutorial filter isn't baked or costs more than starting credits,
+                    // present a curated "All Affordable" starter car carousel directly in kCarSelect
+                    // instead of dumping the player cold onto the raw MANUFACTURERS list.
+                    if (!autoshow.tutorial_mode() || !any_affordable_tut) {
+                      if (autoshow.tutorial_mode()) {
+                        ready = autoshow.open(*db, app.all_baked, why, app.career.credits, false,
+                                              slice12.trainer.hidden_cars, price_mult, &app.career_garage);
+                      }
+                      if (ready && !autoshow.makes().empty()) {
+                        autoshow.select_make(0, app.career.credits);  // "All Affordable" curated starter rides
+                        autoshow.set_sort(AutoshowSort::kPrice);
+                        autoshow.set_step(AutoshowStep::kCarSelect);
+                        // Highlight the sportiest affordable starter car (preferring highest PI within credits
+                        // rather than the slowest vintage economy car at index 0).
+                        const auto& vis = autoshow.visible_cars();
+                        size_t best_idx = 0;
+                        double best_pi = -1.0;
+                        for (size_t vi = 0; vi < vis.size(); ++vi) {
+                          if (vis[vi].dealer.base_cost <= app.career.credits &&
+                              vis[vi].dealer.performance_index > best_pi) {
+                            best_pi = vis[vi].dealer.performance_index;
+                            best_idx = vi;
+                          }
+                        }
+                        if (!vis.empty()) autoshow.select_index(best_idx);
+                      }
+                    }
+                    if (ready) {
+                      notice =
+                          "WELCOME TO HORIZON AUTOSHOW! YOUR 1995 VW CORRADO VR6 IS IN YOUR GARAGE — PICK AN AFFORDABLE STARTER RIDE OR PRESS [B] TO DRIVE FREE ROAM";
+                      notice_until = vehicle.time() + 14.0;
+                    }
+                  }
+                } else {
+                  ready = shop.open(*db, app.career_garage,
+                                    app.career_garage.selected_car() ? app.career_garage.selected_car()->id : 0, why,
+                                    &hub_phys_settings, &hub_pi_cfg, &app.class_bands, price_mult, discount());
+                }
               }
             }
           }
@@ -258,6 +307,7 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
             }
           }
           events_page.close();
+          race::set_campaign_text_resolver([](std::string_view ref) { return carview::game_text(std::string(ref)); });
           const auto enter_action = app.campaign.on_enter_event(ev, app.fmv_player, &app.audio_host);
           apply_campaign_action(enter_action);
           // Defer applying the loaner car until DriveApp::start_race() so Showcase intros never
@@ -273,6 +323,7 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
 }
 
 void DriveSession::start_new_career() {
+          race::set_campaign_text_resolver([](std::string_view ref) { return carview::game_text(std::string(ref)); });
           app.career = race::CareerRecord{};
           app.career.credits = 0;
           app.career.wristband_points = 0;
@@ -554,6 +605,7 @@ void DriveSession::cycle_difficulty(int by) {
           app.race_options.difficulty = race::Difficulty(d);
           app.dynamic_ai_skill = DriveApp::dynamic_skill_for_difficulty(app.race_options.difficulty);
           if (app.race) app.race->set_difficulty(app.race_options.difficulty);
+          app.audio_host.trigger_ui(audio::UiCue::kMove);
           sync_pause_labels();
           const auto sfile = settings_path();
           if (!sfile.empty()) {
@@ -707,17 +759,22 @@ void DriveSession::choose() {
 void DriveSession::race_continue() {
           if (results_table) return;  // the table takes only B
           if (results_page == 0) {
+            app.audio_host.trigger_ui(audio::UiCue::kAccept);
             results_page = 1;
             return;
           }
-          if (results_page == 1 && results_points) {
-            results_page = 2, points_at = vehicle.time();
+          if (results_page == 1) {
+            app.audio_host.trigger_ui(audio::UiCue::kAccept);
+            results_page = 2;
+            points_at = vehicle.time();
             return;
           }
-          if ((results_page == 1 || results_page == 2) && !won_car_name.empty()) {
+          if (results_page == 2 && !won_car_name.empty()) {
+            app.audio_host.trigger_ui(audio::UiCue::kAccept);
             results_page = 3;
             return;
           }
+          app.audio_host.trigger_ui(audio::UiCue::kAccept);
           results_page = 0;
           if (!app.race->post_race_spawn(app.spawn)) {
             const drive::Vec3 at = vehicle.position();
