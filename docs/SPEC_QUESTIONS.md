@@ -1772,9 +1772,12 @@ findings name (`COpenWorldAmbience`, `CAmbientAudio`).
   0..0), not from a spec. The engine loops the 0..0 beds and does not play
   the spawned one-shots (horns, whistles, door slams, dogs, shouts).
 - **Placement.** Every placed Track3D event but the 110,000
-  `Default_Reflections_*` placements is now an emitter; the engine plays
-  the 8 nearest. FMOD's voice limit per event (`max_playbacks`) is not
-  applied.
+  `Default_Reflections_*` placements is now an emitter (10,080). The engine
+  pools the 8 nearest whose event has a loop it plays (4,795 placements),
+  each within its event's own `(distance)` range. FMOD's voice limit per
+  event (`max_playbacks`) and its real voice stealing are not applied, and
+  race-only events (grandstands, race crowds) take pool places in free
+  roam, where their `InRace` window silences them.
 - **Quad beds.** The region beds are 4-channel (`_F` and `_R` stems, the
   rear on `Speaker Level` 2). The engine plays the front stem only.
 - **Regional banks.** Placements name `AMB_Main_Town`, `AMB_Mountains`
@@ -1811,3 +1814,23 @@ read. Needed: the shaping curve and the overdrive scale.
 - Other cars at the Default view are point sources (the view's speaker
   pans are 0 on the disc); traffic has no throttle signal and plays at
   0.5. The pitch-envelope scale of FEV events is not decoded.
+
+## Q84 (audio, not blocking): placed ambience events the disc does not have
+
+Of the 10,080 placed Track3D events (reflections excluded), 1,295 name an
+event that no base-disc ambience FEV has. Most are regional
+(`MainTown_Car_Door_Slam` 251, `MainTown_Car_Horn_Distant` 246,
+`MainTown_Dogs` 211, `Mountains_*`, `Plains_Rusty_*`; Q81). Of the 173
+`Festival_*` placements, 57 resolve. The tiles name `Festival_Air_Horn`
+(32), `Festival_Whistle` (44), `Festival_Swell` and `Festival_Workshop`,
+but `Colorado_Festival.fev` names its events `Air_Horn`, `Whistle`, `Swell`
+and `Workshop`. `Festival_Music_Speakers_C`/`_D`,
+`Festival_Paintshop_Spraypaint` and `Festival_Quad_MemRes` match nothing.
+The engine plays none of them (no stand-in). Before AUDIO-11 a global crowd
+bed played near any festival placement; with the disc's events loaded it
+does not. The festival is heard from its stage music, stage crowd,
+grandstand, tanoy and speakers.
+
+Needed: how the game resolves a placement's `eventName` to an event (a
+project or group prefix it strips, or a remap table), and where the
+regional banks are.

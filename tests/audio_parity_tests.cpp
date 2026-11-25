@@ -808,10 +808,24 @@ void corpus_other_car_banks(const std::filesystem::path& game, const std::filesy
 void corpus_ambience_events(const std::filesystem::path& game) {
   std::error_code ec;
   const auto cache = std::filesystem::temp_directory_path(ec) / "shift-audio-parity-ambience";
+  // The map's placements (ribbon and tiles), as the game loads them.
+  audio::WorldAcousticsData world;
+  CHECK(world.load_configs(game));
+  const int tiles = world.load_soundscapes_from_archive(game / "media" / "tracks" / "colorado" / "bin.zip");
+  CHECK(tiles > 1000);
+  std::vector<uint32_t> placed;
+  for (const auto& em : world.emitters())
+    if (em.playable) placed.push_back(em.event_hash);
+  std::sort(placed.begin(), placed.end());
+  placed.erase(std::unique(placed.begin(), placed.end()), placed.end());
+
   audio::AmbienceBedPlayer amb(48000);
   const auto t0 = std::chrono::steady_clock::now();
   const int queued = amb.load_from_disc(game, cache);
   CHECK(queued > 0);
+  // Only the placed events' loops are decoded.
+  const int wanted = amb.want_events(placed);
+  CHECK(wanted > 10 && wanted < queued);
   constexpr int kBlock = 512;
   std::vector<float> buf(size_t(kBlock) * 2);
   audio::RtAcousticsSample quiet{};
@@ -829,14 +843,20 @@ void corpus_ambience_events(const std::filesystem::path& game) {
       last = have;
       stable_since = now;
     }
-    if (have >= queued || now - stable_since > std::chrono::seconds(20) || now - t0 > std::chrono::minutes(6)) break;
+    if ((amb.loaded_event_sample_count() >= wanted && now - stable_since > std::chrono::milliseconds(500)) ||
+        now - stable_since > std::chrono::seconds(20) || now - t0 > std::chrono::minutes(6))
+      break;
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  std::printf("ambience: %d events, %d of %d beds and event loops decoded (%d region/crowd beds) in %.1f s\n",
-              amb.loaded_event_count(), last, queued, amb.loaded_bed_count(),
+  std::printf("ambience: %d events; %d beds and %d of %d event loops decoded (%d wanted by %zu placed events) in "
+              "%.1f s\n",
+              amb.loaded_event_count(), amb.loaded_bed_count(), amb.loaded_event_sample_count(),
+              queued - amb.loaded_bed_count(), wanted, placed.size(),
               std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
   CHECK(amb.loaded_event_count() > 50);
-  CHECK(amb.loaded_event_sample_count() > 10);
+  CHECK(amb.loaded_event_sample_count() == wanted);
+  std::printf("  event loops in memory: %.1f MB\n", double(amb.loaded_event_sample_bytes()) / 1e6);
+  CHECK(amb.loaded_event_sample_bytes() < size_t(64) << 20);
 
   auto emitter = [&](const char* event, float distance) {
     audio::RtAcousticsSample s = quiet;
@@ -921,6 +941,103 @@ void corpus_ambience_events(const std::filesystem::path& game) {
   const double g_race = energy(stand, racing, nullptr), g_pre = energy(stand, racing_pre, nullptr);
   std::printf("  grandstand at 5 m in race: %.4f, PreRaceAmbience 1 %.5f\n", g_race, g_pre);
   CHECK(g_race > 1e-3 && g_pre < 0.05 * g_race);
+
+  // The path the game takes: the placements, the pool
+  // WorldAcousticsData::evaluate draws from them on each event's own reach,
+  // and the player rendering that sample.
+  std::map<std::string, std::array<int, 3>> census;  // placements, resolved, playable
+  int n_place = 0, n_resolved = 0, n_playable = 0;
+  for (const auto& em : world.emitters()) {
+    auto& c = census[em.event_name];
+    const audio::AmbienceEventReach* r = world.event_reach(audio::ambience_event_hash(em.event_name));
+    ++c[0];
+    ++n_place;
+    if (r) ++c[1], ++n_resolved;
+    if (r && r->playable) ++c[2], ++n_playable;
+  }
+  std::printf("  placements: %d (%d tiles); %d name a disc event, %d of those have a loop\n", n_place, tiles,
+              n_resolved, n_playable);
+  std::vector<std::pair<int, std::string>> missing;
+  for (const auto& [name, c] : census)
+    if (c[1] == 0) missing.push_back({c[0], name});
+  std::sort(missing.rbegin(), missing.rend());
+  for (size_t k = 0; k < missing.size() && k < 12; ++k)
+    std::printf("    no event on the disc: %s (%d)\n", missing[k].second.c_str(), missing[k].first);
+  CHECK(census["Default_Crickets_Bed"][2] > 1000);
+
+  // Ten metres from a placed Default_Crickets_Bed, it is in the pool.
+  const uint32_t h_crickets = audio::ambience_event_hash("Default_Crickets_Bed");
+  std::vector<const audio::AmbientEmitter3D*> beds;
+  for (const auto& em : world.emitters())
+    if (em.event_hash == h_crickets) beds.push_back(&em);
+  int tried = 0, pooled = 0;
+  for (size_t k = 0; k < beds.size(); k += std::max<size_t>(1, beds.size() / 200)) {
+    const auto& em = *beds[k];
+    const auto smp = world.evaluate(em.pos1[0] + 10.0f, em.pos1[1], em.pos1[2]);
+    ++tried;
+    for (const auto& a : smp.active_emitters)
+      if (a.active && a.event_hash == h_crickets) {
+        ++pooled;
+        break;
+      }
+  }
+  std::printf("  10 m from a Default_Crickets_Bed: in the pool at %d of %d placements\n", pooled, tried);
+  CHECK(tried > 0 && pooled * 10 >= tried * 9);
+
+  // That sample through the player: the crickets at 23:00 over the region
+  // bed (40 mph, where the quad bed is out).
+  const auto& c0 = *beds[0];
+  const auto at_bed = audio::RtAcousticsSample::from_sample(world.evaluate(c0.pos1[0] + 10.0f, c0.pos1[1], c0.pos1[2]));
+  const double w_night = energy(at_bed, night, nullptr);
+  std::printf("  evaluated sample at a crickets bed, 23:00: %.4f (no emitter %.6f)\n", w_night,
+              energy(quiet, night, nullptr));
+  CHECK(w_night > 1e-3);
+
+  // The festival: its ribbon placements (stage music, stage crowd) and the
+  // tiles' festival events, at the stage, through the same path.
+  const audio::AmbientEmitter3D* stage = nullptr;
+  int fest = 0, fest_resolved = 0;
+  for (const auto& em : world.emitters()) {
+    if (em.event_name.rfind("Festival", 0) != 0) continue;
+    ++fest;
+    if (world.event_reach(em.event_hash)) ++fest_resolved;
+    if (!stage && em.event_name == "Festival_Stage_Music_A") stage = &em;
+  }
+  std::printf("  festival placements: %d, %d name a disc event\n", fest, fest_resolved);
+  CHECK(stage != nullptr);
+  if (stage) {
+    const auto smp = world.evaluate(stage->pos1[0] + 5.0f, stage->pos1[1], stage->pos1[2]);
+    int live = 0;
+    for (const auto& a : smp.active_emitters) live += a.active ? 1 : 0;
+    const auto rt = audio::RtAcousticsSample::from_sample(smp);
+    const double f_noon = energy(rt, noon, nullptr);
+    std::printf("  5 m from the festival stage: %d pooled, snapshot %s, energy %.4f (no emitter %.6f)\n", live,
+                smp.ambience_snapshot.c_str(), f_noon, energy(quiet, noon, nullptr));
+    CHECK(live > 0 && f_noon > 1e-3);
+  }
+
+  // Walking along the crickets beds: the pool's order changes, a voice
+  // follows its emitter and one dropped fades (no block steps by more than
+  // a click's worth).
+  double worst = 0.0;
+  float prev_l = 0.0f;
+  bool have_prev = false;
+  for (int step = 0; step < 120; ++step) {
+    const auto& em = *beds[size_t(step / 20) % beds.size()];
+    const float t = float(step % 20) * 3.0f;
+    const auto rt = audio::RtAcousticsSample::from_sample(world.evaluate(em.pos1[0] + t, em.pos1[1], em.pos1[2] + t));
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    amb.render(rt, night, buf.data(), kBlock);
+    if (step % 20 == 0) {
+      have_prev = false;  // the walk jumps to the next bed
+      continue;
+    }
+    if (have_prev) worst = std::max(worst, double(std::fabs(buf[0] - prev_l)));
+    prev_l = buf[size_t(2 * (kBlock - 1))];
+    have_prev = true;
+  }
+  std::printf("  walking the crickets beds: largest step between blocks %.4f\n", worst);
+  CHECK(worst < 0.25);
 }
 
 int run_corpus() {

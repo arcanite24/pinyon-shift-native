@@ -755,6 +755,10 @@ int AudioEngine::load_ambience_beds(const std::filesystem::path& game_root, cons
   return total;
 }
 
+int AudioEngine::want_ambience_events(const std::vector<uint32_t>& event_hashes) {
+  return ambience_bed_.want_events(event_hashes);
+}
+
 int AudioEngine::load_rally_ambience_beds(const std::filesystem::path& rally_root_or_state_root,
                                           const std::filesystem::path& cache_dir) {
   return ambience_bed_.load_rally_from_disc(rally_root_or_state_root, cache_dir);

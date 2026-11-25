@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "audio/engine_player.h"
@@ -97,6 +98,18 @@ struct AmbientEmitter3D {
   std::array<float, 3> pos2{};
   float max_distance = 220.0f;
   uint32_t event_hash = 0;  // ambience_event_hash(event_name)
+  // From the disc's event (WorldAcousticsData::set_event_reach): its
+  // (distance) range (0: max_distance) and whether the player has a loop
+  // for it (spawned one-shots and events the disc lacks have none).
+  float reach_m = 0.0f;
+  bool playable = true;
+};
+
+// An ambience event's reach: the range of its (distance) parameter (or its
+// 3D max distance) and whether it has a continuous loop the bed player plays.
+struct AmbienceEventReach {
+  float distance_m = 0.0f;
+  bool playable = false;
 };
 
 struct SoundscapeTile {
@@ -230,7 +243,12 @@ class WorldAcousticsData {
 
   void set_reverb_templates(std::vector<ReverbTemplate> t) { reverb_templates_ = std::move(t); }
   void set_ambience_templates(std::vector<AmbienceTemplate> t) { ambience_templates_ = std::move(t); }
-  void add_emitter(AmbientEmitter3D e) { emitters_.push_back(std::move(e)); }
+  void add_emitter(AmbientEmitter3D e);
+  // The disc's ambience events by ambience_event_hash; placements then pool
+  // on their event's own reach, and those it cannot play stay out of the
+  // pool. Empty: every placement pools on its max_distance.
+  void set_event_reach(std::vector<std::pair<uint32_t, AmbienceEventReach>> reach);
+  const AmbienceEventReach* event_reach(uint32_t hash) const;
 
   // Evaluates the active blended I3DL2 reverb template, tunnel snapshot flag,
   // ambience zone, festival proximity, and top-4 distance-culled 3D ambient
@@ -244,7 +262,12 @@ class WorldAcousticsData {
   std::vector<ReverbZone> reverb_zones_;
   std::vector<AmbienceZone> ambience_zones_;
   std::vector<AmbientEmitter3D> emitters_;
+  std::vector<std::pair<uint32_t, AmbienceEventReach>> event_reach_;  // sorted by hash
+  void apply_reach(AmbientEmitter3D& e) const;
 };
+
+// Reads each event's reach from the ambience FEVs AmbienceBedPlayer loads.
+std::vector<std::pair<uint32_t, AmbienceEventReach>> load_ambience_event_reach(const std::filesystem::path& game_root);
 
 // Lightweight real-time stereo algorithmic environmental reverb parameterized
 // by I3DL2 ReverbTemplate (early slap-back reflections driven by
@@ -326,9 +349,14 @@ class AmbienceBedPlayer {
   ~AmbienceBedPlayer();
 
   // Scans AMB_Quads.fev, AMB_Default.fev, AMB_Festival_Ambience.fev, and
-  // Colorado_Festival.fev under `game_root` and decodes loops asynchronously
-  // into `cache_dir` (never blocking the audio thread).
+  // Colorado_Festival.fev under `game_root` and decodes the region and crowd
+  // beds asynchronously into `cache_dir` (never blocking the audio thread).
+  // An event's own loops are decoded once want_events names it.
   int load_from_disc(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir);
+  // Queues the loops of these events (ambience_event_hash; the map's
+  // placements) for decoding; control thread. Returns how many loops the
+  // events wanted so far have.
+  int want_events(const std::vector<uint32_t>& event_hashes);
   // Scans up to 13 regional `ColoradoDirt/AMB_*.fev/.fsb` banks from a Rally
   // package dir, direct ColoradoDirt dir, or launcher `state_root` and decodes
   // them asynchronously into `cache_dir`.
@@ -345,6 +373,7 @@ class AmbienceBedPlayer {
   // AMB_*.fev / Colorado_Festival.fev), and their decoded loop beds.
   int loaded_event_count() const;
   int loaded_event_sample_count() const;
+  size_t loaded_event_sample_bytes() const { return event_sample_bytes_.load(std::memory_order_acquire); }
   int rally_bed_count() const;
   int last_rally_region() const { return last_rally_region_.load(std::memory_order_acquire); }
   // Frees any replaced bed PCM buffers retired by the audio thread (control thread only).
@@ -376,6 +405,7 @@ class AmbienceBedPlayer {
     std::array<SlotRef, size_t(AmbienceBedSlot::kCount)> slots{};
     std::array<std::array<int8_t, 12>, size_t(AmbienceBedSlot::kCount)> slot_param_id{};
     int sample_count = 0;
+    std::vector<bool> has_loop;  // per event-sample id: a decode job exists
     const Ref* find(uint32_t hash) const;
   };
   static constexpr int kMaxEventSamples = 256;
@@ -405,6 +435,7 @@ class AmbienceBedPlayer {
     uint32_t rng = 0x9E3779B9u;
     std::array<double, kMaxEventLevels> ev_phase{};
     std::array<float, kMaxEventLevels> ev_gain{};
+    RtAmbientEmitter last{};  // the emitter it last played (faded out from when dropped)
   };
   void stop_worker();
   void stop_rally_worker();
@@ -412,7 +443,7 @@ class AmbienceBedPlayer {
   void drain_loaded();
   void render_3d_emitters(const RtAcousticsSample& sample, float* out_stereo, int frames);
   bool render_event_emitter(const EventTable& t, const RtAmbientEmitter& em, EmitterVoice3D& v,
-                            const AmbienceParams& params, float* out_stereo, int frames);
+                            const AmbienceParams& params, float* out_stereo, int frames, bool fade_out = false);
 
   int rate_ = 48000;
   std::array<PcmSample*, int(AmbienceBedSlot::kCount)> beds_{};
@@ -425,6 +456,8 @@ class AmbienceBedPlayer {
   std::atomic<const EventTable*> events_{nullptr};
   std::array<PcmSample*, kMaxEventSamples> event_pcm_{};
   std::atomic<int> event_sample_count_{0};
+  std::atomic<size_t> event_sample_bytes_{0};
+  std::array<std::atomic<bool>, kMaxEventSamples> event_wanted_{};  // control thread sets, worker reads
   AmbienceParams params_{};  // audio thread: the parameters of the render in progress
   SpscQueue<LoadedBed> direct_loaded_q_{32};
   SpscQueue<PcmSample*> retired_pcms_{64};
@@ -443,7 +476,9 @@ class AmbienceBedPlayer {
   SpscQueue<LoadedRallyBed> rally_direct_q_{32};
   std::atomic<bool> stop_rally_worker_{false};
   std::thread rally_worker_;
-  std::array<EmitterVoice3D, RtAcousticsSample::kMaxActiveEmitters> emitter_voices_{};
+  // Twice the pool: with the disc's events a voice follows its emitter by
+  // id, and one the pool dropped fades out while a new one fades in.
+  std::array<EmitterVoice3D, 2 * RtAcousticsSample::kMaxActiveEmitters> emitter_voices_{};
 
   uint32_t rng_ = 0x12345678u;
   float lp_l_ = 0.0f, lp_r_ = 0.0f;

@@ -20,6 +20,17 @@ float parse_pct(const std::string& s, float fallback, float lo, float hi) {
   return std::clamp(float(v / 100.0), lo, hi);
 }
 
+// The events the map's placements play (the bed player decodes only these).
+std::vector<uint32_t> placed_ambience_events(const audio::WorldAcousticsData& d) {
+  std::vector<uint32_t> out;
+  out.reserve(64);
+  for (const auto& em : d.emitters())
+    if (em.playable) out.push_back(em.event_hash != 0u ? em.event_hash : audio::ambience_event_hash(em.event_name));
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
 }  // namespace
 
 bool AudioConfig::parse_arg(const std::vector<std::string>& args, size_t& i, AudioConfig& out) {
@@ -859,6 +870,8 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
     if (beds > 0) {
       std::printf("world acoustics: queued %d AMB_*.fev ambience beds for async decode\n", beds);
     }
+    std::lock_guard<std::mutex> lk(acoustics_mu_);
+    engine_.want_ambience_events(placed_ambience_events(acoustics_));
   }
   if (!rally_acoustics_tried_ && !rally_package.empty()) {
     rally_acoustics_tried_ = true;
@@ -929,6 +942,7 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
         }
         acoustics_loader_ = std::thread([this, archive_path, world_key, my_gen, data = std::move(base_copy)]() mutable {
           const int tiles = data.load_soundscapes_from_archive(archive_path);
+          if (tiles > 0) engine_.want_ambience_events(placed_ambience_events(data));
           if (tiles > 0) {
             std::lock_guard<std::mutex> lk(acoustics_mu_);
             if (acoustics_gen_ == my_gen) {
@@ -947,6 +961,7 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
         {
           std::lock_guard<std::mutex> lk(acoustics_mu_);
           tiles = acoustics_.load_soundscapes_from_archive(archive_path);
+          if (tiles > 0) engine_.want_ambience_events(placed_ambience_events(acoustics_));
           rz = acoustics_.reverb_zone_count();
           az = acoustics_.ambience_zone_count();
         }
@@ -986,7 +1001,8 @@ void AudioHost::clear_codriver() {
 }
 
 void AudioHost::radio_set_time_of_day(double hour) {
-  if (!radio_ || !std::isfinite(hour)) return;
+  // The ambience events read it too (CurrentTime), radio or not.
+  if (!std::isfinite(hour)) return;
   if (have_tod_sent_ && std::fabs(hour - last_tod_hour_) < 0.05) return;
   have_tod_sent_ = true;
   last_tod_hour_ = hour;

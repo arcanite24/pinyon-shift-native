@@ -107,6 +107,9 @@ class AudioEngine {
                          const std::filesystem::path& state_root = {});
   int load_rally_ambience_beds(const std::filesystem::path& rally_root_or_state_root,
                                const std::filesystem::path& cache_dir);
+  // Decodes the loops of these ambience events (the map's placements);
+  // control thread.
+  int want_ambience_events(const std::vector<uint32_t>& event_hashes);
   void set_rally_world(bool on);
   // The game state the ambience events read that the audio thread cannot see
   // itself (InRace, PreRaceAmbience, CameraType, CrowdExcitement; each 0..1).

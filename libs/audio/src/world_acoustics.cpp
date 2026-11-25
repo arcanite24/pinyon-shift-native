@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -12,6 +13,7 @@
 #include <span>
 #include <sstream>
 #include <system_error>
+#include <tuple>
 
 #include "audio/bake.h"
 #include "audio/fev.h"
@@ -127,6 +129,39 @@ void parse_track3d_node(const XmlNode& track3d, std::vector<AmbientEmitter3D>& o
     }
     out.push_back(std::move(e));
   }
+}
+
+// The ambience FEVs, in the order the bed player loads them (its event-sample
+// ids follow that order).
+constexpr int kEventSampleCap = 256;  // AmbienceBedPlayer::kMaxEventSamples
+const char* const kAmbienceFevNames[] = {
+    "AMB_Quads.fev",
+    "AMB_Default.fev",
+    "AMB_Festival_Ambience.fev",
+    "Colorado_Festival.fev",
+    "Colorado_Ambience.fev",
+};
+std::array<std::filesystem::path, 2> ambience_fev_dirs(const std::filesystem::path& game_root) {
+  return {game_root / "media" / "audio" / "Tracks" / "Colorado", game_root / "media" / "audio" / "ambience"};
+}
+// AMB_Quads' events are the region beds, which play from their own slots,
+// so their sound defs are not decoded again as event loops.
+bool decodes_event_loops(std::string_view fev_name) { return lower_str(fev_name) != "amb_quads.fev"; }
+// The loop the bed player decodes for a sound def: its first wavetable entry
+// whose bank exists, unless the template spawns it (a one-shot).
+bool event_loop_bank(const FevProject& proj, size_t sd, std::filesystem::path& bank, uint32_t& sub) {
+  if (sd >= proj.sound_defs.size()) return false;
+  const FevSoundDefTemplate* tpl = proj.template_of(proj.sound_defs[sd]);
+  if (tpl && tpl->spawned()) return false;
+  for (const auto& en : proj.sound_defs[sd].entries) {
+    if (en.entry_type != 0 || en.wavebank_name.empty()) continue;
+    bank = cars::mods::resolve(proj.dir / (en.wavebank_name + ".fsb"));
+    std::error_code ec;
+    if (!std::filesystem::exists(bank, ec)) return false;
+    sub = en.subsound_index;
+    return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -350,6 +385,7 @@ bool WorldAcousticsData::load_configs(const std::filesystem::path& game_root, st
       ok = true;
     }
   }
+  if (!want_rally) set_event_reach(load_ambience_event_reach(game_root));
   if (note) {
     *note = "acoustics: " + std::to_string(reverb_templates_.size()) + " reverb templates, " +
             std::to_string(ambience_templates_.size()) + " ambience templates, " +
@@ -478,9 +514,68 @@ void WorldAcousticsData::clear_soundscapes() {
   ambience_zones_.clear();
 }
 
+std::vector<std::pair<uint32_t, AmbienceEventReach>> load_ambience_event_reach(const std::filesystem::path& game_root) {
+  std::vector<std::pair<uint32_t, AmbienceEventReach>> out;
+  if (game_root.empty()) return out;
+  int base = 0;
+  for (const auto& dir : ambience_fev_dirs(game_root)) {
+    for (const char* fev_name : kAmbienceFevNames) {
+      FevProject proj;
+      if (!load_fev(cars::mods::resolve(dir / fev_name), proj, nullptr)) continue;
+      const bool loops = decodes_event_loops(fev_name);
+      for (const auto& ev : proj.events) {
+        AmbienceEventReach r;
+        for (const auto& prm : ev.params)
+          if (lower_str(prm.name) == "(distance)") r.distance_m = prm.max_val;
+        if (!(r.distance_m > 0.0f) && (ev.mode & 0x10u)) r.distance_m = ev.max_distance;
+        if (loops) {
+          for (const auto& ly : ev.layers) {
+            for (const auto& si : ly.instances) {
+              std::filesystem::path bank;
+              uint32_t sub = 0;
+              if (base + int(si.sound_def_index) < kEventSampleCap &&
+                  event_loop_bank(proj, si.sound_def_index, bank, sub))
+                r.playable = true;
+            }
+          }
+        }
+        out.push_back({ambience_event_hash(ev.name), r});
+      }
+      base += int(proj.sound_defs.size());
+    }
+  }
+  return out;
+}
+
+void WorldAcousticsData::set_event_reach(std::vector<std::pair<uint32_t, AmbienceEventReach>> reach) {
+  // One entry per name; the earlier project wins, as in the bed player.
+  std::stable_sort(reach.begin(), reach.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  reach.erase(std::unique(reach.begin(), reach.end(), [](const auto& a, const auto& b) { return a.first == b.first; }),
+              reach.end());
+  event_reach_ = std::move(reach);
+  for (auto& em : emitters_) apply_reach(em);
+}
+
+const AmbienceEventReach* WorldAcousticsData::event_reach(uint32_t hash) const {
+  auto it = std::lower_bound(event_reach_.begin(), event_reach_.end(), hash,
+                             [](const auto& e, uint32_t h) { return e.first < h; });
+  return it != event_reach_.end() && it->first == hash ? &it->second : nullptr;
+}
+
+void WorldAcousticsData::apply_reach(AmbientEmitter3D& e) const {
+  if (e.event_hash == 0u) e.event_hash = ambience_event_hash(e.event_name);
+  if (event_reach_.empty()) return;
+  const AmbienceEventReach* r = event_reach(e.event_hash);
+  e.reach_m = r ? r->distance_m : 0.0f;
+  e.playable = r && r->playable;
+}
+
+void WorldAcousticsData::add_emitter(AmbientEmitter3D e) {
+  apply_reach(e);
+  emitters_.push_back(std::move(e));
+}
+
 void WorldAcousticsData::add_tile(SoundscapeTile tile) {
-  for (auto& em : tile.emitters)
-    if (em.event_hash == 0u) em.event_hash = ambience_event_hash(em.event_name);
   for (auto& rz : tile.reverb_zones) reverb_zones_.push_back(std::move(rz));
   for (auto& az : tile.ambience_zones) ambience_zones_.push_back(std::move(az));
   // Every placed Track3D event (crickets beds, rivers, crowds, the festival)
@@ -489,7 +584,8 @@ void WorldAcousticsData::add_tile(SoundscapeTile tile) {
   for (auto& em : tile.emitters) {
     const std::string low = lower_str(em.event_name);
     if (low.find("reflections") != std::string::npos) continue;
-    em.event_hash = ambience_event_hash(em.event_name);
+    em.event_hash = 0u;
+    apply_reach(em);
     emitters_.push_back(std::move(em));
   }
 }
@@ -551,16 +647,20 @@ AcousticsSample WorldAcousticsData::evaluate(float x, float y, float z, float li
     const auto& em = emitters_[ei];
     std::array<float, 3> delta{};
     const float d = dist_point_to_segment(x, y, z, em.pos1, em.pos2, &delta);
-    if (d >= em.max_distance) continue;
+    // The pool takes playable placements within their event's own reach;
+    // the festival and crowd proximities keep the placement's max_distance.
+    const float reach = em.reach_m > 0.0f ? em.reach_m : em.max_distance;
+    const bool poolable = em.playable && d < reach;
+    if (d >= em.max_distance && !poolable) continue;
     const float prox = std::clamp(1.0f - d / std::max(1.0f, em.max_distance), 0.0f, 1.0f);
     const std::string low = lower_str(em.event_name + " " + em.object_name);
     AmbientEmitterKind kind = AmbientEmitterKind::kGeneric;
     if (low.find("festival") != std::string::npos || low.find("stage") != std::string::npos) {
-      out.festival_proximity = std::max(out.festival_proximity, prox);
+      if (d < em.max_distance) out.festival_proximity = std::max(out.festival_proximity, prox);
       kind = AmbientEmitterKind::kFestival;
     }
     if (low.find("crowd") != std::string::npos || low.find("cheer") != std::string::npos) {
-      out.crowd_proximity = std::max(out.crowd_proximity, prox);
+      if (d < em.max_distance) out.crowd_proximity = std::max(out.crowd_proximity, prox);
       if (kind == AmbientEmitterKind::kGeneric) kind = AmbientEmitterKind::kCrowd;
     } else if (low.find("water") != std::string::npos || low.find("river") != std::string::npos ||
                low.find("dam") != std::string::npos || low.find("stream") != std::string::npos) {
@@ -569,18 +669,20 @@ AcousticsSample WorldAcousticsData::evaluate(float x, float y, float z, float li
                low.find("wind") != std::string::npos) {
       kind = AmbientEmitterKind::kTrees;
     }
-    const float att = prox * prox;
-    if (att > 1e-4f) {
+    const float near = std::clamp(1.0f - d / std::max(1.0f, reach), 0.0f, 1.0f);
+    const float att = near * near;
+    if (poolable && att > 1e-4f) {
       const float pan = d > 1e-3f ? std::clamp((delta[0] * rx + delta[2] * rz) / d, -1.0f, 1.0f) : 0.0f;
+      // The nearest kMaxActiveEmitters.
       int slot = -1;
-      float min_g = att;
+      float max_d = d;
       for (int s = 0; s < AcousticsSample::kMaxActiveEmitters; ++s) {
         if (!out.active_emitters[size_t(s)].active) {
           slot = s;
           break;
         }
-        if (out.active_emitters[size_t(s)].gain < min_g) {
-          min_g = out.active_emitters[size_t(s)].gain;
+        if (out.active_emitters[size_t(s)].distance_m > max_d) {
+          max_d = out.active_emitters[size_t(s)].distance_m;
           slot = s;
         }
       }
@@ -1238,6 +1340,27 @@ int AmbienceBedPlayer::loaded_event_count() const {
 
 int AmbienceBedPlayer::loaded_event_sample_count() const { return event_sample_count_.load(std::memory_order_acquire); }
 
+int AmbienceBedPlayer::want_events(const std::vector<uint32_t>& event_hashes) {
+  const EventTable* t = events_.load(std::memory_order_acquire);
+  if (!t) return 0;
+  for (uint32_t h : event_hashes) {
+    const EventTable::Ref* ref = t->find(h);
+    if (!ref) continue;
+    const FevEvent& ev = t->projects[ref->proj].events[ref->ev];
+    for (const auto& ly : ev.layers) {
+      for (const auto& si : ly.instances) {
+        const int id = t->sd_base[ref->proj] + int(si.sound_def_index);
+        if (id >= 0 && id < kMaxEventSamples && size_t(id) < t->has_loop.size() && t->has_loop[size_t(id)])
+          event_wanted_[size_t(id)].store(true, std::memory_order_release);
+      }
+    }
+  }
+  int n = 0;
+  for (size_t id = 0; id < t->has_loop.size() && id < event_wanted_.size(); ++id)
+    n += (t->has_loop[id] && event_wanted_[id].load(std::memory_order_acquire)) ? 1 : 0;
+  return n;
+}
+
 const AmbienceBedPlayer::EventTable::Ref* AmbienceBedPlayer::EventTable::find(uint32_t hash) const {
   const auto it = std::lower_bound(by_name.begin(), by_name.end(), hash,
                                    [](const Ref& r, uint32_t h) { return r.hash < h; });
@@ -1280,19 +1403,9 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
     return ids;
   };
 
-  const std::filesystem::path amb_dirs[] = {
-      game_root / "media" / "audio" / "Tracks" / "Colorado",
-      game_root / "media" / "audio" / "ambience",
-  };
-  const char* kFevCandidates[] = {
-      "AMB_Quads.fev",
-      "AMB_Default.fev",
-      "AMB_Festival_Ambience.fev",
-      "Colorado_Festival.fev",
-      "Colorado_Ambience.fev",
-  };
-  for (const auto& amb_dir : amb_dirs) {
-    for (const char* fev_name : kFevCandidates) {
+  static_assert(kMaxEventSamples == kEventSampleCap);
+  for (const auto& amb_dir : ambience_fev_dirs(game_root)) {
+    for (const char* fev_name : kAmbienceFevNames) {
       const auto fev_path = cars::mods::resolve(amb_dir / fev_name);
       FevProject proj;
       if (!load_fev(fev_path, proj, nullptr)) continue;
@@ -1303,6 +1416,7 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
       table->sd_base.push_back(base);
       table->sample_count += int(proj.sound_defs.size());
       std::vector<bool> queued_sd(proj.sound_defs.size(), false);
+      const bool loops = decodes_event_loops(fev_name);
       for (size_t ei = 0; ei < proj.events.size(); ++ei) {
         const FevEvent& ev = proj.events[ei];
         EventTable::Ref ref;
@@ -1311,21 +1425,18 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
         ref.ev = uint16_t(ei);
         ref.param_id = param_ids(ev);
         table->by_name.push_back(ref);
+        if (!loops) continue;
         for (const auto& ly : ev.layers) {
           for (const auto& si : ly.instances) {
             const size_t sd = si.sound_def_index;
             if (sd >= proj.sound_defs.size() || queued_sd[sd] || base + int(sd) >= kMaxEventSamples) continue;
-            const FevSoundDefTemplate* tpl = proj.template_of(proj.sound_defs[sd]);
-            if (tpl && tpl->spawned()) continue;
-            for (const auto& en : proj.sound_defs[sd].entries) {
-              if (en.entry_type != 0 || en.wavebank_name.empty()) continue;
-              const auto bank = cars::mods::resolve(proj.dir / (en.wavebank_name + ".fsb"));
-              std::error_code bec;
-              if (!std::filesystem::exists(bank, bec)) break;
-              queued_sd[sd] = true;
-              jobs.push_back({AmbienceBedSlot::kCount, bank, en.subsound_index, base + int(sd)});
-              break;
-            }
+            std::filesystem::path bank;
+            uint32_t sub = 0;
+            if (!event_loop_bank(proj, sd, bank, sub)) continue;
+            queued_sd[sd] = true;
+            jobs.push_back({AmbienceBedSlot::kCount, bank, sub, base + int(sd)});
+            if (table->has_loop.size() <= size_t(base) + sd) table->has_loop.resize(size_t(base) + sd + 1, false);
+            table->has_loop[size_t(base) + sd] = true;
           }
         }
       }
@@ -1386,6 +1497,7 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
   stop_worker_.store(true, std::memory_order_release);
   if (worker_.joinable()) worker_.join();
   stop_worker_.store(false, std::memory_order_release);
+  for (auto& w : event_wanted_) w.store(false, std::memory_order_relaxed);
   if (!table->projects.empty()) {
     // One name per event; the earlier project (AMB_Default before
     // Colorado_Festival) wins a shared name.
@@ -1411,8 +1523,7 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
         std::filesystem::temp_directory_path(tec) /
         ("shift-amb-decode-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
     std::filesystem::create_directories(temp_dir, tec);
-    for (const auto& j : jobs) {
-      if (stop_worker_.load(std::memory_order_acquire)) break;
+    auto run = [&](const Job& j) {
       const std::string fname = lower_str(j.bank.stem().string()) + "." + std::to_string(j.sub) + ".s16";
       const std::filesystem::path cf = amb_cache.empty() ? std::filesystem::path{} : (amb_cache / fname);
       auto pcm = std::make_unique<PcmSample>();
@@ -1427,12 +1538,38 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
       if (ok && !pcm->data.empty()) {
         PcmSample* raw = pcm.release();
         if (j.event_sample >= 0) {
-          if (event_loaded_q_.push({j.event_sample, raw})) event_sample_count_.fetch_add(1, std::memory_order_acq_rel);
-          else delete raw;
+          const size_t bytes = raw->data.size() * sizeof(float);
+          if (event_loaded_q_.push({j.event_sample, raw})) {
+            event_sample_bytes_.fetch_add(bytes, std::memory_order_acq_rel);
+            event_sample_count_.fetch_add(1, std::memory_order_acq_rel);
+          } else {
+            delete raw;
+          }
         } else if (!loaded_q_.push({j.slot, raw})) {
           delete raw;
         }
       }
+    };
+    // The beds first, then each event loop once want_events names it (only
+    // the events the map places are held in memory).
+    std::vector<bool> done(jobs.size(), false);
+    size_t left = jobs.size();
+    for (size_t i = 0; i < jobs.size() && !stop_worker_.load(std::memory_order_acquire); ++i) {
+      if (jobs[i].event_sample >= 0) continue;
+      run(jobs[i]);
+      done[i] = true;
+      --left;
+    }
+    while (left > 0 && !stop_worker_.load(std::memory_order_acquire)) {
+      bool any = false;
+      for (size_t i = 0; i < jobs.size() && !stop_worker_.load(std::memory_order_acquire); ++i) {
+        if (done[i] || !event_wanted_[size_t(jobs[i].event_sample)].load(std::memory_order_acquire)) continue;
+        run(jobs[i]);
+        done[i] = true;
+        --left;
+        any = true;
+      }
+      if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(30));
     }
     std::filesystem::remove_all(temp_dir, tec);
   });
@@ -1575,7 +1712,8 @@ float AmbienceBedPlayer::event_level(const EventTable& t, int proj, const FevEve
 }
 
 bool AmbienceBedPlayer::render_event_emitter(const EventTable& t, const RtAmbientEmitter& em, EmitterVoice3D& v,
-                                             const AmbienceParams& params, float* out_stereo, int frames) {
+                                             const AmbienceParams& params, float* out_stereo, int frames,
+                                             bool fade_out) {
   const EventTable::Ref* ref = em.active ? t.find(em.event_hash) : nullptr;
   FevInstanceLevel lv[kMaxEventLevels];
   int n = 0;
@@ -1600,7 +1738,7 @@ bool AmbienceBedPlayer::render_event_emitter(const EventTable& t, const RtAmbien
       if (id >= 0 && id < kMaxEventSamples) pcm = event_pcm_[size_t(id)];
       const FevSoundDefTemplate* tpl =
           lv[k].sound_def < pj->sound_defs.size() ? pj->template_of(pj->sound_defs[lv[k].sound_def]) : nullptr;
-      if (pcm && !(tpl && tpl->spawned())) target = lv[k].gain * (tpl ? tpl->volume : 1.0f);
+      if (pcm && !(tpl && tpl->spawned()) && !fade_out) target = lv[k].gain * (tpl ? tpl->volume : 1.0f);
     }
     float& g = v.ev_gain[size_t(k)];
     if (!pcm || pcm->data.empty() || (target < 1e-5f && g < 1e-5f)) {
@@ -1634,15 +1772,57 @@ void AmbienceBedPlayer::render_3d_emitters(const RtAcousticsSample& sample, floa
   if (!out_stereo || frames <= 0) return;
   const float sm = 1.0f - std::exp(-1.0f / (0.06f * float(rate_)));
   const EventTable* tbl = events_.load(std::memory_order_acquire);
-  for (size_t vi = 0; vi < emitter_voices_.size(); ++vi) {
+  if (tbl) {
+    // With the disc's events an emitter plays its own event (no stand-in
+    // when it names one the disc lacks). A voice follows its emitter by id
+    // (the pool's order changes every evaluation); one whose emitter left
+    // the pool fades out from where it was.
+    constexpr size_t kVoices = std::tuple_size_v<decltype(emitter_voices_)>;
+    std::array<bool, kVoices> used{};
+    std::array<int, RtAcousticsSample::kMaxActiveEmitters> voice_of{};
+    voice_of.fill(-1);
+    for (size_t ei = 0; ei < voice_of.size(); ++ei) {
+      const auto& em = sample.active_emitters[ei];
+      if (!em.active || em.id_hash == 0u) continue;
+      for (size_t vi = 0; vi < kVoices; ++vi) {
+        if (!used[vi] && emitter_voices_[vi].id_hash == em.id_hash) {
+          used[vi] = true;
+          voice_of[ei] = int(vi);
+          break;
+        }
+      }
+    }
+    for (size_t ei = 0; ei < voice_of.size(); ++ei) {
+      const auto& em = sample.active_emitters[ei];
+      if (!em.active || em.id_hash == 0u || voice_of[ei] >= 0) continue;
+      // A free voice: silent first, else the quietest one fading out.
+      int best = -1;
+      for (size_t vi = 0; vi < kVoices; ++vi) {
+        if (used[vi]) continue;
+        if (best < 0 || emitter_voices_[vi].gain < emitter_voices_[size_t(best)].gain) best = int(vi);
+        if (emitter_voices_[vi].gain <= 0.0f) break;
+      }
+      if (best < 0) continue;
+      used[size_t(best)] = true;
+      voice_of[ei] = best;
+    }
+    for (size_t ei = 0; ei < voice_of.size(); ++ei) {
+      if (voice_of[ei] < 0) continue;
+      auto& v = emitter_voices_[size_t(voice_of[ei])];
+      v.last = sample.active_emitters[ei];
+      render_event_emitter(*tbl, v.last, v, params_, out_stereo, frames);
+    }
+    for (size_t vi = 0; vi < kVoices; ++vi) {
+      auto& v = emitter_voices_[vi];
+      if (used[vi] || v.id_hash == 0u) continue;
+      render_event_emitter(*tbl, v.last, v, params_, out_stereo, frames, true);
+      if (v.gain <= 0.0f) v.id_hash = 0u;
+    }
+    return;
+  }
+  for (size_t vi = 0; vi < size_t(RtAcousticsSample::kMaxActiveEmitters); ++vi) {
     const auto& em = sample.active_emitters[vi];
     auto& v = emitter_voices_[vi];
-    // With the disc's events an emitter plays its own event (no stand-in
-    // when it names one the disc lacks).
-    if (tbl) {
-      render_event_emitter(*tbl, em, v, params_, out_stereo, frames);
-      continue;
-    }
     const float target_g = em.active ? std::clamp(em.gain, 0.0f, 1.0f) : 0.0f;
     const float target_pan = em.active ? std::clamp(em.pan, -1.0f, 1.0f) : v.pan;
     if (em.active && em.id_hash != v.id_hash) {
