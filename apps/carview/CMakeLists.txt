@@ -129,6 +129,7 @@ add_library(carview_hud STATIC
   hub_menus.cpp
   car_list_screen.cpp
   options_screen.cpp
+  stats_screen.cpp
   hud_screen.cpp
   map_screen.cpp
   pause_screen.cpp

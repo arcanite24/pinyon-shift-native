@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 
 #include "game_hud.h"
@@ -186,7 +187,103 @@ HubCameraFocus focus_for_part_enum(int part_enum) {
   return HubCameraFocus::kTurntable;
 }
 
+std::vector<CarCameraPreset> parse_car_camera_presets(std::string_view xml) {
+  // <Preset name="..." ordinal="-1" posx="..." .../>, one element per
+  // preset with every value an attribute.
+  std::vector<CarCameraPreset> out;
+  for (size_t at = xml.find("<Preset"); at != std::string_view::npos; at = xml.find("<Preset", at + 1)) {
+    const size_t end = xml.find('>', at);
+    if (end == std::string_view::npos) break;
+    const std::string_view el = xml.substr(at + 7, end - at - 7);
+    if (!el.empty() && el[0] != ' ' && el[0] != '\t' && el[0] != '\r' && el[0] != '\n' && el[0] != '/') continue;
+    CarCameraPreset p;
+    for (size_t q = el.find('='); q != std::string_view::npos; q = el.find('=', q + 1)) {
+      size_t k1 = q;
+      while (k1 > 0 && el[k1 - 1] == ' ') --k1;
+      size_t k0 = k1;
+      while (k0 > 0 && el[k0 - 1] != ' ' && el[k0 - 1] != '\t' && el[k0 - 1] != '\n' && el[k0 - 1] != '\r') --k0;
+      const size_t v0 = el.find('"', q);
+      const size_t v1 = v0 == std::string_view::npos ? v0 : el.find('"', v0 + 1);
+      if (v1 == std::string_view::npos) break;
+      const std::string key = lower(std::string(el.substr(k0, k1 - k0)));
+      const std::string val(el.substr(v0 + 1, v1 - v0 - 1));
+      const float f = std::strtof(val.c_str(), nullptr);
+      if (key == "name") p.name = val;
+      else if (key == "ordinal") p.ordinal = std::atoi(val.c_str());
+      else if (key == "posx") p.pos[0] = f;
+      else if (key == "posy") p.pos[1] = f;
+      else if (key == "posz") p.pos[2] = f;
+      else if (key == "facex") p.face[0] = f;
+      else if (key == "facey") p.face[1] = f;
+      else if (key == "facez") p.face[2] = f;
+      else if (key == "fov") p.fov = f;
+      else if (key == "allowzoom") p.allow_zoom = val != "0";
+      q = v1;
+    }
+    if (!p.name.empty()) out.push_back(std::move(p));
+  }
+  return out;
+}
+
+const CarCameraPreset* find_car_camera_preset(const std::vector<CarCameraPreset>& presets, std::string_view name) {
+  for (const CarCameraPreset& p : presets)
+    if (p.ordinal == -1 && p.name == name) return &p;
+  return nullptr;
+}
+
+std::string_view hub_camera_preset_name(HubRoom room, int part_enum, bool editor_open, bool colour_select) {
+  switch (room) {
+    case HubRoom::kAutoshow:
+      // The standard view is the Autoshow's own camera (6.58 m off the car
+      // in the references, not HorizonAutoshow's 4.8 m; Q129).
+      return colour_select ? "CarColorSel" : "";
+    case HubRoom::kPaintShop: return editor_open ? "LiveryPaintMenu_Body" : "LiveryMainMenu";
+    case HubRoom::kWorkshop:
+      // UpgradeAreas' slots (cars/database.cpp upgrade_slots) on the
+      // presets' names.
+      if (part_enum == 34) return "Upgrades_FrontBumper";
+      if (part_enum == 35) return "Upgrades_RearBumper";
+      if (part_enum == 9) return "Upgrades_RearWing";
+      if (part_enum == 36) return "Upgrades_Hood";
+      if (part_enum == 4 || part_enum == 8 || part_enum == 10 || part_enum == 11 || part_enum == 38 ||
+          part_enum == 39 || part_enum == 43)
+        return "Upgrades_WheelStyle";
+      if (part_enum == 20) return "Upgrades_Flywheel";
+      if (part_enum >= 12 && part_enum <= 29) return "Upgrades_Engine_Front";
+      if (part_enum >= 30 && part_enum <= 33) return "Upgrades_Drivetrain";
+      return "Upgrades_Main";
+    default: return "";
+  }
+}
+
+void HubCamera::set_preset(const CarCameraPreset& p) {
+  const float fl = std::sqrt(p.face[0] * p.face[0] + p.face[1] * p.face[1] + p.face[2] * p.face[2]);
+  if (fl < 1e-4f) return;
+  const float fx = p.face[0] / fl, fy = p.face[1] / fl, fz = p.face[2] / fl;
+  // The ray's nearest point to the car's origin is the aim; a ray past the
+  // origin's back keeps a short distance.
+  const float dist = std::max(0.5f, -(p.pos[0] * fx + p.pos[1] * fy + p.pos[2] * fz));
+  target_pos[0] = p.pos[0] + dist * fx;
+  target_pos[1] = p.pos[1] + dist * fy;
+  target_pos[2] = -(p.pos[2] + dist * fz);  // the game's +Z front is the engine's -Z
+  target_dist = dist;
+  target_pitch = std::asin(std::clamp(-fy, -1.0f, 1.0f));
+  // The nearest turn to the current one, so the car does not spin round.
+  float to = std::atan2(-fx, -fz);
+  while (to - target_yaw > kPi) to -= 2.0f * kPi;
+  while (to - target_yaw < -kPi) to += 2.0f * kPi;
+  target_yaw = to;
+  target_fov_deg = p.fov;
+  if (fov_deg <= 1.0f) fov_deg = p.fov;
+  auto_orbit = false;
+  user_orbited = false;
+  manual_idle_s = 0.0f;
+}
+
 void HubCamera::set_focus(HubCameraFocus focus) {
+  // The room's own field of view.
+  target_fov_deg = 0.0f;
+  fov_deg = 0.0f;
   switch (focus) {
     case HubCameraFocus::kFront:
       target_yaw = 0.25f;
@@ -331,6 +428,7 @@ void HubCamera::step(float dt) {
   for (int i = 0; i < 3; ++i) target[i] += (target_pos[i] - target[i]) * alpha;
   lens_shift_x += (target_lens_shift_x - lens_shift_x) * alpha;
   lens_shift_y += (target_lens_shift_y - lens_shift_y) * alpha;
+  if (target_fov_deg > 1.0f) fov_deg += (target_fov_deg - fov_deg) * alpha;
 }
 
 std::array<float, 3> hub_background_color(HubRoom room) {
@@ -569,7 +667,8 @@ void build_hub_frame(HubRoom room, const HubCamera& cam, uint32_t width, uint32_
   float view[16], proj[16], vp[16];
   build_look_at(eye, cam.target, view);
   const float aspect = height > 0 ? float(width) / float(height) : (16.0f / 9.0f);
-  const float fov_deg = (room == HubRoom::kAutoshow) ? 36.0f : 38.0f;
+  // A disc preset's own field of view, else the room's.
+  const float fov_deg = cam.fov_deg > 1.0f ? cam.fov_deg : (room == HubRoom::kAutoshow) ? 36.0f : 38.0f;
   build_perspective(fov_deg * (kPi / 180.0f), aspect, 0.1f, 120.0f, reverse_z, proj);
 
   // Subtle architectural shift-lens framing in the Autoshow pavilion keeps the hero car

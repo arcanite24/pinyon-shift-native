@@ -3190,6 +3190,39 @@ booth keep their colours. Needed: how the title loads a room's track
 under the menu (which track per screen, the car's placement in it) and
 which preset each screen's camera uses.
 
+The rooms' tracks: each is a small track folder like Colorado's
+(`bin.zip` of 8.6 to 16.1 MB, one PVS zone, a one-cell `.hex`, a
+collision box about the origin, empty `GameObjs.xml`, `CollObjs.xml` and
+post zones, no time of day). `World::open` and `Collision::open` take any
+track folder, so reading them is not the obstacle; drawing one under the
+menu is: room models within 200 m of the origin count as local and are
+not gathered (`rmb_is_world_space`), placements at the origin are dropped
+(a Colorado filter), and a second world's texture numbers would collide
+with Colorado's in the GPU world (one world per host). A room needs a
+full world swap (as the Rally's ColoradoDirt does, seconds per entry) or a
+second world channel, and its interior shaders (`H_INT_*`,
+`HS_SKY_DIFF_HDRI_*`) are unchecked. The car's place in a room is not in
+its data (the empty `GameObjs.xml`); the presets suggest the origin. So
+the rooms stay the studio stage (MENU-02).
+
+The camera presets: `media/UICarTargetCameraPresets.xml` (loose on the
+disc) has 28 presets under 27 names (`LiveryLayerSelect_Wing` twice: one
+for every car, one for car 1124), each an eye (`posx/y/z`) and look
+direction (`facex/y/z`) in the car's frame (+Z front), a field of view, X
+and Y angle limits and `allowZoom`. The engine reads them
+(`parse_car_camera_presets`) and aims the hub camera with them: the
+workshop's `Upgrades_*` by the selected part, the paint shop's
+`LiveryMainMenu` and `LiveryPaintMenu_Body` (editor), and the Autoshow's
+colour select `CarColorSel`. The field of view is taken as vertical. Open:
+- the Autoshow's standard view: `HorizonAutoshow` puts the eye 4.8 m from
+  the car, but every reference dump has the live camera 6.58 m off
+  (AUTOSHOW_REFERENCE.md), so the engine keeps its own camera there and in
+  the garage;
+- the angle limits and zoom (not applied; the engine's orbit limits stay),
+  the `LiveryLayerSelect_*` and `LiveryPaintMenu_*` per region, and which
+  preset the workshop uses for a mid- or rear-engined car's engine parts
+  (`Upgrades_Engine_Rear`).
+
 ## Q130 (UI, not blocking): MY GARAGE on 108, the manufacturer select on 115, and their help bars
 
 No capture shows the garage's own list; the parity run that should have
@@ -3225,6 +3258,26 @@ B BACK, Y ALL AFFORDABLE CARS (`HelpButtons IDS_AffordableCars`). Guesses:
 
 Needed: a capture of the manufacturer select, its help bar, what the info
 panel shows, and where the cursor starts.
+
+Per-car 1000 Club medals (V4-05) stay off these lists. The scenes say so:
+each tile of the club's own list (`H_CAR_CHALLENGE_BUY_CARSELECT`) has
+`Icons/SmallMedal` (`MedalSmall`, `MedalComplete`) for its medal count,
+while `108_C_BUY_CARSELECT`, on the disc and as the title update
+replaces it, has no medal node at all (its `CLUB_IMAGE` and
+`Icons/Icon_1..3` are untextured). The captures agree, though they are
+probably, not certainly, from one session (the same profile, car and
+money): `club_carlist_orig.png` shows the MX-5 with a medal and 0/5,
+`11_car_select_orig.png` the same MX-5 with its wheel icon only, and
+`19_autoshow_orig.png` (HORIZON RECOMMENDS) no medals. In
+car_challenge_menus.xml the medal screens are the club's own states
+(ShowCarChallengeCarSelectScreen, ShowCarChallengeGarageCarSelectScreen,
+ShowBuyCarChallengeDetailsScreen, where "{0} MEDALS AVAILABLE", OWNED and
+NOT ELIGIBLE come from), reached from the 1000 Club's ALL CHALLENGES
+(manufacturer, then model, then the Autoshow's purchase), not from the
+Autoshow, MY GARAGE or the workshop's CHANGE CAR. So those draw no
+medals, and `car_medals()` belongs to the club's lists; that buy path is
+the club's (Q143's ALL CHALLENGES interim). Needed: a capture of MY GARAGE
+and the Autoshow's CAR SELECT after the club is opened.
 
 ## Q131 (UI, not blocking): the workshop's rows
 
@@ -3263,14 +3316,28 @@ old collection when the garage opened. Guesses:
 Needed: a capture of the screen with barns in each state, and which
 popups offer VIEW ON MAP.
 
-## Q134 (UI, not blocking): TEAM CREDITS
+## Q134 (UI, not blocking): MY PROFILE's TEAM CREDITS and STATS
 
 MY PROFILE's TEAM CREDITS opens `834_CREDITS`, a scrolling credits roll.
 The scene's scroller is not run, so the row shows "TEAM CREDITS — NOT
 AVAILABLE YET". Needed: the credits text's source (a string table or a
 file) and the scroll's speed.
 
-## Q135 (UI, not blocking): GAME DIFFICULTY in OPTIONS (rows answered by capture 24)
+STATS is on `H_STATISTICS`; `26_my_profile_stats_orig.png` shows only
+GENERAL. The title's code lists `IDS_GeneralStats`, `IDS_RecordsStats` and
+`IDS_TimeStats`, so the engine's tabs are GENERAL, RECORDS and TIME. The
+other two tabs' rows are the engine's reading of the MyProfile.str names:
+- RECORDS: HIGHEST SKILL CHAIN SCORE and the thirteen ULTIMATE ... SKILLS
+  (`IDS_Num_Perfect_*` with English text; `IDS_Num_Perfect_Turns` has none);
+- TIME: the three TIME IN ... RACES, then TIME SPENT IN THE MENUS,
+  UPGRADING, TUNING, EDITING LIVERIES, TEST DRIVING and IN AUTOVISTA.
+GAME PROGRESS is the engine's measure: the share of the free roam's finds
+and activities done (signs, barns, roads, outposts, PR stunts, speed traps
+and zones). The engine does not count the ultimate skills or the menu and
+shop times, which show zero. Needed: each tab's rows and order, GAME
+PROGRESS's formula, and whether the tabs wrap.
+
+## Q135 (UI, not blocking): OPTIONS's pages (DIFFICULTY answered by capture 24)
 
 `24_options_difficulty_orig.png` answers the rows: the original's
 DIFFICULTY page (`300_I_OPT_ASSISTS_DIFFICULTY`) lists GAME DIFFICULTY
@@ -3291,7 +3358,35 @@ Still open:
 - The defaults RESET TO DEFAULT restores (the engine uses its rows'
   defaults, and GAME DIFFICULTY follows the reset assists).
 - OPPONENT DIFFICULTY's values (the capture shows MEDIUM; AIDiff.str has
-  EASY, NORMAL, HARD).
+  EASY, NORMAL, HARD). RESET TO DEFAULT sets it to MEDIUM, a new profile's
+  level (Q71), not the engine's "default".
+
+AUDIO and CONTROLS are on their scenes too (`837_I_AUDIO_OPTIONS`,
+`831_C_OPT_CONTROLLER`). Open there:
+
+- AUDIO has no capture. The rows are the engine's reading of MyProfile.str
+  (`IDS_AudioOption_*_Desc`, `IDS_SatNav_Desc`): SFX VOLUME, RADIO VOLUME
+  (837's two sliders), RADIO STATION, RADIO DJ, GPS VOICE, PLAYBACK
+  SYSTEM. The engine has no effects-only volume, so SFX VOLUME sets its
+  master volume (which the radio also follows). RADIO STATION shows the
+  station playing or OFF, and steps the radio on and off, not through
+  MyProfile.str's three stations. PLAYBACK SYSTEM's HOME THEATER is the
+  engine's full dynamic range. Needed: a capture of the page, its rows and
+  the slider's length and step.
+- CONTROLS: SWITCH GEAR UP/DOWN (`IDS_Option_InvertGearUpDown`) has no
+  engine setting; it shows OFF and does not step. The capture pins layout 1
+  with automatic shifting only; the labels for manual shifting (SHIFT UP,
+  SHIFT DOWN, CLUTCH with the clutch) and for the other layouts are the
+  engine's bindings by MyProfile.str's names. The engine's d-pad up and
+  down (photo mode, telemetry) are its extras and read NOT USED, as on the
+  capture. The diagram's places are measured on the capture (the disc's
+  are the entry animation's start). Needed: captures of the other layouts
+  and of manual shifting, and what X ADVANCED lists (831's
+  `Group_ADVANCED`, the deadzones; the engine opens its CONTROLS page).
+- VIDEO: no scene carries its name. MyProfile.str's VIDEO options are
+  BRIGHTNESS (`IDS_VideoOption_Brightness_Desc`, the gamma screen
+  `830_GAMMA_ADJUST`) and SUBTITLES; the engine has neither row, so VIDEO
+  opens its DISPLAY page. Needed: the VIDEO page's scene and rows.
 
 ## Q150 (V4-19, not blocking): what the Rally achievements count
 

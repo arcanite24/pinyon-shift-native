@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -737,29 +739,117 @@ void DriveSession::open_settings(int tab) {
 }
 
 void DriveSession::open_options_page(carview::OptionsPage p) {
-          open_settings(int(SettingsPage::Tab::kGameplay));
+          // The engine's page for the same rows when the scene is missing.
+          using T = SettingsPage::Tab;
+          open_settings(int(p == carview::OptionsPage::kAudio      ? T::kAudio
+                            : p == carview::OptionsPage::kControls ? T::kControls
+                                                                   : T::kGameplay));
           options_page = p;
           options_row = 0;
           // CANCEL puts these back.
           options_snapshot = settings_page.tokens();
           const auto& rows = carview::options_rows(p);
-          if (!rows.empty()) settings_page.select_id(rows[0].id);
+          if (!rows.empty() && *rows[0].id) settings_page.select_id(rows[0].id);
+}
+
+const carview::CarCameraPreset* DriveSession::hub_preset(std::string_view name) {
+          if (name.empty()) return nullptr;
+          if (!hub_cam_presets_read) {
+            hub_cam_presets_read = true;
+            std::ifstream in(app.game_root_of() / "media" / "UICarTargetCameraPresets.xml", std::ios::binary);
+            if (in) {
+              const std::string xml((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+              hub_cam_presets = carview::parse_car_camera_presets(xml);
+            }
+          }
+          return carview::find_car_camera_preset(hub_cam_presets, name);
+}
+
+void DriveSession::open_stats() {
+          std::vector<cars::PackInfo> packs;
+          const carview::CareerSummary cs = app.career_summary(packs);
+          career_page.open(cs, std::move(packs));
+          career_page.set_tab(carview::CareerTab::kStats);
+          // The scene's page; the engine's when the scene is missing.
+          stats_tab = carview::SceneScreen(carview::kStatsScene).ok() ? int(carview::StatsTab::kGeneral) : -1;
+          carview::StatsData& d = stats_data;
+          d = {};
+          d.victories = cs.victories, d.podiums = cs.podiums, d.races = cs.races;
+          d.total_winnings = cs.total_winnings, d.cars_in_garage = cs.garage_cars;
+          for (const auto& h : app.saved.car_history) d.time_driven_s += h.time_driven;
+          // The garage's worth as MY GARAGE prices it (the car and its parts).
+          if (app.have_garage && !app.career_garage.cars.empty()) {
+            const cars::PartsDb* gdb =
+                (app.parts_db.valid() && app.parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                    ? app.parts_db.get().get()
+                    : nullptr;
+            carview::GarageBrowser all;
+            all.refresh(app.career_garage, gdb, app.class_bands);
+            for (const auto& e : all.visible()) d.garage_value += e.value_cr;
+          }
+          for (const auto& c : app.career_garage.cars) d.parts_value += c.parts_value;
+          d.popularity_rank = app.current_pop_rank();
+          d.max_skills_score =
+              std::max<int64_t>(app.saved.max_skills_score, app.skill_tracker ? app.skill_tracker->max_skills_score() : 0);
+          d.time_festival_s = app.saved.time_festival, d.time_street_s = app.saved.time_street;
+          d.time_showcase_s = app.saved.time_exhibition;
+          // GAME PROGRESS: the engine's reading (Q134), the share of free
+          // roam's finds and activities done.
+          int64_t done = cs.signs_found + cs.barns_found, total = cs.signs_total + cs.barns;
+          if (app.road_discovery.ready())
+            done += app.road_discovery.discovered_count(), total += app.road_discovery.total_roads();
+          if (app.have_outposts) {
+            done += app.outpost_progress.discovered_count(app.outposts) +
+                    app.outpost_progress.completed_stunt_count(app.outposts);
+            total += int64_t(app.outposts.outposts.size() + app.outposts.stunts.size());
+          }
+          if (app.speed_tracker) {
+            done += int64_t(app.speed_tracker->traps_completed() + app.speed_tracker->zones_completed());
+            total += int64_t(app.speed_data.traps.size() + app.speed_data.zones.size());
+          }
+          d.game_progress = total > 0 ? double(done) / double(total) : 0.0;
 }
 
 void DriveSession::fill_options(carview::OptionsHud& out) {
           namespace t = carview::options_text;
           out = {};
-          out.title = carview::text_of(options_page == carview::OptionsPage::kDifficulty ? t::kDifficulty : t::kHud);
+          out.page = options_page;
+          out.title = carview::options_title(options_page);
           const auto& rows = carview::options_rows(options_page);
-          for (const auto& r : rows)
-            out.rows.push_back({carview::text_of(r.label), carview::options_value_text(r.id, settings_page.value(r.id))});
+          for (const auto& r : rows) {
+            std::string v;
+            if (!*r.id) {
+              v = carview::options_value_text("", "off");  // no engine row (Q135)
+            } else if (std::string_view(r.id) == "radio" && settings_page.value(r.id) != "off") {
+              // RADIO STATION: the station playing.
+              drive::DriveSave now;
+              app.audio_host.save_radio_state(now);
+              v = now.radio_station.empty() ? carview::options_value_text(r.id, "on")
+                                            : carview::options_station_text(now.radio_station);
+            } else {
+              v = carview::options_value_text(r.id, settings_page.value(r.id));
+            }
+            out.rows.push_back({carview::text_of(r.label), v});
+          }
           out.selected = std::clamp(options_row, 0, std::max(0, int(rows.size()) - 1));
           if (!rows.empty()) {
-            out.description_title = carview::text_of(t::kDescription);
             out.description = carview::text_of(rows[size_t(out.selected)].description);
+            if (!out.description.empty()) out.description_title = carview::text_of(t::kDescription);
           }
           if (options_page == carview::OptionsPage::kDifficulty)
             out.bonus = "+" + std::to_string(settings_page.difficulty_credit_bonus_pct()) + "%";
+          if (options_page == carview::OptionsPage::kControls) {
+            const auto ls = settings_page.live_settings();
+            out.pad = carview::controls_pad_labels(ls.controls.layout_id, ls.controls.switch_handbrake_clutch,
+                                                   ls.controls.assists.shifting);
+            // 23_options_controls_orig.png: X ADVANCED opens the engine's
+            // CONTROLS page (deadzones, rebinds).
+            out.prompts = {{"A", carview::text_of(t::kSave)},
+                           {"B", carview::text_of(t::kCancel)},
+                           {"X", carview::text_of(t::kAdvanced)},
+                           {"Y", carview::text_of(t::kResetDefault)}};
+            return;
+          }
           out.prompts = {{"A", carview::text_of(t::kSave)},
                          {"B", carview::text_of(t::kCancel)},
                          {"Y", carview::text_of(t::kResetDefault)}};
@@ -800,22 +890,16 @@ void DriveSession::hub_menu_choose(bool extra) {
             notice_until = vehicle.time() + 3.0;
           };
           switch (act) {
-            case A::kStats: {
-              std::vector<cars::PackInfo> packs;
-              const carview::CareerSummary cs = app.career_summary(packs);
-              career_page.open(cs, std::move(packs));
-              career_page.set_tab(carview::CareerTab::kStats);
-              break;
-            }
+            case A::kStats: open_stats(); break;
             case A::kAchievements:
               eval_achievements(false);
               achievements.open_screen();
               break;
             case A::kTeamCredits: later("TEAM CREDITS"); break;  // interim (SPEC_QUESTIONS Q134)
-            case A::kControls: open_settings(int(T::kControls)); break;
+            case A::kControls: open_options_page(carview::OptionsPage::kControls); break;
             case A::kDifficulty: open_options_page(carview::OptionsPage::kDifficulty); break;
             case A::kHud: open_options_page(carview::OptionsPage::kHud); break;
-            case A::kAudio: open_settings(int(T::kAudio)); break;
+            case A::kAudio: open_options_page(carview::OptionsPage::kAudio); break;
             case A::kVideo: open_settings(int(T::kDisplay)); break;
             case A::kEngineSettings: open_settings(int(T::kPinyon)); break;
             case A::kPaintCar:

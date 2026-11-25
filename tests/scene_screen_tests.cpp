@@ -38,6 +38,7 @@
 #include "car_list_screen.h"
 #include "hub_menus.h"
 #include "options_screen.h"
+#include "stats_screen.h"
 #include "map_screen.h"
 #include "pause_screen.h"
 #include "race_screens.h"
@@ -310,6 +311,95 @@ int main() {
     check(carview::options_value_text("camera", "chase low") == "CHASE LOW", "an engine value, upper-cased");
     for (const auto& r : carview::options_rows(carview::OptionsPage::kDifficulty))
       check(!carview::text_of(r.description).empty(), std::string("a description for ") + r.id);
+  }
+  // AUDIO on 837_I_AUDIO_OPTIONS and CONTROLS on 831_C_OPT_CONTROLLER.
+  {
+    const SceneDraw ad(carview::ui_scene(std::string(carview::kAudioOptionsScene)));
+    check(ad.ok(), "837_I_AUDIO_OPTIONS loads");
+    if (ad.ok()) check_nodes(ad, carview::kAudioOptionsScene, carview::options_audio_nodes());
+    const SceneDraw cd(carview::ui_scene(std::string(carview::kControlsScene)));
+    check(cd.ok(), "831_C_OPT_CONTROLLER loads");
+    if (cd.ok()) check_nodes(cd, carview::kControlsScene, carview::options_controls_nodes());
+    const auto& audio = carview::options_rows(carview::OptionsPage::kAudio);
+    check(audio.size() == 6 && audio[0].slider && audio[1].slider && !audio[2].slider, "AUDIO: two sliders, then spinners");
+    check(carview::text_of(audio[0].label) == "SFX VOLUME" && carview::text_of(audio[4].label) == "GPS VOICE",
+          "AUDIO: MyProfile.str's names");
+    for (const auto& r : audio) check(!carview::text_of(r.description).empty(), std::string("a description for ") + r.id);
+    check(carview::options_value_text("full dynamic range", "on") == "HOME THEATER", "PLAYBACK SYSTEM HOME THEATER");
+    check(carview::options_value_text("full dynamic range", "off") == "TV", "PLAYBACK SYSTEM TV");
+    check(carview::options_station_text("Radio1") == "HORIZON BASS ARENA" &&
+              carview::options_station_text("Radio3") == "HORIZON ROCKS" &&
+              carview::options_station_text("Radio4_Silent") == "OFF",
+          "RADIO STATION: MyProfile.str's station names");
+    // The sliders step by value and stop at the ends, whatever the
+    // choices' order (the volumes' 100, 0, 25, ...; the rumble's 100, 75, ...).
+    const std::vector<std::string> vol = {"100%", "0%", "25%", "50%", "75%"};
+    const std::vector<std::string> rum = {"100%", "75%", "50%", "25%", "0%"};
+    check(carview::options_slider_step(vol, "75%", 1) == "100%", "slider: 75% up to 100%");
+    check(carview::options_slider_step(vol, "100%", 1) == "100%", "slider: stops at 100%");
+    check(carview::options_slider_step(vol, "0%", -1) == "0%", "slider: stops at 0%");
+    check(carview::options_slider_step(vol, "25%", -1) == "0%", "slider: 25% down to 0%");
+    check(carview::options_slider_step(rum, "100%", -1) == "75%", "slider: 100% down to 75%");
+    check(carview::options_slider_step(rum, "50%", 1) == "75%", "slider: 50% up to 75%");
+    check(carview::options_percent("75%") == 0.75f && carview::options_percent("on") < 0.0f, "slider: percentages");
+    const auto& ctl = carview::options_rows(carview::OptionsPage::kControls);
+    check(ctl.size() == 4 && carview::text_of(ctl[0].label) == "LAYOUT" && carview::text_of(ctl[1].label) == "VIBRATION" &&
+              carview::text_of(ctl[2].label) == "SWITCH GEAR UP/DOWN" &&
+              carview::text_of(ctl[3].label) == "SWITCH HANDBRAKE/CLUTCH",
+          "CONTROLS: the capture's four rows");
+    check(carview::options_value_text("controller layout", "layout 1") == "DEFAULT LAYOUT 1", "DEFAULT LAYOUT 1");
+    check(carview::options_title(carview::OptionsPage::kControls) == "CONTROLS", "CONTROLS's title");
+    // 23_options_controls_orig.png: layout 1, automatic shifting.
+    std::map<std::string, std::string> pad;
+    for (const auto& [k, v] : carview::controls_pad_labels(0, false, 0)) pad[k] = v;
+    const std::pair<const char*, const char*> want[] = {
+        {"START", "PAUSE"},     {"LT", "BRAKE"},       {"LB", "NOT USED"},          {"BACK", "MAP"},
+        {"LTS", "STEERING"},    {"LTSB", "NOT USED"},  {"DPAD", "NOT USED"},        {"LEFT", "RADIO"},
+        {"RIGHT", "RADIO"},     {"DOWN", "NOT USED"},  {"RT", "GAS"},               {"RB", "SWITCH CAMERA"},
+        {"Y", "REWIND"},        {"B", "NOT USED"},     {"X", "ACTIVATE"},           {"A", "HANDBRAKE"},
+        {"RTS", "FREE LOOK"},   {"RTSB", "LOOK STRAIGHT BACK"},
+    };
+    for (const auto& [k, v] : want) check(pad[k] == v, std::string("CONTROLS: ") + k + " " + v + " (" + pad[k] + ")");
+    // Manual with clutch names the gears and the clutch; the swap moves the
+    // handbrake to LB.
+    pad.clear();
+    for (const auto& [k, v] : carview::controls_pad_labels(0, true, 2)) pad[k] = v;
+    check(pad["B"] == "SHIFT UP" && pad["X"] == "SHIFT DOWN" && pad["LB"] == "HANDBRAKE" && pad["A"] == "CLUTCH",
+          "CONTROLS: manual with clutch, swapped");
+  }
+  // MY PROFILE > STATS on H_STATISTICS (the title update's).
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kStatsScene)));
+    check(sd.ok(), "H_STATISTICS loads");
+    if (sd.ok()) check_nodes(sd, carview::kStatsScene, carview::stats_nodes());
+    check(carview::stats_tab_name(carview::StatsTab::kGeneral) == "GENERAL", "STATS: GENERAL");
+    check(carview::stats_tab_name(carview::StatsTab::kRecords) == "RECORDS", "STATS: RECORDS");
+    check(carview::stats_tab_name(carview::StatsTab::kTime) == "TIME", "STATS: TIME");
+    carview::StatsData sdata;
+    sdata.game_progress = 0.088, sdata.time_driven_s = 16 * 3600 + 45 * 60 + 17;
+    sdata.total_winnings = 697910, sdata.popularity_rank = 166;
+    const auto g = carview::stats_rows(carview::StatsTab::kGeneral, sdata);
+    // 26_my_profile_stats_orig.png's rows and its values' forms.
+    const char* labels[] = {"GAME PROGRESS", "TIME DRIVEN", "NUMBER OF VICTORIES", "NUMBER OF PODIUMS",
+                            "NUMBER OF RACES", "NUMBER OF CARS IN GARAGE", "TOTAL WINNINGS", "GARAGE VALUE",
+                            "GARAGE PARTS VALUE", "POPULARITY LEVEL"};
+    check(g.size() == 10, "GENERAL's ten rows");
+    for (size_t i = 0; i < g.size() && i < 10; ++i) check(g[i].label == labels[i], std::string("GENERAL: ") + labels[i]);
+    if (g.size() == 10) {
+      check(g[0].value == "8.8%" && std::fabs(g[0].progress - 0.088) < 1e-9, "GAME PROGRESS 8.8% with its bar");
+      check(g[1].value == "16 h 45:17", "TIME DRIVEN 16 h 45:17 (" + g[1].value + ")");
+      check(g[6].value == "697,910 Cr", "TOTAL WINNINGS 697,910 Cr");
+      check(g[9].value == "166th", "POPULARITY LEVEL 166th");
+      check(g[1].progress < 0, "only GAME PROGRESS has a bar");
+    }
+    check(carview::stats_ordinal(1) == "1st" && carview::stats_ordinal(112) == "112th" &&
+              carview::stats_ordinal(23) == "23rd",
+          "ordinals");
+    check(carview::stats_rows(carview::StatsTab::kRecords, sdata).size() <= 14, "RECORDS fits the 14 rows");
+    check(carview::stats_rows(carview::StatsTab::kTime, sdata).size() <= 14, "TIME fits the 14 rows");
+    for (auto t : {carview::StatsTab::kRecords, carview::StatsTab::kTime})
+      for (const auto& r : carview::stats_rows(t, sdata))
+        check(!r.label.empty() && r.label[0] != '_', "a STATS label from the tables: " + r.label);
   }
 
   // The manufacturer select (115_C_BUY_MFRSELECT, v4's).
@@ -1134,6 +1224,60 @@ int main() {
       carview::ui::rasterize(l.items(), fb, W, H);
       const auto p = out_dir / "options_difficulty.png";
       check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write DIFFICULTY");
+    }
+    // AUDIO (no capture) and CONTROLS over 23_options_controls_orig.png.
+    for (carview::OptionsPage page : {carview::OptionsPage::kAudio, carview::OptionsPage::kControls}) {
+      using namespace carview::options_text;
+      const bool ctl = page == carview::OptionsPage::kControls;
+      carview::OptionsHud o;
+      o.page = page;
+      o.title = carview::options_title(page);
+      const auto& rows = carview::options_rows(page);
+      const char* audio_values[6] = {"100%", "75%", "on", "on", "on", "off"};
+      const char* ctl_values[4] = {"layout 1", "on", "off", "off"};
+      for (size_t i = 0; i < rows.size(); ++i) {
+        std::string v = carview::options_value_text(rows[i].id, ctl ? ctl_values[i] : audio_values[i]);
+        if (!ctl && i == 2) v = "HORIZON PULSE";
+        o.rows.push_back({carview::text_of(rows[i].label), v});
+      }
+      o.selected = 0;
+      o.description = carview::text_of(rows[0].description);
+      if (!o.description.empty()) o.description_title = carview::text_of(kDescription);
+      if (ctl) o.pad = carview::controls_pad_labels(0, false, 0);
+      o.prompts = {{"A", carview::text_of(kSave)}, {"B", carview::text_of(kCancel)}};
+      if (ctl) o.prompts.push_back({"X", carview::text_of(kAdvanced)});
+      o.prompts.push_back({"Y", carview::text_of(kResetDefault)});
+      std::vector<uint8_t> fb = backdrop;
+      carview::ui::List l;
+      const std::string what = ctl ? "CONTROLS" : "AUDIO";
+      check(carview::draw_options_list(l, o, float(W), float(H)), "draw " + what);
+      std::set<int> hit_rows;
+      for (const auto& z : l.hits())
+        if (z.group == carview::ui::kHitRow) hit_rows.insert(z.index);
+      check(hit_rows.size() == rows.size(), what + ": a hit per row (" + std::to_string(hit_rows.size()) + ")");
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / (ctl ? "options_controls.png" : "options_audio.png");
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + what);
+    }
+    // STATS's GENERAL over 26_my_profile_stats_orig.png, as it shows.
+    {
+      carview::StatsData sdata;
+      sdata.game_progress = 0.088, sdata.time_driven_s = 16 * 3600 + 45 * 60 + 17;
+      sdata.victories = 16, sdata.podiums = 17, sdata.races = 19, sdata.cars_in_garage = 6;
+      sdata.total_winnings = 697910, sdata.garage_value = 418210, sdata.parts_value = 94210;
+      sdata.popularity_rank = 166;
+      carview::StatsHud sh;
+      sh.rows = carview::stats_rows(carview::StatsTab::kGeneral, sdata);
+      sh.prompts = {{"B", carview::text_of(carview::stats_text::kBack)}};
+      std::vector<uint8_t> fb = backdrop;
+      carview::ui::List l;
+      check(carview::draw_stats_screen(l, d, sh, float(W), float(H)), "draw STATS");
+      int tabs = 0;
+      for (const auto& z : l.hits()) tabs += z.group == carview::ui::kHitTab;
+      check(tabs == 2, "STATS: LB and RB hits");
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / "stats_general.png";
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write STATS");
     }
     // The manufacturer select on 115: Aston Martin, Audi (the cursor),
     // Bentley, BMW and the engine's Hidden & Showcase tab, Audi's profile.

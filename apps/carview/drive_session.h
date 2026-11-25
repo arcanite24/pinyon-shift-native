@@ -45,6 +45,7 @@
 #include "garage/pi_calc.h"
 #include "car_list_screen.h"
 #include "options_screen.h"
+#include "stats_screen.h"
 #include "hub_menus.h"
 #include "hub_scene.h"
 #include "hud.h"
@@ -372,6 +373,10 @@ struct DriveSession {
   drive::CarLampState player_lamps;
   float rotor_heat = 0.0f;  // thermal brake rotor glow [0..1] (heats under braking at speed, cools smoothly)
   HubCamera hub_cam;
+  // media/UICarTargetCameraPresets.xml, read on first use (MENU-03).
+  std::vector<carview::CarCameraPreset> hub_cam_presets;
+  bool hub_cam_presets_read = false;
+  const carview::CarCameraPreset* hub_preset(std::string_view name);
   HubRoom last_hub_room = HubRoom::kNone;
   drive::CockpitAnimState cockpit_anim;
   float cockpit_steer_kick_rad = 0.0f;
@@ -669,6 +674,11 @@ struct DriveSession {
   std::vector<std::string> options_snapshot;
   void open_options_page(carview::OptionsPage p);
   void fill_options(carview::OptionsHud& out);
+  // MY PROFILE > STATS on H_STATISTICS, over the career page (its tab
+  // kStats): the tab shown, -1 when the page is the engine's.
+  int stats_tab = -1;
+  carview::StatsData stats_data;
+  void open_stats();
   void enter_photo_mode();
   bool collect_next_wristband();
   void open_events_browser(int hub_filter);

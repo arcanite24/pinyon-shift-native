@@ -732,7 +732,12 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 hub_cam.set_framing(autoshow.show_specs() ? 0.11f : 0.0f, 0.16f);
                 if (!snap_step_focus) return;
                 if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
-                  hub_cam.set_focus(carview::HubCameraFocus::kPaint);
+                  // The disc's colour-select camera (CarColorSel), else the engine's.
+                  if (const carview::CarCameraPreset* p =
+                          hub_preset(carview::hub_camera_preset_name(carview::HubRoom::kAutoshow, -1, false, true)))
+                    hub_cam.set_preset(*p);
+                  else
+                    hub_cam.set_focus(carview::HubCameraFocus::kPaint);
                 } else {
                   static constexpr carview::HubCameraFocus kPresets[5] = {
                       carview::HubCameraFocus::kTurntable,

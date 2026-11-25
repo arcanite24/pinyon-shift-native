@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "autoshow.h"
@@ -47,6 +48,27 @@ enum class HubCameraFocus {
 const char* hub_room_name(HubRoom room);
 HubCameraFocus focus_for_part_enum(int part_enum);
 
+// A camera preset from media/UICarTargetCameraPresets.xml: the eye and its
+// look direction in the car's frame (the game's, +Z to the car's front), the
+// vertical field of view in degrees, and the orbit limits the engine does
+// not apply yet (Q129).
+struct CarCameraPreset {
+  std::string name;
+  int ordinal = -1;  // -1: every car; else one car's own
+  float pos[3] = {};
+  float face[3] = {};
+  float fov = 0.0f;
+  bool allow_zoom = false;
+};
+std::vector<CarCameraPreset> parse_car_camera_presets(std::string_view xml);
+// The preset for every car (ordinal -1) by name, or null.
+const CarCameraPreset* find_car_camera_preset(const std::vector<CarCameraPreset>& presets, std::string_view name);
+// The preset a hub screen uses: the workshop's by the selected part (part
+// enum, -1 for AUTO UPGRADE and tuning), the paint shop's main menu or its
+// editor, the Autoshow's colour select. Empty: the engine's own camera
+// (the Autoshow's standard view and the garage).
+std::string_view hub_camera_preset_name(HubRoom room, int part_enum, bool editor_open, bool colour_select);
+
 // Smooth turntable camera for 3D Festival Hub screens.
 struct HubCamera {
   float yaw = 0.62f;        // radians (front 3/4 view)
@@ -68,8 +90,14 @@ struct HubCamera {
   float manual_idle_s = 0.0f;
   bool user_orbited = false;
   float orbit_blend = 1.0f;
+  float fov_deg = 0.0f;  // vertical; 0: the room's own
+  float target_fov_deg = 0.0f;
 
   void set_focus(HubCameraFocus focus);
+  // Aims at the preset: its eye and direction (the car's frame mirrored
+  // into the engine's, -Z forward) as yaw, pitch and distance about the
+  // ray's nearest point to the car's origin, and its field of view.
+  void set_preset(const CarCameraPreset& p);
   void set_framing(float shift_x, float shift_y);
   void nudge_orbit(float dyaw, float dpitch, float ddist = 0.0f);
   void step(float dt);
