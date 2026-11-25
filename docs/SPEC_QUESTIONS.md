@@ -2018,6 +2018,11 @@ Open points:
   to 7 m/s slower. That is our AI controller against the mod's unequal
   clamps on the chattering loads, not the caps. The exemption stays.
 
+  (2026-11-25) Both caps are now gone (Q101's decoded wheel query and
+  bump stop). Superseded: "The load cap now applies only to a wheel
+  more than 5 cm into its bump stop". With the mod on every car, the
+  oracle lap reads 38.976 s, and the AI gate shows no regression.
+
   **Resolved (2026-11-25): the exemption is gone.** The controller that
   weaved was the oracle lap's pure-pursuit follower. That follower is
   the M3 interim, not the title's AI. The lap now steers by the AI's own
@@ -2404,17 +2409,86 @@ With Car/HardWorld:
 | PT-27 bank | 1.0 m, 1.3 m/s up |
 | PT-27 0.35 m kerb at 90 km/h | 0.7 m, 2.7 m/s up |
 
+**The wheel query and the bump stop (decoded, 2026-11-25).** This
+supersedes the "Suspension clamps" item below and the "wheel query's
+treatment of steep faces and steps" in Needed.
+
+- **The frame's query.** Once per frame, before the substeps, each
+  wheel sweeps a sphere of the tyre's radius along its strut. The sweep
+  runs from the top of its travel down to where the wheel is. The top is
+  the bump stop plus the tyre's own maximum compression. The wheel takes
+  the highest triangle near it that passes three tests:
+  - its normal . the car's up axis is at least 0.17;
+  - the sphere at the top of the sweep is at most 0.3 m into its plane;
+  - the sphere at the bottom is within about 0.1 m of it.
+- **A failed test.** A face that fails the tests does not carry the
+  wheel, so a fence or a step more than 0.3 m above the wheel's reach is
+  the body spheres' to meet. Each substep re-tests the wheel against the
+  same triangle with the same limits.
+- **The tyre first.** A face above the wheel first compresses the tyre,
+  which has its own deflection and spring (below). Past the tyre's
+  maximum compression, the rest moves the suspension. The suspension
+  stops at its travel, and what is left over is the bump stop's
+  overflow. The overflow is recomputed from zero by every query, and it
+  adds what the sphere at the top of the sweep is into the face.
+- **The suspension force.** The spring, the anti-roll bar and the bump
+  stop's spring, BumpstopStiffness x overflow, are summed. They are
+  added to the damper, which is clamped to DampenBumpClamp and
+  DampenReboundClamp. BumpstopDamping x the contact point's closing speed
+  along the ground's normal is added to the damper before that clamp.
+  The result is floored at 0. Nothing else caps the force.
+- **TireSpringiness.** PhysicsSettings.ini has no TireSpringiness keys,
+  so the executable's built-in values apply:
+  - SideWallHeight: 0.05 to 0.15 m in, 0.005 to 0.015 out.
+  - RestLoadKg: in up to 500, out 0.57 to 1.43.
+  - TirePressure: 15 to 41 psi in.
+  - CompoundStiffness: 0 to 1 in, out from 1.2.
+  - TireWidth: 0.15 in, out 1.1 to 0.9.
+  - RestCompression: 0.005 to 0.025 m.
+  - DBump and DRebound: 0.
+  - MaxGees: 4.
+  - MaxCompression: 0.06 m.
+  - MinMaxCompression: 0.015 m.
+  - MaxRestCompressRatio: 0.333.
+
+  The rule from these values:
+  - **Rest compression.** It is the product of the tables, clamped to
+    RestCompressionMin..Max and to MaxRestCompressRatio x the sidewall.
+  - **Tyre rate.** The rest load over the rest compression.
+  - **Maximum compression.** MaxGees x the rest compression, at most
+    MaxCompression, and at most MaxCompressRatio x the sidewall (at
+    least MinMaxCompression).
+
+The engine now runs this query on its ray, with these interim parts:
+
+- **No tyre spring.** The engine has no tyre deflection and no unsprung
+  mass, so the sweep's top takes the tyre's largest allowed compression
+  (0.06 m), and the overflow is the compression past the bump stop.
+- **One ray, not a sphere sweep.** The ray looks past a face that fails a
+  test, and the penetration is that of the sphere at the top of the
+  sweep along the hit's normal.
+- **Every substep.** The query runs every substep, not once per frame.
+
+The 0.14 m cap and the load cap are gone. With them gone:
+- The 0.35 m vertical step at 90 km/h is within the wheel's reach. It
+  lifts the test car 2.24 m at 6.1 m/s, from the bump stop's spring
+  alone: with BumpstopDamping set to 0 the result is the same.
+- A 0.7 m step is out of reach. The wheels stay on the road and the body
+  meets it (0.07 m/s up).
+- The 150 km/h wall lifts the nose at 1.64 m/s (1.1 with the caps).
+- The oracle lap is unchanged at 38.976 s.
+
 Still interim:
 
-- **Suspension clamps.** The bump stop's 0.14 m over-compression cap and
-  the wheel load cap `max(4 x preload, 1.1 m g)` stay, the load cap now
-  only for a wheel more than 5 cm into its bump stop (the 5 cm is ours).
-  A raycast wheel meeting a step higher than its axle jumps onto it in
-  one substep. Without the caps, the 0.35 m kerb at 90 km/h throws the
-  car 2.3 m up at 6.2 m/s. Applied to every wheel, the load cap also
-  clipped ordinary cornering loads (the oracle lap's bump-stop hits
-  reach 1.4 cm) and spun the AI under FrictionTorqueMod (Q68). The
-  original's wheel query on such steps is not decoded.
+- ~~**Suspension clamps.**~~ Superseded by the decode above. The bump
+  stop's 0.14 m over-compression cap and the wheel load cap `max(4 x
+  preload, 1.1 m g)` are gone. The old text: "A raycast wheel meeting a
+  step higher than its axle jumps onto it in one substep. Without the
+  caps, the 0.35 m kerb at 90 km/h throws the car 2.3 m up at 6.2 m/s.
+  Applied to every wheel, the load cap also clipped ordinary cornering
+  loads (the oracle lap's bump-stop hits reach 1.4 cm) and spun the AI
+  under FrictionTorqueMod (Q68). The original's wheel query on such
+  steps is not decoded."
 - **Rate.** The contact runs every substep (359 Hz). That the original's
   contact chain runs at the same rate is assumed.
 - **Friction noise.** The pair's friction noise (`FrictionNoiseFreqScale`,
@@ -2428,8 +2502,12 @@ Still interim:
   push is no longer called. Their shapes are the props' own spheres,
   boxes and hulls, or the bounding box when a def has none.
 
-Needed: the wheel query's treatment of steep faces and steps, the friction
-noise function, and the contact chain's tick.
+Needed: ~~the wheel query's treatment of steep faces and steps~~
+(decoded above), the friction noise function, and the contact chain's
+tick. Also needed: the tyre spring and unsprung-mass integration, the
+remaining TireSpring table outputs (TirePressureOutput, the upper
+CompoundStiffness and TireWidth points, MaxCompressRatio), and the
+reader of the query's ground-normal velocity term.
 
 ## Q102 (FEEL-05/07/23, not blocking): damage difficulties and List_DamageModDef
 
