@@ -96,9 +96,17 @@ void bind_titles(SceneScreen& sc, const RaceHud& r) {
   if (main >= 0) {
     const float tw = sd.measure(main, title);
     fit_tapes(sc, sc.node("MainTitle"), tw + kTitleTapePad, kTapePink);
-    // The tape's right end follows the text (it ends ~30 px past it).
-    if (const int right = sc.node("MainTitle/Crisp_right"); right >= 0)
-      sc.at(right).dx = sd.at(main)[0] + tw + kTitleTapeEnd - sd.rect(right)[2];
+    // The tape's right end follows the text (it ends ~30 px past it): the
+    // end piece's shown part (its left, cropped) ends there.
+    if (const int right = sc.node("MainTitle/Crisp_right"); right >= 0) {
+      const auto rr = sd.rect(right);
+      const float shown = std::min(tw + kTitleTapePad, rr[2] - rr[0]);
+      sc.at(right).dx = sd.at(main)[0] + tw + kTitleTapeEnd - (rr[0] + shown);
+    }
+    // interim: the crisp tape's sheen draws as a dark gloss over the pink
+    // (and, one texture, is not cropped with the tape); the capture shows a
+    // flat pink tape, so it is hidden.
+    sc.hide(sc.node("MainTitle/Crisp/specular"));
   }
 }
 
