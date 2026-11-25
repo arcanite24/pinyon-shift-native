@@ -246,7 +246,7 @@ add_test(NAME world_gpu_tests COMMAND world_gpu_tests)
 add_executable(rt_logic_tests rt_logic_tests.cpp ../apps/carview/rt_logic.cpp ../apps/carview/render_modern.cpp
                ../apps/carview/settings_page.cpp)
 target_include_directories(rt_logic_tests PRIVATE ../apps/carview)
-target_link_libraries(rt_logic_tests PRIVATE shift_drive)
+target_link_libraries(rt_logic_tests PRIVATE shift_drive shift_race)
 add_test(NAME rt_logic_tests COMMAND rt_logic_tests)
 
 add_executable(career_tests career_tests.cpp)
@@ -280,7 +280,7 @@ add_test(NAME smashables_tests COMMAND smashables_tests)
 add_executable(world_polish_tests world_polish_tests.cpp ../apps/carview/settings_page.cpp
                ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(world_polish_tests PRIVATE ../apps/carview)
-target_link_libraries(world_polish_tests PRIVATE shift_world shift_drive)
+target_link_libraries(world_polish_tests PRIVATE shift_world shift_drive shift_race)
 add_test(NAME world_polish_tests COMMAND world_polish_tests)
 
 add_executable(lamps_tests lamps_tests.cpp)
@@ -290,13 +290,13 @@ add_test(NAME lamps_tests COMMAND lamps_tests)
 add_executable(gps_tests gps_tests.cpp ../apps/carview/settings_page.cpp
                ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(gps_tests PRIVATE ../apps/carview)
-target_link_libraries(gps_tests PRIVATE shift_traffic shift_audio shift_drive)
+target_link_libraries(gps_tests PRIVATE shift_traffic shift_audio shift_drive shift_race)
 add_test(NAME gps_tests COMMAND gps_tests)
 
 add_executable(road_discovery_tests road_discovery_tests.cpp ../apps/carview/map_view.cpp
                ../apps/carview/settings_page.cpp ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(road_discovery_tests PRIVATE ../apps/carview)
-target_link_libraries(road_discovery_tests PRIVATE shift_freeroam shift_traffic shift_profile shift_drive fh1data shift_audio)
+target_link_libraries(road_discovery_tests PRIVATE shift_freeroam shift_traffic shift_profile shift_drive fh1data shift_audio shift_race)
 add_test(NAME road_discovery_tests COMMAND road_discovery_tests)
 
 add_executable(outpost_tests outpost_tests.cpp)
@@ -389,7 +389,7 @@ if(SHIFT_BUILD_CARVIEW)
     ../apps/carview/settings.cpp
     ../apps/carview/settings_page.cpp)
   target_include_directories(fmv_story_tests PRIVATE ../apps/carview)
-  target_link_libraries(fmv_story_tests PRIVATE carview_render shift_audio shift_drive)
+  target_link_libraries(fmv_story_tests PRIVATE carview_render shift_audio shift_drive shift_race)
   add_test(NAME fmv_story_tests COMMAND fmv_story_tests)
 
   # The radio DJ's gameplay triggers (audio/radio_dj.h); the corpus run checks
@@ -468,7 +468,7 @@ add_executable(photo_mode_tests photo_mode_tests.cpp ../apps/carview/photo_mode.
                ../apps/carview/ui4_chrome.cpp ../apps/carview/settings_page.cpp
                ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(photo_mode_tests PRIVATE ../apps/carview)
-target_link_libraries(photo_mode_tests PRIVATE shift_drive shift_stb fh1data shift_volk shift_rhi)
+target_link_libraries(photo_mode_tests PRIVATE shift_drive shift_stb fh1data shift_volk shift_rhi shift_race)
 add_test(NAME photo_mode_tests COMMAND photo_mode_tests)
 
 add_executable(replay_tests replay_tests.cpp ../apps/carview/replay_view.cpp ../apps/carview/ui.cpp
