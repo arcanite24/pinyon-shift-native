@@ -10,6 +10,7 @@
 #include "display_hdr_win.h"
 #include "fh1data/cjk_font.h"
 #include "overlay_input.h"
+#include "scene_screen.h"
 #include "settings.h"
 
 namespace carview {
@@ -487,117 +488,105 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
-            // The pause menu takes the keys and buttons while open.
+            // The pause menu takes the keys and buttons while open: its rows,
+            // the EXTRAS list (X) and the screens it opens (B returns).
             if (menu.open) {
+              using PScreen = PauseMenu::Screen;
+              const bool on_rows = menu.screen == PScreen::kList || menu.screen == PScreen::kExtras;
+              const int n_sponsors = app.have_skills_data ? int(app.skills_data.sponsor_challenges.size()) : 0;
+              auto move_sel = [&](int by) {
+                if (on_rows) menu.move(by);
+                else if (menu.screen == PScreen::kSponsorChallenges && n_sponsors > 0)
+                  menu.sponsor_selected = carview::wrap_row(menu.sponsor_selected, by, n_sponsors);
+                else return;
+                app.audio_host.trigger_ui(audio::UiCue::kVscroll);
+              };
+              auto accept = [&]() {
+                if (!on_rows) return;
+                app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                choose();
+              };
+              auto extras = [&]() {
+                if (menu.screen != PScreen::kList) return;
+                menu.open_extras();
+                app.audio_host.trigger_ui(audio::UiCue::kAccept);
+              };
+              auto resume = [&]() {
+                menu.open = false;
+                menu.screen = PScreen::kList;
+                app.audio_host.trigger_ui(audio::UiCue::kUnPause);
+              };
+              const bool difficulty = on_rows && menu.selected_action() == PauseMenu::kDifficulty;
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
                 if (k == SDLK_ESCAPE && !e.key.repeat) {
-                  menu.open = false;
-                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  pause_back();
                 } else if (k == SDLK_UP || k == SDLK_W) {
-                  menu.move(-1);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  move_sel(-1);
                 } else if (k == SDLK_DOWN || k == SDLK_S) {
-                  menu.move(1);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
-                } else if (menu.selected_action() == PauseMenu::kDifficulty && (k == SDLK_LEFT || k == SDLK_A)) {
+                  move_sel(1);
+                } else if (difficulty && (k == SDLK_LEFT || k == SDLK_A)) {
                   cycle_difficulty(-1);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
-                } else if (menu.selected_action() == PauseMenu::kDifficulty && (k == SDLK_RIGHT || k == SDLK_D)) {
+                } else if (difficulty && (k == SDLK_RIGHT || k == SDLK_D)) {
                   cycle_difficulty(+1);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_X && !e.key.repeat) {
+                  extras();
                 } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
-                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                  choose();
+                  accept();
                 }
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) {
-                  menu.open = false;
-                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                if (b == SDL_GAMEPAD_BUTTON_START) {
+                  resume();
+                } else if (b == SDL_GAMEPAD_BUTTON_EAST) {
+                  pause_back();
                 } else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) {
-                  menu.move(-1);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  move_sel(-1);
                 } else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
-                  menu.move(1);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
-                } else if (menu.selected_action() == PauseMenu::kDifficulty && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) {
+                  move_sel(1);
+                } else if (difficulty && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) {
                   cycle_difficulty(-1);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
-                } else if (menu.selected_action() == PauseMenu::kDifficulty && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
+                } else if (difficulty && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
                   cycle_difficulty(+1);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_WEST) {
+                  extras();
                 } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
-                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                  choose();
+                  accept();
                 }
               }
-              if (e.type == SDL_EVENT_MOUSE_MOTION) {
+              if (e.type == SDL_EVENT_MOUSE_MOTION && on_rows) {
                 carview::ui::HitZone hz{};
-                const int n_menu = int(menu.items().size());
-                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) &&
-                    (hz.group == carview::ui::kHitRow || hz.group == carview::ui::kHitStepLeft ||
-                     hz.group == carview::ui::kHitStepRight) &&
-                    hz.index >= 0 && hz.index < n_menu && menu.selected != hz.index) {
+                const int n_menu = int(menu.rows().size());
+                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow && hz.index >= 0 &&
+                    hz.index < n_menu && menu.selected != hz.index) {
                   menu.selected = hz.index;
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  app.audio_host.trigger_ui(audio::UiCue::kVscroll);
                 }
               }
               if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                 if (e.button.button == SDL_BUTTON_RIGHT) {
-                  menu.open = false;
-                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  pause_back();
                 } else if (e.button.button == SDL_BUTTON_LEFT) {
                   carview::ui::HitZone hz{};
-                  const int n_menu = int(menu.items().size());
+                  const int n_menu = int(menu.rows().size());
                   if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
-                    if (hz.group == carview::ui::kHitStepLeft && hz.index >= 0 && hz.index < n_menu) {
+                    if (on_rows && hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < n_menu) {
                       menu.selected = hz.index;
-                      if (menu.selected_action() == PauseMenu::kDifficulty) {
-                        cycle_difficulty(-1);
-                        app.audio_host.trigger_ui(audio::UiCue::kMove);
-                      }
-                    } else if (hz.group == carview::ui::kHitStepRight && hz.index >= 0 && hz.index < n_menu) {
-                      menu.selected = hz.index;
-                      if (menu.selected_action() == PauseMenu::kDifficulty) {
-                        cycle_difficulty(+1);
-                        app.audio_host.trigger_ui(audio::UiCue::kMove);
-                      }
-                    } else if (hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < n_menu) {
-                      menu.selected = hz.index;
-                      if (menu.selected_action() == PauseMenu::kDifficulty) {
-                        // R3-UI-17: left side of Difficulty row steps -1, right side steps +1 cleanly on click.
-                        float ux = e.button.x;
-                        if (app.window) {
-                          int ww = 0, wh = 0;
-                          SDL_GetWindowSize(app.window, &ww, &wh);
-                          if (ww > 0 && last_ui_w > 0) ux = e.button.x * float(last_ui_w) / float(ww);
-                        }
-                        const float span = std::max(1.0f, hz.x1 - hz.x0);
-                        const float frac = (ux - hz.x0) / span;
-                        cycle_difficulty(frac < 0.35f ? -1 : +1);
-                        app.audio_host.trigger_ui(audio::UiCue::kMove);
-                      } else {
-                        app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                        choose();
-                      }
+                      accept();
                     } else if (hz.group == carview::ui4::kHitButton) {
-                      if (hz.index == 0) {
-                        app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                        choose();
-                      } else if (hz.index == 1) {
-                        menu.open = false;
-                        app.audio_host.trigger_ui(audio::UiCue::kCancel);
-                      }
+                      // The help bar: rows A SELECT, B RESUME/BACK, X EXTRAS;
+                      // the screens B BACK.
+                      if (!on_rows || hz.index == 1) pause_back();
+                      else if (hz.index == 0) accept();
+                      else if (hz.index == 2) extras();
                     }
                   }
                 }
               }
               if (e.type == SDL_EVENT_MOUSE_WHEEL) {
-                if (e.wheel.y > 0) menu.move(-1);
-                else if (e.wheel.y < 0) menu.move(1);
-                app.audio_host.trigger_ui(audio::UiCue::kMove);
+                if (e.wheel.y > 0) move_sel(-1);
+                else if (e.wheel.y < 0) move_sel(1);
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }

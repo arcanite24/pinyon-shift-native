@@ -409,6 +409,19 @@ if(SHIFT_BUILD_CARVIEW)
   target_link_libraries(ui4_parity_tests PRIVATE carview_render carview_hud shift_freeroam shift_traffic shift_race shift_garage
                         shift_drive shift_cars shift_audio shift_profile shift_stb shift_sqlite3)
   add_test(NAME ui4_parity_tests COMMAND ui4_parity_tests)
+
+  # Scene-driven screens (docs/UI_SCENE_SCREENS.md) against the game files.
+  add_executable(scene_screen_tests scene_screen_tests.cpp
+    ../apps/carview/ui_widgets.cpp
+    ../apps/carview/events_page.cpp
+    ../apps/carview/settings_page.cpp
+    ../apps/carview/fmv_player.cpp
+    ../apps/carview/story_intro.cpp)
+  target_include_directories(scene_screen_tests PRIVATE ../apps/carview)
+  target_link_libraries(scene_screen_tests PRIVATE carview_render carview_hud shift_freeroam shift_race shift_garage
+                        shift_drive shift_cars shift_audio shift_stb)
+  add_test(NAME scene_screen_tests COMMAND scene_screen_tests)
+  set_tests_properties(scene_screen_tests PROPERTIES LABELS corpus SKIP_RETURN_CODE 77)
 endif()
 
 add_executable(photo_mode_tests photo_mode_tests.cpp ../apps/carview/photo_mode.cpp ../apps/carview/ui.cpp

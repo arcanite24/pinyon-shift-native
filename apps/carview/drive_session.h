@@ -501,6 +501,11 @@ struct DriveSession {
   void rebuild_outpost_hub();
   void open_outpost_hub(const std::string& id);
   void set_hud(int win_w, int win_h, const std::string& banner, const PauseMenu* menu = nullptr);
+  // The Sponsor Challenges rows (sponsor data + the profile's progress).
+  std::vector<SponsorChallengeRow> sponsor_rows();
+  // The pause menu's keys and buttons (EXTRAS, the screens it opens); true
+  // when the event was the menu's.
+  bool pause_back();
   void append_modern_overlays(ui::List& target_list);
   void set_radio_popup(int height);
   void radio_press(int dir);

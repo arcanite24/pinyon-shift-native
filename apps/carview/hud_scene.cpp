@@ -159,7 +159,7 @@ float SceneDraw::z_depth(int node) const { return sc_ && node >= 0 ? sc_->nodes[
 
 bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity, float dx, float dy, float visible,
                       uint32_t tint, std::string_view tex_override, float extra_angle, float scale_x,
-                      float scale_y) const {
+                      float scale_y, float k, float kbx, float kby) const {
   if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return false;
   if (opacity <= 1e-4f) return false;
   const fh1::UiNode& n = sc_->nodes[size_t(node)];
@@ -191,6 +191,11 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
     r = {rcx - hwx, rcy - hwy, rcx + hwx, rcy + hwy};
   }
   r[0] += dx, r[2] += dx, r[1] += dy, r[3] += dy;
+  // A scaled ancestor (NodeOverride::scale): x' = k x + (kbx, kby).
+  if (k != 1.0f || kbx != 0.0f || kby != 0.0f) {
+    r = {k * r[0] + kbx, k * r[1] + kby, k * r[2] + kbx, k * r[3] + kby};
+    if (visible > 0.0f) visible *= k;
+  }
   // The node's own rotation (scene y up: counter-clockwise on screen).
   const float eff_angle = n.angle + extra_angle;
   const bool turning = (turn_ || extra_angle != 0.0f) && eff_angle != 0.0f && !l.turned();
@@ -336,11 +341,17 @@ float SceneDraw::text_width(int node) const {
   return o.kind == fh1::UiObjectKind::kText ? o.text_width * n.sx : 0;
 }
 
+float SceneDraw::measure(int node, std::string_view s) const {
+  if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size() || s.empty()) return 0;
+  return ui::List::measure(s, style(node, SceneFrame{}, 0xffffffffu));
+}
+
 float SceneDraw::text(ui::List& l, const SceneFrame& f, int node, std::string_view s, uint32_t colour, float dx,
-                      float dy, bool fit) const {
+                      float dy, bool fit, float scale) const {
   if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size() || s.empty()) return 0;
   ui::TextStyle ts = style(node, f, colour);
-  const float box = text_width(node) * f.s;
+  ts.size *= scale;
+  const float box = text_width(node) * f.s * scale;
   if (fit && box > 0)
     for (float w = ui::List::measure(s, ts); w > box && ts.size > 6 * f.s; w = ui::List::measure(s, ts))
       ts.size *= std::max(0.8f, box / w);
@@ -463,6 +474,9 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
   std::vector<float> acc_sy(ncount, 1.0f);
   std::vector<float> acc_ang(ncount, 0.0f);
   std::vector<uint32_t> bgf_tint(ncount, 0u);
+  // Scale about pivots (NodeOverride::scale): a node's offset canvas point p
+  // draws at acc_k * p + acc_b.
+  std::vector<float> acc_k(ncount, 1.0f), acc_bx(ncount, 0.0f), acc_by(ncount, 0.0f);
   std::vector<const NodeOverride*> node_ov(ncount, nullptr);
 
   auto find_override = [&](int idx) -> const NodeOverride* {
@@ -515,6 +529,18 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
                 (bev && bev->scale_y.has_value() ? *bev->scale_y : 1.0f);
     acc_ang[i] = (parent_in ? acc_ang[size_t(n.parent)] : 0.0f) + (ov ? ov->extra_angle : 0.0f) +
                  (bev && bev->rotation.has_value() ? *bev->rotation : 0.0f);
+    {
+      float k = parent_in ? acc_k[size_t(n.parent)] : 1.0f;
+      float bx = parent_in ? acc_bx[size_t(n.parent)] : 0.0f, by = parent_in ? acc_by[size_t(n.parent)] : 0.0f;
+      if (ov && ov->scale != 1.0f) {
+        const auto c = at(int(i));
+        const float px = k * (c[0] + acc_dx[i]) + bx, py = k * (c[1] + acc_dy[i]) + by;
+        k *= ov->scale;
+        bx = ov->scale * bx + (1.0f - ov->scale) * px;
+        by = ov->scale * by + (1.0f - ov->scale) * py;
+      }
+      acc_k[i] = k, acc_bx[i] = bx, acc_by[i] = by;
+    }
     if (bev) {
       if (bev->color_rgba.has_value()) {
         bgf_tint[i] = *bev->color_rgba;
@@ -533,9 +559,12 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
     }
   }
 
-  // Sort by BSG Z depth (back to front), preserving tree order for equal Z.
+  // Sort by BSG Z depth, back to front, preserving tree order for equal Z.
+  // The scenes' cameras sit at z -600 looking down +z, so the nearer node has
+  // the smaller z (a row's text at -14 over its tapes at -10 and -11) and draws
+  // last.
   std::stable_sort(drawables.begin(), drawables.end(), [](const DrawEntry& a, const DrawEntry& b) {
-    if (std::fabs(a.z - b.z) > 1e-4f) return a.z < b.z;
+    if (std::fabs(a.z - b.z) > 1e-4f) return a.z > b.z;
     return a.order < b.order;
   });
 
@@ -550,18 +579,21 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
     const float sx = acc_sx[size_t(d.idx)];
     const float sy = acc_sy[size_t(d.idx)];
     const float ea = acc_ang[size_t(d.idx)];
+    const float k = acc_k[size_t(d.idx)], kbx = acc_bx[size_t(d.idx)], kby = acc_by[size_t(d.idx)];
     if (o.kind == fh1::UiObjectKind::kModel) {
       const float vis_w = (ov && ov->visible_width.has_value()) ? *ov->visible_width : 0.0f;
       const uint32_t tint = (ov && ov->tint.has_value()) ? *ov->tint : bgf_tint[size_t(d.idx)];
       const std::string_view tex_ov = (ov && ov->texture.has_value()) ? std::string_view(*ov->texture) : std::string_view{};
-      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea, sx, sy)) ++emitted;
+      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea, sx, sy, k, kbx, kby)) ++emitted;
     } else if (o.kind == fh1::UiObjectKind::kText) {
       if (!ov || !ov->text.has_value() || ov->text->empty()) continue;
       const uint32_t base_col = ov->tint.has_value() ? *ov->tint
                                 : bgf_tint[size_t(d.idx)] ? bgf_tint[size_t(d.idx)]
                                                           : bindings.default_text_color;
       const uint32_t col = ui::fade(base_col, a);
-      if (text(l, f, d.idx, *ov->text, col, dx, dy, bindings.fit_text) > 0.0f) ++emitted;
+      const auto c = at(d.idx);
+      const float tx = k * (c[0] + dx) + kbx - c[0], ty = k * (c[1] + dy) + kby - c[1];
+      if (text(l, f, d.idx, *ov->text, col, tx, ty, bindings.fit_text, k) > 0.0f) ++emitted;
     }
   }
   return emitted;

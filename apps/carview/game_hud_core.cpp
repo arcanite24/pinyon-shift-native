@@ -1,4 +1,5 @@
 #include "game_hud_internal.h"
+#include "pause_screen.h"
 #include "touch_controls.h"
 
 #include <cstdlib>
@@ -616,6 +617,7 @@ std::string game_text(const std::string& value) {
   }
   return resolved;
 }
+std::string game_text_raw(const std::string& value) { return texts() ? texts()(value) : value; }
 std::string car_name(const std::string& media) {
   std::string out = names() ? names()(media) : media;
   if (out.empty()) out = media;
@@ -1068,6 +1070,9 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     l.rect(0.5f * w - 0.5f * tw - 14 * s, y, 0.5f * w + 0.5f * tw + 14 * s, y + 28 * s, kBlack60);
     l.text(0.5f * w, y + 7 * s, st.toast, ts);
   }
+  // The pause menu from its own scene (925_PAUSE_MENU and the screens it
+  // opens); the shared menu panel when the scene is missing.
+  if (st.pause_screen && draw_pause_screen(l, st, *st.pause_screen, w, h)) return;
   if (menu) menu_panel(l, st, g);
   if (menu && st.career) career_board(l, *st.career, w, h, s);
 }

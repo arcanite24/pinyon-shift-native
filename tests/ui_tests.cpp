@@ -1,7 +1,9 @@
 // The UI layer's CPU rasterizer: text measures and draws inside its box,
 // and SHIFT_UI_SPECIMEN=<file.png> writes a specimen of the font and the
 // shapes to look at.
+#include <algorithm>
 #include <cmath>
+#include <optional>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -15,6 +17,7 @@
 #include "game_hud.h"
 #include "hud.h"
 #include "hud_scene.h"
+#include "pause_screen.h"
 #include "ui.h"
 #include "ui4_chrome.h"
 
@@ -225,56 +228,132 @@ void test_pause_menu() {
   pm.fill(closed_st);
   CHECK(closed_st.menu.empty() && closed_st.menu_title.empty());
 
-  // Free roam items & wrap-around.
+  using PM = carview::PauseMenu;
+  // Free roam: the retail rows (925_PAUSE_MENU), no RESUME row (B resumes).
   pm.show(false);
-  const auto fr_items = pm.items();
-  CHECK(fr_items.size() == 16);
-  CHECK(fr_items.front() == carview::PauseMenu::kResume);
-  CHECK(fr_items.back() == carview::PauseMenu::kQuitToTitle);
+  CHECK((pm.items() == std::vector<PM::Action>{PM::kMap, PM::kSettings, PM::kPhotoMode, PM::kMessageCentre,
+                                                PM::kSponsorChallenges, PM::kCareer, PM::kQuitToTitle}));
   {
-    bool found_club = false;
-    bool found_car_club = false;
-    bool found_achievements = false;
-    bool found_rally = false;
-    for (size_t i = 0; i + 1 < fr_items.size(); ++i) {
-      if (fr_items[i] == carview::PauseMenu::kCareer && fr_items[i + 1] == carview::PauseMenu::kClub) found_club = true;
-      if (fr_items[i] == carview::PauseMenu::kClub && fr_items[i + 1] == carview::PauseMenu::kCarClub)
-        found_car_club = true;
-      if (fr_items[i] == carview::PauseMenu::kCarClub && fr_items[i + 1] == carview::PauseMenu::kAchievements)
-        found_achievements = true;
-      if (fr_items[i] == carview::PauseMenu::kRally) found_rally = true;
-    }
-    CHECK(found_club);
-    CHECK(found_car_club);
-    CHECK(found_achievements);
-    CHECK(found_rally);
-    CHECK(pm.label(carview::PauseMenu::kClub) == "1000 CLUB");
-    CHECK(pm.label(carview::PauseMenu::kCarClub) == "CAR CLUB");
-    CHECK(pm.label(carview::PauseMenu::kRally) == "HORIZON RALLY");
-    CHECK(pm.label(carview::PauseMenu::kAchievements) == "ACHIEVEMENTS");
-    CHECK(pm.label(carview::PauseMenu::kPhotoMode) == "PHOTO MODE");
-    CHECK(pm.label(carview::PauseMenu::kReplay) == "REPLAYS");
+    // No string tables loaded: the English fallbacks.
+    carview::HudState st;
+    pm.fill(st);
+    CHECK(st.menu_title == "paused");
+    CHECK((st.menu == std::vector<std::string>{"MAP", "SETTINGS", "PHOTO MODE", "MESSAGE CENTER",
+                                               "SPONSOR CHALLENGES", "MY PROFILE", "QUIT"}));
   }
-  CHECK(pm.selected_action() == carview::PauseMenu::kResume);
+  CHECK(pm.selected_action() == PM::kMap);
   pm.move(-1);
-  CHECK(pm.selected_action() == carview::PauseMenu::kQuitToTitle);
+  CHECK(pm.selected_action() == PM::kQuitToTitle);
   pm.move(+1);
-  CHECK(pm.selected_action() == carview::PauseMenu::kResume);
-  CHECK(pm.label(carview::PauseMenu::kEvents) == "COLLECT GREEN WRISTBAND!");
-  CHECK(pm.label(carview::PauseMenu::kDifficulty) == "< DIFFICULTY: HARD (+30%) >");
+  CHECK(pm.selected_action() == PM::kMap);
 
-  // In-race items & HudState fill.
+  // The engine's screens sit behind EXTRAS, which keeps the row to return to.
+  pm.move(2);
+  pm.open_extras();
+  CHECK(pm.screen == PM::Screen::kExtras && pm.selected == 0);
+  {
+    const auto ex = pm.extras();
+    for (PM::Action a : {PM::kEvents, PM::kRally, PM::kGarage, PM::kUpgrades, PM::kPaint, PM::kAutoshow, PM::kClub,
+                         PM::kCarClub, PM::kAchievements, PM::kReplay})
+      CHECK(std::find(ex.begin(), ex.end(), a) != ex.end());
+    CHECK(pm.rows() == ex);
+    CHECK(pm.selected_action() == PM::kEvents);
+  }
+  CHECK(pm.label(PM::kEvents) == "COLLECT GREEN WRISTBAND!");
+  CHECK(pm.label(PM::kClub) == "1000 CLUB");
+  CHECK(pm.label(PM::kCarClub) == "CAR CLUB");
+  CHECK(pm.label(PM::kRally) == "HORIZON RALLY");
+  CHECK(pm.label(PM::kReplay) == "REPLAYS");
+  CHECK(pm.back());  // B: back to the rows, on the row left
+  CHECK(pm.open && pm.screen == PM::Screen::kList && pm.selected_action() == PM::kPhotoMode);
+  pm.open_screen(PM::Screen::kSponsorChallenges);
+  CHECK(pm.screen == PM::Screen::kSponsorChallenges && pm.sponsor_selected == 0);
+  CHECK(pm.back() && pm.screen == PM::Screen::kList);
+  CHECK(!pm.back() && !pm.open);  // B on the rows resumes
+
+  // Racing: RESTART, MAP, PHOTO MODE, SPONSOR CHALLENGES, MY PROFILE, QUIT RACE.
   pm.show(true);
-  const auto race_items = pm.items();
-  CHECK(race_items.size() == 8);
-  CHECK(race_items[1] == carview::PauseMenu::kRestartRace);
-  CHECK(race_items.back() == carview::PauseMenu::kQuitRace);
+  CHECK((pm.items() == std::vector<PM::Action>{PM::kRestartRace, PM::kMap, PM::kPhotoMode, PM::kSponsorChallenges,
+                                                PM::kCareer, PM::kQuitRace}));
   pm.move(4);
   carview::HudState st;
   pm.fill(st);
-  CHECK(st.menu_title == "paused");
-  CHECK(st.menu.size() == 8 && st.menu_selected == 4);
-  CHECK(st.menu[4] == "MAP");
+  CHECK(st.menu.size() == 6 && st.menu_selected == 4);
+  CHECK(st.menu[0] == "RESTART" && st.menu[5] == "QUIT RACE");
+  pm.open_extras();
+  CHECK(pm.selected_action() == PM::kReplay);
+  CHECK(pm.label(PM::kDifficulty) == "< DIFFICULTY: HARD (+30%) >");
+  CHECK(pm.label(PM::kReplay) == "VIEW REPLAY");
+
+  // The selection cross-fade starts when the drawn selection changes.
+  pm.show(false);
+  pm.note_shown(10.0);
+  CHECK(pm.shown_selected == 0 && pm.shown_from == -1);
+  pm.move(1);
+  pm.note_shown(11.0);
+  CHECK(pm.shown_selected == 1 && pm.shown_from == 0 && pm.shown_at == 11.0);
+  carview::PauseScreenHud ps;
+  carview::fill_pause_screen(pm, 11.05, ps);
+  CHECK(ps.selected == 1 && ps.from == 0 && ps.fade > 0.4 && ps.fade < 0.6);
+  carview::fill_pause_screen(pm, 12.0, ps);
+  CHECK(ps.fade == 1.0 && ps.from == -1);
+}
+
+void test_scene_screen_strings_and_cues() {
+  using carview::StringRef;
+  // Keys: table hash << 16 | id hash, or the raw id.
+  CHECK(carview::string_key({"PauseMenu", "IDS_Map", 0, "MAP"}) == (0x3739u << 16 | 0xE909u));
+  CHECK(carview::string_key({"PauseMenu", {}, 0xDD6B, "SETTINGS"}) == (0x3739u << 16 | 0xDD6Bu));
+  CHECK(carview::string_key(carview::pause_text::kSelect) == (0xB59Du << 16 | 0x6FA4u));
+  // Every retail row is bound to the PauseMenu table; the extras are the engine's.
+  using PM = carview::PauseMenu;
+  for (PM::Action a : {PM::kMap, PM::kPhotoMode, PM::kMessageCentre, PM::kSponsorChallenges, PM::kCareer,
+                       PM::kQuitToTitle, PM::kRestartRace, PM::kQuitRace}) {
+    const StringRef r = carview::pause_row_text(a, false);
+    CHECK(r.table == "PauseMenu" && !r.id.empty() && !r.engine_label);
+  }
+  CHECK(carview::pause_row_text(PM::kSettings, false).engine_label);
+  CHECK(carview::pause_row_text(PM::kGarage, false).table.empty());
+
+  // Text binding through game_text: the table's text, else the fallback;
+  // an engine label always shows its own.
+  carview::set_game_text([](const std::string& v) -> std::string {
+    if (v == "_&" + std::to_string(0x3739u << 16 | 0xE909u)) return "KARTE";
+    if (v == "_&" + std::to_string(0x3739u << 16 | 0xDD6Bu)) return "MULTIJUGADOR";
+    if (v == "_&" + std::to_string(carview::string_key(carview::pause_text::kCredits)))
+      return "{colour='255 0 0 255'}{0}{colour_pop} Cr{x}";
+    return v;
+  });
+  // Format slots survive the markup strip (other unknown {...} do not).
+  CHECK(carview::format1(carview::text_of(carview::pause_text::kCredits), "1,250") ==
+        "{colour='255 0 0 255'}1,250{colour_pop} Cr");
+  CHECK(carview::text_of(carview::pause_row_text(PM::kMap, false)) == "KARTE");
+  CHECK(carview::text_of(carview::pause_row_text(PM::kSettings, false)) == "SETTINGS");
+  CHECK(carview::lookup(carview::pause_row_text(PM::kSettings, false)) == std::optional<std::string>("MULTIJUGADOR"));
+  CHECK(carview::text_of(carview::pause_row_text(PM::kPhotoMode, false)) == "PHOTO MODE");
+  CHECK(!carview::lookup(carview::pause_row_text(PM::kPhotoMode, false)));
+  carview::set_game_text(nullptr);
+  CHECK(carview::format1("COLLECT {0} WRISTBAND", "BLUE") == "COLLECT BLUE WRISTBAND");
+
+  // Navigation cues: ui4audio.xml play names.
+  CHECK(carview::ui_play_name(carview::UiEvent::kOpen) == "Pause");
+  CHECK(carview::ui_play_name(carview::UiEvent::kClose) == "UnPause");
+  CHECK(carview::ui_play_name(carview::UiEvent::kMove) == "Vscroll");
+  CHECK(carview::ui_play_name(carview::UiEvent::kAccept) == "Accept");
+  CHECK(carview::ui_play_name(carview::UiEvent::kBack) == "Cancel");
+
+  // Rows wrap; a window keeps the selection in view.
+  CHECK(carview::wrap_row(0, -1, 7) == 6 && carview::wrap_row(6, 1, 7) == 0 && carview::wrap_row(3, 0, 0) == 0);
+  CHECK(carview::window_first(0, 10, 7) == 0 && carview::window_first(9, 10, 7) == 3 &&
+        carview::window_first(5, 6, 7) == 0);
+
+  // No scene loaded: the pause screen does not draw (the caller falls back).
+  carview::set_ui_scenes(nullptr);
+  carview::ui::List l;
+  carview::DriveHud d;
+  carview::PauseScreenHud ps;
+  ps.rows = {"MAP"};
+  CHECK(!carview::draw_pause_screen(l, d, ps, 1280, 720));
 }
 
 void test_hud_overlays() {
@@ -595,6 +674,7 @@ int main() {
   }
   test_events_page();
   test_pause_menu();
+  test_scene_screen_strings_and_cues();
   test_hud_overlays();
   test_world_trigger();
 

@@ -1,5 +1,7 @@
 #include "fh1data/ui_scene.h"
 
+#include "fh1data/archive.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -332,6 +334,20 @@ std::string ui_texture_member(const std::string& path, bool& horizon) {
   if (horizon) p = p.substr(8);
   if (p.size() > 4 && p.compare(p.size() - 4, 4, ".TGA") == 0) p.resize(p.size() - 4);
   return p + ".xds";
+}
+
+bool load_ui_scene(Archive& ui_zip, const std::string& name, UiScene& out, std::string* error) {
+  const std::string base = "Scenes/ui4/" + name;
+  auto fbf = ui_zip.read(base + ".fbf");
+  auto bsg = ui_zip.read(base + ".bsg");
+  if (!fbf.ok() || !bsg.ok()) {
+    if (error) *error = "missing " + base + (fbf.ok() ? ".bsg" : ".fbf");
+    return false;
+  }
+  if (!parse_ui_fbf(fbf.data, out, error) || !parse_ui_bsg(bsg.data, out, error)) return false;
+  auto bgf = ui_zip.read(base + ".bgf");
+  out.has_bgf = bgf.ok() && parse_ui_bgf(bgf.data, out.bgf, nullptr);
+  return true;
 }
 
 bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string* error) {
