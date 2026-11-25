@@ -1096,7 +1096,10 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
                                      !shop.is_open() && !autoshow.is_open() && !garage_open &&
                                      !events_page.is_open() && !outpost_hub_open && !paint_open && !club_open &&
                                      !car_club_open && !rewind_buf.active();
-        achievements.build_hud_overlays(list, float(width), float(height), show_track_chip);
+        // The tracked-achievement card is the engine's own (opt-in HUD row);
+        // unlock toasts still draw whatever the row says.
+        achievements.build_hud_overlays(list, float(width), float(height),
+                                        show_track_chip && live_hud.tracked_achievement);
         if (show_track_chip) {
           app.touch_controls.build_overlay(list, float(width), float(height), vehicle.time());
         }

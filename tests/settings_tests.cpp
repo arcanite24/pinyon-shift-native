@@ -625,6 +625,21 @@ int main() {
       CHECK(hs.value("wrong way warning") == "off" && hs.value("popularity and skills") == "off");
       CHECK(hs.value("lap time and position") == "on" && hs.value("names over cars") == "on");
     }
+    // The tracked-achievement card is the engine's own: off unless asked for.
+    {
+      CHECK(!carview::HudToggles{}.tracked_achievement);
+      carview::SettingsPage tp;
+      tp.load({});
+      CHECK(!tp.live_settings().hud.tracked_achievement && tp.value("tracked achievement") == "off");
+      tp.load({"--hud-tracked-achievement"});
+      CHECK(tp.live_settings().hud.tracked_achievement);
+      carview::LiveSettings on;
+      on.hud.tracked_achievement = true;
+      carview::SettingsPage ts;
+      ts.load({});
+      ts.sync_from_live(on);
+      CHECK(ts.value("tracked achievement") == "on");
+    }
     // Pro (+45) + ABS Off (+10) + Sim Steering (+5) + STM Off (+5, the default) + TCS Off + M+C (+15) + Line Off (+10) + Sim Damage (+10) + Rewind Off (+20) = 120%
     CHECK(p6.difficulty_credit_bonus_pct() == 120);
     const auto base_lay = drive::default_controller_layout(0);
