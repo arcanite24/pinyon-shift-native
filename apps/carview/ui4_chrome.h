@@ -281,8 +281,18 @@ void draw_controller_layout_diagram(ui::List& l, float x0, float y0, float x1, f
                                     bool swap_handbrake_clutch, std::string_view highlight_action = {});
 
 // Bottom BUTTON_BAR_SCENE prompt strip with authentic CONTROLLER/* glyphs.
+// `left_x_canvas`: the first pill's left edge (70: the scene's own place).
 void button_bar(ui::List& l, const std::vector<Prompt>& items, float screen_w, float screen_h,
                 float left_x_canvas = 70.0f);
+// The help bar drawn from the scene's own nodes (set by the HUD library,
+// which holds the scene drawing): button_bar() calls it first and draws its
+// own strip when it is unset or returns false.
+using ButtonBarDrawer = bool (*)(ui::List& l, const std::vector<Prompt>& items, float screen_w, float screen_h,
+                                 float left_x_canvas);
+void set_button_bar_drawer(ButtonBarDrawer drawer);
+// Half the width button_glyph() draws `button` at radius `r` (a face button
+// is `r`; a bumper, trigger or key cap is wider), for the active glyph set.
+float button_glyph_half_width(const char* button, float r);
 // Draws a single controller button glyph centred at (cx, cy) with radius `r`.
 void button_glyph(ui::List& l, float cx, float cy, float r, const char* button, float alpha = 1.0f);
 

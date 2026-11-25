@@ -16,6 +16,7 @@
 
 #include "hud_notify.h"
 #include "scene_screen.h"
+#include "ui4_chrome.h"
 
 namespace carview {
 
@@ -96,6 +97,17 @@ std::string event_name_without_sponsor(std::string name, std::string_view sponso
 // bar with the reason when the car is not eligible).
 bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, float s);
 bool hud_prompt_available();
+
+// --- The help bar (BUTTON_BAR_SCENE) ---------------------------------------
+
+// Draws ui4::button_bar()'s prompts on the scene's HelpButton0..6: each
+// button's glyph (the active glyph set's, where BUTTON_LOGO sits), its
+// label and its pill fitted to it, packed left to right from
+// `left_x_canvas` (the first pill's left edge) as the original packs them;
+// false when the scene is missing. help_bar_screen.cpp.
+bool draw_help_bar(ui::List& l, const std::vector<ui4::Prompt>& items, float w, float h, float left_x_canvas);
+// Makes ui4::button_bar() draw through draw_help_bar().
+void install_scene_help_bar();
 
 // --- Notifications (CombinedNotification, PopularityUnlock) ---------------
 

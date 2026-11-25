@@ -121,6 +121,7 @@ add_library(carview_hud STATIC
   game_hud_race.cpp
   game_hud_freeroam.cpp
   game_hud_menus.cpp
+  help_bar_screen.cpp
   hud_scene.cpp
   hud_screen.cpp
   pause_screen.cpp

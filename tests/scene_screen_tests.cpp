@@ -99,6 +99,8 @@ int main() {
     return slot.get();
   });
 
+  carview::install_scene_help_bar();
+
   // EN string tables (disc, v4, packages).
   cars::Install inst;
   std::string why;
