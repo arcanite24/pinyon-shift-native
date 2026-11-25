@@ -1695,3 +1695,79 @@ UI states answered in UI_LAYOUTS.md af0e37b6; captures in out/oracle/ui
 UI follow-up Q1-Q3 answered in docs/specs/UI_SCREENS.md 943ecc1f: HUD 947_HUD, pause 925_PAUSE_MENU, map H_MAP, help bar BUTTON_BAR_SCENE, finish H_POST_RACE_FINISHED then H_POST_RACE_RESULTS (probable); 7xx and split-screen scenes never open in retail; 63 scenes unreferenced; text node = alignment point (left/centre probable, right guess) at the line's vertical middle; material floats 0-3 = diffuse RGBA (confirmed), tint and crop rule 0 <= s*u + o <= 1 probable; pre-race and post-race pages interim, four frame checks listed.
 
 UI follow-up correction in docs/specs/UI_SCREENS.md 3ec78780: only 708_PAUSE and 710_POST_RACE are proven never opened (948_HUD_Split_Screen and other 7xx scenes have unread openers); ResPack.xml packs confirm the HUD group (947_HUD, 925_PAUSE_MENU, H_MAP, H_BARN_FIND_HUD) and list PRE_CAREER_EVENT_TITLE with PRE_AND_POST_RACE in PreEvent, so 62 scenes are unreferenced; finish/results order not established; pause 53-unit vs 50 px pitch read as stacker reflow (lay out stacker rows in the engine); baseline = y - (ascent - descent)/2, which middle box interim.
+
+## Q60 (M6/INTRO, not blocking): cutscene camera details
+
+libs/cutscene reads the CutsceneManager documents and plays them with the
+original's key rule (Hermite time-to-index map, Catmull-Rom pose spline;
+read from the camera player). Interims, narrow: (a) roll sign (applied
+positive = top leans right; no disc cam framing evidence); (b) FOV taken
+as the vertical angle like the driving cameras; (c) post-effect keys
+(DOF, exposure, saturation) interpolated linearly; (d) the FadeOptions S
+curve taken as smoothstep; (e) CWhiteFlash shown as white fading over
+0.1 s (about 6 frames, UI_LAYOUTS) and CBlackOut as an instant cut held
+until the next fade or cutscene; (f) PlacePlayerCar `initialSpeed` unit
+(read as km/h) and `timeTillRelease`; (g) whether in-engine cutscenes can
+be skipped (the engine does not skip them; FMV_01/FMV_02 skip with
+confirm, as `confirmskip="true"`). A trace of the post-effect blend and
+the white-flash state, or a capture at a cut, answers (a)-(e).
+
+## Q61 (M6/INTRO): scoring the race to the festival
+
+FirstTimeCareer.xml has `RacePointsRequired Points="6"`, six
+TicketTriggers, RadioDJTriggers and First50TicketsDistances (remaining
+distance fraction to tickets 10..2). Engine interim: the "Heats Places
+Remaining" counter follows the straight-line distance left to
+EndRacePosition through that table, the DJ's FestivalTicketsDepleting<n>
+lines fire as it drops, and the race cannot be lost (the table never
+reaches 0). Needed: (a) what the distance is measured along (route,
+straight line, trigger order); (b) what RacePointsRequired counts and
+whether the player can fail; (c) what the TicketTriggers and
+RadioDJTriggers ids 1001-1005 fire.
+
+## Q62 (M6/INTRO): tutor prompts in the first drive
+
+Strings (IDS_Accelerate_Message, IDS_Steering_Message, IDS_View_Message,
+IDS_Button_to_Rewind) and the GlobalRegistry FirstTimeCareer timers
+(AccelerateTextTimerLimit 3, BrakeTextTimerLimit 3, MapText* 3/15,
+RewindTextTimerLimit 3, EBrake thresholds) are known; the sequence is
+not. Engine interim: only the accelerate prompt, shown from the hand-over
+until the throttle has been held 3 s. Needed: the prompt order, each
+prompt's show and clear condition, and where the brake, e-brake, rewind,
+camera and map prompts start.
+
+## Q63 (M6/INTRO): the first Autoshow restriction
+
+RaceCentralArrive wraps `autoshows.root` in
+CSetRestrictionsForFirstAutoshow true/false. Engine interim: the
+Autoshow opens with the restricted flag set and no rule applied. Needed:
+what the restriction is (car list, price cap, class, a forced pick) and
+whether leaving without buying is allowed.
+
+## Q64 (M6/INTRO): the opening credits
+
+SetupFestivalDrive runs ShowOpeningCredits while New_Diner_Cutscene_2
+plays (the H_OPENING_TITLES scene, probable). Engine interim: a flag for
+the length of that cutscene and no credit text. Needed: the scene, its
+text source and timing (per card or a fixed list), and when it hides.
+
+## Q65 (M6/INTRO): stage order and triggers around the Heats
+
+The flow files give the steps inside each first-time-career state but
+not every hand-off between states, which is code. Engine interims, each
+marked `interim` in libs/race first_time_career.*: (a) the controller
+loading screen leaves on confirm or after 6 s; (b) the Viper drive ends
+within 40 m of FirstTimeCareer StartPosition (the save finding says stage
+1 has a route and an arrival trigger; route 170's end is also accepted);
+(c) the race to the festival ends within 40 m of EndRacePosition; (d)
+the All Comers heats (AllComerRaces 76 then 77, AllComerFinal 77, top 3
+to pass, the final retried otherwise) are launched directly after
+Radio_Unlock, before the drive to Race Central (FMV_01 says the player
+made the heats; FMV_02 that they bagged the last slot; the
+Do_All_Comers_Heat and Travel_To_RaceCentral instructions); the task list
+puts the Heats after the SatNav tutorial, which this contradicts; (e)
+Race Central's arrival point is Wristband_Intro's player placement,
+within 40 m; (f) MustangRace 101 and Travel_To_Workshop are unused.
+Needed: the state transitions of the first-time career activity (stages
+1, 2, 7 and 10 are its save checkpoints) with their triggers, and
+whether the heats are driven to or launched.
