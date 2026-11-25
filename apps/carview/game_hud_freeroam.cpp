@@ -1,4 +1,5 @@
 #include "game_hud_internal.h"
+#include "hud_screen.h"
 
 namespace carview {
 
@@ -1411,6 +1412,13 @@ bool progression_hud(ui::List& l, const DriveHud& st, const Layout& g, float lif
   const float s = g.s;
   const double age = st.time - st.sponsor_at;
   if (st.sponsor_title.empty() || age < 0.0 || age >= 5.5) return false;
+  // The scene's notification, the sponsor logo picked as below.
+  if (hud_notification_available()) {
+    NotifyView n;
+    n.title = st.sponsor_title, n.message = st.sponsor_detail;
+    n.age = age, n.life = 5.5;
+    return draw_hud_notification(l, n, g.w, g.h, g.s, lift_canvas) > 0.0f;
+  }
 
   const float fade_a = ease_in_time(age, 0.0, 0.25) * (1.0f - clamp01((age - 4.9) / 0.6));
   const float cx = 0.5f * g.w;

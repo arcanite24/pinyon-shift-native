@@ -29,6 +29,7 @@
 #include "freeroam/skills.h"
 #include "game_hud.h"
 #include "hud_scene.h"
+#include "hud_screen.h"
 #include "pause_screen.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -98,6 +99,8 @@ int main() {
     return slot.get();
   });
 
+  carview::install_scene_help_bar();
+
   // EN string tables (disc, v4, packages).
   cars::Install inst;
   std::string why;
@@ -155,7 +158,72 @@ int main() {
                  "NAV_POSITION_INDICATOR"});
   }
 
+  {
+    // The driving HUD's bound nodes (hud_screen.cpp), by element.
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kHudScene)));
+    check(sd.ok(), "947_HUD loads");
+    check_nodes(sd, "947_HUD",
+                {// The dial.
+                 "GAUGE_ANALOG", "GAUGE_ANALOG/ASSIST_ICONS", "ASSIST_ICONS/HUD_SHIFT_LIGHT", "GAUGE_ANALOG/FUEL_ANALOG",
+                 "GAUGE_ANALOG/RPM_ANALOG", "RPM_ANALOG/Elements", "Elements/_P_Tach_Needle", "Elements/Large_Hatches",
+                 "Elements/Mid_Hatches", "Elements/Small_Hatches", "Elements/Numbers", "Elements/RPM_and_MPH",
+                 "_P_Tach_Needle/Group/Rectangle", "_P_Tach_Needle/Group/Swooshes", "Swooshes/Down/DownTrail",
+                 "Swooshes/Up/Uptrail", "GAUGE_ANALOG/Speedo", "Speedo/Group/digit0", "GAUGE_ANALOG/TEXT_GEAR_ANALOG",
+                 "GAUGE_ANALOG/TEXT_SPEED_UNIT_ANALOG", "Rectangle_ON", "Rectangle_OFF", "Glow",
+                 // The race blocks.
+                 "EndConditionBlock/TEXT_ENDCON_CURRENT", "EndConditionBlock/TEXT_ENDCON_FINAL",
+                 "EndConditionBlock/TEXT_ENDCON_SLASH", "EndConditionBlock/TEXT_ENDCON_UNITS", "PlaceBlock/TEXT_PLACE",
+                 "PlaceBlock/TEXT_PLACE_LABEL", "PlaceBlock/TEXT_PLACE_MAX", "PlaceBlock/TEXT_PLACE_SLASH",
+                 "HUDTimes/LINE1", "LINE1/TEXT_TITLE_1", "LINE1/value/TEXT_VALUE_1", "PositionIndicators",
+                 "TEXT_GAMERTAG", "TEXT_POSITION",
+                 // The skill chain and the popularity disc.
+                 "DrivingSkill/CompleteComponent/ScoreGroup/anim_helper", "CompleteComponent/SkillGroup/Skill1",
+                 "Skill1/anim_helper/Skill", "SkillGroup/Skill2", "Total/anim_helper/TEXT_TOTAL", "Multiplier",
+                 "anim_helper/TEXT_MULTIPLIER", "TEXT_X", "Smudge_Tape", "TEXT_POP_SKILLNAME", "SkillValue",
+                 "ComboIcon", "PopularityBar", "PopularityBar/ValueScale/Stars", "ValueScale/ValueType",
+                 "ValueType/TEXT_LEVEL", "ValueType/TEXT_LEVEL_SUFFIX", "CircleFlash", "Flash_SmokeRing",
+                 "Flash_SmokeRing2",
+                 // The event prompt.
+                 "ActivationPrompt/All", "All/Title", "All/Event_Name", "All/Call_to_Action", "Call_to_Action/Default",
+                 "Call_to_Action/Locked",
+                 // The notifications.
+                 "CombinedNotification/State/DoubleTape", "DoubleTape/RankIcon/Bar/Text", "DoubleTape/RankIcon/Bar/Bar",
+                 "DoubleTape/Icons/MiscIcon", "DoubleTape/Icons/MailIcon", "Icons/SponsorScaler/Sponsor",
+                 "DoubleTape/TEXT1", "DoubleTape/TEXT2", "DoubleTape/TEXT3", "DoubleTape/Panel", "DoubleTape/Panel2",
+                 "PopularityUnlock/MainMessage/TEXT_TITLE", "MainMessage/Crisp_Tape", "PopularityUnlock/ShowMe/TEXT_SHOW",
+                 // The start and the wrong way sign.
+                 "I_321_Go/Group/GO", "I_321_Go/Group/TEXT_COUNT", "I_321_Go/Group/Paused", "WrongWay/Sign_Top"});
+  }
+  {
+    // The help bar's buttons (help_bar_screen.cpp).
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kButtonBarScene)));
+    check(sd.ok(), "BUTTON_BAR_SCENE loads");
+    const int buttons = sd.find_path("ButtonBar/Buttons");
+    check(buttons >= 0, "BUTTON_BAR_SCENE: node ButtonBar/Buttons");
+    for (int k = 0; k < 7 && buttons >= 0; ++k) {
+      const std::string name = "HelpButton" + std::to_string(k);
+      const int b = sd.find(name, buttons);
+      check(b >= 0, "BUTTON_BAR_SCENE: node " + name);
+      if (b < 0) continue;
+      for (const char* part : {"Text_BUTTON", "Pill", "BUTTON_LOGO"})
+        check(sd.find(part, b) >= 0, "BUTTON_BAR_SCENE: node " + name + "/" + part);
+    }
+  }
+
   // 2. Every string the screens bind resolves in the EN tables.
+  {
+    // The driving HUD's labels and every notification's lines.
+    using namespace carview::hud_text;
+    for (const carview::StringRef* r :
+         {&kKmh, &kMph, &kEnterNow, &kSignMeUp, &kGo, &kProgress, &kPlace, &kLaps, &kRace, &kLap, &kLast, &kBest})
+      check_ref(*r, "HUD label " + std::string(r->fallback));
+    for (const auto& n : carview::notify_strings())
+      for (const carview::StringRef* r : {&n.tag, &n.title, &n.message})
+        if (!r->table.empty()) check_ref(*r, "notification line " + std::string(r->fallback));
+  }
+  for (const char* id : {"IDS_HudOption_Timers", "IDS_HudOption_WrongWay", "IDS_HudOption_Names",
+                         "IDS_HudOption_PopularitySkills"})
+    check_ref({"InGame", id, 0, id}, std::string("HUD toggle ") + id);
   {
     PauseMenu pm;
     for (bool race : {false, true}) {
@@ -290,6 +358,150 @@ int main() {
     shot("message_centre.png", pm, false);
     pm.show(true);
     shot("pause_race.png", pm, true);
+
+    // The driving HUD, over the original's captures when
+    // SHIFT_SCENE_SCREEN_HUD_DIR names their folder (the calibration loop:
+    // the engine's HUD drawn on the original's).
+    const char* hud_env = std::getenv("SHIFT_SCENE_SCREEN_HUD_DIR");
+    const std::filesystem::path hud_dir = hud_env ? hud_env : "";
+    auto hud_shot = [&](const std::string& file, const std::string& orig, const carview::DriveHud& hd) {
+      std::vector<uint8_t> fb = backdrop;
+      if (!hud_dir.empty()) {
+        int w = 0, h = 0, n = 0;
+        const std::filesystem::path src = std::filesystem::path(orig).is_absolute() ? orig : hud_dir / orig;
+        if (uint8_t* px = stbi_load(src.string().c_str(), &w, &h, &n, 4)) {
+          if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
+          stbi_image_free(px);
+        }
+      }
+      carview::ui::List l;
+      carview::build_drive_hud(l, hd, float(W), float(H));
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / file;
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + file);
+    };
+    carview::DriveHud roam;
+    roam.driving = true;
+    roam.time = 10.0;
+    roam.kmh = 57;
+    roam.rpm = 6900;
+    roam.redline_rpm = 7000;
+    roam.gear = 3;
+    roam.abs_enabled = roam.tcs_enabled = true;
+    hud_shot("hud_roam.png", "05_roam_hud_day_drive_orig.png", roam);
+    carview::DriveHud r34 = roam;
+    r34.kmh = 0;
+    r34.rpm = 900;
+    r34.redline_rpm = 8000;
+    r34.gear = 1;
+    hud_shot("hud_roam_r34.png", "15_countdown_orig.png", r34);
+
+    // The event prompt in an activation zone (09_event_marker_prompt_orig.png).
+    carview::WorldMarkerHud wm;
+    wm.visible = wm.in_range = true;
+    wm.sponsor = carview::event_sponsor(43);
+    check(wm.sponsor == "HORIZON presents", "Events/IDS_Sponsor_43 reads HORIZON presents: " + wm.sponsor);
+    wm.title = carview::event_name_without_sponsor(carview::text_of({"Events", "IDS_Name_43", 0, "?"}), wm.sponsor);
+    check(wm.title == "The Gauntlet", "event 43's name without its sponsor: " + wm.title);
+    wm.prompt = carview::text_of(carview::hud_text::kSignMeUp);
+    wm.icon = std::getenv("SHIFT_HUD_PROMPT_ICON") ? std::getenv("SHIFT_HUD_PROMPT_ICON") : "ICONS/ACTIVATIONZONEICONS/P2P2";
+    carview::DriveHud prompt_d = roam;
+    prompt_d.kmh = 0, prompt_d.rpm = 900, prompt_d.gear = 1;
+    prompt_d.world_marker = &wm;
+    hud_shot("hud_prompt.png", "09_event_marker_prompt_orig.png", prompt_d);
+
+    // A sprint (16_race_hud_orig.png) and a circuit (the oracle's
+    // race-hud-notification.png, by absolute path in SHIFT_SCENE_SCREEN_ORACLE).
+    carview::RaceHud sprint;
+    sprint.phase = carview::RaceHud::kRacing;
+    sprint.place = 8, sprint.cars = 8, sprint.clock = 16.851, sprint.progress = 0.0;
+    const char* names[] = {"Peter Houston", "Ana Ruiz", "Tom Hale", "Lee Park", "Sam Cole", "Josh Pollock",
+                           "Modesto Estrada", "User"};
+    for (int i = 0; i < 8; ++i) {
+      carview::RaceHudRow row;
+      row.name = names[i], row.place = i + 1, row.player = i == 7;
+      sprint.rows.push_back(row);
+    }
+    carview::DriveHud race_d = roam;
+    race_d.kmh = 73, race_d.rpm = 5200, race_d.gear = 2;
+    race_d.race = &sprint;
+    carview::SkillChainHud sprint_sk;
+    sprint_sk.active = true, sprint_sk.chain_points = 250, sprint_sk.multiplier_f = 1.1f;
+    sprint_sk.last_skill = "GREAT ONE EIGHTY", sprint_sk.last_points = 150, sprint_sk.last_skill_at = 9.5;
+    race_d.skills = &sprint_sk;
+    hud_shot("hud_race.png", "16_race_hud_orig.png", race_d);
+    // The start signal (15b_countdown_go_orig.png): GO! alone over the road;
+    // and the wrong way sign.
+    {
+      carview::RaceHud go = sprint;
+      go.place = 7, go.clock = 0.103;
+      carview::DriveHud go_d = race_d;
+      go_d.kmh = 0, go_d.rpm = 1000, go_d.gear = 1, go_d.skills = nullptr;
+      go_d.race = &go;
+      hud_shot("hud_race_go.png", "15b_countdown_go_orig.png", go_d);
+      // The interim count (SPEC_QUESTIONS Q74) at 2.
+      go.phase = carview::RaceHud::kCountdown, go.clock = -1.6, go.digit = 2;
+      hud_shot("hud_race_count.png", "15_countdown_orig.png", go_d);
+      go.phase = carview::RaceHud::kRacing;
+      go.clock = 20.0, go.wrong_way = true;
+      hud_shot("hud_race_wrong_way.png", "16_race_hud_orig.png", go_d);
+    }
+    carview::RaceHud circuit;
+    circuit.phase = carview::RaceHud::kRacing;
+    circuit.circuit = true, circuit.lap = 4, circuit.laps = 4, circuit.place = 4, circuit.cars = 8;
+    circuit.clock = 164.698, circuit.lap_time = 39.697, circuit.last_lap = 40.336, circuit.best_lap = 40.336;
+    const char* cnames[] = {"Alan Brewer", "Kim Novak", "Peter Bankov", "User", "Don Funk", "Ira Bell", "Joe Kerr",
+                            "Max Lane"};
+    for (int i = 0; i < 8; ++i) {
+      carview::RaceHudRow row;
+      row.name = cnames[i], row.place = i + 1, row.player = i == 3;
+      circuit.rows.push_back(row);
+    }
+    carview::DriveHud circuit_d = r34;
+    circuit_d.kmh = 143, circuit_d.rpm = 7600, circuit_d.gear = 3;
+    circuit_d.race = &circuit;
+    carview::SkillChainHud circuit_sk;
+    circuit_sk.active = true, circuit_sk.chain_points = 583, circuit_sk.multiplier_f = 1.4f;
+    circuit_sk.last_skill = "GREAT DRAFTING", circuit_sk.last_points = 150, circuit_sk.last_skill_at = 9.5;
+    circuit_d.skills = &circuit_sk;
+    // The oracle's sponsor notification: RANK 4 UNLOCKED! over the reward and
+    // the drafting challenge, with its sponsor's logo.
+    {
+      const auto t = carview::notify_text(carview::NotifyKind::kSponsorRank, {"4"}, {"+15,000"}, {});
+      check(t.tag == "RANK 4 UNLOCKED!" && t.title == "+15,000 Cr", "sponsor notification lines: " + t.tag + " / " + t.title);
+      circuit_d.popup_kind = carview::NotifyKind::kSponsorRank, circuit_d.popup_icon = carview::NotifyIcon::kSponsor;
+      circuit_d.popup_tag = t.tag, circuit_d.popup_title = t.title;
+      circuit_d.popup_at = circuit_d.time - 1.5;
+      for (size_t i = 0; i < rows.size() && i < skills.sponsor_challenges.size(); ++i)
+        if (skills.sponsor_challenges[i].id == "Draft")
+          circuit_d.popup_text = rows[i].challenge_title, circuit_d.popup_logo = rows[i].logo_texture;
+      check(circuit_d.popup_text == "DRAFTING CHALLENGE", "drafting challenge name: " + circuit_d.popup_text);
+    }
+    const char* oracle = std::getenv("SHIFT_SCENE_SCREEN_ORACLE");
+    hud_shot("hud_race_circuit.png", oracle ? std::string(oracle) + "/race-hud-notification.png" : "", circuit_d);
+    circuit_d.popup_title.clear();
+    // A chain just banked: the total and the popularity disc.
+    carview::SkillChainHud banked_sk;
+    banked_sk.banked_total = 100, banked_sk.banked_at = 9.0, banked_sk.popularity_rank = 165;
+    banked_sk.prev_popularity_rank = 165, banked_sk.pop_anim_progress = 0.3, banked_sk.pop_rank_anim_t = 1.0;
+    circuit_d.skills = &banked_sk;
+    circuit.lap = 1, circuit.place = 7, circuit.clock = 38.635, circuit.lap_time = 34.668;
+    circuit.last_lap = circuit.best_lap = -1;
+    hud_shot("hud_race_banked.png", oracle ? std::string(oracle) + "/race-hud-skill-banked.png" : "", circuit_d);
+    // A free-roam notification (the discount signs) and the showcase banner.
+    {
+      carview::DriveHud n = roam;
+      const auto t = carview::notify_text(carview::NotifyKind::kDiscountSigns, {}, {"12", "100"}, {"12%"});
+      check(t.title == "12/100 DISCOUNT SIGNS SMASHED" && t.message == "Total upgrades discount: 12%",
+            "discount sign lines: " + t.title + " / " + t.message);
+      n.popup_kind = carview::NotifyKind::kDiscountSigns, n.popup_title = t.title, n.popup_text = t.message;
+      n.popup_at = n.time - 1.5;
+      hud_shot("hud_notify_signs.png", "05_roam_hud_day_drive_orig.png", n);
+      const auto u = carview::notify_text(carview::NotifyKind::kShowcaseUnlocked, {}, {}, {});
+      n.popup_kind = carview::NotifyKind::kShowcaseUnlocked, n.popup_title = u.title, n.popup_text = u.message;
+      check(u.title == "SHOWCASE EVENT UNLOCKED!" && u.message == "Show me!", "showcase lines: " + u.title);
+      hud_shot("hud_notify_showcase.png", "05_roam_hud_day_drive_orig.png", n);
+    }
   }
 
   if (g_failures > 0) {

@@ -1853,3 +1853,36 @@ Needed, narrow: the writer of the camera collision input channel (its
 unit, and how many frames a pulse lasts, which the followers' attack
 rates make matter), and the impulse branch of the layer update (edge,
 level or force).
+
+## Q73 (UI, not blocking): the dial's rpm scale
+
+The HUD dial (`947_HUD` `GAUGE_ANALOG`) has 12 numeral slots, 12 large,
+12 mid and 24 small hatch slots, each under a `rotation` group the game
+turns at run time; the scene does not say how many it shows or where.
+Read off two retail captures: the Mazda MX-5 (redline about 7,000 rpm)
+shows 0..8 in ones on a sweep that runs one step past the 8 (0..9, about
+0.52 rad a step from 2.34 rad left of the top); the Nissan Skyline GT-R
+R34 (redline about 8,000 rpm) shows 0..10 in twos over the whole sweep.
+The engine's rule (`dial_scale()` in `apps/carview/hud_screen.cpp`): the
+sweep spans the redline in thousands rounded up plus two; up to 9 it
+counts in ones with numerals to one below the end, above it in twos to an
+even end. Needed, narrow: the code that fills the dial's slots (the rpm
+range it reads per car and how it picks the step and the last numeral),
+or captures of a car with a redline of 6,000 or 9,000 rpm and up.
+
+## Q74 (UI, not blocking): the race start count without a gantry
+
+At a festival start the retail game counts down on the start gantry's
+LEDs (0:05..0:01, then GO) and shows nothing on screen until the signal,
+when `947_HUD` `I_321_Go`'s `GO` text shows GO! (`15_countdown_orig.png`,
+`15b_countdown_go_orig.png`). The node `I_321_Go/Group/TEXT_COUNT` is laid
+out at full opacity but nothing in those captures fills it. The engine
+runs the world clock that the gantry LEDs read from the race clock, but
+its gantry panels stay dark at the FR16 start (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
+and textured, and the shipped shaders carry the LED branch, so the
+cause lies past that (the texture or the draw's intensity) and is not
+found), so until they light it fills
+`TEXT_COUNT` with 3, 2, 1 at every start as an interim. Unknown: whether a start with no gantry (a street race, a
+point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
+Needed, narrow: a capture of such a start, or the code that writes
+`TEXT_COUNT`.

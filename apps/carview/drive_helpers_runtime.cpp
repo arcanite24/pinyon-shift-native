@@ -19,6 +19,7 @@
 #include "cars/mods.h"
 #include "fh1data/xds.h"
 #include "hud_scene.h"
+#include "hud_screen.h"
 #include "mods_page.h"
 #include "render_modern.h"
 #include "ui.h"
@@ -159,6 +160,8 @@ bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache,
   });
   // The UI scenes by name, on first use (FORMAT-UISCENES: Scenes/ui4/<name>.fbf, .bsg and
   // .bgf; v4's copy of each file first).
+  // The help bar on BUTTON_BAR_SCENE's own nodes once the scenes load.
+  carview::install_scene_help_bar();
   carview::set_ui_scenes([st](const std::string& name) -> const fh1::UiScene* {
     if (auto it = st->scene_cache.find(name); it != st->scene_cache.end()) return it->second.get();
     auto& slot = st->scene_cache[name];

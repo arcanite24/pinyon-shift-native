@@ -1,4 +1,5 @@
 #include "drive_session.h"
+#include "hud_screen.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1285,7 +1286,20 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                                             ? (std::string(race::CareerCatalog::event_style_label(*active_trigger.event)) +
                                                "  •  " + carview::thousands(int64_t(active_trigger.event->cash_prize)) + " Cr")
                                             : elig.reason;
-                world_marker.prompt = elig.eligible ? "ENTER NOW" : "INELIGIBLE";
+                world_marker.prompt = elig.eligible ? carview::text_of(carview::hud_text::kEnterNow) : elig.reason;
+                // A sponsored event reads "HORIZON PRESENTS" over its name and
+                // asks SIGN ME UP! (09_event_marker_prompt_orig.png).
+                world_marker.sponsor = carview::event_sponsor(active_trigger.event->event_id);
+                if (!world_marker.sponsor.empty()) {
+                  world_marker.title = carview::event_name_without_sponsor(world_marker.title, world_marker.sponsor);
+                  if (elig.eligible) world_marker.prompt = carview::text_of(carview::hud_text::kSignMeUp);
+                }
+                // The icon's ring is the event's wristband colour: P2P0 is the
+                // festival's white, then one per level (The Gauntlet, level 1,
+                // shows P2P2's green).
+                world_marker.icon = std::string("ICONS/ACTIVATIONZONEICONS/") +
+                                    (active_trigger.event->laps > 1 ? "CIRCUIT" : "P2P") +
+                                    std::to_string(std::clamp(active_trigger.event->level + 1, 0, 7));
                 const int bp = app.career_catalog.best_place(*active_trigger.event, app.career);
                 if (bp == 0) world_marker.badge = "NEW";
                 else if (bp == 1) world_marker.badge = "1ST";

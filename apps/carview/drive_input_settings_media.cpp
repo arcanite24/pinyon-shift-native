@@ -71,6 +71,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 live_sound_enabled = ls.sound;
                 live_radio_enabled = ls.radio;
                 live_hud_speedo_mode = ls.hud_speedo_mode;
+                live_hud = ls.hud;
                 if (live_minimap_mode != ls.minimap_mode) {
                   live_minimap_mode = ls.minimap_mode;
                   minimap_at = -1;

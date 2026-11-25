@@ -274,6 +274,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         d.boost_psi = vehicle.boost_psi();
         d.boost_max_psi = vehicle.params().boost_max_psi;
         d.speedo_mode = live_hud_speedo_mode;
+        d.hud = live_hud;
         d.club_tag = app.saved.car_club_tag;
         // Barn Find proximity radar: signal strength [0..1] when driving inside an active rumour circle.
         if (!app.race && app.progress_loaded && !app.collectibles.barns.empty()) {
@@ -613,6 +614,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (!race_line) d.toast = banner;
         d.popup_title = popup.title, d.popup_text = popup.text, d.popup_at = popup.at;
         d.popup_progress = popup.progress, d.popup_colour = popup.colour;
+        d.popup_kind = popup.kind, d.popup_icon = popup.icon, d.popup_tag = popup.tag, d.popup_logo = popup.logo;
         // Career header panels (pause menu & sub-menus).
         d.credits = app.career.credits;
         d.popularity_rank = app.current_pop_rank();

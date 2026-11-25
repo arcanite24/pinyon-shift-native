@@ -17,6 +17,7 @@
 #include "game_hud.h"
 #include "hud.h"
 #include "hud_scene.h"
+#include "hud_screen.h"
 #include "pause_screen.h"
 #include "ui.h"
 #include "ui4_chrome.h"
@@ -356,6 +357,63 @@ void test_scene_screen_strings_and_cues() {
   CHECK(!carview::draw_pause_screen(l, d, ps, 1280, 720));
 }
 
+// A "rotation" group turned by NodeOverride::turn carries its children
+// round its own position (the dial's needle and hatches), and the dial's
+// scale follows the redline.
+void test_scene_turn_and_dial_scale() {
+  fh1::UiScene sc;
+  fh1::UiObject grp;
+  grp.kind = fh1::UiObjectKind::kGroup, grp.id = 1, grp.name = "rotation";
+  sc.objects.push_back(grp);
+  fh1::UiObject mod;
+  mod.kind = fh1::UiObjectKind::kModel, mod.id = 2, mod.name = "hatch";
+  sc.objects.push_back(mod);
+  fh1::UiObject mat;
+  mat.kind = fh1::UiObjectKind::kMaterial, mat.id = 3, mat.colour = {1, 1, 1, 1};
+  sc.objects.push_back(mat);
+  // The pivot at canvas (100, 100); the hatch 50 px above it, 10 px square.
+  fh1::UiNode pivot;
+  pivot.parent = -1, pivot.object = 1, pivot.object_index = 0, pivot.x = 100 - 640, pivot.y = 360 - 100;
+  sc.nodes.push_back(pivot);
+  fh1::UiNode hatch;
+  hatch.parent = 0, hatch.object = 2, hatch.object_index = 1, hatch.x = 100 - 640, hatch.y = 360 - 50;
+  hatch.bounds_min = {-5, -5, 0}, hatch.bounds_max = {5, 5, 0};
+  sc.nodes.push_back(hatch);
+  carview::SceneDraw sd(&sc);
+  auto centre = [&](float turn, float dy) {
+    carview::SceneBindings b;
+    b.index(0).turn = turn;
+    b.index(1).dy = dy;
+    List l;
+    sd.draw_subtree(l, {0, 0, 1}, 0, b);
+    CHECK(l.items().size() == 1);
+    const auto& r = l.items()[0].rect;
+    return std::array<float, 2>{0.5f * (r[0] + r[2]), 0.5f * (r[1] + r[3])};
+  };
+  auto near = [](std::array<float, 2> a, float x, float y) { return std::fabs(a[0] - x) < 0.5f && std::fabs(a[1] - y) < 0.5f; };
+  CHECK(near(centre(0, 0), 100, 50));
+  // A quarter turn counter-clockwise (scene y up) takes the top to the left.
+  CHECK(near(centre(1.5707963f, 0), 50, 100));
+  CHECK(near(centre(-1.5707963f, 0), 150, 100));
+  // A child's own offset turns with it.
+  CHECK(near(centre(1.5707963f, -10), 40, 100));
+
+  // The dial's scale: a 7,000 rpm redline reads 0..9 in ones with numerals
+  // to 8, an 8,000 one 0..10 in twos.
+  const auto mx5 = carview::dial_scale(7000), r34 = carview::dial_scale(8000), low = carview::dial_scale(5500);
+  CHECK(mx5.top == 9 && mx5.step == 1 && mx5.last == 8);
+  CHECK(r34.top == 10 && r34.step == 2 && r34.last == 10);
+  CHECK(low.top == 8 && low.step == 1 && low.last == 7);
+  CHECK(carview::dial_scale(9500).top == 12 && carview::dial_scale(9500).step == 2);
+  // A sponsored event's name loses its sponsor line.
+  CHECK(carview::event_name_without_sponsor("HORIZON presents The Gauntlet", "HORIZON presents") == "The Gauntlet");
+  CHECK(carview::event_name_without_sponsor("Red Rock Rampage", "HORIZON presents") == "Red Rock Rampage");
+  CHECK(carview::event_name_without_sponsor("Red Rock", "") == "Red Rock");
+  // The race clock: two-digit minutes.
+  CHECK(carview::hud_clock(16.851) == "00:16.851" && carview::hud_clock(164.698) == "02:44.698");
+  CHECK(carview::hud_clock(-1) == "00:00.000");
+}
+
 void test_hud_overlays() {
   // TitleScreenHud confirm_new_career
   {
@@ -675,6 +733,7 @@ int main() {
   test_events_page();
   test_pause_menu();
   test_scene_screen_strings_and_cues();
+  test_scene_turn_and_dial_scale();
   test_hud_overlays();
   test_world_trigger();
 

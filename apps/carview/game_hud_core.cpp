@@ -1,4 +1,5 @@
 #include "game_hud_internal.h"
+#include "hud_screen.h"
 #include "pause_screen.h"
 #include "touch_controls.h"
 
@@ -387,6 +388,7 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
     s = std::min(g.s, (tach_r.h() * g.h) / 184.0f);
     f = SceneFrame{tach_r.cx() * g.w - gx * s, tach_r.cy() * g.h - gy * s, s};
   }
+  if (draw_hud_dial(l, st, f)) return;
   const float cx = f.x(gx), cy = f.y(gy);
   render_fh1_dial(l, st, cx, cy, s, &sc, &f, gauge, ring);
 }
@@ -994,8 +996,15 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   float bottom_lift = compute_subtitle_bottom_lift(st.subtitle_active, st.subtitle_lines, st.subtitle_box_h_canvas);
   // The driving HUD hides under a menu (SPEC-UI-LAYOUTS d).
   if (st.driving && !menu) {
-    const bool show_tags = !st.name_tags.empty() && (!st.race || st.race->phase == RaceHud::kRacing);
+    const bool show_tags = st.hud.names_over_cars && !st.name_tags.empty() &&
+                           (!st.race || st.race->phase == RaceHud::kRacing);
     const WorldMarkerHud* active_wm = (st.world_marker && st.world_marker->visible && !st.race) ? st.world_marker : nullptr;
+    // In an activation zone the event prompt is 947_HUD's ActivationPrompt;
+    // the original draws no label over an event out of range.
+    if (active_wm && hud_prompt_available()) {
+      if (active_wm->in_range) draw_hud_prompt(l, *active_wm, w, h, g.s);
+      active_wm = nullptr;
+    }
     if (show_tags || active_wm) {
       static const std::vector<NameTagHud> kEmptyTags;
       render_world_labels_and_nameplates(l, show_tags ? st.name_tags : kEmptyTags, active_wm, st.race != nullptr, w, h,
@@ -1011,15 +1020,16 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       const float used = speed_activity_hud(l, *st.speed_hud, g, st.metric_units, bottom_lift);
       if (used > 0.0f) bottom_lift += used + 8.0f;
     }
-    if (st.skills && !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open)))
-      skill_chain_hud(l, *st.skills, g, st.time);
+    if (st.skills && st.hud.popularity_skills &&
+        !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open)))
+      if (!draw_hud_skills(l, *st.skills, g.w, g.h, g.s, st.time)) skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
       const RaceHud& r = *st.race;
       if (r.phase != RaceHud::kFinished) reset_post_race_page_timer();
       if (r.phase == RaceHud::kGrid) event_card(l, r, g);
       else if (r.phase == RaceHud::kFinished) results(l, r, st, g);
       else {
-        race_hud(l, r, g);
+        race_hud(l, r, g, st.hud);
         showcase_hud(l, r, g, st.metric_units);
       }
     } else {
@@ -1027,7 +1037,15 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     }
     if (st.rally_stage && st.rally_stage->active) build_rally_pace_notes_hud(l, *st.rally_stage, w, h);
     if (progression_hud(l, st, g, bottom_lift)) bottom_lift += 94.0f;
-    if (popup_card(l, st, g, bottom_lift)) bottom_lift += 72.0f;
+    if (hud_notification_available()) {
+      NotifyView n;
+      n.kind = st.popup_kind, n.icon = st.popup_icon;
+      n.tag = st.popup_tag, n.title = st.popup_title, n.message = st.popup_text, n.logo = st.popup_logo;
+      n.age = st.time - st.popup_at, n.life = kPopupSeconds;
+      bottom_lift += draw_hud_notification(l, n, g.w, g.h, g.s, bottom_lift);
+    } else if (popup_card(l, st, g, bottom_lift)) {
+      bottom_lift += 72.0f;
+    }
     const bool hide_dial = st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open);
     if (!hide_dial) {
       if (st.speedo_mode == 1) render_digital_dial(l, st, g);

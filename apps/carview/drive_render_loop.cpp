@@ -593,8 +593,7 @@ void DriveSession::run_window_loop() {
                   br.notified_ready = true;
                   sync_pending_barns_to_save(app);
                   save_due = true;
-                  popup = {"BARN FIND RESTORED!", br.car_name + " READY TO CLAIM AT DAK'S GARAGE", vehicle.time(), -1,
-                           carview::ui::rgba(74, 238, 97)};
+                  popup = Popup::notify(NotifyKind::kBarnReady, vehicle.time(), {br.car_name});
                   app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
                   apply_campaign_action(app.campaign.on_barn_restored(br.barn_id, br.car_name, &app.audio_host));
                 }

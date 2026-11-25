@@ -894,8 +894,28 @@ void tab_strip(ui::List& l, float s, float x0, float y0, float max_x, const std:
   }
 }
 
+namespace {
+ButtonBarDrawer g_button_bar_drawer = nullptr;
+}  // namespace
+
+void set_button_bar_drawer(ButtonBarDrawer drawer) { g_button_bar_drawer = drawer; }
+
+float button_glyph_half_width(const char* button, float r) {
+  const std::string btn = button ? std::string(button) : std::string("A");
+  const std::string eff_lbl = glyph_label_for(btn);
+  if (active_glyph_set() == GlyphSet::kKeyboard) {
+    const float char_w = r * (eff_lbl.size() > 3 ? 0.50f : 0.62f);
+    return std::max(r * 1.08f, float(eff_lbl.size()) * char_w * 0.56f + r * 0.45f);
+  }
+  if (btn == "LB" || btn == "RB" || btn == "LT" || btn == "RT" || btn.size() > 2 ||
+      (active_glyph_set() == GlyphSet::kPlayStation && (eff_lbl == "OPT" || eff_lbl == "SHARE")))
+    return std::max(r * 1.45f, float(eff_lbl.size()) * r * 0.42f + 4.0f);
+  return r;
+}
+
 void button_bar(ui::List& l, const std::vector<Prompt>& items, float screen_w, float screen_h, float left_x_canvas) {
   if (items.empty()) return;
+  if (g_button_bar_drawer && g_button_bar_drawer(l, items, screen_w, screen_h, left_x_canvas)) return;
   const float s = screen_h / 720.0f;
   float base_cy = screen_h - 52.0f * s;  // BUTTON_BAR_SCENE canvas y = 668
   // Authentic BUTTON_BAR_SCENE alternating micro-tilts (BSG y-up degrees: +1, -1, +1, -0.5, +0.5, 0, +1).
@@ -930,16 +950,8 @@ void button_bar(ui::List& l, const std::vector<Prompt>& items, float screen_w, f
     ui::TextStyle ts = style(ui::Font::kB, 14.0f * s, kWhite, ui::Align::kLeft, false);
     const float tw = ui::List::measure(item.label, ts);
     const std::string btn = item.button ? std::string(item.button) : std::string("A");
-    const std::string eff_lbl = glyph_label_for(btn);
     const float r = 10.5f * s;
-    float glyph_hw = r;
-    if (active_glyph_set() == GlyphSet::kKeyboard) {
-      const float char_w = r * (eff_lbl.size() > 3 ? 0.50f : 0.62f);
-      glyph_hw = std::max(r * 1.08f, float(eff_lbl.size()) * char_w * 0.56f + r * 0.45f);
-    } else if (btn == "LB" || btn == "RB" || btn == "LT" || btn == "RT" || btn.size() > 2 ||
-               (active_glyph_set() == GlyphSet::kPlayStation && (eff_lbl == "OPT" || eff_lbl == "SHARE"))) {
-      glyph_hw = std::max(r * 1.45f, float(eff_lbl.size()) * r * 0.42f + 4.0f);
-    }
+    const float glyph_hw = button_glyph_half_width(btn.c_str(), r);
     const float gx = cx + 10.0f * s + glyph_hw;
     const float btn_pad = 10.0f * s + 2.0f * glyph_hw + 6.0f * s;
     const float pw = tw + btn_pad + 14.0f * s;

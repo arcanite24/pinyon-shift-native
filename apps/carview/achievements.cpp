@@ -1101,6 +1101,21 @@ bool AchievementsSystem::top_left_hud_occupied(const ui::List& list, float w, fl
       max_y = std::max(max_y, it.rect[3]);
     }
   }
+  // Follow a block that runs on below the zone in rows (a circuit's LAP, LAST
+  // and BEST timer lines under RACE), so the chip goes under its last row.
+  for (bool grew = occupied; grew;) {
+    grew = false;
+    for (const auto& it : list.items()) {
+      const float iw = it.rect[2] - it.rect[0];
+      const float ih = it.rect[3] - it.rect[1];
+      if (iw <= 1.0f || ih <= 1.0f || iw >= w * 0.65f || ih >= h * 0.55f) continue;
+      if (it.rect[2] > zone_x0 && it.rect[0] < zone_x1 && it.rect[1] < max_y + 12.0f * s && it.rect[3] > max_y &&
+          it.rect[3] < h * 0.6f) {
+        max_y = it.rect[3];
+        grew = true;
+      }
+    }
+  }
   if (max_bottom_y) *max_bottom_y = max_y;
   return occupied;
 }

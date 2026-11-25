@@ -206,6 +206,7 @@ inline std::vector<MapFilterTabRect> layout_map_filter_tabs(const std::vector<st
 #include "freeroam/festival_ai.h"
 #include "freeroam/skills.h"
 #include "freeroam/speed_zones.h"
+#include "hud_notify.h"
 #include "rally_hub.h"
 #include "ui.h"
 
@@ -310,6 +311,10 @@ struct WorldMarkerHud {
   bool is_festival = false;
   bool eligible = true;
   double distance_m = 0;
+  // The prompt's sponsor line ("HORIZON presents"; empty: none) and its
+  // icon (an ICONS/ACTIVATIONZONEICONS texture; empty: the scene's).
+  std::string sponsor;
+  std::string icon;
 };
 
 // Top-centre Skill Chain & Popularity Rank disc (race-hud.png, race-hud-skill-banked.png).
@@ -561,6 +566,7 @@ struct DriveHud {
   std::string sponsor_title, sponsor_detail;
   double sponsor_at = -1e9;
   std::vector<NameTagHud> name_tags;
+  HudToggles hud;  // the original's HUD options
   double kmh = 0, rpm = 0, redline_rpm = 7000;
   double rpm_rate = 0.0;  // smoothed RPM/s acceleration rate for the Horizon pink needle trail
   int gear = 1;
@@ -610,6 +616,11 @@ struct DriveHud {
   double popup_at = -1e9;
   double popup_progress = -1;
   uint32_t popup_colour = 0;
+  // The notification's kind and icon, its tag (a sponsor's RANK 4
+  // UNLOCKED!) and the sponsor logo texture (CombinedNotification).
+  NotifyKind popup_kind = NotifyKind::kEngine;
+  NotifyIcon popup_icon = NotifyIcon::kMisc;
+  std::string popup_tag, popup_logo;
 };
 inline constexpr double kPopupSeconds = 4.5;
 
