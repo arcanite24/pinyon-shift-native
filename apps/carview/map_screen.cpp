@@ -5,6 +5,7 @@
 
 #include "game_hud.h"
 #include "pause_screen.h"
+#include "race_screens.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -298,7 +299,7 @@ void draw_map(ui::List& l, const DriveHud& st, const MapScreenHud& ms, const Sce
   for (const char* n : {"STATISTICS", "CONTEXT_POPUP", "Tip", "ButtonBar", "Layer2"}) sc.hide(sc.node(n));
   // The cursor: the cross-hair ring when free, the lock-on ring on an icon.
   const int cursor = sc.node("CURSOR"), snap = sc.node("CURSOR_SNAP");
-  const bool overlay = ms.filter_open || ms.dialog != MapDialog::kNone;
+  const bool overlay = ms.filter_open || ms.dialog != MapDialog::kNone || ms.details;
   // The cursor fades in after the map (map_open_f22_orig.png .. f30).
   const float in = float(std::clamp((ms.age - 0.55) / 0.3, 0.0, 1.0));
   if (!overlay && cursor >= 0) {
@@ -475,7 +476,15 @@ bool draw_map_screen(ui::List& l, const DriveHud& st, const MapScreenHud& ms, fl
   const bool overlay = ms.filter_open || ms.dialog != MapDialog::kNone;
   draw_map(l, st, ms, f, false);
   std::vector<std::string> keep;
-  if (ms.filter_open) {
+  if (ms.details && draw_event_ticket(l, st, *ms.details, w, h, false)) {
+    // The ticket over the undimmed map, the map's player bar kept
+    // (map_popup_event_details_orig.png).
+    ui4::button_bar(l,
+                    {{"A", text_of(map_text::kSetRoute)},
+                     {"B", text_of(map_text::kBack)},
+                     {"Y", text_of(map_text::kRestrictions)}},
+                    w, h);
+  } else if (ms.filter_open) {
     draw_filter(l, ms, f);
     ui4::button_bar(l, {{"A", text_of(map_text::kToggle)}, {"B", text_of(map_text::kBack)}}, w, h);
   } else if (ms.dialog != MapDialog::kNone) {

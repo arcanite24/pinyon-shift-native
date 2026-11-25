@@ -75,11 +75,12 @@ void DriveSession::map_screen_open() {
   map_filter_open = false;
   map_filter_row = map_filter_first = 0;
   map_dialog = MapDialog::kNone;
+  map_details = map_details_restrictions = false;
   map_cursor_world();
 }
 
 void DriveSession::map_screen_step(double dt, float sx, float sy, float zoom_axis) {
-  if (map_filter_open || map_dialog != MapDialog::kNone || map_w <= 64 || map_h <= 64) return;
+  if (map_filter_open || map_dialog != MapDialog::kNone || map_details || map_w <= 64 || map_h <= 64) return;
   const SceneFrame f = SceneScreen::frame(float(map_w), float(map_h));
   bool changed = false;
   if (std::fabs(sx) > 1e-4f || std::fabs(sy) > 1e-4f) {
@@ -138,6 +139,10 @@ void DriveSession::map_screen_fill() {
                          : text_of(map_text::kFastTravelAskFree);
   } else if (map_dialog == MapDialog::kNoCredits) {
     ms.dialog_body = text_of(map_text::kFastTravelNoCredits);
+  }
+  if (map_details) {
+    map_details_hud.restrictions_view = map_details_restrictions;
+    ms.details = &map_details_hud;
   }
   if (map_w <= 64 || map_h <= 64) return;
   const SceneFrame f = SceneScreen::frame(float(map_w), float(map_h));
@@ -347,8 +352,33 @@ void DriveSession::map_fast_travel_confirm() {
   map_travel_to(m.x, m.z, 0.0);
 }
 
+bool DriveSession::map_open_details() {
+  if (app.race || map_selected_marker < 0 || size_t(map_selected_marker) >= cached_map_markers.size()) return false;
+  const MapMarker& m = cached_map_markers[size_t(map_selected_marker)];
+  if (m.kind != MapMarker::kEvent || !app.have_career_catalog || !SceneScreen(kEventSummaryScene).ok()) return false;
+  const race::CareerEvent* ev = app.career_catalog.find_event(m.id);
+  if (!ev) return false;
+  map_details_hud = event_ticket(*ev);
+  map_details = true;
+  map_details_restrictions = false;
+  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+  return true;
+}
+
+void DriveSession::map_route_to_selected() {
+  if (app.race || !app.gps_solver.ready() || map_selected_marker < 0 ||
+      size_t(map_selected_marker) >= cached_map_markers.size())
+    return;
+  const MapMarker& m = cached_map_markers[size_t(map_selected_marker)];
+  const auto dk = m.icon_tag == "exhibition" ? traffic::GpsDestKind::kShowcase : traffic::GpsDestKind::kFestivalRace;
+  const drive::Vec3 at = vehicle.position();
+  fire_satnav_event(app.gps_nav.set_destination(m.x, m.z, dk, m.title, at.x, at.z));
+  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+  map_dirty = true;
+}
+
 bool DriveSession::map_screen_event(const SDL_Event& e) {
-  enum class Key { kNone, kA, kB, kX, kLB, kUp, kDown };
+  enum class Key { kNone, kA, kB, kX, kY, kLB, kUp, kDown };
   Key k = Key::kNone;
   if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
     switch (e.gbutton.button) {
@@ -357,6 +387,7 @@ bool DriveSession::map_screen_event(const SDL_Event& e) {
       case SDL_GAMEPAD_BUTTON_BACK:
       case SDL_GAMEPAD_BUTTON_START: k = Key::kB; break;
       case SDL_GAMEPAD_BUTTON_WEST: k = Key::kX; break;
+      case SDL_GAMEPAD_BUTTON_NORTH: k = Key::kY; break;
       case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: k = Key::kLB; break;
       case SDL_GAMEPAD_BUTTON_DPAD_UP: k = Key::kUp; break;
       case SDL_GAMEPAD_BUTTON_DPAD_DOWN: k = Key::kDown; break;
@@ -372,12 +403,35 @@ bool DriveSession::map_screen_event(const SDL_Event& e) {
       case SDLK_BACKSPACE: k = Key::kB; break;
       case SDLK_F: k = Key::kX; break;
       case SDLK_Q: k = Key::kLB; break;
+      case SDLK_Y:
+      case SDLK_TAB: k = Key::kY; break;
       case SDLK_UP:
       case SDLK_W: k = Key::kUp; break;
       case SDLK_DOWN:
       case SDLK_S: k = Key::kDown; break;
       default: break;
     }
+  }
+  if (map_details) {
+    // The ticket: A routes to the event and returns to the map (Q151), B
+    // backs out of the restrictions and then the ticket, Y turns it over.
+    if (k == Key::kA) {
+      map_details = map_details_restrictions = false;
+      map_route_to_selected();
+    } else if (k == Key::kB) {
+      app.audio_host.trigger_ui(audio::UiCue::kCancel);
+      if (map_details_restrictions) map_details_restrictions = false;
+      else map_details = false;
+    } else if (k == Key::kY) {
+      map_details_restrictions = !map_details_restrictions;
+      app.audio_host.trigger_ui(audio::UiCue::kMove);
+    }
+    map_dirty = true;
+    // The ticket takes every key and button; the sticks are held off in
+    // map_screen_step.
+    return e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP || e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+           e.type == SDL_EVENT_GAMEPAD_BUTTON_UP || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+           e.type == SDL_EVENT_MOUSE_WHEEL;
   }
   if (map_dialog != MapDialog::kNone) {
     if (k == Key::kA) {
@@ -427,9 +481,13 @@ bool DriveSession::map_screen_event(const SDL_Event& e) {
       map_dirty = true;
       return true;
     }
-    // DETAILS: the original shows the event's ticket over the map
-    // (map_popup_event_details_orig.png); the engine's events page is the
-    // interim.
+    // DETAILS: an event's ticket over the map
+    // (map_popup_event_details_orig.png). A street-race hub's details have
+    // no capture: the engine's events page at the hub is the interim (Q151).
+    if (map_open_details()) {
+      map_dirty = true;
+      return true;
+    }
     if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
       const MapMarker& m = cached_map_markers[size_t(map_selected_marker)];
       if ((m.kind == MapMarker::kEvent || m.kind == MapMarker::kStreetHub) && !app.race) {

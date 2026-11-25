@@ -752,8 +752,7 @@ void widen_ticket_tape(SceneScreen& sc, int tape, int text, const std::string& s
   sc.at(ce).dx += 0.5f * (from + to) - 0.5f * (rc[0] + rc[2]);
 }
 
-bool draw_event_summary(ui::List& l, const DriveHud& st, const EventSummaryHud& es, float w, float h) {
-  if (es.screen == Screen::kCarSelect) return draw_car_select(l, es, w, h);
+bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& es, float w, float h, bool player_bar) {
   SceneScreen sc(kEventSummaryScene);
   if (!sc.ok()) return false;
   const SceneDraw& sd = sc.scene();
@@ -821,8 +820,15 @@ bool draw_event_summary(ui::List& l, const DriveHud& st, const EventSummaryHud& 
                                                                      : "EVENTTICKETS/EVENTTICKETRESTRICTIONS";
     }
   }
-  bind_player_bar(sc, st);
+  if (player_bar) bind_player_bar(sc, st);
+  else sc.hide(sc.node("PlayerBar"));
   sc.draw(l, SceneScreen::frame(w, h));
+  return true;
+}
+
+bool draw_event_summary(ui::List& l, const DriveHud& st, const EventSummaryHud& es, float w, float h) {
+  if (es.screen == Screen::kCarSelect) return draw_car_select(l, es, w, h);
+  if (!draw_event_ticket(l, st, es, w, h, true)) return false;
   if (es.screen == Screen::kEntryFade) {
     draw_fade(l, es.fade, w, h);
     return true;

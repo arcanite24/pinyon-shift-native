@@ -591,6 +591,48 @@ int main() {
     }
   }
 
+  // The map's X DETAILS draws the event's ticket over the map in place of
+  // the cursor, the popup and the map's help bar: A SET ROUTE, B BACK, Y
+  // RESTRICTIONS (map_popup_event_details_orig.png).
+  {
+    carview::DriveHud md;
+    md.credits = 167700, md.car_name = "Mazda MX-5 Miata";
+    carview::MapScreenHud ms;
+    ms.active = true, ms.age = 5.0, ms.locked = true;
+    ms.popup.kind = carview::MapPopupKind::kCareerRace;
+    ms.popup.title = "Bondurant Valley Skirmish";
+    ms.prompts = {{"A", "SET ROUTE"}, {"B", "EXIT MAP"}, {"X", "DETAILS"}, {"LB", "FILTER"}};
+    carview::ui::List plain;
+    check(carview::draw_map_screen(plain, md, ms, 1280.0f, 720.0f), "map: draws");
+    carview::EventSummaryHud es;
+    es.type = carview::event_type_text(1);
+    es.track = "GLADSTONE DIRT CROSS";
+    es.points = 110, es.credits = 5000;
+    ms.details = &es;
+    carview::ui::List det;
+    check(carview::draw_map_screen(det, md, ms, 1280.0f, 720.0f), "map details: draws");
+    check(det.items().size() > plain.items().size(), "map details: the ticket draws over the map");
+    // The ticket draws in its rect (288..992 x 232..488 on the canvas; its
+    // texts and tapes, the textures are not installed here).
+    auto lit = [](const carview::ui::List& l) {
+      std::vector<uint8_t> fb(size_t(1280) * 720 * 4, 0);
+      carview::ui::rasterize(l.items(), fb, 1280, 720);
+      int n = 0;
+      for (uint32_t y = 260; y < 460; ++y)
+        for (uint32_t x = 320; x < 960; ++x) {
+          const uint8_t* q = &fb[(size_t(y) * 1280 + x) * 4];
+          if (q[0] > 8 || q[1] > 8 || q[2] > 8) ++n;
+        }
+      return n;
+    };
+    const int lp = lit(plain), ld = lit(det);
+    check(ld > lp + 2000, "map details: the ticket draws in its rect (" + std::to_string(lp) + " -> " + std::to_string(ld) + " px)");
+    check(carview::text_of(carview::map_text::kRestrictions) == "RESTRICTIONS" &&
+              carview::text_of(carview::map_text::kBack) == "BACK" &&
+              carview::text_of(carview::map_text::kSetRoute) == "SET ROUTE",
+          "map details: its help bar's strings");
+  }
+
   // 5. Optional renders.
   if (const char* shot_env = std::getenv("SHIFT_SCENE_SCREEN_SHOT_DIR"); shot_env && *shot_env) {
     const std::filesystem::path out_dir = shot_env;
@@ -902,6 +944,18 @@ int main() {
       ms.dialog = carview::MapDialog::kConfirm;
       ms.dialog_body = "Are you sure you want to Fast Travel here for 10,000 credits?";
       hud_shot("map_fasttravel_confirm.png", "map_fasttravel_confirm_orig.png", md);
+      // X DETAILS: the event's ticket over the map.
+      ms.dialog = carview::MapDialog::kNone;
+      carview::EventSummaryHud es;
+      es.type = carview::event_type_text(1);
+      es.ticket = carview::event_ticket_texture(1, "001");
+      es.track = "GLADSTONE DIRT CROSS";
+      es.track_info = carview::event_track_info(1, true);
+      es.points = 110, es.credits = 5000, es.car_class = "A", es.restriction = "MUST BE AWD";
+      es.eligibility = carview::text_of(carview::race_text::kGarageCarsEligible);
+      ms.details = &es;
+      hud_shot("map_details.png", "map_popup_event_details_orig.png", md);
+      ms.details = nullptr;
     }
 
     // The front end and the loading screen over the original's frames.
