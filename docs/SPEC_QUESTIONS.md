@@ -1998,3 +1998,61 @@ Still interim:
   from the schema at run time.
 
 Needed: the table that maps MetaDifficulty to assists.
+
+## Q72 (FEEL-26, FEEL-27, FEEL-31, not blocking): look-around, sputter rumble and camera blur
+
+Three parts of the driving feel now follow the original's data, but
+each still has an interim rule.
+
+**Right-stick look (FEEL-26).** The right stick picks one of the
+original's look targets in every camera: LookBack (pi), LookLeft or
+LookRight (pi/2). The stick click is LookStraightBack. The chase
+cameras no longer orbit continuously. Still interim:
+
+- **Threshold.** A target is picked past half deflection on the
+  dominant axis, and a diagonal counts as left or right. The original's
+  stick thresholds are not decoded.
+- **Spring rate.** The look spring is the engine's 0.1 s
+  (SPEC-CAMERAS).
+- **Invert setting.** The profile's `InvertCameraLookBack`
+  (`forzaprofile.sch`) is not read yet.
+
+**Engine sputter (FEEL-27).** OnEngineSputter rumble now comes from
+engine damage, not the rev limiter. PhysicsSettings.ini gives
+`EngineDamageLevelStartSputter 0.3` and
+`EngineDamageMaxSputtersPerSec 1`, and both are read at load. Still
+interim:
+
+- **Rate rule.** Sputters are evenly spaced. Their rate rises linearly
+  from 0 at the start level to the maximum at full damage. The
+  original's rule between those two values is not decoded, and it may
+  be random.
+- **Damage level.** The damage level is the engine's own damage model
+  (FEEL-19 to FEEL-23, owned by another branch).
+
+**Camera motion blur (FEEL-31).**
+
+- **Strength.** Strength is TrackSettings.xml `motionBlurAmount` × the
+  car speed over `DetailBlurMPHForMaxBlur`, capped at 0.95. The engine's
+  0.55 floor and 18 mph offset are gone, so the free-roam baseline of 0
+  means no blur.
+- **Direction.** On Tier 0, the blur is six taps along the camera's
+  screen motion from its rotation over the last frame, which smears
+  sideways in turns. This replaced the radial blur, which photo mode
+  still uses for its shutter effect. The velocity-blur tiers already
+  follow per-pixel motion.
+
+Still interim:
+
+- **Dynamic amount.** The original changes the amount at run time
+  (CDynamicRenderMotionBlurControl), and that rule is not decoded. So
+  races or modes that should blur from a 0 baseline do not.
+- **Frame-rate scaling.** The motion is per rendered frame, so the
+  smear shortens at high frame rates. The original runs at 30 fps.
+- **Car mask.** The player car is kept sharp with the engine's depth
+  mask.
+- **Camera travel.** Camera travel is not part of the Tier-0 vector.
+
+Needed: the stick thresholds and InvertCameraLookBack handling; the
+sputter scheduler; the dynamic motion-blur amount rule and its time
+base.
