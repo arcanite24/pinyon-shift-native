@@ -206,6 +206,7 @@ inline std::vector<MapFilterTabRect> layout_map_filter_tabs(const std::vector<st
 #include "freeroam/festival_ai.h"
 #include "freeroam/skills.h"
 #include "freeroam/speed_zones.h"
+#include "hud_notify.h"
 #include "rally_hub.h"
 #include "ui.h"
 
@@ -614,6 +615,11 @@ struct DriveHud {
   double popup_at = -1e9;
   double popup_progress = -1;
   uint32_t popup_colour = 0;
+  // The notification's kind and icon, its tag (a sponsor's RANK 4
+  // UNLOCKED!) and the sponsor logo texture (CombinedNotification).
+  NotifyKind popup_kind = NotifyKind::kEngine;
+  NotifyIcon popup_icon = NotifyIcon::kMisc;
+  std::string popup_tag, popup_logo;
 };
 inline constexpr double kPopupSeconds = 4.5;
 

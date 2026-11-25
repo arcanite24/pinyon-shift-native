@@ -13,6 +13,7 @@
 #include "drive_helpers.h"
 #include "drive_helpers_runtime.h"
 #include "game_hud.h"
+#include "hud_screen.h"
 #include "hud.h"
 #include "platform_support.h"
 #include "rhi/rhi.h"
@@ -611,7 +612,9 @@ int run_headless_menu_dumps(const DriveConfig& cfg, UiFontCache& font_cache) {
       carview::DriveHud d;
       d.kmh = 87, d.rpm = 5200, d.redline_rpm = 7500, d.gear = 3, d.time = 1.5;
       d.credits = 1300, d.band_name = "YELLOW WRISTBAND", d.band_points = 50, d.band_hi = 220;
-      d.popup_title = "DISCOUNT SIGN 12/100", d.popup_text = "UPGRADES 12% OFF", d.popup_at = 0;
+      const auto sign = carview::notify_text(carview::NotifyKind::kDiscountSigns, {}, {"12", "100"}, {"12%"});
+      d.popup_kind = carview::NotifyKind::kDiscountSigns;
+      d.popup_title = sign.title, d.popup_text = sign.message, d.popup_at = 0;
       d.popup_progress = 0.12;
       carview::ui::List list;
       list.rect(0, 0, 1280, 720, carview::ui::rgba(70, 92, 120), 0, carview::ui::rgba(150, 128, 96));

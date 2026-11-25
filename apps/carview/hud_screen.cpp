@@ -656,4 +656,236 @@ bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, fl
   return sc.draw(l, hud_frame(HudAnchor::kTop, w, h, s), prompt) > 0;
 }
 
+// --- Notifications ----------------------------------------------------------
+
+const std::vector<NotifyStrings>& notify_strings() {
+  using K = NotifyKind;
+  static const std::vector<NotifyStrings> table = {
+      {K::kRoadsDriven, {}, {"Activities", "IDS_RoadDiscovered_Title", 0, "ROADS DRIVEN"},
+       {"Activities", "IDS_RoadDiscovered_Message", 0, "{0}/{1}"}},
+      {K::kDiscountSigns, {}, {"Activities", "IDS_FlyerCollected", 0, "{0}/{1} DISCOUNT SIGNS SMASHED"},
+       {"Activities", "IDS_FlyerCollected_Message", 0, "Total upgrades discount: {0}"}},
+      {K::kBarnRumour, {}, {"Barnfind", "IDS_Spawned_Body", 0, "NEW BARN FIND RUMOR"}, {}},
+      {K::kBarnRestoring, {}, {"Activities", "IDS_BarnfindBeingRestored_Message", 0, "{0} IS BEING RESTORED"},
+       {"Activities", "IDS_BarnfindBeingRestored_Title", 0, "DAK WILL CALL YOU WHEN IT'S READY"}},
+      {K::kBarnReady, {}, {"Barnfind", "IDS_Ready_Message", 0, "BARN FIND READY - {0}"}, {}},
+      {K::kOutpostDiscovered, {}, {"Missions", "IDS_DiscoverGasStation_Title", 0, "HORIZON OUTPOST DISCOVERED"},
+       {"Missions", "IDS_DiscoverGasStation_Msg1", 0, "NEW FAST TRAVEL DESTINATION UNLOCKED"}},
+      {K::kSpeedStuntDone, {}, {"GasStation", "IDS_SpeedStuntCompleted", 0, "SPEED STUNT COMPLETED"},
+       {"UnitStrings", "IDS_Units_Credits", 0, "{0} Cr"}},
+      {K::kSkillStuntDone, {}, {"GasStation", "IDS_PrStuntCompleted", 0, "SKILL STUNT COMPLETED"},
+       {"UnitStrings", "IDS_Units_Credits", 0, "{0} Cr"}},
+      {K::kPhotoShootDone, {}, {"GasStation", "IDS_PhotoShootCompleted", 0, "PHOTO SHOOT COMPLETED"},
+       {"UnitStrings", "IDS_Units_Credits", 0, "{0} Cr"}},
+      {K::kSpeedStuntFailed, {}, {"InGame", "IDS_SpeedStuntFail", 0, "SPEED STUNT"},
+       {"Missions", "IDS_SpeedStuntFailTimeout", 0, "YOU FAILED TO SET A SPEED"}},
+      // The engine's stunts fail on time alone, so the skill stunt and the
+      // photo shoot say TRY AGAIN rather than their shortfall or wreck lines.
+      {K::kSkillStuntFailed, {}, {"InGame", "IDS_PRStuntFail", 0, "PR STUNT"},
+       {"InGame", "IDS_MissionFail", 0, "TRY AGAIN"}},
+      {K::kPhotoShootFailed, {}, {"InGame", "IDS_PhotoShootFail", 0, "PHOTO SHOOT"},
+       {"InGame", "IDS_MissionFail", 0, "TRY AGAIN"}},
+      {K::kShowcaseUnlocked, {}, {"InGame", "IDS_ShowcaseEventUnlocked_Message", 0, "SHOWCASE EVENT UNLOCKED!"},
+       {"InGame", "IDS_ShowcaseEventUnlocked_CallToAction", 0, "Show me!"}},
+      {K::kSponsorRank, {"SponsorChallengeScreen", "IDS_RankUnlocked", 0, "RANK {0} UNLOCKED!"},
+       {"UnitStrings", "IDS_Units_Credits", 0, "{0} Cr"}, {}, NotifyIcon::kSponsor},
+      {K::kWristbandAvailable, {}, {"InGame", "IDS_WristbandNewAvailable", 0, "NEW WRISTBAND AT RACE CENTRAL"}, {}},
+  };
+  return table;
+}
+
+const NotifyStrings* notify_strings(NotifyKind kind) {
+  for (const auto& e : notify_strings())
+    if (e.kind == kind) return &e;
+  return nullptr;
+}
+
+std::optional<std::string> format_args(std::string_view fmt, const std::vector<std::string>& args) {
+  std::string out;
+  for (size_t i = 0; i < fmt.size(); ++i) {
+    if (fmt[i] == '{' && i + 2 < fmt.size() && fmt[i + 1] >= '0' && fmt[i + 1] <= '9' && fmt[i + 2] == '}') {
+      const size_t a = size_t(fmt[i + 1] - '0');
+      if (a >= args.size()) return std::nullopt;
+      out += args[a];
+      i += 2;
+    } else {
+      out += fmt[i];
+    }
+  }
+  return out;
+}
+
+NotifyText notify_text(NotifyKind kind, const std::vector<std::string>& tag_args,
+                       const std::vector<std::string>& title_args, const std::vector<std::string>& message_args) {
+  NotifyText out;
+  const NotifyStrings* e = notify_strings(kind);
+  if (!e) return out;
+  auto line = [](const StringRef& ref, const std::vector<std::string>& args) {
+    if (ref.table.empty() && ref.fallback.empty()) return std::string();
+    return format_args(text_of(ref), args).value_or(std::string());
+  };
+  out.tag = line(e->tag, tag_args);
+  out.title = line(e->title, title_args);
+  out.message = line(e->message, message_args);
+  return out;
+}
+
+namespace {
+
+// CombinedNotification's packing (its stackers are not run), measured on
+// the race-hud-notification oracle: the panel's crop (its texture clear for
+// 3 px at the left and feathered over 8 px at the right) runs from 12 px
+// left of the 60 px icon to 20 px past the longer line, centred on x 644;
+// the lines start 10 px after the icon. The tag's pill pads its text 8 px;
+// both draw 8 px higher than laid out.
+constexpr float kNotifyIconW = 60.0f, kNotifyPadL = 12.0f, kNotifyGap = 10.0f, kNotifyPadR = 20.0f;
+constexpr float kNotifyCentreX = 644.0f;
+constexpr float kNotifyTagPad = 8.0f, kNotifyTagDy = -8.0f;
+// The sponsor's logo tile draws wider than its texture's own shape (60 by
+// 38 px on the oracle), 2 px right of the icon's middle.
+constexpr float kNotifyLogoStretch = 1.33f, kNotifyLogoDx = 2.0f;
+// The height one takes in the bottom stack (the panel, 64 px, and a gap),
+// and the tag's extra.
+constexpr float kNotifyStep = 72.0f, kNotifyTagStep = 22.0f;
+// Fade in and out (the original slides its tape in; a fade here).
+constexpr double kNotifyIn = 0.25, kNotifyOut = 0.5;
+
+float notify_alpha(double age, double life) {
+  if (age < 0.0 || age > life) return 0.0f;
+  const float in = float(std::clamp(age / kNotifyIn, 0.0, 1.0));
+  const float out = float(std::clamp((life - age) / kNotifyOut, 0.0, 1.0));
+  return std::min(in, out);
+}
+
+float draw_popularity_unlock(ui::List& l, const NotifyView& st, float w, float h, float s, float a) {
+  SceneScreen sc(kHudScene);
+  const SceneDraw& sd = sc.scene();
+  const int root = sc.node("PopularityUnlock");
+  const int main = child(sd, root, "MainMessage"), show = child(sd, root, "ShowMe");
+  if (root < 0 || main < 0) return 0.0f;
+  sc.bindings().fit_text = false;
+  sc.bindings().opacity = a;
+  const int title = child(sd, main, "TEXT_TITLE");
+  sc.text(title, st.title);
+  // The tape centred under the title.
+  if (const int tape = child(sd, main, "Crisp_Tape"); tape >= 0 && title >= 0) {
+    const float tw = sd.measure(title, st.title) + 2.0f * kNotifyTagPad * 2.0f;
+    sc.at(tape).dx = sd.at(title)[0] - 0.5f * tw - sd.rect(tape)[0];
+    sc.at(tape).visible_width = tw;
+  }
+  // The call to action (Show me!) only when the engine acts on its button.
+  if (show >= 0 && st.action && !st.message.empty()) {
+    show_all(sc, show);
+    const int t = child(sd, show, "TEXT_SHOW");
+    sc.text(t, st.message);
+    if (const int bar = child(sd, show, "Bar"); bar >= 0 && t >= 0) {
+      const float left = sd.rect(child_path(sd, show, "Icon/States/Icon"))[0] - kNotifyTagPad;
+      sc.at(bar).dx = left - sd.rect(bar)[0];
+      sc.at(bar).visible_width = sd.at(t)[0] + sd.measure(t, st.message) + kNotifyTagPad - left;
+    }
+    sc.hide(child_path(sd, show, "Icon/Rectangle"));
+  } else {
+    sc.hide(show);
+  }
+  return sc.draw(l, hud_frame(HudAnchor::kTop, w, h, s), root) > 0 ? 1.0f : 0.0f;
+}
+
+}  // namespace
+
+bool hud_notification_available() {
+  const SceneScreen sc(kHudScene);
+  return sc.node("CombinedNotification") >= 0;
+}
+
+float draw_hud_notification(ui::List& l, const NotifyView& st, float w, float h, float s, float lift) {
+  const float a = notify_alpha(st.age, st.life);
+  if (st.title.empty() || a <= 0.01f) return 0.0f;
+  // The showcase banner sits at the top, clear of the bottom stack.
+  if (st.kind == NotifyKind::kShowcaseUnlocked) {
+    draw_popularity_unlock(l, st, w, h, s, a);
+    return 0.0f;
+  }
+
+  SceneScreen sc(kHudScene);
+  const SceneDraw& sd = sc.scene();
+  const int root = sc.node("CombinedNotification");
+  const int tape = child_path(sd, root, "State/DoubleTape");
+  if (root < 0 || tape < 0) return 0.0f;
+  sc.bindings().fit_text = false;
+  sc.bindings().opacity = a;
+  sc.bindings().dy = -lift;
+
+  const int t1 = child(sd, tape, "TEXT1"), t2 = child(sd, tape, "TEXT2");
+  sc.hide(child(sd, tape, "TEXT3"));
+  const bool one_line = st.message.empty();
+  const float tw = std::max(sd.measure(t2, st.title), one_line ? 0.0f : sd.measure(t1, st.message));
+  const float total = kNotifyPadL + kNotifyIconW + kNotifyGap + tw + kNotifyPadR;
+  const float left = kNotifyCentreX - 0.5f * total;
+  const float text_x = left + kNotifyPadL + kNotifyIconW + kNotifyGap;
+  sc.text(t2, st.title);
+  if (t2 >= 0) {
+    sc.at(t2).dx = left_at(sd, t2, st.title, text_x);
+    // A lone line sits in the middle of the panel.
+    if (one_line) sc.at(t2).dy = 0.5f * (sd.at(t1)[1] - sd.at(t2)[1]);
+  }
+  if (one_line) {
+    sc.hide(t1);
+  } else {
+    sc.text(t1, st.message);
+    if (t1 >= 0) {
+      sc.at(t1).dx = left_at(sd, t1, st.message, text_x);
+      sc.at(t1).tint = kSkillYellow;
+    }
+  }
+  for (const char* p : {"Panel", "Panel2"}) {
+    const int panel = child(sd, tape, p);
+    if (panel < 0) continue;
+    sc.at(panel).dx = left - sd.rect(panel)[0];
+    sc.at(panel).visible_width = total;
+  }
+  // The icon: the sponsor's logo, or the misc or mail icon.
+  const int icons = child(sd, tape, "Icons");
+  const float icon_cx = left + kNotifyPadL + 0.5f * kNotifyIconW;
+  const bool sponsor = st.icon == NotifyIcon::kSponsor;
+  for (int c : sd.children_of(icons)) {
+    const std::string_view n = sd.object_name(c);
+    const bool on = sponsor ? n == "SponsorScaler" : (st.icon == NotifyIcon::kMail ? n == "MailIcon" : n == "MiscIcon");
+    if (!on) {
+      sc.hide(c);
+      continue;
+    }
+    if (sponsor) show_all(sc, c);
+    sc.at(c).dx = icon_cx - sd.at(c)[0];
+  }
+  if (const int logo = child_path(sd, icons, "SponsorScaler/Sponsor"); sponsor && logo >= 0) {
+    if (!st.logo.empty()) sc.at(logo).texture = st.logo;
+    sc.at(logo).stretch_x = kNotifyLogoStretch;
+    sc.at(logo).dx = kNotifyLogoDx;
+  }
+  // The tag over the panel (a sponsor's RANK 4 UNLOCKED!).
+  const int rank = child(sd, tape, "RankIcon");
+  if (!st.tag.empty()) {
+    show_all(sc, rank);
+    const int bar = child(sd, rank, "Bar");
+    const int text = child(sd, bar, "Text"), pill = child(sd, bar, "Bar");
+    sc.text(text, st.tag);
+    const float ttw = sd.measure(text, st.tag);
+    if (text >= 0) {
+      sc.at(text).dx = left_at(sd, text, st.tag, 640.0f - 0.5f * ttw);
+      sc.at(text).dy = kNotifyTagDy;
+      sc.at(text).tint = kDiscInk;
+    }
+    if (pill >= 0) {
+      const float pl = 640.0f - 0.5f * ttw - kNotifyTagPad;
+      sc.at(pill).dx = pl - sd.rect(pill)[0];
+      sc.at(pill).dy = kNotifyTagDy;
+      sc.at(pill).visible_width = ttw + 2.0f * kNotifyTagPad;
+    }
+  } else {
+    sc.hide(rank);
+  }
+  if (sc.draw(l, hud_frame(HudAnchor::kBottom, w, h, s), root) <= 0) return 0.0f;
+  return st.tag.empty() ? kNotifyStep : kNotifyStep + kNotifyTagStep;
+}
+
 }  // namespace carview

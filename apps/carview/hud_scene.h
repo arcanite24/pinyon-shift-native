@@ -55,6 +55,9 @@ struct NodeOverride {
   // Scales the node and its descendants about the node's own canvas position
   // (a state's size step, e.g. a focused menu row); 1: none.
   float scale = 1.0f;
+  // Stretches the node's and its descendants' models across, each about its
+  // own middle (a picture swapped in at another aspect); 1: none.
+  float stretch_x = 1.0f;
 };
 
 // Binding table passed to SceneDraw::draw_subtree().

@@ -9,9 +9,12 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "hud_notify.h"
 #include "scene_screen.h"
 
 namespace carview {
@@ -93,5 +96,45 @@ std::string event_name_without_sponsor(std::string name, std::string_view sponso
 // bar with the reason when the car is not eligible).
 bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, float s);
 bool hud_prompt_available();
+
+// --- Notifications (CombinedNotification, PopularityUnlock) ---------------
+
+// A kind's strings: the tag over the panel (RankIcon), the title (TEXT2,
+// the larger white line) and the message (TEXT1, the yellow line under it);
+// an empty table is no line.
+struct NotifyStrings {
+  NotifyKind kind;
+  StringRef tag, title, message;
+  NotifyIcon icon = NotifyIcon::kMisc;
+};
+const std::vector<NotifyStrings>& notify_strings();
+const NotifyStrings* notify_strings(NotifyKind kind);
+
+// A notification's lines, formatted ("{0}", "{1}" from the arguments; a
+// line whose format needs an argument not given is dropped).
+struct NotifyText {
+  std::string tag, title, message;
+};
+NotifyText notify_text(NotifyKind kind, const std::vector<std::string>& tag_args,
+                       const std::vector<std::string>& title_args, const std::vector<std::string>& message_args);
+// "{0}".."{9}" replaced from `args`; nullopt when one is missing.
+std::optional<std::string> format_args(std::string_view fmt, const std::vector<std::string>& args);
+
+// One notification as drawn: its kind and icon, its lines and the sponsor
+// logo texture (SPONSORLOGOTILE/<NAME>), `age` seconds into `life`.
+struct NotifyView {
+  NotifyKind kind = NotifyKind::kEngine;
+  NotifyIcon icon = NotifyIcon::kMisc;
+  std::string tag, title, message, logo;
+  double age = 0, life = 4.5;
+  // A showcase's Show me! is drawn only when the engine acts on its button
+  // (it does not yet, so the button would do nothing).
+  bool action = false;
+};
+// Draws it (CombinedNotification, or PopularityUnlock for a showcase),
+// lifted `lift` canvas px; returns the canvas height it takes (0: none up,
+// or the scene is missing).
+float draw_hud_notification(ui::List& l, const NotifyView& n, float w, float h, float s, float lift);
+bool hud_notification_available();
 
 }  // namespace carview

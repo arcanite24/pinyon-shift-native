@@ -1035,7 +1035,15 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     }
     if (st.rally_stage && st.rally_stage->active) build_rally_pace_notes_hud(l, *st.rally_stage, w, h);
     if (progression_hud(l, st, g, bottom_lift)) bottom_lift += 94.0f;
-    if (popup_card(l, st, g, bottom_lift)) bottom_lift += 72.0f;
+    if (hud_notification_available()) {
+      NotifyView n;
+      n.kind = st.popup_kind, n.icon = st.popup_icon;
+      n.tag = st.popup_tag, n.title = st.popup_title, n.message = st.popup_text, n.logo = st.popup_logo;
+      n.age = st.time - st.popup_at, n.life = kPopupSeconds;
+      bottom_lift += draw_hud_notification(l, n, g.w, g.h, g.s, bottom_lift);
+    } else if (popup_card(l, st, g, bottom_lift)) {
+      bottom_lift += 72.0f;
+    }
     const bool hide_dial = st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open);
     if (!hide_dial) {
       if (st.speedo_mode == 1) render_digital_dial(l, st, g);

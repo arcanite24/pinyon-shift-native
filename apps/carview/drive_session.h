@@ -35,6 +35,7 @@
 #include "drive_helpers.h"
 #include "drive_helpers_runtime.h"
 #include "drive_world_host.h"
+#include "hud_notify.h"
 #include "events_page.h"
 #include "fh1data/spa.h"
 #include "freeroam/club.h"
@@ -122,6 +123,16 @@ struct DriveSession {
     std::string title, text;
     double at = -1e9, progress = -1;
     uint32_t colour = 0;
+    // The original notification it is (its lines from the string tables),
+    // its icon, the tag over it and a sponsor's logo texture.
+    NotifyKind kind = NotifyKind::kEngine;
+    NotifyIcon icon = NotifyIcon::kMisc;
+    std::string tag, logo;
+    // The original notification `kind`, its lines formatted from the string
+    // tables ("{0}".. from the arguments).
+    static Popup notify(NotifyKind kind, double at, const std::vector<std::string>& title_args = {},
+                        const std::vector<std::string>& message_args = {},
+                        const std::vector<std::string>& tag_args = {});
   };
 
   struct ClubRun {
@@ -243,6 +254,8 @@ struct DriveSession {
   std::string notice;
   double notice_until = -1;
   Popup popup;
+  // The wristband last announced as ready to collect (-1: none).
+  int notified_wristband = -1;
   bool save_due = false;
   bool skip_end_save = false;
   bool ui_atlas_synced = false;

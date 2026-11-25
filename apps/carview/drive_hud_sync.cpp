@@ -610,6 +610,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (!race_line) d.toast = banner;
         d.popup_title = popup.title, d.popup_text = popup.text, d.popup_at = popup.at;
         d.popup_progress = popup.progress, d.popup_colour = popup.colour;
+        d.popup_kind = popup.kind, d.popup_icon = popup.icon, d.popup_tag = popup.tag, d.popup_logo = popup.logo;
         // Career header panels (pause menu & sub-menus).
         d.credits = app.career.credits;
         d.popularity_rank = app.current_pop_rank();

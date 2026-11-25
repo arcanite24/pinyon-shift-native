@@ -11,10 +11,49 @@
 #include <string>
 #include <vector>
 
+#include "hud_screen.h"
 #include "world/road_follow.h"
 
 namespace carview {
+
+DriveSession::Popup DriveSession::Popup::notify(NotifyKind kind, double at, const std::vector<std::string>& title_args,
+                                                const std::vector<std::string>& message_args,
+                                                const std::vector<std::string>& tag_args) {
+  const NotifyText t = notify_text(kind, tag_args, title_args, message_args);
+  Popup p{t.title, t.message, at, -1, ui::rgba(245, 4, 92)};
+  p.kind = kind;
+  p.tag = t.tag;
+  if (const NotifyStrings* e = notify_strings(kind)) p.icon = e->icon;
+  return p;
+}
+
 namespace {
+
+// A sponsor challenge's tier reached: the original's sponsor notification,
+// RANK <tier> UNLOCKED! over the reward and the challenge's name, with the
+// sponsor's logo.
+DriveSession::Popup sponsor_popup(DriveSession& s, std::string_view challenge_id, int tier, int64_t credits) {
+  auto p = DriveSession::Popup::notify(NotifyKind::kSponsorRank, s.vehicle.time(), {"+" + thousands(credits)}, {},
+                                       {std::to_string(tier)});
+  const auto rows = s.sponsor_rows();
+  const auto& defs = s.app.skills_data.sponsor_challenges;
+  for (size_t i = 0; i < rows.size() && i < defs.size(); ++i)
+    if (defs[i].id == challenge_id) {
+      p.text = rows[i].challenge_title;
+      p.logo = rows[i].logo_texture;
+      break;
+    }
+  if (p.text.empty()) p.text = std::string(challenge_id);
+  return p;
+}
+
+// The popularity challenge's tier for a fame reward at `rank_required`.
+int fame_tier(const DriveSession& s, int rank_required) {
+  const auto& tiers = s.app.skills_data.fame_tiers;
+  for (size_t i = 0; i < tiers.size(); ++i)
+    if (tiers[i].rank_required == rank_required) return int(i + 1);
+  return 1;
+}
 
 audio::SmashMaterial classify_smash_material(const std::string& stem_l, const std::string& stype,
                                              uint8_t& out_surface_hint) {
@@ -120,12 +159,7 @@ void apply_popularity_with_events(DriveSession& s, double pts) {
       const int64_t scr = s.slice12.trainer.pacing.scale_credits(sev.credits);
       s.app.career.credits = std::min<int64_t>(999999999, s.app.career.credits + scr);
       s.app.career.total_winnings += scr;
-      s.app.sponsor_banner_title = "FAME SPONSORSHIP TIER";
-      s.app.sponsor_banner_detail = "RANK " + std::to_string(sev.rank) + "  •  +" + carview::thousands(scr) + " Cr";
-      s.app.sponsor_banner_at = s.vehicle.time();
-      s.popup = {"FAME SPONSOR BONUS",
-                 "POPULARITY RANK " + std::to_string(sev.rank) + "  +" + carview::thousands(scr) + " Cr",
-                 s.vehicle.time(), -1, carview::ui::rgba(247, 255, 38)};
+      s.popup = sponsor_popup(s, sev.skill_id, fame_tier(s, sev.rank), scr);
       s.save_due = true;
     } else if (sev.kind == freeroam::SkillEvent::kRankUp) {
       const int old_rank = std::max(prev_pop_rank, sev.rank + 1);
@@ -137,8 +171,7 @@ void apply_popularity_with_events(DriveSession& s, double pts) {
         for (const auto& cev : s.app.career_catalog.events) {
           if (cev.style == 3 && cev.popularity_rank_req > 0 &&
               sev.rank <= cev.popularity_rank_req && cev.popularity_rank_req < old_rank) {
-            const std::string ename = race::resolve_event_display_title(&cev);
-            s.popup = {"NEW SHOWCASE UNLOCKED!", ename, s.vehicle.time(), -1, carview::ui::rgba(245, 4, 92)};
+            s.popup = DriveSession::Popup::notify(NotifyKind::kShowcaseUnlocked, s.vehicle.time());
           }
         }
       }
@@ -356,8 +389,9 @@ bool DriveSession::free_roam_step() {
                 if (ch == '_') ch = ' ';
               }
             }
-            popup = {rb, rname, vehicle.time(), double(rev.discovered_count) / double(std::max(1, rev.total_count)),
-                     carview::ui::rgba(74, 238, 97)};
+            popup = Popup::notify(NotifyKind::kRoadsDriven, vehicle.time(), {},
+                                  {std::to_string(rev.discovered_count), std::to_string(rev.total_count)});
+            std::printf("t %.2f s: %s (%s)\n", vehicle.time(), rb, rname.c_str());
             app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
             save_due = true;
           }
@@ -409,11 +443,9 @@ bool DriveSession::free_roam_step() {
               const auto& op = app.outposts.outposts[size_t(disc_idx)];
               apply_popularity_with_events(*this, 500.0);
               const int dc = app.outpost_progress.discovered_count(app.outposts);
-              popup = {"HORIZON OUTPOST DISCOVERED",
-                       op.display_name + "  •  FAST TRAVEL UNLOCKED (" + std::to_string(dc) + "/" +
-                           std::to_string(app.outposts.outposts.size()) + ")",
-                       vehicle.time(), double(dc) / double(std::max<size_t>(1, app.outposts.outposts.size())),
-                       carview::ui::rgba(255, 146, 3)};
+              popup = Popup::notify(NotifyKind::kOutpostDiscovered, vehicle.time());
+              std::printf("t %.2f s: outpost %s discovered (%d/%zu)\n", vehicle.time(), op.display_name.c_str(), dc,
+                          app.outposts.outposts.size());
               app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
               save_due = true;
             }
@@ -464,19 +496,22 @@ bool DriveSession::free_roam_step() {
                 app.career.credits += cr;
                 app.career.total_winnings += cr;
                 apply_popularity_with_events(*this, double(pop));
-                popup = {"PR STUNT COMPLETE!",
-                         st.title + "   +" + carview::thousands(cr) + " Cr   +" + carview::thousands(pop) + " POP",
-                         vehicle.time(),
-                         double(app.outpost_progress.completed_stunt_count(app.outposts)) /
-                             double(std::max<size_t>(1, app.outposts.stunts.size())),
-                         carview::ui::rgba(74, 238, 97)};
+                const NotifyKind done = st.kind == freeroam::PrStuntKind::kSpeed   ? NotifyKind::kSpeedStuntDone
+                                        : st.kind == freeroam::PrStuntKind::kPhoto ? NotifyKind::kPhotoShootDone
+                                                                                   : NotifyKind::kSkillStuntDone;
+                popup = Popup::notify(done, vehicle.time(), {}, {"+" + carview::thousands(cr)});
+                std::printf("t %.2f s: %s +%lld Cr +%lld popularity\n", vehicle.time(), st.title.c_str(),
+                            static_cast<long long>(cr), static_cast<long long>(pop));
                 app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
                 app.gps_nav.clear();
                 save_due = true;
                 restore_pr_stunt_loaner();
               } else if (st_state == freeroam::PrStuntState::kFailed) {
-                popup = {"PR STUNT FAILED", "TIME EXPIRED  •  RETRY AT THE HORIZON OUTPOST", vehicle.time(), -1,
-                         carview::ui::rgba(255, 72, 72)};
+                const auto& st = app.pr_stunt_session.stunt();
+                const NotifyKind failed = st.kind == freeroam::PrStuntKind::kSpeed   ? NotifyKind::kSpeedStuntFailed
+                                          : st.kind == freeroam::PrStuntKind::kPhoto ? NotifyKind::kPhotoShootFailed
+                                                                                     : NotifyKind::kSkillStuntFailed;
+                popup = Popup::notify(failed, vehicle.time());
                 app.gps_nav.clear();
                 restore_pr_stunt_loaner();
               }
@@ -541,13 +576,12 @@ bool DriveSession::free_roam_step() {
             std::snprintf(line, sizeof line, "discount sign %d/%zu - upgrades %d percent off", n, app.collectibles.signs.size(),
                           freeroam::upgrade_discount(n));
             std::printf("t %.2f s: %s smashed (%s)\n", vehicle.time(), app.collectibles.signs[size_t(ev.index)].id.c_str(), line);
-            popup = {"DISCOUNT SIGN " + std::to_string(n) + "/" + std::to_string(app.collectibles.signs.size()),
-                     "UPGRADES " + std::to_string(freeroam::upgrade_discount(n)) + "% OFF", vehicle.time(),
-                     double(n) / double(std::max<size_t>(1, app.collectibles.signs.size())), carview::ui::rgba(255, 186, 20)};
+            popup = Popup::notify(NotifyKind::kDiscountSigns, vehicle.time(),
+                                  {std::to_string(n), std::to_string(app.collectibles.signs.size())},
+                                  {std::to_string(freeroam::upgrade_discount(n)) + "%"});
           } else if (ev.kind == freeroam::Event::kRumourStarted) {
             std::snprintf(line, sizeof line, "barn find rumour - M for the map");
-            popup = {"BARN FIND RUMOUR", "A CLASSIC IS HIDING NEARBY.  M FOR THE MAP", vehicle.time(), -1,
-                     carview::ui::rgba(70, 210, 100)};
+            popup = Popup::notify(NotifyKind::kBarnRumour, vehicle.time());
             app.campaign.on_barn_find(false, app.collectibles.barns[size_t(ev.index)].name, "", &app.audio_host);
             // The barn's RadioDJRequests (barnfinds.xml): the location hint now, the
             // disabled "spotted" reminder inside its window while the rumour stands.
@@ -576,8 +610,7 @@ bool DriveSession::free_roam_step() {
             // immediately. Send it to Dak's Garage pending restoration queue (ready_to_claim = false)
             // until Dak finishes restoring it and the player claims it in Dak's Garage.
             std::snprintf(line, sizeof line, "barn find! dak is restoring %s at the garage", named.c_str());
-            popup = {"BARN FIND DISCOVERED", "DAK IS RESTORING " + named + " AT THE GARAGE", vehicle.time(), -1,
-                     carview::ui::rgba(70, 210, 100)};
+            popup = Popup::notify(NotifyKind::kBarnRestoring, vehicle.time(), {named});
             notice = "BARN FIND DISCOVERED — DAK IS RESTORING IT AT THE GARAGE";
             notice_until = vehicle.time() + 5.0;
             app.campaign.on_barn_find(true, b.name, named, &app.audio_host);
@@ -1047,6 +1080,10 @@ bool DriveSession::step(const drive::Input& user_in) {
         if (!app.race && app.have_career_catalog) {
           const int ready = app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband);
           if (ready >= 0) app.audio_host.radio_wristband_ready(ready);
+          if (ready >= 0 && ready != notified_wristband) {
+            notified_wristband = ready;
+            popup = Popup::notify(NotifyKind::kWristbandAvailable, vehicle.time());
+          }
           // A street race hub's RadioDJRequests special (StreetRaceOwnerHub<n>) when it unlocks.
           if (std::fabs(vehicle.time() - app.street_hub_radio_check_at) >= 1.0) {
             app.street_hub_radio_check_at = vehicle.time();
@@ -1312,20 +1349,13 @@ bool DriveSession::step(const drive::Input& user_in) {
               const int64_t scr = slice12.trainer.pacing.scale_credits(sev.credits);
               app.career.credits = std::min<int64_t>(999999999, app.career.credits + scr);
               app.career.total_winnings += scr;
-              app.sponsor_banner_title = "FAME SPONSORSHIP TIER";
-              app.sponsor_banner_detail = "RANK " + std::to_string(sev.rank) + "  •  +" + carview::thousands(scr) + " Cr";
-              app.sponsor_banner_at = vehicle.time();
-              popup = {"FAME SPONSOR BONUS",
-                       "POPULARITY RANK " + std::to_string(sev.rank) + "  +" + carview::thousands(scr) + " Cr",
-                       vehicle.time(), -1, carview::ui::rgba(247, 255, 38)};
+              popup = sponsor_popup(*this, sev.skill_id, fame_tier(*this, sev.rank), scr);
               save_due = true;
             } else if (sev.kind == freeroam::SkillEvent::kSponsorChallenge && sev.credits > 0) {
               const int64_t scr = slice12.trainer.pacing.scale_credits(sev.credits);
               app.career.credits = std::min<int64_t>(999999999, app.career.credits + scr);
               app.career.total_winnings += scr;
-              app.sponsor_banner_title = "SPONSORSHIP TIER " + std::to_string(sev.rank) + ": " + sev.skill_id;
-              app.sponsor_banner_detail = "+" + carview::thousands(scr) + " Cr REWARD";
-              app.sponsor_banner_at = vehicle.time();
+              popup = sponsor_popup(*this, sev.skill_id, sev.rank, scr);
               save_due = true;
             } else if (sev.kind == freeroam::SkillEvent::kRankUp) {
               const int old_rank = std::max(prev_pop_rank, sev.rank + 1);
@@ -1337,10 +1367,7 @@ bool DriveSession::step(const drive::Input& user_in) {
                 for (const auto& cev : app.career_catalog.events)
                   if (cev.style == 3 && cev.popularity_rank_req > 0 &&
                       sev.rank <= cev.popularity_rank_req && cev.popularity_rank_req < old_rank) {
-                    const std::string ename = carview::game_text(cev.name_ref);
-                    popup = {"NEW SHOWCASE UNLOCKED!",
-                             (!ename.empty() && ename.rfind("_&", 0) != 0 ? ename : cev.horizon_id), vehicle.time(), -1,
-                             carview::ui::rgba(245, 4, 92)};
+                    popup = Popup::notify(NotifyKind::kShowcaseUnlocked, vehicle.time());
                   }
               }
               prev_pop_rank = std::min(prev_pop_rank, sev.rank);
