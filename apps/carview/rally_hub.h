@@ -17,6 +17,7 @@
 #include "race/rally_championship.h"
 #include "race/rally_codriver.h"
 #include "race/rivals.h"
+#include "scene_screen.h"
 #include "ui.h"
 
 namespace carview {
@@ -142,6 +143,8 @@ void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState&
 
 // Draws the final Rally Championship / Heats results & Rally XP/credits screen.
 void build_rally_championship_results_screen(ui::List& out, const RallyChampResultsState& st, float w, float h);
+// rally.str's results strings those screens use (checked by the corpus test).
+std::vector<StringRef> rally_results_text_refs();
 
 // Formats a rally time as MM:SS.mmm or +SS.mm.
 std::string rally_time_str(double seconds);

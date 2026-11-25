@@ -188,11 +188,12 @@ bool RallyCatalog::is_championship_unlocked(int64_t event_id, int rally_xp, bool
   // Explicit unlock row (from Rewards_EventUnlock or imported profile).
   if (std::find(event_unlocks.begin(), event_unlocks.end(), event_id) != event_unlocks.end()) return true;
 
-  // Or unlocked because its predecessor championship in Rewards_EventUnlock has a podium finish (1st-3rd).
+  // Or unlocked because its predecessor in Rewards_EventUnlock was finished, at any place
+  // (CTriggerRallyEventUnlocks on CCompletedLastEvent; SPEC-V4-CONTENT, Q148).
   for (const auto& prev : championships) {
     if (prev.unlocks_event_id == event_id) {
       for (const auto& [eid, place] : event_results)
-        if (eid == prev.event_id && place >= 1 && place <= 3) return true;
+        if (eid == prev.event_id && place >= 1) return true;
     }
   }
   return false;
@@ -471,7 +472,8 @@ bool load_rally_catalog(const std::filesystem::path& state_root, const cars::Par
   return out.loaded;
 }
 
-void RallyChampionshipSession::init_drivers(const RallyCatalog& catalog, const std::string& player_name) {
+void RallyChampionshipSession::init_drivers(const RallyCatalog& catalog, const std::string& player_name,
+                                            size_t max_ai) {
   drivers_.clear();
   overall_.clear();
 
@@ -481,7 +483,7 @@ void RallyChampionshipSession::init_drivers(const RallyCatalog& catalog, const s
   player.is_player = true;
   drivers_.push_back(std::move(player));
 
-  for (size_t i = 0; i < catalog.field.drivers.size(); ++i) {
+  for (size_t i = 0; i < catalog.field.drivers.size() && i < max_ai; ++i) {
     const int ai_id = catalog.field.drivers[i].first;
     RallyStandingRow ai;
     ai.driver_id = ai_id;
@@ -541,7 +543,8 @@ bool RallyChampionshipSession::start_heats(const RallyCatalog& catalog, int diff
   stages_.push_back(std::move(s));
   current_stage_ = 0;
   last_finish_ = {};
-  init_drivers(catalog, player_name);
+  // RALLY_HEATS: 15 drivers (SPEC-V4-CONTENT); interim (Q148): the field's first 14.
+  init_drivers(catalog, player_name, kHeatsDrivers - 1);
   return true;
 }
 
@@ -748,7 +751,7 @@ RallyChampionshipReward RallyChampionshipSession::finalize(const RallyCatalog& c
 
   // Unlock chain:
   // - RALLY_HEATS unlocks all 28 stages + MS_RALLY_05 (275) + RALLY_HEATS (279).
-  // - Championship unlocks its Rewards_EventUnlock target on a podium finish (1st-3rd).
+  // - A championship unlocks its Rewards_EventUnlock target when finished, at any place (Q148).
   if (is_heats_) {
     if (add_unique_unlock(save.event_unlocks, event_id_)) rew.unlocked_events.push_back(event_id_);
     if (add_unique_unlock(save.event_unlocks, 275)) rew.unlocked_events.push_back(275);
@@ -758,7 +761,7 @@ RallyChampionshipReward RallyChampionshipSession::finalize(const RallyCatalog& c
       }
     }
   } else if (unlocks_event_id_ > 0) {
-    if (rew.final_place >= 1 && rew.final_place <= 3) {
+    if (rew.final_place >= 1) {
       if (add_unique_unlock(save.event_unlocks, unlocks_event_id_)) rew.unlocked_events.push_back(unlocks_event_id_);
     }
   } else if (rew.final_place >= 1 && rew.final_place <= 3) {

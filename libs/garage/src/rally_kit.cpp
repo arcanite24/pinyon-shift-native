@@ -46,6 +46,10 @@ std::vector<OptionalPart> query_optional_rally_parts(const cars::PartsDb& db, in
 
 }  // namespace
 
+bool is_horizon_rally_car(const cars::PartsDb& db, int64_t car_id) {
+  return car_id > 0 && !query_optional_rally_parts(db, car_id).empty();
+}
+
 bool is_rally_part(int part_enum, int level) {
   if (part_enum == 8 && level == 5) return true;   // List_UpgradeTireCompound: Rally compound 9
   if (part_enum == 5 && level == 4) return true;   // List_UpgradeSpringDamper: Rally suspension

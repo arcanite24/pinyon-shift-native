@@ -210,9 +210,15 @@ struct DriveSave {
   // begun (tutorial: open CURRENT CAR CHALLENGES), 3 details seen (waiting
   // for the first medal), 4 done.
   int club_tutorial = 0;
-  // Horizon Rally's first-visit flow (game_rally_intro_flow.xml): 0 never
-  // entered, 1 intro video seen, 2 heats driven, 3 hub tutorial done.
+  // Horizon Rally's first-visit flow (game_rally_intro_flow.xml,
+  // game_rally_free_roam_flow.xml): 0 never entered, 1 intro video seen
+  // (the intro race, RALLY_HEATS, next), 2 heats driven (the first
+  // Autoshow, Rally cars only, next), 3 first Autoshow left (the hub's
+  // tutorial next), 4 tutorial heard (CSetHasSeenInitialRallyTicket).
   int rally_flow = 0;
+  // The Horizon Rally champion sequence has played (game_rally_race_flow's
+  // CSetHasSeenRallyEndSequence): it plays once.
+  bool rally_end_seen = false;
   std::vector<SavedCarHistory> car_history;
   // Offline Car Club (451_CLUB_SETTINGS: name, 4-char [TAG], shared Club Garage car IDs).
   std::string car_club_name;
@@ -273,6 +279,35 @@ bool load_save_with_recovery(const std::filesystem::path& save_path, const std::
 // `backup_dir` (or `<save_dir>/../backups/saves` if omitted) and `<save_path>.bak`.
 bool load_save_file(const std::filesystem::path& save_path, DriveSave& out_save, std::string* error = nullptr,
                     const std::filesystem::path& backup_dir = {}, std::filesystem::path* recovered_from = nullptr);
+
+// Achievements 208 and 215: a Horizon Rally car (one with OptionalRallyUpgrades
+// rows) came into the garage, bought (`purchased`) or given. Each car counts
+// once in each list.
+void note_rally_car(AchievementSignals& a, int64_t car_id, bool purchased);
+
+// Achievements 211 and 214 over one Horizon Rally stage: the air the car
+// covers with no wheel down, and whether it crashed (a skill-cancelling
+// impact, the skills' World/CarCollisionThreshold) or rewound.
+struct RallyStageSignals {
+  bool active = false;
+  bool crashed = false;
+  bool rewound = false;
+  double air_m = 0;
+  void start() { *this = {}, active = true; }
+  // One step; returns the air metres added (horizontal travel while airborne).
+  double step(int wheels_on_ground, double horizontal_speed_ms, double dt) {
+    if (!active || wheels_on_ground > 0 || dt <= 0 || !(horizontal_speed_ms > 0)) return 0;
+    const double d = horizontal_speed_ms * dt;
+    air_m += d;
+    return d;
+  }
+  // The stage's end: true for a flawless win (counted by the caller).
+  bool finish(int stage_place) {
+    const bool flawless = active && stage_place == 1 && !crashed && !rewound;
+    active = false;
+    return flawless;
+  }
+};
 
 // Updates (or inserts) a per-car driving & race history entry in `history`.
 void update_car_history(std::vector<SavedCarHistory>& history, int64_t garage_id, int64_t car_id,

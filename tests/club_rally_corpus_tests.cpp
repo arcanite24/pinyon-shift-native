@@ -6,6 +6,7 @@
 // challenges the screens have rows for. With SHIFT_CLUB_SHOT_DIR the screens
 // are drawn to PNGs there (over SHIFT_CLUB_BACKDROP_DIR/<name>.png, the
 // original's captures, when given: the calibration loop).
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -20,8 +21,11 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "audio/vo_player.h"
+#include "cars/physics.h"
 #include "cars/sources.h"
 #include "cars/strings.h"
+#include "garage/rally_kit.h"
 #include "club_menu.h"
 #include "fh1data/archive.h"
 #include "fh1data/stringtables.h"
@@ -35,6 +39,7 @@
 #include "hud_scene.h"
 #include "hud_screen.h"
 #include "pause_screen.h"
+#include "rally_hub.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include "ui.h"
@@ -116,6 +121,35 @@ int main() {
   cars::Install inst;
   std::string why;
   check(cars::discover_install(game_root, state_root, {}, inst, &why), "discover_install: " + why);
+  // The Horizon Rally cars the achievements 208 and 215 count: the five with
+  // OptionalRallyUpgrades rows (V4_CONTENT: Escort, 037, Celica, Lancer, WRX),
+  // not the event-only twins.
+  {
+    cars::PartsDb db;
+    check(db.open(inst, &why), "parts db: " + why);
+    std::vector<int64_t> ids;
+    for (int64_t id = 1; id <= 4000; ++id)
+      if (garage::is_horizon_rally_car(db, id)) ids.push_back(id);
+    check(ids.size() == 5, "five Horizon Rally cars: " + std::to_string(ids.size()));
+    for (int64_t id : ids) check(id < 1626 || id > 1635, "twin " + std::to_string(id) + " is no Rally car");
+    // The first Rally Autoshow lists them: all five are on sale at a price
+    // (Autoshow::open drops a car only for its cost or a missing bake).
+    std::vector<cars::DealerCar> dealer;
+    check(db.dealer(dealer, &why), "dealer: " + why);
+    int on_sale = 0;
+    for (const auto& c : dealer)
+      if (std::find(ids.begin(), ids.end(), c.id) != ids.end() && c.base_cost > 0) ++on_sale;
+    check(on_sale == 5, "the five Rally cars are on sale: " + std::to_string(on_sale));
+  }
+  // The Rally flows' VO lines resolve to samples in the package's bank.
+  {
+    audio::VoPlayer vo(48000, true);
+    std::string note;
+    check(vo.load_rally_vo(state_root, "EN", &note), "rally VO loads: " + note);
+    for (const char* id : {"PostraceHeatsQualification", "ToTheAutoshow", "ChampionshipStructure", "CoDriverIntro",
+                           "HorizonRallyChampion"})
+      check(vo.trigger(id, false), std::string("rally VO plays ") + id);
+  }
   fh1::StringTables tables;
   check(cars::load_string_tables(inst, tables, &why, "EN"), "EN string tables load");
   carview::set_game_text([&](const std::string& v) -> std::string {
@@ -129,6 +163,13 @@ int main() {
   check_ref(carview::pause_row_text(PM::kRally, false), "pause row HORIZON RALLY");
   check(carview::text_of(carview::pause_row_text(PM::kClub, false)) == "1000 CLUB", "1000 CLUB row text");
   check(carview::text_of(carview::pause_row_text(PM::kRally, false)) == "HORIZON RALLY", "HORIZON RALLY row text");
+  // The Rally results' titles and headings read rally.str (their fallbacks
+  // are the EN text).
+  for (const auto& r : carview::rally_results_text_refs()) {
+    check_ref(r, "rally results text " + std::string(r.fallback));
+    const std::string t = carview::text_of(r);
+    check(t == r.fallback, std::string(r.id) + " reads " + std::string(r.fallback) + ": " + t);
+  }
   // The achievements' descriptions with their counts in place.
   {
     freeroam::club::ClubMedalStats st;

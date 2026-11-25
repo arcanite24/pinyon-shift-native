@@ -234,6 +234,17 @@ void test_save_fields() {
   drive::DriveSave clamp;
   check(drive::save_from_text(t0 + "club_tutorial 9\nrally_flow -3\n", clamp, &err), "clamped load");
   check(clamp.club_tutorial == 4 && clamp.rally_flow == 0, "fields clamp on load");
+  // The first-visit flow's last step (the hub's tutorial heard) round trips;
+  // past it clamps.
+  drive::DriveSave four, high;
+  check(drive::save_from_text(t0 + "rally_flow 4\n", four, &err) && four.rally_flow == 4, "rally_flow 4 loads");
+  check(drive::save_from_text(t0 + "rally_flow 7\n", high, &err) && high.rally_flow == 4, "rally_flow clamps to 4");
+  // The champion sequence's once-only flag round trips and is not written unset.
+  check(t0.find("rally_end_seen") == std::string::npos && !back.rally_end_seen, "rally_end_seen unset is not written");
+  drive::DriveSave seen = s, seen_back;
+  seen.rally_end_seen = true;
+  check(drive::save_from_text(drive::save_to_text(seen), seen_back, &err) && seen_back.rally_end_seen,
+        "rally_end_seen round trips");
 }
 
 void test_pause_rows() {
@@ -274,7 +285,48 @@ void test_pause_rows() {
 
 }  // namespace
 
+// V4-19: the Rally achievements' writers (208, 211, 214, 215).
+void test_rally_achievement_writers() {
+  drive::AchievementSignals a;
+  drive::note_rally_car(a, 1504, false);  // given
+  drive::note_rally_car(a, 1504, true);   // the same car bought later
+  drive::note_rally_car(a, 1505, true);
+  drive::note_rally_car(a, 0, true);
+  check(a.rally_cars_obtained == std::vector<int64_t>{1504, 1505}, "208: each Rally car once");
+  check(a.rally_cars_purchased == std::vector<int64_t>{1504, 1505}, "215: bought cars once");
+
+  drive::RallyStageSignals s;
+  check(s.step(0, 30.0, 1.0) == 0.0, "no air counted off a stage");
+  s.start();
+  check(s.step(4, 30.0, 1.0) == 0.0, "wheels down: no air");
+  check(s.step(0, 30.0, 0.5) == 15.0 && s.step(0, 10.0, 0.5) == 5.0, "air: horizontal travel while airborne");
+  check(s.air_m == 20.0, "air summed over the stage");
+  check(s.finish(1), "214: a clean win is flawless");
+  check(!s.finish(1), "one count per stage");
+  s.start();
+  s.crashed = true;
+  check(!s.finish(1), "214: a crash spoils it");
+  s.start();
+  s.rewound = true;
+  check(!s.finish(1), "214: a rewind spoils it");
+  s.start();
+  check(!s.finish(2), "214: only a win");
+
+  drive::DriveSave sv;
+  sv.car = "MER_300SL_54";
+  sv.ach = a;
+  sv.ach.rally_air_m = 1609.5;
+  sv.ach.rally_flawless_stage_wins = 2;
+  drive::DriveSave back;
+  std::string err;
+  check(drive::save_from_text(drive::save_to_text(sv), back, &err), "save round trip: " + err);
+  check(back.ach.rally_cars_obtained == a.rally_cars_obtained && back.ach.rally_cars_purchased == a.rally_cars_purchased,
+        "208/215 saved");
+  check(back.ach.rally_air_m > 1609.0 && back.ach.rally_flawless_stage_wins == 2, "211/214 saved");
+}
+
 int main() {
+  test_rally_achievement_writers();
   test_achievement_table();
   test_car_medals();
   test_texts();

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
@@ -166,6 +167,9 @@ class Autoshow {
   void move_strip_make(int by, int64_t credits);
   void select_affordable(int64_t credits);
   bool tutorial_mode() const { return tutorial_mode_; }
+  // When set, open() lists only the Data_Car ids it accepts (Horizon Rally's first
+  // Autoshow); the caller clears it.
+  std::function<bool(int64_t)> only_cars;
   const std::string& empty_reason() const { return empty_reason_; }
 
   // Sorting & filtering (Price/Year/PI/Name, Class F..X, Drivetrain FWD/RWD/AWD).

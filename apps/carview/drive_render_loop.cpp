@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "fh1data/stringtables.h"
+#include "garage/rally_kit.h"
 #include "race/rivals.h"
 #include "world/road_follow.h"
 
@@ -580,6 +581,39 @@ void DriveSession::run_window_loop() {
                 app.parts_db.valid() && app.parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
               app.pending_autoshow_open = false;
               open_shop_or_autoshow(true);
+            }
+            // Horizon Rally's first Autoshow after the intro race
+            // (CSetRestrictionsForFirstRallyAutoshow): the Rally cars only;
+            // its exit opens the hub for the first time.
+            if (app.rally_first_autoshow_pending && !autoshow.is_open() && !app.race && app.parts_db.valid() &&
+                app.parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+              app.rally_first_autoshow_pending = false;
+              if (auto db = app.parts_db.get()) {
+                autoshow.only_cars = [db](int64_t id) { return garage::is_horizon_rally_car(*db, id); };
+                open_shop_or_autoshow(true);
+                autoshow.only_cars = nullptr;
+              }
+              app.rally_first_autoshow_open = autoshow.is_open();
+              if (!app.rally_first_autoshow_open) {
+                app.saved.rally_flow = 3;
+                app.rally_hub_open = true;
+              }
+            } else if (app.rally_first_autoshow_open && !autoshow.is_open()) {
+              app.rally_first_autoshow_open = false;
+              app.saved.rally_flow = 3;
+              app.rally_hub_open = true;
+            }
+            // The hub's first visit (first_time_hub_flow): the championship
+            // structure and the co-driver's introduction, then the ticket is
+            // marked seen and saved. A profile that drove the heats before
+            // this flow existed comes here straight from the video's step.
+            if (app.rally_hub_open && !app.race && app.saved.rally_flow >= 1 && app.saved.rally_flow < 4 &&
+                !app.rally_first_autoshow_pending && !app.rally_first_autoshow_open &&
+                race::is_rally_heats_completed(app.saved)) {
+              app.audio_host.trigger_vo("ChampionshipStructure", false);
+              app.audio_host.trigger_vo("CoDriverIntro", false);
+              app.saved.rally_flow = 4;
+              save_now("rally hub");
             }
             // Barn finds are restored over a driven distance (freeroam::FreeRoam
             // emits kBarnReady); no timer here.

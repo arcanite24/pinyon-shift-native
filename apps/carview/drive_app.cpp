@@ -16,6 +16,7 @@
 #include "drive_helpers.h"
 #include "frontend_screens.h"
 #include "gamepad_db.h"
+#include "garage/rally_kit.h"
 #include "profile/drive_save.h"
 #include "race/difficulty.h"
 #include "settings.h"
@@ -202,7 +203,28 @@ std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool sele
       }
     }
     write_career_garage();
+    note_car_obtained(car_id, false);
     return carview::car_name(media);
+}
+
+std::string DriveApp::start_rally_heats() {
+  if (!rally_catalog.loaded ||
+      !rally_session.start_heats(rally_catalog, int(race_options.difficulty), race_options.seed))
+    return {};
+  if (auto bit = baked_ids.find(rally_catalog.heats.player_car_id); bit != baked_ids.end()) {
+    pre_loaner_car = car;
+    pre_loaner_garage_id = career_garage.selected;
+    car = bit->second;
+  }
+  rally_hub_open = false;
+  race_options.stage_title = rally_catalog.heats.name;
+  return "stage:" + std::to_string(rally_catalog.heats.route_id);
+}
+
+void DriveApp::note_car_obtained(int64_t car_id, bool purchased) {
+  if (car_id <= 0 || !parts_db.valid()) return;
+  const auto db = parts_db.get();
+  if (db && garage::is_horizon_rally_car(*db, car_id)) drive::note_rally_car(saved.ach, car_id, purchased);
 }
 
 CareerSummary DriveApp::career_summary(std::vector<cars::PackInfo>& packs) {
@@ -1233,6 +1255,32 @@ bool DriveApp::handle_rally_world_switch() {
       }
       world_changed = true;
       std::printf("rally: switched world to ColoradoDirt (%s)\n", world_dir.string().c_str());
+      // The first visit (game_rally_intro_flow): after the video, the intro
+      // race, RALLY_HEATS in its loaner, before any hub.
+      if (saved.rally_flow == 1 && !race::is_rally_heats_completed(saved)) {
+        if (const std::string id = start_rally_heats(); !id.empty()) {
+          std::string why;
+          if (start_race(id, why)) {
+            race_event = id;
+            loading_into_event = true;
+            std::printf("rally: the intro race (%s)\n", id.c_str());
+          } else {
+            std::fprintf(stderr, "rally: intro race %s: %s\n", id.c_str(), why.c_str());
+            rally_session.retire();
+            rally_hub_open = true;
+            if (!pre_loaner_car.empty()) {
+              car = pre_loaner_car;
+              if (pre_loaner_garage_id > 0) career_garage.selected = pre_loaner_garage_id;
+              pre_loaner_car.clear();
+              pre_loaner_garage_id = 0;
+            }
+          }
+        }
+      } else if (saved.rally_flow == 2) {
+        // Left before the first Autoshow: it opens on the way back in.
+        rally_hub_open = false;
+        rally_first_autoshow_pending = true;
+      }
     } else if (dir < 0 && !colorado_world_dir.empty()) {
       world_dir = colorado_world_dir;
       race_options.stage_world = world_dir;
@@ -1250,6 +1298,8 @@ bool DriveApp::handle_rally_world_switch() {
       rally_service_return = false;
       rally_service_resume_after_reload = false;
       rally_results_open = false;
+      rally_first_autoshow_pending = false;
+      rally_first_autoshow_open = false;
       {
         std::string se;
         freeroam::SpeedActivitiesData base;

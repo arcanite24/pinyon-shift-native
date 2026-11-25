@@ -234,6 +234,7 @@ std::string save_to_text(const DriveSave& s) {
   }
   if (s.club_tutorial > 0) out += "club_tutorial " + std::to_string(s.club_tutorial) + "\n";
   if (s.rally_flow > 0) out += "rally_flow " + std::to_string(s.rally_flow) + "\n";
+  if (s.rally_end_seen) out += "rally_end_seen 1\n";
   if (!s.car_club_name.empty()) out += "car_club_name " + s.car_club_name + "\n";
   if (!s.car_club_tag.empty()) out += "car_club_tag " + s.car_club_tag + "\n";
   if (!s.car_club_shared.empty()) {
@@ -538,7 +539,10 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       if (l >> v) out.club_tutorial = std::clamp(v, 0, 4);
     } else if (key == "rally_flow") {
       int v = 0;
-      if (l >> v) out.rally_flow = std::clamp(v, 0, 3);
+      if (l >> v) out.rally_flow = std::clamp(v, 0, 4);
+    } else if (key == "rally_end_seen") {
+      int v = 0;
+      if (l >> v) out.rally_end_seen = v != 0;
     } else if (key == "car_club_name") {
       std::string rest;
       std::getline(l, rest);
@@ -901,6 +905,15 @@ bool load_save_file(const std::filesystem::path& save_path, DriveSave& out_save,
     if (std::filesystem::is_directory(candidate, ec)) effective_backups = candidate;
   }
   return load_save_with_recovery(save_path, effective_backups, out_save, recovered_from, error);
+}
+
+void note_rally_car(AchievementSignals& a, int64_t car_id, bool purchased) {
+  if (car_id <= 0) return;
+  auto add = [car_id](std::vector<int64_t>& v) {
+    if (std::find(v.begin(), v.end(), car_id) == v.end()) v.push_back(car_id);
+  };
+  add(a.rally_cars_obtained);
+  if (purchased) add(a.rally_cars_purchased);
 }
 
 void update_car_history(std::vector<SavedCarHistory>& history, int64_t garage_id, int64_t car_id,

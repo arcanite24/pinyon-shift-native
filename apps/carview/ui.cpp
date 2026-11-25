@@ -1473,6 +1473,10 @@ void set_atlas_size(uint32_t side) {
   v.atlas_size = clamped;
   v.glyph_rows = clamped == 2048u ? 640u : kGlyphRows;
   v.transient_y0 = clamped == 2048u ? 1280u : kTransientY0;
+  atlas_reset();
+}
+void atlas_reset() {
+  VectorFonts& v = vf();
   v.image_x = 0;
   v.image_y = v.glyph_rows;
   v.image_h = 0;

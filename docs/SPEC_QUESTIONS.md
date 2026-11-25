@@ -3059,17 +3059,27 @@ interim:
   yet).
 - The SELECT ACTION panels and the car list's rows and backing are placed
   at offsets measured on the captures, not by the scenes' window sizing.
-- The details screen's focused row is a pink header; the achievements
-  screen's NAV_POSITION_INDICATOR is hidden.
+- The details screen's rows are all pink in the scene; the focused one
+  keeps it and the others are dark (`kTapeDark`). Its small CURRENT CAR
+  CHALLENGES tape rests across the car's name tape and is lifted 28 px
+  clear of it.
+- The achievements screen's rows show the achievement's name (the box
+  shows its description, wrapped to the panel's 360 px); each row's
+  Sponsor_Back pane, which rests far up and right of the row over the
+  player bar, is hidden; NAV_POSITION_INDICATOR is hidden.
+- A ticket's picture is the car's showroom thumbnail over the card's
+  middle, under its gamerscore, G and title; club_home.png's picture is a
+  scenic render whose source is not found yet. The first ticket's icon is
+  the achievement's spanner where club_home.png shows a wheel, and the
+  capture's dark progress track with its gold count is not drawn.
 - The tutorial's last prompt (Visit the 1000 CLUB screen) shows after the
   first medal until the hub is opened.
 - The Autoshow and garage show no per-car medals (`car_medals()` is the
   hook; those screens are another branch's).
-- Visible artifacts left: the achievement ticket shows no car picture
-  (its middle covers the picture drawn under the scene); the achievements
-  screen's rows overlap and its DescriptionBox panel is a dark block; the
-  details screen's rows are all pink and its titles overlap, with two dark
-  bars at the bottom right; the current-car ticket's picture overhangs it.
+- Fixed on the second pass: the two dark bars under the details and
+  achievements panels were HUDPANEL01 mapped at v 0.3..1.3, sampling the
+  atlas past the texture; a single-texture model now shows nothing past
+  its texture's edge, as it already did across.
 
 Needed: captures of the hub after a medal (three tickets), the
 achievements and details screens, and a car list with several cars; the
@@ -3094,14 +3104,44 @@ otherwise IDS_QuitHorizonToRally (A OK, B CANCEL; `rally_confirm_orig.png`),
 both on `H_MESSAGE_POPUP`. The first OK plays Forza_Tone_Rally and saves
 `rally_flow` 1, then the world switches to ColoradoDirt. The popups draw
 over the world, where the original keeps the blurred pause menu under
-them. The flow's intro race, qualification VO, first Autoshow
-(restricted to rally cars) and hub tutorial are not run: the switch still
-opens the engine's hub overlay (V4-11).
+them.
 
-Needed: the intro race's event and car, the VO cue order
-(`Rally_DialogueScript_EN.xml` keys the flow plays), the first Autoshow's
-car filter, and which profile flags (HasSeenInitialIntro,
-HasSeenFirstTicket) each step sets, from the recomp's generated v4 code.
+The rest of the first visit now runs, with `rally_flow` as its step
+(0 never entered, 1 video seen, 2 heats driven, 3 first Autoshow left,
+4 hub tutorial heard):
+
+- The switch after the video starts `RALLY_HEATS` in its loaner
+  (`DriveApp::start_rally_heats`, the hub's own heats start) before any
+  hub. Its results' A plays `PostraceHeatsQualification` and
+  `ToTheAutoshow` (`game_rally_intro_flow`'s `post_race_VO`).
+- Then the Autoshow opens listing only the Horizon Rally cars (the five
+  with `OptionalRallyUpgrades` rows, Q150), as
+  `CSetRestrictionsForFirstRallyAutoshow`'s Autoshow; leaving it opens the
+  hub. A profile that left at step 2 gets the Autoshow on its next entry.
+- The hub's first opening plays `ChampionshipStructure` then
+  `CoDriverIntro` (`first_time_hub_flow`) and saves step 4
+  (`CSetHasSeenInitialRallyTicket` plus its micro-save). A profile that
+  drove the heats before this step existed gets the tutorial on its next
+  hub opening.
+
+All four triggers are in `Rally_DialogueScript_EN.xml`. Interims: the
+heats start from the engine's pre-race menu, where the original runs a
+rolling start under AI control with the pep talk and the heats' intro
+cutscene; the VO is queued, not waited on; the hub's help bar is not
+disabled during the tutorial; and the Autoshow's restriction is the Rally
+cars only, though the behaviour's actual contents are unknown. In the
+harness's play bake none of the five Rally cars (nor the heats' loaner)
+is baked, so the restricted Autoshow is empty and the hub opens straight
+away ("no cars to buy"). The five are on sale at a price
+(`club_rally_corpus_tests` checks the dealer list; 7,000 to 240,000 Cr),
+so a bake with them lists them (checked with a baked stand-in accepted by
+the filter: the Autoshow listed that one car and its exit opened the
+hub). The VO lines queue behind each other
+(`VoPlayer::trigger` without interrupt).
+
+Needed: `CSetRestrictionsForFirstRallyAutoshow`'s restrictions (cars,
+classes, credits), the heats' rolling start and cutscene, and whether
+the flow waits for each VO line before the hub takes input.
 
 ## Q146 (V4-18, not blocking): ColoradoDirt's speed traps and their records
 
@@ -3252,3 +3292,150 @@ Still open:
   defaults, and GAME DIFFICULTY follows the reset assists).
 - OPPONENT DIFFICULTY's values (the capture shows MEDIUM; AIDiff.str has
   EASY, NORMAL, HARD).
+
+## Q150 (V4-19, not blocking): what the Rally achievements count
+
+The writers for 208, 211, 214 and 215 now run:
+
+- A Horizon Rally car is one with `OptionalRallyUpgrades` rows: the five
+  the package sells (`club_rally_corpus_tests` finds exactly five, none of
+  the event-only twins 1626..1635). 208 counts one given or bought
+  (`DriveApp::award_garage_car` and the Autoshow purchase); 215 counts
+  Autoshow purchases only. Cars owned before this build are not counted
+  until they are obtained again.
+- 211 sums the horizontal distance covered with no wheel down during a
+  Rally stage (start to finish), in metres.
+- 214 counts a stage won with no rewind and no crash, where a crash is an
+  impact the skills treat as one (`WorldCollisionThreshold` /
+  `CarCollisionThreshold`, 12 m/s, which cancels a skill chain).
+
+Needed: the original's air measure (distance or the Air skill's own
+length), its crash test for 214, and whether a car won as a prize or
+given counts for 208.
+
+## Q147 (V4-12..V4-14, not blocking): the Rally stage sequence's screens
+
+`game_rally_race_flow` runs each stage as prepare (every car repaired,
+`reset_car_damage_all_cars`), intro and pre-race menu (`onQuit` back to
+free roam), countdown (`CRallyStageIntro` on a first start,
+`CCoDriverPepTalk` every time), the stage, then the finish-position
+screen and, while stages remain, `CGoToNextHeat` with
+`CShowNextMultiStageLoadingScreen`. The single-player flow has no
+service menu and no stage or rollup scoreboard screen (those are the
+Car Club's and online's). After the last stage come the earnings, the
+Rally points screen (`CIsRallyXPEvent`), a pending prize car and, once,
+the champion sequence (`Rally_Champion_Cutscene`,
+`CPlayRallyChampionDialogue`, `H_HORIZON_RALLY_CHAMPION`,
+`CSetHasSeenRallyEndSequence`).
+
+The engine now drops the Service Area: between stages it shows the
+stage's result and standings under rally.str's STAGE RESULTS with
+A CONTINUE, repairs the car and loads the next stage. Quitting a stage
+from the pause menu ends the event and returns to the Rally world.
+Interim: that between-stage page is the engine's layout, not the game's
+finish-position screen, and it shows the standings the game's flow does
+not; the stage intro and pep talk are not played.
+
+Needed: the finish-position screen as shown after a Rally stage, and
+the next-stage loading screen's content.
+
+V4-12, the multi-stage event select (ALL STAGES or one stage): the
+flows place `CShowMultiStageEventSelectionScreen`
+(`ui_show_screens.xml`'s `show_multi_stage_event_selection_screen`) on
+Race Central's Rivals path only (`race_central.xml`'s
+`multi_stage_event_menu`, from the rival category and event screens). The
+single-player Rally rivals ticket (`career_event_activations.xml`'s
+`rally_rival_event_select_screen`) sends that screen's exit back, and
+`game_rally_free_roam_flow` has no stage select. So a championship ticket
+has no stage step, and a stand-alone stage result (the reference save's
+`RALLY_4B`, `NumRallyStages` 1) comes from a Rivals run. Not built: the
+engine's Rally rivals entry is still one route (V4-11's event tickets
+would carry the rest), with no ALL STAGES choice and no per-stage result
+written.
+
+V4-14, the results: the engine's results page now titles itself with
+rally.str's RALLY RESULTS (`IDS_ResultsRallyTitle`) over the event's
+name, heads its table RALLY STANDINGS and labels TOTAL TIME from rally.str,
+in place of its own "RALLY HEATS COMPLETE" / "CHAMPIONSHIP RESULTS" and
+"GREEN RALLY WRISTBAND ..." lines (`club_rally_corpus_tests` checks each
+string). The champion part plays once: `DriveSave::rally_end_seen`
+(CSetHasSeenRallyEndSequence) is set the first time the final is won on
+the podium, with VO `HorizonRallyChampion`. Inferred: that trigger as
+`CPlayRallyChampionDialogue`'s line (the behaviour takes no parameter;
+the dialogue script also has `ChampionAgain` and `PlayerWonRally`).
+Interims: the page is still the engine's layout, not
+`h_post_race_rally_finished` / `h_post_race_rally_points` (both load from
+the v4 overlay); `h_horizon_rally_champion` (a title tape, a position
+tape and a timer over `Rally_Champion_Cutscene`) is not drawn and the
+cutscene is not played; the champion strip's "HORIZON RALLY CHAMPION!"
+is the engine's. rally.str's `IDS_RallyFinalTop_1..4` / `IDS_RallyFinalBottom_1`
+read "NEW EVENT UNLOCKED", "NOW GET OVER TO THE", "NOW GET TO THE",
+"YOU'VE UNLOCKED THE" / "HORIZON RALLY FINAL": the final's unlock
+notice, not the champion screen.
+
+Needed: which line `CPlayRallyChampionDialogue` plays, the champion
+screen's texts, and the points screen's rows.
+
+## Q148 (V4-16, not blocking): Horizon Rally's progression rules
+
+Changed on the evidence of the flows and SPEC-V4-CONTENT:
+
+- A championship unlocks its `Rewards_EventUnlock` successor when it is
+  finished, at any place. `game_rally_free_roam_flow` runs
+  `CTriggerRallyEventUnlocks` on hub entry when `CCompletedLastEvent` says
+  yes; the engine required a podium.
+- `RALLY_HEATS` runs with 15 drivers (`race::kHeatsDrivers`) where the
+  engine ran the full 49-driver field. Interim: the 14 AI are the field's
+  first 14.
+
+Unchanged and still open: whether a podium check sits inside
+`CTriggerRallyEventUnlocks`; the champion rule (the engine: the final
+championship, `MS_RALLY_02`, on the podium, with its `UnlockPointsReq`
+of 310 Rally XP); Rally XP on a replay (the engine adds only the gain
+over the best earlier place, where the spec reads as the full
+`RallyScoring` points each time); the credits' difficulty and assists
+bonus; and which drivers make the heats' field. `CInitialiseEventUnlocksRally`
+takes no parameters in `game_start_rally.xml`, so the first-visit unlock
+set stays the engine's (the heats, `MS_RALLY_05` and the 28 stages,
+which the reference save confirms).
+
+## Q149 (V4-11, V4-21, V4-23, not blocking): the Rally world, the co-driver's lines and level-up gifts
+
+V4-11, the hub as free roam: not built. The original's Rally is
+ColoradoDirt free roam: `game_rally_free_roam_flow` with event tickets
+from the package's `career_event_activations.xml`,
+`rally_event_activations.xml` and `gas_stations.xml`, map icons from
+`rallymapprofile*.xml` and the hub's radio. The engine switches to
+ColoradoDirt and opens its hub overlay (with a FREE ROAM COLORADO DIRT
+row that closes it). Building it needs the free-roam ticket trigger and
+popup, the world markers and the map's Rally profile, which belong with
+the event-activation and map work, not with this branch's screens. Kept
+as the interim: the overlay.
+
+V4-21, the co-driver and Alice: the first visit now plays
+`PostraceHeatsQualification`, `ToTheAutoshow`, `ChampionshipStructure`
+and `CoDriverIntro` (Q145), and becoming champion (the final on the podium,
+once) plays `HorizonRallyChampion` (Q147); `club_rally_corpus_tests`
+checks that each resolves to a sample in `Rally_VO_EN`. Not played: `CCoDriverPepTalk` before
+every countdown and `CRallyStageIntro` on a first start. Both behaviours
+take no parameters; the dialogue script's candidates are `PreRace`,
+`PreRaceFirstStage`, `PreRaceLastStage`, `FinalPreRaceFirstStage`,
+`FinalPreRaceSecondStage`, `FinalPreRaceFinalStage` and
+`PreraceHeatsIntro`, and for the finish `FinishedStage`,
+`FinishedStageFirst`, `FinishedStageLast`, `FinishedIntroRace` and
+`PlayerWonStage`. The finish call's Good/Bad split at 10th place is
+still the engine's.
+
+V4-23, the driver-level gift cars: unchanged; `driver_level_gift_car`
+returns the level's first `Rewards_DriverLevelv3` row, with no
+ownership filter for DLC cars. In v4's `pause.xml` the Message Centre
+(`CShowMessageCentreScreen`) has `onGiftCarPrepare` /
+`onGiftCarUnprepare` transitions, so a gift is claimed from a message,
+which suggests a choice among the level's rows (`MaxGiftCars` 5 to 7).
+
+Needed: which line each of `CCoDriverPepTalk`, `CRallyStageIntro` and
+the finish picks; the gift message's rule (one of N or all N) and its
+DLC filter; and the Rally ticket's trigger radius and speed.
+
+Needed: `CTriggerRallyEventUnlocks`, `CIsRallyXPEvent` and the Rally
+reward path in the generated v4 code.

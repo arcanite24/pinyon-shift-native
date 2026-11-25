@@ -1048,6 +1048,7 @@ bool DriveSession::step(const drive::Input& user_in) {
           const bool r_started = app.race->session().started();
           if (r_started && !club_race_was_started) {
             club_pending.event_started = true;
+            if (app.race->is_stage()) app.rally_stage_signals.start();
             prev_audio_checkpoint = app.race->player_checkpoints_passed();
             prev_audio_lap = int(app.race->session().car(app.race->player_index()).laps.size());
           }
@@ -1095,6 +1096,8 @@ bool DriveSession::step(const drive::Input& user_in) {
           if (fin.stage_place == 1 && app.race_options.difficulty >= race::Difficulty::kHard &&
               app.race_options.assists.shifting != 0 && app.race_options.assists.driving_line == 0)
             ++app.saved.ach.rally_hard_manual_stage_wins;
+          // Achievement 214: a stage win without crashing or rewinding.
+          if (app.rally_stage_signals.finish(fin.stage_place)) ++app.saved.ach.rally_flawless_stage_wins;
           app.audio_host.trigger_codriver(fin.stage_place <= 10 ? "CoDriver/FinishGood/Good1" : "CoDriver/FinishBad/Bad1");
           if (fin.championship_complete) {
             const int dpct = race::difficulty_bonus_percent(int(app.race_options.difficulty));
@@ -1112,6 +1115,15 @@ bool DriveSession::step(const drive::Input& user_in) {
               }
             }
             app.rally_results_state = carview::make_rally_results_state(app.rally_catalog, app.rally_session, rew, app.saved.credits);
+            // The champion sequence plays once (CSetHasSeenRallyEndSequence),
+            // with Alice's champion line (CPlayRallyChampionDialogue; the
+            // trigger is inferred, Q147).
+            if (rew.champion_unlocked && !app.saved.rally_end_seen) {
+              app.saved.rally_end_seen = true;
+              app.audio_host.trigger_vo("HorizonRallyChampion", false);
+            } else {
+              app.rally_results_state.champion_unlocked = false;
+            }
             app.rally_results_open = true;
             save_due = true;
           } else {
@@ -1374,6 +1386,15 @@ bool DriveSession::step(const drive::Input& user_in) {
           const double traffic_imp_s = (traffic && !reset_ghost_active) ? traffic->player_impulse() : 0.0;
           const double race_imp_s = app.race ? app.race->player_impulse() : 0.0;
           si.car_impact_ms = std::max({traffic_imp_s, race_imp_s, step_car_impact_accum}) / mass;
+          // Achievements 211 and 214 on a Horizon Rally stage: air covered,
+          // and a crash as the skills count one (the chain-cancelling impact).
+          if (app.rally_stage_signals.active && app.race && app.race->is_stage()) {
+            app.saved.ach.rally_air_m +=
+                app.rally_stage_signals.step(on_ground, std::hypot(vel.x, vel.z), drive::Vehicle::kStep);
+            if (si.world_impact_ms >= app.skills_data.world_collision_threshold ||
+                si.car_impact_ms >= app.skills_data.car_collision_threshold)
+              app.rally_stage_signals.crashed = true;
+          }
           si.smashed_object = smashed_prop;
           si.smashed_type = smashed_type;
           const drive::Vec3 at = vehicle.position();
