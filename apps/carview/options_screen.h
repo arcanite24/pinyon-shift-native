@@ -64,6 +64,9 @@ std::string options_value_text(std::string_view id, std::string_view engine_valu
 // up or down, stopping at the ends; the value itself at an end or when it
 // is not a percentage.
 std::string options_slider_step(const std::vector<std::string>& choices, std::string_view value, int by);
+// RADIO STATION's value for the station playing (the radio's "Radio1" ->
+// HORIZON BASS ARENA, MyProfile.str's names; a user station by its name).
+std::string options_station_text(std::string_view station);
 // A percentage's fraction ("75%" -> 0.75); -1 when it is not one.
 float options_percent(std::string_view value);
 

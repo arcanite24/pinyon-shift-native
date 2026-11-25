@@ -312,6 +312,10 @@ int main() {
     for (const auto& r : audio) check(!carview::text_of(r.description).empty(), std::string("a description for ") + r.id);
     check(carview::options_value_text("full dynamic range", "on") == "HOME THEATER", "PLAYBACK SYSTEM HOME THEATER");
     check(carview::options_value_text("full dynamic range", "off") == "TV", "PLAYBACK SYSTEM TV");
+    check(carview::options_station_text("Radio1") == "HORIZON BASS ARENA" &&
+              carview::options_station_text("Radio3") == "HORIZON ROCKS" &&
+              carview::options_station_text("Radio4_Silent") == "OFF",
+          "RADIO STATION: MyProfile.str's station names");
     // The sliders step by value and stop at the ends, whatever the
     // choices' order (the volumes' 100, 0, 25, ...; the rumble's 100, 75, ...).
     const std::vector<std::string> vol = {"100%", "0%", "25%", "50%", "75%"};

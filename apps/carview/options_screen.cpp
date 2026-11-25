@@ -196,6 +196,16 @@ std::string options_title(OptionsPage p) {
   }
 }
 
+std::string options_station_text(std::string_view station) {
+  // The stations' names as the radio map's (drive_map_radio.cpp).
+  if (station == "Radio1") return text_of({"MyProfile", "IDS_RadioStation_Option_1", 0, "HORIZON BASS ARENA"});
+  if (station == "Radio2") return text_of({"MyProfile", "IDS_RadioStation_Option_2", 0, "HORIZON PULSE"});
+  if (station == "Radio3") return text_of({"MyProfile", "IDS_RadioStation_Option_3", 0, "HORIZON ROCKS"});
+  if (station.empty() || station == "Radio4_Silent")
+    return text_of({"MyProfile", "IDS_RadioStation_Option_Off", 0, "OFF"});
+  return upper(station);
+}
+
 float options_percent(std::string_view v) {
   if (v.size() < 2 || v.back() != '%') return -1.0f;
   int n = 0;

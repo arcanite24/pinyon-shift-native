@@ -824,8 +824,8 @@ void DriveSession::fill_options(carview::OptionsHud& out) {
               // RADIO STATION: the station playing.
               drive::DriveSave now;
               app.audio_host.save_radio_state(now);
-              v = now.radio_station.empty() ? carview::options_value_text(r.id, "on") : now.radio_station;
-              for (char& c : v) c = char(std::toupper(static_cast<unsigned char>(c)));
+              v = now.radio_station.empty() ? carview::options_value_text(r.id, "on")
+                                            : carview::options_station_text(now.radio_station);
             } else {
               v = carview::options_value_text(r.id, settings_page.value(r.id));
             }
