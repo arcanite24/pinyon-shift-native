@@ -462,6 +462,21 @@ if(SHIFT_BUILD_CARVIEW)
                         shift_drive shift_cars shift_audio shift_stb)
   add_test(NAME scene_screen_tests COMMAND scene_screen_tests)
   set_tests_properties(scene_screen_tests PROPERTIES LABELS corpus SKIP_RETURN_CODE 77)
+
+  # The title update's 1000 Club and Horizon Rally screens and rules.
+  foreach(t club_rally_tests club_rally_corpus_tests)
+    add_executable(${t} ${t}.cpp
+      ../apps/carview/ui_widgets.cpp
+      ../apps/carview/events_page.cpp
+      ../apps/carview/settings_page.cpp
+      ../apps/carview/fmv_player.cpp
+      ../apps/carview/story_intro.cpp)
+    target_include_directories(${t} PRIVATE ../apps/carview)
+    target_link_libraries(${t} PRIVATE carview_render carview_hud shift_freeroam shift_race shift_garage
+                          shift_drive shift_cars shift_audio shift_stb)
+    add_test(NAME ${t} COMMAND ${t})
+  endforeach()
+  set_tests_properties(club_rally_corpus_tests PROPERTIES LABELS corpus SKIP_RETURN_CODE 77)
 endif()
 
 add_executable(photo_mode_tests photo_mode_tests.cpp ../apps/carview/photo_mode.cpp ../apps/carview/ui.cpp

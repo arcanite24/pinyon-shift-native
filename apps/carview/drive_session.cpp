@@ -1477,6 +1477,8 @@ void DriveSession::save_now(const char* why) {
         if (app.have_saved) s.carry_from(app.saved);
         if (app.career.driver_level > 0) s.level = app.career.driver_level;
         s.club = app.saved.club;
+        s.club_tutorial = app.saved.club_tutorial;
+        s.rally_flow = app.saved.rally_flow;
         s.car_club_name = app.saved.car_club_name;
         s.car_club_tag = app.saved.car_club_tag;
         s.car_club_shared = app.saved.car_club_shared;

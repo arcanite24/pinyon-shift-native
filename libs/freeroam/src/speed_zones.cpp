@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
 #include "audio/xml.h"
@@ -199,14 +200,45 @@ bool parse_speed_activities(std::string_view speed_camera_xml, std::string_view 
   return !out.traps.empty() || !out.zones.empty();
 }
 
-bool load_speed_activities(const std::filesystem::path& game_root, SpeedActivitiesData& out, std::string* error) {
+std::filesystem::path colorado_dirt_gamemodes(const std::filesystem::path& package_dir) {
+  if (package_dir.empty()) return {};
+  std::error_code ec;
+  const auto zips = package_dir / "Media" / "DLCZips";
+  if (!std::filesystem::is_directory(zips, ec)) return {};
+  for (const auto& z : std::filesystem::directory_iterator(zips, ec)) {
+    const auto d = z.path() / "Media" / "gamemodes" / "ColoradoDirt";
+    if (std::filesystem::is_regular_file(d / "speed_camera.xml", ec) &&
+        std::filesystem::is_regular_file(d / "average_speed.xml", ec))
+      return d;
+  }
+  return {};
+}
+
+bool load_speed_activities(const std::filesystem::path& game_root, SpeedActivitiesData& out, std::string* error,
+                           const std::filesystem::path& gamemodes_dir) {
   std::string why;
-  auto zip = fh1::Archive::open(game_root / "media" / "gamemodes.zip", &why);
-  if (!zip) return fail(error, why);
-  auto cam = zip->read("Colorado/speed_camera.xml");
-  if (!cam.ok()) return fail(error, "Colorado/speed_camera.xml: " + cam.error);
-  auto avg = zip->read("Colorado/average_speed.xml");
-  if (!avg.ok()) return fail(error, "Colorado/average_speed.xml: " + avg.error);
+  std::vector<uint8_t> cam_bytes, avg_bytes;
+  if (!gamemodes_dir.empty()) {
+    auto slurp = [](const std::filesystem::path& p, std::vector<uint8_t>& b) {
+      std::ifstream in(p, std::ios::binary);
+      if (!in) return false;
+      b.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+      return true;
+    };
+    if (!slurp(gamemodes_dir / "speed_camera.xml", cam_bytes))
+      return fail(error, "cannot open " + (gamemodes_dir / "speed_camera.xml").string());
+    if (!slurp(gamemodes_dir / "average_speed.xml", avg_bytes))
+      return fail(error, "cannot open " + (gamemodes_dir / "average_speed.xml").string());
+  } else {
+    auto zip = fh1::Archive::open(game_root / "media" / "gamemodes.zip", &why);
+    if (!zip) return fail(error, why);
+    auto cam = zip->read("Colorado/speed_camera.xml");
+    if (!cam.ok()) return fail(error, "Colorado/speed_camera.xml: " + cam.error);
+    auto avg = zip->read("Colorado/average_speed.xml");
+    if (!avg.ok()) return fail(error, "Colorado/average_speed.xml: " + avg.error);
+    cam_bytes = std::move(cam.data);
+    avg_bytes = std::move(avg.data);
+  }
 
   std::ifstream go(game_root / "media" / "tracks" / "colorado" / "Ribbon_00" / "GameObjs.xml", std::ios::binary);
   if (!go) return fail(error, "cannot open Ribbon_00/GameObjs.xml");
@@ -221,7 +253,7 @@ bool load_speed_activities(const std::filesystem::path& game_root, SpeedActiviti
   }
 
   auto sv = [](const std::vector<uint8_t>& d) { return std::string_view(reinterpret_cast<const char*>(d.data()), d.size()); };
-  return parse_speed_activities(sv(cam.data), sv(avg.data), objs_str, out, error,
+  return parse_speed_activities(sv(cam_bytes), sv(avg_bytes), objs_str, out, error,
                                 cam_str.keys.empty() ? nullptr : &cam_str);
 }
 

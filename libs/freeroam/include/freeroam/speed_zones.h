@@ -56,8 +56,16 @@ struct SpeedActivitiesData {
 bool parse_speed_activities(std::string_view speed_camera_xml, std::string_view average_speed_xml,
                             std::string_view gameobjs_xml, SpeedActivitiesData& out, std::string* error = nullptr,
                             const fh1::StringTable* camera_strings = nullptr);
+// `gamemodes_dir`: a world's own gamemodes folder (the Rally package's
+// Media/gamemodes/ColoradoDirt) whose speed_camera.xml and average_speed.xml
+// replace the disc's Colorado ones; empty: the disc's. The trap and zone
+// gates are Colorado's GameObjs either way (ColoradoDirt ships none and
+// names the same gates).
 bool load_speed_activities(const std::filesystem::path& game_root, SpeedActivitiesData& out,
-                           std::string* error = nullptr);
+                           std::string* error = nullptr, const std::filesystem::path& gamemodes_dir = {});
+// The Rally package's ColoradoDirt gamemodes folder under `package_dir`
+// (empty when it has no speed_camera.xml).
+std::filesystem::path colorado_dirt_gamemodes(const std::filesystem::path& package_dir);
 
 struct SpeedActivityEvent {
   enum Kind { kTrapTriggered, kZoneEntered, kZoneCompleted, kZoneCancelled };

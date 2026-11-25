@@ -798,7 +798,12 @@ bool DriveApp::init(int& exit_code) {
       colorado_world() || lower_ascii(world_dir.filename().string()) == "coloradodirt";
   if (!world_dir.empty() && is_colorado_or_dirt) {
     std::string se;
-    if (freeroam::load_speed_activities(game_root_of(), speed_data, &se)) {
+    // ColoradoDirt (<package>/Media/Tracks/ColoradoDirt) reads its own set
+    // from the package's Media/gamemodes/ColoradoDirt.
+    const std::filesystem::path speed_dir =
+        colorado_world() ? std::filesystem::path()
+                         : world_dir.parent_path().parent_path() / "gamemodes" / "ColoradoDirt";
+    if (freeroam::load_speed_activities(game_root_of(), speed_data, &se, speed_dir)) {
       speed_tracker = std::make_unique<freeroam::SpeedActivityTracker>(speed_data);
       if (have_saved) speed_tracker->load_records(saved.speed_traps, saved.speed_zones);
       std::printf("speed activities: %zu traps, %zu zones loaded\n", speed_data.traps.size(), speed_data.zones.size());
@@ -1206,13 +1211,24 @@ bool DriveApp::handle_rally_world_switch() {
       rally_hub_open = true;
       rally_hub_selected = 0;
       rally_notice.clear();
-      if (!speed_tracker) {
+      // ColoradoDirt's own traps and zones (the package's gamemodes), in
+      // place of Colorado's (V4-18).
+      {
         std::string se;
-        if (freeroam::load_speed_activities(game_root_of(), speed_data, &se)) {
+        freeroam::SpeedActivitiesData dirt;
+        if (freeroam::load_speed_activities(game_root_of(), dirt, &se,
+                                            freeroam::colorado_dirt_gamemodes(rally_catalog.package_dir))) {
+          if (speed_tracker) {
+            saved.speed_traps = speed_tracker->save_traps();
+            saved.speed_zones = speed_tracker->save_zones();
+          }
+          speed_data = std::move(dirt);
           speed_tracker = std::make_unique<freeroam::SpeedActivityTracker>(speed_data);
           if (have_saved) speed_tracker->load_records(saved.speed_traps, saved.speed_zones);
           std::printf("speed activities (ColoradoDirt): %zu traps, %zu zones loaded\n", speed_data.traps.size(),
                       speed_data.zones.size());
+        } else {
+          std::fprintf(stderr, "speed activities (ColoradoDirt): %s\n", se.c_str());
         }
       }
       world_changed = true;
@@ -1234,6 +1250,19 @@ bool DriveApp::handle_rally_world_switch() {
       rally_service_return = false;
       rally_service_resume_after_reload = false;
       rally_results_open = false;
+      {
+        std::string se;
+        freeroam::SpeedActivitiesData base;
+        if (freeroam::load_speed_activities(game_root_of(), base, &se)) {
+          if (speed_tracker) {
+            saved.speed_traps = speed_tracker->save_traps();
+            saved.speed_zones = speed_tracker->save_zones();
+          }
+          speed_data = std::move(base);
+          speed_tracker = std::make_unique<freeroam::SpeedActivityTracker>(speed_data);
+          if (have_saved) speed_tracker->load_records(saved.speed_traps, saved.speed_zones);
+        }
+      }
       world_changed = true;
       std::printf("rally: returned to Colorado (%s)\n", world_dir.string().c_str());
     }

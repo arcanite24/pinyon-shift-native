@@ -205,6 +205,14 @@ struct DriveSave {
   int num_rallies = 0, num_rally_stages = 0, num_rally_victories = 0, rally_xp = 0, rally_level = 0;
   int64_t rally_winnings = 0;
   std::vector<SavedClubCar> club;
+  // The 1000 Club's first-visit flow (car_challenge_intro / _tutorial.xml):
+  // 0 intro not seen, 1 intro seen (tutorial: pick a car), 2 challenges
+  // begun (tutorial: open CURRENT CAR CHALLENGES), 3 details seen (waiting
+  // for the first medal), 4 done.
+  int club_tutorial = 0;
+  // Horizon Rally's first-visit flow (game_rally_intro_flow.xml): 0 never
+  // entered, 1 intro video seen, 2 heats driven, 3 hub tutorial done.
+  int rally_flow = 0;
   std::vector<SavedCarHistory> car_history;
   // Offline Car Club (451_CLUB_SETTINGS: name, 4-char [TAG], shared Club Garage car IDs).
   std::string car_club_name;

@@ -20,6 +20,7 @@
 #include "autoshow.h"
 #include "career_page.h"
 #include "cars/physics.h"
+#include "club_menu.h"
 #include "club_view.h"
 #include "contact_log.h"
 #include "drive/cameras.h"
@@ -267,8 +268,34 @@ struct DriveSession {
   std::vector<ClubRun> club_runs;
   int64_t club_car = -1;
   std::string club_gate;
+  // Why club_gate is set: the menu's gate (kSystem: not loaded, not in
+  // Colorado or the package off; kWristband: no green wristband) or the
+  // driven car's (kCar: not a garage car; kNoChallenges).
+  enum class ClubGate : uint8_t { kNone, kSystem, kWristband, kCar, kNoChallenges } club_gate_kind = ClubGate::kNone;
   bool club_open = false;
   size_t club_pick = 0;
+  // The 1000 Club's menus on their scenes (club_menu.h); club_open with
+  // club_menu closed draws the hand-drawn screen (no v4 scenes).
+  ClubMenu club_menu;
+  ClubMenuData club_menu_data;
+  // A HUD item's pass or fail (shown for kClubResultHold).
+  struct ClubResult {
+    size_t index = 0;
+    bool passed = false;
+    double at = 0.0;
+  };
+  std::vector<ClubResult> club_results;
+  // The v4 HUD drew the challenges last frame: no bottom banner over its
+  // prompt.
+  bool club_v4_hud_shown = false;
+  // Horizon Rally's entry (V4-10): the gate or confirmation popup over the
+  // world, then the first entry's video before the switch.
+  RallyEntryPopup rally_entry = RallyEntryPopup::kNone;
+  bool rally_enter_after_video = false;
+  void rally_entry_press(bool accept);
+  void rally_enter();
+  // The pause rows of the title update's packages (sync_pause_labels).
+  bool pause_packs_read = false, pause_has_club = false, pause_has_rally = false;
   bool car_club_open = false;
   int car_club_pick = 0;
   std::string car_club_notice;
@@ -519,6 +546,15 @@ struct DriveSession {
   void club_page(std::string& title, std::vector<std::string>& lines);
   ClubActiveStrip build_club_active_strip();
   std::string club_banner();
+  ClubMenuData build_club_menu_data();
+  ClubHud build_club_hud();
+  // The pause row: the menus (the intro video on the first visit).
+  void club_open_menu();
+  // A button on the open menus.
+  void club_menu_press(ClubMenu::Button b);
+  // BEGIN CHALLENGES IN THIS CAR: the record, the save, and the car swap
+  // when it is not the driven one.
+  void club_begin_in(int64_t car_id);
 
   // Simulation, audio & world streaming (drive_simulation.cpp)
   audio::EnginePlayer::Update sound_inputs(audio::View audio_view);
