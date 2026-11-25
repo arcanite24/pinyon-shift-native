@@ -3563,13 +3563,24 @@ written by v4, and the other 6 are probably Horizon Rally triggers
 (`Rally_DialogueScript_*.xml` is not in the local game copy), so that part
 is unconfirmed.
 
-**Values:** count is the times the trigger played. On 369 of 375 entries
-the variant equals count mod the trigger's `Filename` count, so it is the
-next variant to play. The 6 exceptions (`HEATSFinalTicketNeedsWin`,
-`RouteSetOnMap`) suggest that some triggers pick a variant another way.
-That last point is inferred.
+**Values:** count is the times the trigger played, and the variant is the
+`Filename` index to play next. Across the three saves:
+- on 304 entries the trigger has one `Filename`, and the variant is 0;
+- on the 71 entries whose trigger has several, the variant is count mod
+  the `Filename` count 65 times;
+- the other 6 are all `HEATSFinalTicketNeedsWin` and `RouteSetOnMap`, and
+  there the variant is (count + 1) mod the `Filename` count, one step ahead.
+
+Some entries read count 0: `FirstRaceCentralUnlockedFastTravel` and
+`FirstSpeedZoneSight` on all three saves, and `NewWristbandUnlocked3` on
+the seed. So an entry can exist without the line having played, and
+"heard" is count > 0, not the key being present. The variant reading is
+inferred from the numbers.
 
 **Still open:**
 - where in the dialogue manager an entry is added or bumped, and whether a
   one-shot trigger is skipped on count > 0 or on its own flag;
-- what makes those 6 entries differ.
+- why two triggers run one variant ahead.
+
+The engine still seeds its own heard-dialogue keys from the career (Q60).
+It does not read this record yet.
