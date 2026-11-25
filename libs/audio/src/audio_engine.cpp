@@ -640,6 +640,12 @@ void AudioEngine::radio_trigger_immediate(std::string_view gameplay_event) {
   enqueue(c);
 }
 
+void AudioEngine::radio_cancel_festival_updates() {
+  Command c;
+  c.kind = Command::kRadioCancelFestivalUpdates;
+  enqueue(c);
+}
+
 void AudioEngine::radio_trigger_festival_update(std::string_view gameplay_event) {
   Command c;
   c.kind = Command::kRadioFestivalUpdate;
@@ -1055,6 +1061,9 @@ void AudioEngine::drain_commands() {
         break;
       case Command::kRadioFestivalUpdate:
         if (radio_) radio_->trigger_festival_update(c.text.data());
+        break;
+      case Command::kRadioCancelFestivalUpdates:
+        if (radio_) radio_->cancel_festival_updates();
         break;
       case Command::kRuntimeRadioSelect:
         if (runtime_radio_) runtime_radio_->select_station(c.i0);

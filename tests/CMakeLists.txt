@@ -4,6 +4,14 @@ target_include_directories(fh1data_tests PRIVATE ../apps/carview)
 target_link_libraries(fh1data_tests PRIVATE fh1data shift_cars)
 add_test(NAME fh1data_tests COMMAND fh1data_tests)
 
+# The title update's UI files over the disc's (fh1data/ui_overlay.h); the
+# corpus run needs SHIFT_GAME_ROOT and SHIFT_STATE_ROOT (exit 77 without).
+add_executable(ui_overlay_tests ui_overlay_tests.cpp)
+target_link_libraries(ui_overlay_tests PRIVATE fh1data)
+add_test(NAME ui_overlay_tests COMMAND ui_overlay_tests)
+add_test(NAME ui_overlay_corpus COMMAND ui_overlay_tests --corpus)
+set_tests_properties(ui_overlay_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
+
 add_executable(drive_tests drive_tests.cpp)
 target_link_libraries(drive_tests PRIVATE shift_drive)
 add_test(NAME drive_tests COMMAND drive_tests)
@@ -137,6 +145,16 @@ add_test(NAME race_tests COMMAND race_tests)
 add_executable(rally_tests rally_tests.cpp)
 target_link_libraries(rally_tests PRIVATE shift_race shift_garage shift_audio shift_data shift_drive)
 add_test(NAME rally_tests COMMAND rally_tests)
+
+# Every string-table lookup the sources make by name resolves in the
+# player's tables; the corpus run needs SHIFT_GAME_ROOT and SHIFT_STATE_ROOT
+# (exit 77 without).
+add_executable(string_refs_tests string_refs_tests.cpp)
+target_compile_definitions(string_refs_tests PRIVATE SHIFT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(string_refs_tests PRIVATE shift_race shift_cars fh1data)
+add_test(NAME string_refs_tests COMMAND string_refs_tests)
+add_test(NAME string_refs_corpus COMMAND string_refs_tests --corpus)
+set_tests_properties(string_refs_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
 
 # The Pinyon Shift reference save's counts (FORMAT-PROFILE Tests) over the
 # plaintext exports in out/profile (skipped, exit 77, without them).
@@ -313,6 +331,20 @@ if(SHIFT_BUILD_CARVIEW)
   target_include_directories(fmv_story_tests PRIVATE ../apps/carview)
   target_link_libraries(fmv_story_tests PRIVATE carview_render shift_audio shift_drive)
   add_test(NAME fmv_story_tests COMMAND fmv_story_tests)
+
+  # The radio DJ's gameplay triggers (audio/radio_dj.h); the corpus run checks
+  # every name against the player's RadioSystem.xml (skipped, exit 77,
+  # without SHIFT_GAME_ROOT).
+  add_executable(radio_dj_tests radio_dj_tests.cpp
+    ../apps/carview/fmv_player.cpp
+    ../apps/carview/story_intro.cpp
+    ../apps/carview/settings.cpp
+    ../apps/carview/settings_page.cpp)
+  target_include_directories(radio_dj_tests PRIVATE ../apps/carview)
+  target_link_libraries(radio_dj_tests PRIVATE carview_render shift_audio shift_drive shift_race shift_freeroam)
+  add_test(NAME radio_dj_tests COMMAND radio_dj_tests)
+  add_test(NAME radio_dj_corpus COMMAND radio_dj_tests --corpus)
+  set_tests_properties(radio_dj_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
 
   add_executable(campaign_flow_tests campaign_flow_tests.cpp
     ../apps/carview/campaign_director.cpp

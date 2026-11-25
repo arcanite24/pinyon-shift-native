@@ -71,6 +71,8 @@ struct StreetHub {
   bool has_trigger = false;
   std::array<double, 3> trigger_pos{};
   double trigger_radius = 24.0;
+  // The activity's RadioDJRequests special lines (StreetRaceOwnerHub<n>).
+  std::vector<std::string> radio_specials;
 };
 
 struct FestivalSite {

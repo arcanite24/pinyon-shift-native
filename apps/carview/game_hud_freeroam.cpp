@@ -864,7 +864,7 @@ void ceremony_overlay(ui::List& l, const CeremonyHud& c, const Layout& g) {
     fit(bc_txt, cs, g.L(530), 10 * s);
     l.text(g.L(122), g.T(509), bc_txt, cs);
   }
-  ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
+  ui4::button_bar(l, {{"A", str("InGame", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
 }
 
 // Draws a marker-accurate FH1 hover badge icon matching all 10 World Map marker types.
@@ -1190,7 +1190,7 @@ void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g, bool metric_u
     const float ax = x0 + 14.0f * s, ay = 0.5f * (y0 + y1);
     const float rot = float(std::fmod(gps.time * 4.5, 6.2831853));
     l.arc(ax, ay, 7.0f * s, 2.2f * s, rot, rot + 4.4f, ui4::kInk);
-    const std::string rec_lbl = str("SatNav", "IDS_Recalculating", "RECALCULATING...");
+    const std::string rec_lbl = std::string("RECALCULATING...");
     l.text(x0 + 36 * s, y0 + 9 * s, rec_lbl,
            font(ui::Font::kE, 13.0f * s, ui::fade(ui4::kYellow, 0.65f + 0.35f * pulse)));
     return;
@@ -1357,7 +1357,7 @@ float h2h_hud(ui::List& l, const freeroam::HeadToHeadHud& hh, const Layout& g, b
   if (hh.prompt_visible && !hh.active) {
     const float x0 = cx - 230 * s, x1 = cx + 230 * s, y0 = g.B(576 - lift_canvas);
     ui4::brush(l, x0 + 16 * s, y0, x1 - 16 * s, y0 + 26 * s, ui4::kPink);
-    const std::string h2h_lbl = str("Activities", "IDS_HeadToHeadChallenge", "HEAD-TO-HEAD CHALLENGE");
+    const std::string h2h_lbl = std::string("HEAD-TO-HEAD CHALLENGE");
     const TextStyle hts = font(ui::Font::kE, 14.5f * s, ui4::kWhite);
     const float tw = ui::List::measure(h2h_lbl, hts);
     const float row_w = tw + 30.0f * s;

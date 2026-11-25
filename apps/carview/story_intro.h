@@ -92,6 +92,8 @@ class StoryIntro {
   StoryAction skip_stage();
   // Skips the entire intro straight to Autoshow hand-off / free roam.
   StoryAction skip_all();
+  // The radio and VO beats a stage plays (empty for stages without beats).
+  static std::vector<StoryBeat> beats_for(StoryStage stage);
   // Advances directly to a target stage (for tests and headless capture).
   StoryAction advance_to(StoryStage stage);
   void reset() {

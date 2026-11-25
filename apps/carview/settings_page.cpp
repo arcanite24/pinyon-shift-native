@@ -1815,11 +1815,11 @@ void SettingsPage::set_text_resolver(TextResolver fn) { settings_text_resolver()
 
 std::string SettingsPage::tab_label(Tab t) {
   switch (t) {
-    case Tab::kDisplay: return resolve_setting_loc("Options", "IDS_Video", "DISPLAY");
-    case Tab::kAudio: return resolve_setting_loc("Options", "IDS_Audio", "AUDIO");
-    case Tab::kGameplay: return resolve_setting_loc("Options", "IDS_Difficulty", "DIFFICULTY & HUD");
-    case Tab::kControls: return resolve_setting_loc("Options", "IDS_Controls", "CONTROLS");
-    case Tab::kPinyon: return resolve_setting_loc("Options", "IDS_Engine", "ENGINE");
+    case Tab::kDisplay: return resolve_setting_loc("PauseMenu", "IDS_Video", "DISPLAY");
+    case Tab::kAudio: return resolve_setting_loc("PauseMenu", "IDS_Audio", "AUDIO");
+    case Tab::kGameplay: return std::string("DIFFICULTY & HUD");
+    case Tab::kControls: return resolve_setting_loc("PauseMenu", "IDS_Controller", "CONTROLS");
+    case Tab::kPinyon: return std::string("ENGINE");
     default: return "OPTIONS";
   }
 }
@@ -1837,25 +1837,24 @@ bool SettingsPage::metric_units_active() const {
 std::string SettingsPage::format_row_name(const char* raw_name) const {
   if (!settings_text_resolver()) return raw_name;
   const std::string_view n(raw_name);
-  if (n == "difficulty preset") return resolve_setting_loc("Options", "IDS_DifficultyPreset", raw_name);
-  if (n == "difficulty") return resolve_setting_loc("Options", "IDS_Difficulty", raw_name);
-  if (n == "braking") return resolve_setting_loc("Options", "IDS_Braking", raw_name);
-  if (n == "steering") return resolve_setting_loc("Options", "IDS_Steering", raw_name);
-  if (n == "traction control") return resolve_setting_loc("Options", "IDS_TractionControl", raw_name);
-  if (n == "stability control") return resolve_setting_loc("Options", "IDS_StabilityControl", raw_name);
-  if (n == "shifting") return resolve_setting_loc("Options", "IDS_Shifting", raw_name);
-  if (n == "driving line") return resolve_setting_loc("Options", "IDS_DrivingLine", raw_name);
-  if (n == "rewind") return resolve_setting_loc("Options", "IDS_Rewind", raw_name);
-  if (n == "damage") return resolve_setting_loc("Options", "IDS_Damage", raw_name);
-  if (n == "units") return resolve_setting_loc("Options", "IDS_Units", raw_name);
-  if (n == "speedometer") return resolve_setting_loc("Options", "IDS_Speedometer", raw_name);
-  if (n == "minimap") return resolve_setting_loc("Options", "IDS_Minimap", raw_name);
-  if (n == "rumble") return resolve_setting_loc("Options", "IDS_Vibration", raw_name);
-  if (n == "controller layout") return resolve_setting_loc("Options", "IDS_ControllerLayout", raw_name);
-  if (n == "switch handbrake/clutch") return resolve_setting_loc("Options", "IDS_SwitchHandbrakeClutch", raw_name);
-  if (n == "master volume") return resolve_setting_loc("Options", "IDS_MasterVolume", raw_name);
-  if (n == "radio volume") return resolve_setting_loc("Options", "IDS_RadioVolume", raw_name);
-  if (n == "language") return resolve_setting_loc("Options", "IDS_Language", raw_name);
+  if (n == "difficulty preset") return resolve_setting_loc("Assists", "IDS_MetaDifficulty", raw_name);
+  if (n == "difficulty") return resolve_setting_loc("Assists", "IDS_AIDifficulty", raw_name);
+  if (n == "braking") return resolve_setting_loc("Assists", "IDS_Braking", raw_name);
+  if (n == "steering") return resolve_setting_loc("Assists", "IDS_Steering", raw_name);
+  if (n == "traction control") return resolve_setting_loc("Assists", "IDS_TractionControl", raw_name);
+  if (n == "stability control") return resolve_setting_loc("Assists", "IDS_StabilityControl", raw_name);
+  if (n == "shifting") return resolve_setting_loc("Assists", "IDS_Shifting", raw_name);
+  if (n == "driving line") return resolve_setting_loc("Assists", "IDS_SuggestedLine", raw_name);
+  if (n == "rewind") return resolve_setting_loc("Assists", "IDS_Rewind", raw_name);
+  if (n == "units") return resolve_setting_loc("InGame", "IDS_HudOption_Units", raw_name);
+  if (n == "speedometer") return resolve_setting_loc("InGame", "IDS_HudOption_Speedometer", raw_name);
+  if (n == "minimap") return resolve_setting_loc("InGame", "IDS_HudOption_Map", raw_name);
+  if (n == "rumble") return resolve_setting_loc("MyProfile", "IDS_Option_RumbleSetting", raw_name);
+  if (n == "controller layout") return resolve_setting_loc("MyProfile", "IDS_Option_Layout", raw_name);
+  if (n == "switch handbrake/clutch")
+    return resolve_setting_loc("MyProfile", "IDS_Option_InvertHandbrakeClutch", raw_name);
+  if (n == "master volume") return resolve_setting_loc("MyProfile", "IDS_MasterGameVolume", raw_name);
+  if (n == "radio volume") return resolve_setting_loc("MyProfile", "IDS_RadioVolume", raw_name);
   return raw_name;
 }
 

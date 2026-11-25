@@ -532,6 +532,11 @@ bool Radio::trigger_festival_update(std::string_view gameplay_event) {
   return any;
 }
 
+void Radio::cancel_festival_updates() {
+  for (int s : data_.cycle)
+    if (auto* sc = schedule(s)) sc->cancel_festival_updates();
+}
+
 bool Radio::lock_viper_intro_playlist() {
   // Locate Bass Arena (Radio1 / station containing "Bass", or first music station with Levels/Language).
   int target_station = -1;

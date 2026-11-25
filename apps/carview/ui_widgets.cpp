@@ -9,6 +9,7 @@
 
 #include "events_page.h"
 #include "fh1data/stringtables.h"
+#include "fh1data/ui_overlay.h"
 #include "game_hud.h"
 #include "settings_page.h"
 #include "ui4_chrome.h"
@@ -985,13 +986,13 @@ float LoadingScreen::veil_alpha() const {
   return 0.0f;
 }
 
-bool LoadingScreen::load_definitions(const std::filesystem::path& game_root, const std::string& group) {
-  std::ifstream f(game_root / "media" / "ui" / "LoadingDefs.xml", std::ios::binary);
-  if (!f) return false;
-  std::ostringstream ss;
-  ss << f.rdbuf();
+bool LoadingScreen::load_definitions(const std::filesystem::path& game_root, const std::string& group,
+                                     const std::filesystem::path& state_root) {
+  fh1::UiOverlay ui(game_root, fh1::UiOverlay::v4_media_zip_of(state_root));
+  const fh1::UiOverlay::File f = ui.ui_file("LoadingDefs.xml");
+  if (!f.ok()) return false;
   std::vector<fh1::UiLoadingTip> parsed;
-  if (!fh1::parse_loading_defs_xml(ss.str(), parsed)) return false;
+  if (!fh1::parse_loading_defs_xml(std::string(f.read.data.begin(), f.read.data.end()), parsed)) return false;
 
   std::string want = group;
   for (char& c : want) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -1201,7 +1202,7 @@ void LoadingScreen::draw(ui::List& l, float screen_w, float screen_h) const {
     if (sp_node >= 0) sc.model(l, f, sp_node, 1.0f, 0.0f, 0.0f, 0.0f, 0u, {}, -ang);
   }
   ui::TextStyle lw = ui4::style(ui::Font::kB, 11.0f * s, ui4::kOffWhite, ui::Align::kCenter);
-  l.text(sp_cx, sp_cy + 28.0f * s, loc_str("ScreenTitles", "IDS_Loading", "LOADING"), lw);
+  l.text(sp_cx, sp_cy + 28.0f * s, loc_str("Scoreboard", "IDS_Scoreboard_Loading_Title", "LOADING"), lw);
 
   // R3-UI-10: Smooth ~0.25 s ease-out fade-in veil on LoadingScreen entry.
   const float entry_veil = veil_alpha();
@@ -1402,7 +1403,7 @@ void OnScreenKeyboard::draw(ui::List& l, float screen_w, float screen_h) const {
   ui4::button_bar(l,
                   {{"A", loc_str("HelpButtons", "IDS_Select", "TYPE")},
                    {"X", "BACKSPACE"},
-                   {"START", loc_str("HelpButtons", "IDS_ContinueMenu", "DONE")},
+                   {"START", std::string("DONE")},
                    {"B", loc_str("HelpButtons", "IDS_Cancel", "CANCEL")}},
                   screen_w, screen_h);
 }

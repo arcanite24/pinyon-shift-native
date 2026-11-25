@@ -97,10 +97,12 @@ class LoadingScreen {
   bool visible() const { return active_ || fading_out_; }
   float veil_alpha() const;
 
-  // Loads categorized tips from media/ui/LoadingDefs.xml (resolving Tips:IDS_*
+  // Loads categorized tips from media/ui/LoadingDefs.xml (the title update's
+  // copy in <state_root>/title-update-v4/media.zip first; resolving Tips:IDS_*
   // through game_text() / string tables when available) and selects matching
   // LOADING/BGLOADINGIMAGES/* & LOADING/TIPIMAGES/* assets.
-  bool load_definitions(const std::filesystem::path& game_root, const std::string& group = "freeroam");
+  bool load_definitions(const std::filesystem::path& game_root, const std::string& group = "freeroam",
+                        const std::filesystem::path& state_root = {});
   void set_group(const std::string& group) { group_ = group; }
   const std::string& group() const { return group_; }
   void set_bg_index(int idx) { bg_idx_ = idx; }

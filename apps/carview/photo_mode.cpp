@@ -994,8 +994,8 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
 
   if (gallery_open_) {
     ui4::subtle_vignette(out, w, h, 0.36f);
-    const std::string gal_title = loc_str("PhotoMode", "IDS_PhotoGallery", "PHOTO GALLERY");
-    const std::string gal_eyebrow = loc_str("PhotoMode", "IDS_SavedPhotos", "HORIZON PHOTOS") + "  •  " +
+    const std::string gal_title = std::string("PHOTO GALLERY");
+    const std::string gal_eyebrow = std::string("HORIZON PHOTOS") + "  •  " +
                                     std::to_string(gallery_entries_.size()) + " SAVED";
     ui4::title_banner(out, s, 56.0f * s, 28.0f * s, gal_title, gal_eyebrow, true, 480.0f);
 
@@ -1007,7 +1007,7 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
 
       // Tilted brush header bar spanning the gallery workspace.
       ui4::brush(out, bx0 - 6.0f * s, by0, bx1 + 6.0f * s, by0 + 30.0f * s, ui4::kBrushBlack, true);
-      out.text(bx0 + 14.0f * s, by0 + 8.0f * s, loc_str("PhotoMode", "IDS_LocalGallery", "LOCAL PHOTOS FOLDER"),
+      out.text(bx0 + 14.0f * s, by0 + 8.0f * s, std::string("LOCAL PHOTOS FOLDER"),
                ui4::style(Font::kE, 13.0f * s, ui4::kOffWhite));
       if (!gallery_entries_.empty()) {
         char hdr_cnt[32];
@@ -1019,7 +1019,7 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
       if (gallery_entries_.empty()) {
         ui4::panel01(out, bx0, by0 + 38.0f * s, bx1, by1, s, ui4::kCharcoalDark, ui4::kPink);
         out.text(0.5f * w, 0.5f * (by0 + 38.0f * s + by1) - 8.0f * s,
-                 loc_str("PhotoMode", "IDS_NoPhotos", "NO SAVED PHOTOS YET (PRESS ENTER / A IN PHOTO MODE TO SNAP)"),
+                 std::string("NO SAVED PHOTOS YET (PRESS ENTER / A IN PHOTO MODE TO SNAP)"),
                  ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
       } else {
         const float content_top = by0 + 38.0f * s;
@@ -1108,7 +1108,7 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
           out.image(ix0, iy0, ix0 + dw, iy0 + dh, gallery_preview_uv_);
         } else {
           out.text(0.5f * (frame_x0 + frame_x1), 0.5f * (frame_y0 + frame_y1) - 8.0f * s,
-                   loc_str("PhotoMode", "IDS_PreviewUnavailable", "PREVIEW UNAVAILABLE"),
+                   std::string("PREVIEW UNAVAILABLE"),
                    ui4::style(Font::kB, 13.0f * s, ui4::kDim, Align::kCenter));
         }
 
@@ -1236,7 +1236,7 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
 
     // Header PILL01 (#BFBFBF) + PILLCLIPON01 + compact position counter (e.g. "4 / 15")
     ui4::pill(out, dx0, dy0, dx1, dy0 + 26.0f * s, rgba(0xBF, 0xBF, 0xBF, 240), ui4::PillKind::kMenu, false, true);
-    out.text(dx0 + 12.0f * s, dy0 + 6.0f * s, loc_str("PhotoMode", "IDS_Effects", "CAMERA EFFECTS"),
+    out.text(dx0 + 12.0f * s, dy0 + 6.0f * s, std::string("CAMERA EFFECTS"),
              ui4::style(Font::kD, 13.0f * s, ui4::kInk));
     char pos_buf[24];
     std::snprintf(pos_buf, sizeof pos_buf, "%d / %d", selected_row_ + 1, int(kRowCount));
@@ -1264,26 +1264,26 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     std::snprintf(rbuf, sizeof rbuf, "%+.0f°", camera_.roll_deg());
 
     const RowInfo rows[kRowCount] = {
-        {loc_str("PhotoMode", "IDS_Preset", "PRESET"), 0.0f, photo_preset_name(effects_.preset), false},
-        {loc_str("PhotoMode", "IDS_ShutterSpeed", "SHUTTER"), effects_.shutter_speed / 100.0f, fmt_pct(effects_.shutter_speed), true},
-        {loc_str("PhotoMode", "IDS_ShutterMode", "BLUR MODE"), 0.0f, effects_.tracking_panning ? "TRACKING" : "PANNING", false},
-        {loc_str("PhotoMode", "IDS_Aperture", "APERTURE"), effects_.aperture / 100.0f, fmt_pct(effects_.aperture), true},
-        {loc_str("PhotoMode", "IDS_Focus", "FOCUS"), (effects_.focus_distance - 1.5f) / 118.5f, fbuf, true},
-        {loc_str("PhotoMode", "IDS_Exposure", "EXPOSURE"), effects_.exposure / 100.0f, fmt_pct(effects_.exposure), true},
-        {loc_str("PhotoMode", "IDS_Contrast", "CONTRAST"), effects_.contrast / 100.0f, fmt_pct(effects_.contrast), true},
-        {loc_str("PhotoMode", "IDS_Color", "COLOUR"), effects_.colour / 100.0f, fmt_pct(effects_.colour), true},
-        {loc_str("PhotoMode", "IDS_Brightness", "BRIGHTNESS"), effects_.brightness / 100.0f, fmt_pct(effects_.brightness), true},
-        {loc_str("PhotoMode", "IDS_Sepia", "SEPIA"), effects_.sepia / 100.0f, fmt_pct(effects_.sepia), true},
-        {loc_str("PhotoMode", "IDS_Vignette", "VIGNETTE"), effects_.vignette / 100.0f, fmt_pct(effects_.vignette), true},
-        {loc_str("PhotoMode", "IDS_Zoom", "ZOOM / FOV"),
+        {std::string("PRESET"), 0.0f, photo_preset_name(effects_.preset), false},
+        {loc_str("InGame", "IDS_Label_Shutterspeed", "SHUTTER"), effects_.shutter_speed / 100.0f, fmt_pct(effects_.shutter_speed), true},
+        {std::string("BLUR MODE"), 0.0f, effects_.tracking_panning ? "TRACKING" : "PANNING", false},
+        {loc_str("InGame", "IDS_Label_Aperture", "APERTURE"), effects_.aperture / 100.0f, fmt_pct(effects_.aperture), true},
+        {loc_str("InGame", "IDS_Label_Focus", "FOCUS"), (effects_.focus_distance - 1.5f) / 118.5f, fbuf, true},
+        {loc_str("InGame", "IDS_Label_Exposure", "EXPOSURE"), effects_.exposure / 100.0f, fmt_pct(effects_.exposure), true},
+        {loc_str("InGame", "IDS_Label_Contrast", "CONTRAST"), effects_.contrast / 100.0f, fmt_pct(effects_.contrast), true},
+        {loc_str("InGame", "IDS_Label_Color", "COLOUR"), effects_.colour / 100.0f, fmt_pct(effects_.colour), true},
+        {loc_str("InGame", "IDS_Label_Brightness", "BRIGHTNESS"), effects_.brightness / 100.0f, fmt_pct(effects_.brightness), true},
+        {loc_str("InGame", "IDS_Label_Sepia", "SEPIA"), effects_.sepia / 100.0f, fmt_pct(effects_.sepia), true},
+        {loc_str("InGame", "IDS_Label_Vignette", "VIGNETTE"), effects_.vignette / 100.0f, fmt_pct(effects_.vignette), true},
+        {std::string("ZOOM / FOV"),
          float((camera_.limits().max_fov_deg - camera_.fov_deg()) /
                std::max(1.0, camera_.limits().max_fov_deg - camera_.limits().min_fov_deg)),
          zbuf, true},
-        {loc_str("PhotoMode", "IDS_Roll", "ROLL / TILT"),
+        {loc_str("InGame", "IDS_Photo_Mode_Roll", "ROLL / TILT"),
          float((camera_.roll_deg() + camera_.limits().max_roll_deg) / (2.0 * camera_.limits().max_roll_deg)), rbuf,
          true},
-        {loc_str("PhotoMode", "IDS_Watermark", "WATERMARK"), 0.0f, effects_.watermark ? "ON" : "OFF", false},
-        {loc_str("PhotoMode", "IDS_HideCar", "HIDE CAR"), 0.0f, effects_.hide_car ? "ON" : "OFF", false},
+        {std::string("WATERMARK"), 0.0f, effects_.watermark ? "ON" : "OFF", false},
+        {std::string("HIDE CAR"), 0.0f, effects_.hide_car ? "ON" : "OFF", false},
     };
 
     float list_drawn_bot = list_top;
@@ -1343,11 +1343,11 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
 
   // Authentic FH1 BUTTON_BAR_SCENE bottom bar (localized via string tables with English fallbacks).
   ui4::button_bar(out,
-                  {{"A", loc_str("PhotoMode", "IDS_TakePhoto", "SNAP PHOTO")},
-                   {"Y", loc_str("PhotoMode", "IDS_Effects", "EFFECTS")},
+                  {{"A", loc_str("HelpButtons", "IDS_TakePhoto", "SNAP PHOTO")},
+                   {"Y", loc_str("HelpButtons", "IDS_PhotoMode_Effects", "EFFECTS")},
                    {"DPAD_LR", "ADJUST"},
-                   {"X", loc_str("PhotoMode", "IDS_Autofocus", "AUTOFOCUS")},
-                   {"LB", loc_str("HelpButtons", "IDS_Reset", "RESET")},
+                   {"X", std::string("AUTOFOCUS")},
+                   {"LB", std::string("RESET")},
                    {"B", loc_str("HelpButtons", "IDS_Back", "EXIT")}},
                   w, h, 56.0f);
 }

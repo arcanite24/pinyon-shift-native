@@ -155,6 +155,9 @@ class StationSchedule {
   bool queue_special_dialogue(std::string_view gameplay_event);
   bool trigger_immediate_dialogue(std::string_view gameplay_event, double now_clock);
   bool queue_festival_update(std::string_view gameplay_event);
+  // Drops the festival updates queued and not yet scheduled
+  // (radiodj.xml CancelPreviousTier).
+  void cancel_festival_updates() { pending_festival_.clear(); }
   // Locks playback to an explicit ordered track list (e.g. Viper intro 2-track drive).
   void set_locked_playlist(std::vector<int> track_indices, double now_clock);
   void clear_locked_playlist();
@@ -210,6 +213,7 @@ class Radio {
   bool trigger_special_dialogue(std::string_view gameplay_event);
   bool trigger_immediate_dialogue(std::string_view gameplay_event);
   bool trigger_festival_update(std::string_view gameplay_event);
+  void cancel_festival_updates();
   // Locks Radio to the Viper opening drive 2-track Bass Arena playlist
   // ("Levels (Skrillex Remix)" -> "Language"), preventing D-pad station changes until unlocked.
   bool lock_viper_intro_playlist();

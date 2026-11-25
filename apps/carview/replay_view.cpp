@@ -163,11 +163,11 @@ std::string format_replay_speed(float speed_mps, bool metric_units) {
   char buf[48];
   if (metric_units) {
     const int val = int(std::lround(spd * 3.6f));
-    const std::string unit = clean_unit_str(loc_str("UnitStrings", "IDS_Units_KMH", "KM/H"), "KM/H");
+    const std::string unit = clean_unit_str(loc_str("Activities", "IDS_KmPerHour", "KM/H"), "KM/H");
     std::snprintf(buf, sizeof buf, "%3d %s", val, unit.c_str());
   } else {
     const int val = int(std::lround(spd * 2.2369363f));
-    const std::string unit = clean_unit_str(loc_str("UnitStrings", "IDS_Units_MPH", "MPH"), "MPH");
+    const std::string unit = clean_unit_str(loc_str("Activities", "IDS_Mph", "MPH"), "MPH");
     std::snprintf(buf, sizeof buf, "%3d %s", val, unit.c_str());
   }
   return buf;
@@ -655,20 +655,20 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
     ui4::subtle_vignette(out, w, h, 0.35f);
     {
       ui4::TiltScope tilt(out, 0.5f * w, 0.5f * h, ui4::kTiltRad * 0.45f);
-      ui4::title_banner(out, s, 56.0f * s, 28.0f * s, loc_str("Replay", "IDS_SavedReplays", "SAVED REPLAYS"),
-                        loc_str("Replay", "IDS_HorizonTheatre", "HORIZON THEATRE"), true, 440.0f);
+      ui4::title_banner(out, s, 56.0f * s, 28.0f * s, std::string("SAVED REPLAYS"),
+                        std::string("HORIZON THEATRE"), true, 440.0f);
       const float bx0 = 56.0f * s, bx1 = w - 56.0f * s;
       const float by0 = 122.0f * s, by1 = h - 84.0f * s;
       ui4::panel(out, bx0, by0, bx1, by1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
       ui4::offwhite_strip(out, bx0 + 14.0f * s, by0 + 10.0f * s, bx1 - 14.0f * s, by0 + 34.0f * s, s, false);
-      out.text(bx0 + 24.0f * s, by0 + 15.0f * s, loc_str("Replay", "IDS_RecordedSessions", "RECORDED SESSIONS"),
+      out.text(bx0 + 24.0f * s, by0 + 15.0f * s, std::string("RECORDED SESSIONS"),
                ui4::style(Font::kE, 13.0f * s, ui4::kInk));
       out.text(bx1 - 24.0f * s, by0 + 15.5f * s, std::to_string(browser_entries_.size()) + " REPLAYS",
                ui4::style(Font::kB, 11.5f * s, ui4::kInk, Align::kRight));
 
       if (browser_entries_.empty()) {
         out.text(0.5f * w, 0.5f * h - 10.0f * s,
-                 loc_str("Replay", "IDS_NoSavedReplays", "NO SAVED REPLAYS YET (PRESS S IN REPLAY VIEWER TO SAVE)"),
+                 std::string("NO SAVED REPLAYS YET (PRESS S IN REPLAY VIEWER TO SAVE)"),
                  ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
       } else {
         const float row_h = 52.0f * s;
@@ -739,8 +739,8 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
     };
     if (!browser_entries_.empty()) {
       prompts.push_back(
-          {"X", browser_delete_confirm_active() ? loc_str("Replay", "IDS_ConfirmDelete", "CONFIRM DELETE")
-                                                : loc_str("Replay", "IDS_DeleteReplay", "DELETE REPLAY")});
+          {"X", browser_delete_confirm_active() ? std::string("CONFIRM DELETE")
+                                                : std::string("DELETE REPLAY")});
     }
     ui4::button_bar(out, prompts, w, h, 56.0f);
     return;
@@ -814,7 +814,7 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
     };
     // Page header pill (968_TELEMETRY cycleable pages: General / Friction / Suspension / Damage / Engine).
     ui4::pill(out, rx0, ry, rx1, ry + 22.0f * s, ui4::kPink, ui4::PillKind::kHud02);
-    const std::string tel_hdr = loc_str("Replay", "IDS_Telemetry", "TELEMETRY");
+    const std::string tel_hdr = loc_str("InGame", "IDS_Telemetry", "TELEMETRY");
     char pbuf[96];
     std::snprintf(pbuf, sizeof pbuf, "%s %d/%d  •  %s", tel_hdr.c_str(), int(telemetry_page_) + 1,
                   int(ReplayTelemetryPage::kCount), replay_telemetry_page_name(telemetry_page_));
@@ -976,10 +976,10 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
 
   // Authentic BUTTON_BAR_SCENE bottom prompts (localized via string tables with English fallbacks).
   ui4::button_bar(out,
-                  {{"A", loc_str("Replay", "IDS_PlayPause", "PLAY/PAUSE")},
-                   {"DPAD_LR", loc_str("Replay", "IDS_Scrub", "SCRUB")},
-                   {"Y", loc_str("Replay", "IDS_Camera", "CAMERA")},
-                   {"X", loc_str("Replay", "IDS_Telemetry", "TELEMETRY")},
+                  {{"A", std::string("PLAY/PAUSE")},
+                   {"DPAD_LR", std::string("SCRUB")},
+                   {"Y", loc_str("HelpButtons", "IDS_Camera", "CAMERA")},
+                   {"X", loc_str("InGame", "IDS_Telemetry", "TELEMETRY")},
                    {"LB", loc_str("PauseMenu", "IDS_Photo", "PHOTO")},
                    {"B", loc_str("HelpButtons", "IDS_Back", "EXIT")}},
                   w, h, 70.0f);

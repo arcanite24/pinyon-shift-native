@@ -92,7 +92,8 @@ bool write_png(const std::string& path, uint32_t w, uint32_t h, int channels, co
 // The game's UI fonts (FORMAT-FONTS) from media/ui/Fonts.zip: A, B and E,
 // the Cyrillic variants (strict supersets). False, with the stroke font
 // kept, when the archive or a font is missing.
-bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache) {
+bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache,
+                   const std::filesystem::path& state_root) {
   if (game_root.empty() || carview::ui::vector_fonts_loaded()) return carview::ui::vector_fonts_loaded();
   std::string why;
   auto zip = fh1::Archive::open(game_root / "media" / "ui" / "Fonts.zip", &why);
@@ -104,21 +105,18 @@ bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache) {
     std::fprintf(stderr, "carview: note: core vector fonts failed to load from Fonts.zip\n");
   }
   auto st = cache.state;
+  // The UI's files: the title update's media.zip over the disc's, file by
+  // file (fh1data/ui_overlay.h).
+  st->overlay = std::make_shared<fh1::UiOverlay>(game_root, fh1::UiOverlay::v4_media_zip_of(state_root));
   // The game's UI textures by path, on first use (FORMAT-UISCENES).
   carview::set_ui_textures([root = game_root, st](const std::string& path, std::array<float, 4>& uv) {
     if (carview::ui::atlas_find(path, uv)) return true;
     if (st->failed_textures.count(path)) return false;
-    if (!st->textures_opened) {
-      st->textures_opened = true;
-      std::string e;
-      st->horizon_zip = fh1::Archive::open(root / "media" / "ui" / "textures" / "Horizon.zip", &e);
-      st->textures_zip = fh1::Archive::open(root / "media" / "ui" / "Textures.zip", &e);
-    }
     const bool t = path.rfind("T:", 0) == 0;
     const std::string rel = (t ? path.substr(2) : path) + ".xds";
-    fh1::Archive* a = t ? st->textures_zip.get() : st->horizon_zip.get();
-    fh1::ReadResult r = a ? a->read(rel) : fh1::ReadResult{};
-    if (!r.ok() && !t) {
+    fh1::UiOverlay::File file = st->overlay->texture(path);
+    fh1::ReadResult r = file.ok() ? std::move(file.read) : fh1::ReadResult{};
+    if (!file.ok() && !t) {
       std::error_code ec;
       const std::filesystem::path loose = root / "media" / "ui" / "textures" / "Horizon" / rel;
       if (std::filesystem::is_regular_file(loose, ec)) {
@@ -159,25 +157,16 @@ bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache) {
     }
     return true;
   });
-  // The UI scenes by name, on first use (FORMAT-UISCENES: media/UI.zip Scenes/ui4/<name>.fbf and .bsg).
-  carview::set_ui_scenes([root = game_root, st](const std::string& name) -> const fh1::UiScene* {
+  // The UI scenes by name, on first use (FORMAT-UISCENES: Scenes/ui4/<name>.fbf, .bsg and
+  // .bgf; v4's copy of each file first).
+  carview::set_ui_scenes([st](const std::string& name) -> const fh1::UiScene* {
     if (auto it = st->scene_cache.find(name); it != st->scene_cache.end()) return it->second.get();
-    if (!st->ui_opened) {
-      st->ui_opened = true;
-      std::string e;
-      st->ui_zip = fh1::Archive::open(root / "media" / "UI.zip", &e);
-    }
     auto& slot = st->scene_cache[name];
-    if (!st->ui_zip) return nullptr;
-    auto fbf = st->ui_zip->read("Scenes/ui4/" + name + ".fbf");
-    auto bsg = st->ui_zip->read("Scenes/ui4/" + name + ".bsg");
-    auto bgf = st->ui_zip->read("Scenes/ui4/" + name + ".bgf");
     auto sc = std::make_unique<fh1::UiScene>();
     std::string e;
-    if (fbf.ok() && bsg.ok() && fh1::parse_ui_fbf(fbf.data, *sc, &e) && fh1::parse_ui_bsg(bsg.data, *sc, &e)) {
-      if (bgf.ok()) sc->has_bgf = fh1::parse_ui_bgf(bgf.data, sc->bgf, nullptr);
+    if (st->overlay->load_scene(name, *sc, &e))
       slot = std::move(sc);
-    } else
+    else
       std::fprintf(stderr, "carview: note: UI scene %s not loaded%s%s\n", name.c_str(), e.empty() ? "" : ": ", e.c_str());
     return slot.get();
   });

@@ -65,15 +65,10 @@ StoryAction StoryIntro::begin_new_career(const std::filesystem::path& game_root,
   return enter_stage(StoryStage::kViperDrive);
 }
 
-void StoryIntro::populate_beats_for(StoryStage s) {
-  beats_.clear();
-  beat_idx_ = 0;
-  active_speaker_.clear();
-  active_caption_.clear();
-  caption_timer_ = 0.0;
-
+std::vector<StoryBeat> StoryIntro::beats_for(StoryStage s) {
+  std::vector<StoryBeat> beats;
   if (s == StoryStage::kViperDrive) {
-    beats_ = {
+    beats = {
         {"SCOTT TYLER", "AliceOpeningInterview1", "AllComersEventActivated",
          "Welcome to Horizon Bass Arena! Alice Hart says only 250 festival passes remain — get to the Horizon Festival!",
          -1.0, 0.5, 7.0},
@@ -85,13 +80,13 @@ void StoryIntro::populate_beats_for(StoryStage s) {
          900.0, 28.0, 6.5},
     };
   } else if (s == StoryStage::kCorradoQualify) {
-    beats_ = {
+    beats = {
         {"ALICE HART", "AliceOpeningInterview2A", "",
          "Take the VW Corrado VR6 to the grid and finish the qualification race to earn your Yellow Wristband!",
          -1.0, 0.5, 7.0},
     };
   } else if (s == StoryStage::kFestivalIntroBeats) {
-    beats_ = {
+    beats = {
         {"ALICE HART", "", "230PopularityReached",
          "You made it! Here is your official Yellow Wristband — welcome to the Horizon Festival!",
          -1.0, 0.2, 5.0},
@@ -103,6 +98,15 @@ void StoryIntro::populate_beats_for(StoryStage s) {
          -1.0, 11.2, 5.0},
     };
   }
+  return beats;
+}
+
+void StoryIntro::populate_beats_for(StoryStage s) {
+  beats_ = beats_for(s);
+  beat_idx_ = 0;
+  active_speaker_.clear();
+  active_caption_.clear();
+  caption_timer_ = 0.0;
 }
 
 StoryAction StoryIntro::enter_stage(StoryStage next) {
