@@ -2191,7 +2191,7 @@ Needed: how the game resolves a placement's `eventName` to an event (a
 project or group prefix it strips, or a remap table), and where the
 regional banks are.
 
-## Q107 (WORLD-11, not blocking): how an ordinary event sets, holds and restores the time of day
+## Q107 (WORLD-11, not blocking): how an ordinary event sets and holds the time of day
 
 The original changes the clock by a request: a target (plus 86,400 to pass
 midnight) and a rate, which the clock runs at until it lands and pauses
@@ -2199,19 +2199,21 @@ there; a held-clock flag keeps the title's own setters off it. The engine
 has it (`TodClock::request`). The only callers traced are two special
 flows: the first-time-career intro (a 45 s ramp to 18:00, 14:30 or
 midnight, picked by state we have not matched) and the E3 demo. What an
-ordinary event start writes is not traced. A probe of the original at
-22:00 showed The Gauntlet loading in daylight, so the start time is set at
-once, as the engine does; the probe's quit did not register, so whether
-the pre-race time comes back after the event is not seen.
+ordinary event start writes is not traced.
 
-The engine sets the event's `TimeOfDayStart` at once, holds the clock
-through the race (SKY_AND_TOD §7: paused on fixed-time events) and puts
-the pre-race time back afterwards. That restore is the jump the playtest
-saw run backwards; it stays until the original's rule is known.
+Seen in the original: from a 22:00 free roam The Gauntlet loads in
+daylight, so the start time is set at once. Quitting that event (pause,
+QUIT RACE, confirm) returns to free roam still in daylight: the pre-race
+time is not put back. The engine now does the same: it sets the event's
+`TimeOfDayStart` at once, holds the clock through the race (SKY_AND_TOD
+§7: paused on fixed-time events) and lets free roam carry on from there.
+The restore it used to do was the backwards jump the playtest saw.
 
-Needed: a capture pair either side of quitting or finishing an event
-(free-roam time before, after), or the writer of the clock's time and
-hold flag on event load and unload.
+Still open: whether finishing an event (rather than quitting) leaves the
+clock in the same place, and whether free roam resumes at the event's
+start time or at the time it had reached. Needed: a capture either side
+of a finished event, or the writer of the clock's time and hold flag on
+event unload.
 
 ## Q108 (WORLD-12, not blocking): where world lamp glows come from
 

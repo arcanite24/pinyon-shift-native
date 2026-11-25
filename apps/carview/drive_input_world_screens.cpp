@@ -349,7 +349,6 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                   cycle_difficulty(+1);
                 } else {  // QUIT RACE
                   grid_menu_open = false;
-                  app.restore_pre_race_tod();
                   app.leave_race = true;
                   running = false;
                 }
@@ -363,7 +362,6 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) confirm_grid();
                 else if (k == SDLK_ESCAPE) {
                   grid_menu_open = false;
-                  app.restore_pre_race_tod();
                   app.leave_race = true;
                   running = false;
                 }
@@ -377,7 +375,6 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_grid();
                 else if (b == SDL_GAMEPAD_BUTTON_EAST) {
                   grid_menu_open = false;
-                  app.restore_pre_race_tod();
                   app.leave_race = true;
                   running = false;
                 }

@@ -414,7 +414,6 @@ void DriveSession::start_new_career() {
           app.pre_loaner_car.clear();
           app.pre_loaner_garage_id = 0;
           app.pending_event_loaner_car.clear();
-          app.pre_race_tod_sec = -1.0;
           app.story_intro.reset();
           app.pending_handoff = {};
           app.pending_barn_restorations.clear();
@@ -813,7 +812,6 @@ void DriveSession::choose() {
           if (act == PauseMenu::kQuitRace && app.race) {
             app.race->drop_award();
             results_page = 0;
-            app.restore_pre_race_tod();
             app.leave_race = true;
             running = false;
           }
@@ -860,7 +858,6 @@ void DriveSession::race_continue() {
             app.spawn[0] = at.x, app.spawn[1] = at.y, app.spawn[2] = at.z, app.spawn[3] = std::atan2(f.x, f.z);
           }
           app.have_spawn = true;
-          app.restore_pre_race_tod();
           app.leave_race = true;
           running = false;
 }

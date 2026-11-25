@@ -39,15 +39,6 @@ bool extract_event_tod_start(const EvT& ev, double& out_tod_sec) {
 
 bool DriveApp::colorado_world() const { return world_dir.empty() || world::model_prefix(world_dir) == "coloradoout"; }
 
-void DriveApp::restore_pre_race_tod() {
-    if (pre_race_tod_sec >= 0.0) {
-      double sec = std::fmod(pre_race_tod_sec, 86400.0);
-      if (sec < 0.0) sec += 86400.0;
-      tod_clock.tod_sec = sec;
-      pre_race_tod_sec = -1.0;
-    }
-}
-
 std::filesystem::path DriveApp::game_root_of() const {
     return !game_root_given.empty() ? game_root_given : world_dir.parent_path().parent_path().parent_path();
 }
@@ -107,13 +98,14 @@ bool DriveApp::start_race(const std::string& id, std::string& why) {
         has_event_tod = extract_event_tod_start(*cev, event_tod_sec);
       }
     }
+    // WORLD-11: an event with a start time sets the clock there, and free
+    // roam carries on from the event's time afterwards. The original does
+    // not put the pre-race time back: quitting an event entered from a
+    // 22:00 free roam returns to free roam in daylight (Q107).
     if (has_event_tod && event_tod_sec >= 0.0) {
-      if (pre_race_tod_sec < 0.0) pre_race_tod_sec = tod_clock.tod_sec;
       double sec = std::fmod(event_tod_sec, 86400.0);
       if (sec < 0.0) sec += 86400.0;
       tod_clock.tod_sec = sec;
-    } else if (pre_race_tod_sec >= 0.0) {
-      restore_pre_race_tod();
     }
     if (wristbands.levels.empty()) {
       std::string e;
@@ -1134,7 +1126,6 @@ bool DriveApp::handle_rally_world_switch() {
     rally_world_switch = 0;
     race.reset();
     race_event.clear();
-    restore_pre_race_tod();
     bool world_changed = false;
     if (dir > 0 && !rally_catalog.package_dir.empty()) {
       world_dir = rally_catalog.package_dir / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "Tracks" / "ColoradoDirt";
