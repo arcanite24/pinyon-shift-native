@@ -179,6 +179,9 @@ set(carview_sources
   achievements.cpp
   audio_host.cpp
   campaign_director.cpp
+  first_time_career_ui.cpp
+  drive_first_time_career.cpp
+  cutscene_runtime.cpp
   campaign_ui.cpp
   fmv_player.cpp
   story_intro.cpp
@@ -201,7 +204,7 @@ else()
       INSTALL_RPATH "@executable_path/../Frameworks")
   endif()
 endif()
-target_link_libraries(carview PRIVATE carview_render carview_hud shift_drive shift_world shift_audio shift_traffic shift_freeroam shift_race shift_profile shift_garage shift_stb shift_sqlite3)
+target_link_libraries(carview PRIVATE carview_render carview_hud shift_drive shift_world shift_audio shift_traffic shift_freeroam shift_race shift_cutscene shift_profile shift_garage shift_stb shift_sqlite3)
 if(EXISTS "${PROJECT_SOURCE_DIR}/config/gamecontrollerdb.txt" AND NOT (ANDROID AND NOT SHIFT_ANDROID_EXECUTABLE))
   add_custom_command(TARGET carview POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "campaign_director.h"
+#include "first_time_career_ui.h"
 #include "campaign_ui.h"
 #include "drive/save.h"
 #include "fmv_player.h"
@@ -289,9 +290,38 @@ void test_save_load_roundtrip() {
 
   carview::CampaignDirector dir2;
   dir2.load_from_save(sv2);
-  check(dir2.flow().stage() == race::CampaignStage::kViperIntroDrive, "director restores stage");
+  // An old save's onboarding stage resumes in the first-time career.
+  check(dir2.flow().stage() == race::CampaignStage::kFreeRoam, "old onboarding stage leaves CampaignFlow in free roam");
+  drive::DriveSave sv3;
+  dir2.save_to_save(sv3);
+  check(sv3.campaign_stage == "ftc:opening_cutscene", "old viper_drive save resumes at the opening cutscene");
   check(dir2.flow().unlocked_bosses().count("ali") == 1, "director restores unlocked bosses");
   check(dir2.flow().unlocked_showcases().count("PLANE_RACE_003") == 1, "director restores unlocked showcases");
+}
+
+void test_director_first_time_career() {
+  carview::CampaignDirector dir;
+  dir.configure({}, "EN", false);
+  carview::FmvPlayer fmv;
+  const auto act = dir.start_new_career(fmv, nullptr);
+  check(dir.ftc_active() && dir.ftc().stage() == race::FtcStage::kControls, "new career opens the controls screen");
+  check(!fmv.active() && !act.play_fmv, "no FMV at career start");
+  check(!dir.flow().is_onboarding(), "no invented onboarding stage");
+  check(dir.is_blocking_gameplay(), "controls screen blocks driving");
+  for (int i = 0; i < 6; ++i) dir.update(0.1, {0, 0}, fmv, nullptr, false, false);
+  dir.advance_or_skip(fmv, nullptr);
+  const auto a2 = dir.update(0.1, {0, 0}, fmv, nullptr, false, false);
+  check(dir.ftc().stage() == race::FtcStage::kOpeningCutscene, "confirm starts the opening");
+  check(a2.swap_car && a2.car_media == "VIP_Viper_13" && a2.teleport, "the Viper placed for the opening");
+  check(!fmv.active(), "the opening is in-engine, not FMV_01");
+  drive::DriveSave sv;
+  dir.save_to_save(sv);
+  check(sv.campaign_stage == "ftc:opening_cutscene" && !sv.intro_completed, "first-time career stage saved");
+  carview::CampaignDirector back;
+  back.load_from_save(sv);
+  drive::DriveSave sv2;
+  back.save_to_save(sv2);
+  check(sv2.campaign_stage == "ftc:opening_cutscene", "first-time career stage restored");
 }
 
 void test_director_cameras_cli_stages_and_ui_raster() {
@@ -318,6 +348,9 @@ void test_director_cameras_cli_stages_and_ui_raster() {
       fmv.update(1.0, false);
       fmv.draw(list, ctx.screen_w, ctx.screen_h, {}, true, 0.4f);
       fmv.close();
+    } else if (dir.ftc_active()) {
+      carview::ftc_ui::draw(list, dir.ftc(), ctx.screen_w, ctx.screen_h, 0, false);
+      carview::ftc_ui::draw_overlay(list, dir.screen_overlay(), ctx.screen_w, ctx.screen_h);
     } else {
       carview::campaign_ui::draw(list, dir.flow(), ctx);
     }
@@ -715,6 +748,7 @@ int main() {
   test_minute0_to_endgame_state_machine();
   test_dialog_queue_ducking_and_waveforms();
   test_save_load_roundtrip();
+  test_director_first_time_career();
   test_director_cameras_cli_stages_and_ui_raster();
   test_r2_5_campaign_parity();
   test_pt_e_campaign_and_post_race_parity();

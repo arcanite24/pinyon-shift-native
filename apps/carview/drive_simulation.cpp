@@ -745,6 +745,12 @@ bool DriveSession::step(const drive::Input& user_in) {
           vehicle.set_draft(drive::compute_follower_draft(me, leaders.data(), leaders.size()));
         }
         drive::Input eff_user_in = user_in;
+        if (app.campaign.ftc_active()) {
+          ftc_throttle = user_in.throttle;
+          // Controls off while the flow drives (no AI takeover yet: the car
+          // coasts; interim, SPEC_QUESTIONS Q65).
+          if (!app.campaign.ftc().controls_enabled()) eff_user_in = drive::Input{};
+        }
         if (hold_for_reset_fade) {
           eff_user_in = drive::Input{};
           eff_user_in.brake = 1.0;

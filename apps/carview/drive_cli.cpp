@@ -146,6 +146,8 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
     if (a == "--story-intro") { story_intro_cli = true; continue; }
     if (a == "--campaign-stage") { cli_campaign_stage = next(); continue; }
+    if (a == "--cutscene") { cli_cutscene = next(); continue; }
+    if (a == "--cutscene-time") { cli_cutscene_time = std::max(0.0, std::atof(next())); continue; }
     if (a == "--telemetry-json") { telemetry_json_path = next(); continue; }
     if (a == "--record-session") { record_session_dir = next(); continue; }
     if (a == "--capture-times") { capture_times_csv = next(); continue; }

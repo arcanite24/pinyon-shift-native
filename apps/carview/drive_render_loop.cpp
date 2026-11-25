@@ -398,6 +398,11 @@ void DriveSession::run_window_loop() {
               race::CampaignAction ca;
               if (app.campaign.apply_cli_stage(app.cli_campaign_stage, app.fmv_player, &app.audio_host, ca))
                 apply_campaign_action(ca);
+            } else if (!app.cli_cutscene.empty()) {
+              app.show_title = false;
+              app.story_intro.reset();
+              if (!app.campaign.start_cutscene_capture(app.cli_cutscene, app.cli_cutscene_time))
+                std::fprintf(stderr, "carview: --cutscene '%s' not played\n", app.cli_cutscene.c_str());
             } else if (!app.cli_fmv_path.empty()) {
               if (app.fmv_player.open(app.cli_fmv_path, app.language)) {
                 app.audio_host.set_fmv_audio(
@@ -542,8 +547,10 @@ void DriveSession::run_window_loop() {
           if (!app.show_title && !app.headless) {
             const drive::Vec3 vp = vehicle.position();
             const bool rf = app.race && app.race->player_finished();
+            feed_first_time_career();
             apply_campaign_action(
                 app.campaign.update(frame_dt, {vp.x, vp.z}, app.fmv_player, &app.audio_host, rf, hold_skip_now));
+            apply_first_time_career();
             // Deferred event launch: once a Boss/Showcase/Finale/Pre-Race intro finishes or is skipped, enter the race!
             if (!pending_event_launch.empty() && !app.campaign.is_blocking_gameplay() && running) {
               app.next_event = pending_event_launch;

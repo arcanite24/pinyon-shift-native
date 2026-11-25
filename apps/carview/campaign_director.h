@@ -11,10 +11,12 @@
 #include <string>
 #include <string_view>
 
+#include "cutscene_runtime.h"
 #include "drive/cameras.h"
 #include "drive/save.h"
 #include "fmv_player.h"
 #include "race/campaign_flow.h"
+#include "race/first_time_career.h"
 
 namespace carview {
 
@@ -31,6 +33,36 @@ class CampaignDirector {
   // Syncs campaign progression from/to DriveSave cleanly.
   void load_from_save(const drive::DriveSave& save);
   void save_to_save(drive::DriveSave& save) const;
+
+  // ---- First-time career (the original's scripted opening) ----
+  // A new career runs race::FirstTimeCareer instead of the onboarding stages
+  // of CampaignFlow; those stay only to read old saves.
+  struct FtcFrameInput {
+    std::array<double, 3> player_pos{};
+    double throttle = 0.0;
+    bool screen_open = false;  // the map / Autoshow the flow opened
+    bool loading = false;      // a loading screen or a world gather is up: the flow waits
+  };
+  void set_ftc_frame_input(const FtcFrameInput& in) { ftc_in_ = in; }
+  bool ftc_active() const { return ftc_.active(); }
+  const race::FirstTimeCareer& ftc() const { return ftc_; }
+  // The flow's commands the host applies beyond CampaignAction (time of day,
+  // traffic, money, achievement, map, sat-nav hint, repair), oldest first.
+  std::vector<race::FtcCommands> take_ftc_commands();
+  // A cutscene's PlacePlayerCar since the last call (engine heading, m/s).
+  bool take_place_car(std::array<double, 3>& pos, double& heading_rad, double& speed_mps);
+  CutsceneRuntime& cutscenes() { return cutscenes_; }
+  const CutsceneRuntime& cutscenes() const { return cutscenes_; }
+  // Capture entry point (`--cutscene <name> --cutscene-time <t>`): plays the
+  // cutscene frozen at t, with the place-car events up to t applied.
+  bool start_cutscene_capture(std::string_view name, double t);
+  // When a cut frames a spot far from the player car (a camera node), where
+  // to put the car so the world streams around the camera: behind the eye,
+  // out of frame. Once per cut.
+  bool take_stream_anchor(const std::array<double, 3>& car_pos, double car_heading_rad, std::array<double, 3>& pos,
+                          double& heading_rad);
+  // The black / white overlay of the cutscene fades, drawn over everything.
+  cutscene::Overlay screen_overlay() const { return cutscenes_.overlay(); }
 
   // Starts the authentic Minute-0 New Career flow.
   race::CampaignAction start_new_career(FmvPlayer& fmv, AudioHost* audio,
@@ -73,11 +105,30 @@ class CampaignDirector {
   race::CampaignFlow& flow() { return flow_; }
   float skip_hold_progress() const { return skip_hold_progress_; }
   bool is_cinematic_camera_active() const;
-  bool is_blocking_gameplay() const { return flow_.is_blocking_gameplay(); }
+  bool is_blocking_gameplay() const;
 
  private:
   void dispatch_action_media(const race::CampaignAction& act, FmvPlayer& fmv, AudioHost* audio);
   void pump_audio(AudioHost* audio);
+  race::CampaignAction apply_ftc(const race::FtcCommands& c, FmvPlayer& fmv, AudioHost* audio);
+  race::CampaignAction update_ftc(double dt, FmvPlayer& fmv, AudioHost* audio);
+  void handle_cutscene_events(const std::vector<const cutscene::Event*>& events, AudioHost* audio);
+
+  race::FirstTimeCareer ftc_;
+  FtcFrameInput ftc_in_;
+  bool ftc_resume_pending_ = false;
+  race::FtcStage ftc_resume_stage_ = race::FtcStage::kNotStarted;
+  bool ftc_confirm_ = false;
+  bool ftc_race_finished_ = false;
+  int64_t ftc_race_event_ = 0;
+  int ftc_race_place_ = 0;
+  std::vector<race::FtcCommands> ftc_pending_;
+  CutsceneRuntime cutscenes_;
+  int anchor_cam_ = -1;
+  const cutscene::Cutscene* anchor_cs_ = nullptr;
+  bool place_pending_ = false;
+  std::array<double, 3> place_pos_{};
+  double place_heading_ = 0.0, place_speed_ = 0.0;
 
   race::CampaignFlow flow_;
   std::filesystem::path game_root_;

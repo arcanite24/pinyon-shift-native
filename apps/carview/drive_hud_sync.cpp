@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "campaign_ui.h"
+#include "first_time_career_ui.h"
 #include "fh1data/xds.h"
 #include "hub_scene.h"
 #include "perf_overlay.h"
@@ -926,13 +927,18 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           cctx.skip_vo_with_a = app.skip_vo_with_a;
           cctx.metric_units = app.metric_units;
           cctx.catalog = app.have_career_catalog ? &app.career_catalog : nullptr;
-          carview::campaign_ui::draw(list, app.campaign.flow(), cctx);
+          if (app.campaign.ftc_active())
+            carview::ftc_ui::draw(list, app.campaign.ftc(), float(width), float(height), live_controls.layout_id,
+                                  live_controls.switch_handbrake_clutch);
+          else
+            carview::campaign_ui::draw(list, app.campaign.flow(), cctx);
         }
         if (app.fmv_player.active()) {
           list.clear();
           app.fmv_player.draw(list, float(width), float(height), {}, true, app.campaign.skip_hold_progress());
           carview::campaign_ui::draw_transition(list, app.campaign.flow().transition(), float(width), float(height));
         }
+        if (!app.show_title) carview::ftc_ui::draw_overlay(list, app.campaign.screen_overlay(), float(width), float(height));
         static double s_loading_fade_last_t = -1.0;
         if (loading_screen.active()) {
           s_loading_fade_last_t = d.time;

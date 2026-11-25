@@ -26,6 +26,29 @@ std::array<double, 3> normalize_vec(const std::array<double, 3>& v) {
   return {v[0] / len, v[1] / len, v[2] / len};
 }
 
+constexpr double kPi = 3.14159265358979323846;
+
+// The old onboarding stage strings a save may hold, mapped into the
+// first-time career.
+bool ftc_stage_for_legacy(std::string_view s, race::FtcStage& out) {
+  if (s == "intro" || s == "opening" || s == "opening_cutscene" || s == "viper_drive" || s == "viper" ||
+      s == "intro_drive") {
+    out = race::FtcStage::kOpeningCutscene;
+    return true;
+  }
+  if (s == "qualify" || s == "corrado_qualify") {
+    out = race::FtcStage::kRaceToFestival;
+    return true;
+  }
+  if (s == "registration" || s == "starter_handoff") {
+    out = race::FtcStage::kFestivalArriveMovie;
+    return true;
+  }
+  return false;
+}
+
+constexpr std::string_view kFtcSavePrefix = "ftc:";
+
 FmvMovieId movie_for_cutscene(race::CutsceneKind kind) {
   switch (kind) {
     case race::CutsceneKind::kOpeningFmv: return FmvMovieId::kFmv01Opening;
@@ -70,6 +93,17 @@ void CampaignDirector::load_from_save(const drive::DriveSave& save) {
   if (st.campaign_stage.empty() && !save.intro_completed) {
     st.campaign_stage = "viper_drive";
   }
+  // A first-time career in progress (or an old save's onboarding stage)
+  // resumes in race::FirstTimeCareer; CampaignFlow waits in free roam.
+  race::FtcStage fs{};
+  const std::string_view stage = st.campaign_stage;
+  if ((stage.substr(0, kFtcSavePrefix.size()) == kFtcSavePrefix &&
+       race::parse_ftc_stage(stage.substr(kFtcSavePrefix.size()), fs)) ||
+      ftc_stage_for_legacy(stage, fs)) {
+    ftc_resume_pending_ = fs != race::FtcStage::kComplete && fs != race::FtcStage::kNotStarted;
+    ftc_resume_stage_ = fs;
+    st.campaign_stage = "freeroam";
+  }
   flow_.load_from(st);
 }
 
@@ -82,6 +116,12 @@ void CampaignDirector::save_to_save(drive::DriveSave& save) const {
   save.unlocked_bosses = std::move(st.unlocked_bosses);
   save.unlocked_showcases = std::move(st.unlocked_showcases);
   save.finale_complete = st.finale_complete;
+  if (ftc_.active() || ftc_resume_pending_) {
+    const race::FtcStage s = ftc_resume_pending_ ? ftc_resume_stage_ : ftc_.stage();
+    save.campaign_stage = std::string(kFtcSavePrefix) + race::ftc_stage_name(s);
+    save.intro_completed = false;
+    return;
+  }
   if (!flow_.is_onboarding()) save.intro_completed = true;
 }
 
@@ -123,14 +163,158 @@ void CampaignDirector::pump_audio(AudioHost* audio) {
 
 race::CampaignAction CampaignDirector::start_new_career(FmvPlayer& fmv, AudioHost* audio,
                                                         std::array<double, 3> festival_gate) {
+  (void)festival_gate;
   skip_hold_progress_ = 0.0f;
-  const auto prev_stage = flow_.stage();
-  auto act = flow_.start_new_career(skip_intro_movies_, festival_gate);
-  if (audio && prev_stage == race::CampaignStage::kViperIntroDrive &&
-      flow_.stage() != race::CampaignStage::kViperIntroDrive) {
-    audio->radio_lock_viper_intro(false);
+  if (audio) audio->radio_lock_viper_intro(false);
+  // The original's first-time career (intro_flow / first_time_career.xml):
+  // no FMV at the start, the opening is the in-engine Opening_Cutscene.
+  race::CampaignAction none;
+  flow_.jump_to_cli_stage("freeroam", none);
+  cutscenes_.ensure_loaded(game_root_);
+  ftc_resume_pending_ = false;
+  ftc_pending_.clear();
+  return apply_ftc(ftc_.start(), fmv, audio);
+}
+
+std::vector<race::FtcCommands> CampaignDirector::take_ftc_commands() {
+  std::vector<race::FtcCommands> out;
+  out.swap(ftc_pending_);
+  return out;
+}
+
+bool CampaignDirector::take_place_car(std::array<double, 3>& pos, double& heading_rad, double& speed_mps) {
+  if (!place_pending_) return false;
+  place_pending_ = false;
+  pos = place_pos_;
+  heading_rad = place_heading_;
+  speed_mps = place_speed_;
+  return true;
+}
+
+bool CampaignDirector::take_stream_anchor(const std::array<double, 3>& car_pos, double car_heading_rad,
+                                          std::array<double, 3>& pos, double& heading_rad) {
+  const cutscene::Cutscene* cs = cutscenes_.current();
+  if (!cs) {
+    anchor_cs_ = nullptr;
+    anchor_cam_ = -1;
+    return false;
   }
-  dispatch_action_media(act, fmv, audio);
+  const int cam = cs->cam_at(cutscenes_.time());
+  if (cs == anchor_cs_ && cam == anchor_cam_) return false;
+  anchor_cs_ = cs;
+  anchor_cam_ = cam;
+  drive::CameraView v;
+  if (!cutscenes_.camera(car_pos, car_heading_rad, v)) return false;
+  if (std::hypot(v.eye[0] - car_pos[0], v.eye[2] - car_pos[2]) < 300.0) return false;
+  const double n = std::max(1e-6, std::hypot(v.forward[0], v.forward[2]));
+  pos = {v.eye[0] - v.forward[0] / n * 12.0, v.eye[1], v.eye[2] - v.forward[2] / n * 12.0};
+  heading_rad = std::atan2(v.forward[0], v.forward[2]);
+  return true;
+}
+
+bool CampaignDirector::start_cutscene_capture(std::string_view name, double t) {
+  if (!cutscenes_.ensure_loaded(game_root_) || !cutscenes_.play(name, false)) return false;
+  handle_cutscene_events(cutscenes_.seek_and_freeze(t), nullptr);
+  place_speed_ = 0.0;  // a still frame: the car stays where it is placed
+  return true;
+}
+
+void CampaignDirector::handle_cutscene_events(const std::vector<const cutscene::Event*>& events, AudioHost* audio) {
+  for (const auto* e : events) {
+    switch (e->type) {
+      case cutscene::EventType::kPlacePlayerCar:
+        place_pending_ = true;
+        place_pos_ = e->position();
+        place_heading_ = e->rotation_deg() * kPi / 180.0;
+        // initialSpeed read as km/h (interim, SPEC_QUESTIONS Q60 f).
+        place_speed_ = e->number("initialSpeed") / 3.6;
+        break;
+      case cutscene::EventType::kVoiceOver:
+        if (audio && !e->attr("event").empty()) audio->trigger_vo(e->attr("event"), false);
+        break;
+      default:
+        // CCutsceneAudioTrigger stings (UIInGame/UI/Cutscenes), mixer
+        // snapshots, cars, animations: no engine backend yet (interim).
+        break;
+    }
+  }
+}
+
+race::CampaignAction CampaignDirector::apply_ftc(const race::FtcCommands& c, FmvPlayer& fmv, AudioHost* audio) {
+  race::CampaignAction act;
+  for (const auto& f : c.fades) cutscenes_.fade(f);
+  if (c.stop_cutscene) cutscenes_.stop();
+  if (!c.play_cutscene.empty()) {
+    cutscenes_.ensure_loaded(game_root_);
+    cutscenes_.play(c.play_cutscene, c.hold_cutscene);
+  }
+  if (!c.play_movie.empty()) {
+    const FmvMovieId id = c.play_movie == "FMV_02" ? FmvMovieId::kFmv02Ceremony : FmvMovieId::kFmv01Opening;
+    if (fmv.open_or_fallback(game_root_, id, language_, 1280, 720, 8.0) && audio) {
+      audio->set_fmv_audio(
+          [](void* ctx, float* out, int frames) { return static_cast<FmvPlayer*>(ctx)->read_audio(out, frames); },
+          &fmv);
+    }
+  }
+  if (audio) {
+    for (const auto& v : c.vo) audio->trigger_vo(v, false);
+    for (const auto& d : c.dj_lines) audio->radio_trigger_immediate(d);
+  }
+  if (c.swap_car) {
+    act.swap_car = true;
+    act.car_media = c.car_media;
+    act.car_id = c.car_id;
+  }
+  if (c.place_car) {
+    act.teleport = true;
+    act.pos = c.pos;
+    act.heading = c.heading_deg * kPi / 180.0;
+  }
+  if (c.set_destination && (c.destination_xz[0] != 0.0 || c.destination_xz[1] != 0.0)) {
+    act.set_gps = true;
+    act.gps_label = c.destination_label;
+    act.gps_xz = c.destination_xz;
+  }
+  if (c.launch_event_id) {
+    act.launch_event = true;
+    act.event_id = std::to_string(c.launch_event_id);
+  }
+  act.open_autoshow = c.open_autoshow;
+  act.collect_yellow_wristband = c.collect_yellow_wristband;
+  act.intro_completed = c.intro_completed;
+  act.save_requested = c.save_requested;
+  ftc_pending_.push_back(c);
+  return act;
+}
+
+race::CampaignAction CampaignDirector::update_ftc(double dt, FmvPlayer& fmv, AudioHost* audio) {
+  if (ftc_resume_pending_) {
+    ftc_resume_pending_ = false;
+    cutscenes_.ensure_loaded(game_root_);
+    return apply_ftc(ftc_.resume(ftc_resume_stage_), fmv, audio);
+  }
+  if (ftc_in_.loading) return {};
+  bool vo_playing = false;
+  if (audio) vo_playing = audio->telemetry().vo_playing;
+  handle_cutscene_events(cutscenes_.update(dt, vo_playing), audio);
+  race::FtcInput in;
+  in.dt = dt;
+  in.player_pos = ftc_in_.player_pos;
+  in.cutscene_active = cutscenes_.active();
+  in.movie_active = fmv.active();
+  in.throttle = ftc_in_.throttle;
+  in.confirm = ftc_confirm_;
+  in.screen_open = ftc_in_.screen_open;
+  in.race_finished = ftc_race_finished_;
+  in.race_event_id = ftc_race_event_;
+  in.race_place = ftc_race_place_;
+  ftc_confirm_ = false;
+  ftc_race_finished_ = false;
+  auto act = apply_ftc(ftc_.update(in), fmv, audio);
+  if (ftc_.complete()) {
+    act.intro_completed = true;
+    act.save_requested = true;
+  }
   return act;
 }
 
@@ -138,7 +322,20 @@ bool CampaignDirector::apply_cli_stage(std::string_view cli_stage, FmvPlayer& fm
                                        race::CampaignAction& out_action) {
   skip_hold_progress_ = 0.0f;
   const auto prev_stage = flow_.stage();
+  race::FtcStage fs{};
+  if ((cli_stage.substr(0, kFtcSavePrefix.size()) == kFtcSavePrefix &&
+       race::parse_ftc_stage(cli_stage.substr(kFtcSavePrefix.size()), fs)) ||
+      ftc_stage_for_legacy(cli_stage, fs)) {
+    race::CampaignAction none;
+    flow_.jump_to_cli_stage("freeroam", none);
+    cutscenes_.ensure_loaded(game_root_);
+    out_action = apply_ftc(ftc_.resume(fs), fmv, audio);
+    return true;
+  }
   if (!flow_.jump_to_cli_stage(cli_stage, out_action)) return false;
+  ftc_ = race::FirstTimeCareer{};
+  ftc_resume_pending_ = false;
+  cutscenes_.stop();
   if (audio && prev_stage == race::CampaignStage::kViperIntroDrive &&
       flow_.stage() != race::CampaignStage::kViperIntroDrive) {
     audio->radio_lock_viper_intro(false);
@@ -162,6 +359,7 @@ race::CampaignAction CampaignDirector::update(double dt, std::array<double, 2> p
     flow_.cinematic().skip_hold_progress = skip_hold_progress_;
   }
 
+  if (ftc_.active() || ftc_resume_pending_) return update_ftc(dt, fmv, audio);
   if (audio) {
     const auto tel = audio->telemetry();
     flow_.dialogs().set_vo_telemetry(tel.vo_playing, tel.vo_elapsed_s, tel.vo_duration_s, tel.vo_rms,
@@ -179,6 +377,17 @@ race::CampaignAction CampaignDirector::update(double dt, std::array<double, 2> p
 
 race::CampaignAction CampaignDirector::advance_or_skip(FmvPlayer& fmv, AudioHost* audio) {
   skip_hold_progress_ = 0.0f;
+  if (ftc_.active()) {
+    // Movies skip (confirmskip); in-engine cutscenes do not; a press on the
+    // controls screen moves on.
+    if (fmv.active()) {
+      fmv.skip();
+      if (audio) audio->set_fmv_audio(nullptr, nullptr);
+    } else {
+      ftc_confirm_ = true;
+    }
+    return {};
+  }
   if (fmv.active()) {
     fmv.skip();
     if (audio) audio->set_fmv_audio(nullptr, nullptr);
@@ -221,6 +430,11 @@ race::CampaignAction CampaignDirector::on_race_finished(
     int new_pop_rank, int64_t balance_before, int64_t balance_after, int wb_points_after, int collected_wristband,
     const std::string& prize_car_name, const race::CareerCatalog* catalog, FmvPlayer& fmv, AudioHost* audio,
     const std::vector<race::RaceFinishStanding>& standings) {
+  if (ftc_.active() && ev) {
+    ftc_race_finished_ = true;
+    ftc_race_event_ = ev->event_id;
+    ftc_race_place_ = place;
+  }
   auto act = flow_.on_race_finished(ev, award, place, total_cars, old_pop_rank, new_pop_rank, balance_before,
                                     balance_after, wb_points_after, collected_wristband, prize_car_name, catalog,
                                     standings);
@@ -263,6 +477,7 @@ void CampaignDirector::on_popularity_rank_changed(int old_rank, int new_rank, Au
 }
 
 bool CampaignDirector::is_cinematic_camera_active() const {
+  if (cutscenes_.active()) return true;
   const auto st = flow_.stage();
   if (st == race::CampaignStage::kQualifyRace && flow_.qualify_retry_pending()) return true;
   // Exclude kPreRaceGrid so the campaign flyby never bleeds into the live
@@ -278,6 +493,7 @@ bool CampaignDirector::is_cinematic_camera_active() const {
 
 bool CampaignDirector::compute_camera(const std::array<double, 3>& car_pos, double car_heading,
                                       drive::CameraView& out_cam) const {
+  if (cutscenes_.active()) return cutscenes_.camera(car_pos, car_heading, out_cam);
   if (!is_cinematic_camera_active()) return false;
 
   const auto& cin = flow_.cinematic();
@@ -403,6 +619,31 @@ bool CampaignDirector::compute_camera(const std::array<double, 3>& car_pos, doub
   out_cam.up = {0.0, 1.0, 0.0};
   out_cam.fov_degrees = fov;
   return true;
+}
+
+}  // namespace carview
+
+namespace carview {
+
+bool CampaignDirector::is_blocking_gameplay() const {
+  if (cutscenes_.active()) return true;
+  if (ftc_.active()) {
+    // The first-time career's scripted beats; the map and Autoshow stages
+    // leave the host's screens free to open.
+    switch (ftc_.stage()) {
+      case race::FtcStage::kControls:
+      case race::FtcStage::kOpeningCutscene:
+      case race::FtcStage::kDinerCutscenes:
+      case race::FtcStage::kFestivalArrive:
+      case race::FtcStage::kFestivalArriveMovie:
+      case race::FtcStage::kRadioUnlock:
+      case race::FtcStage::kRaceCentralMovie:
+      case race::FtcStage::kWristbandIntro:
+      case race::FtcStage::kRewards: return true;
+      default: return false;
+    }
+  }
+  return flow_.is_blocking_gameplay();
 }
 
 }  // namespace carview
