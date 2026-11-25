@@ -33,6 +33,18 @@ int child_path(const SceneDraw& sd, int parent, std::string_view path) {
   return n;
 }
 
+// The x offset that puts text `t`'s left edge at canvas `left` in its node's
+// box (left, centre or right aligned).
+float left_at(const SceneDraw& sd, int node, std::string_view t, float left) {
+  if (node < 0) return 0.0f;
+  const float w = sd.measure(node, t), x = sd.at(node)[0];
+  switch (sd.style(node, {}, 0).align) {
+    case ui::Align::kCenter: return left + 0.5f * w - x;
+    case ui::Align::kRight: return left + w - x;
+    default: return left - x;
+  }
+}
+
 // Shows `n` and every node under it that the scene leaves at alpha 0 (a
 // script fades them in), at `alpha`.
 void show_all(SceneScreen& sc, int n, float alpha = 1.0f) {
@@ -95,6 +107,10 @@ constexpr uint32_t kLeadingZero = ui::rgba(200, 200, 200, 80);
 // The assist badges: dark while on, white while one intervenes.
 constexpr uint32_t kAssistIdle = ui::rgba(33, 33, 33);
 constexpr uint32_t kGearGrey = ui::rgba(0xBA, 0xB9, 0xB8);
+// The timers' grey tapes (the race-hud-notification oracle).
+constexpr float kTimerTapeAlpha = 0.45f;
+// The player's standings row.
+constexpr uint32_t kPlayerRow = ui::rgba(0xFF, 0x03, 0x61);
 
 float dial_angle(double v, const DialScale& ds) {
   const double t = std::clamp(v / double(ds.top), 0.0, 1.0);
@@ -216,6 +232,182 @@ bool draw_hud_dial(ui::List& l, const DriveHud& st, const SceneFrame& f) {
   sc.hide(child(sd, assists, "HUD_SHIFT_LIGHT"));
   sc.hide(child(sd, gauge, "FUEL_ANALOG"));
   return sc.draw(l, f, gauge) > 0;
+}
+
+// --- Race blocks ----------------------------------------------------------
+
+std::string hud_clock(double seconds) {
+  const long long ms = std::llround(std::max(0.0, seconds) * 1000.0);
+  char b[32];
+  std::snprintf(b, sizeof b, "%02lld:%02lld.%03lld", ms / 60000, ms / 1000 % 60, ms % 1000);
+  return b;
+}
+
+namespace {
+
+// The standings' tapes end at the place column and start this far left of
+// the widest name (16_race_hud_orig.png and the race-hud-notification
+// oracle: 38 px).
+constexpr float kStandingsRight = 1213.0f;
+constexpr float kStandingsPad = 38.0f;
+// A sprint's progress: the percentage from x 68, its label 15 px after it.
+constexpr float kEndConLeft = 68.0f, kEndConGap = 15.0f;
+
+void bind_end_condition(SceneScreen& sc, const RaceHud& r) {
+  const SceneDraw& sd = sc.scene();
+  const int block = sc.node("EndConditionBlock");
+  const int cur = child(sd, block, "TEXT_ENDCON_CURRENT"), slash = child(sd, block, "TEXT_ENDCON_SLASH");
+  const int fin = child(sd, block, "TEXT_ENDCON_FINAL"), units = child(sd, block, "TEXT_ENDCON_UNITS");
+  if (r.circuit) {
+    const bool racing = r.phase == RaceHud::kRacing;
+    sc.text(cur, std::to_string(racing ? std::max(1, std::min(r.lap, r.laps)) : 0));
+    sc.text(slash, "/");
+    sc.text(fin, std::to_string(r.laps));
+    sc.text(units, text_of(hud_text::kLaps));
+  } else {
+    // Sprints: "0%" in the big box, PROGRESS after it (the block's stacker
+    // packs them; measured on 16_race_hud_orig.png).
+    const std::string pct = std::to_string(int(std::lround(std::clamp(r.progress, 0.0, 1.0) * 100))) + "%";
+    const std::string label = text_of(hud_text::kProgress);
+    sc.text(cur, pct);
+    sc.hide(slash);
+    sc.hide(fin);
+    sc.text(units, label);
+    if (cur >= 0) sc.at(cur).dx = left_at(sd, cur, pct, kEndConLeft);
+    if (units >= 0) sc.at(units).dx = left_at(sd, units, label, kEndConLeft + sd.measure(cur, pct) + kEndConGap);
+  }
+}
+
+void bind_place(SceneScreen& sc, const RaceHud& r) {
+  const SceneDraw& sd = sc.scene();
+  const int block = sc.node("PlaceBlock");
+  sc.text(child(sd, block, "TEXT_PLACE_LABEL"), text_of(hud_text::kPlace));
+  sc.text(child(sd, block, "TEXT_PLACE"), std::to_string(std::max(1, r.place)));
+  sc.text(child(sd, block, "TEXT_PLACE_SLASH"), "/");
+  sc.text(child(sd, block, "TEXT_PLACE_MAX"), std::to_string(std::max(1, r.cars)));
+}
+
+// HUDTimes: RACE from the start; on circuits LAP, then LAST and BEST once
+// set, each on its grey tape (a sprint's single RACE line has none).
+int bind_timers(SceneScreen& sc, const RaceHud& r) {
+  const SceneDraw& sd = sc.scene();
+  const int lines = child_path(sd, sc.node("HUDTimes"), "HUDTimes");
+  if (lines < 0) return -1;
+  struct Line {
+    std::string title, value;
+  };
+  std::vector<Line> rows;
+  rows.push_back({text_of(hud_text::kRace), hud_clock(r.clock)});
+  if (r.circuit) {
+    rows.push_back({text_of(hud_text::kLap), hud_clock(r.lap_time)});
+    if (r.last_lap > 0) rows.push_back({text_of(hud_text::kLast), hud_clock(r.last_lap)});
+    if (r.best_lap > 0) rows.push_back({text_of(hud_text::kBest), hud_clock(r.best_lap)});
+  }
+  // The engine's lap split (an extra) on the next line.
+  const bool derived = !r.has_lap_split_delta && r.circuit && r.best_lap > 0.0 && r.last_lap > 0.0 &&
+                       std::fabs(r.last_lap - r.best_lap) > 0.004;
+  const double delta = r.has_lap_split_delta ? r.lap_split_delta : r.last_lap - r.best_lap;
+  int split_line = -1;
+  if (r.phase == RaceHud::kRacing && (r.has_lap_split_delta || derived)) {
+    split_line = int(rows.size());
+    rows.push_back({text_of(hud_text::kSplit), format_split_delta(delta)});
+  }
+  for (int i = 0; i < 5; ++i) {
+    const std::string n = std::to_string(i + 1);
+    const int line = child(sd, lines, "LINE" + n);
+    if (line < 0) continue;
+    if (i >= int(rows.size())) {
+      sc.hide(line);
+      continue;
+    }
+    sc.show(line);
+    const int value_group = child(sd, line, "value");
+    const int title = child(sd, line, "TEXT_TITLE_" + n);
+    const int value = child(sd, value_group, "TEXT_VALUE_" + n);
+    sc.show(title);
+    sc.show(value_group);
+    sc.show(value);
+    sc.text(title, rows[size_t(i)].title);
+    sc.text(value, rows[size_t(i)].value);
+    if (i == split_line && value >= 0) sc.at(value).tint = delta <= 0.0 ? ui4::kGreen : ui4::kRed;
+    const int bar = child(sd, line, "Bar");
+    if (rows.size() > 1) sc.show(bar, kTimerTapeAlpha);
+    else sc.hide(bar);
+    // The icons (penalties) are not used.
+    for (int c : sd.children_of(value_group))
+      if (c != value) sc.hide(c);
+  }
+  return lines;
+}
+
+// PositionIndicators: the leader and the rows round the player, four in all.
+void bind_standings(SceneScreen& sc, const RaceHud& r) {
+  const SceneDraw& sd = sc.scene();
+  const int bars = child(sd, sc.node("PositionIndicators"), "LeaderboardBars");
+  const std::vector<int> slots = sd.children_of(bars);
+  std::vector<size_t> pick;
+  const size_t n = r.rows.size();
+  size_t me = 0;
+  for (size_t i = 0; i < n; ++i)
+    if (r.rows[i].player) me = i;
+  if (n <= 4 || me < 3) {
+    for (size_t i = 0; i < std::min<size_t>(n, 4); ++i) pick.push_back(i);
+  } else {
+    const size_t last = std::min(n - 1, me + 1);
+    pick = {0, last - 2, last - 1, last};
+  }
+  // One tape width for all rows: the widest name's.
+  float left = kStandingsRight;
+  for (size_t k = 0; k < pick.size() && k < slots.size(); ++k) {
+    const int name = child_path(sd, slots[k], "HUDPositionBar/Bar/TEXT_GAMERTAG");
+    if (name >= 0) left = std::min(left, sd.at(name)[0] - sd.measure(name, r.rows[pick[k]].name) - kStandingsPad);
+  }
+  for (size_t k = 0; k < slots.size(); ++k) {
+    if (k >= pick.size()) {
+      sc.hide(slots[k]);
+      continue;
+    }
+    const RaceHudRow& row = r.rows[pick[k]];
+    const int bar = child_path(sd, slots[k], "HUDPositionBar/Bar");
+    sc.text(child(sd, bar, "TEXT_GAMERTAG"), row.name);
+    sc.text(child(sd, bar, "TEXT_POSITION"), std::to_string(row.place));
+    for (int icon : sd.children_of(child(sd, bar, "icon"))) sc.hide(icon);
+    const int tape = child_path(sd, bar, "Bar/Bar");
+    if (tape >= 0) {
+      sc.at(tape).dx = left - sd.rect(tape)[0];
+      sc.at(tape).visible_width = kStandingsRight - left;
+      if (row.player) {
+        sc.at(tape).tint = kPlayerRow;
+        sc.at(tape).alpha = 1.0f;
+      }
+    }
+    // The time box (a gap or lap time column) is not shown in a race.
+    sc.hide(child(sd, slots[k], "HUDPositionTime"));
+  }
+}
+
+}  // namespace
+
+bool draw_hud_race(ui::List& l, const RaceHud& r, float w, float h, float s, bool timers) {
+  SceneScreen sc(kHudScene);
+  const int endcon = sc.node("EndConditionBlock"), place = sc.node("PlaceBlock");
+  const int times = sc.node("HUDTimes"), standings = sc.node("PositionIndicators");
+  if (endcon < 0 || place < 0 || times < 0 || standings < 0) return false;
+  sc.bindings().fit_text = false;
+  bind_end_condition(sc, r);
+  bind_place(sc, r);
+  const SceneFrame tl = hud_frame(HudAnchor::kTopLeft, w, h, s), tr = hud_frame(HudAnchor::kTopRight, w, h, s);
+  sc.draw(l, tl, endcon);
+  sc.draw(l, tr, place);
+  if (timers) {
+    const int lines = bind_timers(sc, r);
+    if (lines >= 0) sc.draw(l, tl, lines);
+  }
+  if (!r.rows.empty()) {
+    bind_standings(sc, r);
+    sc.draw(l, tr, standings);
+  }
+  return true;
 }
 
 }  // namespace carview

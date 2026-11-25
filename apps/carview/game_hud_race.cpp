@@ -1,4 +1,5 @@
 #include "game_hud_internal.h"
+#include "hud_screen.h"
 #include "race/campaign_flow.h"
 
 #include <cstdlib>
@@ -346,6 +347,8 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
   // 947_HUD's EndConditionBlock and PlaceBlock (E 48 current, E 26 slash
   // and total, E 16 label; right-aligned boxes end at their node); the
   // drop shadow is ours. Without the scene: the drawn blocks below.
+  // The blocks from 947_HUD (hud_screen.h); the drawn ones below without it.
+  const bool scene_blocks = draw_hud_race(l, r, g.w, g.h, s);
   const SceneDraw sc = resolve_scene_draw("947_HUD");
   const int endcon = sc.find("EndConditionBlock"), placeblk = sc.find("PlaceBlock");
   const bool scened = endcon >= 0 && placeblk >= 0;
@@ -353,7 +356,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
     sc.text(l, f, node, t, rgba(0, 0, 0, 140), 1.5f, 1.5f, false);
     sc.text(l, f, node, t, kText, 0, 0, false);
   };
-  if (scened) {
+  if (scened && !scene_blocks) {
     const SceneFrame tl{0, 0, s}, tr{g.w - 1280 * s, 0, s};
     if (r.circuit) {
       stext(tl, sc.find("TEXT_ENDCON_CURRENT", endcon), std::to_string(racing ? std::max(1, r.lap) : 0));
@@ -387,7 +390,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
                font(ui::Font::kE, 16 * s, kText), s);
   }
   // The timers: RACE from the start, LAP on circuits, LAST and BEST after a lap.
-  {
+  if (!scene_blocks) {
     struct Row { std::string name; double t; };
     std::vector<Row> rows;
     rows.push_back({str("InGame", "IDS_Race", "RACE"), std::max(0.0, r.clock)});
@@ -427,7 +430,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
     shadowed(l, g.R(1217) - ow - 1 * s, g.T(32), p, font(ui::Font::kE, 50 * s, kText, Align::kRight), s);
   }
   // The standings: the leader and the rows round the player, four in all.
-  if (!r.rows.empty()) {
+  if (!scene_blocks && !r.rows.empty()) {
     std::vector<size_t> pick;
     const size_t n = r.rows.size();
     size_t me = 0;

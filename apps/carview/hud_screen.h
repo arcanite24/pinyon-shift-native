@@ -39,6 +39,8 @@ inline constexpr StringRef kRace{"InGame", "IDS_Race", 0, "RACE"};
 inline constexpr StringRef kLap{"InGame", "IDS_CurrentLapTimeLabel", 0, "LAP"};
 inline constexpr StringRef kLast{"InGame", "IDS_Last", 0, "LAST"};
 inline constexpr StringRef kBest{"InGame", "IDS_Best", 0, "BEST"};
+// No string table has these: the engine's own.
+inline constexpr StringRef kSplit{{}, {}, 0, "SPLIT", true};
 }  // namespace hud_text
 
 // The dial's scale, in thousands of rpm: the sweep spans 0..top, with a
@@ -61,5 +63,14 @@ SceneFrame hud_frame(HudAnchor a, float w, float h, float s);
 
 // The dial (GAUGE_ANALOG) in frame `f`.
 bool draw_hud_dial(ui::List& l, const DriveHud& st, const SceneFrame& f);
+
+// A race clock as the HUD shows it: "00:16.851".
+std::string hud_clock(double seconds);
+
+// The race blocks for a w x h screen at HUD scale `s`: laps or progress
+// (EndConditionBlock), place (PlaceBlock), the timers (HUDTimes, with the
+// engine's lap split line under them) and the standings
+// (PositionIndicators: the leader and the rows round the player).
+bool draw_hud_race(ui::List& l, const RaceHud& r, float w, float h, float s, bool timers = true);
 
 }  // namespace carview

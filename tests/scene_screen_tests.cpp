@@ -300,7 +300,8 @@ int main() {
       std::vector<uint8_t> fb = backdrop;
       if (!hud_dir.empty()) {
         int w = 0, h = 0, n = 0;
-        if (uint8_t* px = stbi_load((hud_dir / orig).string().c_str(), &w, &h, &n, 4)) {
+        const std::filesystem::path src = std::filesystem::path(orig).is_absolute() ? orig : hud_dir / orig;
+        if (uint8_t* px = stbi_load(src.string().c_str(), &w, &h, &n, 4)) {
           if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
           stbi_image_free(px);
         }
@@ -326,6 +327,39 @@ int main() {
     r34.redline_rpm = 8000;
     r34.gear = 1;
     hud_shot("hud_roam_r34.png", "15_countdown_orig.png", r34);
+
+    // A sprint (16_race_hud_orig.png) and a circuit (the oracle's
+    // race-hud-notification.png, by absolute path in SHIFT_SCENE_SCREEN_ORACLE).
+    carview::RaceHud sprint;
+    sprint.phase = carview::RaceHud::kRacing;
+    sprint.place = 8, sprint.cars = 8, sprint.clock = 16.851, sprint.progress = 0.0;
+    const char* names[] = {"Peter Houston", "Ana Ruiz", "Tom Hale", "Lee Park", "Sam Cole", "Josh Pollock",
+                           "Modesto Estrada", "User"};
+    for (int i = 0; i < 8; ++i) {
+      carview::RaceHudRow row;
+      row.name = names[i], row.place = i + 1, row.player = i == 7;
+      sprint.rows.push_back(row);
+    }
+    carview::DriveHud race_d = roam;
+    race_d.kmh = 73, race_d.rpm = 5200, race_d.gear = 2;
+    race_d.race = &sprint;
+    hud_shot("hud_race.png", "16_race_hud_orig.png", race_d);
+    carview::RaceHud circuit;
+    circuit.phase = carview::RaceHud::kRacing;
+    circuit.circuit = true, circuit.lap = 4, circuit.laps = 4, circuit.place = 4, circuit.cars = 8;
+    circuit.clock = 164.698, circuit.lap_time = 39.697, circuit.last_lap = 40.336, circuit.best_lap = 40.336;
+    const char* cnames[] = {"Alan Brewer", "Kim Novak", "Peter Bankov", "User", "Don Funk", "Ira Bell", "Joe Kerr",
+                            "Max Lane"};
+    for (int i = 0; i < 8; ++i) {
+      carview::RaceHudRow row;
+      row.name = cnames[i], row.place = i + 1, row.player = i == 3;
+      circuit.rows.push_back(row);
+    }
+    carview::DriveHud circuit_d = r34;
+    circuit_d.kmh = 143, circuit_d.rpm = 7600, circuit_d.gear = 3;
+    circuit_d.race = &circuit;
+    const char* oracle = std::getenv("SHIFT_SCENE_SCREEN_ORACLE");
+    hud_shot("hud_race_circuit.png", oracle ? std::string(oracle) + "/race-hud-notification.png" : "", circuit_d);
   }
 
   if (g_failures > 0) {

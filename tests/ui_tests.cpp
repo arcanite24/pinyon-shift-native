@@ -405,6 +405,9 @@ void test_scene_turn_and_dial_scale() {
   CHECK(r34.top == 10 && r34.step == 2 && r34.last == 10);
   CHECK(low.top == 8 && low.step == 1 && low.last == 7);
   CHECK(carview::dial_scale(9500).top == 12 && carview::dial_scale(9500).step == 2);
+  // The race clock: two-digit minutes.
+  CHECK(carview::hud_clock(16.851) == "00:16.851" && carview::hud_clock(164.698) == "02:44.698");
+  CHECK(carview::hud_clock(-1) == "00:00.000");
 }
 
 void test_hud_overlays() {
