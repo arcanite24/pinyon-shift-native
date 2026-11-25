@@ -74,6 +74,15 @@ struct SurfaceTyre {
   double wall_friction = -1.0;        // sliding friction mu for wall/barrier contacts
   double wall_restitution = -1.0;     // rebound restitution [0..1] (0 = inelastic, higher = elastic tire wall)
   double wall_damping_scale = -1.0;   // normal damping scale (>1 absorbs energy e.g. tire wall/dirt, <1 crisp glide)
+  // The car-body contact with this surface: surfaceTypes.xml's
+  // CategoryToCategoryParams row for Car and the surface's Category, or the
+  // Default/Default row (SPEC_QUESTIONS Q101). elasticity is as written
+  // (the impulse is 1 + elasticity times the closing speed's);
+  // low_speed_friction < 0: the row has none, so no low-speed blend.
+  double coll_elasticity = 0.1;
+  double coll_friction = 0.5;
+  double coll_low_speed_friction = -1.0;
+  double coll_noise_freq = 0, coll_noise_in0 = 0, coll_noise_in1 = 0, coll_noise_add0 = 0, coll_noise_add1 = 0;
 };
 
 // Evaluates procedural surface Bumpiness height and horizontal gradient at
@@ -176,16 +185,38 @@ struct CarParams {
   Vec3 size{1.8, 1.3, 4.3};         // the body contacts' box, m (ours)
   double gravity = 9.8;             // the spec's weight: 15.6 x 9.8
   double airborne_gravity_scale = 1.15, per_tyre_off_gravity_scale = 1.05;
-  // Body contacts (ours, until the collision spec gives the car's shape):
-  // 26 points on the box from the sill to the roof (corners, edge and face
-  // middles), each probed by a ray from the box's centre, are pushed out of
-  // whatever surface they pass along its normal by a stiff damped spring
-  // with friction. The constants are per corner: the force per point is
-  // scaled by 8/26.
+  // The body box: what traffic, smashables and the camera see of the car,
+  // and the source of the stand-in spheres when the car has no MAXData.
   double sill_height = 0.25;      // m above the ground at rest
-  double body_stiffness = 150;    // N/m per kg of mass, per corner
-  double body_damping = 12;       // N s/m per kg of mass, per corner
-  double body_friction = 0.6;
+  double body_stiffness = 150;    // the penalty box's spring, N/m per kg, per corner (ours)
+  double body_damping = 12;       // its damping, N s/m per kg, per corner (ours)
+  double body_friction = 0.6;     // its friction (ours)
+
+  // Body-to-world contact (SPEC_QUESTIONS Q100, Q101): the car's collision
+  // spheres against the world, solved as impulses with a positional push-out.
+  struct CollSphere {
+    Vec3 centre{};       // car frame (y = 0 the ground at rest, z from mid-wheelbase)
+    double radius = 0;
+    int flags = 0;       // MAXData Flags: bit 0 a ground sphere
+  };
+  struct BodyCollision {
+    std::vector<CollSphere> spheres;  // empty: spheres from the box (stand-in)
+    // PhysicsSettings.ini: spheres stay this far above the wheels' ground.
+    double min_above_ground = 0.11;         // CarCollSphereMinDistAboveGround
+    double ground_min_above_ground = 0.4;   // CarGroundCollSphereMinDistAboveGround
+    // Collision\FrictionLowSpeedMph / FrictionHighSpeedMph: the blend from
+    // the pair's LowSpeedFrictionCoefficient to its FrictionCoefficient.
+    double friction_low_mph = 10, friction_high_mph = 40;
+    // CarObjWorldCollTorqueScalePitch / Yaw / Roll: the contact angular
+    // impulse's body-frame x, y, z scales.
+    Vec3 world_torque_scale{0.55, 0.65, 0.55};
+    // GimbalLock: a tilt spring past GimbalCosAngle0 and a reflection of the
+    // tilting spin past GimbalCosAngle1.
+    bool gimbal_on = true;
+    double gimbal_cos0 = 0.87, gimbal_cos1 = 0.82, gimbal_k = 50;
+    double gimbal_d_compress = 5, gimbal_d_rebound = 0, gimbal_elasticity = 0.2;
+  };
+  BodyCollision body_collision{};
 
   // Suspension per axle (0 front, 1 rear). The wheel rests where the bake
   // stands it; the spring is preloaded to carry the static load there and

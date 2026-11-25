@@ -47,6 +47,7 @@
 #include <climits>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
@@ -231,6 +232,13 @@ int main(int argc, char** argv) {
   }
 
   std::vector<std::string> physics_notes;
+  // With --world <game>/media/tracks/colorado the disc is there for what a
+  // bake lacks (the car's MAXData collision spheres).
+  if (!world_dir.empty()) {
+    const char* state = std::getenv("SHIFT_STATE_ROOT");
+    drive::set_disc_physics_root(world_dir.parent_path().parent_path().parent_path(),
+                                 state ? std::filesystem::path(state) : std::filesystem::path());
+  }
   const drive::CarParams params = drive::params_for_baked_car(bake.car, bake_dir, &physics_notes);
   for (const auto& n : physics_notes) std::fprintf(stderr, "drive: physics: %s\n", n.c_str());
   drive::Vehicle v(params);

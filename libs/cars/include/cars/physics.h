@@ -157,6 +157,22 @@ struct CarCameraRow {
 };
 bool load_car_camera(const Install& install, int64_t car_id, const std::string& media, CarCameraRow& out,
                      std::string* error);
+// The car's collision spheres, MAXData.xml Collision/CollSpheres from the
+// car archive (SPEC_QUESTIONS Q100): per sphere x y z radius flags as
+// written (car frame, z before the BottomCenterWheelbasePos z shift), with
+// the box's MinY (the ground under the stock ride height) and that shift.
+struct CarCollisionSpheres {
+  std::vector<std::array<double, 5>> spheres;  // x, y, z, radius, flags
+  double min_y = 0;        // BoundingBox MinY
+  double wheelbase_z = 0;  // Misc/BottomCenterWheelbasePos z
+  bool has_spheres = false;
+};
+bool load_car_collision_spheres(const Install& install, const std::string& media, CarCollisionSpheres& out,
+                                std::string* error);
+// The same, carried in CarPhysics: curve "MAXData.CollSpheres" (five numbers
+// per sphere) and values "MAXData.BoundingBox.MinY" and
+// "MAXData.BottomCenterWheelbasePos.z".
+void put_collision_spheres(const CarCollisionSpheres& in, CarPhysics& out);
 // media/camera.zip's CameraSettings.ini and CameraPhysics.xml (or
 // CameraPhysicsSansEffects.xml when camera_effects is false); v4's own
 // camera/CameraPhysics.xml from its media.zip when there is one (SPEC-

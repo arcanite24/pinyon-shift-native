@@ -47,7 +47,10 @@ bool parse_physics_settings(std::string_view text, PhysicsSettings& out, std::st
     std::string_view rest = trim(line.substr(space + 1));
     if (!rest.empty() && rest.front() == '=') rest = trim(rest.substr(1));
     double v = 0;
-    if (number(rest, v)) out.values[std::string(key)] = v;
+    // Flags are written true/false (GimbalLock\GimbalLockOn).
+    if (rest == "true" || rest == "True" || rest == "TRUE") out.values[std::string(key)] = 1;
+    else if (rest == "false" || rest == "False" || rest == "FALSE") out.values[std::string(key)] = 0;
+    else if (number(rest, v)) out.values[std::string(key)] = v;
   }
   if (out.values.empty()) {
     if (error) *error = "PhysicsSettings.ini: no numeric settings in " + std::to_string(lines) + " lines";

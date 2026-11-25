@@ -47,10 +47,8 @@ void test_surface_physics_extras_parser() {
     <SoftWorld FrictionScale="1.6"/>
   </CarWorldCollFricMods>
   <CategoryToCategoryParams>
-    <Pair CategoryA="Car" CategoryB="HardWorld" Friction="0.18" Restitution="0.05"/>
-    <Car>
-      <SoftWorld Friction="0.65" Restitution="0.02"/>
-    </Car>
+    <Node Category0="Car" Category1="HardWorld" FrictionCoefficient="0.5" LowSpeedFrictionCoefficient="0.1" Elasticity="-0.9" FrictionNoiseFreqScale="5.0" FrictionNoiseInputNoise0="0.6" FrictionNoiseInputNoise1="0.65" FrictionNoiseOutputFricAdd0="0.0" FrictionNoiseOutputFricAdd1="0.5" />
+    <Node Category0="Smashable" Category1="Car" FrictionCoefficient="0.5" Elasticity="0.3" />
   </CategoryToCategoryParams>
   <SurfaceTypes>
     <Asphalt Category="HardWorld">
@@ -99,10 +97,15 @@ void test_surface_physics_extras_parser() {
   const auto* p_hard = ex.find_category_params("Car", "HardWorld");
   const auto* p_hard_rev = ex.find_category_params("HardWorld", "Car");
   CHECK(p_hard != nullptr && p_hard == p_hard_rev);
-  CHECK(p_hard && p_hard->has_friction && std::fabs(p_hard->friction - 0.18f) < 1e-4f);
-  CHECK(p_hard && p_hard->has_restitution && std::fabs(p_hard->restitution - 0.05f) < 1e-4f);
-  const auto* p_soft = ex.find_category_params("Car", "SoftWorld");
-  CHECK(p_soft != nullptr && std::fabs(p_soft->friction - 0.65f) < 1e-4f);
+  // The retail attribute names; Elasticity stays negative as written.
+  CHECK(p_hard && p_hard->has_friction && std::fabs(p_hard->friction - 0.5f) < 1e-4f);
+  CHECK(p_hard && p_hard->has_restitution && std::fabs(p_hard->restitution + 0.9f) < 1e-4f);
+  CHECK(p_hard && p_hard->has_low_speed_friction && std::fabs(p_hard->low_speed_friction - 0.1f) < 1e-4f);
+  CHECK(p_hard && std::fabs(p_hard->noise_freq - 5.0f) < 1e-4f && std::fabs(p_hard->noise_in0 - 0.6f) < 1e-4f &&
+        std::fabs(p_hard->noise_in1 - 0.65f) < 1e-4f && std::fabs(p_hard->noise_add1 - 0.5f) < 1e-4f);
+  const auto* p_smash = ex.find_category_params("Car", "Smashable");
+  CHECK(p_smash != nullptr && !p_smash->has_low_speed_friction && std::fabs(p_smash->restitution - 0.3f) < 1e-4f);
+  CHECK(ex.find_category_params("Car", "SoftWorld") == nullptr);
 }
 
 }  // namespace

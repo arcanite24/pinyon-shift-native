@@ -675,6 +675,32 @@ void test_sputter_settings() {
   CHECK(p.sputter_start_damage == 0.45 && p.sputter_max_per_sec == 2.5);
 }
 
+// Q100/Q101: the body-contact settings and MAXData spheres reach CarParams.
+void test_body_collision_settings() {
+  cars::PhysicsSettings ps;
+  std::string err;
+  CHECK(cars::parse_physics_settings("GimbalLock\\GimbalLockOn false\nGimbalLock\\GimbalSpringK 40\n"
+                                     "CarCollSphereMinDistAboveGround 0.12\nCollision\\FrictionHighSpeedMph 45\n"
+                                     "CarObjWorldCollTorqueScaleYaw 0.6\n",
+                                     ps, &err));
+  cars::CarPhysics cp;
+  cp.curves["MAXData.CollSpheres"] = {0.0001, 0.3748, 1.734099, 0.31, 2, -0.81, 0.034932, 2.129728, 0.05, 1};
+  cp.values["MAXData.BoundingBox.MinY"] = -0.2014;
+  cp.values["MAXData.BottomCenterWheelbasePos.z"] = -0.000358;
+  drive::CarParams p = test_car();
+  drive::apply_physics(cp, ps, p);
+  const auto& bc = p.body_collision;
+  CHECK(!bc.gimbal_on && bc.gimbal_k == 40 && bc.gimbal_cos0 == 0.87);
+  CHECK(bc.min_above_ground == 0.12 && bc.ground_min_above_ground == 0.4);
+  CHECK(bc.friction_low_mph == 10 && bc.friction_high_mph == 45);
+  CHECK(bc.world_torque_scale.y == 0.6 && bc.world_torque_scale.x == 0.55);
+  CHECK(bc.spheres.size() == 2);
+  if (bc.spheres.size() == 2) {
+    CHECK(std::fabs(bc.spheres[0].centre.y - 0.5762) < 1e-9 && std::fabs(bc.spheres[0].centre.z - 1.734457) < 1e-9);
+    CHECK(bc.spheres[0].radius == 0.31 && bc.spheres[0].flags == 2 && bc.spheres[1].flags == 1);
+  }
+}
+
 // FEEL-11: the original's FrictionTorqueMod law on the shipped table values
 // (PhysicsSettings.ini FrictionTorqueMod defaults in CarParams).
 void test_friction_torque_mod() {
@@ -1053,6 +1079,7 @@ int main() {
   test_per_car_physics();
   test_friction_torque_mod();
   test_sputter_settings();
+  test_body_collision_settings();
   test_pad_steering_linear();
   test_no_thermal_grip();
   test_assists_and_transmission();

@@ -43,13 +43,22 @@ struct SurfacePhysicsProps {
   bool defined = false;
 };
 
+// A CategoryToCategoryParams <Node Category0 Category1 ...> row: the
+// contact's FrictionCoefficient, LowSpeedFrictionCoefficient and Elasticity
+// and its friction noise (FrictionNoiseFreqScale; FrictionNoiseInputNoise0/1
+// mapped onto FrictionNoiseOutputFricAdd0/1). restitution is Elasticity as
+// written: the contact's impulse is (1 + Elasticity) times the closing
+// speed's, so negative values are real (SPEC_QUESTIONS Q101).
 struct CategoryCollisionParams {
   std::string category_a;
   std::string category_b;
   float friction = 0.5f;
   float restitution = 0.0f;
+  float low_speed_friction = 0.0f;
+  float noise_freq = 0.0f, noise_in0 = 0.0f, noise_in1 = 0.0f, noise_add0 = 0.0f, noise_add1 = 0.0f;
   bool has_friction = false;
   bool has_restitution = false;
+  bool has_low_speed_friction = false;
 };
 
 struct SurfaceTableExtras {

@@ -522,6 +522,51 @@ bool load_car_camera(const Install& install, int64_t car_id, const std::string& 
   return out.has_box;
 }
 
+bool load_car_collision_spheres(const Install& install, const std::string& media, CarCollisionSpheres& out,
+                                std::string* error) {
+  out = {};
+  const auto ref = install.find_car(lower(media));
+  if (!ref) {
+    if (error) *error = "no car folder for " + media;
+    return false;
+  }
+  Folder folder;
+  std::vector<uint8_t> bytes;
+  if (!folder.open(*ref, error) || !folder.read("physics/maxdata.xml", bytes, error)) return false;
+  const std::string xml(bytes.begin(), bytes.end());
+  xml_attribute(xml, "BoundingBox", "MinY", out.min_y);
+  xml_attribute(xml, "BottomCenterWheelbasePos", "z", out.wheelbase_z);
+  const size_t at = xml.find("<CollSpheres");
+  const size_t end = at == std::string::npos ? std::string::npos : xml.find("</CollSpheres>", at);
+  if (end == std::string::npos) {
+    if (error) *error = media + ": no Collision/CollSpheres in MAXData.xml";
+    return false;
+  }
+  const std::string block = xml.substr(at, end - at);
+  for (int i = 0;; ++i) {
+    const std::string tag = "Sphere" + std::to_string(i);
+    if (block.find("<" + tag + " ") == std::string::npos) break;
+    std::array<double, 5> s{};
+    const char* names[5] = {"PosX", "PosY", "PosZ", "Radius", "Flags"};
+    bool ok = true;
+    for (int k = 0; k < 5; ++k) ok = ok && xml_attribute(block, tag, names[k], s[size_t(k)]);
+    if (ok && s[3] > 0) out.spheres.push_back(s);
+  }
+  out.has_spheres = !out.spheres.empty();
+  if (!out.has_spheres && error) *error = media + ": no spheres in MAXData.xml CollSpheres";
+  return out.has_spheres;
+}
+
+void put_collision_spheres(const CarCollisionSpheres& in, CarPhysics& out) {
+  if (!in.has_spheres) return;
+  std::vector<double> flat;
+  flat.reserve(in.spheres.size() * 5);
+  for (const auto& s : in.spheres) flat.insert(flat.end(), s.begin(), s.end());
+  out.curves["MAXData.CollSpheres"] = std::move(flat);
+  out.values["MAXData.BoundingBox.MinY"] = in.min_y;
+  out.values["MAXData.BottomCenterWheelbasePos.z"] = in.wheelbase_z;
+}
+
 bool load_camera_files(const Install& install, std::string& settings_ini, std::string& physics_xml,
                        std::string* error, bool camera_effects) {
   std::vector<uint8_t> bytes;
