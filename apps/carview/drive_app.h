@@ -286,7 +286,10 @@ struct DriveApp : DriveConfig {
   void restore_pre_race_tod();
   int current_pop_rank() const;
   std::vector<std::string> class_name_list() const;
-  std::string award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize = false);
+  // `upgrade_class` >= 0: the car arrives upgraded to that CarClasses.Id
+  // at no cost (Rewards_EventPrizes.RewardCarUpgradeClass).
+  std::string award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize = false,
+                               int upgrade_class = -1);
   CareerSummary career_summary(std::vector<cars::PackInfo>& packs);
   CareerBoard career_board(const CareerPage& page);
   size_t garage_picker();

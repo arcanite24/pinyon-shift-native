@@ -1720,9 +1720,12 @@ bool DriveSession::commit_race_award() {
               (long long)app.career.credits, a->first_completion ? ", first completion" : "",
               a->prize_car ? (", prize car " + std::to_string(a->prize_car)).c_str() : "");
   if (a->prize_car > 0) {
-    int prize_col = 0;
-    if (const auto* cev = app.career_catalog.find_event(app.race_event)) prize_col = cev->prize_car_colour;
-    won_car_name = app.award_garage_car(a->prize_car, prize_col, false, /*is_prize=*/true);
+    int prize_col = 0, prize_class = -1;
+    if (const auto* cev = app.career_catalog.find_event(app.race_event)) {
+      prize_col = cev->prize_car_colour;
+      prize_class = cev->prize_car_upgrade_class;
+    }
+    won_car_name = app.award_garage_car(a->prize_car, prize_col, false, /*is_prize=*/true, prize_class);
     app.garage_picker();
   }
   // Dynamic difficulty (AISkillAdjustments): update profile Main/AISkill

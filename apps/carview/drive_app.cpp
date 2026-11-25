@@ -137,7 +137,8 @@ std::vector<std::string> DriveApp::class_name_list() const {
     return out;
 }
 
-std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize) {
+std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize,
+                                       int upgrade_class) {
     const auto* spec = have_career_catalog ? career_catalog.find_car(car_id) : nullptr;
     std::string media = spec ? spec->media_name : std::string();
     if (media.empty()) {
@@ -171,6 +172,31 @@ std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool sele
     gc.slots = std::move(stock);
     career_garage.cars.push_back(std::move(gc));
     if (select_it || career_garage.selected <= 0) career_garage.selected = career_garage.cars.back().id;
+    // A prize car comes fitted to its upgrade class, free of charge (the
+    // parts the quick upgrade would pick, paid from a matching grant).
+    if (upgrade_class >= 0 && upgrade_class > career_garage.cars.back().class_id && parts_db.valid() &&
+        !class_bands.empty()) {
+      if (!race_pi_cfg_loaded && !world_dir.empty()) {
+        race_pi_cfg_loaded = true;
+        const auto pzip = cars::mods::resolve(game_root_of() / "media" / "physics.zip");
+        std::error_code pec;
+        if (std::filesystem::exists(pzip, pec)) {
+          cars::load_physics_settings(pzip, race_phys_settings, nullptr);
+          garage::load_pi_config(pzip, race_pi_cfg, nullptr);
+        }
+      }
+      if (const auto db = parts_db.get()) {
+        const int64_t gid = career_garage.cars.back().id;
+        const auto plan = garage::plan_auto_upgrade(career_garage, *db, gid, upgrade_class, 0, race_phys_settings,
+                                                    race_pi_cfg, class_bands);
+        int64_t free_credits = plan.total_cost;
+        std::string why;
+        if (!plan.ok || !garage::apply_auto_upgrade(career_garage, *db, gid, plan, 0, free_credits,
+                                                    race_phys_settings, race_pi_cfg, class_bands, &why))
+          std::fprintf(stderr, "carview: prize car %lld not upgraded to class %d: %s\n", (long long)car_id,
+                       upgrade_class, (why.empty() ? plan.message : why).c_str());
+      }
+    }
     write_career_garage();
     return carview::car_name(media);
 }
