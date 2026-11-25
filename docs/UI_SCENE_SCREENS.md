@@ -411,7 +411,10 @@ The boot plays the original's two splashes, `T10_MS_Combined` then
   that exists but does not read shows the table's INVALID PROFILE popup once
   the menu is up.
 - **Menu.** `SPLASH_MENU`'s rows: SINGLE PLAYER (`Main/IDS_Horizon`) and
-  MULTIPLAYER. The selected row on its pink tapes (`Crisp_Tape`,
+  MULTIPLAYER. The game mounts title update v4's scene, whose first row is
+  `SPLASH_MENU_BUTTON_SPECIAL` (its `NormalMode` drawn, its medal-badged
+  `SpecialMode` hidden) and which has no `BREADCRUMB`; the disc's
+  `SPLASH_MENU_BUTTON1` serves without v4 (`title_row_nodes`). The selected row on its pink tapes (`Crisp_Tape`,
   `smudge_tape`) cut to its text, a size step up; the other plain, light grey,
   moved in (`02_title_menu_orig.png`). Help bar A SELECT, B BACK. SINGLE
   PLAYER continues a played career through the load screen, or starts the

@@ -56,6 +56,18 @@ inline constexpr StringRef kNewCareerBody{{}, {}, 0, "This will overwrite your s
 // A title row's text.
 StringRef title_row_text(TitleMenu::Row r);
 
+// SPLASH_MENU's row `slot` (0..4): its button and the group holding its
+// TEXT_BUTTON and Tape. Title update v4 (the scene the game mounts) put
+// SPLASH_MENU_BUTTON_SPECIAL in the disc's SPLASH_MENU_BUTTON1's place: its
+// NormalMode is the plain row, its SpecialMode a medal-badged one (Q138).
+// -1 where missing.
+struct TitleRowNodes {
+  int button = -1;
+  int group = -1;
+  int special = -1;  // v4's SpecialMode, hidden
+};
+TitleRowNodes title_row_nodes(const SceneDraw& sd, int slot);
+
 // Measured placements (1280x720 canvas) of the original's captures. The
 // scene rests at its intro start (the slides are not decoded), so its
 // Content group (the logo and PRESS START) sits off screen right.

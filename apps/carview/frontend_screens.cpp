@@ -33,6 +33,8 @@ float ease(double t, double len) {
 
 // The tape behind a selected row ends a little past its text.
 constexpr float kRowTapePad = 34.0f;
+// SPLASH_MENU's row tape colour (the rows' Material845, 0.98 0 0.39).
+constexpr uint32_t kRowTape = ui::rgba(250, 0, 99);
 // The tip title's tape ends just past its text (03_loading_tip_orig.png).
 constexpr float kTipTapePad = 18.0f;
 
@@ -66,6 +68,19 @@ StringRef title_row_text(TitleMenu::Row r) {
     case Row::kQuit: return title_text::kQuit;
   }
   return title_text::kSinglePlayer;
+}
+
+TitleRowNodes title_row_nodes(const SceneDraw& sd, int slot) {
+  TitleRowNodes r;
+  r.button = sd.find("SPLASH_MENU_BUTTON" + std::to_string(slot + 1));
+  r.group = child(sd, r.button, "Group");
+  if (slot == 0 && r.button < 0) {
+    r.button = sd.find("SPLASH_MENU_BUTTON_SPECIAL");
+    const int g = child(sd, r.button, "Group");
+    r.group = child(sd, g, "NormalMode");
+    r.special = child(sd, g, "SpecialMode");
+  }
+  return r;
 }
 
 bool draw_title_screen(ui::List& l, const TitleScreenHud& ts, float w, float h) {
@@ -113,13 +128,15 @@ bool draw_title_screen(ui::List& l, const TitleScreenHud& ts, float w, float h) 
   } else {
     const auto rows = m.rows();
     for (int slot = 0; slot < 5; ++slot) {
-      const int btn = sc.node("SPLASH_MENU_BUTTON" + std::to_string(slot + 1));
+      const TitleRowNodes rn = title_row_nodes(sd, slot);
+      const int btn = rn.button;
       if (btn < 0) continue;
       if (slot >= int(rows.size())) {
         sc.hide(btn);
         continue;
       }
-      const int group = child(sd, btn, "Group");
+      sc.hide(rn.special);
+      const int group = rn.group;
       const int text = child(sd, group, "TEXT_BUTTON");
       const int tape = child(sd, group, "Tape");
       const std::string label = text_of(title_row_text(rows[size_t(slot)]));
@@ -136,6 +153,10 @@ bool draw_title_screen(ui::List& l, const TitleScreenHud& ts, float w, float h) 
         sc.at(btn).dx = title_layout::kRowSelectedDx;
         for (const char* t : {"Crisp_Tape", "smudge_tape"})
           if (const int n = child(sd, tape, t); n >= 0) sc.at(n).visible_width = tw + kRowTapePad;
+        // v4's special row rests on a grey tape (its other rows' are pink);
+        // selected, it is pink as theirs (02_title_menu_orig.png).
+        for (const char* t : {"Crisp_Tape", "smudge_tape", "Dirt"})
+          if (const int n = child(sd, tape, t); n >= 0) sc.at(n).tint = kRowTape;
       }
       if (text >= 0) {
         const auto c = sd.at(text);
@@ -264,9 +285,8 @@ std::string loading_group_for_event(int style, int level) {
 const std::vector<std::pair<std::string_view, std::vector<const char*>>>& frontend_scene_nodes() {
   static const std::vector<std::pair<std::string_view, std::vector<const char*>>> k = {
       {kPreSplashScene,
-       {"Video", "Fader", "Start", "Install", "ButtonBar", "BREADCRUMB", "menu_shadow", "Content", "TitleTape",
-        "TitleTapeText", "Logo", "Menu", "SPLASH_MENU_BUTTON1/Group/TEXT_BUTTON", "SPLASH_MENU_BUTTON1/Group/Tape",
-        "SPLASH_MENU_BUTTON2/Group/TEXT_BUTTON", "SPLASH_MENU_BUTTON5/Group/Tape/Crisp_Tape",
+       {"Video", "Fader", "Start", "Install", "ButtonBar", "menu_shadow", "Content", "TitleTape", "TitleTapeText",
+        "Logo", "Menu", "SPLASH_MENU_BUTTON2/Group/TEXT_BUTTON", "SPLASH_MENU_BUTTON5/Group/Tape/Crisp_Tape",
         "SPLASH_MENU_BUTTON5/Group/Tape/smudge_tape"}},
       {kLoadingScene,
        {"Fade", "TipImage", "BG", "Title_Text", "Title_Text/TitleText", "Title_Text/crisp_tape", "Body_Text",

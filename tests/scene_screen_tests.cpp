@@ -246,6 +246,21 @@ int main() {
     check(sd.ok(), std::string(scene) + " loads");
     if (sd.ok()) check_nodes(sd, scene, paths);
   }
+  // The title's five rows, on v4's scene (its special first row) or the disc's.
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kPreSplashScene)));
+    const bool v4 = !fh1::UiOverlay::v4_media_zip_of(state_root).empty();
+    for (int slot = 0; slot < 5; ++slot) {
+      const carview::TitleRowNodes rn = carview::title_row_nodes(sd, slot);
+      const std::string row = "120_P_PRE_SPLASH: row " + std::to_string(slot + 1);
+      check(rn.button >= 0 && rn.group >= 0, row);
+      check(child(sd, rn.group, "TEXT_BUTTON") >= 0 && child(sd, rn.group, "Tape") >= 0, row + " TEXT_BUTTON, Tape");
+      if (slot == 0)
+        check(v4 ? (rn.special >= 0 && sd.object_name(rn.button) == "SPLASH_MENU_BUTTON_SPECIAL")
+                 : sd.object_name(rn.button) == "SPLASH_MENU_BUTTON1",
+              v4 ? row + " is v4's SPLASH_MENU_BUTTON_SPECIAL" : row + " is the disc's SPLASH_MENU_BUTTON1");
+    }
+  }
   // Every load group the engine names is one LoadingDefs.xml has.
   {
     std::ifstream f(game_root / "media" / "ui" / "LoadingDefs.xml", std::ios::binary);
@@ -905,6 +920,34 @@ int main() {
       ts.menu.confirm();
       ts.menu.open_extras();
       hud_shot("title_extras.png", "02_title_menu_orig.png", td);
+    }
+    {
+      // SINGLE PLAYER selected sits on the pink tape, not v4's grey special
+      // tape and not its medal (02_title_menu_orig.png: 856..1160 x 560..596).
+      carview::TitleScreenHud ts;
+      ts.active = true;
+      ts.menu.show_menu();
+      carview::ui::List l;
+      check(carview::draw_title_screen(l, ts, 1280.0f, 720.0f), "draw the title menu");
+      std::vector<uint8_t> fb(size_t(1280) * 720 * 4, 0);
+      carview::ui::rasterize(l.items(), fb, 1280, 720);
+      int pink = 0, grey = 0;
+      for (uint32_t y = 560; y < 596; ++y)
+        for (uint32_t x = 856; x < 1160; ++x) {
+          const uint8_t* p = &fb[(size_t(y) * 1280 + x) * 4];
+          if (p[0] > 180 && p[1] < 60 && p[2] > 50 && p[2] < 140) ++pink;
+          if (p[0] > 20 && p[0] < 50 && std::abs(int(p[0]) - int(p[1])) < 6 && std::abs(int(p[0]) - int(p[2])) < 6) ++grey;
+        }
+      check(pink > 3000, "title menu: SINGLE PLAYER's tape is pink (" + std::to_string(pink) + " px)");
+      check(grey < 300, "title menu: no grey tape under SINGLE PLAYER (" + std::to_string(grey) + " px)");
+      int medal = 0;  // SpecialMode's MedalHUDUnlock (814..860 x 554..600) stays hidden
+      for (uint32_t y = 554; y < 600; ++y)
+        for (uint32_t x = 805; x < 845; ++x) {
+          const uint8_t* p = &fb[(size_t(y) * 1280 + x) * 4];
+          const bool is_pink = p[0] > 180 && p[1] < 60;
+          if (!is_pink && (p[0] > 30 || p[1] > 30 || p[2] > 30)) ++medal;
+        }
+      check(medal < 50, "title menu: no medal beside SINGLE PLAYER (" + std::to_string(medal) + " px)");
     }
     auto load_shot = [&](const std::string& file, const std::string& orig, const carview::LoadingSceneHud& lh) {
       std::vector<uint8_t> fb = backdrop;

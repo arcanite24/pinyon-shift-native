@@ -2978,7 +2978,20 @@ shows `LiveStrings/IDS_Not_Connected_To_Live_PopUp_*` (NO NETWORK ACCESS)
 on `H_MESSAGE_POPUP`, the title the original uses for MESSAGE CENTER
 offline; the original's popup for MULTIPLAYER on PC is not recorded.
 
-Needed: the decoded `SPLASH_MENU_BUTTON` states, and a capture of
+v4's first row, `SPLASH_MENU_BUTTON_SPECIAL`, has a `NormalMode` and a
+`SpecialMode` (a `MedalHUDUnlock` badge beside the text, its texture under
+`DLC/CARCHALLENGE`, v4's 1000 Club). Its BGF contract
+`BUTTON_TEXT_SPECIAL` binds both modes' `TEXT_BUTTON`, so the row carries
+the first item in either mode; the engine draws `NormalMode`, which gives
+`02_title_menu_orig.png` to the pixel. That row's tapes rest grey (0.13)
+where the other rows' are pink; selected, the engine tints them the rows'
+pink (0.98 0 0.39). The BGF's state records for these nodes do not decode
+yet, so which state turns the tape pink, and when the original shows the
+badged row, are not known (a short search of the recomp's v4 notes found
+the 1000 Club but nothing on the title row).
+
+Needed: the decoded `SPLASH_MENU_BUTTON` states, what switches
+`SPLASH_MENU_BUTTON_SPECIAL` to `SpecialMode` (a 1000 Club medal?), and a capture of
 MULTIPLAYER chosen offline.
 
 ## Q139 (LOAD-01, LOAD-02, not blocking): which tips a load shows
