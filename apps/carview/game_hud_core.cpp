@@ -1,4 +1,5 @@
 #include "game_hud_internal.h"
+#include "hud_screen.h"
 #include "pause_screen.h"
 #include "touch_controls.h"
 
@@ -387,6 +388,7 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
     s = std::min(g.s, (tach_r.h() * g.h) / 184.0f);
     f = SceneFrame{tach_r.cx() * g.w - gx * s, tach_r.cy() * g.h - gy * s, s};
   }
+  if (draw_hud_dial(l, st, f)) return;
   const float cx = f.x(gx), cy = f.y(gy);
   render_fh1_dial(l, st, cx, cy, s, &sc, &f, gauge, ring);
 }

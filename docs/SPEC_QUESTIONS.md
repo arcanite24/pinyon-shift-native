@@ -1736,3 +1736,19 @@ code. Also open: `CHorizonDialoguesState` (hashed line keys, kept as
 bytes; the engine seeds its own heard-dialogue keys from the career
 instead) and the meaning of `CFirstTimeCareerState` stages other than 1
 and 2 (both finished saves read stage 8).
+
+## Q73 (UI, not blocking): the dial's rpm scale
+
+The HUD dial (`947_HUD` `GAUGE_ANALOG`) has 12 numeral slots, 12 large,
+12 mid and 24 small hatch slots, each under a `rotation` group the game
+turns at run time; the scene does not say how many it shows or where.
+Read off two retail captures: the Mazda MX-5 (redline about 7,000 rpm)
+shows 0..8 in ones on a sweep that runs one step past the 8 (0..9, about
+0.52 rad a step from 2.34 rad left of the top); the Nissan Skyline GT-R
+R34 (redline about 8,000 rpm) shows 0..10 in twos over the whole sweep.
+The engine's rule (`dial_scale()` in `apps/carview/hud_screen.cpp`): the
+sweep spans the redline in thousands rounded up plus two; up to 9 it
+counts in ones with numerals to one below the end, above it in twos to an
+even end. Needed, narrow: the code that fills the dial's slots (the rpm
+range it reads per car and how it picks the step and the last numeral),
+or captures of a car with a redline of 6,000 or 9,000 rpm and up.

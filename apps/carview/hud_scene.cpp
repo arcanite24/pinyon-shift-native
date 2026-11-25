@@ -157,9 +157,17 @@ float SceneDraw::alpha(int node) const { return sc_ && node >= 0 ? sc_->nodes[si
 
 float SceneDraw::z_depth(int node) const { return sc_ && node >= 0 ? sc_->nodes[size_t(node)].z : 0; }
 
+namespace {
+// k R(t) (x, y) + (bx, by) on the canvas (y down; t counter-clockwise).
+std::array<float, 2> turn_point(float x, float y, float k, float t, float bx, float by) {
+  const float c = std::cos(t), s = std::sin(t);
+  return {k * (c * x + s * y) + bx, k * (-s * x + c * y) + by};
+}
+}  // namespace
+
 bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity, float dx, float dy, float visible,
                       uint32_t tint, std::string_view tex_override, float extra_angle, float scale_x,
-                      float scale_y, float k, float kbx, float kby) const {
+                      float scale_y, float k, float kbx, float kby, float kt) const {
   if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return false;
   if (opacity <= 1e-4f) return false;
   const fh1::UiNode& n = sc_->nodes[size_t(node)];
@@ -191,14 +199,18 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
     r = {rcx - hwx, rcy - hwy, rcx + hwx, rcy + hwy};
   }
   r[0] += dx, r[2] += dx, r[1] += dy, r[3] += dy;
-  // A scaled ancestor (NodeOverride::scale): x' = k x + (kbx, kby).
-  if (k != 1.0f || kbx != 0.0f || kby != 0.0f) {
-    r = {k * r[0] + kbx, k * r[1] + kby, k * r[2] + kbx, k * r[3] + kby};
+  // A scaled or turned ancestor (NodeOverride::scale / turn):
+  // x' = k R(kt) x + (kbx, kby).
+  if (k != 1.0f || kbx != 0.0f || kby != 0.0f || kt != 0.0f) {
+    const float cx = 0.5f * (r[0] + r[2]), cy = 0.5f * (r[1] + r[3]);
+    const float hx = 0.5f * (r[2] - r[0]) * k, hy = 0.5f * (r[3] - r[1]) * k;
+    const auto p = turn_point(cx, cy, k, kt, kbx, kby);
+    r = {p[0] - hx, p[1] - hy, p[0] + hx, p[1] + hy};
     if (visible > 0.0f) visible *= k;
   }
   // The node's own rotation (scene y up: counter-clockwise on screen).
-  const float eff_angle = n.angle + extra_angle;
-  const bool turning = (turn_ || extra_angle != 0.0f) && eff_angle != 0.0f && !l.turned();
+  const float eff_angle = n.angle + extra_angle + kt;
+  const bool turning = (turn_ || extra_angle != 0.0f || kt != 0.0f) && eff_angle != 0.0f && !l.turned();
   if (turning) l.turn(f.x(0.5f * (r[0] + r[2])), f.y(0.5f * (r[1] + r[3])), -eff_angle);
   struct Unturn {
     ui::List& l;
@@ -247,7 +259,11 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
     const auto& m = tex[0]->matrix;
     auto U = [&](float u) { return uv[0] + (uv[2] - uv[0]) * u; };
     auto V = [&](float v) { return uv[1] + (uv[3] - uv[1]) * v; };
-    const float u0 = m[12], u1 = m[12] + m[0], v0 = std::min(m[13], m[13] + m[5]), v1 = std::max(m[13], m[13] + m[5]);
+    const float u0 = m[12], u1 = m[12] + m[0];
+    float v0 = std::min(m[13], m[13] + m[5]), v1 = std::max(m[13], m[13] + m[5]);
+    // A whole-texture offset (947_HUD's REDLINE maps v 1..2): the same texels
+    // under wrap addressing.
+    if (const float whole = std::floor(v0 + 1e-4f); whole != 0.0f && v1 - whole <= 1.0f + 1e-4f) v0 -= whole, v1 -= whole;
     float x0 = r[0], x1 = r[2], a = u0, b = u1;
     if (b > a && (a < 0 || b > 1)) {
       const float w = (x1 - x0) / (b - a);
@@ -347,7 +363,7 @@ float SceneDraw::measure(int node, std::string_view s) const {
 }
 
 float SceneDraw::text(ui::List& l, const SceneFrame& f, int node, std::string_view s, uint32_t colour, float dx,
-                      float dy, bool fit, float scale) const {
+                      float dy, bool fit, float scale, float extra_angle) const {
   if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size() || s.empty()) return 0;
   ui::TextStyle ts = style(node, f, colour);
   ts.size *= scale;
@@ -356,8 +372,8 @@ float SceneDraw::text(ui::List& l, const SceneFrame& f, int node, std::string_vi
     for (float w = ui::List::measure(s, ts); w > box && ts.size > 6 * f.s; w = ui::List::measure(s, ts))
       ts.size *= std::max(0.8f, box / w);
   const auto [cx, cy] = at(node);
-  const float angle = sc_->nodes[size_t(node)].angle;
-  const bool turning = turn_ && angle != 0 && !l.turned();
+  const float angle = (turn_ ? sc_->nodes[size_t(node)].angle : 0.0f) + extra_angle;
+  const bool turning = angle != 0 && !l.turned();
   if (turning) l.turn(f.x(cx + dx), f.y(cy + dy), -angle);
   const float w = l.text(f.x(cx + dx), f.y(cy + dy) - 0.5f * ts.size, s, ts);
   if (turning) l.unturn();
@@ -476,7 +492,7 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
   std::vector<uint32_t> bgf_tint(ncount, 0u);
   // Scale about pivots (NodeOverride::scale): a node's offset canvas point p
   // draws at acc_k * p + acc_b.
-  std::vector<float> acc_k(ncount, 1.0f), acc_bx(ncount, 0.0f), acc_by(ncount, 0.0f);
+  std::vector<float> acc_k(ncount, 1.0f), acc_bx(ncount, 0.0f), acc_by(ncount, 0.0f), acc_t(ncount, 0.0f);
   std::vector<const NodeOverride*> node_ov(ncount, nullptr);
 
   auto find_override = [&](int idx) -> const NodeOverride* {
@@ -532,14 +548,17 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
     {
       float k = parent_in ? acc_k[size_t(n.parent)] : 1.0f;
       float bx = parent_in ? acc_bx[size_t(n.parent)] : 0.0f, by = parent_in ? acc_by[size_t(n.parent)] : 0.0f;
-      if (ov && ov->scale != 1.0f) {
+      float t = parent_in ? acc_t[size_t(n.parent)] : 0.0f;
+      if (ov && (ov->scale != 1.0f || ov->turn != 0.0f)) {
+        // About the node's drawn position P: x' = P + s R(turn) (T(x) - P).
         const auto c = at(int(i));
-        const float px = k * (c[0] + acc_dx[i]) + bx, py = k * (c[1] + acc_dy[i]) + by;
+        const auto p = turn_point(c[0] + acc_dx[i], c[1] + acc_dy[i], k, t, bx, by);
+        const auto b = turn_point(bx - p[0], by - p[1], ov->scale, ov->turn, p[0], p[1]);
         k *= ov->scale;
-        bx = ov->scale * bx + (1.0f - ov->scale) * px;
-        by = ov->scale * by + (1.0f - ov->scale) * py;
+        t += ov->turn;
+        bx = b[0], by = b[1];
       }
-      acc_k[i] = k, acc_bx[i] = bx, acc_by[i] = by;
+      acc_k[i] = k, acc_bx[i] = bx, acc_by[i] = by, acc_t[i] = t;
     }
     if (bev) {
       if (bev->color_rgba.has_value()) {
@@ -580,11 +599,12 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
     const float sy = acc_sy[size_t(d.idx)];
     const float ea = acc_ang[size_t(d.idx)];
     const float k = acc_k[size_t(d.idx)], kbx = acc_bx[size_t(d.idx)], kby = acc_by[size_t(d.idx)];
+    const float kt = acc_t[size_t(d.idx)];
     if (o.kind == fh1::UiObjectKind::kModel) {
       const float vis_w = (ov && ov->visible_width.has_value()) ? *ov->visible_width : 0.0f;
       const uint32_t tint = (ov && ov->tint.has_value()) ? *ov->tint : bgf_tint[size_t(d.idx)];
       const std::string_view tex_ov = (ov && ov->texture.has_value()) ? std::string_view(*ov->texture) : std::string_view{};
-      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea, sx, sy, k, kbx, kby)) ++emitted;
+      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea, sx, sy, k, kbx, kby, kt)) ++emitted;
     } else if (o.kind == fh1::UiObjectKind::kText) {
       if (!ov || !ov->text.has_value() || ov->text->empty()) continue;
       const uint32_t base_col = ov->tint.has_value() ? *ov->tint
@@ -592,8 +612,9 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
                                                           : bindings.default_text_color;
       const uint32_t col = ui::fade(base_col, a);
       const auto c = at(d.idx);
-      const float tx = k * (c[0] + dx) + kbx - c[0], ty = k * (c[1] + dy) + kby - c[1];
-      if (text(l, f, d.idx, *ov->text, col, tx, ty, bindings.fit_text, k) > 0.0f) ++emitted;
+      const auto p = turn_point(c[0] + dx, c[1] + dy, k, kt, kbx, kby);
+      if (text(l, f, d.idx, *ov->text, col, p[0] - c[0], p[1] - c[1], bindings.fit_text, k, ea + kt) > 0.0f)
+        ++emitted;
     }
   }
   return emitted;

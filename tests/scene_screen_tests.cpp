@@ -290,6 +290,42 @@ int main() {
     shot("message_centre.png", pm, false);
     pm.show(true);
     shot("pause_race.png", pm, true);
+
+    // The driving HUD, over the original's captures when
+    // SHIFT_SCENE_SCREEN_HUD_DIR names their folder (the calibration loop:
+    // the engine's HUD drawn on the original's).
+    const char* hud_env = std::getenv("SHIFT_SCENE_SCREEN_HUD_DIR");
+    const std::filesystem::path hud_dir = hud_env ? hud_env : "";
+    auto hud_shot = [&](const std::string& file, const std::string& orig, const carview::DriveHud& hd) {
+      std::vector<uint8_t> fb = backdrop;
+      if (!hud_dir.empty()) {
+        int w = 0, h = 0, n = 0;
+        if (uint8_t* px = stbi_load((hud_dir / orig).string().c_str(), &w, &h, &n, 4)) {
+          if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
+          stbi_image_free(px);
+        }
+      }
+      carview::ui::List l;
+      carview::build_drive_hud(l, hd, float(W), float(H));
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / file;
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + file);
+    };
+    carview::DriveHud roam;
+    roam.driving = true;
+    roam.time = 10.0;
+    roam.kmh = 57;
+    roam.rpm = 6900;
+    roam.redline_rpm = 7000;
+    roam.gear = 3;
+    roam.abs_enabled = roam.tcs_enabled = true;
+    hud_shot("hud_roam.png", "05_roam_hud_day_drive_orig.png", roam);
+    carview::DriveHud r34 = roam;
+    r34.kmh = 0;
+    r34.rpm = 900;
+    r34.redline_rpm = 8000;
+    r34.gear = 1;
+    hud_shot("hud_roam_r34.png", "15_countdown_orig.png", r34);
   }
 
   if (g_failures > 0) {
