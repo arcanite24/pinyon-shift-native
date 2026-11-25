@@ -287,8 +287,19 @@ void test_race_to_festival() {
   c = ftc.update(in);
   check(ftc.tickets_remaining() == 8 && c.dj_lines.empty(), "no countdown line on the last stretch");
   in.player_pos = {-945.9, -1.0, -647.2};
-  ftc.update(in);
+  c = ftc.update(in);
   check(ftc.stage() == FtcStage::kFestivalArrive, "the alternate festival zone also arrives");
+  check(!c.set_destination, "no route loaded: the sat-nav stays as it was");
+
+  // With route 170's waypoints the AI drives on to the route's last one.
+  FirstTimeCareer routed;
+  routed.set_route_waypoints({{-709.274, 44.3724, -1294.93}, {-963.946, -8.10395, 117.809}});
+  routed.resume(FtcStage::kRaceToFestival);
+  in.player_pos = FirstTimeCareer::kEndRacePosition;
+  c = routed.update(in);
+  check(routed.stage() == FtcStage::kFestivalArrive && routed.ai_driving() && c.set_destination &&
+            c.destination_xz[0] == -963.946 && c.destination_xz[1] == 117.809,
+        "the festival arrival drives on to route 170's last waypoint");
 }
 
 void test_heats_and_showcase() {
@@ -411,6 +422,46 @@ void test_tutor() {
         "hint strings from HelpButtons");
 }
 
+void test_tod_zones() {
+  // The request: forward to the zone's time, past midnight when behind,
+  // reached in the ramp time.
+  auto r = race::ftc_tod_request(33300.0, 52200.0, 45.0);
+  check(r.target_s == 52200.0 && std::abs(r.rate - (52200.0 - 33300.0) / 45.0) < 1e-9, "14:30 from 09:15 in 45 s");
+  r = race::ftc_tod_request(70000.0, 64800.0, 45.0);
+  check(r.target_s == 64800.0 + 86400.0 && std::abs(r.rate - (64800.0 + 86400.0 - 70000.0) / 45.0) < 1e-9,
+        "a target behind the clock goes past midnight");
+  const auto& z = FirstTimeCareer::kTodZones;
+  check(z[0].time_s == 64800.0 && z[1].time_s == 52200.0 && z[0].zone.radius == 20.0 && z[1].zone.radius == 20.0,
+        "18:00 and 14:30 zones, 20 m");
+  // The initial drive's zone, on entry only.
+  FirstTimeCareer ftc;
+  ftc.resume(FtcStage::kRaceToFestival);  // any stage up to the festival arrival
+  race::FtcInput in;
+  in.dt = 0.1;
+  in.player_pos = {z[1].zone.pos[0] + 19.0, z[1].zone.pos[1], z[1].zone.pos[2]};
+  auto c = ftc.update(in);
+  check(c.request_time_of_day && c.tod_request_target_s == 52200.0 && c.tod_request_duration_s == 45.0,
+        "entering the zone requests 14:30 over 45 s");
+  c = ftc.update(in);
+  check(!c.request_time_of_day, "staying inside requests nothing more");
+  in.player_pos = {z[1].zone.pos[0] + 25.0, z[1].zone.pos[1], z[1].zone.pos[2]};
+  c = ftc.update(in);
+  check(!c.request_time_of_day, "outside the 20 m sphere: nothing");
+  in.player_pos = z[1].zone.pos;
+  c = ftc.update(in);
+  check(c.request_time_of_day, "re-entering requests again");
+  in.player_pos = z[0].zone.pos;
+  c = ftc.update(in);
+  check(c.request_time_of_day && c.tod_request_target_s == 64800.0, "the race's zone requests 18:00");
+  // Past stage 4 the zones do nothing.
+  ftc.resume(FtcStage::kHeats);
+  in.player_pos = {0, 0, 0};
+  ftc.update(in);
+  in.player_pos = z[0].zone.pos;
+  c = ftc.update(in);
+  check(!c.request_time_of_day, "the heats (stage 7): no time-of-day zone");
+}
+
 void test_stage_names_and_resume() {
   for (int s = 0; s <= int(FtcStage::kComplete); ++s) {
     FtcStage back{};
@@ -442,6 +493,7 @@ int main() {
   test_race_to_festival();
   test_heats_and_showcase();
   test_tutor();
+  test_tod_zones();
   test_stage_names_and_resume();
   if (g_failures) {
     std::fprintf(stderr, "first_time_career_tests: %d failure(s)\n", g_failures);

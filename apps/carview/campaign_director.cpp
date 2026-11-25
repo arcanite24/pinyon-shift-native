@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "audio_host.h"
+#include "race/route.h"
 
 namespace carview {
 namespace {
@@ -223,6 +224,13 @@ race::CampaignAction CampaignDirector::start_new_career(FmvPlayer& fmv, AudioHos
 }
 
 void CampaignDirector::prime_ftc_world() {
+  // Route 170 (the opening's CLoadRoute): the race to the festival's route.
+  race::Route route;
+  if (race::load_route(game_root_, race::FirstTimeCareer::kInitialDriveRoute, route, nullptr)) {
+    std::vector<std::array<double, 3>> wps;
+    for (const auto* t : route.waypoints()) wps.push_back({t->x, t->y, t->z});
+    ftc_.set_route_waypoints(std::move(wps));
+  }
   if (!catalog_) return;
   // The heats final signs up in the FESTIVAL_SECOND_NODE race activation's
   // 27 m sphere; the showcase at its own trigger.

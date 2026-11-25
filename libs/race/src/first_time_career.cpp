@@ -80,6 +80,13 @@ int ftc_title_stage(FtcStage stage) {
   return 0;
 }
 
+FtcTodRequest ftc_tod_request(double now_s, double target_s, double duration_s) {
+  FtcTodRequest r;
+  r.target_s = target_s < now_s ? target_s + 86400.0 : target_s;
+  r.rate = duration_s > 0.0 ? (r.target_s - now_s) / duration_s : 0.0;
+  return r;
+}
+
 void FirstTimeCareer::set_event_trigger(int64_t event_id, const std::array<double, 3>& pos, double radius) {
   for (auto& t : triggers_)
     if (t.id == event_id) {
@@ -208,6 +215,7 @@ FtcCommands FirstTimeCareer::start() {
   hud_ = false;
   credits_ = false;
   map_locked_ = false;
+  in_tod_zone_ = 0;
   return enter(FtcStage::kControls);
 }
 
@@ -355,6 +363,12 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       c.save_requested = true;
       c.fades = {fade(FtcFadeKind::kWhiteFlash)};
       c.play_cutscene = "Festival_Race_Outro";
+      // The AI drives on along route 170 to its last waypoint, in the festival.
+      if (!route_waypoints_.empty()) {
+        c.set_destination = true;
+        c.destination_label = "IDS_HudInstruction_Race_To_Festival";
+        c.destination_xz = {route_waypoints_.back()[0], route_waypoints_.back()[2]};
+      }
       controls_ = false;
       ai_ = true;
       hud_ = false;
@@ -544,6 +558,11 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
   auto go = [&](FtcStage next) {
     FtcCommands n = enter(next);
     n.dj_lines.insert(n.dj_lines.begin(), c.dj_lines.begin(), c.dj_lines.end());
+    if (c.request_time_of_day && !n.set_time_of_day) {
+      n.request_time_of_day = true;
+      n.tod_request_target_s = c.tod_request_target_s;
+      n.tod_request_duration_s = c.tod_request_duration_s;
+    }
     return n;
   };
   // An event the activity waits on: its result place moves the career on.
@@ -585,6 +604,19 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
     if (d <= radius) in_trigger_ = true;
     else if (d > radius + kRearmMargin) in_trigger_ = false;
   };
+
+  // The time-of-day zones, on entry, up to the festival arrival.
+  for (size_t i = 0; i < kTodZones.size(); ++i) {
+    const bool now_in = inside(kTodZones[i].zone, in.player_pos);
+    const bool was_in = (in_tod_zone_ >> i) & 1u;
+    if (now_in) in_tod_zone_ |= 1u << i;
+    else in_tod_zone_ &= ~(1u << i);
+    if (now_in && !was_in && ftc_title_stage(stage_) <= kTodZonesLastStage) {
+      c.request_time_of_day = true;
+      c.tod_request_target_s = kTodZones[i].time_s;
+      c.tod_request_duration_s = kTodRampTime;
+    }
+  }
 
   if ((stage_ == FtcStage::kOpeningCutscene || stage_ == FtcStage::kInitialDrive) && drive_leg_ < 2 &&
       dist_xz(in.player_pos, kInitialDrivePoints[size_t(drive_leg_)]) < kDriveLegRadius) {

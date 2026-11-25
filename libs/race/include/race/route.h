@@ -39,6 +39,8 @@ struct Route {
   const RouteTransform* find(std::string_view name) const;
   // start_location_00, _01, ... in order (00 is pole), until one is missing.
   std::vector<const RouteTransform*> slots() const;
+  // route_waypoint_00, _01, ... in order, until one is missing.
+  std::vector<const RouteTransform*> waypoints() const;
   // The plane through start_gantry_cannon_00 normal to the slots' facing
   // (slot 00's), counted within 60 m of the gantry.
   std::optional<Gate> start_line() const;

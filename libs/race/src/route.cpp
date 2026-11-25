@@ -64,6 +64,18 @@ std::vector<const RouteTransform*> Route::slots() const {
   return out;
 }
 
+std::vector<const RouteTransform*> Route::waypoints() const {
+  std::vector<const RouteTransform*> out;
+  for (int k = 0; k < 100; ++k) {
+    char n[32];
+    std::snprintf(n, sizeof n, "route_waypoint_%02d", k);
+    const RouteTransform* t = find(n);
+    if (!t) break;
+    out.push_back(t);
+  }
+  return out;
+}
+
 std::optional<Gate> Route::start_line() const {
   const RouteTransform* g = find("start_gantry_cannon_00");
   const auto s = slots();
