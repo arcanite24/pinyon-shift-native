@@ -31,7 +31,7 @@ layout(set = 0, binding = 11) uniform sampler2D vol_tex;
 layout(set = 0, binding = 12) uniform sampler2D virtual_mirror_tex;
 
 layout(set = 0, binding = 5) uniform Optical {
-  vec4 flags_near;    // x flags (1=mblur, 2=dof, 4=god_rays, 8=lens_flare, 16=reverse_z, 32=paired_vig, 64=camera mblur), y near, z contrast, w brightness
+  vec4 flags_near;    // x flags (1=mblur, 2=dof, 4=god_rays, 8=lens_flare, 16=reverse_z, 32=paired_vig, 64=camera mblur, 128=backdrop blur), y near, z contrast, w brightness
   vec4 mblur;         // xy center uv (radial) or camera screen motion uv (flag 64), z strength [0..1], w car_protect_dist_m
   vec4 dof;           // x focal_distance_m, y focal_range_m, z max_blur [0..1], w sepia [0..1]
   vec4 sun;           // xy sun_screen_uv, z sun_visibility [0..1], w god_ray_strength
@@ -342,7 +342,9 @@ void main() {
   if ((oflags & 2u) != 0u && opt.dof.z > 0.005) {
     float focal_d = max(opt.dof.x, 2.0);
     float focal_rng = max(opt.dof.y, 6.0);
-    float coc = clamp((abs(pix_dist - focal_d) - 4.0) / focal_rng, 0.0, 1.0) * opt.dof.z;
+    // 128: a UI popup's backdrop, blurred evenly at any depth.
+    float coc = (oflags & 128u) != 0u ? opt.dof.z
+                                      : clamp((abs(pix_dist - focal_d) - 4.0) / focal_rng, 0.0, 1.0) * opt.dof.z;
     if (coc > 0.02) {
       const vec2 poisson[8] = vec2[8](
           vec2(-0.707, -0.707), vec2(0.707, -0.707), vec2(-0.707, 0.707), vec2(0.707, 0.707),
@@ -353,7 +355,7 @@ void main() {
       for (int i = 0; i < 8; ++i) {
         vec2 suv = clamp(v_uv + poisson[i] * rad, vec2(0.001), vec2(0.999));
         float sd = linear_depth_m(suv, rev_z);
-        float w = (sd + 1.5 < pix_dist && pix_dist > focal_d) ? 0.15 : 1.0;
+        float w = (oflags & 128u) == 0u && (sd + 1.5 < pix_dist && pix_dist > focal_d) ? 0.15 : 1.0;
         acc += raw_scene(suv) * w;
         wsum += w;
       }

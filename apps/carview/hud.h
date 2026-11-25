@@ -61,7 +61,10 @@ struct PauseMenu {
   };
   // What the open menu shows: its rows, the EXTRAS list, or a screen opened
   // from a row.
-  enum class Screen { kList, kExtras, kMessageCentre, kSponsorChallenges };
+  // kOffline: MESSAGE CENTER offline, the NO NETWORK ACCESS popup over the
+  // rows (29_message_center_offline_orig.png); kConfirm: QUIT's (and QUIT
+  // RACE's) confirmation over the rows (28_quit_prompt_orig.png).
+  enum class Screen { kList, kExtras, kMessageCentre, kSponsorChallenges, kOffline, kConfirm };
   bool open = false;
   bool in_race = false;
   bool in_rally_world = false;
@@ -73,6 +76,7 @@ struct PauseMenu {
   int selected = 0;              // in rows(): the menu's rows or the extras
   int list_selected = 0;         // the menu row kept while the extras are open
   int sponsor_selected = 0;      // Sponsor Challenges' selected sponsor
+  Action confirm_action = kResume;  // what kConfirm's A does (kQuitToTitle, kQuitRace)
   // The selection the HUD last drew and when it changed (the cross-fade);
   // kept by the drawing side, hence mutable.
   mutable int shown_selected = -1, shown_from = -1;
@@ -134,6 +138,12 @@ struct PauseMenu {
     list_selected = selected;
     screen = s;
     sponsor_selected = 0;
+  }
+  // A popup over the rows (they stay drawn, the selection kept).
+  bool popup_open() const { return open && (screen == Screen::kOffline || screen == Screen::kConfirm); }
+  void open_confirm(Action a) {
+    open_screen(Screen::kConfirm);
+    confirm_action = a;
   }
   // B: back to the rows from the extras or a screen (true), or resume
   // (false: the menu closes).

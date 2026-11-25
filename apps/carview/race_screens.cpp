@@ -217,7 +217,12 @@ bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacit
   }
   fit_tapes(sc, sc.node("Tape2"), 0.0f, kTapePink);
   sc.draw(l, SceneScreen::frame(w, h));
-  if (opacity >= 1.0f) {
+  // A head-to-head's win (race_encounters.xml PlayWinCutScene): no restart,
+  // results or replay in free roam.
+  // interim (SPEC_QUESTIONS Q171): its help bar is not captured.
+  if (opacity >= 1.0f && r.head_to_head) {
+    ui4::button_bar(l, {{"A", text_of(race_text::kContinue)}}, w, h);
+  } else if (opacity >= 1.0f) {
     ui4::button_bar(l,
                     {{"A", text_of(race_text::kContinue)},
                      {"Y", text_of(race_text::kRestart)},
@@ -311,6 +316,9 @@ bool draw_cash(ui::List& l, const RaceHud& r, float w, float h) {
   // The lines: the finish, the mileage, the difficulty and assists bonus.
   std::vector<std::pair<std::string, std::string>> lines;
   lines.push_back({format1(text_of(race_text::kFinishedPlace), ordinal(std::max(1, r.place))), credits_text(r.base_credits)});
+  // The payout's order: FINISHED, BEAT THE STAR, MILEAGE BONUS, then the
+  // DIFFICULTY & ASSISTS percentage. SKILLS is an XP-screen row, not cash.
+  if (r.nemesis_bonus > 0) lines.push_back({text_of(race_text::kBeatTheStar), credits_text(r.nemesis_bonus)});
   if (r.mileage_bonus > 0) lines.push_back({text_of(race_text::kMileageBonus), credits_text(r.mileage_bonus)});
   if (r.difficulty_pct > 0)
     lines.push_back({text_of(race_text::kDifficultyBonus), "+" + std::to_string(r.difficulty_pct) + "%"});
@@ -393,6 +401,10 @@ bool is_tape(const SceneDraw& sd, int node) {
 bool draw_rival_intro(ui::List& l, const RaceHud& r, float w, float h) {
   SceneScreen sc(kRaceTitleScene);
   if (!sc.ok()) return false;
+  // nemesis_show's UI trigger: the callout from 0.8 s for 10 s.
+  if (r.screen_t < race_flow::timing::kRivalUiAt ||
+      r.screen_t >= race_flow::timing::kRivalUiAt + race_flow::timing::kRivalUiFor)
+    return true;
   const SceneDraw& sd = sc.scene();
   sc.bindings().fit_text = false;
   for (const char* n : {"Winnings", "ButtonBar", "FreeRoam", "Layer2", "TitleGroup"}) sc.hide(sc.node(n));
@@ -418,7 +430,9 @@ bool draw_rival_intro(ui::List& l, const RaceHud& r, float w, float h) {
   // REWARD, then the reward on its pink tape.
   const int line = sc.node("NemesisName"), title = sc.node("TEXT_BONUS_TITLE"), bonus = sc.node("TEXT_BONUS");
   const int group = sc.node("NemesisName/Group");
-  if (line >= 0 && title >= 0) {
+  // No BEAT THE STAR (a headline race's star pays none): no REWARD line.
+  if (r.rival_reward <= 0) sc.hide(line);
+  if (line >= 0 && title >= 0 && r.rival_reward > 0) {
     const std::string rw = text_of(race_text::kReward);
     const auto a = sd.at(title);
     const float dx = kRivalX - a[0], dy = kRivalRewardMidY + kTextMidAbove * kRivalRewardSize - a[1];
@@ -455,6 +469,50 @@ bool draw_rival_intro(ui::List& l, const RaceHud& r, float w, float h) {
   const SceneFrame f = SceneScreen::frame(w, h);
   sc.draw(l, f);
   for (const auto& lt : late) sd.text(l, f, lt.node, lt.s, lt.colour, lt.dx, lt.dy, false);
+  return true;
+}
+
+// --- H_RACE_ENCOUNTER ------------------------------------------------------
+
+// A head-to-head's intro (CShowRaceEncounterIntroScreen): the rival's name,
+// the car's make, its name and class, then REWARD and the reward on pink.
+// interim (SPEC_QUESTIONS Q171): no capture; the scene's own rects, the
+// tapes cut to their texts, and the reward lines (alpha 0 at rest, brought
+// in by the intro) shown at their rects.
+bool draw_encounter_intro(ui::List& l, const RaceHud& r, float w, float h) {
+  SceneScreen sc(kEncounterScene);
+  if (!sc.ok()) return false;
+  const SceneDraw& sd = sc.scene();
+  sc.bindings().fit_text = false;
+  auto line = [&](const char* group, const char* text, const std::string& s, uint32_t tint) {
+    const int g = sc.node(group), t = sc.node(text);
+    if (s.empty() || g < 0 || t < 0) {
+      sc.hide(g);
+      return;
+    }
+    show_tree(sc, g);
+    sc.text(t, s);
+    fit_tapes(sc, g, sd.measure(t, s) + kTitleTapePad, tint);
+  };
+  line("Name", "TEXT_NAME", r.rival_name, kTapeBlack);
+  line("Manufacturer", "TEXT_CARMAKE", upper(r.encounter_make), kTapeBlack);
+  if (const int car = sc.node("TEXT_CAR_NAME"); car >= 0) sc.text(car, r.encounter_car);
+  if (!r.encounter_class.empty()) {
+    const int pi = sc.node("TEXT_PI");
+    sc.text(pi, std::to_string(r.encounter_pi));
+    if (pi >= 0) sc.at(pi).tint = kInk;
+    if (const int cls = sc.node("CLASS_A"); cls >= 0) sc.at(cls).texture = "PICLASS/CLASS_" + upper(r.encounter_class);
+  } else {
+    sc.hide(sc.node("CLASS_SM"));
+  }
+  if (r.rival_reward > 0) {
+    line("Reward", "TEXT_REWARD", text_of(race_text::kReward), kTapeBlack);
+    line("Credits", "TEXT_CREDITS", credits_text(r.rival_reward), kTapePink);
+  } else {
+    sc.hide(sc.node("Reward"));
+    sc.hide(sc.node("Credits"));
+  }
+  sc.draw(l, SceneScreen::frame(w, h));
   return true;
 }
 
@@ -657,6 +715,9 @@ const std::vector<std::pair<std::string_view, std::vector<const char*>>>& race_s
         "NextReward/Wristband", "HeadlineEvent", "GlowMover"}},
       {kWonCarScene, {"ButtonBar", "ScreenTitle/TEXT_TITLE", "TEXT_POSITION", "Tape2", "CarName", "ScreenTitle"}},
       {kPopupScene, {"SpinnerBox", "Background", "Title", "Message"}},
+      {kEncounterScene,
+       {"Name", "TEXT_NAME", "Manufacturer", "TEXT_CARMAKE", "TEXT_CAR_NAME", "CLASS_SM", "TEXT_PI", "CLASS_A", "Reward",
+        "TEXT_REWARD", "Credits", "TEXT_CREDITS"}},
   };
   return k;
 }
@@ -707,9 +768,8 @@ std::string event_type_text(int style) {
   }
 }
 
-// interim (SPEC_QUESTIONS Q97): car select (108_C_BUY_CARSELECT) is not
-// decoded; the engine lists the garage's eligible cars on the grid menu's
-// scene under a CAR SELECT title.
+// The fallback when 108_C_BUY_CARSELECT is missing: the garage's eligible
+// cars on the grid menu's scene under a CAR SELECT title.
 bool draw_car_select(ui::List& l, const EventSummaryHud& es, float w, float h) {
   RaceHud r;
   r.event_type = text_of(race_text::kCarSelectTitle);
@@ -735,6 +795,7 @@ void draw_fade(ui::List& l, double fade, float w, float h) {
 constexpr float kTicketPointsDy = 17.0f, kTicketPointsTextDy = 30.0f;
 constexpr float kTicketCreditsDy = -6.0f, kTicketCreditsTextDy = 16.0f;
 constexpr float kTicketEligibilityDx = -80.0f;
+constexpr const char* kTicketOpenText = "OPEN";  // the restriction kTicketEligibilityDx was measured after
 constexpr float kTicketTapePad = 8.0f;
 
 // Widens a ticket value tape (LeftEdge, Centre, RightEdge) leftwards to its
@@ -783,7 +844,14 @@ bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& e
   if (const int tx = sc.node("TEXT_POINTS"); tx >= 0) sc.at(tx).dy = kTicketPointsTextDy;
   if (const int tp = sc.node("Credits/Tape"); tp >= 0) sc.at(tp).dy = kTicketCreditsDy;
   if (const int tx = sc.node("TEXT_CREDITS"); tx >= 0) sc.at(tx).dy = kTicketCreditsTextDy;
-  if (const int el = sc.node("TEXT_ELIGIBILITY"); el >= 0) sc.at(el).dx = kTicketEligibilityDx;
+  // The eligibility line follows the restriction: measured after OPEN, and
+  // pushed right by a longer restriction (MUST BE ...) so they never overlap.
+  if (const int el = sc.node("TEXT_ELIGIBILITY"); el >= 0) {
+    float dx = kTicketEligibilityDx;
+    if (const int cr = sc.node("TEXT_CAR_RESTRICTIONS"); cr >= 0 && !es.restriction.empty())
+      dx += std::max(0.0f, sd.measure(cr, upper(es.restriction)) - sd.measure(cr, kTicketOpenText));
+    sc.at(el).dx = dx;
+  }
   widen_ticket_tape(sc, sc.node("Points/Tape"), sc.node("TEXT_POINTS"), thousands(es.points) + " " + text_of(race_text::kPts));
   widen_ticket_tape(sc, sc.node("Credits/Tape"), sc.node("TEXT_CREDITS"), credits_text(es.credits));
   if (es.style == 1)
@@ -828,7 +896,8 @@ bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& e
 }
 
 bool draw_event_summary(ui::List& l, const DriveHud& st, const EventSummaryHud& es, float w, float h) {
-  if (es.screen == Screen::kCarSelect) return draw_car_select(l, es, w, h);
+  if (es.screen == Screen::kCarSelect)
+    return (!es.car_list.tiles.empty() && draw_car_list(l, st, es.car_list, w, h)) || draw_car_select(l, es, w, h);
   if (!draw_event_ticket(l, st, es, w, h, true)) return false;
   if (es.screen == Screen::kEntryFade) {
     draw_fade(l, es.fade, w, h);
@@ -847,6 +916,7 @@ bool draw_race_screen(ui::List& l, const DriveHud&, const RaceHud& r, float w, f
     case Screen::kTitleCard: return draw_title_card(l, r, w, h);
     case Screen::kGridMenu: return draw_grid_menu(l, r, w, h);
     case Screen::kRivalIntro: return draw_rival_intro(l, r, w, h);
+    case Screen::kEncounterIntro: return draw_encounter_intro(l, r, w, h);
     case Screen::kFinishBanner: return draw_finished(l, r, w, h, 1.0f);
     case Screen::kCashReward: return draw_cash(l, r, w, h);
     case Screen::kPoints: return draw_points(l, r, w, h);

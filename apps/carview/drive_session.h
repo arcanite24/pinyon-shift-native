@@ -451,12 +451,38 @@ struct DriveSession {
   // (race_screens).
   race_flow::Flow entry_screens;
   race_flow::Flow race_screens;
+  bool race_quitting = false;  // QUIT RACE: the black-out runs, then the load
+  // The pre-race rival callout (prerace_nemesis): the field's first star
+  // driver (AIPlayers.Nemesis) and its BEAT THE STAR reward.
+  std::string race_rival_name;
+  int64_t race_rival_reward = 0;
+  // The race's cutscenes (the flows' CPrepareCutscene: prerace_intro under
+  // the title card, prerace_looping_01 under the grid menu, nemesis_show,
+  // prerace_countdown, then postrace_finishline and the transitions under
+  // the rewards): their own runtime, the track's set (Tracks.DevName).
+  CutsceneRuntime race_cuts;
+  std::string race_cut_name;  // the cutscene the flow asked for last
+  // A free-roam head-to-head's screens (race_encounters.xml): the intro as
+  // it starts (H_RACE_ENCOUNTER), the banner and the cash on a win.
+  race_flow::Flow h2h_screens;
+  std::string h2h_name, h2h_make, h2h_car, h2h_class;
+  int h2h_pi = 0;
+  int64_t h2h_reward = 0;
+  bool h2h_was_active = false;
+  double h2h_finish_seen = -1e9;
   const race::CareerEvent* summary_event = nullptr;
   bool summary_restrictions = false;
   EventSummaryHud event_summary_hud;
   double summary_opened_at = 0;
-  std::vector<std::pair<std::string, std::string>> event_cars;  // car select: (name, media)
+  // Car select (108_C_BUY_CARSELECT): the garage's cars that qualify.
+  struct EventCar {
+    std::string name, media;
+    int64_t car_id = 0;
+    double raw_pi = -1;
+  };
+  std::vector<EventCar> event_cars;
   int event_car_selected = 0;
+  bool event_car_specs = true;  // Y TOGGLE: the selected car's panel
   std::string event_car_media;  // the car chosen for the event
   bool stay_in_car_pending = false;
   std::string stay_in_car_name, stay_in_car_media;  double title_orbit_time = 0.0;
@@ -694,18 +720,28 @@ struct DriveSession {
   // The event's ticket (H_EVENT_SUMMARY's values) for the current car; with
   // `cars`, the garage's cars that can enter it when the current one cannot.
   EventSummaryHud event_ticket(const race::CareerEvent& ev,
-                               std::vector<std::pair<std::string, std::string>>* cars = nullptr);
+                               std::vector<EventCar>* cars = nullptr);
   void close_event_summary();
   void event_summary_accept();
   void event_summary_back();
   void event_summary_move(int by);
   void event_summary_restrictions();
   bool event_summary_open() const { return entry_screens.active(); }
+  // A message popup over the game (STAY IN CAR, the pause menu's
+  // confirmations): the frame behind it is blurred.
+  bool popup_backdrop() const;
   // Advances the race screens (timed steps, the grid's start, the finish).
   void update_race_screens(double dt);
+  // Plays the race cutscene the flow's step asks for (update_race_screens).
+  void sync_race_cutscene();
+  // The head-to-head's screens, from the festival racers' state.
+  void sync_h2h_screens(double dt);
+  // The race cutscene's camera this frame (false: the game's own camera).
+  bool race_cutscene_camera(drive::CameraView& out) const;
   void grid_menu_accept();
   void race_back();
   void finish_race_screens();
+  void begin_race_quit();
   void update_driving_line_overlay();
   void start_new_career();
   bool map_marker_visible(const MapMarker& m);
@@ -739,6 +775,9 @@ struct DriveSession {
   void sync_pause_labels();
   void cycle_difficulty(int by);
   void choose();
+  // A on the pause menu's confirmation popup: runs its action (QUIT, QUIT RACE).
+  void confirm_pause_popup();
+  void run_pause_action(PauseMenu::Action act);
   void race_continue();
   void race_restart();
   // Commits the finished race's held award (career, garage, campaign tally,

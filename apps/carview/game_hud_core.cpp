@@ -1028,11 +1028,16 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     }
     if (st.skills && st.hud.popularity_skills &&
         !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open ||
-                      (st.race->phase == RaceHud::kGrid && st.race->screen != race_flow::Screen::kNone))))
+                      (st.race->phase == RaceHud::kGrid && st.race->screen != race_flow::Screen::kNone) ||
+                      st.race->screen == race_flow::Screen::kBlackOut || st.race->screen == race_flow::Screen::kDone)))
       if (!draw_hud_skills(l, *st.skills, g.w, g.h, g.s, st.time)) skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
       const RaceHud& r = *st.race;
       if (r.phase != RaceHud::kFinished) reset_post_race_page_timer();
+      if (r.cut_fade[3] > 0.0f)
+        l.rect(0.0f, 0.0f, w, h,
+               ui::rgba(uint8_t(r.cut_fade[0] * 255.0f), uint8_t(r.cut_fade[1] * 255.0f),
+                        uint8_t(r.cut_fade[2] * 255.0f), uint8_t(std::clamp(r.cut_fade[3], 0.0f, 1.0f) * 255.0f)));
       // The original's screens around the race from their scenes (race_screens.h);
       // the results table (X on the banner) keeps its own page.
       const bool table = r.screen == race_flow::Screen::kFinishBanner && r.results_table;
@@ -1060,8 +1065,11 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     } else if (popup_card(l, st, g, bottom_lift)) {
       bottom_lift += 72.0f;
     }
+    // The black-out (a quit's or the rewards') covers the dial too.
     const bool hide_dial = st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open ||
-                                       (st.race->phase == RaceHud::kGrid && st.race->screen != race_flow::Screen::kNone));
+                                       (st.race->phase == RaceHud::kGrid && st.race->screen != race_flow::Screen::kNone) ||
+                                       st.race->screen == race_flow::Screen::kBlackOut ||
+                                       st.race->screen == race_flow::Screen::kDone);
     if (!hide_dial) {
       if (st.speedo_mode == 1) render_digital_dial(l, st, g);
       else if (st.speedo_mode == 0) dial(l, st, g);

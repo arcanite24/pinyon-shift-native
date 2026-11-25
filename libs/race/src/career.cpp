@@ -496,6 +496,16 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
               ev.ticket = col_txt(s, 3);
             },
             &ignored);
+    // The track's DevName names its race cutscenes (a separate query: older
+    // databases lack the column).
+    db.each("select e.Id, coalesce(t.DevName, '') from Events e join Races r on r.EventId = e.Id "
+            "join Tracks t on t.id = r.TrackId",
+            {},
+            [&](sqlite3_stmt* s) {
+              auto it = by_id.find(col_i64(s, 0));
+              if (it != by_id.end()) out.events[it->second].track_dev_name = col_txt(s, 1);
+            },
+            &ignored);
   }
 
   // 5a'. The prize cars' upgrade class, livery and tuning levels, the event

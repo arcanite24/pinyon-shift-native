@@ -19,6 +19,28 @@ bool CutsceneRuntime::ensure_loaded(const std::filesystem::path& game_root) {
   return loaded_;
 }
 
+bool CutsceneRuntime::load_race(const std::filesystem::path& game_root, const std::string& dev_name) {
+  if (tried_ && race_dev_ == dev_name) return loaded_;
+  stop();
+  tried_ = true;
+  race_dev_ = dev_name;
+  lib_ = {};
+  error_.clear();
+  loaded_ = cutscene::load_gamemodes_cutscenes(game_root, cutscene::kRaceCutscenesMember, lib_, &error_);
+  if (!loaded_) std::fprintf(stderr, "carview: race cutscenes: %s\n", error_.c_str());
+  // A track without its own set uses the defaults.
+  std::string ignored;
+  if (loaded_ && !dev_name.empty())
+    (void)cutscene::load_gamemodes_cutscenes(game_root, cutscene::track_cutscenes_member(dev_name), lib_, &ignored);
+  return loaded_;
+}
+
+bool CutsceneRuntime::play_race(std::string_view name) {
+  const cutscene::Cutscene* cs = cutscene::find_race_cutscene(lib_, name, race_dev_);
+  if (!cs) return false;
+  return play(cs->name, false);
+}
+
 bool CutsceneRuntime::play(std::string_view name, bool hold) {
   const cutscene::Cutscene* cs = lib_.find(name);
   frozen_ = false;

@@ -790,6 +790,12 @@ void DriveSession::place_world() {
             ps.dof_focal_range = 42.0f;
             ps.dof_max_blur = std::clamp(cfg.dof_focal_max_blur > 0.05f ? cfg.dof_focal_max_blur * 0.55f : 0.35f,
                                          0.15f, 0.65f);
+            // A popup over the game (STAY IN CAR, the pause confirmations)
+            // blurs the frame behind it.
+            if (popup_backdrop()) {
+              ps.backdrop_blur = true;
+              ps.dof_max_blur = 1.0f;
+            }
             ps.near_plane = active_near;
             ps.god_rays = !app.low_preset && (!app.bench || app.bench_full_fx);
             ps.lens_flare = !app.low_preset && (!app.bench || app.bench_full_fx);

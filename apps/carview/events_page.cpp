@@ -307,10 +307,11 @@ void EventsPage::fill(std::string& title, std::vector<std::string>& lines, int& 
 
     // Line 2: CR payout and wristband points reward (RACE-18: no buy-in).
     std::string payout = "1ST PRIZE: " + thousands(int64_t(ev.cash_prize)) + " Cr";
-    if (ev.style != 2) {
-      const int wb_pts = (ev.style == 3) ? 1500 : (ev.style == 5 || ev.style == 6) ? 2500 : 1000;
-      payout += "  •  +" + thousands(wb_pts) + " WRISTBAND PTS";
-    }
+    // A festival win's wristband points, as the event's ticket shows them
+    // (POINTS AVAILABLE; only festival events pay wristband points).
+    if (ev.style == 1 && wristbands_)
+      if (const int wb_pts = wristbands_->points_for(ev.level, 1); wb_pts > 0)
+        payout += "  •  +" + thousands(wb_pts) + " WRISTBAND PTS";
     detail_lines.push_back(payout);
 
     // Line 3: Class limit or Showcase loaner car.

@@ -451,10 +451,16 @@ int main() {
           &kHeadlineRace, &kStarShowdown, &kCircuit, &kPointToPoint, &kAsphalt, &kMixedSurface, &kOffRoad,
           &kTwoWords, &kPointsAvailable, &kEntryRestrictions, &kClassOrBelow, &kCarProvided, &kBestFinish, &kBeat,
           &kReward, &kCurrentCarEligible, &kGarageCarsEligible, &kNoCarsEligible, &kPts, &kNoRestrictions,
-          &kCredits, &kFinished, &kCashReward, &kFinishedPlace, &kMileageBonus, &kDifficultyBonus, &kTotal,
+          &kCredits, &kFinished, &kCashReward, &kFinishedPlace, &kMileageBonus, &kBeatTheStar, &kDifficultyBonus, &kTotal,
           &kBalance, &kPlace, &kPointsEarned, &kPointsN, &kCollectIt, &kWristbandUnlocked, &kPointsToNext,
           &kPointToNext, &kPleaseWait, &kYouWonACar, &kStayInCar, &kStayInCarQ, &kCarSelectTitle})
       check_ref(*r, "race screen " + std::string(r->fallback));
+    for (const carview::StringRef* r :
+         {&carview::pause_text::kNoNetworkTitle, &carview::pause_text::kNoNetworkBody, &carview::pause_text::kQuitTitle,
+          &carview::pause_text::kQuitDesc, &carview::pause_text::kQuitRaceTitle, &carview::pause_text::kQuitRaceDesc,
+          &carview::pause_text::kExitSinglePlayer, &carview::pause_text::kQuitButton, &carview::pause_text::kCancel,
+          &carview::pause_text::kOk})
+      check_ref(*r, "pause popup " + std::string(r->fallback));
     std::vector<std::string> rows;
     for (auto g : carview::kGridRows) rows.push_back(carview::text_of(carview::grid_row_text(g)));
     check((rows == std::vector<std::string>{"START RACE", "DIFFICULTY", "OPTIONS", "QUIT RACE"}),
@@ -857,8 +863,44 @@ int main() {
     pm.back();
     pm.open_screen(PauseMenu::Screen::kMessageCentre);
     shot("message_centre.png", pm, false);
+    pm.back();
+    // The popups over the rows: MESSAGE CENTER offline, QUIT, QUIT RACE.
+    auto popup = [&](PauseMenu& m, std::string& title, std::vector<std::pair<std::string, std::string>>& prompts) {
+      carview::PauseScreenHud ps;
+      carview::fill_pause_screen(m, 1e9, ps);
+      std::string message;
+      return carview::pause_popup_text(ps, title, message, prompts) && !message.empty();
+    };
+    {
+      std::string title;
+      std::vector<std::pair<std::string, std::string>> prompts;
+      check(!popup(pm, title, prompts), "no popup over the rows");
+      pm.open_screen(PauseMenu::Screen::kOffline);
+      check(pm.popup_open() && popup(pm, title, prompts) &&
+                title == carview::text_of(carview::pause_text::kNoNetworkTitle) && prompts.size() == 1,
+            "MESSAGE CENTER offline: the NO NETWORK ACCESS popup (" + title + ")");
+      shot("pause_offline.png", pm, false);
+      pm.back();
+      pm.open_confirm(PauseMenu::kQuitToTitle);
+      check(pm.popup_open() && popup(pm, title, prompts) && title == "QUIT" &&
+                (prompts == std::vector<std::pair<std::string, std::string>>{{"A", "EXIT SINGLE PLAYER"},
+                                                                              {"B", "CANCEL"}}),
+            "QUIT asks: A EXIT SINGLE PLAYER, B CANCEL (28_quit_prompt_orig.png)");
+      shot("pause_quit.png", pm, false);
+      pm.back();
+      check(!pm.popup_open() && pm.open, "B on the popup returns to the rows");
+    }
     pm.show(true);
     shot("pause_race.png", pm, true);
+    {
+      std::string title;
+      std::vector<std::pair<std::string, std::string>> prompts;
+      pm.open_confirm(PauseMenu::kQuitRace);
+      check(popup(pm, title, prompts) && title == "QUIT RACE" && prompts.size() == 2,
+            "QUIT RACE asks first (" + title + ")");
+      shot("pause_quit_race.png", pm, true);
+      pm.back();
+    }
 
     // The driving HUD, over the original's captures when
     // SHIFT_SCENE_SCREEN_HUD_DIR names their folder (the calibration loop:
@@ -957,6 +999,28 @@ int main() {
         check(count.items().empty(), "I_321_Go: no count on screen before GO!");
       }
       hud_shot("hud_race_count.png", "15_countdown_orig.png", go_d);
+      // A start without a gantry (a street race) counts on TEXT_COUNT (Q173 interim).
+      go.start_gantry = false;
+      {
+        carview::ui::List count;
+        check(carview::draw_hud_countdown(count, go, 1280.0f, 720.0f, 1.0f) && !count.items().empty(),
+              "I_321_Go: a start without a gantry counts on screen");
+      }
+      hud_shot("hud_race_count_street.png", "15_countdown_orig.png", go_d);
+      go.start_gantry = true;
+      // QUIT RACE's black-out covers the dial too (Q172).
+      go.phase = carview::RaceHud::kRacing, go.clock = 12.0;
+      go.screen = carview::race_flow::Screen::kBlackOut, go.screen_t = 5.0;
+      {
+        carview::ui::List l;
+        carview::build_drive_hud(l, go_d, float(W), float(H));
+        std::vector<uint8_t> fb(size_t(W) * H * 4, 255);
+        carview::ui::rasterize(l.items(), fb, W, H);
+        const size_t px = (size_t(585) * W + 1120) * 4;  // the dial's centre
+        check(fb[px] < 8 && fb[px + 1] < 8 && fb[px + 2] < 8, "the black-out covers the dial");
+      }
+      hud_shot("race_quit_black.png", "16_race_hud_orig.png", go_d);
+      go.screen = carview::race_flow::Screen::kNone, go.screen_t = 0;
       go.phase = carview::RaceHud::kRacing;
       go.clock = 20.0, go.wrong_way = true;
       hud_shot("hud_race_wrong_way.png", "16_race_hud_orig.png", go_d);
@@ -1035,6 +1099,24 @@ int main() {
       hud_shot("race_summary.png", "10_event_card_prerace_orig.png", sum_d);
       es.restrictions_view = true;
       hud_shot("race_summary_restrictions.png", "10_event_card_prerace_orig.png", sum_d);
+      // Car select on 108_C_BUY_CARSELECT's car list (11_car_select_orig.png).
+      es.restrictions_view = false;
+      es.screen = S::kCarSelect;
+      es.car_list.title = carview::text_of(carview::car_list_text::kCarSelect);
+      for (int64_t id : {int64_t(1259), int64_t(1105), int64_t(1286)}) {
+        carview::CarTile tile;
+        tile.car_id = id;
+        es.car_list.tiles.push_back(tile);
+      }
+      es.car_list.selected = 1;
+      es.car_list.prompts = {{"A", "SELECT"}, {"B", "BACK"}, {"Y", "TOGGLE"}};
+      {
+        carview::ui::List l;
+        check(carview::draw_car_list(l, sum_d, es.car_list, float(W), float(H)) && !l.items().empty(),
+              "car select draws on 108_C_BUY_CARSELECT");
+      }
+      hud_shot("race_car_select.png", "11_car_select_orig.png", sum_d);
+      es.screen = S::kEventSummary;
 
       carview::RaceHud rr;
       rr.phase = carview::RaceHud::kGrid;
@@ -1057,6 +1139,10 @@ int main() {
       rr.screen = S::kCashReward, rr.screen_t = 3.0;
       rr.base_credits = 0, rr.mileage_bonus = 400, rr.difficulty_pct = 40, rr.credits = 560, rr.balance = 118010;
       hud_shot("race_cash.png", "17_results_cash_reward_orig.png", rd);
+      // A star in the field: BEAT THE STAR after FINISHED.
+      rr.nemesis_bonus = 1500, rr.credits = 2060;
+      hud_shot("race_cash_star.png", "17_results_cash_reward_orig.png", rd);
+      rr.nemesis_bonus = 0;
       rr.screen = S::kPoints;
       rr.band_before = 2970, rr.band_after = 3080, rr.band_lo = 2000, rr.band_hi = 4100;
       rr.band_name = "ORANGE WRISTBAND", rr.band_next = "PURPLE";
@@ -1065,6 +1151,27 @@ int main() {
       hud_shot("race_won_car.png", "16b_finish_banner_orig.png", rd);
       rr.screen = S::kStayInCar, rr.stay_car = "Nissan GT-R R34";
       hud_shot("race_stay_in_car.png", "18_post_race_stay_in_car_orig.png", rd);
+
+      // A free-roam head-to-head (race_encounters.xml): the intro on
+      // H_RACE_ENCOUNTER, then a win's banner with A CONTINUE alone.
+      carview::RaceHud hh;
+      hh.head_to_head = true;
+      hh.phase = carview::RaceHud::kRacing;
+      hh.screen = S::kEncounterIntro;
+      hh.rival_name = "Peter Houston", hh.rival_reward = 5000;
+      hh.encounter_make = "Nissan", hh.encounter_car = "Skyline GT-R V-Spec II";
+      hh.encounter_class = "A", hh.encounter_pi = 560;
+      carview::DriveHud hd = roam;
+      hd.race = &hh;
+      {
+        carview::ui::List l;
+        check(carview::draw_race_screen(l, hd, hh, float(W), float(H)) && !l.items().empty(),
+              "the head-to-head's intro draws on H_RACE_ENCOUNTER");
+      }
+      hud_shot("h2h_intro.png", "05_roam_hud_day_drive_orig.png", hd);
+      hh.phase = carview::RaceHud::kFinished;
+      hh.screen = S::kFinishBanner, hh.screen_t = 5.0, hh.place = 1;
+      hud_shot("h2h_won.png", "16b_finish_banner_orig.png", hd);
     }
 
     // The pause map over the original's captures (the popups at the icons

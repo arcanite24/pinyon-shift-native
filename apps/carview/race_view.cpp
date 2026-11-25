@@ -306,6 +306,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   line_ = race::build_race_line(owt_, &route_, circuit_ ? laps + 3 : 1);
   ribbon_ = std::make_unique<race::RibbonGround>(owt_);
   auto gate = route_.start_line();
+  start_gantry_ = gate.has_value();
   auto finish = route_.sprint_finish();
   // A Rally stage finishes FinishLine x Length past the start along the AI
   // line (v4's Tracks row; ours: SPEC-V4-CONTENT's interim is progress 1,
@@ -1828,6 +1829,7 @@ RaceHud RaceView::hud_info() const {
     default: h.event_type = "FESTIVAL RACE"; break;
   }
   h.circuit = circuit_;
+  h.start_gantry = start_gantry_;
   h.stage = have_stage_track_;
   h.clock = s.clock();
   h.digit = s.digit();

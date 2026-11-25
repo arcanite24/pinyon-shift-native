@@ -282,6 +282,7 @@ void DriveSession::open_events_browser(int hub_filter) {
           int64_t cid = 0;
           int clid = 2;
           current_car_info(cid, clid);
+          events_page.set_wristband_tables(&app.wristbands);
           events_page.open(app.career_catalog, app.career, app.collected_wristband, app.current_pop_rank(), cid, clid, app.class_bands,
                            hub_filter);
 }
@@ -934,8 +935,16 @@ void DriveSession::hub_menu_choose(bool extra) {
 void DriveSession::choose() {
           const PauseMenu::Action act = menu.selected_action();
           // The screens the menu opens inside itself (B returns to the rows).
+          // MESSAGE CENTER offline: the NO NETWORK ACCESS popup over the
+          // rows (29_message_center_offline_orig.png); the engine is offline.
           if (act == PauseMenu::kMessageCentre) {
-            menu.open_screen(PauseMenu::Screen::kMessageCentre);
+            menu.open_screen(PauseMenu::Screen::kOffline);
+            return;
+          }
+          // QUIT and QUIT RACE ask first (28_quit_prompt_orig.png;
+          // PauseMenu IDS_QuitRace_Desc_SinglePlayer / _Career).
+          if (act == PauseMenu::kQuitToTitle || (act == PauseMenu::kQuitRace && app.race)) {
+            menu.open_confirm(act);
             return;
           }
           if (act == PauseMenu::kSponsorChallenges) {
@@ -1025,6 +1034,17 @@ void DriveSession::choose() {
             app.next_event = app.race_event;
             running = false;
           }
+          run_pause_action(act);
+}
+
+void DriveSession::confirm_pause_popup() {
+          const PauseMenu::Action act = menu.confirm_action;
+          menu.open = false;
+          menu.screen = PauseMenu::Screen::kList;
+          run_pause_action(act);
+}
+
+void DriveSession::run_pause_action(PauseMenu::Action act) {
           if (act == PauseMenu::kQuitRace && app.race) {
             app.race->drop_award();
             results_page = 0;
@@ -1036,8 +1056,7 @@ void DriveSession::choose() {
               app.rally_service_open = false;
               app.rally_hub_open = true;
             }
-            app.leave_race = true;
-            running = false;
+            begin_race_quit();
           }
           if (act == PauseMenu::kQuitToTitle) {
             app.pending_event_loaner_car.clear();

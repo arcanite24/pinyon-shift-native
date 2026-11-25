@@ -51,6 +51,8 @@ class EventsPage {
             const std::vector<garage::ClassBand>& bands, int hub_filter = 0,
             const std::filesystem::path& ghosts_dir = {});
   void set_ghosts_dir(const std::filesystem::path& ghosts_dir) { ghosts_dir_ = ghosts_dir; }
+  // The wristband points a win pays (the ticket's POINTS AVAILABLE).
+  void set_wristband_tables(const race::WristbandTables* t) { wristbands_ = t; }
   void cycle_rival_tier(int by);
   void close() { open_ = false; }
   bool is_open() const { return open_; }
@@ -80,6 +82,7 @@ class EventsPage {
 
   const race::CareerCatalog* catalog_ = nullptr;
   const race::CareerRecord* career_ = nullptr;
+  const race::WristbandTables* wristbands_ = nullptr;
   int collected_wristband_ = 0;
   int popularity_rank_ = 250;
   int64_t car_id_ = 0;

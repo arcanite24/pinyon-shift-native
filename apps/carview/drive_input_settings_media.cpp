@@ -736,6 +736,17 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 app.audio_host.trigger_ui(audio::UiCue::kVscroll);
               };
               auto accept = [&]() {
+                // The popups over the rows: A confirms QUIT, or closes the
+                // NO NETWORK ACCESS popup.
+                if (menu.screen == PScreen::kConfirm) {
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                  confirm_pause_popup();
+                  return;
+                }
+                if (menu.screen == PScreen::kOffline) {
+                  pause_back();
+                  return;
+                }
                 if (!on_rows) return;
                 app.audio_host.trigger_ui(audio::UiCue::kAccept);
                 choose();
@@ -811,7 +822,8 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                     } else if (hz.group == carview::ui4::kHitButton) {
                       // The help bar: rows A SELECT, B RESUME/BACK, X EXTRAS;
                       // the screens B BACK.
-                      if (!on_rows || hz.index == 1) pause_back();
+                      if (menu.popup_open() && hz.index == 0) accept();
+                      else if (!on_rows || hz.index == 1) pause_back();
                       else if (hz.index == 0) accept();
                       else if (hz.index == 2) extras();
                     }

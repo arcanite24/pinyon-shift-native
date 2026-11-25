@@ -84,6 +84,28 @@ int main() {
   check(with_cams == 75, "75 with cams");
   check(cams == 254, "254 cams");
 
+  // The race cutscenes (the flows' CPrepareCutscene) and a track's own set.
+  {
+    cutscene::Library race;
+    std::string rerr;
+    check(cutscene::load_gamemodes_cutscenes(root, cutscene::kRaceCutscenesMember, race, &rerr), "race cutscenes load");
+    const size_t defaults = race.cutscenes.size();
+    check(cutscene::load_gamemodes_cutscenes(root, cutscene::track_cutscenes_member("FESTIVAL_FEST_001"), race, &rerr),
+          "FESTIVAL_FEST_001's cutscenes load");
+    check(race.cutscenes.size() > defaults, "the track's set appends");
+    for (const char* n : {"prerace_intro", "prerace_looping_01", "prerace_countdown", "nemesis_show",
+                          "postrace_finishline", "postrace_transition_01", "postrace_transition_02",
+                          "postrace_rewardcar_transition_01"})
+      check(cutscene::find_race_cutscene(race, n, "") != nullptr, std::string(n) + " in the default set");
+    const auto* intro = cutscene::find_race_cutscene(race, "prerace_intro", "FESTIVAL_FEST_001");
+    check(intro && intro->name == "prerace_intro_FESTIVAL_FEST_001" && std::fabs(intro->duration - 27.0) < 1e-3,
+          "FESTIVAL_FEST_001's own prerace_intro (27 s)");
+    const auto* count = cutscene::find_race_cutscene(race, "prerace_countdown", "");
+    check(count && count->cams.size() == 2 && !count->cams[0].follow && count->cams[1].follow &&
+              std::fabs(count->cams[1].start - 3.0) < 1e-6,
+          "prerace_countdown hands over to the driving camera at 3 s");
+  }
+
   for (const auto& x : kCareer) {
     const auto* cs = lib.find(x.name);
     check(cs != nullptr, std::string(x.name) + " present");

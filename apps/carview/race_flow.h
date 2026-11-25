@@ -17,6 +17,7 @@ enum class Screen : uint8_t {
   kEventSummary,  // H_EVENT_SUMMARY: the event, its restrictions; A enters
   kCarSelect,     // 108_C_BUY_CARSELECT: an eligible car for the event
   kEntryFade,     // the 0.5 s fade out before the load (prepare_to_load_from_ticket)
+  kEncounterIntro,  // H_RACE_ENCOUNTER: a head-to-head's rival, car and reward
   // On the grid (prerace_intro / prerace_menu / prerace_nemesis).
   kTitleCard,   // PRE_AND_POST_RACE's event title over the intro
   kGridMenu,    // H_GENERIC_TITLE: START RACE / DIFFICULTY / OPTIONS / QUIT RACE
@@ -94,10 +95,17 @@ inline constexpr double kCashAuto = 170.0 / 60;  // cash auto-advances after 160
 inline constexpr double kCashLines = 30.0 / 60;  // the remaining cash lines within 30 frames
 inline constexpr double kBlackFade = 12.0 / 60;  // the darken after A on the points
 inline constexpr double kBlackHold = 30.0 / 60;  // 30 frames of black before the load
-// interim: the rival callout's length is the nemesis_show cutscene's, which
-// the engine does not play; this holds the rival card for about as long as
-// the callout capture shows it (SPEC_QUESTIONS Q95).
-inline constexpr double kRivalIntro = 3.0;
+// The rival callout runs on the nemesis_show cutscene: its
+// CCutsceneNemesisUITrigger shows the callout at 0.8 s for 10 s, then the
+// flow waits half a second (NemesisCalloutSequence's wait_half_second).
+// interim (SPEC_QUESTIONS Q95): that the sequence ends with the UI
+// trigger's duration (the cutscene itself loops), and A skips it.
+inline constexpr double kRivalUiAt = 0.8;
+inline constexpr double kRivalUiFor = 10.0;
+inline constexpr double kRivalIntro = kRivalUiAt + kRivalUiFor + 0.5;
+// race_encounters.xml: the encounter's intro screen stays while
+// RandomEncounter_Intro (3.5 s) plays, then the empty screen.
+inline constexpr double kEncounterIntro = 3.5;
 }  // namespace timing
 
 // One run of steps: the current screen, how long it has shown, and the

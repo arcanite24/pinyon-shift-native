@@ -108,6 +108,8 @@ class RaceView {
   // Where the player stands after the race (the route's
   // post_race_location_00, SPEC-EVENTS); false when the route has none.
   bool post_race_spawn(double out[4]) const;
+  // The route's named transforms (start_location_00, post_race_location_00, ...).
+  const race::Route& route() const { return route_; }
   // Loads the opponents' cars (models and physics) and stands them on their
   // slots on `ground`.
   bool load_cars(Renderer& renderer, const drive::Ground& ground, std::string& error);
@@ -373,6 +375,7 @@ class RaceView {
   double wrong_way_ = 0;  // s the player has driven against the line (ours)
   bool circuit_ = true;
   bool street_ = false;                   // a line built along the road map (no AI line)
+  bool start_gantry_ = true;              // the route has a start line (its gantry counts)
   race::HandOfGodReset hand_of_god_;      // GameTunableSettings.ini [HandOfGodReset]
   race::RaceBoostTunables boost_tunables_;  // GlobalRegistry.xml AI/Racing/RaceBehavior (WORLD-05)
   bool stage_ = false;                   // a Rally stage (Options::stage_world)

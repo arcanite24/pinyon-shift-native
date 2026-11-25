@@ -43,6 +43,7 @@ Cam parse_cam(const audio::XmlNode& c) {
   cam.start = c.number("StartCut");
   cam.duration = c.number("duration");
   cam.target_name = c.attr("TargetName");
+  cam.follow = ieq(c.attr("Type"), "Follow");
   cam.disable_csm = flag(c, "DisableCSM");
   cam.disable_cubemap = flag(c, "DisableCubemap");
   cam.disable_car_rendering = flag(c, "DisableCarRendering");
@@ -545,6 +546,8 @@ Frame Player::frame_for(const Cam& cam, const Frame& player_car, const CarParts*
     if (cs_)
       for (const auto& e : cs_->events)
         if (e.type == EventType::kCameraNode && ieq(e.name, cam.target_name)) return {e.position(), e.rotation_deg()};
+    for (const auto& [n, f] : scene_nodes_)
+      if (ieq(n, cam.target_name)) return f;
   }
   if (cam.pos_space == AnimSpace::kPartSpace && parts && !cam.keys.empty()) {
     const double u = key_parameter(cam.keys, local_t);
@@ -561,6 +564,7 @@ bool Player::world_camera(const Frame& player_car, WorldCamera& out, const CarPa
   const Sample s = current();
   if (s.cam_index < 0) return false;
   const Cam& cam = cs_->cams[size_t(s.cam_index)];
+  if (cam.follow) return false;  // the game's own camera
   out = to_world(s.pose, frame_for(cam, player_car, parts, s.local_time), cam.in_cockpit);
   return true;
 }
@@ -579,6 +583,37 @@ bool load_freeroam_cutscenes(const std::filesystem::path& game_root, Library& ou
   }
   return parse_cutscenes(std::string_view(reinterpret_cast<const char*>(bytes.data.data()), bytes.data.size()), out,
                          error);
+}
+
+std::string track_cutscenes_member(std::string_view dev_name) {
+  return "Colorado/Cutscenes/Tracks/cutscenes_" + std::string(dev_name) + ".xml";
+}
+
+bool load_gamemodes_cutscenes(const std::filesystem::path& game_root, std::string_view member, Library& out,
+                              std::string* error) {
+  std::string why;
+  auto modes = fh1::Archive::open(game_root / "media" / "gamemodes.zip", &why);
+  if (!modes) {
+    if (error) *error = "gamemodes.zip: " + why;
+    return false;
+  }
+  auto bytes = modes->read(std::string(member));
+  if (!bytes.ok()) {
+    if (error) *error = "gamemodes.zip " + std::string(member) + ": " + bytes.error;
+    return false;
+  }
+  Library more;
+  if (!parse_cutscenes(std::string_view(reinterpret_cast<const char*>(bytes.data.data()), bytes.data.size()), more,
+                       error))
+    return false;
+  for (auto& c : more.cutscenes) out.cutscenes.push_back(std::move(c));
+  return true;
+}
+
+const Cutscene* find_race_cutscene(const Library& lib, std::string_view name, std::string_view dev_name) {
+  if (!dev_name.empty())
+    if (const Cutscene* c = lib.find(std::string(name) + "_" + std::string(dev_name))) return c;
+  return lib.find(name);
 }
 
 }  // namespace cutscene

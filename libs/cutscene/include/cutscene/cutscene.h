@@ -75,6 +75,9 @@ struct Cam {
   double start = 0.0;     // StartCut, seconds into the cutscene
   double duration = 0.0;  // the cut's length
   std::string target_name;
+  // Type="Follow" (the race's prerace_countdown): the cut hands the view to
+  // the game's own driving camera; it has no keys.
+  bool follow = false;
   bool disable_csm = false, disable_cubemap = false, disable_car_rendering = false;
   bool apply_motion_blur = false;
   AnimSpace pos_space = AnimSpace::kCarSpace;
@@ -158,6 +161,18 @@ bool parse_cutscenes(std::string_view xml, Library& out, std::string* error);
 // Rally expansion ships a byte-identical copy).
 inline constexpr const char* kFreeRoamCutscenesMember = "Colorado/Cutscenes/cutscenes_default_freeroam.xml";
 bool load_freeroam_cutscenes(const std::filesystem::path& game_root, Library& out, std::string* error);
+
+// The race cutscenes (the flows' CPrepareCutscene): the default set, and a
+// track's own set under Tracks/ (cutscenes_<Tracks.DevName>.xml), whose
+// cutscenes are named <name>_<DevName>.
+inline constexpr const char* kRaceCutscenesMember = "Colorado/Cutscenes/cutscenes_default_race.xml";
+std::string track_cutscenes_member(std::string_view dev_name);
+// Appends the cutscenes of one gamemodes.zip member to `out`.
+bool load_gamemodes_cutscenes(const std::filesystem::path& game_root, std::string_view member, Library& out,
+                              std::string* error);
+// A race_specific cutscene: the track's <name>_<DevName> when it has one,
+// else the default <name>.
+const Cutscene* find_race_cutscene(const Library& lib, std::string_view name, std::string_view dev_name);
 
 // ---- Evaluation ----
 
@@ -284,9 +299,14 @@ class Player {
   // the part the cam's key at `local_t` names for a PartSpace cam.
   Frame frame_for(const Cam& cam, const Frame& player_car, const CarParts* parts = nullptr,
                   double local_t = 0.0) const;
-  // The current world camera (false when not active or the cutscene has no cams).
+  // The current world camera (false when not active, the cutscene has no
+  // cams, or the current cut is a Follow cut).
   bool world_camera(const Frame& player_car, WorldCamera& out, const CarParts* parts = nullptr) const;
   const std::vector<std::pair<std::string, Frame>>& nodes() const { return nodes_; }
+  // Named frames of the scene the cutscene plays in (the race route's
+  // start_location_00, post_race_location_00, ...): a cam's target node
+  // when the cutscene places none of that name. Kept across start().
+  void set_scene_nodes(std::vector<std::pair<std::string, Frame>> nodes) { scene_nodes_ = std::move(nodes); }
 
  private:
   void fire_range(double t0, double t1, bool inclusive_start, std::vector<const Event*>& out);
@@ -300,6 +320,7 @@ class Player {
   double exit_vo_wait_ = 0.0;
   std::vector<bool> fired_;
   std::vector<std::pair<std::string, Frame>> nodes_;
+  std::vector<std::pair<std::string, Frame>> scene_nodes_;
 };
 
 }  // namespace cutscene
