@@ -1008,6 +1008,19 @@ int main() {
       }
       hud_shot("hud_race_count_street.png", "15_countdown_orig.png", go_d);
       go.start_gantry = true;
+      // QUIT RACE's black-out covers the dial too (Q172).
+      go.phase = carview::RaceHud::kRacing, go.clock = 12.0;
+      go.screen = carview::race_flow::Screen::kBlackOut, go.screen_t = 5.0;
+      {
+        carview::ui::List l;
+        carview::build_drive_hud(l, go_d, float(W), float(H));
+        std::vector<uint8_t> fb(size_t(W) * H * 4, 255);
+        carview::ui::rasterize(l.items(), fb, W, H);
+        const size_t px = (size_t(585) * W + 1120) * 4;  // the dial's centre
+        check(fb[px] < 8 && fb[px + 1] < 8 && fb[px + 2] < 8, "the black-out covers the dial");
+      }
+      hud_shot("race_quit_black.png", "16_race_hud_orig.png", go_d);
+      go.screen = carview::race_flow::Screen::kNone, go.screen_t = 0;
       go.phase = carview::RaceHud::kRacing;
       go.clock = 20.0, go.wrong_way = true;
       hud_shot("hud_race_wrong_way.png", "16_race_hud_orig.png", go_d);

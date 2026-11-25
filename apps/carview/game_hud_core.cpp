@@ -1028,7 +1028,8 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     }
     if (st.skills && st.hud.popularity_skills &&
         !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open ||
-                      (st.race->phase == RaceHud::kGrid && st.race->screen != race_flow::Screen::kNone))))
+                      (st.race->phase == RaceHud::kGrid && st.race->screen != race_flow::Screen::kNone) ||
+                      st.race->screen == race_flow::Screen::kBlackOut || st.race->screen == race_flow::Screen::kDone)))
       if (!draw_hud_skills(l, *st.skills, g.w, g.h, g.s, st.time)) skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
       const RaceHud& r = *st.race;
@@ -1064,8 +1065,11 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     } else if (popup_card(l, st, g, bottom_lift)) {
       bottom_lift += 72.0f;
     }
+    // The black-out (a quit's or the rewards') covers the dial too.
     const bool hide_dial = st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open ||
-                                       (st.race->phase == RaceHud::kGrid && st.race->screen != race_flow::Screen::kNone));
+                                       (st.race->phase == RaceHud::kGrid && st.race->screen != race_flow::Screen::kNone) ||
+                                       st.race->screen == race_flow::Screen::kBlackOut ||
+                                       st.race->screen == race_flow::Screen::kDone);
     if (!hide_dial) {
       if (st.speedo_mode == 1) render_digital_dial(l, st, g);
       else if (st.speedo_mode == 0) dial(l, st, g);
