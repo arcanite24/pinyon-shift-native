@@ -278,6 +278,7 @@ struct DriveApp : DriveConfig {
   bool colorado_world() const;
   std::filesystem::path game_root_of() const;
   void write_career_garage();
+  void snap_to_event_tod(const std::string& id);
   bool start_race(const std::string& id, std::string& why);
   int current_pop_rank() const;
   std::vector<std::string> class_name_list() const;
