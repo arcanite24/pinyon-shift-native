@@ -51,6 +51,9 @@ struct RallyChampionshipDef {
   std::vector<RallyStageInfo> stages;  // 4 stages in StageIndex order
 };
 
+// RALLY_HEATS: the first-run stage, 15 drivers (SPEC-V4-CONTENT).
+inline constexpr size_t kHeatsDrivers = 15;
+
 struct RallyHeatsDef {
   int64_t event_id = 279;
   int route_id = 24;
@@ -236,7 +239,8 @@ class RallyChampionshipSession {
   double player_total_time() const;
 
  private:
-  void init_drivers(const RallyCatalog& catalog, const std::string& player_name);
+  // `max_ai`: the field's AI drivers kept, in field order (the heats: 14).
+  void init_drivers(const RallyCatalog& catalog, const std::string& player_name, size_t max_ai = SIZE_MAX);
 
   bool active_ = false;
   bool is_heats_ = false;

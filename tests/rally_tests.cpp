@@ -136,6 +136,7 @@ void test_championship_standings_and_rewards() {
   ai_heats[0] = 110.0;  // one AI faster -> player is 2nd
   const auto hfin = heats.record_stage_finish(cat, 115.0, ai_heats);
   CHECK(hfin.championship_complete);
+  CHECK(heats.overall_standings().size() == race::kHeatsDrivers);  // RALLY_HEATS: 15 drivers
   CHECK(hfin.stage_place == 2 && hfin.overall_place == 2);
   const auto hrew = heats.finalize(cat, save, 15, 0);
   CHECK(hrew.is_heats && hrew.rally_xp_earned == 0 && hrew.total_credits > 0);
@@ -370,21 +371,22 @@ void test_r2_5_xp_delta_podium_unlock_and_helpers() {
     return s.finalize(cat, save, 0, 0);
   };
 
-  // 1. Finishing 4th in Beaumont awards 4th-place XP (54) but does NOT unlock Montano Plains (podium required!).
+  // 1. Finishing 4th in Beaumont awards 4th-place XP (54) and unlocks Montano Plains: any finish does
+  //    (game_rally_free_roam_flow: CTriggerRallyEventUnlocks on CCompletedLastEvent; SPEC-V4-CONTENT).
   const auto r_4th = run_championship_with_place(275, 4);
   CHECK(r_4th.final_place == 4);
   CHECK(r_4th.rally_xp_earned == cat.points_for_place(4) && save.rally_xp == 54);
-  CHECK(r_4th.unlocked_events.empty());
-  CHECK(!cat.is_championship_unlocked(274, save.rally_xp, true, save.event_unlocks, save.event_results));
+  CHECK(r_4th.unlocked_events == std::vector<int64_t>{274});
+  CHECK(cat.is_championship_unlocked(274, save.rally_xp, true, save.event_unlocks, save.event_results));
   CHECK(cat.championships_won(save) == 0 && cat.podiums_count(save) == 0 && cat.stages_completed_total(save) == 4);
   CHECK(!cat.champion_unlocked(save));
 
   // 2. Replaying Beaumont and finishing 5th awards 0 XP (no farming!).
   const auto r_5th = run_championship_with_place(275, 5);
   CHECK(r_5th.final_place == 5 && r_5th.rally_xp_earned == 0 && save.rally_xp == 54);
-  CHECK(!cat.is_championship_unlocked(274, save.rally_xp, true, save.event_unlocks, save.event_results));
+  CHECK(cat.is_championship_unlocked(274, save.rally_xp, true, save.event_unlocks, save.event_results));
 
-  // 3. Replaying Beaumont and finishing 2nd (podium!) awards ONLY the delta (57 - 54 = 3 XP) and unlocks Montano Plains!
+  // 3. Replaying Beaumont and finishing 2nd awards ONLY the delta (57 - 54 = 3 XP).
   const auto r_2nd = run_championship_with_place(275, 2);
   CHECK(r_2nd.final_place == 2 && r_2nd.rally_xp_earned == 3 && save.rally_xp == 57);
   CHECK(cat.is_championship_unlocked(274, save.rally_xp, true, save.event_unlocks, save.event_results));

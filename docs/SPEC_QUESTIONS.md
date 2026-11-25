@@ -3159,3 +3159,29 @@ not; the stage intro and pep talk are not played.
 
 Needed: the finish-position screen as shown after a Rally stage, and
 the next-stage loading screen's content.
+
+## Q148 (V4-16, not blocking): Horizon Rally's progression rules
+
+Changed on the evidence of the flows and SPEC-V4-CONTENT:
+
+- A championship unlocks its `Rewards_EventUnlock` successor when it is
+  finished, at any place. `game_rally_free_roam_flow` runs
+  `CTriggerRallyEventUnlocks` on hub entry when `CCompletedLastEvent` says
+  yes; the engine required a podium.
+- `RALLY_HEATS` runs with 15 drivers (`race::kHeatsDrivers`) where the
+  engine ran the full 49-driver field. Interim: the 14 AI are the field's
+  first 14.
+
+Unchanged and still open: whether a podium check sits inside
+`CTriggerRallyEventUnlocks`; the champion rule (the engine: the final
+championship, `MS_RALLY_02`, on the podium, with its `UnlockPointsReq`
+of 310 Rally XP); Rally XP on a replay (the engine adds only the gain
+over the best earlier place, where the spec reads as the full
+`RallyScoring` points each time); the credits' difficulty and assists
+bonus; and which drivers make the heats' field. `CInitialiseEventUnlocksRally`
+takes no parameters in `game_start_rally.xml`, so the first-visit unlock
+set stays the engine's (the heats, `MS_RALLY_05` and the 28 stages,
+which the reference save confirms).
+
+Needed: `CTriggerRallyEventUnlocks`, `CIsRallyXPEvent` and the Rally
+reward path in the generated v4 code.
