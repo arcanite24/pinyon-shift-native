@@ -442,6 +442,11 @@ struct DriveSession {
   CeremonyHud ceremony;
   bool garage_open = false;
   bool garage_barn_finds = false;  // the garage shows its BARN FINDS list
+  // The screen the garage was opened from, which B returns to (the
+  // workshop's list stays open underneath on its own).
+  enum class GarageFrom { kNone, kOutpostHub, kPause } garage_from = GarageFrom::kNone;
+  PauseMenu::Screen garage_pause_screen = PauseMenu::Screen::kList;  // kPause: the rows
+  int garage_pause_selected = 0;                                       // and the row
   size_t garage_pick = 0;
   bool grid_menu_open = false;
   double pre_race_blend_t = -1.0;
@@ -639,6 +644,8 @@ struct DriveSession {
   void put_back();
   // The garage (CHANGE CAR); `barn_finds`: its BARN FINDS list.
   void open_garage_browser(bool barn_finds);
+  // B on the garage: back one screen, to where it was opened from.
+  void close_garage_browser();
   void sync_livery_preview(bool recomposite_vinyls);
   void open_paint();
   void open_shop_or_autoshow(bool is_autoshow);

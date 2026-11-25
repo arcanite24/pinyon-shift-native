@@ -921,6 +921,7 @@ bool DriveSession::handle_events_and_outpost_event(const SDL_Event& e) {
                     break;
                   case OutpostHubItem::kGarage:
                     open_garage_browser(false);
+                    garage_from = GarageFrom::kOutpostHub;  // B comes back here
                     break;
                   case OutpostHubItem::kNearbyEvents:
                     open_events_browser(0);
