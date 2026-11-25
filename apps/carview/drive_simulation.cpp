@@ -1130,6 +1130,20 @@ bool DriveSession::step(const drive::Input& user_in) {
           bonus_in.assists_pct = race::assist_difficulty_bonus_percent(app.race->assists());
           bonus_in.skills_points = app.skill_tracker ? app.skill_tracker->race_skills_banked() : 0;
           bonus_in.wristband_level = app.collected_wristband;
+          bonus_in.legacy_fm4_xp = app.legacy_fm4_progression;
+          // BEAT THE STAR: the first star driver (AIPlayers.Nemesis) in the
+          // field, at its running place when the player takes the flag.
+          {
+            const auto& opps = app.race->event().opponents;
+            const auto& ses = app.race->session();
+            const size_t field_ai = std::min(opps.size(), app.race->player_index());
+            for (size_t k = 0; k < field_ai && k < ses.size(); ++k) {
+              if (opps[k].nemesis) {
+                bonus_in.star_place = ses.car(k).place;
+                break;
+              }
+            }
+          }
           bonus_in.mileage = app.post_race_options.for_mode(
               race::post_race_mode(app.race->event().career_type, app.race->rivals_solo()));
           // RACE-05: the award is computed at the line and held; the career,

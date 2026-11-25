@@ -51,6 +51,12 @@ struct CareerEvent {
   int64_t player_car_id = 0;         // Events.PlayerCarId (loaner car for Showcases)
   int64_t prize_car_id = 0;          // Rewards_EventPrizes.RewardCarId
   int prize_car_colour = 0;          // Rewards_EventPrizes.RewardCarColorSequence
+  // Rewards_EventPrizes.RewardCarUpgradeClass (CarClasses.Id the prize car
+  // arrives tuned to; -1: none), LiveryLevel and TuningLevel.
+  int prize_car_upgrade_class = -1;
+  int prize_car_livery_level = 0;
+  int prize_car_tuning_level = 0;
+  int bonus_id = 0;                  // Events.BonusId (EventBonuses.Id; display only)
   int64_t prereq_event_id = 0;       // Rewards_EventUnlock prerequisite EventId (must win)
   shift::data::EventRestrictions restrictions;
   int required_engine_placement = 0;  // 0 = any, 1 = Front, 2 = Mid, 3 = Rear
@@ -61,6 +67,23 @@ struct CareerEvent {
   bool has_trigger = false;
   std::array<double, 3> trigger_pos{};
   double trigger_radius = 25.0;
+};
+
+// One EventBonuses row. BonusTypeId groups by three: 0-2 Affinity, 3-5
+// Driver Level, 6-8 Credits, 9 Mystery; within a group flat, percent and
+// random. The original only labels the event card with it: no payout code
+// reads the table (every career event's BonusId is 1, "Affinity +500").
+struct EventBonus {
+  enum class Kind { kAffinity, kDriverLevel, kCredits, kMystery };
+  enum class Form { kFlat, kPercent, kRandom };
+  int id = 0;
+  int type_id = 0;  // EventBonuses.BonusTypeId
+  int amount = 0;   // EventBonuses.Amount
+  Kind kind() const {
+    return type_id >= 9 ? Kind::kMystery : type_id >= 6 ? Kind::kCredits : type_id >= 3 ? Kind::kDriverLevel
+                                                                                        : Kind::kAffinity;
+  }
+  Form form() const { return type_id >= 9 ? Form::kRandom : Form(type_id % 3); }
 };
 
 struct StreetHub {
@@ -106,6 +129,7 @@ struct CareerCatalog {
   std::vector<WristbandTier> wristbands;  // sorted by ascending XP
   std::vector<CareerEvent> events;        // playable career events (ribbon >= 0)
   std::vector<StreetHub> hubs;            // Street Race Hubs (1..3)
+  std::map<int, EventBonus> event_bonuses; // EventBonuses by Id (labels only)
   std::vector<FestivalSite> sites;        // Festival locations (Race Central, Autoshow, Dak's Garage, Paint Shop)
   std::map<int64_t, CarSpec> cars;        // Data_Car by Id
   std::map<std::string, int64_t> car_id_by_media;  // lower-case MediaName -> Data_Car.Id
@@ -122,6 +146,7 @@ struct CareerCatalog {
   const CarSpec* find_car(int64_t car_id) const;
   const CarSpec* find_car_by_media(const std::string& media) const;
   const FestivalSite* find_site(FestivalSite::Kind kind) const;
+  const EventBonus* find_event_bonus(int bonus_id) const;
 
   // Highest wristband index (0..size-1) whose XP threshold <= wristband_points; -1 if none.
   int earned_wristband(int wristband_points) const;

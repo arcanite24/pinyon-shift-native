@@ -131,36 +131,45 @@ struct RaceAward {
   int64_t prize_car = 0;  // 0: none
 };
 
-// Per-assist settings for the difficulty credit bonus (SPEC-REWIND section 7,
-// SPEC-EVENT-REWARDS Credits / Unknowns).
-// Rewind OFF awards +20% (0.20) except in excluded session mode 3; Rewind ON
-// awards +0% with no extra per-use penalty. Remaining assists are interim 0%
-// until their exact percentages are confirmed.
+// Per-assist settings for the DIFFICULTY & ASSISTS BONUS. The percentages
+// are decoded from the original's post-race bonus code (the per-assist terms
+// it sums), not from data:
+//   driving line  Full 0, Braking only +10, Off +20
+//   braking       Assisted 0, ABS on +10, ABS off +20
+//   steering      Assisted 0, Normal +10, Simulation +20
+//   traction ctl  On 0, Off +15
+//   shifting      Automatic 0, Manual +15, Manual with clutch +20
+//   rewind        On 0, Off +20
+//   opponents     Easy 0, Medium +5, Hard +15, Pro +25
+// Stability control and damage are not counted (only the Difficulty menu's
+// own preview rows mention STM). Rewind and opponent difficulty are skipped
+// in session mode 3.
 struct DifficultyAssists {
   static constexpr int kExcludedSessionMode = 3;
   bool rewind_on = true;  // Main/Rewind: 0 = ON (default), 1 = OFF
-  int session_mode = 0;   // mode 3 skips the Rewind difficulty bonus
-  int braking = 1;        // 0 = Assisted, 1 = ABS On, 2 = ABS Off (+10%)
-  int steering = 1;       // 0 = Assisted, 1 = Normal, 2 = Simulation (+5%)
-  bool tcs_on = true;     // TractionControl (On = -5% penalty vs off, clamped >= 0); new profile On
-  bool stm_on = false;    // StabilityControl (Off = +5%); new profile Off
-  int shifting = 0;       // 0 = Automatic, 1 = Manual (+10%), 2 = Manual + Clutch (+15%)
-  int driving_line = 2;   // 0 = Off (+10%), 1 = Braking Only (+5%), 2 = Full
-  int damage_mode = 1;    // 0 = None, 1 = Cosmetic, 2 = Simulation (+10%)
+  int session_mode = 0;   // mode 3 skips the Rewind and opponent terms
+  int braking = 1;        // 0 = Assisted, 1 = ABS On (+10%), 2 = ABS Off (+20%)
+  int steering = 1;       // 0 = Assisted, 1 = Normal (+10%), 2 = Simulation (+20%)
+  bool tcs_on = true;     // TractionControl: Off = +15%; new profile On
+  bool stm_on = false;    // StabilityControl: not counted
+  int shifting = 0;       // 0 = Automatic, 1 = Manual (+15%), 2 = Manual + Clutch (+20%)
+  int driving_line = 2;   // 0 = Off (+20%), 1 = Braking Only (+10%), 2 = Full
+  int damage_mode = 1;    // 0 = None, 1 = Cosmetic, 2 = Simulation: not counted
 };
 
 // Rewind difficulty bonus as an exact fraction: 0.20 when Rewind is OFF and
 // session_mode != 3, 0.0 otherwise (SPEC-REWIND section 7).
 double rewind_difficulty_bonus(bool rewind_on, int session_mode = 0);
-// Sum of per-assist difficulty bonus fractions across all assists.
+// Sum of the per-assist bonus fractions (rewind included, opponents not).
 double assist_difficulty_bonus(const DifficultyAssists& assists);
-// Sum of per-assist difficulty bonuses in integer percent (e.g. 20 for +20%).
+// The same in integer percent (e.g. 20 for +20%).
 int assist_difficulty_bonus_percent(const DifficultyAssists& assists);
 
-// Difficulty bonus percentage (ours: 0 Easy, 15 Med, 30 Hard, 45 Pro) and
-// mileage bonus from race distance driven (m).
+// The opponent difficulty term (Easy 0, Medium 5, Hard 15, Pro 25; the
+// engine's extra Hard+ tier pays as Pro).
 int difficulty_bonus_percent(int difficulty_index);
-// Combined AI difficulty + per-assist difficulty bonus percentage.
+// Combined opponent + per-assist percentage (at most 140), with the session
+// mode 3 exclusion of the opponent term.
 int total_difficulty_bonus_percent(int difficulty_index, const DifficultyAssists& assists);
 
 // The mileage bonus rule of one race mode, from the game's
@@ -207,7 +216,9 @@ bool load_post_race_options(const std::filesystem::path& game_root, PostRaceOpti
 // Optional extra race-breakdown inputs (defaults preserve backward compatibility).
 struct RaceBonusInputs {
   int assists_pct = 0;          // per-assist difficulty bonus % (e.g. +20% rewind off)
-  int64_t skills_points = 0;    // skill points banked during this race
+  int64_t skills_points = 0;    // skill points banked this race (XP-screen only: pays no credits)
+  int star_place = 0;           // the star driver's finishing place (0: no star in the race)
+  bool legacy_fm4_xp = false;   // the FM4-style driver/affinity XP extra (off: no XP rows)
   int64_t bounty_bonus = 0;     // rival / bounty bonus credits
   int wristband_level = -1;     // current wristband level (-1: infer from record.wristband_points)
   double reward_multiplier = 1.0;  // Festival Pacing multiplier (0.5x..5.0x)

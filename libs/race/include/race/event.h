@@ -81,6 +81,9 @@ struct Opponent {
   int64_t color_sequence = 0;
   int tuning_level = 0;  // EventParticipants.TuningLevel (0=stock, 1=street, 2=sport, 3=race)
   int livery_level = 0;  // EventParticipants.LiveryLevel
+  // AIPlayers.Nemesis: the event's star driver (BEAT THE STAR is paid for
+  // finishing ahead of the first one in the field).
+  bool nemesis = false;
 };
 
 struct AiPlayerColor {

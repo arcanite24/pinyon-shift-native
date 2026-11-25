@@ -101,6 +101,11 @@ const CareerEvent* CareerCatalog::find_event_by_id(int64_t event_id) const {
   return nullptr;
 }
 
+const EventBonus* CareerCatalog::find_event_bonus(int bonus_id) const {
+  auto it = event_bonuses.find(bonus_id);
+  return it == event_bonuses.end() ? nullptr : &it->second;
+}
+
 const StreetHub* CareerCatalog::find_hub(int hub_id) const {
   for (const auto& h : hubs)
     if (h.id == hub_id) return &h;
@@ -525,6 +530,42 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
                },
                error))
     return false;
+
+  // 5a. The prize cars' upgrade class, livery and tuning levels, the event
+  // bonus labels and each event's BonusId (optional columns: a minimal
+  // database leaves the defaults).
+  {
+    std::map<int64_t, std::array<int, 3>> prize_upgrades;
+    db.each("select EventId, coalesce(RewardCarUpgradeClass, -1), coalesce(LiveryLevel, 0), "
+            "coalesce(TuningLevel, 0) from Rewards_EventPrizes order by Id",
+            {},
+            [&](sqlite3_stmt* s) {
+              const int64_t eid = col_i64(s, 0);
+              if (!prize_upgrades.count(eid))
+                prize_upgrades[eid] = {int(col_i64(s, 1)), int(col_i64(s, 2)), int(col_i64(s, 3))};
+            },
+            nullptr);
+    std::map<int64_t, int> bonus_ids;
+    db.each("select Id, coalesce(BonusId, 0) from Events", {},
+            [&](sqlite3_stmt* s) { bonus_ids[col_i64(s, 0)] = int(col_i64(s, 1)); }, nullptr);
+    for (auto& ev : out.events) {
+      if (auto it = prize_upgrades.find(ev.event_id); it != prize_upgrades.end() && ev.prize_car_id) {
+        ev.prize_car_upgrade_class = it->second[0];
+        ev.prize_car_livery_level = it->second[1];
+        ev.prize_car_tuning_level = it->second[2];
+      }
+      if (auto it = bonus_ids.find(ev.event_id); it != bonus_ids.end()) ev.bonus_id = it->second;
+    }
+    db.each("select Id, coalesce(BonusTypeId, 0), coalesce(Amount, 0) from EventBonuses order by Id", {},
+            [&](sqlite3_stmt* s) {
+              EventBonus b;
+              b.id = int(col_i64(s, 0));
+              b.type_id = int(col_i64(s, 1));
+              b.amount = int(col_i64(s, 2));
+              out.event_bonuses[b.id] = b;
+            },
+            nullptr);
+  }
 
   // 5b. Optional restriction display-name lookup tables (non-fatal when absent in minimal synthetic DBs).
   out.region_names = {{1, "Asia"}, {2, "Europe"}, {3, "North America"}};

@@ -65,9 +65,9 @@ void test_save_roundtrip() {
 
 void test_rewards_difficulty_mileage() {
   CHECK(race::difficulty_bonus_percent(0) == 0);
-  CHECK(race::difficulty_bonus_percent(1) == 15);
-  CHECK(race::difficulty_bonus_percent(2) == 30);
-  CHECK(race::difficulty_bonus_percent(3) == 45);
+  CHECK(race::difficulty_bonus_percent(1) == 5);
+  CHECK(race::difficulty_bonus_percent(2) == 15);
+  CHECK(race::difficulty_bonus_percent(3) == 25);
   // PostRaceOptions MileageCredits (offline career modes): 5,000 Cr over 50 km, steps of 100.
   race::MileageCredits offline;
   offline.total_distance_m = 50000.0;

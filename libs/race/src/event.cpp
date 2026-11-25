@@ -341,6 +341,15 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  {ev}, [&](sqlite3_stmt* s) { load_participant(s, false); }, error))
       return false;
   }
+  // The star drivers (AIPlayers.Nemesis); an older database without the
+  // column leaves every opponent unflagged.
+  db.each("select Id from AIPlayers where coalesce(Nemesis, 0) <> 0", {},
+          [&](sqlite3_stmt* s) {
+            const int64_t id = i64(s, 0);
+            for (auto& o : out.opponents)
+              if (o.ai_player_id == id) o.nemesis = true;
+          },
+          nullptr);
   if (!db.each("select id, SoloLapping_BrakingMinimum, SoloLapping_BrakingMaximum, SoloLapping_CorneringMinimum, "
                "SoloLapping_CorneringMaximum, SoloLapping_DistBehindForMaxPerformance, SoloLapping_NominalTorqueScale, "
                "SoloLapping_FarBehindTorqueBoost, Rubberbands_id from AISkills order by id",
