@@ -545,7 +545,7 @@ endif()
 # checks, and the disc's tables with --corpus (exit 77 without
 # SHIFT_GAME_ROOT, a failure when it is set and the data does not load).
 add_executable(progression_tests progression_tests.cpp)
-target_link_libraries(progression_tests PRIVATE shift_race shift_freeroam)
+target_link_libraries(progression_tests PRIVATE shift_race shift_freeroam shift_garage shift_cars)
 add_test(NAME progression_tests COMMAND progression_tests)
 add_test(NAME progression_corpus COMMAND progression_tests --corpus)
 set_tests_properties(progression_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)

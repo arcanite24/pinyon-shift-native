@@ -146,29 +146,6 @@ audio::SmashMaterial classify_smash_material(const std::string& stem_l, const st
   return audio::SmashMaterial::kDefault;
 }
 
-int parse_barn_numeric_id(const std::string& barn_name) {
-  int val = 0;
-  bool any = false;
-  for (char c : barn_name) {
-    if (c >= '0' && c <= '9') {
-      val = val * 10 + (c - '0');
-      any = true;
-    }
-  }
-  return any ? val : 0;
-}
-
-void sync_saved_pending_barns(DriveApp& app) {
-  app.saved.pending_barn_restorations.clear();
-  for (const auto& br : app.pending_barn_restorations) {
-    drive::PendingBarnRestoration p{};
-    p.barn_id = parse_barn_numeric_id(br.barn_id);
-    p.car_id = int(br.car_id);
-    p.remaining_sec = float(std::max(0.0, br.ready_after_s - br.elapsed_s));
-    app.saved.pending_barn_restorations.push_back(p);
-  }
-}
-
 struct RolloverRecoveryState {
   const DriveSession* owner = nullptr;
   double last_sim_time = -1.0;
@@ -594,8 +571,20 @@ bool DriveSession::free_roam_step() {
         const double fwd_spd = vehicle.speed();
         cs.speed = (std::fabs(fwd_spd) >= planar_spd) ? fwd_spd : (fwd_spd < 0.0 ? -planar_spd : planar_spd);
         cs.moved = std::max(std::fabs(fwd_spd), planar_spd) * drive::Vehicle::kStep;
+        cs.dt = drive::Vehicle::kStep;
+        // The barn controller's predicates: free roam, and no PR stunt or
+        // speed zone running (activity_dependencies.xml blocks barn finds
+        // during them). Dialogue is not tracked (interim, SPEC Q116).
+        {
+          const auto& bt = app.barn_tuning;  // GlobalRegistry Activities/BarnFinds
+          host.free_roam->set_barn_tuning(bt.time_between_ticks_s, bt.max_idle_time_s, bt.min_distance_before_next_m,
+                                          bt.min_speed_before_spawn_ms, bt.min_time_before_spawn_s);
+        }
+        freeroam::BarnContext barn_ctx;
+        barn_ctx.free_roam = app.race == nullptr;
+        barn_ctx.blocked = app.pr_stunt_session.active() || (app.speed_tracker && app.speed_tracker->zone_active());
         bool sign_smashed_now = false;
-        for (const auto& ev : host.free_roam->step(cs)) {
+        for (const auto& ev : host.free_roam->step(cs, barn_ctx)) {
           char line[160];
           if (ev.kind == freeroam::Event::kSignSmashed) {
             sign_smashed_now = true;
@@ -642,6 +631,21 @@ bool DriveSession::free_roam_step() {
             }
             std::printf("t %.2f s: %s rumour at %.1f km driven\n", vehicle.time(),
                         app.collectibles.barns[size_t(ev.index)].name.c_str(), app.progress.total_distance / 1000);
+          } else if (ev.kind == freeroam::Event::kBarnReady) {
+            // Restored: BARN FIND READY - {car}, Dak's call, then the garage collects it.
+            const auto& b = app.collectibles.barns[size_t(ev.index)];
+            std::string named = barn_car_label(b);
+            if (!b.car_name_key.empty()) {
+              const uint32_t ref = uint32_t(fh1::string_hash("Barnfind")) << 16 | fh1::string_hash(b.car_name_key);
+              const std::string t = carview::game_text("_&" + std::to_string(ref));
+              if (!t.empty() && t[0] != '_') named = t;
+            }
+            popup = Popup::notify(NotifyKind::kBarnReady, vehicle.time(), {named});
+            app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
+            apply_campaign_action(app.campaign.on_barn_restored(b.name, named, &app.audio_host));
+            std::printf("t %.2f s: %s restored after %.1f km: %s ready at the garage\n", vehicle.time(),
+                        b.name.c_str(), (app.progress.total_distance - app.progress.barns[size_t(ev.index)].found_at) / 1000,
+                        named.c_str());
           } else {
             const auto& b = app.collectibles.barns[size_t(ev.index)];
             for (const auto& rq : b.radio_requests) app.audio_host.radio_cancel_scheduled(rq.event);
@@ -656,36 +660,16 @@ bool DriveSession::free_roam_step() {
               const std::string t = carview::game_text("_&" + std::to_string(ref));
               if (!t.empty() && t[0] != '_') named = t;
             }
-            // R3-CAM-09: Real FH1 Barn Find flow — discovery NEVER adds the barn car to the garage
-            // immediately. Send it to Dak's Garage pending restoration queue (ready_to_claim = false)
-            // until Dak finishes restoring it and the player claims it in Dak's Garage.
-            std::snprintf(line, sizeof line, "barn find! dak is restoring %s at the garage", named.c_str());
+            // The title's flow: discovery starts the restoration (status 1);
+            // the car is ready after a driven distance and is collected at
+            // the garage.
+            std::snprintf(line, sizeof line, "barn find! dak is restoring %s", named.c_str());
             popup = Popup::notify(NotifyKind::kBarnRestoring, vehicle.time(), {named});
-            notice = "BARN FIND DISCOVERED — DAK IS RESTORING IT AT THE GARAGE";
-            notice_until = vehicle.time() + 5.0;
             app.campaign.on_barn_find(true, b.name, named, &app.audio_host);
             app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
-            bool already_queued = false;
-            for (const auto& existing : app.pending_barn_restorations) {
-              if (existing.barn_id == b.name || (b.car_id > 0 && existing.car_id == b.car_id)) {
-                already_queued = true;
-                break;
-              }
-            }
-            if (!already_queued) {
-              DriveApp::PendingBarnRestore pbr;
-              pbr.barn_id = b.name;
-              pbr.car_name = named;
-              pbr.car_id = b.car_id;
-              pbr.ready_after_s = 45.0;
-              pbr.elapsed_s = 0.0;
-              pbr.ready_to_claim = false;
-              pbr.notified_ready = false;
-              app.pending_barn_restorations.push_back(std::move(pbr));
-            }
-            sync_saved_pending_barns(app);
-            std::printf("t %.2f s: %s found: %s (Data_Car %d) sent to Dak for restoration\n", vehicle.time(), b.name.c_str(),
-                        named.c_str(), b.car_id);
+            std::printf("t %.2f s: %s found: %s (Data_Car %d), restored after %.1f km\n", vehicle.time(), b.name.c_str(),
+                        named.c_str(), b.car_id,
+                        freeroam::barn_restore_distance(b, app.progress.barns[size_t(ev.index)].found_at) / 1000);
           }
           save_due = true;
         }

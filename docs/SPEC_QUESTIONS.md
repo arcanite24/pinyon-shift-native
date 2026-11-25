@@ -2286,3 +2286,28 @@ What remains open:
 
 Needed: the virtual query's function, and what the two early exits stand
 for.
+
+## Q116 (PROG-12, not blocking): barn-find gates the engine does not model
+
+The barn controller is decoded: spawn ticks, the weighted pick and its 1-in-N
+roll, pending to rumour, discovery, restoration over the `DistanceDriven`
+distance, ready, and collection at the garage. The tuning comes from
+GlobalRegistry `Activities/BarnFinds`. Five points are still open:
+
+- **Two predicates that skip the update.** One skips the controller's whole
+  update, including its tick timer. The other is a global flag checked
+  beside it. Either could be a story gate, such as the opening. The engine
+  has neither; it only pauses during onboarding.
+- **The idle timer.** A tick is skipped when a player timer reaches
+  `MaxIdleTime` (600 s). The timer is probably idle time. The engine counts
+  the time spent below 0.5 m/s.
+- **The ready check's player value.** Ready needs a player value of at least
+  11.176, probably speed (25 mph). The engine reads it as speed.
+- **Dialogue.** The pending timer pauses while dialogue plays. The engine does
+  not track dialogue, so its timer never pauses for it.
+- **Collection.** The title collects a ready car on its garage Barn Finds
+  screen, with a COLLECT CAR confirmation. The engine collects it when the
+  garage opens, and the garage insert itself was not traced.
+
+Needed: what the two predicates test, the timer behind the idle check, and
+the value behind the ready check.

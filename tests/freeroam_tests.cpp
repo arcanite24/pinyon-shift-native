@@ -37,13 +37,17 @@ const char* kBarns = R"(<ActivityManager>
   <Activity type="ActivityBarnFind" name="barnfind_01">
     <HintRegion x_offset="-20" y_offset="30" angle="0" x_radius="400" y_radius="400" />
     <DoorInfo open_id="BF_A_OPEN" closed_id="BF_A_CLOSED" open_coll_id="BF_A_OPENC" closed_coll_id="BF_A_CLOSEDC" />
+    <SpawnInfo weighting="100" min_probability="1" min_distance="0" max_probability="1" max_distance="100" />
     <TriggerZone object="BARNFIND_A" name="BARNFIND_A" radius="10" maxMPH="50" />
+    <DistanceDriven distanceMin="5" distanceMax="10" threshold="10"/>
     <UnlockCar id="9001" stringTableNameId="IDS_Barnfind_Car_A"/>
   </Activity>
   <Activity type="ActivityBarnFind" name="barnfind_02">
     <HintRegion x_offset="0" y_offset="0" angle="0" x_radius="300" y_radius="300" />
     <DoorInfo open_id="BF_B_OPEN" closed_id="BF_B_CLOSED" open_coll_id="BF_B_OPENC" closed_coll_id="BF_B_CLOSEDC" />
+    <SpawnInfo weighting="100" min_probability="10" min_distance="0" max_probability="1" max_distance="200" />
     <TriggerZone object="BARNFIND_B" name="BARNFIND_B" radius="10" maxMPH="50" />
+    <DistanceDriven distanceMin="5" distanceMax="10" threshold="10"/>
     <UnlockCar id="9002" stringTableNameId="IDS_Barnfind_Car_B"/>
   </Activity>
 </ActivityManager>)";
@@ -110,31 +114,107 @@ int main() {
   car.z = 200;
   CHECK(fr.step(car).empty());
 
-  // No rumour before 50 km; then barn 01, then barn 02 50 km later.
-  car.x = 5000, car.z = 5000, car.moved = 49999;
-  CHECK(fr.step(car).empty());
-  car.moved = 1;
-  ev = fr.step(car);
-  CHECK(ev.size() == 1 && ev[0].kind == Event::kRumourStarted && ev[0].index == 0);
-  CHECK(progress.barns[0].status == kBarnRumour && near(progress.barns[0].rumour_at, 50000));
-  car.moved = 0;
-  // Discovery: within 10 m and below 50 mph (22.35 m/s).
-  car.x = 1005, car.z = 1000, car.speed = 25;
-  CHECK(fr.step(car).empty());
-  car.speed = 20;
-  ev = fr.step(car);
-  CHECK(ev.size() == 1 && ev[0].kind == Event::kBarnFound && ev[0].index == 0);
-  CHECK(progress.barns[0].status == kBarnFound && progress.garage.size() == 1 && progress.garage[0] == 9001);
-  CHECK(fr.hidden()->count("bf_a_closed") && fr.hidden()->count("barnfind_a") && !fr.hidden()->count("bf_a_open"));
-  // Barn 02 is not spawned: driving to it finds nothing.
-  car.x = -1000, car.z = -1000, car.speed = 5;
-  CHECK(fr.step(car).empty() && progress.barns[1].status == kBarnNotSpawned);
-  car.moved = 50000;
-  ev = fr.step(car);  // the rumour starts this step; discovery tests next step
-  CHECK(ev.size() == 1 && ev[0].kind == Event::kRumourStarted && ev[0].index == 1);
-  car.moved = 0;
-  ev = fr.step(car);
-  CHECK(ev.size() == 1 && ev[0].kind == Event::kBarnFound && ev[0].index == 1 && fr.barns_found() == 2);
+  // The barn controller (the title's rules, disc tuning).
+  if (data.barns.size() == 2) {
+    const Barn& a = data.barns[0];
+    CHECK(a.spawn_weighting == 100 && near(a.spawn_max_distance_m, 160934.4, 0.01));
+    CHECK(near(a.restore_min_m, 8046.72, 0.01) && near(a.restore_max_m, 16093.44, 0.01) &&
+          near(a.restore_threshold_m, 16093.44, 0.01));
+    // R = max + (min - max) * clamp(found / threshold): 10 mi found at 0, 5 mi from 10 mi on.
+    CHECK(near(barn_restore_distance(a, 0), 16093.44, 0.01));
+    CHECK(near(barn_restore_distance(a, 8046.72), 12070.08, 0.01));
+    CHECK(near(barn_restore_distance(a, 50000), 8046.72, 0.01));
+  }
+  {
+    // A scripted random source: the weighted pick, then the roll.
+    std::vector<double> draws;
+    size_t next = 0;
+    fr.set_random([&] { return next < draws.size() ? draws[next++] : 0.0; });
+    car.x = 5000, car.z = 5000, car.speed = 15, car.moved = 0;
+    car.dt = 299;
+    CHECK(fr.step(car).empty());  // no tick before 300 s
+    // Tick: pick 0.1 * 200 -> barn 01 (1-in-1: certain) -> pending, no rumour yet.
+    draws = {0.1, 0.9};
+    car.dt = 1;
+    CHECK(fr.step(car).empty());
+    CHECK(progress.barns[0].status == kBarnPending && progress.barns[1].status == kBarnNotSpawned);
+    // The rumour after 15 s above 20 mph (8.94 m/s); none on a slower car.
+    // (The spawn step already ran the timer for its 1 s.)
+    car.speed = 8, car.dt = 20;
+    CHECK(fr.step(car).empty() && progress.barns[0].status == kBarnPending);
+    car.speed = 15, car.dt = 13;
+    CHECK(fr.step(car).empty());
+    car.dt = 1;
+    ev = fr.step(car);
+    CHECK(ev.size() == 1 && ev[0].kind == Event::kRumourStarted && ev[0].index == 0);
+    CHECK(progress.barns[0].status == kBarnRumour);
+    // Blocked (a PR stunt running): no discovery inside the zone.
+    car.dt = 0;
+    car.x = 1005, car.z = 1000, car.speed = 20;
+    CHECK(fr.step(car, BarnContext{true, true, false}).empty());
+    // Discovery: within 10 m and below 50 mph (22.35 m/s) -> restoring, not in the garage.
+    car.speed = 25;
+    CHECK(fr.step(car).empty());
+    car.speed = 20;
+    const double found_odo = progress.total_distance;
+    ev = fr.step(car);
+    CHECK(ev.size() == 1 && ev[0].kind == Event::kBarnFound && ev[0].index == 0);
+    CHECK(progress.barns[0].status == kBarnRestoring && progress.garage.empty());
+    CHECK(near(progress.barns[0].found_at, std::trunc(found_odo)));
+    CHECK(fr.barns_found() == 1);
+    CHECK(fr.hidden()->count("bf_a_closed") && fr.hidden()->count("barnfind_a") && !fr.hidden()->count("bf_a_open"));
+    CHECK(!fr.collect_barn(0));  // NOT READY
+    // Ready after the restoration distance (10 mi: found below 1 km), above 25 mph.
+    const double r = barn_restore_distance(data.barns[0], progress.barns[0].found_at);
+    car.x = 5000, car.z = 5000, car.speed = 15;
+    car.moved = r - 10;
+    CHECK(fr.step(car).empty());
+    car.moved = 20, car.speed = 10;  // far enough, but below 25 mph
+    CHECK(fr.step(car).empty() && progress.barns[0].status == kBarnRestoring);
+    car.moved = 0, car.speed = 12;
+    ev = fr.step(car);
+    CHECK(ev.size() == 1 && ev[0].kind == Event::kBarnReady && ev[0].index == 0);
+    CHECK(progress.barns[0].status == kBarnReady && progress.garage.empty());
+    // COLLECT CAR at the garage: status 2 and the car in the garage, once.
+    CHECK(fr.collect_barn(0) && progress.barns[0].status == kBarnCollected);
+    CHECK(progress.garage.size() == 1 && progress.garage[0] == 9001);
+    CHECK(!fr.collect_barn(0) && fr.barns_found() == 1);
+
+    // Barn 02: 1-in-10 at 0 mi; round(u * 9) == 0 is the hit.
+    car.speed = 15, car.dt = 300, car.moved = 0;
+    draws = {0.5, 0.2};  // the pick, then round(1.8) = 2: miss
+    next = 0;
+    CHECK(fr.step(car).empty() && progress.barns[1].status == kBarnNotSpawned);
+    draws = {0.5, 0.05};  // round(0.45) = 0: hit
+    next = 0;
+    CHECK(fr.step(car).empty() && progress.barns[1].status == kBarnPending);
+    // Its rumour waits for 30 mi past barn 01's rumour start.
+    car.dt = 20;
+    CHECK(fr.step(car).empty() && progress.barns[1].status == kBarnPending);
+    car.dt = 0, car.moved = 48280.32;
+    CHECK(fr.step(car).empty());
+    car.dt = 15, car.moved = 0;
+    ev = fr.step(car);
+    CHECK(ev.size() == 1 && ev[0].kind == Event::kRumourStarted && ev[0].index == 1);
+    // Out of free roam the pending timer resets; idle skips the tick.
+    Progress p2;
+    FreeRoam fr2(data, p2);
+    fr2.set_random([] { return 0.0; });
+    CarState idle;
+    idle.x = 5000, idle.z = 5000, idle.dt = 700;
+    CHECK(fr2.step(idle).empty() && p2.barns[0].status == kBarnNotSpawned);  // stationary 700 s: skipped
+    idle.speed = 15, idle.dt = 299;
+    CHECK(fr2.step(idle).empty() && p2.barns[0].status == kBarnNotSpawned);
+    idle.dt = 1;
+    CHECK(fr2.step(idle).empty() && p2.barns[0].status == kBarnPending);
+    idle.dt = 10;
+    CHECK(fr2.step(idle).empty());
+    CHECK(fr2.step(idle, BarnContext{false, false, false}).empty());  // a race: the timer resets
+    idle.dt = 10;
+    CHECK(fr2.step(idle).empty() && p2.barns[0].status == kBarnPending);
+    idle.dt = 5;
+    CHECK(fr2.step(idle).size() == 1 && p2.barns[0].status == kBarnRumour);
+  }
 
   // A sign that is not placed is an error.
   Collectibles bad;
@@ -620,6 +700,16 @@ int main() {
       }
       CHECK(doors.size() == 36);
       CHECK(disc.barns[0].trigger == "barnfind_bug_eb110bf_92" && near(disc.barns[0].at.x, 1423.378, 0.01));
+      // SpawnInfo (1-in-N odds over miles of odometer) and DistanceDriven 5/10/10 mi.
+      const double min_p[9] = {10, 5, 5, 25, 200, 250, 100, 10, 150};
+      const double max_mi[9] = {200, 100, 100, 250, 1500, 2250, 500, 200, 1000};
+      for (int i = 0; i < 9; ++i) {
+        const Barn& b = disc.barns[size_t(i)];
+        CHECK(b.spawn_weighting == 100 && near(b.spawn_min_probability, min_p[i]) && near(b.spawn_max_probability, 1));
+        CHECK(near(b.spawn_min_distance_m, 0) && near(b.spawn_max_distance_m, max_mi[i] * 1609.344, 0.01));
+        CHECK(near(b.restore_min_m, 8046.72, 0.01) && near(b.restore_max_m, 16093.44, 0.01) &&
+              near(b.restore_threshold_m, 16093.44, 0.01));
+      }
     }
   } else {
     std::printf("SHIFT_GAME_ROOT not set: the disc checks skipped\n");
@@ -939,28 +1029,6 @@ int main() {
     CHECK(zev.size() == 1 && zev[0].kind == SpeedActivityEvent::kZoneCompleted);
     // True corridor average is 200 m / 4.0 s = 50 m/s = 111.85 mph (not ~350+ mph from zig-zagging!).
     CHECK(zev[0].speed_mph > 105.0 && zev[0].speed_mph < 120.0);
-
-    // 4. R3-CAM-09: Barn Find progression-aware rumour gating.
-    Collectibles bdata;
-    CHECK(parse_collectibles(kFlyers, kBarns, kObjs, bdata, &serr));
-    Progress bprog;
-    FreeRoam bfr(bdata, bprog);
-    CarState bcar;
-    bcar.x = 5000;
-    bcar.z = 5000;
-    bcar.moved = 9000.0;  // 9 km (> 8 km gate for Barn 1), but 0 events completed -> still locked!
-    CHECK(bfr.step(bcar, {0, 0, true}).empty());
-    CHECK(bprog.barns[0].status == kBarnNotSpawned);
-    bcar.moved = 0.0;
-    // Complete 1 event at Yellow wristband -> Barn 1 rumour unlocks cleanly!
-    auto brev = bfr.step(bcar, {0, 1, true});
-    CHECK(brev.size() == 1 && brev[0].kind == Event::kRumourStarted && brev[0].index == 0);
-    // Barn 2 requires Green wristband (1), 3+ events, and +12 km distance:
-    bcar.moved = 13000.0;
-    CHECK(bfr.step(bcar, {0, 5, true}).empty());  // still Yellow wristband -> blocked
-    bcar.moved = 6000.0;  // extra distance while active_rumours > 0 -> 19 km >= 12 * 1.5 = 18 km
-    auto brev2 = bfr.step(bcar, {1, 3, true});
-    CHECK(brev2.size() == 1 && brev2[0].kind == Event::kRumourStarted && brev2[0].index == 1);
 
     // 5. R3-CAM-21: h2h_wager_credits 1:1 alignment & difficulty scaling.
     CHECK(h2h_wager_credits(500, 650) == h2h_reward_credits(500, 650));

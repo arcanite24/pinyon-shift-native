@@ -613,7 +613,7 @@ std::vector<Mark> marks(const MapScene& s, bool apply_filter) {
       for (size_t i = 0; i < s.data->barns.size(); ++i) {
         const auto& b = s.data->barns[i];
         const int status = i < s.progress->barns.size() ? s.progress->barns[i].status : freeroam::kBarnNotSpawned;
-        if (status == freeroam::kBarnFound) out.push_back({"barnfind_collected", b.at.x, b.at.z, false, true, true, -1});
+        if (freeroam::barn_discovered(status)) out.push_back({"barnfind_collected", b.at.x, b.at.z, false, true, true, -1});
         else if (s.reveal) out.push_back({"barnfind", b.at.x, b.at.z, false, false, true, -1});
       }
     }

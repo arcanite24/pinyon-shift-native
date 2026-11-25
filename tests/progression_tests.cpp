@@ -10,7 +10,12 @@
 #include <map>
 #include <string>
 
+#include "cars/physics.h"
+#include "cars/sources.h"
+#include "freeroam/collectibles.h"
 #include "freeroam/tunables.h"
+#include "garage/garage.h"
+#include "garage/pi_calc.h"
 #include "race/career.h"
 #include "race/event.h"
 
@@ -157,6 +162,95 @@ int corpus() {
   CHECK(std::abs(bt.min_speed_before_spawn_ms - 8.9408) < 1e-4);
   std::printf("registry: %zu values; fast travel %lld CR, discounts %.2f/%.2f/%.2f/%.2f\n", reg.values.size(),
               (long long)ft.total_cost, ft.discount[0], ft.discount[1], ft.discount[2], ft.discount[3]);
+
+  // Every prize car fits its RewardCarUpgradeClass through the garage's
+  // auto upgrade (what the award does), from its stock class.
+  {
+    cars::Install install;
+    std::string gerr;
+    cars::PartsDb db;
+    cars::PhysicsSettings phys;
+    garage::PiConfig pi_cfg;
+    std::vector<garage::ClassBand> bands;
+    const bool ok = cars::discover_install(game, "", "", install, &gerr) && db.open(install, &gerr) &&
+                    cars::load_physics_settings(install.media / "physics.zip", phys, &gerr) &&
+                    garage::load_pi_config(install.media / "physics.zip", pi_cfg, &gerr) &&
+                    garage::load_class_bands(game, bands, &gerr);
+    CHECK(ok);
+    if (!ok) std::printf("garage data: %s\n", gerr.c_str());
+    int upgraded = 0;
+    for (const auto& ev : cat.events) {
+      if (!ok || !ev.prize_car_id || ev.prize_car_upgrade_class < 0) continue;
+      garage::Garage g;
+      std::map<std::string, int64_t> stock;
+      db.stock_slots(ev.prize_car_id, stock, &gerr);
+      garage::PiResult pi0;
+      CHECK(garage::compute_pi_for_car(db, ev.prize_car_id, {}, phys, pi_cfg, bands, pi0, &gerr));
+      int64_t gid = 0;
+      CHECK(garage::award_prize_car(g, ev.prize_car_id, pi0.raw_pi, pi0.class_id, 0, stock, &gid));
+      if (pi0.class_id >= ev.prize_car_upgrade_class) {
+        ++upgraded;  // already there from stock
+        continue;
+      }
+      const auto plan =
+          garage::plan_auto_upgrade(g, db, gid, ev.prize_car_upgrade_class, 0, phys, pi_cfg, bands);
+      int64_t grant = plan.total_cost;
+      std::string why;
+      const bool applied =
+          plan.ok && garage::apply_auto_upgrade(g, db, gid, plan, 0, grant, phys, pi_cfg, bands, &why);
+      const garage::Car* car = g.find(gid);
+      const bool in_class = applied && car && car->class_id == ev.prize_car_upgrade_class;
+      if (!in_class)
+        std::printf("prize %lld (event %lld): class %d -> %d failed: %s\n", (long long)ev.prize_car_id,
+                    (long long)ev.event_id, pi0.class_id, ev.prize_car_upgrade_class,
+                    (why.empty() ? plan.message : why).c_str());
+      CHECK(in_class);
+      CHECK(grant == 0);
+      upgraded += in_class;
+    }
+    std::printf("prize cars at their upgrade class: %d / %d\n", upgraded, prizes);
+    CHECK(upgraded == prizes);
+  }
+
+  // The barn finds: 9, their spawn odds and restoration distances, and the
+  // controller run on the disc's data (a scripted random source).
+  {
+    freeroam::Collectibles col;
+    std::string cerr;
+    const bool ok = freeroam::load_collectibles(game, col, &cerr);
+    CHECK(ok);
+    if (!ok) std::printf("collectibles: %s\n", cerr.c_str());
+    CHECK(col.barns.size() == 9);
+    int spawn_rows = 0;
+    for (const auto& b : col.barns) {
+      spawn_rows += b.spawn_weighting == 100 && b.spawn_max_probability == 1 && b.spawn_max_distance_m > 0;
+      CHECK(std::abs(freeroam::barn_restore_distance(b, 0) - 16093.44) < 0.01);
+      CHECK(std::abs(freeroam::barn_restore_distance(b, 1e6) - 8046.72) < 0.01);
+    }
+    CHECK(spawn_rows == 9);
+    // Barn 01 (1-in-10 at 0 mi, 1-in-1 at 200 mi): certain past 200 mi of odometer.
+    freeroam::Progress prog;
+    prog.total_distance = 200 * 1609.344 + 1;
+    freeroam::FreeRoam fr(col, prog);
+    fr.set_barn_tuning(bt.time_between_ticks_s, bt.max_idle_time_s, bt.min_distance_before_next_m,
+                       bt.min_speed_before_spawn_ms, bt.min_time_before_spawn_s);
+    fr.set_random([] { return 0.0; });  // the pick lands on barn 01
+    freeroam::CarState car;
+    // The tick lands at the end of the first step; the 1 s step after it
+    // starts the pending timer, and the spawn time finishes it.
+    car.x = 0, car.z = 0, car.speed = 20, car.dt = bt.time_between_ticks_s - 1;
+    auto ev = fr.step(car);
+    car.dt = 1;
+    ev = fr.step(car);
+    CHECK(prog.barns[0].status == freeroam::kBarnPending);
+    car.dt = bt.min_time_before_spawn_s;
+    ev = fr.step(car);
+    CHECK(ev.size() == 1 && ev[0].kind == freeroam::Event::kRumourStarted && ev[0].index == 0);
+    int rumours = 0;
+    for (const auto& b : prog.barns) rumours += b.status == freeroam::kBarnRumour;
+    std::printf("barn finds: %zu, spawn rows %d, rumours after one tick past 200 mi: %d\n", col.barns.size(),
+                spawn_rows, rumours);
+  }
 
   std::printf("progression_tests --corpus: %d failures\n", failures);
   return failures ? 1 : 0;

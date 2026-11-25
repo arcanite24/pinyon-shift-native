@@ -215,7 +215,7 @@ CareerSummary DriveApp::career_summary(std::vector<cars::PackInfo>& packs) {
     cs.level = li;
     cs.signs_found = int(saved.signs_found.size());
     cs.barns = int(saved.barns.size());
-    for (const auto& b : saved.barns) cs.barns_found += b.status == freeroam::kBarnFound;
+    for (const auto& b : saved.barns) cs.barns_found += freeroam::barn_discovered(b.status);
     cs.wristband_points = career.wristband_points, cs.credits = career.credits;
     cs.total_winnings = career.total_winnings, cs.races = career.num_races;
     cs.victories = career.num_victories, cs.podiums = career.num_podiums;

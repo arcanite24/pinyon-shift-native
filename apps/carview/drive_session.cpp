@@ -796,8 +796,11 @@ void DriveSession::init_session() {
           gamepad_rumble.set_config(rumble_cfg);
         }
       }
-      // P0-K2: Reconcile Barn Find restorations against collectibles & garage once per save load
-      // so pending timers resume cleanly and any kBarnFound car missing from garage is immediately awarded.
+      // Barn finds once per save load. Saves from the old timer flow marked a
+      // barn 2 on discovery and queued it for a 45 s restoration: a queued
+      // barn whose car is not in the garage goes back to restoring (1), or
+      // ready (0) if its timer had run out, and the queue is dropped. A
+      // collected barn (2) has its car in the garage.
       if (app.progress_loaded && !app.collectibles.barns.empty() && !app.barn_restorations_reconciled) {
         app.barn_restorations_reconciled = true;
         auto owns_car = [&](int64_t cid) {
@@ -805,49 +808,27 @@ void DriveSession::init_session() {
             if (gc.car_id == cid) return true;
           return false;
         };
-        auto resolve_barn_label = [&](const freeroam::Barn& b) {
-          std::string named = barn_car_label(b);
-          if (!b.car_name_key.empty()) {
-            const uint32_t ref = uint32_t(fh1::string_hash("Barnfind")) << 16 | fh1::string_hash(b.car_name_key);
-            const std::string t = carview::game_text("_&" + std::to_string(ref));
-            if (!t.empty() && t[0] != '_') named = t;
-          }
-          return named;
-        };
-        // Refine restored pending entries against collectibles metadata & drop any already-owned cars.
-        std::vector<DriveApp::PendingBarnRestore> kept;
-        kept.reserve(app.pending_barn_restorations.size());
-        for (auto& br : app.pending_barn_restorations) {
-          if (br.car_id <= 0 || owns_car(br.car_id)) continue;
-          if (br.ready_after_s <= 0.0) {
-            br.ready_to_claim = true;
-            br.notified_ready = true;
-          }
-          for (const auto& b : app.collectibles.barns) {
-            if (b.car_id == br.car_id || b.name == br.barn_id) {
-              br.barn_id = b.name;
-              const std::string lbl = resolve_barn_label(b);
-              if (!lbl.empty()) br.car_name = lbl;
-              break;
+        for (const auto& br : app.pending_barn_restorations) {
+          for (size_t bi = 0; bi < app.collectibles.barns.size() && bi < app.progress.barns.size(); ++bi) {
+            const auto& b = app.collectibles.barns[bi];
+            if (b.name != br.barn_id && !(b.car_id > 0 && b.car_id == br.car_id)) continue;
+            auto& bp = app.progress.barns[bi];
+            if (bp.status == freeroam::kBarnCollected && !owns_car(b.car_id)) {
+              bp.status = br.ready_to_claim ? freeroam::kBarnReady : freeroam::kBarnRestoring;
+              std::printf("barn finds: %s from the old restoration queue -> %s\n", b.name.c_str(),
+                          br.ready_to_claim ? "ready" : "restoring");
             }
+            break;
           }
-          kept.push_back(std::move(br));
         }
-        app.pending_barn_restorations = std::move(kept);
-        // Award any barn already marked kBarnFound whose car is neither in garage nor pending restoration.
+        if (!app.pending_barn_restorations.empty() || !app.saved.pending_barn_restorations.empty()) save_due = true;
+        app.pending_barn_restorations.clear();
+        app.saved.pending_barn_restorations.clear();
         int reconciled_count = 0;
         for (size_t bi = 0; bi < app.collectibles.barns.size() && bi < app.progress.barns.size(); ++bi) {
-          if (app.progress.barns[bi].status != freeroam::kBarnFound) continue;
+          if (app.progress.barns[bi].status != freeroam::kBarnCollected) continue;
           const auto& b = app.collectibles.barns[bi];
           if (b.car_id <= 0 || owns_car(b.car_id)) continue;
-          bool in_pending = false;
-          for (const auto& pbr : app.pending_barn_restorations) {
-            if (pbr.car_id == b.car_id) {
-              in_pending = true;
-              break;
-            }
-          }
-          if (in_pending) continue;
           const std::string awarded = app.award_garage_car(b.car_id, 0, false, true);
           if (!awarded.empty()) {
             ++reconciled_count;

@@ -90,6 +90,21 @@ bool parse_collectibles(std::string_view flyers_xml, std::string_view barns_xml,
     b.closed_coll_id = lower(doors->attr("closed_coll_id"));
     b.car_id = int(car->number("id"));
     b.car_name_key = car->attr("stringTableNameId");
+    // SpawnInfo and DistanceDriven distances are miles in the file (the
+    // title's loader scales them by 1609.344); HintRegion is metres.
+    constexpr double kMile = 1609.344;
+    if (const auto* sp = a.child("SpawnInfo")) {
+      b.spawn_weighting = int(sp->number("weighting", 100));
+      b.spawn_min_probability = sp->number("min_probability", 1);
+      b.spawn_max_probability = sp->number("max_probability", 1);
+      b.spawn_min_distance_m = sp->number("min_distance") * kMile;
+      b.spawn_max_distance_m = sp->number("max_distance") * kMile;
+    }
+    if (const auto* dd = a.child("DistanceDriven")) {
+      b.restore_min_m = dd->number("distanceMin") * kMile;
+      b.restore_max_m = dd->number("distanceMax") * kMile;
+      b.restore_threshold_m = dd->number("threshold") * kMile;
+    }
     if (const auto* dj = a.child("RadioDJRequests")) {
       for (const auto& r : audio::parse_radio_dj_requests(*dj))
         b.radio_requests.push_back({r.channel == audio::RadioChannel::kImmediate, r.event, r.delay_min_s, r.delay_max_s,
@@ -119,22 +134,9 @@ bool load_collectibles(const std::filesystem::path& game_root, Collectibles& out
   return parse_collectibles(text(flyers.data), text(barns.data), objs.str(), out, error);
 }
 
-BarnRumourGate barn_rumour_gate(size_t barn_index) {
-  // Progression-aware rumour pacing across Colorado's 9 Barn Finds (Yellow -> Gold):
-  // combines Wristband level, events completed, and reasonable cruising distance.
-  static constexpr BarnRumourGate kGates[9] = {
-      {0, 1, 8000.0},   // Barn 1: Yellow wristband, 1+ event, 8 km
-      {1, 3, 12000.0},  // Barn 2: Green wristband, 3+ events, +12 km
-      {1, 6, 14000.0},  // Barn 3: Green wristband, 6+ events, +14 km
-      {2, 10, 15000.0}, // Barn 4: Blue wristband, 10+ events, +15 km
-      {3, 15, 16000.0}, // Barn 5: Pink wristband, 15+ events, +16 km
-      {4, 22, 18000.0}, // Barn 6: Orange wristband, 22+ events, +18 km
-      {5, 30, 20000.0}, // Barn 7: Purple wristband, 30+ events, +20 km
-      {5, 38, 22000.0}, // Barn 8: Purple wristband, 38+ events, +22 km
-      {6, 46, 25000.0}, // Barn 9: Gold wristband, 46+ events, +25 km
-  };
-  if (barn_index < 9) return kGates[barn_index];
-  return {6, 46 + int(barn_index - 8) * 6, 25000.0};
+double barn_restore_distance(const Barn& b, double found_at) {
+  const double t = b.restore_threshold_m > 0 ? std::clamp(1.0 - found_at / b.restore_threshold_m, 0.0, 1.0) : 0.0;
+  return b.restore_min_m + (b.restore_max_m - b.restore_min_m) * t;
 }
 
 FreeRoam::FreeRoam(const Collectibles& data, Progress& progress) : data_(data), progress_(progress) {
@@ -144,23 +146,45 @@ FreeRoam::FreeRoam(const Collectibles& data, Progress& progress) : data_(data), 
   rebuild_hidden();
 }
 
-void FreeRoam::set_progression(int wristband_level, int events_completed) {
-  progression_.wristband_level = std::max(0, wristband_level);
-  progression_.events_completed = std::max(0, events_completed);
-  progression_.active = true;
+void FreeRoam::set_barn_tuning(double time_between_ticks_s, double max_idle_time_s, double min_distance_before_next_m,
+                               double min_speed_before_spawn_ms, double min_time_before_spawn_s) {
+  tick_s_ = time_between_ticks_s, max_idle_s_ = max_idle_time_s, min_gap_m_ = min_distance_before_next_m;
+  min_speed_ = min_speed_before_spawn_ms, min_time_s_ = min_time_before_spawn_s;
+}
+
+double FreeRoam::uniform() {
+  if (uniform_) return std::clamp(uniform_(), 0.0, 1.0);
+  return std::uniform_real_distribution<double>(0.0, 1.0)(rng_);
 }
 
 int FreeRoam::barns_found() const {
   int n = 0;
-  for (const auto& b : progress_.barns) n += b.status == kBarnFound;
+  for (const auto& b : progress_.barns) n += barn_discovered(b.status);
   return n;
+}
+
+bool collect_barn(const Collectibles& data, Progress& progress, size_t index) {
+  if (index >= progress.barns.size() || index >= data.barns.size()) return false;
+  BarnProgress& bp = progress.barns[index];
+  if (bp.status != kBarnReady) return false;
+  bp.status = kBarnCollected;
+  const int car = data.barns[index].car_id;
+  if (car > 0 && std::find(progress.garage.begin(), progress.garage.end(), car) == progress.garage.end())
+    progress.garage.push_back(car);
+  return true;
+}
+
+bool FreeRoam::collect_barn(size_t index) {
+  if (!freeroam::collect_barn(data_, progress_, index)) return false;
+  rebuild_hidden();
+  return true;
 }
 
 void FreeRoam::rebuild_hidden() {
   auto set = std::make_shared<std::set<std::string>>(progress_.signs_found);
   for (size_t i = 0; i < data_.barns.size(); ++i) {
     const Barn& b = data_.barns[i];
-    if (progress_.barns[i].status == kBarnFound) {
+    if (barn_discovered(progress_.barns[i].status)) {
       set->insert({b.closed_id, b.closed_coll_id, b.trigger});
     } else {
       set->insert({b.open_id, b.open_coll_id});
@@ -170,9 +194,7 @@ void FreeRoam::rebuild_hidden() {
   hidden_ = std::move(set);
 }
 
-std::vector<Event> FreeRoam::step(const CarState& car) { return step(car, progression_); }
-
-std::vector<Event> FreeRoam::step(const CarState& car, const BarnProgressionContext& progression) {
+std::vector<Event> FreeRoam::step(const CarState& car, const BarnContext& ctx) {
   std::vector<Event> events;
   bool changed = false;
   progress_.total_distance += std::max(0.0, car.moved);
@@ -242,53 +264,115 @@ std::vector<Event> FreeRoam::step(const CarState& car, const BarnProgressionCont
     }
   }
 
-  // Barns: discovery at status 5, within the trigger radius, below maxMPH.
-  for (size_t i = 0; i < data_.barns.size() && i < progress_.barns.size(); ++i) {
+  step_barns(car, ctx, events, changed);
+
+  if (changed) rebuild_hidden();
+  return events;
+}
+
+void FreeRoam::step_barns(const CarState& car, const BarnContext& ctx, std::vector<Event>& events, bool& changed) {
+  const double odo = progress_.total_distance;
+  const double speed = std::fabs(car.speed);
+  const double dt = std::max(0.0, car.dt);
+  const size_t n = std::min(data_.barns.size(), progress_.barns.size());
+  const bool live = ctx.free_roam && !ctx.blocked;
+
+  // Discovery: a rumoured barn, inside its trigger zone below maxMPH, in
+  // free roam. Restoration starts (status 1) at this odometer.
+  for (size_t i = 0; i < n && live; ++i) {
     BarnProgress& bp = progress_.barns[i];
     if (bp.status != kBarnRumour) continue;
     const Barn& b = data_.barns[i];
     if (std::hypot(b.at.x - car.x, b.at.z - car.z) > b.radius) continue;
-    if (std::fabs(car.speed) >= b.max_mph * 0.44704) continue;
-    bp.status = kBarnFound;
-    bp.found_at = progress_.total_distance;
-    if (std::find(progress_.garage.begin(), progress_.garage.end(), b.car_id) == progress_.garage.end())
-      progress_.garage.push_back(b.car_id);
+    if (speed >= b.max_mph * 0.44704) continue;
+    bp.status = kBarnRestoring;
+    bp.found_at = std::trunc(odo);
     events.push_back({Event::kBarnFound, int(i)});
     changed = true;
   }
 
-  // Rumours: progression-gated (Wristband level + events completed + cruising distance)
-  // when campaign progression context is active; falls back to legacy 50 km spacing
-  // when no progression context is supplied.
-  double last = 0.0;
-  int active_rumours = 0;
-  for (const auto& bp : progress_.barns) {
-    if (bp.status != kBarnNotSpawned) last = std::max(last, bp.rumour_at);
-    if (bp.status == kBarnRumour) ++active_rumours;
-  }
-  for (size_t i = 0; i < progress_.barns.size(); ++i) {
-    if (progress_.barns[i].status != kBarnNotSpawned) continue;
-    bool unlock = false;
-    if (progression.active) {
-      const BarnRumourGate gate = barn_rumour_gate(i);
-      const double required_dist =
-          active_rumours > 0 ? (gate.min_distance_since_last_m * 1.5) : gate.min_distance_since_last_m;
-      const bool meets_progression =
-          progression.wristband_level >= gate.min_wristband && progression.events_completed >= gate.min_events;
-      unlock = meets_progression && (progress_.total_distance >= last + required_dist);
-    } else {
-      unlock = progress_.total_distance >= last + kRumourSpacing;
-    }
-    if (unlock) {
-      progress_.barns[i].status = kBarnRumour;
-      progress_.barns[i].rumour_at = progress_.total_distance;
-      events.push_back({Event::kRumourStarted, int(i)});
-    }
-    break;
+  // Restoration: ready once the restoration distance is driven, in free
+  // roam above 25 mph (the speed check is probable, SPEC Q116).
+  constexpr double kReadySpeed = 11.176;
+  for (size_t i = 0; i < n && ctx.free_roam; ++i) {
+    BarnProgress& bp = progress_.barns[i];
+    if (bp.status != kBarnRestoring) continue;
+    if (odo - bp.found_at < barn_restore_distance(data_.barns[i], bp.found_at)) continue;
+    if (speed < kReadySpeed) continue;
+    bp.status = kBarnReady;
+    events.push_back({Event::kBarnReady, int(i)});
+    changed = true;
   }
 
-  if (changed) rebuild_hidden();
-  return events;
+  // The spawn tick: one roll every TimeBetweenTicks, none while idle for
+  // MaxIdleTime. A pending barn waits for its rumour; otherwise a weighted
+  // pick among the unspawned barns rolls its 1-in-N odds at this odometer.
+  idle_s_ = speed < 0.5 ? idle_s_ + dt : 0.0;
+  int pending = -1;
+  for (size_t i = 0; i < n; ++i)
+    if (progress_.barns[i].status == kBarnPending) pending = int(i);
+  tick_clock_ += dt;
+  if (tick_s_ > 0 && tick_clock_ >= tick_s_) {
+    tick_clock_ = 0;
+    if (idle_s_ < max_idle_s_ && pending < 0) {
+      double total = 0;
+      for (size_t i = 0; i < n; ++i)
+        if (progress_.barns[i].status == kBarnNotSpawned) total += std::max(0, data_.barns[i].spawn_weighting);
+      int pick = -1;
+      if (total > 0) {
+        double r = uniform() * total;
+        for (size_t i = 0; i < n; ++i) {
+          if (progress_.barns[i].status != kBarnNotSpawned) continue;
+          const double w = std::max(0, data_.barns[i].spawn_weighting);
+          if (w <= 0) continue;
+          pick = int(i);
+          if (r < w) break;
+          r -= w;
+        }
+      }
+      if (pick >= 0) {
+        const Barn& b = data_.barns[size_t(pick)];
+        const double span = b.spawn_max_distance_m - b.spawn_min_distance_m;
+        const double t = span != 0 ? (odo - b.spawn_min_distance_m) / span : 1.0;
+        const double lo = std::min(b.spawn_min_probability, b.spawn_max_probability);
+        const double hi = std::max(b.spawn_min_probability, b.spawn_max_probability);
+        const double p =
+            std::clamp(b.spawn_min_probability + t * (b.spawn_max_probability - b.spawn_min_probability), lo, hi);
+        const int odds = std::max(1, int(std::lround(p)));
+        const bool hit = odds <= 1 || std::lround(uniform() * double(odds - 1)) == 0;
+        if (hit) {
+          progress_.barns[size_t(pick)].status = kBarnPending;
+          pending = pick;
+          pending_s_ = 0;
+        }
+      }
+    }
+  }
+
+  // Pending -> rumour: the timer runs in free roam (reset outside it) while
+  // the car is above MinSpeedBeforeSpawn, no dialogue plays and the odometer
+  // is MinDistanceBeforeNextSpawn past the latest rumour start (paused
+  // otherwise); after MinTimeBeforeSpawn the rumour starts.
+  if (pending >= 0) {
+    if (!live) {
+      pending_s_ = 0;
+    } else {
+      double latest = -1;
+      for (size_t i = 0; i < n; ++i) {
+        const int st = progress_.barns[i].status;
+        if (st == kBarnRumour || barn_discovered(st)) latest = std::max(latest, progress_.barns[i].rumour_at);
+      }
+      const bool far_enough = latest < 0 || odo - latest > min_gap_m_;
+      if (far_enough && speed > min_speed_ && !ctx.dialogue) pending_s_ += dt;
+      if (pending_s_ >= min_time_s_) {
+        BarnProgress& bp = progress_.barns[size_t(pending)];
+        bp.status = kBarnRumour;
+        bp.rumour_at = std::trunc(odo);
+        pending_s_ = 0;
+        events.push_back({Event::kRumourStarted, pending});
+      }
+    }
+  }
 }
 
 int64_t discounted_price(int64_t price, int discount_percent) {

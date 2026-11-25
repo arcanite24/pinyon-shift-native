@@ -497,7 +497,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                     for (size_t bi = 0; bi < app.collectibles.barns.size(); ++bi) {
                       const auto& b = app.collectibles.barns[bi];
                       const int st = bi < app.progress.barns.size() ? app.progress.barns[bi].status : freeroam::kBarnNotSpawned;
-                      if (st != freeroam::kBarnFound && st != freeroam::kBarnRumour && !reveal) continue;
+                      if (!freeroam::barn_discovered(st) && st != freeroam::kBarnRumour && !reveal) continue;
                       const double d = std::hypot(b.at.x - map_cx, b.at.z - map_cz);
                       if (d < best_cd) {
                         best_cd = d;
