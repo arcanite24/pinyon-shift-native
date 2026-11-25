@@ -114,7 +114,9 @@ void SnapshotMixer::add_defaults() {
   make("Paused",  0.0f, 0.25f, 0.25f, 1.0f, 0.0f, 0.5f, 0.15f, 0.3f);  // the pause fix: world drops out, music dips
   make("Menu",    0.0f, 0.0f,  1.0f,  1.0f, 1.0f, 0.5f, 0.1f,  0.3f);  // menu/hub over the drive (keeps hub/menu music)
   make("Title",   0.0f, 0.0f,  0.0f,  1.0f, 0.0f, 1.0f, 0.1f,  0.5f);  // title screen keeps MenuMusic at full level
-  make("Loading", 0.0f, 0.25f, 0.25f, 1.0f, 0.0f, 1.0f, 0.1f,  0.5f);  // loading lowers game music, keeps MenuMusic
+  // Loading as AudioMixerSnapshots.xml has it: game music ducked to 0.25,
+  // no menu or homespace music, no VO (its 2 s fade kept short here).
+  make("Loading", 0.0f, 0.25f, 0.0f,  0.0f, 0.0f, 0.0f, 0.1f,  0.5f);
 }
 
 // ------------------------------------------------------------------- master

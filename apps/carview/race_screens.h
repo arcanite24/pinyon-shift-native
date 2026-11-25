@@ -13,6 +13,7 @@
 
 #include "race_flow.h"
 #include "scene_screen.h"
+#include "ui4_chrome.h"
 
 namespace carview {
 
@@ -141,6 +142,11 @@ bool draw_event_summary(ui::List& l, const DriveHud& st, const EventSummaryHud& 
 // The race screen `r.screen` (title card .. stay in car); false: not one of
 // these, or its scene is missing.
 bool draw_race_screen(ui::List& l, const DriveHud& st, const RaceHud& r, float w, float h);
+// H_MESSAGE_POPUP over the screen: a title, a message wrapped at the
+// original's pitch, and the help prompts (STAY IN CAR, the front end's
+// notices). False when the scene is missing.
+bool draw_message_popup(ui::List& l, const std::string& title, const std::string& message,
+                        const std::vector<ui4::Prompt>& prompts, float w, float h);
 
 // Measured placements (1280x720 canvas) of the original's captures.
 namespace race_layout {

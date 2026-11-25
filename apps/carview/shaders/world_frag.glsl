@@ -1217,26 +1217,11 @@ void main() {
     colour += t.rgb * hl_sum * hl_night * draw.up.w;
   }
 
-  // Emissive vertex-lit animated world props (kFlagVertexLit with alpha < 0.98):
-  //   a in [0.50, 0.98): always-on signals (traffic light active lens, balloon burner flame, aviation beacon)
-  //   a in [0.22, 0.50): dusk/night festival accent bulbs (Ferris wheel rim lights, blimp marquee LEDs)
-  //   a in (0.01, 0.22): night-only sweeping mainstage searchlight/laser cones
-  if ((flags & kFlagVertexLit) != 0u && v_colour.a < 0.98) {
-    float night_w = clamp(frame.sky_color.w, 0.0, 1.0);
-    float em_boost = 0.0;
-    if (v_colour.a >= 0.50) {
-      em_boost = (1.0 - v_colour.a) * 5.0 * mix(1.0, 1.45, night_w);
-    } else if (v_colour.a >= 0.22) {
-      em_boost = mix(0.25, 2.8, smoothstep(0.05, 0.55, night_w));
-    } else if (v_colour.a > 0.01) {
-      em_boost = 2.6 * smoothstep(0.08, 0.55, night_w);
-    }
-    colour += t.rgb * em_boost * draw.up.w;
-  }
-
   // World night Light_Map (slot 7) & staggered dusk/dawn EmissiveMapSampler (slot 3) (SKY_AND_TOD §6.1-6.2):
-  // Light_Map holds baked incident night irradiance (billboard spotlights, outpost floodlights, patio lamps)
-  // and modulates surface albedo t.rgb; EmissiveMap (slot 3) is self-emission (lit windows / neon signs).
+  // Light_Map is baked night light (lamp pools, lit facades) ADDED to the
+  // radiance, Light_Map.rgb * max(SwitchOnLights, c3.w), not a multiply on
+  // the surface albedo (the decoded terrain shaders add it before fog).
+  // EmissiveMap (slot 3) is self-emission (lit windows / neon signs).
   // Dual _EMIS + _LM building props set BOTH flags, reading Light_Map from light_map and EmissiveMap from layer_c.
   // c3.w (emissive_force) encoded in fractional part of draw.params.z enables daytime interior/sign glow.
   float emissive_force = clamp((draw.params.z - floor(draw.params.z + 0.01)) / 0.45, 0.0, 1.0);
@@ -1246,7 +1231,7 @@ void main() {
     float lm_gain = max(frame.sky_color.w, emissive_force);
     if (lm_gain > 0.002) {
       vec3 lm = texture(light_map, v_uv2).rgb;
-      colour += t.rgb * lm * lm_gain * lm_scale * draw.up.w;
+      colour += lm * lm_gain * lm_scale * draw.up.w;
     }
   }
   if (has_em) {

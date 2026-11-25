@@ -949,7 +949,6 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 app.rally_results_open = false;
                 app.rally_session.retire();
                 app.rally_hub_open = true;
-                app.restore_pre_race_tod();
                 app.leave_race = true;
                 running = false;
               }
@@ -1004,7 +1003,6 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   app.rally_service_resume_after_reload = false;
                   app.rally_session.retire();
                   app.rally_hub_open = true;
-                  app.restore_pre_race_tod();
                   app.leave_race = true;
                   running = false;
                 }
@@ -1162,7 +1160,64 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
-            // The 1000 Club screen: up/down inspects challenges & hints, enter begins challenges in this car.
+            // Horizon Rally's entry popups (A OK, B CANCEL).
+            if (rally_entry != carview::RallyEntryPopup::kNone) {
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE) rally_entry_press(false);
+                else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) rally_entry_press(true);
+              } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_BACK) rally_entry_press(false);
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) rally_entry_press(true);
+              } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                if (e.button.button == SDL_BUTTON_RIGHT) rally_entry_press(false);
+                else if (e.button.button == SDL_BUTTON_LEFT) rally_entry_press(true);
+              }
+              return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+            }
+            // The 1000 Club's menus on their scenes (club_menu.h).
+            if (club_open && club_menu.open()) {
+              using CB = carview::ClubMenu::Button;
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE) club_menu_press(CB::kBack);
+                else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) club_menu_press(CB::kAccept);
+                else if (k == SDLK_UP || k == SDLK_W) club_menu_press(CB::kUp);
+                else if (k == SDLK_DOWN || k == SDLK_S) club_menu_press(CB::kDown);
+                else if (k == SDLK_LEFT || k == SDLK_A) club_menu_press(CB::kLeft);
+                else if (k == SDLK_RIGHT || k == SDLK_D) club_menu_press(CB::kRight);
+              } else if (e.type == SDL_EVENT_KEY_DOWN && e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_UP || k == SDLK_W) club_menu_press(CB::kUp);
+                else if (k == SDLK_DOWN || k == SDLK_S) club_menu_press(CB::kDown);
+                else if (k == SDLK_LEFT || k == SDLK_A) club_menu_press(CB::kLeft);
+                else if (k == SDLK_RIGHT || k == SDLK_D) club_menu_press(CB::kRight);
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_BACK) club_menu_press(CB::kBack);
+                else if (b == SDL_GAMEPAD_BUTTON_START) {
+                  club_menu.close();
+                  club_open = false;
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) club_menu_press(CB::kAccept);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) club_menu_press(CB::kUp);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) club_menu_press(CB::kDown);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) club_menu_press(CB::kLeft);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) club_menu_press(CB::kRight);
+              }
+              if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                if (e.button.button == SDL_BUTTON_RIGHT) club_menu_press(CB::kBack);
+                else if (e.button.button == SDL_BUTTON_LEFT) club_menu_press(CB::kAccept);
+              }
+              if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+                if (e.wheel.y > 0) club_menu_press(CB::kUp);
+                else if (e.wheel.y < 0) club_menu_press(CB::kDown);
+              }
+              return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+            }
+            // The hand-drawn 1000 Club screen (no v4 scenes): up/down inspects challenges & hints, enter begins challenges in this car.
             if (club_open) {
               const size_t rows = (club_gate.empty() && club_car >= 0 && app.club_data.cars.count(club_car))
                                       ? std::max<size_t>(1, app.club_data.cars.at(club_car).size())
@@ -1178,8 +1233,6 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                 app.saved.club.push_back(std::move(rec));
                 save_now("1000 club");
                 club_check();
-                notice = "1000 CLUB: CHALLENGES BEGUN IN THIS CAR";
-                notice_until = vehicle.time() + 4;
                 club_open = false;
               };
               if (e.type == SDL_EVENT_KEY_DOWN) {

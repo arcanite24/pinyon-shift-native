@@ -181,6 +181,10 @@ class CarNames {
   std::string short_name(const std::string& media) const;
   // "2009 Ferrari California".
   std::string full_name(const std::string& media) const;
+  // The two lines of a car card (the 1000 Club's car list): "California"
+  // and "2009 Ferrari"; short_name() and "" when unknown.
+  std::string model_name(const std::string& media) const;
+  std::string year_make(const std::string& media) const;
   // The loaded string tables (disc + v4 + DLC in the active language), or null.
   const fh1::StringTables* strings() const { return strings_.get(); }
   // The words of a media name's model part ("CamaroZL1" -> "Camaro ZL1").

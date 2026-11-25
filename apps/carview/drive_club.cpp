@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -80,6 +81,7 @@ drive::SavedClubCar* DriveSession::club_record() {
 void DriveSession::club_check() {
         club_runs.clear();
         club_car = -1;
+        club_gate_kind = ClubGate::kSystem;
         const std::filesystem::path state_path = !app.state_root.empty()
                                                      ? app.state_root
                                                      : (std::getenv("SHIFT_STATE_ROOT")
@@ -104,7 +106,7 @@ void DriveSession::club_check() {
           race::load_wristband_tables(app.game_root_of(), app.state_root, app.shared_db, app.wristbands, &e);
         }
         if (app.collected_wristband < 1 && !std::getenv("SHIFT_CLUB_ANY_BAND") && !app.demo_club)
-          return club_gate = "needs the green wristband", void();
+          return club_gate_kind = ClubGate::kWristband, club_gate = "needs the green wristband", void();
         // The car driven: the selected garage row when it is this car, else
         // any garage row of this car (a --car pick).
         if (app.have_garage) {
@@ -119,9 +121,11 @@ void DriveSession::club_check() {
         if (club_car < 0 && app.demo_club && app.have_career_catalog) {
           if (const auto* sp = app.career_catalog.find_car_by_media(app.car)) club_car = sp->car_id;
         }
-        if (club_car < 0) return club_gate = "only in your own garage cars", void();
-        if (!app.club_data.cars.count(club_car)) return club_gate = "this car has no challenges", void();
+        if (club_car < 0) return club_gate_kind = ClubGate::kCar, club_gate = "only in your own garage cars", void();
+        if (!app.club_data.cars.count(club_car))
+          return club_gate_kind = ClubGate::kNoChallenges, club_gate = "this car has no challenges", void();
         club_gate.clear();
+        club_gate_kind = ClubGate::kNone;
         const auto& list = app.club_data.cars.at(club_car);
         drive::SavedClubCar* rec = club_record();
         if (!rec) return;  // not begun in this car
@@ -275,16 +279,19 @@ void DriveSession::club_step() {
             club_ceremony.cars_with_medal = mstats.cars_with_medal;
             club_ceremony.age = 0.0;
             club_ceremony_at = s.time;
-            app.audio_host.trigger_ui(audio::UiCue::kSignSmash);
+            club_results.push_back({r.index, true, s.time});
+            // interim (SPEC_QUESTIONS Q144): ui4audio.xml names no medal
+            // play; the HUD notification's cue stands in (not the
+            // sign smash's).
+            app.audio_host.trigger_ui(audio::UiCue::kAchievementReward);
             save_due = true;
             club_runs.erase(club_runs.begin() + std::ptrdiff_t(k));
             continue;
           }
           if (r.run.failures() != r.failures_seen) {
             r.failures_seen = r.run.failures();
-            notice = "1000 CLUB: " + title + " FAILED - TRY AGAIN";
-            notice_until = s.time + 3;
-            std::printf("t %.2f s: %s\n", s.time, notice.c_str());
+            club_results.push_back({r.index, false, s.time});
+            std::printf("t %.2f s: 1000 club: %s failed\n", s.time, title.c_str());
           }
           ++k;
         }
@@ -369,8 +376,253 @@ ClubActiveStrip DriveSession::build_club_active_strip() {
 }
 
 std::string DriveSession::club_banner() {
+        if (club_v4_hud_shown) return {};
         const auto s = build_club_active_strip();
-        return s.active ? ("1000 CLUB: " + s.title + " - " + s.status) : std::string();
+        return s.active ? (text_of(club_text::kTitle) + ": " + s.title + " - " + s.status) : std::string();
+}
+
+ClubMenuData DriveSession::build_club_menu_data() {
+        ClubMenuData d;
+        club_ensure_meta();
+        d.tutorial = app.saved.club_tutorial;
+        d.stats = club_medal_stats();
+        d.achievements = club_achievement_lines(d.stats);
+        for (auto& a : d.achievements) {
+          if (const char* n = achievement_fallback_name(a.id)) a.name = n;
+          a.gamerscore = achievement_fallback_gamerscore(a.id);
+        }
+        if (club_gate_kind == ClubGate::kWristband) {
+          d.gate_title = club_text::kUnavailableTitle;
+          d.gate_message = club_text::kUnavailableMsg;
+          return d;
+        }
+        if (club_gate_kind == ClubGate::kSystem) {
+          // No string table has the engine's reasons (no data, not in
+          // Colorado, the package off).
+          d.gate_title = club_text::kUnavailableTitle;
+          d.gate_message = StringRef{{}, {}, 0, club_gate, true};
+          return d;
+        }
+        const fh1::StringTables* stbls = app.car_names->strings();
+        const auto& defs = freeroam::club::club_achievements();
+        auto add = [&](int64_t car_id, const garage::Car* gc) {
+          const auto cit = app.club_data.cars.find(car_id);
+          if (cit == app.club_data.cars.end()) return;
+          ClubCarEntry e;
+          e.car_id = car_id;
+          e.garage_id = gc ? gc->id : 0;
+          const auto bit = app.baked_ids.find(car_id);
+          const std::string media = bit != app.baked_ids.end() ? bit->second : std::string();
+          e.name = media.empty() ? std::to_string(car_id) : app.car_names->model_name(media);
+          e.year_make = media.empty() ? std::string() : app.car_names->year_make(media);
+          if (gc && !app.class_bands.empty()) {
+            e.class_letter = app.class_bands[size_t(garage::class_of(gc->performance_index, app.class_bands))].name;
+            e.pi = garage::shown_index(gc->performance_index, app.class_bands);
+          }
+          const drive::SavedClubCar* rec = nullptr;
+          for (const auto& c : app.saved.club)
+            if (c.car_id == car_id) rec = &c;
+          for (size_t i = 0; i < cit->second.size(); ++i) {
+            e.challenge_titles.push_back(cit->second[i].format_title(stbls));
+            e.completed.push_back(rec && i < rec->challenges.size() && rec->challenges[i].second);
+          }
+          e.medals = freeroam::club::car_medals(app.club_data, car_id, rec ? &e.completed : nullptr);
+          if (auto mit = club_car_meta.find(car_id); mit != club_car_meta.end())
+            for (size_t i = 0; i < defs.size(); ++i) e.counts[i] = freeroam::club::counts_for(defs[i].id, mit->second);
+          e.current = car_id == club_car;
+          d.garage.push_back(std::move(e));
+        };
+        std::set<int64_t> seen;
+        if (app.have_garage) {
+          for (const auto& gc : app.career_garage.cars)
+            if (seen.insert(gc.car_id).second) add(gc.car_id, &gc);
+        }
+        if (club_car >= 0 && !seen.count(club_car)) add(club_car, nullptr);  // --demo-club's car
+        for (size_t i = 0; i < d.garage.size(); ++i)
+          if (d.garage[i].current) d.current = int(i);
+        if (club_car >= 0 && club_record()) {
+          d.current_begun = true;
+          for (auto& row : build_club_screen().rows) {
+            ClubChallengeLine c;
+            c.title = std::move(row.title);
+            c.description = std::move(row.description);
+            c.hint = std::move(row.hint);
+            c.status = std::move(row.status);
+            c.completed = row.completed;
+            c.progress = row.progress;
+            d.challenges.push_back(std::move(c));
+          }
+        }
+        return d;
+}
+
+ClubHud DriveSession::build_club_hud() {
+        ClubHud hud;
+        const double now = vehicle.time();
+        club_results.erase(std::remove_if(club_results.begin(), club_results.end(),
+                                          [&](const ClubResult& r) { return now - r.at > kClubResultHold || now < r.at; }),
+                           club_results.end());
+        if (club_car < 0 || !app.club_data.cars.count(club_car) || !club_record()) return hud;
+        club_ensure_meta();
+        const fh1::StringTables* stbls = app.car_names->strings();
+        const auto& list = app.club_data.cars.at(club_car);
+        for (const auto& r : club_results) {
+          if (hud.items.size() >= 6 || r.index >= list.size()) break;
+          ClubHudItem it;
+          it.number = int(r.index) + 1;
+          it.text = list[r.index].format_title(stbls);
+          it.result = r.passed ? ClubHudItem::Result::kPassed : ClubHudItem::Result::kFailed;
+          it.result_age = now - r.at;
+          hud.items.push_back(std::move(it));
+        }
+        for (const auto& r : club_runs) {
+          if (hud.items.size() >= 6) break;
+          if (!r.run.under_way(club_signal)) continue;
+          bool shown = false;
+          for (const auto& it : hud.items) shown = shown || it.number == int(r.index) + 1;
+          if (shown) continue;
+          ClubHudItem it;
+          it.number = int(r.index) + 1;
+          it.text = list[r.index].format_title(stbls) + "  " + r.run.status(club_signal);
+          it.progress = r.run.progress(club_signal);
+          hud.items.push_back(std::move(it));
+        }
+        // club_begin.png: the details prompt in free roam once challenges are
+        // begun, and the tutorial's next step at the top left.
+        hud.details_hint = !app.race;
+        if (app.saved.club_tutorial == 2) hud.instruction = text_of(club_text::kTutorialGoToDetails);
+        // interim (SPEC_QUESTIONS Q143): after the first medal the tutorial
+        // sends the player back to the 1000 CLUB screen.
+        else if (app.saved.club_tutorial == 3 && club_medal_stats().total_medals > 0)
+          hud.instruction = text_of(club_text::kTutorialGoToHome);
+        return hud;
+}
+
+void DriveSession::club_open_menu() {
+        club_check();
+        club_open = true;
+        club_pick = 0;
+        club_menu_data = build_club_menu_data();
+        // Without the title update's scenes the hand-drawn screen stays.
+        if (!SceneScreen(kClubHomeScene).ok()) {
+          club_menu.close();
+          return;
+        }
+        // The tutorial's last step: back on the 1000 CLUB screen after the
+        // first medal.
+        if (app.saved.club_tutorial == 3 && club_menu_data.stats.total_medals > 0) {
+          app.saved.club_tutorial = 4;
+          club_menu_data.tutorial = 4;
+          save_now("1000 club");
+        }
+        club_menu.show(club_menu_data);
+        app.audio_host.trigger_ui(audio::UiCue::kMenuOpen);
+        if (club_menu.screen == ClubMenu::Screen::kIntro) {
+          club_menu.opened_at = vehicle.time();
+          const auto mp = FmvPlayer::resolve_movie(app.game_root_of(), FmvMovieId::kClubIntro, app.state_root);
+          if (!mp.empty() && app.fmv_player.open(mp, app.language)) {
+            app.audio_host.set_fmv_audio(
+                [](void* ctx, float* out, int fr) { return static_cast<FmvPlayer*>(ctx)->read_audio(out, fr); },
+                &app.fmv_player);
+          }
+        }
+}
+
+void DriveSession::club_menu_press(ClubMenu::Button b) {
+        const ClubMenu::Action a = club_menu.press(b, club_menu_data);
+        switch (a) {
+          case ClubMenu::Action::kNone: break;
+          case ClubMenu::Action::kMove: app.audio_host.trigger_ui(audio::UiCue::kMove); break;
+          case ClubMenu::Action::kAccept:
+          case ClubMenu::Action::kTutorialStep: app.audio_host.trigger_ui(audio::UiCue::kAccept); break;
+          case ClubMenu::Action::kBack:
+          case ClubMenu::Action::kClose: app.audio_host.trigger_ui(audio::UiCue::kCancel); break;
+          case ClubMenu::Action::kDeny: app.audio_host.trigger_ui(audio::UiCue::kError); break;
+          case ClubMenu::Action::kBegin:
+            app.audio_host.trigger_ui(audio::UiCue::kAccept);
+            club_begin_in(club_menu.action_car);
+            break;
+        }
+        if (club_menu.tutorial_to > app.saved.club_tutorial) {
+          app.saved.club_tutorial = club_menu.tutorial_to;
+          club_menu_data.tutorial = club_menu.tutorial_to;
+          save_now("1000 club");
+        }
+        club_menu.tutorial_to = 0;
+        if (!club_menu.open()) {
+          club_open = false;
+          if (app.fmv_player.active()) app.fmv_player.close();
+        }
+}
+
+void DriveSession::club_begin_in(int64_t car_id) {
+        const auto cit = app.club_data.cars.find(car_id);
+        if (cit == app.club_data.cars.end()) return;
+        bool have = false;
+        for (const auto& c : app.saved.club) have = have || c.car_id == car_id;
+        if (!have) {
+          drive::SavedClubCar rec;
+          rec.car_id = car_id;
+          for (const auto& ch : cit->second) {
+            rec.challenges.emplace_back(ch.definition_hash, false);
+            rec.progress.emplace_back();
+          }
+          app.saved.club.push_back(std::move(rec));
+        }
+        // Another garage car: into it (the garage's selection and the drive's
+        // car), as the garage's GET IN CAR does.
+        if (car_id != club_car && app.have_garage) {
+          for (const auto& gc : app.career_garage.cars) {
+            if (gc.car_id != car_id) continue;
+            app.career_garage.selected = gc.id;
+            app.write_career_garage();
+            break;
+          }
+          if (auto bit = app.baked_ids.find(car_id); bit != app.baked_ids.end() && bit->second != app.car) {
+            save_now("1000 club");
+            app.next_car = bit->second;
+            running = false;
+            return;
+          }
+        }
+        save_now("1000 club");
+        club_check();
+}
+
+
+void DriveSession::rally_entry_press(bool accept) {
+        const RallyEntryPopup p = rally_entry;
+        rally_entry = RallyEntryPopup::kNone;
+        if (p == RallyEntryPopup::kGate || !accept) {
+          app.audio_host.trigger_ui(audio::UiCue::kCancel);
+          return;
+        }
+        app.audio_host.trigger_ui(audio::UiCue::kAccept);
+        // The first entry plays Forza_Tone_Rally before the switch (the intro
+        // race, first Autoshow and hub tutorial are not run yet: Q145).
+        if (app.saved.rally_flow == 0) {
+          app.saved.rally_flow = 1;
+          save_now("horizon rally");
+          const auto mp = FmvPlayer::resolve_movie(app.game_root_of(), FmvMovieId::kRallyForzaTone, app.state_root);
+          if (!mp.empty() && app.fmv_player.open(mp, app.language)) {
+            app.audio_host.set_fmv_audio(
+                [](void* ctx, float* out, int fr) { return static_cast<FmvPlayer*>(ctx)->read_audio(out, fr); },
+                &app.fmv_player);
+            rally_enter_after_video = true;
+            return;
+          }
+        }
+        rally_enter();
+}
+
+void DriveSession::rally_enter() {
+        const drive::Vec3 vp = vehicle.position();
+        const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+        app.colorado_return_pos = {vp.x, vp.y, vp.z};
+        app.colorado_return_heading = std::atan2(vf.x, vf.z);
+        app.has_colorado_return = true;
+        app.rally_world_switch = +1;
+        running = false;
 }
 
 }  // namespace carview

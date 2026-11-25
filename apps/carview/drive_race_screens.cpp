@@ -216,7 +216,6 @@ void DriveSession::grid_menu_accept() {
       app.audio_host.trigger_ui(audio::UiCue::kAccept);
       grid_menu_open = false;
       race_screens.stop();
-      app.restore_pre_race_tod();
       app.leave_race = true;
       running = false;
       return;
@@ -302,7 +301,6 @@ void DriveSession::finish_race_screens() {
     app.spawn[0] = at.x, app.spawn[1] = at.y, app.spawn[2] = at.z, app.spawn[3] = std::atan2(f.x, f.z);
   }
   app.have_spawn = true;
-  app.restore_pre_race_tod();
   app.leave_race = true;
   running = false;
 }

@@ -39,12 +39,14 @@ enum class NotifyIcon : uint8_t { kMisc, kSponsor, kMail };
 // LAP TIME AND POSITION (Timers: the race's lap, place, times and
 // standings), WRONG WAY WARNING (WrongWay), NAMES OVER CARS (NamesOverCars)
 // and POPULARITY AND SKILLS (PopularitySkills: the skill chain and the
-// popularity disc).
+// popularity disc). TRACKED ACHIEVEMENT is the engine's own card (the
+// original HUD has nothing in the top left), so it is off unless asked for.
 struct HudToggles {
   bool timers = true;
   bool wrong_way = true;
   bool names_over_cars = true;
   bool popularity_skills = true;
+  bool tracked_achievement = false;
   bool operator==(const HudToggles&) const = default;
 };
 

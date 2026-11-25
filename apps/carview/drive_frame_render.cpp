@@ -117,7 +117,9 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             UiMusic ui_mus = UiMusic::kNone;
             if (!app.fmv_player.active()) {
               if (loading_screen.active()) {
-                ui_mus = UiMusic::kLoading;
+                // No music bed: the original's loads only duck the radio
+                // (AudioMixerSnapshots.xml Loading: GameMusic 0.25, MenuMusic 0).
+                ui_mus = UiMusic::kNone;
               } else if (app.show_title) {
                 ui_mus = UiMusic::kTitle;
               } else if (map_open) {
@@ -1430,29 +1432,37 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           } else if (map_open) {
             // Smooth dt-integrated velocity panning, exponential zoom interpolation, and gentle magnetic snap
             // for keyboard arrows/WASD, gamepad D-pad, analog stick, and triggers.
+            // The original's controls (map_cursor.h): the left stick, the
+            // D-pad and the arrows move a free cursor that scrolls the map at
+            // the screen's edge; the right stick zooms about it. The mouse
+            // still drags the camera.
             double pan_x = 0.0, pan_z = 0.0, zoom_rate = 0.0;
+            float cur_x = 0.0f, cur_y = 0.0f, zoom_axis = 0.0f;
             const bool* ks = SDL_GetKeyboardState(nullptr);
-            if (ks) {
-              if (ks[SDL_SCANCODE_LEFT] || ks[SDL_SCANCODE_A]) pan_x -= 1.0;
-              if (ks[SDL_SCANCODE_RIGHT] || ks[SDL_SCANCODE_D]) pan_x += 1.0;
-              if (ks[SDL_SCANCODE_UP] || ks[SDL_SCANCODE_W]) pan_z += 1.0;
-              if (ks[SDL_SCANCODE_DOWN] || ks[SDL_SCANCODE_S]) pan_z -= 1.0;
-              if (ks[SDL_SCANCODE_EQUALS] || ks[SDL_SCANCODE_KP_PLUS]) zoom_rate += 0.85;
-              if (ks[SDL_SCANCODE_MINUS] || ks[SDL_SCANCODE_KP_MINUS]) zoom_rate -= 0.85;
+            if (ks && !map_filter_open) {
+              if (ks[SDL_SCANCODE_LEFT] || ks[SDL_SCANCODE_A]) cur_x -= 1.0f;
+              if (ks[SDL_SCANCODE_RIGHT] || ks[SDL_SCANCODE_D]) cur_x += 1.0f;
+              if (ks[SDL_SCANCODE_UP] || ks[SDL_SCANCODE_W]) cur_y -= 1.0f;
+              if (ks[SDL_SCANCODE_DOWN] || ks[SDL_SCANCODE_S]) cur_y += 1.0f;
+              if (ks[SDL_SCANCODE_EQUALS] || ks[SDL_SCANCODE_KP_PLUS]) zoom_axis += 1.0f;
+              if (ks[SDL_SCANCODE_MINUS] || ks[SDL_SCANCODE_KP_MINUS]) zoom_axis -= 1.0f;
             }
             for (SDL_Gamepad* pad : pads) {
               const double sx = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0, 0.16, 0.96);
               const double sy = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0, 0.16, 0.96);
-              const double z_in = std::max(0.0, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / 32767.0);
-              const double z_out = std::max(0.0, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0);
-              pan_x += sx;
-              pan_z -= sy;
-              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) pan_x -= 1.0;
-              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) pan_x += 1.0;
-              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP)) pan_z += 1.0;
-              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) pan_z -= 1.0;
-              if (z_in > 0.06 || z_out > 0.06) zoom_rate += (z_in - z_out);
+              const double ry = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY) / 32767.0, 0.2, 0.96);
+              cur_x += float(sx);
+              cur_y += float(sy);
+              zoom_axis -= float(ry);
+              if (!map_filter_open) {
+                if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) cur_x -= 1.0f;
+                if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) cur_x += 1.0f;
+                if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP)) cur_y -= 1.0f;
+                if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) cur_y += 1.0f;
+              }
             }
+            map_screen_step(frame_dt, std::clamp(cur_x, -1.0f, 1.0f), std::clamp(cur_y, -1.0f, 1.0f),
+                            std::clamp(zoom_axis, -1.0f, 1.0f));
             const bool map_cam_active = !map_dragging &&
                                         (std::fabs(pan_x) > 1e-4 || std::fabs(pan_z) > 1e-4 || std::fabs(zoom_rate) > 1e-4 ||
                                          std::fabs(map_cam.vx()) > 1e-4 || std::fabs(map_cam.vz()) > 1e-4 ||
@@ -1511,6 +1521,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               ms.filter = map_filter;
               update_map_selection();
               ms.selected_marker = map_selected_marker;
+              // The filter popup and the dialogs blur the map behind them.
+              ms.blur = map_filter_open || map_dialog != MapDialog::kNone;
               // 100% edge-to-edge fullscreen viewport (0, 0, w, h) — zero outer borders!
               HudImage img = app.map_view.pause_map(ms, w, h, map_zoom, map_cx, map_cz);
               host.renderer.set_overlay(std::move(img.rgba), img.width, img.height, 0, 0, 2);

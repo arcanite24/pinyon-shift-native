@@ -14,6 +14,7 @@
 #include "drive/from_bake.h"
 #include "drive/from_physics.h"
 #include "drive_helpers.h"
+#include "frontend_screens.h"
 #include "gamepad_db.h"
 #include "profile/drive_save.h"
 #include "race/difficulty.h"
@@ -39,15 +40,6 @@ bool extract_event_tod_start(const EvT& ev, double& out_tod_sec) {
 
 bool DriveApp::colorado_world() const { return world_dir.empty() || world::model_prefix(world_dir) == "coloradoout"; }
 
-void DriveApp::restore_pre_race_tod() {
-    if (pre_race_tod_sec >= 0.0) {
-      double sec = std::fmod(pre_race_tod_sec, 86400.0);
-      if (sec < 0.0) sec += 86400.0;
-      tod_clock.tod_sec = sec;
-      pre_race_tod_sec = -1.0;
-    }
-}
-
 std::filesystem::path DriveApp::game_root_of() const {
     return !game_root_given.empty() ? game_root_given : world_dir.parent_path().parent_path().parent_path();
 }
@@ -58,6 +50,25 @@ void DriveApp::write_career_garage() {
       std::fprintf(stderr, "carview: %s\n", e.c_str());
 }
 
+// WORLD-11: an event with a start time sets the clock there, and free roam
+// carries on from the event's time afterwards. The original does not put
+// the pre-race time back: quitting an event entered from a 22:00 free roam
+// returns to free roam in daylight (Q107).
+void DriveApp::snap_to_event_tod(const std::string& id) {
+    if (!race) return;
+    double event_tod_sec = -1.0;
+    bool has_event_tod = extract_event_tod_start(race->event(), event_tod_sec);
+    if (!has_event_tod && have_career_catalog) {
+      if (const auto* cev = career_catalog.find_event(id)) {
+        has_event_tod = extract_event_tod_start(*cev, event_tod_sec);
+      }
+    }
+    if (has_event_tod && event_tod_sec >= 0.0) {
+      double sec = std::fmod(event_tod_sec, 86400.0);
+      if (sec < 0.0) sec += 86400.0;
+      tod_clock.tod_sec = sec;
+    }
+}
 bool DriveApp::start_race(const std::string& id, std::string& why) {
     if (!race_pi_cfg_loaded && !world_dir.empty()) {
       race_pi_cfg_loaded = true;
@@ -100,21 +111,8 @@ bool DriveApp::start_race(const std::string& id, std::string& why) {
     race->player_spawn(spawn);
     have_spawn = true;
     race_top_speed = 0;
-    double event_tod_sec = -1.0;
-    bool has_event_tod = extract_event_tod_start(race->event(), event_tod_sec);
-    if (!has_event_tod && have_career_catalog) {
-      if (const auto* cev = career_catalog.find_event(id)) {
-        has_event_tod = extract_event_tod_start(*cev, event_tod_sec);
-      }
-    }
-    if (has_event_tod && event_tod_sec >= 0.0) {
-      if (pre_race_tod_sec < 0.0) pre_race_tod_sec = tod_clock.tod_sec;
-      double sec = std::fmod(event_tod_sec, 86400.0);
-      if (sec < 0.0) sec += 86400.0;
-      tod_clock.tod_sec = sec;
-    } else if (pre_race_tod_sec >= 0.0) {
-      restore_pre_race_tod();
-    }
+    snap_to_event_tod(id);
+
     if (wristbands.levels.empty()) {
       std::string e;
       if (!race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e))
@@ -130,6 +128,12 @@ bool DriveApp::start_race(const std::string& id, std::string& why) {
 }
 
 int DriveApp::current_pop_rank() const { return skill_tracker ? skill_tracker->popularity_rank() : 250; }
+
+std::string DriveApp::loading_group() const {
+  if (!race) return "freeroam";
+  const race::CareerEvent* ev = have_career_catalog ? career_catalog.find_event(race_event) : nullptr;
+  return ev ? loading_group_for_event(ev->style, ev->level) : std::string("festivalevent");
+}
 
 std::vector<std::string> DriveApp::class_name_list() const {
     std::vector<std::string> out;
@@ -353,7 +357,8 @@ bool DriveApp::init(int& exit_code) {
   if (!save_path.empty()) {
     std::string e;
     have_saved = drive::read_save(save_path, saved, &e);
-    if (!have_saved && !e.empty()) std::fprintf(stderr, "carview: note: save ignored: %s\n", e.c_str());
+    save_read_error = !have_saved && !e.empty();
+    if (save_read_error) std::fprintf(stderr, "carview: note: save ignored: %s\n", e.c_str());
   }
   auto resolve_colorado_dir = [](const std::filesystem::path& root) -> std::filesystem::path {
     if (root.empty()) return {};
@@ -662,6 +667,8 @@ bool DriveApp::init(int& exit_code) {
     // The campaign's wristband, Star Showdown and Showcase tables. The raw
     // text: game_text strips "{0}" placeholders, and the wristband name
     // goes into Scoreboard's "{0} WRISTBAND".
+    race::set_campaign_caption_resolver(
+        [](std::string_view ref) { return carview::game_text_raw(std::string(ref)); });
     race::CampaignTablesLoad tl;
     if (race::load_campaign_tables(game_root_of(), state_root, shared_db,
                                    [](std::string_view ref) { return carview::game_text_raw(std::string(ref)); }, &tl,
@@ -701,7 +708,9 @@ bool DriveApp::init(int& exit_code) {
                 saved.popularity_points, saved_pop_rank, saved.collected_wristband, saved.unlocked_bosses.size(),
                 saved.unlocked_showcases.size(), saved.finale_complete ? "won" : "open");
   if (have_saved) campaign.load_from_save(saved, saved_pop_rank);
-  title_menu_phase = cli_title_menu;
+  title.reset();
+  if (cli_title_menu) title.show_menu();
+  title.profile_error = save_read_error;
   if (!race_event.empty()) {
     if (world_dir.empty()) {
       std::fprintf(stderr, "carview: --event needs the world (--world)\n");
@@ -789,7 +798,12 @@ bool DriveApp::init(int& exit_code) {
       colorado_world() || lower_ascii(world_dir.filename().string()) == "coloradodirt";
   if (!world_dir.empty() && is_colorado_or_dirt) {
     std::string se;
-    if (freeroam::load_speed_activities(game_root_of(), speed_data, &se)) {
+    // ColoradoDirt (<package>/Media/Tracks/ColoradoDirt) reads its own set
+    // from the package's Media/gamemodes/ColoradoDirt.
+    const std::filesystem::path speed_dir =
+        colorado_world() ? std::filesystem::path()
+                         : world_dir.parent_path().parent_path() / "gamemodes" / "ColoradoDirt";
+    if (freeroam::load_speed_activities(game_root_of(), speed_data, &se, speed_dir)) {
       speed_tracker = std::make_unique<freeroam::SpeedActivityTracker>(speed_data);
       if (have_saved) speed_tracker->load_records(saved.speed_traps, saved.speed_zones);
       std::printf("speed activities: %zu traps, %zu zones loaded\n", speed_data.traps.size(), speed_data.zones.size());
@@ -1068,6 +1082,9 @@ bool DriveApp::init(int& exit_code) {
   } else {
     tod_clock.set_hour(hour);
   }
+  // An --event started above set its start time; the saved or --hour time
+  // must not overwrite it.
+  snap_to_event_tod(race_event);
   tod_clock.speed_scale = day_length_scale;
   colorado_world_dir = world_dir;
   start_world_assets_async(true);
@@ -1184,7 +1201,6 @@ bool DriveApp::handle_rally_world_switch() {
     rally_world_switch = 0;
     race.reset();
     race_event.clear();
-    restore_pre_race_tod();
     bool world_changed = false;
     if (dir > 0 && !rally_catalog.package_dir.empty()) {
       world_dir = rally_catalog.package_dir / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "Tracks" / "ColoradoDirt";
@@ -1195,13 +1211,24 @@ bool DriveApp::handle_rally_world_switch() {
       rally_hub_open = true;
       rally_hub_selected = 0;
       rally_notice.clear();
-      if (!speed_tracker) {
+      // ColoradoDirt's own traps and zones (the package's gamemodes), in
+      // place of Colorado's (V4-18).
+      {
         std::string se;
-        if (freeroam::load_speed_activities(game_root_of(), speed_data, &se)) {
+        freeroam::SpeedActivitiesData dirt;
+        if (freeroam::load_speed_activities(game_root_of(), dirt, &se,
+                                            freeroam::colorado_dirt_gamemodes(rally_catalog.package_dir))) {
+          if (speed_tracker) {
+            saved.speed_traps = speed_tracker->save_traps();
+            saved.speed_zones = speed_tracker->save_zones();
+          }
+          speed_data = std::move(dirt);
           speed_tracker = std::make_unique<freeroam::SpeedActivityTracker>(speed_data);
           if (have_saved) speed_tracker->load_records(saved.speed_traps, saved.speed_zones);
           std::printf("speed activities (ColoradoDirt): %zu traps, %zu zones loaded\n", speed_data.traps.size(),
                       speed_data.zones.size());
+        } else {
+          std::fprintf(stderr, "speed activities (ColoradoDirt): %s\n", se.c_str());
         }
       }
       world_changed = true;
@@ -1223,6 +1250,19 @@ bool DriveApp::handle_rally_world_switch() {
       rally_service_return = false;
       rally_service_resume_after_reload = false;
       rally_results_open = false;
+      {
+        std::string se;
+        freeroam::SpeedActivitiesData base;
+        if (freeroam::load_speed_activities(game_root_of(), base, &se)) {
+          if (speed_tracker) {
+            saved.speed_traps = speed_tracker->save_traps();
+            saved.speed_zones = speed_tracker->save_zones();
+          }
+          speed_data = std::move(base);
+          speed_tracker = std::make_unique<freeroam::SpeedActivityTracker>(speed_data);
+          if (have_saved) speed_tracker->load_records(saved.speed_traps, saved.speed_zones);
+        }
+      }
       world_changed = true;
       std::printf("rally: returned to Colorado (%s)\n", world_dir.string().c_str());
     }

@@ -555,7 +555,10 @@ constexpr float kPopupTitleDy = 12.0f, kPopupMessageDy = 8.0f, kPopupLinePitch =
 constexpr float kPopupPanelTop = 318.0f, kPopupPanelShown = 332.0f;
 constexpr float kPopupPanelTwoLines = 110.0f;
 
-bool draw_stay_in_car(ui::List& l, const RaceHud& r, float w, float h) {
+}  // namespace
+
+bool draw_message_popup(ui::List& l, const std::string& title_text, const std::string& message,
+                        const std::vector<ui4::Prompt>& prompts, float w, float h) {
   SceneScreen sc(kPopupScene);
   if (!sc.ok()) return false;
   const SceneDraw& sd = sc.scene();
@@ -568,7 +571,7 @@ bool draw_stay_in_car(ui::List& l, const RaceHud& r, float w, float h) {
     sc.at(bg).tint = ui::rgba(0, 0, 0);
   }
   const int title = sc.node("Title"), msg = sc.node("Message");
-  sc.text(title, text_of(race_text::kStayInCar));
+  sc.text(title, title_text);
   if (title >= 0) {
     sc.at(title).tint = kInk;
     sc.at(title).dy = kPopupTitleDy;
@@ -576,7 +579,7 @@ bool draw_stay_in_car(ui::List& l, const RaceHud& r, float w, float h) {
   // The message, a line at a time at the capture's pitch.
   std::vector<std::string> lines;
   if (msg >= 0) {
-    const std::string wrapped = sc.wrap(msg, format1(text_of(race_text::kStayInCarQ), r.stay_car), kPopupMessageWidth);
+    const std::string wrapped = sc.wrap(msg, message, kPopupMessageWidth);
     size_t from = 0;
     for (size_t nl; (nl = wrapped.find('\n', from)) != std::string::npos; from = nl + 1)
       lines.push_back(wrapped.substr(from, nl - from));
@@ -597,8 +600,15 @@ bool draw_stay_in_car(ui::List& l, const RaceHud& r, float w, float h) {
   sc.draw(l, f);
   for (size_t i = 0; i < lines.size(); ++i)
     sd.text(l, f, msg, lines[i], kWhite, 0.0f, kPopupMessageDy + kPopupLinePitch * float(i), false);
-  ui4::button_bar(l, {{"A", text_of(race_text::kYes)}, {"B", text_of(race_text::kNo)}}, w, h);
+  ui4::button_bar(l, prompts, w, h);
   return true;
+}
+
+namespace {
+
+bool draw_stay_in_car(ui::List& l, const RaceHud& r, float w, float h) {
+  return draw_message_popup(l, text_of(race_text::kStayInCar), format1(text_of(race_text::kStayInCarQ), r.stay_car),
+                            {{"A", text_of(race_text::kYes)}, {"B", text_of(race_text::kNo)}}, w, h);
 }
 
 // The black-out before the load: a darken, then black.

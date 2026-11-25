@@ -477,10 +477,16 @@ void test_rally_world_separation_and_sharing() {
   CHECK(std::fabs(mirror.post_config().crowd_sprite_distance - 52.0f) < 1e-4f);
   CHECK(mirror.balloons().empty());
 
-  // Switch primary back to Colorado -> shared mirror sees Colorado balloons & festival crowds immediately.
+  // Switch primary back to Colorado -> the shared mirror follows at once.
+  // WORLD-14/15: Colorado has no hard-coded balloons, aircraft, flags or
+  // crowd clusters; with no media there are no `.pgeo` or GameObjs.xml
+  // placements either, so every list is empty.
   primary.set_world({}, std::filesystem::path("media/tracks/colorado"), cfg);
   CHECK(!mirror.is_rally_world());
-  CHECK(!mirror.balloons().empty());
+  CHECK(mirror.balloons().empty());
+  CHECK(mirror.aircraft_banners().empty());
+  CHECK(mirror.flags().empty());
+  CHECK(mirror.crowds().empty());
   world::AnimatedWorldSystem::set_shared(nullptr);
 
   // 3. Verify ParticleLibrary records Rally world context cleanly when world_dir is ColoradoDirt.

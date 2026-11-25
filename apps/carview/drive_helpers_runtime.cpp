@@ -109,8 +109,25 @@ bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache,
   // The UI's files: the title update's media.zip over the disc's, file by
   // file (fh1data/ui_overlay.h).
   st->overlay = std::make_shared<fh1::UiOverlay>(game_root, fh1::UiOverlay::v4_media_zip_of(state_root));
+  // The content packages' loose UI textures (the 1000 Club's
+  // DLC/CarChallenge/*: <package>/Media/DLCZips/<zip>/Media/UI/Textures/Horizon).
+  auto dlc_dirs = std::make_shared<std::vector<std::filesystem::path>>();
+  if (!state_root.empty()) {
+    std::error_code ec;
+    for (const auto& r : {state_root / "user" / "0000000000000000" / "4D5309C9" / "00000002", state_root / "00000002"}) {
+      if (!std::filesystem::is_directory(r, ec)) continue;
+      for (const auto& pkg : std::filesystem::directory_iterator(r, ec)) {
+        const auto zips = pkg.path() / "Media" / "DLCZips";
+        if (!std::filesystem::is_directory(zips, ec)) continue;
+        for (const auto& z : std::filesystem::directory_iterator(zips, ec)) {
+          const auto dir = z.path() / "Media" / "UI" / "Textures" / "Horizon";
+          if (std::filesystem::is_directory(dir, ec)) dlc_dirs->push_back(dir);
+        }
+      }
+    }
+  }
   // The game's UI textures by path, on first use (FORMAT-UISCENES).
-  carview::set_ui_textures([root = game_root, st](const std::string& path, std::array<float, 4>& uv) {
+  carview::set_ui_textures([root = game_root, st, dlc_dirs](const std::string& path, std::array<float, 4>& uv) {
     if (carview::ui::atlas_find(path, uv)) return true;
     if (st->failed_textures.count(path)) return false;
     const bool t = path.rfind("T:", 0) == 0;
@@ -120,8 +137,14 @@ bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache,
     if (!file.ok() && !t) {
       std::error_code ec;
       const std::filesystem::path loose = root / "media" / "ui" / "textures" / "Horizon" / rel;
+      std::filesystem::path in_dlc;
+      for (const auto& d : *dlc_dirs)
+        if (in_dlc.empty() && std::filesystem::is_regular_file(d / rel, ec)) in_dlc = d / rel;
       if (std::filesystem::is_regular_file(loose, ec)) {
         std::ifstream f(loose, std::ios::binary);
+        r.data.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+      } else if (!in_dlc.empty()) {
+        std::ifstream f(in_dlc, std::ios::binary);
         r.data.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
       } else {
         if (!st->rally_probed) {

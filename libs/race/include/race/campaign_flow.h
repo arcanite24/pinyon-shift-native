@@ -166,6 +166,9 @@ void reset_campaign_tables();
 
 // Optional localized string-table resolver callback (e.g. bound to carview::game_text).
 void set_campaign_text_resolver(std::function<std::string(std::string_view)> resolver);
+// The resolver for the campaign's shipped captions (`_&N` -> raw text, with
+// its "{0}" kept). Without one the captions are the English tables' text.
+void set_campaign_caption_resolver(std::function<std::string(std::string_view)> resolver);
 
 // Resolves a clean human-readable display title for an event, ensuring raw internal
 // database keys (e.g. PLANE_RACE_001, FR05, FESTIVAL_SECOND) are never displayed.

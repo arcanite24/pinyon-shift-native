@@ -6,6 +6,7 @@
 #include <string>
 
 #include "settings.h"
+#include "ui4_chrome.h"
 
 namespace carview {
 
@@ -156,169 +157,146 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                   e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                 title_idle_s = 0.0;
               }
-              const bool has_save_opt =
-                  app.have_saved && (app.saved.career_started || app.saved.owned_garage || app.career.num_races > 0 || app.career.credits > 0);
-              const int item_count = has_save_opt ? 5 : 4;
-              auto confirm_title = [&]() {
-                if (!app.title_menu_phase) {
-                  app.title_menu_phase = true;
-                  app.title_selected = 0;
-                  return;
-                }
-                if (app.title_confirm_new) {
-                  if (app.title_confirm_selected == 0) start_new_career();
-                  else app.title_confirm_new = false;
-                  return;
-                }
-                const int idx = has_save_opt ? app.title_selected : (app.title_selected + 1);
-                if (idx == 0) {  // CONTINUE CAREER
-                  app.show_title = false;
-                  if (app.title_video.active()) app.title_video.close();
-                  if (app.title_saved_resume_pending) {
-                    app.title_saved_resume_pending = false;
-                    loading_screen.load_definitions(app.game_root_of(), "freeroam", app.state_root);
-                    loading_screen.start("COLORADO FREE ROAM", "HORIZON FESTIVAL");
-                    loading_min_until = 0.25;
-                    if (host.streamer) {
-                      std::string rerr;
-                      bool changed = false;
-                      const bool ok = host.streamer->update(app.saved_resume_spawn[0], app.saved_resume_spawn[2],
-                                                            &changed, &rerr);
-                      if (ok && changed && host.streamer->prepared().has_value()) {
-                        host.ground = &host.streamer->ground();
-                        host.follower.set_ground(&host.streamer->ground());
-                        host.set_staged_world();
-                        world::Spawn rsp;
-                        const char* rhow = nullptr;
-                        if (world::choose_spawn(*host.streamer, app.saved_resume_spawn, nullptr, nullptr, rsp, &rhow)) {
-                          vehicle.place({rsp.position[0], rsp.position[1] + 0.03, rsp.position[2]}, rsp.heading);
-                          const drive::Vec3 vp = vehicle.position();
-                          const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
-                          drive::Hit wh;
-                          if (host.streamer->ground().raycast({vp.x, vp.y + 0.8, vp.z}, {0, 1, 0}, 3.5, wh) ||
-                              host.streamer->ground().raycast({vp.x, vp.y + 0.7, vp.z}, vf, 2.5, wh)) {
-                            world::recover(*host.streamer, vehicle);
-                          }
-                        }
-                        drawn_before = vehicle.pose();
-                      } else if (ok) {
-                        // Async gather is running off-thread: keep loading_screen animating at 60 FPS until ready.
-                        pending_title_resume_gather = true;
+              // The front end's model (title_menu.h) takes each input and names
+              // the sound and the action; the app carries the action out.
+              auto continue_career = [&]() {
+                app.show_title = false;
+                if (app.title_video.active()) app.title_video.close();
+                // SINGLE PLAYER loads into free roam behind the tip card, a
+                // second at least, as the original's does.
+                loading_screen.load_definitions(app.game_root_of(), "freeroam", app.state_root);
+                loading_screen.start({});
+                loading_min_until = carview::LoadingScreen::kTitleMinSeconds;
+                if (!app.title_saved_resume_pending) return;
+                app.title_saved_resume_pending = false;
+                if (host.streamer) {
+                  std::string rerr;
+                  bool changed = false;
+                  const bool ok = host.streamer->update(app.saved_resume_spawn[0], app.saved_resume_spawn[2],
+                                                        &changed, &rerr);
+                  if (ok && changed && host.streamer->prepared().has_value()) {
+                    host.ground = &host.streamer->ground();
+                    host.follower.set_ground(&host.streamer->ground());
+                    host.set_staged_world();
+                    world::Spawn rsp;
+                    const char* rhow = nullptr;
+                    if (world::choose_spawn(*host.streamer, app.saved_resume_spawn, nullptr, nullptr, rsp, &rhow)) {
+                      vehicle.place({rsp.position[0], rsp.position[1] + 0.03, rsp.position[2]}, rsp.heading);
+                      const drive::Vec3 vp = vehicle.position();
+                      const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                      drive::Hit wh;
+                      if (host.streamer->ground().raycast({vp.x, vp.y + 0.8, vp.z}, {0, 1, 0}, 3.5, wh) ||
+                          host.streamer->ground().raycast({vp.x, vp.y + 0.7, vp.z}, vf, 2.5, wh)) {
+                        world::recover(*host.streamer, vehicle);
                       }
-                    } else {
-                      vehicle.place({app.saved_resume_spawn[0], app.saved_resume_spawn[1], app.saved_resume_spawn[2]},
-                                    app.saved_resume_spawn[3]);
-                      drawn_before = vehicle.pose();
                     }
+                    drawn_before = vehicle.pose();
+                  } else if (ok) {
+                    // Async gather is running off-thread: keep loading_screen animating at 60 FPS until ready.
+                    pending_title_resume_gather = true;
                   }
-                } else if (idx == 1) {  // NEW CAREER
-                  if (has_save_opt) {
-                    app.title_confirm_new = true;
-                    app.title_confirm_selected = 1;
-                  } else {
+                } else {
+                  vehicle.place({app.saved_resume_spawn[0], app.saved_resume_spawn[1], app.saved_resume_spawn[2]},
+                                app.saved_resume_spawn[3]);
+                  drawn_before = vehicle.pose();
+                }
+              };
+              auto run_title = [&](carview::TitleMenu::Step st) {
+                using A = carview::TitleMenu::Action;
+                using C = carview::TitleMenu::Cue;
+                switch (st.cue) {
+                  case C::kNone: break;
+                  case C::kMove: app.audio_host.trigger_ui(audio::UiCue::kMove); break;
+                  case C::kAccept: app.audio_host.trigger_ui(audio::UiCue::kAccept); break;
+                  case C::kBack: app.audio_host.trigger_ui(audio::UiCue::kCancel); break;
+                  case C::kDeny: app.audio_host.trigger_ui(audio::UiCue::kError); break;
+                }
+                switch (st.action) {
+                  case A::kNone: break;
+                  case A::kContinueCareer: continue_career(); break;
+                  case A::kStartCareer:
+                  case A::kNewCareer:
                     if (app.title_video.active()) app.title_video.close();
                     app.title_saved_resume_pending = false;
                     start_new_career();
-                  }
-                } else if (idx == 2) {  // FREE ROAM
-                  app.show_title = false;
-                  app.title_saved_resume_pending = false;
-                  if (app.title_video.active()) app.title_video.close();
-                } else if (idx == 3) {  // SETTINGS
-                  settings_page.load(read_settings(settings_path(), nullptr));
-                  settings_page.open();
-                } else if (idx == 4) {  // QUIT
-                  running = false;
+                    break;
+                  case A::kFreeRoam:
+                    app.show_title = false;
+                    app.title_saved_resume_pending = false;
+                    if (app.title_video.active()) app.title_video.close();
+                    break;
+                  case A::kSettings:
+                    settings_page.load(read_settings(settings_path(), nullptr));
+                    settings_page.open();
+                    break;
+                  case A::kQuit: running = false; break;
                 }
               };
-              auto back_title = [&]() {
-                if (app.title_confirm_new) app.title_confirm_new = false;
-                else if (app.title_menu_phase) app.title_menu_phase = false;
-                else running = false;
-              };
+              carview::TitleMenu& tm = app.title;
+              tm.has_save = app.played_career();
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) confirm_title();
-                else if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE) back_title();
-                else if (app.title_confirm_new && (k == SDLK_UP || k == SDLK_W || k == SDLK_DOWN || k == SDLK_S))
-                  app.title_confirm_selected = 1 - app.title_confirm_selected;
-                else if (app.title_menu_phase && (k == SDLK_UP || k == SDLK_W))
-                  app.title_selected = (app.title_selected + item_count - 1) % item_count;
-                else if (app.title_menu_phase && (k == SDLK_DOWN || k == SDLK_S))
-                  app.title_selected = (app.title_selected + 1) % item_count;
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) run_title(tm.confirm());
+                else if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE) run_title(tm.back());
+                else if (k == SDLK_X) run_title(tm.open_extras());
+                else if (k == SDLK_UP || k == SDLK_W) run_title(tm.move(-1));
+                else if (k == SDLK_DOWN || k == SDLK_S) run_title(tm.move(1));
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_SOUTH || b == SDL_GAMEPAD_BUTTON_START) confirm_title();
-                else if (b == SDL_GAMEPAD_BUTTON_EAST) back_title();
-                else if (app.title_confirm_new &&
-                         (b == SDL_GAMEPAD_BUTTON_DPAD_UP || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN ||
-                          b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT))
-                  app.title_confirm_selected = 1 - app.title_confirm_selected;
-                else if (app.title_menu_phase && b == SDL_GAMEPAD_BUTTON_DPAD_UP)
-                  app.title_selected = (app.title_selected + item_count - 1) % item_count;
-                else if (app.title_menu_phase && b == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
-                  app.title_selected = (app.title_selected + 1) % item_count;
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH || b == SDL_GAMEPAD_BUTTON_START) run_title(tm.confirm());
+                else if (b == SDL_GAMEPAD_BUTTON_EAST) run_title(tm.back());
+                else if (b == SDL_GAMEPAD_BUTTON_WEST) run_title(tm.open_extras());
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) run_title(tm.move(-1));
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) run_title(tm.move(1));
               }
               // Raw SDL_Joystick fallback navigation on title screen (for unmapped USB/BT pads).
               if (e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN && !SDL_IsGamepad(e.jbutton.which)) {
                 const Uint8 b = e.jbutton.button;
-                if (b == 0 || b == 7 || b == 9 || b == 11) confirm_title();
-                else if (b == 1) back_title();
+                if (b == 0 || b == 7 || b == 9 || b == 11) run_title(tm.confirm());
+                else if (b == 1) run_title(tm.back());
+                else if (b == 2) run_title(tm.open_extras());
               }
               if (e.type == SDL_EVENT_JOYSTICK_HAT_MOTION && !SDL_IsGamepad(e.jhat.which)) {
-                if (app.title_confirm_new && (e.jhat.value == SDL_HAT_UP || e.jhat.value == SDL_HAT_DOWN))
-                  app.title_confirm_selected = 1 - app.title_confirm_selected;
-                else if (app.title_menu_phase && e.jhat.value == SDL_HAT_UP)
-                  app.title_selected = (app.title_selected + item_count - 1) % item_count;
-                else if (app.title_menu_phase && e.jhat.value == SDL_HAT_DOWN)
-                  app.title_selected = (app.title_selected + 1) % item_count;
+                if (e.jhat.value == SDL_HAT_UP) run_title(tm.move(-1));
+                else if (e.jhat.value == SDL_HAT_DOWN) run_title(tm.move(1));
               }
               if (e.type == SDL_EVENT_MOUSE_MOTION) {
                 carview::ui::HitZone hz{};
-                if (ui_mouse_hit(e.motion.x, e.motion.y, hz)) {
-                  if (app.title_confirm_new && (hz.group == carview::ui::kHitConfirm || hz.group == carview::ui::kHitCancel)) {
-                    const int next_sel = (hz.group == carview::ui::kHitConfirm) ? 0 : 1;
-                    if (app.title_confirm_selected != next_sel) {
-                      app.title_confirm_selected = next_sel;
-                      app.audio_host.trigger_ui(audio::UiCue::kMove);
-                    }
-                  } else if (app.title_menu_phase && hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < item_count) {
-                    if (app.title_selected != hz.index) {
-                      app.title_selected = hz.index;
-                      app.audio_host.trigger_ui(audio::UiCue::kMove);
-                    }
-                  }
-                }
+                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow)
+                  run_title(tm.hover(hz.index));
               }
               if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                 if (e.button.button == SDL_BUTTON_RIGHT) {
-                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
-                  back_title();
+                  run_title(tm.back());
                 } else if (e.button.button == SDL_BUTTON_LEFT) {
-                  if (!app.title_menu_phase) {
-                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                    confirm_title();
-                  } else {
-                    carview::ui::HitZone hz{};
-                    if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
-                      if (app.title_confirm_new && (hz.group == carview::ui::kHitConfirm || hz.group == carview::ui::kHitCancel)) {
-                        app.title_confirm_selected = (hz.group == carview::ui::kHitConfirm) ? 0 : 1;
-                        app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                        confirm_title();
-                      } else if (!app.title_confirm_new && hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < item_count) {
-                        app.title_selected = hz.index;
-                        app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                        confirm_title();
-                      }
+                  carview::ui::HitZone hz{};
+                  const bool hit = ui_mouse_hit(e.button.x, e.button.y, hz);
+                  if (tm.popup == carview::TitleMenu::Popup::kConfirmNewCareer) {
+                    // YES / NO: only their pills (a stray click must not
+                    // start a new career over the save).
+                    if (hit && hz.group == carview::ui4::kHitButton) {
+                      if (hz.index == 0) run_title(tm.confirm());
+                      else if (hz.index == 1) run_title(tm.back());
                     }
+                  } else if (!tm.menu_visible() || tm.popup != carview::TitleMenu::Popup::kNone) {
+                    // Press Start and the one-button popups: a click
+                    // anywhere is A.
+                    run_title(tm.confirm());
+                  } else if (hit && hz.group == carview::ui::kHitRow) {
+                    tm.hover(hz.index);
+                    if (tm.selected == hz.index) run_title(tm.confirm());
+                  } else if (hit && hz.group == carview::ui4::kHitButton) {
+                    // The help bar's pills: A SELECT, B BACK, X EXTRAS.
+                    if (hz.index == 0) run_title(tm.confirm());
+                    else if (hz.index == 1) run_title(tm.back());
+                    else if (hz.index == 2) run_title(tm.open_extras());
                   }
                 }
               }
-              if (e.type == SDL_EVENT_MOUSE_WHEEL && app.title_menu_phase && !app.title_confirm_new) {
-                if (e.wheel.y > 0) app.title_selected = (app.title_selected + item_count - 1) % item_count;
-                else if (e.wheel.y < 0) app.title_selected = (app.title_selected + 1) % item_count;
-                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              if (e.type == SDL_EVENT_MOUSE_WHEEL && tm.menu_visible()) {
+                if (e.wheel.y > 0) run_title(tm.move(-1));
+                else if (e.wheel.y < 0) run_title(tm.move(1));
               }
               return true;
             }
@@ -409,6 +387,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
             //    LB/RB or Q/E cycles filters, LT/RT/wheel zooms, B/Esc/M/Back closes).
             if (map_open) {
               bool close = false;
+              // The scene-driven map's filter popup, dialogs, LB and X first.
+              if (map_screen_event(e)) return true;
               auto zoom_by = [&](double f) {
                 map_cam.nudge_target_zoom(f);
                 map_dirty = true;
@@ -431,8 +411,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 app.audio_host.trigger_ui(audio::UiCue::kMove);
               };
               auto resolve_gps_target = [&](double& tx, double& tz, std::string& label, traffic::GpsDestKind& dk) {
-                tx = map_cx;
-                tz = map_cz;
+                tx = map_px;
+                tz = map_pz;
                 label = "CUSTOM WAYPOINT";
                 dk = traffic::GpsDestKind::kGeneric;
                 if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
@@ -456,9 +436,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                   }
                   return;
                 }
-                const bool show_barns = map_filter == MapFilter::kAll || map_filter == MapFilter::kDiscovery;
-                const bool show_signs = map_filter == MapFilter::kAll || map_filter == MapFilter::kSigns ||
-                                        map_filter == MapFilter::kDiscovery;
+                const bool show_barns = map_filter.shows(MapCategory::kBarnFind);
+                const bool show_signs = map_filter.shows(MapCategory::kDiscountSign);
                 if ((show_barns || show_signs) && app.progress_loaded) {
                   const bool reveal = app.reveal || app.treasure_map_setting ||
                                       slice12.trainer.effective_reveal_collectibles();
@@ -507,8 +486,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 resolve_gps_target(tx, tz, label, dk);
                 // Toggle off if pressing A/Enter/Click again on the active GPS destination;
                 // ALWAYS keep the World Map open so the player can inspect the GPS route!
-                if (app.gps_nav.active() &&
-                    std::hypot(tx - app.gps_nav.route().dest_x, tz - app.gps_nav.route().dest_z) < 120.0) {
+                if (app.gps_nav.active()) {
                   app.gps_nav.clear();
                   app.audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
                   app.audio_host.trigger_ui(audio::UiCue::kCancel);
@@ -548,12 +526,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                           app.audio_host.trigger_ui(audio::UiCue::kError);
                           return;
                         }
-                        // The outpost's fast-travel price (GlobalRegistry Activities/Outposts:
-                        // 10,000 / 7,500 / 5,000 CR, free with its 3 PR Stunts done).
-                        const int64_t ft_fee =
-                            ft_anywhere ? 0
-                                        : std::max<int64_t>(0, app.outpost_progress.fast_travel_cost(
-                                                                   app.outposts, op->id, app.fast_travel_tuning));
+                        // The map's fee: less for each of the outpost's missions done.
+                        const int64_t ft_fee = outpost_travel_fee(op->id);
                         if (ft_fee > 0 && app.career.credits < ft_fee) {
                           notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
                           notice_until = vehicle.time() + 3.5;
@@ -685,13 +659,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 if (k == SDLK_EQUALS || k == SDLK_PLUS || k == SDLK_KP_PLUS) zoom_by(1.35);
                 if (k == SDLK_MINUS || k == SDLK_KP_MINUS) zoom_by(1 / 1.35);
                 if (!e.key.repeat && k == SDLK_Q) {
-                  map_filter = MapFilter((int(map_filter) + int(MapFilter::kCount) - 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
                 if (!e.key.repeat && k == SDLK_E) {
-                  map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -721,8 +695,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
                   map_dragging = false;
                   map_drag_moved = false;
-                  if (hz.group == carview::ui::kHitTab && hz.index >= 0 && hz.index < int(MapFilter::kCount)) {
-                    map_filter = MapFilter(hz.index);
+                  if (hz.group == carview::ui::kHitTab && hz.index >= 0 && hz.index < kMapFilterRows) {
+                    map_filter.toggle(MapFilterRow(hz.index));
                     map_dirty = true;
                     update_map_selection();
                     app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -735,7 +709,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                     } else if (hz.index == 1) {
                       map_fast_travel_or_secondary();
                     } else if (hz.index == 2) {
-                      map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                      map_filter_open = true;
                       map_dirty = true;
                       update_map_selection();
                       app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -788,13 +762,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 if (b == SDL_GAMEPAD_BUTTON_WEST) map_fast_travel_or_secondary();
                 if (b == SDL_GAMEPAD_BUTTON_NORTH) map_center_on_car();
                 if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
-                  map_filter = MapFilter((int(map_filter) + int(MapFilter::kCount) - 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
                 if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
-                  map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -952,13 +926,10 @@ bool DriveSession::handle_events_and_outpost_event(const SDL_Event& e) {
                       notice = "QUIT RACE TO FAST TRAVEL";
                       notice_until = vehicle.time() + 3.0;
                     } else {
-                      // The festival is always free; an outpost costs its fast-travel price.
-                      const bool ft_free = (item.kind == OutpostHubItem::kFastTravelFestival) ||
-                                           slice12.trainer.effective_fast_travel_anywhere() || !app.have_outposts;
+                      // The map's rule: the festival places are free, an
+                      // outpost costs less for each of its missions done.
                       const int64_t ft_fee =
-                          ft_free ? 0
-                                  : std::max<int64_t>(0, app.outpost_progress.fast_travel_cost(
-                                                             app.outposts, item.ref_id, app.fast_travel_tuning));
+                          item.kind == OutpostHubItem::kFastTravelFestival ? 0 : outpost_travel_fee(item.ref_id);
                       if (ft_fee > 0 && app.career.credits < ft_fee) {
                         notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
                         notice_until = vehicle.time() + 3.5;

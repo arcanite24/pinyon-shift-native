@@ -276,6 +276,11 @@ struct UiLoadingTip {
   std::string message_key;  // e.g. "Tips:IDS_PopularityTip"
   int layout = 1;
   float display_time = 8.0f;
+  // The group's own attributes: how many of its tips one load shows
+  // (`tipcount`) and whether they are picked at random or in file order
+  // (`order="sequential"`).
+  int group_tip_count = 1;
+  bool group_sequential = false;
 };
 bool parse_loading_defs_xml(std::string_view xml, std::vector<UiLoadingTip>& out);
 

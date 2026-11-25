@@ -209,6 +209,7 @@ inline std::vector<MapFilterTabRect> layout_map_filter_tabs(const std::vector<st
 #include "hud_notify.h"
 #include "race_flow.h"
 #include "rally_hub.h"
+#include "title_menu.h"
 #include "ui.h"
 
 namespace carview {
@@ -294,19 +295,11 @@ struct RaceHud {
   int stay_selected = 0;    // 0 YES, 1 NO
 };
 
-// Title screen state (120_P_PRE_SPLASH parity).
+// The front end (120_P_PRE_SPLASH, title_menu.h): the model's state for
+// one frame. The PressStart movie draws under it.
 struct TitleScreenHud {
   bool active = false;
-  bool menu_phase = false;  // false: splash ("PRESS ENTER / [A] TO START"), true: title menu
-  bool has_save = false;
-  bool confirm_new_career = false;
-  int confirm_selected = 1;  // 0 CONFIRM, 1 CANCEL
-  std::vector<std::string> menu;
-  int selected = 0;
-  // Save preview card on right side when hovering CONTINUE CAREER.
-  std::string save_band_name, save_car_name, save_car_class;
-  int save_car_pi = 0, save_band_points = 0, save_wins = 0, save_races = 0, save_pop_rank = 250;
-  int64_t save_credits = 0;
+  TitleMenu menu;
 };
 
 // Free-roam world-space projected event / Festival trigger marker (hud-freeroam-event-marker.png).
@@ -461,8 +454,11 @@ struct GpsHud {
 
 // Interactive Pause Map overlay card (hovered destination info, filter tabs,
 // roads discovered counter, and legend/help bar).
+struct MapScreenHud;
 struct MapOverlayHud {
   bool active = false;
+  // The scene-driven map (map_screen.h); null: the interim overlay below.
+  const MapScreenHud* screen = nullptr;
   std::string title;
   std::string subtitle;
   std::string detail_line;      // rich event / PR stunt / barn find rumour metadata line

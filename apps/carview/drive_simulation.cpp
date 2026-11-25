@@ -423,7 +423,6 @@ bool DriveSession::free_roam_step() {
           }
         }
         if (!app.race) {
-          app.restore_pre_race_tod();
           const drive::Vec3 at = pos_now;
           auto restore_pr_stunt_loaner = [&]() {
             if (!app.pr_stunt_loaner_active) return;
@@ -523,12 +522,12 @@ bool DriveSession::free_roam_step() {
                 const NotifyKind done = st.kind == freeroam::PrStuntKind::kSpeed   ? NotifyKind::kSpeedStuntDone
                                         : st.kind == freeroam::PrStuntKind::kPhoto ? NotifyKind::kPhotoShootDone
                                                                                    : NotifyKind::kSkillStuntDone;
-                const int64_t ft_cost =
-                    app.outpost_progress.fast_travel_cost(app.outposts, st.outpost_id, app.fast_travel_tuning);
-                // The popup reads FAST TRAVEL DISCOUNT EARNED (GasStation strings).
+                // No credits: the popup reads FAST TRAVEL DISCOUNT EARNED
+                // (GasStation strings) on a first completion.
                 popup = Popup::notify(done, vehicle.time());
+                if (first_time) popup.text = text_of(map_text::kCardEarned);
                 std::printf("t %.2f s: %s done%s, fast travel %lld CR\n", vehicle.time(), st.title.c_str(),
-                            first_time ? "" : " (repeat)", static_cast<long long>(ft_cost));
+                            first_time ? "" : " (repeat)", static_cast<long long>(outpost_travel_fee(st.outpost_id)));
                 app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
                 app.gps_nav.clear();
                 save_due = true;
@@ -640,8 +639,9 @@ bool DriveSession::free_roam_step() {
               const std::string t = carview::game_text("_&" + std::to_string(ref));
               if (!t.empty() && t[0] != '_') named = t;
             }
+            // Ready is not yet in the garage: the "car added" sting plays
+            // when the garage collects it.
             popup = Popup::notify(NotifyKind::kBarnReady, vehicle.time(), {named});
-            app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
             apply_campaign_action(app.campaign.on_barn_restored(b.name, named, &app.audio_host));
             std::printf("t %.2f s: %s restored after %.1f km: %s ready at the garage\n", vehicle.time(),
                         b.name.c_str(), (app.progress.total_distance - app.progress.barns[size_t(ev.index)].found_at) / 1000,
@@ -666,7 +666,6 @@ bool DriveSession::free_roam_step() {
             std::snprintf(line, sizeof line, "barn find! dak is restoring %s", named.c_str());
             popup = Popup::notify(NotifyKind::kBarnRestoring, vehicle.time(), {named});
             app.campaign.on_barn_find(true, b.name, named, &app.audio_host);
-            app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
             std::printf("t %.2f s: %s found: %s (Data_Car %d), restored after %.1f km\n", vehicle.time(), b.name.c_str(),
                         named.c_str(), b.car_id,
                         freeroam::barn_restore_distance(b, app.progress.barns[size_t(ev.index)].found_at) / 1000);
@@ -1764,7 +1763,7 @@ bool DriveSession::commit_race_award() {
       race::RaceFinishStanding a_st;
       a_st.place = (pl == 1 ? 2 : 1);
       a_st.driver_name = sc_opp.spec().display_name;
-      a_st.car_name = "AIRBORNE CHALLENGER";
+      a_st.car_name = sc_opp.spec().vehicle_name;  // AirChallenges IDS_VehicleN
       a_st.finish_time_s = sc_opp.pose().finished ? sc_opp.pose().finish_time : -1.0;
       const double est_gap =
           (a_st.finish_time_s > 0.0 && p_st.finish_time_s > 0.0)

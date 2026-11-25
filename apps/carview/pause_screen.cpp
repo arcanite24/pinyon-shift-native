@@ -155,7 +155,9 @@ void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float 
   if (list >= 0) sc.at(list).dx = kListDx, sc.at(list).dy = kListDy;
 
   const int n = int(ps.rows.size());
-  constexpr int kSlots = 7;
+  // The scene's nine rows (Button0..8): the packages' 1000 CLUB and HORIZON
+  // RALLY make nine (club_pause.png); the rest stay hidden.
+  constexpr int kSlots = 9;
   const int first = window_first(ps.selected, n, kSlots);
   for (int slot = 0; slot < kSlots; ++slot) {
     const int btn = sc.node("Button" + std::to_string(slot));
@@ -416,8 +418,9 @@ StringRef pause_row_text(PauseMenu::Action a, bool in_race) {
     case Action::kUpgrades: return {{}, {}, 0, "UPGRADES", true};
     case Action::kPaint: return {{}, {}, 0, "PAINT", true};
     case Action::kAutoshow: return {{}, {}, 0, "AUTOSHOW", true};
-    case Action::kRally: return {{}, {}, 0, "HORIZON RALLY", true};
-    case Action::kClub: return {{}, {}, 0, "1000 CLUB", true};
+    // The title update's packages' rows (their own tables).
+    case Action::kRally: return {"Main", "IDS_HorizonRally", 0, "HORIZON RALLY"};
+    case Action::kClub: return {"CarChallenges", "IDS_PauseMenu_CarChallenges", 0, "1000 CLUB"};
     case Action::kCarClub: return {{}, {}, 0, "CAR CLUB", true};
     case Action::kAchievements: return {{}, {}, 0, "ACHIEVEMENTS", true};
     case Action::kReplay: return {{}, {}, 0, in_race ? "VIEW REPLAY" : "REPLAYS", true};
@@ -454,6 +457,10 @@ void fill_pause_screen(const PauseMenu& menu, double now, PauseScreenHud& out) {
   out.fade = kPauseFadeSeconds > 0 ? std::clamp((now - menu.shown_at) / kPauseFadeSeconds, 0.0, 1.0) : 1.0;
   if (out.fade >= 1.0) out.from = -1;
   out.sponsor_selected = menu.sponsor_selected;
+}
+
+void bind_pause_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& band_texture) {
+  bind_player_bar(sc, st, band_texture);
 }
 
 bool draw_pause_screen(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float w, float h) {

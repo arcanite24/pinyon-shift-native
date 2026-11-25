@@ -106,6 +106,10 @@ class AudioHost {
   bool init_codriver(const std::filesystem::path& rally_package_dir, const std::filesystem::path& cache_dir,
                      std::string_view language = "EN");
   void set_ui_music(audio::AudioEngine::UiMusicMode mode);
+  // A load drawn outside the frame loop (the world host's): the Loading mix
+  // (the radio ducked, no menu music) until it ends, as update_frame's
+  // `loading` gives the session's.
+  void set_blocking_load(bool on);
   uint8_t map_tire_surface_group(std::string_view physics_surface) const;
   int16_t map_tire_surface_index(std::string_view physics_surface) const;
   bool init_vo(const std::filesystem::path& game_root, std::string_view language = "EN");

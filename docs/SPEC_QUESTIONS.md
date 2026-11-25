@@ -1929,15 +1929,17 @@ LEDs (0:05..0:01, then GO) and shows nothing on screen until the signal,
 when `947_HUD` `I_321_Go`'s `GO` text shows GO! (`15_countdown_orig.png`,
 `15b_countdown_go_orig.png`). The node `I_321_Go/Group/TEXT_COUNT` is laid
 out at full opacity but nothing in those captures fills it. The engine
-runs the world clock that the gantry LEDs read from the race clock, but
-its gantry panels stay dark at the FR16 start (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
-and textured, and the shipped shaders carry the LED branch, so the
-cause lies past that (the texture or the draw's intensity) and is not
-found), so until they light it fills
-`TEXT_COUNT` with 3, 2, 1 at every start as an interim. Unknown: whether a start with no gantry (a street race, a
-point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
-Needed, narrow: a capture of such a start, or the code that writes
-`TEXT_COUNT`.
+runs the world clock that the gantry LEDs read from the race clock, and
+its gantry panels now light at the FR16 start. They had been turned to
+face their normals, which point into the gantry, and were back-face
+culled; the file's own order is culled too, and with the corners
+reversed they light. Only the FR16 gantry is checked. So the engine, like
+those captures, leaves `TEXT_COUNT` empty and shows only GO!.
+
+Unknown: whether a start with no gantry (a street race, a point-to-point
+started on an open road) fills `TEXT_COUNT` with 3, 2, 1; the engine
+shows no count there. Needed, narrow: a capture of such a start, or the
+code that writes `TEXT_COUNT`.
 
 ## Q68 (FEEL-11, not blocking): FrictionTorqueMod selection, and our AI
 
@@ -2745,7 +2747,22 @@ GlobalRegistry `Activities/BarnFinds`. Five points are still open:
   not track dialogue, so its timer never pauses for it.
 - **Collection.** The title collects a ready car on its garage Barn Finds
   screen, with a COLLECT CAR confirmation. The engine collects it when the
-  garage opens, and the garage insert itself was not traced.
+  garage opens. UI.zip has no Barn Finds scene: its only barn scene is
+  `H_BARN_FIND_HUD`, the driving HUD's. The screen is therefore probably a
+  garage car list with Barnfind's popups:
+  - `IDS_Collect_Popup_Title` / `_Message`: "COLLECT CAR", "This Barn Find
+    will now be added to your garage."
+  - `IDS_Wrecked_Popup_*`: "NOT READY", "Please come back later. This Barn
+    Find is still being restored".
+  - `IDS_Locked_Popup_*`: "NOT DISCOVERED", "This Barn Find has not been
+    discovered yet!".
+  - `IDS_Trade_BarnFind_*`: "CAN'T SELL BARN FIND".
+  - `IDS_ViewMapAction`: "VIEW ON MAP".
+
+  Porting it means the garage list's Barn Finds filter, its entries for
+  every barn state, and those popups on a message-popup scene. That is the
+  garage screen's work, not a scene of its own, and it is left for the
+  garage screen's port.
 
 Needed: what the two predicates test, the timer behind the idle check, and
 the value behind the ready check.
@@ -2761,15 +2778,356 @@ those lines are blank or interim:
 - **Blank:** the wristband announcement, the Star Showdown challenge and
   victory lines, and the Showcase intro and victory lines. Their dialogue
   cues still play the VO.
-- **Interim:** the campaign cinematics' eyebrows, detail lines and badges
-  (for example "HORIZON STAR SHOWDOWN • 1-ON-1 PINK SLIP"), and the unlock
-  subtitles ("Star Showdown unlocked! ..."). Each is engine text.
+- **From the string tables** (the English text is the fallback without a
+  resolver):
+
+  | Where | String |
+  |---|---|
+  | Wristband ceremony eyebrow | PostRaceFlow `IDS_WristbandUnlocked` "WRISTBAND UNLOCKED!" |
+  | Showcase intro eyebrow and detail | InGame `IDS_HudMsg_ShowcaseEvent` "SHOWCASE EVENT", CareerEventUI `IDS_ShowcaseInstructions` "WIN THE RACE TO KEEP THE CAR" |
+  | Showcase unlock subtitle | InGame `IDS_ShowcaseEventUnlocked_Message` "SHOWCASE EVENT UNLOCKED!" |
+  | Star Showdown intro eyebrow and detail | CareerEventUI `IDS_TitleNemesisRace` "STAR SHOWDOWN", `IDS_NemesisCalloutTitle` "Beat {0}" |
+  | Showcase and Star Showdown victory eyebrows | CareerEventUI `IDS_Headline_Event_Won` "WINNER" |
+  | Collect-wristband objective | InGame `IDS_CollectWristband` "COLLECT {0} WRISTBAND", `IDS_WristbandNewAvailable` "NEW WRISTBAND AT RACE CENTRAL" |
+  | Finale objective | InGame `IDS_HudMsg_HorizonFinal` "HORIZON FINAL", PostRaceFlow `IDS_HeadlineEventAvailableLn2` "WIN TO BE CHAMPION!" |
+  | Star Showdown objective detail | "Beat {0}" |
+  | Barn rumour subtitle | Barnfind `IDS_Spawned_Body` "NEW BARN FIND RUMOR" |
+  | Barn found detail and subtitle | Activities `IDS_BarnfindBeingRestored_Message` "{0} IS BEING RESTORED", `IDS_BarnfindBeingRestored_Title` "DAK WILL CALL YOU WHEN IT'S READY" |
+  | Barn ready headline, detail and subtitle | Barnfind `IDS_Ready_Message` "BARN FIND READY - {0}", `IDS_Title` "Head to the garage to collect it!" |
+
+- **Interim, with no string to use:** the wristband ceremony's subheadline
+  and badge ("7 NEW FESTIVAL EVENTS • STAR SHOWDOWN UNLOCKED", "WRISTBAND
+  TIER 2 / 7"), the Showcase and Star Showdown badges and victory
+  subheadlines ("POPULARITY RANK #250 SHOWCASE", "PINK SLIP CLAIMED"), the
+  Star Showdown unlock subtitle ("Star Showdown unlocked! ..."), the
+  "COMPLETE" and "DEFEATED" headline suffixes, and the free-roam objective
+  texts. Each is engine text.
 - **Casing:** names go in as the string tables hold them ("Hailey Harper",
   "Manic MINI"). Only captions built from an all-capitals format are in
   capitals ("{0} WRISTBAND" gives "PURPLE WRISTBAND").
 
-Needed: which of these screens the title draws, what text each one shows,
-and whether the UI changes the case.
+Needed: which of these screens the title draws, which strings each one
+uses (the ones above are matched by their wording, not traced to their
+callers), and whether the UI changes the case.
+
+## Q107 (WORLD-11, not blocking): how an ordinary event sets and holds the time of day
+
+The original changes the clock by a request: a target (plus 86,400 to pass
+midnight) and a rate, which the clock runs at until it lands and pauses
+there; a held-clock flag keeps the title's own setters off it. The engine
+has it (`TodClock::request`). The only callers traced are two special
+flows: the first-time-career intro (a 45 s ramp to 18:00, 14:30 or
+midnight, picked by state we have not matched) and the E3 demo. What an
+ordinary event start writes is not traced.
+
+Seen in the original: from a 22:00 free roam The Gauntlet loads in
+daylight, so the start time is set at once. Quitting that event (pause,
+QUIT RACE, confirm) returns to free roam still in daylight: the pre-race
+time is not put back. The engine now does the same: it sets the event's
+`TimeOfDayStart` at once, holds the clock through the race (SKY_AND_TOD
+§7: paused on fixed-time events) and lets free roam carry on from there.
+The restore it used to do was the backwards jump the playtest saw.
+
+Still open: whether finishing an event (rather than quitting) leaves the
+clock in the same place, and whether free roam resumes at the event's
+start time or at the time it had reached. Needed: a capture either side
+of a finished event, or the writer of the clock's time and hold flag on
+event unload.
+
+## Q108 (WORLD-12, not blocking): where world lamp glows come from
+
+The original's lamp glows are camera-facing sprites drawn after the opaque
+world (a sprite texture times a 1D colour ramp, additive, depth-tested,
+a per-lamp `SwitchOnLights` threshold and a `LookFadeValues` cone). Not
+decoded: where each glow's position, direction, colour, radius, threshold
+and textures come from (a record in the track or prop data, or the prop's
+model). The engine makes its own: a glow on props whose names read as
+lamps or floodlights, colour by kind, a hashed threshold, re-seated into
+the prop's box and dropped when no box matches, drawn as a procedural
+corona. Without the source, changing those constants trades one guess for
+another, so they stay as they are.
+
+Needed: the glow record format and its sprite and ramp textures, or a
+night frame's draw log of the lamp-glow draws with their vertex data.
+
+## Q109 (WORLD-14, not blocking): spectator clips and placements
+
+The original steps each spectator one frame per rendered frame through a
+`Spectators.zip` clip and, at its end, picks another clip or loops. The
+engine parses each `.anim.bin` header and skeleton but not its keys, and
+poses spectators with its own procedural moves. Hard-coded clusters and
+the head turn toward the car are gone (WORLD-14); the remaining clusters
+are placed from `GameObjs.xml` gameplay nodes by the engine's own offsets,
+not from a crowd record (`Colorado_track_00.crowd` is 12 bytes).
+
+Needed: the `.anim.bin` key layout (rotation and translation tracks, rate)
+and the source of the start-line spectator instances.
+
+## Q110 (WORLD-POST, not blocking): overall exposure and grade against the original
+
+Matched free-roam captures (`world_{day,dusk,night}_orig.png` against
+`world_*_engine_after.png`) put the engine darker overall: mean luma 96.6
+against 111.6 by day, 53.0 against 58.8 at dusk, 29.4 against 34.5 at
+night, with the sky brighter and bluer and the ground darker. The
+originals were taken with the recomp's bloom, depth of field and MSAA
+off, and the car and pose differ, so part of the gap is the frame, not
+the grade. No tone-map, LUT or exposure change was made to close it by
+eye.
+
+Needed: the original's post chain constants for one time of day
+(exposure, tone curve, colour cube in use), or matched captures with the
+same post settings on both sides.
+
+## Q111 (WORLD-15, not blocking): where the animated showcase props stand in free roam
+
+The `animatedobjects.zip` `.pgeo` meshes (balloon race, showcase-intro
+balloons, air walkers, main stage lights, plane banner, blimp, Ferris
+wheel) are placed by `AnimatedWorldSystem::populate_pgeo_placements` at
+anchors the engine picked (box-derived spreads, the festival hub, a
+reservoir vista) with its own colour palettes. The fixed-position props
+are gone (WORLD-15), but these placements are not from a placement
+record either. Whether the original shows any of them outside the
+showcase events that own them is not known.
+
+Needed: the placement source for these `.pgeo` objects (a track object
+list or the showcase event scripts), and a free-roam capture of the
+festival and a showcase start in the original.
+
+runs the world clock that the gantry LEDs read from the race clock, but
+its gantry panels stay dark at the FR16 start (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
+and textured, and the shipped shaders carry the LED branch, so the
+cause lies past that (the texture or the draw's intensity) and is not
+found), so until they light it fills
+`TEXT_COUNT` with 3, 2, 1 at every start as an interim. Unknown: whether a start with no gantry (a street race, a
+point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
+Needed, narrow: a capture of such a start, or the code that writes
+`TEXT_COUNT`.
+
+## Q87 (UI, not blocking): the pause map's view
+
+The original draws the pause map from `MapProfileFullscreen.xml` and the
+captures (`map_open_orig.png`, `map_popup_*_orig.png`) look top-down, but
+whether its camera tilts or pans in perspective while zooming is not
+known. The engine draws a flat top-down raster (`MapView::pause_map`)
+under `H_MAP`. Needed, narrow: a capture sequence of a full zoom in and
+out, or the map camera's setup in the code.
+
+## Q88 (UI, not blocking): the map filter's combination and Rivals
+
+`H_FIXED_SETTING_LIST` titled `IDS_FilterMap_Title` lists twelve rows,
+all ticked in `map_filter_orig.png`. The engine shows an icon when any
+ticked row covers it (New, Not Won and the category rows OR'd), ticks or
+clears every row with All (cleared in `map_filter_alloff_orig.png`), and
+keeps All ticked exactly when every row is (`map_filter.h`). Unknown:
+whether New and Not Won narrow the category rows instead (AND), and what
+Rivals shows (the engine has no rivals, so the row covers nothing).
+Needed, narrow:
+captures of the map with only New, only Not Won and only Rivals ticked.
+
+## Q89 (UI, not blocking): the minimap camera
+
+In `04_roam_hud_day_idle_orig.png` the minimap's arrow sits about 100 px
+down the 180 px panel (y 520 at 720 lines) with roads well ahead of it.
+The engine uses a fixed camera 108 m up and 54 m behind the car, which
+puts the arrow there and shows about 160 m ahead and 45 m behind. In
+`05_roam_hud_day_drive_orig.png` (moving slowly, same place) the icons sit
+about 15% further apart and the arrow a few pixels lower than at rest, so
+the original's view changes a little with the car, the other way from
+pulling out. Unknown: the original's real camera height and pitch, and how
+it follows speed. Needed, narrow: captures of the minimap at rest and at
+200 km/h on the same road, or the minimap camera's parameters.
+
+## Q90 (UI, not blocking): fast travel to undiscovered outposts, and A on the map
+
+The engine offers FAST TRAVEL only on discovered outposts and the
+festival places, and A with a route set clears it wherever the cursor is
+(the help bar then reads CLEAR ROUTE). Unknown: whether the original
+lists an undiscovered outpost as a destination, and whether A over a
+different icon replaces the route instead of clearing it. Needed, narrow:
+a capture with the cursor on an undiscovered outpost, and one of A over
+another icon while a route is set.
+
+## Q91 (UI, not blocking): the post-stunt fast travel card
+
+When a mission at an outpost is done for the first time, the original
+adds GasStation `IDS_MissionCompletedDiscount` (FAST TRAVEL DISCOUNT
+EARNED) to the stunt's completed headline; the strings `IDS_Discount`
+({0}% OFF) and `IDS_AvailableAtHub` (AVAILABLE AT {0}) suggest a card with
+the discount and the outpost. No travel offer follows. The engine shows
+the headline with FAST TRAVEL DISCOUNT EARNED as the message, without the
+percentage, the outpost or the credits. Needed, narrow: a capture of a
+first PR stunt completion.
+
+## Q92 (UI, not blocking): X DETAILS on the map
+
+X on an event or a street-race hub shows the event's ticket over the map
+(`map_popup_event_details_orig.png`). That screen is the race pre-screen,
+so the engine opens its events page at the hub (or the whole list) in the
+meantime. B on the ticket returns to the map with the event still
+selected (`map_popup_event_details_back_orig.png`). Unknown: whether A on
+the ticket starts the event or sets a route. Needed, narrow: a capture of
+A on the ticket.
+
+## Q136 (BOOT-01, BOOT-06, not blocking): skipping the boot splashes and the attract loop
+
+The engine boots with the original's two splashes (`T10_MS_Combined`,
+`Dolby_Corona_Intro`) and, after 53 s idle on Press Start, plays
+`forza_intro.wmv` and returns to Press Start. Not recorded: which inputs
+skip a splash (the engine keeps its hold-to-skip), whether any input other
+than a button resets the idle timer, and whether the attract movie can be
+skipped. `Forza_Tone.wmv` is no longer played anywhere; where the original
+uses it is not known.
+
+Needed: a recorded boot with inputs during each splash, and one attract
+cycle with an input partway through.
+
+## Q137 (BOOT-04, not blocking): the profile step after Press Start
+
+The original reads its profile after Press Start, then shows the menu.
+The engine reads its save at startup and shows a fixed 0.35 s step (the
+logo fades, then the menu shows; `TitleMenu::kProfileSeconds`), because the
+scene's `START_OUTRO` and `MENU_INTRO` slides are not decoded. There is no
+profile picker or storage-device step. A save that does not read shows
+`Main/IDS_ProfileCorrupt_*` (INVALID PROFILE) once the menu is up; what
+the original does next (new profile, retry) is not known.
+
+Needed: the slides' timelines, and the original's flow for a damaged
+profile.
+
+## Q138 (BOOT-02, BOOT-03, not blocking): the front-end menu's states and its offline popup
+
+The selected row's size step (1.03) and offset, and the unselected row's
+28 px indent and grey (195) are measured on `02_title_menu_orig.png`, not
+read from the scene's states; `menu_shadow` is hidden. MULTIPLAYER offline
+shows `LiveStrings/IDS_Not_Connected_To_Live_PopUp_*` (NO NETWORK ACCESS)
+on `H_MESSAGE_POPUP`, the title the original uses for MESSAGE CENTER
+offline; the original's popup for MULTIPLAYER on PC is not recorded.
+
+Needed: the decoded `SPLASH_MENU_BUTTON` states, and a capture of
+MULTIPLAYER chosen offline.
+
+## Q139 (LOAD-01, LOAD-02, not blocking): which tips a load shows
+
+Each load shows its LoadingDefs.xml group's `tipcount` tips (random, or
+the next in file order for `order="sequential"`, a cursor per group for
+the session), each for its `displaytime`; a load longer than all of them
+comes round to the first again. An event's group is `festival_N` with
+N = the event's level + 1; `11b_event_loading_orig.png` (a level-1 event
+while the player held the Green wristband) fits both the event's level
+and the player's wristband, so which one the original uses is open.
+Qualifiers use `festival_heats`, street races `streetrace`, showcases
+`showcase`, the rest `festivalevent`. The other contexts (paint shop,
+workshop, photo, skill and speed missions, online) are not wired, the
+`layout` attribute's slides are not decoded, and every capture shows the
+backdrop `IMAGE1`, which is the only one used.
+
+Needed: the group index's source for festival events, whether sequential
+cursors persist across sessions, and what shows after the last tip.
+
+## Q140 (LOAD-03, LOAD-04, not blocking): the load screen's spinner and the event name
+
+PLEASE WAIT and the spinner sit where `03_loading_tip_orig.png` has them;
+the spinner turns once a second (set by eye). On event loads the engine
+puts the event's name on the scene's `Stat_Text` (an engine request; no
+original frame shows it), placed by eye. The minimum holds (1 s from the
+title into free roam, 3 s into and out of events, none for fast travel)
+follow the recomp; the engine's 0.25 s fades are its own.
+
+Needed: the spinner's rate and the fades' timings from the scene's
+timelines.
+
+## Q141 (LOAD-05, not blocking): the load's mix fade
+
+Loads use the Loading mix (game music 0.25, menu and homespace music,
+cars and VO 0) and no UI music. With the game's `AudioMixerSnapshots.xml`
+loaded the file's 2 s fade applies; the engine's built-in fallback keeps a
+0.1 s fade. Whether the original plays the `LoadingScreen` UI event when a
+load starts is not recorded; the engine plays nothing.
+
+Needed: a recorded load with its audio.
+
+## Q142 (BOOT-05, not blocking): an autosave or storage notice
+
+No scene or string for an autosave or storage notice was found among the
+front end's scenes or the string tables; the engine shows none.
+
+Needed: a capture of any save notice the original shows at boot or after
+Press Start.
+
+## Q143 (V4-02..V4-07, not blocking): the 1000 Club screens' unmeasured parts
+
+The 1000 Club now runs on the title update's scenes (`H_CAR_CHALLENGE_HUB`,
+`_BUY_CARSELECT`, `_ACHIEVEMENTS`, `_DETAILS`, `H_POPUP_MENU`,
+`H_MESSAGE_POPUP`), checked against `club_{home,carlist,carlist_tut,
+select_action,tutorial,begin}_orig.png`. What the captures do not show is
+interim:
+
+- The home ticket's AchievementName and Description are hidden (the
+  capture's first ticket shows neither); the later tickets (current car,
+  VIEW ALL) and the hub after the first medal have no capture.
+- The car list's FLAG, DRIVETRAIN, STATS, PURCHASED, PACK_NAME and
+  PlayerBar are hidden; its help bar is A SELECT CAR / B BACK where the
+  capture has A SELECT CAR / Y TOGGLE / LT SEARCH (no toggle or search
+  yet).
+- The SELECT ACTION panels and the car list's rows and backing are placed
+  at offsets measured on the captures, not by the scenes' window sizing.
+- The details screen's focused row is a pink header; the achievements
+  screen's NAV_POSITION_INDICATOR is hidden.
+- The tutorial's last prompt (Visit the 1000 CLUB screen) shows after the
+  first medal until the hub is opened.
+- The Autoshow and garage show no per-car medals (`car_medals()` is the
+  hook; those screens are another branch's).
+- Visible artifacts left: the achievement ticket shows no car picture
+  (its middle covers the picture drawn under the scene); the achievements
+  screen's rows overlap and its DescriptionBox panel is a dark block; the
+  details screen's rows are all pink and its titles overlap, with two dark
+  bars at the bottom right; the current-car ticket's picture overhangs it.
+
+Needed: captures of the hub after a medal (three tickets), the
+achievements and details screens, and a car list with several cars; the
+car list's Y and LT actions.
+
+## Q144 (V4-06, not blocking): the 1000 Club HUD's timings and cue
+
+A passed challenge plays `UiCue::kAchievementReward` (the old sign-smash
+cue is gone), shows the large medal for 1 s and holds MEDAL EARNED! or
+FAILED for 3 s (`kClubResultHold`); the items' COMPLETE and FAIL
+animations (their flashes and scale) are not run, and the item layout is
+the scene's rest. No capture shows a running or finished challenge.
+
+Needed: a capture (or video) of a challenge running, passing and failing
+in the original, and the cue the medal plays.
+
+## Q145 (V4-10, not blocking): the rest of Horizon Rally's first entry
+
+The HORIZON RALLY pause row now follows `game_start_rally.xml`'s front:
+without the yellow wristband it shows IDS_FirstTimeCareerError (A OK);
+otherwise IDS_QuitHorizonToRally (A OK, B CANCEL; `rally_confirm_orig.png`),
+both on `H_MESSAGE_POPUP`. The first OK plays Forza_Tone_Rally and saves
+`rally_flow` 1, then the world switches to ColoradoDirt. The popups draw
+over the world, where the original keeps the blurred pause menu under
+them. The flow's intro race, qualification VO, first Autoshow
+(restricted to rally cars) and hub tutorial are not run: the switch still
+opens the engine's hub overlay (V4-11).
+
+Needed: the intro race's event and car, the VO cue order
+(`Rally_DialogueScript_EN.xml` keys the flow plays), the first Autoshow's
+car filter, and which profile flags (HasSeenInitialIntro,
+HasSeenFirstTicket) each step sets, from the recomp's generated v4 code.
+
+## Q146 (V4-18, not blocking): ColoradoDirt's speed traps and their records
+
+The Rally world now reads the package's own `gamemodes/ColoradoDirt`
+`speed_camera.xml` and `average_speed.xml`. They name the same 22 traps
+and 9 zones as the disc's Colorado set, with the same scoreboard ids and
+minimum speeds (`club_rally_corpus_tests` checks this), and ColoradoDirt
+ships no GameObjs, so the gates are Colorado's. The engine keeps one set
+of best speeds for both worlds, where the profile has a separate
+ColoradoDirt block (22 cameras, 9 zones).
+
+Needed: whether the original keeps Rally-world speed records apart from
+Colorado's (and shows them on separate scoreboards), and where
+ColoradoDirt's gates come from if not Colorado's GameObjs.
 
 ## Q121 (WORLD-05, not blocking): the one-on-one nemesis catch-up flag
 

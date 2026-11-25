@@ -20,6 +20,7 @@
 #include "autoshow.h"
 #include "career_page.h"
 #include "cars/physics.h"
+#include "club_menu.h"
 #include "club_view.h"
 #include "contact_log.h"
 #include "drive/cameras.h"
@@ -45,6 +46,8 @@
 #include "hub_scene.h"
 #include "hud.h"
 #include "livery_editor.h"
+#include "map_cursor.h"
+#include "map_screen.h"
 #include "map_view.h"
 #include "mods_page.h"
 #include "photo_mode.h"
@@ -265,8 +268,34 @@ struct DriveSession {
   std::vector<ClubRun> club_runs;
   int64_t club_car = -1;
   std::string club_gate;
+  // Why club_gate is set: the menu's gate (kSystem: not loaded, not in
+  // Colorado or the package off; kWristband: no green wristband) or the
+  // driven car's (kCar: not a garage car; kNoChallenges).
+  enum class ClubGate : uint8_t { kNone, kSystem, kWristband, kCar, kNoChallenges } club_gate_kind = ClubGate::kNone;
   bool club_open = false;
   size_t club_pick = 0;
+  // The 1000 Club's menus on their scenes (club_menu.h); club_open with
+  // club_menu closed draws the hand-drawn screen (no v4 scenes).
+  ClubMenu club_menu;
+  ClubMenuData club_menu_data;
+  // A HUD item's pass or fail (shown for kClubResultHold).
+  struct ClubResult {
+    size_t index = 0;
+    bool passed = false;
+    double at = 0.0;
+  };
+  std::vector<ClubResult> club_results;
+  // The v4 HUD drew the challenges last frame: no bottom banner over its
+  // prompt.
+  bool club_v4_hud_shown = false;
+  // Horizon Rally's entry (V4-10): the gate or confirmation popup over the
+  // world, then the first entry's video before the switch.
+  RallyEntryPopup rally_entry = RallyEntryPopup::kNone;
+  bool rally_enter_after_video = false;
+  void rally_entry_press(bool accept);
+  void rally_enter();
+  // The pause rows of the title update's packages (sync_pause_labels).
+  bool pause_packs_read = false, pause_has_club = false, pause_has_rally = false;
   bool car_club_open = false;
   int car_club_pick = 0;
   std::string car_club_notice;
@@ -470,7 +499,20 @@ struct DriveSession {
   bool map_open = false, map_dirty = false, map_dragging = false, map_drag_moved = false;
   float map_drag_start_x = 0.0f, map_drag_start_y = 0.0f;
   double map_zoom = 2, map_cx = 0, map_cz = 0;
-  MapFilter map_filter = MapFilter::kAll;
+  MapFilterSet map_filter;
+  // The FILTER popup (LB on the map) and its cursor row.
+  bool map_filter_open = false;
+  int map_filter_row = 0, map_filter_first = 0;
+  // The scene-driven pause map (drive_map_screen.cpp): the free cursor, the
+  // world point under it, the opening zoom and the fast travel dialog.
+  MapScreenHud map_screen_hud;
+  MapCursor map_cursor;
+  double map_opened_at = 0.0, map_base_zoom = 2.0;
+  double map_px = 0.0, map_pz = 0.0;
+  MapDialog map_dialog = MapDialog::kNone;
+  int map_dialog_marker = -1;
+  int64_t map_dialog_cost = 0;
+  double map_dialog_px = 0.0, map_dialog_pz = 0.0;  // the trainer's bare-cursor destination
   MapCameraController map_cam;
   int map_w = 0, map_h = 0;
   bool window_minimized = false;
@@ -504,6 +546,15 @@ struct DriveSession {
   void club_page(std::string& title, std::vector<std::string>& lines);
   ClubActiveStrip build_club_active_strip();
   std::string club_banner();
+  ClubMenuData build_club_menu_data();
+  ClubHud build_club_hud();
+  // The pause row: the menus (the intro video on the first visit).
+  void club_open_menu();
+  // A button on the open menus.
+  void club_menu_press(ClubMenu::Button b);
+  // BEGIN CHALLENGES IN THIS CAR: the record, the save, and the car swap
+  // when it is not the driven one.
+  void club_begin_in(int64_t car_id);
 
   // Simulation, audio & world streaming (drive_simulation.cpp)
   audio::EnginePlayer::Update sound_inputs(audio::View audio_view);
@@ -584,6 +635,17 @@ struct DriveSession {
   drive::Input ftc_autopilot_input();
   double ftc_last_impact_seen = -10.0;
   void close_map();
+  // The scene-driven pause map (drive_map_screen.cpp).
+  void map_screen_open();
+  void map_screen_step(double dt, float sx, float sy, float zoom_axis);
+  void map_screen_fill();
+  bool map_screen_event(const SDL_Event& e);
+  void map_cursor_world();
+  bool map_travel_quote(const MapMarker& m, int64_t& cost);
+  int64_t outpost_travel_fee(const std::string& outpost_id);  // the original's fee (freeroam/fast_travel.h)
+  void map_fast_travel_request();
+  void map_fast_travel_confirm();
+  void map_travel_to(double x, double z, double heading);
   void sync_pause_labels();
   void cycle_difficulty(int by);
   void choose();

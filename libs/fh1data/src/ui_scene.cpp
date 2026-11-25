@@ -254,6 +254,40 @@ bool parse_ui_fbf(std::span<const uint8_t> data, UiScene& out, std::string* erro
   return true;
 }
 
+// A model laid flat in its own XZ plane and stood up on the canvas by its
+// node's rotation about x or y (947_HUD's red zone, HalfRectangle: bounds
+// x -50..50, y 0, z -50..0, turned -90 degrees about x) has no height in its
+// stored XY bounds. Its canvas bounds are its scaled box turned by those
+// two rotations, stored back unscaled so the node's x and y scales apply.
+// Nodes with a real XY extent are left as stored.
+static void stand_up_flat_bounds(UiNode& n) {
+  const float rx = n.rotation[0], ry = n.rotation[1];
+  if (std::fabs(rx) < 1e-3f && std::fabs(ry) < 1e-3f) return;
+  const float ex = n.bounds_max[0] - n.bounds_min[0], ey = n.bounds_max[1] - n.bounds_min[1];
+  const float ez = n.bounds_max[2] - n.bounds_min[2];
+  if (!(ez > 1e-3f && (ex <= 1e-3f || ey <= 1e-3f))) return;
+  const float s0 = std::fabs(n.scale[0]) > 1e-6f ? n.scale[0] : 1.0f;
+  const float s1 = std::fabs(n.scale[1]) > 1e-6f ? n.scale[1] : 1.0f;
+  const float s2 = std::fabs(n.scale[2]) > 1e-6f ? n.scale[2] : 1.0f;
+  const float cx = std::cos(rx), sx = std::sin(rx), cy = std::cos(ry), sy = std::sin(ry);
+  float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+  for (int c = 0; c < 8; ++c) {
+    const float x = ((c & 1) ? n.bounds_max[0] : n.bounds_min[0]) * s0;
+    const float y = ((c & 2) ? n.bounds_max[1] : n.bounds_min[1]) * s1;
+    const float z = ((c & 4) ? n.bounds_max[2] : n.bounds_min[2]) * s2;
+    // About x, then about y.
+    const float y1 = y * cx - z * sx, z1 = y * sx + z * cx;
+    const float x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
+    const float p[3] = {x2, y1, z2};
+    for (int k = 0; k < 3; ++k) lo[k] = std::min(lo[k], p[k]), hi[k] = std::max(hi[k], p[k]);
+  }
+  const float sc[3] = {s0, s1, s2};
+  for (int k = 0; k < 3; ++k) {
+    const float a = lo[k] / sc[k], b = hi[k] / sc[k];
+    n.bounds_min[k] = std::min(a, b), n.bounds_max[k] = std::max(a, b);
+  }
+}
+
 bool parse_ui_bsg(std::span<const uint8_t> data, UiScene& out, std::string* error) {
   Reader r{data};
   static const uint8_t kTag[8] = {'F', 'G', 'B', 'k', 'r', 'a', 'n', 'A'};
@@ -301,6 +335,7 @@ bool parse_ui_bsg(std::span<const uint8_t> data, UiScene& out, std::string* erro
   for (size_t i = 0; i < out.objects.size(); ++i) index.emplace(out.objects[i].id, int(i));
   for (size_t i = 0; i < out.nodes.size(); ++i) {
     UiNode& n = out.nodes[i];
+    stand_up_flat_bounds(n);
     if (auto it = index.find(n.object); it != index.end()) n.object_index = it->second;
     const float lx = n.position[0], ly = n.position[1], lz = n.position[2];
     if (n.parent >= 0 && size_t(n.parent) < i) {
@@ -805,6 +840,8 @@ std::string UiFontMap::resolve(std::string_view font_name) const {
 bool parse_loading_defs_xml(std::string_view xml, std::vector<UiLoadingTip>& out) {
   out.clear();
   std::string cur_group = "freeroam";
+  int cur_count = 1;
+  bool cur_sequential = false;
   size_t pos = 0;
   while (pos < xml.size()) {
     const size_t lt = xml.find('<', pos);
@@ -821,9 +858,14 @@ bool parse_loading_defs_xml(std::string_view xml, std::vector<UiLoadingTip>& out
     if (tag.rfind("<LoadingGroup", 0) == 0) {
       std::string nm;
       if (extract_xml_attr(tag, "name", nm) && !nm.empty()) cur_group = to_lower_ascii(nm);
+      std::string count_s, order_s;
+      cur_count = extract_xml_attr(tag, "tipcount", count_s) ? std::max(1, std::atoi(count_s.c_str())) : 1;
+      cur_sequential = extract_xml_attr(tag, "order", order_s) && to_lower_ascii(order_s) == "sequential";
     } else if (tag.rfind("<Tip", 0) == 0 && (tag.size() == 4 || tag[4] == ' ' || tag[4] == '\t')) {
       UiLoadingTip tip;
       tip.group = cur_group;
+      tip.group_tip_count = cur_count;
+      tip.group_sequential = cur_sequential;
       extract_xml_attr(tag, "title", tip.title_key);
       extract_xml_attr(tag, "message", tip.message_key);
       std::string lay_s, dt_s;

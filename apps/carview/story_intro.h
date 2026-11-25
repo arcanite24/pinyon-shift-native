@@ -21,6 +21,16 @@
 
 namespace carview {
 
+// The boot splashes the original plays before Press Start, in its order
+// (BOOT-01): every recorded boot opens T10_MS_Combined, Dolby_Corona_Intro,
+// then PressStart.wmv, and nothing else.
+inline constexpr std::array<FmvMovieId, 2> kBootSplashes = {FmvMovieId::kT10MsCombined, FmvMovieId::kDolbyCorona};
+// The title's attract movie (BOOT-06): after kAttractIdleSeconds idle on
+// Press Start the original replays forza_intro.wmv, then reloads the
+// press-start scene.
+inline constexpr FmvMovieId kAttractMovie = FmvMovieId::kForzaIntro;
+inline constexpr double kAttractIdleSeconds = 53.0;
+
 enum class StoryStage {
   kInactive = 0,
   kBootSplash,
@@ -121,6 +131,7 @@ class StoryIntro {
   const std::string& objective_title() const { return objective_title_; }
   const std::string& objective_detail() const { return objective_detail_; }
   int splash_index() const { return splash_idx_; }
+  const std::vector<FmvMovieId>& splash_queue() const { return splash_queue_; }
   int beat_index() const { return beat_idx_; }
 
   static const char* stage_name(StoryStage s);

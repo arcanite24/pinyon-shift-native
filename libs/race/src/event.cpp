@@ -568,6 +568,26 @@ std::string CarNames::full_name(const std::string& media) const {
   return it != rows_.end() && it->second.year > 0 ? std::to_string(it->second.year) + " " + s : s;
 }
 
+std::string CarNames::model_name(const std::string& media) const {
+  auto it = rows_.find(media);
+  if (it == rows_.end() || it->second.model.empty()) return short_name(media);
+  const std::string& make = it->second.make;
+  const std::string& model = it->second.model;
+  const bool has_make = !make.empty() && model.size() > make.size() && model[make.size()] == ' ' &&
+                        std::equal(make.begin(), make.end(), model.begin(), [](char x, char y) {
+                          return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+                        });
+  return has_make ? model.substr(make.size() + 1) : model;
+}
+
+std::string CarNames::year_make(const std::string& media) const {
+  auto it = rows_.find(media);
+  if (it == rows_.end()) return {};
+  const std::string& make = it->second.make;
+  if (it->second.year <= 0) return make;
+  return make.empty() ? std::to_string(it->second.year) : std::to_string(it->second.year) + " " + make;
+}
+
 bool load_ai_player_names(const std::filesystem::path& game_root, std::vector<std::string>& out,
                           const CarNames* names, const std::filesystem::path& state_root,
                           const cars::PartsDb* db_in) {

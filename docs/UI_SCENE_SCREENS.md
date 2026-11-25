@@ -18,6 +18,8 @@ The code is in `apps/carview`:
 | `hud_screen.h/.cpp` | The driving HUD on `947_HUD`: dial, race blocks, skills, prompt, notifications, start, wrong way |
 | `hud_notify.h` | The notification kinds and icons, and the HUD toggles (`HudToggles`) |
 | `help_bar_screen.cpp` | The help bar on `BUTTON_BAR_SCENE` (installed into `ui4::button_bar`) |
+| `title_menu.h` | The front end's model: Press Start, the profile step, SINGLE PLAYER / MULTIPLAYER, EXTRAS, popups |
+| `frontend_screens.h/.cpp` | The front end on `120_P_PRE_SPLASH` and the load screen on `2_C_INI_LOADING` |
 | `tests/scene_screen_tests.cpp` | The corpus test: scenes, nodes, strings, cues; optional renders |
 
 ## The pieces
@@ -177,6 +179,71 @@ caller then draws the old hand-drawn block.
   `SHIFT_SCENE_SCREEN_SHOT_DIR` (`hud_*.png`), with each offset in a named
   constant next to the capture it came from.
 
+## The map
+
+`map_screen.cpp` draws `H_MAP` over the engine's map raster
+(`MapView::pause_map`, flat and top-down; Q87), with the session glue in
+`drive_map_screen.cpp`, the cursor and zoom in `map_cursor.h` and the
+filter in `map_filter.h`.
+
+- **Cursor.** The map opens centred on the player with the cursor on the
+  player's arrow (`map_open_orig.png`); near the map's edge the view stays
+  inside the map and the cursor opens off the centre, still on the arrow.
+  The left stick, the D-pad and WASD/arrows move a free cursor
+  (`MAP_OVERLAY/CURSOR`) at 490 px/s, slowed to 0.45 times over an icon.
+  Past 190 px across or 120 px up from the centre the map scrolls under it
+  at 470 px/s; it stops at x 96..1184, y 88..635. Within 30 px of an icon
+  (or the player's arrow, a found sign or a revealed barn) it locks on
+  (`CURSOR_SNAP`, tinted faint white and scaled to about 54 px as in
+  `map_popup_outpost_orig.png`); the icon grows 1.25 times and the others
+  dim to 0.6.
+- **Zoom.** The right stick's y (or the wheel) zooms about the cursor at 1.9
+  per second, from the opening scale (the most zoomed out) to 2.6 times it.
+- **Popup.** `MAP_OVERLAY/DETAIL` shows the icon's group: `CareerRace`
+  (title, class chip `PICLASS/CLASS_<c>_SM`, points, credits), `StreetRace`
+  (the hub's medals from its events' best places), `Outpost` (one pip per
+  mission and the fee's discount), `Generic` (two lines: a festival place's
+  `IDS_Festival_*_Line1/2`, a speed trap's PB) or `Simple` (one line: the
+  player's name, a sign's `IDS_Flyer` and number, a barn). The box is cropped
+  to its widest row and centred on the icon with its last row about 60 px
+  above it, measured from `map_popup_*_orig.png`.
+- **Help bar.** A SET ROUTE (CLEAR ROUTE when a route is set; A then clears
+  it wherever the cursor is), B EXIT MAP, X for the icon (FAST TRAVEL (n Cr)
+  on a destination, DETAILS on an event or hub) and LB FILTER; the player
+  bar is `925_PAUSE_MENU`'s, bound by `bind_pause_player_bar`.
+- **Filter.** LB opens `H_FIXED_SETTING_LIST` titled `IDS_FilterMap_Title`
+  over the blurred map: the twelve InGame rows (All, New, Not Won, Rivals,
+  Festival Events, Showcases, Star Showdowns, Outposts, Street Race Hubs,
+  Speed Cameras, Discount Signs, Barn Finds), all ticked at first. A ticks a
+  row; A on All ticks or clears every row, and All is ticked exactly when
+  every row is. An icon shows when any ticked row covers it (Q88);
+  facilities (Race Central, the Autoshow and so on) always show. Eight rows
+  show, drawn with the scene's five bars on one leaning line, and the list
+  scrolls only when the cursor passes its first or last row.
+- **Rumours.** A barn rumour is the profiles' `barn_find_region` ellipse,
+  flat white (a=80 on the pause map, solid with a faint black edge on the
+  minimap); the barn icon sits inside it.
+
+## Fast travel
+
+`freeroam/fast_travel.h` quotes a destination from `GlobalRegistry.xml`
+(`Activities/Outposts/TotalCost`, 10,000 Cr, less `Discount_<n>_Missions`
+for the missions done at that outpost: 10,000 / 7,500 / 5,000 / 0). The
+festival places are free; events, hubs, traps, signs and barns are not
+destinations, and an outpost must be discovered (Q90).
+
+- **Confirm.** X shows `H_MESSAGE_POPUP` titled PauseMenu `IDS_FastTravel`
+  with `IDS_FastTravelDesc` (or `_Free`) and OK / CANCEL; short of credits it
+  says `IDS_FastTravelDesc_Failed` with OK alone
+  (`map_fasttravel_confirm_orig.png`). OK takes the fee, saves and reloads
+  the world at the outpost's spawn behind the loading screen.
+- **Stunt discount.** A first completion of an outpost's mission shows the
+  stunt's completed headline with GasStation `IDS_MissionCompletedDiscount`
+  (FAST TRAVEL DISCOUNT EARNED) as its message; there is no travel offer
+  (Q91).
+- **Trainer.** With the trainer's fast travel anywhere every destination is
+  free, undiscovered outposts too, and X on the bare cursor travels there.
+
 ## Porting the next screen
 
 1. **Find the scene.** Look up the screen's scene in the scene registry and
@@ -245,16 +312,31 @@ caller then draws the old hand-drawn block.
 
 ## Interims in the HUD
 
-- **Start count.** The engine's gantry panels stay dark at the FR16 start
-  (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
-  and textured, and the shipped shaders carry the LED branch, so the
-  cause lies past that (the texture or the draw's intensity) and is not
-  found), so `TEXT_COUNT` shows 3, 2, 1 for the last three seconds until
-  they light (Q74).
 - **Minimap.** The engine's map raster is kept: it covers the original's
   visible map (90..270 x 420..600) and the scene's `MATERIAL_VIEWPORT` frame
-  is not drawn. The player arrow sits lower than the original's (about
-  y 570 against 520).
+  is not drawn. Its camera is fixed, with the player's arrow 100 px down the
+  180 px panel (y 520 as in the original; Q89); the roads are the profile's
+  white line over its soft under-line, with no driven tint, and traffic and
+  the Festival's drivers are the profile's vehicle icon. The original's wide
+  fading ribbon on the player's own road is not drawn.
+- **Map details.** X DETAILS on an event or hub opens the engine's events
+  page at that hub; the original shows the event's ticket over the map
+  (`map_popup_event_details_orig.png`, Q92). A speed trap has no X
+  LEADERBOARD (the engine has no leaderboards). The selected event's course
+  outline (pink, `map_popup_event_details_back_orig.png`) is not drawn. The
+  original zooms out about a sixth past its opening scale
+  (`map_zoom_out_orig.png`); the engine stops at the opening scale. The
+  engine's view stops where the background texture's paint ends (its
+  black side margins never show); at the west edge the original stops
+  about 100 px (opening scale) further in
+  (`map_streethub_search_w_orig.png`: about 140 px of desert west of
+  Carson's highway curve at its scale, the engine about 285 px at its
+  own). In the live render the FILTER title tape is greyer and
+  taller than the original's white bar, and the list's scroll indicator is
+  drawn by hand (a track and a thumb at the cursor's row) in place of the
+  scene's. The icons' open and pulse animations and the barn rumour's
+  reveal animation are not ported, and travel keeps the loading screen
+  without the original's fast travel camera.
 - **Not ported.** `DirectionArrows`; the notifications' tape slide (they
   fade); the Show me! action (hidden, no action behind it); the ghosts and
   rewind message toggles (the engine has neither element).
@@ -310,3 +392,136 @@ flow files) as plain steps, with the timings measured on the captures;
   `H_GENERIC_TITLE`'s rows; DIFFICULTY steps the difficulty in place (Q97).
 - **Not drawn.** The tombola and the rival offer (Q98); the title and
   rival tapes' specular sheens (Q99).
+
+## The front end and the load screen
+
+The boot plays the original's two splashes, `T10_MS_Combined` then
+`Dolby_Corona_Intro` (`kBootSplashes`), then the title over the looping
+`PressStart.wmv`. After 53 s idle on Press Start the original replays
+`forza_intro.wmv` (`kAttractMovie`) and comes back to Press Start.
+
+- **Press Start.** `120_P_PRE_SPLASH`'s `Content` group (the logo and
+  `TitleTapeText` reading PRESS START) moved by one measured offset
+  (`title_layout::kContentDx/Dy`, matched to the pixel on
+  `01_title_pressstart_orig.png`). The scene's own Kinect and controller
+  prompts (`Start`), install pane, help bar, video placeholder and fader are
+  hidden. No help bar, as the original.
+- **Profile step.** Press Start's outro and the menu's intro
+  (`TitleMenu::kProfileSeconds`): the logo fades, then the menu shows. A save
+  that exists but does not read shows the table's INVALID PROFILE popup once
+  the menu is up.
+- **Menu.** `SPLASH_MENU`'s rows: SINGLE PLAYER (`Main/IDS_Horizon`) and
+  MULTIPLAYER. The selected row on its pink tapes (`Crisp_Tape`,
+  `smudge_tape`) cut to its text, a size step up; the other plain, light grey,
+  moved in (`02_title_menu_orig.png`). Help bar A SELECT, B BACK. SINGLE
+  PLAYER continues a played career through the load screen, or starts the
+  first-time career; MULTIPLAYER shows the original's NO NETWORK ACCESS
+  popup (`LiveStrings`, the title it shows for features that need Xbox
+  LIVE). B goes back to Press Start.
+- **EXTRAS.** The engine's NEW CAREER (with a confirm over a save), FREE
+  ROAM, SETTINGS and QUIT sit behind X EXTRAS in the help bar, on the same
+  rows, as the pause menu has its extras. The original has none of them.
+- **Load screen.** `2_C_INI_LOADING`: the tip's title on `Title_Text`'s black
+  tape, its message wrapped on `Body_Text`'s `Line_n` pills (dark text on
+  white), `Info`'s PLEASE WAIT and turning `LoadSpinner`, over `BG` with
+  `LOADING/BGLOADINGIMAGES/IMAGE1` (the stage every capture shows). No
+  progress bar. `Stat_Text` (the big pink title) carries the event's name on
+  event loads (an engine request) and is hidden otherwise. The texts' offsets
+  against their tapes and pills are measured on `03_loading_tip_orig.png`
+  (`loading_layout`).
+- **Tips.** Each load takes its LoadingDefs.xml group's `tipcount` tips, at
+  random or, with `order="sequential"`, the next in file order (a cursor per
+  group for the session), each held its `displaytime`. Free roam uses
+  `freeroam`; an event `festival_N` by its level (N = level + 1: its
+  wristband's star rival's tips, `11b_event_loading_orig.png`),
+  `festival_heats` for a qualifier, `streetrace`, `showcase`, else
+  `festivalevent` (`loading_group_for_event`).
+- **Timing.** The load from the title into free roam holds 1 s at least,
+  loads into and out of an event 3 s, fast travel and a restart none
+  (`LoadingScreen::kTitleMinSeconds`, `kEventMinSeconds`).
+- **Sound.** Loads use the Loading mix: the radio ducked to 0.25, no menu
+  music bed, no VO.
+
+## Interims in the front end
+
+- **Profile step.** A fixed 0.35 s with a fade: the `START_OUTRO` and
+  `MENU_INTRO` slides are not decoded; no profile picker or storage device
+  (Q137).
+- **Menu states.** The selected row's size step and offset, the unselected
+  row's indent and grey are measured, not read from the scene's states;
+  `menu_shadow` is hidden (Q138).
+- **Popups.** NO NETWORK ACCESS and INVALID PROFILE draw on
+  `H_MESSAGE_POPUP` as STAY IN CAR does; the original's exact popup for
+  MULTIPLAYER offline on PC is not recorded (Q138).
+- **Tips.** Which value picks `festival_N` (the event's level or the
+  player's wristband) is ambiguous in the one capture; a long load comes
+  round to its first tip again; the other load contexts (paint shop,
+  workshop, missions, online) are not wired (Q139).
+- **Load screen.** The spinner's rate and the event name's place on
+  `Stat_Text` are set by eye (Q140).
+- **Not started.** An autosave or storage notice: no scene or string for
+  one was found (Q142).
+
+## The 1000 Club
+
+`club_menu.h` holds the 1000 Club's screens as a model (`ClubMenu`, no
+renderer; `club_rally_tests` drives it) over what the drive fills from the
+save and the package (`ClubMenuData`). `club_screens.cpp` draws each
+screen on the title update's own scene (the v4 overlay), and
+`drive_club.cpp` runs them from the pause row.
+
+- **Pause row.** 1000 CLUB (`CarChallenges/IDS_PauseMenu_CarChallenges`)
+  sits under MAP, then HORIZON RALLY (`Main/IDS_HorizonRally`), only when
+  the package is owned (offers 2700 and 1600; `PauseMenu::has_club`,
+  `has_rally`). Without it, the engine's own rows stay in the extras.
+- **First visit.** The package's intro video
+  (`Splash_Intros/car_challenges_intro`), then `H_CAR_CHALLENGE_HUB` with
+  the tutorial's welcome on `H_MESSAGE_POPUP`. Until the first medal the
+  hub has one ticket (the first achievement); A opens its cars
+  (`H_CAR_CHALLENGE_BUY_CARSELECT`, the car-list tutorial), A on a car
+  opens SELECT ACTION (`H_POPUP_MENU`), and BEGIN CHALLENGES IN THIS CAR
+  starts the car's challenges (a car swap when it is not the driven one).
+  The steps are saved (`club_tutorial` 0..4) so each popup shows once.
+- **Hub.** The tickets are a carousel (Ticket4 is the focused slot): the
+  current car's challenges once begun, the next achievement to earn, and
+  VIEW ALL CHALLENGES after the first medal. The achievement ticket opens
+  its cars; VIEW ALL opens `H_CAR_CHALLENGE_ACHIEVEMENTS` (the ten
+  achievements with their progress and gamerscore); the car ticket opens
+  `H_CAR_CHALLENGE_DETAILS` (the car's challenges, their descriptions and
+  hints).
+- **Driving HUD.** `947_HUD`'s `HUDCarChallengePrompt`: up to six items
+  (the medal number, the running description, then MEDAL EARNED! or
+  FAILED for `kClubResultHold`), PRESS (D-pad) TO VIEW CAR CHALLENGE
+  DETAILS at the bottom, and the tutorial's next step in `HUDInstruction`
+  (top left). It replaces the hand-drawn strip, banner and medal ceremony.
+- **Strings.** Every string comes from `carchallenges` (`club_text`); the
+  tables leave the count out of IDS_MedalsRequired and IDS_CarsRequired
+  (" MEDALS REQUIRED"), so `format_count` puts it in front.
+- **Measured placements.** As around a race, the scenes rest at their intro
+  start, so the drawn offsets are measured on the captures
+  (`club_*_orig.png`): the popup panels' cut, the car list's row pitch and
+  its dark backing, and the HUD prompt's line.
+
+## Interims in the 1000 Club
+
+- **Screens.** The home ticket's achievement name and description, the car
+  list's flag, drivetrain, stats, purchase and pack nodes and its PlayerBar
+  are hidden; the car list's help bar is SELECT CAR / BACK where the
+  capture shows SELECT CAR / TOGGLE / SEARCH; the details rows' focus is a
+  pink header; the popup panels and rows are cut to measured boxes, not by
+  the scenes' timelines (Q143).
+- **Medals elsewhere.** The Autoshow and garage do not show per-car medals
+  yet; `freeroam::club::car_medals()` is the hook (Q143).
+- **HUD.** The medal cue is the achievement reward, not the sign smash; the
+  COMPLETE and FAIL animations are not run (a 1 s large medal and a 3 s
+  hold instead); the item layout is the scene's rest, with no capture of a
+  running challenge to measure against (Q144).
+
+## Horizon Rally's entry
+
+The HORIZON RALLY pause row opens `draw_rally_entry_popup` on
+`H_MESSAGE_POPUP`: the yellow-wristband gate (`rally/IDS_FirstTimeCareerError`)
+or the quit-to-Rally confirmation (`rally/IDS_QuitHorizonToRally`, A OK,
+B CANCEL). The first OK plays `Forza_Tone_Rally` and saves `rally_flow`,
+then switches worlds. The intro race, first Autoshow and hub tutorial are
+not run yet (Q145).

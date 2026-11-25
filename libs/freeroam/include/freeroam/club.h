@@ -251,6 +251,37 @@ struct ClubMedalStats {
 ClubMedalStats compute_medal_stats(const std::vector<std::pair<int64_t, int>>& medals_per_car,
                                    const std::map<int64_t, CarMeta>& meta);
 
+// The ten 1000 Club achievements in the package's table order (spa ids 216
+// to 225). `desc` is the number in carchallenges' IDS_Achievement_Desc_<n>
+// (60..69, the same order); `per_car` says the target counts cars with a
+// medal (every one but the first medal, which counts medals).
+struct ClubAchievementDef {
+  uint16_t id = 0;
+  int desc = 0;
+  int target = 0;
+  bool per_car = true;
+};
+const std::array<ClubAchievementDef, 10>& club_achievements();
+// The definition of achievement `id` (216..225), or null.
+const ClubAchievementDef* club_achievement(uint16_t id);
+// Whether a car with a medal counts toward achievement `id` (216 and 225:
+// any car).
+bool counts_for(uint16_t id, const CarMeta& meta);
+// The progress `stats` holds toward achievement `id` (medals for 216, cars
+// otherwise).
+int achievement_progress(uint16_t id, const ClubMedalStats& stats);
+
+// The medals a car can earn: its challenge count (0 for a car without
+// challenges). The per-car medal hook the Autoshow, garage and change-car
+// screens read (V4-05).
+struct CarMedals {
+  int available = 0;  // challenges for the car
+  int earned = 0;     // completed ones
+  bool begun = false;  // a record exists (BEGIN CHALLENGES IN THIS CAR)
+};
+// `completed`: the car's record's completed flags (null: not begun).
+CarMedals car_medals(const ClubData& data, int64_t car_id, const std::vector<bool>* completed);
+
 // One challenge's attempt. step() returns true on the step it passes; a
 // failure restarts the attempt (its counts too, but save_progress counts
 // survive) and is reported through failures().

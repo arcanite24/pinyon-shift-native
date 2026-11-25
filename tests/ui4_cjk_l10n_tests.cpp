@@ -152,8 +152,8 @@ void test_synthetic_cjk_and_widgets() {
   ls.set_tips({"Tip A", "Tip B"});
   ls.set_progress(0.65f);
   check(ls.active() && ls.current_tip() == "Tip A", "LoadingScreen starts on Tip A");
-  ls.update(5.2);
-  check(ls.current_tip() == "Tip B", "LoadingScreen cycles to Tip B after 5s");
+  ls.update(8.2);
+  check(ls.current_tip() == "Tip B", "LoadingScreen cycles to Tip B after its 8 s displaytime");
   carview::ui::List ll;
   ls.draw(ll, 640.0f, 360.0f);
   check(!ll.empty(), "LoadingScreen::draw emits UI items");
@@ -246,6 +246,79 @@ void test_cjk_loading_tips_and_spa_cht() {
   carview::set_game_text({});
   std::filesystem::remove_all(tmp_root, ec);
 
+  // 2b. A load's tips: the group's tipcount, random or sequential, each held
+  // its displaytime; a missing group falls back to freeroam's.
+  {
+    const auto tips_root = std::filesystem::temp_directory_path() / "shift_loading_tip_pick_test";
+    std::filesystem::remove_all(tips_root, ec);
+    std::filesystem::create_directories(tips_root / "media" / "ui", ec);
+    {
+      std::ofstream xml(tips_root / "media" / "ui" / "LoadingDefs.xml", std::ios::binary);
+      xml << "<LoadingDefs>\n"
+             "  <LoadingGroup name=\"freeroam\" tipcount=\"2\" order=\"random\">\n";
+      for (int i = 1; i <= 4; ++i)
+        xml << "    <Tip layout=\"1\" displaytime=\"8\" title=\"Tips:IDS_R" << i << "Title\" message=\"Tips:IDS_R" << i
+            << "Tip\" />\n";
+      xml << "  </LoadingGroup>\n"
+             "  <LoadingGroup name=\"seq\" tipcount=\"2\" order=\"sequential\">\n";
+      for (int i = 1; i <= 3; ++i)
+        xml << "    <Tip layout=\"1\" displaytime=\"3\" title=\"Tips:IDS_S" << i << "Title\" message=\"Tips:IDS_S" << i
+            << "Tip\" />\n";
+      xml << "  </LoadingGroup>\n</LoadingDefs>\n";
+    }
+    std::map<std::string, std::string> text;
+    auto ref = [](const std::string& id) {
+      return "_&" + std::to_string((uint32_t(fh1::string_hash("Tips")) << 16) | fh1::string_hash(id));
+    };
+    for (const char* g : {"R", "S"})
+      for (int i = 1; i <= 4; ++i) {
+        const std::string n = std::string(g) + std::to_string(i);
+        text[ref("IDS_" + n + "Title")] = n;
+        text[ref("IDS_" + n + "Tip")] = "The message of tip " + n + " for the load screen.";
+      }
+    carview::set_game_text([&](const std::string& r) -> std::string {
+      const auto it = text.find(r);
+      return it == text.end() ? r : it->second;
+    });
+    carview::LoadingScreen rnd;
+    rnd.set_seed(7);
+    check(rnd.load_definitions(tips_root, "freeroam"), "tip pick: freeroam loads");
+    check(rnd.tip_count() == 2, "tip pick: freeroam shows its tipcount (2) tips");
+    const std::string a = rnd.current_tip_title();
+    rnd.start();
+    check(rnd.current_tip_title() == a, "tip pick: start() keeps load_definitions' pick");
+    rnd.update(7.9);
+    check(rnd.current_tip_title() == a, "tip pick: a tip holds its displaytime (8 s)");
+    rnd.update(0.2);
+    const std::string b = rnd.current_tip_title();
+    check(b != a && b.size() == 2 && b[0] == 'R' && a[0] == 'R', "tip pick: two distinct freeroam tips");
+    rnd.update(8.1);
+    check(rnd.current_tip_title() == a, "tip pick: the load comes round to its first tip");
+
+    carview::LoadingScreen s1, s2;
+    check(s1.load_definitions(tips_root, "seq"), "tip pick: seq loads");
+    check(s1.current_tip_title() == "S1", "tip pick: sequential starts at the first tip");
+    s1.start();
+    s1.update(2.9);
+    check(s1.current_tip_title() == "S1", "tip pick: a sequential tip holds its 3 s displaytime");
+    s1.update(0.2);
+    check(s1.current_tip_title() == "S2", "tip pick: sequential's second tip after its displaytime");
+    s2.load_definitions(tips_root, "seq");
+    check(s2.current_tip_title() == "S3", "tip pick: the next load carries on in file order");
+    s2.start();
+    check(s2.current_tip_title() == "S3", "tip pick: start() after load_definitions keeps its pick");
+    s2.update(3.1);
+    check(s2.current_tip_title() == "S1", "tip pick: sequential wraps to the group's first tip");
+    s2.stop();
+    s2.start();
+    check(s2.current_tip_title() == "S2", "tip pick: a new load without reloading picks the next tips");
+
+    carview::LoadingScreen fb;
+    check(fb.load_definitions(tips_root, "festival_9"), "tip pick: a missing group falls back");
+    check(fb.group() == "festival_9" && fb.current_tip_title()[0] == 'R', "tip pick: the fallback is freeroam's tips");
+    carview::set_game_text({});
+    std::filesystem::remove_all(tips_root, ec);
+  }
   // 3. SPA language ID resolution for Traditional/Simplified Chinese codes (CHT, ZHT, TW, CHS, ZHS).
   const uint16_t kTcId = uint16_t(fh1::SpaLanguage::kTraditionalChinese);
   check(fh1::spa_language_id("CHT") == kTcId, "spa_language_id(\"CHT\") maps to kTraditionalChinese (8)");

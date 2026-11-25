@@ -2,14 +2,17 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <map>
 #include <sstream>
 
 #include "events_page.h"
 #include "fh1data/stringtables.h"
 #include "fh1data/ui_overlay.h"
+#include "frontend_screens.h"
 #include "game_hud.h"
 #include "settings_page.h"
 #include "ui4_chrome.h"
@@ -951,15 +954,18 @@ std::vector<std::string> wrap_tip_lines(std::string_view text, const ui::TextSty
 }
 }  // namespace
 
-void LoadingScreen::start(std::string destination_title, std::string subtitle) {
+void LoadingScreen::start(std::string event_title, std::string subtitle) {
   active_ = true;
   fading_out_ = false;
   fade_out_elapsed_ = 0.0;
-  title_ = std::move(destination_title);
+  title_ = std::move(event_title);
   subtitle_ = std::move(subtitle);
   elapsed_ = 0.0;
   tip_timer_ = 0.0;
   progress_ = 0.0f;
+  // A new load picks its tips again (unless load_definitions just did).
+  if (!fresh_pick_) pick_tips();
+  fresh_pick_ = false;
   if (tips_.empty()) {
     tip_titles_ = {"POPULARITY & SKILLS", "DISCOUNT SIGNS", "FESTIVAL RADIO", "DRIVING ASSISTS"};
     tips_ = {
@@ -968,6 +974,8 @@ void LoadingScreen::start(std::string destination_title, std::string subtitle) {
         "Listen to Horizon Bass Arena, Pulse, and Rocks for Barn Find rumours from the festival DJs.",
         "Adjust ABS, Traction Control, and Manual + Clutch in Settings to boost your race credit bonus.",
     };
+    tip_times_.assign(tips_.size(), kDefaultTipSeconds);
+    tip_idx_ = 0;
   }
 }
 
@@ -993,6 +1001,53 @@ float LoadingScreen::veil_alpha() const {
   return 0.0f;
 }
 
+uint32_t LoadingScreen::next_random() {
+  if (rng_ == 0) {
+    // A fresh seed per screen: the clock and a counter.
+    static uint32_t counter = 0;
+    rng_ = uint32_t(std::chrono::steady_clock::now().time_since_epoch().count()) ^ (0x9E3779B9u * ++counter);
+    if (rng_ == 0) rng_ = 1;
+  }
+  // xorshift32.
+  rng_ ^= rng_ << 13;
+  rng_ ^= rng_ >> 17;
+  rng_ ^= rng_ << 5;
+  return rng_;
+}
+
+void LoadingScreen::pick_tips() {
+  if (pool_.empty()) return;
+  const int n = int(pool_.size());
+  const int want = std::clamp(pool_tip_count_, 1, n);
+  std::vector<int> picks;
+  if (pool_sequential_) {
+    // File order, carried on from the group's last load (the executable keeps
+    // a cursor per group for the session).
+    static std::map<std::string, int> cursors;
+    int& at = cursors[group_];
+    for (int i = 0; i < want; ++i) picks.push_back((at + i) % n);
+    at = (at + want) % n;
+  } else {
+    std::vector<int> order(static_cast<size_t>(n), 0);
+    for (int i = 0; i < n; ++i) order[size_t(i)] = i;
+    for (int i = 0; i < want; ++i) {
+      const int j = i + int(next_random() % uint32_t(n - i));
+      std::swap(order[size_t(i)], order[size_t(j)]);
+      picks.push_back(order[size_t(i)]);
+    }
+  }
+  tip_titles_.clear();
+  tips_.clear();
+  tip_times_.clear();
+  for (int p : picks) {
+    tip_titles_.push_back(pool_[size_t(p)].title);
+    tips_.push_back(pool_[size_t(p)].message);
+    tip_times_.push_back(pool_[size_t(p)].display_time);
+  }
+  tip_idx_ = 0;
+  tip_timer_ = 0.0;
+}
+
 bool LoadingScreen::load_definitions(const std::filesystem::path& game_root, const std::string& group,
                                      const std::filesystem::path& state_root) {
   fh1::UiOverlay ui(game_root, fh1::UiOverlay::v4_media_zip_of(state_root));
@@ -1005,8 +1060,6 @@ bool LoadingScreen::load_definitions(const std::filesystem::path& game_root, con
   for (char& c : want) c = char(std::tolower(static_cast<unsigned char>(c)));
   group_ = want.empty() ? "freeroam" : want;
 
-  std::vector<std::string> new_titles;
-  std::vector<std::string> new_msgs;
   auto accept_tip = [](const std::string& ttl, const std::string& msg) {
     if (looks_like_raw_key(msg) || msg == ttl) return false;
     bool has_non_ascii = false;
@@ -1018,38 +1071,36 @@ bool LoadingScreen::load_definitions(const std::filesystem::path& game_root, con
     }
     return has_non_ascii ? (msg.size() >= 12) : (msg.size() >= 20);
   };
-  for (const auto& t : parsed) {
-    if (t.group != group_) continue;
-    const std::string ttl = resolve_loading_key(t.title_key, true);
-    const std::string msg = resolve_loading_key(t.message_key, false);
-    if (accept_tip(ttl, msg)) {
-      new_titles.push_back(ttl.empty() ? "FESTIVAL TIP" : ttl);
-      new_msgs.push_back(msg);
-    }
-  }
-  if (new_msgs.empty()) {
+  auto gather = [&](const std::string& g) {
+    std::vector<PoolTip> out;
     for (const auto& t : parsed) {
+      if (t.group != g) continue;
       const std::string ttl = resolve_loading_key(t.title_key, true);
       const std::string msg = resolve_loading_key(t.message_key, false);
-      if (accept_tip(ttl, msg)) {
-        new_titles.push_back(ttl.empty() ? "FESTIVAL TIP" : ttl);
-        new_msgs.push_back(msg);
-        if (new_msgs.size() >= 12) break;
-      }
+      if (!accept_tip(ttl, msg)) continue;
+      pool_tip_count_ = t.group_tip_count;
+      pool_sequential_ = t.group_sequential;
+      out.push_back({ttl.empty() ? "FESTIVAL TIP" : ttl, msg, t.display_time > 0.0f ? double(t.display_time) : kDefaultTipSeconds});
     }
-  }
-  if (new_msgs.empty()) return false;
-  tip_titles_ = std::move(new_titles);
-  tips_ = std::move(new_msgs);
-  tip_idx_ = 0;
+    return out;
+  };
+  std::vector<PoolTip> pool = gather(group_);
+  if (pool.empty() && group_ != "freeroam") pool = gather("freeroam");
+  if (pool.empty()) return false;
+  pool_ = std::move(pool);
+  pick_tips();
+  fresh_pick_ = true;
   return true;
 }
 
 void LoadingScreen::set_tips(std::vector<std::string> tips) {
   if (!tips.empty()) {
+    pool_.clear();
     tips_ = std::move(tips);
     tip_titles_.assign(tips_.size(), "FESTIVAL TIP");
+    tip_times_.assign(tips_.size(), kDefaultTipSeconds);
     tip_idx_ = 0;
+    tip_timer_ = 0.0;
   }
 }
 
@@ -1068,9 +1119,15 @@ void LoadingScreen::update(double dt) {
   if (!active_) return;
   elapsed_ += dt;
   tip_timer_ += dt;
-  if (tip_timer_ >= 5.0 && !tips_.empty()) {
-    tip_timer_ -= 5.0;
-    tip_idx_ = (tip_idx_ + 1) % int(tips_.size());
+  // Each tip holds its displaytime; a long load comes round to the first
+  // again (Q139).
+  if (!tips_.empty()) {
+    const size_t i = size_t(tip_idx_ % int(tips_.size()));
+    const double hold = i < tip_times_.size() && tip_times_[i] > 0.0 ? tip_times_[i] : kDefaultTipSeconds;
+    if (tip_timer_ >= hold) {
+      tip_timer_ -= hold;
+      tip_idx_ = (tip_idx_ + 1) % int(tips_.size());
+    }
   }
 }
 
@@ -1096,126 +1153,72 @@ void LoadingScreen::draw(ui::List& l, float screen_w, float screen_h) const {
     }
     return;
   }
-  const float s = screen_h / 720.0f;
-  const SceneFrame f{0.5f * screen_w - 640.0f * s, 0.5f * screen_h - 360.0f * s, s};
-  const fh1::UiScene* sc_ptr = ui_scene("2_C_INI_LOADING");
-  SceneDraw sc(sc_ptr, true);
-
-  // 1. Real full-screen LOADING/BGLOADINGIMAGES/ImageN backdrop (ZERO flat purple gradient!).
-  std::array<float, 4> bg_uv{};
-  const int img_num = 1 + ((std::max(0, bg_idx_ - 1) + tip_idx_) % 10);
-  const bool have_bg = ui_texture("LOADING/BGLOADINGIMAGES/IMAGE" + std::to_string(img_num), bg_uv) ||
-                       ui_texture("LOADING/BGLOADINGIMAGES/IMAGE1", bg_uv) ||
-                       ui_texture("LOADING/BGLOADINGIMAGES/CONTROLLERLOADINGBACKGROUND", bg_uv);
-  if (have_bg) {
-    l.image(0, 0, screen_w, screen_h, bg_uv, ui::rgba(255, 255, 255, 255));
-    // Subtle dark scrim along bottom & left for legible typography over bright daylight photos.
-    l.rect(0, 0, screen_w, screen_h, ui::rgba(8, 10, 14, 72), 0.0f, ui::rgba(8, 10, 14, 155));
-  } else {
-    l.rect(0, 0, screen_w, screen_h, ui4::kCharcoalDark);
-    std::array<float, 4> noise{};
-    if (ui_texture("DIRTMASKS/BGNOISE01", noise)) {
-      l.image(0, 0, screen_w, screen_h, noise, ui::rgba(255, 255, 255, 24));
-    }
+  const float entry_veil = veil_alpha();
+  // The original's scene: the tip card, PLEASE WAIT and the spinner over
+  // one backdrop (every capture shows IMAGE1's stage).
+  LoadingSceneHud hud;
+  hud.tip_title = current_tip_title();
+  hud.tip_body = current_tip();
+  hud.event_title = title_;
+  hud.backdrop = "LOADING/BGLOADINGIMAGES/IMAGE" + std::to_string(std::clamp(bg_idx_, 1, 10));
+  hud.t = elapsed_;
+  if (draw_loading_scene(l, hud, screen_w, screen_h)) {
+    if (entry_veil > 0.004f)
+      l.rect(0.0f, 0.0f, screen_w, screen_h, ui::rgba(8, 10, 14, uint8_t(std::lround(entry_veil * 255.0f))));
+    return;
   }
 
-  // 2. Drive 2_C_INI_LOADING +3.0 deg tilted TitleText, large pink Title, TipLayout PILL_BIG lines, and LOADSPINNER.
-  const std::string tip_hdr = current_tip_title();
-  const std::string dest_title = title_.empty() ? "HORIZON COLORADO" : title_;
-  const std::string tip_body = current_tip();
-
-  // Top-left eyebrow / tip heading on #0E0E0E tape (2_C_INI_LOADING TitleText @(137,154), E@36px).
+  // No scene: a stand-in in its places.
+  const float s = screen_h / 720.0f;
+  const SceneFrame f{0.5f * screen_w - 640.0f * s, 0.5f * screen_h - 360.0f * s, s};
+  std::array<float, 4> bg_uv{};
+  if (ui_texture(hud.backdrop, bg_uv) || ui_texture("LOADING/BGLOADINGIMAGES/IMAGE1", bg_uv)) {
+    l.image(0, 0, screen_w, screen_h, bg_uv, ui::rgba(255, 255, 255, 255));
+  } else {
+    l.rect(0, 0, screen_w, screen_h, ui4::kCharcoalDark);
+  }
   {
     ui4::TiltScope tilt(l, f.x(360.0f), f.y(165.0f), ui4::kTiltRad);
     const float hx = f.x(110.0f), hy = f.y(132.0f);
     ui::TextStyle hts = ui4::style(ui::Font::kE, 30.0f * s, ui4::kWhite);
-    ui4::fit_text(tip_hdr, hts, 560.0f * s, 16.0f * s);
-    const float hw = ui::List::measure(tip_hdr, hts);
+    ui4::fit_text(hud.tip_title, hts, 560.0f * s, 16.0f * s);
+    const float hw = ui::List::measure(hud.tip_title, hts);
     ui4::brush(l, hx - 16.0f * s, hy - 8.0f * s, hx + std::max(260.0f * s, hw + 44.0f * s), hy + hts.size + 12.0f * s,
                ui4::kBrushBlack, true);
-    l.text(hx + 10.0f * s, hy + 2.0f * s, tip_hdr, hts);
+    l.text(hx + 10.0f * s, hy + 2.0f * s, hud.tip_title, hts);
   }
-
-  // Tilted TipLayout@(190,280, rot=+3 deg): crisp white text on dark HUDPILL01/charcoal strips for high contrast!
   {
     ui4::TiltScope tilt(l, f.x(410.0f), f.y(295.0f), ui4::kTiltRad);
-    ui::TextStyle line_ts = ui4::style(ui::Font::kB, 16.0f * s, ui4::kWhite, ui::Align::kLeft, true);
-    const auto lines = wrap_tip_lines(tip_body, line_ts, 560.0f * s, 6);
-    float ly = f.y(210.0f);
+    ui::TextStyle line_ts = ui4::style(ui::Font::kA, 16.0f * s, ui4::kInk, ui::Align::kLeft, true);
+    const auto lines = wrap_tip_lines(hud.tip_body, line_ts, 493.0f * s, 8);
+    float ly = f.y(206.0f);
     for (const auto& ln : lines) {
       const float lw = ui::List::measure(ln, line_ts);
-      const float px0 = f.x(122.0f), px1 = px0 + lw + 34.0f * s;
-      const float py0 = ly - 4.0f * s, py1 = ly + 23.0f * s;
-      l.rect(px0, py0, px1, py1, ui::rgba(14, 16, 22, 228));
-      l.rect(px0, py0, px0 + 4.0f * s, py1, ui4::kPink);
-      l.text(px0 + 16.0f * s, ly + 1.0f * s, ln, line_ts);
-      ly += 29.0f * s;
+      const float px0 = f.x(135.0f), px1 = px0 + lw + 22.0f * s;
+      l.rect(px0, ly - 3.0f * s, px1, ly + 22.0f * s, ui4::kWhite);
+      l.text(px0 + 10.0f * s, ly + 1.0f * s, ln, line_ts);
+      ly += 26.5f * s;
     }
   }
-
-  // Lower-left large pink destination title (2_C_INI_LOADING E@54px @(105,519) on CRISPTAPEBIG01/SMUDGETAPEBIG01).
-  {
+  if (!title_.empty()) {
     ui4::TiltScope tilt(l, f.x(380.0f), f.y(540.0f), ui4::kTiltRad);
     const float tx = f.x(92.0f), ty = f.y(500.0f);
     ui::TextStyle tts = ui4::style(ui::Font::kE, 48.0f * s, ui4::kWhite);
-    ui4::fit_text(dest_title, tts, 740.0f * s, 22.0f * s);
-    const float tw = ui::List::measure(dest_title, tts);
+    ui4::fit_text(title_, tts, 740.0f * s, 22.0f * s);
+    const float tw = ui::List::measure(title_, tts);
     ui4::brush(l, tx - 28.0f * s, ty - 12.0f * s, tx + std::max(340.0f * s, tw + 56.0f * s), ty + tts.size + 16.0f * s,
                ui4::kPink, true);
-    l.text(tx + 12.0f * s, ty + 2.0f * s, dest_title, tts);
-
-    if (!subtitle_.empty()) {
-      ui::TextStyle sts = ui4::style(ui::Font::kB, 17.0f * s, ui4::kWhite);
-      ui4::fit_text(subtitle_, sts, 580.0f * s, 11.0f * s);
-      const float sw = ui::List::measure(subtitle_, sts);
-      const float sy = ty + tts.size + 22.0f * s;
-      ui4::brush(l, tx - 10.0f * s, sy - 4.0f * s, tx + std::max(220.0f * s, sw + 38.0f * s), sy + sts.size + 10.0f * s,
-                 ui4::kBrushBlack, false);
-      l.text(tx + 12.0f * s, sy + 2.0f * s, subtitle_, sts);
-    }
+    l.text(tx + 12.0f * s, ty + 2.0f * s, title_, tts);
   }
-
-  // Sharp FH1 progress strip (STATBARFILL / BARBASE8PX — ZERO rounded progress bar!).
-  if (progress_ > 0.0f) {
-    const float bx0 = f.x(92.0f), bx1 = f.x(1070.0f), by = f.y(648.0f), bh = 8.0f * s;
-    std::array<float, 4> bar_empty{}, bar_fill{};
-    if (ui_texture("KITPARTS/BARS/BARBASE8PX", bar_empty)) {
-      l.image(bx0, by, bx1, by + bh, bar_empty, ui::rgba(255, 255, 255, 64));
-    } else {
-      l.rect(bx0, by, bx1, by + bh, ui::rgba(255, 255, 255, 40));
-    }
-    const float fw = std::max(4.0f * s, (bx1 - bx0) * std::clamp(progress_, 0.0f, 1.0f));
-    if (ui_texture("KITPARTS/BARS/BARBASE8PX", bar_fill)) {
-      l.image(bx0, by, bx0 + fw, by + bh, bar_fill, ui4::kPink);
-    } else {
-      l.rect(bx0, by, bx0 + fw, by + bh, ui4::kPink);
-    }
-    char pct[16];
-    std::snprintf(pct, sizeof pct, "%d%%", int(std::lround(progress_ * 100.0f)));
-    ui::TextStyle pct_ts = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
-    l.text(bx1, by - 20.0f * s, pct, pct_ts);
-  }
-
-  // Real rotating COMMON/LOADSPINNER.xds (or LOADING/LOADINGSPINNER50PX) sprite!
-  const float sp_cx = f.x(1152.0f);
-  const float sp_cy = f.y(646.0f);
-  const float ang = float(std::fmod(elapsed_ * 4.2, 6.2831853));
+  const float sp_cx = f.x(1172.0f), sp_cy = f.y(655.0f);
   std::array<float, 4> sp_uv{};
-  if (ui_texture("COMMON/LOADSPINNER", sp_uv) || ui_texture("LOADING/LOADINGSPINNER50PX", sp_uv) ||
-      ui_texture("COMMON/SPINNER", sp_uv)) {
-    l.image_rotated(sp_cx, sp_cy, 24.0f * s, 24.0f * s, ang, sp_uv, ui4::kWhite);
-  } else if (sc.ok()) {
-    const int sp_node = sc.find("LOADSPINNER");
-    if (sp_node >= 0) sc.model(l, f, sp_node, 1.0f, 0.0f, 0.0f, 0.0f, 0u, {}, -ang);
-  }
-  ui::TextStyle lw = ui4::style(ui::Font::kB, 11.0f * s, ui4::kOffWhite, ui::Align::kCenter);
-  l.text(sp_cx, sp_cy + 28.0f * s, loc_str("Scoreboard", "IDS_Scoreboard_Loading_Title", "LOADING"), lw);
-
-  // R3-UI-10: Smooth ~0.25 s ease-out fade-in veil on LoadingScreen entry.
-  const float entry_veil = veil_alpha();
-  if (entry_veil > 0.004f) {
+  if (ui_texture("COMMON/LOADSPINNER", sp_uv))
+    l.image_rotated(sp_cx, sp_cy, 18.0f * s, 18.0f * s,
+                    float(std::fmod(elapsed_ * loading_layout::kSpinnerRate, 6.2831853)), sp_uv, ui4::kWhite);
+  l.text(f.x(1150.0f), sp_cy - 9.0f * s, text_of(title_text::kPleaseWait),
+         ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite, ui::Align::kRight));
+  if (entry_veil > 0.004f)
     l.rect(0.0f, 0.0f, screen_w, screen_h, ui::rgba(8, 10, 14, uint8_t(std::lround(entry_veil * 255.0f))));
-  }
 }
 
 // ------------------------------------------------ Virtual On-Screen Keyboard

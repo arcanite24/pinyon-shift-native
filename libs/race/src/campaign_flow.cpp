@@ -1,6 +1,7 @@
 #include "race/campaign_flow.h"
 
 #include "drive/save.h"
+#include "fh1data/stringtables.h"
 
 #include <algorithm>
 #include <cctype>
@@ -69,6 +70,50 @@ std::function<std::string(std::string_view)>& text_resolver_slot() {
   static std::function<std::string(std::string_view)> fn;
   return fn;
 }
+
+std::function<std::string(std::string_view)>& caption_resolver_slot() {
+  static std::function<std::string(std::string_view)> fn;
+  return fn;
+}
+
+// A shipped caption: string `ids` of table `table`, through the caption
+// resolver; `english` (that table's EN text) without one.
+struct Caption {
+  const char* table;
+  const char* ids;
+  const char* english;
+};
+std::string caption(const Caption& c) {
+  if (const auto& fn = caption_resolver_slot()) {
+    const std::string ref =
+        "_&" + std::to_string((uint32_t(fh1::string_hash(c.table)) << 16) | fh1::string_hash(c.ids));
+    std::string t = fn(ref);
+    if (!t.empty() && t != ref && !fh1::StringTables::is_reference(t)) return t;
+  }
+  return c.english;
+}
+std::string caption(const Caption& c, std::string_view arg) {
+  std::string s = caption(c);
+  if (auto at = s.find("{0}"); at != std::string::npos) s.replace(at, 3, arg);
+  return s;
+}
+
+constexpr Caption kWristbandUnlocked{"PostRaceFlow", "IDS_WristbandUnlocked", "WRISTBAND UNLOCKED!"};
+constexpr Caption kCollectWristband{"InGame", "IDS_CollectWristband", "COLLECT {0} WRISTBAND"};
+constexpr Caption kWristbandAtRaceCentral{"InGame", "IDS_WristbandNewAvailable", "NEW WRISTBAND AT RACE CENTRAL"};
+constexpr Caption kShowcaseEvent{"InGame", "IDS_HudMsg_ShowcaseEvent", "SHOWCASE EVENT"};
+constexpr Caption kShowcaseInstructions{"CareerEventUI", "IDS_ShowcaseInstructions", "WIN THE RACE TO KEEP THE CAR"};
+constexpr Caption kShowcaseUnlocked{"InGame", "IDS_ShowcaseEventUnlocked_Message", "SHOWCASE EVENT UNLOCKED!"};
+constexpr Caption kStarShowdown{"CareerEventUI", "IDS_TitleNemesisRace", "STAR SHOWDOWN"};
+constexpr Caption kBeatRival{"CareerEventUI", "IDS_NemesisCalloutTitle", "Beat {0}"};
+constexpr Caption kWinner{"CareerEventUI", "IDS_Headline_Event_Won", "WINNER"};
+constexpr Caption kHorizonFinal{"InGame", "IDS_HudMsg_HorizonFinal", "HORIZON FINAL"};
+constexpr Caption kWinToBeChampion{"PostRaceFlow", "IDS_HeadlineEventAvailableLn2", "WIN TO BE CHAMPION!"};
+constexpr Caption kBarnRumour{"Barnfind", "IDS_Spawned_Body", "NEW BARN FIND RUMOR"};
+constexpr Caption kBarnRestoringTitle{"Activities", "IDS_BarnfindBeingRestored_Title", "DAK WILL CALL YOU WHEN IT'S READY"};
+constexpr Caption kBarnRestoring{"Activities", "IDS_BarnfindBeingRestored_Message", "{0} IS BEING RESTORED"};
+constexpr Caption kBarnReady{"Barnfind", "IDS_Ready_Message", "BARN FIND READY - {0}"};
+constexpr Caption kBarnCollectIt{"Barnfind", "IDS_Title", "Head to the garage to collect it!"};
 
 }  // namespace
 
@@ -173,6 +218,10 @@ const CharacterProfile& character_profile(CharacterId id) {
 
 void set_campaign_text_resolver(std::function<std::string(std::string_view)> resolver) {
   text_resolver_slot() = std::move(resolver);
+}
+
+void set_campaign_caption_resolver(std::function<std::string(std::string_view)> resolver) {
+  caption_resolver_slot() = std::move(resolver);
 }
 
 std::string resolve_event_display_title(std::string_view raw_id_or_title, std::string_view localized_override) {
@@ -849,7 +898,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.kind = CutsceneKind::kWristbandStageCinematic;
       cinematic_.duration_s = 7.5;
       cinematic_.letterbox_amount = 1.0f;
-      cinematic_.eyebrow = "HORIZON RACE CENTRAL CEREMONY";
+      cinematic_.eyebrow = caption(kWristbandUnlocked);
       cinematic_.headline = wb ? wb->display_name : "NEW WRISTBAND UNLOCKED";
       cinematic_.subheadline =
           wb ? (std::to_string(wb->unlocked_events_hint) + " NEW FESTIVAL EVENTS  •  STAR SHOWDOWN UNLOCKED")
@@ -877,15 +926,14 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.kind = CutsceneKind::kShowcaseIntroCinematic;
       cinematic_.duration_s = 6.0;
       cinematic_.letterbox_amount = 1.0f;
-      cinematic_.eyebrow = "HORIZON SHOWCASE EVENT";
+      cinematic_.eyebrow = caption(kShowcaseEvent);
       // The cinematic lines are in capitals; the table names are as the string tables hold them.
       const std::string sc_name = upper_ascii(sc.display_name), sc_opp = upper_ascii(sc.opponent_label);
       cinematic_.headline = sc_name;
       // An exhibition has no single opponent to name.
       cinematic_.subheadline =
           sc_opp.empty() ? sc.loaner_car_display : sc.loaner_car_display + "  VS  " + sc_opp;
-      cinematic_.detail_line = sc_opp.empty() ? "WIN THE RACE TO KEEP THE " + sc.loaner_car_display
-                                              : "BEAT THE " + sc_opp + " TO WIN THE " + sc.loaner_car_display;
+      cinematic_.detail_line = caption(kShowcaseInstructions);
       cinematic_.badge_text = "POPULARITY RANK #" + std::to_string(sc.popularity_rank_req) + " SHOWCASE";
       cinematic_.accent_rgba = pack_rgba(0xF9, 0x00, 0x64);
       cinematic_.showcase_index = sc.index;
@@ -901,7 +949,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.kind = CutsceneKind::kShowcaseOutroCinematic;
       cinematic_.duration_s = 6.5;
       cinematic_.letterbox_amount = 1.0f;
-      cinematic_.eyebrow = "SHOWCASE VICTORY!";
+      cinematic_.eyebrow = caption(kWinner);
       cinematic_.headline = upper_ascii(sc.display_name) + " COMPLETE";
       cinematic_.subheadline = "NEW PRIZE CAR DELIVERED TO YOUR GARAGE";
       cinematic_.reward_car = sc.loaner_car_display;
@@ -926,11 +974,10 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.kind = CutsceneKind::kBossIntroCinematic;
       cinematic_.duration_s = 6.8;
       cinematic_.letterbox_amount = 1.0f;
-      cinematic_.eyebrow = boss.is_finale_champion ? "HORIZON FESTIVAL FINALE  •  CHAMPION VS CHAMPION"
-                                                   : "HORIZON STAR SHOWDOWN  •  1-ON-1 PINK SLIP";
+      cinematic_.eyebrow = caption(kStarShowdown);
       cinematic_.headline = upper_ascii(boss.rival_name);
       cinematic_.subheadline = boss.rival_title + "  •  " + boss.car_display;
-      cinematic_.detail_line = "BEAT " + upper_ascii(boss.rival_name) + " TO WIN THE " + boss.car_display + " PINK SLIP";
+      cinematic_.detail_line = caption(kBeatRival, boss.rival_name);
       cinematic_.badge_text = boss.is_finale_champion ? "FINAL BOSS SHOWDOWN" : "STAR SHOWDOWN #" + std::to_string(boss.index + 1);
       cinematic_.accent_rgba = character_profile(boss.character).accent_rgba;
       cinematic_.boss_index = boss.index;
@@ -948,7 +995,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.kind = CutsceneKind::kBossVictoryCinematic;
       cinematic_.duration_s = 6.8;
       cinematic_.letterbox_amount = 1.0f;
-      cinematic_.eyebrow = "STAR SHOWDOWN VICTORY  •  PINK SLIP WON";
+      cinematic_.eyebrow = caption(kWinner);
       cinematic_.headline = upper_ascii(boss.rival_name) + " DEFEATED";
       cinematic_.subheadline = "RIVAL VEHICLE ADDED TO YOUR HORIZON GARAGE";
       cinematic_.reward_car = boss.car_display;
@@ -1383,7 +1430,7 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
       RewardTallyRow opp_row;
       opp_row.place = tally_.place == 1 ? 2 : 1;
       opp_row.driver = matched_sc->opponent_label;
-      opp_row.car = matched_sc->airborne ? "AIRBORNE CHALLENGER" : "SHOWCASE FIELD";
+      opp_row.car = matched_sc->airborne ? "---" : "";  // AirChallenges IDS_VehicleN; an exhibition has a field
       opp_row.gap_s = tally_.place == 1 ? 1.0 : 0.0;
       if (tally_.place == 1) {
         tally_.results_rows.push_back(std::move(player_row));
@@ -1662,18 +1709,18 @@ CampaignAction CampaignFlow::on_barn_find(bool discovered, const std::string& ba
   if (!discovered) {
     dialogs_.enqueue(
         {"barn_rumour_" + barn_id, CharacterId::kDakStewart, "", "", "BarnFindFirstRumour", "",
-         "Hey, word around the Festival is someone stashed a classic in a barn nearby. Check your map for the purple search zone!",
+         caption(kBarnRumour),
          6.0, 6, true, false},
         &heard_dialogs_);
     return {};
   }
   auto act = enter_stage(CampaignStage::kBarnDiscovery, TransitionKind::kCrossFade);
   cinematic_.headline = car_name.empty() ? "BARN FIND DISCOVERED!" : car_name;
-  cinematic_.detail_line = "Dak's recovery crew is hauling this Colorado classic back to the Horizon Garage.";
+  cinematic_.detail_line = caption(kBarnRestoring, car_name);
   cinematic_.reward_car = car_name;
   dialogs_.enqueue(
       {"barn_found_" + barn_id, CharacterId::kDakStewart, "", "", "BarnFindIntro", "",
-       "Look at what you found! Let me get it back to the shop, strip the rust, and tune it back to life.",
+       caption(kBarnRestoringTitle),
        6.0, 8, true, true},
       &heard_dialogs_);
   act.save_requested = true;
@@ -1682,14 +1729,12 @@ CampaignAction CampaignFlow::on_barn_find(bool discovered, const std::string& ba
 
 CampaignAction CampaignFlow::on_barn_restored(const std::string& barn_id, const std::string& car_name) {
   auto act = enter_stage(CampaignStage::kBarnRestored, TransitionKind::kBrushWipe);
-  cinematic_.headline = car_name.empty() ? "RESTORATION COMPLETE" : car_name;
+  cinematic_.headline = car_name.empty() ? "RESTORATION COMPLETE" : caption(kBarnReady, car_name);
   cinematic_.reward_car = car_name;
-  // Restored is not yet in the garage: the car is collected there
-  // (Barnfind IDS_Title, the title's own line).
-  constexpr const char* kCollectIt = "Head to the garage to collect it!";
-  cinematic_.detail_line = kCollectIt;
+  // Restored is not yet in the garage: the car is collected there.
+  cinematic_.detail_line = caption(kBarnCollectIt);
   dialogs_.enqueue({"barn_restored_" + barn_id, CharacterId::kDakStewart, "", "", "1040BarnFindAtWorkshop", "",
-                    kCollectIt, 6.0, 7, true, true},
+                    caption(kBarnCollectIt), 6.0, 7, true, true},
                    &heard_dialogs_);
   act.save_requested = true;
   return act;
@@ -1726,8 +1771,7 @@ void CampaignFlow::check_showcase_unlocks(int pop_rank) {
       unlocked_showcases_.insert(sc.horizon_id);
       dialogs_.enqueue(
           {"sc_unlock_" + std::string(sc.horizon_id), CharacterId::kHollyCruz, "", "", "ShowcaseUnlockedFreeRoam", "",
-           std::string("New Showcase Event unlocked: ") + sc.display_name + " (" + sc.loaner_car_display +
-               (sc.opponent_label.empty() ? "" : " vs " + sc.opponent_label) + ")!",
+           caption(kShowcaseUnlocked),
            6.0, 6, true, false},
           &heard_dialogs_);
     }
@@ -2063,8 +2107,8 @@ CampaignObjective CampaignFlow::next_objective(int wristband_points, int collect
   const int next_wb = collected_wristband + 1;
   if (next_wb >= 0 && next_wb < int(bands.size()) && wristband_points >= bands[size_t(next_wb)].xp_threshold) {
     obj.valid = true;
-    obj.title = std::string("COLLECT ") + bands[size_t(next_wb)].display_name;
-    obj.detail = "DRIVE TO RACE CENTRAL TO UNLOCK NEW EVENTS";
+    obj.title = caption(kCollectWristband, upper_ascii(bands[size_t(next_wb)].colour_key));
+    obj.detail = caption(kWristbandAtRaceCentral);
     obj.gps_label = "RACE CENTRAL  •  WRISTBAND CEREMONY";
     obj.is_urgent = true;
     return obj;
@@ -2088,8 +2132,8 @@ CampaignObjective CampaignFlow::next_objective(int wristband_points, int collect
   // 2b. Horizon Finale (HEADLINE_EVENT) when Gold Wristband + 10,000 pts reached!
   if (!finale_complete_ && collected_wristband >= 6 && wristband_points >= 10000) {
     obj.valid = true;
-    obj.title = "HORIZON FESTIVAL FINALE";
-    obj.detail = "WIN THE FINALE TO CHALLENGE DARIUS FLYNT FOR THE HORIZON CROWN";
+    obj.title = caption(kHorizonFinal);
+    obj.detail = caption(kWinToBeChampion);
     obj.gps_label = "HORIZON FINALE  •  HEADLINE EVENT";
     obj.is_urgent = true;
     if (catalog) {
@@ -2106,7 +2150,7 @@ CampaignObjective CampaignFlow::next_objective(int wristband_points, int collect
     if (!boss->is_finale_champion && wristband_points >= boss->unlock_points) {
       obj.valid = true;
       obj.title = std::string("STAR SHOWDOWN: ") + upper_ascii(boss->rival_name);
-      obj.detail = std::string("BEAT THE ") + boss->car_display + " TO WIN THE PINK SLIP";
+      obj.detail = caption(kBeatRival, boss->rival_name);
       obj.gps_label = std::string("STAR SHOWDOWN  •  ") + upper_ascii(boss->rival_name);
       obj.is_urgent = true;
       if (catalog) {

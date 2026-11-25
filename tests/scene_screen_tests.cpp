@@ -8,9 +8,12 @@
 // SHIFT_SCENE_SCREEN_SHOT_DIR the screens are also drawn to PNGs there, over
 // SHIFT_SCENE_SCREEN_BACKDROP (a 1280x720 PNG) when given.
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
@@ -27,9 +30,11 @@
 #include "fh1data/ui_scene.h"
 #include "fh1data/xds.h"
 #include "freeroam/skills.h"
+#include "frontend_screens.h"
 #include "game_hud.h"
 #include "hud_scene.h"
 #include "hud_screen.h"
+#include "map_screen.h"
 #include "pause_screen.h"
 #include "race_screens.h"
 #include "stb_image.h"
@@ -163,6 +168,19 @@ int main() {
     // The driving HUD's bound nodes (hud_screen.cpp), by element.
     const SceneDraw sd(carview::ui_scene(std::string(carview::kHudScene)));
     check(sd.ok(), "947_HUD loads");
+    {
+      // The dial's red zone (Redline/rotation/HalfRectangle) is laid flat in
+      // its XZ plane and stood up by a -90 degree turn about x: it draws as
+      // the dial ring's lower half (253 x 126 px), not a zero-height strip.
+      const int red = sd.find_path("RPM_and_MPH/Redline/rotation");
+      const std::vector<int> half = sd.children_of(red);
+      check(red >= 0 && !half.empty(), "947_HUD: the red zone's half ring");
+      if (!half.empty()) {
+        const auto r = sd.rect(half[0]);
+        check(std::fabs((r[2] - r[0]) - 253.0f) < 2.0f && std::fabs((r[3] - r[1]) - 126.5f) < 2.0f,
+              "947_HUD: the red zone stands up to the ring's half (253 x 126 px)");
+      }
+    }
     check_nodes(sd, "947_HUD",
                 {// The dial.
                  "GAUGE_ANALOG", "GAUGE_ANALOG/ASSIST_ICONS", "ASSIST_ICONS/HUD_SHIFT_LIGHT", "GAUGE_ANALOG/FUEL_ANALOG",
@@ -218,7 +236,40 @@ int main() {
     if (sd.ok()) check_nodes(sd, scene, paths);
   }
 
+  // The front end's and the loading screen's scenes (frontend_screens.cpp).
+  for (const auto& [scene, paths] : carview::frontend_scene_nodes()) {
+    const SceneDraw sd(carview::ui_scene(std::string(scene)));
+    check(sd.ok(), std::string(scene) + " loads");
+    if (sd.ok()) check_nodes(sd, scene, paths);
+  }
+  // Every load group the engine names is one LoadingDefs.xml has.
+  {
+    std::ifstream f(game_root / "media" / "ui" / "LoadingDefs.xml", std::ios::binary);
+    const std::string xml((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::vector<fh1::UiLoadingTip> tips;
+    check(fh1::parse_loading_defs_xml(xml, tips), "LoadingDefs.xml parses");
+    std::set<std::string> groups;
+    for (const auto& t : tips) groups.insert(t.group);
+    std::set<std::string> named{"freeroam"};
+    for (int style : {1, 2, 3, 5, 6})
+      for (int level = -1; level <= 6; ++level) named.insert(carview::loading_group_for_event(style, level));
+    for (const auto& g : named) check(groups.count(g) == 1, "LoadingDefs.xml has group " + g);
+    for (const auto& t : tips)
+      if (t.group == "freeroam") check(t.group_tip_count == 2 && !t.group_sequential, "freeroam: 2 tips at random");
+    for (const auto& t : tips)
+      if (t.group == "festival_heats") check(t.group_tip_count == 2 && t.group_sequential, "festival_heats: sequential");
+  }
+
   // 2. Every string the screens bind resolves in the EN tables.
+  {
+    using namespace carview::title_text;
+    for (const carview::StringRef* r :
+         {&kPressStart, &kSinglePlayer, &kMultiplayer, &kSelect, &kBack, &kContinue, &kYes, &kNo, &kPleaseWait,
+          &kNoNetworkTitle, &kNoNetworkBody, &kProfileCorruptTitle, &kProfileCorruptBody})
+      check_ref(*r, "front end " + std::string(r->fallback));
+    check(carview::text_of(kSinglePlayer) == "SINGLE PLAYER" && carview::text_of(kMultiplayer) == "MULTIPLAYER",
+          "the menu's rows read SINGLE PLAYER / MULTIPLAYER");
+  }
   {
     using namespace carview::race_text;
     for (const carview::StringRef* r :
@@ -310,6 +361,99 @@ int main() {
       const std::string_view play = carview::ui_play_name(e);
       const auto* entry = map.resolve(play, carview::kPauseScene);
       check(entry && !entry->is_blank(), "cue " + std::string(play) + " plays a sound");
+    }
+  }
+
+  // 4b. The pause map (map_screen.h): H_MAP's cursor, popups and player bar,
+  // the FILTER list and the fast travel dialog, their strings and textures.
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kMapScene)));
+    check(sd.ok(), "H_MAP loads");
+    check_nodes(sd, "H_MAP",
+                {"CURSOR", "CURSOR/Group/Rectangle", "CURSOR_SNAP", "CURSOR_SNAP/Rectangle3", "DETAIL", "STATISTICS",
+                 "CONTEXT_POPUP", "Tip", "ButtonBar", "Layer2", "PlayerBar", "Next_Level", "Points", "Wristband",
+                 "TEXT_CAR", "TEXT_PI", "CLASS_A", "TEXT_CR", "BottomRow"});
+    const int detail = sd.find("DETAIL");
+    const std::map<std::string, std::vector<const char*>> groups{
+        {"CareerRace", {"Pin", "Top/TEXT_NAME", "Top/Pill_top", "Top/Pill_bottom", "Middle/Class", "Middle/TEXT_PTS",
+                        "Middle/Pillpoints", "Middle/TEXT_MONEY", "Middle/Pillmoney", "Bottom"}},
+        {"Exhibition", {"Pin", "Top/TEXT_NAME", "Top/Pill_top", "Middle/Money/TEXT_MONEY", "Middle/Class"}},
+        {"StreetRace", {"Pin", "Top/TEXT_NAME", "Top/Pilltop", "Top/Pillmiddle", "Top/Pillbottom",
+                        "Middle/TEXT_COMPLETE", "Bottom/HubList/StreetRaceHUB10/Gold"}},
+        {"Generic", {"Pin", "Top/TEXT_NAME", "Top/Pill_top", "Top/Pill_bottom", "Middle/TEXT_COMPLETE"}},
+        {"Simple", {"Pin", "Top/TEXT_NAME", "Top/Pill_top"}},
+        {"Nemesis", {"Pin", "Top/TEXT_NAME", "Middle/Class", "Middle/TEXT_COMPLETE"}},
+        {"Outpost", {"Pin", "Top/TEXT_NAME", "Top/Pilltop", "Middle/TEXT_COMPLETE", "Bottom/HubList/StreetRaceHUB3/Gold",
+                     "Bottom/HubList/StreetRaceHUB3/Available", "Bottom/TEXT_DISCOUNT", "Bottom/TEXT_VALUE"}},
+    };
+    for (const auto& [g, paths] : groups) {
+      const int gn = child(sd, detail, g);
+      check(gn >= 0, "H_MAP: DETAIL/" + g);
+      for (const char* p : paths) check(sd.find_path(p, gn) >= 0, "H_MAP: DETAIL/" + g + "/" + p);
+    }
+    for (int i = 0; i < 10; ++i) {
+      const std::string hub = i == 0 ? "StreetRaceHUB" : "StreetRaceHUB" + std::to_string(i + 1);
+      for (const char* st : {"Gold", "Silver", "Bronze", "Available", "Unavailable"})
+        check(sd.find_path("StreetRace/Bottom/HubList/" + hub + "/" + st, detail) >= 0,
+              "H_MAP: street race pip " + hub + "/" + st);
+    }
+    const SceneDraw fl(carview::ui_scene(std::string(carview::kMapFilterScene)));
+    check(fl.ok(), "H_FIXED_SETTING_LIST loads");
+    check_nodes(fl, "H_FIXED_SETTING_LIST",
+                {"TitleTapeText", "SCROLLING_LIST", "HELP_BUTTON_BAR", "NAV_POSITION_INDICATOR"});
+    for (int i = 0; i < 5; ++i) {
+      const int bar = fl.find(i == 0 ? "FixedSettingsBar" : "FixedSettingsBar" + std::to_string(i + 1));
+      check(bar >= 0, "H_FIXED_SETTING_LIST: FixedSettingsBar" + std::to_string(i + 1));
+      check(fl.find_path("Group/_6pxPill/Pill", bar) >= 0 && fl.find_path("Group/TEXT_SETTING_NAME", bar) >= 0,
+            "H_FIXED_SETTING_LIST: bar " + std::to_string(i + 1) + " pill and name");
+    }
+    const SceneDraw mp(carview::ui_scene(std::string(carview::kMapDialogScene)));
+    check(mp.ok(), "H_MESSAGE_POPUP loads");
+    check_nodes(mp, "H_MESSAGE_POPUP", {"Title", "Message", "SpinnerBox", "ButtonBar"});
+    // The 12 filter rows, in the original's order, and their strings.
+    check(carview::kMapFilterRows == 12, "map filter: 12 rows");
+    const std::array<const char*, 12> want{"All", "New", "Not Won", "Rivals", "Festival Events", "Showcases",
+                                           "Star Showdowns", "Outposts", "Street Race Hubs", "Speed Cameras",
+                                           "Discount Signs", "Barn Finds"};
+    for (int i = 0; i < carview::kMapFilterRows; ++i) {
+      const auto r = carview::map_filter_text(carview::MapFilterRow(i));
+      check_ref(r, std::string("map filter row ") + want[size_t(i)]);
+      check(carview::text_of(r) == want[size_t(i)], std::string("map filter row text ") + want[size_t(i)] + " = " +
+                                                        carview::text_of(r));
+    }
+    using namespace carview::map_text;
+    for (const carview::StringRef* r :
+         {&kSetRoute, &kClearRoute, &kExitMap, &kFastTravelButton, &kDetails, &kLeaderboard, &kFilter, &kToggle, &kBack,
+          &kOk, &kCancel, &kFilterTitle, &kFastTravelTitle, &kFastTravelAsk, &kFastTravelAskFree, &kFastTravelNoCredits,
+          &kCredits, &kCardFastTravel, &kCardDiscount, &kCardAvailableAt, &kCardEarned})
+      check_ref(*r, "map string " + std::string(r->fallback));
+    check(carview::format1(carview::text_of(kFastTravelButton), carview::format1(carview::text_of(kCredits), "10,000")) ==
+              "FAST TRAVEL (10,000 Cr)",
+          "fast travel help label");
+    check(carview::format1(carview::text_of(kFastTravelAsk), "10,000") ==
+              "Are you sure you want to Fast Travel here for 10,000 credits?",
+          "fast travel question");
+    for (const carview::StringRef r :
+         {carview::StringRef{"Activities", "IDS_Description_GasStation", 0, "HORIZON OUTPOST"},
+          carview::StringRef{"Activities", "IDS_Description_StreetRaceHub", 0, "STREET RACE HUB"},
+          carview::StringRef{"Activities", "IDS_GasStation_Discount", 0, "Discount:"},
+          carview::StringRef{"Activities", "IDS_PB", 0, "PB"},
+          carview::StringRef{"Activities", "IDS_Flyer", 0, "DISCOUNT SIGN"},
+          carview::StringRef{"Activities", "IDS_Description_BarnFind", 0, "BARN FIND"},
+          carview::StringRef{"UnitStrings", "IDS_Units_PTS", 0, "{0} PTS"},
+          carview::StringRef{"UnitStrings", "IDS_Units_KmPerHour", 0, "{0} km/h"},
+          carview::StringRef{"InGame", "IDS_Festival_WS_Line1", 0, "DAK'S GARAGE"},
+          carview::StringRef{"InGame", "IDS_Festival_WS_Line2", 0, "UPGRADE YOUR CAR"}})
+      check_ref(r, "map popup string " + std::string(r.fallback));
+    // The textures the map binds.
+    auto hzt = fh1::Archive::open(game_root / "media" / "ui" / "textures" / "Horizon.zip", nullptr);
+    check(hzt != nullptr, "Horizon.zip opens");
+    for (const char* t : {"MAP/MASKS/MAP_CROSSHAIR", "MAP/MASKS/MAP_LOCKON", "MAP/ICONS/STREETRACEICONS/GOLD",
+                          "MAP/ICONS/STREETRACEICONS/SILVER", "MAP/ICONS/STREETRACEICONS/BRONZE",
+                          "MAP/ICONS/STREETRACEICONS/AVAILABLE", "MAP/ICONS/STREETRACEICONS/UNAVAILABLE",
+                          "PICLASS/CLASS_A"}) {
+      const bool ok = hzt && hzt->read(std::string(t) + ".xds").ok();
+      check(ok, std::string("map texture ") + t);
     }
   }
 
@@ -467,8 +611,14 @@ int main() {
       go_d.kmh = 0, go_d.rpm = 1000, go_d.gear = 1, go_d.skills = nullptr;
       go_d.race = &go;
       hud_shot("hud_race_go.png", "15b_countdown_go_orig.png", go_d);
-      // The interim count (SPEC_QUESTIONS Q74) at 2.
+      // The count (15_countdown_orig.png): on the gantry only, nothing from
+      // I_321_Go on screen (Q74).
       go.phase = carview::RaceHud::kCountdown, go.clock = -1.6, go.digit = 2;
+      {
+        carview::ui::List count;
+        check(carview::draw_hud_countdown(count, go, 1280.0f, 720.0f, 1.0f), "I_321_Go: present at the count");
+        check(count.items().empty(), "I_321_Go: no count on screen before GO!");
+      }
       hud_shot("hud_race_count.png", "15_countdown_orig.png", go_d);
       go.phase = carview::RaceHud::kRacing;
       go.clock = 20.0, go.wrong_way = true;
@@ -578,6 +728,108 @@ int main() {
       hud_shot("race_won_car.png", "16b_finish_banner_orig.png", rd);
       rr.screen = S::kStayInCar, rr.stay_car = "Nissan GT-R R34";
       hud_shot("race_stay_in_car.png", "18_post_race_stay_in_car_orig.png", rd);
+    }
+
+    // The pause map over the original's captures (the popups at the icons
+    // the captures show).
+    {
+      carview::DriveHud md = d;
+      md.pause = false;
+      md.pause_screen = nullptr;
+      carview::MapOverlayHud mo;
+      mo.active = true;
+      carview::MapScreenHud ms;
+      ms.active = true;
+      ms.age = 5.0;
+      mo.screen = &ms;
+      md.map_overlay = &mo;
+      ms.prompts = {{"A", "SET ROUTE"}, {"B", "EXIT MAP"}, {"X", "FAST TRAVEL (10,000 Cr)"}, {"LB", "FILTER"}};
+      ms.locked = true;
+      auto& p = ms.popup;
+      p.kind = carview::MapPopupKind::kOutpost;
+      p.x = 668, p.y = 403;
+      p.title = "HORIZON OUTPOST", p.line = "GLADSTONE CREEK";
+      p.pips = {carview::MapPip::kAvailable, carview::MapPip::kAvailable, carview::MapPip::kAvailable};
+      p.discount_label = "Discount:", p.discount_value = "0%";
+      hud_shot("map_popup_outpost.png", "map_popup_outpost_orig.png", md);
+      p = {};
+      p.kind = carview::MapPopupKind::kCareerRace;
+      p.x = 563, p.y = 277;
+      p.title = "Bondurant Valley Skirmish", p.class_name = "A", p.points = "110 PTS", p.money = "5,000 Cr";
+      ms.prompts[2] = {"X", "DETAILS"};
+      hud_shot("map_popup_event.png", "map_popup_event_orig.png", md);
+      p = {};
+      p.kind = carview::MapPopupKind::kSimple;
+      p.x = 640, p.y = 359;
+      p.title = "User";
+      ms.prompts.erase(ms.prompts.begin() + 2);
+      hud_shot("map_open.png", "map_open_orig.png", md);
+      ms.filter_open = true;
+      hud_shot("map_filter.png", "map_filter_orig.png", md);
+      ms.filter_row = 11;
+      hud_shot("map_filter_3.png", "map_filter_3_orig.png", md);
+      ms.filter_open = false;
+      ms.dialog = carview::MapDialog::kConfirm;
+      ms.dialog_body = "Are you sure you want to Fast Travel here for 10,000 credits?";
+      hud_shot("map_fasttravel_confirm.png", "map_fasttravel_confirm_orig.png", md);
+    }
+
+    // The front end and the loading screen over the original's frames.
+    {
+      carview::TitleScreenHud ts;
+      ts.active = true;
+      carview::DriveHud td;
+      td.title_screen = &ts;
+      td.time = 1.0;
+      hud_shot("title_pressstart.png", "01_title_pressstart_orig.png", td);
+      ts.menu.show_menu();
+      hud_shot("title_menu.png", "02_title_menu_orig.png", td);
+      ts.menu.move(1);
+      ts.menu.confirm();
+      hud_shot("title_no_network.png", "02_title_menu_orig.png", td);
+      ts.menu.confirm();
+      ts.menu.open_extras();
+      hud_shot("title_extras.png", "02_title_menu_orig.png", td);
+    }
+    auto load_shot = [&](const std::string& file, const std::string& orig, const carview::LoadingSceneHud& lh) {
+      std::vector<uint8_t> fb = backdrop;
+      if (!hud_dir.empty()) {
+        int w = 0, h = 0, n = 0;
+        if (uint8_t* px = stbi_load((hud_dir / orig).string().c_str(), &w, &h, &n, 4)) {
+          if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
+          stbi_image_free(px);
+        }
+      }
+      carview::ui::List l;
+      check(carview::draw_loading_scene(l, lh, float(W), float(H)), "draw " + file);
+      carview::ui::rasterize(l.items(), fb, W, H);
+      if (!lh.backdrop.empty()) {
+        // PLEASE WAIT over the backdrop (03_loading_tip_orig.png: 992..1150 x 646..664).
+        int lit = 0;
+        for (uint32_t y = 646; y < 664; ++y)
+          for (uint32_t x = 992; x < 1150; ++x) {
+            const uint8_t* p = &fb[(size_t(y) * W + x) * 4];
+            lit += p[0] > 235 && p[1] > 235 && p[2] > 235;
+          }
+        check(lit > 200, file + ": PLEASE WAIT drawn over the backdrop");
+      }
+      const auto p = out_dir / file;
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + file);
+    };
+    {
+      carview::LoadingSceneHud lh;
+      lh.tip_title = carview::text_of({"Tips", "IDS_PopularityTitle", 0, "POPULARITY"});
+      lh.tip_body = carview::text_of({"Tips", "IDS_PopularityTip", 0, ""});
+      lh.t = 0.3;
+      // Over the original's frame (no backdrop: the calibration loop) and
+      // with it.
+      load_shot("loading_tip.png", "03_loading_tip_orig.png", lh);
+      lh.backdrop = "LOADING/BGLOADINGIMAGES/IMAGE1";
+      load_shot("loading_tip_bg.png", "03_loading_tip_orig.png", lh);
+      lh.tip_title = carview::text_of({"Tips", "IDS_AliTitle", 0, "ALI HOWARD"});
+      lh.tip_body = carview::text_of({"Tips", "IDS_AliTip", 0, ""});
+      lh.event_title = "THE GAUNTLET";
+      load_shot("loading_event.png", "11b_event_loading_orig.png", lh);
     }
   }
 

@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -384,7 +385,7 @@ bool DriveWorldHost::open_world_and_car() {
     auto boot_last_tp = std::chrono::steady_clock::now();
     if (boot_live_ui) {
       boot_loading.load_definitions(app.game_root_of(), "freeroam", app.state_root);
-      boot_loading.start("HORIZON COLORADO", "LOADING");
+      boot_loading.start();
       boot_loading.set_progress(0.08f);
     }
     auto pump_boot_frame = [&](float target_progress) {
@@ -945,22 +946,29 @@ bool DriveWorldHost::hot_reload_car_and_world() {
 
         // Pump an animated 60 FPS LoadingScreen in windowed mode whenever heavy car reload or
         // world regather work is required so SDL events stay responsive and the window never freezes.
-        const bool hot_live_ui = (need_car_reload || need_regather) && !app.headless && !app.bench && app.window != nullptr;
+        // Into and out of an event the original holds its load screen
+        // kEventMinSeconds (fast travel and the rest: none).
+        const bool event_load = app.loading_into_event || app.loading_out_of_event;
+        app.loading_into_event = app.loading_out_of_event = false;
+        const double hot_min_s = event_load ? LoadingScreen::kEventMinSeconds : 0.0;
+        const bool hot_live_ui =
+            (need_car_reload || need_regather || event_load) && !app.headless && !app.bench && app.window != nullptr;
         LoadingScreen hot_loading;
         bool hot_atlas_synced = false;
         bool hot_cancelled = false;
         auto hot_last_tp = std::chrono::steady_clock::now();
         if (hot_live_ui) {
-          hot_loading.load_definitions(app.game_root_of(), app.race ? "race" : "freeroam", app.state_root);
-          // The event's display name (the original's load screen names the
-          // event, never its internal id).
-          std::string load_title = "HORIZON COLORADO";
+          hot_loading.load_definitions(app.game_root_of(), app.loading_group(), app.state_root);
+          // Into an event: its display name (kept by request; the original's
+          // tip card names no event).
+          std::string load_title;
           if (app.race && !app.race_event.empty()) {
             const auto* cev = app.have_career_catalog ? app.career_catalog.find_event(app.race_event) : nullptr;
             load_title = cev ? race::resolve_event_display_title(cev) : race::resolve_event_display_title(app.race_event);
           }
           const std::string load_sub = app.race ? "LOADING EVENT" : (need_car_reload ? "LOADING VEHICLE" : "TRAVELING");
           hot_loading.start(load_title, load_sub);
+          app.audio_host.set_blocking_load(true);
           hot_loading.set_progress(0.08f);
         }
         auto pump_hot_frame = [&](float target_progress) {
@@ -1106,6 +1114,12 @@ bool DriveWorldHost::hot_reload_car_and_world() {
             start_heading = app.spawn[3];
           }
         }
+        while (hot_live_ui && !hot_cancelled && hot_loading.elapsed() < hot_min_s) {
+          pump_hot_frame(0.99f);
+          std::this_thread::sleep_for(std::chrono::milliseconds(8));
+        }
+        if (hot_live_ui) app.audio_host.set_blocking_load(false);
+        if (hot_cancelled) return false;
         const double hot_ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_hot0).count();
         std::printf("carview: hot swap to %s in %.1f ms (car %s, regather %s, world textures kept: %zu, gpu draws: %u)\n",

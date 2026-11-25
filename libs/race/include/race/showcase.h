@@ -42,10 +42,14 @@ struct ShowcaseSpec {
   int64_t event_id = 0;
   std::string horizon_id;
   ShowcaseAircraftKind kind = ShowcaseAircraftKind::kMustangP51;
-  std::string display_name;       // e.g. "P-51 MUSTANG"
-  // <Opponent LocStringPilotName>: the AirChallenges string naming the
-  // opponent ("IDS_Pilot2" -> "Plane"); empty for the built-in specs.
+  // The opponent's name and vehicle, as the title's results show them:
+  // airborne_challenges.xml's <Opponent LocStringPilotName> and
+  // LocStringAirVehName in the AirChallenges strings ("IDS_Pilot2" ->
+  // "Plane", "IDS_Vehicle2" -> "---"). Empty when the event has none.
+  std::string display_name;
+  std::string vehicle_name;
   std::string pilot_name_ids;
+  std::string vehicle_name_ids;
   std::string anim_pgeo;          // e.g. "ANIM_Showcase_Event_Helicopter_Race.pgeo"
   std::string anim_in_race;       // in-race animation name
   double base_altitude_m = 26.0;  // cruise height above road
@@ -72,6 +76,10 @@ struct ShowcaseSpec {
   double rumble_distance_inner_m = 15.0;
   std::vector<ShowcaseTimingCheckpoint> timing_checkpoints;
 };
+
+// The English AirChallenges text for an IDS_ name ("IDS_Pilot3" ->
+// "Chopper"); empty for one the table does not hold.
+std::string air_challenges_text(std::string_view ids);
 
 // True for all 7 Airborne Showcase events (CareerTypeId == 8 or PLANE_RACE_*).
 bool is_airborne_showcase(int career_type, std::string_view horizon_id);
