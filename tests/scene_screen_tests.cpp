@@ -453,8 +453,14 @@ int main() {
       go_d.kmh = 0, go_d.rpm = 1000, go_d.gear = 1, go_d.skills = nullptr;
       go_d.race = &go;
       hud_shot("hud_race_go.png", "15b_countdown_go_orig.png", go_d);
-      // The interim count (SPEC_QUESTIONS Q74) at 2.
+      // The count (15_countdown_orig.png): on the gantry only, nothing from
+      // I_321_Go on screen (Q74).
       go.phase = carview::RaceHud::kCountdown, go.clock = -1.6, go.digit = 2;
+      {
+        carview::ui::List count;
+        check(carview::draw_hud_countdown(count, go, 1280.0f, 720.0f, 1.0f), "I_321_Go: present at the count");
+        check(count.items().empty(), "I_321_Go: no count on screen before GO!");
+      }
       hud_shot("hud_race_count.png", "15_countdown_orig.png", go_d);
       go.phase = carview::RaceHud::kRacing;
       go.clock = 20.0, go.wrong_way = true;

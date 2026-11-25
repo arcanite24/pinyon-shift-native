@@ -199,9 +199,8 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     shared.clear();
     // LED displays (anim_flag 2 countdown, 3 flipbook) are unlit and their
     // normals point into the gantry, so turning their faces toward the normals
-    // (or keeping the file's order) left the panels back-facing and culled.
-    // Their front is the file's clockwise side (Direct3D's default front
-    // face), so their corners are reversed instead (Q74).
+    // (or keeping the file's order) left the FR16 panels back-facing and
+    // culled; with their corners reversed they face the grid and light (Q74).
     const bool normalize_ccw =
         (mat.blend == 0 && !mat.is_water && mat.anim_flag == 0 && !mat.is_grass && !billboard);
     const bool led_panel = mat.blend == 0 && mat.anim_flag >= 2;

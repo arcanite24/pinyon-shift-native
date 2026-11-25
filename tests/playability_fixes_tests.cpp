@@ -3,7 +3,7 @@
 // 2. Keyboard W/Up acceleration from 0 -> >50 km/h with & without phantom controller/wheel axes
 // 3. Alt-tab focus-gain zero-recreate fast path & FramePacer reset
 // 4. Water material detection (LAKE_ANIM_NORM_OPAC_REFL_3, RIVER/WATER, non-decal alpha)
-// 5. Race gantry LED panels face the file's clockwise side (Q74)
+// 5. Race gantry LED panels: corners reversed, not turned to the normal (Q74)
 
 #include <SDL3/SDL.h>
 
@@ -271,8 +271,8 @@ void test_water_material_detection() {
 }  // namespace
 
 // The world's lit faces are turned toward their normals; the unlit LED
-// panels' normals point into the gantry, so their front is the file's
-// clockwise side and their corners are reversed whatever the normal says.
+// panels' normals point into the gantry, so their corners are reversed
+// whatever the normal says (the FR16 panels light that way, Q74).
 void test_led_panel_winding() {
   carview::WorldTriangles w;
   w.colours.push_back({1.0f, 1.0f, 1.0f});
