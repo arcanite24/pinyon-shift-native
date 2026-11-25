@@ -79,10 +79,13 @@ inline constexpr float kPressStartScale = 1.0f;  // TitleTape's size step (its r
 // 02_title_menu_orig.png: SINGLE PLAYER (selected) at 865..1138 x 564..588 on
 // its tape at 858..1154 x 559..594; MULTIPLAYER (unselected) at 883..1129 x
 // 602..625, moved in 28 px, a light grey (195). The rows' colours and the
-// selected row's size step (its Focused slide's pulse, 0.7 to 0.722 at
-// 1.04..1.27 s of 2.5) come from their slides; the offsets do not (Q138).
-// kRowUnselected is the look without a timeline (the scene's Blurred: 200).
-inline constexpr float kRowSelectedDx = 8.0f;
+// selected row's size come from their slides; the offsets do not (Q138).
+// The capture's selected row is 1.03 its rest size: the Focused slide rests
+// at 0.7 and pulses to 0.722 (x1.031) at 1.04..1.27 s of its 2.5 s loop, so
+// the capture matches the pulse's peak (Q185). kRowSelectedScale and
+// kRowUnselected are the looks without a timeline (the scene's Blurred
+// text is 200).
+inline constexpr float kRowSelectedScale = 1.03f, kRowSelectedDx = 8.0f;
 inline constexpr float kRowUnselectedDx = 28.0f;
 inline constexpr uint32_t kRowUnselected = ui::rgba(195, 195, 195);
 }  // namespace title_layout

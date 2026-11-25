@@ -797,6 +797,47 @@ int main() {
     carview::set_ui_textures(nullptr);
   }
 
+  // 4b. The front end's timeline (no textures needed): the menu's items fade
+  // in over Menu_Intro (0.49..1.01 s) and the logo's fade out (0..0.3 s).
+  {
+    carview::TitleScreenHud ts;
+    ts.active = true;
+    auto alpha_in = [](const carview::ui::List& l, float x0, float y0, float x1, float y1) {
+      int a = 0;
+      for (const auto& it : l.items()) {
+        const float cx = 0.5f * (it.rect[0] + it.rect[2]), cy = 0.5f * (it.rect[1] + it.rect[3]);
+        if (cx >= x0 && cx < x1 && cy >= y0 && cy < y1) a = std::max(a, int((it.color >> 24) & 0xFF));
+      }
+      return a;
+    };
+    std::map<int, std::pair<int, int>> at;  // ms -> (menu alpha, logo alpha)
+    ts.menu.reset();
+    {
+      carview::ui::List l;
+      carview::draw_title_screen(l, ts, 1280.0f, 720.0f);
+    }
+    ts.menu.confirm();
+    double t = 0.0;
+    for (int ms : {100, 250, 600, 1200}) {
+      while (t < ms / 1000.0 - 1e-9) {
+        const double dt = std::min(1.0 / 60.0, ms / 1000.0 - t);
+        ts.menu.update(dt);
+        t += dt;
+        carview::ui::List f;
+        carview::draw_title_screen(f, ts, 1280.0f, 720.0f);
+      }
+      carview::ui::List l;
+      carview::draw_title_screen(l, ts, 1280.0f, 720.0f);
+      at[ms] = {alpha_in(l, 840, 555, 1180, 640), alpha_in(l, 880, 470, 1240, 550)};
+    }
+    std::printf("title transition: menu/logo alpha 0.1 s %d/%d, 0.25 s %d/%d, 0.6 s %d/%d, 1.2 s %d/%d\n",
+                at[100].first, at[100].second, at[250].first, at[250].second, at[600].first, at[600].second,
+                at[1200].first, at[1200].second);
+    check(at[250].first < 40 && at[600].first > 0 && at[600].first < at[1200].first && at[1200].first >= 250,
+          "title transition: the menu fades in over Menu_Intro");
+    check(at[100].second > 0 && at[100].second < 255, "title transition: the logo is fading at 0.1 s");
+  }
+
   // 5. Optional renders.
   if (const char* shot_env = std::getenv("SHIFT_SCENE_SCREEN_SHOT_DIR"); shot_env && *shot_env) {
     const std::filesystem::path out_dir = shot_env;
@@ -1354,10 +1395,6 @@ int main() {
       std::printf("title transition: menu box pixels");
       for (const auto& [k, v] : menu_px) std::printf(" %s=%d", k.c_str(), v);
       std::printf("\n");
-      // The menu is not up before its fade starts (0.49 s), is part way at
-      // 0.6 s and full by 1.2 s.
-      check(menu_px["2_intro_0.25"] < menu_px["3_intro_0.60"] && menu_px["3_intro_0.60"] < menu_px["5_intro_1.20"],
-            "title transition: the menu fades in over Menu_Intro");
     }
     auto load_shot = [&](const std::string& file, const std::string& orig, const carview::LoadingSceneHud& lh) {
       std::vector<uint8_t> fb = backdrop;

@@ -225,6 +225,7 @@ bool draw_title_screen(ui::List& l, const TitleScreenHud& ts, float w, float h) 
         // No timeline: the looks measured on 02_title_menu_orig.png.
         if (text >= 0) sc.at(text).tint = sel ? kWhite : title_layout::kRowUnselected;
         if (!sel) sc.hide(tape);
+        if (sel) sc.at(btn).scale = title_layout::kRowSelectedScale;
         for (const char* t : {"Crisp_Tape", "smudge_tape", "Dirt"})
           if (const int n = child(sd, tape, t); n >= 0 && sel) sc.at(n).tint = kRowTape;
       }
