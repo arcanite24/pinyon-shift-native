@@ -282,6 +282,7 @@ void DriveSession::open_events_browser(int hub_filter) {
           int64_t cid = 0;
           int clid = 2;
           current_car_info(cid, clid);
+          events_page.set_wristband_tables(&app.wristbands);
           events_page.open(app.career_catalog, app.career, app.collected_wristband, app.current_pop_rank(), cid, clid, app.class_bands,
                            hub_filter);
 }

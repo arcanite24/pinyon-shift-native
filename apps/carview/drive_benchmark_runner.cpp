@@ -339,6 +339,7 @@ void DriveSession::run_benchmark() {
                   int64_t cid = 0;
                   int clid = 2;
                   current_car_info(cid, clid);
+                  events_page.set_wristband_tables(&app.wristbands);
                   events_page.open(app.career_catalog, app.career, app.collected_wristband, app.current_pop_rank(), cid, clid,
                                    app.class_bands, int((frame_idx / 40u) % 3u));
                   for (uint32_t mv = 0; mv < (frame_idx % 8u); ++mv) events_page.move(1);
