@@ -33,6 +33,11 @@ target_link_libraries(cutscene_corpus_tests PRIVATE shift_cutscene)
 add_test(NAME cutscene_corpus_tests COMMAND cutscene_corpus_tests)
 set_tests_properties(cutscene_corpus_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
 
+# The first-time career's stage order, stepped headless.
+add_executable(first_time_career_tests first_time_career_tests.cpp)
+target_link_libraries(first_time_career_tests PRIVATE shift_race)
+add_test(NAME first_time_career_tests COMMAND first_time_career_tests)
+
 add_executable(data_tests data_tests.cpp)
 target_link_libraries(data_tests PRIVATE shift_data)
 add_test(NAME data_tests COMMAND data_tests)

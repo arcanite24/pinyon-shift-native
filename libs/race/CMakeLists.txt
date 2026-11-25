@@ -13,7 +13,8 @@ add_library(shift_race STATIC
   src/rally_codriver.cpp
   src/rivals.cpp
   src/career.cpp
-  src/campaign_flow.cpp)
+  src/campaign_flow.cpp
+  src/first_time_career.cpp)
 target_include_directories(shift_race PUBLIC include)
 target_link_libraries(shift_race PUBLIC shift_drive shift_traffic shift_data fh1data shift_cars PRIVATE shift_sqlite3 shift_audio)
 if(MSVC)
