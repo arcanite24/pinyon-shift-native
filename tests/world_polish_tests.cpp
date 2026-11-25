@@ -188,10 +188,12 @@ int main() {
   {
     world::AnimatedWorldSystem anim;
     CHECK(!anim.windmills().empty());
-    CHECK(!anim.flags().empty());
+    CHECK(anim.flags().empty());             // WORLD-15: no hard-coded flags,
+    CHECK(anim.aircraft_banners().empty());  // blimp or biplane,
+    CHECK(anim.balloons().empty());          // or fallback balloons
+    CHECK(anim.crowds().empty());            // WORLD-14: no hard-coded crowds
     CHECK(!anim.ferris_wheels().empty());
     CHECK(!anim.stage_lights().empty());
-    CHECK(!anim.aircraft_banners().empty());
     CHECK(!anim.traffic_lights().empty());
 
     // Traffic light 30 s Green/Yellow/Red smooth emissive cycle check.
