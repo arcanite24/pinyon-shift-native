@@ -1752,3 +1752,16 @@ counts in ones with numerals to one below the end, above it in twos to an
 even end. Needed, narrow: the code that fills the dial's slots (the rpm
 range it reads per car and how it picks the step and the last numeral),
 or captures of a car with a redline of 6,000 or 9,000 rpm and up.
+
+## Q74 (UI, not blocking): the race start count without a gantry
+
+At a festival start the retail game counts down on the start gantry's
+LEDs (0:05..0:01, then GO) and shows nothing on screen until the signal,
+when `947_HUD` `I_321_Go`'s `GO` text shows GO! (`15_countdown_orig.png`,
+`15b_countdown_go_orig.png`). The node `I_321_Go/Group/TEXT_COUNT` is laid
+out at full opacity but nothing in those captures fills it. The engine
+now shows no screen count at any start and drives the gantry from the
+race clock. Unknown: whether a start with no gantry (a street race, a
+point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
+Needed, narrow: a capture of such a start, or the code that writes
+`TEXT_COUNT`.

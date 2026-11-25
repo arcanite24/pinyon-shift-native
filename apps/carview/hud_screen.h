@@ -98,6 +98,17 @@ std::string event_name_without_sponsor(std::string name, std::string_view sponso
 bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, float s);
 bool hud_prompt_available();
 
+// The start (I_321_Go): the original shows no count on screen (the start
+// gantry's LEDs count 0:05..0:01, world.frag on the race clock); at the
+// signal its GO node shows GO! (InGame IDS_3_2_1_GO) for kGoSeconds. True
+// when the scene is present (nothing to draw during the count).
+inline constexpr double kGoSeconds = 0.8;
+bool draw_hud_countdown(ui::List& l, const RaceHud& r, float w, float h, float s);
+// The wrong way sign (WrongWay/Sign_Top) while `r.wrong_way`, lowered `dy`
+// canvas px (below the engine's missed checkpoint card); false when the
+// scene is missing.
+bool draw_hud_wrong_way(ui::List& l, const RaceHud& r, float w, float h, float s, float dy);
+
 // --- The help bar (BUTTON_BAR_SCENE) ---------------------------------------
 
 // Draws ui4::button_bar()'s prompts on the scene's HelpButton0..6: each

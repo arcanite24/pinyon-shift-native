@@ -25,6 +25,10 @@ void clear_detached_car_parts(const void* owner_key);
 
 namespace {
 
+// The world clock at the race's countdown start (the gantry's 0:05 row) and,
+// outside a race, the offset that keeps it past the gantry's count.
+constexpr double kGantryStart = 6.0, kGantryIdle = 11.0;
+
 uint32_t resolve_wristband_rgba(const DriveApp& app) {
   // Canonical Horizon Festival wristband tiers: Yellow, Green, Blue, Pink, Orange, Purple, Gold.
   static constexpr uint32_t kTierRgba[7] = {
@@ -714,7 +718,14 @@ void DriveSession::place_world() {
               tod.car_hl_bottom[k] *= car_gnd_keep;
             }
           }
-          host.showroom.set_tod(tod, app.tod_clock.moon_phase(), float(vehicle.time()), float(vpos.y));
+          // The world's animation clock, which the start gantry's LEDs also
+          // read (world.frag: 0..6 s the 0:05..0:01 rows, then GO! for 4.5 s,
+          // then the festival screen): in a race it runs on the race clock so
+          // the count meets the start signal; elsewhere it stays past the
+          // count. It moves on monotonically within either.
+          const double world_clock = app.race ? kGantryStart + app.race->session().clock()
+                                              : vehicle.time() + kGantryIdle;
+          host.showroom.set_tod(tod, app.tod_clock.moon_phase(), float(world_clock), float(vpos.y));
           if (app.post_on) {
             PostSettings ps = host.renderer.post_settings();
             const float dn = tod.day_night_post;

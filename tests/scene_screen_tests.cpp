@@ -410,6 +410,18 @@ int main() {
     sprint_sk.last_skill = "GREAT ONE EIGHTY", sprint_sk.last_points = 150, sprint_sk.last_skill_at = 9.5;
     race_d.skills = &sprint_sk;
     hud_shot("hud_race.png", "16_race_hud_orig.png", race_d);
+    // The start signal (15b_countdown_go_orig.png): GO! alone over the road;
+    // and the wrong way sign.
+    {
+      carview::RaceHud go = sprint;
+      go.place = 7, go.clock = 0.103;
+      carview::DriveHud go_d = race_d;
+      go_d.kmh = 0, go_d.rpm = 1000, go_d.gear = 1, go_d.skills = nullptr;
+      go_d.race = &go;
+      hud_shot("hud_race_go.png", "15b_countdown_go_orig.png", go_d);
+      go.clock = 20.0, go.wrong_way = true;
+      hud_shot("hud_race_wrong_way.png", "16_race_hud_orig.png", go_d);
+    }
     carview::RaceHud circuit;
     circuit.phase = carview::RaceHud::kRacing;
     circuit.circuit = true, circuit.lap = 4, circuit.laps = 4, circuit.place = 4, circuit.cars = 8;

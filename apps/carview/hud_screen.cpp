@@ -261,6 +261,9 @@ constexpr float kDiscFillStart = -2.356f, kDiscFillSweep = 4.712f;
 // (the same as 30_skill_toast_orig.png): the title, name and call to
 // action lines' offsets from where the scene lays them, and the tapes'
 // ends.
+// GO!: its place and size on 15b_countdown_go_orig.png, and the fade out.
+constexpr float kGoDx = -6.0f, kGoDy = -1.0f, kGoScale = 1.26f;
+constexpr double kGoFade = 0.35;
 constexpr float kPromptTitleDx = -27.0f, kPromptTitleDy = -1.0f;
 constexpr float kPromptNameDx = -19.0f, kPromptNameDy = -1.0f;
 // The name line draws a little larger than laid out.
@@ -404,6 +407,37 @@ void bind_standings(SceneScreen& sc, const RaceHud& r) {
 }
 
 }  // namespace
+
+bool draw_hud_countdown(ui::List& l, const RaceHud& r, float w, float h, float s) {
+  SceneScreen sc(kHudScene);
+  const SceneDraw& sd = sc.scene();
+  const int root = sc.node("I_321_Go"), group = child(sd, root, "Group");
+  if (root < 0 || group < 0) return false;
+  if (r.phase != RaceHud::kRacing || r.clock < 0.0 || r.clock >= kGoSeconds) return true;
+  sc.bindings().fit_text = false;
+  // GO! over the road, fading out (its tape stays at the scene's alpha 0,
+  // as on 15b_countdown_go_orig.png).
+  sc.bindings().opacity = float(std::clamp((kGoSeconds - r.clock) / kGoFade, 0.0, 1.0));
+  sc.hide(child(sd, group, "TEXT_COUNT"));
+  sc.hide(child(sd, group, "Paused"));
+  const int go = child(sd, group, "GO");
+  sc.show(go);
+  sc.text(go, text_of(hud_text::kGo));
+  sc.at(go).dx = kGoDx, sc.at(go).dy = kGoDy;
+  sc.at(go).scale = kGoScale;
+  return sc.draw(l, hud_frame(HudAnchor::kCentre, w, h, s), root) >= 0;
+}
+
+bool draw_hud_wrong_way(ui::List& l, const RaceHud& r, float w, float h, float s, float dy) {
+  SceneScreen sc(kHudScene);
+  const SceneDraw& sd = sc.scene();
+  const int root = sc.node("WrongWay"), sign = child(sd, root, "Sign_Top");
+  if (root < 0 || sign < 0) return false;
+  if (!r.wrong_way) return true;
+  show_all(sc, root);
+  sc.bindings().dy = dy;
+  return sc.draw(l, hud_frame(HudAnchor::kTop, w, h, s), root) >= 0;
+}
 
 bool draw_hud_race(ui::List& l, const RaceHud& r, float w, float h, float s, bool timers) {
   SceneScreen sc(kHudScene);

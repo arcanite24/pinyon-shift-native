@@ -467,8 +467,9 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
       l.text(g.R(1181), y + (14 * s - ns.size) * 0.5f, row.name, ns);
     }
   }
-  // 947_HUD/I_321_Go: pre-race 3-2-1 countdown digits and GO! signal.
-  {
+  // 947_HUD/I_321_Go: pre-race 3-2-1 countdown digits and GO! signal (drawn
+  // when the scene is missing; the scene shows GO! alone, the gantry counts).
+  if (!draw_hud_countdown(l, r, g.w, g.h, g.s)) {
     const SceneFrame cf{0.5f * g.w - 640 * s, 0.5f * g.h - 360 * s, s};
     const int go_root = sc.find("I_321_Go");
     const int go_node = sc.find("TEXT_GO", go_root);
@@ -589,9 +590,10 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
     }
   }
   // R3-UI-11: Pulsing "WRONG WAY" warning icon + text (always shows both icon and label).
-  if (racing && r.wrong_way) {
+  const float ww_lift = r.missed_checkpoint ? 86.0f : 0.0f;
+  if (racing && r.wrong_way && !draw_hud_wrong_way(l, r, g.w, g.h, g.s, ww_lift)) {
     const float pulse = 0.70f + 0.30f * float(std::cos(r.clock * 6.2832 * 2.2));
-    const float y_off = r.missed_checkpoint ? 86.0f * s : 0.0f;
+    const float y_off = ww_lift * s;
     const float cx = 0.5f * g.w;
     std::array<float, 4> ww_uv{};
     const float icon_y0 = g.T(162) + y_off;
