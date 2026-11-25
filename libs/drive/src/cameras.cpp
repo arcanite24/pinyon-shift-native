@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 namespace drive {
 namespace {
@@ -886,17 +887,43 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
     eye = add(eye, add(mul(cam_right, l.camera_xyz[0]),
                        add(mul(cam_up, l.camera_xyz[1]), mul(f, l.camera_xyz[2]))));
   }
-  // Horizontal wall / car-OBB obstacle pull-in (CAMERAS.md:266): raycast from
-  // look_at toward eye; pull in immediately when blocked, ease back smoothly.
+  // Horizontal wall / car-OBB obstacle pull-in (CAMERAS.md:266): cast a 3-ray
+  // horizontal fan (center + +-0.35 m camera-right offsets) from look_at toward
+  // eye taking the minimum hit distance so wide-FOV near-plane corners never
+  // slice through tunnel walls, bridge girders, or adjacent vehicles.
   if (in.obstacle_ray) {
     const V3 to_eye = add(eye, mul(look_at, -1.0));
     const double full_dist = std::sqrt(to_eye[0] * to_eye[0] + to_eye[1] * to_eye[1] + to_eye[2] * to_eye[2]);
     if (full_dist > 0.5) {
       const V3 dir = mul(to_eye, 1.0 / full_dist);
-      double hit_d = full_dist;
+      V3 ray_right = cross({0.0, 1.0, 0.0}, dir);
+      const double rr_len = std::hypot(ray_right[0], ray_right[2]);
+      if (rr_len > 1e-6) {
+        ray_right = {ray_right[0] / rr_len, 0.0, ray_right[2] / rr_len};
+      } else {
+        ray_right = {1.0, 0.0, 0.0};
+      }
+      double min_hit_d = full_dist;
+      bool hit_any = false;
+      const double fan_offsets[3] = {0.0, -kFanHalfWidth, kFanHalfWidth};
+      for (double off : fan_offsets) {
+        const V3 end_pt = off == 0.0 ? eye : add(eye, mul(ray_right, off));
+        const V3 rv = add(end_pt, mul(look_at, -1.0));
+        const double rlen = std::sqrt(rv[0] * rv[0] + rv[1] * rv[1] + rv[2] * rv[2]);
+        if (rlen <= 1e-6) continue;
+        const V3 rdir = mul(rv, 1.0 / rlen);
+        double hit_d = rlen;
+        if (in.obstacle_ray(look_at, rdir, rlen, hit_d) && hit_d >= 0.0 && hit_d < rlen) {
+          const double proj_d = hit_d * (full_dist / rlen);
+          if (proj_d < min_hit_d) {
+            min_hit_d = proj_d;
+            hit_any = true;
+          }
+        }
+      }
       double target_pull = 1.0;
-      if (in.obstacle_ray(look_at, dir, full_dist, hit_d) && hit_d < full_dist) {
-        const double safe_d = std::max(0.6, hit_d - 0.35);
+      if (hit_any) {
+        const double safe_d = std::max(0.6, min_hit_d - 0.35);
         target_pull = std::clamp(safe_d / full_dist, 0.2, 1.0);
       }
       if (dt >= kSettle || target_pull < wall_pull_) {
@@ -909,10 +936,56 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
       }
     }
   }
-  // Clearance (probable): 0.3 m above the world under the eye.
+  // Clearance: 0.30 m above ground under the eye, and at least 0.25 m below any
+  // overhead tunnel ceiling or low bridge deck. Anchor the downward ground probe
+  // below any detected ceiling and bounded by min(eye + 0.30, car_y + 1.4 +
+  // max(0, slope)) so the camera never snaps upward onto a tunnel roof or
+  // overpass deck.
+  const double car_y = com[1];
+  const double car_roof_y = com[1] + (car_.box_max[1] - car_.com[1]);
+  bool has_ceiling = false;
+  double ceiling_y = 1e30;
+  {
+    const double eye_roof_y = car_roof_y + std::max(0.0, slope);
+    const double up_start_y = std::min(eye[1] - 0.05, std::max(eye[1] - 0.65, eye_roof_y));
+    const double up_reach = (eye[1] - up_start_y) + 2.5;
+    if (in.ceiling_above) {
+      double cy = 0.0;
+      if (in.ceiling_above(eye[0], up_start_y, eye[2], cy) && cy > up_start_y + 0.05 && cy <= eye[1] + 2.5) {
+        has_ceiling = true;
+        ceiling_y = cy;
+      }
+    } else if (in.obstacle_ray) {
+      double hit_d = up_reach;
+      if (in.obstacle_ray({eye[0], up_start_y, eye[2]}, {0.0, 1.0, 0.0}, up_reach, hit_d) && hit_d > 0.05 &&
+          hit_d <= up_reach) {
+        has_ceiling = true;
+        ceiling_y = up_start_y + hit_d;
+      }
+    }
+  }
+  bool has_ground = false;
+  double gy = -1e30;
   if (in.ground_below) {
-    double gy = 0;
-    if (in.ground_below(eye[0], eye[1] + 2.0, eye[2], gy) && eye[1] < gy + kClearance) eye[1] = gy + kClearance;
+    double down_start_y = std::min(eye[1] + 0.30, car_y + 1.4 + std::max(0.0, slope));
+    if (has_ceiling) {
+      down_start_y = std::min(down_start_y, ceiling_y - 0.10);
+    }
+    double probed_y = 0.0;
+    if (in.ground_below(eye[0], down_start_y, eye[2], probed_y) && probed_y <= down_start_y + 0.01 &&
+        (!has_ceiling || probed_y < ceiling_y - 0.30)) {
+      has_ground = true;
+      gy = probed_y;
+    }
+  }
+  if (has_ground && eye[1] < gy + kClearance) {
+    eye[1] = gy + kClearance;
+  }
+  if (has_ceiling) {
+    const double max_y = ceiling_y - kCeilingClearance;
+    if (eye[1] > max_y) {
+      eye[1] = (has_ground && max_y < gy + kClearance) ? 0.5 * (gy + ceiling_y) : max_y;
+    }
   }
   // The layers' yaw (positive right) and pitch (positive down).
   const double layer_yaw = (l.car_ypr[0] + l.camera_ypr[0]) * kDeg;
@@ -1029,6 +1102,91 @@ CameraView DriveCamera::on_car(const CameraInput& in, const LayerOut& l) {
   v.near_clip = near_clip;
   v.interior = mode_ == CameraMode::kCockpit;
   return v;
+}
+
+namespace {
+
+struct CameraObbRegistry {
+  std::mutex mu;
+  std::array<std::vector<CameraVehicleObb>, 3> sources;
+};
+
+CameraObbRegistry& camera_obb_registry() {
+  static CameraObbRegistry reg;
+  return reg;
+}
+
+double dot3_d(const std::array<double, 3>& a, const std::array<double, 3>& b) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+}  // namespace
+
+void set_camera_vehicle_obbs(CameraObstacleSource source, std::vector<CameraVehicleObb> obbs) {
+  auto& reg = camera_obb_registry();
+  std::lock_guard<std::mutex> lock(reg.mu);
+  reg.sources[size_t(source)] = std::move(obbs);
+}
+
+void clear_camera_vehicle_obbs(CameraObstacleSource source) {
+  auto& reg = camera_obb_registry();
+  std::lock_guard<std::mutex> lock(reg.mu);
+  reg.sources[size_t(source)].clear();
+}
+
+bool intersect_ray_obb(const std::array<double, 3>& origin, const std::array<double, 3>& dir, double max_dist,
+                       const CameraVehicleObb& obb, double& hit_dist) {
+  if (max_dist <= 0.0) return false;
+  const std::array<double, 3> p{obb.center[0] - origin[0], obb.center[1] - origin[1], obb.center[2] - origin[2]};
+  const std::array<double, 3> axes[3] = {obb.axis_x, obb.axis_y, obb.axis_z};
+  double t_min = -1e30;
+  double t_max = max_dist;
+  for (int i = 0; i < 3; ++i) {
+    const double h = obb.half_extents[size_t(i)];
+    if (h <= 0.0) return false;
+    const double e = dot3_d(axes[i], p);
+    const double f = dot3_d(axes[i], dir);
+    if (std::fabs(f) > 1e-9) {
+      double t1 = (e - h) / f;
+      double t2 = (e + h) / f;
+      if (t1 > t2) std::swap(t1, t2);
+      t_min = std::max(t_min, t1);
+      t_max = std::min(t_max, t2);
+      if (t_min > t_max || t_max < 0.0) return false;
+    } else if (std::fabs(e) > h) {
+      return false;
+    }
+  }
+  const double t_hit = t_min >= 0.0 ? t_min : 0.0;
+  if (t_hit > max_dist) return false;
+  hit_dist = t_hit;
+  return true;
+}
+
+bool intersect_camera_vehicle_obbs(const std::array<double, 3>& origin, const std::array<double, 3>& dir,
+                                   double max_dist, const std::array<double, 3>& player_pos,
+                                   double max_player_dist, double& hit_dist) {
+  if (max_dist <= 0.0) return false;
+  const double max_p2 = max_player_dist * max_player_dist;
+  auto& reg = camera_obb_registry();
+  std::lock_guard<std::mutex> lock(reg.mu);
+  bool hit = false;
+  double best = max_dist;
+  for (const auto& list : reg.sources) {
+    for (const auto& obb : list) {
+      const double dx = obb.center[0] - player_pos[0];
+      const double dy = obb.center[1] - player_pos[1];
+      const double dz = obb.center[2] - player_pos[2];
+      if (dx * dx + dy * dy + dz * dz > max_p2) continue;
+      double d = best;
+      if (intersect_ray_obb(origin, dir, best, obb, d) && d < best) {
+        best = d;
+        hit = true;
+      }
+    }
+  }
+  if (hit) hit_dist = best;
+  return hit;
 }
 
 }  // namespace drive

@@ -166,8 +166,13 @@ double body_contact_friction(const Hit& hit, const Vec3& normal, double default_
   const bool is_wall = std::fabs(normal.y) < 0.65;
   const bool is_dirt_bank = hit.tyre.off_roadness >= 0.5 || hit.tyre.is_springy;
   double base = default_friction;
-  if (is_dirt_bank) base = std::max(default_friction, 0.45);
-  else if (is_wall) base = std::min(default_friction, 0.12);  // smooth guardrail / concrete wall-glide
+  if (is_wall && hit.tyre.wall_friction >= 0.0) {
+    base = hit.tyre.wall_friction;
+  } else if (is_dirt_bank) {
+    base = std::max(default_friction, 0.45);
+  } else if (is_wall) {
+    base = std::min(default_friction, 0.12);  // default low-friction guardrail / concrete wall-glide
+  }
   const double mod = hit.tyre.car_world_coll_fric_mod > 0.0 ? hit.tyre.car_world_coll_fric_mod : 1.0;
   return std::clamp(base * mod, 0.0, 2.0);
 }
@@ -175,9 +180,23 @@ double body_contact_friction(const Hit& hit, const Vec3& normal, double default_
 double body_contact_damping_scale(const Hit& hit, const Vec3& normal) {
   const bool is_wall = std::fabs(normal.y) < 0.65;
   const bool is_dirt_bank = hit.tyre.off_roadness >= 0.5 || hit.tyre.is_springy;
+  if (is_wall && hit.tyre.wall_damping_scale > 0.0) {
+    return std::clamp(hit.tyre.wall_damping_scale, 0.35, 2.5);
+  }
   if (is_dirt_bank) return 1.25;  // absorb impact energy into soft dirt banks
   if (is_wall) return 0.90;       // crisp guardrail / concrete glance
   return 1.0;
+}
+
+double body_contact_restitution(const Hit& hit, const Vec3& normal) {
+  const bool is_wall = std::fabs(normal.y) < 0.65;
+  const bool is_dirt_bank = hit.tyre.off_roadness >= 0.5 || hit.tyre.is_springy;
+  if (is_wall && hit.tyre.wall_restitution >= 0.0) {
+    return std::clamp(hit.tyre.wall_restitution, 0.0, 0.85);
+  }
+  if (is_dirt_bank) return 0.02;  // inelastic soft bank
+  if (is_wall) return 0.05;       // subtle rigid barrier glance
+  return 0.0;
 }
 
 double TyreCurves::blend(double load_kgf) const {
@@ -448,6 +467,8 @@ void Vehicle::launch(const Vec3& position, double heading, double speed, double 
   bov_open_ = true;
   boost_factor_ = 1.0;
   engine_torque_prev_ = 0;
+  rev_cut_active_ = false;
+  rev_cut_timer_ = 0;
 }
 
 void Vehicle::apply_impulse(const Vec3& point, const Vec3& impulse, double angular_scale) {
@@ -490,6 +511,11 @@ void Vehicle::reset(const Vec3& position, double heading) {
   time_ = 0;
   steer_angle_ = 0;
   steer_ang_vel_ = 0;
+  kb_steer_hold_time_ = 0;
+  kb_steer_dir_ = 0;
+  kb_steer_filtered_ = 0;
+  rev_cut_active_ = false;
+  rev_cut_timer_ = 0;
   handbrake_shaped_ = 0;
   abs_flag_ = false;
   tcs_flag_ = false;
@@ -499,6 +525,7 @@ void Vehicle::reset(const Vec3& position, double heading) {
   shifted_without_clutch_ = false;
   manual_shift_dwell_ = 0;
   trans_damage_ = 0;
+  clutch_damage_ = 0;
   stall_timer_ = 0;
   lateral_g_ = 0;
   raw_ = shaped_ = {};
@@ -530,16 +557,65 @@ Vec3 Vehicle::position() const { return pos_ - rotate(rot_, com_local_); }
 Vehicle::Pose Vehicle::blend(const Pose& a, const Pose& b, double t) {
   t = std::clamp(t, 0.0, 1.0);
   const Vec3 d = b.pos - a.pos;
-  if (t >= 1 || dot(d, d) > 25) return b;
+  const double dist2 = dot(d, d);
+  // Teleport / reset guard at 250 m (allows smooth 2.5 s rewind scrubbing for fast cars).
+  if (t >= 1.0 || dist2 > 62500.0) return b;
+  if (t <= 0.0) return a;
   auto mix = [t](const Vec3& x, const Vec3& y) { return x + (y - x) * t; };
   Pose p = b;
-  p.pos = mix(a.pos, b.pos), p.vel = mix(a.vel, b.vel), p.ang = mix(a.ang, b.ang);
-  // The shorter way round, then normalised (the step is too small for slerp to differ).
-  const double s = a.rot.x * b.rot.x + a.rot.y * b.rot.y + a.rot.z * b.rot.z + a.rot.w * b.rot.w < 0 ? -1.0 : 1.0;
-  Quat q{a.rot.x + (s * b.rot.x - a.rot.x) * t, a.rot.y + (s * b.rot.y - a.rot.y) * t,
-         a.rot.z + (s * b.rot.z - a.rot.z) * t, a.rot.w + (s * b.rot.w - a.rot.w) * t};
+  // Smooth cubic Hermite position interpolation using endpoint velocities so rewind
+  // scrubbing across 2.5 s keyframes follows corners cleanly instead of cutting chords,
+  // while reducing exactly to linear interpolation for constant-velocity steps.
+  const double dist = std::sqrt(dist2);
+  const double va = length(a.vel);
+  const double vb = length(b.vel);
+  const double v_avg = 0.5 * (va + vb);
+  if (dist > 1e-4 && v_avg > 0.25 && std::isfinite(va) && std::isfinite(vb)) {
+    double arc_scale = 1.0;
+    if (va > 0.25 && vb > 0.25) {
+      const double cos_ang = std::clamp(dot(a.vel, b.vel) / (va * vb), -1.0, 1.0);
+      const double half_ang = 0.5 * std::acos(cos_ang);
+      if (half_ang > 1e-3 && half_ang < 0.49 * kPi) {
+        arc_scale = std::min(1.5, half_ang / std::sin(half_ang));
+      }
+    }
+    const double dt_est = std::clamp((dist / v_avg) * arc_scale, 0.0, 2.5);
+    Vec3 m0 = a.vel * dt_est;
+    Vec3 m1 = b.vel * dt_est;
+    const double max_m = 1.5 * dist;
+    const double m0_len = length(m0);
+    if (m0_len > max_m && m0_len > 1e-9) m0 = m0 * (max_m / m0_len);
+    const double m1_len = length(m1);
+    if (m1_len > max_m && m1_len > 1e-9) m1 = m1 * (max_m / m1_len);
+    const double t2 = t * t;
+    const double t3 = t2 * t;
+    const double h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    const double h10 = t3 - 2.0 * t2 + t;
+    const double h01 = -2.0 * t3 + 3.0 * t2;
+    const double h11 = t3 - t2;
+    p.pos = a.pos * h00 + m0 * h10 + b.pos * h01 + m1 * h11;
+  } else {
+    p.pos = mix(a.pos, b.pos);
+  }
+  p.vel = mix(a.vel, b.vel);
+  p.ang = mix(a.ang, b.ang);
+  // Shortest-arc spherical linear interpolation (slerp) for smooth large-angle scrubbing.
+  double cos_theta = a.rot.x * b.rot.x + a.rot.y * b.rot.y + a.rot.z * b.rot.z + a.rot.w * b.rot.w;
+  const double s = cos_theta < 0.0 ? -1.0 : 1.0;
+  cos_theta = std::clamp(cos_theta * s, 0.0, 1.0);
+  double w0 = 1.0 - t, w1 = t;
+  if (cos_theta < 0.9995) {
+    const double theta = std::acos(cos_theta);
+    const double sin_theta = std::sin(theta);
+    if (sin_theta > 1e-6) {
+      w0 = std::sin((1.0 - t) * theta) / sin_theta;
+      w1 = std::sin(t * theta) / sin_theta;
+    }
+  }
+  Quat q{a.rot.x * w0 + s * b.rot.x * w1, a.rot.y * w0 + s * b.rot.y * w1,
+         a.rot.z * w0 + s * b.rot.z * w1, a.rot.w * w0 + s * b.rot.w * w1};
   const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-  p.rot = {q.x / n, q.y / n, q.z / n, q.w / n};
+  p.rot = n > 1e-12 ? Quat{q.x / n, q.y / n, q.z / n, q.w / n} : b.rot;
   for (size_t i = 0; i < p.wheels.size(); ++i) {
     const WheelState &wa = a.wheels[i], &wb = b.wheels[i];
     WheelState& w = p.wheels[i];
@@ -605,23 +681,71 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   shaped_.clutch = std::clamp(raw.clutch, 0.0, 1.0);
   shaped_.shift = raw.shift;
   shaped_.linear_steer = raw.linear_steer;
+  shaped_.input_is_keyboard = raw.input_is_keyboard;
   handbrake_shaped_ = approach(handbrake_shaped_, raw.handbrake ? 1.0 : 0.0, p_.handbrake_rate, dt);
   if (raw.linear_steer) {
     // 900-degree racing wheel: direct linear steering to full road-wheel lock,
     // bypassing gamepad speed-sensitive narrowing and stick shaping.
+    kb_steer_hold_time_ = 0.0;
+    kb_steer_dir_ = 0.0;
+    kb_steer_filtered_ = shaped_.steer;
     steer_angle_ = shaped_.steer * p_.max_steer;
     steer_ang_vel_ = 0.0;
     return;
   }
   // Forza dynamic pad steering filter (SPEC-CAR-PHYSICS, Steering-at-speed filter
   // and Assisted / Normal / Simulation steering):
+  // - Dedicated digital keyboard steering filter (0-120 ms tap ramp, highway cap,
+  //   instant countersteer exception, crisp return-to-center)
   // - SteeringWheelFilter speed-dependent stick shaping
   // - Speed-sensitive rate interpolation across [SlowSpeed, FastSpeed] toward FastRateScale
+  // - Normal/Assisted active countersteer bias above ~6 deg rear slip at > 8 m/s
   // - Dynamic peak-slip tracking (SteerAngVelDynFindPeak) in Normal/Assisted modes
   // - Countersteer boost above rear slip threshold
   // - Acceleration-ramped angular velocity over SteerAccelTimeToMaxRate
   const double v_abs = std::fabs(speed());
   const double lock = std::min(steer_lock(), std::max(p_.steer_min_lock, surf_steer_lock_cap_rad_));
+  const Vec3 vl_cs = rotate_inverse(rot_, vel_);
+  const Vec3 wl_cs = rotate_inverse(rot_, ang_);
+  const double z_rear_rel = 0.5 * (p_.wheel_centres[2].z + p_.wheel_centres[3].z) - com_local_.z;
+  const double vy_rear = vl_cs.x + wl_cs.y * z_rear_rel;
+  const double rear_slip_rad = (vl_cs.z > 2.0) ? std::atan2(vy_rear, std::max(vl_cs.z, 1.0)) : 0.0;
+  const double mean_rear_sa = 0.5 * (w_[2].slip_angle + w_[3].slip_angle);
+
+  double eff_stick = shaped_.steer;
+  bool kb_countersteering = false;
+  double kb_tap_rate_scale = 1.0;
+  if (raw.input_is_keyboard) {
+    const double raw_s = shaped_.steer;
+    const double dir = (raw_s > 0.05) ? 1.0 : (raw_s < -0.05 ? -1.0 : 0.0);
+    kb_countersteering = dir != 0.0 && vl_cs.z > 5.0 &&
+                         ((std::fabs(rear_slip_rad) > 5.0 * kPi / 180.0 && dir * rear_slip_rad > 0.0) ||
+                          (std::fabs(mean_rear_sa) > 0.45 && dir * mean_rear_sa > 0.0));
+    if (dir != 0.0) {
+      if (dir != kb_steer_dir_) {
+        kb_steer_dir_ = dir;
+        kb_steer_hold_time_ = kb_countersteering ? 0.08 : 0.0;
+      }
+      kb_steer_hold_time_ = std::min(0.25, kb_steer_hold_time_ + dt);
+      const double u_tap = std::clamp(kb_steer_hold_time_ / 0.12, 0.0, 1.0);
+      double tap_mag = u_tap * (0.35 + 0.65 * u_tap);
+      const double kb_spd_cap = kb_countersteering ? 1.0 : lerp(1.0, 0.45, ramp(v_abs, 15.0, 65.0));
+      if (kb_countersteering) tap_mag = std::max(tap_mag, 0.85);
+      else kb_tap_rate_scale = lerp(0.35, 1.0, u_tap);
+      const double kb_tgt = dir * std::fabs(raw_s) * tap_mag * kb_spd_cap;
+      kb_steer_filtered_ = approach(kb_steer_filtered_, kb_tgt, kb_countersteering ? 18.0 : 14.0, dt);
+    } else {
+      kb_steer_hold_time_ = 0.0;
+      kb_steer_dir_ = 0.0;
+      kb_steer_filtered_ = approach(kb_steer_filtered_, 0.0, 11.0, dt);
+    }
+    eff_stick = kb_steer_filtered_;
+  } else {
+    kb_steer_hold_time_ = 0.0;
+    kb_steer_dir_ = 0.0;
+    kb_steer_filtered_ = shaped_.steer;
+  }
+
   const double u_sw = assists_.steering == 2
                           ? ramp(v_abs, p_.sw_filter_corr_speed0, p_.sw_filter_corr_speed1)
                           : ramp(v_abs, p_.sw_filter_speed0, p_.sw_filter_speed1);
@@ -631,9 +755,13 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   // Subtle highway-speed center precision from SteeringWheelFilter while keeping
   // full mid-stick authority at cornering speeds.
   const double sw_blend = std::clamp(0.08 * (sw_scale - 1.0) * u_sw, 0.0, 0.25);
-  const double stick_abs = std::fabs(shaped_.steer);
-  const double stick_shaped = sign(shaped_.steer) * lerp(stick_abs, stick_abs * stick_abs, sw_blend);
+  const double stick_abs = std::fabs(eff_stick);
+  const double stick_shaped = sign(eff_stick) * lerp(stick_abs, stick_abs * stick_abs, sw_blend);
   double target = stick_shaped * lock;
+  if (kb_countersteering) {
+    const double kb_cs_lock = std::min(p_.max_steer, std::max(lock, 0.35));
+    target = stick_shaped * kb_cs_lock;
+  }
   // Assisted steering mode: gentle road/lane centering bias when road guidance is
   // provided on Input, fading out smoothly when the player applies deliberate lock.
   if (assists_.steering == 0 && raw.has_assist_lane && v_abs > 3.0) {
@@ -644,15 +772,43 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     const double lane_bias = std::clamp(raw_bias, -max_bias, max_bias) * speed_fade * player_fade;
     target = std::clamp(target + lane_bias, -lock, lock);
   }
+  // Assisted / Normal active countersteer assist (Simulation == 2 stays raw/unassisted):
+  // when rear slip exceeds ~6 deg at > 8 m/s, apply a bounded countersteer bias that
+  // blends out smoothly when holding handbrake or actively steering past it.
+  bool cs_assist_active = false;
+  if (assists_.steering <= 1 && vl_cs.z > 8.0 && (w_[2].contact || w_[3].contact)) {
+    constexpr double kCsSlipStart = 6.0 * kPi / 180.0;
+    constexpr double kCsSlipFull = 10.0 * kPi / 180.0;
+    if (std::fabs(rear_slip_rad) > kCsSlipStart) {
+      const double slip_fade = ramp(std::fabs(rear_slip_rad), kCsSlipStart, kCsSlipFull);
+      const double spd_fade = ramp(vl_cs.z, 8.0, 14.0);
+      const double hb_fade = 1.0 - std::clamp(handbrake_shaped_, 0.0, 1.0);
+      const double gain = (assists_.steering == 0) ? 0.90 : 0.75;
+      const double cs_bias = std::clamp(rear_slip_rad * gain, -0.35, 0.35) * slip_fade * spd_fade * hb_fade;
+      if (std::fabs(cs_bias) > 1e-5) {
+        double cs_target = target;
+        if (target * cs_bias > 0.0) {
+          if (std::fabs(cs_bias) > std::fabs(target)) cs_target = cs_bias;
+        } else {
+          const double opp_fade = 1.0 - std::clamp(stick_abs, 0.0, 1.0);
+          cs_target = target + cs_bias * opp_fade;
+        }
+        const double cs_cap = std::min(p_.max_steer, std::max(lock, std::fabs(cs_bias)));
+        target = std::clamp(cs_target, -cs_cap, cs_cap);
+        cs_assist_active = true;
+      }
+    }
+  }
   const bool centring = std::fabs(target) < std::fabs(steer_angle_) && target * steer_angle_ >= 0;
-  const double mean_rear_sa = 0.5 * (w_[2].slip_angle + w_[3].slip_angle);
   const bool countersteering =
-      std::fabs(mean_rear_sa) > 0.5 && (shaped_.steer * mean_rear_sa > 0);  // steer into slide
+      (std::fabs(mean_rear_sa) > 0.5 && (eff_stick * mean_rear_sa > 0)) || cs_assist_active || kb_countersteering;
   const double u_spd = ramp(v_abs, p_.steer_slow_speed, p_.steer_fast_speed);
   const double speed_rate_scale = lerp(1.0, p_.steer_fast_rate_scale, u_spd);
   const double share = p_.max_steer > 0 ? std::clamp(lock / p_.max_steer, p_.steer_rate_min_share, 1.0) : 1.0;
-  double rate_use = (centring ? p_.straighten_rate : p_.steer_rate * lerp(share, share * p_.steer_fast_rate_scale, u_spd)) *
+  double rate_use = (centring ? p_.straighten_rate
+                              : p_.steer_rate * lerp(share, share * p_.steer_fast_rate_scale, u_spd) * kb_tap_rate_scale) *
                     std::clamp(surf_steer_rate_mult_, 0.35, 2.0);
+  if (centring && raw.input_is_keyboard) rate_use = std::max(rate_use, p_.straighten_rate * 1.45);
   // Dynamic peak-slip tracking: in Normal/Assisted modes (and not during
   // handbrake drift initiation), when front tyres wash past peak lateral slip,
   // pull target angle smoothly toward peak front grip via SteerAngVelDynFindPeak.
@@ -665,6 +821,7 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     }
   }
   if (countersteering) rate_use = std::max(rate_use, p_.steer_countersteer_rate);
+  if (kb_countersteering) rate_use = std::max(rate_use, p_.steer_countersteer_rate * 1.25);
   if (assists_.steering == 2) rate_use = std::max(rate_use, p_.steer_rate * std::max(0.5, share));
   if (p_.steer_accel_time > 1e-4 && dt > 0.0) {
     const double err = target - steer_angle_;
@@ -761,7 +918,7 @@ double Vehicle::engine_torque(double rpm, double throttle) const {
       full = lerp(p_.torque_curve[i], p_.torque_curve[i + 1], x - double(i));
     }
   }
-  const double k_limiter = rpm >= p_.redline_rpm ? 0.05 : 1.0;
+  const double k_limiter = (rev_cut_active_ || rpm >= p_.redline_rpm) ? 0.0 : 1.0;
   const double wot = full * p_.torque_scale * boost_factor_ * k_limiter * torque_factor_;
   // SPEC-CAR-PHYSICS, Engine item 1 (confirmed): for ICE, c_closed ramps
   // linearly 0 -> -1.0 from 800 rpm to peak-power RPM, stays flat -1.0
@@ -781,6 +938,8 @@ double Vehicle::engine_torque(double rpm, double throttle) const {
     c_closed = over_span > 1.0 ? -1.0 - 1.63 * std::clamp((rpm - p_.redline_rpm) / over_span, 0.0, 1.0) : -2.63;
   }
   const double closed = c_closed * p_.engine_braking;
+  // Rhythmic ignition/fuel cut: zero combustion torque -> engine decelerates under pumping drag.
+  if (k_limiter == 0.0) return closed;
   return throttle * (wot - closed) + closed;
 }
 
@@ -845,6 +1004,7 @@ void Vehicle::update_gearbox(double dt) {
         if (c_pedal <= 0.8) {
           shifted_without_clutch_ = true;
           trans_damage_ = std::clamp(trans_damage_ + p_.shift_without_clutch_damage, 0.0, 1.0);
+          clutch_damage_ = std::clamp(clutch_damage_ + p_.shift_without_clutch_damage * 1.2, 0.0, 1.0);
           manual_shift_dwell_ = std::max(0.0, p_.gear_shift_time + damage_.shift_time_add + 0.25 * trans_damage_);
         } else {
           shifted_without_clutch_ = false;
@@ -1149,6 +1309,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
     WheelState& w = w_[i];
     const int a = axle_of(i);
     const double radius = p.tyre_radius[i];
+    const double axle_rest = p.axle_rest_length(a);
     const Vec3 hard_local{p.wheel_centres[i].x, p.wheel_centres[i].y + p.rest_length, p.wheel_centres[i].z};
     const Vec3 hard = pos_ + rotate(rot_, hard_local - com_local_);
     // Ackermann (ours: the spec has no steering geometry): each front wheel
@@ -1168,7 +1329,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
       w.steer += wheel_toe;
     }
     Hit hit;
-    const double reach = p.probe_height + p.rest_length + droop_[i] + radius;
+    const double reach = p.probe_height + std::max(p.rest_length, axle_rest) + droop_[i] + radius;
     const Vec3 probe = hard - down * p.probe_height;
     double compression = -droop_[i];
     w.contact = up.y > 0.2 && ground.raycast(probe, down, reach, hit);
@@ -1180,7 +1341,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
     }
     w.surface = w.contact ? hit.surface : -1;
     if (w.contact) {
-      compression = p.rest_length - (hit.distance - p.probe_height - radius);
+      compression = axle_rest - (hit.distance - p.probe_height - radius);
       if (compression < -droop_[i]) w.contact = false, compression = -droop_[i];
     }
     if (w.contact) {
@@ -1258,7 +1419,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
       load = std::min(load, max_wheel_load);
     }
     w.load = load;
-    w.centre = {p.wheel_centres[i].x, p.wheel_centres[i].y + std::min(compression, p.bump_travel[a]),
+    w.centre = {p.wheel_centres[i].x,
+                p.wheel_centres[i].y - p.ride_height_delta[a] + std::min(compression, p.bump_travel[a]),
                 p.wheel_centres[i].z};
   }
   spring_ring_pos_ = (spring_ring_pos_ + 1) % 3;
@@ -1411,13 +1573,18 @@ void Vehicle::substep(double dt, const Ground& ground) {
     }
     if (abs_timer_[i] > 0) abs_timer_[i] -= dt;
     w.brake = frac;
+    const bool has_axle_brk = (damage_.brake_power_axle[0] < 0.9999 || damage_.brake_power_axle[1] < 0.9999);
+    const double axle_brk_mod =
+        std::clamp(has_axle_brk ? damage_.brake_power_axle[size_t(a)] : damage_.brake_power, 0.25, 1.0);
+    const double rear_hb_mod =
+        std::clamp(has_axle_brk ? damage_.brake_power_axle[1] : damage_.brake_power, 0.25, 1.0);
     if (p.use_per_car_brakes) {
-      double t_trace = frac * brake_const_[a] * damage_.brake_power;
-      if (a == 1 && handbrake_shaped_ > 0) t_trace += handbrake_const_ * handbrake_shaped_;
+      double t_trace = frac * brake_const_[a] * axle_brk_mod;
+      if (a == 1 && handbrake_shaped_ > 0) t_trace += handbrake_const_ * handbrake_shaped_ * rear_hb_mod;
       brake[i] = p.mass * (kKgf / 4.0) * p.tyre_radius[i] * t_trace;
     } else {
-      brake[i] = frac * (a == 0 ? p.front_brake_torque : p.rear_brake_torque) * damage_.brake_power;
-      if (a == 1 && shaped_.handbrake) brake[i] += p.handbrake_torque;
+      brake[i] = frac * (a == 0 ? p.front_brake_torque : p.rear_brake_torque) * axle_brk_mod;
+      if (a == 1 && shaped_.handbrake) brake[i] += p.handbrake_torque * rear_hb_mod;
     }
     const double eng_est = clutch_ > 0.05 ? engine_torque(rpm(), drive_in) : 0.0;
     slowing[i] = brake_frac > 0 || brake[i] > 0 || eng_est * G * weight_[i] * w.omega < 0;
@@ -1428,6 +1595,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
 
   Vec3 fwd[kWheels]{}, lat[kWheels]{};
   double vx[kWheels]{}, vy[kWheels]{}, fx0[kWheels]{}, fy[kWheels]{}, slope[kWheels]{};
+  const Vec3 body_right = rotate(rot_, {1, 0, 0});
   auto tyre = [&](int i, double omega, double* fx_out, double* fy_out, double* sx_out, double* sy_out) {
     const int a = axle_of(i);
     const double n = w_[i].load, kgf = n / kKgf, stretch = p.sidewall_stretch[a];
@@ -1473,6 +1641,19 @@ void Vehicle::substep(double dt, const Ground& ground) {
                      : lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(vx[i]), p.accel_speed0, p.accel_speed1));
     double ky = grip[i] * rear * hb_grip * ai * p.lat_scale[a] * p.lat_compound_scale * p.long_misc_scale *
                 p.tire_mod_friction_scale * damage_.tyre_grip[size_t(i)] * thermal_grip;
+    // Lightweight roll- & steer-induced dynamic camber modulation on per-wheel lateral grip:
+    // chassis roll tilts the outside wheel toward positive camber while negative static camber
+    // and front caster recover optimal contact patch alignment under cornering load.
+    const double roll_deg = std::asin(std::clamp(dot(body_right, normal[i]), -1.0, 1.0)) * (180.0 / kPi);
+    const double side_sign = (i % 2 == 0) ? 1.0 : -1.0;
+    const double caster_cam = (a == 0) ? -side_sign * std::sin(w_[i].steer) * p.front_caster_deg * 0.35 : 0.0;
+    const double dyn_cam = p.static_camber_deg[a] + side_sign * (0.65 * roll_deg) + caster_cam;
+    auto camber_grip = [](double c_deg) {
+      const double err = c_deg + 0.5;
+      return std::clamp(1.02 - 0.0045 * err * err, 0.86, 1.02);
+    };
+    const double camber_mod = std::clamp(camber_grip(dyn_cam) / std::max(0.5, camber_grip(p.static_camber_deg[a])), 0.88, 1.08);
+    ky *= camber_mod;
     // The rear-grip fix: g + d (1 - g), g the scale faded out by the
     // normalised slip angle, d by the road wheels' steer angle in degrees.
     if (a == 1) {
@@ -1559,7 +1740,23 @@ void Vehicle::substep(double dt, const Ground& ground) {
     }
   }
   update_boost(dt, drive_in, rpm());
-  const double cap = G != 0 ? p.clutch_max_torque * p.clutch_torque_factor * clutch_ : 0;
+  // Rhythmic ignition-cut redline rev-limiter: cuts fuel at redline_rpm and
+  // releases once RPM falls by 200 rpm or after 0.065 s so the tach bounces crisply.
+  const double rpm_sub = engine_omega_ * kRpm;
+  if (rev_cut_active_) {
+    rev_cut_timer_ += dt;
+    if (rpm_sub <= p.redline_rpm - 200.0 || rev_cut_timer_ >= 0.065) {
+      rev_cut_active_ = false;
+      rev_cut_timer_ = 0.0;
+    }
+  }
+  if (!rev_cut_active_ && rpm_sub >= p.redline_rpm) {
+    rev_cut_active_ = true;
+    rev_cut_timer_ = 0.0;
+  }
+  const double local_clutch_cap = 1.0 - 0.55 * std::clamp(clutch_damage_, 0.0, 1.0);
+  const double eff_clutch_cap = std::min(std::clamp(damage_.clutch_capacity, 0.25, 1.0), local_clutch_cap);
+  const double cap = G != 0 ? p.clutch_max_torque * p.clutch_torque_factor * eff_clutch_cap * clutch_ : 0;
   const double je = p.engine_inertia;
   const double te_raw = engine_torque(rpm(), drive_in);
   const double te = te_raw > 0 ? te_raw * tcs_cut * damage_.engine_torque : te_raw;
@@ -1699,7 +1896,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
     omega_e = w_stall;
   }
   const double w_red = p.redline_rpm / kRpm;
-  if (!lock_now && omega_e > w_red) omega_e = w_red;
+  const double w_ceil = 1.04 * w_red;
+  if (!lock_now && omega_e > w_ceil) omega_e = w_ceil;
   locked_ = lock_now;
   engine_omega_ = omega_e;
 
@@ -1808,11 +2006,15 @@ void Vehicle::substep(double dt, const Ground& ground) {
     }
     const double vn = dot(v, n_eff);
     const double damp_scale = body_contact_damping_scale(hit, n);
-    // Wall/barrier/fence contacts are heavily damped (inelastic) on rebound so
-    // the car glides/absorbs energy cleanly instead of bouncing or launching
-    // violently into the air on angled impacts.
-    const double spring_term = (is_wall && vn > 0.0) ? 0.35 * p.body_stiffness * depth : p.body_stiffness * depth;
-    const double eff_damp = is_wall ? std::max(p.body_damping * damp_scale, 22.0) : p.body_damping * damp_scale;
+    const double rest = body_contact_restitution(hit, n);
+    // Wall/barrier/fence contacts scale rebound stiffness from per-surface restitution
+    // (inelastic ~0.38 on guardrail/concrete vs bouncier ~0.55 on tire walls) while
+    // staying strictly horizontal so angled impacts never catapult the car upward.
+    const double wall_rebound_k = std::clamp(0.35 + 0.70 * rest, 0.25, 1.0);
+    const double spring_term =
+        (is_wall && vn > 0.0) ? wall_rebound_k * p.body_stiffness * depth : p.body_stiffness * depth;
+    const double eff_damp = is_wall ? std::max(p.body_damping * damp_scale, 22.0 * damp_scale)
+                                    : p.body_damping * damp_scale;
     double fn = kShare * std::max(0.0, p.mass * (spring_term - eff_damp * vn));
     fn = std::min(fn, kShare * p.mass * (is_wall ? 180.0 : 120.0));
     if (fn <= 0) continue;
@@ -1905,26 +2107,40 @@ void Vehicle::substep(double dt, const Ground& ground) {
 
   // FrictionTorqueMod yaw stabilization (SPEC-CAR-PHYSICS, Steering assist
   // modes): active for Assisted (0) / Normal (1), disabled in Simulation (2).
-  // Applies TurnScale/TurnClamp when widening yaw slip vs StraightenScale/
-  // StraightenClamp when recovering, plus FWDModifiers and OffRoadModifiers.
+  // Narrowed to primarily catch imminent spin-outs (|slip| > 28 deg in Normal
+  // while yaw rate diverges away from recovery) so playful drift initiation and
+  // steady drift angle holds are never flattened.
   if (!ai_ && assists_.steering != 2 && off < kWheels) {
     const Vec3 fwd_w = rotate(rot_, {0, 0, 1});
     const double sp_xz = std::hypot(vel_.x, vel_.z);
     if (sp_xz > 5.0) {
       const double cos_yaw = std::clamp((fwd_w.x * vel_.x + fwd_w.z * vel_.z) / sp_xz, -1.0, 1.0);
-      if (cos_yaw < 0.996194) {  // > 5 deg yaw slip
+      const double slip_deg = std::acos(cos_yaw) * (180.0 / kPi);
+      // Cross product in XZ indicates slip sign; yaw rate of same sign widens the slide (diverges).
+      const double yaw_cross = fwd_w.x * vel_.z - fwd_w.z * vel_.x;
+      const bool diverging = (ang_.y * yaw_cross) > 0.0;
+      // Predictive spin-out angle (0.22 s yaw-rate lookahead only while diverging away
+      // from recovery): catches imminent spin-outs without flattening steady drift holds
+      // or playful drift initiation below ~28 deg.
+      const double slip_pred_deg = slip_deg + (diverging ? std::fabs(ang_.y) * (180.0 / kPi) * 0.22 : 0.0);
+      double spin_weight = 0.0;
+      if (assists_.steering == 1) {
+        if (diverging && slip_pred_deg > 28.0) {
+          spin_weight = ramp(slip_pred_deg, 28.0, 42.0);
+        }
+      } else {
+        if (diverging && slip_pred_deg > 18.0) {
+          spin_weight = ramp(slip_pred_deg, 18.0, 34.0);
+        } else if (!diverging && slip_deg > 35.0) {
+          spin_weight = 0.25 * ramp(slip_deg, 35.0, 50.0);
+        }
+      }
+      if (spin_weight > 0.0) {
         const double u_mass = ramp(p.mass, 909.1, 1590.9);
-        const double u_yaw = ramp(0.996194 - cos_yaw, 0.0, 0.996194 - 0.961261);
-        const double assist_gain = assists_.steering == 0 ? 1.5 : 0.6;
-        // Cross product in XZ indicates slip sign; yaw rate of opposite sign straightens.
-        const double yaw_cross = fwd_w.x * vel_.z - fwd_w.z * vel_.x;
-        const bool straightening = (ang_.y * yaw_cross) < 0.0;
-        const double mode_scale = straightening ? lerp(1.0, 0.8, u_yaw) : lerp(1.0, 0.7, u_yaw);
+        const double assist_gain = assists_.steering == 0 ? 1.35 : 0.90;
+        const double mode_scale = lerp(0.85, 1.0, spin_weight);
         // FrictionTorqueMod table values (100..180) are in 100 N*m units -> SI N*m.
-        const double base_clamp = (straightening
-                                       ? lerp(lerp(145.0, 140.0, u_yaw), lerp(115.0, 120.0, u_yaw), u_mass)
-                                       : lerp(lerp(180.0, 120.0, u_yaw), lerp(150.0, 100.0, u_yaw), u_mass)) *
-                                  100.0;
+        const double base_clamp = lerp(lerp(180.0, 120.0, spin_weight), lerp(150.0, 100.0, spin_weight), u_mass) * 100.0;
         int n_offroad = 0;
         for (int i = 0; i < kWheels; ++i) {
           if (w_[i].contact && surf[i].off_roadness >= 0.5) ++n_offroad;
@@ -1932,9 +2148,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
         // Off-road modifier activates only when all 4 wheels are off-road.
         const double offroad_mod = (n_offroad == kWheels) ? 1.2 : 1.0;
         const double fwd_mod = p.layout == CarParams::Layout::kFront ? 0.9 : 1.0;
-        const double clamp_t = base_clamp * assist_gain * offroad_mod;
-        const double yaw_damp =
-            std::clamp(-ang_.y * inertia_.y * 2.5 * mode_scale * fwd_mod * offroad_mod * assist_gain, -clamp_t, clamp_t);
+        const double clamp_t = base_clamp * assist_gain * offroad_mod * spin_weight;
+        const double yaw_damp = std::clamp(
+            -ang_.y * inertia_.y * 2.5 * mode_scale * fwd_mod * offroad_mod * assist_gain * spin_weight, -clamp_t,
+            clamp_t);
         torque.y += yaw_damp;
       }
     }

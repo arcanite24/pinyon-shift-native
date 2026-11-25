@@ -954,6 +954,14 @@ void DriveSession::run_window_loop() {
               prev_vel_y = vy;
             }
             {
+              host.skid_sys.set_time(float(vehicle.time()));
+              if (app.race && app.race->consume_smashables_reset()) {
+                app.smashables.reset_broken();
+              }
+              if (auto respawned = app.smashables.consume_respawned_hidden(); !respawned.empty()) {
+                for (const auto& hs : respawned) host.showroom.unhide_world_props_near(hs.pos, hs.radius);
+                if (host.streamer) host.streamer->set_hidden_positions(app.smashables.broken_hidden_positions());
+              }
               drive::RewindCameraState cs;
               if (have_rig) cs.rig = rig;
               cs.view = last_cam_view;
@@ -963,9 +971,84 @@ void DriveSession::run_window_loop() {
               const bool cap_ok = !app.race || (app.race->session().clock() >= 0.0 && !app.race->player_finished());
               const auto sh = app.skill_tracker ? app.skill_tracker->hud() : freeroam::SkillHudState{};
               const double sk_timer = app.skill_tracker ? app.skill_tracker->chain_remaining_s(vehicle.time()) : 0.0;
+              const bool will_stream = rewind_buf.will_record_stream(vehicle.time());
+              const bool keyframe_due = cap_ok && vehicle.time() >= rewind_buf.next_capture_time() - 1e-6;
+
+              drive::RewindExtraState rw_extra{};
+              rw_extra.rotor_heat = {rotor_heat, rotor_heat, rotor_heat, rotor_heat};
+              rw_extra.prev_rumble_gear = prev_rumble_gear;
+              rw_extra.cam_state = have_rig ? int(rig.mode()) : 0;
+              rw_extra.prev_audio_checkpoint = prev_audio_checkpoint;
+              rw_extra.prev_audio_lap = prev_audio_lap;
+              // Encode Free-Roam SpeedActivity / Outpost PR Stunt / DiscountSign state at 20 Hz
+              // and on keyframe capture (reusing cached payloads on intermediate 120 Hz ticks).
+              thread_local std::vector<uint8_t> s_cached_speed_bytes;
+              thread_local std::vector<uint8_t> s_cached_pr_bytes;
+              thread_local std::vector<uint8_t> s_cached_signs_bytes;
+              if (will_stream || keyframe_due || vehicle.time() < 0.1) {
+                if (app.speed_tracker) {
+                  s_cached_speed_bytes = carview::rewind_codec::encode_speed_records(
+                      app.speed_tracker->save_traps(), app.speed_tracker->save_zones());
+                } else {
+                  s_cached_speed_bytes.clear();
+                }
+                const std::string active_pr =
+                    app.pr_stunt_session.active() ? app.pr_stunt_session.stunt().id : std::string{};
+                s_cached_pr_bytes = carview::rewind_codec::encode_pr_stunt_state(
+                    app.outpost_progress.discovered_outposts, app.outpost_progress.completed_pr_stunts, active_pr);
+                s_cached_signs_bytes = carview::rewind_codec::encode_string_set(app.progress.signs_found);
+              }
+              rw_extra.speed_trap_state = s_cached_speed_bytes;
+              rw_extra.pr_stunt_state = s_cached_pr_bytes;
+              rw_extra.signs_state = s_cached_signs_bytes;
+
               const uint64_t captured_id = rewind_buf.record_step(
                   vehicle.time(), rc, vehicle, cs, cap_ok, uint64_t(std::max(0, sh.chain_points)),
-                  std::max(1, sh.multiplier), sk_timer);
+                  std::max(1, sh.multiplier), sk_timer, &rw_extra);
+              if (will_stream) {
+                auto lane_quat = [](double heading, double pitch) {
+                  const drive::Quat yq{0, std::sin(heading * 0.5), 0, std::cos(heading * 0.5)};
+                  const drive::Quat pq{std::sin(-pitch * 0.5), 0, 0, std::cos(-pitch * 0.5)};
+                  return drive::Quat{
+                      yq.w * pq.x + yq.x * pq.w + yq.y * pq.z - yq.z * pq.y,
+                      yq.w * pq.y - yq.x * pq.z + yq.y * pq.w + yq.z * pq.x,
+                      yq.w * pq.z + yq.x * pq.y - yq.y * pq.x + yq.z * pq.w,
+                      yq.w * pq.w - yq.x * pq.x - yq.y * pq.y - yq.z * pq.z,
+                  };
+                };
+                std::vector<drive::RewindActorPose> actors;
+                actors.reserve(40);
+                if (app.race) app.race->collect_rewind_actors(actors);
+                if (traffic && traffic->cars()) {
+                  for (const auto& tc : *traffic->cars()) {
+                    drive::RewindActorPose ap{};
+                    ap.kind = 1u;
+                    ap.id = tc.id;
+                    ap.pos = {tc.position.x, tc.position.y, tc.position.z};
+                    ap.rot = lane_quat(tc.heading, tc.pitch);
+                    ap.vel = {std::sin(tc.heading) * tc.speed, 0.0, std::cos(tc.heading) * tc.speed};
+                    ap.steer = float(tc.heading);
+                    ap.wheel_spin = float(tc.speed);
+                    ap.extra0 = float(tc.pitch);
+                    actors.push_back(ap);
+                  }
+                }
+                if (festival_mgr) {
+                  for (const auto& fc : festival_mgr->cars()) {
+                    drive::RewindActorPose ap{};
+                    ap.kind = 2u;
+                    ap.id = fc.id;
+                    ap.pos = {fc.position.x, fc.position.y, fc.position.z};
+                    ap.rot = lane_quat(fc.heading, fc.pitch);
+                    ap.vel = {fc.vx, fc.vy, fc.vz};
+                    ap.steer = float(fc.heading);
+                    ap.wheel_spin = float(fc.speed);
+                    ap.extra0 = float(fc.pitch);
+                    actors.push_back(ap);
+                  }
+                }
+                if (!actors.empty()) rewind_buf.attach_latest_stream_actors(std::move(actors));
+              }
               if (captured_id != 0u) capture_world_rewind(captured_id);
               // 60 Hz gameplay replay ring-buffer recording (player + opponents + nearby traffic).
               if (replay_rec.active()) {

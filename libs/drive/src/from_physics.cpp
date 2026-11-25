@@ -222,7 +222,9 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
     p.antiroll_rate[a] = get(ar + "DefSwaybarStiffness", p.antiroll_rate[a] / m) * m;
     p.antiroll_damping[a] = get(ar + "SwaybarDamping", 2) * m;
     p.static_toe_rad[a] = std::clamp(car.get(sd + "StaticToe", 0.0), -5.0, 5.0) * kDeg;
+    p.static_camber_deg[a] = std::clamp(car.get(sd + "StaticCamber", a == 0 ? -1.0 : -0.8), -5.0, 5.0);
   }
+  p.front_caster_deg = std::clamp(car.get("FrontSpringDamper.StaticCaster", 5.0), 1.0, 7.0);
 
   // Rally Suspension (List_UpgradeSpringDamper.Level == 4): lift static ride
   // height, suspension rest length, sill height, and centre of mass.
@@ -657,6 +659,7 @@ void apply_tune(const CarTune& tune, const cars::CarPhysics& car, CarParams& p) 
   for (int a = 0; a < 2; ++a) {
     if (cambers[a] > -90.0) {
       const double c = std::clamp(cambers[a], -5.0, 5.0);
+      p.static_camber_deg[a] = c;
       const double opt = a == 0 ? -1.5 : -1.0;
       const double lat_gain = 1.02 - 0.008 * (c - opt) * (c - opt);
       const double long_pen = 1.0 - 0.005 * std::fabs(c);
@@ -673,6 +676,7 @@ void apply_tune(const CarTune& tune, const cars::CarPhysics& car, CarParams& p) 
   }
   if (tune.front_caster_deg > -90.0) {
     const double caster = std::clamp(tune.front_caster_deg, 1.0, 7.0);
+    p.front_caster_deg = caster;
     p.lat_scale[0] *= std::clamp(1.0 + 0.004 * (caster - 5.0), 0.97, 1.02);
   }
 
@@ -704,7 +708,9 @@ void apply_tune(const CarTune& tune, const cars::CarPhysics& car, CarParams& p) 
       const double rh = lerp(lo, hi, heights[a]);
       const double compress = car.get(sd + "MaxCompressHeight", lo * 0.75);
       p.bump_travel[a] = std::max(0.025, rh - compress);
-      rh_delta_sum += (rh - def_rh);
+      const double dh = std::clamp(rh - def_rh, -0.15, 0.15);
+      p.ride_height_delta[a] = dh;
+      rh_delta_sum += dh;
       ++rh_count;
     }
     if (rebounds[a] >= 0) {

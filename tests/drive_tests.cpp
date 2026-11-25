@@ -16,6 +16,7 @@
 #include "drive/ai_driver.h"
 #include "drive/contact.h"
 #include "drive/controls.h"
+#include "drive/damage.h"
 #include "drive/oracle_lap.h"
 #include "drive/save.h"
 #include "drive/vehicle.h"
@@ -1411,6 +1412,188 @@ int main() {
         CHECK(line.segment(d, kPts - 2) == want);
         sequential_hint = want;
       }
+    }
+  }
+  // 13) Round 3 Phase R3-B parity tests (R3-PHY-01, 06, 07, 08, 16, 18):
+  {
+    const auto p = test_car();
+    const drive::FlatGround flat;
+    constexpr double kPi = 3.14159265358979323846;
+
+    // R3-PHY-01: Vehicle::blend smooth long-range cubic Hermite + slerp scrub over > 5 m
+    // (2.5 s cornering arc ~ 70 m chord) without teleporting, while snapping past 250 m.
+    {
+      drive::Vehicle::Pose pa{}, pb{};
+      const double R = 50.0;
+      const double speed_arc = (0.5 * kPi * R) / 2.5;  // ~31.4 m/s around 90 deg arc in 2.5 s
+      pa.pos = {0.0, 0.5, 0.0};
+      pa.vel = {0.0, 0.0, speed_arc};  // heading 0 (+Z)
+      pa.rot = {0.0, 0.0, 0.0, 1.0};
+      pb.pos = {R, 0.5, R};            // 90 deg right turn (chord = 70.7 m > old 5 m guard!)
+      pb.vel = {speed_arc, 0.0, 0.0};  // heading +pi/2 (+X)
+      pb.rot = {0.0, std::sin(kPi / 4.0), 0.0, std::cos(kPi / 4.0)};
+
+      const auto mid = drive::Vehicle::blend(pa, pb, 0.5);
+      // Must NOT snap to pb!
+      CHECK(mid.pos.x < pb.pos.x - 10.0 && mid.pos.z < pb.pos.z - 5.0);
+      // Hermite follows outer corner curve: at t=0.5 on right turn from (0,0) facing +Z to (R,R) facing +X,
+      // linear midpoint is (25, 25), true arc midpoint is (14.64, 35.36) -> Hermite bends toward (x < 22, z > 28)!
+      CHECK(mid.pos.x < 22.0 && mid.pos.z > 28.0);
+      // Slerp midpoint heading is 45 deg (pi/4).
+      const auto mid_fwd = drive::rotate(mid.rot, {0, 0, 1});
+      const double mid_hdg = std::atan2(mid_fwd.x, mid_fwd.z);
+      CHECK(std::fabs(mid_hdg - kPi / 4.0) < 0.02);
+
+      // Jump past 250 m (> 62500 m^2) still snaps cleanly to b.
+      drive::Vehicle::Pose far_b = pb;
+      far_b.pos = {300.0, 0.5, 0.0};
+      const auto snapped = drive::Vehicle::blend(pa, far_b, 0.5);
+      CHECK(std::fabs(snapped.pos.x - far_b.pos.x) < 1e-6);
+    }
+
+    // R3-PHY-08: Rhythmic ignition-cut redline rev-limiter bounce.
+    {
+      drive::Vehicle v(p);
+      drive::VehicleAssists a;
+      a.shifting = 2;  // Manual + Clutch so we can free-rev with clutch held
+      v.set_assists(a);
+      int cut_transitions = 0;
+      bool prev_cut = false;
+      double min_post_cut_rpm = 1e9, max_rpm = 0.0;
+      bool hit_redline = false;
+      for (int i = 0; i < 120 * 2; ++i) {
+        v.step({0.0, 1.0, 0.0, false, 1.0, 0}, flat);
+        const double r = v.rpm();
+        max_rpm = std::max(max_rpm, r);
+        if (v.rev_limiter_active()) hit_redline = true;
+        if (hit_redline) min_post_cut_rpm = std::min(min_post_cut_rpm, r);
+        if (v.rev_limiter_active() != prev_cut) {
+          ++cut_transitions;
+          prev_cut = v.rev_limiter_active();
+        }
+      }
+      CHECK(hit_redline);
+      CHECK(cut_transitions >= 6);  // rhythmic on/off bounces, not a flat pin
+      CHECK(min_post_cut_rpm < p.redline_rpm - 60.0);
+      CHECK(max_rpm <= p.redline_rpm * 1.04 + 25.0);
+    }
+
+    // R3-PHY-07: Keyboard digital steering progressive 0-120 ms tap ramp, highway cap & crisp center return.
+    {
+      drive::Vehicle v_kb(p), v_pad(p);
+      v_kb.launch({0, 0, 0}, 0.0, 14.0);
+      v_pad.launch({0, 0, 0}, 0.0, 14.0);
+      drive::Input kb_in{1.0, 0.2, 0.0, false};
+      kb_in.input_is_keyboard = true;
+      drive::Input pad_in{1.0, 0.2, 0.0, false};
+      pad_in.input_is_keyboard = false;
+      // Short 25 ms tap (3 steps): keyboard tap ramp is much gentler than instant full-stick pad input.
+      for (int i = 0; i < 3; ++i) {
+        v_kb.step(kb_in, flat);
+        v_pad.step(pad_in, flat);
+      }
+      const double tap_early = v_kb.steer_angle();
+      CHECK(tap_early > 0.0 && tap_early < v_pad.steer_angle() * 0.75);
+      // Sustained hold past 120 ms (18 more steps = 175 ms total): ramps up substantially.
+      for (int i = 0; i < 18; ++i) v_kb.step(kb_in, flat);
+      const double tap_held = v_kb.steer_angle();
+      CHECK(tap_held > tap_early * 3.0);
+      // Release key: crisp return toward center within 150 ms.
+      kb_in.steer = 0.0;
+      for (int i = 0; i < 18; ++i) v_kb.step(kb_in, flat);
+      CHECK(std::fabs(v_kb.steer_angle()) < tap_held * 0.35);
+
+      // Highway speed cap: at 55 m/s sustained keyboard steer is capped lower than at 10 m/s.
+      drive::Vehicle v_hi(p), v_lo(p);
+      v_hi.launch({0, 0, 0}, 0.0, 55.0);
+      v_lo.launch({0, 0, 0}, 0.0, 10.0);
+      kb_in.steer = 1.0;
+      for (int i = 0; i < 30; ++i) {
+        v_hi.step(kb_in, flat);
+        v_lo.step(kb_in, flat);
+      }
+      CHECK(v_hi.steer_angle() < v_lo.steer_angle() * 0.5);
+    }
+
+    // R3-PHY-06: Normal steering active countersteer assist vs raw Simulation + handbrake blend-out.
+    {
+      drive::Vehicle v_norm(p), v_sim(p), v_hb(p);
+      drive::VehicleAssists a_norm, a_sim;
+      a_norm.steering = 1;  // Normal
+      a_sim.steering = 2;   // Simulation
+      v_norm.set_assists(a_norm);
+      v_sim.set_assists(a_sim);
+      v_hb.set_assists(a_norm);
+      // Oversteer slide: nose pointed +0.30 rad (~17 deg) right of velocity at 22 m/s -> rear slip < 0 -> countersteer left (< 0).
+      v_norm.launch({0, 0, 0}, 0.30, 22.0);
+      v_sim.launch({0, 0, 0}, 0.30, 22.0);
+      v_hb.launch({0, 0, 0}, 0.30, 22.0);
+      v_norm.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
+      v_sim.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
+      v_hb.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
+      for (int i = 0; i < 25; ++i) {
+        v_norm.step({0.0, 0.2, 0.0, false}, flat);
+        v_sim.step({0.0, 0.2, 0.0, false}, flat);
+        v_hb.step({0.0, 0.2, 0.0, true}, flat);
+      }
+      CHECK(v_norm.steer_angle() < -0.08);                // Normal actively countersteers left into slide
+      CHECK(std::fabs(v_sim.steer_angle()) < 1e-6);       // Simulation stays completely raw
+      CHECK(std::fabs(v_hb.steer_angle()) < std::fabs(v_norm.steer_angle()) * 0.35);  // handbrake blends it out
+    }
+
+    // R3-PHY-16: Per-surface wall collision hints (guardrail glide vs tire-wall damping/restitution).
+    {
+      const drive::Vec3 wall_n{1.0, 0.0, 0.0};
+      drive::Hit h_rail{}, h_tire{};
+      h_rail.tyre.wall_friction = 0.08;
+      h_rail.tyre.wall_restitution = 0.04;
+      h_rail.tyre.wall_damping_scale = 0.85;
+      h_tire.tyre.wall_friction = 0.38;
+      h_tire.tyre.wall_restitution = 0.28;
+      h_tire.tyre.wall_damping_scale = 1.35;
+      CHECK(drive::body_contact_friction(h_rail, wall_n, 0.6) < 0.10);
+      CHECK(drive::body_contact_friction(h_tire, wall_n, 0.6) > 0.35);
+      CHECK(drive::body_contact_damping_scale(h_tire, wall_n) > drive::body_contact_damping_scale(h_rail, wall_n) + 0.3);
+      CHECK(drive::body_contact_restitution(h_tire, wall_n) > drive::body_contact_restitution(h_rail, wall_n) + 0.15);
+    }
+
+    // R3-PHY-18: Clutch-grind damage accumulation + capacity scaling & per-axle brake effectiveness degradation.
+    {
+      drive::Vehicle v_grind(p);
+      drive::VehicleAssists a_mc;
+      a_mc.shifting = 2;  // Manual + Clutch
+      v_grind.set_assists(a_mc);
+      v_grind.launch({0, 0, 0}, 0.0, 20.0);
+      CHECK(v_grind.clutch_damage() == 0.0);
+      // Clean clutched shift: zero clutch damage.
+      v_grind.step({0.0, 0.5, 0.0, false, 1.0, +1}, flat);
+      CHECK(v_grind.clutch_damage() == 0.0);
+      // Grind without clutch: accumulates clutch_damage.
+      v_grind.step({0.0, 0.5, 0.0, false, 0.0, -1}, flat);
+      CHECK(v_grind.clutch_damage() > 0.0);
+
+      // CarDamageState Simulation mode: clutch grind reduces clutch_capacity & front hit degrades front brakes more than rear.
+      drive::CarDamageState dmg;
+      dmg.mode = drive::DamageMode::kSimulation;
+      dmg.record_clutch_grind(0.25f);
+      dmg.record_clutch_grind(0.25f);
+      dmg.record_impact(0.0f, 0.5f, 1.9f, 22.0f);  // front hit
+      const auto mul = dmg.multipliers();
+      CHECK(mul.clutch_capacity < 0.80);
+      CHECK(mul.brake_power_axle[0] < mul.brake_power_axle[1] - 0.10);
+
+      // Per-axle brake degradation in Vehicle::DamageMods slows front-damaged car less than healthy car under braking.
+      drive::Vehicle v_brk_ok(p), v_brk_dmg(p);
+      drive::Vehicle::DamageMods dm_brk{};
+      dm_brk.brake_power_axle = {0.40, 1.0};  // severely faded front brakes, intact rear
+      v_brk_dmg.set_damage_mods(dm_brk);
+      v_brk_ok.launch({0, 0, 0}, 0.0, 35.0);
+      v_brk_dmg.launch({0, 0, 0}, 0.0, 35.0);
+      for (int i = 0; i < 120; ++i) {
+        v_brk_ok.step({0.0, 0.0, 0.6, false}, flat);
+        v_brk_dmg.step({0.0, 0.0, 0.6, false}, flat);
+      }
+      CHECK(v_brk_dmg.speed() > v_brk_ok.speed() + 1.0);
     }
   }
   if (failures) {

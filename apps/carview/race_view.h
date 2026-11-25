@@ -34,6 +34,10 @@
 #include "game_hud.h"
 #include "showroom.h"
 
+namespace drive {
+struct RewindActorPose;
+}
+
 namespace cars {
 class PartsDb;
 struct PhysicsSettings;
@@ -114,10 +118,22 @@ class RaceView {
   void clip_room(world::Collision& collision);
 
   // Before the player's step: the field's pass; returns what the player's
-  // car does (held until the signal; the AI's input under autopilot or
-  // once finished; else `user`).
+  // car does (held until the signal with player throttle pass-through for
+  // launch revving; the AI's input under autopilot or once finished; else `user`).
   drive::Input player_input(const drive::Vehicle& player, const drive::Input& user,
                             const TrafficView* traffic = nullptr);
+  // Pre-start 3-2-1 countdown grid hold input: preserves player throttle so
+  // the player can rev, build turbo boost, and modulate launch RPM while
+  // holding the car stationary in 1st gear until GO.
+  static drive::Input countdown_grid_input(const drive::Input& user, bool autopilot = false, double clock_s = -6.0);
+  // One-shot trigger set on event open/restart so callers reset non-Discount-Sign smashables.
+  bool consume_smashables_reset() {
+    const bool v = smashables_reset_pending_;
+    smashables_reset_pending_ = false;
+    return v;
+  }
+  // Appends compact 20 Hz actor poses (Race AI cars + Showcase aircraft) for smooth rewind scrub.
+  void collect_rewind_actors(std::vector<drive::RewindActorPose>& out) const;
   // CareerRaceModes.xml UseTraffic="true": true for all Street & Nemesis races.
   bool uses_traffic() const { return race::event_uses_traffic(event_.career_type); }
   // After the player's step: the opponents' steps (on `near` inside the
@@ -371,6 +387,7 @@ class RaceView {
   // Persistent worker pool for parallel multi-car AI physics steps (zero per-step spawn cost).
   struct PhysicsStepPool;
   std::unique_ptr<PhysicsStepPool> step_pool_;
+  bool smashables_reset_pending_ = false;
   // The player's credits for place p (the spec's share; before the award).
   int64_t credits_for(int place) const;
 };

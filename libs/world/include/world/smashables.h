@@ -177,6 +177,8 @@ class SmashableWorld {
  public:
   static constexpr size_t kMaxDynamicBodies = 384;  // confirmed pool cap (FORMAT-PHYSICS-DEFINITIONS)
   static constexpr float kDebrisDespawnSeconds = 9.0f;
+  static constexpr float kRespawnCheckIntervalS = 1.0f;
+  static constexpr float kRespawnDistanceM = 300.0f;
 
   SmashableWorld();
   ~SmashableWorld();
@@ -221,9 +223,11 @@ class SmashableWorld {
   // Persists a broken external prop (e.g. smashed discount sign) in broken_hidden_positions().
   void record_hidden_prop(const std::array<float, 3>& pos, float hide_radius);
 
-  // Clears all flying debris and optionally restores broken props (e.g. on reset/rewind).
+  // Clears all flying debris and restores non-Discount-Sign broken props (e.g. on event start/restart).
   void clear_debris();
   void reset_broken();
+  // Drains world hidden spheres for props recently restored via distance respawn or reset_broken().
+  std::vector<GatherOptions::HiddenSphere> consume_respawned_hidden();
 
   // Rewind snapshot/restore: captures broken prop indices so props broken after
   // the rewind keyframe are restored (and returns their hidden spheres to unhide).
@@ -285,6 +289,9 @@ class SmashableWorld {
   };
 
   const PropPhysicsDef* match_definition(const CollObjPlacement& p) const;
+  bool is_discount_sign(const PlacedProp& pp) const;
+  float hide_radius_for(const PlacedProp& pp) const;
+  void rebuild_broken_positions();
   void spawn_dynamic_body(const DynamicBody& body);
   std::array<uint8_t, 4> colour_for_prop(int32_t surface_type, int8_t object_type, std::string_view stem) const;
   void step_barn_doors(drive::Vehicle& vehicle);
@@ -303,7 +310,10 @@ class SmashableWorld {
   std::unordered_map<int64_t, std::vector<uint32_t>> barrier_grid_;  // 25 m XZ spatial grid
   std::vector<DynamicBody> dynamic_bodies_;                  // capped at kMaxDynamicBodies (384)
   std::vector<BarnDoorCollider> barn_doors_;
+  std::vector<GatherOptions::HiddenSphere> persistent_hidden_;  // external persistent hides (Discount Signs)
+  std::vector<GatherOptions::HiddenSphere> respawned_hidden_;   // queued unhide spheres for renderer/streamer
   std::shared_ptr<std::vector<GatherOptions::HiddenSphere>> broken_positions_;
+  float respawn_timer_ = 0.0f;
   uint64_t evictions_ = 0;
   uint32_t rng_ = 0x51C4D3B7u;
 

@@ -202,12 +202,43 @@ struct CameraInput {
   double boost_norm = 0;
   // The world's height under a point (for the chase clearance); empty: none.
   std::function<bool(double x, double y, double z, double& ground_y)> ground_below;
+  // The world's ceiling height above a point (for tunnel/underpass clearance);
+  // empty: falls back to probing upward via obstacle_ray when present.
+  std::function<bool(double x, double y, double z, double& ceiling_y)> ceiling_above;
   // Horizontal wall / car-OBB obstacle raycast from look_at toward chase eye;
   // returns true and writes hit_dist in [0, max_dist] if blocked (CAMERAS.md:266).
   std::function<bool(const std::array<double, 3>& origin, const std::array<double, 3>& dir, double max_dist,
                      double& hit_dist)>
       obstacle_ray;
 };
+
+// Oriented bounding box of a nearby AI or traffic vehicle for chase-camera
+// obstacle pull-in so FollowLow/FollowHigh never clip inside trucks, buses,
+// or trailing opponents.
+struct CameraVehicleObb {
+  std::array<double, 3> center{};
+  std::array<double, 3> axis_x{1, 0, 0};
+  std::array<double, 3> axis_y{0, 1, 0};
+  std::array<double, 3> axis_z{0, 0, 1};
+  std::array<double, 3> half_extents{0.95, 0.72, 2.25};
+};
+
+enum class CameraObstacleSource : uint8_t { kTraffic = 0, kFestivalAi = 1, kRaceAi = 2 };
+
+// Publishes the current frame's vehicle OBBs for a simulation source.
+void set_camera_vehicle_obbs(CameraObstacleSource source, std::vector<CameraVehicleObb> obbs);
+void clear_camera_vehicle_obbs(CameraObstacleSource source);
+
+// Ray-vs-OBB slab intersection in world space. Returns true and writes
+// hit_dist in [0, max_dist] on hit.
+bool intersect_ray_obb(const std::array<double, 3>& origin, const std::array<double, 3>& dir, double max_dist,
+                       const CameraVehicleObb& obb, double& hit_dist);
+
+// Intersects a ray against all published vehicle OBBs within `max_player_dist`
+// of `player_pos`. Returns true and writes the nearest hit_dist in [0, max_dist].
+bool intersect_camera_vehicle_obbs(const std::array<double, 3>& origin, const std::array<double, 3>& dir,
+                                   double max_dist, const std::array<double, 3>& player_pos,
+                                   double max_player_dist, double& hit_dist);
 
 struct CameraView {
   std::array<double, 3> eye{}, forward{0, 0, 1}, up{0, 1, 0};  // world
@@ -255,6 +286,8 @@ class DriveCamera {
   static constexpr double kHoodAnchor[3] = {0, 0.45, 0.60};
   static constexpr double kBoxInset = 0.6096;
   static constexpr double kClearance = 0.3;
+  static constexpr double kCeilingClearance = 0.25;
+  static constexpr double kFanHalfWidth = 0.35;
   // SPEC-CAMERAS (Q51): the slope term's limit as a multiple of the
   // distance and how long it stays on once fewer than three wheels touch;
   // the look spring's time constant is ours (open).

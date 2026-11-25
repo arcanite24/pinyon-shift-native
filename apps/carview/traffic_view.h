@@ -67,6 +67,7 @@ class TrafficView {
     traffic::Population::Snapshot population;
     traffic::Bodies::Snapshot bodies;
     std::map<uint32_t, TrafficPose> before;
+    std::map<uint32_t, int64_t> locked_model;
   };
   RewindSnapshot capture_rewind() const;
   void restore_rewind(const RewindSnapshot& s);
@@ -88,6 +89,7 @@ class TrafficView {
     bool failed = false;
   };
   void update_guests();
+  void publish_camera_obbs(const drive::Vec3& player_pos) const;
 
   Renderer& r_;
   Showroom& host_;
@@ -113,6 +115,10 @@ class TrafficView {
   std::map<uint32_t, TrafficPose> before_;
   std::map<uint32_t, drive::CarLampState> lamps_;
   std::map<uint32_t, float> wheel_spin_;
+  // Per-car locked render model ID: once a spawned traffic car is first rendered
+  // with a resident model, it stays locked to that model for its visible lifetime
+  // so async uploads never visibly morph a car mid-road.
+  std::map<uint32_t, int64_t> locked_model_;
   std::vector<traffic::ExternalVehicle> external_vehicles_;
   int external_ttl_ = 0;
 };

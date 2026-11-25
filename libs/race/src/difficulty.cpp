@@ -184,6 +184,11 @@ void DriverAi::update(double gap, int places_behind, double dt) {
       next = State::kRubberband;
       if (gap > row_.start_torque_cut) torque = torque_cut(row_, gap);
     }
+    // SoloLapping_FarBehindTorqueBoost: apply torque boost when an AI opponent
+    // falls far behind the player in solo races (respecting the Rubber-Banding toggle).
+    if ((max_ || catch_up_) && skill_.far_behind_torque_boost > 1.0) {
+      torque *= skill_.far_behind_torque_boost;
+    }
   }
   // When a mode is drawn: on entering rubber-band mode, and while in it
   // whenever the place changes or the gap crosses StartRubberbandingDistance,

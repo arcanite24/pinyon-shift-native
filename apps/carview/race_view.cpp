@@ -15,6 +15,7 @@
 #include <thread>
 
 #include "drive/from_physics.h"
+#include "drive/rewind.h"
 #include "garage/garage.h"
 #include "race/player_pi.h"
 #include "race/street_line.h"
@@ -549,6 +550,17 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   recorded_ghost_.event_id = event_.horizon_id;
   recorded_ghost_.car_media = o.player_car;
   if (player_pi_ > 0.0 && !bands_.empty()) recorded_ghost_.shown_pi = garage::shown_index(player_pi_, bands_);
+  if (session_ && !bands_.empty()) {
+    for (size_t k = 0; k < cars_.size(); ++k) {
+      if (cars_[k].who.performance_index > 0.0) {
+        session_->set_car_class(k, garage::class_of(cars_[k].who.performance_index, bands_));
+      }
+    }
+    if (player_pi_ > 0.0) {
+      session_->set_car_class(player_index(), garage::class_of(player_pi_, bands_));
+    }
+  }
+  smashables_reset_pending_ = true;
   std::printf("race: %s, route %d (%s, %d lap%s, line %.0f m a lap), %d cars, player on slot %02d, %zu ribbon "
               "triangles\n",
               event.c_str(), event_.route_id, circuit_ ? "circuit" : "sprint", laps, laps == 1 ? "" : "s",
@@ -768,6 +780,12 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
   }
   for (const auto& line_log : bisect_logs) {
     if (!line_log.empty()) std::fputs(line_log.c_str(), stdout);
+  }
+  if (session_ && !bands_.empty()) {
+    for (size_t k = 0; k < cars_.size(); ++k) {
+      const double eff_pi = cars_[k].upgraded_raw_pi > 0.0 ? cars_[k].upgraded_raw_pi : cars_[k].who.performance_index;
+      if (eff_pi > 0.0) session_->set_car_class(k, garage::class_of(eff_pi, bands_));
+    }
   }
   // The ribbon against the collision: heights at the line's centre points
   // within 300 m of the player's slot (a car handed between the two should
@@ -1008,7 +1026,7 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   // 420 m braking-curve pass until 50 ms before GO so countdown stays at full framerate.
   if (!session_->started() && session_->clock() < -0.05) {
     for (auto& inp : inputs_) inp = drive::Input{};
-    return drive::Input{0, 0, 0.4, true};
+    return countdown_grid_input(user, o_.autopilot, session_->clock());
   }
   // Lanes from the last step's progress, then the field's pass.
   for (size_t k = 0; k <= n; ++k)
@@ -1041,10 +1059,24 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
                    traffic_obs_scratch_);
   for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]), field_->set_speed_cap(k, caps_[k]);
   field_->drive(states_, inputs_);
-  // Held on the grid in first: brake under the reverse-select press (0.5) and the handbrake.
-  if (!session_->started()) return drive::Input{0, 0, 0.4, true};
+  // Held on the grid in first until GO while passing player throttle through for launch revving.
+  if (!session_->started()) return countdown_grid_input(user, o_.autopilot, session_->clock());
   if (o_.autopilot || session_->finished(n)) return inputs_[n];
   return user;
+}
+
+drive::Input RaceView::countdown_grid_input(const drive::Input& user, bool autopilot, double clock_s) {
+  const double thr = autopilot ? (clock_s >= -3.09 ? 1.0 : 0.0)
+                               : (std::isfinite(user.throttle) ? std::clamp(user.throttle, 0.0, 1.0) : 0.0);
+  // Keep brake = 1.0 when revving (thr > 0) and 0.4 when off-throttle so automatic
+  // transmission never triggers the > 0.5 reverse-select hold while sitting on the grid.
+  drive::Input held{};
+  held.steer = 0.0;
+  held.throttle = thr;
+  held.brake = thr > 0.0 ? 1.0 : 0.4;
+  held.handbrake = true;
+  held.clutch = 1.0;
+  return held;
 }
 
 void RaceView::replay_player(drive::Vehicle& player) const {
@@ -2378,6 +2410,40 @@ void RaceView::restore_rewind(const RewindSnapshot& s, bool mark_player_lap_dirt
   last_planner_c_.assign(last_planner_c_.size(), -1.0f);
   last_planner_b_.assign(last_planner_b_.size(), -1.0f);
   if (session_) codriver_.rewind_to(session_->clock());
+}
+
+void RaceView::collect_rewind_actors(std::vector<drive::RewindActorPose>& out) const {
+  for (size_t i = 0; i < cars_.size(); ++i) {
+    const auto& c = cars_[i];
+    if (!c.body) continue;
+    const drive::Vehicle::Pose p = c.body->pose();
+    drive::RewindActorPose ap{};
+    ap.kind = 0u;
+    ap.id = uint32_t(i);
+    ap.pos = p.pos;  // centre of mass (matches Vehicle::Pose::pos)
+    ap.rot = p.rot;
+    ap.vel = p.vel;
+    ap.steer = float(p.wheels[0].steer);
+    ap.wheel_spin = float(p.wheels[0].spin);
+    out.push_back(ap);
+  }
+  if (showcase_.active()) {
+    const auto& sp = showcase_.pose();
+    drive::RewindActorPose ap{};
+    ap.kind = 3u;
+    ap.id = 0u;
+    ap.pos = {sp.position[0], sp.position[1], sp.position[2]};
+    ap.rot = {0.0, std::sin(sp.heading * 0.5), 0.0, std::cos(sp.heading * 0.5)};
+    const double cp = std::cos(sp.pitch);
+    ap.vel = {std::sin(sp.heading) * cp * sp.speed_mps, std::sin(sp.pitch) * sp.speed_mps,
+              std::cos(sp.heading) * cp * sp.speed_mps};
+    ap.steer = float(sp.heading);
+    ap.wheel_spin = float(sp.speed_mps);
+    ap.extra0 = float(sp.pitch);
+    ap.extra1 = float(sp.roll);
+    ap.extra2 = float(sp.rotor_angle);
+    out.push_back(ap);
+  }
 }
 
 }  // namespace carview

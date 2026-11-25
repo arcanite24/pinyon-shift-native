@@ -1373,6 +1373,124 @@ int main() {
             loaded.samples.size() == 2);
       std::filesystem::remove_all(tmp_dir, ec);
     }
+
+    // R3-PHY-03: Pre-start countdown grid hold allows player throttle revving without moving
+    // and without shifting Automatic transmission into Reverse, then launches cleanly on GO.
+    {
+      drive::CarParams cp{};
+      const double r = 0.32;
+      cp.wheel_centres = {drive::Vec3{-0.78, r, 1.30}, drive::Vec3{0.78, r, 1.30},
+                          drive::Vec3{-0.79, r, -1.25}, drive::Vec3{0.79, r, -1.25}};
+      cp.tyre_radius = {r, r, r, r};
+      cp.centre_of_mass = {0, 0.5, 0.05};
+      cp.has_turbo = true;
+      cp.boost_max_psi = 14.0;
+      drive::Vehicle car(cp);
+      drive::FlatGround flat(0.0);
+      car.reset({0.0, 0.0, 0.0}, 0.0);
+
+      // Sitting off-throttle on grid (brake = 0.4, handbrake = true, clutch = 1.0): stays in 1st gear.
+      for (int k = 0; k < 120; ++k) {
+        drive::Input hold{};
+        hold.brake = 0.4;
+        hold.handbrake = true;
+        hold.clutch = 1.0;
+        car.step(hold, flat);
+      }
+      CHECK(car.gear() == 1);
+      CHECK(std::fabs(car.position().z) < 0.15);
+
+      // Player revs throttle (throttle = 0.85, brake = 1.0, handbrake = true, clutch = 1.0):
+      // RPM climbs well above idle while car stays locked on the grid in 1st gear!
+      const double idle_rpm = car.rpm();
+      for (int k = 0; k < 120; ++k) {
+        drive::Input rev{};
+        rev.throttle = 0.85;
+        rev.brake = 1.0;
+        rev.handbrake = true;
+        rev.clutch = 1.0;
+        car.step(rev, flat);
+      }
+      CHECK(car.gear() == 1);
+      CHECK(car.rpm() > idle_rpm + 1500.0);
+      CHECK(std::fabs(car.position().z) < 0.20);
+
+      // GO: release brake/handbrake/clutch with throttle held -> launches cleanly forward!
+      for (int k = 0; k < 120; ++k) {
+        drive::Input go{};
+        go.throttle = 0.85;
+        car.step(go, flat);
+      }
+      CHECK(car.position().z > 2.0 && car.speed() > 4.0);
+    }
+
+    // R3-PHY-14: parse_difficulty("insane"), SoloLapping_FarBehindTorqueBoost, and multi-class Session::class_place.
+    {
+      race::Difficulty parsed = race::Difficulty::kEasy;
+      CHECK(race::parse_difficulty("insane", parsed) && parsed == race::Difficulty::kPro);
+      CHECK(race::parse_difficulty("INSANE", parsed) && parsed == race::Difficulty::kPro);
+
+      race::SkillRow sk{};
+      sk.id = 10;
+      sk.braking_min = 0.7;
+      sk.braking_max = 0.8;
+      sk.cornering_min = 0.7;
+      sk.cornering_max = 0.8;
+      sk.dist_behind_for_max = 100.0;
+      sk.nominal_torque_scale = 1.0;
+      sk.far_behind_torque_boost = 1.25;
+
+      race::RubberbandRow rb{};
+      rb.id = 1;
+      rb.start_rubberbanding = 50.0;
+      rb.start_catch_up = 80.0;
+      rb.stop_catch_up = 40.0;
+      rb.catch_up_factor = 0.5;
+
+      // Rubber-banding ON: far behind applies far_behind_torque_boost; normal/ahead does not.
+      race::DriverAi ai_on;
+      ai_on.init(sk, &rb, 7, /*enabled=*/true);
+      ai_on.update(-150.0, 2);
+      CHECK(near(ai_on.torque(), 1.25, 1e-6));
+      ai_on.update(-10.0, 0);
+      CHECK(near(ai_on.torque(), 1.0, 1e-6));
+
+      // Rubber-banding OFF: far_behind_torque_boost must stay disabled!
+      race::DriverAi ai_off;
+      ai_off.init(sk, &rb, 7, /*enabled=*/false);
+      ai_off.update(-150.0, 2);
+      CHECK(near(ai_off.torque(), 1.0, 1e-6));
+
+      // Multi-class Session::class_place & class_order.
+      race::Gate start{0, 0, 0, 1, 50};
+      race::Session mc(4, false, 1, start, race::Gate{0, 500, 0, 1, 50}, {0.0, false});
+      CHECK(!mc.is_multi_class());
+      const int classes[4] = {10, 20, 10, 20};  // Class 10: cars 0, 2; Class 20: cars 1, 3
+      mc.set_car_classes(classes);
+      CHECK(mc.is_multi_class());
+      // Interleaved progress: car 3 (C20, 400m) > car 2 (C10, 300m) > car 1 (C20, 200m) > car 0 (C10, 100m).
+      race::CarSample cs[4]{};
+      cs[0].progress = 100.0;
+      cs[1].progress = 200.0;
+      cs[2].progress = 300.0;
+      cs[3].progress = 400.0;
+      mc.step(0.1, cs);
+      CHECK(mc.car(3).place == 1 && mc.class_place(3) == 1);
+      CHECK(mc.car(2).place == 2 && mc.class_place(2) == 1);
+      CHECK(mc.car(1).place == 3 && mc.class_place(1) == 2);
+      CHECK(mc.car(0).place == 4 && mc.class_place(0) == 2);
+      const auto ord10 = mc.class_order(10);
+      const auto ord20 = mc.class_order(20);
+      CHECK(ord10.size() == 2 && ord10[0] == 2 && ord10[1] == 0);
+      CHECK(ord20.size() == 2 && ord20[0] == 3 && ord20[1] == 1);
+      // Snapshot/restore preserves class assignments and class_place.
+      const auto snap = mc.snapshot();
+      cs[0].progress = 450.0;
+      mc.step(0.1, cs);
+      CHECK(mc.class_place(0) == 1);
+      mc.restore(snap);
+      CHECK(mc.car_class(0) == 10 && mc.class_place(0) == 2 && mc.class_place(2) == 1);
+    }
   }
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {
     disc(root);

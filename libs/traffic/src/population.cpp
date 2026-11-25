@@ -671,6 +671,76 @@ bool Population::next_junction(const Car& car, double max_dist, uint32_t& node_o
   return false;
 }
 
+uint32_t Population::junction_holder(uint32_t node) const {
+  const auto it = junction_reservations_.find(node);
+  return it == junction_reservations_.end() ? 0u : it->second.holder_id;
+}
+
+void Population::update_junction_reservations() {
+  // 1. Release reservations whose holder despawned, went off-line, timed out,
+  //    or cleanly exited the intersection box.
+  for (auto it = junction_reservations_.begin(); it != junction_reservations_.end();) {
+    const uint32_t node = it->first;
+    const JunctionReservation& res = it->second;
+    const Car* holder = nullptr;
+    for (const auto& c : cars_) {
+      if (c.id == res.holder_id) {
+        holder = &c;
+        break;
+      }
+    }
+    bool release = !holder || holder->road < 0 || holder->off_line || time_ >= res.expires_at;
+    if (!release) {
+      uint32_t nj_node = 0;
+      double nj_dist = 0.0, nj_turn = 0.0;
+      P3 nj_pos{};
+      const bool has_nj = next_junction(*holder, config_.junction_max_collision_check_distance, nj_node, nj_dist,
+                                        nj_pos, nj_turn);
+      const bool still_approaching = has_nj && nj_node == node;
+      const double dist_to_j = hdist(holder->position, res.junction_pos);
+      if ((!still_approaching && dist_to_j > 7.5) || dist_to_j > config_.junction_max_collision_check_distance + 12.0) {
+        release = true;
+      }
+    }
+    it = release ? junction_reservations_.erase(it) : std::next(it);
+  }
+
+  // 2. For any unreserved junction approached by traffic cars within the reservation
+  //    window, grant priority to the earliest-arriving car (tie-break by distance, then id).
+  struct Claim {
+    double eta = 1e30;
+    double dist = 1e30;
+    uint32_t id = 0;
+    int road = -1;
+    int dir = 1;
+    P3 pos{};
+  };
+  std::map<uint32_t, Claim> best_claims;
+  for (const auto& car : cars_) {
+    if (car.road < 0 || car.off_line) continue;
+    uint32_t jnode = 0;
+    double jdist = 0.0, turn_angle = 0.0;
+    P3 jpos{};
+    if (!next_junction(car, config_.junction_max_collision_check_distance, jnode, jdist, jpos, turn_angle)) continue;
+    if (junction_reservations_.count(jnode)) continue;
+    const double reserve_dist =
+        std::min(config_.junction_max_collision_check_distance, std::max(28.0, car.speed * 2.6 + 10.0));
+    if (jdist > reserve_dist) continue;
+    const double eta = jdist <= 3.0 ? 0.0 : (jdist / std::max(2.0, car.speed));
+    auto it = best_claims.find(jnode);
+    const bool better = (it == best_claims.end()) || (eta < it->second.eta - 1e-6) ||
+                        (std::fabs(eta - it->second.eta) <= 1e-6 &&
+                         (jdist < it->second.dist - 1e-6 ||
+                          (std::fabs(jdist - it->second.dist) <= 1e-6 && car.id < it->second.id)));
+    if (better) {
+      best_claims[jnode] = {eta, jdist, car.id, car.road, car.dir, jpos};
+    }
+  }
+  for (const auto& [jnode, cl] : best_claims) {
+    junction_reservations_[jnode] = {cl.id, cl.road, cl.dir, cl.pos, time_, time_ + 8.0};
+  }
+}
+
 void Population::drive(Car& car, double dt, const P3& player, const P3& player_velocity,
                        std::span<const ExternalVehicle> obstacles) {
   const Road& r = roads_.roads()[size_t(car.road)];
@@ -704,7 +774,10 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
   }
   if (car.flash_cooldown > 0) car.flash_cooldown = std::max(0.0, car.flash_cooldown - dt);
 
-  // Junction approach: turn indicators, SpeedAtGivewayJunctions, and cross-traffic give-way checks.
+  bool emergency_brake = false;
+
+  // Junction approach: turn indicators, SpeedAtGivewayJunctions, per-junction right-of-way
+  // reservation, and cross-traffic give-way checks.
   {
     uint32_t jnode = 0;
     double jdist = 0, turn_angle = 0;
@@ -728,6 +801,25 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
         const double brk_d = std::max(0.0, jdist - 4.0);
         target = std::min(target, std::sqrt(v_giveway * v_giveway + 2.0 * kBendDecel * brk_d));
       }
+      // Per-junction right-of-way reservation: first approaching car holds priority
+      // until it clears the junction; cross-traffic approaching from another road
+      // yields cleanly at the stop line instead of ghosting through simultaneously.
+      bool holds_reservation = false;
+      bool reserved_by_cross = false;
+      if (const auto rit = junction_reservations_.find(jnode); rit != junction_reservations_.end()) {
+        if (rit->second.holder_id == car.id) {
+          holds_reservation = true;
+        } else {
+          const bool same_stream = (rit->second.holder_road == car.road && rit->second.holder_dir == car.dir);
+          if (!same_stream) reserved_by_cross = true;
+        }
+      }
+      if (reserved_by_cross && !car.off_line && jdist > 1.5) {
+        const double stop_d = std::max(0.0, jdist - 7.0);
+        const double vstop = stop_d < 1.2 ? 0.0 : std::sqrt(2.0 * config_.decel_max * stop_d);
+        target = std::min(target, std::min(vstop, v_giveway));
+        if (jdist < 14.0) emergency_brake = true;
+      }
       // Give-way against approaching cross-traffic, player, or Race AI opponents.
       if (jdist > 2.5 && !car.off_line) {
         const double t_me = jdist / std::max(2.0, car.speed);
@@ -749,9 +841,11 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
             }
           }
         };
-        for (const auto& o : cars_) {
-          if (o.id == car.id || o.road == car.road) continue;
-          check_cross(o.position, std::sin(o.heading) * o.speed, std::cos(o.heading) * o.speed, false);
+        if (!holds_reservation) {
+          for (const auto& o : cars_) {
+            if (o.id == car.id || o.road == car.road) continue;
+            check_cross(o.position, std::sin(o.heading) * o.speed, std::cos(o.heading) * o.speed, false);
+          }
         }
         check_cross(player, player_velocity.x, player_velocity.z, true);
         for (const auto& obs : obstacles) check_cross(obs.position, obs.velocity.x, obs.velocity.z, true);
@@ -769,7 +863,6 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
   const auto right = right_of(fx, fz);
   const P3 lane_origin{road_c.x + right[0] * car.lateral, road_c.y, road_c.z + right[1] * car.lateral};
   bool blocked_by_traffic = false;
-  bool emergency_brake = false;
   auto ahead = [&](const P3& p, double vx, double vz, double search, double half_width, bool is_traffic) {
     const double rx = p.x - lane_origin.x, rz = p.z - lane_origin.z;
     const double d = rx * fx + rz * fz, lat = rx * right[0] + rz * right[1];
@@ -1069,6 +1162,9 @@ void Population::step(double dt, const P3& player, const P3& player_velocity, do
       }
     }
     car.physics = car.off_line || near_actor;
+  }
+  update_junction_reservations();
+  for (auto& car : cars_) {
     if (car.road >= 0) drive(car, dt, player, player_velocity, obstacles);
   }
 }

@@ -5,6 +5,8 @@
 #include <limits>
 #include <queue>
 
+#include "drive/cameras.h"
+
 namespace freeroam {
 namespace {
 
@@ -87,6 +89,10 @@ int64_t h2h_wager_credits(int pi, int /*wristband_level*/) { return h2h_reward_c
 FestivalManager::FestivalManager(const traffic::NavMap& nav, const traffic::Roads& roads,
                                  const traffic::TrafficConfig& config, uint64_t seed)
     : nav_(nav), roads_(roads), config_(config), rng_(seed) {}
+
+FestivalManager::~FestivalManager() {
+  drive::clear_camera_vehicle_obbs(drive::CameraObstacleSource::kFestivalAi);
+}
 
 void FestivalManager::set_driver_names(std::vector<std::string> names) {
   driver_names_ = std::move(names);
@@ -322,7 +328,7 @@ void FestivalManager::steer_towards(FestivalAiCar& car, const traffic::P3& aim, 
   constexpr double kWheelbase = 2.65;
   constexpr double kMaxSteer = 0.52;      // ~30 deg road wheel lock
   constexpr double kMaxSteerRate = 2.2;   // rad/s road wheel slew limit
-  constexpr double kMaxYawRate = 1.65;    // rad/s hard ceiling
+  constexpr double kMaxYawRate = 1.65;    // rad/s steering ceiling
   const double fx = std::sin(car.heading), fz = std::cos(car.heading);
   const auto rt = traffic::right_of(fx, fz);
   const double dx = aim.x - car.position.x;
@@ -333,23 +339,28 @@ void FestivalManager::steer_towards(FestivalAiCar& car, const traffic::P3& aim, 
   const double alpha = std::atan2(lx, lz);
   double target_steer = std::atan(2.0 * kWheelbase * std::sin(alpha) / ld);
   // Speed-dependent lateral grip steering cap so high-speed lane changes never jerk.
+  // During smooth off-road recovery, allow slightly gentler return curvature at speed.
   const double v_eff = std::max(car.speed, 2.0);
-  const double grip_steer = std::clamp(std::atan(kWheelbase * max_lat_g / (v_eff * v_eff)), 0.06, kMaxSteer);
+  const double eff_lat_g = car.off_road_recovery > 0.0 ? max_lat_g * 0.85 : max_lat_g;
+  const double grip_steer = std::clamp(std::atan(kWheelbase * eff_lat_g / (v_eff * v_eff)), 0.06, kMaxSteer);
   target_steer = std::clamp(target_steer, -grip_steer, grip_steer);
-  car.steer_angle += std::clamp(target_steer - car.steer_angle, -kMaxSteerRate * dt, kMaxSteerRate * dt);
+  const double steer_slew = car.off_road_recovery > 0.0 ? kMaxSteerRate * 1.15 : kMaxSteerRate;
+  car.steer_angle += std::clamp(target_steer - car.steer_angle, -steer_slew * dt, steer_slew * dt);
 
   double target_yaw = (car.speed / kWheelbase) * std::tan(car.steer_angle);
-  const double yaw_cap = std::min(kMaxYawRate, max_lat_g / std::max(car.speed, 4.0));
+  const double yaw_cap = std::min(kMaxYawRate, eff_lat_g / std::max(car.speed, 4.0));
   target_yaw = std::clamp(target_yaw, -yaw_cap, yaw_cap);
+  // Combine steering yaw rate with any collision-imparted angular spin response.
+  const double combined_yaw = std::clamp(target_yaw + car.spin_yaw_rate, -4.2, 4.2);
   const double yaw_alpha = std::min(1.0, dt / 0.08);
-  car.yaw_rate += (target_yaw - car.yaw_rate) * yaw_alpha;
+  car.yaw_rate += (combined_yaw - car.yaw_rate) * yaw_alpha;
   car.heading = wrap_angle(car.heading + car.yaw_rate * dt);
 
   const double nfx = std::sin(car.heading), nfz = std::cos(car.heading);
   car.position.x += (nfx * car.speed + car.knockback_vx) * dt;
   car.position.z += (nfz * car.speed + car.knockback_vz) * dt;
 
-  // Smooth ground elevation & pitch tracking.
+  // Smooth ground elevation, suspension roll, and pitch tracking.
   double y_hint = aim.y;
   if (std::isfinite(car.position.y)) y_hint = 0.5 * (car.position.y + aim.y);
   double y = y_hint;
@@ -366,7 +377,11 @@ void FestivalManager::steer_towards(FestivalAiCar& car, const traffic::P3& aim, 
       target_pitch = std::clamp(std::atan2(yf - yb, 2.8), -0.45, 0.45);
     }
   }
+  target_pitch = std::clamp(target_pitch + car.pitch_impulse, -0.45, 0.45);
   car.pitch += (target_pitch - car.pitch) * std::min(1.0, dt / 0.12);
+  // Steady lateral acceleration roll + damped decay of any impact roll shock.
+  const double steady_roll = std::clamp(-car.yaw_rate * car.speed * 0.0085, -0.10, 0.10);
+  car.roll += (steady_roll - car.roll) * std::min(1.0, dt * 6.5);
 }
 
 bool FestivalManager::spawn_roaming(const traffic::P3& player, bool initial) {
@@ -833,10 +848,20 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
       (void)ospd;
     };
 
+    if (car.ghosted()) {
+      // Ghosted post-crash/stuck car smoothly returns to its cruising lane without
+      // getting re-pinned to zero speed by overlapping obstacles.
+      car.target_lateral = default_lat;
+      const double lat_rate = 2.4;
+      car.lateral += std::clamp(car.target_lateral - car.lateral, -lat_rate * dt, lat_rate * dt);
+      return;
+    }
+
     for (const auto& fs : fest_snaps) {
       if (fs.id == car.id) continue;
       check_obstacle(fs.pos, fs.vx, fs.vz, fs.speed, true, fs.id);
     }
+
     if (traffic_cars) {
       for (const auto& tc : *traffic_cars) {
         const double tfx = std::sin(tc.heading), tfz = std::cos(tc.heading);
@@ -850,17 +875,24 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     if (std::fabs(nudge_lat) > 1e-3) {
       car.target_lateral = std::clamp(car.lateral + nudge_lat, -3.2, 3.6);
     }
-    const double lat_rate = car.in_h2h ? 2.6 : 1.9;
+    const double lat_rate = car.off_road_recovery > 0.0 ? 1.8 : (car.in_h2h ? 2.6 : 1.9);
     car.lateral += std::clamp(car.target_lateral - car.lateral, -lat_rate * dt, lat_rate * dt);
   };
 
   for (auto& car : cars_) {
     const traffic::P3 prev_pos = car.position;
-    // Decay any collision knockback velocity via lateral/longitudinal tyre grip.
+    const bool near_player = car.in_h2h || hdist(car.position, player_pos) < kNearPhysicsDistance;
+    // Decay collision knockback, spin yaw rate, suspension pitch reaction, and recovery/ghost timers.
     const double kb_decay = std::exp(-dt * 4.5);
     car.knockback_vx *= kb_decay;
     car.knockback_vz *= kb_decay;
     if (std::hypot(car.knockback_vx, car.knockback_vz) < 0.05) car.knockback_vx = car.knockback_vz = 0.0;
+    car.spin_yaw_rate *= std::exp(-dt * 3.2);
+    if (std::fabs(car.spin_yaw_rate) < 0.02) car.spin_yaw_rate = 0.0;
+    car.pitch_impulse *= std::exp(-dt * 5.5);
+    if (std::fabs(car.pitch_impulse) < 1e-4) car.pitch_impulse = 0.0;
+    if (car.off_road_recovery > 0.0) car.off_road_recovery = std::max(0.0, car.off_road_recovery - dt);
+    if (car.ghost_timer > 0.0) car.ghost_timer = std::max(0.0, car.ghost_timer - dt);
 
     const double pi_d = std::clamp(double(car.spec.pi), 100.0, 999.0);
     const double mass_kg = std::clamp(car.spec.mass_kg > 100.0 ? car.spec.mass_kg : 1480.0, 700.0, 3200.0);
@@ -869,6 +901,7 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     car.turn_left = false;
     car.turn_right = false;
     car.reversing = false;
+    double tracked_want_spd = 0.0;
     if (car.in_h2h && h2h_active_ && car.id == h2h_car_id_) {
       // Racing pace along the Head-to-Head nav route scaled by opponent PI & car mass
       // (no 58 m/s hypercar cap) with curvature lookahead braking.
@@ -900,6 +933,7 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
         d_prev = look_d;
       }
       eval_avoidance(car, want_spd, 1.5);
+      tracked_want_spd = want_spd;
       car.braking = want_spd < car.speed - 1.2;
       const double pi_accel_base = std::clamp(3.8 + (pi_d - 100.0) * 0.0115, 3.8, 14.5);
       const double speed_ratio = std::clamp(car.speed / std::max(base_race_spd, 1.0), 0.0, 1.0);
@@ -912,7 +946,8 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
         pose_on_h2h(car.h2h_progress, car.lateral, car.position, car.heading, car.pitch);
         car.pose_initialized = true;
       }
-      const double look_d = std::clamp(car.speed * 0.55, 8.0, 38.0);
+      double look_d = std::clamp(car.speed * 0.55, 8.0, 38.0);
+      if (car.off_road_recovery > 0.0) look_d *= 1.35;
       traffic::P3 aim{};
       double aim_h = car.heading, aim_p = 0.0;
       pose_on_h2h(std::min(h2h_length_, car.h2h_progress + look_d), car.lateral, aim, aim_h, aim_p);
@@ -957,6 +992,7 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
         d_prev = look_d;
       }
       eval_avoidance(car, want_spd, kLane);
+      tracked_want_spd = want_spd;
       // Drive realistic turn indicators on lane changes or upcoming junction turns.
       const double lat_delta = car.target_lateral - car.lateral;
       if (lat_delta < -0.35 || signed_turn_ahead < -0.45) car.turn_left = true;
@@ -966,7 +1002,8 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
       car.speed += std::clamp(want_spd - car.speed, -10.5 * dt, cruise_accel * dt);
       car.speed = std::max(0.0, car.speed);
 
-      const double look_d = std::clamp(car.speed * 0.65, 7.5, 28.0);
+      double look_d = std::clamp(car.speed * 0.65, 7.5, 28.0);
+      if (car.off_road_recovery > 0.0) look_d *= 1.35;
       traffic::P3 aim{};
       std::array<double, 2> aim_t{};
       if (sample_roaming_ahead(car, look_d, car.lateral, aim, aim_t)) {
@@ -1007,6 +1044,31 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     const double v_along = car.vx * std::sin(car.heading) + car.vz * std::cos(car.heading);
     car.reversing = (v_along < -0.5);
     car.rpm = estimate_rpm_for_speed(car.speed, car.spec.pi);
+
+    // Post-crash / stuck ghosting recovery (3.0 s): if a nearby Festival AI car is
+    // wedged or unable to make progress while trying to cruise, enter ghosting so
+    // it cleanly un-clips and resumes cruising without static box pushing.
+    if (near_player && !car.ghosted()) {
+      const double actual_horiz = std::hypot(car.vx, car.vz);
+      const bool wedged = (tracked_want_spd > 4.0 && actual_horiz < 1.5 && car.speed < 2.0) ||
+                          (car.off_road_recovery > 0.0 && actual_horiz < 2.0 && car.speed < 2.2);
+      if (wedged) {
+        car.stuck_timer += dt;
+        if (car.stuck_timer >= 2.0) {
+          car.ghost_timer = kCollisionGhostDuration;
+          car.stuck_timer = 0.0;
+          car.knockback_vx = 0.0;
+          car.knockback_vz = 0.0;
+          car.spin_yaw_rate *= 0.25;
+          car.off_road_recovery = std::max(car.off_road_recovery, 2.5);
+          car.speed = std::max(car.speed, 6.0);
+        }
+      } else if (actual_horiz >= 3.0) {
+        car.stuck_timer = std::max(0.0, car.stuck_timer - dt * 2.0);
+      }
+    } else if (car.ghosted()) {
+      car.stuck_timer = 0.0;
+    }
   }
 
   // Final inter-Festival anti-overlap safety pass so converging cars at a
@@ -1017,6 +1079,7 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     for (size_t j = i + 1; j < cars_.size(); ++j) {
       auto& a = cars_[i];
       auto& b = cars_[j];
+      if (a.ghosted() || b.ghosted()) continue;
       const double dx = b.position.x - a.position.x;
       const double dz = b.position.z - a.position.z;
       const double dist = std::hypot(dx, dz);
@@ -1049,6 +1112,25 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
       if (loc_f > 0.0) a.speed = std::min(a.speed, std::max(0.0, b.speed - 2.0));
       else b.speed = std::min(b.speed, std::max(0.0, a.speed - 2.0));
     }
+  }
+
+  // Publish nearby non-ghosted Festival AI OBBs for chase-camera obstacle pull-in.
+  {
+    std::vector<drive::CameraVehicleObb> cam_obbs;
+    for (const auto& fc : cars_) {
+      if (fc.ghosted() || hdist(fc.position, player_pos) > 25.0) continue;
+      const double ch = std::cos(fc.heading), sh = std::sin(fc.heading);
+      const double cp = std::cos(fc.pitch), sp = std::sin(fc.pitch);
+      drive::CameraVehicleObb obb;
+      obb.axis_x = {ch, 0.0, -sh};
+      obb.axis_y = {-sh * sp, cp, -ch * sp};
+      obb.axis_z = {sh * cp, sp, ch * cp};
+      obb.half_extents = {0.98, 0.72, 2.25};
+      obb.center = {fc.position.x + obb.axis_y[0] * 0.72, fc.position.y + obb.axis_y[1] * 0.72,
+                    fc.position.z + obb.axis_y[2] * 0.72};
+      cam_obbs.push_back(obb);
+    }
+    drive::set_camera_vehicle_obbs(drive::CameraObstacleSource::kFestivalAi, std::move(cam_obbs));
   }
 
   // Active Head-to-Head progress & finish check.
@@ -1143,6 +1225,8 @@ FestivalCollisionImpulse FestivalManager::resolve_player_collision(const traffic
   constexpr double kRestitution = 0.35;
 
   for (auto& car : cars_) {
+    // Post-crash / stuck ghosting immunity: skip collision while un-clipping.
+    if (car.ghosted()) continue;
     const double ai_mass = std::clamp(car.spec.mass_kg > 100.0 ? car.spec.mass_kg : 1480.0, 700.0, 3200.0);
     const double dy = std::fabs(player_pos.y - car.position.y);
     if (dy > 2.2) continue;
@@ -1198,11 +1282,32 @@ FestivalCollisionImpulse FestivalManager::resolve_player_collision(const traffic
       car.knockback_vx *= 25.0 / kb_mag;
       car.knockback_vz *= 25.0 / kb_mag;
     }
-    // Impart off-center yaw kick on AI car proportional to lever arm and lateral impulse.
+    // Realistic lateral/longitudinal lever-arm angular spin & yaw-rate response,
+    // suspension roll/pitch reaction metadata, smooth off-road recovery steering,
+    // and 3.0 s post-crash ghosting on severe or wedged impacts.
     const double ai_lat_imp = -(j_mag * (nx * rx + nz * rz));
+    const double ai_long_imp = -(j_mag * (nx * fx + nz * fz));
+    const double torque = std::clamp(loc_f, -kHalfL, kHalfL) * ai_lat_imp -
+                          std::clamp(loc_r, -kHalfW, kHalfW) * ai_long_imp;
     const double ai_inertia = std::max(1200.0, ai_mass * 1.9);
-    car.yaw_rate = std::clamp(car.yaw_rate + (loc_f * ai_lat_imp * 0.55) / ai_inertia, -2.5, 2.5);
+    const double d_yaw = std::clamp((torque * 0.85) / ai_inertia, -3.5, 3.5);
+    car.spin_yaw_rate = std::clamp(car.spin_yaw_rate + d_yaw, -4.2, 4.2);
+    car.yaw_rate = std::clamp(car.yaw_rate + d_yaw, -4.2, 4.2);
+    car.roll = std::clamp(car.roll + std::clamp((ai_lat_imp / ai_mass) * 0.025, -0.18, 0.18), -0.22, 0.22);
+    car.pitch_impulse =
+        std::clamp(car.pitch_impulse + std::clamp((-ai_long_imp / ai_mass) * 0.016, -0.14, 0.14), -0.18, 0.18);
     car.speed = std::max(0.0, car.speed + ai_dv_x * fx + ai_dv_z * fz);
+
+    const double dv_ai = j_mag / ai_mass;
+    if (dv_ai > 1.8 || std::fabs(car.lateral - kLane) > 1.8) {
+      car.off_road_recovery = std::max(car.off_road_recovery, std::clamp(0.8 + dv_ai * 0.18, 0.8, 3.5));
+    }
+    const bool severe_crash = dv_ai >= 8.0 || std::fabs(car.spin_yaw_rate) >= 2.6 ||
+                              (pen >= 0.55 && car.stuck_timer > 0.5);
+    if (severe_crash) {
+      car.ghost_timer = kCollisionGhostDuration;
+      car.stuck_timer = 0.0;
+    }
     if (j_mag > out.impulse_magnitude) {
       out.hit = true;
       out.car_id = car.id;

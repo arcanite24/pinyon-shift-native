@@ -493,6 +493,69 @@ int main() {
     CHECK(min_dist >= 2.1);
   }
 
+  // R3-PHY-11: Festival AI collision spin/yaw response, suspension roll/pitch reaction,
+  // off-road recovery steering, and 3.0 s post-crash ghosting un-clip + cruise resume.
+  {
+    traffic::NavMap nm;
+    nm.keys = {"road_type", "traffic_density"};
+    nm.values = {"a", "5"};
+    for (uint32_t i = 0; i < 40; ++i) {
+      traffic::NavNode nd;
+      nd.id = i;
+      nd.z = float(i * 40);
+      nm.nodes.push_back(nd);
+      nm.way_nodes.push_back(i);
+    }
+    nm.tags = {{0, 0}, {1, 1}};
+    traffic::NavWay w;
+    w.node_count = 40;
+    w.tag_count = 2;
+    nm.ways.push_back(w);
+    traffic::Roads roads;
+    roads.build(nm);
+    traffic::TrafficConfig cfg;
+    cfg.initial_festival_cars = 0;
+    cfg.min_festival = 1;
+    cfg.max_festival = 1;
+    FestivalManager fm(nm, roads, cfg, 37);
+    fm.set_roster({{1219, "NIS_SkylineGTRVSpecII_02", "Crash Rival", "A", 540, 1480.0}});
+    const uint32_t fid = fm.spawn_ahead({0, 0, 50}, 0.0, 20.0);
+    CHECK(fid > 0 && fm.cars().size() == 1);
+    const double dt = 1.0 / 60.0;
+    fm.step(dt, dt, {40.0, 0.0, 70.0}, 0.0, 0.0);
+
+    // High-speed off-center corner impact imparts realistic spin, roll, off-road recovery, and 3.0 s ghosting.
+    const auto p0 = fm.cars()[0].position;
+    const auto col1 = fm.resolve_player_collision({p0.x + 1.0, p0.y, p0.z + 1.1}, {-22.0, 0.0, 15.0}, 1500.0, dt);
+    CHECK(col1.hit && col1.impulse_magnitude > 5000.0);
+    CHECK(std::fabs(fm.cars()[0].spin_yaw_rate) > 1.0);
+    CHECK(std::fabs(fm.cars()[0].yaw_rate) > 1.0);
+    CHECK(std::fabs(fm.cars()[0].roll) > 0.05);
+    CHECK(fm.cars()[0].off_road_recovery > 0.5);
+    CHECK(fm.cars()[0].ghosted() && near(fm.cars()[0].ghost_timer, FestivalManager::kCollisionGhostDuration, 0.05));
+
+    // While ghosted, overlapping player contact is suppressed so wedged cars cleanly un-clip.
+    const auto p1 = fm.cars()[0].position;
+    const auto col_ghost = fm.resolve_player_collision({p1.x + 0.4, p1.y, p1.z}, {-10.0, 0.0, 15.0}, 1500.0, dt);
+    CHECK(!col_ghost.hit);
+
+    // Step for 3.5 s: ghosting expires, spin damps out, car steers smoothly back to lane and resumes cruising.
+    for (int k = 2; k <= 212; ++k) {
+      const double pz = fm.cars().empty() ? 100.0 : fm.cars()[0].position.z;
+      fm.step(dt, k * dt, {45.0, 0.0, pz}, 0.0, 0.0);
+    }
+    CHECK(!fm.cars().empty());
+    if (!fm.cars().empty()) {
+      const auto& c = fm.cars()[0];
+      std::printf("festival ghost recovery: ghost=%.2f spin=%.3f lat=%.2f spd=%.1f\n", c.ghost_timer, c.spin_yaw_rate,
+                  c.lateral, c.speed);
+      CHECK(!c.ghosted());
+      CHECK(std::fabs(c.spin_yaw_rate) < 0.05);
+      CHECK(std::fabs(c.lateral - 2.2) < 1.0);
+      CHECK(c.speed > 12.0);
+    }
+  }
+
   // The player's disc.
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {
     Collectibles disc;

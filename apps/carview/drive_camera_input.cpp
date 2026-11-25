@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <mutex>
+#include <unordered_map>
 
 #include "cars/mods.h"
 #include "drive/from_physics.h"
@@ -411,6 +413,40 @@ void compute_clip_from_world(const ShowroomFrame& f, const cars::bake::CarInfo& 
   }
 }
 
+namespace {
+
+// Per-rig telemetry state for smoothed vertical g-force and edge-detected
+// gear-shift camera impulse (reset automatically on rig restart or accel reset).
+struct RigTelemetryState {
+  drive::Vec3 last_vel{};
+  bool have_vel = false;
+  double g_vertical_smooth = 0.0;
+  int last_nonzero_gear = 0;
+  double shift_impulse = 0.0;
+  uint64_t restart_count = 0;
+
+  void reset(uint64_t rc, int cur_gear) {
+    last_vel = {};
+    have_vel = false;
+    g_vertical_smooth = 0.0;
+    last_nonzero_gear = cur_gear;
+    shift_impulse = 0.0;
+    restart_count = rc;
+  }
+};
+
+std::mutex& rig_telemetry_mutex() {
+  static std::mutex mu;
+  return mu;
+}
+
+std::unordered_map<const drive::DriveCamera*, RigTelemetryState>& rig_telemetry_map() {
+  static std::unordered_map<const drive::DriveCamera*, RigTelemetryState> map;
+  return map;
+}
+
+}  // namespace
+
 // The rig's frame: the car's pose and motion in, the view out (in the
 // car's model frame, where the showroom draws).
 ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info, const drive::Vehicle& v,
@@ -418,6 +454,7 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
                         bool reverse_z, bool* interior, double* com_distance, drive::CameraView* out_view,
                         const world::Collision* collision, double car_coll_long, double car_coll_lat,
                         std::array<double, 4>* prev_wheel_comp, CameraProjectionState* cam_out) {
+  constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
   float model_to_world[16], world_to_model[16];
   drive::model_to_world(info, v, model_to_world);
   invert_affine(model_to_world, world_to_model);
@@ -427,13 +464,58 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
   const drive::Vec3 vel = v.velocity();
   in.speed = std::sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
   const drive::Vec3 fwd = drive::rotate(v.orientation(), {0, 0, 1});
+  const drive::Vec3 right = drive::rotate(v.orientation(), {1, 0, 0});
+  const drive::Vec3 car_up = drive::rotate(v.orientation(), {0, 1, 0});
   in.heading = std::atan2(fwd.x, fwd.z);
   in.yaw_rate = v.angular_velocity().y;
-  in.pitch_degrees = std::asin(std::clamp(fwd.y, -1.0, 1.0)) * 180 / 3.14159265358979323846;
+  in.pitch_degrees = std::asin(std::clamp(fwd.y, -1.0, 1.0)) * kRadToDeg;
+  in.roll_degrees = std::atan2(-right.y, car_up.y) * kRadToDeg;
   // The g layers' inputs: the body's acceleration over the frame along its
-  // forward and right axes, gravity left out (SPEC-CAMERAS, Inputs).
+  // forward, right and up axes, gravity left out (SPEC-CAMERAS, Inputs),
+  // plus edge-detected gear-shift impulse decaying over ~0.18 s.
+  const bool accel_was_reset = !accel.have_last;
   if (dt > 0.0) {
     accel.sample(vel, v.orientation(), dt, in.g_longitudinal, in.g_lateral);
+  }
+  {
+    std::lock_guard<std::mutex> lock(rig_telemetry_mutex());
+    auto& ts = rig_telemetry_map()[&rig];
+    const uint64_t rc = rig.restart_count();
+    const int cur_gear = v.gear();
+    if (accel_was_reset || ts.restart_count != rc || !std::isfinite(vel.x) || !std::isfinite(vel.y) ||
+        !std::isfinite(vel.z)) {
+      ts.reset(rc, cur_gear);
+      if (std::isfinite(vel.x) && std::isfinite(vel.y) && std::isfinite(vel.z)) {
+        ts.last_vel = vel;
+        ts.have_vel = true;
+      }
+    } else if (dt > 0.0) {
+      if (ts.have_vel && dt > 1e-4 && dt < 0.25) {
+        const drive::Vec3 a_vec{(vel.x - ts.last_vel.x) / dt, (vel.y - ts.last_vel.y) / dt,
+                                (vel.z - ts.last_vel.z) / dt};
+        const double raw_g_vert =
+            std::clamp((a_vec.x * car_up.x + a_vec.y * car_up.y + a_vec.z * car_up.z) / 9.81, -6.0, 6.0);
+        const double alpha_v = 1.0 - std::exp(-dt * 14.0);
+        ts.g_vertical_smooth += (raw_g_vert - ts.g_vertical_smooth) * alpha_v;
+      } else if (dt >= 0.25) {
+        ts.g_vertical_smooth = 0.0;
+      }
+      ts.last_vel = vel;
+      ts.have_vel = true;
+      bool shifted_now = false;
+      if (cur_gear != 0) {
+        if (ts.last_nonzero_gear != 0 && cur_gear != ts.last_nonzero_gear) {
+          ts.shift_impulse = 1.0;
+          shifted_now = true;
+        }
+        ts.last_nonzero_gear = cur_gear;
+      }
+      if (!shifted_now && ts.shift_impulse > 0.0) {
+        ts.shift_impulse = std::max(0.0, ts.shift_impulse - dt / 0.18);
+      }
+    }
+    in.g_vertical = ts.g_vertical_smooth;
+    in.shift_impulse = ts.shift_impulse;
   }
   int down = 0;
   const double c = std::cos(info.pitch), s = std::sin(info.pitch);
@@ -477,10 +559,40 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
   in.suspension_bias_longitudinal =
       0.5 * (v.wheels()[0].compression + v.wheels()[1].compression) -
       0.5 * (v.wheels()[2].compression + v.wheels()[3].compression);
+  in.suspension_bias_lateral =
+      0.5 * (v.wheels()[1].compression + v.wheels()[3].compression) -
+      0.5 * (v.wheels()[0].compression + v.wheels()[2].compression);
+  // Wire remaining CameraPhysics.xml telemetry & SurfaceTypes ChaseCamSpringMultiplier.
+  {
+    const double surf_mult = v.surface_chase_cam_spring_mult();
+    in.chase_cam_spring_mult = (std::isfinite(surf_mult) && surf_mult > 0.0) ? surf_mult : 1.0;
+    const double idle_rpm = v.params().idle_rpm;
+    const double redline_rpm = std::max(idle_rpm + 500.0, v.params().redline_rpm);
+    in.engine_norm_rpm = std::clamp((v.rpm() - idle_rpm) / (redline_rpm - idle_rpm), 0.0, 1.15);
+    const auto& shaped = v.shaped_input();
+    in.steer_input = std::clamp(shaped.steer, -1.0, 1.0);
+    in.throttle = std::clamp(shaped.throttle, 0.0, 1.0);
+    in.brake = std::clamp(shaped.brake, 0.0, 1.0);
+    const double v_fwd = vel.x * fwd.x + vel.z * fwd.z;
+    const double v_lat = vel.x * right.x + vel.z * right.z;
+    const double v_horiz = std::hypot(v_fwd, v_lat);
+    if (v_horiz > 1.5 && v_fwd > 0.5) {
+      const double fade = std::clamp((v_horiz - 1.5) / 2.5, 0.0, 1.0);
+      in.drift_angle_degrees = std::atan2(v_lat, v_fwd) * kRadToDeg * fade;
+    }
+    if (v.params().has_turbo) {
+      const double lo = std::max(14.7, v.params().boost_min_psi);
+      const double hi = std::max(lo + 1.0, v.params().boost_max_psi);
+      in.boost_norm = std::clamp((v.boost_psi() - lo) / (hi - lo), 0.0, 1.0);
+    } else if (v.params().has_supercharger) {
+      const double lo = std::min(14.7, v.params().sc_zero_psi);
+      const double hi = std::max(lo + 1.0, v.params().sc_redline_psi);
+      in.boost_norm = std::clamp((v.boost_psi() - lo) / (hi - lo), 0.0, 1.0);
+    }
+  }
   if (v.body_contact_force() > 0.0) {
     const auto& bc = v.strongest_body_contact();
     const double mag = bc.force / std::max(1.0, v.params().mass);
-    const drive::Vec3 right = drive::rotate(v.orientation(), {1, 0, 0});
     in.world_collision_longitudinal = mag * (bc.normal.x * fwd.x + bc.normal.y * fwd.y + bc.normal.z * fwd.z);
     in.world_collision_lateral = mag * (bc.normal.x * right.x + bc.normal.y * right.y + bc.normal.z * right.z);
   }
@@ -493,14 +605,35 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
       gy = y - hit.distance;
       return true;
     };
-    in.obstacle_ray = [ground](const std::array<double, 3>& origin, const std::array<double, 3>& dir, double max_dist,
-                               double& hit_dist) {
+    in.ceiling_above = [ground](double x, double y, double z, double& cy) {
       drive::Hit hit;
-      if (!ground->raycast({origin[0], origin[1], origin[2]}, {dir[0], dir[1], dir[2]}, max_dist, hit)) return false;
-      hit_dist = hit.distance;
+      if (!ground->raycast({x, y, z}, {0, 1, 0}, 6.0, hit)) return false;
+      if (std::fabs(hit.normal.y) < 0.35) return false;
+      cy = y + hit.distance;
       return true;
     };
   }
+  const std::array<double, 3> player_pos_arr{vpos.x, vpos.y, vpos.z};
+  in.obstacle_ray = [ground, player_pos_arr](const std::array<double, 3>& origin, const std::array<double, 3>& dir,
+                                             double max_dist, double& hit_dist) {
+    bool hit_any = false;
+    double best = max_dist;
+    if (ground) {
+      drive::Hit hit;
+      if (ground->raycast({origin[0], origin[1], origin[2]}, {dir[0], dir[1], dir[2]}, best, hit) &&
+          hit.distance < best) {
+        best = hit.distance;
+        hit_any = true;
+      }
+    }
+    double obb_d = best;
+    if (drive::intersect_camera_vehicle_obbs(origin, dir, best, player_pos_arr, 12.0, obb_d) && obb_d < best) {
+      best = obb_d;
+      hit_any = true;
+    }
+    if (hit_any) hit_dist = best;
+    return hit_any;
+  };
   const drive::CameraView view = rig.update(dt, in);
   if (out_view) *out_view = view;
   if (interior) *interior = view.interior;

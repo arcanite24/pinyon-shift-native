@@ -157,7 +157,7 @@ bool parse_difficulty(const std::string& s0, Difficulty& out) {
   if (s == "easy") out = Difficulty::kEasy;
   else if (s == "med" || s == "medium") out = Difficulty::kMed;
   else if (s == "hard") out = Difficulty::kHard;
-  else if (s == "pro") out = Difficulty::kPro;
+  else if (s == "pro" || s == "insane") out = Difficulty::kPro;
   else if (s == "hard+" || s == "hard-plus" || s == "hardplus" || s == "unbeatable") out = Difficulty::kHardPlus;
   else return false;
   return true;

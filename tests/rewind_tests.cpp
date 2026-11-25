@@ -513,6 +513,128 @@ void test_extra_state_and_invalid_anchor_rejection() {
         res_ex.signs_state == ex_kf.signs_state);
 }
 
+// R3-PHY-01 & R3-PHY-02: 20 Hz actor pose stream smooth scrub (Race AI, Traffic,
+// Festival AI, Showcase aircraft + 250 m respawn guard), RewindBracket span_s,
+// and trigger(..., nullptr) automatic last-extra snapshot.
+void test_actor_stream_scrub_and_auto_extra_snapshot() {
+  const drive::FlatGround flat;
+  drive::Vehicle v(test_car());
+  v.launch({0, 0, 0}, 0, 25.0);
+  drive::RewindBuffer rb;
+  rb.start_session(0.0);
+
+  drive::Input in;
+  in.throttle = 0.6;
+  const int total_steps = 120 * 14;  // 14.0 s -> captures keyframes at 10.0 and 12.5
+  for (int i = 0; i < total_steps; ++i) {
+    v.step(in, flat);
+    const double t = v.time();
+    const bool will_stream = rb.will_record_stream(t);
+    drive::RewindExtraState ex{};
+    ex.rotor_heat = {float(std::min(1.0, t * 0.05)), 0.1f, 0.1f, 0.1f};
+    ex.prev_rumble_gear = (t > 12.5) ? 4 : 2;
+    ex.prev_audio_checkpoint = int(t);
+    ex.prev_audio_lap = (t > 11.0) ? 2 : 1;
+    ex.signs_state = {uint8_t(t > 12.5 ? 2 : 1)};
+    rb.record_step(t, t, v, make_cam(v.position().z), true, 0, 1, 0.0, &ex);
+    if (will_stream) {
+      std::vector<drive::RewindActorPose> actors;
+      // Kind 0: Race AI car travelling +Z at 30 m/s (> 75 m per 2.5 s keyframe!).
+      drive::RewindActorPose ai{};
+      ai.kind = 0u;
+      ai.id = 0u;
+      ai.pos = {4.0, 0.5, t * 30.0};
+      ai.vel = {0.0, 0.0, 30.0};
+      ai.rot = {0.0, 0.0, 0.0, 1.0};
+      ai.steer = 0.15f;
+      ai.wheel_spin = float(t * 20.0);
+      actors.push_back(ai);
+
+      // Kind 1: Traffic car travelling +X at 18 m/s.
+      drive::RewindActorPose tr{};
+      tr.kind = 1u;
+      tr.id = 42u;
+      tr.pos = {t * 18.0, 0.0, 50.0};
+      tr.vel = {18.0, 0.0, 0.0};
+      tr.rot = {0.0, std::sin(0.78539816339), 0.0, std::cos(0.78539816339)};
+      tr.steer = 1.5707963f;
+      tr.wheel_spin = 18.0f;
+      actors.push_back(tr);
+
+      // Kind 1: Respawned traffic car (> 300 m jump at t == 13.0 -> must snap, not smear across map).
+      drive::RewindActorPose tr_jump{};
+      tr_jump.kind = 1u;
+      tr_jump.id = 99u;
+      tr_jump.pos = (t < 13.0) ? drive::Vec3{0.0, 0.0, 0.0} : drive::Vec3{400.0, 0.0, 0.0};
+      tr_jump.vel = {0.0, 0.0, 0.0};
+      tr_jump.rot = {0.0, 0.0, 0.0, 1.0};
+      actors.push_back(tr_jump);
+
+      // Kind 3: Showcase aircraft climbing and banking with spinning propeller.
+      drive::RewindActorPose sc{};
+      sc.kind = 3u;
+      sc.id = 0u;
+      sc.pos = {-10.0, 20.0 + t * 1.5, t * 48.0};
+      sc.vel = {0.0, 1.5, 48.0};
+      sc.rot = {0.0, 0.0, 0.0, 1.0};
+      sc.steer = 0.1f;
+      sc.wheel_spin = 48.0f;
+      sc.extra0 = 0.08f;
+      sc.extra1 = -0.25f;
+      sc.extra2 = float(t * 40.0);
+      actors.push_back(sc);
+
+      rb.attach_latest_stream_actors(std::move(actors));
+    }
+  }
+  CHECK(rb.keyframe_count() == 2);
+
+  // Trigger with nullptr extra: must automatically snapshot the latest live extra state (R3-PHY-02).
+  CHECK(rb.trigger(v.time(), v.time(), v, make_cam(v.position().z), 0, 1, 0.0, nullptr));
+  CHECK(rb.consume_tape_start_cue());
+
+  // Scrub back 0.8 s (mid-span between trigger ~14.0 s and keyframe 1 at 12.5 s).
+  rb.update(0.8);
+  const double pt = rb.playback_time();
+  drive::RewindBuffer::RewindBracket br{};
+  CHECK(rb.sampled_snapshot_bracket(br));
+  CHECK(br.span_s > 1.0);
+
+  std::vector<drive::RewindActorPose> sampled;
+  CHECK(rb.sampled_actor_poses(sampled));
+  bool saw_ai = false, saw_tr = false, saw_sc = false;
+  for (const auto& ap : sampled) {
+    if (ap.kind == 0u && ap.id == 0u) {
+      saw_ai = true;
+      CHECK(near(ap.pos.z, pt * 30.0, 0.5));
+      CHECK(near(ap.wheel_spin, pt * 20.0, 1.0));
+    } else if (ap.kind == 1u && ap.id == 42u) {
+      saw_tr = true;
+      CHECK(near(ap.pos.x, pt * 18.0, 0.5));
+    } else if (ap.kind == 3u && ap.id == 0u) {
+      saw_sc = true;
+      CHECK(near(ap.pos.z, pt * 48.0, 0.8));
+      CHECK(near(ap.pos.y, 20.0 + pt * 1.5, 0.2));
+      CHECK(near(ap.extra2, pt * 40.0, 2.0));
+    }
+  }
+  CHECK(saw_ai && saw_tr && saw_sc);
+
+  // Scrub to pause at slot 1, then press Rewind Further -> re-arms tape_start_cue & kLoopRewind.
+  for (int i = 0; i < 40; ++i) rb.update(0.05);
+  CHECK(rb.is_paused_at_keyframe());
+  CHECK(rb.rewind_further());
+  CHECK(rb.ui_state() == drive::RewindUiState::kLoopRewind);
+  CHECK(rb.consume_tape_start_cue());
+
+  // Cancel must restore the automatically snapshotted trigger-frame extra state (gear 4, signs_state {2}).
+  drive::RewindExtraState cancel_ex{};
+  CHECK(rb.cancel(v, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &cancel_ex));
+  CHECK(cancel_ex.prev_rumble_gear == 4);
+  CHECK(cancel_ex.prev_audio_lap == 2);
+  CHECK(cancel_ex.signs_state.size() == 1 && cancel_ex.signs_state[0] == 2);
+}
+
 }  // namespace
 
 int main() {
@@ -525,6 +647,7 @@ int main() {
   test_world_snapshot_ids_and_view_replay();
   test_sampled_snapshot_bracket_for_visual_scrub();
   test_extra_state_and_invalid_anchor_rejection();
+  test_actor_stream_scrub_and_auto_extra_snapshot();
   if (failures) {
     std::printf("rewind_tests: %d failure(s)\n", failures);
     return 1;

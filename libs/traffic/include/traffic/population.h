@@ -137,6 +137,17 @@ class Population {
   const PopulationStats& stats() const { return stats_; }
   double despawn_distance(const Car& car) const;
   double time() const { return time_; }
+  // Current traffic car id holding right-of-way at junction `node` (0 if unreserved).
+  uint32_t junction_holder(uint32_t node) const;
+
+  struct JunctionReservation {
+    uint32_t holder_id = 0;
+    int holder_road = -1;
+    int holder_dir = 1;
+    P3 junction_pos{};
+    double reserved_at = 0.0;
+    double expires_at = 0.0;
+  };
 
   struct Snapshot {
     std::vector<Car> cars;
@@ -145,10 +156,11 @@ class Population {
     double time = 0.0;
     double smoothed = 0.0, target = 0.0;
     double next_test = 0.0, next_spawn = 0.0, next_rotation = 0.0, next_overspawn = 0.0;
+    std::map<uint32_t, JunctionReservation> junction_reservations;
   };
   Snapshot snapshot() const {
     return {cars_, next_id_, started_, time_, smoothed_, target_, next_test_, next_spawn_, next_rotation_,
-            next_overspawn_};
+            next_overspawn_, junction_reservations_};
   }
   void restore(const Snapshot& s) {
     cars_ = s.cars;
@@ -161,6 +173,7 @@ class Population {
     next_spawn_ = s.next_spawn;
     next_rotation_ = s.next_rotation;
     next_overspawn_ = s.next_overspawn;
+    junction_reservations_ = s.junction_reservations;
   }
 
  private:
@@ -183,6 +196,7 @@ class Population {
                      double& turn_angle_out) const;
   void drive(Car& car, double dt, const P3& player, const P3& player_velocity,
              std::span<const ExternalVehicle> obstacles);
+  void update_junction_reservations();
   void sync_cursor(Car& car, double max_advance) const;
   void steer_kinematic(Car& car, const P3& aim, double dt) const;
   void advance(Car& car, double distance) const;
@@ -209,6 +223,7 @@ class Population {
   // measured again once the player has moved 10 m.
   std::map<int, double> within_;
   P3 within_at_{1e30, 0, 1e30};
+  std::map<uint32_t, JunctionReservation> junction_reservations_;
   PopulationStats stats_;
 };
 

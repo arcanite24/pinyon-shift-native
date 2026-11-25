@@ -11,6 +11,7 @@
 #include "world/collision.h"
 #include "world/smashables.h"
 #include "world/stream.h"
+#include "world/vfx.h"
 #include "world/world.h"
 
 namespace {
@@ -466,6 +467,120 @@ void test_road_sign_debris_and_barn_door_no_launch() {
   }
 }
 
+// R3-PHY-13: Periodic distance-based (> 300 m) respawn of non-Discount-Sign smashables
+// in Free Roam, Discount Sign preservation across respawn and reset_broken(), and
+// SkidMarkSystem::truncate_after(time_s) erasing post-rewind skidmarks cleanly.
+void test_smashable_respawn_and_skidmark_truncate() {
+  {
+    world::SmashableWorld sw;
+    world::PropPhysicsDef fence{};
+    fence.object_type_index = 0;  // Fence (respawns)
+    fence.break_speed_mph = 2.0f;
+    fence.mass = 0.2f;
+    fence.bounding_radius = 1.2f;
+
+    world::PropPhysicsDef sign{};
+    sign.object_type_index = 1;  // Flyer / Discount Sign (must NOT respawn)
+    sign.break_speed_mph = 0.0f;
+    sign.mass = 0.2f;
+    sign.bounding_radius = 1.2f;
+
+    world::CollObjPlacement pf{};
+    pf.physics_type = "CO_FenceRespawn.0.rmb";
+    pf.stem = "co_fencerespawn";
+    pf.pos = {0.0f, 0.0f, 6.0f};
+    sw.add_prop(pf, &fence);
+
+    world::CollObjPlacement ps{};
+    ps.physics_type = "CO_FlyerSign.0.rmb";
+    ps.stem = "co_flyersign";
+    ps.pos = {0.0f, 0.0f, 12.0f};
+    sw.add_prop(ps, &sign);
+
+    // Also record an external Discount Sign hide sphere (FreeRoam collectible path).
+    sw.record_hidden_prop({50.0f, 0.0f, 50.0f}, 3.5f);
+    CHECK(sw.broken_prop_count() == 1);
+
+    drive::FlatGround ground(0.0);
+    drive::CarParams cp{};
+    drive::Vehicle car(cp);
+    car.launch({0.0, 0.0, 2.0}, 0.0, 20.0);
+    std::vector<world::SmashEvent> evs;
+    for (int i = 0; i < 80; ++i) {
+      car.step({0.0, 0.4, 0.0, false}, ground);
+      sw.step(car, ground, float(drive::Vehicle::kStep), evs);
+    }
+    // Both the fence, the Flyer prop, and the external Discount Sign are now broken/hidden (3 total).
+    CHECK(sw.broken_prop_count() == 3);
+
+    // Stay within 150 m (< 300 m) for > 1.2 s: fence must NOT respawn yet.
+    car.reset({0.0, 0.0, 150.0}, 0.0);
+    for (int i = 0; i < 30; ++i) sw.step(car, ground, 0.05f, evs);
+    CHECK(sw.broken_prop_count() == 3);
+    CHECK(sw.consume_respawned_hidden().empty());
+
+    // Move > 350 m away and step > 1.1 s: fence respawns, BOTH Discount Signs stay broken!
+    car.reset({0.0, 0.0, 360.0}, 0.0);
+    for (int i = 0; i < 25; ++i) sw.step(car, ground, 0.05f, evs);
+    CHECK(sw.broken_prop_count() == 2);
+    const auto resp = sw.consume_respawned_hidden();
+    CHECK(resp.size() == 1 && std::fabs(resp[0].pos[2] - 6.0f) < 0.1f);
+
+    // Smash the respawned fence again, then call reset_broken() (event start/restart):
+    // fence resets immediately, while both Discount Signs remain preserved!
+    car.launch({0.0, 0.0, 2.0}, 0.0, 20.0);
+    for (int i = 0; i < 50; ++i) {
+      car.step({0.0, 0.4, 0.0, false}, ground);
+      sw.step(car, ground, float(drive::Vehicle::kStep), evs);
+    }
+    CHECK(sw.broken_prop_count() == 3);
+    sw.reset_broken();
+    CHECK(sw.broken_prop_count() == 2);
+    CHECK(sw.consume_respawned_hidden().size() == 1);
+  }
+
+  // SkidMarkSystem timestamping & truncate_after(time_s) on rewind resume.
+  {
+    world::SkidMarkSystem skids;
+    world::WheelVfxInput wv{};
+    wv.grounded = true;
+    wv.surface_normal = {0.0f, 1.0f, 0.0f};
+    wv.wheel_right = {1.0f, 0.0f, 0.0f};
+    wv.wheel_forward = {0.0f, 0.0f, 1.0f};
+    wv.tyre_width_m = 0.25f;
+    wv.slip_combined = 1.2f;
+    wv.wheel_speed_mps = 15.0f;
+    wv.surface.skid_a = 200;
+    wv.surface.skid_texture_index = 0;
+
+    // Seed wheel strip at t = 0.5 s, then emit 10 segments from t = 1.0 s to t = 10.0 s.
+    wv.contact_pos = {0.0f, 0.0f, 0.0f};
+    skids.set_time(0.5f);
+    skids.update_wheel(0, wv);
+    for (int i = 1; i <= 10; ++i) {
+      wv.contact_pos = {0.0f, 0.0f, float(i) * 1.0f};
+      skids.set_time(float(i));
+      skids.update_wheel(0, wv);
+    }
+    CHECK(skids.segment_count() == 10);
+
+    // Rewind resume to t = 4.0 s: post-rewind segments (t = 5..10) are cleanly erased!
+    skids.truncate_after(4.0f);
+    CHECK(skids.segment_count() == 4);
+    std::vector<world::SkidVertex> asph, ruts;
+    skids.build_geometry(asph, ruts);
+    CHECK(asph.size() == 4 * 6);
+    CHECK(ruts.empty());
+
+    // Subsequent skidmark at t = 4.5 s starts a fresh strip cleanly after break_all().
+    wv.contact_pos = {0.0f, 0.0f, 4.0f};
+    skids.update_wheel(0, wv, 4.2f);
+    wv.contact_pos = {0.0f, 0.0f, 5.0f};
+    skids.update_wheel(0, wv, 4.5f);
+    CHECK(skids.segment_count() == 5);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -474,6 +589,7 @@ int main() {
   test_smashables_rewind_restore();
   test_solid_festival_barriers_and_ground_height();
   test_road_sign_debris_and_barn_door_no_launch();
+  test_smashable_respawn_and_skidmark_truncate();
   test_corpus();
   if (g_failures == 0) {
     std::printf("smashables_tests: all checks passed\n");

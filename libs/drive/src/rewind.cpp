@@ -58,6 +58,70 @@ bool vehicle_grounded(const Vehicle& vehicle) {
   return false;
 }
 
+double lerp_angle_rad(double a, double b, double t) {
+  constexpr double kPi = 3.14159265358979323846;
+  double d = b - a;
+  while (d > kPi) d -= 2.0 * kPi;
+  while (d < -kPi) d += 2.0 * kPi;
+  return a + d * t;
+}
+
+Quat blend_quat_shortest(const Quat& a, const Quat& b, double t) {
+  const double s = (a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w) < 0.0 ? -1.0 : 1.0;
+  Quat q{a.x + (s * b.x - a.x) * t, a.y + (s * b.y - a.y) * t,
+         a.z + (s * b.z - a.z) * t, a.w + (s * b.w - a.w) * t};
+  const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  return n > 1e-12 ? Quat{q.x / n, q.y / n, q.z / n, q.w / n} : b;
+}
+
+Vec3 hermite_pos(const Vec3& p0, const Vec3& v0, const Vec3& p1, const Vec3& v1, double dt, double t) {
+  const Vec3 d = p1 - p0;
+  if (!(dt > 1e-5) || !std::isfinite(dt)) return p0 + d * t;
+  const double chord2 = dot(d, d);
+  const double m0_2 = dot(v0, v0) * dt * dt;
+  const double m1_2 = dot(v1, v1) * dt * dt;
+  // Use linear fallback when velocity is zero or unphysically large relative to chord (e.g. hard collision).
+  if ((m0_2 < 1e-8 && m1_2 < 1e-8) || m0_2 > 9.0 * std::max(chord2, 1.0) || m1_2 > 9.0 * std::max(chord2, 1.0)) {
+    return p0 + d * t;
+  }
+  const double t2 = t * t;
+  const double t3 = t2 * t;
+  const double h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+  const double h10 = t3 - 2.0 * t2 + t;
+  const double h01 = -2.0 * t3 + 3.0 * t2;
+  const double h11 = t3 - t2;
+  return {
+      h00 * p0.x + h10 * (v0.x * dt) + h01 * p1.x + h11 * (v1.x * dt),
+      h00 * p0.y + h10 * (v0.y * dt) + h01 * p1.y + h11 * (v1.y * dt),
+      h00 * p0.z + h10 * (v0.z * dt) + h01 * p1.z + h11 * (v1.z * dt),
+  };
+}
+
+RewindActorPose blend_actor_pose(const RewindActorPose& a, const RewindActorPose& b, double dt, double t) {
+  const Vec3 d = b.pos - a.pos;
+  // True wrap / respawn guard (> 250 m displacement snaps cleanly).
+  if (t >= 1.0 || dot(d, d) > 62500.0) return b;
+  if (t <= 0.0) return a;
+  RewindActorPose out = b;
+  out.pos = hermite_pos(a.pos, a.vel, b.pos, b.vel, dt, t);
+  out.rot = blend_quat_shortest(a.rot, b.rot, t);
+  out.vel = {a.vel.x + (b.vel.x - a.vel.x) * t, a.vel.y + (b.vel.y - a.vel.y) * t,
+             a.vel.z + (b.vel.z - a.vel.z) * t};
+  if (a.kind == 0) {
+    // Race AI: steer is wheel steer angle; wheel_spin is continuous spin angle.
+    out.steer = float(double(a.steer) + (double(b.steer) - double(a.steer)) * t);
+    out.wheel_spin = float(double(a.wheel_spin) + (double(b.wheel_spin) - double(a.wheel_spin)) * t);
+  } else {
+    // Traffic / Festival AI / Showcase: steer carries heading rad, wheel_spin carries speed m/s.
+    out.steer = float(lerp_angle_rad(double(a.steer), double(b.steer), t));
+    out.wheel_spin = float(double(a.wheel_spin) + (double(b.wheel_spin) - double(a.wheel_spin)) * t);
+  }
+  out.extra0 = float(double(a.extra0) + (double(b.extra0) - double(a.extra0)) * t);
+  out.extra1 = float(double(a.extra1) + (double(b.extra1) - double(a.extra1)) * t);
+  out.extra2 = float(double(a.extra2) + (double(b.extra2) - double(a.extra2)) * t);
+  return out;
+}
+
 }  // namespace
 
 RewindBuffer::RewindBuffer(const RewindConfig& config)
@@ -95,6 +159,8 @@ void RewindBuffer::reset_history(double current_replay_time) {
   audio_.playback_speed = 1.0;
   audio_.vehicle_audio_state = 1;
   audio_.tape_start_cue = false;
+  last_extra_ = {};
+  has_last_extra_ = false;
 }
 
 void RewindBuffer::push_keyframe(RewindKeyframe&& kf) {
@@ -126,6 +192,11 @@ uint64_t RewindBuffer::record_step(double replay_time, double race_clock, const 
                                    double skill_chain_timer, const RewindExtraState* extra) {
   if (state_ != RewindState::kIdle) return 0u;
 
+  if (extra) {
+    last_extra_ = *extra;
+    has_last_extra_ = true;
+  }
+
   const double stream_dt = cfg_.stream_record_hz > 0.0 ? 1.0 / cfg_.stream_record_hz : 0.05;
   if (!stream_started_ || replay_time >= next_stream_time_ - 1e-9) {
     RewindStreamSample s;
@@ -136,7 +207,7 @@ uint64_t RewindBuffer::record_step(double replay_time, double race_clock, const 
     if (!stream_.empty() && replay_time < stream_.back().replay_time) {
       stream_.clear();
     }
-    stream_.push_back(s);
+    stream_.push_back(std::move(s));
     stream_started_ = true;
     next_stream_time_ = replay_time + stream_dt;
   }
@@ -154,7 +225,7 @@ uint64_t RewindBuffer::record_step(double replay_time, double race_clock, const 
     kf.skill_chain_score = skill_chain_score;
     kf.skill_chain_mult = skill_chain_mult;
     kf.skill_chain_timer = skill_chain_timer;
-    store_extra(kf, extra);
+    store_extra(kf, extra ? extra : (has_last_extra_ ? &last_extra_ : nullptr));
     push_keyframe(std::move(kf));
     next_capture_time_ = replay_time + cfg_.keyframe_interval_s;
     prune_stream();
@@ -182,7 +253,7 @@ bool RewindBuffer::trigger(double current_replay_time, double race_clock, const 
   cancel_snapshot_->skill_chain_score = skill_chain_score;
   cancel_snapshot_->skill_chain_mult = skill_chain_mult;
   cancel_snapshot_->skill_chain_timer = skill_chain_timer;
-  store_extra(*cancel_snapshot_, extra);
+  store_extra(*cancel_snapshot_, extra ? extra : (has_last_extra_ ? &last_extra_ : nullptr));
 
   // Append exact trigger-point stream sample so reverse scrub starts seamlessly.
   if (stream_.empty() || current_replay_time > stream_.back().replay_time + 1e-6) {
@@ -447,6 +518,80 @@ bool RewindBuffer::sampled_camera(CameraView& out) const {
   return false;
 }
 
+bool RewindBuffer::will_record_stream(double replay_time) const {
+  if (state_ != RewindState::kIdle) return false;
+  return !stream_started_ || replay_time >= next_stream_time_ - 1e-9;
+}
+
+void RewindBuffer::attach_latest_stream_actors(std::vector<RewindActorPose> actors) {
+  if (stream_.empty()) return;
+  stream_.back().actors = std::move(actors);
+}
+
+bool RewindBuffer::sampled_actor_poses(std::vector<RewindActorPose>& out) const {
+  out.clear();
+  if (stream_.empty()) return false;
+  // Find the nearest bracketing stream samples that carry actor pose snapshots.
+  auto it = std::lower_bound(stream_.begin(), stream_.end(), playback_time_,
+                             [](const RewindStreamSample& s, double t) { return s.replay_time < t; });
+  const RewindStreamSample* a = nullptr;
+  const RewindStreamSample* b = nullptr;
+  for (auto fwd = it; fwd != stream_.end(); ++fwd) {
+    if (!fwd->actors.empty()) {
+      b = &(*fwd);
+      break;
+    }
+  }
+  if (it != stream_.begin()) {
+    for (auto rev = it;; --rev) {
+      if (rev != stream_.end() && rev != it && !rev->actors.empty()) {
+        a = &(*rev);
+        break;
+      }
+      if (rev == stream_.begin()) break;
+    }
+  }
+  if (!a && !b) return false;
+  if (!a) {
+    out = b->actors;
+    return true;
+  }
+  if (!b || a == b) {
+    out = a->actors;
+    return true;
+  }
+  const double span = b->replay_time - a->replay_time;
+  const double alpha = span > 1e-9 ? std::clamp((playback_time_ - a->replay_time) / span, 0.0, 1.0) : 1.0;
+  out.reserve(std::max(a->actors.size(), b->actors.size()));
+  for (const auto& ab : b->actors) {
+    const RewindActorPose* match_a = nullptr;
+    for (const auto& aa : a->actors) {
+      if (aa.kind == ab.kind && aa.id == ab.id) {
+        match_a = &aa;
+        break;
+      }
+    }
+    if (match_a) {
+      out.push_back(blend_actor_pose(*match_a, ab, span, alpha));
+    } else if (alpha >= 0.5) {
+      out.push_back(ab);
+    }
+  }
+  if (alpha < 0.5) {
+    for (const auto& aa : a->actors) {
+      bool in_b = false;
+      for (const auto& ab : b->actors) {
+        if (ab.kind == aa.kind && ab.id == aa.id) {
+          in_b = true;
+          break;
+        }
+      }
+      if (!in_b) out.push_back(aa);
+    }
+  }
+  return !out.empty();
+}
+
 bool RewindBuffer::sampled_snapshot_bracket(RewindBracket& out) const {
   out = {};
   struct Node {
@@ -465,11 +610,11 @@ bool RewindBuffer::sampled_snapshot_bracket(RewindBracket& out) const {
   }
   if (nodes.empty()) return false;
   if (playback_time_ <= nodes.front().t) {
-    out = {nodes.front().id, nodes.front().id, 0.0};
+    out = {nodes.front().id, nodes.front().id, 0.0, 0.0};
     return true;
   }
   if (playback_time_ >= nodes.back().t) {
-    out = {nodes.back().id, nodes.back().id, 1.0};
+    out = {nodes.back().id, nodes.back().id, 1.0, 0.0};
     return true;
   }
   for (size_t i = 1; i < nodes.size(); ++i) {
@@ -478,11 +623,11 @@ bool RewindBuffer::sampled_snapshot_bracket(RewindBracket& out) const {
       const Node& b = nodes[i];
       const double span = b.t - a.t;
       const double alpha = span > 1e-9 ? std::clamp((playback_time_ - a.t) / span, 0.0, 1.0) : 1.0;
-      out = {a.id, b.id, alpha};
+      out = {a.id, b.id, alpha, span};
       return true;
     }
   }
-  out = {nodes.back().id, nodes.back().id, 1.0};
+  out = {nodes.back().id, nodes.back().id, 1.0, 0.0};
   return true;
 }
 

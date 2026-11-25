@@ -55,8 +55,16 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             have_rv_cam = true;
           }
           const audio::View cur_audio_view = audio_view();
+          const auto& rw_audio = rewind_buf.audio();
+          const bool rewind_tape_cue = rewind_buf.consume_tape_start_cue();
+          if (rewind_tape_cue && rewind_buf.ui_state() == drive::RewindUiState::kLoopRewind) {
+            // Initial Rewind entry triggers kRewindTapeStart via AudioHost::update_vehicle's
+            // snapshot transition; Rewind Further loops fire the cue explicitly here.
+            app.audio_host.trigger_ui(audio::UiCue::kRewindTapeStart);
+          }
           const bool rewind_audio_hold = rewind_buf.is_rewinding() || rewind_buf.is_paused_at_keyframe();
           const bool rewind_settling = rewind_buf.is_settling();
+          const bool rewind_snapshot_on = rw_audio.snapshot_active || rw_audio.dsp_active || rw_audio.blend > 0.01;
           const bool rewind_audio_frozen = rewind_buf.is_paused_at_keyframe() || rewind_settling;
           const bool exterior_ui_open =
               !app.show_title && !app.fmv_player.active() &&
@@ -66,7 +74,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           const bool pause_snapshot_active =
               !app.show_title && !app.fmv_player.active() &&
               (menu.open || settings_page.is_open() || mods_page.is_open() || save_page.is_open() || club_open || car_club_open ||
-               slice12.trainer_overlay.is_open() || rewind_audio_hold || rewind_settling ||
+               slice12.trainer_overlay.is_open() || rewind_snapshot_on ||
                (replay_viewer.active() && replay_viewer.paused()) ||
                (menu_paused && !exterior_ui_open && !photo_mode.active() && !replay_viewer.active() &&
                 !trainer_freecam_active));
@@ -95,6 +103,11 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             eng_in.throttle = 0.0;
             eng_in.pos_torque = 0.0;
             eng_in.neg_torque = 0.0;
+          } else if (rw_audio.blend > 0.001) {
+            const double focus_gain = std::clamp(rw_audio.focus_car_gain(), 0.0, 1.0);
+            eng_in.throttle *= focus_gain;
+            eng_in.pos_torque *= focus_gain;
+            eng_in.neg_torque *= focus_gain;
           }
           app.audio_host.update_frame(eng_in, pause_snapshot_active, exterior_ui_open,
                                       app.show_title, loading_screen.active());
@@ -400,8 +413,21 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 wa.wheel_rpm = 0.0f;
                 wa.bottom_out_force = 0.0f;
               }
+            } else if (rw_audio.blend > 0.001) {
+              // Smoothly duck secondary vehicle SFX channels alongside Rewind mixer snapshot & DSP.
+              const float fx_gain = float(std::clamp(rw_audio.effects_gain(), 0.0, 1.0));
+              const float car_gain = float(std::clamp(rw_audio.focus_car_gain(), 0.0, 1.0));
+              vst.throttle *= car_gain;
+              vst.engine_load *= car_gain;
+              vst.scrape_intensity *= fx_gain;
+              if (fx_gain < 0.02f) vst.scraping = false;
+              for (auto& wa : vst.wheels) {
+                wa.slip_combined *= fx_gain;
+                wa.bottom_out_force *= fx_gain;
+              }
             }
-            app.audio_host.update_vehicle(vst, app.race != nullptr, rewind_audio_hold, in_countdown, countdown_digit);
+            const bool rewind_audio_active = rewind_audio_hold || rw_audio.snapshot_active || rw_audio.dsp_active;
+            app.audio_host.update_vehicle(vst, app.race != nullptr, rewind_audio_active, in_countdown, countdown_digit);
           }
           // Airborne Showcase proximity flyby rumble (airborne_challenges.xml RumbleWhenNearPlayer).
           if (app.race && app.race->is_showcase() && !menu_paused && !rewind_buf.active() && rumble_enabled &&

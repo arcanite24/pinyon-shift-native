@@ -74,6 +74,8 @@ class Session {
     double best_lap = -1;
     std::vector<double> laps;
     int place = 0;
+    int car_class = 0;       // multi-class bucket (CarClasses.Id; 0 = single-class default)
+    int class_place = 0;     // 1-based standing within car_class
     double wrong = 0, slow = 0, off5 = 0, off15 = 0, rolled = 0;  // reset timers, s
     double no_collide_until = -1e9;
     const char* reason = "";  // the last reset's condition
@@ -130,8 +132,16 @@ class Session {
   void restore(const Snapshot& s);
   // Car indices from first to last place.
   std::vector<size_t> order() const;
+  // Multi-class standings helpers (for events with mixed car classes).
+  void set_car_class(size_t i, int car_class);
+  void set_car_classes(std::span<const int> classes);
+  int car_class(size_t i) const;
+  int class_place(size_t car_idx) const;
+  std::vector<size_t> class_order(int car_class) const;
+  bool is_multi_class() const;
 
  private:
+  void update_class_places(const std::vector<size_t>& ord);
   std::vector<Car> cars_;
   std::vector<double> progress_;
   std::vector<size_t> resets_;

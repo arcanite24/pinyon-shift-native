@@ -497,6 +497,127 @@ void test_camera_collision_restraint_and_restart() {
   check(cam.restart_count() == before_r + 1, "clear_pending_restart preserves restart_count");
 }
 
+void test_tunnel_ceiling_clearance_and_3ray_fan() {
+  drive::CameraTuning t;
+  t.chase[0].height = 0.5;
+  t.chase[0].radius = 1.0;
+  t.chase[0].fov = 50.0;
+  t.chase[0].yaw_k = 40.0;
+  t.chase[0].yaw_d = 12.0;
+  t.chase[0].height_k = 30.0;
+  t.chase[0].height_d = 10.0;
+  t.chase[1] = t.chase[0];
+  t.chase[1].height = 0.85;
+  t.chase[1].fov = 58.0;
+
+  drive::CameraCar car;
+  car.box_min = {-0.9, 0.0, -2.1};
+  car.box_max = {0.9, 1.3, 2.2};
+  car.com = {0.0, 0.5, 0.0};
+
+  // 1) R3-PHY-04: Tunnel/overpass roof at y = 2.60 m (road at y = 0.0 m).
+  // Previously probing ground_below from eye[1] + 2.0 hit the overpass deck
+  // and snapped eye[1] up onto the roof (2.90 m). Must stay inside the tunnel!
+  {
+    drive::DriveCamera cam;
+    cam.set_tuning(t);
+    cam.set_car(car);
+    cam.set_mode(drive::CameraMode::kFollowLow);
+    drive::CameraInput in;
+    in.ground_below = [](double, double y, double, double& gy) {
+      gy = (y >= 2.60) ? 2.60 : 0.0;
+      return true;
+    };
+    const auto v = cam.update(1.0, in);
+    check(v.eye[1] >= 0.30 && v.eye[1] < 2.50,
+          "chase camera stays inside tunnel and never roof-snaps onto overpass deck");
+  }
+
+  // 2) R3-PHY-04: Explicit low tunnel ceiling at y = 2.05 m clamps high chase eye
+  // strictly within [ground_y + 0.30, ceiling_y - 0.25] = [0.30, 1.80].
+  {
+    drive::DriveCamera cam;
+    cam.set_tuning(t);
+    cam.set_car(car);
+    cam.set_mode(drive::CameraMode::kFollowHigh);
+    drive::CameraInput in;
+    in.ground_below = [](double, double y, double, double& gy) {
+      gy = (y >= 2.05) ? 2.05 : 0.0;
+      return true;
+    };
+    in.ceiling_above = [](double, double y, double, double& cy) {
+      if (y < 2.05) {
+        cy = 2.05;
+        return true;
+      }
+      return false;
+    };
+    const auto v = cam.update(1.0, in);
+    check(v.eye[1] >= 0.30 && v.eye[1] <= 1.801,
+          "low tunnel ceiling clamps FollowHigh eye to [ground + 0.30, ceiling - 0.25]");
+  }
+
+  // 3) R3-PHY-15: 3-ray horizontal fan (center + +-0.35 m right offsets) catches
+  // a tunnel wall/girder at x = +0.25 m that the center ray (x = 0) misses.
+  {
+    drive::DriveCamera cam;
+    cam.set_tuning(t);
+    cam.set_car(car);
+    cam.set_mode(drive::CameraMode::kFollowLow);
+    drive::CameraInput in;
+    const auto v_open = cam.update(1.0, in);
+    const double d_open = std::hypot(v_open.eye[0], v_open.eye[2]);
+
+    int ray_calls = 0;
+    in.obstacle_ray = [&](const std::array<double, 3>& origin, const std::array<double, 3>& dir, double max_dist,
+                          double& hit_d) {
+      // Ignore upward ceiling probe if called.
+      if (dir[1] > 0.9) return false;
+      ++ray_calls;
+      // Vertical wall plane at x = +0.25 m spanning z in [-6.0, -1.0].
+      if (dir[0] > 1e-6) {
+        const double dist = (0.25 - origin[0]) / dir[0];
+        if (dist > 0.0 && dist < max_dist) {
+          const double hz = origin[2] + dir[2] * dist;
+          if (hz >= -6.0 && hz <= -1.0) {
+            hit_d = dist;
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    const auto v_fan = cam.update(1.0 / 60.0, in);
+    const double d_fan = std::hypot(v_fan.eye[0], v_fan.eye[2]);
+    check(ray_calls == 3, "chase obstacle pull-in casts 3-ray horizontal fan");
+    check(d_fan < d_open - 0.5, "3-ray horizontal fan pulls chase eye in for side wall missed by center ray");
+  }
+
+  // 4) R3-PHY-15: Nearby vehicle OBB registry intersects box truck within 12 m
+  // and ignores distant vehicles beyond 12 m.
+  {
+    drive::CameraVehicleObb near_truck;
+    near_truck.center = {0.0, 1.5, -3.5};
+    near_truck.half_extents = {1.15, 1.5, 1.2};
+    drive::CameraVehicleObb far_truck;
+    far_truck.center = {0.0, 1.5, -18.0};
+    far_truck.half_extents = {1.15, 1.5, 2.0};
+    drive::set_camera_vehicle_obbs(drive::CameraObstacleSource::kTraffic, {near_truck, far_truck});
+
+    double hit_d = 0.0;
+    const bool hit_near = drive::intersect_camera_vehicle_obbs({0.0, 1.3, 0.0}, {0.0, 0.0, -1.0}, 10.0,
+                                                               {0.0, 0.0, 0.0}, 12.0, hit_d);
+    check(hit_near && hit_d > 2.0 && hit_d < 2.6, "nearby traffic box truck OBB intersects chase ray accurately");
+
+    // Remove near truck; far truck at 18 m (> 12 m player filter) must not trigger pull-in.
+    drive::set_camera_vehicle_obbs(drive::CameraObstacleSource::kTraffic, {far_truck});
+    const bool hit_far = drive::intersect_camera_vehicle_obbs({0.0, 1.3, 0.0}, {0.0, 0.0, -1.0}, 25.0,
+                                                              {0.0, 0.0, 0.0}, 12.0, hit_d);
+    check(!hit_far, "vehicle OBBs beyond 12 m player radius are filtered out");
+    drive::clear_camera_vehicle_obbs(drive::CameraObstacleSource::kTraffic);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -505,6 +626,7 @@ int main() {
   test_udp_telemetry_layouts();
   test_camera_parity_layers_and_pullin();
   test_camera_collision_restraint_and_restart();
+  test_tunnel_ceiling_clearance_and_3ray_fan();
   if (g_failures > 0) {
     std::fprintf(stderr, "camera_telemetry_tests: %d failure(s)\n", g_failures);
     return 1;

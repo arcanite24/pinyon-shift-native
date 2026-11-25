@@ -57,8 +57,15 @@ struct FestivalAiCar {
   bool turn_right = false;
   bool reversing = false;
   double knockback_vx = 0.0, knockback_vz = 0.0;
+  double roll = 0.0;                 // suspension body roll reaction (rad)
+  double pitch_impulse = 0.0;        // transient suspension impact pitch reaction (rad)
+  double spin_yaw_rate = 0.0;        // collision-imparted angular spin velocity (rad/s)
+  double off_road_recovery = 0.0;    // smooth road-recovery steering timer after bump/impact (s)
+  double stuck_timer = 0.0;          // accumulated wedged/stalled time (s)
+  double ghost_timer = 0.0;          // 3.0 s post-crash / stuck ghosting timer (s)
   bool in_h2h = false;
   double h2h_progress = 0.0;
+  bool ghosted() const { return ghost_timer > 0.0; }
 };
 
 struct FestivalCollisionImpulse {
@@ -133,9 +140,12 @@ class FestivalManager {
   static constexpr double kH2hFinishTriggerRadius = 10.0;     // m (EndPointTriggerDiameter = 20 m)
   static constexpr double kH2hTurnDelaySeconds = 20.0;        // s
   static constexpr double kH2hOneWayMultiplier = 999.0;       // wrong-way penalty multiplier
+  static constexpr double kCollisionGhostDuration = 3.0;      // s post-crash / stuck ghosting
+  static constexpr double kNearPhysicsDistance = 80.0;        // m nearby collision realism zone
 
   FestivalManager(const traffic::NavMap& nav, const traffic::Roads& roads, const traffic::TrafficConfig& config,
                   uint64_t seed = 42);
+  ~FestivalManager();
   void set_ground(GroundHeight g) { ground_ = std::move(g); }
   void set_roster(std::vector<FestivalRacerSpec> roster);
   // Populates fallback driver names from gamedb.slt AIPlayers before/after set_roster.

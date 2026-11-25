@@ -8,6 +8,7 @@
 #include <fstream>
 #include <set>
 
+#include "drive/cameras.h"
 #include "drive/from_bake.h"
 #include "drive/from_physics.h"
 
@@ -66,6 +67,8 @@ TrafficView::TrafficView(Renderer& renderer, Showroom& host, std::filesystem::pa
     : r_(renderer), host_(host), bake_dir_(std::move(bake_dir)), sync_(sync_loads) {}
 
 TrafficView::~TrafficView() {
+  drive::clear_camera_vehicle_obbs(drive::CameraObstacleSource::kTraffic);
+  drive::clear_camera_vehicle_obbs(drive::CameraObstacleSource::kRaceAi);
   host_.set_instances({});
   for (auto& [id, g] : guests_)
     if (g.loading.valid()) g.loading.wait();
@@ -148,6 +151,55 @@ bool TrafficView::open(const std::filesystem::path& game_root, const drive::Grou
 void TrafficView::set_external_vehicles(std::vector<traffic::ExternalVehicle> vehicles) {
   external_vehicles_ = std::move(vehicles);
   external_ttl_ = external_vehicles_.empty() ? 0 : 2;
+  std::vector<drive::CameraVehicleObb> race_obbs;
+  race_obbs.reserve(external_vehicles_.size());
+  for (const auto& ev : external_vehicles_) {
+    const double spd = std::hypot(ev.velocity.x, ev.velocity.z);
+    const double heading = spd > 0.25 ? std::atan2(ev.velocity.x, ev.velocity.z) : 0.0;
+    const double ch = std::cos(heading), sh = std::sin(heading);
+    drive::CameraVehicleObb obb;
+    obb.axis_x = {ch, 0.0, -sh};
+    obb.axis_y = {0.0, 1.0, 0.0};
+    obb.axis_z = {sh, 0.0, ch};
+    obb.half_extents = {0.98, 0.72, 2.25};
+    obb.center = {ev.position.x, ev.position.y + 0.72, ev.position.z};
+    race_obbs.push_back(obb);
+  }
+  drive::set_camera_vehicle_obbs(drive::CameraObstacleSource::kRaceAi, std::move(race_obbs));
+}
+
+void TrafficView::publish_camera_obbs(const drive::Vec3& player_pos) const {
+  if (!population_) return;
+  std::vector<drive::CameraVehicleObb> obbs;
+  for (const auto& c : population_->cars()) {
+    const drive::Vehicle* body = bodies_ ? bodies_->body(c.id) : nullptr;
+    const drive::Vec3 at = body ? body->position() : drive::Vec3{c.position.x, c.position.y, c.position.z};
+    const double dx = at.x - player_pos.x, dy = at.y - player_pos.y, dz = at.z - player_pos.z;
+    if (dx * dx + dy * dy + dz * dz > 25.0 * 25.0) continue;
+    const drive::Quat rot = body ? body->orientation() : lane_orientation(c.heading, c.pitch);
+    const drive::Vec3 ax = drive::rotate(rot, {1.0, 0.0, 0.0});
+    const drive::Vec3 ay = drive::rotate(rot, {0.0, 1.0, 0.0});
+    const drive::Vec3 az = drive::rotate(rot, {0.0, 0.0, 1.0});
+    drive::Vec3 sz{1.9, 1.5, 4.4};
+    if (body) {
+      sz = body->params().size;
+    } else {
+      const auto lit = locked_model_.find(c.id);
+      const int64_t mid = (lit != locked_model_.end()) ? lit->second : c.model;
+      if (const auto pit = params_.find(mid); pit != params_.end()) sz = pit->second.size;
+    }
+    const double hx = std::clamp(0.5 * sz.x, 0.75, 1.65);
+    const double hy = std::clamp(0.5 * sz.y, 0.55, 2.20);
+    const double hz = std::clamp(0.5 * sz.z, 1.60, 6.50);
+    drive::CameraVehicleObb obb;
+    obb.axis_x = {ax.x, ax.y, ax.z};
+    obb.axis_y = {ay.x, ay.y, ay.z};
+    obb.axis_z = {az.x, az.y, az.z};
+    obb.half_extents = {hx, hy, hz};
+    obb.center = {at.x + ay.x * hy, at.y + ay.y * hy, at.z + ay.z * hy};
+    obbs.push_back(obb);
+  }
+  drive::set_camera_vehicle_obbs(drive::CameraObstacleSource::kTraffic, std::move(obbs));
 }
 
 void TrafficView::step(drive::Vehicle& player, std::span<const traffic::ExternalVehicle> obstacles) {
@@ -167,7 +219,10 @@ void TrafficView::step(drive::Vehicle& player, std::span<const traffic::External
   const std::span<const traffic::ExternalVehicle> active_obs =
       obstacles.empty() ? std::span<const traffic::ExternalVehicle>(external_vehicles_) : obstacles;
   population_->step(drive::Vehicle::kStep, {p.x, p.y, p.z}, {v.x, v.y, v.z}, heading, active_obs);
-  if (external_ttl_ > 0 && --external_ttl_ == 0) external_vehicles_.clear();
+  if (external_ttl_ > 0 && --external_ttl_ == 0) {
+    external_vehicles_.clear();
+    drive::clear_camera_vehicle_obbs(drive::CameraObstacleSource::kRaceAi);
+  }
   // The bodies' parameters come with the models: refresh them on the sim's
   // clock too, so a run that renders seldom (headless --every) still gets
   // bodies near the player.
@@ -176,12 +231,15 @@ void TrafficView::step(drive::Vehicle& player, std::span<const traffic::External
     update_guests();
   }
   if (ground_ && *ground_) bodies_->step(**ground_, &player);
+  publish_camera_obbs(p);
 }
 
 void TrafficView::update_guests() {
-  // The models wanted: the loaded set and any with a car still driving.
+  // The models wanted: the loaded set, any with a car still driving, and any
+  // model permanently locked to a visible car so locked cars never lose their mesh.
   std::set<int64_t> want(population_->loaded().begin(), population_->loaded().end());
   for (const auto& c : population_->cars()) want.insert(c.model);
+  for (const auto& [cid, mid] : locked_model_) want.insert(mid);
   for (int64_t id : want) {
     if (!media_.count(id)) continue;
     Guest& g = guests_[id];
@@ -286,7 +344,11 @@ void TrafficView::update_guests() {
 void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Vehicle& player) {
   if (!population_) return;
   const drive::Vec3 player_pos = player.position();
-  // Count nearby visible cars per model (< 95 m) so identical nearby traffic cars each receive
+  std::set<uint32_t> alive_ids;
+  for (const auto& c : population_->cars()) alive_ids.insert(c.id);
+  for (auto it = locked_model_.begin(); it != locked_model_.end();)
+    it = alive_ids.count(it->first) ? std::next(it) : locked_model_.erase(it);
+  // Count nearby visible cars per effective model (< 95 m) so identical nearby traffic cars each receive
   // an independent Showroom clone with isolated wheel steer, spin, omega blur, and suspension Y.
   {
     std::map<int64_t, size_t> near_counts;
@@ -298,7 +360,9 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
       const double cz = body ? body->position().z : c.position.z;
       const double dx = cx - player_pos.x, dy = cy - player_pos.y, dz = cz - player_pos.z;
       if (dx * dx + dy * dy + dz * dz <= 95.0 * 95.0) {
-        size_t& cnt = near_counts[c.model];
+        const auto lit = locked_model_.find(c.id);
+        const int64_t eff_model = (lit != locked_model_.end()) ? lit->second : c.model;
+        size_t& cnt = near_counts[eff_model];
         if (cnt < kMaxWheelClonesPerModel) ++cnt;
       }
     }
@@ -315,30 +379,36 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
   const double now_t = population_->time();
   const float lamp_dt = lamps_at_ >= 0 ? float(std::clamp(now_t - lamps_at_, 0.0, 0.25)) : float(drive::Vehicle::kStep);
   lamps_at_ = now_t;
-  std::set<uint32_t> alive_ids;
-  for (const auto& c : population_->cars()) alive_ids.insert(c.id);
   for (auto it = lamps_.begin(); it != lamps_.end();)
     it = alive_ids.count(it->first) ? std::next(it) : lamps_.erase(it);
   for (auto it = wheel_spin_.begin(); it != wheel_spin_.end();)
     it = alive_ids.count(it->first) ? std::next(it) : wheel_spin_.erase(it);
 
-  // Fallback to any already-loaded traffic guest so an active traffic car whose own model
-  // is still async-loading or failed never drives around as an invisible obstacle.
-  Showroom* fallback_guest = nullptr;
+  // Collect all currently resident traffic models (sorted deterministically by model ID).
+  // Once a spawned car is first rendered with any resident model, locked_model_[car_id]
+  // pins it permanently to that model for its entire visible lifetime so async uploads
+  // never visibly morph a car into a different vehicle mid-road.
+  std::vector<int64_t> resident_models;
+  resident_models.reserve(guests_.size());
   for (const auto& [gid, gg] : guests_) {
-    if (!gg.showrooms.empty() && gg.showrooms[0]) {
-      fallback_guest = gg.showrooms[0].get();
-      break;
-    }
+    if (!gg.showrooms.empty() && gg.showrooms[0]) resident_models.push_back(gid);
   }
+  auto resident_sr = [&](int64_t mid) -> Showroom* {
+    const auto it = guests_.find(mid);
+    return (it != guests_.end() && !it->second.showrooms.empty() && it->second.showrooms[0])
+               ? it->second.showrooms[0].get()
+               : nullptr;
+  };
 
   constexpr float kTwoPi = 6.28318530717958647692f;
+  constexpr double kAsyncDelayDistSq = 140.0 * 140.0;
   const double tod_sec = population_->hour() * 3600.0;
   const bool tod_lamps = drive::CarLampState::tod_requests_headlamps(tod_sec);
 
   struct VisibleCar {
     const traffic::Car* car = nullptr;
     const drive::Vehicle* body = nullptr;
+    int64_t render_model = 0;
     drive::Vec3 at{};
     drive::Quat rot{0, 0, 0, 1};
     double d2 = 1e30;
@@ -355,11 +425,6 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
   for (const auto& c : population_->cars()) {
     const float alpha = std::clamp(c.alpha, 0.0f, 1.0f);
     if (alpha <= 0.005f) continue;
-    const auto it = guests_.find(c.model);
-    Showroom* primary_sr =
-        (it != guests_.end() && !it->second.showrooms.empty() && it->second.showrooms[0]) ? it->second.showrooms[0].get()
-                                                                                           : fallback_guest;
-    if (!primary_sr) continue;
     const drive::Vehicle* body = bodies_->body(c.id);
     TrafficPose pose{
         body ? body->position() : drive::Vec3{c.position.x, c.position.y, c.position.z},
@@ -379,6 +444,30 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
 
     const double dx = at.x - player_pos.x, dy = at.y - player_pos.y, dz = at.z - player_pos.z;
     const double d2 = dx * dx + dy * dy + dz * dz;
+
+    int64_t render_model = 0;
+    Showroom* primary_sr = nullptr;
+    if (const auto lit = locked_model_.find(c.id); lit != locked_model_.end()) {
+      render_model = lit->second;
+      primary_sr = resident_sr(render_model);
+      if (!primary_sr) continue;
+    } else if (Showroom* own_sr = resident_sr(c.model)) {
+      render_model = c.model;
+      primary_sr = own_sr;
+      locked_model_.emplace(c.id, render_model);
+    } else {
+      const auto git = guests_.find(c.model);
+      const bool target_loading = (git != guests_.end() && git->second.loading.valid() && !git->second.failed);
+      // Delay displaying a newly spawned far-away car until its own async model is resident;
+      // if already within view or promoted to physics, lock permanently to a resident fallback
+      // model so no visible car ever morphs mid-road.
+      if (target_loading && d2 > kAsyncDelayDistSq && !c.physics) continue;
+      if (resident_models.empty()) continue;
+      render_model = resident_models[size_t(c.id) % resident_models.size()];
+      primary_sr = resident_sr(render_model);
+      if (!primary_sr) continue;
+      locked_model_.emplace(c.id, render_model);
+    }
 
     const bool is_new = !lamps_.count(c.id);
     drive::CarLampState& lstate = lamps_[c.id];
@@ -404,6 +493,7 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     VisibleCar vc{};
     vc.car = &c;
     vc.body = body;
+    vc.render_model = render_model;
     vc.at = at;
     vc.rot = q;
     vc.d2 = d2;
@@ -442,21 +532,16 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     visible.push_back(vc);
   }
 
-  // Group visible cars by model and sort each group nearest-first so the closest cars of every
-  // model receive dedicated Showroom clones with independent wheel poses (zero clobbering).
+  // Group visible cars by their permanently locked render_model and sort each group nearest-first
+  // so the closest cars receive dedicated Showroom clones with independent wheel poses.
   std::map<int64_t, std::vector<size_t>> by_model;
-  for (size_t i = 0; i < visible.size(); ++i) by_model[visible[i].car->model].push_back(i);
+  for (size_t i = 0; i < visible.size(); ++i) by_model[visible[i].render_model].push_back(i);
 
-  std::set<Showroom*> posed_guests;
-  std::vector<size_t> fallback_indices;
   for (auto& [mid, idxs] : by_model) {
     std::sort(idxs.begin(), idxs.end(),
               [&](size_t a, size_t b) { return visible[a].d2 < visible[b].d2; });
     auto git = guests_.find(mid);
-    if (git == guests_.end() || git->second.showrooms.empty()) {
-      for (size_t idx : idxs) fallback_indices.push_back(idx);
-      continue;
-    }
+    if (git == guests_.end() || git->second.showrooms.empty()) continue;
     const auto& slots = git->second.showrooms;
     const size_t n_slots = slots.size();
     struct SlotState {
@@ -472,7 +557,6 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
         Showroom* sr = slots[k].get();
         vc.assigned = sr;
         sr->set_wheel_poses(vc.wposes);
-        posed_guests.insert(sr);
         active_slots.push_back({sr, vc.speed, vc.steer});
       } else if (!active_slots.empty()) {
         // Overflow distant car (> kMaxWheelClonesPerModel or while clone is async-loading):
@@ -491,17 +575,9 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
       }
     }
   }
-  if (!fallback_indices.empty() && fallback_guest) {
-    std::sort(fallback_indices.begin(), fallback_indices.end(),
-              [&](size_t a, size_t b) { return visible[a].d2 < visible[b].d2; });
-    for (size_t idx : fallback_indices) {
-      VisibleCar& vc = visible[idx];
-      vc.assigned = fallback_guest;
-      if (posed_guests.insert(fallback_guest).second) {
-        fallback_guest->set_wheel_poses(vc.wposes);
-      }
-    }
-  }
+
+  // Publish exact interpolated nearby traffic OBBs for chase-camera pull-in.
+  publish_camera_obbs(player_pos);
 
   std::vector<Showroom::Instance> list;
   list.reserve(visible.size());
@@ -545,6 +621,7 @@ TrafficView::RewindSnapshot TrafficView::capture_rewind() const {
   if (population_) snap.population = population_->snapshot();
   if (bodies_) snap.bodies = bodies_->snapshot();
   snap.before = before_;
+  snap.locked_model = locked_model_;
   return snap;
 }
 
@@ -552,6 +629,7 @@ void TrafficView::restore_rewind(const RewindSnapshot& s) {
   if (population_) population_->restore(s.population);
   if (bodies_) bodies_->restore(s.bodies);
   before_ = s.before;
+  locked_model_ = s.locked_model;
   lamps_at_ = population_ ? population_->time() : -1.0;
 }
 

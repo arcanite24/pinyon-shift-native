@@ -104,10 +104,15 @@ void test_blend_traffic_pose() {
   const auto p1 = carview::blend_traffic_pose(a, b, 1.0);
   CHECK(near(p1.pos.x, 2.0) && near(p1.pos.z, 4.0) && near(p1.rot.y, s45));
 
-  // > 5 m displacement snaps to b even at alpha == 0.5.
-  const carview::TrafficPose far_b{{6.0, 0, 0}, {0, s45, 0, c45}};
+  // Normal highway displacement (60 m across a 2.5 s keyframe) interpolates smoothly.
+  const carview::TrafficPose hwy_b{{60.0, 0, 0}, {0, s45, 0, c45}};
+  const auto hwy_mid = carview::blend_traffic_pose(a, hwy_b, 0.5);
+  CHECK(near(hwy_mid.pos.x, 30.0, 1e-4));
+
+  // > 250 m wrap/respawn displacement snaps cleanly to b even at alpha == 0.5.
+  const carview::TrafficPose far_b{{300.0, 0, 0}, {0, s45, 0, c45}};
   const auto snapped = carview::blend_traffic_pose(a, far_b, 0.5);
-  CHECK(near(snapped.pos.x, 6.0) && near(snapped.rot.y, s45));
+  CHECK(near(snapped.pos.x, 300.0) && near(snapped.rot.y, s45));
 
   // Non-finite alpha falls back to t = 0.0 (start-of-step pose `a`).
   const double nan = std::numeric_limits<double>::quiet_NaN();

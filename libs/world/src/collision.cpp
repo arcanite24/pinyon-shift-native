@@ -324,6 +324,54 @@ bool parse_surface_physics_extras(std::string_view xml, SurfaceTableExtras& out,
   return true;
 }
 
+void resolve_wall_collision_hints(const SurfaceTableExtras& extras, std::string_view surface_name,
+                                  std::string_view category, double& wall_friction, double& wall_restitution,
+                                  double& wall_damping_scale) {
+  wall_friction = -1.0;
+  wall_restitution = -1.0;
+  wall_damping_scale = -1.0;
+
+  // 1. Explicit CategoryToCategoryParams pair (Car vs category or surface name).
+  const CategoryCollisionParams* cp = nullptr;
+  if (!category.empty()) cp = extras.find_category_params("Car", category);
+  if (!cp && !surface_name.empty()) cp = extras.find_category_params("Car", surface_name);
+  if (cp) {
+    if (cp->has_friction) wall_friction = std::clamp(double(cp->friction), 0.02, 2.0);
+    if (cp->has_restitution) wall_restitution = std::clamp(double(cp->restitution), 0.0, 0.85);
+  }
+
+  // 2. Material-class defaults for fields not explicitly specified in CategoryToCategoryParams.
+  const std::string nm = lower_ascii(surface_name);
+  const std::string ct = lower_ascii(category);
+  auto has_any = [&](std::initializer_list<const char*> needles) {
+    for (const char* n : needles) {
+      if (nm.find(n) != std::string::npos || ct.find(n) != std::string::npos) return true;
+    }
+    return false;
+  };
+  if (has_any({"tire", "tyre", "rubber", "hay", "straw", "foam", "cushion"})) {
+    if (wall_friction < 0.0) wall_friction = 0.38;
+    if (wall_restitution < 0.0) wall_restitution = 0.28;
+    wall_damping_scale = 1.35;
+  } else if (has_any({"guardrail", "armco", "metal", "steel", "rail", "aluminum", "iron"})) {
+    if (wall_friction < 0.0) wall_friction = 0.08;
+    if (wall_restitution < 0.0) wall_restitution = 0.04;
+    wall_damping_scale = 0.85;
+  } else if (has_any({"dirt", "mud", "sand", "snow", "grass", "gravel", "softworld", "earth", "soil"})) {
+    if (wall_friction < 0.0) wall_friction = 0.48;
+    if (wall_restitution < 0.0) wall_restitution = 0.02;
+    wall_damping_scale = 1.30;
+  } else if (has_any({"wood", "fence", "timber", "plastic", "plywood"})) {
+    if (wall_friction < 0.0) wall_friction = 0.22;
+    if (wall_restitution < 0.0) wall_restitution = 0.08;
+    wall_damping_scale = 1.05;
+  } else if (has_any({"concrete", "stone", "rock", "brick", "wall", "hardworld", "jersey", "asphalt"})) {
+    if (wall_friction < 0.0) wall_friction = 0.14;
+    if (wall_restitution < 0.0) wall_restitution = 0.06;
+    wall_damping_scale = 0.92;
+  }
+}
+
 struct Collision::Impl {
   fh1::MemberSource source;
 };
@@ -424,6 +472,8 @@ drive::SurfaceTyre Collision::surface_tyre(int surface) const {
     t.car_world_coll_fric_mod = ex.car_world_coll_fric_mod;
     t.spring_norm_y_cutoff = ex.spring_norm_y_cutoff;
     t.spring_speed_cutoff = ex.spring_speed_cutoff;
+    resolve_wall_collision_hints(surface_extras_, ex.name, ex.category, t.wall_friction, t.wall_restitution,
+                                 t.wall_damping_scale);
   }
   return t;
 }

@@ -1187,6 +1187,7 @@ void SkidMarkSystem::clear() {
   head_ = 0;
   count_ = 0;
   next_seq_ = 1;
+  current_time_s_ = 0.0f;
   break_all();
 }
 
@@ -1198,6 +1199,26 @@ void SkidMarkSystem::break_all() {
   for (auto& s : strips_) s.active = false;
 }
 
+void SkidMarkSystem::truncate_after(float time_s) {
+  break_all();
+  if (count_ == 0) {
+    current_time_s_ = std::min(current_time_s_, time_s);
+    return;
+  }
+  const size_t start = (head_ + kMaxSegments - count_) % kMaxSegments;
+  std::vector<Segment> kept;
+  kept.reserve(count_);
+  for (size_t i = 0; i < count_; ++i) {
+    const Segment& seg = ring_[(start + i) % kMaxSegments];
+    if (seg.time_s <= time_s) kept.push_back(seg);
+  }
+  const size_t new_count = std::min(kept.size(), kMaxSegments);
+  for (size_t i = 0; i < new_count; ++i) ring_[i] = kept[i];
+  count_ = new_count;
+  head_ = new_count % kMaxSegments;
+  current_time_s_ = std::min(current_time_s_, time_s);
+}
+
 float SkidMarkSystem::slip_intensity(float slip_combined, float min_intensity, float wheel_speed_mps) {
   // Map combined normalized slip [0.55, 1.45] -> [0, 1] per SPEC-VFX-AND-PARTICLES.
   const float slip_i = std::clamp((slip_combined - 0.55f) / 0.90f, 0.0f, 1.0f);
@@ -1205,7 +1226,8 @@ float SkidMarkSystem::slip_intensity(float slip_combined, float min_intensity, f
   return std::max(slip_i, min_i);
 }
 
-void SkidMarkSystem::update_wheel(size_t wheel_slot, const WheelVfxInput& in) {
+void SkidMarkSystem::update_wheel(size_t wheel_slot, const WheelVfxInput& in, float time_s) {
+  if (time_s >= 0.0f) current_time_s_ = time_s;
   if (wheel_slot >= strips_.size()) return;
   auto& st = strips_[wheel_slot];
   if (!in.grounded || in.surface.skid_a == 0) {
@@ -1276,6 +1298,7 @@ void SkidMarkSystem::update_wheel(size_t wheel_slot, const WheelVfxInput& in) {
   Segment seg;
   seg.texture_index = tex_idx;
   seg.seq = next_seq_++;
+  seg.time_s = (time_s >= 0.0f) ? time_s : current_time_s_;
   seg.v[0] = {st.prev_left, st.prev_normal, {0.0f, st.v_coord}, st.prev_rgba};
   seg.v[1] = {st.prev_right, st.prev_normal, {1.0f, st.v_coord}, st.prev_rgba};
   seg.v[2] = {right_p, n, {1.0f, next_v}, rgba};
@@ -1295,7 +1318,7 @@ void SkidMarkSystem::update_wheel(size_t wheel_slot, const WheelVfxInput& in) {
 
 size_t SkidMarkSystem::count_by_texture(int texture_index) const {
   size_t n = 0;
-  const size_t start = (count_ == kMaxSegments) ? head_ : 0;
+  const size_t start = (head_ + kMaxSegments - count_) % kMaxSegments;
   for (size_t i = 0; i < count_; ++i) {
     const auto& seg = ring_[(start + i) % kMaxSegments];
     if (seg.texture_index == texture_index) ++n;
@@ -1308,7 +1331,7 @@ void SkidMarkSystem::build_geometry(std::vector<SkidVertex>& asphalt_tris, std::
   rut_tris.clear();
   if (count_ == 0) return;
 
-  const size_t start = (count_ == kMaxSegments) ? head_ : 0;
+  const size_t start = (head_ + kMaxSegments - count_) % kMaxSegments;
   // Smoothly fade the oldest 15% of segments once the ring approaches capacity.
   const size_t fade_len = (count_ > kMaxSegments / 2) ? (kMaxSegments * 15 / 100) : 0;
 

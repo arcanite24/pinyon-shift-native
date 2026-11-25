@@ -610,6 +610,76 @@ void synthetic_r2_4_checks() {
     CHECK(drive::dualsense::reported_family(fx.right) == 6);
     CHECK(drive::dualsense::reported_family(fx.left) == 3);
   }
+
+  // 7. R3-PHY-17: Per-axle ride height lowering/rake & roll-induced dynamic camber modulation.
+  {
+    cars::CarPhysics cp;
+    cars::PhysicsSettings ps;
+    cp.values["List_UpgradeCarBodyWeight.Mass"] = 1400.0;
+    cp.values["List_UpgradeCarBodyWeight.CMHeight"] = 0.48;
+    cp.values["FrontSpringDamper.DefRideHeight"] = 0.16;
+    cp.values["FrontSpringDamper.MinRideHeight"] = 0.10;
+    cp.values["FrontSpringDamper.MaxRideHeight"] = 0.22;
+    cp.values["FrontSpringDamper.MaxCompressHeight"] = 0.06;
+    cp.values["RearSpringDamper.DefRideHeight"] = 0.16;
+    cp.values["RearSpringDamper.MinRideHeight"] = 0.10;
+    cp.values["RearSpringDamper.MaxRideHeight"] = 0.22;
+    cp.values["RearSpringDamper.MaxCompressHeight"] = 0.06;
+
+    drive::CarParams p_stock = make_synth();
+    drive::apply_physics(cp, ps, p_stock);
+    drive::CarParams p_lower = p_stock;
+    drive::CarTune t_lower;
+    t_lower.front_ride_height = 0.0;  // lowest front (-0.06 m)
+    t_lower.rear_ride_height = 0.0;   // lowest rear (-0.06 m)
+    drive::apply_tune(t_lower, cp, p_lower);
+    CHECK(p_lower.ride_height_delta[0] < -0.04 && p_lower.ride_height_delta[1] < -0.04);
+
+    drive::CarParams p_rake = p_stock;
+    drive::CarTune t_rake;
+    t_rake.front_ride_height = 0.0;   // lowered front (-0.06 m)
+    t_rake.rear_ride_height = 1.0;    // raised rear (+0.06 m)
+    drive::apply_tune(t_rake, cp, p_rake);
+    CHECK(p_rake.ride_height_delta[0] < -0.04 && p_rake.ride_height_delta[1] > 0.04);
+
+    drive::Vehicle v_stock(p_stock), v_lower(p_lower), v_rake(p_rake);
+    for (int i = 0; i < 360; ++i) {
+      v_stock.step({}, flat);
+      v_lower.step({}, flat);
+      v_rake.step({}, flat);
+    }
+    // Lowered car physically settles lower than stock with all wheels grounded.
+    CHECK(v_lower.position().y < v_stock.position().y - 0.03);
+    for (const auto& w : v_lower.wheels()) CHECK(w.contact);
+    // Positive rake physically pitches nose down (forward.y < -0.015).
+    const auto fwd_rake = drive::rotate(v_rake.orientation(), {0, 0, 1});
+    const auto fwd_stock = drive::rotate(v_stock.orientation(), {0, 0, 1});
+    CHECK(fwd_rake.y < fwd_stock.y - 0.015);
+    for (const auto& w : v_rake.wheels()) CHECK(w.contact);
+
+    // Dynamic roll camber: with identical static lat_scale, negative camber (-2.5 deg)
+    // produces stronger sustained cornering grip under body roll than positive camber (+2.5 deg).
+    drive::CarParams p_neg = make_synth(), p_pos = make_synth();
+    p_neg.static_camber_deg = {-2.5, -2.0};
+    p_pos.static_camber_deg = {2.5, 2.0};
+    p_neg.antiroll_rate = {6000.0, 4500.0};  // allow visible body roll
+    p_pos.antiroll_rate = {6000.0, 4500.0};
+    drive::Vehicle v_neg(p_neg), v_pos(p_pos);
+    v_neg.set_ai_controls(true);
+    v_pos.set_ai_controls(true);
+    v_neg.launch({0, 0, 0}, 0.0, 26.0);
+    v_pos.launch({0, 0, 0}, 0.0, 26.0);
+    double lat_g_neg = 0.0, lat_g_pos = 0.0;
+    for (int i = 0; i < 180; ++i) {
+      v_neg.step({0.18, 0.35, 0.0, false}, flat);
+      v_pos.step({0.18, 0.35, 0.0, false}, flat);
+      if (i >= 90) {
+        lat_g_neg += std::fabs(v_neg.lateral_g());
+        lat_g_pos += std::fabs(v_pos.lateral_g());
+      }
+    }
+    CHECK(lat_g_neg > lat_g_pos * 1.015);
+  }
 }
 
 }  // namespace

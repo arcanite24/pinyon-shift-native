@@ -1707,13 +1707,40 @@ void SmashableWorld::add_solid_barrier(const SolidBarrier& barrier) {
   }
 }
 
+bool SmashableWorld::is_discount_sign(const PlacedProp& pp) const {
+  if (pp.def) return pp.def->object_type_index == 1;
+  return pp.place.stem.find("flyer") != std::string::npos;
+}
+
+float SmashableWorld::hide_radius_for(const PlacedProp& pp) const {
+  const float def_r = pp.def ? pp.def->bounding_radius : pp.radius;
+  return std::clamp(std::max(pp.radius, def_r) + 0.65f, 1.5f, 4.5f);
+}
+
+void SmashableWorld::rebuild_broken_positions() {
+  auto next_hidden = std::make_shared<std::vector<GatherOptions::HiddenSphere>>();
+  next_hidden->reserve(persistent_hidden_.size() + 32);
+  for (const auto& hs : persistent_hidden_) next_hidden->push_back(hs);
+  for (const auto& pp : props_) {
+    if (pp.broken) next_hidden->push_back({pp.place.pos, hide_radius_for(pp)});
+  }
+  broken_positions_ = next_hidden->empty() ? nullptr : std::move(next_hidden);
+}
+
 void SmashableWorld::record_hidden_prop(const std::array<float, 3>& pos, float hide_radius) {
   const float r = std::clamp(hide_radius, 0.75f, 6.0f);
-  auto next_hidden = broken_positions_
-                         ? std::make_shared<std::vector<GatherOptions::HiddenSphere>>(*broken_positions_)
-                         : std::make_shared<std::vector<GatherOptions::HiddenSphere>>();
-  next_hidden->push_back({pos, r});
-  broken_positions_ = std::move(next_hidden);
+  for (auto& existing : persistent_hidden_) {
+    const float dx = existing.pos[0] - pos[0];
+    const float dy = existing.pos[1] - pos[1];
+    const float dz = existing.pos[2] - pos[2];
+    if (dx * dx + dy * dy + dz * dz < 0.25f) {
+      existing.radius = std::max(existing.radius, r);
+      rebuild_broken_positions();
+      return;
+    }
+  }
+  persistent_hidden_.push_back({pos, r});
+  rebuild_broken_positions();
 }
 
 void SmashableWorld::spawn_dynamic_body(const DynamicBody& body) {
@@ -2414,14 +2441,53 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
     ++write;
   }
   dynamic_bodies_.resize(write);
+
+  // 4. Periodic distance-based respawn in Free Roam: every ~1 s restore non-Discount-Sign
+  //    broken props more than 300 m away from the player and refresh broken_positions_.
+  respawn_timer_ += step_dt;
+  if (respawn_timer_ >= kRespawnCheckIntervalS) {
+    respawn_timer_ = std::fmod(respawn_timer_, kRespawnCheckIntervalS);
+    const size_t dynamic_broken = broken_positions_
+                                      ? (broken_positions_->size() > persistent_hidden_.size()
+                                             ? broken_positions_->size() - persistent_hidden_.size()
+                                             : 0)
+                                      : 0;
+    if (dynamic_broken > 0) {
+      constexpr float kMaxDist2 = kRespawnDistanceM * kRespawnDistanceM;
+      bool any_respawned = false;
+      for (auto& pp : props_) {
+        if (!pp.broken || is_discount_sign(pp)) continue;
+        const float dx = pp.place.pos[0] - float(cpos.x);
+        const float dz = pp.place.pos[2] - float(cpos.z);
+        if (dx * dx + dz * dz > kMaxDist2) {
+          pp.broken = false;
+          respawned_hidden_.push_back({pp.place.pos, hide_radius_for(pp)});
+          any_respawned = true;
+        }
+      }
+      if (any_respawned) rebuild_broken_positions();
+    }
+  }
 }
 
 void SmashableWorld::clear_debris() { dynamic_bodies_.clear(); }
 
 void SmashableWorld::reset_broken() {
   dynamic_bodies_.clear();
-  broken_positions_.reset();
-  for (auto& pp : props_) pp.broken = false;
+  respawn_timer_ = 0.0f;
+  for (auto& pp : props_) {
+    if (pp.broken && !is_discount_sign(pp)) {
+      pp.broken = false;
+      respawned_hidden_.push_back({pp.place.pos, hide_radius_for(pp)});
+    }
+  }
+  rebuild_broken_positions();
+}
+
+std::vector<GatherOptions::HiddenSphere> SmashableWorld::consume_respawned_hidden() {
+  std::vector<GatherOptions::HiddenSphere> out;
+  out.swap(respawned_hidden_);
+  return out;
 }
 
 void SmashableWorld::build_debris_mesh(std::vector<DebrisVertex>& out_tris) const {
@@ -2545,11 +2611,10 @@ std::vector<GatherOptions::HiddenSphere> SmashableWorld::restore_rewind(const Re
   for (uint32_t idx : s.broken_indices) {
     if (idx < props_.size()) want_broken[idx] = 1;
   }
-  auto next_hidden = std::make_shared<std::vector<GatherOptions::HiddenSphere>>();
+  auto next_hidden = std::make_shared<std::vector<GatherOptions::HiddenSphere>>(persistent_hidden_);
   for (size_t i = 0; i < props_.size(); ++i) {
     auto& pp = props_[i];
-    const float def_r = pp.def ? pp.def->bounding_radius : pp.radius;
-    const float hide_r = std::clamp(std::max(pp.radius, def_r) + 0.65f, 1.5f, 4.5f);
+    const float hide_r = hide_radius_for(pp);
     if (pp.broken && !want_broken[i]) {
       pp.broken = false;
       restored.push_back({pp.place.pos, hide_r});

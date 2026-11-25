@@ -13,6 +13,7 @@
 // never sees it.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <string>
@@ -68,6 +69,11 @@ struct SurfaceTyre {
   double spring_norm_y_cutoff = 0.707, spring_speed_cutoff = 4.0;
   bool is_penalty_surface = false;
   bool is_hand_of_god = false;
+  // Per-surface body-to-world wall collision hints from CategoryToCategoryParams / material class
+  // (negative = unspecified; falls back to surface off-roadness / default wall glide).
+  double wall_friction = -1.0;        // sliding friction mu for wall/barrier contacts
+  double wall_restitution = -1.0;     // rebound restitution [0..1] (0 = inelastic, higher = elastic tire wall)
+  double wall_damping_scale = -1.0;   // normal damping scale (>1 absorbs energy e.g. tire wall/dirt, <1 crisp glide)
 };
 
 // Evaluates procedural surface Bumpiness height and horizontal gradient at
@@ -86,10 +92,11 @@ struct Hit {
   SurfaceTyre tyre;
   int64_t triangle = -1;  // the ground's triangle index, when it has one
 };
-// Per-surface body-contact friction & damping scale (low-friction wall glide on
-// guardrails/concrete vs heavier drag/absorption on dirt banks).
+// Per-surface body-contact friction, damping scale & restitution (low-friction wall glide on
+// guardrails/concrete vs heavier absorption & bounce on tire walls / dirt banks).
 double body_contact_friction(const Hit& hit, const Vec3& normal, double default_friction);
 double body_contact_damping_scale(const Hit& hit, const Vec3& normal);
+double body_contact_restitution(const Hit& hit, const Vec3& normal);
 class Ground {
  public:
   virtual ~Ground() = default;
@@ -184,6 +191,12 @@ struct CarParams {
   // stands it; the spring is preloaded to carry the static load there and
   // reaches its free length `static load / rate` below.
   double rest_length = 0.3;                  // m, hardpoint above the wheel centre (ours)
+  // Per-axle ride height delta (m, 0 front, 1 rear) from suspension tuning:
+  // negative lowers that axle, positive raises it (enabling real lowering & rake).
+  std::array<double, 2> ride_height_delta{0.0, 0.0};
+  double axle_rest_length(int axle) const {
+    return std::max(0.05, rest_length + ride_height_delta[size_t(axle)]);
+  }
   std::array<double, 2> spring_rate{60000, 50000};    // N/m
   std::array<double, 2> bump_rate{4000, 3500};        // N s/m, compressing
   std::array<double, 2> rebound_rate{6000, 5000};     // N s/m, extending
@@ -239,6 +252,10 @@ struct CarParams {
   TireAffectCurve tire_affect_curve{};
   // Static toe angle per axle in radians (Forza convention: + = toe-out, - = toe-in).
   std::array<double, 2> static_toe_rad{0.0, 0.0};
+  // Static camber angle per axle in degrees (Forza convention: negative = top tilted inward)
+  // and front caster angle in degrees for roll- and steer-induced dynamic camber modulation.
+  std::array<double, 2> static_camber_deg{-1.0, -0.8};
+  double front_caster_deg = 5.0;
 
   // Engine (SPEC-CAR-PHYSICS, Engine torque, forced induction and
   // GameTorqueScale).
@@ -457,6 +474,9 @@ struct Input {
   // usable in both races and free roam whenever provided.
   bool has_auto_brake_target = false;
   double auto_brake_target_speed = 0.0;
+  // True when digital keyboard steering (A/D or Left/Right) drives `steer`,
+  // enabling progressive tap ramping, highway speed cap, and crisp return-to-center.
+  bool input_is_keyboard = false;
 };
 
 // Runtime driving assists matching ForzaProfile.sch enums
@@ -534,7 +554,7 @@ class Vehicle {
   };
   Pose pose() const { return {pos_, vel_, ang_, rot_, w_}; }
   void set_pose(const Pose& p) { pos_ = p.pos, vel_ = p.vel, ang_ = p.ang, rot_ = p.rot, w_ = p.wheels; }
-  // a at t = 0, b at t = 1; b alone when the body jumped (over 5 m: a reset).
+  // a at t = 0, b at t = 1; b alone when the body jumped (over 250 m: a reset).
   static Pose blend(const Pose& a, const Pose& b, double t);
   // The AI's input mode (SPEC-CAR-PHYSICS, "What the AI's controls mean"):
   // gas and brake unshaped, the steer a fraction of SteerMaxAngle at the
@@ -574,6 +594,8 @@ class Vehicle {
     std::array<double, 4> tyre_grip{1.0, 1.0, 1.0, 1.0};
     std::array<double, 4> suspension_scale{1.0, 1.0, 1.0, 1.0};
     double steer_pull_rad = 0.0;
+    std::array<double, 2> brake_power_axle{1.0, 1.0};  // per-axle brake effectiveness (0 front, 1 rear)
+    double clutch_capacity = 1.0;                      // clutch torque capacity scale from grind wear
   };
   void set_damage_mods(const DamageMods& d) { damage_ = d; }
   const DamageMods& damage_mods() const { return damage_; }
@@ -612,6 +634,8 @@ class Vehicle {
   double tcs_amount() const { return tcs_amount_; }
   double stm_amount() const { return stm_amount_; }
   double transmission_damage() const { return trans_damage_; }  // [0, 1] from shifts without clutch
+  double clutch_damage() const { return clutch_damage_; }       // [0, 1] from Manual+Clutch shift grinds
+  bool rev_limiter_active() const { return rev_cut_active_; }   // rhythmic ignition-cut redline limiter active
   int substeps() const { return substeps_; }
   const std::array<WheelState, kWheels>& wheels() const { return w_; }
   const Input& shaped_input() const { return shaped_; }
@@ -689,6 +713,11 @@ class Vehicle {
   Input raw_{}, shaped_{};
   double steer_angle_ = 0;
   double steer_ang_vel_ = 0;
+  double kb_steer_hold_time_ = 0;
+  double kb_steer_dir_ = 0;
+  double kb_steer_filtered_ = 0;
+  bool rev_cut_active_ = false;
+  double rev_cut_timer_ = 0;
   int gear_ = 1, target_gear_ = 1;
   int gear_before_ = 1;        // the gear a shift started from
   GearState state_ = GearState::kOpen;
@@ -734,6 +763,7 @@ class Vehicle {
   bool shifted_without_clutch_ = false;
   double manual_shift_dwell_ = 0;
   double trans_damage_ = 0;
+  double clutch_damage_ = 0;
   double stall_timer_ = 0;
   VehicleAssists assists_{};
   bool ai_ = false;

@@ -361,7 +361,13 @@ class SkidMarkSystem {
   void break_all();
 
   // Updates one wheel's track strip. `wheel_slot` in [0, kMaxWheels).
-  void update_wheel(size_t wheel_slot, const WheelVfxInput& in);
+  // When `time_s >= 0`, stamps the segment with `time_s` and updates the current clock;
+  // otherwise uses the clock set via `set_time()`.
+  void set_time(float time_s) { current_time_s_ = time_s; }
+  float current_time() const { return current_time_s_; }
+  void update_wheel(size_t wheel_slot, const WheelVfxInput& in, float time_s = -1.0f);
+  // Removes all skidmark segments stamped strictly after `time_s` (for Rewind resume).
+  void truncate_after(float time_s);
 
   // Computes combined slip intensity in [0, 1] per SPEC-VFX-AND-PARTICLES.
   static float slip_intensity(float slip_combined, float min_intensity, float wheel_speed_mps);
@@ -378,6 +384,7 @@ class SkidMarkSystem {
     std::array<SkidVertex, 4> v{};  // 0=prevL, 1=prevR, 2=currR, 3=currL
     int texture_index = 0;
     uint64_t seq = 0;
+    float time_s = 0.0f;
   };
   struct WheelStrip {
     bool active = false;
@@ -394,6 +401,7 @@ class SkidMarkSystem {
   size_t head_ = 0;
   size_t count_ = 0;
   uint64_t next_seq_ = 1;
+  float current_time_s_ = 0.0f;
   std::array<WheelStrip, kMaxWheels> strips_{};
 };
 

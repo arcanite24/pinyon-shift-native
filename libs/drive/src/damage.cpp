@@ -123,26 +123,36 @@ void CarDamageState::record_impact(float local_x, float local_y, float local_z, 
   if (front_hit) {
     engine_damage = std::min(1.0f, engine_damage + sev * 0.65f);
     aero_damage = std::min(1.0f, aero_damage + sev * 0.70f);
-    brake_damage = std::min(1.0f, brake_damage + sev * 0.30f);
+    brake_damage_axle[0] = std::min(1.0f, brake_damage_axle[0] + sev * 0.40f);
     if (local_x <= 0.15f) suspension_damage[0] = std::min(1.0f, suspension_damage[0] + sev * 0.55f);
     if (local_x >= -0.15f) suspension_damage[1] = std::min(1.0f, suspension_damage[1] + sev * 0.55f);
   }
   if (rear_hit) {
     aero_damage = std::min(1.0f, aero_damage + sev * 0.65f);
     trans_damage = std::min(1.0f, trans_damage + sev * 0.45f);
+    brake_damage_axle[1] = std::min(1.0f, brake_damage_axle[1] + sev * 0.35f);
     if (local_x <= 0.15f) suspension_damage[2] = std::min(1.0f, suspension_damage[2] + sev * 0.50f);
     if (local_x >= -0.15f) suspension_damage[3] = std::min(1.0f, suspension_damage[3] + sev * 0.50f);
   }
   if (left_hit) {
     suspension_damage[0] = std::min(1.0f, suspension_damage[0] + sev * 0.50f);
     suspension_damage[2] = std::min(1.0f, suspension_damage[2] + sev * 0.40f);
-    brake_damage = std::min(1.0f, brake_damage + sev * 0.25f);
+    brake_damage_axle[0] = std::min(1.0f, brake_damage_axle[0] + sev * 0.25f);
+    brake_damage_axle[1] = std::min(1.0f, brake_damage_axle[1] + sev * 0.20f);
   }
   if (right_hit) {
     suspension_damage[1] = std::min(1.0f, suspension_damage[1] + sev * 0.50f);
     suspension_damage[3] = std::min(1.0f, suspension_damage[3] + sev * 0.40f);
-    brake_damage = std::min(1.0f, brake_damage + sev * 0.25f);
+    brake_damage_axle[0] = std::min(1.0f, brake_damage_axle[0] + sev * 0.25f);
+    brake_damage_axle[1] = std::min(1.0f, brake_damage_axle[1] + sev * 0.20f);
   }
+  brake_damage = std::max(brake_damage, 0.5f * (brake_damage_axle[0] + brake_damage_axle[1]));
+}
+
+void CarDamageState::record_clutch_grind(float amount) {
+  if (mode != DamageMode::kSimulation || amount <= 0.0f) return;
+  clutch_damage = std::min(1.0f, clutch_damage + amount);
+  trans_damage = std::min(1.0f, trans_damage + amount * 0.75f);
 }
 
 void CarDamageState::step(double dt, double speed_mps, bool offroad, double throttle, double rpm_norm,
@@ -182,7 +192,13 @@ DamageMultipliers CarDamageState::multipliers() const {
   m.engine_torque = 1.0 - 0.45 * double(engine_damage);
   if (fuel_fraction <= 1e-4f) m.engine_torque = std::min(m.engine_torque, 0.15);
   m.shift_time_add = 0.60 * double(trans_damage);
-  m.brake_power = 1.0 - 0.40 * double(brake_damage);
+  const bool has_axle_brake = (brake_damage_axle[0] > 0.0f || brake_damage_axle[1] > 0.0f);
+  const double front_bd = has_axle_brake ? double(brake_damage_axle[0]) : double(brake_damage);
+  const double rear_bd = has_axle_brake ? double(brake_damage_axle[1]) : double(brake_damage);
+  m.brake_power_axle[0] = 1.0 - 0.45 * std::clamp(front_bd, 0.0, 1.0);
+  m.brake_power_axle[1] = 1.0 - 0.45 * std::clamp(rear_bd, 0.0, 1.0);
+  m.brake_power = 0.5 * (m.brake_power_axle[0] + m.brake_power_axle[1]);
+  m.clutch_capacity = 1.0 - 0.55 * std::clamp(double(clutch_damage), 0.0, 1.0);
   m.aero_drag = 1.0 + 0.35 * double(aero_damage);
   m.aero_downforce = 1.0 - 0.50 * double(aero_damage);
   for (size_t i = 0; i < 4; ++i) {
@@ -199,7 +215,10 @@ void CarDamageState::apply_to_params(CarParams& p) const {
   const DamageMultipliers m = multipliers();
   p.torque_scale *= m.engine_torque;
   p.gear_shift_time += m.shift_time_add;
+  p.clutch_torque_factor *= m.clutch_capacity;
   p.brake_friction_scale *= m.brake_power;
+  p.front_brake_torque *= m.brake_power_axle[0];
+  p.rear_brake_torque *= m.brake_power_axle[1];
   p.aero_drag_long *= m.aero_drag;
   p.drag_quadratic *= m.aero_drag;
   p.aero_df_front *= m.aero_downforce;

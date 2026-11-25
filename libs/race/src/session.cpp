@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <utility>
 
 namespace race {
 
@@ -247,6 +248,69 @@ void Session::step(double dt, std::span<const CarSample> s) {
   }
   const auto ord = order();
   for (size_t k = 0; k < ord.size(); ++k) cars_[ord[k]].place = int(k) + 1;
+  update_class_places(ord);
+}
+
+void Session::update_class_places(const std::vector<size_t>& ord) {
+  std::vector<std::pair<int, int>> counts;  // (car_class, next_place)
+  for (size_t idx : ord) {
+    const int cls = cars_[idx].car_class;
+    int next_p = 1;
+    bool found = false;
+    for (auto& kv : counts) {
+      if (kv.first == cls) {
+        next_p = ++kv.second;
+        found = true;
+        break;
+      }
+    }
+    if (!found) counts.emplace_back(cls, 1);
+    cars_[idx].class_place = next_p;
+  }
+}
+
+void Session::set_car_class(size_t i, int car_class) {
+  if (i >= cars_.size()) return;
+  cars_[i].car_class = car_class;
+  update_class_places(order());
+}
+
+void Session::set_car_classes(std::span<const int> classes) {
+  const size_t n = std::min(classes.size(), cars_.size());
+  for (size_t i = 0; i < n; ++i) cars_[i].car_class = classes[i];
+  update_class_places(order());
+}
+
+int Session::car_class(size_t i) const { return i < cars_.size() ? cars_[i].car_class : 0; }
+
+int Session::class_place(size_t car_idx) const {
+  if (car_idx >= cars_.size()) return 0;
+  const int target_cls = cars_[car_idx].car_class;
+  const auto ord = order();
+  int rank = 0;
+  for (size_t idx : ord) {
+    if (cars_[idx].car_class != target_cls) continue;
+    ++rank;
+    if (idx == car_idx) return rank;
+  }
+  return 0;
+}
+
+std::vector<size_t> Session::class_order(int car_class) const {
+  std::vector<size_t> out;
+  for (size_t idx : order()) {
+    if (cars_[idx].car_class == car_class) out.push_back(idx);
+  }
+  return out;
+}
+
+bool Session::is_multi_class() const {
+  if (cars_.size() < 2) return false;
+  const int first_cls = cars_.front().car_class;
+  for (size_t i = 1; i < cars_.size(); ++i) {
+    if (cars_[i].car_class != first_cls) return true;
+  }
+  return false;
 }
 
 std::vector<size_t> Session::order() const {

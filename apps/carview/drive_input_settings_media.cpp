@@ -986,13 +986,54 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 app.front = cs.front_view;
                 rig_accel.reset();
               };
+              auto restore_extra = [&](const drive::RewindExtraState& ex) {
+                rotor_heat = std::clamp(ex.rotor_heat[0], 0.0f, 1.0f);
+                host.showroom.set_rotor_heat(rotor_heat);
+                prev_rumble_gear = ex.prev_rumble_gear;
+                if (ex.prev_audio_checkpoint >= 0) prev_audio_checkpoint = ex.prev_audio_checkpoint;
+                prev_audio_lap = ex.prev_audio_lap;
+                if (!ex.speed_trap_state.empty() && app.speed_tracker) {
+                  std::vector<std::pair<std::string, double>> traps, zones;
+                  if (carview::rewind_codec::decode_speed_records(ex.speed_trap_state, traps, zones)) {
+                    app.speed_tracker->load_records(traps, zones);
+                    app.speed_tracker->reset_session_clock();
+                  }
+                }
+                if (!ex.pr_stunt_state.empty()) {
+                  std::set<std::string> disc, comp;
+                  std::string active_pr;
+                  if (carview::rewind_codec::decode_pr_stunt_state(ex.pr_stunt_state, disc, comp, active_pr)) {
+                    app.outpost_progress.discovered_outposts = std::move(disc);
+                    app.outpost_progress.completed_pr_stunts = std::move(comp);
+                    if (active_pr.empty() && app.pr_stunt_session.active()) {
+                      app.pr_stunt_session.cancel();
+                    }
+                  }
+                }
+                if (!ex.signs_state.empty()) {
+                  std::set<std::string> restored_signs;
+                  if (carview::rewind_codec::decode_string_set(ex.signs_state, restored_signs) &&
+                      restored_signs != app.progress.signs_found) {
+                    app.progress.signs_found = std::move(restored_signs);
+                    if (host.free_roam) {
+                      host.free_roam = std::make_unique<freeroam::FreeRoam>(app.collectibles, app.progress);
+                    }
+                  }
+                }
+              };
               auto do_resume = [&]() {
                 drive::RewindCameraState cs;
+                double restored_replay_time = 0.0;
                 double restored_race_clock = 0.0;
                 uint64_t snap_id = 0u;
-                if (rewind_buf.resume(vehicle, &cs, nullptr, &restored_race_clock, nullptr, nullptr, &snap_id)) {
+                drive::RewindExtraState restored_extra{};
+                if (rewind_buf.resume(vehicle, &cs, &restored_replay_time, &restored_race_clock, nullptr, nullptr,
+                                      &snap_id, nullptr, &restored_extra)) {
                   host.particle_sys.clear();
                   restore_world_rewind(snap_id, true);
+                  restore_extra(restored_extra);
+                  host.skid_sys.truncate_after(float(restored_replay_time));
+                  host.skid_sys.set_time(float(restored_replay_time));
                   host.skid_sys.break_all();
                   restore_camera(cs);
                   drawn_before = vehicle.pose();
@@ -1002,8 +1043,11 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
               auto do_cancel = [&]() {
                 drive::RewindCameraState cs;
                 uint64_t snap_id = 0u;
-                if (rewind_buf.cancel(vehicle, &cs, nullptr, nullptr, nullptr, nullptr, &snap_id)) {
+                drive::RewindExtraState restored_extra{};
+                if (rewind_buf.cancel(vehicle, &cs, nullptr, nullptr, nullptr, nullptr, &snap_id, nullptr,
+                                      &restored_extra)) {
                   restore_world_rewind(snap_id, false);
+                  restore_extra(restored_extra);
                   host.skid_sys.break_all();
                   restore_camera(cs);
                   drawn_before = vehicle.pose();

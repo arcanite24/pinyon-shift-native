@@ -601,6 +601,107 @@ void test_traffic_behaviors() {
     CHECK(bodies.count() == 1);          // active physics body created so Race AI never ghosts through!
     CHECK(pop.cars()[0].target < 10.0);  // traffic car brakes for the Race AI obstacle!
   }
+  // 11. R3-PHY-19: Per-junction right-of-way reservation prevents simultaneous cross-traffic ghosting.
+  {
+    const traffic::NavMap map = t_junction();
+    traffic::Roads roads;
+    roads.build(map);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    c.junction_force_give_way = false;
+    traffic::DensityEntry e;
+    e.id = 5, e.speed_mph = 30;
+    c.traffic[5] = e;
+    c.models = {{282, 0, false, false}};
+    traffic::Population pop(roads, c, 61);
+    traffic::Car car_a, car_b;
+    car_a.model = car_b.model = 282;
+    car_a.base_speed = car_a.speed = car_a.target = 12.0;
+    car_b.base_speed = car_b.speed = car_b.target = 12.0;
+    // Equal distance (20 m) and equal speed approaching junction node 1 at (0, 0, 100).
+    pop.add(car_a, 0, 80.0, 1);  // id 1: south -> north
+    pop.add(car_b, 1, 80.0, 1);  // id 2: west -> east
+    const uint32_t id_a = pop.cars()[0].id;
+    const uint32_t id_b = pop.cars()[1].id;
+    const traffic::P3 b_start = pop.cars()[1].position;
+    bool saw_a_holder = false;
+    bool saw_b_claim_after = false;
+    double min_b_speed = 1e9;
+    double min_pair_dist = 1e9;
+    double max_b_travel = 0.0;
+    for (int i = 0; i < 360; ++i) {  // 6.0 s at 60 Hz
+      pop.step(1.0 / 60.0, {120.0, 0.0, 20.0}, {0.0, 0.0, 0.0});
+      const uint32_t holder = pop.junction_holder(1);
+      if (holder == id_a) saw_a_holder = true;
+      if (saw_a_holder && holder == id_b) saw_b_claim_after = true;
+      if (pop.cars().size() >= 2) {
+        const auto& a = pop.cars()[0];
+        const auto& b = pop.cars()[1];
+        min_b_speed = std::min(min_b_speed, b.speed);
+        min_pair_dist = std::min(min_pair_dist, std::hypot(a.position.x - b.position.x, a.position.z - b.position.z));
+        max_b_travel = std::max(max_b_travel, std::hypot(b.position.x - b_start.x, b.position.z - b_start.z));
+      }
+    }
+    std::printf("junction reservation: holder_a=%d b_claimed_after=%d min_b_spd=%.2f m/s min_pair=%.2f m b_travel=%.1f m\n",
+                int(saw_a_holder), int(saw_b_claim_after), min_b_speed, min_pair_dist, max_b_travel);
+    CHECK(saw_a_holder);
+    CHECK(min_b_speed < 6.0);    // cross-traffic car B yields at the stop line while car A holds priority
+    CHECK(min_pair_dist > 3.2);  // cars never simultaneously ghost through each other at the junction
+    CHECK(max_b_travel > 28.0);  // car B resumes cleanly once car A clears the intersection
+  }
+  // 12. R3-PHY-19: Secondary traffic-vs-traffic pileup momentum transfer + chain body promotion.
+  {
+    const traffic::NavMap map = straight_road();
+    traffic::Roads roads;
+    roads.build(map);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    c.high_lod_distance = 22.0;
+    traffic::DensityEntry e;
+    e.id = 5, e.speed_mph = 15;
+    c.traffic[5] = e;
+    c.models = {{282, 0, false, false}};
+    traffic::Population pop(roads, c, 67);
+    for (double s_pos : {110.0, 115.5, 121.0}) {
+      traffic::Car tc;
+      tc.model = 282;
+      tc.base_speed = tc.speed = tc.target = 5.0;
+      pop.add(tc, 0, s_pos, 1);
+    }
+    drive::CarParams params;
+    const double r = 0.31;
+    params.wheel_centres = {drive::Vec3{-0.72, r, 1.15}, drive::Vec3{0.72, r, 1.15}, drive::Vec3{-0.72, r, -1.15},
+                            drive::Vec3{0.72, r, -1.15}};
+    params.tyre_radius = {r, r, r, r};
+    params.centre_of_mass = {0, 0.5, 0.05};
+    params.size = {1.64, 1.3, 3.9};
+    traffic::Bodies bodies(pop, [&](int64_t) { return &params; });
+    drive::Vehicle me(params);
+    me.launch({2.2, 0.0, 94.0}, 0.0, 34.0);
+    const drive::FlatGround flat;
+    double peak_b = 0.0, peak_c = 0.0;
+    bool had_body_c = false;
+    for (int i = 0; i < int(1.5 / drive::Vehicle::kStep); ++i) {
+      drive::Input in;
+      in.throttle = bodies.player_contacts() ? 0.0 : 0.8;
+      me.step(in, flat);
+      const auto p = me.position(), v = me.velocity();
+      pop.step(drive::Vehicle::kStep, {p.x, p.y, p.z}, {v.x, v.y, v.z});
+      bodies.step(flat, &me);
+      if (pop.cars().size() >= 3) {
+        peak_b = std::max(peak_b, pop.cars()[1].speed);
+        peak_c = std::max(peak_c, pop.cars()[2].speed);
+        had_body_c |= pop.cars()[2].body;
+      }
+    }
+    std::printf("traffic pileup: total_contacts=%d player_contacts=%d body_c=%d peak_b=%.1f m/s peak_c=%.1f m/s\n",
+                bodies.contacts(), bodies.player_contacts(), int(had_body_c), peak_b, peak_c);
+    CHECK(bodies.player_contacts() > 0);
+    CHECK(bodies.contacts() > bodies.player_contacts());  // secondary traffic-vs-traffic collisions resolved
+    CHECK(had_body_c);                                    // downstream car promoted into full physics chain
+    CHECK(peak_b > 8.5);                                  // momentum transferred A -> B
+    CHECK(peak_c > 6.5);                                  // momentum cascaded B -> C
+  }
 }
 
 }  // namespace

@@ -120,12 +120,29 @@ struct RewindKeyframe {
   explicit RewindKeyframe(const Vehicle& v) : vehicle(v) {}
 };
 
+// Compact high-frequency (20 Hz) world actor pose for smooth rewind scrubbing
+// of Race AI rivals, Traffic, Festival AI, and Showcase aircraft without
+// keyframe-interval chord-cutting or teleporting.
+struct RewindActorPose {
+  uint8_t kind = 0;       // 0 = race AI, 1 = traffic, 2 = festival AI, 3 = showcase
+  uint32_t id = 0;        // car index (race AI), car id (traffic/festival), 0 (showcase)
+  Vec3 pos{};
+  Quat rot{0.0, 0.0, 0.0, 1.0};
+  Vec3 vel{};
+  float steer = 0.0f;      // wheel steer (race AI), heading rad (traffic/festival/showcase)
+  float wheel_spin = 0.0f; // wheel spin rad (race AI), speed m/s (traffic/festival/showcase)
+  float extra0 = 0.0f;     // pitch rad (traffic/festival/showcase)
+  float extra1 = 0.0f;     // roll rad (showcase)
+  float extra2 = 0.0f;     // rotor_angle rad (showcase)
+};
+
 // High-frequency pose sample for smooth -1.0x linear interpolation during scrub.
 struct RewindStreamSample {
   double replay_time = 0.0;
   Vehicle::Pose pose{};
   CameraView camera_view{};
   bool has_camera_view = false;
+  std::vector<RewindActorPose> actors;
 };
 
 enum class RewindState {
@@ -238,9 +255,15 @@ class RewindBuffer {
   const RewindAudioState& audio() const { return audio_; }
   bool consume_tape_start_cue();
 
-  // Interpolated vehicle pose and camera view at current playback_time_.
+  // True when the next record_step(replay_time, ...) call will append a 20 Hz stream sample.
+  bool will_record_stream(double replay_time) const;
+  // Attaches compact world-actor poses to the most recently recorded stream sample.
+  void attach_latest_stream_actors(std::vector<RewindActorPose> actors);
+
+  // Interpolated vehicle pose, camera view, and world actor poses at current playback_time_.
   Vehicle::Pose sampled_pose() const;
   bool sampled_camera(CameraView& out) const;
+  bool sampled_actor_poses(std::vector<RewindActorPose>& out) const;
 
   // Adjacent keyframe/cancel snapshot bracket for smooth whole-world visual rewind scrubbing
   // (AI rivals, traffic, Festival AI, and smashables).
@@ -248,6 +271,7 @@ class RewindBuffer {
     uint64_t snap_a = 0u;
     uint64_t snap_b = 0u;
     double alpha = 0.0;  // 0 at snap_a, 1 at snap_b
+    double span_s = 0.0; // time delta (snap_b - snap_a) in seconds
   };
   bool sampled_snapshot_bracket(RewindBracket& out) const;
 
@@ -285,6 +309,8 @@ class RewindBuffer {
   bool view_replay_requested_ = false;
 
   RewindAudioState audio_{};
+  RewindExtraState last_extra_{};
+  bool has_last_extra_ = false;
 
   // Tutorial hint state.
   int hints_remaining_ = 10;

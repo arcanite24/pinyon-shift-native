@@ -495,6 +495,7 @@ void DriveSession::poll_sdl_events() {
 
 void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
           const bool* keys = SDL_GetKeyboardState(nullptr);
+          constexpr double kLookPi = 3.14159265358979323846;
           drive::Input kb_in;
           kb_in.steer = (action_key_down(keys, live_controls.keys, drive::ControlAction::kSteerRight) ? 1.0 : 0.0) -
                         (action_key_down(keys, live_controls.keys, drive::ControlAction::kSteerLeft) ? 1.0 : 0.0);
@@ -502,11 +503,19 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
           kb_in.brake = action_key_down(keys, live_controls.keys, drive::ControlAction::kBrake) ? 1.0 : 0.0;
           kb_in.handbrake = action_key_down(keys, live_controls.keys, drive::ControlAction::kHandbrake);
           kb_in.clutch = action_key_down(keys, live_controls.keys, drive::ControlAction::kClutch) ? 1.0 : 0.0;
-          // Look around: the right stick turns the chase camera up to half a
-          // turn, LookBack key held looks back.
-          camera_pull.look_target =
-              action_key_down(keys, live_controls.keys, drive::ControlAction::kLookBack) ? 3.14159265358979 : 0.0;
-          rig_look = camera_pull.look_target;
+          // Look around: keyboard LookBack / LookLeft / LookRight keys, plus gamepad
+          // right-stick 360 deg analog orbit in Chase cams or cardinal snaps in cockpit/hood/bumper.
+          const bool kb_look_back = action_key_down(keys, live_controls.keys, drive::ControlAction::kLookBack);
+          const bool kb_look_left = action_key_down(keys, live_controls.keys, drive::ControlAction::kLookLeft);
+          const bool kb_look_right = action_key_down(keys, live_controls.keys, drive::ControlAction::kLookRight);
+          double kb_look = 0.0;
+          if (kb_look_back) kb_look = kLookPi;
+          else if (kb_look_left && !kb_look_right) kb_look = -0.5 * kLookPi;
+          else if (kb_look_right && !kb_look_left) kb_look = 0.5 * kLookPi;
+          camera_pull.look_target = kb_look_back ? kLookPi : -kb_look;
+          rig_look = kb_look;
+          const bool is_chase_cam =
+              !have_rig || rig.mode() == drive::CameraMode::kFollowLow || rig.mode() == drive::CameraMode::kFollowHigh;
           const drive::ControllerLayout pad_layout = drive::apply_handbrake_clutch_swap(
               drive::default_controller_layout(live_controls.layout_id), live_controls.switch_handbrake_clutch);
           const auto& dz = live_controls.deadzones;
@@ -533,15 +542,28 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
             const double brake = is_wheel_pad ? drive::shape_wheel_pedal(raw_brake, slice12.wheel_shaping) : raw_brake;
             const bool handbrake = pad_control_value(pad, hb_ctrl, dz.handbrake_inside, dz.handbrake_outside) > 0.5;
             const double clutch = pad_control_value(pad, clutch_ctrl, dz.clutch_inside, dz.clutch_outside);
-            const double look = drive::apply_deadzone_signed(axis(SDL_GAMEPAD_AXIS_RIGHTX), 0.20, 0.95);
-            if (look != 0) camera_pull.look_target = -look * 3.14159265358979;
-            // The rig's look (SPEC-CAMERAS, Button): the right stick down
-            // looks back, left and right to the sides, its click straight back.
-            const double lx = axis(SDL_GAMEPAD_AXIS_RIGHTX), ly = axis(SDL_GAMEPAD_AXIS_RIGHTY);
-            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK) || (ly > 0.5 && ly > std::fabs(lx)))
-              rig_look = 3.14159265358979;
-            else if (std::fabs(lx) > 0.5 && std::fabs(lx) >= std::fabs(ly))
-              rig_look = (lx > 0 ? 0.5 : -0.5) * 3.14159265358979;
+            // Right-stick camera look: continuous 360 deg orbit in Chase modes when deflected
+            // past deadzone (smoothly returning to 0 on release), cardinal snaps in interior/hood/bumper.
+            const double rx = axis(SDL_GAMEPAD_AXIS_RIGHTX), ry = axis(SDL_GAMEPAD_AXIS_RIGHTY);
+            const double rmag = std::hypot(rx, ry);
+            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
+              rig_look = kLookPi;
+              camera_pull.look_target = kLookPi;
+            } else if (is_chase_cam) {
+              if (rmag > 0.25) {
+                const double orbit = std::atan2(rx, -ry);
+                rig_look = orbit;
+                camera_pull.look_target = -orbit;
+              }
+            } else {
+              if (ry > 0.5 && ry > std::fabs(rx)) {
+                rig_look = kLookPi;
+                camera_pull.look_target = kLookPi;
+              } else if (std::fabs(rx) > 0.5 && std::fabs(rx) >= std::fabs(ry)) {
+                rig_look = (rx > 0 ? 0.5 : -0.5) * kLookPi;
+                camera_pull.look_target = -rig_look;
+              }
+            }
             if (steer != 0 || throttle > 0 || brake > 0 || handbrake || clutch > 0) {
               pad_in.steer = steer;
               pad_in.throttle = throttle;
@@ -556,7 +578,7 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
           }
           const carview::RawJoystickDriveOutput raw_joy = slice12.sample_raw_joystick_input(dz);
           if (!pad_used && raw_joy.any_active) {
-            if (raw_joy.look_x != 0.0) camera_pull.look_target = -raw_joy.look_x * 3.14159265358979;
+            if (raw_joy.look_x != 0.0) camera_pull.look_target = -raw_joy.look_x * kLookPi;
             app.touch_controls.notify_gamepad_input(vehicle.time());
           }
           const carview::RawJoystickDriveOutput wheel_joy = slice12.sample_wheel_input();
@@ -566,6 +588,7 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
             in.linear_steer = true;
           }
           slice12.apply_gyro_input(in);
+          bool touch_steered = false;
           // Apply Android multi-touch controls & edge-triggered HUD actions.
           app.touch_controls.set_gamepad_connected(!pads.empty() || slice12.has_any_raw_controller());
           app.touch_controls.update(vehicle.time());
@@ -600,27 +623,182 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
               in.throttle = std::max(in.throttle, to.throttle);
               in.brake = std::max(in.brake, to.brake);
               in.handbrake = in.handbrake || to.handbrake;
+              touch_steered = true;
             }
           }
-          // Auto-Brake (Braking == 0 / Assisted, SPEC-CAR-PHYSICS): always sample the
-          // active racing line's target speed AT/AHEAD of the car (not dl_samples.front(),
-          // which starts 10 m behind the car), rebuilding even when Driving Line is Off.
-          if (!app.cruise && live_controls.assists.braking == 0 && app.race && !grid_menu_open && !app.race->player_finished()) {
-            const double car_prog = app.race->player_progress();
-            if (dl_samples.empty() || live_controls.assists.driving_line == 0) {
-              drive::build_driving_line(app.race->racing_line(), braking_table, car_prog,
-                                        std::max(0.0, vehicle.speed()), drive::DrivingLineMode::kBrakingOnly,
-                                        dl_samples);
-            }
-            if (!dl_samples.empty()) {
-              double v_target = dl_samples.back().v_target;
-              for (const auto& s : dl_samples) {
-                if (s.dist >= car_prog) {
-                  v_target = s.v_target;
-                  break;
+          in.input_is_keyboard =
+              !touch_steered && !in.linear_steer &&
+              (std::fabs(kb_in.steer) > 1e-3 || (!pad_used && !raw_joy.any_active && !wheel_joy.any_active));
+
+          // Assisted Steering lane guidance (Steering == 0) & Auto-Brake (Braking == 0)
+          // in both active races (racing line) and free roam (active GPS route or road spline).
+          if (!app.cruise && !grid_menu_open && !(app.race && app.race->player_finished())) {
+            const bool want_lane = (live_controls.assists.steering == 0);
+            const bool want_auto_brake = (live_controls.assists.braking == 0);
+            if (want_lane || want_auto_brake) {
+              const drive::Vec3 car_pos = vehicle.position();
+              const drive::Vec3 car_fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
+              const double car_hdg = std::atan2(car_fwd.x, car_fwd.z);
+              const double car_spd = vehicle.speed();
+              const double look_d = std::clamp(std::fabs(car_spd) * 0.35, 4.0, 20.0);
+
+              if (app.race) {
+                const double car_prog = app.race->player_progress();
+                if (want_lane) {
+                  const drive::RacingLine& rline = app.race->racing_line();
+                  if (rline.size() >= 2 && rline.length() > 1.0) {
+                    double rx = 0.0, ry = 0.0, rz = 0.0, r_hdg = 0.0;
+                    rline.pose(car_prog, 0.0, rx, ry, rz, r_hdg);
+                    const double lat_off = (car_pos.x - rx) * std::cos(r_hdg) - (car_pos.z - rz) * std::sin(r_hdg);
+                    double ax = 0.0, ay = 0.0, az = 0.0, ahead_hdg = r_hdg;
+                    rline.pose(std::min(rline.length(), car_prog + look_d), 0.0, ax, ay, az, ahead_hdg);
+                    const double hdg_err = std::remainder(ahead_hdg - car_hdg, 2.0 * kLookPi);
+                    if (std::fabs(hdg_err) < 1.2 && std::fabs(lat_off) < 25.0) {
+                      in.has_assist_lane = true;
+                      in.assist_heading_error_rad = hdg_err;
+                      in.assist_lateral_offset_m = lat_off;
+                    }
+                  }
+                }
+                if (want_auto_brake) {
+                  if (dl_samples.empty() || live_controls.assists.driving_line == 0) {
+                    drive::build_driving_line(app.race->racing_line(), braking_table, car_prog,
+                                              std::max(0.0, car_spd), drive::DrivingLineMode::kBrakingOnly,
+                                              dl_samples);
+                  }
+                  if (!dl_samples.empty()) {
+                    double v_target = dl_samples.back().v_target;
+                    for (const auto& s : dl_samples) {
+                      if (s.dist >= car_prog) {
+                        v_target = s.v_target;
+                        break;
+                      }
+                    }
+                    in.has_auto_brake_target = true;
+                    in.auto_brake_target_speed = v_target;
+                  }
+                }
+              } else {
+                // Free-roam lane guidance & curvature lookahead auto-brake:
+                // prefer active GPS route when on-route, otherwise nearest road spline.
+                bool guided = false;
+                if (app.gps_nav.active() && app.gps_nav.route().valid && app.gps_nav.route().points.size() >= 2 &&
+                    app.gps_nav.route().s.size() == app.gps_nav.route().points.size() &&
+                    app.gps_nav.guidance().off_route_m < 25.0) {
+                  const auto& route = app.gps_nav.route();
+                  auto sample_gps = [&](double sq, double& px, double& pz, double& tx, double& tz) {
+                    sq = std::clamp(sq, 0.0, route.total_length);
+                    auto it = std::upper_bound(route.s.begin(), route.s.end(), sq);
+                    size_t idx = (it == route.s.begin()) ? 0 : size_t((it - route.s.begin()) - 1);
+                    if (idx + 1 >= route.points.size()) idx = route.points.size() - 2;
+                    const double s0 = route.s[idx], s1 = route.s[idx + 1];
+                    const double frac = (s1 > s0 + 1e-6) ? std::clamp((sq - s0) / (s1 - s0), 0.0, 1.0) : 0.0;
+                    const auto& p0 = route.points[idx];
+                    const auto& p1 = route.points[idx + 1];
+                    px = p0.x + (p1.x - p0.x) * frac;
+                    pz = p0.z + (p1.z - p0.z) * frac;
+                    const double dx = p1.x - p0.x, dz = p1.z - p0.z;
+                    const double len = std::hypot(dx, dz);
+                    if (len > 1e-6) {
+                      tx = dx / len;
+                      tz = dz / len;
+                    } else {
+                      tx = 0.0;
+                      tz = 1.0;
+                    }
+                  };
+                  const double s_cur = app.gps_nav.guidance().route_progress_m;
+                  double rx = 0.0, rz = 0.0, tx0 = 0.0, tz0 = 1.0;
+                  sample_gps(s_cur, rx, rz, tx0, tz0);
+                  double ax = 0.0, az = 0.0, tx1 = tx0, tz1 = tz0;
+                  sample_gps(s_cur + look_d, ax, az, tx1, tz1);
+                  const double lat_off = (car_pos.x - rx) * tz0 - (car_pos.z - rz) * tx0;
+                  const double hdg_err = std::remainder(std::atan2(tx1, tz1) - car_hdg, 2.0 * kLookPi);
+                  if (want_lane && std::fabs(hdg_err) < 1.2 && std::fabs(lat_off) < 25.0) {
+                    in.has_assist_lane = true;
+                    in.assist_heading_error_rad = hdg_err;
+                    in.assist_lateral_offset_m = lat_off;
+                  }
+                  if (want_auto_brake && car_spd > 3.0) {
+                    const double max_look = std::clamp(car_spd * car_spd / 12.0 + 20.0, 24.0, 140.0);
+                    double v_target = 90.0;
+                    for (double da = 8.0; da <= max_look; da += 8.0) {
+                      const double sd = s_cur + da;
+                      if (sd > route.total_length) break;
+                      const double sm = std::max(0.0, sd - 7.0);
+                      const double sp = std::min(route.total_length, sd + 7.0);
+                      if (sp - sm < 2.0) continue;
+                      double mx = 0.0, mz = 0.0, tmx = 0.0, tmz = 1.0;
+                      double px = 0.0, pz = 0.0, tpx = 0.0, tpz = 1.0;
+                      sample_gps(sm, mx, mz, tmx, tmz);
+                      sample_gps(sp, px, pz, tpx, tpz);
+                      const double dtheta =
+                          std::fabs(std::remainder(std::atan2(tpx, tpz) - std::atan2(tmx, tmz), 2.0 * kLookPi));
+                      const double kappa = dtheta / (sp - sm);
+                      const double v_corner = drive::auto_brake_target_for_curvature(kappa, 0.85, 90.0);
+                      const double v_allow = std::sqrt(v_corner * v_corner + 2.0 * 7.5 * da);
+                      v_target = std::min(v_target, v_allow);
+                    }
+                    in.has_auto_brake_target = true;
+                    in.auto_brake_target_speed = v_target;
+                  }
+                  guided = true;
+                }
+                if (!guided) {
+                  const traffic::Roads* roads =
+                      app.gps_solver.ready() ? &app.gps_solver.roads()
+                                             : (!festival_roads.roads().empty() ? &festival_roads : nullptr);
+                  if (roads) {
+                    const traffic::RoadHit rhit = roads->nearest(car_pos.x, car_pos.z, false, 20.0);
+                    if (rhit.road >= 0 && size_t(rhit.road) < roads->roads().size() && rhit.distance < 18.0) {
+                      const traffic::Road& rd = roads->roads()[size_t(rhit.road)];
+                      std::array<double, 2> dir0{0.0, 1.0};
+                      const traffic::P3 p0 = roads->point_at(rhit.road, rhit.s, nullptr, &dir0);
+                      const double align = car_fwd.x * dir0[0] + car_fwd.z * dir0[1];
+                      if (std::fabs(align) > 0.34 && rd.length > 2.0) {
+                        const double travel_sign = align >= 0.0 ? 1.0 : -1.0;
+                        const double tx0 = dir0[0] * travel_sign, tz0 = dir0[1] * travel_sign;
+                        if (want_lane) {
+                          const double lat_off = (car_pos.x - p0.x) * tz0 - (car_pos.z - p0.z) * tx0;
+                          std::array<double, 2> dir1 = dir0;
+                          roads->point_at(rhit.road, std::clamp(rhit.s + travel_sign * look_d, 0.0, rd.length), nullptr,
+                                          &dir1);
+                          const double ahead_hdg = std::atan2(dir1[0] * travel_sign, dir1[1] * travel_sign);
+                          const double hdg_err = std::remainder(ahead_hdg - car_hdg, 2.0 * kLookPi);
+                          if (std::fabs(hdg_err) < 1.2 && std::fabs(lat_off) < 25.0) {
+                            in.has_assist_lane = true;
+                            in.assist_heading_error_rad = hdg_err;
+                            in.assist_lateral_offset_m = lat_off;
+                          }
+                        }
+                        if (want_auto_brake && car_spd > 3.0) {
+                          const double max_look = std::clamp(car_spd * car_spd / 12.0 + 20.0, 24.0, 140.0);
+                          double v_target = 90.0;
+                          for (double da = 8.0; da <= max_look; da += 8.0) {
+                            const double sd = rhit.s + travel_sign * da;
+                            if (sd < 0.0 || sd > rd.length) break;
+                            const double sm = std::clamp(sd - 7.0 * travel_sign, 0.0, rd.length);
+                            const double sp = std::clamp(sd + 7.0 * travel_sign, 0.0, rd.length);
+                            const double chord = std::fabs(sp - sm);
+                            if (chord < 2.0) continue;
+                            std::array<double, 2> dm{0.0, 1.0}, dp{0.0, 1.0};
+                            roads->point_at(rhit.road, sm, nullptr, &dm);
+                            roads->point_at(rhit.road, sp, nullptr, &dp);
+                            const double hm = std::atan2(dm[0] * travel_sign, dm[1] * travel_sign);
+                            const double hp = std::atan2(dp[0] * travel_sign, dp[1] * travel_sign);
+                            const double kappa = std::fabs(std::remainder(hp - hm, 2.0 * kLookPi)) / chord;
+                            const double v_corner = drive::auto_brake_target_for_curvature(kappa, 0.85, 90.0);
+                            const double v_allow = std::sqrt(v_corner * v_corner + 2.0 * 7.5 * da);
+                            v_target = std::min(v_target, v_allow);
+                          }
+                          in.has_auto_brake_target = true;
+                          in.auto_brake_target_speed = v_target;
+                        }
+                      }
+                    }
+                  }
                 }
               }
-              drive::apply_auto_brake(in, vehicle.speed(), v_target);
             }
           }
           rig.set_look(rig_look);

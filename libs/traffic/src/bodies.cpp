@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <utility>
 #include <vector>
 
 namespace traffic {
@@ -129,6 +130,30 @@ bool Bodies::collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, doubl
 
 void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
   auto& cars = pop_.cars();
+  // Chain-reaction pileup promotion: promote any traffic car within 22 m of a
+  // recently struck or off-line traffic car into full physics so high-speed
+  // pileups transfer momentum realistically instead of clipping kinematic cars.
+  {
+    std::vector<P3> struck_positions;
+    for (const auto& c : cars) {
+      const auto it = bodies_.find(c.id);
+      const bool recently_struck = c.off_line || (it != bodies_.end() && it->second.since_contact < 2.5);
+      if (recently_struck) struck_positions.push_back(c.position);
+    }
+    if (!struck_positions.empty()) {
+      constexpr double kChainPromoteDistSq = 22.0 * 22.0;
+      for (auto& c : cars) {
+        if (c.physics) continue;
+        for (const auto& sp : struck_positions) {
+          const double dx = c.position.x - sp.x, dz = c.position.z - sp.z;
+          if (dx * dx + dz * dz <= kChainPromoteDistSq) {
+            c.physics = true;
+            break;
+          }
+        }
+      }
+    }
+  }
   // Drop the bodies of cars gone or back to kinematic.
   std::set<uint32_t> wanted;
   for (const auto& c : cars)
@@ -180,23 +205,39 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
     }
     b.v->step(drive_input(c, *b.v, b.prev_steer), ground);
   }
-  // Contacts: each body with the player's car and with the others.
+  // Contacts: resolve player-vs-traffic first so struck traffic immediately receives
+  // impact momentum, then run an iterative pairwise traffic-vs-traffic solver (up to
+  // 3 passes) so multi-car pileups propagate momentum cleanly through secondary impacts.
   std::vector<Body*> list;
+  list.reserve(bodies_.size());
   for (auto& [id, b] : bodies_) list.push_back(&b);
   step_player_ = 0;
-  for (size_t i = 0; i < list.size(); ++i) {
-    double j = 0;
-    // SPEC-TRAFFIC / PhysicsSettings.ini [Collision]: PlayerTorqueScale = 0.0.
-    if (player && collide(*player, 0.0, *list[i]->v, o_.torque_scale, &j)) {
-      ++contacts_, ++player_contacts_;
-      step_player_ = std::max(step_player_, j);
-      list[i]->since_contact = 0;
-    }
-    for (size_t k = i + 1; k < list.size(); ++k)
-      if (collide(*list[i]->v, o_.torque_scale, *list[k]->v, o_.torque_scale)) {
-        ++contacts_;
-        list[i]->since_contact = list[k]->since_contact = 0;
+  if (player) {
+    for (Body* b : list) {
+      double j = 0;
+      // SPEC-TRAFFIC / PhysicsSettings.ini [Collision]: PlayerTorqueScale = 0.0.
+      if (collide(*player, 0.0, *b->v, o_.torque_scale, &j)) {
+        ++contacts_, ++player_contacts_;
+        step_player_ = std::max(step_player_, j);
+        b->since_contact = 0;
       }
+    }
+  }
+  constexpr int kMaxPileupPasses = 3;
+  std::set<std::pair<size_t, size_t>> counted_pairs;
+  for (int pass = 0; pass < kMaxPileupPasses; ++pass) {
+    bool any_hit = false;
+    for (size_t i = 0; i < list.size(); ++i) {
+      for (size_t k = i + 1; k < list.size(); ++k) {
+        if (collide(*list[i]->v, o_.torque_scale, *list[k]->v, o_.torque_scale)) {
+          any_hit = true;
+          if (counted_pairs.insert({i, k}).second) ++contacts_;
+          list[i]->since_contact = 0.0;
+          list[k]->since_contact = 0.0;
+        }
+      }
+    }
+    if (!any_hit) break;
   }
   // The poses back to the population.
   for (size_t i = 0; i < cars.size(); ++i) {

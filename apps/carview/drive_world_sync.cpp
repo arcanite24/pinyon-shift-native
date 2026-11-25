@@ -831,6 +831,59 @@ void DriveSession::capture_world_rewind(uint64_t snap_id) {
         }
         ws.smashables = app.smashables.capture_rewind();
         ws.car_damage = car_damage;
+        // On trigger (cancel snapshot), attach exact trigger-frame actor poses to the
+        // rewind stream so reverse scrub begins in seamless lockstep with zero gap.
+        if (snap_id == rewind_buf.cancel_snapshot_id()) {
+          auto lane_quat = [](double heading, double pitch) {
+            const drive::Quat yq{0, std::sin(heading * 0.5), 0, std::cos(heading * 0.5)};
+            const drive::Quat pq{std::sin(-pitch * 0.5), 0, 0, std::cos(-pitch * 0.5)};
+            return drive::Quat{
+                yq.w * pq.x + yq.x * pq.w + yq.y * pq.z - yq.z * pq.y,
+                yq.w * pq.y - yq.x * pq.z + yq.y * pq.w + yq.z * pq.x,
+                yq.w * pq.z + yq.x * pq.y - yq.y * pq.x + yq.z * pq.w,
+                yq.w * pq.w - yq.x * pq.x - yq.y * pq.y - yq.z * pq.z,
+            };
+          };
+          std::vector<drive::RewindActorPose> actors;
+          actors.reserve(40);
+          if (app.race) app.race->collect_rewind_actors(actors);
+          if (ws.has_traffic) {
+            for (const auto& c : ws.traffic.population.cars) {
+              drive::RewindActorPose ap{};
+              ap.kind = 1u;
+              ap.id = c.id;
+              const auto bit = ws.traffic.bodies.bodies.find(c.id);
+              if (bit != ws.traffic.bodies.bodies.end()) {
+                ap.pos = bit->second.vehicle.position();
+                ap.rot = bit->second.vehicle.orientation();
+                ap.vel = bit->second.vehicle.velocity();
+              } else {
+                ap.pos = {c.position.x, c.position.y, c.position.z};
+                ap.rot = lane_quat(c.heading, c.pitch);
+                ap.vel = {std::sin(c.heading) * c.speed, 0.0, std::cos(c.heading) * c.speed};
+              }
+              ap.steer = float(c.heading);
+              ap.wheel_spin = float(c.speed);
+              ap.extra0 = float(c.pitch);
+              actors.push_back(ap);
+            }
+          }
+          if (ws.has_festival) {
+            for (const auto& fc : ws.festival.cars) {
+              drive::RewindActorPose ap{};
+              ap.kind = 2u;
+              ap.id = fc.id;
+              ap.pos = {fc.position.x, fc.position.y, fc.position.z};
+              ap.rot = lane_quat(fc.heading, fc.pitch);
+              ap.vel = {fc.vx, fc.vy, fc.vz};
+              ap.steer = float(fc.heading);
+              ap.wheel_spin = float(fc.speed);
+              ap.extra0 = float(fc.pitch);
+              actors.push_back(ap);
+            }
+          }
+          if (!actors.empty()) rewind_buf.attach_latest_stream_actors(std::move(actors));
+        }
         world_rewind_snaps[snap_id] = std::move(ws);
         prune_world_rewind();
 }
@@ -863,55 +916,209 @@ void DriveSession::apply_world_rewind_scrub() {
           return a0 + d * t;
         };
 
-        // 1. Smoothly scrub AI race rivals between adjacent keyframes.
-        if (app.race && ws_a.has_race && ws_b.has_race) {
-          RaceView::RewindSnapshot blended = ws_b.race;
-          const size_t n = std::min(ws_a.race.cars.size(), blended.cars.size());
-          for (size_t i = 0; i < n; ++i) {
-            blended.cars[i].before = ws_a.race.cars[i].body.pose();
+        // Sample high-rate (20 Hz) world actor stream when recorded; falls back to
+        // velocity-aware cubic Hermite interpolation across keyframe snapshots.
+        std::vector<drive::RewindActorPose> stream_actors;
+        const bool have_stream_actors = rewind_buf.sampled_actor_poses(stream_actors);
+        std::unordered_map<uint32_t, const drive::RewindActorPose*> race_stream;
+        std::unordered_map<uint32_t, const drive::RewindActorPose*> traffic_stream;
+        std::unordered_map<uint32_t, const drive::RewindActorPose*> festival_stream;
+        const drive::RewindActorPose* showcase_stream = nullptr;
+        if (have_stream_actors) {
+          for (const auto& ap : stream_actors) {
+            if (ap.kind == 0u) race_stream.emplace(ap.id, &ap);
+            else if (ap.kind == 1u) traffic_stream.emplace(ap.id, &ap);
+            else if (ap.kind == 2u) festival_stream.emplace(ap.id, &ap);
+            else if (ap.kind == 3u) showcase_stream = &ap;
           }
-          app.race->restore_rewind(blended, false);
-          app.race->set_blend(alpha);
         }
 
-        // 2. Smoothly scrub open-world & street-race traffic between adjacent keyframes.
-        if (traffic && ws_a.has_traffic && ws_b.has_traffic) {
-          TrafficView::RewindSnapshot blended = ws_b.traffic;
-          blended.before.clear();
-          std::unordered_map<uint32_t, TrafficPose> poses_a;
-          poses_a.reserve(ws_a.traffic.population.cars.size());
-          for (const auto& c : ws_a.traffic.population.cars) {
-            const auto bit = ws_a.traffic.bodies.bodies.find(c.id);
-            if (bit != ws_a.traffic.bodies.bodies.end()) {
-              poses_a.emplace(c.id, TrafficPose{bit->second.vehicle.position(), bit->second.vehicle.orientation()});
-            } else {
-              poses_a.emplace(c.id, TrafficPose{{c.position.x, c.position.y, c.position.z}, lane_quat(c.heading, c.pitch)});
+        // 1. Smoothly scrub AI race rivals and Showcase aircraft.
+        if (app.race && ws_a.has_race && ws_b.has_race) {
+          RaceView::RewindSnapshot blended = (alpha < 0.5) ? ws_a.race : ws_b.race;
+          const size_t n = blended.cars.size();
+          for (size_t i = 0; i < n; ++i) {
+            if (const auto sit = race_stream.find(uint32_t(i)); sit != race_stream.end()) {
+              const auto& ap = *sit->second;
+              drive::Vehicle::Pose p = blended.cars[i].body.pose();
+              p.pos = ap.pos;
+              p.rot = ap.rot;
+              p.vel = ap.vel;
+              p.wheels[0].steer = ap.steer;
+              p.wheels[1].steer = ap.steer;
+              for (size_t wi = 0; wi < 4; ++wi) p.wheels[wi].spin = ap.wheel_spin;
+              blended.cars[i].body.set_pose(p);
+              blended.cars[i].before = p;
+            } else if (i < ws_a.race.cars.size() && i < ws_b.race.cars.size()) {
+              const drive::Vehicle::Pose p = blend_vehicle_pose_hermite(
+                  ws_a.race.cars[i].body.pose(), ws_b.race.cars[i].body.pose(), br.span_s, alpha);
+              blended.cars[i].body.set_pose(p);
+              blended.cars[i].before = p;
             }
           }
-          for (const auto& c : blended.population.cars) {
-            if (const auto ait = poses_a.find(c.id); ait != poses_a.end()) {
-              blended.before.emplace(c.id, ait->second);
+          if (ws_a.race.has_showcase && ws_b.race.has_showcase) {
+            const auto& sa = ws_a.race.showcase;
+            const auto& sb = ws_b.race.showcase;
+            auto& sc = blended.showcase;
+            sc.pose.progress_m = sa.pose.progress_m + (sb.pose.progress_m - sa.pose.progress_m) * alpha;
+            sc.pose.fraction = sa.pose.fraction + (sb.pose.fraction - sa.pose.fraction) * alpha;
+            sc.pose.speed_mps = sa.pose.speed_mps + (sb.pose.speed_mps - sa.pose.speed_mps) * alpha;
+            sc.pose.ground_y = sa.pose.ground_y + (sb.pose.ground_y - sa.pose.ground_y) * alpha;
+            sc.pose.agl_m = sa.pose.agl_m + (sb.pose.agl_m - sa.pose.agl_m) * alpha;
+            sc.anim_time = sa.anim_time + (sb.anim_time - sa.anim_time) * alpha;
+            sc.anim_speed_mult = sa.anim_speed_mult + (sb.anim_speed_mult - sa.anim_speed_mult) * alpha;
+            sc.altitude_y = sa.altitude_y + (sb.altitude_y - sa.altitude_y) * alpha;
+            sc.smoothed_pitch = sa.smoothed_pitch + (sb.smoothed_pitch - sa.smoothed_pitch) * alpha;
+            sc.smoothed_roll = sa.smoothed_roll + (sb.smoothed_roll - sa.smoothed_roll) * alpha;
+            if (showcase_stream) {
+              sc.pose.position = {showcase_stream->pos.x, showcase_stream->pos.y, showcase_stream->pos.z};
+              sc.pose.heading = showcase_stream->steer;
+              sc.pose.speed_mps = showcase_stream->wheel_spin;
+              sc.pose.pitch = showcase_stream->extra0;
+              sc.pose.roll = showcase_stream->extra1;
+              sc.pose.rotor_angle = showcase_stream->extra2;
+              sc.prev_heading = sc.pose.heading;
+            } else {
+              const drive::Vec3 pa{sa.pose.position[0], sa.pose.position[1], sa.pose.position[2]};
+              const drive::Vec3 pb{sb.pose.position[0], sb.pose.position[1], sb.pose.position[2]};
+              const double cpa = std::cos(sa.pose.pitch);
+              const double cpb = std::cos(sb.pose.pitch);
+              const drive::Vec3 va{std::sin(sa.pose.heading) * cpa * sa.pose.speed_mps,
+                                   std::sin(sa.pose.pitch) * sa.pose.speed_mps,
+                                   std::cos(sa.pose.heading) * cpa * sa.pose.speed_mps};
+              const drive::Vec3 vb{std::sin(sb.pose.heading) * cpb * sb.pose.speed_mps,
+                                   std::sin(sb.pose.pitch) * sb.pose.speed_mps,
+                                   std::cos(sb.pose.heading) * cpb * sb.pose.speed_mps};
+              const drive::Vec3 p = hermite_vec3(pa, va, pb, vb, br.span_s, alpha);
+              sc.pose.position = {p.x, p.y, p.z};
+              sc.pose.heading = lerp_angle(sa.pose.heading, sb.pose.heading, alpha);
+              sc.pose.pitch = sa.pose.pitch + (sb.pose.pitch - sa.pose.pitch) * alpha;
+              sc.pose.roll = sa.pose.roll + (sb.pose.roll - sa.pose.roll) * alpha;
+              sc.pose.rotor_angle = sa.pose.rotor_angle + (sb.pose.rotor_angle - sa.pose.rotor_angle) * alpha;
+              sc.prev_heading = sc.pose.heading;
+            }
+          }
+          app.race->restore_rewind(blended, false);
+          app.race->set_blend(1.0);
+        }
+
+        // 2. Smoothly scrub open-world & street-race traffic.
+        if (traffic && ws_a.has_traffic && ws_b.has_traffic) {
+          TrafficView::RewindSnapshot blended = (alpha < 0.5) ? ws_a.traffic : ws_b.traffic;
+          blended.before.clear();
+          struct TrafficSampleA {
+            TrafficPose pose{};
+            drive::Vec3 vel{};
+            double heading = 0.0;
+            double pitch = 0.0;
+            double speed = 0.0;
+          };
+          std::unordered_map<uint32_t, TrafficSampleA> map_a, map_b;
+          auto fill_map = [&](const TrafficView::RewindSnapshot& src, std::unordered_map<uint32_t, TrafficSampleA>& dst) {
+            dst.reserve(src.population.cars.size());
+            for (const auto& c : src.population.cars) {
+              TrafficSampleA s{};
+              const auto bit = src.bodies.bodies.find(c.id);
+              if (bit != src.bodies.bodies.end()) {
+                s.pose = {bit->second.vehicle.position(), bit->second.vehicle.orientation()};
+                s.vel = bit->second.vehicle.velocity();
+              } else {
+                s.pose = {{c.position.x, c.position.y, c.position.z}, lane_quat(c.heading, c.pitch)};
+                s.vel = {std::sin(c.heading) * c.speed, 0.0, std::cos(c.heading) * c.speed};
+              }
+              s.heading = c.heading;
+              s.pitch = c.pitch;
+              s.speed = c.speed;
+              dst.emplace(c.id, s);
+            }
+          };
+          fill_map(ws_a.traffic, map_a);
+          fill_map(ws_b.traffic, map_b);
+
+          auto apply_traffic_body_pose = [&](uint32_t id, const TrafficPose& tp, const drive::Vec3& vel) {
+            auto bit = blended.bodies.bodies.find(id);
+            if (bit == blended.bodies.bodies.end()) return;
+            auto& v = bit->second.vehicle;
+            const drive::Quat cur_q = v.orientation();
+            const drive::Quat inv_q{-cur_q.x, -cur_q.y, -cur_q.z, cur_q.w};
+            const drive::Vec3 com_local = drive::rotate(inv_q, v.centre_of_mass() - v.position());
+            drive::Vehicle::Pose p = v.pose();
+            p.pos = tp.pos + drive::rotate(tp.rot, com_local);
+            p.rot = tp.rot;
+            p.vel = vel;
+            v.set_pose(p);
+          };
+
+          for (auto& c : blended.population.cars) {
+            if (const auto sit = traffic_stream.find(c.id); sit != traffic_stream.end()) {
+              const auto& ap = *sit->second;
+              c.position = {ap.pos.x, ap.pos.y, ap.pos.z};
+              c.heading = ap.steer;
+              c.pitch = ap.extra0;
+              c.speed = ap.wheel_spin;
+              const TrafficPose tp{ap.pos, ap.rot};
+              apply_traffic_body_pose(c.id, tp, ap.vel);
+              blended.before.emplace(c.id, tp);
+            } else {
+              const auto ait = map_a.find(c.id);
+              const auto bit = map_b.find(c.id);
+              if (ait != map_a.end() && bit != map_b.end()) {
+                const TrafficPose tp = blend_traffic_pose_hermite(
+                    ait->second.pose, ait->second.vel, bit->second.pose, bit->second.vel, br.span_s, alpha);
+                const drive::Vec3 vel = ait->second.vel + (bit->second.vel - ait->second.vel) * alpha;
+                c.position = {tp.pos.x, tp.pos.y, tp.pos.z};
+                c.heading = lerp_angle(ait->second.heading, bit->second.heading, alpha);
+                c.pitch = ait->second.pitch + (bit->second.pitch - ait->second.pitch) * alpha;
+                c.speed = ait->second.speed + (bit->second.speed - ait->second.speed) * alpha;
+                apply_traffic_body_pose(c.id, tp, vel);
+                blended.before.emplace(c.id, tp);
+              }
             }
           }
           traffic->restore_rewind(blended);
-          traffic->set_blend(alpha);
+          traffic->set_blend(1.0);
         }
 
-        // 3. Smoothly scrub roaming Festival AI & H2H rivals between adjacent keyframes.
+        // 3. Smoothly scrub roaming Festival AI & H2H rivals.
         if (festival_mgr && ws_a.has_festival && ws_b.has_festival) {
-          freeroam::FestivalManager::RewindSnapshot blended = ws_a.festival;
-          std::unordered_map<uint32_t, const freeroam::FestivalAiCar*> map_b;
+          freeroam::FestivalManager::RewindSnapshot blended = (alpha < 0.5) ? ws_a.festival : ws_b.festival;
+          std::unordered_map<uint32_t, const freeroam::FestivalAiCar*> map_a, map_b;
+          map_a.reserve(ws_a.festival.cars.size());
           map_b.reserve(ws_b.festival.cars.size());
+          for (const auto& c : ws_a.festival.cars) map_a.emplace(c.id, &c);
           for (const auto& c : ws_b.festival.cars) map_b.emplace(c.id, &c);
           for (auto& c : blended.cars) {
-            if (const auto bit = map_b.find(c.id); bit != map_b.end()) {
-              const auto& cb = *bit->second;
-              c.position.x += (cb.position.x - c.position.x) * alpha;
-              c.position.y += (cb.position.y - c.position.y) * alpha;
-              c.position.z += (cb.position.z - c.position.z) * alpha;
-              c.heading = lerp_angle(c.heading, cb.heading, alpha);
-              c.pitch = c.pitch + (cb.pitch - c.pitch) * alpha;
-              c.speed = c.speed + (cb.speed - c.speed) * alpha;
+            if (const auto sit = festival_stream.find(c.id); sit != festival_stream.end()) {
+              const auto& ap = *sit->second;
+              c.position = {ap.pos.x, ap.pos.y, ap.pos.z};
+              c.heading = ap.steer;
+              c.pitch = ap.extra0;
+              c.speed = ap.wheel_spin;
+              c.vx = ap.vel.x;
+              c.vy = ap.vel.y;
+              c.vz = ap.vel.z;
+            } else {
+              const auto ait = map_a.find(c.id);
+              const auto bit = map_b.find(c.id);
+              if (ait != map_a.end() && bit != map_b.end()) {
+                const auto& ca = *ait->second;
+                const auto& cb = *bit->second;
+                const drive::Vec3 pa{ca.position.x, ca.position.y, ca.position.z};
+                const drive::Vec3 pb{cb.position.x, cb.position.y, cb.position.z};
+                const drive::Vec3 d = pb - pa;
+                if (drive::dot(d, d) <= 62500.0) {
+                  const drive::Vec3 va{ca.vx, ca.vy, ca.vz};
+                  const drive::Vec3 vb{cb.vx, cb.vy, cb.vz};
+                  const drive::Vec3 p = hermite_vec3(pa, va, pb, vb, br.span_s, alpha);
+                  c.position = {p.x, p.y, p.z};
+                  c.heading = lerp_angle(ca.heading, cb.heading, alpha);
+                  c.pitch = ca.pitch + (cb.pitch - ca.pitch) * alpha;
+                  c.speed = ca.speed + (cb.speed - ca.speed) * alpha;
+                  c.vx = ca.vx + (cb.vx - ca.vx) * alpha;
+                  c.vy = ca.vy + (cb.vy - ca.vy) * alpha;
+                  c.vz = ca.vz + (cb.vz - ca.vz) * alpha;
+                }
+              }
             }
           }
           festival_mgr->restore_rewind(blended);
