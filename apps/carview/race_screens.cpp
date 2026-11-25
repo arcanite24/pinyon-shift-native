@@ -175,7 +175,9 @@ bool draw_grid_menu(ui::List& l, const RaceHud& r, float w, float h, bool with_b
 
 // 16b_finish_banner_orig.png: the place's text from x 95 (its node rests at
 // its intro start, x -895); the black tape behind the pink is the intro's.
-constexpr float kPlaceDx = 990.0f;
+// Measured on the same capture: FINISHED sits 45 px lower than its rest,
+// the place 20 px lower and turned ~0.9 degrees less.
+constexpr float kPlaceDx = 990.0f, kPlaceDy = 20.0f, kPlaceTurn = -0.016f, kFinishedDy = 45.0f;
 
 bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacity) {
   SceneScreen sc(kFinishedScene);
@@ -188,9 +190,14 @@ bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacit
   const std::string fin = text_of(race_text::kFinished);
   sc.text(title, fin);
   if (title >= 0) fit_tapes(sc, sc.node("ScreenTitle"), sd.measure(title, fin) + kTitleTapePad, kTapeBlack);
+  if (const int st = sc.node("ScreenTitle"); st >= 0) sc.at(st).dy = kFinishedDy;
   const std::string place = upper(format1(text_of(race_text::kPlace), ordinal(std::max(1, r.place))));
   sc.text(pos, place);
-  if (pos >= 0) sc.at(pos).dx = kPlaceDx, sc.at(pos).alpha = 1.0f;
+  if (pos >= 0) {
+    sc.at(pos).dx = kPlaceDx, sc.at(pos).dy = kPlaceDy;
+    sc.at(pos).extra_angle = kPlaceTurn;
+    sc.at(pos).alpha = 1.0f;
+  }
   fit_tapes(sc, sc.node("Tape2"), 0.0f, kTapePink);
   sc.draw(l, SceneScreen::frame(w, h));
   if (opacity >= 1.0f) {
@@ -216,6 +223,8 @@ constexpr float kCashLineX = 148.0f, kCashLineY = 262.0f, kCashLinePitch = 28.0f
 constexpr uint32_t kCashLabelTape = ui::rgba(12, 12, 12, 0);
 constexpr float kCashValuePad = 14.0f;
 constexpr float kCashValueGap = 10.0f;
+// The values sit ~7 px above their labels' middles (0 Cr against FINISHED 5TH).
+constexpr float kCashValueDy = -7.0f;
 constexpr float kTotalX = 140.0f, kTotalY = 450.0f, kTotalPad = 28.0f;
 constexpr float kTotalValueX = 515.0f, kTotalValueY = 418.0f;
 constexpr float kBalanceX = 165.0f, kBalanceY = 500.0f, kBalancePad = 8.0f;
@@ -304,7 +313,7 @@ bool draw_cash(ui::List& l, const RaceHud& r, float w, float h) {
     const auto& [ls, vs] = lines[size_t(i)];
     tape_text(sc, late, tt, label, ls, kCashLineX, y, 20.0f, kCashLinePad, kCashLabelTape);
     const float lw = label >= 0 ? sd.measure(label, ls) : 0.0f;
-    tape_text(sc, late, vt, value, vs, kCashLineX + lw + kCashValueGap, y, 22.0f, kCashValuePad, kTapePink);
+    tape_text(sc, late, vt, value, vs, kCashLineX + lw + kCashValueGap, y + kCashValueDy, 22.0f, kCashValuePad, kTapePink);
   }
   // The total and the balance (with the rest of the lines).
   const int total = sc.node("TotalAlign"), balance = sc.node("Balance");
@@ -509,7 +518,11 @@ bool draw_won_car(ui::List& l, const RaceHud& r, float w, float h) {
   sc.text(title, won);
   if (title >= 0) fit_tapes(sc, sc.node("ScreenTitle"), sd.measure(title, won) + kTitleTapePad, kTapeBlack);
   sc.text(pos, upper(r.won_car_name));
-  if (pos >= 0) sc.at(pos).dx = kPlaceDx, sc.at(pos).alpha = 1.0f;
+  if (pos >= 0) {
+    sc.at(pos).dx = kPlaceDx, sc.at(pos).dy = kPlaceDy;
+    sc.at(pos).extra_angle = kPlaceTurn;
+    sc.at(pos).alpha = 1.0f;
+  }
   fit_tapes(sc, sc.node("Tape2"), 0.0f, kTapePink);
   sc.hide(sc.node("CarName"));
   sc.draw(l, SceneScreen::frame(w, h));
