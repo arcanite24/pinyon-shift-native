@@ -97,7 +97,7 @@ inline constexpr float kTipLineDy = 17.0f;
 // The event's name (Stat_Text, 54 px): set by eye in the middle of its
 // tapes (no original frame shows it, Q140).
 inline constexpr float kStatDx = kTipTitleDx, kStatDy = 38.0f;
-// The spinner's turn (radians a second), measured on the recomp's frames.
+// The spinner's turn (radians a second): one turn a second, set by eye (Q140).
 inline constexpr float kSpinnerRate = 6.2831853f;
 }  // namespace loading_layout
 

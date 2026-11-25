@@ -1120,7 +1120,7 @@ void LoadingScreen::update(double dt) {
   elapsed_ += dt;
   tip_timer_ += dt;
   // Each tip holds its displaytime; a long load comes round to the first
-  // again (Q140).
+  // again (Q139).
   if (!tips_.empty()) {
     const size_t i = size_t(tip_idx_ % int(tips_.size()));
     const double hold = i < tip_times_.size() && tip_times_[i] > 0.0 ? tip_times_[i] : kDefaultTipSeconds;
