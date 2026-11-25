@@ -477,6 +477,10 @@ add_executable(achievements_tests achievements_tests.cpp ../apps/carview/achieve
 target_include_directories(achievements_tests PRIVATE ../apps/carview)
 target_link_libraries(achievements_tests PRIVATE carview_hud fh1data shift_drive shift_freeroam shift_stb shift_race shift_garage)
 add_test(NAME achievements_tests COMMAND achievements_tests)
+# The title's 70-entry achievement table from the content packages' spa.bin
+# under SHIFT_STATE_ROOT (or SHIFT_SPA_ROOT); exit 77 with neither set.
+add_test(NAME achievements_corpus COMMAND achievements_tests --corpus)
+set_tests_properties(achievements_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
 
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)

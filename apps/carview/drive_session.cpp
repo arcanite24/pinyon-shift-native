@@ -652,8 +652,14 @@ void DriveSession::init_session() {
       
       {
         std::string spa_note;
-        if (fh1::load_spa_packages(app.game_root_of(), app.state_root, spa_db, app.language, &spa_note) && !app.headless)
-          std::printf("achievements: %s\n", spa_note.c_str());
+        if (fh1::load_spa_packages(app.game_root_of(), app.state_root, spa_db, app.language, &spa_note)) {
+          if (!app.headless) std::printf("achievements: %s\n", spa_note.c_str());
+        } else {
+          // The title's achievement table is in its content packages' spa.bin
+          // (under SHIFT_STATE_ROOT); without one the SPA names are the fallback.
+          std::printf("achievements: no spa.bin under the game or state root (%s)\n",
+                      app.state_root.empty() ? "SHIFT_STATE_ROOT not set" : app.state_root.string().c_str());
+        }
       }
       
       achievements.init(spa_db);
@@ -1426,6 +1432,7 @@ void DriveSession::save_now(const char* why) {
         s.h2h_wins = app.h2h_wins;
         s.rivals_beaten = app.have_saved ? app.saved.rivals_beaten : 0;
         s.rally_rivals_beaten = app.have_saved ? app.saved.rally_rivals_beaten : 0;
+        s.ach = app.saved.ach;  // achievement signals recorded on app.saved during play
         s.driver_xp = app.career.driver_xp;
         for (const auto& [mid, xp] : app.career.make_affinity_xp) s.make_affinity.emplace_back(mid, xp);
         s.promo_cars = promo_tracker.save_ids();
@@ -1491,8 +1498,23 @@ void DriveSession::eval_achievements(bool toasts) {
         snap.completed_pr_stunts.assign(app.outpost_progress.completed_pr_stunts.begin(),
                                         app.outpost_progress.completed_pr_stunts.end());
         snap.promo_cars = promo_tracker.save_ids();
+        if (app.speed_tracker) {
+          snap.speed_traps = app.speed_tracker->save_traps();
+          snap.speed_zones = app.speed_tracker->save_zones();
+        }
+        if (app.skill_tracker) {
+          snap.sponsors.clear();
+          for (const auto& [sid, prog] : app.skill_tracker->sponsor_progress())
+            snap.sponsors.push_back({sid, prog.count, prog.claimed_tiers});
+          snap.fame_rewards_claimed = app.skill_tracker->fame_rewards_claimed();
+        }
         const int roads_cnt = app.road_discovery.ready() ? app.road_discovery.discovered_count() : 0;
-        auto ags = carview::AchievementGameplayState::from_drive_save(snap, roads_cnt, app.h2h_wins);
+        auto ags = carview::AchievementGameplayState::from_drive_save(
+            snap, roads_cnt, app.h2h_wins, app.have_career_catalog ? &app.career_catalog : nullptr,
+            app.current_pop_rank());
+        if (app.road_discovery.ready()) ags.roads_total = app.road_discovery.total_roads();
+        // 209 for saves that were already champion before the flag existed.
+        if (app.rally_catalog.loaded && app.rally_catalog.champion_unlocked(snap)) ags.rally_champion = true;
         const auto cstats = club_medal_stats();
         ags.club_medals_total = std::max(ags.club_medals_total, cstats.total_medals);
         ags.club_cars_with_medal = std::max(ags.club_cars_with_medal, cstats.cars_with_medal);
@@ -1504,10 +1526,7 @@ void DriveSession::eval_achievements(bool toasts) {
         ags.club_bmw_cars = cstats.bmw_cars;
         ags.club_british_cars = cstats.british_cars;
         ags.club_ford_cars = cstats.ford_cars;
-        int newly_unlocked = achievements.evaluate(ags, toasts);
-        // R3-CAM-07: Rivals & Rally Rivals offline achievements (165 & 212).
-        if (snap.rivals_beaten > 0 && achievements.unlock(165, 0, toasts)) ++newly_unlocked;
-        if (snap.rally_rivals_beaten > 0 && achievements.unlock(212, 0, toasts)) ++newly_unlocked;
+        const int newly_unlocked = achievements.evaluate(ags, toasts);
         if (newly_unlocked > 0 && app.demo_achievements_png.empty())
           achievements.save_state(achievements_path);
 }

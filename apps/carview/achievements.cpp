@@ -38,52 +38,88 @@ struct MetaSpec {
   uint16_t default_g;
   AchievementCategory category;
   AchievementAvailability availability;
+  const char* name;
 };
 
 using C = AchievementCategory;
 using A = AchievementAvailability;
 
-// Clean-room structural table of FH1's 70 achievement IDs (155-205 base,
-// 206-215 Rally, 216-225 1000 Club; 163 unused). Names and descriptions always
-// come from the player's own spa.bin via fh1::SpaDatabase.
+// FH1's 70 achievement ids (155-205 base, 206-215 Horizon Rally, 216-225
+// 1000 Club; there is no 163). At run time the names, descriptions and
+// gamerscores come from the player's spa.bin via fh1::SpaDatabase; the names
+// and gamerscores here are the SPA's own (1,500G in all), kept only for runs
+// that find no spa.bin and for labels a package leaves empty.
 constexpr MetaSpec kFh1Meta[] = {
-    {155, 10, C::kCareer, A::kAvailable},     {156, 10, C::kFestival, A::kAvailable},
-    {157, 15, C::kCareer, A::kAvailable},     {158, 15, C::kCareer, A::kAvailable},
-    {159, 10, C::kRacing, A::kAvailable},     {160, 20, C::kRacing, A::kAvailable},
-    {161, 25, C::kRacing, A::kAvailable},     {162, 15, C::kRacing, A::kAvailable},
-    {164, 25, C::kExplore, A::kAvailable},    {165, 10, C::kRacing, A::kNeedsRivals},
-    {166, 10, C::kFestival, A::kAvailable},   {167, 10, C::kFestival, A::kAvailable},
-    {168, 10, C::kFestival, A::kNeedsOnline}, {169, 25, C::kFestival, A::kAvailable},
-    {170, 10, C::kFame, A::kAvailable},       {171, 15, C::kFame, A::kAvailable},
-    {172, 20, C::kFame, A::kAvailable},       {173, 25, C::kFame, A::kAvailable},
-    {174, 30, C::kFame, A::kAvailable},       {175, 15, C::kCareer, A::kAvailable},
-    {176, 20, C::kCareer, A::kAvailable},     {177, 25, C::kCareer, A::kAvailable},
-    {178, 30, C::kCareer, A::kAvailable},     {179, 35, C::kCareer, A::kAvailable},
-    {180, 40, C::kCareer, A::kAvailable},     {181, 50, C::kCareer, A::kAvailable},
-    {182, 50, C::kCareer, A::kAvailable},     {183, 15, C::kRacing, A::kAvailable},
-    {184, 20, C::kRacing, A::kAvailable},     {185, 25, C::kRacing, A::kAvailable},
-    {186, 20, C::kRacing, A::kAvailable},     {187, 30, C::kRacing, A::kAvailable},
-    {188, 50, C::kRacing, A::kAvailable},     {189, 15, C::kFame, A::kAvailable},
-    {190, 20, C::kFame, A::kAvailable},       {191, 25, C::kFame, A::kAvailable},
-    {192, 10, C::kExplore, A::kAvailable},    {193, 15, C::kExplore, A::kAvailable},
-    {194, 30, C::kExplore, A::kAvailable},    {195, 25, C::kExplore, A::kAvailable},
-    {196, 10, C::kOnline, A::kNeedsOnline},   {197, 10, C::kOnline, A::kNeedsOnline},
-    {198, 15, C::kOnline, A::kNeedsOnline},   {199, 15, C::kOnline, A::kNeedsOnline},
-    {200, 15, C::kOnline, A::kNeedsOnline},   {201, 20, C::kOnline, A::kNeedsOnline},
-    {202, 10, C::kOnline, A::kNeedsOnline},   {203, 10, C::kOnline, A::kNeedsOnline},
-    {204, 15, C::kOnline, A::kNeedsOnline},   {205, 20, C::kOnline, A::kNeedsOnline},
-    // Horizon Rally (206-215)
-    {206, 20, C::kRally, A::kAvailable},      {207, 25, C::kRally, A::kAvailable},
-    {208, 25, C::kRally, A::kAvailable},      {209, 25, C::kRally, A::kAvailable},
-    {210, 25, C::kRally, A::kAvailable},      {211, 25, C::kRally, A::kAvailable},
-    {212, 20, C::kRally, A::kNeedsRivals},    {213, 25, C::kRally, A::kNeedsOnline},
-    {214, 30, C::kRally, A::kAvailable},      {215, 30, C::kRally, A::kAvailable},
-    // 1000 Club (216-225)
-    {216, 15, C::kClub, A::kAvailable},       {217, 20, C::kClub, A::kAvailable},
-    {218, 25, C::kClub, A::kAvailable},       {219, 25, C::kClub, A::kAvailable},
-    {220, 25, C::kClub, A::kAvailable},       {221, 25, C::kClub, A::kAvailable},
-    {222, 25, C::kClub, A::kAvailable},       {223, 30, C::kClub, A::kAvailable},
-    {224, 30, C::kClub, A::kAvailable},       {225, 30, C::kClub, A::kAvailable},
+    {155, 10, C::kCareer, A::kAvailable, "Welcome to Horizon"},
+    {156, 15, C::kFestival, A::kAvailable, "Take Her for a Spin!"},
+    {157, 10, C::kCareer, A::kAvailable, "...and across the line!"},
+    {158, 20, C::kCareer, A::kAvailable, "First!"},
+    {159, 10, C::kRacing, A::kAvailable, "Born Slippy"},
+    {160, 15, C::kRacing, A::kAvailable, "WARNING!!! DANGER TO MANIFOLD"},
+    {161, 15, C::kRacing, A::kAvailable, "#WINNING!"},
+    {162, 20, C::kRacing, A::kAvailable, "Close Encounters"},
+    {164, 10, C::kExplore, A::kAvailable, "Lawbreaker"},
+    {165, 20, C::kRacing, A::kAvailable, "Vendetta"},
+    {166, 10, C::kFestival, A::kAvailable, "Been There, Done That!"},
+    {167, 10, C::kFestival, A::kAvailable, "Rave Paint"},
+    {168, 10, C::kFestival, A::kNeedsOnline, "Wheelin' 'n Dealin'"},
+    {169, 10, C::kFestival, A::kAvailable, "May The Forza Be With You"},
+    {170, 10, C::kFame, A::kAvailable, "One to Watch"},
+    {171, 15, C::kFame, A::kAvailable, "The Next Big Thing"},
+    {172, 20, C::kFame, A::kAvailable, "Almost Famous"},
+    {173, 25, C::kFame, A::kAvailable, "Killer Skills"},
+    {174, 30, C::kFame, A::kAvailable, "Notorious"},
+    {175, 20, C::kCareer, A::kAvailable, "A Wristed Development"},
+    {176, 25, C::kCareer, A::kAvailable, "Going Green"},
+    {177, 30, C::kCareer, A::kAvailable, "Out of the Blue"},
+    {178, 35, C::kCareer, A::kAvailable, "Racing for Pinks"},
+    {179, 40, C::kCareer, A::kAvailable, "Freshly Squeezed"},
+    {180, 45, C::kCareer, A::kAvailable, "Purple Reign"},
+    {181, 50, C::kCareer, A::kAvailable, "Golden Boy"},
+    {182, 100, C::kCareer, A::kAvailable, "Darius Who?"},
+    {183, 10, C::kRacing, A::kAvailable, "Hard Driving"},
+    {184, 30, C::kRacing, A::kAvailable, "Gettin' It Done"},
+    {185, 30, C::kRacing, A::kAvailable, "Win Diesel"},
+    {186, 20, C::kRacing, A::kAvailable, "Exhibitionist"},
+    {187, 10, C::kRacing, A::kAvailable, "Domination!"},
+    {188, 30, C::kRacing, A::kAvailable, "All Your Race Are Belong to Us"},
+    {189, 25, C::kFame, A::kAvailable, "Stuntman"},
+    {190, 10, C::kFame, A::kAvailable, "Kudos to You"},
+    {191, 20, C::kFame, A::kAvailable, "Sellout"},
+    {192, 5, C::kExplore, A::kAvailable, "Barn This Way"},
+    {193, 10, C::kExplore, A::kAvailable, "Bargain Shopper"},
+    {194, 20, C::kExplore, A::kAvailable, "Black Friday"},
+    {195, 25, C::kExplore, A::kAvailable, "Road Trip"},
+    {196, 10, C::kOnline, A::kNeedsOnline, "Still a Noob..."},
+    {197, 20, C::kOnline, A::kNeedsOnline, "Noob No More"},
+    {198, 5, C::kOnline, A::kNeedsOnline, "Playground Games"},
+    {199, 20, C::kOnline, A::kNeedsOnline, "Swings and Roundabouts"},
+    {200, 20, C::kOnline, A::kNeedsOnline, "Cruise Club"},
+    {201, 5, C::kOnline, A::kNeedsOnline, "Ding!"},
+    {202, 10, C::kOnline, A::kNeedsOnline, "Just Me and the XP"},
+    {203, 5, C::kOnline, A::kNeedsOnline, "OMG"},
+    {204, 10, C::kOnline, A::kNeedsOnline, "ZOMG!"},
+    {205, 20, C::kOnline, A::kNeedsOnline, "OMGWT*BBQ!?"},
+    {206, 20, C::kRally, A::kAvailable, "Now that's a Special Stage"},
+    {207, 20, C::kRally, A::kAvailable, "Covered in Mud and Glory"},
+    {208, 20, C::kRally, A::kAvailable, "Take her for a Power Slide"},
+    {209, 75, C::kRally, A::kAvailable, "Horizon Rally Champion"},
+    {210, 25, C::kRally, A::kAvailable, "Harder Driving"},
+    {211, 10, C::kRally, A::kAvailable, "Mile High Club"},
+    {212, 20, C::kRally, A::kAvailable, "Rally Rivals"},
+    {213, 25, C::kRally, A::kNeedsOnline, "Ghostbuster"},
+    {214, 15, C::kRally, A::kAvailable, "Flawless Victory"},
+    {215, 20, C::kRally, A::kAvailable, "High Five!"},
+    {216, 10, C::kClub, A::kAvailable, "My First Challenge"},
+    {217, 20, C::kClub, A::kAvailable, "Ferrari Fan"},
+    {218, 20, C::kClub, A::kAvailable, "It's Just Money"},
+    {219, 20, C::kClub, A::kAvailable, "Snake Charmer"},
+    {220, 20, C::kClub, A::kAvailable, "Lamborghini Lover"},
+    {221, 20, C::kClub, A::kAvailable, "Nissan Ninja"},
+    {222, 20, C::kClub, A::kAvailable, "Well Engineered"},
+    {223, 20, C::kClub, A::kAvailable, "Sir Challenge-a-Lot"},
+    {224, 20, C::kClub, A::kAvailable, "Ford Champion"},
+    {225, 80, C::kClub, A::kAvailable, "Forza Legend"},
 };
 
 const MetaSpec* find_meta(uint16_t id) {
@@ -154,49 +190,77 @@ std::vector<std::string> wrap_lines(std::string_view text, const TextStyle& styl
   return lines;
 }
 
-// Evaluates known progress & unlock conditions against gameplay state.
-std::optional<AchievementProgress> eval_condition(uint16_t id, const AchievementGameplayState& s, bool& should_unlock) {
+// The offline unlock rule of each FH1 achievement, from its SPA unlock text
+// (quoted per case). Returns progress for counter rules; `should_unlock` says
+// whether the condition holds. Returns false in `known` for ids with no rule.
+std::optional<AchievementProgress> eval_condition(uint16_t id, const AchievementGameplayState& s, bool& should_unlock,
+                                                  bool* known = nullptr) {
   should_unlock = false;
+  if (known) *known = true;
   auto counter = [&](int cur, int target) -> std::optional<AchievementProgress> {
     const uint32_t c = uint32_t(std::max(0, cur));
     const uint32_t t = uint32_t(std::max(1, target));
     should_unlock = (c >= t);
     return AchievementProgress{c, t};
   };
+  // "Win every ..." rules: a total of 0 is unknown and never unlocks.
+  auto all_of = [&](int won, int total) -> std::optional<AchievementProgress> {
+    if (total <= 0) return std::nullopt;
+    return counter(std::min(won, total), total);
+  };
+  auto flag = [&](bool v) -> std::optional<AchievementProgress> {
+    should_unlock = v;
+    return std::nullopt;
+  };
+  // Popularity chart position: rank 250 at the start, 1 at the top.
+  auto rank_at_most = [&](int rank) {
+    const int climbed = 250 - std::clamp(s.popularity_rank, 1, 250);
+    return counter(climbed, 250 - rank);
+  };
   switch (id) {
-    case 155: should_unlock = s.career_started || s.num_races > 0 || s.wristbands_earned > 0; return std::nullopt;
-    case 156: return counter(s.garage_cars, 1);
+    // "Arrive at the Horizon Festival."
+    case 155: return flag(s.career_started || s.num_races > 0 || s.wristbands_earned > 0);
+    // "Buy a car from the Festival Autoshow."
+    case 156: return counter(s.autoshow_purchases, 1);
+    // "Finish your first race in Single Player."
     case 157: return counter(s.num_races, 1);
-    case 158: return counter(s.num_victories, 5);
-    case 159: return counter(s.num_victories, 1);
-    case 160: return counter(s.num_podiums, 10);
-    case 161: return counter(s.num_victories, 25);
-    case 162: return counter(s.race_encounters_won + s.street_races_won, 10);
-    case 164: return counter(s.roads_discovered, 216);
-    case 166: return counter(s.garage_cars, 10);
-    case 167: return counter(s.promo_cars_spotted, 1);
-    case 169: return counter(int(std::min<int64_t>(s.total_winnings / 1000, 1000000)), 1000);
-    // Popularity Rank milestones (250th -> Top 200, Top 100, Top 50, Top 10, Rank #1).
-    case 170: {
-      const int climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
-      return counter(climbed, 250 - 200);
+    // "Win a race for the first time in Single Player."
+    case 158: return counter(s.num_victories, 1);
+    // "Win a Mixed-Surface or Dirt Race."
+    case 159: return counter(s.dirt_races_won, 1);
+    // "Win 10 Street Races."
+    case 160: return counter(s.street_races_won, 10);
+    // "Win 10 Festival Races."
+    case 161: return counter(s.festival_races_won, 10);
+    // "Beat 10 Festival Racers after challenging them to a race."
+    case 162: return counter(s.race_encounters_won, 10);
+    // "Set a speed on 5 speed traps and 5 average speed zones."
+    case 164: {
+      should_unlock = s.speed_traps_set >= 5 && s.speed_zones_set >= 5;
+      return AchievementProgress{uint32_t(std::clamp(s.speed_traps_set, 0, 5) + std::clamp(s.speed_zones_set, 0, 5)),
+                                 10u};
     }
-    case 171: {
-      const int climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
-      return counter(climbed, 250 - 100);
+    // "Beat Rivals in 10 events." (local rival ghosts count offline)
+    case 165: return counter(s.rivals_beaten, 10);
+    // "Visit the Paint Shop, Autoshow, Car Club, Marketplace, Race Central, and Workshop at the Festival."
+    case 166: {
+      const uint32_t all = drive::AchievementSignals::kAllVenues;
+      int visited = 0;
+      for (uint32_t b = 1; b & all; b <<= 1) visited += (s.festival_venues & b) ? 1 : 0;
+      should_unlock = (s.festival_venues & all) == all;
+      return AchievementProgress{uint32_t(visited), 6u};
     }
-    case 172: {
-      const int climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
-      return counter(climbed, 250 - 50);
-    }
-    case 173: {
-      const int climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
-      return counter(climbed, 250 - 10);
-    }
-    case 174: {
-      const int climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
-      return counter(climbed, 250 - 1);
-    }
+    // "Create and save a Paint Job."
+    case 167: return counter(s.paint_jobs_saved, 1);
+    // "Receive your Forza loyalty cars."
+    case 169: return flag(s.loyalty_cars_received);
+    // "Get to 200th / 100th / 50th / 10th / 1st Position on the popularity chart."
+    case 170: return rank_at_most(200);
+    case 171: return rank_at_most(100);
+    case 172: return rank_at_most(50);
+    case 173: return rank_at_most(10);
+    case 174: return rank_at_most(1);
+    // "Receive the Yellow ... Golden Wristband."
     case 175: return counter(s.wristbands_earned, 1);
     case 176: return counter(s.wristbands_earned, 2);
     case 177: return counter(s.wristbands_earned, 3);
@@ -204,30 +268,63 @@ std::optional<AchievementProgress> eval_condition(uint16_t id, const Achievement
     case 179: return counter(s.wristbands_earned, 5);
     case 180: return counter(s.wristbands_earned, 6);
     case 181: return counter(s.wristbands_earned, 7);
-    case 182: should_unlock = s.finale_complete; return std::nullopt;
-    case 183: return counter(s.festival_races_won, 10);
-    case 184: return counter(s.street_races_won, 10);
-    case 185: return counter(s.num_victories, 50);
-    case 186: should_unlock = s.top_speed_mps >= 89.4; return counter(int(s.top_speed_mps * 2.23694), 200);
-    case 187: return counter(s.outposts_discovered, std::max(1, s.total_outposts));
-    case 188: return counter(s.num_victories, 70);
-    case 189: return counter(s.pr_stunts_completed, 1);
-    case 190: return counter(s.pr_stunts_completed, 10);
-    case 191: return counter(int(std::min<int64_t>(s.max_skills_score, 1000000)), 50000);
+    // "Become the champion of the Horizon Festival."
+    case 182: return flag(s.finale_complete);
+    // "Win a race on the Hard difficulty setting."
+    case 183: return counter(s.hard_races_won, 1);
+    // "Win all Festival Races."
+    case 184: return all_of(s.festival_races_won, s.festival_races_total);
+    // "Win all Street Races."
+    case 185: return all_of(s.street_races_won, s.street_races_total);
+    // "Win every Showcase Event."
+    case 186: return all_of(s.showcases_won, s.showcases_total);
+    // "Win every Star Showdown race."
+    case 187: return all_of(s.star_showdowns_won, s.star_showdowns_total);
+    // "Win every Festival Race, Street Race, Showcase, and Star Showdown."
+    case 188: {
+      const int totals[4] = {s.festival_races_total, s.street_races_total, s.showcases_total, s.star_showdowns_total};
+      for (int t : totals)
+        if (t <= 0) return std::nullopt;
+      const int won = std::min(s.festival_races_won, totals[0]) + std::min(s.street_races_won, totals[1]) +
+                      std::min(s.showcases_won, totals[2]) + std::min(s.star_showdowns_won, totals[3]);
+      const int total = totals[0] + totals[1] + totals[2] + totals[3];
+      auto p = counter(won, total);
+      should_unlock = s.festival_races_won >= totals[0] && s.street_races_won >= totals[1] &&
+                      s.showcases_won >= totals[2] && s.star_showdowns_won >= totals[3];
+      return p;
+    }
+    // "Complete every Horizon Outpost PR Stunt."
+    case 189: return all_of(s.pr_stunts_completed, s.pr_stunts_total);
+    // "Complete 5 / 20 Sponsorship Challenges."
+    case 190: return counter(s.sponsor_challenges_completed, 5);
+    case 191: return counter(s.sponsor_challenges_completed, 20);
+    // "Discover a barn find."
     case 192: return counter(s.barns_found, 1);
+    // "Collect 10 discount signs." / "Collect all of the discount signs."
     case 193: return counter(s.discount_signs_found, 10);
-    case 194: return counter(s.discount_signs_found, 100);
-    case 195: return counter(s.barns_found, 9);
+    case 194: return all_of(s.discount_signs_found, s.discount_signs_total);
+    // "Drive along all of the roads in the game."
+    case 195: return all_of(s.roads_discovered, s.roads_total);
     // Horizon Rally (206-215)
+    // "Complete your first Horizon Rally stage."
     case 206: return counter(s.rally_stages_done, 1);
+    // "Win a Horizon Rally."
     case 207: return counter(s.rally_victories, 1);
-    case 208: return counter(s.rally_stages_done, 10);
-    case 209: return counter(s.rally_victories, 3);
-    case 210: return counter(s.rally_victories, 7);
-    case 211: return counter(s.rally_stages_done, 4);
-    case 214: return counter(s.rally_stages_done, 28);
-    case 215: return counter((s.rally_level >= 1 || s.rally_victories >= 7) ? 1 : 0, 1);
-    // 1000 Club (216-225) — unified thresholds shared with freeroam::club::compute_medal_stats()
+    // "Obtain your first Horizon Rally car."
+    case 208: return counter(s.rally_cars_obtained, 1);
+    // "Become the Horizon Rally Champion."
+    case 209: return flag(s.rally_champion);
+    // "Win a Rally stage on Hard opponent difficulty without using automatic shifting or the Driving Line."
+    case 210: return counter(s.rally_hard_manual_stage_wins, 1);
+    // "Get a total of 1609 metres of air in Horizon Rally events."
+    case 211: return counter(int(std::min(s.rally_air_m, 1.0e9)), 1609);
+    // "Complete 5 Horizon Rally events in Rivals mode." (local rival ghosts count offline)
+    case 212: return counter(s.rally_rivals_events, 5);
+    // "Win a Horizon Rally stage without crashing or using rewind."
+    case 214: return counter(s.rally_flawless_stage_wins, 1);
+    // "Purchase all five Horizon Rally cars."
+    case 215: return counter(s.rally_cars_purchased, 5);
+    // 1000 Club (216-225): "Earn a Medal in N different ..." (thresholds shared with freeroam::club)
     case 216: return counter(s.club_medals_total, freeroam::club::kClubThresholdFirstMedal);
     case 217: return counter(s.club_ferrari_cars, freeroam::club::kClubThresholdFerrari);
     case 218: return counter(s.club_million_cr_cars, freeroam::club::kClubThresholdMillionCr);
@@ -238,7 +335,9 @@ std::optional<AchievementProgress> eval_condition(uint16_t id, const Achievement
     case 223: return counter(s.club_british_cars, freeroam::club::kClubThresholdBritish);
     case 224: return counter(s.club_ford_cars, freeroam::club::kClubThresholdFord);
     case 225: return counter(s.club_cars_with_medal, freeroam::club::kClubThresholdMultiCars);
-    default: return std::nullopt;
+    default:
+      if (known) *known = false;
+      return std::nullopt;
   }
 }
 
@@ -347,6 +446,25 @@ const char* achievement_status_badge_text(bool unlocked, bool secret) {
   return unlocked ? "[UNLOCKED]" : "[LOCKED]";
 }
 
+AchievementRule achievement_rule(uint16_t id) {
+  const MetaSpec* m = find_meta(id);
+  if (!m) return AchievementRule::kNone;
+  if (m->availability == AchievementAvailability::kNeedsOnline) return AchievementRule::kOnlineOnly;
+  bool unlock = false, known = false;
+  eval_condition(id, AchievementGameplayState{}, unlock, &known);
+  return known ? AchievementRule::kOffline : AchievementRule::kNone;
+}
+
+const char* achievement_fallback_name(uint16_t id) {
+  const MetaSpec* m = find_meta(id);
+  return m ? m->name : nullptr;
+}
+
+uint16_t achievement_fallback_gamerscore(uint16_t id) {
+  const MetaSpec* m = find_meta(id);
+  return m ? m->default_g : 0;
+}
+
 int achievement_completion_tier(uint32_t earned_g, uint32_t available_g) {
   if (available_g == 0) return -1;
   if (earned_g >= available_g) return 7;
@@ -379,20 +497,28 @@ AchievementGameplayState AchievementGameplayState::from_drive_save(const drive::
   st.num_races = save.num_races;
   st.num_victories = save.num_victories;
   st.num_podiums = save.num_podiums;
-  // Count actual Festival vs Street Race wins from event_results (never fabricate from num_victories).
-  for (const auto& [eid, place] : save.event_results) {
-    if (place != 1) continue;
-    if (catalog) {
-      if (const auto* ev = catalog->find_event_by_id(eid)) {
-        if (ev->style == 2) {
-          ++st.street_races_won;
-        } else if (ev->style == 1 || ev->style == 5 || ev->style == 6) {
-          ++st.festival_races_won;
-        }
-        continue;
+  // Distinct events won by style, from Career_EventResults and the catalog
+  // (never inferred from num_victories): 1 Festival Race (69), 2 Street Race,
+  // 3 Showcase, 5 Star Showdown. Ids outside the catalog (Rally stages and
+  // championships) are not career races.
+  if (catalog) {
+    std::set<int64_t> won;
+    for (const auto& [eid, place] : save.event_results)
+      if (place == 1) won.insert(eid);
+    std::set<int64_t> seen;
+    for (const auto& ev : catalog->events) {
+      if (!seen.insert(ev.event_id).second) continue;  // one row per race of a multi-race event
+      const bool w = won.count(ev.event_id) > 0;
+      switch (ev.style) {
+        case 1:  // the Horizon Heats qualifiers (Level -1) are not Festival Races
+          if (ev.level >= 0) ++st.festival_races_total, st.festival_races_won += w;
+          break;
+        case 2: ++st.street_races_total, st.street_races_won += w; break;
+        case 3: ++st.showcases_total, st.showcases_won += w; break;
+        case 5: ++st.star_showdowns_total, st.star_showdowns_won += w; break;
+        default: break;
       }
     }
-    ++st.festival_races_won;
   }
   st.race_encounters_won = race_encounters;
   st.discount_signs_found = int(save.signs_found.size());
@@ -416,6 +542,28 @@ AchievementGameplayState AchievementGameplayState::from_drive_save(const drive::
   st.rally_stages_done = save.num_rally_stages;
   st.rally_victories = save.num_rally_victories;
   st.rally_level = save.rally_level;
+  for (const auto& t : save.speed_traps) st.speed_traps_set += t.second > 0.0 ? 1 : 0;
+  for (const auto& z : save.speed_zones) st.speed_zones_set += z.second > 0.0 ? 1 : 0;
+  st.rivals_beaten = save.rivals_beaten;
+  // Each claimed sponsor tier is one completed Sponsorship Challenge; the Fame
+  // sponsor's tiers are counted by fame_rewards_claimed.
+  for (const auto& sp : save.sponsors)
+    if (sp.id != "Fame") st.sponsor_challenges_completed += std::max(0, sp.claimed);
+  st.sponsor_challenges_completed += std::max(0, save.fame_rewards_claimed);
+  const auto& a = save.ach;
+  st.autoshow_purchases = a.autoshow_purchases;
+  st.dirt_races_won = a.dirt_race_wins;
+  st.festival_venues = a.festival_venues;
+  st.paint_jobs_saved = a.paint_jobs_saved;
+  st.loyalty_cars_received = a.loyalty_cars_received;
+  st.hard_races_won = a.hard_race_wins;
+  st.rally_cars_obtained = int(a.rally_cars_obtained.size());
+  st.rally_champion = a.rally_champion;
+  st.rally_hard_manual_stage_wins = a.rally_hard_manual_stage_wins;
+  st.rally_air_m = a.rally_air_m;
+  st.rally_rivals_events = a.rally_rivals_events;
+  st.rally_flawless_stage_wins = a.rally_flawless_stage_wins;
+  st.rally_cars_purchased = int(a.rally_cars_purchased.size());
   for (const auto& c : save.club) {
     bool any = false;
     for (const auto& [key, done] : c.challenges) {
@@ -441,21 +589,26 @@ void AchievementsSystem::init(const fh1::SpaDatabase& spa) {
       e.id = sa.id;
       e.image_id = sa.image_id;
       e.gamerscore = sa.gamerscore;
-      e.name = sa.label.empty() ? ("ACHIEVEMENT #" + std::to_string(sa.id)) : sa.label;
+      e.name = sa.label;
       e.description = sa.description;
       e.unachieved_description = sa.unachieved_description;
       e.is_secret = !sa.show_unachieved();
       if (const auto* m = find_meta(sa.id)) {
         e.category = m->category;
         e.availability = m->availability;
+        if (e.name.empty()) e.name = m->name;
+        if (e.gamerscore == 0) e.gamerscore = m->default_g;
       } else {
         e.category = AchievementCategory::kCareer;
         e.availability = AchievementAvailability::kAvailable;
       }
+      if (e.name.empty()) e.name = "ACHIEVEMENT #" + std::to_string(sa.id);
       entries_.push_back(std::move(e));
     }
   } else {
-    // Structural fallback (base 50 achievements, zero game prose) when no spa.bin is present.
+    // No spa.bin found (no SHIFT_STATE_ROOT / play.txt state folder holding the
+    // title's content packages): the base 50 with the SPA's names and
+    // gamerscores. The DLC sets need their packages, so they are left out.
     for (const auto& m : kFh1Meta) {
       if (m.id > 205) break;
       AchievementEntry e;
@@ -463,7 +616,7 @@ void AchievementsSystem::init(const fh1::SpaDatabase& spa) {
       e.gamerscore = m.default_g;
       e.category = m.category;
       e.availability = m.availability;
-      e.name = "ACHIEVEMENT " + std::to_string(m.id);
+      e.name = m.name;
       e.description = "Load game spa.bin for localized achievement details.";
       e.unachieved_description = e.description;
       entries_.push_back(std::move(e));

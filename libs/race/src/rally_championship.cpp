@@ -764,6 +764,7 @@ RallyChampionshipReward RallyChampionshipSession::finalize(const RallyCatalog& c
   } else if (rew.final_place >= 1 && rew.final_place <= 3) {
     // Completed the final championship (MS_RALLY_02, Clear Springs) on the podium.
     rew.champion_unlocked = true;
+    save.ach.rally_champion = true;  // achievement 209
   }
 
   return rew;

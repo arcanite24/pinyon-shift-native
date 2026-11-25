@@ -689,6 +689,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 app.hub_orbit_dragged = false;
                 app.garage_picker();
                 app.write_career_garage();
+                ++app.saved.ach.autoshow_purchases;  // achievement 156
                 save_now("purchase");
                 const drive::Vec3 at = vehicle.position();
                 const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
@@ -1654,6 +1655,7 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                       }
                     }
                   }
+                  if (ok) ++app.saved.ach.paint_jobs_saved;  // achievement 167
                   save_now("livery");
                   notice = ok ? "LIVERY SAVED & APPLIED" : ("LIVERY SAVE FAILED: " + lerr);
                   notice_until = vehicle.time() + 3.0;

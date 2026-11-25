@@ -1094,6 +1094,10 @@ bool DriveSession::step(const drive::Input& user_in) {
             !app.rally_results_open) {
           const double ftime = app.race->stage_finish_time();
           const auto fin = app.rally_session.record_stage_finish(app.rally_catalog, ftime, app.race->stage_field());
+          // Achievement 210: a stage win on Hard opponents, manual shifting, driving line off.
+          if (fin.stage_place == 1 && app.race_options.difficulty >= race::Difficulty::kHard &&
+              app.race_options.assists.shifting != 0 && app.race_options.assists.driving_line == 0)
+            ++app.saved.ach.rally_hard_manual_stage_wins;
           app.audio_host.trigger_codriver(fin.stage_place <= 10 ? "CoDriver/FinishGood/Good1" : "CoDriver/FinishBad/Bad1");
           if (fin.championship_complete) {
             const int dpct = race::difficulty_bonus_percent(int(app.race_options.difficulty));
@@ -1642,6 +1646,11 @@ bool DriveSession::commit_race_award() {
   const int pop_before = app.current_pop_rank();
   const race::RaceAward* a = app.race->commit_award(app.career);
   if (!a) return false;
+  // Achievement 183: a win against opponents (not a solo Rivals run) on Hard
+  // (or harder) opponent difficulty.
+  if (app.race->player_place() == 1 && app.race->session().size() > 1 && !app.active_rivals.active &&
+      app.race_options.difficulty >= race::Difficulty::kHard)
+    ++app.saved.ach.hard_race_wins;
   if (slice12.trainer.pacing.modifies_economy()) {
     const int64_t scaled_cr = slice12.trainer.pacing.scale_credits(a->credits);
     const int64_t extra_cr = scaled_cr - a->credits;

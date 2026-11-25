@@ -1338,6 +1338,8 @@ void DriveSession::run_window_loop() {
                                             : (replays_dir.parent_path() / "ghosts");
                 if (app.active_rivals.active && !app.active_rivals.completed) {
                   app.active_rivals.completed = true;
+                  // Achievement 212: a Horizon Rally event completed in Rivals mode.
+                  if (app.active_rivals.is_rally_stage || app.race->is_stage()) ++app.saved.ach.rally_rivals_events;
                   const auto& pc = app.race->session().car(app.race->player_index());
                   const double finish_t = pc.finish;
                   const bool clean_run = !pc.race_dirty;
