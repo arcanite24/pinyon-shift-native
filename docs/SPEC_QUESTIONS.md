@@ -2701,8 +2701,41 @@ What remains open:
 
   Neither one is the DNF check. The engine has neither exit.
 
-Needed: the virtual query's function, and what the two early exits stand
-for.
+**2026-11-25, from the generated code.** The early exits belong to the
+whole race payout, not only to BEAT THE STAR: they return before the
+credits, the skill bonus and the star bonus are worked out. The star
+bonus itself is a separate step. It takes the event id, the player's
+place and the star's place, and pays only when the player is ahead and
+the event's `CareerEventStyle` is 1.
+
+Both flags are copied into the race setup from a session description,
+next to each other. The functions that write them there are the online
+lobby's and the replay's, so both exits probably concern online or replay
+races rather than career events. That is inferred from where they are
+written.
+- **First exit.** The second flag is set, and a per-race counter on the
+  player, divided by a value from the player's race timer (when that value
+  is above 1.0), reaches an integer tuning threshold. The tuning record
+  is the same one the second exit reads.
+- **Second exit.** The first flag is clear, and the player was flagged
+  during the race. The flag is set while racing when the spread of one
+  tracked value stays below a float tuning threshold: the race keeps that
+  value's minimum and maximum, and the flag means max − min < threshold.
+  The value comes from one of the car's per-frame queries. It reads like
+  an "idle or barely moved" guard, but this is inferred.
+
+The star query was not settled. The step walks the participants, takes the
+first whose driver answers true to one virtual query, and reads that
+driver's place; that function is still unidentified.
+
+The engine keeps its reading (Q115's first two bullets). It adds neither
+exit, because neither applies to an offline career race on the evidence
+so far.
+
+Needed:
+- the virtual query;
+- the counter's writer and the timer value (exit 1);
+- the tracked value (exit 2).
 
 ## Q116 (PROG-12, not blocking): barn-find gates the engine does not model
 
