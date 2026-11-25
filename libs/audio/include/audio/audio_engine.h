@@ -107,7 +107,15 @@ class AudioEngine {
                          const std::filesystem::path& state_root = {});
   int load_rally_ambience_beds(const std::filesystem::path& rally_root_or_state_root,
                                const std::filesystem::path& cache_dir);
+  // Decodes the loops of these ambience events (the map's placements);
+  // control thread.
+  int want_ambience_events(const std::vector<uint32_t>& event_hashes);
   void set_rally_world(bool on);
+  // The game state the ambience events read that the audio thread cannot see
+  // itself (InRace, PreRaceAmbience, CameraType, CrowdExcitement; each 0..1).
+  // CurrentTime, CarSpeed, Speed, Engine_RPM and RadioIsPlaying come from the
+  // time of day, the focus car and the radio.
+  void set_ambience_state(float in_race, float pre_race_ambience, float camera_type, float crowd_excitement);
   void set_ambience_bed_sample(AmbienceBedSlot slot, PcmSample pcm);
   void set_rally_ambience_bed_sample(int region_idx, std::string_view region_name, PcmSample pcm);
   void set_vo_base_root(const std::filesystem::path& game_root) { vo_base_game_root_ = game_root; }
@@ -115,6 +123,10 @@ class AudioEngine {
                      std::string* note = nullptr);
   void reload_sfx_burble(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
                          const std::string& burble_bank, int burble_count = 0, int backfire_count = 0);
+  // Other cars' own engine sounds (SfxEngine::set_other_car_engine); control thread.
+  void set_other_car_engine(uint32_t car_id, std::unique_ptr<EnginePlayer> player);
+  void set_other_car_engines_owned(bool on);
+  int other_car_engine_count();
   // Attaches `radio` (caller keeps `RadioData` and `Radio` alive until
   // AudioEngine is stopped/destroyed or detached with nullptr) and its player.
   void set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player);
@@ -129,6 +141,9 @@ class AudioEngine {
   void trigger_collision(const CollisionHit& hit);
   void trigger_landing(const LandingHit& hit);
   void trigger_ui(UiCue cue);
+  // Plays every layer of a UI catalog event (SfxEngine::ui_catalog(); the
+  // caller resolves the ui4audio play name and scene), scaled by `gain`.
+  void trigger_ui_event(const UiAudioCatalog::Event& event, float gain = 1.0f);
   void trigger_satnav(SatNavCue cue);
   void set_satnav_enabled(bool on);
   void trigger_vo(std::string_view trigger_id, bool interrupt = false);
@@ -248,6 +263,7 @@ class AudioEngine {
       kTriggerCollision,
       kTriggerLanding,
       kTriggerUi,
+      kTriggerUiEvent,
       kTriggerSatNav,
       kSatNavEnable,
       kTriggerCoDriver,
@@ -266,6 +282,7 @@ class AudioEngine {
       kRallyWorld,
       kDialogDuck,
       kRadioViperLock,
+      kAmbienceState,
     };
     Kind kind = kBusLevel;
     int i0 = 0;
@@ -334,6 +351,7 @@ class AudioEngine {
   RtAcousticsSample last_acoustics_{};
   bool have_acoustics_ = false;
   float tod_hour_ = 12.0f;
+  AmbienceParams ambience_params_{};  // audio thread: InRace, PreRaceAmbience, CameraType, CrowdExcitement set by command
 
   EnginePlayer::Update last_engine_in_{};
   bool have_engine_in_ = false;

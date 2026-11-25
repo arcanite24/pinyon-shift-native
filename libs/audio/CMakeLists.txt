@@ -15,6 +15,7 @@ add_library(shift_audio STATIC
   src/fev.cpp
   src/event_configs.cpp
   src/sfx_engine.cpp
+  src/ui_audio.cpp
   src/satnav_vo.cpp
   src/codriver_vo.cpp
   src/vo_player.cpp

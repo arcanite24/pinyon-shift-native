@@ -2090,3 +2090,101 @@ Still interim:
 Needed: the stick thresholds and InvertCameraLookBack handling; the
 sputter scheduler; the dynamic motion-blur amount rule and its time
 base.
+
+## Q80 (audio, not blocking): what drives the ambience state
+
+SPEC-AUDIO-EVENTS "World ambience" lists the parameters of
+`AMB_Default.fev` and `Colorado_Festival.fev`. The engine now evaluates the
+events' own curves (AUDIO-11), and feeds `CurrentTime` from the time of
+day, `CarSpeed`, `Speed` and `Engine_RPM` from the focus car,
+`RadioIsPlaying` from the radio, and `InRace` from the flag that selects
+the `Race` snapshot. Missing:
+
+- **`PreRaceAmbience` (0..1).** It is on `Default_Crickets_Bed` (silent
+  from 0.5), `Default_Crowd_Grandstand` (ducked to 0.063 from 0.5) and
+  `Default_Street_Race_Music`. Which race phase sets it, and whether 1
+  means "in the pre-race" or "out of it", is not decoded. The engine keeps
+  it at 0 (`AudioHost::set_pre_race_ambience` has no caller).
+- **`CrowdExcitement`** (`Colorado_Festival.fev`): its source is not
+  decoded either. The engine keeps it at 0 (`set_crowd_excitement`).
+- **`CameraType` (0..1)**: which camera is which value. The engine keeps
+  it at 0.
+- **`Triggerable_Events.fev`** (28 scripted flybys driven by `Speed`,
+  `PhaseRate`, `ClimbAngle`, `Bank`, `Pitch`): their dispatch and paths
+  are not decoded, so no flyby plays.
+
+Needed, narrow: the writers of these parameters in the ambience code the
+findings name (`COpenWorldAmbience`, `CAmbientAudio`).
+
+## Q81 (audio, not blocking): ambience playback the disc does not settle
+
+- **Spawned sounds.** A sound definition's property template starts with
+  u32 play mode, u32 spawn time min and max (ms), u32 maximum spawned and
+  f32 volume. That layout is read from the values (Tree_Rustle
+  1,000..10,000 ms, Air_Horns 500..30,000, Shouts_Lots 0..2,000 with 3
+  spawned; the continuous beds River, Crickets and Race_Crowd_Amb read
+  0..0), not from a spec. The engine loops the 0..0 beds and does not play
+  the spawned one-shots (horns, whistles, door slams, dogs, shouts).
+- **Placement.** Every placed Track3D event but the 110,000
+  `Default_Reflections_*` placements is now an emitter (10,080). The engine
+  pools the 8 nearest whose event has a loop it plays (4,795 placements),
+  each within its event's own `(distance)` range. FMOD's voice limit per
+  event (`max_playbacks`) and its real voice stealing are not applied, and
+  race-only events (grandstands, race crowds) take pool places in free
+  roam, where their `InRace` window silences them.
+- **Quad beds.** The region beds are 4-channel (`_F` and `_R` stems, the
+  rear on `Speaker Level` 2). The engine plays the front stem only.
+- **Regional banks.** Placements name `AMB_Main_Town`, `AMB_Mountains`
+  and `AMB_Foothills` events that are not on the base disc; they stay
+  silent.
+- **Trees.** The ambience templates name a `TreeEventName`
+  (`Default_Tree`, `Default_Tree_Desert`: birds by day, crickets by night)
+  and the tiles hold 76,636 `<Tree>` positions, but no tree is an emitter
+  yet.
+
+## Q82 (audio, not blocking): TrashDSP units and the overdrive scale
+
+The focus car's `_ET.xml` `TrashDSP` bands read `inputgain`/`outputgain`
+0, 1, 2, -2, 3, -3 and `mix` 80 (1,739 of 2,055 bands), so the engine now
+reads the gains as dB and mix as a percentage, and scales the band sum by
+the TrashDSP's own `VolumeCompensate` (0.18 to 0.25 on most tunings). That
+is an inference from the value distributions. Before, a 0 dB band
+multiplied by zero: VW_Beetle_04's focus exhaust rendered silent; it now
+renders at 48.1 (the same loops as another car, without the focus DSP:
+56.9). `overdrive` reads 2.8 to 7.5 on the disc but the shaper takes 0..1,
+so it saturates at 1. `UseCurves="1"` (208 tunings) per-band curves are not
+read. Needed: the shaping curve and the overdrive scale.
+
+## Q83 (audio, not blocking): UI cues and other-car audio left open
+
+- `kAchievementReward` and `kSkillBreak` map to `Hud_GeneralNotificationAppear`
+  and `Lose_Points`, which are empty events on the disc, so both are
+  silent. Is another event meant?
+- The 3-2-1 countdown plays `321MomentStart`, `321Count` per digit and
+  `321Go`; digit 3 gets no `321Count` (the MomentStart covers it). Not
+  confirmed.
+- Stereo UI samples are folded to mono; LFE stems fold into stereo at full
+  level.
+- Other cars at the Default view are point sources (the view's speaker
+  pans are 0 on the disc); traffic has no throttle signal and plays at
+  0.5. The pitch-envelope scale of FEV events is not decoded.
+
+## Q84 (audio, not blocking): placed ambience events the disc does not have
+
+Of the 10,080 placed Track3D events (reflections excluded), 1,295 name an
+event that no base-disc ambience FEV has. Most are regional
+(`MainTown_Car_Door_Slam` 251, `MainTown_Car_Horn_Distant` 246,
+`MainTown_Dogs` 211, `Mountains_*`, `Plains_Rusty_*`; Q81). Of the 173
+`Festival_*` placements, 57 resolve. The tiles name `Festival_Air_Horn`
+(32), `Festival_Whistle` (44), `Festival_Swell` and `Festival_Workshop`,
+but `Colorado_Festival.fev` names its events `Air_Horn`, `Whistle`, `Swell`
+and `Workshop`. `Festival_Music_Speakers_C`/`_D`,
+`Festival_Paintshop_Spraypaint` and `Festival_Quad_MemRes` match nothing.
+The engine plays none of them (no stand-in). Before AUDIO-11 a global crowd
+bed played near any festival placement; with the disc's events loaded it
+does not. The festival is heard from its stage music, stage crowd,
+grandstand, tanoy and speakers.
+
+Needed: how the game resolves a placement's `eventName` to an event (a
+project or group prefix it strips, or a remap table), and where the
+regional banks are.

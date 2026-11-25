@@ -55,6 +55,7 @@ struct LoadedSound {
   EngineSound sound;
   std::map<std::string, std::vector<FsbSample>> banks;  // lower-case bank name
   std::vector<std::string> notes;                       // missing files and silent groups
+  bool fallback = false;  // no <media>_ET.xml: the VW_BORAVR6_03 tunings stand in (SPEC-ENGINE-SOUND)
 };
 bool load_engine_sound(SoundFiles& files, const std::string& media, LoadedSound& out, std::string* error,
                        UpgradeLevels levels = {});

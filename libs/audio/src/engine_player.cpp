@@ -181,32 +181,9 @@ void EnginePlayer::advance_dsp(double dt) {
     shift_boost_cur_ = 0.0;
   }
 
-  // Two-mode damped drivetrain spring oscillation (drivetrain_spring_*).
-  if (sound_.drivetrain_spring.enabled && sound_.drivetrain_spring.clamp > 0.0) {
-    const auto& ds = sound_.drivetrain_spring;
-    const double w1 = 2.0 * kPi * std::clamp(ds.spring_f1, 0.5, 45.0);
-    const double w2 = 2.0 * kPi * std::clamp(ds.spring_f2, 0.5, 60.0);
-    const double c1 = 2.0 * std::clamp(ds.damper_r1, 0.05, 10.0) * w1;
-    const double c2 = 2.0 * std::clamp(ds.damper_r2, 0.05, 10.0) * w2;
-    const int steps = std::max(1, std::min(64, int(std::ceil(clamped_dt / 0.002))));
-    const double h = clamped_dt / double(steps);
-    for (int s = 0; s < steps; ++s) {
-      const double a1 = -w1 * w1 * spring_x1_ - c1 * spring_v1_;
-      spring_v1_ += a1 * h;
-      spring_x1_ += spring_v1_ * h;
-      const double a2 = -w2 * w2 * spring_x2_ - c2 * spring_v2_;
-      spring_v2_ += a2 * h;
-      spring_x2_ += spring_v2_ * h;
-    }
-    if (!std::isfinite(spring_x1_) || !std::isfinite(spring_v1_)) spring_x1_ = spring_v1_ = 0.0;
-    if (!std::isfinite(spring_x2_) || !std::isfinite(spring_v2_)) spring_x2_ = spring_v2_ = 0.0;
-    const double lim = ds.clamp;
-    spring_x1_ = std::clamp(spring_x1_, -lim, lim);
-    spring_x2_ = std::clamp(spring_x2_, -lim, lim);
-    rpm_spring_offset_ = std::clamp((spring_x1_ + 0.45 * spring_x2_) * ds.scalar, -lim, lim);
-  } else {
-    rpm_spring_offset_ = 0.0;
-  }
+  // No drivetrain_spring stage. The engine tuning's drivetrain_spring_*
+  // values are parsed (engine_sound.cpp), but the game's two-spring update
+  // is not decoded, and SPEC-ENGINE-SOUND "Unknowns" says to omit it.
 }
 
 void EnginePlayer::set(const Update& u) {
@@ -219,26 +196,12 @@ void EnginePlayer::set(const Update& u) {
   const double pos_t = safe_clamp(u.pos_torque, 0.0, 1.0, 0.0);
   const double raw_neg = safe_finite(u.neg_torque, 0.0);
   const double neg_in = raw_neg < 0 ? std::clamp(raw_neg, -1.0, 0.0) : std::clamp(raw_neg, 0.0, 1.0);
-  const double signed_torque = pos_t - std::fabs(neg_in);
-  if (sound_.drivetrain_spring.enabled && sound_.drivetrain_spring.clamp > 0.0) {
-    if (have_spring_torque_) {
-      const double dtq = std::clamp(signed_torque - prev_spring_torque_, -2.0, 2.0);
-      if (std::fabs(dtq) > 0.02) {
-        const double impulse = dtq * std::min(sound_.drivetrain_spring.clamp, 600.0) * 6.0;
-        spring_v1_ += impulse;
-        spring_v2_ += impulse * 0.6;
-      }
-    }
-    prev_spring_torque_ = signed_torque;
-    have_spring_torque_ = true;
-    audio_rpm_ = std::clamp(audio_rpm_ + rpm_spring_offset_, 0.0, 32000.0);
-  }
   SoundInputs in{n, thr, pos_t, neg_in};
   const double global = safe_clamp(sound_.global_volume.eval(in, neg_raises) * sound_.engine_volume * master, 0.0, 16.0, 0.0);
   const size_t view = size_t(std::clamp(int(u.view), 0, kViews - 1));
 
   // Focus _ET.xml DSP: FocusPEQ & Distortion parameter updates.
-  if (sound_.focus_peq.active) {
+  if (sound_.focus_peq.active && !positional) {
     const double fg = safe_clamp(sound_.focus_peq.gain.eval(in, neg_raises), 0.05, 3.0, 1.0);
     const double ffc = sound_.focus_peq.center_freq.eval(in, neg_raises);
     const double fbw = sound_.focus_peq.bandwidth.eval(in, neg_raises);
@@ -250,7 +213,7 @@ void EnginePlayer::set(const Update& u) {
     focus_peq_l_.set_bypass();
     focus_peq_r_.set_bypass();
   }
-  if (sound_.distortion.active) {
+  if (sound_.distortion.active && !positional) {
     const double lv = sound_.distortion.level.present
                           ? sound_.distortion.level.eval(in, neg_raises)
                           : sound_.distortion.level_scalar;
@@ -283,8 +246,8 @@ void EnginePlayer::set(const Update& u) {
     for (const auto& g : sound_.groups) {
       if (iequals(g.name, "EngineIntake")) {
         intake_view = g.view_level[view];
-        pl = g.pan_left[view];
-        pr = g.pan_right[view];
+        pl = positional ? 1.0 : g.pan_left[view];
+        pr = positional ? 1.0 : g.pan_right[view];
         break;
       }
     }
@@ -307,8 +270,8 @@ void EnginePlayer::set(const Update& u) {
     st.exp_max_gain = group.expander.present ? std::max(0.0, group.expander.max_gain.eval(in, neg_raises)) : 0.0;
     st.base_target_gain = group.gain.eval(in, neg_raises) * group.view_level[view] * global;
     st.target_gain = st.base_target_gain * (1.0 + st.exp_state);
-    st.left = group.pan_left[view];
-    st.right = group.pan_right[view];
+    st.left = positional ? 1.0 : group.pan_left[view];
+    st.right = positional ? 1.0 : group.pan_right[view];
 
     // 2nd-order resonant Lowpass.
     if (group.lowpass) {
@@ -364,7 +327,8 @@ void EnginePlayer::set(const Update& u) {
       const PcmSample* pcm = pcm_[g][i];
       v.target_gain = pcm ? safe_clamp(fade[i] * group.loops[i].volume, 0.0, 8.0, 0.0) : 0.0;
       if (pcm)
-        v.target_step = safe_clamp(std::max(0.0, pitch_ratio(group.loops[i], audio_rpm_)) * pcm->rate / rate_, 0.0, 16.0, 1.0);
+        v.target_step = safe_clamp(std::max(0.0, pitch_ratio(group.loops[i], audio_rpm_)) * pcm->rate / rate_ * pitch_scale, 0.0,
+                                  16.0, 1.0);
       if (!v.active && v.target_gain > 0.001) {
         v.active = true;
         v.phase = 0;
@@ -380,9 +344,9 @@ void EnginePlayer::render(float* out, int frames) {
   std::fill(out, out + 2 * size_t(frames), 0.0f);
   advance_dsp(double(frames) / double(rate_));
 
-  const bool run_focus_peq = sound_.focus_peq.active;
+  const bool run_focus_peq = sound_.focus_peq.active && !positional;
   const bool run_dist = sound_.distortion.active && cur_dist_level_ > 1e-4;
-  const bool run_trash = sound_.trash_dsp.active;
+  const bool run_trash = sound_.trash_dsp.active && !positional;
   const bool run_focus_dsp = run_focus_peq || run_dist || run_trash;
 
   auto group_bucket = [&](size_t g) -> int {
@@ -491,8 +455,9 @@ void EnginePlayer::render(float* out, int frames) {
             const double lo = trash_lp1_[c];
             const double mid = trash_lp2_[c] - trash_lp1_[c];
             const double hi = ch[c] - trash_lp2_[c];
-            ch[c] = shape_band(lo, sound_.trash_dsp.bands[0]) + shape_band(mid, sound_.trash_dsp.bands[1]) +
-                    shape_band(hi, sound_.trash_dsp.bands[2]);
+            ch[c] = (shape_band(lo, sound_.trash_dsp.bands[0]) + shape_band(mid, sound_.trash_dsp.bands[1]) +
+                     shape_band(hi, sound_.trash_dsp.bands[2])) *
+                    sound_.trash_dsp.volume_compensate;
           }
         }
         if (std::isfinite(ch[0])) out_chunk[2 * f] += float(ch[0]);

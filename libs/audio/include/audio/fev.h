@@ -137,6 +137,22 @@ struct FevSoundDefEntry {
   float osc_freq = 0.0f;
 };
 
+// The head of a sound-definition property template (section 6). On the
+// disc's AMB_Default.fev: u32 play mode, u32 spawn time min and max (ms), u32
+// maximum spawned sounds, f32 volume. Spawned one-shots carry a spawn time
+// (Tree_Rustle 1,000..10,000 ms, Air_Horns 500..30,000, Car_Door_Slams
+// 0..30,000, Shouts_Lots 0..2,000 with 3 spawned); the continuous beds
+// (River, Crickets, Race_Crowd_Amb) carry 0..0. The rest of the block
+// (randomisation and recalculation flags) is not decoded.
+struct FevSoundDefTemplate {
+  uint32_t play_mode = 0;
+  uint32_t spawn_min_ms = 0;
+  uint32_t spawn_max_ms = 0;
+  uint32_t max_spawned = 1;
+  float volume = 1.0f;
+  bool spawned() const { return spawn_max_ms > 0; }
+};
+
 struct FevSoundDef {
   std::string name;
   uint32_t template_index = 0;
@@ -150,13 +166,60 @@ struct FevProject {
   std::vector<FevWavebank> wavebanks;
   FevCategory root_category;
   std::vector<FevEvent> events;
+  std::vector<FevSoundDefTemplate> templates;
   std::vector<FevSoundDef> sound_defs;
   uint32_t reverb_count = 0;
+
+  // The sound definition's property template, or null.
+  const FevSoundDefTemplate* template_of(const FevSoundDef& sd) const {
+    return sd.template_index < templates.size() ? &templates[sd.template_index] : nullptr;
+  }
 
   // Case-insensitive lookup by full path "<project>/<group>/.../<event>"
   // (or "<group>/.../<event>" without project prefix).
   const FevEvent* find_event(std::string_view path) const;
 };
+
+// --- Event evaluation (complex events) --------------------------------------
+// What the disc's events show (all 34 projects, dumped):
+//  - Envelope x and an instance's start_pos/length are normalised to the
+//    parameter's [min_val, max_val] (x <= 1 for Speed 0..275, RPM 0..16000).
+//  - An envelope with no DSP name and flag 0x08 is the layer's volume: y is
+//    linear amplitude (0.708, 0.501, 0.251 = -3, -6, -12 dB grid points), and
+//    a layer's volume envelopes multiply.
+//  - Flag 0x10 (no DSP name) is the layer's pitch: y = 0.5 is unity. The
+//    octave scale of y is not decoded, so it is reported raw, not applied.
+//  - An instance sounds while the layer's control parameter is inside
+//    [start_pos, start_pos + length]; fadein_len / fadeout_len are fractions
+//    of the instance's own length (-1 = none). Damage.fev's DamSlow fade-out
+//    (0.689 x 0.819) and DamFast fade-in (0.758 x 0.745) both span the two
+//    instances' overlap, 0.564. Fades are linear (curve shapes undecoded).
+// DSP-unit envelopes (Lowpass, Highpass, Tremolo, Flange, Speaker Level) are
+// not evaluated.
+inline constexpr uint32_t kFevEnvVolume = 0x08u;
+inline constexpr uint32_t kFevEnvPitch = 0x10u;
+// An unnamed unit whose parameters are a surround pan: param 0 left/right
+// (1 = left), param 1 back/front (1 = front), param 2 LFE send. The disc's
+// countdown stems Left / Right / Left Surround / Right Surround carry
+// (1,1) / (0,1) / (1,0) / (0,0).
+inline constexpr uint32_t kFevEnvSurroundPan = 0x80u;
+
+struct FevInstanceLevel {
+  uint16_t layer = 0;
+  uint16_t instance = 0;
+  uint16_t sound_def = 0;
+  float gain = 0.0f;       // event volume x instance volume x crossfade x volume envelopes
+  float pitch_env = 0.5f;  // the layer's pitch envelope y (0.5 = unity; scale undecoded)
+  bool has_pitch_env = false;
+};
+
+// `raw` normalised to the parameter's range and clamped to [0, 1].
+float fev_normalize(const FevParameter& p, float raw);
+// Evaluates every layer instance of `ev` at the raw parameter values `raw`
+// (indexed like ev.params; missing entries read as the parameter's minimum).
+// Writes at most `cap` levels (audible or not) and returns how many it wrote.
+// No allocation: safe on the audio thread.
+int evaluate_fev_event(const FevEvent& ev, const float* raw, size_t raw_count, FevInstanceLevel* out, int cap);
 
 bool parse_fev(std::span<const uint8_t> bytes, FevProject& out, std::string* error = nullptr);
 bool load_fev(const std::filesystem::path& path, FevProject& out, std::string* error = nullptr);

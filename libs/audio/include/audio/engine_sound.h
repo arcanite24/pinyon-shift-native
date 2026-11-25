@@ -86,6 +86,7 @@ struct TrashDspConfig {
   bool active = false;
   double cutoff1_hz = 300.0;
   double cutoff2_hz = 2500.0;
+  double volume_compensate = 1.0;  // TrashDSP VolumeCompensate: the bands' sum is scaled by it
   std::array<TrashBandConfig, 3> bands{};
 };
 

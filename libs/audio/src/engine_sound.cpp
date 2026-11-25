@@ -263,10 +263,12 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
       out.trash_dsp.cutoff1_hz = std::clamp(trash->number("Cutoff1", 300.0), 40.0, 4000.0);
       out.trash_dsp.cutoff2_hz =
           std::clamp(trash->number("Cutoff2", 2500.0), out.trash_dsp.cutoff1_hz + 100.0, 14000.0);
-      static constexpr const char* kBandNames[3][3] = {
-          {"Low", "Band0", "Band1"},
-          {"Mid", "Band1", "Band2"},
-          {"High", "Band2", "Band3"},
+      out.trash_dsp.volume_compensate = std::clamp(trash->number("VolumeCompensate", 1.0), 0.05, 3.0);
+      // The disc names the bands Band1, Band2 and Band3 (685 tunings each).
+      static constexpr const char* kBandNames[3][2] = {
+          {"Band1", "Low"},
+          {"Band2", "Mid"},
+          {"Band3", "High"},
       };
       bool any_band = false;
       for (int bi = 0; bi < 3; ++bi) {
@@ -278,10 +280,15 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
         if (!bn && size_t(bi) < trash->children.size()) bn = &trash->children[size_t(bi)];
         if (!bn) continue;
         TrashBandConfig& tb = out.trash_dsp.bands[size_t(bi)];
-        tb.input_gain = std::clamp(first_attr_number(*bn, {"inputgain", "InputGain"}, 1.0), 0.0, 8.0);
+        // On the disc the band gains are decibels (0 = unity; 810 of the
+        // bands' outputgain values are 0, others run -3..+3) and mix is a
+        // percentage (80 on 1,739 bands). Read as linear factors, a 0 dB
+        // band multiplies by zero and silences the focus car's exhaust.
+        const auto db = [](double v) { return std::pow(10.0, std::clamp(v, -40.0, 24.0) / 20.0); };
+        tb.input_gain = db(first_attr_number(*bn, {"inputgain", "InputGain"}, 0.0));
         tb.overdrive = std::clamp(first_attr_number(*bn, {"overdrive", "Overdrive"}, 0.0), 0.0, 1.0);
-        tb.mix = std::clamp(first_attr_number(*bn, {"mix", "Mix"}, 0.0), 0.0, 1.0);
-        tb.output_gain = std::clamp(first_attr_number(*bn, {"outputgain", "OutputGain"}, 1.0), 0.0, 4.0);
+        tb.mix = std::clamp(first_attr_number(*bn, {"mix", "Mix"}, 0.0) / 100.0, 0.0, 1.0);
+        tb.output_gain = db(first_attr_number(*bn, {"outputgain", "OutputGain"}, 0.0));
         if (tb.mix > 1e-4 && tb.overdrive > 1e-4) any_band = true;
       }
       out.trash_dsp.active = any_band;

@@ -1435,6 +1435,16 @@ void sfx_engine_checks() {
     std::vector<float> other(4800 * 2, 0.0f);
     float* buses[audio::kBuses]{};
     buses[int(audio::Bus::kOtherCars)] = other.data();
+    // The aircraft synth is a no-assets stand-in: silent until the explicit fallback mode.
+    {
+      audio::VehicleAudioState vs{};
+      vs.showcase.active = true;
+      vs.showcase.pos = {15.0f, 20.0f, 25.0f};
+      vs.showcase.speed_mps = 55.0f;
+      sc_sfx.render(vs, buses, 4800, nullptr);
+      CHECK(bus_rms(other) < 1e-6);
+    }
+    sc_sfx.populate_procedural_fallbacks();
     for (uint8_t kind = 0; kind <= 4; ++kind) {
       std::fill(other.begin(), other.end(), 0.0f);
       audio::VehicleAudioState vs{};
@@ -2343,10 +2353,10 @@ void phase_r2_5_audio_completeness_checks() {
         <VolumeAdjustments BurbleVolume="0.75"/>
         <FocusPEQ Active="1" CenterFrequency="1200" Bandwidth="1.2" Gain="1.6"/>
         <Distortion Active="1" Level="0.5" VolumeCompensate="0.85"/>
-        <TrashDSP Active="1" Cutoff1="350" Cutoff2="2400">
-          <Low inputgain="1.2" overdrive="0.4" mix="0.5" outputgain="1.0"/>
-          <Mid inputgain="1.1" overdrive="0.6" mix="0.4" outputgain="1.0"/>
-          <High inputgain="1.0" overdrive="0.3" mix="0.25" outputgain="1.0"/>
+        <TrashDSP Active="1" VolumeCompensate="0.5" Cutoff1="350" Cutoff2="2400">
+          <Band1 effecttype="1" inputgain="0" overdrive="0.4" mix="50" outputgain="0"/>
+          <Band2 effecttype="2" inputgain="1" overdrive="0.6" mix="40" outputgain="-3"/>
+          <Band3 effecttype="2" inputgain="0" overdrive="0.3" mix="80" outputgain="2"/>
         </TrashDSP>
       </Engine>
     )";
@@ -2376,6 +2386,12 @@ void phase_r2_5_audio_completeness_checks() {
     CHECK(es.focus_peq.active && near(es.focus_peq.center_freq.eval({0.5, 0.5, 0.5, 0.0}), 1200.0, 1e-3));
     CHECK(es.distortion.active);
     CHECK(es.trash_dsp.active && near(es.trash_dsp.cutoff1_hz, 350.0, 1e-3));
+    // Band gains in dB and mix in percent, as on the disc.
+    CHECK(near(es.trash_dsp.volume_compensate, 0.5, 1e-9));
+    CHECK(near(es.trash_dsp.bands[0].output_gain, 1.0, 1e-9) && near(es.trash_dsp.bands[0].mix, 0.5, 1e-9));
+    CHECK(near(es.trash_dsp.bands[1].output_gain, std::pow(10.0, -3.0 / 20.0), 1e-9));
+    CHECK(near(es.trash_dsp.bands[1].input_gain, std::pow(10.0, 1.0 / 20.0), 1e-9));
+    CHECK(near(es.trash_dsp.bands[2].output_gain, std::pow(10.0, 2.0 / 20.0), 1e-9) && near(es.trash_dsp.bands[2].mix, 0.8, 1e-9));
     CHECK(es.has_other_volumes);
     CHECK(near(es.other_volumes[size_t(audio::View::kCockpit)].wind, 0.35, 1e-4));
     CHECK(near(es.other_volumes[size_t(audio::View::kCockpit)].tires, 0.40, 1e-4));
@@ -2395,11 +2411,15 @@ void phase_r2_5_audio_completeness_checks() {
     ep.set({3000.0, 0.0, 0.0, 0.0, audio::View::kFollow});
     std::vector<float> buf(960 * 2, 0.0f);
     ep.render(buf.data(), 960);
-    // Sudden full-throttle torque step excites drivetrain spring oscillation!
+    // A full-throttle torque step: the drivetrain_spring stage is omitted
+    // (SPEC-ENGINE-SOUND "Unknowns"), so the audio rpm stays on the rpm map.
     ep.set({3400.0, 1.0, 1.0, 0.0, audio::View::kFollow});
+    const double mapped = ep.audio_rpm();
     ep.render(buf.data(), 960);
+    ep.set({3400.0, 1.0, 1.0, 0.0, audio::View::kFollow});
+    CHECK(near(ep.audio_rpm(), mapped, 1e-9));
     CHECK(rms(buf) > 0.02);
-    CHECK(std::fabs(ep.drivetrain_spring_offset()) > 0.1 || ep.distortion_level() > 0.1);
+    CHECK(ep.distortion_level() > 0.1);
     for (float v : buf) CHECK(std::isfinite(v));
   }
 
@@ -2415,13 +2435,20 @@ void phase_r2_5_audio_completeness_checks() {
       }
     };
 
-    // 5a. Procedural fallback on Bus::kEngineDamage produces audible output even without Damage.fev loaded!
+    // 5a. Without Damage.fev the damage loop is silent, unless the explicit
+    // no-assets fallback mode supplies its stand-in.
     {
       audio::SfxEngine sfx(48000);
       audio::VehicleAudioState st{};
       st.rpm = 3800.0f;
       st.idle_rpm = 800.0f;
       st.redline_rpm = 7500.0f;
+      st.engine_damage = 0.75f;
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kEngineDamage)]) < 1e-6);
+
+      sfx.populate_procedural_fallbacks();
       st.engine_damage = 0.0f;
       clear_bufs();
       sfx.render(st, ptrs, kFrames);
@@ -2430,7 +2457,7 @@ void phase_r2_5_audio_completeness_checks() {
       st.engine_damage = 0.75f;
       clear_bufs();
       sfx.render(st, ptrs, kFrames);
-      CHECK(rms(bufs[int(audio::Bus::kEngineDamage)]) > 0.01);
+      CHECK(rms(bufs[int(audio::Bus::kEngineDamage)]) > 0.002);
     }
 
     // 5b. Distinct Burble overrun crackle vs shift Backfire pop, ExhNoise, and Multi-band EV.

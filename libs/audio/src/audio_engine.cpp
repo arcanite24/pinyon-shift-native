@@ -467,6 +467,21 @@ void AudioEngine::trigger_ui(UiCue cue) {
   enqueue(c);
 }
 
+void AudioEngine::trigger_ui_event(const UiAudioCatalog::Event& event, float gain) {
+  // One command per layer: the audio thread drains them in the same block, so
+  // the layers start on the same frame.
+  for (const auto& l : event.layers) {
+    if (l.sample < 0) continue;
+    Command c;
+    c.kind = Command::kTriggerUiEvent;
+    c.i0 = l.sample;
+    c.f0 = l.gain * gain;
+    c.f1 = l.left;
+    c.f2 = l.right;
+    enqueue(c);
+  }
+}
+
 void AudioEngine::trigger_satnav(SatNavCue cue) {
   Command c;
   c.kind = Command::kTriggerSatNav;
@@ -740,6 +755,10 @@ int AudioEngine::load_ambience_beds(const std::filesystem::path& game_root, cons
   return total;
 }
 
+int AudioEngine::want_ambience_events(const std::vector<uint32_t>& event_hashes) {
+  return ambience_bed_.want_events(event_hashes);
+}
+
 int AudioEngine::load_rally_ambience_beds(const std::filesystem::path& rally_root_or_state_root,
                                           const std::filesystem::path& cache_dir) {
   return ambience_bed_.load_rally_from_disc(rally_root_or_state_root, cache_dir);
@@ -750,6 +769,17 @@ void AudioEngine::set_rally_world(bool on) {
   Command c;
   c.kind = Command::kRallyWorld;
   c.b0 = on;
+  enqueue(c);
+}
+
+void AudioEngine::set_ambience_state(float in_race, float pre_race_ambience, float camera_type,
+                                     float crowd_excitement) {
+  Command c;
+  c.kind = Command::kAmbienceState;
+  c.f0 = in_race;
+  c.f1 = pre_race_ambience;
+  c.f2 = camera_type;
+  c.f3 = crowd_excitement;
   enqueue(c);
 }
 
@@ -789,6 +819,26 @@ void AudioEngine::reload_sfx_burble(const std::filesystem::path& game_root, cons
   std::lock_guard<std::mutex> lk(sfx_reload_mu_);
   SfxEngine* target = sfx_control_ptr_ ? sfx_control_ptr_ : (!running_.load(std::memory_order_acquire) ? sfx_ : nullptr);
   if (target) target->reload_burble_bank(game_root, cache_dir, burble_bank, burble_count, backfire_count);
+}
+
+void AudioEngine::set_other_car_engine(uint32_t car_id, std::unique_ptr<EnginePlayer> player) {
+  if (!running_.load(std::memory_order_acquire)) drain_commands();
+  std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+  SfxEngine* target = sfx_control_ptr_ ? sfx_control_ptr_ : (!running_.load(std::memory_order_acquire) ? sfx_ : nullptr);
+  if (target) target->set_other_car_engine(car_id, std::move(player));
+}
+
+void AudioEngine::set_other_car_engines_owned(bool on) {
+  if (!running_.load(std::memory_order_acquire)) drain_commands();
+  std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+  SfxEngine* target = sfx_control_ptr_ ? sfx_control_ptr_ : (!running_.load(std::memory_order_acquire) ? sfx_ : nullptr);
+  if (target) target->set_other_car_engines_owned(on);
+}
+
+int AudioEngine::other_car_engine_count() {
+  std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+  SfxEngine* target = sfx_control_ptr_ ? sfx_control_ptr_ : (!running_.load(std::memory_order_acquire) ? sfx_ : nullptr);
+  return target ? target->other_car_engine_count() : 0;
 }
 
 bool AudioEngine::load_mixer_configs(const std::filesystem::path& game_root, std::string* note,
@@ -1012,6 +1062,14 @@ void AudioEngine::drain_commands() {
       case Command::kRallyWorld:
         ambience_bed_.set_rally_world(c.b0);
         break;
+      case Command::kAmbienceState: {
+        auto unit = [](float v) { return std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 0.0f; };
+        ambience_params_.in_race = unit(c.f0);
+        ambience_params_.pre_race_ambience = unit(c.f1);
+        ambience_params_.camera_type = unit(c.f2);
+        ambience_params_.crowd_excitement = unit(c.f3);
+        break;
+      }
       case Command::kSnapshot: mixer_.snapshots().set_active(c.i0, c.b0); break;
       case Command::kMatrixActivate:
         if (use_matrix_) {
@@ -1152,6 +1210,9 @@ void AudioEngine::drain_commands() {
       case Command::kTriggerUi:
         if (sfx_) sfx_->trigger_ui(UiCue(c.i0));
         break;
+      case Command::kTriggerUiEvent:
+        if (sfx_) sfx_->trigger_ui_sample(c.i0, c.f0, c.f1, c.f2);
+        break;
       case Command::kTriggerSatNav:
         if (satnav_ && satnav_enabled_) satnav_->trigger(SatNavCue(c.i0));
         break;
@@ -1269,7 +1330,11 @@ void AudioEngine::render_block(float* out, int frames) {
   }
 
   drain_ui_music_loaded();
-  const bool on_title = snap_title_ >= 0 && mixer_.snapshots().active(snap_title_);
+  // The own "Title" snapshot and the title bus mute are a fallback for
+  // installs without AudioMixerSnapshots.xml. The game's matrix has no
+  // Title snapshot, so with the matrix loaded the title mixes only through
+  // the matrix's Gameplay state (AudioHost maps it to UIExterior).
+  const bool on_title = !use_matrix_ && snap_title_ >= 0 && mixer_.snapshots().active(snap_title_);
   const bool user_music_on = user_music_ && user_music_->active();
   const bool runtime_radio_on = !user_music_on && runtime_radio_ && runtime_radio_->active();
 
@@ -1462,7 +1527,16 @@ void AudioEngine::render_block(float* out, int frames) {
       std::fill(abuf.begin(), abuf.begin() + ptrdiff_t(samples), 0.0f);
       buses[int(Bus::kAmbience)] = abuf.data();
     }
-    if (have_acoustics_) ambience_bed_.render(last_acoustics_, last_veh_state_.speed_mph, abuf.data(), frames, tod_hour_);
+    if (have_acoustics_) {
+      AmbienceParams& ap = ambience_params_;
+      float h = std::fmod(tod_hour_, 24.0f);
+      if (!(h >= 0.0f)) h = std::isfinite(h) ? h + 24.0f : 12.0f;
+      ap.current_time_s = h * 3600.0f;
+      ap.car_speed_mph = ap.speed = std::isfinite(last_veh_state_.speed_mph) ? std::fabs(last_veh_state_.speed_mph) : 0.0f;
+      ap.engine_rpm = std::isfinite(last_veh_state_.rpm) ? last_veh_state_.rpm : 0.0f;
+      ap.radio_is_playing = (user_music_on || runtime_radio_on || (radio_ && radio_->on())) ? 1.0f : 0.0f;
+      ambience_bed_.render(last_acoustics_, ap, abuf.data(), frames);
+    }
     if (radio_player_) {
       if (!user_music_on) {
         radio_player_->render_location_stations(abuf.data(), frames);

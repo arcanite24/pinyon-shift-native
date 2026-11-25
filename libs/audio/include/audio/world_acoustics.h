@@ -14,13 +14,16 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "audio/engine_player.h"
+#include "audio/fev.h"
 #include "audio/rt.h"
 
 namespace audio {
@@ -94,6 +97,19 @@ struct AmbientEmitter3D {
   std::array<float, 3> pos1{};
   std::array<float, 3> pos2{};
   float max_distance = 220.0f;
+  uint32_t event_hash = 0;  // ambience_event_hash(event_name)
+  // From the disc's event (WorldAcousticsData::set_event_reach): its
+  // (distance) range (0: max_distance) and whether the player has a loop
+  // for it (spawned one-shots and events the disc lacks have none).
+  float reach_m = 0.0f;
+  bool playable = true;
+};
+
+// An ambience event's reach: the range of its (distance) parameter (or its
+// 3D max distance) and whether it has a continuous loop the bed player plays.
+struct AmbienceEventReach {
+  float distance_m = 0.0f;
+  bool playable = false;
 };
 
 struct SoundscapeTile {
@@ -118,10 +134,36 @@ struct RtAmbientEmitter {
   float gain = 0.0f;  // distance attenuation [0..1]
   float pan = 0.0f;   // stereo pan [-1..1] relative to listener heading
   uint32_t id_hash = 0;
+  uint32_t event_hash = 0;  // the emitter's FEV event name (ambience_event_hash)
+  float distance_m = 0.0f;  // listener to emitter: the event's (distance) parameter
+};
+
+// Case-insensitive FNV-1a of an ambience event name ("Default_Crickets_Bed").
+uint32_t ambience_event_hash(std::string_view event_name);
+
+// The game state the ambience events read (SPEC-AUDIO-EVENTS, "World
+// ambience"): AMB_Default.fev's CurrentTime (0..86,400 s), CarSpeed and
+// Speed (mph), InRace, PreRaceAmbience, CameraType, RadioIsPlaying and
+// Engine_RPM; Colorado_Festival.fev's CrowdExcitement.
+struct AmbienceParams {
+  float current_time_s = 43200.0f;
+  float car_speed_mph = 0.0f;
+  float speed = 0.0f;
+  float in_race = 0.0f;
+  float pre_race_ambience = 0.0f;
+  float camera_type = 0.0f;
+  float radio_is_playing = 0.0f;
+  float engine_rpm = 0.0f;
+  float crowd_excitement = 0.0f;
+  enum Id : int8_t { kNone = -1, kDistance = -2 };
+  // The index of the parameter called `name` (kDistance for "(distance)",
+  // kNone for one the engine has no source for), and its value.
+  static int8_t id_of(std::string_view name);
+  float value(int8_t id) const;
 };
 
 struct AcousticsSample {
-  static constexpr int kMaxActiveEmitters = 4;
+  static constexpr int kMaxActiveEmitters = 8;
   ReverbTemplate reverb{};
   int reverb_template_idx = 0;
   bool in_tunnel = false;
@@ -201,7 +243,12 @@ class WorldAcousticsData {
 
   void set_reverb_templates(std::vector<ReverbTemplate> t) { reverb_templates_ = std::move(t); }
   void set_ambience_templates(std::vector<AmbienceTemplate> t) { ambience_templates_ = std::move(t); }
-  void add_emitter(AmbientEmitter3D e) { emitters_.push_back(std::move(e)); }
+  void add_emitter(AmbientEmitter3D e);
+  // The disc's ambience events by ambience_event_hash; placements then pool
+  // on their event's own reach, and those it cannot play stay out of the
+  // pool. Empty: every placement pools on its max_distance.
+  void set_event_reach(std::vector<std::pair<uint32_t, AmbienceEventReach>> reach);
+  const AmbienceEventReach* event_reach(uint32_t hash) const;
 
   // Evaluates the active blended I3DL2 reverb template, tunnel snapshot flag,
   // ambience zone, festival proximity, and top-4 distance-culled 3D ambient
@@ -215,7 +262,12 @@ class WorldAcousticsData {
   std::vector<ReverbZone> reverb_zones_;
   std::vector<AmbienceZone> ambience_zones_;
   std::vector<AmbientEmitter3D> emitters_;
+  std::vector<std::pair<uint32_t, AmbienceEventReach>> event_reach_;  // sorted by hash
+  void apply_reach(AmbientEmitter3D& e) const;
 };
+
+// Reads each event's reach from the ambience FEVs AmbienceBedPlayer loads.
+std::vector<std::pair<uint32_t, AmbienceEventReach>> load_ambience_event_reach(const std::filesystem::path& game_root);
 
 // Lightweight real-time stereo algorithmic environmental reverb parameterized
 // by I3DL2 ReverbTemplate (early slap-back reflections driven by
@@ -297,9 +349,14 @@ class AmbienceBedPlayer {
   ~AmbienceBedPlayer();
 
   // Scans AMB_Quads.fev, AMB_Default.fev, AMB_Festival_Ambience.fev, and
-  // Colorado_Festival.fev under `game_root` and decodes loops asynchronously
-  // into `cache_dir` (never blocking the audio thread).
+  // Colorado_Festival.fev under `game_root` and decodes the region and crowd
+  // beds asynchronously into `cache_dir` (never blocking the audio thread).
+  // An event's own loops are decoded once want_events names it.
   int load_from_disc(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir);
+  // Queues the loops of these events (ambience_event_hash; the map's
+  // placements) for decoding; control thread. Returns how many loops the
+  // events wanted so far have.
+  int want_events(const std::vector<uint32_t>& event_hashes);
   // Scans up to 13 regional `ColoradoDirt/AMB_*.fev/.fsb` banks from a Rally
   // package dir, direct ColoradoDirt dir, or launcher `state_root` and decodes
   // them asynchronously into `cache_dir`.
@@ -312,17 +369,53 @@ class AmbienceBedPlayer {
   void set_bed_sample(AmbienceBedSlot slot, PcmSample pcm);
   void set_rally_bed_sample(int region_idx, std::string_view region_name, PcmSample pcm);
   int loaded_bed_count() const;
+  // The disc ambience events the player drives (0 until load_from_disc found
+  // AMB_*.fev / Colorado_Festival.fev), and their decoded loop beds.
+  int loaded_event_count() const;
+  int loaded_event_sample_count() const;
+  size_t loaded_event_sample_bytes() const { return event_sample_bytes_.load(std::memory_order_acquire); }
   int rally_bed_count() const;
   int last_rally_region() const { return last_rally_region_.load(std::memory_order_acquire); }
   // Frees any replaced bed PCM buffers retired by the audio thread (control thread only).
   void reclaim_retired();
 
+  // With the disc's events: the region bed's gain, every emitter's sound and
+  // its rolloff come from the events' parameter curves at `params`.
+  void render(const RtAcousticsSample& sample, const AmbienceParams& params, float* out_stereo, int frames);
   void render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
               float tod_hour = 12.0f);
   void render(const RtAcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
               float tod_hour = 12.0f);
 
  private:
+  // The FEV events behind the beds and emitters, built on the control thread
+  // and immutable once published (kept until destruction).
+  struct EventTable {
+    struct Ref {
+      uint32_t hash = 0;
+      uint16_t proj = 0, ev = 0;
+      std::array<int8_t, 12> param_id{};
+    };
+    struct SlotRef {
+      int proj = -1, ev = -1, layer = 0, inst = 0;
+    };
+    std::vector<FevProject> projects;
+    std::vector<Ref> by_name;  // sorted by hash
+    std::vector<int> sd_base;  // per project: the first event-sample id of its sound defs
+    std::array<SlotRef, size_t(AmbienceBedSlot::kCount)> slots{};
+    std::array<std::array<int8_t, 12>, size_t(AmbienceBedSlot::kCount)> slot_param_id{};
+    int sample_count = 0;
+    std::vector<bool> has_loop;  // per event-sample id: a decode job exists
+    const Ref* find(uint32_t hash) const;
+  };
+  static constexpr int kMaxEventSamples = 256;
+  static constexpr int kMaxEventLevels = 8;
+  struct LoadedEventPcm {
+    int id = -1;
+    PcmSample* pcm = nullptr;
+  };
+  float event_level(const EventTable& t, int proj, const FevEvent& ev, const std::array<int8_t, 12>& pid,
+                    const AmbienceParams& params, float distance, FevInstanceLevel* out, int& count) const;
   struct LoadedBed {
     AmbienceBedSlot slot = AmbienceBedSlot::kDefault;
     PcmSample* pcm = nullptr;
@@ -340,12 +433,17 @@ class AmbienceBedPlayer {
     float lp = 0.0f;
     float bp = 0.0f;
     uint32_t rng = 0x9E3779B9u;
+    std::array<double, kMaxEventLevels> ev_phase{};
+    std::array<float, kMaxEventLevels> ev_gain{};
+    RtAmbientEmitter last{};  // the emitter it last played (faded out from when dropped)
   };
   void stop_worker();
   void stop_rally_worker();
   void retire_pcm(PcmSample* pcm);
   void drain_loaded();
   void render_3d_emitters(const RtAcousticsSample& sample, float* out_stereo, int frames);
+  bool render_event_emitter(const EventTable& t, const RtAmbientEmitter& em, EmitterVoice3D& v,
+                            const AmbienceParams& params, float* out_stereo, int frames, bool fade_out = false);
 
   int rate_ = 48000;
   std::array<PcmSample*, int(AmbienceBedSlot::kCount)> beds_{};
@@ -353,6 +451,14 @@ class AmbienceBedPlayer {
   std::array<float, int(AmbienceBedSlot::kCount)> bed_gain_{};
   // Separate SPSC queues per producer so worker_ and set_bed_sample() never race.
   SpscQueue<LoadedBed> loaded_q_{32};
+  SpscQueue<LoadedEventPcm> event_loaded_q_{512};
+  std::vector<std::unique_ptr<EventTable>> event_tables_;  // control thread (lifecycle_mu_)
+  std::atomic<const EventTable*> events_{nullptr};
+  std::array<PcmSample*, kMaxEventSamples> event_pcm_{};
+  std::atomic<int> event_sample_count_{0};
+  std::atomic<size_t> event_sample_bytes_{0};
+  std::array<std::atomic<bool>, kMaxEventSamples> event_wanted_{};  // control thread sets, worker reads
+  AmbienceParams params_{};  // audio thread: the parameters of the render in progress
   SpscQueue<LoadedBed> direct_loaded_q_{32};
   SpscQueue<PcmSample*> retired_pcms_{64};
   std::mutex direct_q_mu_;
@@ -370,7 +476,9 @@ class AmbienceBedPlayer {
   SpscQueue<LoadedRallyBed> rally_direct_q_{32};
   std::atomic<bool> stop_rally_worker_{false};
   std::thread rally_worker_;
-  std::array<EmitterVoice3D, RtAcousticsSample::kMaxActiveEmitters> emitter_voices_{};
+  // Twice the pool: with the disc's events a voice follows its emitter by
+  // id, and one the pool dropped fades out while a new one fades in.
+  std::array<EmitterVoice3D, 2 * RtAcousticsSample::kMaxActiveEmitters> emitter_voices_{};
 
   uint32_t rng_ = 0x12345678u;
   float lp_l_ = 0.0f, lp_r_ = 0.0f;

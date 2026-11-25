@@ -9,7 +9,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -68,6 +70,19 @@ class AudioHost {
                 const std::filesystem::path& state_root, const std::string& car, audio::UpgradeLevels levels,
                 double idle_rpm, double redline_rpm, std::string* note = nullptr);
   void clear_car();
+
+  // Other cars play their own engine sound (SPEC-ENGINE-SOUND; the focus
+  // car's loader and banks, heard at the Default view). Each frame, bind the
+  // cars about to be heard by their OtherCarAudio::car_id and media name
+  // (idle/redline: the car's physics rpm range, <= 0 = its tuning's); the
+  // sound decodes on a worker and plays once ready; a car not bound for two
+  // seconds is released. Without the disc's sound files nothing changes.
+  void bind_other_car_sound(uint32_t car_id, std::string_view media, double idle_rpm = 0, double redline_rpm = 0);
+  void prefetch_other_car_sound(std::string_view media);
+  void update_other_car_sounds();
+  int other_car_sounds_attached() const { return other_attached_; }
+  // Blocks until every requested sound has decoded or failed (tests, tools).
+  void wait_other_car_sounds();
 
   // Initializes the radio once (honouring cars::mods and `language`) and
   // attaches a RadioPlayer to AudioEngine.
@@ -136,13 +151,32 @@ class AudioHost {
   void trigger_speed_cam();
   void set_window_minimized(bool minimized);
   void set_pre_event(bool active);
+  // The ambience events' PreRaceAmbience and CrowdExcitement (0..1). Which
+  // game state drives them is not decoded (docs/SPEC_QUESTIONS.md Q80), so
+  // nothing calls these yet and both stay at their minimum.
+  void set_pre_race_ambience(float v);
+  void set_crowd_excitement(float v);
   void set_barnfind_active(bool active);
   void set_race_encounter_active(bool active);
   void trigger_collision(const audio::CollisionHit& hit);
   void trigger_landing(const audio::LandingHit& hit);
   void set_rally_world(bool on);
   void set_radio_rally_mode(bool on);
+  // Plays a cue as the game does: through ui4audio.xml's play name for it,
+  // with the current UI scene's overrides (falls back to the engine's own cue
+  // sounds when the disc's ui4audio.xml / UIInGame.fev are missing).
   void trigger_ui(audio::UiCue cue);
+  // ui4audio play names (audio/ui_audio.h). The scene the UI is on picks the
+  // override block (PostRace, Trophy, Showroom); empty = the defaults.
+  void set_ui_scene(std::string_view scene);
+  const std::string& ui_scene() const { return ui_scene_; }
+  // Fires a ui4audio play name with the current scene / with `scene`. False
+  // when the name is unknown (reported once) or the entry is Blank.
+  bool play_ui(std::string_view play);
+  bool play_ui(std::string_view play, std::string_view scene);
+  // The race type the countdown and race-complete cues are chosen by.
+  void set_race_audio_kind(audio::UiRaceKind kind) { race_audio_kind_ = kind; }
+  const audio::UiAudioCatalog* ui_catalog() const { return ui_catalog_.get(); }
   void trigger_satnav(audio::SatNavCue cue);
   void set_satnav_enabled(bool on);
   void trigger_vo(std::string_view trigger_id, bool interrupt = false);
@@ -257,8 +291,41 @@ class AudioHost {
   bool user_music_non_blocking_ = true;
 
   bool mixer_configs_tried_ = false;
+  // Other cars' engine sounds: decoded by media on one worker with its own
+  // sound files, bound by car id on the main thread.
+  struct OtherSound {
+    std::shared_ptr<audio::BakedSound> baked;
+    bool done = false, ok = false;
+    uint64_t last_use = 0;
+  };
+  struct OtherBinding {
+    std::string media;  // lower case
+    double idle = 0, redline = 0;
+    uint64_t last_frame = 0;
+    bool attached = false;
+  };
+  void start_other_worker();
+  void stop_other_worker();
+  std::filesystem::path other_sound_dir_, other_game_root_, other_state_root_;
+  std::mutex other_mu_;
+  std::condition_variable other_cv_;
+  std::vector<std::string> other_jobs_;           // guarded by other_mu_
+  std::map<std::string, OtherSound> other_sounds_;  // lower-case media; guarded by other_mu_
+  std::thread other_worker_;
+  bool other_stop_ = false;  // guarded by other_mu_
+  int other_pending_ = 0;    // guarded by other_mu_
+  std::map<uint32_t, OtherBinding> other_bindings_;
+  uint64_t other_frame_ = 0;
+  int other_attached_ = 0;
+  bool other_owned_ = false;
+
   bool sfx_tried_ = false;
   bool has_sfx_ = false;
+  std::shared_ptr<const audio::UiAudioCatalog> ui_catalog_;  // from the SFX engine, immutable
+  std::string ui_scene_;
+  audio::UiRaceKind race_audio_kind_ = audio::UiRaceKind::kFestival;
+  std::vector<std::string> ui_unknown_;  // play names already reported unknown
+  bool wristband_sting_pending_ = false;  // kWristbandUnlock waits for the level
   std::filesystem::path sfx_game_root_;
   std::filesystem::path sfx_cache_dir_;
   bool satnav_tried_ = false;
@@ -303,6 +370,9 @@ class AudioHost {
   bool speed_zone_active_ = false;
   bool window_minimized_ = false;
   bool pre_event_active_ = false;
+  float amb_pre_race_ = 0.0f, amb_crowd_ = 0.0f;
+  float amb_sent_[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
+  void sync_ambience_state(bool in_race);
   bool barnfind_active_ = false;
   bool race_encounter_active_ = false;
   bool viper_intro_locked_ = false;

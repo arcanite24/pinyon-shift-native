@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <system_error>
 
@@ -746,16 +747,109 @@ SfxSoundId smash_material_sound_id(SmashMaterial mat, uint8_t surface_hint) {
 SfxEngine::SfxEngine(int out_rate) : rate_(std::max(8000, out_rate)) {
   smooth_ = float(1.0 - std::exp(-1.0 / (0.015 * double(rate_))));
   samples_.fill(nullptr);
+  other_engine_scratch_.assign(2 * 1024, 0.0f);
 }
 
 SfxEngine::~SfxEngine() {
   stop_decoder_worker();
   drain_loaded();
   reclaim_retired();
+  drain_other_engines();
+  for (auto& oe : other_engines_) {
+    delete oe.player;
+    oe = {};
+  }
+  reclaim_other_car_engines();
   for (PcmSample*& p : samples_) {
     delete p;
     p = nullptr;
   }
+  for (PcmSample*& p : ui_samples_) {
+    delete p;
+    p = nullptr;
+  }
+}
+
+void SfxEngine::set_other_car_engine(uint32_t car_id, std::unique_ptr<EnginePlayer> player) {
+  reclaim_other_car_engines();
+  if (car_id == 0u) return;
+  EnginePlayer* raw = player.release();
+  std::lock_guard<std::mutex> lock(other_engine_mu_);
+  if (!other_engine_q_.push({car_id, raw})) delete raw;
+}
+
+void SfxEngine::reclaim_other_car_engines() {
+  EnginePlayer* p = nullptr;
+  while (other_engine_retired_q_.pop(p)) delete p;
+}
+
+int SfxEngine::other_car_engine_count() const { return other_engine_count_.load(std::memory_order_acquire); }
+
+void SfxEngine::retire_other_engine(EnginePlayer* p) {
+  if (p && !other_engine_retired_q_.push(p)) delete p;  // the ring is full: free here (rare)
+}
+
+void SfxEngine::drain_other_engines() {
+  OtherEngineMsg m;
+  while (other_engine_q_.pop(m)) {
+    OtherEngine* at = nullptr;
+    OtherEngine* free_at = nullptr;
+    for (auto& oe : other_engines_) {
+      if (oe.car_id == m.car_id) at = &oe;
+      else if (!free_at && oe.car_id == 0u) free_at = &oe;
+    }
+    if (at) {
+      retire_other_engine(at->player);
+      at->player = m.player;
+      if (!m.player) at->car_id = 0u;
+    } else if (m.player) {
+      if (free_at) {
+        free_at->car_id = m.car_id;
+        free_at->player = m.player;
+      } else {
+        retire_other_engine(m.player);  // table full: the car stays without its own sound
+      }
+    }
+  }
+  int n = 0;
+  for (const auto& oe : other_engines_) n += oe.player ? 1 : 0;
+  other_engine_count_.store(n, std::memory_order_release);
+}
+
+EnginePlayer* SfxEngine::other_engine_for(uint32_t car_id) const {
+  if (car_id == 0u) return nullptr;
+  for (const auto& oe : other_engines_)
+    if (oe.car_id == car_id) return oe.player;
+  return nullptr;
+}
+
+void SfxEngine::mix_other_engine(PersistentOtherVoice& sl, EnginePlayer& ep, float gain, float left, float right,
+                                 float* bus, int frames) {
+  const float g0 = sl.eng_gain, l0 = sl.eng_left, r0 = sl.eng_right;
+  const float g1 = safe_clamp_f(gain, 0.0f, 4.0f, 0.0f);
+  const float l1 = safe_clamp_f(left, 0.0f, 2.0f, 0.707f), r1 = safe_clamp_f(right, 0.0f, 2.0f, 0.707f);
+  const int chunk_max = int(other_engine_scratch_.size() / 2);
+  for (int done = 0; done < frames;) {
+    const int n = std::min(chunk_max, frames - done);
+    float* tmp = other_engine_scratch_.data();
+    ep.render(tmp, n);
+    if (bus) {
+      for (int f = 0; f < n; ++f) {
+        const float t = float(done + f + 1) / float(frames);
+        const float g = g0 + (g1 - g0) * t;
+        // The positional player renders the same signal in both channels; their
+        // mean is the point source, then placed.
+        const float m = (tmp[2 * f] + tmp[2 * f + 1]) * 0.5f * g;
+        if (!std::isfinite(m)) continue;
+        bus[2 * (done + f)] += m * (l0 + (l1 - l0) * t);
+        bus[2 * (done + f) + 1] += m * (r0 + (r1 - r0) * t);
+      }
+    }
+    done += n;
+  }
+  sl.eng_gain = g1;
+  sl.eng_left = l1;
+  sl.eng_right = r1;
 }
 
 void SfxEngine::stop_decoder_worker() {
@@ -785,6 +879,12 @@ void SfxEngine::reclaim_retired() {
 void SfxEngine::drain_queue(SpscQueue<LoadedSample>& q) {
   LoadedSample ls;
   while (q.pop(ls)) {
+    if (ls.ui >= 0) {
+      PcmSample* old = ls.pcm;
+      if (ls.ui < kMaxUiSamples) std::swap(old, ui_samples_[size_t(ls.ui)]);
+      if (old && !retired_q_.push(old)) delete old;
+      continue;
+    }
     const size_t idx = size_t(ls.id);
     if (idx < samples_.size()) {
       PcmSample* old = samples_[idx];
@@ -816,7 +916,29 @@ void SfxEngine::set_sample(SfxSoundId id, PcmSample sample) {
   if (!direct_loaded_q_.push({id, p})) delete p;
 }
 
+void SfxEngine::set_ui_sample(int sample_slot, PcmSample sample) {
+  reclaim_retired();
+  if (sample_slot < 0 || sample_slot >= kMaxUiSamples) return;
+  auto* p = new PcmSample(std::move(sample));
+  std::lock_guard<std::mutex> lock(direct_q_mu_);
+  if (!direct_loaded_q_.push({SfxSoundId::kUiAccept, p, sample_slot})) delete p;
+}
+
+int SfxEngine::loaded_ui_sample_count() const {
+  int n = 0;
+  for (const PcmSample* p : ui_samples_)
+    if (p && !p->data.empty()) ++n;
+  return n;
+}
+
+bool SfxEngine::is_ui_sample_active(int sample) const {
+  for (const auto& o : one_shots_)
+    if (o.active && (o.ui == sample || (o.stealing && o.next_ui == sample))) return true;
+  return false;
+}
+
 void SfxEngine::populate_procedural_fallbacks() {
+  procedural_mode_ = true;
   for (int i = 0; i < int(SfxSoundId::kCount); ++i) {
     const auto id = SfxSoundId(i);
     PcmSample pcm;
@@ -864,11 +986,13 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
   tires_cfg_.load(game_root, nullptr, state_root);
   coll_cfg_.load(game_root, nullptr, state_root);
   ui_map_.load(game_root, nullptr);
+  ui_catalog_.reset();
   backfire_cfg_.load(game_root, nullptr);
   car_rolloff_.load(game_root, false, false, nullptr);
   traffic_rolloff_.load(game_root, true, false, nullptr);
 
   std::vector<DecodeJob> jobs;
+  std::vector<DecodeJob> ui_jobs;  // decoded after the driving sounds
   auto add_from_fev = [&](const std::filesystem::path& fev_rel, SfxSoundId id, std::string_view ev_path) {
     FevProject proj;
     if (!load_fev(audio_dir / fev_rel, proj, nullptr)) return;
@@ -1045,45 +1169,42 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
         const auto alt_fev = cars::mods::resolve(audio_dir / "cars/Damage/Damage.fev");
         if (std::filesystem::exists(alt_fev, dmg_ec)) dmg_fev = alt_fev;
       }
-      bool have_dmg_loop = false, have_dmg_misfire = false;
+      // The disc's one event (Damage/Damage/DamageEngine) has one layer whose
+      // instances (DamSlow, DamFast) crossfade over NormRPM; its volume
+      // envelopes on Damage, NormRPM and Throttle set the level
+      // (SPEC-AUDIO-EVENTS "Other vehicle event projects").
+      damage_event_ = FevEvent{};
+      damage_event_ok_ = false;
       FevProject proj;
       if (load_fev(dmg_fev, proj, nullptr)) {
         for (const auto& ev : proj.events) {
-          std::filesystem::path bank;
-          uint32_t sub = 0;
-          if (!resolve_event_sample(proj, ev.path, bank, sub)) continue;
-          const std::string lp = lower_str(ev.path);
-          if (!have_dmg_misfire && (lp.find("misfire") != std::string::npos || lp.find("knock") != std::string::npos ||
-                                    lp.find("sputter") != std::string::npos)) {
-            jobs.push_back({SfxSoundId::kEngineMisfire, bank, sub});
-            have_dmg_misfire = true;
-          } else if (!have_dmg_loop) {
-            jobs.push_back({SfxSoundId::kEngineDamageLoop, bank, sub});
-            have_dmg_loop = true;
-          } else if (!have_dmg_misfire) {
-            jobs.push_back({SfxSoundId::kEngineMisfire, bank, sub});
-            have_dmg_misfire = true;
-          }
-        }
-      }
-      if (!have_dmg_loop) {
-        std::error_code ec;
-        const auto dir = dmg_fev.parent_path();
-        if (std::filesystem::is_directory(dir, ec)) {
-          for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-            if (entry.is_regular_file(ec) && lower_str(entry.path().extension().string()) == ".fsb") {
-              std::vector<uint8_t> raw;
-              std::vector<FsbSample> fsb_s;
-              const uint32_t n = (read_bytes(entry.path(), raw) && read_fsb4(raw, fsb_s, nullptr))
-                                     ? uint32_t(fsb_s.size())
-                                     : 1u;
-              jobs.push_back({SfxSoundId::kEngineDamageLoop, entry.path(), 0});
-              if (!have_dmg_misfire && n > 1) jobs.push_back({SfxSoundId::kEngineMisfire, entry.path(), 1});
+          if (!ev.is_complex() || ev.layers.empty()) continue;
+          static constexpr SfxSoundId kDamageIds[kDamageInstances] = {SfxSoundId::kEngineDamageLoop,
+                                                                      SfxSoundId::kEngineDamageFast};
+          damage_sound_ids_.fill(SfxSoundId::kCount);
+          int slot = 0;
+          for (const auto& si : ev.layers.front().instances) {
+            if (slot >= kDamageInstances || si.sound_def_index >= proj.sound_defs.size()) break;
+            for (const auto& en : proj.sound_defs[si.sound_def_index].entries) {
+              if (en.entry_type != 0 || en.wavebank_name.empty()) continue;
+              jobs.push_back({kDamageIds[slot], cars::mods::resolve(proj.dir / (en.wavebank_name + ".fsb")),
+                              en.subsound_index});
+              damage_sound_ids_[size_t(slot)] = kDamageIds[slot];
               break;
             }
+            ++slot;
           }
+          damage_event_ = ev;
+          damage_event_.layers.resize(1);
+          damage_param_damage_ = ev.find_param("Damage");
+          damage_param_rpm_ = ev.find_param("NormRPM");
+          damage_param_throttle_ = ev.find_param("Throttle");
+          damage_event_ok_ = slot > 0;
+          break;
         }
       }
+      // Without the event there are no level curves: the damage loop stays
+      // silent rather than playing a bare bank at invented gains.
     }
 
     add_first_fev_or_fsb("cars/Reflections/Reflections.fev", SfxSoundId::kRoadsideReflection);
@@ -1268,6 +1389,31 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
   {
     FevProject ui_fev;
     if (load_fev(audio_dir / "UI/UIInGame/UIInGame.fev", ui_fev, nullptr)) {
+      // Every ui4audio event by its own sample and level (SPEC-AUDIO-EVENTS):
+      // the banked events all decode; of the streamed bank only the events
+      // the engine itself fires, so the 46 MB stream bank is not decoded whole.
+      {
+        FevProject gen_fev;
+        std::vector<const FevProject*> projects{&ui_fev};
+        if (load_fev(audio_dir / "gamemodes/General.fev", gen_fev, nullptr)) projects.push_back(&gen_fev);
+        auto cat = std::make_shared<UiAudioCatalog>();
+        cat->build(ui_map_, projects);
+        const auto& evs = cat->events();
+        std::vector<char> fired(evs.size(), 0);
+        std::vector<std::string> scenes{std::string{}};
+        for (const auto& [scene, block] : ui_map_.scene_overrides) scenes.push_back(scene);
+        for (const auto& name : engine_ui_play_names())
+          for (const auto& scene : scenes)
+            if (const int at = cat->resolve(name, scene); at >= 0) fired[size_t(at)] = 1;
+        for (size_t i = 0; i < evs.size(); ++i) {
+          for (const auto& l : evs[i].layers) {
+            if (l.sample < 0 || l.sample >= kMaxUiSamples) continue;
+            const bool streamed = lower_str(l.bank.stem().string()).find("_streams") != std::string::npos;
+            if (!streamed || fired[i]) ui_jobs.push_back({SfxSoundId::kUiAccept, l.bank, l.subsound, l.sample});
+          }
+        }
+        ui_catalog_ = std::move(cat);
+      }
       auto add_ui = [&](SfxSoundId id, std::string_view play_name, std::string_view fallback_path) {
         std::string path;
         if (const auto* e = ui_map_.resolve(play_name); e && !e->is_blank()) path = e->full_path();
@@ -1655,12 +1801,13 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
     }
   }
 
-  if (note) *note = "sfx engine: queued " + std::to_string(jobs.size()) + " FEV/FSB4 sounds for async decode";
-  if (!jobs.empty()) {
-    start_decoder_worker(std::move(jobs), cache_dir, game_root);
-  } else {
-    populate_procedural_fallbacks();
-  }
+  const size_t sound_jobs = jobs.size();
+  jobs.insert(jobs.end(), ui_jobs.begin(), ui_jobs.end());
+  if (note)
+    *note = "sfx engine: queued " + std::to_string(sound_jobs) + " FEV/FSB4 sounds and " +
+            std::to_string(ui_jobs.size()) + " ui4audio samples for async decode";
+  if (sound_jobs == 0) populate_procedural_fallbacks();
+  if (!jobs.empty()) start_decoder_worker(std::move(jobs), cache_dir, game_root);
   if (!state_root.empty()) {
     load_rally_sfx(state_root, cache_dir, nullptr);
   }
@@ -1962,21 +2109,27 @@ void SfxEngine::start_decoder_worker(std::vector<DecodeJob> jobs, std::filesyste
         ok = decode_fsb_subsound(job.bank_path, job.subsound, ffmpeg, temp_dir, *pcm);
         if (ok && !cache_file.empty()) write_cached_sfx(cache_file, *pcm);
       }
-      if (!ok) ok = synthesize_fallback_sfx(job.id, 24000, *pcm);
+      // A UI catalog event plays its own sample or nothing.
+      if (!ok && job.ui < 0) ok = synthesize_fallback_sfx(job.id, 24000, *pcm);
       if (ok && !pcm->data.empty()) {
         PcmSample* raw = pcm.release();
-        if (!loaded_q_.push({job.id, raw})) delete raw;
+        if (!loaded_q_.push({job.id, raw, job.ui})) delete raw;
       }
     }
     std::filesystem::remove_all(temp_dir, ec);
   });
 }
 
-void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch) {
+void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch, int ui) {
   if (gain <= 1e-4f) return;
-  const size_t idx = size_t(id);
-  if (idx >= samples_.size() || !samples_[idx] || samples_[idx]->data.empty()) return;
-  const uint8_t prio = one_shot_priority(id);
+  if (ui >= 0) {
+    if (ui >= kMaxUiSamples || !ui_samples_[size_t(ui)] || ui_samples_[size_t(ui)]->data.empty()) return;
+  } else {
+    const size_t idx = size_t(id);
+    if (idx >= samples_.size() || !samples_[idx] || samples_[idx]->data.empty()) return;
+  }
+  // UI events are sparse and must not be stolen by tyre or impact ticks.
+  const uint8_t prio = ui >= 0 ? uint8_t(100) : one_shot_priority(id);
   const float clamped_pitch = std::clamp(pitch, 0.25f, 4.0f);
   OneShot* slot = nullptr;
   for (auto& o : one_shots_) {
@@ -1988,6 +2141,7 @@ void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, f
   if (slot) {
     slot->active = true;
     slot->id = id;
+    slot->ui = ui;
     slot->bus = bus;
     slot->phase = 0.0;
     slot->gain = gain;
@@ -2029,6 +2183,7 @@ void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, f
     victim->fade_rem_frames = fade_frames;
   }
   victim->next_id = id;
+  victim->next_ui = ui;
   victim->next_bus = bus;
   victim->next_gain = gain;
   victim->next_left = left;
@@ -2188,6 +2343,13 @@ void SfxEngine::trigger_landing(const LandingHit& hit, const VehicleAudioState& 
     spawn_one_shot(resolve_fallback(SfxSoundId::kSuspensionBottom, SfxSoundId::kImpactLfe), Bus::kSuspension,
                    0.60f * intensity * susp_scale, 0.707f, 0.707f, 0.92f);
   }
+}
+
+void SfxEngine::trigger_ui_sample(int sample, float gain, float left, float right) {
+  drain_loaded();
+  if (sample < 0 || sample >= kMaxUiSamples || !std::isfinite(gain)) return;
+  spawn_one_shot(SfxSoundId::kUiAccept, Bus::kUi, std::clamp(gain, 0.0f, 4.0f), safe_clamp_f(left, 0.0f, 2.0f, 0.707f),
+                 safe_clamp_f(right, 0.0f, 2.0f, 0.707f), 1.0f, sample);
 }
 
 void SfxEngine::trigger_ui(UiCue cue) {
@@ -2374,6 +2536,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
                        float* lfe_out) {
   if (frames <= 0) return;
   drain_loaded();
+  drain_other_engines();
   const double prev_time_s = time_s_;
   const double dt = double(frames) / double(rate_);
   time_s_ += dt;
@@ -2780,8 +2943,31 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       mix_loop(electric_high_voice_, ev_hi_id, ev_hi_g, ev_hi_p * hi_p_mult, 0.707f, 0.707f, eng_bus, frames);
     }
 
-    // Mechanical Engine Damage rattle/knock/misfire (Damage.fev + procedural fallback) on Bus::kEngineDamage.
+    // Engine damage loop on Bus::kEngineDamage: Damage.fev DamageEngine evaluated at
+    // Damage / NormRPM / Throttle (its instance crossfade and volume envelopes).
     if (float* dmg_bus = bus_or(Bus::kEngineDamage, Bus::kEngine)) {
+      if (damage_event_ok_) {
+        std::array<float, 8> raw{};
+        raw.fill(std::numeric_limits<float>::quiet_NaN());
+        auto put = [&](int idx, float v) {
+          if (idx >= 0 && size_t(idx) < raw.size()) raw[size_t(idx)] = v;
+        };
+        const bool running = !st.is_electric && st.rpm > 200.0f;
+        put(damage_param_damage_, running ? st.engine_damage : 0.0f);
+        put(damage_param_rpm_, std::clamp(norm_rpm, 0.0f, 1.0f));
+        put(damage_param_throttle_, std::clamp(st.throttle, 0.0f, 1.0f));
+        std::array<FevInstanceLevel, kDamageInstances> lv{};
+        const int n = evaluate_fev_event(damage_event_, raw.data(), raw.size(), lv.data(), kDamageInstances);
+        LoopVoice* voices[kDamageInstances] = {&damage_voice_, &damage_fast_voice_};
+        for (int i = 0; i < kDamageInstances; ++i) {
+          const SfxSoundId id = damage_sound_ids_[size_t(i)];
+          if (id == SfxSoundId::kCount) continue;
+          const float g = (i < n ? lv[size_t(i)].gain : 0.0f) * view_damage;
+          // Pitch envelope scale is undecoded: the loops play at their recorded pitch.
+          mix_loop(*voices[i], id, g, 1.0f, 0.707f, 0.707f, dmg_bus, frames);
+        }
+      } else if (procedural_mode_) {
+      // No-assets stand-in only (populate_procedural_fallbacks): own gain law.
       const float dmg = std::clamp(std::max(st.engine_damage, st.drivetrain_damage * 0.7f), 0.0f, 1.0f);
       const bool dmg_active = (!st.is_electric && dmg > 0.02f && st.rpm > 200.0f);
       const float dmg_g = dmg_active ? (0.48f * dmg * view_damage * (0.35f + 0.65f * std::clamp(norm_rpm, 0.0f, 1.0f)))
@@ -2812,16 +2998,6 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
           dmg_bus[2 * f + 1] += sig * 0.707f;
         }
       }
-      if (dmg_active && dmg > 0.30f) {
-        misfire_timer_s_ -= dt;
-        if (misfire_timer_s_ <= 0.0) {
-          const double cadence = std::clamp(1.15 - 0.85 * double(dmg), 0.18, 1.15);
-          misfire_timer_s_ = cadence * (0.6 + 0.8 * std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
-          const Bus dbus = bus_id_or(Bus::kEngineDamage, Bus::kEngine);
-          const float mpitch = 0.88f + 0.24f * float(std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
-          spawn_one_shot(resolve_fallback(SfxSoundId::kEngineMisfire, SfxSoundId::kEngineDamageLoop), dbus,
-                         0.55f * dmg * view_damage, 0.707f, 0.707f, mpitch);
-        }
       }
     }
 
@@ -3105,6 +3281,11 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
           } else {
             sl.tire_voice.gain = 0.0f;
           }
+          if (EnginePlayer* ep = other_engine_for(sl.bound_car_id); ep && sl.eng_gain > 1e-5f) {
+            mix_other_engine(sl, *ep, 0.0f, sl.eng_left, sl.eng_right, other_bus, frames);
+          } else {
+            sl.eng_gain = 0.0f;
+          }
           smooth_ = saved_smooth;
           sl.fade_out_rem_s -= float(dt);
           if (sl.fade_out_rem_s <= 0.0f) {
@@ -3130,43 +3311,72 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       compute_stereo_pan(st.listener_pos, st.listener_right, car.pos, pl, pr);
       const float p_scale = safe_clamp_f(car.pitch_scale, 0.70f, 1.40f, 1.0f);
 
-      // Select archetype low/high RPM sample pair safely.
+      // The car's own engine sound, heard at the Default view through the
+      // car's chassis rolloff, placed and Doppler-shifted as a point source.
+      EnginePlayer* own = other_engine_for(eff_ids[size_t(c)]);
+      const bool owned_mode = other_engines_owned_.load(std::memory_order_acquire);
+      bool mix_shared_loops = false;
+      if (own || (owned_mode && car.archetype != 5)) {
+        if (own) {
+          EnginePlayer::Update u;
+          u.rpm = car.rpm;
+          u.throttle = car.throttle >= 0.0f ? std::clamp(double(car.throttle), 0.0, 1.0) : 0.5;
+          u.view = View::kDefault;
+          own->pitch_scale = std::clamp(double(doppler), 0.5, 2.0);
+          own->set(u);
+          mix_other_engine(sl, *own, atten * view_other, pl, pr, other_bus, frames);
+        } else {
+          sl.eng_gain = 0.0f;  // still loading, or no engine sound: silent (no stand-in)
+        }
+        // The shared opponent loops fade out if they were playing.
+        if (sl.lo_voice.gain > 1e-4f) mix_loop(sl.lo_voice, sl.last_lo_id, 0.0f, sl.lo_voice.pitch, pl, pr, other_bus, frames);
+        if (sl.last_hi_id != SfxSoundId::kCount && sl.hi_voice.gain > 1e-4f)
+          mix_loop(sl.hi_voice, sl.last_hi_id, 0.0f, sl.hi_voice.pitch, pl, pr, other_bus, frames);
+      } else {
+        sl.eng_gain = 0.0f;
+        mix_shared_loops = true;
+      }
+
+      // Without the car's own sound: the shared opponent loops (no disc
+      // data for the car, or the electric motor).
       SfxSoundId lo_id = SfxSoundId::kOtherCarLoop;
       SfxSoundId hi_id = SfxSoundId::kCount;
-      if (car.is_traffic || car.archetype == 6) {
-        lo_id = resolve_fallback(SfxSoundId::kTrafficCarLoop, SfxSoundId::kOtherCarLoop);
-        hi_id = SfxSoundId::kTrafficCarLoopHi;
-      } else if (car.archetype == 5) {
-        lo_id = resolve_fallback(SfxSoundId::kElectricMotor, SfxSoundId::kOtherCarLoop);
-        hi_id = SfxSoundId::kElectricMotorHigh;
-      } else if (car.archetype == 4) {
-        lo_id = resolve_fallback(SfxSoundId::kOtherCarLoop4, SfxSoundId::kOtherCarLoop);
-        hi_id = SfxSoundId::kOtherCarLoop4Hi;
-      } else {
-        const uint8_t bank_idx = (car.archetype >= 1 && car.archetype <= 3) ? car.archetype : uint8_t(car.variant & 3u);
-        lo_id = resolve_fallback(kOppLoBanks[bank_idx], SfxSoundId::kOtherCarLoop);
-        hi_id = kOppHiBanks[bank_idx];
-      }
-      const bool has_hi = (hi_id != SfxSoundId::kCount && hi_id != lo_id && size_t(hi_id) < samples_.size() &&
-                           samples_[size_t(hi_id)] && !samples_[size_t(hi_id)]->data.empty());
-      sl.last_lo_id = lo_id;
-      sl.last_hi_id = has_hi ? hi_id : SfxSoundId::kCount;
+      if (mix_shared_loops) {
+        if (car.is_traffic || car.archetype == 6) {
+          lo_id = resolve_fallback(SfxSoundId::kTrafficCarLoop, SfxSoundId::kOtherCarLoop);
+          hi_id = SfxSoundId::kTrafficCarLoopHi;
+        } else if (car.archetype == 5) {
+          lo_id = resolve_fallback(SfxSoundId::kElectricMotor, SfxSoundId::kOtherCarLoop);
+          hi_id = SfxSoundId::kElectricMotorHigh;
+        } else if (car.archetype == 4) {
+          lo_id = resolve_fallback(SfxSoundId::kOtherCarLoop4, SfxSoundId::kOtherCarLoop);
+          hi_id = SfxSoundId::kOtherCarLoop4Hi;
+        } else {
+          const uint8_t bank_idx = (car.archetype >= 1 && car.archetype <= 3) ? car.archetype : uint8_t(car.variant & 3u);
+          lo_id = resolve_fallback(kOppLoBanks[bank_idx], SfxSoundId::kOtherCarLoop);
+          hi_id = kOppHiBanks[bank_idx];
+        }
+        const bool has_hi = (hi_id != SfxSoundId::kCount && hi_id != lo_id && size_t(hi_id) < samples_.size() &&
+                             samples_[size_t(hi_id)] && !samples_[size_t(hi_id)]->data.empty());
+        sl.last_lo_id = lo_id;
+        sl.last_hi_id = has_hi ? hi_id : SfxSoundId::kCount;
 
-      const float base_gain = 0.55f * atten * view_other;
-      if (has_hi) {
-        const float xf_lo = (car.is_traffic || car.archetype == 6) ? 2200.0f : 2800.0f;
-        const float xf_span = (car.is_traffic || car.archetype == 6) ? 1800.0f : 2400.0f;
-        const float u = std::clamp((car.rpm - xf_lo) / xf_span, 0.0f, 1.0f);
-        const float hi_w = std::sin(u * 1.5707963f);
-        const float lo_w = std::cos(u * 1.5707963f);
-        const float lo_pitch = std::clamp((car.rpm / 2600.0f) * p_scale, 0.40f, 2.4f) * doppler;
-        const float hi_pitch = std::clamp((car.rpm / 5400.0f) * p_scale, 0.45f, 2.4f) * doppler;
-        mix_loop(sl.lo_voice, lo_id, base_gain * lo_w, lo_pitch, pl, pr, other_bus, frames);
-        mix_loop(sl.hi_voice, hi_id, base_gain * hi_w, hi_pitch, pl, pr, other_bus, frames);
-      } else {
-        const float base_pitch = std::clamp((car.rpm / 3000.0f) * p_scale, 0.40f, 2.8f) * doppler;
-        mix_loop(sl.lo_voice, lo_id, base_gain, base_pitch, pl, pr, other_bus, frames);
-        sl.hi_voice.gain = 0.0f;
+        const float base_gain = 0.55f * atten * view_other;
+        if (has_hi) {
+          const float xf_lo = (car.is_traffic || car.archetype == 6) ? 2200.0f : 2800.0f;
+          const float xf_span = (car.is_traffic || car.archetype == 6) ? 1800.0f : 2400.0f;
+          const float u = std::clamp((car.rpm - xf_lo) / xf_span, 0.0f, 1.0f);
+          const float hi_w = std::sin(u * 1.5707963f);
+          const float lo_w = std::cos(u * 1.5707963f);
+          const float lo_pitch = std::clamp((car.rpm / 2600.0f) * p_scale, 0.40f, 2.4f) * doppler;
+          const float hi_pitch = std::clamp((car.rpm / 5400.0f) * p_scale, 0.45f, 2.4f) * doppler;
+          mix_loop(sl.lo_voice, lo_id, base_gain * lo_w, lo_pitch, pl, pr, other_bus, frames);
+          mix_loop(sl.hi_voice, hi_id, base_gain * hi_w, hi_pitch, pl, pr, other_bus, frames);
+        } else {
+          const float base_pitch = std::clamp((car.rpm / 3000.0f) * p_scale, 0.40f, 2.8f) * doppler;
+          mix_loop(sl.lo_voice, lo_id, base_gain, base_pitch, pl, pr, other_bus, frames);
+          sl.hi_voice.gain = 0.0f;
+        }
       }
 
       // LOD2 3D tyre roll & cornering skid layer routed by surface_group, smoothly fading out across 50..65 m.
@@ -3228,7 +3438,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       const PcmSample* sc_pcm = samples_[size_t(sid)];
       if (sc_pcm && !sc_pcm->data.empty()) {
         mix_loop(showcase_voice_, sid, target_gain, target_pitch, pl, pr, other_bus, frames);
-      } else if (target_gain > 1e-4f || showcase_voice_.gain > 1e-4f) {
+      } else if (procedural_mode_ && (target_gain > 1e-4f || showcase_voice_.gain > 1e-4f)) {
         // Clean in-process rotor / prop / turbine / burner synthesizer fallback (Android / no ffmpeg).
         constexpr double kTwoPi = 6.283185307179586;
         const double inv_rate = 1.0 / double(rate_);
@@ -3305,7 +3515,8 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
 
     auto bind_current = [&]() -> bool {
       const size_t idx = size_t(o.id);
-      pcm = idx < samples_.size() ? samples_[idx] : nullptr;
+      if (o.ui >= 0) pcm = o.ui < kMaxUiSamples ? ui_samples_[size_t(o.ui)] : nullptr;
+      else pcm = idx < samples_.size() ? samples_[idx] : nullptr;
       if (!pcm || pcm->data.empty() || !std::isfinite(o.phase) || o.phase < 0.0) return false;
       bus = resolve_shot_bus(o.bus);
       n = pcm->data.size();
@@ -3316,11 +3527,13 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       step = double(o_pitch) * double(std::max(1, pcm->rate)) / double(rate_);
       attack_n = std::min<double>(64.0, double(n) * 0.125);
       release_n = std::min<double>(64.0, double(n) * 0.125);
-      route_mono_lfe = (lfe_out != nullptr) && (o.id == SfxSoundId::kImpactLfe || o.id == SfxSoundId::kBackfireLfe);
+      route_mono_lfe = (lfe_out != nullptr) && o.ui < 0 &&
+                       (o.id == SfxSoundId::kImpactLfe || o.id == SfxSoundId::kBackfireLfe);
       return true;
     };
     auto promote_steal = [&]() -> bool {
       o.id = o.next_id;
+      o.ui = o.next_ui;
       o.bus = o.next_bus;
       o.phase = 0.0;
       o.gain = o.next_gain;
