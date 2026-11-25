@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <string>
 
+#include "movie_skip.h"
 #include "settings.h"
 #include "ui4_chrome.h"
 
@@ -59,10 +60,10 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
               }
             }
             if (app.campaign.is_blocking_gameplay() && !app.show_title) {
-              // R3-UI-07: FMVs and cinematics require 0.75 s hold-to-skip in interactive windowed mode
-              // (instant skip is only allowed on reward_tally or in --headless / scripted runs).
+              // A movie skips on a press (confirmskip, Q155); the engine's
+              // in-engine cinematics keep their hold-to-skip.
               const bool require_hold_skip =
-                  (app.fmv_player.active() || app.campaign.flow().is_cinematic_active()) &&
+                  !app.fmv_player.active() && app.campaign.flow().is_cinematic_active() &&
                   !app.campaign.flow().reward_tally().active && !app.headless;
               if (require_hold_skip) {
                 return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
@@ -73,7 +74,8 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                                     e.key.key == SDLK_ESCAPE || e.key.key == SDLK_TAB);
               const bool adv_pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
                                    (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH ||
-                                    e.gbutton.button == SDL_GAMEPAD_BUTTON_START);
+                                    e.gbutton.button == SDL_GAMEPAD_BUTTON_START ||
+                                    (app.fmv_player.active() && e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST));
               // The tally's help bar shows X for SET GPS: the pad's X does it too.
               const bool gps_key = (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_G) ||
                                    (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
@@ -114,24 +116,19 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
               return true;
             }
             if (app.fmv_player.active()) {
-              // R3-UI-07: require 0.75 s hold-to-skip in interactive windowed mode (polled in run_window_loop);
-              // allow instant skip only in --headless / scripted test mode.
-              if (app.headless) {
-                const bool skip_key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
-                                      (e.key.key == SDLK_RETURN || e.key.key == SDLK_SPACE || e.key.key == SDLK_ESCAPE);
-                const bool skip_pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
-                                      (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH ||
-                                       e.gbutton.button == SDL_GAMEPAD_BUTTON_START);
-                const bool skip_mouse = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-                                        (e.button.button == SDL_BUTTON_LEFT || e.button.button == SDL_BUTTON_RIGHT);
-                if (skip_key || skip_pad || skip_mouse) {
-                  app.fmv_player.skip();
-                  app.audio_host.set_fmv_audio(nullptr, nullptr);
-                  if (title_attract_playing) {
-                    title_attract_playing = false;
-                    title_idle_s = 0.0;
-                    if (!app.no_title) app.show_title = true;
-                  }
+              // The boot splashes and the attract movie skip on a press
+              // (movie_skip_event); the press goes no further, so the one
+              // that ends the last splash does not also press START.
+              // The end of a movie as the render loop ends one that runs out.
+              if (carview::movie_skip_event(e)) {
+                app.fmv_player.skip();
+                app.audio_host.set_fmv_audio(nullptr, nullptr);
+                host.renderer.reset_auto_exposure();
+                if (title_attract_playing) {
+                  title_attract_playing = false;
+                  title_idle_s = 0.0;
+                  if (!app.no_title) app.show_title = true;
+                  app.title.reset();
                 }
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&

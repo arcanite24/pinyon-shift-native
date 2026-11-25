@@ -14,6 +14,7 @@
 #include "fh1data/stringtables.h"
 #include "fmv_player.h"
 #include "hud.h"
+#include "movie_skip.h"
 #include "settings.h"
 #include "settings_page.h"
 #include "story_intro.h"
@@ -116,7 +117,7 @@ void test_fmv_synthetic_and_audio_mix() {
 
   // Render FMV quad into ui::List and CPU-rasterize (verify fullscreen edge-to-edge without top/bottom black bars).
   carview::ui::List list;
-  player.draw(list, 320.0f, 180.0f, "Welcome to Horizon!", true);
+  player.draw(list, 320.0f, 180.0f, "Welcome to Horizon!");
   check(!list.empty(), "FmvPlayer::draw emits UI items");
   std::vector<uint8_t> fb(320u * 180u * 4u, 0);
   carview::ui::rasterize(list.items(), fb, 320, 180);
@@ -133,7 +134,7 @@ void test_fmv_synthetic_and_audio_mix() {
 
   // On 16:10 (taller than 16:9), FMV cover-fills top-to-bottom without top/bottom black bars.
   carview::ui::List list1610;
-  player.draw(list1610, 320.0f, 200.0f, {}, false);
+  player.draw(list1610, 320.0f, 200.0f);
   std::vector<uint8_t> fb1610(320u * 200u * 4u, 0);
   carview::ui::rasterize(list1610.items(), fb1610, 320, 200);
   const size_t top1610 = (2u * 320u + 160u) * 4u;
@@ -145,7 +146,7 @@ void test_fmv_synthetic_and_audio_mix() {
   // On 3840x2071 (aspect 1.854, scaled 384x207), FMV cover-fills edge-to-edge with ZERO side bars
   // and tags backdrop/video with kUiFlagFullscreen/kUiFlagFullscreenCover so 16:9 HUD lock never exposes 3D edges.
   carview::ui::List list4k;
-  player.draw(list4k, 384.0f, 207.0f, {}, false);
+  player.draw(list4k, 384.0f, 207.0f);
   bool saw_fs_bg = false, saw_fs_cover = false;
   for (const auto& it : list4k.items()) {
     if ((it.flags & carview::ui::kUiFlagFullscreen) != 0u) saw_fs_bg = true;
@@ -547,17 +548,46 @@ void test_r3_fmv_subtitles_pll_hold_skip_and_story_units() {
   const double lag_step = carview::fmv_pll_step_clock(2.0, 0.016, 1.896);   // audio lags by -120 ms
   check(lag_step >= 2.0 && lag_step < 2.016, "PLL gently slows down without reversing when audio lags >40ms");
 
-  // R3-UI-07: 0.75 s hold-to-skip progress ring (stepped in realistic 50 ms frame increments).
-  p.reset_hold_skip();
-  check(p.hold_skip_progress() == 0.0f, "hold-to-skip starts at 0");
-  float p30 = 0.0f;
-  for (int i = 0; i < 6; ++i) p30 = p.update_hold_skip(0.05, true);  // 0.30 s total
-  check(p30 > 0.35f && p30 < 0.45f, "0.30s hold is ~40% of 0.75s (does not skip on frame 0)");
-  float p75 = p30;
-  for (int i = 0; i < 9; ++i) p75 = p.update_hold_skip(0.05, true);  // +0.45 s = 0.75 s total
-  check(p75 >= 1.0f, "0.75s continuous hold reaches 1.0");
-  const float decayed = p.update_hold_skip(0.20, false);
-  check(decayed < 1.0f, "releasing skip decays hold progress");
+  // A movie skips on a press (the original's boot splashes skip on a B tap):
+  // a button going down, never a key's auto-repeat or a release.
+  {
+    SDL_Event e{};
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.key = SDLK_SPACE;
+    check(carview::movie_skip_event(e), "movie skip: Space skips");
+    e.key.repeat = true;
+    check(!carview::movie_skip_event(e), "movie skip: a held key's repeat does not");
+    e.key.repeat = false;
+    e.type = SDL_EVENT_KEY_UP;
+    check(!carview::movie_skip_event(e), "movie skip: a release does not");
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.key = SDLK_W;
+    check(!carview::movie_skip_event(e), "movie skip: other keys do not");
+    SDL_Event b{};
+    b.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+    b.gbutton.button = SDL_GAMEPAD_BUTTON_EAST;
+    check(carview::movie_skip_event(b), "movie skip: B skips");
+    b.gbutton.button = SDL_GAMEPAD_BUTTON_NORTH;
+    check(!carview::movie_skip_event(b), "movie skip: Y does not");
+    SDL_Event m{};
+    m.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    m.button.button = SDL_BUTTON_LEFT;
+    check(!carview::movie_skip_event(m), "movie skip: a click (focusing the window) does not");
+  }
+  // No prompt over a movie (00_opening_movie_orig.png): no text below the
+  // subtitle strip, where the help bar would sit.
+  {
+    carview::FmvPlayer mp;
+    mp.open_synthetic(64, 36, 30.0, 4.0, "");  // no title banner
+    carview::ui::List ml;
+    mp.draw(ml, 320.0f, 180.0f);
+    const float strip_bottom = 180.0f - 86.0f * (180.0f / 720.0f);
+    bool saw_text = false;
+    for (const auto& it : ml.items())
+      if (it.kind == carview::ui::kGlyph && it.p[1] > strip_bottom) saw_text = true;
+    check(!saw_text, "movie skip: no HOLD TO SKIP prompt over a movie");
+    mp.close();
+  }
 
   // R3-UI-07: StoryIntro Viper drive HUD supports Metric and Imperial units cleanly.
   carview::StoryIntro st;

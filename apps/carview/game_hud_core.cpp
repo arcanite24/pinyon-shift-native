@@ -1013,7 +1013,10 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       render_world_labels_and_nameplates(l, show_tags ? st.name_tags : kEmptyTags, active_wm, st.race != nullptr, w, h,
                                          st.metric_units);
     }
-    if (st.gps && st.gps->active && !st.race) gps_turn_hud(l, *st.gps, g, st.metric_units);
+    // The route's next turn: DirectionArrows, else the drawn banner.
+    if (st.gps && st.gps->active && !st.race && should_show_gps_turn_banner(*st.gps) &&
+        !draw_hud_direction_arrow(l, *st.gps, w, h, g.s))
+      gps_turn_hud(l, *st.gps, g, st.metric_units);
     if (st.pr_stunt && st.pr_stunt->active && !st.race) pr_stunt_hud(l, *st.pr_stunt, g);
     if (st.h2h && !st.race) {
       const float used = h2h_hud(l, *st.h2h, g, st.metric_units, bottom_lift);
@@ -1063,9 +1066,9 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       if (st.speedo_mode == 1) render_digital_dial(l, st, g);
       else if (st.speedo_mode == 0) dial(l, st, g);
     }
-    // R3-UI-11: Clean dark-backed Barn Find proximity radar pill positioned strictly above
-    // SatNav / GPS turn banner (never overlaps SatNav at y=376..408!).
-    if (st.barn_radar_proximity > 0.04 && !st.race) {
+    // The barn find radar pill is the engine's own (the original marks a
+    // rumour on the maps only): drawn only with the BARN FIND RADAR row on.
+    if (st.hud.barn_radar && st.barn_radar_proximity > 0.04 && !st.race) {
       const float prox = float(std::clamp(st.barn_radar_proximity, 0.0, 1.0));
       const float pulse_hz = 1.5f + 4.0f * prox;
       const float pulse = 0.5f + 0.5f * std::sin(float(st.time) * 6.28318f * pulse_hz);

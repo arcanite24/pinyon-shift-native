@@ -640,6 +640,21 @@ int main() {
       ts.sync_from_live(on);
       CHECK(ts.value("tracked achievement") == "on");
     }
+    // So is the barn find radar pill (HUD-12): off unless asked for.
+    {
+      CHECK(!carview::HudToggles{}.barn_radar);
+      carview::SettingsPage bp;
+      bp.load({});
+      CHECK(!bp.live_settings().hud.barn_radar && bp.value("barn find radar") == "off");
+      bp.load({"--hud-barn-radar"});
+      CHECK(bp.live_settings().hud.barn_radar);
+      carview::LiveSettings on;
+      on.hud.barn_radar = true;
+      carview::SettingsPage bs;
+      bs.load({});
+      bs.sync_from_live(on);
+      CHECK(bs.value("barn find radar") == "on");
+    }
     // Pro (+25) + ABS Off (+20) + Sim Steering (+20) + TCS Off (+15) + M+C (+20) + Line Off (+20) + Rewind Off (+20) = 140% (the ceiling; STM and damage are not counted)
     CHECK(p6.difficulty_credit_bonus_pct() == 140);
     const auto base_lay = drive::default_controller_layout(0);

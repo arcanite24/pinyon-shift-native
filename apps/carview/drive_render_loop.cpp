@@ -444,18 +444,10 @@ void DriveSession::run_window_loop() {
               hold_skip_now = true;
             }
           }
+          // A movie skips on a press, in the input (movie_skip_event).
           if (app.fmv_player.active()) {
-            bool fmv_done = !app.fmv_player.update(frame_dt, true);
-            // R3-UI-07: standalone / attract / boot-splash FMVs require a 0.75 s hold-to-skip
-            // (campaign FMVs advance CampaignDirector's own 0.75 s hold-to-skip progress ring).
-            if (!fmv_done && !app.campaign.is_blocking_gameplay() && !app.headless) {
-              if (app.fmv_player.update_hold_skip(frame_dt, hold_skip_now) >= 1.0f) {
-                app.fmv_player.skip();
-                fmv_done = true;
-              }
-            }
+            const bool fmv_done = !app.fmv_player.update(frame_dt, true);
             if (fmv_done) {
-              app.fmv_player.reset_hold_skip();
               app.audio_host.set_fmv_audio(nullptr, nullptr);
               host.renderer.reset_auto_exposure();
               if (title_attract_playing) {
@@ -465,8 +457,6 @@ void DriveSession::run_window_loop() {
                 app.title.reset();
               }
             }
-          } else {
-            app.fmv_player.reset_hold_skip();
           }
           // Authentic PressStart.wmv seamless looping animated title screen backdrop when present & decodable;
           // otherwise falls back seamlessly to the live 3D Colorado Festival scenic overlook.
@@ -564,7 +554,8 @@ void DriveSession::run_window_loop() {
             const bool rf = app.race && app.race->post_race_settled();
             feed_first_time_career();
             apply_campaign_action(
-                app.campaign.update(frame_dt, {vp.x, vp.z}, app.fmv_player, &app.audio_host, rf, hold_skip_now));
+                app.campaign.update(frame_dt, {vp.x, vp.z}, app.fmv_player, &app.audio_host, rf,
+                                    hold_skip_now && !app.fmv_player.active()));
             apply_first_time_career();
             // Deferred event launch: once a Boss/Showcase/Finale/Pre-Race intro finishes or is skipped, enter the race!
             if (!pending_event_launch.empty() && !app.campaign.is_blocking_gameplay() && running) {

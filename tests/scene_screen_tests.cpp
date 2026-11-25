@@ -207,6 +207,9 @@ int main() {
                  "ComboIcon", "PopularityBar", "PopularityBar/ValueScale/Stars", "ValueScale/ValueType",
                  "ValueType/TEXT_LEVEL", "ValueType/TEXT_LEVEL_SUFFIX", "CircleFlash", "Flash_SmokeRing",
                  "Flash_SmokeRing2",
+                 // The route's next turn.
+                 "DirectionArrows/graphics/Component/Background", "DirectionArrows/graphics/Component/Group/bg2",
+                 "DirectionArrows/TEXT_JUNCTION",
                  // The event prompt.
                  "ActivationPrompt/All", "All/Title", "All/Event_Name", "All/Call_to_Action", "Call_to_Action/Default",
                  "Call_to_Action/Locked",
@@ -681,6 +684,112 @@ int main() {
     }
   }
 
+  // The map's X DETAILS draws the event's ticket over the map in place of
+  // the cursor, the popup and the map's help bar: A SET ROUTE, B BACK, Y
+  // RESTRICTIONS (map_popup_event_details_orig.png).
+  {
+    carview::DriveHud md;
+    md.credits = 167700, md.car_name = "Mazda MX-5 Miata";
+    carview::MapScreenHud ms;
+    ms.active = true, ms.age = 5.0, ms.locked = true;
+    ms.popup.kind = carview::MapPopupKind::kCareerRace;
+    ms.popup.title = "Bondurant Valley Skirmish";
+    ms.prompts = {{"A", "SET ROUTE"}, {"B", "EXIT MAP"}, {"X", "DETAILS"}, {"LB", "FILTER"}};
+    carview::ui::List plain;
+    check(carview::draw_map_screen(plain, md, ms, 1280.0f, 720.0f), "map: draws");
+    carview::EventSummaryHud es;
+    es.type = carview::event_type_text(1);
+    es.track = "GLADSTONE DIRT CROSS";
+    es.points = 110, es.credits = 5000;
+    ms.details = &es;
+    carview::ui::List det;
+    check(carview::draw_map_screen(det, md, ms, 1280.0f, 720.0f), "map details: draws");
+    check(det.items().size() > plain.items().size(), "map details: the ticket draws over the map");
+    // The ticket draws in its rect (288..992 x 232..488 on the canvas; its
+    // texts and tapes, the textures are not installed here).
+    auto lit = [](const carview::ui::List& l) {
+      std::vector<uint8_t> fb(size_t(1280) * 720 * 4, 0);
+      carview::ui::rasterize(l.items(), fb, 1280, 720);
+      int n = 0;
+      for (uint32_t y = 260; y < 460; ++y)
+        for (uint32_t x = 320; x < 960; ++x) {
+          const uint8_t* q = &fb[(size_t(y) * 1280 + x) * 4];
+          if (q[0] > 8 || q[1] > 8 || q[2] > 8) ++n;
+        }
+      return n;
+    };
+    const int lp = lit(plain), ld = lit(det);
+    check(ld > lp + 2000, "map details: the ticket draws in its rect (" + std::to_string(lp) + " -> " + std::to_string(ld) + " px)");
+    check(carview::text_of(carview::map_text::kRestrictions) == "RESTRICTIONS" &&
+              carview::text_of(carview::map_text::kBack) == "BACK" &&
+              carview::text_of(carview::map_text::kSetRoute) == "SET ROUTE",
+          "map details: its help bar's strings");
+  }
+
+  // The car name tag's measured size (30_skill_toast_orig.png): BISHOP in
+  // horizon_b with 18 px capitals is about 75 px wide.
+  {
+    if (auto fzip = fh1::Archive::open(game_root / "media" / "ui" / "Fonts.zip", nullptr))
+      carview::ui::load_fonts_from_zip(*fzip);
+    carview::ui::TextStyle ts;
+    ts.font = carview::ui::Font::kB, ts.size = carview::kNameTagSize;
+    const float wd = carview::ui::List::measure("BISHOP", ts);
+    check(std::fabs(wd - 75.0f) < 5.0f, "name tag: BISHOP is about 75 px wide (" + std::to_string(wd) + ")");
+  }
+
+  // The route's next turn on DirectionArrows (16_race_hud_orig.png's
+  // hairpin): the dark box at 617..663 x 199..251 and the turn's cell of
+  // DIRECTION_ARROWS, a left turn mirrored from the right-hand cells.
+  {
+    using carview::direction_arrow_cell;
+    check(direction_arrow_cell(0).cell == 0 && direction_arrow_cell(1).cell == 0 && direction_arrow_cell(9).cell == 5 &&
+              direction_arrow_cell(8).cell == 4 && !direction_arrow_cell(8).mirror,
+          "arrow: ahead, the destination and the U-turn's cells");
+    check(direction_arrow_cell(6).cell == 2 && !direction_arrow_cell(6).mirror && direction_arrow_cell(3).cell == 2 &&
+              direction_arrow_cell(3).mirror && direction_arrow_cell(2).cell == 1 && direction_arrow_cell(2).mirror &&
+              direction_arrow_cell(7).cell == 3 && direction_arrow_cell(4).cell == 3 && direction_arrow_cell(4).mirror,
+          "arrow: a left turn is the right turn's cell mirrored");
+    auto hzt = fh1::Archive::open(game_root / "media" / "ui" / "textures" / "Horizon.zip", nullptr);
+    check(hzt && hzt->read("HUD/MASKS/DIRECTION_ARROWS.xds").ok() && hzt->read("DIRTMASKS/HUD/DIRECTIONARROWBG.xds").ok(),
+          "arrow: its textures");
+    // Every texture at the whole of a unit atlas, to read the drawn cells.
+    carview::set_ui_textures([](const std::string&, std::array<float, 4>& uv) {
+      uv = {0.0f, 0.0f, 1.0f, 1.0f};
+      return true;
+    });
+    auto images = [](int kind, bool recalculating) {
+      carview::GpsHud g;
+      g.active = true, g.turn_kind = kind, g.recalculating = recalculating;
+      carview::ui::List l;
+      const bool ok = carview::draw_hud_direction_arrow(l, g, 1280.0f, 720.0f, 1.0f);
+      std::vector<carview::ui::Instance> out;
+      for (const auto& it : l.items())
+        if (it.kind == carview::ui::kImage || it.kind == carview::ui::kImageMasked) out.push_back(it);
+      return std::make_pair(ok, out);
+    };
+    const auto [ok_r, right] = images(6, false);
+    const auto [ok_l, left] = images(3, false);
+    const auto [ok_c, recalc] = images(6, true);
+    check(ok_r && right.size() == 2 && left.size() == 2, "arrow: the box and the arrow");
+    if (right.size() == 2 && left.size() == 2) {
+      const auto& box = right[0];
+      const auto& ar = right[1];
+      const auto& al = left[1];
+      check(std::fabs(box.rect[0] - 606.0f) < 2.0f && std::fabs(box.rect[2] - 674.0f) < 2.0f &&
+                std::fabs(box.rect[1] - 185.0f) < 2.0f && std::fabs(box.rect[3] - 264.0f) < 2.0f,
+            "arrow: the box's rect (606..674 x 185..264)");
+      check(std::fabs(ar.rect[0] - 614.0f) < 2.0f && std::fabs(ar.rect[2] - 666.0f) < 2.0f &&
+                std::fabs(ar.rect[1] - 206.0f) < 2.0f && std::fabs(ar.rect[3] - 244.0f) < 2.0f,
+            "arrow: the arrow's rect (614..666 x 206..244)");
+      check(std::fabs(ar.q[0] - 2.0f / 6.0f) < 1e-4f && std::fabs(ar.q[2] - 3.0f / 6.0f) < 1e-4f,
+            "arrow: turn right is the third cell");
+      check(std::fabs(al.q[0] - 3.0f / 6.0f) < 1e-4f && std::fabs(al.q[2] - 2.0f / 6.0f) < 1e-4f,
+            "arrow: turn left is the third cell mirrored");
+    }
+    check(ok_c && recalc.empty(), "arrow: nothing while the route recalculates");
+    carview::set_ui_textures(nullptr);
+  }
+
   // 5. Optional renders.
   if (const char* shot_env = std::getenv("SHIFT_SCENE_SCREEN_SHOT_DIR"); shot_env && *shot_env) {
     const std::filesystem::path out_dir = shot_env;
@@ -801,6 +910,14 @@ int main() {
     prompt_d.kmh = 0, prompt_d.rpm = 900, prompt_d.gear = 1;
     prompt_d.world_marker = &wm;
     hud_shot("hud_prompt.png", "09_event_marker_prompt_orig.png", prompt_d);
+
+    // The route's next turn (DirectionArrows) over the original's hairpin.
+    carview::GpsHud uturn;
+    uturn.active = uturn.confirmed_uturn = true;
+    uturn.turn_kind = 8, uturn.dist_to_turn_m = 80.0, uturn.dist_to_dest_m = 900.0;
+    carview::DriveHud arrow_d = roam;
+    arrow_d.gps = &uturn;
+    hud_shot("hud_direction_arrow.png", "16_race_hud_orig.png", arrow_d);
 
     // A sprint (16_race_hud_orig.png) and a circuit (the oracle's
     // race-hud-notification.png, by absolute path in SHIFT_SCENE_SCREEN_ORACLE).
@@ -992,6 +1109,18 @@ int main() {
       ms.dialog = carview::MapDialog::kConfirm;
       ms.dialog_body = "Are you sure you want to Fast Travel here for 10,000 credits?";
       hud_shot("map_fasttravel_confirm.png", "map_fasttravel_confirm_orig.png", md);
+      // X DETAILS: the event's ticket over the map.
+      ms.dialog = carview::MapDialog::kNone;
+      carview::EventSummaryHud es;
+      es.type = carview::event_type_text(1);
+      es.ticket = carview::event_ticket_texture(1, "001");
+      es.track = "GLADSTONE DIRT CROSS";
+      es.track_info = carview::event_track_info(1, true);
+      es.points = 110, es.credits = 5000, es.car_class = "A", es.restriction = "MUST BE AWD";
+      es.eligibility = carview::text_of(carview::race_text::kGarageCarsEligible);
+      ms.details = &es;
+      hud_shot("map_details.png", "map_popup_event_details_orig.png", md);
+      ms.details = nullptr;
     }
 
     // The front end and the loading screen over the original's frames.

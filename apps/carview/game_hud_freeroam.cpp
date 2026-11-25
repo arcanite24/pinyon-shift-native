@@ -164,23 +164,14 @@ void layout_world_labels(const std::vector<NameTagHud>& tags, const WorldMarkerH
       c.tag.pi_text = std::to_string(t.pi);
     }
 
+    // The original's tag is the driver's name alone in white on a faint
+    // grey pill (30_skill_toast_orig.png, BISHOP): no class or PI badge.
     const float sc = lod.scale;
-    const float pill_h = 17.5f * s * sc;
-    ui::TextStyle nts = hud_detail::font(ui::Font::kB, 9.8f * s * sc, ui4::kWhite);
-    hud_detail::fit(c.tag.driver, nts, 140.0f * s * sc, 7.6f * s * sc);
+    const float pill_h = kNameTagPillH * s * sc;
+    ui::TextStyle nts = hud_detail::font(ui::Font::kB, kNameTagSize * s * sc, ui4::kWhite);
+    hud_detail::fit(c.tag.driver, nts, 180.0f * s * sc, 10.0f * s * sc);
     const float name_w = ui::List::measure(c.tag.driver, nts);
-
-    float pill_w = 0.0f;
-    if (c.tag.has_badge) {
-      const float bh = pill_h - 4.0f * s * sc;
-      c.tag.cls_w = (c.tag.car_class.size() > 1 ? 16.5f : 13.5f) * s * sc;
-      c.tag.pi_w = std::max(21.0f * s * sc, bh * 1.65f);
-      c.tag.badge_w = c.tag.cls_w + c.tag.pi_w;
-      pill_w = 4.5f * s * sc + c.tag.badge_w + 6.0f * s * sc + name_w + 7.5f * s * sc;
-    } else {
-      const float star_w = c.tag.leader ? ui::List::measure("* ", nts) : 0.0f;
-      pill_w = 4.0f * s * sc + 5.5f * s * sc + star_w + name_w + 7.5f * s * sc;
-    }
+    const float pill_w = name_w + (kNameTagPadL + kNameTagPadR) * s * sc;
 
     const float half_w = 0.5f * pill_w;
     const float cx = std::clamp(t.screen_x, margin_x + half_w, std::max(margin_x + half_w, w - margin_x - half_w));
@@ -188,7 +179,7 @@ void layout_world_labels(const std::vector<NameTagHud>& tags, const WorldMarkerH
     c.pill_h = pill_h;
     c.tag.x0 = cx - half_w;
     c.tag.x1 = cx + half_w;
-    c.tag.y1 = t.screen_y - 5.0f * s * sc;
+    c.tag.y1 = t.screen_y - (kNameTagNotchH + 1.0f) * s * sc;
     c.tag.y0 = c.tag.y1 - pill_h;
     cands.push_back(std::move(c));
   }
@@ -310,59 +301,25 @@ void render_world_labels_and_nameplates(ui::List& l, const std::vector<NameTagHu
   WorldMarkerLayout wm_layout{};
   layout_world_labels(tags, world_marker, in_race, w, h, resolved, &wm_layout);
 
-  // 1. Draw car nameplates back-to-front (farther/nudged first, closest on top).
+  // 1. The car names back to front (farther and nudged first, the closest on
+  // top): the faint pill, its notch over the car and the white name.
   for (auto it = resolved.rbegin(); it != resolved.rend(); ++it) {
     const auto& b = *it;
     const float sc = b.scale;
     const float a = std::clamp(b.alpha, 0.0f, 1.0f);
     if (a <= 0.03f) continue;
     const float pill_h = b.y1 - b.y0;
-
-    // Subtle pointer tick anchored directly beneath the pill pointing toward the car roof.
+    const uint32_t pill = ui::fade(kNameTagPill, a);
+    ui4::pill(l, b.x0, b.y0, b.x1, b.y1, pill, ui4::PillKind::kHud01);
     const float tip_x = std::clamp(b.orig_x, b.x0 + 8.0f * s * sc, b.x1 - 8.0f * s * sc);
-    const float tick_h = 3.8f * s * sc;
-    const float tick_hw = 3.5f * s * sc;
-    const uint32_t accent =
-        b.leader ? ui4::kPink : (b.has_badge ? ui4::class_colour_by_name(b.car_class) : ui::rgba(220, 226, 236));
-    l.line(tip_x - tick_hw, b.y1, tip_x, b.y1 + tick_h, 1.4f * s * sc, ui::fade(accent, a * 0.85f));
-    l.line(tip_x + tick_hw, b.y1, tip_x, b.y1 + tick_h, 1.4f * s * sc, ui::fade(accent, a * 0.85f));
-
-    // Sleek compact translucent FH1 pill backing + subtle top edge sheen + crisp left accent.
-    l.rect(b.x0 + 1.0f * s, b.y0 + 1.5f * s, b.x1 + 1.0f * s, b.y1 + 1.5f * s, ui::fade(ui::rgba(0, 0, 0, 96), a));
-    l.rect(b.x0, b.y0, b.x1, b.y1, ui::fade(ui::rgba(14, 16, 22, 174), a), 1.5f * s * sc,
-           ui::fade(ui::rgba(8, 10, 14, 194), a));
-    l.rect(b.x0, b.y0, b.x1, b.y0 + 0.9f * s, ui::fade(ui::rgba(255, 255, 255, 38), a));
-    l.rect(b.x0, b.y0, b.x0 + 2.5f * s * sc, b.y1, ui::fade(accent, a * 0.95f));
-
-    ui::TextStyle name_ts =
-        hud_detail::font(ui::Font::kB, 9.8f * s * sc, ui::fade(b.leader ? ui4::kYellow : ui4::kWhite, a));
-    hud_detail::fit(b.driver, name_ts, 140.0f * s * sc, 7.6f * s * sc);
-    float tx = b.x0 + 4.5f * s * sc;
-    if (b.has_badge) {
-      const float by0 = b.y0 + 2.0f * s * sc;
-      const float by1 = b.y1 - 2.0f * s * sc;
-      const float bh = by1 - by0;
-      const uint32_t cls_col = ui4::class_colour_by_name(b.car_class);
-      l.rect(tx, by0, tx + b.cls_w, by1, ui::fade(cls_col, a));
-      l.rect(tx + b.cls_w, by0, tx + b.badge_w, by1, ui::fade(ui4::kWhite, a));
-
-      const bool light_cls = (b.car_class == "C" || b.car_class == "c" || b.car_class == "X" || b.car_class == "x");
-      ui::TextStyle cs = hud_detail::font(ui::Font::kE, bh * 0.68f, ui::fade(light_cls ? ui4::kInk : ui4::kWhite, a),
-                                          ui::Align::kCenter);
-      hud_detail::fit(b.car_class, cs, b.cls_w - 1.5f * s * sc, bh * 0.42f);
-      l.text(tx + 0.5f * b.cls_w, by0 + 0.5f * (bh - cs.size), b.car_class, cs);
-
-      ui::TextStyle ps = hud_detail::font(ui::Font::kB, bh * 0.64f, ui::fade(ui4::kInk, a), ui::Align::kCenter);
-      hud_detail::fit(b.pi_text, ps, b.pi_w - 1.5f * s * sc, bh * 0.40f);
-      l.text(tx + b.cls_w + 0.5f * b.pi_w, by0 + 0.5f * (bh - ps.size), b.pi_text, ps);
-
-      tx += b.badge_w + 6.0f * s * sc;
-      l.text(tx, b.y0 + 0.5f * (pill_h - name_ts.size), b.driver, name_ts);
-    } else {
-      tx += 5.5f * s * sc;
-      const std::string text = (b.leader ? "* " : "") + b.driver;
-      l.text(tx, b.y0 + 0.5f * (pill_h - name_ts.size), text, name_ts);
+    const float nw = kNameTagNotchW * 0.5f * s * sc, nh = kNameTagNotchH * s * sc;
+    for (float y = 0.0f; y < nh; y += 1.0f) {
+      const float half = nw * (1.0f - y / nh);
+      l.rect(tip_x - half, b.y1 + y, tip_x + half, b.y1 + y + 1.0f, pill);
     }
+    ui::TextStyle name_ts = hud_detail::font(ui::Font::kB, kNameTagSize * s * sc, ui::fade(ui4::kWhite, a));
+    hud_detail::fit(b.driver, name_ts, 180.0f * s * sc, 10.0f * s * sc);
+    l.text(b.x0 + kNameTagPadL * s * sc, b.y0 + 0.5f * (pill_h - name_ts.size), b.driver, name_ts);
   }
 
   // 2. Draw active World Hub / Outpost / Event Marker cleanly on top (guaranteed non-overlapping).

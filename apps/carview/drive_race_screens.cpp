@@ -29,31 +29,36 @@ race_flow::Kind race_kind(const DriveApp& app) {
 // --- The event summary (festival_event_entry_flow) ------------------------
 
 void DriveSession::open_event_summary(const race::CareerEvent& ev) {
+  event_car_selected = 0;
+  event_car_media.clear();
+  event_summary_hud = event_ticket(ev, &event_cars);
+  summary_event = &ev;
+  summary_restrictions = false;
+  summary_opened_at = vehicle.time();
+  entry_screens.start(race_flow::entry_steps(event_summary_hud.eligible));
+  events_page.close();
+  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+}
+
+EventSummaryHud DriveSession::event_ticket(const race::CareerEvent& ev,
+                                           std::vector<std::pair<std::string, std::string>>* cars) {
   int64_t cid = 0;
   int clid = 2;
   current_car_info(cid, clid);
   const auto names = app.class_name_list();
   const auto elig = app.career_catalog.check_eligibility(ev, cid, clid, names, slice12.trainer.effective_any_car());
   // Car select lists the garage's eligible cars (ShowRegisterEventCarScreen).
-  event_cars.clear();
-  event_car_selected = 0;
-  event_car_media.clear();
+  std::vector<std::pair<std::string, std::string>> eligible_cars;
   if (!elig.eligible && app.have_garage) {
     for (const auto& gc : app.career_garage.cars) {
       const int gcls = app.class_bands.empty() ? gc.class_id : garage::class_of(gc.performance_index, app.class_bands);
       if (!app.career_catalog.check_eligibility(ev, gc.car_id, gcls, names).eligible) continue;
       if (auto it = app.baked_ids.find(gc.car_id); it != app.baked_ids.end())
-        event_cars.push_back({carview::car_name(it->second), it->second});
+        eligible_cars.push_back({carview::car_name(it->second), it->second});
     }
   }
-  summary_event = &ev;
-  summary_restrictions = false;
-  summary_opened_at = vehicle.time();
-  entry_screens.start(race_flow::entry_steps(elig.eligible));
-  events_page.close();
 
-  EventSummaryHud& h = event_summary_hud;
-  h = EventSummaryHud{};
+  EventSummaryHud h;
   h.style = ev.style;
   h.name = race::resolve_event_display_title(&ev);
   h.type = event_type_text(ev.style);
@@ -72,14 +77,15 @@ void DriveSession::open_event_summary(const race::CareerEvent& ev) {
   }
   if (!h.car_class.empty()) h.restriction_detail = format1(text_of(race_text::kClassOrBelow), h.car_class);
   h.eligible = elig.eligible;
-  h.eligibility = text_of(elig.eligible          ? race_text::kCurrentCarEligible
-                          : !event_cars.empty() ? race_text::kGarageCarsEligible
-                                                : race_text::kNoCarsEligible);
+  h.eligibility = text_of(elig.eligible             ? race_text::kCurrentCarEligible
+                          : !eligible_cars.empty() ? race_text::kGarageCarsEligible
+                                                   : race_text::kNoCarsEligible);
   if (elig.uses_loaner && elig.loaner_car_id > 0)
     if (const auto* cs = app.career_catalog.find_car(elig.loaner_car_id)) h.provided_car = carview::car_name(cs->media_name);
   if (const int best = app.career_catalog.best_place(ev, app.career); best > 0)
     h.best_finish = std::to_string(best) + place_suffix(best);
-  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+  if (cars) *cars = std::move(eligible_cars);
+  return h;
 }
 
 void DriveSession::close_event_summary() {

@@ -18,6 +18,7 @@
 namespace carview {
 
 struct DriveHud;
+struct EventSummaryHud;
 
 inline constexpr std::string_view kMapScene = "H_MAP";
 inline constexpr std::string_view kMapFilterScene = "H_FIXED_SETTING_LIST";
@@ -35,6 +36,7 @@ inline constexpr StringRef kLeaderboard{"HelpButtons", "IDS_ShowLeaderboard", 0,
 inline constexpr StringRef kFilter{"HelpButtons", "IDS_Filter_Map", 0, "FILTER"};
 inline constexpr StringRef kToggle{"HelpButtons", "IDS_Toggle", 0, "TOGGLE"};
 inline constexpr StringRef kBack{"HelpButtons", "IDS_Back", 0, "BACK"};
+inline constexpr StringRef kRestrictions{"HelpButtons", {}, 0xAC80, "RESTRICTIONS"};  // as race_text
 inline constexpr StringRef kOk{"HelpButtons", "IDS_OK", 0, "OK"};
 inline constexpr StringRef kCancel{"HelpButtons", "IDS_Cancel", 0, "CANCEL"};
 inline constexpr StringRef kFilterTitle{"InGame", "IDS_FilterMap_Title", 0, "FILTER"};
@@ -102,6 +104,9 @@ struct MapScreenHud {
   MapDialog dialog = MapDialog::kNone;
   std::string dialog_body;
   std::string band_texture;            // the player bar's wristband (empty: from the HUD)
+  // X DETAILS on an event: its ticket over the map (no cursor or popup), with
+  // A SET ROUTE, B BACK and Y RESTRICTIONS (map_popup_event_details_orig.png).
+  const EventSummaryHud* details = nullptr;
 };
 
 // The canvas -> screen fit of the map's 1280x720 layout.

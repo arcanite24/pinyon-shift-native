@@ -147,6 +147,10 @@ std::string event_track_info(int surface, bool circuit);
 std::string event_type_text(int style);
 
 bool draw_event_summary(ui::List& l, const DriveHud& st, const EventSummaryHud& es, float w, float h);
+// The summary's ticket alone (no help bar): over the map for X DETAILS,
+// where the map's own player bar shows (`player_bar` false hides the
+// scene's).
+bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& es, float w, float h, bool player_bar);
 // The race screen `r.screen` (title card .. stay in car); false: not one of
 // these, or its scene is missing.
 bool draw_race_screen(ui::List& l, const DriveHud& st, const RaceHud& r, float w, float h);

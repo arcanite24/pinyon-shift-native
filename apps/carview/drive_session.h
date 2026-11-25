@@ -522,6 +522,11 @@ struct DriveSession {
   int map_dialog_marker = -1;
   int64_t map_dialog_cost = 0;
   double map_dialog_px = 0.0, map_dialog_pz = 0.0;  // the trainer's bare-cursor destination
+  // X DETAILS on an event: its ticket (H_EVENT_SUMMARY) over the map, with
+  // A SET ROUTE, B BACK and Y RESTRICTIONS (map_popup_event_details_orig.png).
+  bool map_details = false;
+  bool map_details_restrictions = false;
+  EventSummaryHud map_details_hud;
   MapCameraController map_cam;
   int map_w = 0, map_h = 0;
   bool window_minimized = false;
@@ -686,6 +691,10 @@ struct DriveSession {
   // The marker's H_EVENT_SUMMARY (festival_event_entry_flow): A enters (car
   // select first when the car is not eligible), B backs out, Y restrictions.
   void open_event_summary(const race::CareerEvent& ev);
+  // The event's ticket (H_EVENT_SUMMARY's values) for the current car; with
+  // `cars`, the garage's cars that can enter it when the current one cannot.
+  EventSummaryHud event_ticket(const race::CareerEvent& ev,
+                               std::vector<std::pair<std::string, std::string>>* cars = nullptr);
   void close_event_summary();
   void event_summary_accept();
   void event_summary_back();
@@ -724,6 +733,8 @@ struct DriveSession {
   int64_t outpost_travel_fee(const std::string& outpost_id);  // the original's fee (freeroam/fast_travel.h)
   void map_fast_travel_request();
   void map_fast_travel_confirm();
+  bool map_open_details();
+  void map_route_to_selected();
   void map_travel_to(double x, double z, double heading);
   void sync_pause_labels();
   void cycle_difficulty(int by);

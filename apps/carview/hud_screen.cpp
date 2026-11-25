@@ -14,6 +14,8 @@ namespace carview {
 namespace {
 
 constexpr uint32_t kWhite = ui::rgba(255, 255, 255);
+// DIRECTION_ARROWS' material (Material14584, 0.91 grey).
+constexpr uint32_t kDirectionArrowInk = ui::rgba(232, 232, 232);
 
 // The direct child of `parent` called `name`.
 int child(const SceneDraw& sd, int parent, std::string_view name) {
@@ -691,6 +693,48 @@ bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, fl
     sc.hide(child_path(sd, def, "Icon/Rectangle"));
   }
   return sc.draw(l, hud_frame(HudAnchor::kTop, w, h, s), prompt) > 0;
+}
+
+// --- DirectionArrows -------------------------------------------------------
+
+DirectionArrowCell direction_arrow_cell(int turn_kind) {
+  switch (turn_kind) {
+    case 2: return {1, true};   // bear left
+    case 3: return {2, true};   // turn left
+    case 4: return {3, true};   // sharp left
+    case 5: return {1, false};  // bear right
+    case 6: return {2, false};  // turn right
+    case 7: return {3, false};  // sharp right
+    case 8: return {4, false};  // U-turn
+    case 9: return {5, false};  // arrived
+    default: return {0, false};
+  }
+}
+
+bool draw_hud_direction_arrow(ui::List& l, const GpsHud& gps, float w, float h, float s) {
+  SceneScreen sc(kHudScene);
+  const SceneDraw& sd = sc.scene();
+  const int root = sc.node("DirectionArrows");
+  const int box = sc.node("DirectionArrows/graphics/Component/Background");
+  const int arrow = sc.node("DirectionArrows/graphics/Component/Group/bg2");
+  if (root < 0 || box < 0 || arrow < 0) return false;
+  if (gps.recalculating) return true;
+  std::array<float, 4> uv{};
+  if (!ui_texture(sd.texture_key_of(arrow), uv)) return false;
+  // The box rests at alpha 0 (the scene fades it in); the arrow and the
+  // junction text are drawn here.
+  sc.show(box);
+  sc.hide(arrow);
+  sc.hide(sc.node("DirectionArrows/TEXT_JUNCTION"));
+  const SceneFrame f = hud_frame(HudAnchor::kTop, w, h, s);
+  if (sc.draw(l, f, root) <= 0) return false;
+  const DirectionArrowCell c = direction_arrow_cell(gps.turn_kind);
+  const float cw = (uv[2] - uv[0]) / float(kDirectionArrowCells);
+  float u0 = uv[0] + cw * float(c.cell), u1 = u0 + cw;
+  if (c.mirror) std::swap(u0, u1);
+  const auto r = sd.rect(arrow);
+  l.image(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), {u0, uv[1], u1, uv[3]}, kDirectionArrowInk);
+  return true;
 }
 
 // --- Notifications ----------------------------------------------------------

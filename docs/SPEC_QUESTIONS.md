@@ -2968,6 +2968,8 @@ selected (`map_popup_event_details_back_orig.png`). Unknown: whether A on
 the ticket starts the event or sets a route. Needed, narrow: a capture of
 A on the ticket.
 
+The ticket is now drawn over the map; Q151 holds what is still open.
+
 ## Q136 (BOOT-01, BOOT-06, not blocking): skipping the boot splashes and the attract loop
 
 The engine boots with the original's two splashes (`T10_MS_Combined`,
@@ -2980,6 +2982,8 @@ uses it is not known.
 
 Needed: a recorded boot with inputs during each splash, and one attract
 cycle with an input partway through.
+
+The hold-to-skip is gone: a press skips (Q155).
 
 ## Q137 (BOOT-04, not blocking): the profile step after Press Start
 
@@ -3851,3 +3855,89 @@ Needed:
 - the title's G table for one car, from a memory read of the controller;
 - the hold throttle;
 - the cheat levels per AISkills row.
+
+## Q151 (MAP-01, not blocking): A on the map's event ticket, and a hub's details
+
+X DETAILS on an event marker now draws the event's `H_EVENT_SUMMARY`
+ticket over the map with A SET ROUTE, B BACK and Y RESTRICTIONS
+(`map_popup_event_details_orig.png`; Q92). The help bar's A reads SET
+ROUTE, so the engine sets a route to the event and closes the ticket,
+staying on the map. Not recorded: whether the original then closes the map
+or stays, and whether A on a ticket can start the event from the map. X on
+a street-race hub has no capture; the engine opens its events page at the
+hub. The ticket's `PlayerBar` is hidden over the map (the map has its
+own).
+
+Needed: a capture after A on an event's ticket, and one of X on a
+street-race hub.
+
+## Q152 (HUD-08, HUD-10, HUD-13, not blocking): the notifications' pairings, slide and Show me!
+
+The notifications draw on `947_HUD`'s `CombinedNotification` (and
+`PopularityUnlock` for a showcase) with lines from the string tables, but
+which title goes with which message is inferred from the tables' names
+(`notify_strings()`), the tape's slide in and out is not ported (they
+fade over `kNotifyIn` / `kNotifyOut`), and a showcase's Show me! stays
+hidden: what its button does (a route to the showcase, the map on it, or
+the event's ticket) is not recorded. The co-op tag is the engine's
+English.
+
+Needed: captures of each notification kind with its message line, the
+tape's slide timeline (the scene's BGF), and a press of Show me!.
+
+## Q153 (HUD-04, HUD-00, not blocking): the route arrow's text, timing and race use
+
+A route's next turn now draws `947_HUD`'s `DirectionArrows` (the
+`DIRECTIONARROWBG` box and the turn's `DIRECTION_ARROWS` cell) where
+`16_race_hud_orig.png` shows a hairpin in a race, in place of the engine's
+turn banner. Not known: what `TEXT_JUNCTION` (horizon_d 13, 56 px under
+the box) says (a distance, a road name, or nothing on PC), so it stays
+empty; how far ahead of a turn the arrow shows and how it fades in (the
+box rests at alpha 0); whether a recalculating route shows anything (the
+engine shows nothing); and which corners get an arrow in a race, so the
+race's corner arrows are not drawn. The minimap's `Details/TEXT_DISTANCE`
+with `SATNAVDEST` (the distance to the destination) is not bound either.
+
+Needed: a free-roam capture with a route set, approaching a junction, and
+the rule the race uses to pick its corners.
+
+## Q154 (HUD-15, VIS-15, C11, not blocking): the activation prompt's button
+
+`ActivationPrompt` draws the event's name and SIGN ME UP! (or ENTER NOW)
+with an X glyph, as `09_event_marker_prompt_orig.png` and
+`30_skill_toast_orig.png` show, while the prompt's own texture is the A
+button (`ACTIVATIONZONEICONS/ABUTTON`) and `gamedb.slt`'s
+`ControllerLayouts` holds no activation binding. The engine keeps X
+because both frames show it. Not known: whether the
+captures' controller layout was the default one, so whether the default
+is A or X.
+
+Needed: one capture of an activation prompt with the default controller
+layout.
+
+## Q155 (INTRO-13, VIS-03, not blocking): what skips a movie
+
+The boot splashes skip on a B tap in the recorded title steps, and the
+story movies (`FMV_01`, `FMV_02`, `FMV_04`, `car_challenges_intro`,
+`Forza_Tone_Rally`) carry `confirmskip="true"`, with no help bar over the
+picture (`00_opening_movie_orig.png`). The engine now skips any movie on a
+press of A, B, Enter, Space or Esc (and Start or Tab in the campaign), and
+never on a button held from before the movie. What `confirmskip` confirms
+is not decoded: a second press, a popup, or nothing on PC. The engine's
+in-engine cinematics (the campaign's own scenes, not movies) keep their
+0.75 s hold, because Q61 (g) records that the original's in-engine
+cutscenes cannot be skipped at all.
+
+Needed: the `confirmskip` handling in the generated movie player, or a
+capture of one press on `FMV_01`.
+
+## Q156 (VIS-09, not blocking): the car name tag's look
+
+Measured on one night frame (`30_skill_toast_orig.png`, BISHOP): white
+`horizon_b` capitals 18 px high, a dark pill at about 38% black (33, 33,
+33, a=96 over the scene) 30 px high with 10 px and 12 px side pads, and a
+16 x 6 px notch under its centre. No PI badge or leader star shows. Not
+recorded: the tag by day, its fade with distance, whether a leader or a
+rival gets a different tag, and the scene or texture it comes from.
+
+Needed: a daytime race capture with several tags at different distances.
