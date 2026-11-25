@@ -189,6 +189,13 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               vst.glass_broken_mask = gmask;
             }
             vst.hub_ambience = autoshow.is_open() ? 1 : (paint_open ? 2 : ((shop.is_open() || garage_open) ? 3 : 0));
+            {
+              // The Autoshow is the homespace showroom scene, whose ui4audio
+              // override silences Accept. Other screens set their own scene.
+              constexpr std::string_view kShowroomScene = "075_SHOWROOM_HOMESPACE";
+              if (autoshow.is_open()) app.audio_host.set_ui_scene(kShowroomScene);
+              else if (app.audio_host.ui_scene() == kShowroomScene) app.audio_host.set_ui_scene({});
+            }
             const auto& body_c = vehicle.strongest_body_contact();
             vst.scraping = body_c.force > 150.0 && vst.speed_mph > 4.0f;
             vst.scrape_intensity = vst.scraping ? float(std::clamp(body_c.force / 20000.0, 0.2, 1.0)) : 0.0f;
@@ -278,6 +285,15 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                                    ? (replay_viewer.camera_mode() == ReplayCameraMode::kCockpit)
                                    : (cur_audio_view == audio::View::kCockpit);
             vst.in_race = app.race != nullptr;
+            if (app.race) {
+              // ui4audio's countdown / race-complete cues by race type
+              // (Events.CareerTypeId: 4 street, 11 nemesis, 7/8 showcase).
+              const int ct = app.race->event().career_type;
+              app.audio_host.set_race_audio_kind(app.race->is_showcase() || ct == 7 || ct == 8 ? audio::UiRaceKind::kShowcase
+                                                 : ct == 4                                     ? audio::UiRaceKind::kStreet
+                                                 : ct == 11                                    ? audio::UiRaceKind::kNemesis
+                                                                                               : audio::UiRaceKind::kFestival);
+            }
             vst.rewinding = rewind_buf.is_rewinding();
             if (vst.rewinding) {
               vst.rewind_speed = float(std::fabs(rw_audio.playback_speed));

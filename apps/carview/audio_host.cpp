@@ -527,6 +527,10 @@ bool AudioHost::init_sfx(const std::filesystem::path& game_root, const std::file
         }
         rally_sfx_tried_ = true;
       }
+      ui_catalog_ = sfx->ui_catalog();
+      if (ui_catalog_)
+        std::printf("sfx engine: ui4audio %zu events, %d samples\n", ui_catalog_->events().size(),
+                    ui_catalog_->sample_count());
       engine_.set_sfx_engine(std::move(sfx));
       has_sfx_ = true;
     }
@@ -879,6 +883,10 @@ void AudioHost::radio_cue(const audio::RadioDjCue& cue) {
 }
 
 void AudioHost::radio_wristband_awarded(int level) {
+  if (wristband_sting_pending_) {
+    wristband_sting_pending_ = false;
+    play_ui(audio::ui_wristband_unlock_play(level + 1));  // `level` is 0 based, the stings 01..07
+  }
   bool cancel = false;
   const auto cues = radio_dj_wristbands_.on_awarded(level, &cancel);
   if (cancel && radio_) engine_.radio_cancel_festival_updates();
@@ -1249,10 +1257,10 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
   // Rewind snapshot + TapeStart / TapeStop transitions (plus clearing stale Co-Driver queue).
   if (rewinding != last_rewinding_) {
     if (rewinding) {
-      engine_.trigger_ui(audio::UiCue::kRewindTapeStart);
+      trigger_ui(audio::UiCue::kRewindTapeStart);
       clear_codriver();
     } else {
-      engine_.trigger_ui(audio::UiCue::kRewindTapeStop);
+      trigger_ui(audio::UiCue::kRewindTapeStop);
     }
   }
   last_rewinding_ = rewinding;
@@ -1292,13 +1300,13 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
   if (countdown_active) {
     if (!last_countdown_active_) {
       last_countdown_digit_ = countdown_digit;
-      engine_.trigger_ui(countdown_digit <= 0 ? audio::UiCue::kCountdownGo : audio::UiCue::kCountdown321);
+      trigger_ui(countdown_digit <= 0 ? audio::UiCue::kCountdownGo : audio::UiCue::kCountdown321);
     } else if (countdown_digit != last_countdown_digit_) {
       last_countdown_digit_ = countdown_digit;
-      engine_.trigger_ui(countdown_digit <= 0 ? audio::UiCue::kCountdownGo : audio::UiCue::kCountdownTick);
+      trigger_ui(countdown_digit <= 0 ? audio::UiCue::kCountdownGo : audio::UiCue::kCountdownTick);
     }
   } else if (last_countdown_active_) {
-    if (last_countdown_digit_ == 1) engine_.trigger_ui(audio::UiCue::kCountdownGo);
+    if (last_countdown_digit_ == 1) trigger_ui(audio::UiCue::kCountdownGo);
     last_countdown_digit_ = -1;
   }
   last_countdown_active_ = countdown_active;
@@ -1324,7 +1332,7 @@ void AudioHost::trigger_speed_cam() {
   if (engine_.has_snapshot_matrix()) {
     engine_.activate_matrix_snapshot("SpeedCam");
   }
-  engine_.trigger_ui(audio::UiCue::kSpeedCamera);
+  trigger_ui(audio::UiCue::kSpeedCamera);
 }
 
 void AudioHost::set_window_minimized(bool minimized) {
@@ -1367,7 +1375,47 @@ void AudioHost::set_radio_rally_mode(bool on) {
   engine_.set_radio_rally_mode(on);
 }
 
-void AudioHost::trigger_ui(audio::UiCue cue) { engine_.trigger_ui(cue); }
+void AudioHost::trigger_ui(audio::UiCue cue) {
+  if (!ui_catalog_) {
+    engine_.trigger_ui(cue);
+    return;
+  }
+  if (cue == audio::UiCue::kWristbandUnlock) {
+    // The sting is per wristband: radio_wristband_awarded(level) plays it.
+    wristband_sting_pending_ = true;
+    return;
+  }
+  if (const auto play = audio::ui_cue_play_name(cue, race_audio_kind_); !play.empty()) {
+    play_ui(play);
+    return;
+  }
+  if (const auto path = audio::ui_cue_event_path(cue); !path.empty()) {
+    if (const auto* ev = ui_catalog_->event(ui_catalog_->find_event(path)); ev && ev->playable)
+      engine_.trigger_ui_event(*ev);
+  }
+}
+
+void AudioHost::set_ui_scene(std::string_view scene) {
+  if (scene != ui_scene_) ui_scene_ = std::string(scene);
+}
+
+bool AudioHost::play_ui(std::string_view play) { return play_ui(play, ui_scene_); }
+
+bool AudioHost::play_ui(std::string_view play, std::string_view scene) {
+  if (!ui_catalog_ || play.empty()) return false;
+  const int at = ui_catalog_->resolve(play, scene);
+  if (at == audio::UiAudioCatalog::kUnknown) {
+    if (std::find(ui_unknown_.begin(), ui_unknown_.end(), play) == ui_unknown_.end()) {
+      ui_unknown_.emplace_back(play);
+      std::fprintf(stderr, "carview: note: ui4audio has no play name '%.*s'\n", int(play.size()), play.data());
+    }
+    return false;
+  }
+  const auto* ev = ui_catalog_->event(at);
+  if (!ev) return false;  // Blank in this scene, or no sample
+  engine_.trigger_ui_event(*ev);
+  return true;
+}
 
 void AudioHost::trigger_satnav(audio::SatNavCue cue) {
   if (cfg_.satnav_on) engine_.trigger_satnav(cue);

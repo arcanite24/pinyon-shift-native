@@ -142,7 +142,21 @@ class AudioHost {
   void trigger_landing(const audio::LandingHit& hit);
   void set_rally_world(bool on);
   void set_radio_rally_mode(bool on);
+  // Plays a cue as the game does: through ui4audio.xml's play name for it,
+  // with the current UI scene's overrides (falls back to the engine's own cue
+  // sounds when the disc's ui4audio.xml / UIInGame.fev are missing).
   void trigger_ui(audio::UiCue cue);
+  // ui4audio play names (audio/ui_audio.h). The scene the UI is on picks the
+  // override block (PostRace, Trophy, Showroom); empty = the defaults.
+  void set_ui_scene(std::string_view scene);
+  const std::string& ui_scene() const { return ui_scene_; }
+  // Fires a ui4audio play name with the current scene / with `scene`. False
+  // when the name is unknown (reported once) or the entry is Blank.
+  bool play_ui(std::string_view play);
+  bool play_ui(std::string_view play, std::string_view scene);
+  // The race type the countdown and race-complete cues are chosen by.
+  void set_race_audio_kind(audio::UiRaceKind kind) { race_audio_kind_ = kind; }
+  const audio::UiAudioCatalog* ui_catalog() const { return ui_catalog_.get(); }
   void trigger_satnav(audio::SatNavCue cue);
   void set_satnav_enabled(bool on);
   void trigger_vo(std::string_view trigger_id, bool interrupt = false);
@@ -259,6 +273,11 @@ class AudioHost {
   bool mixer_configs_tried_ = false;
   bool sfx_tried_ = false;
   bool has_sfx_ = false;
+  std::shared_ptr<const audio::UiAudioCatalog> ui_catalog_;  // from the SFX engine, immutable
+  std::string ui_scene_;
+  audio::UiRaceKind race_audio_kind_ = audio::UiRaceKind::kFestival;
+  std::vector<std::string> ui_unknown_;  // play names already reported unknown
+  bool wristband_sting_pending_ = false;  // kWristbandUnlock waits for the level
   std::filesystem::path sfx_game_root_;
   std::filesystem::path sfx_cache_dir_;
   bool satnav_tried_ = false;

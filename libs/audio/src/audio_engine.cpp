@@ -467,6 +467,21 @@ void AudioEngine::trigger_ui(UiCue cue) {
   enqueue(c);
 }
 
+void AudioEngine::trigger_ui_event(const UiAudioCatalog::Event& event, float gain) {
+  // One command per layer: the audio thread drains them in the same block, so
+  // the layers start on the same frame.
+  for (const auto& l : event.layers) {
+    if (l.sample < 0) continue;
+    Command c;
+    c.kind = Command::kTriggerUiEvent;
+    c.i0 = l.sample;
+    c.f0 = l.gain * gain;
+    c.f1 = l.left;
+    c.f2 = l.right;
+    enqueue(c);
+  }
+}
+
 void AudioEngine::trigger_satnav(SatNavCue cue) {
   Command c;
   c.kind = Command::kTriggerSatNav;
@@ -1151,6 +1166,9 @@ void AudioEngine::drain_commands() {
         break;
       case Command::kTriggerUi:
         if (sfx_) sfx_->trigger_ui(UiCue(c.i0));
+        break;
+      case Command::kTriggerUiEvent:
+        if (sfx_) sfx_->trigger_ui_sample(c.i0, c.f0, c.f1, c.f2);
         break;
       case Command::kTriggerSatNav:
         if (satnav_ && satnav_enabled_) satnav_->trigger(SatNavCue(c.i0));

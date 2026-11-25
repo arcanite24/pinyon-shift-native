@@ -129,6 +129,9 @@ class AudioEngine {
   void trigger_collision(const CollisionHit& hit);
   void trigger_landing(const LandingHit& hit);
   void trigger_ui(UiCue cue);
+  // Plays every layer of a UI catalog event (SfxEngine::ui_catalog(); the
+  // caller resolves the ui4audio play name and scene), scaled by `gain`.
+  void trigger_ui_event(const UiAudioCatalog::Event& event, float gain = 1.0f);
   void trigger_satnav(SatNavCue cue);
   void set_satnav_enabled(bool on);
   void trigger_vo(std::string_view trigger_id, bool interrupt = false);
@@ -248,6 +251,7 @@ class AudioEngine {
       kTriggerCollision,
       kTriggerLanding,
       kTriggerUi,
+      kTriggerUiEvent,
       kTriggerSatNav,
       kSatNavEnable,
       kTriggerCoDriver,

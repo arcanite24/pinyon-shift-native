@@ -757,6 +757,10 @@ SfxEngine::~SfxEngine() {
     delete p;
     p = nullptr;
   }
+  for (PcmSample*& p : ui_samples_) {
+    delete p;
+    p = nullptr;
+  }
 }
 
 void SfxEngine::stop_decoder_worker() {
@@ -786,6 +790,12 @@ void SfxEngine::reclaim_retired() {
 void SfxEngine::drain_queue(SpscQueue<LoadedSample>& q) {
   LoadedSample ls;
   while (q.pop(ls)) {
+    if (ls.ui >= 0) {
+      PcmSample* old = ls.pcm;
+      if (ls.ui < kMaxUiSamples) std::swap(old, ui_samples_[size_t(ls.ui)]);
+      if (old && !retired_q_.push(old)) delete old;
+      continue;
+    }
     const size_t idx = size_t(ls.id);
     if (idx < samples_.size()) {
       PcmSample* old = samples_[idx];
@@ -815,6 +825,27 @@ void SfxEngine::set_sample(SfxSoundId id, PcmSample sample) {
   auto* p = new PcmSample(std::move(sample));
   std::lock_guard<std::mutex> lock(direct_q_mu_);
   if (!direct_loaded_q_.push({id, p})) delete p;
+}
+
+void SfxEngine::set_ui_sample(int sample_slot, PcmSample sample) {
+  reclaim_retired();
+  if (sample_slot < 0 || sample_slot >= kMaxUiSamples) return;
+  auto* p = new PcmSample(std::move(sample));
+  std::lock_guard<std::mutex> lock(direct_q_mu_);
+  if (!direct_loaded_q_.push({SfxSoundId::kUiAccept, p, sample_slot})) delete p;
+}
+
+int SfxEngine::loaded_ui_sample_count() const {
+  int n = 0;
+  for (const PcmSample* p : ui_samples_)
+    if (p && !p->data.empty()) ++n;
+  return n;
+}
+
+bool SfxEngine::is_ui_sample_active(int sample) const {
+  for (const auto& o : one_shots_)
+    if (o.active && (o.ui == sample || (o.stealing && o.next_ui == sample))) return true;
+  return false;
 }
 
 void SfxEngine::populate_procedural_fallbacks() {
@@ -866,11 +897,13 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
   tires_cfg_.load(game_root, nullptr, state_root);
   coll_cfg_.load(game_root, nullptr, state_root);
   ui_map_.load(game_root, nullptr);
+  ui_catalog_.reset();
   backfire_cfg_.load(game_root, nullptr);
   car_rolloff_.load(game_root, false, false, nullptr);
   traffic_rolloff_.load(game_root, true, false, nullptr);
 
   std::vector<DecodeJob> jobs;
+  std::vector<DecodeJob> ui_jobs;  // decoded after the driving sounds
   auto add_from_fev = [&](const std::filesystem::path& fev_rel, SfxSoundId id, std::string_view ev_path) {
     FevProject proj;
     if (!load_fev(audio_dir / fev_rel, proj, nullptr)) return;
@@ -1267,6 +1300,31 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
   {
     FevProject ui_fev;
     if (load_fev(audio_dir / "UI/UIInGame/UIInGame.fev", ui_fev, nullptr)) {
+      // Every ui4audio event by its own sample and level (SPEC-AUDIO-EVENTS):
+      // the banked events all decode; of the streamed bank only the events
+      // the engine itself fires, so the 46 MB stream bank is not decoded whole.
+      {
+        FevProject gen_fev;
+        std::vector<const FevProject*> projects{&ui_fev};
+        if (load_fev(audio_dir / "gamemodes/General.fev", gen_fev, nullptr)) projects.push_back(&gen_fev);
+        auto cat = std::make_shared<UiAudioCatalog>();
+        cat->build(ui_map_, projects);
+        const auto& evs = cat->events();
+        std::vector<char> fired(evs.size(), 0);
+        std::vector<std::string> scenes{std::string{}};
+        for (const auto& [scene, block] : ui_map_.scene_overrides) scenes.push_back(scene);
+        for (const auto& name : engine_ui_play_names())
+          for (const auto& scene : scenes)
+            if (const int at = cat->resolve(name, scene); at >= 0) fired[size_t(at)] = 1;
+        for (size_t i = 0; i < evs.size(); ++i) {
+          for (const auto& l : evs[i].layers) {
+            if (l.sample < 0 || l.sample >= kMaxUiSamples) continue;
+            const bool streamed = lower_str(l.bank.stem().string()).find("_streams") != std::string::npos;
+            if (!streamed || fired[i]) ui_jobs.push_back({SfxSoundId::kUiAccept, l.bank, l.subsound, l.sample});
+          }
+        }
+        ui_catalog_ = std::move(cat);
+      }
       auto add_ui = [&](SfxSoundId id, std::string_view play_name, std::string_view fallback_path) {
         std::string path;
         if (const auto* e = ui_map_.resolve(play_name); e && !e->is_blank()) path = e->full_path();
@@ -1651,12 +1709,13 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
     }
   }
 
-  if (note) *note = "sfx engine: queued " + std::to_string(jobs.size()) + " FEV/FSB4 sounds for async decode";
-  if (!jobs.empty()) {
-    start_decoder_worker(std::move(jobs), cache_dir, game_root);
-  } else {
-    populate_procedural_fallbacks();
-  }
+  const size_t sound_jobs = jobs.size();
+  jobs.insert(jobs.end(), ui_jobs.begin(), ui_jobs.end());
+  if (note)
+    *note = "sfx engine: queued " + std::to_string(sound_jobs) + " FEV/FSB4 sounds and " +
+            std::to_string(ui_jobs.size()) + " ui4audio samples for async decode";
+  if (sound_jobs == 0) populate_procedural_fallbacks();
+  if (!jobs.empty()) start_decoder_worker(std::move(jobs), cache_dir, game_root);
   if (!state_root.empty()) {
     load_rally_sfx(state_root, cache_dir, nullptr);
   }
@@ -1958,21 +2017,27 @@ void SfxEngine::start_decoder_worker(std::vector<DecodeJob> jobs, std::filesyste
         ok = decode_fsb_subsound(job.bank_path, job.subsound, ffmpeg, temp_dir, *pcm);
         if (ok && !cache_file.empty()) write_cached_sfx(cache_file, *pcm);
       }
-      if (!ok) ok = synthesize_fallback_sfx(job.id, 24000, *pcm);
+      // A UI catalog event plays its own sample or nothing.
+      if (!ok && job.ui < 0) ok = synthesize_fallback_sfx(job.id, 24000, *pcm);
       if (ok && !pcm->data.empty()) {
         PcmSample* raw = pcm.release();
-        if (!loaded_q_.push({job.id, raw})) delete raw;
+        if (!loaded_q_.push({job.id, raw, job.ui})) delete raw;
       }
     }
     std::filesystem::remove_all(temp_dir, ec);
   });
 }
 
-void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch) {
+void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch, int ui) {
   if (gain <= 1e-4f) return;
-  const size_t idx = size_t(id);
-  if (idx >= samples_.size() || !samples_[idx] || samples_[idx]->data.empty()) return;
-  const uint8_t prio = one_shot_priority(id);
+  if (ui >= 0) {
+    if (ui >= kMaxUiSamples || !ui_samples_[size_t(ui)] || ui_samples_[size_t(ui)]->data.empty()) return;
+  } else {
+    const size_t idx = size_t(id);
+    if (idx >= samples_.size() || !samples_[idx] || samples_[idx]->data.empty()) return;
+  }
+  // UI events are sparse and must not be stolen by tyre or impact ticks.
+  const uint8_t prio = ui >= 0 ? uint8_t(100) : one_shot_priority(id);
   const float clamped_pitch = std::clamp(pitch, 0.25f, 4.0f);
   OneShot* slot = nullptr;
   for (auto& o : one_shots_) {
@@ -1984,6 +2049,7 @@ void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, f
   if (slot) {
     slot->active = true;
     slot->id = id;
+    slot->ui = ui;
     slot->bus = bus;
     slot->phase = 0.0;
     slot->gain = gain;
@@ -2025,6 +2091,7 @@ void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, f
     victim->fade_rem_frames = fade_frames;
   }
   victim->next_id = id;
+  victim->next_ui = ui;
   victim->next_bus = bus;
   victim->next_gain = gain;
   victim->next_left = left;
@@ -2184,6 +2251,13 @@ void SfxEngine::trigger_landing(const LandingHit& hit, const VehicleAudioState& 
     spawn_one_shot(resolve_fallback(SfxSoundId::kSuspensionBottom, SfxSoundId::kImpactLfe), Bus::kSuspension,
                    0.60f * intensity * susp_scale, 0.707f, 0.707f, 0.92f);
   }
+}
+
+void SfxEngine::trigger_ui_sample(int sample, float gain, float left, float right) {
+  drain_loaded();
+  if (sample < 0 || sample >= kMaxUiSamples || !std::isfinite(gain)) return;
+  spawn_one_shot(SfxSoundId::kUiAccept, Bus::kUi, std::clamp(gain, 0.0f, 4.0f), safe_clamp_f(left, 0.0f, 2.0f, 0.707f),
+                 safe_clamp_f(right, 0.0f, 2.0f, 0.707f), 1.0f, sample);
 }
 
 void SfxEngine::trigger_ui(UiCue cue) {
@@ -3308,7 +3382,8 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
 
     auto bind_current = [&]() -> bool {
       const size_t idx = size_t(o.id);
-      pcm = idx < samples_.size() ? samples_[idx] : nullptr;
+      if (o.ui >= 0) pcm = o.ui < kMaxUiSamples ? ui_samples_[size_t(o.ui)] : nullptr;
+      else pcm = idx < samples_.size() ? samples_[idx] : nullptr;
       if (!pcm || pcm->data.empty() || !std::isfinite(o.phase) || o.phase < 0.0) return false;
       bus = resolve_shot_bus(o.bus);
       n = pcm->data.size();
@@ -3319,11 +3394,13 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       step = double(o_pitch) * double(std::max(1, pcm->rate)) / double(rate_);
       attack_n = std::min<double>(64.0, double(n) * 0.125);
       release_n = std::min<double>(64.0, double(n) * 0.125);
-      route_mono_lfe = (lfe_out != nullptr) && (o.id == SfxSoundId::kImpactLfe || o.id == SfxSoundId::kBackfireLfe);
+      route_mono_lfe = (lfe_out != nullptr) && o.ui < 0 &&
+                       (o.id == SfxSoundId::kImpactLfe || o.id == SfxSoundId::kBackfireLfe);
       return true;
     };
     auto promote_steal = [&]() -> bool {
       o.id = o.next_id;
+      o.ui = o.next_ui;
       o.bus = o.next_bus;
       o.phase = 0.0;
       o.gain = o.next_gain;

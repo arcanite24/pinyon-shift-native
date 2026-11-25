@@ -176,6 +176,11 @@ struct FevProject {
 // not evaluated.
 inline constexpr uint32_t kFevEnvVolume = 0x08u;
 inline constexpr uint32_t kFevEnvPitch = 0x10u;
+// An unnamed unit whose parameters are a surround pan: param 0 left/right
+// (1 = left), param 1 back/front (1 = front), param 2 LFE send. The disc's
+// countdown stems Left / Right / Left Surround / Right Surround carry
+// (1,1) / (0,1) / (1,0) / (0,0).
+inline constexpr uint32_t kFevEnvSurroundPan = 0x80u;
 
 struct FevInstanceLevel {
   uint16_t layer = 0;

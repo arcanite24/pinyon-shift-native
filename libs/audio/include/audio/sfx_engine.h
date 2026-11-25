@@ -20,6 +20,7 @@
 #include "audio/fev.h"
 #include "audio/mixer.h"
 #include "audio/rt.h"
+#include "audio/ui_audio.h"
 
 namespace audio {
 
@@ -435,6 +436,23 @@ class SfxEngine {
   void trigger_collision(const CollisionHit& hit, const VehicleAudioState& st);
   void trigger_landing(const LandingHit& hit, const VehicleAudioState& st);
   void trigger_ui(UiCue cue);
+  // Plays UI catalog sample slot `sample` (one layer of a ui4audio event) once
+  // on the UI bus. The host resolves the play name and scene to the event and
+  // sends each of its layers, so the audio thread never reads the catalog.
+  void trigger_ui_sample(int sample, float gain, float left, float right);
+
+  // The ui4audio catalog load() built (null before load or without the disc's
+  // ui4audio.xml / UIInGame.fev). Immutable once published; read it on the
+  // control thread before handing the engine to the audio thread.
+  std::shared_ptr<const UiAudioCatalog> ui_catalog() const { return ui_catalog_; }
+  // Tests: install the sample for a catalog sample slot.
+  void set_ui_sample(int sample_slot, PcmSample sample);
+  bool is_ui_sample_active(int sample) const;
+  int loaded_ui_sample_count() const;
+  bool has_ui_sample(int sample) const {
+    return sample >= 0 && sample < kMaxUiSamples && ui_samples_[size_t(sample)] && !ui_samples_[size_t(sample)]->data.empty();
+  }
+  static constexpr int kMaxUiSamples = 2048;
 
   // Audio-thread render: adds active SFX & 3D AI/traffic car audio into the
   // per-bus stereo buffers `buses[0..kBuses-1]` (interleaved stereo, `frames`
@@ -462,10 +480,12 @@ class SfxEngine {
     SfxSoundId id = SfxSoundId::kWind;
     std::filesystem::path bank_path;
     uint32_t subsound = 0;
+    int ui = -1;  // >= 0: the sample of UI catalog event `ui` instead of `id`
   };
   struct LoadedSample {
     SfxSoundId id = SfxSoundId::kWind;
     PcmSample* pcm = nullptr;
+    int ui = -1;
   };
   struct LoopVoice {
     double phase = 0.0;
@@ -476,6 +496,7 @@ class SfxEngine {
   struct OneShot {
     bool active = false;
     SfxSoundId id = SfxSoundId::kWind;
+    int ui = -1;  // >= 0: plays ui_samples_[ui] (a UI catalog event)
     Bus bus = Bus::kUi;
     double phase = 0.0;
     float gain = 1.0f;
@@ -488,6 +509,7 @@ class SfxEngine {
     int fade_rem_frames = 0;
     int fade_total_frames = 0;
     SfxSoundId next_id = SfxSoundId::kWind;
+    int next_ui = -1;
     Bus next_bus = Bus::kUi;
     float next_gain = 0.0f;
     float next_left = 0.707f, next_right = 0.707f;
@@ -516,7 +538,7 @@ class SfxEngine {
   void drain_queue(SpscQueue<LoadedSample>& q);
   void drain_loaded();
   void reclaim_retired();
-  void spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch = 1.0f);
+  void spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch = 1.0f, int ui = -1);
   void mix_loop(LoopVoice& v, SfxSoundId id, float target_gain, float target_pitch, float target_l, float target_r,
                 float* bus, int frames);
   void mix_loop_mono(LoopVoice& v, SfxSoundId id, float target_gain, float target_pitch, float* mono_out, int frames);
@@ -532,9 +554,11 @@ class SfxEngine {
   RolloffConfig traffic_rolloff_{};
 
   std::array<PcmSample*, int(SfxSoundId::kCount)> samples_{};
+  std::shared_ptr<const UiAudioCatalog> ui_catalog_;
+  std::array<PcmSample*, kMaxUiSamples> ui_samples_{};  // by UI catalog event index
   // Dedicated SPSC queues (one per producer) so the real-time audio thread
   // drains all loaded samples lock-free with zero multi-producer races.
-  SpscQueue<LoadedSample> loaded_q_{512};         // producer: worker_
+  SpscQueue<LoadedSample> loaded_q_{2048};        // producer: worker_
   SpscQueue<LoadedSample> burble_loaded_q_{32};   // producer: burble_worker_
   SpscQueue<LoadedSample> rally_loaded_q_{64};    // producer: rally_worker_
   SpscQueue<LoadedSample> direct_loaded_q_{512};  // producer: set_sample() (guarded by direct_q_mu_)
