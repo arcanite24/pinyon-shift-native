@@ -581,6 +581,12 @@ bool AudioHost::init_radio(const std::filesystem::path& game_root, std::string_v
         if (found >= 0) start_station = found;
       }
       if (start_station >= 0) radio_->select(start_station);
+      // A radio built after the first-time career set its states takes them
+      // (the engine does not own it yet).
+      radio_->set_dj_enabled(cfg_.radio_dj && !flow_dj_off_);
+      radio_->set_switching_enabled(switching_enabled_);
+      radio_->set_silent_idents(flow_silent_idents_);
+      if (!flow_playlist_.empty()) radio_->set_playlist(flow_playlist_, flow_playlist_then_normal_);
       std::printf("radio: %zu stations in the cycle, %zu tracks, %zu voice clips (%s)\n",
                   stock_radio_data_.cycle.size(), stock_radio_data_.music.size(), stock_radio_data_.vo.size(),
                   stock_radio_data_.language.c_str());
@@ -1093,7 +1099,14 @@ void AudioHost::radio_lock_viper_intro(bool lock) {
 }
 
 bool AudioHost::radio_set_playlist(const std::vector<std::string>& fmodnames, bool then_normal) {
-  if (!radio_ || fmodnames.empty()) return false;
+  if (fmodnames.empty()) return false;
+  if (!radio_) {
+    // Played once the radio is built.
+    flow_playlist_ = fmodnames;
+    flow_playlist_then_normal_ = then_normal;
+    return false;
+  }
+  flow_playlist_.clear();
   // The station carrying the first track, selected here too so the station
   // cycle (custom stations included) agrees with the audio thread's pick.
   for (size_t i = 0; i < stock_radio_data_.stations.size(); ++i) {
@@ -1135,7 +1148,16 @@ void AudioHost::radio_set_flow_dj(bool on) {
 }
 
 void AudioHost::radio_set_silent_idents(bool on) {
+  flow_silent_idents_ = on;
   if (radio_) engine_.radio_set_silent_idents(on);
+}
+
+void AudioHost::radio_reset_flow() {
+  flow_playlist_.clear();
+  radio_set_flow_dj(true);
+  radio_set_switching(true);
+  radio_set_silent_idents(false);
+  radio_cancel_playlist();
 }
 
 void AudioHost::radio_stop_dj() {

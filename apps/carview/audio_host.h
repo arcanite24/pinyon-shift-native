@@ -219,6 +219,10 @@ class AudioHost {
   void radio_set_silent_idents(bool on);
   void radio_stop_dj();
   void radio_cancel_playlist();
+  // Out of the first-time career: the DJ per its option, switching on, idents
+  // audible, no playlist.
+  bool radio_flow_overridden() const { return !switching_enabled_ || flow_dj_off_ || flow_silent_idents_; }
+  void radio_reset_flow();
   bool radio_select_station_by_name(std::string_view substr);
   void update_world_acoustics(float x, float y, float z, float heading_rad);
   void radio_press(int dir);
@@ -397,6 +401,9 @@ class AudioHost {
   bool viper_intro_locked_ = false;
   bool switching_enabled_ = true;
   bool flow_dj_off_ = false;
+  bool flow_silent_idents_ = false;
+  std::vector<std::string> flow_playlist_;  // set before the radio was built
+  bool flow_playlist_then_normal_ = true;
 
   bool have_acoustics_sent_ = false;
   bool last_in_tunnel_ = false;

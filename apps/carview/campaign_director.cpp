@@ -493,13 +493,7 @@ bool CampaignDirector::apply_cli_stage(std::string_view cli_stage, FmvPlayer& fm
     return true;
   }
   if (!flow_.jump_to_cli_stage(cli_stage, out_action)) return false;
-  if (audio && ftc_.active()) {
-    // Out of the opening: the radio as the opening found it.
-    audio->radio_set_flow_dj(true);
-    audio->radio_set_switching(true);
-    audio->radio_set_silent_idents(false);
-    audio->radio_cancel_playlist();
-  }
+  if (audio && audio->radio_flow_overridden()) audio->radio_reset_flow();
   ftc_ = race::FirstTimeCareer{};
   ftc_resume_pending_ = false;
   cutscenes_.stop();
@@ -527,6 +521,9 @@ race::CampaignAction CampaignDirector::update(double dt, std::array<double, 2> p
   }
 
   if (ftc_.active() || ftc_resume_pending_) return update_ftc(dt, fmv, audio);
+  // Out of the first-time career (finished, loaded past it, or left for the
+  // title): the radio is the station's own again.
+  if (audio && audio->radio_flow_overridden()) audio->radio_reset_flow();
   update_tutor(dt);
   if (audio) {
     const auto tel = audio->telemetry();

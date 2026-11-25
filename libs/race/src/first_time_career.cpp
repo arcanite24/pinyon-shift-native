@@ -227,10 +227,10 @@ FtcCommands FirstTimeCareer::resume(FtcStage stage) {
     case FtcStage::kControls:
     case FtcStage::kOpeningCutscene:
     case FtcStage::kInitialDrive: return start();
-    case FtcStage::kFestivalArrive: return enter(FtcStage::kFestivalArriveMovie);
-    case FtcStage::kRewards: return enter(FtcStage::kRewards);
     default: {
-      FtcCommands c = enter(stage);
+      // The festival arrival resumes at its movie.
+      const FtcStage at = stage == FtcStage::kFestivalArrive ? FtcStage::kFestivalArriveMovie : stage;
+      FtcCommands c = enter(at);
       // The diner's cutscenes start from the diner.
       if (stage == FtcStage::kDinerCutscenes) {
         c.place_car = true;
@@ -239,13 +239,13 @@ FtcCommands FirstTimeCareer::resume(FtcStage stage) {
       }
       // Before Dak fixes it the radio stays as the opening set it; after, the
       // station's own.
-      const bool broken = stage < FtcStage::kHeats;
+      const bool broken = at < FtcStage::kHeats;
       c.set_radio_dj = true;
       c.radio_dj = !broken;
       c.set_silent_idents = true;
       c.silent_idents = broken;
       c.set_radio_switching = true;
-      c.radio_switching = !broken || stage == FtcStage::kRadioUnlock;
+      c.radio_switching = !broken || at == FtcStage::kRadioUnlock;
       return c;
     }
   }

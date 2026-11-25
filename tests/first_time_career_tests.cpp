@@ -489,6 +489,12 @@ void test_stage_names_and_resume() {
   c = ftc.resume(FtcStage::kHeats);
   check(c.set_radio_dj && c.radio_dj && c.set_silent_idents && !c.silent_idents && c.radio_switching,
         "resumed at the heats: the radio's own");
+  c = ftc.resume(FtcStage::kFestivalArrive);
+  check(ftc.stage() == FtcStage::kFestivalArriveMovie && c.set_radio_dj && !c.radio_dj && c.silent_idents,
+        "the festival arrival resumes at its movie, the radio still broken");
+  c = ftc.resume(FtcStage::kRewards);
+  check(ftc.stage() == FtcStage::kRewards && c.radio_dj && !c.silent_idents && c.radio_switching,
+        "the rewards resume with the radio's own");
   c = ftc.resume(FtcStage::kRadioUnlock);
   check(ftc.checkpoint() == FtcStage::kHeats, "the festival arrival resumes at the heats (save 7)");
   c = ftc.resume(FtcStage::kWristbandIntro);
