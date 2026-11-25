@@ -375,6 +375,11 @@ bool DriveWorldHost::open_world_and_car() {
       app.status = 1;
       return false;
     }
+    // A second host (Horizon Rally's world switch) has a fresh, empty GPU
+    // atlas; in GPU atlas mode there is no CPU copy to upload in full, so the
+    // glyphs and images cached for the first one are put again.
+    static int renderers_started = 0;
+    if (renderers_started++ > 0 && ui::gpu_atlas_mode()) ui::atlas_reset();
 
     // Windowed boot: render an animated 60 FPS FH1 Loading Screen while pumping SDL events
     // so the main thread NEVER blocks or triggers OS "Not Responding" during startup!

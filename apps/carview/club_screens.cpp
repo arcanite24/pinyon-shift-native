@@ -278,6 +278,11 @@ void bind_view_all_ticket(SceneScreen& sc, int ticket, const ClubMenuData& d) {
   if (const int name = sc.node("AchievementName", ticket); name >= 0) sc.hide(name);
 }
 
+// The ticket picture's window in its CarImage model (club_home.png: the
+// render runs from under the card's top band down to the gold edge, inside
+// the card's sides).
+constexpr float kPictureTop = 0.13f, kPictureBottom = 0.75f, kPictureInset = 0.02f;
+
 int64_t ticket_car_id(const ClubMenuData& d) {
   if (d.current >= 0 && size_t(d.current) < d.garage.size()) return d.garage[size_t(d.current)].car_id;
   return 0;
@@ -294,7 +299,12 @@ bool draw_home(ui::List& l, const ClubMenu& m, const ClubMenuData& d, float w, f
   const auto tickets = ClubMenu::tickets(d);
   const int sel = std::clamp(m.home, 0, int(tickets.size()) - 1);
   const SceneFrame f = SceneScreen::frame(w, h);
-  std::vector<std::pair<int, int64_t>> pictures;  // (CarImage node, car id)
+  struct Picture {
+    int img = -1;
+    int64_t id = 0;
+    std::vector<int> over;  // the ticket's nodes drawn again over it
+  };
+  std::vector<Picture> pictures;
   for (int s = 0; s < kTicketSlots; ++s) {
     const int slot = sc.node("Ticket" + std::to_string(s + 1));
     if (slot < 0) continue;
@@ -319,25 +329,33 @@ bool draw_home(ui::List& l, const ClubMenu& m, const ClubMenuData& d, float w, f
         bind_view_all_ticket(sc, ticket, d);
         break;
     }
-    // The ticket's picture: the driven car's thumbnail under the frame.
+    // The ticket's picture: the driven car's thumbnail over the card's
+    // middle (CARCHALLENGETICKETMIDDLE is opaque there), under its
+    // gamerscore, G and title. (TICKETSINGLECAROVERLAY over it darkens the
+    // whole picture, so it stays under.)
     if (const int img = sc.node("CarImage", ticket); img >= 0) {
       if (const int64_t id = ticket_car_id(d); id > 0) {
-        pictures.emplace_back(img, id);
+        Picture p{img, id, {}};
+        for (const char* over : {"AchievementName", "Gamerscore", "Gicon"}) {
+          const int n = sc.node(over, ticket);
+          if (n < 0) continue;
+          const auto it = sc.bindings().by_node.find(n);
+          if (it != sc.bindings().by_node.end() && it->second.visible == false) continue;
+          p.over.push_back(n);
+        }
+        pictures.push_back(std::move(p));
         sc.hide(img);
-        // Its black backing would cover the picture drawn under the scene.
-        sc.hide(child(sd, ticket, "bg"));
       }
     }
   }
-  for (const auto& [img, id] : pictures) {
-    const auto r = sd.rect(img);
-    // The picture window of the ticket (club_home.png: the car's render
-    // from the card's top band down to the gold edge, 3:2 within the
-    // square model).
-    const float top = r[1] + 0.13f * (r[3] - r[1]), bottom = r[1] + 0.75f * (r[3] - r[1]);
-    ui4::car_thumbnail(l, f.x(r[0]), f.y(top), f.x(r[2]), f.y(bottom), id);
-  }
   sc.draw(l, f);
+  for (const auto& p : pictures) {
+    const auto r = sd.rect(p.img);
+    const float top = r[1] + kPictureTop * (r[3] - r[1]), bottom = r[1] + kPictureBottom * (r[3] - r[1]);
+    const float inset = kPictureInset * (r[2] - r[0]);
+    ui4::car_thumbnail(l, f.x(r[0] + inset), f.y(top), f.x(r[2] - inset), f.y(bottom), p.id);
+    for (int n : p.over) sc.draw(l, f, n);
+  }
   if (m.popup == ClubMenu::Popup::kNone)
     ui4::button_bar(l, {{"A", text_of(club_text::kSelect)}, {"B", text_of(club_text::kBack)}}, w, h);
   return true;
@@ -347,6 +365,7 @@ bool draw_home(ui::List& l, const ClubMenu& m, const ClubMenuData& d, float w, f
 
 constexpr int kAchievementRows = 6;
 constexpr float kRowFocused = 1.0f, kRowIdle = 0.51f;
+constexpr float kDescriptionWidth = 360.0f;
 
 bool draw_achievements(ui::List& l, const ClubMenu& m, const ClubMenuData& d, float w, float h, const DriveHud* hud) {
   SceneScreen sc(kClubAchievementsScene);
@@ -371,7 +390,14 @@ bool draw_achievements(ui::List& l, const ClubMenu& m, const ClubMenuData& d, fl
     const auto& a = d.achievements[size_t(i)];
     const int det = child(sd, bar, "AchievementDetail");
     show_tree(sc, det, i == sel ? kRowFocused : kRowIdle);
-    sc.text(child(sd, det, "TEXT_ACH_TITLE"), club_achievement_desc(a));
+    // interim (SPEC_QUESTIONS Q143): the row's Sponsor_Back pane rests far
+    // up and right of the row (canvas 629..1653 x -286..226), a dark block
+    // over the player bar; its place in a focused row is not known.
+    sc.hide(child(sd, bar, "Sponsor_Back"));
+    // The row names the achievement; its description is the box's
+    // (DescriptionBox: TEXT_ACH_TITLE over TEXT_ACH_DESCRIPTION). The full
+    // description here ran under TEXT_REQUIRED and the next row.
+    sc.text(child(sd, det, "TEXT_ACH_TITLE"), a.name.empty() ? club_achievement_desc(a) : upper(a.name));
     sc.text(child(sd, det, "TEXT_REQUIRED"), a.unlocked ? std::string() : club_required_text(a));
     sc.text(child(sd, det, "TEXT_GAMERPOINTS"), std::to_string(a.gamerscore));
     if (const int pb = child(sd, det, "ProgressBar"); pb >= 0)
@@ -382,7 +408,9 @@ bool draw_achievements(ui::List& l, const ClubMenu& m, const ClubMenuData& d, fl
     const int box = sc.node("DescriptionBox");
     sc.text(sc.node("TEXT_ACH_TITLE", box), a.name.empty() ? upper(text_of(club_text::kTitle)) : upper(a.name));
     const int desc = sc.node("TEXT_ACH_DESCRIPTION", box);
-    sc.text(desc, sc.wrap(desc, club_achievement_desc(a)));
+    // Wrapped to the box's panel (HUDPanel01, 400 px), not the rest text's
+    // 143 px.
+    sc.text(desc, sc.wrap(desc, club_achievement_desc(a), kDescriptionWidth));
   }
   sc.hide(sc.node("NAV_POSITION_INDICATOR"));
   sc.draw(l, SceneScreen::frame(w, h));
@@ -538,6 +566,7 @@ bool draw_car_list(ui::List& l, const ClubMenu& m, const ClubMenuData& d, float 
 
 constexpr int kDetailRows = 6;
 constexpr float kDetailWidth = 420.0f;
+constexpr float kSmallTapeLift = -28.0f;
 
 bool draw_details(ui::List& l, const ClubMenu& m, const ClubMenuData& d, float w, float h, const DriveHud* hud) {
   SceneScreen sc(kClubDetailsScene);
@@ -549,6 +578,9 @@ bool draw_details(ui::List& l, const ClubMenu& m, const ClubMenuData& d, float w
   const ClubCarEntry* car =
       d.current >= 0 && size_t(d.current) < d.garage.size() ? &d.garage[size_t(d.current)] : nullptr;
   sc.text(sc.node("TitleTapeSmall/Group/TitleTapeText"), upper(text_of(club_text::kCurrentChallenges)));
+  // interim (SPEC_QUESTIONS Q143): at rest the small tape (y 135..170) lies
+  // across the car's name tape (144..214); it is lifted clear of it.
+  if (const int small = sc.node("TitleTapeSmall"); small >= 0) sc.at(small).dy = kSmallTapeLift;
   sc.text(sc.node("TitleTape/Group/TitleTapeText"), car ? upper(car->name) : std::string());
   const int list = sc.node("Challenge_List/ChallengeList");
   sc.text(sc.node("TEXT_CHALLENGE_TITLE"), upper(text_of(club_text::kChallenges)));
@@ -568,8 +600,10 @@ bool draw_details(ui::List& l, const ClubMenu& m, const ClubMenuData& d, float w
     const int medal = child(sd, bar, "Medal");
     sc.text(child(sd, medal, "TEXT_CHALLENGE_NUMBER"), std::to_string(r + 1));
     sc.hide(child(sd, medal, c.completed ? "MedalGrey" : "Medal"));
-    // interim (SPEC_QUESTIONS Q143): the focused row's header bar in pink.
-    if (const int hb = child(sd, bar, "HeaderBar"); hb >= 0 && r == sel) sc.at(hb).tint = ui4::kPink;
+    // interim (SPEC_QUESTIONS Q143): the scene's rows are all pink at rest;
+    // the focused row keeps it and the others are dark, as the game's other
+    // pill lists.
+    if (const int hb = child(sd, bar, "HeaderBar"); hb >= 0 && r != sel) sc.at(hb).tint = kTapeDark;
   }
   const int box = sc.node("DetailsBox");
   if (n > 0) {

@@ -3046,17 +3046,25 @@ interim:
   yet).
 - The SELECT ACTION panels and the car list's rows and backing are placed
   at offsets measured on the captures, not by the scenes' window sizing.
-- The details screen's focused row is a pink header; the achievements
-  screen's NAV_POSITION_INDICATOR is hidden.
+- The details screen's rows are all pink in the scene; the focused one
+  keeps it and the others are dark (`kTapeDark`). Its small CURRENT CAR
+  CHALLENGES tape rests across the car's name tape and is lifted 28 px
+  clear of it.
+- The achievements screen's rows show the achievement's name (the box
+  shows its description, wrapped to the panel's 360 px); each row's
+  Sponsor_Back pane, which rests far up and right of the row over the
+  player bar, is hidden; NAV_POSITION_INDICATOR is hidden.
+- A ticket's picture is the car's showroom thumbnail over the card's
+  middle, under its gamerscore, G and title; club_home.png's picture is a
+  scenic render whose source is not found yet.
 - The tutorial's last prompt (Visit the 1000 CLUB screen) shows after the
   first medal until the hub is opened.
 - The Autoshow and garage show no per-car medals (`car_medals()` is the
   hook; those screens are another branch's).
-- Visible artifacts left: the achievement ticket shows no car picture
-  (its middle covers the picture drawn under the scene); the achievements
-  screen's rows overlap and its DescriptionBox panel is a dark block; the
-  details screen's rows are all pink and its titles overlap, with two dark
-  bars at the bottom right; the current-car ticket's picture overhangs it.
+- Fixed on the second pass: the two dark bars under the details and
+  achievements panels were HUDPANEL01 mapped at v 0.3..1.3, sampling the
+  atlas past the texture; a single-texture model now shows nothing past
+  its texture's edge, as it already did across.
 
 Needed: captures of the hub after a medal (three tickets), the
 achievements and details screens, and a car list with several cars; the

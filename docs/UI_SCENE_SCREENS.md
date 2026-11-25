@@ -525,3 +525,11 @@ or the quit-to-Rally confirmation (`rally/IDS_QuitHorizonToRally`, A OK,
 B CANCEL). The first OK plays `Forza_Tone_Rally` and saves `rally_flow`,
 then switches worlds. The intro race, first Autoshow and hub tutorial are
 not run yet (Q145).
+
+The switch runs a second `DriveWorldHost`, whose renderer starts with an
+empty GPU atlas. In GPU atlas mode there is no CPU copy to upload in full,
+so the glyphs and images cached for the first host sampled blank texels
+(the Rally hub's missing letters, whichever letters the Colorado screens
+had used). The new host calls `ui::atlas_reset()` before its first frame,
+so everything is put again on use. The DLC texture folders were not the
+cause.

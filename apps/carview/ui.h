@@ -118,6 +118,11 @@ struct AtlasPatch {
 // Configures runtime atlas side (2048 or 4096) and GPU-only patch mode (avoids
 // keeping a permanent 64 MiB CPU shadow copy when rendering with Vulkan).
 void set_atlas_size(uint32_t side);
+// Forgets every glyph and image in the atlas (they are put again on next
+// use). For a fresh renderer whose atlas starts empty: in GPU atlas mode
+// there is no CPU copy to upload in full, so cached entries would sample
+// blank texels.
+void atlas_reset();
 uint32_t atlas_size();
 void set_gpu_atlas_mode(bool on);
 bool gpu_atlas_mode();

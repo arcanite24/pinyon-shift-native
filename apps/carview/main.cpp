@@ -188,6 +188,40 @@ int ui_scene_dump(int argc, char** argv) {
   if (!fh1::parse_ui_fbf(fbf.data, sc, &error) || !fh1::parse_ui_bsg(bsg.data, sc, &error))
     return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
   std::printf("version %u, %zu objects, %zu nodes, %zu pool\n", sc.version, sc.objects.size(), sc.nodes.size(), sc.pool.size());
+  // `bgf` as a fourth argument: the BGF document's items, contracts and
+  // state styles instead (the run-time looks the scene does not show at rest).
+  if (argc > 4 && std::strcmp(argv[4], "bgf") == 0) {
+    auto bgf = zip->read(base + ".bgf");
+    fh1::UiBgfDocument doc;
+    if (!bgf.ok() || !fh1::parse_ui_bgf(bgf.data, doc, &error))
+      return std::fprintf(stderr, "carview: bgf: %s%s\n", bgf.error.c_str(), error.c_str()), 1;
+    auto name_of = [&](uint32_t id) -> std::string {
+      for (const auto& o : sc.objects)
+        if (o.id == id) return o.name;
+      return "?";
+    };
+    for (size_t i = 0; i < doc.items.size(); ++i) {
+      const auto& it = doc.items[i];
+      std::printf("item %zu kind %u value %u %s name %08x parent %08x props %zu\n", i, it.kind, it.value,
+                  name_of(it.value).c_str(), it.name_hash, it.parent_hash, it.properties.size());
+    }
+    for (const auto& c : doc.contracts) {
+      std::printf("contract item %d %s state %s", c.item_index, c.type.c_str(), c.initial_state.c_str());
+      for (const auto& b : c.bindings) std::printf(" b:%s", b.c_str());
+      for (const auto& e : c.events) std::printf(" e:%s", e.c_str());
+      std::printf("\n");
+    }
+    for (const auto& s : doc.styles) {
+      std::printf("style owner %u (%s) states %u\n", s.owner_item, name_of(s.owner_item).c_str(), s.state_count);
+      for (const auto& r : s.states)
+        std::printf("  state %08x item %u (%s) attr %08x target %u value %.3f raw %08x\n", r.state_hash, r.target_item,
+                    name_of(r.target_item).c_str(), r.attr_hash, uint32_t(r.target), r.value, r.raw_value);
+    }
+    for (const auto& a : doc.animations)
+      std::printf("anim owner %u (%s) name %08x dur %.2f channels %zu\n", a.owner_item, name_of(a.owner_item).c_str(),
+                  a.name_hash, a.duration, a.channels.size());
+    return 0;
+  }
   const bool all = argc > 4;
   for (size_t i = 0; i < sc.objects.size() && (all || i < 400); ++i) {
     const auto& o = sc.objects[i];
