@@ -246,6 +246,7 @@ class PendingRaceAward {
     award_ = award;
     commit_ = c;
     held_ = true;
+    committed_ = false;
   }
   bool held() const { return held_; }
   // The held award (for the post-race screens), or null.
@@ -255,15 +256,19 @@ class PendingRaceAward {
   const RaceAward* commit(CareerRecord& record) {
     if (!held_) return nullptr;
     held_ = false;
+    committed_ = true;
     commit_race_award(record, award_, commit_);
     return &award_;
   }
   void drop() { held_ = false; }
+  // Whether the held award was committed (a dropped one never is).
+  bool committed() const { return committed_; }
 
  private:
   RaceAward award_;
   RaceAwardCommit commit_;
   bool held_ = false;
+  bool committed_ = false;
 };
 
 }  // namespace race

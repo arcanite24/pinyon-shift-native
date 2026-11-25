@@ -162,14 +162,19 @@ void test_rewards_paid_after_banner() {
   CHECK(pending.held() && pending.award() && pending.award()->credits == 4400);
   pending.drop();
   CHECK(!pending.held() && !pending.award());
+  // A dropped award is not settled: the campaign must not advance past the
+  // race (a qualifier restarted from the banner stays the qualifier).
+  CHECK(!pending.committed());
   CHECK(pending.commit(rec) == nullptr);
+  CHECK(!pending.committed());
   CHECK(rec.credits == 1000 && rec.wristband_points == 0 && rec.event_places.empty() && rec.prize_cars.empty() &&
         rec.num_races == 0 && rec.total_winnings == 0);
 
   // The restarted race finishes and the player continues: paid once.
   pending.hold(compute(), c);
+  CHECK(!pending.committed());
   const race::RaceAward* paid = pending.commit(rec);
-  CHECK(paid && paid->credits == 4400);
+  CHECK(paid && paid->credits == 4400 && pending.committed());
   CHECK(rec.credits == 5400 && rec.total_winnings == 4400 && rec.wristband_points == 100 && rec.num_races == 1 &&
         rec.num_victories == 1 && rec.event_places[26] == 1 && rec.race_places[100] == 1 &&
         rec.prize_cars.size() == 1);

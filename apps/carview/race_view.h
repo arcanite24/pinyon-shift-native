@@ -165,8 +165,9 @@ class RaceView {
   // Forgets the held award (Restart, Quit).
   void drop_award() { pending_award_.drop(); }
   // The player has finished and the award, if the race pays one, has been
-  // committed: the post-race screens after the finish banner may run.
-  bool post_race_settled() const { return player_finished() && (stage_ || (award_ && !pending_award_.held())); }
+  // committed (not dropped by a Restart or Quit): the post-race screens
+  // after the finish banner may run.
+  bool post_race_settled() const { return player_finished() && (stage_ || pending_award_.committed()); }
   // Opponents' 3D world positions + names + leader flag (for overhead tags, skill detection, and Horizon Promo).
   struct OpponentTag {
     double x = 0, y = 0, z = 0;
