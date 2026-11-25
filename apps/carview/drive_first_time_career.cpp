@@ -141,8 +141,13 @@ void DriveSession::feed_first_time_career() {
 
 void DriveSession::apply_first_time_career() {
   auto& c = app.campaign;
-  // The cutscene areas to stream before they play.
-  for (const auto& at : c.take_cutscene_preloads()) prime_world_at(*this, at[0], at[2]);
+  // The cutscene areas to stream before they play. Not while the player
+  // drives: recentring the world away from the car would drop the road under
+  // it (the cutscene's own placement primes its area as it starts).
+  for (const auto& at : c.take_cutscene_preloads()) {
+    if (c.ftc_active() && c.ftc().controls_enabled()) continue;
+    prime_world_at(*this, at[0], at[2]);
+  }
   if (c.cutscenes().active())
     c.cutscenes().set_car_parts(car_parts(vehicle, host.showroom.bounds_min(), host.showroom.bounds_max()));
   std::array<double, 3> pos{};

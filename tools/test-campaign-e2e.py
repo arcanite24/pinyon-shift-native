@@ -2,9 +2,11 @@
 """Automated Campaign E2E Visual + Telemetry Verification Harness for shift-engine.
 
 Runs carview.exe headlessly through the first-time career's driven stages
-(`--campaign-stage ftc:<stage>`): the opening (the AI drives the Viper under
-Opening_Cutscene, then the hand-over) and the race to the festival in the
-Corrado (and optionally the heats, the drive to Race Central), using an
+(`--campaign-stage ftc:<stage>`): the opening (the career holds the controls
+and the AI drives the Viper on the sat-nav route; headless runs do not step
+the career, so the frames show the controls screen over that drive) and the
+race to the festival in the Corrado, driven by the cruise input (and
+optionally the heats, the drive to Race Central), using an
 isolated temporary save directory (NEVER touching
 %LOCALAPPDATA%\\PinyonShift), captures PNG frames at key timestamps
 (t=0.0s, 1.0s, 3.0s, 6.0s, 10.0s), parses per-frame JSON telemetry, and
@@ -606,10 +608,12 @@ def run_stage(
     car_override: str | None = None,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    telemetry_path = out_dir / f"{stage}_telemetry.json"
-    out_png_prefix = out_dir / f"{stage}.png"
+    # A stage name as a file name (ftc:opening_cutscene -> ftc_opening_cutscene).
+    tag = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in stage)
+    telemetry_path = out_dir / f"{tag}_telemetry.json"
+    out_png_prefix = out_dir / f"{tag}.png"
 
-    with tempfile.TemporaryDirectory(prefix=f"shift-campaign-e2e-{stage}-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix=f"shift-campaign-e2e-{tag}-") as tmp_dir:
         tmp_path = Path(tmp_dir)
         save_file = tmp_path / "save.txt"
 
@@ -658,7 +662,7 @@ def run_stage(
             text=True,
             timeout=timeout_s,
         )
-        log_path = out_dir / f"{stage}_carview.log"
+        log_path = out_dir / f"{tag}_carview.log"
         log_path.write_text(
             f"EXIT_CODE={proc.returncode}\n\n--- STDOUT ---\n{proc.stdout}\n\n--- STDERR ---\n{proc.stderr}\n",
             encoding="utf-8",
