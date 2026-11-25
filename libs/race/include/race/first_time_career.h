@@ -1,18 +1,20 @@
 // FH1's first-time career: the scripted opening a new player goes through
-// before free roam, from the controls screen to the HORIZON Heats and the
-// first wristband. The order and the per-stage steps follow the original's
-// flow files (game_free_roam_flow.xml intro_flow, first_time_career.xml) and
-// tunables (gametunablesettings FirstTimeCareer.xml, First50TicketsDistances,
-// the GlobalRegistry FirstTimeCareer keys). Headless: the host feeds inputs
-// (time, player position, cutscene / movie / race / screen completion) and
-// applies the one-shot commands each update returns; the persistent
-// presentation state (controls, HUD, AI driving, instructions) is read back
-// through the accessors.
+// before free roam, from the controls screen to the first wristband. The
+// steps inside each stage follow the original's flow files
+// (game_free_roam_flow.xml intro_flow, first_time_career.xml) and tunables
+// (gametunablesettings FirstTimeCareer.xml, the GlobalRegistry
+// FirstTimeCareer keys); the hand-offs between stages, the trigger zones, the
+// ticket counter and the save checkpoints follow the original's
+// first-time-career activity (read 2026-11-25; SPEC_QUESTIONS Q62, Q66).
+// Headless: the host feeds inputs (time, player position, cutscene / movie /
+// race / screen completion) and applies the one-shot commands each update
+// returns; the persistent presentation state (controls, HUD, AI driving,
+// instructions) is read back through the accessors.
 //
-// Stages whose rule the flow files do not state are marked interim here and
-// in docs/SPEC_QUESTIONS.md (Q62 race-to-festival scoring, Q63 tutor
-// prompts, Q64 first Autoshow restriction, Q65 opening credits, Q66 stage
-// order around the Heats and the stage triggers).
+// The activity's stages (the title's stage value in brackets): the opening
+// and the initial drive [0], the diner [1], the race to the festival [2, 3],
+// the festival arrival flow [4, 6], the Horizon Heats [7], the Red Rock
+// showcase [10, 12], the drive to Race Central [8] and Race Central [9].
 #pragma once
 
 #include <array>
@@ -25,27 +27,30 @@ namespace race {
 
 enum class FtcStage : uint8_t {
   kNotStarted = 0,
-  kControls,             // the controller loading screen
-  kOpeningCutscene,      // Opening_Cutscene over the AI-driven Viper (route 170)
-  kInitialDrive,         // white flash, human takeover, "hold RT" tutor prompt
-  kDinerCutscenes,       // NEW_Diner_Cutscene_1, New_Diner_Cutscene_2 (credits), New_Diner_Cutscene_3
-  kRaceToFestival,       // the Corrado on open roads, the DJ's ticket countdown
+  kControls,             // the controller loading screen while the opening loads
+  kOpeningCutscene,      // Opening_Cutscene over the AI-driven Viper
+  kInitialDrive,         // white flash, human takeover, the driving tutor
+  kDinerCutscenes,       // NEW_Diner_Cutscene_1, New_Diner_Cutscene_2 (opening titles), New_Diner_Cutscene_3
+  kRaceToFestival,       // the Corrado on open roads, the heats places counter
   kFestivalArrive,       // Festival_Race_Outro, fade to black
   kFestivalArriveMovie,  // FMV_01
   kWorkshopMap,          // placed at the workshop, the locked map
   kRadioUnlock,          // Dak fixes the radio (Radio_Unlock)
-  kHeats,                // the All Comers heats (events 76, 77)
+  kHeats,                // drive to the Horizon Heats and finish the final (event 77) in the top 3
+  kShowcase,             // the Red Rock showcase (event 101, Mustang against the plane)
   kTravelToRaceCentral,  // drive to Race Central
   kRaceCentralMovie,     // FMV_02
   kWristbandIntro,       // Wristband_Intro until its voice-over ends
   kRewards,              // Horizon Rookie, 40,000 CR, the yellow wristband
   kFirstAutoshow,        // the map with Race Central VO, then the restricted Autoshow
-  kSatNavTutorial,       // the sat-nav hint and Recaro Rush as the destination
+  kSatNavTutorial,       // the map input hint and Recaro Rush as the destination
   kComplete,
 };
 
 const char* ftc_stage_name(FtcStage stage);
 bool parse_ftc_stage(std::string_view name, FtcStage& out);
+// The title's CFirstTimeCareerState stage value while the engine is in `stage`.
+int ftc_title_stage(FtcStage stage);
 
 // The presentation states the flow scripts (state_definitions.xml).
 enum class FtcFadeKind : uint8_t {
@@ -66,6 +71,9 @@ struct FtcCommands {
   std::string play_cutscene;  // by name; empty = none
   bool hold_cutscene = false;  // hold-and-loop until released (voice-over exit)
   bool stop_cutscene = false;
+  // Stream the world around a cutscene's places before it plays (the
+  // activity's GetRidOfTrafficAndLoadCutscene, CPrepareCutscene).
+  std::string preload_cutscene;
   std::string play_movie;  // "FMV_01" / "FMV_02"
   std::vector<FtcFade> fades;
 
@@ -90,16 +98,21 @@ struct FtcCommands {
   // Audio.
   std::vector<std::string> radio_playlist;  // set_radio_playlist, in order
   std::vector<std::string> dj_lines;        // RadioDJ requests due now
+  bool stop_dj = false;                     // cut the DJ line playing
   std::vector<std::string> vo;              // voice-over triggers
-  std::vector<std::string> mix_snapshots;
+  std::vector<std::string> mix_snapshots;   // AudioMixerSnapshots.xml names, applied in order
   bool set_radio_switching = false;
   bool radio_switching = false;
 
   // Screens and rewards.
+  bool activate_tutor = false;   // CActivateDrivingTutor
   bool open_map = false;         // the map, locked to viewing (no fast travel)
   bool open_autoshow = false;
-  bool autoshow_restricted = false;  // CSetRestrictionsForFirstAutoshow
-  bool show_satnav_hint = false;
+  // CSetRestrictionsForFirstAutoshow: the Autoshow lists only these cars,
+  // previews the first, hides Back and skips the "keep shopping?" prompt.
+  bool autoshow_restricted = false;
+  std::vector<int64_t> autoshow_cars;
+  bool show_map_hint = false;    // the map input hint ("PRESS <Back> TO OPEN THE MAP")
   bool set_destination = false;
   std::string destination_label;
   std::array<double, 2> destination_xz{};
@@ -109,7 +122,7 @@ struct FtcCommands {
   bool collect_yellow_wristband = false;
   bool intro_completed = false;  // introSequenceCompleted / CSetIsFristTimeCareer false
   bool enter_free_roam = false;
-  bool save_requested = false;
+  bool save_requested = false;   // a save checkpoint (the activity's save stages 1, 7, 12, 8)
 };
 
 struct FtcInput {
@@ -120,15 +133,16 @@ struct FtcInput {
   double throttle = 0.0;  // 0..1
   bool confirm = false;   // A / Enter pressed this frame
   bool screen_open = false;  // the map / Autoshow the flow opened is still open
-  bool race_finished = false;  // edge: the race the flow launched just finished
+  bool race_finished = false;  // edge: a race the player was in just finished
   int64_t race_event_id = 0;
   int race_place = 0;  // 1-based
-  bool route_finished = false;  // the initial drive's route reached its end
+  bool racing = false;  // the player is in a race (the heats triggers wait)
 };
 
-struct FtcTicketThreshold {
-  double remaining_fraction;
-  int tickets;
+// A sphere trigger (the activity's CTriggerZone, shape 1).
+struct FtcZone {
+  std::array<double, 3> pos;
+  double radius;
 };
 
 class FirstTimeCareer {
@@ -139,35 +153,69 @@ class FirstTimeCareer {
   static constexpr double kInitialTimeOfDay = 33840.0;  // 09:24
   static constexpr double kIntroTimeOfDay = 33300.0;    // 09:15 (intro_flow)
   static constexpr double kRaceCentralTimeOfDay = 29460.0;  // 08:11
-  static constexpr int kRacePointsRequired = 6;
-  static constexpr int64_t kAllComerRace1 = 76, kAllComerRace2 = 77, kAllComerFinal = 77;
-  static constexpr int kHeatCutoffPlace = 3;  // interim (Q66)
+  static constexpr int64_t kAllComerFinal = 77;  // AllComerFinal (FESTIVAL_SECOND); Race1ID 76 has no event
+  static constexpr int64_t kMustangRace = 101;   // MustangRace (PLANE_RACE_001, the Red Rock showcase)
+  // The activity moves on when the event's result place is under 4.
+  static constexpr int kCutoffPlace = 3;
+  static constexpr std::array<double, 3> kHalfWayToTollBooth = {225.43, 116.76, -3323.21};
+  static constexpr std::array<double, 3> kTollBoothPosition = {-800.06, 30.05, -1063.63};
+  static constexpr std::array<double, 3> kBeyondTollBoothPosition = {-915.37, 13.75, -885.44};
   static constexpr std::array<double, 3> kEndRacePosition = {-715.03, 42.56, -1250.56};
+  static constexpr FtcZone kFreeTicketsTrigger = {{207.42, 116.10, -3332.04}, 10.0};
+  // TicketTriggers: each one the player enters takes a place off the counter.
+  static constexpr std::array<FtcZone, 6> kTicketTriggers = {{
+      {{1389.10, 113.91, -2221.42}, 10.0},
+      {{1252.56, 124.64, -2572.83}, 10.0},
+      {{803.55, 121.71, -3115.07}, 10.0},
+      {{-240.76, 103.61, -3348.91}, 15.0},
+      {{-602.16, 88.36, -2973.12}, 10.0},
+      {{-778.72, 73.57, -2466.95}, 10.0},
+  }};
+  // The activity's own zones.
+  static constexpr std::array<FtcZone, 2> kDinerArrive = {{{{1709.0, 117.8, -1718.0}, 10.0}, {{1486.0, 115.0, -2024.0}, 10.0}}};
+  static constexpr std::array<FtcZone, 2> kDinerApproach = {{{{1890.0, 118.6, -1503.0}, 20.0}, {{938.0, 119.7, -2927.0}, 20.0}}};
+  static constexpr std::array<FtcZone, 2> kFestivalArriveZones = {{{kEndRacePosition, 20.0}, {{-945.9, -1.0, -647.2}, 20.0}}};
+  static constexpr FtcZone kFestivalApproach = {{-701.4, 46.19, -1501.0}, 20.0};
+  static constexpr double kHeatsSignUpRadius = 27.0;  // the FESTIVAL_SECOND_NODE race activation
+  // Where the activity puts the player after each event.
+  static constexpr std::array<double, 3> kHeatsFinalPlace = {-3196.8, 4.18, -1465.5};
+  static constexpr double kHeatsFinalHeading = -117.78;
+  static constexpr double kHeatsFinalTimeOfDay = 56880.0;  // 15:48
+  static constexpr std::array<double, 3> kPlaneRacePlace = {-5423.0, 74.1, -3181.0};
+  static constexpr double kPlaneRaceHeading = -6.77;
   // intro_flow / first_time_career.xml placements.
   static constexpr std::array<double, 3> kViperStart = {-1361.97, 47.32, 1881.99};
   static constexpr double kViperHeading = 94.07;
   static constexpr int kInitialDriveRoute = 170;
+  // CSetDestForInitialDrive's last point (the sat-nav goes through two before it).
+  static constexpr std::array<double, 3> kInitialDriveDestination = {1576.62, 119.08, -1839.37};
   static constexpr std::array<double, 3> kDinerPlace = {1553.881226, 118.073807, -1934.264526};
   static constexpr double kDinerHeading = -120.859550;
   static constexpr std::array<double, 3> kWorkshopPlace = {-1027.26, -8.68, -145.57};
   static constexpr double kWorkshopHeading = 100.0;
-  // Wristband_Intro's player placement, the stand-in for Race Central's trigger.
+  // Wristband_Intro's player placement: Race Central when the host gives no site.
   static constexpr std::array<double, 3> kRaceCentral = {-832.17, -6.02, -254.29};
   static constexpr const char* kViperMedia = "VIP_Viper_13";
   static constexpr int64_t kViperCarId = 1544;
   static constexpr const char* kCorradoMedia = "VW_Corrado_95";
   static constexpr int64_t kCorradoCarId = 309;
   static constexpr int64_t kStartingMoney = 40000;  // CGivePlayerMoney
+  // The first Autoshow's car list (Subaru WRX STi 2011, Mitsubishi Lancer Evo X GSR 2008).
+  static constexpr std::array<int64_t, 2> kFirstAutoshowCars = {1323, 1009};
   static constexpr const char* kRecaroRush = "FR02";
-  // Interim arrival radii (Q66).
-  static constexpr double kArriveRadius = 40.0;
-  // GlobalRegistry FirstTimeCareer/TutorialMessages.
-  static constexpr double kAccelerateTextTimerLimit = 3.0;
+  // Interim (Q66): Race Central's arrival radius when the host gives no site.
+  static constexpr double kRaceCentralRadius = 40.0;
+  // The heats places counter (CHudStatusTicketCountdown): 10, never under 1.
+  static constexpr int kTicketsStart = 10, kTicketsMin = 1;
+  static constexpr double kReminderDelay1 = 30.0, kReminderDelay2 = 60.0;
+  // GlobalRegistry UI/FirstTimeCareer.
   static constexpr double kLargeHudInstructionDisplayTime = 3.0;
-  // First50TicketsDistances.
-  static constexpr std::array<FtcTicketThreshold, 10> kTickets = {{
-      {0.90, 10}, {0.80, 9}, {0.70, 8}, {0.60, 7}, {0.50, 6}, {0.40, 5}, {0.30, 4}, {0.20, 3}, {0.10, 2}, {0.00, 2}}};
-  static int tickets_for_remaining(double remaining_fraction);
+
+  // The host's world: where events 77 / 101 sign up and where Race Central
+  // is (the career catalogue's triggers). Without them the events launch at
+  // once and Race Central uses kRaceCentral / kRaceCentralRadius.
+  void set_event_trigger(int64_t event_id, const std::array<double, 3>& pos, double radius);
+  void set_race_central(const std::array<double, 3>& pos, double radius);
 
   // Starts (or restarts) the career at the controls screen.
   FtcCommands start();
@@ -179,38 +227,64 @@ class FirstTimeCareer {
   double stage_time() const { return stage_t_; }
   bool active() const { return stage_ != FtcStage::kNotStarted && stage_ != FtcStage::kComplete; }
   bool complete() const { return stage_ == FtcStage::kComplete; }
+  // The stage a save made now resumes at: the activity's last save checkpoint
+  // (none before the diner, so the opening replays).
+  FtcStage checkpoint() const;
 
   // Persistent presentation state.
   bool show_controls_screen() const { return stage_ == FtcStage::kControls; }
   bool controls_enabled() const { return controls_; }
   bool ai_driving() const { return ai_; }
   bool hud_visible() const { return hud_; }
+  // H_OPENING_TITLES: from New_Diner_Cutscene_2 until the HUD comes back.
   bool show_opening_credits() const { return credits_; }
+  double opening_credits_time() const { return credits_ ? credits_t_ : 0.0; }
   bool map_locked() const { return map_locked_; }
-  // String ids (UI string table) of the large HUD instruction and the tutor
-  // prompt on screen, empty when none.
+  // String ids (InGame): the stage's persistent HUD instruction, and the
+  // large two-line instruction shown for LargeHudInstructionDisplayTime as a
+  // stage starts; empty when none.
   const std::string& hud_instruction() const { return instruction_; }
-  const std::string& tutor_prompt() const { return tutor_; }
-  // The race to the festival's ticket counter (-1 outside that stage).
+  const std::string& large_instruction_1() const { return large1_; }
+  const std::string& large_instruction_2() const { return large2_; }
+  // The heats places counter (-1 when not shown).
   int tickets_remaining() const { return stage_ == FtcStage::kRaceToFestival ? tickets_ : -1; }
 
  private:
   FtcCommands enter(FtcStage next);
+  void opening_setup(FtcCommands& c);
   void at(double t, std::string dj);  // a DJ line due `t` seconds into the stage
   void pump_timed(FtcCommands& out);
+  void set_instruction(int title_stage);
+  void route_to_next_waypoint(FtcCommands& c);
+  // The event's sign-up sphere and the player's distance to it; false when unknown.
+  bool event_trigger(int64_t id, const std::array<double, 3>& p, double& radius, double& distance) const;
 
   FtcStage stage_ = FtcStage::kNotStarted;
   double stage_t_ = 0.0;
   int step_ = 0;
   double step_t_ = 0.0;
   bool controls_ = true, ai_ = false, hud_ = true, credits_ = false, map_locked_ = false;
-  std::string instruction_, tutor_;
-  double instruction_t_ = 0.0;
-  double throttle_held_ = 0.0;
-  int tickets_ = 10;
-  double race_total_ = 1.0;
-  int heat_ = 0;
-  bool awaiting_race_ = false;  // a heat was launched and has not reported
+  double credits_t_ = 0.0;
+  std::string instruction_, large1_, large2_;
+  double large_t_ = 0.0;
+  int tickets_ = kTicketsStart;
+  uint32_t zones_hit_ = 0;      // ticket zones already taken (bit per zone)
+  uint32_t dj_counted_ = 0;     // FestivalTicketsDepleting<n> already played (bit n)
+  bool festival_approach_ = false;  // the player passed the last stretch's zone
+  bool reminders_due_ = false;
+  bool diner_preloaded_ = false;
+  int waypoint_ = 0;            // the race's sat-nav route: HalfWay, TollBooth, Beyond
+  bool in_trigger_ = false;     // inside the event's sign-up sphere (edge)
+  bool awaiting_race_ = false;  // an event was launched and has not reported
+  struct Trigger {
+    int64_t id;
+    std::array<double, 3> pos;
+    double radius;
+  };
+  std::vector<Trigger> triggers_;
+  bool have_race_central_ = false;
+  std::array<double, 3> race_central_ = kRaceCentral;
+  double race_central_radius_ = kRaceCentralRadius;
   struct Timed {
     double t;
     std::string dj;
