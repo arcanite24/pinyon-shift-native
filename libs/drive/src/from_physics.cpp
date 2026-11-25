@@ -683,20 +683,14 @@ void apply_tune(const CarTune& tune, const cars::CarPhysics& car, CarParams& p) 
     if (tune.gears[i] > 0.1) p.gears[i] = std::clamp(tune.gears[i], 0.4, 6.0);
   }
 
-  // 3. Alignment (camber, toe, caster).
-  // Optimal negative camber (~ -1.0..-2.2 deg) improves cornering peak grip while slightly reducing straight-line grip;
-  // toe adjusts turn-in / stability; caster adds dynamic camber gain under steer.
+  // 3. Alignment (camber, toe, caster). The tuned angles are stored; they
+  // carry no grip multipliers of the engine's own (FEEL-01).
   const double cambers[2] = {tune.front_camber_deg, tune.rear_camber_deg};
   const double toes[2] = {tune.front_toe_deg, tune.rear_toe_deg};
   for (int a = 0; a < 2; ++a) {
     if (cambers[a] > -90.0) {
       const double c = std::clamp(cambers[a], -5.0, 5.0);
       p.static_camber_deg[a] = c;
-      const double opt = a == 0 ? -1.5 : -1.0;
-      const double lat_gain = 1.02 - 0.008 * (c - opt) * (c - opt);
-      const double long_pen = 1.0 - 0.005 * std::fabs(c);
-      p.lat_scale[a] *= std::clamp(lat_gain, 0.85, 1.04);
-      p.long_scale[a] *= std::clamp(long_pen, 0.90, 1.01);
     }
     if (toes[a] > -90.0) {
       const double t = std::clamp(toes[a], -5.0, 5.0);
@@ -709,7 +703,6 @@ void apply_tune(const CarTune& tune, const cars::CarPhysics& car, CarParams& p) 
   if (tune.front_caster_deg > -90.0) {
     const double caster = std::clamp(tune.front_caster_deg, 1.0, 7.0);
     p.front_caster_deg = caster;
-    p.lat_scale[0] *= std::clamp(1.0 + 0.004 * (caster - 5.0), 0.97, 1.02);
   }
 
   // 4. Anti-roll bars, springs, ride height, damping.

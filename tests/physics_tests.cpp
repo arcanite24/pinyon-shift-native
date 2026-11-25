@@ -661,8 +661,9 @@ void synthetic_r2_4_checks() {
     CHECK(fwd_rake.y < fwd_stock.y - 0.015);
     for (const auto& w : v_rake.wheels()) CHECK(w.contact);
 
-    // Dynamic roll camber: with identical static lat_scale, negative camber (-2.5 deg)
-    // produces stronger sustained cornering grip under body roll than positive camber (+2.5 deg).
+    // FEEL-01: no engine camber term. Static camber of -2.5 or +2.5 deg gives the
+    // same sustained cornering grip under body roll (the original's camber acts
+    // only through List_TireAffectCurve, within 1 % of 1).
     drive::CarParams p_neg = make_synth(), p_pos = make_synth();
     p_neg.static_camber_deg = {-2.5, -2.0};
     p_pos.static_camber_deg = {2.5, 2.0};
@@ -682,7 +683,7 @@ void synthetic_r2_4_checks() {
         lat_g_pos += std::fabs(v_pos.lateral_g());
       }
     }
-    CHECK(lat_g_neg > lat_g_pos * 1.015);
+    CHECK(std::fabs(lat_g_neg - lat_g_pos) <= 1e-9 * lat_g_pos);
   }
 }
 

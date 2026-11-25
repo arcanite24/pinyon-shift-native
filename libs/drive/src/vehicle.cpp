@@ -1649,7 +1649,6 @@ void Vehicle::substep(double dt, const Ground& ground) {
 
   Vec3 fwd[kWheels]{}, lat[kWheels]{};
   double vx[kWheels]{}, vy[kWheels]{}, fx0[kWheels]{}, fy[kWheels]{}, slope[kWheels]{};
-  const Vec3 body_right = rotate(rot_, {1, 0, 0});
   auto tyre = [&](int i, double omega, double* fx_out, double* fy_out, double* sx_out, double* sy_out) {
     const int a = axle_of(i);
     const double n = w_[i].load, kgf = n / kKgf, stretch = p.sidewall_stretch[a];
@@ -1695,19 +1694,9 @@ void Vehicle::substep(double dt, const Ground& ground) {
                      : lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(vx[i]), p.accel_speed0, p.accel_speed1));
     double ky = grip[i] * rear * hb_grip * ai * p.lat_scale[a] * p.lat_compound_scale * p.long_misc_scale *
                 p.tire_mod_friction_scale * damage_.tyre_grip[size_t(i)] * thermal_grip;
-    // Lightweight roll- & steer-induced dynamic camber modulation on per-wheel lateral grip:
-    // chassis roll tilts the outside wheel toward positive camber while negative static camber
-    // and front caster recover optimal contact patch alignment under cornering load.
-    const double roll_deg = std::asin(std::clamp(dot(body_right, normal[i]), -1.0, 1.0)) * (180.0 / kPi);
-    const double side_sign = (i % 2 == 0) ? 1.0 : -1.0;
-    const double caster_cam = (a == 0) ? -side_sign * std::sin(w_[i].steer) * p.front_caster_deg * 0.35 : 0.0;
-    const double dyn_cam = p.static_camber_deg[a] + side_sign * (0.65 * roll_deg) + caster_cam;
-    auto camber_grip = [](double c_deg) {
-      const double err = c_deg + 0.5;
-      return std::clamp(1.02 - 0.0045 * err * err, 0.86, 1.02);
-    };
-    const double camber_mod = std::clamp(camber_grip(dyn_cam) / std::max(0.5, camber_grip(p.static_camber_deg[a])), 0.88, 1.08);
-    ky *= camber_mod;
+    // No camber term (FEEL-01): in the original, camber acts only through
+    // List_TireAffectCurve, which stays within 1 % of 1 on the R34
+    // (SPEC-CAR-PHYSICS, tyre law).
     // The rear-grip fix: g + d (1 - g), g the scale faded out by the
     // normalised slip angle, d by the road wheels' steer angle in degrees.
     if (a == 1) {
