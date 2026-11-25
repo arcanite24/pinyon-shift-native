@@ -300,6 +300,19 @@ int main() {
     CHECK(world::skipped_object("Underground_NOLOD"));
     CHECK(world::skipped_object("World_Cage_01"));
     CHECK(!world::skipped_object("Terrain_Road_LOD00"));
+    // The far ring's level: by the name, else an object drawn only with the
+    // UberLOD effect (a far terrain sheet named like near terrain).
+    CHECK(world::far_level("TERR_Zone_MIDDIST_01_LOD00") == 1);
+    CHECK(world::far_level("UberLOD_01_LOD00") == 2);
+    CHECK(world::far_level("UberLOD_01_CAGE_LOD00") == 0);
+    CHECK(world::far_level("TERR_CUBE_Area_01") == 0);
+    CHECK(world::far_level("Hills_Terrain_LOD00") == 0);
+    CHECK(world::far_level("Hills_Terrain_07_LOD00", {"H_BLND1_SPEC"}) == 2);
+    CHECK(world::far_level("Hills_Terrain_07_LOD00", {"H_BLND1_SPEC", "H_BLND1_SPEC"}) == 2);
+    CHECK(world::far_level("Hills_Terrain_07_LOD00", {"H_BLND1_SPEC", "H_VBLND_NORM_AO_LM"}) == 0);
+    CHECK(world::far_level("Hills_Terrain_07_LOD00", {"H_BLND1"}) == 0);
+    CHECK(world::far_level("Hills_MIDDIST_07_LOD00", {"H_BLND1_SPEC"}) == 1);
+    CHECK(world::far_level("Hills_CAGE_LOD00", {"H_BLND1_SPEC"}) == 0);
   }
 
   // 5b2. Clean-room Round 2 world material resolution & TrackSettings road/lightmap parsing:

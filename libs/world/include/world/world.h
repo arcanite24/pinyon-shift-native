@@ -43,6 +43,12 @@ Surface classify(const std::string& object, const std::string& material);
 // Whether a world-space object or submesh is left out of the gather.
 bool skipped_object(const std::string& object);
 bool skipped_material(const std::string& material);
+// The far ring's level of a world-space object (GatherOptions::far_radius):
+// 1 MIDDIST, 2 UberLOD, 0 near scenery (and the TERR_CUBE, CAGE, occluder
+// and shadow objects, drawn by neither). By the name, else by `effects`,
+// the object's effect per submesh (upper case): one drawn only with
+// H_BLND1_SPEC, the UberLOD patches' effect, is an UberLOD patch.
+uint8_t far_level(const std::string& object, const std::vector<std::string>& effects = {});
 // Whether a world-space object is driven on in the stand-in ground. Thin,
 // upright things (armco, barriers, railings, cables, gates, fences) are
 // not: with nothing but wheel rays they act as ramps. Props never are.
