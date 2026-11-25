@@ -806,7 +806,13 @@ bool DriveSession::step(const drive::Input& user_in) {
           eff_user_in = drive::Input{};
           eff_user_in.brake = 1.0;
         }
-        const drive::Input in = app.race ? app.race->player_input(vehicle, eff_user_in, traffic.get()) : eff_user_in;
+        // The rewards (results_page > 0): the car waits at the post-race
+        // location, out of the AI's hands (PrepareForRewardsFlow). The race
+        // still steps its field.
+        drive::Input in = app.race ? app.race->player_input(vehicle, eff_user_in, traffic.get()) : eff_user_in;
+        // Handbrake and a light pedal: a held brake at a stop would select
+        // reverse.
+        if (app.race && results_page > 0) in = drive::Input{}, in.brake = 0.4, in.handbrake = true;
         vehicle.step(in, *host.ground);
         {
           // Thermal brake rotor integrator: heats proportionally to brake pedal * speed

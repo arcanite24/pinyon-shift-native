@@ -9,6 +9,7 @@
 
 #include "race/rewards.h"
 #include "race_screens.h"
+#include "world/collision.h"
 
 namespace carview {
 
@@ -243,8 +244,19 @@ void DriveSession::race_continue() {
       // PrepareForRewardsFlow: the AI cars go and the car waits at the
       // post-race location (post_race_location_00).
       if (race_flow::hides_opponents(f.kind)) app.race->set_rivals_solo(true);
+      // place, not reset: the vehicle's clock runs on (the notices and the
+      // screens' timers read it), and the fall check starts from here.
       double at[4];
-      if (app.race->post_race_spawn(at)) vehicle.reset({at[0], at[1], at[2]}, at[3]);
+      if (app.race->post_race_spawn(at)) {
+        double gy = at[1];
+        if (host.ground) world::ground_height(*host.ground, at[0], at[2], at[1] + 4.0, gy);
+        vehicle.place({at[0], gy + 0.05, at[2]}, at[3]);
+        drawn_before = vehicle.pose();
+        have_touch = true;
+        last_touch_y = vehicle.position().y;
+        camera_pull = CameraPull{};
+        notice_until = 0;
+      }
       return;
     }
     case S::kCashReward:
