@@ -1064,6 +1064,14 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
                                                                              : "FAST TRAVEL";
               mc.art_style = (item.kind == OutpostHubItem::kNearbyEvents) ? 2 : 1;
               mc.target_line = item.detail_lines.empty() ? item.label : item.detail_lines[0];
+              // The card's price line: the map's fee (the detail lines' third,
+              // which the card does not draw).
+              if (item.kind == OutpostHubItem::kFastTravelOutpost) {
+                const int64_t fee = outpost_travel_fee(item.ref_id);
+                mc.reward_line = fee > 0 ? carview::thousands(fee) + " CR" : std::string("FREE FAST TRAVEL");
+              } else if (item.kind == OutpostHubItem::kFastTravelFestival) {
+                mc.reward_line = "FREE FAST TRAVEL";
+              }
               mc.status_line = "SELECT";
             }
             mcards.push_back(std::move(mc));
