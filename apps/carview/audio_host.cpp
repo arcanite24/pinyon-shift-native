@@ -1367,6 +1367,11 @@ void AudioHost::set_radio_rally_mode(bool on) {
 
 void AudioHost::trigger_ui(audio::UiCue cue) { engine_.trigger_ui(cue); }
 
+void AudioHost::activate_mix_snapshot(std::string_view name) {
+  if (!engine_.has_snapshot_matrix() || engine_.find_matrix_snapshot(name) < 0) return;
+  engine_.activate_matrix_snapshot(name);
+}
+
 void AudioHost::trigger_satnav(audio::SatNavCue cue) {
   if (cfg_.satnav_on) engine_.trigger_satnav(cue);
 }

@@ -185,6 +185,15 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
             std::string swap_target;
             if (ca.swap_car && !ca.car_media.empty()) {
               swap_target = find_baked_car(ca.car_media, ca.car_id);
+              if (swap_target.empty()) {
+                // The career cannot go on in the right car: say which one.
+                std::fprintf(stderr,
+                             "carview: error: the campaign needs %s (car %lld), which is not baked; bake it with "
+                             "tools/setup.py <game> --cars %s\n",
+                             ca.car_media.c_str(), (long long)ca.car_id, ca.car_media.c_str());
+                notice = "CAR NOT BAKED: " + ca.car_media;
+                notice_until = vehicle.time() + 8;
+              }
             }
             const bool needs_swap = !swap_target.empty() && lower_ascii(swap_target) != lower_ascii(app.car);
             if (needs_swap) {

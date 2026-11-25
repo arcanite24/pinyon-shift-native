@@ -533,6 +533,13 @@ struct DriveSession {
   void feed_first_time_career();
   void apply_first_time_career();
   double ftc_throttle = 0.0;
+  bool ftc_handbrake = false;
+  // While the career drives (controls off, AI on): the engine's AI driver on
+  // the sat-nav route, one car. Rebuilt when the route changes.
+  struct FtcAutopilot;
+  std::shared_ptr<FtcAutopilot> ftc_autopilot;
+  drive::Input ftc_autopilot_input();
+  double ftc_last_impact_seen = -10.0;
   void close_map();
   void sync_pause_labels();
   void cycle_difficulty(int by);

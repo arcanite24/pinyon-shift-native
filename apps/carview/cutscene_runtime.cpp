@@ -107,7 +107,7 @@ bool CutsceneRuntime::camera(const std::array<double, 3>& car_pos, double car_he
   if (!player_.active()) return false;
   cutscene::WorldCamera w;
   const cutscene::Frame car{car_pos, car_heading_rad * 180.0 / kPi};
-  if (!player_.world_camera(car, w)) return false;
+  if (!player_.world_camera(car, w, parts_.empty() ? nullptr : &parts_)) return false;
   out.eye = w.eye;
   out.forward = w.forward;
   out.up = w.up;

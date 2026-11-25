@@ -631,6 +631,7 @@ bool DriveApp::init(int& exit_code) {
     std::string e;
     have_career_catalog = race::load_career_catalog(game_root_of(), state_root, shared_db, career_catalog, &e);
     if (!have_career_catalog && !e.empty()) std::fprintf(stderr, "carview: note: no career catalog: %s\n", e.c_str());
+    if (have_career_catalog) campaign.set_career_catalog(&career_catalog);
     e.clear();
     have_skills_data = freeroam::load_skills_data(game_root_of(), skills_data, &e);
     if (!have_skills_data && !e.empty()) std::fprintf(stderr, "carview: note: no skills data: %s\n", e.c_str());

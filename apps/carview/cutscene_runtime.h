@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "cutscene/cutscene.h"
@@ -51,6 +52,9 @@ class CutsceneRuntime {
   // The cutscene camera for the player car at `car_pos` / `car_heading_rad`
   // (engine heading, atan2(f.x, f.z)); false when no cutscene is playing.
   bool camera(const std::array<double, 3>& car_pos, double car_heading_rad, drive::CameraView& out) const;
+  // The player car's parts the PartSpace cams follow (body axes, from the
+  // car shown); empty = the car's origin.
+  void set_car_parts(cutscene::CarParts parts) { parts_ = std::move(parts); }
   // The eye the world should stream around (the camera's, else nothing).
   bool streaming_focus(const std::array<double, 3>& car_pos, double car_heading_rad, std::array<double, 3>& out) const;
 
@@ -60,6 +64,7 @@ class CutsceneRuntime {
   std::string error_;
   cutscene::Player player_;
   bool frozen_ = false;
+  cutscene::CarParts parts_;
   // The scripted fade in progress (or the black it leaves behind).
   race::FtcFade fade_{};
   bool fade_on_ = false;

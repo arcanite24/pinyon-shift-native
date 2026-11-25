@@ -927,6 +927,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
                                   live_controls.switch_handbrake_clutch);
           else
             carview::campaign_ui::draw(list, app.campaign.flow(), cctx);
+          if (!app.campaign.is_blocking_gameplay())
+            carview::ftc_ui::draw_hint(list, app.campaign.hint_message(), float(width), float(height));
         }
         if (app.fmv_player.active()) {
           list.clear();

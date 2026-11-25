@@ -145,6 +145,10 @@ class AudioHost {
   void trigger_ui(audio::UiCue cue);
   void trigger_satnav(audio::SatNavCue cue);
   void set_satnav_enabled(bool on);
+  // A flow's or a cutscene's mixer snapshot by its AudioMixerSnapshots.xml
+  // name (OpeningCutscene, FreeRoam, VOPlayingInstant...): it replaces the
+  // active snapshot of its group. Without the matrix it does nothing.
+  void activate_mix_snapshot(std::string_view name);
   void trigger_vo(std::string_view trigger_id, bool interrupt = false);
   void skip_vo();
   void set_dialog_ducking(bool active);

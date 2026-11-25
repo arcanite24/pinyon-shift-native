@@ -765,9 +765,15 @@ bool DriveSession::step(const drive::Input& user_in) {
         drive::Input eff_user_in = user_in;
         if (app.campaign.ftc_active()) {
           ftc_throttle = user_in.throttle;
-          // Controls off while the flow drives (no AI takeover yet: the car
-          // coasts; interim, SPEC_QUESTIONS Q66).
-          if (!app.campaign.ftc().controls_enabled()) eff_user_in = drive::Input{};
+          ftc_handbrake = ftc_handbrake || user_in.handbrake;
+          // Controls off while the flow drives: the AI drives the player's
+          // car on the route (the opening, the festival arrival), else the
+          // car is held.
+          if (!app.campaign.ftc().controls_enabled())
+            eff_user_in = app.campaign.ftc().ai_driving() ? ftc_autopilot_input() : drive::Input{};
+        } else if (app.campaign.tutor().active()) {
+          ftc_throttle = user_in.throttle;
+          ftc_handbrake = ftc_handbrake || user_in.handbrake;
         }
         if (hold_for_reset_fade) {
           eff_user_in = drive::Input{};

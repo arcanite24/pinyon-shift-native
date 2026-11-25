@@ -165,7 +165,9 @@ void DriveSession::open_shop_or_autoshow(bool is_autoshow) {
                 const bool first_starter_visit =
                     !app.imported && app.career_garage.cars.size() <= 1 && app.collected_wristband <= 0 &&
                     app.career.wristband_points <= 50;
-                const bool tutorial_first = is_autoshow && (onboarding_handoff || first_starter_visit);
+                // The first-time career's first Autoshow lists only its two cars.
+                const bool ftc_first = app.campaign.consume_ftc_autoshow_restriction();
+                const bool tutorial_first = is_autoshow && (onboarding_handoff || first_starter_visit || ftc_first);
                 const double price_mult = slice12.trainer.pacing.effective_price_multiplier();
                 if (is_autoshow) {
                   ready = autoshow.open(*db, app.all_baked, why, app.career.credits, tutorial_first,

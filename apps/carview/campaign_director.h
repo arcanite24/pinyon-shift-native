@@ -16,6 +16,7 @@
 #include "drive/save.h"
 #include "fmv_player.h"
 #include "race/campaign_flow.h"
+#include "race/driving_tutor.h"
 #include "race/first_time_career.h"
 
 namespace carview {
@@ -47,10 +48,49 @@ class CampaignDirector {
     double throttle = 0.0;
     bool screen_open = false;  // the map / Autoshow the flow opened
     bool loading = false;      // a loading screen or a world gather is up: the flow waits
+    bool racing = false;       // the player is in an event
+    // The driving tutor's inputs (race::TutorInput).
+    double speed_mps = 0.0;
+    bool impact = false;
+    bool rewind_available = false, rewind_pressed = false, ebrake_pressed = false;
+    bool turn_ahead = false;
+    double turn_distance_m = 0.0;
   };
   void set_ftc_frame_input(const FtcFrameInput& in) { ftc_in_ = in; }
   bool ftc_active() const { return ftc_.active(); }
   const race::FirstTimeCareer& ftc() const { return ftc_; }
+  // The career catalogue the first-time career takes its event sign-up
+  // spheres (the heats final, the showcase) and Race Central from.
+  void set_career_catalog(const race::CareerCatalog* catalog) { catalog_ = catalog; }
+  // The driving tutor (CActivateDrivingTutor): on from the opening's
+  // hand-over, it keeps running after the career.
+  const race::DrivingTutor& tutor() const { return tutor_; }
+  // The input hint on screen: the tutor's, else the map hint the career
+  // shows at its end (without Kinect: "PRESS <Back> TO OPEN THE MAP").
+  race::TutorMessage hint_message() const {
+    if (tutor_.message() != race::TutorMessage::kNone) return tutor_.message();
+    return map_hint_left_ > 0.0 ? race::TutorMessage::kMap : race::TutorMessage::kNone;
+  }
+  // The first Autoshow the career opens lists only the career's two cars
+  // (CSetRestrictionsForFirstAutoshow); true once, for the opening it asks.
+  bool consume_ftc_autoshow_restriction() {
+    const bool r = ftc_autoshow_restricted_;
+    ftc_autoshow_restricted_ = false;
+    return r;
+  }
+  // A cutscene's CCutsceneCarTrigger / CCutsceneReleaseCarTrigger since the
+  // last call: a car to show at a place, or to hand to the AI at a speed.
+  struct CutsceneCar {
+    std::string name;  // the trigger's name (FestivalCar_0)
+    int64_t car_id = 0;
+    bool release = false;
+    std::array<double, 3> pos{};
+    double heading_rad = 0.0, speed_mps = 0.0;
+  };
+  std::vector<CutsceneCar> take_cutscene_cars();
+  // The cutscene areas to stream before they play (FtcCommands
+  // preload_cutscene), as the world places their first cut frames.
+  std::vector<std::array<double, 3>> take_cutscene_preloads();
   // The flow's commands the host applies beyond CampaignAction (time of day,
   // traffic, money, achievement, map, sat-nav hint, repair), oldest first.
   std::vector<race::FtcCommands> take_ftc_commands();
@@ -118,6 +158,8 @@ class CampaignDirector {
   race::CampaignAction apply_ftc(const race::FtcCommands& c, FmvPlayer& fmv, AudioHost* audio);
   race::CampaignAction update_ftc(double dt, FmvPlayer& fmv, AudioHost* audio);
   void handle_cutscene_events(const std::vector<const cutscene::Event*>& events, AudioHost* audio);
+  void prime_ftc_world();
+  void update_tutor(double dt);
 
   race::FirstTimeCareer ftc_;
   FtcFrameInput ftc_in_;
@@ -129,6 +171,12 @@ class CampaignDirector {
   int64_t ftc_race_event_ = 0;
   int ftc_race_place_ = 0;
   std::vector<race::FtcCommands> ftc_pending_;
+  const race::CareerCatalog* catalog_ = nullptr;
+  race::DrivingTutor tutor_;
+  bool ftc_autoshow_restricted_ = false;
+  double map_hint_left_ = 0.0;
+  std::vector<CutsceneCar> cutscene_cars_;
+  std::vector<std::array<double, 3>> cutscene_preloads_;
   CutsceneRuntime cutscenes_;
   int anchor_cam_ = -1;
   const cutscene::Cutscene* anchor_cs_ = nullptr;
