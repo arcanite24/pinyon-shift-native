@@ -569,6 +569,10 @@ void test_r3_fmv_subtitles_pll_hold_skip_and_story_units() {
     check(carview::movie_skip_event(b), "movie skip: B skips");
     b.gbutton.button = SDL_GAMEPAD_BUTTON_NORTH;
     check(!carview::movie_skip_event(b), "movie skip: Y does not");
+    SDL_Event m{};
+    m.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    m.button.button = SDL_BUTTON_LEFT;
+    check(!carview::movie_skip_event(m), "movie skip: a click (focusing the window) does not");
   }
   // No prompt over a movie (00_opening_movie_orig.png): no text below the
   // subtitle strip, where the help bar would sit.

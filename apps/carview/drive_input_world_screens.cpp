@@ -119,15 +119,16 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
               // The boot splashes and the attract movie skip on a press
               // (movie_skip_event); the press goes no further, so the one
               // that ends the last splash does not also press START.
-              {
-                if (carview::movie_skip_event(e)) {
-                  app.fmv_player.skip();
-                  app.audio_host.set_fmv_audio(nullptr, nullptr);
-                  if (title_attract_playing) {
-                    title_attract_playing = false;
-                    title_idle_s = 0.0;
-                    if (!app.no_title) app.show_title = true;
-                  }
+              // The end of a movie as the render loop ends one that runs out.
+              if (carview::movie_skip_event(e)) {
+                app.fmv_player.skip();
+                app.audio_host.set_fmv_audio(nullptr, nullptr);
+                host.renderer.reset_auto_exposure();
+                if (title_attract_playing) {
+                  title_attract_playing = false;
+                  title_idle_s = 0.0;
+                  if (!app.no_title) app.show_title = true;
+                  app.title.reset();
                 }
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&

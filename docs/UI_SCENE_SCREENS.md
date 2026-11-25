@@ -423,8 +423,8 @@ The boot plays the original's two splashes, `T10_MS_Combined` then
 
 A movie skips on a press, with no prompt over it
 (`00_opening_movie_orig.png`): the boot splashes and the attract movie on
-a press of A, B, Start, Enter, Space, Esc or a click (`movie_skip_event`;
-a held key's repeat does not count, and the press goes no further, so the
+a press of A, B, Start, Enter, Space or Esc (`movie_skip_event`; a held
+key's repeat and a click do not count, and the press goes no further, so the
 one that ends the last splash does not also press START), the campaign's
 movies on the same presses or Tab. The engine's in-engine cinematics keep
 their 0.75 s hold (Q155).

@@ -7,8 +7,8 @@
 
 namespace carview {
 
-// True for a press of A, B or Start, Enter, Space or Esc, or a left or right
-// click.
+// True for a press of A, B or Start, Enter, Space or Esc (not a click: one
+// that focuses the window must not skip).
 inline bool movie_skip_event(const SDL_Event& e) {
   if (e.type == SDL_EVENT_KEY_DOWN)
     return !e.key.repeat && (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE ||
@@ -16,8 +16,6 @@ inline bool movie_skip_event(const SDL_Event& e) {
   if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)
     return e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH || e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST ||
            e.gbutton.button == SDL_GAMEPAD_BUTTON_START;
-  if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
-    return e.button.button == SDL_BUTTON_LEFT || e.button.button == SDL_BUTTON_RIGHT;
   return false;
 }
 
