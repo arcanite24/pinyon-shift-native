@@ -22,6 +22,7 @@
 #include "drive/vehicle.h"
 #include "drive_helpers.h"
 #include "fh1data/archive.h"
+#include "fh1data/ui_overlay.h"
 #include "fh1data/ui_scene.h"
 #include "freeroam/collectibles.h"
 #include "game_hud.h"
@@ -77,16 +78,12 @@ struct CameraProjectionState {
 // (replaces function-local static caches in load_ui_fonts()).
 struct UiFontCache {
   struct State {
-    std::unique_ptr<fh1::Archive> horizon_zip;
-    std::unique_ptr<fh1::Archive> textures_zip;
+    // The disc's UI archives under the title update's media.zip.
+    std::shared_ptr<fh1::UiOverlay> overlay;
     std::set<std::string> failed_textures;
-    bool textures_opened = false;
     std::filesystem::path rally_tex_dir;
     bool rally_probed = false;
-
-    std::unique_ptr<fh1::Archive> ui_zip;
     std::map<std::string, std::unique_ptr<fh1::UiScene>> scene_cache;
-    bool ui_opened = false;
   };
   std::shared_ptr<State> state = std::make_shared<State>();
 };
@@ -96,7 +93,10 @@ bool write_png(const std::string& path, uint32_t w, uint32_t h, int channels, co
 bool read_png(const std::string& path, int channels, uint32_t w, uint32_t h, std::vector<uint8_t>& out,
               std::string& error);
 std::string mask_path_for(const std::string& out);
-bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache);
+// The UI fonts, and the texture and scene resolvers over the disc and, when
+// `state_root` holds title-update-v4/media.zip, the title update's copies.
+bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache,
+                   const std::filesystem::path& state_root = {});
 void upload_ui_atlas(Renderer& renderer, bool full = false);
 bool write_menu_png(const HudState& st, const std::string& path, const CareerBoard* board = nullptr);
 

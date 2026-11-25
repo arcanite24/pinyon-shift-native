@@ -492,7 +492,9 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
 int run_headless_menu_dumps(const DriveConfig& cfg, UiFontCache& font_cache) {
     {
       const char* g = std::getenv("SHIFT_GAME_ROOT");
-      load_ui_fonts(!cfg.game_root_given.empty() ? cfg.game_root_given : std::filesystem::path(g ? g : ""), font_cache);
+      const char* s = std::getenv("SHIFT_STATE_ROOT");
+      load_ui_fonts(!cfg.game_root_given.empty() ? cfg.game_root_given : std::filesystem::path(g ? g : ""), font_cache,
+                    std::filesystem::path(s ? s : ""));
     }
     // The HUD with the pause menu open, the second item chosen, at scale 3.
     HudState st;

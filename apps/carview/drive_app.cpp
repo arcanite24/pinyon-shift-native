@@ -483,7 +483,7 @@ bool DriveApp::init(int& exit_code) {
 #endif
     carview::ui::set_gpu_atlas_mode(true);
   }
-  if (!world_dir.empty() || !game_root_given.empty()) load_ui_fonts(game_root_of(), font_cache);
+  if (!world_dir.empty() || !game_root_given.empty()) load_ui_fonts(game_root_of(), font_cache, state_root);
   // The screen's car names (FORMAT-STRINGTABLES), loaded on first use.
   
   

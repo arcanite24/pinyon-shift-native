@@ -9,6 +9,7 @@
 
 #include "events_page.h"
 #include "fh1data/stringtables.h"
+#include "fh1data/ui_overlay.h"
 #include "game_hud.h"
 #include "settings_page.h"
 #include "ui4_chrome.h"
@@ -985,13 +986,13 @@ float LoadingScreen::veil_alpha() const {
   return 0.0f;
 }
 
-bool LoadingScreen::load_definitions(const std::filesystem::path& game_root, const std::string& group) {
-  std::ifstream f(game_root / "media" / "ui" / "LoadingDefs.xml", std::ios::binary);
-  if (!f) return false;
-  std::ostringstream ss;
-  ss << f.rdbuf();
+bool LoadingScreen::load_definitions(const std::filesystem::path& game_root, const std::string& group,
+                                     const std::filesystem::path& state_root) {
+  fh1::UiOverlay ui(game_root, fh1::UiOverlay::v4_media_zip_of(state_root));
+  const fh1::UiOverlay::File f = ui.ui_file("LoadingDefs.xml");
+  if (!f.ok()) return false;
   std::vector<fh1::UiLoadingTip> parsed;
-  if (!fh1::parse_loading_defs_xml(ss.str(), parsed)) return false;
+  if (!fh1::parse_loading_defs_xml(std::string(f.read.data.begin(), f.read.data.end()), parsed)) return false;
 
   std::string want = group;
   for (char& c : want) c = char(std::tolower(static_cast<unsigned char>(c)));

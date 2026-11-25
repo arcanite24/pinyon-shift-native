@@ -379,7 +379,7 @@ bool DriveWorldHost::open_world_and_car() {
     bool boot_cancelled = false;
     auto boot_last_tp = std::chrono::steady_clock::now();
     if (boot_live_ui) {
-      boot_loading.load_definitions(app.game_root_of(), "freeroam");
+      boot_loading.load_definitions(app.game_root_of(), "freeroam", app.state_root);
       boot_loading.start("HORIZON COLORADO", "LOADING");
       boot_loading.set_progress(0.08f);
     }
@@ -921,7 +921,7 @@ bool DriveWorldHost::hot_reload_car_and_world() {
         bool hot_cancelled = false;
         auto hot_last_tp = std::chrono::steady_clock::now();
         if (hot_live_ui) {
-          hot_loading.load_definitions(app.game_root_of(), app.race ? "race" : "freeroam");
+          hot_loading.load_definitions(app.game_root_of(), app.race ? "race" : "freeroam", app.state_root);
           const std::string load_title =
               (app.race && !app.race_event.empty()) ? app.race_event : std::string("HORIZON COLORADO");
           const std::string load_sub = app.race ? "LOADING EVENT" : (need_car_reload ? "LOADING VEHICLE" : "TRAVELING");

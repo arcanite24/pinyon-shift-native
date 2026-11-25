@@ -4,6 +4,14 @@ target_include_directories(fh1data_tests PRIVATE ../apps/carview)
 target_link_libraries(fh1data_tests PRIVATE fh1data shift_cars)
 add_test(NAME fh1data_tests COMMAND fh1data_tests)
 
+# The title update's UI files over the disc's (fh1data/ui_overlay.h); the
+# corpus run needs SHIFT_GAME_ROOT and SHIFT_STATE_ROOT (exit 77 without).
+add_executable(ui_overlay_tests ui_overlay_tests.cpp)
+target_link_libraries(ui_overlay_tests PRIVATE fh1data)
+add_test(NAME ui_overlay_tests COMMAND ui_overlay_tests)
+add_test(NAME ui_overlay_corpus COMMAND ui_overlay_tests --corpus)
+set_tests_properties(ui_overlay_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
+
 add_executable(drive_tests drive_tests.cpp)
 target_link_libraries(drive_tests PRIVATE shift_drive)
 add_test(NAME drive_tests COMMAND drive_tests)
