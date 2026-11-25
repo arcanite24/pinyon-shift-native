@@ -1485,48 +1485,12 @@ void AnimatedWorldSystem::set_world(const std::filesystem::path& media_dir, cons
 }
 
 void AnimatedWorldSystem::populate_default_colorado() {
-  // WORLD-15: no procedural balloons, aircraft or hard-coded flags: the sky
-  // props are the animatedobjects.zip `.pgeo` placements alone
-  // (populate_pgeo_placements). WORLD-14: no hard-coded crowd clusters.
-  // Colorado ranch spinning windmills & ridge wind turbines (aligned with wind direction).
-  state_->windmills = {
-      {{2052.0f, 143.0f, 928.0f}, 0.65f, 13.5f, 4.1f, 0.0f, false},
-      {{1890.0f, 142.0f, 1020.0f}, 1.15f, 14.5f, 4.4f, 1.3f, false},
-      {{2185.0f, 148.0f, 845.0f}, -0.45f, 15.0f, 4.5f, 2.6f, false},
-      {{1428.0f, 197.0f, -5348.0f}, 0.35f, 13.8f, 4.0f, 0.8f, false},
-      {{-1525.0f, 92.0f, -395.0f}, 1.80f, 14.2f, 4.3f, 2.1f, false},
-      {{1120.0f, 155.0f, 640.0f}, -0.95f, 14.0f, 4.2f, 3.4f, false},
-      // Modern 3-blade ridge wind turbines along high Colorado hills.
-      {{2120.0f, 152.0f, 1085.0f}, 0.50f, 28.0f, 11.5f, 0.4f, true},
-      {{1785.0f, 156.0f, 1140.0f}, 0.50f, 30.0f, 12.0f, 2.2f, true},
-      {{-1590.0f, 110.0f, -180.0f}, 0.50f, 29.0f, 11.8f, 4.1f, true},
-      {{-1645.0f, 118.0f, -85.0f}, 0.50f, 31.0f, 12.2f, 5.5f, true},
-  };
-
-  // Authentic Horizon Festival animated landmarks: Ferris wheels with rotating upright gondolas & night lights.
-  state_->ferris_wheels = {
-      {{-1412.0f, 24.0f, -292.0f}, 0.45f, 19.0f, 24.5f, 12, 0.0f},
-      {{1952.0f, 144.0f, 898.0f}, -0.35f, 16.5f, 21.5f, 12, 1.6f},
-  };
-
-  // Main Stage sweeping night searchlight / laser cones (projectors always visible; cones ignite at dusk/night).
-  state_->stage_lights = {
-      {{-1455.0f, 26.0f, -335.0f}, 0.2f, 44.0f, 0.0f, {242, 44, 156}},
-      {{-1442.0f, 26.0f, -322.0f}, 0.8f, 46.0f, 1.7f, {38, 206, 250}},
-      {{-1464.0f, 26.0f, -346.0f}, -0.5f, 42.0f, 3.2f, {254, 196, 42}},
-      {{1990.0f, 144.0f, 948.0f}, 0.4f, 40.0f, 0.9f, {242, 44, 156}},
-      {{2010.0f, 144.0f, 936.0f}, -0.4f, 42.0f, 2.5f, {38, 206, 250}},
-  };
-
-  // Intersection traffic light housings with smooth green/yellow/red emissive cycling (staggered cross-phases).
-  state_->traffic_lights = {
-      {{2012.0f, 144.0f, 946.0f}, 0.72f, 6.8f, 4.4f, 0.0f},
-      {{1984.0f, 145.0f, 968.0f}, 2.29f, 6.8f, 4.4f, 15.0f},
-      {{-1398.0f, 1.0f, -24.0f}, 0.85f, 6.8f, 4.4f, 5.0f},
-      {{-1004.0f, 0.0f, -246.0f}, -0.40f, 6.8f, 4.4f, 20.0f},
-      {{1420.0f, 197.0f, -5340.0f}, 0.35f, 6.8f, 4.4f, 10.0f},
-  };
-
+  // WORLD-14/15: Colorado has no engine-placed props. The balloons, blimp,
+  // biplane, flags, windmills, wind turbines, Ferris wheels, stage light
+  // cones, traffic lights and crowd clusters that stood here at fixed
+  // positions are not in the original (the Gauntlet sign-up shows none of
+  // them); animated objects come from the animatedobjects.zip `.pgeo`
+  // placements (populate_pgeo_placements) and crowds from GameObjs.xml.
 }
 
 void AnimatedWorldSystem::populate_pgeo_placements() {

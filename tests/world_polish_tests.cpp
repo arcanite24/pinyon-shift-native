@@ -187,14 +187,15 @@ int main() {
   //    grass road/dirt filtering, and R3-REN-14 per-cell grass ground height caching.
   {
     world::AnimatedWorldSystem anim;
-    CHECK(!anim.windmills().empty());
-    CHECK(anim.flags().empty());             // WORLD-15: no hard-coded flags,
-    CHECK(anim.aircraft_banners().empty());  // blimp or biplane,
-    CHECK(anim.balloons().empty());          // or fallback balloons
-    CHECK(anim.crowds().empty());            // WORLD-14: no hard-coded crowds
-    CHECK(!anim.ferris_wheels().empty());
-    CHECK(!anim.stage_lights().empty());
-    CHECK(!anim.traffic_lights().empty());
+    // WORLD-14/15: Colorado has no engine-placed props at fixed positions.
+    CHECK(anim.windmills().empty());
+    CHECK(anim.flags().empty());
+    CHECK(anim.aircraft_banners().empty());
+    CHECK(anim.balloons().empty());
+    CHECK(anim.crowds().empty());
+    CHECK(anim.ferris_wheels().empty());
+    CHECK(anim.stage_lights().empty());
+    CHECK(anim.traffic_lights().empty());
 
     // Traffic light 30 s Green/Yellow/Red smooth emissive cycle check.
     {
@@ -240,22 +241,11 @@ int main() {
     }
     CHECK(moved);
 
-    // Verify Colorado flags, windmills, Ferris wheel, stage lights & traffic lights render near ground level
-    // even when roadside grass is disabled, while omitting grass vertices.
+    // With roadside grass off there is nothing left to draw: no landmark
+    // at a fixed position near the Gauntlet sign-up (WORLD-15).
     std::vector<world::DebrisVertex> v_no_grass;
     anim.build_mesh(2005.0, 146.5, 955.0, 0.0f, &grass_ground, v_no_grass, false);
-    CHECK(!v_no_grass.empty() && v_no_grass.size() < v0.size());
-    bool has_ground_landmark = false;
-    bool has_high_sky_prop = false;
-    bool has_emissive_landmark = false;
-    for (const auto& v : v_no_grass) {
-      if (v.pos[1] >= 140.0f && v.pos[1] <= 175.0f) has_ground_landmark = true;
-      if (v.pos[1] > 180.0f) has_high_sky_prop = true;
-      if (v.rgba[3] < 250u) has_emissive_landmark = true;
-    }
-    CHECK(has_ground_landmark);
-    CHECK(has_high_sky_prop);
-    CHECK(has_emissive_landmark);
+    CHECK(v_no_grass.empty());
 
     anim.invalidate_grass_ground_cache();
     CHECK(anim.cached_grass_ground_count() == 0);
