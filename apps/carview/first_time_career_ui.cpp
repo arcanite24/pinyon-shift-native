@@ -102,19 +102,20 @@ void coloured_line(ui::List& l, float cx, float y, std::string_view text, ui::Te
   }
 }
 
-// H_OPENING_TITLES: the four opening title cards over the diner cutscenes.
-// Interim timing (SPEC_QUESTIONS Q65: the scene's own animation is not
-// decoded): each card 4 s with half-second fades, the Horizon logo last and
-// held.
+// H_OPENING_TITLES: the four opening title cards over the diner cutscenes,
+// timed by the scene's PLAY animation (race::opening_title_alpha, Q164).
+// Interim: the cards are centred and the shadow layers are not drawn; the
+// scene's placement is not read yet.
 void draw_opening_titles(ui::List& l, double t, float w, float h) {
   static constexpr const char* kCards[] = {"OPENINGTITLES/TITLEMICROSOFT", "OPENINGTITLES/TITLETURN10",
                                            "OPENINGTITLES/TITLEPLAYGROUND", "OPENINGTITLES/HORIZONLOGO"};
-  constexpr double kCard = 4.0, kFade = 0.5;
-  const int n = int(std::size(kCards));
-  const int i = std::min(n - 1, int(t / kCard));
-  const double lt = t - i * kCard;
-  float a = float(std::clamp(lt / kFade, 0.0, 1.0));
-  if (i < n - 1) a = std::min(a, float(std::clamp((kCard - lt) / kFade, 0.0, 1.0)));
+  static_assert(std::size(kCards) == race::kOpeningTitleCards);
+  int i = 0;
+  float a = 0.0f;
+  for (int c = 0; c < race::kOpeningTitleCards && a <= 0.0f; ++c) {
+    i = c;
+    a = race::opening_title_alpha(c, t);
+  }
   if (a <= 0.0f) return;
   std::array<float, 4> uv{};
   if (!ui4::texture(kCards[i], uv)) return;

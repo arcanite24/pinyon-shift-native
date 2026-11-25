@@ -52,6 +52,15 @@ bool parse_ftc_stage(std::string_view name, FtcStage& out);
 // The title's CFirstTimeCareerState stage value while the engine is in `stage`.
 int ftc_title_stage(FtcStage stage);
 
+// H_OPENING_TITLES' cards in order: Microsoft, Turn 10, Playground, the
+// Horizon logo. The scene's PLAY animation (33 s from ShowOpeningCredits)
+// keys each card four times (Q164). The alpha rises between the first two
+// keys, holds, and falls between the last two (the key values are not
+// decoded). Returns 0 outside a card's keys and for an unknown card.
+inline constexpr int kOpeningTitleCards = 4;
+inline constexpr double kOpeningTitlesLength = 33.0;
+float opening_title_alpha(int card, double t);
+
 // The presentation states the flow scripts (state_definitions.xml).
 enum class FtcFadeKind : uint8_t {
   kBlackOut,    // CBlackOut: cut to black
@@ -90,6 +99,13 @@ struct FtcCommands {
   // World.
   bool set_time_of_day = false;
   double time_of_day_s = 0.0;  // seconds since midnight
+  // A time-of-day request: the clock runs forward to `tod_request_target_s`
+  // (seconds since midnight; passing midnight when it is behind the clock)
+  // over `tod_request_duration_s` real seconds, then holds there
+  // (ftc_tod_request gives the target and rate).
+  bool request_time_of_day = false;
+  double tod_request_target_s = 0.0;
+  double tod_request_duration_s = 0.0;
   bool set_time_locked = false;
   bool time_locked = false;
   bool set_civilian_traffic = false;
@@ -103,6 +119,12 @@ struct FtcCommands {
   std::vector<std::string> mix_snapshots;   // AudioMixerSnapshots.xml names, applied in order
   bool set_radio_switching = false;
   bool radio_switching = false;
+  // Audio.disable/enable_radio_dj and Audio.enable/disable_radio_silent_idents:
+  // until Dak fixes the radio the station plays no DJ links and no idents.
+  bool set_radio_dj = false;
+  bool radio_dj = false;
+  bool set_silent_idents = false;
+  bool silent_idents = false;
 
   // Screens and rewards.
   bool activate_tutor = false;   // CActivateDrivingTutor
@@ -145,6 +167,15 @@ struct FtcZone {
   double radius;
 };
 
+// The time-of-day request a zone makes at `now_s`: the target moved past
+// midnight when it is behind the clock (+86,400 s), and the rate in game
+// seconds per real second that reaches it in `duration_s`.
+struct FtcTodRequest {
+  double target_s = 0.0;
+  double rate = 0.0;
+};
+FtcTodRequest ftc_tod_request(double now_s, double target_s, double duration_s);
+
 class FirstTimeCareer {
  public:
   // FirstTimeCareer.xml.
@@ -177,6 +208,20 @@ class FirstTimeCareer {
   static constexpr std::array<FtcZone, 2> kFestivalArriveZones = {{{kEndRacePosition, 20.0}, {{-945.9, -1.0, -647.2}, 20.0}}};
   static constexpr FtcZone kFestivalApproach = {{-701.4, 46.19, -1501.0}, 20.0};
   static constexpr double kHeatsSignUpRadius = 27.0;  // the FESTIVAL_SECOND_NODE race activation
+  // The activity's two time-of-day zones (20 m spheres): entering one while
+  // the title's stage value is 4 or less runs the clock forward to its time
+  // over kTodRampTime. The one on the race to the festival goes to 18:00,
+  // the one on the initial drive (past the second sat-nav point) to 14:30.
+  struct TodZone {
+    FtcZone zone;
+    double time_s;
+  };
+  static constexpr std::array<TodZone, 2> kTodZones = {{
+      {{{-116.0, 107.0, -3377.0}, 20.0}, 64800.0},
+      {{{2284.42, 109.87, 398.12}, 20.0}, 52200.0},
+  }};
+  static constexpr double kTodRampTime = 45.0;
+  static constexpr int kTodZonesLastStage = 4;
   // Where the activity puts the player after each event.
   static constexpr std::array<double, 3> kHeatsFinalPlace = {-3196.8, 4.18, -1465.5};
   static constexpr double kHeatsFinalHeading = -117.78;
@@ -224,6 +269,11 @@ class FirstTimeCareer {
   // once and Race Central uses kRaceCentral / kRaceCentralRadius.
   void set_event_trigger(int64_t event_id, const std::array<double, 3>& pos, double radius);
   void set_race_central(const std::array<double, 3>& pos, double radius);
+  // Route 170's waypoints (route_waypoint_NN in order). The route is the
+  // race to the festival's: its grid is at the diner and its waypoints run
+  // through the toll booth into the festival. When the AI takes the car at
+  // the festival it drives on to the route's last waypoint.
+  void set_route_waypoints(std::vector<std::array<double, 3>> waypoints) { route_waypoints_ = std::move(waypoints); }
 
   // Starts (or restarts) the career at the controls screen.
   FtcCommands start();
@@ -278,6 +328,7 @@ class FirstTimeCareer {
   double large_t_ = 0.0;
   int tickets_ = kTicketsStart;
   uint32_t zones_hit_ = 0;      // ticket zones already taken (bit per zone)
+  uint32_t in_tod_zone_ = 0;    // inside a time-of-day zone (bit per zone; requests on entry)
   uint32_t dj_counted_ = 0;     // FestivalTicketsDepleting<n> already played (bit n)
   bool festival_approach_ = false;  // the player passed the last stretch's zone
   bool reminders_due_ = false;
@@ -294,6 +345,7 @@ class FirstTimeCareer {
     double radius;
   };
   std::vector<Trigger> triggers_;
+  std::vector<std::array<double, 3>> route_waypoints_;
   bool have_race_central_ = false;
   std::array<double, 3> race_central_ = kRaceCentral;
   double race_central_radius_ = kRaceCentralRadius;

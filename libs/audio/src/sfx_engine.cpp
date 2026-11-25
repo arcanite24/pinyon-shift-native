@@ -1405,6 +1405,9 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
         for (const auto& name : engine_ui_play_names())
           for (const auto& scene : scenes)
             if (const int at = cat->resolve(name, scene); at >= 0) fired[size_t(at)] = 1;
+        // The cutscenes' stings (CCutsceneAudioTrigger) fire too.
+        for (size_t i = 0; i < evs.size(); ++i)
+          if (is_cutscene_ui_event(evs[i].path)) fired[i] = 1;
         for (size_t i = 0; i < evs.size(); ++i) {
           for (const auto& l : evs[i].layers) {
             if (l.sample < 0 || l.sample >= kMaxUiSamples) continue;

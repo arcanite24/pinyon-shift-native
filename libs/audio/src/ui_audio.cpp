@@ -176,6 +176,17 @@ std::vector<std::string> engine_ui_play_names() {
   return out;
 }
 
+bool is_cutscene_ui_event(std::string_view path) {
+  return path.size() > kCutsceneUiGroup.size() && path[kCutsceneUiGroup.size()] == '/' &&
+         iequal(path.substr(0, kCutsceneUiGroup.size()), kCutsceneUiGroup);
+}
+
+int UiAudioCatalog::resolve_event(std::string_view path) const {
+  const int at = find_event(path);
+  if (at < 0) return kUnknown;
+  return events_[size_t(at)].playable ? at : kSilent;
+}
+
 int UiAudioCatalog::find_event(std::string_view path) const {
   for (size_t i = 0; i < events_.size(); ++i)
     if (iequal(events_[i].path, path)) return int(i);
@@ -217,6 +228,10 @@ void UiAudioCatalog::build(const UiAudioMap& map, const std::vector<const FevPro
     const std::string_view p = ui_cue_event_path(UiCue(c));
     if (!p.empty()) intern(std::string(p), projects, false);
   }
+  for (const FevProject* proj : projects)
+    if (proj)
+      for (const FevEvent& ev : proj->events)
+        if (is_cutscene_ui_event(ev.path)) intern(ev.path, projects, false);
 }
 
 bool UiAudioCatalog::load(const std::filesystem::path& game_root, std::string* error) {

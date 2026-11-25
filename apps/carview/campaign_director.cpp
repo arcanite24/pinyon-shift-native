@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "audio_host.h"
+#include "race/route.h"
 
 namespace carview {
 namespace {
@@ -50,14 +51,21 @@ bool ftc_stage_for_legacy(std::string_view s, race::FtcStage& out) {
 
 constexpr std::string_view kFtcSavePrefix = "ftc:";
 
-// CCutsceneAudioTrigger: the trigger's event is a ui4audio play name
-// (CS_OpeningSequence, CS_WristbandIntro...). AudioHost plays ui4audio names
-// once the audio branch's play_ui is in; until then the sting is silent.
+// CCutsceneAudioTrigger: the trigger names its FEV group and event
+// ("UIInGame/UI/Cutscenes" + "CS_OpeningSequence"); the event plays by that
+// path, else as a ui4audio play name of the same name.
 template <class Host>
-bool play_ui_name(Host* audio, std::string_view play) {
+bool play_ui_name(Host* audio, std::string_view group, std::string_view play) {
   if constexpr (requires(Host* a, std::string_view n) { a->play_ui(n); }) {
+    if (!group.empty()) {
+      std::string path(group);
+      path += '/';
+      path += play;
+      if (audio->play_ui_event(path)) return true;
+    }
     return audio->play_ui(play);
   } else {
+    (void)group;
     (void)audio;
     static bool told = false;
     if (!told) {
@@ -223,6 +231,13 @@ race::CampaignAction CampaignDirector::start_new_career(FmvPlayer& fmv, AudioHos
 }
 
 void CampaignDirector::prime_ftc_world() {
+  // Route 170 (the opening's CLoadRoute): the race to the festival's route.
+  race::Route route;
+  if (race::load_route(game_root_, race::FirstTimeCareer::kInitialDriveRoute, route, nullptr)) {
+    std::vector<std::array<double, 3>> wps;
+    for (const auto* t : route.waypoints()) wps.push_back({t->x, t->y, t->z});
+    ftc_.set_route_waypoints(std::move(wps));
+  }
   if (!catalog_) return;
   // The heats final signs up in the FESTIVAL_SECOND_NODE race activation's
   // 27 m sphere; the showcase at its own trigger.
@@ -322,7 +337,7 @@ void CampaignDirector::handle_cutscene_events(const std::vector<const cutscene::
         if (audio && !e->attr("event").empty()) audio->trigger_vo(e->attr("event"), false);
         break;
       case cutscene::EventType::kAudio:
-        if (audio && !e->attr("event").empty()) play_ui_name(audio, e->attr("event"));
+        if (audio && !e->attr("event").empty()) play_ui_name(audio, e->attr("group"), e->attr("event"));
         break;
       case cutscene::EventType::kMixSnapshot:
         if (audio && !e->attr("snapshot").empty()) audio->activate_mix_snapshot(e->attr("snapshot"));
@@ -385,6 +400,13 @@ race::CampaignAction CampaignDirector::apply_ftc(const race::FtcCommands& c, Fmv
     }
   }
   if (audio) {
+    // The flow's radio states in its order: DJ, playlist, switching, idents.
+    if (c.set_radio_dj) audio->radio_set_flow_dj(c.radio_dj);
+    // CSetRadioPlaylist normalBehaviourAfterListPlayed="true".
+    if (!c.radio_playlist.empty()) audio->radio_set_playlist(c.radio_playlist, true);
+    if (c.set_radio_switching) audio->radio_set_switching(c.radio_switching);
+    if (c.set_silent_idents) audio->radio_set_silent_idents(c.silent_idents);
+    if (c.stop_dj) audio->radio_stop_dj();
     for (const auto& m : c.mix_snapshots) audio->activate_mix_snapshot(m);
     for (const auto& v : c.vo) audio->trigger_vo(v, false);
     for (const auto& d : c.dj_lines) audio->radio_trigger_immediate(d);
@@ -471,6 +493,7 @@ bool CampaignDirector::apply_cli_stage(std::string_view cli_stage, FmvPlayer& fm
     return true;
   }
   if (!flow_.jump_to_cli_stage(cli_stage, out_action)) return false;
+  if (audio && audio->radio_flow_overridden()) audio->radio_reset_flow();
   ftc_ = race::FirstTimeCareer{};
   ftc_resume_pending_ = false;
   cutscenes_.stop();
@@ -498,6 +521,9 @@ race::CampaignAction CampaignDirector::update(double dt, std::array<double, 2> p
   }
 
   if (ftc_.active() || ftc_resume_pending_) return update_ftc(dt, fmv, audio);
+  // Out of the first-time career (finished, loaded past it, or left for the
+  // title): the radio is the station's own again.
+  if (audio && audio->radio_flow_overridden()) audio->radio_reset_flow();
   update_tutor(dt);
   if (audio) {
     const auto tel = audio->telemetry();

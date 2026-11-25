@@ -229,6 +229,13 @@ void test_ui_catalog() {
     ev.layers = {stem(3, 1.0f, 1.0f), stem(4, 0.0f, 0.0f)};
     proj.events.push_back(ev);
   }
+  {
+    audio::FevEvent ev;  // a cutscene sting: no ui4audio play name
+    ev.path = "UIInGame/UI/Cutscenes/CS_Sting";
+    ev.event_type = 0x10;
+    ev.simple_instances.push_back(instance(0, 1.0f));
+    proj.events.push_back(ev);
+  }
   audio::UiAudioCatalog cat;
   cat.build(map, {&proj});
 
@@ -258,7 +265,13 @@ void test_ui_catalog() {
   if (!st || st->layers.size() != 2) return;
   CHECK(st->layers[0].left > 0.99f && st->layers[0].right < 1e-4f);                         // front left
   CHECK(std::fabs(st->layers[1].right - 0.70710678f) < 1e-4f && st->layers[1].left < 1e-4f);  // rear right
-  CHECK(cat.sample_count() == 5);
+  CHECK(cat.sample_count() == 6);
+  // The cutscene sting by its trigger's group/event path.
+  CHECK(audio::is_cutscene_ui_event("uiingame/ui/cutscenes/CS_Sting") && !audio::is_cutscene_ui_event("UIInGame/UI/Nav/Accept") &&
+        !audio::is_cutscene_ui_event("UIInGame/UI/Cutscenes"));
+  CHECK(cat.resolve_event("UIInGame/UI/Cutscenes/CS_Sting") >= 0);
+  CHECK(cat.resolve("CS_Sting") == C::kUnknown);
+  CHECK(cat.resolve_event("UIInGame/UI/Cutscenes/Nope") == C::kUnknown);
 
   // Played through the SFX engine: the left stem reaches only the left channel.
   audio::SfxEngine sfx(48000);
@@ -484,6 +497,13 @@ void corpus_ui_catalog(const std::filesystem::path& game) {
   const int stop = cat.find_event("UIInGame/UI/Mulligan/TapeStop");
   CHECK(stop >= 0 && cat.events()[size_t(stop)].playable);
   if (stop >= 0) fired.push_back(stop);
+  // The opening's sting and Dak's radio fix: cutscene events ui4audio does not list.
+  for (const char* cs : {"UIInGame/UI/Cutscenes/CS_OpeningSequence", "UIInGame/UI/Cutscenes/CS_RadioUnlock"}) {
+    const int at = cat.resolve_event(cs);
+    std::printf("%s: %d\n", cs, at);
+    CHECK(at >= 0);
+    if (at >= 0) fired.push_back(at);
+  }
   CHECK(cat.resolve("Accept", "075_SHOWROOM_HOMESPACE") == C::kSilent);
 
   // The festival pre-race countdown is five stems of one 5.1 mix.

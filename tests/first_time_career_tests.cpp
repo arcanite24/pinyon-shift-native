@@ -45,6 +45,9 @@ struct FakeHost {
   double tod = 0;
   int64_t pending_event = 0;
   std::array<double, 2> dest{};
+  // The radio as the flow leaves it, and whether the DJ was ever on while
+  // the radio was still broken.
+  bool radio_dj = true, silent_idents = false, radio_switching = true, dj_on_while_broken = false;
 
   void apply(const race::FtcCommands& c) {
     if (!c.play_cutscene.empty()) {
@@ -86,6 +89,10 @@ struct FakeHost {
     if (!c.achievement.empty()) achievements.push_back(c.achievement);
     if (c.collect_yellow_wristband) wristband = true;
     if (c.intro_completed) intro_done = true;
+    if (c.set_radio_dj) radio_dj = c.radio_dj;
+    if (c.set_silent_idents) silent_idents = c.silent_idents;
+    if (c.set_radio_switching) radio_switching = c.radio_switching;
+    if (radio_dj && !radio_switching) dj_on_while_broken = true;
   }
 };
 
@@ -214,6 +221,8 @@ void test_order() {
   check(has(host.mixes, "OpeningCutscene") && has(host.mixes, "VOPlayingInstant"), "mixer snapshots");
   check(host.saves >= 5, "save checkpoints");
   check(ftc.controls_enabled() && ftc.hud_visible() && !ftc.ai_driving(), "free roam handed back");
+  check(!host.dj_on_while_broken, "no DJ links until Dak fixes the radio");
+  check(host.radio_dj && !host.silent_idents && host.radio_switching, "the radio's own after Radio_Unlock");
 }
 
 void test_opening_commands() {
@@ -222,6 +231,9 @@ void test_opening_commands() {
   check(c.swap_car && c.car_media == "VIP_Viper_13" && c.load_route == 170 && c.place_car, "Viper and route 170 under the controls screen");
   check(c.set_time_of_day && c.time_of_day_s == 33300.0 && c.time_locked, "time locked at 09:15");
   check(c.radio_playlist == std::vector<std::string>({"R1_Everyday", "R1_ThePower"}), "radio playlist");
+  check(c.set_radio_dj && !c.radio_dj && c.set_silent_idents && c.silent_idents && c.set_radio_switching &&
+            !c.radio_switching,
+        "the opening: DJ off, silent idents, no station switching");
   check(c.preload_cutscene == "Opening_Cutscene", "the opening's area preloaded");
   check(c.set_destination && c.destination_xz[0] == FirstTimeCareer::kInitialDrivePoints[0][0],
         "sat-nav to the diner, through CSetDestForInitialDrive's first point");
@@ -287,8 +299,19 @@ void test_race_to_festival() {
   c = ftc.update(in);
   check(ftc.tickets_remaining() == 8 && c.dj_lines.empty(), "no countdown line on the last stretch");
   in.player_pos = {-945.9, -1.0, -647.2};
-  ftc.update(in);
+  c = ftc.update(in);
   check(ftc.stage() == FtcStage::kFestivalArrive, "the alternate festival zone also arrives");
+  check(!c.set_destination, "no route loaded: the sat-nav stays as it was");
+
+  // With route 170's waypoints the AI drives on to the route's last one.
+  FirstTimeCareer routed;
+  routed.set_route_waypoints({{-709.274, 44.3724, -1294.93}, {-963.946, -8.10395, 117.809}});
+  routed.resume(FtcStage::kRaceToFestival);
+  in.player_pos = FirstTimeCareer::kEndRacePosition;
+  c = routed.update(in);
+  check(routed.stage() == FtcStage::kFestivalArrive && routed.ai_driving() && c.set_destination &&
+            c.destination_xz[0] == -963.946 && c.destination_xz[1] == 117.809,
+        "the festival arrival drives on to route 170's last waypoint");
 }
 
 void test_heats_and_showcase() {
@@ -411,6 +434,46 @@ void test_tutor() {
         "hint strings from HelpButtons");
 }
 
+void test_tod_zones() {
+  // The request: forward to the zone's time, past midnight when behind,
+  // reached in the ramp time.
+  auto r = race::ftc_tod_request(33300.0, 52200.0, 45.0);
+  check(r.target_s == 52200.0 && std::abs(r.rate - (52200.0 - 33300.0) / 45.0) < 1e-9, "14:30 from 09:15 in 45 s");
+  r = race::ftc_tod_request(70000.0, 64800.0, 45.0);
+  check(r.target_s == 64800.0 + 86400.0 && std::abs(r.rate - (64800.0 + 86400.0 - 70000.0) / 45.0) < 1e-9,
+        "a target behind the clock goes past midnight");
+  const auto& z = FirstTimeCareer::kTodZones;
+  check(z[0].time_s == 64800.0 && z[1].time_s == 52200.0 && z[0].zone.radius == 20.0 && z[1].zone.radius == 20.0,
+        "18:00 and 14:30 zones, 20 m");
+  // The initial drive's zone, on entry only.
+  FirstTimeCareer ftc;
+  ftc.resume(FtcStage::kRaceToFestival);  // any stage up to the festival arrival
+  race::FtcInput in;
+  in.dt = 0.1;
+  in.player_pos = {z[1].zone.pos[0] + 19.0, z[1].zone.pos[1], z[1].zone.pos[2]};
+  auto c = ftc.update(in);
+  check(c.request_time_of_day && c.tod_request_target_s == 52200.0 && c.tod_request_duration_s == 45.0,
+        "entering the zone requests 14:30 over 45 s");
+  c = ftc.update(in);
+  check(!c.request_time_of_day, "staying inside requests nothing more");
+  in.player_pos = {z[1].zone.pos[0] + 25.0, z[1].zone.pos[1], z[1].zone.pos[2]};
+  c = ftc.update(in);
+  check(!c.request_time_of_day, "outside the 20 m sphere: nothing");
+  in.player_pos = z[1].zone.pos;
+  c = ftc.update(in);
+  check(c.request_time_of_day, "re-entering requests again");
+  in.player_pos = z[0].zone.pos;
+  c = ftc.update(in);
+  check(c.request_time_of_day && c.tod_request_target_s == 64800.0, "the race's zone requests 18:00");
+  // Past stage 4 the zones do nothing.
+  ftc.resume(FtcStage::kHeats);
+  in.player_pos = {0, 0, 0};
+  ftc.update(in);
+  in.player_pos = z[0].zone.pos;
+  c = ftc.update(in);
+  check(!c.request_time_of_day, "the heats (stage 7): no time-of-day zone");
+}
+
 void test_stage_names_and_resume() {
   for (int s = 0; s <= int(FtcStage::kComplete); ++s) {
     FtcStage back{};
@@ -422,6 +485,16 @@ void test_stage_names_and_resume() {
   check(ftc.checkpoint() == FtcStage::kOpeningCutscene, "no checkpoint before the diner");
   c = ftc.resume(FtcStage::kRaceToFestival);
   check(ftc.checkpoint() == FtcStage::kDinerCutscenes, "the race resumes at the diner (save 1)");
+  check(c.set_radio_dj && !c.radio_dj && c.silent_idents && !c.radio_switching, "resumed before Dak: the radio still broken");
+  c = ftc.resume(FtcStage::kHeats);
+  check(c.set_radio_dj && c.radio_dj && c.set_silent_idents && !c.silent_idents && c.radio_switching,
+        "resumed at the heats: the radio's own");
+  c = ftc.resume(FtcStage::kFestivalArrive);
+  check(ftc.stage() == FtcStage::kFestivalArriveMovie && c.set_radio_dj && !c.radio_dj && c.silent_idents,
+        "the festival arrival resumes at its movie, the radio still broken");
+  c = ftc.resume(FtcStage::kRewards);
+  check(ftc.stage() == FtcStage::kRewards && c.radio_dj && !c.silent_idents && c.radio_switching,
+        "the rewards resume with the radio's own");
   c = ftc.resume(FtcStage::kRadioUnlock);
   check(ftc.checkpoint() == FtcStage::kHeats, "the festival arrival resumes at the heats (save 7)");
   c = ftc.resume(FtcStage::kWristbandIntro);
@@ -436,12 +509,41 @@ void test_stage_names_and_resume() {
 
 }  // namespace
 
+// H_OPENING_TITLES' PLAY keys (Q164): one card at a time, half-second
+// fades, nothing before 4.5 s or after the logo leaves at 32.157 s.
+void test_opening_titles() {
+  auto near = [](float a, float b) { return std::abs(a - b) < 1e-3f; };
+  check(race::opening_title_alpha(0, 0.0) == 0.0f && race::opening_title_alpha(0, 4.5) == 0.0f,
+        "no card before the first key");
+  check(near(race::opening_title_alpha(0, 4.75), 0.5f), "Microsoft fades in over 4.5..5.0 s");
+  check(race::opening_title_alpha(0, 6.0) == 1.0f, "Microsoft held");
+  check(near(race::opening_title_alpha(0, 8.25), 0.5f), "Microsoft fades out over 8.0..8.5 s");
+  check(race::opening_title_alpha(1, 10.0) == 0.0f && race::opening_title_alpha(1, 14.0) == 1.0f,
+        "Turn 10 from 12 s");
+  check(race::opening_title_alpha(2, 20.0) == 1.0f && race::opening_title_alpha(3, 30.0) == 1.0f,
+        "Playground, then the Horizon logo");
+  check(race::opening_title_alpha(3, 32.2) == 0.0f && 32.157 < race::kOpeningTitlesLength,
+        "the logo leaves before the animation ends");
+  check(race::opening_title_alpha(-1, 6.0) == 0.0f && race::opening_title_alpha(4, 6.0) == 0.0f,
+        "unknown cards are hidden");
+  for (double t = 0.0; t < race::kOpeningTitlesLength; t += 0.05) {
+    int shown = 0;
+    for (int c = 0; c < race::kOpeningTitleCards; ++c) shown += race::opening_title_alpha(c, t) > 0.0f;
+    if (shown > 1) {
+      check(false, "two cards at once at t=" + std::to_string(t));
+      break;
+    }
+  }
+}
+
 int main() {
   test_order();
+  test_opening_titles();
   test_opening_commands();
   test_race_to_festival();
   test_heats_and_showcase();
   test_tutor();
+  test_tod_zones();
   test_stage_names_and_resume();
   if (g_failures) {
     std::fprintf(stderr, "first_time_career_tests: %d failure(s)\n", g_failures);

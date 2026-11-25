@@ -128,6 +128,7 @@ struct DriveConfig {
   std::vector<std::string> args;
   bool photo_through_walls_cli = false;
   bool photo_wider_limits_cli = false;
+  bool timed_autosave = false;  // --timed-autosave: the engine's 30 s save (an extra; the original saves at checkpoints)
   std::filesystem::path demo_photo_png;
   std::filesystem::path demo_replay_png;
   std::filesystem::path demo_achievements_png;

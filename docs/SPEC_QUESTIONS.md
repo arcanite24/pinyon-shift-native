@@ -2421,9 +2421,11 @@ Still interim:
   function is not decoded.
 - **Low-speed blend.** The blend's car-side gate (a body flag) is taken
   as always on.
-- **Smashables.** Props below their break speed still use the engine's
-  own OBB push (smashables.cpp), not this solver with the Smashable/Car
-  row.
+- **Smashables.** Props below their break speed now add body-sphere
+  contacts to this solver with the Smashable/Car row (and solid barriers
+  with Car/GuardRail; `SmashableWorld::add_sphere_contacts`); the old OBB
+  push is no longer called. Their shapes are the props' own spheres,
+  boxes and hulls, or the bounding box when a def has none.
 
 Needed: the wheel query's treatment of steep faces and steps, the friction
 noise function, and the contact chain's tick.
@@ -2724,8 +2726,50 @@ What remains open:
 
   Neither one is the DNF check. The engine has neither exit.
 
-Needed: the virtual query's function, and what the two early exits stand
-for.
+**2026-11-25, from the generated code.** The early exits belong to the
+whole race payout, not only to BEAT THE STAR: they return before the
+credits, the skill bonus and the star bonus are worked out. The star
+bonus itself is a separate step. It takes the event id, the player's
+place and the star's place, and pays only when the player is ahead and
+the event's `CareerEventStyle` is 1.
+
+Both flags are copied into the race setup from a session description,
+next to each other. Which class that description is was not confirmed.
+The search for their writers matched on the byte offset only, so it can
+hit unrelated classes. Among the hits, the online lobby writes the whole
+run of flags and sets the second flag to 1, and a constructor-like
+function writes 0 to both.
+- So the first exit, which needs the second flag set, is probably online
+  only.
+- The second exit needs the first flag clear, which looks like the
+  default. It may therefore apply to career races too, and that is
+  undetermined.
+
+The two exits in detail:
+- **First exit.** The second flag is set, and a per-race counter on the
+  player, divided by a value from the player's race timer (when that value
+  is above 1.0), reaches an integer tuning threshold. The tuning record
+  is the same one the second exit reads.
+- **Second exit.** The first flag is clear, and the player was flagged
+  during the race. The flag is set while racing when the spread of one
+  tracked value stays below a float tuning threshold: the race keeps that
+  value's minimum and maximum, and the flag means max − min < threshold.
+  The value comes from one of the car's per-frame queries. It reads like
+  an "idle or barely moved" guard, but this is inferred.
+
+The star query was not settled. The step walks the participants, takes the
+first whose driver answers true to one virtual query, and reads that
+driver's place; that function is still unidentified.
+
+The engine keeps its reading (Q115's first two bullets) and still has
+neither exit. That stays open: the second exit may apply offline. C2 is
+not settled.
+
+Needed:
+- the session description's class and the second exit's flag;
+- the virtual query;
+- the counter's writer and the timer value (exit 1);
+- the tracked value (exit 2).
 
 ## Q116 (PROG-12, not blocking): barn-find gates the engine does not model
 
@@ -2746,8 +2790,9 @@ GlobalRegistry `Activities/BarnFinds`. Five points are still open:
 - **Dialogue.** The pending timer pauses while dialogue plays. The engine does
   not track dialogue, so its timer never pauses for it.
 - **Collection.** The title collects a ready car on its garage Barn Finds
-  screen, with a COLLECT CAR confirmation. The engine collects it when the
-  garage opens. UI.zip has no Barn Finds scene: its only barn scene is
+  screen, with a COLLECT CAR confirmation. So does the engine now (Q133:
+  the Barn Finds list on `108_C_BUY_CARSELECT` and its popups); it no
+  longer collects when the garage opens. UI.zip has no Barn Finds scene: its only barn scene is
   `H_BARN_FIND_HUD`, the driving HUD's. The screen is therefore probably a
   garage car list with Barnfind's popups:
   - `IDS_Collect_Popup_Title` / `_Message`: "COLLECT CAR", "This Barn Find
@@ -2759,13 +2804,33 @@ GlobalRegistry `Activities/BarnFinds`. Five points are still open:
   - `IDS_Trade_BarnFind_*`: "CAN'T SELL BARN FIND".
   - `IDS_ViewMapAction`: "VIEW ON MAP".
 
-  Porting it means the garage list's Barn Finds filter, its entries for
-  every barn state, and those popups on a message-popup scene. That is the
-  garage screen's work, not a scene of its own, and it is left for the
-  garage screen's port.
+  The engine's port of that list is Q133's.
 
-Needed: what the two predicates test, the timer behind the idle check, and
-the value behind the ready check.
+**2026-11-25, from the generated code:**
+- **The idle timer is decoded.** It is a player timer. Each frame it adds
+  the frame time while the magnitude of one player value is below a
+  threshold, and resets to 0 otherwise. It does not run while the player
+  is in a skip state (a player flag, or a player query that is true).
+  - The threshold is a field of a tuning record. The race payout's second
+    early exit (Q115) compares a value's spread with the same field.
+  - The value is probably speed, as the engine reads it, so the engine's
+    rule (time below a speed threshold) has the right shape. The
+    threshold's value was not read; the engine's 0.5 m/s is still a guess.
+  - The tick is skipped once the timer reaches `MaxIdleTime`, as stated
+    above.
+- **The predicate that skips the whole update** is a game query. It follows
+  the game's session object to a state object. It skips when that object
+  is missing or a byte flag on it is clear. The flag's meaning (free roam
+  active, or not in a race or cutscene) is not identified, so the engine's
+  "pause during onboarding" stays an interim.
+- **The pending step checks two more predicates.** One is a global
+  manager's query, probably the dialogue-playing check above. Not
+  identified further.
+
+Needed:
+- the session state's byte flag;
+- the tuning record's threshold values;
+- the value behind the ready check.
 
 ## Q117 (PROG-03, not blocking): campaign captions with no shipped text
 
@@ -2892,16 +2957,6 @@ showcase events that own them is not known.
 Needed: the placement source for these `.pgeo` objects (a track object
 list or the showcase event scripts), and a free-roam capture of the
 festival and a showcase start in the original.
-
-runs the world clock that the gantry LEDs read from the race clock, but
-its gantry panels stay dark at the FR16 start (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
-and textured, and the shipped shaders carry the LED branch, so the
-cause lies past that (the texture or the draw's intensity) and is not
-found), so until they light it fills
-`TEXT_COUNT` with 3, 2, 1 at every start as an interim. Unknown: whether a start with no gantry (a street race, a
-point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
-Needed, narrow: a capture of such a start, or the code that writes
-`TEXT_COUNT`.
 
 ## Q87 (UI, not blocking): the pause map's view
 
@@ -3941,3 +3996,211 @@ recorded: the tag by day, its fade with distance, whether a leader or a
 rival gets a different tag, and the scene or texture it comes from.
 
 Needed: a daytime race capture with several tags at different distances.
+
+## Q159 (INTRO-03, WORLD-11): route 170 and the opening's time-of-day zones
+
+Supersedes, in Q66's engine interims, "the AI drives the sat-nav route
+rather than route 170's own path" in part and "the two time-of-day zones
+... are not implemented" in full.
+
+**Time-of-day zones (answered 2026-11-25**, from the first-time-career
+activity's zone setup and trigger handler in the generated code). Two
+20 m spheres: (-116, 107, -3377) asks for 18:00 (64,800 s) and
+(2284.42, 109.87, 398.12) for 14:30 (52,200 s). On entering one, and only
+while the activity's stage value is 4 or less (up to the festival
+arrival), the target gets 86,400 s added if the clock is past it, and the
+clock is asked to run there at (target - now) / 45 game seconds per real
+second: a 45 s ramp, after which it holds. The engine does the same
+(`FirstTimeCareer::kTodZones`, `ftc_tod_request`, `TodClock::request`),
+on the zone's entry edge only.
+
+**Route 170** (`media/tracks/colorado/Ribbon_00/TrackRoute170.xml`, the
+opening's CLoadRoute) is the race to the festival's route, not the
+Viper's: its grid (`start_location_00..07`) is at the diner, its two
+checkpoints are near (398, -3269) and the toll booth (-798, -1065), and
+its waypoints 00 to 12 run from (1582, -1840) to (-964, 118) inside the
+festival. The engine now loads it at the opening and sends the festival
+arrival's sat-nav to its last waypoint (`Route::waypoints`,
+`FirstTimeCareer::set_route_waypoints`).
+
+Still interim, narrow: while the career holds the controls the engine's
+autopilot drives the sat-nav route; the title's race behaviour on the
+route (which path the Viper's AI takes from the opening's placement to the
+diner) is not read.
+
+## Q160 (INTRO-08, INTRO-09): the cutscenes' cars and people
+
+Opening_Cutscene places `FestivalCar_0` (CarID 1171, a Ferrari 599XX) at
+(816.3, 172.43, 1806.2), heading 97 degrees, at 31 s and releases it at
+once at 110 mph (`despawnTime` 0); NEW_Diner_Cutscene_1 places two cars
+and releases them at 120 mph with a 25 s despawn. The people and animals
+are CCutsceneAnimationTrigger clips (`AnimatedObjects\*.pgeo`: the diner's
+characters, Radio_Unlock, Wristband_Intro, deer and bird flocks), each
+with an `animname`, a duration and a parent node.
+
+The engine reads both triggers (`CampaignDirector::take_cutscene_cars`)
+and logs them, but has no scripted car spawn: its traffic and festival AI
+have no call to place a given car at a pose and speed and drive it on,
+and RaceView is the only other AI-car path. The animation clips need the
+`.anim.bin` keys (Q109). Interim: the cutscenes play without those cars
+and people.
+
+Needed: the scripted car's behaviour after release (does it follow a
+road or drive straight, and what despawns it with `despawnTime` 0), and
+Q109's keys for the people.
+
+## Q161 (INTRO-04): the opening's radio states
+
+**Engine reading** (from first_time_career.xml and game_free_roam_flow.xml):
+
+- Under the controller loading screen the free-roam flow runs
+  `Audio.disable_radio_dj`, `Audio.disable_radio_station_switching`,
+  `Audio.enable_radio_silent_idents` and CSetRadioPlaylist
+  (`startWithFirstTrack`, `startAtBeginningOfTrack`,
+  `normalBehaviourAfterListPlayed`, R1_Everyday then R1_ThePower).
+- Radio_Unlock's flow (FestivalArriveCutscene) turns station switching on
+  after Dak's line, then, once the camera sequence ends and the HUD is
+  back, the DJ on and the silent idents off. RaceCentralArriveCutscene
+  turns all three on again.
+- The race to the festival's last stretch stops the DJ (Q62).
+
+The engine applies these (`FtcCommands::set_radio_dj`, `radio_playlist`,
+`set_radio_switching`, `set_silent_idents`, `stop_dj`; `Radio::set_playlist`
+and friends). A resumed save before the heats gets the opening's states;
+from the heats on, the station's own. Out of the first-time career the
+host resets them, and the DJ follows the player's DJ option whenever the
+flow allows it.
+
+Inferred, not read from code:
+
+- A silent ident keeps the ident's place between tracks (the next track
+  starts at the ident's `OffsetStartNextTrack`) and plays nothing.
+- CPrepareDinerCutscene's `musicTrack="R1_ThePower"` is played like a
+  one-track playlist: from its start, then the station's own picks.
+- Immediate DJ lines (CRadioDJImmediate, such as IntroCutscene and E3Intro)
+  play while the DJ is disabled.
+
+Needed: the radio's handling of `enable_radio_silent_idents`, the diner's
+`musicTrack`, and whether CRadioDJImmediate checks the DJ switch.
+## Q162 (PROG-13, answered): the popularity header word against a displayed rank
+
+Supersedes Q60's "Not yet compared with a rank the game displays." Q60's
+reading (the first u32 of `SponsorshipState` is the popularity points) now
+has one displayed rank behind it.
+
+The original's stats screen (`26_my_profile_stats_orig.png` in the audit's
+captures, General tab) shows POPULARITY LEVEL 166th. It was taken on the
+recomp seed `appdata-2026-09-27`. That seed's `ForzaProfile` matches the
+hash in its `seed.json`. A copy was decrypted with the recomp's
+`profile-export.py` and read with the engine's `profile-import`
+(`profile::popularity_points_from_sponsorship_state`). The save is the one
+on screen: credits 167,700 and 6 garage cars, as the capture shows.
+
+- Header word: 456,480. On Fame.xml that is rank 166 (target 450,682).
+  Rank 165 needs 456,840, so the window is 6,158 points wide and the word
+  sits 360 points short of the next rank.
+- The `Fame` child's first word is 3: the Fame-sponsor tiers at or above
+  rank 166 (225, 200, 175), as Q60's rule predicts.
+
+The reader is unchanged. The f32 at header +8 and the zero word stay open
+(Q60).
+
+## Q163 (PROG-15, answered in part): `DialoguesState`, the heard-dialogue record
+
+Supersedes Q60's "Also open: `CHorizonDialoguesState` (hashed line keys,
+kept as bytes …)" as far as the layout and the key go. Read from the
+class's serializer and the dialogue script loader in the recomp's
+generated code.
+
+**Layout** (`CHorizonDialoguesState` v1): a u32 entry count, then that many
+12-byte entries (key u32, variant u32, count u32), in ascending key order.
+In memory the state is an ordered map from key to (count, variant), and
+the serializer writes key, variant, count. All three reference saves parse
+exactly: 4 + 12n bytes, with n = 126 (`user`), 176 (`user-modded`) and 79
+(the `appdata-2026-09-27` seed of Q162).
+
+**Key:** a hash of the `DialogueScript_<LANG>.xml` trigger id. The id is
+read from the `Trigger` element's `id` attribute and passed to the game's
+string hash with 32 bits and folding on:
+
+    h = 0xFFFFFFFF
+    for each byte c of the id, lowercased (as a signed char):
+        h = rotl32(h ^ c, 7)
+
+Every key on `user` (126 of 126) and on the seed (79 of 79) is a trigger in
+`DialogueScript_EN.xml`. On `user-modded` 170 of 176 are. That save was
+written by v4, and the other 6 are probably Horizon Rally triggers
+(`Rally_DialogueScript_*.xml` is not in the local game copy), so that part
+is unconfirmed.
+
+**Values:** count is the times the trigger fired or played (which one is
+not settled; `WristbandReminder` reads 1,107), and the variant is the
+`Filename` index to play next. Across the three saves:
+- on 304 entries the trigger has one `Filename`, and the variant is 0;
+- on the 71 entries whose trigger has several, the variant is count mod
+  the `Filename` count 65 times;
+- the other 6 are all `HEATSFinalTicketNeedsWin` and `RouteSetOnMap`, and
+  there the variant is (count + 1) mod the `Filename` count, one step ahead.
+
+Some entries read count 0: `FirstRaceCentralUnlockedFastTravel` and
+`FirstSpeedZoneSight` on all three saves, and `NewWristbandUnlocked3` on
+the seed. So an entry can exist without the line having played, and
+"heard" is probably count > 0, not the key being present. The variant reading is
+inferred from the numbers.
+
+**Still open:**
+- where in the dialogue manager an entry is added or bumped, and whether a
+  one-shot trigger is skipped on count > 0 or on its own flag;
+- why two triggers run one variant ahead.
+
+The engine still seeds its own heard-dialogue keys from the career (Q60).
+It does not read this record yet.
+
+## Q164 (INTRO-07, answered in part): the opening titles' timing
+
+Supersedes, for the timing, two of Q65's sentences:
+- "Still open: the timing and placement, which are the scene's BGF
+  animation (not decoded)";
+- "Engine interim: the four cards in turn, 4 s each with half-second
+  fades, centred". Only the centring stays.
+
+The timing was read from the bytes of `H_OPENING_TITLES.bgf`
+(UI.zip). The engine's BGF reader mis-sorts the scene's tracks as styles,
+but the bytes are plain. The document has two animations:
+- `Master Slide`, 10,000 ms;
+- `PLAY`, 33,000 ms. It has one channel per item (29). Eight of them,
+  the card and shadow layers, carry a track, all on the same attribute.
+
+Each track has four keys, in milliseconds. They are read here as time
+from the scene opening (ShowOpeningCredits); that PLAY starts as the scene
+opens is inferred.
+
+| Layer | Keys (s) |
+|---|---|
+| `_Microsoft` | 4.500, 5.000, 8.000, 8.500 |
+| `_MicrosoftShadow` | 4.740, 5.240, 7.776, 8.276 |
+| `_Turn10` | 12.000, 12.500, 15.500, 16.000 |
+| `_Turn10Shadow` | 12.246, 12.746, 15.240, 15.740 |
+| `_Playground` | 18.621, 19.121, 22.121, 22.633 |
+| `_PlaygroundShadow` | 18.853, 19.353, 21.852, 22.352 |
+| `_Horizon` | 28.165, 28.657, 31.665, 32.157 |
+| `_HorizonShadow` | 28.400, 28.900, 31.400, 31.900 |
+
+So the cards come one at a time. Each has half-second ramps, and the
+Horizon logo also leaves, at 32.157 s; it is not held.
+
+The engine uses the card keys (`race::opening_title_alpha`) as an alpha
+that rises over the first two keys, holds, and falls over the last two.
+
+Still open:
+- The key values. They read 0, except a -1.0 pair on each last key, so the
+  animated attribute and its curve are inferred. The ramp shape fits the
+  half-second spacing.
+- The attribute's name (hash 0x1991C315).
+- The cards' placement in the scene. The engine still centres them.
+- The shadow layers, which the engine does not draw.
+- Whether the cards get their full 32.2 s. The engine keeps the scene open
+  from New_Diner_Cutscene_2 until the race to the festival starts, after
+  New_Diner_Cutscene_3. If those two cutscenes run shorter than 32.2 s,
+  the later cards never show. The cutscenes' length was not checked, and
+  the change has not been seen in a run.

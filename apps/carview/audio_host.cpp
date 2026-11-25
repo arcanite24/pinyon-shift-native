@@ -291,7 +291,7 @@ void AudioHost::apply_config(const AudioConfig& cfg, const std::filesystem::path
   engine_.set_full_dynamic_range(cfg_.full_dynamic_range);
   // Propagate the 8 top-level UI mix sliders so Mixer applies each slider cleanly to its sub-buses.
   for (int b = 0; b < audio::kUiSliderBuses; ++b) engine_.set_bus_level(audio::Bus(b), cfg_.bus_mix[size_t(b)]);
-  engine_.radio_set_dj(cfg_.radio_dj);
+  engine_.radio_set_dj(cfg_.radio_dj && !flow_dj_off_);
   engine_.radio_set_volume(cfg_.radio_on ? cfg_.radio_volume : 0.0f);
   engine_.runtime_radio_set_volume(cfg_.radio_on ? cfg_.radio_volume : 0.0f);
   engine_.set_satnav_enabled(cfg_.satnav_on);
@@ -581,6 +581,12 @@ bool AudioHost::init_radio(const std::filesystem::path& game_root, std::string_v
         if (found >= 0) start_station = found;
       }
       if (start_station >= 0) radio_->select(start_station);
+      // A radio built after the first-time career set its states takes them
+      // (the engine does not own it yet).
+      radio_->set_dj_enabled(cfg_.radio_dj && !flow_dj_off_);
+      radio_->set_switching_enabled(switching_enabled_);
+      radio_->set_silent_idents(flow_silent_idents_);
+      if (!flow_playlist_.empty()) radio_->set_playlist(flow_playlist_, flow_playlist_then_normal_);
       std::printf("radio: %zu stations in the cycle, %zu tracks, %zu voice clips (%s)\n",
                   stock_radio_data_.cycle.size(), stock_radio_data_.music.size(), stock_radio_data_.vo.size(),
                   stock_radio_data_.language.c_str());
@@ -1092,6 +1098,76 @@ void AudioHost::radio_lock_viper_intro(bool lock) {
   if (radio_) engine_.radio_lock_viper_intro(lock);
 }
 
+bool AudioHost::radio_set_playlist(const std::vector<std::string>& fmodnames, bool then_normal) {
+  if (fmodnames.empty()) return false;
+  if (!radio_) {
+    // Played once the radio is built.
+    flow_playlist_ = fmodnames;
+    flow_playlist_then_normal_ = then_normal;
+    return false;
+  }
+  flow_playlist_.clear();
+  // The station carrying the first track, selected here too so the station
+  // cycle (custom stations included) agrees with the audio thread's pick.
+  for (size_t i = 0; i < stock_radio_data_.stations.size(); ++i) {
+    const auto& st = stock_radio_data_.stations[i];
+    if (st.off) continue;
+    const bool has = std::any_of(st.tracks.begin(), st.tracks.end(), [&](const audio::RadioTrack& t) {
+      return t.name.size() == fmodnames[0].size() &&
+             std::equal(t.name.begin(), t.name.end(), fmodnames[0].begin(), [](char a, char b) {
+               return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+             });
+    });
+    if (!has) continue;
+    bool in_cycle = false;
+    for (size_t p = 0; p < unified_cycle_.size(); ++p)
+      if (unified_cycle_[p] == int(i)) {
+        select_unified_station(int(p), false);
+        in_cycle = true;
+        break;
+      }
+    if (!in_cycle) {
+      active_custom_idx_ = -1;
+      active_custom_station_ = -1;
+      engine_.runtime_radio_select(-1);
+    }
+    engine_.radio_set_playlist(fmodnames, then_normal);
+    return true;
+  }
+  return false;
+}
+
+void AudioHost::radio_set_switching(bool on) {
+  switching_enabled_ = on;
+  if (radio_) engine_.radio_set_switching(on);
+}
+
+void AudioHost::radio_set_flow_dj(bool on) {
+  flow_dj_off_ = !on;
+  engine_.radio_set_dj(cfg_.radio_dj && !flow_dj_off_);
+}
+
+void AudioHost::radio_set_silent_idents(bool on) {
+  flow_silent_idents_ = on;
+  if (radio_) engine_.radio_set_silent_idents(on);
+}
+
+void AudioHost::radio_reset_flow() {
+  flow_playlist_.clear();
+  radio_set_flow_dj(true);
+  radio_set_switching(true);
+  radio_set_silent_idents(false);
+  radio_cancel_playlist();
+}
+
+void AudioHost::radio_stop_dj() {
+  if (radio_) engine_.radio_stop_dj();
+}
+
+void AudioHost::radio_cancel_playlist() {
+  if (radio_) engine_.radio_cancel_playlist();
+}
+
 bool AudioHost::radio_select_station_by_name(std::string_view substr) {
   if (!has_radio() || substr.empty()) return false;
   auto lower = [](std::string_view sv) {
@@ -1600,6 +1676,15 @@ bool AudioHost::play_ui(std::string_view play, std::string_view scene) {
   return true;
 }
 
+bool AudioHost::play_ui_event(std::string_view path) {
+  if (!ui_catalog_ || path.empty()) return false;
+  const int at = ui_catalog_->resolve_event(path);
+  const auto* ev = ui_catalog_->event(at);
+  if (!ev) return false;
+  engine_.trigger_ui_event(*ev);
+  return true;
+}
+
 void AudioHost::activate_mix_snapshot(std::string_view name) {
   if (!engine_.has_snapshot_matrix() || engine_.find_matrix_snapshot(name) < 0) return;
   engine_.activate_matrix_snapshot(name);
@@ -1615,7 +1700,7 @@ void AudioHost::set_satnav_enabled(bool on) {
 }
 
 void AudioHost::radio_press(int dir) {
-  if (!has_radio() || viper_intro_locked_) return;
+  if (!has_radio() || viper_intro_locked_ || !switching_enabled_) return;
   if (custom_stations_.empty() && radio_) {
     engine_.radio_press(dir);
     return;

@@ -58,6 +58,11 @@ class CampaignDirector {
   };
   void set_ftc_frame_input(const FtcFrameInput& in) { ftc_in_ = in; }
   bool ftc_active() const { return ftc_.active(); }
+  // The timed autosave (an engine extra, --timed-autosave, off by default):
+  // the original saves only at the career's checkpoints, and never on a timer
+  // inside the first-time career.
+  static constexpr double kTimedAutosaveInterval = 30.0;
+  bool timed_autosave_allowed(bool option_on) const { return option_on && !ftc_.active(); }
   const race::FirstTimeCareer& ftc() const { return ftc_; }
   // The career catalogue the first-time career takes its event sign-up
   // spheres (the heats final, the showcase) and Race Central from.

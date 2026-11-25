@@ -178,6 +178,8 @@ class AudioHost {
   // when the name is unknown (reported once) or the entry is Blank.
   bool play_ui(std::string_view play);
   bool play_ui(std::string_view play, std::string_view scene);
+  // A UI event by FEV path (a cutscene's CCutsceneAudioTrigger group/event).
+  bool play_ui_event(std::string_view path);
   // The race type the countdown and race-complete cues are chosen by.
   void set_race_audio_kind(audio::UiRaceKind kind) { race_audio_kind_ = kind; }
   const audio::UiAudioCatalog* ui_catalog() const { return ui_catalog_.get(); }
@@ -208,6 +210,19 @@ class AudioHost {
   void radio_cancel_scheduled(std::string_view gameplay_event);
   const audio::RadioDjRules& radio_dj_rules() const { return radio_dj_rules_; }
   void radio_lock_viper_intro(bool lock);
+  // The first-time career flow's radio states: the playlist (by RadioSystem.xml
+  // fmodname), station switching, the DJ (on only when the DJ option is on too),
+  // silent idents and cutting the DJ line playing.
+  bool radio_set_playlist(const std::vector<std::string>& fmodnames, bool then_normal);
+  void radio_set_switching(bool on);
+  void radio_set_flow_dj(bool on);
+  void radio_set_silent_idents(bool on);
+  void radio_stop_dj();
+  void radio_cancel_playlist();
+  // Out of the first-time career: the DJ per its option, switching on, idents
+  // audible, no playlist.
+  bool radio_flow_overridden() const { return !switching_enabled_ || flow_dj_off_ || flow_silent_idents_; }
+  void radio_reset_flow();
   bool radio_select_station_by_name(std::string_view substr);
   void update_world_acoustics(float x, float y, float z, float heading_rad);
   void radio_press(int dir);
@@ -384,6 +399,11 @@ class AudioHost {
   bool barnfind_active_ = false;
   bool race_encounter_active_ = false;
   bool viper_intro_locked_ = false;
+  bool switching_enabled_ = true;
+  bool flow_dj_off_ = false;
+  bool flow_silent_idents_ = false;
+  std::vector<std::string> flow_playlist_;  // set before the radio was built
+  bool flow_playlist_then_normal_ = true;
 
   bool have_acoustics_sent_ = false;
   bool last_in_tunnel_ = false;

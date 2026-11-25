@@ -37,6 +37,11 @@ std::string ui_wristband_unlock_play(int level);
 // Every ui4audio play name the engine's own code can fire (the UiCue map over
 // every race kind, the wristband stings and the named widget cues below).
 std::vector<std::string> engine_ui_play_names();
+// A cutscene's CCutsceneAudioTrigger names its sound by FEV group and event
+// (group "UIInGame/UI/Cutscenes", event "CS_OpeningSequence"), not by a
+// ui4audio play name: the catalog holds every event under that group too.
+inline constexpr std::string_view kCutsceneUiGroup = "UIInGame/UI/Cutscenes";
+bool is_cutscene_ui_event(std::string_view path);
 
 // Widget cues the engine fires by name (ui4audio defaults).
 namespace ui_play {
@@ -102,6 +107,8 @@ class UiAudioCatalog {
   int resolve(std::string_view play, std::string_view scene = {}) const;
   // The event index of an FEV path (case-insensitive), or kUnknown.
   int find_event(std::string_view path) const;
+  // The playable event at an FEV path, kSilent when it has no sample, else kUnknown.
+  int resolve_event(std::string_view path) const;
   const Event* event(int index) const {
     return index >= 0 && size_t(index) < events_.size() ? &events_[size_t(index)] : nullptr;
   }

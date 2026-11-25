@@ -76,9 +76,11 @@ struct DriveSession::FtcAutopilot {
 };
 
 drive::Input DriveSession::ftc_autopilot_input() {
-  // The original gives the opening's car a race behaviour on its route; the
-  // engine drives the sat-nav route the career set (route 170's own path is
-  // not loaded; interim, SPEC_QUESTIONS Q66).
+  // The original gives the car a race behaviour on route 170, whose
+  // waypoints start at the diner and end in the festival; the engine drives
+  // the sat-nav route the career set (to the diner under the opening, to
+  // route 170's last waypoint at the festival arrival). The road between
+  // waypoints is the sat-nav's (interim, SPEC_QUESTIONS Q159).
   const auto& route = app.gps_nav.route();
   if (!route.valid || route.points.size() < 2) return drive::Input{};
   if (!ftc_autopilot) ftc_autopilot = std::make_shared<FtcAutopilot>();
@@ -199,10 +201,19 @@ void DriveSession::apply_first_time_career() {
   }
   for (const auto& cmd : c.take_ftc_commands()) {
     if (cmd.set_time_of_day) {
+      // A set time ends any request still running toward another.
+      app.tod_clock.transition = false;
+      app.tod_clock.rate_override = false;
       app.tod_clock.tod_sec = std::fmod(std::max(0.0, cmd.time_of_day_s), 86400.0);
       if (traffic) traffic->set_hour(app.tod_clock.hour());
     }
     if (cmd.set_time_locked) app.tod_clock.paused = cmd.time_locked;
+    if (cmd.request_time_of_day) {
+      // A time-of-day zone: the clock runs on to the zone's time and holds.
+      const race::FtcTodRequest r =
+          race::ftc_tod_request(app.tod_clock.tod_sec, cmd.tod_request_target_s, cmd.tod_request_duration_s);
+      if (r.rate > 0.0) app.tod_clock.request(r.target_s, r.rate);
+    }
     if (cmd.set_civilian_traffic && traffic) traffic->set_civilian(cmd.civilian_traffic);
     if (cmd.give_money) app.career.credits += cmd.give_money;
     if (!cmd.achievement.empty()) {
