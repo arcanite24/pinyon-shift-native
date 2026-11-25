@@ -598,7 +598,8 @@ void build_rally_championship_results_screen(ui::List& out, const RallyChampResu
   // Right: H_POST_RACE_RESULTS tilted standings table (PILL03 rows, off-white header, pink highlight).
   const float rx0 = lx0 + lw + 26.0f * u;
   const float rx1 = f.x(1206.0f);
-  out.text(rx0, ly0 - 24.0f * u, text_of(kRallyStandingsTitle), ui4::style(ui::Font::kE, 16.0f * u, kWhite));
+  ui4::brush(out, rx0 - 6.0f * u, ly0 - 34.0f * u, rx0 + 270.0f * u, ly0 - 6.0f * u, ui4::kBrushBlack, false);
+  out.text(rx0 + 8.0f * u, ly0 - 29.0f * u, text_of(kRallyStandingsTitle), ui4::style(ui::Font::kE, 16.0f * u, kWhite));
   ui4::offwhite_strip(out, rx0, ly0, rx1, ly0 + 28.0f * u, u, false);
   {
     ui::TextStyle ch = ui4::style(ui::Font::kD, 12.5f * u, ui4::kInk);
