@@ -187,6 +187,9 @@ struct CameraInput {
   double slip_longitudinal = 0, slip_lateral = 0;
   std::array<double, 4> surface_bump{};  // FL, FR, RL, RR surface/suspension bump
   double suspension_bias_longitudinal = 0;
+  // Collision pulses: an impact's size for the one frame it happens on,
+  // 0 otherwise (SPEC-CAMERAS: injected on impact events). The engine feeds
+  // the closing speed in m/s (SPEC_QUESTIONS Q67).
   double world_collision_longitudinal = 0, world_collision_lateral = 0;
   double car_collision_longitudinal = 0, car_collision_lateral = 0;
   // Extended CameraPhysics.xml inputs & SurfaceTypes.xml ChaseCamSpringMultiplier.
@@ -300,7 +303,7 @@ class DriveCamera {
     double env = 0, env_sign = 1.0;
     double noise_phase = 0;
     double impulse_timer = -1.0, pending_impulse = 0.0;
-    double impulse_cooldown = 0.0, prev_impulse_mag = 0.0;
+    bool impulse_armed = true;  // an impulse fires once per rising edge (Q67)
     bool started = false;
   };
   struct LayerOut {
@@ -334,7 +337,6 @@ class DriveCamera {
   // slope_hold_: seconds since three or more wheels last touched.
   double look_old_ = 0;  // the look angle the eye stood at last frame
   double theta_ = 0, omega_ = 0, h_ = 0, h_rate_ = 0, c_ = 0, slope_hold_ = 0;
-  double yaw_rate_smooth_ = 0;  // slew-damped car yaw rate for crash-shock immunity
   double wall_pull_ = 1.0;  // damped horizontal obstacle pull-in fraction [0.2, 1.0]
   // The bumper's ground height, taken when it starts.
   double bumper_ground_ = 0;

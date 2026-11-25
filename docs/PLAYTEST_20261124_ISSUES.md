@@ -197,6 +197,7 @@ Source playtest session: `out/playtests/20261124-143848/`
   - **Priority**: P1
   - **Evidence**: User report ("camera movements when crashing a fence, moves too aggressively").
   - **Fix (PT-C)**: Added collision deadzone + light-vs-heavy shaping curve, rising-edge `0.22 s` refractory cooldown on impulse layers, damped spring recovery (`>= 0.75`), bounded total collision kick offsets, and chase yaw-rate/slope slew clamps in `DriveCamera`.
+  - **Superseded (parity/corpus-gates)**: the cause was the feed, the penalty force over mass at every contact frame. The collision layers now get one pulse per body impact (its closing speed, `Vehicle::last_body_impact`), impulse outputs fire once per rising edge, and the clamps above are gone (`SPEC_QUESTIONS.md` Q67).
 
 - [x] **PT-29 — Crashing a road sign emits a single giant floating sign/particle instead of natural debris**
   - **Priority**: P1

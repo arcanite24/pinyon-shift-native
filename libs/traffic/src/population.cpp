@@ -698,7 +698,17 @@ void Population::update_junction_reservations() {
                                         nj_pos, nj_turn);
       const bool still_approaching = has_nj && nj_node == node;
       const double dist_to_j = hdist(holder->position, res.junction_pos);
-      if ((!still_approaching && dist_to_j > 7.5) || dist_to_j > config_.junction_max_collision_check_distance + 12.0) {
+      // Past the node and driving away from it at 1 m/s or more: the
+      // crossing check (JunctionManoeuvreSafeTimeGap) no longer counts the
+      // holder, so neither does its reservation. A holder stopped in the box
+      // keeps it until it is 7.5 m clear.
+      const double hx = holder->position.x - res.junction_pos.x, hz = holder->position.z - res.junction_pos.z;
+      const double away =
+          dist_to_j > 1e-3
+              ? (std::sin(holder->heading) * hx + std::cos(holder->heading) * hz) * holder->speed / dist_to_j
+              : 0.0;
+      if ((!still_approaching && (dist_to_j > 7.5 || away >= 1.0)) ||
+          dist_to_j > config_.junction_max_collision_check_distance + 12.0) {
         release = true;
       }
     }

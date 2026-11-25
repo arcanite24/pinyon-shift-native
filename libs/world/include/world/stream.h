@@ -47,6 +47,12 @@ class Streamer {
   // caller must not use them.
   bool update(double x, double z, bool* changed, std::string* error);
   void set_async(bool async) { async_ = async; }
+  // Ours (no spec covers the streaming centre): an async gather started more
+  // than 50 m from the last centre is centred up to min(150 m, 0.2 x the
+  // collision radius) further along the car's displacement from it, so a
+  // fast car is still central when the gather lands. Off by default, where
+  // the centre is the point update() was given.
+  void set_lead(bool lead) { lead_ = lead; }
   // A new set of hidden props (GatherOptions::hidden): the next update
   // gathers again wherever the car is, once no gather is running.
   void set_hidden(std::shared_ptr<const std::set<std::string>> hidden) {
@@ -114,6 +120,7 @@ class Streamer {
   std::unique_ptr<drive::MeshGround> ground_;
   std::unique_ptr<drive::Ground> composite_ground_;
   bool async_ = false;
+  bool lead_ = false;
   Prepare prepare_;
   std::any prepared_;
   double last_seconds_ = 0;

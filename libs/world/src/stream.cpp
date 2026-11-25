@@ -243,10 +243,11 @@ bool Streamer::update(double x, double z, bool* changed, std::string* error) {
   }
   if (!forced && gathers_ > 0 && dist <= regather_) return true;
   if (async_ && gathers_ > 0) {
-    // Lead the gather center slightly ahead along the travel vector so a fast car
-    // stays centered inside the new collision bubble when the async gather finishes.
+    // With set_lead: lead the gather centre ahead along the travel vector so a
+    // fast car stays centred inside the new collision bubble when the async
+    // gather finishes. Off by default: the centre is the point asked for.
     double gx = x, gz = z;
-    if (!forced && dist > 50.0) {
+    if (lead_ && !forced && dist > 50.0) {
       const double lead = std::min(150.0, collision_radius_ * 0.20);
       gx += (x - cx_) / dist * lead;
       gz += (z - cz_) / dist * lead;

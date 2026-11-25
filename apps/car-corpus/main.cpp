@@ -249,6 +249,11 @@ int main(int argc, char** argv) {
   for (const auto& [media, _] : install.base_cars) seen.insert(media);
   for (const cars::Package& p : install.packages) {
     for (const auto& archive : p.archives) {
+      // FORMAT-CARS counts the textures of every offer ZIP (its census
+      // extracts the offer ZIPs). The resolver also mounts the loose
+      // <offer>_pri_<n>/ folders beside them (audio, and the Rally and Car
+      // Challenge packs' UI textures), which are not in that census.
+      if (dlc_extracted.empty() && fs::is_directory(archive)) continue;
       cars::FolderRef ref;
       ref.kind = fs::is_directory(archive) ? cars::FolderRef::Kind::kDirectory : cars::FolderRef::Kind::kArchive;
       ref.path = archive;

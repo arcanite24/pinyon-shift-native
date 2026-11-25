@@ -623,31 +623,46 @@ void test_traffic_behaviors() {
     pop.add(car_b, 1, 80.0, 1);  // id 2: west -> east
     const uint32_t id_a = pop.cars()[0].id;
     const uint32_t id_b = pop.cars()[1].id;
-    const traffic::P3 b_start = pop.cars()[1].position;
+    traffic::P3 b_last = pop.cars()[1].position;
     bool saw_a_holder = false;
     bool saw_b_claim_after = false;
+    bool both_alive = true;
     double min_b_speed = 1e9;
     double min_pair_dist = 1e9;
-    double max_b_travel = 0.0;
+    double b_path = 0.0;  // along B's path: it may turn at the node (TRAFFIC.md, Junctions: any allowed way)
+    auto find = [&](uint32_t id) -> const traffic::Car* {
+      for (const auto& car : pop.cars())
+        if (car.id == id) return &car;
+      return nullptr;
+    };
     for (int i = 0; i < 360; ++i) {  // 6.0 s at 60 Hz
-      pop.step(1.0 / 60.0, {120.0, 0.0, 20.0}, {0.0, 0.0, 0.0});
+      // The parked player stays within MaxMediumLodDistance of both cars: past
+      // it, a population over its density target culls its farthest car at
+      // each OverspawnCheckTime (4 s), which here would be B.
+      pop.step(1.0 / 60.0, {60.0, 0.0, 60.0}, {0.0, 0.0, 0.0});
       const uint32_t holder = pop.junction_holder(1);
       if (holder == id_a) saw_a_holder = true;
       if (saw_a_holder && holder == id_b) saw_b_claim_after = true;
-      if (pop.cars().size() >= 2) {
-        const auto& a = pop.cars()[0];
-        const auto& b = pop.cars()[1];
-        min_b_speed = std::min(min_b_speed, b.speed);
-        min_pair_dist = std::min(min_pair_dist, std::hypot(a.position.x - b.position.x, a.position.z - b.position.z));
-        max_b_travel = std::max(max_b_travel, std::hypot(b.position.x - b_start.x, b.position.z - b_start.z));
+      const traffic::Car* a = find(id_a);
+      const traffic::Car* b = find(id_b);
+      if (!a || !b) {
+        both_alive = false;
+        break;
       }
+      min_b_speed = std::min(min_b_speed, b->speed);
+      min_pair_dist = std::min(min_pair_dist, std::hypot(a->position.x - b->position.x, a->position.z - b->position.z));
+      b_path += std::hypot(b->position.x - b_last.x, b->position.z - b_last.z);
+      b_last = b->position;
     }
-    std::printf("junction reservation: holder_a=%d b_claimed_after=%d min_b_spd=%.2f m/s min_pair=%.2f m b_travel=%.1f m\n",
-                int(saw_a_holder), int(saw_b_claim_after), min_b_speed, min_pair_dist, max_b_travel);
+    std::printf("junction reservation: holder_a=%d b_claimed_after=%d alive=%d min_b_spd=%.2f m/s min_pair=%.2f m "
+                "b_path=%.1f m\n",
+                int(saw_a_holder), int(saw_b_claim_after), int(both_alive), min_b_speed, min_pair_dist, b_path);
+    CHECK(both_alive);
     CHECK(saw_a_holder);
+    CHECK(saw_b_claim_after);    // the reservation passes to B once A clears
     CHECK(min_b_speed < 6.0);    // cross-traffic car B yields at the stop line while car A holds priority
     CHECK(min_pair_dist > 3.2);  // cars never simultaneously ghost through each other at the junction
-    CHECK(max_b_travel > 28.0);  // car B resumes cleanly once car A clears the intersection
+    CHECK(b_path > 28.0);        // car B resumes cleanly once car A clears the intersection
   }
   // 12. R3-PHY-19: Secondary traffic-vs-traffic pileup momentum transfer + chain body promotion.
   {

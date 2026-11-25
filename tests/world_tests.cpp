@@ -363,6 +363,22 @@ int main() {
                 polls, bg.last_gather_seconds(), bg.centre_x(), bg.centre_z(), bg.mesh_ground().triangle_count());
     CHECK(changed && bg.centre_x() == fx && bg.gathers() == 2 && !bg.gathering());
     CHECK(bg.mesh_ground().triangle_count() > 1000);
+
+    // With the lead (carview's live drive), the same move centres the gather
+    // min(150 m, 0.2 x the 750 m collision radius) further along it.
+    world::Streamer led(w, world::GatherOptions{}, 200, &collision);
+    led.set_async(true);
+    led.set_lead(true);
+    CHECK(led.update(world::kSpawnX, world::kSpawnZ, nullptr, &error));
+    changed = false;
+    CHECK(led.update(fx, fz, &changed, &error));
+    const auto t1 = std::chrono::steady_clock::now();
+    while (!changed && std::chrono::steady_clock::now() - t1 < std::chrono::seconds(60)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      CHECK(led.update(fx, fz, &changed, &error));
+    }
+    std::printf("led background gather: centre %.1f %.1f\n", led.centre_x(), led.centre_z());
+    CHECK(changed && std::fabs(led.centre_x() - (fx + 150)) < 1e-6 && std::fabs(led.centre_z() - fz) < 1e-6);
   }
 
   if (failures) {

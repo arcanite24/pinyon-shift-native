@@ -657,6 +657,17 @@ class Vehicle {
     int64_t triangle = -1;
   };
   const BodyContact& strongest_body_contact() const { return strongest_; }
+  // The last body impact: the substep a body contact began after a step
+  // (1/120 s) or more without one. speed: the largest closing speed along
+  // a contact normal then (m/s); normal: that contact's, out of the surface;
+  // count: impacts since the car was made, so a reader can take each one
+  // once (the camera's WorldCollision pulse, SPEC-CAMERAS layers).
+  struct BodyImpact {
+    Vec3 normal{};
+    double speed = 0;
+    uint64_t count = 0;
+  };
+  const BodyImpact& last_body_impact() const { return impact_; }
   // Surface bumpiness rumble: max across grounded wheels of 2 * Bumpiness.Rumble
   // (COLLISION.md, Runtime SurfaceType evaluation; consumed by ControllerRumble).
   double surface_bump_rumble() const { return surface_bump_rumble_; }
@@ -777,6 +788,8 @@ class Vehicle {
   double body_force_ = 0;
   double lateral_g_ = 0;
   BodyContact strongest_;
+  BodyImpact impact_;
+  double body_free_time_ = 1.0;  // s since a body contact last pushed
 };
 
 // One line of a trace (CSV header and row), for the determinism check.

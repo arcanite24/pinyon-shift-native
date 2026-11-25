@@ -28,8 +28,10 @@ ShowroomFrame DriveSession::drive_frame(float aspect, double dt) {
                                       &cam_prev_wheel_comp, &host.cam_proj);
           have_cam_view = true;
           cockpit_steer_kick_rad = float(last_cam_view.steering_wheel_kick);
-          cam_car_coll_long *= std::exp(-dt * 12.0);
-          cam_car_coll_lat *= std::exp(-dt * 12.0);
+          // CarCollision is a pulse (SPEC-CAMERAS, layers): the frame's
+          // impact reaches the layers once, then is spent.
+          cam_car_coll_long = 0.0;
+          cam_car_coll_lat = 0.0;
           if (rig.mode() == drive::CameraMode::kFollowLow || rig.mode() == drive::CameraMode::kFollowHigh) {
             rig_min_distance = std::min(rig_min_distance, d);
             rig_max_distance = std::max(rig_max_distance, d);

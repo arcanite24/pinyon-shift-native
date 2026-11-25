@@ -1812,3 +1812,44 @@ within 40 m; (f) MustangRace 101 and Travel_To_Workshop are unused.
 Needed: the state transitions of the first-time career activity (stages
 1, 2, 7 and 10 are its save checkpoints) with their triggers, and
 whether the heats are driven to or launched.
+
+## Q67 (polish, not blocking): the camera's collision pulses
+
+SPEC-CAMERAS has the `WorldCollision` and `CarCollision` inputs as pulses
+"injected directly into the layer pipeline on impact events" and leaves
+their unit and the impulse outputs' firing rule unread (Unknowns,
+`InputType 1..34` sub-branches). The stock `CameraPhysics.xml` collision
+layers clamp their inputs at about 3 to 12 and bend their curves at 0.25,
+0.75 and 1.0 to 5.0, sizes that fit an impact speed in m/s.
+
+**Engine reading (ours, until decoded):**
+
+- `drive::Vehicle::last_body_impact()`: a body contact that begins after
+  a step (1/120 s) or more without one is an impact; its size is the
+  largest closing speed along a pushing contact's normal at that substep
+  (m/s). carview feeds each impact once, for one frame, split along the
+  car's forward and right axes; car-to-car impacts (traffic, race AI) are
+  fed for one frame and then spent.
+- An impulse output (`*Impulse`) adds its mapped value to its spring's
+  velocity once per rising edge of the input past `ImpulseInputSizeCutoff`
+  (with a non-zero mapped value) and re-arms when the input falls back, so
+  an attack/decay follower's tail does not fire it again every frame.
+- No other limit: the PT-28 dead zone, refractory period, value and
+  offset clamps and forced damping are gone, and the chase heading spring
+  takes the raw yaw rate again (Q51's replay: direction 0.40 deg rms
+  with the low-pass, 0.20 deg rms without it).
+
+With the stock `CameraPhysics.xml`, no chase-camera collision layer is an
+impulse output. They are offset layers behind attack/decay followers
+(attack 289.5 to 12000 per s), and both signs of each axis reach one. A
+one-frame pulse rises at most attack/120 per frame, so on the chase
+cameras every impact from 5 to 25 m/s gives the same kick against a
+no-impact run: about 0.7 deg for lateral and 0.2 to 0.33 deg for
+longitudinal, with the eye moving 7 mm. A glancing scrape along a wall
+(0.02 to 0.15 rad) and a head-on hit at 8 or 28 m/s each make exactly
+one impact.
+
+Needed, narrow: the writer of the camera collision input channel (its
+unit, and how many frames a pulse lasts, which the followers' attack
+rates make matter), and the impulse branch of the layer update (edge,
+level or force).
