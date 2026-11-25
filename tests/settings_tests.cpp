@@ -789,6 +789,9 @@ int main() {
     CHECK(op.value("steering") == "normal");
     CHECK(op.value("traction control") == "on");
     CHECK(op.value("traffic") == "off");  // not on the page
+    // OPPONENT DIFFICULTY resets to MEDIUM, a level the original names.
+    op.reset_rows({"difficulty"});
+    CHECK(op.value("difficulty") == "medium");
     // GAME DIFFICULTY follows the reset rows, as a fresh load shows it.
     {
       carview::SettingsPage fresh;

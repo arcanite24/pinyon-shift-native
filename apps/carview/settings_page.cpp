@@ -1265,8 +1265,14 @@ void SettingsPage::reset_rows(const std::vector<std::string>& ids) {
     for (const std::string& id : ids) {
       // The preset follows the rows it sets (below), as on load.
       if (id == "difficulty preset" || id != rows_[i].name) continue;
-      if (rows_[i].pick != fresh[i].pick || rows_[i].explicit_default) {
-        rows_[i].pick = fresh[i].pick;
+      size_t pick = fresh[i].pick;
+      // OPPONENT DIFFICULTY resets to a level the original names, a new
+      // profile's MEDIUM (Q71), not the engine's "default" (keep the save's).
+      if (id == "difficulty")
+        for (size_t c = 0; c < rows_[i].choices.size(); ++c)
+          if (rows_[i].choices[c].label == "medium") pick = c;
+      if (rows_[i].pick != pick || rows_[i].explicit_default) {
+        rows_[i].pick = pick;
         rows_[i].explicit_default = false;
         dirty_ = true;
       }
