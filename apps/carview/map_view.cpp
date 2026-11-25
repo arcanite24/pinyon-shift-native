@@ -737,6 +737,7 @@ bool MapView::open(const std::filesystem::path& game_root, std::string* error, c
   if (!zip) return fail(error, why);
   horizon_zip_ = std::shared_ptr<fh1::Archive>(std::move(zip));
   if (!read_texture(*horizon_zip_, "Map/background/low-0-0.xds", background_, error)) return false;
+  find_art_bounds();
   const std::string lcode = lang.empty() ? std::string("EN") : lang;
   const std::string loc_small = "Map/icons/MapIcons/" + lcode + "/MapIconSheetSmall.xds";
   const std::string loc_large = "Map/icons/MapIcons/" + lcode + "/MapIconSheet.xds";
@@ -837,8 +838,8 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   // player arrow, and smooth outer edge fade (zero dark backdrop disc!).
   Canvas cv(size, size, {0, 0, 0, 0});
   cv.edge_fade = 0.34f;
-  // A fixed camera behind and above the car (the original's does not pull
-  // out with speed): the player's arrow about 100 px down a 180 px panel
+  // A fixed camera behind and above the car (whether the original's moves
+  // with speed is open, Q89): the player's arrow about 100 px down a 180 px panel
   // (y 520 at 720 lines in 04_roam_hud_day_idle_orig.png), about 160 m
   // ahead to the top and 45 m behind to the bottom.
   const double map_heading = scene.north_up ? 0.0 : scene.heading;
@@ -1163,16 +1164,40 @@ std::array<int, 2> MapView::pause_internal_size(int width, int height) {
   return {rw, rh};
 }
 
+void MapView::find_art_bounds() {
+  art_west_ = freeroam::kMapWest, art_east_ = freeroam::kMapWest + freeroam::kMapWidth;
+  art_south_ = freeroam::kMapNorth - freeroam::kMapHeight, art_north_ = freeroam::kMapNorth;
+  const int w = int(background_.width), h = int(background_.height);
+  if (w < 8 || h < 8 || background_.rgba.size() < size_t(w) * h * 4) return;
+  // A row or column is art when a few percent of it is brighter than black.
+  std::vector<int> col(w, 0), row(h, 0);
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < w; ++x) {
+      const uint8_t* p = &background_.rgba[(size_t(y) * w + x) * 4];
+      if (std::max({p[0], p[1], p[2]}) > 40) ++col[x], ++row[y];
+    }
+  int x0 = 0, x1 = w - 1, y0 = 0, y1 = h - 1;
+  while (x0 < x1 && col[x0] * 50 < h) ++x0;
+  while (x1 > x0 && col[x1] * 50 < h) --x1;
+  while (y0 < y1 && row[y0] * 50 < w) ++y0;
+  while (y1 > y0 && row[y1] * 50 < w) --y1;
+  if (x1 - x0 < w / 2 || y1 - y0 < h / 2) return;  // not what was expected: keep the whole texture
+  art_west_ = freeroam::kMapWest + freeroam::kMapWidth * double(x0 + 1) / w;
+  art_east_ = freeroam::kMapWest + freeroam::kMapWidth * double(x1) / w;
+  art_north_ = freeroam::kMapNorth - freeroam::kMapHeight * double(y0 + 1) / h;
+  art_south_ = freeroam::kMapNorth - freeroam::kMapHeight * double(y1) / h;
+}
+
 double MapView::min_zoom(int width, int height) const {
   width = std::max(1, width);
   height = std::max(1, height);
   const double span_x = max_x_ > min_x_ ? (max_x_ - min_x_) : freeroam::kMapWidth;
   const double span_z = max_z_ > min_z_ ? (max_z_ - min_z_) : freeroam::kMapHeight;
   const double base_scale = std::max(span_x / double(width), span_z / double(height)) * 1.04;
-  // Cap maximum metres/pixel so the visible viewport fits strictly inside Colorado's
-  // authored map texture bounds at any aspect ratio (zero black borders!).
-  const double max_scale = std::min((freeroam::kMapWidth * 0.996) / double(width),
-                                    (freeroam::kMapHeight * 0.996) / double(height));
+  // Cap maximum metres/pixel so the view fits inside the painted part of the
+  // background at any aspect ratio (no black borders).
+  const double max_scale = std::min((art_east_ - art_west_) / double(width),
+                                    (art_north_ - art_south_) / double(height));
   return std::max(1.0, base_scale / std::max(1e-6, max_scale));
 }
 
@@ -1183,8 +1208,8 @@ double MapView::map_scale(int width, int height, double zoom) const {
   const double span_x = max_x_ > min_x_ ? (max_x_ - min_x_) : freeroam::kMapWidth;
   const double span_z = max_z_ > min_z_ ? (max_z_ - min_z_) : freeroam::kMapHeight;
   const double raw = std::max(span_x / double(width), span_z / double(height)) * 1.04 / eff_zoom;
-  const double max_scale = std::min((freeroam::kMapWidth * 0.996) / double(width),
-                                    (freeroam::kMapHeight * 0.996) / double(height));
+  const double max_scale = std::min((art_east_ - art_west_) / double(width),
+                                    (art_north_ - art_south_) / double(height));
   return std::min(raw, max_scale);
 }
 
@@ -1194,16 +1219,11 @@ void MapView::clamp_camera(int width, int height, double zoom, double& cx, doubl
   const double scale = map_scale(width, height, zoom);
   const double half_w_m = 0.5 * double(width) * scale;
   const double half_h_m = 0.5 * double(height) * scale;
-  const double west = freeroam::kMapWest;
-  const double east = freeroam::kMapWest + freeroam::kMapWidth;
-  const double south = freeroam::kMapNorth - freeroam::kMapHeight;
-  const double north = freeroam::kMapNorth;
-  const double inset_x = freeroam::kMapWidth * 0.0015;
-  const double inset_z = freeroam::kMapHeight * 0.0015;
-  const double min_cx = west + inset_x + half_w_m;
-  const double max_cx = east - inset_x - half_w_m;
-  const double min_cz = south + inset_z + half_h_m;
-  const double max_cz = north - inset_z - half_h_m;
+  const double west = art_west_, east = art_east_, south = art_south_, north = art_north_;
+  const double min_cx = west + half_w_m;
+  const double max_cx = east - half_w_m;
+  const double min_cz = south + half_h_m;
+  const double max_cz = north - half_h_m;
   cx = (min_cx <= max_cx) ? std::clamp(cx, min_cx, max_cx) : 0.5 * (west + east);
   cz = (min_cz <= max_cz) ? std::clamp(cz, min_cz, max_cz) : 0.5 * (south + north);
 }

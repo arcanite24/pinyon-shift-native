@@ -1913,9 +1913,12 @@ captures of the map with only New, only Not Won and only Rivals ticked.
 In `04_roam_hud_day_idle_orig.png` the minimap's arrow sits about 100 px
 down the 180 px panel (y 520 at 720 lines) with roads well ahead of it.
 The engine uses a fixed camera 108 m up and 54 m behind the car, which
-puts the arrow there and shows about 160 m ahead and 45 m behind. Unknown:
-the original's real camera height and pitch, and whether it pulls out
-with speed. Needed, narrow: captures of the minimap at rest and at
+puts the arrow there and shows about 160 m ahead and 45 m behind. In
+`05_roam_hud_day_drive_orig.png` (moving slowly, same place) the icons sit
+about 15% further apart and the arrow a few pixels lower than at rest, so
+the original's view changes a little with the car, the other way from
+pulling out. Unknown: the original's real camera height and pitch, and how
+it follows speed. Needed, narrow: captures of the minimap at rest and at
 200 km/h on the same road, or the minimap camera's parameters.
 
 ## Q90 (UI, not blocking): fast travel to undiscovered outposts, and A on the map

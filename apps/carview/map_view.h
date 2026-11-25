@@ -211,6 +211,11 @@ class MapView {
   std::vector<Road> roads_;
   // A coarse grid of road segments for the minimap: (road, segment) by cell.
   double cell_ = 400, min_x_ = 0, min_z_ = 0, max_x_ = 0, max_z_ = 0;
+  // The part of the background texture that is painted (world metres); its
+  // edges are black and the pause map's camera stays off them.
+  double art_west_ = freeroam::kMapWest, art_east_ = freeroam::kMapWest + freeroam::kMapWidth;
+  double art_south_ = freeroam::kMapNorth - freeroam::kMapHeight, art_north_ = freeroam::kMapNorth;
+  void find_art_bounds();
   int nx_ = 0, nz_ = 0;
   std::vector<std::vector<std::pair<uint32_t, uint32_t>>> grid_;
   Profile mini_, full_;

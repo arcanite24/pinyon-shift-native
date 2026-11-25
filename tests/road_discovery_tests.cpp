@@ -372,6 +372,21 @@ void test_colorado_corpus_optional() {
       }
     }
     check(void_px == 0, "PT-32: extreme SW pan has zero black border void pixels");
+    // Nor the background texture's own black margins (a band of black down a
+    // whole side of the view); the art's own shadows and lakes are dark in places.
+    for (const auto& [ex, ez] : {std::pair{-25000.0, 0.0}, std::pair{25000.0, 0.0}, std::pair{0.0, 25000.0},
+                                 std::pair{0.0, -25000.0}}) {
+      const auto img = mv.pause_map(sc, 1280, 720, 2.0, ex, ez);
+      auto dark = [&](int x, int y) {
+        const uint8_t* p = &img.rgba[(size_t(y) * 1280 + size_t(x)) * 4];
+        return std::max({p[0], p[1], p[2]}) <= 40 ? 1 : 0;
+      };
+      int left = 0, right = 0, top = 0, bottom = 0;
+      for (int y = 0; y < 720; y += 8) left += dark(2, y), right += dark(1277, y);
+      for (int x = 0; x < 1280; x += 8) top += dark(x, 2), bottom += dark(x, 717);
+      check(std::max(left, right) * 2 < 90 && std::max(top, bottom) * 2 < 160,
+            "the pause map's camera stays off the background's black margins");
+    }
   }
 
   // PT-33: Verify Horizon Outpost "H" icon (atlas cell 1,2) has valid RGBA and renders
@@ -452,6 +467,18 @@ void test_colorado_corpus_optional() {
       std::printf("PT-35 minimap check (%s): green=%d road_grey=%d casing=%d\n",
                   tc.tag, gps_green_px, road_grey_px, casing_dark_px);
     }
+  }
+
+  // The minimap's camera is fixed (docs/UI_SCENE_SCREENS.md, Q89): the same
+  // frame at rest and at 60 m/s.
+  {
+    carview::MapScene msc;
+    msc.x = 2303.92, msc.z = 548.02, msc.heading = -3.0964;
+    msc.speed_mps = 0.0;
+    const auto still = mv.minimap(msc, 180);
+    msc.speed_mps = 60.0;
+    const auto fast = mv.minimap(msc, 180);
+    check(still.width == 180 && still.rgba == fast.rgba, "minimap: the same view at rest and at 60 m/s");
   }
 
   // PT-09: Cached 4K pause_map panning stays fast (zero 4K base re-rasterization on pan cache hits).

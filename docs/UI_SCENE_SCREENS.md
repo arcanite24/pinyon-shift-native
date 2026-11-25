@@ -316,18 +316,18 @@ destinations, and an outpost must be discovered (Q90).
   visible map (90..270 x 420..600) and the scene's `MATERIAL_VIEWPORT` frame
   is not drawn. Its camera is fixed, with the player's arrow 100 px down the
   180 px panel (y 520 as in the original; Q89); the roads are the profile's
-  white line over its soft under-line, with no driven tint, and traffic is
-  small red dots. The original's wide fading ribbon on the player's own road
-  is not drawn.
+  white line over its soft under-line, with no driven tint, and traffic and
+  the Festival's drivers are the profile's vehicle icon. The original's wide
+  fading ribbon on the player's own road is not drawn.
 - **Map details.** X DETAILS on an event or hub opens the engine's events
   page at that hub; the original shows the event's ticket over the map
   (`map_popup_event_details_orig.png`, Q92). A speed trap has no X
   LEADERBOARD (the engine has no leaderboards). The selected event's course
   outline (pink, `map_popup_event_details_back_orig.png`) is not drawn. The
   original zooms out about a sixth past its opening scale
-  (`map_zoom_out_orig.png`); the engine stops at the opening scale. Near
-  the west edge (Carson) the engine's raster leaves a black band where the
-  map texture ends. In the live render the FILTER title tape is greyer and
+  (`map_zoom_out_orig.png`); the engine stops at the opening scale, and
+  its camera stays inside the painted part of the background texture (the
+  texture's black margins never show). In the live render the FILTER title tape is greyer and
   taller than the original's white bar, and the list's scroll indicator is
   drawn by hand (a track and a thumb at the cursor's row) in place of the
   scene's. The icons' open and pulse animations and the barn rumour's
