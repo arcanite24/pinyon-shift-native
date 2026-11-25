@@ -797,8 +797,9 @@ int main() {
     carview::set_ui_textures(nullptr);
   }
 
-  // 4b. The front end's timeline (no textures needed): the menu's items fade
-  // in over Menu_Intro (0.49..1.01 s) and the logo's fade out (0..0.3 s).
+  // 4b. The front end's timeline (no textures needed, so only the texts
+  // draw): SINGLE PLAYER fades in over Menu_Intro (0.49..1.01 s), and PRESS
+  // START fades out with the logo's Content (0..0.3 s).
   {
     carview::TitleScreenHud ts;
     ts.active = true;
@@ -810,7 +811,7 @@ int main() {
       }
       return a;
     };
-    std::map<int, std::pair<int, int>> at;  // ms -> (menu alpha, logo alpha)
+    std::map<int, std::pair<int, int>> at;  // ms -> (SINGLE PLAYER alpha, PRESS START alpha)
     ts.menu.reset();
     {
       carview::ui::List l;
@@ -828,14 +829,17 @@ int main() {
       }
       carview::ui::List l;
       carview::draw_title_screen(l, ts, 1280.0f, 720.0f);
-      at[ms] = {alpha_in(l, 840, 555, 1180, 640), alpha_in(l, 880, 470, 1240, 550)};
+      // SINGLE PLAYER at 865..1138 x 564..588; PRESS START at 981..1176 x
+      // 604..636 (MULTIPLAYER comes in over it from 0.49 s).
+      at[ms] = {alpha_in(l, 840, 555, 1180, 597), alpha_in(l, 970, 600, 1190, 640)};
     }
-    std::printf("title transition: menu/logo alpha 0.1 s %d/%d, 0.25 s %d/%d, 0.6 s %d/%d, 1.2 s %d/%d\n",
+    std::printf("title transition: menu/press start alpha 0.1 s %d/%d, 0.25 s %d/%d, 0.6 s %d/%d, 1.2 s %d/%d\n",
                 at[100].first, at[100].second, at[250].first, at[250].second, at[600].first, at[600].second,
                 at[1200].first, at[1200].second);
     check(at[250].first < 40 && at[600].first > 0 && at[600].first < at[1200].first && at[1200].first >= 250,
           "title transition: the menu fades in over Menu_Intro");
-    check(at[100].second > 0 && at[100].second < 255, "title transition: the logo is fading at 0.1 s");
+    check(at[100].second > 0 && at[100].second < 255 && at[250].second < at[100].second,
+          "title transition: PRESS START fades out over Menu_Intro");
   }
 
   // 5. Optional renders.
@@ -1118,6 +1122,19 @@ int main() {
       n.popup_kind = carview::NotifyKind::kDiscountSigns, n.popup_title = t.title, n.popup_text = t.message;
       n.popup_at = n.time - 1.5;
       hud_shot("hud_notify_signs.png", "05_roam_hud_day_drive_orig.png", n);
+      // HUD-11: the panel's SHOW (0..0.218 s) and HIDE (the last 0.137 s),
+      // with the timeline and without (the measured fade).
+      for (const bool on : {true, false}) {
+        carview::set_scene_timelines_enabled(on);
+        for (const double age : {0.05, 0.12, 0.17, 0.25, carview::kPopupSeconds - 0.10, carview::kPopupSeconds - 0.04}) {
+          char name[64];
+          std::snprintf(name, sizeof name, "hud_notify_anim_%04d%s.png", int(age * 1000.0 + 0.5), on ? "" : "_static");
+          n.popup_at = n.time - age;
+          hud_shot(name, "05_roam_hud_day_drive_orig.png", n);
+        }
+      }
+      carview::set_scene_timelines_enabled(true);
+      n.popup_at = n.time - 1.5;
       const auto u = carview::notify_text(carview::NotifyKind::kShowcaseUnlocked, {}, {}, {});
       n.popup_kind = carview::NotifyKind::kShowcaseUnlocked, n.popup_title = u.title, n.popup_text = u.message;
       check(u.title == "SHOWCASE EVENT UNLOCKED!" && u.message == "Show me!", "showcase lines: " + u.title);
