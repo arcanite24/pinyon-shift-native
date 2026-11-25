@@ -975,6 +975,28 @@ double Vehicle::engine_torque(double rpm, double throttle) const {
   return throttle * (wot - closed) + closed;
 }
 
+double Vehicle::hold_throttle() const {
+  const double r = rpm(), w = engine_omega_ * p_.game_torque_scale;
+  const double p0 = engine_torque(r, 0) * w, p1 = engine_torque(r, 1) * w;
+  // The forward drag at the forward speed (the step's aero terms; the
+  // surface's drag scale is the step's own and is left out here).
+  const double v = rotate_inverse(rot_, vel_).z, va = std::fabs(v);
+  double f;
+  if (p_.aero_drag_long > 0) {
+    const double hs = lerp(p_.high_speed_drag_s0, p_.high_speed_drag_s1,
+                           ramp(va, p_.high_speed_drag_v0, p_.high_speed_drag_v1));
+    const double c = v >= 0 ? p_.aero_drag_long * hs * draft_.body_drag + p_.aero_part_drag_front * draft_.front_drag +
+                                  p_.aero_part_drag_rear * draft_.rear_drag
+                            : p_.aero_drag_long * hs;
+    f = c * damage_.aero_drag * va * va;
+  } else {
+    f = p_.drag_quadratic * va * va + p_.drag_constant * std::min(1.0, va);
+  }
+  const double pd = f * va, lo = std::min(p0, p1), hi = std::max(p0, p1);
+  if (hi - lo < 1e-9) return pd > lo ? 1.0 : 0.0;
+  return std::clamp((pd - lo) / (hi - lo), 0.0, 1.0);
+}
+
 void Vehicle::update_gearbox(double dt) {
   // SPEC-CAR-PHYSICS, Clutch and gearbox states. clutch_ is the engagement
   // (the spec's c is 1 - clutch_). Reverse pedal swap already ran upstream

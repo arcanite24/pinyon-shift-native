@@ -509,6 +509,75 @@ void test_ai_controller() {
   CHECK(worst_change < 1.0);
 }
 
+// SPEC-RACE-AI, Throttle: the title's pedal states, caps and brake filter
+// (decoded), and the hold throttle.
+void test_ai_pedals() {
+  auto near = [](double a, double b, double tol) { return std::fabs(a - b) <= tol; };
+  constexpr double dt = drive::Vehicle::kStep;
+  drive::AiPedalState st;
+  drive::AiPedalIn in;
+  in.hold = 0.3, in.speed = 20;
+  double t = 0, b = 0;
+  auto run = [&](double target) {
+    in.target = target;
+    drive::ai_pedals(in, dt, st, t, b);
+    return st.state;
+  };
+  CHECK(run(25) == 3 && t == 1 && b == 0);              // well under the plan: full gas
+  CHECK(run(20.5) == 3 && t == 1);                      // full gas holds above 0.25 m/s
+  CHECK(run(20.2) == 2 && near(t, 0.3 * 1.2, 1e-6));    // then the hold band: H (1 + err)
+  CHECK(run(19.5) == 2 && near(t, 0.3 * 0.5, 1e-6));
+  CHECK(run(18.0) == 5 && t == 0);                      // 2 m/s over: brake 0.6 x the share
+  const double k = std::pow(0.75, 60 * dt);
+  CHECK(near(b, (1 - k) * 0.6, 1e-6));                  // rising through the brake filter
+  CHECK(run(19.5) == 5);                                // braking holds while over the plan
+  const double bp = b;
+  CHECK(run(20.0) == 2 && t > 0);
+  CHECK(near(b, std::pow(0.5, 60 * dt) * bp, 1e-6));    // falling through the filter
+  CHECK(run(0) == 1 && b > 0 && t == 0);                // a target of 0 stops
+  // Track edge: the last gas eased by 0.016 x the rate a 60 Hz update.
+  st = {};
+  in.target = 25;
+  drive::ai_pedals(in, dt, st, t, b);
+  in.edge = true, in.edge_rate = 2;
+  drive::ai_pedals(in, dt, st, t, b);
+  CHECK(st.state == 4 && near(t, 1 - 0.016 * 2 * 60 * dt, 1e-6));
+  in.edge = false;
+  // The gas caps: 0.6 turned off the line; 1.05 - the mean metric off the road.
+  in.heading_cos = 0.0;
+  drive::ai_pedals(in, dt, st, t, b);
+  CHECK(near(t, 0.6, 1e-6));
+  in.heading_cos = 1, in.chi = 1.2, st.slip_mean = 0.6f;
+  drive::ai_pedals(in, dt, st, t, b);
+  CHECK(near(t, 0.45, 1e-6));
+  // Off the road with the front sliding: no full gas.
+  in.chi = 0, st.slip_mean = 0, in.off_track = true, st.slip_front = 1.02f, st.state = 3;
+  drive::ai_pedals(in, dt, st, t, b);
+  CHECK(st.state == 3 && near(t, 0.3, 1e-6));
+  st.slip_front = 1.1f;
+  drive::ai_pedals(in, dt, st, t, b);
+  CHECK(t == 0);
+  // The slip metrics' steady states at 120 Hz.
+  drive::AiCarState c;
+  c.slip = {0.5f, 0.7f, 0.4f, 0.4f};
+  drive::AiPedalState ms;
+  for (int i = 0; i < 200; ++i) drive::ai_slip_metrics(c, dt, ms);
+  CHECK(near(ms.slip_mean, 0.5, 1e-4) && near(ms.slip_front, 0.7, 1e-4));
+  c.slip = {};
+  for (int i = 0; i < 200; ++i) drive::ai_slip_metrics(c, dt, ms);
+  CHECK(near(ms.slip_mean, 0.25, 1e-4) && near(ms.slip_front, 0.25, 1e-4));  // a wheel at 0 counts 0.25
+  // The hold throttle: what holds the speed against the drag.
+  const drive::CarParams p = test_car();
+  drive::Vehicle car(p);
+  car.set_ai_controls(true);
+  car.launch({0, 0, 0}, 0.0, 30.0);
+  const double h = car.hold_throttle();
+  std::printf("hold throttle at 30 m/s: %.3f (gear %d)\n", h, car.gear());
+  CHECK(h > 0 && h < 1);
+  car.reset({0, 0, 0}, 0.0);
+  CHECK(car.hold_throttle() < 0.2);
+}
+
 // SPEC-RACE-AI, Speed planning (Q53): the spec's synthetic cases.
 void test_speed_planner() {
   auto near = [](double a, double b, double tol) { return std::fabs(a - b) <= tol; };
@@ -1106,6 +1175,7 @@ int main() {
   test_model_to_world();
   test_oracle_lap();
   test_ai_field();
+  test_ai_pedals();
   test_ai_slip_rule();
   test_ai_controller();
   test_speed_planner();

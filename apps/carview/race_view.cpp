@@ -73,6 +73,15 @@ int ai_steer_mode() {
   return mode;
 }
 bool slip_rule() { return ai_steer_mode() != 0; }
+// SPEC-RACE-AI, Throttle: the full-gas band rule; SHIFT_AI_PEDALS=title for
+// the title's pedals (decoded), which lose time on our handling (Q175).
+bool ai_title_pedals() {
+  static const bool on = [] {
+    const char* e = std::getenv("SHIFT_AI_PEDALS");
+    return e && std::string(e) == "title";
+  }();
+  return on;
+}
 
 int faked_target(int P, int C, int lo, int hi, int r) {
   if (P > C + 300) return C + 300;
@@ -501,7 +510,8 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
                                                                     .slope_curvature = slope_curvature_,
                                                                     .slip_rule = slip_rule(),
                                                                     .controller = ai_steer_mode() == 2,
-                                                                    .track_edge_avoidance = track_edge_avoidance_});
+                                                                    .track_edge_avoidance = track_edge_avoidance_,
+                                                                    .title_pedals = ai_title_pedals()});
   const double from = circuit_ ? line_.gate_progress - 0.5 * line_.lap_length : std::max(0.0, line_.gate_progress - 1500);
   cars_.clear();
   cars_.resize(size_t(cars - 1));
@@ -1542,7 +1552,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
                    "\"target\":%.2f,\"thr\":%.2f,\"brk\":%.2f,\"steer\":%.2f,\"off\":%.2f,\"cos\":%.2f,\"gear\":%d,"
                    "\"far\":%d,\"state\":%d,\"torque\":%.3f,\"hit\":%.1f,\"hny\":%.2f,\"surf\":%d,"
                    "\"pass\":%d,\"follow\":%d,\"frust\":%.0f,\"y\":%.2f,\"imp\":%llu,\"imps\":%.1f,\"impny\":%.2f,\"yaw\":%.2f,"
-                   "\"beta\":%.3f,\"tcs\":%.3f,\"stm\":%d,\"sat\":%.3f}\n",
+                   "\"beta\":%.3f,\"tcs\":%.3f,\"stm\":%d,\"sat\":%.3f,\"pedal\":%d,\"slipf\":%.2f,\"slipm\":%.2f}\n",
                    session_->clock(), i, q.x1, q.z1, q.speed, q.progress, field_->cross_track(i), lanes_[i],
                    field_->target_speed(i), inputs_[i].throttle, inputs_[i].brake, inputs_[i].steer, q.off_route,
                    q.heading_cos, v.gear(), i < n ? int(cars_[i].far) : 0, i < n ? int(cars_[i].ai.state()) : -1,
@@ -1560,7 +1570,9 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
                      const double fx = f.x / fl, fz = f.z / fl;
                      return std::atan2(u.x * fz - u.z * fx, u.x * fx + u.z * fz);
                    }(),
-                   v.tcs_amount(), int(v.stm_active()), i < n ? double(field_->grip_sat(i)) : 0.0);
+                   v.tcs_amount(), int(v.stm_active()), i < n ? double(field_->grip_sat(i)) : 0.0,
+                   i < n ? field_->pedal_state(i) : 0, i < n ? double(field_->pedals(i).slip_front) : 0.0,
+                   i < n ? double(field_->pedals(i).slip_mean) : 0.0);
     }
     std::fflush(trace);
   }

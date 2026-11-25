@@ -143,6 +143,14 @@ struct AiCarState {
   // this speed (ours: past it the fronts slide and the car runs wide).
   float max_delta = 0.6f;
   float yaw_rate = 0;  // rad/s about up, + turning towards + steer
+  // The pedals' inputs (SPEC-RACE-AI, Throttle): the hold throttle
+  // (Vehicle::hold_throttle; 0.6 before the first), and each wheel's slip
+  // metric, front left, front right, rear left, rear right (0 off the
+  // ground). The title's metric is a per-wheel value from its tyre model
+  // that was not decoded; ours is the normalised combined slip,
+  // hypot(slip ratio, slip angle), 1 at the curves' peaks (Q175).
+  float hold = 0.6f;
+  std::array<float, 4> slip{};
 };
 AiCarState ai_state(const Vehicle& v);
 
@@ -171,6 +179,47 @@ struct AiSteerState {
 double ai_controller_lookahead(const AiCarState& c, const AiYawGain& G, double chi_car, double floor_track,
                                AiSteerState& st);
 struct AiCapacity;
+
+// SPEC-RACE-AI, Throttle (the title's line controller's pedals, decoded).
+// The per-car state: the pedal state (0 none yet, 1 stop, 2 hold, 3 full
+// gas, 4 track edge, 5 brake), the last gas and brake, and the smoothed
+// wheel slip metrics (the mean over the four wheels and the larger front).
+struct AiPedalState {
+  int state = 0;
+  float throttle = 0, brake = 0;
+  float slip_mean = 0, slip_front = 0;
+};
+// The slip metrics' update, once a step before the pedals. At the title's
+// 60 Hz: mean <- 0.2 mean + 0.2 (sum + 0.25 x the wheels at 0), front <-
+// 0.2 front + 0.8 max(front left, front right) (0.25 when both are 0); per
+// step of dt the old value keeps 0.2^(60 dt) and the steady states hold.
+void ai_slip_metrics(const AiCarState& c, double dt, AiPedalState& st);
+// What the pedals read: the speed target (m/s, the plan with its caps; 0
+// stops), the forward speed, the hold throttle H, the friction circle's
+// share left for braking at the target's point (0 to 1), whether
+// track-edge avoidance holds this step with |e|'s growth rate (m/s),
+// whether the car is off the road, and the heading's cosine to the line
+// and chi.
+struct AiPedalIn {
+  double target = 0, speed = 0, hold = 0.6, friction = 1;
+  bool edge = false;
+  double edge_rate = 0;
+  bool off_track = false;
+  double heading_cos = 1, chi = 0;
+};
+// The state from err = target - speed: 1 at a target of 0; 4 while edge
+// avoidance holds and err > -1; else 3 stays while err > 0.25 and 5 while
+// err < 0; else 2 within 1 m/s, 5 below, 3 above. The pedals: 1 brakes
+// clamp(|speed|, 0.5, 1); 2 holds H (1 + err); 3 is full gas; 4 eases the
+// last gas by 0.016 x the rate (at 60 Hz) above the plan and brakes as 5
+// at or below it; 5 brakes 0.6 x the friction share. Off the road with the
+// front metric at 1 or more: no gas in 2, and in 3 H (0 from 1.05). Then
+// the gas is capped at 0.6 at a heading cosine under 0.1 and at
+// clamp(1.05 - mean metric, 0.2, 0.9) past |chi| 1 with the mean above
+// 0.25, and the brake is filtered: rising from under 0.95, 0.75 old + 0.25
+// new; falling from over 0.05, 0.5 old + 0.5 new (at 60 Hz; per step of
+// dt the old share is that to the 60 dt).
+void ai_pedals(const AiPedalIn& in, double dt, AiPedalState& st, double& throttle, double& brake);
 
 // The AI's traction and slide guard (ours; SPEC-CAR-PHYSICS leaves open
 // which assists the AI-driven car has, and traces a traction-control
@@ -224,6 +273,15 @@ class AiField {
     // The look-ahead's floor above 17 m/s, m (the title's is 6 to 10 m by
     // track, from a measure not decoded; Q125).
     float min_lookahead_track = 8.0f;
+    // The title's pedals (SPEC-RACE-AI, Throttle; ai_pedals) under the line
+    // controller, in place of full_gas: the target from the plan 0.67 of a
+    // line point past the car's, interpolated; the heading speed cap (0.2
+    // of max_speed with the heading's cosine under 0.1, 0.1 under -0.5);
+    // while steering back, the target cut by k off the road (0.02 at |e|
+    // 0.25 m to 0.12 plus the metres past a metre outside at 3 m) or far
+    // off the line on the road (|e| over 2.5 m, |chi| over 0.25, the front
+    // metric over 1.5: 0 at 2.5 m to 0.1 at 10 m).
+    bool title_pedals = false;
   };
   AiField(const RacingLine& line, size_t cars, const Options& options);
   AiField(const RacingLine& line, size_t cars) : AiField(line, cars, Options{}) {}
@@ -270,10 +328,11 @@ class AiField {
     std::vector<double> progress;
     std::vector<float> lane, skill, cross, corner, decel, target, cap, prev_steer;
     std::vector<float> look, boost, abs_e, chi, prev_throttle;
+    std::vector<AiPedalState> pedal;
   };
   Snapshot snapshot() const {
     return {seg_, progress_, lane_, skill_, cross_, corner_, decel_, target_, cap_, prev_steer_,
-            look_, boost_, abs_e_, chi_, prev_throttle_};
+            look_, boost_, abs_e_, chi_, prev_throttle_, pedal_};
   }
   void restore(const Snapshot& s) {
     if (s.seg.size() != seg_.size()) return;
@@ -290,7 +349,11 @@ class AiField {
     if (s.look.size() == look_.size()) {
       look_ = s.look, boost_ = s.boost, abs_e_ = s.abs_e, chi_ = s.chi, prev_throttle_ = s.prev_throttle;
     }
+    if (s.pedal.size() == pedal_.size()) pedal_ = s.pedal;
   }
+  // Car i's pedal state (AiPedalState::state; 0 off the title's pedals).
+  int pedal_state(size_t i) const { return pedal_[i].state; }
+  const AiPedalState& pedals(size_t i) const { return pedal_[i]; }
   // The speed car i plans at `distance` along the line (m/s).
   double planned_speed(size_t i, double distance) const;
   // The planner's corner speed of car i at line point j (m/s; the corner pass).
@@ -305,6 +368,7 @@ class AiField {
   // The line controller's per car: the look-ahead (m), the under-steer
   // boost, |e| and chi a step ago, and the last gas.
   std::vector<float> look_, boost_, abs_e_, chi_, prev_throttle_, sat_;
+  std::vector<AiPedalState> pedal_;
   std::vector<AiYawGain> yaw_gain_;
   // The planner's per car: the tables, C, B and the corner speeds by line
   // point for the current C (NaN: not computed yet).
@@ -312,6 +376,9 @@ class AiField {
   std::vector<float> plan_c_, plan_b_;
   mutable std::vector<std::vector<float>> corner_speed_;
   double corner_at(size_t i, size_t j) const;
+  // The plan at line point j (m/s) and, with the planner, the friction
+  // circle's share left there for braking (1 without it).
+  double plan_point(size_t i, size_t j, double* friction) const;
 };
 
 }  // namespace drive
