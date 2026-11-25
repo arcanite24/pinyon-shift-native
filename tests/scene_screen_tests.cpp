@@ -38,6 +38,7 @@
 #include "car_list_screen.h"
 #include "hub_menus.h"
 #include "options_screen.h"
+#include "stats_screen.h"
 #include "map_screen.h"
 #include "pause_screen.h"
 #include "race_screens.h"
@@ -295,6 +296,40 @@ int main() {
     check(carview::options_value_text("camera", "chase low") == "CHASE LOW", "an engine value, upper-cased");
     for (const auto& r : carview::options_rows(carview::OptionsPage::kDifficulty))
       check(!carview::text_of(r.description).empty(), std::string("a description for ") + r.id);
+  }
+  // MY PROFILE > STATS on H_STATISTICS (the title update's).
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kStatsScene)));
+    check(sd.ok(), "H_STATISTICS loads");
+    if (sd.ok()) check_nodes(sd, carview::kStatsScene, carview::stats_nodes());
+    check(carview::stats_tab_name(carview::StatsTab::kGeneral) == "GENERAL", "STATS: GENERAL");
+    check(carview::stats_tab_name(carview::StatsTab::kRecords) == "RECORDS", "STATS: RECORDS");
+    check(carview::stats_tab_name(carview::StatsTab::kTime) == "TIME", "STATS: TIME");
+    carview::StatsData sdata;
+    sdata.game_progress = 0.088, sdata.time_driven_s = 16 * 3600 + 45 * 60 + 17;
+    sdata.total_winnings = 697910, sdata.popularity_rank = 166;
+    const auto g = carview::stats_rows(carview::StatsTab::kGeneral, sdata);
+    // 26_my_profile_stats_orig.png's rows and its values' forms.
+    const char* labels[] = {"GAME PROGRESS", "TIME DRIVEN", "NUMBER OF VICTORIES", "NUMBER OF PODIUMS",
+                            "NUMBER OF RACES", "NUMBER OF CARS IN GARAGE", "TOTAL WINNINGS", "GARAGE VALUE",
+                            "GARAGE PARTS VALUE", "POPULARITY LEVEL"};
+    check(g.size() == 10, "GENERAL's ten rows");
+    for (size_t i = 0; i < g.size() && i < 10; ++i) check(g[i].label == labels[i], std::string("GENERAL: ") + labels[i]);
+    if (g.size() == 10) {
+      check(g[0].value == "8.8%" && std::fabs(g[0].progress - 0.088) < 1e-9, "GAME PROGRESS 8.8% with its bar");
+      check(g[1].value == "16 h 45:17", "TIME DRIVEN 16 h 45:17 (" + g[1].value + ")");
+      check(g[6].value == "697,910 Cr", "TOTAL WINNINGS 697,910 Cr");
+      check(g[9].value == "166th", "POPULARITY LEVEL 166th");
+      check(g[1].progress < 0, "only GAME PROGRESS has a bar");
+    }
+    check(carview::stats_ordinal(1) == "1st" && carview::stats_ordinal(112) == "112th" &&
+              carview::stats_ordinal(23) == "23rd",
+          "ordinals");
+    check(carview::stats_rows(carview::StatsTab::kRecords, sdata).size() <= 14, "RECORDS fits the 14 rows");
+    check(carview::stats_rows(carview::StatsTab::kTime, sdata).size() <= 14, "TIME fits the 14 rows");
+    for (auto t : {carview::StatsTab::kRecords, carview::StatsTab::kTime})
+      for (const auto& r : carview::stats_rows(t, sdata))
+        check(!r.label.empty() && r.label[0] != '_', "a STATS label from the tables: " + r.label);
   }
 
   // The manufacturer select (115_C_BUY_MFRSELECT, v4's).
@@ -1091,6 +1126,26 @@ int main() {
       carview::ui::rasterize(l.items(), fb, W, H);
       const auto p = out_dir / "options_difficulty.png";
       check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write DIFFICULTY");
+    }
+    // STATS's GENERAL over 26_my_profile_stats_orig.png, as it shows.
+    {
+      carview::StatsData sdata;
+      sdata.game_progress = 0.088, sdata.time_driven_s = 16 * 3600 + 45 * 60 + 17;
+      sdata.victories = 16, sdata.podiums = 17, sdata.races = 19, sdata.cars_in_garage = 6;
+      sdata.total_winnings = 697910, sdata.garage_value = 418210, sdata.parts_value = 94210;
+      sdata.popularity_rank = 166;
+      carview::StatsHud sh;
+      sh.rows = carview::stats_rows(carview::StatsTab::kGeneral, sdata);
+      sh.prompts = {{"B", carview::text_of(carview::stats_text::kBack)}};
+      std::vector<uint8_t> fb = backdrop;
+      carview::ui::List l;
+      check(carview::draw_stats_screen(l, d, sh, float(W), float(H)), "draw STATS");
+      int tabs = 0;
+      for (const auto& z : l.hits()) tabs += z.group == carview::ui::kHitTab;
+      check(tabs == 2, "STATS: LB and RB hits");
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / "stats_general.png";
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write STATS");
     }
     // The manufacturer select on 115: Aston Martin, Audi (the cursor),
     // Bentley, BMW and the engine's Hidden & Showcase tab, Audi's profile.

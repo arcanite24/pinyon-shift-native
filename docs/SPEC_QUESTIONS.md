@@ -3210,12 +3210,26 @@ old collection when the garage opened. Guesses:
 Needed: a capture of the screen with barns in each state, and which
 popups offer VIEW ON MAP.
 
-## Q134 (UI, not blocking): TEAM CREDITS
+## Q134 (UI, not blocking): MY PROFILE's TEAM CREDITS and STATS
 
 MY PROFILE's TEAM CREDITS opens `834_CREDITS`, a scrolling credits roll.
 The scene's scroller is not run, so the row shows "TEAM CREDITS — NOT
 AVAILABLE YET". Needed: the credits text's source (a string table or a
 file) and the scroll's speed.
+
+STATS is on `H_STATISTICS`; `26_my_profile_stats_orig.png` shows only
+GENERAL. The title's code lists `IDS_GeneralStats`, `IDS_RecordsStats` and
+`IDS_TimeStats`, so the engine's tabs are GENERAL, RECORDS and TIME. The
+other two tabs' rows are the engine's reading of the MyProfile.str names:
+- RECORDS: HIGHEST SKILL CHAIN SCORE and the thirteen ULTIMATE ... SKILLS
+  (`IDS_Num_Perfect_*` with English text; `IDS_Num_Perfect_Turns` has none);
+- TIME: the three TIME IN ... RACES, then TIME SPENT IN THE MENUS,
+  UPGRADING, TUNING, EDITING LIVERIES, TEST DRIVING and IN AUTOVISTA.
+GAME PROGRESS is the engine's measure: the share of the free roam's finds
+and activities done (signs, barns, roads, outposts, PR stunts, speed traps
+and zones). The engine does not count the ultimate skills or the menu and
+shop times, which show zero. Needed: each tab's rows and order, GAME
+PROGRESS's formula, and whether the tabs wrap.
 
 ## Q135 (UI, not blocking): GAME DIFFICULTY in OPTIONS (rows answered by capture 24)
 
@@ -3238,4 +3252,5 @@ Still open:
 - The defaults RESET TO DEFAULT restores (the engine uses its rows'
   defaults, and GAME DIFFICULTY follows the reset assists).
 - OPPONENT DIFFICULTY's values (the capture shows MEDIUM; AIDiff.str has
-  EASY, NORMAL, HARD).
+  EASY, NORMAL, HARD). RESET TO DEFAULT sets it to MEDIUM, a new profile's
+  level (Q71), not the engine's "default".

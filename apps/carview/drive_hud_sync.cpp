@@ -220,6 +220,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (settings_page.is_open()) settings_page.fill(st.menu_title, st.menu, st.menu_selected);
         // An option page lasts only as long as the settings page it rides on.
         if (!settings_page.is_open()) options_page = carview::OptionsPage::kNone;
+        if (!career_page.is_open()) stats_tab = -1;
         if (paint_open) {
           st.menu_title = "PAINT SHOP (FREE): LEFT/RIGHT PREVIEW   ENTER APPLY";
           st.menu.clear();
@@ -1007,6 +1008,15 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         } else if (save_page.is_open()) {
           list.clear();
           carview::draw_save_page(list, float(width), float(height), save_page, app.save_session);
+        } else if (career_page.is_open() && stats_tab >= 0) {
+          // MY PROFILE > STATS on H_STATISTICS (open_stats left the engine's
+          // page when the scene is missing).
+          list.clear();
+          carview::StatsHud sh;
+          sh.tab = carview::StatsTab(stats_tab);
+          sh.rows = carview::stats_rows(sh.tab, stats_data);
+          sh.prompts = {{"B", carview::text_of(carview::stats_text::kBack)}};
+          carview::draw_stats_screen(list, d, sh, float(width), float(height));
         } else if (settings_page.is_open()) {
           list.clear();
           bool drawn = false;

@@ -506,6 +506,42 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
             // The career page & sponsor challenges board: supports keyboard, gamepad, and full mouse UX.
+            // MY PROFILE > STATS on H_STATISTICS: LB and RB the tabs, B back.
+            if (career_page.is_open() && stats_tab >= 0) {
+              auto tab = [&](int by) {
+                stats_tab = (stats_tab + by + carview::kStatsTabCount) % carview::kStatsTabCount;
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              };
+              auto back = [&]() {
+                career_page.close();
+                stats_tab = -1;
+                app.audio_host.trigger_ui(audio::UiCue::kCancel);
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE) back();
+                else if (k == SDLK_Q || k == SDLK_LEFT || k == SDLK_A || k == SDLK_PAGEUP) tab(-1);
+                else if (k == SDLK_E || k == SDLK_RIGHT || k == SDLK_D || k == SDLK_PAGEDOWN || k == SDLK_TAB)
+                  tab((e.key.mod & SDL_KMOD_SHIFT) && k == SDLK_TAB ? -1 : 1);
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START) back();
+                else if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) tab(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) tab(1);
+              }
+              if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                carview::ui::HitZone hz{};
+                if (e.button.button == SDL_BUTTON_RIGHT) back();
+                else if (e.button.button == SDL_BUTTON_LEFT && ui_mouse_hit(e.button.x, e.button.y, hz)) {
+                  if (hz.group == carview::ui::kHitTab) tab(hz.index == 0 ? -1 : 1);
+                  else if (hz.group == carview::ui4::kHitButton && hz.index == 0) back();
+                }
+              }
+              if (e.type == SDL_EVENT_MOUSE_WHEEL && e.wheel.y != 0) tab(e.wheel.y > 0 ? -1 : 1);
+              return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
+                      e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+            }
             if (career_page.is_open()) {
               const int n_sponsors = app.have_skills_data ? int(app.skills_data.sponsor_challenges.size()) : 0;
               auto close_or_back = [&]() {

@@ -567,6 +567,15 @@ not run yet (Q145).
   rows only; GAME DIFFICULTY then follows the assists it reset). The
   engine's other rows (STABILITY CONTROL, its HUD extras) stay on its own
   pages, behind OPTIONS's X ENGINE SETTINGS.
+- **STATS on `H_STATISTICS`** (`stats_screen.h`; the title update's scene
+  replaces the disc's). MY PROFILE's STATS (`26_*_orig.png`): the STATS
+  tape, the tab between LB and RB (GENERAL, RECORDS, TIME: the three
+  MyProfile.str names the title's code lists), fourteen stat rows and
+  B BACK. GENERAL is the capture's ten rows, GAME PROGRESS with its bar.
+  LB/RB (Q/E, the arrows, the wheel or a click on the bumpers) step the
+  tab; B closes it to MY PROFILE. The rows drop 18 px and the bar rises
+  15 px onto its value's line, as measured on the capture; RB's arrow is
+  LB's mirrored.
 - **Popups.** `draw_message_popup` draws `H_MESSAGE_POPUP` with a title, a
   wrapped message and its own help bar (STAY IN CAR, and the garage's
   COLLECT CAR, NOT READY, NOT DISCOVERED and CAN'T SELL BARN FIND).
@@ -591,8 +600,11 @@ not run yet (Q145).
 - **Rows.** The workshop's order (Q131); the paint booth's vinyl rows open
   the livery editor (Q132); TEAM CREDITS shows a notice (Q134). OPTIONS's
   CONTROLS, AUDIO and VIDEO open the engine's pages.
+- **STATS.** RECORDS and TIME's rows, GAME PROGRESS's measure, and the
+  ultimate skills and menu and shop times the engine does not count (zero)
+  (Q134).
 - **Option pages.** GAME DIFFICULTY's values and RESET TO DEFAULT's
-  defaults are the engine's (Q135). The description panel's dirt is a
+  defaults are the engine's, OPPONENT DIFFICULTY's MEDIUM (Q135). The description panel's dirt is a
   measured dark panel (its crop is not decoded).
 - **Barn Finds.** Which popups offer VIEW ON MAP, and the undiscovered and
   collected tiles (Q133).

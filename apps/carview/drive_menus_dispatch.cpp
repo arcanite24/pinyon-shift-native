@@ -746,6 +746,51 @@ void DriveSession::open_options_page(carview::OptionsPage p) {
           if (!rows.empty()) settings_page.select_id(rows[0].id);
 }
 
+void DriveSession::open_stats() {
+          std::vector<cars::PackInfo> packs;
+          const carview::CareerSummary cs = app.career_summary(packs);
+          career_page.open(cs, std::move(packs));
+          career_page.set_tab(carview::CareerTab::kStats);
+          // The scene's page; the engine's when the scene is missing.
+          stats_tab = carview::SceneScreen(carview::kStatsScene).ok() ? int(carview::StatsTab::kGeneral) : -1;
+          carview::StatsData& d = stats_data;
+          d = {};
+          d.victories = cs.victories, d.podiums = cs.podiums, d.races = cs.races;
+          d.total_winnings = cs.total_winnings, d.cars_in_garage = cs.garage_cars;
+          for (const auto& h : app.saved.car_history) d.time_driven_s += h.time_driven;
+          // The garage's worth as MY GARAGE prices it (the car and its parts).
+          if (app.have_garage && !app.career_garage.cars.empty()) {
+            const cars::PartsDb* gdb =
+                (app.parts_db.valid() && app.parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                    ? app.parts_db.get().get()
+                    : nullptr;
+            carview::GarageBrowser all;
+            all.refresh(app.career_garage, gdb, app.class_bands);
+            for (const auto& e : all.visible()) d.garage_value += e.value_cr;
+          }
+          for (const auto& c : app.career_garage.cars) d.parts_value += c.parts_value;
+          d.popularity_rank = app.current_pop_rank();
+          d.max_skills_score =
+              std::max<int64_t>(app.saved.max_skills_score, app.skill_tracker ? app.skill_tracker->max_skills_score() : 0);
+          d.time_festival_s = app.saved.time_festival, d.time_street_s = app.saved.time_street;
+          d.time_showcase_s = app.saved.time_exhibition;
+          // GAME PROGRESS: the engine's reading (Q134), the share of free
+          // roam's finds and activities done.
+          int64_t done = cs.signs_found + cs.barns_found, total = cs.signs_total + cs.barns;
+          if (app.road_discovery.ready())
+            done += app.road_discovery.discovered_count(), total += app.road_discovery.total_roads();
+          if (app.have_outposts) {
+            done += app.outpost_progress.discovered_count(app.outposts) +
+                    app.outpost_progress.completed_stunt_count(app.outposts);
+            total += int64_t(app.outposts.outposts.size() + app.outposts.stunts.size());
+          }
+          if (app.speed_tracker) {
+            done += int64_t(app.speed_tracker->traps_completed() + app.speed_tracker->zones_completed());
+            total += int64_t(app.speed_data.traps.size() + app.speed_data.zones.size());
+          }
+          d.game_progress = total > 0 ? double(done) / double(total) : 0.0;
+}
+
 void DriveSession::fill_options(carview::OptionsHud& out) {
           namespace t = carview::options_text;
           out = {};
@@ -800,13 +845,7 @@ void DriveSession::hub_menu_choose(bool extra) {
             notice_until = vehicle.time() + 3.0;
           };
           switch (act) {
-            case A::kStats: {
-              std::vector<cars::PackInfo> packs;
-              const carview::CareerSummary cs = app.career_summary(packs);
-              career_page.open(cs, std::move(packs));
-              career_page.set_tab(carview::CareerTab::kStats);
-              break;
-            }
+            case A::kStats: open_stats(); break;
             case A::kAchievements:
               eval_achievements(false);
               achievements.open_screen();

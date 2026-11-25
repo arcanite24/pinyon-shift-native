@@ -45,6 +45,7 @@
 #include "garage/pi_calc.h"
 #include "car_list_screen.h"
 #include "options_screen.h"
+#include "stats_screen.h"
 #include "hub_menus.h"
 #include "hub_scene.h"
 #include "hud.h"
@@ -669,6 +670,11 @@ struct DriveSession {
   std::vector<std::string> options_snapshot;
   void open_options_page(carview::OptionsPage p);
   void fill_options(carview::OptionsHud& out);
+  // MY PROFILE > STATS on H_STATISTICS, over the career page (its tab
+  // kStats): the tab shown, -1 when the page is the engine's.
+  int stats_tab = -1;
+  carview::StatsData stats_data;
+  void open_stats();
   void enter_photo_mode();
   bool collect_next_wristband();
   void open_events_browser(int hub_filter);
