@@ -31,6 +31,7 @@
 #include "game_hud.h"
 #include "hud_scene.h"
 #include "hud_screen.h"
+#include "map_screen.h"
 #include "pause_screen.h"
 #include "race_screens.h"
 #include "stb_image.h"
@@ -327,6 +328,99 @@ int main() {
     }
   }
 
+  // 4b. The pause map (map_screen.h): H_MAP's cursor, popups and player bar,
+  // the FILTER list and the fast travel dialog, their strings and textures.
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kMapScene)));
+    check(sd.ok(), "H_MAP loads");
+    check_nodes(sd, "H_MAP",
+                {"CURSOR", "CURSOR/Group/Rectangle", "CURSOR_SNAP", "CURSOR_SNAP/Rectangle3", "DETAIL", "STATISTICS",
+                 "CONTEXT_POPUP", "Tip", "ButtonBar", "Layer2", "PlayerBar", "Next_Level", "Points", "Wristband",
+                 "TEXT_CAR", "TEXT_PI", "CLASS_A", "TEXT_CR", "BottomRow"});
+    const int detail = sd.find("DETAIL");
+    const std::map<std::string, std::vector<const char*>> groups{
+        {"CareerRace", {"Pin", "Top/TEXT_NAME", "Top/Pill_top", "Top/Pill_bottom", "Middle/Class", "Middle/TEXT_PTS",
+                        "Middle/Pillpoints", "Middle/TEXT_MONEY", "Middle/Pillmoney", "Bottom"}},
+        {"Exhibition", {"Pin", "Top/TEXT_NAME", "Top/Pill_top", "Middle/Money/TEXT_MONEY", "Middle/Class"}},
+        {"StreetRace", {"Pin", "Top/TEXT_NAME", "Top/Pilltop", "Top/Pillmiddle", "Top/Pillbottom",
+                        "Middle/TEXT_COMPLETE", "Bottom/HubList/StreetRaceHUB10/Gold"}},
+        {"Generic", {"Pin", "Top/TEXT_NAME", "Top/Pill_top", "Top/Pill_bottom", "Middle/TEXT_COMPLETE"}},
+        {"Simple", {"Pin", "Top/TEXT_NAME", "Top/Pill_top"}},
+        {"Nemesis", {"Pin", "Top/TEXT_NAME", "Middle/Class", "Middle/TEXT_COMPLETE"}},
+        {"Outpost", {"Pin", "Top/TEXT_NAME", "Top/Pilltop", "Middle/TEXT_COMPLETE", "Bottom/HubList/StreetRaceHUB3/Gold",
+                     "Bottom/HubList/StreetRaceHUB3/Available", "Bottom/TEXT_DISCOUNT", "Bottom/TEXT_VALUE"}},
+    };
+    for (const auto& [g, paths] : groups) {
+      const int gn = child(sd, detail, g);
+      check(gn >= 0, "H_MAP: DETAIL/" + g);
+      for (const char* p : paths) check(sd.find_path(p, gn) >= 0, "H_MAP: DETAIL/" + g + "/" + p);
+    }
+    for (int i = 0; i < 10; ++i) {
+      const std::string hub = i == 0 ? "StreetRaceHUB" : "StreetRaceHUB" + std::to_string(i + 1);
+      for (const char* st : {"Gold", "Silver", "Bronze", "Available", "Unavailable"})
+        check(sd.find_path("StreetRace/Bottom/HubList/" + hub + "/" + st, detail) >= 0,
+              "H_MAP: street race pip " + hub + "/" + st);
+    }
+    const SceneDraw fl(carview::ui_scene(std::string(carview::kMapFilterScene)));
+    check(fl.ok(), "H_FIXED_SETTING_LIST loads");
+    check_nodes(fl, "H_FIXED_SETTING_LIST",
+                {"TitleTapeText", "SCROLLING_LIST", "HELP_BUTTON_BAR", "NAV_POSITION_INDICATOR"});
+    for (int i = 0; i < 5; ++i) {
+      const int bar = fl.find(i == 0 ? "FixedSettingsBar" : "FixedSettingsBar" + std::to_string(i + 1));
+      check(bar >= 0, "H_FIXED_SETTING_LIST: FixedSettingsBar" + std::to_string(i + 1));
+      check(fl.find_path("Group/_6pxPill/Pill", bar) >= 0 && fl.find_path("Group/TEXT_SETTING_NAME", bar) >= 0,
+            "H_FIXED_SETTING_LIST: bar " + std::to_string(i + 1) + " pill and name");
+    }
+    const SceneDraw mp(carview::ui_scene(std::string(carview::kMapDialogScene)));
+    check(mp.ok(), "H_MESSAGE_POPUP loads");
+    check_nodes(mp, "H_MESSAGE_POPUP", {"Title", "Message", "SpinnerBox", "ButtonBar"});
+    // The 12 filter rows, in the original's order, and their strings.
+    check(carview::kMapFilterRows == 12, "map filter: 12 rows");
+    const std::array<const char*, 12> want{"All", "New", "Not Won", "Rivals", "Festival Events", "Showcases",
+                                           "Star Showdowns", "Outposts", "Street Race Hubs", "Speed Cameras",
+                                           "Discount Signs", "Barn Finds"};
+    for (int i = 0; i < carview::kMapFilterRows; ++i) {
+      const auto r = carview::map_filter_text(carview::MapFilterRow(i));
+      check_ref(r, std::string("map filter row ") + want[size_t(i)]);
+      check(carview::text_of(r) == want[size_t(i)], std::string("map filter row text ") + want[size_t(i)] + " = " +
+                                                        carview::text_of(r));
+    }
+    using namespace carview::map_text;
+    for (const carview::StringRef* r :
+         {&kSetRoute, &kClearRoute, &kExitMap, &kFastTravelButton, &kDetails, &kLeaderboard, &kFilter, &kToggle, &kBack,
+          &kOk, &kCancel, &kFilterTitle, &kFastTravelTitle, &kFastTravelAsk, &kFastTravelAskFree, &kFastTravelNoCredits,
+          &kCredits, &kCardFastTravel, &kCardDiscount, &kCardAvailableAt, &kCardEarned})
+      check_ref(*r, "map string " + std::string(r->fallback));
+    check(carview::format1(carview::text_of(kFastTravelButton), carview::format1(carview::text_of(kCredits), "10,000")) ==
+              "FAST TRAVEL (10,000 Cr)",
+          "fast travel help label");
+    check(carview::format1(carview::text_of(kFastTravelAsk), "10,000") ==
+              "Are you sure you want to Fast Travel here for 10,000 credits?",
+          "fast travel question");
+    for (const carview::StringRef r :
+         {carview::StringRef{"Activities", "IDS_Description_GasStation", 0, "HORIZON OUTPOST"},
+          carview::StringRef{"Activities", "IDS_Description_StreetRaceHub", 0, "STREET RACE HUB"},
+          carview::StringRef{"Activities", "IDS_GasStation_Discount", 0, "Discount:"},
+          carview::StringRef{"Activities", "IDS_PB", 0, "PB"},
+          carview::StringRef{"Activities", "IDS_Flyer", 0, "DISCOUNT SIGN"},
+          carview::StringRef{"Activities", "IDS_Description_BarnFind", 0, "BARN FIND"},
+          carview::StringRef{"UnitStrings", "IDS_Units_PTS", 0, "{0} PTS"},
+          carview::StringRef{"UnitStrings", "IDS_Units_KmPerHour", 0, "{0} km/h"},
+          carview::StringRef{"InGame", "IDS_Festival_WS_Line1", 0, "DAK'S GARAGE"},
+          carview::StringRef{"InGame", "IDS_Festival_WS_Line2", 0, "UPGRADE YOUR CAR"}})
+      check_ref(r, "map popup string " + std::string(r.fallback));
+    // The textures the map binds.
+    auto hzt = fh1::Archive::open(game_root / "media" / "ui" / "textures" / "Horizon.zip", nullptr);
+    check(hzt != nullptr, "Horizon.zip opens");
+    for (const char* t : {"MAP/MASKS/MAP_CROSSHAIR", "MAP/MASKS/MAP_LOCKON", "MAP/ICONS/STREETRACEICONS/GOLD",
+                          "MAP/ICONS/STREETRACEICONS/SILVER", "MAP/ICONS/STREETRACEICONS/BRONZE",
+                          "MAP/ICONS/STREETRACEICONS/AVAILABLE", "MAP/ICONS/STREETRACEICONS/UNAVAILABLE",
+                          "PICLASS/CLASS_A"}) {
+      const bool ok = hzt && hzt->read(std::string(t) + ".xds").ok();
+      check(ok, std::string("map texture ") + t);
+    }
+  }
+
   // 5. Optional renders.
   if (const char* shot_env = std::getenv("SHIFT_SCENE_SCREEN_SHOT_DIR"); shot_env && *shot_env) {
     const std::filesystem::path out_dir = shot_env;
@@ -598,6 +692,50 @@ int main() {
       hud_shot("race_won_car.png", "16b_finish_banner_orig.png", rd);
       rr.screen = S::kStayInCar, rr.stay_car = "Nissan GT-R R34";
       hud_shot("race_stay_in_car.png", "18_post_race_stay_in_car_orig.png", rd);
+    }
+
+    // The pause map over the original's captures (the popups at the icons
+    // the captures show).
+    {
+      carview::DriveHud md = d;
+      md.pause = false;
+      md.pause_screen = nullptr;
+      carview::MapOverlayHud mo;
+      mo.active = true;
+      carview::MapScreenHud ms;
+      ms.active = true;
+      ms.age = 5.0;
+      mo.screen = &ms;
+      md.map_overlay = &mo;
+      ms.prompts = {{"A", "SET ROUTE"}, {"B", "EXIT MAP"}, {"X", "FAST TRAVEL (10,000 Cr)"}, {"LB", "FILTER"}};
+      ms.locked = true;
+      auto& p = ms.popup;
+      p.kind = carview::MapPopupKind::kOutpost;
+      p.x = 668, p.y = 403;
+      p.title = "HORIZON OUTPOST", p.line = "GLADSTONE CREEK";
+      p.pips = {carview::MapPip::kAvailable, carview::MapPip::kAvailable, carview::MapPip::kAvailable};
+      p.discount_label = "Discount:", p.discount_value = "0%";
+      hud_shot("map_popup_outpost.png", "map_popup_outpost_orig.png", md);
+      p = {};
+      p.kind = carview::MapPopupKind::kCareerRace;
+      p.x = 563, p.y = 277;
+      p.title = "Bondurant Valley Skirmish", p.class_name = "A", p.points = "110 PTS", p.money = "5,000 Cr";
+      ms.prompts[2] = {"X", "DETAILS"};
+      hud_shot("map_popup_event.png", "map_popup_event_orig.png", md);
+      p = {};
+      p.kind = carview::MapPopupKind::kSimple;
+      p.x = 640, p.y = 359;
+      p.title = "User";
+      ms.prompts.erase(ms.prompts.begin() + 2);
+      hud_shot("map_open.png", "map_open_orig.png", md);
+      ms.filter_open = true;
+      hud_shot("map_filter.png", "map_filter_orig.png", md);
+      ms.filter_row = 11;
+      hud_shot("map_filter_3.png", "map_filter_3_orig.png", md);
+      ms.filter_open = false;
+      ms.dialog = carview::MapDialog::kConfirm;
+      ms.dialog_body = "Are you sure you want to Fast Travel here for 10,000 credits?";
+      hud_shot("map_fasttravel_confirm.png", "map_fasttravel_confirm_orig.png", md);
     }
   }
 

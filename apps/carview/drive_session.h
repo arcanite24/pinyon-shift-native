@@ -45,6 +45,8 @@
 #include "hub_scene.h"
 #include "hud.h"
 #include "livery_editor.h"
+#include "map_cursor.h"
+#include "map_screen.h"
 #include "map_view.h"
 #include "mods_page.h"
 #include "photo_mode.h"
@@ -470,7 +472,20 @@ struct DriveSession {
   bool map_open = false, map_dirty = false, map_dragging = false, map_drag_moved = false;
   float map_drag_start_x = 0.0f, map_drag_start_y = 0.0f;
   double map_zoom = 2, map_cx = 0, map_cz = 0;
-  MapFilter map_filter = MapFilter::kAll;
+  MapFilterSet map_filter;
+  // The FILTER popup (LB on the map) and its cursor row.
+  bool map_filter_open = false;
+  int map_filter_row = 0, map_filter_first = 0;
+  // The scene-driven pause map (drive_map_screen.cpp): the free cursor, the
+  // world point under it, the opening zoom and the fast travel dialog.
+  MapScreenHud map_screen_hud;
+  MapCursor map_cursor;
+  double map_opened_at = 0.0, map_base_zoom = 2.0;
+  double map_px = 0.0, map_pz = 0.0;
+  MapDialog map_dialog = MapDialog::kNone;
+  int map_dialog_marker = -1;
+  int64_t map_dialog_cost = 0;
+  double map_dialog_px = 0.0, map_dialog_pz = 0.0;  // the trainer's bare-cursor destination
   MapCameraController map_cam;
   int map_w = 0, map_h = 0;
   bool window_minimized = false;
@@ -584,6 +599,17 @@ struct DriveSession {
   drive::Input ftc_autopilot_input();
   double ftc_last_impact_seen = -10.0;
   void close_map();
+  // The scene-driven pause map (drive_map_screen.cpp).
+  void map_screen_open();
+  void map_screen_step(double dt, float sx, float sy, float zoom_axis);
+  void map_screen_fill();
+  bool map_screen_event(const SDL_Event& e);
+  void map_cursor_world();
+  bool map_travel_quote(const MapMarker& m, int64_t& cost);
+  int64_t outpost_travel_fee(const std::string& outpost_id);  // the original's fee (freeroam/fast_travel.h)
+  void map_fast_travel_request();
+  void map_fast_travel_confirm();
+  void map_travel_to(double x, double z, double heading);
   void sync_pause_labels();
   void cycle_difficulty(int by);
   void choose();

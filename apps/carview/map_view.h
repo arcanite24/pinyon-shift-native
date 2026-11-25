@@ -42,36 +42,13 @@ inline std::array<double, 2> minimap_compass_north_pos(double map_heading_rad, i
 #include "freeroam/collectibles.h"
 #include "freeroam/road_discovery.h"
 #include "hud.h"
+#include "map_filter.h"
 
 namespace fh1 {
 class Archive;
 }
 
 namespace carview {
-
-enum class MapFilter : int {
-  kAll = 0,
-  kEvents,
-  kOutposts,
-  kSpeed,
-  kSigns,
-  kShowcases,
-  kDiscovery,
-  kCount
-};
-
-inline const char* map_filter_name(MapFilter f) {
-  switch (f) {
-    case MapFilter::kAll: return "ALL";
-    case MapFilter::kEvents: return "EVENTS";
-    case MapFilter::kOutposts: return "OUTPOSTS";
-    case MapFilter::kSpeed: return "SPEED";
-    case MapFilter::kSigns: return "SIGNS";
-    case MapFilter::kShowcases: return "SHOWCASES";
-    case MapFilter::kDiscovery: return "DISCOVERY";
-    default: return "ALL";
-  }
-}
 
 struct MapMarker {
   enum Kind { kEvent, kStreetHub, kFestivalSite, kOutpost, kPrStunt, kSpeedTrap, kSpeedZone, kH2hFinish };
@@ -86,9 +63,20 @@ struct MapMarker {
   bool discovered = true;  // false for undiscovered outposts
   int site_or_hub = 0;  // FestivalSite::Kind, StreetHub::id, or Outpost index
   std::string detail_line;  // optional rich event / PR stunt metadata line
+  // The pause map's popup (map_screen.h): its heading and second line (an
+  // outpost's or hub's name, a place's line, a speed trap's PB), an event's
+  // class letter, points and prize, and a pip per race or mission
+  // (MapPip: -1 locked, 0 open, 1..3 gold, silver, bronze).
+  std::string popup_line;
+  std::string class_name;
+  std::string points, money;
+  std::vector<int> pips;
+  std::string discount;  // an outpost's "0%"
 };
 
-bool map_marker_matches_filter(const MapMarker& m, MapFilter f);
+// The marker's filter row (map_filter.h); PR stunts have no icon.
+MapCategory map_marker_category(const MapMarker& m);
+bool map_marker_matches_filter(const MapMarker& m, const MapFilterSet& f);
 
 struct MapScene {
   double x = 0, z = 0;  // the player, game frame
@@ -101,7 +89,7 @@ struct MapScene {
   // Unfound signs and barns' exact places on the map (the game's Treasure
   // Map, or its collectibles cheat); found ones and rumours always show.
   bool reveal = false;
-  MapFilter filter = MapFilter::kAll;
+  MapFilterSet filter;
   // A race's opponents (x, z), drawn as dots.
   std::vector<std::array<double, 2>> opponents;
   // Free-roam traffic vehicles (x, z), drawn as subtle car dots on the minimap.
@@ -124,6 +112,9 @@ struct MapScene {
   // Unlocked career events, Street Hubs, Festival sites, Outposts & PR Stunts.
   std::vector<MapMarker> markers;
   int selected_marker = -1;  // highlighted marker on pause map (-1: none)
+  // The pause map behind the FILTER popup and the fast travel dialogs:
+  // blurred (map_filter_orig.png, map_fasttravel_confirm_orig.png).
+  bool blur = false;
 };
 
 class MapView {
@@ -220,6 +211,11 @@ class MapView {
   std::vector<Road> roads_;
   // A coarse grid of road segments for the minimap: (road, segment) by cell.
   double cell_ = 400, min_x_ = 0, min_z_ = 0, max_x_ = 0, max_z_ = 0;
+  // The part of the background texture that is painted (world metres); its
+  // edges are black and the pause map's camera stays off them.
+  double art_west_ = freeroam::kMapWest, art_east_ = freeroam::kMapWest + freeroam::kMapWidth;
+  double art_south_ = freeroam::kMapNorth - freeroam::kMapHeight, art_north_ = freeroam::kMapNorth;
+  void find_art_bounds();
   int nx_ = 0, nz_ = 0;
   std::vector<std::vector<std::pair<uint32_t, uint32_t>>> grid_;
   Profile mini_, full_;

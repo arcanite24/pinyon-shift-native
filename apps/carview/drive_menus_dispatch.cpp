@@ -460,25 +460,26 @@ void DriveSession::update_map_selection() {
             app.map_view.clamp_camera(map_w, map_h, map_zoom, map_cx, map_cz);
           }
           map_overlay.active = true;
-          map_overlay.active_filter = int(map_filter);
-          map_overlay.filter_tabs.clear();
-          for (int fi = 0; fi < int(MapFilter::kCount); ++fi)
-            map_overlay.filter_tabs.push_back(map_filter_name(MapFilter(fi)));
+          map_cursor_world();
           map_overlay.roads_discovered = app.road_discovery.ready() ? app.road_discovery.discovered_count() : 0;
           map_overlay.roads_total = app.road_discovery.ready() ? app.road_discovery.total_roads() : 216;
           map_overlay.zoom = map_zoom;
           map_overlay.treasure_map = app.reveal || app.treasure_map_setting || slice12.trainer.effective_reveal_collectibles();
           slice12.trainer.note_map_road({map_cx, 0.0, map_cz});
-          const double snap_r = 280.0 / std::max(0.5, map_zoom);
+          // The lock-on radius: about 30 canvas px (map_popup_event_orig.png).
+          const double snap_r = map_w > 64 && map_h > 64
+                                    ? 30.0 * double(SceneScreen::frame(float(map_w), float(map_h)).s) *
+                                          app.map_view.map_scale(map_w, map_h, map_zoom)
+                                    : 280.0 / std::max(0.5, map_zoom);
           double best_d = snap_r;
           for (size_t i = 0; i < cached_map_markers.size(); ++i) {
             if (!map_marker_visible(cached_map_markers[i])) continue;
-            const double d = std::hypot(cached_map_markers[i].x - map_cx, cached_map_markers[i].z - map_cz);
+            const double d = std::hypot(cached_map_markers[i].x - map_px, cached_map_markers[i].z - map_pz);
             if (d < best_d) best_d = d, map_selected_marker = int(i);
           }
           const drive::Vec3 at = vehicle.position();
           const bool ft_anywhere = slice12.trainer.effective_fast_travel_anywhere();
-          double target_x = map_cx, target_z = map_cz;
+          double target_x = map_px, target_z = map_pz;
           if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
             const auto& m = cached_map_markers[size_t(map_selected_marker)];
             target_x = m.x;
@@ -488,9 +489,8 @@ void DriveSession::update_map_selection() {
             map_overlay.distance_m = std::hypot(m.x - at.x, m.z - at.z);
           } else {
             bool matched_collectible = false;
-            const bool show_barns = map_filter == MapFilter::kAll || map_filter == MapFilter::kDiscovery;
-            const bool show_signs =
-                map_filter == MapFilter::kAll || map_filter == MapFilter::kSigns || map_filter == MapFilter::kDiscovery;
+            const bool show_barns = map_filter.shows(MapCategory::kBarnFind);
+            const bool show_signs = map_filter.shows(MapCategory::kDiscountSign);
             if ((show_barns || show_signs) && app.progress_loaded) {
               double best_cd = snap_r;
               if (show_barns) {
@@ -500,7 +500,7 @@ void DriveSession::update_map_selection() {
                   const bool visible =
                       (freeroam::barn_discovered(st) || st == freeroam::kBarnRumour || map_overlay.treasure_map);
                   if (!visible) continue;
-                  const double d = std::hypot(b.at.x - map_cx, b.at.z - map_cz);
+                  const double d = std::hypot(b.at.x - map_px, b.at.z - map_pz);
                   if (d < best_cd) {
                     best_cd = d;
                     matched_collectible = true;
@@ -516,7 +516,7 @@ void DriveSession::update_map_selection() {
                 for (const auto& sign : app.collectibles.signs) {
                   const bool found = app.progress.signs_found.count(sign.id) > 0;
                   if (!found && !map_overlay.treasure_map) continue;
-                  const double d = std::hypot(sign.at.x - map_cx, sign.at.z - map_cz);
+                  const double d = std::hypot(sign.at.x - map_px, sign.at.z - map_pz);
                   if (d < best_cd) {
                     best_cd = d;
                     matched_collectible = true;
@@ -532,7 +532,7 @@ void DriveSession::update_map_selection() {
             if (!matched_collectible) {
               map_overlay.title = "COLORADO MAP";
               map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR FESTIVAL SITE";
-              map_overlay.distance_m = std::hypot(map_cx - at.x, map_cz - at.z);
+              map_overlay.distance_m = std::hypot(map_px - at.x, map_pz - at.z);
             }
           }
 
@@ -561,11 +561,7 @@ void DriveSession::update_map_selection() {
               if (player_dist <= disc_rad) {
                 map_overlay.gps_hint = "ENTER OUTPOST";
               } else if (m.discovered || ft_anywhere) {
-                const int64_t ft_fee =
-                    ft_anywhere || !app.have_outposts
-                        ? 0
-                        : std::max<int64_t>(0, app.outpost_progress.fast_travel_cost(app.outposts, m.id,
-                                                                                     app.fast_travel_tuning));
+                const int64_t ft_fee = ft_anywhere ? 0 : outpost_travel_fee(m.id);  // the map's fee
                 map_overlay.gps_hint =
                     ft_fee > 0 ? ("FAST TRAVEL (" + carview::thousands(ft_fee) + " CR)") : "FAST TRAVEL (FREE)";
               } else {
@@ -621,6 +617,7 @@ void DriveSession::open_map() {
           mm_size = 0;
           radio_popup_gpu = {};
           cached_map_markers = map_scene().markers;
+          map_screen_open();
           update_map_selection();
           save_now("map");
 }

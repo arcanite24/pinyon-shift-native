@@ -522,12 +522,12 @@ bool DriveSession::free_roam_step() {
                 const NotifyKind done = st.kind == freeroam::PrStuntKind::kSpeed   ? NotifyKind::kSpeedStuntDone
                                         : st.kind == freeroam::PrStuntKind::kPhoto ? NotifyKind::kPhotoShootDone
                                                                                    : NotifyKind::kSkillStuntDone;
-                const int64_t ft_cost =
-                    app.outpost_progress.fast_travel_cost(app.outposts, st.outpost_id, app.fast_travel_tuning);
-                // The popup reads FAST TRAVEL DISCOUNT EARNED (GasStation strings).
+                // No credits: the popup reads FAST TRAVEL DISCOUNT EARNED
+                // (GasStation strings) on a first completion.
                 popup = Popup::notify(done, vehicle.time());
+                if (first_time) popup.text = text_of(map_text::kCardEarned);
                 std::printf("t %.2f s: %s done%s, fast travel %lld CR\n", vehicle.time(), st.title.c_str(),
-                            first_time ? "" : " (repeat)", static_cast<long long>(ft_cost));
+                            first_time ? "" : " (repeat)", static_cast<long long>(outpost_travel_fee(st.outpost_id)));
                 app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
                 app.gps_nav.clear();
                 save_due = true;

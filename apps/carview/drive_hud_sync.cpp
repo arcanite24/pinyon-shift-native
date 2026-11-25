@@ -149,7 +149,7 @@ void DriveSession::rebuild_outpost_hub() {
           item.dest_x = other.spawn.x;
           item.dest_z = other.spawn.z;
           const double dist_m = std::hypot(item.dest_x - at.x, item.dest_z - at.z);
-          const int64_t ft_cost = app.outpost_progress.fast_travel_cost(app.outposts, other.id, app.fast_travel_tuning);
+          const int64_t ft_cost = outpost_travel_fee(other.id);  // the map's fee
           const std::string dist_line =
               "DISTANCE: " + carview::format_distance_unit(dist_m, app.metric_units) + "   •   " +
               (ft_cost <= 0 ? std::string("FREE FAST TRAVEL") : carview::thousands(ft_cost) + " CR");
@@ -368,6 +368,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               }
             }
           }
+          map_screen_fill();
+          map_overlay.screen = &map_screen_hud;
           d.map_overlay = &map_overlay;
         }
         carview::SkillChainHud sk_hud;

@@ -934,6 +934,21 @@ void DriveSession::finalize_session(bool& session_again) {
           const double cx = best_idx >= 0 ? 0.5 * (sc.x + sc.markers[size_t(best_idx)].x) : sc.x;
           const double cz = best_idx >= 0 ? 0.5 * (sc.z + sc.markers[size_t(best_idx)].z) : sc.z;
           sc.selected_marker = best_idx;
+          // The live map's state, so H_MAP draws this view with the cursor
+          // locked on that outpost.
+          cached_map_markers = sc.markers;
+          map_w = int(app.width), map_h = int(app.height);
+          map_cx = cx, map_cz = cz, map_zoom = app.cli_map_zoom;
+          map_selected_marker = best_idx;
+          map_opened_at = double(SDL_GetTicks()) / 1000.0 - 5.0;
+          map_cursor.reset();
+          if (best_idx >= 0) {
+            const SceneFrame fr = SceneScreen::frame(float(map_w), float(map_h));
+            const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
+            const auto& mk = sc.markers[size_t(best_idx)];
+            map_cursor.x = float((0.5 * map_w + (mk.x - cx) / mpp - fr.ox) / fr.s);
+            map_cursor.y = float((0.5 * map_h - (mk.z - cz) / mpp - fr.oy) / fr.s);
+          }
           // 100% edge-to-edge fullscreen viewport (0, 0, width, height) — zero outer margins!
           HudImage img = app.map_view.pause_map(sc, int(app.width), int(app.height), app.cli_map_zoom, cx, cz);
           for (int layer : {0, 1, 3}) host.renderer.set_overlay({}, 0, 0, 0, 0, layer);
@@ -942,8 +957,6 @@ void DriveSession::finalize_session(bool& session_again) {
           map_overlay = carview::MapOverlayHud{};
           map_overlay.active = true;
           map_overlay.active_filter = 0;
-          for (int fi = 0; fi < int(MapFilter::kCount); ++fi)
-            map_overlay.filter_tabs.push_back(map_filter_name(MapFilter(fi)));
           map_overlay.roads_discovered = app.road_discovery.ready() ? app.road_discovery.discovered_count() : 0;
           map_overlay.roads_total = app.road_discovery.ready() ? app.road_discovery.total_roads() : 216;
           map_overlay.zoom = app.cli_map_zoom;
@@ -961,6 +974,8 @@ void DriveSession::finalize_session(bool& session_again) {
             map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR OUTPOST";
             map_overlay.action_hint = "FAST TRAVEL HERE";
           }
+          map_screen_fill();
+          map_overlay.screen = &map_screen_hud;
           set_hud(int(app.width), int(app.height), "");
           std::vector<uint8_t> rgba;
           host.renderer.set_camera_projection(host.cam_proj.near_z, host.cam_proj.far_z, host.cam_proj.proj00, host.cam_proj.proj11);

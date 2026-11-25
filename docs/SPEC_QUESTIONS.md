@@ -2867,3 +2867,78 @@ showcase events that own them is not known.
 Needed: the placement source for these `.pgeo` objects (a track object
 list or the showcase event scripts), and a free-roam capture of the
 festival and a showcase start in the original.
+
+runs the world clock that the gantry LEDs read from the race clock, but
+its gantry panels stay dark at the FR16 start (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
+and textured, and the shipped shaders carry the LED branch, so the
+cause lies past that (the texture or the draw's intensity) and is not
+found), so until they light it fills
+`TEXT_COUNT` with 3, 2, 1 at every start as an interim. Unknown: whether a start with no gantry (a street race, a
+point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
+Needed, narrow: a capture of such a start, or the code that writes
+`TEXT_COUNT`.
+
+## Q87 (UI, not blocking): the pause map's view
+
+The original draws the pause map from `MapProfileFullscreen.xml` and the
+captures (`map_open_orig.png`, `map_popup_*_orig.png`) look top-down, but
+whether its camera tilts or pans in perspective while zooming is not
+known. The engine draws a flat top-down raster (`MapView::pause_map`)
+under `H_MAP`. Needed, narrow: a capture sequence of a full zoom in and
+out, or the map camera's setup in the code.
+
+## Q88 (UI, not blocking): the map filter's combination and Rivals
+
+`H_FIXED_SETTING_LIST` titled `IDS_FilterMap_Title` lists twelve rows,
+all ticked in `map_filter_orig.png`. The engine shows an icon when any
+ticked row covers it (New, Not Won and the category rows OR'd), ticks or
+clears every row with All (cleared in `map_filter_alloff_orig.png`), and
+keeps All ticked exactly when every row is (`map_filter.h`). Unknown:
+whether New and Not Won narrow the category rows instead (AND), and what
+Rivals shows (the engine has no rivals, so the row covers nothing).
+Needed, narrow:
+captures of the map with only New, only Not Won and only Rivals ticked.
+
+## Q89 (UI, not blocking): the minimap camera
+
+In `04_roam_hud_day_idle_orig.png` the minimap's arrow sits about 100 px
+down the 180 px panel (y 520 at 720 lines) with roads well ahead of it.
+The engine uses a fixed camera 108 m up and 54 m behind the car, which
+puts the arrow there and shows about 160 m ahead and 45 m behind. In
+`05_roam_hud_day_drive_orig.png` (moving slowly, same place) the icons sit
+about 15% further apart and the arrow a few pixels lower than at rest, so
+the original's view changes a little with the car, the other way from
+pulling out. Unknown: the original's real camera height and pitch, and how
+it follows speed. Needed, narrow: captures of the minimap at rest and at
+200 km/h on the same road, or the minimap camera's parameters.
+
+## Q90 (UI, not blocking): fast travel to undiscovered outposts, and A on the map
+
+The engine offers FAST TRAVEL only on discovered outposts and the
+festival places, and A with a route set clears it wherever the cursor is
+(the help bar then reads CLEAR ROUTE). Unknown: whether the original
+lists an undiscovered outpost as a destination, and whether A over a
+different icon replaces the route instead of clearing it. Needed, narrow:
+a capture with the cursor on an undiscovered outpost, and one of A over
+another icon while a route is set.
+
+## Q91 (UI, not blocking): the post-stunt fast travel card
+
+When a mission at an outpost is done for the first time, the original
+adds GasStation `IDS_MissionCompletedDiscount` (FAST TRAVEL DISCOUNT
+EARNED) to the stunt's completed headline; the strings `IDS_Discount`
+({0}% OFF) and `IDS_AvailableAtHub` (AVAILABLE AT {0}) suggest a card with
+the discount and the outpost. No travel offer follows. The engine shows
+the headline with FAST TRAVEL DISCOUNT EARNED as the message, without the
+percentage, the outpost or the credits. Needed, narrow: a capture of a
+first PR stunt completion.
+
+## Q92 (UI, not blocking): X DETAILS on the map
+
+X on an event or a street-race hub shows the event's ticket over the map
+(`map_popup_event_details_orig.png`). That screen is the race pre-screen,
+so the engine opens its events page at the hub (or the whole list) in the
+meantime. B on the ticket returns to the map with the event still
+selected (`map_popup_event_details_back_orig.png`). Unknown: whether A on
+the ticket starts the event or sets a route. Needed, narrow: a capture of
+A on the ticket.

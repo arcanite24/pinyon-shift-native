@@ -177,6 +177,71 @@ caller then draws the old hand-drawn block.
   `SHIFT_SCENE_SCREEN_SHOT_DIR` (`hud_*.png`), with each offset in a named
   constant next to the capture it came from.
 
+## The map
+
+`map_screen.cpp` draws `H_MAP` over the engine's map raster
+(`MapView::pause_map`, flat and top-down; Q87), with the session glue in
+`drive_map_screen.cpp`, the cursor and zoom in `map_cursor.h` and the
+filter in `map_filter.h`.
+
+- **Cursor.** The map opens centred on the player with the cursor on the
+  player's arrow (`map_open_orig.png`); near the map's edge the view stays
+  inside the map and the cursor opens off the centre, still on the arrow.
+  The left stick, the D-pad and WASD/arrows move a free cursor
+  (`MAP_OVERLAY/CURSOR`) at 490 px/s, slowed to 0.45 times over an icon.
+  Past 190 px across or 120 px up from the centre the map scrolls under it
+  at 470 px/s; it stops at x 96..1184, y 88..635. Within 30 px of an icon
+  (or the player's arrow, a found sign or a revealed barn) it locks on
+  (`CURSOR_SNAP`, tinted faint white and scaled to about 54 px as in
+  `map_popup_outpost_orig.png`); the icon grows 1.25 times and the others
+  dim to 0.6.
+- **Zoom.** The right stick's y (or the wheel) zooms about the cursor at 1.9
+  per second, from the opening scale (the most zoomed out) to 2.6 times it.
+- **Popup.** `MAP_OVERLAY/DETAIL` shows the icon's group: `CareerRace`
+  (title, class chip `PICLASS/CLASS_<c>_SM`, points, credits), `StreetRace`
+  (the hub's medals from its events' best places), `Outpost` (one pip per
+  mission and the fee's discount), `Generic` (two lines: a festival place's
+  `IDS_Festival_*_Line1/2`, a speed trap's PB) or `Simple` (one line: the
+  player's name, a sign's `IDS_Flyer` and number, a barn). The box is cropped
+  to its widest row and centred on the icon with its last row about 60 px
+  above it, measured from `map_popup_*_orig.png`.
+- **Help bar.** A SET ROUTE (CLEAR ROUTE when a route is set; A then clears
+  it wherever the cursor is), B EXIT MAP, X for the icon (FAST TRAVEL (n Cr)
+  on a destination, DETAILS on an event or hub) and LB FILTER; the player
+  bar is `925_PAUSE_MENU`'s, bound by `bind_pause_player_bar`.
+- **Filter.** LB opens `H_FIXED_SETTING_LIST` titled `IDS_FilterMap_Title`
+  over the blurred map: the twelve InGame rows (All, New, Not Won, Rivals,
+  Festival Events, Showcases, Star Showdowns, Outposts, Street Race Hubs,
+  Speed Cameras, Discount Signs, Barn Finds), all ticked at first. A ticks a
+  row; A on All ticks or clears every row, and All is ticked exactly when
+  every row is. An icon shows when any ticked row covers it (Q88);
+  facilities (Race Central, the Autoshow and so on) always show. Eight rows
+  show, drawn with the scene's five bars on one leaning line, and the list
+  scrolls only when the cursor passes its first or last row.
+- **Rumours.** A barn rumour is the profiles' `barn_find_region` ellipse,
+  flat white (a=80 on the pause map, solid with a faint black edge on the
+  minimap); the barn icon sits inside it.
+
+## Fast travel
+
+`freeroam/fast_travel.h` quotes a destination from `GlobalRegistry.xml`
+(`Activities/Outposts/TotalCost`, 10,000 Cr, less `Discount_<n>_Missions`
+for the missions done at that outpost: 10,000 / 7,500 / 5,000 / 0). The
+festival places are free; events, hubs, traps, signs and barns are not
+destinations, and an outpost must be discovered (Q90).
+
+- **Confirm.** X shows `H_MESSAGE_POPUP` titled PauseMenu `IDS_FastTravel`
+  with `IDS_FastTravelDesc` (or `_Free`) and OK / CANCEL; short of credits it
+  says `IDS_FastTravelDesc_Failed` with OK alone
+  (`map_fasttravel_confirm_orig.png`). OK takes the fee, saves and reloads
+  the world at the outpost's spawn behind the loading screen.
+- **Stunt discount.** A first completion of an outpost's mission shows the
+  stunt's completed headline with GasStation `IDS_MissionCompletedDiscount`
+  (FAST TRAVEL DISCOUNT EARNED) as its message; there is no travel offer
+  (Q91).
+- **Trainer.** With the trainer's fast travel anywhere every destination is
+  free, undiscovered outposts too, and X on the bare cursor travels there.
+
 ## Porting the next screen
 
 1. **Find the scene.** Look up the screen's scene in the scene registry and
@@ -247,8 +312,29 @@ caller then draws the old hand-drawn block.
 
 - **Minimap.** The engine's map raster is kept: it covers the original's
   visible map (90..270 x 420..600) and the scene's `MATERIAL_VIEWPORT` frame
-  is not drawn. The player arrow sits lower than the original's (about
-  y 570 against 520).
+  is not drawn. Its camera is fixed, with the player's arrow 100 px down the
+  180 px panel (y 520 as in the original; Q89); the roads are the profile's
+  white line over its soft under-line, with no driven tint, and traffic and
+  the Festival's drivers are the profile's vehicle icon. The original's wide
+  fading ribbon on the player's own road is not drawn.
+- **Map details.** X DETAILS on an event or hub opens the engine's events
+  page at that hub; the original shows the event's ticket over the map
+  (`map_popup_event_details_orig.png`, Q92). A speed trap has no X
+  LEADERBOARD (the engine has no leaderboards). The selected event's course
+  outline (pink, `map_popup_event_details_back_orig.png`) is not drawn. The
+  original zooms out about a sixth past its opening scale
+  (`map_zoom_out_orig.png`); the engine stops at the opening scale. The
+  engine's view stops where the background texture's paint ends (its
+  black side margins never show); at the west edge the original stops
+  about 100 px (opening scale) further in
+  (`map_streethub_search_w_orig.png`: about 140 px of desert west of
+  Carson's highway curve at its scale, the engine about 285 px at its
+  own). In the live render the FILTER title tape is greyer and
+  taller than the original's white bar, and the list's scroll indicator is
+  drawn by hand (a track and a thumb at the cursor's row) in place of the
+  scene's. The icons' open and pulse animations and the barn rumour's
+  reveal animation are not ported, and travel keeps the loading screen
+  without the original's fast travel camera.
 - **Not ported.** `DirectionArrows`; the notifications' tape slide (they
   fade); the Show me! action (hidden, no action behind it); the ghosts and
   rewind message toggles (the engine has neither element).

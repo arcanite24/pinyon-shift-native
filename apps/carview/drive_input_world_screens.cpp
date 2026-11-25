@@ -409,6 +409,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
             //    LB/RB or Q/E cycles filters, LT/RT/wheel zooms, B/Esc/M/Back closes).
             if (map_open) {
               bool close = false;
+              // The scene-driven map's filter popup, dialogs, LB and X first.
+              if (map_screen_event(e)) return true;
               auto zoom_by = [&](double f) {
                 map_cam.nudge_target_zoom(f);
                 map_dirty = true;
@@ -431,8 +433,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 app.audio_host.trigger_ui(audio::UiCue::kMove);
               };
               auto resolve_gps_target = [&](double& tx, double& tz, std::string& label, traffic::GpsDestKind& dk) {
-                tx = map_cx;
-                tz = map_cz;
+                tx = map_px;
+                tz = map_pz;
                 label = "CUSTOM WAYPOINT";
                 dk = traffic::GpsDestKind::kGeneric;
                 if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
@@ -456,9 +458,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                   }
                   return;
                 }
-                const bool show_barns = map_filter == MapFilter::kAll || map_filter == MapFilter::kDiscovery;
-                const bool show_signs = map_filter == MapFilter::kAll || map_filter == MapFilter::kSigns ||
-                                        map_filter == MapFilter::kDiscovery;
+                const bool show_barns = map_filter.shows(MapCategory::kBarnFind);
+                const bool show_signs = map_filter.shows(MapCategory::kDiscountSign);
                 if ((show_barns || show_signs) && app.progress_loaded) {
                   const bool reveal = app.reveal || app.treasure_map_setting ||
                                       slice12.trainer.effective_reveal_collectibles();
@@ -507,8 +508,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 resolve_gps_target(tx, tz, label, dk);
                 // Toggle off if pressing A/Enter/Click again on the active GPS destination;
                 // ALWAYS keep the World Map open so the player can inspect the GPS route!
-                if (app.gps_nav.active() &&
-                    std::hypot(tx - app.gps_nav.route().dest_x, tz - app.gps_nav.route().dest_z) < 120.0) {
+                if (app.gps_nav.active()) {
                   app.gps_nav.clear();
                   app.audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
                   app.audio_host.trigger_ui(audio::UiCue::kCancel);
@@ -548,12 +548,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                           app.audio_host.trigger_ui(audio::UiCue::kError);
                           return;
                         }
-                        // The outpost's fast-travel price (GlobalRegistry Activities/Outposts:
-                        // 10,000 / 7,500 / 5,000 CR, free with its 3 PR Stunts done).
-                        const int64_t ft_fee =
-                            ft_anywhere ? 0
-                                        : std::max<int64_t>(0, app.outpost_progress.fast_travel_cost(
-                                                                   app.outposts, op->id, app.fast_travel_tuning));
+                        // The map's fee: less for each of the outpost's missions done.
+                        const int64_t ft_fee = outpost_travel_fee(op->id);
                         if (ft_fee > 0 && app.career.credits < ft_fee) {
                           notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
                           notice_until = vehicle.time() + 3.5;
@@ -685,13 +681,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 if (k == SDLK_EQUALS || k == SDLK_PLUS || k == SDLK_KP_PLUS) zoom_by(1.35);
                 if (k == SDLK_MINUS || k == SDLK_KP_MINUS) zoom_by(1 / 1.35);
                 if (!e.key.repeat && k == SDLK_Q) {
-                  map_filter = MapFilter((int(map_filter) + int(MapFilter::kCount) - 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
                 if (!e.key.repeat && k == SDLK_E) {
-                  map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -721,8 +717,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
                   map_dragging = false;
                   map_drag_moved = false;
-                  if (hz.group == carview::ui::kHitTab && hz.index >= 0 && hz.index < int(MapFilter::kCount)) {
-                    map_filter = MapFilter(hz.index);
+                  if (hz.group == carview::ui::kHitTab && hz.index >= 0 && hz.index < kMapFilterRows) {
+                    map_filter.toggle(MapFilterRow(hz.index));
                     map_dirty = true;
                     update_map_selection();
                     app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -735,7 +731,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                     } else if (hz.index == 1) {
                       map_fast_travel_or_secondary();
                     } else if (hz.index == 2) {
-                      map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                      map_filter_open = true;
                       map_dirty = true;
                       update_map_selection();
                       app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -788,13 +784,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                 if (b == SDL_GAMEPAD_BUTTON_WEST) map_fast_travel_or_secondary();
                 if (b == SDL_GAMEPAD_BUTTON_NORTH) map_center_on_car();
                 if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
-                  map_filter = MapFilter((int(map_filter) + int(MapFilter::kCount) - 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
                 if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
-                  map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                  map_filter_open = true;
                   map_dirty = true;
                   update_map_selection();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -952,13 +948,10 @@ bool DriveSession::handle_events_and_outpost_event(const SDL_Event& e) {
                       notice = "QUIT RACE TO FAST TRAVEL";
                       notice_until = vehicle.time() + 3.0;
                     } else {
-                      // The festival is always free; an outpost costs its fast-travel price.
-                      const bool ft_free = (item.kind == OutpostHubItem::kFastTravelFestival) ||
-                                           slice12.trainer.effective_fast_travel_anywhere() || !app.have_outposts;
+                      // The map's rule: the festival places are free, an
+                      // outpost costs less for each of its missions done.
                       const int64_t ft_fee =
-                          ft_free ? 0
-                                  : std::max<int64_t>(0, app.outpost_progress.fast_travel_cost(
-                                                             app.outposts, item.ref_id, app.fast_travel_tuning));
+                          item.kind == OutpostHubItem::kFastTravelFestival ? 0 : outpost_travel_fee(item.ref_id);
                       if (ft_fee > 0 && app.career.credits < ft_fee) {
                         notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
                         notice_until = vehicle.time() + 3.5;

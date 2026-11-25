@@ -456,6 +456,12 @@ void fill_pause_screen(const PauseMenu& menu, double now, PauseScreenHud& out) {
   out.sponsor_selected = menu.sponsor_selected;
 }
 
+void bind_pause_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& band_texture) {
+  PauseScreenHud ps;
+  ps.band_texture = band_texture;
+  bind_player_bar(sc, st, ps);
+}
+
 bool draw_pause_screen(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float w, float h) {
   switch (ps.screen) {
     case Screen::kSponsorChallenges:
