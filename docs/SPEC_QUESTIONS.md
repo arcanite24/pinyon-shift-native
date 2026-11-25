@@ -2307,3 +2307,28 @@ Still interim (the spec marks the gain "probable"):
 
 Needed: the auto-brake's threshold and gain constants, from a trace
 through a few corners with Braking set to Assisted.
+
+## Q104 (FEEL-18, not blocking): racing-wheel dead zones
+
+ForzaProfile.sch keeps a wheel's dead zones apart from a pad's:
+WheelAdvancedOptions has steering 0.01/0.95, throttle 0.15/1.00, brake
+0.15/0.95, clutch 0.15/0.90 and handbrake 0.10/1.00, against
+ControllerAdvancedOptions' 0.24/0.95 steering. The engine gave a wheel
+only its own WheelShaping (saturation, curve, skip), with the pad's
+pedal window. A wheel, whether SDL sees it as a gamepad or as a raw
+joystick, now takes WheelAdvancedOptions' window
+(`ControlDeadzones::wheel_defaults`) before the shaping, whose defaults
+change nothing.
+
+Still interim:
+
+- the rescale itself, linear from inside to outside per axis, as for the
+  pad (the pre-curve is open, SPEC-CAR-PHYSICS);
+- whether the original applies the pad's steering dead zone radially;
+- the wheel window is the profile default; the settings page has no
+  rows for it;
+- WheelShaping, which the original does not have, stays as a user
+  option, and the Separate Devices path keeps its own per-axis dead
+  zones.
+
+Needed: the input manager's dead-zone rescale and its wheel rows.

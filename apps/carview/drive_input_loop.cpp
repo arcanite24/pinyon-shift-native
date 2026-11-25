@@ -618,28 +618,34 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
             const char* pname = SDL_GetGamepadName(pad);
             const bool is_wheel_pad = carview::is_racing_wheel_device(
                 SDL_GetGamepadVendor(pad), SDL_GetGamepadProduct(pad), pname ? pname : "");
+            // A wheel takes WheelAdvancedOptions' dead zones, a pad
+            // ControllerAdvancedOptions' (FEEL-18).
+            static const drive::ControlDeadzones kWheelDz = drive::ControlDeadzones::wheel_defaults();
+            const drive::ControlDeadzones& pdz = is_wheel_pad ? kWheelDz : dz;
             const double raw_steer = axis(SDL_GAMEPAD_AXIS_LEFTX);
             const double steer =
                 is_wheel_pad
-                    ? drive::shape_wheel_steering(raw_steer, slice12.wheel_shaping)
-                    : drive::apply_deadzone_signed(raw_steer, dz.steering_inside, dz.steering_outside);
+                    ? drive::shape_wheel_steering(
+                          drive::apply_deadzone_signed(raw_steer, pdz.steering_inside, pdz.steering_outside),
+                          slice12.wheel_shaping)
+                    : drive::apply_deadzone_signed(raw_steer, pdz.steering_inside, pdz.steering_outside);
             const double raw_throttle =
                 (g_x_prompt_consumed && gas_ctrl == drive::PadControl::kButtonX)
                     ? 0.0
-                    : pad_control_value(pad, gas_ctrl, dz.throttle_inside, dz.throttle_outside);
+                    : pad_control_value(pad, gas_ctrl, pdz.throttle_inside, pdz.throttle_outside);
             const double raw_brake =
                 (g_x_prompt_consumed && brake_ctrl == drive::PadControl::kButtonX)
                     ? 0.0
-                    : pad_control_value(pad, brake_ctrl, dz.brake_inside, dz.brake_outside);
+                    : pad_control_value(pad, brake_ctrl, pdz.brake_inside, pdz.brake_outside);
             const double throttle = is_wheel_pad ? drive::shape_wheel_pedal(raw_throttle, slice12.wheel_shaping) : raw_throttle;
             const double brake = is_wheel_pad ? drive::shape_wheel_pedal(raw_brake, slice12.wheel_shaping) : raw_brake;
             const bool handbrake =
                 !(g_x_prompt_consumed && hb_ctrl == drive::PadControl::kButtonX) &&
-                pad_control_value(pad, hb_ctrl, dz.handbrake_inside, dz.handbrake_outside) > 0.5;
+                pad_control_value(pad, hb_ctrl, pdz.handbrake_inside, pdz.handbrake_outside) > 0.5;
             const double clutch =
                 (g_x_prompt_consumed && clutch_ctrl == drive::PadControl::kButtonX)
                     ? 0.0
-                    : pad_control_value(pad, clutch_ctrl, dz.clutch_inside, dz.clutch_outside);
+                    : pad_control_value(pad, clutch_ctrl, pdz.clutch_inside, pdz.clutch_outside);
             // Right-stick camera look (SPEC-CAMERAS, look-around): the stick picks
             // one of the original's targets, back (pi) or left/right (pi/2), which
             // the look spring reaches; released, it springs forward again. The

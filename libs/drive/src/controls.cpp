@@ -52,6 +52,16 @@ void ControlDeadzones::clamp_valid() {
   clamp_pair(handbrake_inside, handbrake_outside);
 }
 
+ControlDeadzones ControlDeadzones::wheel_defaults() {
+  ControlDeadzones d;
+  d.steering_inside = 0.01, d.steering_outside = 0.95;
+  d.throttle_inside = 0.15, d.throttle_outside = 1.00;
+  d.brake_inside = 0.15, d.brake_outside = 0.95;
+  d.clutch_inside = 0.15, d.clutch_outside = 0.90;
+  d.handbrake_inside = 0.10, d.handbrake_outside = 1.00;
+  return d;
+}
+
 double right_stick_look_target(double rx, double ry) {
   constexpr double kPi = 3.14159265358979323846;
   if (ry > 0.5 && ry > std::fabs(rx)) return kPi;
