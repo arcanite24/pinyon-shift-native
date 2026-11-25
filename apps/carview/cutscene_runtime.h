@@ -1,0 +1,72 @@
+// carview's in-engine cutscene playback: the disc's free-roam cutscenes
+// (libs/cutscene) driving the render camera, the full-screen black and white
+// fades the flows script (CBlackOut, CWhiteFlash, CFadeIn, CFadeOut) and the
+// cutscenes' own FadeOptions, and the events the host acts on (place-car,
+// audio, voice-over, mixer snapshots). In-engine cutscenes are not skipped
+// (interim, SPEC_QUESTIONS Q61 g); movies skip on their own.
+#pragma once
+
+#include <array>
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "cutscene/cutscene.h"
+#include "drive/cameras.h"
+#include "race/first_time_career.h"
+
+namespace carview {
+
+class CutsceneRuntime {
+ public:
+  // Loads the library from the disc once; later calls return the first result.
+  bool ensure_loaded(const std::filesystem::path& game_root);
+  const std::string& error() const { return error_; }
+  const cutscene::Library& library() const { return lib_; }
+
+  // Starts a cutscene by name (false when it is not on the disc). `hold`
+  // honours the cutscene's exit-on-finish voice-over.
+  bool play(std::string_view name, bool hold);
+  void stop();
+  bool active() const { return player_.active(); }
+  const cutscene::Cutscene* current() const { return player_.active() ? player_.cutscene() : nullptr; }
+  double time() const { return player_.time(); }
+
+  // Steps playback (not while frozen) and returns the events crossed.
+  std::vector<const cutscene::Event*> update(double dt, bool vo_playing);
+  // Capture: jump to `t` (events up to t fire and are returned) and freeze.
+  std::vector<const cutscene::Event*> seek_and_freeze(double t);
+  bool frozen() const { return frozen_; }
+
+  // Scripted fades (FtcFade); they also advance in update().
+  void fade(const race::FtcFade& f);
+  void step_fades(double dt);
+  // Drops the scripted fade (and the black a cut or fade-out left).
+  void clear_fade() { fade_on_ = false; }
+  // The overlay to draw over the frame: the scripted fade and the
+  // cutscene's own fades, whichever covers more.
+  cutscene::Overlay overlay() const;
+
+  // The cutscene camera for the player car at `car_pos` / `car_heading_rad`
+  // (engine heading, atan2(f.x, f.z)); false when no cutscene is playing.
+  bool camera(const std::array<double, 3>& car_pos, double car_heading_rad, drive::CameraView& out) const;
+  // The eye the world should stream around (the camera's, else nothing).
+  bool streaming_focus(const std::array<double, 3>& car_pos, double car_heading_rad, std::array<double, 3>& out) const;
+
+ private:
+  cutscene::Library lib_;
+  bool tried_ = false, loaded_ = false;
+  std::string error_;
+  cutscene::Player player_;
+  bool frozen_ = false;
+  // The scripted fade in progress (or the black it leaves behind).
+  race::FtcFade fade_{};
+  bool fade_on_ = false;
+  double fade_t_ = 0.0;
+};
+
+// CWhiteFlash's length: about 6 frames (UI_LAYOUTS; interim, Q61 e).
+inline constexpr double kWhiteFlashSeconds = 0.1;
+
+}  // namespace carview

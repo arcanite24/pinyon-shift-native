@@ -529,6 +529,10 @@ struct DriveSession {
   bool map_marker_visible(const MapMarker& m);
   void update_map_selection();
   void open_map();
+  // First-time career glue (drive_first_time_career.cpp).
+  void feed_first_time_career();
+  void apply_first_time_career();
+  double ftc_throttle = 0.0;
   void close_map();
   void sync_pause_labels();
   void cycle_difficulty(int by);

@@ -145,6 +145,10 @@ struct DriveConfig {
   bool metric_units = true;
   bool story_intro_cli = false;
   std::string cli_campaign_stage;
+  // Capture entry point: `--cutscene <name> [--cutscene-time <s>]` plays a
+  // disc cutscene frozen at that time.
+  std::string cli_cutscene;
+  double cli_cutscene_time = 0.0;
   std::filesystem::path telemetry_json_path;
   std::filesystem::path record_session_dir;
   std::string capture_times_csv;

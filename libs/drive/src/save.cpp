@@ -860,6 +860,8 @@ void update_car_history(std::vector<SavedCarHistory>& history, int64_t garage_id
 bool campaign_stage_is_onboarding(std::string_view campaign_stage) {
   std::string k(campaign_stage);
   for (char& ch : k) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+  // "ftc:<stage>": the first-time career in progress (race::FirstTimeCareer).
+  if (k.rfind("ftc:", 0) == 0) return k != "ftc:complete";
   return k == "intro" || k == "opening" || k == "opening_cutscene" || k == "viper_drive" || k == "viper" ||
          k == "intro_drive" || k == "qualify" || k == "corrado_qualify" || k == "registration" ||
          k == "starter_handoff";
@@ -870,6 +872,14 @@ std::string resolve_campaign_reload_car(DriveSave& save, const std::string& sele
   std::string st = save.campaign_stage;
   for (char& ch : st) ch = char(std::tolower(static_cast<unsigned char>(ch)));
 
+  if (st.rfind("ftc:", 0) == 0 && st != "ftc:complete") {
+    // The first-time career: the Viper until the diner, then the Corrado.
+    save.intro_completed = false;
+    const bool viper = st == "ftc:controls" || st == "ftc:opening_cutscene" || st == "ftc:initial_drive" ||
+                       st == "ftc:not_started";
+    if (viper) return !viper_media.empty() ? viper_media : save.car;
+    return !save.car.empty() ? save.car : starter_media;
+  }
   if (st == "intro" || st == "opening" || st == "opening_cutscene" || st == "viper_drive" || st == "viper" ||
       st == "intro_drive") {
     save.intro_completed = false;

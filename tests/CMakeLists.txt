@@ -30,6 +30,22 @@ add_executable(audio_tests audio_tests.cpp)
 target_link_libraries(audio_tests PRIVATE shift_audio)
 add_test(NAME audio_tests COMMAND audio_tests)
 
+# The cutscene reader and player on synthetic documents; the corpus test
+# parses every free-roam cutscene on the disc (skipped, exit 77, without
+# SHIFT_GAME_ROOT).
+add_executable(cutscene_tests cutscene_tests.cpp)
+target_link_libraries(cutscene_tests PRIVATE shift_cutscene)
+add_test(NAME cutscene_tests COMMAND cutscene_tests)
+add_executable(cutscene_corpus_tests cutscene_corpus_tests.cpp)
+target_link_libraries(cutscene_corpus_tests PRIVATE shift_cutscene)
+add_test(NAME cutscene_corpus_tests COMMAND cutscene_corpus_tests)
+set_tests_properties(cutscene_corpus_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
+
+# The first-time career's stage order, stepped headless.
+add_executable(first_time_career_tests first_time_career_tests.cpp)
+target_link_libraries(first_time_career_tests PRIVATE shift_race)
+add_test(NAME first_time_career_tests COMMAND first_time_career_tests)
+
 add_executable(data_tests data_tests.cpp)
 target_link_libraries(data_tests PRIVATE shift_data)
 add_test(NAME data_tests COMMAND data_tests)
@@ -370,11 +386,13 @@ if(SHIFT_BUILD_CARVIEW)
 
   add_executable(campaign_flow_tests campaign_flow_tests.cpp
     ../apps/carview/campaign_director.cpp
+    ../apps/carview/cutscene_runtime.cpp
+    ../apps/carview/first_time_career_ui.cpp
     ../apps/carview/campaign_ui.cpp
     ../apps/carview/audio_host.cpp
     ../apps/carview/fmv_player.cpp)
   target_include_directories(campaign_flow_tests PRIVATE ../apps/carview)
-  target_link_libraries(campaign_flow_tests PRIVATE carview_render shift_race shift_audio shift_drive shift_cars)
+  target_link_libraries(campaign_flow_tests PRIVATE carview_render shift_race shift_cutscene shift_audio shift_drive shift_cars)
   add_test(NAME campaign_flow_tests COMMAND campaign_flow_tests)
 
   add_executable(ui4_cjk_l10n_tests ui4_cjk_l10n_tests.cpp
