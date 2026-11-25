@@ -168,6 +168,10 @@ void DriveSession::update_race_screens(double dt) {
 
   if (!app.race || app.headless) {
     race_screens.stop();
+    // Headless runs have no screens to step through: the campaign's outro
+    // (finale, boss, showcase) follows the finish at once.
+    if (app.race && app.headless && app.race->player_finished())
+      apply_campaign_action(app.campaign.flow().on_post_race_done());
     return;
   }
   race_screens.update(dt);
