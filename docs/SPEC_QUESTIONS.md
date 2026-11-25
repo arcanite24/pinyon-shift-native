@@ -3426,3 +3426,89 @@ DLC filter; and the Rally ticket's trigger radius and speed.
 
 Needed: `CTriggerRallyEventUnlocks`, `CIsRallyXPEvent` and the Rally
 reward path in the generated v4 code.
+
+## Q159 (INTRO-03, WORLD-11): route 170 and the opening's time-of-day zones
+
+Supersedes, in Q66's engine interims, "the AI drives the sat-nav route
+rather than route 170's own path" in part and "the two time-of-day zones
+... are not implemented" in full.
+
+**Time-of-day zones (answered 2026-11-25**, from the first-time-career
+activity's zone setup and trigger handler in the generated code). Two
+20 m spheres: (-116, 107, -3377) asks for 18:00 (64,800 s) and
+(2284.42, 109.87, 398.12) for 14:30 (52,200 s). On entering one, and only
+while the activity's stage value is 4 or less (up to the festival
+arrival), the target gets 86,400 s added if the clock is past it, and the
+clock is asked to run there at (target - now) / 45 game seconds per real
+second: a 45 s ramp, after which it holds. The engine does the same
+(`FirstTimeCareer::kTodZones`, `ftc_tod_request`, `TodClock::request`),
+on the zone's entry edge only.
+
+**Route 170** (`media/tracks/colorado/Ribbon_00/TrackRoute170.xml`, the
+opening's CLoadRoute) is the race to the festival's route, not the
+Viper's: its grid (`start_location_00..07`) is at the diner, its two
+checkpoints are near (398, -3269) and the toll booth (-798, -1065), and
+its waypoints 00 to 12 run from (1582, -1840) to (-964, 118) inside the
+festival. The engine now loads it at the opening and sends the festival
+arrival's sat-nav to its last waypoint (`Route::waypoints`,
+`FirstTimeCareer::set_route_waypoints`).
+
+Still interim, narrow: while the career holds the controls the engine's
+autopilot drives the sat-nav route; the title's race behaviour on the
+route (which path the Viper's AI takes from the opening's placement to the
+diner) is not read.
+
+## Q160 (INTRO-08, INTRO-09): the cutscenes' cars and people
+
+Opening_Cutscene places `FestivalCar_0` (CarID 1171, a Ferrari 599XX) at
+(816.3, 172.43, 1806.2), heading 97 degrees, at 31 s and releases it at
+once at 110 mph (`despawnTime` 0); NEW_Diner_Cutscene_1 places two cars
+and releases them at 120 mph with a 25 s despawn. The people and animals
+are CCutsceneAnimationTrigger clips (`AnimatedObjects\*.pgeo`: the diner's
+characters, Radio_Unlock, Wristband_Intro, deer and bird flocks), each
+with an `animname`, a duration and a parent node.
+
+The engine reads both triggers (`CampaignDirector::take_cutscene_cars`)
+and logs them, but has no scripted car spawn: its traffic and festival AI
+have no call to place a given car at a pose and speed and drive it on,
+and RaceView is the only other AI-car path. The animation clips need the
+`.anim.bin` keys (Q109). Interim: the cutscenes play without those cars
+and people.
+
+Needed: the scripted car's behaviour after release (does it follow a
+road or drive straight, and what despawns it with `despawnTime` 0), and
+Q109's keys for the people.
+
+## Q161 (INTRO-04): the opening's radio states
+
+**Engine reading** (from first_time_career.xml and game_free_roam_flow.xml):
+
+- Under the controller loading screen the free-roam flow runs
+  `Audio.disable_radio_dj`, `Audio.disable_radio_station_switching`,
+  `Audio.enable_radio_silent_idents` and CSetRadioPlaylist
+  (`startWithFirstTrack`, `startAtBeginningOfTrack`,
+  `normalBehaviourAfterListPlayed`, R1_Everyday then R1_ThePower).
+- Radio_Unlock's flow (FestivalArriveCutscene) turns station switching on
+  after Dak's line, then, once the camera sequence ends and the HUD is
+  back, the DJ on and the silent idents off. RaceCentralArriveCutscene
+  turns all three on again.
+- The race to the festival's last stretch stops the DJ (Q62).
+
+The engine applies these (`FtcCommands::set_radio_dj`, `radio_playlist`,
+`set_radio_switching`, `set_silent_idents`, `stop_dj`; `Radio::set_playlist`
+and friends). A resumed save before the heats gets the opening's states;
+from the heats on, the station's own. Out of the first-time career the
+host resets them, and the DJ follows the player's DJ option whenever the
+flow allows it.
+
+Inferred, not read from code:
+
+- A silent ident keeps the ident's place between tracks (the next track
+  starts at the ident's `OffsetStartNextTrack`) and plays nothing.
+- CPrepareDinerCutscene's `musicTrack="R1_ThePower"` is played like a
+  one-track playlist: from its start, then the station's own picks.
+- Immediate DJ lines (CRadioDJImmediate, such as IntroCutscene and E3Intro)
+  play while the DJ is disabled.
+
+Needed: the radio's handling of `enable_radio_silent_idents`, the diner's
+`musicTrack`, and whether CRadioDJImmediate checks the DJ switch.
