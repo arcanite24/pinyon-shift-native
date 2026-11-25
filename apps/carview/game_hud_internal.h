@@ -189,7 +189,6 @@ void event_card(ui::List& l, const RaceHud& r, const Layout& g);
 // `hud`: the original's HUD options (lap time and position, wrong way).
 void race_hud(ui::List& l, const RaceHud& r, const Layout& g, const HudToggles& hud = {});
 void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g);
-void opponent_name_tags(ui::List& l, const std::vector<NameTagHud>& tags, const Layout& g);
 void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g, bool metric_units);
 
 // Free-roam HUD builders (game_hud_freeroam.cpp)

@@ -384,6 +384,17 @@ struct NameTagHud {
   int pi = -1;               // optional PI rating (>0)
 };
 
+// The tag's look, measured on 30_skill_toast_orig.png (BISHOP, 720 lines):
+// the name in horizon_b with 18 px capitals, 75 px wide for BISHOP, on a
+// faint grey pill 30 px tall with 10 px before the name and 12 after, and
+// a notch under it pointing at the car. The pill's grey and alpha are read
+// off the night frame (about 16 over a 7 sky).
+inline constexpr float kNameTagSize = 18.0f;
+inline constexpr float kNameTagPillH = 30.0f;
+inline constexpr float kNameTagPadL = 10.0f, kNameTagPadR = 12.0f;
+inline constexpr float kNameTagNotchW = 16.0f, kNameTagNotchH = 6.0f;
+inline constexpr uint32_t kNameTagPill = ui::rgba(33, 33, 33, 96);
+
 struct NameTagLod {
   float scale = 1.0f;
   float alpha = 1.0f;

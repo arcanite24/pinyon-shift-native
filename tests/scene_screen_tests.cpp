@@ -633,6 +633,17 @@ int main() {
           "map details: its help bar's strings");
   }
 
+  // The car name tag's measured size (30_skill_toast_orig.png): BISHOP in
+  // horizon_b with 18 px capitals is about 75 px wide.
+  {
+    if (auto fzip = fh1::Archive::open(game_root / "media" / "ui" / "Fonts.zip", nullptr))
+      carview::ui::load_fonts_from_zip(*fzip);
+    carview::ui::TextStyle ts;
+    ts.font = carview::ui::Font::kB, ts.size = carview::kNameTagSize;
+    const float wd = carview::ui::List::measure("BISHOP", ts);
+    check(std::fabs(wd - 75.0f) < 5.0f, "name tag: BISHOP is about 75 px wide (" + std::to_string(wd) + ")");
+  }
+
   // 5. Optional renders.
   if (const char* shot_env = std::getenv("SHIFT_SCENE_SCREEN_SHOT_DIR"); shot_env && *shot_env) {
     const std::filesystem::path out_dir = shot_env;
