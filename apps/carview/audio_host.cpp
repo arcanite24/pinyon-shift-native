@@ -1654,6 +1654,15 @@ bool AudioHost::play_ui(std::string_view play, std::string_view scene) {
   return true;
 }
 
+bool AudioHost::play_ui_event(std::string_view path) {
+  if (!ui_catalog_ || path.empty()) return false;
+  const int at = ui_catalog_->resolve_event(path);
+  const auto* ev = ui_catalog_->event(at);
+  if (!ev) return false;
+  engine_.trigger_ui_event(*ev);
+  return true;
+}
+
 void AudioHost::activate_mix_snapshot(std::string_view name) {
   if (!engine_.has_snapshot_matrix() || engine_.find_matrix_snapshot(name) < 0) return;
   engine_.activate_matrix_snapshot(name);

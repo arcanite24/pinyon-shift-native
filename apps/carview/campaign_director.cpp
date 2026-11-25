@@ -51,14 +51,21 @@ bool ftc_stage_for_legacy(std::string_view s, race::FtcStage& out) {
 
 constexpr std::string_view kFtcSavePrefix = "ftc:";
 
-// CCutsceneAudioTrigger: the trigger's event is a ui4audio play name
-// (CS_OpeningSequence, CS_WristbandIntro...). AudioHost plays ui4audio names
-// once the audio branch's play_ui is in; until then the sting is silent.
+// CCutsceneAudioTrigger: the trigger names its FEV group and event
+// ("UIInGame/UI/Cutscenes" + "CS_OpeningSequence"); the event plays by that
+// path, else as a ui4audio play name of the same name.
 template <class Host>
-bool play_ui_name(Host* audio, std::string_view play) {
+bool play_ui_name(Host* audio, std::string_view group, std::string_view play) {
   if constexpr (requires(Host* a, std::string_view n) { a->play_ui(n); }) {
+    if (!group.empty()) {
+      std::string path(group);
+      path += '/';
+      path += play;
+      if (audio->play_ui_event(path)) return true;
+    }
     return audio->play_ui(play);
   } else {
+    (void)group;
     (void)audio;
     static bool told = false;
     if (!told) {
@@ -330,7 +337,7 @@ void CampaignDirector::handle_cutscene_events(const std::vector<const cutscene::
         if (audio && !e->attr("event").empty()) audio->trigger_vo(e->attr("event"), false);
         break;
       case cutscene::EventType::kAudio:
-        if (audio && !e->attr("event").empty()) play_ui_name(audio, e->attr("event"));
+        if (audio && !e->attr("event").empty()) play_ui_name(audio, e->attr("group"), e->attr("event"));
         break;
       case cutscene::EventType::kMixSnapshot:
         if (audio && !e->attr("snapshot").empty()) audio->activate_mix_snapshot(e->attr("snapshot"));

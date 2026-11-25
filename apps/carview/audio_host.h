@@ -178,6 +178,8 @@ class AudioHost {
   // when the name is unknown (reported once) or the entry is Blank.
   bool play_ui(std::string_view play);
   bool play_ui(std::string_view play, std::string_view scene);
+  // A UI event by FEV path (a cutscene's CCutsceneAudioTrigger group/event).
+  bool play_ui_event(std::string_view path);
   // The race type the countdown and race-complete cues are chosen by.
   void set_race_audio_kind(audio::UiRaceKind kind) { race_audio_kind_ = kind; }
   const audio::UiAudioCatalog* ui_catalog() const { return ui_catalog_.get(); }
