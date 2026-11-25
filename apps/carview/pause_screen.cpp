@@ -156,11 +156,13 @@ void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float 
   if (list >= 0) sc.at(list).dx = kListDx, sc.at(list).dy = kListDy;
 
   const int n = int(ps.rows.size());
-  // The scene's nine rows (Button0..8): the packages' 1000 CLUB and HORIZON
-  // RALLY make nine (club_pause.png); the rest stay hidden.
-  constexpr int kSlots = 9;
-  const int first = window_first(ps.selected, n, kSlots);
-  for (int slot = 0; slot < kSlots; ++slot) {
+  // The scene's rows: the title update's scene has nine (Button0..8), for the
+  // packages' 1000 CLUB and HORIZON RALLY (club_pause.png); the disc's has
+  // seven, so the nine EXTRAS rows scroll there. The rest stay hidden.
+  int slots = 0;
+  while (slots < 9 && sc.node("Button" + std::to_string(slots)) >= 0) ++slots;
+  const int first = window_first(ps.selected, n, slots);
+  for (int slot = 0; slot < slots; ++slot) {
     const int btn = sc.node("Button" + std::to_string(slot));
     const int i = first + slot;
     if (btn < 0) continue;
