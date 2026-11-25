@@ -1044,7 +1044,6 @@ bool FmvPlayer::open(const std::filesystem::path& wmv_path, std::string_view lan
   audio_eof_.store(false, std::memory_order_release);
   audio_frames_played_.store(0, std::memory_order_release);
   clock_s_ = 0.0;
-  hold_skip_progress_ = 0.0f;
   finished_ = false;
   paused_.store(false, std::memory_order_release);
   synthetic_ = false;
@@ -1112,7 +1111,6 @@ void FmvPlayer::open_synthetic(int w, int h, double fps, double duration_s, std:
   duration_s_ = std::max(0.1, duration_s);
   title_ = std::move(title);
   clock_s_ = 0.0;
-  hold_skip_progress_ = 0.0f;
   finished_ = false;
   paused_.store(false, std::memory_order_release);
   synthetic_ = true;
@@ -1134,7 +1132,6 @@ void FmvPlayer::close() {
   }
   audio_ring_.clear();
   finished_ = false;
-  hold_skip_progress_ = 0.0f;
   paused_.store(false, std::memory_order_release);
   synthetic_ = false;
   subtitles_.clear();
@@ -1144,20 +1141,6 @@ void FmvPlayer::skip() {
   if (!active_.load(std::memory_order_acquire)) return;
   close();
   finished_ = true;
-}
-
-float FmvPlayer::update_hold_skip(double dt, bool holding) {
-  if (!active_.load(std::memory_order_acquire)) {
-    hold_skip_progress_ = 0.0f;
-    return 0.0f;
-  }
-  dt = std::clamp(dt, 0.0, 0.25);
-  if (holding) {
-    hold_skip_progress_ = std::min(1.0f, hold_skip_progress_ + float(dt / kHoldToSkipSeconds));
-  } else {
-    hold_skip_progress_ = std::max(0.0f, hold_skip_progress_ - float(dt * 3.0));
-  }
-  return hold_skip_progress_;
 }
 
 void FmvPlayer::set_subtitles(std::vector<FmvSubtitleCue> cues) {
@@ -1820,8 +1803,7 @@ int FmvPlayer::read_audio(float* out, int frames) {
   return got_frames;
 }
 
-void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_view subtitle_text,
-                     bool show_skip_prompt, float hold_skip_progress) const {
+void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_view subtitle_text) const {
   if (!active_.load(std::memory_order_acquire) || width_ <= 0 || height_ <= 0 ||
       current_frame_.size() < size_t(width_) * size_t(height_) * 4) {
     return;
@@ -1896,25 +1878,6 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
       for (size_t li = 0; li < lines.size(); ++li) {
         l.text(screen_w * 0.5f, text_top + float(li) * line_h, lines[li], ts);
       }
-    }
-  }
-
-  if (show_skip_prompt) {
-    // Authentic BUTTON_BAR_SCENE hold-to-skip prompt + progress ring & fill bar (0.75 s hold).
-    const float hp = std::clamp(std::max(hold_skip_progress, hold_skip_progress_), 0.0f, 1.0f);
-    ui4::button_bar(l, {{"A", hp > 0.01f ? "SKIPPING..." : "HOLD TO SKIP"}}, screen_w, screen_h, 70.0f);
-    if (hp > 0.01f) {
-      const float rcx = screen_w - 280.0f * s;
-      const float rcy = screen_h - 32.0f * s;
-      const float rr = 11.0f * s;
-      constexpr float kTwoPi = 6.2831853f;
-      constexpr float kStartAng = -1.5707963f;
-      l.arc(rcx, rcy, rr, 2.5f * s, 0.0f, kTwoPi, ui::rgba(255, 255, 255, 55));
-      l.arc(rcx, rcy, rr, 3.0f * s, kStartAng, kStartAng + kTwoPi * hp, ui4::kPink);
-      const float bx0 = screen_w - 260.0f * s, bx1 = screen_w - 64.0f * s;
-      const float by0 = screen_h - 36.0f * s, by1 = screen_h - 28.0f * s;
-      l.rect(bx0, by0, bx1, by1, ui::rgba(255, 255, 255, 55));
-      l.rect(bx0, by0, bx0 + (bx1 - bx0) * hp, by1, ui4::kPink);
     }
   }
 

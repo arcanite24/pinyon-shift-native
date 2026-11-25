@@ -77,6 +77,10 @@ std::vector<std::string> wrap_fmv_subtitle(std::string_view text, float max_widt
 // smooth proportional drift correction outside +/-40 ms, never steps backwards).
 double fmv_pll_step_clock(double video_clock_s, double dt_s, double audio_clock_s);
 
+// A movie skips on a press, as the original's boot splashes do on a B tap:
+// true the frame the skip buttons go down, never while one stays held.
+inline bool movie_skip_press(bool held_now, bool held_before) { return held_now && !held_before; }
+
 struct FmvProbeInfo {
   int width = 0;
   int height = 0;
@@ -94,7 +98,6 @@ bool parse_fmv_subtitles(std::string_view xml, std::vector<FmvSubtitleCue>& out)
 class FmvPlayer {
  public:
   static constexpr int kAudioRate = 48000;
-  static constexpr double kHoldToSkipSeconds = 0.75;
 
   FmvPlayer() = default;
   ~FmvPlayer();
@@ -151,10 +154,6 @@ class FmvPlayer {
   void set_subtitles(std::vector<FmvSubtitleCue> cues);
   const std::vector<uint8_t>& current_frame() const { return current_frame_; }
 
-  // Hold-to-skip progress accumulator (0..1 over kHoldToSkipSeconds = 0.75 s).
-  float update_hold_skip(double dt, bool holding);
-  float hold_skip_progress() const { return hold_skip_progress_; }
-  void reset_hold_skip() { hold_skip_progress_ = 0.0f; }
 
   // Advances playback by `dt` seconds (syncing to drained audio clock when
   // `audio_synced` is true and audio is streaming). Returns true while active.
@@ -165,9 +164,9 @@ class FmvPlayer {
   int read_audio(float* out, int frames);
 
   // Draws the current video frame letterboxed over a black backdrop into `l`,
-  // along with fade-in/out, optional subtitle text, and a skip / hold-to-skip prompt.
-  void draw(ui::List& l, float screen_w, float screen_h, std::string_view subtitle_text = {},
-            bool show_skip_prompt = true, float hold_skip_progress = 0.0f) const;
+  // along with fade-in/out and optional subtitle text. No skip prompt: the
+  // original shows none over a movie (00_opening_movie_orig.png).
+  void draw(ui::List& l, float screen_w, float screen_h, std::string_view subtitle_text = {}) const;
 
  private:
   struct VideoFrame {
@@ -196,7 +195,6 @@ class FmvPlayer {
   double fps_ = 24.0;
   double duration_s_ = 0.0;
   double clock_s_ = 0.0;
-  float hold_skip_progress_ = 0.0f;
   FmvMovieId movie_id_ = FmvMovieId::kFmv01Opening;
   std::string title_;
   std::vector<FmvSubtitleCue> subtitles_;

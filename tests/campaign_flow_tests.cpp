@@ -344,7 +344,7 @@ void test_director_cameras_cli_stages_and_ui_raster() {
     ctx.screen_h = 360.0f;
     if (fmv.active()) {
       fmv.update(1.0, false);
-      fmv.draw(list, ctx.screen_w, ctx.screen_h, {}, true, 0.4f);
+      fmv.draw(list, ctx.screen_w, ctx.screen_h);
       fmv.close();
     } else if (dir.ftc_active()) {
       carview::ftc_ui::draw(list, dir.ftc(), ctx.screen_w, ctx.screen_h, 0, false);

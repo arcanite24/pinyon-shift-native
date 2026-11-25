@@ -59,10 +59,10 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
               }
             }
             if (app.campaign.is_blocking_gameplay() && !app.show_title) {
-              // R3-UI-07: FMVs and cinematics require 0.75 s hold-to-skip in interactive windowed mode
-              // (instant skip is only allowed on reward_tally or in --headless / scripted runs).
+              // A movie skips on a press (confirmskip, Q155); the engine's
+              // in-engine cinematics keep their hold-to-skip.
               const bool require_hold_skip =
-                  (app.fmv_player.active() || app.campaign.flow().is_cinematic_active()) &&
+                  !app.fmv_player.active() && app.campaign.flow().is_cinematic_active() &&
                   !app.campaign.flow().reward_tally().active && !app.headless;
               if (require_hold_skip) {
                 return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
@@ -73,7 +73,8 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                                     e.key.key == SDLK_ESCAPE || e.key.key == SDLK_TAB);
               const bool adv_pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
                                    (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH ||
-                                    e.gbutton.button == SDL_GAMEPAD_BUTTON_START);
+                                    e.gbutton.button == SDL_GAMEPAD_BUTTON_START ||
+                                    (app.fmv_player.active() && e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST));
               // The tally's help bar shows X for SET GPS: the pad's X does it too.
               const bool gps_key = (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_G) ||
                                    (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&

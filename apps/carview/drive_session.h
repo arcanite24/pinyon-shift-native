@@ -457,6 +457,7 @@ struct DriveSession {
   std::string stay_in_car_name, stay_in_car_media;  double title_orbit_time = 0.0;
   double title_idle_s = 0.0;
   bool title_attract_playing = false;
+  bool movie_skip_held = false;  // the skip buttons' state last frame (movie_skip_press)
   LoadingScreen loading_screen;
   double loading_min_until = -1.0;
   WorldTrigger active_trigger;
