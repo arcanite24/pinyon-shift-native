@@ -393,6 +393,7 @@ void DriveSession::start_new_career() {
             app.skill_tracker = std::make_unique<freeroam::SkillTracker>(app.skills_data, 0.0, 0, 0);
             app.skill_tracker->reset_session_clock();
           }
+          if (app.freeroam_challenges) app.freeroam_challenges->load({});  // a new career starts them afresh
           app.max_skills_car = 0;
           app.career_garage = garage::Garage{};
           app.have_garage = true;

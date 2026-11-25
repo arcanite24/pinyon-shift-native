@@ -1416,6 +1416,12 @@ void DriveSession::save_now(const char* why) {
         } else if (app.have_saved) {
           s.sponsors = app.saved.sponsors;
         }
+        if (app.freeroam_challenges) {
+          for (const auto& r : app.freeroam_challenges->save())
+            s.freeroam_challenges.push_back({r.id, r.progress, r.completed});
+        } else if (app.have_saved) {
+          s.freeroam_challenges = app.saved.freeroam_challenges;
+        }
         s.h2h_races = app.h2h_races;
         s.h2h_wins = app.h2h_wins;
         s.rivals_beaten = app.have_saved ? app.saved.rivals_beaten : 0;

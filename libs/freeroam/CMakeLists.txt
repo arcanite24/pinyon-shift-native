@@ -2,6 +2,7 @@ add_library(shift_freeroam STATIC
   src/club.cpp
   src/collectibles.cpp
   src/festival_ai.cpp
+  src/freeroam_challenges.cpp
   src/outposts.cpp
   src/road_discovery.cpp
   src/skills.cpp

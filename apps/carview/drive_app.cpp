@@ -635,6 +635,9 @@ bool DriveApp::init(int& exit_code) {
     e.clear();
     have_skills_data = freeroam::load_skills_data(game_root_of(), skills_data, &e);
     if (!have_skills_data && !e.empty()) std::fprintf(stderr, "carview: note: no skills data: %s\n", e.c_str());
+    e.clear();
+    if (!freeroam::load_free_roam_challenges(game_root_of(), freeroam_challenges_data, &e) && !e.empty())
+      std::fprintf(stderr, "carview: note: no free-roam challenges: %s\n", e.c_str());
   }
   bench_startup.db_catalog_load_ms =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - db_cat_t0).count();
@@ -774,6 +777,13 @@ bool DriveApp::init(int& exit_code) {
     if (have_saved) {
       for (const auto& sp : saved.sponsors) skill_tracker->set_sponsor_progress(sp.id, sp.count, sp.claimed);
     }
+  }
+  if (!freeroam_challenges_data.challenges.empty()) {
+    freeroam_challenges = std::make_unique<freeroam::FreeRoamChallengeTracker>(freeroam_challenges_data);
+    std::vector<freeroam::ChallengeRecord> recs;
+    if (have_saved)
+      for (const auto& fc : saved.freeroam_challenges) recs.push_back({fc.id, fc.progress, fc.completed});
+    freeroam_challenges->load(recs);
   }
   // --career-png: every window of the career page as the game's save left
   // it (prefix_N.png), then exit: the M6 gate's view of the import.

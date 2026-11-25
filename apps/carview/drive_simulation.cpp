@@ -47,6 +47,50 @@ DriveSession::Popup sponsor_popup(DriveSession& s, std::string_view challenge_id
   return p;
 }
 
+// PROG-11: steps the free-roam (co-op) challenges on this step's distance,
+// speed, time of day, car, skill awards and speed camera results; pays and
+// announces each one completed.
+void step_freeroam_challenges(DriveSession& s) {
+  auto& app = s.app;
+  freeroam::ChallengeStepInput in;
+  in.time_s = s.vehicle.time();
+  const drive::Vec3 v = s.vehicle.velocity();
+  const double speed = std::max(std::fabs(s.vehicle.speed()), std::hypot(v.x, v.z));
+  in.distance_m = speed * drive::Vehicle::kStep;
+  in.speed_mph = speed * 2.2369362920544;
+  in.tod_hour = app.tod_clock.hour();
+  if (app.have_career_catalog)
+    if (const auto* spec = app.career_catalog.find_car_by_media(app.car)) {
+      using F = freeroam::CarField;
+      in.car[F::kClass] = spec->stock_class;
+      in.car[F::kPi] = spec->stock_pi;
+      in.car[F::kYear] = spec->props.year;
+      in.car[F::kBodyFamily] = spec->props.body_family;
+      in.car[F::kRegion] = spec->props.region;
+      in.car[F::kCountry] = spec->props.country;
+      in.car[F::kMake] = spec->props.make;
+      in.car[F::kModelFamily] = spec->props.model_family;
+      in.car[F::kDriveType] = spec->props.drive_type;
+      in.car[F::kEnginePlacement] = spec->engine_placement;
+      in.car[F::kBaseCost] = spec->base_cost;
+    }
+  for (const auto& sk : s.club_pending.skills) in.skills.push_back(sk.type);
+  for (const auto& cam : s.club_pending.cameras) in.flashes.push_back({cam.name, cam.speed_mph, 0});
+  for (const auto& done : app.freeroam_challenges->step(in)) {
+    const int64_t cr = s.slice12.trainer.pacing.scale_credits(done.credits);
+    app.career.credits = std::min<int64_t>(999999999, app.career.credits + cr);
+    app.career.total_winnings += cr;
+    // interim: the sponsor notification with FreeRoamChallenges.str's
+    // IDS_HighlightedChallengeHudTitle / IDS_Completed lines.
+    s.popup = DriveSession::Popup::notify(NotifyKind::kSponsorRank, s.vehicle.time(), {"+" + thousands(cr)});
+    s.popup.tag = "CO-OP CHALLENGE COMPLETED";
+    s.popup.text = done.def && !done.def->challenge_name.empty() ? done.def->challenge_name : done.id;
+    if (done.def) s.popup.logo = done.def->logo_texture();
+    std::printf("free-roam challenge %s completed: +%lld CR\n", done.id.c_str(), (long long)cr);
+    s.save_due = true;
+  }
+}
+
 // The popularity challenge's tier for a fame reward at `rank_required`.
 int fame_tier(const DriveSession& s, int rank_required) {
   const auto& tiers = s.app.skills_data.fame_tiers;
@@ -1467,6 +1511,9 @@ bool DriveSession::step(const drive::Input& user_in) {
             }
           }
         }
+        if (app.freeroam_challenges && !app.race && !app.campaign.cutscene_drives_player() &&
+            !app.campaign.flow().is_onboarding())
+          step_freeroam_challenges(*this);  // before club_step() clears this step's skills and cameras
         club_step();  // evaluates all active 1000 Club challenges on full step signals
         if (!host.streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the

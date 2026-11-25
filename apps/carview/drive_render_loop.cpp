@@ -927,6 +927,11 @@ void DriveSession::run_window_loop() {
                   for (const auto& sp : disk_save.sponsors)
                     app.skill_tracker->set_sponsor_progress(sp.id, sp.count, sp.claimed);
                 }
+                if (app.freeroam_challenges) {
+                  std::vector<freeroam::ChallengeRecord> recs;
+                  for (const auto& fc : disk_save.freeroam_challenges) recs.push_back({fc.id, fc.progress, fc.completed});
+                  app.freeroam_challenges->load(recs);
+                }
                 if (!app.collectibles.signs.empty()) {
                   app.progress = freeroam::Progress{};
                   progress_from_save(disk_save, app.collectibles, app.progress);

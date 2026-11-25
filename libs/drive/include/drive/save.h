@@ -24,6 +24,7 @@
 //   unlocks hub 1 2
 //   rally 1 1
 //   club 1219 3735928559:1 12345:0
+//   freeroam_challenge Drive8000Miles 51234.500000 0
 //
 // Lines are "key values"; unknown keys are skipped, so later versions can
 // add lines. `spawn` (optional) is the last spawn point, where "back to the
@@ -146,6 +147,15 @@ struct DriveSave {
     int claimed = 0;
   };
   std::vector<SavedSponsor> sponsors;
+  // Free-roam (co-op) challenges, FreeRoamChallenges.xml (PROG-11): one
+  // `freeroam_challenge <id> <progress> <completed>` line each, progress the
+  // distance driven (m) or the skill count.
+  struct SavedFreeRoamChallenge {
+    std::string id;
+    double progress = 0;
+    bool completed = false;
+  };
+  std::vector<SavedFreeRoamChallenge> freeroam_challenges;
   // Head-to-Head & Rivals counters.
   int h2h_races = 0, h2h_wins = 0;
   int rivals_beaten = 0, rally_rivals_beaten = 0;

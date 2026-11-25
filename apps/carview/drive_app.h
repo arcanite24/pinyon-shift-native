@@ -27,6 +27,7 @@
 #include "fmv_player.h"
 #include "freeroam/club.h"
 #include "freeroam/collectibles.h"
+#include "freeroam/freeroam_challenges.h"
 #include "freeroam/outposts.h"
 #include "freeroam/road_discovery.h"
 #include "freeroam/skills.h"
@@ -121,6 +122,7 @@ struct DriveApp : DriveConfig {
   bool have_career_catalog = false;
   freeroam::SkillsData skills_data;
   bool have_skills_data = false;
+  freeroam::FreeRoamChallengesData freeroam_challenges_data;  // PROG-11
 
   bool show_title = false;
   FmvPlayer fmv_player;
@@ -178,6 +180,7 @@ struct DriveApp : DriveConfig {
   std::map<int, bool> street_hub_radio_unlocked;
   double street_hub_radio_check_at = -1e9;
   std::unique_ptr<freeroam::SkillTracker> skill_tracker;
+  std::unique_ptr<freeroam::FreeRoamChallengeTracker> freeroam_challenges;
   int64_t max_skills_car = 0;
   std::string sponsor_banner_title, sponsor_banner_detail;
   double sponsor_banner_at = -1e9;

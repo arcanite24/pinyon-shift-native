@@ -145,6 +145,15 @@ add_executable(freeroam_tests freeroam_tests.cpp)
 target_link_libraries(freeroam_tests PRIVATE shift_freeroam)
 add_test(NAME freeroam_tests COMMAND freeroam_tests)
 
+# Free-roam (co-op) sponsor challenges (PROG-11) on synthetic XML; the corpus
+# run reads FreeRoamChallenges.xml/.str from the disc (exit 77 without
+# SHIFT_GAME_ROOT, a failure when it is set and the data does not load).
+add_executable(freeroam_challenges_tests freeroam_challenges_tests.cpp)
+target_link_libraries(freeroam_challenges_tests PRIVATE shift_freeroam shift_drive fh1data)
+add_test(NAME freeroam_challenges_tests COMMAND freeroam_challenges_tests)
+add_test(NAME freeroam_challenges_corpus COMMAND freeroam_challenges_tests --corpus)
+set_tests_properties(freeroam_challenges_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
+
 add_executable(club_tests club_tests.cpp)
 target_link_libraries(club_tests PRIVATE shift_freeroam fh1data shift_drive)
 add_test(NAME club_tests COMMAND club_tests)

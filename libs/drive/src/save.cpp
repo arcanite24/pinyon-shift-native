@@ -144,6 +144,8 @@ std::string save_to_text(const DriveSave& s) {
     out += "speed_zone " + id + " " + num(mph) + "\n";
   for (const auto& sp : s.sponsors)
     out += "sponsor " + sp.id + " " + std::to_string(sp.count) + " " + std::to_string(sp.claimed) + "\n";
+  for (const auto& fc : s.freeroam_challenges)
+    out += "freeroam_challenge " + fc.id + " " + num(fc.progress) + " " + (fc.completed ? "1" : "0") + "\n";
   if (s.h2h_races > 0 || s.h2h_wins > 0)
     out += "h2h " + std::to_string(s.h2h_races) + " " + std::to_string(s.h2h_wins) + "\n";
   if (s.rivals_beaten > 0 || s.rally_rivals_beaten > 0)
@@ -393,6 +395,13 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
     } else if (key == "sponsor") {
       DriveSave::SavedSponsor sp;
       if (l >> sp.id >> sp.count >> sp.claimed && sp.count >= 0 && sp.claimed >= 0) out.sponsors.push_back(sp);
+    } else if (key == "freeroam_challenge") {
+      DriveSave::SavedFreeRoamChallenge fc;
+      int done = 0;
+      if (l >> fc.id >> fc.progress >> done && std::isfinite(fc.progress) && fc.progress >= 0) {
+        fc.completed = done != 0;
+        out.freeroam_challenges.push_back(fc);
+      }
     } else if (key == "h2h") {
       l >> out.h2h_races >> out.h2h_wins;
     } else if (key == "rivals") {
