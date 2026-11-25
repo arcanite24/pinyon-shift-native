@@ -15,6 +15,9 @@ The code is in `apps/carview`:
 | `hud_scene.h/.cpp` | The renderer: `SceneDraw::draw_subtree` with `SceneBindings` / `NodeOverride` |
 | `pause_screen.h/.cpp` | The pilot: the pause rows, its Sponsor Challenges and Message Centre screens |
 | `hud.h` (`PauseMenu`) | The pause menu's model: rows, EXTRAS, sub-screens, the selection |
+| `hud_screen.h/.cpp` | The driving HUD on `947_HUD`: dial, race blocks, skills, prompt, notifications, start, wrong way |
+| `hud_notify.h` | The notification kinds and icons, and the HUD toggles (`HudToggles`) |
+| `help_bar_screen.cpp` | The help bar on `BUTTON_BAR_SCENE` (installed into `ui4::button_bar`) |
 | `tests/scene_screen_tests.cpp` | The corpus test: scenes, nodes, strings, cues; optional renders |
 
 ## The pieces
@@ -71,7 +74,9 @@ sc.draw(list, SceneScreen::frame(w, h));   // the whole scene, or a subtree
 | `visible_width` | A two-texture tape's crop width in canvas pixels (a row's tape follows its text) |
 | `dx`, `dy` | Move a node and its subtree |
 | `extra_angle` | Turn a node |
+| `turn` | Turn a node and its subtree about the node's own position, children orbiting it (the dial's needle and hatches) |
 | `scale` | Scale a node and its subtree about the node's own position (a focused row's size step) |
+| `stretch_x` | Stretch the models of a node and its subtree across, each about its middle (a sponsor logo of another aspect) |
 
 ### Strings: `StringRef`
 
@@ -121,6 +126,53 @@ new screen's scene name when you check its cues.
 - Rows past the list's end are hidden; the remaining slots keep their places
   (the scene's stacker packs from the top).
 - Add a `ui::kHitRow` hit zone per row for the mouse.
+
+## The driving HUD
+
+`hud_screen.cpp` draws `947_HUD`'s blocks from `build_drive_hud`
+(`game_hud_core.cpp`, `game_hud_race.cpp`, `game_hud_freeroam.cpp`). Every
+`draw_hud_*` returns false when the scene or its node is missing, and the
+caller then draws the old hand-drawn block.
+
+- **Frames.** The HUD scene is laid out for 1280x720. `hud_frame(anchor, w,
+  h, s)` scales it by the HUD scale and pins it to the screen edge its block
+  sits on (the race blocks at the top corners, the prompt at the top, the toasts at
+  the bottom, the start at the centre), so a wider screen keeps each block at its
+  edge.
+- **Blocks.** The dial (`GAUGE_ANALOG`; its scale from `dial_scale`, Q73), the
+  race blocks (`EndConditionBlock`, `PlaceBlock`, `HUDTimes`,
+  `PositionIndicators`), the skill chain and popularity disc
+  (`DrivingSkill`, `PopularityBar`; the multiplier's value stays the chain's,
+  only its text is in `skill_multiplier_text`), the event prompt
+  (`ActivationPrompt`), the notifications (`CombinedNotification`,
+  `PopularityUnlock`), the start (`I_321_Go`) and the wrong way sign
+  (`WrongWay/Sign_Top`).
+- **Notifications.** `notify_strings()` gives each `NotifyKind` its tag,
+  title and message keys; `DriveSession::Popup::notify` makes a toast from a
+  kind and its `{0}` arguments, and `draw_hud_notification` stacks them. The
+  sponsor rank toast is calibrated on the oracle `race-hud-notification.png`;
+  the other kinds' pairings of title and message are inferred from the
+  string tables.
+- **Help bar.** `ui4_chrome` is in `carview_render` and the scene code in
+  `carview_hud`, so `ui4::button_bar` calls a drawer installed by
+  `install_scene_help_bar()` (at start-up in `drive_helpers_runtime.cpp`, and
+  in the corpus test). Without it, `button_bar` draws its old pills; the
+  `ui4_parity_tests` check that path.
+- **The start.** The original counts 0:05..0:01 on the start gantry's LEDs and
+  shows only GO! on screen. The world clock that `world.frag`'s gantry
+  branch reads (`set_tod`'s time) runs from the race clock in a race (6 s
+  before the signal at 0:05) and stays past the count elsewhere
+  (`drive_world_sync.cpp`), so it jumps at race entry and exit, both of which
+  are cuts.
+- **Toggles.** The HUD options (`HudToggles`: lap time and position, wrong
+  way warning, names over cars, popularity and skills) are settings rows
+  named from `InGame/IDS_HudOption_*` and reach the HUD through
+  `DriveSession::live_hud` and `DriveHud::hud`.
+- **Calibration.** `scene_screen_tests` renders `build_drive_hud` over the
+  original captures (`SHIFT_SCENE_SCREEN_HUD_DIR`, the captures folder) or
+  the oracles (`SHIFT_SCENE_SCREEN_ORACLE`) into
+  `SHIFT_SCENE_SCREEN_SHOT_DIR` (`hud_*.png`), with each offset in a named
+  constant next to the capture it came from.
 
 ## Porting the next screen
 
@@ -187,3 +239,23 @@ new screen's scene name when you check its cues.
 - **EXTRAS.** The engine's own screens (events, garage, upgrades, paint, ...)
   sit behind X EXTRAS in the help bar, in the same list with the scene's
   screen-title text reading EXTRAS. The original has neither.
+
+## Interims in the HUD
+
+- **Start count.** The engine's gantry panels stay dark at the FR16 start
+  (cause not found; there was no GLSL compiler to probe the prebuilt
+  shader), so `TEXT_COUNT` shows 3, 2, 1 for the last three seconds until
+  they light (Q74).
+- **Minimap.** The engine's map raster is kept: it covers the original's
+  visible map (90..270 x 420..600) and the scene's `MATERIAL_VIEWPORT` frame
+  is not drawn. The player arrow sits lower than the original's (about
+  y 570 against 520).
+- **Not ported.** `DirectionArrows`; the notifications' tape slide (they
+  fade); the Show me! action (hidden, no action behind it); the ghosts and
+  rewind message toggles (the engine has neither element).
+- **Engine wording kept.** The outpost and hub prompts, the locked prompt's
+  reason, the lap split line under `HUDTimes`, and X EXTRAS in the pause help
+  bar.
+- **Extras outside the layout.** The performance overlay, trainer, touch
+  controls and the tracked achievement card stay the engine's; the card sits
+  top left, where the race's `HUDTimes` block also draws.
