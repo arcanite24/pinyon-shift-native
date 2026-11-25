@@ -1142,7 +1142,12 @@ void Vehicle::update_gearbox(double dt) {
       engine_throttle_ = driver;
       const bool hb_disconnect = handbrake_shaped_ > 0.5 &&
                                  (p_.layout == CarParams::Layout::kRear || p_.layout == CarParams::Layout::kAll);
-      if (brake_pedal > 0.1 || drive_pedal < 0.05 || hb_disconnect) {
+      // Only a brake above 0.1 returns to open (SPEC-CAR-PHYSICS, Launch): a
+      // lift keeps the servo, which at zero gas holds the engine at the low
+      // target and closes onto the wheels (the turn circle coasts in first
+      // with the clutch locked). The handbrake disconnect is Manual with
+      // Clutch's.
+      if (brake_pedal > 0.1 || hb_disconnect) {
         open();
         break;
       }
@@ -1562,10 +1567,12 @@ void Vehicle::substep(double dt, const Ground& ground) {
         frac = 0.0;
         if (abs_on) abs_flag_ = true;
       } else if (abs_scale_[i] < 1.0) {
-        // SPEC-CAR-PHYSICS, ABS: linear brake pressure recovery proportional to
-        // (wheel_inertia / R) / 2.4516625 after release hold expires.
+        // SPEC-CAR-PHYSICS, ABS: after the release hold, abs_scale recovers
+        // linearly by (wheel_inertia / R) / 2.4516625 per regulator update (a
+        // step, not a per-second rate). On the R34 that is above 1, so the brake
+        // goes straight back to 1, as the oracle's straight stops measure.
         const double rec = (p.wheel_inertia / std::max(0.1, p.tyre_radius[i])) / 2.4516625;
-        abs_scale_[i] = std::min(1.0, abs_scale_[i] + rec * 12.0 * dt);
+        abs_scale_[i] = std::min(1.0, abs_scale_[i] + rec);
         frac *= abs_scale_[i];
       }
     } else {
