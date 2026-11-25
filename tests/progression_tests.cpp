@@ -21,6 +21,7 @@
 #include "garage/pi_calc.h"
 #include "race/campaign_flow.h"
 #include "race/career.h"
+#include "race/showcase.h"
 #include "race/event.h"
 
 namespace {
@@ -328,6 +329,39 @@ int corpus() {
     CHECK(diffs == 0);
     std::printf("campaign tables: %d wristbands, %d star showdowns, %d showcases, %d captions missing, %d diffs\n",
                 tl.wristbands, tl.bosses, tl.showcases, tl.captions_missing, diffs);
+
+    // The campaign's shipped captions resolve on the disc to the English
+    // fallbacks the flow carries.
+    race::set_campaign_caption_resolver([&](std::string_view ref) {
+      auto t = strings.resolve(ref);
+      return t ? *t : std::string();
+    });
+    {
+      race::CampaignFlow flow;
+      CHECK(flow.next_objective(1500, 2, 250).title == "COLLECT PINK WRISTBAND");
+      flow.on_barn_find(true, "barnfind_01", "1964 Aston Martin DB5 Vantage");
+      CHECK(flow.cinematic().detail_line == "1964 Aston Martin DB5 Vantage IS BEING RESTORED");
+      flow.on_barn_restored("barnfind_01", "1964 Aston Martin DB5 Vantage");
+      CHECK(flow.cinematic().headline == "BARN FIND READY - 1964 Aston Martin DB5 Vantage");
+      CHECK(flow.cinematic().detail_line == "Head to the garage to collect it!");
+    }
+    race::set_campaign_caption_resolver({});
+
+    // The Showcase opponents: airborne_challenges.xml's pilot and vehicle
+    // strings, which the built-in AirChallenges text matches.
+    std::vector<race::ShowcaseSpec> air;
+    CHECK(race::load_airborne_challenges(game, air, &serr));
+    int named = 0;
+    for (const auto& sp : air) {
+      auto ref = [&](const std::string& ids) {
+        return "_&" + std::to_string((uint32_t(fh1::string_hash("AirChallenges")) << 16) | fh1::string_hash(ids));
+      };
+      const auto pilot = strings.resolve(ref(sp.pilot_name_ids));
+      const auto veh = strings.resolve(ref(sp.vehicle_name_ids));
+      named += pilot && veh && *pilot == sp.display_name && *veh == sp.vehicle_name && !sp.display_name.empty();
+    }
+    CHECK(air.size() == 7 && named == 7);
+    std::printf("showcase opponents named from AirChallenges: %d / %zu\n", named, air.size());
     race::reset_campaign_tables();
   }
 
