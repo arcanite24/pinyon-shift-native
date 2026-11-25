@@ -3,8 +3,9 @@
 // the dial (GAUGE_ANALOG), the race blocks (EndConditionBlock, PlaceBlock,
 // HUDTimes, PositionIndicators), the skill chain and popularity meter
 // (DrivingSkill, PopularityBar), the event prompt (ActivationPrompt), the
-// notifications (CombinedNotification), the countdown (I_321_Go), the wrong
-// way sign and the minimap frame. Each draw returns false when the scene or
+// notifications (CombinedNotification), the countdown (I_321_Go) and the
+// wrong way sign (the minimap stays the engine's raster, docs/
+// UI_SCENE_SCREENS.md). Each draw returns false when the scene or
 // its node is missing, and the caller falls back to the drawn HUD.
 #pragma once
 
@@ -100,8 +101,9 @@ bool hud_prompt_available();
 
 // The start (I_321_Go): the original shows no count on screen (the start
 // gantry's LEDs count 0:05..0:01, world.frag on the race clock); at the
-// signal its GO node shows GO! (InGame IDS_3_2_1_GO) for kGoSeconds. True
-// when the scene is present (nothing to draw during the count).
+// signal its GO node shows GO! (InGame IDS_3_2_1_GO) for kGoSeconds. Until
+// the engine's gantry panels light, TEXT_COUNT shows the last three seconds
+// (an interim, SPEC_QUESTIONS Q74). True when the scene is present.
 inline constexpr double kGoSeconds = 0.8;
 bool draw_hud_countdown(ui::List& l, const RaceHud& r, float w, float h, float s);
 // The wrong way sign (WrongWay/Sign_Top) while `r.wrong_way`, lowered `dy`

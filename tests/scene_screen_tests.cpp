@@ -190,7 +190,24 @@ int main() {
                  "CombinedNotification/State/DoubleTape", "DoubleTape/RankIcon/Bar/Text", "DoubleTape/RankIcon/Bar/Bar",
                  "DoubleTape/Icons/MiscIcon", "DoubleTape/Icons/MailIcon", "Icons/SponsorScaler/Sponsor",
                  "DoubleTape/TEXT1", "DoubleTape/TEXT2", "DoubleTape/TEXT3", "DoubleTape/Panel", "DoubleTape/Panel2",
-                 "PopularityUnlock/MainMessage/TEXT_TITLE", "MainMessage/Crisp_Tape", "PopularityUnlock/ShowMe/TEXT_SHOW"});
+                 "PopularityUnlock/MainMessage/TEXT_TITLE", "MainMessage/Crisp_Tape", "PopularityUnlock/ShowMe/TEXT_SHOW",
+                 // The start and the wrong way sign.
+                 "I_321_Go/Group/GO", "I_321_Go/Group/TEXT_COUNT", "I_321_Go/Group/Paused", "WrongWay/Sign_Top"});
+  }
+  {
+    // The help bar's buttons (help_bar_screen.cpp).
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kButtonBarScene)));
+    check(sd.ok(), "BUTTON_BAR_SCENE loads");
+    const int buttons = sd.find_path("ButtonBar/Buttons");
+    check(buttons >= 0, "BUTTON_BAR_SCENE: node ButtonBar/Buttons");
+    for (int k = 0; k < 7 && buttons >= 0; ++k) {
+      const std::string name = "HelpButton" + std::to_string(k);
+      const int b = sd.find(name, buttons);
+      check(b >= 0, "BUTTON_BAR_SCENE: node " + name);
+      if (b < 0) continue;
+      for (const char* part : {"Text_BUTTON", "Pill", "BUTTON_LOGO"})
+        check(sd.find(part, b) >= 0, "BUTTON_BAR_SCENE: node " + name + "/" + part);
+    }
   }
 
   // 2. Every string the screens bind resolves in the EN tables.
@@ -204,6 +221,9 @@ int main() {
       for (const carview::StringRef* r : {&n.tag, &n.title, &n.message})
         if (!r->table.empty()) check_ref(*r, "notification line " + std::string(r->fallback));
   }
+  for (const char* id : {"IDS_HudOption_Timers", "IDS_HudOption_WrongWay", "IDS_HudOption_Names",
+                         "IDS_HudOption_PopularitySkills"})
+    check_ref({"InGame", id, 0, id}, std::string("HUD toggle ") + id);
   {
     PauseMenu pm;
     for (bool race : {false, true}) {
@@ -419,6 +439,10 @@ int main() {
       go_d.kmh = 0, go_d.rpm = 1000, go_d.gear = 1, go_d.skills = nullptr;
       go_d.race = &go;
       hud_shot("hud_race_go.png", "15b_countdown_go_orig.png", go_d);
+      // The interim count (SPEC_QUESTIONS Q74) at 2.
+      go.phase = carview::RaceHud::kCountdown, go.clock = -1.6, go.digit = 2;
+      hud_shot("hud_race_count.png", "15_countdown_orig.png", go_d);
+      go.phase = carview::RaceHud::kRacing;
       go.clock = 20.0, go.wrong_way = true;
       hud_shot("hud_race_wrong_way.png", "16_race_hud_orig.png", go_d);
     }

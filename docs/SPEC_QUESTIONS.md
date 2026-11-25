@@ -1760,8 +1760,10 @@ LEDs (0:05..0:01, then GO) and shows nothing on screen until the signal,
 when `947_HUD` `I_321_Go`'s `GO` text shows GO! (`15_countdown_orig.png`,
 `15b_countdown_go_orig.png`). The node `I_321_Go/Group/TEXT_COUNT` is laid
 out at full opacity but nothing in those captures fills it. The engine
-now shows no screen count at any start and drives the gantry from the
-race clock. Unknown: whether a start with no gantry (a street race, a
+runs the world clock that the gantry LEDs read from the race clock, but
+its gantry panels stay dark at the FR16 start (cause not found; the
+shaders could not be rebuilt to probe it), so until they light it fills
+`TEXT_COUNT` with 3, 2, 1 at every start as an interim. Unknown: whether a start with no gantry (a street race, a
 point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
 Needed, narrow: a capture of such a start, or the code that writes
 `TEXT_COUNT`.
