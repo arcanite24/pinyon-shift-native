@@ -2709,10 +2709,18 @@ place and the star's place, and pays only when the player is ahead and
 the event's `CareerEventStyle` is 1.
 
 Both flags are copied into the race setup from a session description,
-next to each other. The functions that write them there are the online
-lobby's and the replay's, so both exits probably concern online or replay
-races rather than career events. That is inferred from where they are
-written.
+next to each other. Which class that description is was not confirmed.
+The search for their writers matched on the byte offset only, so it can
+hit unrelated classes. Among the hits, the online lobby writes the whole
+run of flags and sets the second flag to 1, and a constructor-like
+function writes 0 to both.
+- So the first exit, which needs the second flag set, is probably online
+  only.
+- The second exit needs the first flag clear, which looks like the
+  default. It may therefore apply to career races too, and that is
+  undetermined.
+
+The two exits in detail:
 - **First exit.** The second flag is set, and a per-race counter on the
   player, divided by a value from the player's race timer (when that value
   is above 1.0), reaches an integer tuning threshold. The tuning record
@@ -2728,11 +2736,12 @@ The star query was not settled. The step walks the participants, takes the
 first whose driver answers true to one virtual query, and reads that
 driver's place; that function is still unidentified.
 
-The engine keeps its reading (Q115's first two bullets). It adds neither
-exit, because neither applies to an offline career race on the evidence
-so far.
+The engine keeps its reading (Q115's first two bullets) and still has
+neither exit. That stays open: the second exit may apply offline. C2 is
+not settled.
 
 Needed:
+- the session description's class and the second exit's flag;
 - the virtual query;
 - the counter's writer and the timer value (exit 1);
 - the tracked value (exit 2).
@@ -3619,7 +3628,8 @@ written by v4, and the other 6 are probably Horizon Rally triggers
 (`Rally_DialogueScript_*.xml` is not in the local game copy), so that part
 is unconfirmed.
 
-**Values:** count is the times the trigger played, and the variant is the
+**Values:** count is the times the trigger fired or played (which one is
+not settled; `WristbandReminder` reads 1,107), and the variant is the
 `Filename` index to play next. Across the three saves:
 - on 304 entries the trigger has one `Filename`, and the variant is 0;
 - on the 71 entries whose trigger has several, the variant is count mod
@@ -3630,7 +3640,7 @@ is unconfirmed.
 Some entries read count 0: `FirstRaceCentralUnlockedFastTravel` and
 `FirstSpeedZoneSight` on all three saves, and `NewWristbandUnlocked3` on
 the seed. So an entry can exist without the line having played, and
-"heard" is count > 0, not the key being present. The variant reading is
+"heard" is probably count > 0, not the key being present. The variant reading is
 inferred from the numbers.
 
 **Still open:**
@@ -3643,18 +3653,22 @@ It does not read this record yet.
 
 ## Q164 (INTRO-07, answered in part): the opening titles' timing
 
-Supersedes Q65's "Still open: the timing and placement, which are the
-scene's BGF animation (not decoded)" for the timing.
+Supersedes, for the timing, two of Q65's sentences:
+- "Still open: the timing and placement, which are the scene's BGF
+  animation (not decoded)";
+- "Engine interim: the four cards in turn, 4 s each with half-second
+  fades, centred". Only the centring stays.
 
 The timing was read from the bytes of `H_OPENING_TITLES.bgf`
 (UI.zip). The engine's BGF reader mis-sorts the scene's tracks as styles,
 but the bytes are plain. The document has two animations:
 - `Master Slide`, 10,000 ms;
-- `PLAY`, 33,000 ms. Its 29 channels bind one track each to the eight
-  card and shadow layers, all on the same attribute.
+- `PLAY`, 33,000 ms. It has one channel per item (29). Eight of them,
+  the card and shadow layers, carry a track, all on the same attribute.
 
-Each track has four keys, in milliseconds from the scene opening
-(ShowOpeningCredits):
+Each track has four keys, in milliseconds. They are read here as time
+from the scene opening (ShowOpeningCredits); that PLAY starts as the scene
+opens is inferred.
 
 | Layer | Keys (s) |
 |---|---|
@@ -3680,3 +3694,8 @@ Still open:
 - The attribute's name (hash 0x1991C315).
 - The cards' placement in the scene. The engine still centres them.
 - The shadow layers, which the engine does not draw.
+- Whether the cards get their full 32.2 s. The engine keeps the scene open
+  from New_Diner_Cutscene_2 until the race to the festival starts, after
+  New_Diner_Cutscene_3. If those two cutscenes run shorter than 32.2 s,
+  the later cards never show. The cutscenes' length was not checked, and
+  the change has not been seen in a run.
