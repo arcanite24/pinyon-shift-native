@@ -220,9 +220,13 @@ void DriveSession::fill_garage_list(carview::CarListHud& out) {
           out.details.model = model_of(carview::car_name(e->media_name), e->make_name);
       }
     }
+    // 11_car_select_orig.png's bar on the same scene (the event's garage
+    // cars): SELECT, BACK, (X CAR LIST,) TOGGLE, SEARCH. SEARCH steps the
+    // class filter for now; the list view (X) is not built.
     out.prompts = {{"A", carview::text_of(t::kSelect)},
                    {"B", carview::text_of(t::kBack)},
-                   {"Y", carview::text_of(t::kToggle)}};
+                   {"Y", carview::text_of(t::kToggle)},
+                   {"BACK", carview::text_of(t::kSearch)}};
   }
   // The popup over the list.
   auto& p = out.popup;

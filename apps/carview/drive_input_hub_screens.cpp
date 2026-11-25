@@ -409,8 +409,8 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                   notice = std::string("SORT: ") + carview::garage_sort_name(garage_browser.sort_mode());
                   notice_until = vehicle.time() + 2.5;
-                } else if (k == SDLK_X && !e.key.repeat && use_browser) {
-                  cycle_class();
+                } else if ((k == SDLK_X || k == SDLK_M) && !e.key.repeat && use_browser) {
+                  cycle_class();  // M: SEARCH, as on the Autoshow's list
                 } else if (k == SDLK_F && !e.key.repeat && use_browser) {
                   toggle_fav();
                 } else if (k == SDLK_V && !e.key.repeat && use_browser) {
@@ -442,7 +442,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                   notice = std::string("SORT: ") + carview::garage_sort_name(garage_browser.sort_mode());
                   notice_until = vehicle.time() + 2.5;
-                } else if (b == SDL_GAMEPAD_BUTTON_WEST && use_browser) {
+                } else if ((b == SDL_GAMEPAD_BUTTON_WEST || b == SDL_GAMEPAD_BUTTON_BACK) && use_browser) {
                   cycle_class();
                 } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER && use_browser) {
                   toggle_fav();
@@ -503,6 +503,8 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                       } else if (hz.index == 2) {
                         garage_show_specs = !garage_show_specs;
                         app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      } else if (hz.index == 3 && use_browser) {
+                        cycle_class();
                       }
                     } else if (hz.group == carview::ui4::kHitButton) {
                       if (hz.index == 0) drive_selected();

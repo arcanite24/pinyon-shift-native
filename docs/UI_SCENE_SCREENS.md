@@ -310,3 +310,54 @@ flow files) as plain steps, with the timings measured on the captures;
   `H_GENERIC_TITLE`'s rows; DIFFICULTY steps the difficulty in place (Q97).
 - **Not drawn.** The tombola and the rival offer (Q98); the title and
   rival tapes' specular sheens (Q99).
+
+## The hub's menus and car lists
+
+- **Option lists on `H_GENERIC`** (`hub_menus.h`). MY PROFILE, OPTIONS,
+  the workshop, the paint booth, the upgrade choice and photo mode are the
+  original's string-table rows on one scene (`20_`, `21_`, `22_`,
+  `31_*_orig.png`), its list placed per row count. The pause menu's
+  SETTINGS, MY PROFILE and PHOTO MODE open them; B on the first list goes
+  back to the pause menu. An engine page reached from one is on X (OPTIONS'
+  ENGINE SETTINGS); MY PROFILE replaces the career page as the entry, and
+  the career page stays as an extra on the pause menu's extras.
+- **Car lists on `108_C_BUY_CARSELECT`** (`car_list_screen.h`,
+  `drive_car_lists.cpp`). One draw, parameterised by title, tiles, card and
+  help bar:
+  - the Autoshow's car select, titled HORIZON RECOMMENDS for the first car
+    and CAR SELECT for a make, with the price under the cursor
+    (`19_autoshow_orig.png`);
+  - MY GARAGE, the garage's cars in class then PI order with no line under
+    the cursor (`11_car_select_orig.png` is the same scene for an event);
+  - BARN FINDS, every barn with its state icon and Barnfind.str's state
+    under the cursor.
+  The cursor sits on the strip's fourth slot. The card shows the model
+  (`Data_Car.ModelShort`), year and make, the country flag
+  (`List_Country.IconPath`), class and PI, the drivetrain icon
+  (`UI4/Common/Drivetrain_<drive>_<placement>`) and the five rating bars
+  over its dirt panel. Y TOGGLE hides the card.
+- **Popups.** `draw_message_popup` draws `H_MESSAGE_POPUP` with a title, a
+  wrapped message and its own help bar (STAY IN CAR, and the garage's
+  COLLECT CAR, NOT READY, NOT DISCOVERED and CAN'T SELL BARN FIND).
+- **Two-texture panels.** A pane whose first texture's offset only slides
+  its dirt pattern (108's `HUDPanel01` behind the card) takes
+  `NodeOverride::wrap`, which samples the pattern repeating instead of
+  cropping it at the texture's border.
+
+## Interims in the hub
+
+- **Car lists.** The card's photo and the tiles are the cars' thumbnails
+  on the studio sweep (Q128). The panes behind the strip are drawn as a
+  measured band (their crop is not decoded). SEARCH steps the Autoshow's
+  all-cars toggle and the garage's class filter. MY GARAGE has no buy-car
+  tile, current-car icon or list view (Q130).
+- **Rooms.** Each room is the engine's studio stage, the Autoshow's dark
+  (Q129).
+- **Rows.** The workshop's order (Q131); the paint booth's vinyl rows open
+  the livery editor (Q132); TEAM CREDITS shows a notice (Q134); OPTIONS's
+  DIFFICULTY opens the engine's gameplay page (Q135).
+- **Barn Finds.** Which popups offer VIEW ON MAP, and the undiscovered and
+  collected tiles (Q133).
+- **Engine extras kept.** The garage's sorts (O, left stick), favourites
+  (F, V), and selling (Q, Del, LB) work but are not on the help bar; the
+  livery editor; the engine's settings pages.
