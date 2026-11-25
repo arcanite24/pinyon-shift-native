@@ -243,11 +243,18 @@ class Player {
   const Cutscene* cutscene() const { return cs_; }
   double time() const { return t_; }
 
-  // Hold at the end: a Normal cutscene with a LoopFrom keeps looping from
-  // LoopFrom to the end while held (the original holds Wristband_Intro until
-  // its exit-on-finish voice-over ends). Looping cutscenes always loop.
+  // Hold for the voice-over: a cutscene with an exitCutsceneOnFinish
+  // voice-over (Wristband_Intro) loops from LoopFrom to the end while that
+  // voice-over plays and ends when it finishes. Held, the loop lasts while
+  // the voice-over is pending (up to kVoiceStartGrace after its trigger) or
+  // playing; a voice-over that never starts lets the cutscene finish at its
+  // Duration. Looping cutscenes always loop.
+  static constexpr double kVoiceStartGrace = 1.5;
   void set_hold(bool hold) { hold_ = hold; }
   bool hold() const { return hold_; }
+  // The host's voice-over state, before each step.
+  void set_voice_playing(bool playing);
+  bool holding() const;
 
   // The evaluated sample at the current (wrapped) time.
   Sample current() const;
@@ -265,6 +272,8 @@ class Player {
   bool started_ = false;
   bool finished_ = false;
   bool hold_ = false;
+  enum class ExitVo : uint8_t { kNone, kFired, kPlaying, kDone } exit_vo_ = ExitVo::kNone;
+  double exit_vo_wait_ = 0.0;
   std::vector<bool> fired_;
   std::vector<std::pair<std::string, Frame>> nodes_;
 };

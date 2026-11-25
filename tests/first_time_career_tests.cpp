@@ -42,6 +42,8 @@ struct FakeHost {
       // The disc lengths of the two with timed DJ lines; others 2 s.
       cutscene_left = c.play_cutscene == "Opening_Cutscene" ? 39.0 : c.play_cutscene == "NEW_Diner_Cutscene_1" ? 6.7 : 2.0;
       hold = c.hold_cutscene;
+      // A held cutscene runs until its voice-over (5 s here) ends.
+      if (hold) cutscene_left = 5.0;
     }
     if (c.stop_cutscene) cutscene_left = 0;
     if (!c.play_movie.empty()) {
@@ -187,6 +189,26 @@ void test_opening_commands() {
   check(ftc.tutor_prompt().empty(), "prompt clears after 3 s of throttle");
 }
 
+void test_heat_edges() {
+  FirstTimeCareer ftc;
+  ftc.resume(FtcStage::kHeats);
+  race::FtcInput in;
+  in.dt = 0.1;
+  in.race_finished = true;
+  in.race_event_id = FirstTimeCareer::kAllComerRace1;
+  in.race_place = 1;
+  auto c = ftc.update(in);
+  check(c.launch_event_id == FirstTimeCareer::kAllComerRace2, "first heat done: the final");
+  in.race_event_id = FirstTimeCareer::kAllComerFinal;
+  in.race_place = 8;
+  c = ftc.update(in);
+  check(c.launch_event_id == FirstTimeCareer::kAllComerFinal, "missed cut: retry");
+  // A held race_finished flag does not relaunch every frame once reported.
+  in.race_finished = false;
+  c = ftc.update(in);
+  check(c.launch_event_id == 0 && ftc.stage() == FtcStage::kHeats, "no relaunch without a new finish");
+}
+
 void test_stage_names_and_resume() {
   for (int s = 0; s <= int(FtcStage::kComplete); ++s) {
     FtcStage back{};
@@ -207,6 +229,7 @@ void test_stage_names_and_resume() {
 int main() {
   test_order();
   test_opening_commands();
+  test_heat_edges();
   test_stage_names_and_resume();
   if (g_failures) {
     std::fprintf(stderr, "first_time_career_tests: %d failure(s)\n", g_failures);

@@ -273,6 +273,7 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       c.civilian_traffic = true;
       c.launch_event_id = kAllComerRace1;
       heat_ = 0;
+      awaiting_race_ = true;
       controls_ = true;
       hud_ = true;
       show_instruction("IDS_HudInstruction_Do_All_Comers_Heat");
@@ -447,14 +448,18 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       break;
 
     case FtcStage::kHeats:
-      if (in.race_finished) {
+      if (in.race_finished && awaiting_race_) {
+        awaiting_race_ = false;
         if (in.race_event_id == kAllComerRace1 && heat_ == 0) {
           heat_ = 1;
           c.launch_event_id = kAllComerRace2;
         } else if (in.race_event_id == kAllComerFinal) {
           if (in.race_place >= 1 && in.race_place <= kHeatCutoffPlace) return go(FtcStage::kTravelToRaceCentral);
           c.launch_event_id = kAllComerFinal;  // retry the final heat
+        } else {
+          c.launch_event_id = heat_ == 0 ? kAllComerRace1 : kAllComerRace2;  // another race: back to the heat
         }
+        awaiting_race_ = true;
       }
       break;
 

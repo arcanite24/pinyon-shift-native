@@ -433,6 +433,8 @@ void Player::start(const Cutscene* cs) {
   started_ = false;
   finished_ = cs == nullptr;
   hold_ = false;
+  exit_vo_ = ExitVo::kNone;
+  exit_vo_wait_ = 0.0;
   nodes_.clear();
   fired_.assign(cs ? cs->events.size() : 0, false);
 }
@@ -463,13 +465,32 @@ void Player::fire_range(double t0, double t1, bool inclusive_start, std::vector<
       }
       if (!replaced) nodes_.emplace_back(ev.name, f);
     }
+    if (ev.type == EventType::kVoiceOver && ev.number("exitCutsceneOnFinish") == 1.0) {
+      exit_vo_ = ExitVo::kFired;
+      exit_vo_wait_ = 0.0;
+    }
     out.push_back(&ev);
   }
+}
+
+void Player::set_voice_playing(bool playing) {
+  if (exit_vo_ == ExitVo::kFired && playing) exit_vo_ = ExitVo::kPlaying;
+  else if (exit_vo_ == ExitVo::kPlaying && !playing) exit_vo_ = ExitVo::kDone;
+}
+
+bool Player::holding() const {
+  return hold_ && (exit_vo_ == ExitVo::kPlaying || (exit_vo_ == ExitVo::kFired && exit_vo_wait_ < kVoiceStartGrace));
 }
 
 std::vector<const Event*> Player::step(double dt) {
   std::vector<const Event*> out;
   if (!cs_ || finished_) return out;
+  if (hold_ && exit_vo_ == ExitVo::kDone) {
+    // exitCutsceneOnFinish: the cutscene ends with its voice-over.
+    finished_ = true;
+    return out;
+  }
+  if (exit_vo_ == ExitVo::kFired) exit_vo_wait_ += std::max(0.0, dt);
   if (!started_) {
     started_ = true;
     fire_range(0.0, 0.0, true, out);
@@ -478,7 +499,7 @@ std::vector<const Event*> Player::step(double dt) {
   const double t0 = t_;
   double t1 = t_ + dt;
   const double end = cs_->duration;
-  const bool loops = cs_->mode == PlaybackMode::kLooping || (hold_ && cs_->loop_from > 0.0);
+  const bool loops = cs_->mode == PlaybackMode::kLooping || (holding() && cs_->loop_from > 0.0);
   if (t1 >= end && end > 0) {
     fire_range(t0, end, false, out);
     if (loops && cs_->loop_from < end) {

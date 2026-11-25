@@ -117,11 +117,10 @@ struct FtcInput {
   std::array<double, 3> player_pos{};
   bool cutscene_active = false;  // the host's cutscene player is running
   bool movie_active = false;
-  bool vo_playing = false;
   double throttle = 0.0;  // 0..1
   bool confirm = false;   // A / Enter pressed this frame
   bool screen_open = false;  // the map / Autoshow the flow opened is still open
-  bool race_finished = false;
+  bool race_finished = false;  // edge: the race the flow launched just finished
   int64_t race_event_id = 0;
   int race_place = 0;  // 1-based
   bool route_finished = false;  // the initial drive's route reached its end
@@ -211,6 +210,7 @@ class FirstTimeCareer {
   int tickets_ = 10;
   double race_total_ = 1.0;
   int heat_ = 0;
+  bool awaiting_race_ = false;  // a heat was launched and has not reported
   struct Timed {
     double t;
     std::string dj;

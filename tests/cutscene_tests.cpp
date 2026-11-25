@@ -196,16 +196,32 @@ void test_player_and_world() {
   fired = pl.step(1.6);
   check(fired.size() == 1 && fired[0]->type == cutscene::EventType::kPlacePlayerCar, "place-car at 3.0 s");
   check(pl.world_camera(car, w) && w.interior, "second cam (no target) is relative to the car, in the cockpit");
-  // Hold: a Normal cutscene with LoopFrom loops while held.
+  // Hold: while the exit-on-finish voice-over (fired at 1.5 s) plays, the
+  // cutscene loops from LoopFrom; it ends when the voice-over does.
   pl.set_hold(true);
+  pl.set_voice_playing(true);
+  check(pl.holding(), "holding while the voice-over plays");
   fired = pl.step(2.5);  // 3.2 + 2.5 = 5.7
   check(pl.active() && fired.size() == 1, "snapshot at 5.0 fires");
   fired = pl.step(0.5);  // past 6.0 -> wraps to loop_from
   check(pl.active() && pl.time() >= 4.0 && pl.time() < 6.0, "held cutscene loops from LoopFrom");
   check(pl.step(1.0).empty(), "events do not refire on loop");
-  pl.set_hold(false);
-  pl.step(3.0);
-  check(pl.finished() && !pl.active(), "released cutscene finishes at its duration");
+  pl.set_voice_playing(false);
+  pl.step(0.01);
+  check(pl.finished() && !pl.active(), "the cutscene ends with its voice-over");
+
+  // A voice-over that never starts: the hold lapses and the cutscene ends at
+  // its duration instead of looping for ever.
+  cutscene::Player quiet;
+  quiet.start(cs);
+  quiet.set_hold(true);
+  quiet.step(0.0);
+  quiet.step(1.6);  // VO fires
+  check(quiet.holding(), "pending voice-over holds briefly");
+  quiet.step(2.0);
+  check(!quiet.holding(), "hold lapses when the voice-over never plays");
+  quiet.step(3.0);
+  check(quiet.finished(), "unvoiced cutscene finishes at its duration");
 
   // Pose conventions: yaw +90 looks along +X; pitch +10 looks down.
   cutscene::Pose pose;
