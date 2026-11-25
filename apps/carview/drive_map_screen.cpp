@@ -370,7 +370,8 @@ bool DriveSession::map_screen_event(const SDL_Event& e) {
       case SDLK_ESCAPE:
       case SDLK_M:
       case SDLK_BACKSPACE: k = Key::kB; break;
-      case SDLK_F: k = Key::kX; break;
+      case SDLK_F:
+      case SDLK_X: k = Key::kX; break;  // the help bar's chip reads X
       case SDLK_Q: k = Key::kLB; break;
       case SDLK_UP:
       case SDLK_W: k = Key::kUp; break;
