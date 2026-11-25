@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -179,19 +180,27 @@ int ui_scene_dump(int argc, char** argv) {
   std::string error;
   fh1::UiScene sc;
   std::error_code ec;
+  // The scene's BGF, for the `bgf` option below (from where the scene came).
+  std::function<fh1::ReadResult()> read_bgf;
+  std::unique_ptr<fh1::UiOverlay> ov_keep;
+  std::unique_ptr<fh1::Archive> zip_keep;
   if (std::filesystem::is_directory(argv[2], ec)) {
     // A game root: the scene as the game mounts it, the title update's
     // media.zip (under SHIFT_STATE_ROOT) over the disc's UI.zip.
     const char* state = std::getenv("SHIFT_STATE_ROOT");
-    fh1::UiOverlay ov(argv[2], fh1::UiOverlay::v4_media_zip_of(state ? state : ""));
+    ov_keep = std::make_unique<fh1::UiOverlay>(argv[2], fh1::UiOverlay::v4_media_zip_of(state ? state : ""));
+    fh1::UiOverlay& ov = *ov_keep;
+    read_bgf = [&ov, name = std::string(argv[3])] { return ov.scene_file(name, "bgf").read; };
     fh1::UiOverlay::Origin fo{}, bo{};
     if (!ov.load_scene(argv[3], sc, &error, &fo, &bo)) return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
     std::printf("fbf from %s, bsg from %s\n", fo == fh1::UiOverlay::Origin::kV4 ? "v4" : "disc",
                 bo == fh1::UiOverlay::Origin::kV4 ? "v4" : "disc");
   } else {
-    auto zip = fh1::Archive::open(argv[2], &error);
+    zip_keep = fh1::Archive::open(argv[2], &error);
+    fh1::Archive* zip = zip_keep.get();
     if (!zip) return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
     const std::string base = std::string("Scenes/ui4/") + argv[3];
+    read_bgf = [zip, base] { return zip->read(base + ".bgf"); };
     auto fbf = zip->read(base + ".fbf");
     auto bsg = zip->read(base + ".bsg");
     if (!fbf.ok() || !bsg.ok()) return std::fprintf(stderr, "carview: %s%s\n", fbf.error.c_str(), bsg.error.c_str()), 1;
@@ -205,7 +214,7 @@ int ui_scene_dump(int argc, char** argv) {
   // `bgf` as a fourth argument: the BGF document's items, contracts and
   // state styles instead (the run-time looks the scene does not show at rest).
   if (argc > 4 && std::strcmp(argv[4], "bgf") == 0) {
-    auto bgf = zip->read(base + ".bgf");
+    auto bgf = read_bgf();
     fh1::UiBgfDocument doc;
     if (!bgf.ok() || !fh1::parse_ui_bgf(bgf.data, doc, &error))
       return std::fprintf(stderr, "carview: bgf: %s%s\n", bgf.error.c_str(), error.c_str()), 1;
