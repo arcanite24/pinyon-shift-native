@@ -949,8 +949,19 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
               if (confirm) {
                 app.audio_host.trigger_ui(audio::UiCue::kAccept);
                 app.rally_results_open = false;
+                // The intro race's end (game_rally_intro_flow): to the first
+                // Autoshow, then the hub's first visit.
+                const bool intro_heats = app.rally_session.is_heats() && app.saved.rally_flow == 1;
                 app.rally_session.retire();
-                app.rally_hub_open = true;
+                if (intro_heats) {
+                  app.audio_host.trigger_vo("PostraceHeatsQualification", false);
+                  app.audio_host.trigger_vo("ToTheAutoshow", false);
+                  app.saved.rally_flow = 2;
+                  app.rally_first_autoshow_pending = true;
+                  app.rally_hub_open = false;
+                } else {
+                  app.rally_hub_open = true;
+                }
                 app.leave_race = true;
                 running = false;
               }
@@ -1005,15 +1016,8 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                 if (app.rally_hub_selected < 0 || size_t(app.rally_hub_selected) >= hst.items.size()) return;
                 const auto& it = hst.items[size_t(app.rally_hub_selected)];
                 if (it.kind == carview::RallyHubItem::kHeats) {
-                  if (app.rally_session.start_heats(app.rally_catalog, int(app.race_options.difficulty), app.race_options.seed)) {
-                    if (auto bit = app.baked_ids.find(app.rally_catalog.heats.player_car_id); bit != app.baked_ids.end()) {
-                      app.pre_loaner_car = app.car;
-                      app.pre_loaner_garage_id = app.career_garage.selected;
-                      app.car = bit->second;
-                    }
-                    app.rally_hub_open = false;
-                    app.race_options.stage_title = app.rally_catalog.heats.name;
-                    app.next_event = "stage:" + std::to_string(app.rally_catalog.heats.route_id);
+                  if (const std::string id = app.start_rally_heats(); !id.empty()) {
+                    app.next_event = id;
                     running = false;
                   }
                 } else if (it.kind == carview::RallyHubItem::kChampionship) {

@@ -234,6 +234,11 @@ void test_save_fields() {
   drive::DriveSave clamp;
   check(drive::save_from_text(t0 + "club_tutorial 9\nrally_flow -3\n", clamp, &err), "clamped load");
   check(clamp.club_tutorial == 4 && clamp.rally_flow == 0, "fields clamp on load");
+  // The first-visit flow's last step (the hub's tutorial heard) round trips;
+  // past it clamps.
+  drive::DriveSave four, high;
+  check(drive::save_from_text(t0 + "rally_flow 4\n", four, &err) && four.rally_flow == 4, "rally_flow 4 loads");
+  check(drive::save_from_text(t0 + "rally_flow 7\n", high, &err) && high.rally_flow == 4, "rally_flow clamps to 4");
 }
 
 void test_pause_rows() {

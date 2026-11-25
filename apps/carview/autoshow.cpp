@@ -201,6 +201,8 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
     if (!baked.empty() && !baked.count(lower(c.media_name))) continue;
     // SPEC-AUTOSHOW-PAINT: 2-car tutorial list (ids 1323 and 1009).
     if (tutorial_mode_ && c.id != 1323 && c.id != 1009) continue;
+    // Horizon Rally's first Autoshow (CSetRestrictionsForFirstRallyAutoshow): its cars only.
+    if (only_cars && !only_cars(c.id)) continue;
 
     AutoshowCar entry;
     entry.dealer = c;

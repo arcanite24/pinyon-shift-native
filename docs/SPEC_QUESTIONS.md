@@ -3091,14 +3091,39 @@ otherwise IDS_QuitHorizonToRally (A OK, B CANCEL; `rally_confirm_orig.png`),
 both on `H_MESSAGE_POPUP`. The first OK plays Forza_Tone_Rally and saves
 `rally_flow` 1, then the world switches to ColoradoDirt. The popups draw
 over the world, where the original keeps the blurred pause menu under
-them. The flow's intro race, qualification VO, first Autoshow
-(restricted to rally cars) and hub tutorial are not run: the switch still
-opens the engine's hub overlay (V4-11).
+them.
 
-Needed: the intro race's event and car, the VO cue order
-(`Rally_DialogueScript_EN.xml` keys the flow plays), the first Autoshow's
-car filter, and which profile flags (HasSeenInitialIntro,
-HasSeenFirstTicket) each step sets, from the recomp's generated v4 code.
+The rest of the first visit now runs, with `rally_flow` as its step
+(0 never entered, 1 video seen, 2 heats driven, 3 first Autoshow left,
+4 hub tutorial heard):
+
+- The switch after the video starts `RALLY_HEATS` in its loaner
+  (`DriveApp::start_rally_heats`, the hub's own heats start) before any
+  hub. Its results' A plays `PostraceHeatsQualification` and
+  `ToTheAutoshow` (`game_rally_intro_flow`'s `post_race_VO`).
+- Then the Autoshow opens listing only the Horizon Rally cars (the five
+  with `OptionalRallyUpgrades` rows, Q150), as
+  `CSetRestrictionsForFirstRallyAutoshow`'s Autoshow; leaving it opens the
+  hub. A profile that left at step 2 gets the Autoshow on its next entry.
+- The hub's first opening plays `ChampionshipStructure` then
+  `CoDriverIntro` (`first_time_hub_flow`) and saves step 4
+  (`CSetHasSeenInitialRallyTicket` plus its micro-save). A profile that
+  drove the heats before this step existed gets the tutorial on its next
+  hub opening.
+
+All four triggers are in `Rally_DialogueScript_EN.xml`. Interims: the
+heats start from the engine's pre-race menu, where the original runs a
+rolling start under AI control with the pep talk and the heats' intro
+cutscene; the VO is queued, not waited on; the hub's help bar is not
+disabled during the tutorial; and the Autoshow's restriction is the Rally
+cars only, though the behaviour's actual contents are unknown. In the
+harness's play bake none of the five Rally cars (nor the heats' loaner)
+is baked, so the restricted Autoshow is empty and the hub opens straight
+away ("no cars to buy").
+
+Needed: `CSetRestrictionsForFirstRallyAutoshow`'s restrictions (cars,
+classes, credits), the heats' rolling start and cutscene, and whether
+the flow waits for each VO line before the hub takes input.
 
 ## Q146 (V4-18, not blocking): ColoradoDirt's speed traps and their records
 

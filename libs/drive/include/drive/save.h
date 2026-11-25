@@ -210,8 +210,11 @@ struct DriveSave {
   // begun (tutorial: open CURRENT CAR CHALLENGES), 3 details seen (waiting
   // for the first medal), 4 done.
   int club_tutorial = 0;
-  // Horizon Rally's first-visit flow (game_rally_intro_flow.xml): 0 never
-  // entered, 1 intro video seen, 2 heats driven, 3 hub tutorial done.
+  // Horizon Rally's first-visit flow (game_rally_intro_flow.xml,
+  // game_rally_free_roam_flow.xml): 0 never entered, 1 intro video seen
+  // (the intro race, RALLY_HEATS, next), 2 heats driven (the first
+  // Autoshow, Rally cars only, next), 3 first Autoshow left (the hub's
+  // tutorial next), 4 tutorial heard (CSetHasSeenInitialRallyTicket).
   int rally_flow = 0;
   std::vector<SavedCarHistory> car_history;
   // Offline Car Club (451_CLUB_SETTINGS: name, 4-char [TAG], shared Club Garage car IDs).

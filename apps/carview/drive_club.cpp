@@ -598,8 +598,9 @@ void DriveSession::rally_entry_press(bool accept) {
           return;
         }
         app.audio_host.trigger_ui(audio::UiCue::kAccept);
-        // The first entry plays Forza_Tone_Rally before the switch (the intro
-        // race, first Autoshow and hub tutorial are not run yet: Q145).
+        // The first entry plays Forza_Tone_Rally before the switch; the
+        // switch then runs the intro race, the first Autoshow and the hub's
+        // tutorial (DriveSave::rally_flow; Q145).
         if (app.saved.rally_flow == 0) {
           app.saved.rally_flow = 1;
           save_now("horizon rally");

@@ -538,7 +538,7 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       if (l >> v) out.club_tutorial = std::clamp(v, 0, 4);
     } else if (key == "rally_flow") {
       int v = 0;
-      if (l >> v) out.rally_flow = std::clamp(v, 0, 3);
+      if (l >> v) out.rally_flow = std::clamp(v, 0, 4);
     } else if (key == "car_club_name") {
       std::string rest;
       std::getline(l, rest);

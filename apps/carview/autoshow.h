@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
@@ -158,6 +159,9 @@ class Autoshow {
   const std::vector<AutoshowMake>& makes() const { return makes_; }
   size_t selected_make_index() const { return make_index_; }
   bool tutorial_mode() const { return tutorial_mode_; }
+  // When set, open() lists only the Data_Car ids it accepts (Horizon Rally's first
+  // Autoshow); the caller clears it.
+  std::function<bool(int64_t)> only_cars;
   const std::string& empty_reason() const { return empty_reason_; }
 
   // Sorting & filtering (Price/Year/PI/Name, Class F..X, Drivetrain FWD/RWD/AWD).

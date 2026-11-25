@@ -309,6 +309,13 @@ struct DriveApp : DriveConfig {
   // at no cost (Rewards_EventPrizes.RewardCarUpgradeClass).
   std::string award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize = false,
                                int upgrade_class = -1);
+  // Starts the RALLY_HEATS session in its loaner car; the stage's event id
+  // ("stage:<route>"), empty when it cannot start.
+  std::string start_rally_heats();
+  // Horizon Rally's first visit after the heats (game_rally_intro_flow):
+  // the Autoshow with the Rally cars only, then the hub's tutorial.
+  bool rally_first_autoshow_pending = false;
+  bool rally_first_autoshow_open = false;
   // Achievements 208/215: a car came into the garage (bought or given).
   void note_car_obtained(int64_t car_id, bool purchased);
   // Achievements 211/214: the Horizon Rally stage being driven.
