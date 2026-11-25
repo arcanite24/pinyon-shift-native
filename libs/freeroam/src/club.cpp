@@ -853,6 +853,91 @@ bool load_club(const std::string& state_root, ClubData& out, std::string* error)
   return true;
 }
 
+namespace {
+
+bool british(const CarMeta& m) {
+  const std::string mk = lower(m.make);
+  const std::string co = lower(m.country);
+  const bool british_make =
+      has_substr(mk, "aston") || has_substr(mk, "bentley") || has_substr(mk, "jaguar") ||
+      has_substr(mk, "land rover") || has_substr(mk, "lotus") || has_substr(mk, "mclaren") ||
+      has_substr(mk, "mini") || has_substr(mk, "noble") || has_substr(mk, "tvr") ||
+      has_substr(mk, "vauxhall") || has_substr(mk, "radical") || has_substr(mk, "ultima") ||
+      has_substr(mk, "austin") || has_substr(mk, "ascari") || has_substr(mk, "bowler") ||
+      has_substr(mk, "caterham") || has_substr(mk, "eagle") || has_substr(mk, "joss");
+  const bool british_country = (co == "uk" || has_substr(co, "brit") || has_substr(co, "united kingdom") ||
+                                has_substr(co, "unitedkingdom") || has_substr(co, "england"));
+  return british_make || british_country;
+}
+
+}  // namespace
+
+// The package's achievement table (spa 216..225) with the targets above.
+const std::array<ClubAchievementDef, 10>& club_achievements() {
+  static const std::array<ClubAchievementDef, 10> k = {{
+      {216, 60, kClubThresholdFirstMedal, false},
+      {217, 61, kClubThresholdFerrari, true},
+      {218, 62, kClubThresholdMillionCr, true},
+      {219, 63, kClubThresholdShelby, true},
+      {220, 64, kClubThresholdLamborghini, true},
+      {221, 65, kClubThresholdNissan, true},
+      {222, 66, kClubThresholdBmw, true},
+      {223, 67, kClubThresholdBritish, true},
+      {224, 68, kClubThresholdFord, true},
+      {225, 69, kClubThresholdMultiCars, true},
+  }};
+  return k;
+}
+
+const ClubAchievementDef* club_achievement(uint16_t id) {
+  for (const auto& a : club_achievements())
+    if (a.id == id) return &a;
+  return nullptr;
+}
+
+bool counts_for(uint16_t id, const CarMeta& m) {
+  const std::string mk = lower(m.make);
+  switch (id) {
+    case 216: case 225: return true;
+    case 217: return has_substr(mk, "ferrari");
+    case 218: return m.base_cost >= 1000000;
+    case 219: return has_substr(mk, "shelby");
+    case 220: return has_substr(mk, "lamborghini");
+    case 221: return has_substr(mk, "nissan");
+    case 222: return has_substr(mk, "bmw");
+    case 223: return british(m);
+    case 224: return has_substr(mk, "ford");
+    default: return false;
+  }
+}
+
+int achievement_progress(uint16_t id, const ClubMedalStats& st) {
+  switch (id) {
+    case 216: return st.total_medals;
+    case 217: return st.ferrari_cars;
+    case 218: return st.million_cr_cars;
+    case 219: return st.shelby_cars;
+    case 220: return st.lamborghini_cars;
+    case 221: return st.nissan_cars;
+    case 222: return st.bmw_cars;
+    case 223: return st.british_cars;
+    case 224: return st.ford_cars;
+    case 225: return st.cars_with_medal;
+    default: return 0;
+  }
+}
+
+CarMedals car_medals(const ClubData& data, int64_t car_id, const std::vector<bool>* completed) {
+  CarMedals m;
+  if (auto it = data.cars.find(car_id); it != data.cars.end()) m.available = int(it->second.size());
+  if (completed) {
+    m.begun = true;
+    for (bool c : *completed) m.earned += c ? 1 : 0;
+    m.earned = std::min(m.earned, m.available);
+  }
+  return m;
+}
+
 ClubMedalStats compute_medal_stats(const std::vector<std::pair<int64_t, int>>& medals_per_car,
                                    const std::map<int64_t, CarMeta>& meta) {
   ClubMedalStats st;
@@ -864,25 +949,15 @@ ClubMedalStats compute_medal_stats(const std::vector<std::pair<int64_t, int>>& m
     ++st.cars_with_medal;
     auto it = meta.find(car_id);
     if (it == meta.end()) continue;
-    const std::string mk = lower(it->second.make);
-    const std::string co = lower(it->second.country);
-    if (has_substr(mk, "ford")) ++st.ford_cars;
-    if (has_substr(mk, "ferrari")) ++st.ferrari_cars;
-    if (has_substr(mk, "shelby")) ++st.shelby_cars;
-    if (has_substr(mk, "lamborghini")) ++st.lamborghini_cars;
-    if (has_substr(mk, "nissan")) ++st.nissan_cars;
-    if (has_substr(mk, "bmw")) ++st.bmw_cars;
-    const bool british_make =
-        has_substr(mk, "aston") || has_substr(mk, "bentley") || has_substr(mk, "jaguar") ||
-        has_substr(mk, "land rover") || has_substr(mk, "lotus") || has_substr(mk, "mclaren") ||
-        has_substr(mk, "mini") || has_substr(mk, "noble") || has_substr(mk, "tvr") ||
-        has_substr(mk, "vauxhall") || has_substr(mk, "radical") || has_substr(mk, "ultima") ||
-        has_substr(mk, "austin") || has_substr(mk, "ascari") || has_substr(mk, "bowler") ||
-        has_substr(mk, "caterham") || has_substr(mk, "eagle") || has_substr(mk, "joss");
-    const bool british_country = (co == "uk" || has_substr(co, "brit") || has_substr(co, "united kingdom") ||
-                                  has_substr(co, "unitedkingdom") || has_substr(co, "england"));
-    if (british_make || british_country) ++st.british_cars;
-    if (it->second.base_cost >= 1000000) ++st.million_cr_cars;
+    const CarMeta& m = it->second;
+    st.ford_cars += counts_for(224, m);
+    st.ferrari_cars += counts_for(217, m);
+    st.shelby_cars += counts_for(219, m);
+    st.lamborghini_cars += counts_for(220, m);
+    st.nissan_cars += counts_for(221, m);
+    st.bmw_cars += counts_for(222, m);
+    st.british_cars += counts_for(223, m);
+    st.million_cr_cars += counts_for(218, m);
   }
   st.ach_first_medal = st.total_medals >= kClubThresholdFirstMedal;
   st.ach_multi_cars = st.cars_with_medal >= kClubThresholdMultiCars;
