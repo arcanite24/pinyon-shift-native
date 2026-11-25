@@ -580,26 +580,8 @@ void DriveSession::run_window_loop() {
               app.pending_autoshow_open = false;
               open_shop_or_autoshow(true);
             }
-            // R3-CAM-09: Barn find restoration timer -> marks ready_to_claim for Dak's Garage pickup
-            // (never auto-erases or auto-awards garage car before the player claims it at Dak's Garage).
-            if (!app.pending_barn_restorations.empty() && !app.race && !app.campaign.is_blocking_gameplay() && !menu.open &&
-                !map_open && !autoshow.is_open() && !shop.is_open() && !garage_open && !events_page.is_open()) {
-              for (auto& br : app.pending_barn_restorations) {
-                if (br.ready_to_claim) continue;
-                br.elapsed_s += frame_dt;
-                if (br.elapsed_s >= br.ready_after_s) {
-                  br.elapsed_s = br.ready_after_s;
-                  br.ready_to_claim = true;
-                  br.notified_ready = true;
-                  sync_pending_barns_to_save(app);
-                  save_due = true;
-                  popup = Popup::notify(NotifyKind::kBarnReady, vehicle.time(), {br.car_name});
-                  app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
-                  apply_campaign_action(app.campaign.on_barn_restored(br.barn_id, br.car_name, &app.audio_host));
-                }
-                break;
-              }
-            }
+            // Barn finds are restored over a driven distance (freeroam::FreeRoam
+            // emits kBarnReady); no timer here.
           }
           {
             const drive::Vec3 vp = vehicle.position();
@@ -916,6 +898,11 @@ void DriveSession::run_window_loop() {
                       disk_save.max_skills_score, app.max_skills_car);
                   for (const auto& sp : disk_save.sponsors)
                     app.skill_tracker->set_sponsor_progress(sp.id, sp.count, sp.claimed);
+                }
+                if (app.freeroam_challenges) {
+                  std::vector<freeroam::ChallengeRecord> recs;
+                  for (const auto& fc : disk_save.freeroam_challenges) recs.push_back({fc.id, fc.progress, fc.completed});
+                  app.freeroam_challenges->load(recs);
                 }
                 if (!app.collectibles.signs.empty()) {
                   app.progress = freeroam::Progress{};
@@ -1323,6 +1310,8 @@ void DriveSession::run_window_loop() {
                                             : (replays_dir.parent_path() / "ghosts");
                 if (app.active_rivals.active && !app.active_rivals.completed) {
                   app.active_rivals.completed = true;
+                  // Achievement 212: a Horizon Rally event completed in Rivals mode.
+                  if (app.active_rivals.is_rally_stage || app.race->is_stage()) ++app.saved.ach.rally_rivals_events;
                   const auto& pc = app.race->session().car(app.race->player_index());
                   const double finish_t = pc.finish;
                   const bool clean_run = !pc.race_dirty;

@@ -2653,3 +2653,95 @@ the tape, so they run on past its end as a dark band. The captures
 tapes, so as an interim the engine hides both. Needed, narrow: the
 sheens' blend mode (additive or alpha) and whether the original crops
 them with their tape.
+
+## Q114 (PROG-07, not blocking): rewards for speed traps and speed zones
+
+PR stunts and outpost discovery pay nothing in the title: no credits, no
+popularity. Completing a stunt only raises the outpost's fast-travel
+discount. Both are decoded.
+
+For speed traps and speed zones the evidence is weaker:
+- the trap handler's own body makes no popularity call;
+- `HorizonFeats.xml` has no speed-trap skill;
+- the credits setter has no caller in trap code.
+
+But the handler's listener loop and two of its callees were not read, and
+the speed-zone (average speed) handlers were not opened. The engine now
+pays nothing for either (it used to pay +500 popularity on a new best and
++150 otherwise).
+
+Needed: whether a trap or zone result adds popularity or credits anywhere
+(a listener on the trap event, or the zone's completion path).
+
+## Q115 (PROG-08, not blocking): the star driver and the payout's early exits
+
+BEAT THE STAR pays `CareerWristbandLevels.NemesisBonus` of the event's
+`Level` when the event is a festival race (CareerEventStyle 1) and the
+player places strictly ahead of the star. Both conditions are decoded.
+
+What remains open:
+- **Who the star is.** The payout takes the first participant whose
+  driver object answers true to one virtual query, and that query's
+  function was not found. The grid builder reads `AIPlayers.Nemesis` for
+  each `EventParticipants` row and seats flagged drivers at
+  `Events.NemesisGridPosition`, so the engine takes the first
+  `AIPlayers.Nemesis` driver in the field as the star. This is inferred.
+- **The star's place.** The engine reads the star's running place when the
+  player crosses the line. The title probably reads the same field, but
+  this is not confirmed.
+- **Early exits.** The payout returns with nothing in two cases, and what
+  each one means is not known:
+  - a setup flag is set and a ratio of two player-car values reaches a
+    threshold;
+  - another setup flag is clear and a byte on the player object is set.
+
+  Neither one is the DNF check. The engine has neither exit.
+
+Needed: the virtual query's function, and what the two early exits stand
+for.
+
+## Q116 (PROG-12, not blocking): barn-find gates the engine does not model
+
+The barn controller is decoded: spawn ticks, the weighted pick and its 1-in-N
+roll, pending to rumour, discovery, restoration over the `DistanceDriven`
+distance, ready, and collection at the garage. The tuning comes from
+GlobalRegistry `Activities/BarnFinds`. Five points are still open:
+
+- **Two predicates that skip the update.** One skips the controller's whole
+  update, including its tick timer. The other is a global flag checked
+  beside it. Either could be a story gate, such as the opening. The engine
+  has neither; it only pauses during onboarding.
+- **The idle timer.** A tick is skipped when a player timer reaches
+  `MaxIdleTime` (600 s). The timer is probably idle time. The engine counts
+  the time spent below 0.5 m/s.
+- **The ready check's player value.** Ready needs a player value of at least
+  11.176, probably speed (25 mph). The engine reads it as speed.
+- **Dialogue.** The pending timer pauses while dialogue plays. The engine does
+  not track dialogue, so its timer never pauses for it.
+- **Collection.** The title collects a ready car on its garage Barn Finds
+  screen, with a COLLECT CAR confirmation. The engine collects it when the
+  garage opens, and the garage insert itself was not traced.
+
+Needed: what the two predicates test, the timer behind the idle check, and
+the value behind the ready check.
+
+## Q117 (PROG-03, not blocking): campaign captions with no shipped text
+
+The wristband, Star Showdown and Showcase tables now come from the disc:
+gamedb.slt for the numbers, airborne_challenges.xml for the opponents and
+the string tables for the names. The title voices these moments, and the
+string tables hold no text for the lines the engine shows around them, so
+those lines are blank or interim:
+
+- **Blank:** the wristband announcement, the Star Showdown challenge and
+  victory lines, and the Showcase intro and victory lines. Their dialogue
+  cues still play the VO.
+- **Interim:** the campaign cinematics' eyebrows, detail lines and badges
+  (for example "HORIZON STAR SHOWDOWN • 1-ON-1 PINK SLIP"), and the unlock
+  subtitles ("Star Showdown unlocked! ..."). Each is engine text.
+- **Casing:** names go in as the string tables hold them ("Hailey Harper",
+  "Manic MINI"). Only captions built from an all-capitals format are in
+  capitals ("{0} WRISTBAND" gives "PURPLE WRISTBAND").
+
+Needed: which of these screens the title draws, what text each one shows,
+and whether the UI changes the case.

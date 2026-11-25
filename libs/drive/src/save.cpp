@@ -144,10 +144,37 @@ std::string save_to_text(const DriveSave& s) {
     out += "speed_zone " + id + " " + num(mph) + "\n";
   for (const auto& sp : s.sponsors)
     out += "sponsor " + sp.id + " " + std::to_string(sp.count) + " " + std::to_string(sp.claimed) + "\n";
+  for (const auto& fc : s.freeroam_challenges)
+    out += "freeroam_challenge " + fc.id + " " + num(fc.progress) + " " + (fc.completed ? "1" : "0") + "\n";
   if (s.h2h_races > 0 || s.h2h_wins > 0)
     out += "h2h " + std::to_string(s.h2h_races) + " " + std::to_string(s.h2h_wins) + "\n";
   if (s.rivals_beaten > 0 || s.rally_rivals_beaten > 0)
     out += "rivals " + std::to_string(s.rivals_beaten) + " " + std::to_string(s.rally_rivals_beaten) + "\n";
+  {
+    const auto& a = s.ach;
+    auto ach_int = [&](const char* k, int64_t v) {
+      if (v > 0) out += std::string("ach ") + k + " " + std::to_string(v) + "\n";
+    };
+    auto ach_ids = [&](const char* k, const std::vector<int64_t>& ids) {
+      if (ids.empty()) return;
+      out += std::string("ach ") + k;
+      for (auto id : ids) out += " " + std::to_string(id);
+      out += "\n";
+    };
+    ach_int("autoshow_purchases", a.autoshow_purchases);
+    ach_int("dirt_race_wins", a.dirt_race_wins);
+    ach_int("festival_venues", a.festival_venues);
+    ach_int("paint_jobs_saved", a.paint_jobs_saved);
+    ach_int("loyalty_cars_received", a.loyalty_cars_received ? 1 : 0);
+    ach_int("hard_race_wins", a.hard_race_wins);
+    ach_ids("rally_cars_obtained", a.rally_cars_obtained);
+    ach_int("rally_champion", a.rally_champion ? 1 : 0);
+    ach_int("rally_hard_manual_stage_wins", a.rally_hard_manual_stage_wins);
+    if (a.rally_air_m > 0) out += "ach rally_air_m " + num(a.rally_air_m) + "\n";
+    ach_int("rally_rivals_events", a.rally_rivals_events);
+    ach_int("rally_flawless_stage_wins", a.rally_flawless_stage_wins);
+    ach_ids("rally_cars_purchased", a.rally_cars_purchased);
+  }
   if (s.driver_xp > 0) out += "driver_xp " + std::to_string(s.driver_xp) + "\n";
   for (const auto& [make_id, xp] : s.make_affinity)
     if (xp > 0) out += "affinity " + std::to_string(make_id) + " " + std::to_string(xp) + "\n";
@@ -393,6 +420,13 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
     } else if (key == "sponsor") {
       DriveSave::SavedSponsor sp;
       if (l >> sp.id >> sp.count >> sp.claimed && sp.count >= 0 && sp.claimed >= 0) out.sponsors.push_back(sp);
+    } else if (key == "freeroam_challenge") {
+      DriveSave::SavedFreeRoamChallenge fc;
+      int done = 0;
+      if (l >> fc.id >> fc.progress >> done && std::isfinite(fc.progress) && fc.progress >= 0) {
+        fc.completed = done != 0;
+        out.freeroam_challenges.push_back(fc);
+      }
     } else if (key == "h2h") {
       l >> out.h2h_races >> out.h2h_wins;
     } else if (key == "rivals") {
@@ -401,6 +435,39 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
         out.rivals_beaten = std::max(0, rb);
         if (l >> rrb) out.rally_rivals_beaten = std::max(0, rrb);
       }
+    } else if (key == "ach") {
+      std::string k;
+      if (!(l >> k)) continue;
+      auto& a = out.ach;
+      auto read_int = [&](int& dst) {
+        int v = 0;
+        if (l >> v) dst = std::max(0, v);
+      };
+      auto read_ids = [&](std::vector<int64_t>& dst) {
+        for (int64_t id; l >> id;)
+          if (std::find(dst.begin(), dst.end(), id) == dst.end()) dst.push_back(id);
+      };
+      if (k == "autoshow_purchases") read_int(a.autoshow_purchases);
+      else if (k == "dirt_race_wins") read_int(a.dirt_race_wins);
+      else if (k == "festival_venues") {
+        uint32_t v = 0;
+        if (l >> v) a.festival_venues = v & AchievementSignals::kAllVenues;
+      } else if (k == "paint_jobs_saved") read_int(a.paint_jobs_saved);
+      else if (k == "loyalty_cars_received") {
+        int v = 0;
+        a.loyalty_cars_received = (l >> v) && v != 0;
+      } else if (k == "hard_race_wins") read_int(a.hard_race_wins);
+      else if (k == "rally_cars_obtained") read_ids(a.rally_cars_obtained);
+      else if (k == "rally_champion") {
+        int v = 0;
+        a.rally_champion = (l >> v) && v != 0;
+      } else if (k == "rally_hard_manual_stage_wins") read_int(a.rally_hard_manual_stage_wins);
+      else if (k == "rally_air_m") {
+        double v = 0;
+        if ((l >> v) && std::isfinite(v) && v > 0) a.rally_air_m = v;
+      } else if (k == "rally_rivals_events") read_int(a.rally_rivals_events);
+      else if (k == "rally_flawless_stage_wins") read_int(a.rally_flawless_stage_wins);
+      else if (k == "rally_cars_purchased") read_ids(a.rally_cars_purchased);
     } else if (key == "driver_xp") {
       if (!(l >> out.driver_xp) || out.driver_xp < 0) out.driver_xp = 0;
     } else if (key == "affinity") {

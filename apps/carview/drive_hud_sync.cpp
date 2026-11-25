@@ -104,8 +104,8 @@ void DriveSession::rebuild_outpost_hub() {
           if (st->time_limit_s > 0.0) {
             item.detail_lines.push_back("TIME LIMIT: " + std::to_string(int(std::lround(st->time_limit_s))) + " SEC");
           }
-          item.detail_lines.push_back("REWARD: " + carview::thousands(st->reward_credits) + " Cr   +   " +
-                                      carview::thousands(st->reward_popularity) + " POPULARITY");
+          // A PR stunt pays no credits or popularity: it lowers the outpost's fast-travel price.
+          item.detail_lines.push_back("REWARD: FAST TRAVEL DISCOUNT");
           item.detail_lines.push_back(done ? "STATUS: COMPLETED (REPLAYABLE)" : "STATUS: NEW PR STUNT");
           outpost_hub_items.push_back(std::move(item));
         }
@@ -149,8 +149,10 @@ void DriveSession::rebuild_outpost_hub() {
           item.dest_x = other.spawn.x;
           item.dest_z = other.spawn.z;
           const double dist_m = std::hypot(item.dest_x - at.x, item.dest_z - at.z);
+          const int64_t ft_cost = app.outpost_progress.fast_travel_cost(app.outposts, other.id, app.fast_travel_tuning);
           const std::string dist_line =
-              "DISTANCE: " + carview::format_distance_unit(dist_m, app.metric_units) + "   •   UNLOCKED";
+              "DISTANCE: " + carview::format_distance_unit(dist_m, app.metric_units) + "   •   " +
+              (ft_cost <= 0 ? std::string("FREE FAST TRAVEL") : carview::thousands(ft_cost) + " CR");
           item.detail_title = other.display_name;
           item.detail_lines = {"FAST TRAVEL DIRECTLY TO THIS REGIONAL", "HORIZON OUTPOST", dist_line};
           outpost_hub_items.push_back(std::move(item));
@@ -1029,8 +1031,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
                   mc.target_line = "TARGET: " + carview::thousands(pst->target_points) + " PTS";
                 else
                   mc.target_line = "REACH LANDMARK & SNAP PHOTO";
-                mc.reward_line = carview::thousands(pst->reward_credits) + " Cr  +  " +
-                                 carview::thousands(pst->reward_popularity) + " POP";
+                mc.reward_line = "FAST TRAVEL DISCOUNT";
               }
               mc.status_line = mc.completed ? "COMPLETED (REPLAY)" : "NEW PR STUNT";
             } else {

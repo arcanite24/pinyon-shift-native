@@ -972,33 +972,8 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     const std::filesystem::path spa_state =
         (spa_state_env && *spa_state_env) ? std::filesystem::path(spa_state_env) : std::filesystem::path{};
     fh1::load_spa_packages(game_root, spa_state, spa, "EN");
-    if (spa.empty()) {
-      // Seed clean English labels when loose spa.bin is not unpacked in game_root.
-      static const struct {
-        uint16_t id;
-        uint16_t gs;
-        const char* name;
-        const char* desc;
-      } kSeedAch[] = {
-          {155, 10, "Welcome to Horizon", "Arrive at the Horizon Festival in Colorado."},
-          {156, 15, "First Win", "Win your first Horizon Festival race event."},
-          {157, 20, "Yellow Wristband", "Earn the Yellow Wristband at Race Central."},
-          {158, 25, "Green Wristband", "Earn the Green Wristband and unlock new Colorado events."},
-          {159, 30, "Blue Wristband", "Earn the Blue Wristband by dominating Festival races."},
-          {164, 25, "Road Trip", "Drive down every road across Colorado."},
-          {191, 25, "Skill Legend", "Bank a 50,000 point Skill Chain in Free Roam."},
-          {194, 30, "Vendetta", "Smash all 100 Horizon Upgrade Discount Signs."},
-      };
-      for (const auto& sa : kSeedAch) {
-        fh1::SpaAchievement a;
-        a.id = sa.id;
-        a.gamerscore = sa.gs;
-        a.label = sa.name;
-        a.description = sa.desc;
-        a.unachieved_description = sa.desc;
-        spa.achievements.push_back(std::move(a));
-      }
-    }
+    // Without a spa.bin the system falls back to the SPA's own names and
+    // gamerscores (apps/carview/achievements.cpp kFh1Meta).
     carview::AchievementsSystem ach;
     ach.init(spa);
     carview::AchievementGameplayState st;

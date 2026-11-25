@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "freeroam/collectibles.h"
+#include "freeroam/tunables.h"
 
 namespace fh1 {
 struct StringTable;
@@ -68,8 +69,10 @@ struct PrStunt {
   int route_id = 0;
   int loaner_car_id = 0;
   int loaner_car_colour = 0;
-  int64_t reward_credits = 5000;
-  int64_t reward_popularity = 5000;
+  // The title pays nothing for a PR stunt (first or repeat): completing
+  // one only raises the outpost's fast-travel discount.
+  int64_t reward_credits = 0;
+  int64_t reward_popularity = 0;
 };
 
 struct OutpostCatalog {
@@ -117,6 +120,14 @@ struct OutpostProgress {
   bool is_outpost_fast_travel_free(int outpost_id) const;
   bool is_outpost_fast_travel_free(const OutpostCatalog& catalog, int outpost_id) const;
   bool is_outpost_fast_travel_free(const OutpostCatalog& catalog, std::string_view outpost_id) const;
+
+  // The outpost's PR stunts, and how many of them are completed.
+  int stunts_at(const OutpostCatalog& catalog, std::string_view outpost_id) const;
+  int completed_stunts_at(const OutpostCatalog& catalog, std::string_view outpost_id) const;
+  // The price of a fast travel to the outpost (freeroam::fast_travel_cost
+  // over its completed stunts); -1 for an unknown outpost.
+  int64_t fast_travel_cost(const OutpostCatalog& catalog, std::string_view outpost_id,
+                           const FastTravelTuning& tuning) const;
 
  private:
   std::map<int, std::vector<std::string>> outpost_stunts_by_index_;

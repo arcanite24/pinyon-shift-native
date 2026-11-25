@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <set>
 #include <string>
@@ -80,57 +81,65 @@ struct CharacterProfile {
 const CharacterProfile& character_profile(CharacterId id);
 const std::vector<CharacterProfile>& all_characters();
 
-// ---- Canonical FH1 Wristbands, Boss Rivals & Showcases ----
+// ---- Wristbands, Star Showdowns & Showcases ----
+// Loaded from the disc by load_campaign_tables(): the numbers from
+// gamedb.slt (CareerWristbandLevels, the Events rows of CareerEventStyle 5
+// and 3, Rewards_EventPrizes, Data_Car, List_CarMake), the opponents from
+// airborne_challenges.xml, the captions from the string tables. The
+// built-in tables hold the same values for runs without a disc. Only the
+// story wiring (key, character, VO cue names) is code.
 struct WristbandMilestoneSpec {
-  int level = 0;  // 0..6 (Yellow..Gold)
-  const char* key = "";
-  const char* display_name = "";
-  const char* colour_key = "";  // "Yellow".."Gold"
-  int xp_threshold = 0;
-  int64_t nemesis_bonus = 1000;
-  const char* vo_unlock_trigger = "";
-  const char* vo_new_trigger = "";
-  const char* radio_event = "";
-  const char* announcement = "";
-  int unlocked_events_hint = 3;
+  int level = 0;                 // CareerWristbandLevels.Id, 0..6 (Yellow..Gold)
+  std::string key;               // "yellow".."gold"
+  std::string display_name;      // Scoreboard "{0} WRISTBAND" with the level's name, in capitals
+  std::string colour_key;        // Thumbnail: "Yellow".."Gold"
+  int xp_threshold = 0;          // XP
+  int64_t nemesis_bonus = 1000;  // NemesisBonus
+  std::string vo_unlock_trigger;
+  std::string vo_new_trigger;
+  // An immediate DJ line; the later wristbands' DJ lines come from
+  // radiodj.xml (AudioHost::radio_wristband_awarded), not from here.
+  std::string radio_event;
+  std::string announcement;      // no shipped caption: empty
+  int unlocked_events_hint = 0;  // Festival events (style 1) at this level
 };
 
 struct BossRivalSpec {
-  int index = 0;          // 0..6
+  int index = 0;  // by Events.Level
   int wristband_level = 0;
   int64_t event_id = 0;
-  const char* horizon_id = "";
-  const char* key = "";   // e.g. "ramona", "darius"
+  std::string horizon_id;
+  std::string key;  // e.g. "ramona", "darius"
   CharacterId character = CharacterId::kRamonaCravache;
-  const char* rival_name = "";
-  const char* rival_title = "";
-  int64_t car_id = 0;
-  const char* car_media = "";
-  const char* car_display = "";
-  int unlock_points = 0;
-  int64_t cash_prize = 5000;
-  const char* vo_unlocked = "";
-  const char* vo_pre_race = "";
-  const char* vo_post_win = "";
-  const char* challenge_line = "";
-  const char* victory_line = "";
+  std::string rival_name;   // Events.Name
+  std::string rival_title;  // CareerEventUI "STAR SHOWDOWN"
+  int64_t car_id = 0;       // the pink slip: Rewards_EventPrizes
+  std::string car_media;
+  std::string car_display;  // "<Year> <make> <model>"
+  int unlock_points = 0;    // UnlockPointsReq (the finale's is 0: it opens from HEADLINE_EVENT)
+  int64_t cash_prize = 0;   // CashPrize
+  std::string vo_unlocked;
+  std::string vo_pre_race;
+  std::string vo_post_win;
+  std::string challenge_line;  // no shipped caption: empty
+  std::string victory_line;    // no shipped caption: empty
   bool is_finale_champion = false;
 };
 
 struct ShowcaseMilestoneSpec {
-  int index = 0;
+  int index = 0;  // by PopularityPointsReq, descending
   int64_t event_id = 0;
-  const char* horizon_id = "";
-  const char* display_name = "";
-  const char* opponent_label = "";  // e.g. "P-51 MUSTANG", "HOT-AIR BALLOON", "HELICOPTER", "BIPLANE"
+  std::string horizon_id;
+  std::string display_name;    // Events.ShortName
+  std::string opponent_label;  // AirChallenges pilot ("Plane", "Chopper", ...); empty for exhibitions
   int popularity_rank_req = 250;
-  int64_t loaner_car_id = 0;
-  const char* loaner_car_media = "";
-  const char* loaner_car_display = "";
-  int64_t cash_prize = 5000;
-  bool airborne = true;
-  const char* intro_line = "";
-  const char* victory_line = "";
+  int64_t loaner_car_id = 0;   // PlayerCarId
+  std::string loaner_car_media;
+  std::string loaner_car_display;
+  int64_t cash_prize = 0;
+  bool airborne = true;        // listed in airborne_challenges.xml
+  std::string intro_line;      // no shipped caption: empty
+  std::string victory_line;    // no shipped caption: empty
 };
 
 const std::vector<WristbandMilestoneSpec>& wristband_milestones();
@@ -141,6 +150,19 @@ const BossRivalSpec* find_boss_by_key(std::string_view key);
 const BossRivalSpec* find_boss_by_level(int wristband_level);
 const std::vector<ShowcaseMilestoneSpec>& showcase_milestones();
 const ShowcaseMilestoneSpec* find_showcase_by_event(std::string_view horizon_id);
+
+struct CampaignTablesLoad {
+  int wristbands = 0, bosses = 0, showcases = 0;
+  int captions_missing = 0;  // string refs that did not resolve (kept from the built-in row)
+};
+// Replaces the tables with the disc's. `text` resolves a `_&N` reference
+// (to empty or the reference itself when it cannot). On failure the
+// tables are left as they were.
+bool load_campaign_tables(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
+                          const cars::PartsDb* shared_db, const std::function<std::string(std::string_view)>& text,
+                          CampaignTablesLoad* counts = nullptr, std::string* error = nullptr);
+// Back to the built-in tables.
+void reset_campaign_tables();
 
 // Optional localized string-table resolver callback (e.g. bound to carview::game_text).
 void set_campaign_text_resolver(std::function<std::string(std::string_view)> resolver);

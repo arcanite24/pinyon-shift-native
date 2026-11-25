@@ -117,12 +117,50 @@ struct AchievementGameplayState {
   int club_bmw_cars = 0;
   int club_british_cars = 0;
   int club_ford_cars = 0;
+  // SPA-rule inputs added for the 1:1 conditions (PROG-16, V4-19). A total of
+  // 0 means "unknown": the "win every ..." rules never unlock on it.
+  int autoshow_purchases = 0;          // 156
+  int dirt_races_won = 0;              // 159
+  uint32_t festival_venues = 0;        // 166 (drive::AchievementSignals::Venue bits)
+  int paint_jobs_saved = 0;            // 167
+  bool loyalty_cars_received = false;  // 169
+  int hard_races_won = 0;              // 183
+  int speed_traps_set = 0;             // 164
+  int speed_zones_set = 0;             // 164
+  int rivals_beaten = 0;               // 165
+  int festival_races_total = 0;        // 184, 188 (distinct Festival Races in the catalog)
+  int street_races_total = 0;          // 185, 188
+  int showcases_won = 0, showcases_total = 0;              // 186, 188
+  int star_showdowns_won = 0, star_showdowns_total = 0;    // 187, 188
+  int pr_stunts_total = 30;            // 189: Colorado's 10 outposts hold 30 PR stunts
+  int sponsor_challenges_completed = 0;  // 190, 191
+  int discount_signs_total = 100;      // 194
+  int roads_total = 216;               // 195: Colorado's named roads
+  int rally_cars_obtained = 0;         // 208
+  bool rally_champion = false;         // 209
+  int rally_hard_manual_stage_wins = 0;  // 210
+  double rally_air_m = 0.0;            // 211
+  int rally_rivals_events = 0;         // 212
+  int rally_flawless_stage_wins = 0;   // 214
+  int rally_cars_purchased = 0;        // 215
 
   static AchievementGameplayState from_drive_save(const drive::DriveSave& save, int roads_discovered_count = 0,
                                                   int race_encounters = 0,
                                                   const race::CareerCatalog* catalog = nullptr,
                                                   int popularity_rank = 0, int total_outposts = 10);
 };
+
+// How the engine treats one FH1 achievement id (155-225).
+enum class AchievementRule : uint8_t {
+  kNone = 0,     // not an FH1 achievement id (163, out of range)
+  kOffline,      // evaluated by eval rules against AchievementGameplayState
+  kOnlineOnly,   // Xbox Live only: never unlocks offline
+};
+AchievementRule achievement_rule(uint16_t id);
+// The SPA's English name and gamerscore, carried for runs without a spa.bin
+// (nullptr / 0 for ids that are not FH1 achievements).
+const char* achievement_fallback_name(uint16_t id);
+uint16_t achievement_fallback_gamerscore(uint16_t id);
 
 struct AchievementEntry {
   uint16_t id = 0;
@@ -161,8 +199,9 @@ struct AchievementToast {
 
 class AchievementsSystem {
  public:
-  // Initializes entries from loaded `spa` (falling back to structural IDs if
-  // `spa` is empty so tests and no-DLC installs still function cleanly).
+  // Initializes entries from loaded `spa`: names, descriptions and gamerscore
+  // come from it. With an empty `spa` (no spa.bin under the game or state
+  // root) it falls back to the base 50 with the SPA's names and gamerscores.
   void init(const fh1::SpaDatabase& spa);
   void set_unlock_sound_callback(std::function<void()> cb) { on_unlock_sound_ = std::move(cb); }
 

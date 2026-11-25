@@ -594,35 +594,103 @@ void test_rewards() {
   CHECK(race::rewind_difficulty_bonus(false, race::DifficultyAssists::kExcludedSessionMode) == 0.0);
   CHECK(race::rewind_difficulty_bonus(true, race::DifficultyAssists::kExcludedSessionMode) == 0.0);
 
+  // The decoded per-assist terms. The defaults (ABS on, normal steering,
+  // full line, TCS on, automatic, rewind on) pay +20%.
   race::DifficultyAssists assists;
   CHECK(assists.rewind_on);
-  CHECK(race::assist_difficulty_bonus(assists) == 0.0);
-  CHECK(race::assist_difficulty_bonus_percent(assists) == 0);
-  CHECK(race::total_difficulty_bonus_percent(1, assists) == 15);
-
-  assists.rewind_on = false;
-  CHECK(race::assist_difficulty_bonus(assists) == 0.20);
   CHECK(race::assist_difficulty_bonus_percent(assists) == 20);
-  CHECK(race::total_difficulty_bonus_percent(0, assists) == 20);
-  CHECK(race::total_difficulty_bonus_percent(1, assists) == 35);
-  CHECK(race::total_difficulty_bonus_percent(2, assists) == 50);
-  CHECK(race::total_difficulty_bonus_percent(3, assists) == 65);
-
-  // Session mode 3 excludes the Rewind bonus.
-  assists.session_mode = race::DifficultyAssists::kExcludedSessionMode;
-  CHECK(race::assist_difficulty_bonus(assists) == 0.0);
-  CHECK(race::assist_difficulty_bonus_percent(assists) == 0);
-  CHECK(race::total_difficulty_bonus_percent(1, assists) == 15);
+  CHECK(race::total_difficulty_bonus_percent(1, assists) == 25);
+  // Every assist at its easiest: nothing.
+  race::DifficultyAssists easy;
+  easy.braking = 0, easy.steering = 0;
+  CHECK(race::assist_difficulty_bonus(easy) == 0.0);
+  CHECK(race::total_difficulty_bonus_percent(0, easy) == 0);
+  // One term at a time.
+  {
+    auto a = easy; a.driving_line = 1; CHECK(race::assist_difficulty_bonus_percent(a) == 10);
+    a.driving_line = 0; CHECK(race::assist_difficulty_bonus_percent(a) == 20);
+  }
+  {
+    auto a = easy; a.braking = 1; CHECK(race::assist_difficulty_bonus_percent(a) == 10);
+    a.braking = 2; CHECK(race::assist_difficulty_bonus_percent(a) == 20);
+  }
+  {
+    auto a = easy; a.steering = 1; CHECK(race::assist_difficulty_bonus_percent(a) == 10);
+    a.steering = 2; CHECK(race::assist_difficulty_bonus_percent(a) == 20);
+  }
+  {
+    auto a = easy; a.tcs_on = false; CHECK(race::assist_difficulty_bonus_percent(a) == 15);
+  }
+  {
+    auto a = easy; a.shifting = 1; CHECK(race::assist_difficulty_bonus_percent(a) == 15);
+    a.shifting = 2; CHECK(race::assist_difficulty_bonus_percent(a) == 20);
+  }
+  {
+    // Stability control and damage are not counted.
+    auto a = easy; a.stm_on = true; a.damage_mode = 2; CHECK(race::assist_difficulty_bonus_percent(a) == 0);
+  }
+  // Opponents: Easy 0, Medium 5, Hard 15, Pro 25.
+  CHECK(race::total_difficulty_bonus_percent(2, easy) == 15);
+  CHECK(race::total_difficulty_bonus_percent(3, easy) == 25);
+  // Everything off on Pro: the 140% ceiling.
+  race::DifficultyAssists hardest;
+  hardest.rewind_on = false, hardest.braking = 2, hardest.steering = 2, hardest.tcs_on = false;
+  hardest.shifting = 2, hardest.driving_line = 0;
+  CHECK(race::total_difficulty_bonus_percent(3, hardest) == 140);
+  // Session mode 3 skips the Rewind and the opponent terms.
+  easy.rewind_on = false;
+  CHECK(race::assist_difficulty_bonus_percent(easy) == 20);
+  easy.session_mode = race::DifficultyAssists::kExcludedSessionMode;
+  CHECK(race::assist_difficulty_bonus(easy) == 0.0);
+  CHECK(race::total_difficulty_bonus_percent(3, easy) == 0);
 
   // End-to-end award_race with Rewind OFF (+20%) on Easy (0%).
-  assists.session_mode = 0;
+  easy.session_mode = 0;
   race::CareerRecord r_bonus;
-  const int pct = race::total_difficulty_bonus_percent(0, assists);
+  const int pct = race::total_difficulty_bonus_percent(0, easy);
   const auto a_bonus = race::award_race(r_bonus, 24, 145, 2, 1, 2, 10000, 8, 1, true, 120, 60, 0, t, pct, 0);
   CHECK(a_bonus.base_credits == 10000);
   CHECK(a_bonus.difficulty_pct == 20);
   CHECK(a_bonus.difficulty_bonus == 2000);
   CHECK(a_bonus.credits == 12000);
+  CHECK(a_bonus.driver_xp == 0 && a_bonus.affinity_xp == 0);  // the FM4-style XP extra is off
+
+  // The bonus is taken over FINISHED + BEAT THE STAR + MILEAGE, rounded half
+  // away from zero; the assist share is split out of it.
+  {
+    race::WristbandTables wt = t;
+    wt.nemesis_bonuses = {500, 1000, 1500};
+    race::RaceBonusInputs ex;
+    ex.star_place = 3;
+    ex.assists_pct = 10;
+    ex.mileage.total_distance_m = 50000, ex.mileage.reward = 5000, ex.mileage.increment = 100;
+    race::CareerRecord rr;
+    // 2nd of 8 in a festival race (style 1, level 2): 10000*7/8 = 8750 -> 8800.
+    const auto a = race::compute_race_award(rr, 25, 2, 1, 2, 10000, 8, 2, true, 0, wt, 25, 4900, ex);
+    CHECK(a.base_credits == 8800);
+    CHECK(a.nemesis_bonus == 1500);
+    CHECK(a.mileage_bonus == 400);
+    CHECK(a.difficulty_bonus + a.assists_bonus == 2675);  // round(10700 * 0.25)
+    CHECK(a.assists_bonus == 1070);  // round(10700 * 0.10)
+    CHECK(a.credits == 8800 + 1500 + 400 + 2675);
+    // Behind the star, or level with no star in the field: no BEAT THE STAR.
+    ex.star_place = 2;
+    CHECK(race::compute_race_award(rr, 25, 2, 1, 2, 10000, 8, 2, true, 0, wt, 25, 4900, ex).nemesis_bonus == 0);
+    ex.star_place = 0;
+    CHECK(race::compute_race_award(rr, 25, 2, 1, 2, 10000, 8, 2, true, 0, wt, 25, 4900, ex).nemesis_bonus == 0);
+    // Not a festival race: none either.
+    ex.star_place = 3;
+    CHECK(race::compute_race_award(rr, 25, 4, 2, 2, 10000, 8, 2, true, 0, wt, 25, 4900, ex).nemesis_bonus == 0);
+    // Already won before: paid again (the payout reads no past results).
+    rr.event_places[25] = 1;
+    CHECK(race::compute_race_award(rr, 25, 2, 1, 2, 10000, 8, 2, true, 0, wt, 25, 4900, ex).nemesis_bonus == 1500);
+    // The FM4-style XP extra, when on, is the only source of XP rows.
+    ex.legacy_fm4_xp = true;
+    CHECK(race::compute_race_award(rr, 25, 2, 1, 2, 10000, 8, 2, true, 0, wt, 25, 4900, ex).driver_xp > 0);
+  }
+  // CashPrize is rounded to two significant figures before the split.
+  CHECK(race::race_credits(12345, race::Winnings::kDefault, 1 + 1, 1, true) == 12000);
+  CHECK(race::race_credits(9, race::Winnings::kDefault, 8, 1, true) == 0);
 }
 
 void test_line_and_ground() {
@@ -1002,8 +1070,8 @@ int main() {
     const auto near_fin = race::nemesis_rival_boost(true, true, 0, 0, 100.0, 400.0, 0.84, 0.90);
     CHECK(!near_fin.active && near_fin.torque_add == 0.0);
 
-    // Difficulty bonus for HARD+ (kHardPlus = 4 -> 60%).
-    CHECK(race::difficulty_bonus_percent(4) == 60);
+    // The engine's extra HARD+ tier (kHardPlus = 4) pays as Pro (25%).
+    CHECK(race::difficulty_bonus_percent(4) == 25);
 
     // Street & Nemesis races enable live traffic (CareerRaceModes.xml UseTraffic="true").
     CHECK(race::event_uses_traffic(4));   // Street
@@ -1226,8 +1294,8 @@ int main() {
       }
     }
 
-    // Full post-race breakdown (Assists, Skills, Bounty, Nemesis) + Style-6 50k CR first-win override
-    // + Driver Level / Manufacturer Affinity progression.
+    // Full post-race breakdown (Assists, Bounty, Nemesis): no first-win
+    // override, no skills credits + Driver Level / Manufacturer Affinity progression.
     {
       race::WristbandTables wt;
       wt.levels = {{0, "Yellow"}, {1000, "Green"}};
@@ -1238,12 +1306,12 @@ int main() {
       ex.skills_points = 4000;  // 1000 CR skills bonus
       ex.bounty_bonus = 500;
       const auto a1 = race::award_race(rec, 901, 901, 12, 6, 6, 10000.0, 8, 1, true, 120.0, 60.0, 0, wt, 50, 5000.0, ex);
-      CHECK(a1.base_credits == 50000);  // Style-6 Horizon Finale 50,000 CR first-win override!
-      CHECK(a1.assists_bonus > 0 && a1.difficulty_bonus > 0 && a1.skills_bonus == 1000 && a1.bounty_bonus == 500);
+      CHECK(a1.base_credits == 10000);  // the event's own CashPrize, winner takes all
+      CHECK(a1.assists_bonus > 0 && a1.difficulty_bonus > 0 && a1.skills_bonus == 0 && a1.bounty_bonus == 500);
       CHECK(a1.credits == a1.base_credits + a1.mileage_bonus + a1.difficulty_bonus + a1.assists_bonus + a1.skills_bonus +
                               a1.bounty_bonus + a1.nemesis_bonus);
       const auto a2 = race::award_race(rec, 902, 902, 11, 5, 1, 20000.0, 2, 1, true, 90.0, 55.0, 0, wt, 15, 4000.0, ex);
-      CHECK(a2.nemesis_bonus == 1000);  // Nemesis win bonus from CareerWristbandLevels
+      CHECK(a2.nemesis_bonus == 0);  // BEAT THE STAR is a festival (style 1) line only
 
       race::ProgressionTables pt;
       pt.driver_levels = {{0, 0, 0}, {1, 5000, 1}, {2, 10000, 1}};

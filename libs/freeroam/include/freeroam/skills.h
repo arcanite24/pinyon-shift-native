@@ -141,14 +141,14 @@ struct SkillEvent {
   int grade = 1;                     // 1=Standard, 2=Great, 3=Awesome, 4=Ultimate
   std::string dialogue_event;        // populated on kRankUp from crossed Fame.xml Level
   std::string radio_festival_update; // populated on kRankUp from crossed Fame.xml Level
-  float multiplier_f = 1.0f;         // exact 1.0x..5.0x in 0.5x steps
+  float multiplier_f = 1.0f;         // exact 1.0x..5.0x in 0.1x steps
 };
 
 struct SkillHudState {
   bool active = false;
   int chain_points = 0;
   int multiplier = 1;
-  float multiplier_f = 1.0f;  // exact 1.0x..5.0x in 0.5x steps
+  float multiplier_f = 1.0f;  // exact 1.0x..5.0x in 0.1x steps
   int skill_count = 0;
   std::string last_skill;
   int last_points = 0;
@@ -161,6 +161,18 @@ struct SkillHudState {
   double popularity_points = 0.0;
   double rank_up_at = -1e9;
 };
+
+// The skill chain multiplier, decoded from the original's code (the
+// HorizonFeats.xml <Multiplier> grades are not read by it). The Multiplier
+// detector holds 41 built-in grades valued 10 to 50 and awards grade
+// min(n, 41) - 1 for n single skills in the chain (ids below the Multiplier:
+// combinations and specials do not count); the chain's multiplier is that
+// value times 0.1. So 1 skill is X1.0, 5 skills X1.4 (the oracle frame's
+// "583 X1.4"), 41 or more X5.0.
+constexpr int kMultiplierGrades = 41;
+float chain_multiplier_for(int single_skills);
+// The banked popularity of a chain: float(points) * multiplier, truncated.
+int64_t banked_chain_points(int chain_points, float multiplier);
 
 struct SponsorProgress {
   int count = 0;
@@ -204,6 +216,7 @@ class SkillTracker {
   struct RewindSnapshot {
     int chain_points = 0;
     int skill_count = 0;
+    int multiplier_skills = 0;
     double last_award_at = -1e9;
     double last_tag_at = -1e9;
     double lockout_until = -1e9;
@@ -294,6 +307,7 @@ class SkillTracker {
   // Chain state.
   int chain_points_ = 0;
   int skill_count_ = 0;
+  int multiplier_skills_ = 0;  // single skills in the chain (the multiplier's count)
   double last_award_at_ = -1e9;
   double last_tag_at_ = -1e9;
   double lockout_until_ = -1e9;

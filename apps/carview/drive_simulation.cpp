@@ -47,6 +47,55 @@ DriveSession::Popup sponsor_popup(DriveSession& s, std::string_view challenge_id
   return p;
 }
 
+// PROG-11: steps the free-roam (co-op) challenges on this step's distance,
+// speed, time of day, car, skill awards and speed camera results; pays and
+// announces each one completed.
+void step_freeroam_challenges(DriveSession& s) {
+  auto& app = s.app;
+  freeroam::ChallengeStepInput in;
+  in.time_s = s.vehicle.time();
+  const drive::Vec3 v = s.vehicle.velocity();
+  const double speed = std::max(std::fabs(s.vehicle.speed()), std::hypot(v.x, v.z));
+  in.distance_m = speed * drive::Vehicle::kStep;
+  in.speed_mph = speed * 2.2369362920544;
+  in.tod_hour = app.tod_clock.hour();
+  if (app.have_career_catalog)
+    if (const auto* spec = app.career_catalog.find_car_by_media(app.car)) {
+      // The catalog's 0 is "not set": left unknown so a restriction on it fails.
+      // interim: PI and class are the stock values; upgrades are not reported.
+      using F = freeroam::CarField;
+      auto put = [&](F f, double v) {
+        if (v > 0) in.car[f] = v;
+      };
+      in.car[F::kClass] = spec->stock_class;
+      put(F::kPi, spec->stock_pi);
+      put(F::kYear, spec->props.year);
+      put(F::kBodyFamily, spec->props.body_family);
+      put(F::kRegion, spec->props.region);
+      put(F::kCountry, spec->props.country);
+      put(F::kMake, spec->props.make);
+      put(F::kModelFamily, spec->props.model_family);
+      put(F::kDriveType, spec->props.drive_type);
+      put(F::kEnginePlacement, spec->engine_placement);
+      put(F::kBaseCost, spec->base_cost);
+    }
+  for (const auto& sk : s.club_pending.skills) in.skills.push_back(sk.type);
+  for (const auto& cam : s.club_pending.cameras) in.flashes.push_back({cam.name, cam.speed_mph, 0});
+  for (const auto& done : app.freeroam_challenges->step(in)) {
+    const int64_t cr = s.slice12.trainer.pacing.scale_credits(done.credits);
+    app.career.credits = std::min<int64_t>(999999999, app.career.credits + cr);
+    app.career.total_winnings += cr;
+    // interim: the sponsor notification, its tag the English of
+    // FreeRoamChallenges.str's "CO-OP CHALLENGE" and "COMPLETED" lines.
+    s.popup = DriveSession::Popup::notify(NotifyKind::kSponsorRank, s.vehicle.time(), {"+" + thousands(cr)});
+    s.popup.tag = "CO-OP CHALLENGE COMPLETED";
+    s.popup.text = done.def && !done.def->challenge_name.empty() ? done.def->challenge_name : done.id;
+    if (done.def) s.popup.logo = done.def->logo_texture();
+    std::printf("free-roam challenge %s completed: +%lld CR\n", done.id.c_str(), (long long)cr);
+    s.save_due = true;
+  }
+}
+
 // The popularity challenge's tier for a fame reward at `rank_required`.
 int fame_tier(const DriveSession& s, int rank_required) {
   const auto& tiers = s.app.skills_data.fame_tiers;
@@ -95,29 +144,6 @@ audio::SmashMaterial classify_smash_material(const std::string& stem_l, const st
   }
   out_surface_hint = 0;
   return audio::SmashMaterial::kDefault;
-}
-
-int parse_barn_numeric_id(const std::string& barn_name) {
-  int val = 0;
-  bool any = false;
-  for (char c : barn_name) {
-    if (c >= '0' && c <= '9') {
-      val = val * 10 + (c - '0');
-      any = true;
-    }
-  }
-  return any ? val : 0;
-}
-
-void sync_saved_pending_barns(DriveApp& app) {
-  app.saved.pending_barn_restorations.clear();
-  for (const auto& br : app.pending_barn_restorations) {
-    drive::PendingBarnRestoration p{};
-    p.barn_id = parse_barn_numeric_id(br.barn_id);
-    p.car_id = int(br.car_id);
-    p.remaining_sec = float(std::max(0.0, br.ready_after_s - br.elapsed_s));
-    app.saved.pending_barn_restorations.push_back(p);
-  }
 }
 
 struct RolloverRecoveryState {
@@ -441,7 +467,8 @@ bool DriveSession::free_roam_step() {
             const int disc_idx = app.outpost_progress.check_discovery(app.outposts, at.x, at.z);
             if (disc_idx >= 0 && size_t(disc_idx) < app.outposts.outposts.size()) {
               const auto& op = app.outposts.outposts[size_t(disc_idx)];
-              apply_popularity_with_events(*this, 500.0);
+              // Discovery only unlocks the fast-travel destination: no
+              // credits or popularity in the original.
               const int dc = app.outpost_progress.discovered_count(app.outposts);
               popup = Popup::notify(NotifyKind::kOutpostDiscovered, vehicle.time());
               std::printf("t %.2f s: outpost %s discovered (%d/%zu)\n", vehicle.time(), op.display_name.c_str(), dc,
@@ -460,7 +487,7 @@ bool DriveSession::free_roam_step() {
               if (app.skill_tracker) {
                 const auto sh = app.skill_tracker->hud();
                 psu.banked_skill_points = int64_t(std::llround(sh.popularity_points));
-                psu.unbanked_skill_points = int64_t(std::llround(double(sh.chain_points) * double(sh.multiplier_f)));
+                psu.unbanked_skill_points = freeroam::banked_chain_points(sh.chain_points, sh.multiplier_f);
                 psu.total_skill_points = psu.banked_skill_points;
               }
               if (have_cam_view) {
@@ -489,19 +516,19 @@ bool DriveSession::free_roam_step() {
               const auto st_state = app.pr_stunt_session.update(psu);
               if (st_state == freeroam::PrStuntState::kSucceeded) {
                 const auto& st = app.pr_stunt_session.stunt();
+                // A PR stunt pays nothing in the original (first time or
+                // repeat): completing it raises the outpost's fast-travel
+                // discount, which the success popup reports.
                 const bool first_time = app.outpost_progress.complete_stunt(st.id);
-                const int64_t raw_cr = first_time ? st.reward_credits : st.reward_credits / 4;
-                const int64_t cr = slice12.trainer.pacing.scale_credits(raw_cr);
-                const int64_t pop = first_time ? st.reward_popularity : st.reward_popularity / 4;
-                app.career.credits += cr;
-                app.career.total_winnings += cr;
-                apply_popularity_with_events(*this, double(pop));
                 const NotifyKind done = st.kind == freeroam::PrStuntKind::kSpeed   ? NotifyKind::kSpeedStuntDone
                                         : st.kind == freeroam::PrStuntKind::kPhoto ? NotifyKind::kPhotoShootDone
                                                                                    : NotifyKind::kSkillStuntDone;
-                popup = Popup::notify(done, vehicle.time(), {}, {"+" + carview::thousands(cr)});
-                std::printf("t %.2f s: %s +%lld Cr +%lld popularity\n", vehicle.time(), st.title.c_str(),
-                            static_cast<long long>(cr), static_cast<long long>(pop));
+                const int64_t ft_cost =
+                    app.outpost_progress.fast_travel_cost(app.outposts, st.outpost_id, app.fast_travel_tuning);
+                // The popup reads FAST TRAVEL DISCOUNT EARNED (GasStation strings).
+                popup = Popup::notify(done, vehicle.time());
+                std::printf("t %.2f s: %s done%s, fast travel %lld CR\n", vehicle.time(), st.title.c_str(),
+                            first_time ? "" : " (repeat)", static_cast<long long>(ft_cost));
                 app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
                 app.gps_nav.clear();
                 save_due = true;
@@ -544,8 +571,20 @@ bool DriveSession::free_roam_step() {
         const double fwd_spd = vehicle.speed();
         cs.speed = (std::fabs(fwd_spd) >= planar_spd) ? fwd_spd : (fwd_spd < 0.0 ? -planar_spd : planar_spd);
         cs.moved = std::max(std::fabs(fwd_spd), planar_spd) * drive::Vehicle::kStep;
+        cs.dt = drive::Vehicle::kStep;
+        // The barn controller's predicates: free roam, and no PR stunt or
+        // speed zone running (activity_dependencies.xml blocks barn finds
+        // during them). Dialogue is not tracked (interim, SPEC Q116).
+        {
+          const auto& bt = app.barn_tuning;  // GlobalRegistry Activities/BarnFinds
+          host.free_roam->set_barn_tuning(bt.time_between_ticks_s, bt.max_idle_time_s, bt.min_distance_before_next_m,
+                                          bt.min_speed_before_spawn_ms, bt.min_time_before_spawn_s);
+        }
+        freeroam::BarnContext barn_ctx;
+        barn_ctx.free_roam = app.race == nullptr;
+        barn_ctx.blocked = app.pr_stunt_session.active() || (app.speed_tracker && app.speed_tracker->zone_active());
         bool sign_smashed_now = false;
-        for (const auto& ev : host.free_roam->step(cs)) {
+        for (const auto& ev : host.free_roam->step(cs, barn_ctx)) {
           char line[160];
           if (ev.kind == freeroam::Event::kSignSmashed) {
             sign_smashed_now = true;
@@ -592,6 +631,21 @@ bool DriveSession::free_roam_step() {
             }
             std::printf("t %.2f s: %s rumour at %.1f km driven\n", vehicle.time(),
                         app.collectibles.barns[size_t(ev.index)].name.c_str(), app.progress.total_distance / 1000);
+          } else if (ev.kind == freeroam::Event::kBarnReady) {
+            // Restored: BARN FIND READY - {car}, Dak's call, then the garage collects it.
+            const auto& b = app.collectibles.barns[size_t(ev.index)];
+            std::string named = barn_car_label(b);
+            if (!b.car_name_key.empty()) {
+              const uint32_t ref = uint32_t(fh1::string_hash("Barnfind")) << 16 | fh1::string_hash(b.car_name_key);
+              const std::string t = carview::game_text("_&" + std::to_string(ref));
+              if (!t.empty() && t[0] != '_') named = t;
+            }
+            popup = Popup::notify(NotifyKind::kBarnReady, vehicle.time(), {named});
+            app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
+            apply_campaign_action(app.campaign.on_barn_restored(b.name, named, &app.audio_host));
+            std::printf("t %.2f s: %s restored after %.1f km: %s ready at the garage\n", vehicle.time(),
+                        b.name.c_str(), (app.progress.total_distance - app.progress.barns[size_t(ev.index)].found_at) / 1000,
+                        named.c_str());
           } else {
             const auto& b = app.collectibles.barns[size_t(ev.index)];
             for (const auto& rq : b.radio_requests) app.audio_host.radio_cancel_scheduled(rq.event);
@@ -606,36 +660,16 @@ bool DriveSession::free_roam_step() {
               const std::string t = carview::game_text("_&" + std::to_string(ref));
               if (!t.empty() && t[0] != '_') named = t;
             }
-            // R3-CAM-09: Real FH1 Barn Find flow — discovery NEVER adds the barn car to the garage
-            // immediately. Send it to Dak's Garage pending restoration queue (ready_to_claim = false)
-            // until Dak finishes restoring it and the player claims it in Dak's Garage.
-            std::snprintf(line, sizeof line, "barn find! dak is restoring %s at the garage", named.c_str());
+            // The title's flow: discovery starts the restoration (status 1);
+            // the car is ready after a driven distance and is collected at
+            // the garage.
+            std::snprintf(line, sizeof line, "barn find! dak is restoring %s", named.c_str());
             popup = Popup::notify(NotifyKind::kBarnRestoring, vehicle.time(), {named});
-            notice = "BARN FIND DISCOVERED — DAK IS RESTORING IT AT THE GARAGE";
-            notice_until = vehicle.time() + 5.0;
             app.campaign.on_barn_find(true, b.name, named, &app.audio_host);
             app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
-            bool already_queued = false;
-            for (const auto& existing : app.pending_barn_restorations) {
-              if (existing.barn_id == b.name || (b.car_id > 0 && existing.car_id == b.car_id)) {
-                already_queued = true;
-                break;
-              }
-            }
-            if (!already_queued) {
-              DriveApp::PendingBarnRestore pbr;
-              pbr.barn_id = b.name;
-              pbr.car_name = named;
-              pbr.car_id = b.car_id;
-              pbr.ready_after_s = 45.0;
-              pbr.elapsed_s = 0.0;
-              pbr.ready_to_claim = false;
-              pbr.notified_ready = false;
-              app.pending_barn_restorations.push_back(std::move(pbr));
-            }
-            sync_saved_pending_barns(app);
-            std::printf("t %.2f s: %s found: %s (Data_Car %d) sent to Dak for restoration\n", vehicle.time(), b.name.c_str(),
-                        named.c_str(), b.car_id);
+            std::printf("t %.2f s: %s found: %s (Data_Car %d), restored after %.1f km\n", vehicle.time(), b.name.c_str(),
+                        named.c_str(), b.car_id,
+                        freeroam::barn_restore_distance(b, app.progress.barns[size_t(ev.index)].found_at) / 1000);
           }
           save_due = true;
         }
@@ -1058,6 +1092,10 @@ bool DriveSession::step(const drive::Input& user_in) {
             !app.rally_results_open) {
           const double ftime = app.race->stage_finish_time();
           const auto fin = app.rally_session.record_stage_finish(app.rally_catalog, ftime, app.race->stage_field());
+          // Achievement 210: a stage win on Hard opponents, manual shifting, driving line off.
+          if (fin.stage_place == 1 && app.race_options.difficulty >= race::Difficulty::kHard &&
+              app.race_options.assists.shifting != 0 && app.race_options.assists.driving_line == 0)
+            ++app.saved.ach.rally_hard_manual_stage_wins;
           app.audio_host.trigger_codriver(fin.stage_place <= 10 ? "CoDriver/FinishGood/Good1" : "CoDriver/FinishBad/Bad1");
           if (fin.championship_complete) {
             const int dpct = race::difficulty_bonus_percent(int(app.race_options.difficulty));
@@ -1090,6 +1128,20 @@ bool DriveSession::step(const drive::Input& user_in) {
           bonus_in.assists_pct = race::assist_difficulty_bonus_percent(app.race->assists());
           bonus_in.skills_points = app.skill_tracker ? app.skill_tracker->race_skills_banked() : 0;
           bonus_in.wristband_level = app.collected_wristband;
+          bonus_in.legacy_fm4_xp = app.legacy_fm4_progression;
+          // BEAT THE STAR: the first star driver (AIPlayers.Nemesis) in the
+          // field, at its running place when the player takes the flag.
+          {
+            const auto& opps = app.race->event().opponents;
+            const auto& ses = app.race->session();
+            const size_t field_ai = std::min(opps.size(), app.race->player_index());
+            for (size_t k = 0; k < field_ai && k < ses.size(); ++k) {
+              if (opps[k].nemesis) {
+                bonus_in.star_place = ses.car(k).place;
+                break;
+              }
+            }
+          }
           bonus_in.mileage = app.post_race_options.for_mode(
               race::post_race_mode(app.race->event().career_type, app.race->rivals_solo()));
           // RACE-05: the award is computed at the line and held; the career,
@@ -1473,13 +1525,17 @@ bool DriveSession::step(const drive::Input& user_in) {
               if (ev.is_new_pb && app.legacy_fm4_progression && app.have_prog_tables) {
                 race::apply_progression_xp(app.career, 750, current_make_id(), 350, app.prog_tables);
               }
-              apply_popularity_with_events(*this, ev.is_new_pb ? 500.0 : 150.0);
+              // Speed traps and zones rank the speed on the leaderboards;
+              // no popularity is paid for them (probable, SPEC Q114).
               std::printf("speed activity: %s %.1f mph%s\n", ev.label.c_str(), ev.speed_mph,
                           ev.is_new_pb ? " (NEW PB!)" : "");
               save_due = true;
             }
           }
         }
+        if (app.freeroam_challenges && !app.race && !app.campaign.cutscene_drives_player() &&
+            !app.campaign.flow().is_onboarding())
+          step_freeroam_challenges(*this);  // before club_step() clears this step's skills and cameras
         club_step();  // evaluates all active 1000 Club challenges on full step signals
         if (!host.streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
@@ -1603,6 +1659,11 @@ bool DriveSession::commit_race_award() {
   const int pop_before = app.current_pop_rank();
   const race::RaceAward* a = app.race->commit_award(app.career);
   if (!a) return false;
+  // Achievement 183: a win against opponents (not a solo Rivals run) on Hard
+  // (or harder) opponent difficulty.
+  if (app.race->player_place() == 1 && app.race->session().size() > 1 && !app.active_rivals.active &&
+      app.race_options.difficulty >= race::Difficulty::kHard)
+    ++app.saved.ach.hard_race_wins;
   if (slice12.trainer.pacing.modifies_economy()) {
     const int64_t scaled_cr = slice12.trainer.pacing.scale_credits(a->credits);
     const int64_t extra_cr = scaled_cr - a->credits;
@@ -1658,9 +1719,12 @@ bool DriveSession::commit_race_award() {
               (long long)app.career.credits, a->first_completion ? ", first completion" : "",
               a->prize_car ? (", prize car " + std::to_string(a->prize_car)).c_str() : "");
   if (a->prize_car > 0) {
-    int prize_col = 0;
-    if (const auto* cev = app.career_catalog.find_event(app.race_event)) prize_col = cev->prize_car_colour;
-    won_car_name = app.award_garage_car(a->prize_car, prize_col, false, /*is_prize=*/true);
+    int prize_col = 0, prize_class = -1;
+    if (const auto* cev = app.career_catalog.find_event(app.race_event)) {
+      prize_col = cev->prize_car_colour;
+      prize_class = cev->prize_car_upgrade_class;
+    }
+    won_car_name = app.award_garage_car(a->prize_car, prize_col, false, /*is_prize=*/true, prize_class);
     app.garage_picker();
   }
   // Dynamic difficulty (AISkillAdjustments): update profile Main/AISkill

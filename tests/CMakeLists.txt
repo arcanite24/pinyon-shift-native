@@ -145,6 +145,15 @@ add_executable(freeroam_tests freeroam_tests.cpp)
 target_link_libraries(freeroam_tests PRIVATE shift_freeroam)
 add_test(NAME freeroam_tests COMMAND freeroam_tests)
 
+# Free-roam (co-op) sponsor challenges (PROG-11) on synthetic XML; the corpus
+# run reads FreeRoamChallenges.xml/.str from the disc (exit 77 without
+# SHIFT_GAME_ROOT, a failure when it is set and the data does not load).
+add_executable(freeroam_challenges_tests freeroam_challenges_tests.cpp)
+target_link_libraries(freeroam_challenges_tests PRIVATE shift_freeroam shift_drive fh1data)
+add_test(NAME freeroam_challenges_tests COMMAND freeroam_challenges_tests)
+add_test(NAME freeroam_challenges_corpus COMMAND freeroam_challenges_tests --corpus)
+set_tests_properties(freeroam_challenges_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
+
 add_executable(club_tests club_tests.cpp)
 target_link_libraries(club_tests PRIVATE shift_freeroam fh1data shift_drive)
 add_test(NAME club_tests COMMAND club_tests)
@@ -473,6 +482,10 @@ add_executable(achievements_tests achievements_tests.cpp ../apps/carview/achieve
 target_include_directories(achievements_tests PRIVATE ../apps/carview)
 target_link_libraries(achievements_tests PRIVATE carview_hud fh1data shift_drive shift_freeroam shift_stb shift_race shift_garage)
 add_test(NAME achievements_tests COMMAND achievements_tests)
+# The title's 70-entry achievement table from the content packages' spa.bin
+# under SHIFT_STATE_ROOT (or SHIFT_SPA_ROOT); exit 77 with neither set.
+add_test(NAME achievements_corpus COMMAND achievements_tests --corpus)
+set_tests_properties(achievements_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
 
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
@@ -532,3 +545,12 @@ if(WIN32)
   endif()
   add_test(NAME rhi_dx12_tests COMMAND rhi_dx12_tests)
 endif()
+
+# Progression rules from the game's data (PROG-02/07/08/10/12): synthetic
+# checks, and the disc's tables with --corpus (exit 77 without
+# SHIFT_GAME_ROOT, a failure when it is set and the data does not load).
+add_executable(progression_tests progression_tests.cpp)
+target_link_libraries(progression_tests PRIVATE shift_race shift_freeroam shift_garage shift_cars)
+add_test(NAME progression_tests COMMAND progression_tests)
+add_test(NAME progression_corpus COMMAND progression_tests --corpus)
+set_tests_properties(progression_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)

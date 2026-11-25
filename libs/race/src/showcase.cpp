@@ -447,6 +447,8 @@ bool parse_airborne_challenges_xml(std::string_view xml, std::vector<ShowcaseSpe
     if (t.name == "names") {
       if (t.has("objectfilename")) cur.anim_pgeo = t.attr("objectfilename");
       if (t.has("anim_in_race")) cur.anim_in_race = t.attr("anim_in_race");
+    } else if (t.name == "opponent") {
+      if (t.has("locstringpilotname")) cur.pilot_name_ids = t.attr("locstringpilotname");
     } else if (t.name == "animstart") {
       cur.on_countdown = t.boolean("on_countdown", false);
     } else if (t.name == "timing") {

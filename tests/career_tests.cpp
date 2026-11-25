@@ -65,9 +65,9 @@ void test_save_roundtrip() {
 
 void test_rewards_difficulty_mileage() {
   CHECK(race::difficulty_bonus_percent(0) == 0);
-  CHECK(race::difficulty_bonus_percent(1) == 15);
-  CHECK(race::difficulty_bonus_percent(2) == 30);
-  CHECK(race::difficulty_bonus_percent(3) == 45);
+  CHECK(race::difficulty_bonus_percent(1) == 5);
+  CHECK(race::difficulty_bonus_percent(2) == 15);
+  CHECK(race::difficulty_bonus_percent(3) == 25);
   // PostRaceOptions MileageCredits (offline career modes): 5,000 Cr over 50 km, steps of 100.
   race::MileageCredits offline;
   offline.total_distance_m = 50000.0;
@@ -300,7 +300,7 @@ void test_skills_and_popularity() {
   const char* fame_xml = R"(
     <Fame>
       <Level rank="249" target="1000"/>
-      <Level rank="225" target="2500"/>
+      <Level rank="225" target="1700"/>
       <Level rank="200" target="6000"/>
     </Fame>)";
   const char* feats_xml = R"(
@@ -344,17 +344,18 @@ void test_skills_and_popularity() {
     const auto evs = tr.step(land);
     CHECK(!evs.empty() && evs[0].kind == freeroam::SkillEvent::kSkillAwarded && evs[0].points == 500);
   }
-  // 2. Trigger a Near Miss right after -> Stuntman combo (+1000 pts) -> 3 skills -> multiplier x2!
+  // 2. Trigger a Near Miss right after -> Stuntman combo (+1000 pts). Two single skills (the combo does
+  // not count) -> X1.1.
   {
     freeroam::SkillInput nm;
     nm.dt = dt, nm.time = (t += dt), nm.speed_ms = 30.0, nm.forward_speed_ms = 30.0, nm.wheels_on_ground = 4;
     nm.nearest_car_dist = 2.5;
     const auto evs = tr.step(nm);
     CHECK(evs.size() >= 2);  // NearMiss + Stuntman combo
-    CHECK(tr.hud().multiplier == 2);
+    CHECK(tr.hud().multiplier == 1 && std::fabs(tr.hud().multiplier_f - 1.1f) < 1e-5f);
     CHECK(tr.hud().chain_points == 1600);
   }
-  // 3. Drive cleanly for 3.2 s -> banks 1600 * 2 = 3200 pts -> crosses rank 249 AND 225 -> pays 5,000 Cr Fame sponsor!
+  // 3. Drive cleanly for 3.2 s -> banks trunc(1600 * 1.1) = 1760 pts -> crosses rank 249 AND 225 -> 5,000 Cr.
   bool banked = false, rank_up = false, sponsor = false;
   int64_t sponsor_cr = 0;
   for (int i = 0; i < 35; ++i) {
@@ -370,7 +371,7 @@ void test_skills_and_popularity() {
   CHECK(rank_up);
   CHECK(sponsor && sponsor_cr == 5000);
   CHECK(tr.popularity_rank() == 225);
-  CHECK(tr.max_skills_score() == 3200);
+  CHECK(tr.max_skills_score() == 1760);
 
   // 4. Hard crash cancels active chain and locks out for 3 s.
   {
@@ -688,39 +689,25 @@ void test_r3_e1_street_hubs_and_buyins() {
   rec.wristband_points = 300;
   CHECK(!cat.is_hub_unlocked(cat.hubs[0], rec, 0));  // below 310 pts
 
-  rec.wristband_points = 5000;
-  CHECK(!cat.is_hub_unlocked(cat.hubs[0], rec, -1));  // pre-Yellow Wristband locked
-  CHECK(cat.is_hub_unlocked(cat.hubs[0], rec, 0));    // Hub 1 unlocks!
-  CHECK(!cat.is_hub_unlocked(cat.hubs[1], rec, 0));   // Hub 2 STILL locked until Hub 1 completed!
-  CHECK(!cat.is_hub_unlocked(cat.hubs[2], rec, 0));   // Hub 3 STILL locked until Hub 2 completed!
-  CHECK(!cat.is_event_unlocked(cat.events[2], rec, 0, 250));
-  CHECK(cat.hub_unlock_requirement(1) == 0);
-  CHECK(cat.hub_unlock_requirement(2) == 2);
-  CHECK(cat.hub_unlock_requirement(3) == 2);
-
-  // Complete 1 Hub 1 race -> Hub 2 still requires 1 more Hub 1 race.
-  rec.event_places[57] = 1;
-  CHECK(cat.hub_events_completed(1, rec) == 1);
+  // The points threshold alone opens a hub (EventHubs.UnlockPointsReq):
+  // no wristband and no races from the previous hub.
+  rec.wristband_points = 310;
+  CHECK(cat.is_hub_unlocked(cat.hubs[0], rec, -1));
   CHECK(!cat.is_hub_unlocked(cat.hubs[1], rec, 0));
-
-  // Complete 2nd Hub 1 race -> Hub 2 unlocks! Hub 3 still locked!
-  rec.event_places[80] = 2;
-  CHECK(cat.hub_events_completed(1, rec) == 2);
+  rec.wristband_points = 1700;
   CHECK(cat.is_hub_unlocked(cat.hubs[1], rec, 0));
-  CHECK(cat.is_event_unlocked(cat.events[2], rec, 0, 250));
+  CHECK(cat.hub_events_completed(1, rec) == 0);
   CHECK(!cat.is_hub_unlocked(cat.hubs[2], rec, 0));
-
-  // Hub 2 also requires its points threshold (1700).
-  rec.wristband_points = 1200;
-  CHECK(!cat.is_hub_unlocked(cat.hubs[1], rec, 0));
-  rec.wristband_points = 5000;
-  CHECK(cat.is_hub_unlocked(cat.hubs[1], rec, 0));
-
-  // Complete both Hub 2 races -> Hub 3 unlocks!
-  rec.event_places[38] = 1;
-  rec.event_places[53] = 1;
+  CHECK(cat.is_event_unlocked(cat.events[2], rec, 0, 250));
+  CHECK(cat.hub_unlock_requirement(1) == 0);
+  CHECK(cat.hub_unlock_requirement(2) == 0);
+  CHECK(cat.hub_unlock_requirement(3) == 0);
+  rec.wristband_points = 4500;
   CHECK(cat.is_hub_unlocked(cat.hubs[2], rec, 0));
   CHECK(cat.is_event_unlocked(cat.events[4], rec, 0, 250));
+  rec.event_places[57] = 1;
+  CHECK(cat.hub_events_completed(1, rec) == 1);
+  rec.wristband_points = 5000;
 }
 
 }  // namespace

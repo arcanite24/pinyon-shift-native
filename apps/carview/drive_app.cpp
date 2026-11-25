@@ -137,7 +137,8 @@ std::vector<std::string> DriveApp::class_name_list() const {
     return out;
 }
 
-std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize) {
+std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize,
+                                       int upgrade_class) {
     const auto* spec = have_career_catalog ? career_catalog.find_car(car_id) : nullptr;
     std::string media = spec ? spec->media_name : std::string();
     if (media.empty()) {
@@ -171,6 +172,31 @@ std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool sele
     gc.slots = std::move(stock);
     career_garage.cars.push_back(std::move(gc));
     if (select_it || career_garage.selected <= 0) career_garage.selected = career_garage.cars.back().id;
+    // A prize car comes fitted to its upgrade class, free of charge (the
+    // parts the quick upgrade would pick, paid from a matching grant).
+    if (upgrade_class >= 0 && upgrade_class > career_garage.cars.back().class_id && parts_db.valid() &&
+        !class_bands.empty()) {
+      if (!race_pi_cfg_loaded && !world_dir.empty()) {
+        race_pi_cfg_loaded = true;
+        const auto pzip = cars::mods::resolve(game_root_of() / "media" / "physics.zip");
+        std::error_code pec;
+        if (std::filesystem::exists(pzip, pec)) {
+          cars::load_physics_settings(pzip, race_phys_settings, nullptr);
+          garage::load_pi_config(pzip, race_pi_cfg, nullptr);
+        }
+      }
+      if (const auto db = parts_db.get()) {
+        const int64_t gid = career_garage.cars.back().id;
+        const auto plan = garage::plan_auto_upgrade(career_garage, *db, gid, upgrade_class, 0, race_phys_settings,
+                                                    race_pi_cfg, class_bands);
+        int64_t free_credits = plan.total_cost;
+        std::string why;
+        if (!plan.ok || !garage::apply_auto_upgrade(career_garage, *db, gid, plan, 0, free_credits,
+                                                    race_phys_settings, race_pi_cfg, class_bands, &why))
+          std::fprintf(stderr, "carview: prize car %lld not upgraded to class %d: %s\n", (long long)car_id,
+                       upgrade_class, (why.empty() ? plan.message : why).c_str());
+      }
+    }
     write_career_garage();
     return carview::car_name(media);
 }
@@ -189,7 +215,7 @@ CareerSummary DriveApp::career_summary(std::vector<cars::PackInfo>& packs) {
     cs.level = li;
     cs.signs_found = int(saved.signs_found.size());
     cs.barns = int(saved.barns.size());
-    for (const auto& b : saved.barns) cs.barns_found += b.status == freeroam::kBarnFound;
+    for (const auto& b : saved.barns) cs.barns_found += freeroam::barn_discovered(b.status);
     cs.wristband_points = career.wristband_points, cs.credits = career.credits;
     cs.total_winnings = career.total_winnings, cs.races = career.num_races;
     cs.victories = career.num_victories, cs.podiums = career.num_podiums;
@@ -633,8 +659,24 @@ bool DriveApp::init(int& exit_code) {
     if (!have_career_catalog && !e.empty()) std::fprintf(stderr, "carview: note: no career catalog: %s\n", e.c_str());
     if (have_career_catalog) campaign.set_career_catalog(&career_catalog);
     e.clear();
+    // The campaign's wristband, Star Showdown and Showcase tables. The raw
+    // text: game_text strips "{0}" placeholders, and the wristband name
+    // goes into Scoreboard's "{0} WRISTBAND".
+    race::CampaignTablesLoad tl;
+    if (race::load_campaign_tables(game_root_of(), state_root, shared_db,
+                                   [](std::string_view ref) { return carview::game_text_raw(std::string(ref)); }, &tl,
+                                   &e))
+      std::printf("campaign: %d wristbands (%s..), %d star showdowns, %d showcases from the disc (%d captions missing)\n",
+                  tl.wristbands, race::wristband_milestones().front().display_name.c_str(), tl.bosses, tl.showcases,
+                  tl.captions_missing);
+    else if (!e.empty())
+      std::fprintf(stderr, "carview: note: built-in campaign tables: %s\n", e.c_str());
+    e.clear();
     have_skills_data = freeroam::load_skills_data(game_root_of(), skills_data, &e);
     if (!have_skills_data && !e.empty()) std::fprintf(stderr, "carview: note: no skills data: %s\n", e.c_str());
+    e.clear();
+    if (!freeroam::load_free_roam_challenges(game_root_of(), freeroam_challenges_data, &e) && !e.empty())
+      std::fprintf(stderr, "carview: note: no free-roam challenges: %s\n", e.c_str());
   }
   bench_startup.db_catalog_load_ms =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - db_cat_t0).count();
@@ -774,6 +816,13 @@ bool DriveApp::init(int& exit_code) {
     if (have_saved) {
       for (const auto& sp : saved.sponsors) skill_tracker->set_sponsor_progress(sp.id, sp.count, sp.claimed);
     }
+  }
+  if (!freeroam_challenges_data.challenges.empty()) {
+    freeroam_challenges = std::make_unique<freeroam::FreeRoamChallengeTracker>(freeroam_challenges_data);
+    std::vector<freeroam::ChallengeRecord> recs;
+    if (have_saved)
+      for (const auto& fc : saved.freeroam_challenges) recs.push_back({fc.id, fc.progress, fc.completed});
+    freeroam_challenges->load(recs);
   }
   // --career-png: every window of the career page as the game's save left
   // it (prefix_N.png), then exit: the M6 gate's view of the import.

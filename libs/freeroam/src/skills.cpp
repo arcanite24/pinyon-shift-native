@@ -100,7 +100,35 @@ const char* special_label_for(SmashObjectType t) {
   }
 }
 
+// The HorizonFeats ids below the Multiplier (27): the single skills whose
+// awards raise the chain's skill count. The combinations and specials (28 to
+// 53) and the Multiplier itself do not (decoded from the original's
+// Multiplier detector).
+bool counts_toward_multiplier(std::string_view id) {
+  static constexpr std::string_view kSingle[] = {
+      "Burnout",         "Donut",          "Turn180",           "JTurn",        "Air",
+      "Drift",           "EDrift",         "Draft",             "TwoWheels",    "CleanSpeed",
+      "NearMiss",        "SketchyOvertake", "TradingPaint",     "Pass",         "Destruction",
+      "Infection",       "King",           "KingHolder",        "LastManStanding", "NearMissInfection",
+      "NearMissKing",    "NearMissMouse",  "Beatdown",          "BeatdownRecovery", "DoubleInfection",
+      "DoubleKing",      "MultipleBeatdown"};
+  for (const auto& s : kSingle)
+    if (audio::iequals(s, id)) return true;
+  return false;
+}
+
 }  // namespace
+
+float chain_multiplier_for(int single_skills) {
+  if (single_skills <= 0) return 1.0f;
+  const int grade = std::min(single_skills, kMultiplierGrades);
+  return float(grade + 9) * 0.1f;
+}
+
+int64_t banked_chain_points(int chain_points, float multiplier) {
+  if (chain_points <= 0) return 0;
+  return int64_t(float(chain_points) * multiplier);
+}
 
 const SkillConfig* SkillsData::find_skill(std::string_view id) const {
   for (const auto& s : all_skills)
@@ -319,6 +347,7 @@ void SkillTracker::set_sponsor_progress(const std::string& id, int count, int cl
 void SkillTracker::clear_active_chain() {
   chain_points_ = 0;
   skill_count_ = 0;
+  multiplier_skills_ = 0;
   over9000_paid_ = false;
   pending_tags_.clear();
   pending_sponsor_feats_.clear();
@@ -347,12 +376,7 @@ void SkillTracker::reset_session_clock() {
   banked_total_ = 0;
 }
 
-float SkillTracker::chain_multiplier() const {
-  if (skill_count_ <= 1) return 1.0f;
-  // Retail FH1 Skill Chain multiplier: 1.0x to 5.0x in 0.5x steps.
-  const int steps = std::min(8, skill_count_ - 1);
-  return 1.0f + 0.5f * float(steps);
-}
+float SkillTracker::chain_multiplier() const { return chain_multiplier_for(multiplier_skills_); }
 
 void SkillTracker::evaluate_popularity_transitions(int rank_before, double time, std::vector<SkillEvent>& out) {
   const int rank_after = popularity_rank();
@@ -430,6 +454,7 @@ void SkillTracker::emit_tag(const PendingTag& tag, double time, std::vector<Skil
   if (tag.points <= 0 || time < lockout_until_) return;
   chain_points_ += tag.points;
   ++skill_count_;
+  if (tag.id != kCombo && counts_toward_multiplier(tag.canonical_id)) ++multiplier_skills_;
   last_award_at_ = time;
   last_tag_at_ = time;
   last_skill_ = tag.label;
@@ -569,7 +594,7 @@ void SkillTracker::bank_chain(double time, std::vector<SkillEvent>& out) {
   if (chain_points_ <= 0) return;
   const float mult_f = chain_multiplier();
   const int mult_i = int(std::floor(mult_f));
-  const int total = int(std::llround(double(chain_points_) * double(mult_f)));
+  const int total = int(banked_chain_points(chain_points_, mult_f));
   const int rank_before = popularity_rank();
   popularity_ += double(total);
   race_banked_ += total;
@@ -935,6 +960,7 @@ SkillTracker::RewindSnapshot SkillTracker::capture_rewind() const {
   RewindSnapshot s;
   s.chain_points = chain_points_;
   s.skill_count = skill_count_;
+  s.multiplier_skills = multiplier_skills_;
   s.last_award_at = last_award_at_;
   s.last_tag_at = last_tag_at_;
   s.lockout_until = lockout_until_;
@@ -980,6 +1006,7 @@ SkillTracker::RewindSnapshot SkillTracker::capture_rewind() const {
 void SkillTracker::restore_rewind(const RewindSnapshot& s) {
   chain_points_ = s.chain_points;
   skill_count_ = s.skill_count;
+  multiplier_skills_ = s.multiplier_skills;
   last_award_at_ = s.last_award_at;
   last_tag_at_ = s.last_tag_at;
   lockout_until_ = s.lockout_until;

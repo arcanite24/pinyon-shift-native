@@ -171,168 +171,6 @@ const CharacterProfile& character_profile(CharacterId id) {
   return idx < chars.size() ? chars[idx] : chars.front();
 }
 
-// ---- Wristband Milestones (Exact CareerWristbandLevels XP thresholds & gamedb.slt event counts) ----
-// radio_event: an immediate DJ line; the later wristbands' DJ lines come from
-// radiodj.xml (AudioHost::radio_wristband_awarded), not from here.
-
-const std::vector<WristbandMilestoneSpec>& wristband_milestones() {
-  static const std::vector<WristbandMilestoneSpec> kBands = {
-      {0, "yellow", "YELLOW WRISTBAND", "Yellow", 0, 1000, "FirstWristbandCollect", "NewWristbandUnlocked1",
-       "AliceOpeningInterview2A",
-       "Welcome to the Horizon Festival! Yellow Wristband events, Race Central, and Dak's Garage are now open.", 3},
-      {1, "green", "GREEN WRISTBAND", "Green", 220, 1500, "GreenWristbandUnlock", "NewWristbandUnlocked2",
-       "",
-       "Green Wristband unlocked! Carson Street Race Hub, faster Colorado events, and your next Star Showdown await.", 7},
-      {2, "blue", "BLUE WRISTBAND", "Blue", 750, 2000, "BlueWristbandUnlock", "NewWristbandUnlocked3",
-       "",
-       "Blue Wristband unlocked! High-speed mountain passes and Duke Maguire's Star Showdown are now live.", 8},
-      {3, "pink", "PINK WRISTBAND", "Pink", 1450, 2500, "PinkWristbandUnlock", "NewWristbandUnlocked4",
-       "",
-       "Pink Wristband unlocked! Red Rock canyon series, Gladstone Street Hub, and Marko Baran's GT-R challenge await.", 9},
-      {4, "orange", "ORANGE WRISTBAND", "Orange", 2500, 3000, "OrangeWristbandUnlock", "NewWristbandUnlocked5",
-       "",
-       "Orange Wristband unlocked! Supercar qualifiers and Zaki Malik's Lexus LFA Star Showdown are open across Colorado.", 12},
-      {5, "purple", "PURPLE WRISTBAND", "Purple", 4100, 4000, "PurpleWristbandUnlock", "NewWristbandUnlocked6",
-       "",
-       "Purple Wristband unlocked! Only the elite reach this tier — Observatory Street Hub and Hailey Harper await.", 14},
-      {6, "gold", "GOLD WRISTBAND", "Gold", 6400, 5000, "GoldWristbandUnlock", "NewWristbandUnlocked7",
-       "",
-       "Gold Wristband unlocked! You have earned your place among Colorado's best — the Horizon Finale and Darius Flynt await!", 16},
-  };
-  return kBands;
-}
-
-const WristbandMilestoneSpec* find_wristband_milestone(int level) {
-  const auto& bands = wristband_milestones();
-  for (const auto& b : bands) {
-    if (b.level == level) return &b;
-  }
-  return nullptr;
-}
-
-// ---- All 7 Star Showdowns (Exact gamedb.slt Events & EventParticipants) ----
-
-const std::vector<BossRivalSpec>& boss_rivals() {
-  static const std::vector<BossRivalSpec> kBosses = {
-      {0, 0, 79, "NEM_TEST", "ramona", CharacterId::kRamonaCravache, "RAMONA CRAVACHE", "YELLOW WRISTBAND STAR",
-       1460, "FOR_SVTRaptor_12", "2011 Ford F-150 SVT Raptor", 220, 5000, "NemesisEventUnlocked1", "NemesisPreRace1",
-       "NemesisPostRaceWin1",
-       "Not bad for a rookie, but you're in my dust now. Beat my SVT Raptor head-to-head and the keys are yours.",
-       "You actually kept up on the dirt — fair play. Take the Raptor keys, you earned your spot at Horizon!", false},
-      {1, 1, 241, "NR02", "ali", CharacterId::kAliHoward, "ALI HOWARD", "GREEN WRISTBAND STAR",
-       1557, "DOD_ChallengerSRT8392_12", "2012 Dodge Challenger SRT8 392", 750, 10000, "NemesisEventUnlocked2",
-       "NemesisPreRace2", "NemesisPostRaceWin2",
-       "Everyone's talking about the newcomer. Let's see if you can handle raw American muscle on the open highway.",
-       "Clean pass at the line! The Challenger SRT8 392 is all yours — see you further up the standings.", false},
-      {2, 2, 242, "NR03", "duke", CharacterId::kDukeMaguire, "DUKE MAGUIRE", "BLUE WRISTBAND STAR",
-       325, "LAM_DiabloSV_97", "1997 Lamborghini Diablo SV", 1450, 15000, "NemesisEventUnlocked3", "NemesisPreRace3",
-       "NemesisPostRaceWin3",
-       "You want my Diablo SV? You'll have to survive the canyon switchbacks without lifting off the throttle.",
-       "Unbelievable drive! Keep the Diablo SV — looks like Darius has a real challenger this year.", false},
-      {3, 3, 243, "NR04", "marko", CharacterId::kMarkoBaran, "MARKO BARAN", "PINK WRISTBAND STAR",
-       1558, "NIS_GTR_12", "2012 Nissan GT-R Black Edition", 2500, 20000, "NemesisEventUnlocked4", "NemesisPreRace4",
-       "NemesisPostRaceWin4",
-       "Precision beats hype every time. My GT-R Black Edition owns Red Rock — show me what you've got.",
-       "Flawless lines through every apex. The GT-R Black Edition belongs in your garage.", false},
-      {4, 4, 244, "NR05", "zaki", CharacterId::kZakiMalik, "ZAKI MALIK", "ORANGE WRISTBAND STAR",
-       1260, "LEX_LFA_10", "2010 Lexus LFA", 4100, 30000, "NemesisEventUnlocked5", "NemesisPreRace5",
-       "NemesisPostRaceWin5",
-       "Listen to that V10 scream across Colorado. If you can catch the LFA before the dam, you win the pink slip.",
-       "You outran the LFA — respect! Take the keys and don't let Hailey or Darius intimidate you.", false},
-      {5, 5, 245, "NR06", "hailey", CharacterId::kHaileyHarper, "HAILEY HARPER", "PURPLE WRISTBAND STAR",
-       432, "SAL_S7_04", "2004 Saleen S7", 6400, 40000, "NemesisEventUnlocked6", "NemesisPreRace6",
-       "NemesisPostRaceWin6",
-       "One showdown stands between you and the Gold Wristband elite. Catch my Saleen S7 if you can!",
-       "Incredible pace! The Saleen S7 is yours — go take the Horizon crown straight from Darius Flynt!", false},
-      {6, 6, 169, "NEM_FINAL", "darius", CharacterId::kDariusFlynt, "DARIUS FLYNT", "REIGNING HORIZON CHAMPION",
-       1171, "FER_599XX_10", "2010 Ferrari 599XX", 10000, 50000, "NemesisEventUnlocked7", "NemesisPreRace7",
-       "NemesisPostRaceWin7",
-       "So you won the Horizon Finale? One more run — champion against champion. Beat my Ferrari 599XX for the title and the keys!",
-       "I didn't think anyone in Colorado could take my 599XX. The Festival is yours — hail the new Horizon Champion!", true},
-  };
-  return kBosses;
-}
-
-const BossRivalSpec* find_boss_by_event(std::string_view horizon_id) {
-  const std::string want = upper_ascii(horizon_id);
-  for (const auto& b : boss_rivals()) {
-    if (upper_ascii(b.horizon_id) == want) return &b;
-  }
-  return nullptr;
-}
-
-const BossRivalSpec* find_boss_by_key(std::string_view key) {
-  std::string want = lower_ascii(key);
-  if (want == "haley") want = "hailey";
-  for (const auto& b : boss_rivals()) {
-    if (want == b.key || want == lower_ascii(b.horizon_id)) return &b;
-  }
-  return nullptr;
-}
-
-const BossRivalSpec* find_boss_by_level(int wristband_level) {
-  for (const auto& b : boss_rivals()) {
-    if (b.wristband_level == wristband_level) return &b;
-  }
-  return nullptr;
-}
-
-// ---- All 10 Showcases (Exact gamedb.slt Popularity Gates 250 -> 1 & airborne_challenges.xml 1:1) ----
-
-const std::vector<ShowcaseMilestoneSpec>& showcase_milestones() {
-  static const std::vector<ShowcaseMilestoneSpec> kShowcases = {
-      {0, 101, "PLANE_RACE_001", "MUSTANG VS MUSTANG", "P-51 MUSTANG", 250, 404, "FOR_MustangBOSS429_70",
-       "1970 Ford Mustang Boss 429", 5000, true,
-       "Holly Cruz here! You're invited to the Mustang vs Mustang Showcase — race a vintage P-51 Mustang warbird across Colorado!",
-       "Unbelievable finish! You beat the P-51 Mustang to the line — the 1970 Mustang Boss 429 is yours to keep!"},
-      {1, 223, "PLANE_RACE_004", "QUATTRO VS BALLOON", "HOT-AIR BALLOON", 225, 633, "AUD_SportQuattro_83",
-       "1983 Audi Sport quattro", 6500, true,
-       "Popularity Rank 225 unlocked! Take the Group B Audi Sport quattro head-to-head against a Horizon Hot-Air Balloon across the valley!",
-       "Group B legend triumphs beneath the balloon! The 1983 Audi Sport quattro has been delivered to your Horizon Garage."},
-      {2, 211, "EXHIBITION_FEST_003", "MINI FESTIVAL EXHIBITION", "FESTIVAL PACK", 200, 1566, "AUS_ShowCaseMiniCooperS_65",
-       "1965 Mini Cooper S", 8500, false,
-       "Rank 200 Showcase unlocked! Jump into a tuned 1965 Mini Cooper S for a three-lap Festival circuit exhibition.",
-       "Crowd favourite! You took first in the Mini Cooper S Showcase — check your garage for the prize car!"},
-      {3, 168, "PLANE_RACE_002", "CORVETTE VS HELICOPTER", "HELICOPTER", 175, 1527, "CHE_CORVETTEGSC_10",
-       "2010 Chevrolet Corvette Grand Sport", 10000, true,
-       "Rank 175 Showcase! Drop the top on a Corvette Grand Sport and outrun the Horizon Helicopter through the canyon!",
-       "What a photo finish under the rotor wash! The Corvette Grand Sport Convertible is now in your garage."},
-      {4, 246, "PLANE_RACE_007", "F40 VS BIPLANE", "BIPLANE", 150, 340, "FER_F40_87",
-       "1987 Ferrari F40", 12500, true,
-       "Rank 150 Showcase unlocked! Twin-turbo legend meets wings — drive the 1987 Ferrari F40 against a barnstorming Biplane!",
-       "Pure Ferrari magic! You beat the Biplane — the 1987 Ferrari F40 is yours and the fans are going wild!"},
-      {5, 214, "EXHIBITION_RESE_003", "RESERVOIR RUN", "EXHIBITION FIELD", 125, 1115, "FIA_500AbarthSS_10",
-       "2010 Abarth 500 esseesse", 15000, false,
-       "Rank 125 Showcase! Carve the dam twisties in an Abarth 500 esseesse against the Festival exhibition grid.",
-       "Pocket rocket victory! The Abarth 500 esseesse is waiting in your Horizon Garage."},
-      {6, 172, "PLANE_RACE_003", "AVENTADOR VS BIPLANE", "BIPLANE", 100, 1398, "LAM_LP7004_12",
-       "2012 Lamborghini Aventador LP700-4", 17500, true,
-       "Top 100 Popularity! Take a Lamborghini Aventador LP700-4 flat out against a low-flying Horizon Biplane!",
-       "V12 thunder beats wings across Colorado! The Lamborghini Aventador LP700-4 is yours!"},
-      {7, 222, "PLANE_RACE_006", "RGT-8 VS MUSTANG", "P-51 MUSTANG", 75, 1432, "RUF_RGT8_11",
-       "2011 RUF RGT-8", 20000, true,
-       "Rank 75 Showcase unlocked! Push the 2011 RUF RGT-8 through Colorado's mountain roads against a P-51 Mustang!",
-       "Not even the P-51 Mustang could match your pace! The 2011 RUF RGT-8 has been added to your garage."},
-      {8, 59, "EXHIBITION_FEST_004", "GROUP B SHOWDOWN", "RALLY LEGENDS", 50, 1533, "PEU_205T16_84",
-       "1984 Peugeot 205 T16", 22500, false,
-       "Top 50 Popularity! Master the gravel and tarmac in the iconic 1984 Peugeot 205 Turbo 16 Showcase!",
-       "Unstoppable! The 1984 Peugeot 205 T16 is now in your Horizon Garage."},
-      {9, 220, "PLANE_RACE_005", "ONE-77 VS HELICOPTER", "HELICOPTER", 1, 1181, "AST_One77_10",
-       "2010 Aston Martin One-77", 25000, true,
-       "You hit #1 in Popularity across the entire Festival! Celebrate in the Aston Martin One-77 against the Horizon Helicopter!",
-       "Festival icon! You beat the Helicopter in the #1 Popularity Showcase — the Aston Martin One-77 is yours forever!"},
-  };
-  return kShowcases;
-}
-
-const ShowcaseMilestoneSpec* find_showcase_by_event(std::string_view horizon_id) {
-  const std::string want = upper_ascii(horizon_id);
-  for (const auto& sc : showcase_milestones()) {
-    if (upper_ascii(sc.horizon_id) == want) return &sc;
-  }
-  return nullptr;
-}
-
 void set_campaign_text_resolver(std::function<std::string(std::string_view)> resolver) {
   text_resolver_slot() = std::move(resolver);
 }
@@ -359,12 +197,13 @@ std::string resolve_event_display_title(std::string_view raw_id_or_title, std::s
   }
 
   const std::string up = upper_ascii(trimmed);
+  // The key-only fallback titles are upper case, like the ones below.
   if (const ShowcaseMilestoneSpec* sc = find_showcase_by_event(up)) {
-    return sc->display_name;
+    return upper_ascii(sc->display_name);
   }
   if (const BossRivalSpec* boss = find_boss_by_event(up)) {
     if (boss->is_finale_champion) return "CHAMPION VS CHAMPION: DARIUS FLYNT";
-    return std::string("STAR SHOWDOWN: ") + boss->rival_name;
+    return std::string("STAR SHOWDOWN: ") + upper_ascii(boss->rival_name);
   }
   if (up == "FESTIVAL_FIRST") return "HORIZON HEATS";
   if (up == "FESTIVAL_SECOND" || up == "FESTIVAL_INTRO") return "HORIZON QUALIFIER";
@@ -1033,9 +872,14 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.duration_s = 6.0;
       cinematic_.letterbox_amount = 1.0f;
       cinematic_.eyebrow = "HORIZON SHOWCASE EVENT";
-      cinematic_.headline = sc.display_name;
-      cinematic_.subheadline = std::string(sc.loaner_car_display) + "  VS  " + sc.opponent_label;
-      cinematic_.detail_line = "BEAT THE " + std::string(sc.opponent_label) + " TO WIN THE " + sc.loaner_car_display;
+      // The cinematic lines are in capitals; the table names are as the string tables hold them.
+      const std::string sc_name = upper_ascii(sc.display_name), sc_opp = upper_ascii(sc.opponent_label);
+      cinematic_.headline = sc_name;
+      // An exhibition has no single opponent to name.
+      cinematic_.subheadline =
+          sc_opp.empty() ? sc.loaner_car_display : sc.loaner_car_display + "  VS  " + sc_opp;
+      cinematic_.detail_line = sc_opp.empty() ? "WIN THE RACE TO KEEP THE " + sc.loaner_car_display
+                                              : "BEAT THE " + sc_opp + " TO WIN THE " + sc.loaner_car_display;
       cinematic_.badge_text = "POPULARITY RANK #" + std::to_string(sc.popularity_rank_req) + " SHOWCASE";
       cinematic_.accent_rgba = pack_rgba(0xF9, 0x00, 0x64);
       cinematic_.showcase_index = sc.index;
@@ -1052,7 +896,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.duration_s = 6.5;
       cinematic_.letterbox_amount = 1.0f;
       cinematic_.eyebrow = "SHOWCASE VICTORY!";
-      cinematic_.headline = std::string(sc.display_name) + " COMPLETE";
+      cinematic_.headline = upper_ascii(sc.display_name) + " COMPLETE";
       cinematic_.subheadline = "NEW PRIZE CAR DELIVERED TO YOUR GARAGE";
       cinematic_.reward_car = sc.loaner_car_display;
       cinematic_.detail_line = sc.victory_line;
@@ -1078,9 +922,9 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.letterbox_amount = 1.0f;
       cinematic_.eyebrow = boss.is_finale_champion ? "HORIZON FESTIVAL FINALE  •  CHAMPION VS CHAMPION"
                                                    : "HORIZON STAR SHOWDOWN  •  1-ON-1 PINK SLIP";
-      cinematic_.headline = boss.rival_name;
-      cinematic_.subheadline = std::string(boss.rival_title) + "  •  " + boss.car_display;
-      cinematic_.detail_line = "BEAT " + std::string(boss.rival_name) + " TO WIN THE " + boss.car_display + " PINK SLIP";
+      cinematic_.headline = upper_ascii(boss.rival_name);
+      cinematic_.subheadline = boss.rival_title + "  •  " + boss.car_display;
+      cinematic_.detail_line = "BEAT " + upper_ascii(boss.rival_name) + " TO WIN THE " + boss.car_display + " PINK SLIP";
       cinematic_.badge_text = boss.is_finale_champion ? "FINAL BOSS SHOWDOWN" : "STAR SHOWDOWN #" + std::to_string(boss.index + 1);
       cinematic_.accent_rgba = character_profile(boss.character).accent_rgba;
       cinematic_.boss_index = boss.index;
@@ -1099,7 +943,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.duration_s = 6.8;
       cinematic_.letterbox_amount = 1.0f;
       cinematic_.eyebrow = "STAR SHOWDOWN VICTORY  •  PINK SLIP WON";
-      cinematic_.headline = std::string(boss.rival_name) + " DEFEATED";
+      cinematic_.headline = upper_ascii(boss.rival_name) + " DEFEATED";
       cinematic_.subheadline = "RIVAL VEHICLE ADDED TO YOUR HORIZON GARAGE";
       cinematic_.reward_car = boss.car_display;
       cinematic_.detail_line = boss.victory_line;
@@ -1834,12 +1678,13 @@ CampaignAction CampaignFlow::on_barn_restored(const std::string& barn_id, const 
   auto act = enter_stage(CampaignStage::kBarnRestored, TransitionKind::kBrushWipe);
   cinematic_.headline = car_name.empty() ? "RESTORATION COMPLETE" : car_name;
   cinematic_.reward_car = car_name;
-  cinematic_.detail_line = "Fresh paint, rebuilt engine, and ready for the Colorado open road.";
-  dialogs_.enqueue(
-      {"barn_restored_" + barn_id, CharacterId::kDakStewart, "", "", "1040BarnFindAtWorkshop", "",
-       "Good news — your barn find restoration is finished and gleaming in the Horizon Garage. Come take her for a spin!",
-       6.0, 7, true, true},
-      &heard_dialogs_);
+  // Restored is not yet in the garage: the car is collected there
+  // (Barnfind IDS_Title, the title's own line).
+  constexpr const char* kCollectIt = "Head to the garage to collect it!";
+  cinematic_.detail_line = kCollectIt;
+  dialogs_.enqueue({"barn_restored_" + barn_id, CharacterId::kDakStewart, "", "", "1040BarnFindAtWorkshop", "",
+                    kCollectIt, 6.0, 7, true, true},
+                   &heard_dialogs_);
   act.save_requested = true;
   return act;
 }
@@ -1875,8 +1720,8 @@ void CampaignFlow::check_showcase_unlocks(int pop_rank) {
       unlocked_showcases_.insert(sc.horizon_id);
       dialogs_.enqueue(
           {"sc_unlock_" + std::string(sc.horizon_id), CharacterId::kHollyCruz, "", "", "ShowcaseUnlockedFreeRoam", "",
-           std::string("New Showcase Event unlocked: ") + sc.display_name + " (" + sc.loaner_car_display + " vs " +
-               sc.opponent_label + ")!",
+           std::string("New Showcase Event unlocked: ") + sc.display_name + " (" + sc.loaner_car_display +
+               (sc.opponent_label.empty() ? "" : " vs " + sc.opponent_label) + ")!",
            6.0, 6, true, false},
           &heard_dialogs_);
     }
@@ -2250,12 +2095,13 @@ CampaignObjective CampaignFlow::next_objective(int wristband_points, int collect
   }
 
   // 3. Available Star Showdown boss rival for current wristband tier.
+  // The finale's showdown opens from the HEADLINE_EVENT win (step 2), not from points.
   if (const BossRivalSpec* boss = find_boss_by_level(std::clamp(collected_wristband, 0, 6))) {
-    if (wristband_points >= boss->unlock_points) {
+    if (!boss->is_finale_champion && wristband_points >= boss->unlock_points) {
       obj.valid = true;
-      obj.title = std::string("STAR SHOWDOWN: ") + boss->rival_name;
+      obj.title = std::string("STAR SHOWDOWN: ") + upper_ascii(boss->rival_name);
       obj.detail = std::string("BEAT THE ") + boss->car_display + " TO WIN THE PINK SLIP";
-      obj.gps_label = std::string("STAR SHOWDOWN  •  ") + boss->rival_name;
+      obj.gps_label = std::string("STAR SHOWDOWN  •  ") + upper_ascii(boss->rival_name);
       obj.is_urgent = true;
       if (catalog) {
         if (const CareerEvent* bev = catalog->find_event(boss->horizon_id); bev && bev->has_trigger) {

@@ -467,7 +467,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                     for (size_t bi = 0; bi < app.collectibles.barns.size(); ++bi) {
                       const auto& b = app.collectibles.barns[bi];
                       const int st = bi < app.progress.barns.size() ? app.progress.barns[bi].status : freeroam::kBarnNotSpawned;
-                      if (st != freeroam::kBarnFound && st != freeroam::kBarnRumour && !reveal) continue;
+                      if (!freeroam::barn_discovered(st) && st != freeroam::kBarnRumour && !reveal) continue;
                       const double d = std::hypot(b.at.x - map_cx, b.at.z - map_cz);
                       if (d < best_cd) {
                         best_cd = d;
@@ -548,11 +548,12 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                           app.audio_host.trigger_ui(audio::UiCue::kError);
                           return;
                         }
-                        // Retail FH1 Fast Travel fee: FREE once all 3 PR Stunts at this Outpost
-                        // are completed (or Fast Travel Anywhere is enabled); otherwise 10,000 CR.
-                        const bool ft_free = ft_anywhere ||
-                                             app.outpost_progress.is_outpost_fast_travel_free(app.outposts, op->id);
-                        const int64_t ft_fee = ft_free ? 0 : 10000LL;
+                        // The outpost's fast-travel price (GlobalRegistry Activities/Outposts:
+                        // 10,000 / 7,500 / 5,000 CR, free with its 3 PR Stunts done).
+                        const int64_t ft_fee =
+                            ft_anywhere ? 0
+                                        : std::max<int64_t>(0, app.outpost_progress.fast_travel_cost(
+                                                                   app.outposts, op->id, app.fast_travel_tuning));
                         if (ft_fee > 0 && app.career.credits < ft_fee) {
                           notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
                           notice_until = vehicle.time() + 3.5;
@@ -951,11 +952,13 @@ bool DriveSession::handle_events_and_outpost_event(const SDL_Event& e) {
                       notice = "QUIT RACE TO FAST TRAVEL";
                       notice_until = vehicle.time() + 3.0;
                     } else {
+                      // The festival is always free; an outpost costs its fast-travel price.
                       const bool ft_free = (item.kind == OutpostHubItem::kFastTravelFestival) ||
-                                           slice12.trainer.effective_fast_travel_anywhere() ||
-                                           (app.have_outposts &&
-                                            app.outpost_progress.is_outpost_fast_travel_free(app.outposts, item.ref_id));
-                      const int64_t ft_fee = ft_free ? 0 : 10000LL;
+                                           slice12.trainer.effective_fast_travel_anywhere() || !app.have_outposts;
+                      const int64_t ft_fee =
+                          ft_free ? 0
+                                  : std::max<int64_t>(0, app.outpost_progress.fast_travel_cost(
+                                                             app.outposts, item.ref_id, app.fast_travel_tuning));
                       if (ft_fee > 0 && app.career.credits < ft_fee) {
                         notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
                         notice_until = vehicle.time() + 3.5;

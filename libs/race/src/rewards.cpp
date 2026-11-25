@@ -61,6 +61,9 @@ int64_t round_prize(double x) {
 
 int64_t race_credits(double prize, Winnings w, int n, int p, bool finished) {
   if (!finished || n <= 1 || p < 1) return 0;
+  // Events.CashPrize is rounded to two significant figures before the split
+  // and the share again after it (decoded).
+  prize = double(round_prize(prize));
   double share = 0;
   switch (w) {
     case Winnings::kDefault: share = std::trunc(prize * double(n - p + 1) / double(n)); break;
@@ -281,21 +284,20 @@ double rewind_difficulty_bonus(bool rewind_on, int session_mode) {
 }
 
 double assist_difficulty_bonus(const DifficultyAssists& assists) {
-  // Cumulative per-assist difficulty credit bonus:
-  // Rewind OFF = +20% (excluded in session mode 3), ABS OFF = +10%,
-  // Simulation Steering = +5%, STM OFF = +5%, Manual = +10% / Manual+Clutch = +15%,
-  // Driving Line Braking Only = +5% / OFF = +10%, Simulation Damage = +10%.
+  // The original's post-race bonus terms (see rewards.h): driving line,
+  // braking, steering, traction control, shifting and rewind. Stability
+  // control and damage add nothing.
   double bonus = rewind_difficulty_bonus(assists.rewind_on, assists.session_mode);
-  if (assists.braking >= 2) bonus += 0.10;
-  if (assists.steering >= 2) bonus += 0.05;
-  if (!assists.stm_on) bonus += 0.05;
-  if (assists.shifting == 1) bonus += 0.10;
-  else if (assists.shifting >= 2) bonus += 0.15;
-  if (assists.driving_line == 1) bonus += 0.05;
-  else if (assists.driving_line <= 0) bonus += 0.10;
-  if (assists.damage_mode == 2) bonus += 0.10;  // Simulation (3 is Limited)
-  if (assists.tcs_on && bonus >= 0.05) bonus -= 0.05;
-  return std::max(0.0, bonus);
+  if (assists.driving_line == 1) bonus += 0.10;
+  else if (assists.driving_line <= 0) bonus += 0.20;
+  if (assists.braking == 1) bonus += 0.10;
+  else if (assists.braking >= 2) bonus += 0.20;
+  if (assists.steering == 1) bonus += 0.10;
+  else if (assists.steering >= 2) bonus += 0.20;
+  if (!assists.tcs_on) bonus += 0.15;
+  if (assists.shifting == 1) bonus += 0.15;
+  else if (assists.shifting >= 2) bonus += 0.20;
+  return bonus;
 }
 
 int assist_difficulty_bonus_percent(const DifficultyAssists& assists) {
@@ -305,16 +307,18 @@ int assist_difficulty_bonus_percent(const DifficultyAssists& assists) {
 int difficulty_bonus_percent(int difficulty_index) {
   switch (difficulty_index) {
     case 0: return 0;
-    case 1: return 15;
-    case 2: return 30;
-    case 3: return 45;
-    case 4: return 60;  // Pinyon Shift HARD+ (+1 tier, no rubber-banding)
+    case 1: return 5;
+    case 2: return 15;
+    case 3: return 25;
+    case 4: return 25;  // the engine's Hard+ extra pays as Pro
     default: return 0;
   }
 }
 
 int total_difficulty_bonus_percent(int difficulty_index, const DifficultyAssists& assists) {
-  return difficulty_bonus_percent(difficulty_index) + assist_difficulty_bonus_percent(assists);
+  const int opponents =
+      assists.session_mode == DifficultyAssists::kExcludedSessionMode ? 0 : difficulty_bonus_percent(difficulty_index);
+  return opponents + assist_difficulty_bonus_percent(assists);
 }
 
 int64_t mileage_bonus_credits(double distance_m, const MileageCredits& rule) {
@@ -434,30 +438,40 @@ RaceAward compute_race_award(const CareerRecord& r, int64_t event_id, int career
                              const RaceBonusInputs& extras) {
   RaceAward a;
   const auto prev = r.event_places.find(event_id);
-  const bool first_win = (prev == r.event_places.end() || prev->second > 1);
   a.base_credits = race_credits(prize, winnings_for_career_type(career_type), racers, place, finished);
-  // SPEC-EVENT-REWARDS: Style-6 (Horizon Finale) awards 50,000 CR on first win.
-  if (finished && style == 6 && place == 1 && first_win && a.base_credits < 50000) a.base_credits = 50000;
+  // No first-win floor or repeat cut: the original's payout never reads past
+  // results (the Horizon Finale's CashPrize is 5,000,000 on its own).
+  // The original's post-race order (decoded): FINISHED (or BOUNTY), plus
+  // BEAT THE STAR, plus MILEAGE BONUS, then the DIFFICULTY & ASSISTS BONUS
+  // as round(total * pct), half away from zero. SKILLS is an XP line on the
+  // XP screen, not credits; career races carry no bounty or wristband line.
+  (void)career_type;
   a.mileage_bonus = finished ? mileage_bonus_credits(distance_m, extras.mileage) : 0;
+  a.bounty_bonus = finished && extras.bounty_bonus > 0 ? extras.bounty_bonus : 0;
+  // BEAT THE STAR: CareerWristbandLevels.NemesisBonus of the event's Level,
+  // for a festival event (style 1) finished ahead of the star driver.
+  if (finished && style == 1 && level >= 0 && extras.star_place > 0 && place < extras.star_place)
+    a.nemesis_bonus = tables.nemesis_bonus_for(level);
   const int total_pct = std::max(0, difficulty_pct);
   a.assists_pct = std::clamp(extras.assists_pct, 0, total_pct);
   a.difficulty_pct = total_pct;
-  const int ai_pct = std::max(0, total_pct - a.assists_pct);
-  const double bonus_base = double(a.base_credits + a.mileage_bonus);
-  a.difficulty_bonus = finished && ai_pct > 0 ? int64_t(std::llround(bonus_base * ai_pct / 100.0)) : 0;
+  const double bonus_base = double(a.base_credits + a.bounty_bonus + a.nemesis_bonus + a.mileage_bonus);
+  const int64_t pct_bonus = finished && total_pct > 0 ? int64_t(std::llround(bonus_base * total_pct / 100.0)) : 0;
+  // One line in the original; split here so the opponent and assist shares
+  // still sum to it.
   a.assists_bonus = finished && a.assists_pct > 0 ? int64_t(std::llround(bonus_base * a.assists_pct / 100.0)) : 0;
-  a.skills_bonus = finished && extras.skills_points > 0 ? round_prize(double(extras.skills_points) * 0.25) : 0;
-  a.bounty_bonus = finished && extras.bounty_bonus > 0 ? extras.bounty_bonus : 0;
-  if (finished && (career_type == 11 || style == 5) && place == 1) {
-    const int wb_lvl = extras.wristband_level >= 0 ? extras.wristband_level : std::max(0, tables.level_index(r.wristband_points));
-    a.nemesis_bonus = tables.nemesis_bonus_for(wb_lvl);
-  }
-  a.credits = a.base_credits + a.mileage_bonus + a.difficulty_bonus + a.assists_bonus + a.skills_bonus +
-              a.bounty_bonus + a.nemesis_bonus;
+  a.assists_bonus = std::min(a.assists_bonus, pct_bonus);
+  a.difficulty_bonus = pct_bonus - a.assists_bonus;
+  a.skills_bonus = 0;
+  a.credits = std::max<int64_t>(0, a.base_credits + a.bounty_bonus + a.nemesis_bonus + a.mileage_bonus +
+                                       a.difficulty_bonus + a.assists_bonus);
   if (!finished) return a;
-  // Driver XP & Manufacturer Affinity XP earned from race finish + distance.
-  a.driver_xp = int(std::max<int64_t>(500, a.base_credits / 4 + int64_t(distance_m * 0.25) + (place == 1 ? 1000 : 0)));
-  a.affinity_xp = int(std::max<int64_t>(250, a.base_credits / 6 + int64_t(distance_m * 0.15) + (place == 1 ? 500 : 0)));
+  // Driver and affinity XP belong to the FM4-style progression extra; the
+  // original's career races award none, so they stay 0 unless it is on.
+  if (extras.legacy_fm4_xp) {
+    a.driver_xp = int(std::max<int64_t>(500, a.base_credits / 4 + int64_t(distance_m * 0.25) + (place == 1 ? 1000 : 0)));
+    a.affinity_xp = int(std::max<int64_t>(250, a.base_credits / 6 + int64_t(distance_m * 0.15) + (place == 1 ? 500 : 0)));
+  }
   // Wristband points: an improvement only (the previous best from the event record).
   if (style == 1) {
     const int before = prev == r.event_places.end() ? 0 : tables.points_for(level, prev->second);

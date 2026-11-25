@@ -101,6 +101,11 @@ const CareerEvent* CareerCatalog::find_event_by_id(int64_t event_id) const {
   return nullptr;
 }
 
+const EventBonus* CareerCatalog::find_event_bonus(int bonus_id) const {
+  auto it = event_bonuses.find(bonus_id);
+  return it == event_bonuses.end() ? nullptr : &it->second;
+}
+
 const StreetHub* CareerCatalog::find_hub(int hub_id) const {
   for (const auto& h : hubs)
     if (h.id == hub_id) return &h;
@@ -148,42 +153,18 @@ int CareerCatalog::hub_events_completed(int hub_id, const CareerRecord& rec) con
 }
 
 int CareerCatalog::hub_unlock_requirement(int hub_id) const {
-  if (hub_id <= 1) return 0;
-  const StreetHub* prev = find_hub(hub_id - 1);
-  if (!prev) return 0;
-  int prev_total = 0;
-  for (const auto& ev : events) {
-    if (ev.style == 2 && ev.hub_id == prev->id) ++prev_total;
-  }
-  if (prev_total <= 0) return 0;
-  if (!prev->initial_events.empty()) {
-    int present_init = 0;
-    for (int64_t eid : prev->initial_events) {
-      if (const CareerEvent* ev = find_event_by_id(eid); ev && ev->style == 2 && ev->hub_id == prev->id) {
-        ++present_init;
-      }
-    }
-    const int base_req = present_init > 0 ? present_init : int(prev->initial_events.size());
-    return std::min(prev_total, std::max(1, base_req));
-  }
-  return std::min(prev_total, 2);
+  // The original asks for no races from the previous hub (see below).
+  (void)hub_id;
+  return 0;
 }
 
 bool CareerCatalog::is_hub_unlocked(const StreetHub& hub, const CareerRecord& rec, int collected_wristband) const {
-  // Progressive 3-hub tier unlocking (R3-CAM-13):
-  // - Hub 1 (Carson): unlocks at its points threshold (310 pts) once Yellow Wristband is earned.
-  // - Hub 2 (Red Rock): unlocks after Hub 1 is unlocked, Hub 1 tier races are completed, and Hub 2 points (1700).
-  // - Hub 3 (Observatory): unlocks after Hub 2 is unlocked, Hub 2 tier races are completed, and Hub 3 points (4500).
-  if (collected_wristband < 0) return false;
-  if (rec.wristband_points < hub.unlock_points_req) return false;
-  if (hub.id > 1) {
-    if (const StreetHub* prev = find_hub(hub.id - 1)) {
-      if (!is_hub_unlocked(*prev, rec, collected_wristband)) return false;
-      const int req = hub_unlock_requirement(hub.id);
-      if (req > 0 && hub_events_completed(prev->id, rec) < req) return false;
-    }
-  }
-  return true;
+  // The title unlocks the street hubs with one query on every points change,
+  // "SELECT Id FROM EventHubs WHERE UnlockPointsReq <= <points>": the
+  // points threshold alone (310 / 1700 / 4500), with no wristband and no
+  // previous-hub races.
+  (void)collected_wristband;
+  return rec.wristband_points >= hub.unlock_points_req;
 }
 
 bool CareerCatalog::is_event_unlocked(const CareerEvent& ev, const CareerRecord& rec, int collected_wristband,
@@ -515,6 +496,42 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
               ev.ticket = col_txt(s, 3);
             },
             &ignored);
+  }
+
+  // 5a'. The prize cars' upgrade class, livery and tuning levels, the event
+  // bonus labels and each event's BonusId (optional columns: a minimal
+  // database leaves the defaults).
+  {
+    std::map<int64_t, std::array<int, 3>> prize_upgrades;
+    db.each("select EventId, coalesce(RewardCarUpgradeClass, -1), coalesce(LiveryLevel, 0), "
+            "coalesce(TuningLevel, 0) from Rewards_EventPrizes order by Id",
+            {},
+            [&](sqlite3_stmt* s) {
+              const int64_t eid = col_i64(s, 0);
+              if (!prize_upgrades.count(eid))
+                prize_upgrades[eid] = {int(col_i64(s, 1)), int(col_i64(s, 2)), int(col_i64(s, 3))};
+            },
+            nullptr);
+    std::map<int64_t, int> bonus_ids;
+    db.each("select Id, coalesce(BonusId, 0) from Events", {},
+            [&](sqlite3_stmt* s) { bonus_ids[col_i64(s, 0)] = int(col_i64(s, 1)); }, nullptr);
+    for (auto& ev : out.events) {
+      if (auto it = prize_upgrades.find(ev.event_id); it != prize_upgrades.end() && ev.prize_car_id) {
+        ev.prize_car_upgrade_class = it->second[0];
+        ev.prize_car_livery_level = it->second[1];
+        ev.prize_car_tuning_level = it->second[2];
+      }
+      if (auto it = bonus_ids.find(ev.event_id); it != bonus_ids.end()) ev.bonus_id = it->second;
+    }
+    db.each("select Id, coalesce(BonusTypeId, 0), coalesce(Amount, 0) from EventBonuses order by Id", {},
+            [&](sqlite3_stmt* s) {
+              EventBonus b;
+              b.id = int(col_i64(s, 0));
+              b.type_id = int(col_i64(s, 1));
+              b.amount = int(col_i64(s, 2));
+              out.event_bonuses[b.id] = b;
+            },
+            nullptr);
   }
 
   // 5b. Optional restriction display-name lookup tables (non-fatal when absent in minimal synthetic DBs).

@@ -24,6 +24,7 @@
 //   unlocks hub 1 2
 //   rally 1 1
 //   club 1219 3735928559:1 12345:0
+//   freeroam_challenge Drive8000Miles 51234.500000 0
 //
 // Lines are "key values"; unknown keys are skipped, so later versions can
 // add lines. `spawn` (optional) is the last spawn point, where "back to the
@@ -88,6 +89,35 @@ struct SavedCarHistory {
   int64_t num_podiums = 0;
 };
 
+// Achievement signals the career counters do not carry (the SPA rules in
+// apps/carview/achievements.cpp). Saved as `ach <key> <value...>` lines, each
+// only when set, so older saves load with everything zero.
+struct AchievementSignals {
+  // 166 "Been There, Done That!": the six festival buildings visited.
+  enum Venue : uint32_t {
+    kPaintShop = 1u << 0,
+    kAutoshow = 1u << 1,
+    kCarClub = 1u << 2,
+    kMarketplace = 1u << 3,
+    kRaceCentral = 1u << 4,
+    kWorkshop = 1u << 5,
+    kAllVenues = (1u << 6) - 1,
+  };
+  int autoshow_purchases = 0;            // 156: cars bought from the Festival Autoshow
+  int dirt_race_wins = 0;                // 159: Mixed-Surface or Dirt race wins
+  uint32_t festival_venues = 0;          // 166: Venue bits
+  int paint_jobs_saved = 0;              // 167: paint jobs created and saved
+  bool loyalty_cars_received = false;    // 169: the Forza loyalty cars were granted
+  int hard_race_wins = 0;                // 183: single-player wins on Hard (or harder) opponents
+  std::vector<int64_t> rally_cars_obtained;   // 208: distinct Horizon Rally cars owned (Data_Car ids)
+  bool rally_champion = false;           // 209: became the Horizon Rally Champion
+  int rally_hard_manual_stage_wins = 0;  // 210: stage wins on Hard, manual shifting, driving line off
+  double rally_air_m = 0;                // 211: total air in Horizon Rally events, m
+  int rally_rivals_events = 0;           // 212: Horizon Rally events completed in Rivals mode
+  int rally_flawless_stage_wins = 0;     // 214: stage wins without crashing or rewinding
+  std::vector<int64_t> rally_cars_purchased;  // 215: distinct Horizon Rally cars bought
+};
+
 struct DriveSave {
   static constexpr int kVersion = 1;
   std::string car;
@@ -146,9 +176,19 @@ struct DriveSave {
     int claimed = 0;
   };
   std::vector<SavedSponsor> sponsors;
+  // Free-roam (co-op) challenges, FreeRoamChallenges.xml (PROG-11): one
+  // `freeroam_challenge <id> <progress> <completed>` line each, progress the
+  // distance driven (m) or the skill count.
+  struct SavedFreeRoamChallenge {
+    std::string id;
+    double progress = 0;
+    bool completed = false;
+  };
+  std::vector<SavedFreeRoamChallenge> freeroam_challenges;
   // Head-to-Head & Rivals counters.
   int h2h_races = 0, h2h_wins = 0;
   int rivals_beaten = 0, rally_rivals_beaten = 0;
+  AchievementSignals ach;
   // Driver XP (PlayerLevelDef) & Manufacturer Affinity XP (AffinityLevelDef: make_id -> xp).
   int driver_xp = 0;
   std::vector<std::pair<int64_t, int>> make_affinity;

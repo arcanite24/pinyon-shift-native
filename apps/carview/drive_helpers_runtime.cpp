@@ -571,9 +571,8 @@ void progress_from_save(const drive::DriveSave& s, const freeroam::Collectibles&
   for (const auto& b : s.barns)
     for (size_t i = 0; i < data.barns.size(); ++i)
       if (data.barns[i].name == b.name) {
-        const bool known = b.status == freeroam::kBarnFound || b.status == freeroam::kBarnNotSpawned ||
-                           b.status == freeroam::kBarnRumour;
-        p.barns[i] = {known ? b.status : int(freeroam::kBarnNotSpawned), b.rumour_at, b.found_at};
+        p.barns[i] = {freeroam::barn_status_known(b.status) ? b.status : int(freeroam::kBarnNotSpawned), b.rumour_at,
+                      b.found_at};
       }
   p.garage = s.garage;
 }

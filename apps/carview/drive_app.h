@@ -27,6 +27,7 @@
 #include "fmv_player.h"
 #include "freeroam/club.h"
 #include "freeroam/collectibles.h"
+#include "freeroam/freeroam_challenges.h"
 #include "freeroam/outposts.h"
 #include "freeroam/road_discovery.h"
 #include "freeroam/skills.h"
@@ -121,6 +122,7 @@ struct DriveApp : DriveConfig {
   bool have_career_catalog = false;
   freeroam::SkillsData skills_data;
   bool have_skills_data = false;
+  freeroam::FreeRoamChallengesData freeroam_challenges_data;  // PROG-11
 
   bool show_title = false;
   FmvPlayer fmv_player;
@@ -178,6 +180,7 @@ struct DriveApp : DriveConfig {
   std::map<int, bool> street_hub_radio_unlocked;
   double street_hub_radio_check_at = -1e9;
   std::unique_ptr<freeroam::SkillTracker> skill_tracker;
+  std::unique_ptr<freeroam::FreeRoamChallengeTracker> freeroam_challenges;
   int64_t max_skills_car = 0;
   std::string sponsor_banner_title, sponsor_banner_detail;
   double sponsor_banner_at = -1e9;
@@ -221,6 +224,10 @@ struct DriveApp : DriveConfig {
   freeroam::RoadDiscovery road_discovery;
   freeroam::OutpostCatalog outposts;
   freeroam::OutpostProgress outpost_progress;
+  // GlobalRegistry.xml Activities/Outposts (the fast-travel price) and
+  // Activities/BarnFinds; the disc's values until the registry loads.
+  freeroam::FastTravelTuning fast_travel_tuning;
+  freeroam::BarnFindTuning barn_tuning;
   freeroam::PrStuntSession pr_stunt_session;
   bool have_outposts = false;
   bool outposts_tried = false;
@@ -287,7 +294,10 @@ struct DriveApp : DriveConfig {
   void restore_pre_race_tod();
   int current_pop_rank() const;
   std::vector<std::string> class_name_list() const;
-  std::string award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize = false);
+  // `upgrade_class` >= 0: the car arrives upgraded to that CarClasses.Id
+  // at no cost (Rewards_EventPrizes.RewardCarUpgradeClass).
+  std::string award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize = false,
+                               int upgrade_class = -1);
   CareerSummary career_summary(std::vector<cars::PackInfo>& packs);
   CareerBoard career_board(const CareerPage& page);
   size_t garage_picker();

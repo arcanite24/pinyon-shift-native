@@ -66,6 +66,22 @@ void DriveSession::put_back() {
 
 void DriveSession::open_garage_browser() {
           sync_pick();
+          // The garage's Barn Finds: a restored (ready) barn is collected
+          // here, "This Barn Find will now be added to your garage."
+          // (interim: the title asks on its own Barn Finds screen).
+          for (size_t bi = 0; bi < app.collectibles.barns.size() && bi < app.progress.barns.size(); ++bi) {
+            if (app.progress.barns[bi].status != freeroam::kBarnReady) continue;
+            const auto& b = app.collectibles.barns[bi];
+            const bool collected = host.free_roam ? host.free_roam->collect_barn(bi)
+                                                  : freeroam::collect_barn(app.collectibles, app.progress, bi);
+            if (!collected) continue;
+            const std::string named = app.award_garage_car(b.car_id, 0, false, /*is_prize=*/true);
+            notice = "COLLECT CAR — " + (named.empty() ? b.name : named) + " ADDED TO YOUR GARAGE";
+            notice_until = vehicle.time() + 4.0;
+            app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
+            std::printf("barn finds: %s collected at the garage (Data_Car %d)\n", b.name.c_str(), b.car_id);
+            save_now("barn find collected");
+          }
           garage_sell_confirm_id = -1;
           if (app.have_garage && !app.career_garage.cars.empty()) {
             const cars::PartsDb* gdb =
@@ -386,6 +402,7 @@ void DriveSession::start_new_career() {
             app.skill_tracker = std::make_unique<freeroam::SkillTracker>(app.skills_data, 0.0, 0, 0);
             app.skill_tracker->reset_session_clock();
           }
+          if (app.freeroam_challenges) app.freeroam_challenges->load({});  // a new career starts them afresh
           app.max_skills_car = 0;
           app.career_garage = garage::Garage{};
           app.have_garage = true;
@@ -481,7 +498,8 @@ void DriveSession::update_map_selection() {
                 for (size_t bi = 0; bi < app.collectibles.barns.size(); ++bi) {
                   const auto& b = app.collectibles.barns[bi];
                   const int st = bi < app.progress.barns.size() ? app.progress.barns[bi].status : freeroam::kBarnNotSpawned;
-                  const bool visible = (st == freeroam::kBarnFound || st == freeroam::kBarnRumour || map_overlay.treasure_map);
+                  const bool visible =
+                      (freeroam::barn_discovered(st) || st == freeroam::kBarnRumour || map_overlay.treasure_map);
                   if (!visible) continue;
                   const double d = std::hypot(b.at.x - map_cx, b.at.z - map_cz);
                   if (d < best_cd) {
@@ -489,7 +507,7 @@ void DriveSession::update_map_selection() {
                     matched_collectible = true;
                     target_x = b.at.x;
                     target_z = b.at.z;
-                    map_overlay.title = st == freeroam::kBarnFound ? "BARN FIND (FOUND)" : "BARN FIND";
+                    map_overlay.title = freeroam::barn_discovered(st) ? "BARN FIND (FOUND)" : "BARN FIND";
                     map_overlay.subtitle = b.name;
                     map_overlay.distance_m = std::hypot(b.at.x - at.x, b.at.z - at.z);
                   }
@@ -544,10 +562,11 @@ void DriveSession::update_map_selection() {
               if (player_dist <= disc_rad) {
                 map_overlay.gps_hint = "ENTER OUTPOST";
               } else if (m.discovered || ft_anywhere) {
-                const bool ft_free = ft_anywhere ||
-                                     (app.have_outposts &&
-                                      app.outpost_progress.is_outpost_fast_travel_free(app.outposts, m.id));
-                const int64_t ft_fee = ft_free ? 0 : 10000LL;
+                const int64_t ft_fee =
+                    ft_anywhere || !app.have_outposts
+                        ? 0
+                        : std::max<int64_t>(0, app.outpost_progress.fast_travel_cost(app.outposts, m.id,
+                                                                                     app.fast_travel_tuning));
                 map_overlay.gps_hint =
                     ft_fee > 0 ? ("FAST TRAVEL (" + carview::thousands(ft_fee) + " CR)") : "FAST TRAVEL (FREE)";
               } else {
