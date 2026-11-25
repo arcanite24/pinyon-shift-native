@@ -647,6 +647,18 @@ void DriveSession::sync_pause_labels() {
                         race::difficulty_bonus_percent(int(app.race_options.difficulty)));
           menu.difficulty_label = db;
           menu.in_rally_world = !app.colorado_world();
+          // The packages' rows (SPEC-V4-CONTENT: Rally is offer 1600, the
+          // 1000 Club 2700), read once per drive.
+          if (!pause_packs_read) {
+            pause_packs_read = true;
+            for (const auto& p : cars::list_packs(app.state_root)) {
+              if (!p.owned()) continue;
+              pause_has_rally = pause_has_rally || p.puboffer == 1600;
+              pause_has_club = pause_has_club || p.puboffer == 2700;
+            }
+          }
+          menu.has_rally = pause_has_rally;
+          menu.has_club = pause_has_club;
 }
 
 void DriveSession::cycle_difficulty(int by) {
@@ -727,24 +739,17 @@ void DriveSession::choose() {
               notice = "Horizon Rally expansion package not installed";
               notice_until = vehicle.time() + 4;
             } else if (app.colorado_world()) {
-              const drive::Vec3 vp = vehicle.position();
-              const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
-              app.colorado_return_pos = {vp.x, vp.y, vp.z};
-              app.colorado_return_heading = std::atan2(vf.x, vf.z);
-              app.has_colorado_return = true;
-              app.rally_world_switch = +1;
-              running = false;
+              // game_start_rally.xml: the yellow wristband's gate, else the
+              // quit-to-Rally confirmation (rally_entry_press goes on).
+              rally_entry = app.collected_wristband < 0 ? RallyEntryPopup::kGate : RallyEntryPopup::kConfirm;
+              app.audio_host.trigger_ui(audio::UiCue::kMenuOpen);
             } else {
               app.rally_hub_open = true;
               app.rally_hub_selected = 0;
               app.rally_notice.clear();
             }
           }
-          if (act == PauseMenu::kClub) {
-            club_check();
-            club_open = true;
-            club_pick = 0;
-          }
+          if (act == PauseMenu::kClub) club_open_menu();
           if (act == PauseMenu::kCarClub) {
             if (app.saved.car_club_name.empty()) app.saved.car_club_name = "HORIZON DRIVERS";
             if (app.saved.car_club_tag.empty()) app.saved.car_club_tag = "HRZN";

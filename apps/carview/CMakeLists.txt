@@ -117,6 +117,8 @@ else()
 endif()
 
 add_library(carview_hud STATIC
+  club_menu.cpp
+  club_screens.cpp
   game_hud_core.cpp
   game_hud_race.cpp
   game_hud_freeroam.cpp

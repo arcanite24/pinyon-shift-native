@@ -416,8 +416,9 @@ StringRef pause_row_text(PauseMenu::Action a, bool in_race) {
     case Action::kUpgrades: return {{}, {}, 0, "UPGRADES", true};
     case Action::kPaint: return {{}, {}, 0, "PAINT", true};
     case Action::kAutoshow: return {{}, {}, 0, "AUTOSHOW", true};
-    case Action::kRally: return {{}, {}, 0, "HORIZON RALLY", true};
-    case Action::kClub: return {{}, {}, 0, "1000 CLUB", true};
+    // The title update's packages' rows (their own tables).
+    case Action::kRally: return {"Main", "IDS_HorizonRally", 0, "HORIZON RALLY"};
+    case Action::kClub: return {"CarChallenges", "IDS_PauseMenu_CarChallenges", 0, "1000 CLUB"};
     case Action::kCarClub: return {{}, {}, 0, "CAR CLUB", true};
     case Action::kAchievements: return {{}, {}, 0, "ACHIEVEMENTS", true};
     case Action::kReplay: return {{}, {}, 0, in_race ? "VIEW REPLAY" : "REPLAYS", true};

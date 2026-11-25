@@ -304,3 +304,67 @@ flow files) as plain steps, with the timings measured on the captures;
   `H_GENERIC_TITLE`'s rows; DIFFICULTY steps the difficulty in place (Q97).
 - **Not drawn.** The tombola and the rival offer (Q98); the title and
   rival tapes' specular sheens (Q99).
+
+## The 1000 Club
+
+`club_menu.h` holds the 1000 Club's screens as a model (`ClubMenu`, no
+renderer; `club_rally_tests` drives it) over what the drive fills from the
+save and the package (`ClubMenuData`). `club_screens.cpp` draws each
+screen on the title update's own scene (the v4 overlay), and
+`drive_club.cpp` runs them from the pause row.
+
+- **Pause row.** 1000 CLUB (`CarChallenges/IDS_PauseMenu_CarChallenges`)
+  sits under MAP, then HORIZON RALLY (`Main/IDS_HorizonRally`), only when
+  the package is owned (offers 2700 and 1600; `PauseMenu::has_club`,
+  `has_rally`). Without it, the engine's own rows stay in the extras.
+- **First visit.** The package's intro video
+  (`Splash_Intros/car_challenges_intro`), then `H_CAR_CHALLENGE_HUB` with
+  the tutorial's welcome on `H_MESSAGE_POPUP`. Until the first medal the
+  hub has one ticket (the first achievement); A opens its cars
+  (`H_CAR_CHALLENGE_BUY_CARSELECT`, the car-list tutorial), A on a car
+  opens SELECT ACTION (`H_POPUP_MENU`), and BEGIN CHALLENGES IN THIS CAR
+  starts the car's challenges (a car swap when it is not the driven one).
+  The steps are saved (`club_tutorial` 0..4) so each popup shows once.
+- **Hub.** The tickets are a carousel (Ticket4 is the focused slot): the
+  current car's challenges once begun, the next achievement to earn, and
+  VIEW ALL CHALLENGES after the first medal. The achievement ticket opens
+  its cars; VIEW ALL opens `H_CAR_CHALLENGE_ACHIEVEMENTS` (the ten
+  achievements with their progress and gamerscore); the car ticket opens
+  `H_CAR_CHALLENGE_DETAILS` (the car's challenges, their descriptions and
+  hints).
+- **Driving HUD.** `947_HUD`'s `HUDCarChallengePrompt`: up to six items
+  (the medal number, the running description, then MEDAL EARNED! or
+  FAILED for `kClubResultHold`), PRESS (D-pad) TO VIEW CAR CHALLENGE
+  DETAILS at the bottom, and the tutorial's next step in `HUDInstruction`
+  (top left). It replaces the hand-drawn strip, banner and medal ceremony.
+- **Strings.** Every string comes from `carchallenges` (`club_text`); the
+  tables leave the count out of IDS_MedalsRequired and IDS_CarsRequired
+  (" MEDALS REQUIRED"), so `format_count` puts it in front.
+- **Measured placements.** As around a race, the scenes rest at their intro
+  start, so the drawn offsets are measured on the captures
+  (`club_*_orig.png`): the popup panels' cut, the car list's row pitch and
+  its dark backing, and the HUD prompt's line.
+
+## Interims in the 1000 Club
+
+- **Screens.** The home ticket's achievement name and description, the car
+  list's flag, drivetrain, stats, purchase and pack nodes and its PlayerBar
+  are hidden; the car list's help bar is SELECT CAR / BACK where the
+  capture shows SELECT CAR / TOGGLE / SEARCH; the details rows' focus is a
+  pink header; the popup panels and rows are cut to measured boxes, not by
+  the scenes' timelines (Q143).
+- **Medals elsewhere.** The Autoshow and garage do not show per-car medals
+  yet; `freeroam::club::car_medals()` is the hook (Q143).
+- **HUD.** The medal cue is the achievement reward, not the sign smash; the
+  COMPLETE and FAIL animations are not run (a 1 s large medal and a 3 s
+  hold instead); the item layout is the scene's rest, with no capture of a
+  running challenge to measure against (Q144).
+
+## Horizon Rally's entry
+
+The HORIZON RALLY pause row opens `draw_rally_entry_popup` on
+`H_MESSAGE_POPUP`: the yellow-wristband gate (`rally/IDS_FirstTimeCareerError`)
+or the quit-to-Rally confirmation (`rally/IDS_QuitHorizonToRally`, A OK,
+B CANCEL). The first OK plays `Forza_Tone_Rally` and saves `rally_flow`,
+then switches worlds. The intro race, first Autoshow and hub tutorial are
+not run yet (Q145).

@@ -2867,3 +2867,59 @@ showcase events that own them is not known.
 Needed: the placement source for these `.pgeo` objects (a track object
 list or the showcase event scripts), and a free-roam capture of the
 festival and a showcase start in the original.
+
+## Q143 (V4-02..V4-07, not blocking): the 1000 Club screens' unmeasured parts
+
+The 1000 Club now runs on the title update's scenes (`H_CAR_CHALLENGE_HUB`,
+`_BUY_CARSELECT`, `_ACHIEVEMENTS`, `_DETAILS`, `H_POPUP_MENU`,
+`H_MESSAGE_POPUP`), checked against `club_{home,carlist,carlist_tut,
+select_action,tutorial,begin}_orig.png`. What the captures do not show is
+interim:
+
+- The home ticket's AchievementName and Description are hidden (the
+  capture's first ticket shows neither); the later tickets (current car,
+  VIEW ALL) and the hub after the first medal have no capture.
+- The car list's FLAG, DRIVETRAIN, STATS, PURCHASED, PACK_NAME and
+  PlayerBar are hidden; its help bar is A SELECT CAR / B BACK where the
+  capture has A SELECT CAR / Y TOGGLE / LT SEARCH (no toggle or search
+  yet).
+- The SELECT ACTION panels and the car list's rows and backing are placed
+  at offsets measured on the captures, not by the scenes' window sizing.
+- The details screen's focused row is a pink header; the achievements
+  screen's NAV_POSITION_INDICATOR is hidden.
+- The tutorial's last prompt (Visit the 1000 CLUB screen) shows after the
+  first medal until the hub is opened.
+- The Autoshow and garage show no per-car medals (`car_medals()` is the
+  hook; those screens are another branch's).
+
+Needed: captures of the hub after a medal (three tickets), the
+achievements and details screens, and a car list with several cars; the
+car list's Y and LT actions.
+
+## Q144 (V4-06, not blocking): the 1000 Club HUD's timings and cue
+
+A passed challenge plays `UiCue::kAchievementReward` (the old sign-smash
+cue is gone), shows the large medal for 1 s and holds MEDAL EARNED! or
+FAILED for 3 s (`kClubResultHold`); the items' COMPLETE and FAIL
+animations (their flashes and scale) are not run, and the item layout is
+the scene's rest. No capture shows a running or finished challenge.
+
+Needed: a capture (or video) of a challenge running, passing and failing
+in the original, and the cue the medal plays.
+
+## Q145 (V4-10, not blocking): the rest of Horizon Rally's first entry
+
+The HORIZON RALLY pause row now follows `game_start_rally.xml`'s front:
+without the yellow wristband it shows IDS_FirstTimeCareerError (A OK);
+otherwise IDS_QuitHorizonToRally (A OK, B CANCEL; `rally_confirm_orig.png`),
+both on `H_MESSAGE_POPUP`. The first OK plays Forza_Tone_Rally and saves
+`rally_flow` 1, then the world switches to ColoradoDirt. The popups draw
+over the world, where the original keeps the blurred pause menu under
+them. The flow's intro race, qualification VO, first Autoshow
+(restricted to rally cars) and hub tutorial are not run: the switch still
+opens the engine's hub overlay (V4-11).
+
+Needed: the intro race's event and car, the VO cue order
+(`Rally_DialogueScript_EN.xml` keys the flow plays), the first Autoshow's
+car filter, and which profile flags (HasSeenInitialIntro,
+HasSeenFirstTicket) each step sets, from the recomp's generated v4 code.

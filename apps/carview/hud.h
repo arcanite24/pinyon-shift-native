@@ -64,6 +64,8 @@ struct PauseMenu {
   bool open = false;
   bool in_race = false;
   bool in_rally_world = false;
+  // The 1000 Club and Horizon Rally packages are installed and on.
+  bool has_club = false, has_rally = false;
   Screen screen = Screen::kList;
   std::string events_label;      // e.g. "COLLECT GREEN WRISTBAND!" or "RACE CENTRAL"
   std::string difficulty_label;  // e.g. "< DIFFICULTY: MED (+5%) >"
@@ -78,15 +80,27 @@ struct PauseMenu {
   // The retail rows (925_PAUSE_MENU's Option_List): free roam MAP, SETTINGS
   // (the retail MULTIPLAYER slot), PHOTO MODE, MESSAGE CENTER, SPONSOR
   // CHALLENGES, MY PROFILE, QUIT; racing RESTART, MAP, PHOTO MODE, SPONSOR
-  // CHALLENGES, MY PROFILE, QUIT RACE.
+  // CHALLENGES, MY PROFILE, QUIT RACE. With the title update's packages
+  // (club-live-1 and rally-confirm-2 pause captures): 1000 CLUB and HORIZON
+  // RALLY after MAP, in that order, in Colorado's free roam.
   std::vector<Action> items() const {
     if (in_race) return {kRestartRace, kMap, kPhotoMode, kSponsorChallenges, kCareer, kQuitRace};
-    return {kMap, kSettings, kPhotoMode, kMessageCentre, kSponsorChallenges, kCareer, kQuitToTitle};
+    std::vector<Action> v = {kMap};
+    if (!in_rally_world && has_club) v.push_back(kClub);
+    if (!in_rally_world && has_rally) v.push_back(kRally);
+    for (Action a : {kSettings, kPhotoMode, kMessageCentre, kSponsorChallenges, kCareer, kQuitToTitle}) v.push_back(a);
+    return v;
   }
-  // The engine's own screens (EXTRAS).
+  // The engine's own screens (EXTRAS); a package's row stays here when the
+  // package is not installed (the engine says why it is closed).
   std::vector<Action> extras() const {
     if (in_race) return {kReplay, kDifficulty, kSettings};
-    return {kEvents, kRally, kGarage, kUpgrades, kPaint, kAutoshow, kClub, kCarClub, kAchievements, kReplay};
+    std::vector<Action> v = {kEvents};
+    if (!has_rally) v.push_back(kRally);
+    for (Action a : {kGarage, kUpgrades, kPaint, kAutoshow}) v.push_back(a);
+    if (!has_club) v.push_back(kClub);
+    for (Action a : {kCarClub, kAchievements, kReplay}) v.push_back(a);
+    return v;
   }
   std::vector<Action> rows() const { return screen == Screen::kExtras ? extras() : items(); }
   Action selected_action() const {

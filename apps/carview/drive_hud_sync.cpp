@@ -863,15 +863,30 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             !grid_menu_open && st.menu.empty() && !career_page.is_open() && !app.rally_hub_open &&
             !app.rally_service_open && !app.rally_results_open && !club_open && !car_club_open)
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
+        // The 1000 Club's screens hide the driving HUD (club_home.png).
+        if ((club_open && club_menu.open()) || rally_entry != carview::RallyEntryPopup::kNone) d.driving = false;
         if (!campaign_hide_hud) carview::build_drive_hud(list, d, float(width), float(height));
         // Brief white flash on confirming START RACE (CAMERAS.md:85, UI_LAYOUTS.md:121-125).
         if (pre_race_blend_t >= 0.0 && pre_race_blend_t < 0.12) {
           const float fa = float(std::clamp(1.0 - pre_race_blend_t / 0.12, 0.0, 1.0)) * 0.65f;
           list.rect(0.0f, 0.0f, float(width), float(height), carview::ui::rgba(255, 255, 255, uint8_t(fa * 255.0f)));
         }
+        // The intro video ended (or was skipped): the home screen.
+        if (rally_enter_after_video && !app.fmv_player.active()) {
+          rally_enter_after_video = false;
+          rally_enter();
+        }
+        if (club_open && club_menu.screen == carview::ClubMenu::Screen::kIntro && !app.fmv_player.active())
+          club_menu_press(carview::ClubMenu::Button::kAccept);
+        // The 1000 Club's v4 HUD (947_HUD's HUDCarChallengePrompt) replaces the
+        // hand-drawn strip and medal ceremony when the title update has it.
+        bool club_v4_hud = false;
         if (club_open) {
-          const auto club_sc = build_club_screen();
-          carview::draw_club_screen(list, width, height, club_sc);
+          if (!club_menu.open() ||
+              !carview::draw_club_menu(list, club_menu, club_menu_data, float(width), float(height), &d)) {
+            const auto club_sc = build_club_screen();
+            carview::draw_club_screen(list, width, height, club_sc);
+          }
         } else if (car_club_open) {
           carview::CarClubScreenState cc;
           cc.active = true;
@@ -913,14 +928,21 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           list.clear();
           carview::draw_car_club_screen(list, width, height, cc);
         } else if (!app.show_title && !ceremony.active && !campaign_hide_hud && !app.rally_hub_open &&
-                   !app.rally_service_open && !app.rally_results_open && st.menu.empty()) {
-          const auto cstrip = build_club_active_strip();
-          if (cstrip.active) carview::draw_club_active_strip(list, width, height, cstrip);
+                   !app.rally_service_open && !app.rally_results_open && st.menu.empty() &&
+                   rally_entry == carview::RallyEntryPopup::kNone) {
+          club_v4_hud = carview::draw_club_hud(list, build_club_hud(), float(width), float(height));
+          if (!club_v4_hud) {
+            const auto cstrip = build_club_active_strip();
+            if (cstrip.active) carview::draw_club_active_strip(list, width, height, cstrip);
+          }
         }
+        if (rally_entry != carview::RallyEntryPopup::kNone)
+          carview::draw_rally_entry_popup(list, rally_entry, float(width), float(height));
+        club_v4_hud_shown = club_v4_hud;
         if (club_ceremony.active) {
           club_ceremony.age = app.demo_club ? 1.2 : (vehicle.time() - club_ceremony_at);
           club_ceremony.dock_bottom_right = club_open;
-          if (club_ceremony.age > club_ceremony.duration) club_ceremony.active = false;
+          if (club_ceremony.age > club_ceremony.duration || club_v4_hud) club_ceremony.active = false;
           else carview::draw_club_medal_ceremony(list, width, height, club_ceremony);
         }
         if (!app.show_title && !ceremony.active && !campaign_hide_hud && radio_popup_gpu.alpha > 0.005f)
