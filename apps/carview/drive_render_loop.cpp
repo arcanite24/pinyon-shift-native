@@ -123,8 +123,9 @@ void DriveSession::apply_story_action(const StoryAction& sa) {
               }
             }
             if (sa.enter_title_screen && !app.no_title) app.show_title = true;
-            if (sa.swap_car && !sa.car_media.empty() && sa.car_media != app.car) {
-              if (std::find(app.baked_cars.begin(), app.baked_cars.end(), sa.car_media) != app.baked_cars.end()) {
+            if (sa.swap_car && !sa.car_media.empty() && lower_ascii(sa.car_media) != lower_ascii(app.car)) {
+              // The baked names are lower case; the story names the disc's.
+              if (const std::string baked = find_baked_car(sa.car_media, 0); !baked.empty()) {
                 if (sa.teleport) {
                   app.spawn[0] = sa.pos[0];
                   app.spawn[1] = sa.pos[1];
@@ -133,7 +134,7 @@ void DriveSession::apply_story_action(const StoryAction& sa) {
                   app.have_spawn = true;
                   app.fast_travel = true;
                 }
-                app.next_car = sa.car_media;
+                app.next_car = baked;
                 running = false;
                 return;
               }

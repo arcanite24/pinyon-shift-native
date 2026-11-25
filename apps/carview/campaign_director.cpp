@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include "audio_host.h"
 
@@ -58,7 +59,12 @@ bool play_ui_name(Host* audio, std::string_view play) {
     return audio->play_ui(play);
   } else {
     (void)audio;
-    (void)play;
+    static bool told = false;
+    if (!told) {
+      told = true;
+      std::fprintf(stderr, "carview: cutscene audio trigger %.*s: no ui4audio playback on this build (silent)\n",
+                   int(play.size()), play.data());
+    }
     return false;
   }
 }
@@ -151,8 +157,13 @@ void CampaignDirector::save_to_save(drive::DriveSave& save) const {
   if (ftc_.active() || ftc_resume_pending_) {
     // The activity's last save checkpoint (none before the diner).
     const race::FtcStage s = ftc_resume_pending_ ? ftc_resume_stage_ : ftc_.checkpoint();
-    save.campaign_stage = std::string(kFtcSavePrefix) + race::ftc_stage_name(s);
-    save.intro_completed = false;
+    if (s != race::FtcStage::kComplete) {
+      save.campaign_stage = std::string(kFtcSavePrefix) + race::ftc_stage_name(s);
+      save.intro_completed = false;
+      return;
+    }
+    // The rewards are in (the yellow wristband): the career is over.
+    save.intro_completed = true;
     return;
   }
   if (!flow_.is_onboarding()) save.intro_completed = true;
