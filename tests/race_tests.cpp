@@ -31,6 +31,7 @@
 #include "race/rewards.h"
 #include "race/rivals.h"
 #include "race/route.h"
+#include "race/dls.h"
 #include "race/session.h"
 #include "race/showcase.h"
 #include "race/street_line.h"
@@ -486,8 +487,32 @@ void test_difficulty() {
   const auto& row = e.rubberbands[0];
   CHECK(near(race::torque_cut(row, 50), 1) && near(race::torque_cut(row, 100), 1));
   CHECK(near(race::torque_cut(row, 250), 0.75) && near(race::torque_cut(row, 400), 0.5) && near(race::torque_cut(row, 900), 0.5));
-  CHECK(near(race::start_boost(0, 8, 0), 0.4) && near(race::start_boost(7, 8, 299), 0.1));
-  CHECK(near(race::start_boost(0, 8, 650), 0.2) && race::start_boost(3, 8, 1000) == 0);
+  {
+    // WORLD-05: the start boost (GlobalRegistry.xml values). Seven other
+    // race AI; the player level with the car, so no gap rule.
+    const race::RaceBoostTunables t;
+    auto b = race::race_boost(t, 0, 0, 0, 7, 0, 5000, false);  // the leader at the start
+    CHECK(near(b.torque, 0.6) && near(b.skill, 2.0) && std::string(b.kind) == "start_full");
+    b = race::race_boost(t, 100, 110, 20, 7, 7, 5000, false);  // the last car, just behind the player
+    CHECK(near(b.torque, 0.2) && near(b.skill, 2.0));
+    CHECK(!race::race_boost(t, 100, 100, 20, 7, 7, 5000, false).active());  // the last AI level with the player
+    b = race::race_boost(t, 750, 760, 20, 7, 7, 5000, false);  // last: held 250 m, then 500 of the 1,000 m decay
+    CHECK(near(b.torque, 0.1) && near(b.skill, 1.5) && std::string(b.kind) == "start_decay");
+    b = race::race_boost(t, 1000, 1000, 40, 7, 0, 5000, false);  // the leader: held 500 m, half decayed
+    CHECK(near(b.torque, 0.3) && near(b.skill, 1.5));
+    CHECK(!race::race_boost(t, 1500, 1500, 40, 7, 0, 5000, false).active());
+    // More than GapPerCar x (others - ahead) ahead of the player: the minimum (0).
+    CHECK(!race::race_boost(t, 300, 300 - 141, 40, 7, 0, 5000, false).active());
+    CHECK(race::race_boost(t, 300, 300 - 139, 40, 7, 0, 5000, false).active());
+    // Behind the player above 25 m/s: TorqueScaleBoostBehindPlayer (0); slower, the normal boost.
+    CHECK(!race::race_boost(t, 300, 320, 26, 7, 3, 5000, false).active());
+    CHECK(race::race_boost(t, 300, 320, 24, 7, 3, 5000, false).active());
+    // The compiled-in defaults (the old spec figures) under the same rule.
+    race::RaceBoostTunables d;
+    d.start_torque_first = 0.4, d.start_torque_last = 0.1, d.keep_full_first = d.keep_full_last = 300, d.decay = 700;
+    CHECK(near(race::race_boost(d, 0, 0, 0, 7, 0, 5000, false).torque, 0.4));
+    CHECK(near(race::race_boost(d, 650, 650, 30, 7, 0, 5000, false).torque, 0.2));
+  }
   race::DriverAi ai;
   ai.init(e.skills[0], &row, 7);
   CHECK(ai.braking() >= 0.5 && ai.braking() <= 0.6 && ai.cornering() >= 0.4 && ai.cornering() <= 0.5);
@@ -726,15 +751,41 @@ void test_line_and_ground() {
   drive::Hit hit;
   CHECK(ground.raycast({0, 10, 50}, {0, -1, 0}, 20, hit) && near(hit.distance, 8, 1e-3));
   CHECK(!ground.raycast({0, 10, 0}, {0, -1, 0}, 20, hit));  // the circle's middle: no road
-  // Lanes: a car 5 m behind a slower one moves aside; with nothing ahead it returns.
-  std::vector<double> prog{100, 105};
-  std::vector<float> cross{0, 0}, speed{30, 20}, lane{0, 0};
-  std::vector<race::LaneParams> lp(2);
-  for (int k = 0; k < 60; ++k) race::plan_lanes(rl.line, prog, cross, speed, lp, 1, lane, 0.05);
-  CHECK(std::fabs(lane[0]) > 3.0 && std::fabs(lane[0]) <= 0.5 * 6 + 0.3 + 1e-4 && lane[1] == 0);
-  prog[1] = 90;
-  for (int k = 0; k < 80; ++k) race::plan_lanes(rl.line, prog, cross, speed, lp, 1, lane, 0.05);
-  CHECK(lane[0] == 0);
+  // The passing search: a car 10 m behind a slower one picks the first
+  // clear slot beside it (3.5 m: the covered slots end at 2.5 m, the 3 m
+  // slot pays half the next slot's time-to-collision cost); once past it,
+  // it returns to the line.
+  {
+    std::vector<race::DlsCar> cars(2);
+    cars[0].progress = 100, cars[0].speed = 30;
+    cars[1].progress = 110, cars[1].speed = 20, cars[1].kind = race::DlsCar::Kind::kHuman;
+    const race::DlsMeeting m = race::dls_predict(cars[0], 0, cars[1]);
+    CHECK(m.valid && m.hit && near(m.t, (10 - 4.6) / 10, 0.04));
+    float to = 0;
+    uint8_t side = 0;
+    const race::DlsSettings set;
+    const double c = race::dls_search(rl.line, cars, 0, 0, 1, m, 0, set, to, side);
+    CHECK(c < set.max_acceptable_cost && near(std::fabs(to), 3.5, 1e-4));
+    // Sticking to a side: the other side costs ChangePassSidesCost more.
+    float to2 = 0;
+    uint8_t side2 = 0;
+    race::dls_search(rl.line, cars, 0, 0, 1, m, 2, set, to2, side2);
+    CHECK(to2 > 0 && side2 == 2);
+    std::vector<race::DlsState> st(1);
+    std::vector<float> lane{0, 0}, cap{1e9f, 1e9f};
+    std::vector<race::LaneParams> lp(1);
+    for (int k = 0; k < 60; ++k) {
+      race::dls_update(rl.line, cars, 1, lp, set, 0.05, st, lane, cap);
+      cars[0].cross = lane[0];
+    }
+    CHECK(st[0].target == 1 && std::fabs(lane[0]) > 3.0 && std::fabs(lane[0]) <= 3.5 + 1e-4 && lane[1] == 0);
+    cars[1].progress = 80;
+    for (int k = 0; k < 200; ++k) {
+      race::dls_update(rl.line, cars, 1, lp, set, 0.05, st, lane, cap);
+      cars[0].cross = lane[0];
+    }
+    CHECK(st[0].target == -1 && lane[0] == 0);
+  }
 }
 
 // ---- the disc ----
@@ -1056,19 +1107,28 @@ int main() {
     CHECK(race::difficulty_from_dynamic_skill(16) == race::Difficulty::kMed);
     CHECK(race::difficulty_from_dynamic_skill(20) == race::Difficulty::kEasy);
 
-    // Nemesis rival boost: multi-AI vs 1v1 torque ramp.
-    const auto off_start = race::nemesis_rival_boost(true, false, 6, 2, 80.0, 2000.0, 0.84, 0.90);
-    CHECK(!off_start.active && off_start.torque_add == 0.0 && near(off_start.cornering, 0.90));
-    const auto multi_on = race::nemesis_rival_boost(true, true, 6, 2, 0.0, 2000.0, 0.84, 0.90);
-    CHECK(multi_on.active && near(multi_on.braking, 1.0) && near(multi_on.cornering, 1.25) &&
-          near(multi_on.torque_add, 0.3));
-    const auto multi_lead = race::nemesis_rival_boost(true, true, 6, 0, 0.0, 2000.0, 0.84, 0.90);
-    CHECK(!multi_lead.active && multi_lead.torque_add == 0.0);
-    const auto one_v_one = race::nemesis_rival_boost(true, true, 0, 0, 75.0, 2000.0, 0.84, 0.90);
-    CHECK(one_v_one.active && near(one_v_one.braking, 0.84) && near(one_v_one.cornering, 0.90) &&
-          near(one_v_one.torque_add, 0.075, 1e-4));
-    const auto near_fin = race::nemesis_rival_boost(true, true, 0, 0, 100.0, 400.0, 0.84, 0.90);
-    CHECK(!near_fin.active && near_fin.torque_add == 0.0);
+    // Nemesis rival boost (WORLD-05): once the start boost is over, with
+    // another race AI ahead SkillBoostFactor 1.1 and +0.4 torque; one on
+    // one, PlayerCatchupTorqueBoost 0.6 ramped over 0 to 150 m behind the
+    // player, off within 300 m of the finish.
+    const race::RaceBoostTunables t;
+    const auto in_start = race::race_boost(t, 800, 800, 30, 6, 2, 2000.0, true);
+    CHECK(std::string(in_start.kind) == "start_decay");
+    const auto multi_on = race::race_boost(t, 2000, 2000, 30, 6, 2, 2000.0, true);
+    CHECK(multi_on.active() && near(multi_on.skill, 1.1) && near(multi_on.torque, 0.4));
+    CHECK(near(drive::ai_boost(0.90, multi_on.skill, 1.25), 0.99) && near(drive::ai_boost(0.95, multi_on.skill, 1.0), 1.0));
+    CHECK(!race::race_boost(t, 2000, 2000, 30, 6, 0, 2000.0, true).active());  // leading the other AI
+    CHECK(!race::race_boost(t, 2000, 2000, 30, 6, 2, 2000.0, false).active());  // not a rival
+    const auto one_v_one = race::race_boost(t, 2000, 2075, 30, 0, 0, 2000.0, true);
+    CHECK(one_v_one.active() && near(one_v_one.skill, 1.0) && near(one_v_one.torque, 0.3, 1e-9));
+    CHECK(near(race::race_boost(t, 2000, 2300, 30, 0, 0, 2000.0, true).torque, 0.6));
+    CHECK(!race::race_boost(t, 2000, 2100, 30, 0, 0, 299.0, true).active());  // near the finish
+    CHECK(!race::race_boost(t, 2000, 2100, 30, 0, 0, 2000.0, true, false).active());  // the flag off
+    // The registry ids map onto the fields.
+    const std::map<std::string, double> reg = {{"AI/Racing/RaceBehavior/RaceStartBoost/GapPerCar", 33.0},
+                                               {"AI/Racing/RaceBehavior/NemesisBoost/TorqueBoost", 0.25}};
+    const auto rt = race::RaceBoostTunables::from(reg);
+    CHECK(near(rt.gap_per_car, 33.0) && near(rt.nemesis_torque, 0.25) && near(rt.start_torque_first, 0.6));
 
     // The engine's extra HARD+ tier (kHardPlus = 4) pays as Pro (25%).
     CHECK(race::difficulty_bonus_percent(4) == 25);
@@ -1079,7 +1139,7 @@ int main() {
     CHECK(!race::event_uses_traffic(1));  // Festival
     CHECK(!race::event_uses_traffic(8));  // Showcase
 
-    // Race AI traffic avoidance: plan_lanes steers around traffic obstacle & caps speed if blocked.
+    // Race AI traffic avoidance: the passing search steers around a traffic car.
     {
       drive::RacingLine rl;
       for (int i = 0; i <= 40; ++i) {
@@ -1092,12 +1152,15 @@ int main() {
         rl.room_left.push_back(4.5f);
         rl.room_right.push_back(4.5f);
       }
-      double prog[1] = {50.0};
-      float cross[1] = {0.0f}, spd[1] = {35.0f}, lane[1] = {0.0f}, cap[1] = {1e9f};
+      race::DlsCar cars[2];
+      cars[0].progress = 50, cars[0].speed = 35;
+      cars[1].progress = 75, cars[1].cross = 0.5f, cars[1].speed = 13.4f, cars[1].kind = race::DlsCar::Kind::kTraffic;
+      float lane[1] = {0.0f}, cap[1] = {1e9f};
       race::LaneParams lp[1] = {{7.0f, 0.3f, 0.4f}};
-      race::TrafficObstacle obs[1] = {{75.0, 0.5f, 13.4f, false}};
-      for (int s = 0; s < 30; ++s) race::plan_lanes(rl, prog, cross, spd, lp, 1, lane, 1.0 / 60.0, 3.2, cap, obs);
-      CHECK(lane[0] < -1.0f);  // moved left around traffic car at cross = +0.5
+      race::DlsState st[1];
+      const race::DlsSettings set;
+      for (int s = 0; s < 30; ++s) race::dls_update(rl, cars, 1, lp, set, 1.0 / 60.0, st, lane, cap);
+      CHECK(st[0].target == 1 && lane[0] < -1.0f);  // moved left around the traffic car at cross = +0.5
     }
 
     // Airborne Showcases: all 7 PLANE_RACE events + XML parser + spring rubber-banding & timing checkpoints.
@@ -1580,7 +1643,8 @@ int main() {
       CHECK(turned_on);
     }
 
-    // R2-4: Passing_AggressionLevel affects plan_lanes() overtaking willingness/rate.
+    // The passing search on a road too narrow to pass: each failed search adds
+    // 5 a 30 Hz frame to the frustration; past 1000 the car follows, trailing the car ahead.
     {
       drive::RacingLine rl;
       for (int i = 0; i <= 40; ++i) {
@@ -1590,19 +1654,22 @@ int main() {
         rl.dist.push_back(float(i * 10));
         rl.radius.push_back(1e6f);
         rl.speed.push_back(60.0f);
-        rl.room_left.push_back(5.5f);
-        rl.room_right.push_back(5.5f);
+        rl.room_left.push_back(0.5f);
+        rl.room_right.push_back(0.5f);
       }
-      double prog[2] = {50.0, 62.0};
-      float cross[2] = {0.0f, 0.0f}, spd[2] = {22.0f, 20.5f};
-      float lane_passive[2] = {0.0f, 0.0f}, lane_aggro[2] = {0.0f, 0.0f};
-      race::LaneParams lp_passive[2] = {{7.0f, 0.3f, 0.4f, 0.0f}, {7.0f, 0.3f, 0.4f, 0.0f}};
-      race::LaneParams lp_aggro[2] = {{7.0f, 0.3f, 0.4f, 1.0f}, {7.0f, 0.3f, 0.4f, 1.0f}};
-      for (int s = 0; s < 30; ++s) {
-        race::plan_lanes(rl, prog, cross, spd, lp_passive, 1, lane_passive, 1.0 / 60.0, 2.0);
-        race::plan_lanes(rl, prog, cross, spd, lp_aggro, 1, lane_aggro, 1.0 / 60.0, 2.0);
-      }
-      CHECK(std::fabs(lane_aggro[0]) > std::fabs(lane_passive[0]) + 0.5f);
+      race::DlsCar cars[2];
+      cars[0].progress = 50, cars[0].speed = 22;
+      cars[1].progress = 58, cars[1].speed = 20.5f;
+      float lane[1] = {0.0f}, cap[1] = {1e9f};
+      race::LaneParams lp[1] = {{7.0f, 0.3f, 0.4f, 0.5f}};
+      race::DlsState st[1];
+      const race::DlsSettings set;
+      for (int s = 0; s < 400; ++s) race::dls_update(rl, cars, 1, lp, set, 1.0 / 60.0, st, lane, cap);
+      CHECK(st[0].target == 1 && !st[0].following && near(st[0].frustration, 1000, 1e-3) && lane[0] == 0);
+      race::dls_update(rl, cars, 1, lp, set, 1.0 / 60.0, st, lane, cap);
+      CHECK(st[0].following);
+      // Trailing at 0.75 x 7 m: 8 m apart less the 4.6 m of the two cars is inside it.
+      CHECK(cap[0] < 20.5f + 0.1f);
     }
 
     // R2-4: Hand-of-God start-line launch grace (< 25 s && !has_launched), widened Street

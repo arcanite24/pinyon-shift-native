@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <random>
 #include <string>
 #include <vector>
@@ -178,6 +179,12 @@ class FestivalManager {
   bool start_head_to_head(const traffic::P3& player_pos, double player_heading, double time, uint32_t car_id = 0);
   void cancel_head_to_head();
 
+  // SPEC-TRAFFIC, Population target, with the festival DensityList and
+  // MinFestival/MaxFestival: the smoothed local density D_s (cars) and
+  // target = min(D_s, cap(h)).
+  double local_density() const { return smoothed_; }
+  double target() const { return target_; }
+
   bool h2h_active() const { return h2h_active_; }
   const std::vector<FestivalAiCar>& cars() const { return cars_; }
   const std::vector<std::array<double, 2>>& h2h_route() const { return h2h_route_2d_; }
@@ -201,10 +208,12 @@ class FestivalManager {
     std::vector<double> h2h_s;
     std::vector<std::array<double, 2>> h2h_route_2d;
     std::array<double, 3> h2h_finish{};
+    double smoothed = 0.0, target = 0.0, next_test = 0.0;
   };
   RewindSnapshot capture_rewind() const {
     return {cars_, next_id_, started_, next_spawn_, prompt_id_, prompt_dist_, h2h_active_, h2h_car_id_, h2h_wager_,
-            h2h_elapsed_, h2h_player_s_, h2h_length_, h2h_pts_, h2h_s_, h2h_route_2d_, h2h_finish_};
+            h2h_elapsed_, h2h_player_s_, h2h_length_, h2h_pts_, h2h_s_, h2h_route_2d_, h2h_finish_,
+            smoothed_, target_, next_test_};
   }
   void restore_rewind(const RewindSnapshot& s) {
     cars_ = s.cars;
@@ -223,6 +232,7 @@ class FestivalManager {
     h2h_s_ = s.h2h_s;
     h2h_route_2d_ = s.h2h_route_2d;
     h2h_finish_ = s.h2h_finish;
+    smoothed_ = s.smoothed, target_ = s.target, next_test_ = s.next_test;
   }
 
  private:
@@ -259,6 +269,10 @@ class FestivalManager {
   double difficulty_scale_ = 1.0;
   bool started_ = false;
   double next_spawn_ = 0.0;
+  void measure(const traffic::P3& player, bool first);
+  double smoothed_ = 0.0, target_ = 0.0, next_test_ = 0.0;
+  std::map<int, double> within_;  // traffic road length (m) by density id within the spawn-out distance
+  traffic::P3 within_at_{1e30, 0, 1e30};
 
   // Proximity prompt state
   uint32_t prompt_id_ = 0;

@@ -519,6 +519,11 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.tcs_fric_diff = s.get("TCSFullEffectFricDiff", p.tcs_fric_diff);
   p.tcs_yaw_min_deg = s.get("YawMinAngleForTCS", p.tcs_yaw_min_deg);
   p.tcs_yaw_max_deg = s.get("YawMaxAngleForTCS", p.tcs_yaw_max_deg);
+  p.tcs_speed_mph_ai = s.get("TractionControlSpeedAI", p.tcs_speed_mph_ai);
+  p.tcs_fric_diff_ai = s.get("TCSFullEffectFricDiffAI", p.tcs_fric_diff_ai);
+  p.tcs_steer_scale_rwd_ai = s.get("TCSFullSteerSlipScaleRWDAI", p.tcs_steer_scale_rwd_ai);
+  p.tcs_steer_scale_fwd_ai = s.get("TCSFullSteerSlipScaleFWDAI", p.tcs_steer_scale_fwd_ai);
+  p.tcs_steer_scale_awd_ai = s.get("TCSFullSteerSlipScaleAWDAI", p.tcs_steer_scale_awd_ai);
   // FEEL-10: the car's own TCS slip targets (SPEC-CAR-PHYSICS, Traction
   // control: S_base), gamedb Data_Car.AssistsTCSSlipDefTakeoff below the
   // speed threshold and Data_Car.AssistsTCSSlipDefMoving above it.

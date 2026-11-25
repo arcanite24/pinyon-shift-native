@@ -234,7 +234,14 @@ void test_oracle_lap() {
   CHECK(gate.nx == 0 && std::fabs(gate.nz - 1) < 1e-12);
   CHECK(!drive::parse_gate("{\"race\": {}}", gate, &error));
 
-  drive::LineFollower follower(line, {});
+  // SPEC-RACE-AI, Steering at speed: 0.27 alpha + 0.29 beta, only the lock bounds it.
+  CHECK(std::fabs(drive::ai_slip_steer(0.1, 0.05, 0.73) - 0.0415) < 1e-12);
+  CHECK(drive::ai_slip_steer(3.0, 0.0, 0.73) == 0.73 && drive::ai_slip_steer(-3.0, -1.0, 0.73) == -0.73);
+  // The geometry below is pure pursuit's (the slip rule's fit is for 15 m/s
+  // and up; this circle runs at 8).
+  drive::LineFollower::Options pursuit;
+  pursuit.slip_rule = false, pursuit.controller = false;
+  drive::LineFollower follower(line, pursuit);
   // The grid's pedals are the last sample at distance 0: the launch's gas.
   double gas = 0, brake = 1;
   follower.pedals_at(0, gas, brake);
@@ -394,7 +401,7 @@ void test_ai_slip_rule() {
     double max_steer_step = 0.0;
     double prev_steer = 0.0;
     for (int s = 0; s < int(20 / drive::Vehicle::kStep); ++s) {
-      // Trigger a sudden lane change mid-run to verify steer_rate prevents 1-tick snaps.
+      // Sudden lane changes mid-run: pursuit's steer_rate stops 1-tick snaps.
       if (s == 600) field.set_lane(0, 2.5f);
       if (s == 1200) field.set_lane(0, -2.5f);
       st[0] = drive::ai_state(car);
@@ -408,7 +415,7 @@ void test_ai_slip_rule() {
     CHECK(std::isfinite(car.position().x) && std::isfinite(car.position().z));
     CHECK(field.progress(0) > 150.0);
     CHECK(max_abs_steer > 0.02);
-    if (use_slip) CHECK(max_steer_step < 0.08);
+    if (!use_slip) CHECK(max_steer_step < 0.08);
     return field.progress(0);
   };
 
@@ -438,6 +445,68 @@ void test_ai_slip_rule() {
   CHECK(std::fabs(guarded.steer) > 0.15);
   CHECK(unguarded.steer == 0.0);
   CHECK(unguarded.throttle < 0.5);
+}
+
+// SPEC-RACE-AI, Steering: the title's line controller (decoded). The yaw
+// gain is the car's kinematic v x lock / wheelbase at walking pace and
+// positive at every bin; an aim point to the right steers right; on a 60 m
+// circle the car holds its lane within a metre once settled, and follows a
+// lane change.
+void test_ai_controller() {
+  const drive::CarParams p = test_car();
+  const drive::AiYawGain g = drive::ai_yaw_gain(p);
+  drive::Vehicle probe(p);
+  probe.set_ai_controls(true);
+  const auto& wc = p.wheel_centres;
+  const double wb = std::fabs((wc[0].z + wc[1].z) / 2 - (wc[2].z + wc[3].z) / 2);
+  const double kin = 2.5 * probe.steer_lock() / wb;
+  std::printf("controller yaw gain: %.2f at 2.5 m/s (kinematic %.2f), %.2f at 22.5, %.2f at 42.5\n", g[0], kin, g[4],
+              g[8]);
+  CHECK(std::fabs(g[0] - kin) < 0.25 * kin);
+  for (float x : g) CHECK(x > 0.05f);
+  {
+    drive::AiCarState c;
+    c.speed = 20, c.vel_z = 20;
+    drive::AiSteerState ss;
+    CHECK(drive::ai_controller_steer(c, g, nullptr, 0, 0, 2.0, 10.0, 0, 1, false, ss) > 0.01);
+    CHECK(drive::ai_controller_steer(c, g, nullptr, 0, 0, -2.0, 10.0, 0, 1, false, ss) < -0.01);
+  }
+  std::vector<float> xs, zs;
+  const double r = 60, kPi = 3.14159265358979323846;
+  for (int i = 0; i <= 720; ++i) {
+    const double a = 2 * kPi * i / 360.0;
+    xs.push_back(float(r - r * std::cos(a)));
+    zs.push_back(float(r * std::sin(a)));
+  }
+  const drive::RacingLine line = drive::RacingLine::from_points(xs, zs, 6.0, 4.0, 8.0, 40.0);
+  const drive::FlatGround ground;
+  drive::AiField::Options opt;
+  opt.controller = true;
+  drive::AiField field(line, 1, opt);
+  field.set_yaw_gain(0, g);
+  drive::Vehicle car(p);
+  car.set_ai_controls(true);
+  field.place(0, 5.0, 0.0f, 0.95f);
+  double x = 0, z = 0, h = 0;
+  field.start_pose(0, x, z, h);
+  car.reset({x, 0, z}, h);
+  std::vector<drive::AiCarState> st(1);
+  std::vector<drive::Input> ins(1);
+  double worst = 0, worst_change = 1e9;
+  for (int s = 0; s < int(20 / drive::Vehicle::kStep); ++s) {
+    if (s == 1200) field.set_lane(0, 2.0f);
+    st[0] = drive::ai_state(car);
+    field.drive(st, ins);
+    const double off = std::fabs(field.cross_track(0) - field.lane(0));
+    if (s > 600 && s < 1200) worst = std::max(worst, off);
+    if (s > 1900) worst_change = std::min(worst_change, off);
+    car.step(ins[0], ground);
+  }
+  std::printf("controller on a 60 m circle: progress %.0f m, worst %.2f m off the lane, %.2f m after the change\n",
+              field.progress(0), worst, worst_change);
+  CHECK(field.progress(0) > 150.0);
+  CHECK(worst < 1.0);
+  CHECK(worst_change < 1.0);
 }
 
 // SPEC-RACE-AI, Speed planning (Q53): the spec's synthetic cases.
@@ -1038,6 +1107,7 @@ int main() {
   test_oracle_lap();
   test_ai_field();
   test_ai_slip_rule();
+  test_ai_controller();
   test_speed_planner();
   test_contact_no_tunnelling();
   // Slice 6: contact torque role scaling (PlayerTorqueScale = 0,

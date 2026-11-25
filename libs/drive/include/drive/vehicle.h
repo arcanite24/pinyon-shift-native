@@ -404,6 +404,9 @@ struct CarParams {
   double tcs_steer_scale_rwd = 1.1, tcs_steer_scale_fwd = 1.2, tcs_steer_scale_awd = 2.0;
   double tcs_fric_diff = 0.25;
   double tcs_yaw_min_deg = 20.0, tcs_yaw_max_deg = 50.0;
+  // The AI-driven car's TCS keys (PhysicsSettings.ini, the ...AI rows).
+  double tcs_speed_mph_ai = 22.0, tcs_fric_diff_ai = 0.25;
+  double tcs_steer_scale_rwd_ai = 1.3, tcs_steer_scale_fwd_ai = 1.7, tcs_steer_scale_awd_ai = 0.71;
   double stm_speed_mph = 30.0;
   double stm_slip_min = 1.2, stm_slip_max = 2.5;
 

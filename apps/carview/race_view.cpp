@@ -61,15 +61,18 @@ const char* ordinal(int p) {
 // SPEC-RACE-AI, AI car upgrades: the faked PI each AI aims at, with P the
 // player's and C the car's shown points and the class lo..hi: P pulled 5
 // inside the class plus the offset r, else C + 300 when P is further above.
-// SPEC-RACE-AI's steering at speed (the slip rule): enabled by default;
-// set SHIFT_AI_STEER=pursuit to opt out to pure pursuit.
-bool slip_rule() {
-  static const bool on = [] {
+// SPEC-RACE-AI, Steering: the title's line controller (decoded) by
+// default; SHIFT_AI_STEER=slip for the fitted slip rule, =pursuit for pure
+// pursuit.
+int ai_steer_mode() {
+  static const int mode = [] {
     const char* e = std::getenv("SHIFT_AI_STEER");
-    return !(e && std::string(e) == "pursuit");
+    const std::string s = e ? e : "";
+    return s == "pursuit" ? 0 : s == "slip" ? 1 : 2;
   }();
-  return on;
+  return mode;
 }
+bool slip_rule() { return ai_steer_mode() != 0; }
 
 int faked_target(int P, int C, int lo, int hi, int r) {
   if (P > C + 300) return C + 300;
@@ -453,6 +456,16 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       std::fprintf(stderr, "race: note: [HandOfGodReset] not read (%s): its values as fallbacks\n", he.c_str());
     for (const auto& k : hand_of_god_.missing) std::fprintf(stderr, "race: note: no %s\n", k.c_str());
     race::apply_hand_of_god(hand_of_god_, sopt);
+    // WORLD-05: the start and nemesis boosts' sizes from GlobalRegistry.xml
+    // (the title loads it over the compiled-in defaults).
+    std::map<std::string, double> registry;
+    std::string re;
+    if (race::load_global_registry(root, registry, &re)) boost_tunables_ = race::RaceBoostTunables::from(registry);
+    else {
+      boost_tunables_ = {};
+      std::fprintf(stderr, "race: note: GlobalRegistry.xml not read (%s): the disc's boost values as fallbacks\n",
+                   re.c_str());
+    }
     // WORLD-04: the AI resets by its own ResetParameters (AIRacing.xml, the
     // race's settings set), the player alone by the Hand of God triggers.
     // Without the file the AI does not reset automatically.
@@ -461,6 +474,17 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     std::string ae;
     if (race::load_ai_reset_rules(root, set, rules, &ae)) sopt.ai_rules = rules;
     else std::fprintf(stderr, "race: note: no AI reset rules (%s): AI cars do not reset\n", ae.c_str());
+    // WORLD-01: the set's passing search and its speed computer's slope weight.
+    race::AiRacingSet ars;
+    std::string de;
+    if (race::load_ai_racing_set(root, set, ars, &de)) {
+      dls_settings_ = ars.dls;
+      slope_curvature_ = float(ars.slope_curvature);
+      track_edge_avoidance_ = !ars.disable_track_edge;
+    } else {
+      dls_settings_ = {}, slope_curvature_ = 0.75f;
+      std::fprintf(stderr, "race: note: AIRacing.xml set %s not read (%s): the default set's values\n", set, de.c_str());
+    }
     sopt.ai_hand_of_god = false;
   }
   if (street_ || race::event_uses_traffic(event_.career_type)) {
@@ -469,11 +493,14 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     sopt.off_route_far = 25.0;
   }
   session_ = std::make_unique<race::Session>(size_t(cars), circuit_, laps, *gate, finish, sopt);
-  // Upgraded closed-road festival packs run wider side-by-side (0.04); street
-  // routes and stock showcase cars stay tighter to the line (0.08).
-  const float off_slow = (event_.upgrade_ai && !street_) ? 0.04f : 0.08f;
+  // SPEC-RACE-AI, Throttle: full gas below the plan; no slowing for
+  // distance off the lane.
   field_ = std::make_unique<drive::AiField>(line_.line, size_t(cars),
-                                            drive::AiField::Options{.full_gas = true, .off_line_slow = off_slow, .slip_rule = slip_rule()});
+                                            drive::AiField::Options{.full_gas = true,
+                                                                    .slope_curvature = slope_curvature_,
+                                                                    .slip_rule = slip_rule(),
+                                                                    .controller = ai_steer_mode() == 2,
+                                                                    .track_edge_avoidance = track_edge_avoidance_});
   const double from = circuit_ ? line_.gate_progress - 0.5 * line_.lap_length : std::max(0.0, line_.gate_progress - 1500);
   cars_.clear();
   cars_.resize(size_t(cars - 1));
@@ -550,6 +577,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   }
   const size_t n = size_t(cars);
   states_.resize(n), inputs_.resize(n), progress_.resize(n), cross_.resize(n), speed_.resize(n), lanes_.assign(n, 0), caps_.assign(n, 1e9f);
+  dls_state_.assign(n, race::DlsState{});
   samples_.resize(n);
   lane_params_.resize(n);
   last_planner_c_.assign(n, -1.0f);
@@ -799,6 +827,7 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
       // exact stock CurbWeight (SPEC-RACE-AI, Contacts and resets).
       c.capacity = drive::ai_capacity(c.body->params());
     }
+    c.yaw_gain = drive::ai_yaw_gain(params);
     c.body->set_ai_dirt_grip(true);
     const auto& s = slots_[size_t(c.slot)];
     double y = s.y;
@@ -838,6 +867,12 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
   }
   for (const auto& line_log : bisect_logs) {
     if (!line_log.empty()) std::fputs(line_log.c_str(), stdout);
+  }
+  for (size_t k = 0; k < cars_.size(); ++k) {
+    field_->set_yaw_gain(k, cars_[k].yaw_gain);
+    const auto& g = cars_[k].yaw_gain;
+    std::printf("race: yaw gain %-28s %.2f %.2f %.2f %.2f %.2f %.2f rad/s at 7.5 to 57.5 m/s\n",
+                cars_[k].who.car_media.c_str(), g[1], g[3], g[5], g[7], g[9], g[11]);
   }
   if (session_ && !bands_.empty()) {
     for (size_t k = 0; k < cars_.size(); ++k) {
@@ -1005,6 +1040,7 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   if (!player_capacity_known_) {
     player_capacity_ = drive::ai_capacity(player.params());
     player_capacity_known_ = true;
+    field_->set_yaw_gain(n, drive::ai_yaw_gain(player.params()));
     const char* e = std::getenv("SHIFT_RACE_PLANNER");
     planner_fit_ = e && std::string(e) == "fit";
     const auto& pc = player_capacity_;
@@ -1031,29 +1067,19 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   for (size_t k = 0; k < n; ++k) {
     states_[k] = drive::ai_state(*cars_[k].body);
     double C = cars_[k].ai.cornering(), B = cars_[k].ai.braking();
-    if (is_nemesis) {
-      const double from_slot = field_->progress(k) - cars_[k].start_progress;
+    {
+      // WORLD-05: the start or nemesis boost (race::race_boost), from the
+      // distance raced past the start line and the other race AI ahead.
       int other_ahead = 0;
       for (size_t j = 0; j < n; ++j)
         if (j != k && field_->progress(j) > field_->progress(k)) ++other_ahead;
       const double dist_to_fin = finish_progress_ > 0 ? std::max(0.0, finish_progress_ - field_->progress(k)) : 1e9;
-      const auto nb = race::nemesis_rival_boost(true, from_slot >= 1000.0, int(n) - 1, other_ahead,
-                                                player_prog - field_->progress(k), dist_to_fin, B, C);
-      B = nb.braking;
-      C = nb.cornering;
-    }
-    // Cap planned cornering below static rollover stability for narrow/tall
-    // chassis (e.g. 1965 Mini 1.2 m track) so catch-up (C = 1.25) never flips
-    // them onto their roof; deliberate mode-4 over-cornering stays uncapped.
-    const bool over_corner = cars_[k].ai.state() == race::DriverAi::State::kRubberband && cars_[k].ai.mode() == 4;
-    if (!over_corner && cars_[k].capacity.lateral[8] > 1.0f) {
-      const auto& bp = cars_[k].body->params();
-      const double half_track = 0.5 * std::fabs(bp.wheel_centres[1].x - bp.wheel_centres[0].x);
-      const double com_h = std::max(0.20, bp.centre_of_mass.y);
-      if (half_track > 0.3 && (half_track / com_h) < 1.45) {
-        const double roll_cap_ms2 = 0.98 * (half_track / com_h) * 9.81;
-        const double max_c = std::max(0.81, roll_cap_ms2 / double(cars_[k].capacity.lateral[8]));
-        if (C > max_c) C = max_c;
+      cars_[k].boost = race::race_boost(boost_tunables_, field_->progress(k) - line_.gate_progress,
+                                        player_prog - line_.gate_progress, states_[k].speed, int(n) - 1, other_ahead,
+                                        dist_to_fin, is_nemesis);
+      if (cars_[k].boost.active()) {
+        B = drive::ai_boost(B, cars_[k].boost.skill, 1.0);
+        C = drive::ai_boost(C, cars_[k].boost.skill, 1.25);
       }
     }
     update_car_planner(k, &cars_[k].capacity, float(C), float(B));
@@ -1089,7 +1115,17 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   // Lanes from the last step's progress, then the field's pass.
   for (size_t k = 0; k <= n; ++k)
     progress_[k] = field_->progress(k), cross_[k] = field_->cross_track(k), speed_[k] = states_[k].speed;
-  traffic_obs_scratch_.clear();
+  // The passing search's view of every car: the AI cars, the player, and
+  // the street traffic near the field projected onto the line.
+  dls_cars_.resize(n + 1);
+  for (size_t k = 0; k <= n; ++k) {
+    const drive::Vehicle& v = k < n ? *cars_[k].body : player;
+    race::DlsCar& d = dls_cars_[k];
+    d.progress = progress_[k], d.cross = cross_[k], d.speed = speed_[k];
+    d.half_width = float(0.5 * std::max(1.0, v.params().size.x));
+    d.half_length = float(0.5 * std::max(2.0, v.params().size.z));
+    d.kind = k < n ? race::DlsCar::Kind::kAi : race::DlsCar::Kind::kHuman;
+  }
   if (traffic && traffic->cars() && !traffic->cars()->empty()) {
     double min_p = progress_[0], max_p = progress_[0];
     for (size_t k = 1; k <= n; ++k)
@@ -1110,11 +1146,14 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
       const double room = std::min(12.0, room_val);
       if (std::fabs(cross) > room + 3.0) continue;
       const double dir_dot = std::sin(tc.heading) * std::sin(lh) + std::cos(tc.heading) * std::cos(lh);
-      traffic_obs_scratch_.push_back({tp, float(cross), float(tc.speed), dir_dot < 0.0});
+      race::DlsCar d;
+      d.progress = tp, d.cross = float(cross), d.speed = float(dir_dot < 0.0 ? -tc.speed : tc.speed);
+      d.kind = race::DlsCar::Kind::kTraffic;
+      dls_cars_.push_back(d);
     }
   }
-  race::plan_lanes(line_.line, progress_, cross_, speed_, lane_params_, n, lanes_, drive::Vehicle::kStep, 2.1, caps_,
-                   traffic_obs_scratch_);
+  if (dls_state_.size() < n) dls_state_.resize(n);
+  race::dls_update(line_.line, dls_cars_, n, lane_params_, dls_settings_, drive::Vehicle::kStep, dls_state_, lanes_, caps_);
   for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]), field_->set_speed_cap(k, caps_[k]);
   field_->drive(states_, inputs_);
   // Held on the grid in first until GO while passing player throttle through for launch revving.
@@ -1174,6 +1213,7 @@ void RaceView::reset_car_to_progress(drive::Vehicle& v, size_t i, double p, cons
   v.launch({x, y + 0.05, z}, h, speed);
   field_->set_lane(i, 0);
   if (i < lanes_.size()) lanes_[i] = 0;
+  if (i < dls_state_.size()) dls_state_[i] = race::DlsState{};
   session_->reset_done(i);
   ++resets_;
   std::printf("race: t %.2f s: %s reset to the line at %.0f m (%.1f m/s; %s)\n", session_->clock(), name_of(i).c_str(),
@@ -1190,9 +1230,6 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     player.set_ai_controls(player_ai);
     player.set_ai_dirt_grip(player_ai);
   }
-  const double grid_cars = double(n + 1);
-  const bool is_nemesis = event_.career_type == 11 || event_.style == 5;
-  const double player_prog = field_->progress(n);
   // SPEC-CAR-PHYSICS, Aerodynamic drafting: evaluate pairwise follower & leader
   // slipstream multipliers across player, AI opponents, and nearby traffic.
   if (session_->started()) {
@@ -1278,29 +1315,17 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     drive::Input in = inputs_[k];
     // Held on the grid; revving from 3.09 s before the signal, clutch dropped at it.
     if (clock < 0) in = clock >= -3.09 ? drive::Input{0, 1, 1, true} : drive::Input{0, 0, 0.4, true};
-    else drive::ai_traction(*c.body, c.traction_cap, drive::Vehicle::kStep, in, !slip_rule());
-    const double from_slot = field_->progress(k) - c.start_progress;
-    const double boost = race::start_boost(c.slot, int(grid_cars), from_slot);
-    double nem_torque = 0.0;
-    if (is_nemesis && from_slot >= 1000.0) {
-      int other_ahead = 0;
-      for (size_t j = 0; j < n; ++j)
-        if (j != k && field_->progress(j) > field_->progress(k)) ++other_ahead;
-      const double dist_to_fin = finish_progress_ > 0 ? std::max(0.0, finish_progress_ - field_->progress(k)) : 1e9;
-      nem_torque = race::nemesis_rival_boost(true, true, int(n) - 1, other_ahead, player_prog - field_->progress(k),
-                                             dist_to_fin, c.ai.braking(), c.ai.cornering())
-                       .torque_add;
+    // SPEC-RACE-AI, Throttle: the plan's on/off gas reaches the car as is
+    // under the slip rule; ai_traction (ours) is pure pursuit's.
+    else if (!slip_rule()) drive::ai_traction(*c.body, c.traction_cap, drive::Vehicle::kStep, in, true);
+    c.body->set_torque_factor(c.ai.torque() * (1 + c.boost.torque));
+    // SPEC-RACE-AI, AI-only grip terms: the line controller's steering-
+    // saturation term on both axles (Q125); the heavy-braking and state
+    // terms are interim 0 (the dirt term is the car's own).
+    {
+      const double g = 1.0 + field_->grip_sat(k);
+      c.body->set_ai_grip(g, g);
     }
-    c.body->set_torque_factor(c.ai.torque() * (1 + boost + nem_torque));
-    const bool over_corner = c.ai.state() == race::DriverAi::State::kRubberband && c.ai.mode() == 4;
-    const auto& bp = c.body->params();
-    const double half_track = 0.5 * std::fabs(bp.wheel_centres[1].x - bp.wheel_centres[0].x);
-    const double com_h = std::max(0.20, bp.centre_of_mass.y);
-    const double max_grip = (half_track > 0.3 && (half_track / com_h) < 1.45) ? 1.0 : 1.25;
-    // Keep deliberate mode-4 over-cornering mistakes at 1.0 grip so they can run wide,
-    // while allowing Hard/Pro AI and kCatchUp to retain their cornering grip up to max_grip.
-    const double ai_corner_grip = over_corner ? 1.0 : std::clamp(c.ai.cornering(), 1.0, max_grip);
-    c.body->set_ai_grip(ai_corner_grip, ai_corner_grip);
     const double d = std::hypot(at.x - cx, at.z - cz);
     const bool was_far = c.far;
     if (c.far && d < radius - 80) c.far = false;
@@ -1503,19 +1528,38 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     return p ? std::fopen(p, "w") : nullptr;
   }();
   static long trace_step = 0;
-  if (trace && trace_step++ % 24 == 0) {  // every 0.2 s
+  static const long trace_every = [] {
+    const char* e = std::getenv("SHIFT_RACE_TRACE_EVERY");
+    return e ? std::max(1L, std::atol(e)) : 24L;
+  }();
+  if (trace && trace_step++ % trace_every == 0) {  // every 0.2 s by default
     for (size_t i = 0; i <= n; ++i) {
       const drive::Vehicle& v = i < n ? *cars_[i].body : player;
       const auto& q = samples_[i];
       std::fprintf(trace,
                    "{\"t\":%.3f,\"car\":%zu,\"x\":%.2f,\"z\":%.2f,\"v\":%.2f,\"p\":%.1f,\"cross\":%.2f,\"lane\":%.2f,"
                    "\"target\":%.2f,\"thr\":%.2f,\"brk\":%.2f,\"steer\":%.2f,\"off\":%.2f,\"cos\":%.2f,\"gear\":%d,"
-                   "\"far\":%d,\"state\":%d,\"torque\":%.3f,\"hit\":%.1f,\"hny\":%.2f,\"surf\":%d}\n",
+                   "\"far\":%d,\"state\":%d,\"torque\":%.3f,\"hit\":%.1f,\"hny\":%.2f,\"surf\":%d,"
+                   "\"pass\":%d,\"follow\":%d,\"frust\":%.0f,\"y\":%.2f,\"imp\":%llu,\"imps\":%.1f,\"impny\":%.2f,\"yaw\":%.2f,"
+                   "\"beta\":%.3f,\"tcs\":%.3f,\"stm\":%d,\"sat\":%.3f}\n",
                    session_->clock(), i, q.x1, q.z1, q.speed, q.progress, field_->cross_track(i), lanes_[i],
                    field_->target_speed(i), inputs_[i].throttle, inputs_[i].brake, inputs_[i].steer, q.off_route,
                    q.heading_cos, v.gear(), i < n ? int(cars_[i].far) : 0, i < n ? int(cars_[i].ai.state()) : -1,
                    v.torque_factor(), v.strongest_body_contact().force / 1000, v.strongest_body_contact().normal.y,
-                   v.strongest_body_contact().surface);
+                   v.strongest_body_contact().surface, i < dls_state_.size() && i < n ? dls_state_[i].target : -1,
+                   i < dls_state_.size() && i < n ? int(dls_state_[i].following) : 0,
+                   i < dls_state_.size() && i < n ? double(dls_state_[i].frustration) : 0.0, v.position().y,
+                   (unsigned long long)v.last_body_impact().count, v.last_body_impact().speed,
+                   v.last_body_impact().normal.y, v.angular_velocity().y,
+                   [&] {
+                     const drive::Vec3 f = drive::rotate(v.orientation(), {0, 0, 1});
+                     const drive::Vec3 u = v.velocity();
+                     const double fl = std::hypot(f.x, f.z);
+                     if (fl < 1e-6 || std::hypot(u.x, u.z) < 1) return 0.0;
+                     const double fx = f.x / fl, fz = f.z / fl;
+                     return std::atan2(u.x * fz - u.z * fx, u.x * fx + u.z * fz);
+                   }(),
+                   v.tcs_amount(), int(v.stm_active()), i < n ? double(field_->grip_sat(i)) : 0.0);
     }
     std::fflush(trace);
   }
@@ -2563,6 +2607,7 @@ RaceView::RewindSnapshot RaceView::capture_rewind() const {
   snap.player_ai = player_ai_;
   snap.next_checkpoint = next_checkpoint_;
   snap.lanes = lanes_;
+  snap.dls = dls_state_;
   snap.ppx = ppx_;
   snap.ppz = ppz_;
   snap.wrong_way = wrong_way_;
@@ -2606,6 +2651,7 @@ void RaceView::restore_rewind(const RewindSnapshot& s, bool mark_player_lap_dirt
   player_ai_ = s.player_ai;
   next_checkpoint_ = s.next_checkpoint;
   lanes_ = s.lanes;
+  dls_state_ = s.dls;
   ppx_ = s.ppx;
   ppz_ = s.ppz;
   wrong_way_ = s.wrong_way;

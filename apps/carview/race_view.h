@@ -296,6 +296,7 @@ class RaceView {
     race::DriverAi player_ai{};
     std::vector<size_t> next_checkpoint;
     std::vector<float> lanes;
+    std::vector<race::DlsState> dls;
     double ppx = 0.0, ppz = 0.0, wrong_way = 0.0;
     std::vector<double> split_times;
     double last_split_delta = 0.0, last_split_at = -1e9;
@@ -320,7 +321,9 @@ class RaceView {
     double px = 0, pz = 0;  // before the step
     bool far = false;
     float traction_cap = 1;  // drive::ai_traction's state
+    race::RaceBoost boost;   // this step's start or nemesis boost (race::race_boost)
     drive::AiCapacity capacity;  // the speed planner's tables (SPEC-RACE-AI)
+    drive::AiYawGain yaw_gain{};  // the line controller's G(v)
     double upgrade_t = 0;        // AI car upgrades: > 0 up, < 0 down (fraction of the range)
     int target_shown_pi = 0;     // faked target shown PI when UpgradeAI is active
     int upgraded_shown_pi = 0;   // solved/upgraded shown PI displayed on HUD & standings
@@ -371,7 +374,8 @@ class RaceView {
   bool circuit_ = true;
   bool street_ = false;                   // a line built along the road map (no AI line)
   race::HandOfGodReset hand_of_god_;      // GameTunableSettings.ini [HandOfGodReset]
-  bool stage_ = false;                    // a Rally stage (Options::stage_world)
+  race::RaceBoostTunables boost_tunables_;  // GlobalRegistry.xml AI/Racing/RaceBehavior (WORLD-05)
+  bool stage_ = false;                   // a Rally stage (Options::stage_world)
   // The stage's track row, the field's times and the player's splits
   // (SPEC-V4-CONTENT; race/rally.h).
   bool have_stage_track_ = false;
@@ -399,7 +403,13 @@ class RaceView {
   std::vector<float> last_planner_c_;
   std::vector<float> last_planner_b_;
   // Reusable per-step scratch buffers (zero heap allocations on the 120 Hz step path).
-  std::vector<race::TrafficObstacle> traffic_obs_scratch_;
+  std::vector<race::DlsCar> dls_cars_;
+  // SPEC-RACE-AI, Traffic between cars: the passing search's settings (the
+  // race's AIRacing.xml set) and each AI car's state.
+  race::DlsSettings dls_settings_;
+  std::vector<race::DlsState> dls_state_;
+  float slope_curvature_ = 0.75f;
+  bool track_edge_avoidance_ = true;  // the set's DisableTrackEdgeAvoidance false
   std::vector<drive::DraftCar> draft_pool_scratch_;
   std::vector<drive::DraftCar> draft_leaders_scratch_;
   std::vector<double> draft_leader_strength_scratch_;

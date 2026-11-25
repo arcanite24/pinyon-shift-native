@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "race/difficulty.h"
 #include "race/reset_rules.h"
 
 namespace {
@@ -73,6 +74,53 @@ int main() {
     CHECK(near(r.slow_speed, 3) && near(r.slow_time, 25));
     CHECK(near(r.upside_down_speed, 3) && near(r.upside_down_time, 3) && near(r.upside_down_up_y, 0.3));
     CHECK(near(r.fell_low, -50) && near(r.cancel_moved_m, 20));
+    // WORLD-01: the set's passing search and slope weights.
+    race::AiRacingSet a;
+    error.clear();
+    const bool aok = race::load_ai_racing_set(root, set, a, &error);
+    if (!aok) std::printf("AIRacing.xml %s passing: %s\n", set, error.c_str());
+    CHECK(aok);
+    const auto& d = a.dls;
+    std::printf("AIRacing.xml %s DLS: TTC %.0f OOB %.0f off-track %.0f car %.0f off-line %.1f change sides %.0f "
+                "head-on %.0f max %.0f, widths %.2f/%.2f/%.2f, every %.2f s, legal side %d; slope %.2f curvature %.2f\n",
+                set, d.time_to_collision_cost, d.out_of_bounds_cost, d.off_track_cost, d.car_cost, d.off_line_cost,
+                d.change_pass_sides_cost, d.head_on_wrong_side_cost, d.max_acceptable_cost, d.extra_width_ai,
+                d.extra_width_human, d.extra_width_traffic, d.update_interval, d.legal_side, a.slope_modifier,
+                a.slope_curvature);
+    CHECK(near(d.time_to_collision_cost, 160) && near(d.off_line_cost, 3.3) && near(d.change_pass_sides_cost, 60));
+    CHECK(near(d.max_acceptable_cost, 400) && near(d.update_interval, 0.2) && d.ignore_cars_not_approached);
+    CHECK(near(d.extra_width_ai, 0.2) && near(d.extra_width_human, 0.3) && near(d.extra_width_traffic, 0.35));
+    const bool def = std::string(set) == "default";
+    CHECK(near(d.out_of_bounds_cost, def ? 400 : 40) && near(d.off_track_cost, def ? 400 : 8));
+    CHECK(near(d.car_cost, def ? 400 : 100) && near(d.head_on_wrong_side_cost, def ? 0 : 50));
+    CHECK(d.legal_side == (def ? 0 : 2) && near(a.slope_modifier, 1.0));
+    CHECK(near(a.slope_curvature, def ? 0.75 : std::string(set) == "freeroam" ? 1.0 : 0.5));
+  }
+  {
+    // WORLD-05: the race boosts' registry values equal the struct's
+    // initialisers (the disc's), so a missing file changes nothing.
+    std::map<std::string, double> reg;
+    error.clear();
+    const bool ok = race::load_global_registry(root, reg, &error);
+    if (!ok) std::printf("GlobalRegistry.xml: %s\n", error.c_str());
+    CHECK(ok);
+    const race::RaceBoostTunables d;
+    const auto t = race::RaceBoostTunables::from(reg);
+    std::printf("GlobalRegistry.xml race boosts: start %.2f..%.2f held %.0f..%.0f m, decay %.0f m, skill x%.2f, "
+                "gap %.0f m/car, behind-player %.0f m/s -> %.2f, min %.2f; nemesis x%.2f +%.2f, catch-up +%.2f over "
+                "%.0f..%.0f m, off %.0f m from the finish\n",
+                t.start_torque_first, t.start_torque_last, t.keep_full_first, t.keep_full_last, t.decay, t.max_skill,
+                t.gap_per_car, t.min_speed_behind_player, t.torque_behind_player, t.torque_minimum, t.nemesis_skill,
+                t.nemesis_torque, t.catchup_torque, t.catchup_min, t.catchup_max, t.catchup_end);
+    CHECK(reg.count("AI/Racing/RaceBehavior/RaceStartBoost/TorqueScaleBoostForFirstCar") == 1);
+    CHECK(near(t.start_torque_first, d.start_torque_first) && near(t.start_torque_last, d.start_torque_last));
+    CHECK(near(t.keep_full_first, d.keep_full_first) && near(t.keep_full_last, d.keep_full_last));
+    CHECK(near(t.decay, d.decay) && near(t.max_skill, d.max_skill) && near(t.gap_per_car, d.gap_per_car));
+    CHECK(near(t.min_speed_behind_player, d.min_speed_behind_player) &&
+          near(t.torque_behind_player, d.torque_behind_player) && near(t.torque_minimum, d.torque_minimum));
+    CHECK(near(t.nemesis_skill, d.nemesis_skill) && near(t.nemesis_torque, d.nemesis_torque));
+    CHECK(near(t.catchup_torque, d.catchup_torque) && near(t.catchup_min, d.catchup_min) &&
+          near(t.catchup_max, d.catchup_max) && near(t.catchup_end, d.catchup_end));
   }
   std::printf("reset_rules_corpus_tests: %d failures\n", failures);
   return failures ? 1 : 0;

@@ -100,6 +100,15 @@ struct AiCapacityCalibration {
   double lateral = 16.01 / 14.6, braking = 18.26 / 17.1;
 };
 AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal = {});
+struct AiCarState;
+struct AiSteerState;
+using AiYawGain = std::array<float, 20>;
+// The line controller's steer (-1 to 1) towards the aim point (lx, lz) in
+// the car's frame (x right, z forward) with the driven line's unit tangent
+// there (gx, gz), the car e m from the driven line and chi_car half widths
+// from the line's centre; back: the last steer turned towards the line.
+double ai_controller_steer(const AiCarState& c, const AiYawGain& G, const AiCapacity* cap, double chi_car, double e,
+                           double lx, double lz, double gx, double gz, bool back, AiSteerState& st);
 // The planner's share of the downforce at speed v: 1 to 15 m/s, then
 // 1 - 0.22 ((v - 15) / 60.1)^3.8, 0.78 from 75.1 m/s.
 double ai_aero_factor(double v);
@@ -108,7 +117,10 @@ double ai_aero_factor(double v);
 // theta (rad, + leaning into the turn), at most `top`: v^2 = g (sin + mu
 // cos) / (|k| (cos - mu sin) - 0.75 k_v (sin + mu cos)), mu = C x
 // lateral(v) / g, iterated up to 10 times on the table entry.
-double ai_corner_speed(const AiCapacity& cap, double cornering, double kappa, double kappa_v, double theta, double top);
+// `slope_curvature`: the set's SpeedComputerSlopeCurvatureModifier
+// (AIRacing.xml PredictiveControllerRLH; `default` 0.75).
+double ai_corner_speed(const AiCapacity& cap, double cornering, double kappa, double kappa_v, double theta, double top,
+                       double slope_curvature = 0.75);
 // The braking pass's two steps. The braking a corner leaves at v_lim
 // under its corner speed v_c (the friction circle), from the deceleration
 // `full` = B x A_brk: full x sqrt(1 - min(v_lim^2 / v_c^2, 1)). The carry
@@ -130,8 +142,35 @@ struct AiCarState {
   // The widest road-wheel angle the controller asks for: the pad's lock at
   // this speed (ours: past it the fronts slide and the car runs wide).
   float max_delta = 0.6f;
+  float yaw_rate = 0;  // rad/s about up, + turning towards + steer
 };
 AiCarState ai_state(const Vehicle& v);
+
+// The AI line controller's yaw gain G(v) (AIRacing.xml
+// PredictiveControllerRLH; SPEC-RACE-AI, Steering): the yaw rate per unit
+// of steer (rad/s), 20 bins of 5 m/s centred at (i + 0.5) x 5, linear in
+// between. The title fills it per car from a run of the car's own
+// simulation; ours steps the car on flat ground at each bin's speed with a
+// small steer (Q125). 4 where the run gives nothing usable.
+using AiYawGain = std::array<float, 20>;
+AiYawGain ai_yaw_gain(const CarParams& p);
+double ai_yaw_gain_at(const AiYawGain& g, double v);
+// The line controller's per-car state: the look-ahead (m), the under-steer
+// boost and |e| a step ago (the caller keeps abs_e).
+struct AiSteerState {
+  float look = 7.5f, boost = 1.0f, abs_e = 0;
+  // The driver's grip level (its cornering skill C, boosts included; 0:
+  // none), which opens the steering-saturation grip term above 0.94.
+  float level = 0;
+  // That term (0 to ramp(level, 0.94, 1.25)) from the last steer, on both
+  // axles' AI grip factor.
+  float sat = 0;
+};
+// The look-ahead along the driven line (m) for a car chi_car half widths
+// off the line's centre, with the track's floor (m); updates st.look.
+double ai_controller_lookahead(const AiCarState& c, const AiYawGain& G, double chi_car, double floor_track,
+                               AiSteerState& st);
+struct AiCapacity;
 
 // The AI's traction and slide guard (ours; SPEC-CAR-PHYSICS leaves open
 // which assists the AI-driven car has, and traces a traction-control
@@ -157,6 +196,9 @@ class AiField {
     // brake above it (the AI's gas jumps between 1 and 0).
     bool full_gas = false;
     float max_speed = 90.0f;  // m/s, the plan's cap
+    // The race's AIRacing.xml set's SpeedComputerSlopeCurvatureModifier
+    // (the vertical curvature's weight in the corner speed).
+    float slope_curvature = 0.75f;
     float off_line_slack = 1.0f;  // m off the lane before the car slows...
     float off_line_slow = 0.0f;   // ...by this fraction a metre (0: never)
     // SPEC-RACE-AI, Steering at speed: delta = 0.27 alpha + 0.29 beta, alpha
@@ -166,9 +208,22 @@ class AiField {
     // pad's speed-narrowed lock).
     bool slip_rule = false;
     float slip_lookahead_s = 1.0f;
-    // Maximum steering command rate (full-lock units per second, 0: unlimited).
-    // Prevents instant 1-tick front-wheel snaps when lanes or curvature change.
+    // Pure pursuit only (ours): the steering command's maximum rate, in
+    // full-lock units per second (0: unlimited). The slip rule has none.
     float steer_rate = 3.8f;
+    // The title's line controller (AIRacing.xml PredictiveControllerRLH,
+    // decoded; SPEC-RACE-AI, Steering): a look-ahead of v x 1.2 / mean G,
+    // the tangent of a Hermite curve to the line there, a yaw-rate demand
+    // 2 v sin(alpha) / l capped by the car's lateral capacity, over the
+    // car's yaw gain, less a yaw-rate damping, and an under-steer boost.
+    // Takes precedence over slip_rule.
+    bool controller = false;
+    // DisableTrackEdgeAvoidance false: the gas eases off while the car,
+    // steering back, still runs towards the road's edge.
+    bool track_edge_avoidance = true;
+    // The look-ahead's floor above 17 m/s, m (the title's is 6 to 10 m by
+    // track, from a measure not decoded; Q125).
+    float min_lookahead_track = 8.0f;
   };
   AiField(const RacingLine& line, size_t cars, const Options& options);
   AiField(const RacingLine& line, size_t cars) : AiField(line, cars, Options{}) {}
@@ -192,6 +247,10 @@ class AiField {
   // braking pass over the 420 m ahead); `cap` null: set_limits' plan.
   // Needs the line's plan_geometry.
   void set_planner(size_t i, const AiCapacity* cap, float cornering, float braking);
+  // Car i's yaw gain for the line controller (Options::controller).
+  void set_yaw_gain(size_t i, const AiYawGain& g) { yaw_gain_[i] = g; }
+  // Car i's steering-saturation grip term (0 to 0.19) from its last drive.
+  float grip_sat(size_t i) const { return sat_[i]; }
   void set_lane(size_t i, float lane) { lane_[i] = lane; }
   // A cap on car i's planned speed, m/s (a car in the way; 1e9: none).
   void set_speed_cap(size_t i, float cap) { cap_[i] = cap; }
@@ -210,9 +269,11 @@ class AiField {
     std::vector<uint32_t> seg;
     std::vector<double> progress;
     std::vector<float> lane, skill, cross, corner, decel, target, cap, prev_steer;
+    std::vector<float> look, boost, abs_e, chi, prev_throttle;
   };
   Snapshot snapshot() const {
-    return {seg_, progress_, lane_, skill_, cross_, corner_, decel_, target_, cap_, prev_steer_};
+    return {seg_, progress_, lane_, skill_, cross_, corner_, decel_, target_, cap_, prev_steer_,
+            look_, boost_, abs_e_, chi_, prev_throttle_};
   }
   void restore(const Snapshot& s) {
     if (s.seg.size() != seg_.size()) return;
@@ -226,6 +287,9 @@ class AiField {
     target_ = s.target;
     cap_ = s.cap;
     if (s.prev_steer.size() == prev_steer_.size()) prev_steer_ = s.prev_steer;
+    if (s.look.size() == look_.size()) {
+      look_ = s.look, boost_ = s.boost, abs_e_ = s.abs_e, chi_ = s.chi, prev_throttle_ = s.prev_throttle;
+    }
   }
   // The speed car i plans at `distance` along the line (m/s).
   double planned_speed(size_t i, double distance) const;
@@ -238,6 +302,10 @@ class AiField {
   std::vector<uint32_t> seg_;
   std::vector<double> progress_;
   std::vector<float> lane_, skill_, cross_, corner_, decel_, target_, cap_, prev_steer_;
+  // The line controller's per car: the look-ahead (m), the under-steer
+  // boost, |e| and chi a step ago, and the last gas.
+  std::vector<float> look_, boost_, abs_e_, chi_, prev_throttle_, sat_;
+  std::vector<AiYawGain> yaw_gain_;
   // The planner's per car: the tables, C, B and the corner speeds by line
   // point for the current C (NaN: not computed yet).
   std::vector<const AiCapacity*> capacity_;

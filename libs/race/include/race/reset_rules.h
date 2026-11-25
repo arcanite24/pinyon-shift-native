@@ -10,9 +10,12 @@
 
 #include <array>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "race/dls.h"
 
 namespace race {
 
@@ -69,6 +72,25 @@ bool parse_ai_reset_rules(std::string_view airacing_xml, std::string_view set, A
 bool load_hand_of_god_reset(const std::filesystem::path& game_root, HandOfGodReset& out, std::string* error);
 bool load_ai_reset_rules(const std::filesystem::path& game_root, std::string_view set, AiResetRules& out,
                          std::string* error);
+
+// A set's passing search (<DLS>, <PassingDriver>) and its speed
+// computer's slope modifiers (<PredictiveControllerRLH>).
+struct AiRacingSet {
+  DlsSettings dls;
+  double slope_modifier = 1.0;     // SpeedComputerSlopeModifier
+  double slope_curvature = 0.75;   // SpeedComputerSlopeCurvatureModifier
+  bool disable_track_edge = false;  // DisableTrackEdgeAvoidance
+};
+// False (with `error`) when the set, a block or an attribute is missing.
+bool parse_ai_racing_set(std::string_view airacing_xml, std::string_view set, AiRacingSet& out, std::string* error);
+bool load_ai_racing_set(const std::filesystem::path& game_root, std::string_view set, AiRacingSet& out,
+                        std::string* error);
+// GlobalRegistry.xml's numeric values by id (`<Value id="a/b" type="float"
+// value="1.0"/>`); string values are skipped. False when the text holds
+// none.
+bool parse_global_registry(std::string_view xml, std::map<std::string, double>& out, std::string* error);
+bool load_global_registry(const std::filesystem::path& game_root, std::map<std::string, double>& out,
+                          std::string* error);
 
 // The AIRacing.xml set a race's AI runs with: "streetrace" for street and
 // other traffic races (SPEC-RACE-AI, Routes with no AI line), "freeroam"

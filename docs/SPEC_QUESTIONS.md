@@ -2017,6 +2017,31 @@ Open points:
   to 7 m/s slower. That is our AI controller against the mod's unequal
   clamps on the chattering loads, not the caps. The exemption stays.
 
+  **Resolved (2026-11-25): the exemption is gone.** The controller that
+  weaved was the oracle lap's pure-pursuit follower. That follower is
+  the M3 interim, not the title's AI. The lap now steers by the AI's own
+  rule (SPEC-RACE-AI, Steering at speed: delta = 0.27 alpha + 0.29 beta,
+  with the line point 1.0 s x v ahead, at least 2 m, and only the lock
+  as a bound). Every car runs the mod. The R34 lap times, with the AI's
+  TCS and STM on (Q122):
+
+  | Steering | Mod | Lap time |
+  |---|---|---|
+  | Pure pursuit | off | 39.258 s (+1.22 %, before Q122) |
+  | Pure pursuit | on | 40.549 s (+4.55 %) |
+  | AI rule | off | 38.568 s (-0.56 %) |
+  | AI rule | on | 39.003 s (+0.57 %) |
+
+  The last row is within the +-1 % target, with a cross-track maximum of
+  3.38 m. From 840 to 1040 m the yaw stays within 6 deg of the oracle's;
+  pure pursuit with the mod was up to 22 deg off. `SHIFT_LAP_STEER=pursuit`
+  brings back the old follower.
+
+  The race gate (seed 1, AI mean time) moved with the mod and the AI
+  rule together, so they land together with Q122. The mod alone, under
+  the old capped and rate-limited race steering, made NR02 170.6 s with 3
+  resets (from 138.6 s, 0 resets) and FR22 185.7 s (from 172.6 s).
+
 ## Q69 (FEEL-16/17, not blocking): the pad steering filter's law
 
 The engine's pad filter is now the parts SPEC-CAR-PHYSICS names, plus
@@ -3157,9 +3182,6 @@ Needed: whether the original keeps Rally-world speed records apart from
 Colorado's (and shows them on separate scoreboards), and where
 ColoradoDirt's gates come from if not Colorado's GameObjs.
 
-Needed: which of these screens the title draws, what text each one shows,
-and whether the UI changes the case.
-
 ## Q128 (UI, not blocking): the car list's photo and tile renders
 
 `108_C_BUY_CARSELECT` is bound for the Autoshow's car select, the garage
@@ -3534,3 +3556,298 @@ DLC filter; and the Rally ticket's trigger radius and speed.
 
 Needed: `CTriggerRallyEventUnlocks`, `CIsRallyXPEvent` and the Rally
 reward path in the generated v4 code.
+
+## Q121 (WORLD-05, not blocking): the one-on-one nemesis catch-up flag
+
+The race-start and nemesis boosts are decoded (C4 settled). The boost
+update reads the `AI/Racing/RaceBehavior/RaceStartBoost/*` and
+`.../NemesisBoost/*` registry values. Each is registered with a
+compiled-in default, and those defaults are the old "code-only" figures:
+0.4 and 0.1, 300 and 700 m, 1.5 and +0.3, and 50, 100 and 500 m. The
+title loads GlobalRegistry.xml over them at boot, matching each
+`<Value id>` to its registered value. So the disc's values are the ones
+that run: 0.6 and 0.2, 500 and 250 m held, a 1,000 m decay, a skill
+factor of 2.0, 20 m a car, 25 m/s, nemesis 1.1 and +0.4, and catch-up
++0.6 over 0 to 150 m, off 300 m from the finish. The engine now runs the
+decoded rule with those values (`race::race_boost`).
+
+Open: the one-on-one branch, `PlayerCatchupTorqueBoost`, runs only while
+a game-state byte is set. That byte is copied from a byte of another
+game object, and what that object is was not traced. Interim: on. On
+`NR02` this branch moves the rival from 160.7 s to 138.6 s (oracle
+130.7 s).
+
+Needed: what the flag means (for example single-player career only, or a
+difficulty or assist option), from a trace of that byte on `NR02`.
+
+Also interim: the distance the boost reads is the distance raced past the
+start line, and the speed test is in m/s. The title reads both from the
+car's route state and does not name their units.
+
+## Q122 (WORLD-02/03, not blocking): the AI-driven car's assists and the planner's calibration
+
+WORLD-02 and WORLD-03 are done: the race AI's own modifiers are gone.
+That covers the speed-narrowed turn-in cap, the 3.8 lock/s steer rate
+limit, the 0.29 alpha gain (now 0.27), the stretched and clamped
+look-ahead (now 1.0 s x v, at least 2 m), `off_line_slow`, the rollover
+cap on C, the cornering grip boost (the tyre's AI grip factor is now 1
+outside the car's dirt term, as RACE_AI's AI-only grip terms say) and
+`ai_traction`'s throttle cap and slip cut. The planner's vertical
+curvature now runs unclamped with the set's
+`SpeedComputerSlopeCurvatureModifier` (`default` 0.75, `freeroam` 1.0,
+`streetrace` 0.5) instead of a fixed 0.75.
+
+Without `ai_traction`, the full on/off gas spun the heavy rear-drive
+cars. NR02's Challenger went from 138.6 s with 0 resets to 277.1 s with
+10 resets. The engine now runs the title's own assists on AI-driven cars:
+
+- TCS with PhysicsSettings.ini's `...AI` keys: `TractionControlSpeedAI`
+  22, `TCSFullEffectFricDiffAI` 0.25, `TCSFullSteerSlipScale{RWD,FWD,AWD}AI`
+  1.3/1.7/0.71, and a takeoff slip of 1.0. The evidence is fair: on the
+  oracle lap the title's TCS amount was non-zero under the AI.
+- STM with the AI's window [1.0, 2.0]. The evidence is weak: the decoded
+  code has an AI window, but whether the AI's car has STM on is open
+  (CAR_PHYSICS, Unknowns). On the engine's oracle lap STM acts for 87
+  steps (0.7 s, amount up to 0.26) at 958 to 965 m, where the title's
+  never acted. The engine's TCS reaches 1.0 for three steps at the launch,
+  against the title's 0.064 peak.
+
+Update: under the decoded line controller (Q125), STM acts on 0 steps of
+the oracle lap. TCS still reaches 1.0, but only for three steps (25 ms)
+at the launch. In a race the AI's TCS target is a slip ratio of 0.77
+(`AssistsTCSSlipDefMoving` 0.5, `TCSFullEffectFricDiffAI` 0.25 and the steer
+scale), so on NR02 it never cut the Challenger's power slide (rear slip
+0.15 to 0.6). Running the race without TCS or without STM made NR02
+slower, by 31 s and 27 s.
+
+Gate (seed 1, AI mean time / resets), oracle in brackets:
+
+| Event | Before (f55db691) | Neither assist | TCS + STM | TCS + STM + `ai_traction` |
+|---|---|---|---|---|
+| FR22 (161.5) | 172.6 / 0 | 194.4 / 0 | 192.7 / 2 | 188.9 / 2 |
+| FR16 (124.0) | 123.4 / 1 | 137.4 / 1 | 121.8 / 0 | 123.6 / 0 |
+| FR24 (110.8) | 108.6 / 0 | 109.0 / 0 | 108.4 / 0 | 108.9 / 0 |
+| FR01 (102.7) | 108.6 / 1 | 121.3 / 8 | 105.8 / 1 | 102.2 / 1 |
+| NR02 (130.7) | 138.6 / 0 | 277.1 / 10 | 151.5 / 0 | 132.6 / 0 |
+| EXHIBITION_FEST_003 (179.0) | 193.8 / 0 | 197.9 / 2 | 185.0 / 0 | 209.9 / 4 |
+
+TCS + STM ships; `ai_traction` stays only on the pure-pursuit path
+(`SHIFT_AI_STEER=pursuit`). NR02's rival lost 20 s of the 25 s it had
+gained on the invented grip boost; that boost lifted a catch-up car's
+grip up to 1.25.
+
+Still interim:
+
+- The capacity calibration (`AiCapacityCalibration`, the R34's
+  16.01/14.6 lateral and 18.26/17.1 braking, blended out below 1,100 kg)
+  stays until the physics' raw tables match the title's dumps (the audit
+  says to fix the physics first). The engine's car model has no
+  downforce for `ai_aero_factor` to scale.
+- The tyre's AI grip factor's cornering, heavy-braking and state terms
+  are 0 (RACE_AI, interim).
+
+Needed: whether the AI-driven car has TCS and STM on, and with which
+slip targets (`AssistsTCSSlipDefMoving` for the AI), from the assist
+flags of an AI car in a race trace; and an AI car's speed against its
+plan on `FR22` and `NR02`, to tell the planner's tables from the car's
+handling.
+
+## Q123 (WORLD-01, not blocking): the passing search's interim parts
+
+The overtaking heuristic (`plan_lanes`) is replaced by the decoded
+dynamic-line search (`race::dls_update`, libs/race/src/dls.cpp). It runs
+on each set's `<DLS>` and `<PassingDriver>` values from AIRacing.xml:
+`default` for festival races, `streetrace` for street and traffic races,
+`freeroam` in free roam. Decoded and implemented:
+
+- 201 slots 0.5 m apart around the car's predicted place, with slots
+  1 to 199 scored;
+- the OUT and EDGE slots from the road's half width at the meeting point;
+- the cars alongside (within 3 m) covering every slot from their near
+  edge, and the predicted meetings covering the other car's lateral span
+  widened by ExtraCarWidth;
+- the cost sum (OutOfBounds, OffTrack, Car, OffLine weighted by
+  max(1, v x 3.3 / d), TimeToCollision on the slot and half its
+  neighbours, ChangePassSides, HeadOnPassWrongSide by LegalSideOfRoad);
+- the strict argmin, accepted below MaxAcceptableCost;
+- a search every 0.2 s, and on failure a hold, +5 frustration and a
+  retry next frame, with following past 1000;
+- the target as the first car met (a hit, or a miss under 0.2 m) among
+  those not yet passed;
+- the lane's rate as the offset over the distance to the meeting,
+  capped at 0.2 of the half width a waypoint (2 m).
+
+Interim (ours):
+
+- The predictions run along the shared line at constant speed. Each car
+  keeps its lateral place, and the own car moves to its lane over 1 s.
+  The boxes are aligned with the line, not the four corners.
+- A covered car is skipped when its near end is more than 1.5 own half
+  lengths from the car at the meeting. The decode reads "the along-track
+  positions differ by more than 1.5 x own half-length", which would skip
+  a car about to be rear-ended.
+- The target stays chosen until the car is past it or stops closing on
+  it, as if in the same lane.
+- Frustration grows by 5 a frame of a 30 Hz AI tick (150 a second). A
+  following car searches again once a second and stops following when a
+  search succeeds, when the target is 20 m ahead, or when it is passed.
+  A traffic car is chosen afresh every step, since its index is not
+  stable.
+- After a pass, or with no target, the lane returns to the line at 1 m a
+  25 m (at least 0.3 m/s), never into a car alongside.
+- Following trails at 0.75 x TrailingDistance. With any car in both the
+  car's path and its lane, a speed cap brakes at 12 m/s^2 to 1 m behind
+  it.
+- Not modelled: the use-rate flag, the low-relative-velocity passes, the
+  starting-line passing state (`StartingLineMinSpeedForPassingState`,
+  `StartingLinePassingDynLineUpdateInterval`), the temperament's TTC
+  threshold and front margin, and ChiVariance.
+
+Gate (seed 1, AI mean time / resets / car-to-car contacts), plan_lanes
+then the search: FR22 192.7/2/11178 to 188.3/1/1857, FR16 121.8/0/450
+to 133.3/2/1467, FR24 108.4/0/819 to 109.1/0/1532, FR01 105.8/1/1576
+to 105.0/0/1367, NR02 151.5/0/56 to 135.0/0/121 (one AI: the change is
+the streetrace set's 0.5 slope weight), EXHIBITION_FEST_003
+185.0/0/750 to 193.9/2/1551. Contacts rise on four routes: the interim
+trailing lets a car close to a metre.
+
+Needed: the transition shape from the current lane to the chosen one,
+the return to the line after a pass, the trailing controller, and what
+the "along-track" test in the coverage compares.
+
+## Q124 (WORLD-08, not blocking): festival group spawns
+
+The roaming festival population now follows SPEC-TRAFFIC's population
+target with the festival entries: target = min(D_s, cap(h)). D_s is the
+festival `DensityList`'s d per 100 m of road within the spawn-out
+distance, smoothed by `DensityDecay` every `DensityTestInterval`, and
+cap(h) runs from `MinFestival` to `MaxFestival`. A way whose density id
+the festival list lacks gets no festival cars (spawn weight 0). Before,
+the target was the cap alone, 2 to 7 cars wherever the player was.
+Without a festival list (no AIOpenWorld.xml) the cap alone still
+applies.
+
+Interim (ours): the same per-100 m reading as traffic (SPEC-TRAFFIC,
+Density), the 5 s spawn interval, and the spawn ring (180 to 320 m, or 45
+to 240 m for the first cars).
+
+Not modelled: `AI/Spawning/FestivalGroupSpawns` (on, on the disc). The
+registry flag is read, but what a group spawn places (several cars
+together, a shared destination) was not decoded (audit WORLD-08:
+"festival group destinations").
+
+At the oracle's census road (TRAFFIC, Tests: 746 m of density-5 and 68 m
+of density-2 road within 370 m), the per-100 m reading of the festival
+list (id 5 0.1 to 0.3, id 2 0.1 to 0.2) gives 2.4 at noon and 0.8 at
+02:00. The oracle counted 0.8 and 1.7 festival cars within 1 km. The old
+cap-only target was 7 and 2. The reading's night fall is the wrong way
+round for the festival cars, so their hour factor may not be traffic's.
+
+Needed: the group spawn's rule (how many cars, where, and whether they
+drive together), the festival cars' hour factor, and a free-roam count
+of festival cars against D_s at one more site than the oracle's road.
+
+## Q125 (WORLD-02/03, not blocking): the line controller's interim parts
+
+The race AI and the oracle lap's follower now steer by the decoded line
+controller (PredictiveControllerRLH) instead of the slip rule. The slip
+rule was ours: `0.27 alpha + 0.29 beta` on a look-ahead of 1.0 s x v.
+The decode found no slip-angle or countersteer term anywhere between the
+controller and the wheels. The engine now runs these decoded parts:
+
+- The look-ahead is T x v, with T = clamp(1.2 / G, 0, 1) s. It carries
+  the slide stretch, the speed floor, the limits on growth and fall, and
+  the widening by 40 x (|chi| - 1), clamped to 6 to 100 m.
+- The aim is the Hermite curve at s = 0.8, which gives omega = 2 v sin(a)
+  / l (or a, past |chi| 1.1). Inside |chi| 0.9, omega is capped by the
+  lateral limit.
+- steer = omega / G(v), less a yaw-rate damping of 0.75 (2 / G)^2 that
+  never crosses straight ahead. The under-steer boost (1 to 2) applies
+  while steering back.
+- More than a metre off the line, the aim point moves 0.2 e towards the
+  car and the tangent turns towards the point.
+- Track-edge avoidance acts on the throttle only (prev - 0.016 d|e|/dt),
+  and the set's `DisableTrackEdgeAvoidance` turns it off.
+- With the heading 84 degrees or more off the line, the gas is at most
+  0.6.
+- The steering-saturation grip term goes on both axles' AI grip factor.
+  It applies past 0.8 of the lateral limit's curvature and is recomputed
+  every update. Its cap is ramp(level, 0.94, 1.25), where the level is
+  the drivatar's cornering skill: AISkills' `SoloLapping_Cornering*`,
+  times the nemesis `SkillBoostFactor` 1.5, at most 1.25. The engine
+  uses the planner's C as the level, boosts included. A car with no
+  drivatar profile has a level of 0.95, so the term is next to nothing,
+  and the oracle lap's follower does not apply it. On the title's oracle
+  lap, all 285 of the AI grip factor's non-unit samples have the 1.1 rear
+  ratio, with no equal-axle term.
+
+The oracle lap is now 38.976 s, +0.50 % (it was 39.003 s under the slip
+rule). Its cross-track error is at most 1.04 m (rms 0.27 m), against
+3.38 m before. STM acts on 0 steps, against 87.
+
+Interim (ours):
+
+- G(v) is the yaw rate per unit steer, in 20 bins of 5 m/s. Ours comes
+  from our own vehicle sim, a small steady steer on flat ground. The
+  title builds its table per car with its own sim, which was not decoded.
+- The track's look-ahead floor is 8 m; the title's is 6 to 10 m, by
+  track. chi is the cross-track over the line's room on that side (4.5 m
+  on the oracle lap).
+- The pedals keep our band rule. The hold value (a car method) and the
+  off-track cap (from a smoothed wheel metric) were not decoded.
+- The saturation term's threshold of 0.94 is 0.97 when an integer on
+  the car body is 2, and what that integer means is not known.
+  The integer cheat levels (`SoloLapping_NominalCheatLevel`,
+  `SoloLapping_TorqueBoostCheatLevel`) are not loaded. They would raise
+  the level to 1 + 0.025 n and turn on the heavy-braking term. Both are
+  0 here.
+- The level is the planner's C. That covers AISkills' cornering skill,
+  the rubber bands' mistakes, and the start and nemesis boosts' skill
+  factor. The decode confirmed only the nemesis `SkillBoostFactor` as
+  feeding the level, so the other paths are assumed. A boosted car
+  reaches 1.25, where the cap is 1.0: the term reaches 1.0 on FR22 seed
+  2, and is above 0.19 on 1.7 % of the AI's samples. The decode also
+  found a rule that caps every skill at 0.93 above a car quantity it
+  could not read. That would close the term for every car it applies to.
+- The AI grip terms add up. The dirt term and this one are summed and
+  then clamped to [0, 2], as in the title.
+
+Gate: the 3-seed mean of each seed's AI mean time, in seconds, with the
+oracle in brackets. f55db691 is before WORLD-02/03, and the slip rule is
+6faaef8c.
+
+| Event | f55db691 | Slip rule | Controller |
+|---|---|---|---|
+| FR22 (161.5) | 173.1 | 192.5 | 163.0 |
+| FR16 (124.0) | 121.9 | 127.3 | 122.6 |
+| FR24 (110.8) | 108.4 | 109.3 | 109.0 |
+| FR01 (102.7) | 103.6 | 102.3 | 101.9 |
+| NR02 (130.7) | 153.5 | 139.6 | 179.3 |
+| EXHIBITION_FEST_003 (179.0) | 191.0 | 194.2 | 186.6 |
+
+Car-to-car contacts per race were as high as 33,151 under the slip rule
+(FR22, seed 2). Most of that count came from cars piling up behind the
+end of the line after finishing. Under the controller, contacts are 150
+to 831 per race.
+
+NR02 is the event the controller misses. Its one rival, the Challenger,
+power-slides at about 40 m/s on full gas in 3rd and spins. The race
+turns on whether it crashes, so 3 seeds are not enough. Over seeds 1 to
+9:
+
+| Build | NR02 mean |
+|---|---|
+| f55db691 | 158.2 s |
+| Controller, grip terms multiplied (e0e89cc0) | 165.5 s |
+| Controller, grip terms summed | 175.0 s |
+
+The slip rule's 0.29 beta (139.6 s over 3 seeds) held the car straight.
+The title has no such term, so what keeps its Challenger straight is
+still to find: the hold throttle, the G table, or the car's own
+physics.
+
+Needed:
+
+- the title's G table for one car, from a memory read of the controller;
+- the hold throttle;
+- the cheat levels per AISkills row.
