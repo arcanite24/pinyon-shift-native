@@ -286,13 +286,15 @@ destinations, and an outpost must be discovered (Q90).
 
 - The BGF timelines (the slides such as `SELECTED`, `UNSELECTED` and
   `FOCUSED`, their curves and the events' actions) are decoded and play
-  through `SceneTimeline` (docs/UI_SCENE_ANIMATION.md). Only the front end
-  (FE-02) and the HUD notifications (HUD-11) are hooked up so far. The pause
-  menu still uses its measured look: open and close in one frame, a
-  selection cross-fade of about three frames, the new row already at its
-  larger size. Its slides give 150 ms, scale 1.2 and a 7 / 6 px spread
-  instead (Q187). Replace `kPauseFocusScale`, `kPauseFadeSeconds` and the
-  tints when it is hooked.
+  through `SceneTimeline` (docs/UI_SCENE_ANIMATION.md). Hooked up so far:
+  - the front end (FE-02);
+  - the HUD notifications (HUD-11);
+  - the pause menu's rows (MENU-17): scale 1.2, the pink tapes and the
+    7 / 6 px spread about the focus, which both pause captures confirm.
+
+  The pause menu's moves still take the measured 0.1 s cross-fade
+  (`kPauseFadeSeconds`) rather than the slides' 150 ms. `kPauseFocusScale`
+  (1.21) and the tints are used only without a timeline (Q187).
 - Stackers are not run: a scene's packed rows keep their laid-out places. The
   pause list's offset (`kListDx`, `kListDy`) and the player bar's packing
   (`kObjectiveRight`, `kPillPad`, `fit_pill`) are measured on

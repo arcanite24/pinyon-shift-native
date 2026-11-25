@@ -4455,16 +4455,28 @@ WP6's table (parity/wp6) misread three times, now corrected:
 Needed: a capture of the opening titles, or the code that drives
 `H_OPENING_TITLES`.
 
-## Q187 (MENU-17, MAP-05, ACT-01, ACT-02, not blocking): the scenes decoded but not played
+## Q187 (MENU-17, MAP-05, ACT-01, ACT-02, not blocking): the scenes decoded but not fully played
 
-The timelines of these are read, but the engine does not play them yet:
-- **`925_PAUSE_MENU` (MENU-17).** The root's `INTRO` / `OUTRO` (300 ms)
-  change nothing visible. Each row's `FOCUSABOVE` / `FOCUSBELOW` (150 ms)
-  scales it to 1.2, turns its tapes pink and brings in its clip-on, from
-  7 px above or 6 px below. `BLURREDABOVE` / `BLURREDBELOW` leave the rows
-  above the focus 7 px up and the rows below 6 px down. The engine keeps
-  its measured 0.1 s fade and 1.21 step, and does not draw the spread;
-  whether the captures show it was not checked.
+**`925_PAUSE_MENU` (MENU-17)** now plays its rows' slides, but not all of
+the scene is used:
+- `FOCUSED` scales the focused row to 1.2 (measured: 1.21).
+- `BLURREDABOVE` / `BLURREDBELOW` rest the rows above the focus 7 px up
+  and those below 6 px down. Both captures confirm the spread:
+  `07_pause_menu_orig.png` (MAP focused) and
+  `07b_pause_menu_scrolled_orig.png` (QUIT focused) put SETTINGS .. MY
+  PROFILE 12 to 13 px apart. The engine's rows now land within 1 px of
+  both.
+- Not from the scene:
+  - The list's rest is measured: `kListDy` plus 7 px up, since the old
+    measurement had the spread folded in.
+  - The list's own slide (`Option_List`'s `Slide1`, 0..6000 ms paused,
+    scrubbed by the game's `SIZE` GotoTime actions) is not sent. Which
+    `SIZE` the game sends for a list's length is not known.
+  - The moves (`FOCUSABOVE` .. `BLURBELOW`, 150 ms) are scrubbed by the
+    measured 0.1 s cross-fade.
+- The root's `INTRO` / `OUTRO` (300 ms) change nothing visible.
+
+Still not played:
 - **`H_MAP` (MAP-05).** The event hubs' `AVAILABLE` / `UNAVAILABLE` /
   `BRONZE` / `SILVER` / `GOLD` slides, and each activity's `Upright` /
   `UprightWarning`. The engine's map does not draw its icons from the
@@ -4474,8 +4486,10 @@ The timelines of these are read, but the engine does not play them yet:
 Also open: the time a contract event is sent relative to the frame it
 takes effect on (the engine fires and advances in the same frame).
 
-Needed: pause menu captures mid-move, and the map's icon layer and the
-activity popups drawn from their scenes.
+Needed:
+- pause menu captures taken mid-move;
+- the `SIZE` event the game sends for each list length;
+- the map's icon layer and the activity popups drawn from their scenes.
 
 ## Q188 (UI, not blocking): the contracts' `initial_state`
 

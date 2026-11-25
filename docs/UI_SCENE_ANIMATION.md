@@ -263,21 +263,29 @@ off, the screens draw as before).
   has four keys. The curves' values are all 0 and the slide sets opacity 0,
   so the fade itself is not in the scene; the engine ramps over the keys
   (Q186).
+- **The pause menu's rows** (`pause_screen.cpp`, MENU-17). `925_PAUSE_MENU`'s
+  `Button0..8` components:
+  - `FOCUSED`: scale 1.2, the tapes pink (250, 0, 100), the clip-on in.
+  - `BLURREDABOVE` / `BLURREDBELOW`: the rows above the focus rest 7 px up,
+    the rows below 6 px down. Both captures agree to a pixel or so: MAP
+    focused (`07_pause_menu_orig.png`) and QUIT focused
+    (`07b_pause_menu_scrolled_orig.png`) put the unfocused rows 12 to 13 px
+    apart.
+  - `FOCUSABOVE` / `FOCUSBELOW` and `BLURABOVE` / `BLURBELOW` (150 ms) play
+    while the focus moves.
+
+  Some parts are not from the scene:
+  - The moves are scrubbed by the measured cross-fade (0.1 s), not the
+    slides' own 150 ms.
+  - The list's own slide (`Option_List`'s `Slide1`, which the game scrubs
+    with its `SIZE` events) is not sent. The list keeps its measured
+    placement, 7 px higher than before the spread (Q187).
+  - The root's `INTRO` and `OUTRO` are 300 ms and change nothing visible
+    (the ButtonBar stays at 100); the captures show the menu opening and
+    closing at once.
 
 ## Decoded, not yet played
 
-- **The pause menu (`925_PAUSE_MENU`, MENU-17).** The root's `INTRO` and
-  `OUTRO` are 300 ms and change nothing visible (the ButtonBar stays at 100),
-  as the captures show the menu opening and closing at once. Each row
-  (`Button0..8`):
-  - `FOCUSABOVE` / `FOCUSBELOW`: 150 ms to scale 1.2 (measured: 1.21), the
-    tapes black to pink (250, 0, 100), the clip-on in, from 7 px above or
-    6 px below.
-  - `BLURABOVE` / `BLURBELOW`: back over 150 ms.
-  - `BLURREDABOVE` / `BLURREDBELOW`: rows above the focus 7 px up, rows below
-    6 px down.
-
-  The engine keeps its measured 0.1 s cross-fade and 1.21 step (Q187).
 - **`H_GENERIC` / `H_GENERIC_TITLE`.** `INTRO` is 300 / 600 ms with no
   visible curve on the root.
 - **The map (`H_MAP`, MAP-05).** The event hubs' `AVAILABLE`, `UNAVAILABLE`,
@@ -295,6 +303,20 @@ off, the screens draw as before).
   checks the zero control times and the Master Slides, and the known slides:
   `120_P_PRE_SPLASH`'s, the pause menu's 300 ms `INTRO` / `OUTRO`, and
   `H_OPENING_TITLES`' card keys.
-- `scene_screen_tests` with `SHIFT_SCENE_SCREEN_SHOT_DIR` draws the front
-  end's transition at nine times, with and without the timeline
-  (`title_anim_*.png`).
+- `scene_screen_tests` checks these on every run, with no shot folder
+  needed:
+  - the front end's fades;
+  - the opening titles' keys, read by the layers' names;
+  - the notification's size and alpha;
+  - the pause rows' 13 px spread.
+
+  With `SHIFT_SCENE_SCREEN_SHOT_DIR` set, it also draws each with and without
+  the timeline:
+  - the front end's transition at nine times (`title_anim_*.png`);
+  - the notification at six ages (`hud_notify_anim_*.png`);
+  - the pause rows (`pause_anim_*.png`).
+
+  With `SHIFT_SCENE_SCREEN_HUD_DIR` set as well, the notification and pause
+  frames are drawn over the original's captures.
+- `carview --ui-scene ... bgf` also prints each item's properties (its base
+  values).
