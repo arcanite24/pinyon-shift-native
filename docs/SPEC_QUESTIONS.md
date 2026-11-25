@@ -4473,3 +4473,33 @@ Grand Cherokees (1491 and 1553); every other car in the gate events is
 at 944 or below. The drivers' C in these events is 0.6 to 0.9, so the
 cap rarely binds. Needed: the two car quantities the test reads, and
 their units.
+
+## Q178 (WORLD-07/08, not blocking): the free-roam racers on the race AI
+
+The festival racers and the head-to-head rival still drive by the
+kinematic model in `freeroam::FestivalManager`, not by the race AI with
+the `freeroam` AIRacing set. A head-to-head now starts (its route is
+built from the world's nav). Moving a racer onto the race AI needs
+pieces free roam does not have:
+
+- a physics car per racer: a baked body, wheels on the world's ground,
+  and its draw through the race cars' path;
+- a `drive::RacingLine` and planner built from the head-to-head route;
+- the hand-over between the kinematic roamer and the physics car as a
+  challenge starts and ends.
+
+That is not a reuse of `RaceView`, so it is left for its own task. The
+festival group spawns (Q124) were not decoded either. Needed: the
+free-roam racers' spawn and hand-over code (how the title swaps a
+roaming racer for a driven one), and the group spawn table.
+
+## Q179 (WORLD, not blocking): the AI's contact with the smashables
+
+The intact props and solid barriers meet the player's car only
+(`world::SmashableGround` in the player's step). The race AI's cars and
+the traffic pass through them, and only the player breaks props. Giving
+the AI the same ground is a few lines. But `SmashableWorld::step`, which
+breaks props and steps the debris, takes one car at a time and steps the
+debris on each call, so the AI's breaks need that split first. Needed:
+whether the title's AI and traffic break props at all, and if so, how
+far from the player.
