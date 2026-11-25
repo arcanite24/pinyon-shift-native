@@ -72,6 +72,13 @@ struct ProgressionTables {
   int64_t affinity_bonus_for_level(int level) const;
 };
 
+// The driver level a save resumes at (one-based): the saved level, kept as
+// saved (an imported Main/Level is not recomputed from XP, FORMAT-PROFILE),
+// or the level `driver_xp` reaches when that is higher. When the saved level
+// is above the XP's, `driver_xp` is raised to that level's PlayerLevelDef
+// floor so later gains count from it. `tables` may be null or empty.
+int resume_driver_level(const ProgressionTables* tables, int saved_level, int& driver_xp);
+
 bool load_progression_tables(const std::filesystem::path& game_root, ProgressionTables& out, std::string* error);
 bool load_progression_tables(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
                              const cars::PartsDb* db, ProgressionTables& out, std::string* error);

@@ -16,6 +16,10 @@
 #include "race/career.h"
 #include "race/rewards.h"
 
+namespace drive {
+struct DriveSave;
+}
+
 namespace race {
 
 // ---- Smooth UI4 & Cinematic Easing Curves ----
@@ -449,6 +453,35 @@ struct CampaignSaveState {
   std::vector<std::string> unlocked_showcases;
   bool finale_complete = false;
 };
+
+// ---- The campaign mirror of an imported original profile ----
+// The original profile stores no campaign mirror (its dialogue record holds
+// hashed keys, PROG-15), so an import rebuilds it from the career it does
+// store, with the rules CampaignFlow applies live:
+// - bosses: every Star Showdown whose rule holds (the collected wristband and
+//   points of check_boss_unlocks) or that has a result; Darius once
+//   HEADLINE_EVENT is won, with its `headline_event_won` key (the pending
+//   showdown) until NEM_FINAL is won, which completes the finale;
+// - showcases: every showcase whose popularity gate the rank meets (or, with
+//   no rank, that `event_unlocks` holds) or that has a result;
+// - heard dialogue: the one-shot unlock and collection lines those imply
+//   (boss and showcase unlocks, each collected wristband, the opening's
+//   lines), so none is queued again; the opening's cutscenes once the intro
+//   is complete, the finale's once it is won.
+struct CampaignImportInputs {
+  std::vector<std::pair<int64_t, int>> event_results;  // event id, best place
+  std::vector<int64_t> event_unlocks;                  // CareerEventUnlocks
+  int wristband_points = 0;
+  int collected_wristband = 0;  // -1 before the yellow band
+  int popularity_rank = 0;      // 1..250; 0 = unknown (use event_unlocks)
+  bool intro_completed = true;
+};
+CampaignSaveState infer_campaign_state(const CampaignImportInputs& in);
+// infer_campaign_state over `save`'s career (event results and unlocks,
+// wristband points, collected wristband, intro), merged into its mirror:
+// the sets are united, the finale kept once set, the stage kept when set.
+// `popularity_rank` 0 means unknown (showcases then come from the unlocks).
+void seed_imported_campaign(drive::DriveSave& save, int popularity_rank);
 
 // ---- Master Campaign Progression State Machine ----
 class CampaignFlow {

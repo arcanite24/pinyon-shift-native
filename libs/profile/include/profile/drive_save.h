@@ -14,6 +14,23 @@
 
 namespace profile {
 
+// Main/Level is the zero-based PlayerLevelDef.Id (a profile edited to level
+// 11 at 100,000 XP stays 11, the row from 95,000); the engine's driver level
+// (ProgressionTables::driver_level_for_xp, DriveSave::level) is one-based.
+int engine_driver_level_from_profile(int64_t main_level);
+int64_t profile_level_from_engine(int engine_level);
+
+// Where an imported career resumes: the collected wristband is
+// Main/WristbandLevel (zero-based, clamped to 0..6); a save still in the
+// first-time career (stage 1 or 2, no band, points or results) resumes in
+// the engine's opening (interim, PROG-05) with no wristband (-1).
+struct ImportedCareerStage {
+  bool intro_completed = true;
+  std::string campaign_stage;  // "freeroam", "viper_drive" or "qualify"
+  int collected_wristband = 0;
+};
+ImportedCareerStage imported_career_stage(const Imported& p);
+
 // Fills `out` from `p`:
 // - car: the CareerCar garage row's model through `media_of` (a Data_Car id
 //   to its MediaName, "" when the engine cannot load it); when that model is
@@ -25,6 +42,13 @@ namespace profile {
 // - free roam: the found signs, the barns off their starting state with
 //   their distances, TotalDistanceDriven;
 // - garage: every garage row's model, in Id order.
+// - progression: popularity points, the Fame tiers claimed and every other
+//   sponsor's {count, tiers} (SponsorshipState, SPEC_QUESTIONS Q60), the
+//   driver level (Main/Level + 1, kept as saved; there is no driver XP),
+//   MaxSkillsScore / MaxSkillsCarOrdinal, the collected wristband
+//   (Main/WristbandLevel) and the opening stage (imported_career_stage).
+//   The campaign mirror (bosses, showcases, finale, heard dialogue) needs
+//   the catalog and the Fame ladder: race::infer_campaign_state fills it.
 // There is no position: the import spawns at the festival (Player0's
 // layout is open). `notes` receives what was checked or left out (the
 // UpgradeDiscount check, hidden cars).

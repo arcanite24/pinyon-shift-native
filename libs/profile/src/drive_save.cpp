@@ -70,6 +70,29 @@ Record* find_child_by_class(Record& parent, std::string_view class_name) {
 
 }  // namespace
 
+int engine_driver_level_from_profile(int64_t main_level) { return int(std::max<int64_t>(0, main_level)) + 1; }
+
+int64_t profile_level_from_engine(int engine_level) { return std::max(0, engine_level - 1); }
+
+ImportedCareerStage imported_career_stage(const Imported& p) {
+  ImportedCareerStage s;
+  // Interim (PROG-05 is open): the first-time career's stages 1 (the opening
+  // Viper race) and 2 (the Corrado drive to the festival) map to the engine's
+  // Viper drive and Corrado qualifier while no band, point or result exists.
+  const uint32_t ftc = p.first_time_career_stage;
+  if (p.has_first_time_career && (ftc == 1 || ftc == 2) && p.wristband_level <= 0 && p.xp <= 0 &&
+      p.event_results.empty()) {
+    s.intro_completed = false;
+    s.campaign_stage = ftc == 1 ? "viper_drive" : "qualify";
+    s.collected_wristband = -1;
+    return s;
+  }
+  s.intro_completed = true;
+  s.campaign_stage = "freeroam";
+  s.collected_wristband = int(std::clamp<int64_t>(p.wristband_level, 0, 6));
+  return s;
+}
+
 void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>& media_of, drive::DriveSave& out,
                    std::vector<std::string>* notes) {
   auto note = [&](std::string s) {
@@ -144,10 +167,20 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   // The career (as is).
   out.credits = p.credits, out.total_winnings = p.total_winnings;
   out.wristband_points = int(p.xp);
+  // Popularity and the sponsors (SponsorshipState, SPEC_QUESTIONS Q60).
   out.popularity_points = p.popularity;
+  out.fame_rewards_claimed = int(p.fame_tiers_claimed);
+  for (const auto& sc : p.sponsors)
+    if (sc.id != "Fame") out.sponsors.push_back({sc.id, int(sc.count), int(sc.tiers_claimed)});
   out.max_skills_score = p.max_skills_score;
   out.max_skills_car = p.max_skills_car;
-  out.driver_xp = int(p.driver_xp);
+  // No driver XP in the profile: the level is kept as saved (see below).
+  out.driver_xp = 0;
+  // The collected wristband (Main/WristbandLevel, zero-based); the opening.
+  const ImportedCareerStage stage = imported_career_stage(p);
+  out.intro_completed = stage.intro_completed;
+  out.campaign_stage = stage.campaign_stage;
+  out.collected_wristband = stage.collected_wristband;
   out.num_races = int(p.num_races), out.num_victories = int(p.num_victories), out.num_podiums = int(p.num_podiums);
   out.time_festival = p.time_festival, out.time_street = p.time_street, out.time_exhibition = p.time_exhibition;
   out.top_speed = p.top_speed;
@@ -165,7 +198,8 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   out.speed_zones = p.speed_zones;
   out.satnav_enabled = p.satnav_on;
   // Carried as is: the level, unlocks, Rally counters and the 1000 Club.
-  out.level = int(p.level);
+  // Main/Level is the zero-based PlayerLevelDef.Id; the engine's level is one-based.
+  out.level = engine_driver_level_from_profile(p.level);
   out.event_unlocks = p.event_unlocks, out.hub_unlocks = p.hub_unlocks;
   out.has_rally = p.rally_fields, out.num_rallies = int(p.num_rallies), out.num_rally_stages = int(p.num_rally_stages);
   out.num_rally_victories = int(p.num_rally_victories), out.rally_winnings = p.rally_winnings;
@@ -236,17 +270,18 @@ void from_drive_save(const drive::DriveSave& save, const garage::Garage& garage,
   set_field_int(out.body.fields, "Main/Credits", clamped_credits, Value::kU32);
   set_field_int(out.body.fields, "Main/XP", save.wristband_points, Value::kI32);
   set_field_int(out.body.fields, "Main/WristbandLevel", wristband_lvl, Value::kI32);
-  set_field_int(out.body.fields, "Main/Level", save.level, Value::kI32);
+  const int64_t main_level = profile_level_from_engine(save.level);
+  set_field_int(out.body.fields, "Main/Level", main_level, Value::kU32);
   set_field_int(out.body.fields, "Main/CareerCar", selected_car_id, Value::kI32);
   set_field_int(out.body.fields, "Main/UpgradeDiscount", discount, Value::kU32);
   set_field_int(out.body.fields, "Main/TotalWinnings", save.total_winnings, Value::kI32);
   set_field_int(out.body.fields, "Main/NumRaces", save.num_races, Value::kI32);
   set_field_int(out.body.fields, "Main/NumVictories", save.num_victories, Value::kI32);
   set_field_int(out.body.fields, "Main/NumPodiums", save.num_podiums, Value::kI32);
-  set_field_double(out.body.fields, "Main/Popularity", save.popularity_points, Value::kFloat);
-  set_field_int(out.body.fields, "Main/MaxSkillsScore", save.max_skills_score, Value::kI32);
-  set_field_int(out.body.fields, "Main/MaxSkillsCar", save.max_skills_car, Value::kI32);
-  set_field_int(out.body.fields, "Main/DriverXP", save.driver_xp, Value::kI32);
+  // Main has no Popularity or DriverXP field (popularity goes to the
+  // SponsorshipState record below); the best skills car is MaxSkillsCarOrdinal.
+  set_field_int(out.body.fields, "Main/MaxSkillsScore", save.max_skills_score, Value::kU32);
+  set_field_int(out.body.fields, "Main/MaxSkillsCarOrdinal", save.max_skills_car, Value::kU32);
   set_field_double(out.body.fields, "Main/TopSpeed", save.top_speed, Value::kFloat);
   set_field_double(out.body.fields, "Main/TotalDistanceDriven", save.total_distance, Value::kFloat);
   set_field_double(out.body.fields, "Main/TimeInFestivalRaces", save.time_festival, Value::kFloat);
@@ -290,6 +325,42 @@ void from_drive_save(const drive::DriveSave& save, const garage::Garage& garage,
     rec.version = 2;
     blk0.records.push_back(std::move(rec));
     colorado = &blk0.records.back();
+  }
+
+  // Popularity and the sponsors (CHorizonSponsorshipState v2, SPEC_QUESTIONS
+  // Q60): patched in place, or a fresh record without a template.
+  SponsorshipState sponsorship;
+  {
+    sponsorship.popularity_points =
+        uint32_t(std::llround(std::clamp(save.popularity_points, 0.0, double(UINT32_MAX))));
+    uint32_t fame_count = 0;
+    if (base_template)
+      for (const auto& sc : base_template->sponsors)
+        if (sc.id == "Fame") fame_count = sc.count;
+    sponsorship.challenges.push_back({"Fame", uint32_t(std::max(0, save.fame_rewards_claimed)), fame_count});
+    for (const auto& sp : save.sponsors)
+      if (sp.id != "Fame")
+        sponsorship.challenges.push_back({sp.id, uint32_t(std::max(0, sp.claimed)), uint32_t(std::max(0, sp.count))});
+    Record* rec = nullptr;
+    for (auto& r : blk0.records)
+      if (r.name == "SponsorshipState" && r.class_name == "CHorizonSponsorshipState") rec = &r;
+    if (rec) {
+      rec->payload = encode_sponsorship_state(rec->payload, sponsorship);
+    } else {
+      Record r;
+      r.name = "SponsorshipState";
+      r.class_name = "CHorizonSponsorshipState";
+      r.version = 2;
+      r.payload = encode_sponsorship_state({}, sponsorship);
+      blk0.records.push_back(std::move(r));
+    }
+    // Re-read so the mirror holds every child (template ones included).
+    for (const auto& r : blk0.records)
+      if (r.name == "SponsorshipState" && r.class_name == "CHorizonSponsorshipState")
+        decode_sponsorship_state(r.payload, sponsorship);
+    // `colorado` may have moved when the block grew.
+    for (auto& r : blk0.records)
+      if (r.name == "Colorado" && r.class_name == "CHorizonLocationState") colorado = &r;
   }
 
   // Discount signs (CFlyerState v1, 2 bytes: [revealed, found]).
@@ -554,17 +625,20 @@ void from_drive_save(const drive::DriveSave& save, const garage::Garage& garage,
   out.credits = clamped_credits;
   out.xp = save.wristband_points;
   out.wristband_level = wristband_lvl;
-  out.level = save.level;
+  out.level = main_level;
   out.career_car = selected_car_id;
   out.upgrade_discount = discount;
   out.total_winnings = save.total_winnings;
   out.num_races = save.num_races;
   out.num_victories = save.num_victories;
   out.num_podiums = save.num_podiums;
-  out.popularity = save.popularity_points;
+  out.popularity = double(sponsorship.popularity_points);
+  out.has_sponsorship = true;
+  out.sponsors = sponsorship.challenges;
+  out.fame_tiers_claimed = 0;
+  if (const SponsorshipChallenge* fame = sponsorship.find("Fame")) out.fame_tiers_claimed = fame->tiers_claimed;
   out.max_skills_score = save.max_skills_score;
   out.max_skills_car = save.max_skills_car;
-  out.driver_xp = save.driver_xp;
   out.top_speed = save.top_speed;
   out.distance_driven = save.total_distance;
   out.time_festival = save.time_festival;

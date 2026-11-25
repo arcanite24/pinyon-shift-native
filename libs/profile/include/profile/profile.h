@@ -121,16 +121,65 @@ struct ClubCar {
   std::vector<std::vector<uint8_t>> raw_blobs;    // raw save_progress blob bytes, parallel to `keys`
 };
 
+// One `CSponsorshipChallengeState` child of `SponsorshipState` (v1, 8 bytes:
+// u32 tiers claimed, u32 count). The tiers word equals the number of the
+// SponsorshipChallenges.xml ranks whose `number` the count reaches on all 28
+// skill children of both reference saves; on `Fame` it is the Fame-sponsor
+// tiers claimed and the count is 0.
+struct SponsorshipChallenge {
+  std::string id;  // the SponsorshipChallenges.xml id ("Air", "Fame", ...)
+  uint32_t tiers_claimed = 0, count = 0;
+};
+
+// `SponsorshipState` (`CHorizonSponsorshipState` v2): a 20-byte header (u32
+// popularity points, a 4-byte word, f32, u32 2, u32 child count) and the
+// child records. Only the popularity word and the 8-byte children are
+// interpreted; the other header words are kept as read.
+struct SponsorshipState {
+  uint32_t popularity_points = 0;
+  std::vector<SponsorshipChallenge> challenges;
+  const SponsorshipChallenge* find(std::string_view id) const;
+};
+
+// Decodes a `SponsorshipState` payload; false when it does not parse.
+bool decode_sponsorship_state(std::span<const uint8_t> payload, SponsorshipState& out);
+// The one place the save's popularity is read (SPEC_QUESTIONS Q60, probable):
+// the first header word of `SponsorshipState`, cumulative Fame.xml points.
+// 0 when the payload does not parse.
+uint32_t popularity_points_from_sponsorship_state(std::span<const uint8_t> payload);
+// `payload` with the popularity word and the named children's two words
+// replaced; children absent from `payload` are appended (count updated),
+// every other byte is kept. An empty `payload` gets a fresh record with the
+// header layout of the reference saves (word 0, f32 0, 2) and the 15
+// SponsorshipChallenges.xml ids.
+std::vector<uint8_t> encode_sponsorship_state(std::span<const uint8_t> payload, const SponsorshipState& st);
+
 // Everything M6 reads from a profile, with the parsed body kept whole.
 struct Imported {
   Body body;
   uint32_t version_flags = 0;  // 0 base, 2 v4 (missing: base)
   size_t main_fields = 0;
   // Main/*: the career.
+  // `level` is Main/Level, the zero-based PlayerLevelDef.Id kept as saved
+  // (the engine's driver level is that plus one); `last_rewarded_level` is
+  // Main/LastRewardedLevel. The profile has no driver XP field.
   int64_t credits = 0, xp = 0, wristband_level = 0, level = 0, career_car = 0, upgrade_discount = 0;
+  int64_t last_rewarded_level = 0;
   int64_t total_winnings = 0, num_races = 0, num_victories = 0, num_podiums = 0;
+  // Popularity points and the sponsors (`SponsorshipState`, see above);
+  // `fame_tiers_claimed` is the `Fame` child's tiers word.
   double popularity = 0;
-  int64_t max_skills_score = 0, max_skills_car = 0, driver_xp = 0;
+  bool has_sponsorship = false;
+  std::vector<SponsorshipChallenge> sponsors;  // every child, Fame included
+  int64_t fame_tiers_claimed = 0;
+  // Main/MaxSkillsScore and Main/MaxSkillsCarOrdinal (a Data_Car id).
+  int64_t max_skills_score = 0, max_skills_car = 0;
+  // Colorado's `CFirstTimeCareerState` (5 bytes: a byte, u32 stage; stage 1
+  // the opening Viper race, 2 the Corrado drive to the festival; 8 on both
+  // finished reference saves).
+  bool has_first_time_career = false;
+  uint8_t first_time_career_flag = 0;
+  uint32_t first_time_career_stage = 0;
   double top_speed = 0;        // m/s
   double distance_driven = 0;  // TotalDistanceDriven, m
   double time_festival = 0, time_street = 0, time_exhibition = 0;  // TimeIn*Races, s

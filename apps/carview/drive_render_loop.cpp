@@ -861,9 +861,8 @@ void DriveSession::run_window_loop() {
                 for (const auto& [id, place] : disk_save.event_results) app.career.event_places[id] = place;
                 app.career.prize_cars = disk_save.prize_cars;
                 app.career.driver_xp = disk_save.driver_xp;
-                app.career.driver_level = app.have_prog_tables
-                                              ? app.prog_tables.driver_level_for_xp(app.career.driver_xp)
-                                              : std::max(1, disk_save.level);
+                app.career.driver_level = race::resume_driver_level(
+                    app.have_prog_tables ? &app.prog_tables : nullptr, disk_save.level, app.career.driver_xp);
                 for (const auto& [mid, xp] : disk_save.make_affinity) app.career.make_affinity_xp[mid] = xp;
                 if (disk_save.difficulty >= 0 && disk_save.difficulty <= 4)
                   app.race_options.difficulty = race::Difficulty(disk_save.difficulty);

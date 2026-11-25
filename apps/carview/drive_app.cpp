@@ -637,6 +637,16 @@ bool DriveApp::init(int& exit_code) {
   
   
   campaign.configure(game_root_of(), language, skip_intro_movies);
+  // An original profile stores no campaign mirror: rebuild it from the
+  // imported career (bosses, showcases by popularity rank, finale, the
+  // one-shot lines already passed) so nothing replays or relocks (PROG-15).
+  if (imported) {
+    const int pop_rank = have_skills_data ? skills_data.rank_for_points(saved.popularity_points) : 0;
+    race::seed_imported_campaign(saved, pop_rank);
+    std::printf("import: popularity %.0f (rank %d), wristband %d collected, %zu bosses, %zu showcases, finale %s\n",
+                saved.popularity_points, pop_rank, saved.collected_wristband, saved.unlocked_bosses.size(),
+                saved.unlocked_showcases.size(), saved.finale_complete ? "won" : "open");
+  }
   if (have_saved) campaign.load_from_save(saved);
   title_menu_phase = cli_title_menu;
   if (!race_event.empty()) {
@@ -714,8 +724,8 @@ bool DriveApp::init(int& exit_code) {
   }
   if (have_saved) {
     career.driver_xp = saved.driver_xp;
-    career.driver_level = have_prog_tables ? prog_tables.driver_level_for_xp(career.driver_xp)
-                                           : std::max(1, saved.level);
+    career.driver_level =
+        race::resume_driver_level(have_prog_tables ? &prog_tables : nullptr, saved.level, career.driver_xp);
     for (const auto& [mid, xp] : saved.make_affinity) career.make_affinity_xp[mid] = xp;
   }
   h2h_races = have_saved ? saved.h2h_races : 0;
