@@ -422,8 +422,10 @@ void DriveSession::init_session() {
             app.shared_nav_loaded
                 ? true
                 : traffic::read_nav(game_root / "media" / "tracks" / "colorado" / "colorado.nav", festival_nav, &ferr);
+        // The racers' nav: the world host's when it has read one (festival_nav is then empty).
+        const traffic::NavMap& fnav = app.shared_nav_loaded ? app.shared_nav : festival_nav;
         if (nav_ready && traffic::read_traffic_config(game_root, fcfg, &ferr, false)) {
-          festival_roads.build(app.shared_nav_loaded ? app.shared_nav : festival_nav);
+          festival_roads.build(fnav);
           std::set<int64_t> traffic_ids;
           for (const auto& tm : fcfg.models) traffic_ids.insert(tm.id);
           // Match roaming Festival AI roster dynamically to the player's current car PI/class.
@@ -550,7 +552,7 @@ void DriveSession::init_session() {
           if (roster.size() > 24) roster.resize(24);
           if (!roster.empty()) {
             const size_t roster_n = roster.size();
-            festival_mgr = std::make_unique<freeroam::FestivalManager>(festival_nav, festival_roads, fcfg, app.traffic_seed + 17);
+            festival_mgr = std::make_unique<freeroam::FestivalManager>(fnav, festival_roads, fcfg, app.traffic_seed + 17);
             std::vector<std::string> ai_names;
             if (race::load_ai_player_names(game_root, ai_names, app.car_names.get(), app.state_root, ai_db.get())) {
               festival_mgr->set_driver_names(std::move(ai_names));

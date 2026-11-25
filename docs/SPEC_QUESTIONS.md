@@ -3844,14 +3844,11 @@ controller and the wheels. The engine now runs these decoded parts:
   0.6.
 - The steering-saturation grip term goes on both axles' AI grip factor.
   It applies past 0.8 of the lateral limit's curvature and is recomputed
-  every update. Its cap is ramp(level, 0.94, 1.25), where the level is
-  the drivatar's cornering skill: AISkills' `SoloLapping_Cornering*`,
-  times the nemesis `SkillBoostFactor` 1.5, at most 1.25. The engine
-  uses the planner's C as the level, boosts included. A car with no
-  drivatar profile has a level of 0.95, so the term is next to nothing,
-  and the oracle lap's follower does not apply it. On the title's oracle
-  lap, all 285 of the AI grip factor's non-unit samples have the 1.1 rear
-  ratio, with no equal-axle term.
+  every update. Its cap is ramp(level, threshold, 1.25): it opens only
+  while the controller's level is above the threshold (0.94, or 0.97 on
+  a four-wheel-drive car). The oracle lap's follower does not apply it.
+  On the title's oracle lap, all 285 of the AI grip factor's non-unit
+  samples have the 1.1 rear ratio, with no equal-axle term.
 
 The oracle lap is now 38.976 s, +0.50 % (it was 39.003 s under the slip
 rule). Its cross-track error is at most 1.04 m (rms 0.27 m), against
@@ -3865,22 +3862,31 @@ Interim (ours):
 - The track's look-ahead floor is 8 m; the title's is 6 to 10 m, by
   track. chi is the cross-track over the line's room on that side (4.5 m
   on the oracle lap).
-- The pedals keep our band rule. The hold value (a car method) and the
-  off-track cap (from a smoothed wheel metric) were not decoded.
-- The saturation term's threshold of 0.94 is 0.97 when an integer on
-  the car body is 2, and what that integer means is not known.
-  The integer cheat levels (`SoloLapping_NominalCheatLevel`,
-  `SoloLapping_TorqueBoostCheatLevel`) are not loaded. They would raise
-  the level to 1 + 0.025 n and turn on the heavy-braking term. Both are
-  0 here.
-- The level is the planner's C. That covers AISkills' cornering skill,
-  the rubber bands' mistakes, and the start and nemesis boosts' skill
-  factor. The decode confirmed only the nemesis `SkillBoostFactor` as
-  feeding the level, so the other paths are assumed. A boosted car
-  reaches 1.25, where the cap is 1.0: the term reaches 1.0 on FR22 seed
-  2, and is above 0.19 on 1.7 % of the AI's samples. The decode also
-  found a rule that caps every skill at 0.93 above a car quantity it
-  could not read. That would close the term for every car it applies to.
+- The pedals keep our band rule by default. The title's pedals are now
+  decoded (the hold throttle and the off-track cap included) and run
+  with `SHIFT_AI_PEDALS=title`; Q175 has why they are not the default.
+- The saturation term's threshold of 0.94 is 0.97 on a four-wheel-drive
+  car: the integer on the car body is the drivetrain, the same test as
+  k_B's 0.96.
+- The level is no longer the planner's C, but the level of 1 is an
+  interim. The term compares a controller field with the threshold. The
+  writers found for that field are the constructor (1) and the cheat
+  level's setter (1 + 0.025 n for the driver's AISkills cheat level n,
+  0 on every row of the disc: Q176). The planner's C and the start and
+  nemesis boosts do not reach it. Under the old level, a boosted car
+  reached 1.25 and the nemesis boost's flapping threw the Challenger's
+  grip between x1 and x2. At level 1 the term is at most 0.19 on a
+  two-wheel-drive car and 0.1 on a four-wheel-drive one. The capture
+  argues against level 1, though. On our oracle lap at level 1, the
+  term's condition holds on 352 steps (peak 0.107 on the
+  four-wheel-drive Skyline), but the title's oracle lap shows no
+  equal-axle sample at all. So either the title's level on that lap is
+  at most the threshold (as with an earlier reading, 0.95 for a car with
+  no drivatar profile), or its lateral limit is higher than ours and the
+  condition never holds. A writer of the field that this decode missed
+  would explain the first.
+- The rule that caps a driver's skills at 0.93 for a heavy car is
+  applied, on operands that are ours (Q177).
 - The AI grip terms add up. The dirt term and this one are summed and
   then clamped to [0, 2], as in the title.
 
@@ -3888,14 +3894,19 @@ Gate: the 3-seed mean of each seed's AI mean time, in seconds, with the
 oracle in brackets. f55db691 is before WORLD-02/03, and the slip rule is
 6faaef8c.
 
-| Event | f55db691 | Slip rule | Controller |
-|---|---|---|---|
-| FR22 (161.5) | 173.1 | 192.5 | 163.0 |
-| FR16 (124.0) | 121.9 | 127.3 | 122.6 |
-| FR24 (110.8) | 108.4 | 109.3 | 109.0 |
-| FR01 (102.7) | 103.6 | 102.3 | 101.9 |
-| NR02 (130.7) | 153.5 | 139.6 | 179.3 |
-| EXHIBITION_FEST_003 (179.0) | 191.0 | 194.2 | 186.6 |
+| Event | f55db691 | Slip rule | Controller | Level 1 |
+|---|---|---|---|---|
+| FR22 (161.5) | 173.1 | 192.5 | 163.0 | 169.5 |
+| FR16 (124.0) | 121.9 | 127.3 | 122.6 | 123.9 |
+| FR24 (110.8) | 108.4 | 109.3 | 109.0 | 109.7 |
+| FR01 (102.7) | 103.6 | 102.3 | 101.9 | 105.0 |
+| NR02 (130.7) | 153.5 | 139.6 | 179.3 | 147.9 |
+| EXHIBITION_FEST_003 (179.0) | 191.0 | 194.2 | 186.6 | 180.5 |
+
+"Level 1" is the level of 1, the four-wheel-drive threshold and the
+0.93 cap, on the band pedals. Its resets are 8 in the 18 races
+(the controller's: 11). FR22's 169.5 s is one seed: over 9 seeds it is
+166.4 s.
 
 Car-to-car contacts per race were as high as 33,151 under the slip rule
 (FR22, seed 2). Most of that count came from cars piling up behind the
@@ -3912,17 +3923,30 @@ turns on whether it crashes, so 3 seeds are not enough. Over seeds 1 to
 | f55db691 | 158.2 s |
 | Controller, grip terms multiplied (e0e89cc0) | 165.5 s |
 | Controller, grip terms summed | 175.0 s |
+| Level 1, band pedals | 165.5 s (10 resets) |
+| Level 1, the title's pedals (Q175) | 157.3 s (0 resets, the same on every seed) |
 
 The slip rule's 0.29 beta (139.6 s over 3 seeds) held the car straight.
-The title has no such term, so what keeps its Challenger straight is
-still to find: the hold throttle, the G table, or the car's own
-physics.
+The title has no such term. The old level made it worse: the nemesis
+boost turns on and off, and with it the level threw the Challenger's
+grip between x1 and x2. At level 1 the car still loses its time in
+traction, not in the plan. On seeds 1 and 3 the plan's own time (the
+line over the target speed) is 98 and 92 s, against finishes of 135.2
+and 145.1 s. The car is below its target for 81 and 88 % of its time
+and on full gas for 83 and 87 %, and TCS acts for 17 and 42 s. The time
+goes in power slides at 30 to 35 m/s in 2nd and 3rd (slip angle 0.2 to
+0.4 rad), some of which end off the road. A clean run (seed 1) is
+135.2 s, +3.4 %; the 9-seed mean is lost to spins and resets. What keeps
+the title's Challenger straight is still to find: the G table, the AI's
+assists, or the car's own physics.
 
 Needed:
 
 - the title's G table for one car, from a memory read of the controller;
-- the hold throttle;
-- the cheat levels per AISkills row.
+- whether the title's AI drives with TCS and STM;
+- every writer of the controller's level field, or a memory read of it
+  on the oracle lap;
+- a trace of the title's Challenger on NR02 (speed, gas and slip angle).
 
 ## Q151 (MAP-01, not blocking): A on the map's event ticket, and a hub's details
 
@@ -4351,3 +4375,131 @@ race's or a showcase's ticket can name points the race does not pay. No
 capture shows such a ticket. Needed: a capture of a street race's,
 showcase's or rivals ticket, to see whether its POINTS AVAILABLE tape
 shows, and with what.
+
+## Q175 (WORLD-02/03, not blocking): the title's pedals, and why they are opt-in
+
+The title's pedal rules under the line controller are decoded and in
+the engine (`drive::ai_pedals`, `AiField::Options::title_pedals`), but
+the race AI keeps our band rule unless `SHIFT_AI_PEDALS=title`. The
+decoded rules, per update (the title's 60 Hz factors are raised to
+60 dt at our step):
+
+- The target is the plan 0.67 of a line point past the car's, between
+  the two points around it, capped by the passing search's cap and by
+  0.2 (0.1) of the plan's top speed with the heading 84 (120) degrees
+  off the line.
+- While steering back, the target is cut by k. Off the road, k runs
+  from 0.02 at |e| 0.25 m to (-1 - edge if edge < -1, else 0) + 0.12 at
+  3 m. On the road, past 2.5 m with |chi| over 0.25 and the front slip
+  metric over 1.5, k runs from 0 to 0.1 at 10 m.
+- Five states on err = target - speed: stop (target 0), hold (|err| at
+  most 1: the hold throttle at 1 + err), full gas (held while err is
+  over 0.25), edge avoidance (the last gas less 0.016 x the rate of
+  |e|), and brake (held while err is below 0: 0.6 x the plan's friction
+  share at the next point).
+- Full gas off the road with the front slip metric at 1 or more is the
+  hold throttle, 0 from 1.05. The gas is at most 0.6 turned 84 degrees
+  off the line, and clamp(1.05 - the mean slip metric, 0.2, 0.9) past
+  |chi| 1 with that mean over 0.25.
+- The brake is filtered: 0.75 old + 0.25 new rising, 0.5 and 0.5
+  falling.
+- The hold throttle is a car method: where the drag power at the
+  forward speed falls between the engine's power at no gas and at full
+  gas, at the current rpm.
+- The slip metrics: the mean of the four wheels' metrics (0.25 for a
+  wheel with none) and the larger front one (0.25 if both are 0), each
+  smoothed by 0.2 old.
+
+Interim (ours):
+
+- The per-wheel slip metric. The title's is a value from its tyre model
+  that was not identified. Ours is hypot(slip ratio, slip angle) over
+  the curves' peaks, so 1 at the peak.
+- Off the road is past the line's room to the road edge on the car's
+  side, and edge is that room less |cross-track| in metres. The title's
+  test and the unit of its edge value were not found. With edge in
+  metres, k reaches 1 (a target of 0) 2 m past the edge, so ours clamps
+  k to 1.
+- The hold throttle's drag is our aero (drag, high-speed scale, draft,
+  damage), without the surface's drag scale.
+
+Why opt-in: on our handling, the title's pedals lose the festival race
+and the band rule loses NR02. 9 seeds each, the mean of the AI's times
+and the resets over the 9 races, with the oracle in brackets:
+
+| Event (oracle) | Band | Title |
+|---|---|---|
+| FR22 (161.5) | 166.4 s, 6 | 162.0 s, 4 |
+| EXHIBITION_FEST_003 (179.0) | 182.6 s, 3 | 204.5 s, 12 |
+| NR02 (130.7) | 165.5 s, 10 | 157.3 s, 0 |
+
+Under the title's pedals, 7 of the festival race's 12 resets are Minis
+stuck in the pack between 2.8 and 3.3 km, and contacts run to 5,721 a
+race (band: 654 at most). The road-edge cut is not the cause: without
+it, over 3 seeds, the festival race is 196.3 s with 4 resets and NR02
+168.8 s with 5. The band rule's NR02 resets are the Challenger
+power-sliding out at 1.8 and 2.25 km. Needed: the title's per-wheel
+slip metric, its off-road test and edge unit, and a trace of a title
+AI's pedals through a pack.
+
+## Q176 (WORLD-02/03, not blocking): the AI cheat levels and the heavy-braking term
+
+AISkills' `SoloLapping_NominalCheatLevel` and
+`SoloLapping_TorqueBoostCheatLevel` are now loaded (`race::SkillRow`).
+The decode shows the line controller storing n and 0.1 n beside a grip
+level of 1 + 0.025 n and a braking level of 1 + 0.05 n, so the nominal
+level n sets the steering-saturation term's level
+(`AiField::set_grip_level`, Q125). Both columns are 0 on every row of
+the disc, so every driver's level is 1 in the engine. That is an
+interim: the title's oracle lap argues for a level at or below the
+threshold there (Q125). For n above 0 the title also
+turns on a heavy-braking term, which was not decoded. The engine leaves
+that term at 0 and prints a note if a row ever has a level. What the
+torque-boost cheat level does was not found. Needed: the heavy-braking
+term, and the reader of `SoloLapping_TorqueBoostCheatLevel`.
+
+## Q177 (WORLD-02/03, not blocking): the operands of the 0.93 skill cap
+
+The decode found a rule in the driver's set-up: four of its skill values
+(with no drivatar profile, 1, 1, 0.95 and 0.95) are capped at 0.93 when
+100 x a x b reaches 1183, where a and b are two quantities read from the
+car. They were not identified. Read as the mass in kg and the
+centre-of-mass height in m, every car passes the test 12 to 67 times
+over, which cannot be the intent. The engine's interim is mass x
+centre-of-mass height (kg x m, above the body frame's ground) >= 1183,
+applied to the planner's C and B before the boosts
+(`race::ai_skill_capped`). That caps the Range Rover (1739) and the
+Grand Cherokees (1491 and 1553); every other car in the gate events is
+at 944 or below. The drivers' C in these events is 0.6 to 0.9, so the
+cap rarely binds. Needed: the two car quantities the test reads, and
+their units.
+
+## Q178 (WORLD-07/08, not blocking): the free-roam racers on the race AI
+
+The festival racers and the head-to-head rival still drive by the
+kinematic model in `freeroam::FestivalManager`, not by the race AI with
+the `freeroam` AIRacing set. A head-to-head now starts (its route is
+built from the world's nav). Moving a racer onto the race AI needs
+pieces free roam does not have:
+
+- a physics car per racer: a baked body, wheels on the world's ground,
+  and its draw through the race cars' path;
+- a `drive::RacingLine` and planner built from the head-to-head route;
+- the hand-over between the kinematic roamer and the physics car as a
+  challenge starts and ends.
+
+That is not a reuse of `RaceView`, so it is left for its own task. The
+festival group spawns (Q124) were not decoded either. Needed: the
+free-roam racers' spawn and hand-over code (how the title swaps a
+roaming racer for a driven one), and the group spawn table.
+
+## Q179 (WORLD, not blocking): the AI's contact with the smashables
+
+The intact props and solid barriers meet the player's car only
+(`world::SmashableGround` in the player's step). The race AI's cars and
+the traffic pass through them, and only the player breaks props. Giving
+the AI the same ground is a few lines. But `SmashableWorld::step`, which
+breaks props and steps the debris, takes one car at a time and steps the
+debris on each call, so the AI's breaks need that split first. Needed:
+whether the title's AI and traffic break props at all, and if so, how
+far from the player.

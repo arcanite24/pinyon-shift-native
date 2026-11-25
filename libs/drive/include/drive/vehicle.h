@@ -715,6 +715,11 @@ class Vehicle {
   double engine_throttle() const { return engine_throttle_; }  // what the engine sees, 0..1
   // The engine's torque (N m) at an rpm and throttle, before the clutch (uses current boost).
   double engine_torque(double rpm, double throttle) const;
+  // The AI's hold throttle (SPEC-RACE-AI, Throttle; decoded): the gas at
+  // which the engine's power at its current speed (the torque between
+  // closed and full throttle, linear, x the game torque scale x omega)
+  // meets the forward drag's power at the body's forward speed, 0 to 1.
+  double hold_throttle() const;
   // Current boost pressure (psi) and combined boost multiplier (1.0 on NA cars).
   double boost_psi() const { return p_.has_turbo ? boost_psi_ : (p_.has_supercharger ? sc_psi_ : 0.0); }
   bool bov_open() const { return bov_open_; }

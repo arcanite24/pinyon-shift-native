@@ -102,6 +102,7 @@ double ai_aero_factor(double v) {
 AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
   AiCapacity c;
   c.braking_k = p.layout == CarParams::Layout::kAll ? 0.96f : 0.94f;
+  c.sat_level_min = p.layout == CarParams::Layout::kAll ? 0.97f : 0.94f;
   constexpr double kG = 9.80665;
   const double m = p.mass, W = m * kG;
   const auto& wc = p.wheel_centres;
@@ -340,7 +341,64 @@ AiCarState ai_state(const Vehicle& v) {
                                                std::min(cp.steer_min_lock, cp.max_steer), cp.max_steer));
   }
   s.yaw_rate = float(v.angular_velocity().y);
+  s.hold = float(v.hold_throttle());
+  for (size_t k = 0; k < 4; ++k) {
+    const auto& w = v.wheels()[k];
+    s.slip[k] = w.contact ? float(std::hypot(w.slip_ratio, w.slip_angle)) : 0.0f;
+  }
   return s;
+}
+
+void ai_slip_metrics(const AiCarState& c, double dt, AiPedalState& st) {
+  double sum = 0;
+  int zeros = 0;
+  for (float m : c.slip) sum += m, zeros += m == 0.0f;
+  double front = std::max(c.slip[0], c.slip[1]);
+  if (front == 0) front = 0.25;
+  const double a = std::pow(0.2, 60 * dt);
+  st.slip_mean = float(a * st.slip_mean + (1 - a) * 0.25 * (sum + 0.25 * zeros));
+  st.slip_front = float(a * st.slip_front + (1 - a) * front);
+}
+
+void ai_pedals(const AiPedalIn& in, double dt, AiPedalState& st, double& throttle, double& brake) {
+  const double err = in.target - in.speed;
+  int s;
+  if (in.target == 0) s = 1;
+  else if (in.edge && err > -1) s = 4;
+  else if (st.state == 3 && err > 0.25) s = 3;
+  else if (st.state == 5 && err < 0) s = 5;
+  else if (std::fabs(err) <= 1) s = 2;
+  else s = err < 0 ? 5 : 3;
+  st.state = s;
+  const bool slipping_off = in.off_track && st.slip_front >= 1;
+  double t = 0, b = 0;
+  switch (s) {
+    case 1: b = std::clamp(std::fabs(in.speed), 0.5, 1.0); break;
+    case 2: t = slipping_off ? 0.0 : in.hold * (1 + err); break;
+    case 3: t = !slipping_off ? 1.0 : st.slip_front >= 1.05 ? 0.0 : in.hold; break;
+    case 4:
+      if (err > 0) t = double(st.throttle) - 0.016 * in.edge_rate * 60 * dt;
+      else b = 0.6 * in.friction;
+      break;
+    default: b = 0.6 * in.friction; break;
+  }
+  t = std::clamp(t, 0.0, 1.0), b = std::clamp(b, 0.0, 1.0);
+  // The post-processing: the gas caps and the brake's filter.
+  double cap = in.heading_cos < 0.1 ? 0.6 : 1.0;
+  if (st.slip_mean > 0.25 && std::fabs(in.chi) >= 1) cap = std::min(cap, std::clamp(1.05 - st.slip_mean, 0.2, 0.9));
+  t = std::min(t, cap);
+  const double prev = st.brake;
+  if (b > prev) {
+    if (prev < 0.95) {
+      const double k = std::pow(0.75, 60 * dt);
+      b = k * prev + (1 - k) * b;
+    }
+  } else if (prev > 0.05) {
+    const double k = std::pow(0.5, 60 * dt);
+    b = k * prev + (1 - k) * b;
+  }
+  st.throttle = float(t), st.brake = float(b);
+  throttle = st.throttle, brake = st.brake;
 }
 
 AiYawGain ai_yaw_gain(const CarParams& p) {
@@ -430,11 +488,12 @@ double ai_controller_steer(const AiCarState& c, const AiYawGain& G, const AiCapa
   const double a = std::atan2(hx, hz);
   double wd = std::fabs(chi_car) < 1.1 ? 2 * v * std::sin(a) / ell : a;
   // The steering-saturation grip term, open while the driver's grip level
-  // is above 0.94: the curve's curvature over the lateral limit's (the
-  // table without the skill), past 0.8, up to ramp(level, 0.94, 1.25);
-  // recomputed every update.
+  // is above the car's threshold (0.97 four-wheel drive, else 0.94): the
+  // curve's curvature over the lateral limit's (the table without the
+  // skill), past 0.8, up to ramp(level, threshold, 1.25); recomputed every
+  // update.
   st.sat = 0;
-  constexpr double kLevelMin = 0.94, kLevelMax = 1.25;
+  const double kLevelMin = cap ? double(cap->sat_level_min) : 0.94, kLevelMax = 1.25;
   if (cap && v > 1 && st.level > kLevelMin) {
     const double alat = double(cap->lateral[size_t(AiCapacity::index(v))]) * ai_aero_factor(v);
     if (alat > 0) {
@@ -481,6 +540,8 @@ AiField::AiField(const RacingLine& line, size_t cars, const Options& options)
       chi_(cars, 0),
       prev_throttle_(cars, 0),
       sat_(cars, 0),
+      pedal_(cars),
+      level_(cars, 1.0f),
       yaw_gain_(cars, [] {
         AiYawGain g;
         g.fill(4.0f);
@@ -523,6 +584,42 @@ void AiField::set_progress(size_t i, double distance) {
   progress_[i] = distance;
   prev_steer_[i] = 0.0f;
   look_[i] = 7.5f, boost_[i] = 1.0f, abs_e_[i] = 0, chi_[i] = 0, prev_throttle_[i] = 0, sat_[i] = 0;
+  pedal_[i] = AiPedalState{};
+}
+
+double AiField::plan_point(size_t i, size_t j0, double* friction) const {
+  const RacingLine& L = line_;
+  if (friction) *friction = 1;
+  if (L.size() < 2) return 0;
+  j0 = std::min(j0, L.size() - 1);
+  if (!capacity_[i] || L.curvature.size() != L.size()) return planned_speed(i, L.dist[j0]);
+  // SPEC-RACE-AI, Speed planning, the braking pass: from the farthest
+  // point within 420 m back to j0, each point's limit is the carried
+  // speed or the three-point mean of the corner speeds; the braking the
+  // corner leaves (the friction circle) and the grade carry it back one
+  // segment. a < 0 decelerates; the carry v - a ds / v (from 10 m/s) or
+  // sqrt(v^2 - 2 a ds) gives the spec's 30 -> 31.0 and 8 -> 11.136 m/s for
+  // a = -15 over 2 m.
+  size_t jmax = j0;
+  while (jmax + 1 < L.size() && L.dist[jmax + 1] - L.dist[j0] <= 420) ++jmax;
+  const AiCapacity& c = *capacity_[i];
+  const double B = plan_b_[i] * c.braking_k;
+  const size_t last = L.size() - 1;
+  double carry = 1000;
+  for (size_t j = jmax;; --j) {
+    const double vc = corner_at(i, j);
+    const double mean = (corner_at(i, j > 0 ? j - 1 : j) + vc + corner_at(i, std::min(j + 1, last))) / 3;
+    const double vlim = std::max(0.001, std::min(carry, mean));
+    if (j == j0 || j == 0) {
+      // The share of the friction circle the corner leaves at the point's
+      // limit: sqrt(1 - min(v_lim^2 / v_c^2, 1)).
+      if (friction) *friction = ai_braking_left(1.0, vlim, vc);
+      return vlim;
+    }
+    const double grip = double(L.grip_at(j));
+    const double a = -ai_braking_left(B * c.braking[size_t(AiCapacity::index(vlim))] * grip, vlim, vc) - 9.81 * L.grade[j];
+    carry = ai_brake_carry(vlim, a, L.dist[j] - L.dist[j - 1]);
+  }
 }
 
 double AiField::planned_speed(size_t i, double p) const {
@@ -530,31 +627,10 @@ double AiField::planned_speed(size_t i, double p) const {
   if (L.size() < 2) return 0;
   const size_t s0 = L.segment(p, seg_[i]);
   if (capacity_[i] && L.curvature.size() == L.size()) {
-    // SPEC-RACE-AI, Speed planning, the braking pass: from the farthest
-    // point within 420 m back to the car's, each point's limit is the
-    // carried speed or the three-point mean of the corner speeds; the
-    // braking the corner leaves (the friction circle) and the grade carry
-    // it back one segment. a < 0 decelerates; the carry v - a ds / v (from
-    // 10 m/s) or sqrt(v^2 - 2 a ds) gives the spec's 30 -> 31.0 and
-    // 8 -> 11.136 m/s for a = -15 over 2 m.
+    // The plan at the line point nearest p (plan_point's braking pass).
     size_t j0 = s0;
     if (j0 + 1 < L.size() && L.dist[j0 + 1] - p < p - L.dist[j0]) ++j0;
-    size_t jmax = j0;
-    while (jmax + 1 < L.size() && L.dist[jmax + 1] - L.dist[j0] <= 420) ++jmax;
-    const AiCapacity& c = *capacity_[i];
-    const double B = plan_b_[i] * c.braking_k;
-    const size_t last = L.size() - 1;
-    double carry = 1000;
-    for (size_t j = jmax;; --j) {
-      const double vc = corner_at(i, j);
-      const double mean = (corner_at(i, j > 0 ? j - 1 : j) + vc + corner_at(i, std::min(j + 1, last))) / 3;
-      const double vlim = std::max(0.001, std::min(carry, mean));
-      if (j == j0 || j == 0) return vlim;
-      const double grip = double(L.grip_at(j));
-      const double a =
-          -ai_braking_left(B * c.braking[size_t(AiCapacity::index(vlim))] * grip, vlim, vc) - 9.81 * L.grade[j];
-      carry = ai_brake_carry(vlim, a, L.dist[j] - L.dist[j - 1]);
-    }
+    return plan_point(i, j0, nullptr);
   }
   const double a = corner_[i], d = decel_[i];
   if (a <= 0 || L.radius.size() != L.size()) {
@@ -584,6 +660,7 @@ void AiField::place(size_t i, double distance, float lane, float skill) {
   skill_[i] = skill;
   prev_steer_[i] = 0.0f;
   look_[i] = 7.5f, boost_[i] = 1.0f, abs_e_[i] = 0, chi_[i] = 0, prev_throttle_[i] = 0, sat_[i] = 0;
+  pedal_[i] = AiPedalState{};
 }
 
 void AiField::start_pose(size_t i, double& x, double& z, double& heading) const {
@@ -692,9 +769,10 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
       const double hw_side = rooms ? double(cross_[i] >= 0 ? L.room_right[s] : L.room_left[s]) : 4.5;
       chi_car = cross_[i] / std::max(1.0, hw_side);
       const AiYawGain& G = yaw_gain_[i];
-      // The grip level: the planner's cornering scalar C (the AISkills
-      // cornering skill, boosts included; 0 without a set_planner plan).
-      AiSteerState ss{look_[i], boost_[i], abs_e_[i], capacity_[i] ? plan_c_[i] : 0.0f};
+      // The grip level: the line controller's own, 1 + 0.025 x the cheat
+      // level (set_grip_level; 1 by default), not the planner's C (0
+      // without a set_planner plan).
+      AiSteerState ss{look_[i], boost_[i], abs_e_[i], capacity_[i] ? level_[i] : 0.0f};
       const double Ltot = ai_controller_lookahead(c, G, chi_car, o_.min_lookahead_track, ss);
       back = double(prev_steer_[i]) * e < 0;  // steering back towards the line
       // The aim point on the driven line, moved 0.2 e towards the car when
@@ -727,6 +805,59 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     }
     prev_steer_[i] = steer_out;
     in.steer = steer_out;
+    if (o_.controller && o_.title_pedals) {
+      // SPEC-RACE-AI, Throttle (decoded): the plan 0.67 of a line point
+      // past the car's, between the two points around it.
+      const double t = std::clamp(double(f), 0.0, 1.0);
+      const size_t j = std::min<size_t>(t >= 0.33 ? s + 1 : s, L.size() - 2);
+      const double fr = t >= 0.33 ? t - 0.33 : t + 0.67;
+      double fric = 1;
+      const double v0 = plan_point(i, j, nullptr), v1 = plan_point(i, j + 1, &fric);
+      double target = progress_[i] >= L.length() - 1 ? 0.0 : (1 - fr) * v0 + fr * v1;
+      // The heading (its cosine with the line's direction).
+      const double sx = L.x[s + 1] - L.x[s], sz = L.z[s + 1] - L.z[s];
+      const double sl = std::hypot(sx, sz);
+      const double hcos = sl > 1e-6 ? (c.fwd_x * sx + c.fwd_z * sz) / sl : 1.0;
+      // The speed caps: the passing search's, and 0.2 of the plan's top
+      // speed turned 84 degrees off the line, 0.1 at 120.
+      double cap = cap_[i];
+      const int turned = (hcos < 0.1) + (hcos < -0.5);
+      if (turned > 0) cap = std::min(cap, (3 - turned) * 0.1 * double(o_.max_speed));
+      AiPedalState& ps = pedal_[i];
+      ai_slip_metrics(c, dt, ps);
+      const double ae = std::fabs(e), dae = ae - double(abs_e_[i]);
+      const double rate = dae / dt;
+      // Off the road: past the room on the car's side.
+      const bool rooms = L.room_right.size() == L.size() && L.room_left.size() == L.size();
+      const double edge_in = rooms ? double(cross_[i] >= 0 ? L.room_right[s] : L.room_left[s]) - std::fabs(cross_[i]) : 1.0;
+      const bool off_track = edge_in < 0;
+      bool edge = false;
+      if (back) {
+        const double room = chi_car > double(chi_[i]) ? 1 - chi_car : 1 + chi_car;
+        edge = o_.track_edge_avoidance && dae > 0 && room > 0 && room / rate < 1.25 && ae > 0.5;
+        // Running wide: the target cut by k.
+        double k = 0;
+        const double a_e = ae + std::min(dae, 0.0);
+        if (off_track) {
+          if (ae > 0.25) {
+            const double k3 = (edge_in < -1 ? -1 - edge_in : 0.0) + 0.12;
+            k = a_e >= 3 ? k3 : a_e <= 0.25 ? 0.02 : 0.02 + (k3 - 0.02) * (a_e - 0.25) / 2.75;
+          }
+        } else if (ae > 2.5 && std::fabs(chi_car) > 0.25 && ps.slip_front > 1.5) {
+          k = a_e >= 10 ? 0.1 : a_e <= 2.5 ? 0.0 : (a_e - 2.5) * 0.1 / 7.5;
+        }
+        // k at most 1 (ours: the road-edge distance is our interim, Q175).
+        if (k > 0) cap = std::min(cap, (1 - std::min(k, 1.0)) * target);
+      }
+      target = std::min(target, cap);
+      target_[i] = float(target);
+      AiPedalIn pi;
+      pi.target = target, pi.speed = c.speed, pi.hold = c.hold, pi.friction = fric;
+      pi.edge = edge, pi.edge_rate = rate, pi.off_track = off_track, pi.heading_cos = hcos, pi.chi = chi_car;
+      ai_pedals(pi, dt, ps, in.throttle, in.brake);
+      abs_e_[i] = float(ae), chi_[i] = float(chi_car), prev_throttle_[i] = float(in.throttle);
+      continue;
+    }
     // Speed: the plan a little ahead. Past the line's end: stop.
     const double ahead = progress_[i] + o_.speed_lookahead_s * speed;
     // Slow down when far off its lane (approaching road edge / wall), not on
