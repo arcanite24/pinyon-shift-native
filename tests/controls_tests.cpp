@@ -31,6 +31,23 @@ int main() {
   CHECK(near(drive::apply_deadzone_signed(0.595, 0.24, 0.95), 0.5));
   CHECK(near(drive::apply_deadzone_signed(-0.595, 0.24, 0.95), -0.5));
 
+  // FEEL-26: the right stick snaps to the original's look targets only
+  // (back pi, left/right pi/2), never an analogue orbit angle.
+  {
+    const double pi = 3.14159265358979323846;
+    CHECK(near(drive::right_stick_look_target(0.0, 0.0), 0.0));
+    CHECK(near(drive::right_stick_look_target(0.0, 1.0), pi));
+    CHECK(near(drive::right_stick_look_target(0.9, 0.2), 0.5 * pi));
+    CHECK(near(drive::right_stick_look_target(-0.9, -0.3), -0.5 * pi));
+    CHECK(near(drive::right_stick_look_target(0.0, -1.0), 0.0));  // pushed up: look forward
+    CHECK(near(drive::right_stick_look_target(0.4, 0.4), 0.0));   // under half deflection
+    CHECK(near(drive::right_stick_look_target(0.7, 0.7), 0.5 * pi));  // diagonal: left/right wins the tie
+    for (double a = 0; a < 2 * pi; a += 0.1) {
+      const double t = drive::right_stick_look_target(std::sin(a), std::cos(a));
+      CHECK(near(t, 0.0) || near(t, pi) || near(std::fabs(t), 0.5 * pi));
+    }
+  }
+
   CHECK(near(drive::apply_deadzone_unsigned(-0.5, 0.15, 0.90), 0.0));
   CHECK(near(drive::apply_deadzone_unsigned(0.15, 0.15, 0.90), 0.0));
   CHECK(near(drive::apply_deadzone_unsigned(0.525, 0.15, 0.90), 0.5));

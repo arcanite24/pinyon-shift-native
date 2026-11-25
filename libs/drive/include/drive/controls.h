@@ -54,6 +54,12 @@ struct ControlDeadzones {
 // Rescales an axis from [inside, outside] to [0, 1] and clamps.
 // Signed preserves sign (steering); unsigned clamps negative inputs to 0 (triggers).
 double apply_deadzone_signed(double raw, double inside, double outside);
+
+// The right stick's look target (SPEC-CAMERAS, look-around: LookBack,
+// LookLeft, LookRight; FEEL-26), in radians of look yaw, right positive:
+// pi when the stick is pushed down (SDL +y), +-pi/2 for right/left, 0 (look
+// forward) otherwise. Past half deflection on the dominant axis.
+double right_stick_look_target(double rx, double ry);
 double apply_deadzone_unsigned(double raw, double inside, double outside);
 
 enum class PadControl {
