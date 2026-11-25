@@ -2894,6 +2894,11 @@ Interim (ours):
   a car about to be rear-ended.
 - The target stays chosen until the car is past it or stops closing on
   it, as if in the same lane.
+- Frustration grows by 5 a frame of a 30 Hz AI tick (150 a second). A
+  following car searches again once a second and stops following when a
+  search succeeds, when the target is 20 m ahead, or when it is passed.
+  A traffic car is chosen afresh every step, since its index is not
+  stable.
 - After a pass, or with no target, the lane returns to the line at 1 m a
   25 m (at least 0.3 m/s), never into a car alongside.
 - Following trails at 0.75 x TrailingDistance. With any car in both the
@@ -2937,6 +2942,13 @@ registry flag is read, but what a group spawn places (several cars
 together, a shared destination) was not decoded (audit WORLD-08:
 "festival group destinations").
 
+At the oracle's census road (TRAFFIC, Tests: 746 m of density-5 and 68 m
+of density-2 road within 370 m), the per-100 m reading of the festival
+list (id 5 0.1 to 0.3, id 2 0.1 to 0.2) gives 2.4 at noon and 0.8 at
+02:00. The oracle counted 0.8 and 1.7 festival cars within 1 km. The old
+cap-only target was 7 and 2. The reading's night fall is the wrong way
+round for the festival cars, so their hour factor may not be traffic's.
+
 Needed: the group spawn's rule (how many cars, where, and whether they
-drive together), and a free-roam count of festival cars against D_s at
-one more site than the oracle's road.
+drive together), the festival cars' hour factor, and a free-roam count
+of festival cars against D_s at one more site than the oracle's road.

@@ -1644,7 +1644,7 @@ int main() {
     }
 
     // The passing search on a road too narrow to pass: each failed search adds
-    // 5 to the frustration; past 1000 the car follows, trailing the car ahead.
+    // 5 a 30 Hz frame to the frustration; past 1000 the car follows, trailing the car ahead.
     {
       drive::RacingLine rl;
       for (int i = 0; i <= 40; ++i) {
@@ -1664,7 +1664,7 @@ int main() {
       race::LaneParams lp[1] = {{7.0f, 0.3f, 0.4f, 0.5f}};
       race::DlsState st[1];
       const race::DlsSettings set;
-      for (int s = 0; s < 200; ++s) race::dls_update(rl, cars, 1, lp, set, 1.0 / 60.0, st, lane, cap);
+      for (int s = 0; s < 400; ++s) race::dls_update(rl, cars, 1, lp, set, 1.0 / 60.0, st, lane, cap);
       CHECK(st[0].target == 1 && !st[0].following && near(st[0].frustration, 1000, 1e-3) && lane[0] == 0);
       race::dls_update(rl, cars, 1, lp, set, 1.0 / 60.0, st, lane, cap);
       CHECK(st[0].following);

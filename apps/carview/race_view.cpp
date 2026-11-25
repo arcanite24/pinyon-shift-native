@@ -1516,12 +1516,15 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
       std::fprintf(trace,
                    "{\"t\":%.3f,\"car\":%zu,\"x\":%.2f,\"z\":%.2f,\"v\":%.2f,\"p\":%.1f,\"cross\":%.2f,\"lane\":%.2f,"
                    "\"target\":%.2f,\"thr\":%.2f,\"brk\":%.2f,\"steer\":%.2f,\"off\":%.2f,\"cos\":%.2f,\"gear\":%d,"
-                   "\"far\":%d,\"state\":%d,\"torque\":%.3f,\"hit\":%.1f,\"hny\":%.2f,\"surf\":%d}\n",
+                   "\"far\":%d,\"state\":%d,\"torque\":%.3f,\"hit\":%.1f,\"hny\":%.2f,\"surf\":%d,"
+                   "\"pass\":%d,\"follow\":%d,\"frust\":%.0f}\n",
                    session_->clock(), i, q.x1, q.z1, q.speed, q.progress, field_->cross_track(i), lanes_[i],
                    field_->target_speed(i), inputs_[i].throttle, inputs_[i].brake, inputs_[i].steer, q.off_route,
                    q.heading_cos, v.gear(), i < n ? int(cars_[i].far) : 0, i < n ? int(cars_[i].ai.state()) : -1,
                    v.torque_factor(), v.strongest_body_contact().force / 1000, v.strongest_body_contact().normal.y,
-                   v.strongest_body_contact().surface);
+                   v.strongest_body_contact().surface, i < dls_state_.size() && i < n ? dls_state_[i].target : -1,
+                   i < dls_state_.size() && i < n ? int(dls_state_[i].following) : 0,
+                   i < dls_state_.size() && i < n ? double(dls_state_[i].frustration) : 0.0);
     }
     std::fflush(trace);
   }

@@ -139,8 +139,11 @@ void dls_update(const drive::RacingLine& line, std::span<const DlsCar> cars, siz
     int target = -1;
     DlsMeeting meet;
     // The car being passed stays the target until the car is past it or no
-    // longer closing on it (interim, Q123).
-    if (s.target >= 0 && size_t(s.target) < n && size_t(s.target) != i && !passed(cars[size_t(s.target)])) {
+    // longer closing on it (interim, Q123). Traffic cars have no stable
+    // index from step to step, so a traffic target is chosen afresh.
+    const bool kept = s.target >= 0 && size_t(s.target) < n && size_t(s.target) != i &&
+                      cars[size_t(s.target)].kind != DlsCar::Kind::kTraffic;
+    if (kept && !passed(cars[size_t(s.target)])) {
       const DlsCar& o = cars[size_t(s.target)];
       const DlsMeeting mm = std::fabs(o.progress - me.progress) < me.half_length + o.half_length
                                 ? DlsMeeting{true, true, 0.0, 0.0}
@@ -159,7 +162,7 @@ void dls_update(const drive::RacingLine& line, std::span<const DlsCar> cars, siz
       if (target < 0 || mm.t < meet.t) target = int(m), meet = mm;
     }
     if (target != s.target) {
-      if (s.following && s.target >= 0 && target < 0) {
+      if (s.following && kept && target < 0) {
         // Keep trailing until it is out of the way (20 m ahead) or gone.
         const DlsCar& o = cars[size_t(s.target)];
         if (o.progress - me.progress < 20 && o.progress > me.progress) target = s.target;
@@ -182,9 +185,10 @@ void dls_update(const drive::RacingLine& line, std::span<const DlsCar> cars, siz
       }
       s.target_lane = goal;
       s.rate = 1.0f / 25.0f;
-    } else if (s.following) {
-      s.target_lane = lane[i];
     } else {
+      // Following: hold the lane, and look for a pass again once a second
+      // (interim, Q123: what ends the title's following is not decoded).
+      if (s.following) s.target_lane = lane[i];
       s.timer -= float(dt);
       if (s.timer <= 0) {
         float to = lane[i];
@@ -196,12 +200,16 @@ void dls_update(const drive::RacingLine& line, std::span<const DlsCar> cars, siz
           s.target_lane = to, s.side = side;
           s.rate = float(std::min(std::fabs(to - lane[i]) / d, 0.2 * road / 2.0));
           s.timer = float(st.update_interval);
+          s.following = false, s.frustration = 0;
+        } else if (s.following) {
+          s.timer = 1.0f;
         } else {
-          // No acceptable slot: hold, try again next frame, and grow frustrated.
+          // No acceptable slot: hold, try again next frame, and grow
+          // frustrated: 5 a frame of the title's 30 Hz (interim, Q123).
           s.target_lane = lane[i];
-          s.frustration += 5;
+          s.frustration += float(5 * dt * 30);
           s.timer = 0;
-          if (s.frustration > 1000) s.following = true;
+          if (s.frustration > 1000) s.following = true, s.timer = 1.0f;
         }
       }
     }
