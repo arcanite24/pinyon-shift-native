@@ -80,6 +80,7 @@ class SettingsPage {
     bool is_save = false;
     bool capturing = false;
     bool selected = false;
+    std::string id;  // the row's own name ("difficulty preset"), whatever `name` displays
   };
 
   // `tokens`: the file's options as command-line tokens (read_settings).

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -686,6 +688,56 @@ int main() {
 
     std::filesystem::remove(tmp_file, ec);
     std::filesystem::remove(tmp_dir, ec);
+  }
+
+  // VIS-31: display rows carry the row's own name, so the help card can pick
+  // the difficulty preset's text whatever the row's localized label is.
+  {
+    carview::SettingsPage p;
+    p.load({});
+    bool found = false;
+    for (const auto& r : p.display_rows()) found = found || r.id == "difficulty preset";
+    CHECK(found);
+  }
+
+  // VIS-29: --no-settings means no settings file is read or written for the
+  // whole run (the settings page, the pause menu's difficulty and the camera
+  // editor all write through write_settings). Temp paths only.
+  {
+    std::error_code ec;
+    const auto dir = std::filesystem::temp_directory_path() / "shift_engine_settings_guard_tests";
+    std::filesystem::create_directories(dir, ec);
+    const auto file = dir / "settings.txt";
+    {
+      std::ofstream out(file, std::ios::binary | std::ios::trunc);
+      out << "preset high\n";
+    }
+    auto content = [&] {
+      std::ifstream in(file, std::ios::binary);
+      return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    CHECK(!carview::settings_file_disabled());
+    CHECK(has(carview::read_settings(file, nullptr), {"--preset", "high"}));
+
+    carview::set_settings_file_disabled(true);
+    CHECK(carview::settings_file_disabled());
+    CHECK(carview::read_settings(file, nullptr).empty());
+    std::string werr;
+    CHECK(!carview::write_settings(file, {"--preset", "low", "--no-traffic"}, &werr));
+    CHECK(!werr.empty());
+    CHECK(content() == "preset high\n");
+    const auto other = dir / "new_settings.txt";
+    CHECK(!carview::write_settings(other, {"--preset", "low"}, &werr));
+    CHECK(!std::filesystem::exists(other));
+    carview::SettingsPage guarded;
+    guarded.load(carview::read_settings(file, nullptr));
+    CHECK(!carview::write_settings(file, guarded.tokens(), &werr));
+    CHECK(content() == "preset high\n");
+
+    carview::set_settings_file_disabled(false);
+    CHECK(carview::write_settings(file, {"--preset", "low"}, &werr));
+    CHECK(has(carview::read_settings(file, nullptr), {"--preset", "low"}));
+    std::filesystem::remove_all(dir, ec);
   }
 
   std::printf("settings_tests: %d failures\n", failures);
