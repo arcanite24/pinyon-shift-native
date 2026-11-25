@@ -6,7 +6,10 @@
 #include <string>
 #include <vector>
 
+#include "drive/rewind.h"
 #include "drive_helpers.h"
+#define CARVIEW_GAME_HUD_LOGIC_ONLY
+#include "game_hud.h"
 #include "world/collision.h"
 
 namespace {
@@ -171,6 +174,84 @@ void test_cli_size_parsing() {
   CHECK(w == 3840 && h == 2160);
 }
 
+void test_missed_checkpoint_tracker() {
+  carview::MissedCheckpointTracker mc;
+  CHECK(!mc.active && near(mc.countdown_s, 0.0));
+
+  // Approaching gate normally on-corridor: must NOT trigger missed checkpoint.
+  CHECK(!mc.step(0.1, true, false, 2, 90.0, 100.0, -10.0, 10.0, 18.0, 2.0));
+  CHECK(!mc.active);
+
+  // Bypassing gate by longitudinal progress (> gate_progress + 16 m) triggers 4.0 s countdown.
+  CHECK(!mc.step(0.1, true, false, 2, 120.0, 100.0, 20.0, 25.0, 18.0, 8.0));
+  CHECK(mc.active && near(mc.countdown_s, carview::MissedCheckpointTracker::kCountdownSec, 1e-6));
+
+  // Counting down while still past gate decrements cleanly without firing early.
+  CHECK(!mc.step(1.5, true, false, 2, 125.0, 100.0, 25.0, 28.0, 18.0, 9.0));
+  CHECK(mc.active && near(mc.countdown_s, 2.5, 1e-6));
+
+  // Passing the gate clears missed checkpoint immediately.
+  CHECK(!mc.step(0.1, true, true, 3, 126.0, 100.0, 26.0, 5.0, 18.0, 1.0));
+  CHECK(!mc.active && near(mc.countdown_s, 0.0));
+
+  // Bypassing gate plane outside gate width triggers countdown; rewind/reset clears immediately.
+  CHECK(!mc.step(0.1, true, false, 4, 205.0, 200.0, 14.0, 26.0, 16.0, 12.0));
+  CHECK(mc.active && near(mc.countdown_s, 4.0, 1e-6));
+  mc.reset();
+  CHECK(!mc.active && near(mc.countdown_s, 0.0));
+
+  // Off-corridor past gate runs countdown to 0.0 and returns true for automatic return-to-track reset.
+  CHECK(!mc.step(0.1, true, false, 5, 300.0, 300.0, 4.0, 35.0, 16.0, 34.0));
+  CHECK(mc.active);
+  CHECK(!mc.step(2.0, true, false, 5, 305.0, 300.0, 8.0, 36.0, 16.0, 34.0));
+  CHECK(mc.active && near(mc.countdown_s, 2.0, 1e-6));
+  CHECK(mc.step(2.05, true, false, 5, 310.0, 300.0, 12.0, 38.0, 16.0, 34.0));
+  CHECK(!mc.active && near(mc.countdown_s, 0.0));
+}
+
+void test_assist_badges_and_rewind_scrubber() {
+  // R3-UI-03: Tri-state ABS / TCS / STM badges + ~0.25 s latch + ~7 Hz blink.
+  CHECK(carview::compute_assist_badge_state(false, false, 0.0) == carview::AssistBadgeState::kDisabled);
+  CHECK(carview::compute_assist_badge_state(true, false, 0.0) == carview::AssistBadgeState::kEnabledIdle);
+  CHECK(carview::compute_assist_badge_state(true, true, 0.0) == carview::AssistBadgeState::kIntervening);
+  CHECK(carview::compute_assist_badge_state(true, false, 0.12) == carview::AssistBadgeState::kIntervening);
+
+  carview::AssistFlashLatch latch;
+  latch.update(1.0, true, false, true);
+  CHECK(near(latch.abs_timer, 0.25, 1e-6));
+  CHECK(near(latch.tcs_timer, 0.0, 1e-6));
+  CHECK(near(latch.stm_timer, 0.25, 1e-6));
+
+  latch.update(1.10, false, true, false);
+  CHECK(near(latch.abs_timer, 0.15, 1e-6));
+  CHECK(near(latch.tcs_timer, 0.25, 1e-6));
+  CHECK(near(latch.stm_timer, 0.15, 1e-6));
+
+  latch.update(1.26, false, false, false);
+  CHECK(near(latch.abs_timer, 0.0, 1e-6));
+  CHECK(near(latch.tcs_timer, 0.09, 1e-6));
+  CHECK(near(latch.stm_timer, 0.0, 1e-6));
+
+  // ~7 Hz oscillation (period ~0.1428 s: positive in first half-cycle, negative in second half-cycle).
+  CHECK(carview::assist_blink_on(0.035));
+  CHECK(!carview::assist_blink_on(0.105));
+
+  // R3-UI-05: Live Rewind scrubber bar telemetry computation.
+  const auto sc = carview::compute_rewind_scrubber(4, drive::RewindConfig::kMaxKeyframes, 2, 10.0, 20.0, 16.5, 22.0);
+  CHECK(near(sc.buffer_fraction, 0.5, 1e-5));
+  CHECK(near(sc.playhead_fraction, 0.65, 1e-5));
+  CHECK(sc.current_slot == 2 && sc.total_slots == 4);
+  CHECK(near(sc.seconds_rewound, 3.5, 1e-5));
+  CHECK(near(sc.seconds_remaining, 6.5, 1e-5));
+
+  const auto sc_oldest =
+      carview::compute_rewind_scrubber(8, drive::RewindConfig::kMaxKeyframes, 0, 10.0, 30.0, 10.0, 30.0);
+  CHECK(near(sc_oldest.buffer_fraction, 1.0, 1e-5));
+  CHECK(near(sc_oldest.playhead_fraction, 0.0, 1e-5));
+  CHECK(near(sc_oldest.seconds_rewound, 20.0, 1e-5));
+  CHECK(near(sc_oldest.seconds_remaining, 0.0, 1e-5));
+}
+
 }  // namespace
 
 int main() {
@@ -180,6 +261,8 @@ int main() {
   test_blend_traffic_pose();
   test_sync_picker_index();
   test_cli_size_parsing();
+  test_missed_checkpoint_tracker();
+  test_assist_badges_and_rewind_scrubber();
   std::printf("carview_drive_tests: %d failure(s)\n", failures);
   return failures ? 1 : 0;
 }

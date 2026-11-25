@@ -294,15 +294,95 @@ void EventsPage::fill(std::string& title, std::vector<std::string>& lines, int& 
     std::string cls = "ANY CLASS";
     if (ev.target_class > 0 && size_t(ev.target_class) < class_names_.size())
       cls = "CLASS " + class_names_[size_t(ev.target_class)] + " OR LOWER";
-    detail_lines.push_back("EVENT: " + sel.display_name);
-    detail_lines.push_back("PRIZE: " + thousands(int64_t(ev.cash_prize)) + " Cr   OPPONENTS: " +
-                           std::to_string(ev.opponents));
+
+    // Line 1: Event format, laps/sprint, opponents & wristband tier.
+    std::string fmt = (ev.laps > 1) ? ("CIRCUIT  •  " + std::to_string(ev.laps) + " LAPS") : "POINT-TO-POINT SPRINT";
+    if (ev.opponents > 0) fmt += "  •  " + std::to_string(ev.opponents) + " OPPONENTS";
+    if (catalog_ && ev.level >= 0 && size_t(ev.level) < catalog_->wristbands.size()) {
+      std::string wb = catalog_->wristbands[size_t(ev.level)].colour_key;
+      for (char& ch : wb) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+      fmt += "  •  " + wb + " WRISTBAND";
+    }
+    detail_lines.push_back(fmt);
+
+    // Line 2: CR payout, Street Race buy-in fee, and wristband points reward.
+    std::string payout = "1ST PRIZE: " + thousands(int64_t(ev.cash_prize)) + " Cr";
+    if (ev.style == 2) {
+      const int64_t buy_in = race::CareerCatalog::street_race_buy_in(ev);
+      if (buy_in > 0) payout += "  •  BUY-IN: " + thousands(buy_in) + " Cr";
+    } else {
+      const int wb_pts = (ev.style == 3) ? 1500 : (ev.style == 5 || ev.style == 6) ? 2500 : 1000;
+      payout += "  •  +" + thousands(wb_pts) + " WRISTBAND PTS";
+    }
+    detail_lines.push_back(payout);
+
+    // Line 3: Class limit or Showcase loaner car.
     if (ev.player_car_id > 0) {
       const auto* cs = catalog_->find_car(ev.player_car_id);
       detail_lines.push_back("SHOWCASE CAR PROVIDED: " + (cs ? car_name(cs->media_name) : std::string("SPECIAL")));
     } else {
       detail_lines.push_back("CLASS LIMIT: " + cls);
     }
+
+    // Line 4: Decoded structured car restrictions (make, country/region, body/model family, drivetrain, year, value, engine, rally).
+    std::string restr_parts;
+    auto add_part = [&](const std::string& p) {
+      if (p.empty()) return;
+      if (!restr_parts.empty()) restr_parts += "  •  ";
+      restr_parts += p;
+    };
+    const auto& rb = ev.restrictions.buckets[0];
+    if (catalog_ && rb.make) {
+      auto it = catalog_->make_names.find(int(*rb.make));
+      add_part("MAKE: " + (it != catalog_->make_names.end() ? it->second : std::to_string(*rb.make)));
+    }
+    if (catalog_ && rb.country) {
+      auto it = catalog_->country_names.find(int(*rb.country));
+      add_part("COUNTRY: " + (it != catalog_->country_names.end() ? it->second : std::to_string(*rb.country)));
+    } else if (catalog_ && rb.region) {
+      auto it = catalog_->region_names.find(int(*rb.region));
+      add_part("REGION: " + (it != catalog_->region_names.end() ? it->second : std::to_string(*rb.region)));
+    }
+    if (catalog_ && rb.model_family) {
+      auto it = catalog_->model_family_names.find(int(*rb.model_family));
+      add_part("MODEL: " + (it != catalog_->model_family_names.end() ? it->second : std::to_string(*rb.model_family)));
+    } else if (catalog_ && rb.body_family) {
+      auto it = catalog_->body_family_names.find(int(*rb.body_family));
+      add_part("BODY: " + (it != catalog_->body_family_names.end() ? it->second : std::to_string(*rb.body_family)));
+    }
+    if (rb.drive_type) {
+      const char* dt = (*rb.drive_type == shift::data::kDriveFwd)   ? "FWD"
+                       : (*rb.drive_type == shift::data::kDriveRwd) ? "RWD"
+                       : (*rb.drive_type == shift::data::kDriveAwd) ? "AWD"
+                                                                    : "RESTRICTED";
+      add_part(std::string("DRIVETRAIN: ") + dt);
+    }
+    if (rb.year_min || rb.year_max) {
+      if (rb.year_min && rb.year_max)
+        add_part("YEAR: " + std::to_string(*rb.year_min) + "-" + std::to_string(*rb.year_max));
+      else if (rb.year_min)
+        add_part("YEAR: " + std::to_string(*rb.year_min) + "+");
+      else
+        add_part("YEAR: <= " + std::to_string(*rb.year_max));
+    }
+    if (rb.value_min || rb.value_max) {
+      if (rb.value_max) add_part("MAX VALUE: " + thousands(int64_t(*rb.value_max)) + " Cr");
+      if (rb.value_min) add_part("MIN VALUE: " + thousands(int64_t(*rb.value_min)) + " Cr");
+    }
+    if (ev.required_engine_placement > 0) {
+      const char* ep = (ev.required_engine_placement == 1) ? "FRONT-ENGINE"
+                       : (ev.required_engine_placement == 2) ? "MID-ENGINE"
+                       : (ev.required_engine_placement == 3) ? "REAR-ENGINE"
+                                                             : "ENGINE LAYOUT";
+      add_part(ep);
+    }
+    if (ev.required_cylinders > 0) {
+      add_part(std::to_string(ev.required_cylinders) + "-CYLINDER");
+    }
+    if (rb.rally_upgraded) add_part("RALLY UPGRADES REQUIRED");
+    if (!restr_parts.empty()) detail_lines.push_back("RESTRICTIONS: " + restr_parts);
+
+    // Localized Event Restriction / Description line (preserved intact!).
     if (!ev.restriction_desc_ref.empty()) {
       const std::string rd = game_text(ev.restriction_desc_ref);
       if (!rd.empty() && rd.rfind("_&", 0) != 0) detail_lines.push_back("RULE: " + rd);
@@ -315,7 +395,7 @@ void EventsPage::fill(std::string& title, std::vector<std::string>& lines, int& 
       detail_lines.push_back("BEST FINISH: " + std::to_string(sel.best_place) + place_suffix(sel.best_place));
     if (!sel.unlocked) detail_lines.push_back("LOCKED: " + sel.reason);
     else if (!sel.eligible) detail_lines.push_back("INELIGIBLE: " + sel.reason);
-    else detail_lines.push_back("READY TO RACE - PRESS ENTER / [A]");
+    else detail_lines.push_back("READY TO RACE  •  PRESS ENTER / [A]");
   }
 }
 

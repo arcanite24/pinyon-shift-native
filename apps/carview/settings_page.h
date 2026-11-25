@@ -4,7 +4,9 @@
 // save back to settings.txt (settings.h).
 #pragma once
 
+#include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "drive/cameras.h"
@@ -118,6 +120,29 @@ class SettingsPage {
   std::string value(const std::string& name) const;
   void set_available_luts(const std::vector<std::string>& names);
 
+  // Optional localization resolver (e.g. bound to carview::game_text at runtime;
+  // pure C++ so unit tests stay independent of fh1data / ui4_chrome).
+  using TextResolver = std::function<std::string(std::string_view table, std::string_view id, const char* fallback)>;
+  static void set_text_resolver(TextResolver fn);
+  static std::string tab_label(Tab t);
+
+  // Explicit controller diagram state for ui4::ControllerDiagramParams (no string scraping).
+  struct ControllerDiagramSpec {
+    bool enabled = false;
+    int layout_id = 0;
+    bool swap_handbrake_clutch = false;
+    std::string highlight_action;
+  };
+  ControllerDiagramSpec controller_diagram_spec() const;
+  template <typename Params>
+  void fill_controller_diagram(Params& out) const {
+    const ControllerDiagramSpec spec = controller_diagram_spec();
+    out.enabled = spec.enabled;
+    out.layout_id = spec.layout_id;
+    out.swap_handbrake_clutch = spec.swap_handbrake_clutch;
+    out.highlight_action = spec.highlight_action;
+  }
+
   // Visual Controls tab controller layout diagram callouts (pure data, no UI dependency).
   struct ControllerDiagramCallout {
     std::string button;      // "LT", "LB", "RT", "RB", "A", "B", "X", "Y", "LS", "RS", "DPAD_LR", "BACK"
@@ -143,6 +168,11 @@ class SettingsPage {
     const char* name;
     drive::ControlAction action;
   };
+  bool metric_units_active() const;
+  std::string format_row_value(const Row& r) const;
+  std::string format_row_name(const char* raw_name) const;
+  void apply_difficulty_preset(size_t preset_pick);
+  void sync_difficulty_preset();
   std::vector<Row> rows_ = build();
   std::vector<RebindRow> rebinds_ = build_rebinds();
   drive::KeyBindings keys_ = drive::KeyBindings::defaults();

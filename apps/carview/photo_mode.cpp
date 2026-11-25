@@ -799,6 +799,7 @@ void PhotoModeController::enter(const std::array<double, 3>& car_pos, double car
   effects_open_ = true;
   ui_hidden_ = false;
   selected_row_ = kAperture;
+  scroll_top_ = 0;
   flash_timer_ = 0.0;
   banner_timer_ = 0.0;
   accum_.cancel();
@@ -906,8 +907,25 @@ bool PhotoModeController::ensure_selected_preview() const {
   return gallery_preview_valid_;
 }
 
+int PhotoModeController::visible_effect_rows(float h) {
+  const float s = std::max(0.25f, h / 720.0f);
+  const float list_top = 66.0f * s;
+  const float list_bot = h - 114.0f * s;
+  const float row_pitch = 40.0f * s;
+  return std::clamp(int(std::floor((list_bot - list_top) / row_pitch)), 1, int(kRowCount));
+}
+
+void PhotoModeController::select_row(int row) {
+  if (row < 0 || row >= kRowCount) return;
+  selected_row_ = row;
+  const int vis = visible_effect_rows(720.0f);
+  if (selected_row_ < scroll_top_) scroll_top_ = selected_row_;
+  else if (selected_row_ >= scroll_top_ + vis) scroll_top_ = selected_row_ - vis + 1;
+  scroll_top_ = std::clamp(scroll_top_, 0, std::max(0, int(kRowCount) - vis));
+}
+
 void PhotoModeController::move_row(int delta) {
-  selected_row_ = ((selected_row_ + delta) % kRowCount + kRowCount) % kRowCount;
+  select_row(((selected_row_ + delta) % kRowCount + kRowCount) % kRowCount);
 }
 
 void PhotoModeController::adjust_row(int delta) {
@@ -975,112 +993,141 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
   const float s = h / 720.0f;
 
   if (gallery_open_) {
-    ui4::subtle_vignette(out, w, h, 0.40f);
-    ui4::title_banner(out, s, 56.0f * s, 28.0f * s, loc_str("PhotoMode", "IDS_PhotoGallery", "PHOTO GALLERY"),
-                      std::to_string(gallery_entries_.size()) + " SAVED PHOTOS", true, 460.0f);
-    const float bx0 = 56.0f * s, bx1 = w - 56.0f * s;
-    const float by0 = 122.0f * s, by1 = h - 84.0f * s;
-    ui4::panel(out, bx0, by0, bx1, by1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-    ui4::offwhite_strip(out, bx0 + 14.0f * s, by0 + 10.0f * s, bx1 - 14.0f * s, by0 + 34.0f * s, s, false);
-    out.text(bx0 + 24.0f * s, by0 + 15.0f * s, "LOCAL PHOTOS FOLDER", ui4::style(Font::kE, 13.0f * s, ui4::kInk));
-    if (gallery_entries_.empty()) {
-      out.text(0.5f * w, 0.5f * h - 10.0f * s, "NO SAVED PHOTOS YET (PRESS ENTER / A IN PHOTO MODE TO SNAP)",
-               ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
-    } else {
-      const float content_top = by0 + 44.0f * s;
-      const float content_bot = by1 - 12.0f * s;
-      const float inner_w = (bx1 - bx0) - 28.0f * s;
-      const float list_x0 = bx0 + 12.0f * s;
-      const float list_x1 = list_x0 + inner_w * 0.44f;
-      const float prev_x0 = list_x1 + 16.0f * s;
-      const float prev_x1 = bx1 - 14.0f * s;
+    ui4::subtle_vignette(out, w, h, 0.36f);
+    const std::string gal_title = loc_str("PhotoMode", "IDS_PhotoGallery", "PHOTO GALLERY");
+    const std::string gal_eyebrow = loc_str("PhotoMode", "IDS_SavedPhotos", "HORIZON PHOTOS") + "  •  " +
+                                    std::to_string(gallery_entries_.size()) + " SAVED";
+    ui4::title_banner(out, s, 56.0f * s, 28.0f * s, gal_title, gal_eyebrow, true, 480.0f);
 
-      // Left pane: scrollable photo list with real decoded thumbnails.
-      const float row_h = 56.0f * s;
-      const int max_vis = std::max(1, int((content_bot - content_top) / row_h));
-      const int start = std::clamp(gallery_selected_ - max_vis / 2, 0,
-                                   std::max(0, int(gallery_entries_.size()) - max_vis));
-      for (int i = start; i < int(gallery_entries_.size()) && i < start + max_vis; ++i) {
-        ensure_entry_thumbnail(size_t(i));
-        const auto& ge = gallery_entries_[size_t(i)];
-        const float ry0 = content_top + float(i - start) * row_h;
-        const float ry1 = ry0 + row_h - 6.0f * s;
-        const bool sel = (i == gallery_selected_);
-        out.add_hit(list_x0, ry0, list_x1, ry1, ui::kHitRow, i);
-        ui4::pill(out, list_x0, ry0, list_x1, ry1,
-                  sel ? ui4::kPink : ((i % 2 == 0) ? ui4::kPillGrey : rgba(24, 26, 32, 232)),
-                  ui4::PillKind::kPill02, false, sel);
+    // Authentic FH1 tilted UI4 gallery workspace (tilted cards + panel01 preview + floating pills).
+    {
+      ui4::TiltScope rot(out, 0.5f * w, 0.5f * h, ui4::kTiltRad * 0.65f);
+      const float bx0 = 60.0f * s, bx1 = w - 60.0f * s;
+      const float by0 = 126.0f * s, by1 = h - 88.0f * s;
 
-        // Decoded thumbnail slot (72x40 at 720p).
-        const float tx0 = list_x0 + 8.0f * s;
-        const float ty0 = ry0 + 5.0f * s;
-        const float tw_box = 72.0f * s;
-        const float th_box = (ry1 - ry0) - 10.0f * s;
-        out.rect(tx0, ty0, tx0 + tw_box, ty0 + th_box, rgba(10, 12, 16, 235));
-        if (ge.has_thumb) {
-          out.image(tx0, ty0, tx0 + tw_box, ty0 + th_box, ge.thumb_uv);
-        }
-        out.frame(tx0, ty0, tx0 + tw_box, ty0 + th_box, sel ? ui4::kYellow : rgba(255, 255, 255, 48), 1.2f * s);
-
-        const float text_x = tx0 + tw_box + 10.0f * s;
-        const float text_max_w = std::max(40.0f * s, list_x1 - text_x - 10.0f * s);
-        ui::TextStyle fts = ui4::style(sel ? Font::kE : Font::kB, 12.5f * s, ui4::kWhite);
-        ui4::fit_text(ge.filename, fts, text_max_w, 8.5f * s);
-        out.text(text_x, ry0 + 9.0f * s, ge.filename, fts);
-
-        char met_buf[64];
-        if (ge.width > 0 && ge.height > 0) {
-          std::snprintf(met_buf, sizeof met_buf, "%ux%u  •  %.0f KB", ge.width, ge.height,
-                        double(ge.size_bytes) / 1024.0);
-        } else {
-          std::snprintf(met_buf, sizeof met_buf, "%.0f KB", double(ge.size_bytes) / 1024.0);
-        }
-        out.text(text_x, ry0 + 28.0f * s, met_buf,
-                 ui4::style(Font::kB, 10.5f * s, sel ? ui4::kYellow : ui4::kDim));
+      // Tilted brush header bar spanning the gallery workspace.
+      ui4::brush(out, bx0 - 6.0f * s, by0, bx1 + 6.0f * s, by0 + 30.0f * s, ui4::kBrushBlack, true);
+      out.text(bx0 + 14.0f * s, by0 + 8.0f * s, loc_str("PhotoMode", "IDS_LocalGallery", "LOCAL PHOTOS FOLDER"),
+               ui4::style(Font::kE, 13.0f * s, ui4::kOffWhite));
+      if (!gallery_entries_.empty()) {
+        char hdr_cnt[32];
+        std::snprintf(hdr_cnt, sizeof hdr_cnt, "%d / %zu", gallery_selected_ + 1, gallery_entries_.size());
+        out.text(bx1 - 14.0f * s, by0 + 8.0f * s, hdr_cnt,
+                 ui4::style(Font::kE, 13.0f * s, ui4::kYellow, Align::kRight));
       }
 
-      // Right pane: crisp aspect-preserving preview of the selected photo.
-      ensure_selected_preview();
-      const auto& sel_entry = gallery_entries_[size_t(std::clamp(gallery_selected_, 0, int(gallery_entries_.size()) - 1))];
-      const float prev_footer_h = 54.0f * s;
-      const float frame_y0 = content_top;
-      const float frame_y1 = content_bot - prev_footer_h;
-      out.rect(prev_x0, frame_y0, prev_x1, frame_y1, rgba(10, 12, 16, 240));
-      out.frame(prev_x0, frame_y0, prev_x1, frame_y1, ui4::kPink, 2.0f * s);
-
-      const float pad = 8.0f * s;
-      const float avail_w = std::max(16.0f, (prev_x1 - prev_x0) - 2.0f * pad);
-      const float avail_h = std::max(16.0f, (frame_y1 - frame_y0) - 2.0f * pad);
-      if (gallery_preview_valid_ && gallery_preview_w_ > 0 && gallery_preview_h_ > 0) {
-        const float img_aspect = float(gallery_preview_w_) / float(gallery_preview_h_);
-        float dw = avail_w;
-        float dh = dw / img_aspect;
-        if (dh > avail_h) {
-          dh = avail_h;
-          dw = dh * img_aspect;
-        }
-        const float ix0 = 0.5f * (prev_x0 + prev_x1 - dw);
-        const float iy0 = 0.5f * (frame_y0 + frame_y1 - dh);
-        out.image(ix0, iy0, ix0 + dw, iy0 + dh, gallery_preview_uv_);
+      if (gallery_entries_.empty()) {
+        ui4::panel01(out, bx0, by0 + 38.0f * s, bx1, by1, s, ui4::kCharcoalDark, ui4::kPink);
+        out.text(0.5f * w, 0.5f * (by0 + 38.0f * s + by1) - 8.0f * s,
+                 loc_str("PhotoMode", "IDS_NoPhotos", "NO SAVED PHOTOS YET (PRESS ENTER / A IN PHOTO MODE TO SNAP)"),
+                 ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
       } else {
-        out.text(0.5f * (prev_x0 + prev_x1), 0.5f * (frame_y0 + frame_y1) - 8.0f * s, "PREVIEW UNAVAILABLE",
-                 ui4::style(Font::kB, 13.0f * s, ui4::kDim, Align::kCenter));
-      }
+        const float content_top = by0 + 38.0f * s;
+        const float content_bot = by1 - 6.0f * s;
+        const float inner_w = bx1 - bx0;
+        const float list_x0 = bx0;
+        const float list_x1 = list_x0 + inner_w * 0.43f;
+        const float prev_x0 = list_x1 + 22.0f * s;
+        const float prev_x1 = bx1;
 
-      // Preview metadata bar.
-      const float fy0 = frame_y1 + 6.0f * s;
-      ui4::pill(out, prev_x0, fy0, prev_x1, content_bot, ui4::kPillGrey, ui4::PillKind::kHud01);
-      ui::TextStyle pfn = ui4::style(Font::kE, 13.0f * s, ui4::kWhite);
-      ui4::fit_text(sel_entry.filename, pfn, (prev_x1 - prev_x0) - 110.0f * s, 9.0f * s);
-      out.text(prev_x0 + 12.0f * s, fy0 + 7.0f * s, sel_entry.filename, pfn);
-      char idx_buf[32];
-      std::snprintf(idx_buf, sizeof idx_buf, "%d / %zu", gallery_selected_ + 1, gallery_entries_.size());
-      out.text(prev_x1 - 12.0f * s, fy0 + 7.0f * s, idx_buf,
-               ui4::style(Font::kE, 13.0f * s, ui4::kYellow, Align::kRight));
-      char det_buf[96];
-      std::snprintf(det_buf, sizeof det_buf, "%ux%u PX  •  %.1f KB", sel_entry.width, sel_entry.height,
-                    double(sel_entry.size_bytes) / 1024.0);
-      out.text(prev_x0 + 12.0f * s, fy0 + 26.0f * s, det_buf, ui4::style(Font::kB, 11.0f * s, ui4::kOffWhite));
+        // Left pane: floating tilted UI4 PILL02/PILL03 list with real decoded thumbnails + scroll indicator.
+        const float row_h = 58.0f * s;
+        const int max_vis = std::max(1, int((content_bot - content_top) / row_h));
+        const int total_g = int(gallery_entries_.size());
+        const int start = std::clamp(gallery_selected_ - max_vis / 2, 0, std::max(0, total_g - max_vis));
+        float last_ry1 = content_top;
+        for (int i = start; i < total_g && i < start + max_vis; ++i) {
+          ensure_entry_thumbnail(size_t(i));
+          const auto& ge = gallery_entries_[size_t(i)];
+          const float ry0 = content_top + float(i - start) * row_h;
+          const float ry1 = ry0 + row_h - 6.0f * s;
+          last_ry1 = ry1;
+          const bool sel = (i == gallery_selected_);
+          out.add_hit(list_x0, ry0, list_x1, ry1, ui::kHitRow, i);
+          ui4::pill(out, list_x0, ry0, list_x1, ry1,
+                    sel ? ui4::kPink : ((i % 2 == 0) ? ui4::kPillGrey : rgba(24, 26, 32, 232)),
+                    (i % 2 == 0) ? ui4::PillKind::kPill02 : ui4::PillKind::kPill03, false, sel);
+
+          // Decoded thumbnail slot (74x42 at 720p).
+          const float tx0 = list_x0 + 8.0f * s;
+          const float ty0 = ry0 + 5.0f * s;
+          const float tw_box = 74.0f * s;
+          const float th_box = (ry1 - ry0) - 10.0f * s;
+          out.rect(tx0, ty0, tx0 + tw_box, ty0 + th_box, rgba(10, 12, 16, 235));
+          if (ge.has_thumb) {
+            out.image(tx0, ty0, tx0 + tw_box, ty0 + th_box, ge.thumb_uv);
+          }
+          out.frame(tx0, ty0, tx0 + tw_box, ty0 + th_box, sel ? ui4::kYellow : rgba(255, 255, 255, 52), 1.4f * s);
+
+          const float text_x = tx0 + tw_box + 10.0f * s;
+          const float text_max_w = std::max(40.0f * s, list_x1 - text_x - 10.0f * s);
+          ui::TextStyle fts = ui4::style(sel ? Font::kE : Font::kB, 12.5f * s, ui4::kWhite);
+          ui4::fit_text(ge.filename, fts, text_max_w, 8.5f * s);
+          out.text(text_x, ry0 + 9.0f * s, ge.filename, fts);
+
+          char met_buf[64];
+          if (ge.width > 0 && ge.height > 0) {
+            std::snprintf(met_buf, sizeof met_buf, "%ux%u  •  %.0f KB", ge.width, ge.height,
+                          double(ge.size_bytes) / 1024.0);
+          } else {
+            std::snprintf(met_buf, sizeof met_buf, "%.0f KB", double(ge.size_bytes) / 1024.0);
+          }
+          out.text(text_x, ry0 + 29.0f * s, met_buf,
+                   ui4::style(Font::kB, 10.5f * s, sel ? ui4::kYellow : ui4::kDim));
+        }
+        ui4::scroll_indicator(out, list_x1 + 6.0f * s, content_top, list_x1 + 13.0f * s,
+                              std::max(content_top + 24.0f * s, last_ry1), start, max_vis, total_g, s);
+
+        // Right pane: tilted FH1 PANEL01 preview card with pink top accent and metadata strip.
+        ensure_selected_preview();
+        const auto& sel_entry =
+            gallery_entries_[size_t(std::clamp(gallery_selected_, 0, int(gallery_entries_.size()) - 1))];
+        ui4::panel01(out, prev_x0, content_top, prev_x1, content_bot, s, ui4::kCharcoalDark, ui4::kPink);
+
+        const float prev_footer_h = 56.0f * s;
+        const float frame_x0 = prev_x0 + 10.0f * s;
+        const float frame_x1 = prev_x1 - 10.0f * s;
+        const float frame_y0 = content_top + 10.0f * s;
+        const float frame_y1 = content_bot - prev_footer_h - 6.0f * s;
+        out.rect(frame_x0, frame_y0, frame_x1, frame_y1, rgba(10, 12, 16, 240));
+        out.frame(frame_x0, frame_y0, frame_x1, frame_y1, ui4::kPink, 1.8f * s);
+
+        const float pad = 6.0f * s;
+        const float avail_w = std::max(16.0f, (frame_x1 - frame_x0) - 2.0f * pad);
+        const float avail_h = std::max(16.0f, (frame_y1 - frame_y0) - 2.0f * pad);
+        if (gallery_preview_valid_ && gallery_preview_w_ > 0 && gallery_preview_h_ > 0) {
+          const float img_aspect = float(gallery_preview_w_) / float(gallery_preview_h_);
+          float dw = avail_w;
+          float dh = dw / img_aspect;
+          if (dh > avail_h) {
+            dh = avail_h;
+            dw = dh * img_aspect;
+          }
+          const float ix0 = 0.5f * (frame_x0 + frame_x1 - dw);
+          const float iy0 = 0.5f * (frame_y0 + frame_y1 - dh);
+          out.image(ix0, iy0, ix0 + dw, iy0 + dh, gallery_preview_uv_);
+        } else {
+          out.text(0.5f * (frame_x0 + frame_x1), 0.5f * (frame_y0 + frame_y1) - 8.0f * s,
+                   loc_str("PhotoMode", "IDS_PreviewUnavailable", "PREVIEW UNAVAILABLE"),
+                   ui4::style(Font::kB, 13.0f * s, ui4::kDim, Align::kCenter));
+        }
+
+        // Preview metadata strip inside the tilted card.
+        const float fy0 = frame_y1 + 6.0f * s;
+        const float fy1 = content_bot - 8.0f * s;
+        ui4::pill(out, frame_x0, fy0, frame_x1, fy1, ui4::kPillGrey, ui4::PillKind::kHud01, false, true);
+        ui::TextStyle pfn = ui4::style(Font::kE, 13.0f * s, ui4::kWhite);
+        ui4::fit_text(sel_entry.filename, pfn, (frame_x1 - frame_x0) - 110.0f * s, 9.0f * s);
+        out.text(frame_x0 + 12.0f * s, fy0 + 7.0f * s, sel_entry.filename, pfn);
+        char idx_buf[32];
+        std::snprintf(idx_buf, sizeof idx_buf, "%d / %zu", gallery_selected_ + 1, gallery_entries_.size());
+        out.text(frame_x1 - 12.0f * s, fy0 + 7.0f * s, idx_buf,
+                 ui4::style(Font::kE, 13.0f * s, ui4::kYellow, Align::kRight));
+        char det_buf[96];
+        std::snprintf(det_buf, sizeof det_buf, "%ux%u PX  •  %.1f KB", sel_entry.width, sel_entry.height,
+                      double(sel_entry.size_bytes) / 1024.0);
+        out.text(frame_x0 + 12.0f * s, fy0 + 26.0f * s, det_buf, ui4::style(Font::kB, 11.0f * s, ui4::kOffWhite));
+      }
     }
     ui4::button_bar(out,
                     {{"X", loc_str("HelpButtons", "IDS_Delete", "DELETE PHOTO")},
@@ -1130,12 +1177,14 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
         banner_timer_ > 0.0 && (!last_promo_.newly_spotted_ids.empty() || !last_saved_label_.empty());
     const PromoSpotResult& promo = show_promo_banner ? last_promo_ : live_promo_;
 
-    // Row 1: Compact pink PHOTO MODE + camera readout pill
+    // Row 1: Compact pink PHOTO MODE + camera readout pill (Metric m vs Imperial ft)
     const std::string pm_hdr = loc_str("PauseMenu", "IDS_Photo", "PHOTO MODE");
+    const float focus_disp = metric_units_ ? effects_.focus_distance : (effects_.focus_distance * 3.28084f);
+    const char* focus_unit = metric_units_ ? "m" : "ft";
     char cam_info[160];
-    std::snprintf(cam_info, sizeof cam_info, "%s   •   FOV %.0f°   •   F/%.1f   •   %.1fm%s",
+    std::snprintf(cam_info, sizeof cam_info, "%s   •   FOV %.0f°   •   F/%.1f   •   %.1f%s%s",
                   pm_hdr.c_str(), camera_.fov_deg(), 1.4f + (1.0f - effects_.aperture / 100.0f) * 14.6f,
-                  effects_.focus_distance, camera_.limits().through_walls ? "   •   NO-CLIP" : "");
+                  focus_disp, focus_unit, camera_.limits().through_walls ? "   •   NO-CLIP" : "");
     ui4::pill(out, px0, py, px0 + 382.0f * s, py + 26.0f * s, ui4::kPink, ui4::PillKind::kHud01);
     ui::TextStyle cis = ui4::style(Font::kE, 12.0f * s, ui4::kWhite);
     ui4::fit_text(cam_info, cis, 358.0f * s, 8.5f * s);
@@ -1170,17 +1219,29 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     out.text(px0 + 12.0f * s, py + 5.5f * s, promo_line, prs);
   }
 
-  // ---- 516_I_EFFECTSMODE: Sleek Right-Edge Effects Column (x=1012..1260) using PILL01 + OPT_SLIDER_FRAME ----
+  // ---- 516_I_EFFECTSMODE: Sleek Right-Edge Scrollable Effects Column (x=1002..1252) ----
   if (effects_open_) {
-    const float dx0 = w - 268.0f * s;  // canvas x = 1012 at 1280px!
-    const float dx1 = w - 20.0f * s;   // canvas x = 1260
+    const float dx0 = w - 278.0f * s;  // canvas x = 1002 at 1280px (keeps x >= 1000 with scrollbar room!)
+    const float dx1 = w - 28.0f * s;   // canvas x = 1252
     const float dy0 = 36.0f * s;
-    const float row_pitch = 38.0f * s;
+    const float row_pitch = 40.0f * s;
+    const float row_h = 35.0f * s;
+    const float list_top = dy0 + 30.0f * s;  // y = 66 at 720p
+    const int vis = visible_effect_rows(h);
+    if (selected_row_ < scroll_top_) scroll_top_ = selected_row_;
+    else if (selected_row_ >= scroll_top_ + vis) scroll_top_ = selected_row_ - vis + 1;
+    scroll_top_ = std::clamp(scroll_top_, 0, std::max(0, int(kRowCount) - vis));
+    const int first = scroll_top_;
+    const int last = std::min(int(kRowCount), first + vis);
 
-    // Header PILL01 (#BFBFBF) + PILLCLIPON01
+    // Header PILL01 (#BFBFBF) + PILLCLIPON01 + compact position counter (e.g. "4 / 15")
     ui4::pill(out, dx0, dy0, dx1, dy0 + 26.0f * s, rgba(0xBF, 0xBF, 0xBF, 240), ui4::PillKind::kMenu, false, true);
     out.text(dx0 + 12.0f * s, dy0 + 6.0f * s, loc_str("PhotoMode", "IDS_Effects", "CAMERA EFFECTS"),
              ui4::style(Font::kD, 13.0f * s, ui4::kInk));
+    char pos_buf[24];
+    std::snprintf(pos_buf, sizeof pos_buf, "%d / %d", selected_row_ + 1, int(kRowCount));
+    out.text(dx1 - 10.0f * s, dy0 + 6.5f * s, pos_buf,
+             ui4::style(Font::kD, 11.5f * s, ui4::kPink, Align::kRight));
 
     struct RowInfo {
       std::string name;
@@ -1194,7 +1255,11 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
       return std::string(b);
     };
     char fbuf[24], zbuf[24], rbuf[24];
-    std::snprintf(fbuf, sizeof fbuf, "%.1fm", effects_.focus_distance);
+    if (metric_units_) {
+      std::snprintf(fbuf, sizeof fbuf, "%.1fm", effects_.focus_distance);
+    } else {
+      std::snprintf(fbuf, sizeof fbuf, "%.1fft", effects_.focus_distance * 3.28084f);
+    }
     std::snprintf(zbuf, sizeof zbuf, "%.0f°", camera_.fov_deg());
     std::snprintf(rbuf, sizeof rbuf, "%+.0f°", camera_.roll_deg());
 
@@ -1221,13 +1286,14 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
         {loc_str("PhotoMode", "IDS_HideCar", "HIDE CAR"), 0.0f, effects_.hide_car ? "ON" : "OFF", false},
     };
 
-    const float list_top = dy0 + 30.0f * s;
-    for (int i = 0; i < kRowCount; ++i) {
-      const float ry0 = list_top + float(i) * row_pitch;
-      const float ry1 = ry0 + 34.0f * s;
+    float list_drawn_bot = list_top;
+    for (int i = first; i < last; ++i) {
+      const float ry0 = list_top + float(i - first) * row_pitch;
+      const float ry1 = ry0 + row_h;
+      list_drawn_bot = ry1;
       const bool sel = (i == selected_row_);
 
-      // Floating PILL01 row (#212121, focused #F90064) — NO giant enclosing dark wall!
+      // Floating PILL01 row (#212121, focused #F90064) — never collides with bottom button bar!
       out.add_hit(dx0, ry0, dx1, ry1, ui::kHitRow, i);
       ui4::pill(out, dx0, ry0, dx1, ry1, sel ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kMenu, false, sel);
 
@@ -1251,6 +1317,12 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
         ui4::opt_slider(out, sl_x0, ry1 - 11.0f * s, sl_x1, ry1 - 4.0f * s, rows[i].norm, s,
                         sel ? ui4::kYellow : ui4::kPink, sel);
       }
+    }
+
+    // Visible vertical scrollbar indicator alongside the 15-slider effects drawer.
+    if (vis < int(kRowCount)) {
+      ui4::scroll_indicator(out, dx1 + 5.0f * s, list_top, dx1 + 12.0f * s, list_drawn_bot, first, vis, int(kRowCount),
+                            s);
     }
   }
 

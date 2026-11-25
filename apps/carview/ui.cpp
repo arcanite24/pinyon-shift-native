@@ -797,8 +797,8 @@ int font_of(const TextStyle& s) {
   return -1;
 }
 
-// The next code point of UTF-8 text (ASCII letters upper-cased, as the
-// stroke font draws them); 0xFFFD for a bad byte.
+// The next code point of UTF-8 text (full Unicode Latin-1/Extended-A/Cyrillic
+// uppercase folding when `!keep_case`); 0xFFFD for a bad byte.
 uint32_t next_code_point(std::string_view t, size_t& i, bool keep_case = false) {
   const auto b = static_cast<unsigned char>(t[i++]);
   if (b < 0x80) return !keep_case && b >= 'a' && b <= 'z' ? uint32_t(b - 32) : b;
@@ -806,7 +806,47 @@ uint32_t next_code_point(std::string_view t, size_t& i, bool keep_case = false) 
   if (n < 0) return 0xFFFD;
   uint32_t c = b & (0x3F >> n);
   for (; n > 0 && i < t.size(); --n) c = c << 6 | (static_cast<unsigned char>(t[i++]) & 0x3F);
-  return c;
+  return keep_case ? c : ui::unicode_to_upper_cp(c);
+}
+
+void append_utf8_cp(std::string& out, uint32_t cp) {
+  if (cp < 0x80u) {
+    out.push_back(char(cp));
+  } else if (cp < 0x800u) {
+    out.push_back(char(0xC0u | (cp >> 6)));
+    out.push_back(char(0x80u | (cp & 0x3Fu)));
+  } else if (cp < 0x10000u) {
+    out.push_back(char(0xE0u | (cp >> 12)));
+    out.push_back(char(0x80u | ((cp >> 6) & 0x3Fu)));
+    out.push_back(char(0x80u | (cp & 0x3Fu)));
+  } else {
+    out.push_back(char(0xF0u | (cp >> 18)));
+    out.push_back(char(0x80u | ((cp >> 12) & 0x3Fu)));
+    out.push_back(char(0x80u | ((cp >> 6) & 0x3Fu)));
+    out.push_back(char(0x80u | (cp & 0x3Fu)));
+  }
+}
+
+// Finds a glyph in `preferred_slot`, falling back across all other loaded VFonts
+// before dropping to CJK/stroke/space so accented European & Cyrillic glyphs render cleanly.
+const fh1::VFontGlyph* find_vfont_glyph(int preferred_slot, uint32_t cp, int& out_slot) {
+  if (cp == ' ') return nullptr;
+  const VectorFonts& v = vf();
+  if (preferred_slot >= 0 && preferred_slot < kNumVFonts && v.font[preferred_slot]) {
+    if (const fh1::VFontGlyph* g = v.font[preferred_slot]->find(cp)) {
+      out_slot = preferred_slot;
+      return g;
+    }
+  }
+  static constexpr int kFallbackOrder[kNumVFonts] = {1, 0, 3, 2, 4, 5, 6, 7, 8, 9, 10};
+  for (int cand : kFallbackOrder) {
+    if (cand == preferred_slot || !v.font[cand]) continue;
+    if (const fh1::VFontGlyph* g = v.font[cand]->find(cp)) {
+      out_slot = cand;
+      return g;
+    }
+  }
+  return nullptr;
 }
 
 // px per em for a cap height of `size` px.
@@ -1252,16 +1292,24 @@ std::vector<StyledLine> parse_styled_lines(std::string_view text, const TextStyl
 float measure_run_single_line(std::string_view text, const TextStyle& s) {
   const int f = font_of(s);
   const bool have_cjk = vf().cjk && vf().cjk->valid();
+  std::string folded_storage;
+  std::string_view src = text;
+  if (!s.keep_case) {
+    folded_storage = ui::unicode_uppercase_utf8(text);
+    src = folded_storage;
+  }
   if (f >= 0) {
     const fh1::VFont& font = *vf().font[f];
     const float k = em_px(font, s.size);
     float w = 0;
     size_t n = 0;
-    for (size_t i = 0; i < text.size();) {
-      const uint32_t cp = next_code_point(text, i, s.keep_case);
-      const fh1::VFontGlyph* g = cp == ' ' ? nullptr : font.find(cp);
+    for (size_t i = 0; i < src.size();) {
+      const uint32_t cp = next_code_point(src, i, true);
+      int actual_slot = f;
+      const fh1::VFontGlyph* g = find_vfont_glyph(f, cp, actual_slot);
       if (g) {
-        w += g->advance * k + s.tracking * s.size;
+        const float gk = (actual_slot == f) ? k : em_px(*vf().font[actual_slot], s.size);
+        w += g->advance * gk + s.tracking * s.size;
       } else if (cp != ' ' && have_cjk && vf().cjk->has_glyph(cp)) {
         w += cjk_advance_px(cp, s.size) + s.tracking * s.size;
       } else {
@@ -1276,8 +1324,8 @@ float measure_run_single_line(std::string_view text, const TextStyle& s) {
     float w = 0;
     size_t n = 0;
     const float r = s.weight * 10;
-    for (size_t i = 0; i < text.size();) {
-      const uint32_t cp = next_code_point(text, i, s.keep_case);
+    for (size_t i = 0; i < src.size();) {
+      const uint32_t cp = next_code_point(src, i, true);
       if (cp >= 0x80 && vf().cjk->has_glyph(cp)) {
         w += cjk_advance_px(cp, s.size) + s.tracking * s.size;
       } else {
@@ -1290,12 +1338,52 @@ float measure_run_single_line(std::string_view text, const TextStyle& s) {
   }
   const float r = s.weight * 10;
   float units = 0;
-  for (char c : text) units += advance_units(glyph(c), r, s.tracking * 10);
-  if (!text.empty()) units -= 1.8f + s.tracking * 10;
+  size_t count = 0;
+  for (size_t i = 0; i < src.size();) {
+    const uint32_t cp = next_code_point(src, i, true);
+    units += advance_units(cp < 128 ? glyph(char(cp)) : nullptr, r, s.tracking * 10);
+    ++count;
+  }
+  if (count > 0) units -= 1.8f + s.tracking * 10;
   return units * s.size / 10;
 }
 
 }  // namespace
+
+uint32_t unicode_to_upper_cp(uint32_t cp) {
+  if (cp >= 'a' && cp <= 'z') return cp - 32u;
+  // Latin-1 Supplement: à..ö (0xE0..0xF6), ø..þ (0xF8..0xFE), ÿ (0xFF -> 0x178)
+  if (cp >= 0x00E0u && cp <= 0x00F6u) return cp - 0x20u;
+  if (cp >= 0x00F8u && cp <= 0x00FEu) return cp - 0x20u;
+  if (cp == 0x00FFu) return 0x0178u;
+  // Latin Extended-A (Polish, Czech, Hungarian, Turkish, etc.)
+  if (cp >= 0x0100u && cp <= 0x012Fu) return (cp & 1u) ? (cp - 1u) : cp;
+  if (cp == 0x0131u) return 'I';
+  if (cp >= 0x0132u && cp <= 0x0137u) return (cp & 1u) ? (cp - 1u) : cp;
+  if (cp >= 0x0139u && cp <= 0x0148u) return ((cp & 1u) == 0u) ? (cp - 1u) : cp;
+  if (cp >= 0x014Au && cp <= 0x0177u) return (cp & 1u) ? (cp - 1u) : cp;
+  if (cp >= 0x0179u && cp <= 0x017Eu) return ((cp & 1u) == 0u) ? (cp - 1u) : cp;
+  // Cyrillic: а..я (0x0430..0x044F), ѐ..џ (0x0450..0x045F, incl. ё -> Ё), ґ -> Ґ
+  if (cp >= 0x0430u && cp <= 0x044Fu) return cp - 0x20u;
+  if (cp >= 0x0450u && cp <= 0x045Fu) return cp - 0x50u;
+  if (cp == 0x0491u) return 0x0490u;
+  return cp;
+}
+
+std::string unicode_uppercase_utf8(std::string_view text) {
+  std::string out;
+  out.reserve(text.size() + 8);
+  for (size_t i = 0; i < text.size();) {
+    const uint32_t cp = next_code_point(text, i, true);
+    if (cp == 0x00DFu) {  // German sharp s: ß -> SS
+      out.push_back('S');
+      out.push_back('S');
+    } else {
+      append_utf8_cp(out, unicode_to_upper_cp(cp));
+    }
+  }
+  return out;
+}
 
 void set_vector_fonts(std::shared_ptr<const fh1::VFont> a, std::shared_ptr<const fh1::VFont> b,
                       std::shared_ptr<const fh1::VFont> e, std::shared_ptr<const fh1::VFont> d) {
@@ -1482,17 +1570,27 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
       TextStyle rs = s;
       rs.font = run.font;
       rs.color = run.color;
+      std::string folded_storage;
+      std::string_view run_src = run.text;
+      if (!rs.keep_case) {
+        folded_storage = ui::unicode_uppercase_utf8(run.text);
+        run_src = folded_storage;
+      }
       const int f = font_of(rs);
       if (f >= 0) {
         const fh1::VFont& font = *vf().font[f];
         const float k = em_px(font, rs.size);
         const int px = cached_px(k);
-        for (size_t i = 0; i < run.text.size();) {
-          const uint32_t cp = next_code_point(run.text, i, rs.keep_case);
-          const fh1::VFontGlyph* g = cp == ' ' ? nullptr : font.find(cp);
+        for (size_t i = 0; i < run_src.size();) {
+          const uint32_t cp = next_code_point(run_src, i, true);
+          int actual_slot = f;
+          const fh1::VFontGlyph* g = find_vfont_glyph(f, cp, actual_slot);
           if (g) {
-            if (const auto* e = glyph_entry(f, cp, px)) {
-              const float scale = k / float(std::max(1, e->px));
+            const fh1::VFont& gf = *vf().font[actual_slot];
+            const float gk = (actual_slot == f) ? k : em_px(gf, rs.size);
+            const int gpx = (actual_slot == f) ? px : cached_px(gk);
+            if (const auto* e = glyph_entry(actual_slot, cp, gpx)) {
+              const float scale = gk / float(std::max(1, e->px));
               const float sx = scale * rs.stretch;
               float gx = pen + e->left * sx, gy = base + e->top * scale;
               if (scale == 1.0f && rs.stretch == 1.0f) gx = std::round(gx), gy = std::round(gy);
@@ -1518,7 +1616,7 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
                                   0});
               }
             }
-            pen += (g->advance * k + rs.tracking * rs.size) * rs.stretch;
+            pen += (g->advance * gk + rs.tracking * rs.size) * rs.stretch;
           } else if (cp != ' ' && have_cjk && vf().cjk->has_glyph(cp)) {
             if (const auto* e = cjk_glyph_entry(cp, cjk_px)) {
               const float cs = std::clamp(rs.size * 1.32f, 8.0f, 96.0f) / float(std::max(1, e->px));
@@ -1537,8 +1635,8 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
       } else {
         const float k = rs.size / 10;
         const float r = rs.weight * 10;
-        for (size_t i = 0; i < run.text.size();) {
-          const uint32_t cp = next_code_point(run.text, i, rs.keep_case);
+        for (size_t i = 0; i < run_src.size();) {
+          const uint32_t cp = next_code_point(run_src, i, true);
           if (cp >= 0x80 && have_cjk && vf().cjk->has_glyph(cp)) {
             if (const auto* e = cjk_glyph_entry(cp, cjk_px)) {
               const float cs = std::clamp(rs.size * 1.32f, 8.0f, 96.0f) / float(std::max(1, e->px));
@@ -1794,6 +1892,26 @@ void rasterize(std::span<const Instance> items, std::vector<uint8_t>& out, uint3
         p[3] = uint8_t(std::lround(255 * a + p[3] * (1 - a)));
       }
   }
+}
+
+namespace {
+
+std::function<std::string(const std::string&)>& ui_text_lookup_fn() {
+  static std::function<std::string(const std::string&)> fn;
+  return fn;
+}
+
+}  // namespace
+
+void set_text_lookup(std::function<std::string(const std::string&)> fn) {
+  ui_text_lookup_fn() = std::move(fn);
+}
+
+std::string lookup_text(const std::string& ref) {
+  if (const auto& fn = ui_text_lookup_fn(); fn && !ref.empty()) {
+    return fn(ref);
+  }
+  return {};
 }
 
 }  // namespace carview::ui

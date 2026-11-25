@@ -70,11 +70,31 @@ int main() {
     CHECK(l4.control_for("SwitchCamera") == drive::PadControl::kLeftShoulder);
     CHECK(l4.control_for("Gas") == drive::PadControl::kLeftTrigger);
     CHECK(l4.control_for("Brake") == drive::PadControl::kRightTrigger);
+
+    // R3-UI-02: D-pad Up -> PhotoMode, D-pad Down -> Telemetry, D-pad Left/Right -> Radio across all 5 layouts.
+    for (int lid = 0; lid < 5; ++lid) {
+      const auto lay = drive::default_controller_layout(lid);
+      CHECK(lay.action_for(drive::PadControl::kDPadUp) == "PhotoMode");
+      CHECK(lay.action_for(drive::PadControl::kDPadDown) == "Telemetry");
+      CHECK(lay.action_for(drive::PadControl::kDPadLeft) == "RadioLeft");
+      CHECK(lay.action_for(drive::PadControl::kDPadRight) == "RadioRight");
+      CHECK(lay.action_for(drive::PadControl::kBack) == "Map");
+    }
   }
 
-  // Keyboard rebinding and serialization.
+  // Keyboard rebinding and serialization (all 20 ControlActions).
   {
     auto kb = drive::KeyBindings::defaults();
+    CHECK(int(drive::ControlAction::kCount) == 20);
+    for (int i = 0; i < int(drive::ControlAction::kCount); ++i) {
+      const auto act = static_cast<drive::ControlAction>(i);
+      const char* nm = drive::control_action_name(act);
+      drive::ControlAction parsed{};
+      CHECK(nm != nullptr && nm[0] != '\0');
+      CHECK(drive::parse_control_action(nm, parsed) && parsed == act);
+    }
+    CHECK(kb.matches(drive::ControlAction::kPhotoMode, "P"));
+    CHECK(kb.matches(drive::ControlAction::kTelemetry, "F3"));
     CHECK(kb.matches(drive::ControlAction::kThrottle, "W"));
     CHECK(kb.matches(drive::ControlAction::kThrottle, "up"));
     CHECK(kb.matches(drive::ControlAction::kSwitchCamera, "v"));

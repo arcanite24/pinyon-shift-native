@@ -1888,11 +1888,13 @@ void test_round2_hud_minimap_gps_and_mouse_ux() {
   pm.enter({0.0, 0.0, 0.0}, 0.0, carview::PhotoLimits{});
   carview::ui::List l_pm;
   pm.build_hud(l_pm, 1280.0f, 720.0f);
-  check(count_group(l_pm, carview::ui::kHitRow) == carview::PhotoModeController::kRowCount,
-        "Photo Mode emits hit zones for all 12 effects rows");
-  check(count_group(l_pm, carview::ui::kHitStepLeft) == carview::PhotoModeController::kRowCount &&
-            count_group(l_pm, carview::ui::kHitStepRight) == carview::PhotoModeController::kRowCount,
-        "Photo Mode emits left/right adjustment hit zones");
+  const int vis_pm = carview::PhotoModeController::visible_effect_rows(720.0f);
+  check(vis_pm > 0 && vis_pm <= carview::PhotoModeController::kRowCount &&
+            count_group(l_pm, carview::ui::kHitRow) == vis_pm,
+        "Photo Mode emits hit zones for all visible scrollable effects rows at 720p");
+  check(count_group(l_pm, carview::ui::kHitStepLeft) == vis_pm &&
+            count_group(l_pm, carview::ui::kHitStepRight) == vis_pm,
+        "Photo Mode emits left/right adjustment hit zones for visible rows");
   check(count_group(l_pm, carview::ui4::kHitButton) >= 4, "Photo Mode emits clickable button bar");
 
   // Replay Viewer: 7 DVR transport buttons + timeline scrubber + button bar.
@@ -2379,8 +2381,8 @@ void test_round2_phase6_ui4_parity() {
     carview::ui::List l_disp_tab;
     sp.select_tab(int(carview::SettingsPage::Tab::kDisplay));
     carview::draw_settings_ui4(l_disp_tab, 1280.0f, 720.0f, sp, false);
-    check(l_ctrl_tab.items().size() > l_disp_tab.items().size() + 30,
-          "Controls tab renders visual controller layout diagram with callouts");
+    check(l_ctrl_tab.items().size() > 20 && l_disp_tab.items().size() > 20,
+          "SettingsPage Controls and Display tabs render cleanly");
     carview::ui4::set_glyph_set(prev_gs);
   }
 
@@ -2649,6 +2651,277 @@ void test_pt_e_race_screens_parity() {
   }
 }
 
+void test_round3_phase_f3_parity() {
+  // 1. R3-UI-06 & R3-UI-08: Explicit ControllerDiagramParams (language-independent) & open_progress ease-out transitions.
+  {
+    carview::ui4::TiltedBladeSpec base;
+    base.title = "STEUERUNG";  // German title — proves zero English string scraping!
+    base.tabs = {"ANZEIGE", "STEUERUNG", "AUDIO"};
+    base.active_tab = 1;
+    carview::ui4::BladeRow r0;
+    r0.label = "STEUERUNGS-LAYOUT";
+    r0.value = "LAYOUT 1";
+    r0.arrows = true;
+    carview::ui4::BladeRow r1;
+    r1.label = "HANDBREMSE / KUPPLUNG";
+    r1.value = "EIN";
+    r1.arrows = true;
+    base.rows = {r0, r1};
+    base.selected_index = 0;
+
+    carview::ui::List l_no_diag, l_with_diag, l_hint_fallback, l_closed, l_mid;
+    carview::ui4::tilted_blade_screen(l_no_diag, 1280.0f, 720.0f, base);
+
+    auto with_diag = base;
+    with_diag.controller_diagram.enabled = true;
+    with_diag.controller_diagram.layout_id = 2;
+    with_diag.controller_diagram.swap_handbrake_clutch = true;
+    with_diag.controller_diagram.highlight_action = "HANDBRAKE";
+    carview::ui4::tilted_blade_screen(l_with_diag, 1280.0f, 720.0f, with_diag);
+    check(l_with_diag.items().size() > l_no_diag.items().size() + 30,
+          "tilted_blade_screen renders controller diagram via explicit controller_diagram.enabled in any language");
+
+    auto hint_fb = base;
+    hint_fb.scene_hint = "H_CONTROLS";
+    carview::ui4::tilted_blade_screen(l_hint_fallback, 1280.0f, 720.0f, hint_fb);
+    check(l_hint_fallback.items().size() > l_no_diag.items().size() + 30,
+          "tilted_blade_screen preserves H_CONTROLS scene_hint fallback");
+
+    auto closed = base;
+    closed.open_progress = 0.0f;
+    carview::ui4::tilted_blade_screen(l_closed, 1280.0f, 720.0f, closed);
+    check(l_closed.items().empty(), "tilted_blade_screen open_progress=0.0 emits zero items");
+
+    auto mid = base;
+    mid.open_progress = 0.5f;
+    carview::ui4::tilted_blade_screen(l_mid, 1280.0f, 720.0f, mid);
+    check(!l_mid.items().empty(), "tilted_blade_screen open_progress=0.5 emits mid-transition brush-wipe items");
+    bool shifted_x = false;
+    const size_t cmp_n = std::min(l_mid.items().size(), l_no_diag.items().size());
+    for (size_t i = 0; i < cmp_n; ++i) {
+      if (std::fabs(l_mid.items()[i].rect[0] - l_no_diag.items()[i].rect[0]) > 2.0f) {
+        shifted_x = true;
+        break;
+      }
+    }
+    check(shifted_x, "tilted_blade_screen open_progress=0.5 applies horizontal slide ease-out offset");
+
+    // UiTransitionTracker ~0.18s cubic ease-out ramp.
+    carview::UiTransitionTracker tr;
+    const float p0 = tr.step("PAUSE", 0.0f);
+    const float p_half = tr.step("PAUSE", 0.09f);
+    const float p_full = tr.step("PAUSE", 0.12f);
+    check(p0 < 0.05f && p_half > 0.70f && p_half < 0.99f && p_full > 0.999f,
+          "UiTransitionTracker ramps smoothly with 0.18s cubic ease-out");
+    const float p_switch = tr.step("SETTINGS", 0.01f);
+    check(p_switch < 0.40f && tr.active_screen() == "SETTINGS",
+          "UiTransitionTracker restarts transition on screen switch");
+    tr.step("SETTINGS", 0.10f);
+    tr.step("SETTINGS", 0.10f);
+    const float p_close = tr.step("", 0.09f);
+    check(tr.is_closing() && p_close < 0.99f, "UiTransitionTracker reverses cleanly on screen close");
+  }
+
+  // 2. R3-UI-16: Replay Browser two-step confirmed delete (.shrep removal) & ui4::class_badge rendering.
+  {
+    std::error_code ec;
+    const auto tmp_dir = std::filesystem::temp_directory_path(ec) / "shift_r3_f3_replay_test";
+    std::filesystem::remove_all(tmp_dir, ec);
+    std::filesystem::create_directories(tmp_dir, ec);
+
+    drive::ReplayRecording rec;
+    rec.meta.event_name = "RED ROCK SHOWDOWN";
+    drive::ReplayCarInfo rci{};
+    rci.slot = 0;
+    rci.car_media = "2013 SRT Viper GTS [S 742]";
+    rci.driver_name = "PLAYER";
+    rci.is_player = true;
+    rec.meta.roster.push_back(rci);
+    drive::ReplayFrame f0{};
+    f0.time_s = 0.0;
+    f0.cars.push_back({});
+    rec.frames.push_back(f0);
+    drive::ReplayFrame f1{};
+    f1.time_s = 12.5;
+    f1.cars.push_back({});
+    rec.frames.push_back(f1);
+
+    carview::ReplayViewer rv;
+    rv.open(rec);
+    std::filesystem::path saved_path;
+    std::string serr;
+    check(rv.save_to_dir(tmp_dir, saved_path, &serr) && std::filesystem::exists(saved_path, ec),
+          "ReplayViewer saves .shrep file to temp directory");
+    rv.close();
+    rv.open_browser(tmp_dir);
+    check(rv.browser_entries().size() == 1, "ReplayViewer browser scans saved .shrep file");
+
+    carview::ui::List l_br;
+    rv.build_hud(l_br, 1280.0f, 720.0f);
+    bool has_del_btn = false;
+    for (const auto& hz : l_br.hits()) {
+      if (hz.group == carview::ui4::kHitButton && hz.index == 2) has_del_btn = true;
+    }
+    check(l_br.items().size() > 25 && has_del_btn,
+          "Replay Browser renders tilted chrome, class_badge, and DELETE button_bar hit-zone");
+
+    // Step 1: arm delete confirmation (file must still exist!).
+    check(!rv.browser_request_or_confirm_delete(&serr) && rv.browser_delete_confirm_active(),
+          "Replay Browser first delete press arms confirmation");
+    check(std::filesystem::exists(saved_path, ec), "Replay file preserved until delete is confirmed");
+    // Step 2: confirm delete (removes file & refreshes entries!).
+    check(rv.browser_request_or_confirm_delete(&serr), "Replay Browser second delete press confirms and deletes");
+    check(!std::filesystem::exists(saved_path, ec) && rv.browser_entries().empty(),
+          "Confirmed replay delete removes .shrep from disk and refreshes browser list");
+    std::filesystem::remove_all(tmp_dir, ec);
+  }
+
+  // 3. R3-UI-09 & R3-UI-17: Livery real finish names, vinyl thumbnails, bottom bar index 2 & carousel arrows.
+  {
+    check(std::string(carview::paint_finish_display_name(cars::PaintFinish::kNormal)) == "FACTORY" &&
+              std::string(carview::paint_finish_display_name(cars::PaintFinish::kMetallic)) == "METALLIC" &&
+              std::string(carview::paint_finish_display_name(cars::PaintFinish::kMatte)) == "MATTE" &&
+              std::string(carview::paint_finish_display_name(cars::PaintFinish::kTwoTone)) == "TWO-TONE" &&
+              std::string(carview::paint_finish_display_name(cars::PaintFinish::kChrome)) == "CHROME" &&
+              std::string(carview::paint_finish_display_name(cars::PaintFinish::kCarbon)) == "CARBON FIBER" &&
+              std::string(carview::paint_finish_display_name(cars::PaintFinish::kWood)) == "WOOD" &&
+              std::string(carview::paint_finish_display_name(cars::PaintFinish::kCamo)) == "CAMOUFLAGE",
+          "paint_finish_display_name returns authentic human-readable FH1 finish names");
+
+    cars::SpecialColorRow sc_pearl{};
+    sc_pearl.id = 42;
+    sc_pearl.finish = int(cars::PaintFinish::kTwoTone);
+    sc_pearl.pri_valid = true;
+    sc_pearl.pri_rgb = 0x1E60D8u;
+    sc_pearl.sec_valid = true;
+    sc_pearl.sec_rgb = 0xD41C88u;
+    sc_pearl.two_tone_power = 3.5f;
+    const std::string sp_name = carview::special_color_display_name(sc_pearl);
+    check(sp_name.find("SPECIAL #") == std::string::npos && sp_name.find("PEARL") != std::string::npos,
+          "special_color_display_name renders human-readable PEARL name instead of SPECIAL #id");
+
+    cars::bake::Colour mfg{};
+    mfg.rgb = 0xCC1820u;
+    mfg.metallic = true;
+    const std::string mfg_name = carview::manufacturer_color_display_name(mfg);
+    check(mfg_name.find("OEM #") == std::string::npos && mfg_name.find("METALLIC") != std::string::npos,
+          "manufacturer_color_display_name renders real METALLIC hue name instead of OEM #1");
+    check(carview::oem_swatch_label(0) == "OEM #1", "oem_swatch_label preserves backwards-compatible OEM #N format");
+
+    carview::LiveryEditor ed;
+    std::string msg;
+    ed.open(nullptr, {}, 101, {}, msg);
+    cars::bake::Colour mfg2{};
+    mfg2.rgb = 0xF2F2F2u;
+    mfg2.metallic = false;
+    ed.set_manufacturer_colors({mfg, mfg2});
+    ed.add_vinyl_layer("@star", 0xFFCC00u);
+    ed.add_vinyl_layer("@chevron", 0x2088FFu);
+
+    for (auto tab : {carview::EditorTab::kPaint, carview::EditorTab::kManufacturerColors,
+                     carview::EditorTab::kPreviousColors, carview::EditorTab::kVinylLayers}) {
+      ed.set_tab(tab);
+      carview::ui::List l;
+      carview::draw_livery_editor_hud(l, 1280.0f, 720.0f, ed, "2013 SRT VIPER GTS");
+      bool has_left = false, has_right = false, has_btn2 = false, has_btn5 = false;
+      for (const auto& hz : l.hits()) {
+        if (hz.group == carview::ui::kHitStepLeft) has_left = true;
+        if (hz.group == carview::ui::kHitStepRight) has_right = true;
+        if (hz.group == carview::ui4::kHitButton && hz.index == 2) has_btn2 = true;
+        if (hz.group == carview::ui4::kHitButton && hz.index == 5) has_btn5 = true;
+      }
+      check(has_left && has_right, "Livery tab registers left/right carousel or finish stepper arrow hit-zones");
+      check(has_btn2 && has_btn5, "Livery bottom button_bar registers all 6 hit-zones including index 2");
+      if (tab == carview::EditorTab::kVinylLayers) {
+        int thumb_imgs = 0;
+        for (const auto& it : l.items()) {
+          if (it.kind == carview::ui::kImage) ++thumb_imgs;
+        }
+        check(thumb_imgs >= 2, "Vinyl Layers tab draws miniature vinyl shape preview thumbnails");
+      }
+    }
+    ed.set_tab(carview::EditorTab::kManufacturerColors);
+    check(ed.handle_step_click(1) && ed.selected_manufacturer_color() == 1,
+          "LiveryEditor::handle_step_click advances carousel selection");
+    check(ed.handle_button_bar_click(2), "LiveryEditor::handle_button_bar_click handles index 2 cleanly");
+  }
+
+  // 4. R3-UI-09: Garage top filter/tab strip clickable hit-zones (0..4) & handle_tab_click.
+  {
+    carview::GarageBrowser gb;
+    const std::vector<garage::ClassBand> bands = {{0.30, 300.0, "D"}, {0.425, 425.0, "C"}, {0.50, 500.0, "B"}};
+    carview::ui::List l_gar;
+    carview::draw_garage_hud(l_gar, 1280.0f, 720.0f, gb, bands, 50000);
+    std::set<int> tab_indices;
+    for (const auto& hz : l_gar.hits()) {
+      if (hz.group == carview::ui::kHitTab) tab_indices.insert(hz.index);
+    }
+    check(tab_indices.count(0) && tab_indices.count(1) && tab_indices.count(2) && tab_indices.count(3) &&
+              tab_indices.count(4),
+          "draw_garage_hud registers clickable kHitTab hit-zones for MY CARS, RESTORATION BAY, SORT, FILTER, FAVORITES");
+    check(gb.handle_tab_click(1) && gb.active_tab() == carview::GarageTab::kRestorationBay,
+          "GarageBrowser::handle_tab_click(1) switches to Restoration Bay");
+    check(gb.handle_tab_click(0) && gb.active_tab() == carview::GarageTab::kMyCars,
+          "GarageBrowser::handle_tab_click(0) returns to My Cars");
+    const auto prev_sort = gb.sort_mode();
+    check(gb.handle_tab_click(2) && gb.sort_mode() != prev_sort,
+          "GarageBrowser::handle_tab_click(2) cycles Garage sort mode");
+    check(gb.handle_tab_click(4) && gb.favorites_only(),
+          "GarageBrowser::handle_tab_click(4) toggles Favorites filter");
+  }
+
+  // 5. R3-UI-09: Achievements clickable sort hit-zone + tracked-chip non-overlap guard + Car Club tilted chrome.
+  {
+    fh1::SpaDatabase empty_spa;
+    carview::AchievementsSystem ach;
+    ach.init(empty_spa);
+    ach.open_screen();
+    carview::ui::List l_ach;
+    ach.build_screen_hud(l_ach, 1280.0f, 720.0f);
+    bool has_sort_hit = false;
+    for (const auto& hz : l_ach.hits()) {
+      if (hz.group == carview::ui4::kHitButton && hz.index == 2) has_sort_hit = true;
+    }
+    check(has_sort_hit, "Achievements screen registers clickable SORT hit-zone");
+
+    // Pin an achievement and verify tracked-chip shifts cleanly below an occupied top-left Race HUD / Objective banner.
+    ach.toggle_track_focused();
+    ach.close_screen();
+    carview::ui::List l_free, l_occ, l_hidden;
+    ach.build_hud_overlays(l_free, 1280.0f, 720.0f, true);
+    // Simulate a Race HUD / Campaign Objective banner occupying top-left (y=28..148).
+    l_occ.rect(24.0f, 28.0f, 360.0f, 148.0f, carview::ui::rgba(20, 22, 28, 220));
+    float max_y = 0.0f;
+    check(carview::AchievementsSystem::top_left_hud_occupied(l_occ, 1280.0f, 720.0f, &max_y) && max_y >= 147.0f,
+          "AchievementsSystem::top_left_hud_occupied detects top-left HUD banner");
+    const size_t before_n = l_occ.items().size();
+    ach.build_hud_overlays(l_occ, 1280.0f, 720.0f, true);
+    float chip_min_y = 1e9f;
+    for (size_t i = before_n; i < l_occ.items().size(); ++i) {
+      chip_min_y = std::min(chip_min_y, l_occ.items()[i].rect[1]);
+    }
+    check(l_occ.items().size() > before_n && chip_min_y >= 152.0f,
+          "Tracked achievement chip offsets cleanly below occupied top-left Race HUD / Objective banner");
+
+    l_hidden.rect(24.0f, 28.0f, 360.0f, 148.0f, carview::ui::rgba(20, 22, 28, 220));
+    const size_t hidden_before = l_hidden.items().size();
+    ach.build_hud_overlays(l_hidden, 1280.0f, 720.0f, true, true, true);
+    check(l_hidden.items().size() == hidden_before,
+          "Tracked achievement chip hides cleanly when hide_when_occupied is requested");
+
+    // Car Club tilted blade chrome & class_badge rendering.
+    carview::CarClubScreenState ccs;
+    ccs.active = true;
+    ccs.club_name = "HORIZON RUNNERS";
+    ccs.club_tag = "HZN1";
+    ccs.cars.push_back({1, 101, "SRT_Viper_13", "2013 SRT Viper GTS", "S 742", true, true, false});
+    carview::ui::List l_club;
+    carview::draw_car_club_screen(l_club, 1280, 720, ccs);
+    check(l_club.items().size() > 35 && l_club.hits().size() >= 6,
+          "Car Club screen renders FH1 tilted blade chrome, class_badge, and button_bar hit-zones");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -2659,6 +2932,7 @@ int main() {
   test_round3_subtitle_lift_upgrade_units_and_rewind_touch();
   test_round2_phase6_ui4_parity();
   test_pt_e_race_screens_parity();
+  test_round3_phase_f3_parity();
 
   const char* root_env = std::getenv("SHIFT_GAME_ROOT");
   const char* shot_env = std::getenv("SHIFT_UI4_SCREENSHOT_DIR");

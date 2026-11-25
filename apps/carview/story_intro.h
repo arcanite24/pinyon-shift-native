@@ -124,7 +124,10 @@ class StoryIntro {
   static const char* stage_name(StoryStage s);
 
   // Draws the Viper/Corrado/Festival story objective HUD + VO caption bar.
-  void draw_hud(ui::List& l, float screen_w, float screen_h) const;
+  void set_metric_units(bool metric) { metric_units_ = metric; }
+  bool metric_units() const { return metric_units_; }
+  void draw_hud(ui::List& l, float screen_w, float screen_h) const { draw_hud(l, screen_w, screen_h, metric_units_); }
+  void draw_hud(ui::List& l, float screen_w, float screen_h, bool metric_units) const;
 
  private:
   StoryAction enter_stage(StoryStage next);
@@ -156,6 +159,7 @@ class StoryIntro {
   bool qualify_launched_ = false;
   bool ceremony_fmv_triggered_ = false;
   int convoy_passed_ = 0;
+  bool metric_units_ = true;
 };
 
 }  // namespace carview

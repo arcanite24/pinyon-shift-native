@@ -127,11 +127,11 @@ void DriveSession::rebuild_outpost_hub() {
           item.label = "FAST TRAVEL: HORIZON FESTIVAL";
           item.dest_x = world::kSpawnX;
           item.dest_z = world::kSpawnZ;
-          const double dist_km = std::hypot(item.dest_x - at.x, item.dest_z - at.z) / 1000.0;
-          char db[64];
-          std::snprintf(db, sizeof db, "DISTANCE: %.1f KM   •   FREE FAST TRAVEL", dist_km);
+          const double dist_m = std::hypot(item.dest_x - at.x, item.dest_z - at.z);
+          const std::string dist_line =
+              "DISTANCE: " + carview::format_distance_unit(dist_m, app.metric_units) + "   •   FREE FAST TRAVEL";
           item.detail_title = "HORIZON FESTIVAL";
-          item.detail_lines = {"RETURN TO RACE CENTRAL, AUTOSHOW,", "DAK'S GARAGE AND THE PAINT SHOP", db};
+          item.detail_lines = {"RETURN TO RACE CENTRAL, AUTOSHOW,", "DAK'S GARAGE AND THE PAINT SHOP", dist_line};
           outpost_hub_items.push_back(std::move(item));
         }
         for (const auto& other : app.outposts.outposts) {
@@ -143,11 +143,11 @@ void DriveSession::rebuild_outpost_hub() {
           item.label = "FAST TRAVEL: " + other.display_name;
           item.dest_x = other.spawn.x;
           item.dest_z = other.spawn.z;
-          const double dist_km = std::hypot(item.dest_x - at.x, item.dest_z - at.z) / 1000.0;
-          char db[64];
-          std::snprintf(db, sizeof db, "DISTANCE: %.1f KM   •   UNLOCKED", dist_km);
+          const double dist_m = std::hypot(item.dest_x - at.x, item.dest_z - at.z);
+          const std::string dist_line =
+              "DISTANCE: " + carview::format_distance_unit(dist_m, app.metric_units) + "   •   UNLOCKED";
           item.detail_title = other.display_name;
-          item.detail_lines = {"FAST TRAVEL DIRECTLY TO THIS REGIONAL", "HORIZON OUTPOST", db};
+          item.detail_lines = {"FAST TRAVEL DIRECTLY TO THIS REGIONAL", "HORIZON OUTPOST", dist_line};
           outpost_hub_items.push_back(std::move(item));
         }
         if (outpost_hub_pick >= outpost_hub_items.size()) outpost_hub_pick = 0;
@@ -243,6 +243,28 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         dial_trail_last_t = d.time;
         d.kmh = st.kmh, d.rpm = st.rpm, d.rpm_rate = dial_trail_rate, d.redline_rpm = st.redline_rpm, d.gear = st.gear, d.abs = st.abs,
         d.tcs = vehicle.tcs_active(), d.stm = vehicle.stm_active();
+        const auto va = vehicle.assists();
+        d.abs_enabled = (va.braking != 2);
+        d.tcs_enabled = va.traction_control;
+        d.stm_enabled = va.stability_control;
+        static carview::AssistFlashLatch s_assist_latch;
+        if (app.show_title) s_assist_latch.reset();
+        s_assist_latch.update(d.time, d.abs, d.tcs, d.stm);
+        d.abs_flash_timer = s_assist_latch.abs_timer;
+        d.tcs_flash_timer = s_assist_latch.tcs_timer;
+        d.stm_flash_timer = s_assist_latch.stm_timer;
+        {
+          const int kf_count = rewind_buf.keyframe_count();
+          const double oldest_t = kf_count > 0 ? rewind_buf.keyframe(0).replay_time : 0.0;
+          const double latest_t = kf_count > 0 ? std::max(vehicle.time(), rewind_buf.keyframe(kf_count - 1).replay_time) : 0.0;
+          const double pb_t = rewind_buf.active() ? rewind_buf.playback_time() : latest_t;
+          const auto rw_sc = carview::compute_rewind_scrubber(
+              kf_count, drive::RewindConfig::kMaxKeyframes, rewind_buf.selected_slot(), oldest_t, latest_t, pb_t, d.time);
+          d.rewind_buffer_fraction = rw_sc.buffer_fraction;
+          d.rewind_slot = rw_sc.current_slot;
+          d.rewind_total_slots = rw_sc.total_slots;
+          d.rewind_seconds_remaining = rw_sc.seconds_remaining;
+        }
         d.has_boost = vehicle.params().has_turbo || vehicle.params().has_supercharger;
         d.boost_psi = vehicle.boost_psi();
         d.boost_max_psi = vehicle.params().boost_max_psi;
@@ -306,6 +328,38 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           map_overlay.center_x = map_cx;
           map_overlay.center_z = map_cz;
           map_overlay.scale_mpp = (map_w > 64 && map_h > 64) ? app.map_view.map_scale(map_w, map_h, map_zoom) : 0.0;
+          map_overlay.marker_icon_tag.clear();
+          map_overlay.detail_line.clear();
+          if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
+            const auto& mk = cached_map_markers[size_t(map_selected_marker)];
+            map_overlay.marker_icon_tag = (mk.kind == MapMarker::kPrStunt) ? std::string("pr_stunt") : mk.icon_tag;
+            map_overlay.detail_line = mk.detail_line;
+          } else if (map_overlay.title.rfind("BARN FIND", 0) == 0) {
+            map_overlay.marker_icon_tag = "barnfind";
+            map_overlay.detail_line = "CLASSIC CAR RESTORATION RUMOUR";
+          } else if (map_overlay.title.rfind("DISCOUNT SIGN", 0) == 0) {
+            map_overlay.marker_icon_tag = "flyer";
+            map_overlay.detail_line = "SMASH FOR 1% UPGRADE DISCOUNT AT DAK'S GARAGE";
+          } else if (app.progress_loaded && !app.collectibles.barns.empty()) {
+            // Check if the crosshair is hovering inside an active Barn Find rumour circle!
+            for (size_t bi = 0; bi < app.collectibles.barns.size() && bi < app.progress.barns.size(); ++bi) {
+              if (app.progress.barns[bi].status != freeroam::kBarnRumour) continue;
+              const auto& b = app.collectibles.barns[bi];
+              const double rx = std::max(80.0, b.hint_rx);
+              const double rz = std::max(80.0, b.hint_rz);
+              const double nx = (map_cx - b.hint_x) / rx;
+              const double nz = (map_cz - b.hint_z) / rz;
+              if (nx * nx + nz * nz <= 1.0) {
+                map_overlay.title = "BARN FIND RUMOUR";
+                map_overlay.subtitle = b.name.empty() ? "SEARCH AREA FOR HIDDEN CLASSIC CAR" : b.name;
+                map_overlay.detail_line = "DRIVE INSIDE THE PURPLE ZONE TO TRACK THE SIGNAL";
+                map_overlay.marker_icon_tag = "barnfind";
+                const drive::Vec3 vp = vehicle.position();
+                map_overlay.distance_m = std::hypot(b.hint_x - vp.x, b.hint_z - vp.z);
+                break;
+              }
+            }
+          }
           d.map_overlay = &map_overlay;
         }
         carview::SkillChainHud sk_hud;
@@ -318,6 +372,9 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           sk_hud.active = sh.active;
           sk_hud.chain_points = sh.chain_points;
           sk_hud.multiplier = sh.multiplier;
+          sk_hud.multiplier_f = sh.multiplier_f > 0.0f ? sh.multiplier_f : float(std::max(1, sh.multiplier));
+          sk_hud.chain_remaining_s = app.skill_tracker->chain_remaining_s(d.time);
+          sk_hud.chain_timeout_s = app.skills_data.bank_timeout > 0.1 ? app.skills_data.bank_timeout : 3.0;
           sk_hud.last_skill = sh.last_skill;
           sk_hud.last_points = sh.last_points;
           sk_hud.last_skill_at = sh.last_skill_at;
@@ -334,8 +391,30 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (world_marker.visible && !app.race) d.world_marker = &world_marker;
         carview::GpsHud gps_hud;
         static double s_gps_uturn_since = -1.0;
+        static struct {
+          bool active = false;
+          double dest_x = 0.0;
+          double dest_z = 0.0;
+          double total_len = 0.0;
+          size_t point_count = 0;
+          double recalc_until = -1e9;
+        } s_gps_recalc;
         if (!app.race && app.gps_nav.active()) {
           const auto& gg = app.gps_nav.guidance();
+          const auto& gr = app.gps_nav.route();
+          const bool same_dest = s_gps_recalc.active &&
+                                 std::hypot(gr.dest_x - s_gps_recalc.dest_x, gr.dest_z - s_gps_recalc.dest_z) < 5.0;
+          const bool route_changed = same_dest && (std::fabs(gr.total_length - s_gps_recalc.total_len) > 2.0 ||
+                                                   gr.points.size() != s_gps_recalc.point_count);
+          if (route_changed || gg.off_route_m > traffic::GpsNavigator::kOffRouteMeters * 0.78) {
+            s_gps_recalc.recalc_until = d.time + 2.2;
+          }
+          s_gps_recalc.active = true;
+          s_gps_recalc.dest_x = gr.dest_x;
+          s_gps_recalc.dest_z = gr.dest_z;
+          s_gps_recalc.total_len = gr.total_length;
+          s_gps_recalc.point_count = gr.points.size();
+
           const bool raw_uturn = (int(gg.next_turn) == 8) && (gg.dist_to_dest_m >= 50.0) &&
                                  (std::fabs(vehicle.speed()) > 4.5);
           if (raw_uturn) {
@@ -350,9 +429,13 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           gps_hud.dist_to_turn_m = gg.dist_to_turn_m;
           gps_hud.dist_to_dest_m = gg.dist_to_dest_m;
           gps_hud.confirmed_uturn = raw_uturn && s_gps_uturn_since >= 0.0 && (vehicle.time() - s_gps_uturn_since >= 2.2);
+          gps_hud.recalculating = (d.time < s_gps_recalc.recalc_until);
+          gps_hud.time = d.time;
           d.gps = &gps_hud;
         } else {
           s_gps_uturn_since = -1.0;
+          s_gps_recalc.active = false;
+          s_gps_recalc.recalc_until = -1e9;
         }
         carview::PrStuntHud pr_hud;
         if (!app.race && app.pr_stunt_session.active()) {
@@ -371,6 +454,30 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         freeroam::SpeedActivityHud speed_hud_state;
         if (!app.race && app.speed_tracker) {
           speed_hud_state = app.speed_tracker->hud(vehicle.time());
+          if (speed_hud_state.zone_active && !speed_hud_state.active_zone_id.empty()) {
+            if (const auto* zd = app.speed_data.find_zone(speed_hud_state.active_zone_id);
+                zd && !zd->display_name.empty()) {
+              const std::string loc = carview::game_text(zd->display_name);
+              speed_hud_state.active_zone_id =
+                  (!loc.empty() && loc.rfind("_&", 0) != 0) ? loc : zd->display_name;
+            }
+          }
+          if (speed_hud_state.banner_active && !speed_hud_state.banner_title.empty()) {
+            const std::string loc = carview::game_text(speed_hud_state.banner_title);
+            if (!loc.empty() && loc.rfind("_&", 0) != 0) {
+              speed_hud_state.banner_title = loc;
+            } else if (speed_hud_state.banner_is_zone) {
+              if (const auto* zd = app.speed_data.find_zone(speed_hud_state.banner_title);
+                  zd && !zd->display_name.empty()) {
+                speed_hud_state.banner_title = zd->display_name;
+              }
+            } else {
+              if (const auto* td = app.speed_data.find_trap(speed_hud_state.banner_title);
+                  td && !td->display_name.empty()) {
+                speed_hud_state.banner_title = td->display_name;
+              }
+            }
+          }
           d.speed_hud = &speed_hud_state;
         }
         freeroam::HeadToHeadHud h2h_hud_state;
@@ -821,15 +928,32 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           app.fmv_player.draw(list, float(width), float(height), {}, true, app.campaign.skip_hold_progress());
           carview::campaign_ui::draw_transition(list, app.campaign.flow().transition(), float(width), float(height));
         }
+        static double s_loading_fade_last_t = -1.0;
         if (loading_screen.active()) {
+          s_loading_fade_last_t = d.time;
           list.clear();
           loading_screen.draw(list, float(width), float(height));
+        } else if (loading_screen.fading_out()) {
+          const double fdt = (s_loading_fade_last_t >= 0.0 && d.time > s_loading_fade_last_t)
+                                 ? std::clamp(d.time - s_loading_fade_last_t, 0.0, 0.05)
+                                 : (1.0 / 60.0);
+          s_loading_fade_last_t = d.time;
+          loading_screen.update(fdt);
+          if (loading_screen.visible()) loading_screen.draw(list, float(width), float(height));
+        } else {
+          s_loading_fade_last_t = d.time;
         }
         if (rewind_buf.active()) {
+          const int kf_count = rewind_buf.keyframe_count();
+          const double oldest_t = kf_count > 0 ? rewind_buf.keyframe(0).replay_time : 0.0;
+          const double latest_t = kf_count > 0 ? std::max(vehicle.time(), rewind_buf.keyframe(kf_count - 1).replay_time) : 0.0;
+          const auto rw_sc = carview::compute_rewind_scrubber(
+              kf_count, drive::RewindConfig::kMaxKeyframes, rewind_buf.selected_slot(), oldest_t, latest_t,
+              rewind_buf.playback_time(), d.time);
           carview::build_rewind_overlay(list, float(width), float(height), rewind_buf.is_rewinding(),
                                         rewind_buf.ui_state() == drive::RewindUiState::kLoopRewind,
                                         rewind_buf.is_paused_at_keyframe(), rewind_buf.at_oldest_slot(),
-                                        rewind_buf.is_settling());
+                                        rewind_buf.is_settling(), &rw_sc);
         }
         if (slice12.trainer_overlay.is_open()) {
           list.clear();
@@ -958,7 +1082,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           if (!garage_browser.visible().empty()) {
             list.clear();
             carview::draw_garage_hud(list, float(width), float(height), garage_browser, app.class_bands, app.career.credits,
-                                     vehicle.time() < notice_until ? notice : std::string());
+                                     vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
           }
         }
         if (barn_card.visible) {

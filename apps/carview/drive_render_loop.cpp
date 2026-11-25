@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "fh1data/stringtables.h"
 #include "race/rivals.h"
 #include "world/road_follow.h"
 
@@ -278,7 +279,19 @@ void DriveSession::run_window_loop() {
         }
         slice12.sync_pad_capabilities(pads);
         slice12.sync_wheel_devices();
+        photo_mode.set_metric_units(app.metric_units);
+        app.story_intro.set_metric_units(app.metric_units);
+        SettingsPage::set_text_resolver([](std::string_view table, std::string_view id, const char* fallback) {
+          const uint32_t packed = (uint32_t(fh1::string_hash(table)) << 16) | uint32_t(fh1::string_hash(id));
+          const std::string ref = "_&" + std::to_string(packed);
+          const std::string resolved = carview::game_text(ref);
+          if (!resolved.empty() && resolved != ref && resolved.rfind("_&", 0) != 0) return resolved;
+          return std::string(fallback);
+        });
         if (app.window) {
+          if (!app.debug_title) {
+            SDL_SetWindowTitle(app.window, "Forza Horizon — Shift Engine");
+          }
           SDL_ShowWindow(app.window);
           SDL_RaiseWindow(app.window);
           SDL_PumpEvents();
@@ -405,8 +418,27 @@ void DriveSession::run_window_loop() {
                                                         false));
             }
           }
+          const bool* kb_skip_now = SDL_GetKeyboardState(nullptr);
+          bool hold_skip_now = kb_skip_now && (kb_skip_now[SDL_SCANCODE_SPACE] || kb_skip_now[SDL_SCANCODE_RETURN] ||
+                                               kb_skip_now[SDL_SCANCODE_KP_ENTER] || kb_skip_now[SDL_SCANCODE_ESCAPE]);
+          for (SDL_Gamepad* pad : pads) {
+            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH) ||
+                SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST)) {
+              hold_skip_now = true;
+            }
+          }
           if (app.fmv_player.active()) {
-            if (!app.fmv_player.update(frame_dt, true)) {
+            bool fmv_done = !app.fmv_player.update(frame_dt, true);
+            // R3-UI-07: standalone / attract / boot-splash FMVs require a 0.75 s hold-to-skip
+            // (campaign FMVs advance CampaignDirector's own 0.75 s hold-to-skip progress ring).
+            if (!fmv_done && !app.campaign.is_blocking_gameplay() && !app.headless) {
+              if (app.fmv_player.update_hold_skip(frame_dt, hold_skip_now) >= 1.0f) {
+                app.fmv_player.skip();
+                fmv_done = true;
+              }
+            }
+            if (fmv_done) {
+              app.fmv_player.reset_hold_skip();
               app.audio_host.set_fmv_audio(nullptr, nullptr);
               host.renderer.reset_auto_exposure();
               if (title_attract_playing) {
@@ -415,6 +447,8 @@ void DriveSession::run_window_loop() {
                 if (!app.no_title) app.show_title = true;
               }
             }
+          } else {
+            app.fmv_player.reset_hold_skip();
           }
           // Authentic PressStart.wmv seamless looping animated title screen backdrop when present & decodable;
           // otherwise falls back seamlessly to the live 3D Colorado Festival scenic overlook.
@@ -507,11 +541,8 @@ void DriveSession::run_window_loop() {
           if (!app.show_title && !app.headless) {
             const drive::Vec3 vp = vehicle.position();
             const bool rf = app.race && app.race->player_finished();
-            const bool* kb_skip = SDL_GetKeyboardState(nullptr);
-            bool hold_skip = kb_skip && (kb_skip[SDL_SCANCODE_SPACE] || kb_skip[SDL_SCANCODE_RETURN]);
-            for (SDL_Gamepad* pad : pads)
-              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) hold_skip = true;
-            apply_campaign_action(app.campaign.update(frame_dt, {vp.x, vp.z}, app.fmv_player, &app.audio_host, rf, hold_skip));
+            apply_campaign_action(
+                app.campaign.update(frame_dt, {vp.x, vp.z}, app.fmv_player, &app.audio_host, rf, hold_skip_now));
             // Deferred event launch: once a Boss/Showcase/Finale/Pre-Race intro finishes or is skipped, enter the race!
             if (!pending_event_launch.empty() && !app.campaign.is_blocking_gameplay() && running) {
               app.next_event = pending_event_launch;
@@ -1506,7 +1537,7 @@ void DriveSession::run_window_loop() {
           }
           slice12.tick(vehicle, rig, pads, !sim_paused && !app.show_title, frame_dt, now,
                        uint32_t(now / 1000000ULL), rumble_low_f, rumble_high_f);
-          if (now - title_at > 100000000) {  // the speedometer, ten times a second
+          if (app.debug_title && now - title_at > 100000000) {  // live telemetry title only with --debug-title (R3-UI-18)
             title_at = now;
             char title[320], gear[8];
             if (vehicle.gear() < 0) std::snprintf(gear, sizeof gear, "R");

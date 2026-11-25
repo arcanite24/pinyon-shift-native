@@ -16,14 +16,88 @@ std::function<std::string(const std::string&)>& replay_text_fn() {
   return fn;
 }
 
+std::function<bool(const std::string&, std::string&, int&)>& replay_class_fn() {
+  static std::function<bool(const std::string&, std::string&, int&)> fn;
+  return fn;
+}
+
 std::string loc_str(std::string_view table, std::string_view id, const char* fallback) {
+  const uint32_t packed = (uint32_t(fh1::string_hash(table)) << 16) | uint32_t(fh1::string_hash(id));
+  const std::string ref = "_&" + std::to_string(packed);
   if (const auto& fn = replay_text_fn()) {
-    const uint32_t packed = (uint32_t(fh1::string_hash(table)) << 16) | uint32_t(fh1::string_hash(id));
-    const std::string ref = "_&" + std::to_string(packed);
     const std::string resolved = fn(ref);
     if (!resolved.empty() && resolved != ref && resolved.rfind("_&", 0) != 0) return resolved;
   }
+  const std::string resolved = ui::lookup_text(ref);
+  if (!resolved.empty() && resolved != ref && resolved.rfind("_&", 0) != 0) return resolved;
   return fallback;
+}
+
+void resolve_replay_class_pi(const std::string& car_str, std::string& out_cls, int& out_pi) {
+  if (const auto& fn = replay_class_fn(); fn && fn(car_str, out_cls, out_pi) && !out_cls.empty() && out_pi > 0) {
+    return;
+  }
+  // Parse embedded "[A 584]" / "[R3 740]" tag if present.
+  if (const size_t lb = car_str.rfind('['); lb != std::string::npos) {
+    const size_t rb = car_str.find(']', lb + 1);
+    if (rb != std::string::npos && rb > lb + 2) {
+      std::string_view inner(car_str.data() + lb + 1, rb - lb - 1);
+      size_t i = 0;
+      while (i < inner.size() && inner[i] == ' ') ++i;
+      std::string cls;
+      if (i + 1 < inner.size() && (inner[i] == 'R' || inner[i] == 'r') && inner[i + 1] >= '1' && inner[i + 1] <= '3') {
+        cls.push_back('R');
+        cls.push_back(inner[i + 1]);
+        i += 2;
+      } else if (i < inner.size() && std::isalpha(static_cast<unsigned char>(inner[i]))) {
+        cls.push_back(char(std::toupper(static_cast<unsigned char>(inner[i]))));
+        ++i;
+      }
+      while (i < inner.size() && !std::isdigit(static_cast<unsigned char>(inner[i]))) ++i;
+      int pi = 0;
+      while (i < inner.size() && std::isdigit(static_cast<unsigned char>(inner[i]))) {
+        pi = pi * 10 + (inner[i] - '0');
+        ++i;
+      }
+      if (!cls.empty() && pi >= 100 && pi <= 999) {
+        out_cls = std::move(cls);
+        out_pi = pi;
+        return;
+      }
+    }
+  }
+  // Deterministic heuristic fallback for known FH1 vehicles so every replay entry renders a crisp class badge.
+  std::string up = car_str;
+  for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
+  if (up.find("599XX") != std::string::npos || up.find("ZONDA") != std::string::npos ||
+      up.find("FXX") != std::string::npos) {
+    out_cls = "R1";
+    out_pi = 910;
+  } else if (up.find("VEYRON") != std::string::npos || up.find("AGERA") != std::string::npos ||
+             up.find("ENZO") != std::string::npos || up.find("F50") != std::string::npos) {
+    out_cls = "R3";
+    out_pi = 745;
+  } else if (up.find("VIPER") != std::string::npos || up.find("F40") != std::string::npos ||
+             up.find("458") != std::string::npos || up.find("AVENTADOR") != std::string::npos ||
+             up.find("GT_05") != std::string::npos || up.find("FORD GT") != std::string::npos) {
+    out_cls = "S";
+    out_pi = 682;
+  } else if (up.find("SKYLINE") != std::string::npos || up.find("GTR") != std::string::npos ||
+             up.find("IMPREZA") != std::string::npos || up.find("LANCER") != std::string::npos ||
+             up.find("EVO") != std::string::npos || up.find("M3") != std::string::npos) {
+    out_cls = "B";
+    out_pi = 461;
+  } else if (up.find("CORRADO") != std::string::npos || up.find("GOLF") != std::string::npos ||
+             up.find("MUSTANG") != std::string::npos) {
+    out_cls = "C";
+    out_pi = 380;
+  } else if (up.find("ABARTH") != std::string::npos || up.find("MINI") != std::string::npos) {
+    out_cls = "D";
+    out_pi = 295;
+  } else {
+    out_cls = "A";
+    out_pi = 550;
+  }
 }
 
 std::string clean_unit_str(std::string s, const char* fallback) {
@@ -78,6 +152,10 @@ std::string format_speed_pill(double speed, bool paused) {
 
 void ReplayViewer::set_text_resolver(std::function<std::string(const std::string&)> fn) {
   replay_text_fn() = std::move(fn);
+}
+
+void ReplayViewer::set_car_class_resolver(std::function<bool(const std::string&, std::string&, int&)> fn) {
+  replay_class_fn() = std::move(fn);
 }
 
 std::string format_replay_speed(float speed_mps, bool metric_units) {
@@ -476,8 +554,10 @@ bool ReplayViewer::save_to_dir(const std::filesystem::path& replays_dir, std::fi
 }
 
 void ReplayViewer::open_browser(const std::filesystem::path& replays_dir) {
+  browser_dir_ = replays_dir;
   browser_entries_ = drive::list_replay_files(replays_dir);
   browser_selected_ = 0;
+  browser_delete_confirm_idx_ = -1;
   browser_open_ = true;
 }
 
@@ -485,11 +565,14 @@ void ReplayViewer::browser_move(int delta) {
   if (browser_entries_.empty()) return;
   const int n = int(browser_entries_.size());
   browser_selected_ = ((browser_selected_ + delta) % n + n) % n;
+  browser_delete_confirm_idx_ = -1;
 }
 
 void ReplayViewer::browser_select(int idx) {
   if (browser_entries_.empty()) return;
-  browser_selected_ = std::clamp(idx, 0, int(browser_entries_.size()) - 1);
+  const int next = std::clamp(idx, 0, int(browser_entries_.size()) - 1);
+  if (next != browser_selected_) browser_delete_confirm_idx_ = -1;
+  browser_selected_ = next;
 }
 
 void ReplayViewer::seek_fraction(double frac) {
@@ -502,10 +585,54 @@ void ReplayViewer::seek_fraction(double frac) {
 bool ReplayViewer::browser_load_selected(std::string* error) {
   if (browser_entries_.empty() || browser_selected_ < 0 || size_t(browser_selected_) >= browser_entries_.size())
     return false;
+  browser_delete_confirm_idx_ = -1;
   drive::ReplayRecording loaded;
   if (!drive::load_replay_file(browser_entries_[size_t(browser_selected_)].path, loaded, error)) return false;
   open(std::move(loaded), true);
   set_notice("LOADED: " + browser_entries_[size_t(browser_selected_)].filename, 3.0);
+  return true;
+}
+
+bool ReplayViewer::browser_request_or_confirm_delete(std::string* error) {
+  return browser_delete_selected(false, error);
+}
+
+bool ReplayViewer::browser_delete_selected(bool confirmed, std::string* error) {
+  if (browser_entries_.empty() || browser_selected_ < 0 || size_t(browser_selected_) >= browser_entries_.size()) {
+    if (error) *error = "no replay selected";
+    browser_delete_confirm_idx_ = -1;
+    return false;
+  }
+  const auto& target = browser_entries_[size_t(browser_selected_)];
+  if (!confirmed && browser_delete_confirm_idx_ != browser_selected_) {
+    browser_delete_confirm_idx_ = browser_selected_;
+    set_notice("CONFIRM DELETE: " + target.filename + "  ([" + ui4::glyph_label_for("X") + " / DEL] AGAIN)", 4.0);
+    return false;
+  }
+
+  const std::filesystem::path del_path = target.path;
+  const std::string del_name = target.filename;
+  std::error_code ec;
+  const bool removed = std::filesystem::remove(del_path, ec);
+  if (ec || !removed) {
+    if (error) *error = ec ? ec.message() : "failed to remove replay file";
+    browser_delete_confirm_idx_ = -1;
+    set_notice("DELETE FAILED: " + del_name, 3.0);
+    return false;
+  }
+
+  if (!browser_dir_.empty()) {
+    browser_entries_ = drive::list_replay_files(browser_dir_);
+  } else {
+    browser_entries_.erase(browser_entries_.begin() + browser_selected_);
+  }
+  if (browser_entries_.empty()) {
+    browser_selected_ = 0;
+  } else {
+    browser_selected_ = std::clamp(browser_selected_, 0, int(browser_entries_.size()) - 1);
+  }
+  browser_delete_confirm_idx_ = -1;
+  set_notice("DELETED REPLAY: " + del_name, 3.0);
   return true;
 }
 
@@ -526,40 +653,96 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
 
   if (browser_open_) {
     ui4::subtle_vignette(out, w, h, 0.35f);
-    ui4::title_banner(out, s, 56.0f * s, 28.0f * s, loc_str("Replay", "IDS_SavedReplays", "SAVED REPLAYS"),
-                      "HORIZON THEATRE", true, 440.0f);
-    const float bx0 = 56.0f * s, bx1 = w - 56.0f * s;
-    const float by0 = 122.0f * s, by1 = h - 84.0f * s;
-    ui4::panel(out, bx0, by0, bx1, by1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-    ui4::offwhite_strip(out, bx0 + 14.0f * s, by0 + 10.0f * s, bx1 - 14.0f * s, by0 + 34.0f * s, s, false);
-    out.text(bx0 + 24.0f * s, by0 + 15.0f * s, loc_str("Replay", "IDS_RecordedSessions", "RECORDED SESSIONS"),
-             ui4::style(Font::kE, 13.0f * s, ui4::kInk));
-    if (browser_entries_.empty()) {
-      out.text(0.5f * w, 0.5f * h - 10.0f * s, "NO SAVED REPLAYS YET (PRESS S IN REPLAY VIEWER TO SAVE)",
-               ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
-    } else {
-      const float row_h = 50.0f * s;
-      const int max_vis = std::max(1, int((by1 - by0 - 54.0f * s) / row_h));
-      const int start = std::max(0, browser_selected_ - max_vis + 1);
-      for (int i = start; i < int(browser_entries_.size()) && i < start + max_vis; ++i) {
-        const auto& e = browser_entries_[size_t(i)];
-        const float ry0 = by0 + 44.0f * s + float(i - start) * row_h;
-        const float ry1 = ry0 + row_h - 6.0f * s;
-        const bool sel = (i == browser_selected_);
-        out.add_hit(bx0 + 8.0f * s, ry0, bx1 - 8.0f * s, ry1, ui::kHitRow, i);
-        if (sel) ui4::brush(out, bx0 + 8.0f * s, ry0, bx1 - 8.0f * s, ry1, ui4::kPink);
-        else out.rect(bx0 + 14.0f * s, ry0, bx1 - 14.0f * s, ry1,
-                      (i % 2 == 0) ? rgba(32, 34, 42, 220) : rgba(24, 26, 32, 220));
-        out.text(bx0 + 28.0f * s, ry0 + 7.0f * s, e.event_name + "  [" + format_timecode(e.duration_s) + "]",
-                 ui4::style(sel ? Font::kE : Font::kB, 14.0f * s, ui4::kWhite));
-        out.text(bx0 + 28.0f * s, ry0 + 25.0f * s, e.filename + (e.player_car.empty() ? "" : ("  •  " + e.player_car)),
-                 ui4::style(Font::kB, 10.5f * s, sel ? ui4::kYellow : ui4::kDim));
+    {
+      ui4::TiltScope tilt(out, 0.5f * w, 0.5f * h, ui4::kTiltRad * 0.45f);
+      ui4::title_banner(out, s, 56.0f * s, 28.0f * s, loc_str("Replay", "IDS_SavedReplays", "SAVED REPLAYS"),
+                        loc_str("Replay", "IDS_HorizonTheatre", "HORIZON THEATRE"), true, 440.0f);
+      const float bx0 = 56.0f * s, bx1 = w - 56.0f * s;
+      const float by0 = 122.0f * s, by1 = h - 84.0f * s;
+      ui4::panel(out, bx0, by0, bx1, by1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+      ui4::offwhite_strip(out, bx0 + 14.0f * s, by0 + 10.0f * s, bx1 - 14.0f * s, by0 + 34.0f * s, s, false);
+      out.text(bx0 + 24.0f * s, by0 + 15.0f * s, loc_str("Replay", "IDS_RecordedSessions", "RECORDED SESSIONS"),
+               ui4::style(Font::kE, 13.0f * s, ui4::kInk));
+      out.text(bx1 - 24.0f * s, by0 + 15.5f * s, std::to_string(browser_entries_.size()) + " REPLAYS",
+               ui4::style(Font::kB, 11.5f * s, ui4::kInk, Align::kRight));
+
+      if (browser_entries_.empty()) {
+        out.text(0.5f * w, 0.5f * h - 10.0f * s,
+                 loc_str("Replay", "IDS_NoSavedReplays", "NO SAVED REPLAYS YET (PRESS S IN REPLAY VIEWER TO SAVE)"),
+                 ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
+      } else {
+        const float row_h = 52.0f * s;
+        const int max_vis = std::max(1, int((by1 - by0 - 54.0f * s) / row_h));
+        const int start = std::max(0, browser_selected_ - max_vis + 1);
+        for (int i = start; i < int(browser_entries_.size()) && i < start + max_vis; ++i) {
+          const auto& e = browser_entries_[size_t(i)];
+          const float ry0 = by0 + 44.0f * s + float(i - start) * row_h;
+          const float ry1 = ry0 + row_h - 6.0f * s;
+          const bool sel = (i == browser_selected_);
+          const bool armed_del = (sel && browser_delete_confirm_active());
+          out.add_hit(bx0 + 8.0f * s, ry0, bx1 - 8.0f * s, ry1, ui::kHitRow, i);
+          if (sel) {
+            ui4::brush(out, bx0 + 8.0f * s, ry0, bx1 - 8.0f * s, ry1, armed_del ? ui4::kRed : ui4::kPink);
+          } else {
+            out.rect(bx0 + 14.0f * s, ry0, bx1 - 14.0f * s, ry1,
+                     (i % 2 == 0) ? rgba(32, 34, 42, 220) : rgba(24, 26, 32, 220));
+          }
+
+          // Vehicle Class & PI Badge on every replay entry (R3-UI-16).
+          std::string cls_name;
+          int pi_val = 0;
+          resolve_replay_class_pi(e.player_car, cls_name, pi_val);
+          const float badge_h = 22.0f * s;
+          const float badge_x = bx0 + 24.0f * s;
+          const float badge_y = ry0 + 0.5f * ((ry1 - ry0) - badge_h);
+          ui4::class_badge(out, badge_x, badge_y, badge_h, cls_name, pi_val);
+
+          const float text_x = badge_x + badge_h * 3.45f + 14.0f * s;
+          const std::string title_line =
+              (e.event_name.empty() ? std::string("FREE ROAM") : e.event_name) + "  [" + format_timecode(e.duration_s) + "]";
+          ui::TextStyle tts = ui4::style(sel ? Font::kE : Font::kB, 14.0f * s, ui4::kWhite);
+          ui4::fit_text(title_line, tts, (bx1 - text_x) - 180.0f * s, 10.0f * s);
+          out.text(text_x, ry0 + 6.0f * s, title_line, tts);
+
+          const std::string sub_line = e.filename + (e.player_car.empty() ? "" : ("  •  " + e.player_car));
+          ui::TextStyle sts = ui4::style(Font::kB, 10.5f * s, sel ? ui4::kYellow : ui4::kDim, Align::kLeft, true);
+          ui4::fit_text(sub_line, sts, (bx1 - text_x) - 180.0f * s, 8.5f * s);
+          out.text(text_x, ry0 + 25.0f * s, sub_line, sts);
+
+          if (armed_del) {
+            out.text(bx1 - 24.0f * s, ry0 + 15.0f * s, "CONFIRM DELETE?",
+                     ui4::style(Font::kE, 12.5f * s, ui4::kYellow, Align::kRight));
+          } else if (e.is_race) {
+            out.text(bx1 - 24.0f * s, ry0 + 15.0f * s, "RACE",
+                     ui4::style(Font::kE, 11.5f * s, sel ? ui4::kYellow : ui4::kDim, Align::kRight));
+          }
+        }
+        if (int(browser_entries_.size()) > max_vis) {
+          ui4::scroll_indicator(out, bx1 - 12.0f * s, by0 + 44.0f * s, bx1 - 5.0f * s, by1 - 12.0f * s, start, max_vis,
+                                int(browser_entries_.size()), s);
+        }
+      }
+
+      if (notice_timer_ > 0.0 && !notice_.empty()) {
+        const float ny = by1 - 36.0f * s;
+        ui4::brush(out, bx0 + 16.0f * s, ny, bx1 - 16.0f * s, ny + 26.0f * s,
+                   browser_delete_confirm_active() ? ui4::kRed : ui4::kPink);
+        ui::TextStyle ns = ui4::style(Font::kE, 12.0f * s, ui4::kWhite, Align::kCenter);
+        ui4::fit_text(notice_, ns, (bx1 - bx0) - 48.0f * s, 8.5f * s);
+        out.text(0.5f * (bx0 + bx1), ny + 6.5f * s, notice_, ns);
       }
     }
-    ui4::button_bar(out,
-                    {{"A", loc_str("HelpButtons", "IDS_Select", "WATCH REPLAY")},
-                     {"B", loc_str("HelpButtons", "IDS_Back", "CLOSE")}},
-                    w, h, 56.0f);
+
+    std::vector<ui4::Prompt> prompts = {
+        {"A", loc_str("HelpButtons", "IDS_Select", "WATCH REPLAY")},
+        {"B", loc_str("HelpButtons", "IDS_Back", "CLOSE")},
+    };
+    if (!browser_entries_.empty()) {
+      prompts.push_back(
+          {"X", browser_delete_confirm_active() ? loc_str("Replay", "IDS_ConfirmDelete", "CONFIRM DELETE")
+                                                : loc_str("Replay", "IDS_DeleteReplay", "DELETE REPLAY")});
+    }
+    ui4::button_bar(out, prompts, w, h, 56.0f);
     return;
   }
 

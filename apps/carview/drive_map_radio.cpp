@@ -8,17 +8,85 @@
 
 namespace carview {
 
+namespace {
+
+void radio_station_meta(const audio::RadioStation& st, std::string& label, std::string& freq, std::string& genre) {
+  if (st.off || st.name == "Radio4_Silent") {
+    label = "RADIO OFF";
+    freq = "OFF";
+    genre = "ENGINE AUDIO";
+  } else if (st.name == "Radio1") {
+    label = "HORIZON BASS ARENA";
+    freq = "94.7 FM";
+    genre = "ELECTRO & HOUSE";
+  } else if (st.name == "Radio2") {
+    label = "HORIZON PULSE";
+    freq = "96.3 FM";
+    genre = "INDIE & POP";
+  } else if (st.name == "Radio3") {
+    label = "HORIZON ROCKS";
+    freq = "101.9 FM";
+    genre = "ALTERNATIVE & ROCK";
+  } else {
+    label = st.name.empty() ? "HORIZON RADIO" : st.name;
+    freq = "FM";
+    genre = "CUSTOM RADIO";
+  }
+}
+
+std::string resolve_speed_label(const std::string& display_name, const std::string& id, const char* fallback_prefix) {
+  if (!display_name.empty()) {
+    const std::string loc = carview::game_text(display_name);
+    if (!loc.empty() && loc.rfind("_&", 0) != 0) return loc;
+    if (display_name.rfind("_&", 0) != 0) return display_name;
+  }
+  const size_t pos = id.rfind('_');
+  return std::string(fallback_prefix) + " " + (pos != std::string::npos ? id.substr(pos + 1) : id);
+}
+
+}  // namespace
+
 void DriveSession::set_radio_popup(int /*height*/) {
         const auto tel = app.audio_host.telemetry();
         const audio::Radio::Popup p = app.audio_host.has_radio() && !tel.user_music_active ? tel.radio_popup : audio::Radio::Popup{};
-        if (p.alpha <= 0 || p.station < 0 || size_t(p.station) >= app.audio_host.radio_data().stations.size()) {
+        const auto& rdata = app.audio_host.radio_data();
+        if (p.alpha <= 0 || p.station < 0 || size_t(p.station) >= rdata.stations.size()) {
           radio_popup_gpu = {};
           return;
         }
-        const auto& st = app.audio_host.radio_data().stations[size_t(p.station)];
+        const auto& st = rdata.stations[size_t(p.station)];
         radio_popup_gpu.station_name = st.name;
-        radio_popup_gpu.station_label = st.off ? "RADIO OFF" : st.name;
+        radio_station_meta(st, radio_popup_gpu.station_label, radio_popup_gpu.station_frequency,
+                           radio_popup_gpu.station_genre);
         radio_popup_gpu.off = st.off;
+        radio_popup_gpu.prev_station_name.clear();
+        radio_popup_gpu.prev_station_label.clear();
+        radio_popup_gpu.next_station_name.clear();
+        radio_popup_gpu.next_station_label.clear();
+        if (rdata.cycle.size() >= 2) {
+          int cyc_idx = -1;
+          for (size_t i = 0; i < rdata.cycle.size(); ++i) {
+            if (rdata.cycle[i] == p.station) {
+              cyc_idx = int(i);
+              break;
+            }
+          }
+          if (cyc_idx >= 0) {
+            const int n = int(rdata.cycle.size());
+            const int prev_st = rdata.cycle[size_t((cyc_idx + n - 1) % n)];
+            const int next_st = rdata.cycle[size_t((cyc_idx + 1) % n)];
+            if (prev_st >= 0 && size_t(prev_st) < rdata.stations.size()) {
+              std::string f, g;
+              radio_popup_gpu.prev_station_name = rdata.stations[size_t(prev_st)].name;
+              radio_station_meta(rdata.stations[size_t(prev_st)], radio_popup_gpu.prev_station_label, f, g);
+            }
+            if (next_st >= 0 && size_t(next_st) < rdata.stations.size()) {
+              std::string f, g;
+              radio_popup_gpu.next_station_name = rdata.stations[size_t(next_st)].name;
+              radio_station_meta(rdata.stations[size_t(next_st)], radio_popup_gpu.next_station_label, f, g);
+            }
+          }
+        }
         if (p.track >= 0 && size_t(p.track) < st.tracks.size()) {
           radio_popup_gpu.title = st.tracks[size_t(p.track)].title;
           radio_popup_gpu.artist = st.tracks[size_t(p.track)].artist;
@@ -53,6 +121,9 @@ MapScene DriveSession::map_scene() {
         }
         if (app.race) {
           app.race->opponent_positions(sc.opponents), app.race->route_near(sc.route);
+          sc.has_next_checkpoint = app.race->next_checkpoint_pos(sc.next_checkpoint);
+          sc.has_finish = app.race->finish_pos(sc.finish_pos);
+          sc.has_race_leader = app.race->leader_opponent_pos(sc.race_leader);
         } else {
           if (app.gps_nav.active()) {
             app.gps_nav.remaining_polyline(sc.gps_route);
@@ -104,6 +175,22 @@ MapScene DriveSession::map_scene() {
             mm.is_new = !mm.completed;
             mm.subtitle = std::string(race::CareerCatalog::event_style_label(ev)) + "  •  " +
                           carview::thousands(int64_t(ev.cash_prize)) + " Cr";
+            std::string det;
+            if (ev.player_car_id > 0) {
+              const auto* cs = app.career_catalog.find_car(ev.player_car_id);
+              det = "SHOWCASE CAR: " + (cs ? carview::car_name(cs->media_name) : std::string("PROVIDED"));
+            } else if (ev.target_class > 0 && size_t(ev.target_class) < app.class_bands.size()) {
+              det = "CLASS " + app.class_bands[size_t(ev.target_class)].name + " OR LOWER";
+            } else {
+              det = "ANY CLASS";
+            }
+            det += (ev.laps > 1) ? ("  •  " + std::to_string(ev.laps) + " LAPS") : "  •  POINT-TO-POINT";
+            if (ev.opponents > 0) det += "  •  " + std::to_string(ev.opponents) + " OPPONENTS";
+            if (ev.prize_car_id > 0) {
+              if (const auto* pcs = app.career_catalog.find_car(ev.prize_car_id))
+                det += "  •  WIN " + carview::car_name(pcs->media_name);
+            }
+            mm.detail_line = std::move(det);
             mm.x = ev.trigger_pos[0], mm.z = ev.trigger_pos[2];
             sc.markers.push_back(std::move(mm));
           }
@@ -124,6 +211,8 @@ MapScene DriveSession::map_scene() {
                                 ? ("HORIZON OUTPOST  •  PR STUNTS " + std::to_string(done_st) + "/" +
                                    std::to_string(op.mission_ids.size()) + "  •  FAST TRAVEL")
                                 : "HORIZON OUTPOST  •  DRIVE HERE TO UNLOCK FAST TRAVEL";
+              mm.detail_line = mm.discovered ? "GARAGE ACCESS  •  FAST TRAVEL AVAILABLE"
+                                             : "DISCOVER TO UNLOCK PR STUNTS & FAST TRAVEL";
               mm.x = op.trigger.x;
               mm.z = op.trigger.z;
               mm.site_or_hub = op.index;
@@ -139,6 +228,15 @@ MapScene DriveSession::map_scene() {
               mm.is_new = !mm.completed;
               mm.subtitle = std::string(freeroam::pr_stunt_kind_name(st.kind)) + "  •  " +
                             carview::thousands(st.reward_credits) + " Cr";
+              if (st.kind == freeroam::PrStuntKind::kSpeed) {
+                mm.detail_line = "TARGET: " + carview::format_speed_unit(st.target_mph, app.metric_units, false) +
+                                 "  •  +" + carview::thousands(st.reward_popularity) + " POP";
+              } else if (st.kind == freeroam::PrStuntKind::kSkill) {
+                mm.detail_line = "TARGET: " + carview::thousands(st.target_points) + " SKILL PTS  •  +" +
+                                 carview::thousands(st.reward_popularity) + " POP";
+              } else {
+                mm.detail_line = "PHOTO CHALLENGE  •  +" + carview::thousands(st.reward_popularity) + " POP";
+              }
               mm.x = st.target_pos.x;
               mm.z = st.target_pos.z;
               sc.markers.push_back(std::move(mm));
@@ -151,15 +249,16 @@ MapScene DriveSession::map_scene() {
               mm.kind = MapMarker::kSpeedTrap;
               mm.icon_tag = pb > 0.0 ? "speed_camera_completed" : "speed_camera_discovered";
               mm.id = t.id;
-              mm.title = "SPEED TRAP " + t.id.substr(t.id.rfind('_') + 1);
+              mm.title = resolve_speed_label(t.display_name, t.id, "SPEED TRAP");
               mm.completed = pb > 0.0;
               mm.is_new = !mm.completed;
-              char sub[64];
+              char sub[80];
               const double spd_scale = app.metric_units ? 1.609344 : 1.0;
               const char* spd_unit = app.metric_units ? "KM/H" : "MPH";
               if (pb > 0.0) std::snprintf(sub, sizeof sub, "SPEED TRAP  •  PB %.1f %s", pb * spd_scale, spd_unit);
               else std::snprintf(sub, sizeof sub, "SPEED TRAP  •  MIN %.0f %s", t.min_speed_mph * spd_scale, spd_unit);
               mm.subtitle = sub;
+              mm.detail_line = "PASS CAMERA AT TOP SPEED TO SET A PERSONAL BEST";
               mm.x = t.gate.center[0];
               mm.z = t.gate.center[2];
               sc.markers.push_back(std::move(mm));
@@ -170,15 +269,16 @@ MapScene DriveSession::map_scene() {
               mm.kind = MapMarker::kSpeedZone;
               mm.icon_tag = pb > 0.0 ? "average_speed_camera_completed" : "average_speed_camera_discovered";
               mm.id = z.id;
-              mm.title = "SPEED ZONE " + z.id.substr(z.id.rfind('_') + 1);
+              mm.title = resolve_speed_label(z.display_name, z.id, "SPEED ZONE");
               mm.completed = pb > 0.0;
               mm.is_new = !mm.completed;
-              char sub[64];
+              char sub[80];
               const double spd_scale = app.metric_units ? 1.609344 : 1.0;
               const char* spd_unit = app.metric_units ? "KM/H" : "MPH";
               if (pb > 0.0) std::snprintf(sub, sizeof sub, "SPEED ZONE  •  PB %.1f %s AVG", pb * spd_scale, spd_unit);
               else std::snprintf(sub, sizeof sub, "SPEED ZONE  •  AVG SPEED CHALLENGE");
               mm.subtitle = sub;
+              mm.detail_line = "MAINTAIN HIGH AVERAGE SPEED BETWEEN BOTH GATES";
               mm.x = z.midpoint[0];
               mm.z = z.midpoint[2];
               sc.markers.push_back(std::move(mm));

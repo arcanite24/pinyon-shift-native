@@ -3,12 +3,17 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "audio/audio_engine.h"
 #include "audio/satnav_vo.h"
 #include "drive/save.h"
+#define CARVIEW_GAME_HUD_LOGIC_ONLY
+#include "game_hud.h"
+#define CARVIEW_MAP_VIEW_LOGIC_ONLY
+#include "map_view.h"
 #include "settings_page.h"
 #include "traffic/gps.h"
 #include "traffic/nav.h"
@@ -582,6 +587,64 @@ void test_r3_aud_11_roundabout_disambiguation_fade_and_cadence() {
   }
 }
 
+void test_r3_ui_12_minimap_compass_legend_and_filter_tabs() {
+  constexpr double kPi = 3.14159265358979323846;
+
+  // 1) Rotating "N" compass rim marker positions at cardinal headings on a 200x200 minimap.
+  {
+    const auto north_up = carview::minimap_compass_north_pos(0.0, 200);
+    check(std::fabs(north_up[0] - 100.0) < 1e-4 && north_up[1] < 25.0,
+          "north-up compass badge sits dead-top of minimap rim");
+
+    // Facing East (+pi/2): North rotates 90 deg counter-clockwise to the left rim.
+    const auto east = carview::minimap_compass_north_pos(0.5 * kPi, 200);
+    check(east[0] < 25.0 && std::fabs(east[1] - 100.0) < 1e-4,
+          "facing East puts North compass badge on left rim");
+
+    // Facing South (pi): North sits on bottom rim.
+    const auto south = carview::minimap_compass_north_pos(kPi, 200);
+    check(std::fabs(south[0] - 100.0) < 1e-4 && south[1] > 175.0,
+          "facing South puts North compass badge on bottom rim");
+
+    // Facing West (-pi/2): North sits on right rim.
+    const auto west = carview::minimap_compass_north_pos(-0.5 * kPi, 200);
+    check(west[0] > 175.0 && std::fabs(west[1] - 100.0) < 1e-4,
+          "facing West puts North compass badge on right rim");
+  }
+
+  // 2) World Map legend de-duplication: zero duplicate labels and no redundant "DRIVEN ROAD" entry.
+  {
+    const auto entries = carview::map_legend_entries();
+    check(entries.size() >= 6, "map legend has expected distinct icon entries");
+    std::set<std::string> seen;
+    bool has_driven_road = false;
+    bool has_dup = false;
+    for (const auto& e : entries) {
+      const std::string lbl = e.label ? std::string(e.label) : std::string();
+      if (lbl == "DRIVEN ROAD") has_driven_road = true;
+      if (!seen.insert(lbl).second) has_dup = true;
+    }
+    check(!has_driven_road, "map legend removes duplicate DRIVEN ROAD entry");
+    check(!has_dup, "map legend entries are strictly unique");
+  }
+
+  // 3) Clickable top filter tab strip layout: 7 non-overlapping hit rects inside viewport bounds.
+  {
+    const std::vector<std::string> tabs = {"ALL",      "EVENTS",  "FESTIVAL", "OUTPOSTS",
+                                           "PR STUNTS", "SPEED",  "DISCOVERY"};
+    const auto rects = carview::layout_map_filter_tabs(tabs, 64.0f, 34.0f, 22.0f, 1.0f, 920.0f);
+    check(rects.size() == tabs.size(), "all 7 map filter tabs lay out cleanly within header bar");
+    for (size_t i = 0; i < rects.size(); ++i) {
+      check(rects[i].filter_index == int(i), "map filter tab rect preserves filter index");
+      check(rects[i].x1 > rects[i].x0 && rects[i].y1 > rects[i].y0, "map filter tab rect has positive area");
+      check(rects[i].x0 >= 64.0f && rects[i].x1 <= 920.0f, "map filter tab rect stays inside header bounds");
+      if (i > 0) {
+        check(rects[i].x0 > rects[i - 1].x1, "adjacent map filter tabs do not overlap");
+      }
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -593,6 +656,7 @@ int main() {
   test_world_map_gps_toggle_and_clear();
   test_colorado_nav_optional();
   test_r3_aud_11_roundabout_disambiguation_fade_and_cadence();
+  test_r3_ui_12_minimap_compass_legend_and_filter_tabs();
   if (g_failed == 0) std::printf("gps_tests: PASS\n");
   return g_failed ? 1 : 0;
 }

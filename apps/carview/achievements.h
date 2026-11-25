@@ -208,10 +208,17 @@ class AchievementsSystem {
   AchievementCategory active_tab() const { return tabs_.empty() ? AchievementCategory::kAll : tabs_[tab_idx_]; }
   AchievementSort sort_mode() const { return sort_; }
 
+  // Detects whether an active Race HUD or Campaign Objective banner already
+  // occupies the top-left HUD corner in `list`.
+  static bool top_left_hud_occupied(const ui::List& list, float w, float h, float* max_bottom_y = nullptr);
+
   // Renders the full F7 Achievements Screen when open.
   void build_screen_hud(ui::List& out, float w, float h) const;
   // Renders the free-roam tracked achievement chip and animated unlock toast.
-  void build_hud_overlays(ui::List& out, float w, float h, bool show_track_chip) const;
+  // Automatically hides or smoothly offsets the tracked chip whenever an active
+  // Race HUD or Campaign Objective banner occupies the same top-left corner.
+  void build_hud_overlays(ui::List& out, float w, float h, bool show_track_chip,
+                          bool top_left_occupied = false, bool hide_when_occupied = false) const;
 
  private:
   void rebuild_tabs();

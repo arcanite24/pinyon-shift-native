@@ -22,12 +22,14 @@
 #include "fh1data/ui_scene.h"
 #include "fh1data/vfont.h"
 #include "fh1data/xds.h"
+#include "career_page.h"
 #include "fmv_player.h"
 #include "game_hud.h"
 #include "hud_scene.h"
 #include "story_intro.h"
 #include "ui.h"
 #include "ui_widgets.h"
+#include "../apps/carview/career_page.cpp"
 
 namespace {
 
@@ -609,6 +611,126 @@ void test_disc_ui4_cjk_and_18_languages(const std::filesystem::path& game_root,
   }
 }
 
+void test_round3_unicode_vfont_and_career_l10n() {
+  // 1. R3-UI-13: UTF-8 Unicode uppercase folding (Latin-1, Polish/Extended-A, Cyrillic).
+  check(carview::ui::unicode_uppercase_utf8("caf\xC3\xA9 ni\xC3\xB1o \xC3\xBC" "ber stra\xC3\x9F" "e") ==
+            "CAF\xC3\x89 NI\xC3\x91O \xC3\x9C" "BER STRASSE",
+        "unicode_uppercase_utf8 folds Latin-1 accents and sharp-s -> SS");
+  check(carview::ui::unicode_uppercase_utf8("\xC5\x82\xC3\xB3" "d\xC5\xBA \xC5\xBC\xC3\xB3\xC5\x82\xC4\x87") ==
+            "\xC5\x81\xC3\x93" "D\xC5\xB9 \xC5\xBB\xC3\x93\xC5\x81\xC4\x86",
+        "unicode_uppercase_utf8 folds Polish Latin Extended-A characters");
+  check(carview::ui::unicode_uppercase_utf8(
+            "\xD0\xBF\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82 \xD1\x91\xD0\xBB\xD0\xBA\xD0\xB0") ==
+            "\xD0\x9F\xD0\xA0\xD0\x98\xD0\x92\xD0\x95\xD0\xA2 \xD0\x81\xD0\x9B\xD0\x9A\xD0\x90",
+        "unicode_uppercase_utf8 folds Cyrillic including yo -> YO");
+
+  // 2. R3-UI-13: Cross-VFont glyph fallback (missing glyph in Font A falls back to Font B).
+  {
+    auto make_box_glyph = [](uint32_t cp, float adv) {
+      fh1::VFontGlyph g;
+      g.code_point = cp;
+      g.advance = adv;
+      g.min_x = 0.0f;
+      g.min_y = 0.0f;
+      g.max_x = 0.55f;
+      g.max_y = 0.72f;
+      g.vertices = {
+          {0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+          {0.55f, 0.0f, 0.0f, 1.0f, 1.0f},
+          {0.55f, 0.72f, 0.0f, 1.0f, 1.0f},
+          {0.0f, 0.72f, 0.0f, 1.0f, 1.0f},
+      };
+      g.indices = {0, 1, 2, 0, 2, 3};
+      return g;
+    };
+    auto fa = std::make_shared<fh1::VFont>();
+    fa->space_width = 0.25f;
+    fa->glyphs[uint32_t('H')] = make_box_glyph(uint32_t('H'), 0.65f);
+    fa->glyphs[uint32_t('A')] = make_box_glyph(uint32_t('A'), 0.62f);
+
+    auto fb = std::make_shared<fh1::VFont>();
+    fb->space_width = 0.25f;
+    fb->glyphs[uint32_t('H')] = make_box_glyph(uint32_t('H'), 0.65f);
+    fb->glyphs[0x00C9u] = make_box_glyph(0x00C9u, 0.64f);  // É
+    fb->glyphs[0x041Fu] = make_box_glyph(0x041Fu, 0.68f);  // П
+
+    carview::ui::set_vector_fonts(fa, fb, nullptr, nullptr);
+    carview::ui::TextStyle st;
+    st.font = carview::ui::Font::kA;
+    st.size = 24.0f;
+    st.keep_case = false;
+    // Lowercase "aéп" folds to "AÉП": 'A' comes from Font A, 'É' and 'П' fall back to Font B!
+    const float w_mixed = carview::ui::List::measure("a\xC3\xA9\xD0\xBF", st);
+    const float w_spaces = carview::ui::List::measure("a  ", st);
+    check(w_mixed > w_spaces + 8.0f, "Cross-VFont fallback measures missing Font A glyphs via Font B");
+
+    carview::ui::List l;
+    l.text(20.0f, 20.0f, "a\xC3\xA9\xD0\xBF", st);
+    int img_count = 0;
+    for (const auto& it : l.items()) {
+      if (it.kind == carview::ui::kImage) ++img_count;
+    }
+    check(img_count == 3, "Cross-VFont fallback draws all 3 glyphs (A + É + П) instead of blank gaps");
+    carview::ui::set_vector_fonts(nullptr, nullptr, nullptr, nullptr);
+  }
+
+  // 3. R3-UI-06: career_page.cpp preserves UTF-8 strings (zero ASCII stripping) & exposes all 4 FH1 sub-tabs.
+  {
+    const std::string intl = "Espa\xC3\xB1ol / \xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E / Polski \xC5\x82\xC5\xBC / "
+                             "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82";
+    check(carview::font_text(intl) == intl, "career_page font_text preserves UTF-8 international text intact");
+    check(carview::font_text("Line1\n\tLine2") == "Line1  Line2",
+          "career_page font_text still normalizes ASCII control characters to spaces");
+
+    carview::CareerSummary sum;
+    sum.level_name = "ORANGE WRISTBAND";
+    sum.wristband_points = 4200;
+    sum.popularity_rank = 74;
+    sum.races = 28;
+    sum.victories = 19;
+    sum.podiums = 25;
+    sum.credits = 245000;
+    sum.total_winnings = 890000;
+    sum.garage_cars = 14;
+    sum.roads_discovered = 142;
+    sum.roads_total = 216;
+    sum.signs_found = 63;
+    sum.signs_total = 100;
+    sum.barns_found = 5;
+    sum.barns = 9;
+    sum.outposts_discovered = 8;
+    sum.outposts_total = 10;
+
+    carview::CareerPage cp;
+    cp.open(sum, {});
+    const auto tabs = cp.tab_labels();
+    check(tabs.size() == 4, "CareerPage exposes all 4 FH1 Progress sub-tabs");
+    check(cp.active_tab() == carview::CareerTab::kProgress, "CareerPage opens on PROGRESS tab");
+    cp.switch_tab(1);
+    check(cp.active_tab() == carview::CareerTab::kSponsorChallenges && cp.show_sponsors(),
+          "CareerPage tab 1 is SPONSOR CHALLENGES");
+    cp.switch_tab(1);
+    check(cp.active_tab() == carview::CareerTab::kStats, "CareerPage tab 2 is STATS");
+    cp.switch_tab(1);
+    check(cp.active_tab() == carview::CareerTab::kContentPacks, "CareerPage tab 3 is CONTENT PACKS");
+
+    std::vector<carview::SponsorChallengeRow> sponsors = {
+        {"OAKLEY", "DRIFT KING", "OAKLEY", 15, 25, 1, 5, 10000},
+    };
+    for (int t = 0; t < 4; ++t) {
+      cp.set_tab(carview::CareerTab(t));
+      carview::ui::List l;
+      carview::draw_career_page_ui4(l, 1280.0f, 720.0f, cp, sponsors, 245000, 1.0f);
+      check(l.items().size() > 20, "draw_career_page_ui4 renders non-empty UI4 chrome for each Progress sub-tab");
+      int tab_hits = 0;
+      for (const auto& hz : l.hits()) {
+        if (hz.group == carview::ui::kHitTab) ++tab_hits;
+      }
+      check(tab_hits >= 4, "draw_career_page_ui4 registers clickable tab_strip hit-zones for all 4 sub-tabs");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -616,6 +738,7 @@ int main() {
   test_multiline_and_style_tags();
   test_synthetic_cjk_and_widgets();
   test_cjk_loading_tips_and_spa_cht();
+  test_round3_unicode_vfont_and_career_l10n();
 
   const char* env_root = std::getenv("SHIFT_GAME_ROOT");
   std::filesystem::path game_root =

@@ -198,6 +198,13 @@ class RaceView {
   // The opponents' positions (x, z), for the maps.
   void opponent_positions(std::vector<std::array<double, 2>>& out) const;
   void opponent_tags(std::vector<OpponentTag>& out) const;
+  // R3-UI-04: Missed checkpoint state for HUD warning & countdown.
+  bool missed_checkpoint() const { return missed_cp_.active; }
+  double missed_checkpoint_countdown_s() const { return missed_cp_.countdown_s; }
+  // R3-UI-12: Minimap race markers (next unpassed checkpoint, checkered finish line, and AI race leader).
+  bool next_checkpoint_pos(std::array<double, 2>& out) const;
+  bool finish_pos(std::array<double, 2>& out) const;
+  bool leader_opponent_pos(std::array<double, 2>& out) const;
   // Allows updating difficulty on the pre-race grid menu before the race starts.
   void set_difficulty(race::Difficulty d);
   race::Difficulty difficulty() const { return o_.difficulty; }
@@ -311,6 +318,8 @@ class RaceView {
     std::string cached_car_name;
   };
   void reset_car(drive::Vehicle& v, size_t i, const drive::Ground& near, double cx, double cz, double radius);
+  void reset_car_to_progress(drive::Vehicle& v, size_t i, double progress, const drive::Ground& near, double cx,
+                             double cz, double radius);
   std::string name_of(size_t i) const;
 
   std::filesystem::path bake_dir_;
@@ -356,6 +365,7 @@ class RaceView {
   std::vector<race::Gate> checkpoint_gates_;  // a street race's checkpoints in order
   std::vector<size_t> next_checkpoint_;       // each car's next checkpoint (the player last)
   std::vector<double> checkpoint_progress_;   // each checkpoint's distance along the line
+  MissedCheckpointTracker missed_cp_{};       // R3-UI-04: missed checkpoint countdown & reset tracker
   std::vector<race::RouteTransform> slots_;
   // Per step, every car (opponents, then the player).
   std::vector<drive::AiCarState> states_;

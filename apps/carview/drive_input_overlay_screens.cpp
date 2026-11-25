@@ -12,6 +12,57 @@
 #include "settings.h"
 
 namespace carview {
+namespace {
+
+bool hit_test_osk_key_overlay(SDL_Window* win, uint32_t fb_w, uint32_t fb_h, float mx, float my, bool symbols_mode,
+                              int& out_row, int& out_col) {
+  const float sw = float(fb_w), sh = float(fb_h);
+  if (sw < 64.0f || sh < 64.0f) return false;
+  float ux = mx, uy = my;
+  if (win) {
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(win, &ww, &wh);
+    if (ww > 0 && wh > 0) {
+      ux = mx * sw / float(ww);
+      uy = my * sh / float(wh);
+    }
+  }
+  const float s = sh / 720.0f;
+  const float pw = 760.0f * s, ph = 428.0f * s;
+  const float px0 = 0.5f * (sw - pw), py0 = 0.5f * (sh - ph) - 10.0f * s;
+  const float cx = px0 + 0.5f * pw, cy = py0 + 0.5f * ph;
+  const float ang = -carview::ui4::kTiltRad;
+  const float cs = std::cos(ang), sn = std::sin(ang);
+  const float dx = ux - cx, dy = uy - cy;
+  const float lx = cx + cs * dx - sn * dy;
+  const float ly = cy + sn * dx + cs * dy;
+
+  const float gx0 = px0 + 24.0f * s, gw = pw - 48.0f * s;
+  const float gy0 = py0 + 114.0f * s;
+  const float gap = 6.0f * s;
+  const float key_h = 46.0f * s;
+  static constexpr int kSymCols[4] = {10, 10, 10, 5};
+  static constexpr int kAlphaCols[5] = {10, 10, 10, 10, 5};
+  const int* col_counts = symbols_mode ? kSymCols : kAlphaCols;
+  const int num_rows = symbols_mode ? 4 : 5;
+  for (int r = 0; r < num_rows; ++r) {
+    const float ky0 = gy0 + float(r) * (key_h + gap);
+    if (ly < ky0 || ly > ky0 + key_h) continue;
+    const int ncols = col_counts[r];
+    const float kw = (gw - gap * float(ncols - 1)) / float(ncols);
+    for (int c = 0; c < ncols; ++c) {
+      const float kx0 = gx0 + float(c) * (kw + gap);
+      if (lx >= kx0 && lx <= kx0 + kw) {
+        out_row = r;
+        out_col = c;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 void DriveSession::persist_slice12_settings() {
               const auto sfile = settings_path();
@@ -227,10 +278,67 @@ bool DriveSession::handle_dev_overlays_event(const SDL_Event& e) {
                 save_page.backspace();
               } else if (save_page.osk_open() && e.type == SDL_EVENT_TEXT_INPUT && e.text.text && e.text.text[0]) {
                 for (const char* p = e.text.text; *p; ++p) save_page.type_char(*p);
-              } else if (save_page.osk_open() && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-                         e.button.button == SDL_BUTTON_RIGHT) {
-                app.audio_host.trigger_ui(audio::UiCue::kCancel);
-                save_page.nav(carview::Nav::kBack, app.save_session);
+              } else if (save_page.osk_open() && e.type == SDL_EVENT_MOUSE_MOTION) {
+                int tr = -1, tc = -1;
+                if (hit_test_osk_key_overlay(app.window, last_ui_w, last_ui_h, e.motion.x,
+                                             e.motion.y, save_page.osk().symbols(), tr, tc)) {
+                  if (tr != save_page.osk().cursor_row() || tc != save_page.osk().cursor_col()) {
+                    for (int s_i = 0; s_i < 12 && save_page.osk().cursor_row() != tr; ++s_i) {
+                      save_page.nav(tr > save_page.osk().cursor_row() ? carview::Nav::kDown : carview::Nav::kUp,
+                                    app.save_session);
+                    }
+                    for (int s_i = 0; s_i < 12 && save_page.osk().cursor_col() != tc; ++s_i) {
+                      save_page.nav(tc > save_page.osk().cursor_col() ? carview::Nav::kRight : carview::Nav::kLeft,
+                                    app.save_session);
+                    }
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  }
+                }
+              } else if (save_page.osk_open() && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                if (e.button.button == SDL_BUTTON_RIGHT) {
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  save_page.nav(carview::Nav::kBack, app.save_session);
+                } else if (e.button.button == SDL_BUTTON_LEFT) {
+                  int tr = -1, tc = -1;
+                  carview::ui::HitZone hz{};
+                  if (hit_test_osk_key_overlay(app.window, last_ui_w, last_ui_h, e.button.x,
+                                               e.button.y, save_page.osk().symbols(), tr, tc)) {
+                    for (int s_i = 0; s_i < 12 && save_page.osk().cursor_row() != tr; ++s_i) {
+                      save_page.nav(tr > save_page.osk().cursor_row() ? carview::Nav::kDown : carview::Nav::kUp,
+                                    app.save_session);
+                    }
+                    for (int s_i = 0; s_i < 12 && save_page.osk().cursor_col() != tc; ++s_i) {
+                      save_page.nav(tc > save_page.osk().cursor_col() ? carview::Nav::kRight : carview::Nav::kLeft,
+                                    app.save_session);
+                    }
+                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                    save_page.nav(carview::Nav::kAccept, app.save_session);
+                  } else if (ui_mouse_hit(e.button.x, e.button.y, hz) && hz.group == carview::ui4::kHitButton) {
+                    if (hz.index == 0) {
+                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                      save_page.nav(carview::Nav::kAccept, app.save_session);
+                    } else if (hz.index == 1) {
+                      app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      save_page.nav(carview::Nav::kX, app.save_session);
+                    } else if (hz.index == 2) {
+                      // Move to DONE key (bottom row, last col) and accept.
+                      const int done_row = save_page.osk().symbols() ? 3 : 4;
+                      for (int s_i = 0; s_i < 12 && save_page.osk().cursor_row() != done_row; ++s_i) {
+                        save_page.nav(done_row > save_page.osk().cursor_row() ? carview::Nav::kDown : carview::Nav::kUp,
+                                      app.save_session);
+                      }
+                      for (int s_i = 0; s_i < 12 && save_page.osk().cursor_col() != 4; ++s_i) {
+                        save_page.nav(4 > save_page.osk().cursor_col() ? carview::Nav::kRight : carview::Nav::kLeft,
+                                      app.save_session);
+                      }
+                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                      save_page.nav(carview::Nav::kAccept, app.save_session);
+                    } else if (hz.index == 3) {
+                      app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                      save_page.nav(carview::Nav::kBack, app.save_session);
+                    }
+                  }
+                }
               } else {
                 const carview::Nav nv = carview::nav_from_sdl(e);
                 if (nv != carview::Nav::kNone) {

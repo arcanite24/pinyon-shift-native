@@ -51,6 +51,12 @@ enum class ShapeCategory : int {
 const char* shape_category_name(ShapeCategory cat);
 // Formats a 0-based manufacturer swatch index as 1-based "OEM #1" .. "OEM #N".
 std::string oem_swatch_label(size_t index);
+// Human-readable FH1 paint finish & color display names (for Paint Shop UI).
+const char* paint_finish_display_name(cars::PaintFinish finish);
+std::string paint_hue_name(uint32_t rgb);
+std::string special_color_display_name(const cars::SpecialColorRow& sc);
+const char* special_color_finish_subtitle(const cars::SpecialColorRow& sc);
+std::string manufacturer_color_display_name(const cars::bake::Colour& c);
 
 struct PreviousColorEntry {
   uint32_t rgb = 0xCC2222u;
@@ -193,6 +199,13 @@ class LiveryEditor {
   size_t selected_special() const { return special_idx_; }
   size_t selected_layer() const { return layer_idx_; }
   size_t library_shape_count() const { return lib_.total_shapes(); }
+  // Loads/retrieves a vinyl shape mesh for miniature HUD preview thumbnails.
+  const cars::VinylMesh* preview_shape_mesh(const std::string& shape_path) const;
+  // Handles left/right carousel & finish stepper arrows (`kHitStepLeft` / `kHitStepRight`).
+  bool handle_step_click(int dir);
+  // Handles bottom button_bar clicks (indices 0..5, including index 2 DPAD_LR).
+  // Returns true if the editor state was updated in-place (save/back 0/5 return false for caller).
+  bool handle_button_bar_click(int button_index);
   bool dirty() const { return dirty_; }
   void clear_dirty() { dirty_ = false; }
   bool wheel_is_chrome() const { return wheel_is_chrome_; }
@@ -222,7 +235,7 @@ class LiveryEditor {
   PaintRegion region_ = PaintRegion::kBody;
   ShapeCategory shape_cat_ = ShapeCategory::kAll;
   cars::LiveryDocument doc_;
-  cars::LiveryLibrary lib_;
+  mutable cars::LiveryLibrary lib_;
   cars::LiveryMaskSet plane_masks_;
   std::vector<cars::SpecialColorRow> specials_;
   std::vector<cars::bake::Colour> mfg_colors_;

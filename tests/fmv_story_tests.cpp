@@ -478,6 +478,77 @@ void test_fmv_subtitles_and_dlc_discovery() {
   std::filesystem::remove_all(tmp, ec);
 }
 
+void test_r3_fmv_subtitles_pll_hold_skip_and_story_units() {
+  // R3-UI-14: Explicit End / Duration attributes in subtitle XML honored by current_subtitle_index().
+  const std::string sub_xml = R"(
+    <Subtitles>
+      <Subtitle0 Start="1.0" End="2.5"/>
+      <Subtitle1 Start="4.0" Duration="1.5"/>
+    </Subtitles>
+  )";
+  std::vector<carview::FmvSubtitleCue> cues;
+  check(carview::parse_fmv_subtitles(sub_xml, cues) && cues.size() == 2, "parse_fmv_subtitles parses End and Duration");
+  check(std::fabs(cues[0].end_s - 2.5) < 1e-4, "cue 0 End == 2.5");
+  check(std::fabs(cues[1].duration_s - 1.5) < 1e-4, "cue 1 Duration == 1.5");
+
+  carview::FmvPlayer p;
+  p.open_synthetic(320, 180, 30.0, 8.0, "SubTest");
+  p.set_subtitles(cues);
+  p.update(1.5, false);
+  check(p.current_subtitle_index() == 0, "cue 0 active inside [1.0, 2.5)");
+  p.update(1.5, false);  // t = 3.0 -> past End=2.5
+  check(p.current_subtitle_index() == -1, "cue 0 hidden after explicit End=2.5");
+  p.update(1.5, false);  // t = 4.5 -> inside [4.0, 5.5)
+  check(p.current_subtitle_index() == 1, "cue 1 active inside [4.0, 4.0 + 1.5)");
+  p.update(1.5, false);  // t = 6.0 -> past Duration=1.5
+  check(p.current_subtitle_index() == -1, "cue 1 hidden after explicit Duration=1.5");
+
+  // R3-UI-14: Multi-line word wrapping keeps every line within max_width_px.
+  carview::ui::TextStyle sub_ts{};
+  sub_ts.font = carview::ui::Font::kB;
+  sub_ts.size = 16.0f;
+  sub_ts.color = carview::ui::rgba(255, 255, 255);
+  sub_ts.align = carview::ui::Align::kCenter;
+  const std::string long_sub =
+      "Welcome to Colorado and the Horizon Festival — drive fast, earn wristbands, and chase the sunset across Red Rock.";
+  const auto lines = carview::wrap_fmv_subtitle(long_sub, 360.0f, sub_ts);
+  check(lines.size() >= 2, "wrap_fmv_subtitle splits long caption into multiple lines");
+  for (const auto& ln : lines) {
+    check(carview::ui::List::measure(ln, sub_ts) <= 365.0f, "wrapped subtitle line fits within max width");
+  }
+
+  // R3-UI-14: +-40 ms audio-clock PLL sync (jitter-free deadband, gentle catch-up / slow-down, monotonic).
+  const double within_deadband = carview::fmv_pll_step_clock(2.0, 0.016, 2.040);  // err = +24 ms <= 40 ms
+  check(std::fabs(within_deadband - 2.016) < 1e-6, "PLL inside +-40ms deadband steps by exact dt without jitter");
+  const double lead_step = carview::fmv_pll_step_clock(2.0, 0.016, 2.136);  // audio leads by +120 ms
+  check(lead_step > 2.016 && lead_step < 2.136, "PLL gently catches up when audio leads >40ms");
+  const double lag_step = carview::fmv_pll_step_clock(2.0, 0.016, 1.896);   // audio lags by -120 ms
+  check(lag_step >= 2.0 && lag_step < 2.016, "PLL gently slows down without reversing when audio lags >40ms");
+
+  // R3-UI-07: 0.75 s hold-to-skip progress ring (stepped in realistic 50 ms frame increments).
+  p.reset_hold_skip();
+  check(p.hold_skip_progress() == 0.0f, "hold-to-skip starts at 0");
+  float p30 = 0.0f;
+  for (int i = 0; i < 6; ++i) p30 = p.update_hold_skip(0.05, true);  // 0.30 s total
+  check(p30 > 0.35f && p30 < 0.45f, "0.30s hold is ~40% of 0.75s (does not skip on frame 0)");
+  float p75 = p30;
+  for (int i = 0; i < 9; ++i) p75 = p.update_hold_skip(0.05, true);  // +0.45 s = 0.75 s total
+  check(p75 >= 1.0f, "0.75s continuous hold reaches 1.0");
+  const float decayed = p.update_hold_skip(0.20, false);
+  check(decayed < 1.0f, "releasing skip decays hold progress");
+
+  // R3-UI-07: StoryIntro Viper drive HUD supports Metric and Imperial units cleanly.
+  carview::StoryIntro st;
+  st.begin_boot({}, true, true, true);
+  st.update(0.5, {1200.0, 600.0}, false, false);
+  st.set_metric_units(false);
+  check(!st.metric_units(), "StoryIntro stores imperial units flag");
+  carview::ui::List l_metric, l_imp;
+  st.draw_hud(l_metric, 1280.0f, 720.0f, true);
+  st.draw_hud(l_imp, 1280.0f, 720.0f, false);
+  check(!l_metric.empty() && !l_imp.empty(), "StoryIntro::draw_hud renders both Metric and Imperial HUDs");
+}
+
 }  // namespace
 
 int main() {
@@ -485,6 +556,7 @@ int main() {
   test_fmv_synthetic_and_audio_mix();
   test_fmv_real_wmv_if_available();
   test_fmv_subtitles_and_dlc_discovery();
+  test_r3_fmv_subtitles_pll_hold_skip_and_story_units();
   test_story_intro_state_machine();
   test_pinyon_boot_switches_and_save();
   test_menu_and_settings_pad_navigation();

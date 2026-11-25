@@ -116,6 +116,7 @@ struct DriveConfig {
   float cli_hdr_pattern_nits = 1000.0f;
   bool cli_perf_overlay = false;
   bool cli_frame_inspector = false;
+  bool debug_title = false;  // R3-UI-18: show live telemetry in window title only when explicitly requested
   InspectorView cli_inspector_view = InspectorView::kColor;
   std::vector<std::string> args;
   bool photo_through_walls_cli = false;

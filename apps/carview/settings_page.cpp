@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <map>
@@ -11,6 +12,19 @@
 
 namespace carview {
 namespace {
+
+SettingsPage::TextResolver& settings_text_resolver() {
+  static SettingsPage::TextResolver fn;
+  return fn;
+}
+
+std::string resolve_setting_loc(std::string_view table, std::string_view id, const char* fallback) {
+  if (const auto& fn = settings_text_resolver()) {
+    const std::string resolved = fn(table, id, fallback);
+    if (!resolved.empty()) return resolved;
+  }
+  return fallback;
+}
 
 struct Kept {
   const char* key;
@@ -412,6 +426,9 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"shadows",
        {{"default", {}}, {"off", {"--shadows", "off"}}, {"low", {"--shadows", "low"}}, {"high", {"--shadows", "high"}}}},
       {"bloom", {{"default", {}}, {"on", {"--bloom"}}, {"off", {"--no-bloom"}}}},
+      {"difficulty preset",
+       {{"easy", {}}, {"medium", {}}, {"hard", {}}, {"insane", {}}, {"custom", {}}},
+       1},
       {"difficulty",
        {{"default", {}},
         {"easy", {"--difficulty", "easy"}},
@@ -450,6 +467,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"switch handbrake/clutch", {{"off", {}}, {"on", {"--switch-handbrake-clutch"}}}},
       {"speedometer", {{"analog", {}}, {"digital", {"--hud-speedo", "digital"}}, {"off", {"--hud-speedo", "off"}}}},
       {"minimap", {{"rotating", {}}, {"north-up", {"--minimap-mode", "north-up"}}, {"off", {"--minimap-mode", "off"}}}},
+      {"units", {{"metric (km/h)", {}}, {"imperial (mph)", {"--units", "imperial"}}}},
       {"steer deadzone in",
        {{"24%", {}},
         {"0%", {"--steer-dz-in", "0.00"}},
@@ -795,7 +813,6 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"3.0x", {"--pacing-rewards", "3.0"}},
         {"5.0x", {"--pacing-rewards", "5.0"}}}},
       {"hidden cars (autoshow)", {{"off", {}}, {"unlocked (4 cars)", {"--hidden-cars"}}}},
-      {"units", {{"metric (km/h)", {}}, {"imperial (mph)", {"--units", "imperial"}}}},
   };
 }
 
@@ -806,11 +823,21 @@ std::vector<SettingsPage::RebindRow> SettingsPage::build_rebinds() {
       {"key steer left", drive::ControlAction::kSteerLeft},
       {"key steer right", drive::ControlAction::kSteerRight},
       {"key handbrake", drive::ControlAction::kHandbrake},
-      {"key camera", drive::ControlAction::kSwitchCamera},
-      {"key look back", drive::ControlAction::kLookBack},
+      {"key clutch", drive::ControlAction::kClutch},
       {"key shift up", drive::ControlAction::kShiftUp},
       {"key shift down", drive::ControlAction::kShiftDown},
+      {"key camera", drive::ControlAction::kSwitchCamera},
+      {"key look back", drive::ControlAction::kLookBack},
+      {"key look left", drive::ControlAction::kLookLeft},
+      {"key look right", drive::ControlAction::kLookRight},
       {"key rewind", drive::ControlAction::kRewind},
+      {"key reset car", drive::ControlAction::kReset},
+      {"key world map", drive::ControlAction::kMap},
+      {"key radio prev", drive::ControlAction::kRadioPrev},
+      {"key radio next", drive::ControlAction::kRadioNext},
+      {"key activate", drive::ControlAction::kActivate},
+      {"key photo mode", drive::ControlAction::kPhotoMode},
+      {"key telemetry", drive::ControlAction::kTelemetry},
   };
 }
 
@@ -1013,6 +1040,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
     }
     if (takes_value) ++i;
   }
+  sync_difficulty_preset();
 }
 
 namespace {
@@ -1030,8 +1058,7 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
       name == "colour lut" || name == "lut strength" || name == "vrs shading" ||
       name == "texture size" || name == "vsync" || name == "frame rate" || name == "frame gen" ||
       name == "hdr" || name == "windows auto-hdr" || name == "hdr paper white" || name == "hdr highlights" ||
-      name == "hdr peak" || name == "hdr compare" || name == "hud 16:9 lock" || name == "hud scale" ||
-      name == "safe zone") {
+      name == "hdr peak" || name == "hdr compare") {
     return SettingsPage::Tab::kDisplay;
   }
   if (name == "radio" || name == "sound" || name == "satnav" || name == "master volume" || name == "mute" ||
@@ -1039,10 +1066,11 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
       name.rfind("your music", 0) == 0) {
     return SettingsPage::Tab::kAudio;
   }
-  if (name == "difficulty" || name == "rubber-banding" || name == "traffic" || name == "collectibles" ||
-      name == "treasure map" || name == "braking" || name == "steering" || name == "traction control" ||
-      name == "stability control" || name == "shifting" || name == "driving line" || name == "rewind" ||
-      name == "damage" || name == "ai opponents" || name == "units" || name == "speedometer" || name == "minimap" ||
+  if (name == "difficulty preset" || name == "difficulty" || name == "rubber-banding" || name == "traffic" ||
+      name == "collectibles" || name == "treasure map" || name == "braking" || name == "steering" ||
+      name == "traction control" || name == "stability control" || name == "shifting" || name == "driving line" ||
+      name == "rewind" || name == "damage" || name == "ai opponents" || name == "units" || name == "speedometer" ||
+      name == "minimap" || name == "hud 16:9 lock" || name == "hud scale" || name == "safe zone" ||
       name.rfind("telemetry", 0) == 0) {
     return SettingsPage::Tab::kGameplay;
   }
@@ -1096,10 +1124,22 @@ void SettingsPage::move(int by) {
 void SettingsPage::step(int by) {
   if (capturing_ || row_ < 0 || row_ >= int(rows_.size())) return;
   Row& r = rows_[size_t(row_)];
+  const std::string rname(r.name);
+  if (rname == "difficulty preset") {
+    // Cycle EASY (0) <-> MEDIUM (1) <-> HARD (2) <-> INSANE (3); leave CUSTOM (4) on step.
+    if (r.pick >= 4) {
+      r.pick = (by >= 0) ? 0u : 3u;
+    } else {
+      r.pick = size_t(((int(r.pick) + by) % 4 + 4) % 4);
+    }
+    apply_difficulty_preset(r.pick);
+    dirty_ = true;
+    return;
+  }
   const int n = int(r.choices.size());
   r.pick = size_t(((int(r.pick) + by) % n + n) % n);
   r.explicit_default = (r.pick == 0 && !explicit_off_tokens_for_row(r.name).empty());
-  if (std::string(r.name) == "preset") {
+  if (rname == "preset") {
     const auto& pt = r.choices[r.pick].tokens;
     PresetSotaDefaults pdef;
     if (pt.size() == 2 && preset_sota_defaults(pt[1], pdef)) {
@@ -1146,6 +1186,11 @@ void SettingsPage::step(int by) {
                       false);
       apply_sota_pick("car clearcoat detail", "", pdef.car_detail);
     }
+  }
+  if (rname == "difficulty" || rname == "braking" || rname == "steering" || rname == "traction control" ||
+      rname == "stability control" || rname == "shifting" || rname == "driving line" || rname == "rewind" ||
+      rname == "damage") {
+    sync_difficulty_preset();
   }
   dirty_ = true;
 }
@@ -1194,17 +1239,19 @@ std::vector<SettingsPage::DisplayRow> SettingsPage::display_rows() const {
   std::vector<DisplayRow> out;
   out.reserve(rows_.size() + rebinds_.size() + 1);
   for (size_t i = 0; i < rows_.size(); ++i) {
-    out.push_back({rows_[i].name, rows_[i].choices[rows_[i].pick].label, classify_setting_row(rows_[i].name), int(i),
-                   false, false, false, row_ == int(i)});
+    out.push_back({format_row_name(rows_[i].name), format_row_value(rows_[i]), classify_setting_row(rows_[i].name),
+                   int(i), false, false, false, row_ == int(i)});
   }
   for (size_t i = 0; i < rebinds_.size(); ++i) {
     const int idx = int(rows_.size() + i);
     const bool cap = capturing_ && row_ == idx;
-    out.push_back({rebinds_[i].name, cap ? "PRESS KEY..." : keys_.map[size_t(rebinds_[i].action)].primary,
-                   Tab::kControls, idx, true, false, cap, row_ == idx});
+    out.push_back({format_row_name(rebinds_[i].name),
+                   cap ? "PRESS KEY..." : keys_.map[size_t(rebinds_[i].action)].primary, Tab::kControls, idx, true,
+                   false, cap, row_ == idx});
   }
   const int save_idx = int(rows_.size() + rebinds_.size());
-  out.push_back({"SAVE & APPLY SETTINGS", "CONFIRM", active_tab(), save_idx, false, true, false, row_ == save_idx});
+  out.push_back({resolve_setting_loc("HelpButtons", "IDS_Save", "SAVE & APPLY SETTINGS"), "CONFIRM", active_tab(),
+                 save_idx, false, true, false, row_ == save_idx});
   return out;
 }
 
@@ -1759,17 +1806,176 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
   set_by_label("hud 16:9 lock", g.hud_lock_16_9 ? "on" : "off");
   set_by_num("hud scale", double(g.hud_scale), 100.0);
   set_by_num("safe zone", double(g.safe_zone), 0.0);
+  sync_difficulty_preset();
+}
+
+void SettingsPage::set_text_resolver(TextResolver fn) { settings_text_resolver() = std::move(fn); }
+
+std::string SettingsPage::tab_label(Tab t) {
+  switch (t) {
+    case Tab::kDisplay: return resolve_setting_loc("Options", "IDS_Video", "DISPLAY");
+    case Tab::kAudio: return resolve_setting_loc("Options", "IDS_Audio", "AUDIO");
+    case Tab::kGameplay: return resolve_setting_loc("Options", "IDS_Difficulty", "DIFFICULTY & HUD");
+    case Tab::kControls: return resolve_setting_loc("Options", "IDS_Controls", "CONTROLS");
+    case Tab::kPinyon: return resolve_setting_loc("Options", "IDS_Engine", "ENGINE");
+    default: return "OPTIONS";
+  }
+}
+
+bool SettingsPage::metric_units_active() const {
+  for (const Row& r : rows_) {
+    if (std::string_view(r.name) == "units") {
+      const auto& toks = r.choices[r.pick].tokens;
+      return !(toks.size() >= 2 && toks[1] == "imperial");
+    }
+  }
+  return true;
+}
+
+std::string SettingsPage::format_row_name(const char* raw_name) const {
+  if (!settings_text_resolver()) return raw_name;
+  const std::string_view n(raw_name);
+  if (n == "difficulty preset") return resolve_setting_loc("Options", "IDS_DifficultyPreset", raw_name);
+  if (n == "difficulty") return resolve_setting_loc("Options", "IDS_Difficulty", raw_name);
+  if (n == "braking") return resolve_setting_loc("Options", "IDS_Braking", raw_name);
+  if (n == "steering") return resolve_setting_loc("Options", "IDS_Steering", raw_name);
+  if (n == "traction control") return resolve_setting_loc("Options", "IDS_TractionControl", raw_name);
+  if (n == "stability control") return resolve_setting_loc("Options", "IDS_StabilityControl", raw_name);
+  if (n == "shifting") return resolve_setting_loc("Options", "IDS_Shifting", raw_name);
+  if (n == "driving line") return resolve_setting_loc("Options", "IDS_DrivingLine", raw_name);
+  if (n == "rewind") return resolve_setting_loc("Options", "IDS_Rewind", raw_name);
+  if (n == "damage") return resolve_setting_loc("Options", "IDS_Damage", raw_name);
+  if (n == "units") return resolve_setting_loc("Options", "IDS_Units", raw_name);
+  if (n == "speedometer") return resolve_setting_loc("Options", "IDS_Speedometer", raw_name);
+  if (n == "minimap") return resolve_setting_loc("Options", "IDS_Minimap", raw_name);
+  if (n == "rumble") return resolve_setting_loc("Options", "IDS_Vibration", raw_name);
+  if (n == "controller layout") return resolve_setting_loc("Options", "IDS_ControllerLayout", raw_name);
+  if (n == "switch handbrake/clutch") return resolve_setting_loc("Options", "IDS_SwitchHandbrakeClutch", raw_name);
+  if (n == "master volume") return resolve_setting_loc("Options", "IDS_MasterVolume", raw_name);
+  if (n == "radio volume") return resolve_setting_loc("Options", "IDS_RadioVolume", raw_name);
+  if (n == "language") return resolve_setting_loc("Options", "IDS_Language", raw_name);
+  return raw_name;
+}
+
+std::string SettingsPage::format_row_value(const Row& r) const {
+  const std::string_view n(r.name);
+  if (n == "difficulty preset") {
+    static constexpr const char* kPresetNames[5] = {"EASY", "MEDIUM", "HARD", "INSANE", "CUSTOM"};
+    const size_t idx = std::min<size_t>(r.pick, 4u);
+    char buf[48];
+    std::snprintf(buf, sizeof buf, "%s (+%d%% CR)", kPresetNames[idx], difficulty_credit_bonus_pct());
+    return buf;
+  }
+  if ((n == "chase height" || n == "chase distance") && r.pick > 0 && !metric_units_active()) {
+    const auto& toks = r.choices[r.pick].tokens;
+    double meters = 0.0;
+    if (toks.size() >= 2 && parse_strict_number(toks[1], meters)) {
+      char buf[32];
+      std::snprintf(buf, sizeof buf, "%+.2f ft", meters * 3.28084);
+      return buf;
+    }
+  }
+  return r.choices[r.pick].label;
+}
+
+void SettingsPage::apply_difficulty_preset(size_t preset_pick) {
+  auto set_row_label = [&](const char* name, const char* label) {
+    for (Row& r : rows_) {
+      if (std::string_view(r.name) != name) continue;
+      for (size_t c = 0; c < r.choices.size(); ++c) {
+        if (r.choices[c].label == label) {
+          r.pick = c;
+          r.explicit_default = false;
+          return;
+        }
+      }
+      return;
+    }
+  };
+  switch (preset_pick) {
+    case 0:  // EASY (+0% CR)
+      set_row_label("difficulty", "easy");
+      set_row_label("braking", "assisted");
+      set_row_label("steering", "assisted");
+      set_row_label("traction control", "on");
+      set_row_label("stability control", "on");
+      set_row_label("shifting", "automatic");
+      set_row_label("driving line", "full");
+      set_row_label("rewind", "on");
+      set_row_label("damage", "none");
+      break;
+    case 1:  // MEDIUM (+15% CR)
+      set_row_label("difficulty", "default");
+      set_row_label("braking", "abs on");
+      set_row_label("steering", "normal");
+      set_row_label("traction control", "off");
+      set_row_label("stability control", "on");
+      set_row_label("shifting", "automatic");
+      set_row_label("driving line", "full");
+      set_row_label("rewind", "on");
+      set_row_label("damage", "cosmetic");
+      break;
+    case 2:  // HARD (+50% CR)
+      set_row_label("difficulty", "hard");
+      set_row_label("braking", "abs on");
+      set_row_label("steering", "normal");
+      set_row_label("traction control", "off");
+      set_row_label("stability control", "off");
+      set_row_label("shifting", "manual");
+      set_row_label("driving line", "braking");
+      set_row_label("rewind", "on");
+      set_row_label("damage", "cosmetic");
+      break;
+    case 3:  // INSANE (+120% CR)
+      set_row_label("difficulty", "pro");
+      set_row_label("braking", "abs off");
+      set_row_label("steering", "simulation");
+      set_row_label("traction control", "off");
+      set_row_label("stability control", "off");
+      set_row_label("shifting", "manual+clutch");
+      set_row_label("driving line", "off");
+      set_row_label("rewind", "off");
+      set_row_label("damage", "simulation");
+      break;
+    default: break;
+  }
+}
+
+void SettingsPage::sync_difficulty_preset() {
+  const LiveSettings ls = live_settings();
+  const int diff = ls.difficulty >= 0 ? ls.difficulty : 1;
+  const auto& a = ls.controls.assists;
+  size_t detected = 4;  // CUSTOM
+  if (diff == 0 && a.braking == 0 && a.steering == 0 && a.traction_control && a.stability_control && a.shifting == 0 &&
+      a.driving_line == 2 && a.rewind && ls.damage_mode == 0) {
+    detected = 0;  // EASY
+  } else if (diff == 1 && a.braking == 1 && a.steering == 1 && !a.traction_control && a.stability_control &&
+             a.shifting == 0 && a.driving_line == 2 && a.rewind && ls.damage_mode == 1) {
+    detected = 1;  // MEDIUM
+  } else if (diff == 2 && a.braking == 1 && a.steering == 1 && !a.traction_control && !a.stability_control &&
+             a.shifting == 1 && a.driving_line == 1 && a.rewind && ls.damage_mode == 1) {
+    detected = 2;  // HARD
+  } else if (diff == 3 && a.braking == 2 && a.steering == 2 && !a.traction_control && !a.stability_control &&
+             a.shifting == 2 && a.driving_line == 0 && !a.rewind && ls.damage_mode == 2) {
+    detected = 3;  // INSANE
+  }
+  for (Row& r : rows_) {
+    if (std::string_view(r.name) == "difficulty preset") {
+      r.pick = detected;
+      break;
+    }
+  }
 }
 
 void SettingsPage::fill(std::string& title, std::vector<std::string>& lines, int& selected) const {
   title = capturing_ ? "press a key to bind (esc cancels)"
                      : "settings: left/right change (live), enter to rebind or save";
   lines.clear();
-  for (const Row& r : rows_) lines.push_back(std::string(r.name) + "  < " + r.choices[r.pick].label + " >");
+  for (const Row& r : rows_) lines.push_back(format_row_name(r.name) + "  < " + format_row_value(r) + " >");
   for (size_t i = 0; i < rebinds_.size(); ++i) {
     const bool cap = capturing_ && row_ == int(rows_.size() + i);
     const std::string& k = keys_.map[size_t(rebinds_[i].action)].primary;
-    lines.push_back(std::string(rebinds_[i].name) + (cap ? "  [ press key... ]" : ("  [ " + k + " ]")));
+    lines.push_back(format_row_name(rebinds_[i].name) + (cap ? "  [ press key... ]" : ("  [ " + k + " ]")));
   }
   lines.push_back("save & apply");
   selected = row_;
@@ -1777,10 +1983,40 @@ void SettingsPage::fill(std::string& title, std::vector<std::string>& lines, int
 
 std::string SettingsPage::value(const std::string& name) const {
   for (const Row& r : rows_)
-    if (name == r.name) return r.choices[r.pick].label;
+    if (name == r.name) return format_row_value(r);
   for (const RebindRow& rb : rebinds_)
     if (name == rb.name) return keys_.map[size_t(rb.action)].primary;
   return {};
+}
+
+SettingsPage::ControllerDiagramSpec SettingsPage::controller_diagram_spec() const {
+  ControllerDiagramSpec spec;
+  const LiveSettings ls = live_settings();
+  spec.enabled = (tab_ == Tab::kControls);
+  spec.layout_id = ls.controls.layout_id;
+  spec.swap_handbrake_clutch = ls.controls.switch_handbrake_clutch;
+  if (!spec.enabled) return spec;
+
+  std::string sel_name;
+  if (row_ >= 0 && size_t(row_) < rows_.size()) sel_name = rows_[size_t(row_)].name;
+  else if (on_rebind_row()) sel_name = rebinds_[size_t(row_ - int(rows_.size()))].name;
+  for (char& c : sel_name) c = char(std::toupper(static_cast<unsigned char>(c)));
+
+  if (sel_name.find("HANDBRAKE") != std::string::npos) spec.highlight_action = "HANDBRAKE";
+  else if (sel_name.find("CLUTCH") != std::string::npos) spec.highlight_action = "CLUTCH";
+  else if (sel_name.find("THROTTLE") != std::string::npos) spec.highlight_action = "GAS";
+  else if (sel_name.find("BRAKE") != std::string::npos) spec.highlight_action = "BRAKE";
+  else if (sel_name.find("STEER") != std::string::npos) spec.highlight_action = "STEER";
+  else if (sel_name.find("SHIFT UP") != std::string::npos) spec.highlight_action = "SHIFT UP";
+  else if (sel_name.find("SHIFT DOWN") != std::string::npos) spec.highlight_action = "SHIFT DOWN";
+  else if (sel_name.find("REWIND") != std::string::npos) spec.highlight_action = "REWIND";
+  else if (sel_name.find("CAMERA") != std::string::npos) spec.highlight_action = "CAMERA";
+  else if (sel_name.find("LOOK BACK") != std::string::npos) spec.highlight_action = "LOOK BACK";
+  else if (sel_name.find("MAP") != std::string::npos) spec.highlight_action = "MAP";
+  else if (sel_name.find("RADIO") != std::string::npos) spec.highlight_action = "RADIO";
+  else if (sel_name.find("PHOTO") != std::string::npos) spec.highlight_action = "PHOTO MODE";
+  else if (sel_name.find("TELEMETRY") != std::string::npos) spec.highlight_action = "TELEMETRY";
+  return spec;
 }
 
 drive::ControllerLayout SettingsPage::active_controller_layout() const {
@@ -1803,23 +2039,20 @@ std::vector<SettingsPage::ControllerDiagramCallout> SettingsPage::controller_dia
     if (raw == "LookStraightBack") return "LOOK BACK";
     if (raw == "Map") return "MAP";
     if (raw == "RadioLeft" || raw == "RadioRight") return "RADIO";
+    if (raw == "PhotoMode") return "PHOTO MODE";
+    if (raw == "Telemetry") return "TELEMETRY";
     return std::string(raw);
   };
-  std::string sel_name;
-  if (row_ >= 0 && size_t(row_) < rows_.size()) sel_name = rows_[size_t(row_)].name;
-  else if (on_rebind_row()) sel_name = rebinds_[size_t(row_ - int(rows_.size()))].name;
-  for (char& c : sel_name) c = char(std::toupper(static_cast<unsigned char>(c)));
+  const ControllerDiagramSpec dspec = controller_diagram_spec();
 
   auto make = [&](const char* btn, std::string act, bool left) {
     bool hi = false;
-    if (!sel_name.empty()) {
-      if (sel_name.find("HANDBRAKE") != std::string::npos && (act == "HANDBRAKE" || act == "CLUTCH")) hi = true;
-      else if (sel_name.find("CLUTCH") != std::string::npos && (act == "CLUTCH" || act == "HANDBRAKE")) hi = true;
-      else if (sel_name.find("THROTTLE") != std::string::npos && act == "GAS") hi = true;
-      else if (sel_name.find("BRAKE") != std::string::npos && act == "BRAKE") hi = true;
-      else if (sel_name.find("STEER") != std::string::npos && act == "STEER") hi = true;
-      else if (sel_name.find("REWIND") != std::string::npos && act == "REWIND") hi = true;
-      else if (sel_name.find("CAMERA") != std::string::npos && act == "CAMERA") hi = true;
+    if (!dspec.highlight_action.empty()) {
+      if (dspec.highlight_action == act) hi = true;
+      else if ((dspec.highlight_action == "HANDBRAKE" || dspec.highlight_action == "CLUTCH") &&
+               (act == "HANDBRAKE" || act == "CLUTCH")) {
+        hi = true;
+      }
     }
     return ControllerDiagramCallout{btn, std::move(act), left, hi};
   };
@@ -1829,6 +2062,8 @@ std::vector<SettingsPage::ControllerDiagramCallout> SettingsPage::controller_dia
       make("LB", pretty_action(lay.action_for(drive::PadControl::kLeftShoulder)), true),
       make("LS", "STEER", true),
       make("DPAD_LR", "RADIO", true),
+      make("DPAD_UP", pretty_action(lay.action_for(drive::PadControl::kDPadUp)), true),
+      make("DPAD_DN", pretty_action(lay.action_for(drive::PadControl::kDPadDown)), true),
       make("BACK", pretty_action(lay.action_for(drive::PadControl::kBack)), true),
       make("RT", pretty_action(lay.action_for(drive::PadControl::kRightTrigger)), false),
       make("RB", pretty_action(lay.action_for(drive::PadControl::kRightShoulder)), false),

@@ -270,10 +270,12 @@ class PhotoModeController {
   void toggle_effects() { effects_open_ = !effects_open_; }
   bool ui_hidden() const { return ui_hidden_; }
   void toggle_ui_hidden() { ui_hidden_ = !ui_hidden_; }
+  void set_metric_units(bool metric) { metric_units_ = metric; }
+  bool metric_units() const { return metric_units_; }
   int selected_row() const { return selected_row_; }
-  void select_row(int row) {
-    if (row >= 0 && row < kRowCount) selected_row_ = row;
-  }
+  int scroll_top() const { return scroll_top_; }
+  static int visible_effect_rows(float h);
+  void select_row(int row);
 
   void move_row(int delta);
   void adjust_row(int delta);
@@ -312,7 +314,9 @@ class PhotoModeController {
   bool active_ = false;
   bool effects_open_ = true;
   bool ui_hidden_ = false;
+  bool metric_units_ = true;
   int selected_row_ = kAperture;
+  mutable int scroll_top_ = 0;
   double time_ = 0.0;
   double flash_timer_ = 0.0;
   double banner_timer_ = 0.0;

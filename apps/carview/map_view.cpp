@@ -1057,6 +1057,68 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     cv.line(p.x, p.y, p.x, p.y, 15 * unit + 2, Rgba{120, 120, 125, 230});
     cv.line(p.x, p.y, p.x, p.y, 15 * unit - 1, Rgba{236, 236, 238, 255});
   }
+  // R3-UI-12: Race leader highlight dot (distinct gold disc with Horizon-pink outer rim).
+  if (scene.has_race_leader && std::hypot(scene.race_leader[0] - scene.x, scene.race_leader[1] - scene.z) <= reach) {
+    const P lp = project(scene.race_leader[0], scene.race_leader[1]);
+    if (lp.depth >= 1) {
+      cv.line(lp.x, lp.y, lp.x, lp.y, 20 * unit + 2.5, Rgba{14, 16, 22, 230});
+      cv.line(lp.x, lp.y, lp.x, lp.y, 18 * unit + 1.5, Rgba{249, 0, 100, 255});
+      cv.line(lp.x, lp.y, lp.x, lp.y, 13 * unit, Rgba{255, 214, 48, 255});
+    }
+  }
+  // R3-UI-12: Next race checkpoint beacon (bright cyan/pink concentric ring, rim-clamped if ahead).
+  if (scene.has_next_checkpoint) {
+    const P cp = project(scene.next_checkpoint[0], scene.next_checkpoint[1]);
+    double bx = cp.x, by = cp.y;
+    const double max_r = size * 0.39;
+    bool on_screen = (cp.depth >= 1.0) && (std::hypot(bx - cxp, by - cyp) <= max_r);
+    if (!on_screen) {
+      const double dx = scene.next_checkpoint[0] - scene.x;
+      const double dz = scene.next_checkpoint[1] - scene.z;
+      const double sx = dx * rx + dz * rz;
+      const double sy = -(dx * fx + dz * fz);
+      const double sl = std::hypot(sx, sy);
+      if (sl > 1e-4) {
+        bx = cxp + (sx / sl) * max_r;
+        by = cyp + (sy / sl) * max_r;
+        on_screen = true;
+      }
+    }
+    if (on_screen) {
+      const double r = std::max(5.5, 11.5 * unit);
+      for (int k = 0; k < 16; ++k) {
+        const double a0 = 2.0 * kPi * k / 16.0;
+        const double a1 = 2.0 * kPi * (k + 1) / 16.0;
+        cv.line(bx + r * std::cos(a0), by + r * std::sin(a0), bx + r * std::cos(a1), by + r * std::sin(a1),
+                std::max(2.6, 5.2 * unit), Rgba{12, 14, 20, 225});
+        cv.line(bx + r * std::cos(a0), by + r * std::sin(a0), bx + r * std::cos(a1), by + r * std::sin(a1),
+                std::max(1.8, 3.2 * unit), Rgba{249, 0, 100, 250});
+      }
+      cv.line(bx, by, bx, by, std::max(3.8, 7.6 * unit), Rgba{56, 224, 255, 250});
+    }
+  }
+  // R3-UI-12: Checkered race finish flag marker.
+  if (scene.has_finish && std::hypot(scene.finish_pos[0] - scene.x, scene.finish_pos[1] - scene.z) <= reach * 1.4) {
+    const P fp = project(scene.finish_pos[0], scene.finish_pos[1]);
+    if (fp.depth >= 1.0 && fp.x >= -16 && fp.x <= size + 16 && fp.y >= -16 && fp.y <= size + 16) {
+      const double cell = std::max(2.8, 4.8 * unit);
+      const double fw = cell * 3.0, fh = cell * 2.0;
+      const double fx0 = fp.x - fw * 0.5, fy0 = fp.y - fh * 0.5 - 4.0 * unit;
+      // Dark outer casing + Horizon pink top header trim.
+      cv.line(fp.x - fw * 0.5 - 1.5, fy0 + fh * 0.5, fp.x + fw * 0.5 + 1.5, fy0 + fh * 0.5, fh + 4.5,
+              Rgba{14, 16, 22, 235});
+      cv.line(fx0, fy0 - 1.5, fx0 + fw, fy0 - 1.5, std::max(1.8, 2.4 * unit), Rgba{249, 0, 100, 250});
+      for (int row = 0; row < 2; ++row) {
+        for (int col = 0; col < 3; ++col) {
+          const bool light = ((row + col) % 2) == 0;
+          const double x0 = fx0 + col * cell, y0 = fy0 + row * cell;
+          const std::vector<std::array<double, 2>> sq = {
+              {x0, y0}, {x0 + cell, y0}, {x0 + cell, y0 + cell}, {x0, y0 + cell}};
+          cv.polygon(sq, light ? Rgba{250, 250, 252, 255} : Rgba{18, 20, 24, 255});
+        }
+      }
+    }
+  }
   // The player: heading up in rotating mode, or compass-rotated in north-up mode.
   if (const auto it = mini_.icons.find("player_local"); it != mini_.icons.end()) {
     const P p = project(scene.x, scene.z);
@@ -1066,7 +1128,68 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y, ic.size * unit * 1.8, player_angle, ic.colour);
   }
   // No frame (SPEC-UI-LAYOUTS a).
-  return cv.image();
+  HudImage img = cv.image();
+
+  // R3-UI-12: Crisp rotating "N" compass rim marker drawn post-edge-fade so it always stays sharp!
+  if (size >= 48) {
+    const auto np = minimap_compass_north_pos(map_heading, size);
+    const double ncx = np[0], ncy = np[1];
+    const double nr = std::max(6.5, 10.5 * unit);
+    auto blend_over = [&](int px, int py, uint8_t cr, uint8_t cg, uint8_t cb, float ca) {
+      if (px < 0 || py < 0 || px >= size || py >= size || ca <= 0.002f) return;
+      uint8_t* dst = &img.rgba[(size_t(py) * size + px) * 4];
+      const float da = dst[3] / 255.0f;
+      const float out_a = ca + da * (1.0f - ca);
+      if (out_a <= 1e-4f) return;
+      const float inv = 1.0f / out_a;
+      dst[0] = uint8_t(std::clamp((cr * ca + dst[0] * da * (1.0f - ca)) * inv + 0.5f, 0.0f, 255.0f));
+      dst[1] = uint8_t(std::clamp((cg * ca + dst[1] * da * (1.0f - ca)) * inv + 0.5f, 0.0f, 255.0f));
+      dst[2] = uint8_t(std::clamp((cb * ca + dst[2] * da * (1.0f - ca)) * inv + 0.5f, 0.0f, 255.0f));
+      dst[3] = uint8_t(std::clamp(out_a * 255.0f + 0.5f, 0.0f, 255.0f));
+    };
+    auto draw_disc = [&](double cx, double cy, double rad, uint8_t cr, uint8_t cg, uint8_t cb, float max_a) {
+      const int x0 = std::max(0, int(std::floor(cx - rad - 1.0)));
+      const int x1 = std::min(size - 1, int(std::ceil(cx + rad + 1.0)));
+      const int y0 = std::max(0, int(std::floor(cy - rad - 1.0)));
+      const int y1 = std::min(size - 1, int(std::ceil(cy + rad + 1.0)));
+      for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+          const double d = std::hypot((x + 0.5) - cx, (y + 0.5) - cy);
+          if (d >= rad + 0.6) continue;
+          const float cov = float(std::clamp(rad + 0.6 - d, 0.0, 1.0));
+          blend_over(x, y, cr, cg, cb, cov * max_a);
+        }
+      }
+    };
+    auto draw_seg = [&](double ax, double ay, double bx, double by, double w, uint8_t cr, uint8_t cg, uint8_t cb) {
+      const double r = 0.5 * w;
+      const int x0 = std::max(0, int(std::floor(std::min(ax, bx) - r - 1.0)));
+      const int x1 = std::min(size - 1, int(std::ceil(std::max(ax, bx) + r + 1.0)));
+      const double dx = bx - ax, dy = by - ay;
+      const double len2 = dx * dx + dy * dy;
+      const int y0 = std::max(0, int(std::floor(std::min(ay, by) - r - 1.0)));
+      const int y1 = std::min(size - 1, int(std::ceil(std::max(ay, by) + r + 1.0)));
+      for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+          const double px = (x + 0.5) - ax, py = (y + 0.5) - ay;
+          const double t = len2 > 1e-6 ? std::clamp((px * dx + py * dy) / len2, 0.0, 1.0) : 0.0;
+          const double d = std::hypot(px - t * dx, py - t * dy);
+          if (d >= r + 0.6) continue;
+          const float cov = float(std::clamp(r + 0.6 - d, 0.0, 1.0));
+          blend_over(x, y, cr, cg, cb, cov);
+        }
+      }
+    };
+    draw_disc(ncx, ncy, nr + 1.2, 249, 0, 100, 0.92f);
+    draw_disc(ncx, ncy, nr - 0.5, 16, 18, 24, 0.95f);
+    const double gw = nr * 0.46;
+    const double gh = nr * 0.52;
+    const double sw = std::max(1.35, nr * 0.22);
+    draw_seg(ncx - gw, ncy + gh, ncx - gw, ncy - gh, sw, 255, 255, 255);
+    draw_seg(ncx - gw, ncy - gh, ncx + gw, ncy + gh, sw, 255, 255, 255);
+    draw_seg(ncx + gw, ncy + gh, ncx + gw, ncy - gh, sw, 255, 255, 255);
+  }
+  return img;
 }
 
 std::array<int, 2> MapView::pause_internal_size(int width, int height) {
@@ -1525,22 +1648,36 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     }
   }
 
-  // Rumour circles: the region's outline over the map, filled faintly.
+  // Rumour circles (MapProfileFullscreen.xml): translucent warm purple/magenta search zone
+  // with crisp dashed magenta/warm-white rim!
   if ((scene.filter == MapFilter::kAll || scene.filter == MapFilter::kDiscovery) && scene.data && scene.progress)
     for (size_t i = 0; i < scene.data->barns.size() && i < scene.progress->barns.size(); ++i) {
       if (scene.progress->barns[i].status != freeroam::kBarnRumour) continue;
       const auto& b = scene.data->barns[i];
       std::vector<std::array<double, 2>> poly;
+      std::vector<std::array<double, 2>> inner_poly;
       poly.reserve(96);
+      inner_poly.reserve(96);
       for (int k = 0; k < 96; ++k) {
         const double t = 2 * kPi * k / 96;
-        poly.push_back(to_screen(b.hint_x + b.hint_rx * std::cos(t), b.hint_z + b.hint_rz * std::sin(t)));
+        const double ct = std::cos(t), st = std::sin(t);
+        poly.push_back(to_screen(b.hint_x + b.hint_rx * ct, b.hint_z + b.hint_rz * st));
+        inner_poly.push_back(to_screen(b.hint_x + b.hint_rx * 0.94 * ct, b.hint_z + b.hint_rz * 0.94 * st));
       }
-      cv.polygon(poly, Rgba{255, 255, 255, 60});
+      cv.polygon(poly, Rgba{186, 48, 168, 72});
       for (size_t k = 0; k < poly.size(); ++k) {
         const auto& p = poly[k];
         const auto& q = poly[(k + 1) % poly.size()];
-        cv.line(p[0], p[1], q[0], q[1], 2, Rgba{255, 255, 255, 220});
+        // Dashed outer rim (2 segments on, 1 off) with dark casing + bright magenta/pink highlight.
+        if (k % 3 != 2) {
+          cv.line(p[0], p[1], q[0], q[1], 4.2, Rgba{38, 10, 34, 185});
+          cv.line(p[0], p[1], q[0], q[1], 2.4, Rgba{244, 96, 226, 238});
+        }
+        if (k % 6 < 2) {
+          const auto& ip = inner_poly[k];
+          const auto& iq = inner_poly[(k + 1) % inner_poly.size()];
+          cv.line(ip[0], ip[1], iq[0], iq[1], 1.3, Rgba{255, 210, 245, 130});
+        }
       }
     }
 

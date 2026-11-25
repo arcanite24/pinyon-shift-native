@@ -687,27 +687,47 @@ void skill_chain_hud(ui::List& l, const SkillChainHud& sk, const Layout& g, doub
   l.text(tx0, ty, rbuf, num_ts);
   l.text(tx0 + nw + 1.0f * bs, ty + 1.5f * bs * anim.text_scale_y, suf, suf_ts);
 
-  // 2. 947_HUD/DrivingSkill: #DAFF00 score + white X1.0 + clean drop-shadowed skill callout
-  //    (optional CRISPTAPESKILLS + SKILLICONSET, ZERO dark rectangle behind the skill name!).
+  // 2. 947_HUD/DrivingSkill: #DAFF00 score + white X1.0..X5.0 multiplier pill with
+  //    expiry countdown ring + clean drop-shadowed skill callout + bank/shatter animations.
   if (sk.active) {
+    const float mult_f = sk.multiplier_f > 0.0f ? sk.multiplier_f : float(std::max(1, sk.multiplier));
     char pts_buf[32], mult_buf[16];
     std::snprintf(pts_buf, sizeof pts_buf, "%s", thousands(sk.chain_points).c_str());
-    std::snprintf(mult_buf, sizeof mult_buf, " X%d.0", sk.multiplier);
+    std::snprintf(mult_buf, sizeof mult_buf, "X%.1f", mult_f);
     TextStyle pts_ts = font(ui::Font::kE, 26 * s, kSkillYellow);
-    TextStyle mul_ts = font(ui::Font::kE, 22 * s, ui4::kWhite);
+    TextStyle mul_ts = font(ui::Font::kE, 16.5f * s, ui4::kWhite, Align::kCenter);
     const float pw = ui::List::measure(pts_buf, pts_ts);
-    const float mw = ui::List::measure(mult_buf, mul_ts);
-    const float sx0 = cx - 0.5f * (pw + mw);
+    const float pill_r = 21.0f * s;
+    const float total_row_w = pw + 10.0f * s + 2.0f * pill_r;
+    const float sx0 = cx - 0.5f * total_row_w;
 
     // Subtle CRISPTAPESKILLS/CIRCLEFLASH glow when chaining high scores.
     std::array<float, 4> flash_uv{}, icon_uv{};
-    if (ui_texture("HUD/DRIVINGSKILLS/CIRCLEFLASH", flash_uv) && (sk.multiplier >= 2 || anim.skill_pulse_alpha > 0.35f)) {
+    if (ui_texture("HUD/DRIVINGSKILLS/CIRCLEFLASH", flash_uv) && (mult_f >= 2.0f || anim.skill_pulse_alpha > 0.35f)) {
       const float fa = std::clamp(0.18f + 0.25f * anim.skill_pulse_alpha, 0.15f, 0.45f);
       l.image(cx - 28 * bs, cy - 28 * bs, cx + 28 * bs, cy + 28 * bs, flash_uv, ui::fade(kSkillYellow, fa));
     }
 
     shadowed(l, sx0, g.T(102), pts_buf, pts_ts, s);
-    shadowed(l, sx0 + pw, g.T(105), mult_buf, mul_ts, s);
+
+    // Multiplier pill with live expiry countdown ring around it (1.0x..5.0x).
+    const float mcx = sx0 + pw + 10.0f * s + pill_r;
+    const float mcy = g.T(114);
+    const double timeout_s = sk.chain_timeout_s > 0.1 ? sk.chain_timeout_s : 3.0;
+    double rem_frac = 1.0;
+    if (sk.chain_remaining_s > 0.0) {
+      rem_frac = std::clamp(sk.chain_remaining_s / timeout_s, 0.0, 1.0);
+    } else if (sk.last_skill_at > -1e8 && time >= sk.last_skill_at) {
+      rem_frac = std::clamp(1.0 - (time - sk.last_skill_at) / timeout_s, 0.0, 1.0);
+    }
+    const bool expiring = rem_frac < 0.35;
+    const uint32_t ring_c = expiring ? ui4::kPink : kSkillYellow;
+    l.circle(mcx, mcy, pill_r - 1.5f * s, rgba(14, 16, 22, 210));
+    l.arc(mcx, mcy, pill_r - 2.0f * s, 3.0f * s, 0.0f, 6.28318f, rgba(255, 255, 255, 42));
+    if (rem_frac > 0.01) {
+      l.arc(mcx, mcy, pill_r - 2.0f * s, 3.4f * s, -1.5708f, -1.5708f + float(rem_frac) * 6.28318f, ring_c, true);
+    }
+    shadowed(l, mcx, mcy - 0.52f * mul_ts.size, mult_buf, mul_ts, s);
 
     if (!sk.last_skill.empty()) {
       char pval[24];
@@ -758,14 +778,14 @@ void skill_chain_hud(ui::List& l, const SkillChainHud& sk, const Layout& g, doub
         const float dv = v_span / float(rows);
         const float pad_u = du * 0.04f;
         const float pad_v = dv * 0.04f;
-        l.image(rx, g.T(124), rx + icon_sz, g.T(124) + icon_sz,
+        l.image(rx, g.T(134), rx + icon_sz, g.T(134) + icon_sz,
                 {icon_uv[0] + col * du + pad_u, icon_uv[1] + row * dv + pad_v,
                  icon_uv[0] + (col + 1) * du - pad_u, icon_uv[1] + (row + 1) * dv - pad_v},
                 ui4::kWhite);
         rx += icon_sz + 6 * s;
       }
-      shadowed(l, rx, g.T(130), sk.last_skill, sn_ts, s);
-      shadowed(l, rx + snw, g.T(130), pval, sp_ts, s);
+      shadowed(l, rx, g.T(140), sk.last_skill, sn_ts, s);
+      shadowed(l, rx + snw, g.T(140), pval, sp_ts, s);
     }
   } else if (show_rank) {
     const float a = 1.0f - clamp01((since_rank - 3.0) / 1.0);
@@ -777,12 +797,33 @@ void skill_chain_hud(ui::List& l, const SkillChainHud& sk, const Layout& g, doub
     ui4::brush(l, cx - 0.5f * w, g.T(100), cx + 0.5f * w, g.T(132), ui::fade(ui4::kPink, a));
     l.text(cx, g.T(106), rl, ts);
   } else if (show_bank) {
+    // Brief scale-pop & lime-gold glow burst on BANK.
     const float a = 1.0f - clamp01((since_bank - 2.6) / 0.9);
+    const float pop_u = clamp01(since_bank / 0.55);
+    const float scale = 1.0f + 0.26f * std::sin(pop_u * 3.14159265f) * (1.0f - pop_u);
+    const float glow_a = (1.0f - pop_u) * a;
     const std::string bl = "+" + thousands(sk.banked_total) + " BANKED";
-    shadowed(l, cx, g.T(104), bl, font(ui::Font::kE, 24 * s, ui::fade(kSkillYellow, a), Align::kCenter), s);
+    const TextStyle bts = font(ui::Font::kE, 24.0f * s * scale, ui::fade(kSkillYellow, a), Align::kCenter);
+    if (glow_a > 0.03f) {
+      const float gw = ui::List::measure(bl, bts) + 36.0f * s;
+      ui4::brush(l, cx - 0.5f * gw, g.T(98), cx + 0.5f * gw, g.T(132), ui::fade(kSkillYellow, glow_a * 0.34f));
+    }
+    shadowed(l, cx, g.T(104), bl, bts, s);
   } else if (show_lost) {
+    // Brief red flash & micro-shake on SHATTER / CANCEL.
     const float a = 1.0f - clamp01((since_lost - 1.5) / 0.7);
-    shadowed(l, cx, g.T(104), "SKILL CHAIN LOST", font(ui::Font::kE, 22 * s, ui::fade(kRed, a), Align::kCenter), s);
+    const float sh_u = clamp01(since_lost / 0.45);
+    const float decay = 1.0f - sh_u;
+    const float shake_x = std::sin(float(since_lost) * 58.0f) * 6.5f * s * decay;
+    if (decay > 0.02f) {
+      l.arc(cx, cy, r + 4.0f * s, 4.5f * s, 0.0f, 6.28318f, ui::fade(kRed, decay * 0.85f));
+      l.circle(cx, cy, r + 6.0f * s, ui::fade(kRed, decay * 0.22f));
+    }
+    const TextStyle lts = font(ui::Font::kE, 22 * s, ui::fade(kRed, a), Align::kCenter);
+    const float lw = ui::List::measure("SKILL CHAIN LOST", lts) + 34.0f * s;
+    ui4::brush(l, cx + shake_x - 0.5f * lw, g.T(98), cx + shake_x + 0.5f * lw, g.T(130),
+               ui::fade(rgba(180, 22, 22), (0.35f + 0.45f * decay) * a));
+    shadowed(l, cx + shake_x, g.T(104), "SKILL CHAIN LOST", lts, s);
   }
 }
 
@@ -826,10 +867,91 @@ void ceremony_overlay(ui::List& l, const CeremonyHud& c, const Layout& g) {
   ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
 }
 
+// Draws a marker-accurate FH1 hover badge icon matching all 10 World Map marker types.
+void draw_map_marker_badge(ui::List& l, float x0, float y0, float sz, std::string_view tag, float s) {
+  std::string low(tag);
+  for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+  const float cx = x0 + 0.5f * sz, cy = y0 + 0.5f * sz, r = 0.44f * sz;
+  uint32_t bg = ui4::kPink;
+  uint32_t fg = ui4::kWhite;
+  const char* glyph = "R";
+
+  if (low == "racecentral" || low == "autoshow" || low == "workshop" || low == "paintshop") {
+    std::array<float, 4> fest_uv{};
+    if (ui_texture("KITPARTS/FESTIVALMAPICON", fest_uv)) {
+      l.image(x0, y0, x0 + sz, y0 + sz, fest_uv, ui4::kWhite);
+      return;
+    }
+    bg = ui4::kPink;
+    glyph = "H";
+  } else if (low == "gas_station") {
+    bg = rgba(255, 146, 36);
+    fg = ui4::kInk;
+    glyph = "O";
+  } else if (low == "exhibition") {
+    bg = ui4::kAmber;
+    fg = ui4::kInk;
+    glyph = "S";
+  } else if (low == "streetrace" || low == "nemesisrace") {
+    bg = ui4::kBlue;
+    glyph = "SR";
+  } else if (low.rfind("speed_camera", 0) == 0) {
+    bg = rgba(56, 206, 255);
+    fg = ui4::kInk;
+    glyph = "ST";
+  } else if (low.rfind("average_speed_camera", 0) == 0) {
+    bg = rgba(70, 220, 180);
+    fg = ui4::kInk;
+    glyph = "SZ";
+  } else if (low.rfind("barnfind", 0) == 0) {
+    bg = rgba(196, 62, 182);
+    glyph = "B";
+  } else if (low.rfind("flyer", 0) == 0) {
+    bg = ui4::kYellow;
+    fg = ui4::kInk;
+    glyph = "%";
+  } else if (low == "pr_stunt") {
+    bg = ui4::kYellow;
+    fg = ui4::kInk;
+    glyph = "PR";
+  } else {
+    // Festival race / default event.
+    bg = ui4::kBrushBlack;
+    glyph = "R";
+  }
+
+  l.circle(cx, cy, r + 1.2f * s, ui4::kWhite);
+  l.circle(cx, cy, r - 0.5f * s, bg);
+  const float fsz = (std::string_view(glyph).size() > 1 ? 9.2f : 12.5f) * s;
+  l.text(cx, cy - 0.52f * fsz, glyph, font(ui::Font::kE, fsz, fg, Align::kCenter));
+}
+
+// Localizes & sanitizes Speed Trap / Speed Zone labels via game_text() with clean fallback.
+std::string localize_speed_activity_name(std::string_view raw, bool is_zone) {
+  if (raw.empty()) return is_zone ? "SPEED ZONE" : "SPEED TRAP";
+  const std::string resolved = game_text(std::string(raw));
+  std::string out = (!resolved.empty() && resolved.rfind("_&", 0) != 0) ? resolved : std::string(raw);
+  // Format raw internal IDs (e.g. "average_speed_01" / "speed_camera_03") into clean display titles.
+  std::string low = out;
+  for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+  if (low.rfind("average_speed_", 0) == 0) {
+    return "SPEED ZONE " + out.substr(14);
+  }
+  if (low.rfind("speed_camera_", 0) == 0) {
+    return "SPEED TRAP " + out.substr(13);
+  }
+  if (out.find('_') != std::string::npos) {
+    for (char& ch : out)
+      if (ch == '_') ch = ' ';
+  }
+  return out;
+}
+
 // (j) Interactive 1:1 FH1 H_MAP HUD overlay:
 // Center MAP_CROSSHAIR + #CF2169 MAP_LOCKON, clean hover MAPPILLSMALL pill,
-// compact non-intrusive top-left filter bar & roads counter (NEVER a giant
+// clickable top-left filter tab strip & roads counter (NEVER a giant
 // permanent list blocking the right third of Colorado!), PlayerBar top-right,
+// marker-accurate hover icon card, toggleable de-duplicated icon Legend,
 // and BUTTON_BAR_SCENE + road legend at bottom.
 void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool has_player_bar, bool metric_units) {
   const float s = g.s;
@@ -855,14 +977,15 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
       } else {
         l.arc(cx, cy, 22 * s, 2.5f * s, 0.0f, 6.28318f, kMapPink);
       }
-      // Compact hover MAPPILLSMALL tooltip placed cleanly to the left of the reticle.
+      // Compact hover MAPPILLSMALL tooltip with marker-accurate icon placed cleanly left of reticle.
       TextStyle hts = font(ui::Font::kE, 14 * s, ui4::kWhite);
-      fit(mo.title, hts, 260 * s, 10 * s);
-      const float hw = std::clamp(ui::List::measure(mo.title, hts) + 32 * s, 128 * s, 292 * s);
+      fit(mo.title, hts, 240 * s, 10 * s);
+      const float hw = std::clamp(ui::List::measure(mo.title, hts) + 56 * s, 146 * s, 308 * s);
       const float hx0 = cx - 48 * s - hw, hy0 = cy - 15 * s;
       ui4::pill(l, hx0, hy0, hx0 + hw, hy0 + 30 * s, ui4::kBrushBlack, ui4::PillKind::kMapSmall);
       l.rect(hx0 + hw - 4 * s, hy0, hx0 + hw, hy0 + 30 * s, kMapPink);
-      l.text(hx0 + 12 * s, hy0 + 0.5f * (30 * s - hts.size), mo.title, hts);
+      draw_map_marker_badge(l, hx0 + 6 * s, hy0 + 4 * s, 22 * s, mo.marker_icon_tag, s);
+      l.text(hx0 + 34 * s, hy0 + 0.5f * (30 * s - hts.size), mo.title, hts);
     } else if (mo.distance_m >= 0.0) {
       // Subtle compact distance pill beside crosshair when panning over open road.
       const std::string db = format_distance_unit(mo.distance_m, metric_units);
@@ -898,7 +1021,7 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
     for (const auto& reg : kRegions) {
       const float sx = half_w + float(reg.x - mo.center_x) * inv_mpp;
       const float sy = half_h - float(reg.z - mo.center_z) * inv_mpp;
-      if (sx < g.L(90) || sx > g.w - g.L(90) || sy < g.T(72) || sy > g.h - g.T(84)) continue;
+      if (sx < g.L(90) || sx > g.w - g.L(90) || sy < g.T(96) || sy > g.h - g.T(84)) continue;
       TextStyle rsh = font(ui::Font::kE, lbl_sz, rgba(0, 0, 0, 175), Align::kCenter);
       TextStyle rts = font(ui::Font::kE, lbl_sz, rgba(255, 255, 255, 192), Align::kCenter);
       l.text(sx + 1.4f * s, sy + 1.4f * s, reg.name, rsh);
@@ -906,60 +1029,64 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
     }
   }
 
-  // 2. Compact non-intrusive top-left H_MAP filter bar & roads discovery pill
-  //    (cycles cleanly via LB / RB without covering the right third of Colorado!).
+  // 2. Directly clickable top-left H_MAP filter tab strip (LB/RB + individual ui::kHitTab rects)
+  //    plus compact Roads Discovered & Treasure Map pills directly underneath.
   {
     const float fx0 = g.L(48);
-    const float fy0 = g.T(32);
-    const std::string active_name =
-        (!mo.filter_tabs.empty() && mo.active_filter >= 0 && mo.active_filter < int(mo.filter_tabs.size()))
-            ? mo.filter_tabs[size_t(mo.active_filter)]
-            : std::string("ALL");
-    const std::string f_txt = "FILTER: " + active_name;
-    TextStyle fts = font(ui::Font::kE, 13.0f * s, ui4::kWhite);
-    const float f_pill_w = std::max(180 * s, ui::List::measure(f_txt, fts) + 92 * s);
-    ui4::pill(l, fx0, fy0, fx0 + f_pill_w, fy0 + 28 * s, ui4::kBrushBlack, ui4::PillKind::kHud01);
-    l.rect(fx0, fy0, fx0 + 4 * s, fy0 + 28 * s, kMapPink);
-    ui4::button_glyph(l, fx0 + 24 * s, fy0 + 14 * s, 9.5f * s, "LB");
-    l.text(fx0 + 46 * s, fy0 + 7.5f * s, f_txt, fts);
-    ui4::button_glyph(l, fx0 + f_pill_w - 22 * s, fy0 + 14 * s, 9.5f * s, "RB");
+    const float fy0 = g.T(28);
+    const float tab_h = 26.0f * s;
+    static const std::vector<std::string> kDefaultTabs = {"ALL", "EVENTS", "OUTPOSTS", "SPEED", "SIGNS", "SHOWCASES",
+                                                          "DISCOVERY"};
+    const auto& tabs = mo.filter_tabs.empty() ? kDefaultTabs : mo.filter_tabs;
+    const float max_strip_r = has_player_bar ? g.R(840) : (g.w - 72.0f * s);
 
-    // Compact Roads Discovered pill right beside filter bar.
+    ui4::button_glyph(l, fx0 + 14.0f * s, fy0 + 0.5f * tab_h, 9.5f * s, "LB");
+    const auto tab_rects = layout_map_filter_tabs(tabs, fx0 + 32.0f * s, fy0, tab_h, s, max_strip_r - 30.0f * s);
+    float strip_end_x = fx0 + 36.0f * s;
+    for (const auto& tr : tab_rects) {
+      const bool active = (tr.filter_index == mo.active_filter);
+      l.add_hit(tr.x0, tr.y0, tr.x1, tr.y1, ui::kHitTab, tr.filter_index);
+      ui4::pill(l, tr.x0, tr.y0, tr.x1, tr.y1, active ? kMapPink : ui4::kBrushBlack, ui4::PillKind::kHud01);
+      if (active) l.rect(tr.x0, tr.y1 - 2.5f * s, tr.x1, tr.y1, ui4::kYellow);
+      TextStyle tts = font(ui::Font::kE, 11.0f * s, active ? ui4::kWhite : ui4::kOffWhite, Align::kCenter);
+      fit(tabs[size_t(tr.filter_index)], tts, (tr.x1 - tr.x0) - 8.0f * s, 8.0f * s);
+      l.text(0.5f * (tr.x0 + tr.x1), tr.y0 + 0.5f * (tab_h - tts.size), tabs[size_t(tr.filter_index)], tts);
+      strip_end_x = tr.x1;
+    }
+    ui4::button_glyph(l, strip_end_x + 18.0f * s, fy0 + 0.5f * tab_h, 9.5f * s, "RB");
+
+    // Compact Roads Discovered pill & optional Treasure Map badge directly below filter tabs.
+    const float row2_y = fy0 + tab_h + 6.0f * s;
     char rb[64];
     std::snprintf(rb, sizeof rb, "ROADS %d / %d", mo.roads_discovered, mo.roads_total);
-    TextStyle rts = font(ui::Font::kB, 12.0f * s, ui4::kWhite);
-    const float rx0 = fx0 + f_pill_w + 10 * s;
-    const float rw = std::max(134 * s, ui::List::measure(rb, rts) + 26 * s);
-    ui4::pill(l, rx0, fy0, rx0 + rw, fy0 + 28 * s, ui4::kPillGrey, ui4::PillKind::kHud01);
-    l.text(rx0 + 12 * s, fy0 + 6.5f * s, rb, rts);
+    TextStyle rts = font(ui::Font::kB, 11.5f * s, ui4::kWhite);
+    const float rw = std::max(138 * s, ui::List::measure(rb, rts) + 26 * s);
+    ui4::pill(l, fx0, row2_y, fx0 + rw, row2_y + 24 * s, ui4::kPillGrey, ui4::PillKind::kHud01);
+    l.text(fx0 + 12 * s, row2_y + 5.0f * s, rb, rts);
     const float rfrac = mo.roads_total > 0 ? float(std::clamp(double(mo.roads_discovered) / mo.roads_total, 0.0, 1.0)) : 0.0f;
-    l.rect(rx0 + 4 * s, fy0 + 23 * s, rx0 + rw - 4 * s, fy0 + 26.5f * s, rgba(255, 255, 255, 32));
-    if (rfrac > 0.0f) l.rect(rx0 + 4 * s, fy0 + 23 * s, rx0 + 4 * s + (rw - 8 * s) * rfrac, fy0 + 26.5f * s, ui4::kGreen);
+    l.rect(fx0 + 4 * s, row2_y + 19.5f * s, fx0 + rw - 4 * s, row2_y + 22.5f * s, rgba(255, 255, 255, 32));
+    if (rfrac > 0.0f) l.rect(fx0 + 4 * s, row2_y + 19.5f * s, fx0 + 4 * s + (rw - 8 * s) * rfrac, row2_y + 22.5f * s, ui4::kGreen);
 
     if (mo.treasure_map) {
-      const float tx0 = rx0 + rw + 10 * s;
-      ui4::pill(l, tx0, fy0, tx0 + 150 * s, fy0 + 28 * s, ui4::kAmber, ui4::PillKind::kHud01);
-      l.text(tx0 + 75 * s, fy0 + 7.5f * s, "TREASURE MAP", font(ui::Font::kE, 11.5f * s, ui4::kInk, Align::kCenter));
+      const float tx0 = fx0 + rw + 10 * s;
+      ui4::pill(l, tx0, row2_y, tx0 + 144 * s, row2_y + 24 * s, ui4::kAmber, ui4::PillKind::kHud01);
+      l.text(tx0 + 72 * s, row2_y + 6.0f * s, "TREASURE MAP", font(ui::Font::kE, 11.0f * s, ui4::kInk, Align::kCenter));
     }
   }
 
-  // 3. Compact contextual right-hand PILL26PX detail card ONLY when hovering an icon/location
-  //    (zero permanent wall blocking the map when browsing roads!).
+  // 3. Compact contextual right-hand PILL26PX detail card ONLY when hovering an icon/location/rumour zone.
   if (hovering_marker) {
-    const float px0 = g.R(908), px1 = g.R(1214);
+    const float px0 = g.R(892), px1 = g.R(1214);
     float ry = has_player_bar ? g.T(130) : g.T(36);
-    std::array<float, 4> pill26_uv{}, fest_uv{};
+    std::array<float, 4> pill26_uv{};
     const bool has_pill26 = ui_texture("KITPARTS/PILL26PX", pill26_uv);
     auto draw_map_row = [&](float y, float h_px, uint32_t col) {
       if (has_pill26) l.image(px0, y, px1, y + h_px, pill26_uv, col);
       else ui4::pill(l, px0, y, px1, y + h_px, col, ui4::PillKind::kHud01);
     };
     draw_map_row(ry, 32 * s, kMapPink);
-    float hdr_tx = px0 + 12 * s;
-    if (ui_texture("KITPARTS/FESTIVALMAPICON", fest_uv)) {
-      l.image(px0 + 8 * s, ry + 3 * s, px0 + 34 * s, ry + 29 * s, fest_uv, ui4::kWhite);
-      hdr_tx = px0 + 40 * s;
-    }
+    draw_map_marker_badge(l, px0 + 8 * s, ry + 3 * s, 26 * s, mo.marker_icon_tag, s);
+    const float hdr_tx = px0 + 40 * s;
     TextStyle hts = font(ui::Font::kE, 15.5f * s, ui4::kWhite);
     fit(mo.title, hts, px1 - hdr_tx - 12 * s, 10 * s);
     l.text(hdr_tx, ry + 0.5f * (32 * s - hts.size), mo.title, hts);
@@ -971,6 +1098,13 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
       fit(mo.subtitle, ss, (px1 - px0) - 24 * s, 9 * s);
       l.text(px0 + 12 * s, ry + 6.5f * s, mo.subtitle, ss);
       ry += 28 * s;
+    }
+    if (!mo.detail_line.empty()) {
+      draw_map_row(ry, 24 * s, ui4::kBrushBlack);
+      TextStyle ds = font(ui::Font::kB, 11.2f * s, ui4::kOffWhite);
+      fit(mo.detail_line, ds, (px1 - px0) - 24 * s, 8.5f * s);
+      l.text(px0 + 12 * s, ry + 6.0f * s, mo.detail_line, ds);
+      ry += 26 * s;
     }
     if (mo.distance_m >= 0.0 || mo.gps_active) {
       draw_map_row(ry, 26 * s, ui4::kPillGrey);
@@ -985,53 +1119,46 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
     }
   }
 
-  // 4. Crisp Pause Map Legend panel (compact 2-column FH1 legend tucked cleanly above bottom-left button bar).
-  {
+  // 4. Toggleable Pause Map Legend panel (de-duplicated: NO duplicate "DRIVEN ROAD" entry;
+  //    bottom-right road bar displays DRIVEN / UNDRIVEN cleanly).
+  if (mo.show_legend) {
     const float lx0 = g.L(48), lx1 = g.L(328);
     const float ly0 = g.B(506), ly1 = g.B(642);
     ui4::panel(l, lx0, ly0, lx1, ly1, s, rgba(14, 16, 22, 218), 0, kMapPink, true);
     ui4::pill(l, lx0 + 8 * s, ly0 + 6 * s, lx1 - 8 * s, ly0 + 26 * s, ui::rgba(0xBF, 0xBF, 0xBF, 238),
               ui4::PillKind::kMenu);
+    l.add_hit(lx0 + 8 * s, ly0 + 6 * s, lx1 - 8 * s, ly0 + 26 * s, ui4::kHitButton, 100);
     l.text(lx0 + 16 * s, ly0 + 10.5f * s, "MAP LEGEND", font(ui::Font::kD, 11.5f * s, ui4::kInk));
-    l.text(lx1 - 14 * s, ly0 + 11.0f * s, "COLORADO", font(ui::Font::kE, 10.0f * s, kMapPink, Align::kRight));
+    l.text(lx1 - 14 * s, ly0 + 11.0f * s, "HIDE [-]", font(ui::Font::kE, 9.8f * s, kMapPink, Align::kRight));
 
-    struct LegendEntry {
-      const char* label;
-      uint32_t col;
-      bool is_line;
-      bool is_new_tag;
-    };
-    static constexpr LegendEntry kLegend[8] = {
-        {"FESTIVAL EVENT", rgba(249, 0, 100), false, false},
-        {"OUTPOST HUB", rgba(255, 146, 36), false, false},
-        {"STREET HUB", rgba(44, 140, 232), false, false},
-        {"PR STUNT", rgba(218, 255, 0), false, false},
-        {"BARN / SIGN", rgba(246, 206, 78), false, false},
-        {"NEW EVENT", rgba(249, 0, 100), false, true},
-        {"GPS ROUTE", rgba(74, 238, 97), true, false},
-        {"DRIVEN ROAD", rgba(252, 244, 214), true, false},
-    };
+    const auto legend = map_legend_entries();
     const float col_w = (lx1 - lx0 - 20 * s) * 0.5f;
-    for (int i = 0; i < 8; ++i) {
-      const int col = i % 2;
-      const int row = i / 2;
+    for (size_t i = 0; i < legend.size(); ++i) {
+      const int col = int(i % 2);
+      const int row = int(i / 2);
       const float ex = lx0 + 14 * s + float(col) * col_w;
       const float ey = ly0 + 34 * s + float(row) * 25.0f * s;
-      const auto& item = kLegend[i];
+      const auto& item = legend[i];
       if (item.is_line) {
-        l.rect(ex, ey + 6 * s, ex + 16 * s, ey + 10.5f * s, item.col);
+        l.rect(ex, ey + 6 * s, ex + 16 * s, ey + 10.5f * s, item.color);
       } else if (item.is_new_tag) {
-        l.rect(ex, ey + 2.5f * s, ex + 16 * s, ey + 13.5f * s, item.col);
+        l.rect(ex, ey + 2.5f * s, ex + 16 * s, ey + 13.5f * s, item.color);
         l.text(ex + 8 * s, ey + 4.5f * s, "N", font(ui::Font::kE, 7.5f * s, ui4::kWhite, Align::kCenter));
       } else {
-        l.circle(ex + 8 * s, ey + 8 * s, 5.5f * s, item.col);
+        l.circle(ex + 8 * s, ey + 8 * s, 5.5f * s, item.color);
         l.circle(ex + 8 * s, ey + 8 * s, 2.2f * s, ui4::kWhite);
       }
-      l.text(ex + 22 * s, ey + 3.0f * s, item.label, font(ui::Font::kB, 10.2f * s, ui4::kOffWhite));
+      l.text(ex + 22 * s, ey + 3.0f * s, item.label, font(ui::Font::kB, 10.0f * s, ui4::kOffWhite));
     }
+  } else {
+    const float lx0 = g.L(48), lx1 = g.L(164), ly0 = g.B(614), ly1 = g.B(640);
+    l.add_hit(lx0, ly0, lx1, ly1, ui4::kHitButton, 100);
+    ui4::pill(l, lx0, ly0, lx1, ly1, ui4::kBrushBlack, ui4::PillKind::kHud01);
+    l.rect(lx0, ly0, lx0 + 4 * s, ly1, kMapPink);
+    l.text(lx0 + 14 * s, ly0 + 6.5f * s, "LEGEND [+]", font(ui::Font::kE, 10.8f * s, ui4::kWhite));
   }
 
-  // 5. Authentic BUTTON_BAR_SCENE bottom help strip + driven/undriven legend pill.
+  // 5. Authentic BUTTON_BAR_SCENE bottom help strip + driven/undriven road legend pill.
   ui4::button_bar(
       l,
       {{"A", mo.action_hint.empty() ? "FAST TRAVEL" : mo.action_hint},
@@ -1049,11 +1176,26 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
   l.text(g.R(1138), ly0 + 8 * s, "UNDRIVEN", font(ui::Font::kB, 11.5f * s, ui4::kDim));
 }
 
-// (j2) 947_HUD/MiniMap/SatNavCommands: slim HUDPILL01 turn-by-turn strip above minimap.
+// (j2) 947_HUD/MiniMap/SatNavCommands: slim HUDPILL01 turn-by-turn strip above minimap
+// with pulsing "RECALCULATING..." indicator after a wrong turn.
 void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g, bool metric_units) {
   if (!should_show_gps_turn_banner(gps)) return;
   const float s = g.s;
   const float x0 = g.L(64), y0 = g.B(376), x1 = g.L(296), y1 = g.B(408);
+
+  if (gps.recalculating) {
+    const float pulse = 0.55f + 0.45f * float(std::sin(gps.time * 6.2831853 * 2.8));
+    ui4::pill(l, x0, y0, x1, y1, ui4::kBrushBlack, ui4::PillKind::kHud01);
+    l.rect(x0, y0, x0 + 28 * s, y1, ui::fade(ui4::kAmber, 0.72f + 0.28f * pulse));
+    const float ax = x0 + 14.0f * s, ay = 0.5f * (y0 + y1);
+    const float rot = float(std::fmod(gps.time * 4.5, 6.2831853));
+    l.arc(ax, ay, 7.0f * s, 2.2f * s, rot, rot + 4.4f, ui4::kInk);
+    const std::string rec_lbl = str("SatNav", "IDS_Recalculating", "RECALCULATING...");
+    l.text(x0 + 36 * s, y0 + 9 * s, rec_lbl,
+           font(ui::Font::kE, 13.0f * s, ui::fade(ui4::kYellow, 0.65f + 0.35f * pulse)));
+    return;
+  }
+
   ui4::pill(l, x0, y0, x1, y1, ui4::kPillGrey, ui4::PillKind::kHud01);
   l.rect(x0, y0, x0 + 28 * s, y1, ui4::kGreen);
   // Crisp vector chevron/arrow SatNav turn icon (replaces ASCII ^/<</U).
@@ -1170,9 +1312,14 @@ float speed_activity_hud(ui::List& l, const freeroam::SpeedActivityHud& sh, cons
   const float cx = 0.5f * g.w;
   float used = 0.0f;
   if (sh.zone_active) {
-    const float x0 = cx - 190 * s, x1 = cx + 190 * s, y0 = g.B(584 - lift_canvas);
-    ui4::pill(l, x0, y0, x1, y0 + 24 * s, ui4::kBlue, ui4::PillKind::kHud01);
-    l.text(cx, y0 + 5 * s, sh.active_zone_id + "  •  SPEED ZONE", font(ui::Font::kE, 12.5f * s, ui4::kWhite, Align::kCenter));
+    const float x0 = cx - 202 * s, x1 = cx + 202 * s, y0 = g.B(584 - lift_canvas);
+    const std::string zname = localize_speed_activity_name(sh.active_zone_id, true);
+    const uint32_t hdr_col = sh.off_road_warning ? ui4::kRed : ui4::kBlue;
+    ui4::pill(l, x0, y0, x1, y0 + 24 * s, hdr_col, ui4::PillKind::kHud01);
+    const std::string hdr = sh.off_road_warning ? (zname + "  •  RETURN TO ROAD!") : (zname + "  •  SPEED ZONE");
+    TextStyle hts = font(ui::Font::kE, 12.5f * s, ui4::kWhite, Align::kCenter);
+    fit(hdr, hts, (x1 - x0) - 20.0f * s, 9.0f * s);
+    l.text(cx, y0 + 5 * s, hdr, hts);
     ui4::pill(l, x0, y0 + 26 * s, x1, y0 + 56 * s, ui4::kPillGrey, ui4::PillKind::kHud02);
     const std::string avg =
         "AVG " + format_speed_unit(sh.live_avg_mph, metric_units, true) + "   •   " +
@@ -1182,12 +1329,15 @@ float speed_activity_hud(ui::List& l, const freeroam::SpeedActivityHud& sh, cons
   }
   if (sh.banner_active) {
     const float extra_lift = sh.zone_active ? 68.0f : 0.0f;
-    const float x0 = cx - 220 * s, x1 = cx + 220 * s, y0 = g.B(564 - lift_canvas - extra_lift),
+    const float x0 = cx - 224 * s, x1 = cx + 224 * s, y0 = g.B(564 - lift_canvas - extra_lift),
                 y1 = g.B(656 - lift_canvas - extra_lift);
     Turn t(l, cx, 0.5f * (y0 + y1), ui4::kTiltRad * 0.5f);
     ui4::brush(l, x0, y0, x1, y0 + 28 * s, ui4::kBrushBlack);
-    l.text(cx, y0 + 6 * s, sh.banner_title + (sh.banner_new_pb ? "  •  NEW PERSONAL BEST!" : ""),
-           font(ui::Font::kB, 13.5f * s, sh.banner_new_pb ? ui4::kYellow : ui4::kWhite, Align::kCenter));
+    const std::string bname = localize_speed_activity_name(sh.banner_title, sh.banner_is_zone);
+    const std::string btitle = bname + (sh.banner_new_pb ? "  •  NEW PERSONAL BEST!" : "");
+    TextStyle bts = font(ui::Font::kB, 13.5f * s, sh.banner_new_pb ? ui4::kYellow : ui4::kWhite, Align::kCenter);
+    fit(btitle, bts, (x1 - x0) - 28.0f * s, 9.5f * s);
+    l.text(cx, y0 + 6 * s, btitle, bts);
     ui4::brush(l, x0 + 14 * s, y0 + 28 * s, x1 - 14 * s, y1, sh.banner_is_zone ? ui4::kPink : ui4::kBlue, true);
     const std::string spd =
         format_speed_unit(sh.banner_speed_mph, metric_units, true) + (sh.banner_is_zone ? " AVG" : "");
@@ -1199,7 +1349,7 @@ float speed_activity_hud(ui::List& l, const freeroam::SpeedActivityHud& sh, cons
   return used;
 }
 
-// 947_HUD/RaceEncounter: bottom-center Head-to-Head challenge prompt, live bar, and finish banner.
+// 947_HUD/RaceEncounter: bottom-center Head-to-Head challenge prompt (glyph-aware), live bar, and finish banner.
 float h2h_hud(ui::List& l, const freeroam::HeadToHeadHud& hh, const Layout& g, bool metric_units, float lift_canvas) {
   const float s = g.s;
   const float cx = 0.5f * g.w;
@@ -1207,7 +1357,13 @@ float h2h_hud(ui::List& l, const freeroam::HeadToHeadHud& hh, const Layout& g, b
   if (hh.prompt_visible && !hh.active) {
     const float x0 = cx - 230 * s, x1 = cx + 230 * s, y0 = g.B(576 - lift_canvas);
     ui4::brush(l, x0 + 16 * s, y0, x1 - 16 * s, y0 + 26 * s, ui4::kPink);
-    l.text(cx, y0 + 5 * s, "HEAD-TO-HEAD CHALLENGE  [X]", font(ui::Font::kE, 14.5f * s, ui4::kWhite, Align::kCenter));
+    const std::string h2h_lbl = str("Activities", "IDS_HeadToHeadChallenge", "HEAD-TO-HEAD CHALLENGE");
+    const TextStyle hts = font(ui::Font::kE, 14.5f * s, ui4::kWhite);
+    const float tw = ui::List::measure(h2h_lbl, hts);
+    const float row_w = tw + 30.0f * s;
+    const float tx = cx - 0.5f * row_w;
+    l.text(tx, y0 + 5.5f * s, h2h_lbl, hts);
+    ui4::button_glyph(l, tx + tw + 16.0f * s, y0 + 13.0f * s, 9.5f * s, "X");
     ui4::pill(l, x0, y0 + 28 * s, x1, y0 + 54 * s, ui4::kPillGrey, ui4::PillKind::kHud01);
     char sub[128];
     std::snprintf(sub, sizeof sub, "VS %s [%s %d]  •  WAGER %s CR", hh.prompt_driver.c_str(),

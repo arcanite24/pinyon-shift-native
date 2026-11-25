@@ -46,6 +46,7 @@ void drive_usage() {
                "  report:  F12 in the window saves carview-pose-N.txt (car, position, heading, hour, camera;\n"
                "           its spawn line goes back in as --spawn x y z heading); the title shows the position\n"
                "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near)\n"
+               "           --debug-title (show live car/speed/RPM/coords telemetry in the window title)\n"
                "           --record-session <dir> (or SHIFT_RECORD_SESSION=<dir>: zero-hitch playtest telemetry,\n"
                "           F11 / Back+RB bug bookmark screenshot + JSON repro, exit summary.json)\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
@@ -153,6 +154,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     if (a == "--no-mods") { mods_off = true; continue; }
     if (a == "--mods-native") { mods_native = true; continue; }
     if (a == "--dev-hints") { cli_dev_hints = true; continue; }
+    if (a == "--debug-title") { debug_title = true; continue; }
     if (a == "--sync-folder") { sync_folder = next(); continue; }
     if (a == "--device-name") { device_name = next(); continue; }
     if (a == "--profile") { profile_name = next(); continue; }

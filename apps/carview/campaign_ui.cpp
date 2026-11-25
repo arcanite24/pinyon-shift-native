@@ -3,12 +3,22 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string_view>
 #include <vector>
 
+#include "fh1data/stringtables.h"
 #include "ui4_chrome.h"
 
 namespace carview::campaign_ui {
 namespace {
+
+std::string loc_str(std::string_view table, std::string_view id, const char* fallback) {
+  const uint32_t packed = (uint32_t(fh1::string_hash(table)) << 16) | uint32_t(fh1::string_hash(id));
+  const std::string ref = "_&" + std::to_string(packed);
+  const std::string resolved = ui::lookup_text(ref);
+  if (!resolved.empty() && resolved != ref && resolved.rfind("_&", 0) != 0) return resolved;
+  return fallback;
+}
 
 bool is_bright_accent(uint32_t argb) {
   const uint32_t r = (argb >> 16) & 0xFFu;
@@ -230,7 +240,7 @@ void draw_post_race_results_stage(ui::List& l, const race::RewardTallyState& tal
     }
   }
 
-  ui4::button_bar(l, {{"A", "CONTINUE"}}, screen_w, screen_h, 70.0f);
+  ui4::button_bar(l, {{"A", loc_str("HelpButtons", "IDS_Continue", "CONTINUE")}}, screen_w, screen_h, 70.0f);
 }
 
 }  // namespace
@@ -273,9 +283,11 @@ void draw_objective_tracker(ui::List& l, const race::CampaignFlow& flow, const D
 
   if (flow.stage() == race::CampaignStage::kViperIntroDrive) {
     const float sx1 = ctx.screen_w - 64.0f * s;
+    const std::string skip_lbl =
+        "[" + ui4::glyph_label_for("BACK") + "] " + loc_str("Campaign", "IDS_SkipIntro", "SKIP INTRO STAGE");
     ui4::pill(l, sx1 - 220.0f * s, y0, sx1, y0 + 28.0f * s, with_alpha(ui4::kCharcoalDark, alpha),
               ui4::PillKind::kHud01);
-    l.text(sx1 - 12.0f * s, y0 + 7.0f * s, "[TAB] SKIP INTRO STAGE",
+    l.text(sx1 - 12.0f * s, y0 + 7.0f * s, skip_lbl,
            ui4::style(ui::Font::kB, 12.0f * s, with_alpha(ui4::kDim, alpha), ui::Align::kRight));
   }
 }
@@ -317,8 +329,11 @@ void draw_dialog_and_subtitles(ui::List& l, const race::DialogQueue& dialogs, co
     // Role tag + live signal indicator.
     ui::TextStyle role_ts = ui4::style(ui::Font::kB, 11.5f * s, with_alpha(ui4::kDim, slide));
     l.text(bx0 + 16.0f * s, by0 + 24.0f * s, role, role_ts);
-    l.text(bx0 + 16.0f * s, by0 + 44.0f * s,
-           ctx.skip_vo_with_a ? "HORIZON RADIO LINK  •  [A] SKIP" : "HORIZON RADIO LINK  •  LIVE",
+    const std::string radio_line =
+        ctx.skip_vo_with_a
+            ? ("HORIZON RADIO LINK  •  [" + ui4::glyph_label_for("A") + "] " + loc_str("HelpButtons", "IDS_Skip", "SKIP"))
+            : "HORIZON RADIO LINK  •  LIVE";
+    l.text(bx0 + 16.0f * s, by0 + 44.0f * s, radio_line,
            ui4::style(ui::Font::kB, 10.5f * s, with_alpha(ui4::kYellow, slide * 0.9f)));
 
     // Animated 10-bar audio waveform spectrum on right side of call-in banner.
@@ -471,9 +486,15 @@ void draw_cinematic_overlay(ui::List& l, const race::CampaignFlow& flow, const D
       }
     }
     if (is_registration) {
-      ui4::button_bar(l, {{"A", "OPEN STARTER AUTOSHOW"}, {"G", "SET GPS TO FIRST EVENT"}}, w, h, 70.0f);
+      ui4::button_bar(l,
+                      {{"A", loc_str("Campaign", "IDS_OpenAutoshow", "OPEN STARTER AUTOSHOW")},
+                       {"X", loc_str("Campaign", "IDS_SetGpsFirst", "SET GPS TO FIRST EVENT")}},
+                      w, h, 70.0f);
     } else {
-      ui4::button_bar(l, {{"A", "CONTINUE"}, {"G", "SET GPS TO NEXT EVENT"}}, w, h, 70.0f);
+      ui4::button_bar(l,
+                      {{"A", loc_str("HelpButtons", "IDS_Continue", "CONTINUE")},
+                       {"X", loc_str("Campaign", "IDS_SetGpsNext", "SET GPS TO NEXT EVENT")}},
+                      w, h, 70.0f);
     }
     return;
   }
@@ -798,14 +819,19 @@ void draw_reward_tally(ui::List& l, const race::RewardTallyState& tally, float s
       ui4::fit_text(det, dts, rw - 36.0f * s, 10.0f * s);
       l.text(rx0 + 20.0f * s, cur_ry + 44.0f * s, det, dts);
       if (tally.has_next_gps) {
-        l.text(rx0 + 20.0f * s, cur_ry + 76.0f * s, "PRESS [G] TO AUTO-SET GPS TO " + tally.next_gps_label,
+        l.text(rx0 + 20.0f * s, cur_ry + 76.0f * s,
+               "PRESS [" + ui4::glyph_label_for("X") + "] TO AUTO-SET GPS TO " + tally.next_gps_label,
                ui4::style(ui::Font::kB, 12.5f * s, ui4::kYellow));
       }
     }
   }
 
-  std::vector<ui4::Prompt> prompts = {{"A", tally.stage_animation_done() ? "CONTINUE TO FREE ROAM" : "SKIP ANIMATION"}};
-  if (tally.has_next_gps) prompts.push_back({"G", "SET GPS TO NEXT OBJECTIVE"});
+  std::vector<ui4::Prompt> prompts = {
+      {"A", tally.stage_animation_done() ? loc_str("HelpButtons", "IDS_ContinueFreeRoam", "CONTINUE TO FREE ROAM")
+                                         : loc_str("HelpButtons", "IDS_Skip", "SKIP ANIMATION")}};
+  if (tally.has_next_gps) {
+    prompts.push_back({"X", loc_str("Campaign", "IDS_SetGpsNextObj", "SET GPS TO NEXT OBJECTIVE")});
+  }
   ui4::button_bar(l, prompts, screen_w, screen_h, 70.0f);
 }
 

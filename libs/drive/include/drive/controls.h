@@ -32,6 +32,8 @@ enum class ControlAction {
   kActivate,
   kLookLeft,
   kLookRight,
+  kPhotoMode,
+  kTelemetry,
   kCount,
 };
 

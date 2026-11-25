@@ -9,29 +9,22 @@
 namespace garage {
 namespace {
 
+constexpr double kPsiToBar = 0.0689475729;
+constexpr double kNmmToKgfmm = 0.1019716213;
+constexpr double kNmmToLbin = 5.7101471547;
+constexpr double kMetersToCm = 100.0;
+constexpr double kMetersToIn = 39.3700787402;
+constexpr double kKgfToLbf = 2.2046226218;
+
 double lerp(double a, double b, double u) { return a + (b - a) * std::clamp(u, 0.0, 1.0); }
 double inv_lerp(double a, double b, double v) {
   return std::fabs(b - a) > 1e-9 ? std::clamp((v - a) / (b - a), 0.0, 1.0) : 0.5;
 }
 
-}  // namespace
+enum class UnitMode { kLegacy, kMetric, kImperial };
 
-const char* tune_category_name(TuneCategory cat) {
-  switch (cat) {
-    case TuneCategory::kTires: return "Tires";
-    case TuneCategory::kGearing: return "Gearing";
-    case TuneCategory::kAlignment: return "Alignment";
-    case TuneCategory::kAntiRollBars: return "Anti-Roll Bars";
-    case TuneCategory::kSprings: return "Springs";
-    case TuneCategory::kDamping: return "Damping";
-    case TuneCategory::kAero: return "Aero";
-    case TuneCategory::kBrake: return "Brake";
-    case TuneCategory::kDifferential: return "Differential";
-    default: return "Tuning";
-  }
-}
-
-std::vector<TuneSlider> build_tune_sliders(const cars::CarPhysics& car, const drive::CarTune& tune) {
+std::vector<TuneSlider> build_tune_sliders_impl(const cars::CarPhysics& car, const drive::CarTune& tune,
+                                                UnitMode mode) {
   std::vector<TuneSlider> out;
   const double mass = std::max(500.0, car.get("List_UpgradeCarBodyWeight.Mass", 1400.0));
   const int trans_lvl = int(std::llround(car.get("List_UpgradeDrivetrainTransmission.Level", 0)));
@@ -77,11 +70,16 @@ std::vector<TuneSlider> build_tune_sliders(const cars::CarPhysics& car, const dr
     out.push_back(std::move(s));
   };
 
-  // 1. Tires (always unlocked).
-  add("Tuning_frontTirePressure", "Front Tire Pressure", "PSI", TuneCategory::kTires, 15.0, 55.0, 30.0, 0.5, true,
-      tune.front_tire_pressure_psi, tune.front_tire_pressure_psi >= 0);
-  add("Tuning_rearTirePressure", "Rear Tire Pressure", "PSI", TuneCategory::kTires, 15.0, 55.0, 30.0, 0.5, true,
-      tune.rear_tire_pressure_psi, tune.rear_tire_pressure_psi >= 0);
+  // 1. Tires (always unlocked): BAR in Metric, PSI in Imperial / Legacy.
+  const double tp_scale = (mode == UnitMode::kMetric) ? kPsiToBar : 1.0;
+  const char* tp_unit = (mode == UnitMode::kMetric) ? "BAR" : "PSI";
+  const double tp_step = (mode == UnitMode::kMetric) ? 0.05 : 0.5;
+  add("Tuning_frontTirePressure", "Front Tire Pressure", tp_unit, TuneCategory::kTires, 15.0 * tp_scale,
+      55.0 * tp_scale, 30.0 * tp_scale, tp_step, true, tune.front_tire_pressure_psi * tp_scale,
+      tune.front_tire_pressure_psi >= 0);
+  add("Tuning_rearTirePressure", "Rear Tire Pressure", tp_unit, TuneCategory::kTires, 15.0 * tp_scale,
+      55.0 * tp_scale, 30.0 * tp_scale, tp_step, true, tune.rear_tire_pressure_psi * tp_scale,
+      tune.rear_tire_pressure_psi >= 0);
 
   // 2. Gearing.
   const double def_fd = car.get("List_UpgradeDrivetrainTransmission.FinalDriveRatio", 3.7);
@@ -115,49 +113,58 @@ std::vector<TuneSlider> build_tune_sliders(const cars::CarPhysics& car, const dr
   add("Tuning_frontCaster", "Front Caster", "deg", TuneCategory::kAlignment, 1.0, 7.0, def_caster, 0.1, align_unlocked,
       tune.front_caster_deg, tune.front_caster_deg > -90, "Requires Race Suspension");
 
-  // 4. Anti-Roll Bars (displayed in 1..40 Forza units, stored normalized [0..1]).
+  // 4. Anti-Roll Bars (stored normalized [0..1]).
   auto norm_slider = [&](const char* key, const char* label, const char* unit, TuneCategory cat, double lo_p,
                          double hi_p, double def_p, double step, bool unlocked, double norm_v, const char* hint = "") {
     const bool tuned = norm_v >= 0.0;
     const double cur = tuned ? lerp(lo_p, hi_p, norm_v) : def_p;
     add(key, label, unit, cat, lo_p, hi_p, def_p, step, unlocked, cur, tuned, hint);
   };
+  const double stiffness_scale =
+      (mode == UnitMode::kMetric) ? kNmmToKgfmm : (mode == UnitMode::kImperial) ? kNmmToLbin : 1.0;
+  const char* stiffness_unit =
+      (mode == UnitMode::kMetric) ? "kgf/mm" : (mode == UnitMode::kImperial) ? "lb/in" : "N/mm";
   {
-    const double def_f = car.get("FrontAntiSway.DefSwaybarStiffness", 10.0);
-    const double lo_f = car.get("FrontAntiSway.MinSwaybarStiffness", def_f * 0.4);
-    const double hi_f = car.get("FrontAntiSway.MaxSwaybarStiffness", def_f * 2.2);
-    norm_slider("Tuning_frontSwaybar", "Front Anti-Roll Bar", "N/mm", TuneCategory::kAntiRollBars, lo_f, hi_f, def_f,
-                std::max(0.2, (hi_f - lo_f) / 40.0), arb_f_unlocked, tune.front_arb, "Requires Race Front Anti-Roll Bar");
-    const double def_r = car.get("RearAntiSway.DefSwaybarStiffness", 8.0);
-    const double lo_r = car.get("RearAntiSway.MinSwaybarStiffness", def_r * 0.4);
-    const double hi_r = car.get("RearAntiSway.MaxSwaybarStiffness", def_r * 2.2);
-    norm_slider("Tuning_rearSwaybar", "Rear Anti-Roll Bar", "N/mm", TuneCategory::kAntiRollBars, lo_r, hi_r, def_r,
-                std::max(0.2, (hi_r - lo_r) / 40.0), arb_r_unlocked, tune.rear_arb, "Requires Race Rear Anti-Roll Bar");
+    const double def_f = car.get("FrontAntiSway.DefSwaybarStiffness", 10.0) * stiffness_scale;
+    const double lo_f = car.get("FrontAntiSway.MinSwaybarStiffness", 4.0) * stiffness_scale;
+    const double hi_f = car.get("FrontAntiSway.MaxSwaybarStiffness", 22.0) * stiffness_scale;
+    norm_slider("Tuning_frontSwaybar", "Front Anti-Roll Bar", stiffness_unit, TuneCategory::kAntiRollBars, lo_f, hi_f,
+                def_f, std::max(0.05, (hi_f - lo_f) / 40.0), arb_f_unlocked, tune.front_arb,
+                "Requires Race Front Anti-Roll Bar");
+    const double def_r = car.get("RearAntiSway.DefSwaybarStiffness", 8.0) * stiffness_scale;
+    const double lo_r = car.get("RearAntiSway.MinSwaybarStiffness", 3.2) * stiffness_scale;
+    const double hi_r = car.get("RearAntiSway.MaxSwaybarStiffness", 17.6) * stiffness_scale;
+    norm_slider("Tuning_rearSwaybar", "Rear Anti-Roll Bar", stiffness_unit, TuneCategory::kAntiRollBars, lo_r, hi_r,
+                def_r, std::max(0.05, (hi_r - lo_r) / 40.0), arb_r_unlocked, tune.rear_arb,
+                "Requires Race Rear Anti-Roll Bar");
   }
 
   // 5. Springs & Ride Height.
   {
-    const double k_f = car.get("FrontSpringDamper.DefSpringRate", 45.0) * mass / 1000.0;  // N/mm
-    const double lo_f = car.get("FrontSpringDamper.MinSpringRate", 25.0) * mass / 1000.0;
-    const double hi_f = car.get("FrontSpringDamper.MaxSpringRate", 90.0) * mass / 1000.0;
-    norm_slider("Tuning_frontSpring", "Front Springs", "N/mm", TuneCategory::kSprings, lo_f, hi_f, k_f,
-                std::max(1.0, (hi_f - lo_f) / 40.0), springs_unlocked, tune.front_spring, "Requires Race Suspension");
-    const double k_r = car.get("RearSpringDamper.DefSpringRate", 40.0) * mass / 1000.0;
-    const double lo_r = car.get("RearSpringDamper.MinSpringRate", 20.0) * mass / 1000.0;
-    const double hi_r = car.get("RearSpringDamper.MaxSpringRate", 85.0) * mass / 1000.0;
-    norm_slider("Tuning_rearSpring", "Rear Springs", "N/mm", TuneCategory::kSprings, lo_r, hi_r, k_r,
-                std::max(1.0, (hi_r - lo_r) / 40.0), springs_unlocked, tune.rear_spring, "Requires Race Suspension");
+    const double k_f = car.get("FrontSpringDamper.DefSpringRate", 45.0) * mass / 1000.0 * stiffness_scale;
+    const double lo_f = car.get("FrontSpringDamper.MinSpringRate", 25.0) * mass / 1000.0 * stiffness_scale;
+    const double hi_f = car.get("FrontSpringDamper.MaxSpringRate", 90.0) * mass / 1000.0 * stiffness_scale;
+    norm_slider("Tuning_frontSpring", "Front Springs", stiffness_unit, TuneCategory::kSprings, lo_f, hi_f, k_f,
+                std::max(0.1, (hi_f - lo_f) / 40.0), springs_unlocked, tune.front_spring, "Requires Race Suspension");
+    const double k_r = car.get("RearSpringDamper.DefSpringRate", 40.0) * mass / 1000.0 * stiffness_scale;
+    const double lo_r = car.get("RearSpringDamper.MinSpringRate", 20.0) * mass / 1000.0 * stiffness_scale;
+    const double hi_r = car.get("RearSpringDamper.MaxSpringRate", 85.0) * mass / 1000.0 * stiffness_scale;
+    norm_slider("Tuning_rearSpring", "Rear Springs", stiffness_unit, TuneCategory::kSprings, lo_r, hi_r, k_r,
+                std::max(0.1, (hi_r - lo_r) / 40.0), springs_unlocked, tune.rear_spring, "Requires Race Suspension");
 
-    const double rh_f = car.get("FrontSpringDamper.DefRideHeight", 0.16) * 100.0;  // cm
-    const double rh_flo = car.get("FrontSpringDamper.MinRideHeight", 0.11) * 100.0;
-    const double rh_fhi = car.get("FrontSpringDamper.MaxRideHeight", 0.21) * 100.0;
-    norm_slider("Tuning_frontRideHeight", "Front Ride Height", "cm", TuneCategory::kSprings, rh_flo, rh_fhi, rh_f, 0.2,
-                springs_unlocked, tune.front_ride_height, "Requires Race Suspension");
-    const double rh_r = car.get("RearSpringDamper.DefRideHeight", 0.17) * 100.0;
-    const double rh_rlo = car.get("RearSpringDamper.MinRideHeight", 0.12) * 100.0;
-    const double rh_rhi = car.get("RearSpringDamper.MaxRideHeight", 0.22) * 100.0;
-    norm_slider("Tuning_rearRideHeight", "Rear Ride Height", "cm", TuneCategory::kSprings, rh_rlo, rh_rhi, rh_r, 0.2,
-                springs_unlocked, tune.rear_ride_height, "Requires Race Suspension");
+    const double rh_scale = (mode == UnitMode::kImperial) ? kMetersToIn : kMetersToCm;
+    const char* rh_unit = (mode == UnitMode::kImperial) ? "in" : "cm";
+    const double rh_step = (mode == UnitMode::kImperial) ? 0.1 : 0.2;
+    const double rh_f = car.get("FrontSpringDamper.DefRideHeight", 0.16) * rh_scale;
+    const double rh_flo = car.get("FrontSpringDamper.MinRideHeight", 0.11) * rh_scale;
+    const double rh_fhi = car.get("FrontSpringDamper.MaxRideHeight", 0.21) * rh_scale;
+    norm_slider("Tuning_frontRideHeight", "Front Ride Height", rh_unit, TuneCategory::kSprings, rh_flo, rh_fhi, rh_f,
+                rh_step, springs_unlocked, tune.front_ride_height, "Requires Race Suspension");
+    const double rh_r = car.get("RearSpringDamper.DefRideHeight", 0.17) * rh_scale;
+    const double rh_rlo = car.get("RearSpringDamper.MinRideHeight", 0.12) * rh_scale;
+    const double rh_rhi = car.get("RearSpringDamper.MaxRideHeight", 0.22) * rh_scale;
+    norm_slider("Tuning_rearRideHeight", "Rear Ride Height", rh_unit, TuneCategory::kSprings, rh_rlo, rh_rhi, rh_r,
+                rh_step, springs_unlocked, tune.rear_ride_height, "Requires Race Suspension");
   }
 
   // 6. Damping (Rebound & Bump).
@@ -185,18 +192,20 @@ std::vector<TuneSlider> build_tune_sliders(const cars::CarPhysics& car, const dr
                 std::max(0.1, (br_hi - br_lo) / 30.0), damping_unlocked, tune.rear_bump, "Requires Race Suspension");
   }
 
-  // 7. Aero Downforce (kgf at 150 mph).
+  // 7. Aero Downforce (kgf in Metric / Legacy, lbf in Imperial).
   {
-    const double f0 = car.get("FrontBumperAero.Downforce0", 0.0);
-    const double f1 = std::max(f0 + 1.0, car.get("FrontBumperAero.Downforce1", f0));
+    const double df_scale = (mode == UnitMode::kImperial) ? kKgfToLbf : 1.0;
+    const char* df_unit = (mode == UnitMode::kImperial) ? "lbf" : "kgf";
+    const double f0 = car.get("FrontBumperAero.Downforce0", 0.0) * df_scale;
+    const double f1 = std::max(f0 + 1.0, car.get("FrontBumperAero.Downforce1", f0 / df_scale) * df_scale);
     const double fu = car.get("FrontBumperAero.DefaultTuneSlider", 0.5);
-    norm_slider("Tuning_frontDownforce", "Front Downforce", "kgf", TuneCategory::kAero, f0, f1, lerp(f0, f1, fu),
+    norm_slider("Tuning_frontDownforce", "Front Downforce", df_unit, TuneCategory::kAero, f0, f1, lerp(f0, f1, fu),
                 std::max(1.0, (f1 - f0) / 25.0), front_aero_unlocked, tune.front_downforce,
                 "Requires Race Front Bumper");
-    const double r0 = car.get("RearWingAero.Downforce0", 0.0);
-    const double r1 = std::max(r0 + 1.0, car.get("RearWingAero.Downforce1", r0));
+    const double r0 = car.get("RearWingAero.Downforce0", 0.0) * df_scale;
+    const double r1 = std::max(r0 + 1.0, car.get("RearWingAero.Downforce1", r0 / df_scale) * df_scale);
     const double ru = car.get("RearWingAero.DefaultTuneSlider", 0.5);
-    norm_slider("Tuning_rearDownforce", "Rear Downforce", "kgf", TuneCategory::kAero, r0, r1, lerp(r0, r1, ru),
+    norm_slider("Tuning_rearDownforce", "Rear Downforce", df_unit, TuneCategory::kAero, r0, r1, lerp(r0, r1, ru),
                 std::max(1.0, (r1 - r0) / 25.0), rear_aero_unlocked, tune.rear_downforce, "Requires Race Rear Wing");
   }
 
@@ -232,8 +241,9 @@ std::vector<TuneSlider> build_tune_sliders(const cars::CarPhysics& car, const dr
   return out;
 }
 
-bool set_tune_slider(drive::CarTune& tune, const cars::CarPhysics& car, const std::string& key, double value) {
-  const auto sliders = build_tune_sliders(car, tune);
+bool set_tune_slider_impl(drive::CarTune& tune, const cars::CarPhysics& car, const std::string& key, double value,
+                          UnitMode mode) {
+  const auto sliders = build_tune_sliders_impl(car, tune, mode);
   const TuneSlider* def = nullptr;
   for (const auto& s : sliders)
     if (s.key == key) {
@@ -243,9 +253,10 @@ bool set_tune_slider(drive::CarTune& tune, const cars::CarPhysics& car, const st
   if (!def || !def->unlocked) return false;
   const double v = std::clamp(value, def->min_val, def->max_val);
   const double u = inv_lerp(def->min_val, def->max_val, v);
+  const double tp_inv = (mode == UnitMode::kMetric) ? (1.0 / kPsiToBar) : 1.0;
 
-  if (key == "Tuning_frontTirePressure") { tune.front_tire_pressure_psi = v; return true; }
-  if (key == "Tuning_rearTirePressure") { tune.rear_tire_pressure_psi = v; return true; }
+  if (key == "Tuning_frontTirePressure") { tune.front_tire_pressure_psi = v * tp_inv; return true; }
+  if (key == "Tuning_rearTirePressure") { tune.rear_tire_pressure_psi = v * tp_inv; return true; }
   if (key == "Tuning_finalDriveRatio") { tune.final_drive = v; return true; }
   static const char* kGearKeys[8] = {"Tuning_firstGear",  "Tuning_secondGear", "Tuning_thirdGear",  "Tuning_fourthGear",
                                      "Tuning_fifthGear",  "Tuning_sixthGear",  "Tuning_seventhGear", "Tuning_eighthGear"};
@@ -276,6 +287,68 @@ bool set_tune_slider(drive::CarTune& tune, const cars::CarPhysics& car, const st
   if (key == "Tuning_rearDecel") { tune.rear_diff_decel = v / 100.0; return true; }
   if (key == "Tuning_centerTorque") { tune.center_diff_split = v / 100.0; return true; }
   return false;
+}
+
+}  // namespace
+
+const char* tune_category_name(TuneCategory cat) {
+  switch (cat) {
+    case TuneCategory::kTires: return "Tires";
+    case TuneCategory::kGearing: return "Gearing";
+    case TuneCategory::kAlignment: return "Alignment";
+    case TuneCategory::kAntiRollBars: return "Anti-Roll Bars";
+    case TuneCategory::kSprings: return "Springs";
+    case TuneCategory::kDamping: return "Damping";
+    case TuneCategory::kAero: return "Aero";
+    case TuneCategory::kBrake: return "Brake";
+    case TuneCategory::kDifferential: return "Differential";
+    default: return "Tuning";
+  }
+}
+
+std::vector<TuneSlider> build_tune_sliders(const cars::CarPhysics& car, const drive::CarTune& tune) {
+  return build_tune_sliders_impl(car, tune, UnitMode::kLegacy);
+}
+
+std::vector<TuneSlider> build_tune_sliders(const cars::CarPhysics& car, const drive::CarTune& tune, bool metric_units) {
+  return build_tune_sliders_impl(car, tune, metric_units ? UnitMode::kMetric : UnitMode::kImperial);
+}
+
+bool set_tune_slider(drive::CarTune& tune, const cars::CarPhysics& car, const std::string& key, double value) {
+  return set_tune_slider_impl(tune, car, key, value, UnitMode::kLegacy);
+}
+
+bool set_tune_slider(drive::CarTune& tune, const cars::CarPhysics& car, const std::string& key, double value,
+                     bool metric_units) {
+  return set_tune_slider_impl(tune, car, key, value, metric_units ? UnitMode::kMetric : UnitMode::kImperial);
+}
+
+std::string format_tune_slider_value(const TuneSlider& slider) {
+  char buf[64];
+  if (slider.unit == "BAR") {
+    std::snprintf(buf, sizeof buf, "%.2f BAR", slider.value);
+  } else if (slider.unit == "PSI") {
+    std::snprintf(buf, sizeof buf, "%.1f PSI", slider.value);
+  } else if (slider.unit == "kgf/mm") {
+    std::snprintf(buf, sizeof buf, "%.1f kgf/mm", slider.value);
+  } else if (slider.unit == "lb/in") {
+    std::snprintf(buf, sizeof buf, "%.0f lb/in", slider.value);
+  } else if (slider.unit == "N/mm") {
+    std::snprintf(buf, sizeof buf, "%.1f N/mm", slider.value);
+  } else if (slider.unit == "cm" || slider.unit == "in") {
+    std::snprintf(buf, sizeof buf, "%.1f %s", slider.value, slider.unit.c_str());
+  } else if (slider.unit == "kgf" || slider.unit == "lbf") {
+    std::snprintf(buf, sizeof buf, "%.0f %s", slider.value, slider.unit.c_str());
+  } else if (slider.unit == "%") {
+    std::snprintf(buf, sizeof buf, "%.0f%%", slider.value);
+  } else if (slider.unit == "deg") {
+    std::snprintf(buf, sizeof buf, "%.1f deg", slider.value);
+  } else if (!slider.unit.empty()) {
+    std::snprintf(buf, sizeof buf, "%.2f %s", slider.value, slider.unit.c_str());
+  } else {
+    std::snprintf(buf, sizeof buf, "%.2f", slider.value);
+  }
+  return buf;
 }
 
 void reset_tune(drive::CarTune& tune) { tune = drive::CarTune{}; }

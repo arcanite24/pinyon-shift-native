@@ -4,7 +4,10 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <string_view>
 
+#include "fh1data/stringtables.h"
 #include "game_hud.h"
 #include "ui4_chrome.h"
 
@@ -13,6 +16,42 @@ namespace {
 
 constexpr uint32_t kGold = ui::rgba(246, 198, 56, 255);
 constexpr uint32_t kCyan = ui::rgba(56, 194, 240, 255);
+
+std::string loc_str(std::string_view table, std::string_view id, const char* fallback) {
+  const uint32_t packed = (uint32_t(fh1::string_hash(table)) << 16) | uint32_t(fh1::string_hash(id));
+  const std::string ref = "_&" + std::to_string(packed);
+  const std::string resolved = game_text(ref);
+  if (!resolved.empty() && resolved != ref && resolved.rfind("_&", 0) != 0) return resolved;
+  return fallback;
+}
+
+bool parse_class_pi(std::string_view raw, std::string& out_cls, int& out_pi) {
+  out_cls.clear();
+  out_pi = 0;
+  size_t i = 0;
+  while (i < raw.size() && (raw[i] == ' ' || raw[i] == '[')) ++i;
+  if (i >= raw.size()) return false;
+  // Class token: "R1", "R2", "R3" or single letter "F".."X".
+  if ((raw[i] == 'R' || raw[i] == 'r') && i + 1 < raw.size() && (raw[i + 1] >= '1' && raw[i + 1] <= '3')) {
+    out_cls.push_back('R');
+    out_cls.push_back(raw[i + 1]);
+    i += 2;
+  } else if (std::isalpha(static_cast<unsigned char>(raw[i]))) {
+    out_cls.push_back(char(std::toupper(static_cast<unsigned char>(raw[i]))));
+    ++i;
+  } else {
+    return false;
+  }
+  while (i < raw.size() && !std::isdigit(static_cast<unsigned char>(raw[i]))) ++i;
+  if (i >= raw.size()) return false;
+  int val = 0;
+  while (i < raw.size() && std::isdigit(static_cast<unsigned char>(raw[i]))) {
+    val = val * 10 + (raw[i] - '0');
+    ++i;
+  }
+  out_pi = std::clamp(val, 100, 999);
+  return !out_cls.empty();
+}
 
 std::string sanitize_club_text(std::string s) {
   // Replace raw internal outpost/transform IDs (e.g. "OUTPOST_REDROCK_NODE") with clean display names.
@@ -104,27 +143,28 @@ void draw_club_screen(ui::List& out, int w, int h, const ClubScreenState& st) {
                 st.stats.cars_with_medal);
 
   ui4::TiltedBladeSpec spec;
-  spec.title = "1000 CLUB";
+  spec.title = loc_str("1000Club", "IDS_Title", "1000 CLUB");
   spec.eyebrow = car_hdr;
   spec.scene_hint = "H_FIXED_SETTING_LIST";
-  spec.status_kicker = "HORIZON 1000 CLUB";
+  spec.status_kicker = loc_str("1000Club", "IDS_Horizon1000Club", "HORIZON 1000 CLUB");
   spec.status_value = status_val;
   spec.status_tag = status_tag;
   spec.status_color = kGold;
-  spec.list_header = "CAR CHALLENGES";
-  spec.list_header_right = st.challenges_begun ? "CHALLENGES ACTIVE" : "PRESS [A] TO BEGIN";
+  spec.list_header = loc_str("1000Club", "IDS_CarChallenges", "CAR CHALLENGES");
+  spec.list_header_right = st.challenges_begun ? loc_str("1000Club", "IDS_ChallengesActive", "CHALLENGES ACTIVE")
+                                               : loc_str("1000Club", "IDS_ReadyToBegin", "READY TO BEGIN");
   spec.selected_index = st.selected;
   spec.max_visible = 7;
 
   if (!st.gate_reason.empty()) {
     spec.empty_message = st.gate_reason;
-    spec.detail_header = "1000 CLUB LOCKED";
+    spec.detail_header = loc_str("1000Club", "IDS_Locked", "1000 CLUB LOCKED");
     spec.detail_title = "GREEN WRISTBAND REQUIRED";
     spec.detail_title_color = ui4::kAmber;
     spec.detail_icon_kind = int(ui4::BadgeIconKind::kLocked);
     spec.detail_paragraphs = {st.gate_reason,
                               "Earn the Horizon Green Wristband and drive one of your own Colorado garage cars to enter."};
-    spec.prompts = {{"B", "BACK"}};
+    spec.prompts = {{"B", loc_str("HelpButtons", "IDS_Back", "BACK")}};
     ui4::tilted_blade_screen(out, W, H, spec);
     return;
   }
@@ -184,10 +224,10 @@ void draw_club_screen(ui::List& out, int w, int h, const ClubScreenState& st) {
     spec.detail_footer = "Complete challenges in each garage car to earn Gold Medals and unlock 1000 Club Achievements.";
   }
 
-  if (!st.challenges_begun) spec.prompts.push_back({"A", "BEGIN CHALLENGES IN THIS CAR"});
-  else spec.prompts.push_back({"A", "CHALLENGES ACTIVE"});
-  spec.prompts.push_back({"DPAD", "INSPECT"});
-  spec.prompts.push_back({"B", "RETURN TO DRIVE"});
+  if (!st.challenges_begun) spec.prompts.push_back({"A", loc_str("1000Club", "IDS_BeginChallenges", "BEGIN CHALLENGES IN THIS CAR")});
+  else spec.prompts.push_back({"A", loc_str("1000Club", "IDS_ChallengesActive", "CHALLENGES ACTIVE")});
+  spec.prompts.push_back({"DPAD", loc_str("HelpButtons", "IDS_Inspect", "INSPECT")});
+  spec.prompts.push_back({"B", loc_str("HelpButtons", "IDS_Back", "RETURN TO DRIVE")});
   ui4::tilted_blade_screen(out, W, H, spec);
 }
 
@@ -339,109 +379,185 @@ void draw_car_club_screen(ui::List& out, int w, int h, const CarClubScreenState&
     return false;
   };
 
-  ui4::subtle_vignette(out, W, H, 0.36f);
+  ui4::subtle_vignette(out, W, H, 0.28f);
   const std::string tag_disp = st.club_tag.empty() ? "NO TAG" : ("[" + st.club_tag + "]");
   const std::string name_disp = st.club_name.empty() ? "HORIZON CAR CLUB" : st.club_name;
-  ui4::title_banner(out, s, 72.0f * sx, 34.0f * sy, "CAR CLUB", tag_disp + "  •  " + name_disp, true, 540.0f);
-
-  const float lx0 = 72.0f * sx, lx1 = 760.0f * sx;
-  const float ly0 = 132.0f * sy, ly1 = H - 84.0f * sy;
-  ui4::panel(out, lx0, ly0, lx1, ly1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(out, lx0 + 12.0f * sx, ly0 + 10.0f * sy, lx1 - 12.0f * sx, ly0 + 34.0f * sy, s, false);
-  out.text(lx0 + 22.0f * sx, ly0 + 15.0f * sy, "CLUB SETTINGS & SHARED GARAGE",
-           ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
 
   int shared_count = 0;
   for (size_t ci = 0; ci < st.cars.size(); ++ci)
     if (row_is_shared(ci, st.cars[ci])) ++shared_count;
 
-  const int total_rows = 2 + int(st.cars.size());
-  const float row_h = 40.0f * sy;
-  const float rows_top = ly0 + 44.0f * sy;
-  const int max_vis = std::max(1, int((ly1 - rows_top - 10.0f * sy) / row_h));
-  const int sel = std::clamp(st.selected, 0, std::max(0, total_rows - 1));
-  const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, total_rows - max_vis));
+  const int64_t borrowed_id = st.borrowed_garage_id > 0 ? st.borrowed_garage_id : ed.borrowed_garage_id;
 
-  for (int i = first; i < std::min(total_rows, first + max_vis); ++i) {
-    const float ry0 = rows_top + float(i - first) * row_h;
-    const float ry1 = ry0 + row_h - 5.0f * sy;
-    const bool is_sel = (i == sel);
-    out.add_hit(lx0 + 10.0f * sx, ry0, lx1 - 10.0f * sx, ry1, ui::kHitRow, i);
-    ui4::pill(out, lx0 + 10.0f * sx, ry0, lx1 - 10.0f * sx, ry1,
-              is_sel ? ui4::kPink : ((i % 2 == 0) ? ui4::kPillGrey : ui::rgba(24, 26, 32, 232)),
-              ui4::PillKind::kPill02, false, is_sel);
+  // Compact top-right Club Status pill (matches FH1 tilted blade chrome).
+  {
+    const float sx1 = W - 58.0f * sx;
+    const float sx0 = sx1 - 320.0f * sx;
+    const float sy0 = 32.0f * sy;
+    out.rect(sx0, sy0, sx1, sy0 + 48.0f * sy, ui::rgba(14, 16, 22, 238));
+    ui4::pill(out, sx0, sy0, sx1, sy0 + 48.0f * sy, ui4::kCharcoalDark, ui4::PillKind::kPillBig, false, true);
+    out.rect(sx0, sy0, sx0 + 5.0f * sx, sy0 + 48.0f * sy, ui4::kPink);
+    out.text(sx0 + 16.0f * sx, sy0 + 7.0f * sy, loc_str("Clubs", "IDS_ClubGarage", "CLUB GARAGE"),
+             ui4::style(ui::Font::kB, 10.0f * s, ui4::kOffWhite));
+    out.text(sx1 - 14.0f * sx, sy0 + 7.0f * sy, tag_disp,
+             ui4::style(ui::Font::kE, 10.5f * s, ui4::kYellow, ui::Align::kRight));
+    out.text(sx0 + 16.0f * sx, sy0 + 24.0f * sy,
+             std::to_string(shared_count) + " / " + std::to_string(st.cars.size()) + " SHARED",
+             ui4::style(ui::Font::kE, 15.5f * s, ui4::kWhite));
+  }
 
-    if (i == 0) {
-      out.text(lx0 + 24.0f * sx, ry0 + 9.0f * sy, "CLUB NAME  [Y/E: EDIT]",
-               ui4::style(ui::Font::kD, 13.0f * s, ui4::kWhite));
-      out.text(lx1 - 24.0f * sx, ry0 + 9.0f * sy, "< " + name_disp + " >",
-               ui4::style(ui::Font::kE, 13.5f * s, is_sel ? ui4::kYellow : ui4::kWhite, ui::Align::kRight));
-    } else if (i == 1) {
-      out.text(lx0 + 24.0f * sx, ry0 + 9.0f * sy, "CLUB TAG (4-CHAR)  [Y/E: EDIT]",
-               ui4::style(ui::Font::kD, 13.0f * s, ui4::kWhite));
-      out.text(lx1 - 24.0f * sx, ry0 + 9.0f * sy, "< " + tag_disp + " >",
-               ui4::style(ui::Font::kE, 13.5f * s, is_sel ? ui4::kYellow : ui4::kWhite, ui::Align::kRight));
-    } else {
-      const size_t ci = size_t(i - 2);
-      const auto& c = st.cars[ci];
-      const bool shared = row_is_shared(ci, c);
-      const bool borrowed = row_is_borrowed(ci, c);
-      std::string lbl = c.class_pi.empty() ? c.display_name : ("[" + c.class_pi + "]  " + c.display_name);
-      ui::TextStyle cs = ui4::style(ui::Font::kD, 13.0f * s, ui4::kWhite);
-      ui4::fit_text(lbl, cs, (lx1 - lx0) - 220.0f * sx, 9.0f * s);
-      out.text(lx0 + 24.0f * sx, ry0 + 9.0f * sy, lbl, cs);
-      const std::string badge = borrowed ? "BORROWED / DRIVING"
-                                : shared ? (c.active ? "SHARED / DRIVING" : "SHARED IN CLUB")
-                                         : "PRIVATE";
-      const uint32_t bcol = borrowed ? kCyan
-                            : shared ? (is_sel ? ui4::kYellow : ui4::kGreen)
-                                     : ui4::kDim;
-      out.text(lx1 - 24.0f * sx, ry0 + 9.5f * sy, badge,
-               ui4::style(ui::Font::kE, 12.0f * s, bcol, ui::Align::kRight));
+  // ---- Entire Car Club blade tilted +3.0 deg (451_CLUB_SETTINGS authentic UI4 chrome) ----
+  {
+    ui4::TiltScope rot(out, 0.5f * W, 0.5f * H, ui4::kTiltRad);
+
+    // Eyebrow + TitleTape (no raw inline key hints).
+    ui::TextStyle es = ui4::style(ui::Font::kE, 14.0f * s, ui4::kWhite);
+    const std::string eye = tag_disp + "  •  " + name_disp;
+    ui4::fit_text(eye, es, 540.0f * s, 9.5f * s);
+    const float ew = ui::List::measure(eye, es);
+    ui4::brush(out, 74.0f * sx, 32.0f * sy, 74.0f * sx + ew + 34.0f * sx, 56.0f * sy, ui4::kBrushBlack);
+    out.text(90.0f * sx, 36.5f * sy, eye, es);
+    ui4::title_tape(out, s, 80.0f * sx, 54.0f * sy, loc_str("Clubs", "IDS_CarClub", "CAR CLUB"), ui4::kPink, 34.0f, 540.0f);
+
+    const float lx0 = 78.0f * sx;
+    const float lw = 696.0f * sx;
+    const float lx1 = lx0 + lw;
+    const float content_y = 116.0f * sy;
+    const float list_bot = H - 96.0f * sy;
+
+    // PILL01 #BFBFBF section header strip.
+    ui4::pill(out, lx0, content_y, lx1, content_y + 28.0f * sy, ui::rgba(0xBF, 0xBF, 0xBF, 242), ui4::PillKind::kMenu,
+              false, true);
+    out.text(lx0 + 16.0f * sx, content_y + 7.0f * sy,
+             loc_str("Clubs", "IDS_ClubSettings", "CLUB SETTINGS & SHARED GARAGE"),
+             ui4::style(ui::Font::kD, 13.0f * s, ui4::kInk));
+    out.text(lx1 - 16.0f * sx, content_y + 7.5f * sy,
+             std::to_string(st.cars.size()) + " CARS",
+             ui4::style(ui::Font::kB, 11.5f * s, ui4::kInk, ui::Align::kRight));
+
+    const int total_rows = 2 + int(st.cars.size());
+    const float row_h = 36.0f * sy;
+    const float row_pitch = row_h + 5.0f * sy;
+    const float rows_top = content_y + 34.0f * sy;
+    const int max_vis = std::max(1, int((list_bot - rows_top) / row_pitch));
+    const int sel = std::clamp(st.selected, 0, std::max(0, total_rows - 1));
+    const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, total_rows - max_vis));
+
+    float ry = rows_top;
+    for (int i = first; i < std::min(total_rows, first + max_vis); ++i) {
+      const float ry0 = ry;
+      const float ry1 = ry0 + row_h;
+      const bool is_sel = (i == sel);
+      out.add_hit(lx0, ry0, lx1, ry1, ui::kHitRow, i);
+      ui4::pill(out, lx0, ry0, lx1, ry1,
+                is_sel ? ui4::kPink : ((i % 2 == 0) ? ui4::kPillGrey : ui::rgba(0x18, 0x18, 0x1C, 236)),
+                (i % 2 == 0) ? ui4::PillKind::kPill02 : ui4::PillKind::kPill03, false, is_sel);
+
+      if (i == 0 || i == 1) {
+        const std::string row_lbl =
+            (i == 0) ? loc_str("Clubs", "IDS_ClubName", "CLUB NAME") : loc_str("Clubs", "IDS_ClubTag", "CLUB TAG");
+        const std::string& row_val = (i == 0) ? name_disp : tag_disp;
+        out.text(lx0 + 18.0f * sx, ry0 + 0.5f * (row_h - 14.0f * s), row_lbl,
+                 ui4::style(ui::Font::kD, 14.0f * s, ui4::kWhite));
+        const float vx0 = lx1 - 248.0f * sx;
+        const float vx1 = lx1 - 16.0f * sx;
+        const float vcy = ry0 + 0.5f * row_h;
+        const uint32_t arr_col = is_sel ? ui4::kWhite : ui::rgba(190, 196, 208, 175);
+        ui4::opt_arrow(out, vx0 + 10.0f * sx, vcy, 14.0f * s, -1, arr_col);
+        ui4::opt_arrow(out, vx1 - 10.0f * sx, vcy, 14.0f * s, +1, arr_col);
+        ui::TextStyle vs = ui4::style(ui::Font::kE, 13.5f * s, is_sel ? ui4::kYellow : ui4::kWhite, ui::Align::kCenter);
+        ui4::fit_text(row_val, vs, (vx1 - vx0) - 42.0f * sx, 9.0f * s);
+        out.text(0.5f * (vx0 + vx1), ry0 + 0.5f * (row_h - vs.size), row_val, vs);
+      } else {
+        const size_t ci = size_t(i - 2);
+        const auto& c = st.cars[ci];
+        const bool shared = row_is_shared(ci, c);
+        const bool borrowed = row_is_borrowed(ci, c);
+
+        float tx = lx0 + 16.0f * sx;
+        std::string cls_name;
+        int pi_val = 0;
+        if (parse_class_pi(c.class_pi, cls_name, pi_val)) {
+          const float bh = 22.0f * sy;
+          ui4::class_badge(out, tx, ry0 + 0.5f * (row_h - bh), bh, cls_name, pi_val);
+          tx += bh * 3.45f + 12.0f * sx;
+        }
+        const std::string car_lbl =
+            !c.display_name.empty() ? c.display_name : resolve_club_car_name(c.media_name);
+        ui::TextStyle cs = ui4::style(ui::Font::kD, 13.5f * s, ui4::kWhite);
+        ui4::fit_text(car_lbl, cs, (lx1 - 178.0f * sx) - tx, 9.0f * s);
+        out.text(tx, ry0 + 0.5f * (row_h - cs.size), car_lbl, cs);
+
+        const std::string badge = borrowed ? "BORROWED"
+                                  : shared ? (c.active ? "SHARED / ACTIVE" : "SHARED IN CLUB")
+                                           : "PRIVATE";
+        const uint32_t bcol = borrowed ? kCyan
+                              : shared ? (is_sel ? ui4::kYellow : ui4::kGreen)
+                                       : ui4::kDim;
+        out.text(lx1 - 16.0f * sx, ry0 + 0.5f * (row_h - 12.0f * s), badge,
+                 ui4::style(ui::Font::kE, 12.0f * s, bcol, ui::Align::kRight));
+      }
+      ry += row_pitch;
+    }
+
+    ui4::scroll_indicator(out, lx1 + 8.0f * sx, rows_top, lx1 + 16.0f * sx, ry - 4.0f * sy, first, max_vis, total_rows,
+                          s);
+
+    // Compact Right-hand DIRTMASKS/PANEL01 Club Summary card (no inline raw keyboard hints!).
+    const float rx0 = lx1 + 28.0f * sx;
+    const float rx1 = W - 68.0f * sx;
+    const float card_h = borrowed_id > 0 ? 290.0f * sy : 244.0f * sy;
+    ui4::panel01(out, rx0, content_y, rx1, content_y + card_h, s, ui4::kCharcoalDark, ui4::kPink);
+    ui4::pill(out, rx0 + 8.0f * sx, content_y + 8.0f * sy, rx1 - 8.0f * sx, content_y + 32.0f * sy,
+              ui::rgba(0xBF, 0xBF, 0xBF, 240), ui4::PillKind::kMenu);
+    out.text(rx0 + 18.0f * sx, content_y + 13.5f * sy, loc_str("Clubs", "IDS_ClubOverview", "CLUB OVERVIEW"),
+             ui4::style(ui::Font::kD, 12.0f * s, ui4::kInk));
+    ui4::brush(out, rx0 - 4.0f * sx, content_y + 38.0f * sy, rx1 + 4.0f * sx, content_y + 72.0f * sy, ui4::kPink);
+    ui::TextStyle hts = ui4::style(ui::Font::kE, 15.5f * s, ui4::kWhite);
+    ui4::fit_text(tag_disp + "  " + name_disp, hts, (rx1 - rx0) - 28.0f * sx, 10.0f * s);
+    out.text(rx0 + 16.0f * sx, content_y + 46.0f * sy, tag_disp + "  " + name_disp, hts);
+
+    float dy = content_y + 86.0f * sy;
+    auto kv_row = [&](std::string_view k, std::string_view v, uint32_t vc) {
+      out.text(rx0 + 16.0f * sx, dy, k, ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim));
+      out.text(rx1 - 16.0f * sx, dy - 0.5f * sy, v,
+               ui4::style(ui::Font::kE, 12.0f * s, vc, ui::Align::kRight, true));
+      dy += 23.0f * sy;
+    };
+    kv_row("CLUB TAG", tag_disp, ui4::kYellow);
+    kv_row("SHARED GARAGE", std::to_string(shared_count) + " / " + std::to_string(st.cars.size()) + " CARS",
+           ui4::kGreen);
+    kv_row("STATUS", borrowed_id > 0 ? "DRIVING SHARED BUILD" : "CLUB READY", borrowed_id > 0 ? kCyan : ui4::kWhite);
+
+    dy += 8.0f * sy;
+    out.text(rx0 + 16.0f * sx, dy, "Share your custom builds with the club",
+             ui4::style(ui::Font::kB, 11.5f * s, ui4::kOffWhite, ui::Align::kLeft, true));
+    out.text(rx0 + 16.0f * sx, dy + 18.0f * sy, "or borrow any shared car to drive.",
+             ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim, ui::Align::kLeft, true));
+
+    if (borrowed_id > 0) {
+      ui4::pill(out, rx0 + 14.0f * sx, content_y + card_h - 44.0f * sy, rx1 - 14.0f * sx,
+                content_y + card_h - 14.0f * sy, kCyan, ui4::PillKind::kHud01);
+      out.text(0.5f * (rx0 + rx1), content_y + card_h - 36.0f * sy,
+               "BORROWING CLUB CAR #" + std::to_string(borrowed_id),
+               ui4::style(ui::Font::kE, 12.0f * s, ui4::kInk, ui::Align::kCenter));
+    }
+
+    if (!st.notice.empty()) {
+      const float ny = content_y + card_h + 12.0f * sy;
+      ui4::brush(out, rx0, ny, rx1, ny + 30.0f * sy, ui4::kPink);
+      ui::TextStyle ns = ui4::style(ui::Font::kE, 12.0f * s, ui4::kWhite, ui::Align::kCenter);
+      ui4::fit_text(st.notice, ns, (rx1 - rx0) - 24.0f * sx, 8.5f * s);
+      out.text(0.5f * (rx0 + rx1), ny + 8.0f * sy, st.notice, ns);
     }
   }
 
-  // Right-hand Club Summary card
-  const float rx0 = 784.0f * sx, rx1 = W - 72.0f * sx;
-  ui4::panel(out, rx0, ly0, rx1, ly0 + 305.0f * sy, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::brush(out, rx0 - 6.0f * sx, ly0 + 12.0f * sy, rx1 + 6.0f * sx, ly0 + 48.0f * sy, ui4::kPink);
-  out.text(rx0 + 18.0f * sx, ly0 + 19.0f * sy, tag_disp + "  " + name_disp,
-           ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite));
-  out.text(rx0 + 18.0f * sx, ly0 + 68.0f * sy,
-           "SHARED GARAGE: " + std::to_string(shared_count) + " / " + std::to_string(st.cars.size()) + " CARS",
-           ui4::style(ui::Font::kB, 13.5f * s, ui4::kYellow));
-  out.text(rx0 + 18.0f * sx, ly0 + 98.0f * sy, "PRESS [Y / E] ON NAME OR TAG TO",
-           ui4::style(ui::Font::kB, 12.5f * s, ui4::kOffWhite));
-  out.text(rx0 + 18.0f * sx, ly0 + 118.0f * sy, "TYPE A CUSTOM NAME OR 4-CHAR [TAG].",
-           ui4::style(ui::Font::kB, 12.5f * s, ui4::kOffWhite));
-  out.text(rx0 + 18.0f * sx, ly0 + 154.0f * sy, "PRESS [A / ENTER] ON A CAR TO SHARE",
-           ui4::style(ui::Font::kB, 12.5f * s, ui4::kDim));
-  out.text(rx0 + 18.0f * sx, ly0 + 174.0f * sy, "THAT GARAGE BUILD WITH YOUR CLUB.",
-           ui4::style(ui::Font::kB, 12.5f * s, ui4::kDim));
-  out.text(rx0 + 18.0f * sx, ly0 + 206.0f * sy, "PRESS [X / D] ON A SHARED CAR TO",
-           ui4::style(ui::Font::kB, 12.5f * s, ui4::kGreen));
-  out.text(rx0 + 18.0f * sx, ly0 + 226.0f * sy, "BORROW & DRIVE (OR RETURN IT).",
-           ui4::style(ui::Font::kB, 12.5f * s, ui4::kGreen));
-
-  const int64_t borrowed_id = st.borrowed_garage_id > 0 ? st.borrowed_garage_id : ed.borrowed_garage_id;
-  if (borrowed_id > 0) {
-    ui4::pill(out, rx0 + 14.0f * sx, ly0 + 258.0f * sy, rx1 - 14.0f * sx, ly0 + 290.0f * sy, kCyan,
-              ui4::PillKind::kHud01);
-    out.text(0.5f * (rx0 + rx1), ly0 + 266.0f * sy, "BORROWING CLUB CAR #" + std::to_string(borrowed_id),
-             ui4::style(ui::Font::kE, 12.0f * s, ui4::kInk, ui::Align::kCenter));
-  }
-
-  if (!st.notice.empty()) {
-    ui4::pill(out, rx0, ly0 + 320.0f * sy, rx1, ly0 + 354.0f * sy, ui4::kPink, ui4::PillKind::kHud01);
-    out.text(0.5f * (rx0 + rx1), ly0 + 329.0f * sy, st.notice,
-             ui4::style(ui::Font::kE, 12.5f * s, ui4::kWhite, ui::Align::kCenter));
-  }
-
   ui4::button_bar(out,
-                  {{"A", "TOGGLE / CYCLE"},
-                   {"Y", "CUSTOM NAME / TAG"},
-                   {"X", borrowed_id > 0 ? "BORROW / RETURN" : "DRIVE SHARED CAR"},
-                   {"B", "CLOSE"}},
+                  {{"A", loc_str("Clubs", "IDS_ToggleShare", "TOGGLE / CYCLE")},
+                   {"Y", loc_str("Clubs", "IDS_EditNameTag", "EDIT NAME / TAG")},
+                   {"X", borrowed_id > 0 ? loc_str("Clubs", "IDS_ReturnCar", "BORROW / RETURN")
+                                         : loc_str("Clubs", "IDS_DriveShared", "DRIVE SHARED CAR")},
+                   {"B", loc_str("HelpButtons", "IDS_Back", "CLOSE")}},
                   W, H, 72.0f);
 
   const OnScreenKeyboard* active_osk = (st.osk && st.osk->is_open()) ? st.osk

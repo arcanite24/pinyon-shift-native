@@ -77,10 +77,49 @@ void draw_radio_popup_gpu(ui::List& l, const RadioPopupGpuState& st, float scree
   const float a = std::clamp(st.alpha, 0.0f, 1.0f);
   if (a <= 0.005f) return;
   const float s = screen_h / 720.0f;
-  // 947_HUD/RadioStation: RS_* logo [1053,353..1221,433], #212121 HUDPILL01 title (B@15px R),
-  // #F90064 HUDPILL01 artist (B@15px R), right-aligned above the tachometer.
+  // 947_HUD/RadioStation: adjacent-station carousel + RS_* logo [1053,353..1221,433],
+  // #212121 HUDPILL01 title (B@15px R), #F90064 HUDPILL01 artist (B@15px R), above the tachometer.
   const float right_x = screen_w - (1280.0f - 1221.0f) * s;
   const float top_y = screen_h - (720.0f - 353.0f) * s;
+
+  // R3-UI-11: Adjacent-station carousel strip (PREV | ACTIVE FREQ/GENRE | NEXT).
+  if (!st.prev_station_label.empty() || !st.next_station_label.empty() || !st.station_frequency.empty()) {
+    const float car_y = top_y - 28.0f * s;
+    const float pill_h = 22.0f * s;
+    const std::string cur_meta = !st.station_frequency.empty()
+                                     ? (st.station_frequency + (st.station_genre.empty() ? "" : ("  •  " + st.station_genre)))
+                                     : (!st.station_label.empty() ? st.station_label : st.station_name);
+    ui::TextStyle side_ts = ui4::style(ui::Font::kB, 10.0f * s, ui::fade(ui::rgba(205, 210, 222, 220), a),
+                                       ui::Align::kCenter, true);
+    ui::TextStyle mid_ts = ui4::style(ui::Font::kE, 10.5f * s, ui::fade(kWhite, a), ui::Align::kCenter);
+
+    const std::string next_lbl = st.next_station_label.empty() ? std::string() : (st.next_station_label + " >");
+    const std::string prev_lbl = st.prev_station_label.empty() ? std::string() : ("< " + st.prev_station_label);
+    const float next_w = next_lbl.empty() ? 0.0f : std::min(132.0f * s, ui::List::measure(next_lbl, side_ts) + 18.0f * s);
+    const float mid_w = std::clamp(ui::List::measure(cur_meta, mid_ts) + 22.0f * s, 96.0f * s, 200.0f * s);
+    const float prev_w = prev_lbl.empty() ? 0.0f : std::min(132.0f * s, ui::List::measure(prev_lbl, side_ts) + 18.0f * s);
+    const float gap = 4.0f * s;
+
+    float rx = right_x;
+    if (next_w > 0.0f) {
+      l.rect(rx - next_w, car_y + 2.0f * s, rx, car_y + pill_h - 1.0f * s, ui::fade(ui::rgba(18, 20, 26, 170), a));
+      ui::TextStyle nts = side_ts;
+      ui4::fit_text(next_lbl, nts, next_w - 8.0f * s, 7.5f * s);
+      l.text(rx - 0.5f * next_w, car_y + 5.5f * s, next_lbl, nts);
+      rx -= next_w + gap;
+    }
+    l.rect(rx - mid_w, car_y, rx, car_y + pill_h, ui::fade(st.off ? ui4::kPillGrey : kPink, a));
+    ui::TextStyle mts = mid_ts;
+    ui4::fit_text(cur_meta, mts, mid_w - 10.0f * s, 7.5f * s);
+    l.text(rx - 0.5f * mid_w, car_y + 5.0f * s, cur_meta, mts);
+    rx -= mid_w + gap;
+    if (prev_w > 0.0f) {
+      l.rect(rx - prev_w, car_y + 2.0f * s, rx, car_y + pill_h - 1.0f * s, ui::fade(ui::rgba(18, 20, 26, 170), a));
+      ui::TextStyle pts = side_ts;
+      ui4::fit_text(prev_lbl, pts, prev_w - 8.0f * s, 7.5f * s);
+      l.text(rx - 0.5f * prev_w, car_y + 5.5f * s, prev_lbl, pts);
+    }
+  }
 
   std::array<float, 4> logo_uv{};
   const std::string tex = radio_logo_texture_path(st.station_name, st.off);
@@ -154,7 +193,8 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
     ui4::TiltScope top_rot(l, 0.5f * screen_w, 120.0f * s, tilt_rad);
     ui4::title_tape(l, s, 82.0f * s, 42.0f * s, header, ui4::kPink, 38.0f, 520.0f);
     if (!is_hub) {
-      static const std::vector<std::string> kEventTabs = {"ALL", "FESTIVAL", "STREET", "SHOWCASES", "SHOWDOWNS"};
+      static const std::vector<std::string> kEventTabs = {"ALL", "FESTIVAL", "STREET", "SHOWCASES", "SHOWDOWNS",
+                                                          "RIVALS"};
       ui4::tab_strip(l, s, 82.0f * s, 108.0f * s, screen_w - 82.0f * s, kEventTabs, int(page.active_tab()), true,
                      ui4::kPink);
     }
@@ -186,10 +226,10 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
       const int first = std::clamp(sel - count / 2, 0, std::max(0, n - count));
       const float pitch = 288.0f * s;
       const float cw = 268.0f * s;
-      const float ch = 354.0f * s;
+      const float ch = 310.0f * s;
       const float total_w = float(count - 1) * pitch + cw;
       const float start_x = std::max(56.0f * s, 0.5f * (screen_w - total_w));
-      const float card_y0 = is_hub ? 148.0f * s : 168.0f * s;
+      const float card_y0 = is_hub ? 132.0f * s : 150.0f * s;
 
       for (int i = first; i < first + count; ++i) {
         const auto& e = entries[size_t(i)];
@@ -212,7 +252,7 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
         // 2. Ticket body + REAL Horizon.zip/EventTickets/{FestivalRaces,StreetRaces,Showcases,NemesisTickets}/*.xds!
         l.rect(cx0, cy0, cx1, cy1, ui::rgba(22, 24, 28, 244));
         const float art_y0 = cy0 + 34.0f * s;
-        const float art_y1 = cy0 + 216.0f * s;
+        const float art_y1 = cy0 + 180.0f * s;
         const int ev_id = e.event ? int(e.event->event_id) : (i + 1);
         const int ev_style = e.event ? int(e.event->style) : (is_hub ? 2 : 1);
         const uint32_t art_tint = !e.unlocked ? ui::rgba(145, 150, 160, 210)
@@ -329,23 +369,50 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
         }
       }
 
-      // Compact bottom tilted cursor counter + selected restriction strip (ZERO giant side wall!)
+      // R3-UI-09: Full multi-line Event Details Panel displaying ALL restrictions, format, payout & prize car without truncation.
       std::string d_title, dummy_t;
       std::vector<std::string> dummy_lines, d_lines;
       int dummy_sel = 0;
       page.fill(dummy_t, dummy_lines, dummy_sel, d_title, d_lines);
-      const float info_y = card_y0 + ch + 14.0f * s;
+      const float info_y = card_y0 + ch + 10.0f * s;
+      const float panel_x0 = 64.0f * s;
+      const float panel_x1 = screen_w - 64.0f * s;
+      const int max_rows = 4;
+      const int nlines = int(d_lines.size());
+      const bool two_col = nlines > 3;
+      const int rows_used = two_col ? std::min(max_rows, (nlines + 1) / 2) : std::max(1, std::min(max_rows, nlines));
+      const float line_h = 20.0f * s;
+      const float panel_h = std::min(120.0f * s, 30.0f * s + float(rows_used) * line_h);
+      ui4::panel01(l, panel_x0, info_y, panel_x1, info_y + panel_h, s, ui::rgba(16, 18, 24, 234), ui4::kPink);
+
+      // Header row: event counter + detail title
       char cbuf[32];
       std::snprintf(cbuf, sizeof cbuf, "%d / %d", sel + 1, n);
-      ui4::pill(l, 68.0f * s, info_y, 180.0f * s, info_y + 28.0f * s, ui4::kBrushBlack, ui4::PillKind::kMenu);
-      l.text(124.0f * s, info_y + 7.0f * s, cbuf, ui4::style(ui::Font::kD, 14.0f * s, ui4::kWhite, ui::Align::kCenter));
-      if (!d_lines.empty()) {
-        std::string summary = d_lines[0];
-        if (d_lines.size() > 1) summary += "   •   " + d_lines[1];
-        ui4::pill(l, 192.0f * s, info_y, screen_w - 68.0f * s, info_y + 28.0f * s, ui4::kPillGrey, ui4::PillKind::kPillBig);
-        ui::TextStyle ss = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kLeft, true);
-        ui4::fit_text(summary, ss, screen_w - 290.0f * s, 9.5f * s);
-        l.text(206.0f * s, info_y + 7.0f * s, summary, ss);
+      l.rect(panel_x0 + 10.0f * s, info_y + 6.0f * s, panel_x0 + 78.0f * s, info_y + 24.0f * s, ui4::kPink);
+      l.text(panel_x0 + 44.0f * s, info_y + 9.0f * s, cbuf,
+             ui4::style(ui::Font::kD, 11.5f * s, ui4::kWhite, ui::Align::kCenter));
+      l.text(panel_x0 + 90.0f * s, info_y + 8.5f * s, d_title.empty() ? "EVENT DETAILS" : d_title,
+             ui4::style(ui::Font::kE, 12.5f * s, ui4::kYellow));
+
+      const float col_pad = 16.0f * s;
+      const float full_w = (panel_x1 - panel_x0) - 2.0f * col_pad;
+      const float col_w = two_col ? (0.5f * full_w - 10.0f * s) : full_w;
+      const float body_y = info_y + 28.0f * s;
+      const int show_n = std::min(nlines, two_col ? (max_rows * 2) : max_rows);
+      for (int li = 0; li < show_n; ++li) {
+        const int col = two_col ? (li / rows_used) : 0;
+        const int row = two_col ? (li % rows_used) : li;
+        const float lx = panel_x0 + col_pad + (col > 0 ? (col_w + 20.0f * s) : 0.0f);
+        const float ly = body_y + float(row) * line_h;
+        const std::string& line = d_lines[size_t(li)];
+        uint32_t col_txt = ui4::kWhite;
+        if (line.rfind("1ST PLACE PRIZE CAR:", 0) == 0 || line.rfind("BONUS CAR:", 0) == 0) col_txt = ui4::kYellow;
+        else if (line.rfind("LOCKED:", 0) == 0 || line.rfind("INELIGIBLE:", 0) == 0) col_txt = ui4::kRed;
+        else if (line.rfind("RESTRICTIONS:", 0) == 0 || line.rfind("RULE:", 0) == 0) col_txt = ui4::kAmber;
+        else if (line.rfind("READY TO RACE", 0) == 0) col_txt = ui4::kGreen;
+        ui::TextStyle lts = ui4::style(ui::Font::kB, 11.5f * s, col_txt, ui::Align::kLeft, true);
+        ui4::fit_text(line, lts, col_w, 8.5f * s);
+        l.text(lx, ly, line, lts);
       }
     }
   }
@@ -750,6 +817,13 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
              std::string("REWIND: ") + (ls.controls.assists.rewind ? "ON" : "OFF") + "  •  TCS: " +
                  (ls.controls.assists.traction_control ? "ON" : "OFF"),
              ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+      // Explicit language-independent controller layout diagram on the Controls tab (R3-UI-06).
+      ui4::ControllerDiagramParams cd;
+      page.fill_controller_diagram(cd);
+      if (cd.enabled && (list_y1 - (list_y0 + card_h + 12.0f * s)) >= 120.0f * s) {
+        ui4::draw_controller_layout_diagram(l, rx0, list_y0 + card_h + 12.0f * s, rx1, list_y1, s, cd.layout_id,
+                                            cd.swap_handbrake_clutch, cd.highlight_action);
+      }
     }
   }
 
@@ -871,6 +945,8 @@ std::vector<std::string> wrap_tip_lines(std::string_view text, const ui::TextSty
 
 void LoadingScreen::start(std::string destination_title, std::string subtitle) {
   active_ = true;
+  fading_out_ = false;
+  fade_out_elapsed_ = 0.0;
   title_ = std::move(destination_title);
   subtitle_ = std::move(subtitle);
   elapsed_ = 0.0;
@@ -885,6 +961,28 @@ void LoadingScreen::start(std::string destination_title, std::string subtitle) {
         "Adjust ABS, Traction Control, and Manual + Clutch in Settings to boost your race credit bonus.",
     };
   }
+}
+
+void LoadingScreen::stop() {
+  if (active_) {
+    active_ = false;
+    fading_out_ = true;
+    fade_out_elapsed_ = 0.0;
+  }
+}
+
+float LoadingScreen::veil_alpha() const {
+  if (active_) {
+    if (elapsed_ >= kFadeInSec) return 0.0f;
+    const float u = 1.0f - float(std::clamp(elapsed_ / kFadeInSec, 0.0, 1.0));
+    return u * u;
+  }
+  if (fading_out_) {
+    const float t = float(std::clamp(fade_out_elapsed_ / kFadeOutSec, 0.0, 1.0));
+    const float u = 1.0f - t;
+    return u * u;
+  }
+  return 0.0f;
 }
 
 bool LoadingScreen::load_definitions(const std::filesystem::path& game_root, const std::string& group) {
@@ -950,8 +1048,16 @@ void LoadingScreen::set_tips(std::vector<std::string> tips) {
 void LoadingScreen::set_progress(float p) { progress_ = std::clamp(p, 0.0f, 1.0f); }
 
 void LoadingScreen::update(double dt) {
-  if (!active_) return;
   dt = std::max(0.0, dt);
+  if (fading_out_) {
+    fade_out_elapsed_ += dt;
+    if (fade_out_elapsed_ >= kFadeOutSec) {
+      fading_out_ = false;
+      fade_out_elapsed_ = kFadeOutSec;
+    }
+    return;
+  }
+  if (!active_) return;
   elapsed_ += dt;
   tip_timer_ += dt;
   if (tip_timer_ >= 5.0 && !tips_.empty()) {
@@ -973,7 +1079,15 @@ const std::string& LoadingScreen::current_tip_title() const {
 }
 
 void LoadingScreen::draw(ui::List& l, float screen_w, float screen_h) const {
-  if (!active_) return;
+  if (!active_) {
+    if (fading_out_) {
+      const float va = veil_alpha();
+      if (va > 0.004f) {
+        l.rect(0.0f, 0.0f, screen_w, screen_h, ui::rgba(8, 10, 14, uint8_t(std::lround(va * 255.0f))));
+      }
+    }
+    return;
+  }
   const float s = screen_h / 720.0f;
   const SceneFrame f{0.5f * screen_w - 640.0f * s, 0.5f * screen_h - 360.0f * s, s};
   const fh1::UiScene* sc_ptr = ui_scene("2_C_INI_LOADING");
@@ -1088,6 +1202,12 @@ void LoadingScreen::draw(ui::List& l, float screen_w, float screen_h) const {
   }
   ui::TextStyle lw = ui4::style(ui::Font::kB, 11.0f * s, ui4::kOffWhite, ui::Align::kCenter);
   l.text(sp_cx, sp_cy + 28.0f * s, loc_str("ScreenTitles", "IDS_Loading", "LOADING"), lw);
+
+  // R3-UI-10: Smooth ~0.25 s ease-out fade-in veil on LoadingScreen entry.
+  const float entry_veil = veil_alpha();
+  if (entry_veil > 0.004f) {
+    l.rect(0.0f, 0.0f, screen_w, screen_h, ui::rgba(8, 10, 14, uint8_t(std::lround(entry_veil * 255.0f))));
+  }
 }
 
 // ------------------------------------------------ Virtual On-Screen Keyboard

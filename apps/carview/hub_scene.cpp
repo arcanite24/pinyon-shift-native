@@ -1007,6 +1007,31 @@ int GarageBrowser::ready_restoration_count() const {
   return n;
 }
 
+bool GarageBrowser::handle_tab_click(int tab_index) {
+  switch (tab_index) {
+    case 0:
+      set_tab(GarageTab::kMyCars);
+      return true;
+    case 1:
+      set_tab(GarageTab::kRestorationBay);
+      return true;
+    case 2:
+      if (tab_ != GarageTab::kMyCars) set_tab(GarageTab::kMyCars);
+      cycle_sort(1);
+      return true;
+    case 3:
+      if (tab_ != GarageTab::kMyCars) set_tab(GarageTab::kMyCars);
+      cycle_class_filter(1);
+      return true;
+    case 4:
+      if (tab_ != GarageTab::kMyCars) set_tab(GarageTab::kMyCars);
+      toggle_favorites_filter();
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool GarageBrowser::claim_selected_restoration(garage::Garage& g, const cars::PartsDb* db,
                                                const std::vector<garage::ClassBand>& bands,
                                                const AwardCarCallback& award_fn, std::string& claimed_barn_id_out,
@@ -2261,11 +2286,15 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
 
     if (!in_bay) {
       const float flt_y = 95.0f * s;
+      // Filter/sort chips are clickable via kHitTab 2 = SORT, 3 = CLASS FILTER, 4 = FAVORITES.
+      list.add_hit(56.0f * s, flt_y, 232.0f * s, flt_y + 24.0f * s, ui::kHitTab, 2);
       ui4::pill(list, 56.0f * s, flt_y, 232.0f * s, flt_y + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
       list.text(70.0f * s, flt_y + 5.0f * s, "SORT: " + std::string(garage_sort_name(browser.sort_mode())),
                 ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+      list.add_hit(238.0f * s, flt_y, 418.0f * s, flt_y + 24.0f * s, ui::kHitTab, 3);
       ui4::pill(list, 238.0f * s, flt_y, 418.0f * s, flt_y + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
       list.text(252.0f * s, flt_y + 5.0f * s, "FILTER: " + filt, ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+      list.add_hit(424.0f * s, flt_y, 580.0f * s, flt_y + 24.0f * s, ui::kHitTab, 4);
       ui4::pill(list, 424.0f * s, flt_y, 580.0f * s, flt_y + 24.0f * s,
                 browser.favorites_only() ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
       list.text(438.0f * s, flt_y + 5.0f * s, browser.favorites_only() ? "FAVORITES: ONLY" : "FAVORITES: ALL",

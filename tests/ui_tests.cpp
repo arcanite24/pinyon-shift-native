@@ -476,10 +476,12 @@ void test_hud_abs_tcs_lamps() {
   };
   const uint32_t off_col = fade(rgba(110, 114, 122), 0.36f);
   const uint32_t on_col = fade(rgba(232, 236, 244), 0.92f);
+  const uint32_t blink_on_col = rgba(255, 168, 28, 255);
 
   {
     List l;
     carview::DriveHud d;
+    d.abs_enabled = false, d.tcs_enabled = false;
     d.abs = false, d.tcs = false;
     carview::build_drive_hud(l, d, 1280, 720);
     CHECK(find_colour(l, 0.1f) == off_col);
@@ -488,7 +490,8 @@ void test_hud_abs_tcs_lamps() {
   {
     List l;
     carview::DriveHud d;
-    d.abs = true, d.tcs = false;
+    d.abs_enabled = true, d.tcs_enabled = false;
+    d.abs = false, d.tcs = false;
     carview::build_drive_hud(l, d, 1280, 720);
     CHECK(find_colour(l, 0.1f) == on_col);
     CHECK(find_colour(l, 0.3f) == off_col);
@@ -496,9 +499,20 @@ void test_hud_abs_tcs_lamps() {
   {
     List l;
     carview::DriveHud d;
-    d.abs = false, d.tcs = true;
+    d.abs_enabled = false, d.tcs_enabled = true;
+    d.abs = false, d.tcs = false;
     carview::build_drive_hud(l, d, 1280, 720);
     CHECK(find_colour(l, 0.1f) == off_col);
+    CHECK(find_colour(l, 0.3f) == on_col);
+  }
+  {
+    List l;
+    carview::DriveHud d;
+    d.abs_enabled = true, d.tcs_enabled = true;
+    d.abs = true, d.abs_flash_timer = 0.25f;
+    d.time = 0.035;  // sin(2*pi*7*0.035) > 0 -> amber blink ON
+    carview::build_drive_hud(l, d, 1280, 720);
+    CHECK(find_colour(l, 0.1f) == blink_on_col);
     CHECK(find_colour(l, 0.3f) == on_col);
   }
 }

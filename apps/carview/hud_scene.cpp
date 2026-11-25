@@ -571,4 +571,51 @@ std::vector<float> SceneDraw::stacker_positions(float origin, float step, int vi
   return fh1::reflow_stacker(origin, step, visible_count);
 }
 
+void UiTransitionTracker::set_duration(float seconds) {
+  duration_ = std::max(0.01f, seconds);
+  elapsed_ = std::clamp(elapsed_, 0.0f, duration_);
+}
+
+float UiTransitionTracker::step(std::string_view screen_id, float dt) {
+  const float safe_dt = std::clamp(dt, 0.0f, 0.1f);
+  if (!screen_id.empty()) {
+    if (screen_id != active_screen_ || closing_) {
+      active_screen_ = std::string(screen_id);
+      closing_ = false;
+      elapsed_ = 0.0f;
+    }
+    elapsed_ = std::min(duration_, elapsed_ + safe_dt);
+  } else if (!active_screen_.empty()) {
+    closing_ = true;
+    elapsed_ = std::max(0.0f, elapsed_ - safe_dt);
+    if (elapsed_ <= 1e-5f) {
+      active_screen_.clear();
+      closing_ = false;
+    }
+  }
+  return progress();
+}
+
+float UiTransitionTracker::raw_progress() const {
+  if (active_screen_.empty()) return 0.0f;
+  return duration_ > 1e-5f ? std::clamp(elapsed_ / duration_, 0.0f, 1.0f) : 1.0f;
+}
+
+float UiTransitionTracker::progress() const { return ui4::ease_out3(raw_progress()); }
+
+void UiTransitionTracker::reset() {
+  active_screen_.clear();
+  elapsed_ = duration_;
+  closing_ = false;
+}
+
+UiTransitionTracker& ui_transition_tracker() {
+  static UiTransitionTracker tracker;
+  return tracker;
+}
+
+float ui_screen_open_progress(std::string_view screen_id, float dt) {
+  return ui_transition_tracker().step(screen_id, dt);
+}
+
 }  // namespace carview

@@ -652,12 +652,107 @@ bool parse_fmv_subtitles(std::string_view xml, std::vector<FmvSubtitleCue>& out)
     FmvSubtitleCue cue;
     cue.index = std::atoi(uname.c_str() + 8);
     cue.start_s = c.number("Start", 0.0);
+    if (c.has("End")) cue.end_s = c.number("End", -1.0);
+    else if (c.has("Stop")) cue.end_s = c.number("Stop", -1.0);
+    if (c.has("Duration")) cue.duration_s = c.number("Duration", -1.0);
+    else if (c.has("Dur")) cue.duration_s = c.number("Dur", -1.0);
+    if (cue.end_s < 0.0 && cue.duration_s > 0.0) {
+      cue.end_s = cue.start_s + cue.duration_s;
+    }
     out.push_back(cue);
   }
   std::sort(out.begin(), out.end(), [](const FmvSubtitleCue& a, const FmvSubtitleCue& b) {
     return a.start_s < b.start_s;
   });
   return !out.empty();
+}
+
+std::vector<std::string> wrap_fmv_subtitle(std::string_view text, float max_width_px, const ui::TextStyle& ts) {
+  std::vector<std::string> lines;
+  if (text.empty()) return lines;
+  const float limit = std::max(40.0f, max_width_px);
+
+  auto push_long_token = [&](const std::string& tok, std::string& cur) {
+    // UTF-8 safe fallback split when a single unspaced word/CJK phrase exceeds `limit`.
+    size_t i = 0;
+    while (i < tok.size()) {
+      size_t step = 1;
+      const unsigned char b = static_cast<unsigned char>(tok[i]);
+      if ((b & 0xE0u) == 0xC0u) step = 2;
+      else if ((b & 0xF0u) == 0xE0u) step = 3;
+      else if ((b & 0xF8u) == 0xF0u) step = 4;
+      step = std::min(step, tok.size() - i);
+      const std::string cp = tok.substr(i, step);
+      const std::string cand = cur + cp;
+      if (!cur.empty() && ui::List::measure(cand, ts) > limit) {
+        lines.push_back(cur);
+        cur = cp;
+      } else {
+        cur = cand;
+      }
+      i += step;
+    }
+  };
+
+  size_t line_start = 0;
+  while (line_start <= text.size()) {
+    size_t nl = text.find('\n', line_start);
+    const std::string_view para =
+        (nl == std::string_view::npos) ? text.substr(line_start) : text.substr(line_start, nl - line_start);
+    std::string cur;
+    size_t p = 0;
+    while (p < para.size()) {
+      while (p < para.size() && (para[p] == ' ' || para[p] == '\t' || para[p] == '\r')) ++p;
+      if (p >= para.size()) break;
+      size_t end = p;
+      while (end < para.size() && para[end] != ' ' && para[end] != '\t' && para[end] != '\r') ++end;
+      const std::string word(para.substr(p, end - p));
+      p = end;
+      if (word.empty()) continue;
+      const std::string cand = cur.empty() ? word : (cur + " " + word);
+      if (ui::List::measure(cand, ts) <= limit) {
+        cur = cand;
+      } else {
+        if (!cur.empty()) {
+          lines.push_back(cur);
+          cur.clear();
+        }
+        if (ui::List::measure(word, ts) <= limit) {
+          cur = word;
+        } else {
+          push_long_token(word, cur);
+        }
+      }
+    }
+    if (!cur.empty()) lines.push_back(cur);
+    if (nl == std::string_view::npos) break;
+    line_start = nl + 1;
+  }
+  return lines;
+}
+
+double fmv_pll_step_clock(double video_clock_s, double dt_s, double audio_clock_s) {
+  const double step_dt = std::clamp(dt_s, 0.0, 0.1);
+  double next = video_clock_s + step_dt;
+  const double err = audio_clock_s - next;  // >0: audio leads video; <0: audio lags video
+  constexpr double kDeadband = 0.040;       // +/-40 ms jitter-free deadband
+  if (std::fabs(err) <= kDeadband) {
+    return next;
+  }
+  if (err > 0.500) {
+    // Large forward audio discontinuity: catch up cleanly without jumping backwards.
+    return std::max(video_clock_s, audio_clock_s);
+  }
+  if (err < -0.500) {
+    // Video is far ahead of audio: gently hold clock at current timestamp until audio catches up.
+    return video_clock_s;
+  }
+  const double excess = (err > 0.0) ? (err - kDeadband) : (err + kDeadband);
+  const bool large_drift = std::fabs(err) > 0.120;
+  const double gain = large_drift ? 0.35 : 0.18;
+  const double max_corr = std::max(0.001, step_dt * (large_drift ? 0.35 : 0.12));
+  const double corr = std::clamp(excess * gain, -max_corr, max_corr);
+  return std::max(video_clock_s, next + corr);
 }
 
 FmvPlayer::~FmvPlayer() { close(); }
@@ -949,6 +1044,7 @@ bool FmvPlayer::open(const std::filesystem::path& wmv_path, std::string_view lan
   audio_eof_.store(false, std::memory_order_release);
   audio_frames_played_.store(0, std::memory_order_release);
   clock_s_ = 0.0;
+  hold_skip_progress_ = 0.0f;
   finished_ = false;
   paused_.store(false, std::memory_order_release);
   synthetic_ = false;
@@ -1016,6 +1112,7 @@ void FmvPlayer::open_synthetic(int w, int h, double fps, double duration_s, std:
   duration_s_ = std::max(0.1, duration_s);
   title_ = std::move(title);
   clock_s_ = 0.0;
+  hold_skip_progress_ = 0.0f;
   finished_ = false;
   paused_.store(false, std::memory_order_release);
   synthetic_ = true;
@@ -1037,6 +1134,7 @@ void FmvPlayer::close() {
   }
   audio_ring_.clear();
   finished_ = false;
+  hold_skip_progress_ = 0.0f;
   paused_.store(false, std::memory_order_release);
   synthetic_ = false;
   subtitles_.clear();
@@ -1046,6 +1144,27 @@ void FmvPlayer::skip() {
   if (!active_.load(std::memory_order_acquire)) return;
   close();
   finished_ = true;
+}
+
+float FmvPlayer::update_hold_skip(double dt, bool holding) {
+  if (!active_.load(std::memory_order_acquire)) {
+    hold_skip_progress_ = 0.0f;
+    return 0.0f;
+  }
+  dt = std::clamp(dt, 0.0, 0.25);
+  if (holding) {
+    hold_skip_progress_ = std::min(1.0f, hold_skip_progress_ + float(dt / kHoldToSkipSeconds));
+  } else {
+    hold_skip_progress_ = std::max(0.0f, hold_skip_progress_ - float(dt * 3.0));
+  }
+  return hold_skip_progress_;
+}
+
+void FmvPlayer::set_subtitles(std::vector<FmvSubtitleCue> cues) {
+  subtitles_ = std::move(cues);
+  std::sort(subtitles_.begin(), subtitles_.end(), [](const FmvSubtitleCue& a, const FmvSubtitleCue& b) {
+    return a.start_s < b.start_s;
+  });
 }
 
 void FmvPlayer::push_audio_stereo(const float* stereo, size_t n_floats) {
@@ -1061,9 +1180,19 @@ void FmvPlayer::push_audio_stereo(const float* stereo, size_t n_floats) {
 int FmvPlayer::current_subtitle_index() const {
   for (size_t i = 0; i < subtitles_.size(); ++i) {
     const double start = subtitles_[i].start_s;
-    const double end = (i + 1 < subtitles_.size())
-                           ? std::min(subtitles_[i + 1].start_s, start + 6.5)
-                           : (start + 5.5);
+    double end = -1.0;
+    if (subtitles_[i].end_s > start) {
+      end = subtitles_[i].end_s;
+    } else if (subtitles_[i].duration_s > 0.0) {
+      end = start + subtitles_[i].duration_s;
+    } else {
+      end = (i + 1 < subtitles_.size())
+                ? std::min(subtitles_[i + 1].start_s, start + 6.5)
+                : (start + 5.5);
+    }
+    if (i + 1 < subtitles_.size() && subtitles_[i + 1].start_s > start) {
+      end = std::min(end, subtitles_[i + 1].start_s);
+    }
     if (clock_s_ >= start && clock_s_ < end) return subtitles_[i].index;
   }
   return -1;
@@ -1640,8 +1769,8 @@ bool FmvPlayer::update(double dt, bool audio_synced) {
   const int64_t played = audio_frames_played_.load(std::memory_order_acquire);
   if (audio_synced && played > 0 && !audio_eof_.load(std::memory_order_acquire)) {
     const double a_clock = double(played) / double(kAudioRate);
-    // Keep clock tightly coupled to audio clock without jumping backwards.
-    clock_s_ = std::max(clock_s_, a_clock);
+    // R3-UI-14: Gentle +/-40 ms deadband audio-clock PLL video sync (no frame jitter or backward jumps).
+    clock_s_ = fmv_pll_step_clock(clock_s_, dt, a_clock);
   } else {
     clock_s_ += std::max(0.0, dt);
   }
@@ -1746,21 +1875,42 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
 
   const std::string resolved_sub = subtitle_text.empty() ? current_subtitle_text() : std::string(subtitle_text);
   if (!resolved_sub.empty()) {
-    const float pad_y = 602.0f * s;
     ui::TextStyle ts = ui4::style(ui::Font::kA, 17.5f * s, ui4::kWhite, ui::Align::kCenter, true);
-    const float sw = std::clamp(ui::List::measure(resolved_sub, ts) + 56.0f * s, 320.0f * s, screen_w * 0.80f);
-    // Sharp FH1 HUDPILL01 subtitle strip (ZERO 4px rounded boxes!).
-    ui4::pill(l, 0.5f * (screen_w - sw), pad_y - 6.0f * s, 0.5f * (screen_w + sw), pad_y + 32.0f * s,
-              ui4::kCharcoalDark, ui4::PillKind::kHud01);
-    l.rect(0.5f * (screen_w - sw), pad_y - 6.0f * s, 0.5f * (screen_w - sw) + 4.0f * s, pad_y + 32.0f * s, ui4::kPink);
-    l.text(screen_w * 0.5f, pad_y + 4.0f * s, resolved_sub, ts);
+    const float max_box_w = std::max(260.0f * s, screen_w * 0.80f);
+    const float max_text_w = std::max(160.0f * s, max_box_w - 56.0f * s);
+    const std::vector<std::string> lines = wrap_fmv_subtitle(resolved_sub, max_text_w, ts);
+    if (!lines.empty()) {
+      float widest = 0.0f;
+      for (const auto& ln : lines) widest = std::max(widest, ui::List::measure(ln, ts));
+      const float sw = std::clamp(widest + 56.0f * s, 320.0f * s, max_box_w);
+      const float line_h = ts.size * 1.28f;
+      const float box_h = std::max(38.0f * s, float(lines.size()) * line_h + 14.0f * s);
+      const float box_y1 = screen_h - 86.0f * s;
+      const float box_y0 = box_y1 - box_h;
+      const float x0 = 0.5f * (screen_w - sw);
+      const float x1 = 0.5f * (screen_w + sw);
+      // Sharp FH1 HUDPILL01 multi-line subtitle strip (ZERO 4px rounded boxes!).
+      ui4::pill(l, x0, box_y0, x1, box_y1, ui4::kCharcoalDark, ui4::PillKind::kHud01);
+      l.rect(x0, box_y0, x0 + 4.0f * s, box_y1, ui4::kPink);
+      const float text_top = box_y0 + 0.5f * (box_h - float(lines.size()) * line_h);
+      for (size_t li = 0; li < lines.size(); ++li) {
+        l.text(screen_w * 0.5f, text_top + float(li) * line_h, lines[li], ts);
+      }
+    }
   }
 
   if (show_skip_prompt) {
-    // Authentic BUTTON_BAR_SCENE skip prompt + optional hold-to-skip progress fill.
-    const float hp = std::clamp(hold_skip_progress, 0.0f, 1.0f);
-    ui4::button_bar(l, {{"A", hp > 0.01f ? "SKIPPING..." : "HOLD / PRESS TO SKIP"}}, screen_w, screen_h, 70.0f);
+    // Authentic BUTTON_BAR_SCENE hold-to-skip prompt + progress ring & fill bar (0.75 s hold).
+    const float hp = std::clamp(std::max(hold_skip_progress, hold_skip_progress_), 0.0f, 1.0f);
+    ui4::button_bar(l, {{"A", hp > 0.01f ? "SKIPPING..." : "HOLD TO SKIP"}}, screen_w, screen_h, 70.0f);
     if (hp > 0.01f) {
+      const float rcx = screen_w - 280.0f * s;
+      const float rcy = screen_h - 32.0f * s;
+      const float rr = 11.0f * s;
+      constexpr float kTwoPi = 6.2831853f;
+      constexpr float kStartAng = -1.5707963f;
+      l.arc(rcx, rcy, rr, 2.5f * s, 0.0f, kTwoPi, ui::rgba(255, 255, 255, 55));
+      l.arc(rcx, rcy, rr, 3.0f * s, kStartAng, kStartAng + kTwoPi * hp, ui4::kPink);
       const float bx0 = screen_w - 260.0f * s, bx1 = screen_w - 64.0f * s;
       const float by0 = screen_h - 36.0f * s, by1 = screen_h - 28.0f * s;
       l.rect(bx0, by0, bx1, by1, ui::rgba(255, 255, 255, 55));

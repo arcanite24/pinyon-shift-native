@@ -202,6 +202,9 @@ class GarageBrowser {
     return selected_restoration_ < restorations_.size() ? &restorations_[selected_restoration_] : nullptr;
   }
   int ready_restoration_count() const;
+  // Handles a mouse click on Garage top tab/filter hit-zones (kHitTab 0..4):
+  // 0 = MY CARS, 1 = RESTORATION BAY, 2 = SORT, 3 = CLASS FILTER, 4 = FAVORITES.
+  bool handle_tab_click(int tab_index);
 
   using AwardCarCallback =
       std::function<std::string(int64_t car_id, int colour_seq, bool select_it, bool is_prize)>;

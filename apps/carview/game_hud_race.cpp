@@ -510,29 +510,105 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
           l.text(cx, top_y, dtxt, ts);
         }
       }
-    } else if (racing && r.clock < 40.0 / 60.0) {
-      const float a = 1 - clamp01((r.clock - 0.5) / 0.17);
-      if (go_node >= 0) {
-        sc.text(l, cf, go_node, "GO!", ui::fade(kSoft, a), 2.0f, 2.0f, false);
-        sc.text(l, cf, go_node, "GO!", ui::fade(kText, a), 0, 0, false);
-      } else {
-        shadowed(l, g.C(637.5f), g.T(230), "GO!", font(ui::Font::kE, 64 * s, ui::fade(kText, a), Align::kCenter), s);
+    } else if (racing && r.clock >= 0.0 && r.clock < 0.80) {
+      // R3-UI-11: Scale-pop animated "GO!" banner fading cleanly over 0.80 s after race start.
+      const float in_u = ease_in_time(r.clock, 0.0, 0.18);
+      const float out_a = 1.0f - clamp01((r.clock - 0.45) / 0.35);
+      const float a = ease_in_time(r.clock, 0.0, 0.06) * out_a;
+      const float pop_scale = (r.clock < 0.18) ? (1.45f - 0.41f * in_u) : (1.04f + 0.14f * clamp01((r.clock - 0.18) / 0.62));
+      if (a > 1e-3f) {
+        float cx = g.C(637.5f);
+        float cy = g.T(252.0f);
+        if (go_node >= 0) {
+          const auto [nx, ny] = sc.at(go_node);
+          cx = cf.x(nx);
+          cy = cf.y(ny);
+        }
+        const std::string go_txt = str("InGame", "IDS_Go", "GO!");
+        TextStyle gts = font(ui::Font::kE, 74.0f * s * pop_scale, ui::fade(kText, a), Align::kCenter);
+        const float tw = ui::List::measure(go_txt, gts);
+        {
+          Turn gt(l, cx, cy, ui4::kTiltRad * 0.55f);
+          const float bw = std::max(176.0f * s, tw + 66.0f * s);
+          const float bh = 68.0f * s * pop_scale;
+          ui4::brush(l, cx - 0.5f * bw, cy - 0.5f * bh, cx + 0.5f * bw, cy + 0.5f * bh, ui::fade(kPink, a * 0.92f),
+                     true);
+        }
+        const float top_y = cy - 0.52f * gts.size;
+        TextStyle glow = gts;
+        glow.color = ui::fade(ui4::kYellow, a * 0.42f);
+        l.text(cx, top_y + 3.0f * s, go_txt, glow);
+        TextStyle sh = gts;
+        sh.color = ui::fade(kSoft, a);
+        l.text(cx + 2.5f * s, top_y + 2.5f * s, go_txt, sh);
+        l.text(cx, top_y, go_txt, gts);
       }
     }
   }
-  // Wrong way: 947_HUD's WrongWay sign (WRONGWAYICON, 582,174-698,290),
-  // pulsing (ours: the scene's animation is not read); without the
-  // texture, a red plate.
-  std::array<float, 4> ww_uv;
-  if (racing && r.wrong_way && ui_texture("HUD/WRONGWAYICON", ww_uv)) {
-    const float pulse = 0.75f + 0.25f * float(std::cos(r.clock * 6.2832 * 1.5));
-    l.image(g.C(582), g.T(174), g.C(698), g.T(290), ww_uv, ui::fade(rgba(255, 255, 255), pulse));
-  } else if (racing && r.wrong_way) {
-    const float pulse = 0.75f + 0.25f * float(std::cos(r.clock * 6.2832 * 1.5));
-    const TextStyle ws = font(ui::Font::kE, 30 * s, kText, Align::kCenter);
-    const float ww = ui::List::measure("WRONG WAY", ws) + 60 * s, wy = g.T(140);
-    l.rect(0.5f * g.w - 0.5f * ww, wy, 0.5f * g.w + 0.5f * ww, wy + 48 * s, ui::fade(kRed, pulse));
-    l.text(0.5f * g.w, wy + 9 * s, "WRONG WAY", ws);
+  // R3-UI-04: Central FH1 pink/amber "MISSED CHECKPOINT" / "RETURNING TO TRACK IN X.X" warning + [Y] Rewind prompt.
+  if (racing && r.missed_checkpoint) {
+    const float pulse = 0.72f + 0.28f * float(std::sin(r.clock * 6.2831853 * 3.5));
+    const float cx = 0.5f * g.w;
+    const float wy0 = g.T(142);
+    const float bw = 420.0f * s;
+    const float x0 = cx - 0.5f * bw, x1 = cx + 0.5f * bw;
+    {
+      Turn mt(l, cx, wy0 + 38.0f * s, ui4::kTiltRad * 0.35f);
+      // Top pink/amber brush warning header.
+      ui4::brush(l, x0, wy0, x1, wy0 + 42.0f * s, ui::fade(ui4::kPink, 0.88f + 0.12f * pulse), true);
+      l.rect(x0, wy0, x0 + 6.0f * s, wy0 + 42.0f * s, ui4::kAmber);
+      l.rect(x1 - 6.0f * s, wy0, x1, wy0 + 42.0f * s, ui4::kAmber);
+      shadowed(l, cx, wy0 + 8.0f * s, "MISSED CHECKPOINT",
+               font(ui::Font::kE, 25.0f * s, ui4::kWhite, Align::kCenter), s);
+
+      // Sub-plate: "RETURNING TO TRACK IN X.X" + live [Y] REWIND glyph prompt + draining countdown bar.
+      const float sy0 = wy0 + 44.0f * s, sy1 = sy0 + 36.0f * s;
+      l.rect(x0 + 12.0f * s, sy0, x1 - 12.0f * s, sy1, rgba(12, 14, 20, 232));
+      l.rect(x0 + 12.0f * s, sy0, x0 + 16.0f * s, sy1, ui4::kAmber);
+      char cbuf[64];
+      std::snprintf(cbuf, sizeof cbuf, "RETURNING TO TRACK IN %.1f", std::max(0.0, r.missed_checkpoint_countdown_s));
+      l.text(x0 + 28.0f * s, sy0 + 9.0f * s, cbuf, font(ui::Font::kE, 14.0f * s, ui4::kAmber));
+
+      // [Y] Rewind prompt on right side of banner.
+      const std::string rw_lbl = str("InGame", "IDS_Rewind", "REWIND");
+      const TextStyle rts = font(ui::Font::kE, 13.5f * s, ui4::kWhite, Align::kRight);
+      const float rw_w = ui::List::measure(rw_lbl, rts);
+      l.text(x1 - 24.0f * s, sy0 + 9.5f * s, rw_lbl, rts);
+      ui4::button_glyph(l, x1 - 24.0f * s - rw_w - 14.0f * s, sy0 + 16.5f * s, 9.5f * s, "Y");
+
+      // Draining countdown progress bar along bottom edge of warning card.
+      const float frac = float(std::clamp(r.missed_checkpoint_countdown_s / MissedCheckpointTracker::kCountdownSec, 0.0, 1.0));
+      const float bx0 = x0 + 16.0f * s, bx1 = x1 - 12.0f * s;
+      l.rect(bx0, sy1 - 4.0f * s, bx1, sy1, rgba(255, 255, 255, 36));
+      if (frac > 0.005f) {
+        l.rect(bx0, sy1 - 4.0f * s, bx0 + (bx1 - bx0) * frac, sy1, ui4::kAmber);
+      }
+    }
+  }
+  // R3-UI-11: Pulsing "WRONG WAY" warning icon + text (always shows both icon and label).
+  if (racing && r.wrong_way) {
+    const float pulse = 0.70f + 0.30f * float(std::cos(r.clock * 6.2832 * 2.2));
+    const float y_off = r.missed_checkpoint ? 86.0f * s : 0.0f;
+    const float cx = 0.5f * g.w;
+    std::array<float, 4> ww_uv{};
+    const float icon_y0 = g.T(162) + y_off;
+    const float icon_sz = 84.0f * s;
+    if (ui_texture("HUD/WRONGWAYICON", ww_uv)) {
+      l.image(cx - 0.5f * icon_sz, icon_y0, cx + 0.5f * icon_sz, icon_y0 + icon_sz, ww_uv,
+              ui::fade(rgba(255, 255, 255), pulse));
+    } else {
+      const float icx = cx, icy = icon_y0 + 0.5f * icon_sz;
+      l.circle(icx, icy, 34.0f * s, ui::fade(kRed, pulse));
+      l.arc(icx, icy, 31.0f * s, 4.0f * s, 0.0f, 6.28318f, ui::fade(ui4::kWhite, pulse));
+      l.rect(icx - 19.0f * s, icy - 5.5f * s, icx + 19.0f * s, icy + 5.5f * s, ui::fade(ui4::kWhite, pulse));
+    }
+    const std::string ww_txt = str("InGame", "IDS_WrongWay", "WRONG WAY");
+    const TextStyle ws = font(ui::Font::kE, 26.0f * s, ui::fade(kText, 0.85f + 0.15f * pulse), Align::kCenter);
+    const float ww = std::max(220.0f * s, ui::List::measure(ww_txt, ws) + 54.0f * s);
+    const float wy = icon_y0 + icon_sz + 4.0f * s;
+    Turn wt(l, cx, wy + 20.0f * s, ui4::kTiltRad * 0.35f);
+    ui4::brush(l, cx - 0.5f * ww, wy, cx + 0.5f * ww, wy + 40.0f * s, ui::fade(kRed, 0.85f * pulse));
+    shadowed(l, cx, wy + 7.0f * s, ww_txt, ws, s);
   }
 }
 
@@ -968,7 +1044,8 @@ void points_page(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout
     ui4::button_bar(l,
                     {{"A", "CONTINUE TO FREE ROAM"},
                      {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART RACE")},
-                     {"V", "WATCH REPLAY"}},
+                     {"X", "WATCH REPLAY"},
+                     {"BACK", "MAP / GPS"}},
                     g.w, g.h);
   } else {
     ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
@@ -1014,7 +1091,8 @@ void won_car_page(ui::List& l, const RaceHud& r, const Layout& g) {
   ui4::button_bar(l,
                   {{"A", "CONTINUE TO FREE ROAM"},
                    {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART RACE")},
-                   {"V", "WATCH REPLAY"}},
+                   {"X", "WATCH REPLAY"},
+                   {"BACK", "MAP / GPS"}},
                   g.w, g.h);
 }
 
@@ -1124,7 +1202,7 @@ void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g)
                     {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")},
                      {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART RACE")},
                      {"X", str("InGame", "IDS_RaceResultsMenu", "RACE RESULTS")},
-                     {"V", "WATCH REPLAY"}},
+                     {"B", "WATCH REPLAY"}},
                     g.w, g.h);
     return;
   }

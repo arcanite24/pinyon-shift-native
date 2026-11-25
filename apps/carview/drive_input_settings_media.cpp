@@ -85,6 +85,8 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 const std::string prev_lang = app.language;
                 app.metric_units = ls.metric_units;
                 replay_viewer.set_metric_units(app.metric_units);
+                photo_mode.set_metric_units(app.metric_units);
+                app.story_intro.set_metric_units(app.metric_units);
                 const bool lang_changed = !ls.language.empty() && ls.language != app.language;
                 if (lang_changed) {
                   app.language = ls.language;
@@ -534,7 +536,9 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
               if (e.type == SDL_EVENT_MOUSE_MOTION) {
                 carview::ui::HitZone hz{};
                 const int n_menu = int(menu.items().size());
-                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow &&
+                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) &&
+                    (hz.group == carview::ui::kHitRow || hz.group == carview::ui::kHitStepLeft ||
+                     hz.group == carview::ui::kHitStepRight) &&
                     hz.index >= 0 && hz.index < n_menu && menu.selected != hz.index) {
                   menu.selected = hz.index;
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
@@ -547,11 +551,46 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 } else if (e.button.button == SDL_BUTTON_LEFT) {
                   carview::ui::HitZone hz{};
                   const int n_menu = int(menu.items().size());
-                  if (ui_mouse_hit(e.button.x, e.button.y, hz) && hz.group == carview::ui::kHitRow &&
-                      hz.index >= 0 && hz.index < n_menu) {
-                    menu.selected = hz.index;
-                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                    choose();
+                  if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
+                    if (hz.group == carview::ui::kHitStepLeft && hz.index >= 0 && hz.index < n_menu) {
+                      menu.selected = hz.index;
+                      if (menu.selected_action() == PauseMenu::kDifficulty) {
+                        cycle_difficulty(-1);
+                        app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      }
+                    } else if (hz.group == carview::ui::kHitStepRight && hz.index >= 0 && hz.index < n_menu) {
+                      menu.selected = hz.index;
+                      if (menu.selected_action() == PauseMenu::kDifficulty) {
+                        cycle_difficulty(+1);
+                        app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      }
+                    } else if (hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < n_menu) {
+                      menu.selected = hz.index;
+                      if (menu.selected_action() == PauseMenu::kDifficulty) {
+                        // R3-UI-17: left side of Difficulty row steps -1, right side steps +1 cleanly on click.
+                        float ux = e.button.x;
+                        if (app.window) {
+                          int ww = 0, wh = 0;
+                          SDL_GetWindowSize(app.window, &ww, &wh);
+                          if (ww > 0 && last_ui_w > 0) ux = e.button.x * float(last_ui_w) / float(ww);
+                        }
+                        const float span = std::max(1.0f, hz.x1 - hz.x0);
+                        const float frac = (ux - hz.x0) / span;
+                        cycle_difficulty(frac < 0.35f ? -1 : +1);
+                        app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      } else {
+                        app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                        choose();
+                      }
+                    } else if (hz.group == carview::ui4::kHitButton) {
+                      if (hz.index == 0) {
+                        app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                        choose();
+                      } else if (hz.index == 1) {
+                        menu.open = false;
+                        app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                      }
+                    }
                   }
                 }
               }
@@ -842,6 +881,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 replay_viewer.set_paused(true);
                 if (const auto* fc = replay_viewer.focused_car()) {
                   const drive::Vec3 pf = drive::rotate({fc->quat[1], fc->quat[2], fc->quat[3], fc->quat[0]}, {0, 0, 1});
+                  photo_mode.set_metric_units(app.metric_units);
                   photo_mode.enter({double(fc->pos[0]), double(fc->pos[1]), double(fc->pos[2])},
                                    std::atan2(pf.x, pf.z),
                                    carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));

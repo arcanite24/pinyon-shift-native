@@ -27,6 +27,13 @@ struct RadioPopupGpuState {
   std::string artist;
   bool off = false;
   float alpha = 0.0f;
+  // R3-UI-11: Adjacent-station carousel metadata (all optional/defaulted).
+  std::string prev_station_name;
+  std::string prev_station_label;
+  std::string next_station_name;
+  std::string next_station_label;
+  std::string station_frequency;  // e.g. "94.7 FM"
+  std::string station_genre;      // e.g. "ELECTRO & HOUSE"
 };
 
 // Draws the radio popup on the GPU UI layer using Loop-Blinn vector fonts / CJK
@@ -80,9 +87,15 @@ bool looks_like_raw_key(std::string_view s);
 
 class LoadingScreen {
  public:
+  static constexpr double kFadeInSec = 0.25;
+  static constexpr double kFadeOutSec = 0.25;
+
   void start(std::string destination_title, std::string subtitle = {});
-  void stop() { active_ = false; }
+  void stop();
   bool active() const { return active_; }
+  bool fading_out() const { return fading_out_; }
+  bool visible() const { return active_ || fading_out_; }
+  float veil_alpha() const;
 
   // Loads categorized tips from media/ui/LoadingDefs.xml (resolving Tips:IDS_*
   // through game_text() / string tables when available) and selects matching
@@ -105,6 +118,8 @@ class LoadingScreen {
 
  private:
   bool active_ = false;
+  bool fading_out_ = false;
+  double fade_out_elapsed_ = 0.0;
   std::string title_;
   std::string subtitle_;
   std::string group_ = "freeroam";

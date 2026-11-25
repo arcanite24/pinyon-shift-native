@@ -10,6 +10,12 @@
 
 namespace carview {
 
+namespace {
+// Latch preventing gamepad X from leaking into Layout 3 Brake while held after
+// activating a world prompt (Festival/Outpost/Event/Hub/H2H).
+bool g_x_prompt_consumed = false;
+}  // namespace
+
 void DriveSession::try_trigger_rewind() {
               drive::RewindCameraState cs;
               if (have_rig) cs.rig = rig;
@@ -91,7 +97,7 @@ void DriveSession::poll_sdl_events() {
                 if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) {
                   pads.push_back(pad);
                   std::printf("gamepad: %s\n", SDL_GetGamepadName(pad) ? SDL_GetGamepadName(pad) : "(unnamed)");
-                  slice12.sync_pad_capabilities(pads);
+                  slice12.sync_pad_capabilities(pads, true);
                   slice12.sync_wheel_devices();
                 }
               }
@@ -102,7 +108,8 @@ void DriveSession::poll_sdl_events() {
                 if (SDL_GetGamepadID(pads[k]) == e.gdevice.which) {
                   SDL_CloseGamepad(pads[k]);
                   pads.erase(pads.begin() + long(k));
-                  slice12.sync_pad_capabilities(pads);
+                  if (pads.empty()) g_x_prompt_consumed = false;
+                  slice12.sync_pad_capabilities(pads, false);
                   slice12.sync_wheel_devices();
                   break;
                 }
@@ -111,6 +118,21 @@ void DriveSession::poll_sdl_events() {
             if (e.type == SDL_EVENT_JOYSTICK_ADDED || e.type == SDL_EVENT_JOYSTICK_REMOVED) {
               slice12.sync_wheel_devices();
               continue;
+            }
+            if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP && e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST) {
+              g_x_prompt_consumed = false;
+            }
+            // R3-UI-02: Auto-switch UI4 GlyphSet (Keyboard / Xbox / PlayStation) by most recent active input device.
+            if ((e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                e.type == SDL_EVENT_MOUSE_WHEEL) {
+              slice12.notify_keyboard_or_mouse_input();
+            } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+              slice12.notify_gamepad_input(e.gbutton.which, pads);
+            } else if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && std::abs(int(e.gaxis.value)) > 10000) {
+              slice12.notify_gamepad_input(e.gaxis.which, pads);
+            } else if ((e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN || e.type == SDL_EVENT_JOYSTICK_HAT_MOTION) &&
+                       !SDL_IsGamepad(e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN ? e.jbutton.which : e.jhat.which)) {
+              slice12.notify_gamepad_input(0, pads);
             }
             // macOS Command shortcuts (Cmd+,, Ctrl+Cmd+F, Cmd+Shift+P, Cmd+T, Cmd+Q).
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
@@ -136,6 +158,7 @@ void DriveSession::poll_sdl_events() {
               } else if (sc == carview::PlatformShortcut::kPhotoMode && !picking && !(app.race && app.race->player_finished())) {
                 const drive::Vec3 pat = vehicle.position();
                 const drive::Vec3 pf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                photo_mode.set_metric_units(app.metric_units);
                 photo_mode.enter({pat.x, pat.y, pat.z}, std::atan2(pf.x, pf.z),
                                  carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));
                 continue;
@@ -210,19 +233,28 @@ void DriveSession::poll_sdl_events() {
                   notice_until = vehicle.time() + 2.5;
                 } else open_menu();
               }
-              if (!app.race && app.pr_stunt_session.active() && e.key.key == SDLK_P) {
+              const std::string kn = sdl_key_name(e.key.key);
+              const bool photo_key =
+                  (e.key.key == SDLK_P) || live_controls.keys.matches(drive::ControlAction::kPhotoMode, kn);
+              if (!app.race && app.pr_stunt_session.active() && photo_key) {
                 pr_stunt_photo_pressed = true;
-              } else if (e.key.key == SDLK_P && !picking && !(app.race && app.race->player_finished())) {
+              } else if (photo_key && !picking && !(app.race && app.race->player_finished())) {
                 const drive::Vec3 pat = vehicle.position();
                 const drive::Vec3 pf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                photo_mode.set_metric_units(app.metric_units);
                 photo_mode.enter({pat.x, pat.y, pat.z}, std::atan2(pf.x, pf.z),
                                  carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));
+              }
+              if (e.key.key != SDLK_F3 && live_controls.keys.matches(drive::ControlAction::kTelemetry, kn)) {
+                host.perf_overlay_open = !host.perf_overlay_open;
+                host.renderer.set_gpu_timing(host.perf_overlay_open || host.inspector_open);
+                notice = host.perf_overlay_open ? "TELEMETRY OVERLAY: ON" : "TELEMETRY OVERLAY: OFF";
+                notice_until = vehicle.time() + 2.0;
               }
               if (on_banner && e.key.key == SDLK_BACKSPACE) results_table = false;
               else if (!on_banner && e.key.key == SDLK_BACKSPACE) try_trigger_rewind();
               if (on_banner && e.key.key == SDLK_X) results_table = true;  // X: RACE RESULTS
               if (on_banner && e.key.key == SDLK_V) open_replay_viewer(false);  // V: VIEW REPLAY
-              const std::string kn = sdl_key_name(e.key.key);
               if (!app.race && live_controls.keys.matches(drive::ControlAction::kActivate, kn)) activate_world_trigger();
               if (live_controls.keys.matches(drive::ControlAction::kReset, kn)) put_back();
               if (!on_banner && live_controls.keys.matches(drive::ControlAction::kRewind, kn)) try_trigger_rewind();
@@ -355,6 +387,19 @@ void DriveSession::poll_sdl_events() {
                   drive::default_controller_layout(live_controls.layout_id), live_controls.switch_handbrake_clutch);
               const drive::PadControl pc = pad_control_from_button(e.gbutton.button);
               const std::string_view act = pad_layout.action_for(pc);
+              // R3-UI-02: Consume X completely when activating a world prompt (Festival/Outpost/Event/Hub/H2H/picker)
+              // so it never leaks into ShiftDown / ShiftUp / Rewind / Brake on any controller layout.
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST && !(app.race && app.race->player_finished())) {
+                const bool has_prompt =
+                    picking || active_trigger.in_range ||
+                    (festival_mgr && !app.race && festival_mgr->hud(vehicle.time()).prompt_visible);
+                if (has_prompt) {
+                  if (picking) take_pick();
+                  else activate_world_trigger();
+                  g_x_prompt_consumed = true;
+                  continue;
+                }
+              }
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) open_menu();
               if (act == "Rewind" && !(app.race && app.race->player_finished()) && !picking) {
                 try_trigger_rewind();
@@ -367,6 +412,23 @@ void DriveSession::poll_sdl_events() {
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH && act != "Rewind" && act != "SwitchCamera" &&
                   !rewind_buf.rewind_on_back() && !(app.race && app.race->player_finished()) && !picking)
                 try_trigger_rewind();
+              if (act == "PhotoMode" && !picking && !(app.race && app.race->player_finished())) {
+                if (!app.race && app.pr_stunt_session.active()) {
+                  pr_stunt_photo_pressed = true;
+                } else {
+                  const drive::Vec3 pat = vehicle.position();
+                  const drive::Vec3 pf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                  photo_mode.set_metric_units(app.metric_units);
+                  photo_mode.enter({pat.x, pat.y, pat.z}, std::atan2(pf.x, pf.z),
+                                   carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));
+                }
+              }
+              if (act == "Telemetry" && !picking && !(app.race && app.race->player_finished())) {
+                host.perf_overlay_open = !host.perf_overlay_open;
+                host.renderer.set_gpu_timing(host.perf_overlay_open || host.inspector_open);
+                notice = host.perf_overlay_open ? "TELEMETRY OVERLAY: ON" : "TELEMETRY OVERLAY: OFF";
+                notice_until = vehicle.time() + 2.0;
+              }
               if (act == "RadioLeft") radio_press(-1);
               if (act == "RadioRight") radio_press(+1);
               if (act == "ShiftUp") pending_shift = +1;
@@ -377,13 +439,6 @@ void DriveSession::poll_sdl_events() {
               }
               if (picking && e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) browse(-1);
               if (picking && e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER && act != "SwitchCamera") browse(1);
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST && !(app.race && app.race->player_finished())) {
-                const bool has_prompt =
-                    picking || active_trigger.in_range ||
-                    (festival_mgr && !app.race && festival_mgr->hud(vehicle.time()).prompt_visible);
-                if (picking) take_pick();
-                else if (has_prompt) activate_world_trigger();
-              }
               if (app.race && app.race->player_finished() && !picking) {
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) race_continue();
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH) race_restart();
@@ -444,13 +499,25 @@ void DriveSession::poll_sdl_events() {
               slice12.sync_wheel_devices();
             }
   }
-  // Left-stick menu navigation with deadzone, axis-dominance lock & repeat
-  // for Pause Menu, Settings Menu, and Pause sub-pages/overlays.
+  // R3-UI-01: Left-stick menu navigation with deadzone, axis-dominance lock & repeat
+  // routed through the FULL modal input chain across all core screens (excluding continuous
+  // analog left-stick modes: World Map pan, Photo Mode camera flight, and Livery vinyl drag).
   static MenuStickNav menu_stick_nav;
   static bool menu_stick_was_active = false;
+  const bool livery_non_vinyl_open =
+      paint_open && (!livery_editor.is_open() || livery_editor.catalog_open() ||
+                     livery_editor.tab() != carview::EditorTab::kVinylLayers);
+  const bool title_nav_open = app.show_title && !settings_page.is_open() && (app.title_menu_phase || app.title_confirm_new);
+  const bool blocking_video_or_map =
+      app.fmv_player.active() || loading_screen.active() || map_open ||
+      (photo_mode.active() && !photo_mode.gallery_open()) || rewind_buf.active();
   const bool menu_nav_active =
-      !pads.empty() &&
-      ((settings_page.is_open() && !settings_page.capturing_key()) || menu.open || career_page.is_open() ||
+      !pads.empty() && !blocking_video_or_map &&
+      (title_nav_open || (app.race && grid_menu_open) || events_page.is_open() || outpost_hub_open || garage_open ||
+       autoshow.is_open() || shop.is_open() || livery_non_vinyl_open || club_open || car_club_open ||
+       app.rally_hub_open || app.rally_service_open || app.rally_results_open || replay_viewer.browser_open() ||
+       (photo_mode.active() && photo_mode.gallery_open()) ||
+       (settings_page.is_open() && !settings_page.capturing_key()) || menu.open || career_page.is_open() ||
        achievements.screen_open() || mods_page.is_open() || save_page.is_open() ||
        slice12.trainer_overlay.is_open() || slice12.cam_editor_overlay.is_open());
   if (!menu_nav_active) {
@@ -458,6 +525,7 @@ void DriveSession::poll_sdl_events() {
     menu_stick_was_active = false;
   } else {
     double best_lx = 0.0, best_ly = 0.0, best_mag2 = -1.0;
+    SDL_JoystickID best_which = 0;
     for (SDL_Gamepad* pad : pads) {
       const double lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0;
       const double ly = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0;
@@ -466,6 +534,7 @@ void DriveSession::poll_sdl_events() {
         best_mag2 = mag2;
         best_lx = lx;
         best_ly = ly;
+        best_which = SDL_GetGamepadID(pad);
       }
     }
     if (!menu_stick_was_active) {
@@ -478,8 +547,10 @@ void DriveSession::poll_sdl_events() {
     const double now_s = double(SDL_GetTicksNS()) * 1e-9;
     const MenuStickNav::Dir dir = menu_stick_nav.update(best_lx, best_ly, now_s);
     if (dir != MenuStickNav::Dir::kNone) {
+      slice12.notify_gamepad_input(best_which, pads);
       SDL_Event syn{};
       syn.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+      syn.gbutton.which = best_which;
       syn.gbutton.down = true;
       switch (dir) {
         case MenuStickNav::Dir::kUp: syn.gbutton.button = SDL_GAMEPAD_BUTTON_DPAD_UP; break;
@@ -488,7 +559,14 @@ void DriveSession::poll_sdl_events() {
         case MenuStickNav::Dir::kRight: syn.gbutton.button = SDL_GAMEPAD_BUTTON_DPAD_RIGHT; break;
         case MenuStickNav::Dir::kNone: break;
       }
-      if (!handle_dev_overlays_event(syn)) handle_settings_and_media_event(syn);
+      if (!handle_campaign_and_title_event(syn) &&
+          !handle_grid_and_map_event(syn) &&
+          !handle_events_and_outpost_event(syn) &&
+          !handle_hub_shop_event(syn) &&
+          !handle_rally_career_club_event(syn) &&
+          !handle_dev_overlays_event(syn)) {
+        handle_settings_and_media_event(syn);
+      }
     }
   }
 }
@@ -536,12 +614,23 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
                 is_wheel_pad
                     ? drive::shape_wheel_steering(raw_steer, slice12.wheel_shaping)
                     : drive::apply_deadzone_signed(raw_steer, dz.steering_inside, dz.steering_outside);
-            const double raw_throttle = pad_control_value(pad, gas_ctrl, dz.throttle_inside, dz.throttle_outside);
-            const double raw_brake = pad_control_value(pad, brake_ctrl, dz.brake_inside, dz.brake_outside);
+            const double raw_throttle =
+                (g_x_prompt_consumed && gas_ctrl == drive::PadControl::kButtonX)
+                    ? 0.0
+                    : pad_control_value(pad, gas_ctrl, dz.throttle_inside, dz.throttle_outside);
+            const double raw_brake =
+                (g_x_prompt_consumed && brake_ctrl == drive::PadControl::kButtonX)
+                    ? 0.0
+                    : pad_control_value(pad, brake_ctrl, dz.brake_inside, dz.brake_outside);
             const double throttle = is_wheel_pad ? drive::shape_wheel_pedal(raw_throttle, slice12.wheel_shaping) : raw_throttle;
             const double brake = is_wheel_pad ? drive::shape_wheel_pedal(raw_brake, slice12.wheel_shaping) : raw_brake;
-            const bool handbrake = pad_control_value(pad, hb_ctrl, dz.handbrake_inside, dz.handbrake_outside) > 0.5;
-            const double clutch = pad_control_value(pad, clutch_ctrl, dz.clutch_inside, dz.clutch_outside);
+            const bool handbrake =
+                !(g_x_prompt_consumed && hb_ctrl == drive::PadControl::kButtonX) &&
+                pad_control_value(pad, hb_ctrl, dz.handbrake_inside, dz.handbrake_outside) > 0.5;
+            const double clutch =
+                (g_x_prompt_consumed && clutch_ctrl == drive::PadControl::kButtonX)
+                    ? 0.0
+                    : pad_control_value(pad, clutch_ctrl, dz.clutch_inside, dz.clutch_outside);
             // Right-stick camera look: continuous 360 deg orbit in Chase modes when deflected
             // past deadzone (smoothly returning to 0 on release), cardinal snaps in interior/hood/bumper.
             const double rx = axis(SDL_GAMEPAD_AXIS_RIGHTX), ry = axis(SDL_GAMEPAD_AXIS_RIGHTY);
@@ -572,9 +661,14 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
               pad_in.clutch = clutch;
               pad_used = true;
               pad_was_wheel = is_wheel_pad;
+              slice12.notify_gamepad_input(SDL_GetGamepadID(pad), pads);
               app.touch_controls.notify_gamepad_input(vehicle.time());
               break;
             }
+          }
+          if (!pad_used &&
+              (kb_in.steer != 0 || kb_in.throttle > 0 || kb_in.brake > 0 || kb_in.handbrake || kb_in.clutch > 0)) {
+            slice12.notify_keyboard_or_mouse_input();
           }
           const carview::RawJoystickDriveOutput raw_joy = slice12.sample_raw_joystick_input(dz);
           if (!pad_used && raw_joy.any_active) {

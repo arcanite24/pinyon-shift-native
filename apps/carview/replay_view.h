@@ -52,6 +52,8 @@ class ReplayViewer {
  public:
   // Optional `_&<hash>` string-table resolver (e.g. `carview::game_text`) for localized Replay UI labels.
   static void set_text_resolver(std::function<std::string(const std::string&)> fn);
+  // Optional car display/media -> (class_name, pi) resolver for Replay Browser class badges.
+  static void set_car_class_resolver(std::function<bool(const std::string&, std::string&, int&)> fn);
 
   void open(drive::ReplayRecording rec, bool start_playing = true);
   void close();
@@ -109,12 +111,22 @@ class ReplayViewer {
   bool save_to_dir(const std::filesystem::path& replays_dir, std::filesystem::path& out_path,
                    std::string* error = nullptr);
   void open_browser(const std::filesystem::path& replays_dir);
-  void close_browser() { browser_open_ = false; }
+  void close_browser() {
+    browser_open_ = false;
+    browser_delete_confirm_idx_ = -1;
+  }
   bool browser_open() const { return browser_open_; }
   void browser_move(int delta);
   void browser_select(int idx);
   void seek_fraction(double frac);
   bool browser_load_selected(std::string* error = nullptr);
+  // Two-step confirmed delete for the selected `.shrep` replay file (X / Del).
+  bool browser_delete_confirm_active() const {
+    return browser_delete_confirm_idx_ >= 0 && browser_delete_confirm_idx_ == browser_selected_;
+  }
+  void browser_cancel_delete() { browser_delete_confirm_idx_ = -1; }
+  bool browser_request_or_confirm_delete(std::string* error = nullptr);
+  bool browser_delete_selected(bool confirmed = true, std::string* error = nullptr);
   const std::vector<drive::ReplayFileEntry>& browser_entries() const { return browser_entries_; }
   int browser_selected() const { return browser_selected_; }
 
@@ -153,8 +165,10 @@ class ReplayViewer {
 
   // Saved replays browser overlay.
   bool browser_open_ = false;
+  std::filesystem::path browser_dir_;
   std::vector<drive::ReplayFileEntry> browser_entries_;
   int browser_selected_ = 0;
+  int browser_delete_confirm_idx_ = -1;
 
   std::string notice_;
   double notice_timer_ = 0.0;

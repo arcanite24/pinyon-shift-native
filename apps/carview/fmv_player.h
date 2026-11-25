@@ -66,7 +66,16 @@ void downmix_interleaved_to_stereo(const float* src, int src_channels, size_t fr
 struct FmvSubtitleCue {
   int index = 0;
   double start_s = 0.0;
+  double end_s = -1.0;       // explicit End attribute (or start_s + Duration); < 0 means implicit window
+  double duration_s = -1.0;  // explicit Duration attribute when present; < 0 means unspecified
 };
+
+// Word-wraps an FMV subtitle string cleanly into lines that fit within `max_width_px`.
+std::vector<std::string> wrap_fmv_subtitle(std::string_view text, float max_width_px, const ui::TextStyle& ts);
+
+// Gentle +/-40 ms deadband audio-clock PLL video clock step (zero jitter within +/-40 ms,
+// smooth proportional drift correction outside +/-40 ms, never steps backwards).
+double fmv_pll_step_clock(double video_clock_s, double dt_s, double audio_clock_s);
 
 struct FmvProbeInfo {
   int width = 0;
@@ -85,6 +94,7 @@ bool parse_fmv_subtitles(std::string_view xml, std::vector<FmvSubtitleCue>& out)
 class FmvPlayer {
  public:
   static constexpr int kAudioRate = 48000;
+  static constexpr double kHoldToSkipSeconds = 0.75;
 
   FmvPlayer() = default;
   ~FmvPlayer();
@@ -138,7 +148,13 @@ class FmvPlayer {
   const std::string& title() const { return title_; }
   int current_subtitle_index() const;
   std::string current_subtitle_text() const;
+  void set_subtitles(std::vector<FmvSubtitleCue> cues);
   const std::vector<uint8_t>& current_frame() const { return current_frame_; }
+
+  // Hold-to-skip progress accumulator (0..1 over kHoldToSkipSeconds = 0.75 s).
+  float update_hold_skip(double dt, bool holding);
+  float hold_skip_progress() const { return hold_skip_progress_; }
+  void reset_hold_skip() { hold_skip_progress_ = 0.0f; }
 
   // Advances playback by `dt` seconds (syncing to drained audio clock when
   // `audio_synced` is true and audio is streaming). Returns true while active.
@@ -180,6 +196,7 @@ class FmvPlayer {
   double fps_ = 24.0;
   double duration_s_ = 0.0;
   double clock_s_ = 0.0;
+  float hold_skip_progress_ = 0.0f;
   FmvMovieId movie_id_ = FmvMovieId::kFmv01Opening;
   std::string title_;
   std::vector<FmvSubtitleCue> subtitles_;

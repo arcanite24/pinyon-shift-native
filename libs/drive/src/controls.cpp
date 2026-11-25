@@ -24,6 +24,7 @@ constexpr const char* kActionNames[size_t(ControlAction::kCount)] = {
     "steer-left", "steer-right", "throttle",  "brake",      "handbrake",  "clutch",
     "shift-up",   "shift-down",  "camera",    "look-back",  "rewind",     "reset",
     "map",        "radio-prev",  "radio-next", "activate",  "look-left",  "look-right",
+    "photo-mode", "telemetry",
 };
 
 }  // namespace
@@ -85,6 +86,8 @@ ControllerLayout default_controller_layout(int layout_id) {
   auto set = [&](PadControl c, const char* act) { l.bindings[size_t(c)] = act; };
   // Common across all 5 ControllerLayouts rows.
   set(PadControl::kRightStickClick, "LookStraightBack");
+  set(PadControl::kDPadUp, "PhotoMode");
+  set(PadControl::kDPadDown, "Telemetry");
   set(PadControl::kDPadLeft, "RadioLeft");
   set(PadControl::kDPadRight, "RadioRight");
   set(PadControl::kBack, "Map");
@@ -174,6 +177,8 @@ KeyBindings KeyBindings::defaults() {
   set(ControlAction::kActivate, "E");
   set(ControlAction::kLookLeft, "J", "Keypad 4");
   set(ControlAction::kLookRight, "K", "Keypad 6");
+  set(ControlAction::kPhotoMode, "P");
+  set(ControlAction::kTelemetry, "F3");
   return kb;
 }
 

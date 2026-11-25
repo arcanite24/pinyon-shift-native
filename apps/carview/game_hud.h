@@ -1,11 +1,205 @@
 // carview --drive: the game's HUD, title screen, and menus on the UI layer (ui.h).
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace carview {
+
+// ---- Pure HUD / Race / Rewind / Map Logic Helpers (standalone-testable) ----
+
+// R3-UI-03: Tri-state ABS / TCS / STM assist badge state & ~7 Hz amber intervention latch.
+enum class AssistBadgeState : uint8_t { kDisabled = 0, kEnabledIdle = 1, kIntervening = 2 };
+
+inline AssistBadgeState compute_assist_badge_state(bool enabled, bool active, double flash_timer) {
+  if (flash_timer > 0.0 || active) return AssistBadgeState::kIntervening;
+  return enabled ? AssistBadgeState::kEnabledIdle : AssistBadgeState::kDisabled;
+}
+
+inline bool assist_blink_on(double time_s) {
+  return std::sin(time_s * 6.28318530717958647692 * 7.0) > 0.0;
+}
+
+struct AssistFlashLatch {
+  static constexpr double kLatchDurationSec = 0.25;
+  double abs_timer = 0.0;
+  double tcs_timer = 0.0;
+  double stm_timer = 0.0;
+  double last_time = -1.0;
+
+  void reset() {
+    abs_timer = tcs_timer = stm_timer = 0.0;
+    last_time = -1.0;
+  }
+
+  void update(double time_s, bool abs_active, bool tcs_active, bool stm_active) {
+    if (last_time < 0.0 || time_s < last_time - 0.5) {
+      abs_timer = abs_active ? kLatchDurationSec : 0.0;
+      tcs_timer = tcs_active ? kLatchDurationSec : 0.0;
+      stm_timer = stm_active ? kLatchDurationSec : 0.0;
+      last_time = time_s;
+      return;
+    }
+    const double dt = std::clamp(time_s - last_time, 0.0, 0.25);
+    last_time = time_s;
+    abs_timer = abs_active ? kLatchDurationSec : std::max(0.0, abs_timer - dt);
+    tcs_timer = tcs_active ? kLatchDurationSec : std::max(0.0, tcs_timer - dt);
+    stm_timer = stm_active ? kLatchDurationSec : std::max(0.0, stm_timer - dt);
+  }
+};
+
+// R3-UI-04: Missed Checkpoint detection & automatic return-to-track countdown tracker.
+struct MissedCheckpointTracker {
+  static constexpr double kCountdownSec = 4.0;
+  static constexpr double kBypassProgressMarginM = 16.0;
+  static constexpr double kBypassPlaneMarginM = 10.0;
+  static constexpr double kOffCorridorTriggerM = 28.0;
+
+  bool active = false;
+  double countdown_s = 0.0;
+  size_t missed_gate_index = 0;
+
+  void reset() {
+    active = false;
+    countdown_s = 0.0;
+    missed_gate_index = 0;
+  }
+
+  // Advances missed-checkpoint state for one step.
+  // Returns true on the step when the countdown reaches 0 and an auto-reset should trigger.
+  bool step(double dt, bool racing, bool gate_passed, size_t next_gate_idx, double player_progress,
+            double gate_progress, double gate_plane_side, double dist_to_gate_m, double gate_reach_m,
+            double off_route_m) {
+    if (!racing || gate_passed) {
+      reset();
+      return false;
+    }
+    if (active && next_gate_idx != missed_gate_index) {
+      reset();
+      return false;
+    }
+    const double eff_reach = (gate_reach_m > 0.0 && gate_reach_m < 1e6) ? gate_reach_m : 18.0;
+    const bool bypassed_by_progress = (player_progress > gate_progress + kBypassProgressMarginM);
+    const bool bypassed_gate_plane =
+        (gate_plane_side > kBypassPlaneMarginM) && (dist_to_gate_m > eff_reach) && (dist_to_gate_m < 400.0);
+    const bool off_corridor_past_gate =
+        (off_route_m > kOffCorridorTriggerM) && (player_progress > gate_progress - 5.0 || gate_plane_side > 0.0);
+    if (!active) {
+      if (bypassed_by_progress || bypassed_gate_plane || off_corridor_past_gate) {
+        active = true;
+        countdown_s = kCountdownSec;
+        missed_gate_index = next_gate_idx;
+      }
+      return false;
+    }
+    if (!bypassed_by_progress && gate_plane_side < -2.0 && off_route_m < 10.0) {
+      reset();
+      return false;
+    }
+    countdown_s = std::max(0.0, countdown_s - std::max(0.0, dt));
+    if (countdown_s <= 0.0) {
+      reset();
+      return true;
+    }
+    return false;
+  }
+};
+
+// R3-UI-05: Live Rewind scrubber bar telemetry.
+struct RewindScrubberHud {
+  float buffer_fraction = 1.0f;    // [0..1] filled capacity of rolling rewind buffer
+  float playhead_fraction = 1.0f;  // [0..1] scrub position within populated buffer (0 = oldest, 1 = latest)
+  int current_slot = 0;
+  int total_slots = 0;
+  double seconds_rewound = 0.0;    // >= 0: seconds rewound from trigger point ("-X.Xs")
+  double seconds_remaining = 0.0;  // >= 0: remaining rewindable seconds back to oldest slot
+  double anim_time = 0.0;
+};
+
+inline RewindScrubberHud compute_rewind_scrubber(int keyframe_count, int max_keyframes, int selected_slot,
+                                                 double oldest_time, double latest_time, double playback_time,
+                                                 double anim_time = 0.0) {
+  RewindScrubberHud out;
+  const int max_kf = std::max(1, max_keyframes);
+  const int count = std::clamp(keyframe_count, 0, max_kf);
+  out.total_slots = count;
+  out.current_slot = std::clamp(selected_slot, 0, std::max(0, count - 1));
+  out.buffer_fraction = std::clamp(float(count) / float(max_kf), 0.0f, 1.0f);
+  const double span = std::max(0.0, latest_time - oldest_time);
+  if (span > 1e-4) {
+    out.playhead_fraction = float(std::clamp((playback_time - oldest_time) / span, 0.0, 1.0));
+    out.seconds_rewound = std::max(0.0, latest_time - playback_time);
+    out.seconds_remaining = std::max(0.0, playback_time - oldest_time);
+  } else if (count > 1) {
+    out.playhead_fraction = std::clamp(float(out.current_slot) / float(count - 1), 0.0f, 1.0f);
+    out.seconds_rewound = double(std::max(0, (count - 1) - out.current_slot)) * 2.5;
+    out.seconds_remaining = double(out.current_slot) * 2.5;
+  } else {
+    out.playhead_fraction = 1.0f;
+    out.seconds_rewound = 0.0;
+    out.seconds_remaining = 0.0;
+  }
+  out.anim_time = anim_time;
+  return out;
+}
+
+// R3-UI-12: De-duplicated World Map icon legend entries (bottom-right road bar owns DRIVEN/UNDRIVEN).
+struct MapLegendItem {
+  const char* label = "";
+  uint32_t color = 0;
+  bool is_line = false;
+  bool is_new_tag = false;
+};
+
+inline std::vector<MapLegendItem> map_legend_entries() {
+  auto pack = [](uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) -> uint32_t {
+    return (uint32_t(a) << 24) | (uint32_t(r) << 16) | (uint32_t(g) << 8) | uint32_t(b);
+  };
+  return {
+      {"FESTIVAL EVENT", pack(249, 0, 100), false, false},
+      {"OUTPOST HUB", pack(255, 146, 36), false, false},
+      {"STREET HUB", pack(44, 140, 232), false, false},
+      {"PR STUNT", pack(218, 255, 0), false, false},
+      {"SPEED CAMERA", pack(56, 206, 255), false, false},
+      {"BARN / SIGN", pack(246, 206, 78), false, false},
+      {"NEW EVENT", pack(249, 0, 100), false, true},
+      {"GPS ROUTE", pack(74, 238, 97), true, false},
+  };
+}
+
+// R3-UI-12: Clickable top filter tab strip layout helper for World Map overlay.
+struct MapFilterTabRect {
+  int filter_index = 0;
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+};
+
+inline std::vector<MapFilterTabRect> layout_map_filter_tabs(const std::vector<std::string>& tabs, float start_x,
+                                                            float y0, float h_px, float scale, float max_right_x) {
+  std::vector<MapFilterTabRect> out;
+  if (tabs.empty()) return out;
+  const float gap = 4.0f * scale;
+  const float min_w = 42.0f * scale;
+  float x = start_x;
+  out.reserve(tabs.size());
+  for (size_t i = 0; i < tabs.size(); ++i) {
+    const float est_w = std::max(min_w, (float(tabs[i].size()) * 7.2f + 16.0f) * scale);
+    const float x1 = std::min(max_right_x, x + est_w);
+    if (x1 <= x + 12.0f * scale) break;
+    out.push_back({int(i), x, y0, x1, y0 + h_px});
+    x = x1 + gap;
+  }
+  return out;
+}
+
+}  // namespace carview
+
+#ifndef CARVIEW_GAME_HUD_LOGIC_ONLY
 
 #include "freeroam/festival_ai.h"
 #include "freeroam/speed_zones.h"
@@ -72,6 +266,8 @@ struct RaceHud {
   std::string band_name, band_next;
   bool band_up = false;  // true -> COLLECT IT FROM RACE CENTRAL
   bool wrong_way = false;
+  bool missed_checkpoint = false;
+  double missed_checkpoint_countdown_s = 0.0;
   int results_page = 0;    // 0 FINISHED banner, 1 CASH REWARD, 2 POINTS & CAREER XP, 3 NEW CAR WON, 4 CAREER/AFFINITY XP
   bool results_table = false;
   int64_t balance = -1;
@@ -118,6 +314,9 @@ struct SkillChainHud {
   bool active = false;
   int chain_points = 0;
   int multiplier = 1;
+  float multiplier_f = 1.0f;       // exact 1.0x..5.0x in 0.5x steps
+  double chain_remaining_s = 0.0;  // remaining seconds before banking
+  double chain_timeout_s = 3.0;    // total bank window duration (s)
   std::string last_skill;
   int last_points = 0;
   double last_skill_at = -1e9;
@@ -238,6 +437,8 @@ struct GpsHud {
   double dist_to_turn_m = 0;
   double dist_to_dest_m = 0;
   bool confirmed_uturn = false;  // true only when sustained wrong-way driving on an active route
+  bool recalculating = false;    // subtle pulsing "RECALCULATING..." SatNav pill after wrong turn
+  double time = 0.0;             // HUD clock for recalculating pulse animation
 };
 
 // Interactive Pause Map overlay card (hovered destination info, filter tabs,
@@ -246,8 +447,10 @@ struct MapOverlayHud {
   bool active = false;
   std::string title;
   std::string subtitle;
-  std::string action_hint;  // e.g. "ENTER EVENT", "FAST TRAVEL"
-  std::string gps_hint;     // e.g. "SET GPS ROUTE", "CLEAR GPS"
+  std::string detail_line;      // rich event / PR stunt / barn find rumour metadata line
+  std::string marker_icon_tag;  // MapProfile icon tag for marker-accurate hover tooltip badge
+  std::string action_hint;      // e.g. "ENTER EVENT", "FAST TRAVEL"
+  std::string gps_hint;         // e.g. "SET GPS ROUTE", "CLEAR GPS"
   bool gps_active = false;
   double distance_m = -1;
   int active_filter = 0;
@@ -258,6 +461,7 @@ struct MapOverlayHud {
   double center_x = 0.0, center_z = 0.0;
   double scale_mpp = 0.0;  // metres per pixel (>0 enables world-projected Colorado region labels)
   bool treasure_map = false;
+  bool show_legend = true;  // toggleable icon Legend panel
 };
 
 // One sponsor challenge row for H_SPONSOR_CHALLENGE_STATUS (18 real SponsorLogoTile/*.xds logos).
@@ -342,6 +546,16 @@ struct DriveHud {
   bool abs = false;
   bool tcs = false;
   bool stm = false;
+  bool abs_enabled = true;
+  bool tcs_enabled = false;
+  bool stm_enabled = false;
+  double abs_flash_timer = 0.0;
+  double tcs_flash_timer = 0.0;
+  double stm_flash_timer = 0.0;
+  float rewind_buffer_fraction = 0.0f;
+  int rewind_slot = 0;
+  int rewind_total_slots = 0;
+  double rewind_seconds_remaining = 0.0;
   bool has_boost = false;
   double boost_psi = 0.0;
   double boost_max_psi = 18.0;
@@ -417,11 +631,14 @@ enum class RewindOverlayAction {
   kCancel,
 };
 
-// Draws the 921_I_REWIND overlay with clickable ui4::kHitButton button-bar hit zones.
+// Draws the 921_I_REWIND overlay with clickable ui4::kHitButton button-bar hit zones
+// and live animated scrubber bar when `scrubber` is provided.
 void build_rewind_overlay(ui::List& list, float w, float h, bool rewinding, bool loop_rewind, bool paused_at_keyframe,
-                          bool at_oldest_slot, bool settling);
+                          bool at_oldest_slot, bool settling, const RewindScrubberHud* scrubber = nullptr);
 // Maps a clicked ui4::kHitButton index from build_rewind_overlay to its RewindOverlayAction.
 RewindOverlayAction rewind_overlay_action_for_button(bool rewinding, bool paused_at_keyframe, bool at_oldest_slot,
                                                      int button_index);
 
 }  // namespace carview
+
+#endif  // CARVIEW_GAME_HUD_LOGIC_ONLY

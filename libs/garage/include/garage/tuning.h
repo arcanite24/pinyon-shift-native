@@ -45,10 +45,19 @@ struct TuneSlider {
 
 // Builds the list of tuning sliders for `car` with ranges and unlock status
 // derived from its fitted CarPhysics rows and current `tune`.
+// The 2-arg overload preserves legacy mixed-unit ranges (PSI / N/mm / cm / kgf);
+// the 3-arg overload formats physical units cleanly for Metric (BAR, kgf/mm, cm, kgf)
+// vs Imperial (PSI, lb/in, in, lbf) displays.
 std::vector<TuneSlider> build_tune_sliders(const cars::CarPhysics& car, const drive::CarTune& tune);
+std::vector<TuneSlider> build_tune_sliders(const cars::CarPhysics& car, const drive::CarTune& tune, bool metric_units);
 
 // Writes a slider's value back into `tune` (by Tuning_* key).
 bool set_tune_slider(drive::CarTune& tune, const cars::CarPhysics& car, const std::string& key, double value);
+bool set_tune_slider(drive::CarTune& tune, const cars::CarPhysics& car, const std::string& key, double value,
+                     bool metric_units);
+
+// Formats a slider's current value with its unit string (e.g. "2.07 BAR", "30.0 PSI", "6.3 in").
+std::string format_tune_slider_value(const TuneSlider& slider);
 
 // Resets all sliders in `tune` (or only one category) to stock defaults.
 void reset_tune(drive::CarTune& tune);

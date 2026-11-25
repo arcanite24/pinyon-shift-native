@@ -384,6 +384,59 @@ void test_gallery_thumbnails_and_smooth_watermark() {
   std::filesystem::remove_all(tmp_dir, ec);
 }
 
+void test_r3_photo_scroll_units_and_glyphs() {
+  // R3-UI-06: 15-slider Photo Mode vertical scroll window at 720p never collides with bottom button bar.
+  const int vis = carview::PhotoModeController::visible_effect_rows(720.0f);
+  check(vis > 0 && vis < carview::PhotoModeController::kRowCount,
+        "Photo Mode scrolls 15 sliders inside a bounded window at 720p");
+
+  carview::PhotoModeController ctrl;
+  ctrl.enter({0, 0, 0}, 0.0, carview::PhotoLimits::from_settings(false, false));
+  ctrl.effects().focus_distance = 10.0f;
+  ctrl.select_row(carview::PhotoModeController::kHideCar);  // bottom row (index 14)
+  check(ctrl.scroll_top() > 0, "Selecting row 14 advances Photo Mode scroll_top");
+
+  carview::ui::List list720;
+  ctrl.build_hud(list720, 1280.0f, 720.0f);
+  float max_row_y1 = 0.0f;
+  int row_hits = 0;
+  for (const auto& hz : list720.hits()) {
+    if (hz.group == carview::ui::kHitRow) {
+      ++row_hits;
+      if (hz.y1 > max_row_y1) max_row_y1 = hz.y1;
+    }
+  }
+  check(row_hits == vis, "Photo Mode emits exact visible slice of effect row hit zones");
+  check(max_row_y1 > 100.0f && max_row_y1 <= 620.0f,
+        "Scrolled Photo Mode sliders never collide with bottom button bar at 720p");
+
+  // R3-UI-07: Photo Mode Focus Distance respects Metric (m) vs Imperial (ft).
+  ctrl.set_metric_units(false);
+  check(!ctrl.metric_units(), "PhotoModeController stores imperial units flag");
+  ctrl.select_row(carview::PhotoModeController::kFocusDistance);
+  carview::ui::List imp_list;
+  ctrl.build_hud(imp_list, 1280.0f, 720.0f);
+  check(!imp_list.empty(), "Imperial Photo Mode HUD builds cleanly");
+
+  // R3-UI-02 & R3-UI-06: GlyphSet switching (Xbox / PlayStation / Keyboard) & SettingsPage -> ControllerDiagramParams.
+  carview::ui4::set_glyph_set(carview::ui4::GlyphSet::kKeyboard);
+  check(carview::ui4::glyph_set() == carview::ui4::GlyphSet::kKeyboard, "GlyphSet switches to Keyboard");
+  check(!carview::ui4::glyph_label_for("A", carview::ui4::GlyphSet::kKeyboard).empty(), "Keyboard glyph label non-empty");
+  carview::ui4::set_glyph_set(carview::ui4::GlyphSet::kPlayStation);
+  check(carview::ui4::glyph_set() == carview::ui4::GlyphSet::kPlayStation, "GlyphSet switches to PlayStation");
+  carview::ui4::set_glyph_set(carview::ui4::GlyphSet::kXbox);
+
+  carview::SettingsPage sp;
+  sp.load({"--controller-layout", "1", "--switch-handbrake-clutch"});
+  sp.open();
+  sp.select_tab(int(carview::SettingsPage::Tab::kControls));
+  carview::ui4::TiltedBladeSpec bspec;
+  sp.fill_controller_diagram(bspec.controller_diagram);
+  check(bspec.controller_diagram.enabled && bspec.controller_diagram.layout_id == 1 &&
+            bspec.controller_diagram.swap_handbrake_clutch,
+        "SettingsPage::fill_controller_diagram populates ui4::ControllerDiagramParams directly");
+}
+
 }  // namespace
 
 int main() {
@@ -394,6 +447,7 @@ int main() {
   test_horizon_promo_and_save_roundtrip();
   test_png_write_and_hud_build();
   test_gallery_thumbnails_and_smooth_watermark();
+  test_r3_photo_scroll_units_and_glyphs();
   if (g_fails == 0) {
     std::printf("photo_mode_tests: all passed\n");
     return 0;

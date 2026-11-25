@@ -1,14 +1,56 @@
 #include "livery_editor.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 
+#include "fh1data/stringtables.h"
+#include "game_hud.h"
 #include "hud_scene.h"
 #include "ui4_chrome.h"
 
 namespace carview {
+
+namespace {
+
+std::string loc_str(std::string_view table, std::string_view id, const char* fallback) {
+  const uint32_t packed = (uint32_t(fh1::string_hash(table)) << 16) | uint32_t(fh1::string_hash(id));
+  const std::string ref = "_&" + std::to_string(packed);
+  std::string resolved = game_text(ref);
+  if (resolved.empty() || resolved == ref || resolved.rfind("_&", 0) == 0) {
+    resolved = ui::lookup_text(ref);
+  }
+  if (!resolved.empty() && resolved != ref && resolved.rfind("_&", 0) != 0) return resolved;
+  return fallback;
+}
+
+std::string loc_key(const std::string& key, const std::string& fallback) {
+  if (!key.empty()) {
+    const std::string resolved = game_text(key);
+    if (!resolved.empty() && resolved != key && resolved.rfind("_&", 0) != 0) return resolved;
+  }
+  return fallback;
+}
+
+bool looks_like_internal_key(const std::string& s) {
+  if (s.empty()) return true;
+  if (s.rfind("_&", 0) == 0 || s.rfind("IDS_", 0) == 0 || s.rfind("STR_", 0) == 0 ||
+      s.rfind("KEY_", 0) == 0 || s.rfind("SPECIAL_", 0) == 0) {
+    return true;
+  }
+  bool all_digits = true;
+  for (unsigned char c : s) {
+    if (!std::isdigit(c)) {
+      all_digits = false;
+      break;
+    }
+  }
+  return all_digits;
+}
+
+}  // namespace
 
 const char* paint_region_name(PaintRegion r) {
   switch (r) {
@@ -34,6 +76,101 @@ const char* shape_category_name(ShapeCategory cat) {
 
 std::string oem_swatch_label(size_t index) {
   return "OEM #" + std::to_string(index + 1);
+}
+
+const char* paint_finish_display_name(cars::PaintFinish finish) {
+  switch (finish) {
+    case cars::PaintFinish::kNormal: return "FACTORY";
+    case cars::PaintFinish::kMetallic: return "METALLIC";
+    case cars::PaintFinish::kMatte: return "MATTE";
+    case cars::PaintFinish::kTwoTone: return "TWO-TONE";
+    case cars::PaintFinish::kChrome: return "CHROME";
+    case cars::PaintFinish::kCarbon: return "CARBON FIBER";
+    case cars::PaintFinish::kWood: return "WOOD";
+    case cars::PaintFinish::kCamo: return "CAMOUFLAGE";
+    default: return "FACTORY";
+  }
+}
+
+std::string paint_hue_name(uint32_t rgb) {
+  float h = 0.0f, s = 0.0f, v = 0.0f;
+  cars::rgb_to_hsv(rgb, h, s, v);
+  if (v < 0.14f) return "BLACK";
+  if (s < 0.12f) {
+    if (v > 0.88f) return "WHITE";
+    if (v > 0.64f) return "SILVER";
+    if (v > 0.36f) return "GUNMETAL";
+    return "CHARCOAL";
+  }
+  const float deg = h * 360.0f;
+  if (deg >= 18.0f && deg < 46.0f && v < 0.55f) return "BRONZE";
+  if (deg >= 12.0f && deg < 40.0f && v < 0.40f) return "BROWN";
+  if (deg < 15.0f || deg >= 345.0f) return (v < 0.58f) ? "CRIMSON" : "RED";
+  if (deg < 36.0f) return "ORANGE";
+  if (deg < 50.0f) return (s > 0.55f && v < 0.85f) ? "GOLD" : "AMBER";
+  if (deg < 72.0f) return "YELLOW";
+  if (deg < 105.0f) return "LIME";
+  if (deg < 150.0f) return (v < 0.55f) ? "EMERALD" : "GREEN";
+  if (deg < 178.0f) return "TEAL";
+  if (deg < 200.0f) return "CYAN";
+  if (deg < 220.0f) return (v > 0.78f) ? "SKY BLUE" : "BLUE";
+  if (deg < 252.0f) return (s > 0.65f) ? "COBALT" : "BLUE";
+  if (deg < 276.0f) return "INDIGO";
+  if (deg < 305.0f) return "PURPLE";
+  if (deg < 330.0f) return "MAGENTA";
+  return "PINK";
+}
+
+const char* special_color_finish_subtitle(const cars::SpecialColorRow& sc) {
+  const auto fin = static_cast<cars::PaintFinish>(sc.finish);
+  if (fin == cars::PaintFinish::kTwoTone) {
+    if (sc.two_tone_power >= 3.0f) return "PEARL";
+    if (sc.two_tone_power <= 1.25f) return "SEMI-GLOSS";
+    return "TWO-TONE";
+  }
+  return paint_finish_display_name(fin);
+}
+
+std::string special_color_display_name(const cars::SpecialColorRow& sc) {
+  if (!sc.display_key.empty()) {
+    const std::string localized = game_text(sc.display_key);
+    if (!localized.empty() && localized != sc.display_key && !looks_like_internal_key(localized)) {
+      return localized;
+    }
+    if (!looks_like_internal_key(sc.display_key)) {
+      std::string cleaned = sc.display_key;
+      for (char& ch : cleaned) {
+        if (ch == '_' || ch == '-') ch = ' ';
+        else ch = char(std::toupper(static_cast<unsigned char>(ch)));
+      }
+      return cleaned;
+    }
+  }
+  const auto fin = static_cast<cars::PaintFinish>(sc.finish);
+  const std::string pri = paint_hue_name(sc.pri_rgb);
+  if (fin == cars::PaintFinish::kCarbon || fin == cars::PaintFinish::kWood ||
+      fin == cars::PaintFinish::kCamo) {
+    return std::string(paint_finish_display_name(fin));
+  }
+  if (fin == cars::PaintFinish::kChrome) {
+    return (pri == "WHITE" || pri == "SILVER") ? "CHROME" : ("CHROME " + pri);
+  }
+  if (fin == cars::PaintFinish::kTwoTone) {
+    const char* sub = special_color_finish_subtitle(sc);
+    if (sc.sec_valid && sc.sec_rgb != sc.pri_rgb) {
+      const std::string sec = paint_hue_name(sc.sec_rgb);
+      if (sec != pri) {
+        return std::string(sub) + " " + pri + "/" + sec;
+      }
+    }
+    return std::string(sub) + " " + pri;
+  }
+  return std::string(paint_finish_display_name(fin)) + " " + pri;
+}
+
+std::string manufacturer_color_display_name(const cars::bake::Colour& c) {
+  const std::string hue = paint_hue_name(c.rgb);
+  return std::string(c.metallic ? "METALLIC " : "FACTORY ") + hue;
 }
 
 bool LiveryEditor::open(const cars::PartsDb* db, const std::filesystem::path& game_root, int64_t car_id,
@@ -964,6 +1101,222 @@ bool LiveryEditor::composite_1024(const std::vector<cars::bake::LiveryPlane>* pl
                                 plane_masks_.empty() ? nullptr : &plane_masks_);
 }
 
+const cars::VinylMesh* LiveryEditor::preview_shape_mesh(const std::string& shape_path) const {
+  if (shape_path.empty() || shape_path[0] == '@' || !lib_.is_open()) return nullptr;
+  return lib_.load_shape(shape_path, nullptr);
+}
+
+bool LiveryEditor::handle_step_click(int dir) {
+  if (dir == 0) return false;
+  switch (tab_) {
+    case EditorTab::kPaint:
+      if (region_ == PaintRegion::kWindowTint) step_window_tint(0.10f * float(dir));
+      else move_finish(dir);
+      return true;
+    case EditorTab::kManufacturerColors:
+      move_manufacturer_color(dir);
+      return true;
+    case EditorTab::kSpecialColors:
+      move_special_color(dir);
+      return true;
+    case EditorTab::kPreviousColors:
+      move_previous_color(dir);
+      return true;
+    case EditorTab::kVinylLayers:
+      if (!doc_.layers.empty()) {
+        select_layer(dir);
+        return true;
+      }
+      return false;
+    default:
+      return false;
+  }
+}
+
+bool LiveryEditor::handle_button_bar_click(int button_index) {
+  const bool vinyl_tab = (tab_ == EditorTab::kVinylLayers);
+  switch (button_index) {
+    case 1:
+      if (vinyl_tab && can_undo()) return undo();
+      move_tab(1);
+      return true;
+    case 2:
+      return handle_step_click(1);
+    case 3:
+      if (vinyl_tab) add_vinyl_layer();
+      else move_region(1);
+      return true;
+    case 4:
+      if (vinyl_tab) delete_selected_layer();
+      else reset_to_factory_paint();
+      return true;
+    default:
+      return false;
+  }
+}
+
+namespace {
+
+// Rasterizes a crisp 32x32 anti-aliased preview thumbnail for a vinyl shape
+// (either an authored Livery.zip VinylMesh or a built-in @primitive) and caches
+// it in the transient UI atlas so subsequent frames are O(1) lookups.
+bool ensure_vinyl_thumbnail_uv(const std::string& shape_path, const cars::VinylMesh* mesh,
+                               bool flip_x, bool flip_y, std::array<float, 4>& out_uv,
+                               bool& out_is_multicolor) {
+  out_is_multicolor = (mesh && mesh->is_decal);
+  const std::string key = "liv.thumb." + (shape_path.empty() ? std::string("@rect") : shape_path) +
+                          (mesh ? ".m" : ".p") + (flip_x ? ".fx" : "") + (flip_y ? ".fy" : "");
+  if (ui::atlas_find(key, out_uv)) return true;
+
+  constexpr uint32_t kSz = 32;
+  std::vector<uint8_t> rgba(kSz * kSz * 4u, 0u);
+  auto put_px = [&](uint32_t px, uint32_t py, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    if (px >= kSz || py >= kSz || a == 0) return;
+    const size_t o = (size_t(py) * kSz + px) * 4u;
+    const float sa = float(a) / 255.0f;
+    const float da = float(rgba[o + 3]) / 255.0f;
+    const float oa = sa + da * (1.0f - sa);
+    if (oa <= 1e-4f) return;
+    rgba[o + 0] = uint8_t(std::clamp(std::lround((float(r) * sa + float(rgba[o + 0]) * da * (1.0f - sa)) / oa), 0L, 255L));
+    rgba[o + 1] = uint8_t(std::clamp(std::lround((float(g) * sa + float(rgba[o + 1]) * da * (1.0f - sa)) / oa), 0L, 255L));
+    rgba[o + 2] = uint8_t(std::clamp(std::lround((float(b) * sa + float(rgba[o + 2]) * da * (1.0f - sa)) / oa), 0L, 255L));
+    rgba[o + 3] = uint8_t(std::clamp(std::lround(oa * 255.0f), 0L, 255L));
+  };
+
+  if (mesh && !mesh->vertices.empty() && mesh->indices.size() >= 3) {
+    const float mw = std::max(1e-4f, mesh->max_x - mesh->min_x);
+    const float mh = std::max(1e-4f, mesh->max_y - mesh->min_y);
+    const float mdim = std::max(mw, mh);
+    const float mcx = 0.5f * (mesh->min_x + mesh->max_x);
+    const float mcy = 0.5f * (mesh->min_y + mesh->max_y);
+    const float pad = 3.0f;
+    const float span = float(kSz) - 2.0f * pad;
+    auto map_x = [&](float vx) {
+      float nx = (vx - mcx) / mdim;
+      if (flip_x) nx = -nx;
+      return 0.5f * float(kSz) + nx * span;
+    };
+    auto map_y = [&](float vy) {
+      float ny = (vy - mcy) / mdim;
+      if (flip_y) ny = -ny;
+      return 0.5f * float(kSz) + ny * span;
+    };
+    auto edge = [](float ax, float ay, float bx, float by, float px, float py) {
+      return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+    };
+    for (size_t t = 0; t + 2 < mesh->indices.size(); t += 3) {
+      const uint32_t i0 = mesh->indices[t], i1 = mesh->indices[t + 1], i2 = mesh->indices[t + 2];
+      if (i0 >= mesh->vertices.size() || i1 >= mesh->vertices.size() || i2 >= mesh->vertices.size()) continue;
+      const auto& v0 = mesh->vertices[i0];
+      const auto& v1 = mesh->vertices[i1];
+      const auto& v2 = mesh->vertices[i2];
+      const float x0 = map_x(v0.x), y0 = map_y(v0.y);
+      const float x1 = map_x(v1.x), y1 = map_y(v1.y);
+      const float x2 = map_x(v2.x), y2 = map_y(v2.y);
+      const float area = edge(x0, y0, x1, y1, x2, y2);
+      if (std::fabs(area) < 1e-4f) continue;
+      const int min_px = std::clamp(int(std::floor(std::min({x0, x1, x2}))), 0, int(kSz) - 1);
+      const int max_px = std::clamp(int(std::ceil(std::max({x0, x1, x2}))), 0, int(kSz) - 1);
+      const int min_py = std::clamp(int(std::floor(std::min({y0, y1, y2}))), 0, int(kSz) - 1);
+      const int max_py = std::clamp(int(std::ceil(std::max({y0, y1, y2}))), 0, int(kSz) - 1);
+      const uint32_t c0 = v0.argb;
+      const uint8_t r = mesh->is_decal ? uint8_t((c0 >> 16) & 0xFFu) : 255u;
+      const uint8_t g = mesh->is_decal ? uint8_t((c0 >> 8) & 0xFFu) : 255u;
+      const uint8_t b = mesh->is_decal ? uint8_t(c0 & 0xFFu) : 255u;
+      const uint8_t a_base = mesh->is_decal ? uint8_t((c0 >> 24) & 0xFFu) : 255u;
+      for (int py = min_py; py <= max_py; ++py) {
+        for (int px = min_px; px <= max_px; ++px) {
+          int hits = 0;
+          for (int sy = 0; sy < 2; ++sy) {
+            for (int sx = 0; sx < 2; ++sx) {
+              const float qx = float(px) + 0.25f + 0.5f * float(sx);
+              const float qy = float(py) + 0.25f + 0.5f * float(sy);
+              const float w0 = edge(x1, y1, x2, y2, qx, qy);
+              const float w1 = edge(x2, y2, x0, y0, qx, qy);
+              const float w2 = edge(x0, y0, x1, y1, qx, qy);
+              const bool in = (area > 0.0f) ? (w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f)
+                                            : (w0 <= 0.0f && w1 <= 0.0f && w2 <= 0.0f);
+              if (in) ++hits;
+            }
+          }
+          if (hits > 0) {
+            put_px(uint32_t(px), uint32_t(py), r, g, b, uint8_t((int(a_base) * hits) / 4));
+          }
+        }
+      }
+    }
+  } else {
+    // Crisp built-in vector primitive preview (@circle, @star, @chevron, @stripe, @rect, or shield fallback).
+    std::string sp = shape_path;
+    for (char& c : sp) c = char(std::tolower(static_cast<unsigned char>(c)));
+    const bool is_circle = (sp.find("circle") != std::string::npos);
+    const bool is_star = (sp.find("star") != std::string::npos);
+    const bool is_chevron = (sp.find("chevron") != std::string::npos || sp.find("arrow") != std::string::npos);
+    const bool is_stripe = (sp.find("stripe") != std::string::npos);
+    const bool is_rect = (sp.empty() || sp.find("rect") != std::string::npos || sp.find("square") != std::string::npos);
+    for (uint32_t py = 0; py < kSz; ++py) {
+      for (uint32_t px = 0; px < kSz; ++px) {
+        int hits = 0;
+        for (int sy = 0; sy < 2; ++sy) {
+          for (int sx = 0; sx < 2; ++sx) {
+            float u = ((float(px) + 0.25f + 0.5f * float(sx)) / float(kSz)) * 2.0f - 1.0f;
+            float v = ((float(py) + 0.25f + 0.5f * float(sy)) / float(kSz)) * 2.0f - 1.0f;
+            if (flip_x) u = -u;
+            if (flip_y) v = -v;
+            bool in = false;
+            if (is_circle) {
+              in = (u * u + v * v) <= 0.78f * 0.78f;
+            } else if (is_star) {
+              const float r = std::hypot(u, v);
+              const float ang = std::atan2(v, u);
+              const float sector = std::fmod(ang + 3.14159265f * 2.5f, 3.14159265f * 0.4f);
+              const float t = std::fabs(sector - 3.14159265f * 0.2f) / (3.14159265f * 0.2f);
+              const float rad = 0.34f + 0.50f * (1.0f - t);
+              in = (r <= rad);
+            } else if (is_chevron) {
+              const float band = v + 0.55f * std::fabs(u);
+              in = (std::fabs(u) <= 0.80f && band >= -0.22f && band <= 0.32f);
+            } else if (is_stripe) {
+              in = (std::fabs(v) <= 0.82f && (std::fabs(u + 0.34f) <= 0.20f || std::fabs(u - 0.34f) <= 0.20f));
+            } else if (is_rect) {
+              in = (std::fabs(u) <= 0.74f && std::fabs(v) <= 0.56f);
+            } else {
+              // Stylised racing badge diamond/chevron silhouette for external shapes when Livery.zip is absent.
+              in = (std::fabs(u) + std::fabs(v) <= 0.82f) && !(std::fabs(u) + std::fabs(v) <= 0.28f);
+            }
+            if (in) ++hits;
+          }
+        }
+        if (hits > 0) {
+          put_px(px, py, 255u, 255u, 255u, uint8_t((255 * hits) / 4));
+        }
+      }
+    }
+  }
+  return ui::atlas_image(key, kSz, kSz, rgba, out_uv, /*transient=*/true);
+}
+
+std::string format_vinyl_shape_label(const std::string& shape_path) {
+  if (shape_path.empty()) return "RECTANGLE";
+  if (shape_path == "@rect") return "RECTANGLE";
+  if (shape_path == "@circle") return "CIRCLE";
+  if (shape_path == "@star") return "STAR";
+  if (shape_path == "@chevron") return "CHEVRON";
+  if (shape_path == "@stripe") return "RACING STRIPE";
+  std::string s = shape_path;
+  const size_t slash = s.find_last_of("/\\");
+  if (slash != std::string::npos) s = s.substr(slash + 1);
+  const size_t dot = s.find_last_of('.');
+  if (dot != std::string::npos) s = s.substr(0, dot);
+  for (char& c : s) {
+    if (c == '_' || c == '-') c = ' ';
+    else c = char(std::toupper(static_cast<unsigned char>(c)));
+  }
+  return s.empty() ? "VINYL SHAPE" : s;
+}
+
+}  // namespace
+
 void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor& editor,
                             const std::string& car_title, const std::string& notice) {
   const float s = h / 720.0f;
@@ -992,10 +1345,16 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
   }
 
   // Top-right LIV_TABS with LBUMPER / RBUMPER (#F90064 active PILL_BIG).
-  static const std::vector<std::string> kTabs = {"PAINT", "MANUFACTURER", "SPECIAL", "PREVIOUS", "VINYLS"};
+  const std::vector<std::string> tabs = {
+      loc_str("Paint", "IDS_Paint", "PAINT"),
+      loc_str("Paint", "IDS_ManufacturerColors", "MANUFACTURER"),
+      loc_str("Paint", "IDS_SpecialColors", "SPECIAL"),
+      loc_str("Paint", "IDS_PreviousColors", "PREVIOUS"),
+      loc_str("Paint", "IDS_Vinyls", "VINYLS"),
+  };
   {
     ui4::TiltScope tab_rot(list, w - 360.0f * s, 40.0f * s, tilt_rad * 0.6f);
-    ui4::tab_strip(list, s, w - 680.0f * s, 24.0f * s, w - 48.0f * s, kTabs, int(editor.tab()), true, ui4::kPink);
+    ui4::tab_strip(list, s, w - 680.0f * s, 24.0f * s, w - 48.0f * s, tabs, int(editor.tab()), true, ui4::kPink);
   }
 
   // Top-right 506_C_LIV_LAYER_SELECT LIV_CLIPBOARD ([1040,55..1184,177]) when in Vinyl Editor!
@@ -1124,7 +1483,10 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
       char tint_buf[32];
       std::snprintf(tint_buf, sizeof tint_buf, "%d%% DARKNESS",
                     int(std::lround(editor.document().paint.window_tint * 100.0f)));
-      const std::string fname = is_tint ? std::string(tint_buf) : std::string(cars::paint_finish_name(active_spec.finish));
+      const std::string fname =
+          is_tint ? std::string(tint_buf)
+                  : loc_key("Paint:" + std::string(cars::paint_finish_name(active_spec.finish)),
+                            paint_finish_display_name(active_spec.finish));
       ui::TextStyle fns = ui4::style(ui::Font::kE, 14.0f * s, ui4::kWhite, ui::Align::kCenter);
       ui4::fit_text(fname, fns, (ar_r - ar_l) - 24.0f * s, 9.5f * s);
       list.text(0.5f * (ar_l + ar_r), fy0 + 0.5f * (34.0f * s - fns.size), fname, fns);
@@ -1209,15 +1571,25 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
     } else if (editor.tab() == EditorTab::kManufacturerColors) {
       const auto& mc = editor.manufacturer_colors();
       ui4::title_tape(list, s, 86.0f * s, 456.0f * s,
-                      "MANUFACTURER COLORS (" + std::to_string(mc.size()) + ")", ui4::kBrushBlack, 30.0f, 540.0f);
+                      loc_str("Paint", "IDS_ManufacturerColors", "MANUFACTURER COLORS") + " (" +
+                          std::to_string(mc.size()) + ")",
+                      ui4::kBrushBlack, 30.0f, 540.0f);
       const int n = int(mc.size());
       const int sel = int(editor.selected_manufacturer_color());
       const int count = std::min(std::max(1, n), 8);
       const int first = std::clamp(sel - count / 2, 0, std::max(0, n - count));
-      const float gap = 10.0f * s;
-      const float cw = (blade_w - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
       const float by = 514.0f * s, bh = 106.0f * s;
-      float bx = left_x;
+      const float arrow_pad = 30.0f * s;
+      const float c_left = left_x + arrow_pad, c_right = right_x - arrow_pad;
+      list.add_hit(left_x - 4.0f * s, by, c_left - 4.0f * s, by + bh, ui::kHitStepLeft,
+                   int(EditorTab::kManufacturerColors));
+      list.add_hit(c_right + 4.0f * s, by, right_x + 4.0f * s, by + bh, ui::kHitStepRight,
+                   int(EditorTab::kManufacturerColors));
+      ui4::opt_arrow(list, left_x + 11.0f * s, by + 0.5f * bh, 15.0f * s, -1, n > 1 ? ui4::kPinkHi : ui4::kDim);
+      ui4::opt_arrow(list, right_x - 11.0f * s, by + 0.5f * bh, 15.0f * s, +1, n > 1 ? ui4::kPinkHi : ui4::kDim);
+      const float gap = 10.0f * s;
+      const float cw = ((c_right - c_left) - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
+      float bx = c_left;
       for (int i = first; i < first + count && i < n; ++i) {
         const auto& c = mc[size_t(i)];
         const bool act = (i == sel);
@@ -1228,25 +1600,35 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
         if (act) list.frame(bx, by - lift, bx + cw, by + bh - lift, ui4::kPink, 2.0f * s);
         list.rect(bx + 10.0f * s, by + 12.0f * s - lift, bx + cw - 10.0f * s, by + 62.0f * s - lift,
                   ui::rgba(uint8_t((c.rgb >> 16) & 0xFF), uint8_t((c.rgb >> 8) & 0xFF), uint8_t(c.rgb & 0xFF), 255));
-        const std::string oem_lbl = oem_swatch_label(size_t(i));
-        list.text(bx + 10.0f * s, by + 70.0f * s - lift, oem_lbl,
-                  ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.0f * s, ui4::kWhite));
-        list.text(bx + 10.0f * s, by + 88.0f * s - lift, c.metallic ? "METALLIC" : "GLOSS",
+        const std::string mfg_lbl = manufacturer_color_display_name(c);
+        ui::TextStyle ms = ui4::style(act ? ui::Font::kE : ui::Font::kB, 11.5f * s, ui4::kWhite);
+        ui4::fit_text(mfg_lbl, ms, cw - 20.0f * s, 8.0f * s);
+        list.text(bx + 10.0f * s, by + 70.0f * s - lift, mfg_lbl, ms);
+        list.text(bx + 10.0f * s, by + 88.0f * s - lift, c.metallic ? "METALLIC" : "FACTORY",
                   ui4::style(ui::Font::kB, 10.0f * s, act ? ui4::kYellow : ui4::kDim));
         bx += cw + gap;
       }
     } else if (editor.tab() == EditorTab::kPreviousColors) {
       const auto& pc = editor.previous_colors();
       ui4::title_tape(list, s, 86.0f * s, 456.0f * s,
-                      "PREVIOUS COLORS (" + std::to_string(pc.size()) + ")", ui4::kBrushBlack, 30.0f, 500.0f);
+                      loc_str("Paint", "IDS_PreviousColors", "PREVIOUS COLORS") + " (" + std::to_string(pc.size()) + ")",
+                      ui4::kBrushBlack, 30.0f, 500.0f);
       const int n = int(pc.size());
       const int sel = int(editor.selected_previous_color());
       const int count = std::min(std::max(1, n), 8);
       const int first = std::clamp(sel - count / 2, 0, std::max(0, n - count));
-      const float gap = 10.0f * s;
-      const float cw = (blade_w - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
       const float by = 514.0f * s, bh = 106.0f * s;
-      float bx = left_x;
+      const float arrow_pad = 30.0f * s;
+      const float c_left = left_x + arrow_pad, c_right = right_x - arrow_pad;
+      list.add_hit(left_x - 4.0f * s, by, c_left - 4.0f * s, by + bh, ui::kHitStepLeft,
+                   int(EditorTab::kPreviousColors));
+      list.add_hit(c_right + 4.0f * s, by, right_x + 4.0f * s, by + bh, ui::kHitStepRight,
+                   int(EditorTab::kPreviousColors));
+      ui4::opt_arrow(list, left_x + 11.0f * s, by + 0.5f * bh, 15.0f * s, -1, n > 1 ? ui4::kPinkHi : ui4::kDim);
+      ui4::opt_arrow(list, right_x - 11.0f * s, by + 0.5f * bh, 15.0f * s, +1, n > 1 ? ui4::kPinkHi : ui4::kDim);
+      const float gap = 10.0f * s;
+      const float cw = ((c_right - c_left) - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
+      float bx = c_left;
       for (int i = first; i < first + count && i < n; ++i) {
         const auto& c = pc[size_t(i)];
         const bool act = (i == sel);
@@ -1257,11 +1639,11 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
         if (act) list.frame(bx, by - lift, bx + cw, by + bh - lift, ui4::kPink, 2.0f * s);
         list.rect(bx + 10.0f * s, by + 12.0f * s - lift, bx + cw - 10.0f * s, by + 62.0f * s - lift,
                   ui::rgba(uint8_t((c.rgb >> 16) & 0xFF), uint8_t((c.rgb >> 8) & 0xFF), uint8_t(c.rgb & 0xFF), 255));
-        char buf[32];
-        std::snprintf(buf, sizeof buf, "#%06X", c.rgb & 0xFFFFFFu);
-        list.text(bx + 10.0f * s, by + 70.0f * s - lift, buf,
-                  ui4::style(act ? ui::Font::kE : ui::Font::kB, 11.5f * s, ui4::kWhite));
-        list.text(bx + 10.0f * s, by + 88.0f * s - lift, cars::paint_finish_name(c.finish),
+        const std::string p_lbl = paint_hue_name(c.rgb);
+        ui::TextStyle ps = ui4::style(act ? ui::Font::kE : ui::Font::kB, 11.5f * s, ui4::kWhite);
+        ui4::fit_text(p_lbl, ps, cw - 20.0f * s, 8.0f * s);
+        list.text(bx + 10.0f * s, by + 70.0f * s - lift, p_lbl, ps);
+        list.text(bx + 10.0f * s, by + 88.0f * s - lift, paint_finish_display_name(c.finish),
                   ui4::style(ui::Font::kB, 9.5f * s, act ? ui4::kYellow : ui4::kDim));
         bx += cw + gap;
       }
@@ -1269,15 +1651,24 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
       // Bottom +3.0 deg Special Two-Tone Paint Carousel
       const auto& sp = editor.special_colors();
       ui4::title_tape(list, s, 86.0f * s, 456.0f * s,
-                      "SPECIAL TWO-TONE PAINTS (" + std::to_string(sp.size()) + ")", ui4::kBrushBlack, 30.0f, 560.0f);
+                      loc_str("Paint", "IDS_SpecialColors", "SPECIAL COLORS") + " (" + std::to_string(sp.size()) + ")",
+                      ui4::kBrushBlack, 30.0f, 560.0f);
       const int n = int(sp.size());
       const int sel = int(editor.selected_special());
       const int count = std::min(n, 6);
       const int first = std::clamp(sel - count / 2, 0, std::max(0, n - count));
-      const float gap = 10.0f * s;
-      const float cw = (blade_w - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
       const float by = 514.0f * s, bh = 106.0f * s;
-      float bx = left_x;
+      const float arrow_pad = 30.0f * s;
+      const float c_left = left_x + arrow_pad, c_right = right_x - arrow_pad;
+      list.add_hit(left_x - 4.0f * s, by, c_left - 4.0f * s, by + bh, ui::kHitStepLeft,
+                   int(EditorTab::kSpecialColors));
+      list.add_hit(c_right + 4.0f * s, by, right_x + 4.0f * s, by + bh, ui::kHitStepRight,
+                   int(EditorTab::kSpecialColors));
+      ui4::opt_arrow(list, left_x + 11.0f * s, by + 0.5f * bh, 15.0f * s, -1, n > 1 ? ui4::kPinkHi : ui4::kDim);
+      ui4::opt_arrow(list, right_x - 11.0f * s, by + 0.5f * bh, 15.0f * s, +1, n > 1 ? ui4::kPinkHi : ui4::kDim);
+      const float gap = 10.0f * s;
+      const float cw = ((c_right - c_left) - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
+      float bx = c_left;
       for (int i = first; i < first + count; ++i) {
         const auto& sc = sp[size_t(i)];
         const bool act = (i == sel);
@@ -1292,13 +1683,11 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
                   ui::rgba(uint8_t((c1 >> 16) & 0xFF), uint8_t((c1 >> 8) & 0xFF), uint8_t(c1 & 0xFF), 255));
         list.rect(mid + 2.0f * s, by + 12.0f * s - lift, bx + cw - 10.0f * s, by + 62.0f * s - lift,
                   ui::rgba(uint8_t((c2 >> 16) & 0xFF), uint8_t((c2 >> 8) & 0xFF), uint8_t(c2 & 0xFF), 255));
-        char buf[48];
-        std::snprintf(buf, sizeof buf, "SPECIAL #%lld", (long long)sc.id);
-        list.text(bx + 10.0f * s, by + 70.0f * s - lift, buf,
-                  ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.5f * s, ui4::kWhite));
-        char sub[48];
-        std::snprintf(sub, sizeof sub, "TWO-TONE %.1f", sc.two_tone_power);
-        list.text(bx + 10.0f * s, by + 88.0f * s - lift, sub,
+        const std::string sp_lbl = special_color_display_name(sc);
+        ui::TextStyle ss = ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.0f * s, ui4::kWhite);
+        ui4::fit_text(sp_lbl, ss, cw - 20.0f * s, 8.0f * s);
+        list.text(bx + 10.0f * s, by + 70.0f * s - lift, sp_lbl, ss);
+        list.text(bx + 10.0f * s, by + 88.0f * s - lift, special_color_finish_subtitle(sc),
                   ui4::style(ui::Font::kB, 10.5f * s, act ? ui4::kYellow : ui4::kDim));
         bx += cw + gap;
       }
@@ -1306,22 +1695,31 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
       // 506_C_LIV_LAYER_SELECT: Bottom +3.0 deg Horizontal Layer Strip (y=498..618, 173px pitch)
       const auto& layers = editor.document().layers;
       ui4::title_tape(list, s, 86.0f * s, 434.0f * s,
-                      "VINYL LAYERS (" + std::to_string(layers.size()) + ")", ui4::kBrushBlack, 32.0f, 480.0f);
+                      loc_str("Paint", "IDS_VinylLayers", "VINYL LAYERS") + " (" + std::to_string(layers.size()) + ")",
+                      ui4::kBrushBlack, 32.0f, 480.0f);
 
       const float by = 498.0f * s, bh = 114.0f * s;
       const int n = int(layers.size());
       const int sel = n > 0 ? int(std::min(editor.selected_layer(), layers.size() - 1)) : 0;
       const int slots = std::max(5, std::min(n + 1, 6));
       const int first = std::clamp(sel - slots / 2, 0, std::max(0, std::max(n, slots) - slots));
+      const float arrow_pad = 30.0f * s;
+      const float c_left = left_x + arrow_pad, c_right = right_x - arrow_pad;
+      list.add_hit(left_x - 4.0f * s, by, c_left - 4.0f * s, by + bh, ui::kHitStepLeft,
+                   int(EditorTab::kVinylLayers));
+      list.add_hit(c_right + 4.0f * s, by, right_x + 4.0f * s, by + bh, ui::kHitStepRight,
+                   int(EditorTab::kVinylLayers));
+      ui4::opt_arrow(list, left_x + 11.0f * s, by + 0.5f * bh, 15.0f * s, -1, n > 1 ? ui4::kPinkHi : ui4::kDim);
+      ui4::opt_arrow(list, right_x - 11.0f * s, by + 0.5f * bh, 15.0f * s, +1, n > 1 ? ui4::kPinkHi : ui4::kDim);
       const float gap = 10.0f * s;
-      const float cw = (blade_w - gap * float(slots - 1)) / float(slots);
+      const float cw = ((c_right - c_left) - gap * float(slots - 1)) / float(slots);
 
       std::array<float, 4> bg_uv{}, empty_uv{}, foc_uv{};
       const bool has_bg = ui4::texture("LIVERY/LIV_BG_GROUP", bg_uv);
       const bool has_empty = ui4::texture("LIVERY/LIV_ICON_EMPTY", empty_uv);
       const bool has_foc = ui4::texture("LIVERY/LIV_FOCUS_FRAME", foc_uv);
 
-      float bx = left_x;
+      float bx = c_left;
       for (int s_i = 0; s_i < slots; ++s_i) {
         const int idx = first + s_i;
         const bool is_layer = (idx < n);
@@ -1347,20 +1745,36 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
           char idx_b[32];
           if (ly.group_id > 0) std::snprintf(idx_b, sizeof idx_b, "LAYER %02d [G%d]", idx + 1, ly.group_id);
           else std::snprintf(idx_b, sizeof idx_b, "LAYER %02d", idx + 1);
-          list.text(bx + 10.0f * s, by + 8.0f * s - lift, idx_b, ui4::style(ui::Font::kE, 11.0f * s, ui4::kYellow));
-          list.rect(bx + cw - 36.0f * s, by + 8.0f * s - lift, bx + cw - 10.0f * s, by + 34.0f * s - lift,
-                    ui::rgba(uint8_t((ly.rgb >> 16) & 0xFF), uint8_t((ly.rgb >> 8) & 0xFF), uint8_t(ly.rgb & 0xFF), 255));
-          list.frame(bx + cw - 36.0f * s, by + 8.0f * s - lift, bx + cw - 10.0f * s, by + 34.0f * s - lift,
-                     ui4::kWhite, 1.0f * s);
+          list.text(bx + 10.0f * s, by + 8.0f * s - lift, idx_b, ui4::style(ui::Font::kE, 10.5f * s, ui4::kYellow));
 
-          std::string sname = ly.shape_path.empty() ? "VINYL SHAPE" : ly.shape_path;
-          ui::TextStyle st = ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
-          ui4::fit_text(sname, st, cw - 20.0f * s, 8.5f * s);
-          list.text(bx + 10.0f * s, by + 46.0f * s - lift, sname, st);
+          // Miniature vinyl shape preview thumbnail box in top-right of card.
+          const float tsz = 36.0f * s;
+          const float tx0 = bx + cw - tsz - 8.0f * s, ty0 = by + 8.0f * s - lift;
+          list.rect(tx0, ty0, tx0 + tsz, ty0 + tsz, ui::rgba(14, 16, 22, 235));
+          std::array<float, 4> thumb_uv{};
+          bool is_multi = false;
+          const cars::VinylMesh* mesh = editor.preview_shape_mesh(ly.shape_path);
+          if (ensure_vinyl_thumbnail_uv(ly.shape_path, mesh, ly.flip_x, ly.flip_y, thumb_uv, is_multi)) {
+            const uint32_t tint =
+                is_multi ? ui4::kWhite
+                         : ui::rgba(uint8_t((ly.rgb >> 16) & 0xFF), uint8_t((ly.rgb >> 8) & 0xFF),
+                                    uint8_t(ly.rgb & 0xFF), 255);
+            list.image(tx0 + 2.0f * s, ty0 + 2.0f * s, tx0 + tsz - 2.0f * s, ty0 + tsz - 2.0f * s, thumb_uv, tint);
+          } else {
+            list.rect(tx0 + 4.0f * s, ty0 + 4.0f * s, tx0 + tsz - 4.0f * s, ty0 + tsz - 4.0f * s,
+                      ui::rgba(uint8_t((ly.rgb >> 16) & 0xFF), uint8_t((ly.rgb >> 8) & 0xFF),
+                               uint8_t(ly.rgb & 0xFF), 255));
+          }
+          list.frame(tx0, ty0, tx0 + tsz, ty0 + tsz, act ? ui4::kPinkHi : ui4::kWhite, 1.0f * s);
+
+          std::string sname = format_vinyl_shape_label(ly.shape_path);
+          ui::TextStyle st = ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+          ui4::fit_text(sname, st, cw - tsz - 22.0f * s, 8.0f * s);
+          list.text(bx + 10.0f * s, by + 30.0f * s - lift, sname, st);
 
           char sub[64];
           std::snprintf(sub, sizeof sub, "%s  •  %.0f°", cars::livery_plane_name(ly.plane), ly.rot_deg);
-          list.text(bx + 10.0f * s, by + 70.0f * s - lift, sub,
+          list.text(bx + 10.0f * s, by + 68.0f * s - lift, sub,
                     ui4::style(ui::Font::kB, 10.0f * s, act ? ui4::kOffWhite : ui4::kDim));
           char scb[48];
           std::snprintf(scb, sizeof scb, "SCALE %.2f x %.2f", ly.scale_x, ly.scale_y);
@@ -1372,9 +1786,11 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
             list.image(bx + 0.5f * (cw - esz), by + 22.0f * s - lift, bx + 0.5f * (cw + esz),
                        by + 22.0f * s + esz - lift, empty_uv, ui::rgba(255, 255, 255, 110));
           }
-          list.text(bx + 0.5f * cw, by + 74.0f * s - lift, "EMPTY SLOT",
+          list.text(bx + 0.5f * cw, by + 74.0f * s - lift, loc_str("Paint", "IDS_EmptySlot", "EMPTY SLOT"),
                     ui4::style(ui::Font::kB, 11.0f * s, ui4::kDim, ui::Align::kCenter));
-          list.text(bx + 0.5f * cw, by + 90.0f * s - lift, "[Y] ADD VINYL",
+          const std::string add_hint =
+              ui4::glyph_label_for("Y") + " " + loc_str("Paint", "IDS_AddVinyl", "ADD VINYL");
+          list.text(bx + 0.5f * cw, by + 90.0f * s - lift, add_hint,
                     ui4::style(ui::Font::kE, 10.0f * s, ui4::kPinkHi, ui::Align::kCenter));
         }
         bx += cw + gap;
@@ -1387,7 +1803,8 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
     const float cx0 = 86.0f * s, cy0 = 112.0f * s, cx1 = 500.0f * s, cy1 = 442.0f * s;
     ui4::panel01(list, cx0, cy0, cx1, cy1, s, ui::rgba(16, 18, 24, 240), ui4::kPink);
     list.text(cx0 + 16.0f * s, cy0 + 12.0f * s,
-              "DESIGN CATALOG (" + std::to_string(editor.design_catalog().size()) + ")",
+              loc_str("Paint", "IDS_DesignCatalog", "DESIGN CATALOG") + " (" +
+                  std::to_string(editor.design_catalog().size()) + ")",
               ui4::style(ui::Font::kE, 14.0f * s, ui4::kPinkHi));
     const auto& cat = editor.design_catalog();
     if (cat.empty()) {
@@ -1412,8 +1829,9 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
         ry += 38.0f * s;
       }
     }
-    list.text(cx0 + 16.0f * s, cy1 - 24.0f * s, "[A/ENTER] LOAD   [S] SAVE COPY   [B/F2] CLOSE",
-              ui4::style(ui::Font::kB, 10.5f * s, ui4::kYellow));
+    const std::string cat_hint = ui4::glyph_label_for("A") + " LOAD   " + ui4::glyph_label_for("X") +
+                                 " SAVE COPY   " + ui4::glyph_label_for("B") + " CLOSE";
+    list.text(cx0 + 16.0f * s, cy1 - 24.0f * s, cat_hint, ui4::style(ui::Font::kB, 10.5f * s, ui4::kYellow));
   }
 
   if (!notice.empty()) {
@@ -1424,14 +1842,19 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
   }
 
   const std::string undo_lbl =
-      editor.can_undo() ? ("UNDO (" + std::to_string(editor.undo_depth()) + ")") : "TAB";
+      editor.can_undo() ? (loc_str("HelpButtons", "IDS_Undo", "UNDO") + " (" + std::to_string(editor.undo_depth()) + ")")
+                        : loc_str("HelpButtons", "IDS_Tab", "TAB");
+  // Concise prompts ensure all 6 buttons (indices 0..5, including index 2 DPAD_LR) fit cleanly at 1280px.
   ui4::button_bar(list,
-                  {{"A", "SAVE LIVERY"},
-                   {"LB", vinyl_tab ? undo_lbl : "TAB"},
-                   {"DPAD_LR", vinyl_tab ? "LAYER / LT:MODS" : "FINISH / COLOR"},
-                   {"Y", vinyl_tab ? "ADD / LT:DUP" : "REGION"},
-                   {"X", vinyl_tab ? "DEL / LT:FLIP" : "RESET FACTORY"},
-                   {"B", "BACK"}},
+                  {{"A", loc_str("HelpButtons", "IDS_Save", "SAVE")},
+                   {"LB", vinyl_tab ? undo_lbl : loc_str("HelpButtons", "IDS_Tab", "TAB")},
+                   {"DPAD_LR", vinyl_tab ? loc_str("Paint", "IDS_Layer", "LAYER")
+                                         : loc_str("Paint", "IDS_Finish", "FINISH")},
+                   {"Y", vinyl_tab ? loc_str("Paint", "IDS_Add", "ADD")
+                                   : loc_str("Paint", "IDS_Region", "REGION")},
+                   {"X", vinyl_tab ? loc_str("HelpButtons", "IDS_Delete", "DELETE")
+                                   : loc_str("Paint", "IDS_Factory", "FACTORY")},
+                   {"B", loc_str("HelpButtons", "IDS_Back", "BACK")}},
                   w, h, 56.0f);
 }
 

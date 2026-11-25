@@ -184,6 +184,13 @@ struct BladeDetailKv {
   uint32_t value_color = kWhite;
 };
 
+struct ControllerDiagramParams {
+  bool enabled = false;
+  int layout_id = 0;
+  bool swap_handbrake_clutch = false;
+  std::string highlight_action;
+};
+
 struct TiltedBladeSpec {
   std::string title;
   std::string eyebrow;
@@ -218,6 +225,8 @@ struct TiltedBladeSpec {
   std::array<float, 4> detail_icon_uv{};
   std::string detail_footer;
   std::string notice;
+  ControllerDiagramParams controller_diagram;
+  float open_progress = 1.0f;  // 0..1 UI4 screen open/close brush-wipe & slide transition (R3-UI-08)
   std::vector<Prompt> prompts;
 };
 

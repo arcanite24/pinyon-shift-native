@@ -20,6 +20,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -96,6 +97,11 @@ bool font_role_loaded(Font role);
 // the Latin/Cyrillic vector fonts (or standalone).
 void set_cjk_font(std::shared_ptr<const fh1::CjkFont> cjk);
 bool cjk_font_loaded();
+
+// Unicode UTF-8 uppercase folding covering ASCII, Latin-1 Supplement (à..þ, ß -> SS),
+// Latin Extended-A (Polish/Czech/Hungarian/etc.), and Cyrillic (а..я, ё -> Ё).
+uint32_t unicode_to_upper_cp(uint32_t cp);
+std::string unicode_uppercase_utf8(std::string_view text);
 
 // The UI atlas (kAtlasSize square, RGBA8, white with the glyphs' coverage
 // in alpha), owned here; the renderer uploads the rectangles that changed.
@@ -239,5 +245,10 @@ class List {
 // The CPU rasterizer: `out` (sRGB RGBA8, width x height) gets the list
 // blended over it.
 void rasterize(std::span<const Instance> items, std::vector<uint8_t>& out, uint32_t width, uint32_t height);
+
+// Optional shared StringTables text lookup hook usable from all UI targets
+// (including lightweight unit-test binaries that do not link carview_hud).
+void set_text_lookup(std::function<std::string(const std::string&)> fn);
+std::string lookup_text(const std::string& ref);
 
 }  // namespace carview::ui

@@ -16,12 +16,28 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
+
+namespace carview {
+
+// R3-UI-12: Computes the (x, y) rim position for the rotating "N" compass badge on a square minimap.
+// In north-up mode (`map_heading_rad == 0`), North sits dead-top at (size/2, size/2 - rim_r).
+inline std::array<double, 2> minimap_compass_north_pos(double map_heading_rad, int size) {
+  const double half = 0.5 * double(size);
+  const double rim_r = std::max(8.0, half - std::max(10.0, double(size) * 0.065));
+  const double a = -map_heading_rad;
+  return {half + rim_r * std::sin(a), half - rim_r * std::cos(a)};
+}
+
+}  // namespace carview
+
+#ifndef CARVIEW_MAP_VIEW_LOGIC_ONLY
 
 #include "freeroam/collectibles.h"
 #include "freeroam/road_discovery.h"
@@ -69,6 +85,7 @@ struct MapMarker {
   bool completed = false;
   bool discovered = true;  // false for undiscovered outposts
   int site_or_hub = 0;  // FestivalSite::Kind, StreetHub::id, or Outpost index
+  std::string detail_line;  // optional rich event / PR stunt metadata line
 };
 
 bool map_marker_matches_filter(const MapMarker& m, MapFilter f);
@@ -93,6 +110,13 @@ struct MapScene {
   std::vector<std::array<double, 2>> festival_ai;
   // A race's route ahead (x, z), drawn green on the minimap (SPEC-UI-LAYOUTS a).
   std::vector<std::array<double, 2>> route;
+  // R3-UI-12: Minimap race overlays (next checkpoint gate, checkered finish line, AI race leader).
+  bool has_next_checkpoint = false;
+  std::array<double, 2> next_checkpoint{};
+  bool has_finish = false;
+  std::array<double, 2> finish_pos{};
+  bool has_race_leader = false;
+  std::array<double, 2> race_leader{};
   // Active free-roam GPS route (x, z) and destination point.
   std::vector<std::array<double, 2>> gps_route;
   bool has_gps_dest = false;
@@ -245,3 +269,5 @@ class MapCameraController {
 };
 
 }  // namespace carview
+
+#endif  // CARVIEW_MAP_VIEW_LOGIC_ONLY

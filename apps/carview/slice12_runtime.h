@@ -62,6 +62,36 @@ struct Slice12Runtime {
   std::vector<RawJoystickEntry> wheel_joysticks_;
   std::vector<RawJoystickEntry> raw_joysticks_;
   std::string ffb_device_match_;
+  bool last_input_was_keyboard_ = false;
+
+  static ui4::GlyphSet glyph_set_for_gamepad(uint16_t vendor_id, uint16_t product_id) {
+    return drive::dualsense::is_playstation_pad(vendor_id, product_id) ? ui4::GlyphSet::kPlayStation
+                                                                       : ui4::GlyphSet::kXbox;
+  }
+
+  void notify_keyboard_or_mouse_input() {
+    last_input_was_keyboard_ = true;
+    ui4::set_glyph_set(ui4::GlyphSet::kKeyboard);
+  }
+
+  void notify_gamepad_input(SDL_JoystickID which, const std::vector<SDL_Gamepad*>& pads) {
+    last_input_was_keyboard_ = false;
+    SDL_Gamepad* matched = nullptr;
+    if (which != 0) {
+      for (SDL_Gamepad* pad : pads) {
+        if (pad && SDL_GetGamepadID(pad) == which) {
+          matched = pad;
+          break;
+        }
+      }
+    }
+    if (!matched && !pads.empty()) matched = pads.front();
+    if (matched) {
+      ui4::set_glyph_set(glyph_set_for_gamepad(SDL_GetGamepadVendor(matched), SDL_GetGamepadProduct(matched)));
+    } else {
+      ui4::set_glyph_set(ui4::GlyphSet::kXbox);
+    }
+  }
 
   void set_window(SDL_Window* window) {
     native_hwnd_ = nullptr;
@@ -199,10 +229,12 @@ struct Slice12Runtime {
     }
   }
 
-  void sync_pad_capabilities(const std::vector<SDL_Gamepad*>& pads) {
+  void sync_pad_capabilities(const std::vector<SDL_Gamepad*>& pads, bool force_gamepad = false) {
     bool ps_active = false;
+    bool any_pad = false;
     for (SDL_Gamepad* pad : pads) {
       if (!pad) continue;
+      any_pad = true;
       const uint16_t vid = SDL_GetGamepadVendor(pad);
       const uint16_t pid = SDL_GetGamepadProduct(pad);
       if (drive::dualsense::is_playstation_pad(vid, pid)) ps_active = true;
@@ -214,7 +246,13 @@ struct Slice12Runtime {
         }
       }
     }
-    ui4::set_glyph_set(ps_active ? ui4::GlyphSet::kPlayStation : ui4::GlyphSet::kXbox);
+    if (!any_pad && !has_any_raw_controller()) {
+      last_input_was_keyboard_ = true;
+      ui4::set_glyph_set(ui4::GlyphSet::kKeyboard);
+    } else if (force_gamepad || !last_input_was_keyboard_) {
+      last_input_was_keyboard_ = false;
+      ui4::set_glyph_set(ps_active ? ui4::GlyphSet::kPlayStation : ui4::GlyphSet::kXbox);
+    }
   }
 
   void on_sdl_event(const SDL_Event& e, const std::vector<SDL_Gamepad*>& pads) {

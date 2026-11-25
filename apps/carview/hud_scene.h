@@ -119,4 +119,34 @@ class SceneDraw {
   bool turn_ = false;
 };
 
+// Tracks smooth ~0.18 s UI4 screen open/close cubic ease-out transitions keyed by active screen ID.
+class UiTransitionTracker {
+ public:
+  static constexpr float kDefaultDurationSec = 0.18f;
+
+  void set_duration(float seconds);
+  float duration() const { return duration_; }
+
+  // Updates active screen ID and advances transition time by `dt` seconds.
+  // Switching to a new non-empty screen ID starts a fresh open transition from 0.
+  // Passing an empty screen ID reverses progress smoothly toward 0 (close transition).
+  float step(std::string_view screen_id, float dt);
+
+  // Current cubic ease-out progress (0..1) and raw linear progress (0..1).
+  float progress() const;
+  float raw_progress() const;
+  const std::string& active_screen() const { return active_screen_; }
+  bool is_closing() const { return closing_; }
+  void reset();
+
+ private:
+  std::string active_screen_;
+  float elapsed_ = kDefaultDurationSec;
+  float duration_ = kDefaultDurationSec;
+  bool closing_ = false;
+};
+
+UiTransitionTracker& ui_transition_tracker();
+float ui_screen_open_progress(std::string_view screen_id, float dt = 0.0f);
+
 }  // namespace carview

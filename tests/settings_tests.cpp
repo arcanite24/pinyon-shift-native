@@ -89,7 +89,7 @@ int main() {
   CHECK(page.value("preset") == "high");
   page.select_tab(int(carview::SettingsPage::Tab::kGameplay));
   CHECK(page.active_tab() == carview::SettingsPage::Tab::kGameplay);
-  page.move(2);  // difficulty -> rubber-banding -> traffic
+  page.move(3);  // difficulty preset -> difficulty -> rubber-banding -> traffic
   page.step(1);  // off -> on
   CHECK(page.value("traffic") == "on");
   page.move(-2);  // back to difficulty
@@ -99,18 +99,18 @@ int main() {
   CHECK(has(t, {"--preset", "high"}) && !has(t, {"--no-traffic"}) && has(t, {"--difficulty", "pro"}));
   CHECK(has(t, {"--size", "1280x720"}) && has(t, {"--hour", "18"}) && has(t, {"--language", "FR"}));
 
-  // Rebind row capture and commit (Controls tab, one before save line -> "key rewind").
+  // Rebind row capture and commit (Controls tab, one before save line -> last rebind row "key telemetry").
   page.open();
   page.select_tab(int(carview::SettingsPage::Tab::kControls));
-  page.move(-2);  // one before save line -> last rebind row ("key rewind")
+  page.move(-2);  // one before save line -> last rebind row ("key telemetry")
   CHECK(page.active_tab() == carview::SettingsPage::Tab::kControls);
   CHECK(page.on_rebind_row());
   page.begin_rebind();
   CHECK(page.capturing_key());
-  CHECK(page.commit_rebind("Backspace"));
+  CHECK(page.commit_rebind("F4"));
   CHECK(!page.capturing_key());
-  CHECK(page.value("key rewind") == "Backspace");
-  CHECK(page.live_settings().controls.keys.matches(drive::ControlAction::kRewind, "Backspace"));
+  CHECK(page.value("key telemetry") == "F4");
+  CHECK(page.live_settings().controls.keys.matches(drive::ControlAction::kTelemetry, "F4"));
 
   // The save line follows the last row of each tab and wraps within that tab.
   page.open();
@@ -416,7 +416,7 @@ int main() {
       std::map<std::string, std::string> initial_vals;
       std::map<std::string, bool> wrapped;
       for (const auto& dr : all_rows) {
-        if (dr.is_save || dr.is_rebind || dr.name == "preset") continue;
+        if (dr.is_save || dr.is_rebind || dr.name == "preset" || dr.name == "difficulty preset") continue;
         initial_vals[dr.name] = wave.value(dr.name);
         wrapped[dr.name] = false;
       }
@@ -424,7 +424,7 @@ int main() {
         bool any_remaining = false;
         std::map<std::string, std::string> wave_expected;
         for (const auto& dr : all_rows) {
-          if (dr.is_save || dr.is_rebind || dr.name == "preset") continue;
+          if (dr.is_save || dr.is_rebind || dr.name == "preset" || dr.name == "difficulty preset") continue;
           if (!wrapped[dr.name]) {
             any_remaining = true;
             wave.select_row(dr.flat_index);
@@ -481,7 +481,8 @@ int main() {
     full.load({});
     full.open();
     std::map<std::string, std::string> expected;
-    const std::vector<std::string> custom_keys = {"I", "K", "J", "L", "N", "F1", "B", "U", "O", "Backspace"};
+    const std::vector<std::string> custom_keys = {"I", "K", "J", "L", "N", "F1", "B", "U", "O", "Backspace",
+                                                  "Z", "X", "T", "G", "Y", "F2", "F4", "F5", "F6", "Tab"};
     size_t key_idx = 0;
     for (const auto& dr : full.display_rows()) {
       if (dr.is_save) continue;
@@ -497,7 +498,7 @@ int main() {
         expected[dr.name] = full.value(dr.name);
       }
     }
-    CHECK(rebinds_verified == 10);
+    CHECK(rebinds_verified == 20);
     // Note: stepping "preset" first set SOTA rows, then stepping each SOTA row adjusted them;
     // record final values right before writing so expected reflects the exact page state.
     for (const auto& dr : full.display_rows()) {
@@ -612,6 +613,76 @@ int main() {
     const auto swap_lay = drive::apply_handbrake_clutch_swap(base_lay, true);
     CHECK(base_lay.control_for("Handbrake") == swap_lay.control_for("Clutch"));
     CHECK(base_lay.control_for("Clutch") == swap_lay.control_for("Handbrake"));
+
+    // R3-UI-15: Top Difficulty Preset macro row (EASY/MEDIUM/HARD/INSANE/CUSTOM with live +XX% CR preview)
+    // and clean tab separation (HUD rows moved onto Gameplay/HUD tab).
+    {
+      carview::SettingsPage dp;
+      dp.load({});
+      dp.open();
+      dp.select_tab(int(carview::SettingsPage::Tab::kGameplay));
+      CHECK(dp.value("difficulty preset") == "MEDIUM (+15% CR)");
+      dp.step(1);  // MEDIUM -> HARD (+50% CR)
+      CHECK(dp.value("difficulty preset") == "HARD (+50% CR)");
+      CHECK(dp.difficulty_credit_bonus_pct() == 50);
+      CHECK(dp.value("difficulty") == "hard");
+      CHECK(dp.value("shifting") == "manual");
+      dp.step(1);  // HARD -> INSANE (+120% CR)
+      CHECK(dp.value("difficulty preset") == "INSANE (+120% CR)");
+      CHECK(dp.difficulty_credit_bonus_pct() == 120);
+      CHECK(dp.value("rewind") == "off");
+      CHECK(dp.value("damage") == "simulation");
+      dp.step(1);  // INSANE -> EASY (+0% CR)
+      CHECK(dp.value("difficulty preset") == "EASY (+0% CR)");
+      CHECK(dp.difficulty_credit_bonus_pct() == 0);
+      CHECK(dp.value("braking") == "assisted");
+      // Changing an individual assist flips preset cleanly to CUSTOM (+XX% CR).
+      dp.move(1);  // difficulty
+      dp.step(1);  // easy -> medium
+      CHECK(dp.value("difficulty preset").rfind("CUSTOM (+", 0) == 0);
+
+      bool hud_scale_on_gameplay = false;
+      bool preset_on_display = false;
+      for (const auto& dr : dp.display_rows()) {
+        if (dr.name == "hud scale" && dr.tab == carview::SettingsPage::Tab::kGameplay) hud_scale_on_gameplay = true;
+        if (dr.name == "preset" && dr.tab == carview::SettingsPage::Tab::kDisplay) preset_on_display = true;
+      }
+      CHECK(hud_scale_on_gameplay && preset_on_display);
+    }
+
+    // R3-UI-07: Metric vs Imperial formatting for chase height & chase distance camera offsets.
+    {
+      carview::SettingsPage cm;
+      cm.load({"--chase-height", "-0.50", "--chase-distance", "1.00"});
+      CHECK(cm.value("chase height") == "-0.50 m");
+      CHECK(cm.value("chase distance") == "+1.00 m");
+      carview::SettingsPage ci;
+      ci.load({"--units", "imperial", "--chase-height", "-0.50", "--chase-distance", "1.00"});
+      CHECK(ci.value("chase height") == "-1.64 ft");
+      CHECK(ci.value("chase distance") == "+3.28 ft");
+      carview::SettingsPage cdef;
+      cdef.load({"--units", "imperial"});
+      CHECK(cdef.value("chase height") == "default");
+      CHECK(cdef.value("chase distance") == "default");
+    }
+
+    // R3-UI-06 & R3-UI-13: Explicit ControllerDiagramSpec on Controls tab + optional text resolver.
+    {
+      carview::SettingsPage ctrl_p;
+      ctrl_p.load({"--controller-layout", "2", "--switch-handbrake-clutch"});
+      ctrl_p.open();
+      CHECK(!ctrl_p.controller_diagram_spec().enabled);  // Display tab
+      ctrl_p.select_tab(int(carview::SettingsPage::Tab::kControls));
+      const auto dspec = ctrl_p.controller_diagram_spec();
+      CHECK(dspec.enabled && dspec.layout_id == 2 && dspec.swap_handbrake_clutch);
+      carview::SettingsPage::set_text_resolver(
+          [](std::string_view, std::string_view id, const char* fb) -> std::string {
+            if (id == "IDS_Audio") return "AUDIO_LOC";
+            return fb;
+          });
+      CHECK(carview::SettingsPage::tab_label(carview::SettingsPage::Tab::kAudio) == "AUDIO_LOC");
+      carview::SettingsPage::set_text_resolver(nullptr);
+    }
 
     std::filesystem::remove(tmp_file, ec);
     std::filesystem::remove(tmp_dir, ec);

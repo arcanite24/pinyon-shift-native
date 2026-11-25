@@ -14,6 +14,54 @@ namespace carview {
 
 namespace {
 
+bool hit_test_osk_key_hub(SDL_Window* win, uint32_t fb_w, uint32_t fb_h, float mx, float my, bool symbols_mode,
+                          int& out_row, int& out_col) {
+  const float sw = float(fb_w), sh = float(fb_h);
+  if (sw < 64.0f || sh < 64.0f) return false;
+  float ux = mx, uy = my;
+  if (win) {
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(win, &ww, &wh);
+    if (ww > 0 && wh > 0) {
+      ux = mx * sw / float(ww);
+      uy = my * sh / float(wh);
+    }
+  }
+  const float s = sh / 720.0f;
+  const float pw = 760.0f * s, ph = 428.0f * s;
+  const float px0 = 0.5f * (sw - pw), py0 = 0.5f * (sh - ph) - 10.0f * s;
+  const float cx = px0 + 0.5f * pw, cy = py0 + 0.5f * ph;
+  const float ang = -carview::ui4::kTiltRad;
+  const float cs = std::cos(ang), sn = std::sin(ang);
+  const float dx = ux - cx, dy = uy - cy;
+  const float lx = cx + cs * dx - sn * dy;
+  const float ly = cy + sn * dx + cs * dy;
+
+  const float gx0 = px0 + 24.0f * s, gw = pw - 48.0f * s;
+  const float gy0 = py0 + 114.0f * s;
+  const float gap = 6.0f * s;
+  const float key_h = 46.0f * s;
+  static constexpr int kSymCols[4] = {10, 10, 10, 5};
+  static constexpr int kAlphaCols[5] = {10, 10, 10, 10, 5};
+  const int* col_counts = symbols_mode ? kSymCols : kAlphaCols;
+  const int num_rows = symbols_mode ? 4 : 5;
+  for (int r = 0; r < num_rows; ++r) {
+    const float ky0 = gy0 + float(r) * (key_h + gap);
+    if (ly < ky0 || ly > ky0 + key_h) continue;
+    const int ncols = col_counts[r];
+    const float kw = (gw - gap * float(ncols - 1)) / float(ncols);
+    for (int c = 0; c < ncols; ++c) {
+      const float kx0 = gx0 + float(c) * (kw + gap);
+      if (lx >= kx0 && lx <= kx0 + kw) {
+        out_row = r;
+        out_col = c;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool reapply_active_car_livery(DriveApp& app, DriveWorldHost& host) {
   if (!app.have_garage) return false;
   const garage::Car* gc = app.career_garage.selected_car();
@@ -1307,6 +1355,51 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                     cc_ed.osk.toggle_symbols();
                     app.audio_host.trigger_ui(audio::UiCue::kMove);
                   }
+                } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                  int tr = -1, tc = -1;
+                  if (hit_test_osk_key_hub(app.window, last_ui_w, last_ui_h, e.motion.x,
+                                           e.motion.y, cc_ed.osk.symbols(), tr, tc)) {
+                    if (tr != cc_ed.osk.cursor_row() || tc != cc_ed.osk.cursor_col()) {
+                      for (int s_i = 0; s_i < 12 && cc_ed.osk.cursor_row() != tr; ++s_i)
+                        cc_ed.osk.move(0, tr > cc_ed.osk.cursor_row() ? 1 : -1);
+                      for (int s_i = 0; s_i < 12 && cc_ed.osk.cursor_col() != tc; ++s_i)
+                        cc_ed.osk.move(tc > cc_ed.osk.cursor_col() ? 1 : -1, 0);
+                      app.audio_host.trigger_ui(audio::UiCue::kMove);
+                    }
+                  }
+                } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                  if (e.button.button == SDL_BUTTON_RIGHT) {
+                    cc_ed.osk.cancel();
+                    commit_osk();
+                  } else if (e.button.button == SDL_BUTTON_LEFT) {
+                    int tr = -1, tc = -1;
+                    carview::ui::HitZone hz{};
+                    if (hit_test_osk_key_hub(app.window, last_ui_w, last_ui_h, e.button.x,
+                                             e.button.y, cc_ed.osk.symbols(), tr, tc)) {
+                      for (int s_i = 0; s_i < 12 && cc_ed.osk.cursor_row() != tr; ++s_i)
+                        cc_ed.osk.move(0, tr > cc_ed.osk.cursor_row() ? 1 : -1);
+                      for (int s_i = 0; s_i < 12 && cc_ed.osk.cursor_col() != tc; ++s_i)
+                        cc_ed.osk.move(tc > cc_ed.osk.cursor_col() ? 1 : -1, 0);
+                      cc_ed.osk.press_selected();
+                      if (!cc_ed.osk.is_open()) commit_osk();
+                      else app.audio_host.trigger_ui(audio::UiCue::kMove);
+                    } else if (ui_mouse_hit(e.button.x, e.button.y, hz) && hz.group == carview::ui4::kHitButton) {
+                      if (hz.index == 0) {
+                        cc_ed.osk.press_selected();
+                        if (!cc_ed.osk.is_open()) commit_osk();
+                        else app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      } else if (hz.index == 1) {
+                        cc_ed.osk.backspace();
+                        app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      } else if (hz.index == 2) {
+                        cc_ed.osk.confirm();
+                        commit_osk();
+                      } else if (hz.index == 3) {
+                        cc_ed.osk.cancel();
+                        commit_osk();
+                      }
+                    }
+                  }
                 }
                 return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
                         e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
@@ -2077,6 +2170,8 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                         } else {
                           step_tab(1);
                         }
+                      } else if (hz.index == 2) {
+                        step_lr(1);
                       } else if (hz.index == 3) {
                         if (livery_editor.tab() == carview::EditorTab::kVinylLayers) {
                           livery_editor.add_vinyl_layer();
