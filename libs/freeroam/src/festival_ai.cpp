@@ -388,6 +388,22 @@ void FestivalManager::steer_towards(FestivalAiCar& car, const traffic::P3& aim, 
   car.roll += (steady_roll - car.roll) * std::min(1.0, dt * 6.5);
 }
 
+void FestivalManager::measure(const traffic::P3& player, bool first) {
+  if (hdist(player, within_at_) > 10) {
+    within_ = roads_.traffic_length_within(player.x, player.z, config_.spawn_out);
+    within_at_ = player;
+  }
+  const double v = traffic::time_factor(hour_, config_);
+  double d = 0;
+  // A way whose id the festival list lacks has no festival cars.
+  for (const auto& [id, m] : within_)
+    if (const auto* e = config_.festival_density(id)) d += traffic::density_at(*e, v) * m / 100;
+  smoothed_ = first ? d : d + (smoothed_ - d) * config_.density_decay;
+  const double cap = config_.min_festival + (config_.max_festival - config_.min_festival) * v;
+  // Without a festival DensityList (no AIOpenWorld.xml): the cap alone.
+  target_ = config_.festival.empty() ? cap : std::min(smoothed_, cap);
+}
+
 bool FestivalManager::spawn_roaming(const traffic::P3& player, bool initial) {
   if (roster_.empty() || roads_.roads().empty()) return false;
   const double v = traffic::time_factor(hour_, config_);
@@ -404,7 +420,7 @@ bool FestivalManager::spawn_roaming(const traffic::P3& player, bool initial) {
   for (int ri = 0; ri < int(roads.size()); ++ri) {
     const auto& r = roads[size_t(ri)];
     if (r.disabled || r.type == "none" || r.type == "shortcut" || r.points.size() < 2) continue;
-    double w = 0.2;
+    double w = config_.festival.empty() ? 0.2 : 0.0;
     if (const auto* fe = config_.festival_density(r.density)) w = traffic::density_at(*fe, v);
     if (w <= 0.0) continue;
     for (double s = 0; s <= r.length; s += 25.0) {
@@ -735,19 +751,25 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     const int init_n = std::clamp(config_.initial_festival_cars, 1, int(config_.max_festival));
     for (int i = 0; i < init_n; ++i) spawn_roaming(player_pos, true);
     next_spawn_ = time + 4.0;
+    measure(player_pos, true);
+    next_test_ = time + config_.density_test_interval;
   }
 
-  // Maintain roaming population of min_festival..max_festival (2..7 cars).
-  const double v = traffic::time_factor(hour_, config_);
-  const int target_n = std::clamp(int(std::lround(config_.min_festival + (config_.max_festival - config_.min_festival) * v)),
-                                  1, 7);
+  // WORLD-08: the festival population follows the local density
+  // (SPEC-TRAFFIC, Population target): target = min(D_s, cap(h)), with D_s
+  // the festival DensityList's d per 100 m of road within the spawn-out
+  // distance, smoothed by DensityDecay every DensityTestInterval.
+  if (time >= next_test_) {
+    measure(player_pos, false);
+    next_test_ = time + std::max(0.01, config_.density_test_interval);
+  }
   for (size_t i = cars_.size(); i-- > 0;) {
     if (cars_[i].in_h2h) continue;
     if (cars_[i].road < 0 || hdist(cars_[i].position, player_pos) > kDespawnDist) {
       cars_.erase(cars_.begin() + std::ptrdiff_t(i));
     }
   }
-  if (!h2h_active_ && time >= next_spawn_ && int(cars_.size()) < target_n) {
+  if (!h2h_active_ && time >= next_spawn_ && double(cars_.size()) < target_) {
     spawn_roaming(player_pos, false);
     next_spawn_ = time + 5.0;
   }

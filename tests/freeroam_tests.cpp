@@ -443,6 +443,36 @@ int main() {
     cfg.min_festival = 1;
     cfg.max_festival = 1;
 
+    {
+      // WORLD-08: the festival population target follows the local density
+      // (SPEC-TRAFFIC, Population target): min(D_s, cap(h)), D_s the festival
+      // list's d per 100 m of road within the spawn-out distance.
+      traffic::TrafficConfig dc = cfg;
+      dc.min_festival = 2, dc.max_festival = 7;
+      traffic::DensityEntry e;
+      e.id = 5, e.min = 0.1, e.max = 0.3;
+      dc.festival[5] = e;
+      FestivalManager fd(nm, roads, dc, 7);
+      fd.set_roster({{1006, "FER_FXX_05", "Hyper Rival", "R1", 950, 1155.0}});
+      fd.set_hour(12.0);
+      fd.step(0.01, 1.0, {0, 0, 2000}, 0.0, 20.0);
+      const double v = traffic::time_factor(12.0, dc);
+      double want = 0;
+      for (const auto& [id, m] : roads.traffic_length_within(0, 2000, dc.spawn_out))
+        if (id == 5) want += traffic::density_at(e, v) * m / 100;
+      std::printf("festival density at noon: D_s %.2f, target %.2f (cap %.1f)\n", fd.local_density(), fd.target(),
+                  2 + 5 * v);
+      CHECK(want > 0.5 && std::fabs(fd.local_density() - want) < 1e-9);
+      CHECK(std::fabs(fd.target() - std::min(want, 2 + 5 * v)) < 1e-9);
+      // Way ids the festival list lacks have no festival cars.
+      traffic::TrafficConfig none = dc;
+      none.festival.clear();
+      none.festival[9] = e;
+      FestivalManager fn(nm, roads, none, 7);
+      fn.set_roster({{1006, "FER_FXX_05", "Hyper Rival", "R1", 950, 1155.0}});
+      fn.step(0.01, 1.0, {0, 0, 2000}, 0.0, 20.0);
+      CHECK(fn.target() == 0);
+    }
     FestivalManager fm(nm, roads, cfg, 99);
     fm.set_player_pi(500);
     fm.set_roster({{1006, "FER_FXX_05", "Hyper Rival", "R1", 950, 1155.0}});

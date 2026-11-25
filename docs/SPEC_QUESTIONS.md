@@ -2915,3 +2915,28 @@ trailing lets a car close to a metre.
 Needed: the transition shape from the current lane to the chosen one,
 the return to the line after a pass, the trailing controller, and what
 the "along-track" test in the coverage compares.
+
+## Q124 (WORLD-08, not blocking): festival group spawns
+
+The roaming festival population now follows SPEC-TRAFFIC's population
+target with the festival entries: target = min(D_s, cap(h)). D_s is the
+festival `DensityList`'s d per 100 m of road within the spawn-out
+distance, smoothed by `DensityDecay` every `DensityTestInterval`, and
+cap(h) runs from `MinFestival` to `MaxFestival`. A way whose density id
+the festival list lacks gets no festival cars (spawn weight 0). Before,
+the target was the cap alone, 2 to 7 cars wherever the player was.
+Without a festival list (no AIOpenWorld.xml) the cap alone still
+applies.
+
+Interim (ours): the same per-100 m reading as traffic (SPEC-TRAFFIC,
+Density), the 5 s spawn interval, and the spawn ring (180 to 320 m, or 45
+to 240 m for the first cars).
+
+Not modelled: `AI/Spawning/FestivalGroupSpawns` (on, on the disc). The
+registry flag is read, but what a group spawn places (several cars
+together, a shared destination) was not decoded (audit WORLD-08:
+"festival group destinations").
+
+Needed: the group spawn's rule (how many cars, where, and whether they
+drive together), and a free-roam count of festival cars against D_s at
+one more site than the oracle's road.
