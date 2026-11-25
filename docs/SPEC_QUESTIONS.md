@@ -4044,3 +4044,32 @@ and the player keeps control; and the free-roam HUD hides while the
 screens show. The rival's driving and pace stay the AI branch's
 (WORLD-07). Needed: captures of a head-to-head's intro and of a win's
 banner and earnings.
+
+## Q172 (RACE, not blocking): the fade on QUIT RACE
+
+QUIT RACE, from the grid menu or from the pause menu (A EXIT on its
+popup), now fades to black and holds it before the load
+(`race_flow::post_steps` with `quit`: `kBlackOut`, then `kDone`), as the
+race's other exits do. Before, the session ended on the press and the
+load cut in. In the flow files neither quit path names a black-out. The
+grid's QUIT goes from `prerace_menu` to `load_back_to_free_roam`. A quit
+from the pause menu runs `postrace_prepare` (`show_empty_screen`), then
+`should_skip_postrace` (`CIsRaceQuit`), then `postrace_cleanup`, then
+`load_back_to_free_roam`. `global.black_out` sits only on the finished
+race's `postrace_rivals` quit. So the fade is an interim until we know
+what `CLoadIntoFreeRoam` shows when it starts. Needed: a capture of a
+quit from the grid and from the pause menu, frame by frame, up to the
+loading screen.
+
+## Q173 (RACE, not blocking): the count at a start without a gantry
+
+A start without a start line (no gantry: the street races, `gate 0` in
+`race-census`) now counts 3, 2, 1 on `947_HUD`'s `I_321_Go/TEXT_COUNT`
+for the race clock's last three seconds, then shows GO! as usual. Before,
+the chase camera waited about three seconds with nothing on screen.
+Festival starts still leave `TEXT_COUNT` empty, as their captures do
+(Q74). The interim rests on two things. The scene lays out `TEXT_COUNT`
+at full opacity, but no gantry start fills it. ui4audio has a street
+start cue (`321MomentStartStreet`) and a street go cue (`321GoStreet`),
+but no street count cue. Needed: a capture of a street race's start, or
+the code that writes `TEXT_COUNT` (Q74).

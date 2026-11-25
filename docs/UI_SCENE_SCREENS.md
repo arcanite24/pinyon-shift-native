@@ -387,6 +387,9 @@ flow files) as plain steps, with the timings measured on the captures;
   difficulty screen. A restart shows only the menu. Each step plays the
   flow's cutscene: `prerace_intro`, `prerace_looping_01`, `nemesis_show`,
   then `prerace_countdown` after START.
+  A start without a gantry (a street race) counts 3, 2, 1 on
+  `I_321_Go/TEXT_COUNT` (Q173). QUIT RACE, from the menu or the pause
+  menu, fades to black before the load (Q172).
 - **Post-race.** `H_POST_RACE_FINISHED` (X results, B replay, Y restart);
   then the AI cars go and the car waits at the post-race location;
   `H_POST_RACE_CREDITS_BREAKDOWN` (it moves on by itself),
