@@ -619,8 +619,9 @@ void DriveSession::run_window_loop() {
             app.audio_host.radio_set_time_of_day(app.tod_clock.hour());
           }
           const bool trainer_freecam_active = slice12.trainer.effective_free_camera();
+          const bool campaign_paused = app.campaign.is_blocking_gameplay() && !app.campaign.cutscene_drives_player();
           const bool menu_paused = app.show_title || app.fmv_player.active() || loading_screen.active() || ceremony.active ||
-                                   app.campaign.is_blocking_gameplay() || grid_menu_open || menu.open ||
+                                   campaign_paused || grid_menu_open || menu.open ||
                                    map_open || events_page.is_open() || outpost_hub_open || garage_open ||
                                    shop.is_open() || autoshow.is_open() || career_page.is_open() ||
                                    settings_page.is_open() || paint_open || club_open || car_club_open || app.rally_hub_open ||
@@ -845,6 +846,11 @@ void DriveSession::run_window_loop() {
           }
           if (!sim_paused) {
             accumulator += frame_dt * game_spd;
+          } else {
+            // The world streamed for a teleport or a cutscene's placement
+            // under a paused screen still swaps in (the step polls it only
+            // while the car runs; the career waits on it).
+            host.showroom.poll_world(false, nullptr);
           }
           last_tick_ns = now;
           // P0-G1: Hot-reload DriveSave + CareerGarage from disk after SaveProfilePage restore/import/profile switch

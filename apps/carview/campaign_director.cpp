@@ -787,4 +787,8 @@ bool CampaignDirector::is_blocking_gameplay() const {
   return flow_.is_blocking_gameplay();
 }
 
+bool CampaignDirector::cutscene_drives_player() const {
+  return cutscenes_.active() && ftc_.active() && !ftc_.controls_enabled() && ftc_.ai_driving();
+}
+
 }  // namespace carview
