@@ -80,6 +80,22 @@ int ftc_title_stage(FtcStage stage) {
   return 0;
 }
 
+float opening_title_alpha(int card, double t) {
+  // Seconds from ShowOpeningCredits: fade in, held, fade out (Q164).
+  static constexpr double kKeys[kOpeningTitleCards][4] = {
+      {4.5, 5.0, 8.0, 8.5},
+      {12.0, 12.5, 15.5, 16.0},
+      {18.621, 19.121, 22.121, 22.633},
+      {28.165, 28.657, 31.665, 32.157},
+  };
+  if (card < 0 || card >= kOpeningTitleCards) return 0.0f;
+  const double* k = kKeys[card];
+  if (t <= k[0] || t >= k[3]) return 0.0f;
+  if (t < k[1]) return float((t - k[0]) / (k[1] - k[0]));
+  if (t <= k[2]) return 1.0f;
+  return float((k[3] - t) / (k[3] - k[2]));
+}
+
 FtcTodRequest ftc_tod_request(double now_s, double target_s, double duration_s) {
   FtcTodRequest r;
   r.target_s = target_s < now_s ? target_s + 86400.0 : target_s;

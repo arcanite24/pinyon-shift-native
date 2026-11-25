@@ -509,8 +509,36 @@ void test_stage_names_and_resume() {
 
 }  // namespace
 
+// H_OPENING_TITLES' PLAY keys (Q164): one card at a time, half-second
+// fades, nothing before 4.5 s or after the logo leaves at 32.157 s.
+void test_opening_titles() {
+  auto near = [](float a, float b) { return std::abs(a - b) < 1e-3f; };
+  check(race::opening_title_alpha(0, 0.0) == 0.0f && race::opening_title_alpha(0, 4.5) == 0.0f,
+        "no card before the first key");
+  check(near(race::opening_title_alpha(0, 4.75), 0.5f), "Microsoft fades in over 4.5..5.0 s");
+  check(race::opening_title_alpha(0, 6.0) == 1.0f, "Microsoft held");
+  check(near(race::opening_title_alpha(0, 8.25), 0.5f), "Microsoft fades out over 8.0..8.5 s");
+  check(race::opening_title_alpha(1, 10.0) == 0.0f && race::opening_title_alpha(1, 14.0) == 1.0f,
+        "Turn 10 from 12 s");
+  check(race::opening_title_alpha(2, 20.0) == 1.0f && race::opening_title_alpha(3, 30.0) == 1.0f,
+        "Playground, then the Horizon logo");
+  check(race::opening_title_alpha(3, 32.2) == 0.0f && 32.157 < race::kOpeningTitlesLength,
+        "the logo leaves before the animation ends");
+  check(race::opening_title_alpha(-1, 6.0) == 0.0f && race::opening_title_alpha(4, 6.0) == 0.0f,
+        "unknown cards are hidden");
+  for (double t = 0.0; t < race::kOpeningTitlesLength; t += 0.05) {
+    int shown = 0;
+    for (int c = 0; c < race::kOpeningTitleCards; ++c) shown += race::opening_title_alpha(c, t) > 0.0f;
+    if (shown > 1) {
+      check(false, "two cards at once at t=" + std::to_string(t));
+      break;
+    }
+  }
+}
+
 int main() {
   test_order();
+  test_opening_titles();
   test_opening_commands();
   test_race_to_festival();
   test_heats_and_showcase();

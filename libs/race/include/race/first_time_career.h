@@ -52,6 +52,15 @@ bool parse_ftc_stage(std::string_view name, FtcStage& out);
 // The title's CFirstTimeCareerState stage value while the engine is in `stage`.
 int ftc_title_stage(FtcStage stage);
 
+// H_OPENING_TITLES' cards in order: Microsoft, Turn 10, Playground, the
+// Horizon logo. The scene's PLAY animation (33 s from ShowOpeningCredits)
+// keys each card four times (Q164). The alpha rises between the first two
+// keys, holds, and falls between the last two (the key values are not
+// decoded). Returns 0 outside a card's keys and for an unknown card.
+inline constexpr int kOpeningTitleCards = 4;
+inline constexpr double kOpeningTitlesLength = 33.0;
+float opening_title_alpha(int card, double t);
+
 // The presentation states the flow scripts (state_definitions.xml).
 enum class FtcFadeKind : uint8_t {
   kBlackOut,    // CBlackOut: cut to black

@@ -3584,3 +3584,43 @@ inferred from the numbers.
 
 The engine still seeds its own heard-dialogue keys from the career (Q60).
 It does not read this record yet.
+
+## Q164 (INTRO-07, answered in part): the opening titles' timing
+
+Supersedes Q65's "Still open: the timing and placement, which are the
+scene's BGF animation (not decoded)" for the timing.
+
+The timing was read from the bytes of `H_OPENING_TITLES.bgf`
+(UI.zip). The engine's BGF reader mis-sorts the scene's tracks as styles,
+but the bytes are plain. The document has two animations:
+- `Master Slide`, 10,000 ms;
+- `PLAY`, 33,000 ms. Its 29 channels bind one track each to the eight
+  card and shadow layers, all on the same attribute.
+
+Each track has four keys, in milliseconds from the scene opening
+(ShowOpeningCredits):
+
+| Layer | Keys (s) |
+|---|---|
+| `_Microsoft` | 4.500, 5.000, 8.000, 8.500 |
+| `_MicrosoftShadow` | 4.740, 5.240, 7.776, 8.276 |
+| `_Turn10` | 12.000, 12.500, 15.500, 16.000 |
+| `_Turn10Shadow` | 12.246, 12.746, 15.240, 15.740 |
+| `_Playground` | 18.621, 19.121, 22.121, 22.633 |
+| `_PlaygroundShadow` | 18.853, 19.353, 21.852, 22.352 |
+| `_Horizon` | 28.165, 28.657, 31.665, 32.157 |
+| `_HorizonShadow` | 28.400, 28.900, 31.400, 31.900 |
+
+So the cards come one at a time. Each has half-second ramps, and the
+Horizon logo also leaves, at 32.157 s; it is not held.
+
+The engine uses the card keys (`race::opening_title_alpha`) as an alpha
+that rises over the first two keys, holds, and falls over the last two.
+
+Still open:
+- The key values. They read 0, except a -1.0 pair on each last key, so the
+  animated attribute and its curve are inferred. The ramp shape fits the
+  half-second spacing.
+- The attribute's name (hash 0x1991C315).
+- The cards' placement in the scene. The engine still centres them.
+- The shadow layers, which the engine does not draw.
