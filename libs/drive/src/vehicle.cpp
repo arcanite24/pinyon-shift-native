@@ -259,6 +259,57 @@ double tyre_peak_mu(const CarParams& p, int axle, TyrePeak kind, double load_n, 
   return peak * lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(speed), p.accel_speed0, p.accel_speed1));
 }
 
+double friction_torque_mod_yaw(const CarParams::FrictionTorqueMod& m, int table, bool off_road, double mass_kg,
+                               double i_yaw, double speed_sq, double cos_yaw, double yaw_rate, double torque_yaw) {
+  // The original's FrictionTorqueMod: rescales and clamps the tyres' summed yaw
+  // torque. The steering table is chosen by steering mode / assists, then
+  // multiplied by the drivetrain row and (all four wheels off-road) the off-road
+  // row; the two mass rows are blended by the car's mass.
+  using Row = CarParams::FrictionTorqueModRow;
+  const auto& st = m.steering[size_t(std::clamp(table, 0, 2))];
+  auto combine = [&](int r) {
+    const Row& a = st[size_t(r)];
+    const Row& d = m.drivetrain[size_t(r)];
+    static const Row kIdentity{};
+    const Row& o = off_road ? m.off_road[size_t(r)] : kIdentity;
+    Row c;
+    c.cos_yaw0 = a.cos_yaw0 * d.cos_yaw0 * o.cos_yaw0;
+    c.cos_yaw1 = a.cos_yaw1 * d.cos_yaw1 * o.cos_yaw1;
+    c.turn_scale0 = a.turn_scale0 * d.turn_scale0 * o.turn_scale0;
+    c.straighten_scale0 = a.straighten_scale0 * d.straighten_scale0 * o.straighten_scale0;
+    c.turn_clamp0 = a.turn_clamp0 * d.turn_clamp0 * o.turn_clamp0;
+    c.straighten_clamp0 = a.straighten_clamp0 * d.straighten_clamp0 * o.straighten_clamp0;
+    c.turn_scale1 = a.turn_scale1 * d.turn_scale1 * o.turn_scale1;
+    c.straighten_scale1 = a.straighten_scale1 * d.straighten_scale1 * o.straighten_scale1;
+    c.turn_clamp1 = a.turn_clamp1 * d.turn_clamp1 * o.turn_clamp1;
+    c.straighten_clamp1 = a.straighten_clamp1 * d.straighten_clamp1 * o.straighten_clamp1;
+    return c;
+  };
+  const Row r0 = combine(0), r1 = combine(1);
+  const double span = m.mass1_kg - m.mass0_kg;
+  const double um = span != 0 ? std::clamp((mass_kg - m.mass0_kg) / span, 0.0, 1.0) : 0.0;
+  const double cos0 = lerp(r0.cos_yaw0, r1.cos_yaw0, um), cos1 = lerp(r0.cos_yaw1, r1.cos_yaw1, um);
+  const double cmin = std::min(cos0, cos1), cmax = std::max(cos0, cos1);
+  double uy = cmax > cmin ? (cmax - cos_yaw) / (cmax - cmin) : 0.0;
+  if (cos_yaw >= cmax) uy = 0.0;
+  if (cos_yaw <= cmin) uy = 1.0;
+  const bool turning = yaw_rate * torque_yaw > 0;
+  const double sc0 = lerp(turning ? r0.turn_scale0 : r0.straighten_scale0,
+                          turning ? r1.turn_scale0 : r1.straighten_scale0, um);
+  const double sc1 = lerp(turning ? r0.turn_scale1 : r0.straighten_scale1,
+                          turning ? r1.turn_scale1 : r1.straighten_scale1, um);
+  const double cl0 = lerp(turning ? r0.turn_clamp0 : r0.straighten_clamp0,
+                          turning ? r1.turn_clamp0 : r1.straighten_clamp0, um);
+  const double cl1 = lerp(turning ? r0.turn_clamp1 : r0.straighten_clamp1,
+                          turning ? r1.turn_clamp1 : r1.straighten_clamp1, um);
+  const double scale = lerp(sc0, sc1, uy), clamp_deg = lerp(cl0, cl1, uy);
+  // Speed blend: no effect below 8 m/s, full effect from 15 m/s.
+  const double s = std::clamp((speed_sq - 64.0) / (225.0 - 64.0), 0.0, 1.0);
+  double t = torque_yaw * lerp(1.0, scale, s);
+  const double lim = std::fabs(clamp_deg * (kPi / 180.0) * i_yaw * lerp(10.0, 1.0, s));
+  return std::clamp(t, -lim, lim);
+}
+
 Vec3 rotate(const Quat& q, const Vec3& v) {
   const Vec3 u{q.x, q.y, q.z};
   const Vec3 t = cross(u, v) * 2.0;
@@ -1909,7 +1960,9 @@ void Vehicle::substep(double dt, const Ground& ground) {
   locked_ = lock_now;
   engine_omega_ = omega_e;
 
-  // 5. Forces on the body.
+  // 5. Forces on the body. The tyres' torque is also summed on its own for
+  // the FrictionTorqueMod pass below.
+  Vec3 tyre_torque{};
   for (int i = 0; i < kWheels; ++i) {
     WheelState& w = w_[i];
     if (w.contact && w.load > 0) {
@@ -1937,7 +1990,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
       const Vec3 f = normal[i] * w.load + fwd[i] * fx + lat[i] * fy_new;
       w.fx = fx;
       force = force + f;
-      torque = torque + cross(contact[i] - pos_, f);
+      // The suspension force's torque goes straight to the body; only the
+      // friction forces' torque is the tyres' (the FrictionTorqueMod input).
+      torque = torque + cross(contact[i] - pos_, normal[i] * w.load);
+      tyre_torque = tyre_torque + cross(contact[i] - pos_, fwd[i] * fx + lat[i] * fy_new);
       // The longitudinal force pitches the body through the measured arm
       // instead of the contact patch's height below the centre of mass
       // (SPEC-CAR-PHYSICS scenario B, load transfer): the same force at a
@@ -1945,9 +2001,9 @@ void Vehicle::substep(double dt, const Ground& ground) {
       // The lateral force rolls it through its own arm likewise.
       const double below = dot(pos_ - contact[i], up);
       if (p.longitudinal_pitch_arm > 0 && below > p.longitudinal_pitch_arm)
-        torque = torque + cross(up * (below - p.longitudinal_pitch_arm), fwd[i] * fx);
+        tyre_torque = tyre_torque + cross(up * (below - p.longitudinal_pitch_arm), fwd[i] * fx);
       if (p.lateral_roll_arm > 0 && below > p.lateral_roll_arm)
-        torque = torque + cross(up * (below - p.lateral_roll_arm), lat[i] * fy_new);
+        tyre_torque = tyre_torque + cross(up * (below - p.lateral_roll_arm), lat[i] * fy_new);
     }
     if (!w.contact || w.load <= 0) w.fx = 0;
     w.omega = omega_new[i];
@@ -1963,6 +2019,30 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double cool_rate = (0.04 + 0.002 * std::fabs(vx[i])) * (tyre_temp_c_[size_t(i)] - cool_target);
     tyre_temp_c_[size_t(i)] = std::clamp(tyre_temp_c_[size_t(i)] + (heat_in - cool_rate) * dt, 25.0, 175.0);
   }
+  // FrictionTorqueMod (SPEC-CAR-PHYSICS, Steering assist modes; SPEC_QUESTIONS
+  // Q68): the tyres' summed yaw torque about the body's up axis is rescaled
+  // and clamped by the car's slip-angle cosine and speed. The table is
+  // SimulationSteering in Simulation steering, else WithAssists or NoAssists
+  // (the shipped rows are equal). The original runs it for every car; ours
+  // skips AI-driven cars for now (interim, Q68): our suspension's wheel loads
+  // chatter, and the unequal Turn/Straighten clamps turn that chatter into a
+  // net yaw that spins the AI on the oracle lap.
+  if (!ai_) {
+    const double t_yaw = dot(tyre_torque, up);
+    const Vec3 fwd_w = rotate(rot_, {0, 0, 1});
+    const Vec3 v_flat = vel_ - up * dot(vel_, up);
+    const double v_len = length(v_flat);
+    const double cos_yaw = v_len > 0 ? dot(fwd_w, v_flat) / v_len : 0.0;
+    int n_offroad = 0;
+    for (int i = 0; i < kWheels; ++i)
+      if (surf[i].off_roadness > 0) ++n_offroad;
+    const int table =
+        assists_.steering == 2 ? 2 : (assists_.traction_control || assists_.stability_control) ? 0 : 1;
+    const double t_new = friction_torque_mod_yaw(p.friction_torque_mod, table, n_offroad == kWheels, p.mass,
+                                                 inertia_.y, dot(vel_, vel_), cos_yaw, dot(ang_, up), t_yaw);
+    tyre_torque = tyre_torque + up * (t_new - t_yaw);
+  }
+  torque = torque + tyre_torque;
   // Per-surface LinearDrag & AngularDrag (SurfaceTypes.xml: deep mud/sand/water resistance).
   if (surf_linear_drag > 0.0) {
     const double lin_d = std::min(surf_linear_drag, 0.5 / std::max(dt, 1e-6));
@@ -2128,58 +2208,6 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (v_abs > 1e-6) {
       const double r = p.drag_quadratic * v_abs * v_abs + p.drag_constant * std::min(1.0, v_abs);
       force = force - vel_ * (r / v_abs);
-    }
-  }
-
-  // FrictionTorqueMod yaw stabilization (SPEC-CAR-PHYSICS, Steering assist
-  // modes): active for Assisted (0) / Normal (1), disabled in Simulation (2).
-  // Narrowed to primarily catch imminent spin-outs (|slip| > 28 deg in Normal
-  // while yaw rate diverges away from recovery) so playful drift initiation and
-  // steady drift angle holds are never flattened.
-  if (!ai_ && assists_.steering != 2 && off < kWheels) {
-    const Vec3 fwd_w = rotate(rot_, {0, 0, 1});
-    const double sp_xz = std::hypot(vel_.x, vel_.z);
-    if (sp_xz > 5.0) {
-      const double cos_yaw = std::clamp((fwd_w.x * vel_.x + fwd_w.z * vel_.z) / sp_xz, -1.0, 1.0);
-      const double slip_deg = std::acos(cos_yaw) * (180.0 / kPi);
-      // Cross product in XZ indicates slip sign; yaw rate of same sign widens the slide (diverges).
-      const double yaw_cross = fwd_w.x * vel_.z - fwd_w.z * vel_.x;
-      const bool diverging = (ang_.y * yaw_cross) > 0.0;
-      // Predictive spin-out angle (0.22 s yaw-rate lookahead only while diverging away
-      // from recovery): catches imminent spin-outs without flattening steady drift holds
-      // or playful drift initiation below ~28 deg.
-      const double slip_pred_deg = slip_deg + (diverging ? std::fabs(ang_.y) * (180.0 / kPi) * 0.22 : 0.0);
-      double spin_weight = 0.0;
-      if (assists_.steering == 1) {
-        if (diverging && slip_pred_deg > 28.0) {
-          spin_weight = ramp(slip_pred_deg, 28.0, 42.0);
-        }
-      } else {
-        if (diverging && slip_pred_deg > 18.0) {
-          spin_weight = ramp(slip_pred_deg, 18.0, 34.0);
-        } else if (!diverging && slip_deg > 35.0) {
-          spin_weight = 0.25 * ramp(slip_deg, 35.0, 50.0);
-        }
-      }
-      if (spin_weight > 0.0) {
-        const double u_mass = ramp(p.mass, 909.1, 1590.9);
-        const double assist_gain = assists_.steering == 0 ? 1.35 : 0.90;
-        const double mode_scale = lerp(0.85, 1.0, spin_weight);
-        // FrictionTorqueMod table values (100..180) are in 100 N*m units -> SI N*m.
-        const double base_clamp = lerp(lerp(180.0, 120.0, spin_weight), lerp(150.0, 100.0, spin_weight), u_mass) * 100.0;
-        int n_offroad = 0;
-        for (int i = 0; i < kWheels; ++i) {
-          if (w_[i].contact && surf[i].off_roadness >= 0.5) ++n_offroad;
-        }
-        // Off-road modifier activates only when all 4 wheels are off-road.
-        const double offroad_mod = (n_offroad == kWheels) ? 1.2 : 1.0;
-        const double fwd_mod = p.layout == CarParams::Layout::kFront ? 0.9 : 1.0;
-        const double clamp_t = base_clamp * assist_gain * offroad_mod * spin_weight;
-        const double yaw_damp = std::clamp(
-            -ang_.y * inertia_.y * 2.5 * mode_scale * fwd_mod * offroad_mod * assist_gain * spin_weight, -clamp_t,
-            clamp_t);
-        torque.y += yaw_damp;
-      }
     }
   }
 

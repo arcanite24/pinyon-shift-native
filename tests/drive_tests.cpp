@@ -3,6 +3,7 @@
 // sound (rest pose, determinism, directions), not that it matches the game.
 // Spec: FORMAT-CARS (Wheels: the wheel stands on y = 0 at its outer
 // radius; the body frame is +X right, +Z forward), REIMPLEMENTATION_PLAN M3.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -663,6 +664,60 @@ void test_per_car_physics() {
   }
 }
 
+// FEEL-11: the original's FrictionTorqueMod law on the shipped table values
+// (PhysicsSettings.ini FrictionTorqueMod defaults in CarParams).
+void test_friction_torque_mod() {
+  // The loader reads every row from the settings (made-up values here).
+  {
+    cars::PhysicsSettings ps;
+    ps.values["FrictionTorqueMod\\Mass0KG"] = 800;
+    ps.values["FrictionTorqueMod\\NoAssists1\\TurnClamp1"] = 77;
+    ps.values["FrictionTorqueMod\\SimulationSteering0\\CosYawAngle1"] = 0.5;
+    ps.values["FrictionTorqueMod\\AWDModifiers0\\StraightenScale0"] = 0.9;
+    ps.values["FrictionTorqueMod\\OffRoadModifiers1\\StraightenClamp0"] = 1.3;
+    ps.values["FrictionTorqueMod\\FWDModifiers0\\TurnScale0"] = 0.1;  // never taken by the original
+    drive::CarParams p = test_car();
+    drive::apply_physics(cars::CarPhysics{}, ps, p);
+    const auto& m = p.friction_torque_mod;
+    CHECK(m.mass0_kg == 800 && m.mass1_kg == drive::CarParams{}.friction_torque_mod.mass1_kg);
+    CHECK(m.steering[1][1].turn_clamp1 == 77 && m.steering[1][0].turn_clamp1 == 120);
+    CHECK(m.steering[2][0].cos_yaw1 == 0.5);
+    CHECK(m.drivetrain[0].straighten_scale0 == 0.9 && m.drivetrain[0].turn_scale0 == 1);
+    CHECK(m.off_road[1].straighten_clamp0 == 1.3);
+  }
+  const drive::CarParams::FrictionTorqueMod m{};
+  const double deg = 3.14159265358979323846 / 180.0, i_yaw = 1000;
+  auto near = [](double a, double b) { return std::fabs(a - b) < 1e-6 * std::max(1.0, std::fabs(b)); };
+  auto ftm = [&](int table, bool off_road, double mass, double v2, double cos_yaw, double yaw_rate, double t) {
+    return drive::friction_torque_mod_yaw(m, table, off_road, mass, i_yaw, v2, cos_yaw, yaw_rate, t);
+  };
+  // Below 8 m/s there is no rescaling, only the low-speed clamp (Clamp deg/s^2
+  // times the yaw inertia, times 10).
+  CHECK(near(ftm(1, false, 909.1, 50, 0.9, 1, 5000), 5000));
+  CHECK(near(ftm(1, false, 909.1, 50, 1.0, 1, 1e6), 180 * deg * i_yaw * 10));
+  // From 15 m/s: past the second yaw cosine the Turn/Straighten scale and clamp
+  // of index 1 apply in full.
+  CHECK(near(ftm(1, false, 909.1, 400, 0.9, 1, 1000), 700));    // turning: TurnScale1 0.7
+  CHECK(near(ftm(1, false, 909.1, 400, 0.9, -1, 1000), 800));   // straightening: StraightenScale1 0.8
+  CHECK(near(ftm(1, false, 909.1, 400, 0.9, 1, 5000), 120 * deg * i_yaw));   // TurnClamp1
+  CHECK(near(ftm(1, false, 909.1, 400, 0.9, 1, -5000), -140 * deg * i_yaw));  // StraightenClamp1
+  // Within the first cosine, index 0; midway between them, half of each.
+  CHECK(near(ftm(1, false, 909.1, 400, 1.0, 1, 1e6), 180 * deg * i_yaw));
+  CHECK(near(ftm(1, false, 909.1, 400, 0.5 * (0.996194 + 0.961261), 1, 1000), 850));
+  // Half the speed blend: half the scale.
+  CHECK(near(ftm(1, false, 909.1, 64 + 161 * 0.5, 0.9, 1, 1000), 850));
+  // The heavy row past Mass1KG.
+  CHECK(near(ftm(1, false, 1590.9, 400, 1.0, 1, 1e6), 150 * deg * i_yaw));
+  CHECK(near(ftm(1, false, 1250.0, 400, 1.0, 1, 1e6), 165 * deg * i_yaw));
+  // With all four wheels off-road the OffRoadModifiers multiply in.
+  CHECK(near(ftm(1, true, 909.1, 400, 1.0, 1, 1000), 1200));
+  CHECK(near(ftm(1, true, 909.1, 400, 1.0, 1, 1e6), 180 * 1.1111 * deg * i_yaw));
+  // Simulation steering: the shipped rows leave the torque alone.
+  CHECK(near(ftm(2, false, 909.1, 400, 0.9, 1, 5000), 5000));
+  // WithAssists and NoAssists ship the same rows.
+  CHECK(near(ftm(0, false, 1200, 300, 0.97, 1, 3000), ftm(1, false, 1200, 300, 0.97, 1, 3000)));
+}
+
 void test_assists_and_transmission() {
   const drive::FlatGround flat;
 
@@ -946,6 +1001,7 @@ int main() {
     CHECK(std::isfinite(ok_car.position().x) && std::isfinite(ok_car.velocity().z));
   }
   test_per_car_physics();
+  test_friction_torque_mod();
   test_assists_and_transmission();
   // Pillar 1 deep behavioral parity tests:
   // 1) HandbrakeGripMultiplier scales rear k_x/k_y on surface with handbrake_grip < 1.
@@ -1229,9 +1285,12 @@ int main() {
       v_norm.step({0.0, 0.2, 0.0, false}, flat_g);
       v_sim.step({0.0, 0.2, 0.0, false}, flat_g);
     }
-    // With authentic 100x FrictionTorqueMod scale (10,000..18,000 N*m clamp), Normal
-    // steering measurably damps yaw rate relative to Simulation steering.
-    CHECK(v_norm.angular_velocity().y < v_sim.angular_velocity().y - 0.15);
+    // FEEL-11: the original's FrictionTorqueMod is no yaw damper. Past the
+    // second yaw cosine it scales the tyres' straightening torque by 0.8 and
+    // clamps it, so in Normal steering the slide's yaw rate falls off less than
+    // in Simulation, whose rows leave the torque alone.
+    std::printf("FTM slide: yaw rate normal %.4f sim %.4f\n", v_norm.angular_velocity().y, v_sim.angular_velocity().y);
+    CHECK(v_norm.angular_velocity().y > v_sim.angular_velocity().y + 0.01);
 
     // Assisted steering gentle lane centering bias: car right of lane center (+2.5 m)
     // with zero stick steers gently left; Simulation mode ignores lane guidance.

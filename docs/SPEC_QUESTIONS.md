@@ -1853,3 +1853,55 @@ Needed, narrow: the writer of the camera collision input channel (its
 unit, and how many frames a pulse lasts, which the followers' attack
 rates make matter), and the impulse branch of the layer update (edge,
 level or force).
+
+## Q68 (FEEL-11, not blocking): FrictionTorqueMod selection, and our AI
+
+The engine now runs the original's FrictionTorqueMod as decoded. Each
+substep it sums the four tyres' friction torque (not the suspension
+force's) and takes its yaw part T about the body's up axis. It picks the
+table: SimulationSteering in Simulation steering, else WithAssists or
+NoAssists. It multiplies in the drivetrain row and, when all four wheels
+are off-road, the off-road row, then blends the Mass0KG and Mass1KG rows
+by the car's mass. The yaw factor runs from 0 at CosYawAngle0 to 1 at
+CosYawAngle1 (the cosine of the angle between the car's forward axis and
+its flat velocity). The speed factor runs from 0 at 8 m/s to 1 at
+15 m/s. The Turn pair applies when the yaw rate and T have the same
+sign; otherwise the Straighten pair applies. The result is
+T * lerp(1, Scale, speed), clamped to
+Clamp deg/s^2 * yaw inertia * lerp(10, 1, speed).
+
+Open points:
+
+- (a) **Drivetrain rows.** The drivetrain-row selection falls through for
+  every layout, so the AWD rows (all 1) are always taken. The ini's FWD
+  rows (TurnClamp0 0.7778, ...) are never read. The engine follows the
+  code. Needed: confirm whether this is a shipped bug or whether we have
+  misread the layout value.
+- (b) **WithAssists or NoAssists.** Two car flags choose between them.
+  One is the TCS yaw-cosine hysteresis state; the other is not
+  identified, and ours reads it as "TCS or STM on". The shipped rows are
+  equal, so no behaviour depends on this.
+- (c) **Off-road rows.** They apply when all four wheels have
+  OffRoadness > 0. The engine's old reading was >= 0.5.
+- (d) **Yaw inertia (probable).** It is read from the rigid body's
+  inertia vector. The oracle lap's peak yaw acceleration is 2.25 rad/s^2,
+  and none reaches 3. That fits the clamp band for the R34 (about 116 to
+  151 deg/s^2). The engine without the mod reaches 5.75 rad/s^2.
+- (e) **Interim: AI-driven cars skip the mod in the engine.** The
+  original runs it for every car. On the oracle lap the AI's results
+  were:
+
+  | Tables | Lap time | Note |
+  |---|---|---|
+  | Identity | 39.312 s | Same as before the port |
+  | Scale only | 39.314 s | |
+  | Clamp only | 39.558 s | |
+  | Full mod | 47.146 s | The AI spins at about 850 m |
+
+  The cause is in our suspension. At about 850 m the wheel loads chatter
+  at about 8 Hz, with one wheel going from 5 to 21 kN in a few substeps.
+  That swings the raw tyre yaw torque by +-20 kN m. The Turn and
+  Straighten clamps differ (151 against 116 deg/s^2 at the R34's mass),
+  so the swing is rectified into a net turning torque. The original's
+  yaw rate on the same stretch is smooth. Needed: nothing from the spec.
+  The exemption comes off once the load chatter is fixed.

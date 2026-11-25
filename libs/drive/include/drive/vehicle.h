@@ -365,6 +365,38 @@ struct CarParams {
   double stm_speed_mph = 30.0;
   double stm_slip_min = 1.2, stm_slip_max = 2.5;
 
+  // FrictionTorqueMod (PhysicsSettings.ini; SPEC_QUESTIONS Q68): after the
+  // four tyres are summed, the yaw part of their torque (about the body's up
+  // axis) is scaled and clamped. Rows come in pairs (index 0 at Mass0KG, 1
+  // at Mass1KG) and each row holds the yaw-cosine window and the Turn and
+  // Straighten scales and clamps at its two ends (clamps in deg/s^2 of yaw
+  // acceleration). The defaults are the disc's values; apply_physics reads
+  // them from the car's settings.
+  struct FrictionTorqueModRow {
+    double cos_yaw0 = 1, cos_yaw1 = 1;
+    double turn_scale0 = 1, straighten_scale0 = 1, turn_clamp0 = 1, straighten_clamp0 = 1;
+    double turn_scale1 = 1, straighten_scale1 = 1, turn_clamp1 = 1, straighten_clamp1 = 1;
+  };
+  struct FrictionTorqueMod {
+    double mass0_kg = 909.1, mass1_kg = 1590.9;
+    // [table][mass row]: 0 WithAssists, 1 NoAssists, 2 SimulationSteering.
+    std::array<std::array<FrictionTorqueModRow, 2>, 3> steering{{
+        {{{0.996194, 0.961261, 1, 1, 180, 145, 0.7, 0.8, 120, 140},
+          {0.996194, 0.961261, 1, 1, 150, 115, 0.7, 0.8, 100, 120}}},
+        {{{0.996194, 0.961261, 1, 1, 180, 145, 0.7, 0.8, 120, 140},
+          {0.996194, 0.961261, 1, 1, 150, 115, 0.7, 0.8, 100, 120}}},
+        {{{1, 1, 1, 1, 10000, 10000, 1, 1, 10000, 10000}, {1, 1, 1, 1, 10000, 10000, 1, 1, 10000, 10000}}},
+    }};
+    // The drivetrain modifier the game applies. Its selector falls through
+    // from the RWD and FWD cases to AWD, so every car ends on the AWD rows
+    // (Q68); the RWD and FWD rows of the ini are never used.
+    std::array<FrictionTorqueModRow, 2> drivetrain{};
+    // Applied when all four wheels stand on a surface with OffRoadness > 0.
+    std::array<FrictionTorqueModRow, 2> off_road{{{1, 1, 1.2, 1.2, 1.1111, 1.1379, 1, 1, 1, 1},
+                                                  {1, 1, 1.2, 1.2, 1.1333, 1.1739, 1, 1, 1, 1}}};
+  };
+  FrictionTorqueMod friction_torque_mod{};
+
   // Manual + Clutch (SPEC-CAR-PHYSICS, Manual with Clutch).
   double clutch_pedal_dead = 0.05;
   double clutch_torque_exp = 1.5;
@@ -488,6 +520,16 @@ struct VehicleAssists {
   bool stability_control = false;
   int shifting = 0;           // 0 Automatic, 1 Manual, 2 Manual + Clutch
 };
+
+// FrictionTorqueMod (SPEC_QUESTIONS Q68): the yaw torque the four tyres put
+// on the body, about its up axis, after the game's clamp. `table` 0 is
+// WithAssists, 1 NoAssists, 2 SimulationSteering; `off_road` when all four
+// wheels stand on an off-road surface. speed_sq is |v|^2 in (m/s)^2,
+// cos_yaw the cosine between the body's forward axis and its velocity in
+// the plane normal to the up axis, yaw_rate (rad/s) and torque_yaw (N m)
+// about the up axis, i_yaw the yaw inertia (kg m^2).
+double friction_torque_mod_yaw(const CarParams::FrictionTorqueMod& m, int table, bool off_road, double mass_kg,
+                               double i_yaw, double speed_sq, double cos_yaw, double yaw_rate, double torque_yaw);
 
 // Auto-Brake upstream helper (Braking == 0 / Assisted, SPEC-CAR-PHYSICS):
 // injects brake demand and cuts throttle when current_speed > target_speed.

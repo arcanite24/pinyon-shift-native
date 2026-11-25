@@ -496,6 +496,34 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   // row Data_Car.AutoSteerOverrideID.
   p.stm_slip_min = get("AutoSteerOverrides.STMSlipMin", p.stm_slip_min);
   p.stm_slip_max = get("AutoSteerOverrides.STMSlipMax", p.stm_slip_max);
+  // FrictionTorqueMod (SPEC-CAR-PHYSICS, Steering assist modes): the yaw
+  // torque tables by steering mode, the drivetrain rows (the original always
+  // takes the AWD rows, SPEC_QUESTIONS Q68) and the off-road rows.
+  {
+    auto& ftm = p.friction_torque_mod;
+    ftm.mass0_kg = s.get("FrictionTorqueMod\\Mass0KG", ftm.mass0_kg);
+    ftm.mass1_kg = s.get("FrictionTorqueMod\\Mass1KG", ftm.mass1_kg);
+    auto row = [&](const std::string& name, CarParams::FrictionTorqueModRow& r) {
+      const std::string k = "FrictionTorqueMod\\" + name + "\\";
+      r.cos_yaw0 = s.get(k + "CosYawAngle0", r.cos_yaw0);
+      r.cos_yaw1 = s.get(k + "CosYawAngle1", r.cos_yaw1);
+      r.turn_scale0 = s.get(k + "TurnScale0", r.turn_scale0);
+      r.straighten_scale0 = s.get(k + "StraightenScale0", r.straighten_scale0);
+      r.turn_clamp0 = s.get(k + "TurnClamp0", r.turn_clamp0);
+      r.straighten_clamp0 = s.get(k + "StraightenClamp0", r.straighten_clamp0);
+      r.turn_scale1 = s.get(k + "TurnScale1", r.turn_scale1);
+      r.straighten_scale1 = s.get(k + "StraightenScale1", r.straighten_scale1);
+      r.turn_clamp1 = s.get(k + "TurnClamp1", r.turn_clamp1);
+      r.straighten_clamp1 = s.get(k + "StraightenClamp1", r.straighten_clamp1);
+    };
+    static const char* const kTables[3] = {"WithAssists", "NoAssists", "SimulationSteering"};
+    for (int t = 0; t < 3; ++t)
+      for (int r = 0; r < 2; ++r) row(kTables[t] + std::to_string(r), ftm.steering[size_t(t)][size_t(r)]);
+    for (int r = 0; r < 2; ++r) {
+      row("AWDModifiers" + std::to_string(r), ftm.drivetrain[size_t(r)]);
+      row("OffRoadModifiers" + std::to_string(r), ftm.off_road[size_t(r)]);
+    }
+  }
   p.clutch_pedal_dead = s.get("ClutchPedalDistBeforeTorqueStarts", p.clutch_pedal_dead);
   p.clutch_torque_exp = s.get("ClutchTorqueCurveExponent", p.clutch_torque_exp);
   p.clutch_max_vel = s.get("ClutchMaxVel", p.clutch_max_vel);
