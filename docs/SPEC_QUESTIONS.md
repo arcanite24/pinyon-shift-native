@@ -3056,7 +3056,9 @@ interim:
   player bar, is hidden; NAV_POSITION_INDICATOR is hidden.
 - A ticket's picture is the car's showroom thumbnail over the card's
   middle, under its gamerscore, G and title; club_home.png's picture is a
-  scenic render whose source is not found yet.
+  scenic render whose source is not found yet. The first ticket's icon is
+  the achievement's spanner where club_home.png shows a wheel, and the
+  capture's dark progress track with its gold count is not drawn.
 - The tutorial's last prompt (Visit the 1000 CLUB screen) shows after the
   first medal until the hub is opened.
 - The Autoshow and garage show no per-car medals (`car_medals()` is the

@@ -271,11 +271,11 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
       if (b > 1) x1 -= (b - 1) * w, b = 1;
       if (x1 <= x0) return false;
     }
-    // The same down: a panel mapped past its texture (H_CAR_CHALLENGE_DETAILS'
-    // HUDPANEL01 at v 0.3..1.3) shows nothing there, not the atlas's next
-    // texels.
+    // The same down for a transparent-border texture (address mode 4): a
+    // panel mapped past its edge (H_CAR_CHALLENGE_DETAILS' HUDPANEL01 at
+    // v 0.3..1.3) shows nothing there, not the atlas's next texels.
     float y0 = r[1], y1 = r[3];
-    if (v1 > v0 && v1 - v0 <= 1.0f + 1e-4f && (v0 < 0 || v1 > 1)) {
+    if (tex[0]->tex_address_mode == 4u && v1 > v0 && v1 - v0 <= 1.0f + 1e-4f && (v0 < 0 || v1 > 1)) {
       const float h = (y1 - y0) / (v1 - v0);
       if (v0 < 0) y0 -= v0 * h, v0 = 0;
       if (v1 > 1) y1 -= (v1 - 1) * h, v1 = 1;

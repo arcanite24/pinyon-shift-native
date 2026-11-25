@@ -345,6 +345,9 @@ bool draw_home(ui::List& l, const ClubMenu& m, const ClubMenuData& d, float w, f
         }
         pictures.push_back(std::move(p));
         sc.hide(img);
+        // Its black backing (the loading card's) would fill the current
+        // car's see-through card.
+        sc.hide(child(sd, ticket, "bg"));
       }
     }
   }

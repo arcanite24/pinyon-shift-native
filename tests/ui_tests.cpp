@@ -859,6 +859,24 @@ int main() {
     CHECK(atlas_glyph_evictions() == 0);
     CHECK(atlas_stats().glyph_count > 30);
 
+    // A fresh renderer's empty atlas (the Rally world switch): atlas_reset
+    // forgets every glyph and image, and both are put again on next use.
+    {
+      std::array<float, 4> kuv{};
+      CHECK(atlas_image("reset.probe", 16, 16, std::vector<uint8_t>(16 * 16 * 4, 255), kuv));
+      CHECK(atlas_find("reset.probe", kuv));
+      atlas_reset();
+      CHECK(!atlas_find("reset.probe", kuv));
+      CHECK(atlas_stats().glyph_count == 0 && atlas_stats().image_count == 0);
+      CHECK(atlas_take_dirty_patches().empty());
+      List l;
+      l.text(40.0f, 40.0f, "AB", TextStyle{.size = 24.0f, .color = rgba(255, 255, 255), .font = Font::kD});
+      CHECK(atlas_stats().glyph_count >= 2);
+      CHECK(!atlas_take_dirty_patches().empty());
+      CHECK(atlas_image("reset.probe", 16, 16, std::vector<uint8_t>(16 * 16 * 4, 255), kuv));
+      CHECK(atlas_find("reset.probe", kuv));
+    }
+
     set_vector_fonts(nullptr, nullptr, nullptr, nullptr);
     set_gpu_atlas_mode(false);
     set_atlas_size(kAtlasSize);
