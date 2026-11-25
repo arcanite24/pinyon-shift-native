@@ -375,6 +375,17 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 notice = garage_browser.favorites_only() ? "FILTER: FAVORITES ONLY" : "FILTER: ALL GARAGE CARS";
                 notice_until = vehicle.time() + 2.5;
               };
+              // Engine extra: the class filter (108 has no tab strip, so it says so).
+              auto cycle_class = [&]() {
+                garage_sell_confirm_id = -1;
+                garage_browser.cycle_class_filter(1);
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+                const int cf = garage_browser.class_filter();
+                notice = cf >= 0 && cf < int(app.class_bands.size())
+                             ? "FILTER: CLASS " + app.class_bands[size_t(cf)].name
+                             : std::string("FILTER: ALL CLASSES");
+                notice_until = vehicle.time() + 2.5;
+              };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
                 if (k == SDLK_ESCAPE && !e.key.repeat) {
@@ -399,9 +410,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   notice = std::string("SORT: ") + carview::garage_sort_name(garage_browser.sort_mode());
                   notice_until = vehicle.time() + 2.5;
                 } else if (k == SDLK_X && !e.key.repeat && use_browser) {
-                  garage_sell_confirm_id = -1;
-                  garage_browser.cycle_class_filter(1);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  cycle_class();
                 } else if (k == SDLK_F && !e.key.repeat && use_browser) {
                   toggle_fav();
                 } else if (k == SDLK_V && !e.key.repeat && use_browser) {
@@ -434,9 +443,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   notice = std::string("SORT: ") + carview::garage_sort_name(garage_browser.sort_mode());
                   notice_until = vehicle.time() + 2.5;
                 } else if (b == SDL_GAMEPAD_BUTTON_WEST && use_browser) {
-                  garage_sell_confirm_id = -1;
-                  garage_browser.cycle_class_filter(1);
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  cycle_class();
                 } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER && use_browser) {
                   toggle_fav();
                 } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_STICK && use_browser) {
