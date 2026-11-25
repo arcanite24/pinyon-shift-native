@@ -1202,7 +1202,7 @@ void LoadingScreen::draw(ui::List& l, float screen_w, float screen_h) const {
     if (sp_node >= 0) sc.model(l, f, sp_node, 1.0f, 0.0f, 0.0f, 0.0f, 0u, {}, -ang);
   }
   ui::TextStyle lw = ui4::style(ui::Font::kB, 11.0f * s, ui4::kOffWhite, ui::Align::kCenter);
-  l.text(sp_cx, sp_cy + 28.0f * s, loc_str("ScreenTitles", "IDS_Loading", "LOADING"), lw);
+  l.text(sp_cx, sp_cy + 28.0f * s, loc_str("Scoreboard", "IDS_Scoreboard_Loading_Title", "LOADING"), lw);
 
   // R3-UI-10: Smooth ~0.25 s ease-out fade-in veil on LoadingScreen entry.
   const float entry_veil = veil_alpha();
@@ -1403,7 +1403,7 @@ void OnScreenKeyboard::draw(ui::List& l, float screen_w, float screen_h) const {
   ui4::button_bar(l,
                   {{"A", loc_str("HelpButtons", "IDS_Select", "TYPE")},
                    {"X", "BACKSPACE"},
-                   {"START", loc_str("HelpButtons", "IDS_ContinueMenu", "DONE")},
+                   {"START", std::string("DONE")},
                    {"B", loc_str("HelpButtons", "IDS_Cancel", "CANCEL")}},
                   screen_w, screen_h);
 }

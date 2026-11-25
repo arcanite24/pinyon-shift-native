@@ -146,6 +146,16 @@ add_executable(rally_tests rally_tests.cpp)
 target_link_libraries(rally_tests PRIVATE shift_race shift_garage shift_audio shift_data shift_drive)
 add_test(NAME rally_tests COMMAND rally_tests)
 
+# Every string-table lookup the sources make by name resolves in the
+# player's tables; the corpus run needs SHIFT_GAME_ROOT and SHIFT_STATE_ROOT
+# (exit 77 without).
+add_executable(string_refs_tests string_refs_tests.cpp)
+target_compile_definitions(string_refs_tests PRIVATE SHIFT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(string_refs_tests PRIVATE shift_race shift_cars fh1data)
+add_test(NAME string_refs_tests COMMAND string_refs_tests)
+add_test(NAME string_refs_corpus COMMAND string_refs_tests --corpus)
+set_tests_properties(string_refs_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
+
 # The Pinyon Shift reference save's counts (FORMAT-PROFILE Tests) over the
 # plaintext exports in out/profile (skipped, exit 77, without them).
 add_test(NAME profile_import_counts COMMAND profile-import --check ${CMAKE_SOURCE_DIR}/out/profile)

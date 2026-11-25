@@ -668,8 +668,12 @@ void DriveSession::choose() {
             if (!app.rally_catalog_tried && !app.state_root.empty()) {
               app.rally_catalog_tried = true;
               const auto db_ptr = app.parts_db.valid() ? app.parts_db.get() : std::shared_ptr<cars::PartsDb>{};
+              // The championship, stage and route names are string-table refs:
+              // load the tables (base, v4, packages) before the catalog.
+              if (!*app.car_names_loaded) carview::car_name("");
               std::string rerr;
-              if (race::load_rally_catalog(app.state_root, db_ptr.get(), nullptr, app.rally_catalog, &rerr)) {
+              if (race::load_rally_catalog(app.state_root, db_ptr.get(), app.car_names->strings(), app.rally_catalog,
+                                           &rerr)) {
                 const auto cd_cache = app.save_path.empty() ? (std::filesystem::path("out") / "audio_cache")
                                                         : (app.save_path.parent_path() / "audio_cache");
                 app.audio_host.init_codriver(app.rally_catalog.package_dir, cd_cache, app.language);

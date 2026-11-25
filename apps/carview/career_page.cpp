@@ -45,10 +45,10 @@ std::string font_text(const std::string& s) {
 
 std::vector<std::string> CareerPage::tab_labels() const {
   return {
-      loc_str("Career", "IDS_Progress", "PROGRESS"),
-      loc_str("PauseMenu", "IDS_SponsorChallenges", "SPONSOR CHALLENGES"),
-      loc_str("Career", "IDS_Statistics", "STATS"),
-      loc_str("Career", "IDS_ContentPacks", "CONTENT PACKS"),
+      loc_str("InGame", "IDS_Progress", "PROGRESS"),
+      loc_str("PauseMenu", "IDS_SponsorChallenge", "SPONSOR CHALLENGES"),
+      loc_str("MyProfile", "IDS_Statistics", "STATS"),
+      std::string("CONTENT PACKS"),
   };
 }
 
@@ -77,7 +77,7 @@ void CareerPage::rebuild_lines() {
                        std::to_string(s.rally_stages) + " STAGES");
     }
   } else if (tab_ == CareerTab::kSponsorChallenges) {
-    lines_.push_back(loc_str("PauseMenu", "IDS_SponsorChallenges", "SPONSOR CHALLENGES"));
+    lines_.push_back(loc_str("PauseMenu", "IDS_SponsorChallenge", "SPONSOR CHALLENGES"));
   } else if (tab_ == CareerTab::kStats) {
     const int win_pct = s.races > 0 ? int(std::lround(100.0 * double(s.victories) / double(s.races))) : 0;
     lines_.push_back("RACES COMPLETED: " + std::to_string(s.races));
@@ -102,7 +102,7 @@ void CareerPage::rebuild_lines() {
       lines_.push_back("RALLY WINNINGS: " + ui4::format_credits(s.rally_winnings));
     }
   } else {
-    lines_.push_back(loc_str("Career", "IDS_ContentPacks", "CONTENT PACKS") + "  " + std::to_string(owned_) + "/" +
+    lines_.push_back(std::string("CONTENT PACKS") + "  " + std::to_string(owned_) + "/" +
                      std::to_string(packs_) + " OWNED");
     for (const auto& p : packs_list_) {
       lines_.push_back("  " + font_text(p.name) +
@@ -205,21 +205,21 @@ void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page,
 
   ui4::TiltedBladeSpec spec;
   spec.title = loc_str("PauseMenu", "IDS_MyProfile", "MY PROFILE");
-  spec.eyebrow = loc_str("Career", "IDS_HorizonFestival", "HORIZON FESTIVAL  •  COLORADO");
+  spec.eyebrow = std::string("HORIZON FESTIVAL  •  COLORADO");
   spec.scene_hint = "H_STATISTICS";
   spec.tabs = page.tab_labels();
   spec.active_tab = int(tab);
   spec.show_tab_bumpers = true;
   spec.open_progress = open_progress;
 
-  spec.status_kicker = !s.level_name.empty() ? font_text(s.level_name) : loc_str("Career", "IDS_Wristband", "WRISTBAND");
+  spec.status_kicker = !s.level_name.empty() ? font_text(s.level_name) : loc_str("Scoreboard", "IDS_Wristband", "WRISTBAND");
   spec.status_value = ui4::format_credits(credits);
   spec.status_tag = "RANK #" + std::to_string(std::clamp(s.popularity_rank, 1, 250));
   spec.status_color = !s.level_name.empty() ? ui4::wristband_colour(s.level_name) : ui4::kPink;
   spec.max_visible = 8;
 
   if (tab == CareerTab::kProgress) {
-    spec.list_header = loc_str("Career", "IDS_FestivalProgress", "FESTIVAL & EXPLORATION PROGRESS");
+    spec.list_header = std::string("FESTIVAL & EXPLORATION PROGRESS");
     spec.list_header_right = std::to_string(s.wristband_points) + " PTS";
     spec.selected_index = int(page.selected_index());
 
@@ -237,27 +237,27 @@ void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page,
     };
 
     const std::string wb_lbl = !s.level_name.empty() ? font_text(s.level_name) : "ENTRY WRISTBAND";
-    add_prog_row(loc_str("Career", "IDS_Wristband", "WRISTBAND"), wb_lbl, std::max(0, s.level + 1), 7,
+    add_prog_row(loc_str("Scoreboard", "IDS_Wristband", "WRISTBAND"), wb_lbl, std::max(0, s.level + 1), 7,
                  ui4::wristband_colour(wb_lbl), std::to_string(s.wristband_points) + " PTS");
     const int rank_climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
-    add_prog_row(loc_str("Career", "IDS_Popularity", "POPULARITY RANK"), "CLIMB TO FESTIVAL #1", rank_climbed, 249,
+    add_prog_row(std::string("POPULARITY RANK"), "CLIMB TO FESTIVAL #1", rank_climbed, 249,
                  ui4::kYellow, "#" + std::to_string(std::clamp(s.popularity_rank, 1, 250)));
-    add_prog_row(loc_str("Career", "IDS_EventsWon", "EVENTS WON"),
+    add_prog_row(std::string("EVENTS WON"),
                  std::to_string(s.podiums) + " PODIUMS  •  " + std::to_string(s.races) + " RACES", s.victories, 70,
                  ui4::kPink);
-    add_prog_row(loc_str("Career", "IDS_Roads", "ROADS DISCOVERED"),
+    add_prog_row(loc_str("MyProfile", "IDS_Completed_Roads", "ROADS DISCOVERED"),
                  pct_str(s.roads_discovered, std::max(1, s.roads_total)) + " OF COLORADO DRIVEN", s.roads_discovered,
                  std::max(1, s.roads_total), ui4::kGreen);
-    add_prog_row(loc_str("Career", "IDS_DiscountSigns", "UPGRADE DISCOUNT SIGNS"),
+    add_prog_row(std::string("UPGRADE DISCOUNT SIGNS"),
                  std::to_string(std::min(100, s.signs_found)) + "% UPGRADE DISCOUNT", s.signs_found,
                  std::max(1, s.signs_total), ui4::kAmber);
-    add_prog_row(loc_str("Career", "IDS_BarnFinds", "BARN FINDS"), "RESTORED CLASSIC CARS", s.barns_found,
+    add_prog_row(loc_str("InGame", "IDS_Filter_BarnFinds", "BARN FINDS"), "RESTORED CLASSIC CARS", s.barns_found,
                  std::max(1, s.barns), ui4::kAmber);
-    add_prog_row(loc_str("Career", "IDS_Outposts", "HORIZON OUTPOSTS"),
+    add_prog_row(loc_str("Tips", "IDS_PRHubsTitle", "HORIZON OUTPOSTS"),
                  std::to_string(s.pr_stunts_done) + " / " + std::to_string(std::max(1, s.pr_stunts_total)) + " PR STUNTS",
                  s.outposts_discovered, std::max(1, s.outposts_total), ui4::kBlue);
 
-    spec.detail_header = loc_str("Career", "IDS_ProgressOverview", "CAREER OVERVIEW");
+    spec.detail_header = std::string("CAREER OVERVIEW");
     spec.detail_title = wb_lbl;
     spec.detail_title_color = ui4::wristband_colour(wb_lbl);
     spec.detail_kvs = {
@@ -273,7 +273,7 @@ void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page,
          ui4::kWhite},
     };
   } else if (tab == CareerTab::kSponsorChallenges) {
-    spec.list_header = loc_str("PauseMenu", "IDS_SponsorChallenges", "SPONSOR CHALLENGES");
+    spec.list_header = loc_str("PauseMenu", "IDS_SponsorChallenge", "SPONSOR CHALLENGES");
     spec.list_header_right = std::to_string(sponsors.size()) + " CHALLENGES";
     spec.selected_index = page.sponsor_selected();
     spec.empty_message = "NO SPONSOR CHALLENGES LOADED FOR THIS PROFILE.";
@@ -294,7 +294,7 @@ void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page,
       spec.rows.push_back(std::move(r));
     }
 
-    spec.detail_header = loc_str("Career", "IDS_SponsorDetails", "SPONSOR PAYOUT");
+    spec.detail_header = std::string("SPONSOR PAYOUT");
     if (!sponsors.empty()) {
       const auto& sel_sc = sponsors[size_t(std::clamp(page.sponsor_selected(), 0, int(sponsors.size()) - 1))];
       spec.detail_title = font_text(sel_sc.sponsor_name);
@@ -316,7 +316,7 @@ void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page,
       spec.detail_paragraphs = {"Perform drifts, near misses, speed feats, and air skills in Colorado to earn Credit payouts from Horizon sponsors."};
     }
   } else if (tab == CareerTab::kStats) {
-    spec.list_header = loc_str("Career", "IDS_DrivingStats", "DRIVING & CAREER STATISTICS");
+    spec.list_header = std::string("DRIVING & CAREER STATISTICS");
     spec.list_header_right = std::to_string(s.races) + " RACES";
     spec.selected_index = int(page.selected_index());
     const int win_pct = s.races > 0 ? int(std::lround(100.0 * double(s.victories) / double(s.races))) : 0;
@@ -344,7 +344,7 @@ void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page,
                std::to_string(s.rally_victories) + " / " + std::to_string(s.rally_stages), ui4::kAmber);
     }
 
-    spec.detail_header = loc_str("Career", "IDS_DriverRecord", "DRIVER RECORD");
+    spec.detail_header = std::string("DRIVER RECORD");
     spec.detail_title = "COLORADO STATS";
     spec.detail_title_color = ui4::kPink;
     spec.detail_kvs = {
@@ -355,7 +355,7 @@ void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page,
     };
   } else {
     // 4th sub-tab: Compact installed expansion / DLC content pack status.
-    spec.list_header = loc_str("Career", "IDS_ContentPacks", "CONTENT PACKS");
+    spec.list_header = std::string("CONTENT PACKS");
     spec.list_header_right = std::to_string(page.packs_owned()) + " / " + std::to_string(page.packs_total()) + " OWNED";
     spec.selected_index = int(page.selected_index());
     spec.empty_message = "NO EXPANSION OR CAR PACKS DETECTED.";
@@ -382,8 +382,8 @@ void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page,
   }
 
   spec.prompts = {
-      {"LB", loc_str("HelpButtons", "IDS_PrevTab", "PREV TAB")},
-      {"RB", loc_str("HelpButtons", "IDS_NextTab", "NEXT TAB")},
+      {"LB", std::string("PREV TAB")},
+      {"RB", std::string("NEXT TAB")},
       {"B", loc_str("HelpButtons", "IDS_Back", "BACK")},
   };
   ui4::tilted_blade_screen(l, w, h, spec);

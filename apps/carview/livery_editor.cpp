@@ -1346,11 +1346,11 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
 
   // Top-right LIV_TABS with LBUMPER / RBUMPER (#F90064 active PILL_BIG).
   const std::vector<std::string> tabs = {
-      loc_str("Paint", "IDS_Paint", "PAINT"),
-      loc_str("Paint", "IDS_ManufacturerColors", "MANUFACTURER"),
-      loc_str("Paint", "IDS_SpecialColors", "SPECIAL"),
-      loc_str("Paint", "IDS_PreviousColors", "PREVIOUS"),
-      loc_str("Paint", "IDS_Vinyls", "VINYLS"),
+      std::string("PAINT"),
+      std::string("MANUFACTURER"),
+      std::string("SPECIAL"),
+      std::string("PREVIOUS"),
+      std::string("VINYLS"),
   };
   {
     ui4::TiltScope tab_rot(list, w - 360.0f * s, 40.0f * s, tilt_rad * 0.6f);
@@ -1571,7 +1571,7 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
     } else if (editor.tab() == EditorTab::kManufacturerColors) {
       const auto& mc = editor.manufacturer_colors();
       ui4::title_tape(list, s, 86.0f * s, 456.0f * s,
-                      loc_str("Paint", "IDS_ManufacturerColors", "MANUFACTURER COLORS") + " (" +
+                      loc_str("Livery", "IDS_ManufacturerColors", "MANUFACTURER COLORS") + " (" +
                           std::to_string(mc.size()) + ")",
                       ui4::kBrushBlack, 30.0f, 540.0f);
       const int n = int(mc.size());
@@ -1611,7 +1611,7 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
     } else if (editor.tab() == EditorTab::kPreviousColors) {
       const auto& pc = editor.previous_colors();
       ui4::title_tape(list, s, 86.0f * s, 456.0f * s,
-                      loc_str("Paint", "IDS_PreviousColors", "PREVIOUS COLORS") + " (" + std::to_string(pc.size()) + ")",
+                      loc_str("Livery", "IDS_PreviousColors", "PREVIOUS COLORS") + " (" + std::to_string(pc.size()) + ")",
                       ui4::kBrushBlack, 30.0f, 500.0f);
       const int n = int(pc.size());
       const int sel = int(editor.selected_previous_color());
@@ -1651,7 +1651,7 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
       // Bottom +3.0 deg Special Two-Tone Paint Carousel
       const auto& sp = editor.special_colors();
       ui4::title_tape(list, s, 86.0f * s, 456.0f * s,
-                      loc_str("Paint", "IDS_SpecialColors", "SPECIAL COLORS") + " (" + std::to_string(sp.size()) + ")",
+                      loc_str("Livery", "IDS_SpecialColors", "SPECIAL COLORS") + " (" + std::to_string(sp.size()) + ")",
                       ui4::kBrushBlack, 30.0f, 560.0f);
       const int n = int(sp.size());
       const int sel = int(editor.selected_special());
@@ -1695,7 +1695,7 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
       // 506_C_LIV_LAYER_SELECT: Bottom +3.0 deg Horizontal Layer Strip (y=498..618, 173px pitch)
       const auto& layers = editor.document().layers;
       ui4::title_tape(list, s, 86.0f * s, 434.0f * s,
-                      loc_str("Paint", "IDS_VinylLayers", "VINYL LAYERS") + " (" + std::to_string(layers.size()) + ")",
+                      std::string("VINYL LAYERS") + " (" + std::to_string(layers.size()) + ")",
                       ui4::kBrushBlack, 32.0f, 480.0f);
 
       const float by = 498.0f * s, bh = 114.0f * s;
@@ -1786,10 +1786,10 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
             list.image(bx + 0.5f * (cw - esz), by + 22.0f * s - lift, bx + 0.5f * (cw + esz),
                        by + 22.0f * s + esz - lift, empty_uv, ui::rgba(255, 255, 255, 110));
           }
-          list.text(bx + 0.5f * cw, by + 74.0f * s - lift, loc_str("Paint", "IDS_EmptySlot", "EMPTY SLOT"),
+          list.text(bx + 0.5f * cw, by + 74.0f * s - lift, std::string("EMPTY SLOT"),
                     ui4::style(ui::Font::kB, 11.0f * s, ui4::kDim, ui::Align::kCenter));
           const std::string add_hint =
-              ui4::glyph_label_for("Y") + " " + loc_str("Paint", "IDS_AddVinyl", "ADD VINYL");
+              ui4::glyph_label_for("Y") + " " + std::string("ADD VINYL");
           list.text(bx + 0.5f * cw, by + 90.0f * s - lift, add_hint,
                     ui4::style(ui::Font::kE, 10.0f * s, ui4::kPinkHi, ui::Align::kCenter));
         }
@@ -1803,7 +1803,7 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
     const float cx0 = 86.0f * s, cy0 = 112.0f * s, cx1 = 500.0f * s, cy1 = 442.0f * s;
     ui4::panel01(list, cx0, cy0, cx1, cy1, s, ui::rgba(16, 18, 24, 240), ui4::kPink);
     list.text(cx0 + 16.0f * s, cy0 + 12.0f * s,
-              loc_str("Paint", "IDS_DesignCatalog", "DESIGN CATALOG") + " (" +
+              std::string("DESIGN CATALOG") + " (" +
                   std::to_string(editor.design_catalog().size()) + ")",
               ui4::style(ui::Font::kE, 14.0f * s, ui4::kPinkHi));
     const auto& cat = editor.design_catalog();
@@ -1842,18 +1842,18 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
   }
 
   const std::string undo_lbl =
-      editor.can_undo() ? (loc_str("HelpButtons", "IDS_Undo", "UNDO") + " (" + std::to_string(editor.undo_depth()) + ")")
-                        : loc_str("HelpButtons", "IDS_Tab", "TAB");
+      editor.can_undo() ? (std::string("UNDO") + " (" + std::to_string(editor.undo_depth()) + ")")
+                        : std::string("TAB");
   // Concise prompts ensure all 6 buttons (indices 0..5, including index 2 DPAD_LR) fit cleanly at 1280px.
   ui4::button_bar(list,
                   {{"A", loc_str("HelpButtons", "IDS_Save", "SAVE")},
-                   {"LB", vinyl_tab ? undo_lbl : loc_str("HelpButtons", "IDS_Tab", "TAB")},
-                   {"DPAD_LR", vinyl_tab ? loc_str("Paint", "IDS_Layer", "LAYER")
-                                         : loc_str("Paint", "IDS_Finish", "FINISH")},
-                   {"Y", vinyl_tab ? loc_str("Paint", "IDS_Add", "ADD")
-                                   : loc_str("Paint", "IDS_Region", "REGION")},
+                   {"LB", vinyl_tab ? undo_lbl : std::string("TAB")},
+                   {"DPAD_LR", vinyl_tab ? std::string("LAYER")
+                                         : std::string("FINISH")},
+                   {"Y", vinyl_tab ? loc_str("HelpButtons", "IDS_Add", "ADD")
+                                   : std::string("REGION")},
                    {"X", vinyl_tab ? loc_str("HelpButtons", "IDS_Delete", "DELETE")
-                                   : loc_str("Paint", "IDS_Factory", "FACTORY")},
+                                   : std::string("FACTORY")},
                    {"B", loc_str("HelpButtons", "IDS_Back", "BACK")}},
                   w, h, 56.0f);
 }

@@ -284,7 +284,7 @@ void draw_objective_tracker(ui::List& l, const race::CampaignFlow& flow, const D
   if (flow.stage() == race::CampaignStage::kViperIntroDrive) {
     const float sx1 = ctx.screen_w - 64.0f * s;
     const std::string skip_lbl =
-        "[" + ui4::glyph_label_for("BACK") + "] " + loc_str("Campaign", "IDS_SkipIntro", "SKIP INTRO STAGE");
+        "[" + ui4::glyph_label_for("BACK") + "] " + std::string("SKIP INTRO STAGE");
     ui4::pill(l, sx1 - 220.0f * s, y0, sx1, y0 + 28.0f * s, with_alpha(ui4::kCharcoalDark, alpha),
               ui4::PillKind::kHud01);
     l.text(sx1 - 12.0f * s, y0 + 7.0f * s, skip_lbl,
@@ -487,13 +487,13 @@ void draw_cinematic_overlay(ui::List& l, const race::CampaignFlow& flow, const D
     }
     if (is_registration) {
       ui4::button_bar(l,
-                      {{"A", loc_str("Campaign", "IDS_OpenAutoshow", "OPEN STARTER AUTOSHOW")},
-                       {"X", loc_str("Campaign", "IDS_SetGpsFirst", "SET GPS TO FIRST EVENT")}},
+                      {{"A", std::string("OPEN STARTER AUTOSHOW")},
+                       {"X", std::string("SET GPS TO FIRST EVENT")}},
                       w, h, 70.0f);
     } else {
       ui4::button_bar(l,
                       {{"A", loc_str("HelpButtons", "IDS_Continue", "CONTINUE")},
-                       {"X", loc_str("Campaign", "IDS_SetGpsNext", "SET GPS TO NEXT EVENT")}},
+                       {"X", std::string("SET GPS TO NEXT EVENT")}},
                       w, h, 70.0f);
     }
     return;
@@ -827,10 +827,10 @@ void draw_reward_tally(ui::List& l, const race::RewardTallyState& tally, float s
   }
 
   std::vector<ui4::Prompt> prompts = {
-      {"A", tally.stage_animation_done() ? loc_str("HelpButtons", "IDS_ContinueFreeRoam", "CONTINUE TO FREE ROAM")
+      {"A", tally.stage_animation_done() ? std::string("CONTINUE TO FREE ROAM")
                                          : loc_str("HelpButtons", "IDS_Skip", "SKIP ANIMATION")}};
   if (tally.has_next_gps) {
-    prompts.push_back({"X", loc_str("Campaign", "IDS_SetGpsNextObj", "SET GPS TO NEXT OBJECTIVE")});
+    prompts.push_back({"X", std::string("SET GPS TO NEXT OBJECTIVE")});
   }
   ui4::button_bar(l, prompts, screen_w, screen_h, 70.0f);
 }

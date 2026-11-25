@@ -500,6 +500,9 @@ bool DriveApp::init(int& exit_code) {
     if (!*car_names_loaded) carview::car_name("");  // loads the tables
     return car_names->text(value);
   });
+  // The screens that look text up through ui::lookup_text (the campaign
+  // panels, and the paint and replay screens' second try) read the same tables.
+  carview::ui::set_text_lookup([](const std::string& ref) { return carview::game_text(ref); });
   // The career garage (SPEC-GARAGE-UPGRADES): garage.txt beside the save,
   // made by the profile import; the cars the bake has, by Data_Car id.
   
@@ -1168,6 +1171,7 @@ void DriveApp::shutdown() {
   wait_all_world_assets();
   carview::set_car_names({});
   carview::set_game_text({});
+  carview::ui::set_text_lookup({});
   carview::set_world_texture_session(nullptr);
   mods_session.shutdown();
   if (window) {

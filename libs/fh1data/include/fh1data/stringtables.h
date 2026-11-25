@@ -37,6 +37,8 @@ class StringTables {
   // Adds or replaces (whole table) the table named `name` (".str" optional).
   void put(std::string_view name, StringTable table);
   size_t size() const { return tables_.size(); }
+  // Whether a table named `name` (no ".str") was put.
+  bool has(std::string_view name) const { return tables_.count(string_hash(name)) != 0; }
   // The table named `name` (".str" optional), made empty when missing
   // (string table mods add to it).
   StringTable& table(std::string_view name);

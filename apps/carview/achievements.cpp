@@ -863,7 +863,7 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
     ui4::TiltScope tilt(out, 0.5f * w, 0.5f * h, ui4::kTiltRad * 0.50f);
 
     // Top title tape + gamerscore summary pill.
-    ui4::title_tape(out, s, 64.0f * s, 30.0f * s, loc_str("Achievements", "IDS_Title", "ACHIEVEMENTS"), ui4::kPink, 34.0f,
+    ui4::title_tape(out, s, 64.0f * s, 30.0f * s, loc_str("MyProfile", "IDS_Achievements", "ACHIEVEMENTS"), ui4::kPink, 34.0f,
                     420.0f);
     {
       const float sx0 = w - 396.0f * s, sx1 = w - 56.0f * s, sy0 = 30.0f * s, sy1 = 84.0f * s;
@@ -912,7 +912,7 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
     // Clickable Sort pill (mapped to ui4::kHitButton index 2 so clicking immediately cycles sort!).
     {
       const std::string sort_txt =
-          loc_str("Achievements", "IDS_Sort", "SORT") + ": " + std::string(achievement_sort_label(sort_));
+          loc_str("HelpButtons", "IDS_Sort", "SORT") + ": " + std::string(achievement_sort_label(sort_));
       ui::TextStyle sts = ui4::style(Font::kE, 11.0f * s, ui4::kWhite, Align::kCenter);
       const float pill_w = std::clamp(ui::List::measure(sort_txt, sts) + 42.0f * s, 148.0f * s, 250.0f * s);
       const float sx1 = gx0 + grid_w - 14.0f * s;
@@ -928,7 +928,7 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
 
     if (visible_.empty()) {
       out.text(gx0 + 0.5f * grid_w, gy0 + 0.5f * grid_h,
-               loc_str("Achievements", "IDS_Empty", "NO ACHIEVEMENTS IN THIS CATEGORY."),
+               std::string("NO ACHIEVEMENTS IN THIS CATEGORY."),
                ui4::style(Font::kB, 14.0f * s, ui4::kDim, Align::kCenter));
     } else {
       const float pad_x = 16.0f * s, pad_y = 44.0f * s;
@@ -1078,9 +1078,9 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
   }
 
   ui4::button_bar(out,
-                  {{"A", loc_str("Achievements", "IDS_TrackOnHud", "TRACK ON HUD")},
-                   {"LB", loc_str("Achievements", "IDS_Category", "CATEGORY")},
-                   {"Y", loc_str("Achievements", "IDS_Sort", "SORT") + ": " + std::string(achievement_sort_label(sort_))},
+                  {{"A", std::string("TRACK ON HUD")},
+                   {"LB", std::string("CATEGORY")},
+                   {"Y", loc_str("HelpButtons", "IDS_Sort", "SORT") + ": " + std::string(achievement_sort_label(sort_))},
                    {"B", loc_str("HelpButtons", "IDS_Back", "BACK")}},
                   w, h, 64.0f);
 }
@@ -1137,7 +1137,7 @@ void AchievementsSystem::build_hud_overlays(ui::List& out, float w, float h, boo
           out.rect(cx0 + 10.0f * s, cy0 + 8.0f * s, cx0 + 52.0f * s, cy0 + 50.0f * s, rgba(255, 190, 48, 45));
         }
         out.text(cx0 + 60.0f * s, cy0 + 8.0f * s,
-                 loc_str("Achievements", "IDS_Tracked", "TRACKED ACHIEVEMENT"),
+                 std::string("TRACKED ACHIEVEMENT"),
                  ui4::style(Font::kE, 9.0f * s, ui4::kYellow));
         std::string nm = tr->name.size() > 22 ? (tr->name.substr(0, 21) + "..") : tr->name;
         out.text(cx0 + 60.0f * s, cy0 + 21.0f * s, nm, ui4::style(Font::kB, 11.5f * s, ui4::kWhite));

@@ -524,7 +524,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
           cx = cf.x(nx);
           cy = cf.y(ny);
         }
-        const std::string go_txt = str("InGame", "IDS_Go", "GO!");
+        const std::string go_txt = str("InGame", "IDS_3_2_1_GO", "GO!");
         TextStyle gts = font(ui::Font::kE, 74.0f * s * pop_scale, ui::fade(kText, a), Align::kCenter);
         const float tw = ui::List::measure(go_txt, gts);
         {
@@ -570,7 +570,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
       l.text(x0 + 28.0f * s, sy0 + 9.0f * s, cbuf, font(ui::Font::kE, 14.0f * s, ui4::kAmber));
 
       // [Y] Rewind prompt on right side of banner.
-      const std::string rw_lbl = str("InGame", "IDS_Rewind", "REWIND");
+      const std::string rw_lbl = str("HelpButtons", "IDS_Mulligan", "REWIND");
       const TextStyle rts = font(ui::Font::kE, 13.5f * s, ui4::kWhite, Align::kRight);
       const float rw_w = ui::List::measure(rw_lbl, rts);
       l.text(x1 - 24.0f * s, sy0 + 9.5f * s, rw_lbl, rts);
@@ -602,7 +602,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
       l.arc(icx, icy, 31.0f * s, 4.0f * s, 0.0f, 6.28318f, ui::fade(ui4::kWhite, pulse));
       l.rect(icx - 19.0f * s, icy - 5.5f * s, icx + 19.0f * s, icy + 5.5f * s, ui::fade(ui4::kWhite, pulse));
     }
-    const std::string ww_txt = str("InGame", "IDS_WrongWay", "WRONG WAY");
+    const std::string ww_txt = std::string("WRONG WAY");
     const TextStyle ws = font(ui::Font::kE, 26.0f * s, ui::fade(kText, 0.85f + 0.15f * pulse), Align::kCenter);
     const float ww = std::max(220.0f * s, ui::List::measure(ww_txt, ws) + 54.0f * s);
     const float wy = icon_y0 + icon_sz + 4.0f * s;
@@ -1043,12 +1043,12 @@ void points_page(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout
   if (r.won_car_name.empty()) {
     ui4::button_bar(l,
                     {{"A", "CONTINUE TO FREE ROAM"},
-                     {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART RACE")},
+                     {"Y", str("InGame", "IDS_RestartMenu", "RESTART RACE")},
                      {"X", "WATCH REPLAY"},
                      {"BACK", "MAP / GPS"}},
                     g.w, g.h);
   } else {
-    ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
+    ui4::button_bar(l, {{"A", str("InGame", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
   }
 }
 
@@ -1090,7 +1090,7 @@ void won_car_page(ui::List& l, const RaceHud& r, const Layout& g) {
   }
   ui4::button_bar(l,
                   {{"A", "CONTINUE TO FREE ROAM"},
-                   {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART RACE")},
+                   {"Y", str("InGame", "IDS_RestartMenu", "RESTART RACE")},
                    {"X", "WATCH REPLAY"},
                    {"BACK", "MAP / GPS"}},
                   g.w, g.h);
@@ -1199,8 +1199,8 @@ void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g)
       }
     }
     ui4::button_bar(l,
-                    {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")},
-                     {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART RACE")},
+                    {{"A", str("InGame", "IDS_ContinueMenu", "CONTINUE")},
+                     {"Y", str("InGame", "IDS_RestartMenu", "RESTART RACE")},
                      {"X", str("InGame", "IDS_RaceResultsMenu", "RACE RESULTS")},
                      {"B", "WATCH REPLAY"}},
                     g.w, g.h);
@@ -1300,7 +1300,7 @@ void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g)
     bs.keep_case = true;  // "117,881 Cr" as shown
     l.text(g.L(426), g.T(490), thousands(shown_bal) + " " + cr, bs);
   }
-  ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
+  ui4::button_bar(l, {{"A", str("InGame", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
 }
 
 
