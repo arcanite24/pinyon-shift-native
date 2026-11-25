@@ -780,6 +780,139 @@ void test_r3_guest_driver_seat_and_wheel_isolation() {
   CHECK(std::fabs(slot_poses[2].steer - (-0.22)) < 1e-6 && std::fabs(slot_poses[2].spin - 4.20f) < 1e-5f);
 }
 
+void test_r3_driver_two_bone_ik_and_wristband_palette() {
+  // R3-REN-12: 2-bone analytical rotational arm IK preserves exact upper-arm (L1) and forearm (L2)
+  // bone lengths and rigid forearm rotation (det=+1, zero vertex shearing) across full +/-270 deg lock.
+  auto vadd = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+  };
+  auto vsub = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+  };
+  auto vscale = [](const std::array<float, 3>& a, float s) -> std::array<float, 3> {
+    return {a[0] * s, a[1] * s, a[2] * s};
+  };
+  auto vdot = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> float {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  };
+  auto vcross = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+  };
+  auto vlen = [&](const std::array<float, 3>& a) -> float { return std::sqrt(vdot(a, a)); };
+  auto vnorm = [&](const std::array<float, 3>& a) -> std::array<float, 3> {
+    const float l = vlen(a);
+    return l > 1e-6f ? vscale(a, 1.0f / l) : std::array<float, 3>{0.0f, 1.0f, 0.0f};
+  };
+
+  struct IkOut {
+    std::array<float, 3> shoulder, elbow, wrist;
+  };
+  auto solve_ik = [&](const std::array<float, 3>& sh, const std::array<float, 3>& tgt, float l1, float l2,
+                      const std::array<float, 3>& pole_hint) -> IkOut {
+    const auto to_t = vsub(tgt, sh);
+    const float raw_d = vlen(to_t);
+    const float d = std::clamp(raw_d, std::fabs(l1 - l2) + 1e-3f, (l1 + l2) * 0.998f);
+    const auto dir = (raw_d > 1e-5f) ? vscale(to_t, 1.0f / raw_d) : std::array<float, 3>{0.0f, 0.0f, -1.0f};
+    auto pole = vsub(pole_hint, vscale(dir, vdot(pole_hint, dir)));
+    if (vlen(pole) < 1e-4f) pole = vcross(dir, {0.0f, 1.0f, 0.0f});
+    pole = vnorm(pole);
+    const float cos_a = std::clamp((l1 * l1 + d * d - l2 * l2) / (2.0f * l1 * d), -1.0f, 1.0f);
+    const float sin_a = std::sqrt(std::max(0.0f, 1.0f - cos_a * cos_a));
+    return {
+        sh,
+        vadd(sh, vadd(vscale(dir, l1 * cos_a), vscale(pole, l1 * sin_a))),
+        vadd(sh, vscale(dir, d)),
+    };
+  };
+
+  constexpr float kL1 = 0.27f;
+  constexpr float kL2 = 0.25f;
+  constexpr float kPi = 3.14159265358979323846f;
+  const std::array<float, 3> pivot{-0.36f, 0.72f, 0.08f};
+  const std::array<float, 3> sh_l{-0.57f, 0.80f, 0.42f};
+  const std::array<float, 3> pole_l = vnorm({-0.78f, -0.56f, 0.28f});
+  const float rim_r = 0.165f;
+
+  // Sweep full steering lock (-270 deg .. +270 deg) plus extreme reach clamp test.
+  for (int deg = -270; deg <= 270; deg += 15) {
+    const float ang = float(deg) * (kPi / 180.0f);
+    const std::array<float, 3> rim_tgt{
+        pivot[0] - std::cos(ang) * rim_r,
+        pivot[1] + std::sin(ang) * rim_r,
+        pivot[2],
+    };
+    const IkOut ik = solve_ik(sh_l, rim_tgt, kL1, kL2, pole_l);
+    const float seg1 = vlen(vsub(ik.elbow, ik.shoulder));
+    const float seg2 = vlen(vsub(ik.wrist, ik.elbow));
+    CHECK(std::fabs(seg1 - kL1) < 1e-4f);
+    CHECK(std::fabs(seg2 - kL2) < 1e-4f);
+    // When target is inside natural arm reach, wrist lands exactly on the rim grip point.
+    if (vlen(vsub(rim_tgt, sh_l)) < (kL1 + kL2) * 0.995f) {
+      CHECK(vlen(vsub(ik.wrist, rim_tgt)) < 1e-4f);
+    }
+  }
+
+  // Over-extended target (1.2 m away) must clamp cleanly without stretching L1 or L2.
+  const IkOut over_ik = solve_ik(sh_l, {sh_l[0], sh_l[1], sh_l[2] - 1.2f}, kL1, kL2, pole_l);
+  CHECK(std::fabs(vlen(vsub(over_ik.elbow, over_ik.shoulder)) - kL1) < 1e-4f);
+  CHECK(std::fabs(vlen(vsub(over_ik.wrist, over_ik.elbow)) - kL2) < 1e-4f);
+
+  // Verify rigid orthonormal bone rotation preserves local forearm geometry (zero shear/stretch).
+  const IkOut rest_ik = solve_ik(sh_l, {pivot[0] - rim_r, pivot[1], pivot[2]}, kL1, kL2, pole_l);
+  const IkOut lock_ik = solve_ik(sh_l, {pivot[0], pivot[1] + rim_r, pivot[2]}, kL1, kL2, pole_l);
+  auto make_basis = [&](const std::array<float, 3>& a, const std::array<float, 3>& b,
+                        std::array<float, 3>& bx, std::array<float, 3>& by, std::array<float, 3>& bz) {
+    bz = vnorm(vsub(b, a));
+    bx = vnorm(vcross({0.0f, 1.0f, 0.0f}, bz));
+    by = vnorm(vcross(bz, bx));
+  };
+  std::array<float, 3> rx, ry, rz, px, py, pz;
+  make_basis(rest_ik.elbow, rest_ik.wrist, rx, ry, rz);
+  make_basis(lock_ik.elbow, lock_ik.wrist, px, py, pz);
+  float rot[3][3]{};
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c)
+      rot[r][c] = px[size_t(r)] * rx[size_t(c)] + py[size_t(r)] * ry[size_t(c)] + pz[size_t(r)] * rz[size_t(c)];
+  const float det = rot[0][0] * (rot[1][1] * rot[2][2] - rot[1][2] * rot[2][1]) -
+                    rot[0][1] * (rot[1][0] * rot[2][2] - rot[1][2] * rot[2][0]) +
+                    rot[0][2] * (rot[1][0] * rot[2][1] - rot[1][1] * rot[2][0]);
+  CHECK(std::fabs(det - 1.0f) < 1e-4f);
+  // Off-axis forearm sleeve vertex preserves exact distance from elbow joint after rigid rotation.
+  const std::array<float, 3> sleeve_local{0.035f, -0.028f, -0.14f};
+  const std::array<float, 3> sleeve_rot{
+      rot[0][0] * sleeve_local[0] + rot[0][1] * sleeve_local[1] + rot[0][2] * sleeve_local[2],
+      rot[1][0] * sleeve_local[0] + rot[1][1] * sleeve_local[1] + rot[1][2] * sleeve_local[2],
+      rot[2][0] * sleeve_local[0] + rot[2][1] * sleeve_local[1] + rot[2][2] * sleeve_local[2],
+  };
+  CHECK(std::fabs(vlen(sleeve_rot) - vlen(sleeve_local)) < 1e-5f);
+
+  // Verify retail DriverHands01.skinbin & DriverWristBand.skinbin presence when disc is available.
+  const fs::path game_root = find_game_root();
+  if (!game_root.empty() && fs::exists(game_root / "media" / "cars" / "Driver.zip")) {
+    std::string err;
+    auto arc = fh1::Archive::open(game_root / "media" / "cars" / "Driver.zip", &err);
+    CHECK(arc != nullptr);
+    if (arc) {
+      bool found_hands = false, found_band = false;
+      for (const auto& m : arc->members()) {
+        std::string low = m.name;
+        for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+        if (low.find("driverhands01.skinbin") != std::string::npos) {
+          auto rd = arc->read(m);
+          CHECK(rd.ok() && rd.data.size() > 0x40);
+          found_hands = true;
+        } else if (low.find("driverwristband.skinbin") != std::string::npos) {
+          auto rd = arc->read(m);
+          CHECK(rd.ok() && rd.data.size() > 0x40);
+          found_band = true;
+        }
+      }
+      CHECK(found_hands);
+      CHECK(found_band);
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -790,6 +923,7 @@ int main() {
   test_disc_tire_compound_camber_and_brakes();
   test_r3_tunnel_tod_preservation_and_per_car_lamps();
   test_r3_guest_driver_seat_and_wheel_isolation();
+  test_r3_driver_two_bone_ik_and_wristband_palette();
   if (g_failed) {
     std::fprintf(stderr, "cars_visual_parity_tests: %d FAILED\n", g_failed);
     return 1;

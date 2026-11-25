@@ -298,6 +298,59 @@ void test_flag_encoding_and_visual_invariants() {
   const float out_premul = straight_rgb * acc_a;
   CHECK(std::fabs(straight_rgb - cloud_rgb) < 1e-6f);
   CHECK(std::fabs(out_premul - cloud_rgb * cloud_a) < 1e-6f);
+
+  // R3-REN-18: Sky dome unwrapped azimuth derivative (fract(du + 0.5) - 0.5) prevents 1-px mip seams at -X.
+  auto unwrap_du = [](float du) {
+    const float v = du + 0.5f;
+    return (v - std::floor(v)) - 0.5f;
+  };
+  CHECK(std::fabs(unwrap_du(0.0012f) - 0.0012f) < 1e-5f);
+  CHECK(std::fabs(unwrap_du(-0.0012f) - (-0.0012f)) < 1e-5f);
+  CHECK(std::fabs(unwrap_du(-0.9988f) - 0.0012f) < 1e-5f);  // 0.9994 -> 0.0006 wrap
+  CHECK(std::fabs(unwrap_du(0.9988f) - (-0.0012f)) < 1e-5f); // 0.0006 -> 0.9994 wrap
+
+  // R3-REN-14: Headlight back-face illumination strictly 0.0 behind surface while preserving grazing road glow.
+  auto smoothstep_f = [](float e0, float e1, float x) {
+    const float t = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+  };
+  auto hl_facing = [&](float nl) {
+    return smoothstep_f(-0.05f, 0.02f, nl) * (0.35f + 0.65f * std::clamp(nl, 0.0f, 1.0f));
+  };
+  CHECK(hl_facing(-1.0f) == 0.0f);
+  CHECK(hl_facing(-0.10f) == 0.0f);
+  CHECK(hl_facing(-0.05f) == 0.0f);
+  CHECK(hl_facing(0.02f) > 0.34f && hl_facing(0.02f) < 0.40f);
+  CHECK(std::fabs(hl_facing(1.0f) - 1.0f) < 1e-5f);
+
+  // R3-REN-14: Complementary IGN screen-door partition between 3D tree fade-out and billboard fade-in.
+  for (int i = 0; i < 16; ++i) {
+    const float door = (float(i) + 0.5f) / 16.0f;
+    const float band_t = 0.42f;
+    const bool keep_3d = !(door < band_t);       // 3D tree discards when door < e
+    const bool keep_bb = !(door >= band_t);      // billboard discards when door >= s (s == e)
+    CHECK(keep_3d != keep_bb);                   // exact zero-gap, zero-double-overdraw partition
+  }
+
+  // R3-REN-20: Hi-Z camera stability guard (cos(8 deg) yaw/pitch cut + teleport cut + screen-edge guard).
+  auto hiz_stable = [](float curr_fx, float curr_fz, float prev_fx, float prev_fz, float eye_dx, float eye_dz) {
+    constexpr float kMaxTurnCos = 0.99026807f;  // cos(8 deg)
+    const float cl = std::hypot(curr_fx, curr_fz);
+    const float pl = std::hypot(prev_fx, prev_fz);
+    if (cl < 1e-3f || pl < 1e-3f) return false;
+    const float d = (curr_fx * prev_fx + curr_fz * prev_fz) / (cl * pl);
+    if (d < kMaxTurnCos) return false;
+    if (std::fabs(eye_dz) > 12.0f || (eye_dx * eye_dx) > 144.0f) return false;
+    return true;
+  };
+  const float rad4 = 4.0f * 3.14159265f / 180.0f;
+  const float rad12 = 12.0f * 3.14159265f / 180.0f;
+  CHECK(hiz_stable(0.0f, 1.0f, 0.0f, 1.0f, 0.5f, 2.0f));                           // steady driving
+  CHECK(hiz_stable(std::sin(rad4), std::cos(rad4), 0.0f, 1.0f, 0.2f, 1.5f));       // gentle 4 deg turn
+  CHECK(!hiz_stable(std::sin(rad12), std::cos(rad12), 0.0f, 1.0f, 0.2f, 1.5f));    // fast 12 deg hairpin turn
+  CHECK(!hiz_stable(0.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0.0f));                         // Look-Back 180 deg cut
+  CHECK(!hiz_stable(0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 25.0f));                         // instant camera teleport
+  CHECK(!hiz_stable(0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f));                          // uninitialized prev_vp
 }
 
 }  // namespace

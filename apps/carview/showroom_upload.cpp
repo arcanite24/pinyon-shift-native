@@ -710,9 +710,6 @@ bool Showroom::upload(std::string& error) {
     car_draws_ = 0;
     r_.mark(cmd, "setup");
     record_world_opaque(cmd);
-    record_skidmarks_draw(cmd);
-    record_contact_shadows(cmd);
-    r_.mark(cmd, "contact_shadow");
     record_debris_draw(cmd);
     record_showcase_draw(cmd);
     record_driver_draw(cmd);
@@ -724,6 +721,11 @@ bool Showroom::upload(std::string& error) {
       r_.mark(cmd, "sky");
     }
     record_world_blended(cmd);
+    // Draw tire skidmarks and car contact shadows AFTER blended road decals/transitions
+    // (before car glass) so road transitions never paint over skidmarks or contact shadows.
+    record_skidmarks_draw(cmd);
+    record_contact_shadows(cmd);
+    r_.mark(cmd, "contact_shadow");
     if (draw_car_) record_draws(cmd, car_op, glass_, 2);
     record_all_instances(cmd, r_.z_prepass(), 2);
     record_glows_draw(cmd);

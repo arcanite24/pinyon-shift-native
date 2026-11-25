@@ -53,6 +53,9 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 region_finish[3];   // 0=hood, 1=wing, 2=mirrors: x finish, y tt_scale, z tt_bias, w active
   vec4 rim_shader;         // x fresnel_index, y fresnel_scalar, z cube_scale, w has_override
   vec4 rim_tint_dirt;      // xyz rim_tint, w bit0=has_car_dirt_mask bit1=has_car_crush_weights
+  vec4 dyn_light_pos[6];   // xyz car-frame pos, w radius (m)
+  vec4 dyn_light_col[6];   // rgb linear color * intensity, w specular_scale
+  vec4 dyn_light_meta;     // x active_count [0..6], y rotor_glow_front, z rotor_glow_rear, w unused
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
@@ -598,6 +601,44 @@ vec3 eval_cockpit_mfd(vec2 muv) {
   return col;
 }
 
+// Match world_frag.glsl ToD atmospheric distance fog + altitude fade + Mie sun in-scattering
+// so distant rivals and highway traffic blend smoothly into the Colorado horizon.
+vec3 apply_car_haze(vec3 colour, vec3 position, vec3 up, vec3 sun, float alpha_w, bool is_additive) {
+  vec3 to = position - frame.eye.xyz;
+  float d = length(to);
+  if (d < 12.0) return colour;
+  vec3 view_dir = to / max(d, 1e-3);
+  float fog_amt = 0.0;
+  vec3 fog_col = vec3(0.50, 0.56, 0.64);
+  if (frame.sun_color.w >= 0.0) {
+    float fog_start = frame.fog_color.w;
+    float fog_dens = max(frame.fog_params.x, 0.0);
+    // Primary ToD fog matching world_frag.glsl, plus gentle near-range aerial perspective for
+    // mid-distance rivals/traffic (>45m) so cars soften naturally before far fog_start.
+    float fog_primary = 1.0 - exp2(-max(d - fog_start, 0.0) * fog_dens);
+    float near_start = min(fog_start, 65.0);
+    float near_ramp = smoothstep(45.0, 140.0, d);
+    float fog_aerial = (1.0 - exp2(-max(d - near_start, 0.0) * fog_dens * 0.45)) * near_ramp * 0.42;
+    float fog_dist = clamp(max(fog_primary, fog_aerial), 0.0, 1.0);
+    float world_y = dot(to, up) + frame.car_light_bot.w;
+    float h_span = max(frame.fog_params.z - frame.fog_params.y, 1.0);
+    float h_u = clamp((world_y - frame.fog_params.y) / h_span, 0.0, 1.0);
+    float h_smooth = h_u * h_u * (3.0 - 2.0 * h_u);
+    float max_fog = mix(0.92, 1.0, smoothstep(3200.0, 7500.0, d));
+    fog_amt = clamp(fog_dist * (1.0 - h_smooth * frame.fog_params.w), 0.0, max_fog);
+    fog_amt = max(fog_amt, smoothstep(6500.0, 11500.0, d));
+    float sc_dist = clamp(d / 6000.0, 0.0, 1.0);
+    float sc_ang = pow(clamp(dot(view_dir, sun), 0.0, 1.0), max(frame.fog_scatter.w, 1.0));
+    fog_col = mix(frame.fog_color.rgb, frame.fog_scatter.rgb, sc_dist * sc_ang);
+  } else {
+    fog_amt = 0.78 * (1.0 - exp(-max(d - 60.0, 0.0) / 1400.0));
+    float sc_ang = pow(clamp(dot(view_dir, sun), 0.0, 1.0), 6.0);
+    fog_col = mix(vec3(0.46, 0.54, 0.66), vec3(0.95, 0.85, 0.68), sc_ang * 0.5);
+  }
+  if (is_additive) return colour * (1.0 - fog_amt);
+  return colour * (1.0 - fog_amt) + fog_amt * fog_col * alpha_w;
+}
+
 void main() {
   uint klass = uint(round(draw.params.x));
   // Round-to-nearest without +0.5 so odd flag masks >= 2^23 (kFlagHasBlurMesh | kFlagSlot1)
@@ -801,8 +842,10 @@ void main() {
 
     vec3 texel = (flags & kFlagStripe) != 0u ? t0.rgb * stripe_rgb : t0.rgb;
     base = mix(paint_col, texel, t0.a);
-    // Apply runtime Shared/ShaderSettings/{Normal,Metallic,Matte}.xml PaintScale when provided.
-    if (abs(xml_paint_scale - 1.0) > 0.01) {
+    // Apply runtime Shared/ShaderSettings/{Normal,Metallic,Matte}.xml PaintScale only on standard
+    // body finishes (not per-region custom finishes such as a matte carbon hood on a metallic body).
+    if (!use_reg && draw.params.w <= 0.5 && (finish == 0 || finish == 1 || finish == 2) &&
+        abs(xml_paint_scale - 1.0) > 0.01) {
       paint_scale = xml_paint_scale;
     }
     // Non-paint baked atlas details (badges, black trim) are not metallic flake.
@@ -1049,11 +1092,11 @@ void main() {
     // render as gleaming metallic alloy instead of black!
     vec3 rim_default = (submat == 1u) ? vec3(0.76, 0.78, 0.82)
                      : (submat == 2u) ? vec3(0.055, 0.06, 0.065)
-                     : (submat == 3u) ? vec3(0.36, 0.37, 0.39)
+                     : (submat == 3u || submat == 13u) ? vec3(0.36, 0.37, 0.39)
                      : (submat == 4u) ? vec3(0.46, 0.48, 0.52)
                                       : vec3(0.56, 0.58, 0.62);
     vec3 rim_xml_tint = (frame.rim_shader.w > 0.5 && (flags & kFlagInstanced) == 0u) ? frame.rim_tint_dirt.rgb : vec3(1.0);
-    vec3 rim_paint = (submat == 2u || submat == 3u) ? rim_default : (rim_default * draw_tint.rgb * rim_xml_tint);
+    vec3 rim_paint = (submat == 2u || submat == 3u || submat == 13u) ? rim_default : (rim_default * draw_tint.rgb * rim_xml_tint);
     float wblur = clamp(draw.params.w, 0.0, 1.0);
     if ((flags & kFlagBlurRim) != 0u) {
       // Retail blur_rim / blur_lip geometry textured with wheel0..3.xds on slot1:
@@ -1102,8 +1145,8 @@ void main() {
       metal = 0.12;
       gloss = 0.22;
       reflectivity = 0.03;
-    } else if (submat == 3u) {
-      // rotor / brake / drum (brushed iron disc).
+    } else if (submat == 3u || submat == 13u) {
+      // rotor / brake / drum (brushed iron disc: submat 3 = front, 13 = rear).
       metal = 0.65;
       gloss = 0.52;
       reflectivity = 0.24;
@@ -1268,6 +1311,8 @@ void main() {
                        (frame.key_light.w * ndl * mix(0.5, 1.0, occlusion) +
                         frame.fill_light.w * max(dot(n, fill), 0.0) * occlusion) * frame.tint_light.rgb;
   vec3 direct_col = frame.key_light.w * frame.tint_light.rgb;
+  vec3 dyn_spec_coat = vec3(0.0);
+  vec3 dyn_spec_std = vec3(0.0);
   float lit = 1.0;
   float occ_refl = occlusion;
 
@@ -1319,6 +1364,35 @@ void main() {
       }
       diffuse_light += hl_sum * hl_night * 0.85;
     }
+    // Dynamic point lights: nearby night streetlamps/tunnel lamps + active brake/reverse/backfire spill.
+    int dyn_count = clamp(int(frame.dyn_light_meta.x + 0.5), 0, 6);
+    if (dyn_count > 0) {
+      vec3 dyn_diff = vec3(0.0);
+      float std_pow = mix(12.0, 220.0, gloss);
+      for (int i = 0; i < dyn_count; ++i) {
+        vec3 lpos = frame.dyn_light_pos[i].xyz;
+        float radius = max(frame.dyn_light_pos[i].w, 0.5);
+        vec3 to_l = lpos - v_position;
+        float d2 = dot(to_l, to_l);
+        float r2 = radius * radius;
+        if (d2 >= r2 || d2 < 1e-4) continue;
+        float dist = sqrt(d2);
+        vec3 L = to_l / dist;
+        float ndl_l = max(dot(n, L), 0.0);
+        if (ndl_l <= 0.001) continue;
+        float ratio = d2 / r2;
+        float win = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+        float att = (win * win) / (1.0 + 0.28 * d2);
+        vec3 lcol = frame.dyn_light_col[i].rgb * att;
+        float spec_s = max(frame.dyn_light_col[i].w, 0.0);
+        dyn_diff += lcol * ndl_l;
+        vec3 H_l = normalize(L + view);
+        float nh_l = max(dot(n, H_l), 0.0);
+        dyn_spec_coat += lcol * (ggx_d(nh_l, 0.09) * 0.045) * ndl_l * spec_s;
+        dyn_spec_std += lcol * pow(nh_l, std_pow) * ((std_pow + 8.0) * 0.035) * ndl_l * gloss * spec_s;
+      }
+      diffuse_light += dyn_diff;
+    }
     direct_col = sun_col;
     // DynamicEnvLightmapDampner = 0.30 (0.50 for chrome per Normal.xml).
     float damp = (klass == kChrome) ? 0.50 : 0.35;
@@ -1331,7 +1405,7 @@ void main() {
   vec3 highlight = vec3(0.0);
   if (frame.drive.w > 0.5) {
     float power = mix(8.0, 400.0, gloss);
-    highlight = direct_col * pow(nh, power) * (power + 8.0) * 0.04 * ndl * lit * gloss;
+    highlight = direct_col * pow(nh, power) * (power + 8.0) * 0.04 * ndl * lit * gloss + dyn_spec_std;
   } else {
     highlight = pow(nh, mix(8.0, 400.0, gloss)) * direct_col * gloss;
   }
@@ -1373,7 +1447,7 @@ void main() {
     float xml_spec1 = (!is_inst && frame.paint_shader_a.w > 0.001)
                           ? pow(nh_c, clamp(frame.paint_shader_d.z, 8.0, 256.0)) * frame.paint_shader_a.w * 0.35
                           : 0.0;
-    vec3 coat_spec = direct_col * (coat_ggx + xml_spec1) * nl_c * lit * coat_mask;
+    vec3 coat_spec = (direct_col * (coat_ggx + xml_spec1) * nl_c * lit + dyn_spec_coat) * coat_mask;
 
     // Layer 2 (Basecoat + Multiscale Anti-Aliased Metallic Flakes, energy-conserved by (1 - F_coat)).
     float base_atten_direct = (1.0 - F_coat_v) * (1.0 - F_coat_l);
@@ -1398,7 +1472,7 @@ void main() {
       }
     }
     colour = basecoat + F_coat_v * coat_refl + coat_spec + emissive;
-  } else if (klass == kRim && submat == 3u) {
+  } else if (klass == kRim && (submat == 3u || submat == 13u)) {
     // Phase B Radial Anisotropic GGX Brake Rotors + Planckian Blackbody Thermal Glow under hard braking.
     vec3 rad_v = v_hub_radial - n * dot(v_hub_radial, n);
     float rlen = length(rad_v);
@@ -1407,12 +1481,21 @@ void main() {
     float d_aniso = aniso_ggx_d(n, h, T_axis, R_axis, 0.09, 0.45);
     vec3 rotor_f0 = mix(vec3(0.04), base * 1.15, metal);
     vec3 rotor_f = rotor_f0 + (vec3(1.0) - rotor_f0) * pow(1.0 - nv, 5.0);
-    vec3 aniso_spec = direct_col * rotor_f * (d_aniso * 0.18) * ndl * lit;
+    vec3 aniso_spec = direct_col * rotor_f * (d_aniso * 0.18) * ndl * lit + dyn_spec_std * 0.45;
     // Planckian thermal glow across the swept brake-pad friction ring (900 K -> 1450 K).
+    // Split front/rear channels (~70/30 front brake bias) so front rotors visibly glow hotter.
     // Guarded to player car so hard braking never makes instanced traffic/AI rotors glow.
     float disc_r = length(v_local_pos.yz);
     float pad_ring = smoothstep(0.065, 0.115, disc_r) * (1.0 - smoothstep(0.165, 0.24, disc_r));
-    float rotor_heat = (flags & kFlagInstanced) == 0u ? frame.phase_b_params.y : 0.0;
+    float rotor_heat = 0.0;
+    if ((flags & kFlagInstanced) == 0u) {
+      bool is_rear_rotor = (submat == 13u) || (v_position.z > 0.15);
+      float front_h = max(frame.dyn_light_meta.y, frame.phase_b_params.y);
+      float rear_h = (frame.dyn_light_meta.y > 1e-4 || frame.dyn_light_meta.z > 1e-4)
+                         ? frame.dyn_light_meta.z
+                         : (frame.phase_b_params.y * 0.4286);
+      rotor_heat = is_rear_rotor ? rear_h : front_h;
+    }
     vec3 thermal_glow = blackbody_rotor_rgb(rotor_heat) * pad_ring;
     colour = base * (1.0 - metal) * diffuse_light + rotor_f * reflection * 0.85 + aniso_spec + thermal_glow + emissive;
   } else {
@@ -1457,7 +1540,7 @@ void main() {
       float f_scl = (is_red || is_amber) ? 0.70 : 1.00;
       float F_cov = clamp(0.05 + f_scl * pow(1.0 - nv, f_idx), 0.05, 0.95);
       vec3 cov_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
-      vec3 cov_spec = direct_col * pow(nh, 128.0) * 2.5 * ndl * lit;
+      vec3 cov_spec = direct_col * pow(nh, 128.0) * 2.5 * ndl * lit + dyn_spec_coat * 0.65;
       // Subtle translucent plastic diffuse scattering on red/amber lamp lenses (P1-3)
       // so unlit daylight rear fog/tail lenses read deep ruby-red instead of dull grey-brown.
       vec3 lens_diff = is_red ? (vec3(0.065, 0.002, 0.002) * diffuse_light)
@@ -1472,11 +1555,16 @@ void main() {
       // Lit base tint avoids unlit khaki/tan rear-window glow under high midnight post-exposure.
       float F_glass = clamp(0.047 + 0.70 * pow(1.0 - nv, 4.35), 0.047, 0.92);
       vec3 glass_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl * (1.0 - glass_crack_vein * 0.55);
-      vec3 glass_spec = direct_col * pow(nh, 140.0) * 2.2 * ndl * lit * (1.0 - glass_crack_vein * 0.50);
+      vec3 glass_spec = (direct_col * pow(nh, 140.0) * 2.2 * ndl * lit + dyn_spec_coat) * (1.0 - glass_crack_vein * 0.50);
       vec3 crack_scatter = vec3(0.48, 0.56, 0.54) * (diffuse_light + direct_col * 0.25) * glass_crack_vein * 0.42;
       colour = base * diffuse_light * alpha + F_glass * glass_refl + glass_spec + crack_scatter + emissive;
       alpha = clamp(alpha + F_glass * 0.65, 0.0, 0.96);
     }
+  }
+  if (frame.drive.w > 0.5 && (flags & kFlagMirror) == 0u) {
+    bool is_add_pass = (klass == kGlass && (flags & kFlagCover) != 0u && submat == 8u);
+    float haze_alpha = (klass == kGlass && !is_add_pass) ? alpha : 1.0;
+    colour = apply_car_haze(colour, v_position, normalize(frame.drive.xyz), key, haze_alpha, is_add_pass);
   }
   colour *= frame.options.x;
   float out_a = alpha;

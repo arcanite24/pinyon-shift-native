@@ -450,14 +450,22 @@ ResolvedMaterialSlots resolve_effect_material(
 
   // Bind SpecularMap across both prop (H_DIFF_*_SPEC*) and non-prop world materials
   // (H_VBLND*_SPEC*, H_BLND*_SPEC*, H_ROAD*_SPEC*), never overwriting H_ROAD Modulate or AO.
+  const bool slot4_is_ao = (road && has_tok("DIFF3") && has_modulate);
   if (has_spec && mm.spec_map == kNoTexture && !mm.is_water) {
-    const bool slot4_is_ao = (road && has_tok("DIFF3") && has_modulate);
     uint32_t sp = slot4_is_ao ? kNoTexture : file_slot_records[4];
     if (sp == kNoTexture && starts("H_BLND1") && !has_norm && !has_tok("_REFL")) {
       const uint32_t cand = file_slot_records[1];
       if (cand != kNoTexture && cand != mm.ao_map && cand != mm.normal_map) sp = cand;
     }
     mm.spec_map = sp;
+  } else if (has_tok("_NORM2") && !has_spec && !slot4_is_ao && mm.spec_map == kNoTexture && !mm.is_water &&
+             mm.layer_b != kNoTexture) {
+    // Multi-layer _NORM2 road/terrain effects (H_ROAD_DIFF2/3_NORM2*, H_BLND2/3_NORM2*, H_VBLND_NORM2*)
+    // store Layer B's DXN/BC5 normal map in RMB slot 4; carry it in spec_map for Layer B normal blending.
+    const uint32_t nb = file_slot_records[4];
+    if (nb != kNoTexture && nb != mm.ao_map && nb != mm.normal_map) {
+      mm.spec_map = nb;
+    }
   }
 
   return out;

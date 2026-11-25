@@ -95,10 +95,17 @@ layout(push_constant) uniform Draw {
 #endif
 
 const uint kFlagSky = 2u, kFlagBillboard = 32u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u,
-           kFlagWater = 32768u, kFlagAnimFlag = 131072u, kFlagGrass = 262144u;
+           kFlagWater = 32768u, kFlagVertexLit = 65536u, kFlagAnimFlag = 131072u, kFlagGrass = 262144u;
 // Far-ring levels are pushed away from the eye by this much each (ours):
 // unchanged on screen, behind the near terrain where both are drawn.
 const float kFarPush = 0.03;
+
+// Dynamic world-space horizontal wind direction with gentle Colorado mountain breeze veering
+// (replaces hardcoded constant direction with multi-axis time-modulated wind azimuth).
+vec2 dynamic_wind_xz(float t_sec, float wind_spd) {
+  float ang = 0.6435 + 0.38 * sin(t_sec * 0.075 * max(wind_spd, 0.4)) + 0.16 * cos(t_sec * 0.19);
+  return vec2(cos(ang), sin(ang));
+}
 
 layout(location = 0) out vec3 v_position;
 layout(location = 1) out vec3 v_normal;
@@ -172,6 +179,18 @@ void main() {
     gl_Position.z = kReverseZ ? 0.0 : gl_Position.w * 0.9999999;
     return;
   }
+  // Night-only vertex-lit stage searchlight / laser cones (rgba.a in (0.02, 0.22)):
+  // collapse off-screen in daylight so festival laser beams only illuminate at dusk/night.
+  if ((flags & kFlagVertexLit) != 0u && in_colour.a > 0.01 && in_colour.a < 0.22 && frame.sky_color.w < 0.08) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    v_position = vec3(0.0);
+    v_normal = vec3(0.0);
+    v_uv0 = vec2(0.0);
+    v_uv1 = vec2(0.0);
+    v_uv2 = vec2(0.0);
+    v_colour = vec4(0.0);
+    return;
+  }
   vec4 world = draw.model * vec4(in_pos, 1.0);
   // The scenery's transform is orthogonal (the car's pose inverted, with
   // the z mirror; no scale), so it turns normals as it is: no per-vertex
@@ -184,10 +203,48 @@ void main() {
     // camera; height along U.
     vec3 u = normalize(normal_matrix * in_normal.xyz);
     vec3 to_eye = frame.eye.xyz - world.xyz;
+    float eye_dist = length(to_eye);
+    v_fade = vec2(1.0, 0.0);
+    if (frame.world_fade.y > 0.0) {
+      float near_start = 8.0;
+      float near_end = near_start + min(max(frame.world_fade.y, 12.0), 18.0);
+      float s = smoothstep(near_start, near_end, eye_dist);
+      float far_end = max(frame.world_fade.w * 4.5, 1750.0);
+      float far_start = far_end - max(frame.world_fade.y * 8.0, 180.0);
+      float e = smoothstep(far_start, far_end, eye_dist);
+      v_fade = vec2(s, e);
+      if (s <= 0.001 || e >= 0.999) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        v_position = vec3(0.0);
+        v_normal = vec3(0.0);
+        v_uv0 = vec2(0.0);
+        v_uv1 = vec2(0.0);
+        v_uv2 = vec2(0.0);
+        v_colour = vec4(0.0);
+        return;
+      }
+    }
     vec3 r = cross(u, to_eye);
     float len = length(r);
     r = len > 1e-4 ? r / len : vec3(1.0, 0.0, 0.0);
-    world.xyz += r * in_uv1.x + u * in_uv1.y;
+    vec3 bb_sway = vec3(0.0);
+    float t_bb = frame.env_basis_x.w;
+    float wspd_bb = max(frame.env_basis_y.w, 0.4);
+    float wamp_bb = clamp(frame.env_basis_z.w, 0.0, 0.85);
+    if (in_uv1.y > 0.01 && wamp_bb > 0.001) {
+      vec2 w_xz = dynamic_wind_xz(t_bb, wspd_bb);
+      vec3 wind_world = frame.env_basis_x.xyz * w_xz.x + frame.env_basis_z.xyz * w_xz.y;
+      wind_world -= u * dot(wind_world, u);
+      float wlen = length(wind_world);
+      vec3 wind_dir = wlen > 1e-4 ? (wind_world / wlen) : r;
+      vec3 wind_side = cross(u, wind_dir);
+      float phase = dot(in_pos.xz, w_xz * 0.20) - t_bb * wspd_bb * 1.15;
+      float gust = sin(phase) + 0.35 * sin(phase * 2.3 + 1.1);
+      float cross_gust = sin(phase * 1.47 + 2.4) * 0.22;
+      float amp = wamp_bb * min(in_uv1.y * 0.045, 0.40);
+      bb_sway = (wind_dir * gust + wind_side * cross_gust) * amp;
+    }
+    world.xyz += r * in_uv1.x + u * in_uv1.y + bb_sway;
     v_position = world.xyz;
     v_normal = normalize(u * 0.65 + normalize(to_eye + vec3(0.0, 0.001, 0.0)) * 0.35);
     v_uv0 = in_uv0;
@@ -199,29 +256,60 @@ void main() {
   }
   v_position = world.xyz;
   v_normal = dot(in_normal.xyz, in_normal.xyz) > 0.01 ? normal_matrix * in_normal.xyz : vec3(0.0);
+  uint blend_v = uint(draw.params.x + 0.5);
   if ((flags & kFlagAnimFlag) != 0u) {
     // Waving flag cloth displacement (ANIM_FLAG*): pin pole side (uv0.x ~ 0 / low vertex-alpha weight),
     // ripple free edge smoothly along a horizontal wind-perpendicular axis so curved feather flags never shred.
     float t = frame.env_basis_x.w;
     float wspd = clamp(max(frame.env_basis_y.w, 0.8), 0.8, 2.2);
     float wamp = clamp(frame.env_basis_z.w, 0.05, 0.45);
+    vec2 w_xz = dynamic_wind_xz(t, wspd);
     float pin = clamp(in_uv0.x, 0.0, 1.0) * smoothstep(0.0, 0.25, max(in_colour.a, in_uv0.x));
-    float phase = dot(in_pos.xyz, vec3(1.15, 0.65, 0.95));
+    float phase = dot(in_pos.xyz, vec3(w_xz.x * 1.35, 0.65, w_xz.y * 1.35));
     float wave = sin(t * (2.6 + wspd * 1.4) - phase) + 0.25 * sin(t * 5.4 - phase * 1.6);
     vec3 horiz_n = vec3(v_normal.x, 0.0, v_normal.z);
-    vec3 fallback_dir = normalize(frame.env_basis_x.xyz * 0.78 + frame.env_basis_z.xyz * 0.62);
+    vec3 fallback_dir = normalize(frame.env_basis_x.xyz * w_xz.x + frame.env_basis_z.xyz * w_xz.y);
     vec3 wave_dir = length(horiz_n) > 0.15 ? normalize(horiz_n) : fallback_dir;
     world.xyz += wave_dir * (wave * pin * (0.04 + wamp * 0.12));
     v_position = world.xyz;
   } else if ((flags & kFlagGrass) != 0u) {
-    // Wind-swaying grass quads (_0x00005007): top of blade sways along wind direction.
+    // Wind-swaying grass quads (_0x00005007): top of blade sways along dynamic multi-axis wind.
     float t = frame.env_basis_x.w;
     float wspd = max(frame.env_basis_y.w, 0.8);
     float wamp = clamp(frame.env_basis_z.w, 0.05, 0.50);
+    vec2 w_xz = dynamic_wind_xz(t, wspd);
+    vec2 w_perp = vec2(-w_xz.y, w_xz.x);
     float tip = clamp(1.0 - in_uv0.y, 0.0, 1.0);
-    float sway = sin(t * (1.8 + wspd) + dot(in_pos.xz, vec2(0.35, 0.27))) * (0.06 + wamp * 0.25) * tip;
-    world.xyz += (frame.env_basis_x.xyz * 0.8 + frame.env_basis_z.xyz * 0.6) * sway;
+    float phase = dot(in_pos.xz, w_xz * 0.42 + w_perp * 0.11) - t * (1.8 + wspd);
+    float gust = sin(phase) + 0.30 * sin(phase * 2.1 + 1.3);
+    float cross_sway = sin(phase * 1.55 + 2.1) * 0.25;
+    float amp = (0.06 + wamp * 0.25) * tip;
+    vec3 wind_main = frame.env_basis_x.xyz * w_xz.x + frame.env_basis_z.xyz * w_xz.y;
+    vec3 wind_cross = frame.env_basis_x.xyz * w_perp.x + frame.env_basis_z.xyz * w_perp.y;
+    world.xyz += (wind_main * gust + wind_cross * cross_sway) * amp;
     v_position = world.xyz;
+  } else if (blend_v == 1u && (flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u &&
+             (flags & kFlagWater) == 0u) {
+    // Subtle height-weighted 3D tree canopy sway on alpha-cutout foliage props (kFlagLodNear / kFlagLodFar).
+    // in_centre holds (prop_origin - in_pos) in decimetres, so rel_y is exact height above prop base in metres.
+    float rel_y = -float(in_centre.y) * 0.1;
+    float wamp = clamp(frame.env_basis_z.w, 0.0, 0.65);
+    if (rel_y > 1.2 && wamp > 0.001) {
+      float t = frame.env_basis_x.w;
+      float wspd = max(frame.env_basis_y.w, 0.5);
+      vec2 w_xz = dynamic_wind_xz(t, wspd);
+      vec2 w_perp = vec2(-w_xz.y, w_xz.x);
+      float height_w = smoothstep(1.2, 8.5, rel_y);
+      vec3 prop_base = in_pos + vec3(in_centre.xyz) * 0.1;
+      float trunk_phase = dot(prop_base.xz, w_xz * 0.18) - t * wspd * 1.1;
+      float leaf_phase = dot(in_pos.xyz, vec3(1.9, 1.3, 1.7)) - t * (2.8 + wspd * 1.6);
+      float main_sway = (sin(trunk_phase) + 0.30 * sin(trunk_phase * 2.17 + 0.9)) * min(rel_y * 0.024, 0.22);
+      float leaf_flutter = sin(leaf_phase) * 0.032;
+      vec3 wind_main = frame.env_basis_x.xyz * w_xz.x + frame.env_basis_z.xyz * w_xz.y;
+      vec3 wind_cross = frame.env_basis_x.xyz * w_perp.x + frame.env_basis_z.xyz * w_perp.y;
+      world.xyz += (wind_main * main_sway + wind_cross * leaf_flutter) * (height_w * min(wamp, 0.55));
+      v_position = world.xyz;
+    }
   }
   v_uv0 = in_uv0;
   // Pass stable game-world meter coordinates (in_pos.xz) to world_frag for water wave synthesis.

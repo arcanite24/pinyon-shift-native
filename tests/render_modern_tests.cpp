@@ -11,6 +11,8 @@
 #include "render_modern.h"
 #define CARVIEW_MOTION_MATH_ONLY
 #include "renderer.h"
+#define CARVIEW_ARENA_LRU_ONLY
+#include "showroom.h"
 #include "upscaler.h"
 
 using namespace carview::modern;
@@ -805,6 +807,60 @@ void test_dynamic_motion_vectors_and_mcguire() {
   CHECK(mcguire_sample_weight(15.0f, 0.02f, 10.0f, 0.06f, 0.02f) > 0.5f);
 }
 
+void test_mirror_schedule_and_post_scaling() {
+  // R3-REN-09: Cockpit mirror band schedule renders all 3 bands on initial invalid frame,
+  // then updates center rearview mirror (band 1) EVERY frame while alternating L (0) and R (2).
+  {
+    const auto init = carview::schedule_cockpit_mirror_bands(0, true, false, false);
+    CHECK(init.count == 3u && init.bands[0] == 0u && init.bands[1] == 1u && init.bands[2] == 2u);
+    const auto even_f = carview::schedule_cockpit_mirror_bands(2, true, false, true);
+    CHECK(even_f.count == 2u && even_f.bands[0] == 1u && even_f.bands[1] == 0u);
+    const auto odd_f = carview::schedule_cockpit_mirror_bands(3, true, false, true);
+    CHECK(odd_f.count == 2u && odd_f.bands[0] == 1u && odd_f.bands[1] == 2u);
+    // Bumper/Hood virtual mirror updates ONLY the center band every frame.
+    const auto vm0 = carview::schedule_cockpit_mirror_bands(0, false, true, false);
+    const auto vm1 = carview::schedule_cockpit_mirror_bands(1, false, true, true);
+    CHECK(vm0.count == 1u && vm0.bands[0] == 1u);
+    CHECK(vm1.count == 1u && vm1.bands[0] == 1u);
+    // Chase camera with neither cockpit nor virtual mirror active updates 0 bands.
+    const auto off = carview::schedule_cockpit_mirror_bands(4, false, false, true);
+    CHECK(off.count == 0u);
+  }
+
+  // R3-REN-09: Bumper & Hood camera detection for automatic virtual rearview mirror activation.
+  {
+    const std::array<float, 3> bmin{-0.95f, 0.0f, -2.20f};
+    const std::array<float, 3> bmax{0.95f, 1.35f, 2.25f};
+    float vp_fwd[16]{};
+    vp_fwd[11] = -1.0f;  // looking forward (-Z in car model space)
+    float vp_back[16]{};
+    vp_back[11] = 1.0f;  // LookBack camera (+Z)
+    const float bumper_eye[3] = {0.0f, 0.55f, -2.10f};
+    const float hood_eye[3] = {0.0f, 1.15f, -0.35f};
+    const float chase_eye[3] = {0.0f, 1.45f, 4.90f};
+    CHECK(carview::is_bumper_or_hood_camera(true, false, false, true, bmin, bmax, bumper_eye, vp_fwd));
+    CHECK(carview::is_bumper_or_hood_camera(true, false, true, true, bmin, bmax, hood_eye, vp_fwd));
+    CHECK(!carview::is_bumper_or_hood_camera(true, false, true, true, bmin, bmax, chase_eye, vp_fwd));
+    CHECK(!carview::is_bumper_or_hood_camera(true, true, true, true, bmin, bmax, hood_eye, vp_fwd));
+    CHECK(!carview::is_bumper_or_hood_camera(true, false, false, true, bmin, bmax, bumper_eye, vp_back));
+    CHECK(!carview::is_bumper_or_hood_camera(false, false, false, true, bmin, bmax, bumper_eye, vp_fwd));
+  }
+
+  // R3-REN-17: Post-FX resolution scaling (720p reference) & ultrawide aspect-ratio computation.
+  {
+    const auto p720 = carview::compute_post_scale(1280, 720);
+    const auto p1080 = carview::compute_post_scale(1920, 1080);
+    const auto p4k = carview::compute_post_scale(3840, 2160);
+    const auto p21_9 = carview::compute_post_scale(3440, 1440);
+    const auto p32_9 = carview::compute_post_scale(5120, 1440);
+    CHECK(near(p720.res_scale, 1.0f) && near(p720.star_scale, 1.0f) && near(p720.aspect, 16.0f / 9.0f, 1e-3f));
+    CHECK(near(p1080.res_scale, 1.5f) && near(p1080.star_scale, 1.5f));
+    CHECK(near(p4k.res_scale, 3.0f) && near(p4k.star_scale, 3.0f));
+    CHECK(near(p21_9.res_scale, 2.0f) && near(p21_9.aspect, 3440.0f / 1440.0f, 1e-3f));
+    CHECK(near(p32_9.res_scale, 2.0f) && near(p32_9.aspect, 5120.0f / 1440.0f, 1e-3f));
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -822,6 +878,7 @@ int main() {
   test_split_bindless_and_pipeline_cache();
   test_lazy_targets_and_reflection_schedule();
   test_dynamic_motion_vectors_and_mcguire();
+  test_mirror_schedule_and_post_scaling();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

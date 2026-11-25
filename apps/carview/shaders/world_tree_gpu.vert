@@ -120,17 +120,19 @@ void main() {
   const float wamp = push.pad.z > 0.0 ? push.pad.z : frame.env_basis_z.w;
   vec3 sway_offset = vec3(0.0);
   if (oy > 0.01 && wamp > 0.001) {
-    // Consistent world-space wind direction in game XZ (matching grass sway in world_vert.glsl).
-    vec3 wind_world = frame.env_basis_x.xyz * 0.8 + frame.env_basis_z.xyz * 0.6;
+    // Dynamic multi-axis Colorado wind direction (matches world_vert.glsl grass & 3D canopy sway).
+    const float w_ang = 0.6435 + 0.38 * sin(t_sec * 0.075 * max(wspd, 0.4)) + 0.16 * cos(t_sec * 0.19);
+    const vec2 w_xz = vec2(cos(w_ang), sin(w_ang));
+    vec3 wind_world = frame.env_basis_x.xyz * w_xz.x + frame.env_basis_z.xyz * w_xz.y;
     if (dot(wind_world, wind_world) < 1e-4) {
-      wind_world = mat3(push.model) * vec3(0.8, 0.0, 0.6);
+      wind_world = mat3(push.model) * vec3(w_xz.x, 0.0, w_xz.y);
     }
     wind_world -= u_axis * dot(wind_world, u_axis);
     const float wlen = length(wind_world);
     const vec3 wind_dir = wlen > 1e-4 ? (wind_world / wlen) : vec3(1.0, 0.0, 0.0);
     const vec3 wind_side = cross(u_axis, wind_dir);
-    // Traveling gust wave aligned with world-space wind XZ.
-    const float phase = dot(t.base_hw.xz, vec2(0.16, 0.12)) - t_sec * max(wspd, 0.4) * 1.15;
+    // Traveling multi-axis gust wave aligned with dynamic world-space wind XZ.
+    const float phase = dot(t.base_hw.xz, w_xz * 0.20) - t_sec * max(wspd, 0.4) * 1.15;
     const float gust = sin(phase) + 0.35 * sin(phase * 2.3 + 1.1);
     const float cross_gust = sin(phase * 1.47 + 2.4) * 0.22;
     const float amp = min(wamp, 0.85) * min(oy * 0.045, 0.42);

@@ -8,11 +8,15 @@
 #include "post_vert_spv.h"
 #include "showroom_frag_spv.h"
 #include "showroom_vert_spv.h"
+#include "world_frag_spv.h"
+#include "world_vert_spv.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 
@@ -26,12 +30,38 @@ struct MirrorExtraPipes {
   VkPipeline car_glass = VK_NULL_HANDLE;
   VkPipeline particle_alpha = VK_NULL_HANDLE;
   VkPipeline particle_add = VK_NULL_HANDLE;
+  VkPipeline world_water = VK_NULL_HANDLE;
 };
 std::mutex g_mirror_extra_mutex;
 std::unordered_map<const Showroom*, MirrorExtraPipes> g_mirror_extra_pipes;
 
+// Cached distance-capped coarse billboard quads built from GPU-instanced `world_trees_`
+// so car paint cubemaps and cockpit/virtual rearview mirrors reflect Colorado's forests.
+constexpr uint32_t kMaxEnvTrees = 512;
+constexpr uint32_t kMaxEnvTreeVerts = kMaxEnvTrees * 6u;
+
+struct EnvTreeBatch {
+  uint32_t texture = kNoWorldTexture;
+  uint32_t first_vertex = 0;
+  uint32_t vertex_count = 0;
+};
+
+struct EnvTreeCache {
+  Renderer::Buffer vb;
+  void* mapped = nullptr;
+  uint64_t world_gen = 0;
+  float eye_sc[3] = {0, 0, 0};
+  uint64_t ver = 0;
+  uint64_t slot_ver[Renderer::kFramesInFlight] = {};
+  std::vector<WorldVertex> cpu;
+  std::vector<EnvTreeBatch> batches;
+};
+std::mutex g_env_tree_mutex;
+std::unordered_map<const Showroom*, std::unique_ptr<EnvTreeCache>> g_env_tree_caches;
+
 MirrorExtraPipes create_mirror_extra_pipes(VkDevice device, VkPipelineCache cache, VkPipelineLayout car_layout,
-                                           VkPipelineLayout particle_layout, VkFormat depth_format, bool reverse_z) {
+                                           VkPipelineLayout particle_layout, VkPipelineLayout world_layout,
+                                           VkFormat depth_format, bool reverse_z) {
   MirrorExtraPipes out{};
   auto make_mod = [&](const uint32_t* code, size_t bytes, VkShaderModule& m) {
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -175,6 +205,72 @@ MirrorExtraPipes create_mirror_extra_pipes(VkDevice device, VkPipelineCache cach
     }
     if (pv) vkDestroyShaderModule(device, pv, nullptr);
     if (pf) vkDestroyShaderModule(device, pf, nullptr);
+  }
+
+  // 3. 1-sample HDR world water pipeline for alpine lakes & rivers in cubemaps and mirrors.
+  if (world_layout) {
+    VkShaderModule wv = VK_NULL_HANDLE, wf = VK_NULL_HANDLE;
+    if (make_mod(kWorld_vert_spv, sizeof(kWorld_vert_spv), wv) == VK_SUCCESS &&
+        make_mod(kWorld_frag_spv, sizeof(kWorld_frag_spv), wf) == VK_SUCCESS) {
+      const VkPipelineShaderStageCreateInfo st[2] = {
+          {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, wv, "main",
+           &spec2},
+          {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, wf, "main",
+           &spec2}};
+      VkVertexInputBindingDescription wbind{0, sizeof(WorldVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+      const VkVertexInputAttributeDescription wattrs[7] = {
+          {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(WorldVertex, position)},
+          {1, 0, VK_FORMAT_R8G8B8A8_SNORM, offsetof(WorldVertex, normal)},
+          {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(WorldVertex, uv0)},
+          {3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(WorldVertex, uv1)},
+          {4, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(WorldVertex, colour)},
+          {5, 0, VK_FORMAT_R16G16B16A16_SINT, offsetof(WorldVertex, centre)},
+          {6, 0, VK_FORMAT_R16G16_SFLOAT, offsetof(WorldVertex, uv2)}};
+      VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+      vi.vertexBindingDescriptionCount = 1;
+      vi.pVertexBindingDescriptions = &wbind;
+      vi.vertexAttributeDescriptionCount = 7;
+      vi.pVertexAttributeDescriptions = wattrs;
+      VkPipelineRasterizationStateCreateInfo wrs = rs;
+      wrs.frontFace = VK_FRONT_FACE_CLOCKWISE;
+      wrs.depthBiasEnable = VK_TRUE;
+      VkPipelineDepthStencilStateCreateInfo wds = ds;
+      wds.depthWriteEnable = VK_TRUE;
+      const VkDynamicState wdyn_states[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                             VK_DYNAMIC_STATE_DEPTH_BIAS};
+      VkPipelineDynamicStateCreateInfo wdyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+      wdyn.dynamicStateCount = 3;
+      wdyn.pDynamicStates = wdyn_states;
+      VkPipelineColorBlendAttachmentState ba{};
+      ba.blendEnable = VK_TRUE;
+      ba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+      ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+      ba.colorBlendOp = VK_BLEND_OP_ADD;
+      ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+      ba.alphaBlendOp = VK_BLEND_OP_ADD;
+      ba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                          VK_COLOR_COMPONENT_A_BIT;
+      VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+      cb.attachmentCount = 1;
+      cb.pAttachments = &ba;
+      VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+      gp.pNext = &rend;
+      gp.stageCount = 2;
+      gp.pStages = st;
+      gp.pVertexInputState = &vi;
+      gp.pInputAssemblyState = &ia;
+      gp.pViewportState = &vp;
+      gp.pRasterizationState = &wrs;
+      gp.pMultisampleState = &ms;
+      gp.pDepthStencilState = &wds;
+      gp.pColorBlendState = &cb;
+      gp.pDynamicState = &wdyn;
+      gp.layout = world_layout;
+      vkCreateGraphicsPipelines(device, cache, 1, &gp, nullptr, &out.world_water);
+    }
+    if (wv) vkDestroyShaderModule(device, wv, nullptr);
+    if (wf) vkDestroyShaderModule(device, wf, nullptr);
   }
   return out;
 }
@@ -328,10 +424,49 @@ void Showroom::bind_dynamic_env(VkImageView cube_view, VkSampler sampler) {
     writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[11].pImageInfo = &map_raw;
     vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
     frame_set_ = fresh;
+    if (frame_set_dip_) frame_set_dip_ = fresh;
+    sync_fullbeam_frame_set(fresh, cube_view, sampler);
     bound_dyn_env_view_ = cube_view;
     return;
   }
   bound_dyn_env_view_ = cube_view;
+}
+
+void Showroom::bind_post_virtual_mirror(Renderer& r, VkImageView view) {
+  if (!r.device_ || !r.post_sampler_ || !r.post_sets_[0]) return;
+  const VkImageView target_view = view ? view : r.lum_adapt_[1].view;
+  if (!target_view) return;
+  VkDescriptorImageInfo imgs[Renderer::kPostSetCount];
+  VkWriteDescriptorSet writes[Renderer::kPostSetCount];
+  for (uint32_t s = 0; s < Renderer::kPostSetCount; ++s) {
+    imgs[s] = {r.post_sampler_, target_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    writes[s] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[s].dstSet = r.post_sets_[s];
+    writes[s].dstBinding = 12;
+    writes[s].descriptorCount = 1;
+    writes[s].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[s].pImageInfo = &imgs[s];
+  }
+  vkUpdateDescriptorSets(r.device_, Renderer::kPostSetCount, writes, 0, nullptr);
+}
+
+void Showroom::set_virtual_mirror_enabled(bool enabled) {
+  virtual_mirror_enabled_ = enabled;
+  update_mirror_mode();
+}
+
+void Showroom::update_mirror_mode() {
+  if (guest_) return;
+  const bool env_disabled = std::getenv("SHIFT_NO_VIRTUAL_MIRROR") != nullptr;
+  virtual_mirror_active_ =
+      virtual_mirror_enabled_ && !env_disabled &&
+      is_bumper_or_hood_camera(world_lit_, cockpit_camera_active_, draw_car_, have_bounds_, bounds_min_, bounds_max_,
+                               frame_.eye, frame_.view_projection);
+  mirror_enabled_ = cockpit_camera_active_ || virtual_mirror_active_;
+  if (mirror_enabled_ && dyn_env_ready_ && !mirror_tex_.view) {
+    ensure_mirror_targets();
+  }
+  detail::set_virtual_mirror_active(&r_, virtual_mirror_active_ && mirror_valid_ && mirror_tex_.view != VK_NULL_HANDLE);
 }
 
 
@@ -606,13 +741,30 @@ bool Showroom::ensure_mirror_targets() {
   if (frame_set_ && sampler_) {
     r_.wait_idle();
     VkDescriptorImageInfo info{sampler_, mirror_tex_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w.dstSet = frame_set_;
-    w.dstBinding = 5;
-    w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w.pImageInfo = &info;
-    vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
+    VkDescriptorSet targets[3] = {frame_set_, frame_set_dip_, frame_set_fullbeam_};
+    for (int ti = 0; ti < 3; ++ti) {
+      VkDescriptorSet target = targets[ti];
+      if (!target) continue;
+      bool dup = false;
+      for (int prev = 0; prev < ti; ++prev) {
+        if (targets[prev] == target) dup = true;
+      }
+      if (dup) continue;
+      VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      w.dstSet = target;
+      w.dstBinding = 5;
+      w.descriptorCount = 1;
+      w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      w.pImageInfo = &info;
+      vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
+    }
+    detail::register_virtual_mirror(&r_, mirror_tex_.view);
+    bind_post_virtual_mirror(r_, mirror_tex_.view);
+    Renderer* rptr = &r_;
+    retired_.push_back({std::numeric_limits<uint64_t>::max(), [rptr]() {
+                          detail::unregister_virtual_mirror(rptr);
+                          bind_post_virtual_mirror(*rptr, VK_NULL_HANDLE);
+                        }});
   }
   mirror_valid_ = false;
   return true;
@@ -702,9 +854,45 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
   vkCmdSetViewport(cmd, 0, 1, &vp);
   vkCmdSetScissor(cmd, 0, 1, &sc);
 
+  // Ensure lazily compiled offscreen extra pipelines (world water, trailing car glass, mirror particles) are ready.
+  MirrorExtraPipes extra_pipes{};
+  if (env_frame_set_) {
+    std::lock_guard<std::mutex> lock(g_mirror_extra_mutex);
+    auto it = g_mirror_extra_pipes.find(this);
+    if (it != g_mirror_extra_pipes.end()) {
+      extra_pipes = it->second;
+    } else {
+      extra_pipes = create_mirror_extra_pipes(r_.device_, r_.pipeline_cache(), pipeline_layout_,
+                                              particle_pipe_layout_, world_pipeline_layout_, r_.depth_format_,
+                                              r_.reverse_z());
+      g_mirror_extra_pipes.emplace(this, extra_pipes);
+      VkDevice dev = r_.device_;
+      const Showroom* key = this;
+      retired_.push_back({std::numeric_limits<uint64_t>::max(), [dev, key]() {
+                            MirrorExtraPipes doomed{};
+                            {
+                              std::lock_guard<std::mutex> lk(g_mirror_extra_mutex);
+                              auto jt = g_mirror_extra_pipes.find(key);
+                              if (jt != g_mirror_extra_pipes.end()) {
+                                doomed = jt->second;
+                                g_mirror_extra_pipes.erase(jt);
+                              }
+                            }
+                            if (doomed.car_glass) vkDestroyPipeline(dev, doomed.car_glass, nullptr);
+                            if (doomed.particle_alpha) vkDestroyPipeline(dev, doomed.particle_alpha, nullptr);
+                            if (doomed.particle_add) vkDestroyPipeline(dev, doomed.particle_add, nullptr);
+                            if (doomed.world_water) vkDestroyPipeline(dev, doomed.world_water, nullptr);
+                          }});
+    }
+  }
+
   // 1. Opaque AND alpha-tested (blend 0 + blend 1) world terrain, roads, mountains, trees,
   //    buildings, signs, banners, and barriers (drawn BEFORE sky for Early-Z rejection).
-  if (world_textured_ && !world_draws_.empty() && env_world_opaque_ && env_frame_set_) {
+  //    Also collect visible water surfaces (kFlagWater = 32768) to blend over lake beds after sky.
+  std::vector<const WorldGeometry::Draw*> water_draws;
+  const float ground_refl_scale =
+      (is_cubemap && tod_active_) ? std::clamp(tod_state_.cube_refl_ground_scale, 0.25f, 2.0f) : 1.0f;
+  if (world_textured_ && (!world_draws_.empty() || !world_trees_.empty()) && env_world_opaque_ && env_frame_set_) {
     float clip[16];
     multiply(view_frame.view_projection, world_transform_, clip);
     float planes[4][4];
@@ -735,21 +923,24 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
                                       : (include_cars ? (low_memory_mode_ ? 200.0f : 320.0f) : 160.0f);
     const float max_dist2 = max_dist * max_dist;
     const float cutout_dist2 =
-        (!is_cubemap && include_cars) ? (low_memory_mode_ ? 110.0f * 110.0f : 165.0f * 165.0f) : (75.0f * 75.0f);
+        (!is_cubemap && include_cars) ? (low_memory_mode_ ? 110.0f * 110.0f : 165.0f * 165.0f)
+                                      : (low_memory_mode_ ? 85.0f * 85.0f : 120.0f * 120.0f);
     const float layer_dist2 = (!is_cubemap && include_cars) ? 120.0f * 120.0f : 80.0f * 80.0f;
-    const float ground_refl_scale =
-        (is_cubemap && tod_active_) ? std::clamp(tod_state_.cube_refl_ground_scale, 0.25f, 2.0f) : 1.0f;
     constexpr uint32_t kExtraTexFlags =
         4u | 8u | 2048u | 4096u | 8192u | 16384u | 524288u | 2097152u | 4194304u | 8388608u;
-    world_bind_buffers(cmd, false);
+    if (!world_draws_.empty()) world_bind_buffers(cmd, false);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &env_frame_set_, 0,
                             nullptr);
     vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
     VkPipeline bound_pipe = VK_NULL_HANDLE;
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
     for (const auto& d : world_draws_) {
-      // Include opaque (blend 0) AND H_DIFF*/TREE_* alpha-tested props/trees/banners (blend 1).
-      if (!d.cull || d.blend > 1) continue;
+      if (!d.cull) continue;
+      const uint32_t fl = uint32_t(std::lround(d.push.params[1]));
+      if ((fl & 2u) != 0u) continue;  // skip legacy sky dome
+      const bool is_water = (fl & 32768u) != 0u;
+      // Include opaque (blend 0), alpha-tested props/trees/banners (blend 1), and water planes.
+      if (!is_water && d.blend > 1) continue;
       // Fast squared AABB distance cull before frustum planes (cuts ~3,400 draws down to ~150-250).
       float d2 = 0.0f;
       for (int k = 0; k < 3; ++k) {
@@ -757,10 +948,12 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
         d2 += q * q;
       }
       if (d2 > max_dist2) continue;
-      if (d.blend == 1 && d2 > cutout_dist2) continue;
+      if (!is_water && d.blend == 1 && d2 > cutout_dist2) continue;
       if (outside(d)) continue;
-      const uint32_t fl = uint32_t(std::lround(d.push.params[1]));
-      if ((fl & (2u | 32768u)) != 0u) continue;
+      if (is_water) {
+        water_draws.push_back(&d);
+        continue;
+      }
       VkPipeline want_pipe = (d.blend == 1 && env_world_coverage_) ? env_world_coverage_ : env_world_opaque_;
       if (want_pipe != bound_pipe)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_pipe = want_pipe);
@@ -803,42 +996,173 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
       if (draw_counter) ++(*draw_counter);
     }
+
+    // 1b. Distance-capped coarse GPU/world trees (`world_trees_`) billboarded per-view in world.vert
+    //     so car paint cubemaps and rearview mirrors reflect Colorado's pine & aspen forests.
+    if (!world_trees_.empty() && env_world_coverage_) {
+      EnvTreeCache* tc = nullptr;
+      VkDeviceSize tree_vb_off = 0;
+      {
+        std::lock_guard<std::mutex> lock(g_env_tree_mutex);
+        auto& ptr = g_env_tree_caches[this];
+        if (!ptr) {
+          auto c = std::make_unique<EnvTreeCache>();
+          const VkDeviceSize region = VkDeviceSize(kMaxEnvTreeVerts) * sizeof(WorldVertex);
+          if (r_.create_buffer(region * Renderer::kFramesInFlight, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, c->vb)) {
+            if (vmaMapMemory(r_.allocator_, c->vb.allocation, &c->mapped) != VK_SUCCESS) {
+              c->mapped = nullptr;
+              r_.destroy_buffer(c->vb);
+            }
+          }
+          if (c->mapped) {
+            ptr = std::move(c);
+            Renderer* rptr = &r_;
+            const Showroom* key = this;
+            retired_.push_back({std::numeric_limits<uint64_t>::max(), [rptr, key]() {
+                                  std::unique_ptr<EnvTreeCache> doomed;
+                                  {
+                                    std::lock_guard<std::mutex> lk(g_env_tree_mutex);
+                                    auto jt = g_env_tree_caches.find(key);
+                                    if (jt != g_env_tree_caches.end()) {
+                                      doomed = std::move(jt->second);
+                                      g_env_tree_caches.erase(jt);
+                                    }
+                                  }
+                                  if (doomed && doomed->vb.allocation) {
+                                    if (doomed->mapped) vmaUnmapMemory(rptr->allocator_, doomed->vb.allocation);
+                                    rptr->destroy_buffer(doomed->vb);
+                                  }
+                                }});
+          }
+        }
+        if (ptr && ptr->mapped) {
+          tc = ptr.get();
+          const float moved2 = (eye_sc[0] - tc->eye_sc[0]) * (eye_sc[0] - tc->eye_sc[0]) +
+                               (eye_sc[1] - tc->eye_sc[1]) * (eye_sc[1] - tc->eye_sc[1]) +
+                               (eye_sc[2] - tc->eye_sc[2]) * (eye_sc[2] - tc->eye_sc[2]);
+          if (tc->world_gen != world_generation_ || moved2 > 144.0f || tc->ver == 0) {
+            tc->world_gen = world_generation_;
+            for (int k = 0; k < 3; ++k) tc->eye_sc[k] = eye_sc[size_t(k)];
+            const float max_tree_r = low_memory_mode_ ? 125.0f : 190.0f;
+            const float max_tree_r2 = max_tree_r * max_tree_r;
+            const size_t cap_trees = low_memory_mode_ ? 256u : kMaxEnvTrees;
+            struct TreeCand {
+              float d2;
+              uint32_t tex;
+              size_t idx;
+            };
+            std::vector<TreeCand> cands;
+            cands.reserve(512);
+            for (size_t i = 0; i < world_trees_.size(); ++i) {
+              const auto& t = world_trees_[i];
+              if (t.texture == kNoWorldTexture || t.half_width <= 0.05f || t.height <= 0.05f) continue;
+              const float dx = t.base[0] - eye_sc[0];
+              const float dy = t.base[1] - eye_sc[1];
+              const float dz = t.base[2] - eye_sc[2];
+              const float d2 = dx * dx + dy * dy + dz * dz;
+              if (d2 > max_tree_r2) continue;
+              cands.push_back({d2, t.texture, i});
+            }
+            if (cands.size() > cap_trees) {
+              std::nth_element(cands.begin(), cands.begin() + ptrdiff_t(cap_trees), cands.end(),
+                               [](const TreeCand& a, const TreeCand& b) { return a.d2 < b.d2; });
+              cands.resize(cap_trees);
+            }
+            std::sort(cands.begin(), cands.end(), [](const TreeCand& a, const TreeCand& b) { return a.tex < b.tex; });
+            tc->cpu.clear();
+            tc->cpu.reserve(cands.size() * 6u);
+            tc->batches.clear();
+            static constexpr int kQuad[6] = {0, 1, 2, 0, 2, 3};
+            for (const auto& c : cands) {
+              const auto& t = world_trees_[c.idx];
+              float ux = t.up[0], uy = t.up[1], uz = t.up[2];
+              const float ul = std::sqrt(ux * ux + uy * uy + uz * uz);
+              if (ul > 1e-4f) ux /= ul, uy /= ul, uz /= ul;
+              else ux = 0.0f, uy = 1.0f, uz = 0.0f;
+              const int8_t nx = int8_t(std::clamp(std::lround(ux * 127.0f), -127l, 127l));
+              const int8_t ny = int8_t(std::clamp(std::lround(uy * 127.0f), -127l, 127l));
+              const int8_t nz = int8_t(std::clamp(std::lround(uz * 127.0f), -127l, 127l));
+              const uint8_t cr = uint8_t(t.rgba8 & 0xFFu);
+              const uint8_t cg = uint8_t((t.rgba8 >> 8u) & 0xFFu);
+              const uint8_t cb = uint8_t((t.rgba8 >> 16u) & 0xFFu);
+              const uint8_t ca = uint8_t((t.rgba8 >> 24u) & 0xFFu);
+              const uint32_t first_v = uint32_t(tc->cpu.size());
+              for (int qi = 0; qi < 6; ++qi) {
+                const int corner = kQuad[qi];
+                WorldVertex v{};
+                v.position[0] = t.base[0];
+                v.position[1] = t.base[1];
+                v.position[2] = t.base[2];
+                v.normal[0] = nx;
+                v.normal[1] = ny;
+                v.normal[2] = nz;
+                v.normal[3] = 0;
+                v.uv0[0] = (corner == 1 || corner == 2) ? t.uv[2] : t.uv[0];
+                v.uv0[1] = (corner >= 2) ? t.uv[1] : t.uv[3];
+                v.uv1[0] = (corner == 1 || corner == 2) ? t.half_width : -t.half_width;
+                v.uv1[1] = (corner >= 2) ? t.height : 0.0f;
+                v.colour[0] = cr;
+                v.colour[1] = cg;
+                v.colour[2] = cb;
+                v.colour[3] = ca;
+                tc->cpu.push_back(v);
+              }
+              if (!tc->batches.empty() && tc->batches.back().texture == c.tex) {
+                tc->batches.back().vertex_count += 6u;
+              } else {
+                tc->batches.push_back({c.tex, first_v, 6u});
+              }
+            }
+            ++tc->ver;
+          }
+          const uint32_t slot = r_.frame_slot();
+          const VkDeviceSize region = VkDeviceSize(kMaxEnvTreeVerts) * sizeof(WorldVertex);
+          tree_vb_off = VkDeviceSize(slot) * region;
+          if (tc->slot_ver[slot] != tc->ver && !tc->cpu.empty()) {
+            std::memcpy(static_cast<uint8_t*>(tc->mapped) + tree_vb_off, tc->cpu.data(),
+                        tc->cpu.size() * sizeof(WorldVertex));
+            tc->slot_ver[slot] = tc->ver;
+          }
+        }
+      }
+      if (tc && !tc->batches.empty()) {
+        if (bound_pipe != env_world_coverage_)
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_pipe = env_world_coverage_);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &tc->vb.buffer, &tree_vb_off);
+        ShowroomPush tpush{};
+        std::memcpy(tpush.model, world_transform_, sizeof tpush.model);
+        std::memcpy(tpush.uv0, world_sun_, sizeof tpush.uv0);
+        tpush.uv0[3] = 2.0f;
+        std::memcpy(tpush.uv1, world_up_, sizeof tpush.uv1);
+        tpush.uv1[3] = world_up_[3] * ground_refl_scale;
+        tpush.tint[0] = tpush.tint[1] = tpush.tint[2] = tpush.tint[3] = 1.0f;
+        tpush.params[0] = 1.0f;                  // kCoverage
+        tpush.params[1] = float(1u | 32u | 64u); // kFlagTextured | kFlagBillboard | kFlagAlphaTest
+        tpush.params[2] = 0.0f;
+        tpush.params[3] = 0.0f;
+        for (const auto& tb : tc->batches) {
+          if (tb.vertex_count == 0) continue;
+          VkDescriptorSet tset = world_set(tb.texture);
+          if (!tset) continue;
+          if (tset != bound_set)
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1,
+                                    &(bound_set = tset), 0, nullptr);
+          vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                             sizeof(ShowroomPush), &tpush);
+          vkCmdDraw(cmd, tb.vertex_count, 1, tb.first_vertex, 0);
+          if (draw_counter) ++(*draw_counter);
+        }
+      }
+    }
   }
-  // 2. Player car's own rear bodywork (mirror pass only, clipped past mirror plane so side
+  // 2. Player car's own rear bodywork (cockpit mirror pass only, clipped past mirror plane so side
   //    mirrors show rear fenders/wing) + nearby AI / traffic cars (opaque + glass in mirrors).
-  MirrorExtraPipes mirror_pipes{};
-  if (!is_cubemap && include_cars && env_frame_set_) {
-    std::lock_guard<std::mutex> lock(g_mirror_extra_mutex);
-    auto it = g_mirror_extra_pipes.find(this);
-    if (it != g_mirror_extra_pipes.end()) {
-      mirror_pipes = it->second;
-    } else {
-      mirror_pipes = create_mirror_extra_pipes(r_.device_, r_.pipeline_cache(), pipeline_layout_,
-                                               particle_pipe_layout_, r_.depth_format_, r_.reverse_z());
-      g_mirror_extra_pipes.emplace(this, mirror_pipes);
-      VkDevice dev = r_.device_;
-      const Showroom* key = this;
-      retired_.push_back({std::numeric_limits<uint64_t>::max(), [dev, key]() {
-                            MirrorExtraPipes doomed{};
-                            {
-                              std::lock_guard<std::mutex> lk(g_mirror_extra_mutex);
-                              auto jt = g_mirror_extra_pipes.find(key);
-                              if (jt != g_mirror_extra_pipes.end()) {
-                                doomed = jt->second;
-                                g_mirror_extra_pipes.erase(jt);
-                              }
-                            }
-                            if (doomed.car_glass) vkDestroyPipeline(dev, doomed.car_glass, nullptr);
-                            if (doomed.particle_alpha) vkDestroyPipeline(dev, doomed.particle_alpha, nullptr);
-                            if (doomed.particle_add) vkDestroyPipeline(dev, doomed.particle_add, nullptr);
-                          }});
-    }
-    if (draw_car_ && env_car_opaque_) {
-      // Side mirrors clip past eye.z + 0.22m (shows rear haunch/fender/wing); center mirror clips past +0.65m
-      // so cabin interior never blocks the rear window view while the rear spoiler/decklid stays visible.
-      const float min_rear_z = view_frame.eye[2] + (std::fabs(view_frame.eye[0]) < 0.25f ? 0.65f : 0.22f);
-      record_player_mirror_rear(cmd, env_car_opaque_, env_frame_set_, min_rear_z);
-    }
+  if (!is_cubemap && include_cars && env_frame_set_ && cockpit_camera_active_ && draw_car_ && env_car_opaque_) {
+    // Side mirrors clip past eye.z + 0.22m (shows rear haunch/fender/wing); center mirror clips past +0.65m
+    // so cabin interior never blocks the rear window view while the rear spoiler/decklid stays visible.
+    const float min_rear_z = view_frame.eye[2] + (std::fabs(view_frame.eye[0]) < 0.25f ? 0.65f : 0.22f);
+    record_player_mirror_rear(cmd, env_car_opaque_, env_frame_set_, min_rear_z);
   }
   if (env_car_opaque_ && env_frame_set_ && !instances_.empty() && (include_cars || is_cubemap)) {
     if (is_cubemap) {
@@ -894,7 +1218,7 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
         const float dz = in.model[14] - view_frame.eye[2];
         if (dx * dx + dy * dy + dz * dz > 220.0f * 220.0f) continue;
         in.car->record_instance_offscreen(cmd, env_car_opaque_, env_frame_set_, in.model,
-                                          in.has_lamps ? &in.lamps : nullptr, mirror_pipes.car_glass);
+                                          in.has_lamps ? &in.lamps : nullptr, extra_pipes.car_glass);
         if (draw_counter) *draw_counter += uint32_t(in.car->draw_count());
       }
     }
@@ -910,6 +1234,45 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &env_sky_sets_[6 + disc], 0,
                             nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
+  }
+  // 3b. Water surfaces (alpine lakes & rivers) blended over underwater beds & sky in cubemaps and mirrors.
+  if (!water_draws.empty() && extra_pipes.world_water && env_frame_set_) {
+    world_bind_buffers(cmd, false);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, extra_pipes.world_water);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &env_frame_set_, 0,
+                            nullptr);
+    vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
+    VkDescriptorSet bound_wset = VK_NULL_HANDLE;
+    constexpr uint32_t kWaterExtraMask = 4096u | 4194304u;  // normal_map | layer_b water normal
+    for (const WorldGeometry::Draw* dp : water_draws) {
+      const auto& d = *dp;
+      VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
+      uint32_t out_fl = uint32_t(std::lround(d.push.params[1]));
+      if ((set || d.texture == kNoWorldTexture) &&
+          (d.normal_map != kNoWorldTexture || d.texture_b != kNoWorldTexture)) {
+        VkDescriptorSet layered = world_layer_set(
+            {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c, d.spec_map});
+        if (layered) set = layered;
+        else out_fl &= ~kWaterExtraMask;
+      } else {
+        out_fl &= ~kWaterExtraMask;
+      }
+      if (!set) set = world_white_set_;
+      if (set != bound_wset)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1,
+                                &(bound_wset = set), 0, nullptr);
+      ShowroomPush push = d.push;
+      push.params[1] = float(out_fl);
+      world_draw_model(d, world_transform_, push.model);
+      std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
+      push.uv0[3] = 2.0f;
+      std::memcpy(push.uv1, world_up_, sizeof push.uv1);
+      push.uv1[3] = world_up_[3] * ground_refl_scale;
+      vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ShowroomPush), &push);
+      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+      if (draw_counter) ++(*draw_counter);
+    }
   }
   // 4. Staged oncoming car headlights & streetlamp glow sprites (1-sample additive HDR pass).
   if (carlights_ready_ && glow_count_ > 0 && glow_pipe_layout_ && glow_set_ && glow_buffer_.buffer && env_frame_set_) {
@@ -972,16 +1335,16 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
     const VkDescriptorSet psets[2] = {env_frame_set_, particle_set_};
     const VkDeviceSize at =
         dyn_sync(particle_buf_, VkDeviceSize(particle_alpha_count_ + particle_add_count_) * sizeof(ParticleGpu));
-    if (particle_alpha_count_ > 0 && mirror_pipes.particle_alpha) {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mirror_pipes.particle_alpha);
+    if (particle_alpha_count_ > 0 && extra_pipes.particle_alpha) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, extra_pipes.particle_alpha);
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, particle_pipe_layout_, 0, 2, psets, 0, nullptr);
       vkCmdPushConstants(cmd, particle_pipe_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof pc, &pc);
       vkCmdBindVertexBuffers(cmd, 0, 1, &particle_buf_.buf.buffer, &at);
       vkCmdDraw(cmd, 6, particle_alpha_count_, 0, 0);
     }
-    if (particle_add_count_ > 0 && mirror_pipes.particle_add) {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mirror_pipes.particle_add);
+    if (particle_add_count_ > 0 && extra_pipes.particle_add) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, extra_pipes.particle_add);
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, particle_pipe_layout_, 0, 2, psets, 0, nullptr);
       vkCmdPushConstants(cmd, particle_pipe_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof pc, &pc);
@@ -1054,6 +1417,17 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
       vkCmdPipelineBarrier2(cmd, &dep);
 
       ShowroomFrame vf = frame_;
+      if (world_lit_ && vf.drive[3] < 0.5f) {
+        for (int k = 0; k < 3; ++k) {
+          vf.key_light[k] = world_sun_[k];
+          vf.drive[k] = world_up_[k];
+          vf.tint[k] = vf.reflect_tint[k] = 1.0f;
+        }
+        vf.key_light[3] = 1.0f;
+        vf.fill_light[3] = 0.0f;
+        vf.options[0] = 1.0f;
+        vf.drive[3] = 1.0f;
+      }
       vf.shadow[0] = 0.0f;
       vf.shadow_far_bias[1] = vf.shadow_far_bias[2] = vf.shadow_far_bias[3] = 0.0f;
       // Clip player car's own self-glows within 3.2m of roof probe while keeping oncoming car & streetlamp glows.
@@ -1147,10 +1521,14 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
     dyn_env_initialized_ = true;
   }
 
-  // Dedicated 3-band cockpit mirror pass (1024x256) ONLY when cockpit camera is active:
-  // Band 0 [0..341): mirrorLeft, Band 1 [341..683): mirrorMiddle, Band 2 [683..1024): mirrorRight.
-  // Staggers 1 band/frame after initial full 3-band populate (preserving untouched bands).
-  if (rstep.render_mirror && mirror_tex_.view && mirror_depth_.view) {
+  // Dedicated 3-band rearview mirror pass (1024x256):
+  //   Band 0 [0..341): mirrorLeft, Band 1 [341..683): mirrorMiddle, Band 2 [683..1024): mirrorRight.
+  // - Cockpit camera: all 3 bands on initial populate, then center mirror (band 1) EVERY frame
+  //   plus alternating left (0) / right (2) side mirrors on even/odd frames.
+  // - Bumper / Hood camera (virtual_mirror_active_): center mirror (band 1) EVERY frame.
+  const MirrorBandSchedule msched =
+      schedule_cockpit_mirror_bands(world_frame_, cockpit_camera_active_, virtual_mirror_active_, mirror_valid_);
+  if (msched.count > 0 && mirror_tex_.view && mirror_depth_.view) {
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
@@ -1173,17 +1551,34 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
     };
     const float sl = 1.0f / std::sqrt(0.20f * 0.20f + 0.04f * 0.04f + 0.98f * 0.98f);
     // Per-car mirror camera origins derived from actual mirrorLeft/mirrorMiddle/mirrorRight bounds
-    // (or scaled car bbox fallback when a mirror part is absent).
+    // (or scaled car bbox fallback when a mirror part is absent). For Bumper/Hood virtual mirror,
+    // lift center probe slightly above roof height so the rear view clears the car cleanly.
+    const std::array<float, 3> center_eye =
+        cockpit_camera_active_
+            ? mirror_origins_[1]
+            : std::array<float, 3>{0.0f, have_bounds_ ? (bounds_max_[1] + 0.12f) : 1.38f,
+                                   have_bounds_ ? (bounds_max_[2] + 0.15f) : 1.85f};
     const MirrorBand bands[3] = {
         {0u, 341u, mirror_origins_[0], {-0.20f * sl, -0.04f * sl, 0.98f * sl}, 0.50f, 0.28f},
-        {341u, 342u, mirror_origins_[1], {0.0f, -0.02f, 0.9998f}, 0.58f, 0.22f},
+        {341u, 342u, center_eye, {0.0f, -0.02f, 0.9998f}, 0.58f, 0.22f},
         {683u, 341u, mirror_origins_[2], {0.20f * sl, -0.04f * sl, 0.98f * sl}, 0.50f, 0.28f},
     };
-    for (uint32_t bi = 0; bi < rstep.mirror_band_count; ++bi) {
-      const auto& mb = bands[(rstep.mirror_band_begin + bi) % 3u];
+    for (uint32_t bi = 0; bi < msched.count; ++bi) {
+      const auto& mb = bands[msched.bands[bi] % 3u];
       // right = cross(fwd, up=(0,1,0)) = (-fwd.z, 0, fwd.x)
       const std::array<float, 3> mright = {-mb.fwd[2], 0.0f, mb.fwd[0]};
       ShowroomFrame mf = frame_;
+      if (world_lit_ && mf.drive[3] < 0.5f) {
+        for (int k = 0; k < 3; ++k) {
+          mf.key_light[k] = world_sun_[k];
+          mf.drive[k] = world_up_[k];
+          mf.tint[k] = mf.reflect_tint[k] = 1.0f;
+        }
+        mf.key_light[3] = 1.0f;
+        mf.fill_light[3] = 0.0f;
+        mf.options[0] = 1.0f;
+        mf.drive[3] = 1.0f;
+      }
       mf.shadow[0] = 0.0f;
       mf.shadow_far_bias[1] = mf.shadow_far_bias[2] = mf.shadow_far_bias[3] = 0.0f;
       mf.eye[0] = mb.eye[0];
@@ -1208,6 +1603,7 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
   } else if (!mirror_enabled_) {
     mirror_valid_ = false;
   }
+  detail::set_virtual_mirror_active(&r_, virtual_mirror_active_ && mirror_valid_ && mirror_tex_.view != VK_NULL_HANDLE);
 }
 
 }  // namespace carview

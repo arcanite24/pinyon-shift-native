@@ -614,6 +614,10 @@ void main() {
   if ((flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u && frame.world_fade.y > 0.0) {
     float s = v_fade.x, e = v_fade.y;
     if ((flags & kFlagLodNear) != 0u ? door < s : door < e || ((flags & kFlagLodFar) != 0u && door >= s)) discard;
+  } else if ((flags & kFlagBillboard) != 0u && frame.world_fade.y > 0.0) {
+    // Complementary 3D-to-billboard distance dither cross-fade band (v_fade.x = fade-in, v_fade.y = far fade-out)
+    // using the exact same IGN door threshold as 3D tree props for seamless zero-gap transitions.
+    if (door >= v_fade.x || door < v_fade.y) discard;
   }
 #endif
   // Terrain layers (WORLD-MATERIALS, Terrain shading): tint holds the
@@ -781,12 +785,11 @@ void main() {
   float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : clamp(frame.shadow.z, 0.0, 1.0);
 
   // LAKE / WATER shader (kFlagWater):
-  // - 4-octave dual-direction animated wave normals in stable world-meter coords
-  //   (blended with real FH1 NormalMap A/B when bound)
-  // - Physically-based Schlick Fresnel (F0=0.02)
-  // - Crisp distance-adapted dynamic cubemap reflections
-  // - Beer-Lambert Colorado alpine lake depth absorption & subtle sun subsurface scatter
-  // - Sparkling dual-lobe GGX sun highlights + soft animated shoreline foam
+  // - Dual-scrolling authored water normal maps (NormalMap A / B) driven by gentle directional
+  //   river-current flow + 2-octave crisp analytical micro-ripple specular (replaces 26x sky_noise)
+  // - Physically-based Schlick Fresnel (F0=0.02) & distance-adapted dynamic cubemap reflections
+  // - Beer-Lambert Colorado alpine lake depth absorption & sunlit subsurface scatter
+  // - Sparkling dual-lobe GGX sun highlights + smooth animated shoreline foam
   if ((flags & kFlagWater) != 0u) {
     float t_sec = frame.env_basis_x.w;
     float wind = clamp(max(frame.env_basis_y.w, 0.85), 0.65, 2.2);
@@ -796,61 +799,45 @@ void main() {
     vec3 t_x = normalize(frame.env_basis_x.xyz);
     vec3 t_z = normalize(frame.env_basis_z.xyz);
 
-    // 4-octave multi-scale alpine lake wave gradient (swells -> chop -> ripples -> capillary shimmer).
-    // Physically realistic gentle mountain-lake slopes (~2-5 deg) with zero zebra banding.
+    float dist_atten = 1.0 / (1.0 + eye_dist * 0.010);
+    float micro_atten = 1.0 / (1.0 + eye_dist * 0.048);
+
+    // Gentle directional river-current / alpine breeze flow with subtle spatial meander.
+    float meander = 0.24 * sin(wp.x * 0.014 + wp.y * 0.011);
+    float f_ang = 0.60 + meander;
+    vec2 flow_a = vec2(cos(f_ang), sin(f_ang));
+    vec2 flow_b = vec2(-flow_a.y, flow_a.x);
     vec2 grad = vec2(0.0);
     float crest = 0.0;
-    float dist_atten = 1.0 / (1.0 + eye_dist * 0.012);
-    float micro_atten = 1.0 / (1.0 + eye_dist * 0.055);
 
-    // Layer 1: Gentle broad swells (~8 m wavelength, rotated dual-direction so never 1D-striped)
-    vec2 s1a = wp * 0.24 + vec2(t_sec * 0.16, t_sec * 0.11) * wind;
-    vec2 s1b = wp * 0.31 + vec2(-t_sec * 0.13, t_sec * 0.18) * wind;
-    float n1a = sky_noise(s1a);
-    float n1b = sky_noise(s1b);
-    vec2 g1a = vec2(sky_noise(s1a + vec2(0.18, 0.0)) - n1a, sky_noise(s1a + vec2(0.0, 0.18)) - n1a);
-    vec2 g1b = vec2(sky_noise(s1b + vec2(0.18, 0.0)) - n1b, sky_noise(s1b + vec2(0.0, 0.18)) - n1b);
-    grad += (g1a + g1b) * 0.12 * dist_atten;
-    crest += (n1a + n1b - 1.0) * 0.45;
-
-    // Layer 2: Soft cross-wind wavelets (~2.5 m wavelength)
-    vec2 s2a = wp * 0.68 + vec2(t_sec * 0.34, -t_sec * 0.24) * wind;
-    vec2 s2b = wp * 0.94 + vec2(-t_sec * 0.29, -t_sec * 0.36) * wind;
-    float n2a = sky_noise(s2a);
-    float n2b = sky_noise(s2b);
-    vec2 g2a = vec2(sky_noise(s2a + vec2(0.16, 0.0)) - n2a, sky_noise(s2a + vec2(0.0, 0.16)) - n2a);
-    vec2 g2b = vec2(sky_noise(s2b + vec2(0.16, 0.0)) - n2b, sky_noise(s2b + vec2(0.0, 0.16)) - n2b);
-    grad += (g2a + g2b) * 0.15 * dist_atten;
-    crest += (n2a + n2b - 1.0) * 0.35;
-
-    // Layer 3: Crisp capillary ripples (~0.9 m wavelength)
-    vec2 r3a = wp * 1.55 + vec2(t_sec * 0.52, t_sec * 0.37) * wind;
-    vec2 r3b = wp * 2.15 + vec2(-t_sec * 0.44, t_sec * 0.58) * wind;
-    float n3a = sky_noise(r3a);
-    float n3b = sky_noise(r3b);
-    vec2 g3a = vec2(sky_noise(r3a + vec2(0.15, 0.0)) - n3a, sky_noise(r3a + vec2(0.0, 0.15)) - n3a);
-    vec2 g3b = vec2(sky_noise(r3b + vec2(0.15, 0.0)) - n3b, sky_noise(r3b + vec2(0.0, 0.15)) - n3b);
-    grad += (g3a + g3b) * 0.14 * dist_atten;
-    crest += (n3a + n3b - 1.0) * 0.20;
-
-    // Layer 4: Fine micro-ripples (~0.32 m wavelength) for lively sun sparkle near the camera
-    vec2 r4a = wp * 4.2 + vec2(t_sec * 0.85, -t_sec * 0.62) * wind;
-    vec2 r4b = wp * 5.8 + vec2(-t_sec * 0.72, -t_sec * 0.84) * wind;
-    float n4a = sky_noise(r4a);
-    float n4b = sky_noise(r4b);
-    vec2 g4 = vec2((sky_noise(r4a + vec2(0.18, 0.0)) - n4a) + 0.7 * (sky_noise(r4b + vec2(0.18, 0.0)) - n4b),
-                   (sky_noise(r4a + vec2(0.0, 0.18)) - n4a) + 0.7 * (sky_noise(r4b + vec2(0.0, 0.18)) - n4b));
-    grad += g4 * 0.11 * micro_atten;
-
-    // Blend in FH1's real scrolling normal map(s) when file-backed normal textures are bound.
+    // Primary wave detail: dual-scrolling authored water normal maps when bound (or compact 2-wave analytical fallback).
     if ((flags & kFlagNormalMap) != 0u) {
-      vec2 wuv = wp * 0.16;
-      vec2 nm_a = texture(normal_map, wuv + vec2(t_sec * 0.032, t_sec * 0.021)).xy * 2.0 - 1.0;
+      vec2 wuv_a = wp * 0.145 + flow_a * (t_sec * 0.044 * wind);
+      vec2 wp_rot = mat2(0.80, -0.60, 0.60, 0.80) * wp;
+      vec2 wuv_b = wp_rot * 0.225 + (flow_a * 0.42 + flow_b * 0.78) * (t_sec * 0.036 * wind);
+      vec2 nm_a = texture(normal_map, wuv_a).xy * 2.0 - 1.0;
       vec2 nm_b = ((flags & kFlagWaterNormalB) != 0u)
-                      ? (texture(layer_b, wuv * 1.55 - vec2(t_sec * 0.026, -t_sec * 0.034)).xy * 2.0 - 1.0)
-                      : (texture(normal_map, wuv * 1.55 - vec2(t_sec * 0.026, -t_sec * 0.034)).xy * 2.0 - 1.0);
-      grad += (nm_a + nm_b) * 0.055 * dist_atten;
+                      ? (texture(layer_b, wuv_b).xy * 2.0 - 1.0)
+                      : (texture(normal_map, wuv_b).xy * 2.0 - 1.0);
+      grad += (nm_a * 0.21 + nm_b * 0.17) * dist_atten;
+      crest += clamp(dot(nm_a, vec2(0.62, 0.78)) + dot(nm_b, vec2(-0.52, 0.74)), -1.0, 1.0) * 0.55;
+    } else {
+      // Compact 2-swell analytical fallback when a water material has no file-backed normal map.
+      vec2 k0 = flow_a * 0.82 + flow_b * 0.28;
+      vec2 k1 = flow_b * 1.18 - flow_a * 0.44;
+      float s0 = dot(wp, k0) - t_sec * 1.05 * wind;
+      float s1 = dot(wp, k1) - t_sec * 1.42 * wind;
+      grad += (k0 * cos(s0) * 0.065 + k1 * cos(s1) * 0.052) * dist_atten;
+      crest += (sin(s0) * 0.35 + sin(s1) * 0.25);
     }
+
+    // 2-octave crisp analytical micro-ripples for lively capillary sun glints near the camera.
+    vec2 m1_k = flow_a * 4.8 + flow_b * 2.1;
+    vec2 m2_k = flow_b * 11.5 - flow_a * 6.4;
+    float p1 = dot(wp, m1_k) - t_sec * (2.25 * wind);
+    float p2 = dot(wp, m2_k) + t_sec * (3.45 * wind);
+    grad += (m1_k * (cos(p1) * 0.0085) + m2_k * (cos(p2) * 0.0042)) * micro_atten;
+    crest += (sin(p1) * 0.22 + sin(p2) * 0.14);
 
     vec3 nw = normalize(n_geom + (t_x * grad.x + t_z * grad.y));
     // Smooth Fresnel normal avoids harsh 0->1 flicker on individual capillary ripples.
@@ -881,17 +868,17 @@ void main() {
 
     // Beer-Lambert Colorado mountain-lake depth absorption using vertex shoreline alpha.
     float shore_a = clamp(v_colour.a, 0.0, 1.0);
-    // Estimate optical water depth: shallow near shore (0.25 m), deep open lake (6+ m).
-    float depth_m = mix(0.25, 6.5, smoothstep(0.02, 0.85, shore_a)) / max(nv, 0.24);
-    vec3 extinction = vec3(0.45, 0.15, 0.10);
+    // Estimate optical water depth: shallow near shore (0.20 m), deep open lake (6.5+ m).
+    float depth_m = mix(0.20, 6.8, smoothstep(0.02, 0.85, shore_a)) / max(nv, 0.24);
+    vec3 extinction = vec3(0.46, 0.15, 0.095);
     vec3 transmittance = exp(-depth_m * extinction);
     float sun_elev = dot(up, sun);
     float sun_above = smoothstep(-0.04, 0.14, sun_elev);
     // Scale lake body scattering by live TOD sun + sky irradiance (no hardcoded daylight floor)
     // so midnight auto-exposure (+4 EV) keeps lakes dark starlit indigo rather than glowing cyan.
     vec3 water_illum = max(sun_col * (max(sun_elev, 0.0) * sun_above * 0.72) + sky_col * 1.40, vec3(0.0015));
-    vec3 shallow_tint = vec3(0.046, 0.162, 0.168) * water_illum + gnd_col * 0.08;
-    vec3 deep_tint = vec3(0.012, 0.064, 0.104) * water_illum + sky_col * 0.10;
+    vec3 shallow_tint = vec3(0.052, 0.172, 0.174) * water_illum + gnd_col * 0.09;
+    vec3 deep_tint = vec3(0.011, 0.062, 0.104) * water_illum + sky_col * 0.10;
     vec3 body_col = mix(deep_tint, shallow_tint, transmittance);
 
     // Subtle subsurface turquoise scatter on sunlit wave crests (gated on sun above horizon).
@@ -899,14 +886,14 @@ void main() {
     float crest_mask = clamp(crest * 0.5 + 0.5, 0.0, 1.0);
     body_col += vec3(0.016, 0.088, 0.092) * sun_col * (sss_ang * crest_mask * 0.32 * sun_above);
 
-    // Sparkling dual-lobe GGX sun specular (sharp glints + soft solar reflection trail).
+    // Sparkling dual-lobe GGX sun specular (sharp micro-ripple glints + soft solar reflection trail).
     vec3 h_w = normalize(view + sun);
     float nh = max(dot(nw, h_w), 0.0);
     float nl_w = max(dot(nw, sun), 0.0);
-    float a1 = 0.028 * 0.028;
+    float a1 = 0.026 * 0.026;
     float d_g1 = nh * nh * (a1 - 1.0) + 1.0;
-    float ggx_glint = (a1 / max(3.14159265 * d_g1 * d_g1, 1e-5)) * 0.095;
-    float a2 = 0.18 * 0.18;
+    float ggx_glint = (a1 / max(3.14159265 * d_g1 * d_g1, 1e-5)) * 0.105;
+    float a2 = 0.17 * 0.17;
     float d_g2 = nh * nh * (a2 - 1.0) + 1.0;
     float ggx_sheen = (a2 / max(3.14159265 * d_g2 * d_g2, 1e-5)) * 0.045;
     float shade_w = mix(1.0, sun_shadow(v_position, n_geom), shadow_scale);
@@ -915,13 +902,17 @@ void main() {
     // Combine refracted depth body + Fresnel sky/mountain reflection + sparkling sun glints.
     vec3 w_col = mix(body_col, refl, clamp(fresnel * 0.92 + 0.05, 0.05, 0.92)) + spec_col;
 
-    // Soft animated shoreline foam where water meets gravel/rock banks.
-    float shore_zone = (1.0 - smoothstep(0.06, 0.55, shore_a)) * smoothstep(0.0, 0.06, shore_a);
-    float foam_noise = sky_noise(wp * 2.4 + vec2(t_sec * 0.32, -t_sec * 0.22)) * 0.6 +
-                       sky_noise(wp * 5.8 - vec2(t_sec * 0.48, t_sec * 0.36)) * 0.4;
-    float foam_band = smoothstep(0.50, 0.80, foam_noise + shore_zone * 0.34 + crest * 0.08) * shore_zone;
-    vec3 foam_col = (sky_col * 0.85 + sun_col * (0.42 * shade_w * sun_above)) * 1.10;
-    w_col = mix(w_col, foam_col, clamp(foam_band * 0.55, 0.0, 0.65));
+    // Smooth animated shoreline foam where shallow water laps against gravel/rock banks.
+    float shore_zone = (1.0 - smoothstep(0.05, 0.52, shore_a)) * smoothstep(0.0, 0.05, shore_a);
+    float foam_band = 0.0;
+    if (shore_zone > 0.005) {
+      float lap = 0.5 + 0.5 * sin(t_sec * 1.9 - shore_a * 14.0 + dot(wp, flow_a) * 0.65);
+      float foam_break = sky_noise(wp * 2.6 + flow_a * (t_sec * 0.34));
+      foam_band = smoothstep(0.46, 0.78, foam_break * 0.62 + lap * 0.24 + shore_zone * 0.36 + crest * 0.08) *
+                  shore_zone;
+      vec3 foam_col = (sky_col * 0.85 + sun_col * (0.42 * shade_w * sun_above)) * 1.10;
+      w_col = mix(w_col, foam_col, clamp(foam_band * 0.58, 0.0, 0.68));
+    }
 
     w_col *= draw.up.w;
     w_col = apply_haze(w_col, v_position, up, sun);
@@ -942,6 +933,11 @@ void main() {
   bool use_hex = false;
   HexTileSample hex_a;
   vec3 hex_w_a = vec3(1.0, 0.0, 0.0);
+  HexTileSample hex_b;
+  vec3 hex_w_b = vec3(1.0, 0.0, 0.0);
+  vec2 uv_b_saved = v_uv0 * draw.tint.zw;
+  float layer_b_w = 0.0;
+  float layer_c_w = 0.0;
   float road_spec_mod = 1.0;
   if ((flags & kFlagTextured) != 0u) {
     // Mikkelsen Hex-Tiling on organic multi-layer terrain blends (never on directional roads or billboards).
@@ -957,15 +953,17 @@ void main() {
     }
     if ((flags & (kFlagVertexBlend | kFlagSplat)) != 0u) {
       vec2 uv_b = v_uv0 * draw.tint.zw;
+      uv_b_saved = uv_b;
       vec4 b;
       if (use_hex) {
-        SAMPLE_HEX_TILE(layer_b, uv_b, b);
+        SAMPLE_HEX_TILE_STATE(layer_b, uv_b, hex_b, hex_w_b, b);
       } else {
         b = texture(layer_b, uv_b);
       }
       if ((flags & kFlagSplat) != 0u) {
         vec4 sp = texture(splat_map, v_uv1);
-        t = mix(t, b, sp.r);
+        layer_b_w = clamp(sp.r, 0.0, 1.0);
+        t = mix(t, b, layer_b_w);
         if ((flags & kFlagLayerC) != 0u) {
           vec2 tc = unpackHalf2x16(floatBitsToUint(draw.params.w));
           if (abs(tc.x) < 1e-4) tc.x = draw.tint.z;
@@ -979,16 +977,19 @@ void main() {
           }
           // FH1 H_BLND3 modulates Blend_C weight by Blend_C alpha (WORLD_MATERIALS.md:735).
           float wc = clamp(sp.g * mix(0.45, 1.0, c.a), 0.0, 1.0);
+          layer_c_w = wc;
           t = mix(t, c, wc);
         }
       } else {
-        t = mix(t, b, v_colour.r);
+        layer_b_w = clamp(v_colour.r, 0.0, 1.0);
+        t = mix(t, b, layer_b_w);
         if ((flags & kFlagRoad) != 0u && (flags & kFlagLayerC) != 0u) {
           vec2 tc = unpackHalf2x16(floatBitsToUint(draw.params.w));
           if (abs(tc.x) < 1e-4) tc.x = draw.tint.z;
           if (abs(tc.y) < 1e-4) tc.y = draw.tint.w;
           vec4 c = texture(layer_c, v_uv0 * tc);
-          t = mix(t, c, clamp(v_colour.g, 0.0, 1.0));
+          layer_c_w = clamp(v_colour.g, 0.0, 1.0);
+          t = mix(t, c, layer_c_w);
         }
       }
     }
@@ -1024,8 +1025,13 @@ void main() {
   if ((flags & kFlagBillboard) != 0u) t.rgb *= 1.85 * pow(max(v_colour.rgb, vec3(0.0)), vec3(1.35));
 
   vec3 n = n_geom;
+  bool spec_slot_is_norm_b = false;
   if ((flags & kFlagNormalMap) != 0u && (flags & kFlagBillboard) == 0u) {
-    float fade_nm = 1.0 - smoothstep(100.0, 175.0, eye_dist);
+    // Extended normal-map fade distances keep highway asphalt, gravel shoulders, and rocky hillsides
+    // crisp well beyond 175 m (zero reversed smoothstep).
+    float nm_near = (flags & kFlagRoad) != 0u ? 220.0 : 180.0;
+    float nm_far = (flags & kFlagRoad) != 0u ? 420.0 : 340.0;
+    float fade_nm = 1.0 - smoothstep(nm_near, nm_far, eye_dist);
     if (fade_nm > 0.001) {
       vec2 nm_uv = v_uv0 * draw.tint.xy;
       vec2 nm_dxy;
@@ -1035,7 +1041,29 @@ void main() {
         nm_dxy = texture(normal_map, nm_uv).xy * 2.0 - 1.0;
       }
       vec3 np = perturb_normal_dxy(n_geom, v_position, nm_uv, nm_dxy);
-      n = normalize(mix(n_geom, np, fade_nm * 0.75));
+      float nm_strength = 0.78;
+      // Blend Layer B's authored DXN/BC5 normal map when bound in spec_map on _NORM2 road/terrain effects.
+      if ((flags & kFlagSpecMap) != 0u && (flags & (kFlagVertexBlend | kFlagSplat)) != 0u) {
+        vec4 sp_b_probe = texture(spec_map, uv_b_saved);
+        if (sp_b_probe.b < 0.002 && sp_b_probe.r > 0.05 && sp_b_probe.g > 0.05) {
+          spec_slot_is_norm_b = true;
+          if (layer_b_w > 0.01) {
+            vec2 nm_b_dxy;
+            if (use_hex) {
+              SAMPLE_HEX_TILE_NORMAL_DXY(spec_map, hex_b, hex_w_b, nm_b_dxy);
+            } else {
+              nm_b_dxy = sp_b_probe.xy * 2.0 - 1.0;
+            }
+            vec3 np_b = perturb_normal_dxy(n_geom, v_position, uv_b_saved, nm_b_dxy);
+            np = normalize(mix(np, np_b, layer_b_w));
+          }
+        }
+      }
+      if (!spec_slot_is_norm_b && (flags & kFlagRoad) != 0u && (layer_b_w > 0.01 || layer_c_w > 0.01)) {
+        // When only Layer A's asphalt normal map is bound, soften it cleanly on gravel/dirt shoulders.
+        nm_strength *= mix(1.0, 0.58, layer_b_w) * mix(1.0, 0.45, layer_c_w);
+      }
+      n = normalize(mix(n_geom, np, fade_nm * nm_strength));
     }
   }
 
@@ -1058,7 +1086,14 @@ void main() {
   }
 
   float ndl = max(dot(n, sun), 0.0);
-  float raw_shade = ndl > 0.0 && (flags & kFlagBillboard) == 0u ? sun_shadow(v_position, n_geom) : 1.0;
+  float raw_shade = 1.0;
+  if ((flags & kFlagBillboard) != 0u) {
+    // Enable sun shadow reception on tree billboards using stable world-up receiver bias
+    // so forested hillsides and roadside conifers darken naturally inside mountain/building shadows.
+    raw_shade = mix(0.32, 1.0, sun_shadow(v_position, up));
+  } else if (ndl > 0.0) {
+    raw_shade = sun_shadow(v_position, n_geom);
+  }
   float shade = mix(1.0, raw_shade, shadow_scale);
   float ibl_amb = frame.sun_color.w >= 0.0 ? max(frame.car_light_top.w, 0.01) : 1.0;
   vec3 hemi_amb = mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb;
@@ -1076,28 +1111,57 @@ void main() {
   vec3 light = (sun_col * ndl * shade + hemi_amb) * ao;
   vec3 colour = t.rgb * light * draw.up.w;
 
-  // Per-material Blinn-Phong sun specular: H_ROAD asphalt glossiness & SpecularMap modulation.
+  // Soft view-dependent backlit subsurface translucency on tree billboards and 3D cutout foliage.
+  bool is_foliage_sss = ((flags & kFlagBillboard) != 0u) ||
+                        (blend == kCoverage && (flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u &&
+                         (flags & kFlagAnimFlag) == 0u);
+  if (is_foliage_sss) {
+    float sun_elev_fol = clamp(dot(up, sun), 0.0, 1.0);
+    float sss_vis = smoothstep(0.02, 0.22, sun_elev_fol);
+    if (sss_vis > 0.001) {
+      float back_scatter = pow(clamp(dot(view, -sun), 0.0, 1.0), 3.0);
+      float rim_wrap = clamp(dot(-n, sun) * 0.5 + 0.5, 0.0, 1.0);
+      float sss_gain = ((flags & kFlagBillboard) != 0u ? 0.42 : 0.30) * sss_vis;
+      vec3 fol_sss = t.rgb * vec3(1.12, 1.24, 0.76) * sun_col * (back_scatter * 0.72 + rim_wrap * 0.28) *
+                     mix(0.25, 1.0, shade) * sss_gain * ao;
+      colour += fol_sss * draw.up.w;
+    }
+  }
+
+  // Per-material Blinn-Phong sun specular: H_ROAD asphalt glossiness & SpecularMap modulation,
+  // preserving distinct Layer B/C roughness/specular contrast on H_ROAD_DIFF2/3 and H_BLND2/3.
   float surf_gloss = 0.0;
   float spec_mask = 1.0;
-  if ((flags & kFlagSpecMap) != 0u && (flags & kFlagBillboard) == 0u) {
+  bool has_real_spec = (flags & kFlagSpecMap) != 0u && !spec_slot_is_norm_b && (flags & kFlagBillboard) == 0u;
+  if (has_real_spec) {
     vec4 sp_sample;
     if (use_hex) {
       SAMPLE_HEX_TILE_WEIGHTED(spec_map, hex_a, hex_w_a, sp_sample);
     } else {
       sp_sample = texture(spec_map, v_uv0 * draw.tint.xy);
     }
-    spec_mask = dot(sp_sample.rgb, vec3(0.3333));
+    if ((flags & (kFlagVertexBlend | kFlagSplat)) != 0u && (flags & kFlagNormalMap) != 0u &&
+        sp_sample.b < 0.002 && sp_sample.r > 0.05 && sp_sample.g > 0.05) {
+      has_real_spec = false;
+    } else {
+      spec_mask = dot(sp_sample.rgb, vec3(0.3333));
+    }
   }
+  float road_layer_spec = mix(1.0, 0.40, layer_b_w) * mix(1.0, 0.26, layer_c_w);
+  float road_layer_gloss = mix(1.0, 0.34, layer_b_w) * mix(1.0, 0.22, layer_c_w);
+  float terrain_layer_spec = mix(1.0, 0.50, layer_b_w) * mix(1.0, 0.36, layer_c_w);
+  float terrain_layer_gloss = mix(32.0, 12.0, clamp(layer_b_w * 0.72 + layer_c_w * 0.88, 0.0, 1.0));
   if ((flags & kFlagRoad) != 0u && (flags & kFlagBillboard) == 0u) {
-    surf_gloss = clamp((0.20 + 0.28 * spec_mask) * road_spec_mod, 0.16, 0.52);
-  } else if ((flags & kFlagSpecMap) != 0u && (flags & kFlagBillboard) == 0u) {
-    surf_gloss = clamp(0.10 + 0.22 * spec_mask, 0.0, 0.34);
+    surf_gloss = clamp((0.20 + 0.28 * spec_mask) * road_spec_mod * road_layer_spec, 0.04, 0.52);
+  } else if (has_real_spec) {
+    surf_gloss = clamp((0.10 + 0.22 * spec_mask) * terrain_layer_spec, 0.0, 0.34);
   }
   if (ndl > 0.0 && (flags & kFlagBillboard) == 0u) {
     vec3 h_v = normalize(view + sun);
     float nv_s = clamp(dot(n, view), 0.0, 1.0);
     if ((flags & kFlagRoad) != 0u) {
-      // FH1 H_ROAD asphalt specular (TrackSettings.xml RoadSpecular / RoadGlossiness).
+      // FH1 H_ROAD asphalt specular (TrackSettings.xml RoadSpecular / RoadGlossiness)
+      // with crisp Layer A asphalt vs matte Layer B/C gravel/shoulder contrast.
       float road_spec_scale = 0.72;
       float road_gloss = 42.0;
       if ((flags & kFlagLayerC) == 0u) {
@@ -1105,14 +1169,16 @@ void main() {
         if (rp.x > 0.01 && rp.x <= 4.0) road_spec_scale = rp.x;
         if (rp.y >= 4.0 && rp.y <= 256.0) road_gloss = rp.y;
       }
+      float eff_gloss = max(road_gloss * road_layer_gloss, 6.0);
       float fres_r = 0.04 + 0.30 * pow(1.0 - nv_s, 4.0);
       float nh_r = max(dot(n, h_v), 0.0);
-      float spec_r = (pow(nh_r, road_gloss) * 0.62 + pow(nh_r, max(road_gloss * 0.24, 4.0)) * 0.14) *
-                     (road_spec_scale / 0.72) * fres_r * spec_mask * road_spec_mod * ndl * shade * ao;
+      float spec_r = (pow(nh_r, eff_gloss) * 0.62 + pow(nh_r, max(eff_gloss * 0.24, 4.0)) * 0.14) *
+                     (road_spec_scale / 0.72) * road_layer_spec * fres_r * spec_mask * road_spec_mod * ndl * shade * ao;
       colour += sun_col * spec_r * draw.up.w;
-    } else if ((flags & (kFlagNormalMap | kFlagSpecMap)) != 0u) {
+    } else if (((flags & kFlagNormalMap) != 0u) || has_real_spec) {
       float fres = 0.04 + 0.25 * pow(1.0 - nv_s, 4.0);
-      float spec = pow(max(dot(n, h_v), 0.0), 32.0) * fres * spec_mask * ndl * shade * ao * 0.45;
+      float spec = pow(max(dot(n, h_v), 0.0), terrain_layer_gloss) * fres * spec_mask * terrain_layer_spec *
+                   ndl * shade * ao * 0.45;
       colour += sun_col * spec * draw.up.w;
     }
   }
@@ -1142,10 +1208,30 @@ void main() {
       float att = pow(clamp(1.0 - dist / range, 0.0, 1.0), 1.35);
       float edge = smoothstep(0.0, 0.08, buv.x) * (1.0 - smoothstep(0.92, 1.0, buv.x)) *
                    smoothstep(0.0, 0.08, buv.y) * (1.0 - smoothstep(0.92, 1.0, buv.y));
-      float facing = max(dot(n, -to_p / dist), 0.30);
+      // Zero back-face illumination floor: gentle grazing wrap illuminates flat road ahead
+      // while strictly fading to 0.0 on back-facing walls, barriers, and hillside berms.
+      float nl_hl = dot(n, -to_p / dist);
+      float facing = smoothstep(-0.05, 0.02, nl_hl) * mix(0.35, 1.0, clamp(nl_hl, 0.0, 1.0));
       hl_sum += headlights.beams[i].color.rgb * pattern * att * edge * facing * headlights.beams[i].dir_power.w;
     }
     colour += t.rgb * hl_sum * hl_night * draw.up.w;
+  }
+
+  // Emissive vertex-lit animated world props (kFlagVertexLit with alpha < 0.98):
+  //   a in [0.50, 0.98): always-on signals (traffic light active lens, balloon burner flame, aviation beacon)
+  //   a in [0.22, 0.50): dusk/night festival accent bulbs (Ferris wheel rim lights, blimp marquee LEDs)
+  //   a in (0.01, 0.22): night-only sweeping mainstage searchlight/laser cones
+  if ((flags & kFlagVertexLit) != 0u && v_colour.a < 0.98) {
+    float night_w = clamp(frame.sky_color.w, 0.0, 1.0);
+    float em_boost = 0.0;
+    if (v_colour.a >= 0.50) {
+      em_boost = (1.0 - v_colour.a) * 5.0 * mix(1.0, 1.45, night_w);
+    } else if (v_colour.a >= 0.22) {
+      em_boost = mix(0.25, 2.8, smoothstep(0.05, 0.55, night_w));
+    } else if (v_colour.a > 0.01) {
+      em_boost = 2.6 * smoothstep(0.08, 0.55, night_w);
+    }
+    colour += t.rgb * em_boost * draw.up.w;
   }
 
   // World night Light_Map (slot 7) & staggered dusk/dawn EmissiveMapSampler (slot 3) (SKY_AND_TOD §6.1-6.2):

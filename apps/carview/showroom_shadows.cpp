@@ -11,7 +11,10 @@ namespace carview {
 namespace {
 
 constexpr uint32_t kMaxShadowTrees = 512;
-constexpr uint32_t kMaxShadowTreeVerts = kMaxShadowTrees * 6u;
+// Cross-quad (X-card: 2 orthogonal vertical cards) + horizontal canopy crown cap = 3 quads (18 verts) per tree
+// so noon sun casts full dappled foliage shadows instead of razor-thin vertical slivers.
+constexpr uint32_t kVertsPerShadowTree = 18u;
+constexpr uint32_t kMaxShadowTreeVerts = kMaxShadowTrees * kVertsPerShadowTree;
 
 struct ShadowTreeBatch {
   uint32_t texture = kNoWorldTexture;
@@ -302,7 +305,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
         }
         std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.tex < b.tex; });
         tree_cache->cpu.clear();
-        tree_cache->cpu.reserve(cands.size() * 6u);
+        tree_cache->cpu.reserve(cands.size() * kVertsPerShadowTree);
         tree_cache->batches.clear();
         static constexpr int kQuad[6] = {0, 1, 2, 0, 2, 3};
         for (const auto& c : cands) {
@@ -311,30 +314,69 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
           const float ul = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
           if (ul > 1e-4f) u[0] /= ul, u[1] /= ul, u[2] /= ul;
           else u[0] = 0.0f, u[1] = 1.0f, u[2] = 0.0f;
-          // Orient billboard perpendicular to sun ray for full canopy shadow projection.
+          // Build orthonormal horizontal basis (r, f) perpendicular to trunk axis u for cross-quad (X-card) geometry.
           float rx = u[1] * sun_sc[2] - u[2] * sun_sc[1];
           float ry = u[2] * sun_sc[0] - u[0] * sun_sc[2];
           float rz = u[0] * sun_sc[1] - u[1] * sun_sc[0];
           const float rl = std::sqrt(rx * rx + ry * ry + rz * rz);
-          if (rl > 1e-4f) rx /= rl, ry /= rl, rz /= rl;
-          else rx = 1.0f, ry = 0.0f, rz = 0.0f;
+          if (rl > 1e-4f) {
+            rx /= rl, ry /= rl, rz /= rl;
+          } else {
+            // Near-zenith noon sun: pick stable horizontal reference perpendicular to u.
+            const float ref_x = std::fabs(u[0]) < 0.9f ? 1.0f : 0.0f;
+            const float ref_z = std::fabs(u[0]) < 0.9f ? 0.0f : 1.0f;
+            rx = u[1] * ref_z;
+            ry = u[2] * ref_x - u[0] * ref_z;
+            rz = -u[1] * ref_x;
+            const float fl = std::sqrt(rx * rx + ry * ry + rz * rz);
+            if (fl > 1e-4f) rx /= fl, ry /= fl, rz /= fl;
+            else rx = 1.0f, ry = 0.0f, rz = 0.0f;
+          }
+          float fx = u[1] * rz - u[2] * ry;
+          float fy = u[2] * rx - u[0] * rz;
+          float fz = u[0] * ry - u[1] * rx;
+          const float flen = std::sqrt(fx * fx + fy * fy + fz * fz);
+          if (flen > 1e-4f) fx /= flen, fy /= flen, fz /= flen;
+          else fx = 0.0f, fy = 0.0f, fz = 1.0f;
+
           const uint32_t first_v = uint32_t(tree_cache->cpu.size());
+          auto emit_card = [&](float ax, float ay, float az) {
+            for (int qi = 0; qi < 6; ++qi) {
+              const int corner = kQuad[qi];
+              const float ox = (corner == 1 || corner == 2) ? t.half_width : -t.half_width;
+              const float oy = (corner >= 2) ? t.height : 0.0f;
+              WorldVertex v{};
+              v.position[0] = t.base[0] + ax * ox + u[0] * oy;
+              v.position[1] = t.base[1] + ay * ox + u[1] * oy;
+              v.position[2] = t.base[2] + az * ox + u[2] * oy;
+              v.uv0[0] = (corner == 1 || corner == 2) ? t.uv[2] : t.uv[0];
+              v.uv0[1] = (corner >= 2) ? t.uv[1] : t.uv[3];
+              tree_cache->cpu.push_back(v);
+            }
+          };
+          // Card 1 & Card 2: orthogonal vertical X-cards for full volumetric azimuth silhouettes.
+          emit_card(rx, ry, rz);
+          emit_card(fx, fy, fz);
+          // Card 3: horizontal leafy crown cap in the upper canopy so high-noon sun casts full dappled shadows.
+          const float crown_y = t.height * 0.58f;
+          const float crown_r = t.half_width * 0.84f;
+          const float crown_v_bot = t.uv[1] + (t.uv[3] - t.uv[1]) * 0.64f;
           for (int qi = 0; qi < 6; ++qi) {
             const int corner = kQuad[qi];
-            const float ox = (corner == 1 || corner == 2) ? t.half_width : -t.half_width;
-            const float oy = (corner >= 2) ? t.height : 0.0f;
+            const float ox = (corner == 1 || corner == 2) ? crown_r : -crown_r;
+            const float oz = (corner >= 2) ? crown_r : -crown_r;
             WorldVertex v{};
-            v.position[0] = t.base[0] + rx * ox + u[0] * oy;
-            v.position[1] = t.base[1] + ry * ox + u[1] * oy;
-            v.position[2] = t.base[2] + rz * ox + u[2] * oy;
+            v.position[0] = t.base[0] + u[0] * crown_y + rx * ox + fx * oz;
+            v.position[1] = t.base[1] + u[1] * crown_y + ry * ox + fy * oz;
+            v.position[2] = t.base[2] + u[2] * crown_y + rz * ox + fz * oz;
             v.uv0[0] = (corner == 1 || corner == 2) ? t.uv[2] : t.uv[0];
-            v.uv0[1] = (corner >= 2) ? t.uv[1] : t.uv[3];
+            v.uv0[1] = (corner >= 2) ? t.uv[1] : crown_v_bot;
             tree_cache->cpu.push_back(v);
           }
           if (!tree_cache->batches.empty() && tree_cache->batches.back().texture == c.tex) {
-            tree_cache->batches.back().vertex_count += 6u;
+            tree_cache->batches.back().vertex_count += kVertsPerShadowTree;
           } else {
-            tree_cache->batches.push_back({c.tex, first_v, 6u});
+            tree_cache->batches.push_back({c.tex, first_v, kVertsPerShadowTree});
           }
         }
         ++tree_cache->ver;
@@ -552,9 +594,9 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
   draw_cascade(0, shadow_set_, shadow_frame_, false, true);
   if (cascades >= 3u && shadow_set_mid_ && shadow_set_far_ && atlas_w >= size * 3u) {
     draw_cascade(size, shadow_set_mid_, shadow_frame_mid_, false, true);
-    draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, false);
+    draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, true);
   } else if (shadow_set_far_ && atlas_w >= size * 2u) {
-    draw_cascade(size, shadow_set_far_, shadow_frame_far_, true, false);
+    draw_cascade(size, shadow_set_far_, shadow_frame_far_, true, true);
   }
   vkCmdEndRendering(cmd);
 

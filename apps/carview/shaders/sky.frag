@@ -179,14 +179,18 @@ void main() {
       float az = atan(V.z, V.x) / kTwoPi + 0.5;
       // Clamp V slightly inside (0,1) so REPEAT sampler never wraps a bright/dark seam at the horizon.
       float elev_v = clamp(1.0 - (asin(clamp(V.y, 0.0, 1.0)) / (kPi * 0.5)), 0.002, 0.998);
+      // Unwrap 1.0 <-> 0.0 azimuth wrap derivatives so 2x2 quads crossing -X (or fract wrap)
+      // never spike implicit mip gradients into the coarsest mip (eliminates the 1-px sky seam).
+      vec2 cuv_dx = vec2(fract(dFdx(az) + 0.5) - 0.5, dFdx(elev_v));
+      vec2 cuv_dy = vec2(fract(dFdy(az) + 0.5) - 0.5, dFdy(elev_v));
       float sun_dot = clamp(dot(V, D), 0.0, 1.0);
       // Gentle half-Lambert wrap keeps clouds away from the sun softly lit at dawn/dusk.
       float sun_wrap = clamp(dot(V, D) * 0.5 + 0.5, 0.0, 1.0);
 
       vec2 cuv_f = vec2(fract(az + sky.close_layers.z), elev_v);
-      vec2 ad_f = texture(tex_close_ad_f, cuv_f).rg;
-      float am_f = texture(tex_close_am_f, cuv_f).r;
-      vec2 tb_f = texture(tex_close_tb_f, cuv_f).rg;
+      vec2 ad_f = textureGrad(tex_close_ad_f, cuv_f, cuv_dx, cuv_dy).rg;
+      float am_f = textureGrad(tex_close_am_f, cuv_f, cuv_dx, cuv_dy).r;
+      vec2 tb_f = textureGrad(tex_close_tb_f, cuv_f, cuv_dx, cuv_dy).rg;
 
       vec3 base_f = mix(sky.close_dense_col.rgb * sky.close_dense_col.w,
                         sky.close_thin_col.rgb * sky.close_thin_col.w, am_f);
@@ -203,9 +207,9 @@ void main() {
       float ca_f = pow(smoothstep(0.03, 0.96, ad_f.r), alpha_curve) * sky.close_layers.x;
 
       vec2 cuv_b = vec2(fract(az + sky.close_layers.w), elev_v);
-      vec2 ad_b = texture(tex_close_ad_b, cuv_b).rg;
-      float am_b = texture(tex_close_am_b, cuv_b).r;
-      vec2 tb_b = texture(tex_close_tb_b, cuv_b).rg;
+      vec2 ad_b = textureGrad(tex_close_ad_b, cuv_b, cuv_dx, cuv_dy).rg;
+      float am_b = textureGrad(tex_close_am_b, cuv_b, cuv_dx, cuv_dy).r;
+      vec2 tb_b = textureGrad(tex_close_tb_b, cuv_b, cuv_dx, cuv_dy).rg;
       vec3 base_b = mix(sky.close_back_dense_col.rgb * sky.close_dense_col.w,
                         sky.close_back_thin_col.rgb * sky.close_thin_col.w, am_b);
       vec3 back_b = sky.close_back_col.rgb * sky.close_intens.x * 0.5 *

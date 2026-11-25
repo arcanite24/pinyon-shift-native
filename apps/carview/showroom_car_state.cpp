@@ -377,7 +377,8 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         d.push.tint[3] = std::clamp(car_shader_overrides_.brake.params.paint_scale, 0.15f, 1.85f);
       }
       // Sub-material variant ID encoded in params[2] for showroom.frag:
-      // 1=outer_rim (chrome lip), 2=inner_rim/wheel_black (dark barrel), 3=rotor/brake/drum,
+      // 1=outer_rim (chrome lip), 2=inner_rim/wheel_black (dark barrel),
+      // 3=front rotor/brake/drum, 13=rear rotor/brake/drum,
       // 4=hub, 5=cockpit metal/metal2, 6=defrost_lines, 9=non-window glass (interior/lamp lenses),
       // 10=mirrorLeft, 11=mirrorMiddle, 12=mirrorRight, 15=cockpit gauge needle,
       // 16=cockpit digital MFD gauge, 17=backlit cluster dial, 18=dark underbody/trim,
@@ -441,8 +442,9 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       } else if (klass == MaterialClass::kRim) {
         if (technique == "outer_rim") submat_id = 1.0f;
         else if (technique == "inner_rim" || technique == "wheel_black") submat_id = 2.0f;
-        else if (technique == "rotor" || technique == "brake" || technique == "drum") submat_id = 3.0f;
-        else if (technique == "hub") submat_id = 4.0f;
+        else if (technique == "rotor" || technique == "brake" || technique == "drum") {
+          submat_id = (pending_wheel_ >= 2 || axle == 1) ? 13.0f : 3.0f;
+        } else if (technique == "hub") submat_id = 4.0f;
       } else if (klass == MaterialClass::kInterior) {
         std::string base_name = technique;
         while (!base_name.empty() && std::isdigit(static_cast<unsigned char>(base_name.back()))) base_name.pop_back();
@@ -522,12 +524,19 @@ void Showroom::set_braking(float glow) {
   if (!lamp_state_active_) {
     lamp_vectors_.dynamic_lights_amount[0] = g;
   }
-  for (Draw& d : draws_)
-    if (d.brake_lamp) d.push.params[2] = g;
 }
 
 void Showroom::set_rotor_heat(float heat) {
-  rotor_glow_ = std::clamp(heat, 0.0f, 1.0f);
+  const auto split = split_rotor_heat_bias(heat, 0.70f);
+  set_rotor_heat(split[0], split[1]);
+}
+
+void Showroom::set_rotor_heat(float front_heat, float rear_heat) {
+  rotor_glow_front_ = std::clamp(front_heat, 0.0f, 1.0f);
+  rotor_glow_rear_ = std::clamp(rear_heat, 0.0f, 1.0f);
+  rotor_glow_ = rotor_glow_front_;
+  frame_.dyn_light_meta[1] = rotor_glow_front_;
+  frame_.dyn_light_meta[2] = rotor_glow_rear_;
 }
 
 void Showroom::sync_paint_shader_uniforms() {
@@ -818,14 +827,13 @@ void Showroom::set_cockpit_telemetry(const CockpitTelemetry& t) {
 }
 
 void Showroom::set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpit_camera) {
-  mirror_enabled_ = cockpit_camera;
   cockpit_camera_active_ = cockpit_camera;
+  update_mirror_mode();
   cockpit_mfd_[0] = std::clamp(anim.speed_norm, 0.0f, 1.0f);
   cockpit_mfd_[1] = std::clamp(anim.tach_norm, 0.0f, 1.0f);
   cockpit_mfd_[2] = std::clamp(anim.fuel_norm, 0.0f, 1.0f);
   cockpit_mfd_[3] = std::clamp(std::max(anim.boost_norm, anim.power_norm), 0.0f, 1.0f);
   for (int k = 0; k < 4; ++k) frame_.cockpit_mfd[k] = cockpit_mfd_[k];
-  if (cockpit_camera && dyn_env_ready_ && !mirror_tex_.view) ensure_mirror_targets();
   driver_wheel_rad_ = anim.wheel_rad;
   update_driver_mesh(anim.wheel_rad);
   auto make_rot = [](const std::array<float, 3>& pivot, const std::array<float, 3>& axis, float angle, float out[16]) {
@@ -1423,9 +1431,12 @@ bool Showroom::reload_car(const std::filesystem::path& bake_dir, const std::stri
       writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[11].pImageInfo = &map_raw;
       vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
       frame_set_ = fresh;
+      if (frame_set_dip_) frame_set_dip_ = fresh;
+      sync_fullbeam_frame_set(fresh, cube_view, sampler_);
     }
   }
   sync_paint_shader_uniforms();
+  update_mirror_mode();
   // Reset per-frame car-derived uniforms so the new car's stripe/paint finish take effect immediately.
   for (int i = 0; i < 4; ++i) {
     frame_.stripe[i] = stripe_[i];
@@ -1435,6 +1446,8 @@ bool Showroom::reload_car(const std::filesystem::path& bake_dir, const std::stri
     frame_.damage_zones[i] = damage_zones_[i];
     frame_.damage_corners[i] = damage_corners_[i];
   }
+  frame_.dyn_light_meta[1] = rotor_glow_front_;
+  frame_.dyn_light_meta[2] = rotor_glow_rear_;
   for (int r = 0; r < 3; ++r) {
     for (int i = 0; i < 4; ++i) {
       frame_.region_two_tone[r][i] = region_two_tone_[r][i];

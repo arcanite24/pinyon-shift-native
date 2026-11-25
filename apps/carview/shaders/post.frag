@@ -28,6 +28,7 @@ layout(set = 0, binding = 8) uniform sampler2D motion_tex;
 layout(set = 0, binding = 9) uniform sampler2D mblur_neighbor_tex;
 layout(set = 0, binding = 10) uniform sampler2D ssr_tex;
 layout(set = 0, binding = 11) uniform sampler2D vol_tex;
+layout(set = 0, binding = 12) uniform sampler2D virtual_mirror_tex;
 
 layout(set = 0, binding = 5) uniform Optical {
   vec4 flags_near;    // x flags (1=mblur, 2=dof, 4=god_rays, 8=lens_flare, 16=reverse_z, 32=paired_vig), y near, z contrast, w brightness
@@ -40,7 +41,7 @@ layout(set = 0, binding = 5) uniform Optical {
   vec4 vig_top_rot;   // x cos(rot), y sin(rot), z power, w unused
   vec4 vig_bot_col;   // rgb color, w opacity
   vec4 vig_bot_geom;  // xy center, zw multiplicative scale (ScaleX, ScaleY)
-  vec4 vig_bot_rot;   // x cos(rot), y sin(rot), z power, w unused
+  vec4 vig_bot_rot;   // x cos(rot), y sin(rot), z power, w virtual_mirror_alpha [0..1]
   vec4 texel_size;    // xy 1/w, 1/h, z time_sec, w frame_jitter [0..1]
   vec4 modern_p;      // x ao_strength, y lut_size, z lut_strength, w out_alpha
   vec4 sota_p;        // x tonemapper (0=Hable, 1=AgX, 2=GT, 3=PBRNeutral), y sscs_strength, z mblur_taps (0/9/13), w gtao_bent_strength
@@ -333,6 +334,9 @@ void main() {
   }
 
   float pix_dist = ((oflags & 11u) != 0u || opt.phase_b.y > 0.5) ? linear_depth_m(v_uv, rev_z) : 100.0;
+  // Resolution & true aspect-ratio scale (normalized to 720p reference so 4K/ultrawide match 720p/1080p weight).
+  float res_scale = clamp((1.0 / max(opt.texel_size.y, 1e-5)) / 720.0, 0.5, 6.0);
+  float aspect = clamp(opt.texel_size.y / max(opt.texel_size.x, 1e-6), 0.5, 5.0);
 
   // Depth of Field (Poisson bokeh gather driven by TrackSettings focal parameters).
   if ((oflags & 2u) != 0u && opt.dof.z > 0.005) {
@@ -343,7 +347,7 @@ void main() {
       const vec2 poisson[8] = vec2[8](
           vec2(-0.707, -0.707), vec2(0.707, -0.707), vec2(-0.707, 0.707), vec2(0.707, 0.707),
           vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0));
-      vec2 rad = opt.texel_size.xy * (coc * 5.5);
+      vec2 rad = opt.texel_size.xy * (coc * 5.5 * res_scale);
       vec3 acc = scene_raw;
       float wsum = 1.0;
       for (int i = 0; i < 8; ++i) {
@@ -365,11 +369,11 @@ void main() {
     int mcguire_taps = int(opt.sota_p.z + 0.5);
     if (mcguire_taps >= 7) {
       vec2 vn = texture(mblur_neighbor_tex, clamp(v_uv, vec2(0.001), vec2(0.999))).rg;
-      // Scale velocity by shutter strength; cap blur span to 24 pixels to stay artifact-free.
+      // Scale velocity by shutter strength; cap blur span to 24 * res_scale pixels for resolution invariance.
       float shutter = clamp(opt.mblur.z * 0.85 + 0.20, 0.15, 1.15);
       vn *= shutter;
       vec2 texel = opt.texel_size.xy;
-      float max_uv = length(texel) * 24.0;
+      float max_uv = length(texel) * (24.0 * res_scale);
       float vn_len = length(vn);
       if (vn_len > max_uv) {
         vn *= (max_uv / vn_len);
@@ -491,7 +495,7 @@ void main() {
       decay *= 0.88;
     }
     illum /= 8.2;
-    float sun_dist = length((v_uv - sun_uv) * vec2(1.6, 1.0));
+    float sun_dist = length((v_uv - sun_uv) * vec2(aspect, 1.0));
     float radial_falloff = exp(-sun_dist * 2.2);
     vec3 shaft = opt.sun_color.rgb * (illum * radial_falloff * opt.sun.z * opt.sun.w);
     c_lin += shaft;
@@ -503,7 +507,7 @@ void main() {
     vec2 sun_uv = opt.sun.xy;
     if (sun_uv.x > -0.15 && sun_uv.x < 1.15 && sun_uv.y > -0.15 && sun_uv.y < 1.15) {
       float unocc = 0.0;
-      vec2 o = opt.texel_size.xy * 5.0;
+      vec2 o = opt.texel_size.xy * (5.0 * res_scale);
       unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv, vec2(0.002), vec2(0.998))).r, rev_z) ? 0.40 : 0.0;
       unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv + vec2(o.x, 0.0), vec2(0.002), vec2(0.998))).r, rev_z) ? 0.15 : 0.0;
       unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv - vec2(o.x, 0.0), vec2(0.002), vec2(0.998))).r, rev_z) ? 0.15 : 0.0;
@@ -513,7 +517,7 @@ void main() {
       // Require clear center/multi-tap sky visibility so tree canopies don't flicker ghosts.
       float flare_vis = smoothstep(0.35, 0.90, unocc) * opt.sun.z * opt.sun_color.w;
       if (flare_vis > 0.005) {
-        vec2 asp = vec2(1.777, 1.0);
+        vec2 asp = vec2(aspect, 1.0);
         vec2 d_sun = (v_uv - sun_uv) * asp;
         float r_sun = length(d_sun);
         float halo = exp(-r_sun * 7.5) * 0.24;
@@ -619,6 +623,70 @@ void main() {
     t = mix(t, sep, clamp(opt.dof.w, 0.0, 1.0));
   }
   t = clamp(t * p.balance.rgb, vec3(0.0), vec3(1.0));
+
+  // Virtual rearview mirror strip for Bumper & Hood cameras (center band of live 1024x256 mirror_tex_).
+  float vm_alpha = clamp(opt.vig_bot_rot.w, 0.0, 1.0);
+  if (vm_alpha > 0.01) {
+    float half_h = 0.056;
+    float half_w = min(half_h * (3.6 / aspect), 0.24);
+    vec2 m_center = vec2(0.5, 0.082);
+    vec2 p_m = (v_uv - m_center) * vec2(aspect, 1.0);
+    vec2 b_in = vec2(half_w * aspect, half_h);
+    float r_in = 0.0085;
+    float bezel_w = 0.0055;
+    // Rounded-box SDF for inner glass and outer bezel in aspect-normalized viewport height units.
+    vec2 q_in = abs(p_m) - (b_in - vec2(r_in));
+    float sd_in = length(max(q_in, vec2(0.0))) + min(max(q_in.x, q_in.y), 0.0) - r_in;
+    float sd_out = sd_in - bezel_w;
+    if (sd_out < 0.020) {
+      float aa = max(opt.texel_size.y * 1.35, 0.0008);
+      // Soft drop shadow behind bezel.
+      float shadow_a = (1.0 - smoothstep(0.0, 0.018, max(sd_out, 0.0))) * 0.45 * vm_alpha;
+      t *= (1.0 - shadow_a);
+      // Outer dark anodized bezel with subtle top bevel highlight.
+      float bezel_cov = (1.0 - smoothstep(-aa, aa, sd_out)) * vm_alpha;
+      if (bezel_cov > 0.001) {
+        float top_sheen = (1.0 - smoothstep(-half_h - bezel_w, half_h + bezel_w, p_m.y)) * 0.025;
+        float rim_hi = (1.0 - smoothstep(0.0, 0.0022, abs(sd_in))) * 0.16;
+        vec3 bezel_col = vec3(0.026, 0.030, 0.038) + vec3(top_sheen + rim_hi);
+        // Inner live rear reflection sampled from mirror_tex_ center band [0.338..0.662].
+        float glass_cov = 1.0 - smoothstep(-aa, aa, sd_in);
+        vec3 mirror_col = bezel_col;
+        if (glass_cov > 0.001) {
+          float local_u = clamp((v_uv.x - (m_center.x - half_w)) / max(2.0 * half_w, 1e-4), 0.0, 1.0);
+          float local_v = clamp((v_uv.y - (m_center.y - half_h)) / max(2.0 * half_h, 1e-4), 0.0, 1.0);
+          vec2 muv = vec2(mix(0.662, 0.338, local_u), mix(0.02, 0.98, local_v));
+          vec3 m_lin = max(texture(virtual_mirror_tex, muv).rgb, vec3(0.0)) * exp_scale;
+          vec3 m_tm;
+          if (tm_mode == 1) {
+            m_tm = tonemap_agx(m_lin * 2.5);
+          } else if (tm_mode == 2) {
+            m_tm = tonemap_gt_filmic(m_lin * 2.3);
+          } else if (tm_mode == 3) {
+            m_tm = tonemap_pbr_neutral(m_lin * 2.2);
+          } else {
+            vec3 denom = max(hable(vec3(max(p.abc.w, 0.05))), vec3(1e-4));
+            m_tm = clamp(hable(m_lin) / denom, vec3(0.0), vec3(1.0));
+          }
+          if ((flags & 2u) != 0u && opt.modern_p.z > 0.001) {
+            float n = max(opt.modern_p.y, 2.0);
+            float m = opt.vig_top_rot.w > 1.5 ? opt.vig_top_rot.w : n;
+            vec3 uvw = clamp(m_tm, vec3(0.0), vec3(1.0)) * ((n - 1.0) / m) + vec3(0.5 / m);
+            m_tm = mix(m_tm, texture(lut3d, uvw).rgb, clamp(opt.modern_p.z, 0.0, 1.0));
+          }
+          m_tm = clamp((m_tm - vec3(0.5)) * contrast + vec3(0.5 + bright_off), vec3(0.0), vec3(1.0));
+          float ml = dot(m_tm, p.desat.rgb);
+          m_tm = mix(vec3(ml), m_tm, p.desat.w);
+          m_tm = clamp(m_tm * p.balance.rgb * vec3(0.95, 0.97, 0.99), vec3(0.0), vec3(1.0));
+          // Subtle glass edge shading inside the mirror frame.
+          float edge_vig = 1.0 - 0.14 * pow(abs(local_v * 2.0 - 1.0), 3.0);
+          mirror_col = mix(bezel_col, m_tm * edge_vig, glass_cov);
+        }
+        t = mix(t, mirror_col, bezel_cov);
+      }
+    }
+  }
+
   // FH1 display transfer (SKY_AND_TOD.md §5.5): gamma-2.0 sqrt output, preserving modern_p.w alpha.
   out_color = vec4(sqrt(t), opt.modern_p.w);
 }

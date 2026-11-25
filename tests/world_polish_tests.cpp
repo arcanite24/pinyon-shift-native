@@ -170,18 +170,51 @@ int main() {
     CHECK(world::wheel_blur_factor(-45.0f) == 1.0f);
   }
 
-  // 4. AnimatedWorldSystem mesh generation & animation motion + grass road/dirt filtering.
+  // 4. AnimatedWorldSystem mesh generation, R3-REN-08 Colorado landmarks, animation motion,
+  //    grass road/dirt filtering, and R3-REN-14 per-cell grass ground height caching.
   {
     world::AnimatedWorldSystem anim;
+    CHECK(!anim.windmills().empty());
+    CHECK(!anim.flags().empty());
+    CHECK(!anim.ferris_wheels().empty());
+    CHECK(!anim.stage_lights().empty());
+    CHECK(!anim.aircraft_banners().empty());
+    CHECK(!anim.traffic_lights().empty());
+
+    // Traffic light 30 s Green/Yellow/Red smooth emissive cycle check.
+    {
+      const auto g = world::evaluate_traffic_light_cycle(5.0f, 0.0f);
+      CHECK(g.green > 0.99f && g.yellow < 0.01f && g.red < 0.01f);
+      const auto gy = world::evaluate_traffic_light_cycle(12.875f, 0.0f);
+      CHECK(gy.green > 0.2f && gy.yellow > 0.2f && std::fabs((gy.green + gy.yellow + gy.red) - 1.0f) < 1e-4f);
+      const auto y = world::evaluate_traffic_light_cycle(14.5f, 0.0f);
+      CHECK(y.yellow > 0.99f && y.green < 0.01f && y.red < 0.01f);
+      const auto r = world::evaluate_traffic_light_cycle(22.0f, 0.0f);
+      CHECK(r.red > 0.99f && r.yellow < 0.01f && r.green < 0.01f);
+      // Negative time wraps cleanly into [0, 30).
+      const auto neg = world::evaluate_traffic_light_cycle(-8.0f, 0.0f);
+      CHECK(neg.red > 0.99f);
+    }
+
     FlatTestGround grass_ground(2);   // Grass in surfaceTypes.xml
     FlatTestGround road_ground(0);    // Asphalt in surfaceTypes.xml
     std::vector<world::DebrisVertex> v0, v1, v_road;
     anim.build_mesh(2005.0, 146.5, 955.0, 0.0f, &grass_ground, v0, true);
+    const size_t rays_after_first = grass_ground.raycast_calls;
+    CHECK(rays_after_first > 0);
+    CHECK(anim.cached_grass_ground_count() > 0);
+
+    // Second build at the same position & Ground* must perform ZERO additional BVH raycasts!
     anim.build_mesh(2005.0, 146.5, 955.0, 1.5f, &grass_ground, v1, true);
+    CHECK(grass_ground.raycast_calls == rays_after_first);
+
+    // Switching Ground* auto-invalidates the cache and re-samples cleanly (asphalt skips grass).
     anim.build_mesh(2005.0, 146.5, 955.0, 0.0f, &road_ground, v_road, true);
+    CHECK(road_ground.raycast_calls > 0);
     CHECK(v0.size() > 1000 && v0.size() % 3 == 0);
-    CHECK(v0.size() > v_road.size());  // grass grows on dirt, skipped on asphalt road
-    // Verify vertices actually animate over time (balloons, windmills, flags, crowds, grass).
+    CHECK(v0.size() > v_road.size());  // grass grows on grass surface, skipped on asphalt road
+
+    // Verify vertices actually animate over time (balloons, windmills, flags, Ferris wheel, stage lights, aircraft, grass).
     bool moved = false;
     const size_t n = std::min(v0.size(), v1.size());
     for (size_t i = 0; i < n; ++i) {
@@ -191,13 +224,26 @@ int main() {
       }
     }
     CHECK(moved);
-    // Verify synthetic procedural windmills/flags/box-crowds are NOT emitted near ground level
-    // when grass is disabled (only high-altitude hot-air balloons remain).
+
+    // Verify Colorado flags, windmills, Ferris wheel, stage lights & traffic lights render near ground level
+    // even when roadside grass is disabled, while omitting grass vertices.
     std::vector<world::DebrisVertex> v_no_grass;
     anim.build_mesh(2005.0, 146.5, 955.0, 0.0f, &grass_ground, v_no_grass, false);
+    CHECK(!v_no_grass.empty() && v_no_grass.size() < v0.size());
+    bool has_ground_landmark = false;
+    bool has_high_sky_prop = false;
+    bool has_emissive_landmark = false;
     for (const auto& v : v_no_grass) {
-      CHECK(v.pos[1] > 165.0f);
+      if (v.pos[1] >= 140.0f && v.pos[1] <= 175.0f) has_ground_landmark = true;
+      if (v.pos[1] > 180.0f) has_high_sky_prop = true;
+      if (v.rgba[3] < 250u) has_emissive_landmark = true;
     }
+    CHECK(has_ground_landmark);
+    CHECK(has_high_sky_prop);
+    CHECK(has_emissive_landmark);
+
+    anim.invalidate_grass_ground_cache();
+    CHECK(anim.cached_grass_ground_count() == 0);
   }
 
   // 5. SettingsPage motion blur & depth of field toggles.
@@ -367,6 +413,23 @@ int main() {
       const auto r_noise = world::resolve_effect_material("H_VBLND_DECAL_NOISE", noise_slots, noise_slots, npc, tms);
       CHECK(r_noise.material.splat == 512u);
       CHECK(r_noise.material.decal_noise_c4[1] > 0.0f);
+
+      // (e) R3-REN-15: _NORM2 multi-layer road/terrain binds Layer B normal map from RMB slot 4
+      // without clobbering AO or H_ROAD Modulate.
+      const std::array<uint32_t, 8> norm2_slots{600u, 601u, 602u, 603u, 604u, 605u, 606u, 607u};
+      const auto r_road_n2 = world::resolve_effect_material("H_ROAD_DIFF2_NORM2_AO_LM", norm2_slots, norm2_slots, {}, tms);
+      CHECK(r_road_n2.material.normal_map == 603u);
+      CHECK(r_road_n2.material.spec_map == 604u);  // Layer B normal map
+      CHECK(r_road_n2.material.ao_map == 605u);
+      const auto r_blnd_n2 = world::resolve_effect_material("H_BLND2_NORM2_AO_LM", norm2_slots, norm2_slots, {}, tms);
+      CHECK(r_blnd_n2.material.normal_map == 603u);
+      CHECK(r_blnd_n2.material.spec_map == 604u);  // Layer B normal map
+      CHECK(r_blnd_n2.material.ao_map == 605u);
+      // H_ROAD_DIFF3 + MODULATE keeps slot 4 as AO and slot 6 as Modulate (never aliases Layer B normal).
+      const auto r_mod_n2 =
+          world::resolve_effect_material("H_ROAD_DIFF3_NORM2_MODULATE_AO_LM", norm2_slots, norm2_slots, {}, tms);
+      CHECK(r_mod_n2.material.ao_map == 604u);
+      CHECK(r_mod_n2.material.spec_map == 606u);
     }
   }
 

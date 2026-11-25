@@ -13,7 +13,41 @@
 #include "world/road_follow.h"
 
 namespace carview {
+
+void set_driver_wristband_color(uint32_t rgba);
+void spawn_detached_car_part(const void* owner_key, int part_kind, const std::array<float, 3>& world_pos,
+                             const std::array<float, 3>& car_vel, const std::array<float, 3>& car_fwd,
+                             const std::array<float, 3>& car_right, const std::array<float, 3>& car_up,
+                             const std::array<uint8_t, 4>& paint_rgba);
+void step_and_append_detached_car_parts(const void* owner_key, float dt, const drive::Ground* ground,
+                                        std::vector<world::DebrisVertex>& out_tris);
+void clear_detached_car_parts(const void* owner_key);
+
 namespace {
+
+uint32_t resolve_wristband_rgba(const DriveApp& app) {
+  // Canonical Horizon Festival wristband tiers: Yellow, Green, Blue, Pink, Orange, Purple, Gold.
+  static constexpr uint32_t kTierRgba[7] = {
+      0xFFD628FFu,  // 0 Yellow
+      0x4BDC6EFFu,  // 1 Green
+      0x0A9BFAFFu,  // 2 Blue
+      0xE81C6EFFu,  // 3 Pink
+      0xFF9224FFu,  // 4 Orange
+      0xC678FFFFu,  // 5 Purple
+      0xF6CE4EFFu,  // 6 Gold
+  };
+  const int tier = std::clamp(app.collected_wristband, 0, 6);
+  if (app.have_career_catalog && size_t(tier) < app.career_catalog.wristbands.size()) {
+    const uint32_t argb = app.career_catalog.wristbands[size_t(tier)].argb;
+    if ((argb & 0x00FFFFFFu) != 0u) {
+      const uint32_t r = (argb >> 16) & 0xFFu;
+      const uint32_t g = (argb >> 8) & 0xFFu;
+      const uint32_t b = argb & 0xFFu;
+      return (r << 24) | (g << 16) | (b << 8) | 0xFFu;
+    }
+  }
+  return kTierRgba[size_t(tier)];
+}
 
 // Per-car overhead roof probe (35 m upward BVH raycast) so AI/traffic/replay
 // vehicles toggle tunnel headlamps based on their own roof occlusion rather
@@ -532,6 +566,7 @@ void DriveSession::place_world() {
           ctel.turn_right = player_lamps.ind_right > 0.5f;
           ctel.shifting = vehicle.shifting();
           ctel.dt = lin.dt;
+          set_driver_wristband_color(resolve_wristband_rgba(app));
           host.showroom.set_cockpit_telemetry(ctel);
           host.showroom.set_cockpit_anim(cockpit_anim, tod_cockpit_cam);
         }
@@ -789,6 +824,71 @@ void DriveSession::place_world() {
           }
           host.showroom.set_showcase_mesh(showcase_tris);
           const drive::Vec3 vpos = vehicle.position();
+          // Spawn tumbling rigid-body debris whenever a bumper, side mirror, or rear wing detaches on impact.
+          {
+            struct DetachedTracker {
+              std::string car_name;
+              uint8_t prev_mask = 0u;
+              bool initialized = false;
+            };
+            static std::unordered_map<const DriveSession*, DetachedTracker> s_detached_trackers;
+            auto& trk = s_detached_trackers[this];
+            const bool damage_on = (car_damage.mode != drive::DamageMode::kNone);
+            const uint8_t cur_mask = damage_on
+                ? uint8_t((car_damage.front_bumper_detached ? (1u << 0) : 0u) |
+                          (car_damage.rear_bumper_detached ? (1u << 1) : 0u) |
+                          (car_damage.left_mirror_detached ? (1u << 2) : 0u) |
+                          (car_damage.right_mirror_detached ? (1u << 3) : 0u) |
+                          (car_damage.wing_detached ? (1u << 4) : 0u))
+                : 0u;
+            if (!trk.initialized || trk.car_name != app.car) {
+              trk.car_name = app.car;
+              trk.prev_mask = cur_mask;
+              trk.initialized = true;
+              clear_detached_car_parts(this);
+            } else {
+              const uint8_t newly_detached = uint8_t(cur_mask & ~trk.prev_mask);
+              if (newly_detached != 0u && !rewind_buf.active() && !replay_viewer.active()) {
+                const drive::Quat vrot = vehicle.orientation();
+                const drive::Vec3 vvel = vehicle.velocity();
+                const drive::Vec3 vfwd = drive::rotate(vrot, {0, 0, 1});
+                const drive::Vec3 vright = drive::rotate(vrot, {1, 0, 0});
+                const drive::Vec3 vup = drive::rotate(vrot, {0, 1, 0});
+                const float half_w = float(std::clamp(vehicle.params().size.x * 0.5, 0.72, 1.15));
+                const float half_l = float(std::clamp(vehicle.params().size.z * 0.5, 1.65, 2.70));
+
+                std::array<uint8_t, 4> paint_rgba{185, 44, 44, 255};
+                const auto& cols = host.showroom.colours();
+                const size_t cidx = host.showroom.colour_index();
+                if (!cols.empty() && cidx < cols.size()) {
+                  const uint32_t rgb = cols[cidx].rgb;
+                  paint_rgba = {uint8_t((rgb >> 16) & 0xFFu), uint8_t((rgb >> 8) & 0xFFu), uint8_t(rgb & 0xFFu), 255u};
+                }
+
+                const std::array<float, 3> cf{float(vfwd.x), float(vfwd.y), float(vfwd.z)};
+                const std::array<float, 3> cr{float(vright.x), float(vright.y), float(vright.z)};
+                const std::array<float, 3> cu{float(vup.x), float(vup.y), float(vup.z)};
+                const std::array<float, 3> cv{float(vvel.x), float(vvel.y), float(vvel.z)};
+                const std::array<drive::Vec3, 5> local_offsets = {
+                    drive::Vec3{0.0, 0.28, double(half_l)},
+                    drive::Vec3{0.0, 0.30, -double(half_l)},
+                    drive::Vec3{-double(half_w) - 0.08, 0.86, 0.36},
+                    drive::Vec3{double(half_w) + 0.08, 0.86, 0.36},
+                    drive::Vec3{0.0, 0.96, -double(half_l) + 0.18},
+                };
+                for (int pk = 0; pk < 5; ++pk) {
+                  if ((newly_detached & (1u << pk)) == 0u) continue;
+                  const drive::Vec3 wp = vpos + drive::rotate(vrot, local_offsets[size_t(pk)]);
+                  spawn_detached_car_part(this, pk, {float(wp.x), float(wp.y), float(wp.z)}, cv, cf, cr, cu, paint_rgba);
+                }
+              }
+              trk.prev_mask = cur_mask;
+            }
+            const float debris_dt = (rewind_buf.active() || tod_frame_dt <= 0.0)
+                                        ? 0.0f
+                                        : float(std::clamp(tod_frame_dt, 0.0, 0.05));
+            step_and_append_detached_car_parts(this, debris_dt, host.ground, debris_tris);
+          }
           app.world_anim.build_mesh(vpos.x, vpos.y + 1.5, vpos.z, float(vehicle.time()), host.ground, debris_tris, !app.low_preset);
           host.showroom.set_debris_mesh(debris_tris);
           std::vector<world::ParticleSprite> p_alpha, p_add;
@@ -1163,8 +1263,10 @@ void DriveSession::restore_world_rewind(uint64_t snap_id, bool is_resume) {
           vdm.steer_pull_rad = dm.steer_pull_rad;
           vehicle.set_damage_mods(vdm);
           host.showroom.set_damage_state(car_damage);
+          clear_detached_car_parts(this);
         } else {
           app.smashables.clear_debris();
+          clear_detached_car_parts(this);
         }
         prune_world_rewind();
 }

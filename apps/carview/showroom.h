@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <list>
 #include <map>
@@ -259,6 +260,164 @@ class WorldArenaLru {
   uint64_t no_evict_frame_ = 0;
 };
 
+// Pure-C++ helpers shared by Showroom and unit tests (no Vulkan dependency).
+
+// R3-REN-09: Cockpit & Bumper/Hood virtual rearview mirror band scheduler.
+// Band 0 = mirrorLeft, Band 1 = mirrorMiddle (center), Band 2 = mirrorRight.
+// Center mirror updates EVERY frame (alternating L/R side mirrors on even/odd frames
+// in cockpit camera, and center-only every frame in Bumper/Hood virtual mirror mode).
+struct MirrorBandSchedule {
+  uint32_t bands[3] = {0, 0, 0};
+  uint32_t count = 0;
+};
+
+inline MirrorBandSchedule schedule_cockpit_mirror_bands(uint64_t frame_index, bool cockpit_camera,
+                                                        bool virtual_mirror_active, bool mirror_valid) {
+  MirrorBandSchedule s{};
+  if (cockpit_camera) {
+    if (!mirror_valid) {
+      s.bands[0] = 0u;
+      s.bands[1] = 1u;
+      s.bands[2] = 2u;
+      s.count = 3u;
+    } else {
+      // Center rearview mirror EVERY frame; alternate left (0) and right (2) side mirrors.
+      s.bands[0] = 1u;
+      s.bands[1] = (frame_index & 1ull) == 0ull ? 0u : 2u;
+      s.count = 2u;
+    }
+  } else if (virtual_mirror_active) {
+    // Bumper/Hood virtual rearview mirror renders only the center band every frame.
+    s.bands[0] = 1u;
+    s.count = 1u;
+  }
+  return s;
+}
+
+// R3-REN-09: Detects forward-facing Bumper or Hood driving cameras in car model space
+// (-Z forward, +Z rear) so the virtual rearview mirror activates automatically without
+// appearing in Cockpit, Follow chase cameras, LookBack, Photo Mode, or Showroom views.
+inline bool is_bumper_or_hood_camera(bool world_lit, bool cockpit_camera, bool draw_car, bool have_bounds,
+                                     const std::array<float, 3>& bmin, const std::array<float, 3>& bmax,
+                                     const float eye[3], const float vp[16]) {
+  if (!world_lit || cockpit_camera || !have_bounds) return false;
+  // Camera forward Z in car model space is row 3 col 2 (vp[11]); forward is -Z (< -0.35).
+  if (vp[11] > -0.35f) return false;
+  const float half_w = std::max(0.95f, 0.5f * (bmax[0] - bmin[0]) + 0.15f);
+  if (std::fabs(eye[0]) > half_w) return false;
+  if (eye[1] < bmin[1] - 0.15f || eye[1] > bmax[1] + 0.55f) return false;
+  if (!draw_car) {
+    // Bumper camera: hidden car, eye near front nose (z <= +0.25 m, forward of cabin rear).
+    return eye[2] >= bmin[2] - 0.85f && eye[2] <= 0.25f;
+  }
+  // Hood camera: car drawn, eye sits above hood/cowl strictly inside front/mid footprint
+  // (well ahead of FollowLow/FollowHigh chase cameras at eye.z > +3.5 m).
+  return eye[2] >= bmin[2] - 0.25f && eye[2] <= std::min(0.25f, bmax[2] - 0.35f);
+}
+
+// R3-REN-19: Splits aggregate brake rotor thermal glow [0..1] into front/rear axle channels
+// using brake energy bias (default 70% front / 30% rear so front discs visibly glow hotter).
+inline std::array<float, 2> split_rotor_heat_bias(float heat, float front_bias = 0.70f) {
+  const float h = std::clamp(heat, 0.0f, 1.0f);
+  const float fb = std::clamp(front_bias, 0.10f, 0.90f);
+  const float rb = 1.0f - fb;
+  const float peak = std::max(fb, rb);
+  return {std::clamp(h * (fb / peak), 0.0f, 1.0f), std::clamp(h * (rb / peak), 0.0f, 1.0f)};
+}
+
+// R3-REN-10: Independent per-corner headlight beam health/flicker multiplier.
+// Matches drive::CarDamageState::kLampBreakThreshold (0.45) when corner damage is active.
+inline float eval_headlight_corner_damage(float corner_dmg, float legacy_front_dmg, bool has_corner_dmg,
+                                          float time_sec, float phase_offset = 0.0f) {
+  if (has_corner_dmg) {
+    if (corner_dmg >= 0.45f) return 0.0f;
+    if (corner_dmg > 0.24f) {
+      const float t = time_sec + phase_offset;
+      const float flicker = 0.5f + 0.5f * std::sin(t * 27.0f + std::sin(t * 7.0f) * 3.0f);
+      const float alive = std::clamp(1.0f - (corner_dmg - 0.24f) / 0.21f, 0.12f, 1.0f);
+      return alive * (0.48f + 0.52f * flicker);
+    }
+    return 1.0f;
+  }
+  if (legacy_front_dmg >= 0.88f) return 0.0f;
+  if (legacy_front_dmg > 0.58f) {
+    const float t = time_sec + phase_offset;
+    const float flicker = 0.5f + 0.5f * std::sin(t * 27.0f + std::sin(t * 7.0f) * 3.0f);
+    const float alive = std::clamp(1.0f - (legacy_front_dmg - 0.58f) / 0.30f, 0.08f, 1.0f);
+    return alive * (0.45f + 0.55f * flicker);
+  }
+  return 1.0f;
+}
+
+// R3-REN-10: Splits carbin front headlamp positions (body frame: -X left, +X right, +Z front)
+// into distinct Left and Right projector origins, mirroring or offsetting +/-0.62 m as fallback.
+struct DualHeadlightOrigins {
+  std::array<float, 3> left{-0.62f, 0.70f, 1.95f};
+  std::array<float, 3> right{0.62f, 0.70f, 1.95f};
+  bool has_left_pts = false;
+  bool has_right_pts = false;
+};
+
+inline DualHeadlightOrigins resolve_dual_headlight_origins(const float* pts_xyz, const uint8_t* pts_mask, size_t count,
+                                                           const std::array<float, 3>& fallback_origin) {
+  DualHeadlightOrigins out{};
+  double sum_l[3] = {0.0, 0.0, 0.0};
+  double sum_r[3] = {0.0, 0.0, 0.0};
+  int cnt_l = 0, cnt_r = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if ((pts_mask[i] & 0x01u) == 0u) continue;
+    const float px = pts_xyz[i * 3 + 0];
+    const float py = pts_xyz[i * 3 + 1];
+    const float pz = pts_xyz[i * 3 + 2];
+    if (pz < 0.5f) continue;
+    if (px < -0.05f) {
+      sum_l[0] += px;
+      sum_l[1] += py;
+      sum_l[2] += pz;
+      ++cnt_l;
+    } else if (px > 0.05f) {
+      sum_r[0] += px;
+      sum_r[1] += py;
+      sum_r[2] += pz;
+      ++cnt_r;
+    }
+  }
+  if (cnt_l > 0) {
+    out.left = {float(sum_l[0] / cnt_l), float(sum_l[1] / cnt_l), float(sum_l[2] / cnt_l)};
+    out.has_left_pts = true;
+  }
+  if (cnt_r > 0) {
+    out.right = {float(sum_r[0] / cnt_r), float(sum_r[1] / cnt_r), float(sum_r[2] / cnt_r)};
+    out.has_right_pts = true;
+  }
+  if (out.has_left_pts && !out.has_right_pts) {
+    out.right = {-out.left[0], out.left[1], out.left[2]};
+  } else if (!out.has_left_pts && out.has_right_pts) {
+    out.left = {-out.right[0], out.right[1], out.right[2]};
+  } else if (!out.has_left_pts && !out.has_right_pts) {
+    out.left = {fallback_origin[0] - 0.62f, fallback_origin[1], fallback_origin[2]};
+    out.right = {fallback_origin[0] + 0.62f, fallback_origin[1], fallback_origin[2]};
+  }
+  return out;
+}
+
+// R3-REN-17: Reference resolution-scale and aspect-ratio math matching post.frag and stars.vert.
+struct PostScaleParams {
+  float res_scale = 1.0f;   // render_height / 720.0 (clamped [0.5, 6.0])
+  float star_scale = 1.0f;  // viewport_height / 720.0 (clamped [0.75, 6.0])
+  float aspect = 16.0f / 9.0f;
+};
+
+inline PostScaleParams compute_post_scale(uint32_t width, uint32_t height) {
+  PostScaleParams p{};
+  const float w = float(std::max(1u, width));
+  const float h = float(std::max(1u, height));
+  p.res_scale = std::clamp(h / 720.0f, 0.5f, 6.0f);
+  p.star_scale = std::clamp(h / 720.0f, 0.75f, 6.0f);
+  p.aspect = std::clamp(w / h, 0.5f, 5.0f);
+  return p;
+}
+
 }  // namespace carview
 
 #ifndef CARVIEW_ARENA_LRU_ONLY
@@ -378,8 +537,13 @@ struct ShowroomFrame {
   // Per-car RimShaderSettings.xml + dirt/crush feature flags.
   float rim_shader[4] = {1.55f, 0.90f, 1.0f, 0.0f};       // fresnel_index, fresnel_scalar, cube_scale, has_override
   float rim_tint_dirt[4] = {1.0f, 1.0f, 1.0f, 0.0f};      // rim_tint.rgb, bit0=car_dirt_mask bit1=car_crush_weights
+  // R3-REN-10 / R3-REN-19: Dynamic night streetlamp/tunnel/brake/backfire point lights on cars
+  // + split front/rear brake rotor thermal glow channels.
+  float dyn_light_pos[6][4] = {};                          // xyz render-space pos, w radius (m)
+  float dyn_light_col[6][4] = {};                          // rgb linear HDR color * intensity, w spec_scale
+  float dyn_light_meta[4] = {0.0f, 0.0f, 0.0f, 0.0f};      // x active count (0..6), y rotor_front, z rotor_rear, w unused
 };
-static_assert(sizeof(ShowroomFrame) == 1056);
+static_assert(sizeof(ShowroomFrame) == 1264);
 
 // Additional per-draw flags in ShowroomPush::params.y (exact float32 bits 0..23).
 inline constexpr uint32_t kFlagBlurRim = 4u;
@@ -566,6 +730,9 @@ class Showroom {
   void set_reflection_rate(float rate) { reflection_rate_ = std::clamp(rate, 0.0f, 1.0f); }
   float reflection_rate() const { return reflection_rate_; }
   void set_low_memory_mode(bool on) { low_memory_mode_ = on; }
+  void set_virtual_mirror_enabled(bool enabled);
+  bool virtual_mirror_enabled() const { return virtual_mirror_enabled_; }
+  bool virtual_mirror_active() const { return virtual_mirror_active_; }
   bool mirror_targets_allocated() const { return mirror_tex_.view != VK_NULL_HANDLE; }
   // The caller's camera and lighting; the stripe colour, paint finish, and damage state are the car's own.
   void set_frame(const ShowroomFrame& frame) {
@@ -587,6 +754,8 @@ class Showroom {
       frame_.rim_shader[i] = rim_shader_[i];
       frame_.rim_tint_dirt[i] = rim_tint_dirt_[i];
     }
+    frame_.dyn_light_meta[1] = rotor_glow_front_;
+    frame_.dyn_light_meta[2] = rotor_glow_rear_;
     for (int r = 0; r < 3; ++r) {
       for (int i = 0; i < 4; ++i) {
         frame_.region_two_tone[r][i] = region_two_tone_[r][i];
@@ -595,6 +764,7 @@ class Showroom {
     }
     if (custom_livery_active_) frame_.options[2] = 2.0f;
     sync_motion_scene();
+    update_mirror_mode();
   }
   // Moves the wheels, rotors and callipers (LF, RF, LR, RR). Until it is
   // called they stand at the car's rest centres, as the showroom shows them.
@@ -756,7 +926,11 @@ class Showroom {
   // reverse, indicators, side lights, numplate, and cockpit gauge backlights.
   void set_braking(float glow);
   // Sets thermal brake rotor glow [0..1] independently of instantaneous brake pedal lamps.
+  // Single-argument overload splits heat with ~70/30 front brake bias.
   void set_rotor_heat(float heat);
+  void set_rotor_heat(float front_heat, float rear_heat);
+  float rotor_glow_front() const { return rotor_glow_front_; }
+  float rotor_glow_rear() const { return rotor_glow_rear_; }
   void set_lamp_state(const drive::CarLampState& state);
   void set_lamp_vectors(const drive::LampShaderVectors& vectors);
   // Loads kind-5 .carbin lamp points and per-car ShaderSettings.xml from disc.
@@ -1202,6 +1376,8 @@ class Showroom {
   ShowroomFrame shadow_frame_mid_{};
   ShowroomFrame shadow_frame_far_{};
   float rotor_glow_ = 0.0f;
+  float rotor_glow_front_ = 0.0f;
+  float rotor_glow_rear_ = 0.0f;
   WheelPose wheel_poses_[4]{};
   bool have_wheel_poses_ = false;
   VkPipeline shadow_world_ = VK_NULL_HANDLE, shadow_cutout_ = VK_NULL_HANDLE, shadow_car_ = VK_NULL_HANDLE;
@@ -1440,6 +1616,9 @@ class Showroom {
   bool lamp_state_active_ = false;
   std::vector<world::WorldGlow> world_glows_;
   GpuTexture headlight_cookie_;
+  GpuTexture headlight_cookie_full_;
+  VkDescriptorSet frame_set_dip_ = VK_NULL_HANDLE;
+  VkDescriptorSet frame_set_fullbeam_ = VK_NULL_HANDLE;
   Renderer::Buffer headlights_ubo_;
   Renderer::VolumetricBeam vol_beams_[8]{};
   uint32_t vol_beam_count_ = 0;
@@ -1492,6 +1671,11 @@ class Showroom {
   bool dyn_env_bound_ = false;
   bool mirror_enabled_ = false;
   bool mirror_valid_ = false;
+  bool virtual_mirror_enabled_ = true;
+  bool virtual_mirror_active_ = false;
+  void update_mirror_mode();
+  static void bind_post_virtual_mirror(Renderer& r, VkImageView view);
+  void sync_fullbeam_frame_set(VkDescriptorSet dip_set, VkImageView cube_view, VkSampler cube_sampler);
   bool init_dynamic_reflections(std::string& error);
   bool ensure_mirror_targets();
   void record_env_and_mirror(VkCommandBuffer cmd);
@@ -1716,6 +1900,13 @@ class Showroom {
   friend class RtScene;
   friend class RtPipeline;
 };
+
+// Internal virtual rearview mirror hook between Showroom (showroom_env.cpp) and Renderer (renderer_post.cpp).
+namespace detail {
+void register_virtual_mirror(const Renderer* r, VkImageView view);
+void unregister_virtual_mirror(const Renderer* r);
+void set_virtual_mirror_active(const Renderer* r, bool active);
+}  // namespace detail
 
 // Standalone AOT shader/pipeline pre-compilation entry point (`carview --precompile-shaders`).
 int run_precompile_shaders(int argc, char** argv);

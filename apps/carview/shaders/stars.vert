@@ -39,7 +39,9 @@ void main() {
     v_alpha = 0.0;
     return;
   }
-  float size_px = mix(1.2, pc.params.z, t);
+  // Scale star quad size by viewport_height / 720.0 so night stars retain consistent visual weight at 1440p/4K.
+  float res_scale = clamp((1.0 / max(pc.viewport_inv.y, 1e-5)) / 720.0, 0.75, 6.0);
+  float size_px = mix(1.2, pc.params.z, t) * res_scale;
   vec2 ndc = clip.xy / clip.w;
   // Half-extent in NDC is (size_px * 0.5) * (2.0 / viewport) = size_px * viewport_inv.
   vec2 offset_ndc = corner * (size_px * pc.viewport_inv.xy);

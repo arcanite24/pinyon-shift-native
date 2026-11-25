@@ -368,11 +368,22 @@ bool parse_sit_skeleton_from_anim_bin(std::span<const uint8_t> data,
 }
 
 AnimatedPgeoCategory classify_pgeo_name(const std::string& low_name) {
-  if (low_name.find("balloon") != std::string::npos || low_name.find("blimp") != std::string::npos) {
+  if (low_name.find("balloon") != std::string::npos) {
     return AnimatedPgeoCategory::kBalloon;
+  }
+  if (low_name.find("ferris") != std::string::npos) {
+    return AnimatedPgeoCategory::kFerrisWheel;
   }
   if (low_name.find("windmill") != std::string::npos || low_name.find("windturbine") != std::string::npos) {
     return AnimatedPgeoCategory::kWindmill;
+  }
+  if (low_name.find("planebanner") != std::string::npos || low_name.find("biplane") != std::string::npos ||
+      low_name.find("plane") != std::string::npos || low_name.find("helicopter") != std::string::npos ||
+      low_name.find("mustang") != std::string::npos || low_name.find("blimp") != std::string::npos) {
+    return AnimatedPgeoCategory::kAircraft;
+  }
+  if (low_name.find("traffic") != std::string::npos) {
+    return AnimatedPgeoCategory::kTrafficLight;
   }
   if (low_name.find("banner") != std::string::npos || low_name.find("flag") != std::string::npos) {
     return AnimatedPgeoCategory::kBannerOrFlag;
@@ -384,14 +395,50 @@ AnimatedPgeoCategory classify_pgeo_name(const std::string& low_name) {
       low_name.find("laser") != std::string::npos) {
     return AnimatedPgeoCategory::kStageLight;
   }
-  if (low_name.find("biplane") != std::string::npos || low_name.find("plane") != std::string::npos ||
-      low_name.find("helicopter") != std::string::npos || low_name.find("mustang") != std::string::npos) {
-    return AnimatedPgeoCategory::kAircraft;
-  }
   return AnimatedPgeoCategory::kOther;
 }
 
+float smooth01(float x) {
+  const float t = std::clamp(x, 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+uint64_t pack_grid_key(int32_t gx, int32_t gz) {
+  return (uint64_t(uint32_t(gx)) << 32) | uint64_t(uint32_t(gz));
+}
+
 }  // namespace
+
+TrafficLightWeights evaluate_traffic_light_cycle(float time_sec, float phase_offset) {
+  constexpr float kPeriod = 30.0f;
+  constexpr float kGreenEnd = 13.0f;
+  constexpr float kYellowEnd = 16.0f;
+  constexpr float kBlend = 0.25f;
+  float cyc = std::fmod(time_sec + phase_offset, kPeriod);
+  if (cyc < 0.0f) cyc += kPeriod;
+
+  TrafficLightWeights w{0.0f, 0.0f, 0.0f};
+  if (cyc < kGreenEnd - kBlend) {
+    w.green = 1.0f;
+  } else if (cyc < kGreenEnd) {
+    const float u = smooth01((cyc - (kGreenEnd - kBlend)) / kBlend);
+    w.green = 1.0f - u;
+    w.yellow = u;
+  } else if (cyc < kYellowEnd - kBlend) {
+    w.yellow = 1.0f;
+  } else if (cyc < kYellowEnd) {
+    const float u = smooth01((cyc - (kYellowEnd - kBlend)) / kBlend);
+    w.yellow = 1.0f - u;
+    w.red = u;
+  } else if (cyc < kPeriod - kBlend) {
+    w.red = 1.0f;
+  } else {
+    const float u = smooth01((cyc - (kPeriod - kBlend)) / kBlend);
+    w.red = 1.0f - u;
+    w.green = u;
+  }
+  return w;
+}
 
 int select_impostor_angle(float rel_azimuth_rad, int num_angles, bool both_sides) {
   const int n = std::max(1, num_angles);
@@ -1109,7 +1156,7 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
     std::string err;
     if (auto ar = fh1::Archive::open(anim_zip, &err)) {
       size_t decoded_geom_count = 0;
-      constexpr size_t kMaxDecodedGeomPgeos = 20;
+      constexpr size_t kMaxDecodedGeomPgeos = 36;
       for (const auto& entry : ar->members()) {
         const std::string low = lower_ascii(entry.name);
         if (low.ends_with(".pgeo")) {
@@ -1118,7 +1165,9 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
               (decoded_geom_count < kMaxDecodedGeomPgeos) &&
               (low.find("balloon") != std::string::npos || low.find("airwalker") != std::string::npos ||
                low.find("windmill") != std::string::npos || low.find("windturbine") != std::string::npos ||
-               low.find("planebanner") != std::string::npos || low.find("mainstage_lights") != std::string::npos);
+               low.find("planebanner") != std::string::npos || low.find("mainstage_lights") != std::string::npos ||
+               low.find("ferris") != std::string::npos || low.find("blimp") != std::string::npos ||
+               low.find("traffic") != std::string::npos || low.find("flag") != std::string::npos);
           const bool want_meta = want_geom || low.rfind("anim_", 0) == 0;
           if (want_meta) {
             const auto rd = ar->read(entry);
@@ -1342,6 +1391,9 @@ void AnimatedWorldSystem::invalidate_spectator_ground_cache() const {
   std::lock_guard<std::mutex> lk(state_->cache_mutex);
   state_->crowd_ground_cache.clear();
   state_->cached_ground_ptr = nullptr;
+  state_->grass_ground_cache.clear();
+  state_->prop_ground_cache.clear();
+  state_->cached_grass_ground_ptr = nullptr;
 }
 
 size_t AnimatedWorldSystem::cached_spectator_ground_count() const {
@@ -1355,6 +1407,18 @@ size_t AnimatedWorldSystem::cached_spectator_ground_count() const {
   return total;
 }
 
+void AnimatedWorldSystem::invalidate_grass_ground_cache() const {
+  std::lock_guard<std::mutex> lk(state_->cache_mutex);
+  state_->grass_ground_cache.clear();
+  state_->prop_ground_cache.clear();
+  state_->cached_grass_ground_ptr = nullptr;
+}
+
+size_t AnimatedWorldSystem::cached_grass_ground_count() const {
+  std::lock_guard<std::mutex> lk(state_->cache_mutex);
+  return state_->grass_ground_cache.size();
+}
+
 void AnimatedWorldSystem::set_post_config(const TrackPostConfig& post_cfg) {
   state_->post_cfg = post_cfg;
 }
@@ -1365,6 +1429,12 @@ bool AnimatedWorldSystem::is_rally_world() const { return state_->rally_world; }
 const std::vector<HotAirBalloon>& AnimatedWorldSystem::balloons() const { return state_->balloons; }
 const std::vector<WindmillProp>& AnimatedWorldSystem::windmills() const { return state_->windmills; }
 const std::vector<FestivalFlagProp>& AnimatedWorldSystem::flags() const { return state_->flags; }
+const std::vector<FerrisWheelProp>& AnimatedWorldSystem::ferris_wheels() const { return state_->ferris_wheels; }
+const std::vector<StageLightProp>& AnimatedWorldSystem::stage_lights() const { return state_->stage_lights; }
+const std::vector<AircraftBannerProp>& AnimatedWorldSystem::aircraft_banners() const {
+  return state_->aircraft_banners;
+}
+const std::vector<TrafficLightProp>& AnimatedWorldSystem::traffic_lights() const { return state_->traffic_lights; }
 const std::vector<CrowdCluster>& AnimatedWorldSystem::crowds() const { return state_->crowds; }
 const std::vector<AnimatedWorldPlacement>& AnimatedWorldSystem::pgeo_placements() const {
   return state_->pgeo_placements;
@@ -1388,12 +1458,19 @@ void AnimatedWorldSystem::set_world(const std::filesystem::path& media_dir, cons
   state_->balloons.clear();
   state_->windmills.clear();
   state_->flags.clear();
+  state_->ferris_wheels.clear();
+  state_->stage_lights.clear();
+  state_->aircraft_banners.clear();
+  state_->traffic_lights.clear();
   state_->crowds.clear();
   state_->pgeo_placements.clear();
   {
     std::lock_guard<std::mutex> lk(state_->cache_mutex);
     state_->crowd_ground_cache.clear();
     state_->cached_ground_ptr = nullptr;
+    state_->grass_ground_cache.clear();
+    state_->prop_ground_cache.clear();
+    state_->cached_grass_ground_ptr = nullptr;
     state_->pools_ready = false;
   }
   reset_frame_cache();
@@ -1422,14 +1499,19 @@ void AnimatedWorldSystem::populate_default_colorado() {
       {{1380.0f, 265.0f, -5250.0f}, 7.5f, 17.5f, 1.8f, {236, 56, 82}, {246, 236, 212}, {44, 156, 192}},
   };
 
-  // Colorado ranch & hillside spinning windmills.
+  // Colorado ranch spinning windmills & ridge wind turbines (aligned with wind direction).
   state_->windmills = {
-      {{2052.0f, 143.0f, 928.0f}, 0.65f, 13.5f, 4.1f, 0.0f},
-      {{1890.0f, 142.0f, 1020.0f}, 1.15f, 14.5f, 4.4f, 1.3f},
-      {{2185.0f, 148.0f, 845.0f}, -0.45f, 15.0f, 4.5f, 2.6f},
-      {{1428.0f, 197.0f, -5348.0f}, 0.35f, 13.8f, 4.0f, 0.8f},
-      {{-1525.0f, 92.0f, -395.0f}, 1.80f, 14.2f, 4.3f, 2.1f},
-      {{1120.0f, 155.0f, 640.0f}, -0.95f, 14.0f, 4.2f, 3.4f},
+      {{2052.0f, 143.0f, 928.0f}, 0.65f, 13.5f, 4.1f, 0.0f, false},
+      {{1890.0f, 142.0f, 1020.0f}, 1.15f, 14.5f, 4.4f, 1.3f, false},
+      {{2185.0f, 148.0f, 845.0f}, -0.45f, 15.0f, 4.5f, 2.6f, false},
+      {{1428.0f, 197.0f, -5348.0f}, 0.35f, 13.8f, 4.0f, 0.8f, false},
+      {{-1525.0f, 92.0f, -395.0f}, 1.80f, 14.2f, 4.3f, 2.1f, false},
+      {{1120.0f, 155.0f, 640.0f}, -0.95f, 14.0f, 4.2f, 3.4f, false},
+      // Modern 3-blade ridge wind turbines along high Colorado hills.
+      {{2120.0f, 152.0f, 1085.0f}, 0.50f, 28.0f, 11.5f, 0.4f, true},
+      {{1785.0f, 156.0f, 1140.0f}, 0.50f, 30.0f, 12.0f, 2.2f, true},
+      {{-1590.0f, 110.0f, -180.0f}, 0.50f, 29.0f, 11.8f, 4.1f, true},
+      {{-1645.0f, 118.0f, -85.0f}, 0.50f, 31.0f, 12.2f, 5.5f, true},
   };
 
   // Waving Horizon festival flags placed behind festival barriers (well off the asphalt road).
@@ -1439,6 +1521,41 @@ void AnimatedWorldSystem::populate_default_colorado() {
       {{2042.0f, 143.4f, 912.0f}, 7.2f, 1.75f, 3.4f, 2.2f, {246, 146, 32}, {252, 226, 78}},
       {{1980.0f, 145.0f, 954.0f}, 7.2f, 1.75f, 3.4f, 3.3f, {236, 42, 92}, {252, 212, 44}},
       {{1968.0f, 145.2f, 964.0f}, 7.2f, 1.75f, 3.4f, 4.4f, {48, 184, 132}, {248, 244, 232}},
+      {{-1444.0f, 26.0f, -332.0f}, 7.4f, 1.75f, 3.4f, 0.7f, {236, 42, 92}, {252, 212, 44}},
+      {{-1432.0f, 26.0f, -322.0f}, 7.4f, 1.75f, 3.4f, 1.9f, {38, 158, 224}, {252, 212, 44}},
+      {{-1382.0f, 1.0f, -26.0f}, 7.2f, 1.75f, 3.4f, 3.1f, {246, 146, 32}, {248, 246, 240}},
+  };
+
+  // Authentic Horizon Festival animated landmarks: Ferris wheels with rotating upright gondolas & night lights.
+  state_->ferris_wheels = {
+      {{-1412.0f, 24.0f, -292.0f}, 0.45f, 19.0f, 24.5f, 12, 0.0f},
+      {{1952.0f, 144.0f, 898.0f}, -0.35f, 16.5f, 21.5f, 12, 1.6f},
+  };
+
+  // Main Stage sweeping night searchlight / laser cones (projectors always visible; cones ignite at dusk/night).
+  state_->stage_lights = {
+      {{-1455.0f, 26.0f, -335.0f}, 0.2f, 44.0f, 0.0f, {242, 44, 156}},
+      {{-1442.0f, 26.0f, -322.0f}, 0.8f, 46.0f, 1.7f, {38, 206, 250}},
+      {{-1464.0f, 26.0f, -346.0f}, -0.5f, 42.0f, 3.2f, {254, 196, 42}},
+      {{1990.0f, 144.0f, 948.0f}, 0.4f, 40.0f, 0.9f, {242, 44, 156}},
+      {{2010.0f, 144.0f, 936.0f}, -0.4f, 42.0f, 2.5f, {38, 206, 250}},
+  };
+
+  // Circling Horizon Festival blimp & banner-towing biplane overhead.
+  state_->aircraft_banners = {
+      {{-1380.0f, 232.0f, -260.0f}, 360.0f, 0.045f, 0.3f, true, {236, 46, 92}, {252, 212, 48}},
+      {{1980.0f, 224.0f, 960.0f}, 340.0f, 0.052f, 2.4f, true, {38, 134, 218}, {252, 212, 48}},
+      {{1960.0f, 206.0f, 940.0f}, 420.0f, 0.095f, 1.1f, false, {244, 132, 34}, {252, 226, 78}},
+      {{-1360.0f, 212.0f, -220.0f}, 460.0f, 0.090f, 4.2f, false, {236, 46, 92}, {248, 246, 240}},
+  };
+
+  // Intersection traffic light housings with smooth green/yellow/red emissive cycling (staggered cross-phases).
+  state_->traffic_lights = {
+      {{2012.0f, 144.0f, 946.0f}, 0.72f, 6.8f, 4.4f, 0.0f},
+      {{1984.0f, 145.0f, 968.0f}, 2.29f, 6.8f, 4.4f, 15.0f},
+      {{-1398.0f, 1.0f, -24.0f}, 0.85f, 6.8f, 4.4f, 5.0f},
+      {{-1004.0f, 0.0f, -246.0f}, -0.40f, 6.8f, 4.4f, 20.0f},
+      {{1420.0f, 197.0f, -5340.0f}, 0.35f, 6.8f, 4.4f, 10.0f},
   };
 
   // Cheering festival spectators positioned strictly behind real Colorado metal festival barriers,
@@ -1555,6 +1672,61 @@ void AnimatedWorldSystem::populate_pgeo_placements() {
       pl.accent_rgb = {246, 246, 244};
       state_->pgeo_placements.push_back(std::move(pl));
     }
+  }
+
+  // 3. Place decoded `.pgeo` Horizon Festival landmarks (mainstage lights, circling planebanner/blimp,
+  // Ferris wheel, wind turbine) when their half-float geometry is present in animatedobjects.zip.
+  if (const auto* sl = cat.find_pgeo("mainstage_lights"); sl && !sl->submeshes.empty()) {
+    AnimatedWorldPlacement pl;
+    pl.pgeo_name = sl->name;
+    pl.category = AnimatedPgeoCategory::kStageLight;
+    pl.base_pos = {-1450.0f, 26.0f, -330.0f};
+    pl.yaw = 0.35f;
+    pl.scale = 1.0f;
+    pl.phase = 0.0f;
+    pl.primary_rgb = {242, 44, 156};
+    pl.secondary_rgb = {38, 206, 250};
+    pl.accent_rgb = {254, 196, 42};
+    state_->pgeo_placements.push_back(std::move(pl));
+  }
+  if (const auto* pb = cat.find_pgeo("planebanner"); pb && !pb->submeshes.empty()) {
+    AnimatedWorldPlacement pl;
+    pl.pgeo_name = pb->name;
+    pl.category = AnimatedPgeoCategory::kAircraft;
+    pl.base_pos = {1960.0f, 212.0f, 940.0f};
+    pl.yaw = 0.0f;
+    pl.scale = 1.0f;
+    pl.phase = 0.6f;
+    pl.primary_rgb = {236, 46, 92};
+    pl.secondary_rgb = {252, 212, 48};
+    pl.accent_rgb = {248, 246, 242};
+    state_->pgeo_placements.push_back(std::move(pl));
+  }
+  if (const auto* bl = cat.find_pgeo("blimp"); bl && !bl->submeshes.empty()) {
+    AnimatedWorldPlacement pl;
+    pl.pgeo_name = bl->name;
+    pl.category = AnimatedPgeoCategory::kAircraft;
+    pl.base_pos = {-1380.0f, 236.0f, -260.0f};
+    pl.yaw = 0.0f;
+    pl.scale = 1.0f;
+    pl.phase = 2.0f;
+    pl.primary_rgb = {38, 134, 218};
+    pl.secondary_rgb = {252, 212, 48};
+    pl.accent_rgb = {248, 246, 242};
+    state_->pgeo_placements.push_back(std::move(pl));
+  }
+  if (const auto* fw = cat.find_pgeo("ferris"); fw && !fw->submeshes.empty()) {
+    AnimatedWorldPlacement pl;
+    pl.pgeo_name = fw->name;
+    pl.category = AnimatedPgeoCategory::kFerrisWheel;
+    pl.base_pos = {-1412.0f, 24.0f, -292.0f};
+    pl.yaw = 0.45f;
+    pl.scale = 1.0f;
+    pl.phase = 0.0f;
+    pl.primary_rgb = {236, 46, 92};
+    pl.secondary_rgb = {252, 212, 48};
+    pl.accent_rgb = {38, 158, 224};
+    state_->pgeo_placements.push_back(std::move(pl));
   }
 }
 
@@ -1867,189 +2039,640 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
     wx = 0.866f;
     wz = 0.50f;
   }
+  const float wind_yaw = std::atan2(wx, wz);
+
+  // Lock cache once for invalidation check + cached prop & grass ground lookups (eliminates ~800/frame raycasts).
+  std::lock_guard<std::mutex> cache_lock(state_->cache_mutex);
+  if (ground != state_->cached_grass_ground_ptr) {
+    state_->cached_grass_ground_ptr = ground;
+    state_->grass_ground_cache.clear();
+    state_->prop_ground_cache.clear();
+  }
+  if (state_->grass_ground_cache.size() > 32768u) {
+    state_->grass_ground_cache.clear();
+  }
+  if (state_->prop_ground_cache.size() > 4096u) {
+    state_->prop_ground_cache.clear();
+  }
 
   auto ground_y = [&](float x, float z, float fallback) -> float {
     if (!ground) return fallback;
+    const uint64_t pk = pack_grid_key(int32_t(std::lround(x * 2.0f)), int32_t(std::lround(z * 2.0f)));
+    if (const auto it = state_->prop_ground_cache.find(pk); it != state_->prop_ground_cache.end()) {
+      return it->second;
+    }
     drive::Hit h;
     const double start_y = std::max(eye_y, double(fallback)) + 30.0;
-    return ground->raycast({double(x), start_y, double(z)}, {0.0, -1.0, 0.0}, 120.0, h) ? float(start_y - h.distance)
-                                                                                       : fallback;
+    const float y =
+        ground->raycast({double(x), start_y, double(z)}, {0.0, -1.0, 0.0}, 120.0, h) ? float(start_y - h.distance)
+                                                                                   : fallback;
+    state_->prop_ground_cache.emplace(pk, y);
+    return y;
   };
 
-  if (state_->rally_world) {
-    // ColoradoDirt Rally world: waving high-visibility stage marker pennants/flags
-    // (no Colorado Festival hot-air balloons or festival airwalkers).
-    for (const auto& fl : state_->flags) {
-      const double dx = double(fl.base_pos[0]) - eye_x;
-      const double dz = double(fl.base_pos[2]) - eye_z;
-      if (dx * dx + dz * dz > 260.0 * 260.0) continue;
-      const float gy = ground_y(fl.base_pos[0], fl.base_pos[2], fl.base_pos[1]);
-      // Slender matte metal pole.
-      push_box(out, {fl.base_pos[0], gy + fl.pole_height * 0.5f, fl.base_pos[2]}, {0.04f, 0, 0},
-               {0, fl.pole_height * 0.5f, 0}, {0, 0, 0.04f}, {92, 96, 102, 255});
-      // Wind-rippling 3-segment rally stage banner pennant.
-      constexpr int kSegs = 3;
-      const float y_top = gy + fl.pole_height;
-      const float y_bot = y_top - fl.height;
-      for (int s = 0; s < kSegs; ++s) {
-        const float t0 = float(s) / float(kSegs);
-        const float t1 = float(s + 1) / float(kSegs);
-        const float w0 = std::sin(time_sec * (3.2f + wind_spd * 1.4f) - t0 * 3.1f + fl.phase) * (0.14f + wind_amp * 0.35f) * t0;
-        const float w1 = std::sin(time_sec * (3.2f + wind_spd * 1.4f) - t1 * 3.1f + fl.phase) * (0.14f + wind_amp * 0.35f) * t1;
-        const std::array<float, 3> p00{fl.base_pos[0] + wx * (t0 * fl.width) - wz * w0, y_bot,
-                                       fl.base_pos[2] + wz * (t0 * fl.width) + wx * w0};
-        const std::array<float, 3> p10{fl.base_pos[0] + wx * (t1 * fl.width) - wz * w1, y_bot + 0.12f * t1,
-                                       fl.base_pos[2] + wz * (t1 * fl.width) + wx * w1};
-        const std::array<float, 3> p11{fl.base_pos[0] + wx * (t1 * fl.width) - wz * w1, y_top - 0.12f * t1,
-                                       fl.base_pos[2] + wz * (t1 * fl.width) + wx * w1};
-        const std::array<float, 3> p01{fl.base_pos[0] + wx * (t0 * fl.width) - wz * w0, y_top,
-                                       fl.base_pos[2] + wz * (t0 * fl.width) + wx * w0};
-        const auto& c = (s == 1) ? fl.stripe_rgb : fl.primary_rgb;
-        push_quad(out, p00, p10, p11, p01, {c[0], c[1], c[2], 255}, true);
-      }
+  // 1. Waving flags (rendered in BOTH Colorado Free Roam AND ColoradoDirt Rally!).
+  for (const auto& fl : state_->flags) {
+    const double dx = double(fl.base_pos[0]) - eye_x;
+    const double dz = double(fl.base_pos[2]) - eye_z;
+    if (dx * dx + dz * dz > 320.0 * 320.0) continue;
+    const float gy = ground_y(fl.base_pos[0], fl.base_pos[2], fl.base_pos[1]);
+    // Slender matte metal pole + metallic finial cap.
+    push_box(out, {fl.base_pos[0], gy + fl.pole_height * 0.5f, fl.base_pos[2]}, {0.045f, 0, 0},
+             {0, fl.pole_height * 0.5f, 0}, {0, 0, 0.045f}, {98, 102, 108, 255});
+    push_box(out, {fl.base_pos[0], gy + fl.pole_height + 0.08f, fl.base_pos[2]}, {0.07f, 0, 0},
+             {0, 0.08f, 0}, {0, 0, 0.07f}, {226, 206, 134, 255});
+    // Wind-rippling 4-segment cloth banner aligned with dynamic wind direction.
+    constexpr int kSegs = 4;
+    const float y_top = gy + fl.pole_height;
+    const float y_bot = y_top - fl.height;
+    for (int s = 0; s < kSegs; ++s) {
+      const float t0 = float(s) / float(kSegs);
+      const float t1 = float(s + 1) / float(kSegs);
+      const float w0 = std::sin(time_sec * (3.2f + wind_spd * 1.4f) - t0 * 3.4f + fl.phase) *
+                       (0.14f + wind_amp * 0.36f) * t0;
+      const float w1 = std::sin(time_sec * (3.2f + wind_spd * 1.4f) - t1 * 3.4f + fl.phase) *
+                       (0.14f + wind_amp * 0.36f) * t1;
+      const std::array<float, 3> p00{fl.base_pos[0] + wx * (t0 * fl.width) - wz * w0, y_bot,
+                                     fl.base_pos[2] + wz * (t0 * fl.width) + wx * w0};
+      const std::array<float, 3> p10{fl.base_pos[0] + wx * (t1 * fl.width) - wz * w1, y_bot + 0.12f * t1,
+                                     fl.base_pos[2] + wz * (t1 * fl.width) + wx * w1};
+      const std::array<float, 3> p11{fl.base_pos[0] + wx * (t1 * fl.width) - wz * w1, y_top - 0.12f * t1,
+                                     fl.base_pos[2] + wz * (t1 * fl.width) + wx * w1};
+      const std::array<float, 3> p01{fl.base_pos[0] + wx * (t0 * fl.width) - wz * w0, y_top,
+                                     fl.base_pos[2] + wz * (t0 * fl.width) + wx * w0};
+      const auto& c = (s == 1 || s == 2) ? fl.stripe_rgb : fl.primary_rgb;
+      push_quad(out, p00, p10, p11, p01, {c[0], c[1], c[2], 255}, true);
     }
-  } else if (!state_->pgeo_placements.empty()) {
-    // 1a. Render parsed `.pgeo` animated world objects from animatedobjects.zip
-    // (real decoded hot-air balloon & festival prop meshes instead of procedural balloons).
-    constexpr size_t kMaxPgeoVertsPerFrame = 48000;
-    const size_t pgeo_start_v = out.size();
-    for (const auto& pl : state_->pgeo_placements) {
-      if ((out.size() - pgeo_start_v) >= kMaxPgeoVertsPerFrame) break;
-      const double dx = double(pl.base_pos[0]) - eye_x;
-      const double dz = double(pl.base_pos[2]) - eye_z;
-      const double max_d = (pl.category == AnimatedPgeoCategory::kBalloon) ? 1400.0 : 280.0;
-      if (dx * dx + dz * dz > max_d * max_d) continue;
+  }
 
-      const AnimatedPgeoObject* obj = state_->catalog.find_pgeo(pl.pgeo_name);
-      if (!obj || obj->submeshes.empty()) continue;
+  if (!state_->rally_world) {
+    bool rendered_pgeo_balloon = false;
 
-      // Submesh 0 holds the primary envelope / body; submesh 1 (when small) holds basket/flame.
-      const auto& sm0 = obj->submeshes[0];
-      const float b_cx = 0.5f * (sm0.box_min[0] + sm0.box_max[0]);
-      const float b_cy = sm0.box_min[1];
-      const float b_cz = 0.5f * (sm0.box_min[2] + sm0.box_max[2]);
-      const float b_h = std::max(sm0.box_max[1] - sm0.box_min[1], 1.0f);
+    // 2a. Render ALL submeshes of parsed `.pgeo` animated world objects from animatedobjects.zip
+    // (restores hot-air balloon baskets/ropes/flames alongside envelopes, plus airwalkers, stage lights,
+    // aircraft banners, and Ferris wheels when decoded).
+    if (!state_->pgeo_placements.empty()) {
+      constexpr size_t kMaxPgeoVertsPerFrame = 56000;
+      const size_t pgeo_start_v = out.size();
+      for (const auto& pl : state_->pgeo_placements) {
+        if ((out.size() - pgeo_start_v) >= kMaxPgeoVertsPerFrame) break;
+        const AnimatedPgeoObject* obj = state_->catalog.find_pgeo(pl.pgeo_name);
+        if (!obj || obj->submeshes.empty()) continue;
 
-      float cx = pl.base_pos[0], cy = pl.base_pos[1], cz = pl.base_pos[2];
-      float yaw = pl.yaw;
-      float lean_x = 0.0f, lean_z = 0.0f;
-      if (pl.category == AnimatedPgeoCategory::kBalloon) {
-        cy += std::sin(time_sec * 0.42f + pl.phase) * 3.2f;
-        cx += std::cos(time_sec * 0.23f + pl.phase) * 2.0f;
-        cz += std::sin(time_sec * 0.19f + pl.phase * 1.3f) * 2.0f;
-        yaw += time_sec * 0.11f;
-      } else if (pl.category == AnimatedPgeoCategory::kAirwalker) {
-        cy = ground_y(cx, cz, cy);
-        const float wave = std::sin(time_sec * (3.6f + wind_spd) + pl.phase) * (0.28f + wind_amp * 0.45f);
-        lean_x = wx * wave;
-        lean_z = wz * wave;
-      }
-      const float cs = std::cos(yaw), sn = std::sin(yaw);
+        float cx = pl.base_pos[0], cy = pl.base_pos[1], cz = pl.base_pos[2];
+        float yaw = pl.yaw;
+        float lean_x = 0.0f, lean_z = 0.0f;
+        float spin_sub_angle = 0.0f;
+        if (pl.category == AnimatedPgeoCategory::kBalloon) {
+          cy += std::sin(time_sec * 0.42f + pl.phase) * 3.2f;
+          cx += std::cos(time_sec * 0.23f + pl.phase) * 2.0f;
+          cz += std::sin(time_sec * 0.19f + pl.phase * 1.3f) * 2.0f;
+          yaw += time_sec * 0.11f;
+        } else if (pl.category == AnimatedPgeoCategory::kAirwalker) {
+          cy = ground_y(cx, cz, cy);
+          const float wave = std::sin(time_sec * (3.6f + wind_spd) + pl.phase) * (0.28f + wind_amp * 0.45f);
+          lean_x = wx * wave;
+          lean_z = wz * wave;
+        } else if (pl.category == AnimatedPgeoCategory::kWindmill) {
+          cy = ground_y(cx, cz, cy);
+          yaw = wind_yaw;
+          spin_sub_angle = time_sec * (1.1f + wind_spd * 0.85f) + pl.phase;
+        } else if (pl.category == AnimatedPgeoCategory::kFerrisWheel) {
+          cy = ground_y(cx, cz, cy);
+          spin_sub_angle = time_sec * 0.22f + pl.phase;
+        } else if (pl.category == AnimatedPgeoCategory::kAircraft) {
+          const float orbit_a = time_sec * 0.065f + pl.phase;
+          const float orbit_r = 380.0f;
+          cx = pl.base_pos[0] + std::cos(orbit_a) * orbit_r;
+          cz = pl.base_pos[2] + std::sin(orbit_a) * orbit_r;
+          cy = pl.base_pos[1] + std::sin(orbit_a * 2.0f) * 6.0f;
+          yaw = -orbit_a;
+        } else if (pl.category == AnimatedPgeoCategory::kStageLight) {
+          cy = ground_y(cx, cz, cy);
+          yaw = pl.yaw + std::sin(time_sec * 0.75f + pl.phase) * 0.55f;
+        }
 
-      // Stride triangles cleanly for distant `.pgeo` balloons to keep frame vertex budgets lean.
-      const double dist = std::sqrt(dx * dx + dz * dz);
-      const size_t tri_count = sm0.indices.size() / 3u;
-      const size_t tri_step = (dist > 600.0 && tri_count > 1200) ? 2u : 1u;
-      out.reserve(out.size() + (tri_count / tri_step) * 3u);
-      for (size_t t = 0; t < tri_count; t += tri_step) {
-        if ((out.size() - pgeo_start_v) + 3u > kMaxPgeoVertsPerFrame) break;
-        const uint16_t i0 = sm0.indices[t * 3u + 0u];
-        const uint16_t i1 = sm0.indices[t * 3u + 1u];
-        const uint16_t i2 = sm0.indices[t * 3u + 2u];
-        const auto& v0 = sm0.vertices[i0];
-        const auto& v1 = sm0.vertices[i1];
-        const auto& v2 = sm0.vertices[i2];
-        const float mid_h = std::clamp(((v0.pos[1] + v1.pos[1] + v2.pos[1]) / 3.0f - b_cy) / b_h, 0.0f, 1.0f);
-        const float mid_ang = std::atan2((v0.pos[2] + v1.pos[2] + v2.pos[2]) / 3.0f - b_cz,
-                                         (v0.pos[0] + v1.pos[0] + v2.pos[0]) / 3.0f - b_cx);
-        const int band = int(std::floor((mid_ang + kPi) / (2.0f * kPi) * 12.0f)) + int(mid_h * 4.0f);
-        const auto& col = (mid_h < 0.14f && pl.category == AnimatedPgeoCategory::kBalloon)
-                              ? std::array<uint8_t, 3>{152, 108, 64}
-                              : ((band % 3 == 0) ? pl.primary_rgb
-                                                 : ((band % 3 == 1) ? pl.secondary_rgb : pl.accent_rgb));
-        const std::array<uint8_t, 4> rgba{col[0], col[1], col[2], 255};
-        auto xform_v = [&](const AnimatedPgeoSubmesh::Vertex& v) -> DebrisVertex {
-          const float lx = (v.pos[0] - b_cx) * pl.scale;
-          const float ly = (v.pos[1] - b_cy) * pl.scale;
-          const float lz = (v.pos[2] - b_cz) * pl.scale;
-          const float h_frac = std::clamp((v.pos[1] - b_cy) / b_h, 0.0f, 1.0f);
-          const float px = cx + lx * cs + lz * sn + lean_x * h_frac * ly;
-          const float py = cy + ly;
-          const float pz = cz - lx * sn + lz * cs + lean_z * h_frac * ly;
-          const std::array<float, 3> wn{v.normal[0] * cs + v.normal[2] * sn, v.normal[1],
-                                        -v.normal[0] * sn + v.normal[2] * cs};
-          return {{px, py, pz}, wn, rgba};
-        };
-        out.push_back(xform_v(v0));
-        out.push_back(xform_v(v1));
-        out.push_back(xform_v(v2));
-      }
-      if (pl.category == AnimatedPgeoCategory::kBalloon) {
-        const float pulse = 0.7f + 0.3f * std::sin(time_sec * 3.1f + pl.phase * 2.0f);
-        push_box(out, {cx, cy + b_h * pl.scale * 0.18f, cz}, {0.55f, 0, 0}, {0, 0.42f, 0}, {0, 0, 0.55f},
-                 {clamp_u8(255.0f * pulse), clamp_u8(178.0f * pulse), 52, 255});
-      }
-    }
-  } else {
-    // 1b. Procedural hot-air balloon fallback (only when animatedobjects.zip `.pgeo` is absent).
-    for (const auto& b : state_->balloons) {
-      const double dx = double(b.base_pos[0]) - eye_x;
-      const double dz = double(b.base_pos[2]) - eye_z;
-      if (dx * dx + dz * dz > 1200.0 * 1200.0) continue;
+        const double dx = double(cx) - eye_x;
+        const double dz = double(cz) - eye_z;
+        const double max_d =
+            (pl.category == AnimatedPgeoCategory::kBalloon || pl.category == AnimatedPgeoCategory::kAircraft) ? 1500.0
+                                                                                                             : 450.0;
+        if (dx * dx + dz * dz > max_d * max_d) continue;
+        if (pl.category == AnimatedPgeoCategory::kBalloon) rendered_pgeo_balloon = true;
 
-      const float bob = std::sin(time_sec * 0.42f + b.phase) * 3.2f;
-      const float sway_x = std::cos(time_sec * 0.23f + b.phase) * 2.0f;
-      const float sway_z = std::sin(time_sec * 0.19f + b.phase * 1.3f) * 2.0f;
-      const float rot = time_sec * 0.11f + b.phase;
-      const float cx = b.base_pos[0] + sway_x;
-      const float cy = b.base_pos[1] + bob;
-      const float cz = b.base_pos[2] + sway_z;
-
-      constexpr int kSegs = 12;
-      constexpr int kRings = 5;
-      const float ring_h[kRings] = {0.0f, 0.22f, 0.52f, 0.80f, 1.0f};
-      const float ring_r[kRings] = {0.22f, 0.68f, 1.00f, 0.84f, 0.0f};
-
-      for (int r = 0; r < kRings - 1; ++r) {
-        const float y0 = cy + ring_h[r] * b.height;
-        const float y1 = cy + ring_h[r + 1] * b.height;
-        const float r0 = ring_r[r] * b.radius;
-        const float r1 = ring_r[r + 1] * b.radius;
-        for (int s = 0; s < kSegs; ++s) {
-          const float a0 = rot + (2.0f * kPi * float(s)) / float(kSegs);
-          const float a1 = rot + (2.0f * kPi * float(s + 1)) / float(kSegs);
-          const auto& col = ((s + r) % 3 == 0) ? b.primary_rgb : (((s + r) % 3 == 1) ? b.secondary_rgb : b.accent_rgb);
-          const std::array<uint8_t, 4> rgba{col[0], col[1], col[2], 255};
-          const std::array<float, 3> p00{cx + std::cos(a0) * r0, y0, cz + std::sin(a0) * r0};
-          const std::array<float, 3> p10{cx + std::cos(a1) * r0, y0, cz + std::sin(a1) * r0};
-          if (r + 1 == kRings - 1) {
-            const std::array<float, 3> top{cx, y1, cz};
-            push_tri(out, p00, top, p10, rgba);
-          } else {
-            const std::array<float, 3> p01{cx + std::cos(a0) * r1, y1, cz + std::sin(a0) * r1};
-            const std::array<float, 3> p11{cx + std::cos(a1) * r1, y1, cz + std::sin(a1) * r1};
-            push_quad(out, p00, p01, p11, p10, rgba);
+        // Compute combined bounds across ALL submeshes so multi-part props stay aligned.
+        std::array<float, 3> all_min{1e9f, 1e9f, 1e9f};
+        std::array<float, 3> all_max{-1e9f, -1e9f, -1e9f};
+        for (const auto& sm : obj->submeshes) {
+          for (int k = 0; k < 3; ++k) {
+            all_min[size_t(k)] = std::min(all_min[size_t(k)], sm.box_min[size_t(k)]);
+            all_max[size_t(k)] = std::max(all_max[size_t(k)], sm.box_max[size_t(k)]);
           }
         }
+        const float b_cx = 0.5f * (all_min[0] + all_max[0]);
+        const float b_cy = all_min[1];
+        const float b_cz = 0.5f * (all_min[2] + all_max[2]);
+        const float b_h = std::max(all_max[1] - all_min[1], 1.0f);
+        const float cs = std::cos(yaw), sn = std::sin(yaw);
+        const double dist = std::sqrt(dx * dx + dz * dz);
+        const float pulse = 0.7f + 0.3f * std::sin(time_sec * 3.1f + pl.phase * 2.0f);
+
+        for (size_t sm_i = 0; sm_i < obj->submeshes.size(); ++sm_i) {
+          if ((out.size() - pgeo_start_v) >= kMaxPgeoVertsPerFrame) break;
+          const auto& sm = obj->submeshes[sm_i];
+          const size_t tri_count = sm.indices.size() / 3u;
+          if (tri_count == 0) continue;
+          const size_t tri_step = (dist > 600.0 && tri_count > 1200) ? 2u : 1u;
+          out.reserve(out.size() + (tri_count / tri_step) * 3u);
+
+          const float sm_span = std::max({sm.box_max[0] - sm.box_min[0], sm.box_max[1] - sm.box_min[1],
+                                          sm.box_max[2] - sm.box_min[2]});
+          const float sm_cy_rel = 0.5f * (sm.box_min[1] + sm.box_max[1]) - b_cy;
+          const bool is_balloon_flame =
+              (pl.category == AnimatedPgeoCategory::kBalloon && sm_i > 0 && sm_span < b_h * 0.16f &&
+               sm_cy_rel > b_h * 0.08f && sm_cy_rel < b_h * 0.35f);
+          const bool is_balloon_basket = (pl.category == AnimatedPgeoCategory::kBalloon && sm_i > 0 && !is_balloon_flame);
+          const bool spin_this =
+              (sm_i > 0 && (pl.category == AnimatedPgeoCategory::kWindmill ||
+                            pl.category == AnimatedPgeoCategory::kFerrisWheel));
+          const float s_cx = 0.5f * (sm.box_min[0] + sm.box_max[0]) - b_cx;
+          const float s_cy = 0.5f * (sm.box_min[1] + sm.box_max[1]) - b_cy;
+          const float r_cs = std::cos(spin_sub_angle), r_sn = std::sin(spin_sub_angle);
+
+          for (size_t t = 0; t < tri_count; t += tri_step) {
+            if ((out.size() - pgeo_start_v) + 3u > kMaxPgeoVertsPerFrame) break;
+            const uint16_t i0 = sm.indices[t * 3u + 0u];
+            const uint16_t i1 = sm.indices[t * 3u + 1u];
+            const uint16_t i2 = sm.indices[t * 3u + 2u];
+            const auto& v0 = sm.vertices[i0];
+            const auto& v1 = sm.vertices[i1];
+            const auto& v2 = sm.vertices[i2];
+            const float mid_h = std::clamp(((v0.pos[1] + v1.pos[1] + v2.pos[1]) / 3.0f - b_cy) / b_h, 0.0f, 1.0f);
+            const float mid_ang = std::atan2((v0.pos[2] + v1.pos[2] + v2.pos[2]) / 3.0f - b_cz,
+                                             (v0.pos[0] + v1.pos[0] + v2.pos[0]) / 3.0f - b_cx);
+            const int band = int(std::floor((mid_ang + kPi) / (2.0f * kPi) * 12.0f)) + int(mid_h * 4.0f);
+            std::array<uint8_t, 4> rgba{220, 220, 220, 255};
+            if (is_balloon_flame) {
+              rgba = {clamp_u8(255.0f * pulse), clamp_u8(180.0f * pulse), 52, 170};
+            } else if (is_balloon_basket) {
+              rgba = (mid_h < 0.11f) ? std::array<uint8_t, 4>{154, 108, 62, 255}
+                                     : std::array<uint8_t, 4>{76, 70, 64, 255};
+            } else if (pl.category == AnimatedPgeoCategory::kStageLight && sm_i > 0) {
+              rgba = {pl.primary_rgb[0], pl.primary_rgb[1], pl.primary_rgb[2], 24};
+            } else {
+              const auto& col = (mid_h < 0.14f && pl.category == AnimatedPgeoCategory::kBalloon)
+                                    ? std::array<uint8_t, 3>{152, 108, 64}
+                                    : ((band % 3 == 0) ? pl.primary_rgb
+                                                       : ((band % 3 == 1) ? pl.secondary_rgb : pl.accent_rgb));
+              rgba = {col[0], col[1], col[2], 255};
+            }
+            auto xform_v = [&](const AnimatedPgeoSubmesh::Vertex& v) -> DebrisVertex {
+              float lx = (v.pos[0] - b_cx);
+              float ly = (v.pos[1] - b_cy);
+              float lz = (v.pos[2] - b_cz);
+              if (spin_this) {
+                const float rx = lx - s_cx;
+                const float ry = ly - s_cy;
+                lx = s_cx + rx * r_cs - ry * r_sn;
+                ly = s_cy + rx * r_sn + ry * r_cs;
+              }
+              lx *= pl.scale;
+              ly *= pl.scale;
+              lz *= pl.scale;
+              const float h_frac = std::clamp((v.pos[1] - b_cy) / b_h, 0.0f, 1.0f);
+              const float px = cx + lx * cs + lz * sn + lean_x * h_frac * ly;
+              const float py = cy + ly;
+              const float pz = cz - lx * sn + lz * cs + lean_z * h_frac * ly;
+              const std::array<float, 3> wn{v.normal[0] * cs + v.normal[2] * sn, v.normal[1],
+                                            -v.normal[0] * sn + v.normal[2] * cs};
+              return {{px, py, pz}, wn, rgba};
+            };
+            out.push_back(xform_v(v0));
+            out.push_back(xform_v(v1));
+            out.push_back(xform_v(v2));
+          }
+        }
+        if (pl.category == AnimatedPgeoCategory::kBalloon) {
+          push_box(out, {cx, cy + b_h * pl.scale * 0.18f, cz}, {0.55f, 0, 0}, {0, 0.42f, 0}, {0, 0, 0.55f},
+                   {clamp_u8(255.0f * pulse), clamp_u8(178.0f * pulse), 52, 170});
+        }
       }
-      const float by = cy - 3.0f;
-      push_box(out, {cx, by, cz}, {1.25f, 0, 0}, {0, 1.05f, 0}, {0, 0, 1.25f}, {154, 108, 62, 255});
-      const float pulse = 0.7f + 0.3f * std::sin(time_sec * 3.1f + b.phase * 2.0f);
-      push_box(out, {cx, cy - 0.55f, cz}, {0.45f, 0, 0}, {0, 0.35f, 0}, {0, 0, 0.45f},
-               {clamp_u8(255.0f * pulse), clamp_u8(178.0f * pulse), 52, 255});
-      for (int k = 0; k < 4; ++k) {
-        const float ca = rot + float(k) * (kPi * 0.5f) + 0.4f;
-        const float ox = std::cos(ca), oz = std::sin(ca);
-        const std::array<float, 3> bot{cx + ox * 1.15f, by + 1.0f, cz + oz * 1.15f};
-        const std::array<float, 3> top{cx + ox * (b.radius * 0.21f), cy + 0.1f, cz + oz * (b.radius * 0.21f)};
-        const std::array<float, 3> side{-oz * 0.08f, 0.0f, ox * 0.08f};
-        push_quad(out, bot, top, {top[0] + side[0], top[1], top[2] + side[2]},
-                  {bot[0] + side[0], bot[1], bot[2] + side[2]}, {72, 68, 64, 255}, true);
+    }
+
+    // 2b. Procedural hot-air balloon fallback when animatedobjects.zip `.pgeo` balloons are absent.
+    if (!rendered_pgeo_balloon) {
+      for (const auto& b : state_->balloons) {
+        const double dx = double(b.base_pos[0]) - eye_x;
+        const double dz = double(b.base_pos[2]) - eye_z;
+        if (dx * dx + dz * dz > 1200.0 * 1200.0) continue;
+
+        const float bob = std::sin(time_sec * 0.42f + b.phase) * 3.2f;
+        const float sway_x = std::cos(time_sec * 0.23f + b.phase) * 2.0f;
+        const float sway_z = std::sin(time_sec * 0.19f + b.phase * 1.3f) * 2.0f;
+        const float rot = time_sec * 0.11f + b.phase;
+        const float cx = b.base_pos[0] + sway_x;
+        const float cy = b.base_pos[1] + bob;
+        const float cz = b.base_pos[2] + sway_z;
+
+        constexpr int kSegs = 12;
+        constexpr int kRings = 5;
+        const float ring_h[kRings] = {0.0f, 0.22f, 0.52f, 0.80f, 1.0f};
+        const float ring_r[kRings] = {0.22f, 0.68f, 1.00f, 0.84f, 0.0f};
+
+        for (int r = 0; r < kRings - 1; ++r) {
+          const float y0 = cy + ring_h[r] * b.height;
+          const float y1 = cy + ring_h[r + 1] * b.height;
+          const float r0 = ring_r[r] * b.radius;
+          const float r1 = ring_r[r + 1] * b.radius;
+          for (int s = 0; s < kSegs; ++s) {
+            const float a0 = rot + (2.0f * kPi * float(s)) / float(kSegs);
+            const float a1 = rot + (2.0f * kPi * float(s + 1)) / float(kSegs);
+            const auto& col = ((s + r) % 3 == 0) ? b.primary_rgb : (((s + r) % 3 == 1) ? b.secondary_rgb : b.accent_rgb);
+            const std::array<uint8_t, 4> rgba{col[0], col[1], col[2], 255};
+            const std::array<float, 3> p00{cx + std::cos(a0) * r0, y0, cz + std::sin(a0) * r0};
+            const std::array<float, 3> p10{cx + std::cos(a1) * r0, y0, cz + std::sin(a1) * r0};
+            if (r + 1 == kRings - 1) {
+              const std::array<float, 3> top{cx, y1, cz};
+              push_tri(out, p00, top, p10, rgba);
+            } else {
+              const std::array<float, 3> p01{cx + std::cos(a0) * r1, y1, cz + std::sin(a0) * r1};
+              const std::array<float, 3> p11{cx + std::cos(a1) * r1, y1, cz + std::sin(a1) * r1};
+              push_quad(out, p00, p01, p11, p10, rgba);
+            }
+          }
+        }
+        const float by = cy - 3.0f;
+        push_box(out, {cx, by, cz}, {1.25f, 0, 0}, {0, 1.05f, 0}, {0, 0, 1.25f}, {154, 108, 62, 255});
+        const float pulse = 0.7f + 0.3f * std::sin(time_sec * 3.1f + b.phase * 2.0f);
+        push_box(out, {cx, cy - 0.55f, cz}, {0.45f, 0, 0}, {0, 0.35f, 0}, {0, 0, 0.45f},
+                 {clamp_u8(255.0f * pulse), clamp_u8(178.0f * pulse), 52, 170});
+        for (int k = 0; k < 4; ++k) {
+          const float ca = rot + float(k) * (kPi * 0.5f) + 0.4f;
+          const float ox = std::cos(ca), oz = std::sin(ca);
+          const std::array<float, 3> bot{cx + ox * 1.15f, by + 1.0f, cz + oz * 1.15f};
+          const std::array<float, 3> top{cx + ox * (b.radius * 0.21f), cy + 0.1f, cz + oz * (b.radius * 0.21f)};
+          const std::array<float, 3> side{-oz * 0.08f, 0.0f, ox * 0.08f};
+          push_quad(out, bot, top, {top[0] + side[0], top[1], top[2] + side[2]},
+                    {bot[0] + side[0], bot[1], bot[2] + side[2]}, {72, 68, 64, 255}, true);
+        }
+      }
+    }
+
+    // 2c. Spinning ranch windmills & 3-blade ridge wind turbines (aligned with wind direction).
+    for (const auto& wm : state_->windmills) {
+      const double dx = double(wm.base_pos[0]) - eye_x;
+      const double dz = double(wm.base_pos[2]) - eye_z;
+      const double max_r = wm.is_turbine ? 1100.0 : 650.0;
+      if (dx * dx + dz * dz > max_r * max_r) continue;
+      const float gy = ground_y(wm.base_pos[0], wm.base_pos[2], wm.base_pos[1]);
+      // Smoothly align rotor axis into the wind with subtle vane hunting.
+      const float yaw = wind_yaw + std::sin(time_sec * 0.28f + wm.phase) * 0.06f;
+      const float fx = std::sin(yaw), fz = std::cos(yaw);
+      const float rx = std::cos(yaw), rz = -std::sin(yaw);
+      const float hub_y = gy + wm.tower_height;
+
+      if (wm.is_turbine) {
+        // Tapered white tubular wind turbine tower + sleek nacelle + blinking red aviation beacon.
+        const std::array<uint8_t, 4> white_mat{232, 234, 238, 255};
+        const std::array<uint8_t, 4> grey_mat{186, 192, 198, 255};
+        push_box(out, {wm.base_pos[0], gy + wm.tower_height * 0.28f, wm.base_pos[2]}, {0.85f, 0, 0},
+                 {0, wm.tower_height * 0.28f, 0}, {0, 0, 0.85f}, white_mat);
+        push_box(out, {wm.base_pos[0], gy + wm.tower_height * 0.76f, wm.base_pos[2]}, {0.55f, 0, 0},
+                 {0, wm.tower_height * 0.26f, 0}, {0, 0, 0.55f}, white_mat);
+        push_box(out, {wm.base_pos[0] - fx * 0.6f, hub_y, wm.base_pos[2] - fz * 0.6f}, {rx * 0.85f, 0, rz * 0.85f},
+                 {0, 0.82f, 0}, {fx * 1.9f, 0, fz * 1.9f}, grey_mat);
+        // Blinking red aviation beacon atop nacelle.
+        const bool blink = std::sin(time_sec * 3.2f + wm.phase) > 0.15f;
+        push_box(out, {wm.base_pos[0] - fx * 1.2f, hub_y + 1.12f, wm.base_pos[2] - fz * 1.2f}, {0.18f, 0, 0},
+                 {0, 0.22f, 0}, {0, 0, 0.18f},
+                 blink ? std::array<uint8_t, 4>{255, 38, 28, 175} : std::array<uint8_t, 4>{92, 24, 22, 255});
+        // Rotor hub + 3 aerodynamic tapered blades.
+        const float hx = wm.base_pos[0] + fx * 1.45f;
+        const float hz = wm.base_pos[2] + fz * 1.45f;
+        push_box(out, {hx, hub_y, hz}, {rx * 0.55f, 0, rz * 0.55f}, {0, 0.55f, 0}, {fx * 0.65f, 0, fz * 0.65f},
+                 white_mat);
+        const float spin = time_sec * (0.72f + wind_spd * 0.55f) + wm.phase;
+        for (int b = 0; b < 3; ++b) {
+          const float ang = spin + float(b) * (2.0f * kPi / 3.0f);
+          const float ca = std::cos(ang), sa = std::sin(ang);
+          const float bx = rx * ca, by = sa, bz = rz * ca;
+          const float tx = -rx * sa, ty = ca, tz = -rz * sa;
+          const float r_len = wm.blade_radius;
+          const std::array<float, 3> p0{hx + tx * 0.42f, hub_y + ty * 0.42f, hz + tz * 0.42f};
+          const std::array<float, 3> p1{hx - tx * 0.42f, hub_y - ty * 0.42f, hz - tz * 0.42f};
+          const std::array<float, 3> p2{hx + bx * r_len - tx * 0.10f, hub_y + by * r_len - ty * 0.10f,
+                                        hz + bz * r_len - tz * 0.10f};
+          const std::array<float, 3> p3{hx + bx * r_len + tx * 0.10f, hub_y + by * r_len + ty * 0.10f,
+                                        hz + bz * r_len + tz * 0.10f};
+          push_quad(out, p0, p1, p2, p3, white_mat, true);
+        }
+      } else {
+        // Classic Colorado ranch steel-lattice windmill: 4 angled legs + tail vane + 8-blade wind wheel.
+        const std::array<uint8_t, 4> steel{124, 128, 134, 255};
+        const std::array<uint8_t, 4> vane_col{184, 62, 46, 255};
+        const std::array<uint8_t, 4> blade_col{198, 202, 206, 255};
+        for (int leg = 0; leg < 4; ++leg) {
+          const float la = float(leg) * (kPi * 0.5f) + 0.7854f;
+          const float lx0 = std::cos(la) * 1.45f, lz0 = std::sin(la) * 1.45f;
+          const float lx1 = std::cos(la) * 0.28f, lz1 = std::sin(la) * 0.28f;
+          const std::array<float, 3> b0{wm.base_pos[0] + lx0 - 0.08f, gy, wm.base_pos[2] + lz0};
+          const std::array<float, 3> b1{wm.base_pos[0] + lx0 + 0.08f, gy, wm.base_pos[2] + lz0};
+          const std::array<float, 3> t1{wm.base_pos[0] + lx1 + 0.06f, hub_y, wm.base_pos[2] + lz1};
+          const std::array<float, 3> t0{wm.base_pos[0] + lx1 - 0.06f, hub_y, wm.base_pos[2] + lz1};
+          push_quad(out, b0, b1, t1, t0, steel, true);
+        }
+        // Horizontal cross-bracing collar + tail rudder pointing downwind.
+        push_box(out, {wm.base_pos[0], gy + wm.tower_height * 0.5f, wm.base_pos[2]}, {0.82f, 0, 0}, {0, 0.09f, 0},
+                 {0, 0, 0.82f}, steel);
+        push_box(out, {wm.base_pos[0] - fx * 1.6f, hub_y, wm.base_pos[2] - fz * 1.6f}, {rx * 0.06f, 0, rz * 0.06f},
+                 {0, 0.65f, 0}, {fx * 1.25f, 0, fz * 1.25f}, vane_col);
+        // Spinning 8-blade ranch wheel facing into the wind.
+        const float hx = wm.base_pos[0] + fx * 0.85f;
+        const float hz = wm.base_pos[2] + fz * 0.85f;
+        const float spin = time_sec * (1.25f + wind_spd * 0.90f) + wm.phase;
+        for (int b = 0; b < 8; ++b) {
+          const float ang = spin + float(b) * (2.0f * kPi / 8.0f);
+          const float ca = std::cos(ang), sa = std::sin(ang);
+          const float bx = rx * ca, by = sa, bz = rz * ca;
+          const float tx = -rx * sa, ty = ca, tz = -rz * sa;
+          const float r0 = wm.blade_radius * 0.22f;
+          const float r1 = wm.blade_radius;
+          const std::array<float, 3> p0{hx + bx * r0 + tx * 0.16f, hub_y + by * r0 + ty * 0.16f,
+                                        hz + bz * r0 + tz * 0.16f};
+          const std::array<float, 3> p1{hx + bx * r0 - tx * 0.16f, hub_y + by * r0 - ty * 0.16f,
+                                        hz + bz * r0 - tz * 0.16f};
+          const std::array<float, 3> p2{hx + bx * r1 - tx * 0.42f, hub_y + by * r1 - ty * 0.42f,
+                                        hz + bz * r1 - tz * 0.42f};
+          const std::array<float, 3> p3{hx + bx * r1 + tx * 0.42f, hub_y + by * r1 + ty * 0.42f,
+                                        hz + bz * r1 + tz * 0.42f};
+          push_quad(out, p0, p1, p2, p3, (b % 2 == 0) ? blade_col : steel, true);
+        }
+      }
+    }
+
+    // 2d. Horizon Festival Ferris wheels (rotating spokes, upright swinging gondolas & rim night lights).
+    for (const auto& fw : state_->ferris_wheels) {
+      const double dx = double(fw.base_pos[0]) - eye_x;
+      const double dz = double(fw.base_pos[2]) - eye_z;
+      if (dx * dx + dz * dz > 1100.0 * 1100.0) continue;
+      const float gy = ground_y(fw.base_pos[0], fw.base_pos[2], fw.base_pos[1]);
+      const float cs = std::cos(fw.yaw), sn = std::sin(fw.yaw);
+      // Wheel plane lies along (rx, y), axle runs along (ax, az).
+      const float rx = cs, rz = sn;
+      const float ax = -sn, az = cs;
+      const float hub_y = gy + fw.hub_height;
+      const std::array<uint8_t, 4> frame_col{224, 228, 236, 255};
+      const std::array<uint8_t, 4> hub_col{236, 46, 92, 255};
+      const float half_w = 2.1f;
+
+      // Twin A-frame support legs + central hub axle.
+      for (int side = -1; side <= 1; side += 2) {
+        const float sx = fw.base_pos[0] + ax * (half_w * 1.35f * float(side));
+        const float sz = fw.base_pos[2] + az * (half_w * 1.35f * float(side));
+        for (int leg = -1; leg <= 1; leg += 2) {
+          const float foot_off = fw.radius * 0.55f * float(leg);
+          const std::array<float, 3> b0{sx + rx * (foot_off - 0.35f), gy, sz + rz * (foot_off - 0.35f)};
+          const std::array<float, 3> b1{sx + rx * (foot_off + 0.35f), gy, sz + rz * (foot_off + 0.35f)};
+          const std::array<float, 3> t1{sx + rx * 0.30f, hub_y, sz + rz * 0.30f};
+          const std::array<float, 3> t0{sx - rx * 0.30f, hub_y, sz - rz * 0.30f};
+          push_quad(out, b0, b1, t1, t0, frame_col, true);
+        }
+      }
+      push_box(out, {fw.base_pos[0], hub_y, fw.base_pos[2]}, {rx * 1.1f, 0, rz * 1.1f}, {0, 1.1f, 0},
+               {ax * (half_w * 1.45f), 0, az * (half_w * 1.45f)}, hub_col);
+
+      const int count = std::clamp(fw.gondolas, 6, 18);
+      const float wheel_rot = time_sec * 0.22f + fw.phase;
+      static constexpr std::array<std::array<uint8_t, 3>, 4> kGondolaCols{{
+          {236, 46, 92}, {38, 168, 232}, {252, 206, 48}, {52, 196, 134},
+      }};
+      for (int i = 0; i < count; ++i) {
+        const float a0 = wheel_rot + (2.0f * kPi * float(i)) / float(count);
+        const float a1 = wheel_rot + (2.0f * kPi * float(i + 1)) / float(count);
+        const float c0 = std::cos(a0), s0 = std::sin(a0);
+        const float c1 = std::cos(a1), s1 = std::sin(a1);
+        const float px0 = fw.base_pos[0] + rx * (c0 * fw.radius);
+        const float py0 = hub_y + s0 * fw.radius;
+        const float pz0 = fw.base_pos[2] + rz * (c0 * fw.radius);
+        const float px1 = fw.base_pos[0] + rx * (c1 * fw.radius);
+        const float py1 = hub_y + s1 * fw.radius;
+        const float pz1 = fw.base_pos[2] + rz * (c1 * fw.radius);
+
+        // Twin rim segments + radial spokes.
+        for (int side = -1; side <= 1; side += 2) {
+          const float ox = ax * (half_w * float(side));
+          const float oz = az * (half_w * float(side));
+          const std::array<float, 3> r0{px0 + ox, py0, pz0 + oz};
+          const std::array<float, 3> r1{px1 + ox, py1, pz1 + oz};
+          const std::array<float, 3> r0i{fw.base_pos[0] + rx * (c0 * (fw.radius - 0.55f)) + ox,
+                                         hub_y + s0 * (fw.radius - 0.55f),
+                                         fw.base_pos[2] + rz * (c0 * (fw.radius - 0.55f)) + oz};
+          const std::array<float, 3> r1i{fw.base_pos[0] + rx * (c1 * (fw.radius - 0.55f)) + ox,
+                                         hub_y + s1 * (fw.radius - 0.55f),
+                                         fw.base_pos[2] + rz * (c1 * (fw.radius - 0.55f)) + oz};
+          push_quad(out, r0, r1, r1i, r0i, frame_col, true);
+          // Radial spoke from hub to rim.
+          const float nx = -s0 * 0.14f, ny = c0 * 0.14f;
+          const std::array<float, 3> h0{fw.base_pos[0] + ox - rx * nx, hub_y - ny, fw.base_pos[2] + oz - rz * nx};
+          const std::array<float, 3> h1{fw.base_pos[0] + ox + rx * nx, hub_y + ny, fw.base_pos[2] + oz + rz * nx};
+          const std::array<float, 3> e1{r0[0] + rx * nx, r0[1] + ny, r0[2] + rz * nx};
+          const std::array<float, 3> e0{r0[0] - rx * nx, r0[1] - ny, r0[2] - rz * nx};
+          push_quad(out, h0, h1, e1, e0, frame_col, true);
+        }
+
+        // Upright gravity-hanging gondola cabin with subtle pendulum sway + night rim LED bulb.
+        const float swing = std::sin(time_sec * 1.35f + float(i) * 0.9f) * 0.18f;
+        const float gx_c = px0 + rx * swing;
+        const float gy_c = py0 - 1.45f;
+        const float gz_c = pz0 + rz * swing;
+        const auto& gc = kGondolaCols[size_t(i) % kGondolaCols.size()];
+        push_box(out, {gx_c, gy_c, gz_c}, {rx * 0.92f, 0, rz * 0.92f}, {0, 0.95f, 0},
+                 {ax * 1.15f, 0, az * 1.15f}, {gc[0], gc[1], gc[2], 255});
+        // Festival rim night light bulb (a=96 -> subtle bulb by day, glowing HDR LED at dusk/night).
+        const float led_pulse = 0.75f + 0.25f * std::sin(time_sec * 4.0f - float(i) * 0.8f);
+        push_box(out, {px0, py0, pz0}, {0.36f, 0, 0}, {0, 0.36f, 0}, {0, 0, 0.36f},
+                 {clamp_u8(float(gc[0]) * led_pulse), clamp_u8(float(gc[1]) * led_pulse),
+                  clamp_u8(float(gc[2]) * led_pulse), 96});
+      }
+    }
+
+    // 2e. Main Stage sweeping night searchlight / laser cones (truss housings + skyward sweeping beams).
+    for (const auto& sl : state_->stage_lights) {
+      const double dx = double(sl.base_pos[0]) - eye_x;
+      const double dz = double(sl.base_pos[2]) - eye_z;
+      if (dx * dx + dz * dz > 950.0 * 950.0) continue;
+      const float gy = ground_y(sl.base_pos[0], sl.base_pos[2], sl.base_pos[1]);
+      // Compact stage-truss projector housing (visible day & night).
+      push_box(out, {sl.base_pos[0], gy + 0.55f, sl.base_pos[2]}, {0.42f, 0, 0}, {0, 0.55f, 0}, {0, 0, 0.42f},
+               {48, 52, 58, 255});
+      // Dual-axis Lissajous sweeping beam direction (collapses off-screen in daylight via rgba.a = 24 in world_vert).
+      const float az = sl.yaw + std::sin(time_sec * 0.85f + sl.phase) * 0.95f;
+      const float tilt = 0.32f + 0.24f * std::cos(time_sec * 1.15f + sl.phase * 1.4f);
+      const float st = std::sin(tilt), ct = std::cos(tilt);
+      const std::array<float, 3> bdir{std::sin(az) * st, ct, std::cos(az) * st};
+      const std::array<float, 3> side1 = vnorm(vcross(bdir, {0.0f, 0.0f, 1.0f}));
+      const std::array<float, 3> side2 = vnorm(vcross(bdir, side1));
+      const std::array<float, 3> base{sl.base_pos[0], gy + 1.05f, sl.base_pos[2]};
+      const std::array<float, 3> tip{base[0] + bdir[0] * sl.beam_length, base[1] + bdir[1] * sl.beam_length,
+                                     base[2] + bdir[2] * sl.beam_length};
+      const float r_base = 0.16f;
+      const float r_tip = 0.72f;
+      const std::array<uint8_t, 4> beam_rgba{sl.beam_rgb[0], sl.beam_rgb[1], sl.beam_rgb[2], 24};
+      for (int card = 0; card < 2; ++card) {
+        const auto& sd = (card == 0) ? side1 : side2;
+        const std::array<float, 3> b0{base[0] - sd[0] * r_base, base[1] - sd[1] * r_base, base[2] - sd[2] * r_base};
+        const std::array<float, 3> b1{base[0] + sd[0] * r_base, base[1] + sd[1] * r_base, base[2] + sd[2] * r_base};
+        const std::array<float, 3> t1{tip[0] + sd[0] * r_tip, tip[1] + sd[1] * r_tip, tip[2] + sd[2] * r_tip};
+        const std::array<float, 3> t0{tip[0] - sd[0] * r_tip, tip[1] - sd[1] * r_tip, tip[2] - sd[2] * r_tip};
+        push_quad(out, b0, b1, t1, t0, beam_rgba, true);
+      }
+    }
+
+    // 2f. Circling Horizon Festival blimps & banner-towing planes overhead.
+    for (const auto& ab : state_->aircraft_banners) {
+      const float theta = time_sec * ab.angular_speed + ab.phase;
+      const float cx = ab.center_pos[0] + std::cos(theta) * ab.orbit_radius;
+      const float cz = ab.center_pos[2] + std::sin(theta) * ab.orbit_radius;
+      const float cy = ab.center_pos[1] + std::sin(theta * 2.0f + ab.phase) * (ab.is_blimp ? 4.0f : 6.0f);
+      const double dx = double(cx) - eye_x;
+      const double dz = double(cz) - eye_z;
+      if (dx * dx + dz * dz > 1600.0 * 1600.0) continue;
+
+      // Tangent velocity unit vector along circular orbit.
+      const float fx = -std::sin(theta), fz = std::cos(theta);
+      const float rx = std::cos(theta), rz = std::sin(theta);
+
+      if (ab.is_blimp) {
+        // Tapered Horizon Festival dirigible hull + 4 stabilizer tail fins + cabin gondola + night marquee strip.
+        const std::array<uint8_t, 4> hull_main{ab.primary_rgb[0], ab.primary_rgb[1], ab.primary_rgb[2], 255};
+        const std::array<uint8_t, 4> hull_acc{ab.accent_rgb[0], ab.accent_rgb[1], ab.accent_rgb[2], 255};
+        const std::array<uint8_t, 4> cabin_col{64, 72, 82, 255};
+        // Center body, tapered nose, tapered tail.
+        push_box(out, {cx, cy, cz}, {rx * 4.4f, 0, rz * 4.4f}, {0, 4.6f, 0}, {fx * 11.5f, 0, fz * 11.5f}, hull_main);
+        push_box(out, {cx + fx * 14.2f, cy, cz + fz * 14.2f}, {rx * 2.6f, 0, rz * 2.6f}, {0, 2.7f, 0},
+                 {fx * 4.2f, 0, fz * 4.2f}, hull_acc);
+        push_box(out, {cx - fx * 14.5f, cy, cz - fz * 14.5f}, {rx * 2.3f, 0, rz * 2.3f}, {0, 2.4f, 0},
+                 {fx * 4.5f, 0, fz * 4.5f}, hull_main);
+        // Vertical & horizontal tail fins.
+        push_box(out, {cx - fx * 16.5f, cy, cz - fz * 16.5f}, {rx * 0.25f, 0, rz * 0.25f}, {0, 5.2f, 0},
+                 {fx * 2.8f, 0, fz * 2.8f}, hull_acc);
+        push_box(out, {cx - fx * 16.5f, cy, cz - fz * 16.5f}, {rx * 5.0f, 0, rz * 5.0f}, {0, 0.25f, 0},
+                 {fx * 2.8f, 0, fz * 2.8f}, hull_acc);
+        // Underside gondola cabin + glowing side Festival marquee strips (a=96).
+        push_box(out, {cx + fx * 1.2f, cy - 5.2f, cz + fz * 1.2f}, {rx * 1.3f, 0, rz * 1.3f}, {0, 1.1f, 0},
+                 {fx * 3.8f, 0, fz * 3.8f}, cabin_col);
+        const float mq = 0.78f + 0.22f * std::sin(time_sec * 3.5f + ab.phase);
+        const std::array<uint8_t, 4> marquee{clamp_u8(float(ab.accent_rgb[0]) * mq),
+                                             clamp_u8(float(ab.accent_rgb[1]) * mq),
+                                             clamp_u8(float(ab.accent_rgb[2]) * mq), 96};
+        for (int s = -1; s <= 1; s += 2) {
+          push_box(out, {cx + rx * (4.55f * float(s)), cy, cz + rz * (4.55f * float(s))},
+                   {rx * 0.12f, 0, rz * 0.12f}, {0, 1.35f, 0}, {fx * 7.8f, 0, fz * 7.8f}, marquee);
+        }
+      } else {
+        // Banked banner-towing biplane + spinning propeller + tow cable + 5-segment waving Horizon sky banner.
+        const float bank = 0.24f;
+        const float cb = std::cos(bank), sb = std::sin(bank);
+        const std::array<float, 3> r_bank{rx * cb, sb, rz * cb};
+        const std::array<float, 3> u_bank{-rx * sb, cb, -rz * sb};
+        const std::array<uint8_t, 4> body_col{ab.primary_rgb[0], ab.primary_rgb[1], ab.primary_rgb[2], 255};
+        const std::array<uint8_t, 4> wing_col{ab.accent_rgb[0], ab.accent_rgb[1], ab.accent_rgb[2], 255};
+        const std::array<uint8_t, 4> dark_col{58, 62, 68, 255};
+        // Fuselage, main wing, tailplane, vertical fin.
+        push_box(out, {cx, cy, cz}, {r_bank[0] * 0.65f, r_bank[1] * 0.65f, r_bank[2] * 0.65f},
+                 {u_bank[0] * 0.65f, u_bank[1] * 0.65f, u_bank[2] * 0.65f}, {fx * 4.4f, 0, fz * 4.4f}, body_col);
+        push_box(out, {cx + fx * 0.7f, cy, cz + fz * 0.7f},
+                 {r_bank[0] * 6.2f, r_bank[1] * 6.2f, r_bank[2] * 6.2f},
+                 {u_bank[0] * 0.16f, u_bank[1] * 0.16f, u_bank[2] * 0.16f}, {fx * 1.15f, 0, fz * 1.15f}, wing_col);
+        push_box(out, {cx - fx * 3.8f, cy, cz - fz * 3.8f},
+                 {r_bank[0] * 2.1f, r_bank[1] * 2.1f, r_bank[2] * 2.1f},
+                 {u_bank[0] * 0.12f, u_bank[1] * 0.12f, u_bank[2] * 0.12f}, {fx * 0.65f, 0, fz * 0.65f}, wing_col);
+        push_box(out, {cx - fx * 3.8f + u_bank[0] * 0.9f, cy + u_bank[1] * 0.9f, cz - fz * 3.8f + u_bank[2] * 0.9f},
+                 {r_bank[0] * 0.12f, r_bank[1] * 0.12f, r_bank[2] * 0.12f},
+                 {u_bank[0] * 1.1f, u_bank[1] * 1.1f, u_bank[2] * 1.1f}, {fx * 0.75f, 0, fz * 0.75f}, body_col);
+        // Spinning nose propeller blades.
+        const float pa = time_sec * 24.0f + ab.phase;
+        const float pc = std::cos(pa), ps = std::sin(pa);
+        const std::array<float, 3> p_dir{r_bank[0] * pc + u_bank[0] * ps, r_bank[1] * pc + u_bank[1] * ps,
+                                         r_bank[2] * pc + u_bank[2] * ps};
+        push_box(out, {cx + fx * 4.55f, cy, cz + fz * 4.55f}, {p_dir[0] * 1.35f, p_dir[1] * 1.35f, p_dir[2] * 1.35f},
+                 {fx * 0.08f, 0.12f, fz * 0.08f}, {0.08f, 0, 0.08f}, dark_col);
+        // Trailing tow rope + 5-segment rippling Horizon Festival sky banner.
+        const float rope_len = 11.0f;
+        const float ban_len = 22.0f;
+        const float ban_h = 3.2f;
+        const std::array<float, 3> tail_pt{cx - fx * 4.4f, cy, cz - fz * 4.4f};
+        const std::array<float, 3> ban_start{cx - fx * (4.4f + rope_len), cy - 0.6f, cz - fz * (4.4f + rope_len)};
+        push_quad(out, tail_pt, ban_start, {ban_start[0], ban_start[1] + 0.12f, ban_start[2]},
+                  {tail_pt[0], tail_pt[1] + 0.12f, tail_pt[2]}, dark_col, true);
+        constexpr int kBanSegs = 5;
+        for (int s = 0; s < kBanSegs; ++s) {
+          const float t0 = float(s) / float(kBanSegs);
+          const float t1 = float(s + 1) / float(kBanSegs);
+          const float d0 = t0 * ban_len;
+          const float d1 = t1 * ban_len;
+          const float w0 = std::sin(time_sec * 5.2f - t0 * 4.8f + ab.phase) * 0.85f * t0;
+          const float w1 = std::sin(time_sec * 5.2f - t1 * 4.8f + ab.phase) * 0.85f * t1;
+          const std::array<float, 3> q00{ban_start[0] - fx * d0 + rx * w0, ban_start[1] - ban_h * 0.5f,
+                                         ban_start[2] - fz * d0 + rz * w0};
+          const std::array<float, 3> q10{ban_start[0] - fx * d1 + rx * w1, ban_start[1] - ban_h * 0.5f,
+                                         ban_start[2] - fz * d1 + rz * w1};
+          const std::array<float, 3> q11{q10[0], ban_start[1] + ban_h * 0.5f, q10[2]};
+          const std::array<float, 3> q01{q00[0], ban_start[1] + ban_h * 0.5f, q00[2]};
+          const auto& bc = (s % 2 == 0) ? body_col : wing_col;
+          push_quad(out, q00, q10, q11, q01, bc, true);
+        }
+      }
+    }
+
+    // 2g. Intersection traffic light housings with smooth green/yellow/red emissive cycling.
+    for (const auto& tl : state_->traffic_lights) {
+      const double dx = double(tl.base_pos[0]) - eye_x;
+      const double dz = double(tl.base_pos[2]) - eye_z;
+      if (dx * dx + dz * dz > 320.0 * 320.0) continue;
+      const float gy = ground_y(tl.base_pos[0], tl.base_pos[2], tl.base_pos[1]);
+      const float ax = std::cos(tl.yaw), az = std::sin(tl.yaw);
+      const float fx = -az, fz = ax;  // signal face perpendicular to cantilever arm
+      const std::array<uint8_t, 4> pole_col{88, 94, 100, 255};
+      const std::array<uint8_t, 4> housing_col{34, 36, 40, 255};
+      // Vertical shoulder pole + horizontal cantilever mast arm.
+      push_box(out, {tl.base_pos[0], gy + tl.pole_height * 0.5f, tl.base_pos[2]}, {0.14f, 0, 0},
+               {0, tl.pole_height * 0.5f, 0}, {0, 0, 0.14f}, pole_col);
+      const float arm_y = gy + tl.pole_height - 0.35f;
+      push_box(out, {tl.base_pos[0] + ax * (tl.arm_length * 0.5f), arm_y, tl.base_pos[2] + az * (tl.arm_length * 0.5f)},
+               {ax * (tl.arm_length * 0.5f), 0, az * (tl.arm_length * 0.5f)}, {0, 0.11f, 0},
+               {fx * 0.11f, 0, fz * 0.11f}, pole_col);
+      // Hanging dark signal head housing + 3 smooth-cycling Red/Yellow/Green emissive lenses.
+      const float hx = tl.base_pos[0] + ax * (tl.arm_length - 0.55f);
+      const float hz = tl.base_pos[2] + az * (tl.arm_length - 0.55f);
+      const float hy = arm_y - 0.72f;
+      push_box(out, {hx, hy, hz}, {ax * 0.24f, 0, az * 0.24f}, {0, 0.62f, 0}, {fx * 0.20f, 0, fz * 0.20f},
+               housing_col);
+
+      const TrafficLightWeights lw = evaluate_traffic_light_cycle(time_sec, tl.phase_offset);
+      auto lens_rgba = [](float w, uint8_t r, uint8_t g, uint8_t b) -> std::array<uint8_t, 4> {
+        const float lit = 0.14f + 0.86f * std::clamp(w, 0.0f, 1.0f);
+        // Active lens uses alpha < 0.98 (175) so world_frag adds crisp emissive signal glow day & night.
+        const uint8_t alpha = (w > 0.15f) ? clamp_u8(255.0f - 85.0f * std::clamp(w, 0.0f, 1.0f)) : 255u;
+        return {clamp_u8(float(r) * lit), clamp_u8(float(g) * lit), clamp_u8(float(b) * lit), alpha};
+      };
+      const std::array<uint8_t, 4> red_c = lens_rgba(lw.red, 255, 42, 34);
+      const std::array<uint8_t, 4> yel_c = lens_rgba(lw.yellow, 255, 198, 28);
+      const std::array<uint8_t, 4> grn_c = lens_rgba(lw.green, 38, 245, 96);
+      const float lens_y[3] = {hy + 0.36f, hy, hy - 0.36f};
+      const std::array<uint8_t, 4> lens_cols[3] = {red_c, yel_c, grn_c};
+      for (int li = 0; li < 3; ++li) {
+        // Emit lenses on both front and back faces of the intersection signal housing.
+        for (int dir = -1; dir <= 1; dir += 2) {
+          push_box(out, {hx + fx * (0.21f * float(dir)), lens_y[li], hz + fz * (0.21f * float(dir))},
+                   {ax * 0.14f, 0, az * 0.14f}, {0, 0.14f, 0}, {fx * 0.03f, 0, fz * 0.03f}, lens_cols[li]);
+        }
       }
     }
   }
 
-  // 2. Roadside wind-swaying grass quads (_0x00005007 / TrackSettings grass parameters).
+  // 3. Roadside wind-swaying grass quads (_0x00005007 / TrackSettings grass parameters)
+  // with per-spatial-cell cached ground heights (eliminates ~800 uncached CPU BVH raycasts/frame).
   if (include_grass && ground && post_cfg.grass_height_scale > 0.01f) {
     const float max_r = std::clamp(post_cfg.grass_fade_end * 0.20f, 22.0f, 52.0f);
     const float fade_start = std::clamp(post_cfg.grass_fade_start * 0.14f, 10.0f, max_r - 4.0f);
@@ -2070,16 +2693,25 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
         const float d2 = dx * dx + dz * dz;
         if (d2 > max_r * max_r || d2 < 2.5f * 2.5f) continue;
 
-        drive::Hit h;
-        const double start_y = eye_y + 20.0;
-        if (!ground->raycast({double(ox), start_y, double(oz)}, {0.0, -1.0, 0.0}, 60.0, h) || h.normal.y < 0.75) {
-          continue;
+        const uint64_t ckey = pack_grid_key(gx, gz);
+        CachedGrassCell sample{};
+        if (const auto it = state_->grass_ground_cache.find(ckey); it != state_->grass_ground_cache.end()) {
+          sample = it->second;
+        } else {
+          drive::Hit h;
+          const double start_y = eye_y + 20.0;
+          if (ground->raycast({double(ox), start_y, double(oz)}, {0.0, -1.0, 0.0}, 60.0, h) && h.normal.y >= 0.75) {
+            // Strict allowlist from physics/surfaceTypes.xml: only grow grass on Grass (2),
+            // Grasscrete (13), and SlowGrass (25) — never on Asphalt (0), Dirt roads, or kerbs.
+            if (h.surface == 2 || h.surface == 13 || h.surface == 25) {
+              sample.y = float(start_y - h.distance);
+              sample.grow = true;
+            }
+          }
+          state_->grass_ground_cache.emplace(ckey, sample);
         }
-        // Strict allowlist from physics/surfaceTypes.xml: only grow grass on Grass (2),
-        // Grasscrete (13), and SlowGrass (25) — never on Asphalt (0), Dirt roads, or kerbs.
-        if (h.surface != 2 && h.surface != 13 && h.surface != 25) {
-          continue;
-        }
+        if (!sample.grow) continue;
+
         const float dist = std::sqrt(d2);
         const float fade = 1.0f - std::clamp((dist - fade_start) / std::max(max_r - fade_start, 1.0f), 0.0f, 1.0f);
         if (fade <= 0.05f) continue;
@@ -2087,7 +2719,7 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
         const float h_rand = 0.16f + 0.18f * hash_01(gx, gz, 211u);
         const float gh = h_rand * std::clamp(post_cfg.grass_height_scale, 0.3f, 2.0f) * fade;
         const float w = 0.035f + 0.028f * hash_01(gx, gz, 251u);
-        const float gy = float(start_y - h.distance);
+        const float gy = sample.y;
         const float sway = std::sin(time_sec * (1.8f + wind_spd * 1.1f) + ox * 0.28f + oz * 0.22f) *
                            (0.08f + wind_amp * 0.35f) * gh;
         const float dry = hash_01(gx, gz, 307u);
@@ -2112,7 +2744,6 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
       }
     }
   }
-  (void)eye_y;
 }
 
 void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, double eye_z, float time_sec,

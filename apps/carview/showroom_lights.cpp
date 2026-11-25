@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 namespace carview {
 
@@ -56,8 +57,8 @@ void Showroom::load_car_lamps(const std::filesystem::path& game_root, const std:
 
 void Showroom::update_frame_cookie_descriptor() {
   if (!r_.device_ || !headlight_cookie_.view) return;
-  for (VkDescriptorSet target : {frame_set_, shadow_set_, shadow_set_mid_, shadow_set_far_, env_frame_set_}) {
-    if (!target) continue;
+  for (VkDescriptorSet target : {frame_set_, frame_set_dip_, shadow_set_, shadow_set_mid_, shadow_set_far_, env_frame_set_}) {
+    if (!target || target == frame_set_fullbeam_) continue;
     VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet = target;
@@ -67,6 +68,62 @@ void Showroom::update_frame_cookie_descriptor() {
     w.pImageInfo = &cookie;
     vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
   }
+}
+
+void Showroom::sync_fullbeam_frame_set(VkDescriptorSet dip_set, VkImageView cube_view, VkSampler cube_sampler) {
+  if (guest_ || !r_.device_ || !pool_ || !frame_layout_ || !headlight_cookie_full_.view || !dip_set) return;
+  VkDescriptorSet fresh = VK_NULL_HANDLE;
+  VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  ai.descriptorPool = pool_;
+  ai.descriptorSetCount = 1;
+  ai.pSetLayouts = &frame_layout_;
+  if (vkAllocateDescriptorSets(r_.device_, &ai, &fresh) != VK_SUCCESS || !fresh) return;
+
+  VkDescriptorBufferInfo buffer{frame_buffer_.buffer, 0, sizeof(ShowroomFrame)};
+  VkImageView use_cube = cube_view
+                             ? cube_view
+                             : (bound_dyn_env_view_
+                                    ? bound_dyn_env_view_
+                                    : ((dyn_env_bound_ && dyn_env_.view) ? dyn_env_.view : environment_.view));
+  VkSampler use_sampler = cube_sampler ? cube_sampler : sampler_;
+  VkDescriptorImageInfo cube{use_sampler, use_cube, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo static_cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo map_raw{r_.shadow_raw_sampler_, r_.shadow_map_.view,
+                                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo cookie{sampler_, headlight_cookie_full_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
+  const VkImageView mirror_view =
+      (dyn_env_ready_ && mirror_tex_.view) ? mirror_tex_.view : gpu_textures_[1].view;
+  VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorBufferInfo inst_buf{guest_ ? empty_inst_ssbo_.buffer : car_inst_buf_.buf.buffer, 0, VK_WHOLE_SIZE};
+  VkDescriptorImageInfo dirt_p{sampler_, shared_dirt_pattern_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  const VkImageView dm_view = (has_car_dirt_mask_ && car_dirt_mask_.view) ? car_dirt_mask_.view : shared_dirt_mask_.view;
+  VkDescriptorImageInfo dirt_m{sampler_, dm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo gcrack{sampler_, shared_glass_crack_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkWriteDescriptorSet writes[12]{};
+  for (int i = 0; i < 12; ++i) {
+    writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[i].dstSet = fresh;
+    writes[i].dstBinding = uint32_t(i);
+    writes[i].descriptorCount = 1;
+  }
+  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, writes[0].pBufferInfo = &buffer;
+  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[1].pImageInfo = &cube;
+  writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[2].pImageInfo = &map;
+  writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[3].pImageInfo = &cookie;
+  writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, writes[4].pBufferInfo = &hl_buf;
+  writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[5].pImageInfo = &mir;
+  writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writes[6].pBufferInfo = &inst_buf;
+  writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[7].pImageInfo = &static_cube;
+  writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[8].pImageInfo = &dirt_p;
+  writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[9].pImageInfo = &dirt_m;
+  writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[10].pImageInfo = &gcrack;
+  writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[11].pImageInfo = &map_raw;
+  vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
+  frame_set_dip_ = dip_set;
+  frame_set_fullbeam_ = fresh;
 }
 
 bool Showroom::upload_carlights(const std::filesystem::path& media_dir, std::string& error) {
@@ -132,6 +189,43 @@ bool Showroom::upload_carlights(const std::filesystem::path& media_dir, std::str
     r_.destroy_image(headlight_cookie_);
     headlight_cookie_ = cookie;
     update_frame_cookie_descriptor();
+  }
+  // R3-REN-10: Also load media/carlights/headlight_beam_full.xds for high-beam projection when present.
+  {
+    const auto full_path = carlights / "headlight_beam_full.xds";
+    std::error_code fec;
+    if (std::filesystem::exists(full_path, fec)) {
+      std::vector<uint8_t> raw;
+      if (FILE* f = std::fopen(full_path.string().c_str(), "rb")) {
+        std::fseek(f, 0, SEEK_END);
+        const long sz = std::ftell(f);
+        if (sz > 0) {
+          raw.resize(size_t(sz));
+          std::fseek(f, 0, SEEK_SET);
+          if (std::fread(raw.data(), 1, raw.size(), f) == raw.size()) {
+            auto xr = fh1::decode_xds(raw);
+            if (!xr.levels.empty() && xr.levels[0].width > 0 && xr.levels[0].height > 0 &&
+                xr.levels[0].rgba.size() == size_t(xr.levels[0].width) * xr.levels[0].height * 4) {
+              bake::Texture tex;
+              tex.format = bake::TextureFormat::kRgba8;
+              tex.levels.push_back({xr.levels[0].width, xr.levels[0].height, std::move(xr.levels[0].rgba)});
+              GpuTexture full_cookie;
+              std::string full_err;
+              if (upload_texture(&tex, false, full_cookie, full_err)) {
+                headlight_cookie_full_ = full_cookie;
+                Renderer* rptr = &r_;
+                GpuTexture doomed_full = headlight_cookie_full_;
+                retired_.push_back({std::numeric_limits<uint64_t>::max(), [rptr, doomed_full]() mutable {
+                                      rptr->destroy_image(doomed_full);
+                                    }});
+                sync_fullbeam_frame_set(frame_set_, VK_NULL_HANDLE, VK_NULL_HANDLE);
+              }
+            }
+          }
+        }
+        std::fclose(f);
+      }
+    }
   }
 
   for (int i = 0; i < 7; ++i) {
@@ -287,22 +381,31 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
     if (len > 1e-6f) r[0] /= len, r[1] /= len, r[2] /= len;
     return r;
   };
-  auto build_beam = [&](const float render_from_body[16], const std::vector<fh1::CarbinLampPoint>& pts,
-                        const drive::LampShaderVectors& vecs, HeadlightBeamGpu& out) -> bool {
-    const float head_amt = vecs.dynamic_lights_2[0];
-    if (head_amt <= 0.01f) return false;
-    const bool fullbeam = vecs.dynamic_lights_2[1] > 0.5f;
-    const auto spec = drive::resolve_headlight_beam(pts, fullbeam);
-    const auto origin = transform_point(render_from_body, spec.origin_body);
-    const float pitch_rad = (fullbeam ? -2.2f : -6.2f) * (3.14159265f / 180.0f);
-    const std::array<float, 3> fwd_b = {0.0f, std::sin(pitch_rad), std::cos(pitch_rad)};
-    const std::array<float, 3> up_b = {0.0f, std::cos(pitch_rad), -std::sin(pitch_rad)};
-    const std::array<float, 3> right_b = {1.0f, 0.0f, 0.0f};
+  const bool has_full_cookie = headlight_cookie_full_.view != VK_NULL_HANDLE;
+  const bool player_fullbeam = draw_car_ && world_lit_ && (lamp_vectors_.dynamic_lights_2[1] > 0.5f);
+  if (frame_set_dip_ && frame_set_fullbeam_) {
+    frame_set_ = player_fullbeam ? frame_set_fullbeam_ : frame_set_dip_;
+  }
+  auto build_beam_at = [&](const float render_from_body[16], const std::array<float, 3>& origin_body,
+                           const std::array<float, 3>& color, float head_amt, bool fullbeam, float yaw_deg,
+                           float power_scale, HeadlightBeamGpu& out) -> bool {
+    if (head_amt <= 0.01f || power_scale <= 0.005f) return false;
+    const auto origin = transform_point(render_from_body, origin_body);
+    const float pitch_rad = (fullbeam ? -1.8f : -6.0f) * (3.14159265f / 180.0f);
+    const float yaw_rad = yaw_deg * (3.14159265f / 180.0f);
+    const float cp = std::cos(pitch_rad), sp = std::sin(pitch_rad);
+    const float cy = std::cos(yaw_rad), sy = std::sin(yaw_rad);
+    const std::array<float, 3> fwd_b = {sy * cp, sp, cy * cp};
+    const std::array<float, 3> right_b = {cy, 0.0f, -sy};
+    const std::array<float, 3> up_b = {-sy * sp, cp, -cy * sp};
     const auto fwd = transform_dir(render_from_body, fwd_b);
     const auto up = transform_dir(render_from_body, up_b);
     const auto right = transform_dir(render_from_body, right_b);
-    const float tan_x = std::tan((fullbeam ? 36.0f : 42.0f) * (3.14159265f / 180.0f));
-    const float tan_y = std::tan((fullbeam ? 18.0f : 19.0f) * (3.14159265f / 180.0f));
+    // High beam extends reach and widens spread (extra wide/long fallback when headlight_beam_full.xds is absent).
+    const float half_fov_x_deg = fullbeam ? (has_full_cookie ? 40.0f : 46.0f) : 40.0f;
+    const float half_fov_y_deg = fullbeam ? (has_full_cookie ? 19.5f : 21.5f) : 18.5f;
+    const float tan_x = std::tan(half_fov_x_deg * (3.14159265f / 180.0f));
+    const float tan_y = std::tan(half_fov_y_deg * (3.14159265f / 180.0f));
     const float dx = -(right[0] * origin[0] + right[1] * origin[1] + right[2] * origin[2]);
     const float dy = -(up[0] * origin[0] + up[1] * origin[1] + up[2] * origin[2]);
     const float dz = -(fwd[0] * origin[0] + fwd[1] * origin[1] + fwd[2] * origin[2]);
@@ -312,19 +415,28 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
     p[1] = -up[0] / tan_y;    p[5] = -up[1] / tan_y;    p[9] = -up[2] / tan_y;     p[13] = -dy / tan_y;
     p[2] = fwd[0];            p[6] = fwd[1];            p[10] = fwd[2];            p[14] = dz;
     p[3] = fwd[0];            p[7] = fwd[1];            p[11] = fwd[2];            p[15] = dz;
+    const float range_m = fullbeam ? (has_full_cookie ? 105.0f : 115.0f) : 58.0f;
     out.origin_range[0] = origin[0];
     out.origin_range[1] = origin[1];
     out.origin_range[2] = origin[2];
-    out.origin_range[3] = spec.range_m;
+    out.origin_range[3] = range_m;
     out.dir_power[0] = fwd[0];
     out.dir_power[1] = fwd[1];
     out.dir_power[2] = fwd[2];
-    out.dir_power[3] = (fullbeam ? 7.5f : 5.8f) * head_amt;
-    out.color[0] = spec.color[0];
-    out.color[1] = spec.color[1];
-    out.color[2] = spec.color[2];
+    out.dir_power[3] = (fullbeam ? 7.8f : 5.8f) * head_amt * power_scale;
+    out.color[0] = color[0];
+    out.color[1] = color[1];
+    out.color[2] = color[2];
     out.color[3] = 1.0f;
     return true;
+  };
+  auto build_beam = [&](const float render_from_body[16], const std::vector<fh1::CarbinLampPoint>& pts,
+                        const drive::LampShaderVectors& vecs, HeadlightBeamGpu& out) -> bool {
+    const float head_amt = vecs.dynamic_lights_2[0];
+    if (head_amt <= 0.01f) return false;
+    const bool fullbeam = vecs.dynamic_lights_2[1] > 0.5f;
+    const auto spec = drive::resolve_headlight_beam(pts, fullbeam);
+    return build_beam_at(render_from_body, spec.origin_body, spec.color, head_amt, fullbeam, 0.0f, 1.0f, out);
   };
 
   // .carbin lamp points live in car model space (same vertical origin as body mesh,
@@ -336,18 +448,42 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
   HeadlightUbo hl{};
   const float night_factor = tod_active_ ? std::clamp(tod_state_.switch_on_lights, 0.0f, 1.0f) : 0.0f;
   int beam_count = 0;
-  // Player headlight beam first (when car drawn and headlamps active).
-  // Heavy front corner damage dims/flickers or extinguishes the player's projected headlight beam.
-  if (draw_car_ && world_lit_) {
+  // R3-REN-10: Player dual Left + Right headlamp projectors gated independently by
+  // damage_corners_[0] (FL) and damage_corners_[1] (FR) so smashing one front corner
+  // kills only that side's beam.
+  if (draw_car_ && world_lit_ && lamp_vectors_.dynamic_lights_2[0] > 0.01f) {
     float ltm[16];
     lamp_to_model(body_to_model_, ltm);
-    const float front_dmg = damage_zones_[0] * damage_dirt_[3];
-    if (front_dmg < 0.88f && build_beam(ltm, lamp_points_, lamp_vectors_, hl.beams[beam_count])) {
-      if (front_dmg > 0.58f) {
-        const float flicker = 0.5f + 0.5f * std::sin(tod_real_time_ * 27.0f + std::sin(tod_real_time_ * 7.0f) * 3.0f);
-        const float alive = std::clamp(1.0f - (front_dmg - 0.58f) / 0.30f, 0.08f, 1.0f);
-        hl.beams[beam_count].dir_power[3] *= alive * (0.45f + 0.55f * flicker);
-      }
+    const float head_amt = lamp_vectors_.dynamic_lights_2[0];
+    const auto spec = drive::resolve_headlight_beam(lamp_points_, player_fullbeam);
+    std::vector<float> pts_xyz;
+    std::vector<uint8_t> pts_mask;
+    pts_xyz.reserve(lamp_points_.size() * 3u);
+    pts_mask.reserve(lamp_points_.size());
+    for (const auto& pt : lamp_points_) {
+      pts_xyz.push_back(pt.position[0]);
+      pts_xyz.push_back(pt.position[1]);
+      pts_xyz.push_back(pt.position[2]);
+      pts_mask.push_back(pt.channel_mask);
+    }
+    const auto dual =
+        resolve_dual_headlight_origins(pts_xyz.data(), pts_mask.data(), pts_mask.size(), spec.origin_body);
+    const bool has_corner_dmg = (damage_corners_[0] > 0.001f || damage_corners_[1] > 0.001f);
+    const float legacy_front_dmg = damage_zones_[0] * damage_dirt_[3];
+    const float fl_mult =
+        eval_headlight_corner_damage(damage_corners_[0], legacy_front_dmg, has_corner_dmg, tod_real_time_, 0.0f);
+    const float fr_mult =
+        eval_headlight_corner_damage(damage_corners_[1], legacy_front_dmg, has_corner_dmg, tod_real_time_, 1.73f);
+    // Calibrate dual overlapping beams (~0.64x each) so center road illumination stays natural
+    // while distinct L/R pools separate crisply on close walls and vehicles.
+    if (fl_mult > 0.005f && beam_count < 16 &&
+        build_beam_at(ltm, dual.left, spec.color, head_amt, player_fullbeam, -1.5f, 0.64f * fl_mult,
+                      hl.beams[beam_count])) {
+      ++beam_count;
+    }
+    if (fr_mult > 0.005f && beam_count < 16 &&
+        build_beam_at(ltm, dual.right, spec.color, head_amt, player_fullbeam, +1.5f, 0.64f * fr_mult,
+                      hl.beams[beam_count])) {
       ++beam_count;
     }
   }
@@ -417,6 +553,74 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
     vkCmdPipelineBarrier2(cmd, &dep);
   }
 
+  // R3-REN-10 & R3-REN-19: Populate dynamic car point lights (player brake/reverse/backfire spill
+  // + top-N nearest active night streetlamp/tunnel fixtures) and front/rear brake rotor heat.
+  std::memset(frame_.dyn_light_pos, 0, sizeof(frame_.dyn_light_pos));
+  std::memset(frame_.dyn_light_col, 0, sizeof(frame_.dyn_light_col));
+  frame_.dyn_light_meta[0] = 0.0f;
+  frame_.dyn_light_meta[1] = rotor_glow_front_;
+  frame_.dyn_light_meta[2] = rotor_glow_rear_;
+  frame_.dyn_light_meta[3] = 0.0f;
+  int dyn_light_count = 0;
+  auto push_dyn_light = [&](float px, float py, float pz, float radius_m, float r, float g, float b, float spec_scale) {
+    if (dyn_light_count >= 6) return;
+    frame_.dyn_light_pos[dyn_light_count][0] = px;
+    frame_.dyn_light_pos[dyn_light_count][1] = py;
+    frame_.dyn_light_pos[dyn_light_count][2] = pz;
+    frame_.dyn_light_pos[dyn_light_count][3] = radius_m;
+    frame_.dyn_light_col[dyn_light_count][0] = r;
+    frame_.dyn_light_col[dyn_light_count][1] = g;
+    frame_.dyn_light_col[dyn_light_count][2] = b;
+    frame_.dyn_light_col[dyn_light_count][3] = spec_scale;
+    ++dyn_light_count;
+  };
+  if (world_lit_) {
+    const float rear_z = have_bounds_ ? bounds_max_[2] : 2.15f;
+    // 1) Exhaust backfire flash point light detected from near-car hot additive flame particles.
+    if (draw_car_ && particle_add_count_ > 0 && particle_buf_.ready()) {
+      const auto* pdata = reinterpret_cast<const ParticleGpu*>(particle_buf_.cpu.data());
+      const uint32_t begin_i = std::min(particle_alpha_count_, kMaxParticleGpu);
+      const uint32_t end_i = std::min(particle_alpha_count_ + particle_add_count_, kMaxParticleGpu);
+      double sx = 0.0, sy = 0.0, sz = 0.0, wsum = 0.0;
+      float max_e = 0.0f;
+      for (uint32_t pi = begin_i; pi < end_i; ++pi) {
+        const auto& sp = pdata[pi];
+        const float px = sp.pos_sx[0], py = sp.pos_sx[1], pz = sp.pos_sx[2];
+        const float d2 = px * px + py * py + pz * pz;
+        if (d2 > 16.0f || pz < 0.4f) continue;  // exhaust sits behind car center (+Z in model space)
+        const float alpha = sp.color[3];
+        if (alpha < 0.05f || sp.color[0] < 0.35f) continue;
+        const float e = std::min(alpha * (sp.color[0] + sp.color[1] * 0.5f), 2.5f);
+        sx += double(px) * e;
+        sy += double(py) * e;
+        sz += double(pz) * e;
+        wsum += double(e);
+        max_e = std::max(max_e, e);
+      }
+      if (wsum > 0.08 && max_e > 0.12f) {
+        const float cx = float(sx / wsum);
+        const float cy = float(sy / wsum);
+        const float cz = float(sz / wsum);
+        const float inten = std::clamp(max_e * 1.65f, 0.35f, 2.8f) * (0.65f + 0.55f * night_factor);
+        push_dyn_light(cx, cy + 0.12f, cz + 0.18f, 6.5f, 3.6f * inten, 1.35f * inten, 0.28f * inten, 1.65f);
+      }
+    }
+    // 2) Active player brake lamp spill light (rear bumper, spoiler, trunk, close trailing rivals).
+    if (draw_car_ && lamp_vectors_.dynamic_lights_amount[0] > 0.05f &&
+        (damage_corners_[2] < 0.45f || damage_corners_[3] < 0.45f)) {
+      const float brk = std::clamp(lamp_vectors_.dynamic_lights_amount[0], 0.0f, 1.0f);
+      const float gain = brk * (0.40f + 0.65f * night_factor);
+      push_dyn_light(0.0f, 0.78f, rear_z + 0.38f, 6.8f, 2.5f * gain, 0.14f * gain, 0.05f * gain, 1.15f);
+    }
+    // 3) Active player reverse lamp spill light.
+    if (draw_car_ && lamp_vectors_.dynamic_lights_amount[1] > 0.05f) {
+      const float rev = std::clamp(lamp_vectors_.dynamic_lights_amount[1], 0.0f, 1.0f);
+      const float gain = rev * (0.35f + 0.65f * night_factor);
+      push_dyn_light(0.0f, 0.72f, rear_z + 0.35f, 5.5f, 1.55f * gain, 1.50f * gain, 1.38f * gain, 1.0f);
+    }
+    frame_.dyn_light_meta[0] = float(dyn_light_count);
+  }
+
   // Collect additive glow sprites (car .carbin lamp points + world streetlamp/outpost glows).
   glow_count_ = 0;
   if (!carlights_ready_ || !glow_buffer_.buffer) return;
@@ -439,12 +643,20 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
     const float ind_r_amt = vecs.dynamic_lights_amount[3];
     for (const auto& pt : pts) {
       if (sprites.size() >= kMaxGlowSprites) break;
-      if (check_player_damage && damage_dirt_[3] > 0.01f) {
+      if (check_player_damage) {
         // Body frame: +Z front, -Z rear, -X left, +X right.
-        const float z_dmg = (pt.position[2] >= 0.0f) ? damage_zones_[0] : damage_zones_[1];
-        const float x_dmg = (pt.position[0] < 0.0f) ? damage_zones_[2] : damage_zones_[3];
-        const float corner_dmg = (z_dmg * 0.75f + x_dmg * 0.30f) * damage_dirt_[3];
-        if (corner_dmg > 0.65f) continue;
+        const bool is_front = (pt.position[2] >= 0.0f);
+        const bool is_left = (pt.position[0] < 0.0f);
+        const float corner_val =
+            is_front ? (is_left ? damage_corners_[0] : damage_corners_[1])
+                     : (is_left ? damage_corners_[2] : damage_corners_[3]);
+        if (corner_val >= 0.45f) continue;
+        if (corner_val <= 0.001f && damage_dirt_[3] > 0.01f) {
+          const float z_dmg = is_front ? damage_zones_[0] : damage_zones_[1];
+          const float x_dmg = is_left ? damage_zones_[2] : damage_zones_[3];
+          const float corner_dmg = (z_dmg * 0.75f + x_dmg * 0.30f) * damage_dirt_[3];
+          if (corner_dmg > 0.65f) continue;
+        }
       }
       const auto g = drive::resolve_lamp_glow(pt);
       const auto p = transform_point(render_from_body, pt.position);
@@ -652,6 +864,39 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
       wc.push_back({d2, i, fade, p});
     }
     std::sort(wc.begin(), wc.end(), [](const WorldCand& a, const WorldCand& b) { return a.dist2 < b.dist2; });
+    // R3-REN-10: Feed top-N nearest active night streetlamp / tunnel lamp fixtures to showroom.frag
+    // so warm sodium/metal-halide highlights glide smoothly across car paint & clearcoat at night.
+    if (world_lit_ && dyn_light_count < 6 && !wc.empty()) {
+      const float ref_x = draw_car_ ? 0.0f : frame_.eye[0];
+      const float ref_y = draw_car_ ? 0.85f : frame_.eye[1];
+      const float ref_z = draw_car_ ? 0.0f : frame_.eye[2];
+      struct CarLightCand {
+        float car_d2;
+        size_t wc_idx;
+      };
+      std::vector<CarLightCand> car_lights;
+      car_lights.reserve(std::min<size_t>(wc.size(), 64u));
+      for (size_t wi = 0; wi < wc.size(); ++wi) {
+        const auto& c = wc[wi];
+        const float cdx = c.pos[0] - ref_x;
+        const float cdy = c.pos[1] - ref_y;
+        const float cdz = c.pos[2] - ref_z;
+        const float cd2 = cdx * cdx + cdy * cdy + cdz * cdz;
+        if (cd2 <= 42.0f * 42.0f) car_lights.push_back({cd2, wi});
+      }
+      std::sort(car_lights.begin(), car_lights.end(),
+                [](const CarLightCand& a, const CarLightCand& b) { return a.car_d2 < b.car_d2; });
+      for (const auto& cl : car_lights) {
+        if (dyn_light_count >= 6) break;
+        const auto& c = wc[cl.wc_idx];
+        const auto& g = s_wg_cache.glows[c.idx];
+        const float radius_m = std::clamp(g.radius * 36.0f, 16.0f, 34.0f);
+        const float gain = c.fade * 2.65f;
+        push_dyn_light(c.pos[0], c.pos[1], c.pos[2], radius_m, g.color[0] * gain, g.color[1] * gain,
+                       g.color[2] * gain, 1.45f);
+      }
+      frame_.dyn_light_meta[0] = float(dyn_light_count);
+    }
     for (const auto& c : wc) {
       if (sprites.size() >= kMaxGlowSprites) break;
       const auto& g = s_wg_cache.glows[c.idx];

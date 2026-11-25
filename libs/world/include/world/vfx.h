@@ -234,13 +234,14 @@ struct WheelVfxInput {
 };
 
 struct VehicleVfxInput {
+  static constexpr int kMaxExhaustTips = 4;
   std::array<float, 3> car_pos{};         // game frame
   std::array<float, 3> car_vel{};         // game frame (m/s)
   std::array<float, 3> car_forward{0, 0, 1};
   std::array<float, 3> car_right{1, 0, 0};
   std::array<float, 3> car_up{0, 1, 0};
   std::array<WheelVfxInput, 4> wheels{};
-  std::array<std::array<float, 3>, 2> exhaust_tips{};  // game frame
+  std::array<std::array<float, 3>, kMaxExhaustTips> exhaust_tips{};  // game frame (up to quad exhaust)
   int exhaust_tip_count = 0;
   float norm_rpm = 0.0f;
   float throttle = 0.0f;
@@ -251,6 +252,7 @@ struct VehicleVfxInput {
   std::array<float, 3> scrape_pos{};
   std::array<float, 3> scrape_normal{0, 1, 0};
   bool scrape_should_spark = false;
+  uint32_t vehicle_slot = 0;              // 0 = player, 1..7 = AI/opponent vehicles
 };
 
 class ParticleSystem {
@@ -281,6 +283,10 @@ class ParticleSystem {
   // Spawns collision sparks + smoke burst at an impact point.
   void spawn_collision_impact(const std::array<float, 3>& pos, const std::array<float, 3>& normal,
                               const std::array<float, 3>& vel, float rel_speed_mps, bool should_spark);
+
+  // Spawns sparkling translucent glass/lamp shards + fine dust when a window or lamp breaks.
+  void spawn_glass_shatter(const std::array<float, 3>& pos, const std::array<float, 3>& car_vel,
+                           const std::array<float, 3>& outward_dir = {0.0f, 0.5f, 0.0f});
 
   // Spawns the Ribbon_00/SmashableEffects.xml burst for a smashed prop stem.
   void spawn_smashable_burst(std::string_view prop_stem, const std::array<float, 3>& pos,
@@ -353,11 +359,19 @@ class SkidMarkSystem {
  public:
   // Matches CSkidMarks ring-buffer capacity constants (4,000 segments -> 16,000 verts).
   static constexpr size_t kMaxSegments = 4000;
-  static constexpr size_t kMaxWheels = 32;  // up to 8 cars * 4 wheels
+  static constexpr size_t kMaxSkidVehicles = 8;  // slot 0 = player, slots 1..7 = nearby AI/opponent cars
+  static constexpr size_t kWheelsPerVehicle = 4;
+  static constexpr size_t kMaxWheels = kMaxSkidVehicles * kWheelsPerVehicle;  // 32
+  static constexpr float kSkidLiftM = 0.008f;    // 8 mm tight road lift (post-blended draw order)
+
+  static constexpr size_t wheel_slot_for(size_t vehicle_slot, size_t wheel_index) {
+    return vehicle_slot * kWheelsPerVehicle + wheel_index;
+  }
 
   SkidMarkSystem();
   void clear();
   void break_wheel(size_t wheel_slot);
+  void break_vehicle(size_t vehicle_slot);
   void break_all();
 
   // Updates one wheel's track strip. `wheel_slot` in [0, kMaxWheels).
@@ -366,6 +380,8 @@ class SkidMarkSystem {
   void set_time(float time_s) { current_time_s_ = time_s; }
   float current_time() const { return current_time_s_; }
   void update_wheel(size_t wheel_slot, const WheelVfxInput& in, float time_s = -1.0f);
+  void update_vehicle_wheel(size_t vehicle_slot, size_t wheel_index, const WheelVfxInput& in,
+                            float time_s = -1.0f);
   // Removes all skidmark segments stamped strictly after `time_s` (for Rewind resume).
   void truncate_after(float time_s);
 

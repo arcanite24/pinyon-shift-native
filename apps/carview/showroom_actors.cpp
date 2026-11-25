@@ -5,6 +5,7 @@
 #include "fh1data/xds.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -13,7 +14,21 @@
 #include <unordered_map>
 
 namespace carview {
+
 namespace {
+
+// Synced Horizon Festival wristband tier colour (0xRRGGBBAA; default Yellow).
+std::atomic<uint32_t> g_driver_wristband_rgba{0xFFD628FFu};
+
+std::array<uint8_t, 4> current_driver_wristband_rgba() {
+  const uint32_t c = g_driver_wristband_rgba.load(std::memory_order_relaxed);
+  return {
+      uint8_t((c >> 24) & 0xFFu),
+      uint8_t((c >> 16) & 0xFFu),
+      uint8_t((c >> 8) & 0xFFu),
+      uint8_t(c & 0xFFu),
+  };
+}
 
 struct DriverPoseParams {
   std::array<float, 3> pivot{-0.36f, 0.72f, 0.08f};
@@ -25,12 +40,27 @@ struct DriverPoseParams {
   float hand_scale = 1.0f;
   bool clamp_roof = false;
   float roof_max_y = 0.0f;
+  bool cockpit_only = false;
+  std::array<uint8_t, 4> wristband_rgba{255, 214, 40, 255};
 };
 
 struct DriverEmitResult {
   uint32_t hands_count = 0;
+  uint32_t main_count = 0;
+  uint32_t wristband_first = 0;
+  uint32_t wristband_count = 0;
   uint32_t total_count = 0;
   float head_above_pivot_y = 0.33f;
+  bool used_skin_mesh = false;
+};
+
+struct PlayerDriverRanges {
+  uint32_t main_first = 0;
+  uint32_t main_count = 0;
+  uint32_t wristband_first = 0;
+  uint32_t wristband_count = 0;
+  bool built_for_cockpit = false;
+  bool used_skin_mesh = false;
 };
 
 // Per-Showroom static neutral seated driver vertex buffer for AI/traffic guest cars
@@ -45,8 +75,138 @@ struct GuestDriverCache {
 
 std::mutex g_guest_driver_mutex;
 std::unordered_map<const Showroom*, std::unique_ptr<GuestDriverCache>> g_guest_driver_caches;
+std::unordered_map<const Showroom*, PlayerDriverRanges> g_player_driver_ranges;
 
-DriverEmitResult emit_driver_geometry(const world::SpectatorMeshLod* skin_mesh, const DriverPoseParams& p,
+// 2-bone analytical rotational IK solver (shoulder -> elbow -> wrist) using Law of Cosines.
+// Preserves upper-arm length L1 and forearm length L2 without shearing or stretching at any lock.
+struct TwoBoneIkResult {
+  std::array<float, 3> shoulder{};
+  std::array<float, 3> elbow{};
+  std::array<float, 3> wrist{};
+  float upper_len = 0.0f;
+  float fore_len = 0.0f;
+};
+
+struct RigidBoneXform {
+  std::array<float, 3> rest_origin{};
+  std::array<float, 3> pose_origin{};
+  std::array<std::array<float, 3>, 3> rot{{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}}};
+
+  std::array<float, 3> apply_pos(const std::array<float, 3>& p) const {
+    const float dx = p[0] - rest_origin[0];
+    const float dy = p[1] - rest_origin[1];
+    const float dz = p[2] - rest_origin[2];
+    return {
+        pose_origin[0] + rot[0][0] * dx + rot[0][1] * dy + rot[0][2] * dz,
+        pose_origin[1] + rot[1][0] * dx + rot[1][1] * dy + rot[1][2] * dz,
+        pose_origin[2] + rot[2][0] * dx + rot[2][1] * dy + rot[2][2] * dz,
+    };
+  }
+
+  std::array<float, 3> apply_dir(const std::array<float, 3>& n) const {
+    return {
+        rot[0][0] * n[0] + rot[0][1] * n[1] + rot[0][2] * n[2],
+        rot[1][0] * n[0] + rot[1][1] * n[1] + rot[1][2] * n[2],
+        rot[2][0] * n[0] + rot[2][1] * n[1] + rot[2][2] * n[2],
+    };
+  }
+};
+
+TwoBoneIkResult solve_two_bone_ik(const std::array<float, 3>& shoulder, const std::array<float, 3>& target_wrist,
+                                  float upper_len, float fore_len, const std::array<float, 3>& pole_hint) {
+  auto vadd = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+  };
+  auto vsub = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+  };
+  auto vscale = [](const std::array<float, 3>& a, float s) -> std::array<float, 3> {
+    return {a[0] * s, a[1] * s, a[2] * s};
+  };
+  auto vdot = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> float {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  };
+  auto vcross = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+  };
+  auto vlen = [&](const std::array<float, 3>& a) -> float { return std::sqrt(vdot(a, a)); };
+
+  const float l1 = std::max(upper_len, 1e-3f);
+  const float l2 = std::max(fore_len, 1e-3f);
+  const auto to_t = vsub(target_wrist, shoulder);
+  const float raw_d = vlen(to_t);
+  const float min_d = std::fabs(l1 - l2) + 1e-3f;
+  const float max_d = (l1 + l2) * 0.998f;
+  const float d = std::clamp(raw_d, min_d, max_d);
+  const std::array<float, 3> dir = (raw_d > 1e-5f) ? vscale(to_t, 1.0f / raw_d) : std::array<float, 3>{0.0f, 0.0f, -1.0f};
+
+  std::array<float, 3> pole = vsub(pole_hint, vscale(dir, vdot(pole_hint, dir)));
+  float pl = vlen(pole);
+  if (pl < 1e-4f) {
+    const std::array<float, 3> fb = std::fabs(dir[1]) < 0.9f ? std::array<float, 3>{0.0f, 1.0f, 0.0f}
+                                                             : std::array<float, 3>{1.0f, 0.0f, 0.0f};
+    pole = vcross(dir, fb);
+    pl = vlen(pole);
+  }
+  pole = (pl > 1e-6f) ? vscale(pole, 1.0f / pl) : std::array<float, 3>{0.0f, -1.0f, 0.0f};
+
+  const float cos_a = std::clamp((l1 * l1 + d * d - l2 * l2) / (2.0f * l1 * d), -1.0f, 1.0f);
+  const float sin_a = std::sqrt(std::max(0.0f, 1.0f - cos_a * cos_a));
+
+  TwoBoneIkResult res{};
+  res.shoulder = shoulder;
+  res.elbow = vadd(shoulder, vadd(vscale(dir, l1 * cos_a), vscale(pole, l1 * sin_a)));
+  res.wrist = vadd(shoulder, vscale(dir, d));
+  res.upper_len = l1;
+  res.fore_len = l2;
+  return res;
+}
+
+RigidBoneXform make_bone_xform(const std::array<float, 3>& rest_a, const std::array<float, 3>& rest_b,
+                               const std::array<float, 3>& rest_up, const std::array<float, 3>& pose_a,
+                               const std::array<float, 3>& pose_b, const std::array<float, 3>& pose_up) {
+  auto vsub = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+  };
+  auto vcross = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+  };
+  auto vnorm = [](const std::array<float, 3>& a, const std::array<float, 3>& fb) -> std::array<float, 3> {
+    const float l = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    return l > 1e-6f ? std::array<float, 3>{a[0] / l, a[1] / l, a[2] / l} : fb;
+  };
+  auto make_basis = [&](const std::array<float, 3>& a, const std::array<float, 3>& b,
+                        const std::array<float, 3>& up_ref, std::array<float, 3>& bx, std::array<float, 3>& by,
+                        std::array<float, 3>& bz) {
+    bz = vnorm(vsub(b, a), {0.0f, 0.0f, -1.0f});
+    std::array<float, 3> u = up_ref;
+    const float dot_u = std::fabs(u[0] * bz[0] + u[1] * bz[1] + u[2] * bz[2]);
+    if (dot_u > 0.96f) {
+      u = (std::fabs(bz[1]) < 0.9f) ? std::array<float, 3>{0.0f, 1.0f, 0.0f} : std::array<float, 3>{1.0f, 0.0f, 0.0f};
+    }
+    bx = vnorm(vcross(u, bz), {1.0f, 0.0f, 0.0f});
+    by = vnorm(vcross(bz, bx), {0.0f, 1.0f, 0.0f});
+  };
+
+  std::array<float, 3> rx, ry, rz, px, py, pz;
+  make_basis(rest_a, rest_b, rest_up, rx, ry, rz);
+  make_basis(pose_a, pose_b, pose_up, px, py, pz);
+
+  RigidBoneXform xf{};
+  xf.rest_origin = rest_a;
+  xf.pose_origin = pose_a;
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) {
+      xf.rot[size_t(r)][size_t(c)] = px[size_t(r)] * rx[size_t(c)] + py[size_t(r)] * ry[size_t(c)] +
+                                     pz[size_t(r)] * rz[size_t(c)];
+    }
+  }
+  return xf;
+}
+
+DriverEmitResult emit_driver_geometry(const world::SpectatorMeshLod* body_mesh,
+                                      const world::SpectatorMeshLod* hands_mesh,
+                                      const world::SpectatorMeshLod* wristband_mesh, const DriverPoseParams& p,
                                       WorldVertex* dst, uint32_t max_verts) {
   DriverEmitResult res{};
   if (!dst || max_verts < 3u) return res;
@@ -186,25 +346,42 @@ DriverEmitResult emit_driver_geometry(const world::SpectatorMeshLod* skin_mesh, 
   const std::array<float, 3> head{p.pivot[0] + lean, p.pivot[1] + 0.21f, p.pivot[2] + 0.38f};
   const std::array<float, 3> l_sh{chest[0] - 0.21f, chest[1] + 0.14f, chest[2] - 0.02f};
   const std::array<float, 3> r_sh{chest[0] + 0.21f, chest[1] + 0.14f, chest[2] - 0.02f};
-  const std::array<float, 3> l_el{(l_sh[0] + l_hand[0]) * 0.5f - 0.06f, (l_sh[1] + l_hand[1]) * 0.5f - 0.08f,
-                                  (l_sh[2] + l_hand[2]) * 0.5f + 0.04f};
-  const std::array<float, 3> r_el{(r_sh[0] + r_hand[0]) * 0.5f + 0.06f, (r_sh[1] + r_hand[1]) * 0.5f - 0.08f,
-                                  (r_sh[2] + r_hand[2]) * 0.5f + 0.04f};
+  const std::array<float, 3> l_pole_hint = vnorm({-0.78f, -0.56f, 0.28f});
+  const std::array<float, 3> r_pole_hint = vnorm({0.78f, -0.56f, 0.28f});
+  const TwoBoneIkResult proc_l_ik = solve_two_bone_ik(l_sh, l_hand, 0.26f, 0.25f, l_pole_hint);
+  const TwoBoneIkResult proc_r_ik = solve_two_bone_ik(r_sh, r_hand, 0.26f, 0.25f, r_pole_hint);
+  const std::array<float, 3> l_el = proc_l_ik.elbow;
+  const std::array<float, 3> r_el = proc_r_ik.elbow;
+  const std::array<float, 3> l_hand_ik = proc_l_ik.wrist;
+  const std::array<float, 3> r_hand_ik = proc_r_ik.wrist;
 
-  // Emit authentic skinned seated driver mesh from media/cars/Driver.zip (`Driver01.skinbin`)
-  // textured with `Driver01_D.xds` when loaded.
-  if (skin_mesh && !skin_mesh->vertices.empty() && skin_mesh->indices.size() >= 3) {
-    const auto& mesh = *skin_mesh;
-    float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f, min_z = 1e9f, max_z = -1e9f;
+  // Emit authentic skinned driver meshes from media/cars/Driver.zip:
+  //   - Cockpit view: high-detail `DriverHands01.skinbin` (fallback: `Driver01.skinbin` arm partition)
+  //                   + Horizon tier-tinted `DriverWristBand.skinbin`
+  //   - Exterior view: full `Driver01.skinbin` + `DriverWristBand.skinbin`
+  // All arm articulation uses 2-bone analytical rotational IK (zero linear shearing).
+  const bool have_body = body_mesh && !body_mesh->vertices.empty() && body_mesh->indices.size() >= 3;
+  const bool have_hands = hands_mesh && !hands_mesh->vertices.empty() && hands_mesh->indices.size() >= 3;
+  const bool have_band = wristband_mesh && !wristband_mesh->vertices.empty() && wristband_mesh->indices.size() >= 3;
+
+  if (have_body || (p.cockpit_only && have_hands)) {
+    const auto& ref_mesh = have_body ? *body_mesh : *hands_mesh;
+    float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f, min_z = 1e9f;
     std::array<double, 3> lh_sum{0, 0, 0}, rh_sum{0, 0, 0}, head_sum{0, 0, 0};
+    std::array<double, 3> lsh_sum{0, 0, 0}, rsh_sum{0, 0, 0};
+    std::array<double, 3> lel_sum{0, 0, 0}, rel_sum{0, 0, 0};
     uint32_t lh_cnt = 0, rh_cnt = 0, head_cnt = 0;
+    uint32_t lsh_cnt = 0, rsh_cnt = 0, lel_cnt = 0, rel_cnt = 0;
     float head_max_y = -1e9f;
     float lh_min_z = 1e9f, lh_max_z = -1e9f;
     float rh_min_z = 1e9f, rh_max_z = -1e9f;
-    for (const auto& v : mesh.vertices) {
+    float lu_min_z = 1e9f;
+    float ru_min_z = 1e9f;
+
+    for (const auto& v : ref_mesh.vertices) {
       min_x = std::min(min_x, v.pos[0]); max_x = std::max(max_x, v.pos[0]);
       min_y = std::min(min_y, v.pos[1]); max_y = std::max(max_y, v.pos[1]);
-      min_z = std::min(min_z, v.pos[2]); max_z = std::max(max_z, v.pos[2]);
+      min_z = std::min(min_z, v.pos[2]);
       if (v.bone0 == 5) {
         lh_sum[0] += v.pos[0]; lh_sum[1] += v.pos[1]; lh_sum[2] += v.pos[2];
         ++lh_cnt;
@@ -215,19 +392,42 @@ DriverEmitResult emit_driver_geometry(const world::SpectatorMeshLod* skin_mesh, 
         ++rh_cnt;
         rh_min_z = std::min(rh_min_z, v.pos[2]);
         rh_max_z = std::max(rh_max_z, v.pos[2]);
+      } else if (v.bone0 == 4) {
+        lu_min_z = std::min(lu_min_z, v.pos[2]);
+      } else if (v.bone0 == 7) {
+        ru_min_z = std::min(ru_min_z, v.pos[2]);
+      } else if (v.bone0 == 3) {
+        lsh_sum[0] += v.pos[0]; lsh_sum[1] += v.pos[1]; lsh_sum[2] += v.pos[2];
+        ++lsh_cnt;
+      } else if (v.bone0 == 6) {
+        rsh_sum[0] += v.pos[0]; rsh_sum[1] += v.pos[1]; rsh_sum[2] += v.pos[2];
+        ++rsh_cnt;
       } else if (v.bone0 == 2) {
         head_sum[0] += v.pos[0]; head_sum[1] += v.pos[1]; head_sum[2] += v.pos[2];
         ++head_cnt;
         head_max_y = std::max(head_max_y, v.pos[1]);
       }
     }
+    // Refine rest elbow centroids near the boundary between upper-arm (4/7) and forearm (5/8) vertices.
+    const float lu_elbow_z = (lu_min_z < 1e8f) ? (lu_min_z + 0.05f) : (lh_max_z - 0.05f);
+    const float ru_elbow_z = (ru_min_z < 1e8f) ? (ru_min_z + 0.05f) : (rh_max_z - 0.05f);
+    for (const auto& v : ref_mesh.vertices) {
+      if ((v.bone0 == 4 && v.pos[2] <= lu_elbow_z) || (v.bone0 == 5 && v.pos[2] >= lh_max_z - 0.06f)) {
+        lel_sum[0] += v.pos[0]; lel_sum[1] += v.pos[1]; lel_sum[2] += v.pos[2];
+        ++lel_cnt;
+      } else if ((v.bone0 == 7 && v.pos[2] <= ru_elbow_z) || (v.bone0 == 8 && v.pos[2] >= rh_max_z - 0.06f)) {
+        rel_sum[0] += v.pos[0]; rel_sum[1] += v.pos[1]; rel_sum[2] += v.pos[2];
+        ++rel_cnt;
+      }
+    }
+
     const float src_cx = (head_cnt > 0) ? float(head_sum[0] / double(head_cnt)) : 0.5f * (min_x + max_x);
     const std::array<float, 3> src_lh =
         (lh_cnt > 0) ? std::array<float, 3>{float(lh_sum[0] / lh_cnt), float(lh_sum[1] / lh_cnt), lh_min_z + 0.08f}
-                     : std::array<float, 3>{src_cx - 0.19f, min_y + 0.56f * (max_y - min_y), min_z + 0.42f};
+                     : std::array<float, 3>{src_cx - 0.19f, min_y + 0.56f * (max_y - min_y), min_z + 0.08f};
     const std::array<float, 3> src_rh =
         (rh_cnt > 0) ? std::array<float, 3>{float(rh_sum[0] / rh_cnt), float(rh_sum[1] / rh_cnt), rh_min_z + 0.08f}
-                     : std::array<float, 3>{src_cx + 0.19f, min_y + 0.56f * (max_y - min_y), min_z + 0.42f};
+                     : std::array<float, 3>{src_cx + 0.19f, min_y + 0.56f * (max_y - min_y), min_z + 0.08f};
     const float src_hand_y = 0.5f * (src_lh[1] + src_rh[1]);
     const float src_hand_z = 0.5f * (src_lh[2] + src_rh[2]);
     const float src_top_y = (head_cnt > 0) ? head_max_y : max_y;
@@ -249,39 +449,131 @@ DriverEmitResult emit_driver_geometry(const world::SpectatorMeshLod* skin_mesh, 
           p.pivot[2] + (pt[2] - src_hand_z) * scale,
       };
     };
-    const auto rest_lh = map_rest(src_lh);
-    const auto rest_rh = map_rest(src_rh);
-    auto clamp_vec = [&](const std::array<float, 3>& v, float max_len) -> std::array<float, 3> {
-      const float l = std::sqrt(vdot(v, v));
-      return (l > max_len && l > 1e-6f) ? vscale(v, max_len / l) : v;
-    };
-    const auto dl = clamp_vec(vsub(l_hand, rest_lh), 0.28f);
-    const auto dr = clamp_vec(vsub(r_hand, rest_rh), 0.28f);
-    const float lh_span_z = std::max(lh_max_z - lh_min_z, 0.12f);
-    const float rh_span_z = std::max(rh_max_z - rh_min_z, 0.12f);
 
-    auto bone_disp = [&](uint8_t bone, const std::array<float, 3>& sp) -> std::array<float, 3> {
+    const auto rest_l_wr = map_rest(src_lh);
+    const auto rest_r_wr = map_rest(src_rh);
+    auto vlen = [&](const std::array<float, 3>& a) -> float { return std::sqrt(vdot(a, a)); };
+
+    std::array<float, 3> rest_l_sh =
+        (lsh_cnt > 0) ? map_rest({float(lsh_sum[0] / lsh_cnt), float(lsh_sum[1] / lsh_cnt), float(lsh_sum[2] / lsh_cnt)})
+                      : std::array<float, 3>{p.pivot[0] - 0.21f, p.pivot[1] + seat_dy + 0.08f, p.pivot[2] + 0.34f};
+    std::array<float, 3> rest_r_sh =
+        (rsh_cnt > 0) ? map_rest({float(rsh_sum[0] / rsh_cnt), float(rsh_sum[1] / rsh_cnt), float(rsh_sum[2] / rsh_cnt)})
+                      : std::array<float, 3>{p.pivot[0] + 0.21f, p.pivot[1] + seat_dy + 0.08f, p.pivot[2] + 0.34f};
+    std::array<float, 3> rest_l_el =
+        (lel_cnt > 0) ? map_rest({float(lel_sum[0] / lel_cnt), float(lel_sum[1] / lel_cnt), float(lel_sum[2] / lel_cnt)})
+                      : std::array<float, 3>{0.5f * (rest_l_sh[0] + rest_l_wr[0]) - 0.06f,
+                                             0.5f * (rest_l_sh[1] + rest_l_wr[1]) - 0.08f,
+                                             0.5f * (rest_l_sh[2] + rest_l_wr[2]) + 0.04f};
+    std::array<float, 3> rest_r_el =
+        (rel_cnt > 0) ? map_rest({float(rel_sum[0] / rel_cnt), float(rel_sum[1] / rel_cnt), float(rel_sum[2] / rel_cnt)})
+                      : std::array<float, 3>{0.5f * (rest_r_sh[0] + rest_r_wr[0]) + 0.06f,
+                                             0.5f * (rest_r_sh[1] + rest_r_wr[1]) - 0.08f,
+                                             0.5f * (rest_r_sh[2] + rest_r_wr[2]) + 0.04f};
+
+    float l_upper_len = vlen(vsub(rest_l_el, rest_l_sh));
+    float l_fore_len = vlen(vsub(rest_l_wr, rest_l_el));
+    if (l_upper_len < 0.14f || l_upper_len > 0.45f || l_fore_len < 0.14f || l_fore_len > 0.45f) {
+      rest_l_sh = {p.pivot[0] - 0.21f, p.pivot[1] + seat_dy + 0.08f, p.pivot[2] + 0.34f};
+      rest_l_el = {0.5f * (rest_l_sh[0] + rest_l_wr[0]) - 0.06f,
+                   0.5f * (rest_l_sh[1] + rest_l_wr[1]) - 0.08f,
+                   0.5f * (rest_l_sh[2] + rest_l_wr[2]) + 0.04f};
+      l_upper_len = std::clamp(vlen(vsub(rest_l_el, rest_l_sh)), 0.18f, 0.36f);
+      l_fore_len = std::clamp(vlen(vsub(rest_l_wr, rest_l_el)), 0.18f, 0.36f);
+    }
+    float r_upper_len = vlen(vsub(rest_r_el, rest_r_sh));
+    float r_fore_len = vlen(vsub(rest_r_wr, rest_r_el));
+    if (r_upper_len < 0.14f || r_upper_len > 0.45f || r_fore_len < 0.14f || r_fore_len > 0.45f) {
+      rest_r_sh = {p.pivot[0] + 0.21f, p.pivot[1] + seat_dy + 0.08f, p.pivot[2] + 0.34f};
+      rest_r_el = {0.5f * (rest_r_sh[0] + rest_r_wr[0]) + 0.06f,
+                   0.5f * (rest_r_sh[1] + rest_r_wr[1]) - 0.08f,
+                   0.5f * (rest_r_sh[2] + rest_r_wr[2]) + 0.04f};
+      r_upper_len = std::clamp(vlen(vsub(rest_r_el, rest_r_sh)), 0.18f, 0.36f);
+      r_fore_len = std::clamp(vlen(vsub(rest_r_wr, rest_r_el)), 0.18f, 0.36f);
+    }
+
+    // Solve 2-bone analytical rotational IK for both arms (shoulder -> elbow -> wrist).
+    const std::array<float, 3> pose_l_sh = {rest_l_sh[0] + lean * 0.45f, rest_l_sh[1], rest_l_sh[2]};
+    const std::array<float, 3> pose_r_sh = {rest_r_sh[0] + lean * 0.45f, rest_r_sh[1], rest_r_sh[2]};
+    const TwoBoneIkResult ik_l = solve_two_bone_ik(pose_l_sh, l_hand, l_upper_len, l_fore_len, l_pole_hint);
+    const TwoBoneIkResult ik_r = solve_two_bone_ik(pose_r_sh, r_hand, r_upper_len, r_fore_len, r_pole_hint);
+
+    // Subtle natural forearm roll following wheel rim angle (clamped to +/-38 deg pronation/supination).
+    const std::array<float, 3> l_up_ref = vnorm({-0.22f, 1.0f, 0.0f});
+    const std::array<float, 3> r_up_ref = vnorm({0.22f, 1.0f, 0.0f});
+    const float l_roll = std::clamp(l_ang * 0.28f, -0.66f, 0.66f);
+    const float r_roll = std::clamp(r_ang * 0.28f, -0.66f, 0.66f);
+    const std::array<float, 3> l_fore_up = vnorm({-0.22f - std::sin(l_roll) * 0.45f, std::cos(l_roll), 0.0f});
+    const std::array<float, 3> r_fore_up = vnorm({0.22f - std::sin(r_roll) * 0.45f, std::cos(r_roll), 0.0f});
+
+    const RigidBoneXform xf_l_upper =
+        make_bone_xform(rest_l_sh, rest_l_el, l_up_ref, ik_l.shoulder, ik_l.elbow, l_up_ref);
+    const RigidBoneXform xf_l_fore =
+        make_bone_xform(rest_l_el, rest_l_wr, l_up_ref, ik_l.elbow, ik_l.wrist, l_fore_up);
+    const RigidBoneXform xf_r_upper =
+        make_bone_xform(rest_r_sh, rest_r_el, r_up_ref, ik_r.shoulder, ik_r.elbow, r_up_ref);
+    const RigidBoneXform xf_r_fore =
+        make_bone_xform(rest_r_el, rest_r_wr, r_up_ref, ik_r.elbow, ik_r.wrist, r_fore_up);
+
+    // Clavicle/torso/head transforms (rigid translation + subtle cornering head yaw).
+    RigidBoneXform xf_identity{};
+    RigidBoneXform xf_torso{};
+    xf_torso.pose_origin = {lean * 0.45f, 0.0f, 0.0f};
+    RigidBoneXform xf_head{};
+    const std::array<float, 3> head_rest =
+        (head_cnt > 0) ? map_rest({float(head_sum[0] / head_cnt), float(head_sum[1] / head_cnt),
+                                   float(head_sum[2] / head_cnt)})
+                       : head;
+    xf_head.rest_origin = head_rest;
+    xf_head.pose_origin = {head_rest[0] + lean, head_rest[1], head_rest[2]};
+    const float head_yaw = std::clamp(-w_clamped * 0.045f, -0.15f, 0.15f);
+    const float hy_c = std::cos(head_yaw), hy_s = std::sin(head_yaw);
+    xf_head.rot = {{{hy_c, 0.0f, hy_s}, {0.0f, 1.0f, 0.0f}, {-hy_s, 0.0f, hy_c}}};
+
+    auto eval_body_bone = [&](uint8_t bone, const std::array<float, 3>& base_p, const std::array<float, 3>& base_n,
+                              std::array<float, 3>& out_p, std::array<float, 3>& out_n) {
       switch (bone) {
-        case 5: {
-          const float t = std::clamp((lh_max_z - sp[2]) / lh_span_z, 0.0f, 1.0f);
-          return vscale(dl, 0.42f + 0.58f * t);
-        }
-        case 4: return vscale(dl, 0.36f);
-        case 3: return vscale(dl, 0.10f);
-        case 8: {
-          const float t = std::clamp((rh_max_z - sp[2]) / rh_span_z, 0.0f, 1.0f);
-          return vscale(dr, 0.42f + 0.58f * t);
-        }
-        case 7: return vscale(dr, 0.36f);
-        case 6: return vscale(dr, 0.10f);
-        case 2: return {lean, 0.0f, 0.0f};
-        case 1: return {lean * 0.45f, 0.0f, 0.0f};
-        default: return {0.0f, 0.0f, 0.0f};
+        case 5:
+          out_p = xf_l_fore.apply_pos(base_p);
+          out_n = xf_l_fore.apply_dir(base_n);
+          return;
+        case 4:
+          out_p = xf_l_upper.apply_pos(base_p);
+          out_n = xf_l_upper.apply_dir(base_n);
+          return;
+        case 3:
+          out_p = vlerp(xf_torso.apply_pos(base_p), xf_l_upper.apply_pos(base_p), 0.25f);
+          out_n = vnorm(vlerp(base_n, xf_l_upper.apply_dir(base_n), 0.25f));
+          return;
+        case 8:
+          out_p = xf_r_fore.apply_pos(base_p);
+          out_n = xf_r_fore.apply_dir(base_n);
+          return;
+        case 7:
+          out_p = xf_r_upper.apply_pos(base_p);
+          out_n = xf_r_upper.apply_dir(base_n);
+          return;
+        case 6:
+          out_p = vlerp(xf_torso.apply_pos(base_p), xf_r_upper.apply_pos(base_p), 0.25f);
+          out_n = vnorm(vlerp(base_n, xf_r_upper.apply_dir(base_n), 0.25f));
+          return;
+        case 2:
+          out_p = xf_head.apply_pos(base_p);
+          out_n = xf_head.apply_dir(base_n);
+          return;
+        case 1:
+          out_p = xf_torso.apply_pos(base_p);
+          out_n = base_n;
+          return;
+        default:
+          out_p = xf_identity.apply_pos(base_p);
+          out_n = base_n;
+          return;
       }
     };
 
     auto is_arm_bone = [](uint8_t b) { return b == 4 || b == 5 || b == 7 || b == 8; };
-    auto emit_pass = [&](bool arms_only) {
+    auto emit_body_pass = [&](const world::SpectatorMeshLod& mesh, bool arms_only) {
       const size_t n_idx = (mesh.indices.size() / 3u) * 3u;
       for (size_t i = 0; i < n_idx; i += 3) {
         if (count + 3u > max_verts) break;
@@ -300,22 +592,25 @@ DriverEmitResult emit_driver_geometry(const world::SpectatorMeshLod* skin_mesh, 
           const float w0 = float(sv.weight0) / 255.0f;
           const float w1 = float(sv.weight1) / 255.0f;
           const float wsum = w0 + w1;
-          std::array<float, 3> disp{0.0f, 0.0f, 0.0f};
-          if (wsum > 1e-4f) {
-            const auto d0 = bone_disp(sv.bone0, sv.pos);
-            const auto d1 = (w1 > 0.0f) ? bone_disp(sv.bone1, sv.pos) : std::array<float, 3>{0, 0, 0};
-            disp = vscale(vadd(vscale(d0, w0), vscale(d1, w1)), 1.0f / wsum);
+          std::array<float, 3> pos_out{}, nrm_out{};
+          if (wsum > 1e-4f && w1 > 1e-4f) {
+            std::array<float, 3> p0{}, n0{}, p1{}, n1{};
+            eval_body_bone(sv.bone0, base_p, sv.normal, p0, n0);
+            eval_body_bone(sv.bone1, base_p, sv.normal, p1, n1);
+            const float inv = 1.0f / wsum;
+            pos_out = vscale(vadd(vscale(p0, w0), vscale(p1, w1)), inv);
+            nrm_out = vnorm(vadd(vscale(n0, w0), vscale(n1, w1)));
           } else {
-            disp = bone_disp(sv.bone0, sv.pos);
+            eval_body_bone(sv.bone0, base_p, sv.normal, pos_out, nrm_out);
           }
           WorldVertex& o = dst[count++];
           o = WorldVertex{};
-          o.position[0] = base_p[0] + disp[0];
-          o.position[1] = base_p[1] + disp[1];
-          o.position[2] = base_p[2] + disp[2];
-          o.normal[0] = snorm8(sv.normal[0]);
-          o.normal[1] = snorm8(sv.normal[1]);
-          o.normal[2] = snorm8(sv.normal[2]);
+          o.position[0] = pos_out[0];
+          o.position[1] = pos_out[1];
+          o.position[2] = pos_out[2];
+          o.normal[0] = snorm8(nrm_out[0]);
+          o.normal[1] = snorm8(nrm_out[1]);
+          o.normal[2] = snorm8(nrm_out[2]);
           o.uv0[0] = sv.uv[0];
           o.uv0[1] = sv.uv[1];
           o.colour[0] = o.colour[1] = o.colour[2] = o.colour[3] = 255;
@@ -323,10 +618,174 @@ DriverEmitResult emit_driver_geometry(const world::SpectatorMeshLod* skin_mesh, 
       }
     };
 
-    emit_pass(true);
-    res.hands_count = count;
-    emit_pass(false);
+    // High-detail cockpit `DriverHands01.skinbin` emitter using 2-bone analytical rotational IK.
+    auto emit_cockpit_hands = [&](const world::SpectatorMeshLod& hmesh) {
+      float hmin_x = 1e9f, hmax_x = -1e9f, hmin_y = 1e9f, hmax_y = -1e9f, hmin_z = 1e9f;
+      for (const auto& v : hmesh.vertices) {
+        hmin_x = std::min(hmin_x, v.pos[0]); hmax_x = std::max(hmax_x, v.pos[0]);
+        hmin_y = std::min(hmin_y, v.pos[1]); hmax_y = std::max(hmax_y, v.pos[1]);
+        hmin_z = std::min(hmin_z, v.pos[2]);
+      }
+      const float h_cx = 0.5f * (hmin_x + hmax_x);
+      const float h_hy = 0.5f * (hmin_y + hmax_y);
+      const float h_hz = hmin_z + 0.08f;
+      // Check whether DriverHands01 shares Driver01's character coordinate origin or has its own local origin.
+      const bool same_frame =
+          have_body && std::fabs(h_cx - src_cx) < 0.25f && std::fabs(h_hy - src_hand_y) < 0.35f &&
+          std::fabs(h_hz - src_hand_z) < 0.40f;
+      auto map_hand_rest = [&](const std::array<float, 3>& pt) -> std::array<float, 3> {
+        if (same_frame) return map_rest(pt);
+        return {
+            p.pivot[0] + (pt[0] - h_cx) * scale,
+            p.pivot[1] + seat_dy + (pt[1] - h_hy) * scale,
+            p.pivot[2] + (pt[2] - h_hz) * scale,
+        };
+      };
+      const auto l_fore_axis = vnorm(vsub(rest_l_wr, rest_l_el));
+      const auto r_fore_axis = vnorm(vsub(rest_r_wr, rest_r_el));
+      const float hscale = std::clamp(p.hand_scale, 0.65f, 1.45f);
+      const float split_x = same_frame ? src_cx : h_cx;
+
+      const size_t n_idx = (hmesh.indices.size() / 3u) * 3u;
+      for (size_t i = 0; i < n_idx; i += 3) {
+        if (count + 3u > max_verts) break;
+        const uint16_t i0 = hmesh.indices[i + 0];
+        const uint16_t i1 = hmesh.indices[i + 1];
+        const uint16_t i2 = hmesh.indices[i + 2];
+        if (i0 >= hmesh.vertices.size() || i1 >= hmesh.vertices.size() || i2 >= hmesh.vertices.size()) continue;
+        const uint16_t tri[3] = {i0, i2, i1};
+        for (int k = 0; k < 3; ++k) {
+          const auto& sv = hmesh.vertices[tri[k]];
+          const bool is_left = (sv.pos[0] < split_x);
+          const auto base_p = map_hand_rest(sv.pos);
+          const auto& rest_el = is_left ? rest_l_el : rest_r_el;
+          const auto& fore_axis = is_left ? l_fore_axis : r_fore_axis;
+          const auto& xf_u = is_left ? xf_l_upper : xf_r_upper;
+          const auto& xf_f = is_left ? xf_l_fore : xf_r_fore;
+          const auto& wrist_anchor = is_left ? ik_l.wrist : ik_r.wrist;
+
+          // Smooth elbow transition from upper arm -> forearm along the bone axis (zero shear!).
+          const float along = vdot(vsub(base_p, rest_el), fore_axis);
+          const float fore_t = std::clamp((along + 0.045f) / 0.09f, 0.0f, 1.0f);
+          const float fore_w = fore_t * fore_t * (3.0f - 2.0f * fore_t);
+
+          std::array<float, 3> pos_out{}, nrm_out{};
+          if (fore_w >= 0.999f) {
+            pos_out = xf_f.apply_pos(base_p);
+            nrm_out = xf_f.apply_dir(sv.normal);
+          } else if (fore_w <= 0.001f) {
+            pos_out = xf_u.apply_pos(base_p);
+            nrm_out = xf_u.apply_dir(sv.normal);
+          } else {
+            const auto pu = xf_u.apply_pos(base_p);
+            const auto pf = xf_f.apply_pos(base_p);
+            const auto nu = xf_u.apply_dir(sv.normal);
+            const auto nf = xf_f.apply_dir(sv.normal);
+            pos_out = vlerp(pu, pf, fore_w);
+            nrm_out = vnorm(vlerp(nu, nf, fore_w));
+          }
+          if (std::fabs(hscale - 1.0f) > 1e-3f) {
+            pos_out = vadd(wrist_anchor, vscale(vsub(pos_out, wrist_anchor), hscale));
+          }
+          WorldVertex& o = dst[count++];
+          o = WorldVertex{};
+          o.position[0] = pos_out[0];
+          o.position[1] = pos_out[1];
+          o.position[2] = pos_out[2];
+          o.normal[0] = snorm8(nrm_out[0]);
+          o.normal[1] = snorm8(nrm_out[1]);
+          o.normal[2] = snorm8(nrm_out[2]);
+          o.uv0[0] = sv.uv[0];
+          o.uv0[1] = sv.uv[1];
+          o.colour[0] = o.colour[1] = o.colour[2] = o.colour[3] = 255;
+        }
+      }
+    };
+
+    // Horizon Festival wristband (`DriverWristBand.skinbin`) rigidly attached to the wrist IK bone
+    // and tinted by the player's current Horizon wristband tier colour.
+    auto emit_wristband = [&](const world::SpectatorMeshLod& bmesh) {
+      res.wristband_first = count;
+      std::array<double, 3> bsum{0, 0, 0};
+      for (const auto& v : bmesh.vertices) {
+        bsum[0] += v.pos[0]; bsum[1] += v.pos[1]; bsum[2] += v.pos[2];
+      }
+      const double inv_n = 1.0 / double(std::max<size_t>(1, bmesh.vertices.size()));
+      const std::array<float, 3> b_cent{float(bsum[0] * inv_n), float(bsum[1] * inv_n), float(bsum[2] * inv_n)};
+      const bool near_lh = have_body && vlen(vsub(b_cent, src_lh)) < 0.35f;
+      const bool near_rh = have_body && vlen(vsub(b_cent, src_rh)) < 0.35f;
+      const bool on_left = near_lh ? true : (near_rh ? false : (b_cent[0] <= src_cx));
+      const bool same_frame = near_lh || near_rh;
+      const auto& xf_f = on_left ? xf_l_fore : xf_r_fore;
+      const auto& rest_wr = on_left ? rest_l_wr : rest_r_wr;
+      const auto& rest_el = on_left ? rest_l_el : rest_r_el;
+      const auto& pose_wr = on_left ? ik_l.wrist : ik_r.wrist;
+      const auto rest_wrist_cuff = vlerp(rest_el, rest_wr, 0.86f);
+      const float hscale = p.cockpit_only ? std::clamp(p.hand_scale, 0.65f, 1.45f) : 1.0f;
+
+      const size_t n_idx = (bmesh.indices.size() / 3u) * 3u;
+      for (size_t i = 0; i < n_idx; i += 3) {
+        if (count + 3u > max_verts) break;
+        const uint16_t i0 = bmesh.indices[i + 0];
+        const uint16_t i1 = bmesh.indices[i + 1];
+        const uint16_t i2 = bmesh.indices[i + 2];
+        if (i0 >= bmesh.vertices.size() || i1 >= bmesh.vertices.size() || i2 >= bmesh.vertices.size()) continue;
+        const uint16_t tri[3] = {i0, i2, i1};
+        for (int k = 0; k < 3; ++k) {
+          const auto& sv = bmesh.vertices[tri[k]];
+          const std::array<float, 3> base_p =
+              same_frame ? map_rest(sv.pos)
+                         : std::array<float, 3>{
+                               rest_wrist_cuff[0] + (sv.pos[0] - b_cent[0]) * scale,
+                               rest_wrist_cuff[1] + (sv.pos[1] - b_cent[1]) * scale,
+                               rest_wrist_cuff[2] + (sv.pos[2] - b_cent[2]) * scale,
+                           };
+          std::array<float, 3> pos_out = xf_f.apply_pos(base_p);
+          const std::array<float, 3> nrm_out = vnorm(xf_f.apply_dir(sv.normal));
+          if (std::fabs(hscale - 1.0f) > 1e-3f) {
+            pos_out = vadd(pose_wr, vscale(vsub(pos_out, pose_wr), hscale));
+          }
+          const float weave = 0.90f + 0.10f * std::sin(sv.uv[0] * 6.2831853f);
+          WorldVertex& o = dst[count++];
+          o = WorldVertex{};
+          o.position[0] = pos_out[0];
+          o.position[1] = pos_out[1];
+          o.position[2] = pos_out[2];
+          o.normal[0] = snorm8(nrm_out[0]);
+          o.normal[1] = snorm8(nrm_out[1]);
+          o.normal[2] = snorm8(nrm_out[2]);
+          o.uv0[0] = sv.uv[0];
+          o.uv0[1] = sv.uv[1];
+          o.colour[0] = uint8_t(std::clamp(int(float(p.wristband_rgba[0]) * weave), 0, 255));
+          o.colour[1] = uint8_t(std::clamp(int(float(p.wristband_rgba[1]) * weave), 0, 255));
+          o.colour[2] = uint8_t(std::clamp(int(float(p.wristband_rgba[2]) * weave), 0, 255));
+          o.colour[3] = 255;
+        }
+      }
+      res.wristband_count = count - res.wristband_first;
+    };
+
+    if (p.cockpit_only) {
+      if (have_hands) {
+        emit_cockpit_hands(*hands_mesh);
+      } else if (have_body) {
+        emit_body_pass(*body_mesh, true);
+      }
+      res.hands_count = count;
+      res.main_count = count;
+    } else if (have_body) {
+      emit_body_pass(*body_mesh, true);
+      res.hands_count = count;
+      emit_body_pass(*body_mesh, false);
+      res.main_count = count;
+    }
+
+    if (have_band && count > 0) {
+      emit_wristband(*wristband_mesh);
+    }
+
     res.total_count = count;
+    res.used_skin_mesh = true;
     if (res.total_count > 0) return res;
   }
 
@@ -360,37 +819,44 @@ DriverEmitResult emit_driver_geometry(const world::SpectatorMeshLod* skin_mesh, 
 
   const std::array<uint8_t, 4> jacket{56, 66, 82, 255};
   const std::array<uint8_t, 4> cuff{38, 44, 54, 255};
-  const std::array<uint8_t, 4> wristband{224, 58, 92, 255};
+  const std::array<uint8_t, 4> wristband = p.wristband_rgba;
   const std::array<uint8_t, 4> collar{168, 52, 68, 255};
   const std::array<uint8_t, 4> skin{184, 140, 114, 255};
   const std::array<uint8_t, 4> hair{48, 38, 32, 255};
   const std::array<uint8_t, 4> shades{22, 24, 30, 255};
   const std::array<uint8_t, 4> glove{38, 40, 46, 255};
 
-  const auto l_wrist = vlerp(l_el, l_hand, 0.82f);
-  const auto r_wrist = vlerp(r_el, r_hand, 0.82f);
+  const auto l_wrist = vlerp(l_el, l_hand_ik, 0.82f);
+  const auto r_wrist = vlerp(r_el, r_hand_ik, 0.82f);
   push_limb(l_el, l_wrist, 0.038f * p.hand_scale, jacket);
   push_limb(r_el, r_wrist, 0.038f * p.hand_scale, jacket);
-  push_limb(l_wrist, l_hand, 0.032f * p.hand_scale, cuff);
-  push_limb(r_wrist, r_hand, 0.032f * p.hand_scale, wristband);
-  push_ellipsoid(l_hand, 0.042f * p.hand_scale, 0.036f * p.hand_scale, 0.046f * p.hand_scale, glove, 6, 10);
-  push_ellipsoid(r_hand, 0.042f * p.hand_scale, 0.036f * p.hand_scale, 0.046f * p.hand_scale, glove, 6, 10);
+  push_limb(l_wrist, l_hand_ik, 0.032f * p.hand_scale, wristband);
+  push_limb(r_wrist, r_hand_ik, 0.032f * p.hand_scale, cuff);
+  push_ellipsoid(l_hand_ik, 0.042f * p.hand_scale, 0.036f * p.hand_scale, 0.046f * p.hand_scale, glove, 6, 10);
+  push_ellipsoid(r_hand_ik, 0.042f * p.hand_scale, 0.036f * p.hand_scale, 0.046f * p.hand_scale, glove, 6, 10);
   res.hands_count = count;
 
-  push_limb(l_sh, l_el, 0.048f, jacket);
-  push_limb(r_sh, r_el, 0.048f, jacket);
-  push_box(chest, {0.19f, 0, 0}, {0, 0.21f, 0}, {0, 0, 0.105f}, jacket);
-  push_box({chest[0], chest[1] + 0.16f, chest[2] - 0.02f}, {0.205f, 0, 0}, {0, 0.048f, 0}, {0, 0, 0.11f}, collar);
-  push_box({head_clamped[0], head_clamped[1] - 0.11f, head_clamped[2]}, {0.052f, 0, 0}, {0, 0.060f, 0}, {0, 0, 0.052f}, skin);
-  push_ellipsoid(head_clamped, 0.098f, 0.115f, 0.112f, skin, 8, 14);
-  push_ellipsoid({head_clamped[0], head_clamped[1] + 0.042f, head_clamped[2] + 0.015f}, 0.104f, 0.088f, 0.114f, hair, 8, 14);
-  push_ellipsoid({head_clamped[0], head_clamped[1] + 0.008f, head_clamped[2] - 0.084f}, 0.078f, 0.028f, 0.032f, shades, 5, 10);
+  if (!p.cockpit_only) {
+    push_limb(l_sh, l_el, 0.048f, jacket);
+    push_limb(r_sh, r_el, 0.048f, jacket);
+    push_box(chest, {0.19f, 0, 0}, {0, 0.21f, 0}, {0, 0, 0.105f}, jacket);
+    push_box({chest[0], chest[1] + 0.16f, chest[2] - 0.02f}, {0.205f, 0, 0}, {0, 0.048f, 0}, {0, 0, 0.11f}, collar);
+    push_box({head_clamped[0], head_clamped[1] - 0.11f, head_clamped[2]}, {0.052f, 0, 0}, {0, 0.060f, 0}, {0, 0, 0.052f}, skin);
+    push_ellipsoid(head_clamped, 0.098f, 0.115f, 0.112f, skin, 8, 14);
+    push_ellipsoid({head_clamped[0], head_clamped[1] + 0.042f, head_clamped[2] + 0.015f}, 0.104f, 0.088f, 0.114f, hair, 8, 14);
+    push_ellipsoid({head_clamped[0], head_clamped[1] + 0.008f, head_clamped[2] - 0.084f}, 0.078f, 0.028f, 0.032f, shades, 5, 10);
+  }
 
+  res.main_count = count;
   res.total_count = count;
   return res;
 }
 
 }  // namespace
+
+void set_driver_wristband_color(uint32_t rgba) {
+  g_driver_wristband_rgba.store(rgba, std::memory_order_relaxed);
+}
 
 bool Showroom::load_showcase_texture(const std::filesystem::path& game_root, int aircraft_kind, std::string& error) {
   if (guest_ || !r_.device_) return true;
@@ -640,15 +1106,41 @@ void Showroom::update_driver_mesh(float wheel_rad) {
   params.hand_scale = std::clamp(driver_hands_scale_, 0.65f, 1.45f);
   params.clamp_roof = have_bounds_;
   params.roof_max_y = bounds_max_[1];
+  params.cockpit_only = cockpit_camera_active_;
+  params.wristband_rgba = current_driver_wristband_rgba();
 
   // Layout in `driver_buf_`:
-  //   [0 .. driver_hands_count_)            : left/right forearms & hands (cockpit view draws only this range)
-  //   [driver_hands_count_ .. driver_count_): torso, shoulders, legs & head (exterior player views draw all)
-  const world::SpectatorMeshLod* skin = driver_assets_loaded_ ? &driver_body_mesh_ : nullptr;
-  const DriverEmitResult res =
-      emit_driver_geometry(skin, params, static_cast<WorldVertex*>(driver_buf_.data()), kMaxDriverVerts);
+  //   Cockpit view : [0 .. main_count) = DriverHands01.skinbin (fallback Driver01 arms),
+  //                  [wristband_first .. wristband_first + wristband_count) = tier-tinted DriverWristBand.skinbin
+  //   Exterior view: [0 .. main_count) = Driver01.skinbin (arms + torso/head),
+  //                  [wristband_first .. wristband_first + wristband_count) = tier-tinted DriverWristBand.skinbin
+  const world::SpectatorMeshLod* body_skin = driver_assets_loaded_ ? &driver_body_mesh_ : nullptr;
+  const world::SpectatorMeshLod* hands_skin =
+      (driver_assets_loaded_ && !driver_hands_mesh_.vertices.empty() && driver_hands_mesh_.indices.size() >= 3)
+          ? &driver_hands_mesh_
+          : nullptr;
+  const world::SpectatorMeshLod* band_skin =
+      (driver_assets_loaded_ && !driver_wristband_mesh_.vertices.empty() && driver_wristband_mesh_.indices.size() >= 3)
+          ? &driver_wristband_mesh_
+          : nullptr;
+  const DriverEmitResult res = emit_driver_geometry(
+      body_skin, hands_skin, band_skin, params, static_cast<WorldVertex*>(driver_buf_.data()), kMaxDriverVerts);
   driver_hands_count_ = res.hands_count;
   driver_count_ = res.total_count;
+  {
+    std::lock_guard<std::mutex> lock(g_guest_driver_mutex);
+    const bool first_entry = (g_player_driver_ranges.find(this) == g_player_driver_ranges.end());
+    g_player_driver_ranges[this] = {
+        0u, res.main_count, res.wristband_first, res.wristband_count, cockpit_camera_active_, res.used_skin_mesh,
+    };
+    if (first_entry) {
+      const Showroom* key = this;
+      retired_.push_back({std::numeric_limits<uint64_t>::max(), [key]() {
+                            std::lock_guard<std::mutex> lk(g_guest_driver_mutex);
+                            g_player_driver_ranges.erase(key);
+                          }});
+    }
+  }
   if (driver_count_ > 0) ++driver_buf_.ver;
 }
 
@@ -657,12 +1149,31 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
   if (!driver_assets_tried_ && !guest_ && r_.device_ && !options_.game_root.empty()) {
     (void)load_driver_assets();
   }
-  const uint32_t player_verts = cockpit_camera_active_ ? driver_hands_count_ : driver_count_;
-  const bool draw_player = draw_car_ && player_verts > 0 && driver_buf_.ready();
+  PlayerDriverRanges ranges{};
+  bool have_ranges = false;
+  {
+    std::lock_guard<std::mutex> lock(g_guest_driver_mutex);
+    if (auto it = g_player_driver_ranges.find(this); it != g_player_driver_ranges.end()) {
+      ranges = it->second;
+      have_ranges = true;
+    }
+  }
+  const uint32_t fallback_verts = cockpit_camera_active_ ? driver_hands_count_ : driver_count_;
+  const uint32_t main_verts =
+      have_ranges
+          ? ((cockpit_camera_active_ && !ranges.built_for_cockpit)
+                 ? std::min(driver_hands_count_, driver_count_)
+                 : std::min(ranges.main_count, driver_count_))
+          : fallback_verts;
+  const uint32_t band_first = have_ranges ? std::min(ranges.wristband_first, driver_count_) : 0u;
+  const uint32_t band_verts =
+      (have_ranges && band_first + ranges.wristband_count <= driver_count_) ? ranges.wristband_count : 0u;
+  const bool draw_player = draw_car_ && (main_verts > 0 || band_verts > 0) && driver_buf_.ready();
   const bool has_guests = !instances_.empty();
   if (!draw_player && !has_guests) return;
 
-  const bool use_tex = driver_assets_loaded_ && driver_tex_set_ != VK_NULL_HANDLE;
+  const bool use_tex =
+      driver_assets_loaded_ && driver_tex_set_ != VK_NULL_HANDLE && (!have_ranges || ranges.used_skin_mesh);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
   r_.apply_vrs(cmd);
@@ -682,18 +1193,37 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
   pc.params[2] = 0.0f;
   pc.params[3] = 1.0f;
 
+  bool bound_white_for_band = false;
   if (draw_player) {
     VkDeviceSize at = dyn_sync(driver_buf_, VkDeviceSize(driver_count_) * sizeof(WorldVertex));
     vkCmdBindVertexBuffers(cmd, 0, 1, &driver_buf_.buf.buffer, &at);
     identity(pc.model);  // player driver vertices are in car model space
-    vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof pc, &pc);
-    vkCmdDraw(cmd, player_verts, 1, 0, 0);
+    if (main_verts > 0) {
+      vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof pc, &pc);
+      vkCmdDraw(cmd, main_verts, 1, ranges.main_first, 0);
+    }
+    if (band_verts > 0) {
+      // Draw Horizon wristband (`DriverWristBand.skinbin`) with vertex-lit tier tinting.
+      if (use_tex) {
+        const VkDescriptorSet wsets[2] = {frame_set_, world_white_set_};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, wsets, 0, nullptr);
+        bound_white_for_band = true;
+      }
+      pc.params[1] = 65536.0f;  // kFlagVertexLit
+      vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof pc, &pc);
+      vkCmdDraw(cmd, band_verts, 1, band_first, 0);
+    }
   }
 
   // Render an independent neutral-pose seated driver inside nearby AI / festival / traffic cars,
   // positioned at each guest car's own LHD/RHD/center seat (never cloning the player's driver_buf_).
   if (!has_guests) return;
+  if (bound_white_for_band && use_tex) {
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
+    pc.params[1] = 1.0f;  // restore kFlagTextured for guest driver body mesh
+  }
   GuestDriverCache* guest_cache = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_guest_driver_mutex);
@@ -716,10 +1246,11 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
         neutral.handbrake_blend = 0.0f;
         neutral.hand_scale = 1.0f;
         neutral.clamp_roof = false;
+        neutral.cockpit_only = false;
         const world::SpectatorMeshLod* skin = driver_assets_loaded_ ? &driver_body_mesh_ : nullptr;
-        const DriverEmitResult gr =
-            emit_driver_geometry(skin, neutral, static_cast<WorldVertex*>(c->mapped), kMaxDriverVerts);
-        c->vert_count = gr.total_count;
+        const DriverEmitResult gr = emit_driver_geometry(
+            skin, nullptr, nullptr, neutral, static_cast<WorldVertex*>(c->mapped), kMaxDriverVerts);
+        c->vert_count = gr.main_count;
         c->head_above_pivot_y = gr.head_above_pivot_y;
         c->built = true;
         ptr = std::move(c);

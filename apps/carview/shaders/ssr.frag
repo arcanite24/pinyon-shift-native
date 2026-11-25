@@ -135,6 +135,20 @@ void main() {
   vec3 P = view_pos_from_depth(v_uv, d_c);
   vec3 V = normalize(-P);
   vec3 N = reconstruct_view_normal(v_uv, P, d_c);
+  // Subtle animated meter-scale wave ripples on flat horizontal low-roughness water pixels
+  // (water writes gloss > 0.60 and faces upward in view space; car clearcoat <= 0.58 is untouched).
+  float water_mask = smoothstep(0.60, 0.78, gloss) * smoothstep(0.72, 0.90, N.y) *
+                     smoothstep(3.5, 8.0, d_c) * (1.0 - smoothstep(220.0, 420.0, d_c));
+  if (water_mask > 0.005) {
+    float wt = pc.ssr_params.w * 6.2831853;
+    vec2 wp = P.xz;
+    float w1 = sin(dot(wp, vec2(1.45, 0.85)) + wt * 2.0);
+    float w2 = cos(dot(wp, vec2(-0.95, 1.75)) - wt * 3.0);
+    float w3 = sin(dot(wp, vec2(2.65, -2.10)) + wt * 4.0);
+    vec2 ripple = vec2(w1 * 0.52 + w3 * 0.24, w2 * 0.52 - w3 * 0.24) * (0.016 * water_mask);
+    N = normalize(N + vec3(ripple.x, 0.0, ripple.y));
+    if (dot(N, P) > 0.0) N = -N;
+  }
   float nv = clamp(dot(N, V), 0.0, 1.0);
   float rough = clamp(1.0 - gloss, 0.04, 0.85);
 

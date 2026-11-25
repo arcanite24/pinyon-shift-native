@@ -767,7 +767,8 @@ void test_shadow_and_smoothstep_invariants() {
   const std::string sf = read_text_file(root / "apps" / "carview" / "shaders" / "showroom.frag");
   check(sf.find("(flags & kFlagInstanced) == 0u && frame.damage_dirt.y > 0.01") != std::string::npos,
         "showroom.frag guards player tyre mud from leaking onto instanced cars");
-  check(sf.find("(flags & kFlagInstanced) == 0u ? frame.phase_b_params.y : 0.0") != std::string::npos,
+  check(sf.find("float rotor_heat = 0.0;") != std::string::npos &&
+            sf.find("if ((flags & kFlagInstanced) == 0u)") != std::string::npos,
         "showroom.frag guards player brake rotor glow from leaking onto instanced cars");
   const std::string shadows_cpp = read_text_file(root / "apps" / "carview" / "showroom_shadows.cpp");
   check(shadows_cpp.find("d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0") != std::string::npos,

@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
 
 #include "bloom_down_frag_spv.h"
 #include "bloom_up_frag_spv.h"
@@ -11,6 +13,38 @@
 #include "post_vert_spv.h"
 
 namespace carview {
+namespace {
+
+struct VirtualMirrorHookState {
+  VkImageView view = VK_NULL_HANDLE;
+  bool active = false;
+};
+
+std::mutex g_vmirror_mutex;
+std::unordered_map<const Renderer*, VirtualMirrorHookState> g_vmirror_map;
+
+}  // namespace
+
+namespace detail {
+
+void register_virtual_mirror(const Renderer* r, VkImageView view) {
+  std::lock_guard<std::mutex> lock(g_vmirror_mutex);
+  auto& st = g_vmirror_map[r];
+  st.view = view;
+}
+
+void unregister_virtual_mirror(const Renderer* r) {
+  std::lock_guard<std::mutex> lock(g_vmirror_mutex);
+  g_vmirror_map.erase(r);
+}
+
+void set_virtual_mirror_active(const Renderer* r, bool active) {
+  std::lock_guard<std::mutex> lock(g_vmirror_mutex);
+  auto it = g_vmirror_map.find(r);
+  if (it != g_vmirror_map.end()) it->second.active = active;
+}
+
+}  // namespace detail
 
 void Renderer::set_post_lut(std::span<const uint8_t> rgba, uint32_t size) {
   if (size < 2 || size > 65) return;
@@ -189,7 +223,7 @@ bool Renderer::create_post(std::string& error) {
     error = "post optical UBO";
     return false;
   }
-  const VkDescriptorSetLayoutBinding bindings[12] = {
+  const VkDescriptorSetLayoutBinding bindings[13] = {
       {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -201,9 +235,10 @@ bool Renderer::create_post(std::string& error) {
       {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 12;
+  set.bindingCount = 13;
   set.pBindings = bindings;
   VK_TRY(vkCreateDescriptorSetLayout(device_, &set, nullptr, &post_set_layout_), "post set layout");
   VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
@@ -214,7 +249,7 @@ bool Renderer::create_post(std::string& error) {
   layout.pPushConstantRanges = &push;
   VK_TRY(vkCreatePipelineLayout(device_, &layout, nullptr, &post_layout_), "post pipeline layout");
   const VkDescriptorPoolSize pool_sizes[2] = {
-      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPostSetCount * 11},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPostSetCount * 12},
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kPostSetCount}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets = kPostSetCount;
@@ -228,6 +263,26 @@ bool Renderer::create_post(std::string& error) {
   alloc.descriptorSetCount = kPostSetCount;
   alloc.pSetLayouts = layouts;
   VK_TRY(vkAllocateDescriptorSets(device_, &alloc, post_sets_), "post descriptor sets");
+  {
+    VkImageView vm_view = lum_adapt_[1].view;
+    {
+      std::lock_guard<std::mutex> lock(g_vmirror_mutex);
+      auto it = g_vmirror_map.find(this);
+      if (it != g_vmirror_map.end() && it->second.view != VK_NULL_HANDLE) vm_view = it->second.view;
+    }
+    VkDescriptorImageInfo vm_imgs[kPostSetCount];
+    VkWriteDescriptorSet vm_writes[kPostSetCount];
+    for (uint32_t s = 0; s < kPostSetCount; ++s) {
+      vm_imgs[s] = {post_sampler_, vm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      vm_writes[s] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      vm_writes[s].dstSet = post_sets_[s];
+      vm_writes[s].dstBinding = 12;
+      vm_writes[s].descriptorCount = 1;
+      vm_writes[s].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      vm_writes[s].pImageInfo = &vm_imgs[s];
+    }
+    vkUpdateDescriptorSets(device_, kPostSetCount, vm_writes, 0, nullptr);
+  }
 
   auto make_module = [&](const uint32_t* code, size_t bytes, VkShaderModule& module) {
     VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -370,6 +425,13 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     u.vig_bot_rot[0] = std::cos(s.vig_bot_rot);
     u.vig_bot_rot[1] = std::sin(s.vig_bot_rot);
     u.vig_bot_rot[2] = s.vig_bot_feather;
+    {
+      bool vm_on = false;
+      std::lock_guard<std::mutex> lock(g_vmirror_mutex);
+      auto it = g_vmirror_map.find(this);
+      if (it != g_vmirror_map.end()) vm_on = (it->second.view != VK_NULL_HANDLE && it->second.active);
+      u.vig_bot_rot[3] = vm_on ? 1.0f : 0.0f;
+    }
     u.texel_size[0] = render_width_ ? 1.0f / float(render_width_) : 1.0f / 1280.0f;
     u.texel_size[1] = render_height_ ? 1.0f / float(render_height_) : 1.0f / 720.0f;
     u.texel_size[2] = s.time_sec;

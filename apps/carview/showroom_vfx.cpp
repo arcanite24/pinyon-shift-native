@@ -260,7 +260,8 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     std::vector<std::string> primary_order = {
         "gr_puffy_smoke_diff.xds",   "gr_backfire_diff.xds",     "vehicle_sparks_diff.xds",
         "gr_dirt_8x1_diff.xds",      "gr_gravel_8x1_diff.xds",   "gr_woodsplinters_diff.xds",
-        "gr_aspen_leaves_diff.xds",  "gr_grass_8x1_diff.xds",    "gr_glass_diff.xds",
+        "gr_aspen_leaves_diff.xds",  "gr_grass_8x1_diff.xds",    "gr_glassshards_diff.xds",
+        "gr_glass_diff.xds",
     };
     std::unordered_set<std::string> seen_grad;
     std::unordered_set<std::string> seen_primary(primary_order.begin(), primary_order.end());
@@ -1356,6 +1357,298 @@ void Showroom::record_particles_draw(VkCommandBuffer cmd) {
     vkCmdBindVertexBuffers(cmd, 0, 1, &particle_buf_.buf.buffer, &at);
     vkCmdDraw(cmd, 6, particle_add_count_, 0, particle_alpha_count_);
   }
+}
+
+namespace {
+
+struct DetachedCarPartBody {
+  int part_kind = 0;  // 0=front bumper, 1=rear bumper, 2=left mirror, 3=right mirror, 4=rear wing
+  std::array<float, 3> pos{};
+  std::array<float, 3> vel{};
+  drive::Quat rot{0.0, 0.0, 0.0, 1.0};
+  std::array<float, 3> omega{};
+  std::array<float, 3> half_extents{0.5f, 0.15f, 0.15f};
+  std::array<uint8_t, 4> paint_rgba{185, 42, 42, 255};
+  float age = 0.0f;
+};
+
+std::mutex g_detached_parts_mutex;
+std::unordered_map<const void*, std::vector<DetachedCarPartBody>> g_detached_parts_by_owner;
+
+drive::Quat quat_from_basis(const std::array<float, 3>& r, const std::array<float, 3>& u,
+                            const std::array<float, 3>& f) {
+  const double m00 = r[0], m01 = u[0], m02 = f[0];
+  const double m10 = r[1], m11 = u[1], m12 = f[1];
+  const double m20 = r[2], m21 = u[2], m22 = f[2];
+  const double tr = m00 + m11 + m22;
+  drive::Quat q{0.0, 0.0, 0.0, 1.0};
+  if (tr > 0.0) {
+    const double s = std::sqrt(tr + 1.0) * 2.0;
+    q.w = 0.25 * s;
+    q.x = (m21 - m12) / s;
+    q.y = (m02 - m20) / s;
+    q.z = (m10 - m01) / s;
+  } else if (m00 > m11 && m00 > m22) {
+    const double s = std::sqrt(1.0 + m00 - m11 - m22) * 2.0;
+    q.w = (m21 - m12) / s;
+    q.x = 0.25 * s;
+    q.y = (m01 + m10) / s;
+    q.z = (m02 + m20) / s;
+  } else if (m11 > m22) {
+    const double s = std::sqrt(1.0 + m11 - m00 - m22) * 2.0;
+    q.w = (m02 - m20) / s;
+    q.x = (m01 + m10) / s;
+    q.y = 0.25 * s;
+    q.z = (m12 + m21) / s;
+  } else {
+    const double s = std::sqrt(1.0 + m22 - m00 - m11) * 2.0;
+    q.w = (m10 - m01) / s;
+    q.x = (m02 + m20) / s;
+    q.y = (m12 + m21) / s;
+    q.z = 0.25 * s;
+  }
+  const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  if (n > 1e-8) {
+    q.x /= n;
+    q.y /= n;
+    q.z /= n;
+    q.w /= n;
+  }
+  return q;
+}
+
+void append_local_box(const DetachedCarPartBody& b, const std::array<float, 3>& loc_c,
+                      const std::array<float, 3>& loc_he, const std::array<uint8_t, 4>& col, float scale,
+                      std::vector<world::DebrisVertex>& out_tris) {
+  static constexpr int kFaces[6][4] = {
+      {0, 1, 2, 3}, {5, 4, 7, 6}, {4, 0, 3, 7}, {1, 5, 6, 2}, {3, 2, 6, 7}, {4, 5, 1, 0},
+  };
+  static constexpr float kNormals[6][3] = {
+      {0, 0, 1}, {0, 0, -1}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, -1, 0},
+  };
+  static constexpr float kCorners[8][3] = {
+      {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}, {-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
+  };
+  static constexpr float kFaceShade[6] = {0.96f, 0.84f, 0.88f, 0.92f, 1.00f, 0.68f};
+
+  std::array<std::array<float, 3>, 8> wv{};
+  for (int i = 0; i < 8; ++i) {
+    const drive::Vec3 local{
+        double((loc_c[0] + kCorners[i][0] * loc_he[0]) * scale),
+        double((loc_c[1] + kCorners[i][1] * loc_he[1]) * scale),
+        double((loc_c[2] + kCorners[i][2] * loc_he[2]) * scale),
+    };
+    const drive::Vec3 r = drive::rotate(b.rot, local);
+    wv[size_t(i)] = {b.pos[0] + float(r.x), b.pos[1] + float(r.y), b.pos[2] + float(r.z)};
+  }
+  for (int f = 0; f < 6; ++f) {
+    const drive::Vec3 wn = drive::rotate(b.rot, {kNormals[f][0], kNormals[f][1], kNormals[f][2]});
+    const std::array<float, 3> n = {float(wn.x), float(wn.y), float(wn.z)};
+    const float fs = kFaceShade[f];
+    const std::array<uint8_t, 4> fcol = {
+        uint8_t(std::clamp(int(float(col[0]) * fs), 0, 255)),
+        uint8_t(std::clamp(int(float(col[1]) * fs), 0, 255)),
+        uint8_t(std::clamp(int(float(col[2]) * fs), 0, 255)),
+        col[3],
+    };
+    const auto& p0 = wv[size_t(kFaces[f][0])];
+    const auto& p1 = wv[size_t(kFaces[f][1])];
+    const auto& p2 = wv[size_t(kFaces[f][2])];
+    const auto& p3 = wv[size_t(kFaces[f][3])];
+    out_tris.push_back({p0, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
+    out_tris.push_back({p1, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
+    out_tris.push_back({p2, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
+    out_tris.push_back({p0, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
+    out_tris.push_back({p2, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
+    out_tris.push_back({p3, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
+  }
+}
+
+}  // namespace
+
+void spawn_detached_car_part(const void* owner_key, int part_kind, const std::array<float, 3>& world_pos,
+                             const std::array<float, 3>& car_vel, const std::array<float, 3>& car_fwd,
+                             const std::array<float, 3>& car_right, const std::array<float, 3>& car_up,
+                             const std::array<uint8_t, 4>& paint_rgba) {
+  if (!owner_key) return;
+  DetachedCarPartBody b{};
+  b.part_kind = part_kind;
+  b.pos = world_pos;
+  b.rot = quat_from_basis(car_right, car_up, car_fwd);
+  b.paint_rgba = paint_rgba;
+  b.paint_rgba[3] = 255;
+
+  // Deterministic tumble impulse tuned per detached component so bumpers skid/flip forward
+  // or off to the side, mirrors catapult outward, and rear wings cartwheel cleanly.
+  float fwd_kick = 0.0f, right_kick = 0.0f, up_kick = 2.6f;
+  switch (part_kind) {
+    case 0:  // front bumper
+      b.half_extents = {0.82f, 0.17f, 0.14f};
+      fwd_kick = 3.2f;
+      right_kick = 1.6f;
+      up_kick = 2.4f;
+      b.omega = {4.2f, 2.8f, -1.9f};
+      break;
+    case 1:  // rear bumper
+      b.half_extents = {0.82f, 0.19f, 0.15f};
+      fwd_kick = -3.8f;
+      right_kick = -1.4f;
+      up_kick = 2.2f;
+      b.omega = {-4.6f, 2.3f, 2.1f};
+      break;
+    case 2:  // left mirror
+      b.half_extents = {0.11f, 0.08f, 0.12f};
+      fwd_kick = -1.2f;
+      right_kick = -4.2f;
+      up_kick = 3.6f;
+      b.omega = {8.5f, -6.2f, 9.0f};
+      break;
+    case 3:  // right mirror
+      b.half_extents = {0.11f, 0.08f, 0.12f};
+      fwd_kick = -1.2f;
+      right_kick = 4.2f;
+      up_kick = 3.6f;
+      b.omega = {-8.2f, 6.5f, -9.2f};
+      break;
+    default:  // rear wing (4)
+      b.half_extents = {0.74f, 0.06f, 0.18f};
+      fwd_kick = -4.4f;
+      right_kick = 0.9f;
+      up_kick = 4.4f;
+      b.omega = {-6.8f, 1.9f, 3.4f};
+      break;
+  }
+
+  for (int k = 0; k < 3; ++k) {
+    b.vel[size_t(k)] = car_vel[size_t(k)] * 0.78f + car_fwd[size_t(k)] * fwd_kick +
+                       car_right[size_t(k)] * right_kick + car_up[size_t(k)] * up_kick;
+  }
+
+  std::lock_guard<std::mutex> lock(g_detached_parts_mutex);
+  auto& pool = g_detached_parts_by_owner[owner_key];
+  if (pool.size() >= 16u) pool.erase(pool.begin());
+  pool.push_back(b);
+}
+
+void clear_detached_car_parts(const void* owner_key) {
+  std::lock_guard<std::mutex> lock(g_detached_parts_mutex);
+  if (!owner_key) {
+    g_detached_parts_by_owner.clear();
+  } else {
+    g_detached_parts_by_owner.erase(owner_key);
+  }
+}
+
+void step_and_append_detached_car_parts(const void* owner_key, float dt, const drive::Ground* ground,
+                                        std::vector<world::DebrisVertex>& out_tris) {
+  if (!owner_key) return;
+  constexpr float kMaxAge = 12.0f;
+  const float step_dt = std::clamp(dt, 0.0f, 0.05f);
+
+  std::lock_guard<std::mutex> lock(g_detached_parts_mutex);
+  auto it = g_detached_parts_by_owner.find(owner_key);
+  if (it == g_detached_parts_by_owner.end() || it->second.empty()) return;
+
+  auto& pool = it->second;
+  size_t write = 0;
+  for (size_t i = 0; i < pool.size(); ++i) {
+    DetachedCarPartBody& b = pool[i];
+    b.age += step_dt;
+    if (b.age >= kMaxAge) continue;
+
+    if (step_dt > 0.0f) {
+      b.vel[1] -= 9.81f * step_dt;
+      const float air_drag = std::exp(-0.42f * step_dt);
+      b.vel[0] *= air_drag;
+      b.vel[2] *= air_drag;
+      b.pos[0] += b.vel[0] * step_dt;
+      b.pos[1] += b.vel[1] * step_dt;
+      b.pos[2] += b.vel[2] * step_dt;
+
+      // Integrate angular tumble into unit quaternion.
+      const double wx = b.omega[0], wy = b.omega[1], wz = b.omega[2];
+      const double half_dt = 0.5 * double(step_dt);
+      const drive::Quat q = b.rot;
+      drive::Quat nq{
+          q.x + half_dt * (wx * q.w + wy * q.z - wz * q.y),
+          q.y + half_dt * (wy * q.w + wz * q.x - wx * q.z),
+          q.z + half_dt * (wz * q.w + wx * q.y - wy * q.x),
+          q.w + half_dt * (-wx * q.x - wy * q.y - wz * q.z),
+      };
+      const double qn = std::sqrt(nq.x * nq.x + nq.y * nq.y + nq.z * nq.z + nq.w * nq.w);
+      if (qn > 1e-8) {
+        nq.x /= qn;
+        nq.y /= qn;
+        nq.z /= qn;
+        nq.w /= qn;
+        b.rot = nq;
+      }
+
+      // Ground bounce & road-sliding friction.
+      if (ground) {
+        drive::Hit hit{};
+        const double probe_y = double(b.pos[1]) + 1.5;
+        if (ground->raycast({double(b.pos[0]), probe_y, double(b.pos[2])}, {0.0, -1.0, 0.0}, 10.0, hit)) {
+          const float gnd_y = float(probe_y - hit.distance);
+          const float r_gnd = std::max(b.half_extents[1], 0.075f);
+          if (b.pos[1] - r_gnd < gnd_y) {
+            b.pos[1] = gnd_y + r_gnd;
+            if (b.vel[1] < -0.65f) {
+              b.vel[1] = -b.vel[1] * 0.36f;
+              b.vel[0] *= 0.74f;
+              b.vel[2] *= 0.74f;
+              b.omega[0] *= 0.78f;
+              b.omega[1] *= 0.78f;
+              b.omega[2] *= 0.78f;
+            } else {
+              b.vel[1] = 0.0f;
+              const float fric = std::exp(-4.2f * step_dt);
+              b.vel[0] *= fric;
+              b.vel[2] *= fric;
+              const float ang_damp = std::exp(-5.0f * step_dt);
+              b.omega[0] *= ang_damp;
+              b.omega[1] *= ang_damp;
+              b.omega[2] *= ang_damp;
+            }
+          }
+        }
+      }
+    }
+
+    const float fade = (b.age > kMaxAge - 1.5f) ? std::clamp((kMaxAge - b.age) / 1.5f, 0.0f, 1.0f) : 1.0f;
+    if (fade > 0.02f) {
+      const float scale = (fade < 1.0f) ? (0.25f + 0.75f * fade) : 1.0f;
+      std::array<uint8_t, 4> body_col = b.paint_rgba;
+      body_col[3] = uint8_t(float(body_col[3]) * fade);
+      const std::array<uint8_t, 4> trim_col = {34, 36, 40, body_col[3]};
+
+      if (b.part_kind == 0 || b.part_kind == 1) {
+        // Front/rear bumper: painted main fascia + dark lower grille/diffuser + wrap-around side returns.
+        append_local_box(b, {0.0f, 0.02f, 0.0f}, {0.82f, 0.15f, 0.12f}, body_col, scale, out_tris);
+        append_local_box(b, {0.0f, -0.11f, 0.01f}, {0.72f, 0.055f, 0.10f}, trim_col, scale, out_tris);
+        const float wrap_z = (b.part_kind == 0) ? -0.18f : 0.18f;
+        append_local_box(b, {-0.78f, 0.0f, wrap_z}, {0.07f, 0.14f, 0.18f}, body_col, scale, out_tris);
+        append_local_box(b, {0.78f, 0.0f, wrap_z}, {0.07f, 0.14f, 0.18f}, body_col, scale, out_tris);
+      } else if (b.part_kind == 2 || b.part_kind == 3) {
+        // Side mirror: painted cap + matte black mount stalk.
+        const float sx = (b.part_kind == 2) ? 0.07f : -0.07f;
+        append_local_box(b, {0.0f, 0.02f, 0.0f}, {0.10f, 0.065f, 0.10f}, body_col, scale, out_tris);
+        append_local_box(b, {sx, -0.03f, 0.02f}, {0.055f, 0.035f, 0.045f}, trim_col, scale, out_tris);
+      } else {
+        // Rear wing: wide airfoil blade + dual endplates + twin pedestal struts.
+        append_local_box(b, {0.0f, 0.04f, 0.0f}, {0.74f, 0.032f, 0.16f}, body_col, scale, out_tris);
+        append_local_box(b, {-0.75f, 0.02f, 0.0f}, {0.02f, 0.10f, 0.18f}, body_col, scale, out_tris);
+        append_local_box(b, {0.75f, 0.02f, 0.0f}, {0.02f, 0.10f, 0.18f}, body_col, scale, out_tris);
+        append_local_box(b, {-0.34f, -0.06f, 0.0f}, {0.025f, 0.09f, 0.08f}, trim_col, scale, out_tris);
+        append_local_box(b, {0.34f, -0.06f, 0.0f}, {0.025f, 0.09f, 0.08f}, trim_col, scale, out_tris);
+      }
+    }
+
+    if (write != i) pool[write] = b;
+    ++write;
+  }
+  pool.resize(write);
+  if (pool.empty()) g_detached_parts_by_owner.erase(it);
 }
 
 

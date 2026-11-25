@@ -729,6 +729,170 @@ void test_corpus_counts() {
   }
 }
 
+void test_r3_multi_vehicle_skids_quad_exhaust_and_glass_shatter() {
+  // 1. Multi-vehicle AI skidmark slots (kMaxSkidVehicles = 8), smooth strip start alpha (0 -> target),
+  //    and tight 0.008 m road lift.
+  {
+    CHECK(world::SkidMarkSystem::kMaxSkidVehicles == 8u);
+    CHECK(std::fabs(world::SkidMarkSystem::kSkidLiftM - 0.008f) < 1e-6f);
+
+    world::SkidMarkSystem skids;
+    fh1::SurfaceType asphalt{};
+    asphalt.skid_a = 200;
+    asphalt.skid_texture_index = 0;
+    asphalt.skid_min_intensity = 0.0f;
+
+    fh1::SurfaceType dirt{};
+    dirt.skid_r = dirt.skid_g = dirt.skid_b = 255;
+    dirt.skid_a = 140;
+    dirt.skid_texture_index = 1;
+    dirt.skid_min_intensity = 0.45f;
+
+    world::WheelVfxInput w{};
+    w.grounded = true;
+    w.surface_normal = {0.0f, 1.0f, 0.0f};
+    w.wheel_right = {1.0f, 0.0f, 0.0f};
+    w.wheel_forward = {0.0f, 0.0f, 1.0f};
+    w.wheel_speed_mps = 18.0f;
+    w.slip_combined = 1.35f;
+
+    // Player (slot 0) on asphalt + 7 AI cars (slots 1..7) on alternating asphalt & dirt trails.
+    for (int step = 0; step < 4; ++step) {
+      for (size_t veh = 0; veh < world::SkidMarkSystem::kMaxSkidVehicles; ++veh) {
+        w.surface = (veh % 2 == 0) ? asphalt : dirt;
+        w.contact_pos = {float(veh) * 4.0f, 0.0f, float(step) * 0.5f};
+        skids.update_vehicle_wheel(veh, 0, w, float(step) * 0.1f);
+      }
+    }
+    // 8 vehicles * 3 emitted segments each = 24 segments (12 asphalt + 12 dirt ruts).
+    CHECK(skids.segment_count() == 24u);
+    CHECK(skids.count_by_texture(0) == 12u);
+    CHECK(skids.count_by_texture(1) == 12u);
+
+    std::vector<world::SkidVertex> asph_tris, rut_tris;
+    skids.build_geometry(asph_tris, rut_tris);
+    CHECK(asph_tris.size() == 12u * 6u);
+    CHECK(rut_tris.size() == 12u * 6u);
+
+    // First segment of the strip must ramp smoothly from alpha == 0 on leading edge (v0, v1)
+    // to target alpha > 0 on trailing edge (v2, v3), with exact 0.008 m Y lift.
+    CHECK(asph_tris[0].rgba[3] == 0u);  // v0 = prevL
+    CHECK(asph_tris[1].rgba[3] == 0u);  // v1 = prevR
+    CHECK(asph_tris[2].rgba[3] > 100u); // v2 = currR
+    CHECK(asph_tris[5].rgba[3] > 100u); // v3 = currL
+    for (const auto& v : asph_tris) {
+      CHECK(std::fabs(v.pos[1] - 0.008f) < 1e-5f);
+    }
+    for (const auto& v : rut_tris) {
+      CHECK(std::fabs(v.pos[1] - 0.008f) < 1e-5f);
+    }
+
+    // Breaking AI vehicle slot 3 must not disrupt player slot 0's continuous strip.
+    skids.break_vehicle(3);
+    w.surface = asphalt;
+    w.contact_pos = {0.0f, 0.0f, 2.0f};
+    skids.update_vehicle_wheel(0, 0, w, 0.4f);
+    CHECK(skids.segment_count() == 25u);  // player slot 0 immediately appended next segment
+    w.surface = dirt;
+    w.contact_pos = {12.0f, 0.0f, 2.0f};
+    skids.update_vehicle_wheel(3, 0, w, 0.4f);
+    CHECK(skids.segment_count() == 25u);  // broken slot 3 only anchored new strip start (0 new segs)
+  }
+
+  // 2. Quad-tip (4-tip) exhaust backfires + dark exhaust puff + isolated AI vehicle dust/smoke.
+  {
+    world::ParticleLibrary lib;
+    auto make_eff = [](const char* name, bool additive, float life) {
+      world::ParticleEffectDef d;
+      d.name = name;
+      d.budget = 120;
+      d.quantity = 80.0f;
+      d.life = life;
+      d.velocity = 2.0f;
+      d.additive = additive;
+      d.rgb_start = {1, 0.9f, 0.6f, 0.9f};
+      d.rgb_mid = {1, 0.6f, 0.2f, 0.7f};
+      d.rgb_end = {0.2f, 0.1f, 0.0f, 0.0f};
+      return d;
+    };
+    lib.add_effect(make_eff("backfire", true, 0.25f));
+    lib.add_effect(make_eff("smokecollision", false, 0.50f));
+    lib.add_effect(make_eff("dust1", false, 0.80f));
+    lib.add_effect(make_eff("smoke", false, 0.80f));
+
+    world::ParticleSystem ps;
+    ps.set_library(&lib);
+
+    world::VehicleVfxInput vin{};
+    vin.car_pos = {0, 0.6f, 0};
+    vin.car_vel = {0, 0, 20.0f};
+    vin.car_forward = {0, 0, 1};
+    vin.exhaust_tip_count = 4;
+    vin.exhaust_tips[0] = {-0.65f, 0.30f, -2.1f};
+    vin.exhaust_tips[1] = {-0.45f, 0.30f, -2.1f};
+    vin.exhaust_tips[2] = {0.45f, 0.30f, -2.1f};
+    vin.exhaust_tips[3] = {0.65f, 0.30f, -2.1f};
+    vin.audio_backfire_pulses = 1;
+    ps.update_vehicle(vin, 0.016f);
+
+    std::vector<world::ParticleSprite> alpha, add;
+    ps.build_sprites({0, 1.5f, -6.0f}, alpha, add);
+    // 4 tips * 2 backfire particles = 8 additive flames, plus 4 dark exhaust puff alpha particles!
+    CHECK(add.size() == 8u);
+    CHECK(alpha.size() == 4u);
+    bool saw_tip0 = false, saw_tip1 = false, saw_tip2 = false, saw_tip3 = false;
+    for (const auto& sp : add) {
+      if (std::fabs(sp.pos[0] - (-0.65f)) < 0.02f) saw_tip0 = true;
+      if (std::fabs(sp.pos[0] - (-0.45f)) < 0.02f) saw_tip1 = true;
+      if (std::fabs(sp.pos[0] - 0.45f) < 0.02f) saw_tip2 = true;
+      if (std::fabs(sp.pos[0] - 0.65f) < 0.02f) saw_tip3 = true;
+    }
+    CHECK(saw_tip0 && saw_tip1 && saw_tip2 && saw_tip3);
+
+    // AI vehicle on slot 2 kicks up off-road dirt dust without touching slot 0's accumulators.
+    world::VehicleVfxInput ai{};
+    ai.vehicle_slot = 2;
+    ai.car_pos = {20.0f, 0.5f, 10.0f};
+    ai.car_vel = {0, 0, 18.0f};
+    for (int wi = 0; wi < 4; ++wi) {
+      ai.wheels[size_t(wi)].grounded = true;
+      ai.wheels[size_t(wi)].contact_pos = {20.0f + float(wi) * 0.5f, 0.0f, 10.0f};
+      ai.wheels[size_t(wi)].wheel_speed_mps = 18.0f;
+      ai.wheels[size_t(wi)].slip_combined = 0.6f;
+      ai.wheels[size_t(wi)].surface.dust_weight = 1.0f;
+      ai.wheels[size_t(wi)].surface.skid_min_intensity = 0.5f;
+    }
+    const size_t before_ai = ps.live_count();
+    for (int k = 0; k < 5; ++k) ps.update_vehicle(ai, 0.02f);
+    CHECK(ps.live_count() >= before_ai + 8u);
+  }
+
+  // 3. Glass shatter particle burst (translucent shards + sparkling glints + expiry).
+  {
+    world::ParticleLibrary lib;
+    world::ParticleEffectDef dust{};
+    dust.name = "bi_dust_small";
+    dust.life = 0.6f;
+    dust.rgb_start = {0.9f, 0.9f, 0.9f, 0.5f};
+    dust.rgb_mid = {0.8f, 0.8f, 0.8f, 0.3f};
+    dust.rgb_end = {0.5f, 0.5f, 0.5f, 0.0f};
+    lib.add_effect(dust);
+
+    world::ParticleSystem ps;
+    ps.set_library(&lib);
+    ps.spawn_glass_shatter({0.0f, 1.1f, 0.5f}, {0.0f, 0.0f, 15.0f});
+    CHECK(ps.live_count() >= 20u);
+
+    std::vector<world::ParticleSprite> alpha, add;
+    ps.build_sprites({0.0f, 1.6f, -5.0f}, alpha, add);
+    CHECK(alpha.size() >= 16u);  // glass shards + fine dust
+    CHECK(add.size() >= 6u);     // sparkling glass glints
+
+    for (int k = 0; k < 35; ++k) ps.step(0.05f);
+    CHECK(ps.live_count() == 0u);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -739,6 +903,7 @@ int main() {
   test_rally_world_separation_and_sharing();
   test_particle_atlas_capacity_and_gradient();
   test_world_flare_composite_and_bounds();
+  test_r3_multi_vehicle_skids_quad_exhaust_and_glass_shatter();
   test_corpus_counts();
   if (g_failures == 0) {
     std::printf("vfx_tests: all checks passed\n");

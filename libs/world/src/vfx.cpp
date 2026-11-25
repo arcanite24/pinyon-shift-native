@@ -773,6 +773,7 @@ void ParticleSystem::emit_continuous(std::string_view effect_name, const std::ar
 
 void ParticleSystem::update_vehicle(const VehicleVfxInput& in, float dt) {
   if (!lib_ || dt <= 0.0f) return;
+  const uint64_t key_base = uint64_t(in.vehicle_slot) << 12u;
 
   for (int w = 0; w < 4; ++w) {
     const auto& wh = in.wheels[size_t(w)];
@@ -795,9 +796,10 @@ void ParticleSystem::update_vehicle(const VehicleVfxInput& in, float dt) {
     // Asphalt tyre smoke: triggered above slip threshold.
     if (wh.surface.smoke_weight > 0.01f && slip_factor > 0.05f) {
       const float inten = slip_factor * wh.surface.smoke_weight;
-      emit_continuous("smoke", patch, plume_dir, in.car_vel, dt, inten, 0x100u + uint64_t(w));
+      emit_continuous("smoke", patch, plume_dir, in.car_vel, dt, inten, key_base | (0x100u + uint64_t(w)));
       if (slip_factor > 0.45f) {
-        emit_continuous("smokerim0", patch, plume_dir, in.car_vel, dt, inten * 0.6f, 0x110u + uint64_t(w));
+        emit_continuous("smokerim0", patch, plume_dir, in.car_vel, dt, inten * 0.6f,
+                        key_base | (0x110u + uint64_t(w)));
       }
     }
 
@@ -805,32 +807,34 @@ void ParticleSystem::update_vehicle(const VehicleVfxInput& in, float dt) {
     const float offroad_drive = std::max(slip_factor, speed_factor * std::max(wh.surface.skid_min_intensity, 0.45f));
     if (wh.surface.dust_weight > 0.01f && offroad_drive > 0.08f) {
       emit_continuous("dust1", patch, plume_dir, in.car_vel, dt, offroad_drive * wh.surface.dust_weight,
-                      0x120u + uint64_t(w));
+                      key_base | (0x120u + uint64_t(w)));
     }
     if (wh.surface.dirt_weight > 0.01f && offroad_drive > 0.08f) {
       emit_continuous("dirt1", patch, plume_dir, in.car_vel, dt, offroad_drive * wh.surface.dirt_weight * 0.75f,
-                      0x130u + uint64_t(w));
+                      key_base | (0x130u + uint64_t(w)));
       // Dirt also kicks up soft dust plumes on Colorado trails.
       if (wh.surface.dust_weight < 0.05f) {
-        emit_continuous("dust1", patch, plume_dir, in.car_vel, dt, offroad_drive * 0.55f, 0x138u + uint64_t(w));
+        emit_continuous("dust1", patch, plume_dir, in.car_vel, dt, offroad_drive * 0.55f,
+                        key_base | (0x138u + uint64_t(w)));
       }
     }
     if (wh.surface.gravel_weight > 0.01f && offroad_drive > 0.08f) {
       emit_continuous("gravelbits", patch, plume_dir, in.car_vel, dt, offroad_drive * wh.surface.gravel_weight * 0.8f,
-                      0x140u + uint64_t(w));
-      emit_continuous("dust1", patch, plume_dir, in.car_vel, dt, offroad_drive * 0.65f, 0x148u + uint64_t(w));
+                      key_base | (0x140u + uint64_t(w)));
+      emit_continuous("dust1", patch, plume_dir, in.car_vel, dt, offroad_drive * 0.65f,
+                      key_base | (0x148u + uint64_t(w)));
     }
     if (wh.surface.grass_weight > 0.01f && offroad_drive > 0.12f) {
       emit_continuous("grass1", patch, plume_dir, in.car_vel, dt, offroad_drive * wh.surface.grass_weight * 0.7f,
-                      0x150u + uint64_t(w));
+                      key_base | (0x150u + uint64_t(w)));
     }
     if (wh.surface.leaf_weight > 0.01f && offroad_drive > 0.12f) {
       emit_continuous("leaf1", patch, plume_dir, in.car_vel, dt, offroad_drive * wh.surface.leaf_weight * 0.6f,
-                      0x160u + uint64_t(w));
+                      key_base | (0x160u + uint64_t(w)));
     }
     if (wh.surface.litter_weight > 0.01f && offroad_drive > 0.12f) {
       emit_continuous("litter", patch, plume_dir, in.car_vel, dt, offroad_drive * wh.surface.litter_weight * 0.6f,
-                      0x170u + uint64_t(w));
+                      key_base | (0x170u + uint64_t(w)));
     }
   }
 
@@ -841,30 +845,39 @@ void ParticleSystem::update_vehicle(const VehicleVfxInput& in, float dt) {
         in.scrape_normal[1] * 0.5f + 0.35f,
         in.scrape_normal[2] * 0.5f - in.car_forward[2] * 0.85f,
     });
-    emit_continuous("sparks1", in.scrape_pos, spark_dir, in.car_vel, dt, 1.0f, 0x200u);
+    emit_continuous("sparks1", in.scrape_pos, spark_dir, in.car_vel, dt, 1.0f, key_base | 0x200u);
   }
 
   // Exhaust backfire flames: directly coupled to Slice 2 audio backfire triggers,
-  // plus fallback simulation timer when audio thread is inactive (e.g. headless mode).
-  fallback_backfire_cooldown_ = std::max(0.0f, fallback_backfire_cooldown_ - dt);
+  // plus fallback simulation timer for the player vehicle when audio thread is inactive.
   bool fire_backfire = (in.audio_backfire_pulses > 0);
-  if (!fire_backfire && in.backfire_level > 0 && fallback_backfire_cooldown_ <= 0.0f) {
-    const int lv_idx = std::clamp(in.backfire_level, 0, 3);
-    const auto& tier = lib_->backfire_config().tiers[size_t(lv_idx)];
-    const bool in_rpm = (in.norm_rpm >= tier.min_norm_rpm && in.norm_rpm <= tier.max_norm_rpm);
-    if ((in.upshift_event && in.norm_rpm > 0.65f) || (in.throttle < 0.05f && in_rpm && tier.max_time_ms > 0.0f)) {
-      if (in.upshift_event || rand01() * 100.0f >= tier.silence_weighting) {
-        fire_backfire = true;
+  if (in.vehicle_slot == 0) {
+    fallback_backfire_cooldown_ = std::max(0.0f, fallback_backfire_cooldown_ - dt);
+    if (!fire_backfire && in.backfire_level > 0 && fallback_backfire_cooldown_ <= 0.0f) {
+      const int lv_idx = std::clamp(in.backfire_level, 0, 3);
+      const auto& tier = lib_->backfire_config().tiers[size_t(lv_idx)];
+      const bool in_rpm = (in.norm_rpm >= tier.min_norm_rpm && in.norm_rpm <= tier.max_norm_rpm);
+      if ((in.upshift_event && in.norm_rpm > 0.65f) || (in.throttle < 0.05f && in_rpm && tier.max_time_ms > 0.0f)) {
+        if (in.upshift_event || rand01() * 100.0f >= tier.silence_weighting) {
+          fire_backfire = true;
+        }
+        const float lo = std::max(0.15f, tier.min_time_ms * 0.001f);
+        const float hi = std::max(lo + 0.05f, tier.max_time_ms * 0.001f);
+        fallback_backfire_cooldown_ = lo + rand01() * (hi - lo);
       }
-      const float lo = std::max(0.15f, tier.min_time_ms * 0.001f);
-      const float hi = std::max(lo + 0.05f, tier.max_time_ms * 0.001f);
-      fallback_backfire_cooldown_ = lo + rand01() * (hi - lo);
     }
   }
   if (fire_backfire && in.exhaust_tip_count > 0) {
     const std::array<float, 3> exhaust_dir = {-in.car_forward[0], -in.car_forward[1] + 0.05f, -in.car_forward[2]};
-    for (int t = 0; t < std::min(in.exhaust_tip_count, 2); ++t) {
+    const int tip_n = std::min(in.exhaust_tip_count, VehicleVfxInput::kMaxExhaustTips);
+    for (int t = 0; t < tip_n; ++t) {
       spawn_burst("backfire", in.exhaust_tips[size_t(t)], exhaust_dir, in.car_vel, 2, 1.4f);
+      // Dark unburnt-fuel exhaust puff alongside each flame pop on up to all 4 tips.
+      if (lib_->find_effect("smokecollision")) {
+        spawn_burst("smokecollision", in.exhaust_tips[size_t(t)], exhaust_dir, in.car_vel, 1, 0.35f);
+      } else if (lib_->find_effect("smoke")) {
+        spawn_burst("smoke", in.exhaust_tips[size_t(t)], exhaust_dir, in.car_vel, 1, 0.30f);
+      }
     }
   }
 }
@@ -879,6 +892,108 @@ void ParticleSystem::spawn_collision_impact(const std::array<float, 3>& pos, con
     spawn_burst("sparks1", pos, dir, vel, int(8.0f * inten), inten);
   }
   spawn_burst("smokecollision", pos, dir, vel, std::max(3, int(6.0f * inten)), inten * 0.85f);
+}
+
+void ParticleSystem::spawn_glass_shatter(const std::array<float, 3>& pos, const std::array<float, 3>& car_vel,
+                                         const std::array<float, 3>& outward_dir) {
+  const std::array<float, 3> emit_dir = vec_norm({
+      outward_dir[0],
+      std::max(outward_dir[1], 0.35f),
+      outward_dir[2],
+  }, {0.0f, 1.0f, 0.0f});
+
+  // Prefer authentic retail effects.zip glass shard definitions when available.
+  const ParticleEffectDef* shard_def = nullptr;
+  if (lib_) {
+    shard_def = lib_->find_effect("glass1");
+    if (!shard_def) shard_def = lib_->find_effect("bi_glass_medium");
+    if (!shard_def) shard_def = lib_->find_effect("bi_glass_small");
+  }
+  static const ParticleEffectDef kGlassShardFallback = []() {
+    ParticleEffectDef d;
+    d.name = "glass_shatter_shards";
+    d.budget = 64;
+    d.off_axis_var_deg = 55.0f;
+    d.off_plane_var_deg = 55.0f;
+    d.velocity = 5.2f;
+    d.velocity_var = 0.45f;
+    d.life = 0.85f;
+    d.life_var = 0.30f;
+    d.shader_kind = ParticleShaderKind::kDefault;
+    d.size_x = 0.085f;
+    d.size_y = 0.085f;
+    d.size_var_x = 0.45f;
+    d.size_var_y = 0.45f;
+    d.max_size_x = 0.095f;
+    d.max_size_y = 0.095f;
+    d.grow_for_x = 0.0f;
+    d.grow_for_y = 0.0f;
+    d.spin_time = 0.38f;
+    d.spin_time_var = 0.4f;
+    d.spin_phase_var = 3.14159f;
+    d.spin_alternate = true;
+    d.motion_influence = 65.0f;
+    d.motion_multiplier = 0.65f;
+    d.gravity_strength = 270.0f;
+    d.friction_strength = 0.18f;
+    d.texture_name = "gr_glassshards_diff.xds";
+    d.additive = false;
+    d.rgb_start = {0.88f, 0.96f, 1.0f, 0.92f};
+    d.rgb_mid = {0.82f, 0.92f, 1.0f, 0.72f};
+    d.rgb_end = {0.72f, 0.86f, 0.96f, 0.0f};
+    d.fade_in_to = 0.05f;
+    d.fade_out_from = 0.60f;
+    return d;
+  }();
+  static const ParticleEffectDef kGlassGlintFallback = []() {
+    ParticleEffectDef d;
+    d.name = "glass_shatter_glint";
+    d.budget = 32;
+    d.off_axis_var_deg = 60.0f;
+    d.off_plane_var_deg = 60.0f;
+    d.velocity = 6.4f;
+    d.velocity_var = 0.40f;
+    d.life = 0.34f;
+    d.life_var = 0.25f;
+    d.shader_kind = ParticleShaderKind::kDefault;
+    d.velocity_quad = true;
+    d.size_x = 0.045f;
+    d.size_y = 0.11f;
+    d.size_var_x = 0.35f;
+    d.size_var_y = 0.35f;
+    d.max_size_x = 0.055f;
+    d.max_size_y = 0.13f;
+    d.motion_influence = 55.0f;
+    d.motion_multiplier = 0.55f;
+    d.gravity_strength = 220.0f;
+    d.additive = true;
+    d.rgb_start = {0.95f, 0.99f, 1.0f, 0.95f};
+    d.rgb_mid = {0.82f, 0.94f, 1.0f, 0.65f};
+    d.rgb_end = {0.65f, 0.85f, 1.0f, 0.0f};
+    d.fade_in_to = 0.04f;
+    d.fade_out_from = 0.45f;
+    return d;
+  }();
+
+  const ParticleEffectDef& use_shard = shard_def ? *shard_def : kGlassShardFallback;
+  for (int i = 0; i < 16; ++i) {
+    const std::array<float, 3> jitter_pos = {
+        pos[0] + rand_sym() * 0.22f,
+        pos[1] + rand_sym() * 0.12f,
+        pos[2] + rand_sym() * 0.22f,
+    };
+    spawn_one(use_shard, jitter_pos, emit_dir, car_vel, 1.15f);
+  }
+  for (int i = 0; i < 6; ++i) {
+    spawn_one(kGlassGlintFallback, pos, emit_dir, car_vel, 0.85f);
+  }
+  if (lib_) {
+    if (lib_->find_effect("bi_dust_small")) {
+      spawn_burst("bi_dust_small", pos, emit_dir, car_vel, 5, 0.55f);
+    } else if (lib_->find_effect("dust1")) {
+      spawn_burst("dust1", pos, emit_dir, car_vel, 4, 0.45f);
+    }
+  }
 }
 
 void ParticleSystem::spawn_smashable_burst(std::string_view prop_stem, const std::array<float, 3>& pos,
@@ -1195,6 +1310,13 @@ void SkidMarkSystem::break_wheel(size_t wheel_slot) {
   if (wheel_slot < strips_.size()) strips_[wheel_slot].active = false;
 }
 
+void SkidMarkSystem::break_vehicle(size_t vehicle_slot) {
+  if (vehicle_slot >= kMaxSkidVehicles) return;
+  for (size_t w = 0; w < kWheelsPerVehicle; ++w) {
+    strips_[wheel_slot_for(vehicle_slot, w)].active = false;
+  }
+}
+
 void SkidMarkSystem::break_all() {
   for (auto& s : strips_) s.active = false;
 }
@@ -1226,6 +1348,12 @@ float SkidMarkSystem::slip_intensity(float slip_combined, float min_intensity, f
   return std::max(slip_i, min_i);
 }
 
+void SkidMarkSystem::update_vehicle_wheel(size_t vehicle_slot, size_t wheel_index, const WheelVfxInput& in,
+                                          float time_s) {
+  if (vehicle_slot >= kMaxSkidVehicles || wheel_index >= kWheelsPerVehicle) return;
+  update_wheel(wheel_slot_for(vehicle_slot, wheel_index), in, time_s);
+}
+
 void SkidMarkSystem::update_wheel(size_t wheel_slot, const WheelVfxInput& in, float time_s) {
   if (time_s >= 0.0f) current_time_s_ = time_s;
   if (wheel_slot >= strips_.size()) return;
@@ -1244,8 +1372,9 @@ void SkidMarkSystem::update_wheel(size_t wheel_slot, const WheelVfxInput& in, fl
 
   const int tex_idx = (in.surface.skid_texture_index == 1) ? 1 : 0;
   const auto n = vec_norm(in.surface_normal, {0.0f, 1.0f, 0.0f});
-  // Lift 3 cm above the collision polygon to avoid Z-fighting on curved road crests.
-  constexpr float kLift = 0.030f;
+  // Tight 8 mm lift above the road surface (post-blended draw order + depth bias prevents Z-fighting
+  // without visibly floating above the asphalt).
+  constexpr float kLift = kSkidLiftM;
   const std::array<float, 3> center = {
       in.contact_pos[0] + n[0] * kLift,
       in.contact_pos[1] + n[1] * kLift,
@@ -1263,6 +1392,7 @@ void SkidMarkSystem::update_wheel(size_t wheel_slot, const WheelVfxInput& in, fl
       in.surface.skid_b,
       uint8_t(std::clamp(alpha_f * 255.0f, 0.0f, 255.0f)),
   };
+  const std::array<uint8_t, 4> start_rgba = {rgba[0], rgba[1], rgba[2], 0};
 
   if (!st.active || st.texture_index != tex_idx) {
     st.active = true;
@@ -1270,7 +1400,8 @@ void SkidMarkSystem::update_wheel(size_t wheel_slot, const WheelVfxInput& in, fl
     st.prev_left = left_p;
     st.prev_right = right_p;
     st.prev_normal = n;
-    st.prev_rgba = rgba;
+    // Ramp smoothly from alpha 0 -> target over the first segment so strips have zero hard start edge.
+    st.prev_rgba = start_rgba;
     st.v_coord = 0.0f;
     st.texture_index = tex_idx;
     return;
@@ -1286,7 +1417,7 @@ void SkidMarkSystem::update_wheel(size_t wheel_slot, const WheelVfxInput& in, fl
     st.prev_left = left_p;
     st.prev_right = right_p;
     st.prev_normal = n;
-    st.prev_rgba = rgba;
+    st.prev_rgba = start_rgba;
     st.v_coord = 0.0f;
     return;
   }

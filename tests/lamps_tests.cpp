@@ -11,6 +11,8 @@
 #include "fh1data/archive.h"
 #include "fh1data/carbin.h"
 #include "fh1data/xds.h"
+#define CARVIEW_ARENA_LRU_ONLY
+#include "../apps/carview/showroom.h"
 
 namespace {
 
@@ -368,12 +370,73 @@ void test_disc_lamp_points_if_available() {
   }
 }
 
+void test_dual_headlights_and_rotor_bias() {
+  // R3-REN-10: Dual L+R headlight origin splitting & fallback symmetry.
+  const std::array<float, 3> fallback{0.0f, 0.70f, 1.95f};
+  {
+    const float pts[] = {
+        -0.72f, 0.68f, 2.04f,  // FL headlamp
+        -0.64f, 0.70f, 2.00f,  // FL inner beam
+        0.70f,  0.69f, 2.02f,  // FR headlamp
+        0.0f,   0.80f, -2.0f,  // rear point (ignored)
+    };
+    const uint8_t mask[] = {0x01u, 0x01u, 0x01u, 0x01u};
+    const auto d = carview::resolve_dual_headlight_origins(pts, mask, 4, fallback);
+    check(d.has_left_pts && d.has_right_pts, "dual headlight origins detect both L and R front lamps");
+    check(std::fabs(d.left[0] - (-0.68f)) < 1e-3f && std::fabs(d.right[0] - 0.70f) < 1e-3f,
+          "dual headlight origins preserve distinct L/R lateral separation");
+    check(d.left[2] > 1.9f && d.right[2] > 1.9f, "dual headlight origins ignore rear lamp points");
+  }
+  {
+    // Single-side carbin lamp mirrors cleanly to opposite corner.
+    const float pts[] = {-0.75f, 0.66f, 1.90f};
+    const uint8_t mask[] = {0x01u};
+    const auto d = carview::resolve_dual_headlight_origins(pts, mask, 1, fallback);
+    check(d.has_left_pts && !d.has_right_pts, "single-side headlight sets left flag only");
+    check(std::fabs(d.right[0] - 0.75f) < 1e-4f && std::fabs(d.right[1] - 0.66f) < 1e-4f,
+          "missing right headlight mirrors left X coordinate");
+  }
+  {
+    // Empty lamp table falls back to +/-0.62 m around fallback origin.
+    const auto d = carview::resolve_dual_headlight_origins(nullptr, nullptr, 0, fallback);
+    check(!d.has_left_pts && !d.has_right_pts, "fallback reports no carbin lamp points");
+    check(std::fabs(d.left[0] - (-0.62f)) < 1e-4f && std::fabs(d.right[0] - 0.62f) < 1e-4f,
+          "fallback separates L and R headlights by +/-0.62 m");
+  }
+
+  // R3-REN-10: Per-corner headlight damage independently kills smashed side while preserving intact side.
+  {
+    const float fl_dead = carview::eval_headlight_corner_damage(0.60f, 0.60f, true, 1.0f, 0.0f);
+    const float fr_ok = carview::eval_headlight_corner_damage(0.05f, 0.60f, true, 1.0f, 1.7f);
+    check(fl_dead == 0.0f && fr_ok == 1.0f,
+          "smashing front-left corner (>=0.45) kills only left headlight while right stays full strength");
+    const float fl_flicker = carview::eval_headlight_corner_damage(0.35f, 0.35f, true, 0.5f, 0.0f);
+    check(fl_flicker > 0.0f && fl_flicker < 1.0f, "moderate front corner damage (0.24..0.45) flickers beam");
+    const float legacy_dead = carview::eval_headlight_corner_damage(0.0f, 0.92f, false, 1.0f, 0.0f);
+    const float legacy_ok = carview::eval_headlight_corner_damage(0.0f, 0.30f, false, 1.0f, 0.0f);
+    check(legacy_dead == 0.0f && legacy_ok == 1.0f, "legacy front-zone damage fallback works when corners absent");
+  }
+
+  // R3-REN-19: Brake rotor heat splits front/rear with ~70/30 bias so front rotors glow hotter.
+  {
+    const auto zero = carview::split_rotor_heat_bias(0.0f);
+    check(zero[0] == 0.0f && zero[1] == 0.0f, "zero brake heat keeps front and rear rotors cool");
+    const auto hard = carview::split_rotor_heat_bias(0.90f, 0.70f);
+    check(std::fabs(hard[0] - 0.90f) < 1e-4f, "front rotors carry full peak heat at 70/30 brake bias");
+    check(std::fabs(hard[1] - (0.90f * (30.0f / 70.0f))) < 1e-3f && hard[0] > hard[1] * 2.0f,
+          "rear rotors receive ~30/70 proportion of front brake rotor heat");
+    const auto clamped = carview::split_rotor_heat_bias(2.5f, 0.70f);
+    check(clamped[0] <= 1.0f && clamped[1] <= 1.0f, "rotor heat split clamps within [0, 1]");
+  }
+}
+
 }  // namespace
 
 int main() {
   test_lamp_state_rules();
   test_technique_classification_and_emission();
   test_cockpit_animation_math();
+  test_dual_headlights_and_rotor_bias();
   test_disc_lamp_points_if_available();
   if (g_failures == 0) std::printf("lamps_tests: all checks passed\n");
   return g_failures ? 1 : 0;

@@ -560,6 +560,312 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             app.race->emit_showcase_vfx(host.particle_sys, app.vfx_lib, vehicle.position(),
                                         float(std::clamp(frame_dt, 0.0, 0.05)));
           }
+          // Player glass & lamp shatter particle bursts whenever car_damage fractures a new pane/lamp.
+          if (!app.headless && (!app.bench || app.bench_full_fx) && !app.show_title && !app.fmv_player.active()) {
+            struct GlassMaskTracker {
+              std::string car_name;
+              uint16_t prev_mask = 0u;
+              bool initialized = false;
+            };
+            static std::unordered_map<const DriveSession*, GlassMaskTracker> s_glass_trackers;
+            auto& gtrk = s_glass_trackers[this];
+            const bool dmg_on = (car_damage.mode != drive::DamageMode::kNone);
+            uint16_t cur_gmask = 0u;
+            if (dmg_on) {
+              if (car_damage.glass_crack >= 0.35f || car_damage.zone_front >= 0.65f) cur_gmask |= (1u << 0);
+              if (car_damage.zone_left >= 0.55f) cur_gmask |= (1u << 1);
+              if (car_damage.zone_right >= 0.55f) cur_gmask |= (1u << 2);
+              if (car_damage.zone_rear >= 0.60f) cur_gmask |= (1u << 3);
+              if (car_damage.zone_roof >= 0.45f || car_damage.glass_crack >= 0.85f) cur_gmask |= (1u << 4);
+              if (car_damage.headlight_fl_broken()) cur_gmask |= (1u << 5);
+              if (car_damage.headlight_fr_broken()) cur_gmask |= (1u << 6);
+              if (car_damage.taillight_rl_broken()) cur_gmask |= (1u << 7);
+              if (car_damage.taillight_rr_broken()) cur_gmask |= (1u << 8);
+            }
+            if (!gtrk.initialized || gtrk.car_name != app.car) {
+              gtrk.car_name = app.car;
+              gtrk.prev_mask = cur_gmask;
+              gtrk.initialized = true;
+            } else {
+              const uint16_t newly_broken = uint16_t(cur_gmask & ~gtrk.prev_mask);
+              if (newly_broken != 0u && !menu_paused && !rewind_buf.active() && !replay_viewer.active()) {
+                const drive::Vec3 vp = vehicle.position();
+                const drive::Quat vq = vehicle.orientation();
+                const drive::Vec3 vv = vehicle.velocity();
+                const std::array<float, 3> cvel{float(vv.x), float(vv.y), float(vv.z)};
+                const double hw = std::clamp(vehicle.params().size.x * 0.5, 0.72, 1.15);
+                const double hl = std::clamp(vehicle.params().size.z * 0.5, 1.65, 2.70);
+                const std::array<drive::Vec3, 9> pane_pos = {
+                    drive::Vec3{0.0, 0.92, hl * 0.28},
+                    drive::Vec3{-hw * 0.92, 0.86, -hl * 0.04},
+                    drive::Vec3{hw * 0.92, 0.86, -hl * 0.04},
+                    drive::Vec3{0.0, 0.90, -hl * 0.34},
+                    drive::Vec3{0.0, 1.24, -hl * 0.04},
+                    drive::Vec3{-hw * 0.74, 0.52, hl * 0.96},
+                    drive::Vec3{hw * 0.74, 0.52, hl * 0.96},
+                    drive::Vec3{-hw * 0.74, 0.60, -hl * 0.96},
+                    drive::Vec3{hw * 0.74, 0.60, -hl * 0.96},
+                };
+                const std::array<drive::Vec3, 9> pane_dir = {
+                    drive::Vec3{0.0, 0.65, 0.76},   drive::Vec3{-0.88, 0.47, 0.0},
+                    drive::Vec3{0.88, 0.47, 0.0},   drive::Vec3{0.0, 0.65, -0.76},
+                    drive::Vec3{0.0, 1.0, 0.0},     drive::Vec3{-0.30, 0.35, 0.89},
+                    drive::Vec3{0.30, 0.35, 0.89},  drive::Vec3{-0.30, 0.35, -0.89},
+                    drive::Vec3{0.30, 0.35, -0.89},
+                };
+                for (int bit = 0; bit < 9; ++bit) {
+                  if ((newly_broken & (1u << bit)) == 0u) continue;
+                  const drive::Vec3 wp = vp + drive::rotate(vq, pane_pos[size_t(bit)]);
+                  const drive::Vec3 wd = drive::rotate(vq, pane_dir[size_t(bit)]);
+                  host.particle_sys.spawn_glass_shatter(
+                      {float(wp.x), float(wp.y), float(wp.z)}, cvel, {float(wd.x), float(wd.y), float(wd.z)});
+                }
+              }
+              gtrk.prev_mask = cur_gmask;
+            }
+          }
+          // Multi-vehicle Race AI & Festival AI tire smoke, dirt/gravel dust, skidmarks, and downshift backfires.
+          if (!menu_paused && !rewind_buf.active() && !replay_viewer.active() && !app.headless &&
+              (!app.bench || app.bench_full_fx) && !app.show_title && !app.fmv_player.active() && frame_dt > 0.0) {
+            constexpr size_t kAiSlots = world::SkidMarkSystem::kMaxSkidVehicles - 1u;  // slots 1..7
+            struct AiKinState {
+              double prev_speed = 0.0;
+              double prev_heading = 0.0;
+              double prev_rpm = 0.0;
+              float backfire_cd = 0.0f;
+              bool valid = false;
+            };
+            struct AiVfxSessionState {
+              std::array<uint64_t, kAiSlots> slot_ids{};
+              std::unordered_map<uint64_t, AiKinState> kin;
+            };
+            static std::unordered_map<const DriveSession*, AiVfxSessionState> s_ai_vfx_states;
+            auto& ai_st = s_ai_vfx_states[this];
+            const float vfx_dt = float(std::clamp(frame_dt, 1e-4, 0.05));
+            const drive::Vec3 ppos = vehicle.position();
+
+            struct AiCandidate {
+              uint64_t id = 0u;
+              double dist2 = 0.0;
+              double x = 0.0, y = 0.0, z = 0.0;
+              double vx = 0.0, vy = 0.0, vz = 0.0;
+              double speed = 0.0;
+              double heading = 0.0;
+              double yaw_rate = 0.0;
+              double rpm = 0.0;
+              bool has_heading = false;
+              bool has_yaw_rate = false;
+              bool braking = false;
+            };
+            std::vector<AiCandidate> ai_cands;
+            if (app.race) {
+              std::vector<carview::RaceView::OpponentTag> otags;
+              app.race->opponent_tags(otags);
+              ai_cands.reserve(otags.size());
+              for (size_t oi = 0; oi < otags.size(); ++oi) {
+                const auto& ot = otags[oi];
+                const double dx = ot.x - ppos.x, dy = ot.y - ppos.y, dz = ot.z - ppos.z;
+                const double d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 > 140.0 * 140.0 || !std::isfinite(d2)) continue;
+                AiCandidate c{};
+                c.id = 0x10000000ull | uint64_t(oi + 1u);
+                c.dist2 = d2;
+                c.x = ot.x; c.y = ot.y; c.z = ot.z;
+                c.vx = ot.vx; c.vy = ot.vy; c.vz = ot.vz;
+                c.speed = std::hypot(ot.vx, ot.vz);
+                if (c.speed > 0.6) {
+                  c.heading = std::atan2(ot.vx, ot.vz);
+                  c.has_heading = true;
+                }
+                c.rpm = ot.rpm;
+                ai_cands.push_back(c);
+              }
+            } else if (festival_mgr) {
+              const auto& fcars = festival_mgr->cars();
+              ai_cands.reserve(fcars.size());
+              for (const auto& fc : fcars) {
+                if (fc.ghosted()) continue;
+                const double dx = fc.position.x - ppos.x, dy = fc.position.y - ppos.y, dz = fc.position.z - ppos.z;
+                const double d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 > 140.0 * 140.0 || !std::isfinite(d2)) continue;
+                AiCandidate c{};
+                c.id = 0x20000000ull | uint64_t(fc.id + 1u);
+                c.dist2 = d2;
+                c.x = fc.position.x; c.y = fc.position.y; c.z = fc.position.z;
+                c.vx = fc.vx; c.vy = fc.vy; c.vz = fc.vz;
+                c.speed = std::fabs(fc.speed);
+                c.heading = fc.heading;
+                c.has_heading = true;
+                c.yaw_rate = fc.yaw_rate + fc.spin_yaw_rate;
+                c.has_yaw_rate = true;
+                c.rpm = fc.rpm;
+                c.braking = fc.braking;
+                ai_cands.push_back(c);
+              }
+            }
+
+            if (ai_cands.size() > kAiSlots) {
+              std::partial_sort(ai_cands.begin(), ai_cands.begin() + kAiSlots, ai_cands.end(),
+                                [](const AiCandidate& a, const AiCandidate& b) { return a.dist2 < b.dist2; });
+              ai_cands.resize(kAiSlots);
+            }
+
+            // Keep persistent AI-ID -> skidmark slot [1..7] bindings so tire strips stay unbroken.
+            std::array<const AiCandidate*, kAiSlots> slot_cand{};
+            std::vector<const AiCandidate*> unassigned;
+            for (const auto& c : ai_cands) {
+              bool matched = false;
+              for (size_t s = 0; s < kAiSlots; ++s) {
+                if (ai_st.slot_ids[s] == c.id) {
+                  slot_cand[s] = &c;
+                  matched = true;
+                  break;
+                }
+              }
+              if (!matched) unassigned.push_back(&c);
+            }
+            for (size_t s = 0; s < kAiSlots; ++s) {
+              if (!slot_cand[s] && ai_st.slot_ids[s] != 0u) {
+                host.skid_sys.break_vehicle(s + 1u);
+                ai_st.slot_ids[s] = 0u;
+              }
+            }
+            size_t ua_i = 0;
+            for (size_t s = 0; s < kAiSlots && ua_i < unassigned.size(); ++s) {
+              if (!slot_cand[s]) {
+                slot_cand[s] = unassigned[ua_i++];
+                ai_st.slot_ids[s] = slot_cand[s]->id;
+                host.skid_sys.break_vehicle(s + 1u);
+              }
+            }
+
+            const auto& surfs = host.collision.surfaces();
+            const bool is_rally = app.vfx_lib.is_rally_world();
+            const float cur_time_s = float(vehicle.time());
+            for (size_t s = 0; s < kAiSlots; ++s) {
+              const AiCandidate* cp = slot_cand[s];
+              if (!cp) continue;
+              const AiCandidate& c = *cp;
+              auto& ks = ai_st.kin[c.id];
+              ks.backfire_cd = std::max(0.0f, ks.backfire_cd - vfx_dt);
+
+              const double hdg = c.has_heading ? c.heading : ks.prev_heading;
+              double yaw_r = c.yaw_rate;
+              double decel_g = 0.0;
+              if (ks.valid) {
+                if (!c.has_yaw_rate && c.has_heading) {
+                  double dh = hdg - ks.prev_heading;
+                  constexpr double kPi = 3.14159265358979323846;
+                  while (dh > kPi) dh -= 2.0 * kPi;
+                  while (dh < -kPi) dh += 2.0 * kPi;
+                  yaw_r = dh / double(vfx_dt);
+                }
+                decel_g = std::max(0.0, (ks.prev_speed - c.speed) / double(vfx_dt)) / 9.81;
+              }
+              const double lat_g = std::fabs(c.speed * yaw_r) / 9.81;
+
+              // Probe real terrain surface & road height under this AI car.
+              double gnd_y = c.y;
+              std::array<float, 3> surf_nrm{0.0f, 1.0f, 0.0f};
+              fh1::SurfaceType surf{};
+              int surf_idx = -1;
+              if (host.ground) {
+                drive::Hit hit{};
+                if (host.ground->raycast({c.x, c.y + 1.5, c.z}, {0.0, -1.0, 0.0}, 6.0, hit)) {
+                  gnd_y = (c.y + 1.5) - hit.distance;
+                  surf_nrm = {float(hit.normal.x), float(hit.normal.y), float(hit.normal.z)};
+                  surf_idx = hit.surface;
+                }
+              }
+              if (surf_idx >= 0 && size_t(surf_idx) < surfs.size()) {
+                surf = surfs[size_t(surf_idx)];
+              } else if (is_rally) {
+                surf.skid_r = 255; surf.skid_g = 240; surf.skid_b = 215;
+                surf.skid_a = 135;
+                surf.skid_texture_index = 1;
+                surf.skid_min_intensity = 0.45f;
+                surf.dust_weight = 0.85f;
+                surf.dirt_weight = 0.85f;
+                surf.gravel_weight = 0.65f;
+                surf.off_roadness = 0.85f;
+              } else {
+                surf.skid_a = 195;
+                surf.skid_texture_index = 0;
+                surf.skid_min_intensity = 0.0f;
+                surf.smoke_weight = 1.0f;
+              }
+
+              const float fx = float(std::sin(hdg));
+              const float fz = float(std::cos(hdg));
+              const float rx = fz;
+              const float rz = -fx;
+              const bool offroad_surf =
+                  (surf.off_roadness > 0.25f || surf.dust_weight > 0.1f || surf.dirt_weight > 0.1f ||
+                   surf.gravel_weight > 0.1f);
+              const float slip = std::clamp(
+                  float(lat_g * 0.68 + decel_g * 0.55) + (c.braking && c.speed > 10.0 ? 0.32f : 0.0f) +
+                      (offroad_surf && c.speed > 6.0 ? 0.22f : 0.0f),
+                  0.0f, 1.55f);
+
+              world::VehicleVfxInput ai_vin{};
+              ai_vin.vehicle_slot = uint32_t(s + 1u);
+              ai_vin.car_pos = {float(c.x), float(gnd_y + 0.5), float(c.z)};
+              ai_vin.car_vel = {float(c.vx), float(c.vy), float(c.vz)};
+              ai_vin.car_forward = {fx, 0.0f, fz};
+              ai_vin.car_right = {rx, 0.0f, rz};
+              ai_vin.car_up = surf_nrm;
+
+              static constexpr float kWheelOffsets[4][2] = {
+                  {-0.78f, 1.32f}, {0.78f, 1.32f}, {-0.78f, -1.32f}, {0.78f, -1.32f},
+              };
+              const bool moving = c.speed > 1.2;
+              for (int wi = 0; wi < 4; ++wi) {
+                auto& wv = ai_vin.wheels[size_t(wi)];
+                wv.grounded = moving;
+                if (!moving) {
+                  host.skid_sys.break_wheel(world::SkidMarkSystem::wheel_slot_for(s + 1u, size_t(wi)));
+                  continue;
+                }
+                const float lx = kWheelOffsets[wi][0];
+                const float lz = kWheelOffsets[wi][1];
+                wv.contact_pos = {float(c.x) + rx * lx + fx * lz, float(gnd_y), float(c.z) + rz * lx + fz * lz};
+                wv.surface_normal = surf_nrm;
+                wv.wheel_right = {rx, 0.0f, rz};
+                wv.wheel_forward = {fx, 0.0f, fz};
+                wv.tyre_width_m = 0.24f;
+                // Rear wheels carry slightly higher slip during hard cornering/acceleration.
+                wv.slip_combined = (wi >= 2) ? slip : (slip * 0.85f);
+                wv.wheel_speed_mps = float(c.speed);
+                wv.surface_index = surf_idx;
+                wv.surface = surf;
+                host.skid_sys.update_vehicle_wheel(s + 1u, size_t(wi), wv, cur_time_s);
+              }
+
+              // Occasional AI exhaust backfires on high-RPM downshifts / hard braking into corners.
+              if (ks.valid && ks.backfire_cd <= 0.0f && c.speed > 14.0 &&
+                  ((ks.prev_rpm > 4800.0 && c.rpm < ks.prev_rpm - 600.0) ||
+                   (c.braking && decel_g > 0.55 && c.rpm > 4200.0))) {
+                const float ex_z = -2.10f;
+                const float ex_y = float(gnd_y) + 0.30f;
+                ai_vin.exhaust_tips[0] = {float(c.x) - rx * 0.36f + fx * ex_z, ex_y,
+                                          float(c.z) - rz * 0.36f + fz * ex_z};
+                ai_vin.exhaust_tips[1] = {float(c.x) + rx * 0.36f + fx * ex_z, ex_y,
+                                          float(c.z) + rz * 0.36f + fz * ex_z};
+                ai_vin.exhaust_tip_count = 2;
+                ai_vin.audio_backfire_pulses = 1;
+                ks.backfire_cd = 2.0f + float(c.id % 5u) * 0.35f;
+              }
+
+              if (moving || ai_vin.audio_backfire_pulses > 0u) {
+                host.particle_sys.update_vehicle(ai_vin, vfx_dt);
+              }
+
+              ks.prev_speed = c.speed;
+              if (c.has_heading) ks.prev_heading = hdg;
+              ks.prev_rpm = c.rpm;
+              ks.valid = true;
+            }
+          }
           int w = 0, h = 0;
           SDL_GetWindowSizeInPixels(app.window, &w, &h);
           // Pose car & camera BEFORE building projected world HUD markers and opponent name tags!

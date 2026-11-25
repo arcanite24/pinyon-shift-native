@@ -106,6 +106,8 @@ enum class AnimatedPgeoCategory : uint8_t {
   kStageLight = 5,
   kAircraft = 6,
   kRallyProp = 7,
+  kFerrisWheel = 8,
+  kTrafficLight = 9,
 };
 
 struct AnimatedPgeoObject {
@@ -214,10 +216,11 @@ struct HotAirBalloon {
 
 struct WindmillProp {
   std::array<float, 3> base_pos{};  // game frame
-  float yaw = 0.0f;                 // facing direction
+  float yaw = 0.0f;                 // resting facing direction (aligns with wind when blowing)
   float tower_height = 14.0f;
   float blade_radius = 4.2f;
   float phase = 0.0f;
+  bool is_turbine = false;          // false = ranch multi-vane windmill, true = 3-blade ridge wind turbine
 };
 
 struct FestivalFlagProp {
@@ -229,6 +232,49 @@ struct FestivalFlagProp {
   std::array<uint8_t, 3> primary_rgb{236, 48, 92};
   std::array<uint8_t, 3> stripe_rgb{250, 210, 44};
 };
+
+struct FerrisWheelProp {
+  std::array<float, 3> base_pos{};  // game frame
+  float yaw = 0.0f;
+  float radius = 18.0f;
+  float hub_height = 23.5f;
+  int gondolas = 12;
+  float phase = 0.0f;
+};
+
+struct StageLightProp {
+  std::array<float, 3> base_pos{};  // game frame
+  float yaw = 0.0f;
+  float beam_length = 42.0f;
+  float phase = 0.0f;
+  std::array<uint8_t, 3> beam_rgb{236, 52, 168};
+};
+
+struct AircraftBannerProp {
+  std::array<float, 3> center_pos{};  // orbit center in game frame (y = cruise altitude)
+  float orbit_radius = 400.0f;
+  float angular_speed = 0.065f;       // rad/s
+  float phase = 0.0f;
+  bool is_blimp = false;              // true = Horizon Festival blimp, false = banner-towing plane
+  std::array<uint8_t, 3> primary_rgb{236, 46, 92};
+  std::array<uint8_t, 3> accent_rgb{252, 212, 48};
+};
+
+struct TrafficLightProp {
+  std::array<float, 3> base_pos{};  // pole base on road shoulder (game frame)
+  float yaw = 0.0f;                 // mast arm horizontal direction
+  float pole_height = 6.8f;
+  float arm_length = 4.4f;
+  float phase_offset = 0.0f;        // seconds offset into 30 s Green/Yellow/Red cycle
+};
+
+// Smooth Green/Yellow/Red emissive weights [0..1] for an intersection traffic light cycle (30 s period).
+struct TrafficLightWeights {
+  float red = 0.0f;
+  float yellow = 0.0f;
+  float green = 1.0f;
+};
+TrafficLightWeights evaluate_traffic_light_cycle(float time_sec, float phase_offset = 0.0f);
 
 struct CrowdCluster {
   std::array<float, 3> origin{};
@@ -316,6 +362,10 @@ class AnimatedWorldSystem {
   const std::vector<HotAirBalloon>& balloons() const;
   const std::vector<WindmillProp>& windmills() const;
   const std::vector<FestivalFlagProp>& flags() const;
+  const std::vector<FerrisWheelProp>& ferris_wheels() const;
+  const std::vector<StageLightProp>& stage_lights() const;
+  const std::vector<AircraftBannerProp>& aircraft_banners() const;
+  const std::vector<TrafficLightProp>& traffic_lights() const;
   const std::vector<CrowdCluster>& crowds() const;
   const std::vector<AnimatedWorldPlacement>& pgeo_placements() const;
 
@@ -343,6 +393,8 @@ class AnimatedWorldSystem {
 
   void invalidate_spectator_ground_cache() const;
   size_t cached_spectator_ground_count() const;
+  void invalidate_grass_ground_cache() const;
+  size_t cached_grass_ground_count() const;
   SpectatorFrameCache& frame_cache() { return frame_cache_; }
   const SpectatorFrameCache& frame_cache() const { return frame_cache_; }
   void reset_frame_cache() { frame_cache_ = SpectatorFrameCache{}; }
@@ -353,6 +405,10 @@ class AnimatedWorldSystem {
     bool valid = false;
     bool culled = false;
   };
+  struct CachedGrassCell {
+    float y = 0.0f;
+    bool grow = false;
+  };
   struct SharedState {
     SpectatorCatalog catalog;
     TrackPostConfig post_cfg;
@@ -360,13 +416,21 @@ class AnimatedWorldSystem {
     std::vector<HotAirBalloon> balloons;
     std::vector<WindmillProp> windmills;
     std::vector<FestivalFlagProp> flags;
+    std::vector<FerrisWheelProp> ferris_wheels;
+    std::vector<StageLightProp> stage_lights;
+    std::vector<AircraftBannerProp> aircraft_banners;
+    std::vector<TrafficLightProp> traffic_lights;
     std::vector<CrowdCluster> crowds;
     std::vector<AnimatedWorldPlacement> pgeo_placements;
 
-    // Cached per-spectator ground heights & prebuilt catalog lookup pools (zero per-frame raycasts/allocs).
+    // Cached per-spectator & per-cell grass/prop ground heights & prebuilt catalog lookup pools
+    // (eliminates ~800/frame CPU BVH raycasts while auto-invalidating on world swap / Ground* change).
     mutable std::mutex cache_mutex;
     mutable const drive::Ground* cached_ground_ptr = nullptr;
     mutable std::vector<std::vector<CachedSpectatorGround>> crowd_ground_cache;
+    mutable const drive::Ground* cached_grass_ground_ptr = nullptr;
+    mutable std::unordered_map<uint64_t, CachedGrassCell> grass_ground_cache;
+    mutable std::unordered_map<uint64_t, float> prop_ground_cache;
     mutable bool pools_ready = false;
     mutable size_t pools_stand_count = 0;
     mutable size_t pools_sit_count = 0;
