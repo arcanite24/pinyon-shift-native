@@ -1002,10 +1002,14 @@ void DriveSession::run_window_loop() {
             notice_until = vehicle.time() + 4.0;
             std::printf("trainer: modded isolation active -> %s\n", app.save_path.string().c_str());
           }
+          // SAVE-01: the timed save is an opt-in extra and never runs inside the
+          // first-time career; the career's checkpoints save on their own.
           if (vehicle.time() >= next_save) {
-            sync_pending_barns_to_save(app);
-            save_now("timer");
-            next_save = vehicle.time() + 30;
+            if (app.campaign.timed_autosave_allowed(app.timed_autosave)) {
+              sync_pending_barns_to_save(app);
+              save_now("timer");
+            }
+            next_save = vehicle.time() + CampaignDirector::kTimedAutosaveInterval;
           }
           if (save_due && !map_open) {  // a collectible or award: micro-save
             save_due = false;

@@ -301,6 +301,14 @@ void test_director_first_time_career() {
   carview::FmvPlayer fmv;
   const auto act = dir.start_new_career(fmv, nullptr);
   check(dir.ftc_active() && dir.ftc().stage() == race::FtcStage::kControls, "new career opens the controls screen");
+  // SAVE-01: no timed save inside the first-time career, even with the extra on.
+  check(!dir.timed_autosave_allowed(true) && !dir.timed_autosave_allowed(false),
+        "no timed autosave during the first-time career");
+  {
+    carview::CampaignDirector free_roam;
+    check(!free_roam.timed_autosave_allowed(false) && free_roam.timed_autosave_allowed(true),
+          "the timed autosave only when its option is on");
+  }
   check(!fmv.active() && !act.play_fmv, "no FMV at career start");
   check(!dir.flow().is_onboarding(), "no invented onboarding stage");
   check(dir.is_blocking_gameplay(), "controls screen blocks driving");

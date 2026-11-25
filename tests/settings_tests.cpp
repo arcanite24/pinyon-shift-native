@@ -57,6 +57,14 @@ int main() {
   CHECK(page.value("rewind") == "off");
   CHECK(page.value("key throttle") == "I");
   CHECK(page.value("key camera") == "F1");
+  // SAVE-01: the timed autosave is an extra, off unless asked for.
+  CHECK(page.value("timed autosave (30 s)") == "off");
+  CHECK(carview::is_settings_option("--timed-autosave"));
+  {
+    carview::SettingsPage on;
+    on.load({"--timed-autosave"});
+    CHECK(on.value("timed autosave (30 s)") == "on");
+  }
 
   // Live settings reflect all loaded controls and assists immediately.
   {

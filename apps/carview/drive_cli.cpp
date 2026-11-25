@@ -248,6 +248,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     else if (a == "--no-dof") dof_flag = 0;
     else if (a == "--photo-through-walls") photo_through_walls_cli = true;
     else if (a == "--photo-wider-limits") photo_wider_limits_cli = true;
+    else if (a == "--timed-autosave") timed_autosave = true;
     else if (a == "--demo-photo-mode") demo_photo_png = next(), headless = true;
     else if (a == "--demo-replay-view") demo_replay_png = next(), headless = true;
     else if (a == "--demo-achievements") demo_achievements_png = next(), headless = true;
