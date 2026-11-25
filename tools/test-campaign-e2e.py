@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Automated Campaign E2E Visual + Telemetry Verification Harness for shift-engine.
 
-Runs carview.exe headlessly through New Campaign Viper Drive (and optionally
-Corrado Qualify) using an isolated temporary save directory (NEVER touching
+Runs carview.exe headlessly through the first-time career's driven stages
+(`--campaign-stage ftc:<stage>`): the opening (the AI drives the Viper under
+Opening_Cutscene, then the hand-over) and the race to the festival in the
+Corrado (and optionally the heats, the drive to Race Central), using an
+isolated temporary save directory (NEVER touching
 %LOCALAPPDATA%\\PinyonShift), captures PNG frames at key timestamps
 (t=0.0s, 1.0s, 3.0s, 6.0s, 10.0s), parses per-frame JSON telemetry, and
 evaluates hard automated gates:
@@ -19,7 +22,7 @@ Zero external dependencies (Python 3 standard library only).
 Usage:
   python tools/test-campaign-e2e.py
   python tools/test-campaign-e2e.py --bin build-campaign-e2e/apps/carview/carview.exe --out-dir out/campaign-e2e
-  python tools/test-campaign-e2e.py --stages viper_drive,corrado_qualify
+  python tools/test-campaign-e2e.py --stages ftc:opening_cutscene,ftc:race_to_festival
   python tools/test-campaign-e2e.py --self-test
 """
 from __future__ import annotations
@@ -559,6 +562,36 @@ def resolve_paths(args: argparse.Namespace) -> dict[str, Path | None]:
     }
 
 
+# The first-time career's stages and the car each starts in (the career swaps
+# to it anyway; starting in it saves a reload). The old onboarding names still
+# map into the career (campaign_director.cpp, ftc_stage_for_legacy).
+DEFAULT_STAGES = "ftc:opening_cutscene,ftc:race_to_festival"
+VIPER = "vip_viper_13"
+CORRADO = "vw_corrado_95"
+STAGE_CARS = {
+    "ftc:opening_cutscene": VIPER,
+    "ftc:initial_drive": VIPER,
+    "viper_drive": VIPER,
+    "ftc:race_to_festival": CORRADO,
+    "ftc:heats": CORRADO,
+    "ftc:showcase": CORRADO,
+    "ftc:travel_to_race_central": CORRADO,
+    "qualify": CORRADO,
+    "corrado_qualify": CORRADO,
+}
+# Every car the opening drives or shows; carview names a missing one and the
+# career cannot swap to it (bake them: tools/setup.py bakes all by default).
+OPENING_CARS = ("VIP_Viper_13", "VW_Corrado_95", "FER_599XX_10", "SUB_WRXSTi_11", "MIT_LancerEvoXGSR_08")
+
+
+def missing_opening_cars(bake: Path | None) -> list[str]:
+    if not bake:
+        return []
+    cars = bake / "cars" if (bake / "cars").is_dir() else bake
+    have = {p.name.lower() for p in cars.glob("*.shiftbake")}
+    return [c for c in OPENING_CARS if f"{c.lower()}.shiftbake" not in have]
+
+
 def run_stage(
     *,
     stage: str,
@@ -584,8 +617,7 @@ def run_stage(
         if paths["play"]:
             cmd += ["--play", str(paths["play"])]
         else:
-            default_car = "vw_corrado_95" if stage in ("qualify", "corrado_qualify") else "vip_viper_13"
-            car_media = car_override or default_car
+            car_media = car_override or STAGE_CARS.get(stage, VIPER)
             cmd += [
                 "--bake", str(paths["bake"]),
                 "--car", car_media,
@@ -611,8 +643,6 @@ def run_stage(
             "--out", str(out_png_prefix),
             "--telemetry-json", str(telemetry_path),
         ]
-        if stage in ("qualify", "corrado_qualify"):
-            cmd.append("--race-auto")
 
         # Isolate state env vars so %LOCALAPPDATA%\PinyonShift is NEVER touched.
         env = os.environ.copy()
@@ -834,8 +864,8 @@ def main() -> int:
     parser.add_argument("--out-dir", default="out/campaign-e2e", help="Output directory for PNGs, telemetry & report")
     parser.add_argument(
         "--stages",
-        default="viper_drive",
-        help="Comma-separated campaign stages to test (default: viper_drive; optional: viper_drive,corrado_qualify)",
+        default=DEFAULT_STAGES,
+        help=f"Comma-separated campaign stages to test (default: {DEFAULT_STAGES}; any ftc:<stage>)",
     )
     parser.add_argument("--seconds", type=float, default=10.0, help="Drive duration in seconds (default: 10.0)")
     parser.add_argument("--capture-times", default="0,1,3,6,10", help="Comma-separated PNG capture timestamps in seconds")
@@ -859,6 +889,12 @@ def main() -> int:
             f"  resolved: bake={paths['bake']} world={paths['world']} game={paths['game']}",
             file=sys.stderr,
         )
+        return 2
+
+    missing = missing_opening_cars(paths["play"] / "bake" if paths["play"] else paths["bake"])
+    if missing:
+        print(f"ERROR: the opening's cars are not baked: {', '.join(missing)} "
+              f"(bake them: tools/setup.py <game> --cars {','.join(missing)})", file=sys.stderr)
         return 2
 
     out_dir = Path(args.out_dir).resolve()

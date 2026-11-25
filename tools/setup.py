@@ -30,6 +30,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 EXE = ".exe" if os.name == "nt" else ""
 DEFAULT_CAR = "NIS_SkylineGTRVSpecII_02"
+# The first-time career's cars: the Viper of the opening, the Corrado of the
+# race to the festival, the 599XX in the opening cutscene and the first
+# Autoshow's two. A --cars bake always includes them, so a new career plays.
+OPENING_CARS = ["VIP_Viper_13", "VW_Corrado_95", "FER_599XX_10", "SUB_WRXSTi_11", "MIT_LancerEvoXGSR_08"]
 
 
 def user_data_dir() -> Path:
@@ -118,12 +122,18 @@ def main():
     if a.dlc_extracted:
         cmd += ["--dlc-extracted", Path(os.path.abspath(Path(a.dlc_extracted).expanduser()))]
     if a.cars:
-        cmd += ["--cars", a.cars]
+        want = [c.strip() for c in a.cars.split(",") if c.strip()]
+        have = {c.lower() for c in want}
+        want += [c for c in OPENING_CARS if c.lower() not in have]
+        cmd += ["--cars", ",".join(want)]
     run(cmd, quiet=True)
     baked = sorted(p.name[: -len(".shiftbake")] for p in (bake / "cars").glob("*.shiftbake"))
     if not baked:
         sys.exit("setup: carbake wrote no cars")
     print(f"setup: {len(baked)} cars baked", flush=True)
+    missing = [c for c in OPENING_CARS if c.lower() not in baked]
+    if missing:
+        print(f"setup: warning: the first-time career's cars did not bake: {', '.join(missing)}", flush=True)
     car = DEFAULT_CAR if DEFAULT_CAR.lower() in baked else baked[0]
 
     # The engine sound: FFmpeg decodes it at bake time; without it the drive is silent.
