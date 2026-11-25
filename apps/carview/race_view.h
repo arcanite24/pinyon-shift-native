@@ -325,6 +325,9 @@ class RaceView {
     float traction_cap = 1;  // drive::ai_traction's state
     race::RaceBoost boost;   // this step's start or nemesis boost (race::race_boost)
     drive::AiCapacity capacity;  // the speed planner's tables (SPEC-RACE-AI)
+    // The 0.93 cap on the driver's cornering and braking skills (a heavy car
+    // with a high centre of mass; race::ai_skill_capped, Q177).
+    bool skill_capped = false;
     drive::AiYawGain yaw_gain{};  // the line controller's G(v)
     double upgrade_t = 0;        // AI car upgrades: > 0 up, < 0 down (fraction of the range)
     int target_shown_pi = 0;     // faked target shown PI when UpgradeAI is active

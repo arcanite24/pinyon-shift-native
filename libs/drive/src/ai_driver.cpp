@@ -102,6 +102,7 @@ double ai_aero_factor(double v) {
 AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
   AiCapacity c;
   c.braking_k = p.layout == CarParams::Layout::kAll ? 0.96f : 0.94f;
+  c.sat_level_min = p.layout == CarParams::Layout::kAll ? 0.97f : 0.94f;
   constexpr double kG = 9.80665;
   const double m = p.mass, W = m * kG;
   const auto& wc = p.wheel_centres;
@@ -487,11 +488,12 @@ double ai_controller_steer(const AiCarState& c, const AiYawGain& G, const AiCapa
   const double a = std::atan2(hx, hz);
   double wd = std::fabs(chi_car) < 1.1 ? 2 * v * std::sin(a) / ell : a;
   // The steering-saturation grip term, open while the driver's grip level
-  // is above 0.94: the curve's curvature over the lateral limit's (the
-  // table without the skill), past 0.8, up to ramp(level, 0.94, 1.25);
-  // recomputed every update.
+  // is above the car's threshold (0.97 four-wheel drive, else 0.94): the
+  // curve's curvature over the lateral limit's (the table without the
+  // skill), past 0.8, up to ramp(level, threshold, 1.25); recomputed every
+  // update.
   st.sat = 0;
-  constexpr double kLevelMin = 0.94, kLevelMax = 1.25;
+  const double kLevelMin = cap ? double(cap->sat_level_min) : 0.94, kLevelMax = 1.25;
   if (cap && v > 1 && st.level > kLevelMin) {
     const double alat = double(cap->lateral[size_t(AiCapacity::index(v))]) * ai_aero_factor(v);
     if (alat > 0) {
@@ -539,6 +541,7 @@ AiField::AiField(const RacingLine& line, size_t cars, const Options& options)
       prev_throttle_(cars, 0),
       sat_(cars, 0),
       pedal_(cars),
+      level_(cars, 1.0f),
       yaw_gain_(cars, [] {
         AiYawGain g;
         g.fill(4.0f);
@@ -766,9 +769,10 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
       const double hw_side = rooms ? double(cross_[i] >= 0 ? L.room_right[s] : L.room_left[s]) : 4.5;
       chi_car = cross_[i] / std::max(1.0, hw_side);
       const AiYawGain& G = yaw_gain_[i];
-      // The grip level: the planner's cornering scalar C (the AISkills
-      // cornering skill, boosts included; 0 without a set_planner plan).
-      AiSteerState ss{look_[i], boost_[i], abs_e_[i], capacity_[i] ? plan_c_[i] : 0.0f};
+      // The grip level: the line controller's own, 1 + 0.025 x the cheat
+      // level (set_grip_level; 1 by default), not the planner's C (0
+      // without a set_planner plan).
+      AiSteerState ss{look_[i], boost_[i], abs_e_[i], capacity_[i] ? level_[i] : 0.0f};
       const double Ltot = ai_controller_lookahead(c, G, chi_car, o_.min_lookahead_track, ss);
       back = double(prev_steer_[i]) * e < 0;  // steering back towards the line
       // The aim point on the driven line, moved 0.2 e towards the car when
@@ -842,7 +846,8 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
         } else if (ae > 2.5 && std::fabs(chi_car) > 0.25 && ps.slip_front > 1.5) {
           k = a_e >= 10 ? 0.1 : a_e <= 2.5 ? 0.0 : (a_e - 2.5) * 0.1 / 7.5;
         }
-        if (k > 0) cap = std::min(cap, (1 - k) * target);
+        // k at most 1 (ours: the road-edge distance is our interim, Q175).
+        if (k > 0) cap = std::min(cap, (1 - std::min(k, 1.0)) * target);
       }
       target = std::min(target, cap);
       target_[i] = float(target);

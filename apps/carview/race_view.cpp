@@ -527,6 +527,17 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
                                            c.who.skill_modifier, c.who.aggro_modifier, c.who.rubberband_modifier,
                                            o.difficulty, o.ai_mode, event_);
     const race::SkillRow* sk = event_.skill(c.setup.skill);
+    // SPEC-RACE-AI, Steering: the line controller's grip level, 1 + 0.025 x
+    // the AISkills nominal cheat level (0 on every row of the disc, so 1;
+    // Q176). A level above 0 also turns on the heavy-braking term, which
+    // stays interim 0.
+    {
+      const int cheat = sk ? sk->nominal_cheat_level : 0;
+      field_->set_grip_level(k, float(race::ai_cheat_level(std::max(0, cheat))));
+      if (cheat > 0 || (sk && sk->torque_boost_cheat_level > 0))
+        std::fprintf(stderr, "race: note: AISkills %d cheat levels %d/%d: the heavy-braking term is not applied\n",
+                     sk->id, sk->nominal_cheat_level, sk->torque_boost_cheat_level);
+    }
     c.ai.init(sk ? *sk : race::SkillRow{}, event_.rubberband(c.setup.rubberband_id), o.seed * 1000003u + k,
               effective_rb);
     const auto& s = slots_[size_t(c.slot)];
@@ -839,6 +850,7 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
       c.capacity = drive::ai_capacity(c.body->params());
     }
     c.yaw_gain = drive::ai_yaw_gain(params);
+    c.skill_capped = race::ai_skill_capped(c.body->params().mass, c.body->params().centre_of_mass.y);
     c.body->set_ai_dirt_grip(true);
     const auto& s = slots_[size_t(c.slot)];
     double y = s.y;
@@ -1078,6 +1090,7 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   for (size_t k = 0; k < n; ++k) {
     states_[k] = drive::ai_state(*cars_[k].body);
     double C = cars_[k].ai.cornering(), B = cars_[k].ai.braking();
+    if (cars_[k].skill_capped) C = std::min(C, race::kAiSkillCap), B = std::min(B, race::kAiSkillCap);
     {
       // WORLD-05: the start or nemesis boost (race::race_boost), from the
       // distance raced past the start line and the other race AI ahead.
@@ -1552,7 +1565,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
                    "\"target\":%.2f,\"thr\":%.2f,\"brk\":%.2f,\"steer\":%.2f,\"off\":%.2f,\"cos\":%.2f,\"gear\":%d,"
                    "\"far\":%d,\"state\":%d,\"torque\":%.3f,\"hit\":%.1f,\"hny\":%.2f,\"surf\":%d,"
                    "\"pass\":%d,\"follow\":%d,\"frust\":%.0f,\"y\":%.2f,\"imp\":%llu,\"imps\":%.1f,\"impny\":%.2f,\"yaw\":%.2f,"
-                   "\"beta\":%.3f,\"tcs\":%.3f,\"stm\":%d,\"sat\":%.3f,\"pedal\":%d,\"slipf\":%.2f,\"slipm\":%.2f}\n",
+                   "\"beta\":%.3f,\"tcs\":%.3f,\"stm\":%d,\"sat\":%.3f,\"pedal\":%d,\"slipf\":%.2f,\"slipm\":%.2f,\"boost\":%d,\"C\":%.3f,\"cap\":%.1f}\n",
                    session_->clock(), i, q.x1, q.z1, q.speed, q.progress, field_->cross_track(i), lanes_[i],
                    field_->target_speed(i), inputs_[i].throttle, inputs_[i].brake, inputs_[i].steer, q.off_route,
                    q.heading_cos, v.gear(), i < n ? int(cars_[i].far) : 0, i < n ? int(cars_[i].ai.state()) : -1,
@@ -1572,7 +1585,9 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
                    }(),
                    v.tcs_amount(), int(v.stm_active()), i < n ? double(field_->grip_sat(i)) : 0.0,
                    i < n ? field_->pedal_state(i) : 0, i < n ? double(field_->pedals(i).slip_front) : 0.0,
-                   i < n ? double(field_->pedals(i).slip_mean) : 0.0);
+                   i < n ? double(field_->pedals(i).slip_mean) : 0.0, i < n ? int(cars_[i].boost.active()) : 0,
+                   i < last_planner_c_.size() ? double(last_planner_c_[i]) : 0.0,
+                   i < caps_.size() ? std::min(999.0, double(caps_[i])) : 999.0);
     }
     std::fflush(trace);
   }

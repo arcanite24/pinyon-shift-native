@@ -352,7 +352,8 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
           nullptr);
   if (!db.each("select id, SoloLapping_BrakingMinimum, SoloLapping_BrakingMaximum, SoloLapping_CorneringMinimum, "
                "SoloLapping_CorneringMaximum, SoloLapping_DistBehindForMaxPerformance, SoloLapping_NominalTorqueScale, "
-               "SoloLapping_FarBehindTorqueBoost, Rubberbands_id from AISkills order by id",
+               "SoloLapping_FarBehindTorqueBoost, Rubberbands_id, SoloLapping_NominalCheatLevel, "
+               "SoloLapping_TorqueBoostCheatLevel from AISkills order by id",
                {},
                [&](sqlite3_stmt* s) {
                  SkillRow r;
@@ -363,6 +364,8 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  r.nominal_torque_scale = d(s, 6);
                  r.far_behind_torque_boost = d(s, 7);
                  r.rubberband_id = int(i64(s, 8));
+                 r.nominal_cheat_level = int(i64(s, 9));
+                 r.torque_boost_cheat_level = int(i64(s, 10));
                  out.skills.push_back(r);
                },
                error))

@@ -78,6 +78,9 @@ struct AiCapacity {
   static constexpr int kEntries = 40;
   std::array<float, kEntries> lateral{}, braking{}, forward{};
   float braking_k = 0.94f;  // k_B: 0.96 four-wheel drive, 0.94 otherwise
+  // The steering-saturation grip term's threshold on the grip level: 0.97
+  // four-wheel drive, 0.94 otherwise (the same drivetrain test as k_B).
+  float sat_level_min = 0.94f;
   static int index(double v);
 };
 // From the car's own physics (the spec's interim: the engine's tyre model
@@ -167,10 +170,11 @@ double ai_yaw_gain_at(const AiYawGain& g, double v);
 // boost and |e| a step ago (the caller keeps abs_e).
 struct AiSteerState {
   float look = 7.5f, boost = 1.0f, abs_e = 0;
-  // The driver's grip level (its cornering skill C, boosts included; 0:
-  // none), which opens the steering-saturation grip term above 0.94.
+  // The line controller's grip level (1 + 0.025 x the cheat level; 0:
+  // none), which opens the steering-saturation grip term above the car's
+  // threshold (AiCapacity::sat_level_min).
   float level = 0;
-  // That term (0 to ramp(level, 0.94, 1.25)) from the last steer, on both
+  // That term (0 to ramp(level, threshold, 1.25)) from the last steer, on both
   // axles' AI grip factor.
   float sat = 0;
 };
@@ -307,8 +311,16 @@ class AiField {
   void set_planner(size_t i, const AiCapacity* cap, float cornering, float braking);
   // Car i's yaw gain for the line controller (Options::controller).
   void set_yaw_gain(size_t i, const AiYawGain& g) { yaw_gain_[i] = g; }
-  // Car i's steering-saturation grip term (0 to 0.19) from its last drive.
+  // Car i's steering-saturation grip term (0 to ramp(level, threshold,
+  // 1.25): 0.19 at the default level 1 on a two-wheel-drive car) from its
+  // last drive.
   float grip_sat(size_t i) const { return sat_[i]; }
+  // Car i's grip level for that term (SPEC-RACE-AI, Steering): the line
+  // controller's level, 1 + 0.025 n for the driver's cheat level n
+  // (race::ai_cheat_level, decoded), 1 by default (an interim: the title's
+  // oracle lap argues for less, Q125). The planner's C and its boosts do
+  // not reach it.
+  void set_grip_level(size_t i, float level) { level_[i] = level; }
   void set_lane(size_t i, float lane) { lane_[i] = lane; }
   // A cap on car i's planned speed, m/s (a car in the way; 1e9: none).
   void set_speed_cap(size_t i, float cap) { cap_[i] = cap; }
@@ -369,6 +381,7 @@ class AiField {
   // boost, |e| and chi a step ago, and the last gas.
   std::vector<float> look_, boost_, abs_e_, chi_, prev_throttle_, sat_;
   std::vector<AiPedalState> pedal_;
+  std::vector<float> level_;
   std::vector<AiYawGain> yaw_gain_;
   // The planner's per car: the tables, C, B and the corner speeds by line
   // point for the current C (NaN: not computed yet).

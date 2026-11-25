@@ -566,6 +566,27 @@ void test_ai_pedals() {
   c.slip = {};
   for (int i = 0; i < 200; ++i) drive::ai_slip_metrics(c, dt, ms);
   CHECK(near(ms.slip_mean, 0.25, 1e-4) && near(ms.slip_front, 0.25, 1e-4));  // a wheel at 0 counts 0.25
+  // The steering-saturation term's threshold: 0.97 on four-wheel drive.
+  {
+    drive::CarParams awd = test_car();
+    awd.layout = drive::CarParams::Layout::kAll;
+    CHECK(drive::ai_capacity(awd).sat_level_min == 0.97f);
+    awd.layout = drive::CarParams::Layout::kRear;
+    CHECK(drive::ai_capacity(awd).sat_level_min == 0.94f);
+    drive::AiCapacity cap;
+    cap.lateral.fill(9.81f);
+    drive::AiCarState c;
+    c.speed = 30;
+    drive::AiYawGain g;
+    g.fill(4.0f);
+    drive::AiSteerState ss;
+    ss.level = 0.955f;
+    drive::ai_controller_steer(c, g, &cap, 0, 0, 3.0, 20.0, 0, 1, false, ss);
+    CHECK(ss.sat > 0);
+    cap.sat_level_min = 0.97f;
+    drive::ai_controller_steer(c, g, &cap, 0, 0, 3.0, 20.0, 0, 1, false, ss);
+    CHECK(ss.sat == 0);
+  }
   // The hold throttle: what holds the speed against the drag.
   const drive::CarParams p = test_car();
   drive::Vehicle car(p);

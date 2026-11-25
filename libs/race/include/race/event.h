@@ -47,7 +47,21 @@ struct SkillRow {
   double nominal_torque_scale = 1;
   double far_behind_torque_boost = 1;
   int rubberband_id = 0;
+  // SoloLapping_NominalCheatLevel and SoloLapping_TorqueBoostCheatLevel
+  // (integers; all 0 on the disc). The title stores a level 1 + 0.025 n
+  // beside n on the line controller and, for n > 0, uses it in place of
+  // the heavy-braking term's own scale (Q176); ai_cheat_level.
+  int nominal_cheat_level = 0, torque_boost_cheat_level = 0;
 };
+
+// The line controller's level for an AISkills cheat level n: 1 + 0.025 n.
+inline double ai_cheat_level(int n) { return 1 + 0.025 * n; }
+// SPEC-RACE-AI (decoded): a car whose mass x centre-of-mass height reaches
+// 1183 has its driver's skill values (cornering and braking, before any
+// boost) capped at 0.93. The operands' units are ours: kg x m over the
+// body frame's ground (Q177).
+constexpr double kAiSkillCap = 0.93;
+inline bool ai_skill_capped(double mass_kg, double com_height_m) { return mass_kg * com_height_m >= 1183; }
 
 struct RubberbandModeChoice {
   int mode = 0;  // AIRubberbandModes id; what each id does is not in RACE_AI.md (no effect yet)
