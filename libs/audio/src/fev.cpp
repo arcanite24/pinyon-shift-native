@@ -1,6 +1,7 @@
 #include "audio/fev.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -240,6 +241,63 @@ int FevEvent::find_param(std::string_view param_name) const {
   for (size_t i = 0; i < params.size(); ++i)
     if (iequals(params[i].name, param_name)) return int(i);
   return -1;
+}
+
+float fev_normalize(const FevParameter& p, float raw) {
+  const float span = p.max_val - p.min_val;
+  if (!(std::fabs(span) > 1e-12f)) return 0.0f;
+  const float x = (raw - p.min_val) / span;
+  if (!(x > 0.0f)) return 0.0f;
+  return x < 1.0f ? x : 1.0f;
+}
+
+int evaluate_fev_event(const FevEvent& ev, const float* raw, size_t raw_count, FevInstanceLevel* out, int cap) {
+  auto norm_of = [&](size_t pi) -> float {
+    if (pi >= ev.params.size()) return 0.0f;
+    const float v = (raw && pi < raw_count && std::isfinite(raw[pi])) ? raw[pi] : ev.params[pi].min_val;
+    return fev_normalize(ev.params[pi], v);
+  };
+  int n = 0;
+  for (size_t li = 0; li < ev.layers.size(); ++li) {
+    const FevLayer& ly = ev.layers[li];
+    float env_gain = 1.0f;
+    float pitch_y = 0.5f;
+    bool has_pitch = false;
+    for (const auto& e : ly.envelopes) {
+      if (!e.dsp_name.empty() || e.parent_index >= 0) continue;
+      if (e.flags & kFevEnvVolume) {
+        env_gain *= std::max(0.0f, e.eval(norm_of(e.param_index)));
+      } else if (e.flags & kFevEnvPitch) {
+        pitch_y += e.eval(norm_of(e.param_index)) - 0.5f;
+        has_pitch = true;
+      }
+    }
+    const float ctrl = norm_of(ly.control_param_index);
+    for (size_t ii = 0; ii < ly.instances.size() && n < cap; ++ii) {
+      const FevSoundInstance& s = ly.instances[ii];
+      float fade = 0.0f;
+      const float end = s.start_pos + s.length;
+      if (s.length > 0.0f && ctrl >= s.start_pos - 1e-6f && ctrl <= end + 1e-6f) {
+        fade = 1.0f;
+        if (s.fadein_len > 0.0f) {
+          const float w = s.fadein_len * s.length;
+          if (w > 1e-9f) fade = std::min(fade, std::clamp((ctrl - s.start_pos) / w, 0.0f, 1.0f));
+        }
+        if (s.fadeout_len > 0.0f) {
+          const float w = s.fadeout_len * s.length;
+          if (w > 1e-9f) fade = std::min(fade, std::clamp((end - ctrl) / w, 0.0f, 1.0f));
+        }
+      }
+      FevInstanceLevel& o = out[n++];
+      o.layer = uint16_t(li);
+      o.instance = uint16_t(ii);
+      o.sound_def = s.sound_def_index;
+      o.gain = std::max(0.0f, ev.volume) * std::max(0.0f, s.volume) * fade * env_gain;
+      o.pitch_env = pitch_y;
+      o.has_pitch_env = has_pitch;
+    }
+  }
+  return n;
 }
 
 const FevEvent* FevProject::find_event(std::string_view path) const {

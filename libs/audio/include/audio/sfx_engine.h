@@ -386,6 +386,8 @@ enum class SfxSoundId : int {
   kScrapeMetal,
   kScrapeDirt,
   kScrapeWood,
+  // Damage.fev DamageEngine's second instance (DamFast; kEngineDamageLoop is DamSlow).
+  kEngineDamageFast,
   kCount
 };
 
@@ -560,6 +562,18 @@ class SfxEngine {
   LoopVoice electric_high_voice_{};
   LoopVoice exh_noise_voice_{};
   LoopVoice damage_voice_{};
+  LoopVoice damage_fast_voice_{};
+  // Damage.fev DamageEngine (read-only after load; evaluated on the audio thread).
+  static constexpr int kDamageInstances = 2;
+  FevEvent damage_event_{};
+  bool damage_event_ok_ = false;
+  std::array<SfxSoundId, kDamageInstances> damage_sound_ids_{SfxSoundId::kCount, SfxSoundId::kCount};
+  int damage_param_damage_ = -1;
+  int damage_param_rpm_ = -1;
+  int damage_param_throttle_ = -1;
+  // Real-time synth stand-ins (damage knock, showcase aircraft) run only in the
+  // explicit no-assets mode set by populate_procedural_fallbacks().
+  bool procedural_mode_ = false;
   LoopVoice reflection_voice_{};
   LoopVoice scrape_voice_{};
   LoopVoice rewind_voice_{};
@@ -573,7 +587,6 @@ class SfxEngine {
   double damage_synth_phase_ = 0.0;
   float damage_synth_lp_ = 0.0f;
   uint32_t damage_synth_rng_ = 0xD4A6E109u;
-  double misfire_timer_s_ = 0.45;
 
   // Edge detection & timers (audio thread).
   SfxSoundId resolve_fallback(SfxSoundId preferred, SfxSoundId fallback) const;

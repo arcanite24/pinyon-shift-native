@@ -158,6 +158,42 @@ struct FevProject {
   const FevEvent* find_event(std::string_view path) const;
 };
 
+// --- Event evaluation (complex events) --------------------------------------
+// What the disc's events show (all 34 projects, dumped):
+//  - Envelope x and an instance's start_pos/length are normalised to the
+//    parameter's [min_val, max_val] (x <= 1 for Speed 0..275, RPM 0..16000).
+//  - An envelope with no DSP name and flag 0x08 is the layer's volume: y is
+//    linear amplitude (0.708, 0.501, 0.251 = -3, -6, -12 dB grid points), and
+//    a layer's volume envelopes multiply.
+//  - Flag 0x10 (no DSP name) is the layer's pitch: y = 0.5 is unity. The
+//    octave scale of y is not decoded, so it is reported raw, not applied.
+//  - An instance sounds while the layer's control parameter is inside
+//    [start_pos, start_pos + length]; fadein_len / fadeout_len are fractions
+//    of the instance's own length (-1 = none). Damage.fev's DamSlow fade-out
+//    (0.689 x 0.819) and DamFast fade-in (0.758 x 0.745) both span the two
+//    instances' overlap, 0.564. Fades are linear (curve shapes undecoded).
+// DSP-unit envelopes (Lowpass, Highpass, Tremolo, Flange, Speaker Level) are
+// not evaluated.
+inline constexpr uint32_t kFevEnvVolume = 0x08u;
+inline constexpr uint32_t kFevEnvPitch = 0x10u;
+
+struct FevInstanceLevel {
+  uint16_t layer = 0;
+  uint16_t instance = 0;
+  uint16_t sound_def = 0;
+  float gain = 0.0f;       // event volume x instance volume x crossfade x volume envelopes
+  float pitch_env = 0.5f;  // the layer's pitch envelope y (0.5 = unity; scale undecoded)
+  bool has_pitch_env = false;
+};
+
+// `raw` normalised to the parameter's range and clamped to [0, 1].
+float fev_normalize(const FevParameter& p, float raw);
+// Evaluates every layer instance of `ev` at the raw parameter values `raw`
+// (indexed like ev.params; missing entries read as the parameter's minimum).
+// Writes at most `cap` levels (audible or not) and returns how many it wrote.
+// No allocation: safe on the audio thread.
+int evaluate_fev_event(const FevEvent& ev, const float* raw, size_t raw_count, FevInstanceLevel* out, int cap);
+
 bool parse_fev(std::span<const uint8_t> bytes, FevProject& out, std::string* error = nullptr);
 bool load_fev(const std::filesystem::path& path, FevProject& out, std::string* error = nullptr);
 

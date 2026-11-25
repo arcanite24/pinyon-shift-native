@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <system_error>
 
@@ -817,6 +818,7 @@ void SfxEngine::set_sample(SfxSoundId id, PcmSample sample) {
 }
 
 void SfxEngine::populate_procedural_fallbacks() {
+  procedural_mode_ = true;
   for (int i = 0; i < int(SfxSoundId::kCount); ++i) {
     const auto id = SfxSoundId(i);
     PcmSample pcm;
@@ -1045,45 +1047,42 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
         const auto alt_fev = cars::mods::resolve(audio_dir / "cars/Damage/Damage.fev");
         if (std::filesystem::exists(alt_fev, dmg_ec)) dmg_fev = alt_fev;
       }
-      bool have_dmg_loop = false, have_dmg_misfire = false;
+      // The disc's one event (Damage/Damage/DamageEngine) has one layer whose
+      // instances (DamSlow, DamFast) crossfade over NormRPM; its volume
+      // envelopes on Damage, NormRPM and Throttle set the level
+      // (SPEC-AUDIO-EVENTS "Other vehicle event projects").
+      damage_event_ = FevEvent{};
+      damage_event_ok_ = false;
       FevProject proj;
       if (load_fev(dmg_fev, proj, nullptr)) {
         for (const auto& ev : proj.events) {
-          std::filesystem::path bank;
-          uint32_t sub = 0;
-          if (!resolve_event_sample(proj, ev.path, bank, sub)) continue;
-          const std::string lp = lower_str(ev.path);
-          if (!have_dmg_misfire && (lp.find("misfire") != std::string::npos || lp.find("knock") != std::string::npos ||
-                                    lp.find("sputter") != std::string::npos)) {
-            jobs.push_back({SfxSoundId::kEngineMisfire, bank, sub});
-            have_dmg_misfire = true;
-          } else if (!have_dmg_loop) {
-            jobs.push_back({SfxSoundId::kEngineDamageLoop, bank, sub});
-            have_dmg_loop = true;
-          } else if (!have_dmg_misfire) {
-            jobs.push_back({SfxSoundId::kEngineMisfire, bank, sub});
-            have_dmg_misfire = true;
-          }
-        }
-      }
-      if (!have_dmg_loop) {
-        std::error_code ec;
-        const auto dir = dmg_fev.parent_path();
-        if (std::filesystem::is_directory(dir, ec)) {
-          for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-            if (entry.is_regular_file(ec) && lower_str(entry.path().extension().string()) == ".fsb") {
-              std::vector<uint8_t> raw;
-              std::vector<FsbSample> fsb_s;
-              const uint32_t n = (read_bytes(entry.path(), raw) && read_fsb4(raw, fsb_s, nullptr))
-                                     ? uint32_t(fsb_s.size())
-                                     : 1u;
-              jobs.push_back({SfxSoundId::kEngineDamageLoop, entry.path(), 0});
-              if (!have_dmg_misfire && n > 1) jobs.push_back({SfxSoundId::kEngineMisfire, entry.path(), 1});
+          if (!ev.is_complex() || ev.layers.empty()) continue;
+          static constexpr SfxSoundId kDamageIds[kDamageInstances] = {SfxSoundId::kEngineDamageLoop,
+                                                                      SfxSoundId::kEngineDamageFast};
+          damage_sound_ids_.fill(SfxSoundId::kCount);
+          int slot = 0;
+          for (const auto& si : ev.layers.front().instances) {
+            if (slot >= kDamageInstances || si.sound_def_index >= proj.sound_defs.size()) break;
+            for (const auto& en : proj.sound_defs[si.sound_def_index].entries) {
+              if (en.entry_type != 0 || en.wavebank_name.empty()) continue;
+              jobs.push_back({kDamageIds[slot], cars::mods::resolve(proj.dir / (en.wavebank_name + ".fsb")),
+                              en.subsound_index});
+              damage_sound_ids_[size_t(slot)] = kDamageIds[slot];
               break;
             }
+            ++slot;
           }
+          damage_event_ = ev;
+          damage_event_.layers.resize(1);
+          damage_param_damage_ = ev.find_param("Damage");
+          damage_param_rpm_ = ev.find_param("NormRPM");
+          damage_param_throttle_ = ev.find_param("Throttle");
+          damage_event_ok_ = slot > 0;
+          break;
         }
       }
+      // Without the event there are no level curves: the damage loop stays
+      // silent rather than playing a bare bank at invented gains.
     }
 
     add_first_fev_or_fsb("cars/Reflections/Reflections.fev", SfxSoundId::kRoadsideReflection);
@@ -2771,8 +2770,31 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       mix_loop(electric_high_voice_, ev_hi_id, ev_hi_g, ev_hi_p * hi_p_mult, 0.707f, 0.707f, eng_bus, frames);
     }
 
-    // Mechanical Engine Damage rattle/knock/misfire (Damage.fev + procedural fallback) on Bus::kEngineDamage.
+    // Engine damage loop on Bus::kEngineDamage: Damage.fev DamageEngine evaluated at
+    // Damage / NormRPM / Throttle (its instance crossfade and volume envelopes).
     if (float* dmg_bus = bus_or(Bus::kEngineDamage, Bus::kEngine)) {
+      if (damage_event_ok_) {
+        std::array<float, 8> raw{};
+        raw.fill(std::numeric_limits<float>::quiet_NaN());
+        auto put = [&](int idx, float v) {
+          if (idx >= 0 && size_t(idx) < raw.size()) raw[size_t(idx)] = v;
+        };
+        const bool running = !st.is_electric && st.rpm > 200.0f;
+        put(damage_param_damage_, running ? st.engine_damage : 0.0f);
+        put(damage_param_rpm_, std::clamp(norm_rpm, 0.0f, 1.0f));
+        put(damage_param_throttle_, std::clamp(st.throttle, 0.0f, 1.0f));
+        std::array<FevInstanceLevel, kDamageInstances> lv{};
+        const int n = evaluate_fev_event(damage_event_, raw.data(), raw.size(), lv.data(), kDamageInstances);
+        LoopVoice* voices[kDamageInstances] = {&damage_voice_, &damage_fast_voice_};
+        for (int i = 0; i < kDamageInstances; ++i) {
+          const SfxSoundId id = damage_sound_ids_[size_t(i)];
+          if (id == SfxSoundId::kCount) continue;
+          const float g = (i < n ? lv[size_t(i)].gain : 0.0f) * view_damage;
+          // Pitch envelope scale is undecoded: the loops play at their recorded pitch.
+          mix_loop(*voices[i], id, g, 1.0f, 0.707f, 0.707f, dmg_bus, frames);
+        }
+      } else if (procedural_mode_) {
+      // No-assets stand-in only (populate_procedural_fallbacks): own gain law.
       const float dmg = std::clamp(std::max(st.engine_damage, st.drivetrain_damage * 0.7f), 0.0f, 1.0f);
       const bool dmg_active = (!st.is_electric && dmg > 0.02f && st.rpm > 200.0f);
       const float dmg_g = dmg_active ? (0.48f * dmg * view_damage * (0.35f + 0.65f * std::clamp(norm_rpm, 0.0f, 1.0f)))
@@ -2803,16 +2825,6 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
           dmg_bus[2 * f + 1] += sig * 0.707f;
         }
       }
-      if (dmg_active && dmg > 0.30f) {
-        misfire_timer_s_ -= dt;
-        if (misfire_timer_s_ <= 0.0) {
-          const double cadence = std::clamp(1.15 - 0.85 * double(dmg), 0.18, 1.15);
-          misfire_timer_s_ = cadence * (0.6 + 0.8 * std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
-          const Bus dbus = bus_id_or(Bus::kEngineDamage, Bus::kEngine);
-          const float mpitch = 0.88f + 0.24f * float(std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
-          spawn_one_shot(resolve_fallback(SfxSoundId::kEngineMisfire, SfxSoundId::kEngineDamageLoop), dbus,
-                         0.55f * dmg * view_damage, 0.707f, 0.707f, mpitch);
-        }
       }
     }
 
@@ -3219,7 +3231,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       const PcmSample* sc_pcm = samples_[size_t(sid)];
       if (sc_pcm && !sc_pcm->data.empty()) {
         mix_loop(showcase_voice_, sid, target_gain, target_pitch, pl, pr, other_bus, frames);
-      } else if (target_gain > 1e-4f || showcase_voice_.gain > 1e-4f) {
+      } else if (procedural_mode_ && (target_gain > 1e-4f || showcase_voice_.gain > 1e-4f)) {
         // Clean in-process rotor / prop / turbine / burner synthesizer fallback (Android / no ffmpeg).
         constexpr double kTwoPi = 6.283185307179586;
         const double inv_rate = 1.0 / double(rate_);

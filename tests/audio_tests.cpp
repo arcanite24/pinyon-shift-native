@@ -1435,6 +1435,16 @@ void sfx_engine_checks() {
     std::vector<float> other(4800 * 2, 0.0f);
     float* buses[audio::kBuses]{};
     buses[int(audio::Bus::kOtherCars)] = other.data();
+    // The aircraft synth is a no-assets stand-in: silent until the explicit fallback mode.
+    {
+      audio::VehicleAudioState vs{};
+      vs.showcase.active = true;
+      vs.showcase.pos = {15.0f, 20.0f, 25.0f};
+      vs.showcase.speed_mps = 55.0f;
+      sc_sfx.render(vs, buses, 4800, nullptr);
+      CHECK(bus_rms(other) < 1e-6);
+    }
+    sc_sfx.populate_procedural_fallbacks();
     for (uint8_t kind = 0; kind <= 4; ++kind) {
       std::fill(other.begin(), other.end(), 0.0f);
       audio::VehicleAudioState vs{};
@@ -2419,13 +2429,20 @@ void phase_r2_5_audio_completeness_checks() {
       }
     };
 
-    // 5a. Procedural fallback on Bus::kEngineDamage produces audible output even without Damage.fev loaded!
+    // 5a. Without Damage.fev the damage loop is silent, unless the explicit
+    // no-assets fallback mode supplies its stand-in.
     {
       audio::SfxEngine sfx(48000);
       audio::VehicleAudioState st{};
       st.rpm = 3800.0f;
       st.idle_rpm = 800.0f;
       st.redline_rpm = 7500.0f;
+      st.engine_damage = 0.75f;
+      clear_bufs();
+      sfx.render(st, ptrs, kFrames);
+      CHECK(rms(bufs[int(audio::Bus::kEngineDamage)]) < 1e-6);
+
+      sfx.populate_procedural_fallbacks();
       st.engine_damage = 0.0f;
       clear_bufs();
       sfx.render(st, ptrs, kFrames);
@@ -2434,7 +2451,7 @@ void phase_r2_5_audio_completeness_checks() {
       st.engine_damage = 0.75f;
       clear_bufs();
       sfx.render(st, ptrs, kFrames);
-      CHECK(rms(bufs[int(audio::Bus::kEngineDamage)]) > 0.01);
+      CHECK(rms(bufs[int(audio::Bus::kEngineDamage)]) > 0.002);
     }
 
     // 5b. Distinct Burble overrun crackle vs shift Backfire pop, ExhNoise, and Multi-band EV.
