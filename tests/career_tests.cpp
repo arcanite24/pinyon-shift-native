@@ -656,7 +656,7 @@ void test_r2_5_detailed_restrictions_and_fame_events() {
 }
 
 void test_r3_e1_street_hubs_and_buyins() {
-  // R3-CAM-13: Progressive 3-hub tier unlocking + CR entry buy-ins.
+  // R3-CAM-13: Progressive 3-hub tier unlocking (RACE-18: the original has no buy-in).
   race::CareerCatalog cat;
   cat.hubs = {
       {1, "HUB_1", 310, {57, 80}, true, {0, 0, 0}, 24.0},
@@ -721,34 +721,6 @@ void test_r3_e1_street_hubs_and_buyins() {
   rec.event_places[53] = 1;
   CHECK(cat.is_hub_unlocked(cat.hubs[2], rec, 0));
   CHECK(cat.is_event_unlocked(cat.events[4], rec, 0, 250));
-
-  // CR entry buy-in fee validation & atomic deduction.
-  race::CareerEvent fest;
-  fest.style = 1;
-  fest.cash_prize = 20000.0;
-  CHECK(race::CareerCatalog::street_race_buy_in(fest) == 0);
-  rec.credits = 0;
-  int64_t fee = -1;
-  CHECK(race::CareerCatalog::charge_street_race_buy_in(fest, rec, &fee) && fee == 0);
-
-  // Hub 1 (24,000 CR prize -> 2,500 CR buy-in), Hub 2 (35,000 -> 3,500), Hub 3 (100,000 -> 10,000).
-  CHECK(race::CareerCatalog::street_race_buy_in(cat.events[0]) == 2500);
-  CHECK(race::CareerCatalog::street_race_buy_in(cat.events[2]) == 3500);
-  CHECK(race::CareerCatalog::street_race_buy_in(cat.events[5]) == 10000);
-
-  // Insufficient CR refuses entry and leaves balance untouched.
-  rec.credits = 2000;
-  std::string why;
-  CHECK(!race::CareerCatalog::charge_street_race_buy_in(cat.events[0], rec, &fee, &why));
-  CHECK(fee == 2500);
-  CHECK(rec.credits == 2000);
-  CHECK(why.find("2,500") != std::string::npos);
-
-  // Sufficient CR deducts exact buy-in.
-  rec.credits = 5000;
-  why.clear();
-  CHECK(race::CareerCatalog::charge_street_race_buy_in(cat.events[0], rec, &fee, &why));
-  CHECK(fee == 2500 && rec.credits == 2500);
 }
 
 }  // namespace

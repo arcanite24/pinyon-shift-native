@@ -207,6 +207,7 @@ inline std::vector<MapFilterTabRect> layout_map_filter_tabs(const std::vector<st
 #include "freeroam/skills.h"
 #include "freeroam/speed_zones.h"
 #include "hud_notify.h"
+#include "race_flow.h"
 #include "rally_hub.h"
 #include "ui.h"
 
@@ -282,6 +283,15 @@ struct RaceHud {
   std::vector<std::string> grid_menu;
   int grid_selected = 0;
   std::string grid_car_info;
+  // The original's screen order around the race (race_flow.h), drawn from
+  // the game's scenes (race_screens.h); kNone: the hand-drawn pages above.
+  race_flow::Screen screen = race_flow::Screen::kNone;
+  double screen_t = 0;      // seconds on `screen`
+  std::string title;        // the event's display name (HORIZON PRESENTS THE GAUNTLET)
+  std::string rival_name;   // the callout's rival (Beat {0})
+  int64_t rival_reward = 0;
+  std::string stay_car;     // STAY IN CAR's car name
+  int stay_selected = 0;    // 0 YES, 1 NO
 };
 
 // Title screen state (120_P_PRE_SPLASH parity).
@@ -541,11 +551,14 @@ struct PrStuntHud {
 };
 
 struct PauseScreenHud;
+struct EventSummaryHud;
 
 struct DriveHud {
   // The pause menu from its scene (pause_screen.h); null: the menu (if any)
   // is drawn by menu_panel.
   const PauseScreenHud* pause_screen = nullptr;
+  // The event summary at a marker (race_screens.h); null: closed.
+  const EventSummaryHud* event_summary = nullptr;
   const CareerBoard* career = nullptr;
   const TitleScreenHud* title_screen = nullptr;
   const WorldMarkerHud* world_marker = nullptr;

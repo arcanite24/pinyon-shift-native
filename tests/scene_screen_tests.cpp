@@ -31,6 +31,7 @@
 #include "hud_scene.h"
 #include "hud_screen.h"
 #include "pause_screen.h"
+#include "race_screens.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include "ui.h"
@@ -210,7 +211,34 @@ int main() {
     }
   }
 
+  // The race screens' scenes (race_screens.cpp).
+  for (const auto& [scene, paths] : carview::race_screen_nodes()) {
+    const SceneDraw sd(carview::ui_scene(std::string(scene)));
+    check(sd.ok(), std::string(scene) + " loads");
+    if (sd.ok()) check_nodes(sd, scene, paths);
+  }
+
   // 2. Every string the screens bind resolves in the EN tables.
+  {
+    using namespace carview::race_text;
+    for (const carview::StringRef* r :
+         {&kEnterEvent, &kBack, &kRestrictions, &kSelect, &kContinue, &kRestart, &kRaceResults, &kViewReplay, &kYes,
+          &kNo, &kStartRace, &kDifficulty, &kOptions, &kQuitRace, &kFestivalRace, &kStreetRace, &kShowcaseRace,
+          &kHeadlineRace, &kStarShowdown, &kCircuit, &kPointToPoint, &kAsphalt, &kMixedSurface, &kOffRoad,
+          &kTwoWords, &kPointsAvailable, &kEntryRestrictions, &kClassOrBelow, &kCarProvided, &kBestFinish, &kBeat,
+          &kReward, &kCurrentCarEligible, &kGarageCarsEligible, &kNoCarsEligible, &kPts, &kNoRestrictions,
+          &kCredits, &kFinished, &kCashReward, &kFinishedPlace, &kMileageBonus, &kDifficultyBonus, &kTotal,
+          &kBalance, &kPlace, &kPointsEarned, &kPointsN, &kCollectIt, &kWristbandUnlocked, &kPointsToNext,
+          &kPointToNext, &kPleaseWait, &kYouWonACar, &kStayInCar, &kStayInCarQ, &kCarSelectTitle})
+      check_ref(*r, "race screen " + std::string(r->fallback));
+    std::vector<std::string> rows;
+    for (auto g : carview::kGridRows) rows.push_back(carview::text_of(carview::grid_row_text(g)));
+    check((rows == std::vector<std::string>{"START RACE", "DIFFICULTY", "OPTIONS", "QUIT RACE"}),
+          "grid menu rows read START RACE .. QUIT RACE from the tables");
+    check(carview::event_track_info(0, false) == "ASPHALT POINT-TO-POINT",
+          "The Gauntlet's track line: " + carview::event_track_info(0, false));
+    check(carview::event_ticket_texture(1, "043") == "EVENTTICKETS/FESTIVALRACES/043", "event 43's ticket");
+  }
   {
     // The driving HUD's labels and every notification's lines.
     using namespace carview::hud_text;
@@ -501,6 +529,55 @@ int main() {
       n.popup_kind = carview::NotifyKind::kShowcaseUnlocked, n.popup_title = u.title, n.popup_text = u.message;
       check(u.title == "SHOWCASE EVENT UNLOCKED!" && u.message == "Show me!", "showcase lines: " + u.title);
       hud_shot("hud_notify_showcase.png", "05_roam_hud_day_drive_orig.png", n);
+    }
+
+    // The race screens (race_screens.h) over the original's captures.
+    {
+      using S = carview::race_flow::Screen;
+      carview::EventSummaryHud es;
+      es.type = carview::event_type_text(1);
+      es.ticket = carview::event_ticket_texture(1, "043");
+      es.track = carview::text_of({"Events", "IDS_Name_43", 0, "?"}) == "" ? "" : "GLADSTONE CANYON RUN";
+      es.track_info = carview::event_track_info(0, false);
+      es.points = 110, es.credits = 6000, es.car_class = "A", es.restriction = "OPEN";
+      es.eligibility = carview::text_of(carview::race_text::kCurrentCarEligible);
+      carview::DriveHud sum_d = roam;
+      sum_d.band_name = "GREEN WRISTBAND", sum_d.band_next = "BLUE", sum_d.band_collect_ready = true;
+      sum_d.car_name = "Mazda MX-5 Miata", sum_d.car_class = "A", sum_d.car_pi = 600, sum_d.credits = 167700;
+      sum_d.event_summary = &es;
+      hud_shot("race_summary.png", "10_event_card_prerace_orig.png", sum_d);
+      es.restrictions_view = true;
+      hud_shot("race_summary_restrictions.png", "10_event_card_prerace_orig.png", sum_d);
+
+      carview::RaceHud rr;
+      rr.phase = carview::RaceHud::kGrid;
+      rr.event_type = "FESTIVAL RACE";
+      rr.title = "BBS JAPANESE TRAILBLAZERS";
+      rr.screen = S::kTitleCard;
+      carview::DriveHud rd = roam;
+      rd.race = &rr;
+      hud_shot("race_title_card.png", "12_race_intro_card_orig.png", rd);
+      rr.title = "HORIZON PRESENTS THE GAUNTLET";
+      rr.screen = S::kGridMenu, rr.screen_t = 5.0;
+      for (auto g : carview::kGridRows) rr.grid_menu.push_back(carview::text_of(carview::grid_row_text(g)));
+      hud_shot("race_grid_menu.png", "13_prerace_menu_orig.png", rd);
+      rr.screen = S::kRivalIntro, rr.rival_name = "Ali Howard", rr.rival_reward = 1500;
+      hud_shot("race_rival_intro.png", "14_rival_intro_orig.png", rd);
+      rr.phase = carview::RaceHud::kFinished;
+      rr.place = 5;
+      rr.screen = S::kFinishBanner, rr.screen_t = 5.0;
+      hud_shot("race_finished.png", "16b_finish_banner_orig.png", rd);
+      rr.screen = S::kCashReward, rr.screen_t = 3.0;
+      rr.base_credits = 0, rr.mileage_bonus = 400, rr.difficulty_pct = 40, rr.credits = 560, rr.balance = 118010;
+      hud_shot("race_cash.png", "17_results_cash_reward_orig.png", rd);
+      rr.screen = S::kPoints;
+      rr.band_before = 2970, rr.band_after = 3080, rr.band_lo = 2000, rr.band_hi = 4100;
+      rr.band_name = "ORANGE WRISTBAND", rr.band_next = "PURPLE";
+      hud_shot("race_points.png", "17_results_cash_reward_orig.png", rd);
+      rr.screen = S::kRewardCar, rr.won_car_name = "Nissan GT-R R34";
+      hud_shot("race_won_car.png", "16b_finish_banner_orig.png", rd);
+      rr.screen = S::kStayInCar, rr.stay_car = "Nissan GT-R R34";
+      hud_shot("race_stay_in_car.png", "18_post_race_stay_in_car_orig.png", rd);
     }
   }
 

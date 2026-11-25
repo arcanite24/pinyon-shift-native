@@ -873,6 +873,21 @@ void DriveSession::init_session() {
       }
       grid_menu_open = app.race != nullptr && !app.headless && !app.bench && !app.race_options.autopilot;
       app.campaign_owns_post_race = false;
+      // The race screens name the event by its string-table name (an event
+      // started from the command line has not been through the menus).
+      race::set_campaign_text_resolver([](std::string_view ref) { return carview::game_text(std::string(ref)); });
+      // The pre-race in the original's order (prerace_intro / prerace_menu):
+      // the title card, then the grid menu; a restart shows the menu only.
+      if (grid_menu_open) {
+        race_flow::PreFacts pf;
+        if (app.race->rivals_solo()) pf.kind = race_flow::Kind::kRivals;
+        else if (const auto* ev = app.career_catalog.find_event(app.race_event))
+          pf.kind = race_flow::kind_of_style(ev->style);
+        pf.restart = app.race_restart;
+        race_screens.start(race_flow::pre_steps(pf));
+        grid_menu_selected = 0;
+      }
+      app.race_restart = false;
       reset_ux = ResetToRoadState{};
       reset_ux.seen_rig_restarts = rig.restart_count();
 }

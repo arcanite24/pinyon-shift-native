@@ -51,6 +51,7 @@
 #include "platform_support.h"
 #include "race/campaign_flow.h"
 #include "race/reset_rules.h"
+#include "race_screens.h"
 #include "race_view.h"
 #include "replay_view.h"
 #include "safe_reset.h"
@@ -407,7 +408,20 @@ struct DriveSession {
   bool grid_menu_open = false;
   double pre_race_blend_t = -1.0;
   int grid_menu_selected = 0;
-  double title_orbit_time = 0.0;
+  // The original's screens around a race (race_flow.h): the marker's event
+  // summary and car select (entry_screens), the grid and the rewards
+  // (race_screens).
+  race_flow::Flow entry_screens;
+  race_flow::Flow race_screens;
+  const race::CareerEvent* summary_event = nullptr;
+  bool summary_restrictions = false;
+  EventSummaryHud event_summary_hud;
+  double summary_opened_at = 0;
+  std::vector<std::pair<std::string, std::string>> event_cars;  // car select: (name, media)
+  int event_car_selected = 0;
+  std::string event_car_media;  // the car chosen for the event
+  bool stay_in_car_pending = false;
+  std::string stay_in_car_name, stay_in_car_media;  double title_orbit_time = 0.0;
   double title_idle_s = 0.0;
   bool title_attract_playing = false;
   LoadingScreen loading_screen;
@@ -538,7 +552,21 @@ struct DriveSession {
   void open_shop_or_autoshow(bool is_autoshow);
   bool collect_next_wristband();
   void open_events_browser(int hub_filter);
-  bool try_enter_event(const race::CareerEvent& ev);
+  bool try_enter_event(const race::CareerEvent& ev, const std::string& chosen_car_media = {});
+  // The marker's H_EVENT_SUMMARY (festival_event_entry_flow): A enters (car
+  // select first when the car is not eligible), B backs out, Y restrictions.
+  void open_event_summary(const race::CareerEvent& ev);
+  void close_event_summary();
+  void event_summary_accept();
+  void event_summary_back();
+  void event_summary_move(int by);
+  void event_summary_restrictions();
+  bool event_summary_open() const { return entry_screens.active(); }
+  // Advances the race screens (timed steps, the grid's start, the finish).
+  void update_race_screens(double dt);
+  void grid_menu_accept();
+  void race_back();
+  void finish_race_screens();
   void update_driving_line_overlay();
   void start_new_career();
   bool map_marker_visible(const MapMarker& m);

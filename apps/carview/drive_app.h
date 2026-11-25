@@ -204,6 +204,10 @@ struct DriveApp : DriveConfig {
   std::string next_event;
   std::string next_event_fallback;
   bool leave_race = false;
+  // The next race is a restart (PreRace_restart: the grid menu only).
+  bool race_restart = false;
+  // The car chosen on the event's car select (STAY IN CAR? after the race).
+  std::string event_car_name;
 
   freeroam::Collectibles collectibles;
   freeroam::Progress progress;

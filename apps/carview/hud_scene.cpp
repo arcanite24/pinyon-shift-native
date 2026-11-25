@@ -542,7 +542,7 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
     acc_sx[i] = (parent_in ? acc_sx[size_t(n.parent)] : 1.0f) *
                 (bev && bev->scale_x.has_value() ? *bev->scale_x : 1.0f) * (ov ? ov->stretch_x : 1.0f);
     acc_sy[i] = (parent_in ? acc_sy[size_t(n.parent)] : 1.0f) *
-                (bev && bev->scale_y.has_value() ? *bev->scale_y : 1.0f);
+                (bev && bev->scale_y.has_value() ? *bev->scale_y : 1.0f) * (ov ? ov->stretch_y : 1.0f);
     acc_ang[i] = (parent_in ? acc_ang[size_t(n.parent)] : 0.0f) + (ov ? ov->extra_angle : 0.0f) +
                  (bev && bev->rotation.has_value() ? *bev->rotation : 0.0f);
     {

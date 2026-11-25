@@ -395,6 +395,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           d.skills = &sk_hud;
         }
         if (world_marker.visible && !app.race) d.world_marker = &world_marker;
+  if (event_summary_open() && !app.race) d.event_summary = &event_summary_hud;
         carview::GpsHud gps_hud;
         static double s_gps_uturn_since = -1.0;
         static struct {
@@ -522,6 +523,11 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             std::snprintf(dbuf, sizeof dbuf, "< DIFFICULTY: %s (+%d%%) >", difficulty_name(app.race_options.difficulty),
                           race::difficulty_bonus_percent(int(app.race_options.difficulty)));
             race_hud.grid_menu = {"START RACE", dbuf, "QUIT RACE"};
+            // The original's PreRace rows (H_GENERIC_TITLE) when its scene draws.
+            if (race_screens.active()) {
+              race_hud.grid_menu.clear();
+              for (auto g : carview::kGridRows) race_hud.grid_menu.push_back(carview::text_of(carview::grid_row_text(g)));
+            }
             race_hud.grid_selected = std::clamp(grid_menu_selected, 0, int(race_hud.grid_menu.size()) - 1);
             int64_t cid = 0;
             int clid = 2;
@@ -537,6 +543,14 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               return 0;
             }();
             race_hud.grid_car_info = carview::car_name(app.car) + "  [" + cname + " " + std::to_string(cpi) + "]";
+          }
+          // The screens around the race (race_flow.h / race_screens.h).
+          race_hud.screen = race_screens.screen();
+          race_hud.screen_t = race_screens.elapsed();
+          race_hud.stay_car = app.event_car_name;
+          if (const auto* cev = app.have_career_catalog ? app.career_catalog.find_event(app.race_event) : nullptr) {
+            race_hud.title = race::resolve_event_display_title(cev);
+            race_hud.event_type = carview::event_type_text(cev->style);
           }
           // Wristband progress after award: show COLLECT IT FROM RACE CENTRAL whenever a new wristband is pending!
           if (race_hud.phase == carview::RaceHud::kFinished && race_hud.wristband > 0 && !app.wristbands.levels.empty()) {

@@ -149,15 +149,12 @@ void test_minute0_to_endgame_state_machine() {
     check(flow.reward_tally().next_unlock_headline.find("DARIUS FLYNT") != std::string::npos,
           "HEADLINE_EVENT tally announces Darius Flynt Showdown unlock");
 
-    // RACE-01: on_race_finished runs after the finish banner, so the tally opens on
-    // Stage 2 (Credits) -> Stage 3 (Wristband/Pop) -> FreeRoam!
-    check(flow.stage() == race::CampaignStage::kRewardTally &&
-              flow.reward_tally().stage == race::PostRaceStage::kCreditsEarned,
-          "HEADLINE_EVENT finish opens the tally on the credits page");
-    flow.advance_or_skip();  // finish Stage 2 animation
-    flow.advance_or_skip();  // Stage 2 -> Stage 3 (Wristband & Popularity)
-    flow.advance_or_skip();  // finish Stage 3 animation
-    flow.advance_or_skip();  // -> FreeRoam (must NOT enter FinaleVictory/Credits yet!)
+    // RACE-01: on_race_finished runs after the finish banner; the original's
+    // rewards screens are the app's race flow, so the campaign stays in free
+    // roam and the end of those screens plays no outro for a headline win.
+    check(flow.stage() == race::CampaignStage::kFreeRoam && !flow.is_blocking_gameplay(),
+          "HEADLINE_EVENT finish leaves the rewards to the race flow");
+    flow.on_post_race_done();
     check(flow.stage() == race::CampaignStage::kFreeRoam,
           "HEADLINE_EVENT win returns to FreeRoam so player can race Darius Flynt");
     const auto obj = flow.next_objective(10000, 6, 5);
@@ -190,35 +187,15 @@ void test_minute0_to_endgame_state_machine() {
     aw.credits = 65000;
     aw.wristband_points = 0;
     flow.on_race_finished(&finale_ev, aw, 1, 2, 5, 1, 300000, 365000, 10000, 6, "2010 Ferrari 599XX");
-    // RACE-01: the finish banner (and its RACE RESULTS popup) came before this call;
-    // the campaign's tally is only the credits and points pages after it.
-    check(flow.stage() == race::CampaignStage::kRewardTally && flow.is_blocking_gameplay() &&
-              flow.reward_tally().stage == race::PostRaceStage::kCreditsEarned,
-          "leaving the finish banner opens the blocking tally on Stage 2 Credits Earned");
-    check(flow.reward_tally().active, "RewardTally active");
-
-    // Step Stage 2 partway and verify animated rolling credits.
-    flow.update(1.0, {0.0, 0.0}, false, false);
-    check(flow.reward_tally().displayed_credits() > 0 && flow.reward_tally().displayed_credits() < 65000,
-          "credits counter rolls smoothly on Stage 2");
-
-    // First skip completes Stage 2 animation; second skip advances to Stage 3 (Wristband & Popularity + Prize Car).
-    flow.advance_or_skip();
-    check(flow.reward_tally().stage_animation_done(), "first skip finishes Stage 2 credits animation");
-    check(flow.reward_tally().displayed_credits() == 65000, "Stage 2 finishes at full credits");
-    flow.advance_or_skip();
-    check(flow.stage() == race::CampaignStage::kRewardTally &&
-              flow.reward_tally().stage == race::PostRaceStage::kWristbandAndPrize,
-          "next continue advances to Stage 3 Wristband & Popularity + Prize Car");
-
-    // Step Stage 3 partway and verify animated popularity climb.
-    flow.update(0.75, {0.0, 0.0}, false, false);
-    check(flow.reward_tally().displayed_pop_rank() < 5 && flow.reward_tally().displayed_pop_rank() >= 1,
-          "popularity rank climbs smoothly on Stage 3");
-    flow.advance_or_skip();
-    check(flow.reward_tally().animation_done(), "skip completes Stage 3 animation");
-    flow.advance_or_skip();
+    // RACE-01: the finish banner came before this call; the earnings and
+    // points are the app's race flow, and its end plays the finale's outro.
+    check(flow.stage() == race::CampaignStage::kFreeRoam && !flow.is_blocking_gameplay(),
+          "leaving the finish banner leaves the rewards screens to the race flow");
+    check(flow.reward_tally().total_credits == 65000, "the tally still records the race's credits");
+    flow.on_post_race_done();
     check(flow.stage() == race::CampaignStage::kFinaleVictory, "Finale win enters FinaleVictory");
+    flow.on_post_race_done();
+    check(flow.stage() == race::CampaignStage::kFinaleVictory, "the outro fires once");
     check(flow.finale_complete() && !flow.pending_darius_showdown(),
           "NEM_FINAL win marks finale_complete and clears pending_darius_showdown");
     check(flow.cinematic().subheadline.find("50,000 CR") != std::string::npos &&
@@ -451,7 +428,8 @@ void test_r2_5_campaign_parity() {
     check(loaded.pending_darius_showdown(), "load_from sets pending_darius_showdown when headline_event_won is recorded");
   }
 
-  // 3. Pre-race grid cinematic blocks gameplay so event launch waits until flyby finishes/skips cleanly.
+  // 3. A plain event launches at once: the original's pre-race (title card,
+  // grid menu) is the app's race flow, not a campaign flyby.
   {
     race::CampaignFlow flow;
     flow.skip_onboarding_all();
@@ -459,13 +437,10 @@ void test_r2_5_campaign_parity() {
     fest_ev.horizon_id = "FR02";
     fest_ev.style = 1;
     fest_ev.level = 0;
-    flow.on_enter_event(fest_ev);
-    check(flow.stage() == race::CampaignStage::kPreRaceGrid, "standard event enters kPreRaceGrid");
-    check(flow.is_cinematic_active(), "kPreRaceGrid has cinematic active");
-    check(flow.is_blocking_gameplay(), "kPreRaceGrid blocks gameplay so countdown does not start prematurely");
-    flow.advance_or_skip();
-    check(flow.stage() == race::CampaignStage::kFreeRoam && !flow.is_blocking_gameplay() && !flow.is_cinematic_active(),
-          "skipping kPreRaceGrid exits cleanly to FreeRoam with no camera bleed");
+    const auto act = flow.on_enter_event(fest_ev);
+    check(flow.stage() == race::CampaignStage::kFreeRoam && !act.launch_event && !flow.is_blocking_gameplay() &&
+              !flow.is_cinematic_active(),
+          "standard event stays in FreeRoam (no invented grid flyby)");
   }
 }
 
@@ -500,10 +475,13 @@ void test_pt_e_campaign_and_post_race_parity() {
     race::CareerEvent raw_fr;
     raw_fr.horizon_id = "FR05";
     raw_fr.style = 1;
+    // A plain event loads straight onto its grid: the title card and the
+    // grid menu are the app's race flow, which shows the resolved title.
     flow.on_enter_event(raw_fr);
-    check(flow.cinematic().headline == "FESTIVAL RACE 05",
-          "Pre-race grid cinematic never shows raw FR05 internal key");
-    flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kFreeRoam && !flow.is_blocking_gameplay(),
+          "a plain event enters no campaign stage of its own");
+    check(race::resolve_event_display_title(&raw_fr) == "FESTIVAL RACE 05",
+          "the race flow's title never shows the raw FR05 internal key");
 
     // Post-race sequential flow for PLANE_RACE_001 Showcase with prize car.
     race::CareerEvent plane_ev;
@@ -529,30 +507,13 @@ void test_pt_e_campaign_and_post_race_parity() {
     ctx.screen_w = 1280.0f;
     ctx.screen_h = 720.0f;
 
-    // RACE-01: the finish banner and its RACE RESULTS popup came first; the tally
-    // opens on Stage 2 (CREDITS EARNED).
-    check(flow.stage() == race::CampaignStage::kRewardTally &&
-              flow.reward_tally().stage == race::PostRaceStage::kCreditsEarned,
-          "the tally opens on Stage 2 CREDITS EARNED");
-    flow.update(1.5, {0.0, 0.0}, false, false);
-    carview::ui::List l2;
-    carview::campaign_ui::draw(l2, flow, ctx);
-    check(l2.items().size() > 25, "Stage 2 CREDITS EARNED renders rolling breakdown & balance");
-
-    // Advance -> Stage 3 (WRISTBAND & POPULARITY + PRIZE CAR AWARDED).
-    flow.advance_or_skip();  // snap Stage 2
-    flow.advance_or_skip();  // enter Stage 3
-    check(flow.reward_tally().stage == race::PostRaceStage::kWristbandAndPrize,
-          "Stage 2 advances to Stage 3 WRISTBAND & POPULARITY + PRIZE CAR");
-    flow.update(1.2, {0.0, 0.0}, false, false);
-    carview::ui::List l3;
-    carview::campaign_ui::draw(l3, flow, ctx);
-    check(l3.items().size() > 25, "Stage 3 renders Wristband, Popularity & Prize Car Awarded card");
-
-    flow.advance_or_skip();  // snap Stage 3
-    flow.advance_or_skip();  // -> kShowcaseOutro
+    // RACE-01: the banner, the earnings and the reward car are the app's race
+    // flow; its end plays the won showcase's outro.
+    check(flow.stage() == race::CampaignStage::kFreeRoam, "the campaign leaves the rewards to the race flow");
+    (void)ctx;
+    flow.on_post_race_done();
     check(flow.stage() == race::CampaignStage::kShowcaseOutro,
-          "Winning Showcase exits Stage 3 cleanly into ShowcaseOutro");
+          "Winning Showcase plays its ShowcaseOutro after the race's screens");
   }
 
   // 2. PT-41: Starter car onboarding after qualification race (First Festival Car / Welcome to Autoshow).

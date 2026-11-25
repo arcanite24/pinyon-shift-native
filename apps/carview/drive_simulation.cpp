@@ -812,7 +812,13 @@ bool DriveSession::step(const drive::Input& user_in) {
           eff_user_in = drive::Input{};
           eff_user_in.brake = 1.0;
         }
-        const drive::Input in = app.race ? app.race->player_input(vehicle, eff_user_in, traffic.get()) : eff_user_in;
+        // The rewards (results_page > 0): the car waits at the post-race
+        // location, out of the AI's hands (PrepareForRewardsFlow). The race
+        // still steps its field.
+        drive::Input in = app.race ? app.race->player_input(vehicle, eff_user_in, traffic.get()) : eff_user_in;
+        // Handbrake and a light pedal: a held brake at a stop would select
+        // reverse.
+        if (app.race && results_page > 0) in = drive::Input{}, in.brake = 0.4, in.handbrake = true;
         if (!app.bench || app.bench_full_fx) {
           // Intact props and solid barriers meet the car's body (FEEL-21).
           const drive::Vec3 v0 = vehicle.velocity();
@@ -1746,7 +1752,8 @@ bool DriveSession::commit_race_award() {
         app.have_career_catalog ? &app.career_catalog : nullptr, app.fmv_player, &app.audio_host,
         finish_standings);
     apply_campaign_action(camp_act);
-    app.campaign_owns_post_race = true;
+    // The rewards screens are the race flow's (race_flow.h); the campaign
+    // waits for on_post_race_done().
     // radiodj.xml: a wristband tier's festival results queue its "after n events" update.
     if (cev && cev->style == 1) app.audio_host.radio_festival_event_finished(cev->level, pl);
   }

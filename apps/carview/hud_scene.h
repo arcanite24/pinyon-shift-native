@@ -58,6 +58,8 @@ struct NodeOverride {
   // Stretches the node's and its descendants' models across, each about its
   // own middle (a picture swapped in at another aspect); 1: none.
   float stretch_x = 1.0f;
+  // The same, down (a panel cut to its text's lines); 1: none.
+  float stretch_y = 1.0f;
 };
 
 // Binding table passed to SceneDraw::draw_subtree().

@@ -125,6 +125,8 @@ add_library(carview_hud STATIC
   hud_scene.cpp
   hud_screen.cpp
   pause_screen.cpp
+  race_flow.cpp
+  race_screens.cpp
   rally_hub.cpp
   scene_screen.cpp)
 set_target_properties(carview_hud PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -150,6 +152,7 @@ set(carview_sources
   drive_hud_sync.cpp
   drive_map_radio.cpp
   drive_menus_dispatch.cpp
+  drive_race_screens.cpp
   drive_benchmark_runner.cpp
   drive_headless_runner.cpp
   drive_input_world_screens.cpp

@@ -2554,3 +2554,89 @@ Still interim:
 
 Needed: the static-object collision rule, and whether an unbroken prop
 is fixed or a heavy dynamic body.
+
+## Q93 (UI, not blocking): the event ticket's surface line
+
+`H_EVENT_SUMMARY`'s `TEXT_TRACK_INFO` reads "<surface> <layout>" (the
+`{0} {1}` string with ASPHALT and POINT-TO-POINT or CIRCUIT). The engine
+picks the surface from `Tracks.SurfaceTypeRibbonConfiguration`: 0 is
+asphalt (FR06, The Gauntlet, whose track has 0, shows ASPHALT
+POINT-TO-POINT in `10_event_card_prerace_orig.png`). As an interim, 1 is
+taken as the mixed surface and 2 as off road (`event_track_info()` in
+`apps/carview/race_screens.cpp`). Needed, narrow: a capture of a dirt or
+mixed event's summary, or the code that picks the surface string.
+
+## Q94 (UI, not blocking): the event ticket's colour scheme
+
+The ticket's value tapes (`Points/Tape`, `Credits/Tape`) take a colour
+per event style at run time through the scene's ColorScheme states, which
+are not decoded. As an interim the engine tints festival tickets with the
+green and dark ink sampled on `10_event_card_prerace_orig.png` (rgb
+4,221,125 and 46,46,46) and leaves the scene's own colours on street,
+showcase, star showdown and headline tickets. Needed, narrow: captures of
+the summary for one event of each other style, or the ColorScheme state
+table.
+
+## Q95 (UI, not blocking): the pre-race rival callout
+
+Before a festival race that has a star rival in it, the original shows
+the rival on `PRE_AND_POST_RACE`'s `NemesisGroup` after the title card,
+alongside the `nemesis_show` cutscene: Beat <name> on the big black tape
+and REWARD with the reward on a pink tape under it
+(`14_rival_intro_orig.png`). The scene rests at its intro start (the big
+tape off-screen left), so the engine places the lines where the capture
+has them; the tapes land lower than their static rects say, and the
+engine corrects them by offsets fitted to that one capture. As interims it
+holds the callout 3 s (`kRivalIntro`), and it has no data yet for which
+events carry a star rival, so the callout is never reached in play (Q98).
+Needed: the callout's intro end state (so the offsets can go), the
+cutscene's length, and where the event's star rival comes from (`Events`
+or the rivals tables).
+
+## Q96 (UI, not blocking): the points and won-car screens
+
+`H_POST_RACE_CAREER_POINTS` rests fully transparent (its intro is a state
+timeline) and `H_POST_RACE_WON_CAR` rests at its intro start like the
+finish banner. As interims the engine shows the points title, the points
+earned and the wristband bar at the rects measured on the UI layouts
+(POINTS EARNED at 103,160), and YOU WON A CAR! with the car's name on the
+banner's pink tape at the banner's offsets. The wristband art, the
+COLLECT panel and the won car's render are not reproduced. Needed:
+captures of both screens at rest (a race that levels the wristband, and a
+race that wins a car), or the intro timelines' end states.
+
+## Q97 (UI, not blocking): car select and difficulty from the race menus
+
+When the current car does not qualify, the original's summary leads to
+car select (`108_C_BUY_CARSELECT`: a carousel of the garage's eligible
+cars with a buy-car tile, and the focused car's card and stats;
+`11_car_select_orig.png`). That scene is not bound (its carousel's layout
+and the cars' thumbnails are not decoded); as an interim the engine lists
+the eligible cars on `H_GENERIC_TITLE`'s rows under a CAR SELECT title.
+The grid menu's DIFFICULTY row opens the original's difficulty screen; as
+an interim the engine steps the difficulty in place (A, or left and
+right). Needed: the carousel's layout and thumbnail source, and a capture
+of the difficulty screen opened from the grid menu.
+
+## Q98 (UI, not blocking): the tombola, the rival offer and star rivals
+
+The post-race order has two screens the engine does not draw yet: the car
+tombola (`H_CAR_TOMBOLA`, after an event whose prize is a tombola) and
+the rival offer (online only, so never reached offline). The flow model
+has steps for both (`race_flow::post_steps`), but the session sets
+neither yet. The engine also lacks which events carry a star rival, which gates
+the rival callout (Q95). Needed: a capture of a tombola after a race, the
+data that marks an event's prize as a tombola, and the event to star
+rival mapping.
+
+## Q99 (UI, not blocking): the tapes' specular sheens
+
+Some tapes carry a `specular` model under their crisp tape (the event
+title's `MainTitle/Crisp/specular` at alpha 0.5, the rival callout's
+`NemesisName/Crisp/specular` at 0.4). The engine draws them as a dark
+gloss across the pink, and, being one texture, they are not cropped with
+the tape, so they run on past its end as a dark band. The captures
+(`12_race_intro_card_orig.png`, `14_rival_intro_orig.png`) show flat
+tapes, so as an interim the engine hides both. Needed, narrow: the
+sheens' blend mode (additive or alpha) and whether the original crops
+them with their tape.

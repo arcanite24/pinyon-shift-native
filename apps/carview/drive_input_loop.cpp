@@ -233,6 +233,7 @@ void DriveSession::poll_sdl_events() {
               const bool on_banner = app.race && app.race->player_finished() && !picking && results_page == 0;
               if (e.key.key == SDLK_ESCAPE) {
                 if (on_banner && results_table) results_table = false;  // B: back to the banner
+                else if (app.race && race_screens.screen() == race_flow::Screen::kStayInCar) race_back();  // B: NO
                 else if (picking) picking = false;
                 else if (!app.race && app.pr_stunt_session.active()) {
                   app.pr_stunt_session.cancel();
@@ -456,6 +457,7 @@ void DriveSession::poll_sdl_events() {
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
                   if (results_table) results_table = false;
                   else if (results_page == 0) open_replay_viewer(false);
+                  else race_back();
                 }
               }
             }

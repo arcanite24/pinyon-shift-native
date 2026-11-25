@@ -78,10 +78,15 @@ void fit_pill(SceneScreen& sc, int pill, int text, const std::string& s) {
   sc.at(pill).dx = left - sd.rect(pill)[0];
 }
 
-void bind_player_bar(SceneScreen& sc, const DriveHud& st, const PauseScreenHud& ps) {
+}  // namespace
+
+void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& band_texture) {
   const SceneDraw& sd = sc.scene();
   // Top row: the wristband objective and the wristband.
-  const int next = sc.node("Next_Level"), points = sc.node("Points"), band = sc.node("Wristband");
+  // By path: a screen sharing the bar (H_EVENT_SUMMARY) has its own Points
+  // and Wristband nodes.
+  const int next = sc.node("TopRow/SP/Next_Level"), points = sc.node("TopRow/SP/Points");
+  const int band = sc.node("TopRow/SP/Wristband");
   // A band waiting to be collected shows that band, its objective in its
   // colour with no tape behind (07_pause_menu_orig.png).
   const bool collect = !st.band_next.empty() && st.band_collect_ready;
@@ -106,7 +111,7 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const PauseScreenHud& 
     sc.hide(points);
   }
   const std::string shown_band = collect ? st.band_next : st.band_name;
-  const std::string band_tex = !ps.band_texture.empty() ? ps.band_texture
+  const std::string band_tex = !band_texture.empty() ? band_texture
                                : shown_band.empty()      ? std::string()
                                                          : "WRISTBANDS/" + upper(shown_band.substr(0, shown_band.find(' ')));
   if (band >= 0 && !band_tex.empty()) sc.at(band).texture = band_tex;
@@ -133,6 +138,8 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const PauseScreenHud& 
     sc.hide(sc.node("BottomRow"));
   }
 }
+
+namespace {
 
 void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float w, float h) {
   SceneScreen sc(kPauseScene);
@@ -189,7 +196,7 @@ void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float 
     sc.text(title, text_of(pause_text::kExtras));
     sc.show(title);
   }
-  bind_player_bar(sc, st, ps);
+  bind_player_bar(sc, st, ps.band_texture);
   sc.draw(l, f);
 
   if (ps.screen == Screen::kExtras) {

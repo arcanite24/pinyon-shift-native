@@ -269,7 +269,7 @@ void DriveSession::open_events_browser(int hub_filter) {
                            hub_filter);
 }
 
-bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
+bool DriveSession::try_enter_event(const race::CareerEvent& ev, const std::string& chosen_car_media) {
           // R3-CAM-13: Enforce progressive 3-hub tier unlocking for Street Races.
           if (ev.style == 2) {
             if (const race::StreetHub* hub = app.career_catalog.find_hub(ev.hub_id)) {
@@ -296,7 +296,8 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
           current_car_info(cid, clid);
           const auto elig = app.career_catalog.check_eligibility(ev, cid, clid, app.class_name_list(),
                                                              slice12.trainer.effective_any_car());
-          if (!elig.eligible) {
+          // A car chosen on car select (ShowRegisterEventCarScreen) races instead.
+          if (!elig.eligible && chosen_car_media.empty()) {
             // Check if another car in the player's garage qualifies.
             std::string hint;
             if (app.have_garage) {
@@ -314,22 +315,14 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
             notice_until = vehicle.time() + 4.5;
             return false;
           }
-          // R3-CAM-13: Enforce authentic Street Race CR entry buy-in fee (deducted on entry).
-          int64_t buy_in_fee = 0;
-          std::string buy_in_reason;
-          if (!race::CareerCatalog::charge_street_race_buy_in(ev, app.career, &buy_in_fee, &buy_in_reason)) {
-            notice = buy_in_reason;
-            notice_until = vehicle.time() + 4.5;
-            app.audio_host.trigger_ui(audio::UiCue::kCancel);
-            return false;
-          }
-          if (buy_in_fee > 0) {
-            notice = "STREET RACE BUY-IN PAID: -" + carview::thousands(buy_in_fee) + " CR";
-            notice_until = vehicle.time() + 3.0;
-            save_due = true;
-          }
+          // RACE-18: the original charges no street-race buy-in.
           std::string event_loaner_media;
-          if (elig.uses_loaner && elig.loaner_car_id > 0) {
+          app.event_car_name.clear();
+          if (!chosen_car_media.empty()) {
+            event_loaner_media = chosen_car_media;
+            app.event_car_name = carview::car_name(chosen_car_media);
+          }
+          if (event_loaner_media.empty() && elig.uses_loaner && elig.loaner_car_id > 0) {
             if (auto it = app.baked_ids.find(elig.loaner_car_id); it != app.baked_ids.end()) {
               event_loaner_media = it->second;
             }
@@ -809,6 +802,8 @@ void DriveSession::choose() {
             club_pending.event_restarted = true;
             club_step();
             results_page = 0;
+            race_screens.stop();
+            app.race_restart = true;  // RACE-27: the restart shows the menu only
             app.next_event = app.race_event;
             running = false;
           }
@@ -830,45 +825,12 @@ void DriveSession::choose() {
           if (act == PauseMenu::kQuit) running = false;
 }
 
-void DriveSession::race_continue() {
-          if (results_table) return;  // the table takes only B
-          if (results_page == 0) {
-            app.audio_host.trigger_ui(audio::UiCue::kAccept);
-            // RACE-05: the original updates and saves the profile on the finish
-            // banner's done exit, so Continue is what pays the race.
-            commit_race_award();
-            // RACE-01: with the campaign on, its tally is the credits and points
-            // pages after the banner; it ends the race when it is done.
-            if (app.campaign_owns_post_race) return;
-            results_page = 1;
-            return;
-          }
-          if (results_page == 1) {
-            app.audio_host.trigger_ui(audio::UiCue::kAccept);
-            results_page = 2;
-            points_at = vehicle.time();
-            return;
-          }
-          if (results_page == 2 && !won_car_name.empty()) {
-            app.audio_host.trigger_ui(audio::UiCue::kAccept);
-            results_page = 3;
-            return;
-          }
-          app.audio_host.trigger_ui(audio::UiCue::kAccept);
-          results_page = 0;
-          if (!app.race->post_race_spawn(app.spawn)) {
-            const drive::Vec3 at = vehicle.position();
-            const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
-            app.spawn[0] = at.x, app.spawn[1] = at.y, app.spawn[2] = at.z, app.spawn[3] = std::atan2(f.x, f.z);
-          }
-          app.have_spawn = true;
-          app.restore_pre_race_tod();
-          app.leave_race = true;
-          running = false;
-}
-
 void DriveSession::race_restart() {
           if (results_table) return;
+          // Y restarts from the finish banner only.
+          if (race_screens.active() && race_screens.screen() != race_flow::Screen::kFinishBanner) return;
+          race_screens.stop();
+          app.race_restart = true;
           if (app.race) app.race->drop_award();  // finishing then restarting pays nothing (RACE-05)
           results_page = 0;
           app.next_event = app.race_event;
@@ -953,7 +915,7 @@ bool DriveSession::activate_world_trigger() {
             open_events_browser(active_trigger.hub->id);
             return true;
           } else if (active_trigger.kind == carview::WorldTrigger::kEvent && active_trigger.event) {
-            try_enter_event(*active_trigger.event);
+            open_event_summary(*active_trigger.event);
             return true;
           } else if (active_trigger.kind == carview::WorldTrigger::kOutpost && active_trigger.outpost) {
             open_outpost_hub(active_trigger.outpost->id);
