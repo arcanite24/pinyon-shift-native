@@ -181,7 +181,7 @@ void DriveSession::club_step() {
         s.skill_chain_completed = club_pending.skill_chain_completed;
         if (app.skill_tracker) {
           const auto sh = app.skill_tracker->hud();
-          s.skill_points = sh.active ? double(sh.chain_points) * double(std::max(1, sh.multiplier)) : 0.0;
+          s.skill_points = sh.active ? double(freeroam::banked_chain_points(sh.chain_points, sh.multiplier_f)) : 0.0;
           if (sh.banked_at > g_club_banked_tracker.last_banked_at && sh.banked_total > 0) {
             s.banked_skill_points_delta = double(sh.banked_total);
             g_club_banked_tracker.last_banked_at = sh.banked_at;

@@ -322,7 +322,7 @@ struct SkillChainHud {
   bool active = false;
   int chain_points = 0;
   int multiplier = 1;
-  float multiplier_f = 1.0f;       // exact 1.0x..5.0x in 0.5x steps
+  float multiplier_f = 1.0f;       // exact 1.0x..5.0x in 0.1x steps
   double chain_remaining_s = 0.0;  // remaining seconds before banking
   double chain_timeout_s = 3.0;    // total bank window duration (s)
   std::string last_skill;

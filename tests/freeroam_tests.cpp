@@ -636,7 +636,7 @@ int main() {
     st.award_named("NearMiss", 2, 10.5);
     st.award_named("Pass", 2, 11.0);
     const auto h_before = st.hud();
-    CHECK(h_before.active && h_before.chain_points > 0 && h_before.multiplier >= 2);
+    CHECK(h_before.active && h_before.chain_points > 0 && h_before.multiplier_f > 1.15f);
     CHECK(st.chain_remaining_s(11.5) > 2.0);
     const auto snap = st.capture_rewind();
     // Simulate wreck cancelling chain.
@@ -645,7 +645,7 @@ int main() {
     // Rewind restores the intact skill chain!
     st.restore_rewind(snap);
     const auto h_after = st.hud();
-    CHECK(h_after.active && h_after.chain_points == h_before.chain_points && h_after.multiplier == h_before.multiplier);
+    CHECK(h_after.active && h_after.chain_points == h_before.chain_points && h_after.multiplier_f == h_before.multiplier_f);
     CHECK(st.chain_remaining_s(11.5) > 2.0);
   }
   // Phase 1 + R3-CAM-10 parity: Sponsor challenge active tier checks sc.tiers[claimed_tiers]
@@ -849,16 +849,31 @@ int main() {
     }
     CHECK(step_rank && step_spon);
 
-    // 2. R3-CAM-10: Float multiplier 1.0x..5.0x in 0.5x steps + Donut XML grades.
+    // 2. The decoded chain multiplier: (min(n, 41) + 9) * 0.1 for n single skills; combinations and
+    // specials do not count. 5 skills show the oracle frame's X1.4.
     SkillTracker tm(sd, 0.0, 0);
     CHECK(near(tm.chain_multiplier(), 1.0f));
-    for (int i = 1; i <= 10; ++i) {
-      tm.award_named("Drift", 1, 1.0 + i * 0.5);
-      const float expected = std::min(5.0f, 1.0f + 0.5f * float(i - 1));
-      CHECK(near(tm.chain_multiplier(), expected, 1e-4));
-      CHECK(near(tm.hud().multiplier_f, expected, 1e-4));
+    CHECK(near(freeroam::chain_multiplier_for(0), 1.0f) && near(freeroam::chain_multiplier_for(1), 1.0f));
+    CHECK(near(freeroam::chain_multiplier_for(2), 1.1f, 1e-6) && near(freeroam::chain_multiplier_for(5), 1.4f, 1e-6));
+    CHECK(near(freeroam::chain_multiplier_for(41), 5.0f, 1e-6) && near(freeroam::chain_multiplier_for(90), 5.0f, 1e-6));
+    for (int i = 1; i <= 45; ++i) {
+      tm.award_named(i % 2 ? "Drift" : "NearMiss", 1, 1.0 + i * 0.01);
+      const float expected = float(std::min(i, 41) + 9) * 0.1f;
+      CHECK(near(tm.chain_multiplier(), expected, 1e-5));
+      CHECK(near(tm.hud().multiplier_f, expected, 1e-5));
     }
-    CHECK(near(tm.chain_multiplier(), 5.0f, 1e-4));
+    CHECK(near(tm.chain_multiplier(), 5.0f, 1e-5));
+    // A combination or special adds points but not to the multiplier's count.
+    SkillTracker tc(sd, 0.0, 0);
+    tc.award_named("Drift", 1, 1.0);
+    tc.award_named("Air", 1, 1.1);
+    tc.award_named("DareDevil", 1, 1.2);
+    tc.award_named("Landscaping", 1, 1.3);
+    CHECK(near(tc.chain_multiplier(), 1.1f, 1e-6) && tc.hud().skill_count == 4);
+    // The bank truncates float(points) * multiplier (no rounding up).
+    CHECK(freeroam::banked_chain_points(583, 1.4f) == 816);
+    CHECK(freeroam::banked_chain_points(999, 1.1f) == 1098);
+    CHECK(freeroam::banked_chain_points(0, 3.0f) == 0);
 
     // Donut XML grades: ~20 m distance spin (>= 18 m, < 30 m) awards grade 2 with XML Fame=200 (not hardcoded 150!).
     SkillTracker td(sd, 0.0, 0);

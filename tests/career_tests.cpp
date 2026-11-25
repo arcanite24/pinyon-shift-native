@@ -300,7 +300,7 @@ void test_skills_and_popularity() {
   const char* fame_xml = R"(
     <Fame>
       <Level rank="249" target="1000"/>
-      <Level rank="225" target="2500"/>
+      <Level rank="225" target="1700"/>
       <Level rank="200" target="6000"/>
     </Fame>)";
   const char* feats_xml = R"(
@@ -344,17 +344,18 @@ void test_skills_and_popularity() {
     const auto evs = tr.step(land);
     CHECK(!evs.empty() && evs[0].kind == freeroam::SkillEvent::kSkillAwarded && evs[0].points == 500);
   }
-  // 2. Trigger a Near Miss right after -> Stuntman combo (+1000 pts) -> 3 skills -> multiplier x2!
+  // 2. Trigger a Near Miss right after -> Stuntman combo (+1000 pts). Two single skills (the combo does
+  // not count) -> X1.1.
   {
     freeroam::SkillInput nm;
     nm.dt = dt, nm.time = (t += dt), nm.speed_ms = 30.0, nm.forward_speed_ms = 30.0, nm.wheels_on_ground = 4;
     nm.nearest_car_dist = 2.5;
     const auto evs = tr.step(nm);
     CHECK(evs.size() >= 2);  // NearMiss + Stuntman combo
-    CHECK(tr.hud().multiplier == 2);
+    CHECK(tr.hud().multiplier == 1 && std::fabs(tr.hud().multiplier_f - 1.1f) < 1e-5f);
     CHECK(tr.hud().chain_points == 1600);
   }
-  // 3. Drive cleanly for 3.2 s -> banks 1600 * 2 = 3200 pts -> crosses rank 249 AND 225 -> pays 5,000 Cr Fame sponsor!
+  // 3. Drive cleanly for 3.2 s -> banks trunc(1600 * 1.1) = 1760 pts -> crosses rank 249 AND 225 -> 5,000 Cr.
   bool banked = false, rank_up = false, sponsor = false;
   int64_t sponsor_cr = 0;
   for (int i = 0; i < 35; ++i) {
@@ -370,7 +371,7 @@ void test_skills_and_popularity() {
   CHECK(rank_up);
   CHECK(sponsor && sponsor_cr == 5000);
   CHECK(tr.popularity_rank() == 225);
-  CHECK(tr.max_skills_score() == 3200);
+  CHECK(tr.max_skills_score() == 1760);
 
   // 4. Hard crash cancels active chain and locks out for 3 s.
   {

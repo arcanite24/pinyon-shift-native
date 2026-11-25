@@ -509,7 +509,7 @@ bool DriveSession::free_roam_step() {
               if (app.skill_tracker) {
                 const auto sh = app.skill_tracker->hud();
                 psu.banked_skill_points = int64_t(std::llround(sh.popularity_points));
-                psu.unbanked_skill_points = int64_t(std::llround(double(sh.chain_points) * double(sh.multiplier_f)));
+                psu.unbanked_skill_points = freeroam::banked_chain_points(sh.chain_points, sh.multiplier_f);
                 psu.total_skill_points = psu.banked_skill_points;
               }
               if (have_cam_view) {
