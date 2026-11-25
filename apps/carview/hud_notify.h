@@ -47,6 +47,9 @@ struct HudToggles {
   bool names_over_cars = true;
   bool popularity_skills = true;
   bool tracked_achievement = false;
+  // BARN FIND RADAR: the engine's proximity pill inside a barn rumour (the
+  // original marks a rumour on the maps only), off unless asked for.
+  bool barn_radar = false;
   bool operator==(const HudToggles&) const = default;
 };
 

@@ -1063,9 +1063,9 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       if (st.speedo_mode == 1) render_digital_dial(l, st, g);
       else if (st.speedo_mode == 0) dial(l, st, g);
     }
-    // R3-UI-11: Clean dark-backed Barn Find proximity radar pill positioned strictly above
-    // SatNav / GPS turn banner (never overlaps SatNav at y=376..408!).
-    if (st.barn_radar_proximity > 0.04 && !st.race) {
+    // The barn find radar pill is the engine's own (the original marks a
+    // rumour on the maps only): drawn only with the BARN FIND RADAR row on.
+    if (st.hud.barn_radar && st.barn_radar_proximity > 0.04 && !st.race) {
       const float prox = float(std::clamp(st.barn_radar_proximity, 0.0, 1.0));
       const float pulse_hz = 1.5f + 4.0f * prox;
       const float pulse = 0.5f + 0.5f * std::sin(float(st.time) * 6.28318f * pulse_hz);

@@ -65,6 +65,7 @@ constexpr Kept kKept[] = {
     {"no-hud-names-over-cars", false, "hud-names-over-cars"},
     {"no-hud-popularity-skills", false, "hud-popularity-skills"},
     {"hud-tracked-achievement", false, "hud-tracked-achievement"},
+    {"hud-barn-radar", false, "hud-barn-radar"},
     {"steer-dz-in", true, "steer-dz-in"},
     {"steer-dz-out", true, "steer-dz-out"},
     {"throttle-dz-in", true, "throttle-dz-in"},
@@ -498,6 +499,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"names over cars", {{"on", {}}, {"off", {"--no-hud-names-over-cars"}}}},
       {"popularity and skills", {{"on", {}}, {"off", {"--no-hud-popularity-skills"}}}},
       {"tracked achievement", {{"off", {}}, {"on", {"--hud-tracked-achievement"}}}},
+      {"barn find radar", {{"off", {}}, {"on", {"--hud-barn-radar"}}}},
       {"units", {{"metric (km/h)", {}}, {"imperial (mph)", {"--units", "imperial"}}}},
       {"steer deadzone in",
        {{"24%", {}},
@@ -1106,6 +1108,7 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
       name == "rewind" || name == "damage" || name == "ai opponents" || name == "units" || name == "speedometer" ||
       name == "minimap" || name == "lap time and position" || name == "wrong way warning" ||
       name == "names over cars" || name == "popularity and skills" || name == "tracked achievement" ||
+      name == "barn find radar" ||
       name == "hud 16:9 lock" || name == "hud scale" || name == "safe zone" ||
       name.rfind("telemetry", 0) == 0) {
     return SettingsPage::Tab::kGameplay;
@@ -1407,6 +1410,7 @@ LiveSettings SettingsPage::live_settings() const {
   ls.hud.names_over_cars = pick_label("names over cars") != "off";
   ls.hud.popularity_skills = pick_label("popularity and skills") != "off";
   ls.hud.tracked_achievement = pick_label("tracked achievement") == "on";
+  ls.hud.barn_radar = pick_label("barn find radar") == "on";
   {
     const std::string lg = pick_val("language");
     ls.language = lg.empty() ? "EN" : lg;
@@ -1670,6 +1674,7 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
   set_by_label("names over cars", live.hud.names_over_cars ? "on" : "off");
   set_by_label("popularity and skills", live.hud.popularity_skills ? "on" : "off");
   set_by_label("tracked achievement", live.hud.tracked_achievement ? "on" : "off");
+  set_by_label("barn find radar", live.hud.barn_radar ? "on" : "off");
   set_by_val("language", (live.language.empty() || live.language == "EN") ? "" : live.language);
   set_by_val("damage", live.damage_mode == 0   ? "none"
                        : live.damage_mode == 2 ? "simulation"
