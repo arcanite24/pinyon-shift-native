@@ -861,7 +861,7 @@ int main() {
     }
   }
 
-  // 4d. HUD-11: a notification's State plays SHOW (0.9 to 1.03 by 0.166 s,
+  // 4d. The notification panel: its State plays SHOW (0.9 to 1.03 by 0.166 s,
   // 1 at 0.218 s, fading in) and HIDE (to 0.8, fading out, in its last
   // 0.137 s). Measured on the drawn items' extent and alpha.
   {
@@ -1028,6 +1028,9 @@ int main() {
         pause_over("pause_anim_2_move_0.66" + suf + ".png", "07_pause_menu_orig.png", m, 0.66);
         m.selected = last, m.shown_selected = last, m.shown_from = -1, m.shown_at = -1e9;
         pause_over("pause_anim_3_quit" + suf + ".png", "07b_pause_menu_scrolled_orig.png", m, 1.0);
+        // A capture the list's rest was not fitted to: SETTINGS focused.
+        m.selected = 1, m.shown_selected = 1, m.shown_from = -1, m.shown_at = -1e9;
+        pause_over("pause_anim_4_settings" + suf + ".png", "29_message_center_offline_orig.png", m, 1.0);
       }
       carview::set_scene_timelines_enabled(true);
     }
@@ -1254,7 +1257,7 @@ int main() {
       n.popup_kind = carview::NotifyKind::kDiscountSigns, n.popup_title = t.title, n.popup_text = t.message;
       n.popup_at = n.time - 1.5;
       hud_shot("hud_notify_signs.png", "05_roam_hud_day_drive_orig.png", n);
-      // HUD-11: the panel's SHOW (0..0.218 s) and HIDE (the last 0.137 s),
+      // The notification panel's SHOW (0..0.218 s) and HIDE (the last 0.137 s),
       // with the timeline and without (the measured fade).
       for (const bool on : {true, false}) {
         carview::set_scene_timelines_enabled(on);

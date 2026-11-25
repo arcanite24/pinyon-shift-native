@@ -4403,6 +4403,9 @@ The engine's rule for an element being on is inferred:
 - A component's slide that omits it hides it, if another of the
   component's slides lists it.
 - `starttime` / `endtime` bound it within the slide.
+- The Master Slide's `active` bytes are ignored. In the Master Slides
+  checked (`925_PAUSE_MENU`'s rows, `947_HUD`'s `State`), every element
+  reads 0; taken literally, that would hide everything.
 
 Values set by one slide persist into the next unless that slide sets them
 again (the Master Slide's values are applied on every entry). A curve's
@@ -4465,7 +4468,9 @@ the scene is used:
   `07_pause_menu_orig.png` (MAP focused) and
   `07b_pause_menu_scrolled_orig.png` (QUIT focused) put SETTINGS .. MY
   PROFILE 12 to 13 px apart. The engine's rows now land within 1 px of
-  both.
+  both. They also land within 1 px of `29_message_center_offline_orig.png`
+  (SETTINGS focused, rows above and below), a capture the list's rest was
+  not fitted to.
 - Not from the scene:
   - The list's rest is measured: `kListDy` plus 7 px up, since the old
     measurement had the spread folded in.
@@ -4477,11 +4482,24 @@ the scene is used:
 - The root's `INTRO` / `OUTRO` (300 ms) change nothing visible.
 
 Still not played:
-- **`H_MAP` (MAP-05).** The event hubs' `AVAILABLE` / `UNAVAILABLE` /
-  `BRONZE` / `SILVER` / `GOLD` slides, and each activity's `Upright` /
-  `UprightWarning`. The engine's map does not draw its icons from the
-  scene.
-- **The activity popups (ACT-01, ACT-02).** Not drawn from their scenes.
+- **`H_MAP` (MAP-05).** Besides the stackers, the only slides are the
+  event hubs' (`AVAILABLE` / `UNAVAILABLE` / `BRONZE` / `SILVER` / `GOLD`)
+  and each activity's (`Upright` / `UprightWarning`). The engine's map does
+  not draw those icons from the scene, and the nodes it does draw have no
+  slides. The audit's MAP-05 (a perspective map, its zoom, and the icons'
+  `reveal_drop` / `bulge` / `grow` animations) and HUD-11 (the rumour's
+  map reveal) are `MapProfileFullscreen.xml` profile animations. Those are
+  not BGF timelines, and this work does not cover them. What this work
+  did under HUD-11 is `947_HUD`'s notification panel (`SHOW` / `HIDE`).
+- **The activity HUDs (ACT-01, ACT-02).** `947_HUD` has the slides:
+  - `SpeedCamera`: `OFF` / `SHOW` / `ON` / `OLDPB`, and more;
+  - its `Icon`: `SPEEDCAM` / `AVERAGESPEEDCAM`;
+  - `MissionsDamage`: `BARFILL`;
+  - `ScoreGroup`: `SHOW` / `HIDE` / `ABORT`.
+
+  The engine draws its own speed trap and mission HUDs, not these
+  components (ACT-01 and ACT-02 themselves), so there is nothing to play
+  them on yet.
 
 Also open: the time a contract event is sent relative to the frame it
 takes effect on (the engine fires and advances in the same frame).

@@ -215,7 +215,9 @@ actions run is decided before any of them runs.
 
 **Activity.** An element is off when its component's current slide lists it
 with `active` 0, or omits it while another slide of the component lists it
-(Master Slide elements are on everywhere). It is also off outside
+The Master Slide's own `active` bytes are ignored. In the Master Slides
+checked (the pause rows' and the notification's), every element reads 0,
+yet those elements show on the other slides. An element is also off outside
 `starttime` / `endtime` when those are set. An off element hides its subtree.
 This is inferred (Q184).
 
@@ -253,7 +255,8 @@ off, the screens draw as before).
   - `Focused`: loops 2.5 s; the row's Group pulses 0.7 to 0.722 at
     1.04..1.27 s.
   - `Blur`: 0.5 s back.
-- **HUD notifications** (`hud_screen.cpp`, HUD-11). `947_HUD`'s
+- **HUD notifications** (`hud_screen.cpp`; assigned as HUD-11, though the
+  audit's HUD-11 is the map's reveal flow, Q187). `947_HUD`'s
   `CombinedNotification` component:
   - `SHOW`: its `State` fades in over 0.166 s, growing 0.9 to 1.03 and back
     to 1 at 0.218 s.
@@ -288,11 +291,22 @@ off, the screens draw as before).
 
 - **`H_GENERIC` / `H_GENERIC_TITLE`.** `INTRO` is 300 / 600 ms with no
   visible curve on the root.
-- **The map (`H_MAP`, MAP-05).** The event hubs' `AVAILABLE`, `UNAVAILABLE`,
-  `BRONZE`, `SILVER` and `GOLD` slides, and each activity's `Upright` /
-  `UprightWarning`. The engine's map does not draw these icons from the
-  scene (Q187).
-- **The activity popups (ACT-01, ACT-02).** Not drawn from their scenes yet
+- **The map (`H_MAP`).** Its only slides besides the stackers' are the
+  event hubs' (`AVAILABLE`, `UNAVAILABLE`, `BRONZE`, `SILVER`, `GOLD`) and
+  each activity's (`Upright` / `UprightWarning`). The engine's map does not
+  draw those icons from the scene. The nodes it does draw (the cursor,
+  popups, title tape and player bar) have no slides. MAP-05's animations
+  (the icons' `reveal_drop`, `bulge`, `grow` ...) and HUD-11's reveal flow
+  are `MapProfileFullscreen.xml` profile animations, not BGF timelines
+  (Q187).
+- **The activity HUDs (ACT-01, ACT-02).** `947_HUD` has the slides:
+  - `SpeedCamera`: `OFF`, `SHOW`, `ON`, `OLDPB` and others;
+  - the `Icon`: `SPEEDCAM` / `AVERAGESPEEDCAM`;
+  - `MissionsDamage`: `BARFILL`;
+  - `ScoreGroup`: `SHOW` / `HIDE` / `ABORT`.
+
+  The engine draws its own speed trap and mission HUDs, not these
+  components. Playing the slides waits on drawing those components first
   (Q187).
 
 ## Tools

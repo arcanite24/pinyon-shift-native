@@ -288,7 +288,7 @@ destinations, and an outpost must be discovered (Q90).
   `FOCUSED`, their curves and the events' actions) are decoded and play
   through `SceneTimeline` (docs/UI_SCENE_ANIMATION.md). Hooked up so far:
   - the front end (FE-02);
-  - the HUD notifications (HUD-11);
+  - the HUD notification panel (assigned as HUD-11, Q187);
   - the pause menu's rows (MENU-17): scale 1.2, the pink tapes and the
     7 / 6 px spread about the focus, which both pause captures confirm.
 
