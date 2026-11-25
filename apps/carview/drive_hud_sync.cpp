@@ -1086,8 +1086,18 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             }
           }
           list.clear();
-          carview::draw_autoshow_hud(list, float(width), float(height), autoshow, app.class_bands, app.career.credits,
-                                     vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
+          // The car select on the original's 108 (the buy confirmation and
+          // the other steps keep the engine's pages).
+          car_list_drawn = false;
+          if (autoshow.step() == carview::AutoshowStep::kCarSelect && !autoshow.buy_confirm_open()) {
+            carview::CarListHud cl;
+            fill_autoshow_list(cl);
+            if (vehicle.time() < notice_until) cl.notice = notice;
+            car_list_drawn = carview::draw_car_list(list, d, cl, float(width), float(height));
+          }
+          if (!car_list_drawn)
+            carview::draw_autoshow_hud(list, float(width), float(height), autoshow, app.class_bands, app.career.credits,
+                                       vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
         } else if (shop.is_open()) {
           list.clear();
           carview::draw_upgrade_shop_hud(list, float(width), float(height), shop, app.class_bands, discount(),

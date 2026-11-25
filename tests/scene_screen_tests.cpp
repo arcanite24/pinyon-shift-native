@@ -8,6 +8,7 @@
 // SHIFT_SCENE_SCREEN_SHOT_DIR the screens are also drawn to PNGs there, over
 // SHIFT_SCENE_SCREEN_BACKDROP (a 1280x720 PNG) when given.
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -30,6 +31,7 @@
 #include "freeroam/skills.h"
 #include "game_hud.h"
 #include "hud_scene.h"
+#include "car_list_screen.h"
 #include "hub_menus.h"
 #include "hud_screen.h"
 #include "pause_screen.h"
@@ -234,6 +236,21 @@ int main() {
     }
   }
 
+  // The car list (108_C_BUY_CARSELECT, v4's).
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kCarListScene)));
+    check(sd.ok(), "108_C_BUY_CARSELECT loads");
+    if (sd.ok()) {
+      check_nodes(sd, carview::kCarListScene, carview::car_list_nodes());
+      for (int k = 0; k < carview::kCarListSlots; ++k)
+        check(sd.find("CAR_LIST_ITEM_" + std::to_string(k)) >= 0, "108: CAR_LIST_ITEM_" + std::to_string(k));
+      // The cursor sits on the fourth slot.
+      const auto cur = sd.at(sd.find_path("CAR_LIST/HIGHLIGHT/CursorBig"));
+      const auto slot = sd.at(sd.find("CAR_LIST_ITEM_" + std::to_string(carview::kCarListCursorSlot)));
+      check(std::abs(cur[0] - slot[0]) < 1 && std::abs(cur[1] - slot[1]) < 1, "108: the cursor on slot 3");
+    }
+  }
+
   // 2. Every string the screens bind resolves in the EN tables.
   {
     using namespace carview::race_text;
@@ -297,6 +314,17 @@ int main() {
     carview::fill_hub_menu(hs, hh);
     check(hh.prompts.size() == 3 && hh.prompts[0].second == "SELECT" && hh.prompts[1].second == "BACK",
           "OPTIONS help bar: A SELECT, B BACK, X the engine's settings");
+  }
+  {
+    using namespace carview::car_list_text;
+    for (const carview::StringRef* r :
+         {&kCarSelect, &kHorizonRecommends, &kManufacturerSelect, &kMyGarage, &kBarnFinds, &kTradeIn, &kSpeed,
+          &kHandling, &kAcceleration, &kLaunch, &kBraking, &kSelect, &kBack, &kToggle, &kSearch, &kSellCar, &kCredits,
+          &kBarnLocked, &kBarnWrecked, &kBarnReady, &kBarnCollected, &kCollectTitle, &kCollectMessage, &kWreckedTitle,
+          &kWreckedMessage, &kLockedTitle, &kLockedMessage, &kCantSellTitle, &kCantSellMessage, &kViewOnMap, &kOk})
+      check_ref(*r, "car list " + std::string(r->fallback));
+    check(carview::text_of(kHorizonRecommends) == "HORIZON RECOMMENDS", "19's title from the tables");
+    check(carview::car_list_credits(120000) == "120,000 Cr", "the cursor's price: " + carview::car_list_credits(120000));
   }
   {
     // The driving HUD's labels and every notification's lines.
@@ -661,6 +689,43 @@ int main() {
     menu_shot("menu_options.png", "22_options_menu_orig.png", carview::HubMenu::kOptions, 0);
     menu_shot("menu_photo.png", "31_photo_mode_menu_orig.png", carview::HubMenu::kPhotoSelect, 0);
     menu_shot("menu_workshop.png", "", carview::HubMenu::kWorkshop, 0);
+
+    // The car list over 19_autoshow_orig.png: HORIZON RECOMMENDS on the
+    // 2012 Jaguar XKR-S (the capture's own numbers).
+    {
+      carview::CarListHud cl;
+      cl.title = carview::text_of(carview::car_list_text::kHorizonRecommends);
+      cl.tiles = {{1009, carview::car_list_credits(120000)}, {1020, carview::car_list_credits(85000)},
+                  {1103, carview::car_list_credits(150000)}};
+      cl.selected = 0;
+      cl.details.valid = true;
+      cl.details.car_id = 1009;
+      cl.details.model = "XKR-S";
+      cl.details.year_make = "2012 Jaguar";
+      cl.details.flag =
+          carview::ui_texture_key(R"(GAME:\Media\UI\Textures\UI4\Logos\Country_Flags\L_FLA_UnitedKingdom_flag.tga)");
+      check(cl.details.flag == "T:UI4/LOGOS/COUNTRY_FLAGS/L_FLA_UNITEDKINGDOM_FLAG", "flag key: " + cl.details.flag);
+      cl.details.car_class = "A";
+      cl.details.pi = 574;
+      cl.details.drive_type = 2;
+      cl.details.stats = {8.8, 8.4, 7.7, 6.6, 8.3};
+      using namespace carview::car_list_text;
+      cl.prompts = {{"A", carview::text_of(kSelect)}, {"B", carview::text_of(kBack)}, {"Y", carview::text_of(kToggle)},
+                    {"BACK", carview::text_of(kSearch)}};
+      std::vector<uint8_t> fb = backdrop;
+      if (!hud_dir.empty()) {
+        int w = 0, h = 0, n = 0;
+        if (uint8_t* px = stbi_load((hud_dir / "19_autoshow_orig.png").string().c_str(), &w, &h, &n, 4)) {
+          if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
+          stbi_image_free(px);
+        }
+      }
+      carview::ui::List l;
+      check(carview::draw_car_list(l, d, cl, float(W), float(H)), "draw car list");
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / "car_list_recommends.png";
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write car list");
+    }
   }
 
   if (g_failures > 0) {

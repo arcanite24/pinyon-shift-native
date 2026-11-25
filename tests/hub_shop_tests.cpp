@@ -745,9 +745,9 @@ void test_disc_hub_shops_and_garage() {
 }
 
 void test_autoshow_layout_and_studio_camera() {
-  // 1. Bright Horizon Autoshow studio background & lighting (no gloomy dark flat void).
+  // 1. The original's dark Autoshow room (19_autoshow_orig.png).
   const auto bg = carview::hub_background_color(carview::HubRoom::kAutoshow);
-  CHECK(bg[0] >= 0.70f && bg[1] >= 0.70f && bg[2] >= 0.75f);
+  CHECK(bg[0] <= 0.10f && bg[1] <= 0.10f && bg[2] <= 0.12f);
 
   // 2. Smooth exponential camera transitions between Overview 3/4, Close Paint, manual orbit, and idle resume.
   carview::HubCamera cam;

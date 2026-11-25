@@ -42,6 +42,7 @@
 #include "freeroam/festival_ai.h"
 #include "game_hud.h"
 #include "garage/pi_calc.h"
+#include "car_list_screen.h"
 #include "hub_menus.h"
 #include "hub_scene.h"
 #include "hud.h"
@@ -555,6 +556,19 @@ struct DriveSession {
   void open_shop_or_autoshow(bool is_autoshow);
   // The original's H_GENERIC option menus (hub_menus.h): MY PROFILE,
   // OPTIONS, the paint booth, the workshop, the photo mode select.
+  // The original's car list (108_C_BUY_CARSELECT) for the Autoshow's car
+  // select and the garage; true while the HUD draws it (its help bar's hit
+  // order differs from the engine's pages).
+  bool car_list_drawn = false;
+  std::map<int, std::string> country_flags;  // List_Country.CountryID -> flag texture key
+  bool country_flags_built = false;
+  const std::string& country_flag(int country_id);
+  // Data_Car.ModelShort ("XKR-S"), the 108 panel's title; empty when the
+  // table has no text for it.
+  std::map<int64_t, std::string> car_models;
+  bool car_models_built = false;
+  std::string car_model(int64_t car_id);
+  void fill_autoshow_list(carview::CarListHud& out);
   carview::HubMenuStack hub_menu;
   bool hub_menu_from_pause = false;  // B on its last list returns to the pause menu
   void open_hub_menu(carview::HubMenu m);

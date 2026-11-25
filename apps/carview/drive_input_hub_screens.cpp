@@ -774,7 +774,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                     if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { autoshow.move(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                     if (k == SDLK_Q || k == SDLK_PAGEUP) { autoshow.page_move_car(-1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                     if (k == SDLK_E || k == SDLK_PAGEDOWN) { autoshow.page_move_car(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                    if (k == SDLK_TAB) { autoshow.toggle_all_cars(app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
+                    if (k == SDLK_TAB || k == SDLK_M) { autoshow.toggle_all_cars(app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                     if (k == SDLK_X || k == SDLK_R) { autoshow.cycle_sort(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                     if (k == SDLK_G) { autoshow.cycle_class_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                     if (k == SDLK_V) { autoshow.cycle_drivetrain_filter(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
@@ -875,6 +875,12 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                       else if (hz.index == 3) toggle_specs_or_cam();
                       else if (hz.index == 4) cycle_cam();
                       else if (hz.index == 5) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
+                    } else if (car_list_drawn) {
+                      // 108's help bar: A SELECT, B BACK, Y TOGGLE, SEARCH.
+                      if (hz.index == 0) confirm_step();
+                      else if (hz.index == 1) { app.audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
+                      else if (hz.index == 2) toggle_specs_or_cam();
+                      else if (hz.index == 3) { autoshow.toggle_all_cars(app.career.credits); app.audio_host.trigger_ui(audio::UiCue::kMove); }
                     } else {
                       if (hz.index == 0) confirm_step();
                       else if (hz.index == 1) { autoshow.cycle_sort(1); app.audio_host.trigger_ui(audio::UiCue::kMove); }
