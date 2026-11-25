@@ -837,15 +837,17 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   // player arrow, and smooth outer edge fade (zero dark backdrop disc!).
   Canvas cv(size, size, {0, 0, 0, 0});
   cv.edge_fade = 0.34f;
-  // Speed-responsive dynamic minimap zoom: pulls higher & further ahead as speed rises.
+  // A fixed camera behind and above the car (the original's does not pull
+  // out with speed): the player's arrow about 100 px down a 180 px panel
+  // (y 520 at 720 lines in 04_roam_hud_day_idle_orig.png), about 160 m
+  // ahead to the top and 45 m behind to the bottom.
   const double map_heading = scene.north_up ? 0.0 : scene.heading;
   const double fx = std::sin(map_heading), fz = std::cos(map_heading);
   const double rx = fz, rz = -fx;  // right of the heading (+X when facing +Z)
-  const double speed_t = std::clamp(std::fabs(scene.speed_mps) / 67.0, 0.0, 1.0);
-  const double kHeight = 108.0 + 88.0 * speed_t;
-  const double kBack = 54.0 + 42.0 * speed_t;
+  constexpr double kHeight = 108.0;
+  constexpr double kBack = 54.0;
   constexpr double kS = 0.70710678118654752;
-  const double focal = size, cxp = size / 2.0, cyp = size / 2.0;
+  const double focal = size * (150.0 / 180.0), cxp = size / 2.0, cyp = size * (50.0 / 180.0);
   struct P {
     double x, y, depth;
   };
@@ -856,7 +858,7 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     if (depth < 1) return P{0, 0, -1};
     return P{cxp + focal * c / depth, cyp - focal * kS * (a - kHeight) / depth, depth};
   };
-  const double reach = 420.0 + 300.0 * speed_t;  // m around the car that can show
+  const double reach = 420.0;  // m around the car that can show
 
   // Rumour circles (sort order 21, under the roads).
   if (scene.data && scene.progress)
@@ -952,21 +954,14 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
         if (roads_[r].style != style) continue;
         const auto& a = roads_[r].points[s];
         const auto& b = roads_[r].points[s + 1];
-        bool driven = true;
-        if (scene.road_discovery && scene.road_discovery->ready() && s + 1 < roads_[r].nodes.size()) {
-          driven = scene.road_discovery->is_node_discovered(roads_[r].nodes[s]) &&
-                   scene.road_discovery->is_node_discovered(roads_[r].nodes[s + 1]);
-        }
-        const Rgba undriven_col = (style == 0)
-                                      ? Rgba{168.0f, 146.0f, 118.0f, 236.0f}
-                                      : Rgba{170.0f, 176.0f, 186.0f, 240.0f};
-        const Rgba driven_col{ls.core.r, ls.core.g, ls.core.b, 252.0f};
-        const Rgba road_col = driven ? driven_col : undriven_col;
-        const float under_a = std::max(222.0f, ls.under.a);
+        // The profile's under-line (line_fade_lr, black at its own alpha)
+        // and line: white roads with a soft edge, every road alike
+        // (04_roam_hud_day_idle_orig.png).
         if (pass == 0) {
-          draw_projected_segment(a[0], a[1], b[0], b[1], road_world_w, 4.4, 4.0, Rgba{12, 14, 18, under_a});
+          draw_projected_segment(a[0], a[1], b[0], b[1], road_world_w, 2.4, 3.0, ls.under);
         } else {
-          draw_projected_segment(a[0], a[1], b[0], b[1], road_world_w, 0.0, 2.6, road_col);
+          draw_projected_segment(a[0], a[1], b[0], b[1], road_world_w, 0.0, 2.0,
+                                 Rgba{ls.core.r, ls.core.g, ls.core.b, 252.0f});
         }
       }
     }
@@ -1060,13 +1055,14 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       }
     }
   }
-  // Free-roam traffic vehicles: compact grey-white car dots on the minimap.
+  // Free-roam traffic: small red dots with a dark rim (the profile's
+  // traffic cell, 04_roam_hud_day_idle_orig.png).
   for (const auto& t : scene.traffic) {
     if (std::hypot(t[0] - scene.x, t[1] - scene.z) > reach) continue;
     const P p = project(t[0], t[1]);
     if (p.depth < 1) continue;
-    cv.line(p.x, p.y, p.x, p.y, 10 * unit + 1.5, Rgba{25, 28, 34, 210});
-    cv.line(p.x, p.y, p.x, p.y, 8 * unit, Rgba{198, 204, 212, 235});
+    cv.line(p.x, p.y, p.x, p.y, 8 * unit + 2.0, Rgba{40, 8, 16, 220});
+    cv.line(p.x, p.y, p.x, p.y, 8 * unit, Rgba{226, 28, 72, 250});
   }
   // Roaming Festival AI racers: distinct Horizon-pink discs with bright rim.
   for (const auto& f : scene.festival_ai) {
@@ -1157,65 +1153,7 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   // No frame (SPEC-UI-LAYOUTS a).
   HudImage img = cv.image();
 
-  // R3-UI-12: Crisp rotating "N" compass rim marker drawn post-edge-fade so it always stays sharp!
-  if (size >= 48) {
-    const auto np = minimap_compass_north_pos(map_heading, size);
-    const double ncx = np[0], ncy = np[1];
-    const double nr = std::max(6.5, 10.5 * unit);
-    auto blend_over = [&](int px, int py, uint8_t cr, uint8_t cg, uint8_t cb, float ca) {
-      if (px < 0 || py < 0 || px >= size || py >= size || ca <= 0.002f) return;
-      uint8_t* dst = &img.rgba[(size_t(py) * size + px) * 4];
-      const float da = dst[3] / 255.0f;
-      const float out_a = ca + da * (1.0f - ca);
-      if (out_a <= 1e-4f) return;
-      const float inv = 1.0f / out_a;
-      dst[0] = uint8_t(std::clamp((cr * ca + dst[0] * da * (1.0f - ca)) * inv + 0.5f, 0.0f, 255.0f));
-      dst[1] = uint8_t(std::clamp((cg * ca + dst[1] * da * (1.0f - ca)) * inv + 0.5f, 0.0f, 255.0f));
-      dst[2] = uint8_t(std::clamp((cb * ca + dst[2] * da * (1.0f - ca)) * inv + 0.5f, 0.0f, 255.0f));
-      dst[3] = uint8_t(std::clamp(out_a * 255.0f + 0.5f, 0.0f, 255.0f));
-    };
-    auto draw_disc = [&](double cx, double cy, double rad, uint8_t cr, uint8_t cg, uint8_t cb, float max_a) {
-      const int x0 = std::max(0, int(std::floor(cx - rad - 1.0)));
-      const int x1 = std::min(size - 1, int(std::ceil(cx + rad + 1.0)));
-      const int y0 = std::max(0, int(std::floor(cy - rad - 1.0)));
-      const int y1 = std::min(size - 1, int(std::ceil(cy + rad + 1.0)));
-      for (int y = y0; y <= y1; ++y) {
-        for (int x = x0; x <= x1; ++x) {
-          const double d = std::hypot((x + 0.5) - cx, (y + 0.5) - cy);
-          if (d >= rad + 0.6) continue;
-          const float cov = float(std::clamp(rad + 0.6 - d, 0.0, 1.0));
-          blend_over(x, y, cr, cg, cb, cov * max_a);
-        }
-      }
-    };
-    auto draw_seg = [&](double ax, double ay, double bx, double by, double w, uint8_t cr, uint8_t cg, uint8_t cb) {
-      const double r = 0.5 * w;
-      const int x0 = std::max(0, int(std::floor(std::min(ax, bx) - r - 1.0)));
-      const int x1 = std::min(size - 1, int(std::ceil(std::max(ax, bx) + r + 1.0)));
-      const double dx = bx - ax, dy = by - ay;
-      const double len2 = dx * dx + dy * dy;
-      const int y0 = std::max(0, int(std::floor(std::min(ay, by) - r - 1.0)));
-      const int y1 = std::min(size - 1, int(std::ceil(std::max(ay, by) + r + 1.0)));
-      for (int y = y0; y <= y1; ++y) {
-        for (int x = x0; x <= x1; ++x) {
-          const double px = (x + 0.5) - ax, py = (y + 0.5) - ay;
-          const double t = len2 > 1e-6 ? std::clamp((px * dx + py * dy) / len2, 0.0, 1.0) : 0.0;
-          const double d = std::hypot(px - t * dx, py - t * dy);
-          if (d >= r + 0.6) continue;
-          const float cov = float(std::clamp(r + 0.6 - d, 0.0, 1.0));
-          blend_over(x, y, cr, cg, cb, cov);
-        }
-      }
-    };
-    draw_disc(ncx, ncy, nr + 1.2, 249, 0, 100, 0.92f);
-    draw_disc(ncx, ncy, nr - 0.5, 16, 18, 24, 0.95f);
-    const double gw = nr * 0.46;
-    const double gh = nr * 0.52;
-    const double sw = std::max(1.35, nr * 0.22);
-    draw_seg(ncx - gw, ncy + gh, ncx - gw, ncy - gh, sw, 255, 255, 255);
-    draw_seg(ncx - gw, ncy - gh, ncx + gw, ncy + gh, sw, 255, 255, 255);
-    draw_seg(ncx + gw, ncy + gh, ncx + gw, ncy - gh, sw, 255, 255, 255);
-  }
+  // No compass: the original's minimap turns with the car and shows no "N".
   return img;
 }
 
@@ -1675,37 +1613,19 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     }
   }
 
-  // Rumour circles (MapProfileFullscreen.xml): translucent warm purple/magenta search zone
-  // with crisp dashed magenta/warm-white rim!
+  // Rumour regions: the profile's barn_find_region ellipse, flat white at
+  // its own alpha with no rim (MapProfileFullscreen.xml).
   if (scene.filter.shows(MapCategory::kBarnFind) && scene.data && scene.progress)
     for (size_t i = 0; i < scene.data->barns.size() && i < scene.progress->barns.size(); ++i) {
       if (scene.progress->barns[i].status != freeroam::kBarnRumour) continue;
       const auto& b = scene.data->barns[i];
       std::vector<std::array<double, 2>> poly;
-      std::vector<std::array<double, 2>> inner_poly;
       poly.reserve(96);
-      inner_poly.reserve(96);
       for (int k = 0; k < 96; ++k) {
         const double t = 2 * kPi * k / 96;
-        const double ct = std::cos(t), st = std::sin(t);
-        poly.push_back(to_screen(b.hint_x + b.hint_rx * ct, b.hint_z + b.hint_rz * st));
-        inner_poly.push_back(to_screen(b.hint_x + b.hint_rx * 0.94 * ct, b.hint_z + b.hint_rz * 0.94 * st));
+        poly.push_back(to_screen(b.hint_x + b.hint_rx * std::cos(t), b.hint_z + b.hint_rz * std::sin(t)));
       }
-      cv.polygon(poly, Rgba{186, 48, 168, 72});
-      for (size_t k = 0; k < poly.size(); ++k) {
-        const auto& p = poly[k];
-        const auto& q = poly[(k + 1) % poly.size()];
-        // Dashed outer rim (2 segments on, 1 off) with dark casing + bright magenta/pink highlight.
-        if (k % 3 != 2) {
-          cv.line(p[0], p[1], q[0], q[1], 4.2, Rgba{38, 10, 34, 185});
-          cv.line(p[0], p[1], q[0], q[1], 2.4, Rgba{244, 96, 226, 238});
-        }
-        if (k % 6 < 2) {
-          const auto& ip = inner_poly[k];
-          const auto& iq = inner_poly[(k + 1) % inner_poly.size()];
-          cv.line(ip[0], ip[1], iq[0], iq[1], 1.3, Rgba{255, 210, 245, 130});
-        }
-      }
+      cv.polygon(poly, full_.region_fill);
     }
 
   // Icons lying flat; profile sizes in internal pixels, growing a little with
