@@ -216,6 +216,9 @@ struct DriveSave {
   // Autoshow, Rally cars only, next), 3 first Autoshow left (the hub's
   // tutorial next), 4 tutorial heard (CSetHasSeenInitialRallyTicket).
   int rally_flow = 0;
+  // The Horizon Rally champion sequence has played (game_rally_race_flow's
+  // CSetHasSeenRallyEndSequence): it plays once.
+  bool rally_end_seen = false;
   std::vector<SavedCarHistory> car_history;
   // Offline Car Club (451_CLUB_SETTINGS: name, 4-char [TAG], shared Club Garage car IDs).
   std::string car_club_name;

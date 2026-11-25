@@ -6,6 +6,7 @@
 // challenges the screens have rows for. With SHIFT_CLUB_SHOT_DIR the screens
 // are drawn to PNGs there (over SHIFT_CLUB_BACKDROP_DIR/<name>.png, the
 // original's captures, when given: the calibration loop).
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +38,7 @@
 #include "hud_scene.h"
 #include "hud_screen.h"
 #include "pause_screen.h"
+#include "rally_hub.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include "ui.h"
@@ -129,6 +131,14 @@ int main() {
       if (garage::is_horizon_rally_car(db, id)) ids.push_back(id);
     check(ids.size() == 5, "five Horizon Rally cars: " + std::to_string(ids.size()));
     for (int64_t id : ids) check(id < 1626 || id > 1635, "twin " + std::to_string(id) + " is no Rally car");
+    // The first Rally Autoshow lists them: all five are on sale at a price
+    // (Autoshow::open drops a car only for its cost or a missing bake).
+    std::vector<cars::DealerCar> dealer;
+    check(db.dealer(dealer, &why), "dealer: " + why);
+    int on_sale = 0;
+    for (const auto& c : dealer)
+      if (std::find(ids.begin(), ids.end(), c.id) != ids.end() && c.base_cost > 0) ++on_sale;
+    check(on_sale == 5, "the five Rally cars are on sale: " + std::to_string(on_sale));
   }
   fh1::StringTables tables;
   check(cars::load_string_tables(inst, tables, &why, "EN"), "EN string tables load");
@@ -143,6 +153,13 @@ int main() {
   check_ref(carview::pause_row_text(PM::kRally, false), "pause row HORIZON RALLY");
   check(carview::text_of(carview::pause_row_text(PM::kClub, false)) == "1000 CLUB", "1000 CLUB row text");
   check(carview::text_of(carview::pause_row_text(PM::kRally, false)) == "HORIZON RALLY", "HORIZON RALLY row text");
+  // The Rally results' titles and headings read rally.str (their fallbacks
+  // are the EN text).
+  for (const auto& r : carview::rally_results_text_refs()) {
+    check_ref(r, "rally results text " + std::string(r.fallback));
+    const std::string t = carview::text_of(r);
+    check(t == r.fallback, std::string(r.id) + " reads " + std::string(r.fallback) + ": " + t);
+  }
   // The achievements' descriptions with their counts in place.
   {
     freeroam::club::ClubMedalStats st;

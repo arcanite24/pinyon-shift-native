@@ -239,6 +239,12 @@ void test_save_fields() {
   drive::DriveSave four, high;
   check(drive::save_from_text(t0 + "rally_flow 4\n", four, &err) && four.rally_flow == 4, "rally_flow 4 loads");
   check(drive::save_from_text(t0 + "rally_flow 7\n", high, &err) && high.rally_flow == 4, "rally_flow clamps to 4");
+  // The champion sequence's once-only flag round trips and is not written unset.
+  check(t0.find("rally_end_seen") == std::string::npos && !back.rally_end_seen, "rally_end_seen unset is not written");
+  drive::DriveSave seen = s, seen_back;
+  seen.rally_end_seen = true;
+  check(drive::save_from_text(drive::save_to_text(seen), seen_back, &err) && seen_back.rally_end_seen,
+        "rally_end_seen round trips");
 }
 
 void test_pause_rows() {

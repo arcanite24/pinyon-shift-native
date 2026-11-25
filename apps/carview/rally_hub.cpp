@@ -417,6 +417,14 @@ void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, flo
 // rally.str's STAGE RESULTS and the common CONTINUE.
 constexpr StringRef kStageResultsTitle{"rally", "IDS_ResultsStageTitle", 0, "STAGE RESULTS"};
 constexpr StringRef kContinue{"", "", 0, "CONTINUE", true};
+// rally.str's results titles and headings (h_post_race_rally_finished).
+constexpr StringRef kRallyResultsTitle{"rally", "IDS_ResultsRallyTitle", 0, "RALLY RESULTS"};
+constexpr StringRef kRallyStandingsTitle{"rally", "IDS_ResultsRallyStandingsTitle", 0, "RALLY STANDINGS"};
+constexpr StringRef kTotalTimeHeading{"rally", "IDS_ResultsHeading_TotalTime", 0, "TOTAL TIME"};
+
+std::vector<StringRef> rally_results_text_refs() {
+  return {kStageResultsTitle, kRallyResultsTitle, kRallyStandingsTitle, kTotalTimeHeading};
+}
 
 void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState& st, float w, float h) {
   if (!st.active) return;
@@ -460,7 +468,7 @@ void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState&
     vl.color = kRallyGold;
     out.text(lx0 + lw * 0.54f, ly0 + 29.0f * u, sp, vl);
 
-    out.text(lx0 + 16.0f * u, ly0 + 66.0f * u, "CUMULATIVE TOTAL", lb);
+    out.text(lx0 + 16.0f * u, ly0 + 66.0f * u, text_of(kTotalTimeHeading), lb);
     vl.color = ui4::kWhite;
     out.text(lx0 + 16.0f * u, ly0 + 83.0f * u, rally_time_str(st.total_time), vl);
 
@@ -530,12 +538,10 @@ void build_rally_championship_results_screen(ui::List& out, const RallyChampResu
 
   // Authentic +3.0 deg tilted H_POST_RACE_RESULTS + H_POST_RACE_CREDITS_BREAKDOWN layout
   // (ZERO 8px/4px rounded kPanelAlt boxes!).
-  const std::string banner_title =
-      st.champion_unlocked ? "HORIZON RALLY CHAMPION!"
-                           : (st.is_heats ? "RALLY HEATS COMPLETE" : "CHAMPIONSHIP RESULTS");
-  const std::string banner_sub =
-      st.champion_unlocked ? (st.title + "  •  GREEN RALLY WRISTBAND AWARDED") : st.title;
-  ui4::title_banner(out, u, f.x(76.0f), f.y(42.0f), banner_title, banner_sub, true, 600.0f);
+  // rally.str's RALLY RESULTS over the event's name (heats and
+  // championships alike). interim (SPEC_QUESTIONS Q147): the layout is the
+  // engine's, not h_post_race_rally_finished / h_post_race_rally_points.
+  ui4::title_banner(out, u, f.x(76.0f), f.y(42.0f), text_of(kRallyResultsTitle), st.title, true, 600.0f);
 
   ui4::TiltScope tilt(out, f.x(640.0f), f.y(380.0f), ui4::kTiltRad);
 
@@ -549,7 +555,7 @@ void build_rally_championship_results_screen(ui::List& out, const RallyChampResu
   out.text(lx0 + 16.0f * u, ly0 + 12.0f * u, pbuf, ui4::style(ui::Font::kE, 32.0f * u, kWhite));
 
   ui4::pill(out, lx0, ly0 + 70.0f * u, lx0 + lw, ly0 + 102.0f * u, ui4::kPillGrey, ui4::PillKind::kHud01);
-  out.text(lx0 + 14.0f * u, ly0 + 78.0f * u, "TOTAL TIME  " + rally_time_str(st.total_time),
+  out.text(lx0 + 14.0f * u, ly0 + 78.0f * u, text_of(kTotalTimeHeading) + "  " + rally_time_str(st.total_time),
            ui4::style(ui::Font::kB, 15.0f * u, kWhite));
   out.text(lx0 + lw - 14.0f * u, ly0 + 78.0f * u, rally_gap_str(st.gap_to_leader),
            ui4::style(ui::Font::kE, 14.0f * u, kRallyCyan, ui::Align::kRight));
@@ -592,6 +598,7 @@ void build_rally_championship_results_screen(ui::List& out, const RallyChampResu
   // Right: H_POST_RACE_RESULTS tilted standings table (PILL03 rows, off-white header, pink highlight).
   const float rx0 = lx0 + lw + 26.0f * u;
   const float rx1 = f.x(1206.0f);
+  out.text(rx0, ly0 - 24.0f * u, text_of(kRallyStandingsTitle), ui4::style(ui::Font::kE, 16.0f * u, kWhite));
   ui4::offwhite_strip(out, rx0, ly0, rx1, ly0 + 28.0f * u, u, false);
   {
     ui::TextStyle ch = ui4::style(ui::Font::kD, 12.5f * u, ui4::kInk);
@@ -641,13 +648,12 @@ void build_rally_championship_results_screen(ui::List& out, const RallyChampResu
     out.rect(lx0 - 12.0f * u, cy1 - 4.0f * u, rx1 + 8.0f * u, cy1, kRallyGold);
     out.text(f.x(640.0f), cy0 + 9.0f * u, "HORIZON RALLY CHAMPION!",
              ui4::style(ui::Font::kE, 22.0f * u, ui4::kYellow, ui::Align::kCenter, true));
-    out.text(f.x(640.0f), cy0 + 34.0f * u,
-             "GREEN RALLY WRISTBAND EARNED  •  COLORADO DIRT CONQUERED",
+    out.text(f.x(640.0f), cy0 + 34.0f * u, st.wristband_name,
              ui4::style(ui::Font::kB, 12.5f * u, kWhite, ui::Align::kCenter));
   }
 
   out.unturn();
-  ui4::button_bar(out, {{"A", "CONTINUE"}}, w, h);
+  ui4::button_bar(out, {{"A", text_of(kContinue)}}, w, h);
 }
 
 RallyHubState make_rally_hub_state(const race::RallyCatalog& catalog, const drive::DriveSave& save,

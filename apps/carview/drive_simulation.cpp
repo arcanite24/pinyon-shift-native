@@ -1115,6 +1115,15 @@ bool DriveSession::step(const drive::Input& user_in) {
               }
             }
             app.rally_results_state = carview::make_rally_results_state(app.rally_catalog, app.rally_session, rew, app.saved.credits);
+            // The champion sequence plays once (CSetHasSeenRallyEndSequence),
+            // with Alice's champion line (CPlayRallyChampionDialogue; the
+            // trigger is inferred, Q147).
+            if (rew.champion_unlocked && !app.saved.rally_end_seen) {
+              app.saved.rally_end_seen = true;
+              app.audio_host.trigger_vo("HorizonRallyChampion", false);
+            } else {
+              app.rally_results_state.champion_unlocked = false;
+            }
             app.rally_results_open = true;
             save_due = true;
           } else {
