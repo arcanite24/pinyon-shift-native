@@ -2396,9 +2396,11 @@ Still interim:
   function is not decoded.
 - **Low-speed blend.** The blend's car-side gate (a body flag) is taken
   as always on.
-- **Smashables.** Props below their break speed still use the engine's
-  own OBB push (smashables.cpp), not this solver with the Smashable/Car
-  row.
+- **Smashables.** Props below their break speed now add body-sphere
+  contacts to this solver with the Smashable/Car row (and solid barriers
+  with Car/GuardRail; `SmashableWorld::add_sphere_contacts`); the old OBB
+  push is no longer called. Their shapes are the props' own spheres,
+  boxes and hulls, or the bounding box when a def has none.
 
 Needed: the wheel query's treatment of steep faces and steps, the friction
 noise function, and the contact chain's tick.
@@ -2721,8 +2723,9 @@ GlobalRegistry `Activities/BarnFinds`. Five points are still open:
 - **Dialogue.** The pending timer pauses while dialogue plays. The engine does
   not track dialogue, so its timer never pauses for it.
 - **Collection.** The title collects a ready car on its garage Barn Finds
-  screen, with a COLLECT CAR confirmation. The engine collects it when the
-  garage opens. UI.zip has no Barn Finds scene: its only barn scene is
+  screen, with a COLLECT CAR confirmation. So does the engine now (Q133:
+  the Barn Finds list on `108_C_BUY_CARSELECT` and its popups); it no
+  longer collects when the garage opens. UI.zip has no Barn Finds scene: its only barn scene is
   `H_BARN_FIND_HUD`, the driving HUD's. The screen is therefore probably a
   garage car list with Barnfind's popups:
   - `IDS_Collect_Popup_Title` / `_Message`: "COLLECT CAR", "This Barn Find
@@ -2734,10 +2737,7 @@ GlobalRegistry `Activities/BarnFinds`. Five points are still open:
   - `IDS_Trade_BarnFind_*`: "CAN'T SELL BARN FIND".
   - `IDS_ViewMapAction`: "VIEW ON MAP".
 
-  Porting it means the garage list's Barn Finds filter, its entries for
-  every barn state, and those popups on a message-popup scene. That is the
-  garage screen's work, not a scene of its own, and it is left for the
-  garage screen's port.
+  The engine's port of that list is Q133's.
 
 Needed: what the two predicates test, the timer behind the idle check, and
 the value behind the ready check.
@@ -2867,16 +2867,6 @@ showcase events that own them is not known.
 Needed: the placement source for these `.pgeo` objects (a track object
 list or the showcase event scripts), and a free-roam capture of the
 festival and a showcase start in the original.
-
-runs the world clock that the gantry LEDs read from the race clock, but
-its gantry panels stay dark at the FR16 start (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
-and textured, and the shipped shaders carry the LED branch, so the
-cause lies past that (the texture or the draw's intensity) and is not
-found), so until they light it fills
-`TEXT_COUNT` with 3, 2, 1 at every start as an interim. Unknown: whether a start with no gantry (a street race, a
-point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
-Needed, narrow: a capture of such a start, or the code that writes
-`TEXT_COUNT`.
 
 ## Q87 (UI, not blocking): the pause map's view
 
@@ -3156,9 +3146,6 @@ ColoradoDirt block (22 cameras, 9 zones).
 Needed: whether the original keeps Rally-world speed records apart from
 Colorado's (and shows them on separate scoreboards), and where
 ColoradoDirt's gates come from if not Colorado's GameObjs.
-
-Needed: which of these screens the title draws, what text each one shows,
-and whether the UI changes the case.
 
 ## Q128 (UI, not blocking): the car list's photo and tile renders
 

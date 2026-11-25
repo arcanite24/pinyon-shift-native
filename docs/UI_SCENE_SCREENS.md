@@ -167,8 +167,8 @@ caller then draws the old hand-drawn block.
   before the signal at 0:05) and stays past the count elsewhere
   (`drive_world_sync.cpp`), so it jumps at race entry and exit (water,
   flags and crowds jump with it; not checked whether a transition hides it).
-  The gantry panels stay dark either way (see the interims), so this has no
-  visible effect on the count yet.
+  The gantry panels light (Q74; only the FR16 gantry is checked), so the
+  jump shows on their LEDs.
 - **Toggles.** The HUD options (`HudToggles`: lap time and position, wrong
   way warning, names over cars, popularity and skills) are settings rows
   named from `InGame/IDS_HudOption_*` and reach the HUD through
@@ -526,8 +526,11 @@ The HORIZON RALLY pause row opens `draw_rally_entry_popup` on
 `H_MESSAGE_POPUP`: the yellow-wristband gate (`rally/IDS_FirstTimeCareerError`)
 or the quit-to-Rally confirmation (`rally/IDS_QuitHorizonToRally`, A OK,
 B CANCEL). The first OK plays `Forza_Tone_Rally` and saves `rally_flow`,
-then switches worlds. The intro race, first Autoshow and hub tutorial are
-not run yet (Q145).
+then switches worlds. On that first visit the intro race (RALLY_HEATS in its
+loaner) runs before any hub, and its end plays the qualification and
+ToTheAutoshow VO and opens the first Autoshow, then the hub tutorial
+(`drive_app.cpp`, `drive_input_hub_screens.cpp`; Q145 has the flow and its
+interims).
 
 ## The hub's menus and car lists
 
