@@ -907,7 +907,7 @@ void draw(ui::List& l, const race::CampaignFlow& flow, const DrawContext& ctx) {
     draw_reward_tally(l, flow.reward_tally(), ctx.screen_w, ctx.screen_h);
   } else if (flow.is_cinematic_active()) {
     draw_cinematic_overlay(l, flow, ctx);
-  } else {
+  } else if (!ctx.race_screens) {
     draw_objective_tracker(l, flow, ctx);
   }
   DrawContext dctx = ctx;
@@ -916,7 +916,7 @@ void draw(ui::List& l, const race::CampaignFlow& flow, const DrawContext& ctx) {
     dctx.suppress_callin = true;
     dctx.suppress_subtitle = true;
   }
-  draw_dialog_and_subtitles(l, flow.dialogs(), dctx);
+  if (!ctx.race_screens) draw_dialog_and_subtitles(l, flow.dialogs(), dctx);
   draw_transition(l, flow.transition(), ctx.screen_w, ctx.screen_h);
 }
 

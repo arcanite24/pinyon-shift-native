@@ -167,6 +167,10 @@ void DriveSession::update_race_screens(double dt) {
       entry_screens.screen() == S::kEntryFade ? std::clamp(entry_screens.elapsed() / race_flow::timing::kEntryFade, 0.0, 1.0)
                                               : 0.0;
 
+  // base_festival_race_flow.xml speaks (radiodj.post_race) before the
+  // results, then nothing over the rewards: the campaign's post-race call-in
+  // waits from the finish until free roam.
+  app.campaign.flow().dialogs().set_held(app.race && !app.headless && app.race->player_finished());
   if (!app.race || app.headless) {
     race_screens.stop();
     // Headless runs have no screens to step through: the campaign's outro

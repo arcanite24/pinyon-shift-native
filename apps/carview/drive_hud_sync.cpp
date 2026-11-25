@@ -942,6 +942,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           cctx.skip_vo_with_a = app.skip_vo_with_a;
           cctx.metric_units = app.metric_units;
           cctx.catalog = app.have_career_catalog ? &app.career_catalog : nullptr;
+          cctx.race_screens = race_screens.active() || entry_screens.active();
           // Headless runs do not step the career: its screens and fades would
           // stay frozen over every frame, so they are left out there.
           if (app.campaign.ftc_active()) {
