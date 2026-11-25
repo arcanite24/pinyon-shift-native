@@ -125,6 +125,7 @@ add_library(carview_hud STATIC
   hud_scene.cpp
   hud_screen.cpp
   pause_screen.cpp
+  race_flow.cpp
   rally_hub.cpp
   scene_screen.cpp)
 set_target_properties(carview_hud PROPERTIES POSITION_INDEPENDENT_CODE ON)

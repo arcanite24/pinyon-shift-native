@@ -197,6 +197,11 @@ add_executable(ui_tests ui_tests.cpp ../apps/carview/ui.cpp ../apps/carview/ui4_
 target_include_directories(ui_tests PRIVATE ../apps/carview)
 target_link_libraries(ui_tests PRIVATE carview_hud shift_stb fh1data shift_race shift_garage shift_freeroam)
 add_test(NAME ui_tests COMMAND ui_tests)
+
+add_executable(race_flow_tests race_flow_tests.cpp)
+target_include_directories(race_flow_tests PRIVATE ../apps/carview)
+target_link_libraries(race_flow_tests PRIVATE carview_hud)
+add_test(NAME race_flow_tests COMMAND race_flow_tests)
 # Slice 11: render scale / HUD / HDR / upscaler fallbacks / .cube reader / frame stats (no Vulkan).
 add_executable(render_modern_tests render_modern_tests.cpp ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp
                ../apps/carview/perf_overlay.cpp ../apps/carview/frame_inspector.cpp
