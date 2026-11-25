@@ -2943,6 +2943,8 @@ selected (`map_popup_event_details_back_orig.png`). Unknown: whether A on
 the ticket starts the event or sets a route. Needed, narrow: a capture of
 A on the ticket.
 
+The ticket is now drawn over the map; Q151 holds what is still open.
+
 ## Q136 (BOOT-01, BOOT-06, not blocking): skipping the boot splashes and the attract loop
 
 The engine boots with the original's two splashes (`T10_MS_Combined`,
@@ -2955,6 +2957,8 @@ uses it is not known.
 
 Needed: a recorded boot with inputs during each splash, and one attract
 cycle with an input partway through.
+
+The hold-to-skip is gone: a press skips (Q155).
 
 ## Q137 (BOOT-04, not blocking): the profile step after Press Start
 
@@ -3439,3 +3443,45 @@ DLC filter; and the Rally ticket's trigger radius and speed.
 
 Needed: `CTriggerRallyEventUnlocks`, `CIsRallyXPEvent` and the Rally
 reward path in the generated v4 code.
+
+## Q151 (MAP-01, not blocking): A on the map's event ticket, and a hub's details
+
+X DETAILS on an event marker now draws the event's `H_EVENT_SUMMARY`
+ticket over the map with A SET ROUTE, B BACK and Y RESTRICTIONS
+(`map_popup_event_details_orig.png`; Q92). The help bar's A reads SET
+ROUTE, so the engine sets a route to the event and closes the ticket,
+staying on the map. Not recorded: whether the original then closes the map
+or stays, and whether A on a ticket can start the event from the map. X on
+a street-race hub has no capture; the engine opens its events page at the
+hub. The ticket's `PlayerBar` is hidden over the map (the map has its
+own).
+
+Needed: a capture after A on an event's ticket, and one of X on a
+street-race hub.
+
+## Q155 (INTRO-13, VIS-03, not blocking): what skips a movie
+
+The boot splashes skip on a B tap in the recorded title steps, and the
+story movies (`FMV_01`, `FMV_02`, `FMV_04`, `car_challenges_intro`,
+`Forza_Tone_Rally`) carry `confirmskip="true"`, with no help bar over the
+picture (`00_opening_movie_orig.png`). The engine now skips any movie on a
+press of A, B, Enter, Space or Esc (and Start or Tab in the campaign), and
+never on a button held from before the movie. What `confirmskip` confirms
+is not decoded: a second press, a popup, or nothing on PC. The engine's
+in-engine cinematics (the campaign's own scenes, not movies) keep their
+0.75 s hold, because Q61 (g) records that the original's in-engine
+cutscenes cannot be skipped at all.
+
+Needed: the `confirmskip` handling in the generated movie player, or a
+capture of one press on `FMV_01`.
+
+## Q156 (VIS-09, not blocking): the car name tag's look
+
+Measured on one night frame (`30_skill_toast_orig.png`, BISHOP): white
+`horizon_b` capitals 18 px high, a dark pill at about 38% black (33, 33,
+33, a=96 over the scene) 30 px high with 10 px and 12 px side pads, and a
+16 x 6 px notch under its centre. No PI badge or leader star shows. Not
+recorded: the tag by day, its fade with distance, whether a leader or a
+rival gets a different tag, and the scene or texture it comes from.
+
+Needed: a daytime race capture with several tags at different distances.

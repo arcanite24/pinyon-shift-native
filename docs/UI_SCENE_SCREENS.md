@@ -172,7 +172,15 @@ caller then draws the old hand-drawn block.
 - **Toggles.** The HUD options (`HudToggles`: lap time and position, wrong
   way warning, names over cars, popularity and skills) are settings rows
   named from `InGame/IDS_HudOption_*` and reach the HUD through
-  `DriveSession::live_hud` and `DriveHud::hud`.
+  `DriveSession::live_hud` and `DriveHud::hud`. Two engine extras ride the
+  same path, off by default: the tracked achievement card and BARN FIND
+  RADAR (`--hud-barn-radar`), the engine's proximity pill over the minimap
+  inside a barn rumour; the original marks a rumour on the maps only.
+- **Name tags.** A car's name is white `horizon_b` capitals 18 px high on a
+  faint dark pill (`kNameTagPill`) with a small notch under it, about 97 px
+  wide for BISHOP (`30_skill_toast_orig.png`); no PI badge, accent or
+  leader star. The pill's colour and the notch are measured on one night
+  frame (Q156).
 - **Calibration.** `scene_screen_tests` renders `build_drive_hud` over the
   original captures (`SHIFT_SCENE_SCREEN_HUD_DIR`, the captures folder) or
   the oracles (`SHIFT_SCENE_SCREEN_ORACLE`) into
@@ -319,9 +327,14 @@ destinations, and an outpost must be discovered (Q90).
   white line over its soft under-line, with no driven tint, and traffic and
   the Festival's drivers are the profile's vehicle icon. The original's wide
   fading ribbon on the player's own road is not drawn.
-- **Map details.** X DETAILS on an event or hub opens the engine's events
-  page at that hub; the original shows the event's ticket over the map
-  (`map_popup_event_details_orig.png`, Q92). A speed trap has no X
+- **Map details.** X DETAILS on an event draws its `H_EVENT_SUMMARY`
+  ticket over the map (`draw_event_ticket`, the entry screen's binding,
+  with the scene's `PlayerBar` hidden), the map's popup and cursor hidden,
+  and A SET ROUTE, B BACK, Y RESTRICTIONS in the help bar
+  (`map_popup_event_details_orig.png`). B backs out of the restrictions,
+  then the ticket. A sets a route to the event and returns to the map, and
+  X on a street-race hub still opens the engine's events page at the hub
+  (Q151). A speed trap has no X
   LEADERBOARD (the engine has no leaderboards). The selected event's course
   outline (pink, `map_popup_event_details_back_orig.png`) is not drawn. The
   original zooms out about a sixth past its opening scale
@@ -399,6 +412,13 @@ The boot plays the original's two splashes, `T10_MS_Combined` then
 `Dolby_Corona_Intro` (`kBootSplashes`), then the title over the looping
 `PressStart.wmv`. After 53 s idle on Press Start the original replays
 `forza_intro.wmv` (`kAttractMovie`) and comes back to Press Start.
+
+A movie skips on a press, with no prompt over it
+(`00_opening_movie_orig.png`): the boot splashes and the attract movie the
+frame A, B, Enter, Space or Esc goes down (`movie_skip_press`, never a
+button held from before the movie), the campaign's movies on the same
+press or Start or Tab. The engine's in-engine cinematics keep their 0.75 s
+hold (Q155).
 
 - **Press Start.** `120_P_PRE_SPLASH`'s `Content` group (the logo and
   `TitleTapeText` reading PRESS START) moved by one measured offset
