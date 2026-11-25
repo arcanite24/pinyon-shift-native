@@ -944,7 +944,7 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     carview::build_drive_hud(l, d, float(W), float(H));
     save_frame("ui4_career_events.png", l, load_or_build_backdrop(world_bg_path));
 
-    // Also verify Rally Hub H_STREET_RACE_HUB tilted ticket cards emit cleanly.
+    // The Rally hub draws on H_RALLY_HUB (the title update's scene) or not at all.
     carview::RallyHubState rhs;
     rhs.active = true;
     rhs.car_name = "SUB_IMPREZA22B_98";
@@ -959,10 +959,11 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
         {carview::RallyHubItem::kChampionship, 2, "RED ROCK DIRT CHALLENGE", "A", "NEW", true, true, "", 35000, 4, {"Stage 1", "Stage 2"}},
         {carview::RallyHubItem::kChampionship, 3, "CLEAR SPRINGS FINALE", "S", "READY", true, true, "", 55000, 4, {"Stage 1", "Stage 2"}},
     };
+    rhs.tickets = int(rhs.items.size());
     carview::ui::List lsrh;
-    carview::build_rally_hub_screen(lsrh, rhs, float(W), float(H));
-    check(lsrh.items().size() > 25, "Rally Hub H_STREET_RACE_HUB emits tilted FH1 ticket cards");
-    save_frame("ui4_events_preview.png", lsrh, load_or_build_backdrop(world_bg_path));
+    const bool rhs_drawn = carview::build_rally_hub_screen(lsrh, &d, rhs, float(W), float(H));
+    check(rhs_drawn ? lsrh.items().size() > 25 : lsrh.items().empty(), "Rally Hub draws H_RALLY_HUB or nothing");
+    if (rhs_drawn) save_frame("ui4_events_preview.png", lsrh, load_or_build_backdrop(world_bg_path));
   }
 
   // 11. ui4_achievements_settings.png — Authentic FH1/Pinyon Shift F7 Achievements + Tabbed Settings & Photo/Replay
@@ -1919,10 +1920,12 @@ void test_round2_hud_minimap_gps_and_mouse_ux() {
   carview::RallyHubState rhub;
   rhub.active = true;
   rhub.items.resize(4);
-  for (int i = 0; i < 4; ++i) rhub.items[size_t(i)].title = "RALLY " + std::to_string(i + 1);
+  for (int i = 0; i < 4; ++i) rhub.items[size_t(i)].kind = carview::RallyHubItem::kFreeRoam;
+  rhub.extras_open = true;
   carview::ui::List l_rhub, l_rsvc;
-  carview::build_rally_hub_screen(l_rhub, rhub, 1280.0f, 720.0f);
-  check(count_group(l_rhub, carview::ui::kHitRow) == 4, "Rally Hub emits ticket card hit zones");
+  // The engine's EXTRAS list: one hit row each (when the scene is there).
+  if (carview::build_rally_hub_screen(l_rhub, nullptr, rhub, 1280.0f, 720.0f))
+    check(count_group(l_rhub, carview::ui::kHitRow) == 4, "Rally Hub EXTRAS emit row hit zones");
   carview::RallyServiceAreaState rsvc;
   rsvc.active = true;
   carview::build_rally_service_area_screen(l_rsvc, rsvc, 1280.0f, 720.0f);

@@ -129,6 +129,9 @@ struct DriveApp : DriveConfig {
   FmvPlayer fmv_player;
   FmvPlayer title_video;
   bool title_video_tried = false;
+  // The Rally hub's backdrop (CShowBackgroundMovie: Splash_Intros/BgLoop.wmv).
+  FmvPlayer rally_bg_video;
+  bool rally_bg_tried = false;
   StoryIntro story_intro;
   CampaignDirector campaign;
   bool campaign_new_career_pending = false;
@@ -270,7 +273,15 @@ struct DriveApp : DriveConfig {
   bool rally_catalog_tried = false;
   race::RallyChampionshipSession rally_session;
   bool rally_hub_open = false;
-  int rally_hub_selected = 0;
+  int rally_hub_selected = 0;         // the focused ticket
+  bool rally_hub_track_layout = false; // Y: the ticket's reverse
+  bool rally_hub_extras = false;       // the engine's EXTRAS list
+  int rally_hub_extra_selected = 0;
+  // first_time_hub_flow: 1 ChampionshipStructure, 2 the half second, 3
+  // CoDriverIntro (each VO waited for); the help bar is off meanwhile.
+  int rally_hub_tutorial = 0;
+  double rally_hub_tutorial_t = 0.0;
+  bool rally_hub_tutorial_vo_seen = false;
   bool rally_service_open = false;
   bool rally_service_return = false;
   bool rally_service_resume_after_reload = false;

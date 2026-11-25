@@ -1105,9 +1105,11 @@ bool DriveSession::activate_world_trigger() {
               }
             }
             if (best_idx >= 0) {
-              // Rally Hub index 0 is RALLY_HEATS; indices 1..7 map directly to catalog.championships.
+              // The hub focuses that championship's ticket (an engine extra:
+              // the original has no ColoradoDirt free roam).
               app.rally_hub_open = true;
-              app.rally_hub_selected = best_idx + 1;
+              app.rally_hub_selected = carview::rally_hub_ticket_index(
+                  app.rally_catalog, app.saved, app.rally_catalog.championships[size_t(best_idx)].event_id);
               app.rally_notice = app.rally_catalog.championships[size_t(best_idx)].name;
               app.audio_host.trigger_ui(audio::UiCue::kAccept);
               return true;

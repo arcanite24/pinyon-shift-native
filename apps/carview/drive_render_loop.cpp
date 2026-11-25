@@ -500,6 +500,20 @@ void DriveSession::run_window_loop() {
           } else if (app.title_video.active()) {
             app.title_video.close();
           }
+          // The Rally hub plays BgLoop.wmv behind it, looped (game_rally_free_roam_flow's
+          // show_bg_movie); the world and the car are not shown.
+          if (app.rally_hub_open && !app.show_title && !app.headless) {
+            if (!app.rally_bg_tried) {
+              app.rally_bg_tried = true;
+              const auto mp = carview::FmvPlayer::resolve_movie(app.game_root_of(), carview::FmvMovieId::kRallyBgLoop,
+                                                                app.state_root);
+              if (!mp.empty()) app.rally_bg_video.open(mp, app.language, 1280, 720, nullptr, true);
+            }
+            if (app.rally_bg_video.active()) app.rally_bg_video.update(frame_dt, false);
+          } else {
+            if (app.rally_bg_video.active()) app.rally_bg_video.close();
+            app.rally_bg_tried = false;
+          }
           if (pending_title_resume_gather) {
             if (host.streamer) {
               std::string rerr;
@@ -598,13 +612,36 @@ void DriveSession::run_window_loop() {
             // structure and the co-driver's introduction, then the ticket is
             // marked seen and saved. A profile that drove the heats before
             // this flow existed comes here straight from the video's step.
+            // The help bar is off from the first VO to the end of the second
+            // (CDisableRallyRaceSelectHelpBar); each CTriggerVO waits for its
+            // line, with a half second between them (Q145).
             if (app.rally_hub_open && !app.race && app.saved.rally_flow >= 1 && app.saved.rally_flow < 4 &&
                 !app.rally_first_autoshow_pending && !app.rally_first_autoshow_open &&
-                race::is_rally_heats_completed(app.saved)) {
+                race::is_rally_heats_completed(app.saved) && app.rally_hub_tutorial == 0) {
+              app.rally_hub_tutorial = 1;
+              app.rally_hub_tutorial_t = 0.0;
+              app.rally_hub_tutorial_vo_seen = false;
               app.audio_host.trigger_vo("ChampionshipStructure", false);
-              app.audio_host.trigger_vo("CoDriverIntro", false);
-              app.saved.rally_flow = 4;
-              save_now("rally hub");
+            }
+            if (app.rally_hub_tutorial != 0) {
+              app.rally_hub_tutorial_t += frame_dt;
+              const bool vo = app.audio_host.telemetry().vo_playing;
+              if (vo) app.rally_hub_tutorial_vo_seen = true;
+              // A line that never starts (no VO bank) is waited for 2 s.
+              const bool vo_done = app.rally_hub_tutorial_vo_seen ? !vo : app.rally_hub_tutorial_t > 2.0;
+              if (app.rally_hub_tutorial == 1 && vo_done) {
+                app.rally_hub_tutorial = 2;
+                app.rally_hub_tutorial_t = 0.0;
+              } else if (app.rally_hub_tutorial == 2 && app.rally_hub_tutorial_t >= 0.5) {
+                app.rally_hub_tutorial = 3;
+                app.rally_hub_tutorial_t = 0.0;
+                app.rally_hub_tutorial_vo_seen = false;
+                app.audio_host.trigger_vo("CoDriverIntro", false);
+              } else if (app.rally_hub_tutorial == 3 && vo_done) {
+                app.rally_hub_tutorial = 0;
+                app.saved.rally_flow = 4;
+                save_now("rally hub");
+              }
             }
             // Barn finds are restored over a driven distance (freeroam::FreeRoam
             // emits kBarnReady); no timer here.

@@ -981,7 +981,8 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     return;
   }
   if (st.rally_hub && st.rally_hub->active) {
-    build_rally_hub_screen(l, *st.rally_hub, w, h);
+    // H_RALLY_HUB over BgLoop.wmv (drawn first by the drive); black without it.
+    if (!build_rally_hub_screen(l, &st, *st.rally_hub, w, h)) l.rect(0, 0, w, h, ui::rgba(0, 0, 0));
     return;
   }
   if (st.rally_service && st.rally_service->active) {

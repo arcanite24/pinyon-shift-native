@@ -598,6 +598,15 @@ void DriveSession::rally_entry_press(bool accept) {
           return;
         }
         app.audio_host.trigger_ui(audio::UiCue::kAccept);
+        if (p == RallyEntryPopup::kQuit) {
+          // The original unloads to the title (CUnloadToPreGame splash);
+          // the engine goes back to the festival instead (Q211).
+          app.rally_hub_open = false;
+          app.rally_hub_track_layout = false;
+          app.rally_world_switch = -1;
+          running = false;
+          return;
+        }
         // The first entry plays Forza_Tone_Rally before the switch; the
         // switch then runs the intro race, the first Autoshow and the hub's
         // tutorial (DriveSave::rally_flow; Q145).

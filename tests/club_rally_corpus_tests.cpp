@@ -8,6 +8,7 @@
 // original's captures, when given: the calibration loop).
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -116,6 +117,17 @@ int main() {
       check(n >= 0, std::string(scene) + ": node " + p);
     }
   }
+  // The Rally hub's scene (CShowUIScreen_RallyHub).
+  {
+    const carview::SceneDraw sd(carview::ui_scene("H_RALLY_HUB"));
+    check(sd.ok(), "H_RALLY_HUB loads");
+    if (sd.ok())
+      for (const char* p : carview::rally_hub_nodes()) {
+        const std::string_view path(p);
+        const int n = path.find('/') != std::string_view::npos ? sd.find_path(path) : sd.find(path);
+        check(n >= 0, std::string("H_RALLY_HUB: node ") + p);
+      }
+  }
 
   // 2. The strings (disc, v4 and the packages, EN).
   cars::Install inst;
@@ -169,6 +181,39 @@ int main() {
     check_ref(r, "rally results text " + std::string(r.fallback));
     const std::string t = carview::text_of(r);
     check(t == r.fallback, std::string(r.id) + " reads " + std::string(r.fallback) + ": " + t);
+  }
+  // The Rally hub's strings, and its tickets: the seven championships'
+  // EventTicket (RallyTickets/001..007) and restriction text.
+  for (const auto& r : carview::rally_hub_text_refs()) {
+    check_ref(r, "rally hub text " + std::string(r.fallback));
+    check(carview::text_of(r) == r.fallback, std::string("rally hub text reads ") + std::string(r.fallback));
+  }
+  for (const auto& r : {carview::rally_text::kQuitTitle, carview::rally_text::kQuitMsg}) {
+    check_ref(r, "rally quit text");
+    check(carview::text_of(r) == r.fallback, "rally quit text reads " + std::string(r.fallback));
+  }
+  race::RallyCatalog rally_cat;
+  {
+    std::string rerr;
+    check(race::load_rally_catalog(state_root, nullptr, &tables, rally_cat, &rerr), "rally catalog: " + rerr);
+    std::set<std::string> ticket_set;
+    // Found: the championships' RestrictionDescription ids resolve in no
+    // table (the hub's reverse uses the class line; Q211).
+    for (const auto& ch : rally_cat.championships) {
+      ticket_set.insert(ch.event_ticket);
+      check(ch.restriction.rfind("_&", 0) != 0, ch.name + ": no raw restriction id");
+    }
+    check(rally_cat.championships.size() == 7 && ticket_set.size() == 7 && ticket_set.count("001") &&
+              ticket_set.count("007"),
+          "the seven championships have tickets 001..007");
+    const std::filesystem::path pkg = rally_cat.package_dir / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "UI" /
+                                      "Textures" / "Horizon" / "EventTickets" / "RallyTickets";
+    std::error_code ec;
+    for (const auto& t : ticket_set)
+      check(std::filesystem::is_regular_file(pkg / (t + ".xds"), ec) &&
+                std::filesystem::is_regular_file(pkg / "Reverse" / (t + ".xds"), ec) &&
+                std::filesystem::is_regular_file(pkg / "Tracks" / (t + ".xds"), ec),
+            "ticket " + t + ": front, reverse and track in the package");
   }
   // The achievements' descriptions with their counts in place.
   {
@@ -382,6 +427,71 @@ int main() {
       const auto path = out_dir / (std::string(name) + ".png");
       check(stbi_write_png(path.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0,
             std::string("write ") + name);
+    }
+    // The Rally hub on H_RALLY_HUB: the seven tickets (the first won), its
+    // track layout, the engine's EXTRAS and the quit popup.
+    {
+      carview::RallyHubState hs;
+      hs.active = true;
+      for (const auto& ch : rally_cat.championships) {
+        carview::RallyHubItem it;
+        it.kind = carview::RallyHubItem::kChampionship;
+        it.event_id = ch.event_id;
+        it.title = ch.name;
+        it.class_badge = race::rally_class_name(ch.target_class);
+        it.cash_prize = ch.cash_prize;
+        it.ticket = ch.event_ticket;
+        it.restriction = "Car Class must be " + it.class_badge + " or below.";
+        hs.items.push_back(it);
+      }
+      if (!hs.items.empty()) hs.items[0].best_place = 1;
+      hs.tickets = int(hs.items.size());
+      for (auto k : {carview::RallyHubItem::kHeats, carview::RallyHubItem::kFitRallyKit,
+                     carview::RallyHubItem::kFreeRoam, carview::RallyHubItem::kReturnColorado}) {
+        carview::RallyHubItem it;
+        it.kind = k;
+        it.eligible = k != carview::RallyHubItem::kFitRallyKit;
+        hs.items.push_back(it);
+      }
+      hs.selected = 1;
+      hs.rally_xp = 120;
+      hs.next_level_xp = rally_cat.next_wristband_xp(0);
+      hs.wristband_name = rally_cat.wristband_name(0);
+      if (rally_cat.wristbands.size() > 1) hs.band_next = rally_cat.wristbands[1].name;
+      if (!rally_cat.wristbands.empty()) {
+        std::string th = rally_cat.wristbands[0].thumbnail;
+        for (char& c : th) c = char(std::toupper(static_cast<unsigned char>(c)));
+        hs.band_texture = "WRISTBANDS/" + th;
+      }
+      hs.credits = 167700;
+      carview::DriveHud rd = d;
+      rd.car_name = "Subaru Impreza WRX STi";
+      rd.car_class = "B";
+      rd.car_pi = 500;
+      auto hub_shot = [&](const std::string& name, const carview::RallyHubState& s, carview::RallyEntryPopup p) {
+        carview::ui::List l;
+        check(carview::build_rally_hub_screen(l, &rd, s, float(W), float(H)), "draws " + name);
+        if (p != carview::RallyEntryPopup::kNone) carview::draw_rally_entry_popup(l, p, float(W), float(H));
+        std::vector<uint8_t> fb = backdrop(name);
+        carview::ui::rasterize(l.items(), fb, W, H);
+        const auto path = out_dir / (name + ".png");
+        check(stbi_write_png(path.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + name);
+      };
+      hub_shot("rally_hub_wp5", hs, carview::RallyEntryPopup::kNone);
+      carview::RallyHubState tl = hs;
+      tl.track_layout = true;
+      hub_shot("rally_hub_track_layout_wp5", tl, carview::RallyEntryPopup::kNone);
+      carview::RallyHubState ex = hs;
+      ex.extras_open = true;
+      hub_shot("rally_hub_extras_wp5", ex, carview::RallyEntryPopup::kNone);
+      hub_shot("rally_hub_quit_wp5", hs, carview::RallyEntryPopup::kQuit);
+      carview::RallyHubState first = hs;
+      first.tickets = 1;
+      first.items.erase(first.items.begin() + 1, first.items.begin() + 7);
+      first.items[0].best_place = 0;
+      first.selected = 0;
+      first.help_hidden = true;
+      hub_shot("rally_hub_first_visit_wp5", first, carview::RallyEntryPopup::kNone);
     }
   }
 

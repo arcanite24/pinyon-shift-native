@@ -1,7 +1,8 @@
 // Horizon Rally Expansion UI & HUD (apps/carview/rally_hub.*):
 // - Live Co-Driver Pace-Note directional icon strip & Rally Stage Split Timer
-// - Horizon Rally Hub (RALLY_HEATS + 7x4 Championships, Rally XP/Wristband,
-//   Rally Kit 0x80 readiness, Free Roam ColoradoDirt, Return to Colorado)
+// - Horizon Rally Hub on H_RALLY_HUB over BgLoop.wmv (game_rally_free_roam_flow's
+//   rally_hub: the unlocked championships' tickets), with the engine's EXTRAS
+//   (heats replay, rally kit, ColoradoDirt free roam, return to Colorado)
 // - Between-Stage Service Area (4-stage cumulative standings, car repair,
 //   tuning/upgrades, continue/retire)
 // - Stage & Championship Final Results screen
@@ -62,6 +63,11 @@ struct RallyHubItem {
   double target_time_s = 0.0;
   int64_t bounty_cr = 0;
   std::array<race::RivalTarget, 3> rival_tiers{};
+  // The ticket (championships): Events.EventTicket, the restriction text, and
+  // the best finish (0 none).
+  std::string ticket;
+  std::string restriction;
+  int best_place = 0;
 };
 
 struct RallyHubState {
@@ -81,8 +87,17 @@ struct RallyHubState {
   int car_pi = 0;
   garage::RallyKitStatus kit_status{};
   int64_t rally_kit_cost = 0;
+  // items[0 .. tickets) are the unlocked championships (the hub's tickets, in
+  // MultiStageSeries order); the rest are the engine's EXTRAS.
   std::vector<RallyHubItem> items;
+  int tickets = 0;
   std::string notice;
+  std::string band_texture;  // WRISTBANDS/<thumbnail> of the rally wristband
+  std::string band_next;     // the next rally wristband's name (" at the top)
+  bool track_layout = false; // Y: the focused ticket's reverse (TRACK LAYOUT)
+  bool help_hidden = false;  // first_time_hub_flow's CDisableRallyRaceSelectHelpBar
+  bool extras_open = false;  // the engine's EXTRAS list over the hub
+  int extras_selected = 0;   // index into items[tickets ..]
 };
 
 // Between-Stage Service Area screen model.
@@ -135,8 +150,18 @@ struct RallyChampResultsState {
 // Draws live Co-Driver pace-note icons + split timer strip during a Rally stage.
 void build_rally_pace_notes_hud(ui::List& out, const RallyStageHud& st, float w, float h);
 
-// Draws the full Horizon Rally Hub overlay.
-void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, float h);
+struct DriveHud;
+// Draws the Horizon Rally hub on H_RALLY_HUB (the player bar from `hud`; the
+// BgLoop.wmv backdrop is the caller's). False without the scene.
+bool build_rally_hub_screen(ui::List& out, const DriveHud* hud, const RallyHubState& st, float w, float h);
+// The hub's scene nodes and strings (checked by the corpus tests).
+const std::vector<const char*>& rally_hub_nodes();
+std::vector<StringRef> rally_hub_text_refs();
+// The ticket index of championship `event_id` on the hub (0 when it is not
+// one of the unlocked tickets).
+int rally_hub_ticket_index(const race::RallyCatalog& catalog, const drive::DriveSave& save, int64_t event_id);
+// The engine's EXTRAS row label of an item (heats, kit, free roam, return).
+std::string rally_hub_extra_label(const RallyHubItem& it);
 
 // Draws the between-stage Service Area & 4-stage cumulative standings screen.
 void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState& st, float w, float h);

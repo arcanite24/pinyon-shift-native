@@ -800,6 +800,10 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           rally_hub_state = carview::make_rally_hub_state(app.rally_catalog, app.saved, app.have_garage ? &app.career_garage : nullptr,
                                                           db_ptr.get(), app.class_bands, app.car, clid, d.car_pi, disc,
                                                           app.rally_hub_selected, app.rally_notice);
+          rally_hub_state.track_layout = app.rally_hub_track_layout;
+          rally_hub_state.extras_open = app.rally_hub_extras;
+          rally_hub_state.extras_selected = app.rally_hub_extra_selected;
+          rally_hub_state.help_hidden = app.rally_hub_tutorial != 0;
           d.rally_hub = &rally_hub_state;
         }
         if (app.rally_service_open && app.rally_session.active()) {
@@ -861,6 +865,10 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         carview::ui::List list;
         if (app.show_title && !settings_page.is_open() && app.title_video.active()) {
           app.title_video.draw(list, float(width), float(height));
+        }
+        if (app.rally_hub_open && !app.show_title) {
+          if (app.rally_bg_video.active()) app.rally_bg_video.draw(list, float(width), float(height));
+          else list.rect(0, 0, float(width), float(height), carview::ui::rgba(0, 0, 0));
         }
         // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally/Club screens, campaign cinematics, and grid menu.
         const bool pre_race_swoop_hide_hud = pre_race_blend_t >= 0.0 && pre_race_blend_t < 0.85;
