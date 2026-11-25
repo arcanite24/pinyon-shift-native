@@ -3459,6 +3459,20 @@ own).
 Needed: a capture after A on an event's ticket, and one of X on a
 street-race hub.
 
+## Q152 (HUD-08, HUD-10, HUD-13, not blocking): the notifications' pairings, slide and Show me!
+
+The notifications draw on `947_HUD`'s `CombinedNotification` (and
+`PopularityUnlock` for a showcase) with lines from the string tables, but
+which title goes with which message is inferred from the tables' names
+(`notify_strings()`), the tape's slide in and out is not ported (they
+fade over `kNotifyIn` / `kNotifyOut`), and a showcase's Show me! stays
+hidden: what its button does (a route to the showcase, the map on it, or
+the event's ticket) is not recorded. The co-op tag is the engine's
+English.
+
+Needed: captures of each notification kind with its message line, the
+tape's slide timeline (the scene's BGF), and a press of Show me!.
+
 ## Q153 (HUD-04, HUD-00, not blocking): the route arrow's text, timing and race use
 
 A route's next turn now draws `947_HUD`'s `DirectionArrows` (the
@@ -3474,6 +3488,20 @@ with `SATNAVDEST` (the distance to the destination) is not bound either.
 
 Needed: a free-roam capture with a route set, approaching a junction, and
 the rule the race uses to pick its corners.
+
+## Q154 (HUD-15, VIS-15, C11, not blocking): the activation prompt's button
+
+`ActivationPrompt` draws the event's name and SIGN ME UP! (or ENTER NOW)
+with an X glyph, as `09_event_marker_prompt_orig.png` and
+`30_skill_toast_orig.png` show, while the prompt's own texture is the A
+button (`ACTIVATIONZONEICONS/ABUTTON`) and `gamedb.slt`'s
+`ControllerLayouts` holds no activation binding. The engine keeps X
+because both frames show it. Not known: whether the
+captures' controller layout was the default one, so whether the default
+is A or X.
+
+Needed: one capture of an activation prompt with the default controller
+layout.
 
 ## Q155 (INTRO-13, VIS-03, not blocking): what skips a movie
 
