@@ -684,6 +684,33 @@ void synthetic_r2_4_checks() {
 
 }  // namespace
 
+// FEEL-10: each car's TCS slip targets from its own gamedb row, through the
+// engine's car-parameter resolution (the R34 and two cars with other
+// AutoSteerOverrideIDs).
+void per_car_assists(const cars::Install& install, const cars::PhysicsSettings& settings) {
+  std::vector<cars::CarPhysics> rows;
+  std::string error;
+  const std::vector<int64_t> ids = {445, 282, 249};  // R34, Beetle 04, 250 GTO
+  if (!cars::load_car_physics(install, ids, rows, &error) || rows.size() != ids.size()) {
+    std::printf("FAIL per-car assists: %s\n", error.c_str());
+    ++failures;
+    return;
+  }
+  for (const auto& car : rows) {
+    drive::CarParams p;
+    drive::geometry_from_physics(car, p);
+    drive::apply_physics(car, settings, p);
+    CHECK(car.has("Data_Car.AssistsTCSSlipDefTakeoff") && car.has("Data_Car.AssistsTCSSlipDefMoving"));
+    CHECK(p.tcs_slip_takeoff == car.get("Data_Car.AssistsTCSSlipDefTakeoff", -1));
+    CHECK(p.tcs_slip_moving == car.get("Data_Car.AssistsTCSSlipDefMoving", -1));
+    std::printf("car %lld %s: TCS slip takeoff %.2f moving %.2f\n", static_cast<long long>(car.car_id),
+                car.media_name.c_str(), p.tcs_slip_takeoff, p.tcs_slip_moving);
+  }
+  // The R34's row (SPEC-CAR-PHYSICS, Traction control; gamedb Data_Car 445).
+  CHECK(rows[0].get("Data_Car.AssistsTCSSlipDefTakeoff", -1) == 33.0);
+  CHECK(rows[0].get("Data_Car.AssistsTCSSlipDefMoving", -1) == 0.5);
+}
+
 int main() {
   synthetic_r2_4_checks();
   if (failures) {
@@ -736,6 +763,7 @@ int main() {
               probe_v.brake_const(1) * 0.81 * unit_r, p.brake_friction_scale, p.aero_drag_long);
 
   unit_checks(r34, settings, p);
+  per_car_assists(install, settings);
   scenario_a(p);
   scenario_b(p);
   turn_circle(p);

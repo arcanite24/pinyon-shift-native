@@ -485,6 +485,11 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.tcs_fric_diff = s.get("TCSFullEffectFricDiff", p.tcs_fric_diff);
   p.tcs_yaw_min_deg = s.get("YawMinAngleForTCS", p.tcs_yaw_min_deg);
   p.tcs_yaw_max_deg = s.get("YawMaxAngleForTCS", p.tcs_yaw_max_deg);
+  // FEEL-10: the car's own TCS slip targets (SPEC-CAR-PHYSICS, Traction
+  // control: S_base), gamedb Data_Car.AssistsTCSSlipDefTakeoff below the
+  // speed threshold and Data_Car.AssistsTCSSlipDefMoving above it.
+  p.tcs_slip_takeoff = get("Data_Car.AssistsTCSSlipDefTakeoff", p.tcs_slip_takeoff);
+  p.tcs_slip_moving = get("Data_Car.AssistsTCSSlipDefMoving", p.tcs_slip_moving);
   p.stm_speed_mph = s.get("StabilityManageSpeed", p.stm_speed_mph);
   p.clutch_pedal_dead = s.get("ClutchPedalDistBeforeTorqueStarts", p.clutch_pedal_dead);
   p.clutch_torque_exp = s.get("ClutchTorqueCurveExponent", p.clutch_torque_exp);

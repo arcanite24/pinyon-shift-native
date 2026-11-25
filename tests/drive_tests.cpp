@@ -11,7 +11,9 @@
 #include <string>
 #include <vector>
 
+#include "cars/physics.h"
 #include "drive/from_bake.h"
+#include "drive/from_physics.h"
 #include "drive/mesh_ground.h"
 #include "drive/ai_driver.h"
 #include "drive/contact.h"
@@ -768,6 +770,50 @@ void test_assists_and_transmission() {
       saw_stm |= v.stm_active();
     }
     CHECK(saw_stm);
+  }
+
+  // FEEL-10: the TCS slip targets come from the car's gamedb row
+  // (Data_Car.AssistsTCSSlipDefTakeoff / ...Moving; made-up values here).
+  {
+    cars::CarPhysics cp;
+    cp.values["Data_Car.AssistsTCSSlipDefTakeoff"] = 12.5;
+    cp.values["Data_Car.AssistsTCSSlipDefMoving"] = 0.65;
+    const cars::PhysicsSettings ps;
+    drive::CarParams p = test_car();
+    drive::apply_physics(cp, ps, p);
+    CHECK(std::fabs(p.tcs_slip_takeoff - 12.5) < 1e-12 && std::fabs(p.tcs_slip_moving - 0.65) < 1e-12);
+    // A car without the columns keeps the engine's fallbacks.
+    drive::CarParams q = test_car();
+    std::vector<std::string> notes;
+    drive::apply_physics(cars::CarPhysics{}, ps, q, &notes);
+    CHECK(q.tcs_slip_takeoff == drive::CarParams{}.tcs_slip_takeoff &&
+          q.tcs_slip_moving == drive::CarParams{}.tcs_slip_moving);
+    bool noted = false;
+    for (const auto& n : notes) noted |= n.find("AssistsTCSSlipDefTakeoff") != std::string::npos;
+    CHECK(noted);
+    // Behaviour: below the speed threshold the takeoff target applies; a
+    // high one (the disc's 33) lets a launch from rest spin far longer
+    // before TCS cuts in than the old 1.0.
+    auto launch = [](double takeoff) {
+      auto c = test_car();
+      c.layout = drive::CarParams::Layout::kRear;
+      c.torque_scale = 950;
+      c.tcs_slip_takeoff = takeoff;
+      drive::Vehicle v(c);
+      drive::VehicleAssists a;
+      a.traction_control = true;
+      v.set_assists(a);
+      const drive::FlatGround flat;
+      int active = 0;
+      for (int i = 0; i < 240 && v.speed() < 5.0; ++i) {
+        v.step({0, 1, 0, false}, flat);
+        active += v.tcs_active();
+      }
+      return active;
+    };
+    const int cut_low = launch(1.0), cut_high = launch(33.0);
+    std::printf("TCS launch from rest: active %d steps (takeoff 1.0), %d (33.0)\n", cut_low, cut_high);
+    CHECK(cut_low > 0 && cut_high < cut_low);
   }
 
   // 6. Steering assist modes (Assisted vs Normal vs Simulation) + Auto-Brake.
