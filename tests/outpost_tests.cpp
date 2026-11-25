@@ -7,6 +7,7 @@
 
 #include "drive/save.h"
 #include "fh1data/stringtables.h"
+#include "freeroam/fast_travel.h"
 #include "freeroam/outposts.h"
 #include "freeroam/speed_zones.h"
 
@@ -440,9 +441,101 @@ void test_r2_5_outpost_tiers_fast_travel_and_speed_camera_names() {
   }
 }
 
+// The outpost fee: TotalCost less Discount_<done>_Missions, nothing once all
+// of the outpost's own missions are done; festival places free; events,
+// hubs, speed traps, signs and barns not destinations.
+void test_fast_travel_cost_rule() {
+  freeroam::FastTravelTunables t;
+  check(freeroam::outpost_fast_travel_cost(t, 3, 0) == 10000, "fast travel: 0/3 missions costs 10,000");
+  check(freeroam::outpost_fast_travel_cost(t, 3, 1) == 7500, "fast travel: 1/3 missions costs 7,500");
+  check(freeroam::outpost_fast_travel_cost(t, 3, 2) == 5000, "fast travel: 2/3 missions costs 5,000");
+  check(freeroam::outpost_fast_travel_cost(t, 3, 3) == 0, "fast travel: 3/3 missions is free");
+  check(freeroam::outpost_fast_travel_cost(t, 3, 5) == 0, "fast travel: more than all done is free");
+  check(freeroam::outpost_fast_travel_cost(t, 0, 0) == 0, "fast travel: an outpost with no missions is free");
+  // Four missions: the fourth discount (Discount_3) is reached before all done.
+  check(freeroam::outpost_fast_travel_cost(t, 4, 3) == 0, "fast travel: Discount_3 = 1.0 makes 3/4 free");
+  freeroam::FastTravelTunables code_defaults;
+  code_defaults.total_cost = 1000;
+  code_defaults.discount = {0.0f, 0.25f, 0.5f, 0.75f};
+  check(freeroam::outpost_fast_travel_cost(code_defaults, 4, 3) == 250, "fast travel: Discount_3 0.75 of 1000");
+  check(freeroam::outpost_discount_percent(3, 0) == 0 && freeroam::outpost_discount_percent(3, 1) == 25 &&
+            freeroam::outpost_discount_percent(3, 2) == 50 && freeroam::outpost_discount_percent(3, 3) == 100,
+        "fast travel: Discount: 0/25/50/100 %");
+
+  const char* reg = R"(<GlobalRegistry>
+  <Value id="Activities/Outposts/Discount_0_Missions" type="float" value="0.100000"/>
+  <Value id="Activities/Outposts/Discount_1_Missions" type="float" value="0.200000"/>
+  <Value id="Activities/Outposts/Discount_2_Missions" type="float" value="0.400000"/>
+  <Value id="Activities/Outposts/Discount_3_Missions" type="float" value="0.800000"/>
+  <Value id="Activities/Outposts/TotalCost" type="int" value="20000"/>
+  <Value id="Activities/RoadDiscovery/UnvisitedDistanceThreshold" type="float" value="75.000000"/>
+</GlobalRegistry>)";
+  freeroam::FastTravelTunables parsed;
+  check(freeroam::parse_fast_travel_tunables(reg, parsed), "fast travel: registry parses");
+  check(parsed.total_cost == 20000, "fast travel: TotalCost read");
+  check(std::fabs(parsed.discount[0] - 0.1f) < 1e-6f && std::fabs(parsed.discount[3] - 0.8f) < 1e-6f,
+        "fast travel: Discount_n_Missions read");
+  check(freeroam::outpost_fast_travel_cost(parsed, 3, 0) == 18000 && freeroam::outpost_fast_travel_cost(parsed, 3, 2) == 12000,
+        "fast travel: cost follows the registry");
+
+  using K = freeroam::FastTravelKind;
+  check(freeroam::fast_travel_kind("gas_station") == K::kOutpost, "fast travel: outposts cost");
+  for (const char* tag : {"racecentral", "workshop", "autoshow", "paintshop", "carclub", "dlccenter"})
+    check(freeroam::fast_travel_kind(tag) == K::kFree, "fast travel: festival places are free");
+  for (const char* tag : {"race", "exhibition", "streetrace", "nemesisrace", "speed_camera_discovered",
+                          "average_speed_camera_completed", "flyer", "barnfind", "barnfind_collected"})
+    check(freeroam::fast_travel_kind(tag) == K::kNone, "fast travel: events, hubs, traps, signs, barns are not");
+  const auto q = freeroam::quote_fast_travel(t, "gas_station", 3, 1, 7499);
+  check(q.eligible() && q.cost == 7500 && !q.affordable, "fast travel: 7,499 Cr cannot pay 7,500");
+  check(freeroam::quote_fast_travel(t, "gas_station", 3, 1, 7500).affordable, "fast travel: 7,500 Cr can pay 7,500");
+  check(freeroam::quote_fast_travel(t, "racecentral", 0, 0, 0).affordable, "fast travel: the festival is free at 0 Cr");
+  check(!freeroam::quote_fast_travel(t, "race", 0, 0, 1000000).eligible(), "fast travel: events are not eligible");
+
+  // Per outpost: only its own missions count.
+  freeroam::OutpostCatalog cat;
+  freeroam::Outpost a, b;
+  a.id = "GasStation_01", a.index = 1, a.mission_ids = {"speedstunt_01", "photoshoot_01", "prstunt_01"};
+  b.id = "GasStation_02", b.index = 2, b.mission_ids = {"speedstunt_02", "photoshoot_02", "prstunt_02"};
+  cat.outposts = {a, b};
+  freeroam::OutpostProgress prog;
+  prog.complete_stunt("speedstunt_01");
+  prog.complete_stunt("photoshoot_01");
+  prog.complete_stunt("prstunt_02");
+  const auto ma = freeroam::outpost_missions(cat, prog, "GasStation_01");
+  const auto mb = freeroam::outpost_missions(cat, prog, "GasStation_02");
+  check(ma.total == 3 && ma.done == 2 && freeroam::outpost_fast_travel_cost(t, ma.total, ma.done) == 5000,
+        "fast travel: outpost 1 with 2/3 done costs 5,000");
+  check(mb.total == 3 && mb.done == 1 && freeroam::outpost_fast_travel_cost(t, mb.total, mb.done) == 7500,
+        "fast travel: outpost 2 counts only its own missions");
+}
+
+void test_fast_travel_corpus() {
+  const char* root = std::getenv("SHIFT_GAME_ROOT");
+  if (!root || !*root) return;
+  freeroam::FastTravelTunables t;
+  std::string err;
+  check(freeroam::load_fast_travel_tunables(root, t, &err), "fast travel: GlobalRegistry.xml loads");
+  check(t.total_cost == 10000, "fast travel: retail TotalCost is 10,000");
+  check(t.discount[0] == 0.0f && t.discount[1] == 0.25f && t.discount[2] == 0.5f && t.discount[3] == 1.0f,
+        "fast travel: retail discounts 0, 0.25, 0.5, 1.0");
+  freeroam::OutpostCatalog cat;
+  if (freeroam::load_outposts(root, cat, &err)) {
+    freeroam::OutpostProgress none;
+    for (const auto& o : cat.outposts) {
+      const auto m = freeroam::outpost_missions(cat, none, o.id);
+      check(m.total == 3 && freeroam::outpost_fast_travel_cost(t, m.total, m.done) == 10000,
+            "fast travel: every retail outpost starts at 10,000 Cr");
+    }
+  }
+  std::printf("Fast travel tunables: TotalCost %lld, discounts %.2f %.2f %.2f %.2f\n", (long long)t.total_cost,
+              t.discount[0], t.discount[1], t.discount[2], t.discount[3]);
+}
+
 }  // namespace
 
 int main() {
+  test_fast_travel_cost_rule();
+  test_fast_travel_corpus();
   test_synthetic_outposts_and_stunts();
   test_r2_5_outpost_tiers_fast_travel_and_speed_camera_names();
   test_colorado_corpus();
