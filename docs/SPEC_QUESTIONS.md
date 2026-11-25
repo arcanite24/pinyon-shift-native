@@ -2393,6 +2393,14 @@ Still interim:
   pass through them, as before.
 - **Barn doors** keep the old horizontal push.
 - **The smash-through slow-down** on a break is the engine's.
+- **Low hard props.** The wheels' rays do not see props, so a box lower
+  than the body spheres' centres is met by the spheres' edges and the
+  Elasticity 0.3 row. A 0.3 m unbreakable box hit at 25 m/s lifts the
+  car 0.30 m more than its own settling, at 1.09 m/s up (0.89 m and
+  3.8 m/s on another approach; the HardWorld row gives 0.16 m and
+  0.40 m/s and lets the car slide over). The shipped
+  PhysicsDefinitions have no such prop: the five that are unbreakable or
+  break above 27 mph all reach 1.06 m or more.
 
 Needed: the static-object collision rule, and whether an unbroken prop
 is fixed or a heavy dynamic body.

@@ -1778,8 +1778,10 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
         if (parse_surface_physics_extras(
                 std::string_view(reinterpret_cast<const char*>(res.data.data()), res.data.size()), extras,
                 nullptr)) {
-          set_contact_params(extras.find_category_params("Smashable", "Car"),
-                             extras.find_category_params("Car", "GuardRail"));
+          const auto* prop = extras.find_category_params("Smashable", "Car");
+          const auto* barrier = extras.find_category_params("Car", "GuardRail");
+          set_contact_params(prop, barrier);
+          contact_rows_loaded_ = prop && barrier;
         }
       }
     }

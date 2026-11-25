@@ -155,6 +155,7 @@ void test_corpus() {
   world::SmashableWorld sw;
   std::string err;
   CHECK(sw.load(media, colorado, &err));
+  CHECK(sw.contact_rows_loaded());  // Smashable/Car and Car/GuardRail from physics.zip (FEEL-21)
   const auto c = sw.definitions().counts();
   std::printf("corpus smashables: defs=%zu max_global=%zu children=%zu (parents=%zu max=%zu) shapes=(%zu S, %zu OBB, %zu H) coll_types=%zu placed=%zu\n",
               c.top_level, c.max_global_index, c.total_children, c.parents_with_children, c.max_children,
@@ -295,6 +296,43 @@ void test_smashables_rewind_restore() {
   CHECK(unhidden.size() == 1);
 }
 
+// Drives a car at `speed` into `world` on flat ground from 0.3 s short of
+// the face at z = `face_z`. The car's own launch settling is measured on the
+// same run without the props, and vy_max and y_max are what the hit adds.
+struct PropHit {
+  double nose = 0, rebound = 0, vy_max = 0, y_max = 0;
+  bool broke = false;
+};
+PropHit drive_into(world::SmashableWorld& w, const drive::CarParams& cp, double face_z, double speed) {
+  auto run = [&](world::SmashableWorld& world_in) {
+    drive::FlatGround ground(0.0);
+    drive::Vehicle v(cp);
+    const double half_len = 0.5 * cp.size.z;
+    v.launch({0.0, 0.0, face_z - half_len - 0.3 * speed}, 0.0, speed);
+    std::vector<world::SmashEvent> evs;
+    PropHit h;
+    double vz_min = 1e9;
+    for (int i = 0; i < int(2.0 / drive::Vehicle::kStep); ++i) {
+      const drive::Vec3 vel = v.velocity();
+      v.step({0.0, 0.0, 0.0, false}, world::SmashableGround(ground, world_in, std::sqrt(drive::dot(vel, vel))));
+      world_in.step(v, ground, float(drive::Vehicle::kStep), evs);
+      h.broke |= !evs.empty();
+      vz_min = std::min(vz_min, v.velocity().z);
+      h.vy_max = std::max(h.vy_max, v.velocity().y);
+      h.y_max = std::max(h.y_max, v.position().y);
+    }
+    h.nose = v.centre_of_mass().z + half_len;
+    h.rebound = -vz_min;
+    return h;
+  };
+  world::SmashableWorld empty;
+  const PropHit base = run(empty);
+  PropHit h = run(w);
+  h.vy_max -= base.vy_max;
+  h.y_max -= base.y_max;
+  return h;
+}
+
 void test_solid_festival_barriers_and_ground_height() {
   // PT-16: model classification separates solid festival crowd barriers from wooden fences & decorative props.
   CHECK(world::SmashableWorld::is_solid_barrier_model("OBJ_FEST_CrowdBarrier_LOD00", {-1.3f, 0.0f, -0.15f},
@@ -367,24 +405,61 @@ void test_solid_festival_barriers_and_ground_height() {
     pl.stem = "co_post";
     pl.pos = {0.0f, 0.0f, 8.0f};
     sp.add_prop(pl, &post);
-    drive::Vehicle v(cp);
-    v.launch({0.0, 0.0, 3.0}, 0.0, 8.0);
-    double vz_min = 1e9, vy_max = 0.0, y_max = 0.0;
-    for (int i = 0; i < 120; ++i) {
-      v.step({0.0, 0.0, 0.0, false}, world::SmashableGround(ground, sp, speed_of(v)));
-      sp.step(v, ground, float(drive::Vehicle::kStep), evs);
-      CHECK(evs.empty());
-      vz_min = std::min(vz_min, v.velocity().z);
-      vy_max = std::max(vy_max, v.velocity().y);
-      y_max = std::max(y_max, v.position().y);
+    const PropHit h = drive_into(sp, cp, 7.85, 8.0);
+    std::printf("feel21 post 8 m/s: nose %.3f m (face 7.85), rebound %.2f m/s, hit adds max_vy %.3f m/s, "
+                "max_y %.3f m\n", h.nose, h.rebound, h.vy_max, h.y_max);
+    CHECK(sp.broken_prop_count() == 0 && !h.broke);
+    CHECK(h.nose < 7.85 + 0.15);
+    CHECK(h.rebound > 0.1 && h.rebound < 2.4);  // stopped, rebounding by less than 0.3 x closing
+    CHECK(h.vy_max < 0.3 && h.y_max < 0.1);
+  }
+
+  // FEEL-21 / PT-27: low unbreakable props (0.3 and 0.6 m tall, below the
+  // body spheres' centres) meet edge and top-face normals; the car is not
+  // thrown into the air. Not checked: 0.3 m at 25 m/s rides over the box
+  // (Q106); the shipped definitions have no hard prop under 1 m.
+  for (const float height : {0.3f, 0.6f}) {
+    for (const double speed : {12.0, 25.0}) {
+      world::SmashableWorld lw;
+      world::PropPhysicsDef low{};
+      low.object_type_index = 0;
+      low.break_speed_mph = 99999.0f;  // unbreakable
+      low.mass = 500.0f;
+      world::PropShape box;
+      box.kind = world::PropShapeKind::kObb;
+      box.transform[13] = 0.5f * height;
+      box.half_extents = {3.0f, 0.5f * height, 0.3f, 0.0f};
+      low.shapes.push_back(box);
+      low.bounding_radius = 3.1f;
+      world::CollObjPlacement pl{};
+      pl.physics_type = "CO_Kerb.0.rmb";
+      pl.stem = "co_kerb";
+      pl.pos = {0.0f, 0.0f, 10.0f};
+      lw.add_prop(pl, &low);
+      const PropHit h = drive_into(lw, cp, 9.7, speed);
+      std::printf("feel21 low prop %.1f m at %.0f m/s: hit adds max_y %.3f m, max_vy %.3f m/s; nose %.2f m\n",
+                  double(height), speed, h.y_max, h.vy_max, h.nose);
+      if (height < 0.5f && speed > 20.0) continue;
+      CHECK(h.y_max < 0.2 && h.vy_max < 1.0);
+      CHECK(h.nose < 9.7 + 0.15);  // stopped at the face
     }
-    const double nose = v.centre_of_mass().z + 0.5 * cp.size.z;
-    std::printf("feel21 post 8 m/s: nose %.3f m (face 7.85), rebound %.2f m/s, max_vy %.3f m/s, max_y %.3f m\n", nose,
-                -vz_min, vy_max, y_max);
-    CHECK(sp.broken_prop_count() == 0);
-    CHECK(nose < 7.85 + 0.15);
-    CHECK(vz_min < -0.1 && vz_min > -2.4);  // stopped, rebounding by less than 0.3 x closing
-    CHECK(vy_max < 1.0 && y_max < 0.3);
+  }
+
+  // PT-27 on this path: the lowest solid barrier the loader keeps (0.7 m) at
+  // 25 m/s stops the car without a launch.
+  {
+    world::SmashableWorld bw;
+    world::SolidBarrier low_bar;
+    low_bar.pos = {0.0f, 0.0f, 8.0f};
+    low_bar.local_center = {0.0f, 0.35f, 0.0f};
+    low_bar.half_extents = {2.6f, 0.35f, 0.22f};
+    low_bar.routes = {0};
+    bw.add_solid_barrier(low_bar);
+    const PropHit h = drive_into(bw, cp, 7.78, 25.0);
+    std::printf("feel21 barrier 0.7 m at 25 m/s: hit adds max_y %.3f m, max_vy %.3f m/s; nose %.2f m, "
+                "rebound %.2f m/s\n", h.y_max, h.vy_max, h.nose, h.rebound);
+    CHECK(h.y_max < 0.1 && h.vy_max < 0.3);
+    CHECK(h.nose < 7.78 + 0.25);
   }
 
   // PT-21: oriented flyer shatter + record_hidden_prop persists hidden sphere.

@@ -223,6 +223,8 @@ class SmashableWorld {
   // (CategoryToCategoryParams Smashable/Car and Car/GuardRail); null keeps
   // the shipped values.
   void set_contact_params(const CategoryCollisionParams* prop, const CategoryCollisionParams* barrier);
+  // Whether load() found both rows in physics.zip (else the shipped values).
+  bool contact_rows_loaded() const { return contact_rows_loaded_; }
   // Adds, for each of `n` body spheres, its contact with an intact prop the
   // car would not break at `car_speed_mps`, or with a solid barrier, where
   // that is deeper than `hits[i]` (FEEL-21). The props are fixed bodies.
@@ -313,6 +315,7 @@ class SmashableWorld {
 
   std::unique_ptr<Impl> impl_;
   drive::SurfaceTyre prop_contact_, barrier_contact_;
+  bool contact_rows_loaded_ = false;
   PhysicsDefinitions defs_;
   std::vector<CollObjectType> coll_types_;
   std::vector<std::string> smash_types_;
