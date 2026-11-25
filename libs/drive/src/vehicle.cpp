@@ -771,8 +771,8 @@ void Vehicle::shape_input(const Input& raw, double dt) {
       const double lo = std::min(m.speed0, m.speed1), hi = std::max(m.speed0, m.speed1);
       scale = lerp(m.scale0, m.scale1, std::clamp((length(vel_) - lo) / std::max(hi - lo, 1e-9), 0.0, 1.0));
     }
-    // Interim: the lock is SteerMaxAngle; the original asks the steering
-    // model for it, and that call is not decoded.
+    // The lock is SteerMaxAngle, capped by the mean steering-lock cap of
+    // the surfaces under the wheels in contact (no speed narrowing here).
     const double lock = p_.max_steer;
     const double target = std::clamp(lock * scale * (in < 0 ? -mapped : mapped), -lock, lock);
     // The road wheels slew to the target at up to 4 pi rad/s.
@@ -1544,7 +1544,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
         damper += p.bumpstop_damping[a] * std::max(0.0, -dot(v_contact, normal[i]));
       }
       damper = std::clamp(damper, -p.rebound_damper_clamp[a], p.damper_clamp[a]);
-      load = preload_[i] + p.spring_rate[a] * susp_s * compression + bump_spring + damper;
+      // The suspension itself stops at its travel; only the overflow goes
+      // to the bump stop.
+      const double travel = std::min(compression, p.bump_travel[a]);
+      load = preload_[i] + p.spring_rate[a] * susp_s * travel + bump_spring + damper;
     }
     w.load = load;
     w.centre = {p.wheel_centres[i].x,
