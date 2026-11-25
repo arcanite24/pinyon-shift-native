@@ -20,8 +20,10 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "cars/physics.h"
 #include "cars/sources.h"
 #include "cars/strings.h"
+#include "garage/rally_kit.h"
 #include "club_menu.h"
 #include "fh1data/archive.h"
 #include "fh1data/stringtables.h"
@@ -116,6 +118,18 @@ int main() {
   cars::Install inst;
   std::string why;
   check(cars::discover_install(game_root, state_root, {}, inst, &why), "discover_install: " + why);
+  // The Horizon Rally cars the achievements 208 and 215 count: the five with
+  // OptionalRallyUpgrades rows (V4_CONTENT: Escort, 037, Celica, Lancer, WRX),
+  // not the event-only twins.
+  {
+    cars::PartsDb db;
+    check(db.open(inst, &why), "parts db: " + why);
+    std::vector<int64_t> ids;
+    for (int64_t id = 1; id <= 4000; ++id)
+      if (garage::is_horizon_rally_car(db, id)) ids.push_back(id);
+    check(ids.size() == 5, "five Horizon Rally cars: " + std::to_string(ids.size()));
+    for (int64_t id : ids) check(id < 1626 || id > 1635, "twin " + std::to_string(id) + " is no Rally car");
+  }
   fh1::StringTables tables;
   check(cars::load_string_tables(inst, tables, &why, "EN"), "EN string tables load");
   carview::set_game_text([&](const std::string& v) -> std::string {

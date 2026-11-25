@@ -66,4 +66,8 @@ bool apply_rally_kit(Garage& g, const cars::PartsDb& db, int64_t garage_id, cons
 // transmission level 4).
 bool is_rally_part(int part_enum, int level);
 
+// One of the Horizon Rally cars: those with OptionalRallyUpgrades rows (the
+// five the Rally achievements 208 and 215 count).
+bool is_horizon_rally_car(const cars::PartsDb& db, int64_t car_id);
+
 }  // namespace garage

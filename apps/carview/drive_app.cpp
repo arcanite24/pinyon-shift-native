@@ -16,6 +16,7 @@
 #include "drive_helpers.h"
 #include "frontend_screens.h"
 #include "gamepad_db.h"
+#include "garage/rally_kit.h"
 #include "profile/drive_save.h"
 #include "race/difficulty.h"
 #include "settings.h"
@@ -202,7 +203,14 @@ std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool sele
       }
     }
     write_career_garage();
+    note_car_obtained(car_id, false);
     return carview::car_name(media);
+}
+
+void DriveApp::note_car_obtained(int64_t car_id, bool purchased) {
+  if (car_id <= 0 || !parts_db.valid()) return;
+  const auto db = parts_db.get();
+  if (db && garage::is_horizon_rally_car(*db, car_id)) drive::note_rally_car(saved.ach, car_id, purchased);
 }
 
 CareerSummary DriveApp::career_summary(std::vector<cars::PackInfo>& packs) {

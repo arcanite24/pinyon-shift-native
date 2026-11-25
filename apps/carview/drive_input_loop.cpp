@@ -28,6 +28,7 @@ void DriveSession::try_trigger_rewind() {
               if (rewind_buf.trigger(vehicle.time(), rc, vehicle, cs, uint64_t(std::max(0, sh.chain_points)),
                                      std::max(1, sh.multiplier), sk_timer)) {
                 capture_world_rewind(rewind_buf.cancel_snapshot_id());
+                app.rally_stage_signals.rewound = true;  // achievement 214
               } else {
                 if (!rewind_buf.enabled()) notice = "rewind is off", notice_until = vehicle.time() + 2;
               }

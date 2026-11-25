@@ -903,6 +903,15 @@ bool load_save_file(const std::filesystem::path& save_path, DriveSave& out_save,
   return load_save_with_recovery(save_path, effective_backups, out_save, recovered_from, error);
 }
 
+void note_rally_car(AchievementSignals& a, int64_t car_id, bool purchased) {
+  if (car_id <= 0) return;
+  auto add = [car_id](std::vector<int64_t>& v) {
+    if (std::find(v.begin(), v.end(), car_id) == v.end()) v.push_back(car_id);
+  };
+  add(a.rally_cars_obtained);
+  if (purchased) add(a.rally_cars_purchased);
+}
+
 void update_car_history(std::vector<SavedCarHistory>& history, int64_t garage_id, int64_t car_id,
                         double delta_distance_m, double delta_time_s, int64_t delta_winnings,
                         int64_t delta_races, int64_t delta_victories, int64_t delta_podiums) {

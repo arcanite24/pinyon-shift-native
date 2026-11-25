@@ -3113,3 +3113,23 @@ ColoradoDirt block (22 cameras, 9 zones).
 Needed: whether the original keeps Rally-world speed records apart from
 Colorado's (and shows them on separate scoreboards), and where
 ColoradoDirt's gates come from if not Colorado's GameObjs.
+
+## Q150 (V4-19, not blocking): what the Rally achievements count
+
+The writers for 208, 211, 214 and 215 now run:
+
+- A Horizon Rally car is one with `OptionalRallyUpgrades` rows: the five
+  the package sells (`club_rally_corpus_tests` finds exactly five, none of
+  the event-only twins 1626..1635). 208 counts one given or bought
+  (`DriveApp::award_garage_car` and the Autoshow purchase); 215 counts
+  Autoshow purchases only. Cars owned before this build are not counted
+  until they are obtained again.
+- 211 sums the horizontal distance covered with no wheel down during a
+  Rally stage (start to finish), in metres.
+- 214 counts a stage won with no rewind and no crash, where a crash is an
+  impact the skills treat as one (`WorldCollisionThreshold` /
+  `CarCollisionThreshold`, 12 m/s, which cancels a skill chain).
+
+Needed: the original's air measure (distance or the Air skill's own
+length), its crash test for 214, and whether a car won as a prize or
+given counts for 208.

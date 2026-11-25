@@ -309,6 +309,10 @@ struct DriveApp : DriveConfig {
   // at no cost (Rewards_EventPrizes.RewardCarUpgradeClass).
   std::string award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize = false,
                                int upgrade_class = -1);
+  // Achievements 208/215: a car came into the garage (bought or given).
+  void note_car_obtained(int64_t car_id, bool purchased);
+  // Achievements 211/214: the Horizon Rally stage being driven.
+  drive::RallyStageSignals rally_stage_signals;
   CareerSummary career_summary(std::vector<cars::PackInfo>& packs);
   CareerBoard career_board(const CareerPage& page);
   size_t garage_picker();

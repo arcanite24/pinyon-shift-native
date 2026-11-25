@@ -690,6 +690,8 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 app.garage_picker();
                 app.write_career_garage();
                 ++app.saved.ach.autoshow_purchases;  // achievement 156
+                if (!app.career_garage.cars.empty())  // 208 and 215: the car just bought
+                  app.note_car_obtained(app.career_garage.cars.back().car_id, true);
                 save_now("purchase");
                 const drive::Vec3 at = vehicle.position();
                 const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
