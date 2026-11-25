@@ -49,6 +49,7 @@
 #include "photo_mode.h"
 #include "platform_support.h"
 #include "race/campaign_flow.h"
+#include "race/reset_rules.h"
 #include "race_view.h"
 #include "replay_view.h"
 #include "safe_reset.h"
@@ -177,14 +178,14 @@ struct DriveSession {
     double dest_x = 0.0, dest_z = 0.0;
   };
 
-  // Retail FH1 smooth Reset-to-Road UX state machine:
-  // ~0.25 s fade-out -> safe road-centerline reposition with zero velocity & camera
-  // re-center -> ~0.30 s fade-in with ~2.5 s brief ghosting / traffic-collision immunity.
+  // Reset-to-Road UX state machine, timed by GameTunableSettings.ini
+  // [HandOfGodReset] (reset_timing): FadeOutTime fade-out -> safe
+  // road-centerline reposition with zero velocity & camera re-center ->
+  // FadeInTime fade-in. Car contact is off for CollisionsOffTime from the
+  // start of the fade-out and for PostResetNonCollideTime after the
+  // reposition (the split between the two timers is inferred from their
+  // names, not traced).
   struct ResetToRoadState {
-    static constexpr double kFadeOutSec = 0.25;
-    static constexpr double kFadeInSec = 0.30;
-    static constexpr double kGhostSec = 2.50;
-
     enum class Phase : uint8_t { kIdle = 0, kFadeOut, kFadeIn };
     Phase phase = Phase::kIdle;
     double elapsed_s = 0.0;
@@ -197,8 +198,13 @@ struct DriveSession {
     std::string pending_notice;
 
     bool active() const { return phase != Phase::kIdle; }
-    bool ghost_active() const { return ghost_remaining_s > 0.0 || phase != Phase::kIdle; }
+    // No car contact: the post-reset window, or the first `collisions_off`
+    // s of the fade-out.
+    bool ghost_active(double collisions_off) const {
+      return ghost_remaining_s > 0.0 || (phase == Phase::kFadeOut && elapsed_s < collisions_off);
+    }
   };
+  race::HandOfGodReset reset_timing;  // loaded with the session (fallbacks: the file's values)
 
   DriveApp& app;
   DriveWorldHost& host;

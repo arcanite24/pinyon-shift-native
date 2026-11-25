@@ -444,6 +444,16 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   const auto opp = race::opponent_slots(player_slot_, cars - 1);
   race::Session::Options sopt;
   sopt.player_index = size_t(cars - 1);  // start-line Hand-of-God launch grace (< 25 s && !has_launched)
+  {
+    // GameTunableSettings.ini [HandOfGodReset]: the reset's fades, its
+    // collision windows and the respawn speed (OptimalSpeedScale).
+    std::string he;
+    hand_of_god_ = {};
+    if (!race::load_hand_of_god_reset(root, hand_of_god_, &he))
+      std::fprintf(stderr, "race: note: [HandOfGodReset] not read (%s): its values as fallbacks\n", he.c_str());
+    for (const auto& k : hand_of_god_.missing) std::fprintf(stderr, "race: note: no %s\n", k.c_str());
+    race::apply_hand_of_god(hand_of_god_, sopt);
+  }
   if (street_ || race::event_uses_traffic(event_.career_type)) {
     // Street & Nemesis open roads have wider shoulders/intersections than closed festival ribbons.
     sopt.off_route_near = 12.0;
@@ -1151,7 +1161,7 @@ void RaceView::reset_car_to_progress(drive::Vehicle& v, size_t i, double p, cons
   if (i < cars_.size()) cars_[i].far = !inside;
   double gy = y;
   if (world::ground_height(g, x, z, y + 5, gy)) y = gy;
-  const double speed = 0.5 * field_->planned_speed(i, p);
+  const double speed = hand_of_god_.optimal_speed_scale * field_->planned_speed(i, p);  // OptimalSpeedScale
   v.launch({x, y + 0.05, z}, h, speed);
   field_->set_lane(i, 0);
   if (i < lanes_.size()) lanes_[i] = 0;

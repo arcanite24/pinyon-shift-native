@@ -151,7 +151,15 @@ void Session::reset_done(size_t i) {
   c.wrong = c.slow = c.off5 = c.off15 = c.rolled = 0;
   c.reset_fade_out = 0.0;
   c.reset_fade_in_timer = std::max(0.0, o_.reset_fade_in);
-  c.no_collide_until = clock_ + 3.0;  // PostResetNonCollideTime
+  c.collisions_off = false;
+  c.no_collide_until = clock_ + o_.post_reset_non_collide;
+}
+
+void apply_hand_of_god(const HandOfGodReset& h, Session::Options& o) {
+  o.reset_fade_out = h.fade_out;
+  o.reset_fade_in = h.fade_in;
+  o.post_reset_non_collide = h.post_reset_non_collide;
+  o.collisions_off = h.collisions_off;
 }
 
 double Session::reset_fade_alpha(size_t i) const {
@@ -235,6 +243,11 @@ void Session::step(double dt, std::span<const CarSample> s) {
       } else {
         c.reset_fade_out = 0.0;
       }
+      // CollisionsOffTime (inferred from the name, not traced): the car
+      // stops touching other cars over the last CollisionsOffTime before
+      // it is put back, the window the fade-out covers; contact returns
+      // if the trigger clears first.
+      c.collisions_off = min_rem < o_.collisions_off;
       c.reason = c.rolled >= o_.rollover_time ? "rolled over"
                : c.wrong >= 3                 ? "wrong way"
                : c.slow >= 3                  ? "no progress"
@@ -244,6 +257,7 @@ void Session::step(double dt, std::span<const CarSample> s) {
       if (*c.reason) resets_.push_back(i);
     } else {
       c.reset_fade_out = 0.0;
+      c.collisions_off = false;
     }
   }
   const auto ord = order();

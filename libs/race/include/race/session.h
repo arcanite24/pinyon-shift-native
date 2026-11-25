@@ -15,6 +15,7 @@
 
 #include "drive/ai_driver.h"
 #include "drive/vehicle.h"
+#include "race/reset_rules.h"
 #include "race/route.h"
 
 namespace race {
@@ -64,8 +65,12 @@ class Session {
     double off_route_far = 15.0;      // m off route for 3 s timer (widened to 25.0 m in Street/Nemesis)
     double start_launch_grace = 25.0; // s after start signal before resetting an unlaunched player
     size_t player_index = size_t(-1); // car index given start-line launch grace (size_t(-1): none)
-    double reset_fade_out = 2.0;      // SPEC-EVENTS: 2 s fade out leading into reset
-    double reset_fade_in = 1.0;       // SPEC-EVENTS: 1 s fade in after reset_done
+    // The reset's timings, GameTunableSettings.ini [HandOfGodReset] (set
+    // them from the file with apply_hand_of_god; these are its values):
+    double reset_fade_out = 2.0;          // FadeOutTime: the fade leading into the reset
+    double reset_fade_in = 1.0;           // FadeInTime: the fade after reset_done
+    double post_reset_non_collide = 3.0;  // PostResetNonCollideTime: no car contact after reset_done
+    double collisions_off = 2.0;          // CollisionsOffTime: no car contact leading into the reset
   };
   struct Car {
     int crossings = 0;
@@ -86,6 +91,7 @@ class Session {
     bool has_launched = false;       // true once car has moved off the grid after signal
     double reset_fade_out = 0.0;     // [0..1] fade-out ramp before Hand-of-God trigger
     double reset_fade_in_timer = 0.0;// s remaining in post-reset fade-in
+    bool collisions_off = false;     // within CollisionsOffTime of a pending reset
   };
   struct Snapshot {
     std::vector<Car> cars;
@@ -122,7 +128,9 @@ class Session {
   // A checkpoint race (SPEC-EVENTS): the finish does not count for car i
   // while held (an earlier checkpoint not passed).
   void hold_finish(size_t i, bool held) { cars_[i].finish_held = held; }
-  bool collides(size_t i) const { return clock_ >= cars_[i].no_collide_until; }
+  // Car-to-car contact: off for PostResetNonCollideTime after reset_done
+  // and for the CollisionsOffTime leading into a reset.
+  bool collides(size_t i) const { return clock_ >= cars_[i].no_collide_until && !cars_[i].collisions_off; }
   // Visibility factor [0, 1] across Hand-of-God 2 s fade-out and 1 s post-reset fade-in.
   double reset_fade_alpha(size_t i) const;
   // Marks car i's current lap & race uncertified (SPEC-REWIND section 5).
@@ -152,6 +160,9 @@ class Session {
   Options o_;
   double clock_;
 };
+
+// The [HandOfGodReset] block into the session's reset options.
+void apply_hand_of_god(const HandOfGodReset& h, Session::Options& o);
 
 // SPEC-RACE-AI, Traffic between cars (interim): each AI car keeps its line
 // while the car ahead is further than its trailing distance; closer and
