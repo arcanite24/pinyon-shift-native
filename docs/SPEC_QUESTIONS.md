@@ -3512,3 +3512,25 @@ Inferred, not read from code:
 
 Needed: the radio's handling of `enable_radio_silent_idents`, the diner's
 `musicTrack`, and whether CRadioDJImmediate checks the DJ switch.
+## Q162 (PROG-13, answered): the popularity header word against a displayed rank
+
+Supersedes Q60's "Not yet compared with a rank the game displays." Q60's
+reading (the first u32 of `SponsorshipState` is the popularity points) now
+has one displayed rank behind it.
+
+The original's stats screen (`26_my_profile_stats_orig.png` in the audit's
+captures, General tab) shows POPULARITY LEVEL 166th. It was taken on the
+recomp seed `appdata-2026-09-27`. That seed's `ForzaProfile` matches the
+hash in its `seed.json`. A copy was decrypted with the recomp's
+`profile-export.py` and read with the engine's `profile-import`
+(`profile::popularity_points_from_sponsorship_state`). The save is the one
+on screen: credits 167,700 and 6 garage cars, as the capture shows.
+
+- Header word: 456,480. On Fame.xml that is rank 166 (target 450,682).
+  Rank 165 needs 456,840, so the window is 6,158 points wide and the word
+  sits 360 points short of the next rank.
+- The `Fame` child's first word is 3: the Fame-sponsor tiers at or above
+  rank 166 (225, 200, 175), as Q60's rule predicts.
+
+The reader is unchanged. The f32 at header +8 and the zero word stay open
+(Q60).
