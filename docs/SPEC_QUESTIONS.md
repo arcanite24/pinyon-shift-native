@@ -2294,9 +2294,22 @@ engine damage, not the rev limiter. PhysicsSettings.ini gives
 interim:
 
 - **Rate rule.** Sputters are evenly spaced. Their rate rises linearly
-  from 0 at the start level to the maximum at full damage. The
+  from 0 at the start level to the maximum at full damage. ~~The
   original's rule between those two values is not decoded, and it may
-  be random.
+  be random.~~ Decoded (2026-11-25), and only the spacing differs:
+  - **The rate.** Each frame, the rate is EngineDamageMaxSputtersPerSec
+    x clamp((damage - start) / (1 - start), 0, 1), with damage clamped
+    to 0..1. It is halved unless a car setting next to the steering mode
+    reads 2; that setting is not identified (possibly the damage mode).
+  - **The trigger.** A sputter starts when a uniform random draw is
+    below rate x dt. The draw comes from the car's own linear
+    congruential generator (x' = x x 1103515245 + 12345, 15 bits).
+  - **The sputter.** It lasts 0.08 s, and for that time the throttle is
+    forced to 0.
+
+  So the original sputter is a 0.08 s throttle cut at random (Poisson)
+  times, not only a rumble event. The engine has the even spacing and no
+  throttle cut.
 - **Damage level.** The damage level is the engine's own damage model
   (FEEL-19 to FEEL-23, owned by another branch).
 
