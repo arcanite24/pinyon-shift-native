@@ -290,6 +290,12 @@ bool DriveSession::map_travel_quote(const MapMarker& m, int64_t& cost) {
   return true;
 }
 
+int64_t DriveSession::outpost_travel_fee(const std::string& outpost_id) {
+  if (slice12.trainer.effective_fast_travel_anywhere() || !app.have_outposts) return 0;
+  const auto om = freeroam::outpost_missions(app.outposts, app.outpost_progress, outpost_id);
+  return freeroam::quote_fast_travel(tunables(app), "gas_station", om.total, om.done, app.career.credits).cost;
+}
+
 void DriveSession::map_fast_travel_request() {
   int64_t cost = 0;
   if (map_selected_marker < 0 || size_t(map_selected_marker) >= cached_map_markers.size()) {

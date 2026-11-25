@@ -956,11 +956,10 @@ bool DriveSession::handle_events_and_outpost_event(const SDL_Event& e) {
                       notice = "QUIT RACE TO FAST TRAVEL";
                       notice_until = vehicle.time() + 3.0;
                     } else {
-                      const bool ft_free = (item.kind == OutpostHubItem::kFastTravelFestival) ||
-                                           slice12.trainer.effective_fast_travel_anywhere() ||
-                                           (app.have_outposts &&
-                                            app.outpost_progress.is_outpost_fast_travel_free(app.outposts, item.ref_id));
-                      const int64_t ft_fee = ft_free ? 0 : 10000LL;
+                      // The map's rule: the festival places are free, an
+                      // outpost costs less for each of its missions done.
+                      const int64_t ft_fee =
+                          item.kind == OutpostHubItem::kFastTravelFestival ? 0 : outpost_travel_fee(item.ref_id);
                       if (ft_fee > 0 && app.career.credits < ft_fee) {
                         notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
                         notice_until = vehicle.time() + 3.5;

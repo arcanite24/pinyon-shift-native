@@ -570,6 +570,7 @@ struct DriveSession {
   bool map_screen_event(const SDL_Event& e);
   void map_cursor_world();
   bool map_travel_quote(const MapMarker& m, int64_t& cost);
+  int64_t outpost_travel_fee(const std::string& outpost_id);  // the original's fee (freeroam/fast_travel.h)
   void map_fast_travel_request();
   void map_fast_travel_confirm();
   void map_travel_to(double x, double z, double heading);
