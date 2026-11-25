@@ -665,6 +665,16 @@ int main() {
       carview::ui::List l;
       check(carview::draw_loading_scene(l, lh, float(W), float(H)), "draw " + file);
       carview::ui::rasterize(l.items(), fb, W, H);
+      if (!lh.backdrop.empty()) {
+        // PLEASE WAIT over the backdrop (03_loading_tip_orig.png: 992..1150 x 646..664).
+        int lit = 0;
+        for (uint32_t y = 646; y < 664; ++y)
+          for (uint32_t x = 992; x < 1150; ++x) {
+            const uint8_t* p = &fb[(size_t(y) * W + x) * 4];
+            lit += p[0] > 235 && p[1] > 235 && p[2] > 235;
+          }
+        check(lit > 200, file + ": PLEASE WAIT drawn over the backdrop");
+      }
       const auto p = out_dir / file;
       check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + file);
     };

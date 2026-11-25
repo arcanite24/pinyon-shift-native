@@ -169,13 +169,14 @@ bool draw_loading_scene(ui::List& l, const LoadingSceneHud& hud, float w, float 
   // The backdrop over the whole screen (the scene's BG fills the canvas;
   // wider screens get the bars filled black first). None: the card alone
   // (over the original's frame in the corpus test).
+  // BG draws first, alone: its depth would put it over Info.
   if (const int bg = sc.node("BG"); bg >= 0) {
-    if (hud.backdrop.empty()) {
-      sc.hide(bg);
-    } else {
+    if (!hud.backdrop.empty()) {
       l.rect(0, 0, w, h, ui::rgba(0, 0, 0));
       sc.at(bg).texture = hud.backdrop;
+      sc.draw(l, f, bg);
     }
+    sc.hide(bg);
   }
 
   // The tip's title on its black tapes.
