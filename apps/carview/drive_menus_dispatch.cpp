@@ -1055,8 +1055,7 @@ void DriveSession::run_pause_action(PauseMenu::Action act) {
               app.rally_service_open = false;
               app.rally_hub_open = true;
             }
-            app.leave_race = true;
-            running = false;
+            begin_race_quit();
           }
           if (act == PauseMenu::kQuitToTitle) {
             app.pending_event_loaner_car.clear();

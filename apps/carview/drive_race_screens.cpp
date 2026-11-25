@@ -222,10 +222,18 @@ void DriveSession::update_race_screens(double dt) {
     pre_race_blend_t = 0.0;
     race_screens.stop();
   }
-  // The finish: the banner when the player crosses the line.
-  if (!grid_menu_open && !race_screens.active() && results_page == 0 && app.race->player_finished())
-    race_screens.start({S::kFinishBanner});
-  if (race_screens.screen() == S::kDone && !app.leave_race) finish_race_screens();
+  if (race_quitting) {
+    // QUIT RACE: after the black-out, the load (kDone holds the black).
+    if (race_screens.screen() == S::kDone && !app.leave_race) {
+      app.leave_race = true;
+      running = false;
+    }
+  } else {
+    // The finish: the banner when the player crosses the line.
+    if (!grid_menu_open && !race_screens.active() && results_page == 0 && app.race->player_finished())
+      race_screens.start({S::kFinishBanner});
+    if (race_screens.screen() == S::kDone && !app.leave_race) finish_race_screens();
+  }
   sync_race_cutscene();
   (void)race_cuts.update(dt, false);
 }
@@ -339,10 +347,7 @@ void DriveSession::grid_menu_accept() {
       return;
     case GridRow::kQuitRace:
       app.audio_host.trigger_ui(audio::UiCue::kAccept);
-      grid_menu_open = false;
-      race_screens.stop();
-      app.leave_race = true;
-      running = false;
+      begin_race_quit();
       return;
   }
 }
@@ -417,6 +422,18 @@ void DriveSession::race_back() {
     app.audio_host.trigger_ui(audio::UiCue::kCancel);
     race_screens.next();
   }
+}
+
+void DriveSession::begin_race_quit() {
+  // interim (SPEC_QUESTIONS Q172): QUIT RACE, from the grid or the pause
+  // menu, fades to black as the race's other exits do before the load
+  // (post_steps with quit: kBlackOut, kDone).
+  grid_menu_open = false;
+  race_flow::PostFacts f;
+  f.kind = race_kind(app);
+  f.quit = true;
+  race_screens.start(race_flow::post_steps(f));
+  race_quitting = true;
 }
 
 void DriveSession::finish_race_screens() {

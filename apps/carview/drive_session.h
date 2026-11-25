@@ -451,6 +451,7 @@ struct DriveSession {
   // (race_screens).
   race_flow::Flow entry_screens;
   race_flow::Flow race_screens;
+  bool race_quitting = false;  // QUIT RACE: the black-out runs, then the load
   // The pre-race rival callout (prerace_nemesis): the field's first star
   // driver (AIPlayers.Nemesis) and its BEAT THE STAR reward.
   std::string race_rival_name;
@@ -740,6 +741,7 @@ struct DriveSession {
   void grid_menu_accept();
   void race_back();
   void finish_race_screens();
+  void begin_race_quit();
   void update_driving_line_overlay();
   void start_new_career();
   bool map_marker_visible(const MapMarker& m);
