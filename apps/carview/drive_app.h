@@ -208,8 +208,9 @@ struct DriveApp : DriveConfig {
   std::string next_event;
   std::string next_event_fallback;
   bool leave_race = false;
-  // The next world load is out of an event (its load screen holds
-  // LoadingScreen::kEventMinSeconds, as the original's does).
+  // The next world load is into an event (not a restart) or out of one: its
+  // load screen holds LoadingScreen::kEventMinSeconds, as the original's does.
+  bool loading_into_event = false;
   bool loading_out_of_event = false;
   // The next race is a restart (PreRace_restart: the grid menu only).
   bool race_restart = false;

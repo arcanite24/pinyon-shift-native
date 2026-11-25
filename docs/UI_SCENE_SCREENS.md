@@ -351,7 +351,7 @@ The boot plays the original's two splashes, `T10_MS_Combined` then
   `festival_heats` for a qualifier, `streetrace`, `showcase`, else
   `festivalevent` (`loading_group_for_event`).
 - **Timing.** The load from the title into free roam holds 1 s at least,
-  loads into and out of an event 3 s, fast travel none
+  loads into and out of an event 3 s, fast travel and a restart none
   (`LoadingScreen::kTitleMinSeconds`, `kEventMinSeconds`).
 - **Sound.** Loads use the Loading mix: the radio ducked to 0.25, no menu
   music bed, no VO.

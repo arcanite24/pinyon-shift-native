@@ -948,8 +948,8 @@ bool DriveWorldHost::hot_reload_car_and_world() {
         // world regather work is required so SDL events stay responsive and the window never freezes.
         // Into and out of an event the original holds its load screen
         // kEventMinSeconds (fast travel and the rest: none).
-        const bool event_load = app.race != nullptr || app.loading_out_of_event;
-        app.loading_out_of_event = false;
+        const bool event_load = app.loading_into_event || app.loading_out_of_event;
+        app.loading_into_event = app.loading_out_of_event = false;
         const double hot_min_s = event_load ? LoadingScreen::kEventMinSeconds : 0.0;
         const bool hot_live_ui =
             (need_car_reload || need_regather || event_load) && !app.headless && !app.bench && app.window != nullptr;

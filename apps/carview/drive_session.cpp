@@ -1049,6 +1049,7 @@ void DriveSession::finalize_session(bool& session_again) {
           }
           if (!opened_id.empty()) {
             app.race_event = opened_id;
+            if (!app.race_restart) app.loading_into_event = true;
             std::printf("race: %s via session hot-reload\n", opened_id.c_str());
           } else {
             std::fprintf(stderr, "carview: event %s: %s\n", id.c_str(), why.c_str());
