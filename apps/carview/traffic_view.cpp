@@ -204,6 +204,19 @@ void TrafficView::publish_camera_obbs(const drive::Vec3& player_pos) const {
 
 void TrafficView::step(drive::Vehicle& player, std::span<const traffic::ExternalVehicle> obstacles) {
   if (!population_) return;
+  if (!civilian_) {
+    // Civilian traffic off: the cars and their bodies go, nothing spawns.
+    if (!population_->cars().empty() || (bodies_ && bodies_->count())) {
+      auto s = population_->snapshot();
+      s.cars.clear();
+      s.junction_reservations.clear();
+      population_->restore(s);
+      if (bodies_) bodies_->restore({});
+      before_.clear();
+    }
+    publish_camera_obbs(player.position());
+    return;
+  }
   std::map<uint32_t, TrafficPose> snap;
   for (const auto& c : population_->cars()) {
     const drive::Vehicle* body = bodies_ ? bodies_->body(c.id) : nullptr;

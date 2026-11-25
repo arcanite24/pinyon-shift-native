@@ -91,8 +91,26 @@ drive::Input DriveSession::ftc_autopilot_input() {
       x.push_back(float(p.x));
       z.push_back(float(p.z));
     }
+    // The sat-nav's points are tens of metres apart: their corners are
+    // rounded off (two passes of corner cutting) so the line's curvature,
+    // and the speed planned from it, is the bend's rather than a straight.
+    for (int pass = 0; pass < 2 && x.size() >= 3; ++pass) {
+      std::vector<float> sx{x.front()}, sz{z.front()};
+      for (size_t i = 0; i + 1 < x.size(); ++i) {
+        sx.push_back(0.75f * x[i] + 0.25f * x[i + 1]);
+        sz.push_back(0.75f * z[i] + 0.25f * z[i + 1]);
+        sx.push_back(0.25f * x[i] + 0.75f * x[i + 1]);
+        sz.push_back(0.25f * z[i] + 0.75f * z[i + 1]);
+      }
+      sx.push_back(x.back());
+      sz.push_back(z.back());
+      x = std::move(sx);
+      z = std::move(sz);
+    }
     ap.field.reset();
-    ap.line = drive::RacingLine::from_points(x, z);
+    // A road car on a public road: cornering kept well inside the grip, and
+    // no faster than the 100 mph the opening places it at (interim).
+    ap.line = drive::RacingLine::from_points(x, z, 6.5, 4.0, 6.0, 100.0 * cutscene::kMphToMps);
     if (ap.line.size() < 2) return drive::Input{};
     ap.field = std::make_unique<drive::AiField>(ap.line, size_t(1), drive::AiField::Options{});
     const drive::Vec3 p = vehicle.position();
@@ -185,6 +203,7 @@ void DriveSession::apply_first_time_career() {
       if (traffic) traffic->set_hour(app.tod_clock.hour());
     }
     if (cmd.set_time_locked) app.tod_clock.paused = cmd.time_locked;
+    if (cmd.set_civilian_traffic && traffic) traffic->set_civilian(cmd.civilian_traffic);
     if (cmd.give_money) app.career.credits += cmd.give_money;
     if (!cmd.achievement.empty()) {
       // ACHIEVEMENT_<NAME>: the achievement list's entry of that name.

@@ -48,6 +48,10 @@ class TrafficView {
   void step(drive::Vehicle& player, std::span<const traffic::ExternalVehicle> obstacles = {});
   // Fraction of a step past the last one (1.0: as stepped).
   void set_blend(double alpha) { blend_ = alpha; }
+  // Civilian traffic on or off (a scripted flow's CSetCivilianTraffic): off
+  // clears the road and spawns nothing until it is back on.
+  void set_civilian(bool on) { civilian_ = on; }
+  bool civilian() const { return civilian_; }
   // The guests' loads and the host's instances for this frame (player's
   // car model frame).
   void place(const cars::bake::CarInfo& player_info, const drive::Vehicle& player);
@@ -96,6 +100,7 @@ class TrafficView {
   std::filesystem::path bake_dir_;
   std::filesystem::path game_root_;
   bool sync_;
+  bool civilian_ = true;
   traffic::NavMap map_;
   traffic::Roads roads_;
   traffic::TrafficConfig config_;
