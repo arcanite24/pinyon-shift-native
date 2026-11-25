@@ -2002,9 +2002,18 @@ Open points:
   that cap removed (the 0.14 m bump-stop cap kept) the AI finishes with
   the mod in 41.532 s (+7.09 %, cross-track max 5.34 m); removing only
   the 0.14 m cap still DNFs. Without the mod, removing both caps leaves
-  the lap at 39.258 s. The exemption stays until the load cap can go,
-  which needs the kerb step of Q101 solved first; the 7 % that remains
-  is the chatter.
+  the lap at 39.258 s.
+
+  The load cap now applies only to a wheel more than 5 cm into its bump
+  stop (Q101). The lap's bump-stop hits at 855 m reach 1.4 cm, at
+  under 1 m/s, so they are no longer capped. The kerb test is unchanged
+  (2.696 m/s up). With the mod the AI now finishes, but in 41.532 s
+  (+7.09 %; target 38.78 s +-1 %); without it, 39.258 s. The lost
+  2.7 s is almost all between 840 and 1040 m, where the AI weaves
+  through the left-right transition (yaw 9 deg off at 800 m, then 55 and
+  -19 deg where the run without the mod reads 37 and -3 deg) and runs up
+  to 7 m/s slower. That is our AI controller against the mod's unequal
+  clamps on the chattering loads, not the caps. The exemption stays.
 
 ## Q69 (FEEL-16/17, not blocking): the pad steering filter's law
 
@@ -2370,10 +2379,14 @@ With Car/HardWorld:
 Still interim:
 
 - **Suspension clamps.** The bump stop's 0.14 m over-compression cap and
-  the wheel load cap `max(4 x preload, 1.1 m g)` stay. A raycast wheel
-  meeting a step higher than its axle jumps onto it in one substep.
-  Without the caps, the 0.35 m kerb at 90 km/h throws the car 2.3 m up at
-  6.2 m/s. The original's wheel query on such steps is not decoded.
+  the wheel load cap `max(4 x preload, 1.1 m g)` stay, the load cap now
+  only for a wheel more than 5 cm into its bump stop (the 5 cm is ours).
+  A raycast wheel meeting a step higher than its axle jumps onto it in
+  one substep. Without the caps, the 0.35 m kerb at 90 km/h throws the
+  car 2.3 m up at 6.2 m/s. Applied to every wheel, the load cap also
+  clipped ordinary cornering loads (the oracle lap's bump-stop hits
+  reach 1.4 cm) and spun the AI under FrictionTorqueMod (Q68). The
+  original's wheel query on such steps is not decoded.
 - **Rate.** The contact runs every substep (359 Hz). That the original's
   contact chain runs at the same rate is assumed.
 - **Friction noise.** The pair's friction noise (`FrictionNoiseFreqScale`,

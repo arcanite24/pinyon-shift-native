@@ -1442,16 +1442,20 @@ void Vehicle::substep(double dt, const Ground& ground) {
       load = preload_[i] + p.spring_rate[a] * susp_s * compression + damper;
       if (compression > p.bump_travel[a]) {
         // Interim (ours, SPEC_QUESTIONS Q101): the bump stop takes at most
-        // 0.14 m and a wheel at most max(4 x preload, 1.1 m g). A raycast
-        // wheel meeting a step higher than its axle jumps onto it in one
-        // substep; without these a 0.35 m kerb at 90 km/h still throws the
-        // car 2 m up (the body's contacts no longer do). The original's
-        // wheel query on such steps is not decoded.
+        // 0.14 m, and a wheel more than 5 cm into it at most max(4 x
+        // preload, 1.1 m g). A raycast wheel meeting a step higher than its
+        // axle jumps onto it in one substep; without these a 0.35 m kerb at
+        // 90 km/h still throws the car 2 m up (the body's contacts no longer
+        // do). Driving loads stay uncapped: the oracle lap's bump-stop hits
+        // reach 1.4 cm, and capping them spun the AI under
+        // FrictionTorqueMod (Q68). The original's wheel query on such steps
+        // is not decoded.
         const double over_comp = std::min(compression - p.bump_travel[a], 0.14);
         const double bs_damp = std::min(p.bumpstop_damping[a] * std::max(0.0, rate[i]), p.damper_clamp[a]);
         load += p.bumpstop_rate[a] * over_comp + bs_damp;
+        if (compression - p.bump_travel[a] > 0.05)
+          load = std::min(load, std::max(4.0 * preload_[i], 1.1 * p.mass * p.gravity));
       }
-      load = std::min(load, std::max(4.0 * preload_[i], 1.1 * p.mass * p.gravity));
     }
     w.load = load;
     w.centre = {p.wheel_centres[i].x,
@@ -1992,8 +1996,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
   // SimulationSteering in Simulation steering, else WithAssists or NoAssists
   // (the shipped rows are equal). The original runs it for every car; ours
   // skips AI-driven cars for now (interim, Q68): our suspension's wheel loads
-  // chatter, and with the wheel load cap (Q101) clipping them the unequal
-  // Turn/Straighten clamps spin the AI on the oracle lap.
+  // chatter, and the unequal Turn/Straighten clamps make the AI weave through
+  // the oracle lap's left-right transition, 7 % slower.
   if (!ai_) {
     const double t_yaw = dot(tyre_torque, up);
     const Vec3 fwd_w = rotate(rot_, {0, 0, 1});
