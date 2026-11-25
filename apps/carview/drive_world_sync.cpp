@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -12,6 +13,20 @@
 #include "world/road_follow.h"
 
 namespace carview {
+namespace {
+
+// Per-car overhead roof probe (35 m upward BVH raycast) so AI/traffic/replay
+// vehicles toggle tunnel headlamps based on their own roof occlusion rather
+// than mirroring the player's audio tunnel flag across Colorado.
+bool is_under_tunnel_roof(const drive::Ground* ground, const drive::Vec3& pos) {
+  if (!ground) return false;
+  if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) return false;
+  drive::Hit hit{};
+  if (!ground->raycast({pos.x, pos.y + 1.6, pos.z}, {0.0, 1.0, 0.0}, 35.0, hit)) return false;
+  return hit.distance >= 0.5 && std::fabs(hit.normal.y) > 0.40;
+}
+
+}  // namespace
 
 void DriveSession::open_replay_viewer(bool browser_if_empty) {
         if (replay_rec.frame_count() >= 2) {
@@ -80,8 +95,7 @@ void DriveSession::place_world() {
           std::vector<Showroom::Instance> rmore;
           const uint32_t focus_slot = replay_viewer.focus_slot();
           const bool hide_focus_bumper = replay_viewer.camera_mode() == ReplayCameraMode::kBumper;
-          const bool night_lamps =
-              drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec) || app.audio_host.in_tunnel();
+          const bool tod_night_lamps = drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec);
           const auto& all_rcars = replay_viewer.current_cars();
           // Process the focused car first so it gets priority for the 1-per-frame guest upload budget.
           std::vector<size_t> order;
@@ -94,7 +108,7 @@ void DriveSession::place_world() {
           }
           int uploads_this_frame = 0;
           constexpr float kTwoPi = 6.28318530717958647692f;
-          std::unordered_set<Showroom*> wheel_posed_guests;
+          std::unordered_set<Showroom*> claimed_guests;
           for (size_t idx : order) {
             const auto& rc = all_rcars[idx];
             // Slot 0 is always rendered by host.showroom (player car).
@@ -103,11 +117,26 @@ void DriveSession::place_world() {
             const auto* cinfo = replay_viewer.recording().find_car_info(rc.slot);
             std::string media = (cinfo && !cinfo->car_media.empty()) ? cinfo->car_media : app.car;
             const int64_t paint_seq = cinfo ? int64_t(cinfo->paint_index) : -1;
-            Showroom* guest_sr = app.race ? app.race->find_loaded_model(media, paint_seq) : nullptr;
+            // Claim a distinct guest Showroom per replay car so identical-model cars never
+            // overwrite each other's wheel steer, spin, omega blur, or suspension Y.
+            Showroom* guest_sr = app.race ? app.race->find_loaded_model(media, paint_seq, &claimed_guests) : nullptr;
             if (!guest_sr) {
-              const std::string gkey = paint_seq >= 0 ? (media + "#" + std::to_string(paint_seq)) : media;
-              auto it = festival_guests.find(gkey);
-              if (it == festival_guests.end() && paint_seq >= 0) it = festival_guests.find(media);
+              const std::string base_key = paint_seq >= 0 ? (media + "#" + std::to_string(paint_seq)) : media;
+              const std::string slot_key = base_key + "@slot" + std::to_string(rc.slot);
+              auto it = festival_guests.find(slot_key);
+              if (it == festival_guests.end()) {
+                auto it_base = festival_guests.find(base_key);
+                if (it_base != festival_guests.end() && it_base->second &&
+                    !claimed_guests.count(it_base->second.get())) {
+                  it = it_base;
+                } else if (paint_seq >= 0) {
+                  auto it_plain = festival_guests.find(media);
+                  if (it_plain != festival_guests.end() && it_plain->second &&
+                      !claimed_guests.count(it_plain->second.get())) {
+                    it = it_plain;
+                  }
+                }
+              }
               if (it == festival_guests.end() && festival_guests.size() < 24 && uploads_this_frame < 1) {
                 ++uploads_this_frame;
                 auto gs = std::make_unique<Showroom>(host.renderer);
@@ -121,16 +150,27 @@ void DriveSession::place_world() {
                 std::string ge;
                 if (gs->load(app.bake_dir, media, opt, ge) && gs->upload(ge)) {
                   gs->load_car_lamps(app.game_root_of(), media);
-                  it = festival_guests.emplace(gkey, std::move(gs)).first;
+                  it = festival_guests.emplace(slot_key, std::move(gs)).first;
                 } else {
-                  it = festival_guests.emplace(gkey, nullptr).first;
+                  it = festival_guests.emplace(slot_key, nullptr).first;
                 }
               }
               if (it != festival_guests.end() && it->second) guest_sr = it->second.get();
+              // Temporary fallback while an extra slot clone awaits the 1-per-frame upload budget.
+              if (!guest_sr) {
+                if (app.race) guest_sr = app.race->find_loaded_model(media, paint_seq);
+                if (!guest_sr) {
+                  if (auto it_b = festival_guests.find(base_key); it_b != festival_guests.end() && it_b->second) {
+                    guest_sr = it_b->second.get();
+                  } else if (auto it_m = festival_guests.find(media); it_m != festival_guests.end() && it_m->second) {
+                    guest_sr = it_m->second.get();
+                  }
+                }
+              }
             }
             if (!guest_sr) continue;
             // Forward recorded wheel steer, spin, angular speed, and suspension Y to the guest car.
-            if (wheel_posed_guests.insert(guest_sr).second) {
+            if (claimed_guests.insert(guest_sr).second) {
               const auto& rest = guest_sr->car().wheel_centres_body;
               bool have_rec_wheels = false;
               for (int wi = 0; wi < 4; ++wi) {
@@ -173,7 +213,10 @@ void DriveSession::place_world() {
               }
             drive::CarLampState ls = (rc.lamp_bits != 0u) ? drive::unpack_replay_lamps(rc.lamp_bits) : drive::CarLampState{};
             if (rc.lamp_bits == 0u) {
-              ls.headlamps_on = night_lamps;
+              const bool rc_in_tunnel =
+                  !tod_night_lamps &&
+                  is_under_tunnel_roof(host.ground, {double(rc.pos[0]), double(rc.pos[1]), double(rc.pos[2])});
+              ls.headlamps_on = tod_night_lamps || rc_in_tunnel;
               ls.brake_on = rc.brake_u8 > 20;
               ls.reverse_on = rc.gear < 0;
             }
@@ -216,13 +259,15 @@ void DriveSession::place_world() {
           world_to_player[15] = 1.0;
 
           std::vector<Showroom::Instance> fmore;
-          const bool fest_in_tunnel = app.audio_host.in_tunnel();
+          const bool fest_tod_lamps = drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec);
           const float fdt = float(tod_frame_dt > 0.0 ? std::clamp(tod_frame_dt, 0.0, 0.25) : 1.0 / 60.0);
           static const freeroam::FestivalManager* s_fest_lamp_owner = nullptr;
           static std::map<uint32_t, drive::CarLampState> s_fest_lamps;
+          static std::map<uint32_t, float> s_fest_wheel_spin;
           if (s_fest_lamp_owner != festival_mgr.get()) {
             s_fest_lamp_owner = festival_mgr.get();
             s_fest_lamps.clear();
+            s_fest_wheel_spin.clear();
           }
           {
             std::unordered_set<uint32_t> alive_fids;
@@ -230,15 +275,24 @@ void DriveSession::place_world() {
             for (auto it = s_fest_lamps.begin(); it != s_fest_lamps.end();) {
               it = alive_fids.count(it->first) ? std::next(it) : s_fest_lamps.erase(it);
             }
+            for (auto it = s_fest_wheel_spin.begin(); it != s_fest_wheel_spin.end();) {
+              it = alive_fids.count(it->first) ? std::next(it) : s_fest_wheel_spin.erase(it);
+            }
           }
-          static std::map<const Showroom*, float> s_fest_wheel_spin;
-          struct FestWheelDrive {
-            double dist2 = 1e30;
-            double speed = 0.0;
-            double steer = 0.0;
-          };
-          std::map<Showroom*, FestWheelDrive> fest_wheels;
           const drive::Vec3 ppos_f = vehicle.position();
+          // Process nearest roaming Festival AI cars first so they get priority for dedicated guest slots.
+          std::vector<size_t> fest_order;
+          fest_order.reserve(festival_mgr->cars().size());
+          for (size_t fi = 0; fi < festival_mgr->cars().size(); ++fi) fest_order.push_back(fi);
+          std::sort(fest_order.begin(), fest_order.end(), [&](size_t ia, size_t ib) {
+            const auto& a = festival_mgr->cars()[ia];
+            const auto& b = festival_mgr->cars()[ib];
+            const double da = (a.position.x - ppos_f.x) * (a.position.x - ppos_f.x) +
+                              (a.position.z - ppos_f.z) * (a.position.z - ppos_f.z);
+            const double db = (b.position.x - ppos_f.x) * (b.position.x - ppos_f.x) +
+                              (b.position.z - ppos_f.z) * (b.position.z - ppos_f.z);
+            return da < db;
+          });
           Showroom* fest_fallback = nullptr;
           for (const auto& [kname, gptr] : festival_guests) {
             if (gptr) {
@@ -246,9 +300,18 @@ void DriveSession::place_world() {
               break;
             }
           }
-          for (const auto& fc : festival_mgr->cars()) {
+          constexpr float kTwoPi = 6.28318530717958647692f;
+          std::map<std::string, size_t> fest_media_occ;
+          std::unordered_set<Showroom*> claimed_fest_guests;
+          for (size_t fi : fest_order) {
+            const auto& fc = festival_mgr->cars()[fi];
             if (!std::isfinite(fc.position.x) || !std::isfinite(fc.position.y) || !std::isfinite(fc.position.z)) continue;
-            auto it = festival_guests.find(fc.spec.car_media);
+            // Give each simultaneous Festival AI car of the same car_media its own guest Showroom
+            // slot so identical models never overwrite each other's wheel steer & spin poses.
+            const size_t occ = fest_media_occ[fc.spec.car_media]++;
+            const std::string gkey =
+                (occ == 0u) ? fc.spec.car_media : (fc.spec.car_media + "@dup" + std::to_string(occ));
+            auto it = festival_guests.find(gkey);
             if (it == festival_guests.end() && festival_guests.size() < 24) {
               auto gs = std::make_unique<Showroom>(host.renderer);
               gs->set_guest();
@@ -261,12 +324,18 @@ void DriveSession::place_world() {
               if (gs->load(app.bake_dir, fc.spec.car_media, opt, ge) && gs->upload(ge)) {
                 gs->load_car_lamps(app.game_root_of(), fc.spec.car_media);
                 if (!fest_fallback) fest_fallback = gs.get();
-                it = festival_guests.emplace(fc.spec.car_media, std::move(gs)).first;
+                it = festival_guests.emplace(gkey, std::move(gs)).first;
               } else {
-                it = festival_guests.emplace(fc.spec.car_media, nullptr).first;
+                it = festival_guests.emplace(gkey, nullptr).first;
               }
             }
-            Showroom* guest_sr = (it != festival_guests.end() && it->second) ? it->second.get() : fest_fallback;
+            Showroom* guest_sr = (it != festival_guests.end() && it->second) ? it->second.get() : nullptr;
+            if (!guest_sr && occ > 0u) {
+              if (auto it0 = festival_guests.find(fc.spec.car_media); it0 != festival_guests.end() && it0->second) {
+                guest_sr = it0->second.get();
+              }
+            }
+            if (!guest_sr) guest_sr = fest_fallback;
             if (!guest_sr) continue;
             const drive::Quat yq{0, std::sin(fc.heading * 0.5), 0, std::cos(fc.heading * 0.5)};
             const drive::Quat pq{std::sin(-fc.pitch * 0.5), 0, 0, std::cos(-fc.pitch * 0.5)};
@@ -291,11 +360,16 @@ void DriveSession::place_world() {
                 for (int kk = 0; kk < 4; ++kk) sum += world_to_player[kk * 4 + row] * gmd[col * 4 + kk];
                 inst.model[col * 4 + row] = float(sum);
               }
+            const double d2 = (fc.position.x - ppos_f.x) * (fc.position.x - ppos_f.x) +
+                              (fc.position.z - ppos_f.z) * (fc.position.z - ppos_f.z);
             // Persistent per-car CarLampState: 15-tick AI brake anti-flicker, staggered
-            // dusk/dawn headlamps, turn indicators, and reverse lights.
+            // dusk/dawn headlamps, per-car overhead tunnel roof probe, turn indicators, and reverse lights.
             const bool is_new_lamp = !s_fest_lamps.count(fc.id);
             drive::CarLampState& lstate = s_fest_lamps[fc.id];
             if (is_new_lamp) lstate.rng_state = 0x9E3779B9u ^ (fc.id * 2654435761u);
+            const bool car_in_tunnel =
+                !fest_tod_lamps && d2 < 220.0 * 220.0 &&
+                is_under_tunnel_roof(host.ground, {fc.position.x, fc.position.y, fc.position.z});
             drive::LampInputs lin{};
             lin.brake_cmd = (fc.braking || fc.speed < 0.25) ? 1.0f : 0.0f;
             lin.brake_pedal = lin.brake_cmd;
@@ -303,7 +377,7 @@ void DriveSession::place_world() {
             lin.tod_sec = app.tod_clock.tod_sec;
             lin.dt = fdt;
             lin.indicator_mode = fc.turn_left ? 1 : (fc.turn_right ? 2 : 0);
-            lin.light_override = fest_in_tunnel ? 1 : 0;
+            lin.light_override = car_in_tunnel ? 1 : 0;
             lin.is_ai = true;
             lin.snap_headlamps = is_new_lamp || app.headless;
             lstate.update(lin);
@@ -318,45 +392,38 @@ void DriveSession::place_world() {
               inst.has_paint = true;
             }
             fmore.push_back(inst);
-            const double d2 = (fc.position.x - ppos_f.x) * (fc.position.x - ppos_f.x) +
-                              (fc.position.z - ppos_f.z) * (fc.position.z - ppos_f.z);
-            auto& fw = fest_wheels[guest_sr];
-            if (d2 < fw.dist2) {
-              fw.dist2 = d2;
-              fw.speed = fc.speed;
-              fw.steer = fc.steer_angle;
-            }
-          }
-          constexpr float kTwoPi = 6.28318530717958647692f;
-          for (const auto& [guest_sr, fw] : fest_wheels) {
+
+            // Integrate per-car wheel spin and pose this car's dedicated guest Showroom.
             const auto& rest = guest_sr->car().wheel_centres_body;
             const float radius = std::clamp(rest[0][1], 0.26f, 0.55f);
-            const float omega = float(fw.speed) / radius;
-            float& spin = s_fest_wheel_spin[guest_sr];
+            const float omega = float(fc.speed) / radius;
+            float& spin = s_fest_wheel_spin[fc.id];
             spin = std::fmod(spin + omega * fdt, kTwoPi);
             if (spin < 0.0f) spin += kTwoPi;
-            WheelPose wposes[4]{};
-            for (int wi = 0; wi < 4; ++wi) {
-              wposes[wi].centre[0] = rest[size_t(wi)][0];
-              wposes[wi].centre[1] = rest[size_t(wi)][1];
-              wposes[wi].centre[2] = rest[size_t(wi)][2];
-              wposes[wi].steer = (wi < 2) ? float(fw.steer) : 0.0f;
-              wposes[wi].spin = spin;
-              wposes[wi].omega = omega;
+            if (claimed_fest_guests.insert(guest_sr).second) {
+              WheelPose wposes[4]{};
+              for (int wi = 0; wi < 4; ++wi) {
+                wposes[wi].centre[0] = rest[size_t(wi)][0];
+                wposes[wi].centre[1] = rest[size_t(wi)][1];
+                wposes[wi].centre[2] = rest[size_t(wi)][2];
+                wposes[wi].steer = (wi < 2) ? float(fc.steer_angle) : 0.0f;
+                wposes[wi].spin = spin;
+                wposes[wi].omega = omega;
+              }
+              guest_sr->set_wheel_poses(wposes);
             }
-            guest_sr->set_wheel_poses(wposes);
           }
           if (!fmore.empty()) host.showroom.add_instances(fmore);
         }
-        const bool in_tunnel = app.audio_host.in_tunnel();
+        const bool player_in_tunnel = app.audio_host.in_tunnel();
         static const DriveWorldHost* s_tunnel_host = nullptr;
         static float s_tunnel_blend = 0.0f;
         if (s_tunnel_host != &host || app.headless || tod_frame_dt <= 0.0) {
           s_tunnel_host = &host;
-          s_tunnel_blend = in_tunnel ? 1.0f : 0.0f;
+          s_tunnel_blend = player_in_tunnel ? 1.0f : 0.0f;
         } else {
           const float t_alpha = std::clamp(1.0f - std::exp(-float(tod_frame_dt) / 0.35f), 0.0f, 1.0f);
-          s_tunnel_blend += ((in_tunnel ? 1.0f : 0.0f) - s_tunnel_blend) * t_alpha;
+          s_tunnel_blend += ((player_in_tunnel ? 1.0f : 0.0f) - s_tunnel_blend) * t_alpha;
         }
         const float tunnel_t = std::clamp(s_tunnel_blend, 0.0f, 1.0f);
         const float active_near =
@@ -423,8 +490,8 @@ void DriveSession::place_world() {
             }
           }
           lin.indicator_mode = vehicle.is_rolled_over() ? 3 : s_ind_mode;
-          // Entering a tunnel automatically triggers daytime headlamps when in auto lamp mode.
-          lin.light_override = (light_override == 0 && in_tunnel) ? 1 : light_override;
+          // Entering a tunnel automatically triggers daytime headlamps on the player car when in auto lamp mode.
+          lin.light_override = (light_override == 0 && player_in_tunnel) ? 1 : light_override;
           lin.popup_open = app.headless ? 1.0f : host.showroom.popup_open();
           lin.snap_headlamps = app.headless;
           player_lamps.update(lin);
@@ -505,24 +572,18 @@ void DriveSession::place_world() {
             tod.fog_height_fade_start *= ft.height_fade_start;
             tod.fog_height_fade_end *= ft.height_fade_end;
           }
-          // Tunnel occlusion: suppress direct sun & sky-ambient bounce and illuminate tunnel/car lamps.
+          // Localized tunnel occlusion: preserve global outdoor Colorado ToD (sun_color, hl_top,
+          // hl_bottom, ambient_color, ibl_ambient_scale, shadow_intensity, switch_on_lights, and
+          // car_sun_color) intact so sunlit terrain outside tunnel portals stays bright and the
+          // shadow map occludes direct sunlight under the tunnel roof. Apply only subtle car
+          // sky-hemisphere ambient darkening (unused by world shaders) while the player is inside.
           if (tunnel_t > 0.001f) {
-            const float sun_keep = 1.0f - 0.85f * tunnel_t;
-            const float sky_keep = 1.0f - 0.72f * tunnel_t;
-            const float gnd_keep = 1.0f - 0.45f * tunnel_t;
-            const float amb_keep = 1.0f - 0.55f * tunnel_t;
+            const float car_sky_keep = 1.0f - 0.35f * tunnel_t;
+            const float car_gnd_keep = 1.0f - 0.20f * tunnel_t;
             for (int k = 0; k < 3; ++k) {
-              tod.sun_color[k] *= sun_keep;
-              tod.car_sun_color[k] *= sun_keep;
-              tod.hl_top[k] *= sky_keep;
-              tod.car_hl_top[k] *= sky_keep;
-              tod.hl_bottom[k] *= gnd_keep;
-              tod.car_hl_bottom[k] *= gnd_keep;
-              tod.ambient_color[k] *= amb_keep;
+              tod.car_hl_top[k] *= car_sky_keep;
+              tod.car_hl_bottom[k] *= car_gnd_keep;
             }
-            tod.ibl_ambient_scale *= amb_keep;
-            tod.switch_on_lights = std::max(tod.switch_on_lights, tunnel_t);
-            tod.shadow_intensity = tod.shadow_intensity * (1.0f - tunnel_t) - tunnel_t;
           }
           host.showroom.set_tod(tod, app.tod_clock.moon_phase(), float(vehicle.time()), float(vpos.y));
           if (app.post_on) {
@@ -617,7 +678,7 @@ void DriveSession::place_world() {
               // respecting parsed CameraExposureRange [exposure_min, exposure_max] (SKY_AND_TOD §5.2).
               const float ev_min = std::min(cfg.exposure_min, cfg.exposure_max);
               const float ev_max = std::max(cfg.exposure_min, cfg.exposure_max);
-              const float tunnel_ev = 0.65f * tunnel_t;
+              const float tunnel_ev = 0.35f * tunnel_t;
               ps.exposure = std::clamp(cfg.filmic_exposure + cs.exposure_bias + tunnel_ev, ev_min, ev_max);
               for (int k = 0; k < 4; ++k) {
                 ps.exp_keys[k] = keys[k];

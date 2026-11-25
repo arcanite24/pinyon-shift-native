@@ -201,10 +201,12 @@ float soft_depth_compare(float za, float zb) {
 }
 
 float cone_weight(float d, float v) {
-  return clamp(1.0 - d / max(v, 1e-5), 0.0, 1.0);
+  if (v <= 1e-5) return 0.0;
+  return clamp(1.0 - d / v, 0.0, 1.0);
 }
 
 float cylinder_weight(float d, float v) {
+  if (v <= 1e-5) return 0.0;
   return 1.0 - smoothstep(0.95 * v, 1.05 * v, d);
 }
 
@@ -234,12 +236,12 @@ float procedural_lens_dirt(vec2 uv) {
   vec2 g1 = floor(uv * vec2(18.0, 11.0));
   vec2 f1 = fract(uv * vec2(18.0, 11.0)) - 0.5;
   float r1 = hash12(g1);
-  float speck1 = smoothstep(0.32, 0.05, length(f1 - (vec2(hash12(g1 + 7.1), hash12(g1 + 19.3)) - 0.5) * 0.45)) *
+  float speck1 = (1.0 - smoothstep(0.05, 0.32, length(f1 - (vec2(hash12(g1 + 7.1), hash12(g1 + 19.3)) - 0.5) * 0.45))) *
                  step(0.74, r1);
   vec2 g2 = floor(uv * vec2(9.0, 6.0));
   vec2 f2 = fract(uv * vec2(9.0, 6.0)) - 0.5;
   float r2 = hash12(g2 + 41.0);
-  float smudge = smoothstep(0.45, 0.05, length(f2)) * step(0.78, r2) * 0.65;
+  float smudge = (1.0 - smoothstep(0.05, 0.45, length(f2))) * step(0.78, r2) * 0.65;
   return clamp(speck1 * 0.7 + smudge, 0.0, 1.0);
 }
 
@@ -355,12 +357,13 @@ void main() {
     }
   }
 
-  // Motion Blur: McGuire Tile-Max / Neighbor-Max velocity reconstruction (Tier 1-3)
-  // with crisp car-silhouette preservation, or lightweight radial fallback on Tier 0.
+  // Motion Blur: McGuire Tile-Max / Neighbor-Max depth-aware velocity reconstruction (Tier 1-3)
+  // driven by true per-object motion vectors (player car carries exact near-zero relative velocity
+  // right up to its sharp silhouette while road 1 px outside the bumper blurs cleanly and passing
+  // AI/traffic vehicles streak naturally), or lightweight radial fallback on Tier 0.
   if ((oflags & 1u) != 0u && opt.mblur.z > 0.005) {
     int mcguire_taps = int(opt.sota_p.z + 0.5);
     if (mcguire_taps >= 7) {
-      float car_mask = smoothstep(opt.mblur.w * 0.75, opt.mblur.w * 1.40, pix_dist);
       vec2 vn = texture(mblur_neighbor_tex, clamp(v_uv, vec2(0.001), vec2(0.999))).rg;
       // Scale velocity by shutter strength; cap blur span to 24 pixels to stay artifact-free.
       float shutter = clamp(opt.mblur.z * 0.85 + 0.20, 0.15, 1.15);
@@ -372,15 +375,14 @@ void main() {
         vn *= (max_uv / vn_len);
         vn_len = max_uv;
       }
-      // Only run gather when the tile neighborhood actually has visible motion (> 0.6 px)
-      // and we are outside the protected player-car hull.
-      if (vn_len > length(texel) * 0.6 && car_mask > 0.02) {
+      // Only run gather when the tile neighborhood actually has visible motion (> 0.6 px).
+      if (vn_len > length(texel) * 0.6) {
         vec4 mv_c = texture(motion_tex, v_uv);
-        vec2 vc = mv_c.rg * shutter * car_mask;
-        float vc_len = max(length(vc), length(texel) * 0.5);
+        vec2 vc = mv_c.rg * shutter;
+        float vc_len = length(vc);
         float jitter = fract(ign_noise(gl_FragCoord.xy) + opt.texel_size.w * 0.61803399) - 0.5;
         // Center sample weighted inversely by center velocity (McGuire eq. 1).
-        float wsum = 1.0 / max(vc_len, 1e-4);
+        float wsum = 1.0 / max(vc_len, length(texel) * 0.5);
         vec3 acc = scene_raw * wsum;
         int n_taps = clamp(mcguire_taps, 7, 15);
         for (int i = 0; i < n_taps; ++i) {
@@ -388,27 +390,27 @@ void main() {
           vec2 suv = clamp(v_uv + vn * t, vec2(0.001), vec2(0.999));
           vec4 mv_s = texture(motion_tex, suv);
           float ds = mv_s.a;
-          // Reject foreground player-car samples from smearing onto background road/sky.
-          float s_car_mask = smoothstep(opt.mblur.w * 0.72, opt.mblur.w * 1.35, ds);
-          vec2 vs = mv_s.rg * shutter * s_car_mask;
+          vec2 vs = mv_s.rg * shutter;
           float vs_len = length(vs);
           float sample_d = abs(t) * vn_len;
-          float f = soft_depth_compare(pix_dist, ds);
-          float b = soft_depth_compare(ds, pix_dist);
+          // McGuire et al. (2012): f = 1 when sample is in front of center (fast foreground blurs
+          // over background), b = 1 when center is in front of sample (fast center uncovers background).
+          float f = soft_depth_compare(ds, pix_dist);
+          float b = soft_depth_compare(pix_dist, ds);
           float ay = f * cone_weight(sample_d, vs_len) +
                      b * cone_weight(sample_d, vc_len) +
                      cylinder_weight(sample_d, vs_len) * cylinder_weight(sample_d, vc_len) * 2.0;
-          ay *= s_car_mask;
           acc += raw_scene(suv) * ay;
           wsum += ay;
         }
-        scene_raw = mix(scene_raw, acc / max(wsum, 1e-4), car_mask);
+        scene_raw = acc / max(wsum, 1e-4);
       }
     } else {
       // Lightweight Tier-0 radial speed blur fallback.
       vec2 to_edge = v_uv - opt.mblur.xy;
       float r = length(to_edge);
-      float car_mask = smoothstep(opt.mblur.w * 0.75, opt.mblur.w * 1.45, pix_dist);
+      float protect_m = max(opt.mblur.w, 0.0);
+      float car_mask = protect_m > 0.05 ? smoothstep(protect_m * 0.75, protect_m * 1.45, pix_dist) : 1.0;
       float blur_w = smoothstep(0.10, 0.85, r) * opt.mblur.z * car_mask;
       if (blur_w > 0.005) {
         vec2 step_uv = to_edge * (blur_w * 0.032);
@@ -568,10 +570,11 @@ void main() {
     t = clamp(hable(c_lin) / denom, vec3(0.0), vec3(1.0));
   }
 
-  // N^3 3D colour-grading volume LUT (texel-centre addressing (N-1)/N + 0.5/N).
+  // N^3 3D colour-grading volume LUT (texel-centre addressing within M^3 backing texture).
   if ((flags & 2u) != 0u && opt.modern_p.z > 0.001) {
     float n = max(opt.modern_p.y, 2.0);
-    vec3 uvw = clamp(t, vec3(0.0), vec3(1.0)) * ((n - 1.0) / n) + vec3(0.5 / n);
+    float m = opt.vig_top_rot.w > 1.5 ? opt.vig_top_rot.w : n;
+    vec3 uvw = clamp(t, vec3(0.0), vec3(1.0)) * ((n - 1.0) / m) + vec3(0.5 / m);
     t = mix(t, texture(lut3d, uvw).rgb, clamp(opt.modern_p.z, 0.0, 1.0));
   }
 

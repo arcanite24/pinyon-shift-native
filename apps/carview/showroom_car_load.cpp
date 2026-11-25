@@ -1737,7 +1737,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       // Cross-fade outer spokes (kRim submat 0/1 or kChrome) while keeping inner barrel (2), rotor (3), hub (4) solid.
       if ((kl == MaterialClass::kRim && sm != 2 && sm != 3 && sm != 4) || kl == MaterialClass::kChrome) {
         d.is_static_spoke = true;
-        uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
+        uint32_t fl = uint32_t(std::lround(d.push.params[1]));
         fl |= kFlagHasBlurMesh;
         d.push.params[1] = float(fl);
       }
@@ -1754,7 +1754,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     std::array<int, 3> part_cnt{0, 0, 0};
     for (const auto& d : draws_) {
       if (d.wheel >= 0) continue;
-      const uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
+      const uint32_t fl = uint32_t(std::lround(d.push.params[1]));
       const int sm = int(d.push.params[2] + 0.5f);
       if ((fl & kFlagMirror) != 0u) {
         const int band = (sm == 10) ? 0 : (sm == 12 ? 2 : 1);

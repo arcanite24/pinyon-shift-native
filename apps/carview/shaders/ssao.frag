@@ -209,7 +209,7 @@ vec4 compute_xegtao(vec2 uv) {
 
   vec3 bent_n = length(bent_sum) > 1e-4 ? normalize(bent_sum) : N;
   // Fade gracefully on distant mountains so far horizons keep full clarity.
-  float dist_fade = smoothstep(260.0, 110.0, center_d);
+  float dist_fade = 1.0 - smoothstep(110.0, 260.0, center_d);
   vis = mix(1.0, vis, dist_fade);
   bent_n = normalize(mix(N, bent_n, dist_fade));
 

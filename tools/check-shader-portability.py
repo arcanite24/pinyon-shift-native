@@ -533,10 +533,38 @@ def find_tool(names: tuple[str, ...]) -> str | None:
     return None
 
 
+REVERSED_SMOOTHSTEP_RE = re.compile(
+    r"\bsmoothstep\s*\(\s*"
+    r"([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)[fF]?\s*,\s*"
+    r"([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)[fF]?\s*,"
+)
+
+
 def strip_glsl_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
     text = re.sub(r"//.*", "", text)
     return text
+
+
+def strip_glsl_comments_preserve_lines(text: str) -> str:
+    def _blank(match: re.Match[str]) -> str:
+        return "".join("\n" if ch == "\n" else " " for ch in match.group(0))
+
+    text = re.sub(r"/\*.*?\*/", _blank, text, flags=re.S)
+    text = re.sub(r"//[^\n]*", _blank, text)
+    return text
+
+
+def find_reversed_smoothsteps(raw: str) -> list[tuple[int, str, str]]:
+    """Return (1-based line, edge0_str, edge1_str) for literal smoothstep(e0, e1, x) with e0 >= e1."""
+    clean = strip_glsl_comments_preserve_lines(raw)
+    hits: list[tuple[int, str, str]] = []
+    for m in REVERSED_SMOOTHSTEP_RE.finditer(clean):
+        e0_str, e1_str = m.group(1), m.group(2)
+        if float(e0_str) >= float(e1_str):
+            lineno = clean.count("\n", 0, m.start()) + 1
+            hits.append((lineno, e0_str, e1_str))
+    return hits
 
 
 def list_shader_files() -> tuple[list[Path], list[Path]]:
@@ -564,6 +592,11 @@ def build_manifest(run_tools: bool = True) -> tuple[dict[str, Any], list[str], l
         uses_pt_coord_src = bool(re.search(r"\bgl_PointCoord\b", code))
         if uses_pt_size_src or uses_pt_coord_src:
             errors.append(f"{hp.name}: header uses gl_PointSize/gl_PointCoord (unsupported >1px in DX12)")
+        for lineno, e0, e1 in find_reversed_smoothsteps(raw):
+            errors.append(
+                f"{hp.name}:{lineno}: reversed smoothstep({e0}, {e1}, ...) has edge0 >= edge1 "
+                "(GLSL/SPIR-V UB; use 1.0 - smoothstep(lo, hi, x))"
+            )
         notes: list[str] = []
         if uses_bda_src:
             notes.append("uses GL_EXT_buffer_reference (64-bit BDA); DX12 SM 6.6 requires bindless buffer-slot migration")
@@ -594,6 +627,11 @@ def build_manifest(run_tools: bool = True) -> tuple[dict[str, Any], list[str], l
             errors.append(f"{sp.name}: source references gl_PointSize (DX12 incompatible)")
         if re.search(r"\bgl_PointCoord\b", code):
             errors.append(f"{sp.name}: source references gl_PointCoord (DX12 incompatible)")
+        for lineno, e0, e1 in find_reversed_smoothsteps(raw):
+            errors.append(
+                f"{sp.name}:{lineno}: reversed smoothstep({e0}, {e1}, ...) has edge0 >= edge1 "
+                "(GLSL/SPIR-V UB; use 1.0 - smoothstep(lo, hi, x))"
+            )
 
         try:
             refl = reflect_spirv(spv_path.read_bytes())

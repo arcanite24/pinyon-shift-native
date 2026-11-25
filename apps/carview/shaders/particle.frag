@@ -90,29 +90,29 @@ float particle_shadow(vec3 p) {
   bool near_ok = edge_n < 1.0 && sn.z > 0.0 && sn.z < 1.0;
   float lit_n = near_ok ? sample_cascade(sn, 0.0, inv_c) : 1.0;
   if (three_c) {
-    if (near_ok && edge_n < 0.80) return mix(frame.shadow.z, 1.0, lit_n);
+    if (near_ok && edge_n < 0.80) return clamp(lit_n, 0.0, 1.0);
     vec4 sm = frame.shadow_matrix_mid * vec4(p, 1.0);
     float edge_m = max(abs(sm.x), abs(sm.y));
     bool mid_ok = edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0;
     float lit_m = mid_ok ? sample_cascade(sm, inv_c, inv_c) : 1.0;
     if (near_ok) {
-      return mix(frame.shadow.z, 1.0, mix(lit_n, lit_m, smoothstep(0.80, 0.98, edge_n)));
+      return clamp(mix(lit_n, lit_m, smoothstep(0.80, 0.98, edge_n)), 0.0, 1.0);
     }
-    if (mid_ok && edge_m < 0.80) return mix(frame.shadow.z, 1.0, lit_m);
+    if (mid_ok && edge_m < 0.80) return clamp(lit_m, 0.0, 1.0);
     vec4 sf = frame.shadow_matrix_far * vec4(p, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
     float lit_f = (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) ? sample_cascade(sf, 2.0 * inv_c, inv_c) : 1.0;
     float bm = mid_ok ? smoothstep(0.80, 0.98, edge_m) : 1.0;
-    return mix(frame.shadow.z, 1.0, mix(lit_m, lit_f, bm));
+    return clamp(mix(lit_m, lit_f, bm), 0.0, 1.0);
   }
   if (frame.shadow_far_bias.y > 0.5 && (!near_ok || edge_n > 0.78)) {
     vec4 sf = frame.shadow_matrix_far * vec4(p, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
     float lit_f = (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) ? sample_cascade(sf, 0.5, 0.5) : 1.0;
     float blend = near_ok ? smoothstep(0.78, 0.98, edge_n) : 1.0;
-    return mix(frame.shadow.z, 1.0, mix(lit_n, lit_f, blend));
+    return clamp(mix(lit_n, lit_f, blend), 0.0, 1.0);
   }
-  return mix(frame.shadow.z, 1.0, lit_n);
+  return clamp(lit_n, 0.0, 1.0);
 }
 
 float linearize_depth(float d, float near_p) {
@@ -151,7 +151,7 @@ void main() {
   vec2 qd = v_local_uv * 2.0 - 1.0;
   float qr = length(qd);
   float quad_radial = 1.0 - smoothstep(0.66, 0.98, qr);
-  float quad_border = smoothstep(1.0, 0.96, max(abs(qd.x), abs(qd.y)));
+  float quad_border = 1.0 - smoothstep(0.96, 1.0, max(abs(qd.x), abs(qd.y)));
   float base_luma = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
   float base_peak = max(tex.r, max(tex.g, tex.b));
 
@@ -215,7 +215,7 @@ void main() {
     vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : vec3(0.9695, 0.8358, 0.5840);
     vec3 sky_col = frame.sun_color.w >= 0.0 ? frame.sky_color.rgb : vec3(0.1687, 0.2229, 0.2746);
     vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : vec3(0.1788, 0.1729, 0.1024);
-    float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
+    float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : clamp(frame.shadow.z, 0.0, 1.0);
 
     float sh = dynamic_light
                    ? mix(1.0, particle_shadow(v_world_pos), shadow_scale * clamp(v_light.w, 0.0, 1.0))

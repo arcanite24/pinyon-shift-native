@@ -279,21 +279,259 @@ void Renderer::record_motion_vectors(VkCommandBuffer cmd) {
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, motion_pipe_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, motion_layout_, 0, 1, &motion_set_, 0, nullptr);
 
+  const float jitter_dx = cam_jitter_uv_x_ - prev_jitter_uv_x_;
+  const float jitter_dy = cam_jitter_uv_y_ - prev_jitter_uv_y_;
+  const float safe_near = std::max(cam_near_, 0.05f);
+  if (!prev_cam_vp_valid_) {
+    prev_motion_scene_valid_ = false;
+  }
+
+  float curr_inv[16];
+  const bool have_curr_inv = cam_vp_set_ && motion_math::mat4_inv(cam_vp_, curr_inv);
+  const bool have_prev = have_curr_inv && prev_cam_vp_valid_;
+  const bool have_world =
+      motion_scene_.has_world_transform && prev_motion_scene_valid_ && prev_motion_scene_.has_world_transform;
+
+  // Detect camera/car teleports (Fast Travel, Reset to Road, Hub room transitions)
+  // so single-frame jumps emit zero velocity instead of a full-screen motion smear.
+  bool scene_cut = false;
+  float inv_curr_world[16], inv_prev_world[16];
+  bool have_world_inv = false;
+  if (have_world && motion_math::mat4_inv(motion_scene_.world_transform, inv_curr_world) &&
+      motion_math::mat4_inv(prev_motion_scene_.world_transform, inv_prev_world)) {
+    have_world_inv = true;
+    const double curr_wx = double(inv_curr_world[12]) + motion_scene_.world_origin[0];
+    const double curr_wy = double(inv_curr_world[13]);
+    const double curr_wz = double(inv_curr_world[14]) + motion_scene_.world_origin[1];
+    const double prev_wx = double(inv_prev_world[12]) + prev_motion_scene_.world_origin[0];
+    const double prev_wy = double(inv_prev_world[13]);
+    const double prev_wz = double(inv_prev_world[14]) + prev_motion_scene_.world_origin[1];
+    const double dx = curr_wx - prev_wx, dy = curr_wy - prev_wy, dz = curr_wz - prev_wz;
+    if (dx * dx + dy * dy + dz * dz > 40.0 * 40.0) scene_cut = true;
+  }
+
+  // Pass 0: Fullscreen static-world reprojection (or camera-only fallback when no world is active).
   struct {
     float prev_vp_inv_curr[16];
     float params[4];
   } pc{};
-  for (int i = 0; i < 4; ++i) pc.prev_vp_inv_curr[i * 5] = 1.0f;
-  float curr_inv[16];
-  if (cam_vp_set_ && prev_cam_vp_valid_ && mat4_inv(cam_vp_, curr_inv)) {
-    mat4_mul(prev_cam_vp_, curr_inv, pc.prev_vp_inv_curr);
+  motion_math::mat4_identity(pc.prev_vp_inv_curr);
+  if (have_prev && !scene_cut) {
+    if (have_world) {
+      if (!motion_math::build_static_world_reproj(
+              prev_cam_vp_, curr_inv, prev_motion_scene_.world_transform, motion_scene_.world_transform,
+              prev_motion_scene_.world_origin[0], prev_motion_scene_.world_origin[1], motion_scene_.world_origin[0],
+              motion_scene_.world_origin[1], pc.prev_vp_inv_curr)) {
+        motion_math::mat4_mul(prev_cam_vp_, curr_inv, pc.prev_vp_inv_curr);
+      }
+    } else {
+      motion_math::mat4_mul(prev_cam_vp_, curr_inv, pc.prev_vp_inv_curr);
+    }
   }
-  pc.params[0] = cam_jitter_uv_x_ - prev_jitter_uv_x_;
-  pc.params[1] = cam_jitter_uv_y_ - prev_jitter_uv_y_;
+  pc.params[0] = jitter_dx;
+  pc.params[1] = jitter_dy;
   pc.params[2] = options_.reverse_z ? 1.0f : 0.0f;
-  pc.params[3] = cam_near_;
+  pc.params[3] = safe_near;
   vkCmdPushConstants(cmd, motion_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
   vkCmdDraw(cmd, 3, 1, 0, 0);
+
+  // Pass 1..K: Exact per-object dynamic vehicle OBB passes (player car + up to 8 nearest AI/traffic cars).
+  // Rendered inside the same dynamic rendering pass with tight per-vehicle screen-space scissors.
+  const bool can_dynamic = have_prev && !scene_cut && std::fabs(cam_proj00_) > 1e-4f && std::fabs(cam_proj11_) > 1e-4f &&
+                           (motion_scene_.has_player_car || motion_scene_.dynamic_car_count > 0);
+  if (can_dynamic) {
+    float view_mat[16];
+    motion_math::extract_view_from_vp(cam_vp_, cam_proj00_, cam_proj11_, view_mat);
+    const float inv_p00 = 1.0f / cam_proj00_;
+    const float inv_p11 = 1.0f / cam_proj11_;
+
+    struct DynJob {
+      float depth_m = 0.0f;
+      bool is_player = false;
+      float curr_model[16];
+      float prev_model[16];
+      float bmin[3];
+      float bmax[3];
+      VkRect2D scissor{};
+    };
+    DynJob jobs[MotionSceneState::kMaxDynamicCars + 1]{};
+    uint32_t job_count = 0;
+
+    auto compute_scissor = [&](const float model[16], const float bmin[3], const float bmax[3],
+                               VkRect2D& out_sc) -> bool {
+      float clip_from_loc[16];
+      motion_math::mat4_mul(cam_vp_, model, clip_from_loc);
+      float u0 = 1.0f, v0 = 1.0f, u1 = 0.0f, v1 = 0.0f;
+      bool any_in_front = false;
+      bool any_near = false;
+      const float w_eps = safe_near * 0.25f;
+      for (int c = 0; c < 8; ++c) {
+        const float x = (c & 1) ? bmax[0] : bmin[0];
+        const float y = (c & 2) ? bmax[1] : bmin[1];
+        const float z = (c & 4) ? bmax[2] : bmin[2];
+        const float cx = clip_from_loc[0] * x + clip_from_loc[4] * y + clip_from_loc[8] * z + clip_from_loc[12];
+        const float cy = clip_from_loc[1] * x + clip_from_loc[5] * y + clip_from_loc[9] * z + clip_from_loc[13];
+        const float cw = clip_from_loc[3] * x + clip_from_loc[7] * y + clip_from_loc[11] * z + clip_from_loc[15];
+        if (cw <= w_eps) {
+          any_near = true;
+        } else {
+          any_in_front = true;
+          const float u = (cx / cw) * 0.5f + 0.5f;
+          const float v = (cy / cw) * 0.5f + 0.5f;
+          u0 = std::min(u0, u);
+          v0 = std::min(v0, v);
+          u1 = std::max(u1, u);
+          v1 = std::max(v1, v);
+        }
+      }
+      if (!any_in_front) return false;
+      if (any_near) {
+        out_sc = sc;
+        return true;
+      }
+      if (u1 <= 0.0f || v1 <= 0.0f || u0 >= 1.0f || v0 >= 1.0f) return false;
+      const int32_t x0 = std::clamp(int32_t(std::floor(u0 * float(rw))) - 4, 0, int32_t(rw));
+      const int32_t y0 = std::clamp(int32_t(std::floor(v0 * float(rh))) - 4, 0, int32_t(rh));
+      const int32_t x1 = std::clamp(int32_t(std::ceil(u1 * float(rw))) + 4, 0, int32_t(rw));
+      const int32_t y1 = std::clamp(int32_t(std::ceil(v1 * float(rh))) + 4, 0, int32_t(rh));
+      if (x1 <= x0 || y1 <= y0) return false;
+      out_sc = {{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+      return true;
+    };
+
+    if (motion_scene_.has_player_car) {
+      const float hx = 0.5f * (motion_scene_.player_bmax[0] - motion_scene_.player_bmin[0]);
+      const float hy = 0.5f * (motion_scene_.player_bmax[1] - motion_scene_.player_bmin[1]);
+      const float hz = 0.5f * (motion_scene_.player_bmax[2] - motion_scene_.player_bmin[2]);
+      if (hx > 0.1f && hy > 0.1f && hz > 0.1f) {
+        float id_m[16];
+        motion_math::mat4_identity(id_m);
+        VkRect2D psc{};
+        if (compute_scissor(id_m, motion_scene_.player_bmin, motion_scene_.player_bmax, psc)) {
+          DynJob& j = jobs[job_count++];
+          j.is_player = true;
+          std::memcpy(j.curr_model, id_m, sizeof(id_m));
+          std::memcpy(j.prev_model, id_m, sizeof(id_m));
+          for (int k = 0; k < 3; ++k) {
+            j.bmin[k] = motion_scene_.player_bmin[k];
+            j.bmax[k] = motion_scene_.player_bmax[k];
+          }
+          const float cx = 0.5f * (j.bmin[0] + j.bmax[0]);
+          const float cy = 0.5f * (j.bmin[1] + j.bmax[1]);
+          const float cz = 0.5f * (j.bmin[2] + j.bmax[2]);
+          j.depth_m = -(view_mat[2] * cx + view_mat[6] * cy + view_mat[10] * cz + view_mat[14]);
+          j.scissor = psc;
+        }
+      }
+    }
+
+    // Match each current AI/traffic car to its exact previous-frame pose in world space
+    // (invariant to player motion and streaming origin re-centering).
+    if (prev_motion_scene_valid_ && motion_scene_.dynamic_car_count > 0 && prev_motion_scene_.dynamic_car_count > 0) {
+      const uint32_t curr_n = std::min(motion_scene_.dynamic_car_count, MotionSceneState::kMaxDynamicCars);
+      const uint32_t prev_n = std::min(prev_motion_scene_.dynamic_car_count, MotionSceneState::kMaxDynamicCars);
+      double prev_wpos[MotionSceneState::kMaxDynamicCars][3]{};
+      float prev_wfwd[MotionSceneState::kMaxDynamicCars][3]{};
+      bool prev_used[MotionSceneState::kMaxDynamicCars]{};
+      auto to_match_frame = [&](const float car_model[16], const float inv_w[16], double ox, double oz,
+                                double out_p[3], float out_fwd[3]) {
+        const float px = car_model[12], py = car_model[13], pz = car_model[14];
+        const float fx = car_model[8], fy = car_model[9], fz = car_model[10];
+        if (have_world_inv) {
+          out_p[0] = double(inv_w[0] * px + inv_w[4] * py + inv_w[8] * pz + inv_w[12]) + ox;
+          out_p[1] = double(inv_w[1] * px + inv_w[5] * py + inv_w[9] * pz + inv_w[13]);
+          out_p[2] = double(inv_w[2] * px + inv_w[6] * py + inv_w[10] * pz + inv_w[14]) + oz;
+          out_fwd[0] = inv_w[0] * fx + inv_w[4] * fy + inv_w[8] * fz;
+          out_fwd[1] = inv_w[1] * fx + inv_w[5] * fy + inv_w[9] * fz;
+          out_fwd[2] = inv_w[2] * fx + inv_w[6] * fy + inv_w[10] * fz;
+        } else {
+          out_p[0] = double(px);
+          out_p[1] = double(py);
+          out_p[2] = double(pz);
+          out_fwd[0] = fx;
+          out_fwd[1] = fy;
+          out_fwd[2] = fz;
+        }
+      };
+      for (uint32_t pi = 0; pi < prev_n; ++pi) {
+        to_match_frame(prev_motion_scene_.dynamic_cars[pi].model, inv_prev_world, prev_motion_scene_.world_origin[0],
+                       prev_motion_scene_.world_origin[1], prev_wpos[pi], prev_wfwd[pi]);
+      }
+      for (uint32_t ci = 0; ci < curr_n; ++ci) {
+        const auto& cc = motion_scene_.dynamic_cars[ci];
+        double cwpos[3]{};
+        float cwfwd[3]{};
+        to_match_frame(cc.model, inv_curr_world, motion_scene_.world_origin[0], motion_scene_.world_origin[1], cwpos,
+                       cwfwd);
+        int best_pi = -1;
+        double best_d2 = 12.0 * 12.0;  // reject newly spawned or teleported cars > 12 m/frame
+        for (uint32_t pi = 0; pi < prev_n; ++pi) {
+          if (prev_used[pi]) continue;
+          if (prev_motion_scene_.dynamic_cars[pi].model_id != cc.model_id) continue;
+          const float fdot = cwfwd[0] * prev_wfwd[pi][0] + cwfwd[1] * prev_wfwd[pi][1] + cwfwd[2] * prev_wfwd[pi][2];
+          if (fdot < 0.6f) continue;
+          const double dx = cwpos[0] - prev_wpos[pi][0];
+          const double dy = cwpos[1] - prev_wpos[pi][1];
+          const double dz = cwpos[2] - prev_wpos[pi][2];
+          const double d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < best_d2) {
+            best_d2 = d2;
+            best_pi = int(pi);
+          }
+        }
+        if (best_pi < 0) continue;
+        prev_used[best_pi] = true;
+        VkRect2D csc{};
+        if (!compute_scissor(cc.model, cc.bmin, cc.bmax, csc)) continue;
+        DynJob& j = jobs[job_count++];
+        j.is_player = false;
+        std::memcpy(j.curr_model, cc.model, sizeof(j.curr_model));
+        std::memcpy(j.prev_model, prev_motion_scene_.dynamic_cars[best_pi].model, sizeof(j.prev_model));
+        for (int k = 0; k < 3; ++k) {
+          j.bmin[k] = cc.bmin[k];
+          j.bmax[k] = cc.bmax[k];
+        }
+        float mv[16];
+        motion_math::mat4_mul(view_mat, cc.model, mv);
+        const float cx = 0.5f * (j.bmin[0] + j.bmax[0]);
+        const float cy = 0.5f * (j.bmin[1] + j.bmax[1]);
+        const float cz = 0.5f * (j.bmin[2] + j.bmax[2]);
+        j.depth_m = -(mv[2] * cx + mv[6] * cy + mv[10] * cz + mv[14]);
+        j.scissor = csc;
+      }
+    }
+
+    // Draw farthest-to-nearest so closer vehicles win if two OBBs touch bumper-to-bumper.
+    std::sort(jobs, jobs + job_count, [](const DynJob& a, const DynJob& b) { return a.depth_m > b.depth_m; });
+    for (uint32_t ji = 0; ji < job_count; ++ji) {
+      const DynJob& j = jobs[ji];
+      float reproj[16];
+      if (j.is_player) {
+        motion_math::mat4_mul(prev_cam_vp_, curr_inv, reproj);
+      } else if (!motion_math::build_object_reproj(prev_cam_vp_, curr_inv, j.prev_model, j.curr_model, reproj)) {
+        continue;
+      }
+      float mv[16];
+      motion_math::mat4_mul(view_mat, j.curr_model, mv);
+      const float c_loc[3] = {0.5f * (j.bmin[0] + j.bmax[0]), 0.5f * (j.bmin[1] + j.bmax[1]),
+                              0.5f * (j.bmin[2] + j.bmax[2])};
+      const float h_loc[3] = {std::max(0.5f * (j.bmax[0] - j.bmin[0]), 0.05f),
+                              std::max(0.5f * (j.bmax[1] - j.bmin[1]), 0.05f),
+                              std::max(0.5f * (j.bmax[2] - j.bmin[2]), 0.05f)};
+      const float center_view[3] = {mv[0] * c_loc[0] + mv[4] * c_loc[1] + mv[8] * c_loc[2] + mv[12],
+                                    mv[1] * c_loc[0] + mv[5] * c_loc[1] + mv[9] * c_loc[2] + mv[13],
+                                    mv[2] * c_loc[0] + mv[6] * c_loc[1] + mv[10] * c_loc[2] + mv[14]};
+      float q[4];
+      motion_math::mat3_to_quat_pos_w(mv, q);
+      uint32_t dyn_words[20]{};
+      motion_math::pack_dynamic_push(reproj, jitter_dx, jitter_dy, center_view, q, h_loc, inv_p00, inv_p11, safe_near,
+                                     options_.reverse_z, j.is_player, dyn_words);
+      vkCmdSetScissor(cmd, 0, 1, &j.scissor);
+      vkCmdPushConstants(cmd, motion_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(dyn_words), dyn_words);
+      vkCmdDraw(cmd, 3, 1, 0, 0);
+    }
+    if (job_count > 0) vkCmdSetScissor(cmd, 0, 1, &sc);
+  }
   vkCmdEndRendering(cmd);
   image_barrier(cmd, motion_vec_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
@@ -302,6 +540,8 @@ void Renderer::record_motion_vectors(VkCommandBuffer cmd) {
     prev_jitter_uv_x_ = cam_jitter_uv_x_;
     prev_jitter_uv_y_ = cam_jitter_uv_y_;
     prev_cam_vp_valid_ = true;
+    prev_motion_scene_ = motion_scene_;
+    prev_motion_scene_valid_ = true;
   }
   mark(cmd, "motion");
 }
@@ -334,7 +574,9 @@ void Renderer::record_mblur_tiles(VkCommandBuffer cmd) {
     vkCmdSetScissor(cmd, 0, 1, &sc);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mblur_tile_pipe_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mblur_tile_layout_, 0, 1, &set, 0, nullptr);
-    const float pc[4] = {inv_w, inv_h, mode, options_.post.motion_blur_car_protect};
+    const bool has_dynamic_mv = motion_scene_.has_player_car || motion_scene_.has_world_transform;
+    const float car_protect = has_dynamic_mv ? 0.0f : options_.post.motion_blur_car_protect;
+    const float pc[4] = {inv_w, inv_h, mode, car_protect};
     vkCmdPushConstants(cmd, mblur_tile_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);

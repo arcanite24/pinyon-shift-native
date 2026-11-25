@@ -448,12 +448,50 @@ void Showroom::world_draw_model(const WorldGeometry::Draw& d, const float transf
   for (int r = 0; r < 4; ++r) out[12 + r] += transform[r] * d.shift[0] + transform[8 + r] * d.shift[1];
 }
 
+bool Showroom::arena_lookup_draw(uint64_t key, uint32_t& out_index_base) const {
+  if (!arena_on()) return false;
+  if (!arena_use_rt_resident_ && arena_lru_.vertex_capacity() > 0) {
+    const auto* e = arena_lru_.find(key);
+    if (!e) return false;
+    out_index_base = e->index_base;
+    return true;
+  }
+  const auto* rd = gpu_world_->resident().find(key);
+  if (!rd) return false;
+  out_index_base = rd->index_base;
+  return true;
+}
+
+bool Showroom::arena_contains_draw(uint64_t key) const {
+  if (!arena_on()) return false;
+  if (!arena_use_rt_resident_ && arena_lru_.vertex_capacity() > 0) return arena_lru_.contains(key);
+  return gpu_world_->resident().contains(key);
+}
+
+void Showroom::arena_mark_draw_valid(uint64_t key) {
+  if (!arena_on()) return;
+  if (!arena_use_rt_resident_ && arena_lru_.vertex_capacity() > 0) {
+    arena_lru_.mark_valid(key);
+    return;
+  }
+  gpu_world_->resident().mark_valid(key);
+}
+
+void Showroom::arena_release_draw(uint64_t key, uint64_t tag) {
+  if (!arena_on()) return;
+  if (!arena_use_rt_resident_ && arena_lru_.vertex_capacity() > 0) {
+    arena_lru_.release(key, tag);
+    return;
+  }
+  gpu_world_->resident().release(key, tag);
+}
+
 void Showroom::world_release_draws(std::vector<WorldGeometry::Draw>& draws) {
   if (!arena_on()) return;
   const uint64_t tag = r_.frames_submitted();
   for (auto& d : draws) {
     if (!d.resident) continue;
-    gpu_world_->resident().release(d.key, tag);
+    arena_release_draw(d.key, tag);
     d.resident = false;
   }
   // Prune per-instance prop span metadata for draws no longer resident in the arena.
@@ -461,24 +499,171 @@ void Showroom::world_release_draws(std::vector<WorldGeometry::Draw>& draws) {
   if (auto it = g_smash_hide.find(this); it != g_smash_hide.end()) {
     auto& by_key = it->second.by_draw_key;
     for (auto kit = by_key.begin(); kit != by_key.end();) {
-      if (!gpu_world_->resident().contains(kit->first)) kit = by_key.erase(kit);
+      if (!arena_contains_draw(kit->first)) kit = by_key.erase(kit);
       else ++kit;
     }
   }
 }
 
 // Gives each draw of a pending world its place in the arenas: found by key (a regather that left it as it was
-// uploads nothing) or placed, its vertices and indices copied from the staging buffers. When the arenas are full
-// of scenery in use, the GPU is waited for, the old scenery given up and this one placed afresh.
+// uploads nothing) or placed via O(1) LRU eviction + O(log F) coalescing free-block allocation without ever
+// wiping the cached world or stalling on vkDeviceWaitIdle() during live driving.
 bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& vertex_copies,
-                                 std::vector<WorldGpu::Copy>& index_copies, std::string& error) {
+                                 std::vector<WorldGpu::Copy>& index_copies, std::string& error,
+                                 bool* deferred_busy, bool allow_blocking_reset) {
+  if (deferred_busy) *deferred_busy = false;
   auto& res = gpu_world_->resident();
+  const uint32_t cap_v = res.vertex_capacity();
+  const uint32_t cap_i = res.index_capacity();
+  const bool want_rt = (r_.active_rt_mode() != rt::RtMode::kOff);
+
+  if (arena_lru_.vertex_capacity() != cap_v || arena_lru_.index_capacity() != cap_i) {
+    arena_lru_.reset(cap_v, cap_i);
+    arena_use_rt_resident_ = want_rt;
+  } else if (want_rt != arena_use_rt_resident_) {
+    if (world_draws_.empty() && arena_lru_.count() == 0 && res.count() == 0) {
+      arena_use_rt_resident_ = want_rt;
+    } else {
+      // Live RT mode toggle: cleanly switch backing resident tracker once.
+      r_.wait_idle();
+      drop_fading_world(true);
+      for (auto& d : world_draws_) d.resident = false;
+      world_draws_.clear();
+      world_trees_.clear();
+      active_gpu_table_records_.clear();
+      gpu_table_missing_textures_.clear();
+      if (gpu_world_) {
+        std::string clear_err;
+        (void)gpu_world_->set_table({}, clear_err);
+      }
+      release_retired();
+      arena_lru_.reset(cap_v, cap_i);
+      res.reset(cap_v, cap_i);
+      arena_use_rt_resident_ = want_rt;
+    }
+  }
+
   std::vector<uint32_t> staged_first(st.draws.size());
   for (size_t i = 0; i < st.draws.size(); ++i) staged_first[i] = st.draws[i].first_index;
-  std::vector<const gpuworld::ResidentDraw*> placed(st.draws.size(), nullptr);
   const uint64_t generation = ++world_generation_;
   size_t fail_idx = 0;
-  auto attempt = [&]() {
+
+  // Release any completed swap-fade draws early so their space is immediately reclaimable by O(1) LRU.
+  if (fading_on_) drop_fading_world(false);
+
+  if (!arena_use_rt_resident_) {
+    std::vector<const WorldArenaLru::Entry*> placed(st.draws.size(), nullptr);
+    auto attempt_lru = [&]() {
+      vertex_copies.clear();
+      index_copies.clear();
+      vertex_copies.reserve(st.draws.size());
+      index_copies.reserve(st.draws.size());
+      for (size_t i = 0; i < st.draws.size(); ++i) {
+        auto& d = st.draws[i];
+        placed[i] = nullptr;
+        if (d.vertex_count == 0 || d.index_count == 0) continue;
+        const WorldArenaLru::Entry* rd = arena_lru_.acquire(d.key, generation);
+        const bool known = rd != nullptr;
+        if (!rd)
+          rd = arena_lru_.place(d.key, d.vertex_count, d.index_count, st.origin_x, st.origin_z, generation,
+                                r_.frames_done());
+        if (!rd) {
+          fail_idx = i;
+          for (size_t k = 0; k < i; ++k)
+            if (placed[k]) arena_lru_.release(st.draws[k].key, 0);
+          return false;
+        }
+        placed[i] = rd;
+        if (!known) {
+          vertex_copies.push_back({VkDeviceSize(d.vertex_begin) * sizeof(WorldVertex),
+                                   VkDeviceSize(rd->vertex_base) * sizeof(WorldVertex),
+                                   VkDeviceSize(d.vertex_count) * sizeof(WorldVertex)});
+          index_copies.push_back({VkDeviceSize(staged_first[i]) * sizeof(uint32_t),
+                                  VkDeviceSize(rd->index_base) * sizeof(uint32_t),
+                                  VkDeviceSize(d.index_count) * sizeof(uint32_t)});
+        }
+      }
+      return true;
+    };
+
+    if (!attempt_lru()) {
+      // If unreferenced draws are only pinned by an in-flight GPU frame (free_tag > frames_done)
+      // and the live + incoming draws fit within arena capacity, defer placement to the next frame
+      // instead of stalling on vkDeviceWaitIdle() and wiping cached world VRAM.
+      if (!allow_blocking_reset && deferred_busy && arena_lru_.has_inflight_unreferenced(r_.frames_done())) {
+        uint64_t live_v = 0, live_i = 0, need_v = 0, need_i = 0;
+        std::unordered_set<uint64_t> seen_live;
+        seen_live.reserve(world_draws_.size() * 2 + 16);
+        for (const auto& d : world_draws_) {
+          if (!d.resident || !seen_live.insert(d.key).second) continue;
+          if (const auto* e = arena_lru_.find(d.key)) {
+            live_v += e->vertex_count;
+            live_i += e->index_count;
+          }
+        }
+        std::unordered_set<uint64_t> seen_new;
+        seen_new.reserve(st.draws.size() * 2 + 16);
+        for (const auto& d : st.draws) {
+          if (d.vertex_count == 0 || d.index_count == 0) continue;
+          if (seen_live.count(d.key) || !seen_new.insert(d.key).second) continue;
+          need_v += d.vertex_count;
+          need_i += d.index_count;
+        }
+        if (live_v + need_v <= uint64_t(cap_v) && live_i + need_i <= uint64_t(cap_i)) {
+          *deferred_busy = true;
+          return true;
+        }
+      }
+
+      // Last-resort fallback only when arena capacity is genuinely smaller than live + incoming draws.
+      r_.wait_idle();
+      drop_fading_world(true);
+      for (auto& d : world_draws_) d.resident = false;
+      world_draws_.clear();
+      world_trees_.clear();
+      active_gpu_table_records_.clear();
+      gpu_table_missing_textures_.clear();
+      if (gpu_world_) {
+        std::string clear_err;
+        (void)gpu_world_->set_table({}, clear_err);
+      }
+      {
+        std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
+        if (auto it = g_smash_hide.find(this); it != g_smash_hide.end()) it->second.by_draw_key.clear();
+      }
+      release_retired();
+      arena_lru_.reset(cap_v, cap_i);
+      if (!attempt_lru()) {
+        const auto& fd = st.draws[fail_idx];
+        error = "world arena full (draw " + std::to_string(fail_idx) + "/" + std::to_string(st.draws.size()) +
+                " v=" + std::to_string(fd.vertex_count) + " i=" + std::to_string(fd.index_count) +
+                " used=" + std::to_string(arena_lru_.vertex_used()) + "/" +
+                std::to_string(arena_lru_.vertex_capacity()) + " idx=" + std::to_string(arena_lru_.index_used()) +
+                "/" + std::to_string(arena_lru_.index_capacity()) + ")";
+        return false;
+      }
+    }
+
+    for (size_t i = 0; i < st.draws.size(); ++i) {
+      auto& d = st.draws[i];
+      const WorldArenaLru::Entry* rd = placed[i];
+      if (!rd) continue;
+      d.first_index = rd->index_base;
+      d.vertex_offset = int32_t(rd->vertex_base);
+      d.shift[0] = float(rd->origin_x - st.origin_x);
+      d.shift[1] = float(rd->origin_z - st.origin_z);
+      for (int k = 0; k < 3; k += 2) {
+        d.box_min[k] += d.shift[k / 2];
+        d.box_max[k] += d.shift[k / 2];
+      }
+      d.resident = true;
+    }
+    return true;
+  }
+
+  // RT-mode path: keeps WorldGpu::resident() populated for RtScene BLAS lookups without premature thrash wipes.
+  std::vector<const gpuworld::ResidentDraw*> placed(st.draws.size(), nullptr);
+  auto attempt_rt = [&]() {
     vertex_copies.clear();
     index_copies.clear();
     vertex_copies.reserve(st.draws.size());
@@ -509,51 +694,12 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
     }
     return true;
   };
-  // Pre-flight capacity estimate (O(N), zero ResidentSet::evict_oldest linear scans).
-  // ResidentSet::place() evicts one entry at a time via an O(N) full-map scan when the arena
-  // is full, and evict_unreferenced() is O(N^2). When a dense gather cannot fit alongside the
-  // live world or would trigger hundreds of O(N) eviction scans, skip the doomed attempt and
-  // reset the arena in O(1) after a single wait_idle().
-  uint64_t need_v = 0, need_i = 0;
-  size_t new_draws = 0;
-  {
-    std::unordered_set<uint64_t> seen_new;
-    seen_new.reserve(st.draws.size() * 2 + 16);
-    for (const auto& d : st.draws) {
-      if (d.vertex_count == 0 || d.index_count == 0) continue;
-      if (res.contains(d.key)) continue;
-      if (seen_new.insert(d.key).second) {
-        need_v += d.vertex_count;
-        need_i += d.index_count;
-        ++new_draws;
-      }
+  if (!attempt_rt()) {
+    if (!allow_blocking_reset && deferred_busy && res.count() > res.referenced() &&
+        r_.frames_submitted() > r_.frames_done()) {
+      *deferred_busy = true;
+      return true;
     }
-  }
-  const uint64_t cap_v = res.vertex_capacity();
-  const uint64_t cap_i = res.index_capacity();
-  const uint64_t used_v = res.vertex_used();
-  const uint64_t used_i = res.index_used();
-  const bool fits_free = (used_v + need_v <= cap_v) && (used_i + need_i <= cap_i);
-  bool skip_first_attempt = false;
-  if (!fits_free && new_draws > 0) {
-    // Release any completed swap-fade draws early before deciding whether an arena reset is needed.
-    if (fading_on_) drop_fading_world(false);
-    uint64_t live_v = 0, live_i = 0;
-    std::unordered_set<uint64_t> seen_live;
-    seen_live.reserve(world_draws_.size() * 2 + 16);
-    for (const auto& d : world_draws_) {
-      if (!d.resident) continue;
-      if (!seen_live.insert(d.key).second) continue;
-      if (const auto* rd = res.find(d.key)) {
-        live_v += rd->vertex_count;
-        live_i += rd->index_count;
-      }
-    }
-    const bool guaranteed_overflow = (live_v + need_v > cap_v) || (live_i + need_i > cap_i);
-    const bool heavy_evict_thrash = (uint64_t(new_draws) * uint64_t(res.count()) > 400000ULL);
-    skip_first_attempt = guaranteed_overflow || heavy_evict_thrash;
-  }
-  if (skip_first_attempt || !attempt()) {
     r_.wait_idle();
     drop_fading_world(true);
     for (auto& d : world_draws_) d.resident = false;
@@ -570,10 +716,8 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
       if (auto it = g_smash_hide.find(this); it != g_smash_hide.end()) it->second.by_draw_key.clear();
     }
     release_retired();
-    // O(1) full arena reset after wait_idle(): avoids O(N^2) evict_unreferenced() and
-    // eliminates the frames_submitted() > frames_done() tag mismatch that left old draws pinned.
-    res.reset(res.vertex_capacity(), res.index_capacity());
-    if (!attempt()) {
+    res.reset(cap_v, cap_i);
+    if (!attempt_rt()) {
       const auto& fd = st.draws[fail_idx];
       error = "world arena full (draw " + std::to_string(fail_idx) + "/" + std::to_string(st.draws.size()) +
               " v=" + std::to_string(fd.vertex_count) + " i=" + std::to_string(fd.index_count) +
@@ -611,14 +755,14 @@ void Showroom::install_world_prop_spans(StagedWorld& st) {
       it = ins;
     }
     if (!state.active_spheres.empty()) {
-      const auto* rd = gpu_world_->resident().find(key);
-      if (!rd) continue;
+      uint32_t idx_base = 0;
+      if (!arena_lookup_draw(key, idx_base)) continue;
       for (auto& sp : it->second) {
         if (sp.hidden) continue;
         for (const auto& hs : state.active_spheres) {
           if (span_matches_origin(sp, hs.pos, hs.radius)) {
             sp.hidden = true;
-            gpu_world_->queue_index_zero(rd->index_base + sp.rel_index_offset, sp.index_count);
+            gpu_world_->queue_index_zero(idx_base + sp.rel_index_offset, sp.index_count);
             break;
           }
         }
@@ -666,15 +810,15 @@ size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, flo
         if (!visited.insert(d.key).second) continue;
         auto it = state.by_draw_key.find(d.key);
         if (it == state.by_draw_key.end()) continue;
-        const auto* rd = gpu_world_->resident().find(d.key);
-        if (!rd) continue;
+        uint32_t idx_base = 0;
+        if (!arena_lookup_draw(d.key, idx_base)) continue;
         for (auto& sp : it->second) {
           if (sp.hidden) continue;
           const bool match = aabb_fallback ? span_matches_aabb_fallback(sp, game_pos, 0.85f)
                                            : span_matches_origin(sp, game_pos, r);
           if (match) {
             sp.hidden = true;
-            gpu_world_->queue_index_zero(rd->index_base + sp.rel_index_offset, sp.index_count);
+            gpu_world_->queue_index_zero(idx_base + sp.rel_index_offset, sp.index_count);
             ++hidden_spans;
           }
         }
@@ -752,13 +896,13 @@ size_t Showroom::unhide_world_props_near(const std::array<float, 3>& game_pos, f
           if (!visited.insert(d.key).second) continue;
           auto it = state.by_draw_key.find(d.key);
           if (it == state.by_draw_key.end()) continue;
-          const auto* rd = gpu_world_->resident().find(d.key);
-          if (!rd) continue;
+          uint32_t idx_base = 0;
+          if (!arena_lookup_draw(d.key, idx_base)) continue;
           for (auto& sp : it->second) {
             if (!sp.hidden) continue;
             if (span_matches_origin(sp, game_pos, r) || span_matches_aabb_fallback(sp, game_pos, r)) {
               sp.hidden = false;
-              gpu_world_->queue_index_restore(rd->index_base + sp.rel_index_offset, sp.saved_indices);
+              gpu_world_->queue_index_restore(idx_base + sp.rel_index_offset, sp.saved_indices);
               ++restored_spans;
             }
           }
@@ -1006,6 +1150,7 @@ bool Showroom::build_gpu_table(std::string& error) {
 
 // Before the scene: the culling pass over the table, with the view's side planes in the scenery's frame.
 void Showroom::record_world_cull(VkCommandBuffer cmd) {
+  sync_motion_scene();
   if (!arena_on()) return;
   gpuworld::CullView view;
   float clip[16];

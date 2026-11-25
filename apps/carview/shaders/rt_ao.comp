@@ -46,7 +46,7 @@ void main() {
     }
   }
   float ao = clamp(vis_sum * 0.5, 0.0, 1.0);
-  float dist_fade = smoothstep(140.0, 95.0, lin_d);
+  float dist_fade = 1.0 - smoothstep(95.0, 140.0, lin_d);
   ao = mix(1.0, ao, dist_fade);
   imageStore(rt_shad_ao_img, px, vec4(prev_shad, ao, 0.0, 0.0));
 }

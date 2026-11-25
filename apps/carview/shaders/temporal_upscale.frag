@@ -103,13 +103,14 @@ void main() {
   vec3 nmin = 0.5 * (cmin5 + cmin9);
   vec3 nmax = 0.5 * (cmax5 + cmax9);
 
-  // Closest-depth 3x3 motion dilation + max reactive mask (prevents silhouette & overlay trails).
+  // Closest-depth 3x3 motion dilation + max reactive mask (aligned with jittered src_uv
+  // so sharp moving vehicle silhouettes dilate cleanly with zero ghosting).
   vec2 best_vel = vec2(0.0);
   float best_depth = 1e9;
   float max_reactive = 0.0;
   for (int y = -1; y <= 1; ++y) {
     for (int x = -1; x <= 1; ++x) {
-      vec4 mv = texture(motion_tex, clamp(v_uv + vec2(float(x), float(y)) * d, vec2(0.0), vec2(1.0)));
+      vec4 mv = texture(motion_tex, clamp(src_uv + vec2(float(x), float(y)) * d, vec2(0.0), vec2(1.0)));
       max_reactive = max(max_reactive, mv.b);
       if (mv.a < best_depth) {
         best_depth = mv.a;

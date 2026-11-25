@@ -83,16 +83,16 @@ float skid_shadow(vec3 p, vec3 n) {
   bool near_ok = edge_n < 1.0 && sn.z > 0.0 && sn.z < 1.0;
   float lit_n = near_ok ? sample_cascade(sn, 0.0, inv_c) : 1.0;
   if (three_c) {
-    if (near_ok && edge_n < 0.80) return mix(frame.shadow.z, 1.0, lit_n);
+    if (near_ok && edge_n < 0.80) return clamp(lit_n, 0.0, 1.0);
     vec4 sm = frame.shadow_matrix_mid * vec4(p + n * frame.shadow_mid_bias.x, 1.0);
     float edge_m = max(abs(sm.x), abs(sm.y));
     bool mid_ok = edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0;
     float lit_m = mid_ok ? sample_cascade(sm, inv_c, inv_c) : 1.0;
-    if (near_ok) return mix(frame.shadow.z, 1.0, mix(lit_n, lit_m, smoothstep(0.80, 0.98, edge_n)));
-    if (mid_ok) return mix(frame.shadow.z, 1.0, lit_m);
+    if (near_ok) return clamp(mix(lit_n, lit_m, smoothstep(0.80, 0.98, edge_n)), 0.0, 1.0);
+    if (mid_ok) return clamp(lit_m, 0.0, 1.0);
     return 1.0;
   }
-  if (near_ok) return mix(frame.shadow.z, 1.0, lit_n);
+  if (near_ok) return clamp(lit_n, 0.0, 1.0);
   return 1.0;
 }
 
@@ -104,7 +104,7 @@ vec3 encode_srgb(vec3 c) {
 void main() {
   vec4 tex = texture(skid_tex, v_uv);
   // Feather lateral ribbon edges so retail treadmark.xds strips blend seamlessly into road/gravel.
-  float edge_feather = smoothstep(0.0, 0.08, v_uv.x) * smoothstep(1.0, 0.92, v_uv.x);
+  float edge_feather = smoothstep(0.0, 0.08, v_uv.x) * (1.0 - smoothstep(0.92, 1.0, v_uv.x));
   float alpha = tex.a * v_color.a * edge_feather;
   if (alpha <= 0.005) discard;
 
@@ -114,7 +114,7 @@ void main() {
   vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : vec3(0.9695, 0.8358, 0.5840);
   vec3 sky_col = frame.sun_color.w >= 0.0 ? frame.sky_color.rgb : vec3(0.1687, 0.2229, 0.2746);
   vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : vec3(0.1788, 0.1729, 0.1024);
-  float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
+  float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : clamp(frame.shadow.z, 0.0, 1.0);
 
   float ndl = max(dot(n, sun), 0.0);
   float sh = mix(1.0, skid_shadow(v_world_pos, n), shadow_scale);

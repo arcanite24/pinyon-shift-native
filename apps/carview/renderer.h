@@ -4,7 +4,330 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
+
+namespace carview::motion_math {
+
+inline void mat4_identity(float out[16]) {
+  std::memset(out, 0, 16 * sizeof(float));
+  out[0] = out[5] = out[10] = out[15] = 1.0f;
+}
+
+inline void mat4_mul(const float a[16], const float b[16], float out[16]) {
+  float tmp[16];
+  for (int c = 0; c < 4; ++c) {
+    for (int r = 0; r < 4; ++r) {
+      tmp[c * 4 + r] = a[0 * 4 + r] * b[c * 4 + 0] + a[1 * 4 + r] * b[c * 4 + 1] +
+                       a[2 * 4 + r] * b[c * 4 + 2] + a[3 * 4 + r] * b[c * 4 + 3];
+    }
+  }
+  std::memcpy(out, tmp, sizeof(tmp));
+}
+
+inline bool mat4_inv(const float m[16], float out[16]) {
+  float inv[16];
+  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] +
+           m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] -
+           m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] +
+           m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] -
+            m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] -
+           m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] +
+           m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] -
+           m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] +
+            m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] +
+           m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] -
+           m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] +
+            m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] -
+            m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] -
+           m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] +
+           m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] -
+            m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] +
+            m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+  const float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+  if (std::fabs(det) < 1e-12f) return false;
+  const float inv_det = 1.0f / det;
+  for (int i = 0; i < 16; ++i) out[i] = inv[i] * inv_det;
+  return true;
+}
+
+inline uint16_t float_to_half(float f) {
+  if (!std::isfinite(f)) f = 0.0f;
+  f = std::clamp(f, -65000.0f, 65000.0f);
+  uint32_t bits = 0;
+  std::memcpy(&bits, &f, sizeof(bits));
+  const uint32_t sign = (bits >> 16u) & 0x8000u;
+  int32_t exp = int32_t((bits >> 23u) & 0xFFu) - 127 + 15;
+  uint32_t mant = bits & 0x007FFFFFu;
+  if (exp <= 0) {
+    if (exp < -10) return uint16_t(sign);
+    mant |= 0x00800000u;
+    const uint32_t shift = uint32_t(14 - exp);
+    const uint32_t round_bit = 1u << (shift - 1u);
+    uint32_t h_mant = (mant + round_bit) >> shift;
+    return uint16_t(sign | h_mant);
+  }
+  if (exp >= 31) return uint16_t(sign | 0x7BFFu);
+  mant += 0x00001000u;
+  if (mant & 0x00800000u) {
+    mant = 0;
+    ++exp;
+    if (exp >= 31) return uint16_t(sign | 0x7BFFu);
+  }
+  return uint16_t(sign | (uint32_t(exp) << 10u) | (mant >> 13u));
+}
+
+inline float half_to_float(uint16_t h) {
+  const uint32_t sign = uint32_t(h & 0x8000u) << 16u;
+  const uint32_t exp = (h >> 10u) & 0x1Fu;
+  uint32_t mant = h & 0x03FFu;
+  uint32_t bits = 0;
+  if (exp == 0) {
+    if (mant == 0) {
+      bits = sign;
+    } else {
+      int32_t e = -14;
+      while ((mant & 0x0400u) == 0u) {
+        mant <<= 1u;
+        --e;
+      }
+      mant &= 0x03FFu;
+      bits = sign | (uint32_t(e + 127) << 23u) | (mant << 13u);
+    }
+  } else if (exp == 31) {
+    bits = sign | 0x7F800000u | (mant << 13u);
+  } else {
+    bits = sign | ((exp + 112u) << 23u) | (mant << 13u);
+  }
+  float out = 0.0f;
+  std::memcpy(&out, &bits, sizeof(out));
+  return out;
+}
+
+inline uint32_t pack_half2x16(float a, float b) {
+  return uint32_t(float_to_half(a)) | (uint32_t(float_to_half(b)) << 16u);
+}
+
+inline void unpack_half2x16(uint32_t packed, float& a, float& b) {
+  a = half_to_float(uint16_t(packed & 0xFFFFu));
+  b = half_to_float(uint16_t((packed >> 16u) & 0xFFFFu));
+}
+
+// Extracts an orthonormal rotation quaternion (qx, qy, qz, qw >= 0) from the
+// upper-left 3x3 of a column-major 4x4 matrix.
+inline void mat3_to_quat_pos_w(const float m[16], float q[4]) {
+  float c0[3] = {m[0], m[1], m[2]};
+  float c1[3] = {m[4], m[5], m[6]};
+  auto norm3 = [](float v[3]) {
+    const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (l > 1e-6f) {
+      v[0] /= l;
+      v[1] /= l;
+      v[2] /= l;
+    } else {
+      v[0] = 1.0f;
+      v[1] = 0.0f;
+      v[2] = 0.0f;
+    }
+  };
+  norm3(c0);
+  const float d01 = c0[0] * c1[0] + c0[1] * c1[1] + c0[2] * c1[2];
+  c1[0] -= d01 * c0[0];
+  c1[1] -= d01 * c0[1];
+  c1[2] -= d01 * c0[2];
+  norm3(c1);
+  const float c2[3] = {c0[1] * c1[2] - c0[2] * c1[1], c0[2] * c1[0] - c0[0] * c1[2],
+                       c0[0] * c1[1] - c0[1] * c1[0]};
+  // Matrix elements R[row][col]: col0=c0, col1=c1, col2=c2.
+  const float r00 = c0[0], r01 = c1[0], r02 = c2[0];
+  const float r10 = c0[1], r11 = c1[1], r12 = c2[1];
+  const float r20 = c0[2], r21 = c1[2], r22 = c2[2];
+  const float trace = r00 + r11 + r22;
+  if (trace > 0.0f) {
+    const float s = std::sqrt(trace + 1.0f) * 2.0f;
+    q[3] = 0.25f * s;
+    q[0] = (r21 - r12) / s;
+    q[1] = (r02 - r20) / s;
+    q[2] = (r10 - r01) / s;
+  } else if (r00 > r11 && r00 > r22) {
+    const float s = std::sqrt(std::max(1.0f + r00 - r11 - r22, 1e-8f)) * 2.0f;
+    q[3] = (r21 - r12) / s;
+    q[0] = 0.25f * s;
+    q[1] = (r01 + r10) / s;
+    q[2] = (r02 + r20) / s;
+  } else if (r11 > r22) {
+    const float s = std::sqrt(std::max(1.0f + r11 - r00 - r22, 1e-8f)) * 2.0f;
+    q[3] = (r02 - r20) / s;
+    q[0] = (r01 + r10) / s;
+    q[1] = 0.25f * s;
+    q[2] = (r12 + r21) / s;
+  } else {
+    const float s = std::sqrt(std::max(1.0f + r22 - r00 - r11, 1e-8f)) * 2.0f;
+    q[3] = (r10 - r01) / s;
+    q[0] = (r02 + r20) / s;
+    q[1] = (r12 + r21) / s;
+    q[2] = 0.25f * s;
+  }
+  const float ql = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+  if (ql > 1e-6f) {
+    const float inv_ql = (q[3] < 0.0f ? -1.0f : 1.0f) / ql;
+    for (int i = 0; i < 4; ++i) q[i] *= inv_ql;
+  } else {
+    q[0] = q[1] = q[2] = 0.0f;
+    q[3] = 1.0f;
+  }
+}
+
+inline void quat_rotate_inv(const float q[4], const float v[3], float out[3]) {
+  // Rotate by conj(q) = (-qx, -qy, -qz, qw).
+  const float cx = -q[0], cy = -q[1], cz = -q[2], cw = q[3];
+  const float tx = 2.0f * (cy * v[2] - cz * v[1]);
+  const float ty = 2.0f * (cz * v[0] - cx * v[2]);
+  const float tz = 2.0f * (cx * v[1] - cy * v[0]);
+  out[0] = v[0] + cw * tx + (cy * tz - cz * ty);
+  out[1] = v[1] + cw * ty + (cz * tx - cx * tz);
+  out[2] = v[2] + cw * tz + (cx * ty - cy * tx);
+}
+
+inline bool point_in_obb(const float view_pos[3], const float center_view[3], const float q[4],
+                         const float half_extents[3]) {
+  const float rel[3] = {view_pos[0] - center_view[0], view_pos[1] - center_view[1], view_pos[2] - center_view[2]};
+  float local[3];
+  quat_rotate_inv(q, rel, local);
+  return std::fabs(local[0]) <= half_extents[0] && std::fabs(local[1]) <= half_extents[1] &&
+         std::fabs(local[2]) <= half_extents[2];
+}
+
+// Extracts the camera view matrix V from VP = P * V using proj00, proj11, and clip.w = -view.z.
+inline void extract_view_from_vp(const float vp[16], float proj00, float proj11, float view_out[16]) {
+  const float inv00 = (std::fabs(proj00) > 1e-6f) ? (1.0f / proj00) : 1.0f;
+  const float inv11 = (std::fabs(proj11) > 1e-6f) ? (1.0f / proj11) : -1.0f;
+  for (int c = 0; c < 4; ++c) {
+    view_out[c * 4 + 0] = vp[c * 4 + 0] * inv00;
+    view_out[c * 4 + 1] = vp[c * 4 + 1] * inv11;
+    view_out[c * 4 + 2] = -vp[c * 4 + 3];
+    view_out[c * 4 + 3] = (c == 3) ? 1.0f : 0.0f;
+  }
+}
+
+// Reprojects a static world pixel from current clip space into previous clip space,
+// accounting for both player-car motion (world_transform_) and double-precision
+// streaming origin re-centering (curr_origin - prev_origin).
+inline bool build_static_world_reproj(const float prev_vp[16], const float curr_vp_inv[16],
+                                      const float prev_world_xf[16], const float curr_world_xf[16], double prev_ox,
+                                      double prev_oz, double curr_ox, double curr_oz, float out_m[16]) {
+  float inv_curr_world[16];
+  if (!mat4_inv(curr_world_xf, inv_curr_world)) return false;
+  float shift[16];
+  mat4_identity(shift);
+  shift[12] = float(curr_ox - prev_ox);
+  shift[14] = float(curr_oz - prev_oz);
+  float tmp1[16], tmp2[16], tmp3[16];
+  mat4_mul(shift, inv_curr_world, tmp1);
+  mat4_mul(prev_world_xf, tmp1, tmp2);
+  mat4_mul(prev_vp, tmp2, tmp3);
+  mat4_mul(tmp3, curr_vp_inv, out_m);
+  return true;
+}
+
+// Reprojects a rigid moving object pixel (curr_model -> prev_model) from current clip
+// space into previous clip space: prev_vp * prev_model * inv(curr_model) * inv(curr_vp).
+inline bool build_object_reproj(const float prev_vp[16], const float curr_vp_inv[16], const float prev_model[16],
+                                const float curr_model[16], float out_m[16]) {
+  float inv_curr_model[16];
+  if (!mat4_inv(curr_model, inv_curr_model)) return false;
+  float tmp1[16], tmp2[16];
+  mat4_mul(prev_model, inv_curr_model, tmp1);
+  mat4_mul(prev_vp, tmp1, tmp2);
+  mat4_mul(tmp2, curr_vp_inv, out_m);
+  return true;
+}
+
+inline bool compute_screen_velocity(const float reproj_m[16], float uv_x, float uv_y, float depth_z, float jitter_dx,
+                                    float jitter_dy, float& vel_x, float& vel_y) {
+  const float nx = uv_x * 2.0f - 1.0f;
+  const float ny = uv_y * 2.0f - 1.0f;
+  const float px = reproj_m[0] * nx + reproj_m[4] * ny + reproj_m[8] * depth_z + reproj_m[12];
+  const float py = reproj_m[1] * nx + reproj_m[5] * ny + reproj_m[9] * depth_z + reproj_m[13];
+  const float pw = reproj_m[3] * nx + reproj_m[7] * ny + reproj_m[11] * depth_z + reproj_m[15];
+  if (std::fabs(pw) < 1e-6f) {
+    vel_x = vel_y = 0.0f;
+    return false;
+  }
+  const float prev_u = (px / pw) * 0.5f + 0.5f;
+  const float prev_v = (py / pw) * 0.5f + 0.5f;
+  vel_x = (uv_x - prev_u) - jitter_dx;
+  vel_y = (uv_y - prev_v) - jitter_dy;
+  return true;
+}
+
+// Packs the 80-byte (20 x uint32) push constant block for motion_vectors.frag's
+// per-object dynamic OBB pass (fitting strictly inside motion_layout_'s 80-byte budget).
+inline void pack_dynamic_push(const float reproj_m[16], float jitter_dx, float jitter_dy, const float center_view[3],
+                              const float q[4], const float half_extents[3], float inv_proj00, float inv_proj11,
+                              float near_plane, bool reverse_z, bool is_player, uint32_t out_words[20]) {
+  auto put_f = [&](int idx, float v) { std::memcpy(&out_words[idx], &v, sizeof(float)); };
+  // Rows 0, 1, 3 of reproj_m (column-major), with jitter delta folded into rows 0 and 1.
+  const float r3[4] = {reproj_m[3], reproj_m[7], reproj_m[11], reproj_m[15]};
+  for (int c = 0; c < 4; ++c) {
+    put_f(0 + c, reproj_m[c * 4 + 0] + 2.0f * jitter_dx * r3[c]);
+    put_f(4 + c, reproj_m[c * 4 + 1] + 2.0f * jitter_dy * r3[c]);
+    put_f(8 + c, r3[c]);
+  }
+  put_f(12, center_view[0]);
+  put_f(13, center_view[1]);
+  put_f(14, center_view[2]);
+  out_words[15] = pack_half2x16(q[0], q[1]);
+  out_words[16] = pack_half2x16(q[2], half_extents[0]);
+  out_words[17] = pack_half2x16(half_extents[1], half_extents[2]);
+  out_words[18] = pack_half2x16(inv_proj00, inv_proj11);
+  const float safe_near = std::clamp(near_plane, 0.05f, 500.0f);
+  const float mode_bias = (is_player ? 2000.0f : 0.0f) + (reverse_z ? 1000.0f : 0.0f);
+  put_f(19, -(safe_near + mode_bias));
+}
+
+// McGuire et al. (2012) depth-aware foreground/background motion blur weights (matching post.frag).
+inline float soft_depth_compare(float za, float zb) {
+  const float soft_z = std::max(0.06f * std::min(za, zb), 0.25f);
+  return std::clamp(1.0f - (za - zb) / soft_z, 0.0f, 1.0f);
+}
+
+inline float mcguire_sample_weight(float center_d, float center_v, float sample_d, float sample_v, float dist) {
+  auto cone = [](float d, float v) {
+    if (v <= 1e-5f) return 0.0f;
+    return std::clamp(1.0f - d / v, 0.0f, 1.0f);
+  };
+  auto cyl = [](float d, float v) {
+    if (v <= 1e-5f) return 0.0f;
+    const float e0 = 0.95f * v, e1 = 1.05f * v;
+    const float t = std::clamp((d - e0) / (e1 - e0), 0.0f, 1.0f);
+    return 1.0f - (t * t * (3.0f - 2.0f * t));
+  };
+  const float f = soft_depth_compare(sample_d, center_d);
+  const float b = soft_depth_compare(center_d, sample_d);
+  return f * cone(dist, sample_v) + b * cone(dist, center_v) + cyl(dist, sample_v) * cyl(dist, center_v) * 2.0f;
+}
+
+}  // namespace carview::motion_math
+
+#ifndef CARVIEW_MOTION_MATH_ONLY
+
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -310,6 +633,26 @@ class Renderer {
   const std::string& probed_rhi_device_name() const { return probed_rhi_device_name_; }
   void set_camera_projection(float near_plane, float far_plane, float proj00, float proj11);
   void set_camera_vp(const float vp[16], float jitter_uv_x = 0.0f, float jitter_uv_y = 0.0f);
+  // Per-object dynamic motion vector scene state (player car + up to 8 nearest AI/traffic cars
+  // + static world transform & streaming origin for exact per-pixel motion vectors).
+  struct MotionCarDesc {
+    uintptr_t model_id = 0;
+    float model[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    float bmin[3] = {0, 0, 0};
+    float bmax[3] = {0, 0, 0};
+  };
+  struct MotionSceneState {
+    static constexpr uint32_t kMaxDynamicCars = 8;
+    bool has_world_transform = false;
+    float world_transform[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    double world_origin[2] = {0.0, 0.0};
+    bool has_player_car = false;
+    float player_bmin[3] = {0, 0, 0};
+    float player_bmax[3] = {0, 0, 0};
+    uint32_t dynamic_car_count = 0;
+    MotionCarDesc dynamic_cars[kMaxDynamicCars]{};
+  };
+  void set_motion_scene(const MotionSceneState& state) { motion_scene_ = state; }
   // Phase B Volumetric Sun Shafts / Aerial Perspective / Night Headlight Cones UBO state.
   struct VolumetricBeam {
     float origin_range[4] = {0, 0, 0, 1};
@@ -580,7 +923,11 @@ class Renderer {
   std::vector<uint8_t> inspector_rgba_;
   Buffer inspector_offscreen_buf_;
   float lut_strength_ = 1.0f;
-  uint32_t lut_image_size_ = 16, lut_pending_size_ = 16;
+  uint32_t lut_image_size_ = 16, lut_pending_size_ = 16, lut_tex_extent_ = 33;
+  bool lut_needs_layout_init_ = false;
+  MotionSceneState motion_scene_{};
+  MotionSceneState prev_motion_scene_{};
+  bool prev_motion_scene_valid_ = false;
   uint32_t hdr_pattern_ = 0;
   float hdr_pattern_nits_ = 1000.0f;
   bool vrs_supported_ = false;
@@ -619,6 +966,7 @@ class Renderer {
   bool lut_dirty_ = false;
   bool lum_reset_ = true;
   bool bloom_prev_valid_ = false;
+  VkImage bloom_persist_img_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout post_layout_ = VK_NULL_HANDLE;
   VkPipeline post_quarter_ = VK_NULL_HANDLE, post_bloom_down_ = VK_NULL_HANDLE, post_bloom_up_ = VK_NULL_HANDLE,
@@ -782,3 +1130,5 @@ class Renderer {
 };
 
 }  // namespace carview
+
+#endif  // CARVIEW_MOTION_MATH_ONLY

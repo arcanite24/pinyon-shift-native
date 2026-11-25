@@ -637,6 +637,143 @@ void test_manifest_and_host_source() {
         "showroom_sky.cpp draws 6-vertex instanced star quads");
 }
 
+std::string read_text_file(const std::filesystem::path& p) {
+  std::ifstream f(p);
+  if (!f) return {};
+  return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+void test_flag_bitmask_float32_exact_decode() {
+  constexpr uint32_t kFlagSlot1 = 1u;
+  constexpr uint32_t kFlagMetallic = 2u;
+  constexpr uint32_t kFlagLampEmissive = 2048u;
+  constexpr uint32_t kFlagInstanced = 8192u;
+  constexpr uint32_t kFlagCarbonTex = 4194304u;
+  constexpr uint32_t kFlagHasBlurMesh = 8388608u;
+
+  // Confirm IEEE-754 float32 + 0.5f corrupts odd masks >= 2^23 via round-to-nearest-even.
+  const uint32_t odd_blur = kFlagHasBlurMesh | kFlagSlot1;
+  const uint32_t corrupted = static_cast<uint32_t>(static_cast<float>(odd_blur) + 0.5f);
+  check(corrupted != odd_blur && (corrupted & kFlagSlot1) == 0u && (corrupted & kFlagMetallic) != 0u,
+        "float32 + 0.5f corrupts kFlagHasBlurMesh | kFlagSlot1 into kFlagMetallic");
+
+  // Confirm std::lround (matching GLSL round()) decodes all 24-bit flag combinations exactly.
+  const uint32_t samples[] = {
+      0u,
+      kFlagSlot1,
+      kFlagHasBlurMesh,
+      kFlagHasBlurMesh | kFlagSlot1,
+      kFlagHasBlurMesh | kFlagSlot1 | kFlagMetallic,
+      kFlagHasBlurMesh | kFlagSlot1 | kFlagInstanced | kFlagLampEmissive,
+      kFlagHasBlurMesh | kFlagCarbonTex | kFlagSlot1 | kFlagMetallic | kFlagInstanced,
+      0x00FFFFFFu,
+  };
+  for (uint32_t mask : samples) {
+    const float encoded = static_cast<float>(mask);
+    const uint32_t decoded = static_cast<uint32_t>(std::lround(encoded));
+    check_str(decoded == mask, "exact float32 round decode preserves 24-bit flag mask " + std::to_string(mask));
+  }
+  for (uint32_t low = 0u; low < 512u; ++low) {
+    const uint32_t mask = kFlagHasBlurMesh | low;
+    const uint32_t decoded = static_cast<uint32_t>(std::lround(static_cast<float>(mask)));
+    check_str(decoded == mask, "kFlagHasBlurMesh | " + std::to_string(low) + " round-trips bit-exact");
+  }
+
+  // Static guard: car pipeline shaders and C++ files must never decode flags via params + 0.5.
+  const std::filesystem::path root(SHIFT_SOURCE_DIR);
+  const std::string sv = read_text_file(root / "apps" / "carview" / "shaders" / "showroom.vert");
+  const std::string sf = read_text_file(root / "apps" / "carview" / "shaders" / "showroom.frag");
+  check(sv.find("draw.params.y + 0.5") == std::string::npos && sv.find("uint(round(draw.params.y))") != std::string::npos,
+        "showroom.vert decodes draw.params.y with exact uint(round(...))");
+  check(sf.find("draw.params.y + 0.5") == std::string::npos && sf.find("uint(round(draw.params.y))") != std::string::npos,
+        "showroom.frag decodes draw.params.y with exact uint(round(...))");
+
+  const char* cpp_files[] = {
+      "showroom_car_load.cpp",
+      "showroom_car_state.cpp",
+      "showroom_draw.cpp",
+      "showroom_shadows.cpp",
+  };
+  for (const char* f : cpp_files) {
+    const std::string src = read_text_file(root / "apps" / "carview" / f);
+    check_str(!src.empty() && src.find("params[1] + 0.5f") == std::string::npos,
+              std::string(f) + ": zero params[1] + 0.5f flag decodes");
+  }
+}
+
+void test_shadow_and_smoothstep_invariants() {
+  // 1. RGB shadow_color packing in shadow_bias.w uses safe normal-float tag 0x3Fu (never NaN/Inf/subnormal).
+  auto pack_shadow_rgb = [](float r, float g, float b) -> float {
+    const uint32_t sr = static_cast<uint32_t>(std::lround(std::clamp(r, 0.0f, 1.0f) * 255.0f)) & 0xFFu;
+    const uint32_t sg = static_cast<uint32_t>(std::lround(std::clamp(g, 0.0f, 1.0f) * 255.0f)) & 0xFFu;
+    const uint32_t sb = static_cast<uint32_t>(std::lround(std::clamp(b, 0.0f, 1.0f) * 255.0f)) & 0xFFu;
+    const uint32_t packed = (0x3Fu << 24u) | (sb << 16u) | (sg << 8u) | sr;
+    float bits = 0.0f;
+    std::memcpy(&bits, &packed, sizeof(bits));
+    return bits;
+  };
+  auto unpack_shadow_rgb = [](float bits) -> std::array<float, 3> {
+    uint32_t u = 0;
+    std::memcpy(&u, &bits, sizeof(u));
+    if ((u >> 24u) != 0x3Fu) return {1.0f, 1.0f, 1.0f};
+    return {
+        static_cast<float>(u & 255u) / 255.0f,
+        static_cast<float>((u >> 8u) & 255u) / 255.0f,
+        static_cast<float>((u >> 16u) & 255u) / 255.0f,
+    };
+  };
+
+  const std::array<float, 3> shadow_colors[] = {
+      {0.0f, 0.0f, 0.0f},
+      {0.35f, 0.35f, 0.35f},
+      {0.20f, 0.30f, 0.48f},
+      {1.0f, 1.0f, 1.0f},
+  };
+  for (const auto& c : shadow_colors) {
+    const float packed = pack_shadow_rgb(c[0], c[1], c[2]);
+    check(std::isfinite(packed) && std::fpclassify(packed) == FP_NORMAL && packed >= 0.5f && packed < 2.0f,
+          "packed RGB shadow_color is a safe normal IEEE-754 float in [0.5, 2.0)");
+    const auto dec = unpack_shadow_rgb(packed);
+    for (int k = 0; k < 3; ++k) {
+      check(std::fabs(dec[size_t(k)] - c[size_t(k)]) <= (1.0f / 255.0f + 1e-6f),
+            "unpacked RGB shadow_color matches source within 1/255");
+    }
+  }
+  const auto cool = unpack_shadow_rgb(pack_shadow_rgb(0.20f, 0.30f, 0.48f));
+  check(cool[2] > cool[1] && cool[1] > cool[0], "RGB shadow_color preserves cool blue chromaticity without grayscale collapse");
+
+  // 2. Reversed smoothstep replacement 1.0 - smoothstep(lo, hi, x) strictly satisfies lo < hi.
+  auto safe_smoothstep = [](float lo, float hi, float x) -> float {
+    const float t = std::clamp((x - lo) / (hi - lo), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+  };
+  auto inv_smoothstep = [&](float lo, float hi, float x) -> float {
+    return 1.0f - safe_smoothstep(lo, hi, x);
+  };
+  // Front crush deformation range [-1.95, -0.75]: 1.0 at bumper tip (-1.95), 0.0 at cabin (-0.75).
+  check(std::fabs(inv_smoothstep(-1.95f, -0.75f, -1.95f) - 1.0f) < 1e-6f, "inv_smoothstep(-1.95, -0.75, -1.95) == 1.0");
+  check(std::fabs(inv_smoothstep(-1.95f, -0.75f, -1.35f) - 0.5f) < 1e-6f, "inv_smoothstep(-1.95, -0.75, -1.35) == 0.5");
+  check(std::fabs(inv_smoothstep(-1.95f, -0.75f, -0.75f) - 0.0f) < 1e-6f, "inv_smoothstep(-1.95, -0.75, -0.75) == 0.0");
+
+  // 3. Source invariants: no shadow.z floor leaking direct sun, instanced guards on tyre mud & rotor glow,
+  //    and phantom shadow caster exclusions in showroom_shadows.cpp.
+  const std::filesystem::path root(SHIFT_SOURCE_DIR);
+  const char* shadow_shaders[] = {"world_frag.glsl", "showroom.frag", "particle.frag", "skid.frag"};
+  for (const char* sh : shadow_shaders) {
+    const std::string src = read_text_file(root / "apps" / "carview" / "shaders" / sh);
+    check_str(!src.empty() && src.find("mix(frame.shadow.z, 1.0,") == std::string::npos,
+              std::string(sh) + ": direct sun shadow never floored by frame.shadow.z");
+  }
+  const std::string sf = read_text_file(root / "apps" / "carview" / "shaders" / "showroom.frag");
+  check(sf.find("(flags & kFlagInstanced) == 0u && frame.damage_dirt.y > 0.01") != std::string::npos,
+        "showroom.frag guards player tyre mud from leaking onto instanced cars");
+  check(sf.find("(flags & kFlagInstanced) == 0u ? frame.phase_b_params.y : 0.0") != std::string::npos,
+        "showroom.frag guards player brake rotor glow from leaking onto instanced cars");
+  const std::string shadows_cpp = read_text_file(root / "apps" / "carview" / "showroom_shadows.cpp");
+  check(shadows_cpp.find("d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0") != std::string::npos,
+        "showroom_shadows.cpp skips detached, blur_rim, and cockpit-only parts in shadow pass");
+}
+
 }  // namespace
 
 int main() {
@@ -644,8 +781,10 @@ int main() {
   test_all_prebuilt_spirv();
   test_star_quad_math_parity();
   test_manifest_and_host_source();
+  test_flag_bitmask_float32_exact_decode();
+  test_shadow_and_smoothstep_invariants();
   if (g_failed == 0) {
-    std::printf("rhi_shader_compat_tests: PASS (56 shaders audited, stars instanced quads verified)\n");
+    std::printf("rhi_shader_compat_tests: PASS (56 shaders audited, stars instanced quads + R3-A1 invariants verified)\n");
     return 0;
   }
   std::fprintf(stderr, "rhi_shader_compat_tests: %d check(s) failed\n", g_failed);

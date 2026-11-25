@@ -971,7 +971,7 @@ void Showroom::preview_colour(size_t index) {
       }
     }
     if (uint32_t(d.push.params[0] + 0.5f) != uint32_t(MaterialClass::kPaint)) continue;
-    uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+    uint32_t flags = uint32_t(std::lround(d.push.params[1]));
     for (int k = 0; k < 3; ++k) d.push.tint[k] = rgb[k];
     d.push.tint[3] = pscale;
     d.push.params[3] = 0.0f;
@@ -1071,7 +1071,7 @@ void Showroom::set_paint_spec(const cars::CarPaintSpec& paint) {
         const auto lin = to_lin(reg->rgb);
         for (int k = 0; k < 3; ++k) d.push.tint[k] = lin[k];
         d.push.tint[3] = paint_scale_for(reg->finish);
-        uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+        uint32_t flags = uint32_t(std::lround(d.push.params[1]));
         const bool is_met = (reg->finish == cars::PaintFinish::kMetallic || reg->finish == cars::PaintFinish::kTwoTone);
         flags = is_met ? (flags | kFlagMetallic) : (flags & ~kFlagMetallic);
         flags &= ~(kFlagRaceLivery | kFlagStripe);
@@ -1109,7 +1109,7 @@ bool Showroom::set_custom_livery(const uint8_t* rgba, uint32_t width, uint32_t h
   std::set<uint32_t> updated_sets;
   for (auto& d : draws_) {
     if (MaterialClass(uint32_t(d.push.params[0] + 0.5f)) != MaterialClass::kPaint) continue;
-    uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+    uint32_t flags = uint32_t(std::lround(d.push.params[1]));
     flags |= kFlagLivery;
     d.push.params[1] = float(flags);
     if (d.descriptor < material_sets_.size() && updated_sets.insert(d.descriptor).second) {

@@ -110,7 +110,7 @@ void main() {
     }
   }
 
-  float dist_fade = smoothstep(135.0, 55.0, center_d);
+  float dist_fade = 1.0 - smoothstep(55.0, 135.0, center_d);
   float lit = 1.0 - clamp(occ * strength * sun_vis * dist_fade, 0.0, 0.68);
   out_shadow = vec4(lit, lit, lit, 1.0);
 }

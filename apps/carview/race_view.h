@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "drive/ai_driver.h"
@@ -162,7 +163,8 @@ class RaceView {
   // Effective player race place (airborne showcase returns 1 or 2 vs aircraft; normal race returns session place).
   int player_place() const;
   // Reuses an already-uploaded opponent guest Showroom for replay without synchronous re-upload hitches.
-  Showroom* find_loaded_model(const std::string& media, int64_t color_seq = -1) const;
+  Showroom* find_loaded_model(const std::string& media, int64_t color_seq = -1,
+                              const std::unordered_set<Showroom*>* exclude = nullptr) const;
   const race::EventData& event() const { return event_; }
   std::string banner() const;
   // What the HUD shows of the race (game_hud.h), from the session.
@@ -273,6 +275,8 @@ class RaceView {
     float ai_paint_rgb[3] = {1.0f, 1.0f, 1.0f};
     drive::CarLampState lamps{}; // persistent per-AI lamp state (15-tick brake hold & headlamp stagger)
     bool lamps_initialized = false;
+    bool in_tunnel = false;      // per-opponent overhead roof probe for tunnel headlamps
+    uint8_t tunnel_probe_tick = 0;
     std::string cached_driver_name;
     std::string cached_car_name;
   };

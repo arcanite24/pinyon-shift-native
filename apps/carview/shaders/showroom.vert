@@ -97,7 +97,7 @@ void main() {
   vec3 n = rotate(q, vec3(1.0, 0.0, 0.0));
   vec3 t = rotate(q, vec3(0.0, 1.0, 0.0));
   vec3 b = rotate(q, vec3(0.0, 0.0, -1.0));
-  uint flags = uint(draw.params.y + 0.5);
+  uint flags = uint(round(draw.params.y));
   v_instance = uint(gl_InstanceIndex);
   mat4 model_mat = (flags & kFlagInstanced) != 0u ? (car_instances[v_instance].model * draw.model) : draw.model;
   vec4 world = model_mat * vec4(p, 1.0);
@@ -110,12 +110,12 @@ void main() {
   // (kOpaque=0, kPaint=1, kLamp=3, kChrome=9, kCarbon=10; excludes kGlass=2, kInterior=4,
   // kGauge=5, kTyre=6, kRim=7, kCaliper=8, kWorld=11). Weighted by per-vertex .carbin crush
   // weight in_light.w when present, with clean fallback for legacy bakes without crush weights.
-  uint klass = uint(draw.params.x + 0.5);
+  uint klass = uint(round(draw.params.x));
   bool crushable_class = (klass == 0u || klass == 1u || klass == 3u || klass == 9u || klass == 10u);
   if ((flags & kFlagInstanced) == 0u && crushable_class) {
-    float z_front = smoothstep(-0.75, -1.95, world.z) * frame.damage_zones.x;
+    float z_front = (1.0 - smoothstep(-1.95, -0.75, world.z)) * frame.damage_zones.x;
     float z_rear = smoothstep(0.75, 1.95, world.z) * frame.damage_zones.y;
-    float x_left = smoothstep(-0.55, -0.95, world.x) * frame.damage_zones.z;
+    float x_left = (1.0 - smoothstep(-0.95, -0.55, world.x)) * frame.damage_zones.z;
     float x_right = smoothstep(0.55, 0.95, world.x) * frame.damage_zones.w;
     bool has_car_crush = (uint(max(frame.rim_tint_dirt.w, 0.0) + 0.5) & 2u) != 0u;
     float crush_w = (in_light.w > 0.003) ? in_light.w : (has_car_crush ? 0.0 : 0.65);

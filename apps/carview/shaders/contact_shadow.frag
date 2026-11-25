@@ -43,7 +43,7 @@ void main() {
 
   float ao = clamp(body_outer * outer_w + body_core * core_w + wheel_ao * 0.42, 0.0, 1.0);
   // Smooth fade to zero strictly inside quad bounds so edges never show hard clipping.
-  float edge_fade = smoothstep(1.0, 0.82, max(abs(v_uv.x), abs(v_uv.y)));
+  float edge_fade = 1.0 - smoothstep(0.82, 1.0, max(abs(v_uv.x), abs(v_uv.y)));
   ao *= edge_fade * strength * mix(1.0, 0.76, clearance);
 
   float mul = mix(1.0, min_dark, ao);

@@ -50,8 +50,15 @@ drive::Quat lane_orientation(double heading, double pitch) {
           y.w * t.z + y.x * t.y - y.y * t.x + y.z * t.w, y.w * t.w - y.x * t.x - y.y * t.y - y.z * t.z};
 }
 
-// Per-guest kinematic wheel spin accumulator (rad) for traffic cars without a live physics body.
-std::map<const Showroom*, float> g_traffic_wheel_spin;
+// Per-car overhead roof probe (35 m upward BVH raycast) so each traffic car toggles
+// tunnel headlamps based on its own roof occlusion rather than the player's state.
+bool is_under_tunnel_roof(const drive::Ground* ground, const drive::Vec3& pos) {
+  if (!ground) return false;
+  if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) return false;
+  drive::Hit hit{};
+  if (!ground->raycast({pos.x, pos.y + 1.6, pos.z}, {0.0, 1.0, 0.0}, 35.0, hit)) return false;
+  return hit.distance >= 0.5 && std::fabs(hit.normal.y) > 0.40;
+}
 
 }  // namespace
 
@@ -64,10 +71,8 @@ TrafficView::~TrafficView() {
     if (g.loading.valid()) g.loading.wait();
   r_.wait_idle();  // one single device idle on shutdown instead of one per guest
   for (auto& [id, g] : guests_)
-    if (g.showroom) {
-      g_traffic_wheel_spin.erase(g.showroom.get());
-      g.showroom->skip_wait_idle_on_destroy();
-    }
+    for (auto& sr : g.showrooms)
+      if (sr) sr->skip_wait_idle_on_destroy();
   guests_.clear();
 }
 
@@ -180,71 +185,79 @@ void TrafficView::update_guests() {
   for (int64_t id : want) {
     if (!media_.count(id)) continue;
     Guest& g = guests_[id];
-    if (g.showroom || g.failed) continue;
-    if (!g.loading.valid()) {
-      const std::filesystem::path bake = bake_dir_;
-      const std::filesystem::path root = game_root_;
-      const std::string media = media_[id];
-      Renderer* r = &r_;
-      const VkImageView host_env_view = host_.dynamic_env_view();
-      const VkSampler host_env_sampler = host_.dynamic_env_sampler();
-      const bool upload_on_worker = !sync_;
-      g.loading = std::async(std::launch::async, [r, bake, root, media, upload_on_worker, host_env_view, host_env_sampler]() {
-        Loaded out;
-        auto s = std::make_unique<Showroom>(*r);
-        s->set_guest();
-        if (host_env_view && host_env_sampler) s->set_shared_dynamic_env(host_env_view, host_env_sampler);
-        std::string e;
-        ShowroomOptions opt{};
-        opt.game_root = root;
-        if (!s->load(bake, media, opt, e)) {
-          std::fprintf(stderr, "carview: traffic model %s: %s\n", media.c_str(), e.c_str());
-          return out;
-        }
-        s->load_car_lamps(root, media);
-        if (upload_on_worker) {
-          const auto t0 = std::chrono::steady_clock::now();
-          if (!s->upload(e)) {
-            out.error = e;
-            out.showroom = std::move(s);
+    const auto dit = desired_slots_.find(id);
+    const size_t desired =
+        std::clamp(dit != desired_slots_.end() ? dit->second : size_t(1), size_t(1), kMaxWheelClonesPerModel);
+    while (g.showrooms.size() < desired && !g.failed) {
+      if (!g.loading.valid()) {
+        const std::filesystem::path bake = bake_dir_;
+        const std::filesystem::path root = game_root_;
+        const std::string media = media_[id];
+        Renderer* r = &r_;
+        const VkImageView host_env_view = host_.dynamic_env_view();
+        const VkSampler host_env_sampler = host_.dynamic_env_sampler();
+        const bool upload_on_worker = !sync_;
+        g.loading = std::async(std::launch::async, [r, bake, root, media, upload_on_worker, host_env_view, host_env_sampler]() {
+          Loaded out;
+          auto s = std::make_unique<Showroom>(*r);
+          s->set_guest();
+          if (host_env_view && host_env_sampler) s->set_shared_dynamic_env(host_env_view, host_env_sampler);
+          std::string e;
+          ShowroomOptions opt{};
+          opt.game_root = root;
+          if (!s->load(bake, media, opt, e)) {
+            std::fprintf(stderr, "carview: traffic model %s: %s\n", media.c_str(), e.c_str());
             return out;
           }
-          out.upload_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-          out.uploaded = true;
-        }
-        out.showroom = std::move(s);
-        return out;
-      });
-    }
-    if (!sync_ && g.loading.wait_for(std::chrono::seconds(0)) != std::future_status::ready) continue;
-    Loaded loaded = g.loading.get();
-    auto s = std::move(loaded.showroom);
-    if (!s) {
-      g.failed = true;
-      continue;
-    }
-    if (!loaded.error.empty()) {
-      std::fprintf(stderr, "carview: traffic model %s: %s\n", media_[id].c_str(), loaded.error.c_str());
-      g.failed = true;
-      continue;
-    }
-    double ms = loaded.upload_ms;
-    if (!loaded.uploaded) {
-      const auto t0 = std::chrono::steady_clock::now();
-      std::string e;
-      if (!s->upload(e)) {
-        std::fprintf(stderr, "carview: traffic model %s: %s\n", media_[id].c_str(), e.c_str());
-        g.failed = true;
-        continue;
+          s->load_car_lamps(root, media);
+          if (upload_on_worker) {
+            const auto t0 = std::chrono::steady_clock::now();
+            if (!s->upload(e)) {
+              out.error = e;
+              out.showroom = std::move(s);
+              return out;
+            }
+            out.upload_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            out.uploaded = true;
+          }
+          out.showroom = std::move(s);
+          return out;
+        });
       }
-      ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      if (!sync_ && g.loading.wait_for(std::chrono::seconds(0)) != std::future_status::ready) break;
+      Loaded loaded = g.loading.get();
+      auto s = std::move(loaded.showroom);
+      if (!s) {
+        g.failed = true;
+        break;
+      }
+      if (!loaded.error.empty()) {
+        std::fprintf(stderr, "carview: traffic model %s: %s\n", media_[id].c_str(), loaded.error.c_str());
+        g.failed = true;
+        break;
+      }
+      double ms = loaded.upload_ms;
+      if (!loaded.uploaded) {
+        const auto t0 = std::chrono::steady_clock::now();
+        std::string e;
+        if (!s->upload(e)) {
+          std::fprintf(stderr, "carview: traffic model %s: %s\n", media_[id].c_str(), e.c_str());
+          g.failed = true;
+          break;
+        }
+        ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      }
+      upload_ms_max_ = std::max(upload_ms_max_, loaded.uploaded ? 0.0 : ms);  // render-thread stall only
+      ++uploads_;
+      const bool is_primary = g.showrooms.empty();
+      if (is_primary) {
+        params_[id] = drive::params_for_baked_car(s->car(), bake_dir_);
+        std::printf("traffic: t %.1f s: model %lld (%s) uploaded in %.0f ms\n", population_->time(), (long long)id,
+                    media_[id].c_str(), ms);
+      }
+      g.showrooms.push_back(std::move(s));
+      if (!sync_) break;  // async mode: load at most one extra clone at a time per model
     }
-    upload_ms_max_ = std::max(upload_ms_max_, loaded.uploaded ? 0.0 : ms);  // render-thread stall only
-    ++uploads_;
-    params_[id] = drive::params_for_baked_car(s->car(), bake_dir_);
-    g.showroom = std::move(s);
-    std::printf("traffic: t %.1f s: model %lld (%s) uploaded in %.0f ms\n", population_->time(), (long long)id,
-                media_[id].c_str(), ms);
   }
   // Models neither loaded nor driving: dropped (out of the instances first).
   for (auto it = guests_.begin(); it != guests_.end();) {
@@ -254,15 +267,17 @@ void TrafficView::update_guests() {
     }
     host_.set_instances({});
     params_.erase(it->first);
+    desired_slots_.erase(it->first);
     std::printf("traffic: t %.1f s: model %lld (%s) dropped\n", population_->time(), (long long)it->first,
                 media_[it->first].c_str());
     // Retire dropped traffic GPU resources through the host's multi-frame retirement ring
     // instead of calling vkDeviceWaitIdle() on the render thread (eliminates 4.5-13.1 ms hitches).
-    if (it->second.showroom) {
-      g_traffic_wheel_spin.erase(it->second.showroom.get());
-      std::shared_ptr<Showroom> retired = std::move(it->second.showroom);
-      retired->skip_wait_idle_on_destroy();
-      host_.retire_deferred([g = std::move(retired)]() mutable { g.reset(); });
+    for (auto& sr : it->second.showrooms) {
+      if (sr) {
+        std::shared_ptr<Showroom> retired = std::move(sr);
+        retired->skip_wait_idle_on_destroy();
+        host_.retire_deferred([g = std::move(retired)]() mutable { g.reset(); });
+      }
     }
     it = guests_.erase(it);
   }
@@ -270,6 +285,27 @@ void TrafficView::update_guests() {
 
 void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Vehicle& player) {
   if (!population_) return;
+  const drive::Vec3 player_pos = player.position();
+  // Count nearby visible cars per model (< 95 m) so identical nearby traffic cars each receive
+  // an independent Showroom clone with isolated wheel steer, spin, omega blur, and suspension Y.
+  {
+    std::map<int64_t, size_t> near_counts;
+    for (const auto& c : population_->cars()) {
+      if (std::clamp(c.alpha, 0.0f, 1.0f) <= 0.005f) continue;
+      const drive::Vehicle* body = bodies_ ? bodies_->body(c.id) : nullptr;
+      const double cx = body ? body->position().x : c.position.x;
+      const double cy = body ? body->position().y : c.position.y;
+      const double cz = body ? body->position().z : c.position.z;
+      const double dx = cx - player_pos.x, dy = cy - player_pos.y, dz = cz - player_pos.z;
+      if (dx * dx + dy * dy + dz * dz <= 95.0 * 95.0) {
+        size_t& cnt = near_counts[c.model];
+        if (cnt < kMaxWheelClonesPerModel) ++cnt;
+      }
+    }
+    for (const auto& [id, cnt] : near_counts) {
+      desired_slots_[id] = std::max(desired_slots_[id], cnt);
+    }
+  }
   update_guests();
   float pm[16];
   drive::model_to_world(player_info, player, pm);
@@ -283,30 +319,47 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
   for (const auto& c : population_->cars()) alive_ids.insert(c.id);
   for (auto it = lamps_.begin(); it != lamps_.end();)
     it = alive_ids.count(it->first) ? std::next(it) : lamps_.erase(it);
+  for (auto it = wheel_spin_.begin(); it != wheel_spin_.end();)
+    it = alive_ids.count(it->first) ? std::next(it) : wheel_spin_.erase(it);
+
   // Fallback to any already-loaded traffic guest so an active traffic car whose own model
   // is still async-loading or failed never drives around as an invisible obstacle.
   Showroom* fallback_guest = nullptr;
   for (const auto& [gid, gg] : guests_) {
-    if (gg.showroom) {
-      fallback_guest = gg.showroom.get();
+    if (!gg.showrooms.empty() && gg.showrooms[0]) {
+      fallback_guest = gg.showrooms[0].get();
       break;
     }
   }
-  struct WheelDriver {
-    double dist2 = 1e30;
+
+  constexpr float kTwoPi = 6.28318530717958647692f;
+  const double tod_sec = population_->hour() * 3600.0;
+  const bool tod_lamps = drive::CarLampState::tod_requests_headlamps(tod_sec);
+
+  struct VisibleCar {
+    const traffic::Car* car = nullptr;
     const drive::Vehicle* body = nullptr;
+    drive::Vec3 at{};
+    drive::Quat rot{0, 0, 0, 1};
+    double d2 = 1e30;
     double speed = 0.0;
     double steer = 0.0;
+    float alpha = 1.0f;
+    drive::LampShaderVectors lamps{};
+    Showroom* assigned = nullptr;
+    WheelPose wposes[4]{};
   };
-  std::map<Showroom*, WheelDriver> wheel_drivers;
-  const drive::Vec3 player_pos = player.position();
-  std::vector<Showroom::Instance> list;
+  std::vector<VisibleCar> visible;
+  visible.reserve(population_->cars().size());
+
   for (const auto& c : population_->cars()) {
     const float alpha = std::clamp(c.alpha, 0.0f, 1.0f);
     if (alpha <= 0.005f) continue;
     const auto it = guests_.find(c.model);
-    Showroom* guest_sr = (it != guests_.end() && it->second.showroom) ? it->second.showroom.get() : fallback_guest;
-    if (!guest_sr) continue;
+    Showroom* primary_sr =
+        (it != guests_.end() && !it->second.showrooms.empty() && it->second.showrooms[0]) ? it->second.showrooms[0].get()
+                                                                                           : fallback_guest;
+    if (!primary_sr) continue;
     const drive::Vehicle* body = bodies_->body(c.id);
     TrafficPose pose{
         body ? body->position() : drive::Vec3{c.position.x, c.position.y, c.position.z},
@@ -323,25 +376,10 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     const double qn = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
     if (!std::isfinite(qn) || qn < 1e-6) q = {0, 0, 0, 1};
     else q = {q.x / qn, q.y / qn, q.z / qn, q.w / qn};
-    // The guest's model frame to the world, relative to the player (the
-    // translation in double).
-    float gm[16];
-    drive::model_to_world(guest_sr->car(), q, {0, 0, 0}, gm);
-    double gmd[16];
-    to_double(gm, gmd);
-    gmd[12] += at.x, gmd[13] += at.y, gmd[14] += at.z;
-    Showroom::Instance in;
-    in.car = guest_sr;
-    multiply(world_to_player, gmd, in.model);
-    in.fade_alpha = alpha;
-    if (const auto& cols = guest_sr->car().colours; !cols.empty()) {
-      const uint32_t rgb = cols[size_t(c.id) % cols.size()].rgb;
-      auto to_lin = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
-      in.paint_rgb[0] = to_lin(float((rgb >> 16) & 0xFF) / 255.0f);
-      in.paint_rgb[1] = to_lin(float((rgb >> 8) & 0xFF) / 255.0f);
-      in.paint_rgb[2] = to_lin(float(rgb & 0xFF) / 255.0f);
-      in.has_paint = true;
-    }
+
+    const double dx = at.x - player_pos.x, dy = at.y - player_pos.y, dz = at.z - player_pos.z;
+    const double d2 = dx * dx + dy * dy + dz * dz;
+
     const bool is_new = !lamps_.count(c.id);
     drive::CarLampState& lstate = lamps_[c.id];
     drive::LampInputs lin;
@@ -353,59 +391,144 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     // drive::Vehicle::gear(): -1 = Reverse, 0 = Neutral, >= 1 = forward.
     // drive::LampInputs::gear: 0 = Reverse, >= 1 = non-reverse.
     lin.gear = body ? (body->gear() == -1 ? 0 : std::max(1, body->gear())) : 1;
-    lin.tod_sec = population_->hour() * 3600.0;
+    lin.tod_sec = tod_sec;
     lin.dt = lamp_dt;
     lin.indicator_mode = c.hazard_on ? 3 : (c.turn_left ? 1 : (c.turn_right ? 2 : 0));
-    lin.light_override = c.flash_headlamps ? 2 : 0;
+    const bool car_in_tunnel =
+        !tod_lamps && d2 < 220.0 * 220.0 && ground_ && *ground_ && is_under_tunnel_roof(*ground_, at);
+    lin.light_override = c.flash_headlamps ? 2 : (car_in_tunnel ? 1 : 0);
     lin.is_ai = true;
     lin.snap_headlamps = is_new;
     lstate.update(lin);
-    in.lamps = lstate.vectors();
-    in.has_lamps = true;
-    list.push_back(in);
 
-    // Track nearest visible car of each guest model to drive its wheel spin & steer poses.
-    const double dx = at.x - player_pos.x, dy = at.y - player_pos.y, dz = at.z - player_pos.z;
-    const double d2 = dx * dx + dy * dy + dz * dz;
-    auto& wd = wheel_drivers[guest_sr];
-    if (d2 < wd.dist2) {
-      wd.dist2 = d2;
-      wd.body = body;
-      wd.speed = body ? body->speed() : c.speed;
-      wd.steer = c.steer_angle;
-    }
-  }
-  constexpr float kTwoPi = 6.28318530717958647692f;
-  for (const auto& [guest_sr, wd] : wheel_drivers) {
-    WheelPose wposes[4]{};
-    if (wd.body) {
+    VisibleCar vc{};
+    vc.car = &c;
+    vc.body = body;
+    vc.at = at;
+    vc.rot = q;
+    vc.d2 = d2;
+    vc.speed = body ? body->speed() : c.speed;
+    vc.steer = body ? body->wheels()[0].steer : c.steer_angle;
+    vc.alpha = alpha;
+    vc.lamps = lstate.vectors();
+
+    if (body) {
       for (int wi = 0; wi < 4; ++wi) {
-        const auto& w = wd.body->wheels()[size_t(wi)];
-        wposes[wi].centre[0] = float(w.centre.x);
-        wposes[wi].centre[1] = float(w.centre.y);
-        wposes[wi].centre[2] = float(w.centre.z);
-        wposes[wi].steer = float(w.steer);
-        wposes[wi].spin = float(w.spin);
-        wposes[wi].omega = float(w.omega);
+        const auto& w = body->wheels()[size_t(wi)];
+        vc.wposes[wi].centre[0] = float(w.centre.x);
+        vc.wposes[wi].centre[1] = float(w.centre.y);
+        vc.wposes[wi].centre[2] = float(w.centre.z);
+        vc.wposes[wi].steer = float(w.steer);
+        vc.wposes[wi].spin = float(w.spin);
+        vc.wposes[wi].omega = float(w.omega);
       }
-      g_traffic_wheel_spin[guest_sr] = wposes[0].spin;
+      wheel_spin_[c.id] = vc.wposes[0].spin;
     } else {
-      const auto& rest = guest_sr->car().wheel_centres_body;
+      const auto& rest = primary_sr->car().wheel_centres_body;
       const float radius = std::clamp(rest[0][1], 0.26f, 0.55f);
-      const float omega = float(wd.speed) / radius;
-      float& spin = g_traffic_wheel_spin[guest_sr];
+      const float omega = float(vc.speed) / radius;
+      float& spin = wheel_spin_[c.id];
       spin = std::fmod(spin + omega * lamp_dt, kTwoPi);
       if (spin < 0.0f) spin += kTwoPi;
       for (int wi = 0; wi < 4; ++wi) {
-        wposes[wi].centre[0] = rest[size_t(wi)][0];
-        wposes[wi].centre[1] = rest[size_t(wi)][1];
-        wposes[wi].centre[2] = rest[size_t(wi)][2];
-        wposes[wi].steer = (wi < 2) ? float(wd.steer) : 0.0f;
-        wposes[wi].spin = spin;
-        wposes[wi].omega = omega;
+        vc.wposes[wi].centre[0] = rest[size_t(wi)][0];
+        vc.wposes[wi].centre[1] = rest[size_t(wi)][1];
+        vc.wposes[wi].centre[2] = rest[size_t(wi)][2];
+        vc.wposes[wi].steer = (wi < 2) ? float(vc.steer) : 0.0f;
+        vc.wposes[wi].spin = spin;
+        vc.wposes[wi].omega = omega;
       }
     }
-    guest_sr->set_wheel_poses(wposes);
+    visible.push_back(vc);
+  }
+
+  // Group visible cars by model and sort each group nearest-first so the closest cars of every
+  // model receive dedicated Showroom clones with independent wheel poses (zero clobbering).
+  std::map<int64_t, std::vector<size_t>> by_model;
+  for (size_t i = 0; i < visible.size(); ++i) by_model[visible[i].car->model].push_back(i);
+
+  std::set<Showroom*> posed_guests;
+  std::vector<size_t> fallback_indices;
+  for (auto& [mid, idxs] : by_model) {
+    std::sort(idxs.begin(), idxs.end(),
+              [&](size_t a, size_t b) { return visible[a].d2 < visible[b].d2; });
+    auto git = guests_.find(mid);
+    if (git == guests_.end() || git->second.showrooms.empty()) {
+      for (size_t idx : idxs) fallback_indices.push_back(idx);
+      continue;
+    }
+    const auto& slots = git->second.showrooms;
+    const size_t n_slots = slots.size();
+    struct SlotState {
+      Showroom* sr = nullptr;
+      double speed = 0.0;
+      double steer = 0.0;
+    };
+    std::vector<SlotState> active_slots;
+    active_slots.reserve(n_slots);
+    for (size_t k = 0; k < idxs.size(); ++k) {
+      VisibleCar& vc = visible[idxs[k]];
+      if (k < n_slots && slots[k]) {
+        Showroom* sr = slots[k].get();
+        vc.assigned = sr;
+        sr->set_wheel_poses(vc.wposes);
+        posed_guests.insert(sr);
+        active_slots.push_back({sr, vc.speed, vc.steer});
+      } else if (!active_slots.empty()) {
+        // Overflow distant car (> kMaxWheelClonesPerModel or while clone is async-loading):
+        // pick the existing slot whose speed & steer match closest without clobbering its pose.
+        size_t best_s = 0;
+        double best_cost = 1e30;
+        for (size_t s = 0; s < active_slots.size(); ++s) {
+          const double cost = std::fabs(active_slots[s].speed - vc.speed) +
+                              8.0 * std::fabs(active_slots[s].steer - vc.steer);
+          if (cost < best_cost) {
+            best_cost = cost;
+            best_s = s;
+          }
+        }
+        vc.assigned = active_slots[best_s].sr;
+      }
+    }
+  }
+  if (!fallback_indices.empty() && fallback_guest) {
+    std::sort(fallback_indices.begin(), fallback_indices.end(),
+              [&](size_t a, size_t b) { return visible[a].d2 < visible[b].d2; });
+    for (size_t idx : fallback_indices) {
+      VisibleCar& vc = visible[idx];
+      vc.assigned = fallback_guest;
+      if (posed_guests.insert(fallback_guest).second) {
+        fallback_guest->set_wheel_poses(vc.wposes);
+      }
+    }
+  }
+
+  std::vector<Showroom::Instance> list;
+  list.reserve(visible.size());
+  for (const auto& vc : visible) {
+    if (!vc.assigned) continue;
+    Showroom* guest_sr = vc.assigned;
+    // The guest's model frame to the world, relative to the player (the translation in double).
+    float gm[16];
+    drive::model_to_world(guest_sr->car(), vc.rot, {0, 0, 0}, gm);
+    double gmd[16];
+    to_double(gm, gmd);
+    gmd[12] += vc.at.x, gmd[13] += vc.at.y, gmd[14] += vc.at.z;
+    Showroom::Instance in;
+    in.car = guest_sr;
+    multiply(world_to_player, gmd, in.model);
+    in.fade_alpha = vc.alpha;
+    if (const auto& cols = guest_sr->car().colours; !cols.empty()) {
+      const uint32_t rgb = cols[size_t(vc.car->id) % cols.size()].rgb;
+      auto to_lin = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+      in.paint_rgb[0] = to_lin(float((rgb >> 16) & 0xFF) / 255.0f);
+      in.paint_rgb[1] = to_lin(float((rgb >> 8) & 0xFF) / 255.0f);
+      in.paint_rgb[2] = to_lin(float(rgb & 0xFF) / 255.0f);
+      in.has_paint = true;
+    }
+    in.lamps = vc.lamps;
+    in.has_lamps = true;
+    list.push_back(in);
   }
   drawn_ = list.size();
   host_.set_instances(std::move(list));

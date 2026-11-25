@@ -206,7 +206,7 @@ float eval_multiscale_flake(vec3 local_pos, vec3 n, vec3 h, vec3 T, vec3 B, floa
   float fp = max(duv.x, duv.y);
   float lod = log2(max(fp * freq, 1.0));
   // Smooth convergence to zero discrete shimmer when pixel footprint spans many flakes.
-  float vis = smoothstep(3.2, 0.25, lod);
+  float vis = 1.0 - smoothstep(0.25, 3.2, lod);
   if (vis <= 0.002) return 0.0;
 
   float l0 = floor(clamp(lod, 0.0, 3.0));
@@ -347,6 +347,21 @@ float sample_cascade_pcss(vec4 s, float x_off, float inv_cascades, float pcss_mo
   return lit / float(taps);
 }
 
+vec3 decode_shadow_color() {
+  uint bits = floatBitsToUint(frame.shadow_bias.w);
+  if ((bits >> 24u) != 0x3Fu) return vec3(1.0);
+  return vec3(float(bits & 255u), float((bits >> 8u) & 255u), float((bits >> 16u) & 255u)) * (1.0 / 255.0);
+}
+
+vec3 shadow_ambient_tint(float occluded) {
+  if (occluded <= 0.001) return vec3(1.0);
+  vec3 sc = decode_shadow_color();
+  float luma = dot(sc, vec3(0.2126, 0.7152, 0.0722));
+  vec3 chroma = luma > 0.01 ? clamp(sc / luma, vec3(0.65), vec3(1.35)) : vec3(1.0);
+  float depth = mix(0.76, 1.0, clamp(luma, 0.0, 1.0));
+  return mix(vec3(1.0), chroma * depth, clamp(occluded, 0.0, 1.0));
+}
+
 float drive_shadow(vec3 p, vec3 n) {
   if (frame.shadow.x < 0.5) return 1.0;
   bool three_c = frame.shadow_mid_bias.y > 0.5;
@@ -376,37 +391,36 @@ float drive_shadow(vec3 p, vec3 n) {
   float lit_n = near_ok ? sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0, g_near) : 1.0;
 
   if (three_c) {
-    if (near_ok && edge_n < 0.80) return mix(frame.shadow.z, 1.0, lit_n);
+    if (near_ok && edge_n < 0.80) return clamp(lit_n, 0.0, 1.0);
     float edge_m = max(abs(sm.x), abs(sm.y));
     bool mid_ok = edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0;
     float lit_m = mid_ok ? sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35, g_mid) : 1.0;
     if (near_ok) {
       float bn = smoothstep(0.80, 0.98, edge_n);
-      return mix(frame.shadow.z, 1.0, mix(lit_n, lit_m, bn));
+      return clamp(mix(lit_n, lit_m, bn), 0.0, 1.0);
     }
-    if (mid_ok && edge_m < 0.80) return mix(frame.shadow.z, 1.0, lit_m);
+    if (mid_ok && edge_m < 0.80) return clamp(lit_m, 0.0, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
     float lit_f = 1.0;
     if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
       lit_f = mix(sample_cascade_pcf(sf, 2.0 * inv_c, inv_c, g_far), 1.0, smoothstep(0.84, 1.0, edge_f));
     }
     float bm = mid_ok ? smoothstep(0.80, 0.98, edge_m) : 1.0;
-    return mix(frame.shadow.z, 1.0, mix(lit_m, lit_f, bm));
+    return clamp(mix(lit_m, lit_f, bm), 0.0, 1.0);
   }
 
   if (frame.shadow_far_bias.y > 0.5) {
-    if (near_ok && edge_n < 0.78) return mix(frame.shadow.z, 1.0, lit_n);
+    if (near_ok && edge_n < 0.78) return clamp(lit_n, 0.0, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
     float lit_f = 1.0;
     if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
       lit_f = mix(sample_cascade_pcf(sf, 0.5, 0.5, g_far), 1.0, smoothstep(0.82, 1.0, edge_f));
     }
     float blend = near_ok ? smoothstep(0.78, 0.98, edge_n) : 1.0;
-    return mix(frame.shadow.z, 1.0, mix(lit_n, lit_f, blend));
+    return clamp(mix(lit_n, lit_f, blend), 0.0, 1.0);
   }
   if (!near_ok) return 1.0;
-  lit_n = mix(lit_n, 1.0, smoothstep(0.8, 1.0, edge_n));
-  return mix(frame.shadow.z, 1.0, lit_n);
+  return clamp(mix(lit_n, 1.0, smoothstep(0.8, 1.0, edge_n)), 0.0, 1.0);
 }
 
 vec3 env(vec3 dir, float lod) {
@@ -424,11 +438,11 @@ vec3 env(vec3 dir, float lod) {
 // Crisp procedural 7-segment digit evaluator (0..9, 10='N', 11='r') in local cell p in [0,1]^2.
 float mfd_seg_h(vec2 p, vec2 c, float hw, float hh) {
   vec2 d = abs(p - c);
-  return smoothstep(hh, hh * 0.45, d.y) * smoothstep(hw, hw * 0.72, d.x + d.y * 0.75);
+  return (1.0 - smoothstep(hh * 0.45, hh, d.y)) * (1.0 - smoothstep(hw * 0.72, hw, d.x + d.y * 0.75));
 }
 float mfd_seg_v(vec2 p, vec2 c, float hw, float hh) {
   vec2 d = abs(p - c);
-  return smoothstep(hw, hw * 0.45, d.x) * smoothstep(hh, hh * 0.72, d.y + d.x * 0.75);
+  return (1.0 - smoothstep(hw * 0.45, hw, d.x)) * (1.0 - smoothstep(hh * 0.72, hh, d.y + d.x * 0.75));
 }
 float mfd_digit(vec2 p, int digit) {
   // Bit order: 0=top, 1=tr, 2=br, 3=bot, 4=bl, 5=tl, 6=mid
@@ -470,10 +484,10 @@ vec3 eval_cockpit_mfd(vec2 muv) {
   // Thin backlit outer frame border & header dividers.
   float bx = min(muv.x, 1.0 - muv.x);
   float by = min(muv.y, 1.0 - muv.y);
-  float frame_line = smoothstep(0.028, 0.012, min(bx, by)) * step(0.006, min(bx, by));
+  float frame_line = (1.0 - smoothstep(0.012, 0.028, min(bx, by))) * step(0.006, min(bx, by));
   col += vec3(0.10, 0.34, 0.52) * frame_line * 0.65;
-  float div_top = smoothstep(0.014, 0.004, abs(muv.y - 0.72)) * step(0.05, muv.x) * step(muv.x, 0.95);
-  float div_bot = smoothstep(0.014, 0.004, abs(muv.y - 0.24)) * step(0.05, muv.x) * step(muv.x, 0.95);
+  float div_top = (1.0 - smoothstep(0.004, 0.014, abs(muv.y - 0.72))) * step(0.05, muv.x) * step(muv.x, 0.95);
+  float div_bot = (1.0 - smoothstep(0.004, 0.014, abs(muv.y - 0.24))) * step(0.05, muv.x) * step(muv.x, 0.95);
   col += vec3(0.12, 0.32, 0.46) * max(div_top, div_bot) * 0.55;
 
   // Top zone (y in [0.76, 0.92]): 16-segment LED tachometer & pulsing shift-light bar,
@@ -546,7 +560,7 @@ vec3 eval_cockpit_mfd(vec2 muv) {
   // Center-right zone: framed real gear badge (r / N / 1..8 from live vehicle.gear()).
   if (muv.y > 0.28 && muv.y < 0.68 && muv.x > 0.70 && muv.x < 0.92) {
     vec2 gp = vec2((muv.x - 0.70) / 0.22, (muv.y - 0.28) / 0.40);
-    float g_box = smoothstep(0.09, 0.04, min(min(gp.x, 1.0 - gp.x), min(gp.y, 1.0 - gp.y)));
+    float g_box = 1.0 - smoothstep(0.04, 0.09, min(min(gp.x, 1.0 - gp.x), min(gp.y, 1.0 - gp.y)));
     vec3 box_col = shift_led ? vec3(1.15, 0.12, 0.08) : vec3(0.85, 0.20, 0.08);
     col += box_col * g_box * 0.55;
     int raw_gear = has_live ? int(round(frame.cockpit_mfd_ext.x)) : 0;
@@ -585,8 +599,10 @@ vec3 eval_cockpit_mfd(vec2 muv) {
 }
 
 void main() {
-  uint klass = uint(draw.params.x + 0.5);
-  uint flags = uint(draw.params.y + 0.5);
+  uint klass = uint(round(draw.params.x));
+  // Round-to-nearest without +0.5 so odd flag masks >= 2^23 (kFlagHasBlurMesh | kFlagSlot1)
+  // decode bit-for-bit identically without round-to-even bit corruption.
+  uint flags = uint(round(draw.params.y));
   vec4 draw_tint = draw.tint;
   vec3 stripe_rgb = frame.stripe.rgb;
   uint submat = uint(max(draw.params.z, 0.0) + 0.5);
@@ -765,13 +781,21 @@ void main() {
     }
 
     // Apply per-car ColorShaderSettings*.xml / ShaderSettings MetalColor flip-flop when active.
-    if ((flags & kFlagInstanced) == 0u && !use_reg && (finish == 0 || finish == 1 || finish == 2)) {
-      float m_scale = frame.paint_shader_d.y;
-      if (m_scale > 0.001) {
-        float m_pow = clamp(frame.paint_shader_c.w, 0.25, 16.0);
-        float m_bias = frame.paint_shader_d.x;
-        float m_t = clamp(pow(1.0 - nv, m_pow) * m_scale + m_bias, 0.0, 1.0);
-        paint_col = mix(paint_col, frame.paint_shader_c.rgb, m_t * (1.0 - t0.a));
+    // On instanced AI/traffic metallic cars, derive a clean OEM grazing-angle flop from the
+    // instance's own paint color instead of borrowing the player car's custom MetalColor.
+    if (!use_reg && (finish == 0 || finish == 1 || finish == 2)) {
+      if ((flags & kFlagInstanced) == 0u) {
+        float m_scale = frame.paint_shader_d.y;
+        if (m_scale > 0.001) {
+          float m_pow = clamp(frame.paint_shader_c.w, 0.25, 16.0);
+          float m_bias = frame.paint_shader_d.x;
+          float m_t = clamp(pow(1.0 - nv, m_pow) * m_scale + m_bias, 0.0, 1.0);
+          paint_col = mix(paint_col, frame.paint_shader_c.rgb, m_t * (1.0 - t0.a));
+        }
+      } else if (finish == 1) {
+        vec3 inst_flop = paint_col * vec3(0.58, 0.60, 0.68);
+        float m_t = clamp(pow(1.0 - nv, 3.2) * 0.28, 0.0, 0.45);
+        paint_col = mix(paint_col, inst_flop, m_t * (1.0 - t0.a));
       }
     }
 
@@ -1011,7 +1035,8 @@ void main() {
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.035);
     // Dynamic off-road tyre mud & dust coating (damage_dirt.y) evaluated in wheel-local space
     // (v_local_pos) so mud rotates 1:1 with the spinning tyre instead of sliding across it!
-    if (frame.damage_dirt.y > 0.01) {
+    // Guarded to player car so off-road mud never leaks onto instanced highway traffic/AI tyres.
+    if ((flags & kFlagInstanced) == 0u && frame.damage_dirt.y > 0.01) {
       float mud_n = fbm(v_local_pos.yz * 18.0 + vec2(v_local_pos.x * 14.0, -v_local_pos.x * 11.0));
       float mud = clamp(frame.damage_dirt.y * (0.55 + 0.65 * mud_n), 0.0, 0.88);
       base = mix(base, vec3(0.16, 0.11, 0.065), mud);
@@ -1259,12 +1284,13 @@ void main() {
       vec3 world_gnd = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : kGroundColour;
       gnd_col = max(world_gnd * 0.45, sky_col * 0.16);
     }
-    float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
+    float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : clamp(frame.shadow.z, 0.0, 1.0);
     float raw_lit = ndl > 0.0 ? drive_shadow(v_position, n) : 1.0;
     lit = mix(1.0, raw_lit, shadow_scale);
     float ibl_amb = frame.sun_color.w >= 0.0 ? max(frame.car_light_top.w, 0.01) : 1.0;
+    vec3 sh_amb_tint = shadow_ambient_tint((1.0 - lit) * shadow_scale);
     diffuse_light = sun_col * ndl * lit * mix(0.6, 1.0, occlusion) +
-                    mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb * occlusion;
+                    mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb * occlusion * sh_amb_tint;
     // Projected headlight beams illuminating other vehicles at night (CAR_LAMPS.md §5).
     int hl_count = int(headlights.count_night.x + 0.5);
     float hl_night = headlights.count_night.y;
@@ -1286,8 +1312,8 @@ void main() {
         float pattern = max(max(ck.r, ck.g), ck.b) * max(ck.a, 0.25);
         float dist = sqrt(d2);
         float att = pow(clamp(1.0 - dist / range, 0.0, 1.0), 1.45);
-        float edge = smoothstep(0.0, 0.08, buv.x) * smoothstep(1.0, 0.92, buv.x) *
-                     smoothstep(0.0, 0.08, buv.y) * smoothstep(1.0, 0.92, buv.y);
+        float edge = smoothstep(0.0, 0.08, buv.x) * (1.0 - smoothstep(0.92, 1.0, buv.x)) *
+                     smoothstep(0.0, 0.08, buv.y) * (1.0 - smoothstep(0.92, 1.0, buv.y));
         float facing = max(dot(n, -to_p / dist), 0.0);
         hl_sum += headlights.beams[i].color.rgb * pattern * att * edge * facing * headlights.beams[i].dir_power.w;
       }
@@ -1316,7 +1342,7 @@ void main() {
     // Close-up (< 6 m) clearcoat-only orange-peel micro-normal on high/ultra gives authentic painted-panel realism.
     vec3 n_coat = n;
     if (frame.phase_b_params.x > 0.5 && eye_dist < 6.0 && coat_mask > 0.05) {
-      float peel_fade = smoothstep(6.0, 2.0, eye_dist) * coat_mask;
+      float peel_fade = (1.0 - smoothstep(2.0, 6.0, eye_dist)) * coat_mask;
       vec3 an_p = abs(n);
       vec2 puv = (an_p.y >= an_p.x && an_p.y >= an_p.z) ? v_local_pos.xz
                : (an_p.x >= an_p.z)                     ? v_local_pos.zy
@@ -1333,9 +1359,10 @@ void main() {
 
     // Layer 1 (Clearcoat): retail FresnelIndex/FresnelScalar/SpecularCubeScalar driven dielectric
     // clearcoat (defaults 1.55 / 0.90 / 1.0 -> rich automotive saturation, controlled grazing mirror).
-    float p_fidx = clamp(frame.paint_shader_a.x, 1.0, 5.0);
-    float p_fscl = clamp(frame.paint_shader_a.y, 0.0, 1.5);
-    float p_cube = clamp(frame.paint_shader_a.z, 0.05, 2.0);
+    bool is_inst = (flags & kFlagInstanced) != 0u;
+    float p_fidx = is_inst ? 1.55 : clamp(frame.paint_shader_a.x, 1.0, 5.0);
+    float p_fscl = is_inst ? 0.90 : clamp(frame.paint_shader_a.y, 0.0, 1.5);
+    float p_cube = is_inst ? 1.00 : clamp(frame.paint_shader_a.z, 0.05, 2.0);
     float fres_exp = clamp(3.45 + (p_fidx - 1.55) * 0.85, 2.2, 5.5);
     float fres_gain = clamp(0.48 * (p_fscl / 0.90), 0.0, 0.78);
     float F_coat_v = clamp(0.040 + fres_gain * pow(1.0 - nv_c, fres_exp), 0.040, 0.62) * coat_mask;
@@ -1343,7 +1370,7 @@ void main() {
     float coat_env_scale = (frame.drive.w > 0.5 ? 0.58 : 0.72) * p_cube;
     vec3 coat_refl = env(r_coat, 0.65) * frame.reflect_tint.rgb * occ_refl * coat_env_scale;
     float coat_ggx = ggx_d(nh_c, 0.065) * 0.022;
-    float xml_spec1 = frame.paint_shader_a.w > 0.001
+    float xml_spec1 = (!is_inst && frame.paint_shader_a.w > 0.001)
                           ? pow(nh_c, clamp(frame.paint_shader_d.z, 8.0, 256.0)) * frame.paint_shader_a.w * 0.35
                           : 0.0;
     vec3 coat_spec = direct_col * (coat_ggx + xml_spec1) * nl_c * lit * coat_mask;
@@ -1355,10 +1382,11 @@ void main() {
     if (paint_metallic > 0.01) {
       vec3 met_cube = env(r, 3.4) * frame.reflect_tint.rgb * occ_refl * p_cube;
       // Continuous dual-lobe metallic GGX sheen scaled by ShaderSettings SpecAmount2/3 & SpecPower2/3.
-      float s2_gain = clamp(frame.paint_shader_b.x / 7.0, 0.25, 2.2);
-      float s2_alpha = clamp(sqrt(2.0 / max(frame.paint_shader_b.y + 2.0, 3.0)) * 0.52, 0.14, 0.45);
-      float s3_gain = clamp(frame.paint_shader_b.z / 6.0, 0.25, 2.2);
-      float s3_alpha = clamp(sqrt(2.0 / max(frame.paint_shader_b.w + 2.0, 3.0)) * 0.82, 0.28, 0.72);
+      vec4 ps_b = is_inst ? vec4(3.0, 12.0, 2.0, 4.0) : frame.paint_shader_b;
+      float s2_gain = clamp(ps_b.x / 7.0, 0.25, 2.2);
+      float s2_alpha = clamp(sqrt(2.0 / max(ps_b.y + 2.0, 3.0)) * 0.52, 0.14, 0.45);
+      float s3_gain = clamp(ps_b.z / 6.0, 0.25, 2.2);
+      float s3_alpha = clamp(sqrt(2.0 / max(ps_b.w + 2.0, 3.0)) * 0.82, 0.28, 0.72);
       float lobe_mid = ggx_d(nh, s2_alpha) * 0.15 * s2_gain;
       float lobe_broad = ggx_d(nh, s3_alpha) * 0.24 * s3_gain;
       vec3 flake_tint = mix(base, vec3(0.95), 0.35);
@@ -1381,9 +1409,11 @@ void main() {
     vec3 rotor_f = rotor_f0 + (vec3(1.0) - rotor_f0) * pow(1.0 - nv, 5.0);
     vec3 aniso_spec = direct_col * rotor_f * (d_aniso * 0.18) * ndl * lit;
     // Planckian thermal glow across the swept brake-pad friction ring (900 K -> 1450 K).
+    // Guarded to player car so hard braking never makes instanced traffic/AI rotors glow.
     float disc_r = length(v_local_pos.yz);
-    float pad_ring = smoothstep(0.065, 0.115, disc_r) * smoothstep(0.24, 0.165, disc_r);
-    vec3 thermal_glow = blackbody_rotor_rgb(frame.phase_b_params.y) * pad_ring;
+    float pad_ring = smoothstep(0.065, 0.115, disc_r) * (1.0 - smoothstep(0.165, 0.24, disc_r));
+    float rotor_heat = (flags & kFlagInstanced) == 0u ? frame.phase_b_params.y : 0.0;
+    vec3 thermal_glow = blackbody_rotor_rgb(rotor_heat) * pad_ring;
     colour = base * (1.0 - metal) * diffuse_light + rotor_f * reflection * 0.85 + aniso_spec + thermal_glow + emissive;
   } else {
     colour = base * (1.0 - metal) * diffuse_light + specular_colour * (reflection + highlight) + emissive;

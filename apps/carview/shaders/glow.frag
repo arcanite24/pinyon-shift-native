@@ -19,7 +19,7 @@ void main() {
   float r2 = dot(d, d);
   if (r2 >= 1.0) discard;
   float r = sqrt(r2);
-  float radial_fade = smoothstep(1.0, 0.72, r);
+  float radial_fade = 1.0 - smoothstep(0.72, 1.0, r);
 
   vec3 col;
   if (v_world_corona >= 0.5) {

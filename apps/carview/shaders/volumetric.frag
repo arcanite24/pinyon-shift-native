@@ -149,7 +149,7 @@ void main() {
   // Golden-hour boost: sun shafts peak dramatically when sun is low over Colorado mountains
   // (elevation 0..25 deg), while staying crisp and subtle at high noon.
   float sun_elev = clamp(dot(sun_dir, world_up), 0.0, 1.0);
-  float golden_hour = smoothstep(0.65, 0.06, sun_elev) * sun_vis;
+  float golden_hour = (1.0 - smoothstep(0.06, 0.65, sun_elev)) * sun_vis;
   float cos_sun = dot(ray_dir, sun_dir);
   float sun_phase = mix(0.22, hg_phase(cos_sun, 0.72) * 1.35 + hg_phase(cos_sun, 0.25) * 0.45, 0.85);
 

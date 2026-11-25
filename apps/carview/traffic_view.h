@@ -81,8 +81,9 @@ class TrafficView {
     std::string error;
     double upload_ms = 0;
   };
+  static constexpr size_t kMaxWheelClonesPerModel = 3;
   struct Guest {
-    std::unique_ptr<Showroom> showroom;  // uploaded
+    std::vector<std::unique_ptr<Showroom>> showrooms;  // [0] primary + on-demand per-car wheel clones
     std::future<Loaded> loading;
     bool failed = false;
   };
@@ -101,6 +102,7 @@ class TrafficView {
   const drive::Ground* const* ground_ = nullptr;
   std::map<int64_t, std::string> media_;  // Data_Car.Id -> media name
   std::map<int64_t, Guest> guests_;
+  std::map<int64_t, size_t> desired_slots_;
   std::map<int64_t, drive::CarParams> params_;
   size_t drawn_ = 0;
   double upload_ms_max_ = 0;
@@ -110,6 +112,7 @@ class TrafficView {
   double blend_ = 1.0;
   std::map<uint32_t, TrafficPose> before_;
   std::map<uint32_t, drive::CarLampState> lamps_;
+  std::map<uint32_t, float> wheel_spin_;
   std::vector<traffic::ExternalVehicle> external_vehicles_;
   int external_ttl_ = 0;
 };

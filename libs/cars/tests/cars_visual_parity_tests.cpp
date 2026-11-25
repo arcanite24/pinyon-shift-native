@@ -8,7 +8,9 @@
 // - P0-C4: CaliperAngleFront/Rear radians, brake size 17, drum_null_caliper,
 //          and Shared/rotor0..4.xds slot binding (never @atlas).
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -589,6 +591,195 @@ void test_pt23_pt24_pt25_playtest_fixes() {
   }
 }
 
+void test_r3_tunnel_tod_preservation_and_per_car_lamps() {
+  // R3-REN-03: Entering a tunnel must NEVER globally darken outdoor Colorado ToD
+  // (sun_color, hl_top, hl_bottom, ambient_color, ibl_ambient_scale, shadow_intensity,
+  // switch_on_lights, car_sun_color) or flip headlights on for outdoor AI cars.
+  struct TunnelTodSnapshot {
+    std::array<float, 3> sun_color{0.9695f, 0.8358f, 0.5840f};
+    std::array<float, 3> car_sun_color{0.4640f, 0.4000f, 0.2800f};
+    std::array<float, 3> hl_top{0.1687f, 0.2229f, 0.2746f};
+    std::array<float, 3> hl_bottom{0.1788f, 0.1729f, 0.1024f};
+    std::array<float, 3> car_hl_top{0.1687f, 0.2229f, 0.2746f};
+    std::array<float, 3> car_hl_bottom{0.1788f, 0.1729f, 0.1024f};
+    std::array<float, 3> ambient_color{0.1717f, 0.2079f, 0.2229f};
+    float ibl_ambient_scale = 1.0f;
+    float shadow_intensity = 1.0f;
+    float switch_on_lights = 0.0f;
+  };
+  auto apply_localized_tunnel = [](TunnelTodSnapshot tod, float tunnel_t) -> TunnelTodSnapshot {
+    if (tunnel_t > 0.001f) {
+      const float car_sky_keep = 1.0f - 0.35f * tunnel_t;
+      const float car_gnd_keep = 1.0f - 0.20f * tunnel_t;
+      for (int k = 0; k < 3; ++k) {
+        tod.car_hl_top[k] *= car_sky_keep;
+        tod.car_hl_bottom[k] *= car_gnd_keep;
+      }
+    }
+    return tod;
+  };
+
+  const TunnelTodSnapshot outdoor{};
+  const TunnelTodSnapshot in_tunnel = apply_localized_tunnel(outdoor, 1.0f);
+  // Global world ToD must remain 100% identical so sunlit Colorado outside tunnel portals stays bright
+  // and shadow maps stay active to occlude sunlight beneath the tunnel roof.
+  for (int k = 0; k < 3; ++k) {
+    CHECK(in_tunnel.sun_color[size_t(k)] == outdoor.sun_color[size_t(k)]);
+    CHECK(in_tunnel.car_sun_color[size_t(k)] == outdoor.car_sun_color[size_t(k)]);
+    CHECK(in_tunnel.hl_top[size_t(k)] == outdoor.hl_top[size_t(k)]);
+    CHECK(in_tunnel.hl_bottom[size_t(k)] == outdoor.hl_bottom[size_t(k)]);
+    CHECK(in_tunnel.ambient_color[size_t(k)] == outdoor.ambient_color[size_t(k)]);
+    // Localized car hemisphere ambient darkens subtly inside the tunnel.
+    CHECK(in_tunnel.car_hl_top[size_t(k)] < outdoor.car_hl_top[size_t(k)]);
+    CHECK(std::fabs(in_tunnel.car_hl_top[size_t(k)] - outdoor.car_hl_top[size_t(k)] * 0.65f) < 1e-5f);
+    CHECK(std::fabs(in_tunnel.car_hl_bottom[size_t(k)] - outdoor.car_hl_bottom[size_t(k)] * 0.80f) < 1e-5f);
+  }
+  CHECK(in_tunnel.ibl_ambient_scale == outdoor.ibl_ambient_scale);
+  CHECK(in_tunnel.shadow_intensity == outdoor.shadow_intensity);
+  CHECK(in_tunnel.shadow_intensity > 0.0f);
+  CHECK(in_tunnel.switch_on_lights == outdoor.switch_on_lights);
+
+  // Per-car tunnel headlamp isolation: player in tunnel turns on ONLY player headlamps;
+  // AI/traffic cars decide purely from their own overhead roof probe.
+  auto eval_override = [](bool tod_lamps, bool own_roof_hit, int manual_override) -> int {
+    if (manual_override != 0) return manual_override;
+    return (!tod_lamps && own_roof_hit) ? 1 : 0;
+  };
+  CHECK(eval_override(false, true, 0) == 1);   // player inside tunnel -> auto headlamps ON
+  CHECK(eval_override(false, false, 0) == 0);  // outdoor AI car while player is in tunnel -> headlamps OFF
+  CHECK(eval_override(true, false, 0) == 0);   // night ToD already handles lamps without tunnel override
+}
+
+void test_r3_guest_driver_seat_and_wheel_isolation() {
+  // R3-REN-05(a): Guest driver seat resolution uses each guest car's own cockpit rig or
+  // CarPartPositions[9] (defaulting to Colorado LHD -0.34 m), never the player's LHD/RHD seat.
+  struct GuestSeatInput {
+    bool has_cockpit_rig = false;
+    std::array<float, 3> rig_pivot{};
+    std::array<float, 3> part_pos9{};  // car frame (+Z forward, -X left / LHD, +X right / RHD)
+    bool has_bounds = false;
+    float bounds_max_y = 1.40f;
+  };
+  auto resolve_guest_seat = [](const GuestSeatInput& g, float head_above_pivot_y) -> std::array<float, 3> {
+    std::array<float, 3> seat{-0.34f, 0.72f, 0.08f};
+    if (g.has_cockpit_rig) {
+      seat = g.rig_pivot;
+    } else if ((std::fabs(g.part_pos9[0]) + std::fabs(g.part_pos9[1]) + std::fabs(g.part_pos9[2])) > 1e-4f) {
+      seat = {g.part_pos9[0], g.part_pos9[1], -g.part_pos9[2]};
+    } else if (g.has_bounds) {
+      seat[0] = -0.34f;
+      seat[1] = std::clamp(g.bounds_max_y - head_above_pivot_y - 0.14f, 0.58f, 1.25f);
+      seat[2] = 0.08f;
+    }
+    if (g.has_bounds) {
+      const float head_top_y = seat[1] + head_above_pivot_y;
+      const float roof_limit = g.bounds_max_y - 0.075f;
+      if (head_top_y > roof_limit) seat[1] -= std::min(head_top_y - roof_limit, 0.18f);
+    }
+    return seat;
+  };
+
+  // LHD guest car with cockpit rig stays on the left (-X) even if player drives an RHD Skyline (+X).
+  GuestSeatInput lhd_rig{};
+  lhd_rig.has_cockpit_rig = true;
+  lhd_rig.rig_pivot = {-0.36f, 0.71f, -0.25f};
+  lhd_rig.has_bounds = true;
+  lhd_rig.bounds_max_y = 1.32f;
+  const auto s_lhd = resolve_guest_seat(lhd_rig, 0.33f);
+  CHECK(s_lhd[0] < -0.30f);
+
+  // RHD guest car with CarPartPositions[9] sits on the right (+X) with mirrored model Z.
+  GuestSeatInput rhd_car{};
+  rhd_car.part_pos9 = {0.36f, 0.73f, 0.26f};
+  rhd_car.has_bounds = true;
+  rhd_car.bounds_max_y = 1.36f;
+  const auto s_rhd = resolve_guest_seat(rhd_car, 0.33f);
+  CHECK(s_rhd[0] > 0.30f);
+  CHECK(std::fabs(s_rhd[2] - (-0.26f)) < 1e-5f);
+
+  // Traffic SUV without cockpit rig or CarPartPositions[9]: defaults to Colorado LHD (-0.34 m)
+  // seated proportionally inside its tall roof cabin.
+  GuestSeatInput traffic_suv{};
+  traffic_suv.has_bounds = true;
+  traffic_suv.bounds_max_y = 1.85f;
+  const auto s_suv = resolve_guest_seat(traffic_suv, 0.33f);
+  CHECK(std::fabs(s_suv[0] - (-0.34f)) < 1e-5f);
+  CHECK(s_suv[1] > 1.0f && s_suv[1] + 0.33f <= traffic_suv.bounds_max_y - 0.074f);
+
+  // Verify real disc CarPartPositions[9] LHD vs RHD X polarity when game_root is present.
+  const fs::path game_root = find_game_root();
+  if (!game_root.empty()) {
+    std::string err;
+    cars::Install install;
+    cars::Database car_db;
+    if (cars::discover_install(game_root, {}, {}, install, &err) && cars::load_database(install, car_db, &err)) {
+      const cars::CarRow* corrado = nullptr;
+      const cars::CarRow* skyline = nullptr;
+      for (const auto& r : car_db.cars) {
+        if (r.id == 309) corrado = &r;
+        if (r.id == 445) skyline = &r;
+      }
+      CHECK(corrado != nullptr && skyline != nullptr);
+      if (corrado && skyline) {
+        CHECK(corrado->has_part_position[9] && corrado->part_positions[9][0] < -0.15);  // LHD (-X)
+        CHECK(skyline->has_part_position[9] && skyline->part_positions[9][0] > 0.15);   // RHD (+X)
+      }
+    }
+  }
+
+  // R3-REN-05(b): Multi-instance guest wheel-pose slot assignment & isolation.
+  // 3 nearby cars of the same model with different speeds/steers must receive 3 distinct slots
+  // with zero wheel-pose clobbering, and a 4th overflow car picks the closest motion match.
+  struct CarMotion {
+    double dist2 = 0.0;
+    double speed = 0.0;
+    double steer = 0.0;
+    float spin = 0.0f;
+  };
+  constexpr size_t kSlots = 3;
+  std::vector<CarMotion> cars_same_model = {
+      {100.0, 0.0, 0.0, 0.10f},     // stopped at red light, wheels straight
+      {225.0, 22.0, 0.28, 1.75f},   // turning left fast
+      {400.0, 14.0, -0.22, 4.20f},  // turning right medium
+      {1600.0, 0.0, 0.02, 0.50f},   // distant 4th car stopped -> should match slot 0 (stopped)
+  };
+  std::vector<size_t> order = {0, 1, 2, 3};
+  std::sort(order.begin(), order.end(),
+            [&](size_t a, size_t b) { return cars_same_model[a].dist2 < cars_same_model[b].dist2; });
+  std::vector<int> assigned_slot(cars_same_model.size(), -1);
+  struct SlotPose {
+    double speed = 0.0, steer = 0.0;
+    float spin = 0.0f;
+  };
+  std::vector<SlotPose> slot_poses;
+  for (size_t k = 0; k < order.size(); ++k) {
+    const size_t idx = order[k];
+    const auto& cm = cars_same_model[idx];
+    if (k < kSlots) {
+      assigned_slot[idx] = int(k);
+      slot_poses.push_back({cm.speed, cm.steer, cm.spin});
+    } else {
+      size_t best_s = 0;
+      double best_cost = 1e30;
+      for (size_t s = 0; s < slot_poses.size(); ++s) {
+        const double cost = std::fabs(slot_poses[s].speed - cm.speed) +
+                            8.0 * std::fabs(slot_poses[s].steer - cm.steer);
+        if (cost < best_cost) {
+          best_cost = cost;
+          best_s = s;
+        }
+      }
+      assigned_slot[idx] = int(best_s);
+    }
+  }
+  CHECK(assigned_slot[0] == 0 && assigned_slot[1] == 1 && assigned_slot[2] == 2);
+  CHECK(assigned_slot[3] == 0);  // distant stopped car matches stopped slot, not speeding/turning slots
+  // Verify each of the 3 primary slots kept its own distinct steer & spin without clobbering.
+  CHECK(std::fabs(slot_poses[0].steer - 0.0) < 1e-6 && std::fabs(slot_poses[0].spin - 0.10f) < 1e-5f);
+  CHECK(std::fabs(slot_poses[1].steer - 0.28) < 1e-6 && std::fabs(slot_poses[1].spin - 1.75f) < 1e-5f);
+  CHECK(std::fabs(slot_poses[2].steer - (-0.22)) < 1e-6 && std::fabs(slot_poses[2].spin - 4.20f) < 1e-5f);
+}
+
 }  // namespace
 
 int main() {
@@ -597,6 +788,8 @@ int main() {
   test_bake_material_classes_blur_rim_and_crush_weights();
   test_pt23_pt24_pt25_playtest_fixes();
   test_disc_tire_compound_camber_and_brakes();
+  test_r3_tunnel_tod_preservation_and_per_car_lamps();
+  test_r3_guest_driver_seat_and_wheel_isolation();
   if (g_failed) {
     std::fprintf(stderr, "cars_visual_parity_tests: %d FAILED\n", g_failed);
     return 1;

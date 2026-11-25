@@ -132,17 +132,30 @@ void Showroom::place_shadow() {
   std::memcpy(frame_.shadow_matrix, m_near, sizeof m_near);
   std::memcpy(frame_.shadow_matrix_mid, m_mid, sizeof m_mid);
   std::memcpy(frame_.shadow_matrix_far, m_far, sizeof m_far);
-  const float shadow_luma =
-      tod_active_ ? std::clamp(0.2126f * tod_state_.shadow_color[0] + 0.7152f * tod_state_.shadow_color[1] +
-                                   0.0722f * tod_state_.shadow_color[2],
-                               0.0f, 1.0f)
-                  : s.strength;
+  // Preserve full RGB TrackSettings ShadowColor in shadow_bias[3] (tagged with safe normal-float
+  // exponent 0x3Fu so it never NaNs/denorms) and keep shadow[2] as shadow intensity [0.12..1.0].
+  // Shaders keep sun_shadow()/drive_shadow() strictly in [0, 1] so tunnels/buildings leak 0 direct sun,
+  // modulating only shadowed ambient/hemisphere light with RGB shadow_color.
+  const float shadow_rgb[3] = {
+      tod_active_ ? std::clamp(tod_state_.shadow_color[0], 0.0f, 1.0f) : std::clamp(s.strength, 0.0f, 1.0f),
+      tod_active_ ? std::clamp(tod_state_.shadow_color[1], 0.0f, 1.0f) : std::clamp(s.strength, 0.0f, 1.0f),
+      tod_active_ ? std::clamp(tod_state_.shadow_color[2], 0.0f, 1.0f) : std::clamp(s.strength, 0.0f, 1.0f),
+  };
+  const uint32_t sr = uint32_t(std::lround(shadow_rgb[0] * 255.0f)) & 0xFFu;
+  const uint32_t sg = uint32_t(std::lround(shadow_rgb[1] * 255.0f)) & 0xFFu;
+  const uint32_t sb = uint32_t(std::lround(shadow_rgb[2] * 255.0f)) & 0xFFu;
+  const uint32_t packed_shadow_rgb = (0x3Fu << 24u) | (sb << 16u) | (sg << 8u) | sr;
+  float shadow_rgb_bits = 0.0f;
+  std::memcpy(&shadow_rgb_bits, &packed_shadow_rgb, sizeof(shadow_rgb_bits));
+  const float shadow_intensity =
+      tod_active_ ? std::clamp(0.5f * (tod_state_.shadow_intensity + 1.0f), 0.12f, 1.0f) : 1.0f;
   frame_.shadow[0] = 1.0f;
   frame_.shadow[1] = 1.0f / float(r_.shadow_size_);
-  frame_.shadow[2] = shadow_luma;
+  frame_.shadow[2] = shadow_intensity;
   frame_.shadow[3] = float(s.taps);
   frame_.shadow_bias[0] = 1.35f * texel_near;
-  frame_.shadow_bias[1] = frame_.shadow_bias[2] = frame_.shadow_bias[3] = 0.0f;
+  frame_.shadow_bias[1] = frame_.shadow_bias[2] = 0.0f;
+  frame_.shadow_bias[3] = shadow_rgb_bits;
   frame_.shadow_mid_bias[0] = 1.45f * texel_mid;
   frame_.shadow_mid_bias[1] = three_cascades ? 1.0f : 0.0f;
   frame_.shadow_mid_bias[2] = (pcss_q == modern::ShadowPcss::kUltra) ? 2.0f
@@ -521,9 +534,9 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
             vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
             vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
             for (const auto& d : g->draws_) {
-              if (d.glass) continue;
+              if (d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0) continue;
               ShowroomPush push = d.push;
-              push.params[1] = float(uint32_t(push.params[1] + 0.5f) | 8192u);
+              push.params[1] = float(uint32_t(std::lround(push.params[1])) | 8192u);
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                  sizeof(ShowroomPush), &push);
               vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
@@ -563,7 +576,7 @@ void Showroom::record_shadow_car(VkCommandBuffer cmd, const float* m, VkDescript
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_car_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &set, 0, nullptr);
   for (const auto& d : draws_) {
-    if (d.glass) continue;  // glass and lamp covers cast none (ours)
+    if (d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0) continue;  // skip glass, detached, blur_rim, cockpit-only parts
     ShowroomPush push = d.push;
     if (m) multiply(m, d.push.model, push.model);
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,

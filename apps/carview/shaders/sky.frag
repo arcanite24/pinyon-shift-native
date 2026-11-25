@@ -103,7 +103,7 @@ void main() {
     // Below the geometric horizon, transition smoothly into the exact world fog colour so
     // distant terrain gaps or far-ring silhouettes never reveal a glowing cyan/white strip.
     if (V.y < 0.0) {
-      float below_t = smoothstep(0.0, -0.055, V.y);
+      float below_t = 1.0 - smoothstep(-0.055, 0.0, V.y);
       lin_rgb = mix(lin_rgb, sky.fog_color.rgb, below_t);
     }
     // Subtle sky gradient dither scaled by luminance so night exposure does not amplify it.
@@ -238,7 +238,7 @@ void main() {
     float f_start = sky.fog_color.w;
     float f_end = max(sky.fog_sky.x, f_start + 0.10);
     float ft = clamp((V.y - f_start) / (f_end - f_start), 0.0, 1.0);
-    float below_h = smoothstep(0.015, -0.008, V.y);
+    float below_h = 1.0 - smoothstep(-0.008, 0.015, V.y);
     float fog_a = clamp(max((1.0 - ft * ft * (3.0 - 2.0 * ft)) * sky.fog_sky.y, below_h), 0.0, 1.0);
     float scatter = pow(clamp(dot(V, normalize(sky.sun_dir.xyz)), 0.0, 1.0), max(sky.fog_scatter.w, 1.0));
     vec3 fog_rgb = mix(sky.fog_color.rgb, sky.fog_scatter.rgb, scatter);

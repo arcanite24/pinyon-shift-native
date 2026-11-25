@@ -366,7 +366,7 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
         push.tint[0] = rgb[0];
         push.tint[1] = rgb[1];
         push.tint[2] = rgb[2];
-        push.params[1] = float(uint32_t(push.params[1] + 0.5f) | kFlagLampEmissive);
+        push.params[1] = float(uint32_t(std::lround(push.params[1])) | kFlagLampEmissive);
       }
     }
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -649,7 +649,7 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
             if (lod_far && d.glass && d.is_cover) continue;
           }
           ShowroomPush push = d.push;
-          uint32_t flags = uint32_t(push.params[1] + 0.5f) | kFlagInstanced;
+          uint32_t flags = uint32_t(std::lround(push.params[1])) | kFlagInstanced;
           flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
           push.params[1] = float(flags);
           if (d.descriptor != bound_desc) {
@@ -695,7 +695,7 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
           if (d.detached || d.is_blur_rim) continue;
           if (d.glass && d.is_cover) continue;
           ShowroomPush push = d.push;
-          uint32_t flags = uint32_t(push.params[1] + 0.5f) | kFlagInstanced;
+          uint32_t flags = uint32_t(std::lround(push.params[1])) | kFlagInstanced;
           flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
           push.params[1] = float(flags);
           if (d.descriptor != bound_desc) {
@@ -737,7 +737,7 @@ void Showroom::record_instance(VkCommandBuffer cmd, const float m[16], const dri
           push.tint[0] = rgb[0];
           push.tint[1] = rgb[1];
           push.tint[2] = rgb[2];
-          push.params[1] = float(uint32_t(push.params[1] + 0.5f) | kFlagLampEmissive);
+          push.params[1] = float(uint32_t(std::lround(push.params[1])) | kFlagLampEmissive);
         }
       }
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
@@ -793,7 +793,7 @@ void Showroom::record_instance_offscreen(VkCommandBuffer cmd, VkPipeline car_opa
           push.tint[0] = rgb[0];
           push.tint[1] = rgb[1];
           push.tint[2] = rgb[2];
-          push.params[1] = float(uint32_t(push.params[1] + 0.5f) | kFlagLampEmissive);
+          push.params[1] = float(uint32_t(std::lround(push.params[1])) | kFlagLampEmissive);
         }
       }
       if (d.descriptor != bound_desc) {
@@ -821,7 +821,7 @@ void Showroom::record_player_mirror_rear(VkCommandBuffer cmd, VkPipeline car_opa
     if (d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0) continue;
     const uint32_t klass = uint32_t(d.push.params[0] + 0.5f);
     if (klass == 4u || klass == 5u) continue;  // kInterior, kGauge
-    const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+    const uint32_t flags = uint32_t(std::lround(d.push.params[1]));
     if ((flags & kFlagMirror) != 0u) continue;
     // Clip to rear bodywork past mirror plane so side mirrors see rear haunch/fender/wing without mirror/cabin blockage.
     if (d.part_max[2] <= min_rear_z + 0.15f || d.centre[2] <= min_rear_z - 0.55f) continue;

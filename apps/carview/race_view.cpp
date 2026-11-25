@@ -37,6 +37,14 @@ double resolve_player_race_pi(const garage::Car* selected_garage_car, const std:
 
 namespace {
 
+bool is_under_tunnel_roof(const drive::Ground* ground, const drive::Vec3& pos) {
+  if (!ground) return false;
+  if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) return false;
+  drive::Hit hit{};
+  if (!ground->raycast({pos.x, pos.y + 1.6, pos.z}, {0.0, 1.0, 0.0}, 35.0, hit)) return false;
+  return hit.distance >= 0.5 && std::fabs(hit.normal.y) > 0.40;
+}
+
 void clock_text(double t, char* out, size_t n) {
   if (t < 0) t = 0;
   const int m = int(t / 60);
@@ -595,15 +603,15 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     std::string media;
     int64_t color_seq = 0;
   };
+  // Allocate a dedicated guest Showroom per opponent slot so even single-make races give
+  // every opponent independent wheel steer, spin, omega blur, and suspension travel.
   std::vector<ModelSpec> specs;
-  for (const auto& c : cars_) {
+  for (size_t k = 0; k < cars_.size(); ++k) {
+    const auto& c = cars_[k];
     const int64_t cseq = effective_color_seq(c.who);
-    const std::string key = c.who.car_media + "#" + std::to_string(cseq);
+    const std::string key = c.who.car_media + "#" + std::to_string(cseq) + "@opp" + std::to_string(k);
     if (models_.count(key)) continue;
-    bool dup = false;
-    for (const auto& s : specs)
-      if (s.key == key) { dup = true; break; }
-    if (!dup) specs.push_back({key, c.who.car_media, cseq});
+    specs.push_back({key, c.who.car_media, cseq});
   }
   if (!specs.empty()) {
     struct LoadedSpec {
@@ -656,9 +664,10 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     }
   }
   auto srgb_to_lin = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
-  for (auto& c : cars_) {
+  for (size_t k = 0; k < cars_.size(); ++k) {
+    auto& c = cars_[k];
     const int64_t cseq = effective_color_seq(c.who);
-    const std::string key = c.who.car_media + "#" + std::to_string(cseq);
+    const std::string key = c.who.car_media + "#" + std::to_string(cseq) + "@opp" + std::to_string(k);
     c.model = models_[key].get();
     c.has_ai_paint = false;
     if (c.who.color_sequence <= 0) {
@@ -1234,8 +1243,20 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     far_steps_ += step_ribbon[k];
     if (step_bad[k]) reset_car(*cars_[k].body, k, near, cx, cz, radius);
     // Update persistent per-AI CarLampState (15-tick brake hold, staggered dusk/dawn
-    // headlamps, and Reverse gear == -1 mapped to LampInputs::gear == 0).
+    // headlamps, per-car overhead tunnel roof probe, and Reverse gear == -1 mapped to gear == 0).
     if (cars_[k].body) {
+      const bool tod_lamps = drive::CarLampState::tod_requests_headlamps(double(tod_sec_));
+      if (!cars_[k].far && !tod_lamps) {
+        if (cars_[k].tunnel_probe_tick == 0) {
+          cars_[k].in_tunnel = is_under_tunnel_roof(&near, cars_[k].body->position());
+          cars_[k].tunnel_probe_tick = 12;
+        } else {
+          --cars_[k].tunnel_probe_tick;
+        }
+      } else {
+        cars_[k].in_tunnel = false;
+        cars_[k].tunnel_probe_tick = 0;
+      }
       drive::LampInputs lin;
       const float brk = (k < inputs_.size()) ? float(inputs_[k].brake) : 0.0f;
       lin.brake_cmd = brk;
@@ -1244,6 +1265,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
       lin.gear = (vgear == -1) ? 0 : std::max(1, vgear);
       lin.tod_sec = double(tod_sec_);
       lin.dt = float(drive::Vehicle::kStep);
+      lin.light_override = cars_[k].in_tunnel ? 1 : 0;
       lin.is_ai = true;
       lin.snap_headlamps = !cars_[k].lamps_initialized;
       cars_[k].lamps.update(lin);
@@ -1501,6 +1523,7 @@ void RaceView::enable_ghost_recording(bool on) {
 
 void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
                          std::vector<Showroom::Instance>& out) const {
+  std::unordered_set<Showroom*> posed_models;
   for (size_t k = 0; k < cars_.size(); ++k) {
     const auto& c = cars_[k];
     if (!c.model || !c.body) continue;
@@ -1513,18 +1536,20 @@ void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Ve
       in = guest_instance(player_info, player, *c.model, *c.body);
       c.body->set_pose(now);
     }
-    // Drive opponent wheel spin, steer, and suspension pose each frame.
-    WheelPose wposes[4]{};
-    for (int wi = 0; wi < 4; ++wi) {
-      const auto& w = c.body->wheels()[size_t(wi)];
-      wposes[wi].centre[0] = float(w.centre.x);
-      wposes[wi].centre[1] = float(w.centre.y);
-      wposes[wi].centre[2] = float(w.centre.z);
-      wposes[wi].steer = float(w.steer);
-      wposes[wi].spin = float(w.spin);
-      wposes[wi].omega = float(w.omega);
+    // Drive each opponent's dedicated Showroom wheel spin, steer, and suspension pose.
+    if (posed_models.insert(c.model).second) {
+      WheelPose wposes[4]{};
+      for (int wi = 0; wi < 4; ++wi) {
+        const auto& w = c.body->wheels()[size_t(wi)];
+        wposes[wi].centre[0] = float(w.centre.x);
+        wposes[wi].centre[1] = float(w.centre.y);
+        wposes[wi].centre[2] = float(w.centre.z);
+        wposes[wi].steer = float(w.steer);
+        wposes[wi].spin = float(w.spin);
+        wposes[wi].omega = float(w.omega);
+      }
+      c.model->set_wheel_poses(wposes);
     }
-    c.model->set_wheel_poses(wposes);
     if (c.has_ai_paint) {
       in.paint_rgb[0] = c.ai_paint_rgb[0];
       in.paint_rgb[1] = c.ai_paint_rgb[1];
@@ -1538,8 +1563,28 @@ void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Ve
   // Rivals / Time-Attack translucent ghost car playback.
   race::GhostSample gs;
   if (ghost_sample(gs)) {
-    Showroom* ghost_sr = ghost_model_ ? ghost_model_ : find_loaded_model(ghost_run_.car_media);
+    Showroom* ghost_sr =
+        ghost_model_ ? ghost_model_ : find_loaded_model(ghost_run_.car_media, -1, &posed_models);
+    if (!ghost_sr && !ghost_model_) ghost_sr = find_loaded_model(ghost_run_.car_media);
     if (ghost_sr) {
+      if (posed_models.insert(ghost_sr).second) {
+        constexpr float kTwoPi = 6.28318530717958647692f;
+        const auto& rest = ghost_sr->car().wheel_centres_body;
+        const float radius = std::clamp(rest[0][1], 0.26f, 0.55f);
+        const float omega = float(gs.speed) / radius;
+        float spin = std::fmod(float(gs.time) * omega, kTwoPi);
+        if (spin < 0.0f) spin += kTwoPi;
+        WheelPose gw[4]{};
+        for (int wi = 0; wi < 4; ++wi) {
+          gw[wi].centre[0] = rest[size_t(wi)][0];
+          gw[wi].centre[1] = rest[size_t(wi)][1];
+          gw[wi].centre[2] = rest[size_t(wi)][2];
+          gw[wi].steer = (wi < 2) ? gs.steer : 0.0f;
+          gw[wi].spin = spin;
+          gw[wi].omega = omega;
+        }
+        ghost_sr->set_wheel_poses(gw);
+      }
       Showroom::Instance gin =
           guest_instance_pose(player_info, player, *ghost_sr, {gs.x, gs.y, gs.z}, {gs.qx, gs.qy, gs.qz, gs.qw});
       gin.fade_alpha = ghost_alpha_;
@@ -1733,15 +1778,21 @@ double RaceView::showcase_rumble_strength(const drive::Vec3& player_pos) const {
   return showcase_.near_rumble_strength(dist_m);
 }
 
-Showroom* RaceView::find_loaded_model(const std::string& media, int64_t color_seq) const {
+Showroom* RaceView::find_loaded_model(const std::string& media, int64_t color_seq,
+                                      const std::unordered_set<Showroom*>* exclude) const {
   if (media.empty() || models_.empty()) return nullptr;
+  auto usable = [&](Showroom* sr) { return sr && (!exclude || !exclude->count(sr)); };
   if (color_seq >= 0) {
     const std::string exact = media + "#" + std::to_string(color_seq);
-    if (auto it = models_.find(exact); it != models_.end() && it->second) return it->second.get();
+    if (auto it = models_.find(exact); it != models_.end() && usable(it->second.get())) return it->second.get();
+    const std::string exact_slot = exact + "@";
+    for (const auto& [k, m] : models_) {
+      if (k.rfind(exact_slot, 0) == 0 && usable(m.get())) return m.get();
+    }
   }
   const std::string prefix = media + "#";
   for (const auto& [k, m] : models_) {
-    if (m && k.rfind(prefix, 0) == 0) return m.get();
+    if (k.rfind(prefix, 0) == 0 && usable(m.get())) return m.get();
   }
   return nullptr;
 }
@@ -2309,6 +2360,8 @@ void RaceView::restore_rewind(const RewindSnapshot& s, bool mark_player_lap_dirt
     c.traction_cap = st.traction_cap;
     c.lamps = st.lamps;
     c.lamps_initialized = st.lamps_initialized;
+    c.in_tunnel = false;
+    c.tunnel_probe_tick = 0;
   }
   player_ai_ = s.player_ai;
   next_checkpoint_ = s.next_checkpoint;

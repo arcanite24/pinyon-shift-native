@@ -150,7 +150,7 @@ void main() {
   vec3 R = reflect(-V, N_jit);
 
   // Fade out rays pointing back toward the viewer (off-screen behind camera -> GGX cubemap fallback).
-  float back_fade = smoothstep(0.32, -0.10, R.z);
+  float back_fade = 1.0 - smoothstep(-0.10, 0.32, R.z);
   if (back_fade <= 0.005) {
     out_ssr = vec4(0.0);
     return;
@@ -247,7 +247,7 @@ void main() {
   vec2 edge = min(hit_uv, vec2(1.0) - hit_uv);
   float edge_fade = smoothstep(0.0, 0.08, min(edge.x, edge.y));
   float dist_fade = 1.0 - smoothstep(0.70, 1.0, hit_dist_frac);
-  float rough_fade = smoothstep(0.82, 0.14, rough);
+  float rough_fade = 1.0 - smoothstep(0.14, 0.82, rough);
   float fresnel = clamp(0.06 + 0.94 * pow(1.0 - nv, 4.0), 0.06, 0.96);
   // Water & chrome stay highly reflective even at steeper viewing angles; car clearcoat obeys Fresnel.
   float angle_weight = mix(fresnel, max(fresnel, 0.55), smoothstep(0.78, 0.95, gloss));

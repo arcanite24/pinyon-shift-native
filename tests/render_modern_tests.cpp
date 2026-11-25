@@ -2,12 +2,15 @@
 // HDR encoding, the upscaler fallbacks and the frame statistics (no Vulkan).
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include "frame_inspector.h"
 #include "perf_overlay.h"
 #include "platform_support.h"
 #include "render_modern.h"
+#define CARVIEW_MOTION_MATH_ONLY
+#include "renderer.h"
 #include "upscaler.h"
 
 using namespace carview::modern;
@@ -664,6 +667,144 @@ void test_lazy_targets_and_reflection_schedule() {
   CHECK(mb_high.dyn_env_size == 256 && mb_high.dyn_env_mips == 9);
 }
 
+void test_dynamic_motion_vectors_and_mcguire() {
+  using namespace carview::motion_math;
+
+  // Build a chase camera looking down -Z in player-car space from (0, 1.5, +5.5) with reverse-Z.
+  const float near_z = 0.25f;
+  const float proj00 = 1.08f, proj11 = -1.92f;
+  float proj[16]{};
+  proj[0] = proj00;
+  proj[5] = proj11;
+  proj[10] = 0.0f;
+  proj[11] = -1.0f;
+  proj[14] = near_z;
+  float view[16];
+  mat4_identity(view);
+  view[12] = 0.0f;
+  view[13] = -1.5f;
+  view[14] = -5.5f;
+  float vp[16], vp_inv[16];
+  mat4_mul(proj, view, vp);
+  CHECK(mat4_inv(vp, vp_inv));
+
+  // Verify extract_view_from_vp recovers exact view matrix V from VP = P * V.
+  float v_ext[16];
+  extract_view_from_vp(vp, proj00, proj11, v_ext);
+  for (int i = 0; i < 16; ++i) CHECK(near(v_ext[i], view[i], 1e-4f));
+
+  // Helper: project a car-space point to (uv_x, uv_y, depth_z) through vp.
+  auto project_pt = [&](const float m_vp[16], float x, float y, float z, float& u, float& v, float& dz) {
+    const float cx = m_vp[0] * x + m_vp[4] * y + m_vp[8] * z + m_vp[12];
+    const float cy = m_vp[1] * x + m_vp[5] * y + m_vp[9] * z + m_vp[13];
+    const float cz = m_vp[2] * x + m_vp[6] * y + m_vp[10] * z + m_vp[14];
+    const float cw = m_vp[3] * x + m_vp[7] * y + m_vp[11] * z + m_vp[15];
+    u = (cx / cw) * 0.5f + 0.5f;
+    v = (cy / cw) * 0.5f + 0.5f;
+    dz = cz / cw;
+  };
+
+  // Scenario: player car drives forward along -Z at 2.0 m/frame while chase cam stays fixed in car space.
+  // Simultaneously, world_origin shifts by +500 m to simulate a streaming regather re-center!
+  float prev_world_xf[16], curr_world_xf[16];
+  mat4_identity(prev_world_xf);
+  prev_world_xf[14] = 100.0f;  // car at z = -100 in prev world
+  mat4_identity(curr_world_xf);
+  curr_world_xf[14] = 102.0f + 500.0f;  // car moved -2 m AND origin shifted +500 m
+
+  float world_reproj[16];
+  CHECK(build_static_world_reproj(vp, vp_inv, prev_world_xf, curr_world_xf, 0.0, 0.0, 0.0, 500.0, world_reproj));
+
+  // 1) A road pixel 1.5 m to the right of the bumper (x=2.0, y=0.0, z=-2.0 in car space):
+  //    In prev frame, that static road point was 2.0 m further ahead (z=-4.0 in car space).
+  float road_u = 0, road_v = 0, road_z = 0;
+  project_pt(vp, 2.0f, 0.0f, -2.0f, road_u, road_v, road_z);
+  float prev_road_u = 0, prev_road_v = 0, prev_road_z = 0;
+  project_pt(vp, 2.0f, 0.0f, -4.0f, prev_road_u, prev_road_v, prev_road_z);
+  float rv_x = 0, rv_y = 0;
+  CHECK(compute_screen_velocity(world_reproj, road_u, road_v, road_z, 0.0f, 0.0f, rv_x, rv_y));
+  CHECK(near(rv_x, road_u - prev_road_u, 2e-4f));
+  CHECK(near(rv_y, road_v - prev_road_v, 2e-4f));
+  CHECK(std::hypot(rv_x, rv_y) > 0.02f);  // road carries crisp high-speed motion vector!
+
+  // 2) Player car pixel (x=0.4, y=0.6, z=0.0): inside player OBB, prev_model == curr_model == I -> ~0 velocity!
+  float car_reproj[16];
+  mat4_mul(vp, vp_inv, car_reproj);
+  float cu = 0, cv = 0, cz = 0;
+  project_pt(vp, 0.4f, 0.6f, 0.0f, cu, cv, cz);
+  float cv_x = 0, cv_y = 0;
+  CHECK(compute_screen_velocity(car_reproj, cu, cv, cz, 0.0f, 0.0f, cv_x, cv_y));
+  CHECK(near(cv_x, 0.0f, 1e-4f) && near(cv_y, 0.0f, 1e-4f));
+
+  // 3) Passing oncoming AI car (moves +4.0 m in +Z relative to player car in one frame).
+  float ai_prev[16], ai_curr[16], ai_reproj[16];
+  mat4_identity(ai_prev);
+  ai_prev[12] = -3.0f;
+  ai_prev[13] = 0.0f;
+  ai_prev[14] = -14.0f;
+  mat4_identity(ai_curr);
+  ai_curr[12] = -3.0f;
+  ai_curr[13] = 0.0f;
+  ai_curr[14] = -10.0f;
+  CHECK(build_object_reproj(vp, vp_inv, ai_prev, ai_curr, ai_reproj));
+  float ai_u = 0, ai_v = 0, ai_z = 0;
+  project_pt(vp, -3.0f, 0.7f, -10.0f, ai_u, ai_v, ai_z);
+  float ai_pu = 0, ai_pv = 0, ai_pz = 0;
+  project_pt(vp, -3.0f, 0.7f, -14.0f, ai_pu, ai_pv, ai_pz);
+  float av_x = 0, av_y = 0;
+  CHECK(compute_screen_velocity(ai_reproj, ai_u, ai_v, ai_z, 0.0f, 0.0f, av_x, av_y));
+  CHECK(near(av_x, ai_u - ai_pu, 2e-4f) && near(av_y, ai_v - ai_pv, 2e-4f));
+  CHECK(std::fabs(av_x) > 0.01f);
+
+  // 4) Rotated 3D OBB containment + FP16 push packing round-trip (must be finite & accurate).
+  float rot_model[16];
+  mat4_identity(rot_model);
+  const float ang = 0.65f;
+  rot_model[0] = std::cos(ang);
+  rot_model[2] = -std::sin(ang);
+  rot_model[8] = std::sin(ang);
+  rot_model[10] = std::cos(ang);
+  rot_model[12] = -3.0f;
+  rot_model[13] = 0.7f;
+  rot_model[14] = -10.0f;
+  float mv[16];
+  mat4_mul(view, rot_model, mv);
+  float q[4];
+  mat3_to_quat_pos_w(mv, q);
+  CHECK(q[3] >= 0.0f);
+  const float c_view[3] = {mv[12], mv[13], mv[14]};
+  const float h_ext[3] = {1.0f, 0.75f, 2.3f};
+  // Point inside the rotated car OBB along its local +Z axis (+1.8 m):
+  const float in_pt[3] = {c_view[0] + mv[8] * 1.8f, c_view[1] + mv[9] * 1.8f, c_view[2] + mv[10] * 1.8f};
+  // Point 0.15 m outside the rotated car's bumper (+2.45 m):
+  const float out_pt[3] = {c_view[0] + mv[8] * 2.45f, c_view[1] + mv[9] * 2.45f, c_view[2] + mv[10] * 2.45f};
+  CHECK(point_in_obb(in_pt, c_view, q, h_ext));
+  CHECK(!point_in_obb(out_pt, c_view, q, h_ext));
+
+  uint32_t words[20]{};
+  pack_dynamic_push(ai_reproj, 0.0005f, -0.0003f, c_view, q, h_ext, 1.0f / proj00, 1.0f / proj11, near_z, true, false,
+                    words);
+  for (int i = 0; i < 20; ++i) {
+    float as_f = 0.0f;
+    std::memcpy(&as_f, &words[i], sizeof(float));
+    CHECK(std::isfinite(as_f));
+  }
+  float uqx = 0, uqy = 0, uqz = 0, uhx = 0, uhy = 0, uhz = 0;
+  unpack_half2x16(words[15], uqx, uqy);
+  unpack_half2x16(words[16], uqz, uhx);
+  unpack_half2x16(words[17], uhy, uhz);
+  CHECK(near(uqx, q[0], 2e-3f) && near(uqy, q[1], 2e-3f) && near(uqz, q[2], 2e-3f));
+  CHECK(near(uhx, h_ext[0], 5e-3f) && near(uhy, h_ext[1], 5e-3f) && near(uhz, h_ext[2], 5e-3f));
+
+  // 5) McGuire depth-aware weights:
+  //    a) Static foreground player car (5 m, v=0) must NOT receive blur from fast background road (8 m, v=0.05).
+  CHECK(near(mcguire_sample_weight(5.0f, 0.0f, 8.0f, 0.05f, 0.01f), 0.0f, 1e-5f));
+  //    b) Fast background road (8 m, v=0.05) must NOT smear static foreground player car (5 m, v=0).
+  CHECK(near(mcguire_sample_weight(8.0f, 0.05f, 5.0f, 0.0f, 0.01f), 0.0f, 1e-5f));
+  //    c) Fast oncoming foreground car (10 m, v=0.06) DOES streak cleanly over background road (15 m, v=0.02).
+  CHECK(mcguire_sample_weight(15.0f, 0.02f, 10.0f, 0.06f, 0.02f) > 0.5f);
+}
+
 }  // namespace
 
 int main() {
@@ -680,6 +821,7 @@ int main() {
   test_upscaler_runtime_and_inspector();
   test_split_bindless_and_pipeline_cache();
   test_lazy_targets_and_reflection_schedule();
+  test_dynamic_motion_vectors_and_mcguire();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

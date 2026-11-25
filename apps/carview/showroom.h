@@ -10,22 +10,272 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
+#include <list>
+#include <map>
+#include <set>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace carview {
+
+// O(1) LRU resident draw manager with O(log F) best-fit coalescing free-block
+// allocators for the GPU-driven world's vertex and index arenas.
+// Eliminates O(N) linear eviction scans and full-arena vkDeviceWaitIdle() resets.
+class WorldArenaLru {
+ public:
+  static constexpr uint32_t kNoSpace = 0xFFFFFFFFu;
+
+  class FreeList {
+   public:
+    void reset(uint32_t capacity) {
+      capacity_ = capacity;
+      used_ = 0;
+      by_offset_.clear();
+      by_size_.clear();
+      if (capacity > 0) {
+        by_offset_[0] = capacity;
+        by_size_.emplace(capacity, 0u);
+      }
+    }
+
+    uint32_t allocate(uint32_t units) {
+      if (units == 0) return 0;
+      auto sit = by_size_.lower_bound({units, 0u});
+      if (sit == by_size_.end()) return kNoSpace;
+      const uint32_t sz = sit->first;
+      const uint32_t off = sit->second;
+      by_size_.erase(sit);
+      by_offset_.erase(off);
+      const uint32_t left = sz - units;
+      if (left > 0) {
+        by_offset_[off + units] = left;
+        by_size_.emplace(left, off + units);
+      }
+      used_ += units;
+      return off;
+    }
+
+    void free(uint32_t offset, uint32_t units) {
+      if (units == 0) return;
+      used_ -= std::min(used_, units);
+      auto next = by_offset_.lower_bound(offset);
+      if (next != by_offset_.end() && offset + units == next->first) {
+        by_size_.erase({next->second, next->first});
+        units += next->second;
+        next = by_offset_.erase(next);
+      }
+      if (next != by_offset_.begin()) {
+        auto prev = std::prev(next);
+        if (prev->first + prev->second == offset) {
+          by_size_.erase({prev->second, prev->first});
+          offset = prev->first;
+          units += prev->second;
+          by_offset_.erase(prev);
+        }
+      }
+      by_offset_[offset] = units;
+      by_size_.emplace(units, offset);
+    }
+
+    uint32_t capacity() const { return capacity_; }
+    uint32_t used() const { return used_; }
+    uint32_t largest_free() const { return by_size_.empty() ? 0u : by_size_.rbegin()->first; }
+    size_t free_ranges() const { return by_offset_.size(); }
+
+   private:
+    uint32_t capacity_ = 0;
+    uint32_t used_ = 0;
+    std::map<uint32_t, uint32_t> by_offset_;
+    std::set<std::pair<uint32_t, uint32_t>> by_size_;
+  };
+
+  struct Entry {
+    uint32_t vertex_base = 0, vertex_count = 0;
+    uint32_t index_base = 0, index_count = 0;
+    double origin_x = 0.0, origin_z = 0.0;
+    uint32_t refs = 0;
+    bool valid = false;
+    uint64_t last_used = 0;
+    uint64_t free_tag = 0;
+    bool in_lru = false;
+    std::list<uint64_t>::iterator lru_it{};
+  };
+
+  WorldArenaLru(uint32_t vertex_capacity = 0, uint32_t index_capacity = 0) { reset(vertex_capacity, index_capacity); }
+
+  void reset(uint32_t vertex_capacity, uint32_t index_capacity) {
+    map_.clear();
+    unref_lru_.clear();
+    vertices_.reset(vertex_capacity);
+    indices_.reset(index_capacity);
+    evictions_ = 0;
+    has_no_evict_frame_ = false;
+    no_evict_frame_ = 0;
+  }
+
+  Entry* acquire(uint64_t key, uint64_t generation) {
+    auto it = map_.find(key);
+    if (it == map_.end()) return nullptr;
+    Entry& e = it->second;
+    if (!e.valid && e.refs == 0) {
+      if (e.in_lru) unref_lru_.erase(e.lru_it);
+      vertices_.free(e.vertex_base, e.vertex_count);
+      indices_.free(e.index_base, e.index_count);
+      map_.erase(it);
+      return nullptr;
+    }
+    if (e.refs == 0 && e.in_lru) {
+      unref_lru_.erase(e.lru_it);
+      e.in_lru = false;
+    }
+    ++e.refs;
+    e.last_used = generation;
+    return &e;
+  }
+
+  void mark_valid(uint64_t key) {
+    auto it = map_.find(key);
+    if (it != map_.end()) it->second.valid = true;
+  }
+
+  // O(1) amortized eviction from the tail of the unreferenced LRU list.
+  bool evict_oldest(uint64_t frames_done, std::vector<uint64_t>* evicted = nullptr) {
+    if (unref_lru_.empty()) return false;
+    if (has_no_evict_frame_ && frames_done <= no_evict_frame_) return false;
+    for (auto it = unref_lru_.end(); it != unref_lru_.begin();) {
+      --it;
+      const uint64_t k = *it;
+      auto mit = map_.find(k);
+      if (mit == map_.end()) {
+        it = unref_lru_.erase(it);
+        continue;
+      }
+      Entry& e = mit->second;
+      if (e.refs != 0 || e.free_tag > frames_done) continue;
+      vertices_.free(e.vertex_base, e.vertex_count);
+      indices_.free(e.index_base, e.index_count);
+      unref_lru_.erase(it);
+      map_.erase(mit);
+      if (evicted) evicted->push_back(k);
+      ++evictions_;
+      return true;
+    }
+    has_no_evict_frame_ = true;
+    no_evict_frame_ = frames_done;
+    return false;
+  }
+
+  Entry* place(uint64_t key, uint32_t vertex_count, uint32_t index_count, double origin_x, double origin_z,
+               uint64_t generation, uint64_t frames_done = ~0ull, std::vector<uint64_t>* evicted = nullptr) {
+    if (Entry* have = acquire(key, generation)) return have;
+    uint32_t v = vertices_.allocate(vertex_count);
+    uint32_t i = indices_.allocate(index_count);
+    while ((v == kNoSpace || i == kNoSpace) && evict_oldest(frames_done, evicted)) {
+      if (v == kNoSpace) v = vertices_.allocate(vertex_count);
+      if (i == kNoSpace) i = indices_.allocate(index_count);
+    }
+    if (v == kNoSpace || i == kNoSpace) {
+      if (v != kNoSpace) vertices_.free(v, vertex_count);
+      if (i != kNoSpace) indices_.free(i, index_count);
+      return nullptr;
+    }
+    Entry e{};
+    e.vertex_base = v;
+    e.vertex_count = vertex_count;
+    e.index_base = i;
+    e.index_count = index_count;
+    e.origin_x = origin_x;
+    e.origin_z = origin_z;
+    e.refs = 1;
+    e.valid = false;
+    e.last_used = generation;
+    e.free_tag = 0;
+    e.in_lru = false;
+    auto [ins, ok] = map_.emplace(key, e);
+    return &ins->second;
+  }
+
+  void release(uint64_t key, uint64_t tag = 0) {
+    auto it = map_.find(key);
+    if (it == map_.end() || it->second.refs == 0) return;
+    Entry& e = it->second;
+    --e.refs;
+    e.free_tag = std::max(e.free_tag, tag);
+    if (e.refs == 0) {
+      if (!e.valid) {
+        // Placement was rolled back before its GPU copy ran: free immediately.
+        vertices_.free(e.vertex_base, e.vertex_count);
+        indices_.free(e.index_base, e.index_count);
+        map_.erase(it);
+        return;
+      }
+      if (!e.in_lru) {
+        unref_lru_.push_front(key);
+        e.lru_it = unref_lru_.begin();
+        e.in_lru = true;
+      }
+      if (has_no_evict_frame_ && e.free_tag <= no_evict_frame_) has_no_evict_frame_ = false;
+    }
+  }
+
+  void evict_unreferenced(uint64_t frames_done = ~0ull, std::vector<uint64_t>* evicted = nullptr) {
+    while (evict_oldest(frames_done, evicted)) {
+    }
+  }
+
+  bool contains(uint64_t key) const { return map_.count(key) != 0; }
+  const Entry* find(uint64_t key) const {
+    auto it = map_.find(key);
+    return it == map_.end() ? nullptr : &it->second;
+  }
+  size_t count() const { return map_.size(); }
+  size_t unreferenced_count() const { return unref_lru_.size(); }
+  bool has_inflight_unreferenced(uint64_t frames_done) const {
+    for (uint64_t k : unref_lru_) {
+      auto it = map_.find(k);
+      if (it != map_.end() && it->second.refs == 0 && it->second.free_tag > frames_done) return true;
+    }
+    return false;
+  }
+  size_t referenced() const { return map_.size() >= unref_lru_.size() ? (map_.size() - unref_lru_.size()) : 0; }
+  uint64_t vertex_used() const { return vertices_.used(); }
+  uint64_t index_used() const { return indices_.used(); }
+  uint32_t vertex_capacity() const { return vertices_.capacity(); }
+  uint32_t index_capacity() const { return indices_.capacity(); }
+  uint32_t vertex_largest_free() const { return vertices_.largest_free(); }
+  uint32_t index_largest_free() const { return indices_.largest_free(); }
+  size_t vertex_free_ranges() const { return vertices_.free_ranges(); }
+  size_t index_free_ranges() const { return indices_.free_ranges(); }
+  uint64_t evictions() const { return evictions_; }
+
+ private:
+  std::unordered_map<uint64_t, Entry> map_;
+  std::list<uint64_t> unref_lru_;
+  FreeList vertices_, indices_;
+  uint64_t evictions_ = 0;
+  bool has_no_evict_frame_ = false;
+  uint64_t no_evict_frame_ = 0;
+};
+
+}  // namespace carview
+
+#ifndef CARVIEW_ARENA_LRU_ONLY
+
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <condition_variable>
-#include <cstdint>
 #include <deque>
 #include <filesystem>
-#include <map>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <unordered_set>
-#include <vector>
 
 #include <volk.h>
 
@@ -344,6 +594,7 @@ class Showroom {
       }
     }
     if (custom_livery_active_) frame_.options[2] = 2.0f;
+    sync_motion_scene();
   }
   // Moves the wheels, rotors and callipers (LF, RF, LR, RR). Until it is
   // called they stand at the car's rest centres, as the showroom shows them.
@@ -437,7 +688,10 @@ class Showroom {
     size_t white = 0, layer_fallback = 0;
   };
   WorldDrawStats world_draw_stats() const { return world_stats_; }
-  uint32_t gpu_resident_draws() const { return gpu_world_ ? gpu_world_->resident_draws() : 0u; }
+  uint32_t gpu_resident_draws() const {
+    if (arena_lru_.vertex_capacity() > 0 && !arena_use_rt_resident_) return uint32_t(arena_lru_.count());
+    return gpu_world_ ? gpu_world_->resident_draws() : 0u;
+  }
   uint32_t gpu_hiz_culled() const { return gpu_world_ ? gpu_world_->last_hiz_culled() : 0u; }
   uint32_t gpu_trees_drawn() const { return gpu_world_ ? gpu_world_->last_trees_drawn() : 0u; }
   double pipeline_compile_ms() const { return pipeline_compile_ms_; }
@@ -983,15 +1237,82 @@ class Showroom {
   bool hiz_enabled_ = true;
   // The GPU-driven world: arenas, bindless textures, culling (world_gpu.h).
   std::unique_ptr<WorldGpu> gpu_world_;
+  WorldArenaLru arena_lru_;
+  bool arena_use_rt_resident_ = false;
   bool arena_on() const;  // the arenas hold the scenery (else the monolithic buffers)
   uint64_t world_generation_ = 0;
+  void sync_motion_scene() {
+    if (guest_) return;
+    Renderer::MotionSceneState ms{};
+    ms.has_world_transform = world_lit_ || !world_draws_.empty();
+    std::memcpy(ms.world_transform, world_transform_, sizeof(ms.world_transform));
+    ms.world_origin[0] = world_origin_[0];
+    ms.world_origin[1] = world_origin_[1];
+    ms.has_player_car = draw_car_ && have_bounds_;
+    if (ms.has_player_car) {
+      // Pad car OBB tightly around wheels/mirrors while lifting bottom +1.5 cm above asphalt
+      // so the road surface underneath stays outside the player-car OBB and blurs cleanly.
+      const float lift_bot = (bounds_max_[1] - bounds_min_[1] > 0.2f) ? 0.015f : 0.0f;
+      ms.player_bmin[0] = bounds_min_[0] - 0.06f;
+      ms.player_bmin[1] = bounds_min_[1] + lift_bot;
+      ms.player_bmin[2] = bounds_min_[2] - 0.05f;
+      ms.player_bmax[0] = bounds_max_[0] + 0.06f;
+      ms.player_bmax[1] = bounds_max_[1] + 0.06f;
+      ms.player_bmax[2] = bounds_max_[2] + 0.05f;
+    }
+    if (!instances_.empty()) {
+      struct Cand {
+        float d2 = 0.0f;
+        size_t idx = 0;
+      };
+      std::vector<Cand> cands;
+      cands.reserve(instances_.size());
+      for (size_t i = 0; i < instances_.size(); ++i) {
+        const auto& in = instances_[i];
+        if (!in.car || !in.car->have_bounds_ || in.fade_alpha <= 0.05f) continue;
+        const float dx = in.model[12] - frame_.eye[0];
+        const float dy = in.model[13] - frame_.eye[1];
+        const float dz = in.model[14] - frame_.eye[2];
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > 160.0f * 160.0f) continue;
+        cands.push_back({d2, i});
+      }
+      if (cands.size() > Renderer::MotionSceneState::kMaxDynamicCars) {
+        std::partial_sort(cands.begin(), cands.begin() + Renderer::MotionSceneState::kMaxDynamicCars, cands.end(),
+                          [](const Cand& a, const Cand& b) { return a.d2 < b.d2; });
+        cands.resize(Renderer::MotionSceneState::kMaxDynamicCars);
+      }
+      ms.dynamic_car_count = uint32_t(cands.size());
+      for (uint32_t k = 0; k < ms.dynamic_car_count; ++k) {
+        const auto& in = instances_[cands[k].idx];
+        auto& dst = ms.dynamic_cars[k];
+        dst.model_id = reinterpret_cast<uintptr_t>(in.car);
+        std::memcpy(dst.model, in.model, sizeof(dst.model));
+        const auto& bmin = in.car->bounds_min_;
+        const auto& bmax = in.car->bounds_max_;
+        const float lift_bot = (bmax[1] - bmin[1] > 0.2f) ? 0.015f : 0.0f;
+        dst.bmin[0] = bmin[0] - 0.06f;
+        dst.bmin[1] = bmin[1] + lift_bot;
+        dst.bmin[2] = bmin[2] - 0.05f;
+        dst.bmax[0] = bmax[0] + 0.06f;
+        dst.bmax[1] = bmax[1] + 0.06f;
+        dst.bmax[2] = bmax[2] + 0.05f;
+      }
+    }
+    r_.set_motion_scene(ms);
+  }
   void world_bind_buffers(VkCommandBuffer cmd, bool fading);
   void world_draw_model(const WorldGeometry::Draw& d, const float transform[16], float out[16]) const;
   void world_release_draws(std::vector<WorldGeometry::Draw>& draws);
   bool build_gpu_table(std::string& error);
   void record_world_cull(VkCommandBuffer cmd);
   bool place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& vertex_copies,
-                         std::vector<WorldGpu::Copy>& index_copies, std::string& error);
+                         std::vector<WorldGpu::Copy>& index_copies, std::string& error,
+                         bool* deferred_busy = nullptr, bool allow_blocking_reset = true);
+  bool arena_lookup_draw(uint64_t key, uint32_t& out_index_base) const;
+  bool arena_contains_draw(uint64_t key) const;
+  void arena_mark_draw_valid(uint64_t key);
+  void arena_release_draw(uint64_t key, uint64_t tag);
   void install_world_prop_spans(StagedWorld& st);
   size_t world_triangles_ = 0;
   size_t gpu_table_white_ = 0, gpu_table_layer_fallback_ = 0;
@@ -1006,7 +1327,9 @@ class Showroom {
     StagedWorld staged;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
+    bool deferred_arena_place = false;
   };
+  bool submit_pending_world_upload(PendingWorld& p, bool allow_blocking_reset, std::string& error);
   std::unique_ptr<PendingWorld> pending_world_;
   void drop_pending_world();
   // The textured world.
@@ -1398,3 +1721,5 @@ class Showroom {
 int run_precompile_shaders(int argc, char** argv);
 
 }  // namespace carview
+
+#endif  // CARVIEW_ARENA_LRU_ONLY

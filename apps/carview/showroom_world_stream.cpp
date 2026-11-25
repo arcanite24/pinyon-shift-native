@@ -762,13 +762,17 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
 void Showroom::drop_pending_world() {
   if (!pending_world_) return;
   auto& p = *pending_world_;
+  const bool had_fence = p.fence != VK_NULL_HANDLE;
   if (p.fence) {
-    vkWaitForFences(r_.device_, 1, &p.fence, VK_TRUE, UINT64_MAX);
+    if (vkGetFenceStatus(r_.device_, p.fence) != VK_SUCCESS) {
+      vkWaitForFences(r_.device_, 1, &p.fence, VK_TRUE, UINT64_MAX);
+    }
     vkDestroyFence(r_.device_, p.fence, nullptr);
+    p.fence = VK_NULL_HANDLE;
   }
-  if (p.fence)  // submitted and waited: the copies ran
+  if (had_fence)  // submitted and completed: the copies ran
     for (const auto& d : p.staged.draws)
-      if (d.resident && arena_on()) gpu_world_->resident().mark_valid(d.key);
+      if (d.resident && arena_on()) arena_mark_draw_valid(d.key);
   world_release_draws(p.staged.draws);
   if (p.cmd) vkFreeCommandBuffers(r_.device_, r_.pool_, 1, &p.cmd);
   // Its copy is done (the fence): the staging buffers, the worker's
@@ -842,6 +846,104 @@ void Showroom::stop_reaper() {
   reaper_.join();
 }
 
+bool Showroom::submit_pending_world_upload(PendingWorld& p, bool allow_blocking_reset, std::string& error) {
+  if (!p.staged.vertices || !p.staged.indices) {
+    p.deferred_arena_place = false;
+    return true;
+  }
+  const bool fenced = p.staged.vertices && p.staged.indices && p.staged.texels;
+  const VkDeviceSize vb = p.staged.vertices->size, ib = p.staged.indices->size;
+  VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  alloc.commandPool = r_.pool_;
+  alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc.commandBufferCount = 1;
+  VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  const bool arena = p.staged.arena && arena_on();
+  std::vector<WorldGpu::Copy> arena_vertex_copies, arena_index_copies;
+  bool deferred_busy = false;
+  if (arena && !place_world_arena(p.staged, arena_vertex_copies, arena_index_copies, error, &deferred_busy,
+                                  allow_blocking_reset)) {
+    return false;
+  }
+  if (deferred_busy) {
+    p.deferred_arena_place = true;
+    return true;
+  }
+  p.deferred_arena_place = false;
+  if (arena) {
+    // build_textured_world() computes d.box_min/max in p.staged's own origin frame
+    // (game_pos - st.origin). place_world_arena() then adds d.shift (rd->origin - st.origin)
+    // to d.box_min/max; undo that extra shift so d.box_min/max stay in p.staged's scenery frame.
+    for (auto& d : p.staged.draws) {
+      if (!d.resident) continue;
+      for (int k = 0; k < 3; k += 2) {
+        d.box_min[k] -= d.shift[k / 2];
+        d.box_max[k] -= d.shift[k / 2];
+      }
+    }
+  }
+  const VkBufferUsageFlags world_rt_flags =
+      r_.rt_supported()
+          ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+          : 0u;
+  if ((!arena && (!r_.create_buffer(vb, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | world_rt_flags,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p.vertices) ||
+                  !r_.create_buffer(ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | world_rt_flags,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p.indices))) ||
+      vkAllocateCommandBuffers(r_.device_, &alloc, &p.cmd) != VK_SUCCESS ||
+      vkCreateFence(r_.device_, &fence, nullptr, &p.fence) != VK_SUCCESS) {
+    error = "world buffers";
+    return false;
+  }
+  VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(p.cmd, &begin);
+  if (arena) {
+    // Only the draws the arenas do not hold yet.
+    gpu_world_->record_copies(p.cmd, p.staged.vertices->buffer, arena_vertex_copies, p.staged.indices->buffer,
+                              arena_index_copies);
+  } else {
+    const VkBufferCopy v{0, 0, vb}, i{0, 0, ib};
+    vkCmdCopyBuffer(p.cmd, p.staged.vertices->buffer, p.vertices.buffer, 1, &v);
+    vkCmdCopyBuffer(p.cmd, p.staged.indices->buffer, p.indices.buffer, 1, &i);
+  }
+  if (fenced) {
+    const auto& st = p.staged;
+    for (size_t k = 0; k < st.textures.size() && k < st.texel_ranges.size(); ++k) {
+      const auto& t = st.textures[k];
+      if (!t || !st.texel_ranges[k].second) continue;
+      {
+        std::lock_guard<std::mutex> lock(world_textures_mutex_);
+        if (world_textures_.count(t->record)) continue;
+      }
+      std::string why;
+      Renderer::Image* made = st.images && k < st.images->size() ? &(*st.images)[k] : nullptr;
+      const uint32_t skip = k < st.texel_skips.size() ? st.texel_skips[k] : 0u;
+      if (!begin_world_texture(*t, st.texels->buffer, st.texel_ranges[k].first, st.texel_ranges[k].second, skip,
+                               p.cmd, made, why))
+        notes_.push_back("world texture " + t->texture.name + ": " + why);  // drawn flat
+    }
+  }
+  vkEndCommandBuffer(p.cmd);
+  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers = &p.cmd;
+  VkResult submitted;
+  {
+    std::lock_guard<std::mutex> qlock(r_.queue_mutex_);
+    submitted = vkQueueSubmit(r_.queue_, 1, &submit, p.fence);
+  }
+  if (submitted != VK_SUCCESS) {
+    vkDestroyFence(r_.device_, p.fence, nullptr);
+    p.fence = VK_NULL_HANDLE;
+    error = "world upload submit";
+    return false;
+  }
+  return true;
+}
+
 bool Showroom::begin_world(StagedWorld staged, std::string& error) {
   // One copy in flight at a time: a newer world replaces a pending one.
   drop_pending_world();
@@ -858,105 +960,19 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
   p->staged = std::move(staged);
   const bool had_world_before = !world_draws_.empty();
   if (p->staged.vertices && p->staged.indices) {
-    const VkDeviceSize vb = p->staged.vertices->size, ib = p->staged.indices->size;
-    VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    alloc.commandPool = r_.pool_;
-    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc.commandBufferCount = 1;
-    VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    const bool arena = p->staged.arena && arena_on();
-    std::vector<WorldGpu::Copy> arena_vertex_copies, arena_index_copies;
-    if (arena && !place_world_arena(p->staged, arena_vertex_copies, arena_index_copies, error)) {
+    if (!submit_pending_world_upload(*p, !had_world_before, error)) {
       pending_world_ = std::move(p);
       drop_pending_world();
-      return false;
-    }
-    if (arena) {
-      // build_textured_world() computes d.box_min/max in p->staged's own origin frame
-      // (game_pos - st.origin). place_world_arena() then adds d.shift (rd->origin - st.origin)
-      // to d.box_min/max, which double-shifts reused resident draws by rd->origin - st.origin
-      // (~200+ m after a streaming regather) and causes world_cull.comp & CPU frustum culling
-      // to drop road junctions and terrain chunks directly under the player's car.
-      // Undo that extra shift so d.box_min/max stay in p->staged's scenery frame.
-      for (auto& d : p->staged.draws) {
-        if (!d.resident) continue;
-        for (int k = 0; k < 3; k += 2) {
-          d.box_min[k] -= d.shift[k / 2];
-          d.box_max[k] -= d.shift[k / 2];
-        }
-      }
-    }
-    const VkBufferUsageFlags world_rt_flags =
-        r_.rt_supported()
-            ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-               VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
-            : 0u;
-    if ((!arena && (!r_.create_buffer(vb, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | world_rt_flags,
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->vertices) ||
-                    !r_.create_buffer(ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | world_rt_flags,
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->indices))) ||
-        vkAllocateCommandBuffers(r_.device_, &alloc, &p->cmd) != VK_SUCCESS ||
-        vkCreateFence(r_.device_, &fence, nullptr, &p->fence) != VK_SUCCESS) {
-      pending_world_ = std::move(p);
-      drop_pending_world();
-      error = "world buffers";
-      return false;
-    }
-    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(p->cmd, &begin);
-    if (arena) {
-      // Only the draws the arenas do not hold yet.
-      gpu_world_->record_copies(p->cmd, p->staged.vertices->buffer, arena_vertex_copies, p->staged.indices->buffer,
-                                arena_index_copies);
-    } else {
-      const VkBufferCopy v{0, 0, vb}, i{0, 0, ib};
-      vkCmdCopyBuffer(p->cmd, p->staged.vertices->buffer, p->vertices.buffer, 1, &v);
-      vkCmdCopyBuffer(p->cmd, p->staged.indices->buffer, p->indices.buffer, 1, &i);
-    }
-    if (fenced) {
-      const auto& st = p->staged;
-      for (size_t k = 0; k < st.textures.size() && k < st.texel_ranges.size(); ++k) {
-        const auto& t = st.textures[k];
-        if (!t || !st.texel_ranges[k].second) continue;
-        {
-          std::lock_guard<std::mutex> lock(world_textures_mutex_);
-          if (world_textures_.count(t->record)) continue;
-        }
-        std::string why;
-        Renderer::Image* made = st.images && k < st.images->size() ? &(*st.images)[k] : nullptr;
-        const uint32_t skip = k < st.texel_skips.size() ? st.texel_skips[k] : 0u;
-        if (!begin_world_texture(*t, st.texels->buffer, st.texel_ranges[k].first, st.texel_ranges[k].second, skip,
-                                 p->cmd, made, why))
-          notes_.push_back("world texture " + t->texture.name + ": " + why);  // drawn flat
-      }
-    }
-    vkEndCommandBuffer(p->cmd);
-    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &p->cmd;
-    VkResult submitted;
-    {
-      std::lock_guard<std::mutex> qlock(r_.queue_mutex_);
-      submitted = vkQueueSubmit(r_.queue_, 1, &submit, p->fence);
-    }
-    if (submitted != VK_SUCCESS) {
-      vkDestroyFence(r_.device_, p->fence, nullptr);
-      p->fence = VK_NULL_HANDLE;
-      pending_world_ = std::move(p);
-      drop_pending_world();
-      error = "world upload submit";
       return false;
     }
   }
   const bool need_immediate_swap =
-      had_world_before && p->staged.arena && arena_on() && world_draws_.empty() && p->staged.vertices &&
-      p->staged.indices && !p->staged.draws.empty();
+      !p->deferred_arena_place && had_world_before && p->staged.arena && arena_on() && world_draws_.empty() &&
+      p->staged.vertices && p->staged.indices && !p->staged.draws.empty();
   pending_world_ = std::move(p);
   evict_world_textures();
-  // If place_world_arena() had to reset a full arena (clearing world_draws_), complete the
-  // short DMA fence immediately so the next rendered frame never flashes an empty sky.
+  // Only if an undersized arena emergency-reset cleared world_draws_, complete the short DMA fence
+  // so the next rendered frame never flashes an empty sky. Under O(1) LRU driving this never fires.
   if (need_immediate_swap) (void)poll_world(true, nullptr);
   return true;
 }
@@ -966,9 +982,21 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
   release_retired();
   if (!pending_world_) return true;
   auto& p = *pending_world_;
+  if (p.deferred_arena_place) {
+    std::string sub_err;
+    if (!submit_pending_world_upload(p, wait, sub_err)) {
+      notes_.push_back("world deferred upload: " + sub_err);
+      drop_pending_world();
+      return false;
+    }
+    if (p.deferred_arena_place) return true;  // in-flight frame still pinning old draws: retry next frame
+  }
   if (p.fence) {
-    if (!wait && vkGetFenceStatus(r_.device_, p.fence) != VK_SUCCESS) return true;
-    vkWaitForFences(r_.device_, 1, &p.fence, VK_TRUE, UINT64_MAX);
+    const VkResult status = vkGetFenceStatus(r_.device_, p.fence);
+    if (status != VK_SUCCESS) {
+      if (!wait) return true;  // non-blocking poll: defer swap to next frame without stalling
+      if (vkWaitForFences(r_.device_, 1, &p.fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) return false;
+    }
   }
   // The scenery in use may still be read by the frame in flight: it goes
   // once that frame is done, off this thread (no device wait here). With a
@@ -984,7 +1012,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
     for (const auto& d : p.staged.draws)
       if (d.resident) {
         new_keys.insert(d.key);
-        gpu_world_->resident().mark_valid(d.key);  // the copy is done (the fence above)
+        arena_mark_draw_valid(d.key);  // the copy is done (the fence above)
       }
     install_world_prop_spans(p.staged);
     std::unordered_set<uint64_t> old_keys;
@@ -1003,7 +1031,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
         d.fade_in = false;
         fading_.draws.push_back(d);  // keeps its reference until the fade ends
       } else {
-        gpu_world_->resident().release(d.key, tag);
+        arena_release_draw(d.key, tag);
       }
     }
     world_draws_ = std::move(p.staged.draws);

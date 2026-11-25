@@ -4,8 +4,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <mutex>
-#include <unordered_map>
 
 #include "bloom_down_frag_spv.h"
 #include "bloom_up_frag_spv.h"
@@ -13,14 +11,6 @@
 #include "post_vert_spv.h"
 
 namespace carview {
-namespace {
-
-// Tracks the upgraded mip-0 bloom persistence target (`bloom_b_[5]`) per Renderer
-// so `bloom_persist` feeds back mip-0 bright-pass rather than 6-mip upsampled `bloom_b_[0]`.
-std::mutex g_bloom_persist_mutex;
-std::unordered_map<const Renderer*, VkImage> g_bloom_persist_img;
-
-}  // namespace
 
 void Renderer::set_post_lut(std::span<const uint8_t> rgba, uint32_t size) {
   if (size < 2 || size > 65) return;
@@ -33,13 +23,20 @@ void Renderer::set_post_lut(std::span<const uint8_t> rgba, uint32_t size) {
 
 bool Renderer::ensure_lut_image(uint32_t size, std::string& error) {
   if (size < 2 || size > 65) return false;
-  if (lut3d_.image && lut_image_size_ == size) return true;
-  if (device_) wait_idle();
+  // Sub-volume fast path: any LUT <= lut_tex_extent_ (pre-allocated 33^3) uploads directly
+  // into [0..size-1]^3 via per-slot staging in record_post() with ZERO wait_idle() and
+  // ZERO submit_once() stalls.
+  if (lut3d_.image && size <= lut_tex_extent_) {
+    lut_image_size_ = size;
+    return true;
+  }
+  if (device_ && frames_submitted_ > frames_done_) wait_idle();
   destroy_image(lut3d_);
+  const uint32_t alloc_ext = std::max(size, 33u);
   VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.imageType = VK_IMAGE_TYPE_3D;
   info.format = VK_FORMAT_R8G8B8A8_UNORM;
-  info.extent = {size, size, size};
+  info.extent = {alloc_ext, alloc_ext, alloc_ext};
   info.mipLevels = 1;
   info.arrayLayers = 1;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -57,15 +54,10 @@ bool Renderer::ensure_lut_image(uint32_t size, std::string& error) {
   view.format = VK_FORMAT_R8G8B8A8_UNORM;
   view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   VK_TRY(vkCreateImageView(device_, &view, nullptr, &lut3d_.view), "vkCreateImageView (3D LUT)");
+  lut_tex_extent_ = alloc_ext;
   lut_image_size_ = size;
-  if (!submit_once([&](VkCommandBuffer cmd) {
-        image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-      })) {
-    error = "3D LUT layout transition";
-    return false;
-  }
+  // Defer layout transition to the frame's own command buffer in record_post() (no submit_once stall).
+  lut_needs_layout_init_ = true;
   if (post_pool_ && post_sampler_) {
     std::vector<VkDescriptorImageInfo> imgs(kPostSetCount);
     std::vector<VkWriteDescriptorSet> writes(kPostSetCount);
@@ -85,7 +77,8 @@ bool Renderer::ensure_lut_image(uint32_t size, std::string& error) {
 
 bool Renderer::create_post(std::string& error) {
   if (post_final_) return true;
-  // Create auto-exposure targets (16x16 + 1x1 ping-pong) and 16x16x16 3D LUT once.
+  // Create auto-exposure targets (16x16 + 1x1 ping-pong) and 33x33x33 3D LUT once
+  // (holds 16^3, 17^3, 32^3, and 33^3 LUTs in-place without ever recreating or stalling).
   const VkImageUsageFlags lum_usage =
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -97,12 +90,13 @@ bool Renderer::create_post(std::string& error) {
     error = "post luminance targets";
     return false;
   }
-  // Create 16x16x16 3D RGBA8 LUT image + host-visible staging buffer.
+  // Create 33x33x33 3D RGBA8 LUT backing image (143 KiB) + initial 16^3 identity ramp.
   {
+    constexpr uint32_t kDefaultLutExtent = 33;
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_3D;
     info.format = VK_FORMAT_R8G8B8A8_UNORM;
-    info.extent = {16, 16, 16};
+    info.extent = {kDefaultLutExtent, kDefaultLutExtent, kDefaultLutExtent};
     info.mipLevels = 1;
     info.arrayLayers = 1;
     info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -114,6 +108,9 @@ bool Renderer::create_post(std::string& error) {
     VK_TRY(vmaCreateImage(allocator_, &info, &alloc, &lut3d_.image, &lut3d_.allocation, &alloc_info),
            "vmaCreateImage (3D LUT)");
     lut3d_.bytes = alloc_info.size;
+    lut_tex_extent_ = kDefaultLutExtent;
+    lut_image_size_ = 16;
+    lut_needs_layout_init_ = false;
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image = lut3d_.image;
     view.viewType = VK_IMAGE_VIEW_TYPE_3D;
@@ -361,6 +358,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     u.vig_top_rot[0] = std::cos(s.vig_top_rot);
     u.vig_top_rot[1] = std::sin(s.vig_top_rot);
     u.vig_top_rot[2] = s.vig_top_feather;
+    u.vig_top_rot[3] = float(lut_tex_extent_);
     u.vig_bot_col[0] = s.vig_bot_color[0];
     u.vig_bot_col[1] = s.vig_bot_color[1];
     u.vig_bot_col[2] = s.vig_bot_color[2];
@@ -455,9 +453,14 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
       lut_pending_.size() == want_lut_bytes) {
     lut_dirty_ = false;
     std::memcpy(slot().lut_staging_mapped, lut_pending_.data(), lut_pending_.size());
-    image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    const VkImageLayout src_layout =
+        lut_needs_layout_init_ ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const VkPipelineStageFlags2 src_stage =
+        lut_needs_layout_init_ ? VK_PIPELINE_STAGE_2_NONE : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    const VkAccessFlags2 src_acc = lut_needs_layout_init_ ? VK_ACCESS_2_NONE : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    lut_needs_layout_init_ = false;
+    image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, src_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  src_stage, src_acc, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkBufferImageCopy reg{};
     reg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     reg.imageExtent = {lut_image_size_, lut_image_size_, lut_image_size_};
@@ -466,6 +469,11 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+  } else if (lut_needs_layout_init_ && lut3d_.image) {
+    lut_needs_layout_init_ = false;
+    image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
   }
 
   auto finite_or = [](float v, float fallback) -> float { return std::isfinite(v) ? v : fallback; };
@@ -565,16 +573,13 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
   //    Temporal bloom_persist feeds back mip-0 bright-pass stored in the otherwise-unused `bloom_b_[5]`
   //    slot (upgraded to mip-0 extent on first bloom frame) instead of 6-mip upsampled `bloom_b_[0]`.
   if (s.bloom && bloom_a_[0].image && bloom_b_[0].image && post_bloom_down_ && post_bloom_up_) {
+    // Upgrade the unused mip-5 bloom_b_[5] slot to mip-0 extent for temporal bloom_persist
+    // WITHOUT calling vkDeviceWaitIdle(): create_targets() always runs while idle and neither
+    // bloom_b_[5] nor post_sets_[2] is bound by any command buffer prior to the first bloom frame.
     if (!bloom_prev_valid_ && bloom_b_[5].image && bloom_w_[0] > 0 && bloom_h_[0] > 0) {
-      bool need_upgrade = false;
-      {
-        std::lock_guard<std::mutex> lock(g_bloom_persist_mutex);
-        auto it = g_bloom_persist_img.find(this);
-        need_upgrade = (it == g_bloom_persist_img.end() || it->second != bloom_b_[5].image ||
-                        bloom_b_[5].bytes < bloom_a_[0].bytes);
-      }
+      const bool need_upgrade =
+          (bloom_persist_img_ != bloom_b_[5].image) || (bloom_b_[5].bytes < bloom_a_[0].bytes);
       if (need_upgrade) {
-        wait_idle();
         destroy_image(bloom_b_[5]);
         const VkImageUsageFlags persist_usage =
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -588,8 +593,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
           pw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
           pw.pImageInfo = &pimg;
           vkUpdateDescriptorSets(device_, 1, &pw, 0, nullptr);
-          std::lock_guard<std::mutex> lock(g_bloom_persist_mutex);
-          g_bloom_persist_img[this] = bloom_b_[5].image;
+          bloom_persist_img_ = bloom_b_[5].image;
         }
       }
     }

@@ -384,6 +384,21 @@ float sample_cascade_pcss(vec4 s, float x_off, float inv_cascades, float pcss_mo
   return lit / float(taps);
 }
 
+vec3 decode_shadow_color() {
+  uint bits = floatBitsToUint(frame.shadow_bias.w);
+  if ((bits >> 24u) != 0x3Fu) return vec3(1.0);
+  return vec3(float(bits & 255u), float((bits >> 8u) & 255u), float((bits >> 16u) & 255u)) * (1.0 / 255.0);
+}
+
+vec3 shadow_ambient_tint(float occluded) {
+  if (occluded <= 0.001) return vec3(1.0);
+  vec3 sc = decode_shadow_color();
+  float luma = dot(sc, vec3(0.2126, 0.7152, 0.0722));
+  vec3 chroma = luma > 0.01 ? clamp(sc / luma, vec3(0.65), vec3(1.35)) : vec3(1.0);
+  float depth = mix(0.76, 1.0, clamp(luma, 0.0, 1.0));
+  return mix(vec3(1.0), chroma * depth, clamp(occluded, 0.0, 1.0));
+}
+
 float sun_shadow(vec3 p, vec3 n) {
   if (frame.shadow.x < 0.5) return 1.0;
   bool three_c = frame.shadow_mid_bias.y > 0.5;
@@ -396,16 +411,16 @@ float sun_shadow(vec3 p, vec3 n) {
   float lit_n = near_ok ? sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0) : 1.0;
 
   if (three_c) {
-    if (near_ok && edge_n < 0.80) return mix(frame.shadow.z, 1.0, lit_n);
+    if (near_ok && edge_n < 0.80) return clamp(lit_n, 0.0, 1.0);
     vec4 sm = frame.shadow_matrix_mid * vec4(p + n * frame.shadow_mid_bias.x, 1.0);
     float edge_m = max(abs(sm.x), abs(sm.y));
     bool mid_ok = edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0;
     float lit_m = mid_ok ? sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35) : 1.0;
     if (near_ok) {
       float bn = smoothstep(0.80, 0.98, edge_n);
-      return mix(frame.shadow.z, 1.0, mix(lit_n, lit_m, bn));
+      return clamp(mix(lit_n, lit_m, bn), 0.0, 1.0);
     }
-    if (mid_ok && edge_m < 0.80) return mix(frame.shadow.z, 1.0, lit_m);
+    if (mid_ok && edge_m < 0.80) return clamp(lit_m, 0.0, 1.0);
     vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
     float lit_f = 1.0;
@@ -413,11 +428,11 @@ float sun_shadow(vec3 p, vec3 n) {
       lit_f = mix(sample_cascade_pcf(sf, 2.0 * inv_c, inv_c), 1.0, smoothstep(0.84, 1.0, edge_f));
     }
     float bm = mid_ok ? smoothstep(0.80, 0.98, edge_m) : 1.0;
-    return mix(frame.shadow.z, 1.0, mix(lit_m, lit_f, bm));
+    return clamp(mix(lit_m, lit_f, bm), 0.0, 1.0);
   }
 
   if (frame.shadow_far_bias.y > 0.5) {
-    if (near_ok && edge_n < 0.78) return mix(frame.shadow.z, 1.0, lit_n);
+    if (near_ok && edge_n < 0.78) return clamp(lit_n, 0.0, 1.0);
     vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
     float lit_f = 1.0;
@@ -425,11 +440,10 @@ float sun_shadow(vec3 p, vec3 n) {
       lit_f = mix(sample_cascade_pcf(sf, 0.5, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f));
     }
     float blend = near_ok ? smoothstep(0.78, 0.98, edge_n) : 1.0;
-    return mix(frame.shadow.z, 1.0, mix(lit_n, lit_f, blend));
+    return clamp(mix(lit_n, lit_f, blend), 0.0, 1.0);
   }
   if (!near_ok) return 1.0;
-  lit_n = mix(lit_n, 1.0, smoothstep(0.8, 1.0, edge_n));
-  return mix(frame.shadow.z, 1.0, lit_n);
+  return clamp(mix(lit_n, 1.0, smoothstep(0.8, 1.0, edge_n)), 0.0, 1.0);
 }
 
 // Cotangent-frame tangent-space normal perturbation from DXN/BC5 normal map slope dxy in [-1, 1].
@@ -764,7 +778,7 @@ void main() {
   vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : kSunColour;
   vec3 sky_col = frame.sun_color.w >= 0.0 ? frame.sky_color.rgb : kSkyColour;
   vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : kGroundColour;
-  float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
+  float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : clamp(frame.shadow.z, 0.0, 1.0);
 
   // LAKE / WATER shader (kFlagWater):
   // - 4-octave dual-direction animated wave normals in stable world-meter coords
@@ -902,7 +916,7 @@ void main() {
     vec3 w_col = mix(body_col, refl, clamp(fresnel * 0.92 + 0.05, 0.05, 0.92)) + spec_col;
 
     // Soft animated shoreline foam where water meets gravel/rock banks.
-    float shore_zone = smoothstep(0.55, 0.06, shore_a) * smoothstep(0.0, 0.06, shore_a);
+    float shore_zone = (1.0 - smoothstep(0.06, 0.55, shore_a)) * smoothstep(0.0, 0.06, shore_a);
     float foam_noise = sky_noise(wp * 2.4 + vec2(t_sec * 0.32, -t_sec * 0.22)) * 0.6 +
                        sky_noise(wp * 5.8 - vec2(t_sec * 0.48, t_sec * 0.36)) * 0.4;
     float foam_band = smoothstep(0.50, 0.80, foam_noise + shore_zone * 0.34 + crest * 0.08) * shore_zone;
@@ -1058,6 +1072,7 @@ void main() {
       hemi_amb += frame.ambient_color.rgb * 0.18 * ibl_amb;
     }
   }
+  hemi_amb *= shadow_ambient_tint((1.0 - shade) * shadow_scale);
   vec3 light = (sun_col * ndl * shade + hemi_amb) * ao;
   vec3 colour = t.rgb * light * draw.up.w;
 
@@ -1125,8 +1140,8 @@ void main() {
       float pattern = max(max(ck.r, ck.g), ck.b) * max(ck.a, 0.25);
       float dist = sqrt(d2);
       float att = pow(clamp(1.0 - dist / range, 0.0, 1.0), 1.35);
-      float edge = smoothstep(0.0, 0.08, buv.x) * smoothstep(1.0, 0.92, buv.x) *
-                   smoothstep(0.0, 0.08, buv.y) * smoothstep(1.0, 0.92, buv.y);
+      float edge = smoothstep(0.0, 0.08, buv.x) * (1.0 - smoothstep(0.92, 1.0, buv.x)) *
+                   smoothstep(0.0, 0.08, buv.y) * (1.0 - smoothstep(0.92, 1.0, buv.y));
       float facing = max(dot(n, -to_p / dist), 0.30);
       hl_sum += headlights.beams[i].color.rgb * pattern * att * edge * facing * headlights.beams[i].dir_power.w;
     }
