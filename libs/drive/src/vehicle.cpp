@@ -1992,8 +1992,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
   // SimulationSteering in Simulation steering, else WithAssists or NoAssists
   // (the shipped rows are equal). The original runs it for every car; ours
   // skips AI-driven cars for now (interim, Q68): our suspension's wheel loads
-  // chatter, and the unequal Turn/Straighten clamps turn that chatter into a
-  // net yaw that spins the AI on the oracle lap.
+  // chatter, and with the wheel load cap (Q101) clipping them the unequal
+  // Turn/Straighten clamps spin the AI on the oracle lap.
   if (!ai_) {
     const double t_yaw = dot(tyre_torque, up);
     const Vec3 fwd_w = rotate(rot_, {0, 0, 1});

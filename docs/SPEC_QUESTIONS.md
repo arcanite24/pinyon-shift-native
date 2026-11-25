@@ -1939,6 +1939,21 @@ Open points:
   yaw rate on the same stretch is smooth. Needed: nothing from the spec.
   The exemption comes off once the load chatter is fixed.
 
+  Re-measured with the sphere body solver (Q100, Q101). Without the mod
+  the AI laps in 39.246 s. With the full mod it no longer finishes: it
+  spins braking into the turn at about 855 m and stops at 904 of 1199 m
+  (DNF after 77.6 s). Logged per substep, the chatter is still there
+  (single wheels swing by 10 to 40 kN within 0.1 s from 24 s on, and the
+  raw yaw torque by +-50 kN m). What turns it into the spin is the
+  interim wheel load cap of Q101, max(4 x preload, 1.1 m g): at 855 m the
+  right-hand wheels hit it, the rear goes light and the car spins. With
+  that cap removed (the 0.14 m bump-stop cap kept) the AI finishes with
+  the mod in 41.532 s (+7.09 %, cross-track max 5.34 m); removing only
+  the 0.14 m cap still DNFs. Without the mod, removing both caps leaves
+  the lap at 39.258 s. The exemption stays until the load cap can go,
+  which needs the kerb step of Q101 solved first; the 7 % that remains
+  is the chatter.
+
 ## Q69 (FEEL-16/17, not blocking): the pad steering filter's law
 
 The engine's pad filter is now the parts SPEC-CAR-PHYSICS names, plus
