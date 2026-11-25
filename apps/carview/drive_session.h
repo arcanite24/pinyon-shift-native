@@ -701,6 +701,9 @@ struct DriveSession {
   void event_summary_move(int by);
   void event_summary_restrictions();
   bool event_summary_open() const { return entry_screens.active(); }
+  // A message popup over the game (STAY IN CAR, the pause menu's
+  // confirmations): the frame behind it is blurred.
+  bool popup_backdrop() const;
   // Advances the race screens (timed steps, the grid's start, the finish).
   void update_race_screens(double dt);
   void grid_menu_accept();
@@ -739,6 +742,9 @@ struct DriveSession {
   void sync_pause_labels();
   void cycle_difficulty(int by);
   void choose();
+  // A on the pause menu's confirmation popup: runs its action (QUIT, QUIT RACE).
+  void confirm_pause_popup();
+  void run_pause_action(PauseMenu::Action act);
   void race_continue();
   void race_restart();
   // Commits the finished race's held award (career, garage, campaign tally,

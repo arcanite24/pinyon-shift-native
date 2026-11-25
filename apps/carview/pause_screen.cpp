@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include "game_hud.h"
+#include "race_screens.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -142,7 +143,7 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
 
 namespace {
 
-void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float w, float h) {
+void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float w, float h, bool help = true) {
   SceneScreen sc(kPauseScene);
   const SceneDraw& sd = sc.scene();
   const SceneFrame f = SceneScreen::frame(w, h);
@@ -204,7 +205,8 @@ void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float 
   bind_player_bar(sc, st, ps.band_texture);
   sc.draw(l, f);
 
-  if (ps.screen == Screen::kExtras) {
+  if (!help) {
+  } else if (ps.screen == Screen::kExtras) {
     help_bar(l, {{"A", text_of(pause_text::kSelect)}, {"B", text_of(pause_text::kBack)}}, w, h);
   } else {
     help_bar(l,
@@ -461,6 +463,33 @@ void fill_pause_screen(const PauseMenu& menu, double now, PauseScreenHud& out) {
   out.fade = kPauseFadeSeconds > 0 ? std::clamp((now - menu.shown_at) / kPauseFadeSeconds, 0.0, 1.0) : 1.0;
   if (out.fade >= 1.0) out.from = -1;
   out.sponsor_selected = menu.sponsor_selected;
+  out.confirm_race = menu.confirm_action == Action::kQuitRace;
+}
+
+bool pause_popup_text(const PauseScreenHud& ps, std::string& title, std::string& message,
+                      std::vector<std::pair<std::string, std::string>>& prompts) {
+  if (ps.screen == Screen::kOffline) {
+    title = text_of(pause_text::kNoNetworkTitle);
+    message = text_of(pause_text::kNoNetworkBody);
+    // interim (SPEC_QUESTIONS Q167): the popup's help bar is not captured.
+    prompts = {{"A", text_of(pause_text::kOk)}};
+    return true;
+  }
+  if (ps.screen == Screen::kConfirm) {
+    if (ps.confirm_race) {
+      title = text_of(pause_text::kQuitRaceTitle);
+      message = text_of(pause_text::kQuitRaceDesc);
+      // interim (SPEC_QUESTIONS Q167): QUIT RACE's popup is not captured;
+      // its prompts follow QUIT's.
+      prompts = {{"A", text_of(pause_text::kQuitButton)}, {"B", text_of(pause_text::kCancel)}};
+    } else {
+      title = text_of(pause_text::kQuitTitle);
+      message = text_of(pause_text::kQuitDesc);
+      prompts = {{"A", text_of(pause_text::kExitSinglePlayer)}, {"B", text_of(pause_text::kCancel)}};
+    }
+    return true;
+  }
+  return false;
 }
 
 void bind_pause_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& band_texture) {
@@ -482,6 +511,19 @@ bool draw_pause_screen(ui::List& l, const DriveHud& st, const PauseScreenHud& ps
       if (!SceneScreen(kPauseScene).ok()) return false;
       draw_list(l, st, ps, w, h);
       return true;
+    case Screen::kOffline:
+    case Screen::kConfirm: {
+      // The rows stay under the popup (blurred with the frame in the
+      // original; the engine blurs only the 3D frame behind the HUD).
+      if (!SceneScreen(kPauseScene).ok()) return false;
+      draw_list(l, st, ps, w, h, false);
+      std::string title, message;
+      std::vector<std::pair<std::string, std::string>> prompts;
+      pause_popup_text(ps, title, message, prompts);
+      std::vector<ui4::Prompt> pp;
+      for (const auto& [b, s] : prompts) pp.push_back({b.c_str(), s});
+      return draw_message_popup(l, title, message, pp, w, h);
+    }
   }
   return false;
 }

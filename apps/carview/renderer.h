@@ -456,6 +456,10 @@ struct PostSettings {
   // Optical post-FX (SPEC-VFX-AND-PARTICLES, PostProcessingZones_Safe.xml, dynamicpost.zip):
   bool motion_blur = false;
   bool dof = false;
+  // The UI popups' backdrop (H_MESSAGE_POPUP over the game, the pause
+  // confirmations): the DoF gather at dof_max_blur over every pixel, near
+  // or far (18_post_race_stay_in_car_orig.png blurs the car too).
+  bool backdrop_blur = false;
   bool god_rays = false;
   bool lens_flare = false;
   bool paired_vignette = false;

@@ -43,6 +43,24 @@ inline constexpr StringRef kMessageTitle{"ScreenTitles", {}, 0x9864, "MESSAGE CE
 inline constexpr StringRef kNoMessages{"MessageCenter", {}, 0xD6BA, "NO MESSAGES"};
 inline constexpr StringRef kYouHaveNoMessages{"MessageCenter", {}, 0xEC26, "YOU HAVE NO MESSAGES"};
 inline constexpr StringRef kCheckBackLater{"MessageCenter", {}, 0x27F8, "Please check back later."};
+// The popups over the rows: MESSAGE CENTER offline and QUIT's confirmation
+// (28_quit_prompt_orig.png: QUIT, the single-player line, A EXIT SINGLE
+// PLAYER, B CANCEL).
+inline constexpr StringRef kNoNetworkTitle{"LiveStrings", "IDS_Not_Connected_To_Live_PopUp_Title", 0,
+                                           "NO NETWORK ACCESS"};
+inline constexpr StringRef kNoNetworkBody{"LiveStrings", "IDS_Not_Connected_To_Live_PopUp_Body", 0,
+                                          "This option is not available because you are not signed into Xbox LIVE."};
+inline constexpr StringRef kQuitTitle{"PauseMenu", "IDS_Quit", 0, "QUIT"};
+inline constexpr StringRef kQuitDesc{"PauseMenu", "IDS_QuitRace_Desc_SinglePlayer", 0,
+                                     "Are you sure you want to quit Horizon single player? You will be taken back to "
+                                     "the title screen."};
+inline constexpr StringRef kQuitRaceTitle{"PauseMenu", "IDS_QuitRace", 0, "QUIT RACE"};
+inline constexpr StringRef kQuitRaceDesc{"PauseMenu", "IDS_QuitRace_Desc_Career", 0,
+                                         "Are you sure you want to quit the race and return to free roam?"};
+inline constexpr StringRef kExitSinglePlayer{"HelpButtons", "IDS_Quit_QuitSinglePlayer", 0, "EXIT SINGLE PLAYER"};
+inline constexpr StringRef kQuitButton{"HelpButtons", "IDS_Quit", 0, "QUIT"};
+inline constexpr StringRef kCancel{"HelpButtons", "IDS_Cancel", 0, "CANCEL"};
+inline constexpr StringRef kOk{"HelpButtons", "IDS_OK", 0, "OK"};
 // No string table has these: the engine's own.
 inline constexpr StringRef kExtras{{}, {}, 0, "EXTRAS", true};
 }  // namespace pause_text
@@ -59,7 +77,13 @@ struct PauseScreenHud {
   const std::vector<SponsorChallengeRow>* sponsors = nullptr;
   int sponsor_selected = 0;
   std::string band_texture;  // WRISTBANDS/<COLOUR>; empty: the scene's
+  bool confirm_race = false;  // kConfirm asks for QUIT RACE (else QUIT)
 };
+
+// The popup over the rows (kOffline, kConfirm): its title, message and help
+// prompts; false for the other screens.
+bool pause_popup_text(const PauseScreenHud& ps, std::string& title, std::string& message,
+                      std::vector<std::pair<std::string, std::string>>& prompts);
 
 // Binds a scene's PlayerBar (the pause menu's, shared by H_EVENT_SUMMARY):
 // the wristband objective, the car and its class, the credits.

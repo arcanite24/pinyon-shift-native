@@ -290,6 +290,10 @@ void DriveSession::race_continue() {
   }
 }
 
+bool DriveSession::popup_backdrop() const {
+  return menu.popup_open() || race_screens.screen() == S::kStayInCar;
+}
+
 void DriveSession::race_back() {
   if (race_screens.screen() == S::kStayInCar) {
     app.audio_host.trigger_ui(audio::UiCue::kCancel);

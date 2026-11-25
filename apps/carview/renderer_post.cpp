@@ -380,7 +380,8 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     static_assert(sizeof(PostOpticalUbo) == 240);
     const uint32_t oflags = (s.motion_blur ? 1u : 0u) | (s.dof ? 2u : 0u) | (s.god_rays ? 4u : 0u) |
                             (s.lens_flare ? 8u : 0u) | (options_.reverse_z ? 16u : 0u) |
-                            (s.paired_vignette ? 32u : 0u) | (s.motion_blur_directional ? 64u : 0u);
+                            (s.paired_vignette ? 32u : 0u) | (s.motion_blur_directional ? 64u : 0u) |
+                            (s.backdrop_blur ? (128u | 2u) : 0u);
     PostOpticalUbo u{};
     u.flags_near[0] = float(oflags);
     u.flags_near[1] = (cam_vp_set_ && cam_near_ > 0.01f) ? cam_near_ : s.near_plane;
