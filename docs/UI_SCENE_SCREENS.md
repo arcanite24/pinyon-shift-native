@@ -510,8 +510,9 @@ screen on the title update's own scene (the v4 overlay), and
   capture shows SELECT CAR / TOGGLE / SEARCH; the details rows' focus is a
   pink header; the popup panels and rows are cut to measured boxes, not by
   the scenes' timelines (Q143).
-- **Medals elsewhere.** The Autoshow and garage do not show per-car medals
-  yet; `freeroam::club::car_medals()` is the hook (Q143).
+- **Medals elsewhere.** The Autoshow, MY GARAGE and the event car select
+  show no per-car medals, as the captures of the same session show; the
+  medals are the club's own lists' (Q130).
 - **HUD.** The medal cue is the achievement reward, not the sign smash; the
   COMPLETE and FAIL animations are not run (a 1 s large medal and a 3 s
   hold instead); the item layout is the scene's rest, with no capture of a

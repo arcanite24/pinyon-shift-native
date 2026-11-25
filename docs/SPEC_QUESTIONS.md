@@ -3050,8 +3050,8 @@ interim:
   screen's NAV_POSITION_INDICATOR is hidden.
 - The tutorial's last prompt (Visit the 1000 CLUB screen) shows after the
   first medal until the hub is opened.
-- The Autoshow and garage show no per-car medals (`car_medals()` is the
-  hook; those screens are another branch's).
+- The Autoshow and garage show no per-car medals, as in the original
+  (Q130); `car_medals()` serves the club's own lists.
 - Visible artifacts left: the achievement ticket shows no car picture
   (its middle covers the picture drawn under the scene); the achievements
   screen's rows overlap and its DescriptionBox panel is a dark block; the
@@ -3206,6 +3206,20 @@ B BACK, Y ALL AFFORDABLE CARS (`HelpButtons IDS_AffordableCars`). Guesses:
 Needed: a capture of the manufacturer select, its help bar, what the info
 panel shows, and where the cursor starts.
 
+Per-car 1000 Club medals (V4-05) stay off these lists. `11_car_select_orig.png`
+and `19_autoshow_orig.png` come from the same session as
+`club_carlist_orig.png` (the same profile and money, the title update
+installed): the club's list shows the MX-5 with a medal and 0/5, while
+CAR SELECT shows the same MX-5 with its wheel icon only, and HORIZON
+RECOMMENDS shows no medals. In car_challenge_menus.xml the medal screens
+are the club's own states (ShowCarChallengeCarSelectScreen,
+ShowCarChallengeGarageCarSelectScreen, ShowBuyCarChallengeDetailsScreen,
+where "{0} MEDALS AVAILABLE", OWNED and NOT ELIGIBLE come from), reached
+from the 1000 Club, not from the Autoshow, the garage or the workshop's
+CHANGE CAR. So the Autoshow, MY GARAGE and the event car select draw no
+medals; `car_medals()` belongs to the club's list. Needed: a capture of
+MY GARAGE with a car whose challenges are begun, to rule out a medal on
+the garage's own tiles.
 ## Q131 (UI, not blocking): the workshop's rows
 
 Dak's garage opens `H_GENERIC` with Workshop.str's rows. Their order is
