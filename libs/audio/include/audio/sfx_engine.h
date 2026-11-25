@@ -38,6 +38,7 @@ struct OtherCarAudio {
   uint8_t archetype = 0;           // 0=Auto/I4, 1=V6, 2=V8, 3=V10/V12, 4=Turbo, 5=EV, 6=Traffic
   float fov_rolloff_scale = 1.0f;  // replay FOV zoom rolloff scale (applied in RolloffCurve::eval, not position)
   uint8_t surface_group = 0;       // 0=OnRoad, 1=OffRoad/Gravel, 2=Grass, 3=Brick, 4=Trackway, 5=Mud
+  float throttle = -1.0f;          // what the car's engine sees, 0..1 (< 0: unknown)
 };
 
 struct WheelAudio {
@@ -454,6 +455,20 @@ class SfxEngine {
   }
   static constexpr int kMaxUiSamples = 2048;
 
+  // Other cars' own engine sounds (SPEC-ENGINE-SOUND: an opponent or traffic
+  // car plays its own engine tuning and banks, heard at the Default view).
+  // Control thread, lock-free: gives car `car_id` (OtherCarAudio::car_id) its
+  // player, or removes it with nullptr; replaced players come back to the
+  // control thread through reclaim_other_car_engines().
+  void set_other_car_engine(uint32_t car_id, std::unique_ptr<EnginePlayer> player);
+  void reclaim_other_car_engines();
+  // When on, a car with no player of its own is silent (its sound is still
+  // loading, or it has none) instead of playing the shared opponent loops;
+  // an electric car still plays the ElectricMotor loop.
+  void set_other_car_engines_owned(bool on) { other_engines_owned_.store(on, std::memory_order_release); }
+  int other_car_engine_count() const;  // players the audio thread holds
+  static constexpr int kMaxOtherEngines = 24;
+
   // Audio-thread render: adds active SFX & 3D AI/traffic car audio into the
   // per-bus stereo buffers `buses[0..kBuses-1]` (interleaved stereo, `frames`
   // long; any bus pointer may be null). Calls `focus_engine->trigger_expander()`
@@ -530,7 +545,24 @@ class SfxEngine {
     LoopVoice hi_voice{};
     LoopVoice tire_voice{};
     double whoosh_cooldown_s = -10.0;
+    // The car's own engine player's level and placement (ramped per block).
+    float eng_gain = 0.0f, eng_left = 0.707f, eng_right = 0.707f;
   };
+  struct OtherEngineMsg {
+    uint32_t car_id = 0;
+    EnginePlayer* player = nullptr;
+  };
+  struct OtherEngine {
+    uint32_t car_id = 0;
+    EnginePlayer* player = nullptr;
+  };
+  void drain_other_engines();
+  EnginePlayer* other_engine_for(uint32_t car_id) const;
+  void retire_other_engine(EnginePlayer* p);
+  // Renders `ep` and adds it to `bus` as a point source, ramping from the
+  // slot's last level and placement to the targets over the block.
+  void mix_other_engine(PersistentOtherVoice& sl, EnginePlayer& ep, float gain, float left, float right, float* bus,
+                        int frames);
 
   void start_decoder_worker(std::vector<DecodeJob> jobs, std::filesystem::path cache_dir,
                             std::filesystem::path game_root = {});
@@ -603,6 +635,13 @@ class SfxEngine {
   LoopVoice rewind_voice_{};
   LoopVoice hub_amb_voice_{};
   std::array<PersistentOtherVoice, VehicleAudioState::kMaxOtherCars> other_slots_{};
+  std::array<OtherEngine, kMaxOtherEngines> other_engines_{};  // audio thread
+  SpscQueue<OtherEngineMsg> other_engine_q_{64};               // producer: control thread (other_engine_mu_)
+  SpscQueue<EnginePlayer*> other_engine_retired_q_{128};       // producer: audio thread
+  std::mutex other_engine_mu_;
+  std::atomic<bool> other_engines_owned_{false};
+  std::atomic<int> other_engine_count_{0};
+  std::vector<float> other_engine_scratch_;  // stereo, sized at construction
   LoopVoice showcase_voice_{};
   double showcase_synth_phase_ = 0.0;
   double showcase_synth_lfo_ = 0.0;

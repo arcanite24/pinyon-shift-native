@@ -115,6 +115,10 @@ class AudioEngine {
                      std::string* note = nullptr);
   void reload_sfx_burble(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
                          const std::string& burble_bank, int burble_count = 0, int backfire_count = 0);
+  // Other cars' own engine sounds (SfxEngine::set_other_car_engine); control thread.
+  void set_other_car_engine(uint32_t car_id, std::unique_ptr<EnginePlayer> player);
+  void set_other_car_engines_owned(bool on);
+  int other_car_engine_count();
   // Attaches `radio` (caller keeps `RadioData` and `Radio` alive until
   // AudioEngine is stopped/destroyed or detached with nullptr) and its player.
   void set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player);

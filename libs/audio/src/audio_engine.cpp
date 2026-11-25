@@ -806,6 +806,26 @@ void AudioEngine::reload_sfx_burble(const std::filesystem::path& game_root, cons
   if (target) target->reload_burble_bank(game_root, cache_dir, burble_bank, burble_count, backfire_count);
 }
 
+void AudioEngine::set_other_car_engine(uint32_t car_id, std::unique_ptr<EnginePlayer> player) {
+  if (!running_.load(std::memory_order_acquire)) drain_commands();
+  std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+  SfxEngine* target = sfx_control_ptr_ ? sfx_control_ptr_ : (!running_.load(std::memory_order_acquire) ? sfx_ : nullptr);
+  if (target) target->set_other_car_engine(car_id, std::move(player));
+}
+
+void AudioEngine::set_other_car_engines_owned(bool on) {
+  if (!running_.load(std::memory_order_acquire)) drain_commands();
+  std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+  SfxEngine* target = sfx_control_ptr_ ? sfx_control_ptr_ : (!running_.load(std::memory_order_acquire) ? sfx_ : nullptr);
+  if (target) target->set_other_car_engines_owned(on);
+}
+
+int AudioEngine::other_car_engine_count() {
+  std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+  SfxEngine* target = sfx_control_ptr_ ? sfx_control_ptr_ : (!running_.load(std::memory_order_acquire) ? sfx_ : nullptr);
+  return target ? target->other_car_engine_count() : 0;
+}
+
 bool AudioEngine::load_mixer_configs(const std::filesystem::path& game_root, std::string* note,
                                      const std::filesystem::path& state_root) {
   if (running_.load(std::memory_order_acquire) || game_root.empty()) return false;

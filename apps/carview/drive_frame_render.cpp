@@ -397,6 +397,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             struct Cand {
               double d2 = 0;
               audio::OtherCarAudio car{};
+              std::string media;  // Data_Car.MediaName: the car's own engine sound
+              double idle_rpm = 0, redline_rpm = 0;
             };
             std::vector<Cand> cands;
             if (replay_viewer.active()) {
@@ -429,7 +431,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 oc.slip = (rc.brake_u8 > 80 || std::abs(int(rc.steer_i8)) > 48) ? 0.38f : 0.10f;
                 oc.fov_rolloff_scale = fov_rolloff;
                 oc.surface_group = default_other_sgrp;
-                cands.push_back({d2, oc});
+                cands.push_back({d2, oc, rinfo ? rinfo->car_media : std::string{}});
               }
             } else if (!rewind_audio_frozen) {
               if (app.race) {
@@ -439,6 +441,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   const auto& ot = otags[oi];
                   const double dx = ot.x - vpos.x, dy = ot.y - vpos.y, dz = ot.z - vpos.z;
                   const double d2 = dx * dx + dy * dy + dz * dz;
+                  app.audio_host.prefetch_other_car_sound(ot.car_media);  // the whole field decodes early
                   if (d2 > 220.0 * 220.0) continue;
                   audio::OtherCarAudio oc{};
                   oc.active = true;
@@ -447,7 +450,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   // Distinct per-opponent engine pitch/timbre identity + cornering tyre scrub.
                   uint32_t nh = 2166136261u ^ uint32_t(oi * 37u);
                   for (char ch : ot.name) nh = (nh ^ uint8_t(ch)) * 16777619u;
-                  oc.archetype = classify_other_archetype(ot.name, false, nh);
+                  oc.archetype = classify_other_archetype(ot.car_media.empty() ? ot.name : ot.car_media, false, nh);
                   oc.variant = (oc.archetype <= 3u) ? oc.archetype : uint8_t(oi & 3u);
                   oc.pos = {float(ot.x), float(ot.y), float(ot.z)};
                   oc.vel = {float(ot.vx), float(ot.vy), float(ot.vz)};
@@ -456,7 +459,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   oc.pitch_scale = 0.84f + 0.36f * float(nh & 0xFFu) / 255.0f;
                   oc.slip = (oc.speed_mph > 25.0f && ot.rpm > 4500.0) ? 0.40f : 0.12f;
                   oc.surface_group = default_other_sgrp;
-                  cands.push_back({d2, oc});
+                  oc.throttle = float(ot.throttle);
+                  cands.push_back({d2, oc, ot.car_media, ot.idle_rpm, ot.redline_rpm});
                 }
               }
               if (traffic && traffic->cars()) {
@@ -476,7 +480,9 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   oc.pitch_scale = 0.82f + 0.30f * float((uint32_t(tc.model) * 73u) & 0xFFu) / 255.0f;
                   oc.slip = (tc.target < tc.speed - 2.0 || std::fabs(tc.steer_angle) > 0.12) ? 0.28f : 0.05f;
                   oc.surface_group = default_other_sgrp;
-                  cands.push_back({d2, oc});
+                  const int64_t shown = traffic->shown_model(tc);
+                  const drive::CarParams* tp = traffic->params_of(shown);
+                  cands.push_back({d2, oc, traffic->media_of(shown), tp ? tp->idle_rpm : 0.0, tp ? tp->redline_rpm : 0.0});
                 }
               }
               if (festival_mgr && !app.race) {
@@ -499,13 +505,21 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   oc.pitch_scale = 0.85f + 0.34f * float((uint32_t(fc.id) * 97u) & 0xFFu) / 255.0f;
                   oc.slip = fc.braking ? 0.38f : 0.10f;
                   oc.surface_group = default_other_sgrp;
-                  cands.push_back({d2, oc});
+                  cands.push_back({d2, oc, fc.spec.car_media});
                 }
               }
             }
             std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.d2 < b.d2; });
             const size_t n_other = std::min(cands.size(), size_t(audio::VehicleAudioState::kMaxOtherCars));
-            for (size_t oi = 0; oi < n_other; ++oi) vst.other_cars[oi] = cands[oi].car;
+            for (size_t oi = 0; oi < n_other; ++oi) {
+              vst.other_cars[oi] = cands[oi].car;
+              app.audio_host.bind_other_car_sound(cands[oi].car.car_id, cands[oi].media, cands[oi].idle_rpm,
+                                                  cands[oi].redline_rpm);
+            }
+            // The next few nearest start decoding before they are heard.
+            for (size_t oi = n_other; oi < std::min(cands.size(), n_other + 4); ++oi)
+              app.audio_host.prefetch_other_car_sound(cands[oi].media);
+            app.audio_host.update_other_car_sounds();
 
             bool in_countdown = false;
             int countdown_digit = -1;

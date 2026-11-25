@@ -9,7 +9,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -68,6 +70,19 @@ class AudioHost {
                 const std::filesystem::path& state_root, const std::string& car, audio::UpgradeLevels levels,
                 double idle_rpm, double redline_rpm, std::string* note = nullptr);
   void clear_car();
+
+  // Other cars play their own engine sound (SPEC-ENGINE-SOUND; the focus
+  // car's loader and banks, heard at the Default view). Each frame, bind the
+  // cars about to be heard by their OtherCarAudio::car_id and media name
+  // (idle/redline: the car's physics rpm range, <= 0 = its tuning's); the
+  // sound decodes on a worker and plays once ready; a car not bound for two
+  // seconds is released. Without the disc's sound files nothing changes.
+  void bind_other_car_sound(uint32_t car_id, std::string_view media, double idle_rpm = 0, double redline_rpm = 0);
+  void prefetch_other_car_sound(std::string_view media);
+  void update_other_car_sounds();
+  int other_car_sounds_attached() const { return other_attached_; }
+  // Blocks until every requested sound has decoded or failed (tests, tools).
+  void wait_other_car_sounds();
 
   // Initializes the radio once (honouring cars::mods and `language`) and
   // attaches a RadioPlayer to AudioEngine.
@@ -271,6 +286,34 @@ class AudioHost {
   bool user_music_non_blocking_ = true;
 
   bool mixer_configs_tried_ = false;
+  // Other cars' engine sounds: decoded by media on one worker with its own
+  // sound files, bound by car id on the main thread.
+  struct OtherSound {
+    std::shared_ptr<audio::BakedSound> baked;
+    bool done = false, ok = false;
+    uint64_t last_use = 0;
+  };
+  struct OtherBinding {
+    std::string media;  // lower case
+    double idle = 0, redline = 0;
+    uint64_t last_frame = 0;
+    bool attached = false;
+  };
+  void start_other_worker();
+  void stop_other_worker();
+  std::filesystem::path other_sound_dir_, other_game_root_, other_state_root_;
+  std::mutex other_mu_;
+  std::condition_variable other_cv_;
+  std::vector<std::string> other_jobs_;           // guarded by other_mu_
+  std::map<std::string, OtherSound> other_sounds_;  // lower-case media; guarded by other_mu_
+  std::thread other_worker_;
+  bool other_stop_ = false;  // guarded by other_mu_
+  int other_pending_ = 0;    // guarded by other_mu_
+  std::map<uint32_t, OtherBinding> other_bindings_;
+  uint64_t other_frame_ = 0;
+  int other_attached_ = 0;
+  bool other_owned_ = false;
+
   bool sfx_tried_ = false;
   bool has_sfx_ = false;
   std::shared_ptr<const audio::UiAudioCatalog> ui_catalog_;  // from the SFX engine, immutable

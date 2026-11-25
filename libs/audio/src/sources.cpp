@@ -247,6 +247,7 @@ bool load_engine_sound(SoundFiles& files, const std::string& media, LoadedSound&
     std::string fb_err;
     if (files.read_tuning(TuningKind::kEngine, "VW_BORAVR6_03_ET.xml", text, &fb_err)) {
       tuning_media = "VW_BORAVR6_03";
+      out.fallback = true;
       out.notes.push_back(media + ": no engine tuning, fell back to VW_BORAVR6_03");
     } else {
       if (error) *error = media + ": engine tuning: " + e;

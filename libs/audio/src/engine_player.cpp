@@ -201,7 +201,7 @@ void EnginePlayer::set(const Update& u) {
   const size_t view = size_t(std::clamp(int(u.view), 0, kViews - 1));
 
   // Focus _ET.xml DSP: FocusPEQ & Distortion parameter updates.
-  if (sound_.focus_peq.active) {
+  if (sound_.focus_peq.active && !positional) {
     const double fg = safe_clamp(sound_.focus_peq.gain.eval(in, neg_raises), 0.05, 3.0, 1.0);
     const double ffc = sound_.focus_peq.center_freq.eval(in, neg_raises);
     const double fbw = sound_.focus_peq.bandwidth.eval(in, neg_raises);
@@ -213,7 +213,7 @@ void EnginePlayer::set(const Update& u) {
     focus_peq_l_.set_bypass();
     focus_peq_r_.set_bypass();
   }
-  if (sound_.distortion.active) {
+  if (sound_.distortion.active && !positional) {
     const double lv = sound_.distortion.level.present
                           ? sound_.distortion.level.eval(in, neg_raises)
                           : sound_.distortion.level_scalar;
@@ -246,8 +246,8 @@ void EnginePlayer::set(const Update& u) {
     for (const auto& g : sound_.groups) {
       if (iequals(g.name, "EngineIntake")) {
         intake_view = g.view_level[view];
-        pl = g.pan_left[view];
-        pr = g.pan_right[view];
+        pl = positional ? 1.0 : g.pan_left[view];
+        pr = positional ? 1.0 : g.pan_right[view];
         break;
       }
     }
@@ -270,8 +270,8 @@ void EnginePlayer::set(const Update& u) {
     st.exp_max_gain = group.expander.present ? std::max(0.0, group.expander.max_gain.eval(in, neg_raises)) : 0.0;
     st.base_target_gain = group.gain.eval(in, neg_raises) * group.view_level[view] * global;
     st.target_gain = st.base_target_gain * (1.0 + st.exp_state);
-    st.left = group.pan_left[view];
-    st.right = group.pan_right[view];
+    st.left = positional ? 1.0 : group.pan_left[view];
+    st.right = positional ? 1.0 : group.pan_right[view];
 
     // 2nd-order resonant Lowpass.
     if (group.lowpass) {
@@ -327,7 +327,8 @@ void EnginePlayer::set(const Update& u) {
       const PcmSample* pcm = pcm_[g][i];
       v.target_gain = pcm ? safe_clamp(fade[i] * group.loops[i].volume, 0.0, 8.0, 0.0) : 0.0;
       if (pcm)
-        v.target_step = safe_clamp(std::max(0.0, pitch_ratio(group.loops[i], audio_rpm_)) * pcm->rate / rate_, 0.0, 16.0, 1.0);
+        v.target_step = safe_clamp(std::max(0.0, pitch_ratio(group.loops[i], audio_rpm_)) * pcm->rate / rate_ * pitch_scale, 0.0,
+                                  16.0, 1.0);
       if (!v.active && v.target_gain > 0.001) {
         v.active = true;
         v.phase = 0;
@@ -343,9 +344,9 @@ void EnginePlayer::render(float* out, int frames) {
   std::fill(out, out + 2 * size_t(frames), 0.0f);
   advance_dsp(double(frames) / double(rate_));
 
-  const bool run_focus_peq = sound_.focus_peq.active;
+  const bool run_focus_peq = sound_.focus_peq.active && !positional;
   const bool run_dist = sound_.distortion.active && cur_dist_level_ > 1e-4;
-  const bool run_trash = sound_.trash_dsp.active;
+  const bool run_trash = sound_.trash_dsp.active && !positional;
   const bool run_focus_dsp = run_focus_peq || run_dist || run_trash;
 
   auto group_bucket = [&](size_t g) -> int {

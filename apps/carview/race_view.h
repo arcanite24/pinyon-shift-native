@@ -180,6 +180,10 @@ class RaceView {
     int64_t car_id = 0;
     std::string car_media;
     std::string car_name;
+    // For the opponent's own engine sound: what its engine sees and the
+    // physics rpm range of its rpm map.
+    double throttle = 0;
+    double idle_rpm = 0, redline_rpm = 0;
   };
   // Collects full Race AI opponent metadata & per-frame samples (quaternion, wheels, lamps, audio/VFX events) for replays.
   void collect_replay_roster(std::vector<drive::ReplayCarInfo>& out) const;

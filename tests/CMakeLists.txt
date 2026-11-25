@@ -33,7 +33,7 @@ add_test(NAME audio_tests COMMAND audio_tests)
 # Audio parity with FH1: the synthetic rule checks, and with --corpus the
 # checks over the player's files (SHIFT_GAME_ROOT; exit 77 without).
 add_executable(audio_parity_tests audio_parity_tests.cpp)
-target_link_libraries(audio_parity_tests PRIVATE shift_audio)
+target_link_libraries(audio_parity_tests PRIVATE shift_audio shift_traffic)
 add_test(NAME audio_parity_tests COMMAND audio_parity_tests)
 add_test(NAME audio_parity_corpus COMMAND audio_parity_tests --corpus)
 set_tests_properties(audio_parity_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 LABELS corpus)

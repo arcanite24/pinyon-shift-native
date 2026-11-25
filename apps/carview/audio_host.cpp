@@ -126,8 +126,148 @@ AudioHost::AudioHost() {
 
 AudioHost::~AudioHost() {
   if (acoustics_loader_.joinable()) acoustics_loader_.join();
+  stop_other_worker();
   stop_device();
   clear_car();
+}
+
+void AudioHost::start_other_worker() {
+  if (other_worker_.joinable()) return;
+  const auto sound_dir = other_sound_dir_, game_root = other_game_root_, state_root = other_state_root_;
+  other_worker_ = std::thread([this, sound_dir, game_root, state_root]() {
+    std::unique_ptr<audio::SoundFiles> files;  // the worker's own: archives are not shared across threads
+    if (!game_root.empty()) {
+      cars::Install install;
+      std::string ie;
+      if (cars::discover_install(game_root, state_root, {}, install, &ie)) {
+        auto sf = std::make_unique<audio::SoundFiles>();
+        if (sf->open(install, &ie)) files = std::move(sf);
+      }
+    }
+    const std::filesystem::path cache =
+        !sound_dir.empty() ? sound_dir : (!state_root.empty() ? state_root / "sound-cache" : std::filesystem::path{});
+    for (;;) {
+      std::string media;
+      {
+        std::unique_lock<std::mutex> lk(other_mu_);
+        other_cv_.wait(lk, [&] { return other_stop_ || !other_jobs_.empty(); });
+        if (other_stop_) return;
+        media = other_jobs_.front();
+        other_jobs_.erase(other_jobs_.begin());
+      }
+      auto baked = std::make_shared<audio::BakedSound>();
+      std::string err;
+      bool ok = !sound_dir.empty() && audio::load_baked_sound(sound_dir, media, *baked, &err);
+      if (!ok && files) ok = audio::decode_engine_sound_runtime(*files, media, cache, *baked, &err);
+      if (!ok) std::fprintf(stderr, "carview: note: no engine sound for %s: %s\n", media.c_str(), err.c_str());
+      std::lock_guard<std::mutex> lk(other_mu_);
+      auto& s = other_sounds_[cars::lower(media)];
+      s.done = true;
+      s.ok = ok;
+      if (ok) s.baked = std::move(baked);
+      --other_pending_;
+      other_cv_.notify_all();
+    }
+  });
+}
+
+void AudioHost::stop_other_worker() {
+  {
+    std::lock_guard<std::mutex> lk(other_mu_);
+    other_stop_ = true;
+  }
+  other_cv_.notify_all();
+  if (other_worker_.joinable()) other_worker_.join();
+}
+
+void AudioHost::prefetch_other_car_sound(std::string_view media) {
+  if (media.empty() || (other_game_root_.empty() && other_sound_dir_.empty())) return;
+  const std::string key = cars::lower(std::string(media));
+  {
+    std::lock_guard<std::mutex> lk(other_mu_);
+    auto [it, fresh] = other_sounds_.try_emplace(key);
+    it->second.last_use = other_frame_;
+    if (!fresh) return;
+    other_jobs_.push_back(std::string(media));
+    ++other_pending_;
+  }
+  start_other_worker();
+  other_cv_.notify_all();
+}
+
+void AudioHost::wait_other_car_sounds() {
+  std::unique_lock<std::mutex> lk(other_mu_);
+  other_cv_.wait(lk, [&] { return other_pending_ <= 0 || other_stop_; });
+}
+
+void AudioHost::bind_other_car_sound(uint32_t car_id, std::string_view media, double idle_rpm, double redline_rpm) {
+  if (car_id == 0u || media.empty()) return;
+  if (other_game_root_.empty() && other_sound_dir_.empty()) return;
+  auto& b = other_bindings_[car_id];
+  const std::string key = cars::lower(std::string(media));
+  if (b.media != key) {
+    if (b.attached) engine_.set_other_car_engine(car_id, nullptr);
+    b = {};
+    b.media = key;
+    prefetch_other_car_sound(media);
+  }
+  b.idle = idle_rpm;
+  b.redline = redline_rpm;
+  b.last_frame = other_frame_;
+}
+
+void AudioHost::update_other_car_sounds() {
+  ++other_frame_;
+  if (other_game_root_.empty() && other_sound_dir_.empty()) return;
+  if (!other_owned_ && has_sfx_) {
+    // From here a car plays its own sound or, while that loads, nothing.
+    engine_.set_other_car_engines_owned(true);
+    other_owned_ = true;
+  }
+  constexpr uint64_t kReleaseFrames = 120;  // about two seconds unbound
+  int attached = 0;
+  for (auto it = other_bindings_.begin(); it != other_bindings_.end();) {
+    auto& [id, b] = *it;
+    if (other_frame_ - b.last_frame > kReleaseFrames) {
+      if (b.attached) engine_.set_other_car_engine(id, nullptr);
+      it = other_bindings_.erase(it);
+      continue;
+    }
+    if (!b.attached) {
+      std::shared_ptr<audio::BakedSound> baked;
+      {
+        std::lock_guard<std::mutex> lk(other_mu_);
+        const auto s = other_sounds_.find(b.media);
+        if (s != other_sounds_.end() && s->second.done && s->second.ok) baked = s->second.baked;
+        if (s != other_sounds_.end()) s->second.last_use = other_frame_;
+      }
+      if (baked && !baked->loaded.sound.groups.empty()) {
+        const auto& snd = baked->loaded.sound;
+        const double idle = b.idle > 0 ? b.idle : snd.audio_rpm_idle;
+        const double redline = b.redline > idle ? b.redline : std::max(snd.audio_rpm_redline, idle + 1000.0);
+        auto ep = std::make_unique<audio::EnginePlayer>(snd, baked->table(), kAudioRate, idle, redline, nullptr);
+        ep->master = kEngineMaster;
+        ep->positional = true;  // a 3D point source; SfxEngine places it
+        ep->attach_owner(baked);
+        engine_.set_other_car_engine(id, std::move(ep));
+        b.attached = true;
+      }
+    } else {
+      std::lock_guard<std::mutex> lk(other_mu_);
+      if (const auto s = other_sounds_.find(b.media); s != other_sounds_.end()) s->second.last_use = other_frame_;
+    }
+    attached += b.attached ? 1 : 0;
+    ++it;
+  }
+  other_attached_ = attached;
+  // Keep the decoded sounds of the last minute of cars; the attached players
+  // pin their own.
+  std::lock_guard<std::mutex> lk(other_mu_);
+  constexpr uint64_t kKeepFrames = 3600;
+  for (auto s = other_sounds_.begin(); s != other_sounds_.end();) {
+    if (s->second.done && other_frame_ - s->second.last_use > kKeepFrames) s = other_sounds_.erase(s);
+    else ++s;
+  }
 }
 
 void AudioHost::apply_config(const AudioConfig& cfg, const std::filesystem::path& music_dir) {
@@ -158,6 +298,12 @@ bool AudioHost::load_car(const std::filesystem::path& sound_dir, const std::file
                          double idle_rpm, double redline_rpm, std::string* note) {
   // Decode and prepare the new car completely off the audio thread before swapping live,
   // avoiding stop_device()/start_device() dropouts and keeping radio/ambience continuous.
+  if (!other_worker_.joinable()) {
+    // The other cars' sounds come from the same files.
+    other_sound_dir_ = sound_dir;
+    other_game_root_ = game_root;
+    other_state_root_ = state_root;
+  }
   auto baked = std::make_shared<audio::BakedSound>();
   std::string err;
   bool ok = !sound_dir.empty() && audio::load_baked_sound(sound_dir, car, *baked, &err, levels);

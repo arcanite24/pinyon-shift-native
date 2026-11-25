@@ -57,6 +57,12 @@ class EnginePlayer {
 
   bool neg_raises = true;  // confirmed SPEC-ENGINE-SOUND: braking raises x
   double master = 1;       // overall level
+  double pitch_scale = 1;  // multiplies each loop's rate on the next set() (a 3D car's Doppler shift)
+  // A 3D point source (another car, at the Default view): each group plays at
+  // unity in both channels and the caller places the sum; the 5.1 speaker mix
+  // and the focus-car exhaust shaping (FocusPEQ, Distortion, TrashDSP) are the
+  // focus car's alone (SPEC-ENGINE-SOUND, Mix basics and Focus DSP).
+  bool positional = false;
 
   double audio_rpm() const { return audio_rpm_; }
   int voices() const;

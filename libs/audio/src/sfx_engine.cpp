@@ -747,12 +747,19 @@ SfxSoundId smash_material_sound_id(SmashMaterial mat, uint8_t surface_hint) {
 SfxEngine::SfxEngine(int out_rate) : rate_(std::max(8000, out_rate)) {
   smooth_ = float(1.0 - std::exp(-1.0 / (0.015 * double(rate_))));
   samples_.fill(nullptr);
+  other_engine_scratch_.assign(2 * 1024, 0.0f);
 }
 
 SfxEngine::~SfxEngine() {
   stop_decoder_worker();
   drain_loaded();
   reclaim_retired();
+  drain_other_engines();
+  for (auto& oe : other_engines_) {
+    delete oe.player;
+    oe = {};
+  }
+  reclaim_other_car_engines();
   for (PcmSample*& p : samples_) {
     delete p;
     p = nullptr;
@@ -761,6 +768,88 @@ SfxEngine::~SfxEngine() {
     delete p;
     p = nullptr;
   }
+}
+
+void SfxEngine::set_other_car_engine(uint32_t car_id, std::unique_ptr<EnginePlayer> player) {
+  reclaim_other_car_engines();
+  if (car_id == 0u) return;
+  EnginePlayer* raw = player.release();
+  std::lock_guard<std::mutex> lock(other_engine_mu_);
+  if (!other_engine_q_.push({car_id, raw})) delete raw;
+}
+
+void SfxEngine::reclaim_other_car_engines() {
+  EnginePlayer* p = nullptr;
+  while (other_engine_retired_q_.pop(p)) delete p;
+}
+
+int SfxEngine::other_car_engine_count() const { return other_engine_count_.load(std::memory_order_acquire); }
+
+void SfxEngine::retire_other_engine(EnginePlayer* p) {
+  if (p && !other_engine_retired_q_.push(p)) delete p;  // the ring is full: free here (rare)
+}
+
+void SfxEngine::drain_other_engines() {
+  OtherEngineMsg m;
+  while (other_engine_q_.pop(m)) {
+    OtherEngine* at = nullptr;
+    OtherEngine* free_at = nullptr;
+    for (auto& oe : other_engines_) {
+      if (oe.car_id == m.car_id) at = &oe;
+      else if (!free_at && oe.car_id == 0u) free_at = &oe;
+    }
+    if (at) {
+      retire_other_engine(at->player);
+      at->player = m.player;
+      if (!m.player) at->car_id = 0u;
+    } else if (m.player) {
+      if (free_at) {
+        free_at->car_id = m.car_id;
+        free_at->player = m.player;
+      } else {
+        retire_other_engine(m.player);  // table full: the car stays without its own sound
+      }
+    }
+  }
+  int n = 0;
+  for (const auto& oe : other_engines_) n += oe.player ? 1 : 0;
+  other_engine_count_.store(n, std::memory_order_release);
+}
+
+EnginePlayer* SfxEngine::other_engine_for(uint32_t car_id) const {
+  if (car_id == 0u) return nullptr;
+  for (const auto& oe : other_engines_)
+    if (oe.car_id == car_id) return oe.player;
+  return nullptr;
+}
+
+void SfxEngine::mix_other_engine(PersistentOtherVoice& sl, EnginePlayer& ep, float gain, float left, float right,
+                                 float* bus, int frames) {
+  const float g0 = sl.eng_gain, l0 = sl.eng_left, r0 = sl.eng_right;
+  const float g1 = safe_clamp_f(gain, 0.0f, 4.0f, 0.0f);
+  const float l1 = safe_clamp_f(left, 0.0f, 2.0f, 0.707f), r1 = safe_clamp_f(right, 0.0f, 2.0f, 0.707f);
+  const int chunk_max = int(other_engine_scratch_.size() / 2);
+  for (int done = 0; done < frames;) {
+    const int n = std::min(chunk_max, frames - done);
+    float* tmp = other_engine_scratch_.data();
+    ep.render(tmp, n);
+    if (bus) {
+      for (int f = 0; f < n; ++f) {
+        const float t = float(done + f + 1) / float(frames);
+        const float g = g0 + (g1 - g0) * t;
+        // The positional player renders the same signal in both channels; their
+        // mean is the point source, then placed.
+        const float m = (tmp[2 * f] + tmp[2 * f + 1]) * 0.5f * g;
+        if (!std::isfinite(m)) continue;
+        bus[2 * (done + f)] += m * (l0 + (l1 - l0) * t);
+        bus[2 * (done + f) + 1] += m * (r0 + (r1 - r0) * t);
+      }
+    }
+    done += n;
+  }
+  sl.eng_gain = g1;
+  sl.eng_left = l1;
+  sl.eng_right = r1;
 }
 
 void SfxEngine::stop_decoder_worker() {
@@ -2438,6 +2527,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
                        float* lfe_out) {
   if (frames <= 0) return;
   drain_loaded();
+  drain_other_engines();
   const double prev_time_s = time_s_;
   const double dt = double(frames) / double(rate_);
   time_s_ += dt;
@@ -3182,6 +3272,11 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
           } else {
             sl.tire_voice.gain = 0.0f;
           }
+          if (EnginePlayer* ep = other_engine_for(sl.bound_car_id); ep && sl.eng_gain > 1e-5f) {
+            mix_other_engine(sl, *ep, 0.0f, sl.eng_left, sl.eng_right, other_bus, frames);
+          } else {
+            sl.eng_gain = 0.0f;
+          }
           smooth_ = saved_smooth;
           sl.fade_out_rem_s -= float(dt);
           if (sl.fade_out_rem_s <= 0.0f) {
@@ -3207,43 +3302,72 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       compute_stereo_pan(st.listener_pos, st.listener_right, car.pos, pl, pr);
       const float p_scale = safe_clamp_f(car.pitch_scale, 0.70f, 1.40f, 1.0f);
 
-      // Select archetype low/high RPM sample pair safely.
+      // The car's own engine sound, heard at the Default view through the
+      // car's chassis rolloff, placed and Doppler-shifted as a point source.
+      EnginePlayer* own = other_engine_for(eff_ids[size_t(c)]);
+      const bool owned_mode = other_engines_owned_.load(std::memory_order_acquire);
+      bool mix_shared_loops = false;
+      if (own || (owned_mode && car.archetype != 5)) {
+        if (own) {
+          EnginePlayer::Update u;
+          u.rpm = car.rpm;
+          u.throttle = car.throttle >= 0.0f ? std::clamp(double(car.throttle), 0.0, 1.0) : 0.5;
+          u.view = View::kDefault;
+          own->pitch_scale = std::clamp(double(doppler), 0.5, 2.0);
+          own->set(u);
+          mix_other_engine(sl, *own, atten * view_other, pl, pr, other_bus, frames);
+        } else {
+          sl.eng_gain = 0.0f;  // still loading, or no engine sound: silent (no stand-in)
+        }
+        // The shared opponent loops fade out if they were playing.
+        if (sl.lo_voice.gain > 1e-4f) mix_loop(sl.lo_voice, sl.last_lo_id, 0.0f, sl.lo_voice.pitch, pl, pr, other_bus, frames);
+        if (sl.last_hi_id != SfxSoundId::kCount && sl.hi_voice.gain > 1e-4f)
+          mix_loop(sl.hi_voice, sl.last_hi_id, 0.0f, sl.hi_voice.pitch, pl, pr, other_bus, frames);
+      } else {
+        sl.eng_gain = 0.0f;
+        mix_shared_loops = true;
+      }
+
+      // Without the car's own sound: the shared opponent loops (no disc
+      // data for the car, or the electric motor).
       SfxSoundId lo_id = SfxSoundId::kOtherCarLoop;
       SfxSoundId hi_id = SfxSoundId::kCount;
-      if (car.is_traffic || car.archetype == 6) {
-        lo_id = resolve_fallback(SfxSoundId::kTrafficCarLoop, SfxSoundId::kOtherCarLoop);
-        hi_id = SfxSoundId::kTrafficCarLoopHi;
-      } else if (car.archetype == 5) {
-        lo_id = resolve_fallback(SfxSoundId::kElectricMotor, SfxSoundId::kOtherCarLoop);
-        hi_id = SfxSoundId::kElectricMotorHigh;
-      } else if (car.archetype == 4) {
-        lo_id = resolve_fallback(SfxSoundId::kOtherCarLoop4, SfxSoundId::kOtherCarLoop);
-        hi_id = SfxSoundId::kOtherCarLoop4Hi;
-      } else {
-        const uint8_t bank_idx = (car.archetype >= 1 && car.archetype <= 3) ? car.archetype : uint8_t(car.variant & 3u);
-        lo_id = resolve_fallback(kOppLoBanks[bank_idx], SfxSoundId::kOtherCarLoop);
-        hi_id = kOppHiBanks[bank_idx];
-      }
-      const bool has_hi = (hi_id != SfxSoundId::kCount && hi_id != lo_id && size_t(hi_id) < samples_.size() &&
-                           samples_[size_t(hi_id)] && !samples_[size_t(hi_id)]->data.empty());
-      sl.last_lo_id = lo_id;
-      sl.last_hi_id = has_hi ? hi_id : SfxSoundId::kCount;
+      if (mix_shared_loops) {
+        if (car.is_traffic || car.archetype == 6) {
+          lo_id = resolve_fallback(SfxSoundId::kTrafficCarLoop, SfxSoundId::kOtherCarLoop);
+          hi_id = SfxSoundId::kTrafficCarLoopHi;
+        } else if (car.archetype == 5) {
+          lo_id = resolve_fallback(SfxSoundId::kElectricMotor, SfxSoundId::kOtherCarLoop);
+          hi_id = SfxSoundId::kElectricMotorHigh;
+        } else if (car.archetype == 4) {
+          lo_id = resolve_fallback(SfxSoundId::kOtherCarLoop4, SfxSoundId::kOtherCarLoop);
+          hi_id = SfxSoundId::kOtherCarLoop4Hi;
+        } else {
+          const uint8_t bank_idx = (car.archetype >= 1 && car.archetype <= 3) ? car.archetype : uint8_t(car.variant & 3u);
+          lo_id = resolve_fallback(kOppLoBanks[bank_idx], SfxSoundId::kOtherCarLoop);
+          hi_id = kOppHiBanks[bank_idx];
+        }
+        const bool has_hi = (hi_id != SfxSoundId::kCount && hi_id != lo_id && size_t(hi_id) < samples_.size() &&
+                             samples_[size_t(hi_id)] && !samples_[size_t(hi_id)]->data.empty());
+        sl.last_lo_id = lo_id;
+        sl.last_hi_id = has_hi ? hi_id : SfxSoundId::kCount;
 
-      const float base_gain = 0.55f * atten * view_other;
-      if (has_hi) {
-        const float xf_lo = (car.is_traffic || car.archetype == 6) ? 2200.0f : 2800.0f;
-        const float xf_span = (car.is_traffic || car.archetype == 6) ? 1800.0f : 2400.0f;
-        const float u = std::clamp((car.rpm - xf_lo) / xf_span, 0.0f, 1.0f);
-        const float hi_w = std::sin(u * 1.5707963f);
-        const float lo_w = std::cos(u * 1.5707963f);
-        const float lo_pitch = std::clamp((car.rpm / 2600.0f) * p_scale, 0.40f, 2.4f) * doppler;
-        const float hi_pitch = std::clamp((car.rpm / 5400.0f) * p_scale, 0.45f, 2.4f) * doppler;
-        mix_loop(sl.lo_voice, lo_id, base_gain * lo_w, lo_pitch, pl, pr, other_bus, frames);
-        mix_loop(sl.hi_voice, hi_id, base_gain * hi_w, hi_pitch, pl, pr, other_bus, frames);
-      } else {
-        const float base_pitch = std::clamp((car.rpm / 3000.0f) * p_scale, 0.40f, 2.8f) * doppler;
-        mix_loop(sl.lo_voice, lo_id, base_gain, base_pitch, pl, pr, other_bus, frames);
-        sl.hi_voice.gain = 0.0f;
+        const float base_gain = 0.55f * atten * view_other;
+        if (has_hi) {
+          const float xf_lo = (car.is_traffic || car.archetype == 6) ? 2200.0f : 2800.0f;
+          const float xf_span = (car.is_traffic || car.archetype == 6) ? 1800.0f : 2400.0f;
+          const float u = std::clamp((car.rpm - xf_lo) / xf_span, 0.0f, 1.0f);
+          const float hi_w = std::sin(u * 1.5707963f);
+          const float lo_w = std::cos(u * 1.5707963f);
+          const float lo_pitch = std::clamp((car.rpm / 2600.0f) * p_scale, 0.40f, 2.4f) * doppler;
+          const float hi_pitch = std::clamp((car.rpm / 5400.0f) * p_scale, 0.45f, 2.4f) * doppler;
+          mix_loop(sl.lo_voice, lo_id, base_gain * lo_w, lo_pitch, pl, pr, other_bus, frames);
+          mix_loop(sl.hi_voice, hi_id, base_gain * hi_w, hi_pitch, pl, pr, other_bus, frames);
+        } else {
+          const float base_pitch = std::clamp((car.rpm / 3000.0f) * p_scale, 0.40f, 2.8f) * doppler;
+          mix_loop(sl.lo_voice, lo_id, base_gain, base_pitch, pl, pr, other_bus, frames);
+          sl.hi_voice.gain = 0.0f;
+        }
       }
 
       // LOD2 3D tyre roll & cornering skid layer routed by surface_group, smoothly fading out across 50..65 m.

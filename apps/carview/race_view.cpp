@@ -2417,7 +2417,9 @@ void RaceView::opponent_tags(std::vector<OpponentTag>& out) const {
     const drive::Vec3 p = cars_[i].body->position();
     const drive::Vec3 v = cars_[i].body->velocity();
     out.push_back({p.x, p.y, p.z, cars_[i].body->speed(), cars_[i].cached_driver_name, i == lead_idx, v.x, v.y, v.z,
-                   cars_[i].body->rpm(), cars_[i].who.car_id, cars_[i].who.car_media, cars_[i].cached_car_name});
+                   cars_[i].body->rpm(), cars_[i].who.car_id, cars_[i].who.car_media, cars_[i].cached_car_name,
+                   cars_[i].body->engine_throttle(), cars_[i].body->params().idle_rpm,
+                   cars_[i].body->params().redline_rpm});
   }
 }
 

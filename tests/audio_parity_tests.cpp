@@ -9,17 +9,24 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "audio/audio_engine.h"
+#include "audio/bake.h"
 #include "audio/event_configs.h"
 #include "audio/ui_audio.h"
 #include "audio/engine_player.h"
 #include "audio/fev.h"
 #include "audio/sfx_engine.h"
+#include "audio/sources.h"
+#include "cars/database.h"
+#include "cars/sources.h"
+#include "traffic/config.h"
 
 namespace {
 
@@ -278,10 +285,102 @@ void test_ui_catalog() {
   CHECK(el > 1.0 && er < 1e-9);
 }
 
+// AUDIO-01: another car plays its own engine player, placed as a point
+// source; once the host owns the other cars' sounds, a car whose sound is not
+// ready is silent rather than a shared stand-in loop.
+void test_other_car_engines() {
+  // The player keeps a reference to its sound: both outlive it here.
+  std::vector<std::unique_ptr<audio::EngineSound>> sounds;
+  std::vector<std::unique_ptr<audio::PcmSample>> keep;
+  auto make_player = [&](double hz) {
+    auto es = std::make_unique<audio::EngineSound>();
+    es->audio_rpm_idle = 800.0;
+    es->audio_rpm_redline = 7000.0;
+    audio::Group grp;
+    grp.name = "ExhaustL";
+    audio::Loop l;
+    l.rpm_min = 500, l.rpm_sample = 3000, l.rpm_max = 9000;
+    grp.loops = {l};
+    es->groups.push_back(grp);
+    sounds.push_back(std::move(es));
+    keep.push_back(std::make_unique<audio::PcmSample>(make_tone(hz, 4800)));
+    auto ep = std::make_unique<audio::EnginePlayer>(
+        *sounds.back(), std::vector<std::vector<const audio::PcmSample*>>{{keep.back().get()}}, 48000, 800.0, 7000.0);
+    ep->positional = true;
+    return ep;
+  };
+  auto render_other = [](audio::SfxEngine& sfx, const audio::VehicleAudioState& vs, int* zero_crossings = nullptr) {
+    std::vector<float> other(1024 * 2, 0.0f);
+    float* buses[audio::kBuses]{};
+    buses[int(audio::Bus::kOtherCars)] = other.data();
+    double e = 0;
+    int zc = 0;
+    for (int b = 0; b < 12; ++b) {
+      std::fill(other.begin(), other.end(), 0.0f);
+      sfx.render(vs, buses, 1024);
+      if (b < 4) continue;  // settle the ramps
+      for (int i = 0; i < 1024; ++i) {
+        const float m = other[size_t(2 * i)] + other[size_t(2 * i + 1)];
+        e += double(m) * m;
+        if (i > 0 && (other[size_t(2 * i - 2)] + other[size_t(2 * i - 1)] < 0.0f) != (m < 0.0f)) ++zc;
+      }
+    }
+    if (zero_crossings) *zero_crossings = zc;
+    return e;
+  };
+  auto car_at = [](uint32_t id, float x) {
+    audio::OtherCarAudio c;
+    c.active = true;
+    c.car_id = id;
+    c.pos = {x, 0.0f, 8.0f};
+    c.rpm = 3000.0f;
+    c.speed_mph = 40.0f;
+    c.throttle = 0.6f;
+    c.archetype = 2;
+    return c;
+  };
+  audio::VehicleAudioState one{}, two{};
+  one.listener_right = two.listener_right = {1.0f, 0.0f, 0.0f};
+  one.other_cars[0] = car_at(0x20000001u, -4.0f);
+  two.other_cars[0] = car_at(0x20000002u, 4.0f);
+
+  audio::SfxEngine sfx(48000);
+  sfx.set_other_car_engine(0x20000001u, make_player(150.0));
+  sfx.set_other_car_engine(0x20000002u, make_player(410.0));
+  int zc1 = 0, zc2 = 0;
+  const double e1 = render_other(sfx, one, &zc1);
+  const double e2 = render_other(sfx, two, &zc2);
+  std::printf("other cars: engines %d, energy %.3f / %.3f, zero crossings %d / %d\n", sfx.other_car_engine_count(), e1,
+              e2, zc1, zc2);
+  CHECK(sfx.other_car_engine_count() == 2);
+  CHECK(e1 > 1e-3 && e2 > 1e-3);
+  CHECK(zc2 > 2 * zc1);  // each car plays its own sound
+
+  // Owned: a car without its player is silent, not a stand-in.
+  audio::SfxEngine stand_in(48000);
+  for (auto id : {audio::SfxSoundId::kOtherCarLoop, audio::SfxSoundId::kOtherCarLoop2, audio::SfxSoundId::kOtherCarLoop2Hi})
+    stand_in.set_sample(id, make_tone(200.0, 4800));
+  audio::VehicleAudioState three{};
+  three.listener_right = {1.0f, 0.0f, 0.0f};
+  three.other_cars[0] = car_at(0x20000003u, 0.0f);
+  const double shared = render_other(stand_in, three);
+  stand_in.set_other_car_engines_owned(true);
+  three.other_cars[0].car_id = 0x20000004u;  // a fresh car
+  const double owned = render_other(stand_in, three);
+  std::printf("other car without its sound: shared loops %.3f, owned %.6f\n", shared, owned);
+  CHECK(shared > 1e-3);
+  CHECK(owned < 1e-9);
+  // Removing a player hands it back for the control thread to free.
+  sfx.set_other_car_engine(0x20000001u, nullptr);
+  render_other(sfx, one);
+  CHECK(sfx.other_car_engine_count() == 1);
+}
+
 int run_unit() {
   test_title_snapshot_only_without_matrix();
   test_fev_evaluator();
   test_ui_catalog();
+  test_other_car_engines();
   return failures;
 }
 
@@ -438,6 +537,253 @@ void corpus_ui_catalog(const std::filesystem::path& game) {
   }
 }
 
+// AUDIO-01: two real traffic cars decoded from their own banks play through
+// the other-car path, differently, and six at once render well inside real
+// time.
+void corpus_other_car_playback(audio::SoundFiles& files, const traffic::TrafficConfig& cfg,
+                               const std::map<int64_t, std::string>& media_by_id,
+                               std::map<std::string, int>& groups_by_media) {
+  std::vector<std::string> pick;
+  for (const auto& m : cfg.models) {
+    const auto it = media_by_id.find(m.id);
+    if (it != media_by_id.end() && groups_by_media[cars::lower(it->second)] > 0) pick.push_back(it->second);
+    if (pick.size() == 2) break;
+  }
+  CHECK(pick.size() == 2);
+  if (pick.size() != 2) return;
+  std::vector<std::shared_ptr<audio::BakedSound>> baked;
+  for (const auto& m : pick) {
+    auto b = std::make_shared<audio::BakedSound>();
+    std::string err;
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok = audio::decode_engine_sound_runtime(files, m, {}, *b, &err);
+    size_t loops = 0, decoded = 0;
+    for (const auto& g : b->table())
+      for (const auto* p : g) {
+        ++loops;
+        decoded += (p && !p->data.empty()) ? 1 : 0;
+      }
+    std::printf("decoded %s: %s, %zu groups, %zu of %zu loops (%.1f s)\n", m.c_str(), ok ? "ok" : err.c_str(),
+                b->loaded.sound.groups.size(), decoded, loops,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    CHECK(ok && !b->loaded.sound.groups.empty() && decoded > 0);
+    if (!ok) return;
+    baked.push_back(b);
+    // The player alone: as a positional other car at the Default view, and
+    // as the focus car at the Follow view (its TrashDSP bands are dB and percent;
+    // read as linear factors they silenced the exhaust).
+    const auto& s = b->loaded.sound;
+    auto alone = [&](bool positional, audio::View view) {
+      audio::EnginePlayer ep(s, b->table(), 48000, s.audio_rpm_idle, s.audio_rpm_redline);
+      ep.positional = positional;
+      audio::EnginePlayer::Update u;
+      u.rpm = 0.5 * (s.audio_rpm_idle + s.audio_rpm_redline);
+      u.throttle = 0.5;
+      u.view = view;
+      std::vector<float> st(1024 * 2);
+      double e = 0;
+      for (int k = 0; k < 8; ++k) {
+        ep.set(u);
+        ep.render(st.data(), 1024);
+        for (float x : st) e += double(x) * x;
+      }
+      return e;
+    };
+    const double e_other = alone(true, audio::View::kDefault), e_focus = alone(false, audio::View::kFollow);
+    std::printf("  alone: other car %.3f, focus car %.3f (trash dsp %s)\n", e_other, e_focus,
+                s.trash_dsp.active ? "on" : "off");
+    CHECK(e_other > 1e-3 && e_focus > 1e-3);
+  }
+  auto player = [&](size_t i) {
+    const auto& s = baked[i]->loaded.sound;
+    auto ep = std::make_unique<audio::EnginePlayer>(s, baked[i]->table(), 48000, s.audio_rpm_idle, s.audio_rpm_redline);
+    ep->master = 0.6;
+    ep->positional = true;
+    ep->attach_owner(baked[i]);
+    return ep;
+  };
+  audio::SfxEngine sfx(48000);
+  std::vector<float> other(512 * 2, 0.0f);
+  float* buses[audio::kBuses]{};
+  buses[int(audio::Bus::kOtherCars)] = other.data();
+  auto run = [&](const audio::VehicleAudioState& vs, int blocks, std::vector<float>* keep_mono) {
+    double e = 0;
+    for (int b = 0; b < blocks; ++b) {
+      std::fill(other.begin(), other.end(), 0.0f);
+      sfx.render(vs, buses, 512);
+      for (int i = 0; i < 512; ++i) {
+        const float m = other[size_t(2 * i)] + other[size_t(2 * i + 1)];
+        if (b >= 8) {
+          e += double(m) * m;
+          if (keep_mono) keep_mono->push_back(m);
+        }
+      }
+    }
+    return e;
+  };
+  std::array<double, 2> energy{};
+  std::array<std::vector<float>, 2> mono;
+  for (size_t i = 0; i < 2; ++i) {
+    const uint32_t id = uint32_t(0x30000001u + i);
+    sfx.set_other_car_engine(id, player(i));
+    audio::VehicleAudioState vs{};
+    vs.listener_right = {1.0f, 0.0f, 0.0f};
+    auto& c = vs.other_cars[0];
+    c.active = true;
+    c.is_traffic = false;  // the car rolloff: an unloaded engine has no traffic rolloff curve
+    c.car_id = id;
+    c.pos = {0.0f, 0.0f, 10.0f};
+    c.rpm = 3000.0f;
+    c.throttle = 0.5f;
+    energy[i] = run(vs, 40, &mono[i]);
+  }
+  // Normalised correlation of the two cars' signals: their banks differ.
+  double xy = 0, xx = 0, yy = 0;
+  for (size_t k = 0; k < std::min(mono[0].size(), mono[1].size()); ++k) {
+    xy += double(mono[0][k]) * mono[1][k];
+    xx += double(mono[0][k]) * mono[0][k];
+    yy += double(mono[1][k]) * mono[1][k];
+  }
+  const double corr = (xx > 0 && yy > 0) ? xy / std::sqrt(xx * yy) : 1.0;
+  std::printf("own engines: %s energy %.3f, %s energy %.3f, correlation %.3f\n", pick[0].c_str(), energy[0],
+              pick[1].c_str(), energy[1], corr);
+  CHECK(energy[0] > 1e-3 && energy[1] > 1e-3);
+  CHECK(std::fabs(corr) < 0.9);
+
+  // Six cars at once (the voice count), timed against real time.
+  audio::VehicleAudioState six{};
+  six.listener_right = {1.0f, 0.0f, 0.0f};
+  for (int k = 0; k < audio::VehicleAudioState::kMaxOtherCars; ++k) {
+    const uint32_t id = uint32_t(0x30000010u + uint32_t(k));
+    sfx.set_other_car_engine(id, player(size_t(k) % 2));
+    auto& c = six.other_cars[size_t(k)];
+    c.active = true;
+    c.car_id = id;
+    c.pos = {float(k) * 3.0f - 8.0f, 0.0f, 12.0f};
+    c.rpm = 2500.0f + 500.0f * float(k);
+    c.throttle = 0.7f;
+  }
+  run(six, 8, nullptr);
+  const auto t0 = std::chrono::steady_clock::now();
+  constexpr int kBlocks = 94;  // about one second
+  run(six, kBlocks, nullptr);
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  std::printf("six own engines: %.1f ms per second of audio (%.1f%% of real time), %d players\n", ms, ms / 10.0,
+              sfx.other_car_engine_count());
+  CHECK(ms < 250.0);
+}
+
+// AUDIO-01: every car the game can put on the road as an opponent or as
+// traffic resolves its own engine sound through the same loader the focus
+// car uses; only a car with no engine tuning takes the VW_BORAVR6_03 stand-in.
+void corpus_other_car_banks(const std::filesystem::path& game, const std::filesystem::path& state) {
+  cars::Install install;
+  std::string err;
+  CHECK(cars::discover_install(game, state, {}, install, &err));
+  audio::SoundFiles files;
+  CHECK(files.open(install, &err));
+  cars::Database db;
+  CHECK(cars::load_database(install, db, &err));
+  std::map<int64_t, std::string> media_by_id;
+  int own = 0, fallback = 0, failed = 0, full = 0, partial = 0, none = 0, mismatched = 0;
+  int trash = 0, trash_dead = 0;  // focus-car TrashDSP, and bands that would zero the exhaust
+  std::vector<std::string> fallbacks, silent;
+  std::set<std::string> seen;
+  auto groups_of = [](const audio::EngineSound& s) {
+    bool in = false, amb = false, ex = false;
+    for (const auto& g : s.groups) {
+      if (g.name == "EngineIntake") in = true;
+      else if (g.name == "EngineAmbient") amb = true;
+      else ex = true;
+    }
+    return int(in) + int(amb) + int(ex);
+  };
+  std::map<std::string, int> groups_by_media;
+  std::map<std::string, bool> fallback_by_media;
+  for (const auto& row : db.cars) {
+    media_by_id[row.id] = row.media_name;
+    const std::string key = cars::lower(row.media_name);
+    if (row.media_name.empty() || !seen.insert(key).second) continue;
+    std::string text, e;
+    const bool has_et = files.read_tuning(audio::TuningKind::kEngine, row.media_name + "_ET.xml", text, &e);
+    audio::LoadedSound ls;
+    if (!audio::load_engine_sound(files, row.media_name, ls, &e)) {
+      ++failed;
+      std::printf("  no engine sound: %s (%s)\n", row.media_name.c_str(), e.c_str());
+      continue;
+    }
+    if (ls.fallback != !has_et) ++mismatched;
+    if (ls.fallback) {
+      ++fallback;
+      fallbacks.push_back(row.media_name);
+    } else {
+      ++own;
+    }
+    if (ls.sound.trash_dsp.active) {
+      ++trash;
+      for (const auto& b : ls.sound.trash_dsp.bands)
+        if (b.output_gain < 0.01 || b.input_gain < 0.01) {
+          ++trash_dead;
+          break;
+        }
+    }
+    const int ng = groups_of(ls.sound);
+    groups_by_media[key] = ng;
+    fallback_by_media[key] = ls.fallback;
+    if (ng == 3) ++full;
+    else if (ng > 0) ++partial;
+    else {
+      ++none;
+      silent.push_back(row.media_name);
+    }
+  }
+  std::printf("engine sound over %zu car rows (%zu models): %d own tuning, %d VW_BORAVR6_03 fallback, %d failed\n",
+              db.cars.size(), seen.size(), own, fallback, failed);
+  std::printf("  groups: %d all three, %d one or two, %d none (spec census: 208 / 30 / 1)\n", full, partial, none);
+  for (const auto& m : fallbacks) std::printf("  fallback: %s\n", m.c_str());
+  for (const auto& m : silent) std::printf("  no group: %s\n", m.c_str());
+  CHECK(failed == 0);
+  CHECK(silent.size() == 1 && silent.front() == "NIS_Leaf_11");  // the one electric car
+  CHECK(mismatched == 0);  // the stand-in exactly when the car has no engine tuning
+  CHECK(own > 200);
+  std::printf("  focus TrashDSP on %d tunings, %d with a band that silences the exhaust\n", trash, trash_dead);
+  CHECK(trash > 100 && trash_dead == 0);
+
+  // The traffic models: each resolves its own sound.
+  traffic::TrafficConfig cfg;
+  CHECK(traffic::read_traffic_config(game, cfg, &err));
+  int t_own = 0, t_fb = 0, t_missing = 0, t_absent = 0, t_electric = 0;
+  for (const auto& m : cfg.models) {
+    const auto it = media_by_id.find(m.id);
+    const std::string key = it == media_by_id.end() ? std::string{} : cars::lower(it->second);
+    const auto g = groups_by_media.find(key);
+    if (it == media_by_id.end()) {
+      // A model the traffic config lists but the merged database does not
+      // have: the game cannot spawn it either.
+      std::printf("  traffic model %lld: not in Data_Car\n", (long long)m.id);
+      ++t_absent;
+      continue;
+    }
+    if (g != groups_by_media.end() && g->second == 0) {
+      // An engine tuning with no group: the electric car, whose sound is the
+      // ElectricMotor event project (SPEC-ENGINE-SOUND).
+      ++t_electric;
+      std::printf("  traffic model %lld (%s): electric motor\n", (long long)m.id, it->second.c_str());
+      continue;
+    }
+    if (g == groups_by_media.end()) {
+      ++t_missing;
+      std::printf("  traffic model %lld (%s): no engine sound\n", (long long)m.id, it->second.c_str());
+      continue;
+    }
+    (fallback_by_media[key] ? t_fb : t_own) += 1;
+  }
+  std::printf("traffic models: %zu, %d own engine sound, %d fallback, %d electric, %d without, %d not in Data_Car\n",
+              cfg.models.size(), t_own, t_fb, t_electric, t_missing, t_absent);
+  CHECK(!cfg.models.empty() && t_missing == 0);
+  corpus_other_car_playback(files, cfg, media_by_id, groups_by_media);
+}
+
 int run_corpus() {
   const char* game = std::getenv("SHIFT_GAME_ROOT");
   if (!game || !*game || !std::filesystem::exists(game)) {
@@ -447,12 +793,15 @@ int run_corpus() {
   const std::filesystem::path root(game);
   corpus_damage_event(root);
   corpus_ui_catalog(root);
+  const char* state = std::getenv("SHIFT_STATE_ROOT");
+  corpus_other_car_banks(root, state && *state ? std::filesystem::path(state) : std::filesystem::path{});
   return failures;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);  // a crash keeps what was printed
   const bool corpus = argc > 1 && std::strcmp(argv[1], "--corpus") == 0;
   const int rc = corpus ? run_corpus() : run_unit();
   if (rc == 77) return 77;

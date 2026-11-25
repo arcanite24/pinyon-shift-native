@@ -53,6 +53,21 @@ class TrafficView {
   void place(const cars::bake::CarInfo& player_info, const drive::Vehicle& player);
   size_t active() const { return population_ ? population_->cars().size() : 0; }
   const std::vector<traffic::Car>* cars() const { return population_ ? &population_->cars() : nullptr; }
+  // The model a traffic car shows (a locked model overrides the population's),
+  // its Data_Car.MediaName ("" when unknown) and its physics (null when unknown).
+  int64_t shown_model(const traffic::Car& c) const {
+    const auto it = locked_model_.find(c.id);
+    return it != locked_model_.end() ? it->second : c.model;
+  }
+  const std::string& media_of(int64_t model) const {
+    static const std::string kNone;
+    const auto it = media_.find(model);
+    return it != media_.end() ? it->second : kNone;
+  }
+  const drive::CarParams* params_of(int64_t model) const {
+    const auto it = params_.find(model);
+    return it != params_.end() ? &it->second : nullptr;
+  }
   size_t bodies() const { return bodies_ ? bodies_->count() : 0; }
   // The largest impulse traffic gave the player's car in the last step (N s).
   double player_impulse() const { return bodies_ ? bodies_->player_impulse() : 0; }
