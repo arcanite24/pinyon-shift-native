@@ -223,7 +223,8 @@ void test_opening_commands() {
   check(c.set_time_of_day && c.time_of_day_s == 33300.0 && c.time_locked, "time locked at 09:15");
   check(c.radio_playlist == std::vector<std::string>({"R1_Everyday", "R1_ThePower"}), "radio playlist");
   check(c.preload_cutscene == "Opening_Cutscene", "the opening's area preloaded");
-  check(c.set_destination && c.destination_xz[0] == FirstTimeCareer::kInitialDriveDestination[0], "sat-nav to the diner");
+  check(c.set_destination && c.destination_xz[0] == FirstTimeCareer::kInitialDrivePoints[0][0],
+        "sat-nav to the diner, through CSetDestForInitialDrive's first point");
   race::FtcInput in;
   in.dt = 0.1;
   // The controls screen does not leave on a button; it leaves once loaded.
@@ -240,6 +241,18 @@ void test_opening_commands() {
   check(ftc.stage() == FtcStage::kInitialDrive && c.fades.size() == 1 && c.fades[0].kind == race::FtcFadeKind::kWhiteFlash,
         "white flash at the hand-over");
   check(c.activate_tutor && ftc.controls_enabled() && !ftc.ai_driving(), "tutor on, controls handed over");
+  // The sat-nav goes through CSetDestForInitialDrive's first two points.
+  const auto& pts = FirstTimeCareer::kInitialDrivePoints;
+  in.player_pos = {pts[0][0] + 30.0, pts[0][1], pts[0][2]};
+  c = ftc.update(in);
+  check(c.set_destination && c.destination_xz[0] == pts[1][0], "first point reached: on to the second");
+  c = ftc.update(in);
+  check(!c.set_destination, "each point routes on once");
+  in.player_pos = pts[1];
+  c = ftc.update(in);
+  check(c.set_destination && c.destination_xz[0] == FirstTimeCareer::kInitialDriveDestination[0] &&
+            c.destination_xz[1] == FirstTimeCareer::kInitialDriveDestination[2],
+        "second point reached: on to the diner");
   // The old 40 m around StartPosition no longer ends the drive.
   in.player_pos = FirstTimeCareer::kStartPosition;
   ftc.update(in);

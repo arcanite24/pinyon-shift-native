@@ -49,6 +49,9 @@ constexpr double kFadeOutHalf = 0.5;    // fade_out_half_sec
 constexpr double kOpeningFadeIn = 2.0;  // play_intro_camera: CFadeIn 2 s, S curve
 // Interim (Q62): when the race's sat-nav moves on to its next waypoint.
 constexpr double kWaypointRadius = 20.0;
+// The initial drive's next sat-nav leg starts here, short of the sat-nav's
+// own arrival distance (interim).
+constexpr double kDriveLegRadius = 60.0;
 // The event sign-up sphere re-arms once the player has left it by this much.
 constexpr double kRearmMargin = 10.0;
 // A launched event that has not started racing this long is taken as declined.
@@ -189,6 +192,16 @@ void FirstTimeCareer::route_to_next_waypoint(FtcCommands& c) {
   c.destination_xz = {p[0], p[2]};
 }
 
+void FirstTimeCareer::route_initial_drive(FtcCommands& c) {
+  // The engine's sat-nav takes one destination: the route goes leg by leg
+  // through CSetDestForInitialDrive's points (interim: the original routes
+  // through them at once).
+  const auto& p = kInitialDrivePoints[size_t(std::clamp(drive_leg_, 0, 2))];
+  c.set_destination = true;
+  c.destination_label = "IDS_HudInstruction_Travel_To_Festival";
+  c.destination_xz = {p[0], p[2]};
+}
+
 FtcCommands FirstTimeCareer::start() {
   controls_ = true;
   ai_ = false;
@@ -239,9 +252,8 @@ void FirstTimeCareer::opening_setup(FtcCommands& c) {
   c.place_car = true;
   c.pos = kViperStart;
   c.heading_deg = kViperHeading;
-  c.set_destination = true;
-  c.destination_label = "IDS_HudInstruction_Travel_To_Festival";
-  c.destination_xz = {kInitialDriveDestination[0], kInitialDriveDestination[2]};
+  drive_leg_ = 0;
+  route_initial_drive(c);
   c.set_civilian_traffic = true;
   c.civilian_traffic = false;
   c.preload_cutscene = "Opening_Cutscene";
@@ -573,6 +585,12 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
     if (d <= radius) in_trigger_ = true;
     else if (d > radius + kRearmMargin) in_trigger_ = false;
   };
+
+  if ((stage_ == FtcStage::kOpeningCutscene || stage_ == FtcStage::kInitialDrive) && drive_leg_ < 2 &&
+      dist_xz(in.player_pos, kInitialDrivePoints[size_t(drive_leg_)]) < kDriveLegRadius) {
+    ++drive_leg_;
+    route_initial_drive(c);
+  }
 
   switch (stage_) {
     case FtcStage::kControls:

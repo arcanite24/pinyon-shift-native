@@ -187,8 +187,14 @@ class FirstTimeCareer {
   static constexpr std::array<double, 3> kViperStart = {-1361.97, 47.32, 1881.99};
   static constexpr double kViperHeading = 94.07;
   static constexpr int kInitialDriveRoute = 170;
-  // CSetDestForInitialDrive's last point (the sat-nav goes through two before it).
-  static constexpr std::array<double, 3> kInitialDriveDestination = {1576.62, 119.08, -1839.37};
+  // CSetDestForInitialDrive's three points: the sat-nav goes through the
+  // first two to the last, near the diner.
+  static constexpr std::array<std::array<double, 3>, 3> kInitialDrivePoints = {{
+      {1881.06, 153.76, 1076.59},
+      {1552.28, 168.99, 1435.91},
+      {1576.62, 119.08, -1839.37},
+  }};
+  static constexpr std::array<double, 3> kInitialDriveDestination = kInitialDrivePoints[2];
   static constexpr std::array<double, 3> kDinerPlace = {1553.881226, 118.073807, -1934.264526};
   static constexpr double kDinerHeading = -120.859550;
   static constexpr std::array<double, 3> kWorkshopPlace = {-1027.26, -8.68, -145.57};
@@ -256,6 +262,7 @@ class FirstTimeCareer {
   void pump_timed(FtcCommands& out);
   void set_instruction(int title_stage);
   void route_to_next_waypoint(FtcCommands& c);
+  void route_initial_drive(FtcCommands& c);
   // The event's sign-up sphere and the player's distance to it; false when unknown.
   bool event_trigger(int64_t id, const std::array<double, 3>& p, double& radius, double& distance) const;
 
@@ -274,6 +281,7 @@ class FirstTimeCareer {
   bool reminders_due_ = false;
   bool diner_preloaded_ = false;
   int waypoint_ = 0;            // the race's sat-nav route: HalfWay, TollBooth, Beyond
+  int drive_leg_ = 0;           // the initial drive's sat-nav point (kInitialDrivePoints)
   bool in_trigger_ = false;     // inside the event's sign-up sphere (edge)
   bool awaiting_race_ = false;  // an event was launched and has not reported
   bool raced_ = false;          // ...and the player has been in it since
