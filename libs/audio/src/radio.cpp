@@ -297,18 +297,7 @@ int StationSchedule::pick_weighted_track() {
     if (std::fabs(w - first_w) > 1e-6) uniform = false;
   }
   if (uniform || total_w <= 0.0) return tracks_.pick(rng_);
-  // Weighted selection respecting positive likelihoods via allow predicate.
-  const double target = std::uniform_real_distribution<double>(0.0, total_w)(rng_);
-  double acc = 0.0;
-  int chosen = 0;
-  for (int i = 0; i < n; ++i) {
-    acc += tod_weight(st_.tracks[size_t(i)]);
-    if (acc >= target) {
-      chosen = i;
-      break;
-    }
-  }
-  return tracks_.pick(rng_, [&](int k) { return k == chosen || tod_weight(st_.tracks[size_t(k)]) > 0.0; });
+  return tracks_.pick_weighted(rng_, [&](int k) { return tod_weight(st_.tracks[size_t(k)]); });
 }
 
 bool StationSchedule::queue_special_dialogue(std::string_view gameplay_event) {
@@ -433,8 +422,7 @@ void StationSchedule::extend() {
   }
 }
 
-void StationSchedule::audible(double t0, double t1, std::vector<RadioEvent>& out) {
-  out.clear();
+void StationSchedule::ensure_extended(double t0, double t1) {
   for (const RadioEvent* last = last_track(); last && last->start <= t1; last = last_track()) {
     const size_t before = events_.size();
     extend();
@@ -443,6 +431,11 @@ void StationSchedule::audible(double t0, double t1, std::vector<RadioEvent>& out
   const RadioEvent* keep = last_track();
   const uint64_t keep_id = keep ? keep->id : ~0ull;
   std::erase_if(events_, [&](const RadioEvent& e) { return e.end <= t0 && e.id != keep_id; });
+}
+
+void StationSchedule::audible(double t0, double t1, std::vector<RadioEvent>& out) {
+  out.clear();
+  ensure_extended(t0, t1);
   for (const auto& e : events_)
     if (e.start < t1 && e.end > t0) {
       out.push_back(e);
@@ -451,8 +444,7 @@ void StationSchedule::audible(double t0, double t1, std::vector<RadioEvent>& out
 }
 
 const RadioEvent* StationSchedule::track_at(double t, double* offset) {
-  std::vector<RadioEvent> tmp;
-  audible(t, t, tmp);
+  ensure_extended(t, t);
   const RadioEvent* best = nullptr;
   for (const auto& e : events_)
     if (e.kind == RadioKind::kTrack && e.start <= t && (!best || e.start > best->start)) best = &e;
@@ -487,10 +479,10 @@ StationSchedule* Radio::schedule(int station) {
   return station >= 0 && size_t(station) < schedules_.size() ? schedules_[size_t(station)].get() : nullptr;
 }
 
-void Radio::select(int station) {
+void Radio::select(int station, bool user_change) {
   for (size_t i = 0; i < data_.cycle.size(); ++i)
     if (data_.cycle[i] == station) pos_ = int(i);
-  last_change_was_user_ = false;
+  last_change_was_user_ = user_change;
   seen_track_ = ~0ull;
   if (auto* s = schedule(selected()))
     if (const RadioEvent* t = s->track_at(clock_)) seen_track_ = t->id;
@@ -620,7 +612,6 @@ void Radio::press(int dir) {
 
 void Radio::advance(double dt, bool run) {
   popup_clock_ += dt;
-  location_clock_ += dt;
   if (!on()) {
     if (run) clock_ += dt;
     return;
@@ -658,17 +649,6 @@ Radio::Popup Radio::popup() const {
 }
 
 // ------------------------------------------------------------------ player
-
-struct RadioPlayer::Voice {
-  uint64_t id = 0;
-  int slot = -1;
-  bool used = false;
-  double pos = 0;   // source frame of the next output frame
-  float env = 0.0f; // smooth fade envelope across seek/underrun boundaries (zero clicks)
-  float last_l = 0.0f;
-  float last_r = 0.0f;
-  bool location = false;
-};
 
 struct RadioPlayer::Banks {
   std::vector<FsbSample> music, vo;
@@ -712,22 +692,53 @@ RadioPlayer::RadioPlayer(Radio& radio, int out_rate, bool non_blocking)
   });
   station_gain_.assign(radio.data().stations.size(), 0.0);
   if (radio.on()) station_gain_[size_t(radio.selected())] = 1;
+  // Pre-allocate audio-thread scratch buffers so steady-state rendering never allocates.
+  scratch_.reserve(32);
+  mix_.resize(6 * 4096, 0.0f);
+  loc_mono_.resize(4096, 0.0f);
+  homespace_stations_[0] = radio.find_station("Radio6_3d_Autoshow");
+  homespace_stations_[1] = radio.find_station("Radio8_3d_Paintshop");
+  homespace_stations_[2] = radio.find_station("Radio7_3d_Workshop");
 }
 
 RadioPlayer::~RadioPlayer() {
-  for (auto& v : voices_) release_voice(v);
+  for (auto& v : voices_) {
+    if (v.active) release_voice(v);
+  }
 }
 
-int RadioPlayer::decoders() const { return int(voices_.size()); }
+int RadioPlayer::decoders() const {
+  int n = 0;
+  for (const auto& v : voices_)
+    if (v.active) ++n;
+  return n;
+}
 
 void RadioPlayer::release_voice(Voice& v) {
   if (v.slot >= 0 && banks_ && banks_->pool) banks_->pool->release(v.slot);
-  v.slot = -1;
+  v = Voice{};
 }
 
-RadioPlayer::Voice* RadioPlayer::voice_for(const RadioEvent& e, int64_t initial_frame) {
+RadioPlayer::Voice* RadioPlayer::voice_for(uint64_t voice_id, const RadioEvent& e, int64_t initial_frame) {
   for (auto& v : voices_)
-    if (v.id == e.id) return &v;
+    if (v.active && v.id == voice_id) return &v;
+  Voice* free_slot = nullptr;
+  for (auto& v : voices_) {
+    if (!v.active) {
+      free_slot = &v;
+      break;
+    }
+  }
+  if (!free_slot) {
+    for (auto& v : voices_) {
+      if (!v.used) {
+        release_voice(v);
+        free_slot = &v;
+        break;
+      }
+    }
+  }
+  if (!free_slot) return nullptr;
   const bool music = e.kind == RadioKind::kTrack;
   const auto& clips = music ? radio_.data().music : radio_.data().vo;
   int slot = -1;
@@ -736,8 +747,13 @@ RadioPlayer::Voice* RadioPlayer::voice_for(const RadioEvent& e, int64_t initial_
     const uint64_t key = (music ? (1ull << 32) : 0ull) | uint64_t(sample);
     slot = banks_->pool->acquire(key, std::max<int64_t>(0, initial_frame));
   }
-  voices_.push_back({e.id, slot, true, double(std::max<int64_t>(0, initial_frame)), 0.0f, 0.0f, 0.0f});
-  return &voices_.back();
+  *free_slot = Voice{};
+  free_slot->active = true;
+  free_slot->id = voice_id;
+  free_slot->slot = slot;
+  free_slot->used = true;
+  free_slot->pos = double(std::max<int64_t>(0, initial_frame));
+  return free_slot;
 }
 
 void RadioPlayer::render(float* out, int frames) {
@@ -752,9 +768,10 @@ void RadioPlayer::render(float* out, int frames) {
   // The clock runs while on, and while the last station fades to off.
   const double t1 = t0 + (sel >= 0 || fading ? dt : 0);
   for (auto& v : voices_) {
-    if (!v.location) v.used = false;
+    if (v.active && !v.location && !v.homespace) v.used = false;
   }
-  mix_.resize(6 * size_t(frames));
+  const size_t mix_need = 6 * size_t(frames);
+  if (mix_.size() < mix_need) mix_.resize(mix_need, 0.0f);
   float* music = mix_.data();
   float* voice = mix_.data() + 2 * size_t(frames);
   float* ident = mix_.data() + 4 * size_t(frames);
@@ -771,7 +788,7 @@ void RadioPlayer::render(float* out, int frames) {
       station_gain_[s] = target;
       continue;
     }
-    std::fill(mix_.begin(), mix_.end(), 0.0f);
+    std::fill_n(mix_.data(), mix_need, 0.0f);
     // Ask ahead by prefetch_s_ so upcoming idents, tracks and DJ lines are
     // already decoded on the worker thread before they start.
     sched->audible(t0, t1 + (int(s) == sel ? prefetch_s_ : 0.0), scratch_);
@@ -783,6 +800,7 @@ void RadioPlayer::render(float* out, int frames) {
       const int last = now_audible ? std::clamp(int(std::ceil((e.end - t0) * rate_)), 0, frames) : 0;
       const double approx_start = now_audible ? std::max(0.0, (t0 + double(first) / rate_ - e.start) * 48000.0) : 0.0;
       Voice* v = voice_for(e, int64_t(approx_start));
+      if (!v) continue;
       v->used = true;
       if (!now_audible || last <= first || v->slot < 0) continue;
       dj |= (e.kind == RadioKind::kDj || e.kind == RadioKind::kFestivalUpdate);
@@ -888,12 +906,9 @@ void RadioPlayer::render(float* out, int frames) {
     }
     station_gain_[s] = g;
   }
-  for (auto it = voices_.begin(); it != voices_.end();) {
-    if (!it->location && !it->used) {
-      release_voice(*it);
-      it = voices_.erase(it);
-    } else {
-      ++it;
+  for (auto& v : voices_) {
+    if (v.active && !v.location && !v.homespace && !v.used) {
+      release_voice(v);
     }
   }
   dj_speaking_ = any_sel_dj;
@@ -941,11 +956,13 @@ std::vector<LocationRadioEmitter> default_colorado_location_emitters(const Radio
 void RadioPlayer::set_location_emitters(std::vector<LocationRadioEmitter> emitters) {
   emitters_ = std::move(emitters);
   emitter_gain_.assign(emitters_.size(), 0.0f);
+  emitter_filters_.assign(emitters_.size(), EmitterFilter{});
 }
 
 void RadioPlayer::add_location_emitter(LocationRadioEmitter emitter) {
   emitters_.push_back(emitter);
   emitter_gain_.push_back(0.0f);
+  emitter_filters_.push_back(EmitterFilter{});
 }
 
 void RadioPlayer::set_listener(std::array<float, 3> pos, float heading_rad) {
@@ -954,20 +971,48 @@ void RadioPlayer::set_listener(std::array<float, 3> pos, float heading_rad) {
 }
 
 void RadioPlayer::render_location_stations(float* out, int frames) {
-  if (!out || frames <= 0 || emitters_.empty()) return;
-  if (emitter_gain_.size() != emitters_.size()) emitter_gain_.assign(emitters_.size(), 0.0f);
-  for (auto& v : voices_) {
-    if (v.location) v.used = false;
-  }
-  const RadioData& data = radio_.data();
-  const double t0 = radio_.location_clock();
+  if (frames <= 0) return;
   const double dt = double(frames) / double(rate_);
+  const double t0 = radio_.location_clock();
   const double t1 = t0 + dt;
+  // Decoupled from player radio playback: advance the 3D location clock
+  // unconditionally so UI music, custom radio, or Radio Off never freeze PA speakers.
+  radio_.advance_location_clock(dt);
+  if (!out || emitters_.empty()) return;
+  if (emitter_gain_.size() != emitters_.size()) emitter_gain_.assign(emitters_.size(), 0.0f);
+  if (emitter_filters_.size() != emitters_.size()) emitter_filters_.assign(emitters_.size(), EmitterFilter{});
+  if (loc_mono_.size() < size_t(frames)) loc_mono_.resize(size_t(frames), 0.0f);
+
+  for (auto& v : voices_) {
+    if (v.active && v.location) v.used = false;
+  }
+
+  const RadioData& data = radio_.data();
   const float rx = std::cos(listener_heading_);
   const float rz = -std::sin(listener_heading_);
   const float gain_sm = 1.0f - std::exp(-1.0f / (0.045f * float(rate_)));
   const float env_up = 1.0f / std::max(1.0f, 0.008f * float(rate_));
   const float env_dn = 1.0f / std::max(1.0f, 0.006f * float(rate_));
+  // External PA high-pass (~250 Hz) removes sub-bass boom so stage bleed never clashes with in-car radio.
+  constexpr float kTwoPi = 6.28318530718f;
+  const float hp_rc = 1.0f / (kTwoPi * 250.0f);
+  const float hp_alpha = hp_rc / (hp_rc + 1.0f / float(rate_));
+
+  // Collect up to 32 audible emitters and deduplicate their stations so each
+  // active location station is decoded & advanced ONCE per block (preventing
+  // 2x double-speed stuttering when overlapping Festival/Outpost speakers share a station).
+  struct AudibleEmitter {
+    size_t idx = 0;
+    int station = -1;
+    float target_att2 = 0.0f;
+    float dist_norm = 0.0f;
+    float pan_l = 0.70710678f;
+    float pan_r = 0.70710678f;
+  };
+  AudibleEmitter audible[32];
+  int audible_count = 0;
+  int unique_stations[16];
+  int unique_count = 0;
 
   for (size_t ei = 0; ei < emitters_.size(); ++ei) {
     const auto& em = emitters_[ei];
@@ -976,36 +1021,56 @@ void RadioPlayer::render_location_stations(float* out, int frames) {
     const float dy = em.pos[1] - listener_pos_[1];
     const float dz = em.pos[2] - listener_pos_[2];
     const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-    const float att =
-        dist >= em.max_distance
-            ? 0.0f
-            : (dist <= em.min_distance
-                   ? 1.0f
-                   : std::clamp(1.0f - (dist - em.min_distance) / std::max(1.0f, em.max_distance - em.min_distance),
-                                0.0f, 1.0f));
+    const float span = std::max(1.0f, em.max_distance - em.min_distance);
+    const float dist_norm =
+        dist <= em.min_distance ? 0.0f : (dist >= em.max_distance ? 1.0f : std::clamp((dist - em.min_distance) / span, 0.0f, 1.0f));
+    const float att = 1.0f - dist_norm;
     const float target_att2 = att * att;
-    float eg = emitter_gain_[ei];
-    if (target_att2 <= 1e-5f && eg <= 1e-5f) {
+    if (target_att2 <= 1e-5f && emitter_gain_[ei] <= 1e-5f) {
       emitter_gain_[ei] = 0.0f;
+      emitter_filters_[ei] = EmitterFilter{};
       continue;
     }
-    const auto& st_def = data.stations[size_t(em.station)];
-    const float pan_raw = dist > 1e-3f ? std::clamp((dx * rx + dz * rz) / dist, -1.0f, 1.0f) : 0.0f;
-    const float pan = pan_raw * float(std::clamp(st_def.pan_level_3d, 0.0, 1.0));
-    const float base_gain = float(st_def.volume * master * volume);
-    const float pan_l = std::sqrt(0.5f * (1.0f - pan));
-    const float pan_r = std::sqrt(0.5f * (1.0f + pan));
+    if (audible_count < 32) {
+      const auto& st_def = data.stations[size_t(em.station)];
+      const float pan_raw = dist > 1e-3f ? std::clamp((dx * rx + dz * rz) / dist, -1.0f, 1.0f) : 0.0f;
+      const float pan = pan_raw * float(std::clamp(st_def.pan_level_3d, 0.0, 1.0));
+      AudibleEmitter ae{};
+      ae.idx = ei;
+      ae.station = em.station;
+      ae.target_att2 = target_att2;
+      ae.dist_norm = dist_norm;
+      ae.pan_l = std::sqrt(0.5f * (1.0f - pan));
+      ae.pan_r = std::sqrt(0.5f * (1.0f + pan));
+      audible[audible_count++] = ae;
 
-    StationSchedule* sched = radio_.schedule(em.station);
+      bool seen = false;
+      for (int u = 0; u < unique_count; ++u) {
+        if (unique_stations[u] == em.station) {
+          seen = true;
+          break;
+        }
+      }
+      if (!seen && unique_count < 16) unique_stations[unique_count++] = em.station;
+    }
+  }
+
+  for (int u = 0; u < unique_count; ++u) {
+    const int st_idx = unique_stations[u];
+    StationSchedule* sched = radio_.schedule(st_idx);
     if (!sched) continue;
+    const auto& st_def = data.stations[size_t(st_idx)];
+    const float base_gain = float(st_def.volume * master * volume);
+    std::fill_n(loc_mono_.data(), size_t(frames), 0.0f);
     sched->audible(t0, t1 + 1.0, scratch_);
-    bool rendered_any = false;
+    bool decoded_any = false;
     for (const auto& e : scratch_) {
       const bool now_audible = e.start < t1 && e.end > t0;
       const int first = now_audible ? std::clamp(int(std::ceil((e.start - t0) * rate_)), 0, frames) : 0;
       const int last = now_audible ? std::clamp(int(std::ceil((e.end - t0) * rate_)), 0, frames) : 0;
       const double approx_start = now_audible ? std::max(0.0, (t0 + double(first) / rate_ - e.start) * 48000.0) : 0.0;
       Voice* v = voice_for(e, int64_t(approx_start));
+      if (!v) continue;
       v->location = true;
       v->used = true;
       if (!now_audible || last <= first || v->slot < 0) continue;
@@ -1018,24 +1083,30 @@ void RadioPlayer::render_location_stations(float* out, int frames) {
       const double step = double(src_rate) / double(rate_);
       const double want_pos = (t0 + double(first) / rate_ - e.start) * double(src_rate);
       const double drift = want_pos - v->pos;
+      double step_eff = step;
       if (std::fabs(drift) > double(src_rate) * 0.25) {
         v->pos = want_pos;
         v->env = 0.0f;
-      } else if (std::fabs(drift) > 0.5) {
-        v->pos += drift * 0.01;
+      } else if (std::fabs(drift) > 0.004 * double(src_rate)) {
+        const double pull = std::clamp(1.0 + drift / (0.35 * double(src_rate)), 0.985, 1.015);
+        step_eff = step * pull;
       }
       const int64_t rfrom = st->from(), rend = st->end();
       const int n = last - first;
-      float local_eg = eg;
-      for (int i = 0; i < n; ++i, v->pos += step) {
-        local_eg += (target_att2 - local_eg) * gain_sm;
+      if (!non_blocking_) {
+        const int64_t want_end = int64_t(v->pos + step_eff * n) + 2;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!st->source_done() && st->end() < want_end && std::chrono::steady_clock::now() < deadline) {
+          st->hint(std::max<int64_t>(rfrom, int64_t(std::floor(v->pos)) - 4));
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+      }
+      for (int i = 0; i < n; ++i, v->pos += step_eff) {
         const int64_t a = int64_t(std::floor(v->pos));
         if (a < rfrom || a >= rend) {
           if (v->env > 0.0f) {
             v->env = std::max(0.0f, v->env - env_dn);
-            const float mono = 0.5f * (v->last_l + v->last_r) * v->env * base_gain * local_eg;
-            out[2 * (first + i)] += mono * pan_l;
-            out[2 * (first + i) + 1] += mono * pan_r;
+            loc_mono_[size_t(first + i)] += 0.5f * (v->last_l + v->last_r) * v->env * base_gain;
           }
           continue;
         }
@@ -1052,29 +1123,147 @@ void RadioPlayer::render_location_stations(float* out, int frames) {
         v->last_l = sl;
         v->last_r = sr;
         v->env = std::min(1.0f, v->env + env_up);
-        const float mono = 0.5f * (sl + sr) * v->env * base_gain * local_eg;
-        out[2 * (first + i)] += mono * pan_l;
-        out[2 * (first + i) + 1] += mono * pan_r;
+        loc_mono_[size_t(first + i)] += 0.5f * (sl + sr) * v->env * base_gain;
       }
-      if (!rendered_any) {
-        eg = local_eg;
-        rendered_any = true;
-      }
+      decoded_any = true;
       st->hint(std::max<int64_t>(rfrom, int64_t(std::floor(v->pos)) - 4));
     }
-    if (!rendered_any) {
-      for (int i = 0; i < frames; ++i) eg += (target_att2 - eg) * gain_sm;
+
+    // Pan, distance-filter (PA bandpass ~250 Hz .. 2.5 kHz rolling down to ~900 Hz),
+    // and mix the single decoded mono station buffer into every audible emitter referencing it.
+    for (int k = 0; k < audible_count; ++k) {
+      const auto& ae = audible[k];
+      if (ae.station != st_idx) continue;
+      float eg = emitter_gain_[ae.idx];
+      if (!decoded_any) {
+        for (int i = 0; i < frames; ++i) eg += (ae.target_att2 - eg) * gain_sm;
+        emitter_gain_[ae.idx] = eg;
+        continue;
+      }
+      EmitterFilter& ef = emitter_filters_[ae.idx];
+      const float lp_fc = 2500.0f - 1600.0f * ae.dist_norm;
+      const float lp_alpha = 1.0f - std::exp(-kTwoPi * lp_fc / float(rate_));
+      for (int i = 0; i < frames; ++i) {
+        eg += (ae.target_att2 - eg) * gain_sm;
+        const float x = loc_mono_[size_t(i)];
+        float hp = hp_alpha * (ef.hp_prev_out + x - ef.hp_prev_in);
+        if (!std::isfinite(hp) || std::fabs(hp) < 1e-20f) hp = 0.0f;
+        ef.hp_prev_in = x;
+        ef.hp_prev_out = hp;
+        ef.lp_state += (hp - ef.lp_state) * lp_alpha;
+        if (!std::isfinite(ef.lp_state) || std::fabs(ef.lp_state) < 1e-20f) ef.lp_state = 0.0f;
+        const float s = ef.lp_state * eg;
+        out[2 * i] += s * ae.pan_l;
+        out[2 * i + 1] += s * ae.pan_r;
+      }
+      emitter_gain_[ae.idx] = eg;
     }
-    emitter_gain_[ei] = eg;
   }
-  for (auto it = voices_.begin(); it != voices_.end();) {
-    if (it->location && !it->used) {
-      release_voice(*it);
-      it = voices_.erase(it);
-    } else {
-      ++it;
+
+  for (auto& v : voices_) {
+    if (v.active && v.location && !v.used) {
+      release_voice(v);
     }
   }
+}
+
+void RadioPlayer::stop_homespace_voices() {
+  for (auto& v : voices_) {
+    if (v.active && v.homespace) release_voice(v);
+  }
+  homespace_gain_ = 0.0f;
+}
+
+bool RadioPlayer::render_homespace_station(int homespace_mode, float* out, int frames) {
+  if (!out || frames <= 0 || homespace_mode < 1 || homespace_mode > 3) return false;
+  const int st_idx = homespace_stations_[homespace_mode - 1];
+  const RadioData& data = radio_.data();
+  if (st_idx < 0 || size_t(st_idx) >= data.stations.size()) return false;
+  StationSchedule* sched = radio_.schedule(st_idx);
+  if (!sched) return false;
+
+  for (auto& v : voices_) {
+    if (v.active && v.homespace) v.used = false;
+  }
+
+  const double dt = double(frames) / double(rate_);
+  const double t0 = radio_.location_clock();
+  const double t1 = t0 + dt;
+  const auto& st_def = data.stations[size_t(st_idx)];
+  const float base_gain = float(std::clamp(st_def.volume, 0.0, 2.0) * master * std::clamp(volume, 0.0, 2.0));
+  const float env_up = 1.0f / std::max(1.0f, 0.008f * float(rate_));
+  const float env_dn = 1.0f / std::max(1.0f, 0.006f * float(rate_));
+  const float ramp = 1.0f / (0.25f * float(rate_));
+  constexpr uint64_t kHomespaceVoiceBit = 1ull << 62;
+
+  sched->audible(t0, t1 + 1.0, scratch_);
+  bool have_ready = false;
+  for (const auto& e : scratch_) {
+    const bool now_audible = e.start < t1 && e.end > t0;
+    const int first = now_audible ? std::clamp(int(std::ceil((e.start - t0) * rate_)), 0, frames) : 0;
+    const int last = now_audible ? std::clamp(int(std::ceil((e.end - t0) * rate_)), 0, frames) : 0;
+    const double approx_start = now_audible ? std::max(0.0, (t0 + double(first) / rate_ - e.start) * 48000.0) : 0.0;
+    Voice* v = voice_for(e.id | kHomespaceVoiceBit, e, int64_t(approx_start));
+    if (!v) continue;
+    v->homespace = true;
+    v->used = true;
+    if (!now_audible || last <= first || v->slot < 0) continue;
+    PcmStream* st = banks_->pool->stream(v->slot);
+    if (!st) continue;
+    if (!non_blocking_ && (st->state() == PcmStream::kLoading || !st->positioned()))
+      banks_->pool->wait_ready(v->slot);
+    if (st->state() != PcmStream::kReady || !st->positioned()) continue;
+    have_ready = true;
+    const int src_rate = st->rate();
+    const double step = double(src_rate) / double(rate_);
+    const double want_pos = (t0 + double(first) / rate_ - e.start) * double(src_rate);
+    const double drift = want_pos - v->pos;
+    double step_eff = step;
+    if (std::fabs(drift) > double(src_rate) * 0.25) {
+      v->pos = want_pos;
+      v->env = 0.0f;
+    } else if (std::fabs(drift) > 0.004 * double(src_rate)) {
+      const double pull = std::clamp(1.0 + drift / (0.35 * double(src_rate)), 0.985, 1.015);
+      step_eff = step * pull;
+    }
+    const int64_t rfrom = st->from(), rend = st->end();
+    const int n = last - first;
+    for (int i = 0; i < n; ++i, v->pos += step_eff) {
+      homespace_gain_ = std::min(1.0f, homespace_gain_ + ramp);
+      const int64_t a = int64_t(std::floor(v->pos));
+      if (a < rfrom || a >= rend) {
+        if (v->env > 0.0f) {
+          v->env = std::max(0.0f, v->env - env_dn);
+          const float g = v->env * base_gain * homespace_gain_;
+          out[2 * (first + i)] += v->last_l * g;
+          out[2 * (first + i) + 1] += v->last_r * g;
+        }
+        continue;
+      }
+      const float frac = float(v->pos - double(a));
+      float al = 0, ar = 0, bl = 0, br = 0;
+      st->sample(a, al, ar);
+      if (a + 1 < rend) st->sample(a + 1, bl, br);
+      else {
+        bl = al;
+        br = ar;
+      }
+      const float sl = al + (bl - al) * frac;
+      const float sr = ar + (br - ar) * frac;
+      v->last_l = sl;
+      v->last_r = sr;
+      v->env = std::min(1.0f, v->env + env_up);
+      const float g = v->env * base_gain * homespace_gain_;
+      out[2 * (first + i)] += sl * g;
+      out[2 * (first + i) + 1] += sr * g;
+    }
+    st->hint(std::max<int64_t>(rfrom, int64_t(std::floor(v->pos)) - 4));
+  }
+
+  for (auto& v : voices_) {
+    if (v.active && v.homespace && !v.used) release_voice(v);
+  }
+  return have_ready;
 }
 
 }  // namespace audio

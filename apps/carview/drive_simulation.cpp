@@ -90,7 +90,12 @@ RolloverRecoveryState g_rollover_state;
 
 audio::EnginePlayer::Update DriveSession::sound_inputs(audio::View audio_view) {
         audio::EnginePlayer::Update u;
-        const double rpm = vehicle.rpm(), thr = vehicle.engine_throttle();
+        const double rpm = vehicle.rpm();
+        double thr = vehicle.engine_throttle();
+        // Retail non-manual-clutch shifts scale engine audio throttle by 0.75x.
+        if (vehicle.shifting() && vehicle.assists().shifting != 2) {
+          thr = std::max(thr, vehicle.shaped_input().throttle) * 0.75;
+        }
         const double torque = vehicle.engine_torque(rpm, thr);
         const double full = vehicle.engine_torque(rpm, 1), closed = vehicle.engine_torque(rpm, 0);
         u.rpm = rpm;
@@ -108,6 +113,16 @@ void DriveSession::fire_satnav_event(const traffic::GpsPromptEvent& gev) {
         if (gev.kind == K::kNone) return;
         audio::SatNavCue cue = audio::SatNavCue::kDestGeneric;
         bool play = true;
+        const bool is_roundabout_exit =
+            (gev.turn == T::kRoundabout && gev.roundabout_exit >= 1 && gev.roundabout_exit <= 4);
+        auto roundabout_cue = [](int exit_num) {
+          switch (exit_num) {
+            case 1: return audio::SatNavCue::kRoundaboutExit1;
+            case 2: return audio::SatNavCue::kRoundaboutExit2;
+            case 3: return audio::SatNavCue::kRoundaboutExit3;
+            default: return audio::SatNavCue::kRoundaboutExit4;
+          }
+        };
         const T eff_turn = (gev.turn == T::kRoundabout)
                                ? (gev.exit_turn != T::kNone ? gev.exit_turn : T::kBearRight)
                                : gev.turn;
@@ -138,6 +153,10 @@ void DriveSession::fire_satnav_event(const traffic::GpsPromptEvent& gev) {
                      carview::ui::rgba(74, 238, 97)};
             break;
           case K::kTurnNow:
+            if (is_roundabout_exit) {
+              cue = roundabout_cue(gev.roundabout_exit);
+              break;
+            }
             switch (eff_turn) {
               case T::kLeft: cue = audio::SatNavCue::kTurnLeft; break;
               case T::kRight: cue = audio::SatNavCue::kTurnRight; break;
@@ -150,6 +169,10 @@ void DriveSession::fire_satnav_event(const traffic::GpsPromptEvent& gev) {
             }
             break;
           case K::kTurnNextJunction:
+            if (is_roundabout_exit) {
+              cue = roundabout_cue(gev.roundabout_exit);
+              break;
+            }
             switch (eff_turn) {
               case T::kLeft: cue = audio::SatNavCue::kNextJuncLeft; break;
               case T::kRight: cue = audio::SatNavCue::kNextJuncRight; break;
@@ -162,6 +185,10 @@ void DriveSession::fire_satnav_event(const traffic::GpsPromptEvent& gev) {
             }
             break;
           case K::kTurnNear:
+            if (is_roundabout_exit) {
+              cue = roundabout_cue(gev.roundabout_exit);
+              break;
+            }
             switch (eff_turn) {
               case T::kLeft: cue = audio::SatNavCue::kNearLeft; break;
               case T::kRight: cue = audio::SatNavCue::kNearRight; break;
@@ -174,6 +201,10 @@ void DriveSession::fire_satnav_event(const traffic::GpsPromptEvent& gev) {
             }
             break;
           case K::kTurnFar:
+            if (is_roundabout_exit) {
+              cue = roundabout_cue(gev.roundabout_exit);
+              break;
+            }
             switch (eff_turn) {
               case T::kLeft: cue = audio::SatNavCue::kFarLeft; break;
               case T::kRight: cue = audio::SatNavCue::kFarRight; break;
@@ -186,6 +217,10 @@ void DriveSession::fire_satnav_event(const traffic::GpsPromptEvent& gev) {
             }
             break;
           case K::kTurnExtended:
+            if (is_roundabout_exit) {
+              cue = roundabout_cue(gev.roundabout_exit);
+              break;
+            }
             switch (eff_turn) {
               case T::kLeft: cue = audio::SatNavCue::kExtendedLeft; break;
               case T::kRight: cue = audio::SatNavCue::kExtendedRight; break;
@@ -1218,10 +1253,16 @@ bool DriveSession::step(const drive::Input& user_in) {
           prev_speed_x = sp_at.x;
           prev_speed_z = sp_at.z;
           for (const auto& ev : speed_evs) {
-            if (ev.kind == freeroam::SpeedActivityEvent::kTrapTriggered ||
-                ev.kind == freeroam::SpeedActivityEvent::kZoneCompleted) {
+            if (ev.kind == freeroam::SpeedActivityEvent::kZoneEntered) {
+              app.audio_host.set_speed_zone_active(true);
+            } else if (ev.kind == freeroam::SpeedActivityEvent::kZoneCancelled) {
+              app.audio_host.set_speed_zone_active(false);
+            } else if (ev.kind == freeroam::SpeedActivityEvent::kTrapTriggered ||
+                       ev.kind == freeroam::SpeedActivityEvent::kZoneCompleted) {
               app.audio_host.trigger_ui(audio::UiCue::kSpeedCamera);
               const bool is_zone = (ev.kind == freeroam::SpeedActivityEvent::kZoneCompleted);
+              if (is_zone) app.audio_host.set_speed_zone_active(false);
+              app.audio_host.trigger_speed_cam();
               int sb_id = 0;
               if (is_zone) {
                 if (const auto* z = app.speed_data.find_zone(ev.id)) sb_id = z->scoreboard_id;

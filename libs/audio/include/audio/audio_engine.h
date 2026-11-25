@@ -61,6 +61,11 @@ struct AudioTelemetry {
   uint32_t codriver_completed_cues = 0;  // monotonic Co-Driver clip completion counter (HUD highlight sync)
   bool satnav_playing = false;
   bool vo_playing = false;
+  float vo_elapsed_s = 0.0f;
+  float vo_duration_s = 0.0f;
+  float vo_rms = 0.0f;
+  uint64_t vo_active_trigger_hash = 0;
+  std::array<char, 64> vo_active_trigger{};
   bool in_tunnel = false;
   bool radio_rally_mode = false;
 };
@@ -105,6 +110,7 @@ class AudioEngine {
   void set_rally_world(bool on);
   void set_ambience_bed_sample(AmbienceBedSlot slot, PcmSample pcm);
   void set_rally_ambience_bed_sample(int region_idx, std::string_view region_name, PcmSample pcm);
+  void set_vo_base_root(const std::filesystem::path& game_root) { vo_base_game_root_ = game_root; }
   bool load_rally_vo(const std::filesystem::path& rally_root_or_state_root, std::string_view language = "EN",
                      std::string* note = nullptr);
   void reload_sfx_burble(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
@@ -150,6 +156,8 @@ class AudioEngine {
   enum class UiMusicMode : uint8_t { kNone = 0, kTitle, kHomespace, kLoading, kMap, kPostRaceVictory };
   void init_ui_music(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir = {});
   void set_ui_music(UiMusicMode mode);
+  // Selects active Homespace interior (0=None, 1=Autoshow/Radio6, 2=Paintshop/Radio8, 3=Workshop/Radio7).
+  void set_homespace_mode(int mode);
 
   // Loads AudioMixerSnapshots.xml, GlobalDSPConfig.xml, and AudioEngineConfig.xml
   // from `game_root` (call before start()). When loaded, the 9x22 SnapshotMatrix,
@@ -157,6 +165,8 @@ class AudioEngine {
   bool load_mixer_configs(const std::filesystem::path& game_root, std::string* note = nullptr,
                           const std::filesystem::path& state_root = {});
   bool load_snapshot_matrix_xml(std::string_view xml, std::string* error = nullptr);
+  void set_master_dsp_config(const MasterDspConfig& cfg);
+  const GlobalDspConfig& global_dsp() const { return global_dsp_; }
   bool has_snapshot_matrix() const { return use_matrix_; }
   float matrix_bus_gain(Bus b) const { return matrix_.bus_gain(b); }
   int find_matrix_snapshot(std::string_view name) const { return matrix_.find(name); }
@@ -172,7 +182,7 @@ class AudioEngine {
 
   // Radio commands (executed on the audio thread so Radio is single-threaded).
   void radio_press(int dir);
-  void radio_select(int station);
+  void radio_select(int station, bool user_change = false);
   void radio_set_dj(bool on);
   void radio_set_volume(float volume);
   void radio_set_time_of_day(double hour);
@@ -249,6 +259,7 @@ class AudioEngine {
       kCarBusDspMode,
       kPlaybackSystem,
       kUiMusicMode,
+      kHomespaceMode,
       kRadioRallyMode,
       kRallyWorld,
       kDialogDuck,
@@ -327,9 +338,12 @@ class AudioEngine {
   VehicleAudioState last_veh_state_{};
 
   std::array<std::vector<float>, kBuses> bus_bufs_;
+  std::vector<float> lfe_buf_;
   std::vector<float> reverb_send_buf_;
   std::vector<float> reverb_wet_buf_;
   std::vector<float> out_buf_;
+  std::filesystem::path vo_base_game_root_;
+  int homespace_mode_ = 0;
   float music_hp_mix_ = 0.0f;
   float music_hp_prev_in_[2]{0.0f, 0.0f};
   float music_hp_prev_out_[2]{0.0f, 0.0f};

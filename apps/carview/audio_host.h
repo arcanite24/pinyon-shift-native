@@ -129,7 +129,14 @@ class AudioHost {
   void update_frame(const audio::EnginePlayer::Update& u, bool paused, bool menu_open, bool on_title,
                     bool loading = false);
   void update_vehicle(const audio::VehicleAudioState& st, bool in_race, bool rewinding, bool countdown_active,
-                      int countdown_digit);
+                      int countdown_digit, float countdown_seq_elapsed_s = -1.0f);
+  void set_homespace_mode(int mode);
+  void set_speed_zone_active(bool active);
+  void trigger_speed_cam();
+  void set_window_minimized(bool minimized);
+  void set_pre_event(bool active);
+  void set_barnfind_active(bool active);
+  void set_race_encounter_active(bool active);
   void trigger_collision(const audio::CollisionHit& hit);
   void trigger_landing(const audio::LandingHit& hit);
   void set_rally_world(bool on);
@@ -160,7 +167,18 @@ class AudioHost {
   void save_radio_state(drive::DriveSave& save);
 
  private:
-  enum class GameplayOverlay : uint8_t { kNone = 0, kMenu, kPaused, kRewind, kLoading };
+  enum class GameplayOverlay : uint8_t {
+    kNone = 0,
+    kMenu,
+    kInterior,
+    kPreEvent,
+    kBarnfind,
+    kRaceEncounter,
+    kVideo,
+    kPaused,
+    kRewind,
+    kLoading,
+  };
   void ensure_device_started();
   void sync_gameplay_snapshot();
 
@@ -255,7 +273,17 @@ class AudioHost {
   bool last_rewinding_ = false;
   bool last_countdown_active_ = false;
   int last_countdown_digit_ = -1;
+  std::chrono::steady_clock::time_point countdown_t0_{};
   audio::CarDspMode last_dsp_mode_ = audio::CarDspMode::kOff;
+  audio::View last_audio_view_ = audio::View::kFollow;
+  int homespace_mode_ = 0;
+  int last_hub_ambience_ = 0;
+  bool speed_zone_active_ = false;
+  bool window_minimized_ = false;
+  bool pre_event_active_ = false;
+  bool barnfind_active_ = false;
+  bool race_encounter_active_ = false;
+  bool viper_intro_locked_ = false;
 
   bool have_acoustics_sent_ = false;
   bool last_in_tunnel_ = false;

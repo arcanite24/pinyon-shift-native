@@ -16,6 +16,18 @@
 namespace audio {
 namespace {
 
+constexpr float kMonoPanGain = 0.70710678f;  // -3 dB equal-power center pan for mono VO
+
+uint64_t fnv1a_64(std::string_view s) {
+  if (s.empty()) return 0;
+  uint64_t h = 14695981039346656037ull;
+  for (unsigned char c : s) {
+    h ^= uint64_t(c);
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
 std::string lower_str(std::string_view s) {
   std::string out(s);
   for (char& c : out) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -362,35 +374,166 @@ bool VoPlayer::trigger(std::string_view trigger_id, bool interrupt) {
   }
 
   if (interrupt) {
+    if (active_.load(std::memory_order_relaxed)) begin_fade_out();
     stop_active();
     queue_.clear();
   }
   if (queue_.size() >= 8) queue_.pop_front();
   queue_.push_back(std::move(ql));
-  if (!active_) start_next();
+  if (!active_.load(std::memory_order_relaxed)) start_next();
   return true;
 }
 
+std::string VoPlayer::active_trigger() const {
+  char tmp[64]{};
+  for (int tries = 0; tries < 8; ++tries) {
+    const uint32_t s0 = trigger_seq_.load(std::memory_order_acquire);
+    if (s0 & 1u) continue;
+    std::memcpy(tmp, trigger_buf_.data(), sizeof(tmp));
+    tmp[sizeof(tmp) - 1] = '\0';
+    const uint32_t s1 = trigger_seq_.load(std::memory_order_acquire);
+    if (s0 == s1) return std::string(tmp);
+  }
+  return {};
+}
+
+void VoPlayer::publish_trigger_snapshot(std::string_view trig) {
+  const uint32_t seq = trigger_seq_.load(std::memory_order_relaxed);
+  trigger_seq_.store(seq + 1u, std::memory_order_release);
+  const size_t n = std::min(trig.size(), trigger_buf_.size() - 1);
+  if (n > 0) std::memcpy(trigger_buf_.data(), trig.data(), n);
+  trigger_buf_[n] = '\0';
+  trigger_seq_.store(seq + 2u, std::memory_order_release);
+  active_trigger_hash_.store(fnv1a_64(trig), std::memory_order_release);
+}
+
+void VoPlayer::update_rms(double sum_sq, int frames) {
+  const float block_rms = (frames > 0 && sum_sq > 0.0) ? float(std::sqrt(sum_sq / double(frames))) : 0.0f;
+  const double dt = double(std::max(1, frames)) / double(rate_);
+  const double tau = (block_rms > rms_smooth_) ? 0.015 : 0.060;
+  const float alpha = float(1.0 - std::exp(-dt / tau));
+  rms_smooth_ += (block_rms - rms_smooth_) * alpha;
+  if (!active_.load(std::memory_order_relaxed) && fade_rem_ <= 0 && rms_smooth_ < 1e-4f) {
+    rms_smooth_ = 0.0f;
+  }
+  current_rms_.store(rms_smooth_, std::memory_order_release);
+}
+
+void VoPlayer::begin_fade_out() {
+  if (!active_.load(std::memory_order_relaxed) || pos_ <= 0.0) return;
+  clear_fade_out();
+  fade_total_ = std::max(1, rate_ / 100);  // 10 ms smooth linear fade-out
+  fade_rem_ = fade_total_;
+  fade_pos_ = pos_;
+  fade_last_l_ = last_l_;
+  fade_last_r_ = last_r_;
+  if (active_mem_) {
+    fade_mem_ = active_mem_;
+    active_mem_ = nullptr;
+  } else if (active_slot_ >= 0) {
+    fade_slot_ = active_slot_;
+    active_slot_ = -1;  // ownership transferred to fade tail until fade completes
+  }
+}
+
+void VoPlayer::clear_fade_out() {
+  if (fade_slot_ >= 0 && pool_) pool_->release(fade_slot_);
+  fade_slot_ = -1;
+  fade_mem_ = nullptr;
+  fade_rem_ = 0;
+  fade_total_ = 0;
+  fade_pos_ = 0.0;
+  fade_last_l_ = 0.0f;
+  fade_last_r_ = 0.0f;
+}
+
+bool VoPlayer::render_fade_out(float* out, int frames, double& sum_sq) {
+  if (fade_rem_ <= 0 || fade_total_ <= 0) return false;
+  const int n = std::min(frames, fade_rem_);
+  const double mem_step = fade_mem_ ? (double(std::max(8000, fade_mem_->rate)) / double(rate_)) : 1.0;
+  PcmStream* st = (fade_slot_ >= 0 && pool_) ? pool_->stream(fade_slot_) : nullptr;
+  const bool st_ready = st && st->state() == PcmStream::kReady && st->positioned();
+  const double st_step = st_ready ? (double(std::max(8000, st->rate())) / double(rate_)) : 1.0;
+  const int64_t rfrom = st_ready ? st->from() : 0;
+  const int64_t rend = st_ready ? st->end() : 0;
+
+  for (int i = 0; i < n; ++i) {
+    float vl = fade_last_l_;
+    float vr = fade_last_r_;
+    if (fade_mem_) {
+      const auto& data = fade_mem_->data;
+      const size_t idx = size_t(fade_pos_);
+      if (idx < data.size()) {
+        const float s0 = data[idx];
+        const float s1 = idx + 1 < data.size() ? data[idx + 1] : s0;
+        const float frac = float(fade_pos_ - double(idx));
+        const float s = (s0 + (s1 - s0) * frac) * kMonoPanGain;
+        vl = vr = s;
+        fade_last_l_ = fade_last_r_ = s;
+        fade_pos_ += mem_step;
+      }
+    } else if (st_ready) {
+      const int64_t a = int64_t(std::floor(fade_pos_));
+      if (a >= rfrom && a < rend) {
+        const float frac = float(fade_pos_ - double(a));
+        float al = 0.0f, ar = 0.0f, bl = 0.0f, br = 0.0f;
+        st->sample(a, al, ar);
+        if (a + 1 < rend) {
+          st->sample(a + 1, bl, br);
+          al += (bl - al) * frac;
+          ar += (br - ar) * frac;
+        }
+        vl = al;
+        vr = ar;
+        fade_last_l_ = al;
+        fade_last_r_ = ar;
+        fade_pos_ += st_step;
+      }
+    }
+    const float g = float(fade_rem_ - 1) / float(fade_total_);
+    const float fl = vl * g;
+    const float fr = vr * g;
+    out[2 * i] += fl;
+    out[2 * i + 1] += fr;
+    sum_sq += 0.5 * (double(fl) * double(fl) + double(fr) * double(fr));
+    --fade_rem_;
+  }
+  if (fade_rem_ <= 0) clear_fade_out();
+  return n > 0;
+}
+
 void VoPlayer::skip_current() {
-  if (!active_) return;
-  stop_active();
+  if (!active_.load(std::memory_order_relaxed)) return;
+  begin_fade_out();
   start_next();
 }
 
 void VoPlayer::clear() {
+  clear_fade_out();
   stop_active();
   queue_.clear();
+  rms_smooth_ = 0.0f;
+  current_rms_.store(0.0f, std::memory_order_release);
 }
 
 void VoPlayer::stop_active() {
   if (active_slot_ >= 0 && pool_) pool_->release(active_slot_);
   active_slot_ = -1;
   active_mem_ = nullptr;
-  active_ = false;
+  active_.store(false, std::memory_order_release);
   active_trigger_.clear();
+  publish_trigger_snapshot({});
+  elapsed_s_.store(0.0f, std::memory_order_release);
+  duration_s_.store(0.0f, std::memory_order_release);
   pos_ = 0.0;
   stalled_frames_ = 0;
   seek_retries_ = 0;
+  last_l_ = 0.0f;
+  last_r_ = 0.0f;
+  if (fade_rem_ <= 0) {
+    rms_smooth_ = 0.0f;
+    current_rms_.store(0.0f, std::memory_order_release);
+  }
 }
 
 void VoPlayer::start_next() {
@@ -404,7 +547,11 @@ void VoPlayer::start_next() {
       active_mem_ = &it->second;
       active_trigger_ = std::move(ql.trigger_id);
       pos_ = 0.0;
-      active_ = true;
+      const int clip_rate = std::max(8000, active_mem_->rate);
+      duration_s_.store(float(double(active_mem_->data.size()) / double(clip_rate)), std::memory_order_release);
+      elapsed_s_.store(0.0f, std::memory_order_release);
+      publish_trigger_snapshot(active_trigger_);
+      active_.store(true, std::memory_order_release);
       return;
     }
     if (pool_) {
@@ -414,22 +561,40 @@ void VoPlayer::start_next() {
       active_slot_ = slot;
       active_trigger_ = std::move(ql.trigger_id);
       pos_ = 0.0;
-      active_ = true;
+      const auto& bank_samples = (ql.bank_id == 1) ? rally_fsb_samples_ : fsb_samples_;
+      float est_dur = 0.0f;
+      if (ql.sample_index >= 0 && size_t(ql.sample_index) < bank_samples.size()) {
+        const FsbSample& fs = bank_samples[size_t(ql.sample_index)];
+        const int sr = fs.rate > 0 ? fs.rate : 48000;
+        if (fs.frames > 0) est_dur = float(double(fs.frames) / double(sr));
+      }
+      duration_s_.store(est_dur, std::memory_order_release);
+      elapsed_s_.store(0.0f, std::memory_order_release);
+      publish_trigger_snapshot(active_trigger_);
+      active_.store(true, std::memory_order_release);
       return;
     }
   }
 }
 
 bool VoPlayer::render(float* out, int frames) {
-  if (!out || frames <= 0) return active_;
-  if (!active_) {
+  if (!out || frames <= 0) return active_.load(std::memory_order_acquire) || fade_rem_ > 0;
+  double sum_sq = 0.0;
+  const bool rendered_fade = render_fade_out(out, frames, sum_sq);
+
+  if (!active_.load(std::memory_order_relaxed)) {
     if (!queue_.empty()) start_next();
-    if (!active_) return false;
+    if (!active_.load(std::memory_order_relaxed)) {
+      update_rms(sum_sq, frames);
+      return rendered_fade;
+    }
   }
 
   if (active_mem_) {
     const auto& data = active_mem_->data;
-    const double step = double(std::max(8000, active_mem_->rate)) / double(rate_);
+    const int clip_rate = std::max(8000, active_mem_->rate);
+    const double step = double(clip_rate) / double(rate_);
+    int rendered = 0;
     for (int i = 0; i < frames; ++i) {
       const size_t idx = size_t(pos_);
       if (idx >= data.size()) {
@@ -439,41 +604,57 @@ bool VoPlayer::render(float* out, int frames) {
       const float s0 = data[idx];
       const float s1 = idx + 1 < data.size() ? data[idx + 1] : s0;
       const float frac = float(pos_ - double(idx));
-      const float sample = s0 + (s1 - s0) * frac;
+      const float sample = (s0 + (s1 - s0) * frac) * kMonoPanGain;
       out[2 * i] += sample;
       out[2 * i + 1] += sample;
+      last_l_ = last_r_ = sample;
+      sum_sq += double(sample) * double(sample);
       pos_ += step;
+      ++rendered;
     }
-    return active_;
+    if (active_mem_) {
+      elapsed_s_.store(float(pos_ / double(clip_rate)), std::memory_order_release);
+    }
+    update_rms(sum_sq, frames);
+    return active_.load(std::memory_order_relaxed) || rendered_fade || rendered > 0;
   }
 
   if (active_slot_ >= 0 && pool_) {
     PcmStream* st = pool_->stream(active_slot_);
     if (!st) {
       start_next();
-      return active_;
+      update_rms(sum_sq, frames);
+      return active_.load(std::memory_order_relaxed) || rendered_fade;
     }
     if (!non_blocking_ && (st->state() == PcmStream::kLoading || !st->positioned())) {
       pool_->wait_ready(active_slot_);
     }
     if (st->state() == PcmStream::kFailed) {
       start_next();
-      return active_;
+      update_rms(sum_sq, frames);
+      return active_.load(std::memory_order_relaxed) || rendered_fade;
     }
     if (st->state() != PcmStream::kReady || !st->positioned()) {
       stalled_frames_ += frames;
       if (stalled_frames_ > rate_ * 4) {
         // Bounded stall guard so a failing/starved stream cannot hang VOPlaying forever.
         start_next();
-        return active_;
+        update_rms(sum_sq, frames);
+        return active_.load(std::memory_order_relaxed) || rendered_fade;
       }
+      update_rms(sum_sq, frames);
       return true;  // still loading/seeking on background worker
     }
-    const double step = double(std::max(8000, st->rate())) / double(rate_);
+    const int st_rate = std::max(8000, st->rate());
+    if (st->length() > 0) {
+      duration_s_.store(float(double(st->length()) / double(st_rate)), std::memory_order_release);
+    }
+    const double step = double(st_rate) / double(rate_);
     const int64_t rfrom = st->from();
     const int64_t rend = st->end();
     bool ring_behind = false;
     bool ring_starved = false;
+    int rendered = 0;
     for (int i = 0; i < frames; ++i) {
       const int64_t a = int64_t(std::floor(pos_));
       if (a >= rend && st->source_done()) {
@@ -501,11 +682,16 @@ bool VoPlayer::render(float* out, int frames) {
       }
       out[2 * i] += al;
       out[2 * i + 1] += ar;
+      last_l_ = al;
+      last_r_ = ar;
+      sum_sq += 0.5 * (double(al) * double(al) + double(ar) * double(ar));
       pos_ += step;
       stalled_frames_ = 0;
       seek_retries_ = 0;
+      ++rendered;
     }
-    if (active_ && st) {
+    if (active_.load(std::memory_order_relaxed) && st) {
+      elapsed_s_.store(float(pos_ / double(st_rate)), std::memory_order_release);
       if (ring_behind) {
         const int64_t cur = int64_t(std::floor(pos_));
         if (seek_retries_ < 2) {
@@ -526,10 +712,12 @@ bool VoPlayer::render(float* out, int frames) {
         st->hint(std::max<int64_t>(rfrom, int64_t(std::floor(pos_)) - 4));
       }
     }
-    return active_;
+    update_rms(sum_sq, frames);
+    return active_.load(std::memory_order_relaxed) || rendered_fade || rendered > 0;
   }
 
-  return false;
+  update_rms(sum_sq, frames);
+  return rendered_fade;
 }
 
 }  // namespace audio

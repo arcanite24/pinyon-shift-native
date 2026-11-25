@@ -147,7 +147,13 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             vst.idle_rpm = float(vp.idle_rpm);
             vst.redline_rpm = float(vp.redline_rpm);
             vst.throttle = float(vehicle.engine_throttle());
+            vst.engine_load = float(std::clamp(std::max(eng_in.pos_torque, std::fabs(eng_in.neg_torque)), 0.0, 1.0));
             vst.gear = vehicle.gear();
+            if (vst.gear < 0) {
+              vst.gear_ratio = float(std::fabs(vp.reverse_gear * vp.final_drive));
+            } else if (vst.gear >= 1 && size_t(vst.gear - 1) < vp.gears.size()) {
+              vst.gear_ratio = float(std::fabs(vp.gears[size_t(vst.gear - 1)] * vp.final_drive));
+            }
             vst.shifting = vehicle.shifting();
             vst.clutch_pos = float(1.0 - vehicle.clutch());
             vst.forced_induction = vp.has_turbo ? 1 : (vp.has_supercharger ? 2 : 0);
@@ -163,16 +169,48 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             vst.turbo_level = audio_turbo_level;
             vst.sc_level = audio_sc_level;
             vst.sc_is_centrifugal = audio_sc_is_centrifugal;
-            vst.backfire_level = std::max({audio_upgrades.exhaust, audio_camshaft_level, vp.has_turbo ? 1 : 0});
+            // Backfire level derives strictly from exhaust/cam upgrade levels (stock (0,0) = 0 even with stock turbo).
+            vst.backfire_level = std::clamp(std::max(audio_upgrades.exhaust, audio_camshaft_level), 0, 3);
+            vst.engine_damage = std::clamp(car_damage.engine_damage, 0.0f, 1.0f);
+            vst.drivetrain_damage = std::clamp(
+                std::max({car_damage.trans_damage, car_damage.clutch_damage, float(vehicle.transmission_damage()),
+                          float(vehicle.clutch_damage())}),
+                0.0f, 1.0f);
+            {
+              uint8_t gmask = 0u;
+              if (car_damage.glass_crack >= 0.35f || car_damage.zone_front >= 0.65f) gmask |= (1u << 0);
+              if (car_damage.zone_left >= 0.55f || car_damage.zone_right >= 0.55f) gmask |= (1u << 1);
+              if (car_damage.zone_rear >= 0.60f) gmask |= (1u << 2);
+              if (car_damage.taillight_rl_broken() || car_damage.taillight_rr_broken() ||
+                  car_damage.headlight_fl_broken() || car_damage.headlight_fr_broken()) {
+                gmask |= (1u << 3);
+              }
+              if (car_damage.zone_roof >= 0.45f || car_damage.glass_crack >= 0.85f) gmask |= (1u << 4);
+              vst.glass_broken_mask = gmask;
+            }
             vst.hub_ambience = autoshow.is_open() ? 1 : (paint_open ? 2 : ((shop.is_open() || garage_open) ? 3 : 0));
             const auto& body_c = vehicle.strongest_body_contact();
             vst.scraping = body_c.force > 150.0 && vst.speed_mph > 4.0f;
             vst.scrape_intensity = vst.scraping ? float(std::clamp(body_c.force / 20000.0, 0.2, 1.0)) : 0.0f;
             const auto& ws = vehicle.wheels();
             const auto& surfs = host.collision.surfaces();
+            if (vst.scraping && body_c.surface >= 0 && size_t(body_c.surface) < surfs.size()) {
+              const std::string sn = lower_ascii(surfs[size_t(body_c.surface)].name);
+              if (sn.find("metal") != std::string::npos || sn.find("guard") != std::string::npos ||
+                  sn.find("steel") != std::string::npos) {
+                vst.scrape_surface_hint = 3;
+              } else if (sn.find("wood") != std::string::npos || sn.find("tree") != std::string::npos) {
+                vst.scrape_surface_hint = 4;
+              } else if (sn.find("dirt") != std::string::npos || sn.find("grass") != std::string::npos ||
+                         sn.find("gravel") != std::string::npos || sn.find("mud") != std::string::npos) {
+                vst.scrape_surface_hint = 2;
+              }
+            }
             for (int wi = 0; wi < 4; ++wi) {
               auto& wa = vst.wheels[size_t(wi)];
               const auto& wstate = ws[size_t(wi)];
+              wa.slip_ratio = float(std::fabs(wstate.slip_ratio));
+              wa.slip_angle = float(std::fabs(wstate.slip_angle));
               wa.slip_combined = float(std::hypot(wstate.slip_ratio, wstate.slip_angle));
               wa.wheel_rpm = float(wstate.omega * 9.5492966);
               const double sload = std::max(100.0, vehicle.static_load(wi));
@@ -181,10 +219,12 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               if (wstate.contact && wstate.compression > vp.bump_travel[size_t(axle)] * 0.92)
                 wa.bottom_out_force = float(wstate.compression - vp.bump_travel[size_t(axle)] * 0.92);
               uint8_t sgrp = 0;
+              int16_t sidx = -1;
               if (wstate.surface >= 0 && size_t(wstate.surface) < surfs.size()) {
                 const auto& sf = surfs[size_t(wstate.surface)];
                 if (!sf.name.empty()) {
                   sgrp = app.audio_host.map_tire_surface_group(sf.name);
+                  sidx = app.audio_host.map_tire_surface_index(sf.name);
                 } else if (sf.off_roadness > 0.5f) {
                   sgrp = 2;
                 } else if (sf.off_roadness > 0.05f) {
@@ -192,6 +232,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 }
               }
               wa.surface_group = sgrp;
+              wa.surface_index = sidx;
             }
             auto set_listener_from_cam = [&](const drive::CameraView& cv) {
               const auto& cf = cv.forward;
@@ -238,6 +279,15 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                                    : (cur_audio_view == audio::View::kCockpit);
             vst.in_race = app.race != nullptr;
             vst.rewinding = rewind_buf.is_rewinding();
+            if (vst.rewinding) {
+              vst.rewind_speed = float(std::fabs(rw_audio.playback_speed));
+              if (rewind_buf.keyframe_count() >= 2) {
+                const double t_old = rewind_buf.keyframe(0).replay_time;
+                const double t_new = rewind_buf.keyframe(rewind_buf.keyframe_count() - 1).replay_time;
+                const double span = std::max(0.25, t_new - t_old);
+                vst.rewind_progress = float(std::clamp((t_new - rewind_buf.playback_time()) / span, 0.0, 1.0));
+              }
+            }
             {
               const std::string lc = lower_ascii(app.car);
               vst.is_electric = (lc.find("leaf") != std::string::npos || lc.find("tesla") != std::string::npos ||
@@ -276,6 +326,58 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             }
 
             // Gather up to kMaxOtherCars nearest race opponents and traffic cars for 3D audio.
+            auto classify_other_archetype = [](const std::string& media_or_name, bool is_traffic,
+                                               uint32_t seed) -> uint8_t {
+              if (is_traffic) return 6;  // Traffic
+              if (!media_or_name.empty()) {
+                const std::string s = lower_ascii(media_or_name);
+                if (s.find("leaf") != std::string::npos || s.find("tesla") != std::string::npos ||
+                    s.find("electric") != std::string::npos || s.find("prius") != std::string::npos) {
+                  return 5;  // EV
+                }
+                if (s.find("lambo") != std::string::npos || s.find("ferrari") != std::string::npos ||
+                    s.find("enzo") != std::string::npos || s.find("aventador") != std::string::npos ||
+                    s.find("murcielago") != std::string::npos || s.find("gallardo") != std::string::npos ||
+                    s.find("viper") != std::string::npos || s.find("lfa") != std::string::npos ||
+                    s.find("zonda") != std::string::npos || s.find("huayra") != std::string::npos ||
+                    s.find("bugatti") != std::string::npos || s.find("veyron") != std::string::npos ||
+                    s.find("agera") != std::string::npos || s.find("mclaren") != std::string::npos ||
+                    s.find("aston") != std::string::npos || s.find("v10") != std::string::npos ||
+                    s.find("v12") != std::string::npos || s.find("_r8") != std::string::npos) {
+                  return 3;  // V10/V12
+                }
+                if (s.find("skyline") != std::string::npos || s.find("gtr") != std::string::npos ||
+                    s.find("supra") != std::string::npos || s.find("evo") != std::string::npos ||
+                    s.find("impreza") != std::string::npos || s.find("wrx") != std::string::npos ||
+                    s.find("rx7") != std::string::npos || s.find("silvia") != std::string::npos ||
+                    s.find("cosworth") != std::string::npos || s.find("quattro") != std::string::npos ||
+                    s.find("turbo") != std::string::npos || s.find("rs200") != std::string::npos) {
+                  return 4;  // Turbo
+                }
+                if (s.find("mustang") != std::string::npos || s.find("camaro") != std::string::npos ||
+                    s.find("corvette") != std::string::npos || s.find("challenger") != std::string::npos ||
+                    s.find("charger") != std::string::npos || s.find("shelby") != std::string::npos ||
+                    s.find("chevelle") != std::string::npos || s.find("amg") != std::string::npos ||
+                    s.find("sls") != std::string::npos || s.find("ford_gt") != std::string::npos ||
+                    s.find("raptor") != std::string::npos || s.find("v8") != std::string::npos) {
+                  return 2;  // V8
+                }
+                if (s.find("350z") != std::string::npos || s.find("370z") != std::string::npos ||
+                    s.find("porsche") != std::string::npos || s.find("911") != std::string::npos ||
+                    s.find("nsx") != std::string::npos || s.find("vr6") != std::string::npos ||
+                    s.find("v6") != std::string::npos || s.find("m3") != std::string::npos) {
+                  return 1;  // V6 / I6
+                }
+                if (s.find("civic") != std::string::npos || s.find("miata") != std::string::npos ||
+                    s.find("golf") != std::string::npos || s.find("mini") != std::string::npos ||
+                    s.find("focus") != std::string::npos || s.find("elise") != std::string::npos ||
+                    s.find("abarth") != std::string::npos || s.find("s2000") != std::string::npos) {
+                  return 0;  // I4
+                }
+              }
+              return uint8_t(seed % 5u);
+            };
+            const uint8_t default_other_sgrp = app.colorado_world() ? 0 : 1;
             struct Cand {
               double d2 = 0;
               audio::OtherCarAudio car{};
@@ -288,7 +390,6 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                                      : float(std::clamp(std::fabs(replay_viewer.speed()), 0.25, 2.0));
               const float fov_rad = float((have_rv_cam ? rv_cam.fov_degrees : 48.0) * (3.14159265358979323846 / 180.0));
               const float fov_rolloff = std::max(0.25f, audio::replay_fov_rolloff_scale(fov_rad));
-              const float inv_fov = 1.0f / fov_rolloff;
               for (const auto& rc : replay_viewer.current_cars()) {
                 if (rc.slot == focus_slot) continue;
                 const float dx = rc.pos[0] - vst.listener_pos.x;
@@ -300,15 +401,18 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 audio::OtherCarAudio oc{};
                 oc.active = rate > 0.0f;
                 oc.is_traffic = rinfo ? rinfo->is_traffic : (rc.slot >= 100u);
-                oc.variant = uint8_t(rc.slot & 3u);
-                // Scale emitter offset by 1 / replay_fov_rolloff_scale so telephoto zoom pulls distant cars closer.
-                oc.pos = {vst.listener_pos.x + dx * inv_fov, vst.listener_pos.y + dy * inv_fov,
-                          vst.listener_pos.z + dz * inv_fov};
+                oc.car_id = 0x10000000u | ((rc.slot + 1u) & 0x0FFFFFFFu);
+                oc.archetype = classify_other_archetype(rinfo ? rinfo->car_media : std::string{}, oc.is_traffic, rc.slot);
+                oc.variant = (oc.archetype <= 3u) ? oc.archetype : uint8_t(rc.slot & 3u);
+                // Pass true 3D world position + fov_rolloff_scale separately so azimuth & Doppler stay exact.
+                oc.pos = {rc.pos[0], rc.pos[1], rc.pos[2]};
                 oc.vel = {rc.vel[0] * rate, rc.vel[1] * rate, rc.vel[2] * rate};
                 oc.rpm = std::max(800.0f, rc.rpm * rate);
                 oc.speed_mph = float(std::fabs(rc.speed_mps) * 2.2369363) * rate;
                 oc.pitch_scale = 0.84f + 0.36f * float((rc.slot * 73u) & 0xFFu) / 255.0f;
                 oc.slip = (rc.brake_u8 > 80 || std::abs(int(rc.steer_i8)) > 48) ? 0.38f : 0.10f;
+                oc.fov_rolloff_scale = fov_rolloff;
+                oc.surface_group = default_other_sgrp;
                 cands.push_back({d2, oc});
               }
             } else if (!rewind_audio_frozen) {
@@ -323,16 +427,19 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   audio::OtherCarAudio oc{};
                   oc.active = true;
                   oc.is_traffic = false;
-                  oc.variant = uint8_t(oi & 3u);
+                  oc.car_id = 0x20000000u | (uint32_t(oi + 1u) & 0x0FFFFFFFu);
+                  // Distinct per-opponent engine pitch/timbre identity + cornering tyre scrub.
+                  uint32_t nh = 2166136261u ^ uint32_t(oi * 37u);
+                  for (char ch : ot.name) nh = (nh ^ uint8_t(ch)) * 16777619u;
+                  oc.archetype = classify_other_archetype(ot.name, false, nh);
+                  oc.variant = (oc.archetype <= 3u) ? oc.archetype : uint8_t(oi & 3u);
                   oc.pos = {float(ot.x), float(ot.y), float(ot.z)};
                   oc.vel = {float(ot.vx), float(ot.vy), float(ot.vz)};
                   oc.rpm = float(ot.rpm);
                   oc.speed_mph = float(std::fabs(ot.speed) * 2.2369363);
-                  // Distinct per-opponent engine pitch/timbre identity + cornering tyre scrub.
-                  uint32_t nh = 2166136261u ^ uint32_t(oi * 37u);
-                  for (char ch : ot.name) nh = (nh ^ uint8_t(ch)) * 16777619u;
                   oc.pitch_scale = 0.84f + 0.36f * float(nh & 0xFFu) / 255.0f;
                   oc.slip = (oc.speed_mph > 25.0f && ot.rpm > 4500.0) ? 0.40f : 0.12f;
+                  oc.surface_group = default_other_sgrp;
                   cands.push_back({d2, oc});
                 }
               }
@@ -344,12 +451,15 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   audio::OtherCarAudio oc{};
                   oc.active = true;
                   oc.is_traffic = true;
+                  oc.car_id = 0x30000000u | ((tc.id + 1u) & 0x0FFFFFFFu);
+                  oc.archetype = 6;  // Traffic
                   oc.pos = {float(tc.position.x), float(tc.position.y), float(tc.position.z)};
                   oc.vel = {float(std::sin(tc.heading) * tc.speed), 0.0f, float(std::cos(tc.heading) * tc.speed)};
-                  oc.rpm = float(1100.0 + std::fabs(tc.speed) * 90.0);
+                  oc.rpm = tc.rpm > 100.0 ? float(tc.rpm) : float(1100.0 + std::fabs(tc.speed) * 90.0);
                   oc.speed_mph = float(std::fabs(tc.speed) * 2.2369363);
                   oc.pitch_scale = 0.82f + 0.30f * float((uint32_t(tc.model) * 73u) & 0xFFu) / 255.0f;
                   oc.slip = (tc.target < tc.speed - 2.0 || std::fabs(tc.steer_angle) > 0.12) ? 0.28f : 0.05f;
+                  oc.surface_group = default_other_sgrp;
                   cands.push_back({d2, oc});
                 }
               }
@@ -363,13 +473,16 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   audio::OtherCarAudio oc{};
                   oc.active = true;
                   oc.is_traffic = false;
-                  oc.variant = uint8_t(fc.id & 3u);
+                  oc.car_id = 0x40000000u | ((fc.id + 1u) & 0x0FFFFFFFu);
+                  oc.archetype = classify_other_archetype(fc.spec.car_media, false, fc.id);
+                  oc.variant = (oc.archetype <= 3u) ? oc.archetype : uint8_t(fc.id & 3u);
                   oc.pos = {float(fc.position.x), float(fc.position.y), float(fc.position.z)};
                   oc.vel = {float(fc.vx), float(fc.vy), float(fc.vz)};
                   oc.rpm = float(fc.rpm);
                   oc.speed_mph = float(std::fabs(fc.speed) * 2.2369363);
                   oc.pitch_scale = 0.85f + 0.34f * float((uint32_t(fc.id) * 97u) & 0xFFu) / 255.0f;
                   oc.slip = fc.braking ? 0.38f : 0.10f;
+                  oc.surface_group = default_other_sgrp;
                   cands.push_back({d2, oc});
                 }
               }
@@ -393,6 +506,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 vst.throttle = (float(rfc->throttle_u8) / 255.0f) * (rate > 0.0f ? 1.0f : 0.0f);
                 vst.engine_load = float(std::clamp(eng_in.pos_torque, 0.0, 1.0));
                 vst.gear = rfc->gear;
+                vst.engine_damage = std::clamp(rfc->damage[0], 0.0f, 1.0f);
+                vst.drivetrain_damage = std::clamp(rfc->damage[1], 0.0f, 1.0f);
                 vst.shifting = false;
                 vst.scraping = false;
                 vst.scrape_intensity = 0.0f;

@@ -511,6 +511,78 @@ void viper_intro_lock_and_emitters(const audio::RadioData& d) {
   CHECK(audio::default_colorado_location_emitters(r).empty());
 }
 
+void weighted_track_picker_and_user_select() {
+  const char* kWeightedXml = R"(<?xml version="1.0"?>
+<RadioSystem>
+  <System musicLevel="1.0" stationChangeFadeTimeUser="0.25" stationChangeFadeTimeNormal="1.0"/>
+  <RadioStation name="WeightedFM">
+    <Playlist noRepeat="0">
+      <MusicTrack name="Heavy" artist="A" fmodname="T_One" likelihoodDaytime="9.0"/>
+      <MusicTrack name="Rare" artist="B" fmodname="T_Two" likelihoodDaytime="1.0"/>
+    </Playlist>
+  </RadioStation>
+  <RadioStation name="Off" isOffStation="true"/>
+</RadioSystem>)";
+  const char* kShortMusic = R"(<SoundBanks>
+  <Bank Name="T_One"><SoundBankInfo SoundBankIndex="0" OffsetEventStart="0" OffsetIdentStart="0" FileLength="1000"/></Bank>
+  <Bank Name="T_Two"><SoundBankInfo SoundBankIndex="1" OffsetEventStart="0" OffsetIdentStart="0" FileLength="1000"/></Bank>
+</SoundBanks>)";
+  audio::RadioData wd;
+  std::string err;
+  CHECK(audio::parse_radio(kWeightedXml, kShortMusic, "<SoundBanks/>", wd, &err));
+  audio::StationSchedule sched(wd, 0, 2025, 0.0, false);
+  sched.set_time_of_day_hour(13.0);  // daytime: 9:1 weight ratio
+  std::vector<audio::RadioEvent> ev;
+  sched.audible(0.0, 250.0, ev);
+  int heavy_count = 0, rare_count = 0;
+  for (const auto& e : ev) {
+    if (e.kind == audio::RadioKind::kTrack) {
+      if (e.track == 0) ++heavy_count;
+      else if (e.track == 1) ++rare_count;
+    }
+  }
+  const int total = heavy_count + rare_count;
+  CHECK(total >= 200);
+  CHECK(double(heavy_count) / double(std::max(1, total)) > 0.78);
+  CHECK(rare_count > 0);
+
+  // User-initiated Radio::select uses fast change_fade flag.
+  audio::Radio r(wd, 99, false);
+  r.select(0, false);
+  CHECK(!r.last_change_was_user());
+  r.select(0, true);
+  CHECK(r.last_change_was_user());
+}
+
+void shared_station_pa_and_location_clock(const audio::RadioData& d) {
+  audio::Radio r(d, 77, false);
+  // Radio::advance() must NOT advance location_clock_ (decoupled from player radio).
+  const double lc0 = r.location_clock();
+  r.select(2);  // Gamma_Silent (off)
+  r.advance(1.5, false);
+  CHECK(near(r.location_clock(), lc0, 1e-9));
+
+  const int hub_st = r.find_station("Delta_3d_Hub");
+  CHECK(hub_st >= 0);
+  audio::RadioPlayer rp(r, 48000, true);
+  // Two overlapping emitters sharing the exact same 3D station.
+  rp.set_location_emitters({
+      {hub_st, {0.0f, 0.0f, 10.0f}, 12.0f, 200.0f},
+      {hub_st, {0.0f, 0.0f, -10.0f}, 12.0f, 200.0f},
+  });
+  rp.set_listener({0.0f, 0.0f, 0.0f}, 0.0f);
+
+  std::vector<float> out(480 * 2, 0.0f);
+  for (int i = 0; i < 10; ++i) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    rp.render_location_stations(out.data(), 480);
+  }
+  // Unconditional 1x advancement even though player RadioPlayer::render() was never called.
+  CHECK(near(r.location_clock(), 0.1, 1e-6));
+  // Overlapping emitters referencing the same station share ONE decoder voice (no 2x advance).
+  CHECK(rp.decoders() <= 1);
+}
+
 }  // namespace
 
 int main() {
@@ -530,6 +602,8 @@ int main() {
   mods_and_language();
   stream_pool_wav();
   viper_intro_lock_and_emitters(d);
+  weighted_track_picker_and_user_select();
+  shared_station_pa_and_location_clock(d);
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) disc(root);
   else std::printf("SHIFT_GAME_ROOT not set: disc checks skipped\n");
   if (failures) std::printf("%d failure(s)\n", failures);

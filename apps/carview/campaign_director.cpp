@@ -97,11 +97,16 @@ void CampaignDirector::dispatch_action_media(const race::CampaignAction& act, Fm
   }
   if (act.lock_viper_radio && audio) {
     // Authentic FH1 Minute-0 Viper opening: tune to Horizon Bass Arena for the
-    // 2-track festival drive playlist ("Levels (Skrillex Remix)" -> "Language").
+    // 2-track festival drive playlist ("Levels (Skrillex Remix)" -> "Language")
+    // and lock the radio until the Viper opening drive completes.
     if (!audio->radio_select_station_by_name("Bass Arena")) {
       audio->radio_select_station_by_name("Bass");
     }
+    audio->radio_lock_viper_intro(true);
     audio->radio_trigger_immediate("AliceOpeningInterview1");
+  }
+  if (act.intro_completed && audio) {
+    audio->radio_lock_viper_intro(false);
   }
   pump_audio(audio);
 }
@@ -119,7 +124,12 @@ void CampaignDirector::pump_audio(AudioHost* audio) {
 race::CampaignAction CampaignDirector::start_new_career(FmvPlayer& fmv, AudioHost* audio,
                                                         std::array<double, 3> festival_gate) {
   skip_hold_progress_ = 0.0f;
+  const auto prev_stage = flow_.stage();
   auto act = flow_.start_new_career(skip_intro_movies_, festival_gate);
+  if (audio && prev_stage == race::CampaignStage::kViperIntroDrive &&
+      flow_.stage() != race::CampaignStage::kViperIntroDrive) {
+    audio->radio_lock_viper_intro(false);
+  }
   dispatch_action_media(act, fmv, audio);
   return act;
 }
@@ -127,7 +137,12 @@ race::CampaignAction CampaignDirector::start_new_career(FmvPlayer& fmv, AudioHos
 bool CampaignDirector::apply_cli_stage(std::string_view cli_stage, FmvPlayer& fmv, AudioHost* audio,
                                        race::CampaignAction& out_action) {
   skip_hold_progress_ = 0.0f;
+  const auto prev_stage = flow_.stage();
   if (!flow_.jump_to_cli_stage(cli_stage, out_action)) return false;
+  if (audio && prev_stage == race::CampaignStage::kViperIntroDrive &&
+      flow_.stage() != race::CampaignStage::kViperIntroDrive) {
+    audio->radio_lock_viper_intro(false);
+  }
   dispatch_action_media(out_action, fmv, audio);
   return true;
 }
@@ -147,7 +162,17 @@ race::CampaignAction CampaignDirector::update(double dt, std::array<double, 2> p
     flow_.cinematic().skip_hold_progress = skip_hold_progress_;
   }
 
+  if (audio) {
+    const auto tel = audio->telemetry();
+    flow_.dialogs().set_vo_telemetry(tel.vo_playing, tel.vo_elapsed_s, tel.vo_duration_s, tel.vo_rms,
+                                     tel.vo_active_trigger.data());
+  }
+  const auto prev_stage = flow_.stage();
   auto act = flow_.update(dt, player_xz, fmv.active(), race_finished);
+  if (audio && prev_stage == race::CampaignStage::kViperIntroDrive &&
+      flow_.stage() != race::CampaignStage::kViperIntroDrive) {
+    audio->radio_lock_viper_intro(false);
+  }
   dispatch_action_media(act, fmv, audio);
   return act;
 }
@@ -159,7 +184,12 @@ race::CampaignAction CampaignDirector::advance_or_skip(FmvPlayer& fmv, AudioHost
     if (audio) audio->set_fmv_audio(nullptr, nullptr);
   }
   if (audio) audio->trigger_ui(audio::UiCue::kAccept);
+  const auto prev_stage = flow_.stage();
   auto act = flow_.advance_or_skip();
+  if (audio && prev_stage == race::CampaignStage::kViperIntroDrive &&
+      flow_.stage() != race::CampaignStage::kViperIntroDrive) {
+    audio->radio_lock_viper_intro(false);
+  }
   dispatch_action_media(act, fmv, audio);
   return act;
 }
@@ -170,7 +200,12 @@ race::CampaignAction CampaignDirector::skip_onboarding_all(FmvPlayer& fmv, Audio
     fmv.skip();
     if (audio) audio->set_fmv_audio(nullptr, nullptr);
   }
+  const auto prev_stage = flow_.stage();
   auto act = flow_.skip_onboarding_all();
+  if (audio && prev_stage == race::CampaignStage::kViperIntroDrive &&
+      flow_.stage() != race::CampaignStage::kViperIntroDrive) {
+    audio->radio_lock_viper_intro(false);
+  }
   dispatch_action_media(act, fmv, audio);
   return act;
 }
@@ -195,7 +230,7 @@ race::CampaignAction CampaignDirector::on_wristband_collected(int wristband_leve
                                                               int newly_unlocked_events, FmvPlayer& fmv,
                                                               AudioHost* audio) {
   auto act = flow_.on_wristband_collected(wristband_level, bonus_car_name, newly_unlocked_events);
-  if (audio) audio->trigger_ui(audio::UiCue::kMenuOpen);
+  if (audio) audio->trigger_ui(audio::UiCue::kWristbandUnlock);
   dispatch_action_media(act, fmv, audio);
   return act;
 }

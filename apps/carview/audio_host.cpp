@@ -135,7 +135,7 @@ void AudioHost::apply_config(const AudioConfig& cfg, const std::filesystem::path
   cfg_ = cfg;
   if (!music_dir.empty()) music_dir_ = music_dir;
   engine_.set_master_volume(cfg_.master_volume);
-  engine_.set_mute(cfg_.mute || !cfg_.sound);
+  engine_.set_mute(cfg_.mute || !cfg_.sound || window_minimized_);
   engine_.set_playback_system(cfg_.full_dynamic_range ? audio::PlaybackSystem::kFullDynamicRange : cfg_.playback_system);
   engine_.set_full_dynamic_range(cfg_.full_dynamic_range);
   // Propagate the 8 top-level UI mix sliders so Mixer applies each slider cleanly to its sub-buses.
@@ -370,7 +370,7 @@ void AudioHost::select_unified_station(int unified_pos, bool show_popup) {
     active_custom_idx_ = custom_idx;
     active_custom_station_ = st_idx;
     if (radio_ && stock_off_station_ >= 0 && stock_off_station_ < stock_count) {
-      engine_.radio_select(stock_off_station_);
+      engine_.radio_select(stock_off_station_, show_popup);
     }
     engine_.runtime_radio_select(custom_idx);
     engine_.runtime_radio_set_volume(cfg_.radio_on ? cfg_.radio_volume : 0.0f);
@@ -384,7 +384,7 @@ void AudioHost::select_unified_station(int unified_pos, bool show_popup) {
     active_custom_station_ = -1;
     engine_.runtime_radio_select(-1);
     if (radio_ && st_idx >= 0 && st_idx < stock_count) {
-      engine_.radio_select(st_idx);
+      engine_.radio_select(st_idx, show_popup);
     }
     if (show_popup) {
       custom_popup_t0_ = std::chrono::steady_clock::now();
@@ -584,8 +584,11 @@ uint8_t AudioHost::map_tire_surface_group(std::string_view physics_surface) cons
     for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
     return s;
   };
+  const std::string s = low(physics_surface);
+  if (s.find("mud") != std::string::npos) return 5;
   if (const auto* e = tires_cfg_.find_surface(physics_surface)) {
     const std::string g = low(e->lod1_group);
+    if (g.find("mud") != std::string::npos) return 5;
     if (g.find("offroad") != std::string::npos || g.find("dirt") != std::string::npos ||
         g.find("gravel") != std::string::npos || g.find("sand") != std::string::npos) {
       return 1;
@@ -595,10 +598,9 @@ uint8_t AudioHost::map_tire_surface_group(std::string_view physics_surface) cons
     if (g.find("trackway") != std::string::npos || g.find("wood") != std::string::npos) return 4;
     return 0;
   }
-  const std::string s = low(physics_surface);
   if (s.find("grass") != std::string::npos) return 2;
   if (s.find("dirt") != std::string::npos || s.find("gravel") != std::string::npos ||
-      s.find("sand") != std::string::npos || s.find("mud") != std::string::npos) {
+      s.find("sand") != std::string::npos) {
     return 1;
   }
   if (s.find("brick") != std::string::npos || s.find("cobble") != std::string::npos) return 3;
@@ -643,6 +645,7 @@ bool AudioHost::init_codriver(const std::filesystem::path& rally_package_dir, co
 bool AudioHost::init_vo(const std::filesystem::path& game_root, std::string_view language) {
   if (game_root.empty()) return false;
   vo_game_root_ = game_root;
+  engine_.set_vo_base_root(game_root);
   if (!vo_tried_) {
     vo_tried_ = true;
     vo_language_ = std::string(language.empty() ? "EN" : language);
@@ -850,6 +853,7 @@ void AudioHost::radio_trigger_festival_update(std::string_view gameplay_event) {
 }
 
 void AudioHost::radio_lock_viper_intro(bool lock) {
+  viper_intro_locked_ = lock;
   if (radio_) engine_.radio_lock_viper_intro(lock);
 }
 
@@ -903,7 +907,7 @@ void AudioHost::update_world_acoustics(float x, float y, float z, float heading_
   if (has_acoustics_.load(std::memory_order_acquire)) {
     std::unique_lock<std::mutex> lk(acoustics_mu_, std::try_to_lock);
     if (lk.owns_lock()) {
-      const auto sample = acoustics_.evaluate(x, y, z);
+      const auto sample = acoustics_.evaluate(x, y, z, heading_rad);
       last_in_tunnel_ = sample.in_tunnel;
       engine_.set_acoustics_sample(sample);
     }
@@ -970,9 +974,12 @@ void AudioHost::ensure_device_started() {
 }
 
 void AudioHost::set_fmv_audio(audio::AudioEngine::FmvAudioFn fn, void* ctx) {
-  has_fmv_audio_ = (fn != nullptr);
+  const bool next = (fn != nullptr);
+  const bool changed = (next != has_fmv_audio_);
+  has_fmv_audio_ = next;
   engine_.set_fmv_audio(fn, ctx);
   if (has_fmv_audio_) ensure_device_started();
+  if (changed && engine_.has_snapshot_matrix()) sync_gameplay_snapshot();
 }
 
 void AudioHost::start_benchmark_device() {
@@ -1003,18 +1010,29 @@ void AudioHost::stop_device() {
 
 void AudioHost::sync_gameplay_snapshot() {
   if (!engine_.has_snapshot_matrix()) return;
-  const GameplayOverlay want = last_loading_     ? GameplayOverlay::kLoading
-                               : last_rewinding_ ? GameplayOverlay::kRewind
-                               : last_paused_    ? GameplayOverlay::kPaused
-                               : last_menu_      ? GameplayOverlay::kMenu
-                                                 : GameplayOverlay::kNone;
+  const bool interior_active = (homespace_mode_ > 0 || last_hub_ambience_ > 0);
+  const GameplayOverlay want = last_loading_          ? GameplayOverlay::kLoading
+                               : has_fmv_audio_       ? GameplayOverlay::kVideo
+                               : last_rewinding_      ? GameplayOverlay::kRewind
+                               : barnfind_active_     ? GameplayOverlay::kBarnfind
+                               : last_paused_         ? GameplayOverlay::kPaused
+                               : interior_active      ? GameplayOverlay::kInterior
+                               : pre_event_active_    ? GameplayOverlay::kPreEvent
+                               : (last_on_title_ || last_menu_) ? GameplayOverlay::kMenu
+                               : race_encounter_active_         ? GameplayOverlay::kRaceEncounter
+                                                                : GameplayOverlay::kNone;
   if (want != last_overlay_) {
     last_overlay_ = want;
     switch (want) {
       case GameplayOverlay::kLoading: engine_.activate_matrix_snapshot("Loading"); break;
+      case GameplayOverlay::kVideo: engine_.activate_matrix_snapshot("Video"); break;
       case GameplayOverlay::kRewind: engine_.activate_matrix_snapshot("Rewind"); break;
+      case GameplayOverlay::kBarnfind: engine_.activate_matrix_snapshot("Barnfind"); break;
       case GameplayOverlay::kPaused: engine_.activate_matrix_snapshot("Paused"); break;
+      case GameplayOverlay::kInterior: engine_.activate_matrix_snapshot("UIInterior"); break;
+      case GameplayOverlay::kPreEvent: engine_.activate_matrix_snapshot("PreEvent"); break;
       case GameplayOverlay::kMenu: engine_.activate_matrix_snapshot("UIExterior"); break;
+      case GameplayOverlay::kRaceEncounter: engine_.activate_matrix_snapshot("RaceEncounter"); break;
       case GameplayOverlay::kNone:
         if (last_in_race_ != applied_in_race_) {
           applied_in_race_ = last_in_race_;
@@ -1040,6 +1058,7 @@ void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, 
   if (!std::isfinite(clean_u.throttle)) clean_u.throttle = 0.0;
   if (!std::isfinite(clean_u.pos_torque)) clean_u.pos_torque = 0.0;
   if (!std::isfinite(clean_u.neg_torque)) clean_u.neg_torque = 0.0;
+  last_audio_view_ = clean_u.view;
   engine_.set_engine_input(clean_u);
   if (!have_on_title_ || on_title != last_on_title_) {
     have_on_title_ = true;
@@ -1071,8 +1090,11 @@ void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, 
 }
 
 void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race, bool rewinding,
-                               bool countdown_active, int countdown_digit) {
+                               bool countdown_active, int countdown_digit, float countdown_seq_elapsed_s) {
   audio::VehicleAudioState eff = st;
+  const audio::View active_view =
+      st.cockpit_view ? audio::View::kCockpit
+                      : (last_audio_view_ == audio::View::kFront ? audio::View::kFront : audio::View::kFollow);
   if (baked_sound_) {
     const auto& es = baked_sound_->loaded.sound;
     eff.trans_vol_scale = float(es.transmission_volume);
@@ -1100,21 +1122,22 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
       eff.burble_silence_weight = float(es.burble.silence_weighting);
     }
     if (es.has_other_volumes) {
-      const audio::View v = st.cockpit_view ? audio::View::kCockpit : audio::View::kFollow;
-      const auto& ov = es.other_volumes[size_t(v)];
+      const auto& ov = es.other_volumes[size_t(active_view)];
       eff.view_wind_scale = float(ov.wind);
       eff.view_tyre_scale = float(ov.tires);
       eff.view_trans_scale = float(ov.transmission);
       eff.view_turbo_scale = float(ov.turbo);
       eff.view_sc_scale = float(ov.supercharger);
       eff.view_backfire_scale = float(ov.backfire);
+      eff.view_burble_scale = float(ov.burble);
       eff.view_susp_scale = float(ov.suspension);
       eff.view_ambience_scale = float(ov.reflections);
-      eff.view_other_cars_scale = st.cockpit_view ? float(std::min(ov.wind, ov.reflections)) : 1.0f;
+      eff.view_other_cars_scale = (active_view == audio::View::kCockpit) ? float(std::min(ov.wind, ov.reflections)) : 1.0f;
       eff.view_damage_scale = float(ov.engine_damage);
-      eff.burble_vol_scale *= float(ov.burble);
-      eff.exh_noise_vol_scale *= float(ov.exhaust_noise);
-      eff.ev_vol_scale *= float(ov.electric_motor);
+      eff.view_exh_noise_scale = float(ov.exhaust_noise);
+      eff.view_ev_scale = float(ov.electric_motor);
+      eff.view_lfe_scale = float(ov.engine_lfe);
+      eff.view_refl_scale = float(ov.reflections);
     } else if (st.cockpit_view) {
       eff.view_wind_scale = 0.72f;
       eff.view_tyre_scale = 0.78f;
@@ -1122,10 +1145,13 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
       eff.view_turbo_scale = 0.85f;
       eff.view_sc_scale = 0.90f;
       eff.view_backfire_scale = 0.72f;
+      eff.view_burble_scale = 0.72f;
       eff.view_susp_scale = 1.05f;
       eff.view_ambience_scale = 0.68f;
       eff.view_other_cars_scale = 0.68f;
       eff.view_damage_scale = 1.10f;
+      eff.view_exh_noise_scale = 0.72f;
+      eff.view_refl_scale = 0.68f;
     }
   } else if (st.cockpit_view) {
     eff.view_wind_scale = 0.72f;
@@ -1134,12 +1160,19 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
     eff.view_turbo_scale = 0.85f;
     eff.view_sc_scale = 0.90f;
     eff.view_backfire_scale = 0.72f;
+    eff.view_burble_scale = 0.72f;
     eff.view_susp_scale = 1.05f;
     eff.view_ambience_scale = 0.68f;
     eff.view_other_cars_scale = 0.68f;
     eff.view_damage_scale = 1.10f;
+    eff.view_exh_noise_scale = 0.72f;
+    eff.view_refl_scale = 0.68f;
   }
   eff.rally_mode = eff.rally_mode || rally_world_;
+  if (homespace_mode_ > 0 && eff.hub_ambience == 0) {
+    eff.hub_ambience = uint8_t(homespace_mode_);
+  }
+  last_hub_ambience_ = int(eff.hub_ambience);
   engine_.set_vehicle_state(eff);
   set_radio_rally_mode(in_race && rally_world_);
 
@@ -1158,10 +1191,27 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
     sync_gameplay_snapshot();
   }
 
-  const audio::CarDspMode dsp = rewinding          ? audio::CarDspMode::kRewind
-                                : countdown_active ? audio::CarDspMode::kCountdown
-                                : st.cockpit_view  ? audio::CarDspMode::kCockpit
-                                                   : audio::CarDspMode::kOff;
+  // ThreeTwoOneDSPConfig windowing: honor GlobalDSPConfig [countdown_start_s, countdown_end_s].
+  bool countdown_dsp_in_window = false;
+  if (countdown_active) {
+    const auto& gdsp = engine_.global_dsp();
+    const double start_s = double(gdsp.countdown_start_s);
+    const double end_s = double(std::max(gdsp.countdown_end_s, gdsp.countdown_start_s + 0.1f));
+    if (countdown_seq_elapsed_s >= 0.0f) {
+      countdown_dsp_in_window =
+          double(countdown_seq_elapsed_s) >= start_s && double(countdown_seq_elapsed_s) <= end_s;
+    } else {
+      if (!last_countdown_active_) countdown_t0_ = std::chrono::steady_clock::now();
+      const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - countdown_t0_).count();
+      const double seq_s = start_s + elapsed_s;
+      countdown_dsp_in_window = (seq_s >= start_s && seq_s <= end_s);
+    }
+  }
+
+  const audio::CarDspMode dsp = rewinding               ? audio::CarDspMode::kRewind
+                                : countdown_dsp_in_window ? audio::CarDspMode::kCountdown
+                                : st.cockpit_view       ? audio::CarDspMode::kCockpit
+                                                        : audio::CarDspMode::kOff;
   if (dsp != last_dsp_mode_) {
     last_dsp_mode_ = dsp;
     engine_.set_car_bus_dsp_mode(dsp);
@@ -1182,6 +1232,53 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
     last_countdown_digit_ = -1;
   }
   last_countdown_active_ = countdown_active;
+}
+
+void AudioHost::set_homespace_mode(int mode) {
+  const int clamped = std::clamp(mode, 0, 3);
+  if (clamped == homespace_mode_) return;
+  homespace_mode_ = clamped;
+  engine_.set_homespace_mode(clamped);
+  if (engine_.has_snapshot_matrix()) sync_gameplay_snapshot();
+}
+
+void AudioHost::set_speed_zone_active(bool active) {
+  if (active == speed_zone_active_) return;
+  speed_zone_active_ = active;
+  if (engine_.has_snapshot_matrix()) {
+    engine_.activate_matrix_snapshot(active ? "AverageSpeedEnter" : "AverageSpeedExit");
+  }
+}
+
+void AudioHost::trigger_speed_cam() {
+  if (engine_.has_snapshot_matrix()) {
+    engine_.activate_matrix_snapshot("SpeedCam");
+  }
+  engine_.trigger_ui(audio::UiCue::kSpeedCamera);
+}
+
+void AudioHost::set_window_minimized(bool minimized) {
+  if (minimized == window_minimized_) return;
+  window_minimized_ = minimized;
+  engine_.set_mute(cfg_.mute || !cfg_.sound || window_minimized_);
+}
+
+void AudioHost::set_pre_event(bool active) {
+  if (active == pre_event_active_) return;
+  pre_event_active_ = active;
+  if (engine_.has_snapshot_matrix()) sync_gameplay_snapshot();
+}
+
+void AudioHost::set_barnfind_active(bool active) {
+  if (active == barnfind_active_) return;
+  barnfind_active_ = active;
+  if (engine_.has_snapshot_matrix()) sync_gameplay_snapshot();
+}
+
+void AudioHost::set_race_encounter_active(bool active) {
+  if (active == race_encounter_active_) return;
+  race_encounter_active_ = active;
+  if (engine_.has_snapshot_matrix()) sync_gameplay_snapshot();
 }
 
 void AudioHost::trigger_collision(const audio::CollisionHit& hit) { engine_.trigger_collision(hit); }
@@ -1212,7 +1309,7 @@ void AudioHost::set_satnav_enabled(bool on) {
 }
 
 void AudioHost::radio_press(int dir) {
-  if (!has_radio()) return;
+  if (!has_radio() || viper_intro_locked_) return;
   if (custom_stations_.empty() && radio_) {
     engine_.radio_press(dir);
     return;

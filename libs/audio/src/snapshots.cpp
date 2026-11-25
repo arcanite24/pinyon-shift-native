@@ -379,29 +379,41 @@ void SnapshotMatrix::set_radio_rally_mode(bool on, float fade_s) {
 void SnapshotMatrix::reset_dynamics() {
   have_prev_speed_ = false;
   prev_speed_mph_ = 0.0f;
+  crash_dt_accum_ = 0.0;
   crash_latched_ = false;
   crash_saw_slow_ = false;
   in_top_speed_ = false;
 }
 
-void SnapshotMatrix::update_dynamics(double /*dt*/, float focus_speed_mph, float car_top_speed_mph) {
+void SnapshotMatrix::update_dynamics(double dt, float focus_speed_mph, float car_top_speed_mph) {
   if (car_top_speed_mph <= 1.0f) car_top_speed_mph = 140.0f;
-  // CrashData trigger & latch.
-  if (crash_latched_) {
-    if (focus_speed_mph <= 5.0f) crash_saw_slow_ = true;
-    else if (crash_saw_slow_ && focus_speed_mph > 5.0f) {
-      crash_latched_ = false;
-      crash_saw_slow_ = false;
+  // CrashData trigger & latch evaluated on a 30 Hz (~33.3 ms) window so 10 ms
+  // audio blocks accumulate speed delta over one 30 Hz physics frame.
+  if (crash_latched_ && focus_speed_mph <= 5.0f) {
+    crash_saw_slow_ = true;
+  }
+  if (!have_prev_speed_) {
+    prev_speed_mph_ = focus_speed_mph;
+    have_prev_speed_ = true;
+    crash_dt_accum_ = 0.0;
+  } else if (dt > 0.0) {
+    crash_dt_accum_ += dt;
+    constexpr double kCrashWindowS = (1.0 / 30.0) - 0.001;
+    if (crash_dt_accum_ >= kCrashWindowS) {
+      if (crash_latched_ && crash_saw_slow_ && focus_speed_mph > 5.0f) {
+        crash_latched_ = false;
+        crash_saw_slow_ = false;
+      }
+      if (!crash_latched_ && prev_speed_mph_ > dynamics_.crash_threshold_mph &&
+          (prev_speed_mph_ - focus_speed_mph) > dynamics_.crash_drop_mph) {
+        activate("Crash");
+        crash_latched_ = true;
+        crash_saw_slow_ = (focus_speed_mph <= 5.0f);
+      }
+      prev_speed_mph_ = focus_speed_mph;
+      crash_dt_accum_ = 0.0;
     }
   }
-  if (have_prev_speed_ && !crash_latched_ && prev_speed_mph_ > dynamics_.crash_threshold_mph &&
-      (prev_speed_mph_ - focus_speed_mph) > dynamics_.crash_drop_mph) {
-    activate("Crash");
-    crash_latched_ = true;
-    crash_saw_slow_ = (focus_speed_mph <= 5.0f);
-  }
-  prev_speed_mph_ = focus_speed_mph;
-  have_prev_speed_ = true;
 
   // TopSpeedData trigger.
   const bool want_top = focus_speed_mph > dynamics_.top_speed_threshold * car_top_speed_mph;
@@ -487,7 +499,7 @@ float SnapshotMatrix::bus_gain(Bus b) const {
     case Bus::kOtherCars: return gain(Category::kOppCar);
     case Bus::kTyres: return gain(Category::kTire);
     case Bus::kWind: return gain(Category::kCarWind);
-    case Bus::kAmbience: return gain(Category::kAmbientStatic);
+    case Bus::kAmbience: return std::min(gain(Category::kAmbientStatic), gain(Category::kAmbientDynamic));
     case Bus::kMusic: return gain(Category::kGameMusic);
     case Bus::kUi: return gain(Category::kGameUI);
     case Bus::kVo: return gain(Category::kVO);
@@ -610,6 +622,11 @@ void CarBusEq::process(float* stereo, int frames) {
 
 // ----------------------------------------------------------- MasterDspConfig
 
+float MasterDspConfig::backfire_reverb_wet_send_linear() const {
+  if (backfire_reverb_wet_send_mb <= -6500.0f) return 0.0f;
+  return std::clamp(std::pow(10.0f, backfire_reverb_wet_send_mb / 2000.0f), 0.0f, 2.0f);
+}
+
 bool MasterDspConfig::parse(std::string_view xml, std::string* error) {
   XmlNode root;
   if (!parse_xml(xml, root, error)) return false;
@@ -633,6 +650,7 @@ bool MasterDspConfig::parse(std::string_view xml, std::string* error) {
   saturator_level = float(root.number("saturatorLevel", saturator_level));
   saturator_saturation = float(root.number("saturatorSaturation", saturator_saturation));
   saturator_gain = float(root.number("saturatorGain", saturator_gain));
+  backfire_reverb_wet_send_mb = float(root.number("backfireReverbWetSendOverride", backfire_reverb_wet_send_mb));
   return true;
 }
 
@@ -679,18 +697,18 @@ float MasterRmsStage::gain_reduction_db() const {
   return -20.0f * std::log10(g);
 }
 
-void MasterRmsStage::process(float* io, int frames, int channels) {
+void MasterRmsStage::process(float* io, int frames, int channels, const float* lfe_mono) {
   if (frames <= 0 || channels <= 0) return;
   peak_ = 0.0f;
   int offset = 0;
   while (offset < frames) {
     const int n = std::min(frames - offset, kBlockSize);
-    process_block(io + size_t(offset) * size_t(channels), n, channels);
+    process_block(io + size_t(offset) * size_t(channels), n, channels, lfe_mono ? (lfe_mono + offset) : nullptr);
     offset += n;
   }
 }
 
-void MasterRmsStage::process_block(float* io, int n, int channels) {
+void MasterRmsStage::process_block(float* io, int n, int channels, const float* lfe_mono) {
   bool comp_bypass = full_range_ || playback_system_ == PlaybackSystem::kFullDynamicRange;
   float level = cfg_.compressor_level;
   float threshold = cfg_.compressor_threshold;
@@ -745,6 +763,7 @@ void MasterRmsStage::process_block(float* io, int n, int channels) {
 
   for (int i = 0; i < n; ++i) {
     const float g = g0 + dg * float(i);
+    const float lfe = (lfe_mono && channels == 2) ? (lfe_mono[i] * 0.70710678f) : 0.0f;
     for (int c = 0; c < channels; ++c) {
       float& x = io[size_t(i) * size_t(channels) + size_t(c)];
       const bool is_lfe = (channels == 6 && c == 3);
@@ -753,6 +772,7 @@ void MasterRmsStage::process_block(float* io, int n, int channels) {
         sum_sq += double(scaled) * double(scaled);
         ++count;
         if (!comp_bypass) x = x * g * level * makeup;
+        x += lfe;
       }
       if (!cfg_.saturator_bypass) {
         x = master_saturate(x, cfg_.saturator_level, cfg_.saturator_saturation, cfg_.saturator_gain);

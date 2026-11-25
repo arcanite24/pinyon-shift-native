@@ -89,6 +89,14 @@ struct TrashDspConfig {
   std::array<TrashBandConfig, 3> bands{};
 };
 
+struct ShiftVolumeScalarConfig {
+  bool present = false;
+  double boost_up_pct = 0.0;      // ShiftVolBoostUpPct (normalized fractional gain delta)
+  double boost_up_time_s = 0.0;   // ShiftVolBoostUpTime (seconds)
+  double boost_down_pct = 0.0;    // ShiftVolBoostDownPct (normalized fractional gain delta)
+  double boost_down_time_s = 0.0; // ShiftVolBoostDownTime (seconds)
+};
+
 struct ViewOtherVolumes {
   double wind = 1.0;
   double tires = 1.0;
@@ -151,9 +159,14 @@ struct EngineSound {
   BurbleConfig burble;
   double exhaust_noise_volume = 0;
   DrivetrainSpringConfig drivetrain_spring;
+  ShiftVolumeScalarConfig shift_volume_scalar;
   PeqConfig focus_peq;
   DistortionConfig distortion;
   TrashDspConfig trash_dsp;
+  // Emission group scope for FocusPEQ / Distortion / TrashDSP (default 2 = ExhaustL/ExhaustR).
+  int focus_peq_group = 2;
+  int distortion_group = 2;
+  int trash_dsp_group = 2;
   std::array<ViewOtherVolumes, kViews> other_volumes{};
   bool has_other_volumes = false;
   std::vector<Group> groups;

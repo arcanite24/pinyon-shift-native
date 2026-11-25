@@ -173,21 +173,79 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
     out.backfire_volume = v->number("BackfireVolume", 1);
     out.burble_volume = v->number("BurbleVolume", 0);
   }
+  // Per-car ShiftVolumeScalar (ShiftVolBoostUpPct/Time, ShiftVolBoostDownPct/Time).
+  {
+    const XmlNode* svs = engine.child("ShiftVolumeScalar");
+    if (!svs) {
+      if (const XmlNode* s = engine.child("EngineSettings")) svs = s->child("ShiftVolumeScalar");
+    }
+    if (!svs) {
+      if (const XmlNode* v = engine.child("VolumeAdjustments")) svs = v->child("ShiftVolumeScalar");
+    }
+    const XmlNode* src = svs;
+    if (!src) {
+      if (const XmlNode* s = engine.child("EngineSettings");
+          s && (s->has("ShiftVolBoostUpPct") || s->has("ShiftVolBoostDownPct"))) {
+        src = s;
+      } else if (const XmlNode* v = engine.child("VolumeAdjustments");
+                 v && (v->has("ShiftVolBoostUpPct") || v->has("ShiftVolBoostDownPct"))) {
+        src = v;
+      }
+    }
+    if (src) {
+      auto norm_pct = [](double raw) {
+        if (!std::isfinite(raw)) return 0.0;
+        const double scaled = std::fabs(raw) > 2.0 ? (raw * 0.01) : raw;
+        return std::clamp(scaled, -0.8, 2.0);
+      };
+      auto norm_time_s = [](double raw) {
+        if (!std::isfinite(raw) || raw <= 0.0) return 0.0;
+        const double sec = raw > 5.0 ? (raw * 0.001) : raw;
+        return std::clamp(sec, 0.0, 3.0);
+      };
+      out.shift_volume_scalar.boost_up_pct =
+          norm_pct(first_attr_number(*src, {"ShiftVolBoostUpPct", "BoostUpPct", "UpPct"}, 0.0));
+      out.shift_volume_scalar.boost_up_time_s =
+          norm_time_s(first_attr_number(*src, {"ShiftVolBoostUpTime", "BoostUpTime", "UpTime"}, 0.0));
+      out.shift_volume_scalar.boost_down_pct =
+          norm_pct(first_attr_number(*src, {"ShiftVolBoostDownPct", "BoostDownPct", "DownPct"}, 0.0));
+      out.shift_volume_scalar.boost_down_time_s =
+          norm_time_s(first_attr_number(*src, {"ShiftVolBoostDownTime", "BoostDownTime", "DownTime"}, 0.0));
+      out.shift_volume_scalar.present =
+          std::fabs(out.shift_volume_scalar.boost_up_pct) > 1e-4 ||
+          std::fabs(out.shift_volume_scalar.boost_down_pct) > 1e-4 ||
+          out.shift_volume_scalar.boost_up_time_s > 1e-4 ||
+          out.shift_volume_scalar.boost_down_time_s > 1e-4;
+    }
+  }
   out.global_volume = read_param(engine.child("GlobalCarVolume"));
   const XmlNode* ht_root = engine.child("HarmonicTunings");
-  auto find_focus_dsp = [&](std::string_view tag) -> const XmlNode* {
+  auto find_focus_dsp = [&](std::string_view tag, int& out_group) -> const XmlNode* {
+    // Scope FocusPEQ / Distortion / TrashDSP primarily to EmissionGroup2 (Exhaust).
+    out_group = 2;
     if (ht_root) {
-      if (const XmlNode* n = ht_root->child(tag)) return n;
-      for (const char* eg : {"EmissionGroup2", "EmissionGroup1", "EmissionGroup0"}) {
+      static constexpr std::pair<const char*, int> kEgOrder[3] = {
+          {"EmissionGroup2", 2},
+          {"EmissionGroup1", 1},
+          {"EmissionGroup0", 0},
+      };
+      for (const auto& [eg, gidx] : kEgOrder) {
         if (const XmlNode* g = ht_root->child(eg)) {
-          if (const XmlNode* n = g->child(tag)) return n;
+          if (const XmlNode* n = g->child(tag)) {
+            out_group = gidx;
+            return n;
+          }
         }
+      }
+      if (const XmlNode* n = ht_root->child(tag)) {
+        out_group = 2;
+        return n;
       }
     }
     return engine.child(tag);
   };
-  out.focus_peq = read_focus_peq(find_focus_dsp("FocusPEQ"));
-  if (const XmlNode* dist = find_focus_dsp("Distortion")) {
+  out.focus_peq = read_focus_peq(find_focus_dsp("FocusPEQ", out.focus_peq_group));
+  if (const XmlNode* dist = find_focus_dsp("Distortion", out.distortion_group)) {
     const bool active = !dist->has("Active") || dist->number("Active", 0) >= 1.0;
     if (active) {
       out.distortion.level = read_param(dist->child("DistortionLevel"));
@@ -199,7 +257,7 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
       out.distortion.active = out.distortion.level.present || out.distortion.level_scalar > 1e-4;
     }
   }
-  if (const XmlNode* trash = find_focus_dsp("TrashDSP")) {
+  if (const XmlNode* trash = find_focus_dsp("TrashDSP", out.trash_dsp_group)) {
     const bool active = !trash->has("Active") || trash->number("Active", 0) >= 1.0;
     if (active) {
       out.trash_dsp.cutoff1_hz = std::clamp(trash->number("Cutoff1", 300.0), 40.0, 4000.0);

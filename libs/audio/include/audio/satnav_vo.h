@@ -67,6 +67,12 @@ enum class SatNavCue : uint8_t {
   kFarDestination,
   kExtendedDestination,
   kArrived,
+  kRoundaboutExit1,
+  kRoundaboutExit2,
+  kRoundaboutExit3,
+  kRoundaboutExit4,
+  kKeepLeft,
+  kKeepRight,
   kCount
 };
 
@@ -122,6 +128,14 @@ class SatNavVoPlayer {
   SatNavCue active_cue_ = SatNavCue::kDestGeneric;
   double phase_ = 0.0;
   float gain_ = 1.0f;
+  float last_sample_ = 0.0f;
+
+  // 8 ms smooth fade-out / crossfade state on high-priority SatNav interrupts.
+  SatNavCue fade_cue_ = SatNavCue::kDestGeneric;
+  double fade_phase_ = 0.0;
+  int fade_rem_ = 0;
+  int fade_total_ = 0;
+  float fade_last_ = 0.0f;
 
   static constexpr size_t kMaxPending = 8;
   std::array<SatNavCue, kMaxPending> pending_{};

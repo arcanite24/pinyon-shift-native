@@ -477,11 +477,29 @@ bool DialogQueue::enqueue(const DialogCue& cue, std::set<std::string>* heard_set
   return true;
 }
 
+void DialogQueue::set_vo_telemetry(const DialogVoTelemetry& vo) {
+  set_vo_telemetry(vo.vo_playing, vo.vo_elapsed_s, vo.vo_duration_s, vo.vo_rms, vo.active_trigger);
+}
+
+void DialogQueue::set_vo_telemetry(bool vo_playing, float vo_elapsed_s, float vo_duration_s, float vo_rms,
+                                   std::string_view active_trigger) {
+  has_vo_telemetry_ = true;
+  vo_playing_ = vo_playing;
+  vo_elapsed_s_ = std::max(0.0f, vo_elapsed_s);
+  vo_duration_s_ = std::max(0.0f, vo_duration_s);
+  vo_rms_ = std::isfinite(vo_rms) ? std::max(0.0f, vo_rms) : 0.0f;
+  vo_active_trigger_.assign(active_trigger.begin(), active_trigger.end());
+}
+
 void DialogQueue::begin_next() {
   if (queue_.empty()) {
     active_ = false;
     elapsed_ = 0.0;
+    effective_duration_s_ = 0.0;
     audio_pending_ = false;
+    vo_seen_playing_ = false;
+    vo_hold_active_ = false;
+    vo_ended_elapsed_ = -1.0;
     return;
   }
   // Pick highest priority cue (stable FIFO within equal priority).
@@ -494,14 +512,75 @@ void DialogQueue::begin_next() {
   if (current_.duration_s < 1.5) current_.duration_s = 4.5;
   active_ = true;
   elapsed_ = 0.0;
+  effective_duration_s_ = current_.duration_s;
+  vo_seen_playing_ = false;
+  vo_hold_active_ = false;
+  vo_ended_elapsed_ = -1.0;
   audio_pending_ = (!current_.vo_trigger.empty() || !current_.radio_event.empty());
+}
+
+void DialogQueue::update(double dt, const DialogVoTelemetry& vo) {
+  set_vo_telemetry(vo);
+  update(dt);
 }
 
 void DialogQueue::update(double dt) {
   dt = std::max(0.0, dt);
   if (active_) {
     elapsed_ += dt;
-    if (elapsed_ >= current_.duration_s) {
+    bool advance = false;
+    if (has_vo_telemetry_ && !current_.vo_trigger.empty()) {
+      auto iequals_ascii = [](std::string_view a, std::string_view b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+          if (std::tolower(static_cast<unsigned char>(a[i])) !=
+              std::tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+          }
+        }
+        return true;
+      };
+      const bool trigger_match = vo_active_trigger_.empty() || iequals_ascii(vo_active_trigger_, current_.vo_trigger);
+      const bool matching_vo_playing = vo_playing_ && trigger_match;
+      const double safety_cap_s = (vo_duration_s_ > 0.5f && vo_duration_s_ < 60.0f)
+                                      ? std::clamp(double(vo_duration_s_) + 4.0,
+                                                   std::max(current_.duration_s, double(vo_duration_s_) + 0.5), 45.0)
+                                      : std::clamp(std::max(current_.duration_s * 2.5, 18.0), 12.0, 30.0);
+
+      if (matching_vo_playing) {
+        vo_seen_playing_ = true;
+        vo_ended_elapsed_ = -1.0;
+        if (vo_duration_s_ > 0.5f && vo_duration_s_ < 60.0f) {
+          effective_duration_s_ = std::max(1.5, double(vo_duration_s_) + 0.35);
+        }
+        if (elapsed_ < safety_cap_s) {
+          vo_hold_active_ = true;
+          if (elapsed_ + 0.4 > effective_duration_s_) {
+            effective_duration_s_ = std::min(safety_cap_s, elapsed_ + 0.5);
+          }
+        } else {
+          vo_hold_active_ = false;
+          advance = true;
+        }
+      } else {
+        vo_hold_active_ = false;
+        if (vo_seen_playing_) {
+          if (vo_ended_elapsed_ < 0.0) vo_ended_elapsed_ = elapsed_;
+          const double finish_at = std::max(1.5, vo_ended_elapsed_ + 0.35);
+          effective_duration_s_ = std::min(safety_cap_s, finish_at);
+          if (elapsed_ >= finish_at || elapsed_ >= safety_cap_s) advance = true;
+        } else {
+          // Missing/failed VO clip: fall back cleanly to static subtitle duration_s.
+          effective_duration_s_ = current_.duration_s;
+          if (elapsed_ >= current_.duration_s) advance = true;
+        }
+      }
+    } else {
+      vo_hold_active_ = false;
+      effective_duration_s_ = current_.duration_s;
+      if (elapsed_ >= current_.duration_s) advance = true;
+    }
+    if (advance) {
       begin_next();
     }
   }
@@ -520,7 +599,11 @@ void DialogQueue::clear() {
   active_ = false;
   queue_.clear();
   elapsed_ = 0.0;
+  effective_duration_s_ = 0.0;
   audio_pending_ = false;
+  vo_seen_playing_ = false;
+  vo_hold_active_ = false;
+  vo_ended_elapsed_ = -1.0;
 }
 
 float DialogQueue::banner_slide() const {
@@ -528,7 +611,9 @@ float DialogQueue::banner_slide() const {
   constexpr double kIn = 0.35;
   constexpr double kOut = 0.35;
   if (elapsed_ < kIn) return float(ease_out_cubic(elapsed_ / kIn));
-  const double rem = current_.duration_s - elapsed_;
+  if (vo_hold_active_) return 1.0f;
+  const double dur = effective_duration_s_ > 1e-4 ? effective_duration_s_ : current_.duration_s;
+  const double rem = dur - elapsed_;
   if (rem < kOut) return float(ease_out_cubic(std::max(0.0, rem) / kOut));
   return 1.0f;
 }
@@ -539,6 +624,25 @@ std::vector<float> DialogQueue::waveform_bars(int count) const {
   if (!active_) return bars;
   const double t = elapsed_;
   const double env = double(banner_slide());
+  if (vo_rms_ > 0.001f) {
+    // Live speech amplitude from VoPlayer block RMS drives the call-in visualizer.
+    const double level = std::clamp(std::pow(double(vo_rms_) / 0.30, 0.65), 0.0, 1.0);
+    const double center = 0.5 * double(count - 1);
+    for (int i = 0; i < count; ++i) {
+      const double norm_dist = (count > 1) ? std::fabs(double(i) - center) / std::max(1.0, center) : 0.0;
+      const double arch = 1.0 - 0.35 * norm_dist * norm_dist;
+      const double shimmer = 0.72 + 0.28 * std::fabs(std::sin(t * (7.5 + double(i % 4) * 2.3) + double(i) * 1.17));
+      const double raw = (0.10 + 0.90 * level * arch * shimmer) * env;
+      bars[size_t(i)] = float(std::clamp(raw, 0.10, 1.0));
+    }
+    return bars;
+  }
+  if (has_vo_telemetry_ && vo_playing_) {
+    for (int i = 0; i < count; ++i) {
+      bars[size_t(i)] = float(std::clamp((0.10 + 0.04 * std::fabs(std::sin(t * 4.0 + double(i)))) * env, 0.10, 0.16));
+    }
+    return bars;
+  }
   for (int i = 0; i < count; ++i) {
     const double phase = t * (6.5 + double(i % 5) * 2.1) + double(i) * 0.93;
     const double voice_mod = 0.5 + 0.5 * std::sin(t * 3.7 + double(i) * 0.45);

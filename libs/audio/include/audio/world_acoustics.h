@@ -104,7 +104,24 @@ struct SoundscapeTile {
   int crowd_count = 0;
 };
 
+enum class AmbientEmitterKind : uint8_t {
+  kGeneric = 0,
+  kCrowd,
+  kFestival,
+  kWater,
+  kTrees,
+};
+
+struct RtAmbientEmitter {
+  bool active = false;
+  AmbientEmitterKind kind = AmbientEmitterKind::kGeneric;
+  float gain = 0.0f;  // distance attenuation [0..1]
+  float pan = 0.0f;   // stereo pan [-1..1] relative to listener heading
+  uint32_t id_hash = 0;
+};
+
 struct AcousticsSample {
+  static constexpr int kMaxActiveEmitters = 4;
   ReverbTemplate reverb{};
   int reverb_template_idx = 0;
   bool in_tunnel = false;
@@ -113,6 +130,7 @@ struct AcousticsSample {
   float festival_proximity = 0.0f;  // 0..1 proximity to festival crowd/stage emitters
   float crowd_proximity = 0.0f;     // 0..1 proximity to crowd emitters
   bool is_rally_world = false;      // true when active world is Horizon Rally (ColoradoDirt)
+  std::array<RtAmbientEmitter, kMaxActiveEmitters> active_emitters{};
 };
 
 // Trivially-copyable, zero-allocation RT acoustics handoff struct for
@@ -132,11 +150,14 @@ struct RtReverbParams {
   float hf_reference_hz = 6260.0f;
   float near_dry = 1.0f;
   float near_wet = 0.0f;
+  float far_dry = 0.8f;
+  float far_wet = 0.8f;
 
   static RtReverbParams from_template(const ReverbTemplate& t);
 };
 
 struct RtAcousticsSample {
+  static constexpr int kMaxActiveEmitters = AcousticsSample::kMaxActiveEmitters;
   RtReverbParams reverb{};
   int reverb_template_idx = 0;
   bool in_tunnel = false;
@@ -145,6 +166,7 @@ struct RtAcousticsSample {
   float festival_proximity = 0.0f;
   float crowd_proximity = 0.0f;
   bool is_rally_world = false;
+  std::array<RtAmbientEmitter, kMaxActiveEmitters> active_emitters{};
 
   static RtAcousticsSample from_sample(const AcousticsSample& s);
   std::string_view ambience_snapshot_view() const;
@@ -182,8 +204,9 @@ class WorldAcousticsData {
   void add_emitter(AmbientEmitter3D e) { emitters_.push_back(std::move(e)); }
 
   // Evaluates the active blended I3DL2 reverb template, tunnel snapshot flag,
-  // ambience zone, and festival proximity at world position (x, y, z).
-  AcousticsSample evaluate(float x, float y, float z) const;
+  // ambience zone, festival proximity, and top-4 distance-culled 3D ambient
+  // emitters at world position (x, y, z) and optional listener heading.
+  AcousticsSample evaluate(float x, float y, float z, float listener_heading_rad = 0.0f) const;
 
  private:
   bool rally_world_ = false;
@@ -215,6 +238,14 @@ class EnvironmentalReverb {
   float target_early_gain() const { return target_early_; }
   float decay_time() const { return decay_time_; }
 
+  // Unity-gain Schroeder allpass filter (exposed for direct unit verification).
+  struct Allpass {
+    std::vector<float> buf;
+    size_t idx = 0;
+    float feedback = 0.5f;
+    float tick(float in);
+  };
+
  private:
   struct Comb {
     std::vector<float> buf;
@@ -222,12 +253,6 @@ class EnvironmentalReverb {
     float filter_store = 0.0f;
     float feedback = 0.7f;
     float damp = 0.3f;
-    float tick(float in);
-  };
-  struct Allpass {
-    std::vector<float> buf;
-    size_t idx = 0;
-    float feedback = 0.5f;
     float tick(float in);
   };
 
@@ -289,6 +314,8 @@ class AmbienceBedPlayer {
   int loaded_bed_count() const;
   int rally_bed_count() const;
   int last_rally_region() const { return last_rally_region_.load(std::memory_order_acquire); }
+  // Frees any replaced bed PCM buffers retired by the audio thread (control thread only).
+  void reclaim_retired();
 
   void render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
               float tod_hour = 12.0f);
@@ -305,10 +332,20 @@ class AmbienceBedPlayer {
     std::array<char, 64> name{};
     PcmSample* pcm = nullptr;
   };
+  struct EmitterVoice3D {
+    uint32_t id_hash = 0;
+    float gain = 0.0f;
+    float pan = 0.0f;
+    double phase = 0.0;
+    float lp = 0.0f;
+    float bp = 0.0f;
+    uint32_t rng = 0x9E3779B9u;
+  };
   void stop_worker();
   void stop_rally_worker();
-  void drain_bed_queue(SpscQueue<LoadedBed>& q);
+  void retire_pcm(PcmSample* pcm);
   void drain_loaded();
+  void render_3d_emitters(const RtAcousticsSample& sample, float* out_stereo, int frames);
 
   int rate_ = 48000;
   std::array<PcmSample*, int(AmbienceBedSlot::kCount)> beds_{};
@@ -317,6 +354,7 @@ class AmbienceBedPlayer {
   // Separate SPSC queues per producer so worker_ and set_bed_sample() never race.
   SpscQueue<LoadedBed> loaded_q_{32};
   SpscQueue<LoadedBed> direct_loaded_q_{32};
+  SpscQueue<PcmSample*> retired_pcms_{64};
   std::mutex direct_q_mu_;
   std::mutex lifecycle_mu_;  // guards control-thread worker start/stop only (never locked on audio thread)
   std::atomic<bool> stop_worker_{false};
@@ -332,6 +370,7 @@ class AmbienceBedPlayer {
   SpscQueue<LoadedRallyBed> rally_direct_q_{32};
   std::atomic<bool> stop_rally_worker_{false};
   std::thread rally_worker_;
+  std::array<EmitterVoice3D, RtAcousticsSample::kMaxActiveEmitters> emitter_voices_{};
 
   uint32_t rng_ = 0x12345678u;
   float lp_l_ = 0.0f, lp_r_ = 0.0f;

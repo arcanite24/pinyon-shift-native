@@ -469,9 +469,10 @@ void test_phase_r2_5_acoustics_vo_radio_parity() {
     check(eng.matrix_bus_gain(audio::Bus::kMusic) < 0.35f,
           "set_dialog_ducking(false) does not cancel active VoPlayer ducking");
 
-    // Skipping VO now releases VOPlaying cleanly.
+    // Skipping VO now fades out over 10 ms (480 frames), then releases VOPlaying cleanly.
     eng.skip_vo();
-    eng.render_offline(out.data(), 480);
+    eng.render_offline(out.data(), 480);  // completes 10 ms click-free skip fade-out
+    eng.render_offline(out.data(), 480);  // fade finished -> VONotPlaying active
     check(eng.matrix_bus_gain(audio::Bus::kMusic) > 0.90f, "VONotPlaying restores music once both VO and dialog end");
   }
 
@@ -540,6 +541,51 @@ void test_phase_r2_5_acoustics_vo_radio_parity() {
   }
 }
 
+void test_r3_aud_10_vo_telemetry_skip_fade_and_mono_pan() {
+  // 1. Equal-power mono center pan (0.70710678f) and live telemetry accessors.
+  audio::VoPlayer vp(48000, false);
+  audio::PcmSample dc;
+  dc.rate = 48000;
+  dc.data.assign(48000, 1.0f);  // 1.0 s constant +1.0 clip
+  vp.set_clip("Intro_Alice_Line", dc);
+
+  check(vp.trigger("Intro_Alice_Line"), "triggers Intro_Alice_Line");
+  check(vp.playing(), "VoPlayer reports playing");
+  check(vp.active_trigger() == "intro_alice_line", "active_trigger() returns lowercase atomic-safe trigger");
+  check(vp.active_trigger_hash() != 0, "active_trigger_hash() non-zero while active");
+  check(std::fabs(vp.duration_s() - 1.0f) < 1e-3f, "duration_s() reports exact clip duration (1.0 s)");
+  check(vp.elapsed_s() < 1e-4f, "elapsed_s() starts at 0.0 s");
+
+  std::vector<float> buf(4800 * 2, 0.0f);  // 100 ms
+  check(vp.render(buf.data(), 4800), "render returns true while playing");
+  check(std::fabs(buf[0] - 0.70710678f) < 1e-4f && std::fabs(buf[1] - 0.70710678f) < 1e-4f,
+        "mono VO uses equal-power 0.70710678f stereo pan");
+  check(std::fabs(vp.elapsed_s() - 0.1f) < 5e-3f, "elapsed_s() advances to ~0.1 s after 4800 frames");
+  check(vp.current_rms() > 0.5f && vp.current_rms() < 0.8f,
+        "current_rms() reports live smoothed block RMS amplitude");
+
+  // 2. 10 ms smooth fade-out on skip_current() prevents hard step clicks.
+  const float pre_skip_l = buf[(4800 - 1) * 2];
+  vp.skip_current();
+  check(!vp.playing(), "skip_current() clears logical playing() immediately when queue empty");
+  check(vp.active_trigger().empty(), "skip_current() clears active_trigger() when queue empty");
+
+  std::vector<float> fade_buf(600 * 2, 0.0f);  // 12.5 ms (covers full 480-frame 10 ms fade + tail)
+  check(vp.render(fade_buf.data(), 600), "render outputs 10 ms skip fade-out tail");
+  float max_step = std::fabs(fade_buf[0] - pre_skip_l);
+  for (int i = 1; i < 600; ++i) {
+    max_step = std::max(max_step, std::fabs(fade_buf[size_t(i) * 2] - fade_buf[size_t(i - 1) * 2]));
+  }
+  check(max_step < 0.01f, "VoPlayer 10 ms skip fade-out eliminates hard step click");
+  check(std::fabs(fade_buf[0]) > 0.65f, "skip fade-out starts continuously near pre-skip level");
+  check(std::fabs(fade_buf[479 * 2]) < 1e-3f && std::fabs(fade_buf[550 * 2]) < 1e-5f,
+        "skip fade-out reaches silence cleanly by 10 ms (480 frames)");
+
+  std::fill(fade_buf.begin(), fade_buf.end(), 0.0f);
+  check(!vp.render(fade_buf.data(), 480), "VoPlayer returns false once 10 ms fade-out completes");
+  check(vp.elapsed_s() == 0.0f && vp.duration_s() == 0.0f, "telemetry resets to 0 after VO finishes");
+}
+
 }  // namespace
 
 int main() {
@@ -547,6 +593,7 @@ int main() {
   test_full_radio_depth_and_3d_stations();
   test_world_acoustics_and_reverb();
   test_phase_r2_5_acoustics_vo_radio_parity();
+  test_r3_aud_10_vo_telemetry_skip_fade_and_mono_pan();
   if (g_failures > 0) {
     std::fprintf(stderr, "acoustics_vo_radio_tests: %d failure(s)\n", g_failures);
     return 1;

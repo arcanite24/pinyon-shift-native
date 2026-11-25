@@ -79,10 +79,15 @@ void sanitize_vehicle_state(VehicleAudioState& st) {
   st.view_turbo_scale = safe_clamp_f(st.view_turbo_scale, 0.0f, 2.5f, 1.0f);
   st.view_sc_scale = safe_clamp_f(st.view_sc_scale, 0.0f, 2.5f, 1.0f);
   st.view_backfire_scale = safe_clamp_f(st.view_backfire_scale, 0.0f, 2.5f, 1.0f);
+  st.view_burble_scale = safe_clamp_f(st.view_burble_scale, 0.0f, 2.5f, 1.0f);
   st.view_susp_scale = safe_clamp_f(st.view_susp_scale, 0.0f, 2.5f, 1.0f);
   st.view_ambience_scale = safe_clamp_f(st.view_ambience_scale, 0.0f, 2.5f, 1.0f);
   st.view_other_cars_scale = safe_clamp_f(st.view_other_cars_scale, 0.0f, 2.5f, 1.0f);
   st.view_damage_scale = safe_clamp_f(st.view_damage_scale, 0.0f, 2.5f, 1.0f);
+  st.view_exh_noise_scale = safe_clamp_f(st.view_exh_noise_scale, 0.0f, 2.5f, 1.0f);
+  st.view_ev_scale = safe_clamp_f(st.view_ev_scale, 0.0f, 2.5f, 1.0f);
+  st.view_lfe_scale = safe_clamp_f(st.view_lfe_scale, 0.0f, 2.5f, 1.0f);
+  st.view_refl_scale = safe_clamp_f(st.view_refl_scale, 0.0f, 2.5f, 1.0f);
   for (auto& w : st.wheels) {
     w.slip_combined = safe_clamp_f(w.slip_combined, 0.0f, 4.0f, 0.0f);
     w.wheel_rpm = safe_clamp_f(w.wheel_rpm, -10000.0f, 10000.0f, 0.0f);
@@ -148,9 +153,10 @@ AudioEngine::AudioEngine(int rate) : rate_(std::max(8000, rate)), ambience_bed_(
   reverb_.prepare(rate_);
   matrix_bus_smooth_.fill(1.0f);
   for (auto& s : bus_levels_shadow_) s.store(1.0f, std::memory_order_relaxed);
-  // Pre-allocate stereo bus scratch buffers for up to 4096 frames so the
-  // audio thread never allocates in steady state.
+  // Pre-allocate stereo bus scratch buffers + mono LFE buffer for up to 4096 frames
+  // so the audio thread never allocates in steady state.
   for (auto& b : bus_bufs_) b.resize(4096 * 2, 0.0f);
+  lfe_buf_.resize(4096, 0.0f);
   reverb_send_buf_.resize(4096 * 2, 0.0f);
   reverb_wet_buf_.resize(4096 * 2, 0.0f);
   out_buf_.resize(4096 * 2, 0.0f);
@@ -285,6 +291,19 @@ void AudioEngine::set_ui_music(UiMusicMode mode) {
   enqueue(c);
 }
 
+void AudioEngine::set_homespace_mode(int mode) {
+  Command c;
+  c.kind = Command::kHomespaceMode;
+  c.i0 = std::clamp(mode, 0, 3);
+  enqueue(c);
+}
+
+void AudioEngine::set_master_dsp_config(const MasterDspConfig& cfg) {
+  if (!running_.load(std::memory_order_acquire)) {
+    rms_stage_.set_config(cfg);
+  }
+}
+
 void AudioEngine::set_playback_system(PlaybackSystem sys) {
   Command c;
   c.kind = Command::kPlaybackSystem;
@@ -320,6 +339,7 @@ void AudioEngine::stop() {
 }
 
 void AudioEngine::reclaim() {
+  ambience_bed_.reclaim_retired();
   Retired r;
   while (retired_.pop(r)) {
     switch (r.kind) {
@@ -737,7 +757,19 @@ void AudioEngine::set_rally_ambience_bed_sample(int region_idx, std::string_view
 
 bool AudioEngine::load_rally_vo(const std::filesystem::path& rally_root_or_state_root, std::string_view language,
                                 std::string* note) {
-  if (running_.load(std::memory_order_acquire)) return false;
+  if (running_.load(std::memory_order_acquire)) {
+    // Build and load off the audio thread, preserving base VO when known, then
+    // hand off atomically via the lock-free SPSC swap queue.
+    auto next = std::make_unique<VoPlayer>(rate_, true);
+    if (!vo_base_game_root_.empty()) {
+      next->load(vo_base_game_root_, language, nullptr);
+    }
+    if (!next->load_rally_vo(rally_root_or_state_root, language, note)) {
+      return false;
+    }
+    set_vo_player(std::move(next));
+    return true;
+  }
   drain_commands();
   if (!vo_) {
     vo_ = new VoPlayer(rate_, true);
@@ -756,6 +788,7 @@ void AudioEngine::reload_sfx_burble(const std::filesystem::path& game_root, cons
 bool AudioEngine::load_mixer_configs(const std::filesystem::path& game_root, std::string* note,
                                      const std::filesystem::path& state_root) {
   if (running_.load(std::memory_order_acquire) || game_root.empty()) return false;
+  if (vo_base_game_root_.empty()) vo_base_game_root_ = game_root;
   std::string err;
   const bool have_matrix = matrix_.load(game_root, &err, state_root);
   if (have_matrix) {
@@ -828,10 +861,11 @@ void AudioEngine::radio_press(int dir) {
   enqueue(c);
 }
 
-void AudioEngine::radio_select(int station) {
+void AudioEngine::radio_select(int station, bool user_change) {
   Command c;
   c.kind = Command::kRadioSelect;
   c.i0 = station;
+  c.b0 = user_change;
   enqueue(c);
 }
 
@@ -962,6 +996,9 @@ void AudioEngine::drain_commands() {
       case Command::kUiMusicMode:
         ui_music_mode_ = UiMusicMode(std::clamp(c.i0, 0, int(UiMusicMode::kPostRaceVictory)));
         break;
+      case Command::kHomespaceMode:
+        homespace_mode_ = std::clamp(c.i0, 0, 3);
+        break;
       case Command::kRadioRallyMode:
         radio_rally_mode_ = c.b0;
         if (use_matrix_) matrix_.set_radio_rally_mode(c.b0);
@@ -981,7 +1018,6 @@ void AudioEngine::drain_commands() {
       case Command::kDynamicsSpeed:
         last_veh_state_.speed_mph = c.f0;
         last_veh_state_.top_speed_mph = c.f1;
-        if (use_matrix_) matrix_.update_dynamics(0.0, c.f0, c.f1);
         break;
       case Command::kCarBusDspMode: {
         GlobalDspBand band{};
@@ -999,7 +1035,7 @@ void AudioEngine::drain_commands() {
         if (radio_) radio_->press(c.i0);
         break;
       case Command::kRadioSelect:
-        if (radio_) radio_->select(c.i0);
+        if (radio_) radio_->select(c.i0, c.b0);
         break;
       case Command::kRadioDj:
         if (radio_) radio_->set_dj_enabled(c.b0);
@@ -1151,7 +1187,7 @@ void AudioEngine::sanitize_output(float* out, int frames) {
         saw_non_finite = true;
       } else {
         if (std::fabs(s) < 1e-20f) s = 0.0f;
-        s = std::clamp(soft_limit(s * env), -1.0f, 1.0f);
+        s = std::clamp(s * env, -1.0f, 1.0f);
       }
       out[2 * size_t(i) + size_t(ch)] = s;
     }
@@ -1201,6 +1237,8 @@ void AudioEngine::render_block(float* out, int frames) {
   for (auto& b : bus_bufs_) {
     if (b.size() < samples) b.resize(samples, 0.0f);
   }
+  if (lfe_buf_.size() < size_t(frames)) lfe_buf_.resize(size_t(frames), 0.0f);
+  std::fill_n(lfe_buf_.data(), size_t(frames), 0.0f);
 
   EnginePlayer::Update u{};
   if (engine_in_.read(u)) {
@@ -1225,43 +1263,76 @@ void AudioEngine::render_block(float* out, int frames) {
   const bool on_title = snap_title_ >= 0 && mixer_.snapshots().active(snap_title_);
   const bool user_music_on = user_music_ && user_music_->active();
   const bool runtime_radio_on = !user_music_on && runtime_radio_ && runtime_radio_->active();
-  const StereoTrack* ui_track =
-      (ui_music_mode_ != UiMusicMode::kNone && size_t(ui_music_mode_) < ui_tracks_.size())
-          ? ui_tracks_[size_t(ui_music_mode_)]
-          : nullptr;
-  const bool ui_music_active = (!user_music_on && ui_track && !ui_track->stereo.empty());
-  if (ui_music_active) {
-    if (ui_music_cur_ != ui_music_mode_) {
-      ui_music_cur_ = ui_music_mode_;
-      ui_music_phase_ = 0.0;
-      ui_music_gain_ = 0.0f;
+
+  // Homespace interior radio stations (Radio6_3d_Autoshow / Radio8_3d_Paintshop / Radio7_3d_Workshop).
+  const int eff_homespace = homespace_mode_ > 0 ? homespace_mode_ : int(last_veh_state_.hub_ambience);
+  bool homespace_radio_active = false;
+  if (!on_title && !user_music_on && ui_music_mode_ == UiMusicMode::kHomespace && eff_homespace >= 1 &&
+      eff_homespace <= 3 && radio_player_) {
+    auto& hbuf = bus_bufs_[int(Bus::kHomespaceMusic)];
+    std::fill(hbuf.begin(), hbuf.begin() + ptrdiff_t(samples), 0.0f);
+    if (radio_player_->render_homespace_station(eff_homespace, hbuf.data(), frames)) {
+      buses[int(Bus::kHomespaceMusic)] = hbuf.data();
+      homespace_radio_active = true;
     }
-    // Route Homespace music to Bus::kHomespaceMusic and Menu/Title/Map/Loading music to Bus::kMenuMusic
-    // so they are never ducked by -13 dB alongside GameMusic in UIExterior / Menu snapshots.
-    const Bus ui_music_bus = (ui_music_mode_ == UiMusicMode::kHomespace) ? Bus::kHomespaceMusic : Bus::kMenuMusic;
-    auto& mbuf = bus_bufs_[int(ui_music_bus)];
-    std::fill(mbuf.begin(), mbuf.begin() + ptrdiff_t(samples), 0.0f);
-    const size_t total_f = ui_track->stereo.size() / 2;
-    const double step = double(std::max(1, ui_track->rate)) / double(rate_);
-    const float ramp = 1.0f / (0.35f * float(rate_));
-    const float base_gain = (ui_music_mode_ == UiMusicMode::kMap) ? 0.50f : 0.72f;
-    for (int i = 0; i < frames; ++i) {
-      ui_music_gain_ = std::min(1.0f, ui_music_gain_ + ramp);
-      const size_t k = size_t(ui_music_phase_) % total_f;
-      const size_t k1 = (k + 1) % total_f;
-      const float frac = float(ui_music_phase_ - std::floor(ui_music_phase_));
-      const float gl = ui_track->stereo[2 * k] + (ui_track->stereo[2 * k1] - ui_track->stereo[2 * k]) * frac;
-      const float gr = ui_track->stereo[2 * k + 1] + (ui_track->stereo[2 * k1 + 1] - ui_track->stereo[2 * k + 1]) * frac;
-      const float g = base_gain * ui_music_gain_;
-      mbuf[2 * size_t(i)] = gl * g;
-      mbuf[2 * size_t(i) + 1] = gr * g;
-      ui_music_phase_ += step;
-      if (ui_music_phase_ >= double(total_f)) ui_music_phase_ = std::fmod(ui_music_phase_, double(total_f));
-    }
-    buses[int(ui_music_bus)] = mbuf.data();
-  } else if (!on_title && (user_music_on || runtime_radio_on || radio_player_)) {
-    ui_music_cur_ = UiMusicMode::kNone;
+  } else if (radio_player_) {
+    radio_player_->stop_homespace_voices();
+  }
+
+  const bool have_want_ui_track =
+      (!user_music_on && !homespace_radio_active && ui_music_mode_ != UiMusicMode::kNone &&
+       size_t(ui_music_mode_) < ui_tracks_.size() && ui_tracks_[size_t(ui_music_mode_)] &&
+       !ui_tracks_[size_t(ui_music_mode_)]->stereo.empty());
+  const UiMusicMode want_ui_mode = have_want_ui_track ? ui_music_mode_ : UiMusicMode::kNone;
+
+  // Smooth 250 ms crossfade envelope on UI music fade-in and fade-out (zero hard-cut clicks).
+  if (ui_music_cur_ == UiMusicMode::kNone && want_ui_mode != UiMusicMode::kNone) {
+    ui_music_cur_ = want_ui_mode;
+    ui_music_phase_ = 0.0;
     ui_music_gain_ = 0.0f;
+  }
+  if (ui_music_cur_ != UiMusicMode::kNone) {
+    const StereoTrack* cur_track =
+        size_t(ui_music_cur_) < ui_tracks_.size() ? ui_tracks_[size_t(ui_music_cur_)] : nullptr;
+    const bool fading_out = (ui_music_cur_ != want_ui_mode);
+    if (cur_track && !cur_track->stereo.empty() && (!fading_out || ui_music_gain_ > 1e-4f)) {
+      const Bus ui_music_bus = (ui_music_cur_ == UiMusicMode::kHomespace) ? Bus::kHomespaceMusic : Bus::kMenuMusic;
+      auto& mbuf = bus_bufs_[int(ui_music_bus)];
+      if (!buses[int(ui_music_bus)]) {
+        std::fill(mbuf.begin(), mbuf.begin() + ptrdiff_t(samples), 0.0f);
+        buses[int(ui_music_bus)] = mbuf.data();
+      }
+      const size_t total_f = cur_track->stereo.size() / 2;
+      const double step = double(std::max(1, cur_track->rate)) / double(rate_);
+      const float ramp = 1.0f / (0.25f * float(rate_));
+      const float base_gain = (ui_music_cur_ == UiMusicMode::kMap) ? 0.50f : 0.72f;
+      for (int i = 0; i < frames; ++i) {
+        ui_music_gain_ = fading_out ? std::max(0.0f, ui_music_gain_ - ramp) : std::min(1.0f, ui_music_gain_ + ramp);
+        const size_t k = size_t(ui_music_phase_) % total_f;
+        const size_t k1 = (k + 1) % total_f;
+        const float frac = float(ui_music_phase_ - std::floor(ui_music_phase_));
+        const float gl = cur_track->stereo[2 * k] + (cur_track->stereo[2 * k1] - cur_track->stereo[2 * k]) * frac;
+        const float gr = cur_track->stereo[2 * k + 1] + (cur_track->stereo[2 * k1 + 1] - cur_track->stereo[2 * k + 1]) * frac;
+        const float g = base_gain * ui_music_gain_;
+        mbuf[2 * size_t(i)] += gl * g;
+        mbuf[2 * size_t(i) + 1] += gr * g;
+        ui_music_phase_ += step;
+        if (ui_music_phase_ >= double(total_f)) ui_music_phase_ = std::fmod(ui_music_phase_, double(total_f));
+      }
+      if (fading_out && ui_music_gain_ <= 1e-4f) {
+        ui_music_gain_ = 0.0f;
+        ui_music_phase_ = 0.0;
+        ui_music_cur_ = want_ui_mode;
+      }
+    } else {
+      ui_music_gain_ = 0.0f;
+      ui_music_phase_ = 0.0;
+      ui_music_cur_ = want_ui_mode;
+    }
+  }
+
+  const bool ui_music_active = homespace_radio_active || (want_ui_mode != UiMusicMode::kNone);
+  if (!ui_music_active && !on_title && (user_music_on || runtime_radio_on || radio_player_)) {
     auto& mbuf = bus_bufs_[int(Bus::kMusic)];
     std::fill(mbuf.begin(), mbuf.begin() + ptrdiff_t(samples), 0.0f);
     if (user_music_on) {
@@ -1346,7 +1417,7 @@ void AudioEngine::render_block(float* out, int frames) {
     sfx_buses[int(Bus::kEngine)] = bus_bufs_[int(Bus::kEngine)].data();
     last_veh_state_.music_active = buses[int(Bus::kMusic)] != nullptr || buses[int(Bus::kHomespaceMusic)] != nullptr ||
                                    buses[int(Bus::kMenuMusic)] != nullptr;
-    sfx_->render(last_veh_state_, sfx_buses, frames, engine_);
+    sfx_->render(last_veh_state_, sfx_buses, frames, engine_, lfe_buf_.data());
   }
 
   bool satnav_now = false;
@@ -1383,7 +1454,13 @@ void AudioEngine::render_block(float* out, int frames) {
       buses[int(Bus::kAmbience)] = abuf.data();
     }
     if (have_acoustics_) ambience_bed_.render(last_acoustics_, last_veh_state_.speed_mph, abuf.data(), frames, tod_hour_);
-    if (radio_player_ && !user_music_on) radio_player_->render_location_stations(abuf.data(), frames);
+    if (radio_player_) {
+      if (!user_music_on) {
+        radio_player_->render_location_stations(abuf.data(), frames);
+      } else if (radio_) {
+        radio_->advance_location_clock(double(frames) / double(rate_));
+      }
+    }
   }
 
   // Apply GlobalDSPConfig.xml car-bus EQ to active car buses (independent filter state per bus).
@@ -1395,39 +1472,30 @@ void AudioEngine::render_block(float* out, int frames) {
       car_eqs_[size_t(i)].process(bus_bufs_[int(kCarBuses[i])].data(), frames);
     }
   }
-  // Environmental reverb (colorado_reverb.xml I3DL2 zones + early reflections) routed across focus
-  // car engine, subsystems, 3D opponent/traffic cars, tyres, collisions, and suspension via a shared wet send bus.
-  if (have_acoustics_) {
-    constexpr Bus kRevBuses[9] = {Bus::kEngine,    Bus::kTransmission, Bus::kSupercharger,
-                                  Bus::kTurbo,     Bus::kBackfire,     Bus::kOtherCars,
-                                  Bus::kTyres,     Bus::kCollision,    Bus::kSuspension};
-    constexpr float kRevSend[9] = {1.0f, 0.85f, 0.85f, 0.85f, 1.0f, 0.85f, 0.65f, 0.90f, 0.70f};
-    float active_w = 0.0f;
-    for (int i = 0; i < 9; ++i)
-      if (buses[int(kRevBuses[i])]) active_w += kRevSend[i];
-    if (active_w > 0.0f) {
-      if (reverb_send_buf_.size() < samples) {
-        reverb_send_buf_.resize(samples, 0.0f);
-        reverb_wet_buf_.resize(samples, 0.0f);
-      }
-      std::fill(reverb_send_buf_.begin(), reverb_send_buf_.begin() + ptrdiff_t(samples), 0.0f);
-      for (int i = 0; i < 9; ++i) {
-        const float* src = buses[int(kRevBuses[i])];
-        if (!src) continue;
-        const float sw = kRevSend[i];
-        for (size_t s = 0; s < samples; ++s) reverb_send_buf_[s] += src[s] * sw;
-      }
-      if (reverb_.process_wet(reverb_send_buf_.data(), reverb_wet_buf_.data(), frames)) {
-        const float dry_g = reverb_.dry_gain();
-        const float inv_w = 1.0f / active_w;
-        for (int i = 0; i < 9; ++i) {
-          if (!buses[int(kRevBuses[i])]) continue;
-          float* dst = bus_bufs_[int(kRevBuses[i])].data();
-          const float ret = kRevSend[i] * inv_w;
-          for (size_t s = 0; s < samples; ++s) dst[s] = dst[s] * dry_g + reverb_wet_buf_[s] * ret;
-        }
-      }
+
+  // Per-bus post-fader environmental reverb send weights (honoring
+  // AudioEngineConfig.xml backfireReverbWetSendOverride instead of hardcoded 1.0).
+  const float bf_rev_send = rms_stage_.config().backfire_reverb_wet_send_linear();
+  auto rev_send_weight = [bf_rev_send](Bus b) -> float {
+    switch (b) {
+      case Bus::kEngine: return 1.0f;
+      case Bus::kTransmission: return 0.85f;
+      case Bus::kSupercharger: return 0.85f;
+      case Bus::kTurbo: return 0.85f;
+      case Bus::kBackfire: return bf_rev_send;
+      case Bus::kOtherCars: return 0.85f;
+      case Bus::kTyres: return 0.65f;
+      case Bus::kCollision: return 0.90f;
+      case Bus::kSuspension: return 0.70f;
+      default: return 0.0f;
     }
+  };
+  if (have_acoustics_) {
+    if (reverb_send_buf_.size() < samples) {
+      reverb_send_buf_.resize(samples, 0.0f);
+      reverb_wet_buf_.resize(samples, 0.0f);
+    }
+    std::fill_n(reverb_send_buf_.data(), samples, 0.0f);
   }
 
   // Unified VO ducking state: coherent union of active VoPlayer playback and UI dialog ducking.
@@ -1468,17 +1536,13 @@ void AudioEngine::render_block(float* out, int frames) {
     }
     std::fill(out, out + samples, 0.0f);
     const float a = 1.0f - std::exp(-1.0f / (0.01f * float(rate_)));
+    bool any_rev_sent = false;
     for (int b = 0; b < kBuses; ++b) {
       // AudioMixerSnapshots.xml is the single source of truth in matrix mode;
-      // do not double-stack legacy SnapshotMixer (Paused/Menu) gains on top.
-      // When UI music is explicitly playing on MenuMusic (Title/Loading/Map/Victory)
-      // or on the Title screen (HomespaceMusic), do not let FreeRoam/Loading/Paused's
-      // 0.0 MenuMusic cell silence it; user Music slider, master volume, and mute still apply.
-      const bool active_menu_music = ui_music_active && (Bus(b) == Bus::kMenuMusic);
-      const bool title_music =
-          on_title && ui_music_active && (Bus(b) == Bus::kMenuMusic || Bus(b) == Bus::kHomespaceMusic);
-      float snap_g = (on_title && Bus(b) != Bus::kUi && !title_music) ? 0.0f : matrix_.bus_gain(Bus(b));
-      if (active_menu_music || title_music) snap_g = std::max(snap_g, 1.0f);
+      // MenuMusic and HomespaceMusic honor snapshot + VO/SatNav ducking directly.
+      const float snap_g =
+          (on_title && Bus(b) != Bus::kUi && Bus(b) != Bus::kMenuMusic && Bus(b) != Bus::kVo) ? 0.0f
+                                                                                             : matrix_.bus_gain(Bus(b));
       const float target = mixer_.bus_level(Bus(b)) * snap_g;
       float& s = matrix_bus_smooth_[size_t(b)];
       const float* in = buses[b];
@@ -1486,22 +1550,49 @@ void AudioEngine::render_block(float* out, int frames) {
         s = target;
         continue;
       }
-      for (int i = 0; i < frames; ++i) {
-        s += (target - s) * a;
-        out[2 * i] += in[2 * i] * s;
-        out[2 * i + 1] += in[2 * i + 1] * s;
+      const float rw = have_acoustics_ ? rev_send_weight(Bus(b)) : 0.0f;
+      if (rw > 1e-5f) {
+        any_rev_sent = true;
+        for (int i = 0; i < frames; ++i) {
+          s += (target - s) * a;
+          const float sl = in[2 * i] * s;
+          const float sr = in[2 * i + 1] * s;
+          out[2 * i] += sl;
+          out[2 * i + 1] += sr;
+          reverb_send_buf_[2 * size_t(i)] += sl * rw;
+          reverb_send_buf_[2 * size_t(i) + 1] += sr * rw;
+        }
+      } else {
+        for (int i = 0; i < frames; ++i) {
+          s += (target - s) * a;
+          out[2 * i] += in[2 * i] * s;
+          out[2 * i + 1] += in[2 * i + 1] * s;
+        }
       }
+    }
+    // Post-fader / post-snapshot environmental reverb return summed directly into master
+    // (dry buses stay untouched: zero cross-bus bleed, zero paused excitation, zero Rewind loss).
+    if (have_acoustics_ && any_rev_sent &&
+        reverb_.process_wet(reverb_send_buf_.data(), reverb_wet_buf_.data(), frames)) {
+      for (size_t s = 0; s < samples; ++s) out[s] += reverb_wet_buf_[s];
     }
     const float m_target = mixer_.master();
     const float mute_target = mixer_.muted() ? 0.0f : 1.0f;
+    const float lfe_gate =
+        on_title ? 0.0f
+                 : std::clamp(std::max(matrix_bus_smooth_[int(Bus::kEngine)], matrix_bus_smooth_[int(Bus::kCollision)]),
+                              0.0f, 2.0f);
     for (int i = 0; i < frames; ++i) {
       matrix_master_smooth_ += (m_target - matrix_master_smooth_) * a;
       matrix_mute_smooth_ += (mute_target - matrix_mute_smooth_) * a;
       const float g = matrix_master_smooth_ * matrix_mute_smooth_;
       out[2 * i] *= g;
       out[2 * i + 1] *= g;
+      lfe_buf_[size_t(i)] *= g * lfe_gate;
     }
-    rms_stage_.process(out, frames, 2);
+    // RMS compressor processes stereo L/R without LFE, then folds uncompressed LFE
+    // into L/R immediately before the single master_saturate() stage.
+    rms_stage_.process(out, frames, 2, sfx_ ? lfe_buf_.data() : nullptr);
     const double dt = std::min(double(frames) / double(rate_), 0.05);
     matrix_.update_dynamics(dt, last_veh_state_.speed_mph, last_veh_state_.top_speed_mph);
     matrix_.advance(dt);
@@ -1511,7 +1602,43 @@ void AudioEngine::render_block(float* out, int frames) {
       last_vo_playing_ = vo_duck_now;
       if (snap_dialog_duck_ >= 0) mixer_.snapshots().set_active(snap_dialog_duck_, vo_duck_now);
     }
+    bool have_wet = false;
+    if (have_acoustics_) {
+      bool any_rev_sent = false;
+      for (int b = 0; b < kBuses; ++b) {
+        const float* src = buses[b];
+        if (!src) continue;
+        const float rw = rev_send_weight(Bus(b));
+        if (rw <= 1e-5f) continue;
+        const float eff_g = mixer_.bus_level(Bus(b)) * mixer_.snapshots().level(Bus(b));
+        if (eff_g <= 1e-5f) continue;
+        any_rev_sent = true;
+        const float k = eff_g * rw;
+        for (size_t s = 0; s < samples; ++s) reverb_send_buf_[s] += src[s] * k;
+      }
+      if (any_rev_sent) {
+        have_wet = reverb_.process_wet(reverb_send_buf_.data(), reverb_wet_buf_.data(), frames);
+      }
+    }
+    const float lfe_gate =
+        std::clamp(std::max(mixer_.bus_level(Bus::kEngine) * mixer_.snapshots().level(Bus::kEngine),
+                            mixer_.bus_level(Bus::kCollision) * mixer_.snapshots().level(Bus::kCollision)),
+                   0.0f, 2.0f);
     mixer_.mix(buses, frames, out);
+    const float master_g = mixer_.muted() ? 0.0f : mixer_.master();
+    if (have_wet) {
+      for (size_t s = 0; s < samples; ++s) out[s] += reverb_wet_buf_[s] * master_g;
+    }
+    if (sfx_) {
+      const float lk = master_g * lfe_gate * 0.70710678f;
+      if (lk > 1e-5f) {
+        for (int i = 0; i < frames; ++i) {
+          const float v = lfe_buf_[size_t(i)] * lk;
+          out[2 * i] += v;
+          out[2 * i + 1] += v;
+        }
+      }
+    }
   }
   sanitize_output(out, frames);
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -1575,6 +1702,16 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   t.codriver_completed_cues = codriver_ ? codriver_->completed_cue_count() : 0u;
   t.satnav_playing = satnav_ && satnav_->playing();
   t.vo_playing = (vo_ && vo_->playing()) || (codriver_ && codriver_->playing());
+  if (vo_) {
+    t.vo_elapsed_s = vo_->elapsed_s();
+    t.vo_duration_s = vo_->duration_s();
+    t.vo_rms = vo_->current_rms();
+    t.vo_active_trigger_hash = vo_->active_trigger_hash();
+    const std::string& trig = vo_->current_trigger();
+    const size_t nt = std::min(trig.size(), t.vo_active_trigger.size() - 1);
+    if (nt > 0) std::memcpy(t.vo_active_trigger.data(), trig.data(), nt);
+    t.vo_active_trigger[nt] = '\0';
+  }
   t.in_tunnel = have_acoustics_ && last_acoustics_.in_tunnel;
   t.radio_rally_mode = radio_rally_mode_;
   telemetry_buf_.write(t);

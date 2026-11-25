@@ -31,8 +31,12 @@ struct OtherCarAudio {
   Vec3f vel{};
   float rpm = 1000.0f;
   float speed_mph = 0.0f;
-  float pitch_scale = 1.0f;  // per-car engine fundamental timbre offset [0.78..1.28]
-  float slip = 0.0f;         // 0..1 cornering/braking tyre scrub for LOD2 tyre audio
+  float pitch_scale = 1.0f;        // per-car engine fundamental timbre offset [0.78..1.28]
+  float slip = 0.0f;               // 0..1 cornering/braking tyre scrub for LOD2 tyre audio
+  uint32_t car_id = 0;             // stable unique car ID for persistent 3D voice binding (0 = slot fallback)
+  uint8_t archetype = 0;           // 0=Auto/I4, 1=V6, 2=V8, 3=V10/V12, 4=Turbo, 5=EV, 6=Traffic
+  float fov_rolloff_scale = 1.0f;  // replay FOV zoom rolloff scale (applied in RolloffCurve::eval, not position)
+  uint8_t surface_group = 0;       // 0=OnRoad, 1=OffRoad/Gravel, 2=Grass, 3=Brick, 4=Trackway, 5=Mud
 };
 
 struct WheelAudio {
@@ -42,6 +46,8 @@ struct WheelAudio {
   float load = 1.0f;
   float bottom_out_force = 0.0f;
   int16_t surface_index = -1;  // Tires.xml SurfaceIndex (>= 0 preserves distinct channels; -1 = derive from group)
+  float slip_ratio = 0.0f;     // longitudinal slip magnitude (burnouts / braking)
+  float slip_angle = 0.0f;     // lateral slip magnitude (cornering scrub)
 };
 
 struct ShowcaseAudioState {
@@ -132,6 +138,12 @@ struct VehicleAudioState {
   uint8_t hub_ambience = 0;  // 0=None, 1=Autoshow, 2=Paintshop, 3=Workshop
   std::array<OtherCarAudio, kMaxOtherCars> other_cars{};
   ShowcaseAudioState showcase{};
+  // R3-AUD-01 / R3-AUD-12 extended vehicle telemetry (defaults preserve backward compatibility).
+  float gear_ratio = 0.0f;         // active gearbox total ratio (gear * final_drive; 0 = synthesize from gear)
+  float rewind_speed = 0.0f;       // |playback_speed| while rewinding (0 = default 1.0 while rewinding=true)
+  float rewind_progress = 0.0f;    // 0..1 progress across active rewind window
+  uint8_t scrape_surface_hint = 0; // 0=Asphalt, 1=Car, 2=Dirt/Grass, 3=Metal/Guardrail, 4=Wood/Prop
+  uint8_t glass_broken_mask = 0;   // bit0=windshield, bit1=side, bit2=rear, bit3=taillight/lamp, bit4=lexan
 };
 
 enum class SmashMaterial : uint8_t {
@@ -358,6 +370,22 @@ enum class SfxSoundId : int {
   kEngineMisfire,
   kElectricMotorMid,
   kElectricMotorHigh,
+  // R3-AUD-06: 2-band high-RPM opponent/traffic layers + Turbo archetype bank.
+  kOtherCarLoopHi,
+  kOtherCarLoop1Hi,
+  kOtherCarLoop2Hi,
+  kOtherCarLoop3Hi,
+  kOtherCarLoop4,
+  kOtherCarLoop4Hi,
+  kTrafficCarLoopHi,
+  // R3-AUD-12: All 5 Glass.fev shatter variants + surface-specific scrape loops.
+  kGlassSideWindow,
+  kGlassRearWindow,
+  kGlassTaillight,
+  kGlassLexan,
+  kScrapeMetal,
+  kScrapeDirt,
+  kScrapeWood,
   kCount
 };
 
@@ -395,6 +423,7 @@ class SfxEngine {
   }
   void set_backfire_config(const BackfireConfig& cfg) { backfire_cfg_ = cfg; }
   void set_tires_config(const TiresConfig& cfg) { tires_cfg_ = cfg; }
+  void set_collision_config(const CollisionAudioConfig& cfg) { coll_cfg_ = cfg; }
   // Maps a physics surface name via Tires.xml (0=OnRoad, 1=OffRoad, 2=Grass, 3=Brick, 4=Trackway, 5=Mud).
   uint8_t map_surface_group(std::string_view physics_surface) const;
   // Maps a physics surface name via Tires.xml to its distinct SurfaceIndex (-1 if unknown).
@@ -408,10 +437,17 @@ class SfxEngine {
   // Audio-thread render: adds active SFX & 3D AI/traffic car audio into the
   // per-bus stereo buffers `buses[0..kBuses-1]` (interleaved stereo, `frames`
   // long; any bus pointer may be null). Calls `focus_engine->trigger_expander()`
-  // when an exhaust backfire/burble pops.
-  void render(const VehicleAudioState& st, float* const* buses, int frames, EnginePlayer* focus_engine = nullptr);
+  // when an exhaust backfire/burble pops. When `lfe_out != nullptr` (mono,
+  // `frames` floats), routes EngineLFE, ImpactLFE, and BackfireLFE exclusively
+  // into `lfe_out` instead of summing them into stereo L/R pre-compressor.
+  void render(const VehicleAudioState& st, float* const* buses, int frames,
+              EnginePlayer* focus_engine = nullptr, float* lfe_out = nullptr);
 
   int active_one_shots() const;
+  bool is_one_shot_active(SfxSoundId id) const;
+  uint32_t bound_other_car_id(int voice_slot) const;
+  float last_lfe_pitch() const { return engine_lfe_voice_.pitch; }
+  float last_rewind_pitch() const { return rewind_voice_.pitch; }
   int loaded_sample_count() const;
   uint32_t backfire_count() const { return backfire_count_.load(std::memory_order_relaxed); }
   uint32_t burble_count() const { return burble_count_.load(std::memory_order_relaxed); }
@@ -443,6 +479,33 @@ class SfxEngine {
     float gain = 1.0f;
     float left = 1.0f, right = 1.0f;
     float pitch = 1.0f;
+    uint8_t priority = 50;
+    uint64_t spawn_seq = 0;
+    // Pending 5 ms fade-out before replacing a stolen voice.
+    bool stealing = false;
+    int fade_rem_frames = 0;
+    int fade_total_frames = 0;
+    SfxSoundId next_id = SfxSoundId::kWind;
+    Bus next_bus = Bus::kUi;
+    float next_gain = 0.0f;
+    float next_left = 0.707f, next_right = 0.707f;
+    float next_pitch = 1.0f;
+    uint8_t next_priority = 50;
+    uint64_t next_spawn_seq = 0;
+  };
+  struct PersistentOtherVoice {
+    uint32_t bound_car_id = 0;  // 0 = free
+    bool active = false;
+    bool fading_out = false;
+    float fade_out_rem_s = 0.0f;
+    float last_dist_m = 1e6f;
+    SfxSoundId last_lo_id = SfxSoundId::kOtherCarLoop;
+    SfxSoundId last_hi_id = SfxSoundId::kCount;
+    SfxSoundId last_tire_id = SfxSoundId::kTireRollOnRoad;
+    LoopVoice lo_voice{};
+    LoopVoice hi_voice{};
+    LoopVoice tire_voice{};
+    double whoosh_cooldown_s = -10.0;
   };
 
   void start_decoder_worker(std::vector<DecodeJob> jobs, std::filesystem::path cache_dir,
@@ -450,9 +513,11 @@ class SfxEngine {
   void stop_decoder_worker();
   void drain_queue(SpscQueue<LoadedSample>& q);
   void drain_loaded();
+  void reclaim_retired();
   void spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch = 1.0f);
   void mix_loop(LoopVoice& v, SfxSoundId id, float target_gain, float target_pitch, float target_l, float target_r,
                 float* bus, int frames);
+  void mix_loop_mono(LoopVoice& v, SfxSoundId id, float target_gain, float target_pitch, float* mono_out, int frames);
 
   int rate_ = 48000;
   float smooth_ = 0.01f;
@@ -471,7 +536,9 @@ class SfxEngine {
   SpscQueue<LoadedSample> burble_loaded_q_{32};   // producer: burble_worker_
   SpscQueue<LoadedSample> rally_loaded_q_{64};    // producer: rally_worker_
   SpscQueue<LoadedSample> direct_loaded_q_{512};  // producer: set_sample() (guarded by direct_q_mu_)
+  SpscQueue<PcmSample*> retired_q_{512};          // producer: audio thread drain_queue(); consumer: control thread
   std::mutex direct_q_mu_;
+  std::mutex reclaim_mu_;    // guards control-thread reclaim_retired() only (never locked on audio thread)
   std::mutex lifecycle_mu_;  // guards control-thread worker start/stop only (never locked on audio thread)
   std::atomic<bool> stop_worker_{false};
   std::thread worker_;
@@ -497,9 +564,7 @@ class SfxEngine {
   LoopVoice scrape_voice_{};
   LoopVoice rewind_voice_{};
   LoopVoice hub_amb_voice_{};
-  std::array<LoopVoice, VehicleAudioState::kMaxOtherCars> other_voices_{};
-  std::array<LoopVoice, VehicleAudioState::kMaxOtherCars> other_tire_voices_{};
-  std::array<double, VehicleAudioState::kMaxOtherCars> whoosh_cooldown_s_{-10.0, -10.0, -10.0, -10.0, -10.0, -10.0};
+  std::array<PersistentOtherVoice, VehicleAudioState::kMaxOtherCars> other_slots_{};
   LoopVoice showcase_voice_{};
   double showcase_synth_phase_ = 0.0;
   double showcase_synth_lfo_ = 0.0;
@@ -513,10 +578,22 @@ class SfxEngine {
   // Edge detection & timers (audio thread).
   SfxSoundId resolve_fallback(SfxSoundId preferred, SfxSoundId fallback) const;
   bool prev_shifting_ = false;
+  int prev_gear_ = 1;
   bool prev_bov_open_ = false;
-  float prev_throttle_ = 0.0f;
+  struct ThrottleHistEntry {
+    double time_s = 0.0;
+    float throttle = 0.0f;
+  };
+  static constexpr int kThrottleHistSize = 16;
+  std::array<ThrottleHistEntry, kThrottleHistSize> thr_hist_{};
+  int thr_hist_head_ = 0;
+  int thr_hist_count_ = 0;
+  bool liftoff_armed_ = false;
   float prev_active_aero_ = 0.0f;
   double aero_cooldown_s_ = -10.0;
+  double rewind_elapsed_s_ = 0.0;
+  uint8_t prev_glass_broken_mask_ = 0;
+  uint64_t one_shot_seq_ = 0;
   std::array<uint8_t, 4> prev_wheel_surface_{0, 0, 0, 0};
   std::array<int16_t, 4> prev_wheel_surface_idx_{-1, -1, -1, -1};
   std::array<double, 4> susp_cooldown_s_{0, 0, 0, 0};

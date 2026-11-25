@@ -1795,18 +1795,19 @@ void phase2_parity_checks() {
     sn.trigger(audio::SatNavCue::kDestGeneric);
     sn.trigger(audio::SatNavCue::kTurnLeft);
     std::vector<float> buf(480 * 2, 0.0f);
+    constexpr float kMonoPan = 0.70710678f;
     CHECK(sn.render(buf.data(), 480));
-    CHECK(std::fabs(buf[10] - 0.25f) < 0.05f);
+    CHECK(std::fabs(buf[10] - 0.25f * kMonoPan) < 0.05f);
     std::fill(buf.begin(), buf.end(), 0.0f);
     CHECK(sn.render(buf.data(), 480));
-    CHECK(std::fabs(buf[10] - 0.50f) < 0.05f);
-    // Interrupting cue immediately takes over.
+    CHECK(std::fabs(buf[10] - 0.50f * kMonoPan) < 0.05f);
+    // Interrupting cue takes over cleanly (checked past the 8 ms crossfade).
     sn.trigger(audio::SatNavCue::kDestGeneric);
     sn.trigger(audio::SatNavCue::kTurnLeft);
     sn.trigger(audio::SatNavCue::kRecalculating);
     std::fill(buf.begin(), buf.end(), 0.0f);
     CHECK(sn.render(buf.data(), 480));
-    CHECK(std::fabs(buf[10] - 0.80f) < 0.05f);
+    CHECK(std::fabs(buf[440 * 2] - 0.80f * kMonoPan) < 0.05f);
   }
 
   // 2. Tires.xml surface-group mapping.
@@ -2797,6 +2798,338 @@ void playtest_pt10_audible_pipeline_checks() {
   fs::remove_all(tmp_root, ec);
 }
 
+// Round 3 Phase R3-C1: R3-AUD-01, R3-AUD-04, R3-AUD-06, R3-AUD-09, R3-AUD-12, R3-AUD-13.
+void phase_r3_c1_audio_parity_checks() {
+  auto make_tone = [](double hz, int frames, int rate = 48000, float amp = 0.6f) {
+    audio::PcmSample s;
+    s.rate = rate;
+    s.data.resize(size_t(frames));
+    for (int i = 0; i < frames; ++i)
+      s.data[size_t(i)] = float(double(amp) * std::sin(2.0 * 3.14159265358979323846 * hz * double(i) / double(rate)));
+    return s;
+  };
+  auto rms = [](const std::vector<float>& buf) {
+    double acc = 0.0;
+    for (float v : buf) acc += double(v) * double(v);
+    return buf.empty() ? 0.0 : std::sqrt(acc / double(buf.size()));
+  };
+
+  static constexpr int kFrames = 2400;  // 50 ms at 48 kHz
+  std::array<std::vector<float>, audio::kBuses> bufs;
+  float* ptrs[audio::kBuses]{};
+  auto clear_bufs = [&](int n = kFrames) {
+    for (int b = 0; b < audio::kBuses; ++b) {
+      bufs[size_t(b)].assign(size_t(n) * 2, 0.0f);
+      ptrs[b] = bufs[size_t(b)].data();
+    }
+  };
+
+  // 1. R3-AUD-01: 0 mph stationary burnout screech, transmission clutch-in silence + reverse whine,
+  //    EngineLFE octave-law pitch, and Rewind Mulligan speed/progress modulation.
+  {
+    audio::SfxEngine sfx(48000);
+    sfx.set_sample(audio::SfxSoundId::kTireSkidOnRoad, make_tone(820.0, 9600));
+    sfx.set_sample(audio::SfxSoundId::kTransWhineL2, make_tone(540.0, 9600));
+    sfx.set_sample(audio::SfxSoundId::kEngineLfeLoop, make_tone(65.0, 9600));
+    sfx.set_sample(audio::SfxSoundId::kRewindLoop, make_tone(340.0, 9600));
+
+    audio::VehicleAudioState st{};
+    st.speed_mph = 0.0f;  // stationary burnout!
+    st.rpm = 5200.0f;
+    st.idle_rpm = 800.0f;
+    st.redline_rpm = 7500.0f;
+    st.throttle = 1.0f;
+    st.wheels[2].wheel_rpm = 550.0f;
+    st.wheels[2].slip_combined = 0.90f;
+    st.wheels[2].slip_ratio = 0.90f;
+    st.wheels[2].load = 1.0f;
+    st.wheels[3].wheel_rpm = 550.0f;
+    st.wheels[3].slip_combined = 0.90f;
+    st.wheels[3].slip_ratio = 0.90f;
+    st.wheels[3].load = 1.0f;
+    clear_bufs();
+    sfx.render(st, ptrs, kFrames);
+    CHECK(rms(bufs[int(audio::Bus::kTyres)]) > 0.03);
+
+    // Transmission whine: clutching in (clutch_pos = 1.0) silences transmission even at high RPM/speed.
+    audio::SfxEngine tsfx(48000);
+    tsfx.set_sample(audio::SfxSoundId::kTransWhineL2, make_tone(540.0, 9600));
+    audio::VehicleAudioState tst{};
+    tst.speed_mph = 55.0f;
+    tst.rpm = 6200.0f;
+    tst.redline_rpm = 7500.0f;
+    tst.gear = 2;
+    tst.trans_level = 2;
+    tst.throttle = 0.8f;
+    tst.clutch_pos = 1.0f;  // clutch pressed (disengaged)
+    clear_bufs();
+    tsfx.render(tst, ptrs, kFrames);
+    CHECK(rms(bufs[int(audio::Bus::kTransmission)]) < 1e-5);
+    // Engaging reverse gear (gear = -1, clutch_pos = 0.0) produces distinct reverse whine even at L0.
+    tst.trans_level = 0;
+    tst.gear = -1;
+    tst.clutch_pos = 0.0f;
+    tst.speed_mph = 15.0f;
+    tsfx.set_sample(audio::SfxSoundId::kTransWhine, make_tone(540.0, 9600));
+    clear_bufs();
+    tsfx.render(tst, ptrs, kFrames);
+    CHECK(rms(bufs[int(audio::Bus::kTransmission)]) > 0.01);
+
+    // EngineLFE octave-law pitch: 4000 RPM -> ~1.0, 8000 RPM > 1.5, 2000 RPM < 0.65.
+    audio::SfxEngine lsfx(48000);
+    lsfx.set_sample(audio::SfxSoundId::kEngineLfeLoop, make_tone(65.0, 9600));
+    audio::VehicleAudioState lst{};
+    lst.throttle = 0.8f;
+    lst.rpm = 4000.0f;
+    for (int i = 0; i < 4; ++i) { clear_bufs(); lsfx.render(lst, ptrs, kFrames); }
+    CHECK(near(lsfx.last_lfe_pitch(), 1.0, 0.03));
+    lst.rpm = 8000.0f;
+    for (int i = 0; i < 4; ++i) { clear_bufs(); lsfx.render(lst, ptrs, kFrames); }
+    CHECK(lsfx.last_lfe_pitch() > 1.55f);
+    lst.rpm = 2000.0f;
+    for (int i = 0; i < 4; ++i) { clear_bufs(); lsfx.render(lst, ptrs, kFrames); }
+    CHECK(lsfx.last_lfe_pitch() < 0.65f);
+
+    // Rewind Mulligan pitch scales with rewind_speed & rewind_progress instead of fixed 1.0.
+    audio::VehicleAudioState rst{};
+    rst.rewinding = true;
+    rst.rewind_speed = 2.0f;
+    rst.rewind_progress = 0.85f;
+    for (int i = 0; i < 5; ++i) { clear_bufs(); sfx.render(rst, ptrs, kFrames); }
+    CHECK(sfx.last_rewind_pitch() > 1.25f);
+  }
+
+  // 2. R3-AUD-04: TiresConfig::find_surface returns nullptr on miss so fallback mapping & Mud work.
+  {
+    audio::TiresConfig tc;
+    CHECK(tc.parse_tires(
+        R"(<Tires><SurfaceMap PhysicsSurface="Asphalt" SurfaceIndex="0" Lod1EventGroup="OnRoad"/></Tires>)"));
+    CHECK(tc.find_surface("Asphalt") != nullptr);
+    CHECK(tc.find_surface("UnknownMudSurface") == nullptr);
+    audio::SfxEngine sfx(48000);
+    sfx.set_tires_config(tc);
+    CHECK(sfx.map_surface_group("WetMud") == 5);
+    CHECK(sfx.map_surface_index("FallenLeaves") == 51);
+    CHECK(sfx.map_surface_index("DeepMud") == 20);
+  }
+
+  // 3. R3-AUD-01/R3-AUD-05: Separate mono LFE output routes EngineLFE, ImpactLFE, BackfireLFE
+  //    exclusively into `lfe_out` instead of summing them into stereo L/R pre-compressor.
+  {
+    audio::SfxEngine sfx(48000);
+    sfx.set_sample(audio::SfxSoundId::kEngineLfeLoop, make_tone(55.0, 9600, 48000, 0.8f));
+    sfx.set_sample(audio::SfxSoundId::kImpactLfe, make_tone(48.0, 4800, 48000, 0.8f));
+    sfx.set_sample(audio::SfxSoundId::kBackfireLfe, make_tone(52.0, 4800, 48000, 0.8f));
+
+    audio::VehicleAudioState st{};
+    st.rpm = 4200.0f;
+    st.idle_rpm = 800.0f;
+    st.redline_rpm = 7500.0f;
+    st.throttle = 0.9f;
+    st.backfire_level = 2;
+    st.shifting = true;  // spawns BackfireLFE
+
+    audio::CollisionHit hit{};
+    hit.rel_speed_mps = 15.0f;
+    sfx.trigger_collision(hit, st);  // spawns ImpactLFE
+
+    clear_bufs();
+    std::vector<float> lfe(kFrames, 0.0f);
+    sfx.render(st, ptrs, kFrames, nullptr, lfe.data());
+    CHECK(rms(lfe) > 0.08);
+    CHECK(rms(bufs[int(audio::Bus::kEngine)]) < 1e-6);
+    CHECK(rms(bufs[int(audio::Bus::kCollision)]) < 1e-6);
+    CHECK(rms(bufs[int(audio::Bus::kBackfire)]) < 1e-6);
+  }
+
+  // 4. R3-AUD-06: Persistent car_id AI voice binding survives distance-sort swaps + 25 ms fade-out
+  //    + fov_rolloff_scale preserves stereo pan + surface-routed LOD2 tires fade smoothly across 50..65 m.
+  {
+    audio::SfxEngine sfx(48000);
+    sfx.set_sample(audio::SfxSoundId::kOtherCarLoop, make_tone(140.0, 9600));
+    sfx.set_sample(audio::SfxSoundId::kOtherCarLoopHi, make_tone(290.0, 9600));
+    sfx.set_sample(audio::SfxSoundId::kOtherCarLoop2, make_tone(110.0, 9600));
+    sfx.set_sample(audio::SfxSoundId::kTireRollOffRoad, make_tone(240.0, 9600));
+
+    audio::VehicleAudioState st{};
+    st.listener_pos = {0.0f, 0.0f, 0.0f};
+    st.listener_right = {1.0f, 0.0f, 0.0f};
+    st.other_cars[0].active = true;
+    st.other_cars[0].car_id = 101u;
+    st.other_cars[0].archetype = 0;
+    st.other_cars[0].pos = {15.0f, 0.0f, 0.0f};
+    st.other_cars[0].rpm = 4800.0f;
+    st.other_cars[0].speed_mph = 55.0f;
+    st.other_cars[0].surface_group = 1;  // OffRoad
+    st.other_cars[0].fov_rolloff_scale = 1.5f;
+
+    st.other_cars[1].active = true;
+    st.other_cars[1].car_id = 202u;
+    st.other_cars[1].archetype = 2;
+    st.other_cars[1].pos = {-20.0f, 0.0f, 0.0f};
+    st.other_cars[1].rpm = 3400.0f;
+    st.other_cars[1].speed_mph = 45.0f;
+
+    clear_bufs(480);
+    sfx.render(st, ptrs, 480);  // 10 ms
+    CHECK(sfx.bound_other_car_id(0) == 101u);
+    CHECK(sfx.bound_other_car_id(1) == 202u);
+
+    // Swap array indices (simulating distance-sort crossing): persistent voice slots MUST NOT swap!
+    std::swap(st.other_cars[0], st.other_cars[1]);
+    clear_bufs(480);
+    sfx.render(st, ptrs, 480);
+    CHECK(sfx.bound_other_car_id(0) == 101u);
+    CHECK(sfx.bound_other_car_id(1) == 202u);
+
+    // Removing car 202 keeps it fading out across 10 ms before releasing after 25 ms.
+    st.other_cars[0].active = false;  // car 202 was swapped into index 0
+    clear_bufs(480);
+    sfx.render(st, ptrs, 480);  // 10 ms into 25 ms fade-out
+    CHECK(sfx.bound_other_car_id(1) == 202u);
+    for (int i = 0; i < 3; ++i) {
+      clear_bufs(480);
+      sfx.render(st, ptrs, 480);  // past 25 ms -> cleanly released
+    }
+    CHECK(sfx.bound_other_car_id(1) == 0u);
+    CHECK(sfx.bound_other_car_id(0) == 101u);
+  }
+
+  // 5. R3-AUD-12 / R3-AUD-13: Priority one-shot stealing protects Countdown321/RaceFinish/ImpactLfe
+  //    from low-priority tire surface ticks, plus 5 Glass.fev transition triggers without bump spam.
+  {
+    audio::SfxEngine sfx(48000);
+    sfx.set_sample(audio::SfxSoundId::kCountdown321, make_tone(880.0, 48000));
+    sfx.set_sample(audio::SfxSoundId::kUiRaceFinish, make_tone(660.0, 48000));
+    sfx.set_sample(audio::SfxSoundId::kImpactLfe, make_tone(55.0, 48000));
+    sfx.set_sample(audio::SfxSoundId::kImpact3d, make_tone(180.0, 48000));
+    sfx.set_sample(audio::SfxSoundId::kSurfaceHardToHard, make_tone(220.0, 48000));
+    sfx.set_sample(audio::SfxSoundId::kGlassShatter, make_tone(1800.0, 4800));
+    sfx.set_sample(audio::SfxSoundId::kGlassTaillight, make_tone(2400.0, 4800));
+
+    audio::VehicleAudioState st{};
+    st.speed_mph = 60.0f;
+    for (auto& w : st.wheels) { w.surface_group = 0; w.load = 1.0f; }
+
+    sfx.trigger_ui(audio::UiCue::kCountdown321);
+    sfx.trigger_ui(audio::UiCue::kRaceFinish);
+    audio::CollisionHit hit{};
+    hit.rel_speed_mps = 20.0f;  // > 26 mph -> must NOT spam GlassShatter!
+    sfx.trigger_collision(hit, st);
+    CHECK(!sfx.is_one_shot_active(audio::SfxSoundId::kGlassShatter));
+
+    // Flood > 30 low-priority tire surface-change ticks across frames.
+    for (int iter = 0; iter < 12; ++iter) {
+      for (auto& w : st.wheels) w.surface_group = uint8_t(iter & 1);
+      clear_bufs(240);  // 5 ms
+      sfx.render(st, ptrs, 240);
+    }
+    CHECK(sfx.is_one_shot_active(audio::SfxSoundId::kCountdown321));
+    CHECK(sfx.is_one_shot_active(audio::SfxSoundId::kUiRaceFinish));
+    CHECK(sfx.is_one_shot_active(audio::SfxSoundId::kImpactLfe));
+
+    // Glass-break mask bit 3 transition triggers kGlassTaillight ONCE.
+    st.glass_broken_mask = (1u << 3);
+    clear_bufs(240);
+    sfx.render(st, ptrs, 240);
+    CHECK(sfx.is_one_shot_active(audio::SfxSoundId::kGlassTaillight));
+  }
+
+  // 6. R3-AUD-09: 33 ms throttle lift-off window (SfxEngine hard_liftoff & EnginePlayer IntakeChuff),
+  //    decoupled <Burble> expander trigger at backfire_level=0, ShiftVolumeScalar, & exhaust-scoped DSP.
+  {
+    audio::SfxEngine sfx(48000);
+    sfx.set_sample(audio::SfxSoundId::kBackfirePop, make_tone(120.0, 2400));
+    sfx.set_sample(audio::SfxSoundId::kBurblePop0, make_tone(240.0, 2400));
+
+    audio::EngineSound es;
+    es.audio_rpm_idle = 800.0;
+    es.audio_rpm_redline = 7500.0;
+    const std::string et_xml = R"(
+      <Engine>
+        <EngineSettings audio_rpm_idle="800" audio_rpm_redline="7500"/>
+        <ShiftVolumeScalar ShiftVolBoostUpPct="0.30" ShiftVolBoostUpTime="0.20"
+                           ShiftVolBoostDownPct="0.15" ShiftVolBoostDownTime="0.15"/>
+        <Distortion Active="1" Level="0.8" VolumeCompensate="1.0"/>
+      </Engine>
+    )";
+    audio::XmlNode et_node;
+    std::vector<audio::HarmonicRef> refs;
+    std::string err;
+    CHECK(audio::parse_xml(et_xml, et_node, &err));
+    CHECK(audio::read_engine_tuning(et_node, es, refs, &err));
+    CHECK(es.shift_volume_scalar.present && near(es.shift_volume_scalar.boost_up_pct, 0.30, 1e-4));
+
+    audio::Group g_in;
+    g_in.name = "EngineIntake";
+    g_in.loops = {loop(500, 3000, 9000)};
+    audio::Group g_exh;
+    g_exh.name = "ExhaustL";
+    g_exh.loops = {loop(500, 3000, 9000)};
+    g_exh.expander.present = true;
+    g_exh.expander.attack_ms = 2.0;
+    g_exh.expander.hold_ms = 50.0;
+    g_exh.expander.release_ms = 100.0;
+    g_exh.expander.max_gain.present = true;
+    g_exh.expander.max_gain.y = {1.0, 1.0, 1.0};
+    es.groups.push_back(g_in);
+    es.groups.push_back(g_exh);
+
+    const audio::PcmSample tone = make_tone(200.0, 4800, 48000, 0.4f);
+    const audio::PcmSample chuff = make_tone(600.0, 4800, 48000, 0.5f);
+    audio::EnginePlayer ep(es, {{&tone}, {&tone}}, 48000, 800.0, 7500.0, &chuff);
+
+    // 120 Hz (8.33 ms/step) gradual throttle ramp 0.0 -> 0.04 -> 0.08 -> 0.13 over 25 ms triggers IntakeChuff!
+    std::vector<float> ebuf(400 * 2, 0.0f);
+    ep.set({1200.0, 0.00, 0.0, 0.0, audio::View::kFollow});
+    ep.render(ebuf.data(), 400);  // 8.33 ms
+    ep.set({1250.0, 0.04, 0.1, 0.0, audio::View::kFollow});
+    ep.render(ebuf.data(), 400);  // 16.67 ms
+    CHECK(!ep.intake_chuff_active());
+    ep.set({1300.0, 0.08, 0.2, 0.0, audio::View::kFollow});
+    ep.render(ebuf.data(), 400);  // 25.0 ms
+    ep.set({1350.0, 0.13, 0.3, 0.0, audio::View::kFollow});
+    CHECK(ep.intake_chuff_active());
+
+    // SfxEngine 120 Hz multi-frame lift-off (0.90 -> 0.50 -> 0.20 -> 0.02 over 25 ms) triggers hard_liftoff ONCE!
+    audio::VehicleAudioState st{};
+    st.rpm = 5600.0f;
+    st.idle_rpm = 800.0f;
+    st.redline_rpm = 7500.0f;
+    st.backfire_level = 2;
+    const float ramp[5] = {0.90f, 0.50f, 0.20f, 0.02f, 0.00f};
+    for (float thr : ramp) {
+      st.throttle = thr;
+      clear_bufs(400);  // 8.33 ms
+      sfx.render(st, ptrs, 400, &ep);
+    }
+    CHECK(sfx.backfire_count() == 1);
+
+    // Decoupled <Burble> at backfire_level == 0 (stock car with burble_vol_scale > 0) triggers burble & expander!
+    audio::SfxEngine bsfx(48000);
+    bsfx.set_sample(audio::SfxSoundId::kBurblePop0, make_tone(240.0, 2400));
+    audio::VehicleAudioState bst{};
+    bst.rpm = 4800.0f;
+    bst.idle_rpm = 800.0f;
+    bst.redline_rpm = 7500.0f;
+    bst.throttle = 0.0f;
+    bst.backfire_level = 0;       // stock car!
+    bst.burble_vol_scale = 0.8f;  // has <Burble> tuning
+    bst.burble_min_time_ms = 40.0f;
+    bst.burble_max_time_ms = 55.0f;
+    bst.burble_silence_weight = 0.0f;
+    double max_exp = 0.0;
+    for (int i = 0; i < 8; ++i) {
+      clear_bufs(2400);
+      bsfx.render(bst, ptrs, 2400, &ep);
+      ep.advance_dsp(0.015);
+      max_exp = std::max(max_exp, ep.expander_state(1));
+    }
+    CHECK(bsfx.burble_count() >= 1);
+    CHECK(max_exp > 0.1);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -2817,6 +3150,7 @@ int main() {
   phase_r2_1_audio_parity_checks();
   phase_r2_5_audio_completeness_checks();
   playtest_pt10_audible_pipeline_checks();
+  phase_r3_c1_audio_parity_checks();
   r34_checks();
   std::printf("audio_tests: %d failures\n", failures);
   return failures ? 1 : 0;

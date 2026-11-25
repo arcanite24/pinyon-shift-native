@@ -183,18 +183,18 @@ constexpr CueSpec kSatNavCueSpecs[] = {
     {SatNavCue::kBearRight, "/BearRight", "/BearRight", "Right_Bear"},
     {SatNavCue::kSharpLeft, "/SharpLeft", "/SharpLeft", "left_Sharp"},
     {SatNavCue::kSharpRight, "/SharpRight", "/SharpRight", "Right_Sharp"},
-    {SatNavCue::kNearLeft, "/Metric/NearLeftMetric", "/Imperial/NearLeft", "Metric_left_NearT"},
-    {SatNavCue::kNearRight, "/Metric/NearRightMetric", "/Imperial/NearRight", "Metric_Right_Near"},
-    {SatNavCue::kNearBearLeft, "/Metric/NearBearLeftMetric", "/Imperial/NearBearLeft", "Metric_left_NearB"},
-    {SatNavCue::kNearBearRight, "/Metric/NearBearRightMetric", "/Imperial/NearBearRight", "Metric_BearRight_Near"},
-    {SatNavCue::kNearSharpLeft, "/Metric/NearSharpLeftMetric", "/Imperial/NearSharpLeft", "Metric_left_Sharp"},
-    {SatNavCue::kNearSharpRight, "/Metric/NearSharpRightMetric", "/Imperial/NearSharpRight", "Metric_Right_Shar"},
-    {SatNavCue::kFarLeft, "/Metric/FarLeftMetric", "/Imperial/FarLeft", "Metric_left_FarTu"},
-    {SatNavCue::kFarRight, "/Metric/FarRightMetric", "/Imperial/FarRight", "Metric_Right_FarT"},
-    {SatNavCue::kFarBearLeft, "/Metric/FarBearLeftMetric", "/Imperial/FarBearLeft", "Metric_left_FarBe"},
-    {SatNavCue::kFarBearRight, "/Metric/FarBearRightMetric", "/Imperial/FarBearRight", "Metric_Right_FarB"},
-    {SatNavCue::kFarSharpLeft, "/Metric/FarSharpleftMetric", "/Imperial/FarSharpLeft", "Metric_left_FarSh"},
-    {SatNavCue::kFarSharpRight, "/Metric/FarSharpRightMetric", "/Imperial/FarSharpRight", "Metric_Right_FarS"},
+    {SatNavCue::kNearLeft, "/Metric/NearLeftMetric", "/Imperial/NearLeft", "Metric_left_NearTurn"},
+    {SatNavCue::kNearRight, "/Metric/NearRightMetric", "/Imperial/NearRight", "Metric_Right_NearTurn"},
+    {SatNavCue::kNearBearLeft, "/Metric/NearBearLeftMetric", "/Imperial/NearBearLeft", "Metric_left_NearBear"},
+    {SatNavCue::kNearBearRight, "/Metric/NearBearRightMetric", "/Imperial/NearBearRight", "Metric_Right_NearBear"},
+    {SatNavCue::kNearSharpLeft, "/Metric/NearSharpLeftMetric", "/Imperial/NearSharpLeft", "Metric_left_NearSharp"},
+    {SatNavCue::kNearSharpRight, "/Metric/NearSharpRightMetric", "/Imperial/NearSharpRight", "Metric_Right_NearSharp"},
+    {SatNavCue::kFarLeft, "/Metric/FarLeftMetric", "/Imperial/FarLeft", "Metric_left_FarTurn"},
+    {SatNavCue::kFarRight, "/Metric/FarRightMetric", "/Imperial/FarRight", "Metric_Right_FarTurn"},
+    {SatNavCue::kFarBearLeft, "/Metric/FarBearLeftMetric", "/Imperial/FarBearLeft", "Metric_left_FarBear"},
+    {SatNavCue::kFarBearRight, "/Metric/FarBearRightMetric", "/Imperial/FarBearRight", "Metric_Right_FarBear"},
+    {SatNavCue::kFarSharpLeft, "/Metric/FarSharpleftMetric", "/Imperial/FarSharpLeft", "Metric_left_FarSharp"},
+    {SatNavCue::kFarSharpRight, "/Metric/FarSharpRightMetric", "/Imperial/FarSharpRight", "Metric_Right_FarSharp"},
     {SatNavCue::kExtendedLeft, "/Metric/SatNav_Metric_Left_ExtendedTurn", "/Imperial/SatNav_Imperial_Left_ExtendedTurn", "Metric_Left_ExtendedTurn"},
     {SatNavCue::kExtendedRight, "/Metric/SatNav_Metric_Right_ExtendedTurn", "/Imperial/SatNav_Imperial_Right_ExtendedTurn", "Metric_Right_ExtendedTurn"},
     {SatNavCue::kExtendedBearLeft, "/Metric/SatNav_Metric_Left_ExtendedBear", "/Imperial/SatNav_Imperial_Left_ExtendedBear", "Metric_Left_ExtendedBear"},
@@ -207,11 +207,19 @@ constexpr CueSpec kSatNavCueSpecs[] = {
     {SatNavCue::kNextJuncBearRight, "/NextJuncBearRight", "/NextJuncBearRight", "Right_NextJuncBear"},
     {SatNavCue::kNextJuncSharpLeft, "/NextJuncSharpLeft", "/NextJuncSharpLeft", "left_NextJuncSharp"},
     {SatNavCue::kNextJuncSharpRight, "/NextJuncSharpRight", "/NextJuncSharpRight", "Right_NextJuncSharp"},
-    {SatNavCue::kNearDestination, "/Metric/NearDestination", "/Imperial/NearDestination", "Metric_Destinatio"},
+    {SatNavCue::kNearDestination, "/Metric/NearDestination", "/Imperial/NearDestination", "Metric_Destination_Near"},
     {SatNavCue::kFarDestination, "/Metric/FarDestination", "/Imperial/FarDestination", "Metric_Destination_Far"},
     {SatNavCue::kExtendedDestination, "/Metric/SatNav_Metric_Destination_ExtendedDefault", "/Imperial/SatNav_Imperial_Destination_ExtendedDefault", "Metric_Destination_Extended"},
-    {SatNavCue::kArrived, "/Destinations/Destination", "/Destinations/Destination", "Destination_Defau"},
+    {SatNavCue::kArrived, "/Destinations/Destination", "/Destinations/Destination", "Destination_Default"},
+    {SatNavCue::kRoundaboutExit1, "/Roundabout/Exit1", "/Roundabout/Exit1", "Roundabout_Exit1"},
+    {SatNavCue::kRoundaboutExit2, "/Roundabout/Exit2", "/Roundabout/Exit2", "Roundabout_Exit2"},
+    {SatNavCue::kRoundaboutExit3, "/Roundabout/Exit3", "/Roundabout/Exit3", "Roundabout_Exit3"},
+    {SatNavCue::kRoundaboutExit4, "/Roundabout/Exit4", "/Roundabout/Exit4", "Roundabout_Exit4"},
+    {SatNavCue::kKeepLeft, "/KeepLeft", "/KeepLeft", "Keep_Left"},
+    {SatNavCue::kKeepRight, "/KeepRight", "/KeepRight", "Keep_Right"},
 };
+
+constexpr float kMonoPanGain = 0.70710678f;  // -3 dB equal-power center pan for mono SatNav VO
 
 }  // namespace
 
@@ -299,12 +307,49 @@ bool SatNavVoPlayer::load(const std::filesystem::path& game_root, const std::fil
     const char* ev_suffix = metric ? sp.metric_event : sp.imperial_event;
     bool ok = resolve_fev_suffix(proj, ev_suffix, bank, sub);
     if (!ok && metric) ok = resolve_fev_suffix(proj, sp.imperial_event, bank, sub);
+    // Try alternate roundabout / lane-keep FEV event names when banks use flat naming.
+    if (!ok) {
+      switch (sp.cue) {
+        case SatNavCue::kRoundaboutExit1:
+          ok = resolve_fev_suffix(proj, "/RoundaboutExit1", bank, sub) ||
+               resolve_fev_suffix(proj, "/Roundabout_Exit1", bank, sub);
+          break;
+        case SatNavCue::kRoundaboutExit2:
+          ok = resolve_fev_suffix(proj, "/RoundaboutExit2", bank, sub) ||
+               resolve_fev_suffix(proj, "/Roundabout_Exit2", bank, sub);
+          break;
+        case SatNavCue::kRoundaboutExit3:
+          ok = resolve_fev_suffix(proj, "/RoundaboutExit3", bank, sub) ||
+               resolve_fev_suffix(proj, "/Roundabout_Exit3", bank, sub);
+          break;
+        case SatNavCue::kRoundaboutExit4:
+          ok = resolve_fev_suffix(proj, "/RoundaboutExit4", bank, sub) ||
+               resolve_fev_suffix(proj, "/Roundabout_Exit4", bank, sub);
+          break;
+        case SatNavCue::kKeepLeft:
+          ok = resolve_fev_suffix(proj, "/Keep_Left", bank, sub);
+          break;
+        case SatNavCue::kKeepRight:
+          ok = resolve_fev_suffix(proj, "/Keep_Right", bank, sub);
+          break;
+        default: break;
+      }
+    }
     if (!ok && !fsb_samples.empty() && sp.fsb_needle) {
       auto find_needle = [&](std::string_view n) -> bool {
         if (n.empty()) return false;
         const std::string needle = lower_str(std::string(n));
-        for (uint32_t i = 0; i < fsb_samples.size(); ++i) {
-          if (lower_str(fsb_samples[i].name).find(needle) != std::string::npos) {
+        // Prefer delimiter-bounded matches so e.g. DestinationSet_Festival does not
+        // collide with DestinationSet_FestivalRace.
+        for (int pass = 0; pass < 2; ++pass) {
+          for (uint32_t i = 0; i < fsb_samples.size(); ++i) {
+            const std::string nm = lower_str(fsb_samples[i].name);
+            const size_t pos = nm.find(needle);
+            if (pos == std::string::npos) continue;
+            if (pass == 0) {
+              const size_t end = pos + needle.size();
+              if (end < nm.size() && std::isalpha(static_cast<unsigned char>(nm[end]))) continue;
+            }
             bank = default_fsb;
             sub = i;
             return true;
@@ -318,6 +363,19 @@ bool SatNavVoPlayer::load(const std::filesystem::path& game_root, const std::fil
       }
       if (!ok && std::string_view(sp.fsb_needle).rfind("Metric_", 0) == 0) {
         ok = find_needle(std::string_view(sp.fsb_needle).substr(7));
+      }
+    }
+    // Graceful directional FEV fallback when a stock disc bank lacks dedicated
+    // roundabout-exit or lane-keep waveforms.
+    if (!ok) {
+      switch (sp.cue) {
+        case SatNavCue::kRoundaboutExit1: ok = resolve_fev_suffix(proj, "/Right", bank, sub); break;
+        case SatNavCue::kRoundaboutExit2: ok = resolve_fev_suffix(proj, "/BearRight", bank, sub); break;
+        case SatNavCue::kRoundaboutExit3: ok = resolve_fev_suffix(proj, "/Left", bank, sub); break;
+        case SatNavCue::kRoundaboutExit4: ok = resolve_fev_suffix(proj, "/TurnAround", bank, sub); break;
+        case SatNavCue::kKeepLeft: ok = resolve_fev_suffix(proj, "/BearLeft", bank, sub); break;
+        case SatNavCue::kKeepRight: ok = resolve_fev_suffix(proj, "/BearRight", bank, sub); break;
+        default: break;
       }
     }
     if (ok && std::filesystem::exists(bank, ec)) jobs.push_back({sp.cue, bank, sub});
@@ -416,6 +474,14 @@ void SatNavVoPlayer::trigger(SatNavCue cue) {
                           cue == SatNavCue::kUTurn);
   if (interrupt || !active_) {
     if (interrupt) pending_head_ = pending_tail_ = 0;
+    if (interrupt && active_ && phase_ > 0.0) {
+      // Smooth 8 ms fade-out of the interrupted SatNav clip to prevent clicks.
+      fade_cue_ = active_cue_;
+      fade_phase_ = phase_;
+      fade_total_ = std::max(1, (rate_ * 8) / 1000);
+      fade_rem_ = fade_total_;
+      fade_last_ = last_sample_;
+    }
     active_ = true;
     active_cue_ = cue;
     phase_ = 0.0;
@@ -441,40 +507,82 @@ void SatNavVoPlayer::stop() {
   pending_head_ = pending_tail_ = 0;
   active_ = false;
   phase_ = 0.0;
+  last_sample_ = 0.0f;
+  fade_rem_ = 0;
+  fade_total_ = 0;
+  fade_phase_ = 0.0;
+  fade_last_ = 0.0f;
 }
 
 bool SatNavVoPlayer::render(float* vo_bus, int frames) {
   drain_loaded();
   if (!enabled_ || !vo_bus || frames <= 0) {
     active_ = false;
+    fade_rem_ = 0;
     return false;
   }
-  if (!active_ && !start_next_pending()) return false;
+  if (!active_ && fade_rem_ <= 0 && !start_next_pending()) return false;
 
   int i = 0;
-  while (i < frames && active_) {
-    const PcmSample* s = clips_[size_t(active_cue_)];
-    if (!s || s->data.empty() || s->rate <= 0) {
-      if (!start_next_pending()) break;
+  while (i < frames && (active_ || fade_rem_ > 0)) {
+    const PcmSample* s = active_ ? clips_[size_t(active_cue_)] : nullptr;
+    if (active_ && (!s || s->data.empty() || s->rate <= 0)) {
+      if (!start_next_pending() && fade_rem_ <= 0) break;
       continue;
     }
-    const double step = double(s->rate) / double(rate_);
-    const size_t n = s->data.size();
+    const double step = (s && s->rate > 0) ? (double(s->rate) / double(rate_)) : 0.0;
+    const size_t n = s ? s->data.size() : 0;
+    const PcmSample* fs = (fade_rem_ > 0) ? clips_[size_t(fade_cue_)] : nullptr;
+    const double fstep = (fs && fs->rate > 0) ? (double(fs->rate) / double(rate_)) : 0.0;
+    const size_t fn = fs ? fs->data.size() : 0;
+
     while (i < frames) {
-      if (phase_ >= double(n - 1)) {
-        start_next_pending();
-        break;
+      float out_v = 0.0f;
+      float in_gain = 1.0f;
+      if (fade_rem_ > 0 && fade_total_ > 0) {
+        const float fade_g = float(fade_rem_ - 1) / float(fade_total_);
+        float fv = fade_last_;
+        if (fs && fn >= 2 && fade_phase_ < double(fn - 1)) {
+          const size_t fp0 = size_t(fade_phase_);
+          const float ffrac = float(fade_phase_ - double(fp0));
+          fv = (fs->data[fp0] * (1.0f - ffrac) + fs->data[fp0 + 1] * ffrac) * gain_ * kMonoPanGain;
+          fade_last_ = fv;
+          fade_phase_ += fstep;
+        }
+        out_v += fv * fade_g;
+        in_gain = 1.0f - fade_g;
+        --fade_rem_;
       }
-      const size_t p0 = size_t(phase_);
-      const float frac = float(phase_ - double(p0));
-      const float v = (s->data[p0] * (1.0f - frac) + s->data[p0 + 1] * frac) * gain_;
-      vo_bus[2 * i] += v;
-      vo_bus[2 * i + 1] += v;
-      phase_ += step;
-      ++i;
+
+      if (active_ && s) {
+        if (n < 2 || phase_ >= double(n - 1)) {
+          start_next_pending();
+          if (out_v != 0.0f) {
+            vo_bus[2 * i] += out_v;
+            vo_bus[2 * i + 1] += out_v;
+            ++i;
+          }
+          break;
+        }
+        const size_t p0 = size_t(phase_);
+        const float frac = float(phase_ - double(p0));
+        const float v = (s->data[p0] * (1.0f - frac) + s->data[p0 + 1] * frac) * gain_ * kMonoPanGain;
+        const float mixed = out_v + v * in_gain;
+        last_sample_ = mixed;
+        vo_bus[2 * i] += mixed;
+        vo_bus[2 * i + 1] += mixed;
+        phase_ += step;
+        ++i;
+      } else {
+        last_sample_ = out_v;
+        vo_bus[2 * i] += out_v;
+        vo_bus[2 * i + 1] += out_v;
+        ++i;
+        if (fade_rem_ <= 0) break;
+      }
     }
   }
-  return active_ || i > 0;
+  return active_ || fade_rem_ > 0 || i > 0;
 }
 
 int SatNavVoPlayer::loaded_clip_count() const {

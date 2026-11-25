@@ -75,10 +75,14 @@ GpsTurnKind classify_turn(double signed_rad) {
 GpsLookahead gps_lookahead_for_speed(double speed_mps) {
   const double v = std::clamp(std::fabs(speed_mps), 0.0, 105.0);
   GpsLookahead th;
-  th.now_m = std::clamp(22.0 + v * 1.4, 30.0, 160.0);
-  th.near_m = std::clamp(90.0 + v * 4.0, 110.0, 460.0);
-  th.far_m = std::clamp(220.0 + v * 8.0, 260.0, 960.0);
-  th.extended_m = std::clamp(450.0 + v * 14.0, 520.0, 1750.0);
+  // Immediate turn call scales smoothly with speed (~1.35 s reaction lead).
+  // Distance-named Near (~200 m/yd), Far (~400 m/yd), and Extended (~800 m / 0.5 mi)
+  // prompts stay tightly matched to their spoken distances rather than stretching
+  // Near to 460 m or Far to 960 m at highway speed.
+  th.now_m = std::clamp(24.0 + v * 1.35, 30.0, 145.0);
+  th.near_m = std::clamp(175.0 + v * 0.75, 185.0, 245.0);
+  th.far_m = std::clamp(370.0 + v * 1.0, 385.0, 465.0);
+  th.extended_m = std::clamp(760.0 + v * 1.8, 780.0, 920.0);
   return th;
 }
 
@@ -486,19 +490,37 @@ void GpsSolver::extract_turns(GpsRoute& route, const std::vector<int>& point_nod
     const double deg = std::fabs(ang) * kDeg;
 
     if (is_roundabout) {
-      // Sample wider 45 m entry/exit headings to determine roundabout exit direction for VO.
+      if (!route.turns.empty() && route.turns.back().is_roundabout && route.s[i] - route.turns.back().route_s < 65.0) {
+        continue;
+      }
+      // Advance across consecutive roundabout nodes within 65 m so multi-node rings
+      // measure overall entry-to-exit deflection for exit numbering (1..4).
+      size_t end_i = i;
+      for (size_t k = i + 1; k + 1 < route.points.size() && route.s[k] - route.s[i] < 65.0; ++k) {
+        const int knid = k < point_nodes.size() ? point_nodes[k] : -1;
+        if (knid >= 0 && size_t(knid) < roundabout_node_.size() && roundabout_node_[size_t(knid)] != 0) {
+          end_i = k;
+        }
+      }
       const auto d0w = dir_before(i, 45.0);
-      const auto d1w = dir_after(i, 45.0);
+      const auto d1w = dir_after(end_i, 45.0);
       const double exit_ang = signed_turn(d0w[0], d0w[1], d1w[0], d1w[1]);
       GpsTurnKind exit_kind = classify_turn(exit_ang);
       if (exit_kind == GpsTurnKind::kStraight || exit_kind == GpsTurnKind::kNone) {
         exit_kind = GpsTurnKind::kBearRight;
       }
-      if (!route.turns.empty() && route.turns.back().is_roundabout && route.s[i] - route.turns.back().route_s < 65.0) {
-        continue;
+      // Right-hand-traffic counter-clockwise roundabout exit numbering:
+      // right (+35..+140 deg) = 1st exit, straight (-35..+35 deg) = 2nd exit,
+      // left (-140..-35 deg) = 3rd exit, full-loop / U-turn (>= 140 deg) = 4th exit.
+      const double exit_deg = std::fabs(exit_ang) * kDeg;
+      int rb_exit = 2;
+      if (exit_deg >= 140.0) {
+        rb_exit = 4;
+      } else if (exit_deg > 35.0) {
+        rb_exit = (exit_ang > 0.0) ? 1 : 3;
       }
-      route.turns.push_back(
-          {route.s[i], GpsTurnKind::kRoundabout, exit_ang, route.points[i].x, route.points[i].z, true, true, exit_kind});
+      route.turns.push_back({route.s[i], GpsTurnKind::kRoundabout, exit_ang, route.points[i].x, route.points[i].z, true,
+                             true, exit_kind, rb_exit});
       continue;
     }
 
@@ -565,6 +587,7 @@ void GpsNavigator::reset_prompt_milestones() {
   announced_ext_dest_ = false;
   announced_far_dest_ = false;
   announced_near_dest_ = false;
+  prompt_cooldown_ = 0.0;
   wrong_dir_time_ = 0.0;
 }
 
@@ -605,6 +628,7 @@ GpsPromptEvent GpsNavigator::update(double car_x, double car_z, double car_headi
   dt = std::max(0.0, dt);
   reroute_cooldown_ = std::max(0.0, reroute_cooldown_ - dt);
   uturn_cooldown_ = std::max(0.0, uturn_cooldown_ - dt);
+  prompt_cooldown_ = std::max(0.0, prompt_cooldown_ - dt);
 
   // Arrival check against both exact target and snapped road destination.
   const double d_exact = std::hypot(car_x - dest_x_, car_z - dest_z_);
@@ -651,6 +675,7 @@ GpsPromptEvent GpsNavigator::update(double car_x, double car_z, double car_headi
       route_ = std::move(fresh);
       reset_prompt_milestones();
       reroute_cooldown_ = kRerouteCooldownSec;
+      prompt_cooldown_ = kMinPromptCadenceSec;
       guidance_.route_progress_m = 0.0;
       guidance_.off_route_m = 0.0;
       guidance_.dist_to_dest_m = route_.total_length;
@@ -669,6 +694,7 @@ GpsPromptEvent GpsNavigator::update(double car_x, double car_z, double car_headi
     guidance_.dist_to_turn_m = 0.0;
     if (wrong_dir_time_ > 1.2 && uturn_cooldown_ <= 0.0) {
       uturn_cooldown_ = kUTurnCooldownSec;
+      prompt_cooldown_ = kMinPromptCadenceSec;
       return {GpsPromptEvent::Kind::kUTurn, GpsTurnKind::kUTurn, guidance_.dest_kind};
     }
     return {};
@@ -687,56 +713,85 @@ GpsPromptEvent GpsNavigator::update(double car_x, double car_z, double car_headi
   // Continuous speed-scaled lookahead thresholds (zero dead zones, scales up to 200+ mph).
   const GpsLookahead th = gps_lookahead_for_speed(speed_mps);
 
+  const double eff_speed = std::max(0.0, std::fabs(speed_mps));
   if (next_idx >= 0) {
     const GpsTurn& t = route_.turns[size_t(next_idx)];
     const double d_turn = std::max(0.0, t.route_s - best_s);
+    const double closing_s = (eff_speed > 1.0) ? (d_turn / eff_speed) : 999.0;
     guidance_.next_turn = t.kind;
     guidance_.dist_to_turn_m = d_turn;
 
+    // Urgent immediate turn prompt: always bypasses cadence cooldown & closing-time skip.
     if (d_turn <= th.now_m && announced_now_turn_ != next_idx) {
       announced_now_turn_ = next_idx;
       announced_near_turn_ = next_idx;
       announced_far_turn_ = next_idx;
       announced_ext_turn_ = next_idx;
+      prompt_cooldown_ = kMinPromptCadenceSec;
       const auto ev_kind = (t.kind == GpsTurnKind::kUTurn) ? GpsPromptEvent::Kind::kUTurn : GpsPromptEvent::Kind::kTurnNow;
-      return {ev_kind, t.kind, guidance_.dest_kind, t.exit_turn};
+      return {ev_kind, t.kind, guidance_.dest_kind, t.exit_turn, t.roundabout_exit};
     }
     if (d_turn <= th.near_m && d_turn > th.now_m && announced_near_turn_ != next_idx) {
       announced_near_turn_ = next_idx;
       announced_far_turn_ = next_idx;
       announced_ext_turn_ = next_idx;
-      const bool next_junc = t.at_junction && !t.is_roundabout && t.kind != GpsTurnKind::kUTurn && next_idx > 0 &&
-                             (t.route_s - route_.turns[size_t(next_idx - 1)].route_s) <= th.far_m;
-      const auto ev_kind = next_junc ? GpsPromptEvent::Kind::kTurnNextJunction : GpsPromptEvent::Kind::kTurnNear;
-      return {ev_kind, t.kind, guidance_.dest_kind, t.exit_turn};
+      if (prompt_cooldown_ <= 0.0 && closing_s >= kSkipIntermediateClosingSec) {
+        prompt_cooldown_ = kMinPromptCadenceSec;
+        const bool next_junc = t.at_junction && !t.is_roundabout && t.kind != GpsTurnKind::kUTurn && next_idx > 0 &&
+                               (t.route_s - route_.turns[size_t(next_idx - 1)].route_s) <= th.far_m;
+        const auto ev_kind = next_junc ? GpsPromptEvent::Kind::kTurnNextJunction : GpsPromptEvent::Kind::kTurnNear;
+        return {ev_kind, t.kind, guidance_.dest_kind, t.exit_turn, t.roundabout_exit};
+      }
+      return {};
     }
     if (d_turn <= th.far_m && d_turn > th.near_m && announced_far_turn_ != next_idx) {
       announced_far_turn_ = next_idx;
       announced_ext_turn_ = next_idx;
-      return {GpsPromptEvent::Kind::kTurnFar, t.kind, guidance_.dest_kind, t.exit_turn};
+      if (prompt_cooldown_ <= 0.0 && closing_s >= kSkipIntermediateClosingSec) {
+        prompt_cooldown_ = kMinPromptCadenceSec;
+        return {GpsPromptEvent::Kind::kTurnFar, t.kind, guidance_.dest_kind, t.exit_turn, t.roundabout_exit};
+      }
+      return {};
     }
     if (d_turn <= th.extended_m && d_turn > th.far_m && announced_ext_turn_ != next_idx) {
       announced_ext_turn_ = next_idx;
-      return {GpsPromptEvent::Kind::kTurnExtended, t.kind, guidance_.dest_kind, t.exit_turn};
+      if (prompt_cooldown_ <= 0.0 && closing_s >= kSkipIntermediateClosingSec) {
+        prompt_cooldown_ = kMinPromptCadenceSec;
+        return {GpsPromptEvent::Kind::kTurnExtended, t.kind, guidance_.dest_kind, t.exit_turn, t.roundabout_exit};
+      }
+      return {};
     }
   } else {
     guidance_.next_turn = GpsTurnKind::kArrive;
     guidance_.dist_to_turn_m = guidance_.dist_to_dest_m;
     const double d_dest = guidance_.dist_to_dest_m;
+    const double closing_s = (eff_speed > 1.0) ? (d_dest / eff_speed) : 999.0;
     if (d_dest <= th.near_m && d_dest > kArrivalMeters && !announced_near_dest_) {
       announced_near_dest_ = true;
       announced_far_dest_ = true;
       announced_ext_dest_ = true;
-      return {GpsPromptEvent::Kind::kArrivedNear, GpsTurnKind::kArrive, guidance_.dest_kind};
+      if (prompt_cooldown_ <= 0.0 && closing_s >= kSkipIntermediateClosingSec) {
+        prompt_cooldown_ = kMinPromptCadenceSec;
+        return {GpsPromptEvent::Kind::kArrivedNear, GpsTurnKind::kArrive, guidance_.dest_kind};
+      }
+      return {};
     }
     if (d_dest <= th.far_m && d_dest > th.near_m && !announced_far_dest_) {
       announced_far_dest_ = true;
       announced_ext_dest_ = true;
-      return {GpsPromptEvent::Kind::kArrivedFar, GpsTurnKind::kArrive, guidance_.dest_kind};
+      if (prompt_cooldown_ <= 0.0 && closing_s >= kSkipIntermediateClosingSec) {
+        prompt_cooldown_ = kMinPromptCadenceSec;
+        return {GpsPromptEvent::Kind::kArrivedFar, GpsTurnKind::kArrive, guidance_.dest_kind};
+      }
+      return {};
     }
     if (d_dest <= th.extended_m && d_dest > th.far_m && !announced_ext_dest_) {
       announced_ext_dest_ = true;
-      return {GpsPromptEvent::Kind::kArrivedExtended, GpsTurnKind::kArrive, guidance_.dest_kind};
+      if (prompt_cooldown_ <= 0.0 && closing_s >= kSkipIntermediateClosingSec) {
+        prompt_cooldown_ = kMinPromptCadenceSec;
+        return {GpsPromptEvent::Kind::kArrivedExtended, GpsTurnKind::kArrive, guidance_.dest_kind};
+      }
+      return {};
     }
   }
   return {};

@@ -297,6 +297,210 @@ void test_hot_reload_merge_and_playback() {
   CHECK(mgr.enabled_stations().size() == 3);
 }
 
+void test_schroeder_allpass_unity_gain_and_far_wet() {
+  auto measure_gain = [](double freq_hz) {
+    audio::EnvironmentalReverb::Allpass ap;
+    ap.buf.assign(37, 0.0f);
+    ap.feedback = 0.5f;
+    double in_sq = 0.0;
+    double out_sq = 0.0;
+    constexpr int kTotal = 4096;
+    constexpr int kMeasureStart = 2048;
+    for (int i = 0; i < kTotal; ++i) {
+      const float x = (freq_hz == 0.0)
+                          ? 0.5f
+                          : float(0.5 * std::cos(2.0 * 3.14159265358979323846 * freq_hz * double(i) / 48000.0));
+      const float y = ap.tick(x);
+      if (i >= kMeasureStart) {
+        in_sq += double(x) * double(x);
+        out_sq += double(y) * double(y);
+      }
+    }
+    return std::sqrt(out_sq / std::max(1e-12, in_sq));
+  };
+  const double g_dc = measure_gain(0.0);
+  const double g_mid = measure_gain(1000.0);
+  const double g_nyq = measure_gain(24000.0);
+  CHECK(std::fabs(g_dc - 1.0) < 0.02);
+  CHECK(std::fabs(g_mid - 1.0) < 0.02);
+  CHECK(std::fabs(g_nyq - 1.0) < 0.02);
+
+  // Outdoor canyon/bridge template with NearWet == 0, FarWet > 0 must produce wet tail.
+  audio::ReverbTemplate canyon{};
+  canyon.near_wet = 0.0f;
+  canyon.far_wet = 0.85f;
+  canyon.room_level_mb = -200.0f;
+  canyon.reverb_level_mb = 0.0f;
+  canyon.decay_time_s = 1.8f;
+  audio::EnvironmentalReverb rev;
+  rev.prepare(48000);
+  rev.set_parameters(canyon);
+  std::vector<float> in(4800 * 2, 0.0f), wet(4800 * 2, 0.0f);
+  in[0] = 1.0f;
+  in[1] = 1.0f;
+  CHECK(rev.process_wet(in.data(), wet.data(), 4800));
+  double tail_e = 0.0;
+  for (size_t i = 1500 * 2; i < wet.size(); ++i) tail_e += double(wet[i]) * double(wet[i]);
+  CHECK(tail_e > 1e-4);
+}
+
+void test_post_fader_reverb_zero_bleed_and_backfire_override() {
+  const std::string xml = R"(
+    <AudioMixerSnapshots>
+      <FreeRoam group="Gameplay">
+        <FocusCar active="1" destvolume="1.0"/>
+        <Collision active="1" destvolume="1.0"/>
+        <Backfire active="1" destvolume="1.0"/>
+      </FreeRoam>
+      <Paused group="Gameplay">
+        <FocusCar active="1" destvolume="0.0"/>
+        <Collision active="1" destvolume="0.0"/>
+        <Backfire active="1" destvolume="0.0"/>
+      </Paused>
+    </AudioMixerSnapshots>
+  )";
+  audio::AudioEngine eng(48000);
+  CHECK(eng.load_snapshot_matrix_xml(xml));
+  auto sfx = std::make_unique<audio::SfxEngine>(48000);
+  audio::PcmSample hit_pcm;
+  hit_pcm.rate = 48000;
+  hit_pcm.data.assign(240, 0.85f);
+  sfx->set_sample(audio::SfxSoundId::kImpact3d, hit_pcm);
+  eng.set_sfx_engine(std::move(sfx));
+
+  audio::AcousticsSample tun{};
+  tun.in_tunnel = true;
+  tun.reverb.near_dry = 1.0f;
+  tun.reverb.near_wet = 0.9f;
+  tun.reverb.far_wet = 0.9f;
+  tun.reverb.room_level_mb = 0.0f;
+  tun.reverb.reverb_level_mb = 600.0f;
+  tun.reverb.decay_time_s = 2.0f;
+  eng.set_acoustics_sample(tun);
+
+  // Zeroing the Ambience slider (which cascades to child Collision) must yield ZERO
+  // reverb bleed or excitation once the 10 ms bus-level smoother settles (~150 ms).
+  eng.set_bus_level(audio::Bus::kAmbience, 0.0f);
+  std::vector<float> warm(7200 * 2, 0.0f);
+  eng.render_offline(warm.data(), 7200);
+
+  audio::CollisionHit ch{};
+  ch.rel_speed_mps = 25.0f;
+  ch.pos = {1.0f, 0.0f, 0.0f};
+  eng.trigger_collision(ch);
+  std::vector<float> out(4800 * 2, 0.0f);
+  eng.render_offline(out.data(), 4800);
+  double zero_e = 0.0;
+  for (float v : out) zero_e += double(v) * double(v);
+  CHECK(zero_e < 1e-6);
+
+  // Restoring slider to 1.0 yields an audible post-fader reverb tail.
+  eng.set_bus_level(audio::Bus::kAmbience, 1.0f);
+  eng.render_offline(warm.data(), 2400);
+  eng.trigger_collision(ch);
+  std::fill(out.begin(), out.end(), 0.0f);
+  eng.render_offline(out.data(), 4800);
+  double tail_e = 0.0;
+  for (size_t i = 1500 * 2; i < out.size(); ++i) tail_e += double(out[i]) * double(out[i]);
+  CHECK(tail_e > 1e-4);
+
+  // AudioEngineConfig.xml backfireReverbWetSendOverride parsing (base -60 mB vs v4 -7000 mB).
+  audio::MasterDspConfig mdsp_base, mdsp_v4;
+  CHECK(mdsp_base.parse(R"(<AudioEngineConfig backfireReverbWetSendOverride="-60"/>)"));
+  CHECK(std::fabs(mdsp_base.backfire_reverb_wet_send_linear() - 0.93325f) < 1e-3f);
+  CHECK(mdsp_v4.parse(R"(<AudioEngineConfig backfireReverbWetSendOverride="-7000"/>)"));
+  CHECK(mdsp_v4.backfire_reverb_wet_send_linear() == 0.0f);
+}
+
+void test_crash_data_30hz_ambient_dynamic_lfe_and_3d_emitters() {
+  // 1. 30 Hz CrashData accumulation across 10 ms audio blocks + kAmbientDynamic routing.
+  const std::string xml = R"(
+    <AudioMixerSnapshots>
+      <DynamicsData>
+        <CrashData threshold="50" drop="10"/>
+        <TopSpeedData threshold="0.70"/>
+      </DynamicsData>
+      <FreeRoam group="Gameplay">
+        <FocusCar active="1" destvolume="1.0"/>
+        <AmbientStatic active="1" destvolume="1.0"/>
+        <AmbientDynamic active="1" destvolume="1.0"/>
+      </FreeRoam>
+      <Crash group="Impact">
+        <FocusCar active="1" destvolume="0.2" fadetime="0.0" returntime="0.5" returnfadetime="0.1"/>
+      </Crash>
+      <DynDuck group="VO">
+        <AmbientDynamic active="1" destvolume="0.25" fadetime="0.0"/>
+      </DynDuck>
+    </AudioMixerSnapshots>
+  )";
+  audio::SnapshotMatrix mat;
+  CHECK(mat.parse(xml));
+  mat.reset_dynamics();
+  // Drop 12 mph across four 10 ms blocks (3 mph/block < 10 mph per block, 12 mph over 40 ms).
+  mat.update_dynamics(0.010, 60.0f, 140.0f);
+  mat.update_dynamics(0.010, 57.0f, 140.0f);
+  mat.update_dynamics(0.010, 54.0f, 140.0f);
+  mat.update_dynamics(0.010, 51.0f, 140.0f);
+  CHECK(mat.gain(audio::Category::kFocusCar) > 0.95f);  // 30 ms elapsed, not yet evaluated
+  mat.update_dynamics(0.010, 48.0f, 140.0f);            // 40 ms elapsed -> 60 -> 48 = 12 mph drop -> fires!
+  CHECK(std::fabs(mat.gain(audio::Category::kFocusCar) - 0.2f) < 1e-4f);
+
+  // kAmbientDynamic ducking must be reflected in bus_gain(Bus::kAmbience).
+  CHECK(std::fabs(mat.bus_gain(audio::Bus::kAmbience) - 1.0f) < 1e-4f);
+  CHECK(mat.activate("DynDuck"));
+  CHECK(std::fabs(mat.bus_gain(audio::Bus::kAmbience) - 0.25f) < 1e-4f);
+
+  // 2. MasterRmsStage stereo RMS compressor bypasses mono LFE fold-in.
+  audio::MasterRmsStage stage;
+  stage.prepare(48000);
+  audio::MasterDspConfig mdsp{};
+  mdsp.compressor_threshold = 0.05f;
+  mdsp.compressor_ratio = 0.10f;
+  mdsp.compressor_attack = 0.005f;
+  mdsp.compressor_release = 0.05f;
+  mdsp.saturator_bypass = true;
+  stage.set_config(mdsp);
+  std::vector<float> stereo(256 * 2, 0.01f);
+  std::vector<float> lfe(256, 0.50f);
+  for (int blk = 0; blk < 20; ++blk) {
+    std::fill(stereo.begin(), stereo.end(), 0.01f);
+    stage.process(stereo.data(), 256, 2, lfe.data());
+  }
+  CHECK(stage.gain_reduction_db() < 0.05f);  // loud LFE did not compress stereo L/R
+  CHECK(stage.peak() > 0.30f);               // LFE was folded into stereo output post-compressor
+
+  // 3. 4-voice distance-culled 3D ambient emitter pool.
+  audio::WorldAcousticsData ac;
+  for (int i = 0; i < 6; ++i) {
+    audio::AmbientEmitter3D em;
+    em.object_name = "water_river_" + std::to_string(i);
+    em.event_name = "amb_water_stream";
+    em.pos1 = {float(10 + i * 15), 0.0f, 0.0f};
+    em.pos2 = em.pos1;
+    em.max_distance = 120.0f;
+    ac.add_emitter(std::move(em));
+  }
+  const auto samp = ac.evaluate(0.0f, 0.0f, 0.0f, 0.0f);
+  int active_n = 0;
+  for (const auto& e : samp.active_emitters) {
+    if (e.active) {
+      ++active_n;
+      CHECK(e.kind == audio::AmbientEmitterKind::kWater);
+      CHECK(e.pan > 0.9f);  // positioned to +X (listener right)
+    }
+  }
+  CHECK(active_n == audio::AcousticsSample::kMaxActiveEmitters);
+  audio::AmbienceBedPlayer bed(48000);
+  std::vector<float> abuf(2400 * 2, 0.0f);
+  bed.render(samp, 0.0f, abuf.data(), 2400, 12.0f);
+  double l_e = 0.0, r_e = 0.0;
+  for (int i = 0; i < 2400; ++i) {
+    l_e += double(abuf[2 * size_t(i)]) * double(abuf[2 * size_t(i)]);
+    r_e += double(abuf[2 * size_t(i) + 1]) * double(abuf[2 * size_t(i) + 1]);
+  }
+  CHECK(r_e > l_e * 1.1 && r_e > 1e-4);
+}
+
 }  // namespace
 
 int main() {
@@ -305,6 +509,9 @@ int main() {
   test_m3u_and_pls_parsing();
   test_ytdlp_json_parsing();
   test_hot_reload_merge_and_playback();
+  test_schroeder_allpass_unity_gain_and_far_wet();
+  test_post_fader_reverb_zero_bleed_and_backfire_override();
+  test_crash_data_30hz_ambient_dynamic_lfe_and_3d_emitters();
   if (g_failures == 0) {
     std::printf("runtime_radio_tests: ALL PASSED\n");
     return 0;

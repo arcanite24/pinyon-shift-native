@@ -137,12 +137,12 @@ void test_turns_reroute_and_arrival() {
   check(far_ev.kind == traffic::GpsPromptEvent::Kind::kTurnFar && far_ev.turn == traffic::GpsTurnKind::kRight,
         "far right turn prompt fired at ~350 m");
 
-  // Approach corner at z=460 (140 m away -> Near turn prompt).
-  const auto near_ev = nav.update(0, 460, 0.0, 25.0, 0.05);
+  // Approach corner at z=460 (140 m away, >3.0 s later -> Near turn prompt).
+  const auto near_ev = nav.update(0, 460, 0.0, 25.0, 3.5);
   check(near_ev.kind == traffic::GpsPromptEvent::Kind::kTurnNear && near_ev.turn == traffic::GpsTurnKind::kRight,
         "near right turn prompt fired at ~140 m");
 
-  // Approach corner at z=570 (30 m away -> Now turn prompt).
+  // Approach corner at z=570 (30 m away -> urgent Now turn prompt bypasses cadence).
   const auto now_ev = nav.update(0, 570, 0.0, 20.0, 0.05);
   check(now_ev.kind == traffic::GpsPromptEvent::Kind::kTurnNow && now_ev.turn == traffic::GpsTurnKind::kRight,
         "immediate right turn prompt fired at ~30 m");
@@ -284,7 +284,8 @@ void test_r2_4_speed_scaling_roundabout_uturn_and_cues() {
   check(th_slow.now_m < th_slow.near_m && th_slow.near_m < th_slow.far_m && th_slow.far_m < th_slow.extended_m,
         "lookahead tiers strictly ordered");
   check(th_200.now_m > th_mid.now_m && th_mid.now_m > th_slow.now_m, "now_m scales monotonically with speed");
-  check(th_200.far_m > 850.0 && th_200.extended_m > 1500.0, "200 mph lookahead scales to highway stopping horizon");
+  check(th_200.near_m <= 250.0 && th_200.far_m >= 380.0 && th_200.far_m <= 470.0 && th_200.extended_m <= 930.0,
+        "200 mph distance-named thresholds stay anchored near true spoken distances");
 
   // 3) DestinationCannotBeSet when solver is missing or unready.
   {
@@ -294,7 +295,7 @@ void test_r2_4_speed_scaling_roundabout_uturn_and_cues() {
           "invalid destination emits kDestinationCannotBeSet");
   }
 
-  // 4) Extended, NextJunc, FarDestination, and closed dead zones (60 m and 200 m at 25 m/s).
+  // 4) Extended, NextJunc, FarDestination, and closed dead zones (200 m and 120 m at 25 m/s).
   {
     NavBuilder b;
     const uint32_t n0 = b.add_node(0, 0);
@@ -312,26 +313,26 @@ void test_r2_4_speed_scaling_roundabout_uturn_and_cues() {
     traffic::GpsNavigator nav(&solver);
     nav.set_destination(160, 1790, traffic::GpsDestKind::kFestival, "FESTIVAL", 0, 10);
 
-    // 650 m before n1 at 25 m/s (th.far_m=420, th.extended_m=800) -> kTurnExtended!
+    // 650 m before n1 at 25 m/s (th.far_m=395, th.extended_m=805) -> kTurnExtended!
     const auto ext_ev = nav.update(0, 150, 0.0, 25.0, 0.05);
     check(ext_ev.kind == traffic::GpsPromptEvent::Kind::kTurnExtended && ext_ev.turn == traffic::GpsTurnKind::kRight,
           "extended turn prompt fires in far-horizon band");
 
-    // 200 m before n1 at 25 m/s (formerly 185..220 m dead zone!) -> kTurnFar!
-    const auto dz1_ev = nav.update(0, 600, 0.0, 25.0, 0.05);
+    // 200 m before n1 at 25 m/s (formerly 185..220 m dead zone; >3.0 s later) -> kTurnFar!
+    const auto dz1_ev = nav.update(0, 600, 0.0, 25.0, 3.5);
     check(dz1_ev.kind == traffic::GpsPromptEvent::Kind::kTurnFar, "200 m dead zone closed (fires kTurnFar)");
 
-    // 60 m before n1 at 25 m/s (formerly 50..65 m dead zone; th.now_m=57, th.near_m=190) -> kTurnNear!
-    const auto dz2_ev = nav.update(0, 740, 0.0, 25.0, 0.05);
-    check(dz2_ev.kind == traffic::GpsPromptEvent::Kind::kTurnNear, "60 m dead zone closed (fires kTurnNear)");
+    // 120 m before n1 at 25 m/s (closing 4.8 s >= 3.5 s, >3.0 s later) -> kTurnNear!
+    const auto dz2_ev = nav.update(0, 680, 0.0, 25.0, 3.5);
+    check(dz2_ev.kind == traffic::GpsPromptEvent::Kind::kTurnNear, "120 m near-band prompt fires kTurnNear");
 
-    // Just after n1 on Cross Link (140 m before closely spaced junction n2) -> kTurnNextJunction!
-    const auto nj_ev = nav.update(20, 800, 1.57, 25.0, 0.05);
+    // Just after n1 on Cross Link (140 m before closely spaced junction n2, >3.0 s later) -> kTurnNextJunction!
+    const auto nj_ev = nav.update(20, 800, 1.57, 25.0, 3.5);
     check(nj_ev.kind == traffic::GpsPromptEvent::Kind::kTurnNextJunction && nj_ev.turn == traffic::GpsTurnKind::kLeft,
           "closely spaced second junction fires kTurnNextJunction");
 
-    // On Final Straight 350 m from destination -> kArrivedFar!
-    const auto fd_ev = nav.update(160, 1440, 0.0, 25.0, 0.05);
+    // On Final Straight 350 m from destination (>3.0 s later) -> kArrivedFar!
+    const auto fd_ev = nav.update(160, 1440, 0.0, 25.0, 3.5);
     check(fd_ev.kind == traffic::GpsPromptEvent::Kind::kArrivedFar, "final approach fires kArrivedFar");
   }
 
@@ -433,6 +434,154 @@ void test_colorado_nav_optional() {
               solver.roundabout_node_count(), solver.uturn_node_count());
 }
 
+void test_r3_aud_11_roundabout_disambiguation_fade_and_cadence() {
+  // 1) SatNav roundabout exit / keep-left / keep-right cues & FSB fallback disambiguation.
+  {
+    const std::string nd = audio::satnav_cue_fsb_fallback(audio::SatNavCue::kNearDestination);
+    const std::string fd = audio::satnav_cue_fsb_fallback(audio::SatNavCue::kFarDestination);
+    const std::string ed = audio::satnav_cue_fsb_fallback(audio::SatNavCue::kExtendedDestination);
+    check(fd.find(nd) == std::string::npos && ed.find(nd) == std::string::npos,
+          "kNearDestination FSB needle does not falsely match Far/Extended destination");
+
+    const std::string nr = audio::satnav_cue_fsb_fallback(audio::SatNavCue::kNearRight);
+    const std::string nbr = audio::satnav_cue_fsb_fallback(audio::SatNavCue::kNearBearRight);
+    const std::string nsr = audio::satnav_cue_fsb_fallback(audio::SatNavCue::kNearSharpRight);
+    check(nbr.find(nr) == std::string::npos && nsr.find(nr) == std::string::npos,
+          "kNearRight FSB needle does not falsely match NearBear/NearSharp");
+
+    const std::string nsl = audio::satnav_cue_fsb_fallback(audio::SatNavCue::kNearSharpLeft);
+    const std::string sl = audio::satnav_cue_fsb_fallback(audio::SatNavCue::kSharpLeft);
+    check(nsl != sl && nsl.find(sl) == std::string::npos,
+          "kNearSharpLeft FSB needle is disambiguated from kSharpLeft");
+
+    std::vector<std::string> seen;
+    for (int i = 0; i < int(audio::SatNavCue::kCount); ++i) {
+      const std::string n = audio::satnav_cue_fsb_fallback(audio::SatNavCue(i));
+      check(!n.empty(), "every SatNavCue including roundabout/keep cues has non-empty FSB needle");
+      for (const auto& prev : seen) {
+        if (prev == n) check(false, "every SatNavCue FSB fallback needle is unique");
+      }
+      seen.push_back(n);
+    }
+    check(std::string(audio::satnav_cue_fsb_fallback(audio::SatNavCue::kRoundaboutExit1)) == "Roundabout_Exit1",
+          "kRoundaboutExit1 mapped");
+    check(std::string(audio::satnav_cue_fsb_fallback(audio::SatNavCue::kRoundaboutExit4)) == "Roundabout_Exit4",
+          "kRoundaboutExit4 mapped");
+    check(std::string(audio::satnav_cue_fsb_fallback(audio::SatNavCue::kKeepLeft)) == "Keep_Left", "kKeepLeft mapped");
+    check(std::string(audio::satnav_cue_fsb_fallback(audio::SatNavCue::kKeepRight)) == "Keep_Right",
+          "kKeepRight mapped");
+  }
+
+  // 2) SatNavVoPlayer equal-power mono pan (0.70710678f) and 8 ms smooth interrupt crossfade.
+  {
+    audio::SatNavVoPlayer sn(48000);
+    audio::PcmSample a, b;
+    a.rate = b.rate = 48000;
+    a.data.assign(4800, 0.6f);
+    b.data.assign(4800, -0.6f);
+    sn.set_clip(audio::SatNavCue::kRoundaboutExit2, a);
+    sn.set_clip(audio::SatNavCue::kRecalculating, b);
+
+    sn.trigger(audio::SatNavCue::kRoundaboutExit2);
+    std::vector<float> buf(480 * 2, 0.0f);
+    check(sn.render(buf.data(), 480), "SatNav renders roundabout exit cue");
+    const float expected_pan = 0.6f * 0.70710678f;
+    check(std::fabs(buf[10] - expected_pan) < 1e-4f && std::fabs(buf[11] - expected_pan) < 1e-4f,
+          "SatNav mono pan normalized to equal-power 0.70710678f");
+
+    // Interrupt mid-clip with opposite polarity clip -> 8 ms crossfade eliminates click.
+    const float pre_int = buf[(480 - 1) * 2];
+    sn.trigger(audio::SatNavCue::kRecalculating);
+    std::vector<float> int_buf(480 * 2, 0.0f);
+    check(sn.render(int_buf.data(), 480), "SatNav renders interrupting cue smoothly");
+    float max_step = std::fabs(int_buf[0] - pre_int);
+    for (int i = 1; i < 480; ++i) {
+      max_step = std::max(max_step, std::fabs(int_buf[size_t(i) * 2] - int_buf[size_t(i - 1) * 2]));
+    }
+    check(max_step < 0.01f, "SatNav 8 ms interrupt crossfade eliminates step click");
+    check(std::fabs(int_buf[450 * 2] - (-expected_pan)) < 1e-3f,
+          "SatNav reaches interrupting clip level after 8 ms (384 frames)");
+  }
+
+  // 3) GpsSolver roundabout_exit numbering (1=right, 2=straight, 3=left, 4=u-turn) & event propagation.
+  {
+    NavBuilder b;
+    const uint32_t south = b.add_node(0, 0);
+    const uint32_t rb = b.add_node(0, 300, {{"sat_nav_junction", "roundabout"}});
+    const uint32_t east = b.add_node(300, 300);
+    const uint32_t north = b.add_node(0, 600);
+    const uint32_t west = b.add_node(-300, 300);
+    const uint32_t south_ret = b.add_node(15, 0);  // return leg for 4th exit U-turn
+    b.add_way({south, rb}, "a", true, "South Entry");
+    b.add_way({rb, east}, "a", false, "East Exit");
+    b.add_way({rb, north}, "a", false, "North Exit");
+    b.add_way({rb, west}, "a", false, "West Exit");
+    b.add_way({rb, south_ret}, "a", true, "South Return");
+
+    traffic::GpsSolver solver;
+    solver.build(b.map);
+
+    auto find_rb_exit = [](const traffic::GpsRoute& r) {
+      for (const auto& t : r.turns) {
+        if (t.kind == traffic::GpsTurnKind::kRoundabout) return t.roundabout_exit;
+      }
+      return 0;
+    };
+    check(find_rb_exit(solver.solve(0, 10, 290, 300)) == 1, "roundabout right turn selects exit 1");
+    check(find_rb_exit(solver.solve(0, 10, 0, 590)) == 2, "roundabout straight selects exit 2");
+    check(find_rb_exit(solver.solve(0, 10, -290, 300)) == 3, "roundabout left turn selects exit 3");
+    check(find_rb_exit(solver.solve(0, 10, 15, 10)) == 4, "roundabout full loop selects exit 4");
+
+    traffic::GpsNavigator nav(&solver);
+    nav.set_destination(-290, 300, traffic::GpsDestKind::kGeneric, "WEST", 0, 10);
+    const auto ev = nav.update(0, 270, 0.0, 20.0, 0.05);
+    check(ev.kind == traffic::GpsPromptEvent::Kind::kTurnNow && ev.turn == traffic::GpsTurnKind::kRoundabout &&
+              ev.roundabout_exit == 3,
+          "GpsNavigator propagates roundabout_exit=3 on GpsPromptEvent");
+  }
+
+  // 4) 3.0 s minimum cadence between non-urgent prompts & < 3.5 s high-speed intermediate skip.
+  {
+    NavBuilder b;
+    const uint32_t n0 = b.add_node(0, 0);
+    const uint32_t corner = b.add_node(0, 1000);
+    const uint32_t n_ext = b.add_node(0, 1200);
+    const uint32_t east = b.add_node(600, 1000);
+    b.add_way({n0, corner, n_ext}, "a", false, "Highway");
+    b.add_way({corner, east}, "a", false, "Exit Ramp");
+
+    traffic::GpsSolver solver;
+    solver.build(b.map);
+    traffic::GpsNavigator nav(&solver);
+    nav.set_destination(590, 1000, traffic::GpsDestKind::kGeneric, "RAMP", 0, 10);
+
+    // 1) Fire Extended at d=700 m -> starts 3.0 s prompt cooldown.
+    const auto e1 = nav.update(0, 300, 0.0, 25.0, 0.05);
+    check(e1.kind == traffic::GpsPromptEvent::Kind::kTurnExtended, "initial Extended prompt fires");
+
+    // 2) Within 1.0 s (< 3.0 s cadence), Far at d=350 m must be suppressed!
+    const auto e2 = nav.update(0, 650, 0.0, 25.0, 1.0);
+    check(e2.kind == traffic::GpsPromptEvent::Kind::kNone,
+          "non-urgent Far prompt suppressed inside 3.0 s cadence window");
+
+    // 3) After >= 3.0 s total elapsed, Near at d=150 m (closing 6.0 s >= 3.5 s) fires cleanly.
+    const auto e3 = nav.update(0, 850, 0.0, 25.0, 2.5);
+    check(e3.kind == traffic::GpsPromptEvent::Kind::kTurnNear,
+          "non-urgent Near prompt fires once 3.0 s cadence elapsed");
+
+    // 4) High-speed 200 mph (89.4 m/s) approach: Near at d=200 m has closing time 2.24 s < 3.5 s -> skipped!
+    nav.set_destination(590, 1000, traffic::GpsDestKind::kGeneric, "RAMP", 0, 10);
+    const auto hs_near = nav.update(0, 800, 0.0, 89.4, 4.0);
+    check(hs_near.kind == traffic::GpsPromptEvent::Kind::kNone,
+          "200 mph intermediate Near prompt skipped when closing time < 3.5 s");
+
+    // 5) Urgent TurnNow ALWAYS fires immediately even with 0.05 s since last prompt!
+    const auto hs_now = nav.update(0, 880, 0.0, 89.4, 0.05);
+    check(hs_now.kind == traffic::GpsPromptEvent::Kind::kTurnNow,
+          "urgent TurnNow always bypasses cadence and closing-time skip");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -443,6 +592,7 @@ int main() {
   test_r2_4_speed_scaling_roundabout_uturn_and_cues();
   test_world_map_gps_toggle_and_clear();
   test_colorado_nav_optional();
+  test_r3_aud_11_roundabout_disambiguation_fade_and_cadence();
   if (g_failed == 0) std::printf("gps_tests: PASS\n");
   return g_failed ? 1 : 0;
 }

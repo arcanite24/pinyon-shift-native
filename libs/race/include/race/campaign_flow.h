@@ -183,25 +183,40 @@ struct DialogCue {
   bool interrupt = false;
 };
 
+struct DialogVoTelemetry {
+  bool vo_playing = false;
+  float vo_elapsed_s = 0.0f;
+  float vo_duration_s = 0.0f;
+  float vo_rms = 0.0f;
+  std::string active_trigger;  // optional lowercase trigger ID for exact clip matching
+};
+
 class DialogQueue {
  public:
   bool enqueue(const DialogCue& cue, std::set<std::string>* heard_set = nullptr);
+  void set_vo_telemetry(const DialogVoTelemetry& vo);
+  void set_vo_telemetry(bool vo_playing, float vo_elapsed_s, float vo_duration_s, float vo_rms,
+                        std::string_view active_trigger = {});
   void update(double dt);
+  void update(double dt, const DialogVoTelemetry& vo);
   void skip_current();
   void clear();
 
   bool active() const { return active_; }
   const DialogCue& current() const { return current_; }
   double elapsed() const { return elapsed_; }
-  double remaining() const { return active_ ? std::max(0.0, current_.duration_s - elapsed_) : 0.0; }
+  double effective_duration() const { return active_ ? effective_duration_s_ : 0.0; }
+  double remaining() const { return active_ ? std::max(0.0, effective_duration_s_ - elapsed_) : 0.0; }
   double progress() const {
-    return active_ && current_.duration_s > 1e-4 ? std::clamp(elapsed_ / current_.duration_s, 0.0, 1.0) : 0.0;
+    return active_ && effective_duration_s_ > 1e-4 ? std::clamp(elapsed_ / effective_duration_s_, 0.0, 1.0) : 0.0;
   }
   // Smooth [0..1] slide-in/out presentation factor for the call-in banner.
   float banner_slide() const;
   // Smooth [0..1] audio ducking envelope (1.0 = full speech duck on Music/Engine).
   float duck_factor() const { return duck_; }
-  // Deterministic animated audio waveform bar heights [0.1..1.0] for UI4 call-in widget.
+  float live_vo_rms() const { return vo_rms_; }
+  bool vo_hold_active() const { return vo_hold_active_; }
+  // Animated audio waveform bar heights [0.1..1.0] driven by live VO RMS when available.
   std::vector<float> waveform_bars(int count) const;
 
   // Pops newly activated audio triggers (returns true once when a cue starts).
@@ -214,8 +229,18 @@ class DialogQueue {
   bool active_ = false;
   DialogCue current_;
   double elapsed_ = 0.0;
+  double effective_duration_s_ = 0.0;
   float duck_ = 0.0f;
   bool audio_pending_ = false;
+  bool has_vo_telemetry_ = false;
+  bool vo_playing_ = false;
+  float vo_elapsed_s_ = 0.0f;
+  float vo_duration_s_ = 0.0f;
+  float vo_rms_ = 0.0f;
+  std::string vo_active_trigger_;
+  bool vo_seen_playing_ = false;
+  bool vo_hold_active_ = false;
+  double vo_ended_elapsed_ = -1.0;
   std::vector<DialogCue> queue_;
 };
 

@@ -81,7 +81,7 @@ ReverbTemplate lerp_reverb(const ReverbTemplate& a, const ReverbTemplate& b, flo
 }
 
 float dist_point_to_segment(float px, float py, float pz, const std::array<float, 3>& a,
-                            const std::array<float, 3>& b) {
+                            const std::array<float, 3>& b, std::array<float, 3>* closest_delta = nullptr) {
   const float abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
   const float len2 = abx * abx + aby * aby + abz * abz;
   float t = 0.0f;
@@ -91,7 +91,15 @@ float dist_point_to_segment(float px, float py, float pz, const std::array<float
   const float cx = a[0] + abx * t - px;
   const float cy = a[1] + aby * t - py;
   const float cz = a[2] + abz * t - pz;
+  if (closest_delta) *closest_delta = {cx, cy, cz};
   return std::sqrt(cx * cx + cy * cy + cz * cz);
+}
+
+uint32_t hash_emitter(std::string_view a, std::string_view b, size_t idx) {
+  uint32_t h = 2166136261u ^ uint32_t(idx * 131u);
+  for (char c : a) h = (h ^ uint8_t(c)) * 16777619u;
+  for (char c : b) h = (h ^ uint8_t(c)) * 16777619u;
+  return h == 0u ? 1u : h;
 }
 
 void parse_track3d_node(const XmlNode& track3d, std::vector<AmbientEmitter3D>& out) {
@@ -439,7 +447,7 @@ void WorldAcousticsData::add_tile(SoundscapeTile tile) {
   }
 }
 
-AcousticsSample WorldAcousticsData::evaluate(float x, float y, float z) const {
+AcousticsSample WorldAcousticsData::evaluate(float x, float y, float z, float listener_heading_rad) const {
   AcousticsSample out;
   out.is_rally_world = rally_world_;
   if (!reverb_templates_.empty()) out.reverb = reverb_templates_[0];
@@ -488,17 +496,55 @@ AcousticsSample WorldAcousticsData::evaluate(float x, float y, float z) const {
     if (hit) break;
   }
 
-  // Evaluate festival / crowd proximity from ribbon & tile 3D emitters.
-  for (const auto& em : emitters_) {
-    const float d = dist_point_to_segment(x, y, z, em.pos1, em.pos2);
+  // Evaluate festival / crowd proximity and top-4 distance-culled 3D ambient
+  // emitters from ribbon & tile Track3D emitters.
+  const float rx = std::cos(listener_heading_rad);
+  const float rz = -std::sin(listener_heading_rad);
+  for (size_t ei = 0; ei < emitters_.size(); ++ei) {
+    const auto& em = emitters_[ei];
+    std::array<float, 3> delta{};
+    const float d = dist_point_to_segment(x, y, z, em.pos1, em.pos2, &delta);
     if (d >= em.max_distance) continue;
     const float prox = std::clamp(1.0f - d / std::max(1.0f, em.max_distance), 0.0f, 1.0f);
     const std::string low = lower_str(em.event_name + " " + em.object_name);
+    AmbientEmitterKind kind = AmbientEmitterKind::kGeneric;
     if (low.find("festival") != std::string::npos || low.find("stage") != std::string::npos) {
       out.festival_proximity = std::max(out.festival_proximity, prox);
+      kind = AmbientEmitterKind::kFestival;
     }
-    if (low.find("crowd") != std::string::npos) {
+    if (low.find("crowd") != std::string::npos || low.find("cheer") != std::string::npos) {
       out.crowd_proximity = std::max(out.crowd_proximity, prox);
+      if (kind == AmbientEmitterKind::kGeneric) kind = AmbientEmitterKind::kCrowd;
+    } else if (low.find("water") != std::string::npos || low.find("river") != std::string::npos ||
+               low.find("dam") != std::string::npos || low.find("stream") != std::string::npos) {
+      kind = AmbientEmitterKind::kWater;
+    } else if (low.find("tree") != std::string::npos || low.find("forest") != std::string::npos ||
+               low.find("wind") != std::string::npos) {
+      kind = AmbientEmitterKind::kTrees;
+    }
+    const float att = prox * prox;
+    if (att > 1e-4f) {
+      const float pan = d > 1e-3f ? std::clamp((delta[0] * rx + delta[2] * rz) / d, -1.0f, 1.0f) : 0.0f;
+      int slot = -1;
+      float min_g = att;
+      for (int s = 0; s < AcousticsSample::kMaxActiveEmitters; ++s) {
+        if (!out.active_emitters[size_t(s)].active) {
+          slot = s;
+          break;
+        }
+        if (out.active_emitters[size_t(s)].gain < min_g) {
+          min_g = out.active_emitters[size_t(s)].gain;
+          slot = s;
+        }
+      }
+      if (slot >= 0) {
+        auto& dst = out.active_emitters[size_t(slot)];
+        dst.active = true;
+        dst.kind = kind;
+        dst.gain = att;
+        dst.pan = pan;
+        dst.id_hash = hash_emitter(em.event_name, em.object_name, ei);
+      }
     }
   }
   if (out.festival_proximity > 0.35f) out.ambience_snapshot = "Festival";
@@ -523,6 +569,8 @@ RtReverbParams RtReverbParams::from_template(const ReverbTemplate& t) {
   r.hf_reference_hz = t.hf_reference_hz;
   r.near_dry = t.near_dry;
   r.near_wet = t.near_wet;
+  r.far_dry = t.far_dry;
+  r.far_wet = t.far_wet;
   return r;
 }
 
@@ -538,6 +586,7 @@ RtAcousticsSample RtAcousticsSample::from_sample(const AcousticsSample& s) {
   out.festival_proximity = s.festival_proximity;
   out.crowd_proximity = s.crowd_proximity;
   out.is_rally_world = s.is_rally_world;
+  out.active_emitters = s.active_emitters;
   return out;
 }
 
@@ -560,10 +609,11 @@ float EnvironmentalReverb::Comb::tick(float in) {
 float EnvironmentalReverb::Allpass::tick(float in) {
   if (buf.empty()) return in;
   const float bufout = buf[idx];
-  const float out = -in + bufout;
-  buf[idx] = in + bufout * feedback;
+  const float g = feedback;
+  const float v = in + g * bufout;
+  buf[idx] = v;
   if (++idx >= buf.size()) idx = 0;
-  return out;
+  return bufout - g * v;
 }
 
 void EnvironmentalReverb::prepare(int rate) {
@@ -618,16 +668,19 @@ void EnvironmentalReverb::set_parameters(const ReverbTemplate& tmpl) {
 
 void EnvironmentalReverb::set_parameters(const RtReverbParams& tmpl) {
   decay_time_ = std::clamp(tmpl.decay_time_s, 0.15f, 6.0f);
-  // Compute room + late reverb wet scale from I3DL2 millibels and NearWet.
+  // Compute room + late reverb wet scale from I3DL2 millibels, blending both
+  // NearWet and FarWet so outdoor canyon/bridge templates (NearWet==0, FarWet>0)
+  // remain audible instead of being silenced.
   const float room_lin = std::pow(10.0f, std::clamp(tmpl.room_level_mb, -6000.0f, 0.0f) / 2000.0f);
-  const float rev_lin = std::pow(10.0f, std::clamp(tmpl.reverb_level_mb, -3000.0f, 1500.0f) / 2000.0f);
-  target_wet_ = std::clamp(tmpl.near_wet * room_lin * std::min(rev_lin, 1.5f) * 0.45f, 0.0f, 0.65f);
-  target_dry_ = std::clamp(tmpl.near_dry, 0.2f, 1.0f);
+  const float rev_lin = std::pow(10.0f, std::clamp(tmpl.reverb_level_mb, -6000.0f, 1500.0f) / 2000.0f);
+  const float eff_wet = std::clamp(std::max(tmpl.near_wet, 0.55f * tmpl.far_wet), 0.0f, 1.0f);
+  target_wet_ = std::clamp(eff_wet * room_lin * std::min(rev_lin, 1.5f) * 0.45f, 0.0f, 0.65f);
+  target_dry_ = std::clamp(0.75f * tmpl.near_dry + 0.25f * tmpl.far_dry, 0.2f, 1.0f);
 
   // Early slap-back reflections driven by I3DL2 reflections_level_mb and reflections_delay_s.
   const float early_lin = std::pow(10.0f, std::clamp(tmpl.reflections_level_mb, -6000.0f, 1000.0f) / 2000.0f);
-  const float er_presence = tmpl.near_wet > 1e-3f ? std::max(tmpl.near_wet, 0.35f)
-                                                  : (tmpl.reflections_level_mb > -2400.0f ? 0.65f : 0.0f);
+  const float er_presence = eff_wet > 1e-3f ? std::max(eff_wet, 0.35f)
+                                            : (tmpl.reflections_level_mb > -2400.0f ? 0.65f : 0.0f);
   target_early_ = std::clamp(er_presence * room_lin * std::min(early_lin, 1.8f) * 0.55f, 0.0f, 0.65f);
   if (!early_l_.empty()) {
     const float base_s = std::clamp(tmpl.reflections_delay_s, 0.004f, 0.080f);
@@ -999,12 +1052,16 @@ AmbienceBedPlayer::AmbienceBedPlayer(int rate) : rate_(std::max(8000, rate)) {
   rally_beds_.fill(nullptr);
   rally_phase_.fill(0.0);
   rally_gain_.fill(0.0f);
+  for (size_t i = 0; i < emitter_voices_.size(); ++i) {
+    emitter_voices_[i].rng = 0x9E3779B9u ^ uint32_t((i + 1) * 0x85EBCA6Bu);
+  }
 }
 
 AmbienceBedPlayer::~AmbienceBedPlayer() {
   stop_worker();
   stop_rally_worker();
   drain_loaded();
+  reclaim_retired();
   for (PcmSample*& p : beds_) {
     delete p;
     p = nullptr;
@@ -1027,16 +1084,30 @@ void AmbienceBedPlayer::stop_rally_worker() {
   if (rally_worker_.joinable()) rally_worker_.join();
 }
 
+void AmbienceBedPlayer::retire_pcm(PcmSample* pcm) {
+  if (!pcm) return;
+  if (!retired_pcms_.push(pcm)) {
+    delete pcm;
+  }
+}
+
+void AmbienceBedPlayer::reclaim_retired() {
+  PcmSample* p = nullptr;
+  while (retired_pcms_.pop(p)) {
+    delete p;
+  }
+}
+
 void AmbienceBedPlayer::drain_loaded() {
   auto drain_bed = [&](SpscQueue<LoadedBed>& q) {
     LoadedBed lb;
     while (q.pop(lb)) {
       const size_t idx = size_t(lb.slot);
       if (idx < beds_.size()) {
-        delete beds_[idx];
+        retire_pcm(beds_[idx]);
         beds_[idx] = lb.pcm;
       } else {
-        delete lb.pcm;
+        retire_pcm(lb.pcm);
       }
     }
   };
@@ -1047,11 +1118,11 @@ void AmbienceBedPlayer::drain_loaded() {
     while (q.pop(rb)) {
       if (rb.region_idx >= 0 && rb.region_idx < kMaxRallyRegions) {
         const size_t idx = size_t(rb.region_idx);
-        delete rally_beds_[idx];
+        retire_pcm(rally_beds_[idx]);
         rally_beds_[idx] = rb.pcm;
         rally_names_[idx] = rb.name;
       } else {
-        delete rb.pcm;
+        retire_pcm(rb.pcm);
       }
     }
   };
@@ -1060,6 +1131,7 @@ void AmbienceBedPlayer::drain_loaded() {
 }
 
 void AmbienceBedPlayer::set_bed_sample(AmbienceBedSlot slot, PcmSample pcm) {
+  reclaim_retired();
   const size_t idx = size_t(slot);
   if (idx >= beds_.size()) return;
   if (pcm.data.size() >= 1024 && std::fabs(pcm.data.back() - pcm.data.front()) > 0.02f) {
@@ -1071,6 +1143,7 @@ void AmbienceBedPlayer::set_bed_sample(AmbienceBedSlot slot, PcmSample pcm) {
 }
 
 void AmbienceBedPlayer::set_rally_bed_sample(int region_idx, std::string_view region_name, PcmSample pcm) {
+  reclaim_retired();
   if (region_idx < 0 || region_idx >= kMaxRallyRegions) return;
   if (pcm.data.size() >= 1024 && std::fabs(pcm.data.back() - pcm.data.front()) > 0.02f) {
     make_seamless_loop(pcm);
@@ -1102,6 +1175,7 @@ int AmbienceBedPlayer::rally_bed_count() const {
 
 int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir) {
   stop_worker();
+  reclaim_retired();
   if (game_root.empty()) return 0;
   struct Job {
     AmbienceBedSlot slot;
@@ -1221,6 +1295,7 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
 int AmbienceBedPlayer::load_rally_from_disc(const std::filesystem::path& rally_root_or_state_root,
                                             const std::filesystem::path& cache_dir) {
   stop_rally_worker();
+  reclaim_retired();
   const auto amb_dir = find_colorado_dirt_amb_dir(rally_root_or_state_root);
   if (amb_dir.empty()) return 0;
 
@@ -1332,6 +1407,86 @@ int AmbienceBedPlayer::load_rally_from_disc(const std::filesystem::path& rally_r
     std::filesystem::remove_all(temp_dir, tec);
   });
   return queued;
+}
+
+void AmbienceBedPlayer::render_3d_emitters(const RtAcousticsSample& sample, float* out_stereo, int frames) {
+  if (!out_stereo || frames <= 0) return;
+  const float sm = 1.0f - std::exp(-1.0f / (0.06f * float(rate_)));
+  for (size_t vi = 0; vi < emitter_voices_.size(); ++vi) {
+    const auto& em = sample.active_emitters[vi];
+    auto& v = emitter_voices_[vi];
+    const float target_g = em.active ? std::clamp(em.gain, 0.0f, 1.0f) : 0.0f;
+    const float target_pan = em.active ? std::clamp(em.pan, -1.0f, 1.0f) : v.pan;
+    if (em.active && em.id_hash != v.id_hash) {
+      v.id_hash = em.id_hash;
+      v.phase = double((em.id_hash & 0x3FFFu)) * 3.0;
+    }
+    if (target_g < 1e-4f && v.gain < 1e-4f) {
+      v.gain = 0.0f;
+      continue;
+    }
+    const PcmSample* pcm = nullptr;
+    float base_scale = 0.055f;
+    float lp_a = 0.08f;
+    float bp_a = 0.012f;
+    if (em.kind == AmbientEmitterKind::kCrowd) {
+      pcm = beds_[size_t(AmbienceBedSlot::kCrowd)];
+      base_scale = pcm ? 0.14f : 0.045f;
+      lp_a = 0.10f;
+      bp_a = 0.018f;
+    } else if (em.kind == AmbientEmitterKind::kFestival) {
+      pcm = beds_[size_t(AmbienceBedSlot::kFestival)];
+      if (!pcm) pcm = beds_[size_t(AmbienceBedSlot::kCrowd)];
+      base_scale = pcm ? 0.14f : 0.050f;
+      lp_a = 0.12f;
+      bp_a = 0.015f;
+    } else if (em.kind == AmbientEmitterKind::kWater) {
+      base_scale = 0.075f;
+      lp_a = 0.16f;
+      bp_a = 0.025f;
+    } else if (em.kind == AmbientEmitterKind::kTrees) {
+      base_scale = 0.040f;
+      lp_a = 0.07f;
+      bp_a = 0.010f;
+    }
+
+    if (pcm && !pcm->data.empty()) {
+      const size_t n = pcm->data.size();
+      const double step = double(std::max(1, pcm->rate)) / double(rate_);
+      double ph = std::fmod(v.phase, double(n));
+      if (ph < 0.0) ph += double(n);
+      for (int i = 0; i < frames; ++i) {
+        v.gain += (target_g - v.gain) * sm;
+        v.pan += (target_pan - v.pan) * sm;
+        const float pan_l = std::sqrt(0.5f * (1.0f - v.pan));
+        const float pan_r = std::sqrt(0.5f * (1.0f + v.pan));
+        const size_t k = size_t(ph) % n;
+        const float frac = float(ph - std::floor(ph));
+        const float s = (pcm->data[k] + (pcm->data[(k + 1) % n] - pcm->data[k]) * frac) * v.gain * base_scale;
+        out_stereo[2 * i] += s * pan_l;
+        out_stereo[2 * i + 1] += s * pan_r;
+        ph += step;
+        if (ph >= double(n)) ph = std::fmod(ph, double(n));
+      }
+      v.phase = ph;
+    } else {
+      for (int i = 0; i < frames; ++i) {
+        v.gain += (target_g - v.gain) * sm;
+        v.pan += (target_pan - v.pan) * sm;
+        const float pan_l = std::sqrt(0.5f * (1.0f - v.pan));
+        const float pan_r = std::sqrt(0.5f * (1.0f + v.pan));
+        v.rng ^= v.rng << 13;
+        v.rng ^= v.rng >> 17;
+        v.rng ^= v.rng << 5;
+        const float n = float(int32_t(v.rng)) * (1.0f / 2147483648.0f);
+        v.lp += (n - v.lp) * lp_a;
+        v.bp += (v.lp - v.bp) * bp_a;
+        const float s = (v.lp - v.bp) * v.gain * base_scale;
+        out_stereo[2 * i] += s * pan_l;
+        out_stereo[2 * i + 1] += s * pan_r;
+      }
+    }
+  }
 }
 
 void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
@@ -1463,6 +1618,7 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, float speed_mph,
         bed_phase_[size_t(AmbienceBedSlot::kCrowd)] = ph;
         bed_gain_[size_t(AmbienceBedSlot::kCrowd)] = g;
       }
+      render_3d_emitters(sample, out_stereo, frames);
       return;
     }
   } else {
@@ -1524,7 +1680,10 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, float speed_mph,
   }
 
   // Only synthesize procedural fallback for layers missing real disc PCM beds.
-  if (have_reg_pcm && have_crowd_pcm) return;
+  if (have_reg_pcm && have_crowd_pcm) {
+    render_3d_emitters(sample, out_stereo, frames);
+    return;
+  }
 
   // Regional filter cutoff character (Mountains: brisk wind, RedRock: warm desert, Festival: crowd murmur).
   float lp_a = 0.04f;
@@ -1558,6 +1717,7 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, float speed_mph,
     out_stereo[2 * i] += (lp_l_ - bp_l_) * nature_gain + lp_l_ * crowd_gain;
     out_stereo[2 * i + 1] += (lp_r_ - bp_r_) * nature_gain + lp_r_ * crowd_gain;
   }
+  render_3d_emitters(sample, out_stereo, frames);
 }
 
 }  // namespace audio

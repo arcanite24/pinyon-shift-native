@@ -246,7 +246,7 @@ bool TiresConfig::load(const std::filesystem::path& game_root, std::string* erro
 const TireSurfaceEntry* TiresConfig::find_surface(std::string_view physics_surface) const {
   for (const auto& s : surfaces)
     if (iequals(s.physics_surface, physics_surface)) return &s;
-  return surfaces.empty() ? nullptr : &surfaces[0];
+  return nullptr;
 }
 
 const TireSurfaceEntry* TiresConfig::find_surface_by_index(int surface_index) const {

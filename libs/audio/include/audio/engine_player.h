@@ -8,6 +8,8 @@
 // stages", "Mix basics", "Rates and timing".
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <vector>
@@ -44,6 +46,8 @@ class EnginePlayer {
   // Triggers the Expander envelope on group `group` (or on all Exhaust groups
   // when `group < 0`), called when an exhaust burble or backfire pops.
   void trigger_expander(int group = -1);
+  // Triggers per-car ShiftVolumeScalar momentary volume boost on upshift/downshift.
+  void trigger_shift_boost(bool upshift);
   // Advances Expander & drivetrain-spring timers by `dt` seconds (also advanced
   // automatically by render()).
   void advance_dsp(double dt);
@@ -62,6 +66,7 @@ class EnginePlayer {
   double focus_peq_gain() const { return cur_focus_peq_gain_; }
   double distortion_level() const { return cur_dist_level_; }
   double drivetrain_spring_offset() const { return rpm_spring_offset_; }
+  double shift_boost_gain() const { return std::clamp(1.0 + shift_boost_cur_, 0.2, 3.0); }
   bool intake_chuff_active() const { return chuff_active_; }
 
  private:
@@ -146,14 +151,28 @@ class EnginePlayer {
   double audio_rpm_ = 0;
   double smooth_, fade_;
 
-  // IntakeChuff one-shot state.
+  // IntakeChuff one-shot state (33 ms sliding throttle history window).
   const PcmSample* chuff_pcm_ = nullptr;
   bool chuff_active_ = false;
+  bool chuff_armed_ = true;
   double chuff_phase_ = 0;
   double chuff_gain_ = 0;
   double chuff_left_ = 1, chuff_right_ = 1;
-  bool have_prev_throttle_ = false;
-  double prev_throttle_ = 0;
+  struct ThrottleHistEntry {
+    double time_s = 0.0;
+    double throttle = 0.0;
+  };
+  static constexpr int kThrottleHistSize = 16;
+  std::array<ThrottleHistEntry, kThrottleHistSize> thr_hist_{};
+  int thr_hist_head_ = 0;
+  int thr_hist_count_ = 0;
+  double dsp_time_s_ = 0.0;
+
+  // Per-car ShiftVolumeScalar boost envelope state.
+  double shift_boost_cur_ = 0.0;
+  double shift_boost_peak_ = 0.0;
+  double shift_boost_elapsed_s_ = 0.0;
+  double shift_boost_dur_s_ = 0.0;
 
   // Focus _ET.xml DSP state (drivetrain spring, FocusPEQ, Distortion, 3-band TrashDSP).
   double spring_x1_ = 0.0, spring_v1_ = 0.0;

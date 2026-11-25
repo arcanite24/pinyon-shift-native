@@ -153,6 +153,7 @@ class SnapshotMatrix {
   // DynamicsData state.
   bool have_prev_speed_ = false;
   float prev_speed_mph_ = 0.0f;
+  double crash_dt_accum_ = 0.0;
   bool crash_latched_ = false;
   bool crash_saw_slow_ = false;
   bool in_top_speed_ = false;
@@ -232,7 +233,9 @@ struct MasterDspConfig {
   float saturator_level = 0.95f;
   float saturator_saturation = 0.90f;
   float saturator_gain = 1.0f;
+  float backfire_reverb_wet_send_mb = -60.0f;  // AudioEngineConfig.xml backfireReverbWetSendOverride (mB)
 
+  float backfire_reverb_wet_send_linear() const;
   bool parse(std::string_view xml, std::string* error = nullptr);
   bool load(const std::filesystem::path& game_root, std::string* error = nullptr,
             const std::filesystem::path& state_root = {});
@@ -259,6 +262,7 @@ class MasterRmsStage {
 
   void prepare(int rate);
   void set_config(const MasterDspConfig& cfg);
+  const MasterDspConfig& config() const { return cfg_; }
   void set_playback_system(PlaybackSystem mode);
   PlaybackSystem playback_system() const { return playback_system_; }
   void set_tv_profile(bool tv) {
@@ -269,13 +273,16 @@ class MasterRmsStage {
 
   // Processes interleaved stereo (`channels = 2`) or 5.1 (`channels = 6`,
   // where channel index 3 is LFE and passes the compressor untouched).
-  void process(float* io, int frames, int channels = 2);
+  // When `lfe_mono` is non-null in stereo mode, uncompressed mono LFE samples
+  // bypass the RMS detector/compressor and are folded into L/R immediately
+  // before the single master saturator stage.
+  void process(float* io, int frames, int channels = 2, const float* lfe_mono = nullptr);
   float current_gain() const { return target_gain_; }
   float gain_reduction_db() const;
   float peak() const { return peak_; }
 
  private:
-  void process_block(float* io, int n, int channels);
+  void process_block(float* io, int n, int channels, const float* lfe_mono);
 
   MasterDspConfig cfg_{};
   int rate_ = 48000;

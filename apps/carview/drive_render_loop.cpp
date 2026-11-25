@@ -234,7 +234,10 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
               if (!app.audio_host.radio_select_station_by_name("Bass Arena")) {
                 app.audio_host.radio_select_station_by_name("Bass");
               }
+              app.audio_host.radio_lock_viper_intro(true);
               app.audio_host.radio_trigger_immediate("AliceOpeningInterview1");
+            } else if (ca.intro_completed || ca.enter_free_roam || ca.launch_event || ca.open_autoshow) {
+              app.audio_host.radio_lock_viper_intro(false);
             }
             if (ca.open_autoshow) app.pending_autoshow_open = true;
             if (ca.enter_free_roam && app.race) {
@@ -312,6 +315,7 @@ void DriveSession::run_window_loop() {
   while (running) {
     poll_sdl_events();
     if (!running) break;
+    app.audio_host.set_window_minimized(app_lifecycle.backgrounded || window_minimized);
     if (app_lifecycle.backgrounded || window_minimized || window_occluded) {
       SDL_WaitEventTimeout(nullptr, app_lifecycle.backgrounded ? 50 : 16);
       last_tick_ns = SDL_GetTicksNS();
@@ -340,7 +344,10 @@ void DriveSession::run_window_loop() {
               if (!app.audio_host.radio_select_station_by_name("Bass Arena")) {
                 app.audio_host.radio_select_station_by_name("Bass");
               }
+              app.audio_host.radio_lock_viper_intro(true);
               app.audio_host.radio_trigger_immediate("AliceOpeningInterview1");
+            } else {
+              app.audio_host.radio_lock_viper_intro(false);
             }
             if (h.open_autoshow) app.pending_autoshow_open = true;
             if (h.has_event && (!h.event_id.empty() || h.route_id > 0)) {

@@ -48,6 +48,7 @@ struct GpsTurn {
   bool at_junction = false;
   bool is_roundabout = false;
   GpsTurnKind exit_turn = GpsTurnKind::kNone;
+  int roundabout_exit = 0;  // 1..4 when kind == kRoundabout
 };
 
 struct GpsRoute {
@@ -93,6 +94,7 @@ struct GpsPromptEvent {
   GpsTurnKind turn = GpsTurnKind::kNone;
   GpsDestKind dest_kind = GpsDestKind::kGeneric;
   GpsTurnKind exit_turn = GpsTurnKind::kNone;
+  int roundabout_exit = 0;  // 1..4 when turn == kRoundabout
 };
 
 struct GpsLookahead {
@@ -180,6 +182,8 @@ class GpsNavigator {
   static constexpr double kArrivalMeters = 35.0;
   static constexpr double kRerouteCooldownSec = 2.5;
   static constexpr double kUTurnCooldownSec = 8.0;
+  static constexpr double kMinPromptCadenceSec = 3.0;
+  static constexpr double kSkipIntermediateClosingSec = 3.5;
 
  private:
   void reset_prompt_milestones();
@@ -198,6 +202,7 @@ class GpsNavigator {
   bool announced_near_dest_ = false;
   double reroute_cooldown_ = 0.0;
   double uturn_cooldown_ = 0.0;
+  double prompt_cooldown_ = 0.0;
   double wrong_dir_time_ = 0.0;
 };
 

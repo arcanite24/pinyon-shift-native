@@ -5,6 +5,8 @@
 // supporting Pinyon Shift's "Skip Voice-Overs with A" setting.
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -72,8 +74,14 @@ class VoPlayer {
   // Returns true while any VO line is actively playing (drives VOPlaying snapshot).
   bool render(float* out, int frames);
 
-  bool playing() const { return active_; }
+  bool playing() const { return active_.load(std::memory_order_acquire); }
   const std::string& current_trigger() const { return active_trigger_; }
+  // Lock-free / atomic-safe live VO telemetry accessors for AudioEngine & UI subtitle sync.
+  float elapsed_s() const { return elapsed_s_.load(std::memory_order_acquire); }
+  float duration_s() const { return duration_s_.load(std::memory_order_acquire); }
+  float current_rms() const { return current_rms_.load(std::memory_order_acquire); }
+  uint64_t active_trigger_hash() const { return active_trigger_hash_.load(std::memory_order_acquire); }
+  std::string active_trigger() const;
   size_t queued_count() const { return queue_.size(); }
 
  private:
@@ -86,6 +94,11 @@ class VoPlayer {
   void ensure_pool();
   void start_next();
   void stop_active();
+  void begin_fade_out();
+  void clear_fade_out();
+  bool render_fade_out(float* out, int frames, double& sum_sq);
+  void publish_trigger_snapshot(std::string_view trig);
+  void update_rms(double sum_sq, int frames);
 
   int rate_ = 48000;
   bool non_blocking_ = true;
@@ -99,14 +112,33 @@ class VoPlayer {
   std::unordered_map<std::string, PcmSample> mem_clips_;
 
   std::deque<QueuedLine> queue_;
-  bool active_ = false;
+  std::atomic<bool> active_{false};
   std::string active_trigger_;
+  std::atomic<float> elapsed_s_{0.0f};
+  std::atomic<float> duration_s_{0.0f};
+  std::atomic<float> current_rms_{0.0f};
+  std::atomic<uint64_t> active_trigger_hash_{0};
+  mutable std::atomic<uint32_t> trigger_seq_{0};
+  std::array<char, 64> trigger_buf_{};
+  float rms_smooth_ = 0.0f;
+
   int active_slot_ = -1;
   const PcmSample* active_mem_ = nullptr;
   double pos_ = 0.0;
   int stalled_frames_ = 0;
   int seek_retries_ = 0;
   uint32_t variant_rr_ = 0;
+  float last_l_ = 0.0f;
+  float last_r_ = 0.0f;
+
+  // 10 ms smooth fade-out tail for click-free skip_current() / interrupt.
+  int fade_rem_ = 0;
+  int fade_total_ = 0;
+  int fade_slot_ = -1;
+  const PcmSample* fade_mem_ = nullptr;
+  double fade_pos_ = 0.0;
+  float fade_last_l_ = 0.0f;
+  float fade_last_r_ = 0.0f;
 };
 
 }  // namespace audio

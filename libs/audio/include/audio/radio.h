@@ -113,6 +113,10 @@ class RadioPicker {
   int pick(std::mt19937_64& rng) {
     return pick(rng, [](int) { return true; });
   }
+  // Weighted pick respecting the `no_repeat` window (falls back to all positive-weight
+  // candidates when all are recent, or uniform pick when all weights are <= 0).
+  template <class WeightFn>
+  int pick_weighted(std::mt19937_64& rng, WeightFn weight_fn);
 
  private:
   int count_ = 0, no_repeat_ = 0;
@@ -157,6 +161,7 @@ class StationSchedule {
   bool has_locked_playlist() const { return !locked_tracks_.empty(); }
 
  private:
+  void ensure_extended(double t0, double t1);
   void extend();  // schedules the ident, the next track and a DJ line
   int pick_weighted_track();
   const RadioData& data_;
@@ -193,7 +198,9 @@ class Radio {
   // D-pad right (+1) or left (-1).
   void press(int dir);
   // Starts on this station (an index into data().stations), no popup.
-  void select(int station);
+  // Pass `user_change = true` when initiated by a user station-cycle press so
+  // the fast `change_fade` (0.25 s) is used instead of `change_fade_normal`.
+  void select(int station, bool user_change = false);
   bool last_change_was_user() const { return last_change_was_user_; }
   int find_station(std::string_view name) const;  // -1 if not found
   std::string selected_name() const;
@@ -210,6 +217,9 @@ class Radio {
   void unlock_viper_intro_playlist();
   bool viper_intro_locked() const { return viper_intro_locked_; }
   double location_clock() const { return location_clock_; }
+  void advance_location_clock(double dt) {
+    if (dt > 0.0) location_clock_ += dt;
+  }
   // Advances the clock (while on, or with `run`: a station still fading
   // out) and the popup by `dt` seconds of output.
   void advance(double dt, bool run = false);
@@ -273,20 +283,45 @@ class RadioPlayer {
   void add_location_emitter(LocationRadioEmitter emitter);
   const std::vector<LocationRadioEmitter>& location_emitters() const { return emitters_; }
   void set_listener(std::array<float, 3> pos, float heading_rad);
-  // Renders active 3D location stations near the listener into `out` (additive).
+  // Renders active 3D location stations near the listener into `out` (additive)
+  // and unconditionally advances `radio_.location_clock()`.
   void render_location_stations(float* out, int frames);
+  // Renders Homespace interior station (1=Autoshow/Radio6, 2=Paintshop/Radio8,
+  // 3=Workshop/Radio7) into `out` (additive). Returns true when a matching
+  // station exists and was rendered (even if still buffering).
+  bool render_homespace_station(int homespace_mode, float* out, int frames);
+  // Releases any active Homespace station voices (call when leaving interior).
+  void stop_homespace_voices();
 
  private:
-  struct Voice;
+  static constexpr size_t kMaxVoices = 16;
+  struct Voice {
+    bool active = false;
+    uint64_t id = 0;
+    int slot = -1;
+    bool used = false;
+    double pos = 0.0;  // source frame of the next output frame
+    float env = 0.0f;  // smooth fade envelope across seek/underrun boundaries (zero clicks)
+    float last_l = 0.0f;
+    float last_r = 0.0f;
+    bool location = false;
+    bool homespace = false;
+  };
+  struct EmitterFilter {
+    float hp_prev_in = 0.0f;
+    float hp_prev_out = 0.0f;
+    float lp_state = 0.0f;
+  };
   struct Banks;
-  Voice* voice_for(const RadioEvent& e, int64_t initial_frame);
+  Voice* voice_for(uint64_t voice_id, const RadioEvent& e, int64_t initial_frame);
+  Voice* voice_for(const RadioEvent& e, int64_t initial_frame) { return voice_for(e.id, e, initial_frame); }
   void release_voice(Voice& v);
   std::unique_ptr<Banks> banks_;
   Radio& radio_;
   int rate_;
   bool non_blocking_ = false;
   double prefetch_s_ = 6.0;
-  std::vector<Voice> voices_;
+  std::array<Voice, kMaxVoices> voices_{};
   std::vector<double> station_gain_;
   double duck_ = 1;
   double dj_modifier_ = 1.0;
@@ -294,10 +329,14 @@ class RadioPlayer {
   bool festival_update_playing_ = false;
   std::vector<LocationRadioEmitter> emitters_;
   std::vector<float> emitter_gain_;
+  std::vector<EmitterFilter> emitter_filters_;
   std::array<float, 3> listener_pos_{};
   float listener_heading_ = 0.0f;
   std::vector<RadioEvent> scratch_;
   std::vector<float> mix_;
+  std::vector<float> loc_mono_;
+  float homespace_gain_ = 0.0f;
+  int homespace_stations_[3]{-1, -1, -1};  // [0]=Autoshow(Radio6), [1]=Paintshop(Radio8), [2]=Workshop(Radio7)
 };
 
 // The MPEG audio frames of `bytes`, with anything between them (padding)
@@ -323,6 +362,44 @@ int RadioPicker::pick(std::mt19937_64& rng, Allow allow) {
   recent_.push_back(p);
   while (recent_.size() > window + 1) recent_.pop_front();
   return p;
+}
+
+template <class WeightFn>
+int RadioPicker::pick_weighted(std::mt19937_64& rng, WeightFn weight_fn) {
+  if (count_ <= 0) return -1;
+  const size_t window = size_t(std::max(0, std::min(no_repeat_, count_ - 1)));
+  auto is_recent = [&](int idx) {
+    for (size_t k = 0; k < recent_.size() && k < window; ++k) {
+      if (recent_[recent_.size() - 1 - k] == idx) return true;
+    }
+    return false;
+  };
+  double total_fresh = 0.0;
+  double total_any = 0.0;
+  for (int i = 0; i < count_; ++i) {
+    const double w = std::max(0.0, double(weight_fn(i)));
+    if (w <= 0.0) continue;
+    total_any += w;
+    if (!is_recent(i)) total_fresh += w;
+  }
+  if (total_any <= 0.0) return pick(rng);
+  const bool use_fresh = total_fresh > 0.0;
+  const double total = use_fresh ? total_fresh : total_any;
+  const double target = std::uniform_real_distribution<double>(0.0, total)(rng);
+  double acc = 0.0;
+  int chosen = -1;
+  for (int i = 0; i < count_; ++i) {
+    if (use_fresh && is_recent(i)) continue;
+    const double w = std::max(0.0, double(weight_fn(i)));
+    if (w <= 0.0) continue;
+    chosen = i;
+    acc += w;
+    if (acc >= target) break;
+  }
+  if (chosen < 0) return pick(rng);
+  recent_.push_back(chosen);
+  while (recent_.size() > window + 1) recent_.pop_front();
+  return chosen;
 }
 
 }  // namespace audio
