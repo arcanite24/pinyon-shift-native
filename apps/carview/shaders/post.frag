@@ -31,8 +31,8 @@ layout(set = 0, binding = 11) uniform sampler2D vol_tex;
 layout(set = 0, binding = 12) uniform sampler2D virtual_mirror_tex;
 
 layout(set = 0, binding = 5) uniform Optical {
-  vec4 flags_near;    // x flags (1=mblur, 2=dof, 4=god_rays, 8=lens_flare, 16=reverse_z, 32=paired_vig), y near, z contrast, w brightness
-  vec4 mblur;         // xy center uv, z strength [0..1], w car_protect_dist_m
+  vec4 flags_near;    // x flags (1=mblur, 2=dof, 4=god_rays, 8=lens_flare, 16=reverse_z, 32=paired_vig, 64=camera mblur), y near, z contrast, w brightness
+  vec4 mblur;         // xy center uv (radial) or camera screen motion uv (flag 64), z strength [0..1], w car_protect_dist_m
   vec4 dof;           // x focal_distance_m, y focal_range_m, z max_blur [0..1], w sepia [0..1]
   vec4 sun;           // xy sun_screen_uv, z sun_visibility [0..1], w god_ray_strength
   vec4 sun_color;     // rgb sun_scatter_color, w lens_flare_strength
@@ -364,7 +364,8 @@ void main() {
   // Motion Blur: McGuire Tile-Max / Neighbor-Max depth-aware velocity reconstruction (Tier 1-3)
   // driven by true per-object motion vectors (player car carries exact near-zero relative velocity
   // right up to its sharp silhouette while road 1 px outside the bumper blurs cleanly and passing
-  // AI/traffic vehicles streak naturally), or lightweight radial fallback on Tier 0.
+  // AI/traffic vehicles streak naturally), or on Tier 0 the camera-motion blur (driving) or
+  // the radial blur (photo mode).
   if ((oflags & 1u) != 0u && opt.mblur.z > 0.005) {
     int mcguire_taps = int(opt.sota_p.z + 0.5);
     if (mcguire_taps >= 7) {
@@ -409,8 +410,23 @@ void main() {
         }
         scene_raw = acc / max(wsum, 1e-4);
       }
+    } else if ((oflags & 64u) != 0u) {
+      // Tier-0 camera motion blur (FEEL-31): six taps of the scene along the
+      // camera's screen motion (mblur.xy, uv per frame), as the original
+      // does; it smears sideways in turns. The player car stays crisp.
+      float protect_m = max(opt.mblur.w, 0.0);
+      float car_mask = protect_m > 0.05 ? smoothstep(protect_m * 0.75, protect_m * 1.45, pix_dist) : 1.0;
+      vec2 span = opt.mblur.xy * (opt.mblur.z * car_mask);
+      if (dot(span, span) > dot(opt.texel_size.xy, opt.texel_size.xy) * 0.25) {
+        vec3 acc = vec3(0.0);
+        for (int k = 0; k < 6; ++k) {
+          float t = (float(k) + 0.5) / 6.0 - 0.5;
+          acc += raw_scene(clamp(v_uv - span * t, vec2(0.001), vec2(0.999)));
+        }
+        scene_raw = acc / 6.0;
+      }
     } else {
-      // Lightweight Tier-0 radial speed blur fallback.
+      // Tier-0 radial blur around mblur.xy (photo mode's shutter blur).
       vec2 to_edge = v_uv - opt.mblur.xy;
       float r = length(to_edge);
       float protect_m = max(opt.mblur.w, 0.0);

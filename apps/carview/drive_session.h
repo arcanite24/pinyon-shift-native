@@ -363,6 +363,7 @@ struct DriveSession {
   drive::DriveCamera rig;
   bool have_rig = false;
   drive::GamepadRumble gamepad_rumble;
+  drive::EngineSputter engine_sputter;
   bool rumble_enabled = true;
   double rumble_scale = 1.0;
   int prev_rumble_gear = 1;

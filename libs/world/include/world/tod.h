@@ -289,6 +289,12 @@ struct TrackPostConfig {
   bool load_xml(const std::string& xml_text);
   bool load_file(const std::filesystem::path& path);
 
+  // Camera motion-blur strength [0, 0.95] at a car speed (FEEL-31):
+  // motionBlurAmount scaled by speed up to DetailBlurMPHForMaxBlur, with no
+  // floor, so the free-roam baseline of 0 means no blur. The original's
+  // dynamic modulation is not decoded (SPEC_QUESTIONS Q72).
+  float motion_blur_strength(double speed_mps) const;
+
   // Evaluates the 4-key piecewise-linear EV curve (SPEC-SKY-AND-TOD §5.2).
   float evaluate_ev(float adapted_luminance, bool cockpit, float exposure_bias = 0.0f) const;
 };

@@ -508,7 +508,7 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
         vc.wposes[wi].centre[0] = float(w.centre.x);
         vc.wposes[wi].centre[1] = float(w.centre.y);
         vc.wposes[wi].centre[2] = float(w.centre.z);
-        vc.wposes[wi].steer = float(w.steer);
+        vc.wposes[wi].steer = float(w.steer + w.toe);
         vc.wposes[wi].spin = float(w.spin);
         vc.wposes[wi].omega = float(w.omega);
       }

@@ -822,6 +822,14 @@ bool TrackPostConfig::load_file(const std::filesystem::path& path) {
   return read_text_file(path, text) && load_xml(text);
 }
 
+float TrackPostConfig::motion_blur_strength(double speed_mps) const {
+  if (!(motion_blur_amount > 0.0f)) return 0.0f;
+  const double mph = std::max(0.0, speed_mps) * 2.23693629;
+  const double mph_max = std::max(double(detail_blur_mph_max), 1.0);
+  const double t = std::clamp(mph / mph_max, 0.0, 1.0);
+  return float(std::clamp(t * double(motion_blur_amount), 0.0, 0.95));
+}
+
 float TrackPostConfig::evaluate_ev(float adapted_luminance, bool cockpit, float exposure_bias) const {
   const float* K = cockpit ? cockpit_keys : exterior_keys;
   const float* E = cockpit ? cockpit_ev : exterior_ev;

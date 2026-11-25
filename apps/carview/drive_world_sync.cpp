@@ -785,14 +785,12 @@ void DriveSession::place_world() {
             ps.vig_bot_radius[1] = std::max(vb.scale_y, 0.005f);
             ps.vig_bot_rot = vb.angle_deg * kDegToRad;
             ps.vig_bot_feather = std::clamp(vb.power, 0.25f, 8.0f);
-            // Optical post-FX: speed/camera radial motion blur, DoF, god rays & lens flare/dirt.
-            const float mph = float(std::max(0.0, vehicle.speed()) * 2.23693629);
-            const float mph_max = std::max(cfg.detail_blur_mph_max, 40.0f);
-            const float spd_t = std::clamp((mph - 18.0f) / mph_max, 0.0f, 1.0f);
+            // Optical post-FX: camera motion blur, DoF, god rays & lens flare/dirt.
+            // Motion blur follows the camera's screen motion with the track's
+            // motionBlurAmount (0 in free roam) and no floor (FEEL-31).
             ps.motion_blur = live_motion_blur && slice12.trainer.config.debug_motion_blur && (!app.bench || app.bench_full_fx);
-            ps.motion_blur_strength = std::clamp(spd_t * std::max(cfg.motion_blur_amount, 0.55f), 0.0f, 0.95f);
-            ps.motion_blur_center[0] = 0.5f;
-            ps.motion_blur_center[1] = 0.44f;
+            ps.motion_blur_strength = cfg.motion_blur_strength(vehicle.speed());
+            ps.motion_blur_directional = true;
             ps.motion_blur_car_protect = tod_cockpit_cam ? 2.2f : 6.8f;
             ps.dof = live_dof && slice12.trainer.config.debug_dof && (!app.bench || app.bench_full_fx);
             ps.dof_focal_distance = std::clamp(cfg.dof_focal_distance, 5.0f, 40.0f);

@@ -229,14 +229,7 @@ double CarParams::TireAffectCurve::evaluate(double temp_c) const {
     const double f = idx - double(i0);
     return std::clamp(lerp(values[i0], values[i0 + 1], f), 0.5, 1.5);
   }
-  // Default thermal window: subtle cold warmup below 55 C, optimal 55..110 C = 1.0,
-  // gradual overheating falloff above 110 C.
-  if (temp_c < 55.0) {
-    const double u = std::clamp((temp_c - 25.0) / 30.0, 0.0, 1.0);
-    return lerp(0.96, 1.0, u);
-  }
-  const double t_over = std::max(0.0, temp_c - 110.0);
-  return 1.0 - std::clamp(t_over * 0.0022, 0.0, 0.14);
+  return 1.0;  // no curve: no effect (the engine's old thermal window was invented, FEEL-02)
 }
 
 double tyre_peak_mu(const CarParams& p, int axle, TyrePeak kind, double load_n, double speed) {
@@ -257,6 +250,57 @@ double tyre_peak_mu(const CarParams& p, int axle, TyrePeak kind, double load_n, 
   peak *= p.long_scale[size_t(axle)];
   if (kind == TyrePeak::kBraking) return peak * p.brake_friction_scale;
   return peak * lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(speed), p.accel_speed0, p.accel_speed1));
+}
+
+double friction_torque_mod_yaw(const CarParams::FrictionTorqueMod& m, int table, bool off_road, double mass_kg,
+                               double i_yaw, double speed_sq, double cos_yaw, double yaw_rate, double torque_yaw) {
+  // The original's FrictionTorqueMod: rescales and clamps the tyres' summed yaw
+  // torque. The steering table is chosen by steering mode / assists, then
+  // multiplied by the drivetrain row and (all four wheels off-road) the off-road
+  // row; the two mass rows are blended by the car's mass.
+  using Row = CarParams::FrictionTorqueModRow;
+  const auto& st = m.steering[size_t(std::clamp(table, 0, 2))];
+  auto combine = [&](int r) {
+    const Row& a = st[size_t(r)];
+    const Row& d = m.drivetrain[size_t(r)];
+    static const Row kIdentity{};
+    const Row& o = off_road ? m.off_road[size_t(r)] : kIdentity;
+    Row c;
+    c.cos_yaw0 = a.cos_yaw0 * d.cos_yaw0 * o.cos_yaw0;
+    c.cos_yaw1 = a.cos_yaw1 * d.cos_yaw1 * o.cos_yaw1;
+    c.turn_scale0 = a.turn_scale0 * d.turn_scale0 * o.turn_scale0;
+    c.straighten_scale0 = a.straighten_scale0 * d.straighten_scale0 * o.straighten_scale0;
+    c.turn_clamp0 = a.turn_clamp0 * d.turn_clamp0 * o.turn_clamp0;
+    c.straighten_clamp0 = a.straighten_clamp0 * d.straighten_clamp0 * o.straighten_clamp0;
+    c.turn_scale1 = a.turn_scale1 * d.turn_scale1 * o.turn_scale1;
+    c.straighten_scale1 = a.straighten_scale1 * d.straighten_scale1 * o.straighten_scale1;
+    c.turn_clamp1 = a.turn_clamp1 * d.turn_clamp1 * o.turn_clamp1;
+    c.straighten_clamp1 = a.straighten_clamp1 * d.straighten_clamp1 * o.straighten_clamp1;
+    return c;
+  };
+  const Row r0 = combine(0), r1 = combine(1);
+  const double span = m.mass1_kg - m.mass0_kg;
+  const double um = span != 0 ? std::clamp((mass_kg - m.mass0_kg) / span, 0.0, 1.0) : 0.0;
+  const double cos0 = lerp(r0.cos_yaw0, r1.cos_yaw0, um), cos1 = lerp(r0.cos_yaw1, r1.cos_yaw1, um);
+  const double cmin = std::min(cos0, cos1), cmax = std::max(cos0, cos1);
+  double uy = cmax > cmin ? (cmax - cos_yaw) / (cmax - cmin) : 0.0;
+  if (cos_yaw >= cmax) uy = 0.0;
+  if (cos_yaw <= cmin) uy = 1.0;
+  const bool turning = yaw_rate * torque_yaw > 0;
+  const double sc0 = lerp(turning ? r0.turn_scale0 : r0.straighten_scale0,
+                          turning ? r1.turn_scale0 : r1.straighten_scale0, um);
+  const double sc1 = lerp(turning ? r0.turn_scale1 : r0.straighten_scale1,
+                          turning ? r1.turn_scale1 : r1.straighten_scale1, um);
+  const double cl0 = lerp(turning ? r0.turn_clamp0 : r0.straighten_clamp0,
+                          turning ? r1.turn_clamp0 : r1.straighten_clamp0, um);
+  const double cl1 = lerp(turning ? r0.turn_clamp1 : r0.straighten_clamp1,
+                          turning ? r1.turn_clamp1 : r1.straighten_clamp1, um);
+  const double scale = lerp(sc0, sc1, uy), clamp_deg = lerp(cl0, cl1, uy);
+  // Speed blend: no effect below 8 m/s, full effect from 15 m/s.
+  const double s = std::clamp((speed_sq - 64.0) / (225.0 - 64.0), 0.0, 1.0);
+  double t = torque_yaw * lerp(1.0, scale, s);
+  const double lim = std::fabs(clamp_deg * (kPi / 180.0) * i_yaw * lerp(10.0, 1.0, s));
+  return std::clamp(t, -lim, lim);
 }
 
 Vec3 rotate(const Quat& q, const Vec3& v) {
@@ -694,16 +738,16 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     steer_ang_vel_ = 0.0;
     return;
   }
-  // Forza dynamic pad steering filter (SPEC-CAR-PHYSICS, Steering-at-speed filter
-  // and Assisted / Normal / Simulation steering):
-  // - Dedicated digital keyboard steering filter (0-120 ms tap ramp, highway cap,
-  //   instant countersteer exception, crisp return-to-center)
-  // - SteeringWheelFilter speed-dependent stick shaping
-  // - Speed-sensitive rate interpolation across [SlowSpeed, FastSpeed] toward FastRateScale
-  // - Normal/Assisted active countersteer bias above ~6 deg rear slip at > 8 m/s
-  // - Dynamic peak-slip tracking (SteerAngVelDynFindPeak) in Normal/Assisted modes
-  // - Countersteer boost above rear slip threshold
-  // - Acceleration-ramped angular velocity over SteerAccelTimeToMaxRate
+  // The pad steering filter (SPEC-CAR-PHYSICS, Steering-at-speed filter and
+  // Assisted / Normal / Simulation steering):
+  // - the speed-sensitive lock (steer_lock) and the rate scaled across
+  //   [SlowSpeed, FastSpeed] toward FastRateScale;
+  // - the countersteer rate (SteerAngVelCountersteer) while the stick
+  //   holds against a rear slide;
+  // - the angular velocity ramped over SteerAccelTimeToMaxRate.
+  // Engine extensions: a keyboard filter (the 360 has no keyboard), and the
+  // opt-in steering helpers (lane centring, a countersteer bias and a front
+  // peak-slip pull), off unless VehicleAssists::engine_steer_assist.
   const double v_abs = std::fabs(speed());
   const double lock = std::min(steer_lock(), std::max(p_.steer_min_lock, surf_steer_lock_cap_rad_));
   const Vec3 vl_cs = rotate_inverse(rot_, vel_);
@@ -747,25 +791,19 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     kb_steer_filtered_ = shaped_.steer;
   }
 
-  const double u_sw = assists_.steering == 2
-                          ? ramp(v_abs, p_.sw_filter_corr_speed0, p_.sw_filter_corr_speed1)
-                          : ramp(v_abs, p_.sw_filter_speed0, p_.sw_filter_speed1);
-  const double sw_scale = assists_.steering == 2
-                              ? lerp(p_.sw_filter_corr_scale0, p_.sw_filter_corr_scale1, u_sw)
-                              : lerp(p_.sw_filter_scale0, p_.sw_filter_scale1, u_sw);
-  // Subtle highway-speed center precision from SteeringWheelFilter while keeping
-  // full mid-stick authority at cornering speeds.
-  const double sw_blend = std::clamp(0.08 * (sw_scale - 1.0) * u_sw, 0.0, 0.25);
+  // FEEL-15: the stick maps linearly onto the lock (the SteeringWheelFilter
+  // block of PhysicsSettings.ini is never read by the original).
   const double stick_abs = std::fabs(eff_stick);
-  const double stick_shaped = sign(eff_stick) * lerp(stick_abs, stick_abs * stick_abs, sw_blend);
-  double target = stick_shaped * lock;
+  double target = eff_stick * lock;
   if (kb_countersteering) {
     const double kb_cs_lock = std::min(p_.max_steer, std::max(lock, 0.35));
-    target = stick_shaped * kb_cs_lock;
+    target = eff_stick * kb_cs_lock;
   }
-  // Assisted steering mode: gentle road/lane centering bias when road guidance is
-  // provided on Input, fading out smoothly when the player applies deliberate lock.
-  if (assists_.steering == 0 && raw.has_assist_lane && v_abs > 3.0) {
+  const bool helpers = assists_.engine_steer_assist;
+  // Steering helper (engine extra, opt-in): in Assisted steering, a gentle
+  // road/lane centring bias when road guidance is provided on Input, fading
+  // out when the player applies deliberate lock.
+  if (helpers && assists_.steering == 0 && raw.has_assist_lane && v_abs > 3.0) {
     const double speed_fade = ramp(v_abs, 3.0, 12.0);
     const double player_fade = 1.0 - 0.65 * stick_abs;
     const double raw_bias = 0.45 * raw.assist_heading_error_rad - 0.08 * raw.assist_lateral_offset_m;
@@ -773,11 +811,11 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     const double lane_bias = std::clamp(raw_bias, -max_bias, max_bias) * speed_fade * player_fade;
     target = std::clamp(target + lane_bias, -lock, lock);
   }
-  // Assisted / Normal active countersteer assist (Simulation == 2 stays raw/unassisted):
-  // when rear slip exceeds ~6 deg at > 8 m/s, apply a bounded countersteer bias that
-  // blends out smoothly when holding handbrake or actively steering past it.
+  // Steering helper (engine extra, opt-in; Simulation stays raw): when rear
+  // slip exceeds ~6 deg at > 8 m/s, a bounded countersteer bias that blends
+  // out when holding the handbrake or actively steering past it.
   bool cs_assist_active = false;
-  if (assists_.steering <= 1 && vl_cs.z > 8.0 && (w_[2].contact || w_[3].contact)) {
+  if (helpers && assists_.steering <= 1 && vl_cs.z > 8.0 && (w_[2].contact || w_[3].contact)) {
     constexpr double kCsSlipStart = 6.0 * kPi / 180.0;
     constexpr double kCsSlipFull = 10.0 * kPi / 180.0;
     if (std::fabs(rear_slip_rad) > kCsSlipStart) {
@@ -810,10 +848,11 @@ void Vehicle::shape_input(const Input& raw, double dt) {
                               : p_.steer_rate * lerp(share, share * p_.steer_fast_rate_scale, u_spd) * kb_tap_rate_scale) *
                     std::clamp(surf_steer_rate_mult_, 0.35, 2.0);
   if (centring && raw.input_is_keyboard) rate_use = std::max(rate_use, p_.straighten_rate * 1.45);
-  // Dynamic peak-slip tracking: in Normal/Assisted modes (and not during
-  // handbrake drift initiation), when front tyres wash past peak lateral slip,
-  // pull target angle smoothly toward peak front grip via SteerAngVelDynFindPeak.
-  if (assists_.steering != 2 && !countersteering && handbrake_shaped_ < 0.1 && v_abs > 5.0 && stick_abs > 0.05) {
+  // Steering helper (engine extra, opt-in): in Normal/Assisted (and not
+  // during handbrake drift initiation), when the fronts wash past peak
+  // lateral slip, pull the target toward peak front grip.
+  if (helpers && assists_.steering != 2 && !countersteering && handbrake_shaped_ < 0.1 && v_abs > 5.0 &&
+      stick_abs > 0.05) {
     const double mean_front_sa = 0.5 * (std::fabs(w_[0].slip_angle) + std::fabs(w_[1].slip_angle));
     if (mean_front_sa > 1.2) {
       const double peak_pull = std::clamp(1.2 / mean_front_sa, 0.78, 1.0);
@@ -850,8 +889,8 @@ double Vehicle::steer_lock() const {
                            ? std::min(p_.max_steer, p_.max_steer_filtered)
                            : p_.max_steer;
   if (ai_ || v <= 0.1) return max_a;
-  const double mode_gees = assists_.steering == 2 ? 1.25 : (assists_.steering == 0 ? 0.90 : 1.0);
-  return std::clamp(std::atan(p_.steer_gees_fit * p_.steer_max_gees * mode_gees * p_.gravity * wheelbase / (v * v)),
+  // The lock law is ours (interim, FEEL-16 d): the same in every steering mode.
+  return std::clamp(std::atan(p_.steer_gees_fit * p_.steer_max_gees * p_.gravity * wheelbase / (v * v)),
                     std::min(p_.steer_min_lock, max_a), max_a);
 }
 
@@ -1320,11 +1359,13 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const Vec3 hard = pos_ + rotate(rot_, hard_local - com_local_);
     // Ackermann (ours: the spec has no steering geometry): each front wheel
     // points at one turn centre on the rear axle's line, steer_angle_ being
-    // the angle of a wheel on the centre line. Static toe (Forza convention:
-    // + = toe-out, - = toe-in) rotates each wheel's heading in the XZ plane.
+    // the angle of a wheel on the centre line. The original's slip heading
+    // has the steer angle and the inner wheel's extra lock but no toe
+    // (FEEL-03), so static toe (Forza convention: + = toe-out, - = toe-in)
+    // is kept for drawing the wheel only.
     const double toe_sign = (i % 2 == 0) ? -1.0 : 1.0;
-    const double wheel_toe = toe_sign * p.static_toe_rad[a];
-    w.steer = wheel_toe;
+    w.toe = toe_sign * p.static_toe_rad[a];
+    w.steer = 0.0;
     const double eff_steer = std::clamp(steer_angle_ + damage_.steer_pull_rad, -p.max_steer, p.max_steer);
     if (a == 0 && std::fabs(eff_steer) > 1e-9) {
       const double z_rear = 0.5 * (p.wheel_centres[2].z + p.wheel_centres[3].z);
@@ -1332,7 +1373,6 @@ void Vehicle::substep(double dt, const Ground& ground) {
       const double centre_x = base / std::tan(eff_steer);
       w.steer = std::atan(base / (centre_x - p.wheel_centres[i].x));
       if (w.steer * eff_steer < 0) w.steer += eff_steer > 0 ? kPi : -kPi;  // past 90 degrees
-      w.steer += wheel_toe;
     }
     Hit hit;
     const double reach = p.probe_height + std::max(p.rest_length, axle_rest) + droop_[i] + radius;
@@ -1603,7 +1643,6 @@ void Vehicle::substep(double dt, const Ground& ground) {
 
   Vec3 fwd[kWheels]{}, lat[kWheels]{};
   double vx[kWheels]{}, vy[kWheels]{}, fx0[kWheels]{}, fy[kWheels]{}, slope[kWheels]{};
-  const Vec3 body_right = rotate(rot_, {1, 0, 0});
   auto tyre = [&](int i, double omega, double* fx_out, double* fy_out, double* sx_out, double* sy_out) {
     const int a = axle_of(i);
     const double n = w_[i].load, kgf = n / kKgf, stretch = p.sidewall_stretch[a];
@@ -1639,29 +1678,19 @@ void Vehicle::substep(double dt, const Ground& ground) {
     // excess over 1 is 1.1 x the front's.
     const double dirt = ai_ && dirt_rule_ ? std::clamp(1 + (a == 0 ? 0.5 : 0.55) * dirt_k_, 0.0, 2.0) : 1.0;
     const double ai = ai_grip_[a] * dirt;
-    // Thermal tyre affect curve (List_TireAffectCurve) & compound TireMod_FrictionScale.
-    const double thermal_grip = p.tire_affect_curve.evaluate(tyre_temp_c_[size_t(i)]);
     // Braking friction on a slowed wheel, else the speed-blended accel
     // scale (SPEC-CAR-PHYSICS, Brakes: Braking friction).
     double kx = grip[i] * rear * hb_grip * ai * p.long_scale[a] * p.long_misc_scale * p.tire_mod_friction_scale *
-                damage_.tyre_grip[size_t(i)] * thermal_grip;
+                damage_.tyre_grip[size_t(i)];
     kx *= slowing[i] ? (p.brake_friction_scale * (abs_off_boost ? p.abs_off_braking_friction_scale : 1.0))
                      : lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(vx[i]), p.accel_speed0, p.accel_speed1));
     double ky = grip[i] * rear * hb_grip * ai * p.lat_scale[a] * p.lat_compound_scale * p.long_misc_scale *
-                p.tire_mod_friction_scale * damage_.tyre_grip[size_t(i)] * thermal_grip;
-    // Lightweight roll- & steer-induced dynamic camber modulation on per-wheel lateral grip:
-    // chassis roll tilts the outside wheel toward positive camber while negative static camber
-    // and front caster recover optimal contact patch alignment under cornering load.
-    const double roll_deg = std::asin(std::clamp(dot(body_right, normal[i]), -1.0, 1.0)) * (180.0 / kPi);
-    const double side_sign = (i % 2 == 0) ? 1.0 : -1.0;
-    const double caster_cam = (a == 0) ? -side_sign * std::sin(w_[i].steer) * p.front_caster_deg * 0.35 : 0.0;
-    const double dyn_cam = p.static_camber_deg[a] + side_sign * (0.65 * roll_deg) + caster_cam;
-    auto camber_grip = [](double c_deg) {
-      const double err = c_deg + 0.5;
-      return std::clamp(1.02 - 0.0045 * err * err, 0.86, 1.02);
-    };
-    const double camber_mod = std::clamp(camber_grip(dyn_cam) / std::max(0.5, camber_grip(p.static_camber_deg[a])), 0.88, 1.08);
-    ky *= camber_mod;
+                p.tire_mod_friction_scale * damage_.tyre_grip[size_t(i)];
+    // No thermal grip factor (FEEL-02): the original's tyre temperature model
+    // is not decoded, and its affect curves stay within 1 % of 1.
+    // No camber term (FEEL-01): in the original, camber acts only through
+    // List_TireAffectCurve, which stays within 1 % of 1 on the R34
+    // (SPEC-CAR-PHYSICS, tyre law).
     // The rear-grip fix: g + d (1 - g), g the scale faded out by the
     // normalised slip angle, d by the road wheels' steer angle in degrees.
     if (a == 1) {
@@ -1909,7 +1938,9 @@ void Vehicle::substep(double dt, const Ground& ground) {
   locked_ = lock_now;
   engine_omega_ = omega_e;
 
-  // 5. Forces on the body.
+  // 5. Forces on the body. The tyres' torque is also summed on its own for
+  // the FrictionTorqueMod pass below.
+  Vec3 tyre_torque{};
   for (int i = 0; i < kWheels; ++i) {
     WheelState& w = w_[i];
     if (w.contact && w.load > 0) {
@@ -1937,7 +1968,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
       const Vec3 f = normal[i] * w.load + fwd[i] * fx + lat[i] * fy_new;
       w.fx = fx;
       force = force + f;
-      torque = torque + cross(contact[i] - pos_, f);
+      // The suspension force's torque goes straight to the body; only the
+      // friction forces' torque is the tyres' (the FrictionTorqueMod input).
+      torque = torque + cross(contact[i] - pos_, normal[i] * w.load);
+      tyre_torque = tyre_torque + cross(contact[i] - pos_, fwd[i] * fx + lat[i] * fy_new);
       // The longitudinal force pitches the body through the measured arm
       // instead of the contact patch's height below the centre of mass
       // (SPEC-CAR-PHYSICS scenario B, load transfer): the same force at a
@@ -1945,15 +1979,15 @@ void Vehicle::substep(double dt, const Ground& ground) {
       // The lateral force rolls it through its own arm likewise.
       const double below = dot(pos_ - contact[i], up);
       if (p.longitudinal_pitch_arm > 0 && below > p.longitudinal_pitch_arm)
-        torque = torque + cross(up * (below - p.longitudinal_pitch_arm), fwd[i] * fx);
+        tyre_torque = tyre_torque + cross(up * (below - p.longitudinal_pitch_arm), fwd[i] * fx);
       if (p.lateral_roll_arm > 0 && below > p.lateral_roll_arm)
-        torque = torque + cross(up * (below - p.lateral_roll_arm), lat[i] * fy_new);
+        tyre_torque = tyre_torque + cross(up * (below - p.lateral_roll_arm), lat[i] * fy_new);
     }
     if (!w.contact || w.load <= 0) w.fx = 0;
     w.omega = omega_new[i];
     w.spin = std::fmod(w.spin + w.omega * dt, 2 * kPi);
-    // Update dynamic tyre carcass temperature (C): heats from sustained slip energy
-    // scaled by HeatTireScale, cools toward 75 C operating / 30 C ambient.
+    // A tyre temperature estimate (ours) for telemetry and replays only; it
+    // no longer changes grip (FEEL-02).
     const double slip_mag = std::hypot(w.slip_ratio, w.slip_angle * 0.12);
     const double heat_in =
         (w.contact && slip_mag > 0.35)
@@ -1963,6 +1997,30 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double cool_rate = (0.04 + 0.002 * std::fabs(vx[i])) * (tyre_temp_c_[size_t(i)] - cool_target);
     tyre_temp_c_[size_t(i)] = std::clamp(tyre_temp_c_[size_t(i)] + (heat_in - cool_rate) * dt, 25.0, 175.0);
   }
+  // FrictionTorqueMod (SPEC-CAR-PHYSICS, Steering assist modes; SPEC_QUESTIONS
+  // Q68): the tyres' summed yaw torque about the body's up axis is rescaled
+  // and clamped by the car's slip-angle cosine and speed. The table is
+  // SimulationSteering in Simulation steering, else WithAssists or NoAssists
+  // (the shipped rows are equal). The original runs it for every car; ours
+  // skips AI-driven cars for now (interim, Q68): our suspension's wheel loads
+  // chatter, and the unequal Turn/Straighten clamps turn that chatter into a
+  // net yaw that spins the AI on the oracle lap.
+  if (!ai_) {
+    const double t_yaw = dot(tyre_torque, up);
+    const Vec3 fwd_w = rotate(rot_, {0, 0, 1});
+    const Vec3 v_flat = vel_ - up * dot(vel_, up);
+    const double v_len = length(v_flat);
+    const double cos_yaw = v_len > 0 ? dot(fwd_w, v_flat) / v_len : 0.0;
+    int n_offroad = 0;
+    for (int i = 0; i < kWheels; ++i)
+      if (surf[i].off_roadness > 0) ++n_offroad;
+    const int table =
+        assists_.steering == 2 ? 2 : (assists_.traction_control || assists_.stability_control) ? 0 : 1;
+    const double t_new = friction_torque_mod_yaw(p.friction_torque_mod, table, n_offroad == kWheels, p.mass,
+                                                 inertia_.y, dot(vel_, vel_), cos_yaw, dot(ang_, up), t_yaw);
+    tyre_torque = tyre_torque + up * (t_new - t_yaw);
+  }
+  torque = torque + tyre_torque;
   // Per-surface LinearDrag & AngularDrag (SurfaceTypes.xml: deep mud/sand/water resistance).
   if (surf_linear_drag > 0.0) {
     const double lin_d = std::min(surf_linear_drag, 0.5 / std::max(dt, 1e-6));
@@ -2128,58 +2186,6 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (v_abs > 1e-6) {
       const double r = p.drag_quadratic * v_abs * v_abs + p.drag_constant * std::min(1.0, v_abs);
       force = force - vel_ * (r / v_abs);
-    }
-  }
-
-  // FrictionTorqueMod yaw stabilization (SPEC-CAR-PHYSICS, Steering assist
-  // modes): active for Assisted (0) / Normal (1), disabled in Simulation (2).
-  // Narrowed to primarily catch imminent spin-outs (|slip| > 28 deg in Normal
-  // while yaw rate diverges away from recovery) so playful drift initiation and
-  // steady drift angle holds are never flattened.
-  if (!ai_ && assists_.steering != 2 && off < kWheels) {
-    const Vec3 fwd_w = rotate(rot_, {0, 0, 1});
-    const double sp_xz = std::hypot(vel_.x, vel_.z);
-    if (sp_xz > 5.0) {
-      const double cos_yaw = std::clamp((fwd_w.x * vel_.x + fwd_w.z * vel_.z) / sp_xz, -1.0, 1.0);
-      const double slip_deg = std::acos(cos_yaw) * (180.0 / kPi);
-      // Cross product in XZ indicates slip sign; yaw rate of same sign widens the slide (diverges).
-      const double yaw_cross = fwd_w.x * vel_.z - fwd_w.z * vel_.x;
-      const bool diverging = (ang_.y * yaw_cross) > 0.0;
-      // Predictive spin-out angle (0.22 s yaw-rate lookahead only while diverging away
-      // from recovery): catches imminent spin-outs without flattening steady drift holds
-      // or playful drift initiation below ~28 deg.
-      const double slip_pred_deg = slip_deg + (diverging ? std::fabs(ang_.y) * (180.0 / kPi) * 0.22 : 0.0);
-      double spin_weight = 0.0;
-      if (assists_.steering == 1) {
-        if (diverging && slip_pred_deg > 28.0) {
-          spin_weight = ramp(slip_pred_deg, 28.0, 42.0);
-        }
-      } else {
-        if (diverging && slip_pred_deg > 18.0) {
-          spin_weight = ramp(slip_pred_deg, 18.0, 34.0);
-        } else if (!diverging && slip_deg > 35.0) {
-          spin_weight = 0.25 * ramp(slip_deg, 35.0, 50.0);
-        }
-      }
-      if (spin_weight > 0.0) {
-        const double u_mass = ramp(p.mass, 909.1, 1590.9);
-        const double assist_gain = assists_.steering == 0 ? 1.35 : 0.90;
-        const double mode_scale = lerp(0.85, 1.0, spin_weight);
-        // FrictionTorqueMod table values (100..180) are in 100 N*m units -> SI N*m.
-        const double base_clamp = lerp(lerp(180.0, 120.0, spin_weight), lerp(150.0, 100.0, spin_weight), u_mass) * 100.0;
-        int n_offroad = 0;
-        for (int i = 0; i < kWheels; ++i) {
-          if (w_[i].contact && surf[i].off_roadness >= 0.5) ++n_offroad;
-        }
-        // Off-road modifier activates only when all 4 wheels are off-road.
-        const double offroad_mod = (n_offroad == kWheels) ? 1.2 : 1.0;
-        const double fwd_mod = p.layout == CarParams::Layout::kFront ? 0.9 : 1.0;
-        const double clamp_t = base_clamp * assist_gain * offroad_mod * spin_weight;
-        const double yaw_damp = std::clamp(
-            -ang_.y * inertia_.y * 2.5 * mode_scale * fwd_mod * offroad_mod * assist_gain * spin_weight, -clamp_t,
-            clamp_t);
-        torque.y += yaw_damp;
-      }
     }
   }
 

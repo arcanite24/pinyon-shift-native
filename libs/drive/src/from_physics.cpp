@@ -496,6 +496,34 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   // row Data_Car.AutoSteerOverrideID.
   p.stm_slip_min = get("AutoSteerOverrides.STMSlipMin", p.stm_slip_min);
   p.stm_slip_max = get("AutoSteerOverrides.STMSlipMax", p.stm_slip_max);
+  // FrictionTorqueMod (SPEC-CAR-PHYSICS, Steering assist modes): the yaw
+  // torque tables by steering mode, the drivetrain rows (the original always
+  // takes the AWD rows, SPEC_QUESTIONS Q68) and the off-road rows.
+  {
+    auto& ftm = p.friction_torque_mod;
+    ftm.mass0_kg = s.get("FrictionTorqueMod\\Mass0KG", ftm.mass0_kg);
+    ftm.mass1_kg = s.get("FrictionTorqueMod\\Mass1KG", ftm.mass1_kg);
+    auto row = [&](const std::string& name, CarParams::FrictionTorqueModRow& r) {
+      const std::string k = "FrictionTorqueMod\\" + name + "\\";
+      r.cos_yaw0 = s.get(k + "CosYawAngle0", r.cos_yaw0);
+      r.cos_yaw1 = s.get(k + "CosYawAngle1", r.cos_yaw1);
+      r.turn_scale0 = s.get(k + "TurnScale0", r.turn_scale0);
+      r.straighten_scale0 = s.get(k + "StraightenScale0", r.straighten_scale0);
+      r.turn_clamp0 = s.get(k + "TurnClamp0", r.turn_clamp0);
+      r.straighten_clamp0 = s.get(k + "StraightenClamp0", r.straighten_clamp0);
+      r.turn_scale1 = s.get(k + "TurnScale1", r.turn_scale1);
+      r.straighten_scale1 = s.get(k + "StraightenScale1", r.straighten_scale1);
+      r.turn_clamp1 = s.get(k + "TurnClamp1", r.turn_clamp1);
+      r.straighten_clamp1 = s.get(k + "StraightenClamp1", r.straighten_clamp1);
+    };
+    static const char* const kTables[3] = {"WithAssists", "NoAssists", "SimulationSteering"};
+    for (int t = 0; t < 3; ++t)
+      for (int r = 0; r < 2; ++r) row(kTables[t] + std::to_string(r), ftm.steering[size_t(t)][size_t(r)]);
+    for (int r = 0; r < 2; ++r) {
+      row("AWDModifiers" + std::to_string(r), ftm.drivetrain[size_t(r)]);
+      row("OffRoadModifiers" + std::to_string(r), ftm.off_road[size_t(r)]);
+    }
+  }
   p.clutch_pedal_dead = s.get("ClutchPedalDistBeforeTorqueStarts", p.clutch_pedal_dead);
   p.clutch_torque_exp = s.get("ClutchTorqueCurveExponent", p.clutch_torque_exp);
   p.clutch_max_vel = s.get("ClutchMaxVel", p.clutch_max_vel);
@@ -521,14 +549,8 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.steer_slow_speed = get("Data_Car.SteerSpeedSensitiveSlowSpeed", p.steer_slow_speed);
   p.steer_fast_speed = get("Data_Car.SteerSpeedSensitiveFastSpeed", p.steer_fast_speed);
   p.steer_fast_rate_scale = std::clamp(get("Data_Car.SteerSpeedSensitiveFastRateScale", p.steer_fast_rate_scale), 0.1, 1.0);
-  p.sw_filter_speed0 = s.get("SteeringWheelFilter\\Speed0", p.sw_filter_speed0);
-  p.sw_filter_scale0 = s.get("SteeringWheelFilter\\ControlScale0", p.sw_filter_scale0);
-  p.sw_filter_speed1 = s.get("SteeringWheelFilter\\Speed1", p.sw_filter_speed1);
-  p.sw_filter_scale1 = s.get("SteeringWheelFilter\\ControlScale1", p.sw_filter_scale1);
-  p.sw_filter_corr_speed0 = s.get("SteeringWheelFilter\\CorrectSpeed0", p.sw_filter_corr_speed0);
-  p.sw_filter_corr_scale0 = s.get("SteeringWheelFilter\\CorrectControlScale0", p.sw_filter_corr_scale0);
-  p.sw_filter_corr_speed1 = s.get("SteeringWheelFilter\\CorrectSpeed1", p.sw_filter_corr_speed1);
-  p.sw_filter_corr_scale1 = s.get("SteeringWheelFilter\\CorrectControlScale1", p.sw_filter_corr_scale1);
+  // PhysicsSettings.ini's SteeringWheelFilter block is not read: the original
+  // never binds those keys (FEEL-15, SPEC_QUESTIONS Q70).
   p.enable_rwd_launch_assist = s.get("EnableRWDLaunchAssist", 1.0) >= 0.5;
 
   // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): DB BodyAero* and
@@ -583,6 +605,8 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   }
 
   p.physics_hz = s.get("CarPhysicsUpdateHz", 359);
+  p.sputter_start_damage = s.get("EngineDamageLevelStartSputter", p.sputter_start_damage);
+  p.sputter_max_per_sec = s.get("EngineDamageMaxSputtersPerSec", p.sputter_max_per_sec);
 }
 
 CarParams params_for_car_text(const cars::bake::CarInfo& car, const std::string& text, std::vector<std::string>* notes);
@@ -661,33 +685,23 @@ void apply_tune(const CarTune& tune, const cars::CarPhysics& car, CarParams& p) 
     if (tune.gears[i] > 0.1) p.gears[i] = std::clamp(tune.gears[i], 0.4, 6.0);
   }
 
-  // 3. Alignment (camber, toe, caster).
-  // Optimal negative camber (~ -1.0..-2.2 deg) improves cornering peak grip while slightly reducing straight-line grip;
-  // toe adjusts turn-in / stability; caster adds dynamic camber gain under steer.
+  // 3. Alignment (camber, toe, caster). The tuned angles are stored; they
+  // carry no grip multipliers of the engine's own (FEEL-01).
   const double cambers[2] = {tune.front_camber_deg, tune.rear_camber_deg};
   const double toes[2] = {tune.front_toe_deg, tune.rear_toe_deg};
   for (int a = 0; a < 2; ++a) {
     if (cambers[a] > -90.0) {
       const double c = std::clamp(cambers[a], -5.0, 5.0);
       p.static_camber_deg[a] = c;
-      const double opt = a == 0 ? -1.5 : -1.0;
-      const double lat_gain = 1.02 - 0.008 * (c - opt) * (c - opt);
-      const double long_pen = 1.0 - 0.005 * std::fabs(c);
-      p.lat_scale[a] *= std::clamp(lat_gain, 0.85, 1.04);
-      p.long_scale[a] *= std::clamp(long_pen, 0.90, 1.01);
     }
     if (toes[a] > -90.0) {
       const double t = std::clamp(toes[a], -5.0, 5.0);
-      p.static_toe_rad[a] = t * kDeg;
-      // Excessive toe increases scrubbing drag / lowers straight-line speed slightly.
-      p.long_scale[a] *= std::clamp(1.0 - 0.004 * std::fabs(t), 0.94, 1.0);
-      if (a == 1 && t < 0) p.lat_scale[1] *= std::clamp(1.0 + 0.008 * std::min(1.5, -t), 1.0, 1.02);
+      p.static_toe_rad[a] = t * kDeg;  // drawn only (FEEL-03)
     }
   }
   if (tune.front_caster_deg > -90.0) {
     const double caster = std::clamp(tune.front_caster_deg, 1.0, 7.0);
     p.front_caster_deg = caster;
-    p.lat_scale[0] *= std::clamp(1.0 + 0.004 * (caster - 5.0), 0.97, 1.02);
   }
 
   // 4. Anti-roll bars, springs, ride height, damping.

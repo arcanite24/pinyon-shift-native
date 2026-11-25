@@ -380,7 +380,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     static_assert(sizeof(PostOpticalUbo) == 240);
     const uint32_t oflags = (s.motion_blur ? 1u : 0u) | (s.dof ? 2u : 0u) | (s.god_rays ? 4u : 0u) |
                             (s.lens_flare ? 8u : 0u) | (options_.reverse_z ? 16u : 0u) |
-                            (s.paired_vignette ? 32u : 0u);
+                            (s.paired_vignette ? 32u : 0u) | (s.motion_blur_directional ? 64u : 0u);
     PostOpticalUbo u{};
     u.flags_near[0] = float(oflags);
     u.flags_near[1] = (cam_vp_set_ && cam_near_ > 0.01f) ? cam_near_ : s.near_plane;
@@ -388,6 +388,27 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     u.flags_near[3] = s.brightness;
     u.mblur[0] = s.motion_blur_center[0];
     u.mblur[1] = s.motion_blur_center[1];
+    // The camera's rotation against the world, not against the player car.
+    float clip_from_world[16];
+    motion_math::clip_from_world(cam_vp_, motion_scene_.has_world_transform, motion_scene_.world_transform,
+                                 clip_from_world);
+    if (s.motion_blur_directional) {
+      // Camera motion blur (FEEL-31): xy carries the camera's screen motion
+      // over the last frame, capped at 4 % of the screen.
+      float m[2] = {0.0f, 0.0f};
+      if (!(cam_vp_set_ && post_prev_vp_valid_ &&
+            motion_math::camera_rotation_uv_motion(post_prev_vp_, clip_from_world, m))) {
+        m[0] = m[1] = 0.0f;
+      }
+      const float len = std::sqrt(m[0] * m[0] + m[1] * m[1]);
+      if (len > 0.04f) m[0] *= 0.04f / len, m[1] *= 0.04f / len;
+      u.mblur[0] = m[0];
+      u.mblur[1] = m[1];
+    }
+    if (cam_vp_set_) {
+      std::memcpy(post_prev_vp_, clip_from_world, sizeof(post_prev_vp_));
+      post_prev_vp_valid_ = true;
+    }
     u.mblur[2] = s.motion_blur_strength;
     u.mblur[3] = s.motion_blur_car_protect;
     u.dof[0] = s.dof_focal_distance;

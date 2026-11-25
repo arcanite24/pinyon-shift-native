@@ -290,6 +290,7 @@ void apply_vehicle_assists(drive::Vehicle& vehicle, const drive::AssistSettings&
   va.traction_control = assists.traction_control;
   va.stability_control = assists.stability_control;
   va.shifting = assists.shifting;
+  va.engine_steer_assist = assists.engine_steer_assist;
   vehicle.set_assists(va);
 }
 
@@ -682,7 +683,7 @@ void wheel_poses(const drive::Vehicle& v, WheelPose poses[4]) {
     poses[i].centre[0] = float(w.centre.x);
     poses[i].centre[1] = float(w.centre.y);
     poses[i].centre[2] = float(w.centre.z);
-    poses[i].steer = float(w.steer);
+    poses[i].steer = float(w.steer + w.toe);
     poses[i].spin = float(w.spin);
     poses[i].omega = float(w.omega);
   }

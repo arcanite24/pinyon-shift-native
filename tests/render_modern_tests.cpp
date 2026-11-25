@@ -670,6 +670,62 @@ void test_lazy_targets_and_reflection_schedule() {
   CHECK(mb_high.dyn_env_size == 256 && mb_high.dyn_env_mips == 9);
 }
 
+// FEEL-31: the camera motion blur follows the camera's rotation on screen
+// (sideways in turns), and plain camera travel adds no motion.
+void test_camera_rotation_blur_vector() {
+  using namespace carview::motion_math;
+  const float proj00 = 1.08f, proj11 = -1.92f;
+  float proj[16]{};
+  proj[0] = proj00;
+  proj[5] = proj11;
+  proj[11] = -1.0f;
+  proj[14] = 0.25f;  // reverse-Z infinite
+  auto view_vp = [&](float yaw, float tx, float tz, float out[16]) {
+    float v[16];
+    mat4_identity(v);  // world -> view: rotate by -yaw about +Y, then translate
+    const float c = std::cos(-yaw), s = std::sin(-yaw);
+    v[0] = c, v[2] = -s, v[8] = s, v[10] = c;
+    v[12] = tx, v[14] = tz;
+    mat4_mul(proj, v, out);
+  };
+  float a[16], b[16], m[2];
+  view_vp(0.3f, 1.0f, -4.0f, a);
+  CHECK(camera_rotation_uv_motion(a, a, m) && near(m[0], 0.0f, 1e-6f) && near(m[1], 0.0f, 1e-6f));
+  view_vp(0.3f, 9.0f, 31.0f, b);  // travel only
+  CHECK(camera_rotation_uv_motion(a, b, m) && near(m[0], 0.0f, 1e-5f) && near(m[1], 0.0f, 1e-5f));
+  const float d = 0.02f;
+  view_vp(0.3f + d, 1.0f, -4.0f, b);  // a yaw turn: a horizontal smear
+  CHECK(camera_rotation_uv_motion(a, b, m));
+  CHECK(near(std::fabs(m[0]), 0.5f * proj00 * std::tan(d), 1e-4f) && near(m[1], 0.0f, 1e-6f));
+  float m2[2];
+  view_vp(0.3f - d, 1.0f, -4.0f, b);
+  CHECK(camera_rotation_uv_motion(a, b, m2) && m2[0] * m[0] < 0.0f);  // the other way, the other sign
+  float zero[16]{};
+  CHECK(!camera_rotation_uv_motion(zero, a, m) && m[0] == 0.0f && m[1] == 0.0f);
+
+  // The chase camera is fixed to the car, and the car's yaw is in the
+  // world-to-car transform: a steady turn still smears sideways once the
+  // two are composed, and not when only the view-projection is compared.
+  float vp[16];
+  view_vp(0.0f, 0.0f, -5.5f, vp);
+  auto world_to_car = [&](float yaw, float x, float z, float out[16]) {
+    mat4_identity(out);
+    const float c = std::cos(-yaw), s = std::sin(-yaw);
+    out[0] = c, out[2] = -s, out[8] = s, out[10] = c;
+    out[12] = x, out[14] = z;
+  };
+  float w0[16], w1[16], c0[16], c1[16];
+  world_to_car(1.0f, 120.0f, -40.0f, w0);
+  world_to_car(1.0f + d, 121.5f, -40.6f, w1);
+  clip_from_world(vp, true, w0, c0);
+  clip_from_world(vp, true, w1, c1);
+  CHECK(camera_rotation_uv_motion(c0, c1, m));
+  CHECK(near(std::fabs(m[0]), 0.5f * proj00 * std::tan(d), 1e-4f) && near(m[1], 0.0f, 1e-5f));
+  CHECK(camera_rotation_uv_motion(vp, vp, m) && m[0] == 0.0f);  // the car-relative view alone misses it
+  clip_from_world(vp, false, w1, c1);
+  CHECK(std::memcmp(c1, vp, sizeof vp) == 0);
+}
+
 void test_dynamic_motion_vectors_and_mcguire() {
   using namespace carview::motion_math;
 
@@ -879,6 +935,7 @@ int main() {
   test_split_bindless_and_pipeline_cache();
   test_lazy_targets_and_reflection_schedule();
   test_dynamic_motion_vectors_and_mcguire();
+  test_camera_rotation_blur_vector();
   test_mirror_schedule_and_post_scaling();
   if (failures) {
     std::printf("%d failure(s)\n", failures);

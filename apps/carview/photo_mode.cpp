@@ -216,6 +216,9 @@ PostSettings PhotoEffects::apply_to_post(const PostSettings& base) const {
   // Shutter speed -> radial motion blur (preserving subject car via depth mask).
   const float sh = std::clamp(shutter_speed / 100.0f, 0.0f, 1.0f);
   out.motion_blur = sh > 0.02f;
+  out.motion_blur_directional = false;  // the still camera has no motion to follow
+  out.motion_blur_center[0] = 0.5f;
+  out.motion_blur_center[1] = 0.44f;
   // Panning mode emphasizes background streak with tight car protection; Tracking mode locks stronger car-relative blur.
   out.motion_blur_strength = sh * (tracking_panning ? 0.95f : 0.72f);
   out.motion_blur_car_protect =

@@ -142,8 +142,8 @@ struct DifficultyAssists {
   int session_mode = 0;   // mode 3 skips the Rewind difficulty bonus
   int braking = 1;        // 0 = Assisted, 1 = ABS On, 2 = ABS Off (+10%)
   int steering = 1;       // 0 = Assisted, 1 = Normal, 2 = Simulation (+5%)
-  bool tcs_on = false;    // TractionControl (On = -5% penalty vs off, clamped >= 0)
-  bool stm_on = true;     // StabilityControl (Off = +5%)
+  bool tcs_on = true;     // TractionControl (On = -5% penalty vs off, clamped >= 0); new profile On
+  bool stm_on = false;    // StabilityControl (Off = +5%); new profile Off
   int shifting = 0;       // 0 = Automatic, 1 = Manual (+10%), 2 = Manual + Clutch (+15%)
   int driving_line = 2;   // 0 = Off (+10%), 1 = Braking Only (+5%), 2 = Full
   int damage_mode = 1;    // 0 = None, 1 = Cosmetic, 2 = Simulation (+10%)

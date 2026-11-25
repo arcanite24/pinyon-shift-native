@@ -52,6 +52,13 @@ void ControlDeadzones::clamp_valid() {
   clamp_pair(handbrake_inside, handbrake_outside);
 }
 
+double right_stick_look_target(double rx, double ry) {
+  constexpr double kPi = 3.14159265358979323846;
+  if (ry > 0.5 && ry > std::fabs(rx)) return kPi;
+  if (std::fabs(rx) > 0.5 && std::fabs(rx) >= std::fabs(ry)) return rx > 0 ? 0.5 * kPi : -0.5 * kPi;
+  return 0.0;
+}
+
 double apply_deadzone_signed(double raw, double inside, double outside) {
   const double a = std::fabs(raw);
   if (a <= inside) return 0.0;

@@ -1886,3 +1886,207 @@ found), so until they light it fills
 point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
 Needed, narrow: a capture of such a start, or the code that writes
 `TEXT_COUNT`.
+
+## Q68 (FEEL-11, not blocking): FrictionTorqueMod selection, and our AI
+
+The engine now runs the original's FrictionTorqueMod as decoded. Each
+substep it sums the four tyres' friction torque (not the suspension
+force's) and takes its yaw part T about the body's up axis. It picks the
+table: SimulationSteering in Simulation steering, else WithAssists or
+NoAssists. It multiplies in the drivetrain row and, when all four wheels
+are off-road, the off-road row, then blends the Mass0KG and Mass1KG rows
+by the car's mass. The yaw factor runs from 0 at CosYawAngle0 to 1 at
+CosYawAngle1 (the cosine of the angle between the car's forward axis and
+its flat velocity). The speed factor runs from 0 at 8 m/s to 1 at
+15 m/s. The Turn pair applies when the yaw rate and T have the same
+sign; otherwise the Straighten pair applies. The result is
+T * lerp(1, Scale, speed), clamped to
+Clamp deg/s^2 * yaw inertia * lerp(10, 1, speed).
+
+Open points:
+
+- (a) **Drivetrain rows.** The drivetrain-row selection falls through for
+  every layout, so the AWD rows (all 1) are always taken. The ini's FWD
+  rows (TurnClamp0 0.7778, ...) are never read. The engine follows the
+  code. Needed: confirm whether this is a shipped bug or whether we have
+  misread the layout value.
+- (b) **WithAssists or NoAssists.** Two car flags choose between them.
+  One is the TCS yaw-cosine hysteresis state; the other is not
+  identified, and ours reads it as "TCS or STM on". The shipped rows are
+  equal, so no behaviour depends on this.
+- (c) **Off-road rows.** They apply when all four wheels have
+  OffRoadness > 0. The engine's old reading was >= 0.5.
+- (d) **Yaw inertia (probable).** It is read from the rigid body's
+  inertia vector. The oracle lap's peak yaw acceleration is 2.25 rad/s^2,
+  and none reaches 3. That fits the clamp band for the R34 (about 116 to
+  151 deg/s^2). The engine without the mod reaches 5.75 rad/s^2.
+- (e) **Interim: AI-driven cars skip the mod in the engine.** The
+  original runs it for every car. On the oracle lap the AI's results
+  were:
+
+  | Tables | Lap time | Note |
+  |---|---|---|
+  | Identity | 39.312 s | Same as before the port |
+  | Scale only | 39.314 s | |
+  | Clamp only | 39.558 s | |
+  | Full mod | 47.146 s | The AI spins at about 850 m |
+
+  The cause is in our suspension. At about 850 m the wheel loads chatter
+  at about 8 Hz, with one wheel going from 5 to 21 kN in a few substeps.
+  That swings the raw tyre yaw torque by +-20 kN m. The Turn and
+  Straighten clamps differ (151 against 116 deg/s^2 at the R34's mass),
+  so the swing is rectified into a net turning torque. The original's
+  yaw rate on the same stretch is smooth. Needed: nothing from the spec.
+  The exemption comes off once the load chatter is fixed.
+
+## Q69 (FEEL-16/17, not blocking): the pad steering filter's law
+
+The engine's pad filter is now the parts SPEC-CAR-PHYSICS names, plus
+its own keyboard filter. Those parts are the speed-sensitive lock, the
+rate scaled toward FastRateScale, SteerAngVelCountersteer while the
+stick holds against a rear slide, and the SteerAccelTimeToMaxRate ramp.
+Three engine-only helpers are now an opt-in extra (ENGINE tab,
+"steering helpers", off by default): the Assisted lane-centring bias,
+the injected countersteer angle and the front peak-slip pull. The
+per-mode lock factors (Simulation 1.25, Assisted 0.90) are gone.
+
+Still ours (interim):
+
+- **The lock law.** It is atan(1.61 * MaxGees * g * wheelbase / v^2)
+  between MinMaxAngle and the mode's cap. The 1.61 is a fit.
+- **The countersteer trigger.** It fires at a mean normalised rear slip
+  above 0.5. Settings carry NormRearSlipAngleToCountersteer 50; its unit
+  is not read.
+- **SteerAngVelDynFindPeak (10 deg/s).** It is unused unless the helpers
+  are on.
+- **SlowSpeed and FastSpeed units.** They are read as m/s (FEEL-17).
+
+Needed: the pad filter's narrowing law (which G it queries), the unit of
+NormRearSlipAngleToCountersteer, and what DynFindPeak drives. A trace of
+pad input against road-wheel angle at several speeds would settle the
+lock law.
+
+## Q70 (FEEL-15, not blocking): the wheel path's mapping
+
+The SteeringWheelFilter block of PhysicsSettings.ini (Speed 10/50,
+ControlScale 1.5/3.0, CorrectSpeed 5/25, CorrectControlScale 1.0/2.5)
+is dead data:
+
+- the settings loader never binds its keys;
+- the strings "CorrectSpeed" and "CorrectControlScale" are not in the
+  executable.
+
+The engine no longer reads it, and the pad no longer squares the stick
+by it.
+
+The wheel's steering goes through a WheelMapping step instead. It has
+four tables, picked by steering mode and 900-degree option:
+WheelMapping, 900Degree, SimSteer and 900DegreeSimSteer. Their fields
+are WheelMapSteerSpeed0/1, SteerScale0/1, NormSteerInput1/Output1 and
+CounterSteerScale. None of these keys are in the shipped ini, so their
+values are the executable's built-in defaults, which are not game files.
+
+Engine interim: the wheel maps linearly to full lock (steer x
+SteerMaxAngle) with no rate limit, as before. Needed: the WheelMapping
+law and its default values from a decode of the settings constructor,
+or a wheel trace. The values would then come from the executable rather
+than from data.
+
+## Q71 (FEEL-12, not blocking): new-profile assists and the presets
+
+ForzaProfile.sch's career assists have these defaults: MetaDiff 1,
+SuggestedLine 0, Braking 1, Steering 1, StabilityControl 1,
+TractionControl 0, Shifting 0 and Rewind 0. The game's assist label
+functions give the polarity:
+
+| Field | 0 | 1 | 2 |
+|---|---|---|---|
+| TractionControl | On | Off | |
+| StabilityControl | On | Off | |
+| SuggestedLine | Full | Braking | Off |
+
+A new profile is therefore Medium: ABS On, Normal steering, TCS On,
+STM Off, Automatic, the full line and Rewind On. The engine now has the
+same defaults in each of these places:
+
+- AssistSettings and `retail_defaults`;
+- the settings rows ("traction control" defaults on and is turned off
+  with `--assist-tcs 0`; "stability control" defaults off and is turned
+  on with `--assist-stm 1`);
+- the MEDIUM preset and its detection;
+- race::DifficultyAssists.
+
+The engine's own driving-line enum (0 Off, 2 Full) runs the opposite
+way to the profile's. That only matters to a profile importer, and the
+engine has none.
+
+Still interim:
+
+- **Preset list.** MetaDifficulty has six presets: Easy, Medium, Hard,
+  Extreme, Insane and Custom. The engine has Easy, Medium, Hard, Insane
+  and Custom.
+- **Preset assists.** Only Medium is backed by data. The assists of the
+  other presets are the engine's.
+- **Values in code.** The defaults are written in code rather than read
+  from the schema at run time.
+
+Needed: the table that maps MetaDifficulty to assists.
+
+## Q72 (FEEL-26, FEEL-27, FEEL-31, not blocking): look-around, sputter rumble and camera blur
+
+Three parts of the driving feel now follow the original's data, but
+each still has an interim rule.
+
+**Right-stick look (FEEL-26).** The right stick picks one of the
+original's look targets in every camera: LookBack (pi), LookLeft or
+LookRight (pi/2). The stick click is LookStraightBack. The chase
+cameras no longer orbit continuously. Still interim:
+
+- **Threshold.** A target is picked past half deflection on the
+  dominant axis, and a diagonal counts as left or right. The original's
+  stick thresholds are not decoded.
+- **Spring rate.** The look spring is the engine's 0.1 s
+  (SPEC-CAMERAS).
+- **Invert setting.** The profile's `InvertCameraLookBack`
+  (`forzaprofile.sch`) is not read yet.
+
+**Engine sputter (FEEL-27).** OnEngineSputter rumble now comes from
+engine damage, not the rev limiter. PhysicsSettings.ini gives
+`EngineDamageLevelStartSputter 0.3` and
+`EngineDamageMaxSputtersPerSec 1`, and both are read at load. Still
+interim:
+
+- **Rate rule.** Sputters are evenly spaced. Their rate rises linearly
+  from 0 at the start level to the maximum at full damage. The
+  original's rule between those two values is not decoded, and it may
+  be random.
+- **Damage level.** The damage level is the engine's own damage model
+  (FEEL-19 to FEEL-23, owned by another branch).
+
+**Camera motion blur (FEEL-31).**
+
+- **Strength.** Strength is TrackSettings.xml `motionBlurAmount` × the
+  car speed over `DetailBlurMPHForMaxBlur`, capped at 0.95. The engine's
+  0.55 floor and 18 mph offset are gone, so the free-roam baseline of 0
+  means no blur.
+- **Direction.** On Tier 0, the blur is six taps along the camera's
+  screen motion from its rotation against the world over the last
+  frame (the view-projection composed with the world-to-car transform),
+  which smears sideways in turns. This replaced the radial blur, which photo mode
+  still uses for its shutter effect. The velocity-blur tiers already
+  follow per-pixel motion.
+
+Still interim:
+
+- **Dynamic amount.** The original changes the amount at run time
+  (CDynamicRenderMotionBlurControl), and that rule is not decoded. So
+  races or modes that should blur from a 0 baseline do not.
+- **Frame-rate scaling.** The motion is per rendered frame, so the
+  smear shortens at high frame rates. The original runs at 30 fps.
+- **Car mask.** The player car is kept sharp with the engine's depth
+  mask.
+- **Camera travel.** Camera travel is not part of the Tier-0 vector.
+
+Needed: the stick thresholds and InvertCameraLookBack handling; the
+sputter scheduler; the dynamic motion-blur amount rule and its time
+base.

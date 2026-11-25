@@ -167,6 +167,38 @@ int main() {
     CHECK(near(out.left, 0.30) && near(out.right, 0.20));
   }
 
+  // FEEL-27: OnEngineSputter comes from engine damage (none below
+  // EngineDamageLevelStartSputter, at most EngineDamageMaxSputtersPerSec).
+  {
+    drive::EngineSputter sp;
+    sp.start_damage = 0.3;
+    sp.max_per_sec = 1.0;
+    auto count = [&](double damage, double seconds, double dt) {
+      int n = 0;
+      for (double t = 0; t < seconds - 1e-9; t += dt) n += sp.step(dt, damage) ? 1 : 0;
+      return n;
+    };
+    CHECK(count(0.0, 10.0, 1.0 / 64) == 0);
+    CHECK(count(0.29, 10.0, 1.0 / 64) == 0);
+    CHECK(near(sp.rate(0.3), 0.0) && near(sp.rate(0.65), 0.5) && near(sp.rate(1.0), 1.0) && near(sp.rate(2.0), 1.0));
+    sp.reset();
+    CHECK(count(1.0, 10.0, 1.0 / 64) == 10);  // the cap: one a second at full damage
+    sp.reset();
+    CHECK(count(0.65, 10.5, 1.0 / 64) == 5);
+    sp.reset();
+    CHECK(count(1.0, 10.0, 0.5) == 10);  // frame rate does not change the count
+    {
+      bool fired = false;
+      for (int i = 0; i < 300; ++i) fired = fired || sp.step(0.0, 1.0);  // paused: no time, no sputter
+      CHECK(!fired);
+    }
+    drive::EngineSputter off;
+    off.max_per_sec = 0.0;
+    int n = 0;
+    for (int i = 0; i < 600; ++i) n += off.step(1.0 / 60, 1.0) ? 1 : 0;
+    CHECK(n == 0);
+  }
+
   // LAB-87: Stationary gating (zero vibration when stopped even with residual slip/bumpiness)
   // and smooth attack/release envelope decay.
   {

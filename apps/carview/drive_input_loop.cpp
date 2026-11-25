@@ -589,8 +589,9 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
           kb_in.brake = action_key_down(keys, live_controls.keys, drive::ControlAction::kBrake) ? 1.0 : 0.0;
           kb_in.handbrake = action_key_down(keys, live_controls.keys, drive::ControlAction::kHandbrake);
           kb_in.clutch = action_key_down(keys, live_controls.keys, drive::ControlAction::kClutch) ? 1.0 : 0.0;
-          // Look around: keyboard LookBack / LookLeft / LookRight keys, plus gamepad
-          // right-stick 360 deg analog orbit in Chase cams or cardinal snaps in cockpit/hood/bumper.
+          // Look around: keyboard LookBack / LookLeft / LookRight keys, plus the
+          // gamepad right stick's LookBack / LookLeft / LookRight snaps (and the
+          // stick click's LookStraightBack) in every camera (FEEL-26).
           const bool kb_look_back = action_key_down(keys, live_controls.keys, drive::ControlAction::kLookBack);
           const bool kb_look_left = action_key_down(keys, live_controls.keys, drive::ControlAction::kLookLeft);
           const bool kb_look_right = action_key_down(keys, live_controls.keys, drive::ControlAction::kLookRight);
@@ -600,8 +601,6 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
           else if (kb_look_right && !kb_look_left) kb_look = 0.5 * kLookPi;
           camera_pull.look_target = kb_look_back ? kLookPi : -kb_look;
           rig_look = kb_look;
-          const bool is_chase_cam =
-              !have_rig || rig.mode() == drive::CameraMode::kFollowLow || rig.mode() == drive::CameraMode::kFollowHigh;
           const drive::ControllerLayout pad_layout = drive::apply_handbrake_clutch_swap(
               drive::default_controller_layout(live_controls.layout_id), live_controls.switch_handbrake_clutch);
           const auto& dz = live_controls.deadzones;
@@ -639,26 +638,19 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
                 (g_x_prompt_consumed && clutch_ctrl == drive::PadControl::kButtonX)
                     ? 0.0
                     : pad_control_value(pad, clutch_ctrl, dz.clutch_inside, dz.clutch_outside);
-            // Right-stick camera look: continuous 360 deg orbit in Chase modes when deflected
-            // past deadzone (smoothly returning to 0 on release), cardinal snaps in interior/hood/bumper.
+            // Right-stick camera look (SPEC-CAMERAS, look-around): the stick picks
+            // one of the original's targets, back (pi) or left/right (pi/2), which
+            // the look spring reaches; released, it springs forward again. The
+            // chase cameras no longer orbit continuously (an engine invention).
             const double rx = axis(SDL_GAMEPAD_AXIS_RIGHTX), ry = axis(SDL_GAMEPAD_AXIS_RIGHTY);
-            const double rmag = std::hypot(rx, ry);
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
               rig_look = kLookPi;
               camera_pull.look_target = kLookPi;
-            } else if (is_chase_cam) {
-              if (rmag > 0.25) {
-                const double orbit = std::atan2(rx, -ry);
-                rig_look = orbit;
-                camera_pull.look_target = -orbit;
-              }
             } else {
-              if (ry > 0.5 && ry > std::fabs(rx)) {
-                rig_look = kLookPi;
-                camera_pull.look_target = kLookPi;
-              } else if (std::fabs(rx) > 0.5 && std::fabs(rx) >= std::fabs(ry)) {
-                rig_look = (rx > 0 ? 0.5 : -0.5) * kLookPi;
-                camera_pull.look_target = -rig_look;
+              const double snap = drive::right_stick_look_target(rx, ry);
+              if (snap != 0.0) {
+                rig_look = snap;
+                camera_pull.look_target = snap > 0.75 * kLookPi ? kLookPi : -snap;
               }
             }
             if (steer != 0 || throttle > 0 || brake > 0 || handbrake || clutch > 0) {

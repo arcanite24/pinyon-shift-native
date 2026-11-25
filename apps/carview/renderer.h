@@ -226,6 +226,46 @@ inline void extract_view_from_vp(const float vp[16], float proj00, float proj11,
   }
 }
 
+// Screen motion (uv per frame) of the view centre from the camera's rotation
+// alone (FEEL-31): the current forward direction, taken at infinity (w = 0,
+// so camera translation and streaming origin shifts drop out), projected
+// through the previous and the current view-projection. False when either
+// projection puts it behind the camera.
+inline bool camera_rotation_uv_motion(const float prev_vp[16], const float curr_vp[16], float out_uv[2]) {
+  out_uv[0] = out_uv[1] = 0.0f;
+  // Column-major: element (row r, column c) is vp[c * 4 + r]. The clip w row
+  // of P * V is the camera's forward axis.
+  float d[3] = {curr_vp[3], curr_vp[7], curr_vp[11]};
+  const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+  if (!(len > 1e-9f)) return false;
+  for (float& c : d) c /= len;
+  auto ndc = [&](const float m[16], float out[2]) {
+    const float x = m[0] * d[0] + m[4] * d[1] + m[8] * d[2];
+    const float y = m[1] * d[0] + m[5] * d[1] + m[9] * d[2];
+    const float w = m[3] * d[0] + m[7] * d[1] + m[11] * d[2];
+    if (!(w > 1e-6f)) return false;
+    out[0] = x / w;
+    out[1] = y / w;
+    return true;
+  };
+  float a[2], b[2];
+  if (!ndc(prev_vp, a) || !ndc(curr_vp, b)) return false;
+  out_uv[0] = 0.5f * (b[0] - a[0]);
+  out_uv[1] = 0.5f * (b[1] - a[1]);
+  return true;
+}
+
+// Clip-from-world for the camera blur: the scene is drawn in the player car's
+// frame, so the view-projection is composed with the world-to-car transform
+// (which carries the car's yaw) when there is one.
+inline void clip_from_world(const float vp[16], bool has_world_transform, const float world_xf[16], float out[16]) {
+  if (has_world_transform) {
+    mat4_mul(vp, world_xf, out);
+  } else {
+    std::memcpy(out, vp, 16 * sizeof(float));
+  }
+}
+
 // Reprojects a static world pixel from current clip space into previous clip space,
 // accounting for both player-car motion (world_transform_) and double-precision
 // streaming origin re-centering (curr_origin - prev_origin).
@@ -419,7 +459,10 @@ struct PostSettings {
   bool god_rays = false;
   bool lens_flare = false;
   bool paired_vignette = false;
-  float motion_blur_strength = 0.0f;     // 0..1 radial blur intensity
+  float motion_blur_strength = 0.0f;     // 0..1 blur intensity
+  // true: the driving camera's blur, six taps along the camera's screen
+  // motion (FEEL-31); false: the photo-mode radial blur around the centre.
+  bool motion_blur_directional = false;
   float motion_blur_center[2] = {0.5f, 0.45f};
   float motion_blur_car_protect = 6.5f;  // metres: keeps player car crisp
   float dof_focal_distance = 12.0f;      // metres
@@ -918,6 +961,9 @@ class Renderer {
   float cam_jitter_uv_x_ = 0.0f, cam_jitter_uv_y_ = 0.0f;
   float prev_jitter_uv_x_ = 0.0f, prev_jitter_uv_y_ = 0.0f;
   bool cam_vp_set_ = false, prev_cam_vp_valid_ = false;
+  // The clip-from-world matrix the last post pass saw (camera motion blur, FEEL-31).
+  float post_prev_vp_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  bool post_prev_vp_valid_ = false;
   bool inspector_active_ = false;
   InspectorView inspector_view_ = InspectorView::kColor;
   VkImageView hiz_preview_view_ = VK_NULL_HANDLE;

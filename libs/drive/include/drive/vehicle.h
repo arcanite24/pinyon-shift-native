@@ -240,13 +240,15 @@ struct CarParams {
   // GameFrictionScaleBraking, in place of the accel blend.
   double brake_friction_scale = 1.8;
   // Compound / global tyre friction modifier (TireMod_FrictionScale), heating
-  // scale (HeatTireScale), and thermal grip curve (List_TireAffectCurve).
+  // scale (HeatTireScale), and thermal grip curve (List_TireAffectCurve). The
+  // curve is loaded but not applied (FEEL-02: the temperature model it needs
+  // is not decoded).
   double tire_mod_friction_scale = 1.0;
   double heat_tire_scale = 1.0;
   struct TireAffectCurve {
     double temp_min_c = 20.0;
     double temp_max_c = 180.0;
-    std::vector<double> values;  // empty = default thermal window curve
+    std::vector<double> values;  // empty = 1 at every temperature
     double evaluate(double temp_c) const;
   };
   TireAffectCurve tire_affect_curve{};
@@ -365,6 +367,38 @@ struct CarParams {
   double stm_speed_mph = 30.0;
   double stm_slip_min = 1.2, stm_slip_max = 2.5;
 
+  // FrictionTorqueMod (PhysicsSettings.ini; SPEC_QUESTIONS Q68): after the
+  // four tyres are summed, the yaw part of their torque (about the body's up
+  // axis) is scaled and clamped. Rows come in pairs (index 0 at Mass0KG, 1
+  // at Mass1KG) and each row holds the yaw-cosine window and the Turn and
+  // Straighten scales and clamps at its two ends (clamps in deg/s^2 of yaw
+  // acceleration). The defaults are the disc's values; apply_physics reads
+  // them from the car's settings.
+  struct FrictionTorqueModRow {
+    double cos_yaw0 = 1, cos_yaw1 = 1;
+    double turn_scale0 = 1, straighten_scale0 = 1, turn_clamp0 = 1, straighten_clamp0 = 1;
+    double turn_scale1 = 1, straighten_scale1 = 1, turn_clamp1 = 1, straighten_clamp1 = 1;
+  };
+  struct FrictionTorqueMod {
+    double mass0_kg = 909.1, mass1_kg = 1590.9;
+    // [table][mass row]: 0 WithAssists, 1 NoAssists, 2 SimulationSteering.
+    std::array<std::array<FrictionTorqueModRow, 2>, 3> steering{{
+        {{{0.996194, 0.961261, 1, 1, 180, 145, 0.7, 0.8, 120, 140},
+          {0.996194, 0.961261, 1, 1, 150, 115, 0.7, 0.8, 100, 120}}},
+        {{{0.996194, 0.961261, 1, 1, 180, 145, 0.7, 0.8, 120, 140},
+          {0.996194, 0.961261, 1, 1, 150, 115, 0.7, 0.8, 100, 120}}},
+        {{{1, 1, 1, 1, 10000, 10000, 1, 1, 10000, 10000}, {1, 1, 1, 1, 10000, 10000, 1, 1, 10000, 10000}}},
+    }};
+    // The drivetrain modifier the game applies. Its selector falls through
+    // from the RWD and FWD cases to AWD, so every car ends on the AWD rows
+    // (Q68); the RWD and FWD rows of the ini are never used.
+    std::array<FrictionTorqueModRow, 2> drivetrain{};
+    // Applied when all four wheels stand on a surface with OffRoadness > 0.
+    std::array<FrictionTorqueModRow, 2> off_road{{{1, 1, 1.2, 1.2, 1.1111, 1.1379, 1, 1, 1, 1},
+                                                  {1, 1, 1.2, 1.2, 1.1333, 1.1739, 1, 1, 1, 1}}};
+  };
+  FrictionTorqueMod friction_torque_mod{};
+
   // Manual + Clutch (SPEC-CAR-PHYSICS, Manual with Clutch).
   double clutch_pedal_dead = 0.05;
   double clutch_torque_exp = 1.5;
@@ -390,12 +424,6 @@ struct CarParams {
   double steer_fast_speed = 67.056;       // m/s (Data_Car.SteerSpeedSensitiveFastSpeed, 150 mph)
   double steer_fast_rate_scale = 0.45;    // Data_Car.SteerSpeedSensitiveFastRateScale
   double steer_rate_min_share = 0.25;
-  // SteeringWheelFilter (PhysicsSettings.ini): default (Assisted/Normal) and
-  // corrected (Simulation) speed-dependent stick/wheel shaping ramps.
-  double sw_filter_speed0 = 10.0, sw_filter_scale0 = 1.5;
-  double sw_filter_speed1 = 50.0, sw_filter_scale1 = 3.0;
-  double sw_filter_corr_speed0 = 5.0, sw_filter_corr_scale0 = 1.0;
-  double sw_filter_corr_speed1 = 25.0, sw_filter_corr_scale1 = 2.5;
   // RWD Launch Assist (PhysicsSettings.ini EnableRWDLaunchAssist).
   bool enable_rwd_launch_assist = true;
 
@@ -427,6 +455,11 @@ struct CarParams {
   double water_floor_y = -46.0;        // m (COLLISION.md, global floor/water Y)
 
   double physics_hz = 359;  // PhysicsSettings.ini CarPhysicsUpdateHz
+
+  // Engine sputter from engine damage (PhysicsSettings.ini
+  // EngineDamageLevelStartSputter / EngineDamageMaxSputtersPerSec; FEEL-27).
+  double sputter_start_damage = 0.3;
+  double sputter_max_per_sec = 1.0;
 };
 
 // Aerodynamic drafting scales applied to a vehicle (SPEC-CAR-PHYSICS,
@@ -464,7 +497,8 @@ struct Input {
   int shift = 0;
   bool linear_steer = false;  // true for 900-deg steering wheel: bypass gamepad speed narrowing
   // Optional road/lane guidance for Assisted steering mode (assists_.steering == 0):
-  // when has_assist_lane is true, Assisted steering adds a gentle centering bias
+  // when has_assist_lane is true and the engine's steering helpers are on
+  // (VehicleAssists::engine_steer_assist), Assisted steering adds a gentle centering bias
   // toward the lane (assist_heading_error_rad: signed angle to road tangent,
   // positive right; assist_lateral_offset_m: signed distance right of lane center).
   bool has_assist_lane = false;
@@ -487,7 +521,21 @@ struct VehicleAssists {
   bool traction_control = false;
   bool stability_control = false;
   int shifting = 0;           // 0 Automatic, 1 Manual, 2 Manual + Clutch
+  // Engine extra, not one of the original's assists (FEEL-16): lane centring
+  // (in Assisted steering), a countersteer bias and a front peak-slip pull
+  // on the pad. Off unless the player opts in.
+  bool engine_steer_assist = false;
 };
+
+// FrictionTorqueMod (SPEC_QUESTIONS Q68): the yaw torque the four tyres put
+// on the body, about its up axis, after the game's clamp. `table` 0 is
+// WithAssists, 1 NoAssists, 2 SimulationSteering; `off_road` when all four
+// wheels stand on an off-road surface. speed_sq is |v|^2 in (m/s)^2,
+// cos_yaw the cosine between the body's forward axis and its velocity in
+// the plane normal to the up axis, yaw_rate (rad/s) and torque_yaw (N m)
+// about the up axis, i_yaw the yaw inertia (kg m^2).
+double friction_torque_mod_yaw(const CarParams::FrictionTorqueMod& m, int table, bool off_road, double mass_kg,
+                               double i_yaw, double speed_sq, double cos_yaw, double yaw_rate, double torque_yaw);
 
 // Auto-Brake upstream helper (Braking == 0 / Assisted, SPEC-CAR-PHYSICS):
 // injects brake demand and cuts throttle when current_speed > target_speed.
@@ -499,7 +547,8 @@ double auto_brake_target_for_curvature(double curvature_inv_m, double lateral_gr
 // Per-wheel state for the renderer and the trace.
 struct WheelState {
   double compression = 0;   // m above rest (positive: compressed)
-  double steer = 0;         // rad, positive towards +x
+  double steer = 0;         // rad, positive towards +x; the tyre heading (no toe)
+  double toe = 0;           // rad, static toe for drawing the wheel only (FEEL-03)
   double spin = 0;          // rad, rolling forward is positive
   double omega = 0;         // rad/s
   double load = 0;          // N

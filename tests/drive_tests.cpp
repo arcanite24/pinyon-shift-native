@@ -3,6 +3,7 @@
 // sound (rest pose, determinism, directions), not that it matches the game.
 // Spec: FORMAT-CARS (Wheels: the wheel stands on y = 0 at its outer
 // radius; the body frame is +X right, +Z forward), REIMPLEMENTATION_PLAN M3.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -663,6 +664,108 @@ void test_per_car_physics() {
   }
 }
 
+// FEEL-27: the sputter tunables come from PhysicsSettings.ini.
+void test_sputter_settings() {
+  drive::CarParams p = test_car();
+  CHECK(p.sputter_start_damage == 0.3 && p.sputter_max_per_sec == 1.0);
+  cars::PhysicsSettings ps;
+  ps.values["EngineDamageLevelStartSputter"] = 0.45;
+  ps.values["EngineDamageMaxSputtersPerSec"] = 2.5;
+  drive::apply_physics(cars::CarPhysics{}, ps, p);
+  CHECK(p.sputter_start_damage == 0.45 && p.sputter_max_per_sec == 2.5);
+}
+
+// FEEL-11: the original's FrictionTorqueMod law on the shipped table values
+// (PhysicsSettings.ini FrictionTorqueMod defaults in CarParams).
+void test_friction_torque_mod() {
+  // The loader reads every row from the settings (made-up values here).
+  {
+    cars::PhysicsSettings ps;
+    ps.values["FrictionTorqueMod\\Mass0KG"] = 800;
+    ps.values["FrictionTorqueMod\\NoAssists1\\TurnClamp1"] = 77;
+    ps.values["FrictionTorqueMod\\SimulationSteering0\\CosYawAngle1"] = 0.5;
+    ps.values["FrictionTorqueMod\\AWDModifiers0\\StraightenScale0"] = 0.9;
+    ps.values["FrictionTorqueMod\\OffRoadModifiers1\\StraightenClamp0"] = 1.3;
+    ps.values["FrictionTorqueMod\\FWDModifiers0\\TurnScale0"] = 0.1;  // never taken by the original
+    drive::CarParams p = test_car();
+    drive::apply_physics(cars::CarPhysics{}, ps, p);
+    const auto& m = p.friction_torque_mod;
+    CHECK(m.mass0_kg == 800 && m.mass1_kg == drive::CarParams{}.friction_torque_mod.mass1_kg);
+    CHECK(m.steering[1][1].turn_clamp1 == 77 && m.steering[1][0].turn_clamp1 == 120);
+    CHECK(m.steering[2][0].cos_yaw1 == 0.5);
+    CHECK(m.drivetrain[0].straighten_scale0 == 0.9 && m.drivetrain[0].turn_scale0 == 1);
+    CHECK(m.off_road[1].straighten_clamp0 == 1.3);
+  }
+  const drive::CarParams::FrictionTorqueMod m{};
+  const double deg = 3.14159265358979323846 / 180.0, i_yaw = 1000;
+  auto near = [](double a, double b) { return std::fabs(a - b) < 1e-6 * std::max(1.0, std::fabs(b)); };
+  auto ftm = [&](int table, bool off_road, double mass, double v2, double cos_yaw, double yaw_rate, double t) {
+    return drive::friction_torque_mod_yaw(m, table, off_road, mass, i_yaw, v2, cos_yaw, yaw_rate, t);
+  };
+  // Below 8 m/s there is no rescaling, only the low-speed clamp (Clamp deg/s^2
+  // times the yaw inertia, times 10).
+  CHECK(near(ftm(1, false, 909.1, 50, 0.9, 1, 5000), 5000));
+  CHECK(near(ftm(1, false, 909.1, 50, 1.0, 1, 1e6), 180 * deg * i_yaw * 10));
+  // From 15 m/s: past the second yaw cosine the Turn/Straighten scale and clamp
+  // of index 1 apply in full.
+  CHECK(near(ftm(1, false, 909.1, 400, 0.9, 1, 1000), 700));    // turning: TurnScale1 0.7
+  CHECK(near(ftm(1, false, 909.1, 400, 0.9, -1, 1000), 800));   // straightening: StraightenScale1 0.8
+  CHECK(near(ftm(1, false, 909.1, 400, 0.9, 1, 5000), 120 * deg * i_yaw));   // TurnClamp1
+  CHECK(near(ftm(1, false, 909.1, 400, 0.9, 1, -5000), -140 * deg * i_yaw));  // StraightenClamp1
+  // Within the first cosine, index 0; midway between them, half of each.
+  CHECK(near(ftm(1, false, 909.1, 400, 1.0, 1, 1e6), 180 * deg * i_yaw));
+  CHECK(near(ftm(1, false, 909.1, 400, 0.5 * (0.996194 + 0.961261), 1, 1000), 850));
+  // Half the speed blend: half the scale.
+  CHECK(near(ftm(1, false, 909.1, 64 + 161 * 0.5, 0.9, 1, 1000), 850));
+  // The heavy row past Mass1KG.
+  CHECK(near(ftm(1, false, 1590.9, 400, 1.0, 1, 1e6), 150 * deg * i_yaw));
+  CHECK(near(ftm(1, false, 1250.0, 400, 1.0, 1, 1e6), 165 * deg * i_yaw));
+  // With all four wheels off-road the OffRoadModifiers multiply in.
+  CHECK(near(ftm(1, true, 909.1, 400, 1.0, 1, 1000), 1200));
+  CHECK(near(ftm(1, true, 909.1, 400, 1.0, 1, 1e6), 180 * 1.1111 * deg * i_yaw));
+  // Simulation steering: the shipped rows leave the torque alone.
+  CHECK(near(ftm(2, false, 909.1, 400, 0.9, 1, 5000), 5000));
+  // WithAssists and NoAssists ship the same rows.
+  CHECK(near(ftm(0, false, 1200, 300, 0.97, 1, 3000), ftm(1, false, 1200, 300, 0.97, 1, 3000)));
+}
+
+// FEEL-15: the pad stick maps linearly onto the speed-sensitive lock at any
+// speed (no SteeringWheelFilter shaping on the pad).
+void test_pad_steering_linear() {
+  const auto p = test_car();
+  const drive::FlatGround flat;
+  for (double speed : {10.0, 40.0}) {
+    drive::Vehicle v(p);
+    v.launch({0, 0, 0}, 0.0, speed);
+    drive::Input in{};
+    in.steer = 0.5;
+    in.throttle = 0.3;
+    for (int i = 0; i < 120; ++i) v.step(in, flat);
+    std::printf("pad half stick at %.0f m/s: steer %.4f of lock %.4f\n", speed, v.steer_angle(), v.steer_lock());
+    CHECK(std::fabs(v.steer_angle() - 0.5 * v.steer_lock()) < 0.02 * v.steer_lock() + 1e-4);
+  }
+}
+
+// FEEL-02: no thermal grip factor. The empty curve is 1 at any temperature,
+// and even a loaded List_TireAffectCurve far from 1 leaves a long, hot
+// skid's grip unchanged.
+void test_no_thermal_grip() {
+  const drive::CarParams::TireAffectCurve none{};
+  CHECK(none.evaluate(20) == 1.0 && none.evaluate(170) == 1.0);
+  const auto p = test_car();
+  auto hot = p;
+  hot.tire_affect_curve.values = {0.6, 0.6, 0.6};
+  const drive::FlatGround flat;
+  drive::Vehicle a(p), b(hot);
+  a.launch({0, 0, 0}, 0.0, 25.0);
+  b.launch({0, 0, 0}, 0.0, 25.0);
+  for (int i = 0; i < 600; ++i) {
+    a.step({0.6, 0.5, 0.0, false}, flat);
+    b.step({0.6, 0.5, 0.0, false}, flat);
+  }
+  CHECK(drive::trace_row(a) == drive::trace_row(b));
+}
+
 void test_assists_and_transmission() {
   const drive::FlatGround flat;
 
@@ -869,12 +972,14 @@ void test_assists_and_transmission() {
     a2.steering = 2;  // Simulation
     v_ast.set_assists(a0);
     v_sim.set_assists(a2);
-    // At rest, Assisted caps to SteerMaxAngleFiltered while Simulation uses SteerMaxAngle;
-    // at mid speed (18 m/s), Simulation allows wider steering lock than Assisted.
+    // At rest, Assisted caps to SteerMaxAngleFiltered while Simulation uses
+    // SteerMaxAngle; at 18 m/s, where the speed-sensitive lock is below both
+    // caps, the lock is the same in every mode (FEEL-16 d: no per-mode gees).
     CHECK(v_sim.steer_lock() > v_ast.steer_lock());
     v_ast.launch({0, 0, 0}, 0, 18.0);
     v_sim.launch({0, 0, 0}, 0, 18.0);
-    CHECK(v_sim.steer_lock() > v_ast.steer_lock());
+    CHECK(v_ast.steer_lock() < p.max_steer_filtered);
+    CHECK(std::fabs(v_sim.steer_lock() - v_ast.steer_lock()) < 1e-12);
 
     drive::Input in{0, 1.0, 0.0, false};
     drive::apply_auto_brake(in, 35.0, 25.0);
@@ -946,6 +1051,10 @@ int main() {
     CHECK(std::isfinite(ok_car.position().x) && std::isfinite(ok_car.velocity().z));
   }
   test_per_car_physics();
+  test_friction_torque_mod();
+  test_sputter_settings();
+  test_pad_steering_linear();
+  test_no_thermal_grip();
   test_assists_and_transmission();
   // Pillar 1 deep behavioral parity tests:
   // 1) HandbrakeGripMultiplier scales rear k_x/k_y on surface with handbrake_grip < 1.
@@ -1229,19 +1338,31 @@ int main() {
       v_norm.step({0.0, 0.2, 0.0, false}, flat_g);
       v_sim.step({0.0, 0.2, 0.0, false}, flat_g);
     }
-    // With authentic 100x FrictionTorqueMod scale (10,000..18,000 N*m clamp), Normal
-    // steering measurably damps yaw rate relative to Simulation steering.
-    CHECK(v_norm.angular_velocity().y < v_sim.angular_velocity().y - 0.15);
+    // FEEL-11: the original's FrictionTorqueMod is no yaw damper. Past the
+    // second yaw cosine it scales the tyres' straightening torque by 0.8 and
+    // clamps it, so in Normal steering the slide's yaw rate falls off (slightly) less
+    // than in Simulation, whose rows leave the torque alone.
+    std::printf("FTM slide: yaw rate normal %.4f sim %.4f\n", v_norm.angular_velocity().y, v_sim.angular_velocity().y);
+    CHECK(v_norm.angular_velocity().y > v_sim.angular_velocity().y + 1e-3);
 
-    // Assisted steering gentle lane centering bias: car right of lane center (+2.5 m)
-    // with zero stick steers gently left; Simulation mode ignores lane guidance.
-    drive::Vehicle v_ast(p), v_sim2(p);
+    // FEEL-16: lane centring is an opt-in engine helper. With it on, a car
+    // right of lane centre (+2.5 m) with zero stick steers gently left in
+    // Assisted; Simulation ignores lane guidance; Assisted without the
+    // helper (the default, as in the original) ignores it too.
+    drive::Vehicle v_ast(p), v_sim2(p), v_ast_plain(p);
     drive::VehicleAssists a_ast;
     a_ast.steering = 0;  // Assisted
+    drive::VehicleAssists a_ast_plain = a_ast;
+    CHECK(!a_ast_plain.engine_steer_assist);
+    a_ast.engine_steer_assist = true;
+    drive::VehicleAssists a_sim_helpers = a_sim;
+    a_sim_helpers.engine_steer_assist = true;
     v_ast.set_assists(a_ast);
-    v_sim2.set_assists(a_sim);
+    v_sim2.set_assists(a_sim_helpers);
+    v_ast_plain.set_assists(a_ast_plain);
     v_ast.launch({0, 0, 0}, 0.0, 20.0);
     v_sim2.launch({0, 0, 0}, 0.0, 20.0);
+    v_ast_plain.launch({0, 0, 0}, 0.0, 20.0);
     drive::Input lane_in{};
     lane_in.throttle = 0.2;
     lane_in.has_assist_lane = true;
@@ -1250,9 +1371,11 @@ int main() {
     for (int i = 0; i < 30; ++i) {
       v_ast.step(lane_in, flat_g);
       v_sim2.step(lane_in, flat_g);
+      v_ast_plain.step(lane_in, flat_g);
     }
     CHECK(v_ast.steer_angle() < -0.02);
     CHECK(std::fabs(v_sim2.steer_angle()) < 1e-6);
+    CHECK(std::fabs(v_ast_plain.steer_angle()) < 1e-6);
   }
   // 11) P0-K2: PendingBarnRestoration serialization/deserialization round-trip.
   {
@@ -1453,7 +1576,7 @@ int main() {
       CHECK(def.braking == 1 && retail.braking == 1);          // ABS ON
       CHECK(def.steering == 1 && retail.steering == 1);        // Normal
       CHECK(def.traction_control && retail.traction_control);  // TCS ON
-      CHECK(def.stability_control && retail.stability_control);  // STM ON
+      CHECK(!def.stability_control && !retail.stability_control);  // STM OFF (FEEL-12)
       CHECK(def.shifting == 0 && retail.shifting == 0);        // Automatic
       CHECK(def.driving_line == 2 && retail.driving_line == 2);  // Full
       CHECK(def.rewind && retail.rewind);                      // Rewind ON
@@ -1603,29 +1726,41 @@ int main() {
       CHECK(v_hi.steer_angle() < v_lo.steer_angle() * 0.5);
     }
 
-    // R3-PHY-06: Normal steering active countersteer assist vs raw Simulation + handbrake blend-out.
+    // R3-PHY-06 / FEEL-16: the countersteer bias is an opt-in engine helper.
+    // With it on, Normal countersteers into the slide, Simulation stays raw
+    // and the handbrake blends it out; Normal without it (the default, as in
+    // the original, whose countersteer is only a faster steering rate) does
+    // not steer by itself.
     {
-      drive::Vehicle v_norm(p), v_sim(p), v_hb(p);
+      drive::Vehicle v_norm(p), v_sim(p), v_hb(p), v_plain(p);
       drive::VehicleAssists a_norm, a_sim;
       a_norm.steering = 1;  // Normal
       a_sim.steering = 2;   // Simulation
+      const drive::VehicleAssists a_plain = a_norm;
+      a_norm.engine_steer_assist = true;
+      a_sim.engine_steer_assist = true;
       v_norm.set_assists(a_norm);
       v_sim.set_assists(a_sim);
       v_hb.set_assists(a_norm);
+      v_plain.set_assists(a_plain);
       // Oversteer slide: nose pointed +0.30 rad (~17 deg) right of velocity at 22 m/s -> rear slip < 0 -> countersteer left (< 0).
       v_norm.launch({0, 0, 0}, 0.30, 22.0);
       v_sim.launch({0, 0, 0}, 0.30, 22.0);
       v_hb.launch({0, 0, 0}, 0.30, 22.0);
+      v_plain.launch({0, 0, 0}, 0.30, 22.0);
       v_norm.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
       v_sim.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
       v_hb.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
+      v_plain.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
       for (int i = 0; i < 25; ++i) {
         v_norm.step({0.0, 0.2, 0.0, false}, flat);
         v_sim.step({0.0, 0.2, 0.0, false}, flat);
         v_hb.step({0.0, 0.2, 0.0, true}, flat);
+        v_plain.step({0.0, 0.2, 0.0, false}, flat);
       }
       CHECK(v_norm.steer_angle() < -0.08);                // Normal actively countersteers left into slide
       CHECK(std::fabs(v_sim.steer_angle()) < 1e-6);       // Simulation stays completely raw
+      CHECK(std::fabs(v_plain.steer_angle()) < 1e-6);     // no helper: the stick alone steers
       CHECK(std::fabs(v_hb.steer_angle()) < std::fabs(v_norm.steer_angle()) * 0.35);  // handbrake blends it out
     }
 
