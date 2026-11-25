@@ -77,6 +77,7 @@ sc.draw(list, SceneScreen::frame(w, h));   // the whole scene, or a subtree
 | `turn` | Turn a node and its subtree about the node's own position, children orbiting it (the dial's needle and hatches) |
 | `scale` | Scale a node and its subtree about the node's own position (a focused row's size step) |
 | `stretch_x` | Stretch the models of a node and its subtree across, each about its middle (a sponsor logo of another aspect) |
+| `stretch_y` | The same, down (the STAY IN CAR panel cut to its message's lines) |
 
 ### Strings: `StringRef`
 
@@ -291,8 +292,8 @@ flow files) as plain steps, with the timings measured on the captures;
 - **Measured placements.** Every scene here rests at its intro start (the
   stackers and timelines are not run), so the drawn positions are offsets
   measured on `10_`..`18_*_orig.png`: the ticket's value tapes, the rival
-  callout's lines, the cash lines and total, and the popup's panel and line
-  pitch.
+  callout's lines, the cash lines and total, and the popup's panel (cut
+  to the message's lines) and line pitch.
 
 ## Interims around a race
 

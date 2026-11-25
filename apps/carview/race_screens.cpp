@@ -544,14 +544,16 @@ bool draw_won_car(ui::List& l, const RaceHud& r, float w, float h) {
 // 18_post_race_stay_in_car_orig.png: the title on its pill from x 446 (its
 // middle at y 307), the message's lines under it 35 px apart (its first
 // line's middle at y 338), the description panel behind them from y 318 to
-// ~440, and the scene behind dimmed (its Background). The panel rests at
-// its intro start (low on the screen), and the scene's text draws its lines
-// closer than the capture's, so both are placed here.
+// 428 (45 px under the second line), and the scene behind dimmed (its
+// Background). The panel rests at its intro start (low on the screen) and
+// at its full height, and the scene's text draws its lines closer than the
+// capture's, so both are placed here; the panel is cut to the lines.
 constexpr float kPopupDim = 0.45f;
 constexpr float kPopupMessageWidth = 390.0f;
 constexpr float kPopupTitleDy = 12.0f, kPopupMessageDy = 8.0f, kPopupLinePitch = 35.0f;
 // The panel's mask shows its model only from 332 px down at rest.
 constexpr float kPopupPanelTop = 318.0f, kPopupPanelShown = 332.0f;
+constexpr float kPopupPanelTwoLines = 110.0f;
 
 bool draw_stay_in_car(ui::List& l, const RaceHud& r, float w, float h) {
   SceneScreen sc(kPopupScene);
@@ -571,8 +573,6 @@ bool draw_stay_in_car(ui::List& l, const RaceHud& r, float w, float h) {
     sc.at(title).tint = kInk;
     sc.at(title).dy = kPopupTitleDy;
   }
-  if (const int panel = sc.node("DescriptionBox/Panel"); panel >= 0)
-    sc.at(panel).dy = kPopupPanelTop - (sd.rect(panel)[1] + kPopupPanelShown);
   // The message, a line at a time at the capture's pitch.
   std::vector<std::string> lines;
   if (msg >= 0) {
@@ -582,6 +582,16 @@ bool draw_stay_in_car(ui::List& l, const RaceHud& r, float w, float h) {
       lines.push_back(wrapped.substr(from, nl - from));
     lines.push_back(wrapped.substr(from));
     sc.at(msg).dy = kPopupMessageDy;
+  }
+  // The panel's shown part (from kPopupPanelShown down) squeezed about the
+  // model's middle to the lines, its top at kPopupPanelTop.
+  if (const int panel = sc.node("DescriptionBox/Panel"); panel >= 0) {
+    const auto rc = sd.rect(panel);
+    const float tall = rc[3] - rc[1], shown = tall - kPopupPanelShown;
+    const float want = kPopupPanelTwoLines + kPopupLinePitch * (float(std::max<size_t>(lines.size(), 1)) - 2.0f);
+    const float s = shown > 1.0f ? std::clamp(want / shown, 0.1f, 1.0f) : 1.0f;
+    sc.at(panel).stretch_y = s;
+    sc.at(panel).dy = kPopupPanelTop - (0.5f * (rc[1] + rc[3]) - 0.5f * s * tall + s * kPopupPanelShown);
   }
   const SceneFrame f = SceneScreen::frame(w, h);
   sc.draw(l, f);
