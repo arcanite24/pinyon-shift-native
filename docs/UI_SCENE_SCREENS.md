@@ -265,3 +265,43 @@ caller then draws the old hand-drawn block.
   under whatever the HUD draws top left, following the race's timer rows.
 - **Help bar.** More than seven prompts (the scene has seven buttons) keep the
   old drawn bar.
+
+## The screens around a race
+
+`race_flow.h` holds the original's order of screens around an event (its
+flow files) as plain steps, with the timings measured on the captures;
+`race_screens.cpp` draws each step on its own scene, and
+`drive_race_screens.cpp` runs them in the drive session.
+
+- **Entry.** The marker opens `H_EVENT_SUMMARY` (the event's ticket
+  texture, track, surface, points and credits; Y turns the ticket to its
+  restrictions). A car that does not qualify leads to car select instead of
+  a toast. A 0.5 s fade, then the load names the event.
+- **Pre-race.** `PRE_AND_POST_RACE`'s title card for 1.8 s, then
+  `H_GENERIC_TITLE` (START RACE, DIFFICULTY, OPTIONS, QUIT RACE), and the
+  rival callout where the event has a star rival. A restart shows only the
+  menu.
+- **Post-race.** `H_POST_RACE_FINISHED` (X results, B replay, Y restart);
+  then the AI cars go and the car waits at the post-race location;
+  `H_POST_RACE_CREDITS_BREAKDOWN` (it moves on by itself),
+  `H_POST_RACE_CAREER_POINTS`, `H_POST_RACE_WON_CAR`, STAY IN CAR on
+  `H_MESSAGE_POPUP` when the event lent a car, then black and the load back
+  to free roam. Head to heads, Rivals, showcases and Rally skip the steps
+  the original skips (`race_flow::post_steps`).
+- **Measured placements.** Every scene here rests at its intro start (the
+  stackers and timelines are not run), so the drawn positions are offsets
+  measured on `10_`..`18_*_orig.png`: the ticket's value tapes, the rival
+  callout's lines, the cash lines and total, and the popup's panel and line
+  pitch.
+
+## Interims around a race
+
+- **Ticket.** The surface line for surfaces other than asphalt (Q93); the
+  value tapes' colours for tickets other than festival ones (Q94).
+- **Rival callout.** Its tapes' offsets and its 3 s hold; no event carries a
+  star rival yet, so it is not reached in play (Q95, Q98).
+- **Points and won car.** Shown at measured rects without their intros'
+  end states; no wristband art or car render (Q96).
+- **Car select and difficulty.** Car select lists the eligible cars on
+  `H_GENERIC_TITLE`'s rows; DIFFICULTY steps the difficulty in place (Q97).
+- **Not drawn.** The tombola and the rival offer (Q98).
