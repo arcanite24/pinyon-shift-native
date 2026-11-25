@@ -860,7 +860,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         const bool pre_race_swoop_hide_hud = pre_race_blend_t >= 0.0 && pre_race_blend_t < 0.85;
         const bool campaign_hide_hud = app.campaign.is_blocking_gameplay() || pre_race_swoop_hide_hud;
         if (mm_size > 0 && !app.show_title && !ceremony.active && !campaign_hide_hud && !map_overlay.active &&
-            !grid_menu_open && st.menu.empty() && !career_page.is_open() && !app.rally_hub_open &&
+            !grid_menu_open && st.menu.empty() && !career_page.is_open() && !hub_menu.open() && !app.rally_hub_open &&
             !app.rally_service_open && !app.rally_results_open && !club_open && !car_club_open)
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         if (!campaign_hide_hud) carview::build_drive_hud(list, d, float(width), float(height));
@@ -928,7 +928,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (app.story_intro.stage() == carview::StoryStage::kBootSplash)
           app.story_intro.draw_hud(list, float(width), float(height));
         const bool suppress_campaign_hud =
-            map_overlay.active || !st.menu.empty() || settings_page.is_open() || career_page.is_open() ||
+            map_overlay.active || !st.menu.empty() || settings_page.is_open() || career_page.is_open() || hub_menu.open() ||
             events_page.is_open() || outpost_hub_open || garage_open || shop.is_open() || autoshow.is_open() ||
             paint_open || club_open || car_club_open || app.rally_hub_open || app.rally_service_open ||
             app.rally_results_open || grid_menu_open;
@@ -1110,12 +1110,21 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             carview::draw_garage_hud(list, float(width), float(height), garage_browser, app.class_bands, app.career.credits,
                                      vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
           }
+        } else if (hub_menu.open() && !career_page.is_open() && !achievements.screen_open() && !paint_open &&
+                   !garage_open && !photo_mode.active()) {
+          // MY PROFILE, OPTIONS, the workshop, the paint booth, photo mode:
+          // H_GENERIC over the world (the HUD hidden).
+          carview::HubMenuHud hm;
+          carview::fill_hub_menu(hub_menu, hm);
+          if (vehicle.time() < notice_until) hm.notice = notice;
+          list.clear();
+          carview::draw_hub_menu(list, hm, float(width), float(height));
         }
         if (barn_card.visible) {
           carview::draw_barn_find_hud(list, float(width), float(height), barn_card);
         }
         const bool show_track_chip = !app.show_title && !app.fmv_player.active() && !barn_card.visible && !ceremony.active && !map_overlay.active && !grid_menu_open &&
-                                     st.menu.empty() && !career_page.is_open() && !settings_page.is_open() &&
+                                     st.menu.empty() && !career_page.is_open() && !hub_menu.open() && !settings_page.is_open() &&
                                      !shop.is_open() && !autoshow.is_open() && !garage_open &&
                                      !events_page.is_open() && !outpost_hub_open && !paint_open && !club_open &&
                                      !car_club_open && !rewind_buf.active();

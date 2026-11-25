@@ -24,11 +24,13 @@
 #include "cars/strings.h"
 #include "fh1data/archive.h"
 #include "fh1data/stringtables.h"
+#include "fh1data/ui_overlay.h"
 #include "fh1data/ui_scene.h"
 #include "fh1data/xds.h"
 #include "freeroam/skills.h"
 #include "game_hud.h"
 #include "hud_scene.h"
+#include "hub_menus.h"
 #include "hud_screen.h"
 #include "pause_screen.h"
 #include "race_screens.h"
@@ -84,17 +86,17 @@ int main() {
   const char* state_env = std::getenv("SHIFT_STATE_ROOT");
   const std::filesystem::path state_root = state_env ? state_env : "";
 
-  // Scenes through the shared loader.
-  auto ui_zip = fh1::Archive::open(game_root / "media" / "UI.zip", nullptr);
-  check(ui_zip != nullptr, "UI.zip opens");
-  if (!ui_zip) return 1;
+  // Scenes as the game mounts them: v4's media.zip over the disc's UI.zip
+  // (fh1::UiOverlay; v4 replaces 108, 115, 554, H_STATISTICS ...).
+  check(std::filesystem::exists(game_root / "media" / "UI.zip"), "UI.zip exists");
+  fh1::UiOverlay overlay(game_root, fh1::UiOverlay::v4_media_zip_of(state_root));
   std::map<std::string, std::unique_ptr<fh1::UiScene>> scenes;
   carview::set_ui_scenes([&](const std::string& name) -> const fh1::UiScene* {
     auto& slot = scenes[name];
     if (!slot) {
       auto sc = std::make_unique<fh1::UiScene>();
       std::string e;
-      if (fh1::load_ui_scene(*ui_zip, name, *sc, &e)) slot = std::move(sc);
+      if (overlay.load_scene(name, *sc, &e)) slot = std::move(sc);
       else std::fprintf(stderr, "scene %s: %s\n", name.c_str(), e.c_str());
     }
     return slot.get();
@@ -218,6 +220,20 @@ int main() {
     if (sd.ok()) check_nodes(sd, scene, paths);
   }
 
+  // The generic menus' scene (hub_menus.cpp binds the race grid menu's rows).
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kGenericMenuScene)));
+    check(sd.ok(), "H_GENERIC loads");
+    if (sd.ok()) {
+      check_nodes(sd, carview::kGenericMenuScene, {"Option_List", "ButtonBar"});
+      for (int i = 0; i < 7; ++i) {
+        const std::string b = "Button" + std::to_string(i);
+        const int btn = sd.find(b);
+        check(btn >= 0, "H_GENERIC: " + b);
+      }
+    }
+  }
+
   // 2. Every string the screens bind resolves in the EN tables.
   {
     using namespace carview::race_text;
@@ -238,6 +254,49 @@ int main() {
     check(carview::event_track_info(0, false) == "ASPHALT POINT-TO-POINT",
           "The Gauntlet's track line: " + carview::event_track_info(0, false));
     check(carview::event_ticket_texture(1, "043") == "EVENTTICKETS/FESTIVALRACES/043", "event 43's ticket");
+  }
+  {
+    // The generic menus (MY PROFILE, OPTIONS, the paint booth, the workshop,
+    // photo mode) read their rows from the tables.
+    using namespace carview::hub_menu_text;
+    for (const carview::StringRef* r :
+         {&kOptions, &kStats, &kAchievements, &kTeamCredits, &kControls, &kDifficulty, &kHud, &kAudio, &kVideo,
+          &kPaintCar, &kAddDecals, &kCreateVinylGroup, &kMyVinylGroups, &kFm4VinylGroups, &kClearDesign, &kChangeCar,
+          &kUpgradeCar, &kWorkshopPaint, &kBarnFinds, &kAutoUpgrade, &kCustomUpgrade, &kTakePhoto, &kViewPhoto,
+          &kPhotoShare, &kSelect, &kBack, &kAdvanced})
+      check_ref(*r, "hub menu " + std::string(r->fallback));
+    auto rows_of = [](carview::HubMenu m) {
+      std::vector<std::string> out;
+      for (const auto& r : carview::hub_menu_rows(m)) out.push_back(carview::text_of(r.text));
+      return out;
+    };
+    using HM = carview::HubMenu;
+    using SV = std::vector<std::string>;
+    check(rows_of(HM::kProfile) == SV{"OPTIONS", "STATS", "ACHIEVEMENTS", "TEAM CREDITS"},
+          "MY PROFILE rows (21_my_profile_menu_orig.png)");
+    check(rows_of(HM::kOptions) == SV{"CONTROLS", "DIFFICULTY", "HUD", "AUDIO", "VIDEO"},
+          "OPTIONS rows (22_options_menu_orig.png)");
+    check(rows_of(HM::kPaintBooth) ==
+              SV{"PAINT CAR", "ADD DECALS", "CREATE VINYL GROUP", "MY VINYL GROUPS", "FM4 VINYL GROUPS", "CLEAR DESIGN"},
+          "paint booth rows (20_paint_shop_orig.png)");
+    check(rows_of(HM::kPhotoSelect) == SV{"TAKE PHOTO", "VIEW PHOTO", "PHOTO SHARE"},
+          "photo mode rows (31_photo_mode_menu_orig.png)");
+    for (const auto& r : rows_of(HM::kWorkshop)) check(r.rfind("IDS_", 0) != 0, "workshop row resolves: " + r);
+    // The stack: OPTIONS from MY PROFILE, B back to it, B again closes.
+    carview::HubMenuStack hs;
+    hs.show(HM::kProfile);
+    carview::HubMenuAction act{};
+    check(hs.action(act) && act == carview::HubMenuAction::kOptions, "MY PROFILE opens on OPTIONS");
+    hs.push(HM::kOptions);
+    hs.move(-1);
+    check(hs.selected() == 4, "OPTIONS wraps up to VIDEO");
+    check(hs.back() && hs.top() == HM::kProfile, "B returns to MY PROFILE");
+    check(!hs.back() && !hs.open(), "B on MY PROFILE closes the list");
+    carview::HubMenuHud hh;
+    hs.show(HM::kOptions);
+    carview::fill_hub_menu(hs, hh);
+    check(hh.prompts.size() == 3 && hh.prompts[0].second == "SELECT" && hh.prompts[1].second == "BACK",
+          "OPTIONS help bar: A SELECT, B BACK, X the engine's settings");
   }
   {
     // The driving HUD's labels and every notification's lines.
@@ -319,16 +378,12 @@ int main() {
     std::filesystem::create_directories(out_dir);
     if (auto fzip = fh1::Archive::open(game_root / "media" / "ui" / "Fonts.zip", nullptr))
       carview::ui::load_fonts_from_zip(*fzip);
-    auto hz = fh1::Archive::open(game_root / "media" / "ui" / "textures" / "Horizon.zip", nullptr);
-    auto tx = fh1::Archive::open(game_root / "media" / "ui" / "Textures.zip", nullptr);
     std::set<std::string> failed;
     carview::set_ui_textures([&](const std::string& path, std::array<float, 4>& uv) -> bool {
       if (carview::ui::atlas_find(path, uv)) return true;
       if (failed.count(path)) return false;
-      const bool t = path.rfind("T:", 0) == 0;
-      fh1::Archive* a = t ? tx.get() : hz.get();
-      const fh1::ReadResult r = a ? a->read((t ? path.substr(2) : path) + ".xds") : fh1::ReadResult{};
-      const auto x = r.ok() ? fh1::decode_xds(r.data, false) : fh1::XdsResult{};
+      const fh1::UiOverlay::File f = overlay.texture(path);
+      const auto x = f.ok() ? fh1::decode_xds(f.read.data, false) : fh1::XdsResult{};
       if (x.levels.empty() || !carview::ui::atlas_image(path, x.levels[0].width, x.levels[0].height, x.levels[0].rgba, uv)) {
         failed.insert(path);
         return false;
@@ -579,6 +634,33 @@ int main() {
       rr.screen = S::kStayInCar, rr.stay_car = "Nissan GT-R R34";
       hud_shot("race_stay_in_car.png", "18_post_race_stay_in_car_orig.png", rd);
     }
+
+    // The generic menus over the original's captures of them.
+    auto menu_shot = [&](const std::string& file, const std::string& orig, carview::HubMenu m, int selected) {
+      std::vector<uint8_t> fb = backdrop;
+      if (!hud_dir.empty()) {
+        int w = 0, h = 0, n = 0;
+        if (uint8_t* px = stbi_load((hud_dir / orig).string().c_str(), &w, &h, &n, 4)) {
+          if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
+          stbi_image_free(px);
+        }
+      }
+      carview::HubMenuStack hs;
+      hs.show(m);
+      hs.select(selected);
+      carview::HubMenuHud hh;
+      carview::fill_hub_menu(hs, hh);
+      carview::ui::List l;
+      check(carview::draw_hub_menu(l, hh, float(W), float(H)), "draw " + file);
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / file;
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + file);
+    };
+    menu_shot("menu_paint_booth.png", "20_paint_shop_orig.png", carview::HubMenu::kPaintBooth, 0);
+    menu_shot("menu_my_profile.png", "21_my_profile_menu_orig.png", carview::HubMenu::kProfile, 0);
+    menu_shot("menu_options.png", "22_options_menu_orig.png", carview::HubMenu::kOptions, 0);
+    menu_shot("menu_photo.png", "31_photo_mode_menu_orig.png", carview::HubMenu::kPhotoSelect, 0);
+    menu_shot("menu_workshop.png", "", carview::HubMenu::kWorkshop, 0);
   }
 
   if (g_failures > 0) {

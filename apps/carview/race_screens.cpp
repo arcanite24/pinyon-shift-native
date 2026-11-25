@@ -125,7 +125,6 @@ bool draw_title_card(ui::List& l, const RaceHud& r, float w, float h) {
 bool draw_grid_menu(ui::List& l, const RaceHud& r, float w, float h, bool with_back = false) {
   SceneScreen sc(kGridMenuScene);
   if (!sc.ok()) return false;
-  const SceneDraw& sd = sc.scene();
   const SceneFrame f = SceneScreen::frame(w, h);
   sc.bindings().fit_text = false;
   sc.hide(sc.node("ButtonBar"));
@@ -137,9 +136,24 @@ bool draw_grid_menu(ui::List& l, const RaceHud& r, float w, float h, bool with_b
     sc.at(menu).scale = 0.8f + 0.2f * grow;
     sc.at(menu).alpha = grow;
   }
+  bind_menu_rows(sc, l, f, r.grid_menu, r.grid_selected);
+  sc.draw(l, f);
+  // The original's grid help bar is SELECT alone (13_prerace_menu_orig.png).
+  if (with_back)
+    ui4::button_bar(l, {{"A", text_of(race_text::kSelect)}, {"B", text_of(race_text::kBack)}}, w, h);
+  else
+    ui4::button_bar(l, {{"A", text_of(race_text::kSelect)}}, w, h);
+  return true;
+}
+
+}  // namespace
+
+void bind_menu_rows(SceneScreen& sc, ui::List& l, const SceneFrame& f, const std::vector<std::string>& rows,
+                    int selected, float extra_dy) {
+  const SceneDraw& sd = sc.scene();
   const int list = sc.node("Option_List");
-  if (list >= 0) sc.at(list).dx = race_layout::kMenuDx, sc.at(list).dy = race_layout::kMenuDy;
-  const int n = int(r.grid_menu.size());
+  if (list >= 0) sc.at(list).dx = race_layout::kMenuDx, sc.at(list).dy = race_layout::kMenuDy + extra_dy;
+  const int n = int(rows.size());
   for (int slot = 0; slot < 7; ++slot) {
     const int btn = sc.node("Button" + std::to_string(slot));
     if (btn < 0) continue;
@@ -149,9 +163,9 @@ bool draw_grid_menu(ui::List& l, const RaceHud& r, float w, float h, bool with_b
     }
     const int body = child(sd, btn, "Button");
     const int text = child(sd, body, "Text");
-    const std::string& label = r.grid_menu[size_t(slot)];
+    const std::string& label = rows[size_t(slot)];
     sc.text(text, label);
-    const bool sel = slot == r.grid_selected;
+    const bool sel = slot == selected;
     const float tw = sd.measure(text, label);
     for (const char* name : {"Dirt_Tile", "Crisp_Tape", "Smudge_Tape"}) {
       const int t = child(sd, body, name);
@@ -167,17 +181,12 @@ bool draw_grid_menu(ui::List& l, const RaceHud& r, float w, float h, bool with_b
     const auto c = sd.at(text);
     const float k = sel ? race_layout::kMenuFocusScale : 1.0f;
     const float x0 = c[0] + race_layout::kMenuDx - 30.0f, x1 = c[0] + race_layout::kMenuDx + k * tw + 30.0f;
-    const float yc = c[1] + race_layout::kMenuDy + (sel ? race_layout::kMenuFocusDy : 0.0f);
+    const float yc = c[1] + race_layout::kMenuDy + extra_dy + (sel ? race_layout::kMenuFocusDy : 0.0f);
     l.add_hit(f.x(x0), f.y(yc - 24.0f * k), f.x(x1), f.y(yc + 24.0f * k), ui::kHitRow, slot);
   }
-  sc.draw(l, f);
-  // The original's grid help bar is SELECT alone (13_prerace_menu_orig.png).
-  if (with_back)
-    ui4::button_bar(l, {{"A", text_of(race_text::kSelect)}, {"B", text_of(race_text::kBack)}}, w, h);
-  else
-    ui4::button_bar(l, {{"A", text_of(race_text::kSelect)}}, w, h);
-  return true;
 }
+
+namespace {
 
 // --- H_POST_RACE_FINISHED ----------------------------------------------
 

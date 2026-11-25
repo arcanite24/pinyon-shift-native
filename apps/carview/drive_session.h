@@ -42,6 +42,7 @@
 #include "freeroam/festival_ai.h"
 #include "game_hud.h"
 #include "garage/pi_calc.h"
+#include "hub_menus.h"
 #include "hub_scene.h"
 #include "hud.h"
 #include "livery_editor.h"
@@ -404,6 +405,7 @@ struct DriveSession {
   EventsPage events_page;
   CeremonyHud ceremony;
   bool garage_open = false;
+  bool garage_barn_finds = false;  // the garage shows its BARN FINDS list
   size_t garage_pick = 0;
   bool grid_menu_open = false;
   double pre_race_blend_t = -1.0;
@@ -546,10 +548,21 @@ struct DriveSession {
   void browse(int by);
   void take_pick();
   void put_back();
-  void open_garage_browser();
+  // The garage (CHANGE CAR); `barn_finds`: its BARN FINDS list.
+  void open_garage_browser(bool barn_finds);
   void sync_livery_preview(bool recomposite_vinyls);
   void open_paint();
   void open_shop_or_autoshow(bool is_autoshow);
+  // The original's H_GENERIC option menus (hub_menus.h): MY PROFILE,
+  // OPTIONS, the paint booth, the workshop, the photo mode select.
+  carview::HubMenuStack hub_menu;
+  bool hub_menu_from_pause = false;  // B on its last list returns to the pause menu
+  void open_hub_menu(carview::HubMenu m);
+  // A on the selected row (or X: the menu's engine extra).
+  void hub_menu_choose(bool extra);
+  // The settings page, on `tab` (SettingsPage::Tab; -1: the last one).
+  void open_settings(int tab);
+  void enter_photo_mode();
   bool collect_next_wristband();
   void open_events_browser(int hub_filter);
   bool try_enter_event(const race::CareerEvent& ev, const std::string& chosen_car_media = {});

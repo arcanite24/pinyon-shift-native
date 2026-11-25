@@ -489,6 +489,78 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
+            // The H_GENERIC lists (MY PROFILE, OPTIONS, the workshop, the paint
+            // booth, photo mode): up/down, A opens the row, B backs out (to
+            // the pause menu when it opened them), X the menu's engine extra.
+            if (hub_menu.open() && !menu.open && !achievements.screen_open()) {
+              const int n_rows = int(carview::hub_menu_rows(hub_menu.top()).size());
+              auto move_sel = [&](int by) {
+                hub_menu.move(by);
+                app.audio_host.trigger_ui(audio::UiCue::kVscroll);
+              };
+              auto back = [&]() {
+                if (!hub_menu.back() && hub_menu_from_pause) {
+                  menu.open = true;
+                  menu.screen = PauseMenu::Screen::kList;
+                }
+                if (!hub_menu.open()) hub_menu_from_pause = false;
+                app.audio_host.trigger_ui(audio::UiCue::kCancel);
+              };
+              auto resume = [&]() {
+                hub_menu.close();
+                hub_menu_from_pause = false;
+                app.audio_host.trigger_ui(audio::UiCue::kUnPause);
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE && !e.key.repeat) back();
+                else if (k == SDLK_UP || k == SDLK_W) move_sel(-1);
+                else if (k == SDLK_DOWN || k == SDLK_S) move_sel(1);
+                else if (k == SDLK_X && !e.key.repeat) hub_menu_choose(true);
+                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat)
+                  hub_menu_choose(false);
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START) resume();
+                else if (b == SDL_GAMEPAD_BUTTON_EAST) back();
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) move_sel(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) move_sel(1);
+                else if (b == SDL_GAMEPAD_BUTTON_WEST) hub_menu_choose(true);
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) hub_menu_choose(false);
+              }
+              if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                carview::ui::HitZone hz{};
+                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow && hz.index >= 0 &&
+                    hz.index < n_rows && hub_menu.selected() != hz.index) {
+                  hub_menu.select(hz.index);
+                  app.audio_host.trigger_ui(audio::UiCue::kVscroll);
+                }
+              }
+              if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                if (e.button.button == SDL_BUTTON_RIGHT) {
+                  back();
+                } else if (e.button.button == SDL_BUTTON_LEFT) {
+                  carview::ui::HitZone hz{};
+                  if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
+                    if (hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < n_rows) {
+                      hub_menu.select(hz.index);
+                      hub_menu_choose(false);
+                    } else if (hz.group == carview::ui4::kHitButton) {
+                      // The help bar: A SELECT, B BACK, X the extra.
+                      if (hz.index == 0) hub_menu_choose(false);
+                      else if (hz.index == 1) back();
+                      else if (hz.index == 2) hub_menu_choose(true);
+                    }
+                  }
+                }
+              }
+              if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+                if (e.wheel.y > 0) move_sel(-1);
+                else if (e.wheel.y < 0) move_sel(1);
+              }
+              return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+            }
             // The pause menu takes the keys and buttons while open: its rows,
             // the EXTRAS list (X) and the screens it opens (B returns).
             if (menu.open) {

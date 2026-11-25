@@ -56,7 +56,8 @@ struct PauseMenu {
     kQuitToTitle,
     kQuit,
     kMessageCentre,
-    kSponsorChallenges
+    kSponsorChallenges,
+    kCareerPage  // the engine's career board (EXTRAS; MY PROFILE opens the original tree)
   };
   // What the open menu shows: its rows, the EXTRAS list, or a screen opened
   // from a row.
@@ -86,7 +87,7 @@ struct PauseMenu {
   // The engine's own screens (EXTRAS).
   std::vector<Action> extras() const {
     if (in_race) return {kReplay, kDifficulty, kSettings};
-    return {kEvents, kRally, kGarage, kUpgrades, kPaint, kAutoshow, kClub, kCarClub, kAchievements, kReplay};
+    return {kEvents, kRally, kGarage, kUpgrades, kPaint, kAutoshow, kCareerPage, kClub, kCarClub, kAchievements, kReplay};
   }
   std::vector<Action> rows() const { return screen == Screen::kExtras ? extras() : items(); }
   Action selected_action() const {

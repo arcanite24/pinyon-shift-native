@@ -594,8 +594,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                       if (kind == race::FestivalSite::kRaceCentral) {
                         if (!collect_next_wristband()) open_events_browser(0);
                       } else if (kind == race::FestivalSite::kAutoshow) open_shop_or_autoshow(true);
-                      else if (kind == race::FestivalSite::kWorkshop) open_shop_or_autoshow(false);
-                      else if (kind == race::FestivalSite::kPaintShop) open_paint();
+                      else if (kind == race::FestivalSite::kWorkshop) open_hub_menu(carview::HubMenu::kWorkshop);
+                      else if (kind == race::FestivalSite::kPaintShop) open_hub_menu(carview::HubMenu::kPaintBooth);
                       return;
                     }
                     if (app.race != nullptr) {
@@ -941,7 +941,7 @@ bool DriveSession::handle_events_and_outpost_event(const SDL_Event& e) {
                     if (const auto* st = app.outposts.find_stunt(item.ref_id)) start_pr_stunt(*st);
                     break;
                   case OutpostHubItem::kGarage:
-                    open_garage_browser();
+                    open_garage_browser(false);
                     break;
                   case OutpostHubItem::kNearbyEvents:
                     open_events_browser(0);

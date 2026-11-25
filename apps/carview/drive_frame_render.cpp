@@ -70,7 +70,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           const bool exterior_ui_open =
               !app.show_title && !app.fmv_player.active() &&
               (autoshow.is_open() || shop.is_open() || paint_open || garage_open || events_page.is_open() ||
-               map_open || achievements.screen_open() || career_page.is_open() || outpost_hub_open ||
+               map_open || achievements.screen_open() || career_page.is_open() || hub_menu.open() || outpost_hub_open ||
                app.rally_hub_open || app.rally_service_open);
           const bool pause_snapshot_active =
               !app.show_title && !app.fmv_player.active() &&

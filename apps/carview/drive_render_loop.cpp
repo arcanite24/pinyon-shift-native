@@ -594,7 +594,7 @@ void DriveSession::run_window_loop() {
           const bool menu_paused = app.show_title || app.fmv_player.active() || loading_screen.active() || ceremony.active ||
                                    campaign_paused || grid_menu_open || menu.open ||
                                    map_open || events_page.is_open() || event_summary_open() || outpost_hub_open ||
-                                   garage_open || shop.is_open() || autoshow.is_open() || career_page.is_open() ||
+                                   garage_open || shop.is_open() || autoshow.is_open() || career_page.is_open() || hub_menu.open() ||
                                    settings_page.is_open() || paint_open || club_open || car_club_open || app.rally_hub_open ||
                                    app.rally_service_open || app.rally_results_open || photo_mode.active() ||
                                    replay_viewer.active() || replay_viewer.browser_open() || achievements.screen_open() ||

@@ -420,6 +420,7 @@ StringRef pause_row_text(PauseMenu::Action a, bool in_race) {
     case Action::kClub: return {{}, {}, 0, "1000 CLUB", true};
     case Action::kCarClub: return {{}, {}, 0, "CAR CLUB", true};
     case Action::kAchievements: return {{}, {}, 0, "ACHIEVEMENTS", true};
+    case Action::kCareerPage: return {{}, {}, 0, "CAREER", true};
     case Action::kReplay: return {{}, {}, 0, in_race ? "VIEW REPLAY" : "REPLAYS", true};
     case Action::kReset: return {{}, {}, 0, "RESET TO ROAD", true};
     case Action::kDifficulty: return {{}, {}, 0, "DIFFICULTY", true};

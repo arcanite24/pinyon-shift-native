@@ -105,6 +105,14 @@ inline constexpr GridRow kGridRows[] = {GridRow::kStartRace, GridRow::kDifficult
                                         GridRow::kQuitRace};
 StringRef grid_row_text(GridRow r);
 
+// Binds a menu scene's Option_List rows (H_GENERIC_TITLE's Menu and
+// H_GENERIC share it): each row's text with its tapes cut to it, the
+// selected row pink with its clip-on and one size step larger, rows past the
+// list hidden, and a ui::kHitRow hit zone per row. The list sits at the
+// offset measured on 13_prerace_menu_orig.png (race_layout::kMenuDx/Dy).
+void bind_menu_rows(SceneScreen& sc, ui::List& l, const SceneFrame& f, const std::vector<std::string>& rows,
+                    int selected, float extra_dy = 0.0f);
+
 // The event summary at a marker (H_EVENT_SUMMARY).
 struct EventSummaryHud {
   int style = 1;           // CareerEvent::style
