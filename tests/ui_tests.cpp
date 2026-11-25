@@ -414,13 +414,83 @@ void test_scene_turn_and_dial_scale() {
   CHECK(carview::hud_clock(-1) == "00:00.000");
 }
 
+// The front end's model (title_menu.h): Press Start, the profile step, the
+// original's two rows and the engine's EXTRAS.
+void test_title_menu_model() {
+  using M = carview::TitleMenu;
+  M m;
+  CHECK(m.phase == M::Phase::kPressStart && m.rows().empty() && !m.menu_visible());
+  CHECK(m.move(1).cue == M::Cue::kNone);
+  // Press Start: the profile step, then the menu.
+  auto st = m.confirm();
+  CHECK(st.cue == M::Cue::kAccept && st.action == M::Action::kNone && m.phase == M::Phase::kProfile);
+  CHECK(m.confirm().cue == M::Cue::kNone && m.back().cue == M::Cue::kNone);
+  m.update(M::kProfileSeconds * 0.5);
+  CHECK(m.phase == M::Phase::kProfile);
+  m.update(M::kProfileSeconds);
+  CHECK(m.phase == M::Phase::kMenu && m.popup == M::Popup::kNone);
+  // SINGLE PLAYER and MULTIPLAYER, wrapping.
+  CHECK(m.rows().size() == 2 && m.rows()[0] == M::Row::kSinglePlayer && m.rows()[1] == M::Row::kMultiplayer);
+  CHECK(m.move(1).cue == M::Cue::kMove && m.selected_row() == M::Row::kMultiplayer);
+  m.move(1);
+  CHECK(m.selected == 0);
+  m.move(-1);
+  // MULTIPLAYER offline: NO NETWORK ACCESS; A closes it and leaves the row.
+  st = m.confirm();
+  CHECK(st.cue == M::Cue::kDeny && st.action == M::Action::kNone && m.popup == M::Popup::kNoNetwork);
+  CHECK(m.move(1).cue == M::Cue::kNone && m.selected == 1);
+  CHECK(m.confirm().action == M::Action::kNone && m.popup == M::Popup::kNone && m.selected == 1);
+  // SINGLE PLAYER: the first-time career without a played save, else continue.
+  m.move(1);
+  CHECK(m.confirm().action == M::Action::kStartCareer);
+  m.has_save = true;
+  CHECK(m.confirm().action == M::Action::kContinueCareer);
+  // EXTRAS (X): the engine's rows; B back keeps the menu row.
+  m.move(1);
+  CHECK(m.open_extras().cue == M::Cue::kAccept && m.phase == M::Phase::kExtras && m.selected == 0);
+  CHECK(m.rows().size() == 4 && m.rows()[0] == M::Row::kNewCareer && m.rows()[3] == M::Row::kQuit);
+  CHECK(m.open_extras().cue == M::Cue::kNone);
+  // NEW CAREER over a save asks first; B NO closes, A YES starts it.
+  CHECK(m.confirm().action == M::Action::kNone && m.popup == M::Popup::kConfirmNewCareer);
+  CHECK(m.back().cue == M::Cue::kBack && m.popup == M::Popup::kNone && m.phase == M::Phase::kExtras);
+  m.confirm();
+  CHECK(m.confirm().action == M::Action::kNewCareer && m.popup == M::Popup::kNone);
+  m.move(1);
+  CHECK(m.confirm().action == M::Action::kFreeRoam);
+  m.move(1);
+  CHECK(m.confirm().action == M::Action::kSettings);
+  m.move(1);
+  CHECK(m.confirm().action == M::Action::kQuit);
+  CHECK(m.hover(1).cue == M::Cue::kMove && m.selected == 1 && m.hover(1).cue == M::Cue::kNone);
+  CHECK(m.hover(9).cue == M::Cue::kNone);
+  CHECK(m.back().cue == M::Cue::kBack && m.phase == M::Phase::kMenu && m.selected == 1);
+  // B on the menu goes back to Press Start; B there quits (PC).
+  CHECK(m.back().cue == M::Cue::kBack && m.phase == M::Phase::kPressStart);
+  CHECK(m.back().action == M::Action::kQuit);
+  // No played save: NEW CAREER starts without asking.
+  M n;
+  n.show_menu();
+  n.open_extras();
+  CHECK(n.confirm().action == M::Action::kNewCareer && n.popup == M::Popup::kNone);
+  // A save that did not read: INVALID PROFILE once the menu shows.
+  M p;
+  p.profile_error = true;
+  p.confirm();
+  p.update(M::kProfileSeconds + 0.01);
+  CHECK(p.phase == M::Phase::kMenu && p.popup == M::Popup::kProfileCorrupt);
+  CHECK(p.confirm().action == M::Action::kNone && p.popup == M::Popup::kNone);
+}
+
 void test_hud_overlays() {
   // TitleScreenHud confirm_new_career
   {
     carview::TitleScreenHud ts;
-    ts.active = true, ts.menu_phase = true, ts.has_save = true;
-    ts.confirm_new_career = true, ts.confirm_selected = 0;
-    ts.menu = {"CONTINUE CAREER", "NEW CAREER", "FREE ROAM", "SETTINGS", "QUIT"};
+    ts.active = true;
+    ts.menu.has_save = true;
+    ts.menu.show_menu();
+    ts.menu.open_extras();
+    ts.menu.confirm();  // EXTRAS > NEW CAREER over a save: the confirm popup
+    CHECK(ts.menu.popup == carview::TitleMenu::Popup::kConfirmNewCareer);
     carview::DriveHud d;
     d.title_screen = &ts, d.time = 1.0;
     check_hud_screen(d);
@@ -694,13 +764,14 @@ int main() {
   };
   {
     carview::TitleScreenHud ts;
-    ts.active = true, ts.menu_phase = false;
+    ts.active = true;
     carview::DriveHud d;
     d.title_screen = &ts, d.time = 1.0;
     check_screen(d);
-    ts.menu_phase = true, ts.has_save = true;
-    ts.menu = {"CONTINUE CAREER", "NEW CAREER", "FREE ROAM", "SETTINGS", "QUIT"};
-    ts.save_band_name = "YELLOW WRISTBAND", ts.save_car_name = "1995 Volkswagen Corrado VR6";
+    ts.menu.has_save = true;
+    ts.menu.show_menu();
+    check_screen(d);
+    ts.menu.open_extras();
     check_screen(d);
   }
   {
@@ -734,6 +805,7 @@ int main() {
   test_pause_menu();
   test_scene_screen_strings_and_cues();
   test_scene_turn_and_dial_scale();
+  test_title_menu_model();
   test_hud_overlays();
   test_world_trigger();
 

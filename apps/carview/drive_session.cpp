@@ -590,7 +590,7 @@ void DriveSession::init_session() {
       }
       app.new_career_save_pending = false;
       FmvPlayer::set_subtitle_resolver(carview::game_text);
-      loading_screen.load_definitions(app.game_root_of(), app.race ? "festivalevent" : "freeroam", app.state_root);
+      loading_screen.load_definitions(app.game_root_of(), app.loading_group(), app.state_root);
       settings_page.set_available_luts(scan_lut_files(carview::settings_path().parent_path()));
       slice12.save_tree_label = (app.slice12_modded_save || app.mods_session.isolation().isolated) ? "user-modded" : "user";
       boot_live_settings = {};
@@ -1005,6 +1005,7 @@ void DriveSession::finalize_session(bool& session_again) {
             app.race->release_models();
             app.race.reset();
             app.race_event.clear();
+            app.loading_out_of_event = true;
             std::printf("race: left for free roam\n");
           }
           if (!app.pre_loaner_car.empty()) {

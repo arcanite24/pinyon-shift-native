@@ -188,7 +188,7 @@ void DriveSession::poll_sdl_events() {
                 SDL_GetWindowSize(app.window, &live_win_w, &live_win_h);
               }
               const bool touch_menu_open =
-                  app.show_title || app.title_menu_phase || app.fmv_player.active() || ceremony.active || grid_menu_open ||
+                  app.show_title || app.fmv_player.active() || ceremony.active || grid_menu_open ||
                   menu.open || map_open || picking || events_page.is_open() || outpost_hub_open || garage_open ||
                   shop.is_open() || autoshow.is_open() || career_page.is_open() || settings_page.is_open() ||
                   paint_open || club_open || car_club_open || app.rally_hub_open || app.rally_service_open || app.rally_results_open ||
@@ -517,7 +517,7 @@ void DriveSession::poll_sdl_events() {
   const bool livery_non_vinyl_open =
       paint_open && (!livery_editor.is_open() || livery_editor.catalog_open() ||
                      livery_editor.tab() != carview::EditorTab::kVinylLayers);
-  const bool title_nav_open = app.show_title && !settings_page.is_open() && (app.title_menu_phase || app.title_confirm_new);
+  const bool title_nav_open = app.show_title && !settings_page.is_open() && app.title.menu_visible();
   const bool blocking_video_or_map =
       app.fmv_player.active() || loading_screen.active() || map_open ||
       (photo_mode.active() && !photo_mode.gallery_open()) || rewind_buf.active();

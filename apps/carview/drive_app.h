@@ -105,6 +105,7 @@ struct DriveApp : DriveConfig {
   SaveSession save_session;
   drive::DriveSave saved;
   bool have_saved = false;
+  bool save_read_error = false;  // a save is there but did not read (INVALID PROFILE)
   std::filesystem::path state_root;
   std::shared_future<std::shared_ptr<cars::PartsDb>> parts_db;
   std::shared_ptr<race::CarNames> car_names = std::make_shared<race::CarNames>();
@@ -137,9 +138,9 @@ struct DriveApp : DriveConfig {
   bool pending_autoshow_open = false;
   bool campaign_owns_post_race = false;
   bool boot_intro_checked = false;
-  bool title_menu_phase = false;
-  bool title_confirm_new = false;
-  int title_selected = 0, title_confirm_selected = 1;
+  // The front end: Press Start, the profile step, SINGLE PLAYER / MULTIPLAYER
+  // and the engine's EXTRAS (title_menu.h).
+  carview::TitleMenu title;
   bool new_career_save_pending = false;
   std::string pre_loaner_car;
   int64_t pre_loaner_garage_id = 0;
@@ -207,6 +208,9 @@ struct DriveApp : DriveConfig {
   std::string next_event;
   std::string next_event_fallback;
   bool leave_race = false;
+  // The next world load is out of an event (its load screen holds
+  // LoadingScreen::kEventMinSeconds, as the original's does).
+  bool loading_out_of_event = false;
   // The next race is a restart (PreRace_restart: the grid menu only).
   bool race_restart = false;
   // The car chosen on the event's car select (STAY IN CAR? after the race).
@@ -292,6 +296,13 @@ struct DriveApp : DriveConfig {
   void snap_to_event_tod(const std::string& id);
   bool start_race(const std::string& id, std::string& why);
   int current_pop_rank() const;
+  // The LoadingDefs.xml group of a load now: the race's (its festival_N,
+  // streetrace, ...) or free roam's.
+  std::string loading_group() const;
+  // A played career in the save (SINGLE PLAYER continues it).
+  bool played_career() const {
+    return have_saved && (saved.career_started || saved.owned_garage || career.num_races > 0 || career.credits > 0);
+  }
   std::vector<std::string> class_name_list() const;
   // `upgrade_class` >= 0: the car arrives upgraded to that CarClasses.Id
   // at no cost (Rewards_EventPrizes.RewardCarUpgradeClass).

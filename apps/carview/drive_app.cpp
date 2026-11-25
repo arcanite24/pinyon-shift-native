@@ -14,6 +14,7 @@
 #include "drive/from_bake.h"
 #include "drive/from_physics.h"
 #include "drive_helpers.h"
+#include "frontend_screens.h"
 #include "gamepad_db.h"
 #include "profile/drive_save.h"
 #include "race/difficulty.h"
@@ -127,6 +128,12 @@ bool DriveApp::start_race(const std::string& id, std::string& why) {
 }
 
 int DriveApp::current_pop_rank() const { return skill_tracker ? skill_tracker->popularity_rank() : 250; }
+
+std::string DriveApp::loading_group() const {
+  if (!race) return "freeroam";
+  const race::CareerEvent* ev = have_career_catalog ? career_catalog.find_event(race_event) : nullptr;
+  return ev ? loading_group_for_event(ev->style, ev->level) : std::string("festivalevent");
+}
 
 std::vector<std::string> DriveApp::class_name_list() const {
     std::vector<std::string> out;
@@ -350,7 +357,8 @@ bool DriveApp::init(int& exit_code) {
   if (!save_path.empty()) {
     std::string e;
     have_saved = drive::read_save(save_path, saved, &e);
-    if (!have_saved && !e.empty()) std::fprintf(stderr, "carview: note: save ignored: %s\n", e.c_str());
+    save_read_error = !have_saved && !e.empty();
+    if (save_read_error) std::fprintf(stderr, "carview: note: save ignored: %s\n", e.c_str());
   }
   auto resolve_colorado_dir = [](const std::filesystem::path& root) -> std::filesystem::path {
     if (root.empty()) return {};
@@ -698,7 +706,9 @@ bool DriveApp::init(int& exit_code) {
                 saved.popularity_points, saved_pop_rank, saved.collected_wristband, saved.unlocked_bosses.size(),
                 saved.unlocked_showcases.size(), saved.finale_complete ? "won" : "open");
   if (have_saved) campaign.load_from_save(saved, saved_pop_rank);
-  title_menu_phase = cli_title_menu;
+  title.reset();
+  if (cli_title_menu) title.show_menu();
+  title.profile_error = save_read_error;
   if (!race_event.empty()) {
     if (world_dir.empty()) {
       std::fprintf(stderr, "carview: --event needs the world (--world)\n");

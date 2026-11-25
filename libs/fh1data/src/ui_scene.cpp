@@ -840,6 +840,8 @@ std::string UiFontMap::resolve(std::string_view font_name) const {
 bool parse_loading_defs_xml(std::string_view xml, std::vector<UiLoadingTip>& out) {
   out.clear();
   std::string cur_group = "freeroam";
+  int cur_count = 1;
+  bool cur_sequential = false;
   size_t pos = 0;
   while (pos < xml.size()) {
     const size_t lt = xml.find('<', pos);
@@ -856,9 +858,14 @@ bool parse_loading_defs_xml(std::string_view xml, std::vector<UiLoadingTip>& out
     if (tag.rfind("<LoadingGroup", 0) == 0) {
       std::string nm;
       if (extract_xml_attr(tag, "name", nm) && !nm.empty()) cur_group = to_lower_ascii(nm);
+      std::string count_s, order_s;
+      cur_count = extract_xml_attr(tag, "tipcount", count_s) ? std::max(1, std::atoi(count_s.c_str())) : 1;
+      cur_sequential = extract_xml_attr(tag, "order", order_s) && to_lower_ascii(order_s) == "sequential";
     } else if (tag.rfind("<Tip", 0) == 0 && (tag.size() == 4 || tag[4] == ' ' || tag[4] == '\t')) {
       UiLoadingTip tip;
       tip.group = cur_group;
+      tip.group_tip_count = cur_count;
+      tip.group_sequential = cur_sequential;
       extract_xml_attr(tag, "title", tip.title_key);
       extract_xml_attr(tag, "message", tip.message_key);
       std::string lay_s, dt_s;

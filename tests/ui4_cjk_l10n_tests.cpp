@@ -152,8 +152,8 @@ void test_synthetic_cjk_and_widgets() {
   ls.set_tips({"Tip A", "Tip B"});
   ls.set_progress(0.65f);
   check(ls.active() && ls.current_tip() == "Tip A", "LoadingScreen starts on Tip A");
-  ls.update(5.2);
-  check(ls.current_tip() == "Tip B", "LoadingScreen cycles to Tip B after 5s");
+  ls.update(8.2);
+  check(ls.current_tip() == "Tip B", "LoadingScreen cycles to Tip B after its 8 s displaytime");
   carview::ui::List ll;
   ls.draw(ll, 640.0f, 360.0f);
   check(!ll.empty(), "LoadingScreen::draw emits UI items");

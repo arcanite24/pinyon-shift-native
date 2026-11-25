@@ -85,40 +85,67 @@ bool looks_like_raw_key(std::string_view s);
 
 // ------------------------------------------------ Animated Loading Screen
 
+// The original's load screen (2_C_INI_LOADING, frontend_screens.h): a tip
+// card from one LoadingDefs.xml group (its `tipcount` tips, picked at random
+// or in file order, each held its `displaytime`), PLEASE WAIT and the
+// spinner; no progress bar. On event loads the event's name (an engine
+// request) on the scene's big pink title.
 class LoadingScreen {
  public:
   static constexpr double kFadeInSec = 0.25;
   static constexpr double kFadeOutSec = 0.25;
+  // The original's shortest loads: from the title into free roam, and into
+  // and out of an event (fast travel has none).
+  static constexpr double kTitleMinSeconds = 1.0;
+  static constexpr double kEventMinSeconds = 3.0;
+  // A tip's hold when its group gives none (LoadingDefs.xml's displaytime).
+  static constexpr double kDefaultTipSeconds = 8.0;
 
-  void start(std::string destination_title, std::string subtitle = {});
+  // `event_title`: the event's name on event loads, else empty. `subtitle`
+  // is kept for the stand-in drawing when the scene is missing.
+  void start(std::string event_title = {}, std::string subtitle = {});
   void stop();
   bool active() const { return active_; }
   bool fading_out() const { return fading_out_; }
   bool visible() const { return active_ || fading_out_; }
   float veil_alpha() const;
 
-  // Loads categorized tips from media/ui/LoadingDefs.xml (the title update's
+  // Loads `group`'s tips from media/ui/LoadingDefs.xml (the title update's
   // copy in <state_root>/title-update-v4/media.zip first; resolving Tips:IDS_*
-  // through game_text() / string tables when available) and selects matching
-  // LOADING/BGLOADINGIMAGES/* & LOADING/TIPIMAGES/* assets.
+  // through game_text()) and picks this load's: the group's `tipcount`, at
+  // random or, for `order="sequential"`, the next ones in file order (kept
+  // across loads). A missing group falls back to freeroam's.
   bool load_definitions(const std::filesystem::path& game_root, const std::string& group = "freeroam",
                         const std::filesystem::path& state_root = {});
   void set_group(const std::string& group) { group_ = group; }
   const std::string& group() const { return group_; }
   void set_bg_index(int idx) { bg_idx_ = idx; }
+  // Replaces the tips (engine tips, tests), each held kDefaultTipSeconds.
   void set_tips(std::vector<std::string> tips);
+  // The random picks' seed (tests); a fresh seed otherwise.
+  void set_seed(uint32_t seed) { rng_ = seed ? seed : 1u; }
+  // Kept for callers; the original's screen shows no progress.
   void set_progress(float p);
   void update(double dt);
 
   float progress() const { return progress_; }
   double elapsed() const { return elapsed_; }
   int tip_index() const { return tip_idx_; }
+  int tip_count() const { return int(tips_.size()); }
   const std::string& current_tip() const;
   const std::string& current_tip_title() const;
+  const std::string& event_title() const { return title_; }
 
   void draw(ui::List& l, float screen_w, float screen_h) const;
 
  private:
+  struct PoolTip {
+    std::string title, message;
+    double display_time = kDefaultTipSeconds;
+  };
+  void pick_tips();
+  uint32_t next_random();
+
   bool active_ = false;
   bool fading_out_ = false;
   double fade_out_elapsed_ = 0.0;
@@ -126,12 +153,20 @@ class LoadingScreen {
   std::string subtitle_;
   std::string group_ = "freeroam";
   int bg_idx_ = 1;  // 1..10 -> LOADING/BGLOADINGIMAGES/IMAGE<N>
+  // The group's tips and its tipcount / order.
+  std::vector<PoolTip> pool_;
+  int pool_tip_count_ = 1;
+  bool pool_sequential_ = false;
+  bool fresh_pick_ = false;  // load_definitions picked this load's tips; start() keeps them
+  // This load's tips.
   std::vector<std::string> tip_titles_;
   std::vector<std::string> tips_;
+  std::vector<double> tip_times_;
   int tip_idx_ = 0;
   double elapsed_ = 0.0;
   double tip_timer_ = 0.0;
   float progress_ = 0.0f;
+  uint32_t rng_ = 0;
 };
 
 // ------------------------------------------------ Virtual On-Screen Keyboard
