@@ -730,13 +730,56 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   shaped_.input_is_keyboard = raw.input_is_keyboard;
   handbrake_shaped_ = approach(handbrake_shaped_, raw.handbrake ? 1.0 : 0.0, p_.handbrake_rate, dt);
   if (raw.linear_steer) {
-    // 900-degree racing wheel: direct linear steering to full road-wheel lock,
-    // bypassing gamepad speed-sensitive narrowing and stick shaping.
+    // A racing wheel skips the pad filter and goes through the WheelMapping
+    // step (FEEL-15, Q70). The table is picked by the steering mode
+    // (Simulation or not) and the 900-degree option. Its values are the
+    // executable's built-in defaults; the shipped ini sets none of them.
     kb_steer_hold_time_ = 0.0;
     kb_steer_dir_ = 0.0;
     kb_steer_filtered_ = shaped_.steer;
-    steer_angle_ = shaped_.steer * p_.max_steer;
-    steer_ang_vel_ = 0.0;
+    struct WheelMap {
+      double speed0, speed1, scale0, scale1, input1, output1, countersteer_scale;
+    };
+    static constexpr WheelMap kMaps[4] = {
+        {0, 30, 1.0, 0.35, 0.14, 0.07, 1.0},  // WheelMapping
+        {0, 30, 1.0, 1.00, 0.14, 0.14, 1.5},  // WheelMapping900Degree
+        {0, 30, 1.0, 0.35, 0.14, 0.07, 1.0},  // WheelMappingSimSteer
+        {0, 30, 1.0, 1.00, 0.14, 0.14, 1.0},  // WheelMapping900DegreeSimSteer
+    };
+    const WheelMap& m = kMaps[(assists_.steering == 2 ? 2 : 0) + (raw.wheel_900 ? 1 : 0)];
+    // The input's magnitude maps piecewise-linearly through (0, 0),
+    // (NormSteerInput1, NormSteerOutput1) and (1, 1); the sign is kept.
+    const double in = shaped_.steer;
+    const double a = std::min(std::fabs(in), 1.0);
+    const double mapped = a < m.input1 ? a * m.output1 / m.input1
+                                       : lerp(m.output1, 1.0, (a - m.input1) / (1.0 - m.input1));
+    // The scale: 1 below 2 m/s forward, and while the wheel is turned back
+    // through centre; CounterSteerScale while countersteering; otherwise
+    // SteerScale0 to SteerScale1 over |velocity| from SteerSpeed0 to 1.
+    // Interim: the countersteer test is ours (the road wheels turned the
+    // way the rear slides, a mean rear slip above 0.5); the original's
+    // inputs to it are not decoded.
+    const double forward = rotate_inverse(rot_, vel_).z;
+    const double rear_sa = 0.5 * (w_[2].slip_angle + w_[3].slip_angle);
+    const bool countersteer = std::fabs(rear_sa) > 0.5 && steer_angle_ * rear_sa > 0;
+    const bool back_through_centre = (steer_angle_ > 0 && in <= 0) || (steer_angle_ < 0 && in >= 0) ||
+                                     (steer_angle_ == 0 && in == 0);
+    double scale = 1.0;
+    if (countersteer) {
+      if (forward > 2.0) scale = m.countersteer_scale;
+    } else if (forward >= 2.0 && !back_through_centre) {
+      const double lo = std::min(m.speed0, m.speed1), hi = std::max(m.speed0, m.speed1);
+      scale = lerp(m.scale0, m.scale1, std::clamp((length(vel_) - lo) / std::max(hi - lo, 1e-9), 0.0, 1.0));
+    }
+    // Interim: the lock is SteerMaxAngle; the original asks the steering
+    // model for it, and that call is not decoded.
+    const double lock = p_.max_steer;
+    const double target = std::clamp(lock * scale * (in < 0 ? -mapped : mapped), -lock, lock);
+    // The road wheels slew to the target at up to 4 pi rad/s.
+    constexpr double kWheelSlew = 4 * kPi;
+    const double delta = target - steer_angle_;
+    steer_ang_vel_ = dt > 0 ? std::clamp(delta / dt, -kWheelSlew, kWheelSlew) : 0.0;
+    steer_angle_ = dt > 0 ? steer_angle_ + steer_ang_vel_ * dt : target;
     return;
   }
   // The pad steering filter (SPEC-CAR-PHYSICS, Steering-at-speed filter and

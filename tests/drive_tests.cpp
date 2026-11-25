@@ -1499,6 +1499,33 @@ int main() {
     }
     CHECK(std::fabs(v_wheel.wheels()[0].steer) > std::fabs(v_pad.wheels()[0].steer) + 0.02);
 
+    // WheelMapping (Q70): the 900-degree table is linear to lock; the
+    // default table maps 0.5 to 0.07 + 0.36 x 0.93 / 0.86 and narrows to 0.35
+    // by 30 m/s; the road wheels slew at up to 4 pi rad/s.
+    {
+      drive::Vehicle v900(p), v_def(p), v_slow(p);
+      v900.launch({0, 0, 0}, 0.0, 45.0);
+      v_def.launch({0, 0, 0}, 0.0, 45.0);
+      drive::Input w900{0.5, 0.0, 0.0, false};
+      w900.linear_steer = true;
+      drive::Input wdef = w900;
+      wdef.wheel_900 = false;
+      v900.step(w900, flat_g);
+      v_def.step(wdef, flat_g);
+      const double first = v900.steer_angle();
+      CHECK(first > 0 && first <= 4 * 3.14159265358979 / 120.0 + 1e-6);  // one 120 Hz frame of slew
+      for (int i = 0; i < 30; ++i) {
+        v900.step(w900, flat_g);
+        v_def.step(wdef, flat_g);
+      }
+      const double mapped = 0.07 + (0.5 - 0.14) * 0.93 / 0.86;
+      CHECK(std::fabs(v900.steer_angle() - 0.5 * p.max_steer) < 0.01);
+      CHECK(std::fabs(v_def.steer_angle() - 0.35 * mapped * p.max_steer) < 0.01);
+      // Standing still, the default table does not narrow.
+      for (int i = 0; i < 60; ++i) v_slow.step(wdef, flat_g);
+      CHECK(std::fabs(v_slow.steer_angle() - mapped * p.max_steer) < 0.01);
+    }
+
     // Handbrake on RWD disconnects clutch so the engine does not fight locked rear wheels.
     drive::Vehicle v_hb(p);
     v_hb.launch({0, 0, 0}, 0.0, 20.0);

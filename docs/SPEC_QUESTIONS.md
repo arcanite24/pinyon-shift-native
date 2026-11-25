@@ -2104,11 +2104,51 @@ are WheelMapSteerSpeed0/1, SteerScale0/1, NormSteerInput1/Output1 and
 CounterSteerScale. None of these keys are in the shipped ini, so their
 values are the executable's built-in defaults, which are not game files.
 
-Engine interim: the wheel maps linearly to full lock (steer x
+~~Engine interim: the wheel maps linearly to full lock (steer x
 SteerMaxAngle) with no rate limit, as before. Needed: the WheelMapping
 law and its default values from a decode of the settings constructor,
-or a wheel trace. The values would then come from the executable rather
-than from data.
+or a wheel trace.~~ Superseded by the decode below (2026-11-25).
+
+**Decoded (2026-11-25).** The settings constructor's defaults:
+
+| Table | SteerSpeed0/1 (m/s) | SteerScale0/1 | NormSteerInput1 / Output1 | CounterSteerScale |
+|---|---|---|---|---|
+| WheelMapping | 0 / 30 | 1.0 / 0.35 | 0.14 / 0.07 | 1.0 |
+| WheelMapping900Degree | 0 / 30 | 1.0 / 1.0 | 0.14 / 0.14 | 1.5 |
+| WheelMappingSimSteer | 0 / 30 | 1.0 / 0.35 | 0.14 / 0.07 | 1.0 |
+| WheelMapping900DegreeSimSteer | 0 / 30 | 1.0 / 1.0 | 0.14 / 0.14 | 1.0 |
+
+The table is the SimSteer pair in Simulation steering, otherwise the
+plain pair, and the 900Degree one of the pair when the 900-degree
+option is on. The law, each frame:
+
+- **The input.** Its magnitude maps piecewise-linearly through (0, 0),
+  (NormSteerInput1, NormSteerOutput1) and (1, 1); the sign is kept.
+- **The scale.** It is 1 below 2 m/s forward speed, and 1 while the
+  input is at or across centre from the road wheels' current angle. It
+  is CounterSteerScale in a countersteer state above 2 m/s. Otherwise
+  it runs from SteerScale0 to SteerScale1 as |velocity| goes from
+  SteerSpeed0 to SteerSpeed1 (m/s; the same speed field the pad filter
+  reads).
+- **The target.** It is the steering model's lock x the scale x the
+  mapped input, clamped to +-lock.
+- **The slew.** The road wheels move to the target at up to 4 pi rad/s.
+
+So a 900-degree wheel is linear to lock with a 1.5 countersteer scale,
+and a wheel with the option off has a soft centre (0.14 in gives 0.07
+out) and narrows to 0.35 of lock by 30 m/s.
+
+The engine now runs this law (`Input::wheel_900`, on by default; the
+carview wheel path does not yet pass its 900-degree setting). Interim:
+
+- **The lock.** It is SteerMaxAngle. The original asks the steering
+  model for it through a virtual call that is not decoded.
+- **The countersteer state.** It is ours: the road wheels turned the way
+  the rear slides, with a mean rear slip above 0.5. The original tests
+  the sign of the road wheels' angle against two car fields that are not
+  identified.
+
+Needed: the steering model's lock call and the two countersteer fields.
 
 ## Q71 (FEEL-12, not blocking): new-profile assists and the presets
 
