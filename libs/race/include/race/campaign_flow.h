@@ -263,10 +263,14 @@ struct TransitionState {
   double duration_s = 0.55;
   bool active = false;
   bool midpoint_fired = false;
+  double peak = 0.5;  // share of duration_s spent covering (the midpoint)
   std::string label;  // optional transition title strip (e.g. "HORIZON FESTIVAL")
 
   void start(TransitionKind k, double duration = 0.55, std::string text = {});
-  // Returns true on the single frame that crosses the midpoint (t >= 0.5).
+  // Covers over `fade_out` s, then uncovers over `fade_in` s (the reset's
+  // FadeOutTime / FadeInTime).
+  void start_split(TransitionKind k, double fade_out, double fade_in, std::string text = {});
+  // Returns true on the single frame that crosses the midpoint (t >= peak).
   bool update(double dt);
   // [0..1] overall progress.
   double progress() const;

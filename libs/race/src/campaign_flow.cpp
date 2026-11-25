@@ -672,14 +672,22 @@ void TransitionState::start(TransitionKind k, double duration, std::string text)
   elapsed_s = 0.0;
   active = (k != TransitionKind::kNone);
   midpoint_fired = false;
+  peak = 0.5;
   label = std::move(text);
+}
+
+void TransitionState::start_split(TransitionKind k, double fade_out, double fade_in, std::string text) {
+  fade_out = std::max(0.0, fade_out);
+  fade_in = std::max(0.0, fade_in);
+  start(k, fade_out + fade_in, std::move(text));
+  if (fade_out + fade_in > 1e-6) peak = std::clamp(fade_out / (fade_out + fade_in), 0.05, 0.95);
 }
 
 bool TransitionState::update(double dt) {
   if (!active) return false;
   elapsed_s += std::max(0.0, dt);
   bool crossed = false;
-  if (!midpoint_fired && elapsed_s >= duration_s * 0.5) {
+  if (!midpoint_fired && elapsed_s >= duration_s * peak) {
     midpoint_fired = true;
     crossed = true;
   }
@@ -698,8 +706,8 @@ double TransitionState::progress() const {
 float TransitionState::cover_alpha() const {
   if (!active) return 0.0f;
   const double p = progress();
-  if (p <= 0.5) return float(ease_in_out_cubic(p * 2.0));
-  return float(ease_in_out_cubic((1.0 - p) * 2.0));
+  if (p <= peak) return float(ease_in_out_cubic(p / peak));
+  return float(ease_in_out_cubic((1.0 - p) / (1.0 - peak)));
 }
 
 float TransitionState::wipe_edge() const {

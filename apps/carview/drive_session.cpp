@@ -576,6 +576,14 @@ void DriveSession::init_session() {
         safe_reset_ok = safe_reset.open(app.game_root_of(), &why);
         if (!safe_reset_ok) std::fprintf(stderr, "carview: note: reset on the nearest road triangle (%s)\n", why.c_str());
       }
+      {
+        // The reset's fade and collision timings (GameTunableSettings.ini
+        // [HandOfGodReset]); a missing key keeps the file's own value.
+        std::string why;
+        if (!race::load_hand_of_god_reset(app.game_root_of(), reset_timing, &why))
+          std::fprintf(stderr, "carview: note: [HandOfGodReset] not read (%s): its values as fallbacks\n", why.c_str());
+        for (const auto& k : reset_timing.missing) std::fprintf(stderr, "carview: note: no %s\n", k.c_str());
+      }
       if (!app.contacts_log_path.empty()) {
         contact_log.f = std::fopen(app.contacts_log_path.string().c_str(), "w");
         if (!contact_log.f) std::fprintf(stderr, "carview: cannot write %s\n", app.contacts_log_path.string().c_str());

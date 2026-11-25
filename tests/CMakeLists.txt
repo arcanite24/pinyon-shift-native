@@ -134,6 +134,11 @@ add_executable(race_tests race_tests.cpp)
 target_link_libraries(race_tests PRIVATE shift_race)
 add_test(NAME race_tests COMMAND race_tests)
 
+add_executable(reset_rules_corpus_tests reset_rules_corpus_tests.cpp)
+target_link_libraries(reset_rules_corpus_tests PRIVATE shift_race)
+add_test(NAME reset_rules_corpus_tests COMMAND reset_rules_corpus_tests)
+set_tests_properties(reset_rules_corpus_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
+
 add_executable(rally_tests rally_tests.cpp)
 target_link_libraries(rally_tests PRIVATE shift_race shift_garage shift_audio shift_data shift_drive)
 add_test(NAME rally_tests COMMAND rally_tests)

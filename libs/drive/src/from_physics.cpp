@@ -485,7 +485,17 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.tcs_fric_diff = s.get("TCSFullEffectFricDiff", p.tcs_fric_diff);
   p.tcs_yaw_min_deg = s.get("YawMinAngleForTCS", p.tcs_yaw_min_deg);
   p.tcs_yaw_max_deg = s.get("YawMaxAngleForTCS", p.tcs_yaw_max_deg);
+  // FEEL-10: the car's own TCS slip targets (SPEC-CAR-PHYSICS, Traction
+  // control: S_base), gamedb Data_Car.AssistsTCSSlipDefTakeoff below the
+  // speed threshold and Data_Car.AssistsTCSSlipDefMoving above it.
+  p.tcs_slip_takeoff = get("Data_Car.AssistsTCSSlipDefTakeoff", p.tcs_slip_takeoff);
+  p.tcs_slip_moving = get("Data_Car.AssistsTCSSlipDefMoving", p.tcs_slip_moving);
   p.stm_speed_mph = s.get("StabilityManageSpeed", p.stm_speed_mph);
+  // The car's STM trigger window (SPEC-CAR-PHYSICS, Stability control:
+  // [STMSlipMin, STMSlipMax] for the player), gamedb AutoSteerOverrides
+  // row Data_Car.AutoSteerOverrideID.
+  p.stm_slip_min = get("AutoSteerOverrides.STMSlipMin", p.stm_slip_min);
+  p.stm_slip_max = get("AutoSteerOverrides.STMSlipMax", p.stm_slip_max);
   p.clutch_pedal_dead = s.get("ClutchPedalDistBeforeTorqueStarts", p.clutch_pedal_dead);
   p.clutch_torque_exp = s.get("ClutchTorqueCurveExponent", p.clutch_torque_exp);
   p.clutch_max_vel = s.get("ClutchMaxVel", p.clutch_max_vel);
@@ -820,6 +830,15 @@ CarParams params_for_car_text(const cars::bake::CarInfo& car, const std::string&
   if (!cars::physics_from_text(text, rows, settings, &error)) {
     if (notes) notes->push_back(error + ": the synthetic car's physics");
     return p;
+  }
+  // Bakes written before the AutoSteerOverrides row was joined lack the
+  // car's STM window: take that row from the disc's database.
+  if (!rows.has("AutoSteerOverrides.STMSlipMin") && rows.has("Data_Car.AutoSteerOverrideID")) {
+    cars::CarPhysics disc;
+    cars::PhysicsSettings unused;
+    if (load_disc_car_physics(car.car_id, car.media_name, disc, unused, nullptr))
+      for (const auto& [k, v] : disc.values)
+        if (k.rfind("AutoSteerOverrides.", 0) == 0) rows.values[k] = v;
   }
   apply_physics(rows, settings, p, notes);
   return p;

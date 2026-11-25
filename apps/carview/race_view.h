@@ -26,6 +26,7 @@
 #include "race/race_line.h"
 #include "race/rally.h"
 #include "race/rally_codriver.h"
+#include "race/reset_rules.h"
 #include "race/rewards.h"
 #include "race/rivals.h"
 #include "race/route.h"
@@ -353,6 +354,7 @@ class RaceView {
   double wrong_way_ = 0;  // s the player has driven against the line (ours)
   bool circuit_ = true;
   bool street_ = false;                   // a line built along the road map (no AI line)
+  race::HandOfGodReset hand_of_god_;      // GameTunableSettings.ini [HandOfGodReset]
   bool stage_ = false;                    // a Rally stage (Options::stage_world)
   // The stage's track row, the field's times and the player's splits
   // (SPEC-V4-CONTENT; race/rally.h).

@@ -618,8 +618,10 @@ bool DriveSession::step(const drive::Input& user_in) {
           }
         }
         g_rewind_guard.last_sim_time = vehicle.time();
-        // PT-31: Retail FH1 smooth Reset-to-Road UX (~0.25 s fade-out -> safe centerline
-        // reposition with zero velocity & camera re-center -> ~0.30 s fade-in + 2.5 s ghosting).
+        // Reset-to-Road UX (GameTunableSettings.ini [HandOfGodReset]): FadeOutTime
+        // fade-out -> safe centerline reposition with zero velocity & camera
+        // re-center -> FadeInTime fade-in; no car contact for CollisionsOffTime
+        // into the fade-out and PostResetNonCollideTime after the reposition.
         auto begin_smooth_reset = [&](const drive::Vehicle::Pose& pre_pose, const drive::Vehicle::Pose& tgt_pose,
                                       std::string msg) {
           reset_ux.target_pose = tgt_pose;
@@ -633,8 +635,9 @@ bool DriveSession::step(const drive::Input& user_in) {
           drawn_before = pre_pose;
           rig.clear_pending_restart();
           if (!app.campaign.flow().transition().active) {
-            app.campaign.flow().transition().start(race::TransitionKind::kCrossFade,
-                                                   ResetToRoadState::kFadeOutSec + ResetToRoadState::kFadeInSec);
+            // Fully covered at the reposition (FadeOutTime), uncovered over FadeInTime.
+            app.campaign.flow().transition().start_split(race::TransitionKind::kCrossFade, reset_timing.fade_out,
+                                                         reset_timing.fade_in);
           }
         };
         if (rig.restart_count() != reset_ux.seen_rig_restarts) {
@@ -662,7 +665,7 @@ bool DriveSession::step(const drive::Input& user_in) {
           const drive::Vec3 v_cur = vehicle.velocity();
           const drive::Vec3 a_cur = vehicle.angular_velocity();
           vehicle.set_velocity(v_cur * damp, a_cur * damp);
-          if (reset_ux.elapsed_s >= ResetToRoadState::kFadeOutSec) {
+          if (reset_ux.elapsed_s >= reset_timing.fade_out) {
             if (reset_ux.has_target_pose) {
               vehicle.set_pose(reset_ux.target_pose);
               vehicle.set_velocity({0.0, 0.0, 0.0}, {0.0, 0.0, 0.0});
@@ -677,7 +680,7 @@ bool DriveSession::step(const drive::Input& user_in) {
             reset_ux.has_target_pose = false;
             reset_ux.phase = ResetToRoadState::Phase::kFadeIn;
             reset_ux.elapsed_s = 0.0;
-            reset_ux.ghost_remaining_s = ResetToRoadState::kGhostSec;
+            reset_ux.ghost_remaining_s = reset_timing.post_reset_non_collide;
             if (!reset_ux.pending_notice.empty()) {
               notice = reset_ux.pending_notice;
               notice_until = vehicle.time() + 2.5;
@@ -686,7 +689,7 @@ bool DriveSession::step(const drive::Input& user_in) {
           }
         } else if (reset_ux.phase == ResetToRoadState::Phase::kFadeIn) {
           reset_ux.elapsed_s += drive::Vehicle::kStep;
-          if (reset_ux.elapsed_s >= ResetToRoadState::kFadeInSec) {
+          if (reset_ux.elapsed_s >= reset_timing.fade_in) {
             reset_ux.phase = ResetToRoadState::Phase::kIdle;
             reset_ux.elapsed_s = 0.0;
           }
@@ -782,13 +785,13 @@ bool DriveSession::step(const drive::Input& user_in) {
         log_contacts();
         const auto ai_t0 = std::chrono::steady_clock::now();
         step_physics_ms += std::chrono::duration<double, std::milli>(ai_t0 - ph_t0).count();
-        const bool reset_ghost_active = reset_ux.ghost_active();
+        const bool reset_ghost_active = reset_ux.ghost_active(reset_timing.collisions_off);
         if (traffic) {
           const auto pre_traffic_pose = vehicle.pose();
           traffic->step(vehicle);
           if (reset_ghost_active && traffic->player_impulse() > 0.0) {
-            // Brief post-reset ghosting immunity (~2.5 s) keeps traffic from
-            // immediately rear-ending the player right after resetting to the road.
+            // Post-reset no-contact window (PostResetNonCollideTime) keeps traffic
+            // from immediately rear-ending the player right after resetting to the road.
             vehicle.set_pose(pre_traffic_pose);
           }
         }

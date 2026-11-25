@@ -151,7 +151,78 @@ void Session::reset_done(size_t i) {
   c.wrong = c.slow = c.off5 = c.off15 = c.rolled = 0;
   c.reset_fade_out = 0.0;
   c.reset_fade_in_timer = std::max(0.0, o_.reset_fade_in);
-  c.no_collide_until = clock_ + 3.0;  // PostResetNonCollideTime
+  c.collisions_off = false;
+  c.ai = {};
+  c.no_collide_until = clock_ + o_.post_reset_non_collide;
+}
+
+void apply_hand_of_god(const HandOfGodReset& h, Session::Options& o) {
+  o.reset_fade_out = h.fade_out;
+  o.reset_fade_in = h.fade_in;
+  o.post_reset_non_collide = h.post_reset_non_collide;
+  o.collisions_off = h.collisions_off;
+  o.facing_speed_mph = h.facing_speed_mph;
+  o.facing_cos = h.facing_cos;
+  o.facing_time = h.facing_time;
+  o.progress_mph = h.progress_mph;
+  o.progress_time = h.progress_time;
+  o.off_route_near = h.off_track_m0;
+  o.off_route_near_time = h.off_track_time0;
+  o.off_route_far = h.off_track_m1;
+  o.off_route_far_time = h.off_track_time1;
+}
+
+// AIRacing.xml MetaAIDriver/ResetParameters (SPEC-RACE-AI, Routes with no
+// AI line; the rule's code is not decoded, so how each condition is
+// measured is read from the attribute names, interim):
+// - stuck within N_k waypoints for MinTime_k: the car has not moved N_k
+//   points along the line from where the timer started;
+// - stuck within the distance for its MinTime: it has stayed within that
+//   many metres of where the timer started;
+// - slower than Speed_mpers for MinTime; upside down (up.y below the
+//   rollover threshold) and slower than its speed for its MinTime;
+// - fell below ResetIfFellThisLow: the world height, at once;
+// - CancelResetIfMovedThisFar_m: once the car is that far (horizontally)
+//   from where the running timers started, they all start again.
+const char* Session::step_ai_rules(Car& c, const CarSample& q, double dt, const AiResetRules& r) {
+  Car::AiTimers& a = c.ai;
+  if (q.y < r.fell_low) return "fell";
+  const bool running = a.waypoint_t[0] > 0 || a.waypoint_t[1] > 0 || a.waypoint_t[2] > 0 || a.near_t > 0 ||
+                       a.slow_t > 0 || a.upside_down_t > 0;
+  if (!running || !a.moved_set) {
+    a.moved_x = q.x1, a.moved_z = q.z1, a.moved_set = true;
+  } else if (std::hypot(q.x1 - a.moved_x, q.z1 - a.moved_z) > r.cancel_moved_m) {
+    a = {};
+    a.moved_x = q.x1, a.moved_z = q.z1, a.moved_set = true;
+  }
+  const double speed = std::fabs(q.speed);
+  for (int k = 0; k < 3; ++k) {
+    const auto& rule = r.stuck_waypoints[size_t(k)];
+    if (q.waypoint < 0 || rule.count <= 0) {
+      a.waypoint_t[k] = 0;
+      continue;
+    }
+    if (a.waypoint_anchor[k] < 0 || std::fabs(q.waypoint - a.waypoint_anchor[k]) >= rule.count) {
+      a.waypoint_anchor[k] = q.waypoint;
+      a.waypoint_t[k] = 0;
+    } else {
+      a.waypoint_t[k] += dt;
+    }
+  }
+  if (!a.near_set || std::hypot(q.x1 - a.near_x, q.z1 - a.near_z) > r.stuck_distance_m) {
+    a.near_x = q.x1, a.near_z = q.z1, a.near_set = true;
+    a.near_t = 0;
+  } else {
+    a.near_t += dt;
+  }
+  a.slow_t = speed < r.slow_speed ? a.slow_t + dt : 0;
+  a.upside_down_t = (q.up_y < r.upside_down_up_y && speed < r.upside_down_speed) ? a.upside_down_t + dt : 0;
+  if (a.upside_down_t >= r.upside_down_time) return "upside down";
+  for (int k = 0; k < 3; ++k)
+    if (a.waypoint_t[k] > 0 && a.waypoint_t[k] >= r.stuck_waypoints[size_t(k)].min_time) return "stuck on the line";
+  if (a.near_t >= r.stuck_distance_time) return "stuck in place";
+  if (a.slow_t >= r.slow_time) return "too slow";
+  return "";
 }
 
 double Session::reset_fade_alpha(size_t i) const {
@@ -212,38 +283,62 @@ void Session::step(double dt, std::span<const CarSample> s) {
       const double g = finish_->crossing(q.x0, q.z0, q.x1, q.z1);
       if (g >= 0) c.finish = std::max(0.0, t0 + g * dt);
     }
-    // The interim automatic resets (every car).
+    // The automatic resets: the player (and, without AI rules, every car)
+    // by the Hand of God triggers; the AI by its own ResetParameters.
     if (c.reset_fade_in_timer > 0.0) c.reset_fade_in_timer = std::max(0.0, c.reset_fade_in_timer - dt);
-    if (o_.resets && c.finish < 0) {
+    const bool player = i == o_.player_index;
+    const bool by_ai_rules = !player && o_.ai_rules.has_value();
+    const bool by_hand_of_god = player || (!o_.ai_rules && o_.ai_hand_of_god);
+    if (o_.resets && c.finish < 0 && (by_ai_rules || by_hand_of_god)) {
       const double mph = q.speed / 0.44704;
       if (mph >= 5.0 || c.distance > 15.0) c.has_launched = true;
-      const bool start_grace = (i == o_.player_index) && (clock_ < o_.start_launch_grace) && !c.has_launched;
-      c.rolled = q.up_y < 0.5 ? c.rolled + dt : 0;
-      c.wrong = (q.heading_cos < 0.342 && mph > 40) ? c.wrong + dt : 0;
-      c.slow = (!start_grace && mph < 5) ? c.slow + dt : 0;
-      c.off5 = q.off_route > o_.off_route_near ? c.off5 + dt : 0;
-      c.off15 = q.off_route > o_.off_route_far ? c.off15 + dt : 0;
-      // Track clean 2 s fade-out leading into any active reset trigger.
+      // Seconds left on the trigger nearest to firing (1e9: none running).
       double min_rem = 1e9;
-      if (c.rolled > 0.0) min_rem = std::min(min_rem, std::max(0.0, o_.rollover_time - c.rolled));
-      if (c.wrong > 0.0) min_rem = std::min(min_rem, std::max(0.0, 3.0 - c.wrong));
-      if (c.slow > 0.0) min_rem = std::min(min_rem, std::max(0.0, 3.0 - c.slow));
-      if (c.off15 > 0.0) min_rem = std::min(min_rem, std::max(0.0, 3.0 - c.off15));
-      if (c.off5 > 0.0) min_rem = std::min(min_rem, std::max(0.0, 6.0 - c.off5));
+      auto left = [&](double t, double limit) {
+        if (t > 0.0) min_rem = std::min(min_rem, std::max(0.0, limit - t));
+      };
+      if (by_ai_rules) {
+        c.reason = step_ai_rules(c, q, dt, *o_.ai_rules);
+        const AiResetRules& r = *o_.ai_rules;
+        for (int k = 0; k < 3; ++k) left(c.ai.waypoint_t[k], r.stuck_waypoints[size_t(k)].min_time);
+        left(c.ai.near_t, r.stuck_distance_time);
+        left(c.ai.slow_t, r.slow_time);
+        left(c.ai.upside_down_t, r.upside_down_time);
+        if (*c.reason) min_rem = 0.0;
+      } else {
+        const bool start_grace = player && (clock_ < o_.start_launch_grace) && !c.has_launched;
+        c.rolled = q.up_y < 0.5 ? c.rolled + dt : 0;
+        c.wrong = (q.heading_cos < o_.facing_cos && mph > o_.facing_speed_mph) ? c.wrong + dt : 0;
+        c.slow = (!start_grace && mph < o_.progress_mph) ? c.slow + dt : 0;
+        c.off5 = q.off_route > o_.off_route_near ? c.off5 + dt : 0;
+        c.off15 = q.off_route > o_.off_route_far ? c.off15 + dt : 0;
+        left(c.rolled, o_.rollover_time);
+        left(c.wrong, o_.facing_time);
+        left(c.slow, o_.progress_time);
+        left(c.off15, o_.off_route_far_time);
+        left(c.off5, o_.off_route_near_time);
+        c.reason = c.rolled >= o_.rollover_time        ? "rolled over"
+                 : c.wrong >= o_.facing_time           ? "wrong way"
+                 : c.slow >= o_.progress_time          ? "no progress"
+                 : c.off15 >= o_.off_route_far_time    ? "far off route"
+                 : c.off5 >= o_.off_route_near_time    ? "off route"
+                                                       : "";
+      }
+      // The fade-out leading into the trigger nearest to firing.
       if (o_.reset_fade_out > 1e-6 && min_rem < o_.reset_fade_out) {
         c.reset_fade_out = std::clamp(1.0 - min_rem / o_.reset_fade_out, 0.0, 1.0);
       } else {
         c.reset_fade_out = 0.0;
       }
-      c.reason = c.rolled >= o_.rollover_time ? "rolled over"
-               : c.wrong >= 3                 ? "wrong way"
-               : c.slow >= 3                  ? "no progress"
-               : c.off15 >= 3                 ? "15 m off"
-               : c.off5 >= 6                  ? "5 m off"
-                                              : "";
+      // CollisionsOffTime (inferred from the name, not traced): the car
+      // stops touching other cars over the last CollisionsOffTime before
+      // it is put back, the window the fade-out covers; contact returns
+      // if the trigger clears first.
+      c.collisions_off = min_rem < o_.collisions_off;
       if (*c.reason) resets_.push_back(i);
     } else {
       c.reset_fade_out = 0.0;
+      c.collisions_off = false;
     }
   }
   const auto ord = order();
