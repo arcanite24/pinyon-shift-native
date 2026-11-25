@@ -862,9 +862,8 @@ void DriveSession::run_window_loop() {
                 for (const auto& [id, place] : disk_save.event_results) app.career.event_places[id] = place;
                 app.career.prize_cars = disk_save.prize_cars;
                 app.career.driver_xp = disk_save.driver_xp;
-                app.career.driver_level = app.have_prog_tables
-                                              ? app.prog_tables.driver_level_for_xp(app.career.driver_xp)
-                                              : std::max(1, disk_save.level);
+                app.career.driver_level = race::resume_driver_level(
+                    app.have_prog_tables ? &app.prog_tables : nullptr, disk_save.level, app.career.driver_xp);
                 for (const auto& [mid, xp] : disk_save.make_affinity) app.career.make_affinity_xp[mid] = xp;
                 if (disk_save.difficulty >= 0 && disk_save.difficulty <= 4)
                   app.race_options.difficulty = race::Difficulty(disk_save.difficulty);
@@ -881,7 +880,8 @@ void DriveSession::run_window_loop() {
                                : std::max(0, app.wristbands.level_index(app.career.wristband_points)));
                 app.max_skills_car = disk_save.max_skills_car;
                 app.treasure_map_setting = disk_save.treasure_map;
-                app.campaign.load_from_save(disk_save);
+                app.campaign.load_from_save(
+                    disk_save, app.have_skills_data ? app.skills_data.rank_for_points(disk_save.popularity_points) : 0);
                 if (disk_save.tod_sec >= 0.0 && disk_save.tod_sec < 86400.0) app.tod_clock.tod_sec = disk_save.tod_sec;
                 app.outpost_progress.discovered_outposts.clear();
                 app.outpost_progress.discovered_outposts.insert(disk_save.discovered_outposts.begin(),

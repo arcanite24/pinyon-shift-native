@@ -28,8 +28,13 @@ class CampaignDirector {
  public:
   void configure(const std::filesystem::path& game_root, std::string_view language, bool skip_intro_movies);
 
-  // Syncs campaign progression from/to DriveSave cleanly.
-  void load_from_save(const drive::DriveSave& save);
+  // Syncs campaign progression from/to DriveSave cleanly. A save that came
+  // from an original profile and not yet seeded
+  // (race::imported_campaign_needs_seed) gets the campaign mirror the
+  // profile does not store rebuilt from its career first
+  // (race::seed_imported_campaign), on every load path:
+  // `popularity_rank` is the rank of its popularity (0: unknown).
+  void load_from_save(const drive::DriveSave& save, int popularity_rank = 0);
   void save_to_save(drive::DriveSave& save) const;
 
   // Starts the authentic Minute-0 New Career flow.

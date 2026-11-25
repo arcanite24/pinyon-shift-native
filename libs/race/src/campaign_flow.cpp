@@ -1,10 +1,14 @@
 #include "race/campaign_flow.h"
 
+#include "drive/save.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
+#include <set>
 
 namespace race {
 namespace {
@@ -2056,6 +2060,97 @@ void CampaignFlow::load_from(const CampaignSaveState& in) {
   unlocked_showcases_.insert(in.unlocked_showcases.begin(), in.unlocked_showcases.end());
   finale_complete_ = in.finale_complete;
   pending_darius_showdown_ = !finale_complete_ && completed_cutscenes_.count("headline_event_won") > 0;
+}
+
+CampaignSaveState infer_campaign_state(const CampaignImportInputs& in) {
+  std::map<int64_t, int> best;
+  for (const auto& [id, place] : in.event_results) {
+    auto it = best.find(id);
+    if (it == best.end() || (place > 0 && place < it->second)) best[id] = place;
+  }
+  const std::set<int64_t> unlocks(in.event_unlocks.begin(), in.event_unlocks.end());
+  auto raced = [&](int64_t id) { return best.count(id) > 0; };
+  auto won = [&](int64_t id) {
+    auto it = best.find(id);
+    return it != best.end() && it->second == 1;
+  };
+  std::set<std::string> bosses, showcases, heard, cutscenes;
+  bool finale = false;
+  for (const auto& boss : boss_rivals()) {
+    if (boss.is_finale_champion) {
+      // NEM_FINAL unlocks only from a HEADLINE_EVENT win (Rewards_EventUnlock).
+      if (won(boss.event_id)) finale = true;
+      continue;
+    }
+    const bool rule = in.collected_wristband >= boss.wristband_level && in.wristband_points >= boss.unlock_points;
+    if (rule || raced(boss.event_id)) {
+      bosses.insert(boss.key);
+      heard.insert("boss_unlock_" + std::string(boss.key));
+    }
+  }
+  constexpr int64_t kHeadline = 167;  // HEADLINE_EVENT (Rewards_EventUnlock 167 -> 169)
+  if (won(kHeadline) || finale) {
+    bosses.insert("darius");
+    cutscenes.insert("headline_event_won");
+  }
+  if (finale) {
+    cutscenes.insert(cutscene_id_name(CutsceneKind::kFinaleVictoryCinematic));
+    cutscenes.insert(cutscene_id_name(CutsceneKind::kFinaleCreditsFmv));
+  }
+  for (const auto& sc : showcase_milestones()) {
+    const bool gate = in.popularity_rank > 0 ? in.popularity_rank <= sc.popularity_rank_req : unlocks.count(sc.event_id) > 0;
+    if (gate || raced(sc.event_id)) {
+      showcases.insert(sc.horizon_id);
+      heard.insert("sc_unlock_" + std::string(sc.horizon_id));
+    }
+  }
+  const auto& bands = wristband_milestones();
+  for (int lv = 0; lv <= std::min(in.collected_wristband, int(bands.size()) - 1); ++lv)
+    heard.insert("wb_collect_" + std::string(bands[size_t(lv)].key));
+  if (in.intro_completed) {
+    for (const char* k : {"m0_viper_beat1", "m0_viper_beat2", "m0_viper_beat3", "m0_viper_convoy_first",
+                          "m0_viper_convoy_last", "m0_viper_convoy_clear", "m0_corrado_qualify", "m0_alice_welcome",
+                          "m0_dak_garage", "m0_holly_events", "m0_autoshow_welcome"})
+      heard.insert(k);
+    cutscenes.insert(cutscene_id_name(CutsceneKind::kOpeningFmv));
+    cutscenes.insert(cutscene_id_name(CutsceneKind::kWristbandCeremonyFmv));
+    cutscenes.insert(cutscene_id_name(CutsceneKind::kWristbandStageCinematic));
+  }
+  CampaignSaveState out;
+  out.campaign_stage = in.intro_completed ? "freeroam" : "";
+  out.completed_cutscenes.assign(cutscenes.begin(), cutscenes.end());
+  out.heard_dialogs.assign(heard.begin(), heard.end());
+  out.unlocked_bosses.assign(bosses.begin(), bosses.end());
+  out.unlocked_showcases.assign(showcases.begin(), showcases.end());
+  out.finale_complete = finale;
+  return out;
+}
+
+void seed_imported_campaign(drive::DriveSave& save, int popularity_rank) {
+  CampaignImportInputs in;
+  in.event_results = save.event_results;
+  in.event_unlocks = save.event_unlocks;
+  in.wristband_points = save.wristband_points;
+  in.collected_wristband = save.collected_wristband;
+  in.popularity_rank = popularity_rank;
+  in.intro_completed = save.intro_completed;
+  const CampaignSaveState st = infer_campaign_state(in);
+  auto unite = [](std::vector<std::string>& into, const std::vector<std::string>& add) {
+    std::set<std::string> all(into.begin(), into.end());
+    all.insert(add.begin(), add.end());
+    into.assign(all.begin(), all.end());
+  };
+  unite(save.completed_cutscenes, st.completed_cutscenes);
+  unite(save.heard_dialogs, st.heard_dialogs);
+  unite(save.unlocked_bosses, st.unlocked_bosses);
+  unite(save.unlocked_showcases, st.unlocked_showcases);
+  save.finale_complete = save.finale_complete || st.finale_complete;
+  if (save.campaign_stage.empty()) save.campaign_stage = st.campaign_stage;
+}
+
+bool imported_campaign_needs_seed(const drive::DriveSave& save) {
+  return save.owned_garage && save.completed_cutscenes.empty() && save.heard_dialogs.empty() &&
+         save.unlocked_bosses.empty() && save.unlocked_showcases.empty() && !save.finale_complete;
 }
 
 CampaignObjective CampaignFlow::next_objective(int wristband_points, int collected_wristband, int pop_rank,

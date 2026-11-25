@@ -154,6 +154,21 @@ int ProgressionTables::driver_level_for_xp(int xp) const {
   return lvl;
 }
 
+int resume_driver_level(const ProgressionTables* tables, int saved_level, int& driver_xp) {
+  driver_xp = std::max(0, driver_xp);
+  const int saved = std::max(1, saved_level);
+  if (!tables || tables->driver_levels.empty()) return saved;
+  const int from_xp = tables->driver_level_for_xp(driver_xp);
+  if (from_xp >= saved) return from_xp;
+  int level = from_xp;
+  for (const auto& row : tables->driver_levels)
+    if (row.level + 1 <= saved && row.level + 1 > level) {
+      level = row.level + 1;
+      driver_xp = std::max(driver_xp, row.xp);
+    }
+  return std::max(level, from_xp);
+}
+
 int ProgressionTables::next_driver_level_xp(int xp) const {
   for (const auto& row : driver_levels)
     if (row.xp > xp) return row.xp;

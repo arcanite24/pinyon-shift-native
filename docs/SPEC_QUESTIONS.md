@@ -1695,3 +1695,44 @@ UI states answered in UI_LAYOUTS.md af0e37b6; captures in out/oracle/ui
 UI follow-up Q1-Q3 answered in docs/specs/UI_SCREENS.md 943ecc1f: HUD 947_HUD, pause 925_PAUSE_MENU, map H_MAP, help bar BUTTON_BAR_SCENE, finish H_POST_RACE_FINISHED then H_POST_RACE_RESULTS (probable); 7xx and split-screen scenes never open in retail; 63 scenes unreferenced; text node = alignment point (left/centre probable, right guess) at the line's vertical middle; material floats 0-3 = diffuse RGBA (confirmed), tint and crop rule 0 <= s*u + o <= 1 probable; pre-race and post-race pages interim, four frame checks listed.
 
 UI follow-up correction in docs/specs/UI_SCREENS.md 3ec78780: only 708_PAUSE and 710_POST_RACE are proven never opened (948_HUD_Split_Screen and other 7xx scenes have unread openers); ResPack.xml packs confirm the HUD group (947_HUD, 925_PAUSE_MENU, H_MAP, H_BARN_FIND_HUD) and list PRE_CAREER_EVENT_TITLE with PRE_AND_POST_RACE in PreEvent, so 62 scenes are unreferenced; finish/results order not established; pause 53-unit vs 50 px pitch read as stacker reflow (lay out stacker rows in the engine); baseline = y - (ascent - descent)/2, which middle box interim.
+
+## Q60 (M6, not blocking): where the profile keeps popularity
+
+SPEC-SKILLS-POPULARITY ("The save") and Q59 (d) guess the last f32 of
+`Player0` (`CPlayerState` v13). That reads 33,649 on both reference
+exports, rank 245, yet `user` has won the showcases gated at ranks 225,
+200 and 175, so the guess cannot hold. `Main` has no popularity field.
+
+**Engine reading (probable): the first u32 of `SponsorshipState`**
+(`CHorizonSponsorshipState` v2). The payload is a 20-byte header (u32,
+a zero word, f32, u32 2, u32 child count 15) and 15
+`CSponsorshipChallengeState` v1 children of 8 bytes. Evidence:
+
+- the header word reads 811,260 on `user` and 1,689,100 on
+  `user-modded`: ranks 115 and 28 on Fame.xml;
+- the `Fame` child's first word is 5 and 8: exactly the Fame-sponsor
+  tiers at or above those ranks (225 to 125, and 225 to 50);
+- on the other 28 children (14 per save) the first word equals the number
+  of SponsorshipChallenges.xml ranks the second word reaches, so a child is
+  (tiers claimed, count), and the header and children belong to the
+  popularity and sponsor system;
+- ranks 115 and 28 reproduce the saves' showcase rows in
+  `CareerEventUnlocks` exactly (6 and 9 of the 10; any rank in 101 to 125
+  and 26 to 50 would, and rank 245 would not);
+- the class's v2 serializer writes the first field and the literal 2
+  through the same integer writer, and the two following fields through
+  another (the f32s), so the first field is an integer, as the Fame
+  targets are whole numbers.
+
+Not yet compared with a rank the game displays. The f32 at header +8
+(246.66 and 26.79) and the zero word are kept as read; their meaning is
+open. The engine reads and writes the value in one place
+(`profile::popularity_points_from_sponsorship_state`,
+`profile::encode_sponsorship_state`) and the corpus test
+`save_import_corpus_tests` checks both saves. Needed, narrow: one
+displayed popularity rank (pause menu or HUD disc) next to the header
+word of the same save, or the reader of this member in the generated
+code. Also open: `CHorizonDialoguesState` (hashed line keys, kept as
+bytes; the engine seeds its own heard-dialogue keys from the career
+instead) and the meaning of `CFirstTimeCareerState` stages other than 1
+and 2 (both finished saves read stage 8).

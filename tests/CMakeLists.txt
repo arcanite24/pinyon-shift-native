@@ -291,6 +291,20 @@ add_executable(save_ecosystem_tests save_ecosystem_tests.cpp)
 target_link_libraries(save_ecosystem_tests PRIVATE shift_profile shift_drive shift_garage fh1data shift_sqlite3)
 add_test(NAME save_ecosystem_tests COMMAND save_ecosystem_tests)
 
+# Importing an original profile resumes where it was (PROG-13/14/15):
+# synthetic always; the two reference saves with SHIFT_GAME_ROOT and
+# SHIFT_STATE_ROOT (exports from SHIFT_PROFILE_EXPORTS, else
+# <SHIFT_STATE_ROOT>/../profile; skipped, exit 77, without them).
+add_executable(save_import_tests save_import_tests.cpp)
+target_link_libraries(save_import_tests PRIVATE shift_profile shift_race shift_freeroam shift_drive shift_garage
+                      shift_sqlite3)
+add_test(NAME save_import_tests COMMAND save_import_tests)
+add_executable(save_import_corpus_tests save_import_corpus_tests.cpp)
+target_link_libraries(save_import_corpus_tests PRIVATE shift_profile shift_race shift_freeroam shift_drive
+                      shift_garage)
+add_test(NAME save_import_corpus_tests COMMAND save_import_corpus_tests)
+set_tests_properties(save_import_corpus_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS corpus)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(mods_saves_ui_tests mods_saves_ui_tests.cpp
     ../apps/carview/mods_page.cpp

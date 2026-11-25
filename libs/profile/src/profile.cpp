@@ -375,6 +375,141 @@ size_t field_count(const std::vector<Field>& fields, std::string_view path) {
   return f && f->value.type == Value::kStruct ? f->value.fields.size() : 0;
 }
 
+// ---- SponsorshipState (CHorizonSponsorshipState v2) ----
+
+namespace {
+
+constexpr size_t kSponsorshipHeader = 20;  // u32 points, 4-byte word, f32, u32 2, u32 child count
+constexpr const char* kSponsorChildClass = "CSponsorshipChallengeState";
+
+// The 15 SponsorshipChallenges.xml ids, in the order both reference saves
+// store them (ASCII order).
+constexpr const char* kSponsorIds[] = {"Air",       "AnySkill", "CleanSpeed", "Daredevil", "Draft",
+                                       "Drift",     "EDrift",   "Fame",       "Infection", "King",
+                                       "NearMiss",  "Over9000", "Pass",       "SideSwipe", "SlingShot"};
+
+void put_be32(std::vector<uint8_t>& out, size_t at, uint32_t v) {
+  out[at] = uint8_t(v >> 24), out[at + 1] = uint8_t(v >> 16), out[at + 2] = uint8_t(v >> 8), out[at + 3] = uint8_t(v);
+}
+
+struct SponsorChildSpan {
+  std::string name, class_name;
+  size_t payload_at = 0, payload_size = 0;
+};
+
+// Walks the header and the children; false when the payload does not parse.
+bool walk_sponsorship(std::span<const uint8_t> payload, uint32_t& points, std::vector<SponsorChildSpan>& children) {
+  Reader r{payload};
+  points = r.u32();
+  r.u32(), r.u32(), r.u32();
+  const uint32_t n = r.u32();
+  if (!r.ok || n > 4096) return false;
+  for (uint32_t k = 0; k < n; ++k) {
+    SponsorChildSpan c;
+    c.name = r.str(r.u32());
+    c.class_name = r.str(r.u32());
+    r.u32();  // version
+    const uint32_t size = r.u32();
+    if (!r.ok || !r.need(size)) return false;
+    c.payload_at = r.at, c.payload_size = size;
+    r.at += size;
+    children.push_back(std::move(c));
+  }
+  return r.ok && r.left() == 0;
+}
+
+void append_sponsor_child(std::vector<uint8_t>& out, const SponsorshipChallenge& c) {
+  Writer w;
+  w.str(c.id);
+  w.str(kSponsorChildClass);
+  w.u32(1);
+  w.u32(8);
+  w.u32(c.tiers_claimed);
+  w.u32(c.count);
+  out.insert(out.end(), w.out.begin(), w.out.end());
+}
+
+}  // namespace
+
+const SponsorshipChallenge* SponsorshipState::find(std::string_view id) const {
+  for (const auto& c : challenges)
+    if (c.id == id) return &c;
+  return nullptr;
+}
+
+bool decode_sponsorship_state(std::span<const uint8_t> payload, SponsorshipState& out) {
+  out = SponsorshipState{};
+  std::vector<SponsorChildSpan> children;
+  if (!walk_sponsorship(payload, out.popularity_points, children)) return false;
+  for (const auto& c : children) {
+    if (c.class_name != kSponsorChildClass || c.payload_size < 8) continue;
+    Reader r{payload.subspan(c.payload_at, c.payload_size)};
+    SponsorshipChallenge sc;
+    sc.id = c.name;
+    sc.tiers_claimed = r.u32();
+    sc.count = r.u32();
+    out.challenges.push_back(std::move(sc));
+  }
+  return true;
+}
+
+uint32_t popularity_points_from_sponsorship_state(std::span<const uint8_t> payload) {
+  SponsorshipState st;
+  return decode_sponsorship_state(payload, st) ? st.popularity_points : 0;
+}
+
+std::vector<uint8_t> encode_sponsorship_state(std::span<const uint8_t> payload, const SponsorshipState& st) {
+  uint32_t points = 0;
+  std::vector<SponsorChildSpan> children;
+  std::vector<uint8_t> out;
+  if (!payload.empty() && !walk_sponsorship(payload, points, children)) {
+    // A layout this reader does not know (another version): kept as is.
+    return std::vector<uint8_t>(payload.begin(), payload.end());
+  }
+  if (payload.empty()) {
+    // A fresh record: the reference saves' header words and every id.
+    std::vector<SponsorshipChallenge> all;
+    for (const char* id : kSponsorIds) {
+      SponsorshipChallenge c;
+      c.id = id;
+      if (const SponsorshipChallenge* have = st.find(id)) c = *have;
+      all.push_back(std::move(c));
+    }
+    for (const auto& c : st.challenges)
+      if (std::none_of(all.begin(), all.end(), [&](const SponsorshipChallenge& a) { return a.id == c.id; }))
+        all.push_back(c);
+    Writer w;
+    w.u32(st.popularity_points);
+    w.u32(0);
+    w.u32(0);  // f32 0.0
+    w.u32(2);
+    w.u32(uint32_t(all.size()));
+    out = std::move(w.out);
+    for (const auto& c : all) append_sponsor_child(out, c);
+    return out;
+  }
+  out.assign(payload.begin(), payload.end());
+  put_be32(out, 0, st.popularity_points);
+  std::set<std::string> seen;
+  for (const auto& c : children) {
+    seen.insert(c.name);
+    if (c.class_name != kSponsorChildClass || c.payload_size < 8) continue;
+    if (const SponsorshipChallenge* want = st.find(c.name)) {
+      put_be32(out, c.payload_at, want->tiers_claimed);
+      put_be32(out, c.payload_at + 4, want->count);
+    }
+  }
+  uint32_t n = uint32_t(children.size());
+  for (const auto& c : st.challenges)
+    if (!seen.count(c.id)) {
+      append_sponsor_child(out, c);
+      seen.insert(c.id);
+      ++n;
+    }
+  put_be32(out, kSponsorshipHeader - 4, n);  // the child count
+  return out;
+}
+
 size_t Imported::signs_found() const {
   return size_t(std::count_if(signs.begin(), signs.end(), [](const Sign& s) { return s.found; }));
 }
@@ -430,9 +565,10 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
   out.level = num("Level"), out.career_car = num("CareerCar"), out.upgrade_discount = num("UpgradeDiscount");
   out.total_winnings = num("TotalWinnings"), out.num_races = num("NumRaces");
   out.num_victories = num("NumVictories"), out.num_podiums = num("NumPodiums");
-  out.popularity = real("Popularity");
-  out.max_skills_score = num("MaxSkillsScore"), out.max_skills_car = num("MaxSkillsCar");
-  out.driver_xp = num("DriverXP");
+  out.last_rewarded_level = num("LastRewardedLevel");
+  // Main has no popularity or driver XP field: popularity is read from the
+  // SponsorshipState record below.
+  out.max_skills_score = num("MaxSkillsScore"), out.max_skills_car = num("MaxSkillsCarOrdinal");
   out.top_speed = real("TopSpeed"), out.distance_driven = real("TotalDistanceDriven");
   out.time_festival = real("TimeInFestivalRaces"), out.time_street = real("TimeInStreetRaces");
   out.time_exhibition = real("TimeInExhibitionRaces");
@@ -478,6 +614,12 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
             out.road_discovery_words.resize(nwords);
             for (size_t wi = 0; wi < nwords; ++wi) out.road_discovery_words[wi] = rr.u32();
           }
+          if (c.class_name == "CFirstTimeCareerState" && c.payload.size() >= 5) {
+            Reader fr{c.payload};
+            out.has_first_time_career = true;
+            out.first_time_career_flag = uint8_t(fr.be(1));
+            out.first_time_career_stage = fr.u32();
+          }
           if (c.class_name == "CGasStationState" && !c.payload.empty() && c.payload[0] != 0) {
             out.outposts_discovered.push_back(c.name);
           }
@@ -506,6 +648,15 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
               else out.speed_zones.emplace_back(c.name, val);
             }
           }
+        }
+      }
+      if (!out.has_sponsorship && rec.name == "SponsorshipState" && rec.class_name == "CHorizonSponsorshipState") {
+        SponsorshipState st;
+        if (decode_sponsorship_state(rec.payload, st)) {
+          out.has_sponsorship = true;
+          out.popularity = double(popularity_points_from_sponsorship_state(rec.payload));
+          out.sponsors = st.challenges;
+          if (const SponsorshipChallenge* fame = st.find("Fame")) out.fame_tiers_claimed = fame->tiers_claimed;
         }
       }
       if (rec.class_name == "CCarChallengeState") {
@@ -972,6 +1123,14 @@ std::map<std::string, int64_t> summary(const Imported& p) {
   s["barns_found"] = int64_t(p.barns_found());
   s["upgrade_discount"] = p.upgrade_discount;
   s["wristband_level"] = p.wristband_level;
+  s["level"] = p.level;
+  s["max_skills_score"] = p.max_skills_score;
+  s["max_skills_car"] = p.max_skills_car;
+  if (p.has_sponsorship) {
+    s["popularity_points"] = int64_t(std::llround(p.popularity));
+    s["fame_tiers_claimed"] = p.fame_tiers_claimed;
+    s["sponsor_challenges"] = int64_t(p.sponsors.size());
+  }
   s["rally_fields"] = p.rally_fields;
   if (p.rally_fields) {
     s["num_rallies"] = p.num_rallies, s["num_rally_stages"] = p.num_rally_stages;

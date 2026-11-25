@@ -214,7 +214,8 @@ void DriveSession::init_session() {
           app.h2h_races = recovered.h2h_races;
           app.h2h_wins = recovered.h2h_wins;
           app.treasure_map_setting = recovered.treasure_map;
-          app.campaign.load_from_save(recovered);
+          app.campaign.load_from_save(
+              recovered, app.have_skills_data ? app.skills_data.rank_for_points(recovered.popularity_points) : 0);
           if (recovered.collected_wristband >= 0) app.collected_wristband = recovered.collected_wristband;
           std::printf("save: recovered save from backup %s\n", recovered_from.string().c_str());
         }
