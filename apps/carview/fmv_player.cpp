@@ -1013,6 +1013,7 @@ bool FmvPlayer::open(const std::filesystem::path& wmv_path, std::string_view lan
   height_ = std::max(16, target_h);
   fps_ = probed && info.fps > 1.0 && info.fps <= 120.0 ? info.fps : 24.0;
   duration_s_ = probed && info.duration_s > 0.0 ? info.duration_s : 0.0;
+  loop_ = loop;
   title_ = wmv_path.stem().string();
 
   // Companion .def for localized ASF audio stream ID selection (e.g. id="4" or id="13").
@@ -1109,6 +1110,7 @@ void FmvPlayer::open_synthetic(int w, int h, double fps, double duration_s, std:
   height_ = std::max(16, h);
   fps_ = std::clamp(fps, 1.0, 120.0);
   duration_s_ = std::max(0.1, duration_s);
+  loop_ = false;
   title_ = std::move(title);
   clock_s_ = 0.0;
   finished_ = false;
@@ -1882,8 +1884,10 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
   }
 
   // Smooth fade-in and fade-out veil on full-length cutscenes (never blacks out t=0 thumbnails/tests).
+  // Not on a looping backdrop: its clock runs on past the duration, and the
+  // fade-out stayed on, leaving the title black after its first loop.
   float fade = 0.0f;
-  if (duration_s_ >= 3.0) {
+  if (duration_s_ >= 3.0 && !loop_) {
     if (clock_s_ > 0.001 && clock_s_ < 0.55) fade = std::max(fade, float(1.0 - clock_s_ / 0.55));
     if (clock_s_ > duration_s_ - 0.55) {
       fade = std::max(fade, float((clock_s_ - (duration_s_ - 0.55)) / 0.55));

@@ -191,6 +191,7 @@ class FmvPlayer {
   double fps_ = 24.0;
   double duration_s_ = 0.0;
   double clock_s_ = 0.0;
+  bool loop_ = false;  // a looping backdrop (PressStart.wmv): its clock runs past the duration
   FmvMovieId movie_id_ = FmvMovieId::kFmv01Opening;
   std::string title_;
   std::vector<FmvSubtitleCue> subtitles_;
