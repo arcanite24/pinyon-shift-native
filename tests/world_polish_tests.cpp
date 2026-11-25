@@ -95,6 +95,19 @@ int main() {
     CHECK(std::fabs(cfg.detail_blur_mph_max - 65.0f) < 1e-4f);
     CHECK(std::fabs(cfg.dof_focal_distance - 14.0f) < 1e-4f);
     CHECK(std::fabs(cfg.dof_focal_max_blur - 0.65f) < 1e-4f);
+
+    // FEEL-31: blur strength is motionBlurAmount scaled by speed up to
+    // DetailBlurMPHForMaxBlur, with no floor and no speed offset.
+    const double mps_per_mph = 1.0 / 2.23693629;
+    CHECK(std::fabs(cfg.motion_blur_strength(0.0)) < 1e-6f);
+    CHECK(std::fabs(cfg.motion_blur_strength(6.5 * mps_per_mph) - 0.08f) < 1e-4f);
+    CHECK(std::fabs(cfg.motion_blur_strength(32.5 * mps_per_mph) - 0.4f) < 1e-4f);
+    CHECK(std::fabs(cfg.motion_blur_strength(65.0 * mps_per_mph) - 0.8f) < 1e-4f);
+    CHECK(std::fabs(cfg.motion_blur_strength(120.0 * mps_per_mph) - 0.8f) < 1e-4f);
+    world::TrackPostConfig roam;  // free-roam baseline: motionBlurAmount 0
+    CHECK(roam.motion_blur_amount == 0.0f && roam.motion_blur_strength(60.0) == 0.0f);
+    roam.motion_blur_amount = 3.0f;
+    CHECK(std::fabs(roam.motion_blur_strength(60.0) - 0.95f) < 1e-6f);
   }
 
   // 2. PostZoneBlender smooth LerpTime transitions.
