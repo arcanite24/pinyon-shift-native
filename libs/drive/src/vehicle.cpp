@@ -517,6 +517,7 @@ void Vehicle::reset(const Vec3& position, double heading) {
   rev_cut_active_ = false;
   rev_cut_timer_ = 0;
   handbrake_shaped_ = 0;
+  body_free_time_ = 1.0;  // contacts before the reset do not join the next one
   abs_flag_ = false;
   tcs_flag_ = false;
   stm_flag_ = false;
@@ -1983,6 +1984,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
   body_force_ = 0;
   double body_fy_pos = 0.0;
   bool had_wall_contact = false;
+  double closing = 0.0;  // the largest closing speed along a pushing contact's normal
+  Vec3 closing_normal{};
   constexpr int kPoints = 26;
   constexpr double kShare = 8.0 / kPoints;
   const Vec3 centre_local{0, p.sill_height + 0.5 * p.size.y, p.centre_of_mass.z};
@@ -2025,6 +2028,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
     double fn = kShare * std::max(0.0, p.mass * (spring_term - eff_damp * vn));
     fn = std::min(fn, kShare * p.mass * (is_wall ? 180.0 : 120.0));
     if (fn <= 0) continue;
+    if (-vn > closing) {
+      closing = -vn;
+      closing_normal = n_eff;
+    }
     Vec3 f = n_eff * fn;
     Vec3 vt = v - n_eff * vn;
     if (is_wall) vt.y = 0.0;  // keep wall-glide friction purely horizontal
@@ -2059,6 +2066,18 @@ void Vehicle::substep(double dt, const Ground& ground) {
     torque = torque + t_contact;
     body_force_ += length(f);
     if (fn > strongest_.force) strongest_ = {centre + dir * hit.distance, n_eff, fn, hit.surface, hit.triangle};
+  }
+  // A body impact: contact after a step or more without one (the camera's
+  // collision pulse reads each once).
+  if (body_force_ > 0.0) {
+    if (body_free_time_ >= kStep - 1e-9) {
+      impact_.normal = closing_normal;
+      impact_.speed = closing;
+      ++impact_.count;
+    }
+    body_free_time_ = 0.0;
+  } else {
+    body_free_time_ += dt;
   }
 
   // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): 3D body drag, lateral drag

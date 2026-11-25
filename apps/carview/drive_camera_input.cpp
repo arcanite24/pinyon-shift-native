@@ -424,6 +424,9 @@ struct RigTelemetryState {
   int last_nonzero_gear = 0;
   double shift_impulse = 0.0;
   uint64_t restart_count = 0;
+  // The vehicle's body-impact count already fed to the collision layers.
+  uint64_t impact_count = 0;
+  bool have_impact_count = false;
 
   void reset(uint64_t rc, int cur_gear) {
     last_vel = {};
@@ -432,6 +435,7 @@ struct RigTelemetryState {
     last_nonzero_gear = cur_gear;
     shift_impulse = 0.0;
     restart_count = rc;
+    have_impact_count = false;
   }
 };
 
@@ -474,6 +478,8 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
   // forward, right and up axes, gravity left out (SPEC-CAMERAS, Inputs),
   // plus edge-detected gear-shift impulse decaying over ~0.18 s.
   const bool accel_was_reset = !accel.have_last;
+  double world_pulse = 0.0;
+  drive::Vec3 world_pulse_normal{};
   if (dt > 0.0) {
     accel.sample(vel, v.orientation(), dt, in.g_longitudinal, in.g_lateral);
   }
@@ -515,6 +521,17 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
       }
     }
     in.g_vertical = ts.g_vertical_smooth;
+    // WorldCollision is a pulse injected on impact events (SPEC-CAMERAS,
+    // layers): each body impact feeds its closing speed (m/s) for one frame.
+    const auto& impact = v.last_body_impact();
+    if (!ts.have_impact_count) {
+      ts.impact_count = impact.count;
+      ts.have_impact_count = true;
+    } else if (impact.count != ts.impact_count) {
+      ts.impact_count = impact.count;
+      world_pulse = impact.speed;
+      world_pulse_normal = impact.normal;
+    }
     in.shift_impulse = ts.shift_impulse;
   }
   int down = 0;
@@ -590,11 +607,10 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
       in.boost_norm = std::clamp((v.boost_psi() - lo) / (hi - lo), 0.0, 1.0);
     }
   }
-  if (v.body_contact_force() > 0.0) {
-    const auto& bc = v.strongest_body_contact();
-    const double mag = bc.force / std::max(1.0, v.params().mass);
-    in.world_collision_longitudinal = mag * (bc.normal.x * fwd.x + bc.normal.y * fwd.y + bc.normal.z * fwd.z);
-    in.world_collision_lateral = mag * (bc.normal.x * right.x + bc.normal.y * right.y + bc.normal.z * right.z);
+  if (world_pulse > 0.0) {
+    const drive::Vec3& n = world_pulse_normal;
+    in.world_collision_longitudinal = world_pulse * (n.x * fwd.x + n.y * fwd.y + n.z * fwd.z);
+    in.world_collision_lateral = world_pulse * (n.x * right.x + n.y * right.y + n.z * right.z);
   }
   in.car_collision_longitudinal = car_coll_long;
   in.car_collision_lateral = car_coll_lat;

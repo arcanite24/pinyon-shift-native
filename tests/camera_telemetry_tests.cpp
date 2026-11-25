@@ -385,9 +385,12 @@ void test_camera_parity_layers_and_pullin() {
 }
 
 void test_camera_collision_restraint_and_restart() {
-  // PT-28: Camera collision impulse layers distinguish light glancing fence scrapes
-  // from heavy solid-wall crashes, prevent multi-frame impulse stacking, bound total
-  // kick, recover crisply with damped spring, and clamp sudden chase yaw_rate spikes.
+  // Collision impulse layers (SPEC-CAMERAS, layers; SPEC_QUESTIONS Q61): the
+  // WorldCollision and CarCollision inputs are pulses injected on impact
+  // events, and an impulse output kicks its spring once per rising edge of
+  // the input, so a contact held over many frames kicks once, as a one-frame
+  // pulse of the same size does; the kick grows with the impact, recovers on
+  // the layer's own spring, and a new impact kicks again.
   const std::string xml = R"(
 <CameraPhysics>
   <FollowCam n="2">
@@ -438,55 +441,59 @@ void test_camera_collision_restraint_and_restart() {
     return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) +
                      (a[2] - b[2]) * (a[2] - b[2]));
   };
-
-  // Sustained light fence scrape for 20 frames at 120 FPS must NOT stack impulses.
-  double light_max_angle = 0.0;
-  double light_max_disp = 0.0;
-  for (int i = 0; i < 20; ++i) {
-    drive::CameraInput scrape = in;
-    scrape.world_collision_lateral = 6.0;
-    const auto v = cam.update(1.0 / 120.0, scrape);
-    light_max_angle = std::max(light_max_angle, angle_deg(v.forward, base.forward));
-    light_max_disp = std::max(light_max_disp, dist3(v.eye, base.eye));
-  }
-  check(light_max_angle > 0.05 && light_max_angle < 1.5,
-        "light fence scrape produces gentle bounded angular kick without stacking");
-  check(light_max_disp < 0.25, "light fence scrape keeps positional kick bounded");
-
-  // Smooth damped recovery back to neutral within 1.0 s.
-  drive::CameraView settled{};
-  for (int i = 0; i < 60; ++i) settled = cam.update(1.0 / 60.0, in);
-  check(angle_deg(settled.forward, base.forward) < 0.15, "camera angular kick recovers cleanly to neutral");
-  check(dist3(settled.eye, base.eye) < 0.03, "camera positional kick recovers cleanly to neutral");
-
-  // Heavy solid-wall impact feels stronger than a fence brush yet stays strictly clamped.
-  double heavy_max_angle = 0.0;
-  double heavy_max_disp = 0.0;
-  for (int i = 0; i < 12; ++i) {
-    drive::CameraInput crash = in;
-    if (i < 3) {
-      crash.world_collision_lateral = 35.0;
-      crash.world_collision_longitudinal = 45.0;
+  // Feeds `frames` frames of a lateral input `lat` (then zero) at 120 Hz for
+  // 0.5 s from a settled camera; the largest angle off the base view.
+  auto kick = [&](double lat, int frames) {
+    cam.update(1.0, in);  // settle
+    double max_angle = 0.0;
+    for (int i = 0; i < 60; ++i) {
+      drive::CameraInput hit = in;
+      if (i < frames) hit.world_collision_lateral = lat;
+      max_angle = std::max(max_angle, angle_deg(cam.update(1.0 / 120.0, hit).forward, base.forward));
     }
-    const auto v = cam.update(1.0 / 60.0, crash);
-    heavy_max_angle = std::max(heavy_max_angle, angle_deg(v.forward, base.forward));
-    heavy_max_disp = std::max(heavy_max_disp, dist3(v.eye, base.eye));
-  }
-  check(heavy_max_angle > light_max_angle * 1.4, "heavy wall impact has stronger tactile feedback than light scrape");
-  check(heavy_max_angle <= 3.6, "heavy wall angular kick stays strictly bounded");
-  check(heavy_max_disp <= 0.30, "heavy wall positional kick stays strictly bounded");
+    return max_angle;
+  };
 
-  // Sudden fence-clip yaw_rate shock does not whip the chase camera wildly off-axis.
-  cam.restart();
-  cam.update(1.0, in);
-  double max_lat_whip = 0.0;
-  for (int i = 0; i < 6; ++i) {
-    drive::CameraInput whip = in;
-    whip.yaw_rate = 10.0;
-    const auto v = cam.update(1.0 / 60.0, whip);
-    max_lat_whip = std::max(max_lat_whip, std::fabs(v.eye[0]));
+  // A held contact kicks once: the same as a one-frame pulse of its size.
+  const double pulse = kick(6.0, 1), held = kick(6.0, 20);
+  std::printf("collision kick: pulse %.3f deg, held 20 frames %.3f deg\n", pulse, held);
+  check(pulse > 0.05, "a collision pulse kicks the camera");
+  check(std::fabs(held - pulse) < 0.05 * pulse, "a held collision input fires its impulse once, not every frame");
+
+  // Under the cutoff nothing fires; a bigger impact kicks harder.
+  check(kick(0.5, 1) < 1e-6, "an input under ImpulseInputSizeCutoff fires nothing");
+  check(kick(9.0, 1) > 1.4 * pulse, "a bigger impact kicks harder");
+
+  // The kick recovers on the layer's spring.
+  {
+    cam.update(1.0, in);
+    drive::CameraInput hit = in;
+    hit.world_collision_lateral = 6.0;
+    hit.world_collision_longitudinal = 6.0;
+    cam.update(1.0 / 60.0, hit);
+    drive::CameraView settled{};
+    for (int i = 0; i < 120; ++i) settled = cam.update(1.0 / 60.0, in);
+    check(angle_deg(settled.forward, base.forward) < 0.15, "camera angular kick recovers cleanly to neutral");
+    check(dist3(settled.eye, base.eye) < 0.03, "camera positional kick recovers cleanly to neutral");
   }
-  check(max_lat_whip < 1.2, "sudden yaw_rate shock does not whip chase camera wildly");
+
+  // A second impact after the input fell back kicks again.
+  {
+    cam.update(1.0, in);
+    drive::CameraInput hit = in;
+    hit.world_collision_lateral = 6.0;
+    double one = 0.0, two = 0.0;
+    for (int i = 0; i < 12; ++i) {
+      drive::CameraInput f = i == 0 ? hit : in;
+      one = std::max(one, angle_deg(cam.update(1.0 / 120.0, f).forward, base.forward));
+    }
+    cam.update(1.0, in);
+    for (int i = 0; i < 12; ++i) {
+      drive::CameraInput f = (i == 0 || i == 3) ? hit : in;
+      two = std::max(two, angle_deg(cam.update(1.0 / 120.0, f).forward, base.forward));
+    }
+    check(two > 1.2 * one, "a new impact re-arms the impulse");
+  }
 
   // PT-31 helper: restart_count() increments on restart() and clear_pending_restart()
   // cancels the pending snap while preserving the monotonic counter.
