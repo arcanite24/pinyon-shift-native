@@ -1853,3 +1853,14 @@ engine reads 1st to 3rd as passing); Race Central's arrival radius (the
 catalogue's site radius); the AI drives the sat-nav route rather than
 route 170's own path; the two time-of-day zones ((-116, 107, -3377) and
 (2284, 109.9, 398.1), ramping to 18:00 and 14:30) are not implemented.
+The initial drive's sat-nav has three points (CSetDestForInitialDrive);
+the engine's sat-nav takes one destination, so the career routes leg by
+leg, (1552, 1436) then (1881, 1077) then the diner point, each leg ending
+60 m short of its point (the order is read from the road: CO-20 passes
+the first about 490 m before the second; the code's order of use is not
+decoded). The opening's AI plans its speed on the rounded-off sat-nav
+line at 6.5 m/s^2 of cornering, capped at the 100 mph PlacePlayerCar
+gives it (the original's race-behaviour speed is not found), and only
+the opening's cutscene keeps the car's physics running under it (the
+diner cutscenes and Festival_Race_Outro keep the paused sim);
+`timeTillRelease`'s parking brake is not applied (Q61 f).
