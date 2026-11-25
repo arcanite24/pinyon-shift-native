@@ -234,8 +234,23 @@ Input LineFollower::input(const Vehicle& v) {
   project(at.x, at.z);
   Input in;
   pedals_at(progress_, in.throttle, in.brake);
-  // Pure pursuit: the arc through the look-ahead point from the body point.
   const double speed = std::fabs(v.speed());
+  if (options_.slip_rule) {
+    // The AI's rule: the bearing of the line point T v ahead and the body's
+    // slip angle, no speed narrowing and no rate limit.
+    double tx = 0, tz = 0;
+    point_at(progress_ + std::max(2.0, options_.slip_lookahead_s * speed), tx, tz);
+    const Vec3 rel = rotate_inverse(v.orientation(), {tx - at.x, 0, tz - at.z});
+    const Vec3 vb = rotate_inverse(v.orientation(), v.velocity());
+    const double alpha = std::atan2(rel.x, rel.z);
+    const double beta = std::hypot(vb.x, vb.z) > 1.0 && vb.z > 0 ? std::atan2(vb.x, vb.z) : 0.0;
+    const double lock = v.steer_lock();
+    const double delta = ai_slip_steer(alpha, beta, lock);
+    saturated_ = std::fabs(0.27 * alpha + 0.29 * beta) > lock;
+    in.steer = lock > 0 ? std::clamp(delta / lock, -1.0, 1.0) : 0.0;
+    return in;
+  }
+  // Pure pursuit: the arc through the look-ahead point from the body point.
   const double look = std::max(options_.min_lookahead, options_.lookahead_s * speed);
   double tx = 0, tz = 0;
   point_at(progress_ + look, tx, tz);

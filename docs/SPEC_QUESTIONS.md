@@ -2015,6 +2015,31 @@ Open points:
   to 7 m/s slower. That is our AI controller against the mod's unequal
   clamps on the chattering loads, not the caps. The exemption stays.
 
+  **Resolved (2026-11-25): the exemption is gone.** The controller that
+  weaved was the oracle lap's pure-pursuit follower. That follower is
+  the M3 interim, not the title's AI. The lap now steers by the AI's own
+  rule (SPEC-RACE-AI, Steering at speed: delta = 0.27 alpha + 0.29 beta,
+  with the line point 1.0 s x v ahead, at least 2 m, and only the lock
+  as a bound). Every car runs the mod. The R34 lap times, with the AI's
+  TCS and STM on (Q122):
+
+  | Steering | Mod | Lap time |
+  |---|---|---|
+  | Pure pursuit | off | 39.258 s (+1.22 %, before Q122) |
+  | Pure pursuit | on | 40.549 s (+4.55 %) |
+  | AI rule | off | 38.568 s (-0.56 %) |
+  | AI rule | on | 39.003 s (+0.57 %) |
+
+  The last row is within the +-1 % target, with a cross-track maximum of
+  3.38 m. From 840 to 1040 m the yaw stays within 6 deg of the oracle's;
+  pure pursuit with the mod was up to 22 deg off. `SHIFT_LAP_STEER=pursuit`
+  brings back the old follower.
+
+  The race gate (seed 1, AI mean time) moved with the mod and the AI
+  rule together, so they land together with Q122. The mod alone, under
+  the old capped and rate-limited race steering, made NR02 170.6 s with 3
+  resets (from 138.6 s, 0 resets) and FR22 185.7 s (from 172.6 s).
+
 ## Q69 (FEEL-16/17, not blocking): the pad steering filter's law
 
 The engine's pad filter is now the parts SPEC-CAR-PHYSICS names, plus
@@ -2772,3 +2797,64 @@ difficulty or assist option), from a trace of that byte on `NR02`.
 Also interim: the distance the boost reads is the distance raced past the
 start line, and the speed test is in m/s. The title reads both from the
 car's route state and does not name their units.
+
+## Q122 (WORLD-02/03, not blocking): the AI-driven car's assists and the planner's calibration
+
+WORLD-02 and WORLD-03 are done: the race AI's own modifiers are gone.
+That covers the speed-narrowed turn-in cap, the 3.8 lock/s steer rate
+limit, the 0.29 alpha gain (now 0.27), the stretched and clamped
+look-ahead (now 1.0 s x v, at least 2 m), `off_line_slow`, the rollover
+cap on C, the cornering grip boost (the tyre's AI grip factor is now 1
+outside the car's dirt term, as RACE_AI's AI-only grip terms say) and
+`ai_traction`'s throttle cap and slip cut. The planner's vertical
+curvature now runs unclamped with the set's
+`SpeedComputerSlopeCurvatureModifier` (`default` 0.75, `freeroam` 1.0,
+`streetrace` 0.5) instead of a fixed 0.75.
+
+Without `ai_traction`, the full on/off gas spun the heavy rear-drive
+cars. NR02's Challenger went from 138.6 s with 0 resets to 277.1 s with
+10 resets. The engine now runs the title's own assists on AI-driven cars:
+
+- TCS with PhysicsSettings.ini's `...AI` keys: `TractionControlSpeedAI`
+  22, `TCSFullEffectFricDiffAI` 0.25, `TCSFullSteerSlipScale{RWD,FWD,AWD}AI`
+  1.3/1.7/0.71, and a takeoff slip of 1.0. The evidence is fair: on the
+  oracle lap the title's TCS amount was non-zero under the AI.
+- STM with the AI's window [1.0, 2.0]. The evidence is weak: the decoded
+  code has an AI window, but whether the AI's car has STM on is open
+  (CAR_PHYSICS, Unknowns). On the engine's oracle lap STM acts for 87
+  steps (0.7 s, amount up to 0.26) at 958 to 965 m, where the title's
+  never acted. The engine's TCS reaches 1.0 for three steps at the launch,
+  against the title's 0.064 peak.
+
+Gate (seed 1, AI mean time / resets), oracle in brackets:
+
+| Event | Before (f55db691) | Neither assist | TCS + STM | TCS + STM + `ai_traction` |
+|---|---|---|---|---|
+| FR22 (161.5) | 172.6 / 1 | 194.4 / 2 | 192.7 / 2 | 188.9 / 2 |
+| FR16 (124.0) | 123.4 / 0 | 137.4 / 8 | 121.8 / 0 | 123.6 / 0 |
+| FR24 (110.8) | 108.6 / 0 | 109.0 / 0 | 108.4 / 0 | 108.9 / 0 |
+| FR01 (102.7) | 108.6 / 1 | 121.3 / 1 | 105.8 / 1 | 102.2 / 1 |
+| NR02 (130.7) | 138.6 / 0 | 277.1 / 10 | 151.5 / 0 | 132.6 / 0 |
+| EXHIBITION_FEST_003 (179.0) | 193.8 / 0 | 197.9 / 10 | 185.0 / 0 | 209.9 / 4 |
+
+TCS + STM ships; `ai_traction` stays only on the pure-pursuit path
+(`SHIFT_AI_STEER=pursuit`). NR02's rival lost 20 s of the 25 s it had
+gained on the invented grip boost; that boost lifted a catch-up car's
+grip up to 1.25.
+
+Still interim:
+
+- The capacity calibration (`AiCapacityCalibration`, the R34's
+  16.01/14.6 lateral and 18.26/17.1 braking, blended out below 1,100 kg)
+  stays until the physics' raw tables match the title's dumps (the audit
+  says to fix the physics first). The engine's car model has no
+  downforce for `ai_aero_factor` to scale.
+- The tyre's AI grip factor's cornering, heavy-braking and state terms
+  are 0 (RACE_AI, interim).
+
+Needed: whether the AI-driven car has TCS and STM on, and with which
+slip targets (`AssistsTCSSlipDefMoving` for the AI), from the assist
+flags of an AI car in a race trace; and an AI car's speed against its
+plan on `FR22` and `NR02`, to tell the planner's tables from the car's
+handling.
+

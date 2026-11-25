@@ -42,6 +42,15 @@ bool parse_gate(const std::string& lap_json, Gate& out, std::string* error);
 // Follows the oracle's line: the car's progress is its projection on the
 // line (moving forward only), the pedals are the oracle's at that
 // distance, and the steer is pure pursuit at a look-ahead point.
+// SPEC-RACE-AI, Steering at speed (the fitted rule): the road-wheel angle
+// (rad) for alpha, the bearing of the look-ahead point less the body's
+// heading, and beta, the velocity's direction less the heading (both in
+// the steer's sense), clamped only by the full lock: 0.27 alpha + 0.29 beta.
+inline double ai_slip_steer(double alpha, double beta, double lock) {
+  const double d = 0.27 * alpha + 0.29 * beta;
+  return d < -lock ? -lock : d > lock ? lock : d;
+}
+
 class LineFollower {
  public:
   struct Options {
@@ -52,6 +61,12 @@ class LineFollower {
     // pure-pursuit angle, so a corner taken with body slip holds the line
     // (pure pursuit from the body point settles wide). 0: pure pursuit only.
     double cross_gain = 0;
+    // SPEC-RACE-AI, Steering at speed: the oracle lap is the title's AI
+    // driving, so it steers by the AI's own rule (drive::ai_slip_steer:
+    // delta = 0.27 alpha + 0.29 beta with the line point slip_lookahead_s x
+    // v ahead, at least 2 m); false: pure pursuit (the M3 interim).
+    bool slip_rule = true;
+    double slip_lookahead_s = 1.0;
   };
   LineFollower(const OracleLine& line, const Options& options);
 

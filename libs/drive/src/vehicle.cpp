@@ -1541,7 +1541,11 @@ void Vehicle::substep(double dt, const Ground& ground) {
   // Stability control (STM, SPEC-CAR-PHYSICS, Stability control): asymmetric
   // outside-of-slide brake demand when moving forward above StabilityManageSpeed.
   double stm_wheel_delta[kWheels]{};
-  if (!ai_ && assists_.stability_control && speed() >= 0) {
+  // The AI-driven car runs it with the AI's window, [1.0, 2.0] (interim,
+  // Q122: the decoded code has the AI's window; whether the AI's car has
+  // STM on is open).
+  const double stm_min = ai_ ? 1.0 : p.stm_slip_min, stm_max = ai_ ? 2.0 : p.stm_slip_max;
+  if ((ai_ || assists_.stability_control) && speed() >= 0) {
     double surf_scale = 0;
     int grounded = 0;
     for (int i = 0; i < kWheels; ++i)
@@ -1551,9 +1555,9 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double v2 = dot(vel_, vel_);
     if (v2 >= v_thresh * v_thresh) {
       const double mean_rear_sa = 0.5 * (w_[2].slip_angle + w_[3].slip_angle);
-      if (std::fabs(mean_rear_sa) >= p.stm_slip_min) {
-        const double amt = std::clamp(
-            (std::fabs(mean_rear_sa) - p.stm_slip_min) / std::max(1e-3, p.stm_slip_max - p.stm_slip_min), 0.0, 1.0);
+      if (std::fabs(mean_rear_sa) >= stm_min) {
+        const double amt =
+            std::clamp((std::fabs(mean_rear_sa) - stm_min) / std::max(1e-3, stm_max - stm_min), 0.0, 1.0);
         stm_flag_ = true;
         stm_amount_ = std::max(stm_amount_, amt);
         if (mean_rear_sa > 0) {
@@ -1728,7 +1732,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
   // the speed/steer/yaw-adjusted target.
   double tcs_cut = 1.0;
   double tcs_avg_slip = 0.0;
-  if (!ai_ && assists_.traction_control && drive_in > 0.05 && G != 0) {
+  // The AI-driven car runs it with the ...AI keys and a takeoff slip of 1.0
+  // (Q122: on the oracle lap the title's TCS amount was non-zero under the
+  // AI).
+  if ((ai_ || assists_.traction_control) && drive_in > 0.05 && G != 0) {
     double sum_sr = 0, sum_sa = 0, sum_surf = 0;
     int n_drv = 0;
     for (int i = 0; i < kWheels; ++i) {
@@ -1744,15 +1751,16 @@ void Vehicle::substep(double dt, const Ground& ground) {
       const double avg_sa = sum_sa / n_drv;
       const double avg_surf = sum_surf / n_drv;
       tcs_avg_slip = avg_sr;
-      const double v_thresh = p.tcs_speed_mph * 0.44704 * avg_surf;
+      const double fric_diff = ai_ ? p.tcs_fric_diff_ai : p.tcs_fric_diff;
+      const double v_thresh = (ai_ ? p.tcs_speed_mph_ai : p.tcs_speed_mph) * 0.44704 * avg_surf;
       const double s_base =
-          dot(vel_, vel_) > 0.19984475 * v_thresh * v_thresh ? p.tcs_slip_moving : p.tcs_slip_takeoff;
-      const double steer_scale = p.layout == CarParams::Layout::kAll
-                                     ? p.tcs_steer_scale_awd
-                                     : (p.layout == CarParams::Layout::kFront ? p.tcs_steer_scale_fwd
-                                                                              : p.tcs_steer_scale_rwd);
-      const double s_target =
-          s_base * lerp(1.0, steer_scale, std::clamp(avg_sa, 0.0, 1.0)) + p.tcs_fric_diff * avg_surf;
+          dot(vel_, vel_) > 0.19984475 * v_thresh * v_thresh ? p.tcs_slip_moving : (ai_ ? 1.0 : p.tcs_slip_takeoff);
+      const double steer_scale =
+          p.layout == CarParams::Layout::kAll
+              ? (ai_ ? p.tcs_steer_scale_awd_ai : p.tcs_steer_scale_awd)
+              : p.layout == CarParams::Layout::kFront ? (ai_ ? p.tcs_steer_scale_fwd_ai : p.tcs_steer_scale_fwd)
+                                                      : (ai_ ? p.tcs_steer_scale_rwd_ai : p.tcs_steer_scale_rwd);
+      const double s_target = s_base * lerp(1.0, steer_scale, std::clamp(avg_sa, 0.0, 1.0)) + fric_diff * avg_surf;
       // Yaw angle fade over [YawMinAngleForTCS, YawMaxAngleForTCS].
       const Vec3 fwd_w = rotate(rot_, {0, 0, 1});
       const double sp_xz = std::hypot(vel_.x, vel_.z);
@@ -1763,7 +1771,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
         yaw_fade = 1.0 - ramp(yaw_deg, p.tcs_yaw_min_deg, p.tcs_yaw_max_deg);
       }
       const double amt =
-          std::clamp((avg_sr - s_target) / std::max(0.1, p.tcs_fric_diff), 0.0, 1.0) * yaw_fade;
+          std::clamp((avg_sr - s_target) / std::max(0.1, fric_diff), 0.0, 1.0) * yaw_fade;
       if (amt >= 0.1) tcs_flag_ = true;
       tcs_amount_ = std::max(tcs_amount_, amt);
       tcs_cut = 1.0 - amt;
@@ -1899,8 +1907,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
     WheelState& w = w_[i];
     double o = w.omega + dt * (tc_wheel_side * G * weight_[i] + lsd[i] - p.tyre_radius[i] * fx0[i]) / j_eff[i];
     // TCS stage 2: wheel speed trim during launch when driven slip exceeds takeoff target.
-    if (tcs_cut < 1.0 && state_ == GearState::kLaunch && weight_[i] > 0 && tcs_avg_slip > p.tcs_slip_takeoff) {
-      const double trim = (1.0 - p.tcs_slip_takeoff / std::max(1e-3, tcs_avg_slip)) *
+    if (tcs_cut < 1.0 && state_ == GearState::kLaunch && weight_[i] > 0 && tcs_avg_slip > (ai_ ? 1.0 : p.tcs_slip_takeoff)) {
+      const double trim = (1.0 - (ai_ ? 1.0 : p.tcs_slip_takeoff) / std::max(1e-3, tcs_avg_slip)) *
                           std::fabs(tc_wheel_side * G * weight_[i]) * dt / std::max(0.1, p.wheel_inertia);
       o -= sign(o) * std::min(std::fabs(o), trim);
     }
@@ -1994,11 +2002,12 @@ void Vehicle::substep(double dt, const Ground& ground) {
   // Q68): the tyres' summed yaw torque about the body's up axis is rescaled
   // and clamped by the car's slip-angle cosine and speed. The table is
   // SimulationSteering in Simulation steering, else WithAssists or NoAssists
-  // (the shipped rows are equal). The original runs it for every car; ours
-  // skips AI-driven cars for now (interim, Q68): our suspension's wheel loads
-  // chatter, and the unequal Turn/Straighten clamps make the AI weave through
-  // the oracle lap's left-right transition, 7 % slower.
-  if (!ai_) {
+  // (the shipped rows are equal). It runs for every car, AI-driven ones
+  // included, as in the original (Q68 (e)): the AI's weave under the
+  // unequal Turn/Straighten clamps came from the oracle lap's pure-pursuit
+  // follower, not from the mod; under the AI's own steering rule the lap
+  // holds the line with the mod on.
+  {
     const double t_yaw = dot(tyre_torque, up);
     const Vec3 fwd_w = rotate(rot_, {0, 0, 1});
     const Vec3 v_flat = vel_ - up * dot(vel_, up);

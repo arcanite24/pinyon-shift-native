@@ -415,6 +415,8 @@ int main(int argc, char** argv) {
     drive::LineFollower::Options fo;
     fo.lookahead_s = lookahead_s;
     if (const char* k = std::getenv("SHIFT_LAP_CROSS_GAIN")) fo.cross_gain = std::atof(k);
+    // SHIFT_LAP_STEER=pursuit: the old pure-pursuit follower.
+    if (const char* k = std::getenv("SHIFT_LAP_STEER")) fo.slip_rule = std::string(k) != "pursuit";
     const bool live_dirt = std::getenv("SHIFT_LAP_DIRT_REPLAY") == nullptr;
     drive::LineFollower follower(line, fo);
     drive::GateTimer timer(gate, follower.length() / 2);
@@ -423,7 +425,8 @@ int main(int argc, char** argv) {
     const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
     long long last_frame = LLONG_MIN;
     double distance = 0, t100 = -1, top = 0, max_cross = 0, sum_cross2 = 0, finish_speed = 0;
-    int lap_steps = 0, saturated = 0;
+    int lap_steps = 0, saturated = 0, stm_steps = 0;
+    double tcs_peak = 0;
     std::map<int, long long> surfaces;
     std::vector<double> ours_at;  // our race time at each 100 m of the oracle's path
     drive::Vec3 prev = v.position();
@@ -451,6 +454,10 @@ int main(int argc, char** argv) {
         }
       }
       v.step(in, *ground);
+      if (v.time() > settle) {
+        tcs_peak = std::max(tcs_peak, v.tcs_amount());
+        if (v.stm_active()) ++stm_steps;
+      }
       const double t = v.time() - settle;
       const drive::Vec3 at = v.position();
       if (streamer) {
@@ -509,6 +516,9 @@ int main(int argc, char** argv) {
                 distance, follower.length());
     std::printf("line: cross-track max %.2f m, rms %.2f m; steer past full lock on %d of %d steps\n", max_cross,
                 lap_steps ? std::sqrt(sum_cross2 / lap_steps) : 0.0, saturated, lap_steps);
+    // SPEC-CAR-PHYSICS: under the title's AI the lap's TCS amount peaked at
+    // 0.064 and STM never acted.
+    std::printf("assists: TCS amount peak %.3f, STM on %d steps\n", tcs_peak, stm_steps);
     long long wheel_samples = 0;
     for (const auto& [k, n] : surfaces) wheel_samples += n;
     for (const auto& [k, n] : surfaces)

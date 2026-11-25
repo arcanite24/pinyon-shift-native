@@ -198,7 +198,8 @@ double ai_brake_carry(double v, double a, double ds) {
   return v >= 10 ? v - a * ds / v : std::sqrt(std::max(0.0, v * v - 2 * a * ds));
 }
 
-double ai_corner_speed(const AiCapacity& cap, double cornering, double kappa, double kappa_v, double theta, double top) {
+double ai_corner_speed(const AiCapacity& cap, double cornering, double kappa, double kappa_v, double theta, double top,
+                       double slope_curvature) {
   constexpr double kG = 9.81;
   const double k = std::fabs(kappa);
   if (k < 1e-9 && std::fabs(kappa_v) < 1e-9) return top;
@@ -210,7 +211,7 @@ double ai_corner_speed(const AiCapacity& cap, double cornering, double kappa, do
     if (n == idx) break;
     idx = n;
     const double mu = cornering * cap.lateral[size_t(n)] / kG;
-    const double num = kG * (s + mu * co), den = k * (co - mu * s) - 0.75 * kappa_v * (s + mu * co);
+    const double num = kG * (s + mu * co), den = k * (co - mu * s) - slope_curvature * kappa_v * (s + mu * co);
     // A negative result: no limit.
     const double v2 = den > 0 && num > 0 ? num / den : 1e6;
     v = std::min(top, std::sqrt(v2));
@@ -371,8 +372,8 @@ double AiField::corner_at(size_t i, size_t j) const {
   if (std::isnan(v)) {
     const double kappa = line_.curvature[j];
     const double theta = kappa > 0 ? line_.bank_left[j] : -line_.bank_left[j];
-    const double kv = std::min<double>(line_.curvature_v[j], 0.002);
-    double vc = ai_corner_speed(*capacity_[i], plan_c_[i], kappa, kv, theta, o_.max_speed);
+    double vc =
+        ai_corner_speed(*capacity_[i], plan_c_[i], kappa, line_.curvature_v[j], theta, o_.max_speed, o_.slope_curvature);
     const double grip = double(line_.grip_at(j));
     if (std::fabs(kappa) > 1e-6 && std::fabs(grip - 1.0) > 1e-4) {
       vc = std::min<double>(o_.max_speed, vc * std::sqrt(grip));
@@ -510,15 +511,9 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     const float speed = std::fabs(c.speed);
     double look_dist = 0.0;
     if (o_.slip_rule) {
-      // SPEC-RACE-AI: T = 1.0 s speed lookahead with a smooth ramp (no binary
-      // 1x/4x cliff!) when body slip grows past ~8-11 deg, bounded so tight
-      // canyon hairpins are never aimed across.
-      const float v_mag = std::hypot(c.vel_x, c.vel_z);
-      const float align = v_mag > 2.0f ? (c.vel_x * c.fwd_x + c.vel_z * c.fwd_z) / v_mag : 1.0f;
-      const float slip_t = v_mag > 5.0f ? std::clamp((0.99f - align) / 0.06f, 0.0f, 1.0f) : 0.0f;
-      const double drift_mult = 1.0 + 2.5 * double(slip_t);
-      const double base_look = std::clamp<double>(o_.slip_lookahead_s * speed, 4.0, 48.0);
-      look_dist = std::min(80.0, base_look * drift_mult);
+      // SPEC-RACE-AI, Steering at speed (interim): the line point T v
+      // ahead, T = 1.0 s, at least 2 m.
+      look_dist = std::max(2.0, double(o_.slip_lookahead_s) * speed);
     } else {
       look_dist = std::clamp<double>(o_.lookahead_s * speed, double(o_.min_lookahead), 24.0);
     }
@@ -545,19 +540,19 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     const float ai_cap = std::min(c.steer_lock, std::max(c.max_delta * 1.55f, 0.08f));
     float delta = std::clamp(ld > 1e-4f ? 1.55f * std::atan(2 * c.wheelbase * std::sin(alpha) / ld) : 0.0f, -ai_cap, ai_cap);
     if (o_.slip_rule) {
-      // SPEC-RACE-AI measured steering at speed (EXHIBITION_FEST_003):
-      // delta = 0.27..0.29 * alpha + 0.29 * beta; cap turn-in by speed-safe
-      // lateral authority while leaving counter-steer (beta) full lock.
+      // SPEC-RACE-AI, Steering at speed: delta = 0.27 alpha + 0.29 beta,
+      // clamped only by the full lock (no speed-narrowed turn-in cap).
       const float vz = c.vel_x * c.fwd_x + c.vel_z * c.fwd_z, vx = c.vel_x * c.fwd_z - c.vel_z * c.fwd_x;
       const float beta = std::hypot(vx, vz) > 1.0f && vz > 0 ? std::atan2(vx, vz) : 0.0f;
-      const float turn_cap = std::min(c.steer_lock, std::max(c.max_delta * 2.2f, 0.14f));
-      delta = std::clamp(std::clamp(0.29f * alpha, -turn_cap, turn_cap) + 0.29f * beta, -c.steer_lock, c.steer_lock);
+      delta = float(ai_slip_steer(alpha, beta, c.steer_lock));
     }
     Input& in = inputs[i];
     in = Input{};
     const float raw_steer = c.steer_lock > 0 ? std::clamp(delta / c.steer_lock, -1.0f, 1.0f) : 0.0f;
     float steer_out = raw_steer;
-    if (o_.steer_rate > 0.0f) {
+    // No rate limit on the slip rule (SPEC-RACE-AI: the wheels follow the
+    // steer at every speed); pure pursuit keeps its own.
+    if (o_.steer_rate > 0.0f && !o_.slip_rule) {
       const float vz_b = c.vel_x * c.fwd_x + c.vel_z * c.fwd_z;
       const float vx_b = c.vel_x * c.fwd_z - c.vel_z * c.fwd_x;
       const bool sliding = std::hypot(vx_b, vz_b) > 5.0f && vz_b > 1.0f && std::fabs(std::atan2(vx_b, vz_b)) > 0.12f;

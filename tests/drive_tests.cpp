@@ -234,7 +234,14 @@ void test_oracle_lap() {
   CHECK(gate.nx == 0 && std::fabs(gate.nz - 1) < 1e-12);
   CHECK(!drive::parse_gate("{\"race\": {}}", gate, &error));
 
-  drive::LineFollower follower(line, {});
+  // SPEC-RACE-AI, Steering at speed: 0.27 alpha + 0.29 beta, only the lock bounds it.
+  CHECK(std::fabs(drive::ai_slip_steer(0.1, 0.05, 0.73) - 0.0415) < 1e-12);
+  CHECK(drive::ai_slip_steer(3.0, 0.0, 0.73) == 0.73 && drive::ai_slip_steer(-3.0, -1.0, 0.73) == -0.73);
+  // The geometry below is pure pursuit's (the slip rule's fit is for 15 m/s
+  // and up; this circle runs at 8).
+  drive::LineFollower::Options pursuit;
+  pursuit.slip_rule = false;
+  drive::LineFollower follower(line, pursuit);
   // The grid's pedals are the last sample at distance 0: the launch's gas.
   double gas = 0, brake = 1;
   follower.pedals_at(0, gas, brake);
@@ -394,7 +401,7 @@ void test_ai_slip_rule() {
     double max_steer_step = 0.0;
     double prev_steer = 0.0;
     for (int s = 0; s < int(20 / drive::Vehicle::kStep); ++s) {
-      // Trigger a sudden lane change mid-run to verify steer_rate prevents 1-tick snaps.
+      // Sudden lane changes mid-run: pursuit's steer_rate stops 1-tick snaps.
       if (s == 600) field.set_lane(0, 2.5f);
       if (s == 1200) field.set_lane(0, -2.5f);
       st[0] = drive::ai_state(car);
@@ -408,7 +415,7 @@ void test_ai_slip_rule() {
     CHECK(std::isfinite(car.position().x) && std::isfinite(car.position().z));
     CHECK(field.progress(0) > 150.0);
     CHECK(max_abs_steer > 0.02);
-    if (use_slip) CHECK(max_steer_step < 0.08);
+    if (!use_slip) CHECK(max_steer_step < 0.08);
     return field.progress(0);
   };
 

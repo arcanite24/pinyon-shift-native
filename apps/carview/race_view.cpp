@@ -479,11 +479,10 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     sopt.off_route_far = 25.0;
   }
   session_ = std::make_unique<race::Session>(size_t(cars), circuit_, laps, *gate, finish, sopt);
-  // Upgraded closed-road festival packs run wider side-by-side (0.04); street
-  // routes and stock showcase cars stay tighter to the line (0.08).
-  const float off_slow = (event_.upgrade_ai && !street_) ? 0.04f : 0.08f;
+  // SPEC-RACE-AI, Throttle: full gas below the plan; no slowing for
+  // distance off the lane.
   field_ = std::make_unique<drive::AiField>(line_.line, size_t(cars),
-                                            drive::AiField::Options{.full_gas = true, .off_line_slow = off_slow, .slip_rule = slip_rule()});
+                                            drive::AiField::Options{.full_gas = true, .slip_rule = slip_rule()});
   const double from = circuit_ ? line_.gate_progress - 0.5 * line_.lap_length : std::max(0.0, line_.gate_progress - 1500);
   cars_.clear();
   cars_.resize(size_t(cars - 1));
@@ -1056,20 +1055,6 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
         C = drive::ai_boost(C, cars_[k].boost.skill, 1.25);
       }
     }
-    // Cap planned cornering below static rollover stability for narrow/tall
-    // chassis (e.g. 1965 Mini 1.2 m track) so catch-up (C = 1.25) never flips
-    // them onto their roof; deliberate mode-4 over-cornering stays uncapped.
-    const bool over_corner = cars_[k].ai.state() == race::DriverAi::State::kRubberband && cars_[k].ai.mode() == 4;
-    if (!over_corner && cars_[k].capacity.lateral[8] > 1.0f) {
-      const auto& bp = cars_[k].body->params();
-      const double half_track = 0.5 * std::fabs(bp.wheel_centres[1].x - bp.wheel_centres[0].x);
-      const double com_h = std::max(0.20, bp.centre_of_mass.y);
-      if (half_track > 0.3 && (half_track / com_h) < 1.45) {
-        const double roll_cap_ms2 = 0.98 * (half_track / com_h) * 9.81;
-        const double max_c = std::max(0.81, roll_cap_ms2 / double(cars_[k].capacity.lateral[8]));
-        if (C > max_c) C = max_c;
-      }
-    }
     update_car_planner(k, &cars_[k].capacity, float(C), float(B));
   }
   states_[n] = drive::ai_state(player);
@@ -1289,17 +1274,14 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     drive::Input in = inputs_[k];
     // Held on the grid; revving from 3.09 s before the signal, clutch dropped at it.
     if (clock < 0) in = clock >= -3.09 ? drive::Input{0, 1, 1, true} : drive::Input{0, 0, 0.4, true};
-    else drive::ai_traction(*c.body, c.traction_cap, drive::Vehicle::kStep, in, !slip_rule());
+    // SPEC-RACE-AI, Throttle: the plan's on/off gas reaches the car as is
+    // under the slip rule; ai_traction (ours) is pure pursuit's.
+    else if (!slip_rule()) drive::ai_traction(*c.body, c.traction_cap, drive::Vehicle::kStep, in, true);
     c.body->set_torque_factor(c.ai.torque() * (1 + c.boost.torque));
-    const bool over_corner = c.ai.state() == race::DriverAi::State::kRubberband && c.ai.mode() == 4;
-    const auto& bp = c.body->params();
-    const double half_track = 0.5 * std::fabs(bp.wheel_centres[1].x - bp.wheel_centres[0].x);
-    const double com_h = std::max(0.20, bp.centre_of_mass.y);
-    const double max_grip = (half_track > 0.3 && (half_track / com_h) < 1.45) ? 1.0 : 1.25;
-    // Keep deliberate mode-4 over-cornering mistakes at 1.0 grip so they can run wide,
-    // while allowing Hard/Pro AI and kCatchUp to retain their cornering grip up to max_grip.
-    const double ai_corner_grip = over_corner ? 1.0 : std::clamp(c.ai.cornering(), 1.0, max_grip);
-    c.body->set_ai_grip(ai_corner_grip, ai_corner_grip);
+    // SPEC-RACE-AI, AI-only grip terms: catch-up and the cornering scalar
+    // do not touch the tyre's AI grip factor; its cornering, heavy-braking
+    // and state terms are interim 0 (the dirt term is the car's own).
+    c.body->set_ai_grip(1.0, 1.0);
     const double d = std::hypot(at.x - cx, at.z - cz);
     const bool was_far = c.far;
     if (c.far && d < radius - 80) c.far = false;

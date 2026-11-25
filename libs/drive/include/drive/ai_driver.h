@@ -108,7 +108,10 @@ double ai_aero_factor(double v);
 // theta (rad, + leaning into the turn), at most `top`: v^2 = g (sin + mu
 // cos) / (|k| (cos - mu sin) - 0.75 k_v (sin + mu cos)), mu = C x
 // lateral(v) / g, iterated up to 10 times on the table entry.
-double ai_corner_speed(const AiCapacity& cap, double cornering, double kappa, double kappa_v, double theta, double top);
+// `slope_curvature`: the set's SpeedComputerSlopeCurvatureModifier
+// (AIRacing.xml PredictiveControllerRLH; `default` 0.75).
+double ai_corner_speed(const AiCapacity& cap, double cornering, double kappa, double kappa_v, double theta, double top,
+                       double slope_curvature = 0.75);
 // The braking pass's two steps. The braking a corner leaves at v_lim
 // under its corner speed v_c (the friction circle), from the deceleration
 // `full` = B x A_brk: full x sqrt(1 - min(v_lim^2 / v_c^2, 1)). The carry
@@ -157,6 +160,9 @@ class AiField {
     // brake above it (the AI's gas jumps between 1 and 0).
     bool full_gas = false;
     float max_speed = 90.0f;  // m/s, the plan's cap
+    // The race's AIRacing.xml set's SpeedComputerSlopeCurvatureModifier
+    // (the vertical curvature's weight in the corner speed).
+    float slope_curvature = 0.75f;
     float off_line_slack = 1.0f;  // m off the lane before the car slows...
     float off_line_slow = 0.0f;   // ...by this fraction a metre (0: never)
     // SPEC-RACE-AI, Steering at speed: delta = 0.27 alpha + 0.29 beta, alpha
@@ -166,8 +172,8 @@ class AiField {
     // pad's speed-narrowed lock).
     bool slip_rule = false;
     float slip_lookahead_s = 1.0f;
-    // Maximum steering command rate (full-lock units per second, 0: unlimited).
-    // Prevents instant 1-tick front-wheel snaps when lanes or curvature change.
+    // Pure pursuit only (ours): the steering command's maximum rate, in
+    // full-lock units per second (0: unlimited). The slip rule has none.
     float steer_rate = 3.8f;
   };
   AiField(const RacingLine& line, size_t cars, const Options& options);
