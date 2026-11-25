@@ -1269,7 +1269,11 @@ void AudioEngine::render_block(float* out, int frames) {
   }
 
   drain_ui_music_loaded();
-  const bool on_title = snap_title_ >= 0 && mixer_.snapshots().active(snap_title_);
+  // The own "Title" snapshot and the title bus mute are a fallback for
+  // installs without AudioMixerSnapshots.xml. The game's matrix has no
+  // Title snapshot, so with the matrix loaded the title mixes only through
+  // the matrix's Gameplay state (AudioHost maps it to UIExterior).
+  const bool on_title = !use_matrix_ && snap_title_ >= 0 && mixer_.snapshots().active(snap_title_);
   const bool user_music_on = user_music_ && user_music_->active();
   const bool runtime_radio_on = !user_music_on && runtime_radio_ && runtime_radio_->active();
 

@@ -1131,7 +1131,9 @@ void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, 
   if (!have_on_title_ || on_title != last_on_title_) {
     have_on_title_ = true;
     last_on_title_ = on_title;
-    engine_.set_snapshot(snap_title_, on_title);
+    // The own Title snapshot only without the game's matrix; with it the
+    // title is the matrix's UIExterior state (sync_gameplay_snapshot).
+    engine_.set_snapshot(snap_title_, on_title && !engine_.has_snapshot_matrix());
   }
 
   // Hot-reload radio_stations.json and drain async YouTube playlist resolutions (~1 Hz).
