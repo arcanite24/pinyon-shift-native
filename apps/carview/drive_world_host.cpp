@@ -758,6 +758,7 @@ bool DriveWorldHost::open_world_and_car() {
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
                                                        app.render_ground ? nullptr : &collision);
           streamer->set_async(streamer_async);
+          streamer->set_lead(true);  // keeps a fast car central in the collision
           streamer->set_prepare([this](const world::Mesh& mesh, double cx, double cz) {
             const bool async_mid_drive = streamer_async && streamer && streamer->gathers() >= 1;
             if (async_mid_drive) lower_stream_worker_priority();
@@ -1000,6 +1001,7 @@ bool DriveWorldHost::hot_reload_car_and_world() {
             streamer = std::make_unique<world::Streamer>(colorado, world_gather_options, kRegather,
                                                          app.render_ground ? nullptr : &collision);
             streamer->set_async(streamer_async);
+            streamer->set_lead(true);
             streamer->set_prepare([this](const world::Mesh& mesh, double cx, double cz) {
               const bool async_mid_drive = streamer_async && streamer && streamer->gathers() >= 1;
               if (async_mid_drive) lower_stream_worker_priority();
