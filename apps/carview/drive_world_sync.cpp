@@ -672,15 +672,8 @@ void DriveSession::place_world() {
         float sun[3], up[3];
         rotate_direction(m, up_game, up);
         if (app.tod_system.loaded_tod) {
-          const world::TodState raw_tod = app.tod_system.evaluate(app.tod_clock);
-          static const DriveWorldHost* s_tod_smooth_host = nullptr;
-          static world::TodSmoother s_tod_smoother;
-          const bool snap_tod = (s_tod_smooth_host != &host || app.headless);
-          if (s_tod_smooth_host != &host) s_tod_smooth_host = &host;
-          world::TodState tod =
-              (!snap_tod && tod_frame_dt <= 0.0 && s_tod_smoother.initialized)
-                  ? s_tod_smoother.state
-                  : s_tod_smoother.update(raw_tod, float(std::clamp(tod_frame_dt, 0.0, 0.25)), snap_tod);
+          // The curves at the clock's time, unsmoothed (SPEC-SKY-AND-TOD §2.4).
+          world::TodState tod = app.tod_system.evaluate(app.tod_clock);
           rotate_direction(m, tod.sun_dir.data(), sun);
           host.showroom.set_world_light(sun, up, 1.0f);
           host.showroom.set_shadow_direction(sun);
