@@ -795,6 +795,7 @@ void draw_fade(ui::List& l, double fade, float w, float h) {
 constexpr float kTicketPointsDy = 17.0f, kTicketPointsTextDy = 30.0f;
 constexpr float kTicketCreditsDy = -6.0f, kTicketCreditsTextDy = 16.0f;
 constexpr float kTicketEligibilityDx = -80.0f;
+constexpr const char* kTicketOpenText = "OPEN";  // the restriction kTicketEligibilityDx was measured after
 constexpr float kTicketTapePad = 8.0f;
 
 // Widens a ticket value tape (LeftEdge, Centre, RightEdge) leftwards to its
@@ -843,7 +844,14 @@ bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& e
   if (const int tx = sc.node("TEXT_POINTS"); tx >= 0) sc.at(tx).dy = kTicketPointsTextDy;
   if (const int tp = sc.node("Credits/Tape"); tp >= 0) sc.at(tp).dy = kTicketCreditsDy;
   if (const int tx = sc.node("TEXT_CREDITS"); tx >= 0) sc.at(tx).dy = kTicketCreditsTextDy;
-  if (const int el = sc.node("TEXT_ELIGIBILITY"); el >= 0) sc.at(el).dx = kTicketEligibilityDx;
+  // The eligibility line follows the restriction: measured after OPEN, and
+  // pushed right by a longer restriction (MUST BE ...) so they never overlap.
+  if (const int el = sc.node("TEXT_ELIGIBILITY"); el >= 0) {
+    float dx = kTicketEligibilityDx;
+    if (const int cr = sc.node("TEXT_CAR_RESTRICTIONS"); cr >= 0 && !es.restriction.empty())
+      dx += std::max(0.0f, sd.measure(cr, upper(es.restriction)) - sd.measure(cr, kTicketOpenText));
+    sc.at(el).dx = dx;
+  }
   widen_ticket_tape(sc, sc.node("Points/Tape"), sc.node("TEXT_POINTS"), thousands(es.points) + " " + text_of(race_text::kPts));
   widen_ticket_tape(sc, sc.node("Credits/Tape"), sc.node("TEXT_CREDITS"), credits_text(es.credits));
   if (es.style == 1)
