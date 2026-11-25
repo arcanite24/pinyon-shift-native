@@ -82,11 +82,12 @@ void fit_pill(SceneScreen& sc, int pill, int text, const std::string& s) {
 
 void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& band_texture) {
   const SceneDraw& sd = sc.scene();
+  // Every node under the PlayerBar: a screen sharing the bar has its own
+  // Points, Wristband, TEXT_PI, Pill01 ... (H_EVENT_SUMMARY, the car lists).
+  const int bar = sc.node("PlayerBar");
   // Top row: the wristband objective and the wristband.
-  // By path: a screen sharing the bar (H_EVENT_SUMMARY) has its own Points
-  // and Wristband nodes.
-  const int next = sc.node("TopRow/SP/Next_Level"), points = sc.node("TopRow/SP/Points");
-  const int band = sc.node("TopRow/SP/Wristband");
+  const int next = sc.node("TopRow/SP/Next_Level", bar), points = sc.node("TopRow/SP/Points", bar);
+  const int band = sc.node("TopRow/SP/Wristband", bar);
   // A band waiting to be collected shows that band, its objective in its
   // colour with no tape behind (07_pause_menu_orig.png).
   const bool collect = !st.band_next.empty() && st.band_collect_ready;
@@ -100,7 +101,7 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
         sc.at(next).dx = kObjectiveRight - sd.measure(next, objective) - sd.at(next)[0];
       }
       sc.hide(points);
-      const int sp = sc.node("TopRow/SP");
+      const int sp = sc.node("TopRow/SP", bar);
       for (const char* tape : {"Smudge_Tape", "Crisp_Tape", "Dirt_Tile", "top_pill"}) sc.hide(child(sd, sp, tape));
     } else {
       sc.text(next, "Nxt Lvl");
@@ -116,26 +117,26 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
                                                          : "WRISTBANDS/" + upper(shown_band.substr(0, shown_band.find(' ')));
   if (band >= 0 && !band_tex.empty()) sc.at(band).texture = band_tex;
   // Middle row: the car and its class / PI.
-  const int car = sc.node("TEXT_CAR"), pi = sc.node("TEXT_PI"), cls = sc.node("CLASS_A");
+  const int car = sc.node("TEXT_CAR", bar), pi = sc.node("TEXT_PI", bar), cls = sc.node("CLASS_A", bar);
   std::string name = st.club_tag.empty() ? st.car_name : "[" + st.club_tag + "] " + st.car_name;
   sc.text(car, name);
-  fit_pill(sc, sc.node("middle_Pill"), car, name);
+  fit_pill(sc, sc.node("middle_Pill", bar), car, name);
   if (!st.car_class.empty()) {
     sc.text(pi, std::to_string(st.car_pi));
     if (pi >= 0) sc.at(pi).tint = kInk;
     if (cls >= 0) sc.at(cls).texture = "PICLASS/CLASS_" + upper(st.car_class);
   } else {
-    sc.hide(sc.node("CLASS_SM"));
+    sc.hide(sc.node("CLASS_SM", bar));
   }
   // Bottom row: credits.
   if (st.credits >= 0) {
-    const int cr = sc.node("TEXT_CR");
+    const int cr = sc.node("TEXT_CR", bar);
     const std::string credits = format1(text_of(pause_text::kCredits), thousands(st.credits));
     sc.text(cr, credits);
-    fit_pill(sc, sc.node("Pill01"), cr, credits);
+    fit_pill(sc, sc.node("Pill01", bar), cr, credits);
     if (cr >= 0) sc.at(cr).tint = kInk;
   } else {
-    sc.hide(sc.node("BottomRow"));
+    sc.hide(sc.node("BottomRow", bar));
   }
 }
 
