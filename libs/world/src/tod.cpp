@@ -219,23 +219,14 @@ bool decode_sky_xds(fh1::Archive& arch, const char* member, fh1::RgbaImage& out,
 
 }  // namespace
 
+// SPEC-SKY-AND-TOD §2.4: piecewise-linear between the two bracketing keys;
+// times outside [first key, last key] take the nearest end key (no wrap
+// across midnight).
 float TodCurve::eval_scalar(float time_min, float fallback) const {
   if (keys.empty()) return fallback;
   if (keys.size() == 1) return keys.front().v[0];
-  const bool cyclic = (keys.front().time_min <= 10.0f && keys.back().time_min >= 1430.0f);
-  if (cyclic) {
-    time_min = std::fmod(std::fmod(time_min, 1440.0f) + 1440.0f, 1440.0f);
-    if (time_min > keys.back().time_min || time_min < keys.front().time_min) {
-      const float span = (keys.front().time_min + 1440.0f) - keys.back().time_min;
-      const float dist = (time_min >= keys.back().time_min) ? (time_min - keys.back().time_min)
-                                                            : (time_min + 1440.0f - keys.back().time_min);
-      const float f = span > 1e-6f ? clamp01(dist / span) : 0.0f;
-      return keys.back().v[0] + f * (keys.front().v[0] - keys.back().v[0]);
-    }
-  } else {
-    if (time_min <= keys.front().time_min) return keys.front().v[0];
-    if (time_min >= keys.back().time_min) return keys.back().v[0];
-  }
+  if (time_min <= keys.front().time_min) return keys.front().v[0];
+  if (time_min >= keys.back().time_min) return keys.back().v[0];
   auto it = std::upper_bound(keys.begin(), keys.end(), time_min,
                              [](float t, const Key& k) { return t < k.time_min; });
   if (it == keys.begin()) return keys.front().v[0];
@@ -249,22 +240,8 @@ float TodCurve::eval_scalar(float time_min, float fallback) const {
 std::array<float, 3> TodCurve::eval_vec3(float time_min, std::array<float, 3> fallback) const {
   if (keys.empty()) return fallback;
   if (keys.size() == 1) return {keys.front().v[0], keys.front().v[1], keys.front().v[2]};
-  const bool cyclic = (keys.front().time_min <= 10.0f && keys.back().time_min >= 1430.0f);
-  if (cyclic) {
-    time_min = std::fmod(std::fmod(time_min, 1440.0f) + 1440.0f, 1440.0f);
-    if (time_min > keys.back().time_min || time_min < keys.front().time_min) {
-      const float span = (keys.front().time_min + 1440.0f) - keys.back().time_min;
-      const float dist = (time_min >= keys.back().time_min) ? (time_min - keys.back().time_min)
-                                                            : (time_min + 1440.0f - keys.back().time_min);
-      const float f = span > 1e-6f ? clamp01(dist / span) : 0.0f;
-      return {keys.back().v[0] + f * (keys.front().v[0] - keys.back().v[0]),
-              keys.back().v[1] + f * (keys.front().v[1] - keys.back().v[1]),
-              keys.back().v[2] + f * (keys.front().v[2] - keys.back().v[2])};
-    }
-  } else {
-    if (time_min <= keys.front().time_min) return {keys.front().v[0], keys.front().v[1], keys.front().v[2]};
-    if (time_min >= keys.back().time_min) return {keys.back().v[0], keys.back().v[1], keys.back().v[2]};
-  }
+  if (time_min <= keys.front().time_min) return {keys.front().v[0], keys.front().v[1], keys.front().v[2]};
+  if (time_min >= keys.back().time_min) return {keys.back().v[0], keys.back().v[1], keys.back().v[2]};
   auto it = std::upper_bound(keys.begin(), keys.end(), time_min,
                              [](float t, const Key& k) { return t < k.time_min; });
   if (it == keys.begin()) return {keys.front().v[0], keys.front().v[1], keys.front().v[2]};
@@ -339,12 +316,6 @@ std::array<float, 3> TodPreset::vec3(const std::string& name, float time_min,
 void TodClock::set_hour(double h) {
   double wrapped = std::fmod(std::fmod(h, 24.0) + 24.0, 24.0);
   tod_sec = wrapped * 3600.0;
-  preset_blend = -1.0;
-}
-
-double TodClock::preset_b_weight() const {
-  if (preset_blend < 0.0) return use_preset_b ? 1.0 : 0.0;
-  return std::clamp(preset_blend, 0.0, 1.0);
 }
 
 void TodClock::step_hours(double delta_hours) {
@@ -355,35 +326,49 @@ void TodClock::step_hours(double delta_hours) {
   tod_sec = next;
 }
 
+void TodClock::request(double target_sec, double rate) {
+  request_rate = rate;
+  request_floor = tod_sec;
+  rate_override = true;
+  request_target = target_sec;
+  transition = true;
+  paused = false;
+}
+
 void TodClock::advance(double dt, double curve_time_speed) {
-  if (paused || speed_scale == 0.0 || dt == 0.0) return;
-  if (preset_blend < 0.0) preset_blend = use_preset_b ? 1.0 : 0.0;
+  if (paused || dt == 0.0) return;
+  const double speed = rate_override ? request_rate : curve_time_speed * speed_scale;
+  if (speed == 0.0) return;
   const double prev = tod_sec;
-  double next = prev + curve_time_speed * speed_scale * dt;
-  bool wrapped_day = false;
-  while (next >= 86400.0) {
-    next -= 86400.0;
-    wrapped_day = true;
-  }
-  while (next < 0.0) {
-    next += 86400.0;
-  }
-  // Noon crossing advances lunar phase counter.
-  const bool crossed_noon = (!wrapped_day && prev < 43200.0 && next >= 43200.0) ||
-                            (wrapped_day && (prev < 43200.0 || next >= 43200.0));
-  if (crossed_noon) ++day_count;
-  // 20:00 (72,000 s) crossing rolls next day's A/B preset (30% B, 70% A).
-  const bool crossed_20 = (!wrapped_day && prev < 72000.0 && next >= 72000.0) ||
-                          (wrapped_day && (prev < 72000.0 || next >= 72000.0));
-  if (crossed_20 && !force_preset) {
+  double next = prev + speed * dt;
+  // 20:00 (72,000 s) crossing rolls the next day's A/B preset (30% B, 70% A).
+  if (!force_preset && prev < 72000.0 && next >= 72000.0) {
     const double u = double(next_u32(rng_state)) / 4294967296.0;
     use_preset_b = (u < 0.30);
   }
-  // Smoothly cross-fade A <-> B over 30 real seconds so 20:00 rolls never pop lighting/clouds.
-  const double target_blend = use_preset_b ? 1.0 : 0.0;
-  const double step_b = std::fabs(dt) / 30.0;
-  if (preset_blend < target_blend) preset_blend = std::min(target_blend, preset_blend + step_b);
-  else if (preset_blend > target_blend) preset_blend = std::max(target_blend, preset_blend - step_b);
+  bool wrapped_day = false;
+  if (next > 86400.0) {
+    next -= 86400.0;
+    if (transition) request_target -= 86400.0;
+    wrapped_day = true;
+  } else if (next < 0.0) {
+    next += 86400.0;
+    if (transition) request_target += 86400.0;
+  }
+  // Noon crossing advances the lunar phase counter.
+  const bool crossed_noon = (!wrapped_day && prev < 43200.0 && next >= 43200.0) ||
+                            (wrapped_day && (prev < 43200.0 || next >= 43200.0));
+  if (crossed_noon) ++day_count;
+  if (transition) {
+    if (next >= request_target) {
+      transition = false;
+      paused = true;
+      rate_override = false;
+      next = request_target;
+    } else if (next < request_floor) {
+      next = request_floor;
+    }
+  }
   tod_sec = next;
 }
 
@@ -530,169 +515,6 @@ TodState evaluate_tod(const TodPreset& p, double tod_sec) {
   s.contrast_mult = p.scalar("ContrastMultiplier", m, 1.0f);
 
   return s;
-}
-
-TodState lerp_tod_state(const TodState& a, const TodState& b, float t) {
-  t = clamp01(t);
-  if (t <= 1e-6f) return a;
-  if (t >= 1.0f - 1e-6f) return b;
-  auto lf = [t](float x, float y) { return x + (y - x) * t; };
-  auto l3 = [t](const std::array<float, 3>& x, const std::array<float, 3>& y) -> std::array<float, 3> {
-    return {x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t};
-  };
-  auto ldir = [t](const std::array<float, 3>& x, const std::array<float, 3>& y) -> std::array<float, 3> {
-    return normalize3({x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t}, y);
-  };
-
-  TodState s = b;
-  s.sun_dir = ldir(a.sun_dir, b.sun_dir);
-  s.sun_object_dir = ldir(a.sun_object_dir, b.sun_object_dir);
-  s.haze_dir = ldir(a.haze_dir, b.haze_dir);
-  s.sun_color = l3(a.sun_color, b.sun_color);
-  s.car_sun_color = l3(a.car_sun_color, b.car_sun_color);
-  s.sun_object_color = l3(a.sun_object_color, b.sun_object_color);
-  s.sun_object_size = lf(a.sun_object_size, b.sun_object_size);
-  s.sun_object_alpha = lf(a.sun_object_alpha, b.sun_object_alpha);
-  s.is_moon = (t >= 0.5f) ? b.is_moon : a.is_moon;
-  s.shadow_intensity = lf(a.shadow_intensity, b.shadow_intensity);
-
-  s.hl_top = l3(a.hl_top, b.hl_top);
-  s.hl_bottom = l3(a.hl_bottom, b.hl_bottom);
-  s.ambient_color = l3(a.ambient_color, b.ambient_color);
-  s.car_hl_top = l3(a.car_hl_top, b.car_hl_top);
-  s.car_hl_bottom = l3(a.car_hl_bottom, b.car_hl_bottom);
-  s.ibl_ambient_scale = lf(a.ibl_ambient_scale, b.ibl_ambient_scale);
-  s.ibl_direct_env = lf(a.ibl_direct_env, b.ibl_direct_env);
-  s.ibl_direct_car = lf(a.ibl_direct_car, b.ibl_direct_car);
-
-  s.sky_gain = lf(a.sky_gain, b.sky_gain);
-  s.atmo_top = l3(a.atmo_top, b.atmo_top);
-  s.atmo_bottom = l3(a.atmo_bottom, b.atmo_bottom);
-  s.atmo_color_power = lf(a.atmo_color_power, b.atmo_color_power);
-  s.atmo_clamp_lo = lf(a.atmo_clamp_lo, b.atmo_clamp_lo);
-  s.atmo_clamp_hi = lf(a.atmo_clamp_hi, b.atmo_clamp_hi);
-  s.atmo_haze_color = l3(a.atmo_haze_color, b.atmo_haze_color);
-  s.atmo_haze_power = lf(a.atmo_haze_power, b.atmo_haze_power);
-  s.atmo_haze_intensity = lf(a.atmo_haze_intensity, b.atmo_haze_intensity);
-  s.atmo_haze_elliptical = lf(a.atmo_haze_elliptical, b.atmo_haze_elliptical);
-  s.atmo_haze_alpha = lf(a.atmo_haze_alpha, b.atmo_haze_alpha);
-  s.star_fade = lf(a.star_fade, b.star_fade);
-
-  s.far_dense = l3(a.far_dense, b.far_dense);
-  s.far_thin = l3(a.far_thin, b.far_thin);
-  s.far_thin_intensity = lf(a.far_thin_intensity, b.far_thin_intensity);
-  s.far_centre_alpha = lf(a.far_centre_alpha, b.far_centre_alpha);
-  s.far_edge_alpha = lf(a.far_edge_alpha, b.far_edge_alpha);
-  s.far_alpha_power = lf(a.far_alpha_power, b.far_alpha_power);
-  s.far_coverage = lf(a.far_coverage, b.far_coverage);
-  s.far_back_dense = l3(a.far_back_dense, b.far_back_dense);
-  s.far_back_thin = l3(a.far_back_thin, b.far_back_thin);
-  s.far_back_centre_alpha = lf(a.far_back_centre_alpha, b.far_back_centre_alpha);
-  s.far_back_edge_alpha = lf(a.far_back_edge_alpha, b.far_back_edge_alpha);
-  s.far_back_coverage = lf(a.far_back_coverage, b.far_back_coverage);
-  s.far_back_speed_x = lf(a.far_back_speed_x, b.far_back_speed_x);
-  s.far_back_speed_z = lf(a.far_back_speed_z, b.far_back_speed_z);
-
-  s.close_top_color = l3(a.close_top_color, b.close_top_color);
-  s.close_bottom_color = l3(a.close_bottom_color, b.close_bottom_color);
-  s.close_back_color = l3(a.close_back_color, b.close_back_color);
-  s.close_dense_color = l3(a.close_dense_color, b.close_dense_color);
-  s.close_thin_color = l3(a.close_thin_color, b.close_thin_color);
-  s.close_back_dense_color = l3(a.close_back_dense_color, b.close_back_dense_color);
-  s.close_back_thin_color = l3(a.close_back_thin_color, b.close_back_thin_color);
-  s.close_back_bottom_color = l3(a.close_back_bottom_color, b.close_back_bottom_color);
-  s.close_dense_intensity = lf(a.close_dense_intensity, b.close_dense_intensity);
-  s.close_thin_intensity = lf(a.close_thin_intensity, b.close_thin_intensity);
-  s.close_back_power = lf(a.close_back_power, b.close_back_power);
-  s.close_back_intensity = lf(a.close_back_intensity, b.close_back_intensity);
-  s.close_top_power = lf(a.close_top_power, b.close_top_power);
-  s.close_top_intensity = lf(a.close_top_intensity, b.close_top_intensity);
-  s.close_bottom_power = lf(a.close_bottom_power, b.close_bottom_power);
-  s.close_bottom_intensity = lf(a.close_bottom_intensity, b.close_bottom_intensity);
-  s.close_back_bottom_power = lf(a.close_back_bottom_power, b.close_back_bottom_power);
-  s.close_back_bottom_intensity = lf(a.close_back_bottom_intensity, b.close_back_bottom_intensity);
-  s.close_top_mask_power = lf(a.close_top_mask_power, b.close_top_mask_power);
-  s.close_bottom_mask_power = lf(a.close_bottom_mask_power, b.close_bottom_mask_power);
-  s.close_top_alpha = lf(a.close_top_alpha, b.close_top_alpha);
-  s.close_bottom_alpha = lf(a.close_bottom_alpha, b.close_bottom_alpha);
-  s.close_front_alpha = lf(a.close_front_alpha, b.close_front_alpha);
-  s.close_back_alpha = lf(a.close_back_alpha, b.close_back_alpha);
-  s.close_alpha_curve = lf(a.close_alpha_curve, b.close_alpha_curve);
-  s.close_front_revs = lf(a.close_front_revs, b.close_front_revs);
-  s.close_back_revs = lf(a.close_back_revs, b.close_back_revs);
-
-  s.cube_atmo_haze_color = l3(a.cube_atmo_haze_color, b.cube_atmo_haze_color);
-  s.cube_atmo_haze_power = lf(a.cube_atmo_haze_power, b.cube_atmo_haze_power);
-  s.cube_atmo_haze_intensity = lf(a.cube_atmo_haze_intensity, b.cube_atmo_haze_intensity);
-  s.cube_atmo_haze_elliptical = lf(a.cube_atmo_haze_elliptical, b.cube_atmo_haze_elliptical);
-  s.cube_sun_object_color = l3(a.cube_sun_object_color, b.cube_sun_object_color);
-  s.cube_sun_object_size = lf(a.cube_sun_object_size, b.cube_sun_object_size);
-  s.cube_sky_saturation = lf(a.cube_sky_saturation, b.cube_sky_saturation);
-  s.cube_refl_ground_scale = lf(a.cube_refl_ground_scale, b.cube_refl_ground_scale);
-  s.cube_far_distance = lf(a.cube_far_distance, b.cube_far_distance);
-
-  s.shadow_near = lf(a.shadow_near, b.shadow_near);
-  s.shadow_far = lf(a.shadow_far, b.shadow_far);
-  s.shadow_color = l3(a.shadow_color, b.shadow_color);
-
-  s.fog_color = l3(a.fog_color, b.fog_color);
-  s.fog_density = lf(a.fog_density, b.fog_density);
-  s.fog_start = lf(a.fog_start, b.fog_start);
-  s.fog_sun_scatter_color = l3(a.fog_sun_scatter_color, b.fog_sun_scatter_color);
-  s.fog_sun_scatter_power = lf(a.fog_sun_scatter_power, b.fog_sun_scatter_power);
-  s.fog_sun_scatter_start = lf(a.fog_sun_scatter_start, b.fog_sun_scatter_start);
-  s.fog_sun_scatter_rampup = lf(a.fog_sun_scatter_rampup, b.fog_sun_scatter_rampup);
-  s.fog_height_fade_amount = lf(a.fog_height_fade_amount, b.fog_height_fade_amount);
-  s.fog_height_fade_start = lf(a.fog_height_fade_start, b.fog_height_fade_start);
-  s.fog_height_fade_end = lf(a.fog_height_fade_end, b.fog_height_fade_end);
-  s.fog_sky_height_fade_start = lf(a.fog_sky_height_fade_start, b.fog_sky_height_fade_start);
-  s.fog_sky_height_fade_end = lf(a.fog_sky_height_fade_end, b.fog_sky_height_fade_end);
-
-  s.time_speed = lf(a.time_speed, b.time_speed);
-  s.switch_on_lights = lf(a.switch_on_lights, b.switch_on_lights);
-  s.day_night_post = lf(a.day_night_post, b.day_night_post);
-  s.day_color_grade = lf(a.day_color_grade, b.day_color_grade);
-  s.night_color_grade = lf(a.night_color_grade, b.night_color_grade);
-  s.vignette_amount = lf(a.vignette_amount, b.vignette_amount);
-  s.light_rays_color = l3(a.light_rays_color, b.light_rays_color);
-  s.light_rays_intensity = lf(a.light_rays_intensity, b.light_rays_intensity);
-  s.bloom_scale_mult = lf(a.bloom_scale_mult, b.bloom_scale_mult);
-  s.bloom_cutoff_mult = lf(a.bloom_cutoff_mult, b.bloom_cutoff_mult);
-  s.bloom_lower_grad_mult = lf(a.bloom_lower_grad_mult, b.bloom_lower_grad_mult);
-  s.bloom_upper_grad_mult = lf(a.bloom_upper_grad_mult, b.bloom_upper_grad_mult);
-  s.bloom_persist_mult = lf(a.bloom_persist_mult, b.bloom_persist_mult);
-  s.desat_amount_mult = lf(a.desat_amount_mult, b.desat_amount_mult);
-  s.desat_luminosity_mult = l3(a.desat_luminosity_mult, b.desat_luminosity_mult);
-  s.desat_post_mod_mult = l3(a.desat_post_mod_mult, b.desat_post_mod_mult);
-  s.contrast_mult = lf(a.contrast_mult, b.contrast_mult);
-  return s;
-}
-
-const TodState& TodSmoother::update(const TodState& target, float dt, bool snap,
-                                    float tau_sec, float shadow_tau_sec) {
-  if (!initialized || snap || dt <= 0.0f) {
-    initialized = true;
-    state = target;
-    return state;
-  }
-  const float alpha = clamp01(1.0f - std::exp(-dt / std::max(tau_sec, 0.05f)));
-  const float shadow_alpha = clamp01(1.0f - std::exp(-dt / std::max(shadow_tau_sec, 0.05f)));
-  const float prev_shadow = state.shadow_intensity;
-  const bool moon_flipped = (target.is_moon != state.is_moon);
-
-  state = lerp_tod_state(state, target, alpha);
-  state.shadow_intensity = prev_shadow + (target.shadow_intensity - prev_shadow) * shadow_alpha;
-  // Keep clock phase and discrete celestial body swap aligned without sweeping the disc across the zenith.
-  state.tod_sec = target.tod_sec;
-  state.tod_min = target.tod_min;
-  state.time_speed = target.time_speed;
-  state.is_moon = target.is_moon;
-  if (moon_flipped) {
-    state.sun_dir = target.sun_dir;
-    state.sun_object_dir = target.sun_object_dir;
-    state.haze_dir = target.haze_dir;
-  }
-  return state;
 }
 
 bool TrackPostConfig::load_xml(const std::string& xml_text) {
@@ -1420,14 +1242,7 @@ const TodPreset& TodSystem::active_preset(const TodClock& clock) const {
 TodState TodSystem::evaluate(const TodClock& clock) const {
   TodState s{};
   if (loaded_tod) {
-    const float bw = float(clock.preset_b_weight());
-    if (bw <= 1e-4f) {
-      s = evaluate_tod(preset_a, clock.tod_sec);
-    } else if (bw >= 1.0f - 1e-4f) {
-      s = evaluate_tod(preset_b, clock.tod_sec);
-    } else {
-      s = lerp_tod_state(evaluate_tod(preset_a, clock.tod_sec), evaluate_tod(preset_b, clock.tod_sec), bw);
-    }
+    s = evaluate_tod(active_preset(clock), clock.tod_sec);
   } else {
     s.tod_sec = float(clock.tod_sec);
     s.tod_min = float(clock.tod_sec / 60.0);

@@ -8,6 +8,7 @@
 // SHIFT_SCENE_SCREEN_SHOT_DIR the screens are also drawn to PNGs there, over
 // SHIFT_SCENE_SCREEN_BACKDROP (a 1280x720 PNG) when given.
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -163,6 +164,19 @@ int main() {
     // The driving HUD's bound nodes (hud_screen.cpp), by element.
     const SceneDraw sd(carview::ui_scene(std::string(carview::kHudScene)));
     check(sd.ok(), "947_HUD loads");
+    {
+      // The dial's red zone (Redline/rotation/HalfRectangle) is laid flat in
+      // its XZ plane and stood up by a -90 degree turn about x: it draws as
+      // the dial ring's lower half (253 x 126 px), not a zero-height strip.
+      const int red = sd.find_path("RPM_and_MPH/Redline/rotation");
+      const std::vector<int> half = sd.children_of(red);
+      check(red >= 0 && !half.empty(), "947_HUD: the red zone's half ring");
+      if (!half.empty()) {
+        const auto r = sd.rect(half[0]);
+        check(std::fabs((r[2] - r[0]) - 253.0f) < 2.0f && std::fabs((r[3] - r[1]) - 126.5f) < 2.0f,
+              "947_HUD: the red zone stands up to the ring's half (253 x 126 px)");
+      }
+    }
     check_nodes(sd, "947_HUD",
                 {// The dial.
                  "GAUGE_ANALOG", "GAUGE_ANALOG/ASSIST_ICONS", "ASSIST_ICONS/HUD_SHIFT_LIGHT", "GAUGE_ANALOG/FUEL_ANALOG",
@@ -467,8 +481,14 @@ int main() {
       go_d.kmh = 0, go_d.rpm = 1000, go_d.gear = 1, go_d.skills = nullptr;
       go_d.race = &go;
       hud_shot("hud_race_go.png", "15b_countdown_go_orig.png", go_d);
-      // The interim count (SPEC_QUESTIONS Q74) at 2.
+      // The count (15_countdown_orig.png): on the gantry only, nothing from
+      // I_321_Go on screen (Q74).
       go.phase = carview::RaceHud::kCountdown, go.clock = -1.6, go.digit = 2;
+      {
+        carview::ui::List count;
+        check(carview::draw_hud_countdown(count, go, 1280.0f, 720.0f, 1.0f), "I_321_Go: present at the count");
+        check(count.items().empty(), "I_321_Go: no count on screen before GO!");
+      }
       hud_shot("hud_race_count.png", "15_countdown_orig.png", go_d);
       go.phase = carview::RaceHud::kRacing;
       go.clock = 20.0, go.wrong_way = true;

@@ -1929,15 +1929,17 @@ LEDs (0:05..0:01, then GO) and shows nothing on screen until the signal,
 when `947_HUD` `I_321_Go`'s `GO` text shows GO! (`15_countdown_orig.png`,
 `15b_countdown_go_orig.png`). The node `I_321_Go/Group/TEXT_COUNT` is laid
 out at full opacity but nothing in those captures fills it. The engine
-runs the world clock that the gantry LEDs read from the race clock, but
-its gantry panels stay dark at the FR16 start (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
-and textured, and the shipped shaders carry the LED branch, so the
-cause lies past that (the texture or the draw's intensity) and is not
-found), so until they light it fills
-`TEXT_COUNT` with 3, 2, 1 at every start as an interim. Unknown: whether a start with no gantry (a street race, a
-point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
-Needed, narrow: a capture of such a start, or the code that writes
-`TEXT_COUNT`.
+runs the world clock that the gantry LEDs read from the race clock, and
+its gantry panels now light at the FR16 start. They had been turned to
+face their normals, which point into the gantry, and were back-face
+culled; the file's own order is culled too, and with the corners
+reversed they light. Only the FR16 gantry is checked. So the engine, like
+those captures, leaves `TEXT_COUNT` empty and shows only GO!.
+
+Unknown: whether a start with no gantry (a street race, a point-to-point
+started on an open road) fills `TEXT_COUNT` with 3, 2, 1; the engine
+shows no count there. Needed, narrow: a capture of such a start, or the
+code that writes `TEXT_COUNT`.
 
 ## Q68 (FEEL-11, not blocking): FrictionTorqueMod selection, and our AI
 
@@ -2745,3 +2747,86 @@ those lines are blank or interim:
 
 Needed: which of these screens the title draws, what text each one shows,
 and whether the UI changes the case.
+
+## Q107 (WORLD-11, not blocking): how an ordinary event sets and holds the time of day
+
+The original changes the clock by a request: a target (plus 86,400 to pass
+midnight) and a rate, which the clock runs at until it lands and pauses
+there; a held-clock flag keeps the title's own setters off it. The engine
+has it (`TodClock::request`). The only callers traced are two special
+flows: the first-time-career intro (a 45 s ramp to 18:00, 14:30 or
+midnight, picked by state we have not matched) and the E3 demo. What an
+ordinary event start writes is not traced.
+
+Seen in the original: from a 22:00 free roam The Gauntlet loads in
+daylight, so the start time is set at once. Quitting that event (pause,
+QUIT RACE, confirm) returns to free roam still in daylight: the pre-race
+time is not put back. The engine now does the same: it sets the event's
+`TimeOfDayStart` at once, holds the clock through the race (SKY_AND_TOD
+§7: paused on fixed-time events) and lets free roam carry on from there.
+The restore it used to do was the backwards jump the playtest saw.
+
+Still open: whether finishing an event (rather than quitting) leaves the
+clock in the same place, and whether free roam resumes at the event's
+start time or at the time it had reached. Needed: a capture either side
+of a finished event, or the writer of the clock's time and hold flag on
+event unload.
+
+## Q108 (WORLD-12, not blocking): where world lamp glows come from
+
+The original's lamp glows are camera-facing sprites drawn after the opaque
+world (a sprite texture times a 1D colour ramp, additive, depth-tested,
+a per-lamp `SwitchOnLights` threshold and a `LookFadeValues` cone). Not
+decoded: where each glow's position, direction, colour, radius, threshold
+and textures come from (a record in the track or prop data, or the prop's
+model). The engine makes its own: a glow on props whose names read as
+lamps or floodlights, colour by kind, a hashed threshold, re-seated into
+the prop's box and dropped when no box matches, drawn as a procedural
+corona. Without the source, changing those constants trades one guess for
+another, so they stay as they are.
+
+Needed: the glow record format and its sprite and ramp textures, or a
+night frame's draw log of the lamp-glow draws with their vertex data.
+
+## Q109 (WORLD-14, not blocking): spectator clips and placements
+
+The original steps each spectator one frame per rendered frame through a
+`Spectators.zip` clip and, at its end, picks another clip or loops. The
+engine parses each `.anim.bin` header and skeleton but not its keys, and
+poses spectators with its own procedural moves. Hard-coded clusters and
+the head turn toward the car are gone (WORLD-14); the remaining clusters
+are placed from `GameObjs.xml` gameplay nodes by the engine's own offsets,
+not from a crowd record (`Colorado_track_00.crowd` is 12 bytes).
+
+Needed: the `.anim.bin` key layout (rotation and translation tracks, rate)
+and the source of the start-line spectator instances.
+
+## Q110 (WORLD-POST, not blocking): overall exposure and grade against the original
+
+Matched free-roam captures (`world_{day,dusk,night}_orig.png` against
+`world_*_engine_after.png`) put the engine darker overall: mean luma 96.6
+against 111.6 by day, 53.0 against 58.8 at dusk, 29.4 against 34.5 at
+night, with the sky brighter and bluer and the ground darker. The
+originals were taken with the recomp's bloom, depth of field and MSAA
+off, and the car and pose differ, so part of the gap is the frame, not
+the grade. No tone-map, LUT or exposure change was made to close it by
+eye.
+
+Needed: the original's post chain constants for one time of day
+(exposure, tone curve, colour cube in use), or matched captures with the
+same post settings on both sides.
+
+## Q111 (WORLD-15, not blocking): where the animated showcase props stand in free roam
+
+The `animatedobjects.zip` `.pgeo` meshes (balloon race, showcase-intro
+balloons, air walkers, main stage lights, plane banner, blimp, Ferris
+wheel) are placed by `AnimatedWorldSystem::populate_pgeo_placements` at
+anchors the engine picked (box-derived spreads, the festival hub, a
+reservoir vista) with its own colour palettes. The fixed-position props
+are gone (WORLD-15), but these placements are not from a placement
+record either. Whether the original shows any of them outside the
+showcase events that own them is not known.
+
+Needed: the placement source for these `.pgeo` objects (a track object
+list or the showcase event scripts), and a free-roam capture of the
+festival and a showcase start in the original.

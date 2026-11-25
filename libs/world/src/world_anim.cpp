@@ -1485,92 +1485,12 @@ void AnimatedWorldSystem::set_world(const std::filesystem::path& media_dir, cons
 }
 
 void AnimatedWorldSystem::populate_default_colorado() {
-  // Fallback procedural Colorado Horizon Festival & valley hot-air balloons
-  // (used when animatedobjects.zip `.pgeo` balloons are unavailable).
-  state_->balloons = {
-      {{2075.0f, 185.0f, 905.0f}, 7.6f, 18.0f, 0.2f, {236, 46, 86}, {250, 212, 48}, {38, 134, 218}},
-      {{1915.0f, 202.0f, 1055.0f}, 8.2f, 19.5f, 1.4f, {244, 132, 34}, {245, 245, 240}, {32, 168, 152}},
-      {{2145.0f, 196.0f, 1060.0f}, 7.0f, 16.5f, 2.7f, {58, 126, 224}, {252, 232, 92}, {228, 66, 62}},
-      {{1840.0f, 190.0f, 860.0f}, 7.8f, 18.2f, 4.1f, {214, 52, 138}, {248, 242, 226}, {246, 176, 42}},
-      {{1650.0f, 215.0f, 1210.0f}, 8.4f, 19.8f, 5.2f, {40, 172, 118}, {246, 222, 68}, {232, 64, 52}},
-      {{-1420.0f, 165.0f, -290.0f}, 8.0f, 19.0f, 0.9f, {238, 72, 54}, {248, 244, 232}, {52, 118, 212}},
-      {{-980.0f, 225.0f, 1540.0f}, 7.8f, 18.5f, 2.2f, {246, 162, 36}, {56, 132, 218}, {244, 244, 242}},
-      {{620.0f, 240.0f, -1820.0f}, 8.0f, 19.0f, 3.6f, {162, 56, 204}, {250, 206, 54}, {244, 242, 238}},
-      {{1380.0f, 265.0f, -5250.0f}, 7.5f, 17.5f, 1.8f, {236, 56, 82}, {246, 236, 212}, {44, 156, 192}},
-  };
-
-  // Colorado ranch spinning windmills & ridge wind turbines (aligned with wind direction).
-  state_->windmills = {
-      {{2052.0f, 143.0f, 928.0f}, 0.65f, 13.5f, 4.1f, 0.0f, false},
-      {{1890.0f, 142.0f, 1020.0f}, 1.15f, 14.5f, 4.4f, 1.3f, false},
-      {{2185.0f, 148.0f, 845.0f}, -0.45f, 15.0f, 4.5f, 2.6f, false},
-      {{1428.0f, 197.0f, -5348.0f}, 0.35f, 13.8f, 4.0f, 0.8f, false},
-      {{-1525.0f, 92.0f, -395.0f}, 1.80f, 14.2f, 4.3f, 2.1f, false},
-      {{1120.0f, 155.0f, 640.0f}, -0.95f, 14.0f, 4.2f, 3.4f, false},
-      // Modern 3-blade ridge wind turbines along high Colorado hills.
-      {{2120.0f, 152.0f, 1085.0f}, 0.50f, 28.0f, 11.5f, 0.4f, true},
-      {{1785.0f, 156.0f, 1140.0f}, 0.50f, 30.0f, 12.0f, 2.2f, true},
-      {{-1590.0f, 110.0f, -180.0f}, 0.50f, 29.0f, 11.8f, 4.1f, true},
-      {{-1645.0f, 118.0f, -85.0f}, 0.50f, 31.0f, 12.2f, 5.5f, true},
-  };
-
-  // Waving Horizon festival flags placed behind festival barriers (well off the asphalt road).
-  state_->flags = {
-      {{2018.0f, 144.2f, 932.0f}, 7.2f, 1.75f, 3.4f, 0.0f, {236, 42, 92}, {252, 212, 44}},
-      {{2030.0f, 143.8f, 922.0f}, 7.2f, 1.75f, 3.4f, 1.1f, {38, 158, 224}, {248, 246, 240}},
-      {{2042.0f, 143.4f, 912.0f}, 7.2f, 1.75f, 3.4f, 2.2f, {246, 146, 32}, {252, 226, 78}},
-      {{1980.0f, 145.0f, 954.0f}, 7.2f, 1.75f, 3.4f, 3.3f, {236, 42, 92}, {252, 212, 44}},
-      {{1968.0f, 145.2f, 964.0f}, 7.2f, 1.75f, 3.4f, 4.4f, {48, 184, 132}, {248, 244, 232}},
-      {{-1444.0f, 26.0f, -332.0f}, 7.4f, 1.75f, 3.4f, 0.7f, {236, 42, 92}, {252, 212, 44}},
-      {{-1432.0f, 26.0f, -322.0f}, 7.4f, 1.75f, 3.4f, 1.9f, {38, 158, 224}, {252, 212, 44}},
-      {{-1382.0f, 1.0f, -26.0f}, 7.2f, 1.75f, 3.4f, 3.1f, {246, 146, 32}, {248, 246, 240}},
-  };
-
-  // Authentic Horizon Festival animated landmarks: Ferris wheels with rotating upright gondolas & night lights.
-  state_->ferris_wheels = {
-      {{-1412.0f, 24.0f, -292.0f}, 0.45f, 19.0f, 24.5f, 12, 0.0f},
-      {{1952.0f, 144.0f, 898.0f}, -0.35f, 16.5f, 21.5f, 12, 1.6f},
-  };
-
-  // Main Stage sweeping night searchlight / laser cones (projectors always visible; cones ignite at dusk/night).
-  state_->stage_lights = {
-      {{-1455.0f, 26.0f, -335.0f}, 0.2f, 44.0f, 0.0f, {242, 44, 156}},
-      {{-1442.0f, 26.0f, -322.0f}, 0.8f, 46.0f, 1.7f, {38, 206, 250}},
-      {{-1464.0f, 26.0f, -346.0f}, -0.5f, 42.0f, 3.2f, {254, 196, 42}},
-      {{1990.0f, 144.0f, 948.0f}, 0.4f, 40.0f, 0.9f, {242, 44, 156}},
-      {{2010.0f, 144.0f, 936.0f}, -0.4f, 42.0f, 2.5f, {38, 206, 250}},
-  };
-
-  // Circling Horizon Festival blimp & banner-towing biplane overhead.
-  state_->aircraft_banners = {
-      {{-1380.0f, 232.0f, -260.0f}, 360.0f, 0.045f, 0.3f, true, {236, 46, 92}, {252, 212, 48}},
-      {{1980.0f, 224.0f, 960.0f}, 340.0f, 0.052f, 2.4f, true, {38, 134, 218}, {252, 212, 48}},
-      {{1960.0f, 206.0f, 940.0f}, 420.0f, 0.095f, 1.1f, false, {244, 132, 34}, {252, 226, 78}},
-      {{-1360.0f, 212.0f, -220.0f}, 460.0f, 0.090f, 4.2f, false, {236, 46, 92}, {248, 246, 240}},
-  };
-
-  // Intersection traffic light housings with smooth green/yellow/red emissive cycling (staggered cross-phases).
-  state_->traffic_lights = {
-      {{2012.0f, 144.0f, 946.0f}, 0.72f, 6.8f, 4.4f, 0.0f},
-      {{1984.0f, 145.0f, 968.0f}, 2.29f, 6.8f, 4.4f, 15.0f},
-      {{-1398.0f, 1.0f, -24.0f}, 0.85f, 6.8f, 4.4f, 5.0f},
-      {{-1004.0f, 0.0f, -246.0f}, -0.40f, 6.8f, 4.4f, 20.0f},
-      {{1420.0f, 197.0f, -5340.0f}, 0.35f, 6.8f, 4.4f, 10.0f},
-  };
-
-  // Cheering festival spectators positioned strictly behind real Colorado metal festival barriers,
-  // including standing barrier rows and seated grandstand/festival seating clusters.
-  state_->crowds = {
-      {{1993.65f, 143.65f, 958.25f}, 0.808f, -0.052f, -0.589f, 0.589f, 0.808f, 13, 1.12f, "Barrier", false, true},
-      {{1994.75f, 143.52f, 956.40f}, 0.808f, -0.052f, -0.589f, 0.589f, 0.808f, 9, 1.48f, "GigCheer01", false, true},
-      // Canonical Horizon Festival Hub baseline clusters (Main Stage, Race Central, Autoshow, Dak's Garage).
-      {{-1458.0f, 26.0f, -340.0f}, 0.85f, 0.0f, -0.52f, 0.52f, 0.85f, 12, 1.15f, "GigCheer01", true, true},
-      {{-1458.5f, 26.0f, -340.9f}, 0.85f, 0.0f, -0.52f, 0.52f, 0.85f, 8, 1.45f, "Sit", true, true},
-      {{-1388.0f, 1.0f, -18.0f}, 0.72f, 0.0f, 0.69f, -0.69f, 0.72f, 12, 1.15f, "Barrier", true, true},
-      {{-1387.3f, 1.0f, -18.7f}, 0.72f, 0.0f, 0.69f, -0.69f, 0.72f, 8, 1.45f, "Sit", true, true},
-      {{-1012.0f, 0.0f, -252.0f}, 0.92f, 0.0f, 0.39f, -0.39f, 0.92f, 10, 1.20f, "Barrier", true, true},
-      {{-952.0f, 0.0f, -172.0f}, 0.60f, 0.0f, -0.80f, 0.80f, 0.60f, 10, 1.20f, "Barrier", true, true},
-  };
+  // WORLD-14/15: Colorado has no engine-placed props. The balloons, blimp,
+  // biplane, flags, windmills, wind turbines, Ferris wheels, stage light
+  // cones, traffic lights and crowd clusters that stood here at fixed
+  // positions are not in the original (the Gauntlet sign-up shows none of
+  // them); animated objects come from the animatedobjects.zip `.pgeo`
+  // placements (populate_pgeo_placements) and crowds from GameObjs.xml.
 }
 
 void AnimatedWorldSystem::populate_pgeo_placements() {
@@ -3091,21 +3011,9 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         continue;
       }
 
-      // Living head gaze tracking toward the player car/camera when passing within 50 m in front.
-      float gaze_yaw = 0.0f;
-      if (dist > 1.2f && dist < 50.0f) {
-        const float to_ex = float(-dx) / dist;
-        const float to_ez = float(-dz) / dist;
-        const float fwd_dot = to_ex * syaw + to_ez * cyaw;
-        if (fwd_dot > 0.05f) {
-          // Local +X is character left = (cyaw, 0, -syaw).
-          const float left_dot = to_ex * cyaw - to_ez * syaw;
-          const float rel_ang = std::atan2(left_dot, fwd_dot);
-          const float w_dist = std::clamp((50.0f - dist) / 30.0f, 0.0f, 1.0f);
-          const float w_front = std::clamp((fwd_dot - 0.05f) / 0.40f, 0.0f, 1.0f);
-          gaze_yaw = std::clamp(rel_ang, -0.65f, 0.65f) * w_dist * w_front;
-        }
-      }
+      // WORLD-14: spectators do not turn their heads toward the car; the
+      // original plays its clips as authored (no gaze).
+      const float gaze_yaw = 0.0f;
 
       // Derive per-spectator tempo, phase, and lively energy envelope from parsed `.anim.bin` clips,
       // boosted naturally as the player car approaches within 35 m.

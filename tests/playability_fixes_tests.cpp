@@ -3,6 +3,7 @@
 // 2. Keyboard W/Up acceleration from 0 -> >50 km/h with & without phantom controller/wheel axes
 // 3. Alt-tab focus-gain zero-recreate fast path & FramePacer reset
 // 4. Water material detection (LAKE_ANIM_NORM_OPAC_REFL_3, RIVER/WATER, non-decal alpha)
+// 5. Race gantry LED panels: corners reversed, not turned to the normal (Q74)
 
 #include <SDL3/SDL.h>
 
@@ -18,6 +19,7 @@
 #include "gamepad_db.h"
 #include "render_modern.h"
 #include "renderer.h"
+#include "showroom.h"
 #include "world/world.h"
 
 namespace {
@@ -280,12 +282,57 @@ void test_water_material_detection() {
 
 }  // namespace
 
+// The world's lit faces are turned toward their normals; the unlit LED
+// panels' normals point into the gantry, so their corners are reversed
+// whatever the normal says (the FR16 panels light that way, Q74).
+void test_led_panel_winding() {
+  carview::WorldTriangles w;
+  w.colours.push_back({1.0f, 1.0f, 1.0f});
+  // Both triangles are counter-clockwise seen from +z, normals +z.
+  for (float x : {0.0f, 5.0f}) {
+    w.positions.push_back({x, 0.0f, 0.0f});
+    w.positions.push_back({x + 1.0f, 0.0f, 0.0f});
+    w.positions.push_back({x, 1.0f, 0.0f});
+  }
+  for (int i = 0; i < 6; ++i) {
+    w.normals.push_back({0.0f, 0.0f, 1.0f});
+    w.uv0.push_back({0.0f, 0.0f});
+    w.uv1.push_back({0.0f, 0.0f});
+    w.vertex_colours.push_back({255, 255, 255, 255});
+  }
+  w.group = {0, 0};
+  w.material = {0, 1};
+  carview::WorldTriangles::Material lit;
+  lit.texture = 1;
+  carview::WorldTriangles::Material led = lit;
+  led.texture = 2;
+  led.anim_flag = 2;  // the countdown gantry
+  w.materials = {lit, led};
+  const carview::WorldGeometry g = carview::build_world(w);
+  int seen = 0;
+  for (const auto& d : g.draws) {
+    if (d.index_count != 3) continue;
+    const auto& a = g.textured_vertices[g.indices[d.first_index]].position;
+    const auto& b = g.textured_vertices[g.indices[d.first_index + 1]].position;
+    const auto& c = g.textured_vertices[g.indices[d.first_index + 2]].position;
+    const float cross_z = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    const bool led_draw = (uint32_t(std::lround(d.push.params[1])) & 1024u) != 0u;
+    if (led_draw) {
+      CHECK(cross_z < 0.0f);  // reversed: front toward -z
+    } else {
+      CHECK(cross_z > 0.0f);  // kept: front toward its +z normal
+    }
+    ++seen;
+  }
+  CHECK(seen == 2);
+}
 int main() {
   test_gamepad_db_and_8bitdo();
   test_raw_joystick_and_wheel_calibration();
   test_keyboard_acceleration_regression();
   test_alt_tab_zero_recreate_fast_path();
   test_water_material_detection();
+  test_led_panel_winding();
   if (g_failures == 0) {
     std::printf("playability_fixes_tests: all checks passed\n");
     return 0;

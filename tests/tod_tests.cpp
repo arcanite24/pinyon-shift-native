@@ -448,37 +448,29 @@ void test_disc_assets_if_available() {
   check(sunset.cube_sun_object_size > 0.0f && sunset.cube_atmo_haze_power > 0.0f, "Colorado Cube* curves parsed");
   check(sunset.light_rays_intensity > 0.1f, "Colorado LightRaysIntensity active at sunset");
 
-  // PT-12: Verify smoothed Colorado 24h traversal (including dawn, dusk, 20:00 A/B roll, and midnight)
-  // has no abrupt single-frame lighting, shadow, or tone-map jumps at 60 Hz.
+  // WORLD-10: the world lights from the curves at the clock's time, raw
+  // (no temporal smoother): across dusk, night, the 20:00 roll and dawn the
+  // evaluated state equals the active preset's curves at tod_sec.
   world::TodClock drive_clk;
   drive_clk.set_hour(19.0);
-  drive_clk.use_preset_b = false;
-  drive_clk.force_preset = false;
-  world::TodSmoother smoother;
   const float dt = 1.0f / 60.0f;
-  world::TodState prev = smoother.update(sys.evaluate(drive_clk), dt, true);
-  float max_d_shadow = 0.0f, max_d_hl = 0.0f, max_d_dn = 0.0f, max_d_sky = 0.0f;
-  // Simulate across dusk -> night -> midnight -> dawn -> morning (~450 real seconds = ~13 game hours).
+  bool raw_everywhere = true;
   for (int step = 0; step < 450 * 60; ++step) {
     const double spd = sys.active_preset(drive_clk).scalar("TimeSpeed", float(drive_clk.tod_sec / 60.0), 28.0f);
     drive_clk.advance(dt, spd);
-    const world::TodState cur = smoother.update(sys.evaluate(drive_clk), dt, false);
-    max_d_shadow = std::max(max_d_shadow, std::fabs(cur.shadow_intensity - prev.shadow_intensity));
-    max_d_dn = std::max(max_d_dn, std::fabs(cur.day_night_post - prev.day_night_post));
-    max_d_sky = std::max(max_d_sky, std::fabs(cur.sky_gain - prev.sky_gain));
-    for (int c = 0; c < 3; ++c) {
-      max_d_hl = std::max(max_d_hl, std::fabs(cur.hl_top[size_t(c)] - prev.hl_top[size_t(c)]));
-    }
-    prev = cur;
+    if (step % 600 != 0) continue;
+    const world::TodState cur = sys.evaluate(drive_clk);
+    const world::TodState raw = world::evaluate_tod(sys.active_preset(drive_clk), drive_clk.tod_sec);
+    raw_everywhere = raw_everywhere && cur.shadow_intensity == raw.shadow_intensity &&
+                     cur.day_night_post == raw.day_night_post && cur.sky_gain == raw.sky_gain &&
+                     cur.hl_top == raw.hl_top && cur.switch_on_lights == raw.switch_on_lights;
   }
-  check(max_d_shadow < 0.02f, "Colorado smoothed ShadowIntensity has no abrupt 60Hz jump");
-  check(max_d_hl < 0.02f, "Colorado smoothed HLTopColour has no abrupt 60Hz jump");
-  check(max_d_dn < 0.02f, "Colorado smoothed DayNightPostProcess has no abrupt 60Hz jump");
-  check(max_d_sky < 0.05f, "Colorado smoothed SkyGain has no abrupt 60Hz jump");
+  check(raw_everywhere, "Colorado: the evaluated state is the active preset's curves at tod_sec (no smoothing)");
 }
 
 void test_smooth_tod_and_lut_transitions() {
-  // 1. Cyclic 24h curves wrap continuously across midnight (1439 -> 1440 / 0) with no step jump.
+  // 1. SPEC-SKY-AND-TOD §2.4: keys outside [first, last] clamp to the
+  //    nearest end key; there is no interpolation across midnight.
   const std::string wrap_xml = R"xml(<TOD version="2">
     <CloseCloudBottomAlpha numKeys="3">
       <Key time="0.0" x="0.10"/>
@@ -486,35 +478,26 @@ void test_smooth_tod_and_lut_transitions() {
       <Key time="1439.0" x="0.90"/>
     </CloseCloudBottomAlpha>
     <CloseCloudBottomColourBack numKeys="2">
-      <Key time="0.0" r="0.10" g="0.20" b="0.30"/>
-      <Key time="1439.0" r="0.90" g="0.80" b="0.70"/>
+      <Key time="10.0" r="0.10" g="0.20" b="0.30"/>
+      <Key time="1430.0" r="0.90" g="0.80" b="0.70"/>
     </CloseCloudBottomColourBack>
   </TOD>)xml";
   world::TodPreset wp;
-  check(wp.load_xml(wrap_xml), "load cyclic midnight-wrap TOD XML");
-  const float before_mid = wp.scalar("CloseCloudBottomAlpha", 1439.5f);
-  const float at_mid = wp.scalar("CloseCloudBottomAlpha", 0.0f);
-  check(near(before_mid, 0.50f, 1e-3f), "cyclic curve interpolates smoothly across 1439..1440 midnight wrap");
-  float max_wrap_jump = 0.0f;
-  float prev_v = wp.scalar("CloseCloudBottomAlpha", 1438.5f);
-  for (int i = 1; i <= 120; ++i) {
-    const float m = std::fmod(1438.5f + float(i) * (2.0f / 120.0f), 1440.0f);
-    const float v = wp.scalar("CloseCloudBottomAlpha", m);
-    max_wrap_jump = std::max(max_wrap_jump, std::fabs(v - prev_v));
-    prev_v = v;
-  }
-  check(max_wrap_jump < 0.02f && near(at_mid, 0.10f, 1e-3f), "no discontinuity across 23:59 -> 00:00 wrap");
+  check(wp.load_xml(wrap_xml), "load midnight-edge TOD XML");
+  check(near(wp.scalar("CloseCloudBottomAlpha", 1439.5f), 0.90f, 1e-5f), "past the last key: the last key's value");
+  check(near(wp.scalar("CloseCloudBottomAlpha", 0.0f), 0.10f, 1e-5f), "at 00:00: the first key's value");
+  check(near(wp.scalar("CloseCloudBottomAlpha", 360.0f), 0.30f, 1e-5f), "between keys: linear");
+  check(near(wp.vec3("CloseCloudBottomColourBack", 5.0f)[0], 0.10f, 1e-5f) &&
+            near(wp.vec3("CloseCloudBottomColourBack", 1435.0f)[2], 0.70f, 1e-5f),
+        "vector curves clamp at both ends");
 
-  // 2. 20:00 A <-> B preset roll cross-fades smoothly over 30 real seconds instead of snapping in 1 frame.
+  // 2. The 20:00 roll switches the preset at once (no cross-fade).
   const std::string preset_a_xml = R"xml(<TOD version="2">
     <HLTopColour numKeys="2"><Key time="0.0" r="0.02" g="0.03" b="0.04"/><Key time="1439.0" r="0.02" g="0.03" b="0.04"/></HLTopColour>
     <SkyGain numKeys="2"><Key time="0.0" x="1.2"/><Key time="1439.0" x="1.2"/></SkyGain>
     <ShadowIntensity numKeys="4">
       <Key time="0.0" x="-1.0"/><Key time="469.0" x="-0.3"/><Key time="470.0" x="1.0"/><Key time="1439.0" x="-1.0"/>
     </ShadowIntensity>
-    <AtmosphereHazePower numKeys="4">
-      <Key time="0.0" x="5.0"/><Key time="1199.0" x="5.0"/><Key time="1200.0" x="100.0"/><Key time="1439.0" x="5.0"/>
-    </AtmosphereHazePower>
   </TOD>)xml";
   const std::string preset_b_xml = R"xml(<TOD version="2">
     <HLTopColour numKeys="2"><Key time="0.0" r="0.20" g="0.25" b="0.30"/><Key time="1439.0" r="0.20" g="0.25" b="0.30"/></HLTopColour>
@@ -526,13 +509,10 @@ void test_smooth_tod_and_lut_transitions() {
   check(sys.preset_b.load_xml(preset_b_xml), "load synthetic preset B");
   sys.preset_b.merge_fallback(sys.preset_a);
   sys.loaded_tod = true;
-
-  // Find a deterministic RNG seed that rolls B at 20:00.
   world::TodClock clk;
   for (uint32_t seed = 1; seed < 1000; ++seed) {
     world::TodClock probe;
     probe.rng_state = seed;
-    probe.use_preset_b = false;
     probe.set_hour(19.99);
     probe.advance(5.0, 40.0);
     if (probe.use_preset_b) {
@@ -540,37 +520,45 @@ void test_smooth_tod_and_lut_transitions() {
       break;
     }
   }
-  clk.use_preset_b = false;
   clk.set_hour(19.99);
-  const float sky_before = sys.evaluate(clk).sky_gain;
-  float max_sky_frame_jump = 0.0f;
-  float prev_sky = sky_before;
-  for (int f = 0; f < 40 * 60; ++f) {
+  check(near(sys.evaluate(clk).sky_gain, 1.2f, 1e-5f), "before 20:00: preset A");
+  int frames_to_b = -1;
+  for (int f = 0; f < 60 && frames_to_b < 0; ++f) {
     clk.advance(1.0 / 60.0, 40.0);
-    const float cur_sky = sys.evaluate(clk).sky_gain;
-    max_sky_frame_jump = std::max(max_sky_frame_jump, std::fabs(cur_sky - prev_sky));
-    prev_sky = cur_sky;
+    if (clk.use_preset_b && near(sys.evaluate(clk).sky_gain, 2.6f, 1e-5f)) frames_to_b = f;
   }
-  check(clk.use_preset_b, "synthetic 20:00 roll selected preset B");
-  check(max_sky_frame_jump < 0.01f, "20:00 A->B preset crossfade has no single-frame SkyGain snap");
-  check(near(prev_sky, 2.6f, 0.02f), "20:00 A->B crossfade reaches preset B cleanly after 30s");
+  check(clk.tod_sec >= 72000.0 && frames_to_b >= 0, "the frame that crosses 20:00 lights from preset B");
+  check(near(sys.evaluate(clk).sky_gain, 2.6f, 1e-5f), "no blend: preset B's own curves after the roll");
 
-  // 3. TodSmoother filters hard 1-minute ShadowIntensity (-0.3 -> +1.0) & haze steps smoothly.
+  // 3. The raw curve steps exactly as keyed: ShadowIntensity -0.3 -> +1.0
+  //    over the 469 -> 470 minute key.
   world::TodClock dawn_clk;
   dawn_clk.force_preset = true;
-  dawn_clk.set_hour(468.5 / 60.0);
-  world::TodSmoother sm;
-  const float dt60 = 1.0f / 60.0f;
-  world::TodState prev_s = sm.update(sys.evaluate(dawn_clk), dt60, true);
-  float max_shadow_jump = 0.0f;
-  for (int f = 0; f < 10 * 60; ++f) {
-    dawn_clk.advance(dt60, 40.0);
-    const world::TodState cur_s = sm.update(sys.evaluate(dawn_clk), dt60, false);
-    max_shadow_jump = std::max(max_shadow_jump, std::fabs(cur_s.shadow_intensity - prev_s.shadow_intensity));
-    prev_s = cur_s;
+  dawn_clk.set_hour(469.5 / 60.0);
+  check(near(sys.evaluate(dawn_clk).shadow_intensity, 0.35f, 1e-4f), "dawn shadow step: linear between keys");
+
+  // 4. The time-of-day request: from 10:00, ask for 18:00 over 45 real
+  //    seconds (rate = (target - now) / 45): the curve's TimeSpeed is
+  //    ignored, the clock reaches 18:00 after 45 s, stops there and pauses.
+  {
+    world::TodClock rc;
+    rc.set_hour(10.0);
+    const double target = 18.0 * 3600.0;
+    rc.request(target, (target - rc.tod_sec) / 45.0);
+    for (int f = 0; f < 44 * 60; ++f) rc.advance(1.0 / 60.0, 28.0);
+    check(!rc.paused && rc.transition && rc.tod_sec < target, "request: still ramping at 44 s");
+    check(near(float(rc.tod_sec), float(36000.0 + 44.0 * 640.0), 1.0f), "request: its own rate, not TimeSpeed");
+    for (int f = 0; f < 2 * 60; ++f) rc.advance(1.0 / 60.0, 28.0);
+    check(rc.paused && !rc.transition && !rc.rate_override && rc.tod_sec == target, "request: clamps and pauses");
+    rc.advance(10.0, 28.0);
+    check(rc.tod_sec == target, "request: held after it lands");
+    // Past midnight: 22:00 to 02:00 (target + 86,400).
+    world::TodClock mc;
+    mc.set_hour(22.0);
+    mc.request(2.0 * 3600.0 + 86400.0, (4.0 * 3600.0) / 45.0);
+    for (int f = 0; f < 50 * 60; ++f) mc.advance(1.0 / 60.0, 220.0);
+    check(mc.paused && near(float(mc.tod_sec), 7200.0f, 1e-3f), "request: past midnight lands on 02:00");
   }
-  check(max_shadow_jump < 0.015f, "TodSmoother eliminates abrupt dawn ShadowIntensity pop");
-  check(prev_s.shadow_intensity > 0.90f, "TodSmoother converges smoothly to daytime ShadowIntensity");
 
   // 4. ColorLutBlender is frame-rate independent (30 Hz vs 60 Hz vs 120 Hz match at t=1.0s, no 120 Hz snap).
   const world::ColorLut16 lut_a = world::ColorLut16::identity();

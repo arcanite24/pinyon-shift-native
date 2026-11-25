@@ -244,7 +244,6 @@ struct DriveApp : DriveConfig {
 
   world::TodSystem tod_system;
   world::TodClock tod_clock;
-  double pre_race_tod_sec = -1.0;
   world::ParticleLibrary vfx_lib;
   world::SmashableWorld smashables;
   world::AnimatedWorldSystem world_anim;
@@ -290,8 +289,8 @@ struct DriveApp : DriveConfig {
   bool colorado_world() const;
   std::filesystem::path game_root_of() const;
   void write_career_garage();
+  void snap_to_event_tod(const std::string& id);
   bool start_race(const std::string& id, std::string& why);
-  void restore_pre_race_tod();
   int current_pop_rank() const;
   std::vector<std::string> class_name_list() const;
   // `upgrade_class` >= 0: the car arrives upgraded to that CarClasses.Id

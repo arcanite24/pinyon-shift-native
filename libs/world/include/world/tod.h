@@ -178,7 +178,9 @@ struct TodState {
 };
 
 // Continuous 24-hour clock with Colorado's non-uniform TimeSpeed schedule
-// (~30.46 real minutes per full day) and 20:00 A/B preset roll.
+// (~30.46 real minutes per full day) and 20:00 A/B preset roll
+// (SPEC-SKY-AND-TOD §2.1-2.3). Curves are evaluated raw at tod_sec: no
+// temporal smoothing, and the A/B choice switches without a cross-fade.
 struct TodClock {
   double tod_sec = 43200.0;      // [0, 86400)
   int day_count = 2;             // starts on Moon2.xds (full/gibbous)
@@ -186,36 +188,31 @@ struct TodClock {
   double speed_scale = 1.0;      // 0 = frozen, 1 = 30.5m day, 2 = 15m, 0.5 = 61m, etc.
   bool use_preset_b = false;
   bool force_preset = false;     // when true, disables 20:00 random A/B roll
-  double preset_blend = -1.0;    // <0: snap to use_preset_b; [0..1]: smooth A->B cross-fade
+  // A requested transition (the original's time-of-day request): the clock
+  // runs at `request_rate` game s / real s instead of the TimeSpeed curve,
+  // never below `request_floor` (where it was asked from), until it reaches
+  // `request_target`, where it stops and pauses.
+  bool rate_override = false;
+  double request_rate = 0.0;
+  bool transition = false;
+  double request_target = 0.0;
+  double request_floor = 0.0;
   uint32_t rng_state = 0x51A7E3C1u;
 
   void set_hour(double hour);
   double hour() const { return tod_sec / 3600.0; }
   void step_hours(double delta_hours);
+  // Asks the clock to run forward to `target_sec` (add 86,400 to pass
+  // midnight) at `rate` game seconds per real second, then pause there.
+  void request(double target_sec, double rate);
   // Advances the clock by `dt` real seconds using `curve_time_speed` (game s / real s).
   void advance(double dt, double curve_time_speed);
-  // Smooth [0..1] blend weight toward TimeOfDayB (0 = Preset A, 1 = Preset B).
-  double preset_b_weight() const;
   // Lunar phase index [0..4] for Moon0..4.xds.
   int moon_phase() const { return ((day_count % 5) + 5) % 5; }
 };
 
 // Evaluates all curves of `preset` at `tod_sec`.
 TodState evaluate_tod(const TodPreset& preset, double tod_sec);
-// Smoothly interpolates all lighting, sky, cloud, fog, and post fields of two TodStates.
-TodState lerp_tod_state(const TodState& a, const TodState& b, float t);
-
-// Temporal smoother for TodState that filters abrupt 1-minute curve steps
-// (e.g. ShadowIntensity dawn/dusk transitions, haze steps, or preset switches)
-// with frame-rate-independent exponential smoothing.
-struct TodSmoother {
-  bool initialized = false;
-  TodState state{};
-
-  void reset() { initialized = false; }
-  const TodState& update(const TodState& target, float dt, bool snap = false,
-                         float tau_sec = 1.5f, float shadow_tau_sec = 2.5f);
-};
 
 // Track-wide post-processing, exposure, and shadow configuration from TrackSettings.xml.
 struct TrackPostConfig {

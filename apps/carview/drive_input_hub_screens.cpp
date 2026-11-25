@@ -949,7 +949,6 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 app.rally_results_open = false;
                 app.rally_session.retire();
                 app.rally_hub_open = true;
-                app.restore_pre_race_tod();
                 app.leave_race = true;
                 running = false;
               }
@@ -1004,7 +1003,6 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   app.rally_service_resume_after_reload = false;
                   app.rally_session.retire();
                   app.rally_hub_open = true;
-                  app.restore_pre_race_tod();
                   app.leave_race = true;
                   running = false;
                 }

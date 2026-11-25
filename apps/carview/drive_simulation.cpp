@@ -423,7 +423,6 @@ bool DriveSession::free_roam_step() {
           }
         }
         if (!app.race) {
-          app.restore_pre_race_tod();
           const drive::Vec3 at = pos_now;
           auto restore_pr_stunt_loaner = [&]() {
             if (!app.pr_stunt_loaner_active) return;
