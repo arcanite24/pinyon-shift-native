@@ -2285,3 +2285,25 @@ Still interim:
 
 Needed: the List_DamageModDef consumer (impact unit, location and roll),
 Limited's rule, and the original's settings rows.
+
+## Q103 (FEEL-14, not blocking): Assisted braking's gain
+
+SPEC-CAR-PHYSICS confirms the pipeline: with `AutoBrakeOn` (Braking 0)
+the controller reads the racing line's lookahead target speed and adds
+brake (and cuts throttle) while the car is faster than it. The engine
+now takes that target from the driving line everywhere
+(`drive::auto_brake_target`): in races on the racing line, and in free
+roam on the GPS route or the road ahead, built from the car's own
+10-point braking table. The fixed 0.85 g corner rule and 7.5 m/s^2
+braking that free roam used are gone.
+
+Still interim (the spec marks the gain "probable"):
+
+- the margin: nothing below 0.5 m/s over the target;
+- the gain: brake (excess - 0.5) / 8, throttle cut over (excess - 0.5)
+  / 3, both clamped to 0..1;
+- the free-roam path: the GPS route or the nearest road's centre line
+  ahead, which the original may not use.
+
+Needed: the auto-brake's threshold and gain constants, from a trace
+through a few corners with Braking set to Assisted.

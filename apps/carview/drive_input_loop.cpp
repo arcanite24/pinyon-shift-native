@@ -582,6 +582,8 @@ void DriveSession::poll_sdl_events() {
 void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
           const bool* keys = SDL_GetKeyboardState(nullptr);
           constexpr double kLookPi = 3.14159265358979323846;
+          // Assisted braking looks as far ahead as the driving line brakes (FEEL-14).
+          constexpr double kAutoBrakeLookM = drive::DrivingLineOptions{}.brake_lookahead_m;
           drive::Input kb_in;
           kb_in.steer = (action_key_down(keys, live_controls.keys, drive::ControlAction::kSteerRight) ? 1.0 : 0.0) -
                         (action_key_down(keys, live_controls.keys, drive::ControlAction::kSteerLeft) ? 1.0 : 0.0);
@@ -754,23 +756,11 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
                     }
                   }
                 }
-                if (want_auto_brake) {
-                  if (dl_samples.empty() || live_controls.assists.driving_line == 0) {
-                    drive::build_driving_line(app.race->racing_line(), braking_table, car_prog,
-                                              std::max(0.0, car_spd), drive::DrivingLineMode::kBrakingOnly,
-                                              dl_samples);
-                  }
-                  if (!dl_samples.empty()) {
-                    double v_target = dl_samples.back().v_target;
-                    for (const auto& s : dl_samples) {
-                      if (s.dist >= car_prog) {
-                        v_target = s.v_target;
-                        break;
-                      }
-                    }
-                    in.has_auto_brake_target = true;
-                    in.auto_brake_target_speed = v_target;
-                  }
+                double v_target = 0.0;
+                if (want_auto_brake &&
+                    drive::auto_brake_target(app.race->racing_line(), braking_table, car_prog, car_spd, v_target)) {
+                  in.has_auto_brake_target = true;
+                  in.auto_brake_target_speed = v_target;
                 }
               } else {
                 // Free-roam lane guidance & curvature lookahead auto-brake:
@@ -814,27 +804,19 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
                     in.assist_lateral_offset_m = lat_off;
                   }
                   if (want_auto_brake && car_spd > 3.0) {
-                    const double max_look = std::clamp(car_spd * car_spd / 12.0 + 20.0, 24.0, 140.0);
-                    double v_target = 90.0;
-                    for (double da = 8.0; da <= max_look; da += 8.0) {
-                      const double sd = s_cur + da;
-                      if (sd > route.total_length) break;
-                      const double sm = std::max(0.0, sd - 7.0);
-                      const double sp = std::min(route.total_length, sd + 7.0);
-                      if (sp - sm < 2.0) continue;
-                      double mx = 0.0, mz = 0.0, tmx = 0.0, tmz = 1.0;
-                      double px = 0.0, pz = 0.0, tpx = 0.0, tpz = 1.0;
-                      sample_gps(sm, mx, mz, tmx, tmz);
-                      sample_gps(sp, px, pz, tpx, tpz);
-                      const double dtheta =
-                          std::fabs(std::remainder(std::atan2(tpx, tpz) - std::atan2(tmx, tmz), 2.0 * kLookPi));
-                      const double kappa = dtheta / (sp - sm);
-                      const double v_corner = drive::auto_brake_target_for_curvature(kappa, 0.85, 90.0);
-                      const double v_allow = std::sqrt(v_corner * v_corner + 2.0 * 7.5 * da);
-                      v_target = std::min(v_target, v_allow);
+                    // The route ahead as a path from the car (FEEL-14).
+                    std::vector<float> px{float(rx)}, pz{float(rz)};
+                    for (double da = 4.0; da <= kAutoBrakeLookM && s_cur + da <= route.total_length; da += 4.0) {
+                      double qx = 0.0, qz = 0.0, qtx = 0.0, qtz = 1.0;
+                      sample_gps(s_cur + da, qx, qz, qtx, qtz);
+                      px.push_back(float(qx));
+                      pz.push_back(float(qz));
                     }
-                    in.has_auto_brake_target = true;
-                    in.auto_brake_target_speed = v_target;
+                    double v_target = 0.0;
+                    if (drive::auto_brake_target_on_path(px, pz, braking_table, car_spd, v_target)) {
+                      in.has_auto_brake_target = true;
+                      in.auto_brake_target_speed = v_target;
+                    }
                   }
                   guided = true;
                 }
@@ -866,27 +848,20 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
                           }
                         }
                         if (want_auto_brake && car_spd > 3.0) {
-                          const double max_look = std::clamp(car_spd * car_spd / 12.0 + 20.0, 24.0, 140.0);
-                          double v_target = 90.0;
-                          for (double da = 8.0; da <= max_look; da += 8.0) {
+                          // The road ahead as a path from the car (FEEL-14).
+                          std::vector<float> px{float(p0.x)}, pz{float(p0.z)};
+                          for (double da = 4.0; da <= kAutoBrakeLookM; da += 4.0) {
                             const double sd = rhit.s + travel_sign * da;
                             if (sd < 0.0 || sd > rd.length) break;
-                            const double sm = std::clamp(sd - 7.0 * travel_sign, 0.0, rd.length);
-                            const double sp = std::clamp(sd + 7.0 * travel_sign, 0.0, rd.length);
-                            const double chord = std::fabs(sp - sm);
-                            if (chord < 2.0) continue;
-                            std::array<double, 2> dm{0.0, 1.0}, dp{0.0, 1.0};
-                            roads->point_at(rhit.road, sm, nullptr, &dm);
-                            roads->point_at(rhit.road, sp, nullptr, &dp);
-                            const double hm = std::atan2(dm[0] * travel_sign, dm[1] * travel_sign);
-                            const double hp = std::atan2(dp[0] * travel_sign, dp[1] * travel_sign);
-                            const double kappa = std::fabs(std::remainder(hp - hm, 2.0 * kLookPi)) / chord;
-                            const double v_corner = drive::auto_brake_target_for_curvature(kappa, 0.85, 90.0);
-                            const double v_allow = std::sqrt(v_corner * v_corner + 2.0 * 7.5 * da);
-                            v_target = std::min(v_target, v_allow);
+                            const traffic::P3 q = roads->point_at(rhit.road, sd, nullptr, nullptr);
+                            px.push_back(float(q.x));
+                            pz.push_back(float(q.z));
                           }
-                          in.has_auto_brake_target = true;
-                          in.auto_brake_target_speed = v_target;
+                          double v_target = 0.0;
+                          if (drive::auto_brake_target_on_path(px, pz, braking_table, car_spd, v_target)) {
+                            in.has_auto_brake_target = true;
+                            in.auto_brake_target_speed = v_target;
+                          }
                         }
                       }
                     }
