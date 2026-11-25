@@ -1514,7 +1514,10 @@ void DriveSession::run_window_loop() {
             ri.car_to_object_impulse = frame_object_impact;
             ri.on_shift = !sim_paused && (vehicle.gear() != prev_rumble_gear);
             prev_rumble_gear = vehicle.gear();
-            ri.on_engine_sputter = (vehicle.rpm() >= vp.redline_rpm * 0.985 && vehicle.engine_throttle() > 0.5);
+            // OnEngineSputter follows engine damage, not the rev limiter (FEEL-27).
+            engine_sputter.start_damage = vp.sputter_start_damage;
+            engine_sputter.max_per_sec = vp.sputter_max_per_sec;
+            ri.on_engine_sputter = engine_sputter.step(sim_paused ? 0.0 : frame_dt, double(car_damage.engine_damage));
             const uint32_t cur_bf_rumble = app.audio_host.telemetry().backfire_count;
             ri.on_backfire = !sim_paused && (cur_bf_rumble > prev_rumble_backfire);
             prev_rumble_backfire = cur_bf_rumble;

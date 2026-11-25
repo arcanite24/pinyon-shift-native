@@ -455,6 +455,11 @@ struct CarParams {
   double water_floor_y = -46.0;        // m (COLLISION.md, global floor/water Y)
 
   double physics_hz = 359;  // PhysicsSettings.ini CarPhysicsUpdateHz
+
+  // Engine sputter from engine damage (PhysicsSettings.ini
+  // EngineDamageLevelStartSputter / EngineDamageMaxSputtersPerSec; FEEL-27).
+  double sputter_start_damage = 0.3;
+  double sputter_max_per_sec = 1.0;
 };
 
 // Aerodynamic drafting scales applied to a vehicle (SPEC-CAR-PHYSICS,

@@ -605,6 +605,8 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   }
 
   p.physics_hz = s.get("CarPhysicsUpdateHz", 359);
+  p.sputter_start_damage = s.get("EngineDamageLevelStartSputter", p.sputter_start_damage);
+  p.sputter_max_per_sec = s.get("EngineDamageMaxSputtersPerSec", p.sputter_max_per_sec);
 }
 
 CarParams params_for_car_text(const cars::bake::CarInfo& car, const std::string& text, std::vector<std::string>* notes);

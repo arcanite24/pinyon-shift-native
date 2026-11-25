@@ -170,6 +170,25 @@ bool should_trigger_shift_rumble(int prev_gear, int new_gear) {
   return new_gear != prev_gear && new_gear > 0;
 }
 
+double EngineSputter::rate(double engine_damage) const {
+  if (!(max_per_sec > 0.0) || !(engine_damage >= start_damage)) return 0.0;
+  const double span = 1.0 - start_damage;
+  const double u = span > 1e-9 ? std::clamp((engine_damage - start_damage) / span, 0.0, 1.0) : 1.0;
+  return max_per_sec * u;
+}
+
+bool EngineSputter::step(double dt, double engine_damage) {
+  const double r = rate(engine_damage);
+  if (!(r > 0.0) || !(dt > 0.0)) {
+    if (!(r > 0.0)) phase_ = 0;
+    return false;
+  }
+  phase_ += r * dt;
+  if (phase_ < 1.0) return false;
+  phase_ = std::fmod(phase_, 1.0);
+  return true;
+}
+
 uint16_t RumbleOutput::left_u16() const {
   const double v = std::clamp(left, 0.0, 1.0);
   return static_cast<uint16_t>(std::lround(v * 65535.0));

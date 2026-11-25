@@ -664,6 +664,17 @@ void test_per_car_physics() {
   }
 }
 
+// FEEL-27: the sputter tunables come from PhysicsSettings.ini.
+void test_sputter_settings() {
+  drive::CarParams p = test_car();
+  CHECK(p.sputter_start_damage == 0.3 && p.sputter_max_per_sec == 1.0);
+  cars::PhysicsSettings ps;
+  ps.values["EngineDamageLevelStartSputter"] = 0.45;
+  ps.values["EngineDamageMaxSputtersPerSec"] = 2.5;
+  drive::apply_physics(cars::CarPhysics{}, ps, p);
+  CHECK(p.sputter_start_damage == 0.45 && p.sputter_max_per_sec == 2.5);
+}
+
 // FEEL-11: the original's FrictionTorqueMod law on the shipped table values
 // (PhysicsSettings.ini FrictionTorqueMod defaults in CarParams).
 void test_friction_torque_mod() {
@@ -1041,6 +1052,7 @@ int main() {
   }
   test_per_car_physics();
   test_friction_torque_mod();
+  test_sputter_settings();
   test_pad_steering_linear();
   test_no_thermal_grip();
   test_assists_and_transmission();
