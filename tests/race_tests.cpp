@@ -181,15 +181,15 @@ void test_reset_timings() {
         near(o.collisions_off, 0.5));
   race::Gate g{0, 10, 0, 1, 25};
   race::Session s(1, true, 1, g, std::nullopt, o);
-  race::CarSample still;  // stopped: the 3 s no-progress rule
+  race::CarSample still;  // stopped: the no-progress rule
   double off_at = -1, reset_at = -1;
-  for (int k = 0; k < 40 && reset_at < 0; ++k) {
+  for (int k = 0; k < 60 && reset_at < 0; ++k) {
     s.step(0.1, std::span(&still, 1));
     if (!s.collides(0) && off_at < 0) off_at = s.clock();
     if (!s.resets().empty()) reset_at = s.clock();
   }
-  CHECK(reset_at > 2.95 && reset_at < 3.15);
-  CHECK(off_at > 2.45 && off_at < 2.65);  // collisions off from 0.5 s before
+  CHECK(reset_at > 3.95 && reset_at < 4.15);  // ProgressTimeBeforeReset 4
+  CHECK(off_at > 3.45 && off_at < 3.65);      // collisions off from 0.5 s before
   s.reset_done(0);
   CHECK(!s.collides(0) && !s.car(0).collisions_off);
   {
@@ -250,6 +250,150 @@ void test_reset_timings() {
   CHECK(std::string(race::ai_settings_set(true)) == "streetrace" &&
         std::string(race::ai_settings_set(false)) == "default" &&
         std::string(race::ai_settings_set(false, true)) == "freeroam");
+}
+
+// WORLD-04: AI cars reset by their ResetParameters, the player by the Hand
+// of God triggers (made-up rules).
+void test_ai_reset_rules() {
+  race::AiResetRules r;
+  r.stuck_waypoints = {{{1, 20.0}, {3, 21.0}, {5, 22.0}}};
+  r.stuck_distance_m = 2.0, r.stuck_distance_time = 9.0;
+  r.slow_speed = 3.0, r.slow_time = 10.0;
+  r.upside_down_speed = 3.0, r.upside_down_time = 2.0, r.upside_down_up_y = 0.3;
+  r.fell_low = -50.0, r.cancel_moved_m = 20.0;
+  race::Gate g{0, 1e6, 0, 1, 25};  // never crossed
+  auto make = [&](const race::AiResetRules* rules, bool ai_hog = false) {
+    race::Session::Options o;
+    o.countdown = 0;
+    o.player_index = 1;
+    if (rules) o.ai_rules = *rules;
+    o.ai_hand_of_god = ai_hog;
+    return race::Session(2, false, 1, g, race::Gate{0, 2e6, 0, 1, 25}, o);
+  };
+  // Run until the first reset of each car (or `until` s); returns the times.
+  struct Run {
+    double ai = -1, player = -1;
+    std::string ai_reason;
+    bool ai_off_early = false, ai_off_late = false;
+  };
+  auto run = [&](race::Session& s, race::CarSample ai, race::CarSample player, double until, double ai_vx = 0,
+                 double ai_vz = 0) {
+    Run out;
+    player.waypoint = 0;
+    for (int k = 0; k < int(until / 0.1 + 0.5); ++k) {
+      ai.x0 = ai.x1, ai.z0 = ai.z1;
+      ai.x1 += ai_vx * 0.1, ai.z1 += ai_vz * 0.1;
+      race::CarSample cs[2] = {ai, player};
+      if (k == 0) cs[1].speed = 10;  // the player launches (no start-line grace)
+      s.step(0.1, cs);
+      if (std::fabs(s.clock() - 6.5) < 0.05) out.ai_off_early = !s.collides(0);
+      if (std::fabs(s.clock() - 7.5) < 0.05) out.ai_off_late = !s.collides(0);
+      for (size_t i : s.resets()) {
+        if (i == 0 && out.ai < 0) out.ai = s.clock(), out.ai_reason = s.car(0).reason;
+        if (i == 1 && out.player < 0) out.player = s.clock();
+        if (i == 1) s.reset_done(1);
+      }
+      if (out.ai >= 0) break;
+    }
+    return out;
+  };
+  race::CarSample still;
+  still.waypoint = 5;
+  {
+    // Stopped: the player goes at 3 s, the AI at 9 s (within 2 m), with its
+    // collisions off over the last 2 s.
+    auto s = make(&r);
+    const Run o = run(s, still, still, 30);
+    CHECK(o.player > 2.95 && o.player < 3.25);
+    CHECK(o.ai > 8.95 && o.ai < 9.25 && o.ai_reason == "stuck in place");
+    CHECK(!o.ai_off_early && o.ai_off_late);
+  }
+  {
+    auto s = make(&r);
+    race::CarSample up = still;
+    up.up_y = 0.1;
+    const Run o = run(s, up, still, 30);
+    CHECK(o.ai > 1.9 && o.ai < 2.15 && o.ai_reason == "upside down");
+  }
+  {
+    auto s = make(&r);
+    race::CarSample low = still;
+    low.y = -60;
+    const Run o = run(s, low, still, 1);
+    CHECK(near(o.ai, 0.1, 1e-9) && o.ai_reason == "fell");
+  }
+  {
+    // Stuck on the line: within one point for 20 s (the other rules off).
+    race::AiResetRules w = r;
+    w.stuck_distance_time = 1e9, w.slow_time = 1e9;
+    auto s = make(&w);
+    const Run o = run(s, still, still, 30);
+    CHECK(o.ai > 19.95 && o.ai < 20.25 && o.ai_reason == "stuck on the line");
+  }
+  {
+    // Crawling at 2.5 m/s past a point a metre: too slow after 10 s, unless
+    // the cancel distance (20 m, reached after 8 s) restarts the timers.
+    race::CarSample crawl = still;
+    crawl.speed = 2.5;
+    race::AiResetRules nc = r;
+    nc.cancel_moved_m = 1e9;
+    auto s = make(&nc);
+    Run o;
+    {
+      // The line point follows the car (1 m apart).
+      race::CarSample ai = crawl, pl = still;
+      pl.speed = 20;
+      for (int k = 0; k < 300 && o.ai < 0; ++k) {
+        ai.x0 = ai.x1, ai.z0 = ai.z1, ai.z1 += 0.25, ai.waypoint = std::floor(ai.z1);
+        race::CarSample cs[2] = {ai, pl};
+        s.step(0.1, cs);
+        for (size_t i : s.resets())
+          if (i == 0) o.ai = s.clock(), o.ai_reason = s.car(0).reason;
+      }
+    }
+    CHECK(o.ai > 9.9 && o.ai < 10.15 && o.ai_reason == "too slow");
+    auto c = make(&r);
+    bool any = false;
+    race::CarSample ai = crawl, pl = still;
+    pl.speed = 20;
+    for (int k = 0; k < 300; ++k) {
+      ai.x0 = ai.x1, ai.z0 = ai.z1, ai.z1 += 0.25, ai.waypoint = std::floor(ai.z1);
+      race::CarSample cs[2] = {ai, pl};
+      c.step(0.1, cs);
+      for (size_t i : c.resets()) any |= i == 0;
+    }
+    CHECK(!any);
+    // The timers ride along in a Rewind snapshot.
+    const auto snap = c.snapshot();
+    CHECK(snap.cars[0].ai.slow_t > 0 && snap.cars[0].ai.slow_t < 8.1);
+  }
+  {
+    // No AI rules: the AI does not reset (or, asked, by the player's triggers).
+    auto s = make(nullptr);
+    const Run o = run(s, still, still, 30);
+    CHECK(o.ai < 0 && o.player > 0);
+    auto h = make(nullptr, true);
+    const Run p = run(h, still, still, 30);
+    CHECK(p.ai > 2.9 && p.ai < 3.15 && p.ai_reason == "no progress");
+  }
+  {
+    // The Hand of God triggers follow the options (apply_hand_of_god).
+    race::HandOfGodReset hog;
+    hog.progress_mph = 10, hog.progress_time = 1.5, hog.off_track_m0 = 3;
+    race::Session::Options o;
+    o.countdown = 0;
+    race::apply_hand_of_god(hog, o);
+    CHECK(near(o.progress_mph, 10) && near(o.progress_time, 1.5) && near(o.off_route_near, 3));
+    race::Session s(1, false, 1, g, std::nullopt, o);
+    race::CarSample slow7;
+    slow7.speed = 7 * 0.44704;  // under 10 mph
+    double at = -1;
+    for (int k = 0; k < 40 && at < 0; ++k) {
+      s.step(0.1, std::span(&slow7, 1));
+      if (!s.resets().empty()) at = s.clock();
+    }
+    CHECK(at > 1.45 && at < 1.65);
+  }
 }
 
 void test_session() {
@@ -795,6 +939,7 @@ int main() {
   test_route();
   test_session();
   test_reset_timings();
+  test_ai_reset_rules();
   test_difficulty();
   test_rubberband_modes();
   test_rewards();

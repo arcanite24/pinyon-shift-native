@@ -453,6 +453,15 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       std::fprintf(stderr, "race: note: [HandOfGodReset] not read (%s): its values as fallbacks\n", he.c_str());
     for (const auto& k : hand_of_god_.missing) std::fprintf(stderr, "race: note: no %s\n", k.c_str());
     race::apply_hand_of_god(hand_of_god_, sopt);
+    // WORLD-04: the AI resets by its own ResetParameters (AIRacing.xml, the
+    // race's settings set), the player alone by the Hand of God triggers.
+    // Without the file the AI does not reset automatically.
+    const char* set = race::ai_settings_set(street_ || race::event_uses_traffic(event_.career_type));
+    race::AiResetRules rules;
+    std::string ae;
+    if (race::load_ai_reset_rules(root, set, rules, &ae)) sopt.ai_rules = rules;
+    else std::fprintf(stderr, "race: note: no AI reset rules (%s): AI cars do not reset\n", ae.c_str());
+    sopt.ai_hand_of_god = false;
   }
   if (street_ || race::event_uses_traffic(event_.career_type)) {
     // Street & Nemesis open roads have wider shoulders/intersections than closed festival ribbons.
@@ -1433,6 +1442,9 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     s.heading_cos = st.fwd_x * std::sin(h) + st.fwd_z * std::cos(h);
     s.off_route = std::max(0.0, std::fabs(cr) - room);
     s.up_y = v.up_y();
+    s.y = p.y;
+    // The AI reset rules count line points as the AI's waypoints (interim).
+    s.waypoint = line_.line.size() > 1 ? double(line_.line.segment(s.progress, 0)) : -1.0;
   };
   for (size_t k = 0; k < n; ++k) sample(k, *cars_[k].body, cars_[k].px, cars_[k].pz);
   sample(n, player, ppx_, ppz_);
