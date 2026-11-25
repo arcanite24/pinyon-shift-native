@@ -211,8 +211,9 @@ filter in `map_filter.h`.
   Speed Cameras, Discount Signs, Barn Finds), all ticked at first. A ticks a
   row; A on All ticks or clears every row, and All is ticked exactly when
   every row is. An icon shows when any ticked row covers it (Q88);
-  facilities (Race Central, the Autoshow and so on) always show. The rows
-  scroll eight at a time in the scene's five-bar frame.
+  facilities (Race Central, the Autoshow and so on) always show. Eight rows
+  show, drawn with the scene's five bars on one leaning line, and the list
+  scrolls only when the cursor passes its first or last row.
 - **Rumours.** A barn rumour is the profiles' `barn_find_region` ellipse,
   flat white (a=80 on the pause map, solid with a faint black edge on the
   minimap); the barn icon sits inside it.
@@ -323,10 +324,15 @@ destinations, and an outpost must be discovered (Q90).
   (`map_popup_event_details_orig.png`, Q92). A speed trap has no X
   LEADERBOARD (the engine has no leaderboards). The selected event's course
   outline (pink, `map_popup_event_details_back_orig.png`) is not drawn. The
-  icons' open and pulse
-  animations, the barn rumour's reveal animation and the filter's
-  scrollbar are not ported, and travel keeps the loading screen without
-  the original's fast travel camera.
+  original zooms out about a sixth past its opening scale
+  (`map_zoom_out_orig.png`); the engine stops at the opening scale. Near
+  the west edge (Carson) the engine's raster leaves a black band where the
+  map texture ends. In the live render the FILTER title tape is greyer and
+  taller than the original's white bar, and the list's scroll indicator is
+  drawn by hand (a track and a thumb at the cursor's row) in place of the
+  scene's. The icons' open and pulse animations and the barn rumour's
+  reveal animation are not ported, and travel keeps the loading screen
+  without the original's fast travel camera.
 - **Not ported.** `DirectionArrows`; the notifications' tape slide (they
   fade); the Show me! action (hidden, no action behind it); the ghosts and
   rewind message toggles (the engine has neither element).
