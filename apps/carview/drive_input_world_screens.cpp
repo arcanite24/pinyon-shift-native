@@ -272,9 +272,16 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                 } else if (e.button.button == SDL_BUTTON_LEFT) {
                   carview::ui::HitZone hz{};
                   const bool hit = ui_mouse_hit(e.button.x, e.button.y, hz);
-                  if (!tm.menu_visible() || tm.popup != carview::TitleMenu::Popup::kNone) {
-                    // Press Start and the popups: a click anywhere is A (a
-                    // popup's B is the right button).
+                  if (tm.popup == carview::TitleMenu::Popup::kConfirmNewCareer) {
+                    // YES / NO: only their pills (a stray click must not
+                    // start a new career over the save).
+                    if (hit && hz.group == carview::ui4::kHitButton) {
+                      if (hz.index == 0) run_title(tm.confirm());
+                      else if (hz.index == 1) run_title(tm.back());
+                    }
+                  } else if (!tm.menu_visible() || tm.popup != carview::TitleMenu::Popup::kNone) {
+                    // Press Start and the one-button popups: a click
+                    // anywhere is A.
                     run_title(tm.confirm());
                   } else if (hit && hz.group == carview::ui::kHitRow) {
                     tm.hover(hz.index);
