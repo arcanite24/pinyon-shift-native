@@ -1879,9 +1879,11 @@ when `947_HUD` `I_321_Go`'s `GO` text shows GO! (`15_countdown_orig.png`,
 out at full opacity but nothing in those captures fills it. The engine
 runs the world clock that the gantry LEDs read from the race clock, but
 its gantry panels stay dark at the FR16 start (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
-and textured, and the shipped shaders carry the LED branch, so the
-cause lies past that (the texture or the draw's intensity) and is not
-found), so until they light it fills
+and textured, and the shipped shaders carry the LED branch. With the
+branch forced to a debug colour, the FR16 panels stayed dark: the panels
+seen at that start are not drawn by it. Three draws carry the material in
+the loaded world; which gantry they belong to, and what material the FR16
+panels use, is not found), so until they light it fills
 `TEXT_COUNT` with 3, 2, 1 at every start as an interim. Unknown: whether a start with no gantry (a street race, a
 point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
 Needed, narrow: a capture of such a start, or the code that writes
@@ -2188,3 +2190,54 @@ grandstand, tanoy and speakers.
 Needed: how the game resolves a placement's `eventName` to an event (a
 project or group prefix it strips, or a remap table), and where the
 regional banks are.
+
+## Q107 (WORLD-11, not blocking): how an ordinary event sets, holds and restores the time of day
+
+The original changes the clock by a request: a target (plus 86,400 to pass
+midnight) and a rate, which the clock runs at until it lands and pauses
+there; a held-clock flag keeps the title's own setters off it. The engine
+has it (`TodClock::request`). The only callers traced are two special
+flows: the first-time-career intro (a 45 s ramp to 18:00, 14:30 or
+midnight, picked by state we have not matched) and the E3 demo. What an
+ordinary event start writes is not traced. A probe of the original at
+22:00 showed The Gauntlet loading in daylight, so the start time is set at
+once, as the engine does; the probe's quit did not register, so whether
+the pre-race time comes back after the event is not seen.
+
+The engine sets the event's `TimeOfDayStart` at once, holds the clock
+through the race (SKY_AND_TOD §7: paused on fixed-time events) and puts
+the pre-race time back afterwards. That restore is the jump the playtest
+saw run backwards; it stays until the original's rule is known.
+
+Needed: a capture pair either side of quitting or finishing an event
+(free-roam time before, after), or the writer of the clock's time and
+hold flag on event load and unload.
+
+## Q108 (WORLD-12, not blocking): where world lamp glows come from
+
+The original's lamp glows are camera-facing sprites drawn after the opaque
+world (a sprite texture times a 1D colour ramp, additive, depth-tested,
+a per-lamp `SwitchOnLights` threshold and a `LookFadeValues` cone). Not
+decoded: where each glow's position, direction, colour, radius, threshold
+and textures come from (a record in the track or prop data, or the prop's
+model). The engine makes its own: a glow on props whose names read as
+lamps or floodlights, colour by kind, a hashed threshold, re-seated into
+the prop's box and dropped when no box matches, drawn as a procedural
+corona. Without the source, changing those constants trades one guess for
+another, so they stay as they are.
+
+Needed: the glow record format and its sprite and ramp textures, or a
+night frame's draw log of the lamp-glow draws with their vertex data.
+
+## Q109 (WORLD-14, not blocking): spectator clips and placements
+
+The original steps each spectator one frame per rendered frame through a
+`Spectators.zip` clip and, at its end, picks another clip or loops. The
+engine parses each `.anim.bin` header and skeleton but not its keys, and
+poses spectators with its own procedural moves. Hard-coded clusters and
+the head turn toward the car are gone (WORLD-14); the remaining clusters
+are placed from `GameObjs.xml` gameplay nodes by the engine's own offsets,
+not from a crowd record (`Colorado_track_00.crowd` is 12 bytes).
+
+Needed: the `.anim.bin` key layout (rotation and translation tracks, rate)
+and the source of the start-line spectator instances.
