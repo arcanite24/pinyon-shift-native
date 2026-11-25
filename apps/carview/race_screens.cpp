@@ -103,7 +103,7 @@ void bind_titles(SceneScreen& sc, const RaceHud& r) {
       const float shown = std::min(tw + kTitleTapePad, rr[2] - rr[0]);
       sc.at(right).dx = sd.at(main)[0] + tw + kTitleTapeEnd - (rr[0] + shown);
     }
-    // interim: the crisp tape's sheen draws as a dark gloss over the pink
+    // interim (SPEC_QUESTIONS Q99): the crisp tape's sheen draws as a dark gloss over the pink
     // (and, one texture, is not cropped with the tape); the capture shows a
     // flat pink tape, so it is hidden.
     sc.hide(sc.node("MainTitle/Crisp/specular"));
@@ -419,6 +419,7 @@ bool draw_rival_intro(ui::List& l, const RaceHud& r, float w, float h) {
     const float tw = sd.measure(title, rw);
     fit_tapes(sc, line, tw + kTitleTapePad, kTapeBlack);
     if (const int dirt = child(sd, line, "dirt"); dirt >= 0) sc.hide(dirt);
+    // interim (SPEC_QUESTIONS Q99): the sheen, uncropped, runs past the tape.
     if (const int sp = sc.node("NemesisName/Crisp/specular"); sp >= 0) sc.hide(sp);
     if (group >= 0 && bonus >= 0) {
       const std::string reward = credits_text(r.rival_reward);

@@ -304,4 +304,5 @@ flow files) as plain steps, with the timings measured on the captures;
   end states; no wristband art or car render (Q96).
 - **Car select and difficulty.** Car select lists the eligible cars on
   `H_GENERIC_TITLE`'s rows; DIFFICULTY steps the difficulty in place (Q97).
-- **Not drawn.** The tombola and the rival offer (Q98).
+- **Not drawn.** The tombola and the rival offer (Q98); the title and
+  rival tapes' specular sheens (Q99).

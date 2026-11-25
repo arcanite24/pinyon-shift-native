@@ -1960,3 +1960,15 @@ neither yet. The engine also lacks which events carry a star rival, which gates
 the rival callout (Q95). Needed: a capture of a tombola after a race, the
 data that marks an event's prize as a tombola, and the event to star
 rival mapping.
+
+## Q99 (UI, not blocking): the tapes' specular sheens
+
+Some tapes carry a `specular` model under their crisp tape (the event
+title's `MainTitle/Crisp/specular` at alpha 0.5, the rival callout's
+`NemesisName/Crisp/specular` at 0.4). The engine draws them as a dark
+gloss across the pink, and, being one texture, they are not cropped with
+the tape, so they run on past its end as a dark band. The captures
+(`12_race_intro_card_orig.png`, `14_rival_intro_orig.png`) show flat
+tapes, so as an interim the engine hides both. Needed, narrow: the
+sheens' blend mode (additive or alpha) and whether the original crops
+them with their tape.
