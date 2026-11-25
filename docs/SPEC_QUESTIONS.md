@@ -4935,3 +4935,62 @@ is in the engine, and the consumers are not decoded.
 
 Needed: the consumers of the bump-stop damage keys and
 BumpstopFrictionScale.
+
+## Q191 (WORLD-GEOMETRY Q3 follow-up, not blocking): the far terrain over the Finley Dam gorge
+
+`Mountains_Area04A_Terrain_05_LOD00..02` (coloradoout.12897–12899,
+`H_BLND1_SPEC`, in the UberLOD block next to `TERR_UberLOD_Patch10_CAGE003`)
+duplicates the Finley Dam terrain to within about ±2 m. Below the dam road
+(x 6527..6793, z -470..-113) it is the only geometry over the gorge.
+
+Open:
+- How does the game draw it near the camera without covering the road? A
+  PVS or zone exclusion, a separate far-terrain depth pass, or something
+  else?
+- What draws the gorge floor in a frame from the Cliff Run route near
+  (6577, 231, -456)?
+
+The engine meanwhile:
+- Objects drawn only with `H_BLND1_SPEC` are UberLOD-level far terrain.
+- Inside the inner cut, far triangles fill only the holes in the near
+  ground.
+- Six thin slivers at hole edges remain.
+
+Needed: a capture from the Cliff Run route above the gorge, or the
+renderer's far-terrain pass.
+
+## Q192 (MAP, not blocking): X on the map at the festival site you are at
+
+On the map, a festival site offers X FAST TRAVEL (0 Cr)
+(`map_popup_garage_orig.png`, `map_popup_paintshop_orig.png`). No capture
+shows the map opened while the player stands in that site's trigger.
+
+The engine meanwhile: on the site the player is at, X reads ENTER NOW
+(`Activities/IDS_EnterNow`) and enters the site, as the world prompt does.
+Elsewhere X still offers the fast travel.
+
+Needed: a capture of the map opened inside a festival site's trigger,
+with the cursor on that site.
+
+## Q193 (MAP, HUD-11, not blocking): which barn states show which map icon
+
+`CActivityBarnFind` sets up two map markers at the barn: `barnfind`
+(MapIconSheet cell 0,4, tan) and `barnfind_collected` (cell 1,4, dark).
+Its marker update shows the tan one when asked to, and shows the dark one
+in its place when the activity's byte +44 or byte +513 is non-zero. The
+original's map shows tan barns inside the rumour circles
+(`map_open_orig.png`, `08_world_map_orig.png`).
+
+The engine meanwhile:
+- A barn with a running rumour gets the tan icon.
+- A found barn (restoring, ready or collected) gets the dark icon, the
+  sheet's colour with no tint, as both profiles give it.
+- A selection fades the other icons to the profile's `ghost` alpha (0.3).
+
+Open:
+- Which fields bytes +44 and +513 are.
+- Whether a restoring or ready barn keeps the tan icon until it is
+  collected.
+
+Needed: the writers of those two bytes, or a map capture with a found but
+uncollected barn.
