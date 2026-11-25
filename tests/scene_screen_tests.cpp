@@ -343,6 +343,10 @@ int main() {
     carview::DriveHud race_d = roam;
     race_d.kmh = 73, race_d.rpm = 5200, race_d.gear = 2;
     race_d.race = &sprint;
+    carview::SkillChainHud sprint_sk;
+    sprint_sk.active = true, sprint_sk.chain_points = 250, sprint_sk.multiplier_f = 1.1f;
+    sprint_sk.last_skill = "GREAT ONE EIGHTY", sprint_sk.last_points = 150, sprint_sk.last_skill_at = 9.5;
+    race_d.skills = &sprint_sk;
     hud_shot("hud_race.png", "16_race_hud_orig.png", race_d);
     carview::RaceHud circuit;
     circuit.phase = carview::RaceHud::kRacing;
@@ -358,8 +362,20 @@ int main() {
     carview::DriveHud circuit_d = r34;
     circuit_d.kmh = 143, circuit_d.rpm = 7600, circuit_d.gear = 3;
     circuit_d.race = &circuit;
+    carview::SkillChainHud circuit_sk;
+    circuit_sk.active = true, circuit_sk.chain_points = 583, circuit_sk.multiplier_f = 1.4f;
+    circuit_sk.last_skill = "GREAT DRAFTING", circuit_sk.last_points = 150, circuit_sk.last_skill_at = 9.5;
+    circuit_d.skills = &circuit_sk;
     const char* oracle = std::getenv("SHIFT_SCENE_SCREEN_ORACLE");
     hud_shot("hud_race_circuit.png", oracle ? std::string(oracle) + "/race-hud-notification.png" : "", circuit_d);
+    // A chain just banked: the total and the popularity disc.
+    carview::SkillChainHud banked_sk;
+    banked_sk.banked_total = 100, banked_sk.banked_at = 9.0, banked_sk.popularity_rank = 165;
+    banked_sk.prev_popularity_rank = 165, banked_sk.pop_anim_progress = 0.3, banked_sk.pop_rank_anim_t = 1.0;
+    circuit_d.skills = &banked_sk;
+    circuit.lap = 1, circuit.place = 7, circuit.clock = 38.635, circuit.lap_time = 34.668;
+    circuit.last_lap = circuit.best_lap = -1;
+    hud_shot("hud_race_banked.png", oracle ? std::string(oracle) + "/race-hud-skill-banked.png" : "", circuit_d);
   }
 
   if (g_failures > 0) {

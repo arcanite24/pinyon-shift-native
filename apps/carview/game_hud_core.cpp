@@ -1014,7 +1014,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       if (used > 0.0f) bottom_lift += used + 8.0f;
     }
     if (st.skills && !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open)))
-      skill_chain_hud(l, *st.skills, g, st.time);
+      if (!draw_hud_skills(l, *st.skills, g.w, g.h, g.s, st.time)) skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
       const RaceHud& r = *st.race;
       if (r.phase != RaceHud::kFinished) reset_post_race_page_timer();

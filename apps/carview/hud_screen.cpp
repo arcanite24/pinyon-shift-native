@@ -252,6 +252,10 @@ constexpr float kStandingsRight = 1213.0f;
 constexpr float kStandingsPad = 38.0f;
 // A sprint's progress: the percentage from x 68, its label 15 px after it.
 constexpr float kEndConLeft = 68.0f, kEndConGap = 15.0f;
+// The popularity disc's fill along its groove (the banked oracle).
+constexpr float kDiscFillRadius = 31.0f, kDiscFillWidth = 5.0f;
+// The fill runs clockwise from the groove's open end (7:30) round 270 degrees.
+constexpr float kDiscFillStart = -2.356f, kDiscFillSweep = 4.712f;
 
 void bind_end_condition(SceneScreen& sc, const RaceHud& r) {
   const SceneDraw& sd = sc.scene();
@@ -406,6 +410,141 @@ bool draw_hud_race(ui::List& l, const RaceHud& r, float w, float h, float s, boo
   if (!r.rows.empty()) {
     bind_standings(sc, r);
     sc.draw(l, tr, standings);
+  }
+  return true;
+}
+
+// --- DrivingSkill and PopularityBar ---------------------------------------
+
+namespace {
+
+// The skill chain's yellow (TEXT_TOTAL, SkillValue) and the popularity
+// disc's text (16_race_hud_orig.png, the race-hud-skill-banked oracle).
+constexpr uint32_t kSkillYellow = ui::rgba(0xDA, 0xFF, 0x00);
+constexpr uint32_t kDiscInk = ui::rgba(20, 20, 22);
+constexpr uint32_t kLostRed = ui::rgba(236, 52, 44);
+// The rows' stackers centre them on x 640; the gaps between their texts
+// (measured on the same captures).
+constexpr float kScoreGap = 6.0f, kSkillGap = 4.0f;
+// How long the banked total and the disc stay up, and the lost chain.
+constexpr double kBankSeconds = 3.5, kLostSeconds = 2.2, kRankSeconds = 4.0;
+
+// Packs texts on one row centred on canvas x `cx` by their left edges.
+void pack_row(SceneScreen& sc, const std::vector<std::pair<int, std::string>>& items, float cx,
+              const std::vector<float>& gaps) {
+  const SceneDraw& sd = sc.scene();
+  float total = 0.0f;
+  for (size_t i = 0; i < items.size(); ++i) total += sd.measure(items[i].first, items[i].second) * 1.0f;
+  for (size_t i = 0; i + 1 < items.size(); ++i) total += i < gaps.size() ? gaps[i] : 0.0f;
+  float x = cx - 0.5f * total;
+  for (size_t i = 0; i < items.size(); ++i) {
+    const int n = items[i].first;
+    if (n < 0) continue;
+    sc.text(n, items[i].second);
+    sc.at(n).dx = left_at(sd, n, items[i].second, x);
+    x += sd.measure(n, items[i].second) + (i < gaps.size() ? gaps[i] : 0.0f);
+  }
+}
+
+}  // namespace
+
+std::string skill_multiplier_text(const SkillChainHud& sk) {
+  const float m = sk.multiplier_f > 0.0f ? sk.multiplier_f : float(std::max(1, sk.multiplier));
+  char b[16];
+  std::snprintf(b, sizeof b, "%.1f", m);
+  return b;
+}
+
+bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, float s, double time) {
+  SceneScreen sc(kHudScene);
+  const SceneDraw& sd = sc.scene();
+  const int skill = sc.node("DrivingSkill"), pop = sc.node("PopularityBar");
+  const int score = child_path(sd, skill, "CompleteComponent/ScoreGroup/anim_helper");
+  const int skill1 = child_path(sd, skill, "CompleteComponent/SkillGroup/Skill1/anim_helper/Skill");
+  if (skill < 0 || pop < 0 || score < 0 || skill1 < 0) return false;
+  sc.bindings().fit_text = false;
+  const SceneFrame f = hud_frame(HudAnchor::kTop, w, h, s);
+  const double since_bank = time - sk.banked_at, since_lost = time - sk.lost_at, since_rank = time - sk.rank_up_at;
+  const bool banked = since_bank >= 0 && since_bank < kBankSeconds;
+  const bool lost = since_lost >= 0 && since_lost < kLostSeconds;
+  const bool rank_up = (since_rank >= 0 && since_rank < kRankSeconds) ||
+                       (sk.pop_rank_anim_t >= 0.0 && sk.pop_rank_anim_t < 0.999);
+  if (!sk.active && !banked && !lost && !rank_up) return true;
+
+  // The chain: the score and multiplier, the last skill and its points.
+  const int mult = child(sd, score, "Multiplier");
+  const int mult_h = child(sd, mult, "anim_helper");
+  const int total_n = child_path(sd, score, "Total/anim_helper/TEXT_TOTAL");
+  const int x_n = child(sd, mult_h, "TEXT_X"), m_n = child_path(sd, mult_h, "anim_helper/TEXT_MULTIPLIER");
+  const float cx = 640.0f;
+  if (sk.active || lost || banked) {
+    show_all(sc, score);
+    for (int c : {child(sd, mult_h, "Background"), child(sd, mult_h, "Smudge_Tape"), child(sd, mult, "Flash"),
+                  child_path(sd, score, "Total/Flash")})
+      sc.hide(c);
+    const int shown = banked && !sk.active ? sk.banked_total : sk.chain_points;
+    const std::string total = thousands(shown);
+    if (sk.active) {
+      pack_row(sc, {{total_n, total}, {x_n, "X"}, {m_n, skill_multiplier_text(sk)}}, cx, {kScoreGap, 0.0f});
+    } else {
+      sc.hide(mult);
+      pack_row(sc, {{total_n, total}}, cx, {});
+    }
+    const float fade = lost && !sk.active ? 1.0f - float(std::clamp((since_lost - 1.5) / 0.7, 0.0, 1.0))
+                       : banked && !sk.active ? 1.0f - float(std::clamp((since_bank - 3.0) / 0.5, 0.0, 1.0))
+                                              : 1.0f;
+    if (total_n >= 0) {
+      sc.at(total_n).tint = lost && !sk.active ? kLostRed : kSkillYellow;
+      sc.at(total_n).alpha = fade;
+    }
+    if (x_n >= 0) sc.at(x_n).alpha = fade;
+    if (m_n >= 0) sc.at(m_n).alpha = fade;
+  } else {
+    sc.hide(score);
+  }
+  const int skill_group = child_path(sd, skill, "CompleteComponent/SkillGroup");
+  sc.hide(child_path(sd, skill_group, "Skill2"));
+  if (sk.active && !sk.last_skill.empty()) {
+    show_all(sc, skill1);
+    for (int c : {child(sd, skill1, "Background"), child(sd, skill1, "Smudge_Tape"), child(sd, skill1, "ComboIcon")})
+      sc.hide(c);
+    sc.hide(child_path(sd, skill_group, "Skill1/Flash"));
+    const int name = child(sd, skill1, "TEXT_POP_SKILLNAME"), value = child(sd, skill1, "SkillValue");
+    pack_row(sc, {{name, sk.last_skill}, {value, std::to_string(sk.last_points)}}, cx, {kSkillGap});
+    if (value >= 0) sc.at(value).tint = kSkillYellow;
+  } else {
+    sc.hide(skill_group);
+  }
+  sc.draw(l, f, skill);
+
+  // The popularity disc: shown when a chain banks or the rank changes.
+  if (banked || rank_up) {
+    const PopularityBadgeAnimFrame anim = evaluate_popularity_badge_anim(sk, time);
+    const int value_type = child_path(sd, pop, "ValueScale/ValueType");
+    const int level = child(sd, value_type, "TEXT_LEVEL"), suffix = child(sd, value_type, "TEXT_LEVEL_SUFFIX");
+    const int rank = std::max(1, anim.display_rank);
+    sc.text(level, std::to_string(rank));
+    sc.text(suffix, place_suffix(rank));
+    if (level >= 0) sc.at(level).tint = kDiscInk;
+    if (suffix >= 0) {
+      sc.at(suffix).tint = kDiscInk;
+      // The suffix follows the number (its stacker).
+      sc.at(suffix).dx = sd.at(level)[0] - sd.at(suffix)[0] + 1.0f;
+    }
+    sc.hide(child_path(sd, pop, "ValueScale/Stars"));
+    sc.hide(child(sd, pop, "Bar"));
+    for (int c : {child(sd, pop, "CircleFlash"), child(sd, pop, "Flash_SmokeRing")})
+      if (c >= 0) sc.at(c).alpha = anim.ring_flash_alpha;
+    sc.hide(child(sd, pop, "Flash_SmokeRing2"));
+    const float fade = banked ? 1.0f - float(std::clamp((since_bank - 3.0) / 0.5, 0.0, 1.0)) : 1.0f;
+    sc.bindings().opacity = fade;
+    sc.draw(l, f, pop);
+    // The ring's fill (the scene's quarter pieces are turned by the game; an
+    // arc along the same groove here).
+    const auto c = sd.at(pop);
+    const float r = kDiscFillRadius * f.s, a0 = kDiscFillStart;
+    l.arc(f.x(c[0]), f.y(c[1]), r, kDiscFillWidth * f.s, a0, a0 + anim.radial_progress * kDiscFillSweep,
+          ui::fade(kSkillYellow, fade), true);
   }
   return true;
 }

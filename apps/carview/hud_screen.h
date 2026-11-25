@@ -73,4 +73,13 @@ std::string hud_clock(double seconds);
 // (PositionIndicators: the leader and the rows round the player).
 bool draw_hud_race(ui::List& l, const RaceHud& r, float w, float h, float s, bool timers = true);
 
+// The skill chain's multiplier as the HUD shows it after its "X" ("1.1").
+// The value itself is the chain's (SkillTracker); only its text is here.
+std::string skill_multiplier_text(const SkillChainHud& sk);
+
+// The skill chain (DrivingSkill: the score, the multiplier, the last skill
+// and its points) and, when a chain banks or the rank changes, the
+// popularity disc (PopularityBar).
+bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, float s, double time);
+
 }  // namespace carview
