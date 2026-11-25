@@ -17,6 +17,7 @@
 #include "frontend_screens.h"
 #include "gamepad_db.h"
 #include "garage/rally_kit.h"
+#include "platform_support.h"
 #include "profile/drive_save.h"
 #include "race/difficulty.h"
 #include "settings.h"
@@ -314,11 +315,18 @@ bool DriveApp::init(int& exit_code) {
   // The play test's defaults for a window: the bake in out/bake (or
   // out/bake1), the R34, Colorado from SHIFT_GAME_ROOT or the sibling
   // horizon1-recomp checkout, at the free-roam spawn, 1600 x 900.
+  // Portable mode keeps the save in the portable folder; SDL's pref path is
+  // not asked for (it would create the folder under %APPDATA%).
+  const std::filesystem::path portable_dir = carview::portable_user_dir();
   if (!headless && !no_save && save_path.empty()) {
-    if (char* pref = SDL_GetPrefPath("shift-engine", "drive")) {
-      save_path = std::filesystem::path(pref) / "save.txt";
-      SDL_free(pref);
+    std::filesystem::path pref_drive;
+    if (portable_dir.empty()) {
+      if (char* pref = SDL_GetPrefPath("shift-engine", "drive")) {
+        pref_drive = std::filesystem::path(pref);
+        SDL_free(pref);
+      }
     }
+    save_path = carview::resolve_default_save_path(portable_dir, pref_drive);
   }
   if (no_save) save_path.clear();
   slice12_modded_save = false;
@@ -405,7 +413,9 @@ bool DriveApp::init(int& exit_code) {
     // The app's external files folder (Android/data/<app>/files/play).
     if (const char* x = SDL_GetAndroidExternalStoragePath()) where.emplace_back(std::filesystem::path(x) / "play");
 #endif
-    if (char* pref = SDL_GetPrefPath("shift-engine", "play")) {
+    if (!portable_dir.empty()) {
+      where.emplace_back(portable_dir / "play");
+    } else if (char* pref = SDL_GetPrefPath("shift-engine", "play")) {
       where.emplace_back(pref);
       SDL_free(pref);
     }

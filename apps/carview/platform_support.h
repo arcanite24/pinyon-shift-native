@@ -90,4 +90,11 @@ PlatformShortcut match_macos_shortcut(uint32_t sdl_keycode, uint16_t sdl_keymod,
 std::filesystem::path resolve_portable_data_root(const std::filesystem::path& exe_dir,
                                                  bool is_macos = false);
 
+// The save's path when --save is not given: `<portable data>/drive/save.txt`
+// in portable mode (the run keeps everything inside the portable folder),
+// else `<pref drive dir>/save.txt` (SDL's pref path shift-engine/drive/), or
+// empty when neither is known.
+std::filesystem::path resolve_default_save_path(const std::filesystem::path& portable_data_root,
+                                                const std::filesystem::path& pref_drive_dir);
+
 }  // namespace carview
