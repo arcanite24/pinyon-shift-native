@@ -265,7 +265,6 @@ constexpr float kDiscFillStart = -2.356f, kDiscFillSweep = 4.712f;
 // GO!: its place and size on 15b_countdown_go_orig.png, and the fade out.
 constexpr float kGoDx = -6.0f, kGoDy = -1.0f, kGoScale = 1.26f;
 constexpr double kGoFade = 0.35;
-constexpr double kCountFade = 0.25;
 constexpr float kPromptTitleDx = -27.0f, kPromptTitleDy = -1.0f;
 constexpr float kPromptNameDx = -19.0f, kPromptNameDy = -1.0f;
 // The name line draws a little larger than laid out.
@@ -417,18 +416,8 @@ bool draw_hud_countdown(ui::List& l, const RaceHud& r, float w, float h, float s
   if (root < 0 || group < 0) return false;
   sc.bindings().fit_text = false;
   sc.hide(child(sd, group, "Paused"));
-  if (r.phase == RaceHud::kCountdown && r.digit > 0 && r.clock < 0.0) {
-    // Interim (SPEC_QUESTIONS Q74): the engine's gantry panels stay dark,
-    // so the scene's TEXT_COUNT shows 3, 2, 1 until they light; each digit
-    // fades out over its second's last kCountFade.
-    const double left = -r.clock - double(r.digit - 1);
-    sc.bindings().opacity = float(std::clamp(left / kCountFade, 0.0, 1.0));
-    sc.hide(child(sd, group, "GO"));
-    const int count = child(sd, group, "TEXT_COUNT");
-    sc.show(count);
-    sc.text(count, std::to_string(r.digit));
-    return sc.draw(l, hud_frame(HudAnchor::kCentre, w, h, s), root) >= 0;
-  }
+  // No count on screen: the gantry's LED panels count (Q74).
+
   if (r.phase != RaceHud::kRacing || r.clock < 0.0 || r.clock >= kGoSeconds) return true;
   // GO! over the road, fading out (its tape stays at the scene's alpha 0,
   // as on 15b_countdown_go_orig.png).

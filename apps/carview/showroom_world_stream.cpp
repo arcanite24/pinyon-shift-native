@@ -197,11 +197,21 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     for (int i = 0; i < 3; ++i) d.box_min[i] = 1e30f, d.box_max[i] = -1e30f;
     float reach = 0;
     shared.clear();
-    const bool normalize_ccw = (mat.blend == 0 && !mat.is_water && mat.anim_flag != 1 && !mat.is_grass && !billboard);
+    // LED displays (anim_flag 2 countdown, 3 flipbook) are unlit and their
+    // normals point into the gantry, so turning their faces toward the normals
+    // (or keeping the file's order) left the panels back-facing and culled.
+    // Their front is the file's clockwise side (Direct3D's default front
+    // face), so their corners are reversed instead (Q74).
+    const bool normalize_ccw =
+        (mat.blend == 0 && !mat.is_water && mat.anim_flag == 0 && !mat.is_grass && !billboard);
+    const bool led_panel = mat.blend == 0 && mat.anim_flag >= 2;
     for (size_t j = first; j < last; ++j) {
       const uint32_t t = cells[j].second;
       int corners[3] = {0, 1, 2};
-      if (normalize_ccw) {
+      if (led_panel) {
+        corners[1] = 2;
+        corners[2] = 1;
+      } else if (normalize_ccw) {
         const size_t c0 = size_t(t) * 3;
         const auto& p0 = world.positions[c0];
         const auto& p1 = world.positions[c0 + 1];

@@ -1877,17 +1877,16 @@ LEDs (0:05..0:01, then GO) and shows nothing on screen until the signal,
 when `947_HUD` `I_321_Go`'s `GO` text shows GO! (`15_countdown_orig.png`,
 `15b_countdown_go_orig.png`). The node `I_321_Go/Group/TEXT_COUNT` is laid
 out at full opacity but nothing in those captures fills it. The engine
-runs the world clock that the gantry LEDs read from the race clock, but
-its gantry panels stay dark at the FR16 start (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
-and textured, and the shipped shaders carry the LED branch. With the
-branch forced to a debug colour, the FR16 panels stayed dark: the panels
-seen at that start are not drawn by it. Three draws carry the material in
-the loaded world; which gantry they belong to, and what material the FR16
-panels use, is not found), so until they light it fills
-`TEXT_COUNT` with 3, 2, 1 at every start as an interim. Unknown: whether a start with no gantry (a street race, a
-point-to-point started on an open road) fills `TEXT_COUNT` with 3, 2, 1.
-Needed, narrow: a capture of such a start, or the code that writes
-`TEXT_COUNT`.
+runs the world clock that the gantry LEDs read from the race clock, and
+its gantry panels now light at the FR16 start (they had been turned to
+face their normals, which point into the gantry, and were back-face
+culled; their front is the file's clockwise side). So the engine, like
+those captures, leaves `TEXT_COUNT` empty and shows only GO!.
+
+Unknown: whether a start with no gantry (a street race, a point-to-point
+started on an open road) fills `TEXT_COUNT` with 3, 2, 1; the engine
+shows no count there. Needed, narrow: a capture of such a start, or the
+code that writes `TEXT_COUNT`.
 
 ## Q68 (FEEL-11, not blocking): FrictionTorqueMod selection, and our AI
 

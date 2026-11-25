@@ -244,12 +244,6 @@ caller then draws the old hand-drawn block.
 
 ## Interims in the HUD
 
-- **Start count.** The engine's gantry panels stay dark at the FR16 start
-  (the panels' `H_DIFF_COUNTDOWN_NOLIGHT_MASKED` materials load flagged
-  and textured, and the shipped shaders carry the LED branch, so the
-  cause lies past that (the texture or the draw's intensity) and is not
-  found), so `TEXT_COUNT` shows 3, 2, 1 for the last three seconds until
-  they light (Q74).
 - **Minimap.** The engine's map raster is kept: it covers the original's
   visible map (90..270 x 420..600) and the scene's `MATERIAL_VIEWPORT` frame
   is not drawn. The player arrow sits lower than the original's (about

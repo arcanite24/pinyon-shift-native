@@ -101,9 +101,8 @@ bool hud_prompt_available();
 
 // The start (I_321_Go): the original shows no count on screen (the start
 // gantry's LEDs count 0:05..0:01, world.frag on the race clock); at the
-// signal its GO node shows GO! (InGame IDS_3_2_1_GO) for kGoSeconds. Until
-// the engine's gantry panels light, TEXT_COUNT shows the last three seconds
-// (an interim, SPEC_QUESTIONS Q74). True when the scene is present.
+// signal its GO node shows GO! (InGame IDS_3_2_1_GO) for kGoSeconds.
+// TEXT_COUNT stays empty (Q74). True when the scene is present.
 inline constexpr double kGoSeconds = 0.8;
 bool draw_hud_countdown(ui::List& l, const RaceHud& r, float w, float h, float s);
 // The wrong way sign (WrongWay/Sign_Top) while `r.wrong_way`, lowered `dy`
