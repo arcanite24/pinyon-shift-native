@@ -2772,8 +2772,31 @@ GlobalRegistry `Activities/BarnFinds`. Five points are still open:
 
   The engine's port of that list is Q133's.
 
-Needed: what the two predicates test, the timer behind the idle check, and
-the value behind the ready check.
+**2026-11-25, from the generated code:**
+- **The idle timer is decoded.** It is a player timer. Each frame it adds
+  the frame time while the magnitude of one player value is below a
+  threshold, and resets to 0 otherwise. It does not run while the player
+  is in a skip state (a player flag, or a player query that is true).
+  - The threshold is a field of a tuning record. The race payout's second
+    early exit (Q115) compares a value's spread with the same field.
+  - The value is probably speed, as the engine reads it, so the engine's
+    rule (time below a speed threshold) has the right shape. The
+    threshold's value was not read; the engine's 0.5 m/s is still a guess.
+  - The tick is skipped once the timer reaches `MaxIdleTime`, as stated
+    above.
+- **The predicate that skips the whole update** is a game query. It follows
+  the game's session object to a state object. It skips when that object
+  is missing or a byte flag on it is clear. The flag's meaning (free roam
+  active, or not in a race or cutscene) is not identified, so the engine's
+  "pause during onboarding" stays an interim.
+- **The pending step checks two more predicates.** One is a global
+  manager's query, probably the dialogue-playing check above. Not
+  identified further.
+
+Needed:
+- the session state's byte flag;
+- the tuning record's threshold values;
+- the value behind the ready check.
 
 ## Q117 (PROG-03, not blocking): campaign captions with no shipped text
 
