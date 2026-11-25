@@ -1687,6 +1687,50 @@ int main() {
       }
     }
 
+    // Q102: the damage difficulties on List_DamageModDef. Cosmetic: no part
+    // damage; Limited and Simulation: the rows' ranges, Limited at half;
+    // tyre wear and fuel in Simulation only.
+    {
+      auto crash = [](drive::DamageMode mode, float mps, int hits) {
+        drive::CarDamageState d;
+        d.mode = mode;
+        for (int i = 0; i < hits; ++i) d.record_impact(0.0f, 0.5f, 1.9f, mps);
+        return d;
+      };
+      const auto cos = crash(drive::DamageMode::kCosmetic, 40.0f, 20);
+      CHECK(cos.zone_front > 0.5f && cos.engine_damage == 0.0f && cos.multipliers().engine_torque == 1.0);
+      // Below every row's DamageMinImpact (5 mph): nothing.
+      const auto tap = crash(drive::DamageMode::kSimulation, 2.0f, 20);
+      for (float pd : tap.part_damage) CHECK(pd == 0.0f);
+      // 134 mph hits: every part past its DamageMaxImpact (with RandomImpact), chance 1.
+      const auto sim = crash(drive::DamageMode::kSimulation, 60.0f, 1);
+      const auto lim = crash(drive::DamageMode::kLimited, 60.0f, 1);
+      CHECK(std::fabs(sim.part_damage[drive::kDamageEngine] - 1.0f) < 1e-6f);
+      CHECK(std::fabs(lim.part_damage[drive::kDamageEngine] - 0.5f) < 1e-6f);
+      CHECK(sim.part_damage[drive::kDamageTires] == 0.0f);  // DamageMax 0
+      const auto ms = sim.multipliers();
+      CHECK(std::fabs(ms.engine_torque - 0.05) < 1e-9);        // Engine ModFullDamage
+      CHECK(std::fabs(ms.shift_time_scale - 8.0) < 1e-9);      // GearBox
+      CHECK(std::fabs(ms.aero_drag - 2.0) < 1e-9);             // BodyDrag
+      CHECK(std::fabs(ms.aero_downforce_front - 0.1) < 1e-9);  // FrontDownforce
+      CHECK(std::fabs(ms.brake_power - 0.1) < 1e-9);           // Brakes
+      CHECK(std::fabs(ms.suspension_scale[0] - 0.2) < 1e-9);   // Suspension
+      const auto ml = lim.multipliers();
+      CHECK(std::fabs(ml.engine_torque - 0.525) < 1e-9);
+      // The sputter rumble and the audio read engine_damage: the Engine part.
+      CHECK(sim.engine_damage == 1.0f && std::fabs(lim.engine_damage - 0.5f) < 1e-6f);
+      const std::array<double, 4> slip{0.5, 0.5, 0.5, 0.5};
+      auto drive_for = [&](drive::DamageMode mode) {
+        drive::CarDamageState d;
+        d.mode = mode;
+        for (int i = 0; i < 600; ++i) d.step(1.0 / 60, 30.0, false, 1.0, 0.8, slip);
+        return d;
+      };
+      CHECK(drive_for(drive::DamageMode::kSimulation).fuel_fraction < 1.0f);
+      CHECK(drive_for(drive::DamageMode::kLimited).fuel_fraction == 1.0f);
+      CHECK(drive_for(drive::DamageMode::kLimited).tyre_wear[0] == 0.0f);
+    }
+
     // PT-30: Retail FH1 Medium default driving assists on fresh/new campaign profiles.
     {
       const drive::AssistSettings def{};
@@ -1897,15 +1941,13 @@ int main() {
       v_grind.step({0.0, 0.5, 0.0, false, 0.0, -1}, flat);
       CHECK(v_grind.clutch_damage() > 0.0);
 
-      // CarDamageState Simulation mode: clutch grind reduces clutch_capacity & front hit degrades front brakes more than rear.
+      // CarDamageState Simulation mode: clutch grind reduces clutch_capacity.
       drive::CarDamageState dmg;
       dmg.mode = drive::DamageMode::kSimulation;
       dmg.record_clutch_grind(0.25f);
       dmg.record_clutch_grind(0.25f);
-      dmg.record_impact(0.0f, 0.5f, 1.9f, 22.0f);  // front hit
       const auto mul = dmg.multipliers();
       CHECK(mul.clutch_capacity < 0.80);
-      CHECK(mul.brake_power_axle[0] < mul.brake_power_axle[1] - 0.10);
 
       // Per-axle brake degradation in Vehicle::DamageMods slows front-damaged car less than healthy car under braking.
       drive::Vehicle v_brk_ok(p), v_brk_dmg(p);

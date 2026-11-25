@@ -11,6 +11,7 @@
 
 #include "cars/database.h"
 #include "cars/sources.h"
+#include <sqlite3.h>
 #include "drive/from_bake.h"
 
 namespace drive {
@@ -42,6 +43,30 @@ class DiscPhysicsCache {
     parts_db_.reset();
     by_id_.clear();
     id_by_media_.clear();
+  }
+
+  bool load_damage_mods(std::array<DamageModDef, kDamagePartCount>& out, std::string* error) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!ensure_init_locked(error)) return false;
+    int rows = 0;
+    const bool ok = parts_db_->each(
+        "SELECT DamageModName, ModZeroDamage, ModFullDamage, DamageMinImpact, DamageMaxImpact, DamageMin, DamageMax, "
+        "RandomImpact, ProbabilityMinImpact, ProbabilityMaxImpact, ProbabilityMin, ProbabilityMax "
+        "FROM List_DamageModDef",
+        {},
+        [&](sqlite3_stmt* st) {
+          const auto* name = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+          const int part = damage_part_by_name(name);
+          if (part < 0) return;
+          DamageModDef& d = out[size_t(part)];
+          double* f[11] = {&d.mod_zero, &d.mod_full, &d.damage_min_impact, &d.damage_max_impact,
+                           &d.damage_min, &d.damage_max, &d.random_impact, &d.probability_min_impact,
+                           &d.probability_max_impact, &d.probability_min, &d.probability_max};
+          for (int k = 0; k < 11; ++k) *f[k] = sqlite3_column_double(st, k + 1);
+          ++rows;
+        },
+        error);
+    return ok && rows > 0;
   }
 
   bool load_settings(cars::PhysicsSettings& out_settings, std::string* error) {
@@ -145,6 +170,10 @@ void set_disc_physics_root(const std::filesystem::path& game_root, const std::fi
 bool load_disc_car_physics(int64_t car_id, const std::string& media_name, cars::CarPhysics& out_car,
                            cars::PhysicsSettings& out_settings, std::string* error) {
   return DiscPhysicsCache::instance().load_car(car_id, media_name, out_car, out_settings, error);
+}
+
+bool load_disc_damage_mod_defs(std::array<DamageModDef, kDamagePartCount>& out, std::string* error) {
+  return DiscPhysicsCache::instance().load_damage_mods(out, error);
 }
 
 bool load_disc_physics_settings(cars::PhysicsSettings& out_settings, std::string* error) {

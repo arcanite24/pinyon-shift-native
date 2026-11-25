@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 
 namespace drive {
 
@@ -10,14 +11,47 @@ const char* damage_mode_name(DamageMode m) {
     case DamageMode::kNone: return "NONE";
     case DamageMode::kCosmetic: return "COSMETIC";
     case DamageMode::kSimulation: return "SIMULATION";
+    case DamageMode::kLimited: return "LIMITED";
     default: return "COSMETIC";
   }
 }
 
+const std::array<DamageModDef, kDamagePartCount>& default_damage_mod_defs() {
+  // gamedb.slt List_DamageModDef as shipped: ModZeroDamage, ModFullDamage,
+  // DamageMinImpact, DamageMaxImpact, DamageMin, DamageMax, RandomImpact,
+  // ProbabilityMinImpact, ProbabilityMaxImpact, ProbabilityMin, ProbabilityMax.
+  static const std::array<DamageModDef, kDamagePartCount> rows{{
+      {1.0, 8.0, 25, 100, 0.2, 1.0, 0.1, 0, 75, 0.3, 1.0},    // GearBox
+      {1.0, 8.0, 25, 100, 0.1, 1.0, 0.2, 0, 75, 0.3, 1.0},    // Driveline
+      {0.0, 4.0, 25, 100, 0.25, 1.0, 0.1, 0, 75, 0.3, 1.0},   // Steering
+      {1.0, 2.0, 5, 75, 0.05, 1.0, 0.2, 0, 40, 0.5, 1.0},     // BodyDrag
+      {1.0, 0.1, 5, 50, 0.1, 1.0, 0.2, 0, 30, 0.5, 1.0},      // FrontDownforce
+      {1.0, 0.1, 5, 50, 0.1, 1.0, 0.2, 0, 30, 0.5, 1.0},      // RearDownforce
+      {1.0, 0.1, 10, 100, 0.1, 1.0, 0.05, 0, 75, 0.3, 1.0},   // Brakes
+      {1.0, 1.0, 20, 150, 0.0, 0.0, 0.3, 0, 150, 0.3, 1.0},   // Tires
+      {1.0, 0.2, 15, 100, 0.2, 1.0, 0.05, 0, 75, 0.3, 1.0},   // Suspension
+      {1.0, 0.05, 15, 100, 0.2, 1.0, 0.05, 0, 75, 0.2, 1.0},  // Engine
+      {1.0, 0.05, 15, 100, 0.2, 1.0, 0.05, 0, 75, 0.2, 1.0},  // Motor
+  }};
+  return rows;
+}
+
+int damage_part_by_name(const char* name) {
+  static const char* names[kDamagePartCount] = {"GearBox", "Driveline",  "Steering",   "BodyDrag",
+                                                "FrontDownforce", "RearDownforce", "Brakes", "Tires",
+                                                "Suspension", "Engine", "Motor"};
+  if (!name) return -1;
+  for (int i = 0; i < kDamagePartCount; ++i)
+    if (std::string_view(name) == names[i]) return i;
+  return -1;
+}
+
 void CarDamageState::reset() {
   const DamageMode keep_mode = mode;
+  const auto keep_defs = mod_defs;
   *this = CarDamageState{};
   mode = keep_mode;
+  mod_defs = keep_defs;
 }
 
 void CarDamageState::record_impact(float local_x, float local_y, float local_z, float impact_speed_mps) {
@@ -117,40 +151,46 @@ void CarDamageState::record_impact(float local_x, float local_y, float local_z, 
   scratch_amount = std::min(1.0f, std::max({zone_front, zone_rear, zone_left, zone_right, zone_roof}) * 0.92f +
                                       0.25f * sev);
 
-  if (mode != DamageMode::kSimulation) return;
+  if (!mechanical()) return;
 
-  // Simulation mechanical degradation mapped to impact location.
-  if (front_hit) {
-    engine_damage = std::min(1.0f, engine_damage + sev * 0.65f);
-    aero_damage = std::min(1.0f, aero_damage + sev * 0.70f);
-    brake_damage_axle[0] = std::min(1.0f, brake_damage_axle[0] + sev * 0.40f);
-    if (local_x <= 0.15f) suspension_damage[0] = std::min(1.0f, suspension_damage[0] + sev * 0.55f);
-    if (local_x >= -0.15f) suspension_damage[1] = std::min(1.0f, suspension_damage[1] + sev * 0.55f);
+  // The parts (Limited, Simulation): each List_DamageModDef row on the
+  // impact in mph (Q102: the unit, the roll and Limited's half are ours).
+  auto next = [this]() {
+    rng ^= rng << 13;
+    rng ^= rng >> 17;
+    rng ^= rng << 5;
+    return double(rng) / 4294967296.0;
+  };
+  auto ramp = [](double x, double x0, double x1) {
+    return x1 > x0 ? std::clamp((x - x0) / (x1 - x0), 0.0, 1.0) : (x >= x1 ? 1.0 : 0.0);
+  };
+  const double mph = double(impact_speed_mps) / 0.44704;
+  const double share = mode == DamageMode::kLimited ? 0.5 : 1.0;
+  for (int i = 0; i < kDamagePartCount; ++i) {
+    const DamageModDef& d = mod_defs[size_t(i)];
+    const double impact = mph * (1.0 + d.random_impact * (2.0 * next() - 1.0));
+    if (impact < d.damage_min_impact || !(d.damage_max > 0)) continue;
+    const double chance = d.probability_min + (d.probability_max - d.probability_min) *
+                                                  ramp(impact, d.probability_min_impact, d.probability_max_impact);
+    if (next() >= chance) continue;
+    const double add =
+        d.damage_min + (d.damage_max - d.damage_min) * ramp(impact, d.damage_min_impact, d.damage_max_impact);
+    part_damage[size_t(i)] = float(std::clamp(double(part_damage[size_t(i)]) + add * share, 0.0, 1.0));
   }
-  if (rear_hit) {
-    aero_damage = std::min(1.0f, aero_damage + sev * 0.65f);
-    trans_damage = std::min(1.0f, trans_damage + sev * 0.45f);
-    brake_damage_axle[1] = std::min(1.0f, brake_damage_axle[1] + sev * 0.35f);
-    if (local_x <= 0.15f) suspension_damage[2] = std::min(1.0f, suspension_damage[2] + sev * 0.50f);
-    if (local_x >= -0.15f) suspension_damage[3] = std::min(1.0f, suspension_damage[3] + sev * 0.50f);
-  }
-  if (left_hit) {
-    suspension_damage[0] = std::min(1.0f, suspension_damage[0] + sev * 0.50f);
-    suspension_damage[2] = std::min(1.0f, suspension_damage[2] + sev * 0.40f);
-    brake_damage_axle[0] = std::min(1.0f, brake_damage_axle[0] + sev * 0.25f);
-    brake_damage_axle[1] = std::min(1.0f, brake_damage_axle[1] + sev * 0.20f);
-  }
-  if (right_hit) {
-    suspension_damage[1] = std::min(1.0f, suspension_damage[1] + sev * 0.50f);
-    suspension_damage[3] = std::min(1.0f, suspension_damage[3] + sev * 0.40f);
-    brake_damage_axle[0] = std::min(1.0f, brake_damage_axle[0] + sev * 0.25f);
-    brake_damage_axle[1] = std::min(1.0f, brake_damage_axle[1] + sev * 0.20f);
-  }
-  brake_damage = std::max(brake_damage, 0.5f * (brake_damage_axle[0] + brake_damage_axle[1]));
+  // The engine's damage fields from the parts (read by the sputter rumble,
+  // the audio's damage sounds, the HUD and replays).
+  engine_damage = std::max(engine_damage, std::max(part_damage[kDamageEngine], part_damage[kDamageMotor]));
+  trans_damage = std::max(trans_damage, part_damage[kDamageGearBox]);
+  brake_damage = std::max(brake_damage, part_damage[kDamageBrakes]);
+  brake_damage_axle = {brake_damage, brake_damage};
+  aero_damage = std::max({aero_damage, part_damage[kDamageBodyDrag], part_damage[kDamageFrontDownforce],
+                          part_damage[kDamageRearDownforce]});
+  for (auto& sd : suspension_damage) sd = std::max(sd, part_damage[kDamageSuspension]);
+  steer_pull_sign = local_x < 0 ? -1.0f : 1.0f;
 }
 
 void CarDamageState::record_clutch_grind(float amount) {
-  if (mode != DamageMode::kSimulation || amount <= 0.0f) return;
+  if (!mechanical() || amount <= 0.0f) return;
   clutch_damage = std::min(1.0f, clutch_damage + amount);
   trans_damage = std::min(1.0f, trans_damage + amount * 0.75f);
 }
@@ -188,43 +228,48 @@ void CarDamageState::step(double dt, double speed_mps, bool offroad, double thro
 
 DamageMultipliers CarDamageState::multipliers() const {
   DamageMultipliers m;
-  if (mode != DamageMode::kSimulation) return m;
-  m.engine_torque = 1.0 - 0.45 * double(engine_damage);
+  if (!mechanical()) return m;
+  // Each part's effect: ModZeroDamage..ModFullDamage across its damage.
+  auto mod = [&](int part) {
+    const DamageModDef& d = mod_defs[size_t(part)];
+    return d.mod_zero + (d.mod_full - d.mod_zero) * std::clamp(double(part_damage[size_t(part)]), 0.0, 1.0);
+  };
+  m.engine_torque = std::min(mod(kDamageEngine), mod(kDamageMotor));
   if (fuel_fraction <= 1e-4f) m.engine_torque = std::min(m.engine_torque, 0.15);
-  m.shift_time_add = 0.60 * double(trans_damage);
-  const bool has_axle_brake = (brake_damage_axle[0] > 0.0f || brake_damage_axle[1] > 0.0f);
-  const double front_bd = has_axle_brake ? double(brake_damage_axle[0]) : double(brake_damage);
-  const double rear_bd = has_axle_brake ? double(brake_damage_axle[1]) : double(brake_damage);
-  m.brake_power_axle[0] = 1.0 - 0.45 * std::clamp(front_bd, 0.0, 1.0);
-  m.brake_power_axle[1] = 1.0 - 0.45 * std::clamp(rear_bd, 0.0, 1.0);
-  m.brake_power = 0.5 * (m.brake_power_axle[0] + m.brake_power_axle[1]);
+  m.shift_time_scale = mod(kDamageGearBox);
+  m.shift_time_add = 0.60 * double(clutch_damage);
+  m.brake_power_axle[0] = m.brake_power_axle[1] = mod(kDamageBrakes);
+  m.brake_power = mod(kDamageBrakes);
   m.clutch_capacity = 1.0 - 0.55 * std::clamp(double(clutch_damage), 0.0, 1.0);
-  m.aero_drag = 1.0 + 0.35 * double(aero_damage);
-  m.aero_downforce = 1.0 - 0.50 * double(aero_damage);
+  m.aero_drag = mod(kDamageBodyDrag);
+  m.aero_downforce_front = mod(kDamageFrontDownforce);
+  m.aero_downforce_rear = mod(kDamageRearDownforce);
+  m.aero_downforce = 0.5 * (m.aero_downforce_front + m.aero_downforce_rear);
   for (size_t i = 0; i < 4; ++i) {
-    m.tyre_grip[i] = 1.0 - 0.35 * double(tyre_wear[i]);
-    m.suspension_scale[i] = 1.0 - 0.42 * double(suspension_damage[i]);
+    m.tyre_grip[i] = mode == DamageMode::kSimulation ? 1.0 - 0.35 * double(tyre_wear[i]) : 1.0;
+    m.suspension_scale[i] = mod(kDamageSuspension);
   }
-  // Asymmetric front suspension damage induces subtle steering pull.
-  m.steer_pull_rad = 0.045 * double(suspension_damage[1] - suspension_damage[0]);
+  // Steering: ModFullDamage degrees of pull (ours: the side of the last
+  // mechanical impact).
+  m.steer_pull_rad = double(steer_pull_sign) * mod(kDamageSteering) * 3.14159265358979323846 / 180.0;
   return m;
 }
 
 void CarDamageState::apply_to_params(CarParams& p) const {
-  if (mode != DamageMode::kSimulation) return;
+  if (!mechanical()) return;
   const DamageMultipliers m = multipliers();
   p.torque_scale *= m.engine_torque;
-  p.gear_shift_time += m.shift_time_add;
+  p.gear_shift_time = p.gear_shift_time * m.shift_time_scale + m.shift_time_add;
   p.clutch_torque_factor *= m.clutch_capacity;
   p.brake_friction_scale *= m.brake_power;
   p.front_brake_torque *= m.brake_power_axle[0];
   p.rear_brake_torque *= m.brake_power_axle[1];
   p.aero_drag_long *= m.aero_drag;
   p.drag_quadratic *= m.aero_drag;
-  p.aero_df_front *= m.aero_downforce;
-  p.aero_df_rear *= m.aero_downforce;
-  p.aero_part_df_front *= m.aero_downforce;
-  p.aero_part_df_rear *= m.aero_downforce;
+  p.aero_df_front *= m.aero_downforce_front;
+  p.aero_df_rear *= m.aero_downforce_rear;
+  p.aero_part_df_front *= m.aero_downforce_front;
+  p.aero_part_df_rear *= m.aero_downforce_rear;
   const double front_grip = 0.5 * (m.tyre_grip[0] + m.tyre_grip[1]);
   const double rear_grip = 0.5 * (m.tyre_grip[2] + m.tyre_grip[3]);
   p.width_scale[0] *= front_grip;

@@ -293,7 +293,7 @@ double assist_difficulty_bonus(const DifficultyAssists& assists) {
   else if (assists.shifting >= 2) bonus += 0.15;
   if (assists.driving_line == 1) bonus += 0.05;
   else if (assists.driving_line <= 0) bonus += 0.10;
-  if (assists.damage_mode >= 2) bonus += 0.10;
+  if (assists.damage_mode == 2) bonus += 0.10;  // Simulation (3 is Limited)
   if (assists.tcs_on && bonus >= 0.05) bonus -= 0.05;
   return std::max(0.0, bonus);
 }

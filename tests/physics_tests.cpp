@@ -781,12 +781,17 @@ int main() {
     return 1;
   }
   {
-    // The body's collision spheres (MAXData, Q100).
+    // The body's collision spheres (MAXData, Q100) and the damage rows (Q102).
     cars::CarCollisionSpheres spheres;
     CHECK(cars::load_car_collision_spheres(install, rows[0].media_name, spheres, &error));
     std::printf("R34 MAXData: %zu collision spheres, box MinY %.4f\n", spheres.spheres.size(), spheres.min_y);
     CHECK(spheres.spheres.size() == 32 && std::fabs(spheres.min_y + 0.2014) < 1e-4);
     cars::put_collision_spheres(spheres, rows[0]);
+    drive::set_disc_physics_root(root, state ? state : "");
+    std::array<drive::DamageModDef, drive::kDamagePartCount> defs{};
+    CHECK(drive::load_disc_damage_mod_defs(defs, &error));
+    CHECK(defs[drive::kDamageEngine].mod_full == 0.05 && defs[drive::kDamageGearBox].mod_full == 8.0 &&
+          defs[drive::kDamageBodyDrag].damage_min_impact == 5.0);
   }
   const cars::CarPhysics& r34 = rows[0];
   std::printf("car %lld %s: %zu values, %zu curves\n", static_cast<long long>(r34.car_id), r34.media_name.c_str(),

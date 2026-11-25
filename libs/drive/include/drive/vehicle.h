@@ -677,9 +677,11 @@ class Vehicle {
   struct DamageMods {
     double engine_torque = 1.0;
     double shift_time_add = 0.0;
+    double shift_time_scale = 1.0;  // the GearBox part (Q102)
     double brake_power = 1.0;
     double aero_drag = 1.0;
     double aero_downforce = 1.0;
+    double aero_downforce_front = 1.0, aero_downforce_rear = 1.0;  // on top of aero_downforce
     std::array<double, 4> tyre_grip{1.0, 1.0, 1.0, 1.0};
     std::array<double, 4> suspension_scale{1.0, 1.0, 1.0, 1.0};
     double steer_pull_rad = 0.0;

@@ -1378,11 +1378,20 @@ void DriveSession::run_window_loop() {
                 hit.pos = {float(bc.point.x), float(bc.point.y), float(bc.point.z)};
                 hit.surface_hint = collision_surface_hint(host.collision, bc.surface);
                 app.audio_host.trigger_collision(hit);
-                const drive::Vec3 rel = bc.point - vehicle.position();
-                const drive::Quat q = vehicle.orientation();
-                const drive::Quat qinv{-q.x, -q.y, -q.z, q.w};
-                const drive::Vec3 loc = drive::rotate(qinv, rel);
-                car_damage.record_impact(float(loc.x), float(loc.y), float(loc.z), float(dv_world));
+              }
+              // Damage once per body impact, at its closing speed (Q102): the
+              // contact impulses spread one crash over many steps.
+              {
+                thread_local uint64_t s_damage_impact_seen = 0;
+                const auto& bi = vehicle.last_body_impact();
+                if (bi.count != s_damage_impact_seen) {
+                  s_damage_impact_seen = bi.count;
+                  const drive::Vec3 rel = bc.point - vehicle.position();
+                  const drive::Quat q = vehicle.orientation();
+                  const drive::Quat qinv{-q.x, -q.y, -q.z, q.w};
+                  const drive::Vec3 loc = drive::rotate(qinv, rel);
+                  car_damage.record_impact(float(loc.x), float(loc.y), float(loc.z), float(bi.speed));
+                }
               }
               if (dv_race > 1.0 && app.race) {
                 const std::array<float, 3> rloc = app.race->player_impulse_local_pos();
@@ -1444,7 +1453,7 @@ void DriveSession::run_window_loop() {
               }
               const std::array<double, 4> slips = {ws[0].slip_ratio, ws[1].slip_ratio, ws[2].slip_ratio, ws[3].slip_ratio};
               const double rpm_n = vehicle.rpm() / std::max(1000.0, vehicle.params().redline_rpm);
-              if (car_damage.mode == drive::DamageMode::kSimulation) {
+              if (car_damage.mechanical()) {
                 car_damage.trans_damage = std::max(car_damage.trans_damage, float(vehicle.transmission_damage()));
               }
               car_damage.step(drive::Vehicle::kStep, vehicle.speed(), offroad, step_in.throttle, rpm_n, slips);
@@ -1452,9 +1461,14 @@ void DriveSession::run_window_loop() {
               drive::Vehicle::DamageMods vdm;
               vdm.engine_torque = dm.engine_torque;
               vdm.shift_time_add = dm.shift_time_add;
+              vdm.shift_time_scale = dm.shift_time_scale;
+              vdm.aero_downforce_front = dm.aero_downforce_front;
+              vdm.aero_downforce_rear = dm.aero_downforce_rear;
+              vdm.brake_power_axle = dm.brake_power_axle;
+              vdm.clutch_capacity = dm.clutch_capacity;
               vdm.brake_power = dm.brake_power;
               vdm.aero_drag = dm.aero_drag;
-              vdm.aero_downforce = dm.aero_downforce;
+              vdm.aero_downforce = 1.0;  // the front/rear factors carry it
               vdm.tyre_grip = dm.tyre_grip;
               vdm.suspension_scale = dm.suspension_scale;
               vdm.steer_pull_rad = dm.steer_pull_rad;

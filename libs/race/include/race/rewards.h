@@ -146,7 +146,7 @@ struct DifficultyAssists {
   bool stm_on = false;    // StabilityControl (Off = +5%); new profile Off
   int shifting = 0;       // 0 = Automatic, 1 = Manual (+10%), 2 = Manual + Clutch (+15%)
   int driving_line = 2;   // 0 = Off (+10%), 1 = Braking Only (+5%), 2 = Full
-  int damage_mode = 1;    // 0 = None, 1 = Cosmetic, 2 = Simulation (+10%)
+  int damage_mode = 1;    // 0 = None, 1 = Cosmetic, 2 = Simulation (+10%), 3 = Limited
 };
 
 // Rewind difficulty bonus as an exact fraction: 0.20 when Rewind is OFF and

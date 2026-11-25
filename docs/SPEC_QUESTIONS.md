@@ -2214,3 +2214,59 @@ Still interim:
 Needed: the wheel query's treatment of steep faces and steps, the friction
 noise function, and the contact chain's tick.
 
+## Q102 (FEEL-05/07/23, not blocking): damage difficulties and List_DamageModDef
+
+The original's damage difficulties are Cosmetic, Limited and Simulation
+(EDamageDifficulty; GameOptionValues 19 Cosmetic and 20 Limited, in that
+order). gamedb.slt `List_DamageModDef` has one row per part, for GearBox,
+Driveline, Steering, BodyDrag, Front/RearDownforce, Brakes, Tires,
+Suspension, Engine and Motor. The Lobby's damage option also sets fuel
+depletion and tyre wear. The rows' consumer is not decoded.
+
+**Engine reading (ours, on the rows' columns):**
+
+- **Modes.** `DamageMode` gains Limited (stored as 3). The stored 0
+  (None, ours), 1 (Cosmetic) and 2 (Simulation) keep their meaning for
+  saves, and only Simulation earns the +10% reward. The settings row
+  offers limited.
+- **Parts.** Under Limited and Simulation, each body impact damages each
+  part as follows:
+  - The impact in mph is first varied by ±`RandomImpact`.
+  - At or past `DamageMinImpact`, the damage added runs from `DamageMin`
+    to `DamageMax` across `DamageMinImpact..DamageMaxImpact`.
+  - The damage applies with a chance that runs from `ProbabilityMin` to
+    `ProbabilityMax` across `ProbabilityMinImpact..MaxImpact`.
+  - Limited adds half.
+  - The part's effect runs from `ModZeroDamage` to `ModFullDamage` across
+    its damage:
+    - Engine and Motor: torque;
+    - GearBox: shift time;
+    - BodyDrag: drag;
+    - Front and Rear Downforce: the downforce at each end;
+    - Brakes: brake torque;
+    - Suspension: rates;
+    - Steering: degrees of pull, towards the side of the hit.
+- **Rows.** The rows come from the disc (`load_disc_damage_mod_defs`),
+  with the shipped values as the fallback.
+- **Impacts.** carview records one impact per body impact at its closing
+  speed (`last_body_impact`), no longer once per frame of contact force.
+- **Sputter and audio.** `engine_damage` is the Engine/Motor part's
+  damage, so the sputter rumble (`EngineDamageLevelStartSputter` 0.3) and
+  the audio's damage sounds follow these rows.
+- **Wear and fuel.** Tyre wear and fuel burn only in Simulation.
+
+Still interim:
+
+- the impact unit (mph of closing speed);
+- the random roll;
+- Limited's half share;
+- the application to every part regardless of where the car is hit;
+- the Driveline part, which has no effect;
+- Steering's pull side;
+- the wear and fuel rates;
+- the cosmetic zone and lamp model;
+- the settings page, which still lists the engine's none and presets
+  that use it (Q71).
+
+Needed: the List_DamageModDef consumer (impact unit, location and roll),
+Limited's rule, and the original's settings rows.

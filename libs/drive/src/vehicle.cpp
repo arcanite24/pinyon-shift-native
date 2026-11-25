@@ -1037,10 +1037,10 @@ void Vehicle::update_gearbox(double dt) {
           shifted_without_clutch_ = true;
           trans_damage_ = std::clamp(trans_damage_ + p_.shift_without_clutch_damage, 0.0, 1.0);
           clutch_damage_ = std::clamp(clutch_damage_ + p_.shift_without_clutch_damage * 1.2, 0.0, 1.0);
-          manual_shift_dwell_ = std::max(0.0, p_.gear_shift_time + damage_.shift_time_add + 0.25 * trans_damage_);
+          manual_shift_dwell_ = std::max(0.0, p_.gear_shift_time * damage_.shift_time_scale + damage_.shift_time_add + 0.25 * trans_damage_);
         } else {
           shifted_without_clutch_ = false;
-          manual_shift_dwell_ = std::max(0.0, 0.35 * p_.gear_shift_time + damage_.shift_time_add);
+          manual_shift_dwell_ = std::max(0.0, 0.35 * p_.gear_shift_time * damage_.shift_time_scale + damage_.shift_time_add);
         }
       }
     }
@@ -1250,7 +1250,7 @@ void Vehicle::update_gearbox(double dt) {
     case GearState::kGearChange:
       engine_throttle_ = 0;
       clutch_ = 0;
-      if (state_time_ >= p_.gear_shift_time + damage_.shift_time_add + 0.35 * trans_damage_ - 1e-9) {
+      if (state_time_ >= p_.gear_shift_time * damage_.shift_time_scale + damage_.shift_time_add + 0.35 * trans_damage_ - 1e-9) {
         gear_ = target_gear_;  // the gear number changes at the end
         if (shifting_mode == 0 && gear_ > 1 && out_rpm() < 0.9 * idle) {
           const int best = auto_gear_for_speed();
@@ -2054,8 +2054,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (vl.z > 0.1) {
       const double alpha_pitch = std::atan2(vl.y, vl.z);
       const double aoa = std::max(0.0, 1.0 - std::fabs(alpha_pitch) / std::max(0.05, p.aero_zero_df_rad));
-      df_f = (p.aero_df_front + p.aero_part_df_front) * aoa * vl.z * vl.z * draft_.front_df * damage_.aero_downforce;
-      df_r = (p.aero_df_rear + p.aero_part_df_rear) * aoa * vl.z * vl.z * draft_.rear_df * damage_.aero_downforce;
+      df_f = (p.aero_df_front + p.aero_part_df_front) * aoa * vl.z * vl.z * draft_.front_df * damage_.aero_downforce * damage_.aero_downforce_front;
+      df_r = (p.aero_df_rear + p.aero_part_df_rear) * aoa * vl.z * vl.z * draft_.rear_df * damage_.aero_downforce * damage_.aero_downforce_rear;
     }
     const double z_f = 0.5 * (p.wheel_centres[0].z + p.wheel_centres[1].z) - com_local_.z;
     const double z_r = 0.5 * (p.wheel_centres[2].z + p.wheel_centres[3].z) - com_local_.z;
