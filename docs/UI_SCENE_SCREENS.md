@@ -162,8 +162,10 @@ caller then draws the old hand-drawn block.
   shows only GO! on screen. The world clock that `world.frag`'s gantry
   branch reads (`set_tod`'s time) runs from the race clock in a race (6 s
   before the signal at 0:05) and stays past the count elsewhere
-  (`drive_world_sync.cpp`), so it jumps at race entry and exit, both of which
-  are cuts.
+  (`drive_world_sync.cpp`), so it jumps at race entry and exit (water,
+  flags and crowds jump with it; not checked whether a transition hides it).
+  The gantry panels stay dark either way (see the interims), so this has no
+  visible effect on the count yet.
 - **Toggles.** The HUD options (`HudToggles`: lap time and position, wrong
   way warning, names over cars, popularity and skills) are settings rows
   named from `InGame/IDS_HudOption_*` and reach the HUD through
@@ -257,5 +259,7 @@ caller then draws the old hand-drawn block.
   reason, the lap split line under `HUDTimes`, and X EXTRAS in the pause help
   bar.
 - **Extras outside the layout.** The performance overlay, trainer, touch
-  controls and the tracked achievement card stay the engine's; the card sits
-  top left, where the race's `HUDTimes` block also draws.
+  controls and the tracked achievement card stay the engine's; the card goes
+  under whatever the HUD draws top left, following the race's timer rows.
+- **Help bar.** More than seven prompts (the scene has seven buttons) keep the
+  old drawn bar.

@@ -2910,6 +2910,16 @@ void test_round3_phase_f3_parity() {
     check(l_occ.items().size() > before_n && chip_min_y >= 152.0f,
           "Tracked achievement chip offsets cleanly below occupied top-left Race HUD / Objective banner");
 
+    // A circuit's timer lines run on below the zone in rows (RACE, LAP, LAST,
+    // BEST): the chip goes under the last one.
+    carview::ui::List l_rows;
+    l_rows.rect(56.0f, 30.0f, 330.0f, 100.0f, carview::ui::rgba(20, 22, 28, 220));
+    for (int k = 0; k < 4; ++k)
+      l_rows.rect(60.0f, 108.0f + 28.0f * k, 250.0f, 130.0f + 28.0f * k, carview::ui::rgba(20, 22, 28, 220));
+    max_y = 0.0f;
+    check(carview::AchievementsSystem::top_left_hud_occupied(l_rows, 1280.0f, 720.0f, &max_y) && max_y >= 214.0f,
+          "AchievementsSystem::top_left_hud_occupied follows timer rows below the zone");
+
     l_hidden.rect(24.0f, 28.0f, 360.0f, 148.0f, carview::ui::rgba(20, 22, 28, 220));
     const size_t hidden_before = l_hidden.items().size();
     ach.build_hud_overlays(l_hidden, 1280.0f, 720.0f, true, true, true);

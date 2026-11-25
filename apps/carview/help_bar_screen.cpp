@@ -30,6 +30,10 @@ struct Glyph {
 }  // namespace
 
 bool draw_help_bar(ui::List& l, const std::vector<ui4::Prompt>& items, float w, float h, float left_x_canvas) {
+  // The scene has seven buttons; a longer bar keeps the drawn one, which
+  // packs prompts until the width runs out.
+  if (std::count_if(items.begin(), items.end(), [](const ui4::Prompt& p) { return !p.label.empty(); }) > 7)
+    return false;
   SceneScreen sc(kButtonBarScene);
   if (!sc.ok()) return false;
   const SceneDraw& sd = sc.scene();
