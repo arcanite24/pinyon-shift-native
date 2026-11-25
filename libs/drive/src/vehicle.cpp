@@ -773,7 +773,7 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     }
     // The lock is SteerMaxAngle, capped by the mean steering-lock cap of
     // the surfaces under the wheels in contact (no speed narrowing here).
-    const double lock = p_.max_steer;
+    const double lock = std::min(p_.max_steer, surf_steer_lock_cap_rad_);
     const double target = std::clamp(lock * scale * (in < 0 ? -mapped : mapped), -lock, lock);
     // The road wheels slew to the target at up to 4 pi rad/s.
     constexpr double kWheelSlew = 4 * kPi;

@@ -2079,10 +2079,47 @@ Still ours (interim):
   tables that use mph say so (FrictionLowSpeedMph,
   MaxForwardVelShiftReverseMPH).
 
-Needed: the pad filter's narrowing law (which G it queries), the unit of
-NormRearSlipAngleToCountersteer, and what DynFindPeak drives. A trace of
-pad input against road-wheel angle at several speeds would settle the
-lock law.
+~~Needed: the pad filter's narrowing law (which G it queries)~~ (decoded
+below), the unit of NormRearSlipAngleToCountersteer, and what
+DynFindPeak drives.
+
+**The lock law (decoded, 2026-11-25).** The steer row sits in the car
+in its file order: MaxAngle, a field not identified, MaxAngVelTurning,
+Straighten, Countersteer, DynFindPeak, AccelTimeToMaxRate, MaxGees,
+MinMaxAngle, SlowSpeed, FastSpeed, FastRateScale.
+
+- **The curve, built once per car.** There are 32 samples up to 67.056
+  m/s (150 mph), at 0.4623 samples per m/s. Sample i is taken at
+  v = max(0.01, i / 0.4623). It is atan(MaxGees x L x a(v) / v^2),
+  clamped between MinMaxAngle and MaxAngle. L is a car length, probably
+  the wheelbase, whose writer is not found.
+- **a(v).** This is the G the law queries: the car's own lateral grip
+  acceleration at that speed, not g. The steering model works it out
+  from the tyres. It iterates the lateral load transfer six times. Each
+  wheel's peak friction comes from the tyre's light-to-heavy load
+  blend, and the wheel forces are summed and divided by the mass. The
+  speed and downforce inputs are not fully traced.
+- **Each frame.**
+  - The lock is MaxAngle, capped by the mean steering-lock cap of the
+    surfaces under the wheels in contact (Q70).
+  - The narrowed lock is the smaller of that lock and the curve at
+    |velocity|. The curve is read by a four-point cubic through the
+    samples around the speed, then multiplied by the surfaces' mean
+    third steering factor.
+  - The result is clamped between min(MinMaxAngle, lock) and the lock.
+    The target is the stick times it.
+- **The rate.** MaxAngVelTurning is scaled from 1 toward FastRateScale
+  as |velocity| goes from SlowSpeed to FastSpeed. The speed is the same
+  m/s field the curve reads, so SlowSpeed and FastSpeed are m/s unless
+  the row loader converts them (FEEL-17, probable). The rate is also
+  scaled by the surfaces' mean rate factor. A test of |stick| against
+  0.976 is on this path; its use is not decoded.
+
+The engine keeps its interim lock law. Its 1.61 x g stands in for a(v),
+and the engine has no per-speed table. Porting a(v) needs the steering
+model's load-transfer iteration, which is decoded only in outline.
+Supersedes, in Q69's Still ours, "The 1.61 is a fit": it is a fit to
+a(v) / g.
 
 ## Q70 (FEEL-15, not blocking): the wheel path's mapping
 
@@ -2141,14 +2178,23 @@ out) and narrows to 0.35 of lock by 30 m/s.
 The engine now runs this law (`Input::wheel_900`, on by default; the
 carview wheel path does not yet pass its 900-degree setting). Interim:
 
-- **The lock.** It is SteerMaxAngle. The original asks the steering
-  model for it through a virtual call that is not decoded.
+- ~~**The lock.** It is SteerMaxAngle. The original asks the steering
+  model for it through a virtual call that is not decoded.~~ Decoded:
+  the steering model's lock is SteerMaxAngle capped by the mean of the
+  steering-lock caps (degrees, converted) of the surfaces under the
+  wheels in contact, 9999 when none is. The wheel path takes it without
+  speed narrowing. The engine now does the same.
 - **The countersteer state.** It is ours: the road wheels turned the way
   the rear slides, with a mean rear slip above 0.5. The original tests
-  the sign of the road wheels' angle against two car fields that are not
-  identified.
+  the sign of the road wheels' angle against the same field of the two
+  front wheel blocks. It counts as countersteer when the angle is
+  positive and the first front wheel's field is negative, or the angle
+  is not positive and the second front wheel's field is positive. The
+  field is set at car setup from a car vector. No per-frame writer turns
+  up in a search of plain stores, so it may be written by a vector
+  store.
 
-Needed: the steering model's lock call and the two countersteer fields.
+Needed: what that front-wheel field is.
 
 ## Q71 (FEEL-12, not blocking): new-profile assists and the presets
 
@@ -2471,8 +2517,9 @@ treatment of steep faces and steps" in Needed.
   stops at its travel, and what is left over is the bump stop's
   overflow. The overflow is recomputed from zero by every query, and it
   adds what the sphere at the top of the sweep is into the face.
-- **The suspension force.** The spring, the anti-roll bar and the bump
-  stop's spring, BumpstopStiffness x overflow, are summed. They are
+- **The suspension force.** The spring (on the position, which stops at
+  the travel), the anti-roll bar and the bump stop's spring,
+  BumpstopStiffness x overflow, are summed. They are
   added to the damper, which is clamped to DampenBumpClamp and
   DampenReboundClamp. BumpstopDamping x the contact point's closing speed
   along the ground's normal is added to the damper before that clamp.
@@ -2511,12 +2558,16 @@ The engine now runs this query on its ray, with these interim parts:
 
 The 0.14 m cap and the load cap are gone. With them gone:
 - The 0.35 m vertical step at 90 km/h is within the wheel's reach. It
-  lifts the test car 2.24 m at 6.1 m/s, from the bump stop's spring
-  alone: with BumpstopDamping set to 0 the result is the same.
+  lifts the test car 1.88 m at 5.5 m/s, from the bump stop's spring
+  alone: with BumpstopDamping set to 0 the result is the same. (2.24 m
+  at 6.1 m/s while the main spring still acted past the travel.)
 - A 0.7 m step is out of reach. The wheels stay on the road and the body
   meets it (0.07 m/s up).
-- The 150 km/h wall lifts the nose at 1.64 m/s (1.1 with the caps).
+- The 150 km/h wall lifts the nose at 1.58 m/s (1.1 with the caps).
 - The oracle lap is unchanged at 38.976 s.
+- The AI gate (AI-driven player) leans slower on NR02 and FR22 once the
+  spring stops at the travel: 6-seed means 158.7 -> 164.6 s and
+  164.8 -> 166.7 s, within the seed spread.
 
 Still interim:
 
@@ -2605,6 +2656,16 @@ Still interim:
 
 Needed: the List_DamageModDef consumer (impact unit, location and roll),
 Limited's rule, and the original's settings rows.
+
+**Partly decoded (2026-11-25).** The rows' loader reads each part's row
+when the database has one. For a missing row it fills a built-in row,
+which in its read order is 1.0, 0.25, 40, 75, 0.1, 0.35, 0.2, 0, 75,
+0.2 and 1.0. Read as the table's columns, that is a part with no effect
+at zero damage and a quarter at full damage, a 40 to 75 impact range
+and a 0.1 to 0.35 damage range; the mapping of the last five values to
+columns is not confirmed. The engine's fallback is the shipped rows, so
+this only matters for a database without them. The consumer, which
+turns an impact into part damage, is still not found.
 
 ## Q103 (FEEL-14, not blocking): Assisted braking's gain
 
@@ -4621,3 +4682,36 @@ breaks props and steps the debris, takes one car at a time and steps the
 debris on each call, so the AI's breaks need that split first. Needed:
 whether the title's AI and traffic break props at all, and if so, how
 far from the player.
+
+## Q199 (FEEL-16/19/20, not blocking): PhysicsSettings' built-in values
+
+The executable's PhysicsSettings constructor holds a built-in value for
+every key. The shipped PhysicsSettings.ini overrides some of them. Keys
+the ini leaves out keep the built-in value, which is not in any game
+file. The ones this work package reads:
+
+| Key | Built in | Shipped ini |
+|---|---|---|
+| NormRearSlipAngleToCountersteer | 3.0 | 50 |
+| SteerDefCountersteerRate | 160 | 105 |
+| SteerDefDynSteerFindPeakRate | 10 | 105 |
+| SteerFrictionClamp | 1.2 | (not set) |
+| CarCollSphereMinDistAboveGround | 0.08 | 0.11 |
+| CarGroundCollSphereMinDistAboveGround | 0.45 | 0.4 |
+| CarBoundingBoxMin | 0 | (not set) |
+| AmountIntoBumpstopsToCauseDamage | 1e-4 | (not set) |
+| TimeInBumpstops | 0.25 | (not set) |
+| BumpstopDamagePerSec | 0.02 | (not set) |
+| BumpstopFrictionScale | 0.9 | (not set) |
+| NumUpdatesToSkipSurfaceBumps | 1 | (not set) |
+
+The TireSpringiness block and the four WheelMapping tables are built-in
+only (Q101, Q70).
+
+By their names, the bump-stop damage keys mean that a wheel held more
+than 1e-4 m into its bump stop for 0.25 s takes 0.02 damage per second,
+and BumpstopFrictionScale scales grip in the bump stop by 0.9. Neither
+is in the engine, and the consumers are not decoded.
+
+Needed: the consumers of the bump-stop damage keys and
+BumpstopFrictionScale.
