@@ -2090,3 +2090,127 @@ Still interim:
 Needed: the stick thresholds and InvertCameraLookBack handling; the
 sputter scheduler; the dynamic motion-blur amount rule and its time
 base.
+
+## Q100 (FEEL-19/20, not blocking): the car's collision spheres
+
+The original collides the car body with the world through collision
+spheres, not a box. MAXData.xml `Collision/CollSpheres` lists them per car
+(the R34 has 32: twenty Flags 2 spheres of radius 0.16 to 0.34 m around the
+body, twelve Flags 1 spheres of radius 0.05 m at the corners and roof).
+
+**Engine reading:**
+
+- `cars::load_car_collision_spheres` reads the list from the car archive.
+  `apply_physics` moves it into our car frame: y from the box's `MinY` (the
+  ground under the stock ride height), z from `BottomCenterWheelbasePos`.
+  Bakes carry no MAXData, so the disc supplies the spheres; a car without
+  any uses a stand-in set on the body box (ours: eight corners and six face
+  middles, radius 0.15 m).
+- Each step the spheres are raised so their bottoms stay
+  `CarCollSphereMinDistAboveGround` (0.11 m) above the lowest wheel's
+  ground, or `CarGroundCollSphereMinDistAboveGround` (0.4 m) for spheres
+  with Flags bit 0. This follows the original's per-step lift, which reads
+  each wheel's position. On flat road no sphere touches the ground.
+
+Still interim:
+
+- **Scales.** `PosScale` (0.995) and `RadiusScale` (1.35) are not applied.
+  The car's `physicsdefinition.bin` holds the runtime sphere list
+  unscaled, with hand moves for some cars (the R34's side spheres sit at
+  y 0.41, x 0.66, and its nose and tail spheres about 0.29 m further out).
+  That file's header is not decoded, so MAXData's list is used.
+- **The lift's second term.** The original takes the lower of the wheels'
+  ground and a body field; only the wheels' term is read.
+
+Needed: the physicsdefinition.bin sphere block's header, and the body
+field in the lift.
+
+## Q101 (FEEL-19/20/21, PT-27, not blocking): the body-to-world contact
+
+PT-27's fence launches came from the engine's 26-point penalty box: stiff
+springs that turned any slanted surface into an upward force, then clamped.
+The original solves contacts as impulses.
+
+**Engine reading (decoded):**
+
+- **Contacts.** Up to 16 sphere contacts, the deepest. MeshGround tests the
+  triangles near the car once per step for all spheres. A face is pushed
+  from the side the body's centre is on, so a sphere that passes through a
+  one-sided fence is still pushed back. Other grounds use two rays per
+  sphere.
+- **Push-out.** The body is moved out along the contacts' normals, each
+  contact adding only the depth the push so far leaves. Only the position
+  changes; the velocity is untouched. Wheel compression moves with the
+  body, so the dampers see no rate.
+- **Impulses.** These are computed from the velocities after the step's
+  forces. For each contact closing on its surface:
+  - The normal impulse is `j = -(1 + e) vn / (1/m + n . ((I^-1 (r x n)) x r))`,
+    where `e` is the pair's `Elasticity` as written. Car/HardWorld's −0.9
+    removes a tenth of the closing speed per substep, and the push-out
+    keeps the car outside.
+  - The friction impulse is `mu * min(j, m * 7 mph)`. It acts against the
+    slide direction, and below 5 m/s it is scaled by 0.2 per m/s of sliding
+    speed.
+  - `mu` blends `LowSpeedFrictionCoefficient` into `FrictionCoefficient`
+    over `Collision\FrictionLowSpeedMph..FrictionHighSpeedMph` (10..40 mph)
+    of the contact point's speed.
+- **Combining.** The impulses and their moments are averaged over the
+  closing contacts. The moment is scaled per body axis by
+  `CarObjWorldCollTorqueScalePitch/Yaw/Roll` (0.55, 0.65, 0.55), then both
+  are applied.
+- **Pair rows.** Surfaces take surfaceTypes.xml's CategoryToCategoryParams
+  row for Car and their Category, or Default/Default when there is none.
+- **GimbalLock.** Past `GimbalCosAngle0` (0.87) of tilt, a spring acts on
+  the spin about the horizontal tilt axis: rate `GimbalSpringK` (50),
+  damped by `DCompress` (5) when the tilt grows and `DRebound` (0) when it
+  shrinks. Past `GimbalCosAngle1` (0.82), spin that tilts further is first
+  reflected with `GimbalAngImpulseElasticity` (0.2). This replaces the
+  10 rad/s spin cap.
+- **Q67.** `last_body_impact` keeps its meaning. A contact that begins
+  after a step or more with none is an impact, and its speed is the
+  largest closing speed then. `strongest_body_contact().force` is the
+  substep's impulse over its length.
+
+**Removed (PT-27):**
+
+- the flattened wall normals;
+- the wall damping floor and rebound factor;
+- the force caps per point (180 and 120 × mass share) and on the summed
+  upward force (3 m g);
+- the horizontal-only wall friction;
+- the wall torque factors (0.20, 0.35, 0.20);
+- the vertical-velocity clamps after any contact;
+- the 10 rad/s spin cap;
+- the wheels' rejection of normals under 0.65.
+
+With Car/HardWorld:
+
+| Test | Result |
+|---|---|
+| Fence at 25 km/h | 0.03 m/s up, nose 2 cm in, one impact |
+| Wall head-on at 150 km/h | stopped in 0.1 m, 1.1 m/s up, 0.4 m/s rebound |
+| Wall glance at 20 deg, 108 km/h | keeps 24 m/s along the wall |
+| PT-27 bank | 1.0 m, 1.3 m/s up |
+| PT-27 0.35 m kerb at 90 km/h | 0.7 m, 2.7 m/s up |
+
+Still interim:
+
+- **Suspension clamps.** The bump stop's 0.14 m over-compression cap and
+  the wheel load cap `max(4 x preload, 1.1 m g)` stay. A raycast wheel
+  meeting a step higher than its axle jumps onto it in one substep.
+  Without the caps, the 0.35 m kerb at 90 km/h throws the car 2.3 m up at
+  6.2 m/s. The original's wheel query on such steps is not decoded.
+- **Rate.** The contact runs every substep (359 Hz). That the original's
+  contact chain runs at the same rate is assumed.
+- **Friction noise.** The pair's friction noise (`FrictionNoiseFreqScale`,
+  input to output range) is loaded but not applied, because its noise
+  function is not decoded.
+- **Low-speed blend.** The blend's car-side gate (a body flag) is taken
+  as always on.
+- **Smashables.** Props below their break speed still use the engine's
+  own OBB push (smashables.cpp), not this solver with the Smashable/Car
+  row.
+
+Needed: the wheel query's treatment of steep faces and steps, the friction
+noise function, and the contact chain's tick.
+

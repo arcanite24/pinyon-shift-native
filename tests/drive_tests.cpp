@@ -45,6 +45,15 @@ drive::CarParams test_car() {
   return p;
 }
 
+// surfaceTypes.xml's Car/HardWorld row (asphalt, concrete, walls).
+drive::SurfaceTyre hard_world() {
+  drive::SurfaceTyre t;
+  t.coll_elasticity = -0.9;
+  t.coll_friction = 0.5;
+  t.coll_low_speed_friction = 0.1;
+  return t;
+}
+
 std::vector<std::string> run(const drive::CarParams& p, const drive::Input& in, int steps) {
   drive::Vehicle v(p);
   const drive::FlatGround ground;
@@ -1240,17 +1249,6 @@ int main() {
         CHECK(v.wheels()[w].centre.y <= p.wheel_centres[w].y + p.bump_travel[a] + 1e-9);
       }
     }
-
-    drive::Hit h_wall{};
-    h_wall.tyre.off_roadness = 0.0;
-    const drive::Vec3 wall_n{1.0, 0.0, 0.0};
-    CHECK(drive::body_contact_friction(h_wall, wall_n, 0.30) <= 0.12 + 1e-9);
-    CHECK(drive::body_contact_damping_scale(h_wall, wall_n) < 1.0);
-
-    drive::Hit h_dirt{};
-    h_dirt.tyre.off_roadness = 0.9;
-    CHECK(drive::body_contact_friction(h_dirt, wall_n, 0.30) >= 0.45 - 1e-9);
-    CHECK(drive::body_contact_damping_scale(h_dirt, wall_n) > 1.0);
   }
   // 7) LAB-87: Automatic gearbox downshifts cleanly from high gear (5) to gear 1
   //    when speed drops to 0 km/h (coasting or sudden stop) and never locks out throttle.
@@ -1527,7 +1525,8 @@ int main() {
 
     fs::remove_all(root, ec);
   }
-  // 12) PT-27 (no vertical catapult on steep banks/curbs while preserving ramp climbs),
+  // 12) PT-27 (no vertical catapult on steep banks/curbs while preserving ramp climbs: now the
+  //     body's sphere contacts, which push out by position only, Q101),
   //     PT-30 (retail FH1 Medium default assists), and PT-A (O(log N) RacingLine::segment).
   {
     const auto p = test_car();
@@ -1540,7 +1539,8 @@ int main() {
           {-h, 0, -h}, {h, 0, h}, {h, 0, -h}, {-h, 0, -h}, {-h, 0, h}, {h, 0, h},
           {-30, 0, 20}, {30, 3.0f, 21.5f}, {30, 0, 20},
           {-30, 0, 20}, {-30, 3.0f, 21.5f}, {30, 3.0f, 21.5f},
-      });
+      }, {}, {0, 0, 0, 0});
+      bank.set_surface_tyres({hard_world()});
       drive::Vehicle v(p);
       v.launch({0, 0, 8.0}, 0.12, 38.0);  // ~137 km/h angled into steep bank
       double max_y = 0.0, max_vy = 0.0;
@@ -1563,7 +1563,8 @@ int main() {
           {-30, 0, 12}, {-30, 0.35f, 12}, {30, 0.35f, 12},
           {-h, 0.35f, 12}, {h, 0.35f, h}, {h, 0.35f, 12},
           {-h, 0.35f, 12}, {-h, 0.35f, h}, {h, 0.35f, h},
-      });
+      }, {}, {0, 0, 0, 0, 0, 0});
+      curb.set_surface_tyres({hard_world()});
       drive::Vehicle v(p);
       v.launch({0, 0, 4.0}, 0.0, 25.0);
       double max_y = 0.0, max_vy = 0.0;
@@ -1583,7 +1584,8 @@ int main() {
           {-h, 0, -h}, {h, 0, 10}, {h, 0, -h}, {-h, 0, -h}, {-h, 0, 10}, {h, 0, 10},
           {-20, 0, 10}, {20, 3.8f, 22}, {20, 0, 10},
           {-20, 0, 10}, {-20, 3.8f, 22}, {20, 3.8f, 22},
-      });
+      }, {}, {0, 0, 0, 0});
+      ramp.set_surface_tyres({hard_world()});
       drive::Vehicle v(p);
       v.launch({0, 0, 2.0}, 0.0, 28.0);
       double max_y = 0.0, max_vy = 0.0;
@@ -1594,6 +1596,95 @@ int main() {
       }
       CHECK(max_y > 2.5);
       CHECK(max_vy > 3.0);
+    }
+
+    // Q100/Q101 regressions: the body's spheres against a fence and a wall, with
+    // surfaceTypes.xml's Car/HardWorld row (Elasticity -0.9, friction 0.1 -> 0.5).
+    {
+      const drive::SurfaceTyre hard = hard_world();
+      auto wall_ground = [&](float z, float top) {
+        drive::MeshGround g({
+                                {-h, 0, -h}, {h, 0, h}, {h, 0, -h}, {-h, 0, -h}, {-h, 0, h}, {h, 0, h},
+                                {-100, 0, z}, {100, top, z}, {100, 0, z},
+                                {-100, 0, z}, {-100, top, z}, {100, top, z},
+                            },
+                            {}, {0, 0, 1, 1});
+        g.set_surface_tyres({drive::SurfaceTyre{}, hard});
+        return g;
+      };
+      // A low-speed nudge into a 1.1 m fence (one face, as the .fiz fences are):
+      // no launch, no pass-through, one impact.
+      {
+        const drive::MeshGround fence = wall_ground(10.0f, 1.1f);
+        drive::Vehicle v(p);
+        v.launch({0, 0, 0.0}, 0.0, 7.0);  // 25 km/h
+        const uint64_t n0 = v.last_body_impact().count;
+        double max_y = 0.0, max_vy = 0.0, max_z = -1e9, first = -1;
+        for (int i = 0; i < 240; ++i) {
+          v.step({0, 0.3, 0, false}, fence);
+          if (first < 0 && v.last_body_impact().count > n0) first = v.last_body_impact().speed;
+          max_y = std::max(max_y, v.position().y);
+          max_vy = std::max(max_vy, v.velocity().y);
+          max_z = std::max(max_z, v.position().z);
+        }
+        const double front = p.centre_of_mass.z + 0.5 * p.size.z;
+        std::printf("fence 25 km/h: max_y %.3f m (start %.3f), max_vy %.3f m/s, nose at most %.3f m past the fence, "
+                    "impacts %llu (closing %.2f m/s), speed after %.2f m/s\n",
+                    max_y, 0.0, max_vy, max_z + front - 10.0,
+                    (unsigned long long)(v.last_body_impact().count - n0), first, v.speed());
+        CHECK(max_vy < 0.5);
+        CHECK(max_y < 0.15);
+        CHECK(max_z + front < 10.0 + 0.25);
+        CHECK(v.last_body_impact().count - n0 >= 1);
+        CHECK(first > 5.0 && first < 10.0);
+      }
+      // A 150 km/h head-on into a 3 m wall: stopped, no launch, no flip, little
+      // rebound (the original's -0.9 Elasticity takes a tenth of the closing
+      // speed per contact step; the push-out takes the rest).
+      {
+        const drive::MeshGround wall = wall_ground(40.0f, 3.0f);
+        drive::Vehicle v(p);
+        v.launch({0, 0, 0.0}, 0.0, 41.7);
+        double max_y = 0.0, max_vy = 0.0, max_z = -1e9, min_vz = 1e9, min_up = 1.0, first = -1;
+        const uint64_t n0 = v.last_body_impact().count;
+        for (int i = 0; i < 360; ++i) {
+          v.step({0, 0, 0, false}, wall);
+          if (first < 0 && v.last_body_impact().count > n0) first = v.last_body_impact().speed;
+          max_y = std::max(max_y, v.position().y);
+          max_vy = std::max(max_vy, v.velocity().y);
+          max_z = std::max(max_z, v.position().z);
+          min_vz = std::min(min_vz, v.velocity().z);
+          min_up = std::min(min_up, v.up_y());
+        }
+        const double front = p.centre_of_mass.z + 0.5 * p.size.z;
+        std::printf("wall 150 km/h: max_y %.3f m, max_vy %.3f m/s, nose at most %.3f m past the wall, rebound %.2f m/s, "
+                    "min up.y %.3f, closing %.2f m/s\n",
+                    max_y, max_vy, max_z + front - 40.0, -min_vz, min_up, first);
+        CHECK(max_vy < 1.5);
+        CHECK(max_y < 0.5);
+        CHECK(max_z + front < 40.0 + 0.5);
+        CHECK(-min_vz < 5.0);
+        CHECK(min_up > 0.8);
+        CHECK(first > 35.0);
+      }
+      // A 20-degree glance at 108 km/h: deflected along the wall, most of the
+      // speed kept, no launch.
+      {
+        const drive::MeshGround wall = wall_ground(30.0f, 3.0f);
+        drive::Vehicle v(p);
+        v.launch({0, 0, 24.0}, 1.22, 30.0);
+        double max_vy = 0.0, max_z = -1e9;
+        for (int i = 0; i < 240; ++i) {
+          v.step({0, 0.3, 0, false}, wall);
+          max_vy = std::max(max_vy, v.velocity().y);
+          max_z = std::max(max_z, v.position().z);
+        }
+        std::printf("wall glance 108 km/h: max_vy %.3f m/s, speed after %.2f m/s, vz %.2f\n", max_vy, v.speed(),
+                    v.velocity().z);
+        CHECK(max_vy < 1.0);
+        CHECK(v.speed() > 15.0);
+        CHECK(max_z < 30.0);
+      }
     }
 
     // PT-30: Retail FH1 Medium default driving assists on fresh/new campaign profiles.
@@ -1789,22 +1880,6 @@ int main() {
       CHECK(std::fabs(v_sim.steer_angle()) < 1e-6);       // Simulation stays completely raw
       CHECK(std::fabs(v_plain.steer_angle()) < 1e-6);     // no helper: the stick alone steers
       CHECK(std::fabs(v_hb.steer_angle()) < std::fabs(v_norm.steer_angle()) * 0.35);  // handbrake blends it out
-    }
-
-    // R3-PHY-16: Per-surface wall collision hints (guardrail glide vs tire-wall damping/restitution).
-    {
-      const drive::Vec3 wall_n{1.0, 0.0, 0.0};
-      drive::Hit h_rail{}, h_tire{};
-      h_rail.tyre.wall_friction = 0.08;
-      h_rail.tyre.wall_restitution = 0.04;
-      h_rail.tyre.wall_damping_scale = 0.85;
-      h_tire.tyre.wall_friction = 0.38;
-      h_tire.tyre.wall_restitution = 0.28;
-      h_tire.tyre.wall_damping_scale = 1.35;
-      CHECK(drive::body_contact_friction(h_rail, wall_n, 0.6) < 0.10);
-      CHECK(drive::body_contact_friction(h_tire, wall_n, 0.6) > 0.35);
-      CHECK(drive::body_contact_damping_scale(h_tire, wall_n) > drive::body_contact_damping_scale(h_rail, wall_n) + 0.3);
-      CHECK(drive::body_contact_restitution(h_tire, wall_n) > drive::body_contact_restitution(h_rail, wall_n) + 0.15);
     }
 
     // R3-PHY-18: Clutch-grind damage accumulation + capacity scaling & per-axle brake effectiveness degradation.

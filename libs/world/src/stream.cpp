@@ -36,6 +36,13 @@ class FallbackGround final : public drive::Ground {
     }
     return false;
   }
+  // The body spheres meet the .fiz collision only (the fallback terrain is
+  // for the wheels).
+  void sphere_contacts(const drive::Vec3& inside, const drive::SphereQuery* spheres, int n,
+                       drive::SphereHit* hits) const override {
+    if (primary_) primary_->sphere_contacts(inside, spheres, n, hits);
+    else for (int i = 0; i < n; ++i) hits[i] = {};
+  }
 
  private:
   const drive::MeshGround* primary_ = nullptr;

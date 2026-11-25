@@ -436,13 +436,6 @@ void synthetic_r2_4_checks() {
     CHECK(v_mud.speed() < v_dry.speed() - 5.0);
     CHECK(std::fabs(v_mud.angular_velocity().y) < std::fabs(v_dry.angular_velocity().y) * 0.6);
 
-    // CarWorldCollFricMods scales body_contact_friction.
-    drive::Hit h_mod{};
-    h_mod.tyre.car_world_coll_fric_mod = 0.25;
-    const double mu_base = drive::body_contact_friction(drive::Hit{}, {0, 1, 0}, 0.6);
-    const double mu_mod = drive::body_contact_friction(h_mod, {0, 1, 0}, 0.6);
-    CHECK(std::fabs(mu_mod - mu_base * 0.25) < 1e-6);
-
     // Springiness cutoffs: inactive below spring_speed_cutoff, active above.
     CustomSurfaceGround g_spr;
     g_spr.st.is_springy = true;
@@ -786,6 +779,14 @@ int main() {
       !cars::load_car_physics(install, {445}, rows, &error)) {
     std::printf("FAIL physics rows: %s\n", error.c_str());
     return 1;
+  }
+  {
+    // The body's collision spheres (MAXData, Q100).
+    cars::CarCollisionSpheres spheres;
+    CHECK(cars::load_car_collision_spheres(install, rows[0].media_name, spheres, &error));
+    std::printf("R34 MAXData: %zu collision spheres, box MinY %.4f\n", spheres.spheres.size(), spheres.min_y);
+    CHECK(spheres.spheres.size() == 32 && std::fabs(spheres.min_y + 0.2014) < 1e-4);
+    cars::put_collision_spheres(spheres, rows[0]);
   }
   const cars::CarPhysics& r34 = rows[0];
   std::printf("car %lld %s: %zu values, %zu curves\n", static_cast<long long>(r34.car_id), r34.media_name.c_str(),

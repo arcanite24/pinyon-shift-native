@@ -69,11 +69,6 @@ struct SurfaceTyre {
   double spring_norm_y_cutoff = 0.707, spring_speed_cutoff = 4.0;
   bool is_penalty_surface = false;
   bool is_hand_of_god = false;
-  // Per-surface body-to-world wall collision hints from CategoryToCategoryParams / material class
-  // (negative = unspecified; falls back to surface off-roadness / default wall glide).
-  double wall_friction = -1.0;        // sliding friction mu for wall/barrier contacts
-  double wall_restitution = -1.0;     // rebound restitution [0..1] (0 = inelastic, higher = elastic tire wall)
-  double wall_damping_scale = -1.0;   // normal damping scale (>1 absorbs energy e.g. tire wall/dirt, <1 crisp glide)
   // The car-body contact with this surface: surfaceTypes.xml's
   // CategoryToCategoryParams row for Car and the surface's Category, or the
   // Default/Default row (SPEC_QUESTIONS Q101). elasticity is as written
@@ -101,15 +96,32 @@ struct Hit {
   SurfaceTyre tyre;
   int64_t triangle = -1;  // the ground's triangle index, when it has one
 };
-// Per-surface body-contact friction, damping scale & restitution (low-friction wall glide on
-// guardrails/concrete vs heavier absorption & bounce on tire walls / dirt banks).
-double body_contact_friction(const Hit& hit, const Vec3& normal, double default_friction);
-double body_contact_damping_scale(const Hit& hit, const Vec3& normal);
-double body_contact_restitution(const Hit& hit, const Vec3& normal);
+// A body sphere against the ground: the deepest surface it overlaps.
+// normal: out of the surface, towards the side the query's `inside` point
+// is on; depth: how far the sphere is in along it; point: the surface
+// point nearest the sphere's centre.
+struct SphereHit {
+  Vec3 point{}, normal{0, 1, 0};
+  double depth = 0;
+  double grip = 1;
+  int surface = -1;
+  SurfaceTyre tyre;
+  int64_t triangle = -1;
+};
+struct SphereQuery {
+  Vec3 centre{};
+  double radius = 0;
+};
 class Ground {
  public:
   virtual ~Ground() = default;
   virtual bool raycast(const Vec3& origin, const Vec3& dir, double max_distance, Hit& hit) const = 0;
+  // For each of `n` spheres, whether it overlaps the ground (`hits[i].depth`
+  // > 0), seen from `inside`, a point within the car's body: a surface the
+  // centre has passed through, the way from `inside`, still pushes it back
+  // towards `inside`. The default casts two rays per sphere (from `inside`
+  // through the centre, and down through it); MeshGround tests triangles.
+  virtual void sphere_contacts(const Vec3& inside, const SphereQuery* spheres, int n, SphereHit* hits) const;
 };
 // The plane y = height.
 class FlatGround : public Ground {
@@ -188,9 +200,6 @@ struct CarParams {
   // The body box: what traffic, smashables and the camera see of the car,
   // and the source of the stand-in spheres when the car has no MAXData.
   double sill_height = 0.25;      // m above the ground at rest
-  double body_stiffness = 150;    // the penalty box's spring, N/m per kg, per corner (ours)
-  double body_damping = 12;       // its damping, N s/m per kg, per corner (ours)
-  double body_friction = 0.6;     // its friction (ours)
 
   // Body-to-world contact (SPEC_QUESTIONS Q100, Q101): the car's collision
   // spheres against the world, solved as impulses with a positional push-out.
@@ -724,12 +733,13 @@ class Vehicle {
   // lock narrows with speed; see shape_input).
   double steer_lock() const;
   double time() const { return time_; }
-  // The body contacts' total force in the last substep (N): 0 while only
-  // the tyres touch the ground.
+  // The body contacts' impulse in the last substep over its length (N): 0
+  // while only the tyres touch the ground.
   double body_contact_force() const { return body_force_; }
-  // The strongest single body contact over the last step (all substeps):
-  // where the ray met the surface, its normal and the Hit's surface and
-  // triangle. force 0: none.
+  // The strongest body contact over the last step (all substeps): the
+  // deepest contact's surface point, normal, surface and triangle in the
+  // substep whose impulse was largest, force that impulse over the
+  // substep (N). force 0: none closing.
   struct BodyContact {
     Vec3 point{}, normal{};
     double force = 0;
@@ -778,6 +788,10 @@ class Vehicle {
 
  private:
   void substep(double dt, const Ground& ground);
+  // The body spheres against the ground after the velocity step (Q100, Q101).
+  void body_contacts(double dt, const Ground& ground);
+  // GimbalLock: the tilt spring and spin reflection past the cos angles (Q101).
+  void gimbal_lock(double dt);
   void shape_input(const Input& raw, double dt);
   void update_gearbox(double dt);
   void update_boost(double dt, double throttle, double rpm_now);

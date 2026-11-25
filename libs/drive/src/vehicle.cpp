@@ -162,41 +162,33 @@ double FrictionCurve::at(double slip, double stretch) const {
   return lerp(values[i], values[i + 1], x - double(i));
 }
 
-double body_contact_friction(const Hit& hit, const Vec3& normal, double default_friction) {
-  const bool is_wall = std::fabs(normal.y) < 0.65;
-  const bool is_dirt_bank = hit.tyre.off_roadness >= 0.5 || hit.tyre.is_springy;
-  double base = default_friction;
-  if (is_wall && hit.tyre.wall_friction >= 0.0) {
-    base = hit.tyre.wall_friction;
-  } else if (is_dirt_bank) {
-    base = std::max(default_friction, 0.45);
-  } else if (is_wall) {
-    base = std::min(default_friction, 0.12);  // default low-friction guardrail / concrete wall-glide
+void Ground::sphere_contacts(const Vec3& inside, const SphereQuery* spheres, int n, SphereHit* hits) const {
+  for (int i = 0; i < n; ++i) {
+    SphereHit& out = hits[i];
+    out = {};
+    const Vec3 c = spheres[i].centre;
+    const double r = spheres[i].radius;
+    auto take = [&](const Vec3& origin, const Vec3& dir, double reach) {
+      Hit hit;
+      if (!raycast(origin, dir, reach, hit)) return;
+      const Vec3 n_out = dot(hit.normal, dir) > 0 ? hit.normal * -1.0 : hit.normal;
+      const Vec3 at = origin + dir * hit.distance;
+      const double depth = r - dot(c - at, n_out);
+      if (depth > out.depth) {
+        out.point = at;
+        out.normal = n_out;
+        out.depth = depth;
+        out.grip = hit.grip;
+        out.surface = hit.surface;
+        out.tyre = hit.tyre;
+        out.triangle = hit.triangle;
+      }
+    };
+    const Vec3 ray = c - inside;
+    const double len = length(ray);
+    if (len > 1e-6) take(inside, ray * (1 / len), len + r);
+    take(c, {0, -1, 0}, r);
   }
-  const double mod = hit.tyre.car_world_coll_fric_mod > 0.0 ? hit.tyre.car_world_coll_fric_mod : 1.0;
-  return std::clamp(base * mod, 0.0, 2.0);
-}
-
-double body_contact_damping_scale(const Hit& hit, const Vec3& normal) {
-  const bool is_wall = std::fabs(normal.y) < 0.65;
-  const bool is_dirt_bank = hit.tyre.off_roadness >= 0.5 || hit.tyre.is_springy;
-  if (is_wall && hit.tyre.wall_damping_scale > 0.0) {
-    return std::clamp(hit.tyre.wall_damping_scale, 0.35, 2.5);
-  }
-  if (is_dirt_bank) return 1.25;  // absorb impact energy into soft dirt banks
-  if (is_wall) return 0.90;       // crisp guardrail / concrete glance
-  return 1.0;
-}
-
-double body_contact_restitution(const Hit& hit, const Vec3& normal) {
-  const bool is_wall = std::fabs(normal.y) < 0.65;
-  const bool is_dirt_bank = hit.tyre.off_roadness >= 0.5 || hit.tyre.is_springy;
-  if (is_wall && hit.tyre.wall_restitution >= 0.0) {
-    return std::clamp(hit.tyre.wall_restitution, 0.0, 0.85);
-  }
-  if (is_dirt_bank) return 0.02;  // inelastic soft bank
-  if (is_wall) return 0.05;       // subtle rigid barrier glance
-  return 0.0;
 }
 
 double TyreCurves::blend(double load_kgf) const {
@@ -1379,12 +1371,6 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const Vec3 probe = hard - down * p.probe_height;
     double compression = -droop_[i];
     w.contact = up.y > 0.2 && ground.raycast(probe, down, reach, hit);
-    // Reject steep wall/fence/bank triangles (normal.y < 0.65, > ~49.5 deg) from
-    // wheel suspension contact so brushing a barrier or bank never triggers a huge
-    // probe-height compression spike and catapults the car airborne.
-    if (w.contact && hit.normal.y < 0.65) {
-      w.contact = false;
-    }
     w.surface = w.contact ? hit.surface : -1;
     if (w.contact) {
       compression = axle_rest - (hit.distance - p.probe_height - radius);
@@ -1455,14 +1441,17 @@ void Vehicle::substep(double dt, const Ground& ground) {
       damper = std::clamp(damper, -p.rebound_damper_clamp[a], p.damper_clamp[a]);
       load = preload_[i] + p.spring_rate[a] * susp_s * compression + damper;
       if (compression > p.bump_travel[a]) {
+        // Interim (ours, SPEC_QUESTIONS Q101): the bump stop takes at most
+        // 0.14 m and a wheel at most max(4 x preload, 1.1 m g). A raycast
+        // wheel meeting a step higher than its axle jumps onto it in one
+        // substep; without these a 0.35 m kerb at 90 km/h still throws the
+        // car 2 m up (the body's contacts no longer do). The original's
+        // wheel query on such steps is not decoded.
         const double over_comp = std::min(compression - p.bump_travel[a], 0.14);
         const double bs_damp = std::min(p.bumpstop_damping[a] * std::max(0.0, rate[i]), p.damper_clamp[a]);
         load += p.bumpstop_rate[a] * over_comp + bs_damp;
       }
-      // Cap single-wheel vertical load to realistic hard-landing peak so a curb/lip
-      // compression jump cannot inject extreme upward impulse in a single substep.
-      const double max_wheel_load = std::max(4.0 * preload_[i], 1.1 * p.mass * p.gravity);
-      load = std::min(load, max_wheel_load);
+      load = std::min(load, std::max(4.0 * preload_[i], 1.1 * p.mass * p.gravity));
     }
     w.load = load;
     w.centre = {p.wheel_centres[i].x,
@@ -2033,111 +2022,6 @@ void Vehicle::substep(double dt, const Ground& ground) {
     torque = torque - rotate(rot_, t_drag_local) * ang_d;
   }
 
-  // Body contacts: 26 points on the box (corners, edge and face middles),
-  // each probed by a ray from the box's centre. A point past the first
-  // surface along its ray is pushed out along that surface's normal, so
-  // floors, walls, barriers and ceilings all act on the body. The force per
-  // point is scaled so that the eight corners carry what they did when they
-  // were the only contacts.
-  body_force_ = 0;
-  double body_fy_pos = 0.0;
-  bool had_wall_contact = false;
-  double closing = 0.0;  // the largest closing speed along a pushing contact's normal
-  Vec3 closing_normal{};
-  constexpr int kPoints = 26;
-  constexpr double kShare = 8.0 / kPoints;
-  const Vec3 centre_local{0, p.sill_height + 0.5 * p.size.y, p.centre_of_mass.z};
-  const Vec3 centre = pos_ + rotate(rot_, centre_local - com_local_);
-  for (int k = 0; k < 27; ++k) {
-    const int ix = k % 3 - 1, iy = k / 3 % 3 - 1, iz = k / 9 - 1;
-    if (ix == 0 && iy == 0 && iz == 0) continue;
-    const Vec3 point_local = centre_local + Vec3{0.5 * ix * p.size.x, 0.5 * iy * p.size.y, 0.5 * iz * p.size.z};
-    const Vec3 point = pos_ + rotate(rot_, point_local - com_local_);
-    const Vec3 ray = point - centre;
-    const double reach = length(ray);
-    const Vec3 dir = ray * (1 / reach);
-    Hit hit;
-    if (!ground.raycast(centre, dir, reach, hit)) continue;
-    // The normal faces against the ray: out of the surface, towards the box.
-    const Vec3 n = dot(hit.normal, dir) > 0 ? hit.normal * -1.0 : hit.normal;
-    const double depth = std::max(0.0, (reach - hit.distance) * -dot(dir, n));
-    const Vec3 v = vel_ + cross(ang_, point - pos_);
-    const bool is_wall = std::fabs(n.y) < 0.65;
-    // Steep side-wall / barrier / fence / bank contacts deflect strictly horizontally
-    // (n_eff.y = 0) so angled guardrail or embankment clips never convert horizontal
-    // speed into an upward launch impulse.
-    Vec3 n_eff = n;
-    if (is_wall) {
-      const double nxz = std::hypot(n.x, n.z);
-      if (nxz <= 1e-4) continue;
-      n_eff = {n.x / nxz, 0.0, n.z / nxz};
-    }
-    const double vn = dot(v, n_eff);
-    const double damp_scale = body_contact_damping_scale(hit, n);
-    const double rest = body_contact_restitution(hit, n);
-    // Wall/barrier/fence contacts scale rebound stiffness from per-surface restitution
-    // (inelastic ~0.38 on guardrail/concrete vs bouncier ~0.55 on tire walls) while
-    // staying strictly horizontal so angled impacts never catapult the car upward.
-    const double wall_rebound_k = std::clamp(0.35 + 0.70 * rest, 0.25, 1.0);
-    const double spring_term =
-        (is_wall && vn > 0.0) ? wall_rebound_k * p.body_stiffness * depth : p.body_stiffness * depth;
-    const double eff_damp = is_wall ? std::max(p.body_damping * damp_scale, 22.0 * damp_scale)
-                                    : p.body_damping * damp_scale;
-    double fn = kShare * std::max(0.0, p.mass * (spring_term - eff_damp * vn));
-    fn = std::min(fn, kShare * p.mass * (is_wall ? 180.0 : 120.0));
-    if (fn <= 0) continue;
-    if (-vn > closing) {
-      closing = -vn;
-      closing_normal = n_eff;
-    }
-    Vec3 f = n_eff * fn;
-    Vec3 vt = v - n_eff * vn;
-    if (is_wall) vt.y = 0.0;  // keep wall-glide friction purely horizontal
-    const double vt_len = length(vt);
-    if (vt_len > 1e-6) {
-      const double mu = body_contact_friction(hit, n, p.body_friction);
-      const double ft = std::min(mu * fn, p.mass / kPoints * vt_len / dt);
-      f = f - vt * (ft / vt_len);
-    }
-    if (is_wall) {
-      if (f.y > 0.0) f.y = 0.0;
-      had_wall_contact = true;
-    } else if (f.y > 0.0) {
-      // Clamp cumulative upward body-contact force across all 26 points so low
-      // curbs or hard bottoming-out never launch the car skyward.
-      const double max_body_fy = p.mass * p.gravity * 3.0;
-      const double allow = std::max(0.0, max_body_fy - body_fy_pos);
-      if (f.y > allow) f.y = allow;
-      body_fy_pos += f.y;
-    }
-    force = force + f;
-    Vec3 t_contact = cross(point - pos_, f);
-    if (is_wall) {
-      // Attenuate pitch/roll/yaw torque on wall/fence impacts so clipping a
-      // barrier deflects the car cleanly instead of flipping or pinball-spinning.
-      Vec3 t_loc = rotate_inverse(rot_, t_contact);
-      t_loc.x *= 0.20;
-      t_loc.y *= 0.35;
-      t_loc.z *= 0.20;
-      t_contact = rotate(rot_, t_loc);
-    }
-    torque = torque + t_contact;
-    body_force_ += length(f);
-    if (fn > strongest_.force) strongest_ = {centre + dir * hit.distance, n_eff, fn, hit.surface, hit.triangle};
-  }
-  // A body impact: contact after a step or more without one (the camera's
-  // collision pulse reads each once).
-  if (body_force_ > 0.0) {
-    if (body_free_time_ >= kStep - 1e-9) {
-      impact_.normal = closing_normal;
-      impact_.speed = closing;
-      ++impact_.count;
-    }
-    body_free_time_ = 0.0;
-  } else {
-    body_free_time_ += dt;
-  }
-
   // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): 3D body drag, lateral drag
   // at front/rear axles, vertical drag, front/rear downforce with pitch AoA
   // falloff, high-speed drag ramp, and active drafting multipliers.
@@ -2192,28 +2076,17 @@ void Vehicle::substep(double dt, const Ground& ground) {
   // Record body-frame signed lateral G (+X right in a right turn) for FFB & telemetry.
   lateral_g_ = rotate_inverse(rot_, force * (1.0 / p.mass)).x / std::max(1.0, p.gravity);
 
-  // Integrate (semi-implicit Euler).
-  const double prev_vy = vel_.y;
+  // Integrate (semi-implicit Euler): the velocities, then the body
+  // contacts' impulses and push-out and GimbalLock on them, then the pose.
   vel_ = vel_ + force * (dt / p.mass);
-  // Clamp single-substep upward velocity delta from wall/obstacle body contacts
-  // so fence, curb, or steep-bank bumps never catapult the car airborne while
-  // preserving natural jump trajectories over real ramps/crests and landing arrest.
-  if (had_wall_contact) {
-    const double cap_vy = std::max(prev_vy, 0.0);
-    if (vel_.y > cap_vy) vel_.y = cap_vy;
-  } else if (body_force_ > 0.0) {
-    const double max_up_vy = std::max(prev_vy, 0.0) + 0.12;
-    if (vel_.y > max_up_vy) vel_.y = max_up_vy;
-  }
   const Vec3 tl = rotate_inverse(rot_, torque);
   Vec3 wl = rotate_inverse(rot_, ang_);
   const Vec3 iw{inertia_.x * wl.x, inertia_.y * wl.y, inertia_.z * wl.z};
   const Vec3 gyro = cross(wl, iw);
   wl = wl + Vec3{(tl.x - gyro.x) / inertia_.x, (tl.y - gyro.y) / inertia_.y, (tl.z - gyro.z) / inertia_.z} * dt;
-  const double ang_mag = length(wl);
-  constexpr double kMaxAngVel = 10.0;  // rad/s: prevent violent post-crash spin explosions
-  if (ang_mag > kMaxAngVel) wl = wl * (kMaxAngVel / ang_mag);
   ang_ = rotate(rot_, wl);
+  body_contacts(dt, ground);
+  gimbal_lock(dt);
   pos_ = pos_ + vel_ * dt;
   const Quat dq{ang_.x, ang_.y, ang_.z, 0};
   Quat q{rot_.x + 0.5 * dt * (dq.w * rot_.x + dq.x * rot_.w + dq.y * rot_.z - dq.z * rot_.y),
@@ -2222,6 +2095,167 @@ void Vehicle::substep(double dt, const Ground& ground) {
          rot_.w + 0.5 * dt * (dq.w * rot_.w - dq.x * rot_.x - dq.y * rot_.y - dq.z * rot_.z)};
   const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
   rot_ = {q.x / n, q.y / n, q.z / n, q.w / n};
+}
+
+void Vehicle::body_contacts(double dt, const Ground& ground) {
+  // The original's car-to-world contact (SPEC_QUESTIONS Q100, Q101). Its
+  // collision spheres (MAXData; a stand-in set on the body box for a car
+  // without one), raised to stay CarCollSphereMinDistAboveGround (ground
+  // spheres: CarGroundCollSphereMinDistAboveGround) above the lowest
+  // wheel's ground, give up to 16 contacts. The body is first pushed out
+  // along their normals, each contact taking only the depth the push so
+  // far leaves (position only: the velocity is untouched). Then each
+  // contact closing on its surface gives an impulse from the same
+  // velocities: the normal one (1 + Elasticity) times the closing speed's,
+  // the friction one mu times it (at most the car's mass times 7 mph),
+  // against the sliding direction (scaled by 0.2 per m/s below 5 m/s);
+  // mu blends from LowSpeedFrictionCoefficient to FrictionCoefficient over
+  // FrictionLowSpeedMph..FrictionHighSpeedMph. The impulses and their
+  // moments are averaged over the closing contacts, the moment scaled per
+  // body axis by CarObjWorldCollTorqueScale, and applied.
+  const CarParams& p = p_;
+  const auto& bc = p.body_collision;
+  const Vec3 up = rotate(rot_, {0, 1, 0});
+  body_force_ = 0;
+
+  // The spheres in the car frame (y = 0 the ground at rest).
+  thread_local std::vector<CarParams::CollSphere> box_spheres;
+  const std::vector<CarParams::CollSphere>* spheres = &bc.spheres;
+  if (spheres->empty()) {
+    // Stand-in (ours): the box's 8 corners and 6 face middles, radius 0.15 m.
+    box_spheres.clear();
+    const double r = 0.15;
+    const Vec3 h{0.5 * p.size.x - r, 0.5 * p.size.y - r, 0.5 * p.size.z - r};
+    const Vec3 c{0, p.sill_height + 0.5 * p.size.y, p.centre_of_mass.z};
+    for (int k = 0; k < 27; ++k) {
+      const int ix = k % 3 - 1, iy = k / 3 % 3 - 1, iz = k / 9 - 1;
+      const int nz = (ix != 0) + (iy != 0) + (iz != 0);
+      if (nz != 3 && nz != 1) continue;
+      box_spheres.push_back({c + Vec3{ix * h.x, iy * h.y, iz * h.z}, r, iy < 0 && nz == 3 ? 1 : 2});
+    }
+    spheres = &box_spheres;
+  }
+  double ground_y = 1e9;
+  for (int i = 0; i < kWheels; ++i) ground_y = std::min(ground_y, w_[i].centre.y - p.tyre_radius[i]);
+  const int n_spheres = int(std::min<size_t>(spheres->size(), 64));
+  SphereQuery query[64];
+  SphereHit hits[64];
+  for (int k = 0; k < n_spheres; ++k) {
+    const auto& sp = (*spheres)[size_t(k)];
+    Vec3 c = sp.centre;
+    const double lift = (sp.flags & 1) ? bc.ground_min_above_ground : bc.min_above_ground;
+    if (c.y - sp.radius < ground_y + lift) c.y = ground_y + lift + sp.radius;
+    query[k] = {pos_ + rotate(rot_, c - com_local_), sp.radius};
+  }
+  const Vec3 inside_local{0, p.sill_height + 0.5 * p.size.y, p.centre_of_mass.z};
+  const Vec3 inside = pos_ + rotate(rot_, inside_local - com_local_);
+  ground.sphere_contacts(inside, query, n_spheres, hits);
+
+  // Up to 16 contacts, the deepest.
+  int order[64];
+  int n = 0;
+  for (int k = 0; k < n_spheres; ++k)
+    if (hits[k].depth > 0) order[n++] = k;
+  std::sort(order, order + n, [&](int a, int b) { return hits[a].depth > hits[b].depth; });
+  n = std::min(n, 16);
+  if (n == 0) {
+    body_free_time_ += dt;
+    return;
+  }
+
+  // Push-out.
+  Vec3 push{};
+  for (int i = 0; i < n; ++i) {
+    const SphereHit& h = hits[order[i]];
+    const double rem = h.depth - dot(push, h.normal);
+    if (rem > 0) push = push + h.normal * rem;
+  }
+  pos_ = pos_ + push;
+  // The wheels move with the body: their compression change is no damper
+  // rate (the original moves each wheel's stored position too).
+  const double lift_along_up = dot(push, up);
+  for (int i = 0; i < kWheels; ++i) prev_compression_[i] -= lift_along_up;
+
+  // Impulses from the same velocities, averaged over the closing contacts.
+  auto inv_inertia = [&](const Vec3& v) {
+    const Vec3 l = rotate_inverse(rot_, v);
+    return rotate(rot_, Vec3{l.x / inertia_.x, l.y / inertia_.y, l.z / inertia_.z});
+  };
+  const double inv_mass = 1.0 / p.mass;
+  constexpr double kMph = 0.44704;
+  Vec3 sum_p{}, sum_l{};
+  int closing_n = 0;
+  double closing = 0.0;
+  Vec3 closing_normal = hits[order[0]].normal;
+  for (int i = 0; i < n; ++i) {
+    const SphereHit& h = hits[order[i]];
+    const Vec3 at = query[order[i]].centre - h.normal * query[order[i]].radius;
+    const Vec3 arm = at - pos_;
+    const Vec3 u = vel_ + cross(ang_, arm);
+    const double vn = dot(u, h.normal);
+    if (vn >= 0) continue;
+    if (-vn > closing) {
+      closing = -vn;
+      closing_normal = h.normal;
+    }
+    const double k_n = inv_mass + dot(h.normal, cross(inv_inertia(cross(arm, h.normal)), arm));
+    const double j = std::max(0.0, -(1.0 + h.tyre.coll_elasticity) * vn / k_n);
+    double mu = h.tyre.coll_friction;
+    if (h.tyre.coll_low_speed_friction >= 0) {
+      const double span = bc.friction_high_mph - bc.friction_low_mph;
+      const double t = span > 0 ? std::clamp((length(u) / kMph - bc.friction_low_mph) / span, 0.0, 1.0) : 1.0;
+      mu = h.tyre.coll_low_speed_friction + (h.tyre.coll_friction - h.tyre.coll_low_speed_friction) * t;
+    }
+    const double jt = mu * std::min(j, p.mass * 7.0 * kMph);
+    const Vec3 vt = u - h.normal * vn;
+    const double vt2 = dot(vt, vt);
+    const Vec3 dir = vt2 > 25.0 ? vt * (-1.0 / std::sqrt(vt2)) : vt * -0.2;
+    const Vec3 imp = h.normal * j + dir * jt;
+    sum_p = sum_p + imp;
+    sum_l = sum_l + cross(arm, imp);
+    ++closing_n;
+  }
+  if (closing_n > 0) {
+    const Vec3 imp = sum_p * (1.0 / closing_n);
+    Vec3 l_loc = rotate_inverse(rot_, sum_l * (1.0 / closing_n));
+    l_loc = {l_loc.x * bc.world_torque_scale.x, l_loc.y * bc.world_torque_scale.y, l_loc.z * bc.world_torque_scale.z};
+    vel_ = vel_ + imp * inv_mass;
+    ang_ = ang_ + inv_inertia(rotate(rot_, l_loc));
+    body_force_ = length(imp) / dt;
+  }
+  const SphereHit& deepest = hits[order[0]];
+  if (body_force_ >= strongest_.force)
+    strongest_ = {deepest.point, deepest.normal, body_force_, deepest.surface, deepest.triangle};
+  // A body impact: contact after a step or more without one (the camera's
+  // collision pulse reads each once, Q67).
+  if (body_free_time_ >= kStep - 1e-9) {
+    impact_.normal = closing_normal;
+    impact_.speed = closing;
+    ++impact_.count;
+  }
+  body_free_time_ = 0.0;
+}
+
+void Vehicle::gimbal_lock(double dt) {
+  // GimbalLock (SPEC_QUESTIONS Q101): past GimbalCosAngle0 of tilt, a spring
+  // (GimbalSpringK, damped by DCompress tilting further, DRebound coming
+  // back) on the spin about the horizontal tilt axis; past GimbalCosAngle1,
+  // spin that tilts further is first reflected with GimbalAngImpulseElasticity.
+  const auto& bc = p_.body_collision;
+  if (!bc.gimbal_on) return;
+  const Vec3 up = rotate(rot_, {0, 1, 0});
+  const double c = up.y;
+  if (!(c < bc.gimbal_cos0)) return;
+  const double h = std::hypot(up.x, up.z);
+  if (h < 1e-9) return;
+  const Vec3 axis = cross(Vec3{0, 1, 0}, Vec3{up.x / h, 0, up.z / h});
+  if (c < bc.gimbal_cos1) {
+    const double wa = dot(ang_, axis);
+    if (wa > 0) ang_ = ang_ - axis * ((1.0 + bc.gimbal_elasticity) * wa);
+  }
+  const double wa = dot(ang_, axis);
+  const double d = wa > 0 ? bc.gimbal_d_compress : bc.gimbal_d_rebound;
+  ang_ = ang_ + axis * ((-bc.gimbal_k * (bc.gimbal_cos0 - c) - d * wa) * dt);
 }
 
 void apply_auto_brake(Input& in, double current_speed, double target_speed) {

@@ -26,6 +26,9 @@ class MeshGround : public Ground {
   // The nearest hit along the ray within `max_distance`, either face. The
   // normal faces against the ray.
   bool raycast(const Vec3& origin, const Vec3& dir, double max_distance, Hit& hit) const override;
+  // The triangles near the spheres, gathered once for all of them; per
+  // sphere the deepest overlap, the normal facing `inside`'s side.
+  void sphere_contacts(const Vec3& inside, const SphereQuery* spheres, int n, SphereHit* hits) const override;
   // The tyre columns by surface index, reported in Hit::tyre (empty, or an
   // index past the end: the defaults).
   void set_surface_tyres(std::vector<SurfaceTyre> tyres) { tyres_ = std::move(tyres); }
