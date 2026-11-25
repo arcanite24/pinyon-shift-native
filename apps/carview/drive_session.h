@@ -470,6 +470,7 @@ struct DriveSession {
   MapDialog map_dialog = MapDialog::kNone;
   int map_dialog_marker = -1;
   int64_t map_dialog_cost = 0;
+  double map_dialog_px = 0.0, map_dialog_pz = 0.0;  // the trainer's bare-cursor destination
   MapCameraController map_cam;
   int map_w = 0, map_h = 0;
   bool window_minimized = false;
@@ -568,6 +569,7 @@ struct DriveSession {
   void map_screen_fill();
   bool map_screen_event(const SDL_Event& e);
   void map_cursor_world();
+  bool map_travel_quote(const MapMarker& m, int64_t& cost);
   void map_fast_travel_request();
   void map_fast_travel_confirm();
   void map_travel_to(double x, double z, double heading);

@@ -500,6 +500,9 @@ bool DriveSession::free_roam_step() {
                                         : st.kind == freeroam::PrStuntKind::kPhoto ? NotifyKind::kPhotoShootDone
                                                                                    : NotifyKind::kSkillStuntDone;
                 popup = Popup::notify(done, vehicle.time(), {}, {"+" + carview::thousands(cr)});
+                // A first completion cuts the outpost's fast travel fee; the
+                // original's card then says so under the headline.
+                if (first_time) popup.text = text_of(map_text::kCardEarned);
                 std::printf("t %.2f s: %s +%lld Cr +%lld popularity\n", vehicle.time(), st.title.c_str(),
                             static_cast<long long>(cr), static_cast<long long>(pop));
                 app.audio_host.trigger_ui(audio::UiCue::kSkillAward);

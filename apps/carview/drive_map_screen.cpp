@@ -194,15 +194,9 @@ void DriveSession::map_screen_fill() {
         break;
     }
     // X on a destination: the fee.
-    const std::string tag = travel_tag(m);
-    if (!tag.empty() && !app.race && (m.kind != MapMarker::kOutpost || m.discovered)) {
-      freeroam::OutpostMissions om;
-      if (m.kind == MapMarker::kOutpost && app.have_outposts)
-        om = freeroam::outpost_missions(app.outposts, app.outpost_progress, m.id);
-      const auto q = freeroam::quote_fast_travel(tunables(app), tag, om.total, om.done, app.career.credits);
-      if (q.eligible())
-        x_label = format1(text_of(map_text::kFastTravelButton), format1(text_of(map_text::kCredits), thousands(q.cost)));
-    }
+    int64_t cost = 0;
+    if (map_travel_quote(m, cost))
+      x_label = format1(text_of(map_text::kFastTravelButton), format1(text_of(map_text::kCredits), thousands(cost)));
   } else {
     // The player (their name over the arrow, map_open_orig.png), then a
     // found or revealed sign or barn.
@@ -250,6 +244,8 @@ void DriveSession::map_screen_fill() {
   // icon's action, LB the filter.
   ms.prompts.push_back({"A", text_of(route ? map_text::kClearRoute : map_text::kSetRoute)});
   ms.prompts.push_back({"B", text_of(map_text::kExitMap)});
+  if (x_label.empty() && map_selected_marker < 0 && !app.race && slice12.trainer.effective_fast_travel_anywhere())
+    x_label = format1(text_of(map_text::kFastTravelButton), format1(text_of(map_text::kCredits), thousands(0)));
   if (!x_label.empty()) ms.prompts.push_back({"X", x_label});
   ms.prompts.push_back({"LB", text_of(map_text::kFilter)});
   if (const int pending = app.have_career_catalog
@@ -274,25 +270,50 @@ void DriveSession::map_travel_to(double x, double z, double heading) {
   running = false;
 }
 
-void DriveSession::map_fast_travel_request() {
-  if (map_selected_marker < 0 || size_t(map_selected_marker) >= cached_map_markers.size()) return;
-  const MapMarker& m = cached_map_markers[size_t(map_selected_marker)];
+bool DriveSession::map_travel_quote(const MapMarker& m, int64_t& cost) {
+  // The engine's trainer "fast travel anywhere" makes every destination,
+  // found or not, free.
+  const bool anywhere = slice12.trainer.effective_fast_travel_anywhere();
   const std::string tag = travel_tag(m);
-  if (tag.empty() || app.race || (m.kind == MapMarker::kOutpost && !m.discovered)) return;
+  if (tag.empty() || app.race || (m.kind == MapMarker::kOutpost && !m.discovered && !anywhere)) return false;
+  if (anywhere) {
+    cost = 0;
+    return true;
+  }
   freeroam::OutpostMissions om;
   if (m.kind == MapMarker::kOutpost && app.have_outposts)
     om = freeroam::outpost_missions(app.outposts, app.outpost_progress, m.id);
   const auto q = freeroam::quote_fast_travel(tunables(app), tag, om.total, om.done, app.career.credits);
-  if (!q.eligible()) return;
+  if (!q.eligible()) return false;
+  cost = q.cost;
+  return true;
+}
+
+void DriveSession::map_fast_travel_request() {
+  int64_t cost = 0;
+  if (map_selected_marker < 0 || size_t(map_selected_marker) >= cached_map_markers.size()) {
+    // The trainer also travels to the bare cursor.
+    if (app.race || !slice12.trainer.effective_fast_travel_anywhere()) return;
+  } else if (!map_travel_quote(cached_map_markers[size_t(map_selected_marker)], cost)) {
+    return;
+  }
+  const bool affordable = cost <= 0 || app.career.credits >= cost;
   map_dialog_marker = map_selected_marker;
-  map_dialog_cost = q.cost;
-  map_dialog = q.affordable ? MapDialog::kConfirm : MapDialog::kNoCredits;
-  app.audio_host.trigger_ui(q.affordable ? audio::UiCue::kAccept : audio::UiCue::kError);
+  map_dialog_px = map_px, map_dialog_pz = map_pz;
+  map_dialog_cost = cost;
+  map_dialog = affordable ? MapDialog::kConfirm : MapDialog::kNoCredits;
+  app.audio_host.trigger_ui(affordable ? audio::UiCue::kAccept : audio::UiCue::kError);
 }
 
 void DriveSession::map_fast_travel_confirm() {
   map_dialog = MapDialog::kNone;
-  if (map_dialog_marker < 0 || size_t(map_dialog_marker) >= cached_map_markers.size()) return;
+  if (map_dialog_marker < 0) {
+    if (!slice12.trainer.effective_fast_travel_anywhere()) return;
+    app.audio_host.trigger_ui(audio::UiCue::kAccept);
+    map_travel_to(map_dialog_px, map_dialog_pz, 0.0);
+    return;
+  }
+  if (size_t(map_dialog_marker) >= cached_map_markers.size()) return;
   const MapMarker m = cached_map_markers[size_t(map_dialog_marker)];
   if (map_dialog_cost > 0) {
     if (app.career.credits < map_dialog_cost) return;
