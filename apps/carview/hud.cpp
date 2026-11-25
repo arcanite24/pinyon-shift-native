@@ -174,40 +174,7 @@ HudImage draw_radio_popup(const RadioPopupState& st, int height) {
   return img;
 }
 
-std::string PauseMenu::label(Action a) const {
-  switch (a) {
-    case kResume: return "RESUME";
-    case kMap: return "MAP";
-    case kEvents: return !events_label.empty() ? events_label : "EVENTS";
-    case kGarage: return "GARAGE";
-    case kUpgrades: return "UPGRADES";
-    case kPaint: return "PAINT";
-    case kAutoshow: return "AUTOSHOW";
-    case kCareer: return "MY PROFILE";
-    case kRally: return in_rally_world ? "RALLY HUB" : "HORIZON RALLY";
-    case kClub: return "1000 CLUB";
-    case kCarClub: return "CAR CLUB";
-    case kAchievements: return "ACHIEVEMENTS";
-    case kPhotoMode: return "PHOTO MODE";
-    case kReplay: return in_race ? "VIEW REPLAY" : "REPLAYS";
-    case kSettings: return "SETTINGS";
-    case kReset: return "RESET TO ROAD";
-    case kRestartRace: return "RESTART RACE";
-    case kDifficulty: return !difficulty_label.empty() ? difficulty_label : "DIFFICULTY";
-    case kQuitRace: return "QUIT RACE";
-    case kQuitToTitle: return "TITLE SCREEN";
-    case kQuit: return "QUIT";
-  }
-  return "";
-}
-
-void PauseMenu::fill(HudState& st) const {
-  if (!open) return;
-  st.menu_title = "paused";
-  st.menu.clear();
-  for (Action a : items()) st.menu.push_back(label(a));
-  st.menu_selected = std::clamp(selected, 0, std::max(0, int(st.menu.size()) - 1));
-}
+// PauseMenu::label and fill: pause_screen.cpp (carview_hud).
 
 HudImage draw_hud(const HudState& state, int scale) {
   scale = std::max(1, scale);

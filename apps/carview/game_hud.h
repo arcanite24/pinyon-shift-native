@@ -201,7 +201,10 @@ inline std::vector<MapFilterTabRect> layout_map_filter_tabs(const std::vector<st
 
 #ifndef CARVIEW_GAME_HUD_LOGIC_ONLY
 
+#include <map>
+
 #include "freeroam/festival_ai.h"
+#include "freeroam/skills.h"
 #include "freeroam/speed_zones.h"
 #include "rally_hub.h"
 #include "ui.h"
@@ -474,7 +477,20 @@ struct SponsorChallengeRow {
   int tier = 1;
   int max_tiers = 5;
   int64_t reward_cr = 10000;
+  std::string description;   // the challenge's details text, its target filled in
+  std::string logo_texture;  // SPONSORLOGOTILE/<NAME> (the scene's SponsorLogo); empty: logo_key
+  bool fame = false;         // the popularity challenge: `current` is the chart position
+  int previous_target = 0;   // fame: the last tier's position (the bar's start)
+  bool completed = false;    // every tier claimed
 };
+
+// The Sponsor Challenges rows from the game's sponsor data and the profile's
+// progress: each challenge's sponsor, name and details resolved in the
+// SponsorshipChallenges table, its next tier, and the popularity chart
+// position for the popularity challenge.
+std::vector<SponsorChallengeRow> sponsor_challenge_rows(const freeroam::SkillsData& data,
+                                                        const std::map<std::string, freeroam::SponsorProgress>* progress,
+                                                        int popularity_rank, int fame_claimed);
 
 // The career page's board (right of the career page list).
 struct CareerBoard {
@@ -519,7 +535,12 @@ struct PrStuntHud {
   bool is_photo = false;
 };
 
+struct PauseScreenHud;
+
 struct DriveHud {
+  // The pause menu from its scene (pause_screen.h); null: the menu (if any)
+  // is drawn by menu_panel.
+  const PauseScreenHud* pause_screen = nullptr;
   const CareerBoard* career = nullptr;
   const TitleScreenHud* title_screen = nullptr;
   const WorldMarkerHud* world_marker = nullptr;
@@ -599,6 +620,10 @@ void set_car_names(std::function<std::string(const std::string&)> source);
 std::string car_name(const std::string& media);
 void set_game_text(std::function<std::string(const std::string&)> source);
 std::string game_text(const std::string& value);
+// The table text as stored, before game_text() strips its markup (and with it
+// the "{0}" format slots).
+std::string game_text_raw(const std::string& value);
+std::string strip_ui_inline_tags(std::string s);
 void set_ui_textures(std::function<bool(const std::string&, std::array<float, 4>&)> source);
 bool ui_texture(const std::string& path, std::array<float, 4>& uv);
 

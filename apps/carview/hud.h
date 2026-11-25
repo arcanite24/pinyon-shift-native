@@ -27,8 +27,11 @@ struct HudState {
   int menu_selected = 0;
 };
 
-// The windowed drive's pause menu: Esc or Start opens it; the items move
-// with up and down and wrap. Adapts cleanly between Free Roam and In-Race.
+// The pause menu (925_PAUSE_MENU, docs/UI_SCENE_SCREENS.md): Esc or Start
+// opens it on the game's own rows, which move with up and down and wrap; B
+// resumes. The engine's extra screens sit behind one EXTRAS list (X) so the
+// original rows stay as they were; MESSAGE CENTER and SPONSOR CHALLENGES open
+// inside the menu and B returns from them.
 struct PauseMenu {
   enum Action {
     kResume,
@@ -51,23 +54,43 @@ struct PauseMenu {
     kDifficulty,
     kQuitRace,
     kQuitToTitle,
-    kQuit
+    kQuit,
+    kMessageCentre,
+    kSponsorChallenges
   };
+  // What the open menu shows: its rows, the EXTRAS list, or a screen opened
+  // from a row.
+  enum class Screen { kList, kExtras, kMessageCentre, kSponsorChallenges };
   bool open = false;
   bool in_race = false;
   bool in_rally_world = false;
+  Screen screen = Screen::kList;
   std::string events_label;      // e.g. "COLLECT GREEN WRISTBAND!" or "RACE CENTRAL"
   std::string difficulty_label;  // e.g. "< DIFFICULTY: MED (+15%) >"
-  int selected = 0;
+  int selected = 0;              // in rows(): the menu's rows or the extras
+  int list_selected = 0;         // the menu row kept while the extras are open
+  int sponsor_selected = 0;      // Sponsor Challenges' selected sponsor
+  // The selection the HUD last drew and when it changed (the cross-fade);
+  // kept by the drawing side, hence mutable.
+  mutable int shown_selected = -1, shown_from = -1;
+  mutable double shown_at = -1e9;
+
+  // The retail rows (925_PAUSE_MENU's Option_List): free roam MAP, SETTINGS
+  // (the retail MULTIPLAYER slot), PHOTO MODE, MESSAGE CENTER, SPONSOR
+  // CHALLENGES, MY PROFILE, QUIT; racing RESTART, MAP, PHOTO MODE, SPONSOR
+  // CHALLENGES, MY PROFILE, QUIT RACE.
   std::vector<Action> items() const {
-    if (in_race) {
-      return {kResume, kRestartRace, kPhotoMode, kReplay, kMap, kDifficulty, kSettings, kQuitRace};
-    }
-    return {kResume, kMap, kEvents, kRally, kPhotoMode, kReplay, kGarage, kUpgrades, kPaint, kAutoshow, kCareer, kClub,
-            kCarClub, kAchievements, kSettings, kQuitToTitle};
+    if (in_race) return {kRestartRace, kMap, kPhotoMode, kSponsorChallenges, kCareer, kQuitRace};
+    return {kMap, kSettings, kPhotoMode, kMessageCentre, kSponsorChallenges, kCareer, kQuitToTitle};
   }
+  // The engine's own screens (EXTRAS).
+  std::vector<Action> extras() const {
+    if (in_race) return {kReplay, kDifficulty, kSettings};
+    return {kEvents, kRally, kGarage, kUpgrades, kPaint, kAutoshow, kClub, kCarClub, kAchievements, kReplay};
+  }
+  std::vector<Action> rows() const { return screen == Screen::kExtras ? extras() : items(); }
   Action selected_action() const {
-    const auto list = items();
+    const auto list = rows();
     if (list.empty()) return kResume;
     return list[size_t(std::clamp(selected, 0, int(list.size()) - 1))];
   }
@@ -75,11 +98,46 @@ struct PauseMenu {
   void show(bool racing = false) {
     open = true;
     in_race = racing;
+    screen = Screen::kList;
     selected = 0;
+    list_selected = 0;
+    shown_selected = -1;
   }
   void move(int by) {
-    const int n = int(items().size());
+    const int n = int(rows().size());
     if (n > 0) selected = ((selected + by) % n + n) % n;
+  }
+  void open_extras() {
+    if (screen != Screen::kList) return;
+    list_selected = selected;
+    screen = Screen::kExtras;
+    selected = 0;
+    shown_selected = -1;
+  }
+  // Opens a screen from a row (MESSAGE CENTER, SPONSOR CHALLENGES).
+  void open_screen(Screen s) {
+    list_selected = selected;
+    screen = s;
+    sponsor_selected = 0;
+  }
+  // B: back to the rows from the extras or a screen (true), or resume
+  // (false: the menu closes).
+  bool back() {
+    if (screen != Screen::kList) {
+      if (screen == Screen::kExtras) shown_selected = -1;
+      screen = Screen::kList;
+      selected = list_selected;
+      return true;
+    }
+    open = false;
+    return false;
+  }
+  // Notes the selection drawn at time `t` (the row cross-fade's start).
+  void note_shown(double t) const {
+    if (selected == shown_selected) return;
+    shown_from = shown_selected;
+    shown_selected = selected;
+    shown_at = shown_from < 0 ? -1e9 : t;
   }
   // Fills the HUD's menu fields (nothing while closed).
   void fill(HudState& st) const;

@@ -45,6 +45,9 @@ struct NodeOverride {
   std::optional<float> visible_width;  // overrides 2-tex crop width (canvas px)
   float dx = 0.0f, dy = 0.0f;          // additional canvas px offset (propagates to descendants)
   float extra_angle = 0.0f;            // extra rotation in radians (scene y-up)
+  // Scales the node and its descendants about the node's own canvas position
+  // (a state's size step, e.g. a focused menu row); 1: none.
+  float scale = 1.0f;
 };
 
 // Binding table passed to SceneDraw::draw_subtree().
@@ -97,14 +100,17 @@ class SceneDraw {
   // colour. `tex_override` swaps the main texture. False when nothing could be drawn.
   bool model(ui::List& l, const SceneFrame& f, int node, float opacity = 1, float dx = 0, float dy = 0,
              float visible = 0, uint32_t tint = 0, std::string_view tex_override = {},
-             float extra_angle = 0.0f, float scale_x = 1.0f, float scale_y = 1.0f) const;
+             float extra_angle = 0.0f, float scale_x = 1.0f, float scale_y = 1.0f, float k = 1.0f, float kbx = 0.0f,
+             float kby = 0.0f) const;
   // A text node's style (font resolved via fontmap.xml, size; the colour given).
   ui::TextStyle style(int node, const SceneFrame& f, uint32_t colour) const;
   // Draws `text` in a text node's box; returns the width drawn, canvas pixels.
   float text(ui::List& l, const SceneFrame& f, int node, std::string_view text, uint32_t colour,
-             float dx = 0, float dy = 0, bool fit = true) const;
+             float dx = 0, float dy = 0, bool fit = true, float scale = 1.0f) const;
   // A text node's box width in canvas pixels (0: none).
   float text_width(int node) const;
+  // The advance of `text` in a text node's font and size, canvas pixels.
+  float measure(int node, std::string_view text) const;
   // Walks a BSG subtree in Z/painter order, drawing all visible models and
   // bound text nodes with per-node overrides and optional BGF track animation.
   // Returns the number of drawables emitted.

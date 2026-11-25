@@ -50,6 +50,7 @@
 #include "hub_scene.h"
 #include "hud.h"
 #include "hud_scene.h"
+#include "pause_screen.h"
 #include "livery_editor.h"
 #include "map_view.h"
 #include "race/campaign_flow.h"
@@ -1135,6 +1136,12 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     d.car_class = "B";
     d.car_pi = 461;
     d.credits = 117700;
+    // The pause menu from its scene (pause_screen.h).
+    carview::PauseMenu pm;
+    pm.show(false);
+    carview::PauseScreenHud ps;
+    carview::fill_pause_screen(pm, 1e9, ps);
+    d.pause_screen = &ps;
     carview::ui::List l;
     carview::build_drive_hud(l, d, float(W), float(H));
     save_frame("ui4_re_pause_menu.png", l, load_or_build_backdrop(world_bg_path));

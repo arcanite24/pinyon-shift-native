@@ -169,15 +169,11 @@ bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache) {
     }
     auto& slot = st->scene_cache[name];
     if (!st->ui_zip) return nullptr;
-    auto fbf = st->ui_zip->read("Scenes/ui4/" + name + ".fbf");
-    auto bsg = st->ui_zip->read("Scenes/ui4/" + name + ".bsg");
-    auto bgf = st->ui_zip->read("Scenes/ui4/" + name + ".bgf");
     auto sc = std::make_unique<fh1::UiScene>();
     std::string e;
-    if (fbf.ok() && bsg.ok() && fh1::parse_ui_fbf(fbf.data, *sc, &e) && fh1::parse_ui_bsg(bsg.data, *sc, &e)) {
-      if (bgf.ok()) sc->has_bgf = fh1::parse_ui_bgf(bgf.data, sc->bgf, nullptr);
+    if (fh1::load_ui_scene(*st->ui_zip, name, *sc, &e))
       slot = std::move(sc);
-    } else
+    else
       std::fprintf(stderr, "carview: note: UI scene %s not loaded%s%s\n", name.c_str(), e.empty() ? "" : ": ", e.c_str());
     return slot.get();
   });

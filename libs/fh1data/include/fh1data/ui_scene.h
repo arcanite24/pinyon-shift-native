@@ -242,6 +242,11 @@ bool parse_ui_bsg(std::span<const uint8_t> data, UiScene& out, std::string* erro
 // tracks/keyframes, and animations.
 bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string* error);
 
+class Archive;
+// Loads Scenes/ui4/<name>.fbf / .bsg (and .bgf when present) from a UI.zip:
+// the app's scene resolver and the scene corpus tests share it.
+bool load_ui_scene(Archive& ui_zip, const std::string& name, UiScene& out, std::string* error);
+
 // Evaluates a BGF keyframe track or animation channel linearly at `time_s`.
 float evaluate_bgf_track(const UiBgfTrack& track, float time_s, float fallback = 0.0f);
 float evaluate_bgf_anim_channel(const UiBgfAnimChannel& ch, float time_s, float fallback = 0.0f);

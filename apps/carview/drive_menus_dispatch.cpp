@@ -653,9 +653,38 @@ void DriveSession::cycle_difficulty(int by) {
           }
 }
 
+std::vector<SponsorChallengeRow> DriveSession::sponsor_rows() {
+          if (!app.have_skills_data) return {};
+          if (!*app.car_names_loaded) carview::car_name("");  // loads the string tables
+          return sponsor_challenge_rows(app.skills_data, app.skill_tracker ? &app.skill_tracker->sponsor_progress() : nullptr,
+                                        app.current_pop_rank(),
+                                        app.skill_tracker ? app.skill_tracker->fame_rewards_claimed() : 0);
+}
+
+bool DriveSession::pause_back() {
+          const bool stays = menu.back();
+          app.audio_host.trigger_ui(stays ? audio::UiCue::kCancel : audio::UiCue::kUnPause);
+          return stays;
+}
+
 void DriveSession::choose() {
           const PauseMenu::Action act = menu.selected_action();
+          // The screens the menu opens inside itself (B returns to the rows).
+          if (act == PauseMenu::kMessageCentre) {
+            menu.open_screen(PauseMenu::Screen::kMessageCentre);
+            return;
+          }
+          if (act == PauseMenu::kSponsorChallenges) {
+            menu.open_screen(PauseMenu::Screen::kSponsorChallenges);
+            return;
+          }
+          // Difficulty (an extra while racing) steps with left and right.
+          if (act == PauseMenu::kDifficulty) {
+            cycle_difficulty(+1);
+            return;
+          }
           menu.open = false;
+          menu.screen = PauseMenu::Screen::kList;
           if (act == PauseMenu::kMap) open_map();
           if (act == PauseMenu::kEvents) open_events_browser(0);
           if (act == PauseMenu::kGarage) {
@@ -833,6 +862,7 @@ void DriveSession::race_restart() {
 void DriveSession::open_menu() {
           sync_pause_labels();
           menu.show(app.race != nullptr);
+          app.audio_host.trigger_ui(audio::UiCue::kPause);
           picking = false;
           save_now("pause");
 }

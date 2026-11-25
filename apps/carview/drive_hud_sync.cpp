@@ -1,6 +1,7 @@
 #include "drive_session.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -10,6 +11,7 @@
 #include "campaign_ui.h"
 #include "fh1data/xds.h"
 #include "hub_scene.h"
+#include "pause_screen.h"
 #include "perf_overlay.h"
 #include "ui4_chrome.h"
 #include "ui_widgets.h"
@@ -651,31 +653,24 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             board.pr_stunts = app.outpost_progress.completed_stunt_count(app.outposts);
             board.pr_stunts_total = int(app.outposts.stunts.size());
           }
-          if (app.have_skills_data) {
-            for (const auto& sc : app.skills_data.sponsor_challenges) {
-              carview::SponsorChallengeRow srow;
-              srow.sponsor_name = sc.sponsor_name.empty() ? sc.id : sc.sponsor_name;
-              srow.challenge_title = sc.challenge_name.empty() ? sc.id : sc.challenge_name;
-              srow.logo_key = sc.sponsor_name.empty() ? sc.id : sc.sponsor_name;
-              srow.max_tiers = std::max(1, int(sc.tiers.size()));
-              if (app.skill_tracker) {
-                if (auto it = app.skill_tracker->sponsor_progress().find(sc.id);
-                    it != app.skill_tracker->sponsor_progress().end()) {
-                  srow.current = it->second.count;
-                  srow.tier = std::min(srow.max_tiers, it->second.claimed_tiers + 1);
-                }
-              }
-              const size_t ti = size_t(std::clamp(srow.tier - 1, 0, std::max(0, int(sc.tiers.size()) - 1)));
-              if (ti < sc.tiers.size()) {
-                srow.target = std::max(1, sc.tiers[ti].number);
-                srow.reward_cr = sc.tiers[ti].credits;
-              }
-              board.sponsors.push_back(std::move(srow));
-            }
-          }
+          if (app.have_skills_data) board.sponsors = sponsor_rows();
           board.show_sponsors = career_page.show_sponsors();
           board.sponsor_selected = career_page.sponsor_selected();
           d.career = &board;
+        }
+        // The pause menu from its scene (925_PAUSE_MENU and the screens it
+        // opens).
+        carview::PauseScreenHud pause_screen;
+        std::vector<carview::SponsorChallengeRow> pause_sponsors;
+        if (menu && menu->open) {
+          const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+          menu->note_shown(now);
+          carview::fill_pause_screen(*menu, now, pause_screen);
+          if (menu->screen == PauseMenu::Screen::kSponsorChallenges && app.have_skills_data) {
+            pause_sponsors = sponsor_rows();
+            pause_screen.sponsors = &pause_sponsors;
+          }
+          d.pause_screen = &pause_screen;
         }
         carview::RallyStageHud rally_stage_hud;
         carview::RallyHubState rally_hub_state;
