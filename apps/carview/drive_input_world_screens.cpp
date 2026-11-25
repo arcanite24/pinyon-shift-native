@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <string>
 
+#include "movie_skip.h"
 #include "settings.h"
 #include "ui4_chrome.h"
 
@@ -115,17 +116,11 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
               return true;
             }
             if (app.fmv_player.active()) {
-              // R3-UI-07: require 0.75 s hold-to-skip in interactive windowed mode (polled in run_window_loop);
-              // allow instant skip only in --headless / scripted test mode.
-              if (app.headless) {
-                const bool skip_key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
-                                      (e.key.key == SDLK_RETURN || e.key.key == SDLK_SPACE || e.key.key == SDLK_ESCAPE);
-                const bool skip_pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
-                                      (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH ||
-                                       e.gbutton.button == SDL_GAMEPAD_BUTTON_START);
-                const bool skip_mouse = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-                                        (e.button.button == SDL_BUTTON_LEFT || e.button.button == SDL_BUTTON_RIGHT);
-                if (skip_key || skip_pad || skip_mouse) {
+              // The boot splashes and the attract movie skip on a press
+              // (movie_skip_event); the press goes no further, so the one
+              // that ends the last splash does not also press START.
+              {
+                if (carview::movie_skip_event(e)) {
                   app.fmv_player.skip();
                   app.audio_host.set_fmv_audio(nullptr, nullptr);
                   if (title_attract_playing) {

@@ -422,11 +422,12 @@ The boot plays the original's two splashes, `T10_MS_Combined` then
 `forza_intro.wmv` (`kAttractMovie`) and comes back to Press Start.
 
 A movie skips on a press, with no prompt over it
-(`00_opening_movie_orig.png`): the boot splashes and the attract movie the
-frame A, B, Enter, Space or Esc goes down (`movie_skip_press`, never a
-button held from before the movie), the campaign's movies on the same
-press or Start or Tab. The engine's in-engine cinematics keep their 0.75 s
-hold (Q155).
+(`00_opening_movie_orig.png`): the boot splashes and the attract movie on
+a press of A, B, Start, Enter, Space, Esc or a click (`movie_skip_event`;
+a held key's repeat does not count, and the press goes no further, so the
+one that ends the last splash does not also press START), the campaign's
+movies on the same presses or Tab. The engine's in-engine cinematics keep
+their 0.75 s hold (Q155).
 
 - **Press Start.** `120_P_PRE_SPLASH`'s `Content` group (the logo and
   `TitleTapeText` reading PRESS START) moved by one measured offset

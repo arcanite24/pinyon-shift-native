@@ -14,6 +14,7 @@
 #include "fh1data/stringtables.h"
 #include "fmv_player.h"
 #include "hud.h"
+#include "movie_skip.h"
 #include "settings.h"
 #include "settings_page.h"
 #include "story_intro.h"
@@ -548,21 +549,26 @@ void test_r3_fmv_subtitles_pll_hold_skip_and_story_units() {
   check(lag_step >= 2.0 && lag_step < 2.016, "PLL gently slows down without reversing when audio lags >40ms");
 
   // A movie skips on a press (the original's boot splashes skip on a B tap):
-  // the frame a button goes down, never a button held from before.
+  // a button going down, never a key's auto-repeat or a release.
   {
-    const bool held[] = {true, true, false, false, true, true, true, false, true};
-    bool before = true;  // held as the movie starts
-    int skips = 0, first = -1;
-    for (int i = 0; i < int(std::size(held)); ++i) {
-      if (carview::movie_skip_press(held[i], before)) {
-        ++skips;
-        if (first < 0) first = i;
-      }
-      before = held[i];
-    }
-    check(first == 4 && skips == 2, "movie skip: a press skips; a held button skips once; one held from before does not");
-    check(!carview::movie_skip_press(false, false) && carview::movie_skip_press(true, false),
-          "movie skip: a press from rest skips; no press does not");
+    SDL_Event e{};
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.key = SDLK_SPACE;
+    check(carview::movie_skip_event(e), "movie skip: Space skips");
+    e.key.repeat = true;
+    check(!carview::movie_skip_event(e), "movie skip: a held key's repeat does not");
+    e.key.repeat = false;
+    e.type = SDL_EVENT_KEY_UP;
+    check(!carview::movie_skip_event(e), "movie skip: a release does not");
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.key = SDLK_W;
+    check(!carview::movie_skip_event(e), "movie skip: other keys do not");
+    SDL_Event b{};
+    b.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+    b.gbutton.button = SDL_GAMEPAD_BUTTON_EAST;
+    check(carview::movie_skip_event(b), "movie skip: B skips");
+    b.gbutton.button = SDL_GAMEPAD_BUTTON_NORTH;
+    check(!carview::movie_skip_event(b), "movie skip: Y does not");
   }
   // No prompt over a movie (00_opening_movie_orig.png): no text below the
   // subtitle strip, where the help bar would sit.

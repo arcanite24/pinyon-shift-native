@@ -77,10 +77,6 @@ std::vector<std::string> wrap_fmv_subtitle(std::string_view text, float max_widt
 // smooth proportional drift correction outside +/-40 ms, never steps backwards).
 double fmv_pll_step_clock(double video_clock_s, double dt_s, double audio_clock_s);
 
-// A movie skips on a press, as the original's boot splashes do on a B tap:
-// true the frame the skip buttons go down, never while one stays held.
-inline bool movie_skip_press(bool held_now, bool held_before) { return held_now && !held_before; }
-
 struct FmvProbeInfo {
   int width = 0;
   int height = 0;

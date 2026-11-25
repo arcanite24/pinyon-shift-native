@@ -444,19 +444,9 @@ void DriveSession::run_window_loop() {
               hold_skip_now = true;
             }
           }
-          // A movie skips on a press, as the original's boot splashes do on a
-          // B tap (orig-title.steps): a button going down, never one held
-          // from before the movie.
-          const bool skip_press = carview::movie_skip_press(hold_skip_now, movie_skip_held);
-          movie_skip_held = hold_skip_now;
+          // A movie skips on a press, in the input (movie_skip_event).
           if (app.fmv_player.active()) {
-            bool fmv_done = !app.fmv_player.update(frame_dt, true);
-            // The boot splashes and the attract movie; the campaign's movies
-            // skip through its input (drive_input_world_screens.cpp).
-            if (!fmv_done && !app.campaign.is_blocking_gameplay() && !app.headless && skip_press) {
-              app.fmv_player.skip();
-              fmv_done = true;
-            }
+            const bool fmv_done = !app.fmv_player.update(frame_dt, true);
             if (fmv_done) {
               app.audio_host.set_fmv_audio(nullptr, nullptr);
               host.renderer.reset_auto_exposure();
