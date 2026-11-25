@@ -255,6 +255,17 @@ inline bool camera_rotation_uv_motion(const float prev_vp[16], const float curr_
   return true;
 }
 
+// Clip-from-world for the camera blur: the scene is drawn in the player car's
+// frame, so the view-projection is composed with the world-to-car transform
+// (which carries the car's yaw) when there is one.
+inline void clip_from_world(const float vp[16], bool has_world_transform, const float world_xf[16], float out[16]) {
+  if (has_world_transform) {
+    mat4_mul(vp, world_xf, out);
+  } else {
+    std::memcpy(out, vp, 16 * sizeof(float));
+  }
+}
+
 // Reprojects a static world pixel from current clip space into previous clip space,
 // accounting for both player-car motion (world_transform_) and double-precision
 // streaming origin re-centering (curr_origin - prev_origin).
@@ -950,7 +961,7 @@ class Renderer {
   float cam_jitter_uv_x_ = 0.0f, cam_jitter_uv_y_ = 0.0f;
   float prev_jitter_uv_x_ = 0.0f, prev_jitter_uv_y_ = 0.0f;
   bool cam_vp_set_ = false, prev_cam_vp_valid_ = false;
-  // The view-projection the last post pass saw (camera motion blur, FEEL-31).
+  // The clip-from-world matrix the last post pass saw (camera motion blur, FEEL-31).
   float post_prev_vp_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   bool post_prev_vp_valid_ = false;
   bool inspector_active_ = false;

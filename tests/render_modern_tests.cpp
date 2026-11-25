@@ -702,6 +702,28 @@ void test_camera_rotation_blur_vector() {
   CHECK(camera_rotation_uv_motion(a, b, m2) && m2[0] * m[0] < 0.0f);  // the other way, the other sign
   float zero[16]{};
   CHECK(!camera_rotation_uv_motion(zero, a, m) && m[0] == 0.0f && m[1] == 0.0f);
+
+  // The chase camera is fixed to the car, and the car's yaw is in the
+  // world-to-car transform: a steady turn still smears sideways once the
+  // two are composed, and not when only the view-projection is compared.
+  float vp[16];
+  view_vp(0.0f, 0.0f, -5.5f, vp);
+  auto world_to_car = [&](float yaw, float x, float z, float out[16]) {
+    mat4_identity(out);
+    const float c = std::cos(-yaw), s = std::sin(-yaw);
+    out[0] = c, out[2] = -s, out[8] = s, out[10] = c;
+    out[12] = x, out[14] = z;
+  };
+  float w0[16], w1[16], c0[16], c1[16];
+  world_to_car(1.0f, 120.0f, -40.0f, w0);
+  world_to_car(1.0f + d, 121.5f, -40.6f, w1);
+  clip_from_world(vp, true, w0, c0);
+  clip_from_world(vp, true, w1, c1);
+  CHECK(camera_rotation_uv_motion(c0, c1, m));
+  CHECK(near(std::fabs(m[0]), 0.5f * proj00 * std::tan(d), 1e-4f) && near(m[1], 0.0f, 1e-5f));
+  CHECK(camera_rotation_uv_motion(vp, vp, m) && m[0] == 0.0f);  // the car-relative view alone misses it
+  clip_from_world(vp, false, w1, c1);
+  CHECK(std::memcmp(c1, vp, sizeof vp) == 0);
 }
 
 void test_dynamic_motion_vectors_and_mcguire() {

@@ -2037,8 +2037,9 @@ interim:
   0.55 floor and 18 mph offset are gone, so the free-roam baseline of 0
   means no blur.
 - **Direction.** On Tier 0, the blur is six taps along the camera's
-  screen motion from its rotation over the last frame, which smears
-  sideways in turns. This replaced the radial blur, which photo mode
+  screen motion from its rotation against the world over the last
+  frame (the view-projection composed with the world-to-car transform),
+  which smears sideways in turns. This replaced the radial blur, which photo mode
   still uses for its shutter effect. The velocity-blur tiers already
   follow per-pixel motion.
 

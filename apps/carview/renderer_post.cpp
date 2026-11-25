@@ -388,11 +388,16 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     u.flags_near[3] = s.brightness;
     u.mblur[0] = s.motion_blur_center[0];
     u.mblur[1] = s.motion_blur_center[1];
+    // The camera's rotation against the world, not against the player car.
+    float clip_from_world[16];
+    motion_math::clip_from_world(cam_vp_, motion_scene_.has_world_transform, motion_scene_.world_transform,
+                                 clip_from_world);
     if (s.motion_blur_directional) {
       // Camera motion blur (FEEL-31): xy carries the camera's screen motion
       // over the last frame, capped at 4 % of the screen.
       float m[2] = {0.0f, 0.0f};
-      if (!(cam_vp_set_ && post_prev_vp_valid_ && motion_math::camera_rotation_uv_motion(post_prev_vp_, cam_vp_, m))) {
+      if (!(cam_vp_set_ && post_prev_vp_valid_ &&
+            motion_math::camera_rotation_uv_motion(post_prev_vp_, clip_from_world, m))) {
         m[0] = m[1] = 0.0f;
       }
       const float len = std::sqrt(m[0] * m[0] + m[1] * m[1]);
@@ -401,7 +406,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
       u.mblur[1] = m[1];
     }
     if (cam_vp_set_) {
-      std::memcpy(post_prev_vp_, cam_vp_, sizeof(post_prev_vp_));
+      std::memcpy(post_prev_vp_, clip_from_world, sizeof(post_prev_vp_));
       post_prev_vp_valid_ = true;
     }
     u.mblur[2] = s.motion_blur_strength;
