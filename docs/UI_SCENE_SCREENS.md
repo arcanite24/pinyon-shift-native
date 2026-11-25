@@ -525,3 +525,78 @@ or the quit-to-Rally confirmation (`rally/IDS_QuitHorizonToRally`, A OK,
 B CANCEL). The first OK plays `Forza_Tone_Rally` and saves `rally_flow`,
 then switches worlds. The intro race, first Autoshow and hub tutorial are
 not run yet (Q145).
+
+## The hub's menus and car lists
+
+- **Option lists on `H_GENERIC`** (`hub_menus.h`). MY PROFILE, OPTIONS,
+  the workshop, the paint booth, the upgrade choice and photo mode are the
+  original's string-table rows on one scene (`20_`, `21_`, `22_`,
+  `31_*_orig.png`), its list placed per row count. The pause menu's
+  SETTINGS, MY PROFILE and PHOTO MODE open them; B on the first list goes
+  back to the pause menu. An engine page reached from one is on X (OPTIONS'
+  ENGINE SETTINGS); MY PROFILE replaces the career page as the entry, and
+  the career page stays as an extra on the pause menu's extras.
+- **Car lists on `108_C_BUY_CARSELECT`** (`car_list_screen.h`,
+  `drive_car_lists.cpp`). One draw, parameterised by title, tiles, card and
+  help bar:
+  - the Autoshow's car select, titled HORIZON RECOMMENDS for the first car
+    and CAR SELECT for a make, with the price under the cursor
+    (`19_autoshow_orig.png`);
+  - MY GARAGE, the garage's cars in class then PI order with no line under
+    the cursor (`11_car_select_orig.png` is the same scene for an event);
+  - BARN FINDS, every barn with its state icon and Barnfind.str's state
+    under the cursor.
+  The cursor sits on the strip's fourth slot. The card shows the model
+  (`Data_Car.ModelShort`), year and make, the country flag
+  (`List_Country.IconPath`), class and PI, the drivetrain icon
+  (`UI4/Common/Drivetrain_<drive>_<placement>`) and the five rating bars
+  over its dirt panel. Y TOGGLE hides the card.
+- **The manufacturer select on `115_C_BUY_MFRSELECT`** (`draw_make_list`,
+  `fill_make_list`). The Autoshow's first step: the makes' logos
+  (`List_CarMake.IconPath` on `MANU_IMAGE`, held clear by the scene until
+  the list fills it) on the same seven-slot strip as 108, the make's name
+  under the cursor, its count of cars on `Available` and A SELECT, B BACK,
+  Y ALL AFFORDABLE CARS. `Autoshow::strip_makes` is the strip; B from the
+  car select comes back to the make it left.
+- **Option pages on `300_I_OPT_ASSISTS_DIFFICULTY`** (`options_screen.h`).
+  OPTIONS's DIFFICULTY and HUD (`24_`, `25_*_orig.png`): the settings
+  page's rows by their own names, in the original's order and words
+  (Assists.str, InGame.str), the pink bar on the selected row, the row's
+  description, DIFFICULTY's TOTAL RACE BONUS, and A SAVE, B CANCEL (the
+  rows as they were when the page opened), Y RESET TO DEFAULT (the page's
+  rows only; GAME DIFFICULTY then follows the assists it reset). The
+  engine's other rows (STABILITY CONTROL, its HUD extras) stay on its own
+  pages, behind OPTIONS's X ENGINE SETTINGS.
+- **Popups.** `draw_message_popup` draws `H_MESSAGE_POPUP` with a title, a
+  wrapped message and its own help bar (STAY IN CAR, and the garage's
+  COLLECT CAR, NOT READY, NOT DISCOVERED and CAN'T SELL BARN FIND).
+- **Two-texture panels.** A pane whose first texture's offset only slides
+  its dirt pattern (108's `HUDPanel01` behind the card) takes
+  `NodeOverride::wrap`, which samples the pattern repeating instead of
+  cropping it at the texture's border.
+
+## Interims in the hub
+
+- **Car lists.** The card's photo and the tiles are the cars' thumbnails
+  on the studio sweep (Q128). The panes behind the strip are drawn as a
+  measured band (their crop is not decoded). SEARCH steps the Autoshow's
+  all-cars toggle and the garage's class filter. MY GARAGE has no buy-car
+  tile, current-car icon or list view (Q130).
+- **Manufacturer select.** No capture: the help bar, the strip's contents
+  and the info panel are guesses (Q130). The info panel is hidden because
+  every `List_CarMake.Profile` is "N/A"; the engine's Hidden & Showcase tab
+  is a text tile after the makes.
+- **Rooms.** Each room is the engine's studio stage, the Autoshow's dark
+  (Q129).
+- **Rows.** The workshop's order (Q131); the paint booth's vinyl rows open
+  the livery editor (Q132); TEAM CREDITS shows a notice (Q134). OPTIONS's
+  CONTROLS, AUDIO and VIDEO open the engine's pages.
+- **Option pages.** GAME DIFFICULTY's values and RESET TO DEFAULT's
+  defaults are the engine's (Q135). The description panel's dirt is a
+  measured dark panel (its crop is not decoded).
+- **Barn Finds.** Which popups offer VIEW ON MAP, and the undiscovered and
+  collected tiles (Q133).
+- **Engine extras kept.** The garage's sorts (O, left stick), favourites
+  (F, V), and selling (Q, Del, LB) work but are not on the help bar; the
+  manufacturer strip's paging (Q, E, LB, RB); the livery editor; the
+  engine's settings pages.

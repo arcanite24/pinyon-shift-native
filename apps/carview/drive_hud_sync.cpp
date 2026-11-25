@@ -218,6 +218,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (autoshow.is_open()) autoshow.fill(app.class_bands, app.career.credits, st.menu_title, st.menu, st.menu_selected);
         if (career_page.is_open()) career_page.fill(st.menu_title, st.menu, st.menu_selected);
         if (settings_page.is_open()) settings_page.fill(st.menu_title, st.menu, st.menu_selected);
+        // An option page lasts only as long as the settings page it rides on.
+        if (!settings_page.is_open()) options_page = carview::OptionsPage::kNone;
         if (paint_open) {
           st.menu_title = "PAINT SHOP (FREE): LEFT/RIGHT PREVIEW   ENTER APPLY";
           st.menu.clear();
@@ -839,7 +841,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         const bool pre_race_swoop_hide_hud = pre_race_blend_t >= 0.0 && pre_race_blend_t < 0.85;
         const bool campaign_hide_hud = app.campaign.is_blocking_gameplay() || pre_race_swoop_hide_hud;
         if (mm_size > 0 && !app.show_title && !ceremony.active && !campaign_hide_hud && !map_overlay.active &&
-            !grid_menu_open && st.menu.empty() && !career_page.is_open() && !app.rally_hub_open &&
+            !grid_menu_open && st.menu.empty() && !career_page.is_open() && !hub_menu.open() && !app.rally_hub_open &&
             !app.rally_service_open && !app.rally_results_open && !club_open && !car_club_open)
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         // The 1000 Club's screens hide the driving HUD (club_home.png).
@@ -930,7 +932,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (app.story_intro.stage() == carview::StoryStage::kBootSplash)
           app.story_intro.draw_hud(list, float(width), float(height));
         const bool suppress_campaign_hud =
-            map_overlay.active || !st.menu.empty() || settings_page.is_open() || career_page.is_open() ||
+            map_overlay.active || !st.menu.empty() || settings_page.is_open() || career_page.is_open() || hub_menu.open() ||
             events_page.is_open() || outpost_hub_open || garage_open || shop.is_open() || autoshow.is_open() ||
             paint_open || club_open || car_club_open || app.rally_hub_open || app.rally_service_open ||
             app.rally_results_open || grid_menu_open;
@@ -1007,7 +1009,15 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           carview::draw_save_page(list, float(width), float(height), save_page, app.save_session);
         } else if (settings_page.is_open()) {
           list.clear();
-          carview::draw_settings_ui4(list, float(width), float(height), settings_page, settings_live_overlay);
+          bool drawn = false;
+          if (options_page != carview::OptionsPage::kNone) {
+            carview::OptionsHud oh;
+            fill_options(oh);
+            if (vehicle.time() < notice_until) oh.notice = notice;
+            drawn = carview::draw_options_list(list, oh, float(width), float(height));
+          }
+          if (!drawn)
+            carview::draw_settings_ui4(list, float(width), float(height), settings_page, settings_live_overlay);
         } else if (events_page.is_open()) {
           list.clear();
           carview::draw_events_ui4(list, float(width), float(height), events_page, app.class_bands);
@@ -1088,8 +1098,26 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             }
           }
           list.clear();
-          carview::draw_autoshow_hud(list, float(width), float(height), autoshow, app.class_bands, app.career.credits,
-                                     vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
+          // The car select on the original's 108 (the buy confirmation and
+          // the other steps keep the engine's pages).
+          car_list_drawn = false;
+          make_list_drawn = false;
+          if (autoshow.step() != carview::AutoshowStep::kMakeSelect) make_none_affordable = false;
+          if (autoshow.step() == carview::AutoshowStep::kCarSelect && !autoshow.buy_confirm_open()) {
+            carview::CarListHud cl;
+            fill_autoshow_list(cl);
+            if (vehicle.time() < notice_until) cl.notice = notice;
+            car_list_drawn = carview::draw_car_list(list, d, cl, float(width), float(height));
+          } else if (autoshow.step() == carview::AutoshowStep::kMakeSelect && !autoshow.buy_confirm_open()) {
+            // The manufacturer select on the original's 115.
+            carview::MakeListHud ml;
+            fill_make_list(ml);
+            if (vehicle.time() < notice_until) ml.notice = notice;
+            make_list_drawn = carview::draw_make_list(list, d, ml, float(width), float(height));
+          }
+          if (!car_list_drawn && !make_list_drawn)
+            carview::draw_autoshow_hud(list, float(width), float(height), autoshow, app.class_bands, app.career.credits,
+                                       vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
         } else if (shop.is_open()) {
           list.clear();
           carview::draw_upgrade_shop_hud(list, float(width), float(height), shop, app.class_bands, discount(),
@@ -1099,7 +1127,15 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           list.clear();
           carview::draw_livery_editor_hud(list, float(width), float(height), livery_editor, carview::car_name(app.car),
                                           vehicle.time() < notice_until ? notice : std::string());
+        } else if (garage_open && garage_barn_finds) {
+          // BARN FINDS on 108.
+          list.clear();
+          carview::CarListHud cl;
+          fill_garage_list(cl);
+          if (vehicle.time() < notice_until) cl.notice = notice;
+          car_list_drawn = carview::draw_car_list(list, d, cl, float(width), float(height));
         } else if (garage_open && app.have_garage && !app.career_garage.cars.empty()) {
+          car_list_drawn = false;
           if (garage_browser.visible().empty()) {
             const cars::PartsDb* gdb =
                 (app.parts_db.valid() && app.parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
@@ -1108,16 +1144,32 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             garage_browser.refresh(app.career_garage, gdb, app.class_bands);
           }
           if (!garage_browser.visible().empty()) {
+            // MY GARAGE on 108; the engine's page without the scene.
             list.clear();
-            carview::draw_garage_hud(list, float(width), float(height), garage_browser, app.class_bands, app.career.credits,
-                                     vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
+            carview::CarListHud cl;
+            fill_garage_list(cl);
+            if (vehicle.time() < notice_until) cl.notice = notice;
+            car_list_drawn = carview::draw_car_list(list, d, cl, float(width), float(height));
+            if (!car_list_drawn)
+              carview::draw_garage_hud(list, float(width), float(height), garage_browser, app.class_bands,
+                                       app.career.credits, vehicle.time() < notice_until ? notice : std::string(),
+                                       app.metric_units);
           }
+        } else if (hub_menu.open() && !career_page.is_open() && !achievements.screen_open() && !paint_open &&
+                   !garage_open && !photo_mode.active()) {
+          // MY PROFILE, OPTIONS, the workshop, the paint booth, photo mode:
+          // H_GENERIC over the world (the HUD hidden).
+          carview::HubMenuHud hm;
+          carview::fill_hub_menu(hub_menu, hm);
+          if (vehicle.time() < notice_until) hm.notice = notice;
+          list.clear();
+          carview::draw_hub_menu(list, hm, float(width), float(height));
         }
         if (barn_card.visible) {
           carview::draw_barn_find_hud(list, float(width), float(height), barn_card);
         }
         const bool show_track_chip = !app.show_title && !app.fmv_player.active() && !barn_card.visible && !ceremony.active && !map_overlay.active && !grid_menu_open &&
-                                     st.menu.empty() && !career_page.is_open() && !settings_page.is_open() &&
+                                     st.menu.empty() && !career_page.is_open() && !hub_menu.open() && !settings_page.is_open() &&
                                      !shop.is_open() && !autoshow.is_open() && !garage_open &&
                                      !events_page.is_open() && !outpost_hub_open && !paint_open && !club_open &&
                                      !car_club_open && !rewind_buf.active();

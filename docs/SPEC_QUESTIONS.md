@@ -3103,3 +3103,139 @@ ColoradoDirt block (22 cameras, 9 zones).
 Needed: whether the original keeps Rally-world speed records apart from
 Colorado's (and shows them on separate scoreboards), and where
 ColoradoDirt's gates come from if not Colorado's GameObjs.
+
+Needed: which of these screens the title draws, what text each one shows,
+and whether the UI changes the case.
+
+## Q128 (UI, not blocking): the car list's photo and tile renders
+
+`108_C_BUY_CARSELECT` is bound for the Autoshow's car select, the garage
+and Barn Finds (`car_list_screen.h`). Two pictures on it are not the
+original's:
+
+- **The card's photo.** `19_autoshow_orig.png` shows the selected car
+  photographed outdoors (`CAR/Car_Thumb_`). The engine draws the car's
+  thumbnail on the studio sweep (`KITPARTS/INFINITYCURVE`) in the
+  measured photo rect.
+- **The tiles.** `CAR_IMAGE_NEW` is filled at run time. The engine draws
+  `Thumbnails/Thumbnail_<id>`, a 768x288 render that exists for only 154
+  cars, on each tile's `InfinityCurve`; a car without one shows the bare
+  sweep.
+
+Needed: where the card's photo and the tiles' renders come from (a
+render target of the car, or a file per car), and the camera they use.
+
+## Q129 (UI, not blocking): the hub rooms' tracks and cameras
+
+The Autoshow, the workshop and the paint booth are tracks on the disc
+(`uiautoshow`, `uiworkshop`, `uipaintshop`) with their own camera presets
+(`UICarTargetCameraPresets.xml`, the `HorizonAutoshow` set). The engine
+still draws each room as its studio stage (`build_hub_stage`) with a
+per-room colour. As an interim the Autoshow stage is dark
+(`19_autoshow_orig.png` is a dark club stage); the workshop and the paint
+booth keep their colours. Needed: how the title loads a room's track
+under the menu (which track per screen, the car's placement in it) and
+which preset each screen's camera uses.
+
+## Q130 (UI, not blocking): MY GARAGE on 108, the manufacturer select on 115, and their help bars
+
+No capture shows the garage's own list; the parity run that should have
+(`orig-garage`) stayed on the map. `11_car_select_orig.png` shows the
+garage's cars on `108_C_BUY_CARSELECT` for an event (no line under the
+cursor, a buy-car tile, a wheel icon on the current car, and A SELECT,
+B BACK, X CAR LIST, Y TOGGLE, BACK SEARCH), so MY GARAGE
+(`carflow IDS_Garage_View_Title`) is drawn on the same scene, in the
+original order (class, then PI; GARAGE_UPGRADES "The active car and
+switching"). Interims: no buy-car tile and no current-car icon; X CAR LIST
+(a list view, probably `106_C_CAR_LIST`) is not built; SEARCH steps the
+class filter. The engine's sorts, favourites and selling stay as unlisted
+extras. Needed: a capture of MY GARAGE from the workshop's CHANGE CAR, the
+SEARCH screen's options, and which icon marks the current car.
+
+No capture shows the Autoshow's first step either. The engine draws it on
+`115_C_BUY_MFRSELECT` (`ScreenTitles IDS_Manufacturer_Select`): a strip of
+the makes' logos (`List_CarMake.IconPath` on each tile's `MANU_IMAGE`) in
+alphabetical order, the make's name under the cursor, `carflow
+IDS_Num_Available` ("{0} AVAILABLE") for its count of cars, and A SELECT,
+B BACK, Y ALL AFFORDABLE CARS (`HelpButtons IDS_AffordableCars`). Guesses:
+
+- The strip holds the makes alone; the engine's All Affordable is Y, its
+  All Cars the car select's SEARCH, and its Hidden & Showcase tab (an
+  engine extra) a text tile after the makes.
+- The info panel (`InfoPanelGroup`) would show the make's
+  `List_CarMake.Profile`, but every profile on the disc is "N/A", so the
+  panel is not shown.
+- The tiles' DLC, NEW and lock icons are not shown.
+- Y with nothing affordable opens carflow's NONE AFFORDABLE popup
+  (`IDS_No_Affordable_Title`, `IDS_No_Affordable_Msg`) with A OK, and the
+  strip stays.
+
+Needed: a capture of the manufacturer select, its help bar, what the info
+panel shows, and where the cursor starts.
+
+## Q131 (UI, not blocking): the workshop's rows
+
+Dak's garage opens `H_GENERIC` with Workshop.str's rows. Their order is
+not captured; the engine lists CHANGE CAR, UPGRADE CAR, PAINT CAR, BARN
+FINDS (the table's order), with AUTO UPGRADE and CUSTOM UPGRADE under
+UPGRADE CAR. MY UPGRADE SETUPS and BUY UPGRADE SETUPS are not listed.
+Needed: a capture of the workshop's list.
+
+## Q132 (UI, not blocking): the paint booth's vinyl rows
+
+The paint booth's rows (PAINT CAR, ADD DECALS, CREATE VINYL GROUP, MY
+VINYL GROUPS, FM4 VINYL GROUPS, CLEAR DESIGN; `20_paint_shop_orig.png`)
+are on `H_GENERIC`. The vinyl rows open the livery editor's layer stack
+(an engine extra) because the original's group browsers and decal picker
+are not ported; CLEAR DESIGN opens it too. Needed: the screens behind
+those rows (scenes and flows).
+
+## Q133 (UI, not blocking): the Barn Finds screen's details
+
+Q116 left the garage's Barn Finds for the garage screen. The engine now
+draws it on `108_C_BUY_CARSELECT` under `ScreenTitles
+IDS_SelectBarnFindCar`: every barn in barnfinds.xml order, the tile's icon
+from the scene (`Ready_Icon`, `Not_Ready_Icon`, `Undiscovered_Icon`) over
+the car, Barnfind.str's state under the cursor, and the popups on
+`H_MESSAGE_POPUP` (COLLECT CAR, NOT READY, NOT DISCOVERED; CAN'T SELL BARN
+FIND when selling a barn's car from MY GARAGE). Collecting replaces the
+old collection when the garage opened. Guesses:
+
+- An undiscovered barn's tile shows no car and its card is hidden.
+- VIEW ON MAP is offered on NOT DISCOVERED for a rumoured barn (the map
+  centres on the rumour's circle) and on NOT READY (on the barn).
+- A on a collected barn does nothing.
+- The icons draw at full opacity (the scene holds them at 0.4).
+
+Needed: a capture of the screen with barns in each state, and which
+popups offer VIEW ON MAP.
+
+## Q134 (UI, not blocking): TEAM CREDITS
+
+MY PROFILE's TEAM CREDITS opens `834_CREDITS`, a scrolling credits roll.
+The scene's scroller is not run, so the row shows "TEAM CREDITS — NOT
+AVAILABLE YET". Needed: the credits text's source (a string table or a
+file) and the scroll's speed.
+
+## Q135 (UI, not blocking): GAME DIFFICULTY in OPTIONS (rows answered by capture 24)
+
+`24_options_difficulty_orig.png` answers the rows: the original's
+DIFFICULTY page (`300_I_OPT_ASSISTS_DIFFICULTY`) lists GAME DIFFICULTY
+(`Assists IDS_MetaDifficulty`, "Automatically adjusts the driving assists
+below ..."), BRAKING, STEERING, TRACTION CONTROL, SHIFTING, DRIVING LINE,
+COSMETIC DAMAGE, REWIND and OPPONENT DIFFICULTY, with TOTAL RACE BONUS
+under them and A SAVE, B CANCEL, Y RESET TO DEFAULT. So the original has a
+difficulty preset in its own layout, and the engine's (the settings row
+"difficulty preset") is drawn as GAME DIFFICULTY there; the engine draws
+the page from its settings rows (`options_screen.h`). The engine's
+STABILITY CONTROL row is not on the capture and stays on its own page.
+Still open:
+
+- The preset's values: Assists.str has EASY, MEDIUM, HARD, EXPERT
+  (`IDS_MetaDifficulty_Insane`), PRO (`IDS_MetaDifficulty_Extreme`) and
+  CUSTOM; the engine's preset steps EASY, MEDIUM, HARD, EXPERT and shows
+  CUSTOM, with no PRO.
+- The defaults RESET TO DEFAULT restores (the engine uses its rows'
+  defaults, and GAME DIFFICULTY follows the reset assists).
+- OPPONENT DIFFICULTY's values (the capture shows MEDIUM; AIDiff.str has
+  EASY, NORMAL, HARD).

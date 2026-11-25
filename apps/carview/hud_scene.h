@@ -60,6 +60,10 @@ struct NodeOverride {
   float stretch_x = 1.0f;
   // The same, down (a panel cut to its text's lines); 1: none.
   float stretch_y = 1.0f;
+  // A two-texture panel whose first texture's offset only slides a dirt
+  // pattern (the game wraps it): sample it repeating instead of cropping at
+  // the texture's border (108's HUDPanel01 behind the car's stats).
+  bool wrap = false;
 };
 
 // Binding table passed to SceneDraw::draw_subtree().
@@ -94,6 +98,8 @@ class SceneDraw {
   int find_path(std::string_view slash_path, int under = -1) const;
   // Direct child node indices of `parent`.
   std::vector<int> children_of(int parent) const;
+  // A model node's first texture as a ui_texture key; empty: none.
+  std::string texture_key_of(int node) const;
   // Object name for a node index (empty if none).
   std::string_view object_name(int node) const;
   // A node's centre and bounds on the canvas (y down).
@@ -113,7 +119,7 @@ class SceneDraw {
   bool model(ui::List& l, const SceneFrame& f, int node, float opacity = 1, float dx = 0, float dy = 0,
              float visible = 0, uint32_t tint = 0, std::string_view tex_override = {},
              float extra_angle = 0.0f, float scale_x = 1.0f, float scale_y = 1.0f, float k = 1.0f, float kbx = 0.0f,
-             float kby = 0.0f, float kt = 0.0f) const;
+             float kby = 0.0f, float kt = 0.0f, bool wrap = false) const;
   // A text node's style (font resolved via fontmap.xml, size; the colour given).
   ui::TextStyle style(int node, const SceneFrame& f, uint32_t colour) const;
   // Draws `text` in a text node's box; returns the width drawn, canvas pixels.

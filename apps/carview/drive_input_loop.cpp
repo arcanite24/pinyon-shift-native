@@ -156,6 +156,7 @@ void DriveSession::poll_sdl_events() {
               } else if (sc == carview::PlatformShortcut::kSettings) {
                 settings_page.load(read_settings(settings_path(), nullptr));
                 settings_page.open();
+                options_page = carview::OptionsPage::kNone;  // the engine's page, not an option page
                 settings_live_overlay = true;
                 app.audio_host.trigger_ui(audio::UiCue::kMenuOpen);
                 continue;
@@ -190,7 +191,7 @@ void DriveSession::poll_sdl_events() {
               const bool touch_menu_open =
                   app.show_title || app.fmv_player.active() || ceremony.active || grid_menu_open ||
                   menu.open || map_open || picking || events_page.is_open() || outpost_hub_open || garage_open ||
-                  shop.is_open() || autoshow.is_open() || career_page.is_open() || settings_page.is_open() ||
+                  shop.is_open() || autoshow.is_open() || career_page.is_open() || hub_menu.open() || settings_page.is_open() ||
                   paint_open || club_open || car_club_open || app.rally_hub_open || app.rally_service_open || app.rally_results_open ||
                   photo_mode.active() || replay_viewer.active() || replay_viewer.browser_open() ||
                   achievements.screen_open() || mods_page.is_open() || save_page.is_open() ||
@@ -320,6 +321,7 @@ void DriveSession::poll_sdl_events() {
                 } else {
                   settings_page.load(read_settings(settings_path(), nullptr));
                   settings_page.open();
+                  options_page = carview::OptionsPage::kNone;  // the engine's page, not an option page
                   settings_live_overlay = true;
                 }
                 app.audio_host.trigger_ui(audio::UiCue::kMenuOpen);
@@ -527,7 +529,7 @@ void DriveSession::poll_sdl_events() {
        autoshow.is_open() || shop.is_open() || livery_non_vinyl_open || club_open || car_club_open ||
        app.rally_hub_open || app.rally_service_open || app.rally_results_open || replay_viewer.browser_open() ||
        (photo_mode.active() && photo_mode.gallery_open()) ||
-       (settings_page.is_open() && !settings_page.capturing_key()) || menu.open || career_page.is_open() ||
+       (settings_page.is_open() && !settings_page.capturing_key()) || menu.open || career_page.is_open() || hub_menu.open() ||
        achievements.screen_open() || mods_page.is_open() || save_page.is_open() ||
        slice12.trainer_overlay.is_open() || slice12.cam_editor_overlay.is_open());
   if (!menu_nav_active) {

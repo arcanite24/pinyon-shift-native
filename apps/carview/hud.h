@@ -56,7 +56,8 @@ struct PauseMenu {
     kQuitToTitle,
     kQuit,
     kMessageCentre,
-    kSponsorChallenges
+    kSponsorChallenges,
+    kCareerPage  // the engine's career board (EXTRAS; MY PROFILE opens the original tree)
   };
   // What the open menu shows: its rows, the EXTRAS list, or a screen opened
   // from a row.
@@ -98,7 +99,7 @@ struct PauseMenu {
     if (in_race) return {kReplay, kDifficulty, kSettings};
     std::vector<Action> v = {kEvents};
     if (in_rally_world && has_rally) v.push_back(kRally);
-    for (Action a : {kGarage, kUpgrades, kPaint, kAutoshow}) v.push_back(a);
+    for (Action a : {kGarage, kUpgrades, kPaint, kAutoshow, kCareerPage}) v.push_back(a);
     for (Action a : {kCarClub, kAchievements, kReplay}) v.push_back(a);
     return v;
   }

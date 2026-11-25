@@ -211,6 +211,7 @@ void DriveSession::grid_menu_accept() {
     case GridRow::kOptions:
       app.audio_host.trigger_ui(audio::UiCue::kAccept);
       settings_page.open();
+      options_page = carview::OptionsPage::kNone;  // the engine's page, not an option page
       return;
     case GridRow::kQuitRace:
       app.audio_host.trigger_ui(audio::UiCue::kAccept);

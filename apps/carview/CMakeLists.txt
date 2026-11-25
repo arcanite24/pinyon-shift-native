@@ -126,6 +126,9 @@ add_library(carview_hud STATIC
   frontend_screens.cpp
   help_bar_screen.cpp
   hud_scene.cpp
+  hub_menus.cpp
+  car_list_screen.cpp
+  options_screen.cpp
   hud_screen.cpp
   map_screen.cpp
   pause_screen.cpp
@@ -150,6 +153,7 @@ set(carview_sources
   drive_app.cpp
   drive_world_host.cpp
   drive_session.cpp
+  drive_car_lists.cpp
   drive_club.cpp
   drive_simulation.cpp
   drive_world_sync.cpp

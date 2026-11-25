@@ -238,6 +238,27 @@ void test_disc_hub_shops_and_garage() {
   CHECK(autoshow.visible_cars().empty());
   CHECK(autoshow.empty_reason() == "no affordable cars");
 
+  // 115's strip: the makes alone (All Affordable and All Cars are off it);
+  // Y lists the affordable cars, and the strip comes back on the make it left.
+  {
+    carview::Autoshow strip_show;
+    CHECK(strip_show.open(db, {}, err, 500000, false));
+    const std::vector<size_t> strip = strip_show.strip_makes();
+    CHECK(strip.size() > 25);
+    for (size_t i : strip) CHECK(strip_show.makes()[i].make_id >= 0 || strip_show.makes()[i].make_id == -3);
+    strip_show.move_strip_make(0, 500000);
+    CHECK(strip_show.selected_make_index() == strip[0]);
+    strip_show.move_strip_make(-1, 500000);
+    CHECK(strip_show.selected_make_index() == strip.back());
+    strip_show.move_strip_make(2, 500000);
+    const size_t left = strip_show.selected_make_index();
+    CHECK(left == strip[1]);
+    strip_show.select_affordable(500000);
+    CHECK(strip_show.makes()[strip_show.selected_make_index()].make_id == -1);
+    strip_show.move_strip_make(0, 500000);
+    CHECK(strip_show.selected_make_index() == left);
+  }
+
   // Move to "All Cars" / real makes and verify Sort/Filter/Test Drive/Swatch scrolling.
   CHECK(autoshow.makes().size() > 25);
   autoshow.move_make(1, 500000);
@@ -442,7 +463,18 @@ void test_disc_hub_shops_and_garage() {
   gb.cycle_sort(1);
   CHECK(gb.sort_mode() == carview::GarageSort::kValue);
   gb.cycle_sort(1);
+  CHECK(gb.sort_mode() == carview::GarageSort::kDrivetrain);
+  gb.cycle_sort(1);
+  CHECK(gb.sort_mode() == carview::GarageSort::kPi);
+  gb.cycle_sort(1);
   CHECK(gb.sort_mode() == carview::GarageSort::kYear);
+  // Back to the original order (class, then PI).
+  gb.set_sort(carview::GarageSort::kClass);
+  for (size_t i = 1; i < gb.visible().size(); ++i) {
+    const auto& a = gb.visible()[i - 1];
+    const auto& b = gb.visible()[i];
+    CHECK(a.class_id < b.class_id || (a.class_id == b.class_id && a.raw_pi <= b.raw_pi));
+  }
   // Class F (0) & Class X (10) filters supported cleanly.
   gb.set_class_filter(0);
   CHECK(gb.class_filter() == 0);
@@ -745,9 +777,9 @@ void test_disc_hub_shops_and_garage() {
 }
 
 void test_autoshow_layout_and_studio_camera() {
-  // 1. Bright Horizon Autoshow studio background & lighting (no gloomy dark flat void).
+  // 1. The original's dark Autoshow room (19_autoshow_orig.png).
   const auto bg = carview::hub_background_color(carview::HubRoom::kAutoshow);
-  CHECK(bg[0] >= 0.70f && bg[1] >= 0.70f && bg[2] >= 0.75f);
+  CHECK(bg[0] <= 0.10f && bg[1] <= 0.10f && bg[2] <= 0.12f);
 
   // 2. Smooth exponential camera transitions between Overview 3/4, Close Paint, manual orbit, and idle resume.
   carview::HubCamera cam;

@@ -27,6 +27,7 @@
 #include "cars/strings.h"
 #include "fh1data/archive.h"
 #include "fh1data/stringtables.h"
+#include "fh1data/ui_overlay.h"
 #include "fh1data/ui_scene.h"
 #include "fh1data/xds.h"
 #include "freeroam/skills.h"
@@ -34,6 +35,9 @@
 #include "game_hud.h"
 #include "hud_scene.h"
 #include "hud_screen.h"
+#include "car_list_screen.h"
+#include "hub_menus.h"
+#include "options_screen.h"
 #include "map_screen.h"
 #include "pause_screen.h"
 #include "race_screens.h"
@@ -89,17 +93,17 @@ int main() {
   const char* state_env = std::getenv("SHIFT_STATE_ROOT");
   const std::filesystem::path state_root = state_env ? state_env : "";
 
-  // Scenes through the shared loader.
-  auto ui_zip = fh1::Archive::open(game_root / "media" / "UI.zip", nullptr);
-  check(ui_zip != nullptr, "UI.zip opens");
-  if (!ui_zip) return 1;
+  // Scenes as the game mounts them: v4's media.zip over the disc's UI.zip
+  // (fh1::UiOverlay; v4 replaces 108, 115, 554, H_STATISTICS ...).
+  check(std::filesystem::exists(game_root / "media" / "UI.zip"), "UI.zip exists");
+  fh1::UiOverlay overlay(game_root, fh1::UiOverlay::v4_media_zip_of(state_root));
   std::map<std::string, std::unique_ptr<fh1::UiScene>> scenes;
   carview::set_ui_scenes([&](const std::string& name) -> const fh1::UiScene* {
     auto& slot = scenes[name];
     if (!slot) {
       auto sc = std::make_unique<fh1::UiScene>();
       std::string e;
-      if (fh1::load_ui_scene(*ui_zip, name, *sc, &e)) slot = std::move(sc);
+      if (overlay.load_scene(name, *sc, &e)) slot = std::move(sc);
       else std::fprintf(stderr, "scene %s: %s\n", name.c_str(), e.c_str());
     }
     return slot.get();
@@ -260,6 +264,67 @@ int main() {
       if (t.group == "festival_heats") check(t.group_tip_count == 2 && t.group_sequential, "festival_heats: sequential");
   }
 
+  // The generic menus' scene (hub_menus.cpp binds the race grid menu's rows).
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kGenericMenuScene)));
+    check(sd.ok(), "H_GENERIC loads");
+    if (sd.ok()) {
+      check_nodes(sd, carview::kGenericMenuScene, {"Option_List", "ButtonBar"});
+      for (int i = 0; i < 7; ++i) {
+        const std::string b = "Button" + std::to_string(i);
+        const int btn = sd.find(b);
+        check(btn >= 0, "H_GENERIC: " + b);
+      }
+    }
+  }
+
+  // The option pages (300_I_OPT_ASSISTS_DIFFICULTY): the nodes and the
+  // original's words for the engine's values.
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kOptionsListScene)));
+    check(sd.ok(), "300_I_OPT_ASSISTS_DIFFICULTY loads");
+    if (sd.ok()) check_nodes(sd, carview::kOptionsListScene, carview::options_list_nodes());
+    check(carview::options_rows(carview::OptionsPage::kDifficulty).size() == 9, "DIFFICULTY's nine rows");
+    check(carview::options_rows(carview::OptionsPage::kHud).size() == 9, "HUD's nine rows");
+    check(carview::options_value_text("difficulty preset", "MEDIUM (+40% CR)") == "MEDIUM", "GAME DIFFICULTY MEDIUM");
+    check(carview::options_value_text("difficulty preset", "INSANE (+90% CR)") == "EXPERT", "GAME DIFFICULTY EXPERT");
+    check(carview::options_value_text("braking", "abs on") == "ABS ON", "BRAKING ABS ON");
+    check(carview::options_value_text("damage", "cosmetic") == "ON", "COSMETIC DAMAGE ON");
+    check(carview::options_value_text("rewind", "on") == "ON", "REWIND ON");
+    check(carview::options_value_text("units", "imperial (mph)") == "ENGLISH", "UNITS ENGLISH");
+    check(carview::options_value_text("camera", "chase low") == "CHASE LOW", "an engine value, upper-cased");
+    for (const auto& r : carview::options_rows(carview::OptionsPage::kDifficulty))
+      check(!carview::text_of(r.description).empty(), std::string("a description for ") + r.id);
+  }
+
+  // The manufacturer select (115_C_BUY_MFRSELECT, v4's).
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kMakeListScene)));
+    check(sd.ok(), "115_C_BUY_MFRSELECT loads");
+    if (sd.ok()) {
+      check_nodes(sd, carview::kMakeListScene, carview::make_list_nodes());
+      // The cursor sits on the fourth slot, as on 108.
+      const auto cur = sd.at(sd.find_path("MANUFACTURER_LIST/HIGHLIGHT/CursorBig"));
+      const auto slot = sd.at(sd.find("CAR_LIST_ITEM_" + std::to_string(carview::kCarListCursorSlot)));
+      check(std::fabs(cur[0] - slot[0]) < 1.0f && std::fabs(cur[1] - slot[1]) < 1.0f, "115: the cursor on slot 3");
+    }
+  }
+
+  // The car list (108_C_BUY_CARSELECT, v4's).
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kCarListScene)));
+    check(sd.ok(), "108_C_BUY_CARSELECT loads");
+    if (sd.ok()) {
+      check_nodes(sd, carview::kCarListScene, carview::car_list_nodes());
+      for (int k = 0; k < carview::kCarListSlots; ++k)
+        check(sd.find("CAR_LIST_ITEM_" + std::to_string(k)) >= 0, "108: CAR_LIST_ITEM_" + std::to_string(k));
+      // The cursor sits on the fourth slot.
+      const auto cur = sd.at(sd.find_path("CAR_LIST/HIGHLIGHT/CursorBig"));
+      const auto slot = sd.at(sd.find("CAR_LIST_ITEM_" + std::to_string(carview::kCarListCursorSlot)));
+      check(std::abs(cur[0] - slot[0]) < 1 && std::abs(cur[1] - slot[1]) < 1, "108: the cursor on slot 3");
+    }
+  }
+
   // 2. Every string the screens bind resolves in the EN tables.
   {
     using namespace carview::title_text;
@@ -289,6 +354,60 @@ int main() {
     check(carview::event_track_info(0, false) == "ASPHALT POINT-TO-POINT",
           "The Gauntlet's track line: " + carview::event_track_info(0, false));
     check(carview::event_ticket_texture(1, "043") == "EVENTTICKETS/FESTIVALRACES/043", "event 43's ticket");
+  }
+  {
+    // The generic menus (MY PROFILE, OPTIONS, the paint booth, the workshop,
+    // photo mode) read their rows from the tables.
+    using namespace carview::hub_menu_text;
+    for (const carview::StringRef* r :
+         {&kOptions, &kStats, &kAchievements, &kTeamCredits, &kControls, &kDifficulty, &kHud, &kAudio, &kVideo,
+          &kPaintCar, &kAddDecals, &kCreateVinylGroup, &kMyVinylGroups, &kFm4VinylGroups, &kClearDesign, &kChangeCar,
+          &kUpgradeCar, &kWorkshopPaint, &kBarnFinds, &kAutoUpgrade, &kCustomUpgrade, &kTakePhoto, &kViewPhoto,
+          &kPhotoShare, &kSelect, &kBack, &kAdvanced})
+      check_ref(*r, "hub menu " + std::string(r->fallback));
+    auto rows_of = [](carview::HubMenu m) {
+      std::vector<std::string> out;
+      for (const auto& r : carview::hub_menu_rows(m)) out.push_back(carview::text_of(r.text));
+      return out;
+    };
+    using HM = carview::HubMenu;
+    using SV = std::vector<std::string>;
+    check(rows_of(HM::kProfile) == SV{"OPTIONS", "STATS", "ACHIEVEMENTS", "TEAM CREDITS"},
+          "MY PROFILE rows (21_my_profile_menu_orig.png)");
+    check(rows_of(HM::kOptions) == SV{"CONTROLS", "DIFFICULTY", "HUD", "AUDIO", "VIDEO"},
+          "OPTIONS rows (22_options_menu_orig.png)");
+    check(rows_of(HM::kPaintBooth) ==
+              SV{"PAINT CAR", "ADD DECALS", "CREATE VINYL GROUP", "MY VINYL GROUPS", "FM4 VINYL GROUPS", "CLEAR DESIGN"},
+          "paint booth rows (20_paint_shop_orig.png)");
+    check(rows_of(HM::kPhotoSelect) == SV{"TAKE PHOTO", "VIEW PHOTO", "PHOTO SHARE"},
+          "photo mode rows (31_photo_mode_menu_orig.png)");
+    for (const auto& r : rows_of(HM::kWorkshop)) check(r.rfind("IDS_", 0) != 0, "workshop row resolves: " + r);
+    // The stack: OPTIONS from MY PROFILE, B back to it, B again closes.
+    carview::HubMenuStack hs;
+    hs.show(HM::kProfile);
+    carview::HubMenuAction act{};
+    check(hs.action(act) && act == carview::HubMenuAction::kOptions, "MY PROFILE opens on OPTIONS");
+    hs.push(HM::kOptions);
+    hs.move(-1);
+    check(hs.selected() == 4, "OPTIONS wraps up to VIDEO");
+    check(hs.back() && hs.top() == HM::kProfile, "B returns to MY PROFILE");
+    check(!hs.back() && !hs.open(), "B on MY PROFILE closes the list");
+    carview::HubMenuHud hh;
+    hs.show(HM::kOptions);
+    carview::fill_hub_menu(hs, hh);
+    check(hh.prompts.size() == 3 && hh.prompts[0].second == "SELECT" && hh.prompts[1].second == "BACK",
+          "OPTIONS help bar: A SELECT, B BACK, X the engine's settings");
+  }
+  {
+    using namespace carview::car_list_text;
+    for (const carview::StringRef* r :
+         {&kCarSelect, &kHorizonRecommends, &kManufacturerSelect, &kMyGarage, &kBarnFinds, &kTradeIn, &kSpeed,
+          &kHandling, &kAcceleration, &kLaunch, &kBraking, &kSelect, &kBack, &kToggle, &kSearch, &kSellCar, &kCredits,
+          &kBarnLocked, &kBarnWrecked, &kBarnReady, &kBarnCollected, &kCollectTitle, &kCollectMessage, &kWreckedTitle,
+          &kWreckedMessage, &kLockedTitle, &kLockedMessage, &kCantSellTitle, &kCantSellMessage, &kViewOnMap, &kOk})
+      check_ref(*r, "car list " + std::string(r->fallback));
+    check(carview::text_of(kHorizonRecommends) == "HORIZON RECOMMENDS", "19's title from the tables");
+    check(carview::car_list_credits(120000) == "120,000 Cr", "the cursor's price: " + carview::car_list_credits(120000));
   }
   {
     // The driving HUD's labels and every notification's lines.
@@ -463,16 +582,12 @@ int main() {
     std::filesystem::create_directories(out_dir);
     if (auto fzip = fh1::Archive::open(game_root / "media" / "ui" / "Fonts.zip", nullptr))
       carview::ui::load_fonts_from_zip(*fzip);
-    auto hz = fh1::Archive::open(game_root / "media" / "ui" / "textures" / "Horizon.zip", nullptr);
-    auto tx = fh1::Archive::open(game_root / "media" / "ui" / "Textures.zip", nullptr);
     std::set<std::string> failed;
     carview::set_ui_textures([&](const std::string& path, std::array<float, 4>& uv) -> bool {
       if (carview::ui::atlas_find(path, uv)) return true;
       if (failed.count(path)) return false;
-      const bool t = path.rfind("T:", 0) == 0;
-      fh1::Archive* a = t ? tx.get() : hz.get();
-      const fh1::ReadResult r = a ? a->read((t ? path.substr(2) : path) + ".xds") : fh1::ReadResult{};
-      const auto x = r.ok() ? fh1::decode_xds(r.data, false) : fh1::XdsResult{};
+      const fh1::UiOverlay::File f = overlay.texture(path);
+      const auto x = f.ok() ? fh1::decode_xds(f.read.data, false) : fh1::XdsResult{};
       if (x.levels.empty() || !carview::ui::atlas_image(path, x.levels[0].width, x.levels[0].height, x.levels[0].rgba, uv)) {
         failed.insert(path);
         return false;
@@ -830,6 +945,205 @@ int main() {
       lh.tip_body = carview::text_of({"Tips", "IDS_AliTip", 0, ""});
       lh.event_title = "THE GAUNTLET";
       load_shot("loading_event.png", "11b_event_loading_orig.png", lh);
+    }
+
+    // The generic menus over the original's captures of them.
+    auto menu_shot = [&](const std::string& file, const std::string& orig, carview::HubMenu m, int selected) {
+      std::vector<uint8_t> fb = backdrop;
+      if (!hud_dir.empty()) {
+        int w = 0, h = 0, n = 0;
+        if (uint8_t* px = stbi_load((hud_dir / orig).string().c_str(), &w, &h, &n, 4)) {
+          if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
+          stbi_image_free(px);
+        }
+      }
+      carview::HubMenuStack hs;
+      hs.show(m);
+      hs.select(selected);
+      carview::HubMenuHud hh;
+      carview::fill_hub_menu(hs, hh);
+      carview::ui::List l;
+      check(carview::draw_hub_menu(l, hh, float(W), float(H)), "draw " + file);
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / file;
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + file);
+    };
+    menu_shot("menu_paint_booth.png", "20_paint_shop_orig.png", carview::HubMenu::kPaintBooth, 0);
+    menu_shot("menu_my_profile.png", "21_my_profile_menu_orig.png", carview::HubMenu::kProfile, 0);
+    menu_shot("menu_options.png", "22_options_menu_orig.png", carview::HubMenu::kOptions, 0);
+    menu_shot("menu_photo.png", "31_photo_mode_menu_orig.png", carview::HubMenu::kPhotoSelect, 0);
+    menu_shot("menu_workshop.png", "", carview::HubMenu::kWorkshop, 0);
+
+    // The car list over 19_autoshow_orig.png: HORIZON RECOMMENDS on the
+    // 2012 Jaguar XKR-S (the capture's own numbers).
+    {
+      carview::CarListHud cl;
+      cl.title = carview::text_of(carview::car_list_text::kHorizonRecommends);
+      cl.tiles = {{1009, carview::car_list_credits(120000)}, {1020, carview::car_list_credits(85000)},
+                  {1103, carview::car_list_credits(150000)}};
+      cl.selected = 0;
+      cl.details.valid = true;
+      cl.details.car_id = 1009;
+      cl.details.model = "XKR-S";
+      cl.details.year_make = "2012 Jaguar";
+      cl.details.flag =
+          carview::ui_texture_key(R"(GAME:\Media\UI\Textures\UI4\Logos\Country_Flags\L_FLA_UnitedKingdom_flag.tga)");
+      check(cl.details.flag == "T:UI4/LOGOS/COUNTRY_FLAGS/L_FLA_UNITEDKINGDOM_FLAG", "flag key: " + cl.details.flag);
+      cl.details.car_class = "A";
+      cl.details.pi = 574;
+      cl.details.drive_type = 2;
+      cl.details.stats = {8.8, 8.4, 7.7, 6.6, 8.3};
+      using namespace carview::car_list_text;
+      cl.prompts = {{"A", carview::text_of(kSelect)}, {"B", carview::text_of(kBack)}, {"Y", carview::text_of(kToggle)},
+                    {"BACK", carview::text_of(kSearch)}};
+      std::vector<uint8_t> fb = backdrop;
+      if (!hud_dir.empty()) {
+        int w = 0, h = 0, n = 0;
+        if (uint8_t* px = stbi_load((hud_dir / "19_autoshow_orig.png").string().c_str(), &w, &h, &n, 4)) {
+          if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
+          stbi_image_free(px);
+        }
+      }
+      carview::ui::List l;
+      check(carview::draw_car_list(l, d, cl, float(W), float(H)), "draw car list");
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / "car_list_recommends.png";
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write car list");
+    }
+    // The garage's lists on 108: MY GARAGE (no cursor line) and BARN FINDS
+    // with a ready barn's COLLECT CAR popup.
+    {
+      using namespace carview::car_list_text;
+      carview::CarListHud cl;
+      cl.title = carview::text_of(kMyGarage);
+      cl.tiles = {{1009, ""}, {1105, ""}, {1040, ""}, {251, ""}};
+      cl.selected = 1;
+      cl.details.valid = true;
+      cl.details.car_id = 1105;
+      cl.details.model = "DB5 Vantage";
+      cl.details.year_make = "1964 Aston Martin";
+      cl.details.car_class = "C";
+      cl.details.pi = 446;
+      cl.details.drive_type = 2;
+      cl.details.stats = {5.6, 4.9, 4.4, 4.6, 3.9};
+      cl.prompts = {{"A", carview::text_of(kSelect)}, {"B", carview::text_of(kBack)}, {"Y", carview::text_of(kToggle)}};
+      std::vector<uint8_t> fb = backdrop;
+      carview::ui::List l;
+      check(carview::draw_car_list(l, d, cl, float(W), float(H)), "draw my garage");
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / "car_list_garage.png";
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write my garage");
+
+      cl.title = carview::text_of(kBarnFinds);
+      cl.tiles = {{1105, carview::text_of(kBarnReady), carview::CarTileState::kReady},
+                  {1040, carview::text_of(kBarnWrecked), carview::CarTileState::kNotReady},
+                  {251, carview::text_of(kBarnLocked), carview::CarTileState::kUndiscovered},
+                  {1154, carview::text_of(kBarnCollected), carview::CarTileState::kNormal}};
+      cl.selected = 0;
+      cl.popup = {true, carview::text_of(kCollectTitle), carview::text_of(kCollectMessage),
+                  {{"A", carview::text_of(kOk)}, {"B", carview::text_of(kBack)}}};
+      check(cl.popup.title == "COLLECT CAR" && cl.popup.prompts[0].second == "OK", "COLLECT CAR popup's strings");
+      std::vector<uint8_t> fb2 = backdrop;
+      carview::ui::List l2;
+      check(carview::draw_car_list(l2, d, cl, float(W), float(H)), "draw barn finds");
+      check(l2.items().size() > l.items().size(), "the popup draws over the list");
+      carview::ui::rasterize(l2.items(), fb2, W, H);
+      const auto p2 = out_dir / "car_list_barn_finds.png";
+      check(stbi_write_png(p2.string().c_str(), int(W), int(H), 4, fb2.data(), int(W * 4)) != 0,
+            "write barn finds");
+    }
+    // DIFFICULTY over 24_options_difficulty_orig.png, as it shows.
+    {
+      using namespace carview::options_text;
+      carview::OptionsHud o;
+      o.title = carview::text_of(kDifficulty);
+      const char* values[9] = {"custom", "abs on", "normal", "off", "automatic", "full", "cosmetic", "on", "medium"};
+      const auto& rows = carview::options_rows(carview::OptionsPage::kDifficulty);
+      for (size_t i = 0; i < rows.size(); ++i)
+        o.rows.push_back({carview::text_of(rows[i].label), carview::options_value_text(rows[i].id, values[i])});
+      check(o.rows[0].first == "GAME DIFFICULTY" && o.rows[0].second == "CUSTOM", "GAME DIFFICULTY CUSTOM");
+      o.selected = 0;
+      o.description_title = carview::text_of(kDescription);
+      o.description = carview::text_of(rows[0].description);
+      o.bonus = "+40%";
+      o.prompts = {{"A", carview::text_of(kSave)}, {"B", carview::text_of(kCancel)}, {"Y", carview::text_of(kResetDefault)}};
+      std::vector<uint8_t> fb = backdrop;
+      carview::ui::List l;
+      check(carview::draw_options_list(l, o, float(W), float(H)), "draw DIFFICULTY");
+      std::set<int> hit_rows;
+      for (const auto& z : l.hits())
+        if (z.group == carview::ui::kHitRow) hit_rows.insert(z.index);
+      check(hit_rows.size() == 9, "DIFFICULTY: hits for nine rows (" + std::to_string(hit_rows.size()) + ")");
+      // A row's value, right of its label and higher on the slope, hits
+      // that row.
+      {
+        const SceneDraw osd(carview::ui_scene(std::string(carview::kOptionsListScene)));
+        for (int k : {1, 4, 8}) {
+          const std::string item = "Group_BLADE/Group_MENU/LIST_SPINNER/Group_Items/OPT_SPINNER_ITEM_LG" +
+                                   std::to_string(k + 1) + "/Group/Text_Current";
+          const auto at = osd.at(osd.find_path(item));
+          carview::ui::HitZone hz{};
+          const bool hit = l.hit_test(at[0], at[1] - 4.0f, hz);
+          check(hit && hz.group == carview::ui::kHitRow && hz.index == k,
+                "row " + std::to_string(k) + "'s value hits it (" + std::to_string(hit ? hz.index : -1) + ")");
+        }
+      }
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / "options_difficulty.png";
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write DIFFICULTY");
+    }
+    // The manufacturer select on 115: Aston Martin, Audi (the cursor),
+    // Bentley, BMW and the engine's Hidden & Showcase tab, Audi's profile.
+    {
+      using namespace carview::car_list_text;
+      carview::MakeListHud ml;
+      ml.title = carview::text_of(kManufacturerSelect);
+      check(ml.title == "MANUFACTURER SELECT", "115's title: " + ml.title);
+      const char* logos[4] = {"AstonMartin", "Audi", "Bentley", "BMW"};
+      for (int i = 0; i < 4; ++i) {
+        carview::MakeTile t;
+        t.id = 10 + i;
+        t.logo = carview::ui_texture_key(std::string(R"(GAME:\Media\UI\Textures\UI4\Logos\Manufacturer_Logos_I\L_MAN_)") +
+                                         logos[i] + "_Logo.tga");
+        std::array<float, 4> uv{};
+        check(carview::ui4::texture(t.logo, uv), std::string("115: the logo ") + t.logo);
+        t.label = logos[i];
+        ml.tiles.push_back(t);
+      }
+      ml.tiles.push_back({99, "", "Hidden & Showcase"});
+      ml.selected = 1;
+      ml.cursor = "AUDI";
+      ml.available = carview::format1(carview::text_of(kAvailable), "12");
+      check(ml.available == "12 AVAILABLE", "115's count: " + ml.available);
+      // List_CarMake.Profile is "N/A" on the disc, so the info panel is
+      // not shown.
+      check(carview::game_text("_&857946860") == "N/A", "Audi's profile: " + carview::game_text("_&857946860"));
+      ml.prompts = {{"A", carview::text_of(kSelect)}, {"B", carview::text_of(kBack)}, {"Y", carview::text_of(kAffordableCars)}};
+      check(ml.prompts[2].second == "ALL AFFORDABLE CARS", "115's Y: " + ml.prompts[2].second);
+      std::vector<uint8_t> fb = backdrop;
+      carview::ui::List l;
+      check(carview::draw_make_list(l, d, ml, float(W), float(H)), "draw make list");
+      int hits = 0;
+      for (const auto& z : l.hits())
+        if (z.group == carview::ui::kHitRow) ++hits;
+      check(hits == 5, "115: a hit per shown make (" + std::to_string(hits) + ")");
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / "make_list.png";
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write make list");
+      // A profile shows the info panel, its text cut at the panel's foot.
+      ml.info_title = "AUDI";
+      ml.info_text.clear();
+      for (int i = 0; i < 40; ++i) ml.info_text += "Vorsprung durch Technik. ";
+      carview::ui::List l2;
+      check(carview::draw_make_list(l2, d, ml, float(W), float(H)), "draw make list with a profile");
+      check(l2.items().size() > l.items().size(), "115: the profile's panel draws");
+      // Y with nothing affordable.
+      ml.popup = {true, carview::text_of(kNoneAffordableTitle), carview::text_of(kNoneAffordableMessage),
+                  {{"A", carview::text_of(kOk)}}};
+      check(ml.popup.title == "NONE AFFORDABLE", "115's popup: " + ml.popup.title);
+      carview::ui::List l3;
+      check(carview::draw_make_list(l3, d, ml, float(W), float(H)), "draw make list with NONE AFFORDABLE");
+      check(l3.items().size() > l2.items().size(), "115: the popup draws over the strip");
     }
   }
 

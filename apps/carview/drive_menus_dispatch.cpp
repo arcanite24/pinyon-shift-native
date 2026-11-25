@@ -64,23 +64,21 @@ void DriveSession::put_back() {
           world_rewind_snaps.clear();
 }
 
-void DriveSession::open_garage_browser() {
+void DriveSession::open_garage_browser(bool barn_finds) {
+          garage_barn_finds = barn_finds;
           sync_pick();
-          // The garage's Barn Finds: a restored (ready) barn is collected
-          // here, "This Barn Find will now be added to your garage."
-          // (interim: the title asks on its own Barn Finds screen).
-          for (size_t bi = 0; bi < app.collectibles.barns.size() && bi < app.progress.barns.size(); ++bi) {
-            if (app.progress.barns[bi].status != freeroam::kBarnReady) continue;
-            const auto& b = app.collectibles.barns[bi];
-            const bool collected = host.free_roam ? host.free_roam->collect_barn(bi)
-                                                  : freeroam::collect_barn(app.collectibles, app.progress, bi);
-            if (!collected) continue;
-            const std::string named = app.award_garage_car(b.car_id, 0, false, /*is_prize=*/true);
-            notice = "COLLECT CAR — " + (named.empty() ? b.name : named) + " ADDED TO YOUR GARAGE";
-            notice_until = vehicle.time() + 4.0;
-            app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
-            std::printf("barn finds: %s collected at the garage (Data_Car %d)\n", b.name.c_str(), b.car_id);
-            save_now("barn find collected");
+          // A ready barn is collected on the Barn Finds list, with its
+          // COLLECT CAR popup (fill_garage_list, garage_popup_accept).
+          garage_popup = GaragePopup::kNone;
+          garage_show_specs = true;
+          if (barn_finds) {
+            // The cursor on the first barn ready to collect, else the first.
+            barn_pick = 0;
+            for (size_t bi = 0; bi < app.collectibles.barns.size() && bi < app.progress.barns.size(); ++bi)
+              if (app.progress.barns[bi].status == freeroam::kBarnReady) {
+                barn_pick = bi;
+                break;
+              }
           }
           garage_sell_confirm_id = -1;
           if (app.have_garage && !app.career_garage.cars.empty()) {
@@ -186,6 +184,7 @@ void DriveSession::open_shop_or_autoshow(bool is_autoshow) {
                 const bool tutorial_first = is_autoshow && (onboarding_handoff || first_starter_visit || ftc_first);
                 const double price_mult = slice12.trainer.pacing.effective_price_multiplier();
                 if (is_autoshow) {
+                  make_none_affordable = false;
                   ready = autoshow.open(*db, app.all_baked, why, app.career.credits, tutorial_first,
                                         slice12.trainer.hidden_cars, price_mult, &app.career_garage);
                   if (ready && tutorial_first) {
@@ -688,6 +687,166 @@ bool DriveSession::pause_back() {
           return stays;
 }
 
+void DriveSession::open_settings(int tab) {
+          settings_page.load(read_settings(settings_path(), nullptr));
+          LiveSettings snap = settings_page.live_settings();
+          snap.difficulty = int(app.race_options.difficulty);
+          snap.ai_mode = int(app.race_options.ai_mode);
+          snap.rubberband = app.race_options.rubberband;
+          snap.damage_mode = int(car_damage.mode);
+          snap.sound = live_sound_enabled;
+          snap.radio = live_radio_enabled;
+          snap.treasure_map = app.treasure_map_setting;
+          snap.motion_blur = live_motion_blur;
+          snap.dof = live_dof;
+          snap.skip_intro_movies = app.skip_intro_movies;
+          snap.start_in_single_player = app.start_in_single_player;
+          snap.skip_vo_with_a = app.skip_vo_with_a;
+          snap.metric_units = app.metric_units;
+          snap.hud_speedo_mode = live_hud_speedo_mode;
+          snap.minimap_mode = live_minimap_mode;
+          snap.hud = live_hud;
+          if (!app.language.empty()) snap.language = app.language;
+          snap.photo_through_walls = live_photo_through_walls;
+          snap.photo_wider_limits = live_photo_wider_limits;
+          snap.day_length_scale = app.tod_clock.speed_scale;
+          snap.controls = live_controls;
+          snap.controls.assists.driving_line = static_cast<int>(driving_line_mode);
+          snap.wheel_shaping = slice12.wheel_shaping;
+          snap.wheel_ffb = slice12.ffb_cfg;
+          snap.dualsense = slice12.ds_cfg;
+          snap.head_tracking = slice12.ht_cfg;
+          snap.camera_editor = slice12.cam_editor_cfg;
+          snap.immersive_camera = slice12.imm_cam_cfg;
+          snap.telemetry_udp = slice12.tel_cfg;
+          snap.trainer_cheats = slice12.trainer.config.cheats_enabled;
+          snap.festival_pacing = slice12.trainer.pacing;
+          snap.hidden_cars = slice12.trainer.hidden_cars;
+          if (!app.preset_name.empty() &&
+              (snap.preset.empty() ? (app.preset_name != "high") : (app.preset_name != snap.preset))) {
+            snap.preset = app.preset_name;
+          }
+          if (!app.shadows_flag.empty()) snap.shadows = app.shadows_flag;
+          if (app.bloom_flag >= 0) snap.bloom_mode = app.bloom_flag;
+          if (!app.graphics_backend.empty()) snap.graphics_backend = app.graphics_backend;
+          snap.graphics = host.active_graphics;
+          settings_page.sync_from_live(snap);
+          settings_page.open();
+          if (tab >= 0) settings_page.select_tab(tab);
+          options_page = carview::OptionsPage::kNone;
+}
+
+void DriveSession::open_options_page(carview::OptionsPage p) {
+          open_settings(int(SettingsPage::Tab::kGameplay));
+          options_page = p;
+          options_row = 0;
+          // CANCEL puts these back.
+          options_snapshot = settings_page.tokens();
+          const auto& rows = carview::options_rows(p);
+          if (!rows.empty()) settings_page.select_id(rows[0].id);
+}
+
+void DriveSession::fill_options(carview::OptionsHud& out) {
+          namespace t = carview::options_text;
+          out = {};
+          out.title = carview::text_of(options_page == carview::OptionsPage::kDifficulty ? t::kDifficulty : t::kHud);
+          const auto& rows = carview::options_rows(options_page);
+          for (const auto& r : rows)
+            out.rows.push_back({carview::text_of(r.label), carview::options_value_text(r.id, settings_page.value(r.id))});
+          out.selected = std::clamp(options_row, 0, std::max(0, int(rows.size()) - 1));
+          if (!rows.empty()) {
+            out.description_title = carview::text_of(t::kDescription);
+            out.description = carview::text_of(rows[size_t(out.selected)].description);
+          }
+          if (options_page == carview::OptionsPage::kDifficulty)
+            out.bonus = "+" + std::to_string(settings_page.difficulty_credit_bonus_pct()) + "%";
+          out.prompts = {{"A", carview::text_of(t::kSave)},
+                         {"B", carview::text_of(t::kCancel)},
+                         {"Y", carview::text_of(t::kResetDefault)}};
+}
+
+void DriveSession::enter_photo_mode() {
+          const drive::Vec3 pat = vehicle.position();
+          const drive::Vec3 pf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          photo_mode.enter({pat.x, pat.y, pat.z}, std::atan2(pf.x, pf.z),
+                           carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));
+}
+
+void DriveSession::open_hub_menu(carview::HubMenu m) {
+          hub_menu.show(m);
+          hub_menu_from_pause = false;
+          app.audio_host.trigger_ui(audio::UiCue::kMenuOpen);
+}
+
+void DriveSession::hub_menu_choose(bool extra) {
+          using A = carview::HubMenuAction;
+          using T = SettingsPage::Tab;
+          A act{};
+          if (extra) {
+            carview::HubMenuRow row{};
+            if (!hub_menu.open() || !carview::hub_menu_extra(hub_menu.top(), row)) return;
+            act = row.action;
+          } else if (!hub_menu.action(act)) {
+            return;
+          }
+          app.audio_host.trigger_ui(audio::UiCue::kAccept);
+          // The rows that open another list stay in the stack (B returns).
+          if (act == A::kOptions) return hub_menu.push(carview::HubMenu::kOptions);
+          if (act == A::kUpgradeCar) return hub_menu.push(carview::HubMenu::kUpgradeChoice);
+          // The rest open the engine's screen for the row; B there closes it
+          // and the list it came from is still open underneath.
+          auto later = [&](const char* what) {
+            notice = std::string(what) + " \u2014 NOT AVAILABLE YET";
+            notice_until = vehicle.time() + 3.0;
+          };
+          switch (act) {
+            case A::kStats: {
+              std::vector<cars::PackInfo> packs;
+              const carview::CareerSummary cs = app.career_summary(packs);
+              career_page.open(cs, std::move(packs));
+              career_page.set_tab(carview::CareerTab::kStats);
+              break;
+            }
+            case A::kAchievements:
+              eval_achievements(false);
+              achievements.open_screen();
+              break;
+            case A::kTeamCredits: later("TEAM CREDITS"); break;  // interim (SPEC_QUESTIONS Q134)
+            case A::kControls: open_settings(int(T::kControls)); break;
+            case A::kDifficulty: open_options_page(carview::OptionsPage::kDifficulty); break;
+            case A::kHud: open_options_page(carview::OptionsPage::kHud); break;
+            case A::kAudio: open_settings(int(T::kAudio)); break;
+            case A::kVideo: open_settings(int(T::kDisplay)); break;
+            case A::kEngineSettings: open_settings(int(T::kPinyon)); break;
+            case A::kPaintCar:
+              open_paint();
+              livery_editor.set_tab(carview::EditorTab::kPaint);
+              break;
+            // The vinyl rows open the layer stack (interim: SPEC_QUESTIONS
+            // Q132; the original's group browsers are not ported). CLEAR
+            // DESIGN opens it too: the layers are deleted there.
+            case A::kAddDecals:
+            case A::kCreateVinylGroup:
+            case A::kMyVinylGroups:
+            case A::kFm4VinylGroups:
+            case A::kClearDesign:
+              open_paint();
+              livery_editor.set_tab(carview::EditorTab::kVinylLayers);
+              break;
+            case A::kChangeCar: open_garage_browser(false); break;
+            case A::kBarnFinds: open_garage_browser(true); break;
+            case A::kAutoUpgrade:
+            case A::kCustomUpgrade: open_shop_or_autoshow(false); break;
+            case A::kTakePhoto:
+              hub_menu.close();
+              enter_photo_mode();
+              break;
+            case A::kViewPhoto: later("VIEW PHOTO"); break;
+            case A::kPhotoShare: later("PHOTO SHARE"); break;
+            default: break;
+          }
+}
+
 void DriveSession::choose() {
           const PauseMenu::Action act = menu.selected_action();
           // The screens the menu opens inside itself (B returns to the rows).
@@ -708,9 +867,7 @@ void DriveSession::choose() {
           menu.screen = PauseMenu::Screen::kList;
           if (act == PauseMenu::kMap) open_map();
           if (act == PauseMenu::kEvents) open_events_browser(0);
-          if (act == PauseMenu::kGarage) {
-            open_garage_browser();
-          }
+          if (act == PauseMenu::kGarage) open_garage_browser(false);
           if (act == PauseMenu::kUpgrades) open_shop_or_autoshow(false);
           if (act == PauseMenu::kAutoshow) open_shop_or_autoshow(true);
           if (act == PauseMenu::kPaint) open_paint();
@@ -757,60 +914,18 @@ void DriveSession::choose() {
             eval_achievements(false);
             achievements.open_screen();
           }
-          if (act == PauseMenu::kPhotoMode) {
-            const drive::Vec3 pat = vehicle.position();
-            const drive::Vec3 pf = drive::rotate(vehicle.orientation(), {0, 0, 1});
-            photo_mode.enter({pat.x, pat.y, pat.z}, std::atan2(pf.x, pf.z),
-                             carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));
-          }
+          // PHOTO MODE opens TAKE PHOTO / VIEW PHOTO / PHOTO SHARE
+          // (31_photo_mode_menu_orig.png).
+          if (act == PauseMenu::kPhotoMode) open_hub_menu(carview::HubMenu::kPhotoSelect), hub_menu_from_pause = true;
           if (act == PauseMenu::kReplay) open_replay_viewer(true);
-          if (act == PauseMenu::kSettings) {
-            settings_page.load(read_settings(settings_path(), nullptr));
-            LiveSettings snap = settings_page.live_settings();
-            snap.difficulty = int(app.race_options.difficulty);
-            snap.ai_mode = int(app.race_options.ai_mode);
-            snap.rubberband = app.race_options.rubberband;
-            snap.damage_mode = int(car_damage.mode);
-            snap.sound = live_sound_enabled;
-            snap.radio = live_radio_enabled;
-            snap.treasure_map = app.treasure_map_setting;
-            snap.motion_blur = live_motion_blur;
-            snap.dof = live_dof;
-            snap.skip_intro_movies = app.skip_intro_movies;
-            snap.start_in_single_player = app.start_in_single_player;
-            snap.skip_vo_with_a = app.skip_vo_with_a;
-            snap.metric_units = app.metric_units;
-            snap.hud_speedo_mode = live_hud_speedo_mode;
-            snap.minimap_mode = live_minimap_mode;
-            snap.hud = live_hud;
-            if (!app.language.empty()) snap.language = app.language;
-            snap.photo_through_walls = live_photo_through_walls;
-            snap.photo_wider_limits = live_photo_wider_limits;
-            snap.day_length_scale = app.tod_clock.speed_scale;
-            snap.controls = live_controls;
-            snap.controls.assists.driving_line = static_cast<int>(driving_line_mode);
-            snap.wheel_shaping = slice12.wheel_shaping;
-            snap.wheel_ffb = slice12.ffb_cfg;
-            snap.dualsense = slice12.ds_cfg;
-            snap.head_tracking = slice12.ht_cfg;
-            snap.camera_editor = slice12.cam_editor_cfg;
-            snap.immersive_camera = slice12.imm_cam_cfg;
-            snap.telemetry_udp = slice12.tel_cfg;
-            snap.trainer_cheats = slice12.trainer.config.cheats_enabled;
-            snap.festival_pacing = slice12.trainer.pacing;
-            snap.hidden_cars = slice12.trainer.hidden_cars;
-            if (!app.preset_name.empty() &&
-                (snap.preset.empty() ? (app.preset_name != "high") : (app.preset_name != snap.preset))) {
-              snap.preset = app.preset_name;
-            }
-            if (!app.shadows_flag.empty()) snap.shadows = app.shadows_flag;
-            if (app.bloom_flag >= 0) snap.bloom_mode = app.bloom_flag;
-            if (!app.graphics_backend.empty()) snap.graphics_backend = app.graphics_backend;
-            snap.graphics = host.active_graphics;
-            settings_page.sync_from_live(snap);
-            settings_page.open();
-          }
-          if (act == PauseMenu::kCareer) {
+          // SETTINGS opens the original OPTIONS list (H_GENERIC): CONTROLS,
+          // DIFFICULTY, HUD, AUDIO, VIDEO; each row opens its page.
+          if (act == PauseMenu::kSettings) open_hub_menu(carview::HubMenu::kOptions), hub_menu_from_pause = true;
+          // MY PROFILE: OPTIONS / STATS / ACHIEVEMENTS / TEAM CREDITS
+          // (21_my_profile_menu_orig.png); the engine's career board is an
+          // EXTRAS row.
+          if (act == PauseMenu::kCareer) open_hub_menu(carview::HubMenu::kProfile), hub_menu_from_pause = true;
+          if (act == PauseMenu::kCareerPage) {
             std::vector<cars::PackInfo> packs;
             const carview::CareerSummary cs = app.career_summary(packs);
             career_page.open(cs, std::move(packs));
@@ -907,8 +1022,9 @@ bool DriveSession::activate_world_trigger() {
                 if (!collect_next_wristband()) open_events_browser(0);
                 return true;
               case race::FestivalSite::kAutoshow: open_shop_or_autoshow(true); return true;
-              case race::FestivalSite::kWorkshop: open_shop_or_autoshow(false); return true;
-              case race::FestivalSite::kPaintShop: open_paint(); return true;
+              // The workshop and the paint shop open their H_GENERIC lists.
+              case race::FestivalSite::kWorkshop: open_hub_menu(carview::HubMenu::kWorkshop); return true;
+              case race::FestivalSite::kPaintShop: open_hub_menu(carview::HubMenu::kPaintBooth); return true;
             }
           } else if (active_trigger.kind == carview::WorldTrigger::kStreetHub && active_trigger.hub) {
             if (!app.career_catalog.is_hub_unlocked(*active_trigger.hub, app.career, app.collected_wristband)) {

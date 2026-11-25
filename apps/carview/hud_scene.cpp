@@ -129,6 +129,21 @@ std::vector<int> SceneDraw::children_of(int parent) const {
   return out;
 }
 
+std::string SceneDraw::texture_key_of(int node) const {
+  if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return {};
+  const int oi = sc_->nodes[size_t(node)].object_index;
+  if (oi < 0 || sc_->objects[size_t(oi)].kind != fh1::UiObjectKind::kModel) return {};
+  // The material and its textures follow the model.
+  const fh1::UiObject* mat = nullptr;
+  for (size_t k = size_t(oi) + 1; k < sc_->objects.size(); ++k) {
+    const auto& q = sc_->objects[k];
+    if (q.kind == fh1::UiObjectKind::kMaterial && !mat) mat = &q;
+    else if (q.kind == fh1::UiObjectKind::kTexture && mat && q.owner == mat->id) return texture_key(q.path);
+    else break;
+  }
+  return {};
+}
+
 std::string_view SceneDraw::object_name(int node) const {
   if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return {};
   const int oi = sc_->nodes[size_t(node)].object_index;
@@ -167,7 +182,7 @@ std::array<float, 2> turn_point(float x, float y, float k, float t, float bx, fl
 
 bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity, float dx, float dy, float visible,
                       uint32_t tint, std::string_view tex_override, float extra_angle, float scale_x,
-                      float scale_y, float k, float kbx, float kby, float kt) const {
+                      float scale_y, float k, float kbx, float kby, float kt, bool wrap) const {
   if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return false;
   if (opacity <= 1e-4f) return false;
   const fh1::UiNode& n = sc_->nodes[size_t(node)];
@@ -326,7 +341,7 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
     ou0 = 1.0f - vis / full;
   }
   uint32_t mask_flags = 0u;
-  if (tiled) {
+  if (tiled || wrap) {
     mask_flags = ui::kMaskRepeat;
   } else if (tex[0]->tex_address_mode == 4u || visible > 0.0f || std::fabs(ou0) > 1e-4f || std::fabs(ov0) > 1e-4f) {
     mask_flags = ui::kMaskBorderTransparent;
@@ -604,7 +619,8 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
       const float vis_w = (ov && ov->visible_width.has_value()) ? *ov->visible_width : 0.0f;
       const uint32_t tint = (ov && ov->tint.has_value()) ? *ov->tint : bgf_tint[size_t(d.idx)];
       const std::string_view tex_ov = (ov && ov->texture.has_value()) ? std::string_view(*ov->texture) : std::string_view{};
-      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea, sx, sy, k, kbx, kby, kt)) ++emitted;
+      const bool wrap = ov && ov->wrap;
+      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea, sx, sy, k, kbx, kby, kt, wrap)) ++emitted;
     } else if (o.kind == fh1::UiObjectKind::kText) {
       if (!ov || !ov->text.has_value() || ov->text->empty()) continue;
       const uint32_t base_col = ov->tint.has_value() ? *ov->tint

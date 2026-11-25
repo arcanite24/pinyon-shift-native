@@ -157,6 +157,14 @@ class Autoshow {
   bool all_cars_mode() const { return all_cars_mode_; }
   const std::vector<AutoshowMake>& makes() const { return makes_; }
   size_t selected_make_index() const { return make_index_; }
+  // The original's manufacturer strip (115_C_BUY_MFRSELECT): the makes, and
+  // the engine's Hidden & Showcase tab after them. "All Affordable" is its Y
+  // (select_affordable); "All Cars" is the car select's SEARCH.
+  std::vector<size_t> strip_makes() const;
+  // Moves along the strip (wrapping); off the strip (after Y), `by` 0 returns
+  // to the strip's last make.
+  void move_strip_make(int by, int64_t credits);
+  void select_affordable(int64_t credits);
   bool tutorial_mode() const { return tutorial_mode_; }
   const std::string& empty_reason() const { return empty_reason_; }
 
@@ -254,6 +262,7 @@ class Autoshow {
   int64_t last_garage_selected_id_ = -1;
   size_t last_garage_size_ = 0;
   size_t make_index_ = 0;
+  size_t strip_make_ = SIZE_MAX;  // the strip's last make (a makes_ index)
   size_t selected_ = 0;
   size_t colour_index_ = 0;
   AutoshowPaintFinish paint_finish_ = AutoshowPaintFinish::kFactory;

@@ -348,6 +348,7 @@ void DriveSession::run_benchmark() {
                 }
               } else {
                 settings_page.open();
+                options_page = carview::OptionsPage::kNone;  // the engine's page, not an option page
                 for (uint32_t mv = 0; mv < (frame_idx % 5u); ++mv) settings_page.switch_tab(1);
                 for (uint32_t mv = 0; mv < (frame_idx % 6u); ++mv) settings_page.move(1);
               }

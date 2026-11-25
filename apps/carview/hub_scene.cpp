@@ -335,7 +335,10 @@ void HubCamera::step(float dt) {
 
 std::array<float, 3> hub_background_color(HubRoom room) {
   switch (room) {
-    case HubRoom::kAutoshow: return {0.74f, 0.78f, 0.84f};   // bright Horizon Autoshow pavilion cyclorama
+    // The original's Autoshow is a dark club stage (19_autoshow_orig.png,
+    // probe-v4 showroom.png); interim: a dark room, not its uiautoshow track
+    // (SPEC_QUESTIONS Q129).
+    case HubRoom::kAutoshow: return {0.035f, 0.04f, 0.055f};
     case HubRoom::kWorkshop: return {0.12f, 0.11f, 0.10f};   // Dak's warm industrial garage
     case HubRoom::kPaintShop: return {0.16f, 0.17f, 0.19f};  // neutral colour-true paint booth
     case HubRoom::kGarage: return {0.09f, 0.11f, 0.15f};     // Horizon festival bay
@@ -353,11 +356,13 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
   std::array<float, 3> ring_col = {0.92f, 0.36f, 0.08f};  // Horizon signature coral-orange trim
   std::array<float, 3> wall_col = {0.11f, 0.12f, 0.15f};
   if (is_autoshow) {
-    // Bright, crisp Horizon Autoshow architectural showroom floor & cool-white cyclorama.
-    floor_col = {0.54f, 0.58f, 0.64f};
-    plinth_col = {0.68f, 0.72f, 0.77f};
-    ring_col = {0.96f, 0.12f, 0.44f};  // Horizon Autoshow magenta architectural accent
-    wall_col = {0.72f, 0.76f, 0.82f};
+    // The dark Autoshow stage: a dark grey floor and walls (interim, Q129).
+    // Linear colours: the stage is lit by the studio sun and converted to
+    // sRGB, so these land near the capture's dark greys.
+    floor_col = {0.022f, 0.024f, 0.03f};
+    plinth_col = {0.03f, 0.032f, 0.04f};
+    ring_col = {0.05f, 0.052f, 0.06f};
+    wall_col = {0.008f, 0.009f, 0.012f};
   } else if (room == HubRoom::kWorkshop) {
     floor_col = {0.16f, 0.15f, 0.14f};
     plinth_col = {0.22f, 0.21f, 0.20f};

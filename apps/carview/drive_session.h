@@ -43,6 +43,9 @@
 #include "freeroam/festival_ai.h"
 #include "game_hud.h"
 #include "garage/pi_calc.h"
+#include "car_list_screen.h"
+#include "options_screen.h"
+#include "hub_menus.h"
 #include "hub_scene.h"
 #include "hud.h"
 #include "livery_editor.h"
@@ -433,6 +436,7 @@ struct DriveSession {
   EventsPage events_page;
   CeremonyHud ceremony;
   bool garage_open = false;
+  bool garage_barn_finds = false;  // the garage shows its BARN FINDS list
   size_t garage_pick = 0;
   bool grid_menu_open = false;
   double pre_race_blend_t = -1.0;
@@ -597,10 +601,75 @@ struct DriveSession {
   void browse(int by);
   void take_pick();
   void put_back();
-  void open_garage_browser();
+  // The garage (CHANGE CAR); `barn_finds`: its BARN FINDS list.
+  void open_garage_browser(bool barn_finds);
   void sync_livery_preview(bool recomposite_vinyls);
   void open_paint();
   void open_shop_or_autoshow(bool is_autoshow);
+  // The original's H_GENERIC option menus (hub_menus.h): MY PROFILE,
+  // OPTIONS, the paint booth, the workshop, the photo mode select.
+  // The original's car list (108_C_BUY_CARSELECT) for the Autoshow's car
+  // select and the garage; true while the HUD draws it (its help bar's hit
+  // order differs from the engine's pages).
+  bool car_list_drawn = false;
+  std::map<int, std::string> country_flags;  // List_Country.CountryID -> flag texture key
+  bool country_flags_built = false;
+  const std::string& country_flag(int country_id);
+  // Data_Car's rows as the 108 panel shows them: ModelShort ("XKR-S"), the
+  // year, the make's name, the country, the engine's place, the drive type
+  // and the ratings.
+  struct CarListInfo {
+    std::string model, make;
+    int year = 0, country = 0, placement = 1, drive_type = 0;
+    double raw_pi = 0;
+    std::array<double, 5> stats{};
+  };
+  std::map<int64_t, CarListInfo> car_list_infos;
+  bool car_list_infos_built = false;
+  const CarListInfo* car_list_info(int64_t car_id);
+  // The panel for a car; `raw_pi` < 0: the car's stock index.
+  carview::CarListDetails car_list_details(int64_t car_id, double raw_pi = -1);
+  void fill_autoshow_list(carview::CarListHud& out);
+  // List_CarMake's logo (IconPath) and profile (Profile) by make id.
+  struct MakeInfo {
+    std::string logo, profile;
+  };
+  std::map<int64_t, MakeInfo> make_infos;
+  bool make_infos_built = false;
+  const MakeInfo* make_info(int64_t make_id);
+  // The Autoshow's manufacturer select on 115_C_BUY_MFRSELECT.
+  void fill_make_list(carview::MakeListHud& out);
+  bool make_list_drawn = false;
+  bool make_none_affordable = false;  // Y with nothing affordable: NONE AFFORDABLE
+  // MY GARAGE and BARN FINDS on 108 (garage_barn_finds picks the list).
+  void fill_garage_list(carview::CarListHud& out);
+  bool garage_show_specs = true;  // Y TOGGLE
+  size_t barn_pick = 0;           // the Barn Finds list's cursor (Collectibles::barns index)
+  // The open popup over the garage's lists.
+  enum class GaragePopup : uint8_t { kNone, kCollect, kNotReady, kNotDiscovered, kCantSell };
+  GaragePopup garage_popup = GaragePopup::kNone;
+  // Whether a Data_Car id is a barn find's car (it cannot be sold).
+  bool is_barn_car(int64_t car_id) const;
+  // Barn Finds: A on the selected barn, the popup's answers.
+  void barn_select();
+  void garage_popup_accept();
+  void garage_popup_view_map();
+  carview::HubMenuStack hub_menu;
+  bool hub_menu_from_pause = false;  // B on its last list returns to the pause menu
+  void open_hub_menu(carview::HubMenu m);
+  // A on the selected row (or X: the menu's engine extra).
+  void hub_menu_choose(bool extra);
+  // The settings page, on `tab` (SettingsPage::Tab; -1: the last one).
+  void open_settings(int tab);
+  // OPTIONS's DIFFICULTY and HUD on the original's page
+  // (300_I_OPT_ASSISTS_DIFFICULTY): the settings page's rows by name, with
+  // A SAVE, B CANCEL (the rows as they were) and Y RESET TO DEFAULT.
+  carview::OptionsPage options_page = carview::OptionsPage::kNone;
+  int options_row = 0;
+  std::vector<std::string> options_snapshot;
+  void open_options_page(carview::OptionsPage p);
+  void fill_options(carview::OptionsHud& out);
+  void enter_photo_mode();
   bool collect_next_wristband();
   void open_events_browser(int hub_filter);
   bool try_enter_event(const race::CareerEvent& ev, const std::string& chosen_car_media = {});
