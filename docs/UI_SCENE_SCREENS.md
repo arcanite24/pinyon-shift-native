@@ -336,6 +336,13 @@ flow files) as plain steps, with the timings measured on the captures;
   (`List_Country.IconPath`), class and PI, the drivetrain icon
   (`UI4/Common/Drivetrain_<drive>_<placement>`) and the five rating bars
   over its dirt panel. Y TOGGLE hides the card.
+- **The manufacturer select on `115_C_BUY_MFRSELECT`** (`draw_make_list`,
+  `fill_make_list`). The Autoshow's first step: the makes' logos
+  (`List_CarMake.IconPath` on `MANU_IMAGE`, held clear by the scene until
+  the list fills it) on the same seven-slot strip as 108, the make's name
+  under the cursor, its count of cars on `Available` and A SELECT, B BACK,
+  Y ALL AFFORDABLE CARS. `Autoshow::strip_makes` is the strip; B from the
+  car select comes back to the make it left.
 - **Popups.** `draw_message_popup` draws `H_MESSAGE_POPUP` with a title, a
   wrapped message and its own help bar (STAY IN CAR, and the garage's
   COLLECT CAR, NOT READY, NOT DISCOVERED and CAN'T SELL BARN FIND).
@@ -351,6 +358,10 @@ flow files) as plain steps, with the timings measured on the captures;
   measured band (their crop is not decoded). SEARCH steps the Autoshow's
   all-cars toggle and the garage's class filter. MY GARAGE has no buy-car
   tile, current-car icon or list view (Q130).
+- **Manufacturer select.** No capture: the help bar, the strip's contents
+  and the info panel are guesses (Q130). The info panel is hidden because
+  every `List_CarMake.Profile` is "N/A"; the engine's Hidden & Showcase tab
+  is a text tile after the makes.
 - **Rooms.** Each room is the engine's studio stage, the Autoshow's dark
   (Q129).
 - **Rows.** The workshop's order (Q131); the paint booth's vinyl rows open
@@ -360,4 +371,5 @@ flow files) as plain steps, with the timings measured on the captures;
   collected tiles (Q133).
 - **Engine extras kept.** The garage's sorts (O, left stick), favourites
   (F, V), and selling (Q, Del, LB) work but are not on the help bar; the
-  livery editor; the engine's settings pages.
+  manufacturer strip's paging (Q, E, LB, RB); the livery editor; the
+  engine's settings pages.

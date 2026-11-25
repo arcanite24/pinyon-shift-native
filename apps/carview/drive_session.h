@@ -578,6 +578,16 @@ struct DriveSession {
   // The panel for a car; `raw_pi` < 0: the car's stock index.
   carview::CarListDetails car_list_details(int64_t car_id, double raw_pi = -1);
   void fill_autoshow_list(carview::CarListHud& out);
+  // List_CarMake's logo (IconPath) and profile (Profile) by make id.
+  struct MakeInfo {
+    std::string logo, profile;
+  };
+  std::map<int64_t, MakeInfo> make_infos;
+  bool make_infos_built = false;
+  const MakeInfo* make_info(int64_t make_id);
+  // The Autoshow's manufacturer select on 115_C_BUY_MFRSELECT.
+  void fill_make_list(carview::MakeListHud& out);
+  bool make_list_drawn = false;
   // MY GARAGE and BARN FINDS on 108 (garage_barn_finds picks the list).
   void fill_garage_list(carview::CarListHud& out);
   bool garage_show_specs = true;  // Y TOGGLE

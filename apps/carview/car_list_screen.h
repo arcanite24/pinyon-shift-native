@@ -61,6 +61,9 @@ inline constexpr StringRef kCantSellTitle{"Barnfind", "IDS_Trade_BarnFind_Title"
 inline constexpr StringRef kCantSellMessage{"Barnfind", "IDS_Trade_BarnFind_Message", 0, "You cannot sell Barn finds."};
 inline constexpr StringRef kViewOnMap{"Barnfind", "IDS_ViewMapAction", 0, "VIEW ON MAP"};
 inline constexpr StringRef kOk{"Workshop", "IDS_BarnFindCollect", 0, "OK"};
+// The manufacturer select (115_C_BUY_MFRSELECT).
+inline constexpr StringRef kAvailable{"carflow", "IDS_Num_Available", 0, "{0} AVAILABLE"};
+inline constexpr StringRef kAffordableCars{"HelpButtons", "IDS_AffordableCars", 0, "ALL AFFORDABLE CARS"};
 }  // namespace car_list_text
 
 // A tile's state: the scene's own icons (Ready_Icon, Not_Ready_Icon,
@@ -121,5 +124,32 @@ std::string ui_texture_key(const std::string& game_path);
 
 // Draws the list; false when the scene is missing.
 bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w, float h);
+
+// The Autoshow's first step, 115_C_BUY_MFRSELECT: the title tape, a strip
+// of make tiles (List_CarMake.IconPath's logo on MANU_IMAGE) with the cursor
+// on its fourth slot, the make's count of cars (Available), its profile in
+// the info panel (List_CarMake.Profile) and the player bar.
+inline constexpr std::string_view kMakeListScene = "115_C_BUY_MFRSELECT";
+
+struct MakeTile {
+  int id = 0;          // the tile's hit index (the caller's make)
+  std::string logo;    // the logo's texture key; empty: `label` instead
+  std::string label;
+};
+
+struct MakeListHud {
+  std::string title;
+  std::vector<MakeTile> tiles;
+  int selected = 0;
+  std::string cursor;      // under the cursor: the make's name
+  std::string available;   // "{0} AVAILABLE"
+  std::string info_title;  // the info panel's title and text
+  std::string info_text;
+  std::vector<std::pair<std::string, std::string>> prompts;  // (button, label)
+  std::string notice;
+};
+
+const std::vector<const char*>& make_list_nodes();
+bool draw_make_list(ui::List& l, const DriveHud& st, const MakeListHud& m, float w, float h);
 
 }  // namespace carview

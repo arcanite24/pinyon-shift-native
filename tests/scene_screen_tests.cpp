@@ -236,6 +236,19 @@ int main() {
     }
   }
 
+  // The manufacturer select (115_C_BUY_MFRSELECT, v4's).
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kMakeListScene)));
+    check(sd.ok(), "115_C_BUY_MFRSELECT loads");
+    if (sd.ok()) {
+      check_nodes(sd, carview::kMakeListScene, carview::make_list_nodes());
+      // The cursor sits on the fourth slot, as on 108.
+      const auto cur = sd.at(sd.find_path("MANUFACTURER_LIST/HIGHLIGHT/CursorBig"));
+      const auto slot = sd.at(sd.find("CAR_LIST_ITEM_" + std::to_string(carview::kCarListCursorSlot)));
+      check(std::fabs(cur[0] - slot[0]) < 1.0f && std::fabs(cur[1] - slot[1]) < 1.0f, "115: the cursor on slot 3");
+    }
+  }
+
   // The car list (108_C_BUY_CARSELECT, v4's).
   {
     const SceneDraw sd(carview::ui_scene(std::string(carview::kCarListScene)));
@@ -767,6 +780,52 @@ int main() {
       const auto p2 = out_dir / "car_list_barn_finds.png";
       check(stbi_write_png(p2.string().c_str(), int(W), int(H), 4, fb2.data(), int(W * 4)) != 0,
             "write barn finds");
+    }
+    // The manufacturer select on 115: Aston Martin, Audi (the cursor),
+    // Bentley, BMW and the engine's Hidden & Showcase tab, Audi's profile.
+    {
+      using namespace carview::car_list_text;
+      carview::MakeListHud ml;
+      ml.title = carview::text_of(kManufacturerSelect);
+      check(ml.title == "MANUFACTURER SELECT", "115's title: " + ml.title);
+      const char* logos[4] = {"AstonMartin", "Audi", "Bentley", "BMW"};
+      for (int i = 0; i < 4; ++i) {
+        carview::MakeTile t;
+        t.id = 10 + i;
+        t.logo = carview::ui_texture_key(std::string(R"(GAME:\Media\UI\Textures\UI4\Logos\Manufacturer_Logos_I\L_MAN_)") +
+                                         logos[i] + "_Logo.tga");
+        std::array<float, 4> uv{};
+        check(carview::ui4::texture(t.logo, uv), std::string("115: the logo ") + t.logo);
+        t.label = logos[i];
+        ml.tiles.push_back(t);
+      }
+      ml.tiles.push_back({99, "", "Hidden & Showcase"});
+      ml.selected = 1;
+      ml.cursor = "AUDI";
+      ml.available = carview::format1(carview::text_of(kAvailable), "12");
+      check(ml.available == "12 AVAILABLE", "115's count: " + ml.available);
+      // List_CarMake.Profile is "N/A" on the disc, so the info panel is
+      // not shown.
+      check(carview::game_text("_&857946860") == "N/A", "Audi's profile: " + carview::game_text("_&857946860"));
+      ml.prompts = {{"A", carview::text_of(kSelect)}, {"B", carview::text_of(kBack)}, {"Y", carview::text_of(kAffordableCars)}};
+      check(ml.prompts[2].second == "ALL AFFORDABLE CARS", "115's Y: " + ml.prompts[2].second);
+      std::vector<uint8_t> fb = backdrop;
+      carview::ui::List l;
+      check(carview::draw_make_list(l, d, ml, float(W), float(H)), "draw make list");
+      int hits = 0;
+      for (const auto& z : l.hits())
+        if (z.group == carview::ui::kHitRow) ++hits;
+      check(hits == 5, "115: a hit per shown make (" + std::to_string(hits) + ")");
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / "make_list.png";
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write make list");
+      // A profile shows the info panel, its text cut at the panel's foot.
+      ml.info_title = "AUDI";
+      ml.info_text.clear();
+      for (int i = 0; i < 40; ++i) ml.info_text += "Vorsprung durch Technik. ";
+      carview::ui::List l2;
+      check(carview::draw_make_list(l2, d, ml, float(W), float(H)), "draw make list with a profile");
+      check(l2.items().size() > l.items().size(), "115: the profile's panel draws");
     }
   }
 

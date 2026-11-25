@@ -2776,7 +2776,7 @@ booth keep their colours. Needed: how the title loads a room's track
 under the menu (which track per screen, the car's placement in it) and
 which preset each screen's camera uses.
 
-## Q130 (UI, not blocking): MY GARAGE on 108 and its help bar
+## Q130 (UI, not blocking): MY GARAGE on 108, the manufacturer select on 115, and their help bars
 
 No capture shows the garage's own list; the parity run that should have
 (`orig-garage`) stayed on the map. `11_car_select_orig.png` shows the
@@ -2790,6 +2790,24 @@ switching"). Interims: no buy-car tile and no current-car icon; X CAR LIST
 class filter. The engine's sorts, favourites and selling stay as unlisted
 extras. Needed: a capture of MY GARAGE from the workshop's CHANGE CAR, the
 SEARCH screen's options, and which icon marks the current car.
+
+No capture shows the Autoshow's first step either. The engine draws it on
+`115_C_BUY_MFRSELECT` (`ScreenTitles IDS_Manufacturer_Select`): a strip of
+the makes' logos (`List_CarMake.IconPath` on each tile's `MANU_IMAGE`) in
+alphabetical order, the make's name under the cursor, `carflow
+IDS_Num_Available` ("{0} AVAILABLE") for its count of cars, and A SELECT,
+B BACK, Y ALL AFFORDABLE CARS (`HelpButtons IDS_AffordableCars`). Guesses:
+
+- The strip holds the makes alone; the engine's All Affordable is Y, its
+  All Cars the car select's SEARCH, and its Hidden & Showcase tab (an
+  engine extra) a text tile after the makes.
+- The info panel (`InfoPanelGroup`) would show the make's
+  `List_CarMake.Profile`, but every profile on the disc is "N/A", so the
+  panel is not shown.
+- The tiles' DLC, NEW and lock icons are not shown.
+
+Needed: a capture of the manufacturer select, its help bar, what the info
+panel shows, and where the cursor starts.
 
 ## Q131 (UI, not blocking): the workshop's rows
 

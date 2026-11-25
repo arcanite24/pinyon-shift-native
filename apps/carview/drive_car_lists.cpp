@@ -3,6 +3,8 @@
 // and its Barn Finds.
 #include "drive_session.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -46,6 +48,11 @@ std::string table_text(const std::string& ref) {
   if (ref.empty()) return {};
   const std::string text = carview::game_text(ref);
   return (text.empty() || text[0] == '_' || text[0] == '&') ? std::string{} : text;
+}
+
+std::string upper(std::string s) {
+  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
+  return s;
 }
 
 }  // namespace
@@ -154,6 +161,59 @@ void DriveSession::fill_autoshow_list(carview::CarListHud& out) {
                  {"B", carview::text_of(t::kBack)},
                  {"Y", carview::text_of(t::kToggle)},
                  {"BACK", carview::text_of(t::kSearch)}};
+}
+
+const DriveSession::MakeInfo* DriveSession::make_info(int64_t make_id) {
+  if (!make_infos_built) {
+    make_infos_built = true;
+    if (app.shared_db) {
+      app.shared_db->each(
+          "SELECT ID, COALESCE(IconPath, ''), COALESCE(Profile, '') FROM List_CarMake", {},
+          [&](sqlite3_stmt* st) {
+            MakeInfo mi;
+            mi.logo = carview::ui_texture_key(col(st, 1));
+            mi.profile = table_text(col(st, 2));
+            // The disc's profiles are all "N/A" (List_CarMake.str).
+            if (mi.profile == "N/A") mi.profile.clear();
+            make_infos[sqlite3_column_int64(st, 0)] = std::move(mi);
+          },
+          nullptr);
+    }
+  }
+  const auto it = make_infos.find(make_id);
+  return it == make_infos.end() ? nullptr : &it->second;
+}
+
+void DriveSession::fill_make_list(carview::MakeListHud& out) {
+  namespace t = carview::car_list_text;
+  out = {};
+  out.title = carview::text_of(t::kManufacturerSelect);
+  // The strip holds the makes; after Y (All Affordable) the cursor returns
+  // to the make it left.
+  const std::vector<size_t> strip = autoshow.strip_makes();
+  const auto& makes = autoshow.makes();
+  if (std::find(strip.begin(), strip.end(), autoshow.selected_make_index()) == strip.end())
+    autoshow.move_strip_make(0, app.career.credits);
+  for (size_t k = 0; k < strip.size(); ++k) {
+    const carview::AutoshowMake& mk = makes[strip[k]];
+    carview::MakeTile tile;
+    tile.id = int(strip[k]);
+    if (const MakeInfo* mi = mk.make_id >= 0 ? make_info(mk.make_id) : nullptr) tile.logo = mi->logo;
+    tile.label = mk.name;
+    if (strip[k] == autoshow.selected_make_index()) {
+      out.selected = int(k);
+      out.cursor = upper(mk.name);
+      out.available = carview::format1(carview::text_of(t::kAvailable), std::to_string(mk.car_count));
+      if (const MakeInfo* mi = mk.make_id >= 0 ? make_info(mk.make_id) : nullptr; mi && !mi->profile.empty()) {
+        out.info_title = out.cursor;
+        out.info_text = mi->profile;
+      }
+    }
+    out.tiles.push_back(std::move(tile));
+  }
+  out.prompts = {{"A", carview::text_of(t::kSelect)},
+                 {"B", carview::text_of(t::kBack)},
+                 {"Y", carview::text_of(t::kAffordableCars)}};
 }
 
 bool DriveSession::is_barn_car(int64_t car_id) const {

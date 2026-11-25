@@ -238,6 +238,27 @@ void test_disc_hub_shops_and_garage() {
   CHECK(autoshow.visible_cars().empty());
   CHECK(autoshow.empty_reason() == "no affordable cars");
 
+  // 115's strip: the makes alone (All Affordable and All Cars are off it);
+  // Y lists the affordable cars, and the strip comes back on the make it left.
+  {
+    carview::Autoshow strip_show;
+    CHECK(strip_show.open(db, {}, err, 500000, false));
+    const std::vector<size_t> strip = strip_show.strip_makes();
+    CHECK(strip.size() > 25);
+    for (size_t i : strip) CHECK(strip_show.makes()[i].make_id >= 0 || strip_show.makes()[i].make_id == -3);
+    strip_show.move_strip_make(0, 500000);
+    CHECK(strip_show.selected_make_index() == strip[0]);
+    strip_show.move_strip_make(-1, 500000);
+    CHECK(strip_show.selected_make_index() == strip.back());
+    strip_show.move_strip_make(2, 500000);
+    const size_t left = strip_show.selected_make_index();
+    CHECK(left == strip[1]);
+    strip_show.select_affordable(500000);
+    CHECK(strip_show.makes()[strip_show.selected_make_index()].make_id == -1);
+    strip_show.move_strip_make(0, 500000);
+    CHECK(strip_show.selected_make_index() == left);
+  }
+
   // Move to "All Cars" / real makes and verify Sort/Filter/Test Drive/Swatch scrolling.
   CHECK(autoshow.makes().size() > 25);
   autoshow.move_make(1, 500000);

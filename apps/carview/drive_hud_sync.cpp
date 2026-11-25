@@ -1089,13 +1089,20 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           // The car select on the original's 108 (the buy confirmation and
           // the other steps keep the engine's pages).
           car_list_drawn = false;
+          make_list_drawn = false;
           if (autoshow.step() == carview::AutoshowStep::kCarSelect && !autoshow.buy_confirm_open()) {
             carview::CarListHud cl;
             fill_autoshow_list(cl);
             if (vehicle.time() < notice_until) cl.notice = notice;
             car_list_drawn = carview::draw_car_list(list, d, cl, float(width), float(height));
+          } else if (autoshow.step() == carview::AutoshowStep::kMakeSelect && !autoshow.buy_confirm_open()) {
+            // The manufacturer select on the original's 115.
+            carview::MakeListHud ml;
+            fill_make_list(ml);
+            if (vehicle.time() < notice_until) ml.notice = notice;
+            make_list_drawn = carview::draw_make_list(list, d, ml, float(width), float(height));
           }
-          if (!car_list_drawn)
+          if (!car_list_drawn && !make_list_drawn)
             carview::draw_autoshow_hud(list, float(width), float(height), autoshow, app.class_bands, app.career.credits,
                                        vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
         } else if (shop.is_open()) {

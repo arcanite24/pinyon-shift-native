@@ -275,6 +275,7 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   }
 
   make_index_ = 0;
+  strip_make_ = SIZE_MAX;
   selected_ = 0;
   colour_index_ = 0;
   if (owned_garage) set_owned_cars(*owned_garage);
@@ -428,8 +429,47 @@ void Autoshow::select_make(size_t index, int64_t credits) {
   if (makes_.empty()) return;
   all_cars_mode_ = false;
   make_index_ = std::min(index, makes_.size() - 1);
+  if (makes_[make_index_].make_id >= 0 || makes_[make_index_].make_id == -3) strip_make_ = make_index_;
   selected_ = 0;
   rebuild_visible(credits);
+}
+
+std::vector<size_t> Autoshow::strip_makes() const {
+  std::vector<size_t> out;
+  for (size_t i = 0; i < makes_.size(); ++i)
+    if (makes_[i].make_id >= 0) out.push_back(i);
+  for (size_t i = 0; i < makes_.size(); ++i)
+    if (makes_[i].make_id == -3) out.push_back(i);
+  return out;
+}
+
+void Autoshow::move_strip_make(int by, int64_t credits) {
+  const std::vector<size_t> strip = strip_makes();
+  if (strip.empty()) return;
+  const int n = int(strip.size());
+  int at = -1;
+  for (int k = 0; k < n; ++k)
+    if (strip[size_t(k)] == make_index_) at = k;
+  if (at < 0) {
+    for (int k = 0; k < n; ++k)
+      if (strip[size_t(k)] == strip_make_) at = k;
+    if (at < 0) at = 0;
+    if (by == 0) {
+      select_make(strip[size_t(at)], credits);
+      strip_make_ = make_index_;
+      return;
+    }
+  }
+  select_make(strip[size_t(((at + by) % n + n) % n)], credits);
+  strip_make_ = make_index_;
+}
+
+void Autoshow::select_affordable(int64_t credits) {
+  for (size_t i = 0; i < makes_.size(); ++i)
+    if (makes_[i].make_id == -1) {
+      select_make(i, credits);
+      return;
+    }
 }
 
 void Autoshow::toggle_all_cars(int64_t credits) {

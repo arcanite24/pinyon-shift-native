@@ -56,6 +56,22 @@ void draw_tile(ui::List& l, const SceneFrame& f, float cx, float cy, float hw, f
   l.unturn();
 }
 
+// The engine's notice (a sort or a filter changed) over the help bar's right.
+void draw_notice(ui::List& l, const std::string& notice, float w, float h) {
+  if (notice.empty()) return;
+  const float s = std::max(0.25f, h / 720.0f);
+  ui4::brush(l, w - 420.0f * s, h - 68.0f * s, w - 56.0f * s, h - 38.0f * s, ui4::kPink);
+  ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
+  std::string text = notice;
+  ui4::fit_text(text, ns, 340.0f * s, 9.0f * s);
+  l.text(w - 68.0f * s, h - 60.0f * s, text, ns);
+}
+
+// 115's profile text: its box is wider than the info panel, so it wraps at
+// the panel's width and stops at the panel's foot.
+constexpr float kInfoTextWidth = 440.0f;
+constexpr int kInfoTextLines = 7;
+
 }  // namespace
 
 const std::vector<const char*>& car_list_nodes() {
@@ -316,14 +332,7 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
     }
   }
 
-  if (!c.notice.empty()) {
-    const float s = std::max(0.25f, h / 720.0f);
-    ui4::brush(l, w - 420.0f * s, h - 68.0f * s, w - 56.0f * s, h - 38.0f * s, ui4::kPink);
-    ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
-    std::string text = c.notice;
-    ui4::fit_text(text, ns, 340.0f * s, 9.0f * s);
-    l.text(w - 68.0f * s, h - 60.0f * s, text, ns);
-  }
+  draw_notice(l, c.notice, w, h);
   std::vector<ui4::Prompt> prompts;
   for (const auto& [b, label] : c.prompts) prompts.push_back({b.c_str(), label});
   if (c.popup.open) {
@@ -333,6 +342,139 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
     draw_message_popup(l, c.popup.title, c.popup.message, pp, w, h);
     return true;
   }
+  ui4::button_bar(l, prompts, w, h);
+  return true;
+}
+
+const std::vector<const char*>& make_list_nodes() {
+  static const std::vector<const char*> nodes = {
+      "TitleTape/Group/TitleTapeText",
+      "MANUFACTURER_LIST/Group/CAR_LIST_ITEM_0/IMAGE/MANU_LOGO/MANU_IMAGE",
+      "MANUFACTURER_LIST/Group/CAR_LIST_ITEM_6/IMAGE/MANU_LOGO/MANU_IMAGE",
+      "MANUFACTURER_LIST/Group/CAR_LIST_ITEM_3/BG/Filler",
+      "MANUFACTURER_LIST/HIGHLIGHT/CursorBig",
+      "MANUFACTURER_LIST/HIGHLIGHT/TEXT_CURSOR",
+      "MANUFACTURER_LIST/Available/Group_DISCOUNT/TEXT_CURSOR",
+      "InfoPanelGroup/TEXT_DESCRIPTION",
+      "InfoPanelGroup/TitleBar/TEXT_TITLE",
+      "InfoPanelGroup/BG/HUDPanel01",
+      "PlayerBar/MiddleRow/TEXT_CAR",
+      "Back_Pane",
+      "ButtonBar",
+  };
+  return nodes;
+}
+
+bool draw_make_list(ui::List& l, const DriveHud& st, const MakeListHud& m, float w, float h) {
+  SceneScreen sc(kMakeListScene);
+  if (!sc.ok()) return false;
+  const SceneDraw& sd = sc.scene();
+  const SceneFrame f = SceneScreen::frame(w, h);
+  sc.bindings().fit_text = false;
+  sc.hide(sc.node("ButtonBar"));
+  sc.hide(sc.node("Timer"));
+  // As on 108: the panes behind the strip draw misplaced (their crop is not
+  // decoded).
+  sc.hide(sc.node("Back_Pane"));
+  sc.hide(sc.node("MANUFACTURER_LIST/HIGHLIGHT/BigPane01"));
+  sc.text(sc.node("TitleTape/Group/TitleTapeText"), m.title);
+
+  // The strip: slot k holds tile selected + k - 3.
+  const int n = int(m.tiles.size());
+  const int strip = sc.node("MANUFACTURER_LIST");
+  struct Label {
+    float cx, cy;
+    std::string text;
+    bool selected;
+  };
+  std::vector<Label> labels;
+  for (int k = 0; k < kCarListSlots; ++k) {
+    const int item = sc.node("Group/CAR_LIST_ITEM_" + std::to_string(k), strip);
+    if (item < 0) continue;
+    const int ti = m.selected + k - kCarListCursorSlot;
+    if (ti < 0 || ti >= n) {
+      sc.hide(item);
+      continue;
+    }
+    const MakeTile& t = m.tiles[size_t(ti)];
+    const bool selected = ti == m.selected;
+    // DLC, NEW, the lock and the spinner are the online store's.
+    sc.hide(child(sd, item, "Icons"));
+    const int bg = child(sd, item, "BG");
+    sc.hide(child(sd, bg, "BigPane01"));
+    const int image = child(sd, item, "IMAGE");
+    const int logo = child(sd, image, "MANU_LOGO");
+    const int pic = child(sd, logo, "MANU_IMAGE");
+    // The logo is held clear until the list fills it.
+    if (!t.logo.empty() && pic >= 0) {
+      sc.at(image).alpha = 1.0f;
+      sc.at(logo).alpha = 1.0f;
+      NodeOverride& o = sc.at(pic);
+      o.alpha = 1.0f;
+      o.texture = t.logo;
+      if (!selected) o.tint = kTileDim;
+    } else {
+      sc.hide(image);
+    }
+    if (const int filler = child(sd, bg, "Filler"); filler >= 0) {
+      const auto r = sd.rect(filler);
+      const float cx = 0.5f * (r[0] + r[2]), cy = 0.5f * (r[1] + r[3]);
+      const float hw = 0.5f * std::fabs(r[2] - r[0]), hh = 0.5f * std::fabs(r[3] - r[1]);
+      if (t.logo.empty()) labels.push_back({cx, cy, t.label, selected});
+      l.add_hit(f.x(cx - hw), f.y(cy - hh), f.x(cx + hw), f.y(cy + hh), ui::kHitRow, t.id);
+    }
+  }
+  const int cursor = sc.node("MANUFACTURER_LIST/HIGHLIGHT/TEXT_CURSOR");
+  if (n > 0 && m.selected >= 0 && m.selected < n) {
+    sc.text(cursor, m.cursor);
+    if (m.cursor.empty()) {
+      sc.hide(cursor);
+      sc.hide(sc.node("MANUFACTURER_LIST/HIGHLIGHT/Pill01"));
+    }
+  } else {
+    sc.hide(sc.node("MANUFACTURER_LIST/HIGHLIGHT"));
+  }
+  if (m.available.empty())
+    sc.hide(sc.node("MANUFACTURER_LIST/Available"));
+  else
+    sc.text(sc.node("MANUFACTURER_LIST/Available/Group_DISCOUNT/TEXT_CURSOR"), m.available);
+
+  // The make's profile; none (the disc's are all "N/A"): no panel.
+  const int info = sc.node("InfoPanelGroup");
+  if (m.info_text.empty()) {
+    sc.hide(info);
+  } else {
+    sc.at(sc.node("BG/HUDPanel01", info)).wrap = true;
+    const int title = sc.node("TitleBar/TEXT_TITLE", info);
+    sc.text(title, m.info_title);
+    if (title >= 0) sc.at(title).tint = kInk;  // on the title bar's light pill
+    const int desc = sc.node("TEXT_DESCRIPTION", info);
+    std::string text = sc.wrap(desc, m.info_text, kInfoTextWidth);
+    // At most the panel's lines, the last cut with an ellipsis.
+    int lines = 1;
+    for (size_t i = 0; i < text.size(); ++i) {
+      if (text[i] != '\n' || ++lines <= kInfoTextLines) continue;
+      text.resize(i);
+      while (!text.empty() && (text.back() == ' ' || text.back() == '.' || text.back() == ',')) text.pop_back();
+      text += "...";
+      break;
+    }
+    sc.text(desc, text);
+  }
+
+  bind_player_bar(sc, st);
+  sc.draw(l, f);
+  for (const Label& lb : labels) {
+    l.turn(f.x(lb.cx), f.y(lb.cy), -0.052f);
+    ui::TextStyle ts = ui4::style(ui::Font::kD, 18.0f * f.s, lb.selected ? kWhite : kTileDim, ui::Align::kCenter);
+    std::string text = upper(lb.text);
+    ui4::fit_text(text, ts, 210.0f * f.s, 11.0f * f.s);
+    l.text(f.x(lb.cx), f.y(lb.cy) - 9.0f * f.s, text, ts);
+    l.unturn();
+  }
+  draw_notice(l, m.notice, w, h);
+  std::vector<ui4::Prompt> prompts;
+  for (const auto& [b, label] : m.prompts) prompts.push_back({b.c_str(), label});
   ui4::button_bar(l, prompts, w, h);
   return true;
 }
