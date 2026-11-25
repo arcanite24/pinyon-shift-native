@@ -2365,3 +2365,34 @@ are the engine's. None of them is in the spec or the car data:
 Needed: the launch assist's gain, and how the per-tyre gravity scale
 combines. Both are visible in a standing-start trace of a RWD car and a
 trace of a car with one or two wheels off a kerb.
+
+## Q106 (FEEL-21, not blocking): props the car does not break
+
+A prop breaks when the car's speed is above its BreakSpeedMph
+(FORMAT-PHYSICS-DEFINITIONS); below that, and for an unbreakable prop,
+the engine used to push the car out horizontally with its own impulse
+(1.08 restitution, 0.22 friction, a 0.65 m push cap), so a fence or
+post hit had no pitch and no rebound of the original's kind. The props
+now join the car's body solve (Q101) as fixed bodies:
+`world::SmashableGround` adds their PhysicsDefinitions shapes (spheres
+and OBBs) to the ground's sphere contacts, with the
+CategoryToCategoryParams Smashable/Car row (mu 0.5, Elasticity 0.3).
+The solid barriers go the same way with the Car/GuardRail row.
+
+Still interim:
+
+- **Solid barriers by name.** Which static models are solid is still
+  chosen from their names and proportions; the original's rule for
+  static objects' collision is not decoded.
+- **Convex hulls** meet the car as their box in the prop's frame.
+- **Fixed bodies.** An unbroken prop does not move; its Mass is unused
+  until it breaks.
+- **The break test** reads the car's speed at the start of its step,
+  not the contact's closing speed.
+- **Only the player's car** meets the props; AI and traffic cars still
+  pass through them, as before.
+- **Barn doors** keep the old horizontal push.
+- **The smash-through slow-down** on a break is the engine's.
+
+Needed: the static-object collision rule, and whether an unbroken prop
+is fixed or a heavy dynamic body.

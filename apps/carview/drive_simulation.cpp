@@ -807,7 +807,14 @@ bool DriveSession::step(const drive::Input& user_in) {
           eff_user_in.brake = 1.0;
         }
         const drive::Input in = app.race ? app.race->player_input(vehicle, eff_user_in, traffic.get()) : eff_user_in;
-        vehicle.step(in, *host.ground);
+        if (!app.bench || app.bench_full_fx) {
+          // Intact props and solid barriers meet the car's body (FEEL-21).
+          const drive::Vec3 v0 = vehicle.velocity();
+          const world::SmashableGround sm_ground(*host.ground, app.smashables, std::sqrt(drive::dot(v0, v0)));
+          vehicle.step(in, sm_ground);
+        } else {
+          vehicle.step(in, *host.ground);
+        }
         {
           // Thermal brake rotor integrator: heats proportionally to brake pedal * speed
           // above 3 m/s and cools exponentially with airflow (zero glow when parked).

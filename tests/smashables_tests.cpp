@@ -325,8 +325,9 @@ void test_solid_festival_barriers_and_ground_height() {
   std::vector<world::SmashEvent> evs;
   double max_y = 0.0;
   double max_vy = 0.0;
+  auto speed_of = [](const drive::Vehicle& v) { return std::sqrt(drive::dot(v.velocity(), v.velocity())); };
   for (int i = 0; i < 80; ++i) {
-    car.step({0.0, 0.4, 0.0, false}, ground);
+    car.step({0.0, 0.4, 0.0, false}, world::SmashableGround(ground, sw, speed_of(car)));
     sw.step(car, ground, float(drive::Vehicle::kStep), evs);
     CHECK(evs.empty());  // solid barrier must NOT shatter
     max_y = std::max(max_y, car.position().y);
@@ -340,10 +341,51 @@ void test_solid_festival_barriers_and_ground_height() {
   sw.set_active_route(16);
   car.launch({0.0, 0.4, 3.0}, 0.0, 14.0);
   for (int i = 0; i < 80; ++i) {
-    car.step({0.0, 0.4, 0.0, false}, ground);
+    car.step({0.0, 0.4, 0.0, false}, world::SmashableGround(ground, sw, speed_of(car)));
     sw.step(car, ground, float(drive::Vehicle::kStep), evs);
   }
   CHECK(car.position().z > 9.5);
+  sw.set_active_route(0);
+
+  // FEEL-21: a prop the car does not break (below its BreakSpeedMph) is a
+  // fixed body in the car's contact solve: Smashable/Car Elasticity 0.3
+  // stops the car with a small rebound, no launch and no break.
+  {
+    world::SmashableWorld sp;
+    world::PropPhysicsDef post{};
+    post.object_type_index = 0;
+    post.break_speed_mph = 40.0f;  // 17.9 m/s
+    post.mass = 80.0f;
+    world::PropShape box;
+    box.kind = world::PropShapeKind::kObb;
+    box.transform[13] = 0.75f;  // centre 0.75 m up
+    box.half_extents = {1.5f, 0.75f, 0.15f, 0.0f};
+    post.shapes.push_back(box);
+    post.bounding_radius = 1.6f;
+    world::CollObjPlacement pl{};
+    pl.physics_type = "CO_Post.0.rmb";
+    pl.stem = "co_post";
+    pl.pos = {0.0f, 0.0f, 8.0f};
+    sp.add_prop(pl, &post);
+    drive::Vehicle v(cp);
+    v.launch({0.0, 0.0, 3.0}, 0.0, 8.0);
+    double vz_min = 1e9, vy_max = 0.0, y_max = 0.0;
+    for (int i = 0; i < 120; ++i) {
+      v.step({0.0, 0.0, 0.0, false}, world::SmashableGround(ground, sp, speed_of(v)));
+      sp.step(v, ground, float(drive::Vehicle::kStep), evs);
+      CHECK(evs.empty());
+      vz_min = std::min(vz_min, v.velocity().z);
+      vy_max = std::max(vy_max, v.velocity().y);
+      y_max = std::max(y_max, v.position().y);
+    }
+    const double nose = v.centre_of_mass().z + 0.5 * cp.size.z;
+    std::printf("feel21 post 8 m/s: nose %.3f m (face 7.85), rebound %.2f m/s, max_vy %.3f m/s, max_y %.3f m\n", nose,
+                -vz_min, vy_max, y_max);
+    CHECK(sp.broken_prop_count() == 0);
+    CHECK(nose < 7.85 + 0.15);
+    CHECK(vz_min < -0.1 && vz_min > -2.4);  // stopped, rebounding by less than 0.3 x closing
+    CHECK(vy_max < 1.0 && y_max < 0.3);
+  }
 
   // PT-21: oriented flyer shatter + record_hidden_prop persists hidden sphere.
   const int shards = sw.spawn_flyer_shatter({10.0f, 1.0f, 20.0f}, {0.5f, 0.0f, 0.866f}, {0.0f, 1.0f, 0.0f},

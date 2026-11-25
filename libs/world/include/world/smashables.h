@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "drive/vehicle.h"
+#include "world/collision.h"
 #include "world/world.h"
 
 namespace world {
@@ -212,8 +213,21 @@ class SmashableWorld {
   void add_barn_door(const BarnDoorCollider& door) { barn_doors_.push_back(door); }
   void add_solid_barrier(const SolidBarrier& barrier);
 
-  // Steps prop collisions against `vehicle`, barn-door & solid barrier collision, and all active dynamic debris.
+  // Breaks the props `vehicle` hits at or above their BreakSpeedMph, steps
+  // the barn doors and all active dynamic debris. The props it does not
+  // break, and the solid barriers, push back through the car's body solver
+  // instead (SmashableGround).
   void step(drive::Vehicle& vehicle, const drive::Ground& ground, float dt, std::vector<SmashEvent>& events);
+
+  // The contact rows for an intact prop and for a solid barrier
+  // (CategoryToCategoryParams Smashable/Car and Car/GuardRail); null keeps
+  // the shipped values.
+  void set_contact_params(const CategoryCollisionParams* prop, const CategoryCollisionParams* barrier);
+  // Adds, for each of `n` body spheres, its contact with an intact prop the
+  // car would not break at `car_speed_mps`, or with a solid barrier, where
+  // that is deeper than `hits[i]` (FEEL-21). The props are fixed bodies.
+  void add_sphere_contacts(const drive::Vec3& inside, double car_speed_mps, const drive::SphereQuery* spheres,
+                           int n, drive::SphereHit* hits) const;
 
   // Explicitly shatters a discount sign (`Flyer`, 12 debris children) at `pos`.
   int spawn_flyer_shatter(const std::array<float, 3>& pos, const std::array<float, 3>& car_vel);
@@ -295,10 +309,10 @@ class SmashableWorld {
   void spawn_dynamic_body(const DynamicBody& body);
   std::array<uint8_t, 4> colour_for_prop(int32_t surface_type, int8_t object_type, std::string_view stem) const;
   void step_barn_doors(drive::Vehicle& vehicle);
-  void step_solid_barriers(drive::Vehicle& vehicle);
   static int64_t cell_key(float x, float z);
 
   std::unique_ptr<Impl> impl_;
+  drive::SurfaceTyre prop_contact_, barrier_contact_;
   PhysicsDefinitions defs_;
   std::vector<CollObjectType> coll_types_;
   std::vector<std::string> smash_types_;
@@ -319,6 +333,29 @@ class SmashableWorld {
 
   float rand01();
   float rand_sym();
+};
+
+// A ground for the car's step that adds the smashables to the world it
+// stands on: wheel rays go to `base`, body spheres meet `base` and the
+// props and barriers of `world` (SmashableWorld::add_sphere_contacts).
+class SmashableGround : public drive::Ground {
+ public:
+  SmashableGround(const drive::Ground& base, const SmashableWorld& world, double car_speed_mps)
+      : base_(base), world_(world), car_speed_(car_speed_mps) {}
+  bool raycast(const drive::Vec3& origin, const drive::Vec3& dir, double max_distance,
+               drive::Hit& hit) const override {
+    return base_.raycast(origin, dir, max_distance, hit);
+  }
+  void sphere_contacts(const drive::Vec3& inside, const drive::SphereQuery* spheres, int n,
+                       drive::SphereHit* hits) const override {
+    base_.sphere_contacts(inside, spheres, n, hits);
+    world_.add_sphere_contacts(inside, car_speed_, spheres, n, hits);
+  }
+
+ private:
+  const drive::Ground& base_;
+  const SmashableWorld& world_;
+  double car_speed_;
 };
 
 }  // namespace world
