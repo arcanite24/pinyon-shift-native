@@ -1374,7 +1374,14 @@ void DriveSession::restore_world_rewind(uint64_t snap_id, bool is_resume) {
         prune_world_rewind();
 }
 
-void prime_world_and_snap_vehicle(DriveSession& s, std::array<double, 3> target_pos, double target_heading) {
+namespace {
+
+// `authored`: a cutscene's PlacePlayerCar. The original keeps the authored
+// x/z and heading and drops the car onto the surface nearest the authored
+// height (any surface facing up, not only road), so the cutscene's cameras
+// frame it where they were authored; the road search below would move it.
+void prime_world_and_snap_impl(DriveSession& s, std::array<double, 3> target_pos, double target_heading,
+                               bool authored) {
   double px = target_pos[0];
   double py = target_pos[1];
   double pz = target_pos[2];
@@ -1429,10 +1436,27 @@ void prime_world_and_snap_vehicle(DriveSession& s, std::array<double, 3> target_
 
     sync_prime_at(px, pz);
 
+    if (authored) {
+      // Down from just above the authored height, and from high up: the hit
+      // nearest the authored height that faces up wins.
+      double best_y = py, best_d = 1e30;
+      for (const double from : {py + 3.0, py + 1000.0}) {
+        drive::Hit h{};
+        if (!s.host.streamer->ground().raycast({px, from, pz}, {0, -1, 0}, 2000.0, h) || h.normal.y < 0.2) continue;
+        const double y = from - h.distance;
+        if (std::abs(y - py) < best_d) {
+          best_d = std::abs(y - py);
+          best_y = y;
+        }
+      }
+      py = best_y + 0.03;
+    }
+
     double hit_y = py;
     drive::Hit hit{};
-    const bool direct_hit = raycast_ground(px, py, pz, hit_y, hit);
-    if (direct_hit && is_drivable_road(hit)) {
+    const bool direct_hit = !authored && raycast_ground(px, py, pz, hit_y, hit);
+    if (authored) {
+    } else if (direct_hit && is_drivable_road(hit)) {
       py = hit_y + 0.03;
     } else {
       world::Spawn sp;
@@ -1473,7 +1497,44 @@ void prime_world_and_snap_vehicle(DriveSession& s, std::array<double, 3> target_
   s.rewind_buf.reset_history(s.vehicle.time());
   s.world_rewind_snaps.clear();
   s.place_world();
-  std::printf("campaign teleport: primed world at (%.2f, %.2f, %.2f) heading %.4f rad\n", px, py, pz, ph);
+  std::printf("campaign teleport: primed world at (%.2f, %.2f, %.2f) heading %.4f rad%s\n", px, py, pz, ph,
+              authored ? " (as authored)" : "");
+}
+
+}  // namespace
+
+void prime_world_and_snap_vehicle(DriveSession& s, std::array<double, 3> target_pos, double target_heading) {
+  prime_world_and_snap_impl(s, target_pos, target_heading, false);
+}
+
+void prime_world_and_place_vehicle_as_authored(DriveSession& s, std::array<double, 3> target_pos,
+                                               double target_heading) {
+  prime_world_and_snap_impl(s, target_pos, target_heading, true);
+}
+
+void prime_world_at(DriveSession& s, double x, double z) {
+  // Streams the world around (x, z) without moving the car: a cutscene's
+  // places, before it plays (the original's CPrepareCutscene).
+  if (!s.host.streamer) return;
+  bool any_changed = false;
+  for (int wait_i = 0; wait_i < 2000 && s.host.streamer->gathering(); ++wait_i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    bool ch = false;
+    s.host.streamer->update(x, z, &ch, &s.app.error);
+    any_changed = any_changed || ch;
+  }
+  s.host.streamer->set_async(false);
+  s.host.streamer->set_hidden(s.host.hidden_sent);
+  bool ch = false;
+  s.host.streamer->update(x, z, &ch, &s.app.error);
+  any_changed = any_changed || ch;
+  s.host.streamer->set_async(s.host.streamer_async);
+  if (any_changed && s.host.streamer->prepared().has_value()) {
+    s.host.ground = &s.host.streamer->ground();
+    s.host.follower.set_ground(&s.host.streamer->ground());
+    s.host.set_staged_world();
+  }
+  std::printf("cutscene preload: primed world at (%.1f, %.1f)\n", x, z);
 }
 
 }  // namespace carview

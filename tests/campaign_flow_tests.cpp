@@ -310,11 +310,13 @@ void test_director_first_time_career() {
   check(!fmv.active() && !act.play_fmv, "no FMV at career start");
   check(!dir.flow().is_onboarding(), "no invented onboarding stage");
   check(dir.is_blocking_gameplay(), "controls screen blocks driving");
-  for (int i = 0; i < 6; ++i) dir.update(0.1, {0, 0}, fmv, nullptr, false, false);
-  dir.advance_or_skip(fmv, nullptr);
-  const auto a2 = dir.update(0.1, {0, 0}, fmv, nullptr, false, false);
-  check(dir.ftc().stage() == race::FtcStage::kOpeningCutscene, "confirm starts the opening");
-  check(a2.swap_car && a2.car_media == "VIP_Viper_13" && a2.teleport, "the Viper placed for the opening");
+  // The Viper is placed under the controls screen, which leaves once the
+  // opening has loaded (no button, no timer).
+  check(act.swap_car && act.car_media == "VIP_Viper_13" && act.teleport, "the Viper placed for the opening");
+  dir.update(0.1, {0, 0}, fmv, nullptr, false, false);
+  check(dir.ftc().stage() == race::FtcStage::kControls, "the controls screen while the opening loads");
+  dir.update(0.1, {0, 0}, fmv, nullptr, false, false);
+  check(dir.ftc().stage() == race::FtcStage::kOpeningCutscene, "the opening once loaded");
   check(!fmv.active(), "the opening is in-engine, not FMV_01");
   drive::DriveSave sv;
   dir.save_to_save(sv);

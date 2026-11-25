@@ -226,6 +226,26 @@ struct WorldCamera {
 // The world camera of a pose expressed in `frame`.
 WorldCamera to_world(const Pose& pose, const Frame& frame, bool in_cockpit = false);
 
+// PartSpace cams on the player car are relative to one of its parts
+// (headlightL/R, taillightL/R, wheelLF/RF/LR/RR on the disc): the part's
+// position in the car's body axes (+X right, +Y up, +Z forward, origin at
+// the car's ground point), keeping the car's heading. A PartSpace cam on a
+// camera target node ignores its part (the node has none).
+struct CarPart {
+  std::string name;
+  std::array<double, 3> pos{};
+};
+using CarParts = std::vector<CarPart>;
+// The part (case-insensitive); false when the car has no such part.
+bool find_part(const CarParts& parts, std::string_view name, std::array<double, 3>& out);
+// The frame of a car part on a car frame.
+Frame part_frame(const Frame& car, const std::array<double, 3>& part_pos);
+
+// CCutscenePlaceCarTrigger's initialSpeed is in miles per hour (the
+// original converts it with 0.44704 before setting the car's velocity).
+inline constexpr double kMphToMps = 0.44704;
+inline double place_speed_mps(const Event& e) { return e.number("initialSpeed") * kMphToMps; }
+
 // ---- Playback ----
 
 // A cutscene being played: advances time, fires each event once as the
@@ -258,10 +278,14 @@ class Player {
 
   // The evaluated sample at the current (wrapped) time.
   Sample current() const;
-  // The frame a cam is relative to, given the player car's frame.
-  Frame frame_for(const Cam& cam, const Frame& player_car) const;
+  // The frame a cam is relative to, given the player car's frame: its target
+  // node (resolved by name when the cut runs: a node trigger already fired,
+  // else the cutscene's trigger of that name), or the player car, offset to
+  // the part the cam's key at `local_t` names for a PartSpace cam.
+  Frame frame_for(const Cam& cam, const Frame& player_car, const CarParts* parts = nullptr,
+                  double local_t = 0.0) const;
   // The current world camera (false when not active or the cutscene has no cams).
-  bool world_camera(const Frame& player_car, WorldCamera& out) const;
+  bool world_camera(const Frame& player_car, WorldCamera& out, const CarParts* parts = nullptr) const;
   const std::vector<std::pair<std::string, Frame>>& nodes() const { return nodes_; }
 
  private:

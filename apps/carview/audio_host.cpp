@@ -1593,6 +1593,11 @@ bool AudioHost::play_ui(std::string_view play, std::string_view scene) {
   return true;
 }
 
+void AudioHost::activate_mix_snapshot(std::string_view name) {
+  if (!engine_.has_snapshot_matrix() || engine_.find_matrix_snapshot(name) < 0) return;
+  engine_.activate_matrix_snapshot(name);
+}
+
 void AudioHost::trigger_satnav(audio::SatNavCue cue) {
   if (cfg_.satnav_on) engine_.trigger_satnav(cue);
 }

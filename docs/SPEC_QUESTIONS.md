@@ -1734,8 +1734,10 @@ displayed popularity rank (pause menu or HUD disc) next to the header
 word of the same save, or the reader of this member in the generated
 code. Also open: `CHorizonDialoguesState` (hashed line keys, kept as
 bytes; the engine seeds its own heard-dialogue keys from the career
-instead) and the meaning of `CFirstTimeCareerState` stages other than 1
-and 2 (both finished saves read stage 8).
+instead). `CFirstTimeCareerState`'s stage is answered by Q66: the value
+is the activity's stage, and a finished save reads 8 because the drive
+to Race Central is the last stage that saves (Race Central, 9, never
+does).
 
 ## Q61 (M6/INTRO, not blocking): cutscene camera details
 
@@ -1748,70 +1750,120 @@ as the vertical angle like the driving cameras; (c) post-effect keys
 curve taken as smoothstep; (e) CWhiteFlash shown as white fading over
 0.1 s (about 6 frames, UI_LAYOUTS) and CBlackOut as an instant cut held
 until the next fade or cutscene; (f) PlacePlayerCar `initialSpeed` unit
-(read as km/h) and `timeTillRelease`; (g) whether in-engine cutscenes can
-be skipped (the engine does not skip them; FMV_01/FMV_02 skip with
+and `timeTillRelease` (**answered 2026-11-25**: mph; the place-car
+trigger scales it by 0.44704 into the car's velocity along its heading,
+and `timeTillRelease` is when the parking brake lets go; the placement
+keeps the authored x/z and heading and drops the car onto the surface
+nearest the authored height, ray +-1000 m, normal.y >= 0.2; PartSpace
+cams are relative to the named car part, and to a target node with the
+part ignored); (g) whether in-engine cutscenes can be skipped (the engine does not skip them; FMV_01/FMV_02 skip with
 confirm, as `confirmskip="true"`). A trace of the post-effect blend and
 the white-flash state, or a capture at a cut, answers (a)-(e).
 
 ## Q62 (M6/INTRO): scoring the race to the festival
 
-FirstTimeCareer.xml has `RacePointsRequired Points="6"`, six
-TicketTriggers, RadioDJTriggers and First50TicketsDistances (remaining
-distance fraction to tickets 10..2). Engine interim: the "Heats Places
-Remaining" counter follows the straight-line distance left to
-EndRacePosition through that table, the DJ's FestivalTicketsDepleting<n>
-lines fire as it drops, and the race cannot be lost (the table never
-reaches 0). Needed: (a) what the distance is measured along (route,
-straight line, trigger order); (b) what RacePointsRequired counts and
-whether the player can fail; (c) what the TicketTriggers and
-RadioDJTriggers ids 1001-1005 fire.
+**Answered 2026-11-25** (read from the first-time-career activity's update
+and its zone setup in the generated code; implemented in libs/race
+first_time_career.*). The "Heats Places Remaining" counter is not a
+distance: it starts at 10 and each TicketTrigger the player enters takes
+one place, never under 1; after the player passes the last stretch's
+zone (around -701, 46, -1501, 20 m), non-traffic AI cars reaching the
+EndRacePosition zone take places too. First50TicketsDistances and
+RacePointsRequired are loaded and never read, so (b) the race cannot be
+lost. (c) RadioDJTriggers 1001-1005 and the FreeTicketsTrigger (1003)
+play nothing (no RadioDJ request has those ids; 1005 is commented out in
+the file); the FreeTicketsTrigger re-routes the sat-nav from TollBooth to
+BeyondTollBooth. The DJ's FestivalTicketsDepleting<count> lines play once
+each, only before the last stretch and only when the DJ is idle; at one
+place left the giveaway reminders follow; the last stretch's zone stops
+the DJ. The counter's HUD (CHudStatusTicketCountdown) is created as the
+race starts (stage 2 to 3) and removed at the festival. Engine interim,
+narrow: the AI cars' places (the engine's traffic has no festival
+racers on that road yet) and the reminder delays (30 s and 60 s).
 
 ## Q63 (M6/INTRO): tutor prompts in the first drive
 
-Strings (IDS_Accelerate_Message, IDS_Steering_Message, IDS_View_Message,
-IDS_Button_to_Rewind) and the GlobalRegistry FirstTimeCareer timers
-(AccelerateTextTimerLimit 3, BrakeTextTimerLimit 3, MapText* 3/15,
-RewindTextTimerLimit 3, EBrake thresholds) are known; the sequence is
-not. Engine interim: only the accelerate prompt, shown from the hand-over
-until the throttle has been held 3 s. Needed: the prompt order, each
-prompt's show and clear condition, and where the brake, e-brake, rewind,
-camera and map prompts start.
+**Answered 2026-11-25** (the driving tutor's update in the generated
+code; implemented in libs/race driving_tutor.*). The tutor is a state
+machine over the CTutorialMessages hints, table HelpButtons
+(IDS_InputHint_<X>_L "PRESS", the button glyph, IDS_InputHint_<X>_R):
+accelerate from the hand-over until the throttle passes 0.01; then the
+brake hint after BrakeDelay (10 s) for BrakeMessageTimeout (5 s); then
+idle, where a crash with rewind available shows the rewind hint for
+RewindMessageTimeout (5 s; cool-down 30 s, ten times at most), and over
+50 mph within 110 m of a sat-nav left or right turn shows the e-brake
+hint for EBrakeTimeout (6.5 s; cool-down 30 s, ten times), followed once
+by the camera hint (ChangeCameraMessageTimeout 5 s, a crash after 2 s
+switches it to the rewind hint). Using rewind or the e-brake ends that
+hint for good. The tutor is activated at the hand-over and nothing turns
+it off. The FM4-era strings (IDS_Accelerate_Message and the like) are not
+used. The map hint (IDS_InputHint_Map_*) replaces the sat-nav popup when
+Kinect is off, after the first Autoshow. Engine interim, narrow: the
+turn test reads the guidance's next manoeuvre as "left or right, normal
+or sharp", and the map hint stays up 5 s.
 
 ## Q64 (M6/INTRO): the first Autoshow restriction
 
-RaceCentralArrive wraps `autoshows.root` in
-CSetRestrictionsForFirstAutoshow true/false. Engine interim: the
-Autoshow opens with the restricted flag set and no rule applied. Needed:
-what the restriction is (car list, price cap, class, a forced pick) and
-whether leaving without buying is allowed.
+**Answered 2026-11-25** (the restriction's state in the generated code).
+CSetRestrictionsForFirstAutoshow true limits the car list to Id IN
+(1323, 1009) (SUB_WRXSTi_11, MIT_LancerEvoXGSR_08), ordered by class
+then PI; the preview car is 1323; Back is disabled and hidden, so the
+player must buy; the "keep shopping?" prompt after buying is skipped.
+The engine's Autoshow tutorial mode lists those two; interim, narrow:
+the order and the preview car follow the tutorial mode's own sort. The
+AutoshowPreFirstYellowEvent VO state is not referenced.
 
 ## Q65 (M6/INTRO): the opening credits
 
-SetupFestivalDrive runs ShowOpeningCredits while New_Diner_Cutscene_2
-plays (the H_OPENING_TITLES scene, probable). Engine interim: a flag for
-the length of that cutscene and no credit text. Needed: the scene, its
-text source and timing (per card or a fixed list), and when it hides.
+**Partly answered 2026-11-25.** ShowOpeningCredits opens the scene
+H_OPENING_TITLES (a CEmptyScene) while New_Diner_Cutscene_2 plays; the
+scene holds only textures (OPENINGTITLES: TITLEMICROSOFT, TITLETURN10,
+TITLEPLAYGROUND, HORIZONLOGO and their shadows), no text. It stays open
+after its state exits and closes with the HUD as the race to the festival
+starts (probable). Still open: the timing and placement, which are the
+scene's BGF animation (not decoded). Engine interim: the four cards in
+turn, 4 s each with half-second fades, centred.
 
 ## Q66 (M6/INTRO): stage order and triggers around the Heats
 
-The flow files give the steps inside each first-time-career state but
-not every hand-off between states, which is code. Engine interims, each
-marked `interim` in libs/race first_time_career.*: (a) the controller
-loading screen leaves on confirm or after 6 s; (b) the Viper drive ends
-within 40 m of FirstTimeCareer StartPosition (the save finding says stage
-1 has a route and an arrival trigger; route 170's end is also accepted);
-(c) the race to the festival ends within 40 m of EndRacePosition; (d)
-the All Comers heats (AllComerRaces 76 then 77, AllComerFinal 77, top 3
-to pass, the final retried otherwise) are launched directly after
-Radio_Unlock, before the drive to Race Central (FMV_01 says the player
-made the heats; FMV_02 that they bagged the last slot; the
-Do_All_Comers_Heat and Travel_To_RaceCentral instructions); the task list
-puts the Heats after the SatNav tutorial, which this contradicts; (e)
-Race Central's arrival point is Wristband_Intro's player placement,
-within 40 m; (f) MustangRace 101 and Travel_To_Workshop are unused.
-Needed: the state transitions of the first-time career activity (stages
-1, 2, 7 and 10 are its save checkpoints) with their triggers, and
-whether the heats are driven to or launched.
+**Answered 2026-11-25** (the first-time-career activity's update and
+save in the generated code; implemented in libs/race first_time_career.*).
+The activity's stage value runs: 0 the opening and the initial drive;
+1 the diner; 2 the drive set-up; 3 the race to the festival; 4 and 6 the
+festival arrival flow; 7 the Horizon Heats; 10 then 12 the Red Rock
+showcase; 8 the drive to Race Central; 9 Race Central. It saves at
+stages 1, 7, 12 and 8 (9 is never saved, so a finished career reads 8).
+(a) The controller loading screen leaves when the opening has loaded, on
+no timer or button (probable). (b) The initial drive ends in either of
+the diner's arrival spheres ((1709, 117.8, -1718) and (1486, 115, -2024),
+10 m); the approach spheres before them (20 m) remove the traffic and
+load NEW_Diner_Cutscene_1. (c) The race ends in a 20 m sphere at
+EndRacePosition or at (-945.9, -1, -647.2). (d) The heats are driven to:
+a 27 m sphere at the FESTIVAL_SECOND_NODE race activation signs up the
+final (AllComerFinal 77; Race1ID 76 has no Events row); a result place
+under 4 moves on, else the final is retried. Then the activity places
+the player by the heats at 15:48 and the Red Rock showcase (MustangRace
+101) follows the same way; after it the player is placed by the plane
+race and drives to Race Central. (e) Race Central's arrival is the Race
+Central activity's own callback. (f) Travel_To_Workshop is stage 5's
+instruction (unused by the flow). While the career holds the controls
+the player's car is driven by a race behaviour on the opening's route.
+Engine interims, narrow: whether the result place is 0- or 1-based (the
+engine reads 1st to 3rd as passing); Race Central's arrival radius (the
+catalogue's site radius); the AI drives the sat-nav route rather than
+route 170's own path; the two time-of-day zones ((-116, 107, -3377) and
+(2284, 109.9, 398.1), ramping to 18:00 and 14:30) are not implemented.
+The initial drive's sat-nav has three points (CSetDestForInitialDrive);
+the engine's sat-nav takes one destination, so the career routes leg by
+leg, (1552, 1436) then (1881, 1077) then the diner point, each leg ending
+60 m short of its point (the order is read from the road: CO-20 passes
+the first about 490 m before the second; the code's order of use is not
+decoded). The opening's AI plans its speed on the rounded-off sat-nav
+line at 6.5 m/s^2 of cornering, capped at the 100 mph PlacePlayerCar
+gives it (the original's race-behaviour speed is not found), and only
+the opening's cutscene keeps the car's physics running under it (the
+diner cutscenes and Festival_Race_Outro keep the paused sim);
+`timeTillRelease`'s parking brake is not applied (Q61 f).
 
 ## Q67 (polish, not blocking): the camera's collision pulses
 

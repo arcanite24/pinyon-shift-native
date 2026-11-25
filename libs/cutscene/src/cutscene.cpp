@@ -522,20 +522,46 @@ Sample Player::current() const {
   return sample(*cs_, t_);
 }
 
-Frame Player::frame_for(const Cam& cam, const Frame& player_car) const {
+bool find_part(const CarParts& parts, std::string_view name, std::array<double, 3>& out) {
+  for (const auto& p : parts)
+    if (ieq(p.name, name)) {
+      out = p.pos;
+      return true;
+    }
+  return false;
+}
+
+Frame part_frame(const Frame& car, const std::array<double, 3>& part_pos) {
+  const auto off = rotate_heading(part_pos, car.heading_deg * kDeg);
+  return {{car.origin[0] + off[0], car.origin[1] + off[1], car.origin[2] + off[2]}, car.heading_deg};
+}
+
+Frame Player::frame_for(const Cam& cam, const Frame& player_car, const CarParts* parts, double local_t) const {
   if (!cam.target_name.empty()) {
     for (const auto& [n, f] : nodes_)
       if (ieq(n, cam.target_name)) return f;
+    // Not fired yet (a seek, or a cut that starts with its node): the
+    // cutscene's node trigger of that name.
+    if (cs_)
+      for (const auto& e : cs_->events)
+        if (e.type == EventType::kCameraNode && ieq(e.name, cam.target_name)) return {e.position(), e.rotation_deg()};
+  }
+  if (cam.pos_space == AnimSpace::kPartSpace && parts && !cam.keys.empty()) {
+    const double u = key_parameter(cam.keys, local_t);
+    const size_t k = std::min(cam.keys.size() - 1, size_t(std::max(0.0, std::floor(u + 0.5))));
+    std::array<double, 3> p{};
+    if (find_part(*parts, cam.keys[k].car_part, p) || find_part(*parts, cam.keys[0].car_part, p))
+      return part_frame(player_car, p);
   }
   return player_car;
 }
 
-bool Player::world_camera(const Frame& player_car, WorldCamera& out) const {
+bool Player::world_camera(const Frame& player_car, WorldCamera& out, const CarParts* parts) const {
   if (!cs_ || cs_->cams.empty()) return false;
   const Sample s = current();
   if (s.cam_index < 0) return false;
   const Cam& cam = cs_->cams[size_t(s.cam_index)];
-  out = to_world(s.pose, frame_for(cam, player_car), cam.in_cockpit);
+  out = to_world(s.pose, frame_for(cam, player_car, parts, s.local_time), cam.in_cockpit);
   return true;
 }
 

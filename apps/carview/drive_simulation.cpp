@@ -798,9 +798,15 @@ bool DriveSession::step(const drive::Input& user_in) {
         drive::Input eff_user_in = user_in;
         if (app.campaign.ftc_active()) {
           ftc_throttle = user_in.throttle;
-          // Controls off while the flow drives (no AI takeover yet: the car
-          // coasts; interim, SPEC_QUESTIONS Q66).
-          if (!app.campaign.ftc().controls_enabled()) eff_user_in = drive::Input{};
+          ftc_handbrake = ftc_handbrake || user_in.handbrake;
+          // Controls off while the flow drives: the AI drives the player's
+          // car on the route (the opening, the festival arrival), else the
+          // car is held.
+          if (!app.campaign.ftc().controls_enabled())
+            eff_user_in = app.campaign.ftc().ai_driving() ? ftc_autopilot_input() : drive::Input{};
+        } else if (app.campaign.tutor().active()) {
+          ftc_throttle = user_in.throttle;
+          ftc_handbrake = ftc_handbrake || user_in.handbrake;
         }
         if (hold_for_reset_fade) {
           eff_user_in = drive::Input{};
@@ -1102,7 +1108,8 @@ bool DriveSession::step(const drive::Input& user_in) {
             }
           }
         }
-        const bool smashed_sign = free_roam_step();
+        // Free roam's discoveries wait for the player's own driving.
+        const bool smashed_sign = app.campaign.cutscene_drives_player() ? false : free_roam_step();
         if (smashed_sign) club_pending.smashables.push_back("sign");
         if (host.free_roam && host.free_roam->hidden()) app.smashables.sync_barns_from_hidden(*host.free_roam->hidden());
         bool smashed_prop = smashed_sign;
@@ -1270,7 +1277,9 @@ bool DriveSession::step(const drive::Input& user_in) {
           host.particle_sys.step(float(drive::Vehicle::kStep), {0.707f, 0.0f, 0.707f}, 1.45f);
         }
         // SPEC-SKILLS-POPULARITY: step driving skill detectors in free roam and active races.
-        if (app.skill_tracker && (!app.race || (app.race->session().started() && !app.race->player_finished()))) {
+        // No skills while the career's AI drives the car under a cutscene.
+        if (app.skill_tracker && !app.campaign.cutscene_drives_player() &&
+            (!app.race || (app.race->session().started() && !app.race->player_finished()))) {
           freeroam::SkillInput si;
           si.dt = drive::Vehicle::kStep;
           si.time = vehicle.time();

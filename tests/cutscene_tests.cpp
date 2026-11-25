@@ -74,6 +74,27 @@ const char* kDoc = R"(<?xml version="1.0"?>
       </Event>
     </Events>
   </Cutscene>
+  <Cutscene name="Parts" PlaybackMode="Normal" Duration="4.0" MirrorForRightHandDrive="0" LoopFrom="0.0">
+    <Cams CutQueueType="Cutscene" NumCams="2">
+      <Cam Version="3" Group="0" Type="Animateable" StartCut="0.0" TargetName="" duration="2.0">
+        <Anim PosAnimType="PartSpace" RotAnimType="CarSpace" TimeAnimType="AffectsPath" IsInCockpit="0" NumKeys="2">
+          <Key Time="0.0" PosX="0" PosY="0" PosZ="1" Yaw="0" Pitch="0" Roll="0" FOV="40" TimeC0="0" CarPart="headlightL"/>
+          <Key Time="2.0" PosX="0" PosY="0" PosZ="1" Yaw="0" Pitch="0" Roll="0" FOV="40" TimeC0="0" CarPart="headlightL"/>
+        </Anim>
+      </Cam>
+      <Cam Version="3" Group="0" Type="Animateable" StartCut="2.0" TargetName="Late_Node" duration="2.0">
+        <Anim PosAnimType="PartSpace" RotAnimType="CarSpace" TimeAnimType="AffectsPath" IsInCockpit="0" NumKeys="2">
+          <Key Time="0.0" PosX="0" PosY="0" PosZ="0" Yaw="0" Pitch="0" Roll="0" FOV="40" TimeC0="0" CarPart="wheelRR"/>
+          <Key Time="2.0" PosX="0" PosY="0" PosZ="0" Yaw="0" Pitch="0" Roll="0" FOV="40" TimeC0="0" CarPart="wheelRR"/>
+        </Anim>
+      </Cam>
+    </Cams>
+    <Events>
+      <Event time="3.0">
+        <EventTrigger name="Late_Node" id="CCutsceneCameraNodeTrigger" x="50" y="0" z="0" rotation="0"/>
+      </Event>
+    </Events>
+  </Cutscene>
 </CutsceneManager>
 )";
 
@@ -81,7 +102,7 @@ void test_parse() {
   cutscene::Library lib;
   std::string err;
   check(cutscene::parse_cutscenes(kDoc, lib, &err), "parses the synthetic document");
-  check(lib.cutscenes.size() == 2, "two cutscenes");
+  check(lib.cutscenes.size() == 3, "three cutscenes");
   const auto* eo = lib.find("eventsonly");
   check(eo && eo->cams.empty() && eo->declared_cams == 0 && eo->events.size() == 1, "events-only cutscene keeps its event");
   const auto* cs = lib.find("Test_Scene");
@@ -238,6 +259,36 @@ void test_player_and_world() {
         "heading 180 mirrors the local axes");
 }
 
+void test_parts_and_nodes() {
+  cutscene::Library lib;
+  std::string err;
+  cutscene::parse_cutscenes(kDoc, lib, &err);
+  const auto* cs = lib.find("Parts");
+  check(cs != nullptr, "parts cutscene parsed");
+  if (!cs) return;
+  cutscene::Player pl;
+  pl.start(cs);
+  pl.step(0.0);
+  const cutscene::CarParts parts = {{"headlightL", {-0.7, 0.6, 2.0}}, {"wheelRR", {0.8, 0.3, -1.3}}};
+  cutscene::WorldCamera w;
+  // Car at the origin facing +X (heading 90): the left headlight is at
+  // world (2, 0.6, 0.7); the cam 1 m ahead of it.
+  const cutscene::Frame car{{0, 0, 0}, 90};
+  check(pl.world_camera(car, w, &parts) && near(w.eye[0], 3.0, 1e-9) && near(w.eye[1], 0.6, 1e-9) &&
+            near(w.eye[2], 0.7, 1e-9),
+        "PartSpace cam follows its car part");
+  check(pl.world_camera(car, w) && near(w.eye[0], 1.0, 1e-9), "no parts: the car's origin");
+  // The second cut targets a node whose trigger fires later: resolved by
+  // name, its part ignored.
+  pl.step(2.5);
+  check(pl.world_camera(car, w, &parts) && near(w.eye[0], 50.0, 1e-9) && near(w.eye[2], 0.0, 1e-9),
+        "a node not fired yet is found by name; its part is ignored");
+  // initialSpeed is mph.
+  cutscene::Event e;
+  e.attributes = {{"initialSpeed", "100"}};
+  check(near(cutscene::place_speed_mps(e), 44.704, 1e-9), "initialSpeed 100 mph is 44.704 m/s");
+}
+
 }  // namespace
 
 int main() {
@@ -245,6 +296,7 @@ int main() {
   test_interpolation();
   test_post_and_fades();
   test_player_and_world();
+  test_parts_and_nodes();
   if (g_failures) {
     std::fprintf(stderr, "cutscene_tests: %d failure(s)\n", g_failures);
     return 1;

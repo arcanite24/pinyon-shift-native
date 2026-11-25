@@ -123,8 +123,9 @@ void DriveSession::apply_story_action(const StoryAction& sa) {
               }
             }
             if (sa.enter_title_screen && !app.no_title) app.show_title = true;
-            if (sa.swap_car && !sa.car_media.empty() && sa.car_media != app.car) {
-              if (std::find(app.baked_cars.begin(), app.baked_cars.end(), sa.car_media) != app.baked_cars.end()) {
+            if (sa.swap_car && !sa.car_media.empty() && lower_ascii(sa.car_media) != lower_ascii(app.car)) {
+              // The baked names are lower case; the story names the disc's.
+              if (const std::string baked = find_baked_car(sa.car_media, 0); !baked.empty()) {
                 if (sa.teleport) {
                   app.spawn[0] = sa.pos[0];
                   app.spawn[1] = sa.pos[1];
@@ -133,7 +134,7 @@ void DriveSession::apply_story_action(const StoryAction& sa) {
                   app.have_spawn = true;
                   app.fast_travel = true;
                 }
-                app.next_car = sa.car_media;
+                app.next_car = baked;
                 running = false;
                 return;
               }
@@ -185,6 +186,15 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
             std::string swap_target;
             if (ca.swap_car && !ca.car_media.empty()) {
               swap_target = find_baked_car(ca.car_media, ca.car_id);
+              if (swap_target.empty()) {
+                // The career cannot go on in the right car: say which one.
+                std::fprintf(stderr,
+                             "carview: error: the campaign needs %s (car %lld), which is not baked; bake it with "
+                             "tools/setup.py <game> --cars %s\n",
+                             ca.car_media.c_str(), (long long)ca.car_id, ca.car_media.c_str());
+                notice = "CAR NOT BAKED: " + ca.car_media;
+                notice_until = vehicle.time() + 8;
+              }
             }
             const bool needs_swap = !swap_target.empty() && lower_ascii(swap_target) != lower_ascii(app.car);
             if (needs_swap) {
@@ -608,8 +618,9 @@ void DriveSession::run_window_loop() {
             app.audio_host.radio_set_time_of_day(app.tod_clock.hour());
           }
           const bool trainer_freecam_active = slice12.trainer.effective_free_camera();
+          const bool campaign_paused = app.campaign.is_blocking_gameplay() && !app.campaign.cutscene_drives_player();
           const bool menu_paused = app.show_title || app.fmv_player.active() || loading_screen.active() || ceremony.active ||
-                                   app.campaign.is_blocking_gameplay() || grid_menu_open || menu.open ||
+                                   campaign_paused || grid_menu_open || menu.open ||
                                    map_open || events_page.is_open() || outpost_hub_open || garage_open ||
                                    shop.is_open() || autoshow.is_open() || career_page.is_open() ||
                                    settings_page.is_open() || paint_open || club_open || car_club_open || app.rally_hub_open ||
@@ -834,6 +845,11 @@ void DriveSession::run_window_loop() {
           }
           if (!sim_paused) {
             accumulator += frame_dt * game_spd;
+          } else {
+            // The world streamed for a teleport or a cutscene's placement
+            // under a paused screen still swaps in (the step polls it only
+            // while the car runs; the career waits on it).
+            host.showroom.poll_world(false, nullptr);
           }
           last_tick_ns = now;
           // P0-G1: Hot-reload DriveSave + CareerGarage from disk after SaveProfilePage restore/import/profile switch

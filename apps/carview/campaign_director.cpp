@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include "audio_host.h"
 
@@ -48,6 +49,36 @@ bool ftc_stage_for_legacy(std::string_view s, race::FtcStage& out) {
 }
 
 constexpr std::string_view kFtcSavePrefix = "ftc:";
+
+// CCutsceneAudioTrigger: the trigger's event is a ui4audio play name
+// (CS_OpeningSequence, CS_WristbandIntro...). AudioHost plays ui4audio names
+// once the audio branch's play_ui is in; until then the sting is silent.
+template <class Host>
+bool play_ui_name(Host* audio, std::string_view play) {
+  if constexpr (requires(Host* a, std::string_view n) { a->play_ui(n); }) {
+    return audio->play_ui(play);
+  } else {
+    (void)audio;
+    static bool told = false;
+    if (!told) {
+      told = true;
+      std::fprintf(stderr, "carview: cutscene audio trigger %.*s: no ui4audio playback on this build (silent)\n",
+                   int(play.size()), play.data());
+    }
+    return false;
+  }
+}
+
+// The first place a cutscene frames: its first player-car placement or
+// camera node.
+bool first_place(const cutscene::Cutscene& cs, std::array<double, 3>& out) {
+  for (const auto& e : cs.events)
+    if (e.type == cutscene::EventType::kPlacePlayerCar || e.type == cutscene::EventType::kCameraNode) {
+      out = e.position();
+      return true;
+    }
+  return false;
+}
 
 FmvMovieId movie_for_cutscene(race::CutsceneKind kind) {
   switch (kind) {
@@ -124,9 +155,15 @@ void CampaignDirector::save_to_save(drive::DriveSave& save) const {
   save.unlocked_showcases = std::move(st.unlocked_showcases);
   save.finale_complete = st.finale_complete;
   if (ftc_.active() || ftc_resume_pending_) {
-    const race::FtcStage s = ftc_resume_pending_ ? ftc_resume_stage_ : ftc_.stage();
-    save.campaign_stage = std::string(kFtcSavePrefix) + race::ftc_stage_name(s);
-    save.intro_completed = false;
+    // The activity's last save checkpoint (none before the diner).
+    const race::FtcStage s = ftc_resume_pending_ ? ftc_resume_stage_ : ftc_.checkpoint();
+    if (s != race::FtcStage::kComplete) {
+      save.campaign_stage = std::string(kFtcSavePrefix) + race::ftc_stage_name(s);
+      save.intro_completed = false;
+      return;
+    }
+    // The rewards are in (the yellow wristband): the career is over.
+    save.intro_completed = true;
     return;
   }
   if (!flow_.is_onboarding()) save.intro_completed = true;
@@ -180,7 +217,50 @@ race::CampaignAction CampaignDirector::start_new_career(FmvPlayer& fmv, AudioHos
   cutscenes_.ensure_loaded(game_root_);
   ftc_resume_pending_ = false;
   ftc_pending_.clear();
+  tutor_ = race::DrivingTutor{};
+  prime_ftc_world();
   return apply_ftc(ftc_.start(), fmv, audio);
+}
+
+void CampaignDirector::prime_ftc_world() {
+  if (!catalog_) return;
+  // The heats final signs up in the FESTIVAL_SECOND_NODE race activation's
+  // 27 m sphere; the showcase at its own trigger.
+  if (const auto* ev = catalog_->find_event_by_id(race::FirstTimeCareer::kAllComerFinal))
+    ftc_.set_event_trigger(ev->event_id, ev->trigger_pos, race::FirstTimeCareer::kHeatsSignUpRadius);
+  if (const auto* ev = catalog_->find_event_by_id(race::FirstTimeCareer::kMustangRace))
+    ftc_.set_event_trigger(ev->event_id, ev->trigger_pos, ev->trigger_radius);
+  if (const auto* rc = catalog_->find_site(race::FestivalSite::kRaceCentral)) ftc_.set_race_central(rc->pos, rc->radius);
+}
+
+std::vector<CampaignDirector::CutsceneCar> CampaignDirector::take_cutscene_cars() {
+  std::vector<CutsceneCar> out;
+  out.swap(cutscene_cars_);
+  return out;
+}
+
+std::vector<std::array<double, 3>> CampaignDirector::take_cutscene_preloads() {
+  std::vector<std::array<double, 3>> out;
+  out.swap(cutscene_preloads_);
+  return out;
+}
+
+void CampaignDirector::update_tutor(double dt) {
+  map_hint_left_ = std::max(0.0, map_hint_left_ - std::max(0.0, dt));
+  if (!tutor_.active()) return;
+  // The hints wait while the player has no control (cutscenes, screens).
+  if (cutscenes_.active() || (ftc_.active() && !ftc_.controls_enabled()) || ftc_in_.screen_open) return;
+  race::TutorInput t;
+  t.dt = dt;
+  t.throttle = ftc_in_.throttle;
+  t.speed_mps = ftc_in_.speed_mps;
+  t.impact = ftc_in_.impact;
+  t.rewind_available = ftc_in_.rewind_available;
+  t.rewind_pressed = ftc_in_.rewind_pressed;
+  t.ebrake_pressed = ftc_in_.ebrake_pressed;
+  t.turn_ahead = ftc_in_.turn_ahead;
+  t.turn_distance_m = ftc_in_.turn_distance_m;
+  tutor_.update(t);
 }
 
 std::vector<race::FtcCommands> CampaignDirector::take_ftc_commands() {
@@ -221,6 +301,9 @@ bool CampaignDirector::take_stream_anchor(const std::array<double, 3>& car_pos, 
 
 bool CampaignDirector::start_cutscene_capture(std::string_view name, double t) {
   if (!cutscenes_.ensure_loaded(game_root_) || !cutscenes_.play(name, false)) return false;
+  // The cutscene's area streams first, as before the original plays one.
+  std::array<double, 3> at{};
+  if (cutscenes_.current() && first_place(*cutscenes_.current(), at)) cutscene_preloads_.push_back(at);
   handle_cutscene_events(cutscenes_.seek_and_freeze(t), nullptr);
   place_speed_ = 0.0;  // a still frame: the car stays where it is placed
   return true;
@@ -233,15 +316,37 @@ void CampaignDirector::handle_cutscene_events(const std::vector<const cutscene::
         place_pending_ = true;
         place_pos_ = e->position();
         place_heading_ = e->rotation_deg() * kPi / 180.0;
-        // initialSpeed read as km/h (interim, SPEC_QUESTIONS Q61 f).
-        place_speed_ = e->number("initialSpeed") / 3.6;
+        place_speed_ = cutscene::place_speed_mps(*e);  // initialSpeed is mph
         break;
       case cutscene::EventType::kVoiceOver:
         if (audio && !e->attr("event").empty()) audio->trigger_vo(e->attr("event"), false);
         break;
+      case cutscene::EventType::kAudio:
+        if (audio && !e->attr("event").empty()) play_ui_name(audio, e->attr("event"));
+        break;
+      case cutscene::EventType::kMixSnapshot:
+        if (audio && !e->attr("snapshot").empty()) audio->activate_mix_snapshot(e->attr("snapshot"));
+        break;
+      case cutscene::EventType::kCar: {
+        CutsceneCar car;
+        car.name = e->name;
+        car.car_id = int64_t(e->number("CarID"));
+        car.pos = e->position();
+        car.heading_rad = e->rotation_deg() * kPi / 180.0;
+        cutscene_cars_.push_back(std::move(car));
+        break;
+      }
+      case cutscene::EventType::kReleaseCar: {
+        CutsceneCar car;
+        car.name = e->attr("carName", e->name);
+        car.release = true;
+        car.speed_mps = cutscene::place_speed_mps(*e);
+        cutscene_cars_.push_back(std::move(car));
+        break;
+      }
       default:
-        // CCutsceneAudioTrigger stings (UIInGame/UI/Cutscenes), mixer
-        // snapshots, cars, animations: no engine backend yet (interim).
+        // Animations (props, people) and the driver show / hide: no engine
+        // backend yet (interim).
         break;
     }
   }
@@ -254,6 +359,17 @@ race::CampaignAction CampaignDirector::apply_ftc(const race::FtcCommands& c, Fmv
   if (ftc_.stage() != ftc_last_stage_ && c.fades.empty()) cutscenes_.clear_fade();
   ftc_last_stage_ = ftc_.stage();
   for (const auto& f : c.fades) cutscenes_.fade(f);
+  if (c.activate_tutor) tutor_.activate();
+  // The map hint: on screen as long as a tutor hint (interim, Q63).
+  if (c.show_map_hint) map_hint_left_ = race::DrivingTutor::kBrakeMessageTimeout;
+  if (c.open_autoshow && c.autoshow_restricted) ftc_autoshow_restricted_ = true;
+  if (!c.preload_cutscene.empty() && cutscenes_.ensure_loaded(game_root_)) {
+    // CPrepareCutscene: the world around the cutscene's first place streams
+    // before it plays.
+    std::array<double, 3> at{};
+    if (const auto* cs = cutscenes_.library().find(c.preload_cutscene); cs && first_place(*cs, at))
+      cutscene_preloads_.push_back(at);
+  }
   if (!c.play_movie.empty()) cutscenes_.clear_fade();
   if (c.stop_cutscene) cutscenes_.stop();
   if (!c.play_cutscene.empty()) {
@@ -269,6 +385,7 @@ race::CampaignAction CampaignDirector::apply_ftc(const race::FtcCommands& c, Fmv
     }
   }
   if (audio) {
+    for (const auto& m : c.mix_snapshots) audio->activate_mix_snapshot(m);
     for (const auto& v : c.vo) audio->trigger_vo(v, false);
     for (const auto& d : c.dj_lines) audio->radio_trigger_immediate(d);
   }
@@ -303,9 +420,14 @@ race::CampaignAction CampaignDirector::update_ftc(double dt, FmvPlayer& fmv, Aud
   if (ftc_resume_pending_) {
     ftc_resume_pending_ = false;
     cutscenes_.ensure_loaded(game_root_);
+    prime_ftc_world();
+    // A save past the hand-over: the tutor is already on.
+    tutor_ = race::DrivingTutor{};
+    if (ftc_resume_stage_ > race::FtcStage::kInitialDrive) tutor_.activate();
     return apply_ftc(ftc_.resume(ftc_resume_stage_), fmv, audio);
   }
   if (ftc_in_.loading) return {};
+  update_tutor(dt);
   bool vo_playing = false;
   if (audio) vo_playing = audio->telemetry().vo_playing;
   handle_cutscene_events(cutscenes_.update(dt, vo_playing), audio);
@@ -320,6 +442,7 @@ race::CampaignAction CampaignDirector::update_ftc(double dt, FmvPlayer& fmv, Aud
   in.race_finished = ftc_race_finished_;
   in.race_event_id = ftc_race_event_;
   in.race_place = ftc_race_place_;
+  in.racing = ftc_in_.racing;
   ftc_confirm_ = false;
   ftc_race_finished_ = false;
   auto act = apply_ftc(ftc_.update(in), fmv, audio);
@@ -341,6 +464,9 @@ bool CampaignDirector::apply_cli_stage(std::string_view cli_stage, FmvPlayer& fm
     race::CampaignAction none;
     flow_.jump_to_cli_stage("freeroam", none);
     cutscenes_.ensure_loaded(game_root_);
+    prime_ftc_world();
+    tutor_ = race::DrivingTutor{};
+    if (fs > race::FtcStage::kInitialDrive) tutor_.activate();
     out_action = apply_ftc(ftc_.resume(fs), fmv, audio);
     return true;
   }
@@ -372,6 +498,7 @@ race::CampaignAction CampaignDirector::update(double dt, std::array<double, 2> p
   }
 
   if (ftc_.active() || ftc_resume_pending_) return update_ftc(dt, fmv, audio);
+  update_tutor(dt);
   if (audio) {
     const auto tel = audio->telemetry();
     flow_.dialogs().set_vo_telemetry(tel.vo_playing, tel.vo_elapsed_s, tel.vo_duration_s, tel.vo_rms,
@@ -658,6 +785,14 @@ bool CampaignDirector::is_blocking_gameplay() const {
     }
   }
   return flow_.is_blocking_gameplay();
+}
+
+bool CampaignDirector::cutscene_drives_player() const {
+  // The opening only: the diner cutscenes and Festival_Race_Outro also give
+  // the car to the AI, but their car is parked or out of shot and they keep
+  // the paused sim (interim, Q66).
+  return cutscenes_.active() && ftc_.active() && ftc_.stage() == race::FtcStage::kOpeningCutscene &&
+         !ftc_.controls_enabled() && ftc_.ai_driving();
 }
 
 }  // namespace carview

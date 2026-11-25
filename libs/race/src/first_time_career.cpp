@@ -9,42 +9,53 @@ namespace {
 struct StageName {
   FtcStage stage;
   const char* name;
+  int title_stage;
 };
 constexpr StageName kNames[] = {
-    {FtcStage::kNotStarted, "not_started"},
-    {FtcStage::kControls, "controls"},
-    {FtcStage::kOpeningCutscene, "opening_cutscene"},
-    {FtcStage::kInitialDrive, "initial_drive"},
-    {FtcStage::kDinerCutscenes, "diner_cutscenes"},
-    {FtcStage::kRaceToFestival, "race_to_festival"},
-    {FtcStage::kFestivalArrive, "festival_arrive"},
-    {FtcStage::kFestivalArriveMovie, "festival_arrive_movie"},
-    {FtcStage::kWorkshopMap, "workshop_map"},
-    {FtcStage::kRadioUnlock, "radio_unlock"},
-    {FtcStage::kHeats, "heats"},
-    {FtcStage::kTravelToRaceCentral, "travel_to_race_central"},
-    {FtcStage::kRaceCentralMovie, "race_central_movie"},
-    {FtcStage::kWristbandIntro, "wristband_intro"},
-    {FtcStage::kRewards, "rewards"},
-    {FtcStage::kFirstAutoshow, "first_autoshow"},
-    {FtcStage::kSatNavTutorial, "satnav_tutorial"},
-    {FtcStage::kComplete, "complete"},
+    {FtcStage::kNotStarted, "not_started", 0},
+    {FtcStage::kControls, "controls", 0},
+    {FtcStage::kOpeningCutscene, "opening_cutscene", 0},
+    {FtcStage::kInitialDrive, "initial_drive", 0},
+    {FtcStage::kDinerCutscenes, "diner_cutscenes", 1},
+    {FtcStage::kRaceToFestival, "race_to_festival", 3},
+    {FtcStage::kFestivalArrive, "festival_arrive", 4},
+    {FtcStage::kFestivalArriveMovie, "festival_arrive_movie", 4},
+    {FtcStage::kWorkshopMap, "workshop_map", 4},
+    {FtcStage::kRadioUnlock, "radio_unlock", 4},
+    {FtcStage::kHeats, "heats", 7},
+    {FtcStage::kShowcase, "showcase", 12},
+    {FtcStage::kTravelToRaceCentral, "travel_to_race_central", 8},
+    {FtcStage::kRaceCentralMovie, "race_central_movie", 9},
+    {FtcStage::kWristbandIntro, "wristband_intro", 9},
+    {FtcStage::kRewards, "rewards", 9},
+    {FtcStage::kFirstAutoshow, "first_autoshow", 9},
+    {FtcStage::kSatNavTutorial, "satnav_tutorial", 9},
+    {FtcStage::kComplete, "complete", 8},
 };
 
 double dist_xz(const std::array<double, 3>& a, const std::array<double, 3>& b) {
   return std::hypot(a[0] - b[0], a[2] - b[2]);
 }
+// The activity's trigger spheres (radius in metres, full 3D distance).
+bool inside(const FtcZone& z, const std::array<double, 3>& p) {
+  return std::hypot(p[0] - z.pos[0], p[1] - z.pos[1], p[2] - z.pos[2]) <= z.radius;
+}
 
 FtcFade fade(FtcFadeKind kind, double duration = 0.0, bool s = true) { return FtcFade{kind, duration, s}; }
 
-// The controller loading screen: it stays up while the opening loads; the
-// host's load is not modelled, so it leaves on confirm or after this long
-// (interim, Q66).
-constexpr double kControlsScreenTime = 6.0;
 constexpr double kOutroHold = 3.0;      // wait_3_sec after Festival_Race_Outro starts
 constexpr double kFadeOut2 = 2.0;       // fade_out_2_sec
 constexpr double kFadeOutHalf = 0.5;    // fade_out_half_sec
 constexpr double kOpeningFadeIn = 2.0;  // play_intro_camera: CFadeIn 2 s, S curve
+// Interim (Q62): when the race's sat-nav moves on to its next waypoint.
+constexpr double kWaypointRadius = 20.0;
+// The initial drive's next sat-nav leg starts here, short of the sat-nav's
+// own arrival distance (interim).
+constexpr double kDriveLegRadius = 60.0;
+// The event sign-up sphere re-arms once the player has left it by this much.
+constexpr double kRearmMargin = 10.0;
+// A launched event that has not started racing this long is taken as declined.
+constexpr double kLaunchGrace = 10.0;
 
 }  // namespace
 
@@ -63,10 +74,66 @@ bool parse_ftc_stage(std::string_view name, FtcStage& out) {
   return false;
 }
 
-int FirstTimeCareer::tickets_for_remaining(double remaining_fraction) {
-  for (const auto& t : kTickets)
-    if (remaining_fraction >= t.remaining_fraction) return t.tickets;
-  return kTickets.back().tickets;
+int ftc_title_stage(FtcStage stage) {
+  for (const auto& n : kNames)
+    if (n.stage == stage) return n.title_stage;
+  return 0;
+}
+
+void FirstTimeCareer::set_event_trigger(int64_t event_id, const std::array<double, 3>& pos, double radius) {
+  for (auto& t : triggers_)
+    if (t.id == event_id) {
+      t.pos = pos;
+      t.radius = radius;
+      return;
+    }
+  triggers_.push_back({event_id, pos, radius});
+}
+
+void FirstTimeCareer::set_race_central(const std::array<double, 3>& pos, double radius) {
+  have_race_central_ = true;
+  race_central_ = pos;
+  race_central_radius_ = radius > 0 ? radius : kRaceCentralRadius;
+}
+
+bool FirstTimeCareer::event_trigger(int64_t id, const std::array<double, 3>& p, double& radius,
+                                    double& distance) const {
+  for (const auto& t : triggers_)
+    if (t.id == id) {
+      radius = t.radius;
+      distance = dist_xz(p, t.pos);
+      return true;
+    }
+  return false;
+}
+
+FtcStage FirstTimeCareer::checkpoint() const {
+  switch (stage_) {
+    case FtcStage::kNotStarted:
+    case FtcStage::kControls:
+    case FtcStage::kOpeningCutscene:
+    case FtcStage::kInitialDrive: return FtcStage::kOpeningCutscene;
+    // Save 1 at the diner.
+    case FtcStage::kDinerCutscenes:
+    case FtcStage::kRaceToFestival: return FtcStage::kDinerCutscenes;
+    // Save 7 on arriving at the festival: a reload waits for the heats.
+    case FtcStage::kFestivalArrive:
+    case FtcStage::kFestivalArriveMovie:
+    case FtcStage::kWorkshopMap:
+    case FtcStage::kRadioUnlock:
+    case FtcStage::kHeats: return FtcStage::kHeats;
+    case FtcStage::kShowcase: return FtcStage::kShowcase;
+    // Save 8 after the showcase; Race Central's stage 9 is never saved.
+    case FtcStage::kTravelToRaceCentral:
+    case FtcStage::kRaceCentralMovie:
+    case FtcStage::kWristbandIntro: return FtcStage::kTravelToRaceCentral;
+    // Past the rewards the career is over (CSetIsFristTimeCareer false).
+    case FtcStage::kRewards:
+    case FtcStage::kFirstAutoshow:
+    case FtcStage::kSatNavTutorial:
+    case FtcStage::kComplete: return FtcStage::kComplete;
+  }
+  return FtcStage::kOpeningCutscene;
 }
 
 void FirstTimeCareer::at(double t, std::string dj) { timed_.push_back({t, std::move(dj)}); }
@@ -82,14 +149,65 @@ void FirstTimeCareer::pump_timed(FtcCommands& out) {
   }
 }
 
+void FirstTimeCareer::set_instruction(int title_stage) {
+  // The first-time-career HUD instruction picks its strings by the title's
+  // stage value: the persistent line, and the large two-line one.
+  instruction_.clear();
+  large1_.clear();
+  large2_.clear();
+  large_t_ = 0.0;
+  switch (title_stage) {
+    case 2: instruction_ = "IDS_HudInstruction_Travel_To_Festival"; break;
+    case 3:
+      instruction_ = "IDS_HudInstruction_Race_To_Festival";
+      large1_ = "IDS_HudMsg_RaceTo";
+      large2_ = "IDS_HudMsg_TheFestival";
+      break;
+    case 5: instruction_ = "IDS_HudInstruction_Travel_To_Workshop"; break;
+    case 7:
+      instruction_ = "IDS_HudInstruction_Do_All_Comers_Final";
+      large1_ = "IDS_HudMsg_EnterThe";
+      large2_ = "IDS_HudMsg_HorizonHeats";
+      break;
+    case 8:
+      instruction_ = "IDS_HudInstruction_Travel_To_RaceCentral";
+      large1_ = "IDS_HudMsg_DriveTo";
+      large2_ = "IDS_HudMsg_RaceCentral";
+      break;
+    case 12:
+      instruction_ = "IDS_HudInstruction_Go_To_Red_Rock";
+      large1_ = "IDS_HudMsg_EnterThe";
+      large2_ = "IDS_HudMsg_ShowcaseEvent";
+      break;
+    default: break;
+  }
+}
+
+void FirstTimeCareer::route_to_next_waypoint(FtcCommands& c) {
+  static constexpr std::array<std::array<double, 3>, 3> kRoute = {kHalfWayToTollBooth, kTollBoothPosition,
+                                                                   kBeyondTollBoothPosition};
+  const auto& p = kRoute[size_t(std::clamp(waypoint_, 0, 2))];
+  c.set_destination = true;
+  c.destination_label = "IDS_HudInstruction_Race_To_Festival";
+  c.destination_xz = {p[0], p[2]};
+}
+
+void FirstTimeCareer::route_initial_drive(FtcCommands& c) {
+  // The engine's sat-nav takes one destination: the route goes leg by leg
+  // through CSetDestForInitialDrive's points (interim: the original routes
+  // through them at once).
+  const auto& p = kInitialDrivePoints[size_t(std::clamp(drive_leg_, 0, 2))];
+  c.set_destination = true;
+  c.destination_label = "IDS_HudInstruction_Travel_To_Festival";
+  c.destination_xz = {p[0], p[2]};
+}
+
 FtcCommands FirstTimeCareer::start() {
   controls_ = true;
   ai_ = false;
   hud_ = false;
   credits_ = false;
   map_locked_ = false;
-  tutor_.clear();
-  instruction_.clear();
   return enter(FtcStage::kControls);
 }
 
@@ -97,14 +215,48 @@ FtcCommands FirstTimeCareer::resume(FtcStage stage) {
   switch (stage) {
     case FtcStage::kNotStarted:
     case FtcStage::kComplete: stage_ = stage; return {};
-    // The opening restarts as a whole: the drive begins inside the cutscene.
+    // No save before the diner: the opening restarts as a whole.
     case FtcStage::kControls:
     case FtcStage::kOpeningCutscene:
-    case FtcStage::kInitialDrive: return enter(FtcStage::kOpeningCutscene);
+    case FtcStage::kInitialDrive: return start();
     case FtcStage::kFestivalArrive: return enter(FtcStage::kFestivalArriveMovie);
     case FtcStage::kRewards: return enter(FtcStage::kRewards);
-    default: return enter(stage);
+    default: {
+      FtcCommands c = enter(stage);
+      // The diner's cutscenes start from the diner.
+      if (stage == FtcStage::kDinerCutscenes) {
+        c.place_car = true;
+        c.pos = kStartPosition;
+        c.heading_deg = kStartHeading;
+      }
+      return c;
+    }
   }
+}
+
+void FirstTimeCareer::opening_setup(FtcCommands& c) {
+  // intro_flow, under the controller loading screen: radio playlist, the
+  // time locked at 09:15, route 170, the Viper placed and given to the AI,
+  // the sat-nav to the diner, no traffic.
+  c.radio_playlist = {"R1_Everyday", "R1_ThePower"};
+  c.set_radio_switching = true;
+  c.radio_switching = false;
+  c.set_time_of_day = true;
+  c.time_of_day_s = kIntroTimeOfDay;
+  c.set_time_locked = true;
+  c.time_locked = true;
+  c.load_route = kInitialDriveRoute;
+  c.swap_car = true;
+  c.car_media = kViperMedia;
+  c.car_id = kViperCarId;
+  c.place_car = true;
+  c.pos = kViperStart;
+  c.heading_deg = kViperHeading;
+  drive_leg_ = 0;
+  route_initial_drive(c);
+  c.set_civilian_traffic = true;
+  c.civilian_traffic = false;
+  c.preload_cutscene = "Opening_Cutscene";
 }
 
 FtcCommands FirstTimeCareer::enter(FtcStage next) {
@@ -113,73 +265,53 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
   step_ = 0;
   step_t_ = 0.0;
   timed_.clear();
-  instruction_.clear();
+  set_instruction(-1);
+  in_trigger_ = false;
+  awaiting_race_ = false;
   FtcCommands c;
-  c.save_requested = next != FtcStage::kControls;
-  auto show_instruction = [&](const char* id) {
-    instruction_ = id;
-    instruction_t_ = 0.0;
-  };
   switch (next) {
-    case FtcStage::kNotStarted:
+    case FtcStage::kNotStarted: break;
+
     case FtcStage::kControls:
+      // The controller loading screen stays up while the opening loads.
+      opening_setup(c);
       controls_ = false;
+      ai_ = true;
       hud_ = false;
-      c.save_requested = false;
       break;
 
     case FtcStage::kOpeningCutscene:
-      // intro_flow: radio playlist, the time locked at 09:15, the Viper on
-      // route 170 under AI control, controls off, no traffic, then a cut to
-      // black and Opening_Cutscene fading in over 2 s.
-      c.radio_playlist = {"R1_Everyday", "R1_ThePower"};
-      c.set_radio_switching = true;
-      c.radio_switching = false;
-      c.set_time_of_day = true;
-      c.time_of_day_s = kIntroTimeOfDay;
-      c.set_time_locked = true;
-      c.time_locked = true;
-      c.load_route = kInitialDriveRoute;
-      c.swap_car = true;
-      c.car_media = kViperMedia;
-      c.car_id = kViperCarId;
-      c.place_car = true;
-      c.pos = kViperStart;
-      c.heading_deg = kViperHeading;
-      c.set_destination = true;
-      c.destination_label = "IDS_HudInstruction_Race_To_Festival";
-      c.destination_xz = {kStartPosition[0], kStartPosition[2]};
-      c.set_civilian_traffic = true;
-      c.civilian_traffic = false;
+      // A cut to black, then Opening_Cutscene fading in over 2 s with the
+      // opening mix; the DJ's intro line 12.5 s in.
       c.mix_snapshots = {"OpeningCutscene"};
       c.fades = {fade(FtcFadeKind::kBlackOut), fade(FtcFadeKind::kFadeIn, kOpeningFadeIn)};
       c.play_cutscene = "Opening_Cutscene";
       controls_ = false;
       ai_ = true;
       hud_ = false;
-      tutor_.clear();
       at(12.5, "IntroCutscene");
       break;
 
     case FtcStage::kInitialDrive:
-      // play_intro_camera done: tutor on, human takeover, traffic back,
+      // play_intro_camera done: the tutor on, human takeover, traffic back,
       // the camera back on the player, a white flash and the HUD.
       c.fades = {fade(FtcFadeKind::kWhiteFlash)};
       c.set_civilian_traffic = true;
       c.civilian_traffic = true;
       c.mix_snapshots = {"FreeRoam"};
+      c.activate_tutor = true;
       controls_ = true;
       ai_ = false;
       hud_ = true;
-      tutor_ = "IDS_Accelerate_Message";
-      throttle_held_ = 0.0;
+      diner_preloaded_ = false;
       break;
 
     case FtcStage::kDinerCutscenes:
       // Finish_Initial_Drive + SetupFestivalDrive: black out, the diner
-      // cutscenes with the DJ's E3 intro and the opening credits.
+      // cutscenes with the DJ's E3 intro and the opening titles. Save 1.
+      c.save_requested = true;
       c.fades = {fade(FtcFadeKind::kBlackOut)};
-      c.mix_snapshots = {"DJSpeakingSnapshot"};
+      c.mix_snapshots = {"RadioDJSpeaking"};
       c.radio_playlist = {"R1_ThePower"};
       c.play_cutscene = "NEW_Diner_Cutscene_1";
       c.set_civilian_traffic = true;
@@ -187,12 +319,12 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       controls_ = false;
       ai_ = true;
       hud_ = false;
-      tutor_.clear();
       at(1.5, "E3Intro");
       break;
 
     case FtcStage::kRaceToFestival:
-      // The white flash out of New_Diner_Cutscene_3, the Corrado at the diner.
+      // The white flash out of New_Diner_Cutscene_3, the Corrado at the
+      // diner, the HUD (the opening titles close with it) and the counter.
       c.fades = {fade(FtcFadeKind::kWhiteFlash)};
       c.swap_car = true;
       c.car_media = kCorradoMedia;
@@ -202,23 +334,26 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       c.heading_deg = kDinerHeading;
       c.set_civilian_traffic = true;
       c.civilian_traffic = true;
-      c.set_destination = true;
-      c.destination_label = "IDS_HudInstruction_Race_To_Festival";
-      c.destination_xz = {kEndRacePosition[0], kEndRacePosition[2]};
+      c.mix_snapshots = {"FreeRoam"};
       controls_ = true;
       ai_ = false;
       hud_ = true;
       credits_ = false;
-      show_instruction("IDS_HudInstruction_Race_To_Festival");
-      race_total_ = std::max(1.0, dist_xz(kDinerPlace, kEndRacePosition));
-      tickets_ = kTickets.front().tickets;
-      at(30.0, "TicketGiveawayReminder1");
-      at(60.0, "TicketGiveawayReminder2");
+      set_instruction(3);
+      tickets_ = kTicketsStart;
+      zones_hit_ = 0;
+      dj_counted_ = 0;
+      festival_approach_ = false;
+      reminders_due_ = false;
+      waypoint_ = 0;
+      route_to_next_waypoint(c);
       break;
 
     case FtcStage::kFestivalArrive:
       // FestivalArrive: controls off, the AI drives into the festival under
-      // Festival_Race_Outro, then a 2 s fade to black.
+      // Festival_Race_Outro, then a 2 s fade to black. Save 7.
+      c.save_requested = true;
+      c.fades = {fade(FtcFadeKind::kWhiteFlash)};
       c.play_cutscene = "Festival_Race_Outro";
       controls_ = false;
       ai_ = true;
@@ -238,6 +373,7 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
     case FtcStage::kWorkshopMap:
       // FestivalArriveCutscene: placed at the workshop, the map shown with
       // fast travel locked.
+      c.mix_snapshots = {"Loading"};
       c.place_car = true;
       c.pos = kWorkshopPlace;
       c.heading_deg = kWorkshopHeading;
@@ -256,7 +392,8 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       c.time_locked = true;
       c.set_time_of_day = true;
       c.time_of_day_s = kInitialTimeOfDay;
-      c.mix_snapshots = {"FreeRoam", "VOPlaying"};
+      c.mix_snapshots = {"FreeRoam"};
+      c.preload_cutscene = "Radio_Unlock";
       c.play_cutscene = "Radio_Unlock";
       c.vo = {"RadioFixedByDak"};
       c.set_radio_switching = true;
@@ -267,25 +404,55 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       break;
 
     case FtcStage::kHeats:
-      // Interim (Q66): the heats follow Radio_Unlock; the flow files place
-      // them in code. Both All Comers heats run in order.
+      // Stage 7: free roam with the heats as the destination; the final
+      // starts at its sign-up sphere.
       c.set_civilian_traffic = true;
       c.civilian_traffic = true;
-      c.launch_event_id = kAllComerRace1;
-      heat_ = 0;
-      awaiting_race_ = true;
+      c.set_time_locked = true;
+      c.time_locked = false;
       controls_ = true;
+      ai_ = false;
       hud_ = true;
-      show_instruction("IDS_HudInstruction_Do_All_Comers_Heat");
+      set_instruction(7);
+      for (const auto& t : triggers_)
+        if (t.id == kAllComerFinal) {
+          c.set_destination = true;
+          c.destination_label = "IDS_HudMsg_HorizonHeats";
+          c.destination_xz = {t.pos[0], t.pos[2]};
+        }
+      break;
+
+    case FtcStage::kShowcase:
+      // Stages 10 and 12: placed by the heats, 15:48, the Red Rock showcase
+      // as the destination. Save 12.
+      c.save_requested = true;
+      c.place_car = true;
+      c.pos = kHeatsFinalPlace;
+      c.heading_deg = kHeatsFinalHeading;
+      c.set_time_of_day = true;
+      c.time_of_day_s = kHeatsFinalTimeOfDay;
+      controls_ = true;
+      ai_ = false;
+      hud_ = true;
+      set_instruction(12);
+      for (const auto& t : triggers_)
+        if (t.id == kMustangRace) {
+          c.set_destination = true;
+          c.destination_label = "IDS_HudMsg_ShowcaseEvent";
+          c.destination_xz = {t.pos[0], t.pos[2]};
+        }
       break;
 
     case FtcStage::kTravelToRaceCentral:
+      // Stage 8, save 8.
+      c.save_requested = true;
       c.set_destination = true;
-      c.destination_label = "IDS_HudInstruction_Travel_To_RaceCentral";
-      c.destination_xz = {kRaceCentral[0], kRaceCentral[2]};
+      c.destination_label = "IDS_HudMsg_RaceCentral";
+      c.destination_xz = {race_central_[0], race_central_[2]};
       controls_ = true;
+      ai_ = false;
       hud_ = true;
-      show_instruction("IDS_HudInstruction_Travel_To_RaceCentral");
+      set_instruction(8);
       break;
 
     case FtcStage::kRaceCentralMovie:
@@ -293,6 +460,7 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       c.fades = {fade(FtcFadeKind::kFadeOut, kFadeOutHalf)};
       c.set_time_of_day = true;
       c.time_of_day_s = kRaceCentralTimeOfDay;
+      c.preload_cutscene = "Wristband_Intro";
       controls_ = false;
       hud_ = false;
       break;
@@ -301,7 +469,7 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       c.repair_car = true;
       c.set_civilian_traffic = true;
       c.civilian_traffic = false;
-      c.mix_snapshots = {"VOPlaying"};
+      c.mix_snapshots = {"VOPlayingInstant"};
       c.play_cutscene = "Wristband_Intro";
       c.hold_cutscene = true;  // held until RaceCentralWristbandIntro ends
       controls_ = false;
@@ -310,11 +478,13 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
 
     case FtcStage::kRewards:
       c.fades = {fade(FtcFadeKind::kBlackOut)};
+      c.mix_snapshots = {"FreeRoam"};
       c.achievement = "ACHIEVEMENT_HORIZON_ROOKIE";
       c.dj_lines = {"festival_wristband"};
       c.give_money = kStartingMoney;
       c.collect_yellow_wristband = true;
       c.intro_completed = true;
+      c.save_requested = true;
       controls_ = false;
       hud_ = false;
       break;
@@ -327,7 +497,9 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       break;
 
     case FtcStage::kSatNavTutorial:
-      c.show_satnav_hint = true;
+      // Without Kinect the sat-nav popup gives way to the map input hint;
+      // Recaro Rush becomes the destination and the clock runs again.
+      c.show_map_hint = true;
       c.set_destination = true;
       c.destination_label = kRecaroRush;
       c.set_time_locked = true;
@@ -341,10 +513,10 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
 
     case FtcStage::kComplete:
       c.enter_free_roam = true;
+      c.save_requested = true;
       controls_ = true;
       ai_ = false;
       hud_ = true;
-      tutor_.clear();
       break;
   }
   return c;
@@ -356,9 +528,11 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
   const double dt = std::clamp(in.dt, 0.0, 0.25);
   stage_t_ += dt;
   step_t_ += dt;
-  if (!instruction_.empty() && (instruction_t_ += dt) >= kLargeHudInstructionDisplayTime &&
-      stage_ != FtcStage::kRaceToFestival)
-    instruction_.clear();
+  if (credits_) credits_t_ += dt;
+  if (!large1_.empty() && (large_t_ += dt) >= kLargeHudInstructionDisplayTime) {
+    large1_.clear();
+    large2_.clear();
+  }
   pump_timed(c);
   auto next_step = [&]() {
     ++step_;
@@ -372,10 +546,57 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
     n.dj_lines.insert(n.dj_lines.begin(), c.dj_lines.begin(), c.dj_lines.end());
     return n;
   };
+  // An event the activity waits on: its result place moves the career on.
+  auto event_result = [&](int64_t id) {
+    return in.race_finished && in.race_event_id == id && in.race_place >= 1 && in.race_place <= kCutoffPlace;
+  };
+  // Drive to an event's sign-up sphere, then start it (each new entry; the
+  // host's own event marker can start it too).
+  auto sign_up = [&](int64_t id) {
+    if (in.racing) {
+      raced_ = true;
+      return;
+    }
+    double radius = 0, d = 0;
+    const bool have_trigger = event_trigger(id, in.player_pos, radius, d);
+    if (awaiting_race_) {
+      // A launched event that was declined or quit (it ran, or never
+      // started, and reported no result): the sphere re-arms once the
+      // player is out of it.
+      const bool gave_up = raced_ || step_t_ - launch_t_ > kLaunchGrace;
+      if (have_trigger && gave_up && d > radius + kRearmMargin) {
+        awaiting_race_ = false;
+        in_trigger_ = false;
+      }
+      return;
+    }
+    auto launch = [&]() {
+      c.launch_event_id = id;
+      awaiting_race_ = true;
+      raced_ = false;
+      launch_t_ = step_t_;
+    };
+    if (!have_trigger) {
+      // No trigger known: launch at once (interim).
+      launch();
+      return;
+    }
+    if (d <= radius && !in_trigger_) launch();
+    if (d <= radius) in_trigger_ = true;
+    else if (d > radius + kRearmMargin) in_trigger_ = false;
+  };
+
+  if ((stage_ == FtcStage::kOpeningCutscene || stage_ == FtcStage::kInitialDrive) && drive_leg_ < 2 &&
+      dist_xz(in.player_pos, kInitialDrivePoints[size_t(drive_leg_)]) < kDriveLegRadius) {
+    ++drive_leg_;
+    route_initial_drive(c);
+  }
 
   switch (stage_) {
     case FtcStage::kControls:
-      if ((in.confirm && stage_t_ > 0.5) || stage_t_ >= kControlsScreenTime) return go(FtcStage::kOpeningCutscene);
+      // The screen leaves once the opening has loaded (the host does not
+      // update the career while its world is loading).
+      if (step_t_ > 0.0 && stage_t_ > dt) return go(FtcStage::kOpeningCutscene);
       break;
 
     case FtcStage::kOpeningCutscene:
@@ -383,25 +604,26 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       break;
 
     case FtcStage::kInitialDrive:
-      // Tutor (interim, Q63): the accelerate prompt stays until the throttle
-      // has been held for AccelerateTextTimerLimit seconds.
-      if (!tutor_.empty()) {
-        if (in.throttle > 0.5) throttle_held_ += dt;
-        if (throttle_held_ >= kAccelerateTextTimerLimit) tutor_.clear();
+      // Approaching the diner: the traffic goes and the diner cutscene loads.
+      if (!diner_preloaded_ && std::any_of(kDinerApproach.begin(), kDinerApproach.end(),
+                                           [&](const FtcZone& z) { return inside(z, in.player_pos); })) {
+        diner_preloaded_ = true;
+        c.set_civilian_traffic = true;
+        c.civilian_traffic = false;
+        c.preload_cutscene = "NEW_Diner_Cutscene_1";
       }
-      // Interim (Q66): the drive ends at route 170's end or at the diner.
-      if (in.route_finished || dist_xz(in.player_pos, kStartPosition) < kArriveRadius)
+      if (std::any_of(kDinerArrive.begin(), kDinerArrive.end(), [&](const FtcZone& z) { return inside(z, in.player_pos); }))
         return go(FtcStage::kDinerCutscenes);
       break;
 
     case FtcStage::kDinerCutscenes:
       if (step_ == 0 && waited(in.cutscene_active)) {
         c.play_cutscene = "New_Diner_Cutscene_2";
-        credits_ = true;  // ShowOpeningCredits (interim presentation, Q65)
+        credits_ = true;  // ShowOpeningCredits: H_OPENING_TITLES opens and stays
+        credits_t_ = 0.0;
         next_step();
       } else if (step_ == 1 && waited(in.cutscene_active)) {
         c.play_cutscene = "New_Diner_Cutscene_3";
-        credits_ = false;
         next_step();
       } else if (step_ == 2 && waited(in.cutscene_active)) {
         return go(FtcStage::kRaceToFestival);
@@ -409,21 +631,45 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       break;
 
     case FtcStage::kRaceToFestival: {
-      // Interim (Q62): the counter follows the straight-line distance left
-      // to the festival through First50TicketsDistances; it never reaches
-      // zero, so the race cannot be lost.
-      const double left = dist_xz(in.player_pos, kEndRacePosition);
-      const int t = tickets_for_remaining(std::clamp(left / race_total_, 0.0, 1.0));
-      while (tickets_ > t) {
-        --tickets_;
-        c.dj_lines.push_back("FestivalTicketsDepleting" + std::to_string(tickets_));
+      // The heats places counter: each ticket zone the player enters takes a
+      // place (never under 1); the DJ counts down while the last stretch is
+      // ahead; at 1 the giveaway reminders follow.
+      for (size_t i = 0; i < kTicketTriggers.size(); ++i) {
+        if ((zones_hit_ & (1u << i)) || !inside(kTicketTriggers[i], in.player_pos)) continue;
+        zones_hit_ |= 1u << i;
+        tickets_ = std::max(kTicketsMin, tickets_ - 1);
+        if (!festival_approach_ && tickets_ >= 1 && tickets_ <= 9 && !(dj_counted_ & (1u << tickets_))) {
+          dj_counted_ |= 1u << tickets_;
+          c.dj_lines.push_back("FestivalTicketsDepleting" + std::to_string(tickets_));
+        }
       }
-      if (left < kArriveRadius) return go(FtcStage::kFestivalArrive);
+      if (tickets_ <= kTicketsMin && !reminders_due_) {
+        reminders_due_ = true;
+        at(stage_t_ + kReminderDelay1, "TicketGiveawayReminder1");
+        at(stage_t_ + kReminderDelay2, "TicketGiveawayReminder2");
+      }
+      if (!festival_approach_ && inside(kFestivalApproach, in.player_pos)) {
+        festival_approach_ = true;
+        c.stop_dj = true;
+      }
+      // The sat-nav: HalfWay, then (past the free-tickets trigger) the toll
+      // booth and beyond it.
+      if (waypoint_ == 0 && inside(kFreeTicketsTrigger, in.player_pos)) {
+        waypoint_ = 1;
+        route_to_next_waypoint(c);
+      } else if (waypoint_ == 1 && dist_xz(in.player_pos, kTollBoothPosition) < kWaypointRadius) {
+        waypoint_ = 2;
+        route_to_next_waypoint(c);
+      }
+      if (std::any_of(kFestivalArriveZones.begin(), kFestivalArriveZones.end(),
+                      [&](const FtcZone& z) { return inside(z, in.player_pos); }))
+        return go(FtcStage::kFestivalArrive);
       break;
     }
 
     case FtcStage::kFestivalArrive:
       if (step_ == 0 && step_t_ >= kOutroHold) {
+        c.mix_snapshots = {"FadeOut"};
         c.fades = {fade(FtcFadeKind::kFadeOut, kFadeOut2)};
         next_step();
       } else if (step_ == 1 && step_t_ >= kFadeOut2) {
@@ -441,30 +687,34 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
 
     case FtcStage::kRadioUnlock:
       if (waited(in.cutscene_active)) {
+        // The festival arrival flow ends: stage 6, then 7.
         FtcCommands n = go(FtcStage::kHeats);
         n.dj_lines.push_back("CycleRadioLogos");
+        n.achievement = "ACHIEVEMENT_WELCOME_TO_HORIZON";
         return n;
       }
       break;
 
     case FtcStage::kHeats:
-      if (in.race_finished && awaiting_race_) {
-        awaiting_race_ = false;
-        if (in.race_event_id == kAllComerRace1 && heat_ == 0) {
-          heat_ = 1;
-          c.launch_event_id = kAllComerRace2;
-        } else if (in.race_event_id == kAllComerFinal) {
-          if (in.race_place >= 1 && in.race_place <= kHeatCutoffPlace) return go(FtcStage::kTravelToRaceCentral);
-          c.launch_event_id = kAllComerFinal;  // retry the final heat
-        } else {
-          c.launch_event_id = heat_ == 0 ? kAllComerRace1 : kAllComerRace2;  // another race: back to the heat
-        }
-        awaiting_race_ = true;
+      if (in.race_finished) awaiting_race_ = false;
+      if (event_result(kAllComerFinal)) return go(FtcStage::kShowcase);
+      sign_up(kAllComerFinal);
+      break;
+
+    case FtcStage::kShowcase:
+      if (in.race_finished) awaiting_race_ = false;
+      if (event_result(kMustangRace)) {
+        FtcCommands n = go(FtcStage::kTravelToRaceCentral);
+        n.place_car = true;
+        n.pos = kPlaneRacePlace;
+        n.heading_deg = kPlaneRaceHeading;
+        return n;
       }
+      sign_up(kMustangRace);
       break;
 
     case FtcStage::kTravelToRaceCentral:
-      if (dist_xz(in.player_pos, kRaceCentral) < kArriveRadius) return go(FtcStage::kRaceCentralMovie);
+      if (dist_xz(in.player_pos, race_central_) < race_central_radius_) return go(FtcStage::kRaceCentralMovie);
       break;
 
     case FtcStage::kRaceCentralMovie:
@@ -491,6 +741,7 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
         c.heading_deg = kWorkshopHeading;
         c.open_autoshow = true;
         c.autoshow_restricted = true;
+        c.autoshow_cars.assign(kFirstAutoshowCars.begin(), kFirstAutoshowCars.end());
         map_locked_ = false;
         next_step();
       } else if (step_ == 1 && waited(in.screen_open)) {
