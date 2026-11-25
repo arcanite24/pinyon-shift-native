@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "race/difficulty.h"
 #include "race/reset_rules.h"
 
 namespace {
@@ -73,6 +74,32 @@ int main() {
     CHECK(near(r.slow_speed, 3) && near(r.slow_time, 25));
     CHECK(near(r.upside_down_speed, 3) && near(r.upside_down_time, 3) && near(r.upside_down_up_y, 0.3));
     CHECK(near(r.fell_low, -50) && near(r.cancel_moved_m, 20));
+  }
+  {
+    // WORLD-05: the race boosts' registry values equal the struct's
+    // initialisers (the disc's), so a missing file changes nothing.
+    std::map<std::string, double> reg;
+    error.clear();
+    const bool ok = race::load_global_registry(root, reg, &error);
+    if (!ok) std::printf("GlobalRegistry.xml: %s\n", error.c_str());
+    CHECK(ok);
+    const race::RaceBoostTunables d;
+    const auto t = race::RaceBoostTunables::from(reg);
+    std::printf("GlobalRegistry.xml race boosts: start %.2f..%.2f held %.0f..%.0f m, decay %.0f m, skill x%.2f, "
+                "gap %.0f m/car, behind-player %.0f m/s -> %.2f, min %.2f; nemesis x%.2f +%.2f, catch-up +%.2f over "
+                "%.0f..%.0f m, off %.0f m from the finish\n",
+                t.start_torque_first, t.start_torque_last, t.keep_full_first, t.keep_full_last, t.decay, t.max_skill,
+                t.gap_per_car, t.min_speed_behind_player, t.torque_behind_player, t.torque_minimum, t.nemesis_skill,
+                t.nemesis_torque, t.catchup_torque, t.catchup_min, t.catchup_max, t.catchup_end);
+    CHECK(reg.count("AI/Racing/RaceBehavior/RaceStartBoost/TorqueScaleBoostForFirstCar") == 1);
+    CHECK(near(t.start_torque_first, d.start_torque_first) && near(t.start_torque_last, d.start_torque_last));
+    CHECK(near(t.keep_full_first, d.keep_full_first) && near(t.keep_full_last, d.keep_full_last));
+    CHECK(near(t.decay, d.decay) && near(t.max_skill, d.max_skill) && near(t.gap_per_car, d.gap_per_car));
+    CHECK(near(t.min_speed_behind_player, d.min_speed_behind_player) &&
+          near(t.torque_behind_player, d.torque_behind_player) && near(t.torque_minimum, d.torque_minimum));
+    CHECK(near(t.nemesis_skill, d.nemesis_skill) && near(t.nemesis_torque, d.nemesis_torque));
+    CHECK(near(t.catchup_torque, d.catchup_torque) && near(t.catchup_min, d.catchup_min) &&
+          near(t.catchup_max, d.catchup_max) && near(t.catchup_end, d.catchup_end));
   }
   std::printf("reset_rules_corpus_tests: %d failures\n", failures);
   return failures ? 1 : 0;

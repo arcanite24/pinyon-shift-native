@@ -320,6 +320,7 @@ class RaceView {
     double px = 0, pz = 0;  // before the step
     bool far = false;
     float traction_cap = 1;  // drive::ai_traction's state
+    race::RaceBoost boost;   // this step's start or nemesis boost (race::race_boost)
     drive::AiCapacity capacity;  // the speed planner's tables (SPEC-RACE-AI)
     double upgrade_t = 0;        // AI car upgrades: > 0 up, < 0 down (fraction of the range)
     int target_shown_pi = 0;     // faked target shown PI when UpgradeAI is active
@@ -371,7 +372,8 @@ class RaceView {
   bool circuit_ = true;
   bool street_ = false;                   // a line built along the road map (no AI line)
   race::HandOfGodReset hand_of_god_;      // GameTunableSettings.ini [HandOfGodReset]
-  bool stage_ = false;                    // a Rally stage (Options::stage_world)
+  race::RaceBoostTunables boost_tunables_;  // GlobalRegistry.xml AI/Racing/RaceBehavior (WORLD-05)
+  bool stage_ = false;                   // a Rally stage (Options::stage_world)
   // The stage's track row, the field's times and the player's splits
   // (SPEC-V4-CONTENT; race/rally.h).
   bool have_stage_track_ = false;

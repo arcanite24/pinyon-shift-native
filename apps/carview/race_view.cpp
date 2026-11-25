@@ -453,6 +453,16 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       std::fprintf(stderr, "race: note: [HandOfGodReset] not read (%s): its values as fallbacks\n", he.c_str());
     for (const auto& k : hand_of_god_.missing) std::fprintf(stderr, "race: note: no %s\n", k.c_str());
     race::apply_hand_of_god(hand_of_god_, sopt);
+    // WORLD-05: the start and nemesis boosts' sizes from GlobalRegistry.xml
+    // (the title loads it over the compiled-in defaults).
+    std::map<std::string, double> registry;
+    std::string re;
+    if (race::load_global_registry(root, registry, &re)) boost_tunables_ = race::RaceBoostTunables::from(registry);
+    else {
+      boost_tunables_ = {};
+      std::fprintf(stderr, "race: note: GlobalRegistry.xml not read (%s): the disc's boost values as fallbacks\n",
+                   re.c_str());
+    }
     // WORLD-04: the AI resets by its own ResetParameters (AIRacing.xml, the
     // race's settings set), the player alone by the Hand of God triggers.
     // Without the file the AI does not reset automatically.
@@ -1031,16 +1041,20 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   for (size_t k = 0; k < n; ++k) {
     states_[k] = drive::ai_state(*cars_[k].body);
     double C = cars_[k].ai.cornering(), B = cars_[k].ai.braking();
-    if (is_nemesis) {
-      const double from_slot = field_->progress(k) - cars_[k].start_progress;
+    {
+      // WORLD-05: the start or nemesis boost (race::race_boost), from the
+      // distance raced past the start line and the other race AI ahead.
       int other_ahead = 0;
       for (size_t j = 0; j < n; ++j)
         if (j != k && field_->progress(j) > field_->progress(k)) ++other_ahead;
       const double dist_to_fin = finish_progress_ > 0 ? std::max(0.0, finish_progress_ - field_->progress(k)) : 1e9;
-      const auto nb = race::nemesis_rival_boost(true, from_slot >= 1000.0, int(n) - 1, other_ahead,
-                                                player_prog - field_->progress(k), dist_to_fin, B, C);
-      B = nb.braking;
-      C = nb.cornering;
+      cars_[k].boost = race::race_boost(boost_tunables_, field_->progress(k) - line_.gate_progress,
+                                        player_prog - line_.gate_progress, states_[k].speed, int(n) - 1, other_ahead,
+                                        dist_to_fin, is_nemesis);
+      if (cars_[k].boost.active()) {
+        B = drive::ai_boost(B, cars_[k].boost.skill, 1.0);
+        C = drive::ai_boost(C, cars_[k].boost.skill, 1.25);
+      }
     }
     // Cap planned cornering below static rollover stability for narrow/tall
     // chassis (e.g. 1965 Mini 1.2 m track) so catch-up (C = 1.25) never flips
@@ -1190,9 +1204,6 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     player.set_ai_controls(player_ai);
     player.set_ai_dirt_grip(player_ai);
   }
-  const double grid_cars = double(n + 1);
-  const bool is_nemesis = event_.career_type == 11 || event_.style == 5;
-  const double player_prog = field_->progress(n);
   // SPEC-CAR-PHYSICS, Aerodynamic drafting: evaluate pairwise follower & leader
   // slipstream multipliers across player, AI opponents, and nearby traffic.
   if (session_->started()) {
@@ -1279,19 +1290,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     // Held on the grid; revving from 3.09 s before the signal, clutch dropped at it.
     if (clock < 0) in = clock >= -3.09 ? drive::Input{0, 1, 1, true} : drive::Input{0, 0, 0.4, true};
     else drive::ai_traction(*c.body, c.traction_cap, drive::Vehicle::kStep, in, !slip_rule());
-    const double from_slot = field_->progress(k) - c.start_progress;
-    const double boost = race::start_boost(c.slot, int(grid_cars), from_slot);
-    double nem_torque = 0.0;
-    if (is_nemesis && from_slot >= 1000.0) {
-      int other_ahead = 0;
-      for (size_t j = 0; j < n; ++j)
-        if (j != k && field_->progress(j) > field_->progress(k)) ++other_ahead;
-      const double dist_to_fin = finish_progress_ > 0 ? std::max(0.0, finish_progress_ - field_->progress(k)) : 1e9;
-      nem_torque = race::nemesis_rival_boost(true, true, int(n) - 1, other_ahead, player_prog - field_->progress(k),
-                                             dist_to_fin, c.ai.braking(), c.ai.cornering())
-                       .torque_add;
-    }
-    c.body->set_torque_factor(c.ai.torque() * (1 + boost + nem_torque));
+    c.body->set_torque_factor(c.ai.torque() * (1 + c.boost.torque));
     const bool over_corner = c.ai.state() == race::DriverAi::State::kRubberband && c.ai.mode() == 4;
     const auto& bp = c.body->params();
     const double half_track = 0.5 * std::fabs(bp.wheel_centres[1].x - bp.wheel_centres[0].x);

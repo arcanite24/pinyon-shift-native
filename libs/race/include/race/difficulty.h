@@ -5,6 +5,8 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <string>
 
 #include "race/event.h"
 
@@ -26,21 +28,65 @@ DriverSetup assign_driver_for_mode(int event_skill, int event_temperament, int e
                                    int aggro_modifier, int rubberband_modifier, Difficulty base_difficulty,
                                    AiMode ai_mode, const EventData& rows);
 
-// Nemesis rival boost (SPEC-RACE-AI, Code-only boosts):
-// Runs only for a nemesis rival once the start boost has ended (s >= 1000 m).
-// - Multi-AI race with >= 1 other race AI ahead: braking/cornering boosted by
-//   1.5x (clamped to 1.0 / 1.25 via ai_boost), torque +0.3.
-// - 1v1 race (other_ai_count == 0): skill scalars untouched; torque-only ramp
-//   from 50 m to 100 m behind the player, shut off within 500 m of the finish.
-struct NemesisBoostResult {
-  double braking = 1.0;
-  double cornering = 1.0;
-  double torque_add = 0.0;
-  bool active = false;
+// The race-start and nemesis boosts' tunables: GlobalRegistry.xml
+// `AI/Racing/RaceBehavior/RaceStartBoost/*` and `.../NemesisBoost/*`. The
+// title registers each as a registry value whose compiled-in default is the
+// old "code-only" figure (0.4, 0.1, 300, 700, 1.5, +0.3, 50/100/500 m) and
+// loads GlobalRegistry.xml over them at boot, so the disc's values below
+// are the ones that run (WORLD-05, C4). `from` reads them from the parsed
+// registry (id -> value); a missing id keeps the initialiser.
+struct RaceBoostTunables {
+  double start_torque_first = 0.6;       // RaceStartBoost/TorqueScaleBoostForFirstCar
+  double start_torque_last = 0.2;        // .../TorqueScaleBoostForLastCar
+  double keep_full_first = 500;          // .../KeepFullBoostDistanceFirst (m)
+  double keep_full_last = 250;           // .../KeepFullBoostDistanceLast (m)
+  double decay = 1000;                   // .../DecayBoostOverThisManyMeters (m)
+  double max_skill = 2.0;                // .../MaxSkillBoostFactor
+  double gap_per_car = 20;               // .../GapPerCar (m)
+  double min_speed_behind_player = 25;   // .../MinSpeedBoostBehindPlayer (m/s)
+  double torque_behind_player = 0;       // .../TorqueScaleBoostBehindPlayer
+  double torque_minimum = 0;             // .../TorqueScaleBoostMinimum
+  double nemesis_skill = 1.1;            // NemesisBoost/SkillBoostFactor
+  double nemesis_torque = 0.4;           // NemesisBoost/TorqueBoost
+  double catchup_torque = 0.6;           // NemesisBoost/PlayerCatchupTorqueBoost
+  double catchup_min = 0;                // NemesisBoost/PlayerCatchupMinDist (m)
+  double catchup_max = 150;              // NemesisBoost/PlayerCatchupMaxDist (m)
+  double catchup_end = 300;              // NemesisBoost/PlayerCatchupEndDist (m)
+  static RaceBoostTunables from(const std::map<std::string, double>& registry);
 };
-NemesisBoostResult nemesis_rival_boost(bool is_nemesis, bool start_boost_done, int other_ai_count, int other_ai_ahead,
-                                       double gap_behind_player, double dist_to_finish, double braking,
-                                       double cornering);
+
+// One race AI's boost this step (SPEC-RACE-AI, Difficulty and
+// rubber-banding; decoded from the title's boost update). Inputs:
+// - progress: the car's distance raced (m), player_progress the player's;
+// - speed: the car's speed (m/s);
+// - others: the other race-AI cars in the race, others_ahead those of them
+//   further along than this car;
+// - to_finish: m left to the finish;
+// - nemesis: this car is a nemesis rival.
+// The start boost runs while progress < KeepFirst + Decay. Its full-boost
+// distance and torque are lerped from the first car's to the last's by
+// others_ahead / others. A car more than GapPerCar x (others -
+// others_ahead) m ahead of the player gets TorqueScaleBoostMinimum; one
+// behind the player above MinSpeedBoostBehindPlayer gets
+// TorqueScaleBoostBehindPlayer. The torque is held to the full-boost
+// distance, then decays to 0 over Decay m, while the skill factor runs from
+// MaxSkillBoostFactor down to 1 over the same span. With no start torque,
+// a nemesis rival with another race AI ahead gets SkillBoostFactor and
+// +TorqueBoost. A rival with no other race AI (one on one) more than
+// PlayerCatchupEndDist from the finish and more than MinDist behind the
+// player gets PlayerCatchupTorqueBoost ramped from MinDist to MaxDist
+// (`one_on_one_catchup`: the title gates this on a game-state flag whose
+// meaning is not traced; interim on, SPEC_QUESTIONS Q121).
+// The torque factor is x (1 + torque); braking and cornering become
+// drive::ai_boost(s, skill, cap) with the caps 1.0 and 1.25.
+struct RaceBoost {
+  double torque = 0.0;  // added to 1 in the torque factor
+  double skill = 1.0;   // the skill multiplier m of drive::ai_boost
+  const char* kind = "";  // "start_full", "start_decay", "nemesis" or ""
+  bool active() const { return *kind != '\0'; }
+};
+RaceBoost race_boost(const RaceBoostTunables& t, double progress, double player_progress, double speed, int others,
+                     int others_ahead, double to_finish, bool nemesis, bool one_on_one_catchup = true);
 
 // Dynamic difficulty (GameTunableSettings.ini [DynamicDifficulty] +
 // AISkillAdjustments): adjusts profile Main/AISkill (1..20, lower = harder)
@@ -62,11 +108,6 @@ Difficulty difficulty_from_dynamic_skill(int ai_skill, const DynamicDifficultyCo
 // The torque factor in torque-cut mode: 1 - r x TorqueCutFactor, r linear
 // from 0 at StartTorqueCutDistance to 1 at MaxTorqueCutDistance (clamped).
 double torque_cut(const RubberbandRow& row, double gap);
-// The race-start boost (probable): 0.4 on pole down to 0.1 on the last
-// slot, held for the first 300 m from the slot, gone over the next 700 m;
-// the torque is x (1 + boost).
-double start_boost(int slot, int cars, double distance_from_slot);
-
 // The AI's acceleration limits from its rolled values (the spec's fits):
 // corner a_c = cornering x 1.7 g, braking = braking x 2.0 g.
 constexpr double kGravity = 9.81;

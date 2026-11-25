@@ -2745,3 +2745,30 @@ those lines are blank or interim:
 
 Needed: which of these screens the title draws, what text each one shows,
 and whether the UI changes the case.
+
+## Q121 (WORLD-05, not blocking): the one-on-one nemesis catch-up flag
+
+The race-start and nemesis boosts are decoded (C4 settled). The boost
+update reads the `AI/Racing/RaceBehavior/RaceStartBoost/*` and
+`.../NemesisBoost/*` registry values. Each is registered with a
+compiled-in default, and those defaults are the old "code-only" figures:
+0.4 and 0.1, 300 and 700 m, 1.5 and +0.3, and 50, 100 and 500 m. The
+title loads GlobalRegistry.xml over them at boot, matching each
+`<Value id>` to its registered value. So the disc's values are the ones
+that run: 0.6 and 0.2, 500 and 250 m held, a 1,000 m decay, a skill
+factor of 2.0, 20 m a car, 25 m/s, nemesis 1.1 and +0.4, and catch-up
++0.6 over 0 to 150 m, off 300 m from the finish. The engine now runs the
+decoded rule with those values (`race::race_boost`).
+
+Open: the one-on-one branch, `PlayerCatchupTorqueBoost`, runs only while
+a game-state byte is set. That byte is copied from a byte of another
+game object, and what that object is was not traced. Interim: on. On
+`NR02` this branch moves the rival from 160.7 s to 138.6 s (oracle
+130.7 s).
+
+Needed: what the flag means (for example single-player career only, or a
+difficulty or assist option), from a trace of that byte on `NR02`.
+
+Also interim: the distance the boost reads is the distance raced past the
+start line, and the speed test is in m/s. The title reads both from the
+car's route state and does not name their units.

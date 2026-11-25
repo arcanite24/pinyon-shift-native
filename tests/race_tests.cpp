@@ -486,8 +486,32 @@ void test_difficulty() {
   const auto& row = e.rubberbands[0];
   CHECK(near(race::torque_cut(row, 50), 1) && near(race::torque_cut(row, 100), 1));
   CHECK(near(race::torque_cut(row, 250), 0.75) && near(race::torque_cut(row, 400), 0.5) && near(race::torque_cut(row, 900), 0.5));
-  CHECK(near(race::start_boost(0, 8, 0), 0.4) && near(race::start_boost(7, 8, 299), 0.1));
-  CHECK(near(race::start_boost(0, 8, 650), 0.2) && race::start_boost(3, 8, 1000) == 0);
+  {
+    // WORLD-05: the start boost (GlobalRegistry.xml values). Seven other
+    // race AI; the player level with the car, so no gap rule.
+    const race::RaceBoostTunables t;
+    auto b = race::race_boost(t, 0, 0, 0, 7, 0, 5000, false);  // the leader at the start
+    CHECK(near(b.torque, 0.6) && near(b.skill, 2.0) && std::string(b.kind) == "start_full");
+    b = race::race_boost(t, 100, 110, 20, 7, 7, 5000, false);  // the last car, just behind the player
+    CHECK(near(b.torque, 0.2) && near(b.skill, 2.0));
+    CHECK(!race::race_boost(t, 100, 100, 20, 7, 7, 5000, false).active());  // the last AI level with the player
+    b = race::race_boost(t, 750, 760, 20, 7, 7, 5000, false);  // last: held 250 m, then 500 of the 1,000 m decay
+    CHECK(near(b.torque, 0.1) && near(b.skill, 1.5) && std::string(b.kind) == "start_decay");
+    b = race::race_boost(t, 1000, 1000, 40, 7, 0, 5000, false);  // the leader: held 500 m, half decayed
+    CHECK(near(b.torque, 0.3) && near(b.skill, 1.5));
+    CHECK(!race::race_boost(t, 1500, 1500, 40, 7, 0, 5000, false).active());
+    // More than GapPerCar x (others - ahead) ahead of the player: the minimum (0).
+    CHECK(!race::race_boost(t, 300, 300 - 141, 40, 7, 0, 5000, false).active());
+    CHECK(race::race_boost(t, 300, 300 - 139, 40, 7, 0, 5000, false).active());
+    // Behind the player above 25 m/s: TorqueScaleBoostBehindPlayer (0); slower, the normal boost.
+    CHECK(!race::race_boost(t, 300, 320, 26, 7, 3, 5000, false).active());
+    CHECK(race::race_boost(t, 300, 320, 24, 7, 3, 5000, false).active());
+    // The compiled-in defaults (the old spec figures) under the same rule.
+    race::RaceBoostTunables d;
+    d.start_torque_first = 0.4, d.start_torque_last = 0.1, d.keep_full_first = d.keep_full_last = 300, d.decay = 700;
+    CHECK(near(race::race_boost(d, 0, 0, 0, 7, 0, 5000, false).torque, 0.4));
+    CHECK(near(race::race_boost(d, 650, 650, 30, 7, 0, 5000, false).torque, 0.2));
+  }
   race::DriverAi ai;
   ai.init(e.skills[0], &row, 7);
   CHECK(ai.braking() >= 0.5 && ai.braking() <= 0.6 && ai.cornering() >= 0.4 && ai.cornering() <= 0.5);
@@ -1056,19 +1080,28 @@ int main() {
     CHECK(race::difficulty_from_dynamic_skill(16) == race::Difficulty::kMed);
     CHECK(race::difficulty_from_dynamic_skill(20) == race::Difficulty::kEasy);
 
-    // Nemesis rival boost: multi-AI vs 1v1 torque ramp.
-    const auto off_start = race::nemesis_rival_boost(true, false, 6, 2, 80.0, 2000.0, 0.84, 0.90);
-    CHECK(!off_start.active && off_start.torque_add == 0.0 && near(off_start.cornering, 0.90));
-    const auto multi_on = race::nemesis_rival_boost(true, true, 6, 2, 0.0, 2000.0, 0.84, 0.90);
-    CHECK(multi_on.active && near(multi_on.braking, 1.0) && near(multi_on.cornering, 1.25) &&
-          near(multi_on.torque_add, 0.3));
-    const auto multi_lead = race::nemesis_rival_boost(true, true, 6, 0, 0.0, 2000.0, 0.84, 0.90);
-    CHECK(!multi_lead.active && multi_lead.torque_add == 0.0);
-    const auto one_v_one = race::nemesis_rival_boost(true, true, 0, 0, 75.0, 2000.0, 0.84, 0.90);
-    CHECK(one_v_one.active && near(one_v_one.braking, 0.84) && near(one_v_one.cornering, 0.90) &&
-          near(one_v_one.torque_add, 0.075, 1e-4));
-    const auto near_fin = race::nemesis_rival_boost(true, true, 0, 0, 100.0, 400.0, 0.84, 0.90);
-    CHECK(!near_fin.active && near_fin.torque_add == 0.0);
+    // Nemesis rival boost (WORLD-05): once the start boost is over, with
+    // another race AI ahead SkillBoostFactor 1.1 and +0.4 torque; one on
+    // one, PlayerCatchupTorqueBoost 0.6 ramped over 0 to 150 m behind the
+    // player, off within 300 m of the finish.
+    const race::RaceBoostTunables t;
+    const auto in_start = race::race_boost(t, 800, 800, 30, 6, 2, 2000.0, true);
+    CHECK(std::string(in_start.kind) == "start_decay");
+    const auto multi_on = race::race_boost(t, 2000, 2000, 30, 6, 2, 2000.0, true);
+    CHECK(multi_on.active() && near(multi_on.skill, 1.1) && near(multi_on.torque, 0.4));
+    CHECK(near(drive::ai_boost(0.90, multi_on.skill, 1.25), 0.99) && near(drive::ai_boost(0.95, multi_on.skill, 1.0), 1.0));
+    CHECK(!race::race_boost(t, 2000, 2000, 30, 6, 0, 2000.0, true).active());  // leading the other AI
+    CHECK(!race::race_boost(t, 2000, 2000, 30, 6, 2, 2000.0, false).active());  // not a rival
+    const auto one_v_one = race::race_boost(t, 2000, 2075, 30, 0, 0, 2000.0, true);
+    CHECK(one_v_one.active() && near(one_v_one.skill, 1.0) && near(one_v_one.torque, 0.3, 1e-9));
+    CHECK(near(race::race_boost(t, 2000, 2300, 30, 0, 0, 2000.0, true).torque, 0.6));
+    CHECK(!race::race_boost(t, 2000, 2100, 30, 0, 0, 299.0, true).active());  // near the finish
+    CHECK(!race::race_boost(t, 2000, 2100, 30, 0, 0, 2000.0, true, false).active());  // the flag off
+    // The registry ids map onto the fields.
+    const std::map<std::string, double> reg = {{"AI/Racing/RaceBehavior/RaceStartBoost/GapPerCar", 33.0},
+                                               {"AI/Racing/RaceBehavior/NemesisBoost/TorqueBoost", 0.25}};
+    const auto rt = race::RaceBoostTunables::from(reg);
+    CHECK(near(rt.gap_per_car, 33.0) && near(rt.nemesis_torque, 0.25) && near(rt.start_torque_first, 0.6));
 
     // The engine's extra HARD+ tier (kHardPlus = 4) pays as Pro (25%).
     CHECK(race::difficulty_bonus_percent(4) == 25);

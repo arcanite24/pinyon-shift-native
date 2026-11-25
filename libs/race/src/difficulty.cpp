@@ -37,26 +37,78 @@ DriverSetup assign_driver_for_mode(int event_skill, int event_temperament, int e
   return s;
 }
 
-NemesisBoostResult nemesis_rival_boost(bool is_nemesis, bool start_boost_done, int other_ai_count, int other_ai_ahead,
-                                       double gap_behind_player, double dist_to_finish, double braking,
-                                       double cornering) {
-  NemesisBoostResult r{braking, cornering, 0.0, false};
-  if (!is_nemesis || !start_boost_done) return r;
-  if (other_ai_count > 0) {
-    if (other_ai_ahead > 0) {
-      r.braking = drive::ai_boost(braking, 1.5, 1.0);
-      r.cornering = drive::ai_boost(cornering, 1.5, 1.25);
-      r.torque_add = 0.3;
-      r.active = true;
+RaceBoostTunables RaceBoostTunables::from(const std::map<std::string, double>& registry) {
+  RaceBoostTunables t;
+  auto g = [&](const char* id, double& v) {
+    const auto it = registry.find(std::string("AI/Racing/RaceBehavior/") + id);
+    if (it != registry.end()) v = it->second;
+  };
+  g("RaceStartBoost/TorqueScaleBoostForFirstCar", t.start_torque_first);
+  g("RaceStartBoost/TorqueScaleBoostForLastCar", t.start_torque_last);
+  g("RaceStartBoost/KeepFullBoostDistanceFirst", t.keep_full_first);
+  g("RaceStartBoost/KeepFullBoostDistanceLast", t.keep_full_last);
+  g("RaceStartBoost/DecayBoostOverThisManyMeters", t.decay);
+  g("RaceStartBoost/MaxSkillBoostFactor", t.max_skill);
+  g("RaceStartBoost/GapPerCar", t.gap_per_car);
+  g("RaceStartBoost/MinSpeedBoostBehindPlayer", t.min_speed_behind_player);
+  g("RaceStartBoost/TorqueScaleBoostBehindPlayer", t.torque_behind_player);
+  g("RaceStartBoost/TorqueScaleBoostMinimum", t.torque_minimum);
+  g("NemesisBoost/SkillBoostFactor", t.nemesis_skill);
+  g("NemesisBoost/TorqueBoost", t.nemesis_torque);
+  g("NemesisBoost/PlayerCatchupTorqueBoost", t.catchup_torque);
+  g("NemesisBoost/PlayerCatchupMinDist", t.catchup_min);
+  g("NemesisBoost/PlayerCatchupMaxDist", t.catchup_max);
+  g("NemesisBoost/PlayerCatchupEndDist", t.catchup_end);
+  return t;
+}
+
+namespace {
+// The title's ramp: a at x <= x0, b at x >= x1, linear between.
+double ramp_between(double x, double x0, double x1, double a, double b) {
+  if (x1 == x0) return x >= x1 ? b : a;
+  const double u = std::clamp((x - x0) / (x1 - x0), 0.0, 1.0);
+  return a + u * (b - a);
+}
+}  // namespace
+
+RaceBoost race_boost(const RaceBoostTunables& t, double progress, double player_progress, double speed, int others,
+                     int others_ahead, double to_finish, bool nemesis, bool one_on_one_catchup) {
+  RaceBoost r;
+  // The start boost's level, set while the car is within the first car's
+  // full-boost distance plus the decay.
+  double level = 0, keep = t.keep_full_first;
+  if (progress < t.keep_full_first + t.decay) {
+    const double place = others > 0 ? double(others_ahead) / double(others) : 0.0;
+    keep = ramp_between(place, 0.0, 1.0, t.keep_full_first, t.keep_full_last);
+    const double ahead_of_player = progress - player_progress;
+    const double allowed = others > 0 ? double(others - others_ahead) * t.gap_per_car : t.gap_per_car;
+    if (ahead_of_player >= 0 || speed <= t.min_speed_behind_player) {
+      level = ahead_of_player >= allowed ? t.torque_minimum
+                                         : ramp_between(place, 0.0, 1.0, t.start_torque_first, t.start_torque_last);
+    } else {
+      level = t.torque_behind_player;
     }
+  }
+  if (level > 0) {
+    r.torque = level * ramp_between(progress, keep, keep + t.decay, 1.0, 0.0);
+    r.skill = ramp_between(progress, keep, keep + t.decay, t.max_skill, 1.0);
+    r.kind = progress > keep ? "start_decay" : "start_full";
     return r;
   }
-  // 1v1 nemesis rival (e.g. NR02): skill scalars untouched; torque-only ramp
-  // from 50 m to 100 m behind the player, shut off within 500 m of the finish.
-  if (dist_to_finish > 500.0 && gap_behind_player > 50.0) {
-    const double f = std::clamp((gap_behind_player - 50.0) / 50.0, 0.0, 1.0);
-    r.torque_add = 0.15 * f;
-    r.active = r.torque_add > 0.0;
+  if (!nemesis) return r;
+  if (others_ahead > 0) {
+    r.torque = t.nemesis_torque;
+    r.skill = t.nemesis_skill;
+    r.kind = "nemesis";
+    return r;
+  }
+  if (one_on_one_catchup && others == 0 && to_finish > t.catchup_end) {
+    const double behind = player_progress - progress;
+    if (behind > t.catchup_min) {
+      r.torque = ramp_between(behind, std::min(t.catchup_min, t.catchup_max), std::max(t.catchup_min, t.catchup_max),
+                              0.0, t.catchup_torque);
+      r.kind = "nemesis";
+    }
   }
   return r;
 }
@@ -103,14 +155,6 @@ double torque_cut(const RubberbandRow& row, double gap) {
   const double span = row.max_torque_cut - row.start_torque_cut;
   const double r = span > 0 ? std::clamp((gap - row.start_torque_cut) / span, 0.0, 1.0) : (gap >= row.start_torque_cut ? 1.0 : 0.0);
   return 1 - r * row.torque_cut_factor;
-}
-
-double start_boost(int slot, int cars, double s) {
-  if (cars < 1) return 0;
-  const double top = cars > 1 ? 0.4 - 0.3 * double(slot) / double(cars - 1) : 0.4;
-  if (s <= 300) return top;
-  if (s >= 1000) return 0;
-  return top * (1 - (s - 300) / 700);
 }
 
 double DriverAi::uniform() {

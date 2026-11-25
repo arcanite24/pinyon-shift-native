@@ -1,6 +1,7 @@
 #include "race/reset_rules.h"
 
 #include <cmath>
+#include <cstdlib>
 
 #include "audio/xml.h"
 #include "cars/physics.h"
@@ -114,6 +115,41 @@ bool load_ai_reset_rules(const std::filesystem::path& game_root, std::string_vie
   std::string text;
   if (!read_member(game_root, "AIRacing.xml", text, error)) return false;
   return parse_ai_reset_rules(text, set, out, error);
+}
+
+bool parse_global_registry(std::string_view xml, std::map<std::string, double>& out, std::string* error) {
+  std::map<std::string, double> r;
+  auto attr = [](std::string_view elem, std::string_view name, std::string& v) {
+    const std::string key = " " + std::string(name) + "=\"";
+    const size_t at = elem.find(key);
+    if (at == std::string_view::npos) return false;
+    const size_t from = at + key.size(), to = elem.find('"', from);
+    if (to == std::string_view::npos) return false;
+    v.assign(elem.substr(from, to - from));
+    return true;
+  };
+  size_t at = 0;
+  while ((at = xml.find("<Value", at)) != std::string_view::npos) {
+    const size_t end = xml.find('>', at);
+    if (end == std::string_view::npos) break;
+    const std::string_view elem = xml.substr(at, end - at);
+    at = end;
+    std::string id, value;
+    if (!attr(elem, "id", id) || !attr(elem, "value", value)) continue;
+    char* stop = nullptr;
+    const double v = std::strtod(value.c_str(), &stop);
+    if (stop != value.c_str()) r[id] = v;
+  }
+  if (r.empty()) return fail(error, "GlobalRegistry.xml: no numeric <Value> entries");
+  out = std::move(r);
+  return true;
+}
+
+bool load_global_registry(const std::filesystem::path& game_root, std::map<std::string, double>& out,
+                          std::string* error) {
+  std::string text;
+  if (!read_member(game_root, "GlobalRegistry.xml", text, error)) return false;
+  return parse_global_registry(text, out, error);
 }
 
 const char* ai_settings_set(bool street_race, bool free_roam) {
