@@ -829,6 +829,14 @@ void DriveSession::choose() {
           if (act == PauseMenu::kQuitRace && app.race) {
             app.race->drop_award();
             results_page = 0;
+            // A quit Rally stage ends the event and goes back to the Rally
+            // world (game_rally_race_flow: CIsRaceQuit, then free roam); with
+            // no service menu, this is the retirement.
+            if (app.race->is_stage() && app.rally_session.active()) {
+              app.rally_session.retire();
+              app.rally_service_open = false;
+              app.rally_hub_open = true;
+            }
             app.leave_race = true;
             running = false;
           }

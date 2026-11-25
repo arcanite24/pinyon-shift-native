@@ -7,6 +7,7 @@
 
 #include "game_hud.h"
 #include "hud_scene.h"
+#include "scene_screen.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -413,18 +414,25 @@ void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, flo
   ui4::button_bar(out, {{"A", "SELECT"}, {"DPAD_LR", "BROWSE"}, {"B", "BACK"}}, w, h);
 }
 
+// rally.str's STAGE RESULTS and the common CONTINUE.
+constexpr StringRef kStageResultsTitle{"rally", "IDS_ResultsStageTitle", 0, "STAGE RESULTS"};
+constexpr StringRef kContinue{"", "", 0, "CONTINUE", true};
+
 void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState& st, float w, float h) {
   if (!st.active) return;
   const float u = h / 720.0f;
   const SceneFrame f{0.5f * w - 640.0f * u, 0.5f * h - 360.0f * u, u};
   ui4::subtle_vignette(out, w, h, 0.34f);
 
-  // Tilted +3.0 deg FH1 Service Area layout (open Colorado backdrop, ZERO opaque full-screen wall!).
+  // Between stages the race flow shows the stage's result and goes on to
+  // the next (game_rally_race_flow: no service menu; every car is repaired
+  // before each stage). interim (SPEC_QUESTIONS Q147): the layout is the
+  // engine's; the game's single-player flow shows its finish-position screen.
   {
     char eyebrow[128];
     std::snprintf(eyebrow, sizeof eyebrow, "%s  •  STAGE %d OF %d COMPLETE", st.championship_name.c_str(),
                   st.completed_stage, st.total_stages);
-    ui4::title_banner(out, u, f.x(76.0f), f.y(42.0f), "SERVICE AREA", eyebrow, true, 540.0f);
+    ui4::title_banner(out, u, f.x(76.0f), f.y(42.0f), text_of(kStageResultsTitle), eyebrow, true, 540.0f);
 
     // Top-right next-stage off-white distressed strip.
     ui4::TiltScope nt(out, f.x(1020.0f), f.y(66.0f), ui4::kTiltRad * 0.6f);
@@ -463,41 +471,6 @@ void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState&
     vl.color = st.overall_place <= 3 ? kRallyGreen : kRallyCyan;
     vl.size = 17.0f * u;
     out.text(lx0 + lw * 0.54f, ly0 + 84.0f * u, op, vl);
-  }
-
-  // Car Damage & Repair meter with real resolved car display name (never raw SUB_IMPREZA22B_98!).
-  const float dmy = ly0 + 136.0f * u;
-  ui4::panel(out, lx0, dmy, lx0 + lw, dmy + 66.0f * u, u, ui4::kCharcoalDark, 0, ui4::kPink, true);
-  {
-    ui4::class_badge(out, lx0 + 14.0f * u, dmy + 10.0f * u, 22.0f * u, st.car_class.empty() ? "B" : st.car_class,
-                     st.car_pi > 0 ? st.car_pi : 500, 4);
-    const std::string nice_car = resolve_rally_car_name(st.car_name);
-    char cbuf[128];
-    std::snprintf(cbuf, sizeof cbuf, "%s  •  DMG %.0f%%", nice_car.c_str(), st.damage_pct);
-    ui::TextStyle cs = ui4::style(ui::Font::kB, 13.0f * u, ui4::kWhite, ui::Align::kLeft, true);
-    ui4::fit_text(cbuf, cs, lw - 102.0f * u, 9.0f * u);
-    out.text(lx0 + 92.0f * u, dmy + 14.0f * u, cbuf, cs);
-    const float bx0 = lx0 + 14.0f * u, bx1 = lx0 + lw - 14.0f * u;
-    out.rect(bx0, dmy + 44.0f * u, bx1, dmy + 52.0f * u, ui::rgba(52, 56, 66, 230));
-    const float dmg = float(std::clamp(st.damage_pct / 100.0, 0.0, 1.0));
-    const uint32_t dcol = dmg < 0.05f ? ui4::kGreen : (dmg < 0.4f ? ui4::kAmber : ui4::kRed);
-    out.rect(bx0, dmy + 44.0f * u, bx0 + (bx1 - bx0) * std::max(0.03f, 1.0f - dmg), dmy + 52.0f * u, dcol);
-  }
-
-  const char* actions[4] = {
-      "CONTINUE TO NEXT STAGE",
-      st.repaired ? "CAR REPAIRED (100%)" : "REPAIR CAR DAMAGE (FREE)",
-      "UPGRADES & TUNING",
-      "RETIRE FROM CHAMPIONSHIP",
-  };
-  const float my0 = dmy + 80.0f * u;
-  for (int i = 0; i < 4; ++i) {
-    const float y = my0 + float(i) * 44.0f * u;
-    const bool sel = st.selected == i;
-    out.add_hit(lx0, y, lx0 + lw, y + 36.0f * u, ui::kHitRow, i);
-    ui4::brush(out, lx0, y, lx0 + lw, y + 36.0f * u, sel ? ui4::kPink : ui4::kBrushBlack, false);
-    ui::TextStyle as = ui4::style(ui::Font::kE, 15.0f * u, sel ? ui4::kWhite : ui::rgba(220, 224, 234, 255));
-    out.text(lx0 + 18.0f * u, y + 9.0f * u, actions[i], as);
   }
 
   // Right side: H_POST_RACE_RESULTS style floating tilted PILL03 standings table!
@@ -546,7 +519,7 @@ void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState&
   }
 
   out.unturn();
-  ui4::button_bar(out, {{"A", "SELECT"}, {"DPAD", "NAVIGATE"}, {"B", "RETIRE"}}, w, h);
+  ui4::button_bar(out, {{"A", text_of(kContinue)}}, w, h);
 }
 
 void build_rally_championship_results_screen(ui::List& out, const RallyChampResultsState& st, float w, float h) {

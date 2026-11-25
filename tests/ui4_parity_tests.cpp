@@ -1926,7 +1926,9 @@ void test_round2_hud_minimap_gps_and_mouse_ux() {
   carview::RallyServiceAreaState rsvc;
   rsvc.active = true;
   carview::build_rally_service_area_screen(l_rsvc, rsvc, 1280.0f, 720.0f);
-  check(count_group(l_rsvc, carview::ui::kHitRow) == 4, "Rally Service Area emits 4 action hit zones");
+  // Between stages: the stage's results and A CONTINUE, no service menu (V4-13).
+  check(count_group(l_rsvc, carview::ui::kHitRow) == 0, "Rally stage results offer no service actions");
+  check(count_group(l_rsvc, carview::ui4::kHitButton) == 1, "Rally stage results: one CONTINUE button");
 
   // Sponsors Challenges & 1000 Club & Achievements & Post-Race Results.
   std::vector<carview::SponsorChallengeRow> srows(3);

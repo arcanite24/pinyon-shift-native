@@ -3133,3 +3133,29 @@ The writers for 208, 211, 214 and 215 now run:
 Needed: the original's air measure (distance or the Air skill's own
 length), its crash test for 214, and whether a car won as a prize or
 given counts for 208.
+
+## Q147 (V4-12..V4-14, not blocking): the Rally stage sequence's screens
+
+`game_rally_race_flow` runs each stage as prepare (every car repaired,
+`reset_car_damage_all_cars`), intro and pre-race menu (`onQuit` back to
+free roam), countdown (`CRallyStageIntro` on a first start,
+`CCoDriverPepTalk` every time), the stage, then the finish-position
+screen and, while stages remain, `CGoToNextHeat` with
+`CShowNextMultiStageLoadingScreen`. The single-player flow has no
+service menu and no stage or rollup scoreboard screen (those are the
+Car Club's and online's). After the last stage come the earnings, the
+Rally points screen (`CIsRallyXPEvent`), a pending prize car and, once,
+the champion sequence (`Rally_Champion_Cutscene`,
+`CPlayRallyChampionDialogue`, `H_HORIZON_RALLY_CHAMPION`,
+`CSetHasSeenRallyEndSequence`).
+
+The engine now drops the Service Area: between stages it shows the
+stage's result and standings under rally.str's STAGE RESULTS with
+A CONTINUE, repairs the car and loads the next stage. Quitting a stage
+from the pause menu ends the event and returns to the Rally world.
+Interim: that between-stage page is the engine's layout, not the game's
+finish-position screen, and it shows the standings the game's flow does
+not; the stage intro and pep talk are not played.
+
+Needed: the finish-position screen as shown after a Rally stage, and
+the next-stage loading screen's content.

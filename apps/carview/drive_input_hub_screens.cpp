@@ -957,95 +957,33 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
             if (app.rally_service_open) {
+              // Between stages (game_rally_race_flow): the stage's results,
+              // then the next stage. The race flow repairs every car before
+              // each stage (reset_car_damage_all_cars); there is no service
+              // menu, and quitting is the pre-race menu's or the pause menu's.
               auto act_service = [&]() {
-                if (app.rally_service_selected == 0) {
-                  int64_t cid = 0;
-                  int car_class_id = app.rally_session.target_class();
-                  current_car_info(cid, car_class_id);
-                  bool has_rally_kit = true;
-                  if (!app.rally_session.is_heats() && app.have_garage && app.parts_db.valid()) {
-                    if (const garage::Car* sc = app.career_garage.selected_car()) {
-                      if (const auto db_ptr = app.parts_db.get(); db_ptr && db_ptr->is_open()) {
-                        const auto rk = garage::inspect_rally_kit(*sc, *db_ptr);
-                        has_rally_kit = rk.is_rally_upgraded;
-                      }
-                    }
-                  }
-                  std::string reason;
-                  if (app.rally_session.advance_from_service_area(car_class_id, has_rally_kit, &reason)) {
-                    app.rally_service_open = false;
-                    app.rally_service_return = false;
-                    app.rally_notice.clear();
-                    if (const auto* stg = app.rally_session.current_stage()) {
-                      app.race_options.stage_title = stg->name;
-                      app.next_event = "stage:" + std::to_string(stg->route_id);
-                      running = false;
-                    }
-                  } else {
-                    app.rally_notice = reason.empty() ? "CAR NO LONGER MEETS CHAMPIONSHIP REQUIREMENTS" : reason;
-                    notice = app.rally_notice;
-                    notice_until = vehicle.time() + 4.5;
-                    app.audio_host.trigger_ui(audio::UiCue::kError);
-                  }
-                } else if (app.rally_service_selected == 1) {
-                  car_damage.reset();
-                  app.rally_service_repaired = true;
-                  app.rally_notice = "CAR REPAIRED TO 100% — READY FOR NEXT STAGE";
-                } else if (app.rally_service_selected == 2) {
-                  app.rally_service_return = true;
-                  app.rally_service_open = false;
-                  open_shop_or_autoshow(false);
-                  if (!shop.is_open()) {
-                    app.rally_service_return = false;
-                    app.rally_service_open = true;
-                  }
-                } else if (app.rally_service_selected == 3) {
-                  app.rally_service_open = false;
-                  app.rally_service_return = false;
-                  app.rally_service_resume_after_reload = false;
-                  app.rally_session.retire();
-                  app.rally_hub_open = true;
-                  app.leave_race = true;
+                app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                car_damage.reset();
+                app.rally_service_repaired = true;
+                app.rally_session.advance_from_service_area();
+                app.rally_service_open = false;
+                app.rally_service_return = false;
+                app.rally_notice.clear();
+                if (const auto* stg = app.rally_session.current_stage()) {
+                  app.race_options.stage_title = stg->name;
+                  app.next_event = "stage:" + std::to_string(stg->route_id);
                   running = false;
                 }
               };
+              app.rally_service_selected = 0;
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
-                if (e.key.key == SDLK_UP || e.key.key == SDLK_W) { app.rally_service_selected = (app.rally_service_selected + 3) % 4; app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_S) { app.rally_service_selected = (app.rally_service_selected + 1) % 4; app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) { app.audio_host.trigger_ui(audio::UiCue::kAccept); act_service(); }
+                if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) act_service();
               } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) { app.rally_service_selected = (app.rally_service_selected + 3) % 4; app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { app.rally_service_selected = (app.rally_service_selected + 1) % 4; app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) { app.audio_host.trigger_ui(audio::UiCue::kAccept); act_service(); }
-              } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) act_service();
+              } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
                 carview::ui::HitZone hz{};
-                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow &&
-                    hz.index >= 0 && hz.index < 4 && app.rally_service_selected != hz.index) {
-                  app.rally_service_selected = hz.index;
-                  app.audio_host.trigger_ui(audio::UiCue::kMove);
-                }
-              } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-                if (e.button.button == SDL_BUTTON_RIGHT) {
-                  app.rally_service_selected = 3;
-                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                if (ui_mouse_hit(e.button.x, e.button.y, hz) && hz.group == carview::ui4::kHitButton && hz.index == 0)
                   act_service();
-                } else if (e.button.button == SDL_BUTTON_LEFT) {
-                  carview::ui::HitZone hz{};
-                  if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
-                    if (hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < 4) {
-                      app.rally_service_selected = hz.index;
-                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                      act_service();
-                    } else if (hz.group == carview::ui4::kHitButton) {
-                      if (hz.index == 0) { app.audio_host.trigger_ui(audio::UiCue::kAccept); act_service(); }
-                      else if (hz.index == 2) { app.rally_service_selected = 3; app.audio_host.trigger_ui(audio::UiCue::kCancel); act_service(); }
-                    }
-                  }
-                }
-              } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
-                if (e.wheel.y > 0) app.rally_service_selected = (app.rally_service_selected + 3) % 4;
-                else if (e.wheel.y < 0) app.rally_service_selected = (app.rally_service_selected + 1) % 4;
-                app.audio_host.trigger_ui(audio::UiCue::kMove);
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
