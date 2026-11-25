@@ -1246,6 +1246,28 @@ void SettingsPage::switch_tab(int by) {
   row_ = indices.empty() ? 0 : indices.front();
 }
 
+bool SettingsPage::select_id(const std::string& id) {
+  for (size_t i = 0; i < rows_.size(); ++i) {
+    if (id == rows_[i].name) {
+      select_row(int(i));
+      return true;
+    }
+  }
+  return false;
+}
+
+void SettingsPage::reset_rows(const std::vector<std::string>& ids) {
+  const std::vector<Row> fresh = build();
+  for (size_t i = 0; i < rows_.size() && i < fresh.size(); ++i) {
+    for (const std::string& id : ids) {
+      if (id == rows_[i].name && rows_[i].pick != fresh[i].pick) {
+        rows_[i].pick = fresh[i].pick;
+        dirty_ = true;
+      }
+    }
+  }
+}
+
 void SettingsPage::select_row(int flat_idx) {
   if (capturing_) return;
   const int n = int(rows_.size() + rebinds_.size()) + 1;

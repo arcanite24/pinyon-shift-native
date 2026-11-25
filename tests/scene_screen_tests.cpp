@@ -32,6 +32,7 @@
 #include "game_hud.h"
 #include "hud_scene.h"
 #include "car_list_screen.h"
+#include "options_screen.h"
 #include "hub_menus.h"
 #include "hud_screen.h"
 #include "pause_screen.h"
@@ -234,6 +235,25 @@ int main() {
         check(btn >= 0, "H_GENERIC: " + b);
       }
     }
+  }
+
+  // The option pages (300_I_OPT_ASSISTS_DIFFICULTY): the nodes and the
+  // original's words for the engine's values.
+  {
+    const SceneDraw sd(carview::ui_scene(std::string(carview::kOptionsListScene)));
+    check(sd.ok(), "300_I_OPT_ASSISTS_DIFFICULTY loads");
+    if (sd.ok()) check_nodes(sd, carview::kOptionsListScene, carview::options_list_nodes());
+    check(carview::options_rows(carview::OptionsPage::kDifficulty).size() == 9, "DIFFICULTY's nine rows");
+    check(carview::options_rows(carview::OptionsPage::kHud).size() == 9, "HUD's nine rows");
+    check(carview::options_value_text("difficulty preset", "MEDIUM (+40% CR)") == "MEDIUM", "GAME DIFFICULTY MEDIUM");
+    check(carview::options_value_text("difficulty preset", "INSANE (+90% CR)") == "EXPERT", "GAME DIFFICULTY EXPERT");
+    check(carview::options_value_text("braking", "abs on") == "ABS ON", "BRAKING ABS ON");
+    check(carview::options_value_text("damage", "cosmetic") == "ON", "COSMETIC DAMAGE ON");
+    check(carview::options_value_text("rewind", "on") == "ON", "REWIND ON");
+    check(carview::options_value_text("units", "imperial (mph)") == "ENGLISH", "UNITS ENGLISH");
+    check(carview::options_value_text("camera", "chase low") == "CHASE LOW", "an engine value, upper-cased");
+    for (const auto& r : carview::options_rows(carview::OptionsPage::kDifficulty))
+      check(!carview::text_of(r.description).empty(), std::string("a description for ") + r.id);
   }
 
   // The manufacturer select (115_C_BUY_MFRSELECT, v4's).
@@ -780,6 +800,32 @@ int main() {
       const auto p2 = out_dir / "car_list_barn_finds.png";
       check(stbi_write_png(p2.string().c_str(), int(W), int(H), 4, fb2.data(), int(W * 4)) != 0,
             "write barn finds");
+    }
+    // DIFFICULTY over 24_options_difficulty_orig.png, as it shows.
+    {
+      using namespace carview::options_text;
+      carview::OptionsHud o;
+      o.title = carview::text_of(kDifficulty);
+      const char* values[9] = {"custom", "abs on", "normal", "off", "automatic", "full", "cosmetic", "on", "medium"};
+      const auto& rows = carview::options_rows(carview::OptionsPage::kDifficulty);
+      for (size_t i = 0; i < rows.size(); ++i)
+        o.rows.push_back({carview::text_of(rows[i].label), carview::options_value_text(rows[i].id, values[i])});
+      check(o.rows[0].first == "GAME DIFFICULTY" && o.rows[0].second == "CUSTOM", "GAME DIFFICULTY CUSTOM");
+      o.selected = 0;
+      o.description_title = carview::text_of(kDescription);
+      o.description = carview::text_of(rows[0].description);
+      o.bonus = "+40%";
+      o.prompts = {{"A", carview::text_of(kSave)}, {"B", carview::text_of(kCancel)}, {"Y", carview::text_of(kResetDefault)}};
+      std::vector<uint8_t> fb = backdrop;
+      carview::ui::List l;
+      check(carview::draw_options_list(l, o, float(W), float(H)), "draw DIFFICULTY");
+      int hits = 0;
+      for (const auto& z : l.hits())
+        if (z.group == carview::ui::kHitRow) ++hits;
+      check(hits == 9, "DIFFICULTY: a hit per row (" + std::to_string(hits) + ")");
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / "options_difficulty.png";
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write DIFFICULTY");
     }
     // The manufacturer select on 115: Aston Martin, Audi (the cursor),
     // Bentley, BMW and the engine's Hidden & Showcase tab, Audi's profile.

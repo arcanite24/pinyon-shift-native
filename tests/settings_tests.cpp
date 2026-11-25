@@ -759,6 +759,26 @@ int main() {
     std::filesystem::remove_all(dir, ec);
   }
 
+  // The original's option pages: a row by its name, RESET TO DEFAULT on a
+  // page's rows only, CANCEL by loading the page's tokens back.
+  {
+    carview::SettingsPage op;
+    op.load({"--assist-braking", "2", "--assist-tcs", "0", "--no-traffic"});
+    const std::vector<std::string> before = op.tokens();
+    CHECK(op.select_id("steering"));
+    CHECK(!op.select_id("no such row"));
+    op.step(1);
+    CHECK(op.value("steering") != "normal");
+    op.reset_rows({"braking", "steering", "traction control"});
+    CHECK(op.value("braking") == "abs on");
+    CHECK(op.value("steering") == "normal");
+    CHECK(op.value("traction control") == "on");
+    CHECK(op.value("traffic") == "off");  // not on the page
+    op.load(before);
+    CHECK(op.value("braking") == "abs off");
+    CHECK(op.tokens() == before);
+  }
+
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

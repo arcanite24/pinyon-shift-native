@@ -2856,12 +2856,25 @@ The scene's scroller is not run, so the row shows "TEAM CREDITS — NOT
 AVAILABLE YET". Needed: the credits text's source (a string table or a
 file) and the scroll's speed.
 
-## Q135 (UI, not blocking): GAME DIFFICULTY in OPTIONS
+## Q135 (UI, not blocking): GAME DIFFICULTY in OPTIONS (rows answered by capture 24)
 
-`22_options_menu_orig.png` and `24_options_difficulty_orig.png` show
-OPTIONS with a DIFFICULTY row and its own page, so the original has
-difficulty settings in its layout. The engine's difficulty preset (one
-row that sets every assist) is an engine extra and stays outside the
-original layout; OPTIONS's DIFFICULTY opens the engine's gameplay page as
-an interim. Needed: the rows of the original difficulty page and their
-defaults, so the page can be drawn on `300_I_OPT_ASSISTS_DIFFICULTY`.
+`24_options_difficulty_orig.png` answers the rows: the original's
+DIFFICULTY page (`300_I_OPT_ASSISTS_DIFFICULTY`) lists GAME DIFFICULTY
+(`Assists IDS_MetaDifficulty`, "Automatically adjusts the driving assists
+below ..."), BRAKING, STEERING, TRACTION CONTROL, SHIFTING, DRIVING LINE,
+COSMETIC DAMAGE, REWIND and OPPONENT DIFFICULTY, with TOTAL RACE BONUS
+under them and A SAVE, B CANCEL, Y RESET TO DEFAULT. So the original has a
+difficulty preset in its own layout, and the engine's (the settings row
+"difficulty preset") is drawn as GAME DIFFICULTY there; the engine draws
+the page from its settings rows (`options_screen.h`). The engine's
+STABILITY CONTROL row is not on the capture and stays on its own page.
+Still open:
+
+- The preset's values: Assists.str has EASY, MEDIUM, HARD, EXPERT
+  (`IDS_MetaDifficulty_Insane`), PRO (`IDS_MetaDifficulty_Extreme`) and
+  CUSTOM; the engine's preset steps EASY, MEDIUM, HARD, EXPERT and shows
+  CUSTOM, with no PRO.
+- The defaults RESET TO DEFAULT restores (the engine uses its rows'
+  defaults).
+- OPPONENT DIFFICULTY's values (the capture shows MEDIUM; AIDiff.str has
+  EASY, NORMAL, HARD).

@@ -43,6 +43,7 @@
 #include "game_hud.h"
 #include "garage/pi_calc.h"
 #include "car_list_screen.h"
+#include "options_screen.h"
 #include "hub_menus.h"
 #include "hub_scene.h"
 #include "hud.h"
@@ -609,6 +610,14 @@ struct DriveSession {
   void hub_menu_choose(bool extra);
   // The settings page, on `tab` (SettingsPage::Tab; -1: the last one).
   void open_settings(int tab);
+  // OPTIONS's DIFFICULTY and HUD on the original's page
+  // (300_I_OPT_ASSISTS_DIFFICULTY): the settings page's rows by name, with
+  // A SAVE, B CANCEL (the rows as they were) and Y RESET TO DEFAULT.
+  carview::OptionsPage options_page = carview::OptionsPage::kNone;
+  int options_row = 0;
+  std::vector<std::string> options_snapshot;
+  void open_options_page(carview::OptionsPage p);
+  void fill_options(carview::OptionsHud& out);
   void enter_photo_mode();
   bool collect_next_wristband();
   void open_events_browser(int hub_filter);

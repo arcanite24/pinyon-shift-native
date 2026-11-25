@@ -94,6 +94,11 @@ class SettingsPage {
   void step(int by);  // left and right on the selected row
   void switch_tab(int by);  // switches category tab and resets selection to row 0 of that tab
   void select_row(int flat_idx);
+  // Selects a row by its own name ("braking"); false when there is none.
+  bool select_id(const std::string& id);
+  // Puts the named rows back on their defaults (the original's RESET TO
+  // DEFAULT on one page).
+  void reset_rows(const std::vector<std::string>& ids);
   void select_tab(int tab_idx);
   int selected() const { return row_; }
   int selected_in_tab() const;

@@ -725,6 +725,36 @@ void DriveSession::open_settings(int tab) {
           settings_page.sync_from_live(snap);
           settings_page.open();
           if (tab >= 0) settings_page.select_tab(tab);
+          options_page = carview::OptionsPage::kNone;
+}
+
+void DriveSession::open_options_page(carview::OptionsPage p) {
+          open_settings(int(SettingsPage::Tab::kGameplay));
+          options_page = p;
+          options_row = 0;
+          // CANCEL puts these back.
+          options_snapshot = settings_page.tokens();
+          const auto& rows = carview::options_rows(p);
+          if (!rows.empty()) settings_page.select_id(rows[0].id);
+}
+
+void DriveSession::fill_options(carview::OptionsHud& out) {
+          namespace t = carview::options_text;
+          out = {};
+          out.title = carview::text_of(options_page == carview::OptionsPage::kDifficulty ? t::kDifficulty : t::kHud);
+          const auto& rows = carview::options_rows(options_page);
+          for (const auto& r : rows)
+            out.rows.push_back({carview::text_of(r.label), carview::options_value_text(r.id, settings_page.value(r.id))});
+          out.selected = std::clamp(options_row, 0, std::max(0, int(rows.size()) - 1));
+          if (!rows.empty()) {
+            out.description_title = carview::text_of(t::kDescription);
+            out.description = carview::text_of(rows[size_t(out.selected)].description);
+          }
+          if (options_page == carview::OptionsPage::kDifficulty)
+            out.bonus = "+" + std::to_string(settings_page.difficulty_credit_bonus_pct()) + "%";
+          out.prompts = {{"A", carview::text_of(t::kSave)},
+                         {"B", carview::text_of(t::kCancel)},
+                         {"Y", carview::text_of(t::kResetDefault)}};
 }
 
 void DriveSession::enter_photo_mode() {
@@ -775,8 +805,8 @@ void DriveSession::hub_menu_choose(bool extra) {
               break;
             case A::kTeamCredits: later("TEAM CREDITS"); break;  // interim (SPEC_QUESTIONS Q134)
             case A::kControls: open_settings(int(T::kControls)); break;
-            case A::kDifficulty: open_settings(int(T::kGameplay)); break;
-            case A::kHud: open_settings(int(T::kGameplay)); break;
+            case A::kDifficulty: open_options_page(carview::OptionsPage::kDifficulty); break;
+            case A::kHud: open_options_page(carview::OptionsPage::kHud); break;
             case A::kAudio: open_settings(int(T::kAudio)); break;
             case A::kVideo: open_settings(int(T::kDisplay)); break;
             case A::kEngineSettings: open_settings(int(T::kPinyon)); break;

@@ -260,6 +260,105 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   settings_live_overlay = false;
                 }
               };
+              // OPTIONS's DIFFICULTY and HUD on the original's page: up and down
+              // its rows, left and right their values, A SAVE, B CANCEL (the
+              // rows as they were), Y RESET TO DEFAULT.
+              if (options_page != carview::OptionsPage::kNone && !settings_page.capturing_key()) {
+                const auto& orows = carview::options_rows(options_page);
+                const int on = int(orows.size());
+                auto pick = [&](int r) {
+                  options_row = std::clamp(r, 0, std::max(0, on - 1));
+                  if (on > 0) settings_page.select_id(orows[size_t(options_row)].id);
+                };
+                auto move_row = [&](int by) {
+                  if (on <= 0) return;
+                  pick(((options_row + by) % on + on) % on);
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                };
+                auto step_row = [&](int by) {
+                  pick(options_row);
+                  settings_page.step(by);
+                  apply_live();
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                };
+                auto leave = [&]() {
+                  settings_page.close();
+                  settings_live_overlay = false;
+                  options_page = carview::OptionsPage::kNone;
+                };
+                auto save = [&]() {
+                  if (settings_page.dirty()) {
+                    persist_settings_file(nullptr);
+                    if (!app.show_title) save_now("settings");
+                    settings_page.mark_clean();
+                  }
+                  leave();
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                };
+                auto cancel = [&]() {
+                  if (settings_page.tokens() != options_snapshot) {
+                    settings_page.load(options_snapshot);
+                    apply_live();
+                  }
+                  settings_page.mark_clean();
+                  leave();
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                };
+                auto reset = [&]() {
+                  std::vector<std::string> ids;
+                  for (const auto& r : orows) ids.emplace_back(r.id);
+                  settings_page.reset_rows(ids);
+                  apply_live();
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                };
+                if (e.type == SDL_EVENT_KEY_DOWN) {
+                  const SDL_Keycode k = e.key.key;
+                  if (k == SDLK_UP || k == SDLK_W) move_row(-1);
+                  else if (k == SDLK_DOWN || k == SDLK_S) move_row(1);
+                  else if (k == SDLK_LEFT || k == SDLK_A) step_row(-1);
+                  else if (k == SDLK_RIGHT || k == SDLK_D) step_row(1);
+                  else if (e.key.repeat) {
+                  } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) save();
+                  else if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE || k == SDLK_F6) cancel();
+                  else if (k == SDLK_Y) reset();
+                }
+                if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                  const auto b = e.gbutton.button;
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) move_row(-1);
+                  else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) move_row(1);
+                  else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) step_row(-1);
+                  else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) step_row(1);
+                  else if (b == SDL_GAMEPAD_BUTTON_SOUTH) save();
+                  else if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START) cancel();
+                  else if (b == SDL_GAMEPAD_BUTTON_NORTH) reset();
+                }
+                if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                  carview::ui::HitZone hz{};
+                  if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow && hz.index >= 0 &&
+                      hz.index < on && hz.index != options_row) {
+                    pick(hz.index);
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  }
+                }
+                if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                  carview::ui::HitZone hz{};
+                  const bool hit = ui_mouse_hit(e.button.x, e.button.y, hz);
+                  if (e.button.button == SDL_BUTTON_RIGHT) {
+                    cancel();
+                  } else if (e.button.button == SDL_BUTTON_LEFT && hit && hz.group == carview::ui::kHitRow &&
+                             hz.index >= 0 && hz.index < on) {
+                    pick(hz.index);
+                    step_row(1);
+                  } else if (e.button.button == SDL_BUTTON_LEFT && hit && hz.group == carview::ui4::kHitButton) {
+                    if (hz.index == 0) save();
+                    else if (hz.index == 1) cancel();
+                    else if (hz.index == 2) reset();
+                  }
+                }
+                if (e.type == SDL_EVENT_MOUSE_WHEEL) move_row(e.wheel.y > 0 ? -1 : 1);
+                return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
+                        e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+              }
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
                 if (settings_page.capturing_key()) {

@@ -343,6 +343,14 @@ flow files) as plain steps, with the timings measured on the captures;
   under the cursor, its count of cars on `Available` and A SELECT, B BACK,
   Y ALL AFFORDABLE CARS. `Autoshow::strip_makes` is the strip; B from the
   car select comes back to the make it left.
+- **Option pages on `300_I_OPT_ASSISTS_DIFFICULTY`** (`options_screen.h`).
+  OPTIONS's DIFFICULTY and HUD (`24_`, `25_*_orig.png`): the settings
+  page's rows by their own names, in the original's order and words
+  (Assists.str, InGame.str), the pink bar on the selected row, the row's
+  description, DIFFICULTY's TOTAL RACE BONUS, and A SAVE, B CANCEL (the
+  rows as they were when the page opened), Y RESET TO DEFAULT (the page's
+  rows only). The engine's other rows (STABILITY CONTROL, its HUD extras)
+  stay on its own pages, behind OPTIONS's X ENGINE SETTINGS.
 - **Popups.** `draw_message_popup` draws `H_MESSAGE_POPUP` with a title, a
   wrapped message and its own help bar (STAY IN CAR, and the garage's
   COLLECT CAR, NOT READY, NOT DISCOVERED and CAN'T SELL BARN FIND).
@@ -365,8 +373,11 @@ flow files) as plain steps, with the timings measured on the captures;
 - **Rooms.** Each room is the engine's studio stage, the Autoshow's dark
   (Q129).
 - **Rows.** The workshop's order (Q131); the paint booth's vinyl rows open
-  the livery editor (Q132); TEAM CREDITS shows a notice (Q134); OPTIONS's
-  DIFFICULTY opens the engine's gameplay page (Q135).
+  the livery editor (Q132); TEAM CREDITS shows a notice (Q134). OPTIONS's
+  CONTROLS, AUDIO and VIDEO open the engine's pages.
+- **Option pages.** GAME DIFFICULTY's values and RESET TO DEFAULT's
+  defaults are the engine's (Q135). The description panel's dirt is a
+  measured dark panel (its crop is not decoded).
 - **Barn Finds.** Which popups offer VIEW ON MAP, and the undiscovered and
   collected tiles (Q133).
 - **Engine extras kept.** The garage's sorts (O, left stick), favourites

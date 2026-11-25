@@ -1005,7 +1005,15 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           carview::draw_save_page(list, float(width), float(height), save_page, app.save_session);
         } else if (settings_page.is_open()) {
           list.clear();
-          carview::draw_settings_ui4(list, float(width), float(height), settings_page, settings_live_overlay);
+          bool drawn = false;
+          if (options_page != carview::OptionsPage::kNone) {
+            carview::OptionsHud oh;
+            fill_options(oh);
+            if (vehicle.time() < notice_until) oh.notice = notice;
+            drawn = carview::draw_options_list(list, oh, float(width), float(height));
+          }
+          if (!drawn)
+            carview::draw_settings_ui4(list, float(width), float(height), settings_page, settings_live_overlay);
         } else if (events_page.is_open()) {
           list.clear();
           carview::draw_events_ui4(list, float(width), float(height), events_page, app.class_bands);

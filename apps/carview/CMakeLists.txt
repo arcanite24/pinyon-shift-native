@@ -125,6 +125,7 @@ add_library(carview_hud STATIC
   hud_scene.cpp
   hub_menus.cpp
   car_list_screen.cpp
+  options_screen.cpp
   hud_screen.cpp
   pause_screen.cpp
   race_flow.cpp
