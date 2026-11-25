@@ -1467,10 +1467,10 @@ CampaignAction CampaignFlow::on_enter_event(const CareerEvent& ev) {
     active_showcase_idx_ = sc->index;
     return enter_stage(CampaignStage::kShowcaseIntro, TransitionKind::kBrushWipe);
   }
-  auto act = enter_stage(CampaignStage::kPreRaceGrid, TransitionKind::kSlideLeft);
-  cinematic_.headline = resolve_event_display_title(&ev);
-  cinematic_.subheadline = CareerCatalog::event_style_label(ev);
-  return act;
+  // A plain event loads straight onto its grid: the original's pre-race
+  // (title card, then the grid menu) is the app's race flow.
+  (void)ev;
+  return {};
 }
 
 CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceAward& award, int place, int total_cars,
@@ -1737,13 +1737,26 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
          5.0, 4, false, false});
   }
 
-  // RACE-01: this runs when the player leaves the finish banner, which with
-  // its RACE RESULTS popup is the original's results step; the tally opens
-  // on the credits page (the original's earnings breakdown, then points).
+  // RACE-01: this runs when the player leaves the finish banner. The
+  // original's rewards screens (earnings, points, the reward car) are the
+  // app's race flow; the campaign waits for on_post_race_done() to play a
+  // won finale's, boss's or showcase's outro.
   mark_cutscene_done(CutsceneKind::kPostRaceFinishCam);
-  auto act = enter_stage(CampaignStage::kRewardTally, TransitionKind::kSlideLeft);
+  post_race_pending_ = true;
+  CampaignAction act;
   act.save_requested = true;
   return act;
+}
+
+CampaignAction CampaignFlow::on_post_race_done() {
+  if (!post_race_pending_) return {};
+  post_race_pending_ = false;
+  if (tally_.is_finale && tally_.place == 1) return enter_stage(CampaignStage::kFinaleVictory, TransitionKind::kBrushWipe);
+  if (tally_.is_boss && tally_.place == 1 && active_boss_idx_ >= 0)
+    return enter_stage(CampaignStage::kBossVictory, TransitionKind::kBrushWipe);
+  if (tally_.is_showcase && tally_.place == 1 && active_showcase_idx_ >= 0)
+    return enter_stage(CampaignStage::kShowcaseOutro, TransitionKind::kBrushWipe);
+  return {};
 }
 
 bool CampaignFlow::on_viper_convoy_pass(int passed_delta) {

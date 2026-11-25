@@ -186,35 +186,6 @@ bool CareerCatalog::is_hub_unlocked(const StreetHub& hub, const CareerRecord& re
   return true;
 }
 
-int64_t CareerCatalog::street_race_buy_in(const CareerEvent& ev) {
-  if (ev.style != 2) return 0;
-  const int64_t min_fee = (ev.hub_id >= 3) ? 5000LL : (ev.hub_id == 2 ? 2500LL : 1000LL);
-  if (ev.cash_prize <= 0.0) return min_fee;
-  const int64_t scaled = int64_t(std::llround((ev.cash_prize * 0.10) / 500.0)) * 500LL;
-  return std::max(min_fee, scaled);
-}
-
-bool CareerCatalog::charge_street_race_buy_in(const CareerEvent& ev, CareerRecord& rec, int64_t* out_fee,
-                                              std::string* reason) {
-  const int64_t fee = street_race_buy_in(ev);
-  if (out_fee) *out_fee = fee;
-  if (fee <= 0) return true;
-  if (rec.credits < fee) {
-    if (reason) {
-      std::string digits = std::to_string(fee);
-      std::string formatted;
-      for (size_t i = 0; i < digits.size(); ++i) {
-        if (i > 0 && ((digits.size() - i) % 3 == 0)) formatted.push_back(',');
-        formatted.push_back(digits[i]);
-      }
-      *reason = "INSUFFICIENT CREDITS — STREET RACE BUY-IN REQUIRES " + formatted + " CR";
-    }
-    return false;
-  }
-  rec.credits -= fee;
-  return true;
-}
-
 bool CareerCatalog::is_event_unlocked(const CareerEvent& ev, const CareerRecord& rec, int collected_wristband,
                                       int popularity_rank) const {
   if (ev.prereq_event_id > 0 && find_event_by_id(ev.prereq_event_id) != nullptr) {
@@ -525,6 +496,26 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
                },
                error))
     return false;
+
+  // 5a. The ticket's lines (non-fatal: minimal synthetic DBs lack the columns).
+  {
+    std::map<int64_t, size_t> by_id;
+    for (size_t i = 0; i < out.events.size(); ++i) by_id[out.events[i].event_id] = i;
+    std::string ignored;
+    db.each("select e.Id, coalesce(t.DisplayName, ''), coalesce(t.SurfaceTypeRibbonConfiguration, 0), "
+            "coalesce(e.EventTicket, '') from Events e join Races r on r.EventId = e.Id "
+            "join Tracks t on t.id = r.TrackId",
+            {},
+            [&](sqlite3_stmt* s) {
+              auto it = by_id.find(col_i64(s, 0));
+              if (it == by_id.end()) return;
+              CareerEvent& ev = out.events[it->second];
+              ev.track_name_ref = col_txt(s, 1);
+              ev.track_surface = int(col_i64(s, 2));
+              ev.ticket = col_txt(s, 3);
+            },
+            &ignored);
+  }
 
   // 5b. Optional restriction display-name lookup tables (non-fatal when absent in minimal synthetic DBs).
   out.region_names = {{1, "Asia"}, {2, "Europe"}, {3, "North America"}};

@@ -340,97 +340,67 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
 }
 
 bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
+            // The original's pre-race menu (H_GENERIC_TITLE): START RACE /
+            // DIFFICULTY / OPTIONS / QUIT RACE, its help bar SELECT alone.
             if (app.race && grid_menu_open && !menu.open && !settings_page.is_open()) {
-              auto confirm_grid = [&]() {
-                if (grid_menu_selected == 0) {  // START RACE
-                  grid_menu_open = false;
-                  pre_race_blend_t = 0.0;
-                } else if (grid_menu_selected == 1) {  // DIFFICULTY
-                  cycle_difficulty(+1);
-                } else {  // QUIT RACE
-                  grid_menu_open = false;
-                  app.restore_pre_race_tod();
-                  app.leave_race = true;
-                  running = false;
+              using S = race_flow::Screen;
+              constexpr int kRows = int(std::size(carview::kGridRows));
+              const bool on_menu = race_screens.screen() == S::kGridMenu && race_screens.ready();
+              auto move = [&](int by) {
+                if (!on_menu) return;
+                grid_menu_selected = carview::wrap_row(grid_menu_selected, by, kRows);
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              };
+              auto accept = [&]() {
+                // A over the title card brings the menu in.
+                if (race_screens.screen() == S::kTitleCard) {
+                  race_screens.next();
+                  return;
                 }
+                if (race_screens.screen() == S::kRivalIntro) {
+                  race_screens.next();
+                  return;
+                }
+                if (!on_menu) return;
+                grid_menu_accept();
               };
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_UP || k == SDLK_W) grid_menu_selected = (grid_menu_selected + 2) % 3;
-                else if (k == SDLK_DOWN || k == SDLK_S) grid_menu_selected = (grid_menu_selected + 1) % 3;
-                else if (grid_menu_selected == 1 && (k == SDLK_LEFT || k == SDLK_A)) cycle_difficulty(-1);
-                else if (grid_menu_selected == 1 && (k == SDLK_RIGHT || k == SDLK_D)) cycle_difficulty(+1);
-                else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) confirm_grid();
-                else if (k == SDLK_ESCAPE) {
-                  grid_menu_open = false;
-                  app.restore_pre_race_tod();
-                  app.leave_race = true;
-                  running = false;
-                }
+                if (k == SDLK_UP || k == SDLK_W) move(-1);
+                else if (k == SDLK_DOWN || k == SDLK_S) move(+1);
+                else if (on_menu && grid_menu_selected == 1 && (k == SDLK_LEFT || k == SDLK_A)) cycle_difficulty(-1);
+                else if (on_menu && grid_menu_selected == 1 && (k == SDLK_RIGHT || k == SDLK_D)) cycle_difficulty(+1);
+                else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) accept();
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) grid_menu_selected = (grid_menu_selected + 2) % 3;
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) grid_menu_selected = (grid_menu_selected + 1) % 3;
-                else if (grid_menu_selected == 1 && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) cycle_difficulty(-1);
-                else if (grid_menu_selected == 1 && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) cycle_difficulty(+1);
-                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_grid();
-                else if (b == SDL_GAMEPAD_BUTTON_EAST) {
-                  grid_menu_open = false;
-                  app.restore_pre_race_tod();
-                  app.leave_race = true;
-                  running = false;
-                }
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) move(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) move(+1);
+                else if (on_menu && grid_menu_selected == 1 && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) cycle_difficulty(-1);
+                else if (on_menu && grid_menu_selected == 1 && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) cycle_difficulty(+1);
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) accept();
               }
-              if (e.type == SDL_EVENT_MOUSE_MOTION) {
+              if (on_menu && e.type == SDL_EVENT_MOUSE_MOTION) {
                 carview::ui::HitZone hz{};
-                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) &&
-                    (hz.group == carview::ui::kHitRow || hz.group == carview::ui::kHitStepLeft ||
-                     hz.group == carview::ui::kHitStepRight) &&
-                    hz.index >= 0 && hz.index < 3 && grid_menu_selected != hz.index) {
+                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow && hz.index >= 0 &&
+                    hz.index < kRows && grid_menu_selected != hz.index) {
                   grid_menu_selected = hz.index;
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
               }
               if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
                 carview::ui::HitZone hz{};
-                if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
-                  if (hz.group == carview::ui::kHitStepLeft && hz.index == 1) {
-                    grid_menu_selected = 1;
-                    cycle_difficulty(-1);
-                    app.audio_host.trigger_ui(audio::UiCue::kMove);
-                  } else if (hz.group == carview::ui::kHitStepRight && hz.index == 1) {
-                    grid_menu_selected = 1;
-                    cycle_difficulty(+1);
-                    app.audio_host.trigger_ui(audio::UiCue::kMove);
-                  } else if (hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < 3) {
-                    grid_menu_selected = hz.index;
-                    if (hz.index == 1) {
-                      float ux = e.button.x, uy = e.button.y;
-                      if (app.window) {
-                        int ww = 0, wh = 0;
-                        SDL_GetWindowSize(app.window, &ww, &wh);
-                        if (ww > 0 && wh > 0 && last_ui_w > 0 && last_ui_h > 0) {
-                          ux = e.button.x * float(last_ui_w) / float(ww);
-                          uy = e.button.y * float(last_ui_h) / float(wh);
-                        }
-                      }
-                      (void)uy;
-                      const float span = std::max(1.0f, hz.x1 - hz.x0);
-                      const float frac = (ux - hz.x0) / span;
-                      cycle_difficulty(frac < 0.35f ? -1 : +1);
-                      app.audio_host.trigger_ui(audio::UiCue::kMove);
-                    } else {
-                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                      confirm_grid();
-                    }
-                  }
+                if (!on_menu) {
+                  accept();
+                } else if (ui_mouse_hit(e.button.x, e.button.y, hz) && hz.group == carview::ui::kHitRow &&
+                           hz.index >= 0 && hz.index < kRows) {
+                  grid_menu_selected = hz.index;
+                  accept();
                 }
               }
               if (e.type == SDL_EVENT_MOUSE_WHEEL) {
-                if (e.wheel.y > 0) grid_menu_selected = (grid_menu_selected + 2) % 3;
-                else if (e.wheel.y < 0) grid_menu_selected = (grid_menu_selected + 1) % 3;
-                app.audio_host.trigger_ui(audio::UiCue::kMove);
+                if (e.wheel.y > 0) move(-1);
+                else if (e.wheel.y < 0) move(+1);
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
@@ -841,6 +811,31 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
 }
 
 bool DriveSession::handle_events_and_outpost_event(const SDL_Event& e) {
+            // The event summary (H_EVENT_SUMMARY) and its car select.
+            if (event_summary_open()) {
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) event_summary_accept();
+                else if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE) event_summary_back();
+                else if (k == SDLK_Y || k == SDLK_TAB) event_summary_restrictions();
+                else if (k == SDLK_UP || k == SDLK_W) event_summary_move(-1);
+                else if (k == SDLK_DOWN || k == SDLK_S) event_summary_move(+1);
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) event_summary_accept();
+                else if (b == SDL_GAMEPAD_BUTTON_EAST) event_summary_back();
+                else if (b == SDL_GAMEPAD_BUTTON_NORTH) event_summary_restrictions();
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) event_summary_move(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) event_summary_move(+1);
+              }
+              if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                if (e.button.button == SDL_BUTTON_LEFT) event_summary_accept();
+                else if (e.button.button == SDL_BUTTON_RIGHT) event_summary_back();
+              }
+              return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
+                      e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+            }
             if (events_page.is_open()) {
               auto confirm_event = [&]() {
                 const auto* sel = events_page.selected_entry();
@@ -854,7 +849,7 @@ bool DriveSession::handle_events_and_outpost_event(const SDL_Event& e) {
                   notice_until = vehicle.time() + 3.5;
                   return;
                 }
-                if (sel->event) try_enter_event(*sel->event);
+                if (sel->event) open_event_summary(*sel->event);
               };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;

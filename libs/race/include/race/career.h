@@ -58,6 +58,11 @@ struct CareerEvent {
   bool has_tod_start = false;
   double tod_start_sec = 0.0;         // Events.TimeOfDayStart (seconds since midnight [0..86400))
   double tod_end_sec = 0.0;           // Events.TimeOfDayEnd (seconds since midnight [0..86400))
+  // The event ticket's lines (H_EVENT_SUMMARY): its race track's name and
+  // surface, and the ticket texture's number.
+  std::string track_name_ref;  // Tracks.DisplayName (`_&...`)
+  int track_surface = 0;       // Tracks.SurfaceTypeRibbonConfiguration
+  std::string ticket;          // Events.EventTicket ("043": EventTickets/<style>/043)
   bool has_trigger = false;
   std::array<double, 3> trigger_pos{};
   double trigger_radius = 25.0;
@@ -136,11 +141,6 @@ struct CareerCatalog {
                          int popularity_rank) const;
   bool is_event_completed(const CareerEvent& ev, const CareerRecord& rec) const;
   int best_place(const CareerEvent& ev, const CareerRecord& rec) const;
-
-  // Street Race entry buy-in fee (CR) & atomic credit validation/deduction (R3-CAM-13).
-  static int64_t street_race_buy_in(const CareerEvent& ev);
-  static bool charge_street_race_buy_in(const CareerEvent& ev, CareerRecord& rec, int64_t* out_fee = nullptr,
-                                        std::string* reason = nullptr);
 
   // Car eligibility check against TargetClass + EventRestrictions bucket 0.
   // When `any_car_override` is true (F10 Trainer), bypasses class & restriction checks.

@@ -532,6 +532,9 @@ class CampaignFlow {
                                   int64_t balance_after, int wb_points_after, int collected_wristband,
                                   const std::string& prize_car_name, const CareerCatalog* catalog = nullptr,
                                   const std::vector<RaceFinishStanding>& standings = {});
+  // The race's own screens (the original's postrace flow, run by the app)
+  // are done: a won finale, boss or showcase plays its outro; else nothing.
+  CampaignAction on_post_race_done();
   // Records Festival-bound convoy overtakes during the Viper opening highway drive (R3-CAM-15).
   bool on_viper_convoy_pass(int passed_delta = 1);
   CampaignAction on_wristband_collected(int wristband_level, const std::string& bonus_car_name = {},
@@ -611,6 +614,7 @@ class CampaignFlow {
   int active_boss_idx_ = -1;
   int active_showcase_idx_ = -1;
   bool pending_finale_credits_ = false;
+  bool post_race_pending_ = false;  // on_race_finished ran; on_post_race_done not yet
   bool pending_darius_showdown_ = false;
   bool starter_autoshow_onboarding_ = false;
 

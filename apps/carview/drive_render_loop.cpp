@@ -560,20 +560,10 @@ void DriveSession::run_window_loop() {
               pending_event_launch.clear();
               running = false;
             }
-            // Deduplicated post-race handoff: once CampaignDirector's RewardTally/Victory/Credits finishes, exit race cleanly.
-            if (app.campaign_owns_post_race && app.race && app.race->player_finished() &&
-                app.campaign.flow().stage() == race::CampaignStage::kFreeRoam && running) {
-              app.campaign_owns_post_race = false;
-              results_page = 0;
-              if (!app.race->post_race_spawn(app.spawn)) {
-                const drive::Vec3 at = vehicle.position();
-                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
-                app.spawn[0] = at.x, app.spawn[1] = at.y, app.spawn[2] = at.z, app.spawn[3] = std::atan2(f.x, f.z);
-              }
-              app.have_spawn = true;
-              app.leave_race = true;
-              running = false;
-            }
+            // The screens around the race (race_flow.h): the event summary's
+            // fade, the grid's title card and menu, the rewards; their end
+            // loads free roam.
+            if (running) update_race_screens(frame_dt);
             // Tutorial 2-car Autoshow handoff once parts_db is ready in Free Roam.
             if (app.pending_autoshow_open && !app.campaign.is_blocking_gameplay() && !autoshow.is_open() && !app.race &&
                 app.parts_db.valid() && app.parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -610,8 +600,8 @@ void DriveSession::run_window_loop() {
           const bool trainer_freecam_active = slice12.trainer.effective_free_camera();
           const bool menu_paused = app.show_title || app.fmv_player.active() || loading_screen.active() || ceremony.active ||
                                    app.campaign.is_blocking_gameplay() || grid_menu_open || menu.open ||
-                                   map_open || events_page.is_open() || outpost_hub_open || garage_open ||
-                                   shop.is_open() || autoshow.is_open() || career_page.is_open() ||
+                                   map_open || events_page.is_open() || event_summary_open() || outpost_hub_open ||
+                                   garage_open || shop.is_open() || autoshow.is_open() || career_page.is_open() ||
                                    settings_page.is_open() || paint_open || club_open || car_club_open || app.rally_hub_open ||
                                    app.rally_service_open || app.rally_results_open || photo_mode.active() ||
                                    replay_viewer.active() || replay_viewer.browser_open() || achievements.screen_open() ||

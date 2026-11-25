@@ -152,6 +152,7 @@ set(carview_sources
   drive_hud_sync.cpp
   drive_map_radio.cpp
   drive_menus_dispatch.cpp
+  drive_race_screens.cpp
   drive_benchmark_runner.cpp
   drive_headless_runner.cpp
   drive_input_world_screens.cpp

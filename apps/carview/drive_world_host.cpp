@@ -944,8 +944,13 @@ bool DriveWorldHost::hot_reload_car_and_world() {
         auto hot_last_tp = std::chrono::steady_clock::now();
         if (hot_live_ui) {
           hot_loading.load_definitions(app.game_root_of(), app.race ? "race" : "freeroam", app.state_root);
-          const std::string load_title =
-              (app.race && !app.race_event.empty()) ? app.race_event : std::string("HORIZON COLORADO");
+          // The event's display name (the original's load screen names the
+          // event, never its internal id).
+          std::string load_title = "HORIZON COLORADO";
+          if (app.race && !app.race_event.empty()) {
+            const auto* cev = app.have_career_catalog ? app.career_catalog.find_event(app.race_event) : nullptr;
+            load_title = cev ? race::resolve_event_display_title(cev) : race::resolve_event_display_title(app.race_event);
+          }
           const std::string load_sub = app.race ? "LOADING EVENT" : (need_car_reload ? "LOADING VEHICLE" : "TRAVELING");
           hot_loading.start(load_title, load_sub);
           hot_loading.set_progress(0.08f);

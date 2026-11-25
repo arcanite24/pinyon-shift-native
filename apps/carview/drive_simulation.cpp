@@ -1730,7 +1730,8 @@ bool DriveSession::commit_race_award() {
         app.have_career_catalog ? &app.career_catalog : nullptr, app.fmv_player, &app.audio_host,
         finish_standings);
     apply_campaign_action(camp_act);
-    app.campaign_owns_post_race = true;
+    // The rewards screens are the race flow's (race_flow.h); the campaign
+    // waits for on_post_race_done().
     // radiodj.xml: a wristband tier's festival results queue its "after n events" update.
     if (cev && cev->style == 1) app.audio_host.radio_festival_event_finished(cev->level, pl);
   }
