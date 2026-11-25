@@ -61,18 +61,23 @@ void step_freeroam_challenges(DriveSession& s) {
   in.tod_hour = app.tod_clock.hour();
   if (app.have_career_catalog)
     if (const auto* spec = app.career_catalog.find_car_by_media(app.car)) {
+      // The catalog's 0 is "not set": left unknown so a restriction on it fails.
+      // interim: PI and class are the stock values; upgrades are not reported.
       using F = freeroam::CarField;
+      auto put = [&](F f, double v) {
+        if (v > 0) in.car[f] = v;
+      };
       in.car[F::kClass] = spec->stock_class;
-      in.car[F::kPi] = spec->stock_pi;
-      in.car[F::kYear] = spec->props.year;
-      in.car[F::kBodyFamily] = spec->props.body_family;
-      in.car[F::kRegion] = spec->props.region;
-      in.car[F::kCountry] = spec->props.country;
-      in.car[F::kMake] = spec->props.make;
-      in.car[F::kModelFamily] = spec->props.model_family;
-      in.car[F::kDriveType] = spec->props.drive_type;
-      in.car[F::kEnginePlacement] = spec->engine_placement;
-      in.car[F::kBaseCost] = spec->base_cost;
+      put(F::kPi, spec->stock_pi);
+      put(F::kYear, spec->props.year);
+      put(F::kBodyFamily, spec->props.body_family);
+      put(F::kRegion, spec->props.region);
+      put(F::kCountry, spec->props.country);
+      put(F::kMake, spec->props.make);
+      put(F::kModelFamily, spec->props.model_family);
+      put(F::kDriveType, spec->props.drive_type);
+      put(F::kEnginePlacement, spec->engine_placement);
+      put(F::kBaseCost, spec->base_cost);
     }
   for (const auto& sk : s.club_pending.skills) in.skills.push_back(sk.type);
   for (const auto& cam : s.club_pending.cameras) in.flashes.push_back({cam.name, cam.speed_mph, 0});
@@ -80,8 +85,8 @@ void step_freeroam_challenges(DriveSession& s) {
     const int64_t cr = s.slice12.trainer.pacing.scale_credits(done.credits);
     app.career.credits = std::min<int64_t>(999999999, app.career.credits + cr);
     app.career.total_winnings += cr;
-    // interim: the sponsor notification with FreeRoamChallenges.str's
-    // IDS_HighlightedChallengeHudTitle / IDS_Completed lines.
+    // interim: the sponsor notification, its tag the English of
+    // FreeRoamChallenges.str's "CO-OP CHALLENGE" and "COMPLETED" lines.
     s.popup = DriveSession::Popup::notify(NotifyKind::kSponsorRank, s.vehicle.time(), {"+" + thousands(cr)});
     s.popup.tag = "CO-OP CHALLENGE COMPLETED";
     s.popup.text = done.def && !done.def->challenge_name.empty() ? done.def->challenge_name : done.id;
