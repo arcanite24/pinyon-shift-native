@@ -214,6 +214,9 @@ add_test(NAME rt_logic_tests COMMAND rt_logic_tests)
 add_executable(career_tests career_tests.cpp)
 target_link_libraries(career_tests PRIVATE shift_race shift_freeroam shift_drive shift_data)
 add_test(NAME career_tests COMMAND career_tests)
+# PostRaceOptions mileage rules over the player's files (exit 77 without SHIFT_GAME_ROOT).
+add_test(NAME post_race_options_corpus COMMAND career_tests --corpus)
+set_tests_properties(post_race_options_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
 
 add_executable(carview_drive_tests carview_drive_tests.cpp)
 target_include_directories(carview_drive_tests PRIVATE ../apps/carview)

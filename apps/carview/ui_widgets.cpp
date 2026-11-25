@@ -751,9 +751,16 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
       std::string nm_up = sr.name;
       for (char& ch : nm_up) ch = char(std::toupper(static_cast<unsigned char>(ch)));
       const char* hint = nullptr;
+      std::string hint_text;
       if (sr.is_save) hint = "Writes changes to settings.txt and closes Settings.";
       else if (sr.is_rebind) hint = "Press [A] / Enter then press any key to rebind.";
-      else if (nm_up.find("PRESET") != std::string::npos || nm_up.find("QUALITY") != std::string::npos)
+      else if (sr.id == "difficulty preset") {
+        // The game's own description of its difficulty preset (VIS-31).
+        hint_text = loc_str("Assists", "IDS_Desc_MetaDifficulty",
+                            "Automatically adjusts the driving assists below to create a gameplay experience that "
+                            "matches the difficulty level you choose.");
+        hint = hint_text.c_str();
+      } else if (nm_up.find("PRESET") != std::string::npos || nm_up.find("QUALITY") != std::string::npos)
         hint = "Selects graphics profile (resolution, shadows, MSAA & post-FX).";
       else if (nm_up.find("RESOLUTION") != std::string::npos || nm_up.find("SCALE") != std::string::npos)
         hint = "Internal 3D render scale before upscaling to display resolution.";

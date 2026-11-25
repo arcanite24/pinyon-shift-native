@@ -541,7 +541,10 @@ void DriveSession::run_window_loop() {
           }
           if (!app.show_title && !app.headless) {
             const drive::Vec3 vp = vehicle.position();
-            const bool rf = app.race && app.race->player_finished();
+            // The campaign hears of the finish only once the banner is left and
+            // the award committed (on_race_finished runs there and applies the
+            // qualifier's top-3 cutoff before this may advance the stage).
+            const bool rf = app.race && app.race->post_race_settled();
             apply_campaign_action(
                 app.campaign.update(frame_dt, {vp.x, vp.z}, app.fmv_player, &app.audio_host, rf, hold_skip_now));
             // Deferred event launch: once a Boss/Showcase/Finale/Pre-Race intro finishes or is skipped, enter the race!

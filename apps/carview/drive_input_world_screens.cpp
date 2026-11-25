@@ -73,7 +73,10 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
               const bool adv_pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
                                    (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH ||
                                     e.gbutton.button == SDL_GAMEPAD_BUTTON_START);
-              const bool gps_key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_G;
+              // The tally's help bar shows X for SET GPS: the pad's X does it too.
+              const bool gps_key = (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_G) ||
+                                   (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                                    e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST);
               bool mouse_gps = false;
               bool mouse_adv = false;
               if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {

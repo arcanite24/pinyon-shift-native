@@ -1969,7 +1969,7 @@ int64_t RaceView::credits_for(int place) const {
                             int(session_->size()), place, true);
 }
 
-const race::RaceAward* RaceView::award(race::CareerRecord& career, const race::WristbandTables& tables,
+const race::RaceAward* RaceView::award(const race::CareerRecord& career, const race::WristbandTables& tables,
                                        double top_speed, const race::RaceBonusInputs& extras) {
   const size_t n = cars_.size();
   // A Rally stage pays nothing and writes no race result (SPEC-V4-CONTENT:
@@ -1981,10 +1981,19 @@ const race::RaceAward* RaceView::award(race::CareerRecord& career, const race::W
   race::RaceBonusInputs eff_extras = extras;
   if (eff_extras.assists_pct == 0) eff_extras.assists_pct = race::assist_difficulty_bonus_percent(o_.assists);
   eff_extras.prize_car_max_place = std::max(eff_extras.prize_car_max_place, event_.prize_car_max_place);
-  award_ = race::award_race(career, event_.event_id, event_.race_id, event_.career_type, event_.style, event_.level,
-                            event_.cash_prize, racers, place, true, c.finish, top_speed, event_.prize_car, tables,
-                            race::total_difficulty_bonus_percent(int(o_.difficulty), o_.assists), c.distance,
-                            eff_extras);
+  award_ = race::compute_race_award(career, event_.event_id, event_.career_type, event_.style, event_.level,
+                                    event_.cash_prize, racers, place, true, event_.prize_car, tables,
+                                    race::total_difficulty_bonus_percent(int(o_.difficulty), o_.assists), c.distance,
+                                    eff_extras);
+  race::RaceAwardCommit commit;
+  commit.event_id = event_.event_id;
+  commit.race_id = event_.race_id;
+  commit.career_type = event_.career_type;
+  commit.place = place;
+  commit.finished = true;
+  commit.race_time = c.finish;
+  commit.top_speed = top_speed;
+  pending_award_.hold(*award_, commit);
   return &*award_;
 }
 

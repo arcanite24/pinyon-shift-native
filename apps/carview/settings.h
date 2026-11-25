@@ -25,12 +25,19 @@ std::filesystem::path default_photos_dir();
 std::filesystem::path default_replays_dir();
 std::filesystem::path default_achievements_path();
 
+// --no-settings: the run neither reads nor writes any settings file
+// (read_settings returns nothing, write_settings refuses), so a test or
+// tool run never changes the player's settings.txt.
+void set_settings_file_disabled(bool disabled);
+bool settings_file_disabled();
+
 // The file's options as command-line tokens ("--preset", "low", ...).
-// Missing file: none.
+// Missing file (or settings_file_disabled()): none.
 std::vector<std::string> read_settings(const std::filesystem::path& file, std::vector<std::string>* notes);
 
 // Writes the kept options of `args` (command-line tokens, settings first),
-// the last of each kept: --save-settings.
+// the last of each kept: --save-settings. Refuses (false) when
+// settings_file_disabled().
 bool write_settings(const std::filesystem::path& file, const std::vector<std::string>& args, std::string* error);
 
 // Returns true when `arg` (with leading "--") is a recognized settings.txt

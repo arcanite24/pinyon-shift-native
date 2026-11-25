@@ -1737,11 +1737,11 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
          5.0, 4, false, false});
   }
 
-  auto act = enter_stage(CampaignStage::kPostRaceFinish, TransitionKind::kCrossFade);
-  cinematic_.eyebrow = "RACE RESULTS  •  " + tally_.event_category;
-  cinematic_.headline = std::to_string(tally_.place) + ord(tally_.place) + " PLACE";
-  cinematic_.subheadline = tally_.event_title;
-  cinematic_.badge_text = "STAGE 1 / 3  •  FINISHED";
+  // RACE-01: this runs when the player leaves the finish banner, which with
+  // its RACE RESULTS popup is the original's results step; the tally opens
+  // on the credits page (the original's earnings breakdown, then points).
+  mark_cutscene_done(CutsceneKind::kPostRaceFinishCam);
+  auto act = enter_stage(CampaignStage::kRewardTally, TransitionKind::kSlideLeft);
   act.save_requested = true;
   return act;
 }

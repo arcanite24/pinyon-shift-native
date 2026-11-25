@@ -331,8 +331,19 @@ bool is_settings_option(const std::string& arg, bool* takes_value) {
   return true;
 }
 
+namespace {
+bool& settings_file_disabled_flag() {
+  static bool disabled = false;
+  return disabled;
+}
+}  // namespace
+
+void set_settings_file_disabled(bool disabled) { settings_file_disabled_flag() = disabled; }
+bool settings_file_disabled() { return settings_file_disabled_flag(); }
+
 std::vector<std::string> read_settings(const std::filesystem::path& file, std::vector<std::string>* notes) {
   std::vector<std::string> out;
+  if (settings_file_disabled()) return out;
   std::ifstream in(file);
   if (!in) return out;
   int n = 0;
@@ -368,6 +379,10 @@ std::vector<std::string> read_settings(const std::filesystem::path& file, std::v
 }
 
 bool write_settings(const std::filesystem::path& file, const std::vector<std::string>& args, std::string* error) {
+  if (settings_file_disabled()) {
+    if (error) *error = "settings are not saved in this run (--no-settings)";
+    return false;
+  }
   // The last option of each group, in the order first seen.
   std::vector<std::string> order;
   std::map<std::string, std::string> line;
@@ -1242,7 +1257,7 @@ std::vector<SettingsPage::DisplayRow> SettingsPage::display_rows() const {
   out.reserve(rows_.size() + rebinds_.size() + 1);
   for (size_t i = 0; i < rows_.size(); ++i) {
     out.push_back({format_row_name(rows_[i].name), format_row_value(rows_[i]), classify_setting_row(rows_[i].name),
-                   int(i), false, false, false, row_ == int(i)});
+                   int(i), false, false, false, row_ == int(i), rows_[i].name});
   }
   for (size_t i = 0; i < rebinds_.size(); ++i) {
     const int idx = int(rows_.size() + i);

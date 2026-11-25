@@ -827,7 +827,7 @@ void draw_reward_tally(ui::List& l, const race::RewardTallyState& tally, float s
   }
 
   std::vector<ui4::Prompt> prompts = {
-      {"A", tally.stage_animation_done() ? std::string("CONTINUE TO FREE ROAM")
+      {"A", tally.stage_animation_done() ? loc_str("InGame", "IDS_ContinueMenu", "CONTINUE")
                                          : loc_str("HelpButtons", "IDS_Skip", "SKIP ANIMATION")}};
   if (tally.has_next_gps) {
     prompts.push_back({"X", std::string("SET GPS TO NEXT OBJECTIVE")});

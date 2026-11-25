@@ -100,6 +100,9 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       if (a == "--headless" || a == "--bench" || a == "--bench-scenario" || a == "--menu-png" || a == "--help" || a == "-h" || a == "--list-backends") window = false;
       if (a == "--no-settings") use_settings = false;
     }
+    // VIS-29: --no-settings holds for the whole run, the settings page and
+    // the pause menu included, not only for the start-up read.
+    carview::set_settings_file_disabled(!use_settings);
     if ((window || std::getenv("SHIFT_SETTINGS")) && use_settings) {
       std::vector<std::string> notes;
       args = carview::read_settings(carview::settings_path(), &notes);

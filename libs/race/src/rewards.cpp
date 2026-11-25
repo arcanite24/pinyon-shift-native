@@ -1,7 +1,9 @@
 #include "race/rewards.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <iterator>
 #include <string_view>
 #include <utility>
@@ -9,6 +11,7 @@
 #include "cars/sources.h"
 #include "cars/strings.h"
 #include "db_util.h"
+#include "fh1data/archive.h"
 #include "fh1data/stringtables.h"
 
 namespace race {
@@ -314,22 +317,128 @@ int total_difficulty_bonus_percent(int difficulty_index, const DifficultyAssists
   return difficulty_bonus_percent(difficulty_index) + assist_difficulty_bonus_percent(assists);
 }
 
-int64_t mileage_bonus_credits(double distance_m) {
-  if (!(distance_m > 0)) return 0;
-  return round_prize(distance_m * 0.05);
+int64_t mileage_bonus_credits(double distance_m, const MileageCredits& rule) {
+  if (!rule.valid() || !(distance_m > 0)) return 0;
+  const double d = std::min(distance_m, rule.total_distance_m);
+  const double cr = rule.reward * d / rule.total_distance_m;
+  const int64_t steps = int64_t(std::floor(cr / double(rule.increment) + 1e-9));
+  return std::min<int64_t>(steps * rule.increment, int64_t(std::floor(rule.reward)));
 }
 
-RaceAward award_race(CareerRecord& r, int64_t event_id, int64_t race_id, int career_type, int style, int level,
-                     double prize, int racers, int place, bool finished, double race_time, double top_speed,
-                     int64_t prize_car, const WristbandTables& tables, int difficulty_pct, double distance_m,
-                     const RaceBonusInputs& extras) {
+PostRaceMode post_race_mode(int career_type, bool rivals) {
+  if (rivals) return PostRaceMode::kRivals;
+  switch (career_type) {
+    case 4: return PostRaceMode::kStreetRace;
+    case 11: return PostRaceMode::kNemesisRace;
+    case 12: return PostRaceMode::kHeadline;
+    case 7:
+    case 8: return PostRaceMode::kExhibition;
+    default: return PostRaceMode::kFestivalRace;
+  }
+}
+
+std::string post_race_options_member(PostRaceMode mode) {
+  static constexpr const char* kNames[] = {"FestivalRace", "StreetRace",    "Headline", "NemesisRace",
+                                           "Exhibition",   "RaceEncounter", "Rivals"};
+  const size_t i = std::min(size_t(mode), std::size(kNames) - 1);
+  return std::string("PostRaceOptions/PostRaceOptions_Offline_") + kNames[i] + ".xml";
+}
+
+namespace {
+
+// The value of attribute `name` inside one element's text.
+bool xml_attr(std::string_view elem, std::string_view name, double& out) {
+  size_t at = 0;
+  while ((at = elem.find(name, at)) != std::string_view::npos) {
+    const bool start_ok = at > 0 && std::isspace(static_cast<unsigned char>(elem[at - 1]));
+    size_t i = at + name.size();
+    at = i;
+    if (!start_ok) continue;
+    while (i < elem.size() && elem[i] == ' ') ++i;
+    if (i >= elem.size() || elem[i] != '=') continue;
+    ++i;
+    while (i < elem.size() && elem[i] == ' ') ++i;
+    if (i >= elem.size() || (elem[i] != '"' && elem[i] != '\'')) continue;
+    const char q = elem[i++];
+    const size_t end = elem.find(q, i);
+    if (end == std::string_view::npos) return false;
+    const std::string v(elem.substr(i, end - i));
+    char* stop = nullptr;
+    out = std::strtod(v.c_str(), &stop);
+    return stop && stop != v.c_str() && *stop == '\0';
+  }
+  return false;
+}
+
+}  // namespace
+
+bool parse_mileage_credits(std::string_view xml, MileageCredits& out, std::string* error) {
+  const size_t at = xml.find("<MileageCredits");
+  if (at == std::string_view::npos) {
+    if (error) *error = "no MileageCredits element";
+    return false;
+  }
+  const size_t end = xml.find('>', at);
+  if (end == std::string_view::npos) {
+    if (error) *error = "MileageCredits element not closed";
+    return false;
+  }
+  const std::string_view elem = xml.substr(at, end - at);
+  double dist = 0, reward = 0, inc = 0;
+  if (!xml_attr(elem, "totalDistance", dist) || !xml_attr(elem, "reward", reward) ||
+      !xml_attr(elem, "increment", inc)) {
+    if (error) *error = "MileageCredits lacks totalDistance, reward or increment";
+    return false;
+  }
+  MileageCredits m;
+  m.total_distance_m = dist;
+  m.reward = reward;
+  m.increment = int64_t(std::llround(inc));
+  if (!m.valid()) {
+    if (error) *error = "MileageCredits values not positive";
+    return false;
+  }
+  out = m;
+  return true;
+}
+
+bool load_post_race_options(const std::filesystem::path& game_root, PostRaceOptions& out, std::string* error) {
+  std::string why;
+  auto zip = fh1::Archive::open(game_root / "media" / "gametunablesettings.zip", &why);
+  if (!zip) {
+    if (error) *error = why;
+    return false;
+  }
+  PostRaceOptions o;
+  for (size_t i = 0; i < size_t(PostRaceMode::kCount); ++i) {
+    const std::string member = post_race_options_member(PostRaceMode(i));
+    auto r = zip->read(member);
+    if (!r.ok()) {
+      if (error) *error = member + ": " + r.error;
+      return false;
+    }
+    std::string e;
+    if (!parse_mileage_credits(std::string_view(reinterpret_cast<const char*>(r.data.data()), r.data.size()),
+                               o.mileage[i], &e)) {
+      if (error) *error = member + ": " + e;
+      return false;
+    }
+  }
+  out = o;
+  return true;
+}
+
+RaceAward compute_race_award(const CareerRecord& r, int64_t event_id, int career_type, int style, int level,
+                             double prize, int racers, int place, bool finished, int64_t prize_car,
+                             const WristbandTables& tables, int difficulty_pct, double distance_m,
+                             const RaceBonusInputs& extras) {
   RaceAward a;
   const auto prev = r.event_places.find(event_id);
   const bool first_win = (prev == r.event_places.end() || prev->second > 1);
   a.base_credits = race_credits(prize, winnings_for_career_type(career_type), racers, place, finished);
   // SPEC-EVENT-REWARDS: Style-6 (Horizon Finale) awards 50,000 CR on first win.
   if (finished && style == 6 && place == 1 && first_win && a.base_credits < 50000) a.base_credits = 50000;
-  a.mileage_bonus = finished ? mileage_bonus_credits(distance_m) : 0;
+  a.mileage_bonus = finished ? mileage_bonus_credits(distance_m, extras.mileage) : 0;
   const int total_pct = std::max(0, difficulty_pct);
   a.assists_pct = std::clamp(extras.assists_pct, 0, total_pct);
   a.difficulty_pct = total_pct;
@@ -362,35 +471,58 @@ RaceAward award_race(CareerRecord& r, int64_t event_id, int64_t race_id, int car
     a.driver_xp = a.driver_xp > 0 ? std::max(1, int(std::lround(double(a.driver_xp) * rm))) : 0;
     a.affinity_xp = a.affinity_xp > 0 ? std::max(1, int(std::lround(double(a.affinity_xp) * rm))) : 0;
   }
-  // 1. The race record; 2. the event record (one race: its place).
-  auto rp = r.race_places.find(race_id);
-  if (rp == r.race_places.end()) r.race_places[race_id] = place;
-  else rp->second = std::min(rp->second, place);
-  if (prev == r.event_places.end()) {
-    r.event_places[event_id] = place;
-    a.first_completion = true;
-  } else {
-    prev->second = std::min(prev->second, place);
-  }
+  a.first_completion = prev == r.event_places.end();
   a.won = place == 1;
+  // The prize car, once, for finishing within Rewards_EventPrizes max placement (1st or 2nd).
+  const int max_prize_place = std::max(1, extras.prize_car_max_place);
+  if (prize_car && place >= 1 && place <= max_prize_place &&
+      std::find(r.prize_cars.begin(), r.prize_cars.end(), prize_car) == r.prize_cars.end()) {
+    a.prize_car = prize_car;
+  }
+  return a;
+}
+
+void commit_race_award(CareerRecord& r, const RaceAward& a, const RaceAwardCommit& c) {
+  if (!c.finished) return;
+  const int place = c.place;
+  // 1. The race record; 2. the event record (one race: its place).
+  auto rp = r.race_places.find(c.race_id);
+  if (rp == r.race_places.end()) r.race_places[c.race_id] = place;
+  else rp->second = std::min(rp->second, place);
+  auto prev = r.event_places.find(c.event_id);
+  if (prev == r.event_places.end()) r.event_places[c.event_id] = place;
+  else prev->second = std::min(prev->second, place);
   // 3. The counters (podiums in every mode: which modes count is open).
   r.credits = std::min<int64_t>(999999999, r.credits + a.credits);
   r.total_winnings += a.credits;
   ++r.num_races;
   if (place == 1) ++r.num_victories;
   if (place <= 3) ++r.num_podiums;
-  if (career_type == 4 || career_type == 11) r.time_in_street += race_time;
-  else if (career_type == 7 || career_type == 8) r.time_in_exhibition += race_time;
-  else r.time_in_festival += race_time;
-  r.top_speed = std::max(r.top_speed, top_speed);
+  if (c.career_type == 4 || c.career_type == 11) r.time_in_street += c.race_time;
+  else if (c.career_type == 7 || c.career_type == 8) r.time_in_exhibition += c.race_time;
+  else r.time_in_festival += c.race_time;
+  r.top_speed = std::max(r.top_speed, c.top_speed);
   r.wristband_points += a.wristband_points;
-  // 4. The prize car, once, for finishing within Rewards_EventPrizes max placement (1st or 2nd).
-  const int max_prize_place = std::max(1, extras.prize_car_max_place);
-  if (prize_car && place >= 1 && place <= max_prize_place &&
-      std::find(r.prize_cars.begin(), r.prize_cars.end(), prize_car) == r.prize_cars.end()) {
-    r.prize_cars.push_back(prize_car);
-    a.prize_car = prize_car;
-  }
+  // 4. The prize car, once.
+  if (a.prize_car && std::find(r.prize_cars.begin(), r.prize_cars.end(), a.prize_car) == r.prize_cars.end())
+    r.prize_cars.push_back(a.prize_car);
+}
+
+RaceAward award_race(CareerRecord& r, int64_t event_id, int64_t race_id, int career_type, int style, int level,
+                     double prize, int racers, int place, bool finished, double race_time, double top_speed,
+                     int64_t prize_car, const WristbandTables& tables, int difficulty_pct, double distance_m,
+                     const RaceBonusInputs& extras) {
+  const RaceAward a = compute_race_award(r, event_id, career_type, style, level, prize, racers, place, finished,
+                                         prize_car, tables, difficulty_pct, distance_m, extras);
+  RaceAwardCommit c;
+  c.event_id = event_id;
+  c.race_id = race_id;
+  c.career_type = career_type;
+  c.place = place;
+  c.finished = finished;
+  c.race_time = race_time;
+  c.top_speed = top_speed;
+  commit_race_award(r, a, c);
   return a;
 }
 

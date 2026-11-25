@@ -152,11 +152,23 @@ class RaceView {
 
   void instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
                  std::vector<Showroom::Instance>& out) const;
-  // Once the player has finished: the race's award applied to `career`
-  // (SPEC-EVENT-REWARDS), once a race; null before then or when already
-  // awarded this call. `top_speed` m/s for the counters.
-  const race::RaceAward* award(race::CareerRecord& career, const race::WristbandTables& tables, double top_speed,
-                               const race::RaceBonusInputs& extras = {});
+  // Once the player has finished: the race's award computed from `career`
+  // (SPEC-EVENT-REWARDS) and held, once a race; null before then or when
+  // already computed. Nothing is written to `career` until commit_award
+  // (the original updates the profile after the finish banner).
+  // `top_speed` m/s for the counters.
+  const race::RaceAward* award(const race::CareerRecord& career, const race::WristbandTables& tables,
+                               double top_speed, const race::RaceBonusInputs& extras = {});
+  // Applies the held award to `career` once; null when none is held.
+  const race::RaceAward* commit_award(race::CareerRecord& career) { return pending_award_.commit(career); }
+  // Whether an award is computed but not committed.
+  bool award_pending() const { return pending_award_.held(); }
+  // Forgets the held award (Restart, Quit).
+  void drop_award() { pending_award_.drop(); }
+  // The player has finished and the award, if the race pays one, has been
+  // committed (not dropped by a Restart or Quit): the post-race screens
+  // after the finish banner may run.
+  bool post_race_settled() const { return player_finished() && (stage_ || pending_award_.committed()); }
   // Opponents' 3D world positions + names + leader flag (for overhead tags, skill detection, and Horizon Promo).
   struct OpponentTag {
     double x = 0, y = 0, z = 0;
@@ -402,6 +414,7 @@ class RaceView {
   };
   std::vector<ReplayRow> replay_;
   std::optional<race::RaceAward> award_;
+  race::PendingRaceAward pending_award_;
   race::ShowcaseOpponent showcase_;
   // Active Rivals / Time-Attack ghost run and optional recording buffer.
   race::GhostRun ghost_run_;

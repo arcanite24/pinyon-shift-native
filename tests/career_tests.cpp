@@ -68,23 +68,62 @@ void test_rewards_difficulty_mileage() {
   CHECK(race::difficulty_bonus_percent(1) == 15);
   CHECK(race::difficulty_bonus_percent(2) == 30);
   CHECK(race::difficulty_bonus_percent(3) == 45);
-  CHECK(race::mileage_bonus_credits(4000.0) == 200);
+  // PostRaceOptions MileageCredits (offline career modes): 5,000 Cr over 50 km, steps of 100.
+  race::MileageCredits offline;
+  offline.total_distance_m = 50000.0;
+  offline.reward = 5000.0;
+  offline.increment = 100;
+  CHECK(race::mileage_bonus_credits(4000.0, offline) == 400);
+  CHECK(race::mileage_bonus_credits(4900.0, offline) == 400);  // FR22's ~4.9 km: MILEAGE BONUS 400 Cr
+  CHECK(race::mileage_bonus_credits(4999.0, offline) == 400);  // floored, not rounded
+  CHECK(race::mileage_bonus_credits(5000.0, offline) == 500);
+  CHECK(race::mileage_bonus_credits(99.0, offline) == 0);
+  CHECK(race::mileage_bonus_credits(80000.0, offline) == 5000);  // capped at the reward
+  CHECK(race::mileage_bonus_credits(4900.0, race::MileageCredits{}) == 0);  // no data, no bonus
+  race::MileageCredits rivals;
+  rivals.total_distance_m = 50000.0;
+  rivals.reward = 20000.0;
+  rivals.increment = 400;
+  CHECK(race::mileage_bonus_credits(4900.0, rivals) == 1600);
+  CHECK(race::mileage_bonus_credits(50000.0, rivals) == 20000);
+
+  race::MileageCredits parsed;
+  std::string perr;
+  CHECK(race::parse_mileage_credits(
+      "<PostRaceOptions>\n  <MileageXp totalDistance=\"10000.0\" reward=\"250.0\" increment=\"50\"/>\n"
+      "  <MileageCredits totalDistance=\"50000.0\" reward=\"20000.0\" increment=\"400\"/>\n</PostRaceOptions>",
+      parsed, &perr));
+  CHECK(parsed.total_distance_m == 50000.0 && parsed.reward == 20000.0 && parsed.increment == 400);
+  CHECK(!race::parse_mileage_credits("<PostRaceOptions/>", parsed, &perr));
+  CHECK(!race::parse_mileage_credits("<MileageCredits totalDistance=\"50000\" reward=\"x\" increment=\"1\"/>", parsed,
+                                     &perr));
+  CHECK(race::post_race_mode(2, false) == race::PostRaceMode::kFestivalRace);
+  CHECK(race::post_race_mode(4, false) == race::PostRaceMode::kStreetRace);
+  CHECK(race::post_race_mode(11, false) == race::PostRaceMode::kNemesisRace);
+  CHECK(race::post_race_mode(12, false) == race::PostRaceMode::kHeadline);
+  CHECK(race::post_race_mode(7, false) == race::PostRaceMode::kExhibition);
+  CHECK(race::post_race_mode(2, true) == race::PostRaceMode::kRivals);
+  CHECK(race::post_race_options_member(race::PostRaceMode::kRivals) ==
+        "PostRaceOptions/PostRaceOptions_Offline_Rivals.xml");
 
   race::WristbandTables wb;
   wb.points[0][1] = 100;
   wb.points[0][2] = 60;
   wb.levels = {{0, "Yellow"}, {220, "Green"}};
 
+  race::RaceBonusInputs with_mileage;
+  with_mileage.mileage = offline;
   race::CareerRecord rec;
-  const auto a1 = race::award_race(rec, 26, 100, 2, 1, 0, 4000.0, 8, 1, true, 120.0, 55.0, 1460, wb, 30, 4000.0);
+  const auto a1 =
+      race::award_race(rec, 26, 100, 2, 1, 0, 4000.0, 8, 1, true, 120.0, 55.0, 1460, wb, 30, 4000.0, with_mileage);
   CHECK(a1.base_credits == 4000);
-  CHECK(a1.mileage_bonus == 200);
+  CHECK(a1.mileage_bonus == 400);
   CHECK(a1.difficulty_pct == 30);
-  CHECK(a1.difficulty_bonus == 1260);
-  CHECK(a1.credits == 5460);
+  CHECK(a1.difficulty_bonus == 1320);
+  CHECK(a1.credits == 5720);
   CHECK(a1.wristband_points == 100);
   CHECK(a1.prize_car == 1460);
-  CHECK(rec.credits == 5460);
+  CHECK(rec.credits == 5720);
   CHECK(rec.prize_cars.size() == 1);
 
   // Winning again pays credits, 0 extra wristband pts, and does not re-award prize car.
@@ -92,6 +131,62 @@ void test_rewards_difficulty_mileage() {
   CHECK(a2.wristband_points == 0);
   CHECK(a2.prize_car == 0);
   CHECK(rec.prize_cars.size() == 1);
+}
+
+// RACE-05: the award of a finished race is held until the finish banner's
+// Continue; a Restart (or Quit) from the banner pays nothing.
+void test_rewards_paid_after_banner() {
+  race::WristbandTables wb;
+  wb.points[0][1] = 100;
+  wb.levels = {{0, "Yellow"}, {220, "Green"}};
+  race::RaceBonusInputs ex;
+  ex.mileage = {50000.0, 5000.0, 100};
+  race::RaceAwardCommit c;
+  c.event_id = 26, c.race_id = 100, c.career_type = 2, c.place = 1, c.finished = true;
+  c.race_time = 120.0, c.top_speed = 55.0;
+
+  race::CareerRecord rec;
+  rec.credits = 1000;
+  const race::CareerRecord before = rec;
+  auto compute = [&] {
+    return race::compute_race_award(rec, 26, 2, 1, 0, 4000.0, 8, 1, true, 1460, wb, 0, 4900.0, ex);
+  };
+  const race::RaceAward a = compute();
+  CHECK(a.credits == 4400 && a.wristband_points == 100 && a.prize_car == 1460 && a.first_completion);
+  // Computing changes nothing.
+  CHECK(rec.credits == before.credits && rec.event_places.empty() && rec.prize_cars.empty() && rec.num_races == 0);
+
+  // Finish, then Restart from the banner: dropped, nothing paid.
+  race::PendingRaceAward pending;
+  pending.hold(a, c);
+  CHECK(pending.held() && pending.award() && pending.award()->credits == 4400);
+  pending.drop();
+  CHECK(!pending.held() && !pending.award());
+  // A dropped award is not settled: the campaign must not advance past the
+  // race (a qualifier restarted from the banner stays the qualifier).
+  CHECK(!pending.committed());
+  CHECK(pending.commit(rec) == nullptr);
+  CHECK(!pending.committed());
+  CHECK(rec.credits == 1000 && rec.wristband_points == 0 && rec.event_places.empty() && rec.prize_cars.empty() &&
+        rec.num_races == 0 && rec.total_winnings == 0);
+
+  // The restarted race finishes and the player continues: paid once.
+  pending.hold(compute(), c);
+  CHECK(!pending.committed());
+  const race::RaceAward* paid = pending.commit(rec);
+  CHECK(paid && paid->credits == 4400 && pending.committed());
+  CHECK(rec.credits == 5400 && rec.total_winnings == 4400 && rec.wristband_points == 100 && rec.num_races == 1 &&
+        rec.num_victories == 1 && rec.event_places[26] == 1 && rec.race_places[100] == 1 &&
+        rec.prize_cars.size() == 1);
+  CHECK(pending.commit(rec) == nullptr);  // a second Continue pays nothing more
+  CHECK(rec.credits == 5400 && rec.num_races == 1);
+
+  // compute + commit is award_race.
+  race::CareerRecord r2;
+  r2.credits = 1000;
+  const auto a2 = race::award_race(r2, 26, 100, 2, 1, 0, 4000.0, 8, 1, true, 120.0, 55.0, 1460, wb, 0, 4900.0, ex);
+  CHECK(a2.credits == 4400 && r2.credits == 5400 && r2.num_races == 1 && r2.prize_cars.size() == 1 &&
+        r2.wristband_points == 100 && r2.time_in_festival == 120.0);
 }
 
 void test_career_progression_rules() {
@@ -658,9 +753,40 @@ void test_r3_e1_street_hubs_and_buyins() {
 
 }  // namespace
 
-int main() {
+// --corpus: the mileage rules from the player's gametunablesettings.zip
+// (RACE-06). Exit 77 without SHIFT_GAME_ROOT.
+int post_race_options_corpus() {
+  const char* root = std::getenv("SHIFT_GAME_ROOT");
+  if (!root || !*root) {
+    std::printf("career_tests --corpus: SHIFT_GAME_ROOT not set, skipped\n");
+    return 77;
+  }
+  race::PostRaceOptions o;
+  std::string err;
+  CHECK(race::load_post_race_options(root, o, &err));
+  if (!err.empty()) std::printf("post race options: %s\n", err.c_str());
+  for (size_t i = 0; i < size_t(race::PostRaceMode::kCount); ++i) {
+    const auto mode = race::PostRaceMode(i);
+    const auto& m = o.for_mode(mode);
+    std::printf("%s: totalDistance %.1f reward %.1f increment %lld\n", race::post_race_options_member(mode).c_str(),
+                m.total_distance_m, m.reward, (long long)m.increment);
+    CHECK(m.total_distance_m == 50000.0);
+    if (mode == race::PostRaceMode::kRivals) CHECK(m.reward == 20000.0 && m.increment == 400);
+    else CHECK(m.reward == 5000.0 && m.increment == 100);
+  }
+  // The measured cash reward of FR22 (about 4.9 km driven): MILEAGE BONUS 400 Cr.
+  const auto& fest = o.for_mode(race::post_race_mode(2, false));
+  CHECK(race::mileage_bonus_credits(4900.0, fest) == 400);
+  CHECK(race::mileage_bonus_credits(4900.0, o.for_mode(race::post_race_mode(2, true))) == 1600);
+  std::printf("career_tests --corpus: %d failures\n", failures);
+  return failures ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+  if (argc > 1 && std::string(argv[1]) == "--corpus") return post_race_options_corpus();
   test_save_roundtrip();
   test_rewards_difficulty_mileage();
+  test_rewards_paid_after_banner();
   test_career_progression_rules();
   test_skills_and_popularity();
   test_skills_reset_session_clock();
