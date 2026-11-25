@@ -202,6 +202,10 @@ enum class UiCue : uint8_t {
   kRewindTapeStop,
   kCountdownTick,
   kWristbandUnlock,
+  // ui4audio.xml's pause menu plays: Pause, UnPause, Vscroll.
+  kPause,
+  kUnPause,
+  kVscroll,
 };
 
 enum class SfxSoundId : int {
@@ -386,6 +390,9 @@ enum class SfxSoundId : int {
   kScrapeMetal,
   kScrapeDirt,
   kScrapeWood,
+  kUiPause,
+  kUiUnPause,
+  kUiVscroll,
   kCount
 };
 

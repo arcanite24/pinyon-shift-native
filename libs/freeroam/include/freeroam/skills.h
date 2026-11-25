@@ -39,6 +39,8 @@ struct SponsorChallenge {
   std::string type;  // "FameRankChallenge" or "SkillChallenge"
   std::string sponsor_name;
   std::string challenge_name;
+  std::string description;  // IDS_ name in SponsorshipChallenges (a "{0}" target format)
+  std::string logo;         // the sponsorLogo texture path (SponsorLogoTile/*)
   std::vector<SkillSponsorTier> tiers;
 };
 

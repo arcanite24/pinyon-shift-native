@@ -254,6 +254,8 @@ bool parse_skills_data(std::string_view fame_xml, std::string_view feats_xml, st
     sc.type = ch.attr("type");
     sc.sponsor_name = ch.attr("sponsorName");
     sc.challenge_name = ch.attr("challengeName");
+    sc.description = ch.attr("description");
+    sc.logo = ch.attr("sponsorLogo");
     if (audio::iequals(sc.type, "FameRankChallenge")) {
       for (const auto& rk : ch.children) {
         if (!audio::iequals(rk.name, "Rank")) continue;

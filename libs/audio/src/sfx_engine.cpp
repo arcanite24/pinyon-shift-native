@@ -1281,6 +1281,9 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
       add_ui(SfxSoundId::kUiMove, "GridScroll", "UIInGame/UI/Nav/Move");
       add_ui(SfxSoundId::kUiError, "DenyAccess", "UIInGame/UI/Nav/Error");
       add_ui(SfxSoundId::kUiMenuOpen, "MenuVisible", "UIInGame/UI/Nav/SidePanel");
+      add_ui(SfxSoundId::kUiPause, "Pause", "UIInGame/UI/Nav/HUD_Pause");
+      add_ui(SfxSoundId::kUiUnPause, "UnPause", "UIInGame/UI/Nav/HUD_UnPause");
+      add_ui(SfxSoundId::kUiVscroll, "Vscroll", "UIInGame/UI/Nav/Move");
       add_ui(SfxSoundId::kRewindTapeStart, "Skip", "UIInGame/UI/Mulligan/TapeStart");
       add_ui(SfxSoundId::kRewindLoop, "Rewind", "UIInGame/UI/Mulligan/TapeLoop");
       add_ui(SfxSoundId::kRewindTapeStop, "RewindStop", "UIInGame/UI/Mulligan/TapeStop");
@@ -2197,6 +2200,12 @@ void SfxEngine::trigger_ui(UiCue cue) {
     case UiCue::kMove: id = SfxSoundId::kUiMove; gain = 0.45f; break;
     case UiCue::kError: id = SfxSoundId::kUiError; break;
     case UiCue::kMenuOpen: id = SfxSoundId::kUiMenuOpen; gain = 0.55f; break;
+    case UiCue::kPause: id = resolve_fallback(SfxSoundId::kUiPause, SfxSoundId::kUiMenuOpen); break;
+    case UiCue::kUnPause: id = resolve_fallback(SfxSoundId::kUiUnPause, SfxSoundId::kUiCancel); break;
+    case UiCue::kVscroll:
+      id = resolve_fallback(SfxSoundId::kUiVscroll, SfxSoundId::kUiMove);
+      gain = 0.45f;
+      break;
     case UiCue::kRewindTapeStart: id = SfxSoundId::kRewindTapeStart; gain = 0.85f; break;
     case UiCue::kRewindTapeStop:
       id = resolve_fallback(SfxSoundId::kRewindTapeStop, SfxSoundId::kRewindTapeStart);
