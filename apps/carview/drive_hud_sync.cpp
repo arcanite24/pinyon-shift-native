@@ -218,6 +218,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (autoshow.is_open()) autoshow.fill(app.class_bands, app.career.credits, st.menu_title, st.menu, st.menu_selected);
         if (career_page.is_open()) career_page.fill(st.menu_title, st.menu, st.menu_selected);
         if (settings_page.is_open()) settings_page.fill(st.menu_title, st.menu, st.menu_selected);
+        // An option page lasts only as long as the settings page it rides on.
+        if (!settings_page.is_open()) options_page = carview::OptionsPage::kNone;
         if (paint_open) {
           st.menu_title = "PAINT SHOP (FREE): LEFT/RIGHT PREVIEW   ENTER APPLY";
           st.menu.clear();

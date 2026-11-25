@@ -184,6 +184,7 @@ void DriveSession::open_shop_or_autoshow(bool is_autoshow) {
                 const bool tutorial_first = is_autoshow && (onboarding_handoff || first_starter_visit || ftc_first);
                 const double price_mult = slice12.trainer.pacing.effective_price_multiplier();
                 if (is_autoshow) {
+                  make_none_affordable = false;
                   ready = autoshow.open(*db, app.all_baked, why, app.career.credits, tutorial_first,
                                         slice12.trainer.hidden_cars, price_mult, &app.career_garage);
                   if (ready && tutorial_first) {

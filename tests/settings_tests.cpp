@@ -774,6 +774,12 @@ int main() {
     CHECK(op.value("steering") == "normal");
     CHECK(op.value("traction control") == "on");
     CHECK(op.value("traffic") == "off");  // not on the page
+    // GAME DIFFICULTY follows the reset rows, as a fresh load shows it.
+    {
+      carview::SettingsPage fresh;
+      fresh.load(op.tokens());
+      CHECK(op.value("difficulty preset") == fresh.value("difficulty preset"));
+    }
     op.load(before);
     CHECK(op.value("braking") == "abs off");
     CHECK(op.tokens() == before);

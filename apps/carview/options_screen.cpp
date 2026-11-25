@@ -214,8 +214,16 @@ bool draw_options_list(ui::List& l, const OptionsHud& o, float w, float h) {
       for (int p : {sc.node("Pill_left", bar), sc.node("Pill_right", bar)})
         if (p >= 0) sc.at(p).tint = ui4::kPink;
     if (label >= 0) {
+      // The row rises along its slope (30 px over its length, more than a
+      // row), so its hit is cut into level pieces that follow it.
       const auto a = sd.at(label);
-      l.add_hit(f.x(a[0] - 12.0f), f.y(a[1] - 16.0f), f.x(a[0] + 580.0f), f.y(a[1] + 8.0f), ui::kHitRow, k);
+      constexpr int kPieces = 6;
+      constexpr float kX0 = -12.0f, kLen = 592.0f, kHalf = 12.0f;
+      for (int s = 0; s < kPieces; ++s) {
+        const float x0 = a[0] + kX0 + kLen * float(s) / kPieces, x1 = a[0] + kX0 + kLen * float(s + 1) / kPieces;
+        const float cy = a[1] - 4.0f - kRowSlope * (0.5f * (x0 + x1) - a[0]);
+        l.add_hit(f.x(x0), f.y(cy - kHalf), f.x(x1), f.y(cy + kHalf), ui::kHitRow, k);
+      }
     }
   }
 

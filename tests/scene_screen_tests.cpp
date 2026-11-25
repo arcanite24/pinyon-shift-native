@@ -819,10 +819,24 @@ int main() {
       std::vector<uint8_t> fb = backdrop;
       carview::ui::List l;
       check(carview::draw_options_list(l, o, float(W), float(H)), "draw DIFFICULTY");
-      int hits = 0;
+      std::set<int> hit_rows;
       for (const auto& z : l.hits())
-        if (z.group == carview::ui::kHitRow) ++hits;
-      check(hits == 9, "DIFFICULTY: a hit per row (" + std::to_string(hits) + ")");
+        if (z.group == carview::ui::kHitRow) hit_rows.insert(z.index);
+      check(hit_rows.size() == 9, "DIFFICULTY: hits for nine rows (" + std::to_string(hit_rows.size()) + ")");
+      // A row's value, right of its label and higher on the slope, hits
+      // that row.
+      {
+        const SceneDraw osd(carview::ui_scene(std::string(carview::kOptionsListScene)));
+        for (int k : {1, 4, 8}) {
+          const std::string item = "Group_BLADE/Group_MENU/LIST_SPINNER/Group_Items/OPT_SPINNER_ITEM_LG" +
+                                   std::to_string(k + 1) + "/Group/Text_Current";
+          const auto at = osd.at(osd.find_path(item));
+          carview::ui::HitZone hz{};
+          const bool hit = l.hit_test(at[0], at[1] - 4.0f, hz);
+          check(hit && hz.group == carview::ui::kHitRow && hz.index == k,
+                "row " + std::to_string(k) + "'s value hits it (" + std::to_string(hit ? hz.index : -1) + ")");
+        }
+      }
       carview::ui::rasterize(l.items(), fb, W, H);
       const auto p = out_dir / "options_difficulty.png";
       check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write DIFFICULTY");

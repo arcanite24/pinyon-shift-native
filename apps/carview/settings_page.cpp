@@ -1260,12 +1260,16 @@ void SettingsPage::reset_rows(const std::vector<std::string>& ids) {
   const std::vector<Row> fresh = build();
   for (size_t i = 0; i < rows_.size() && i < fresh.size(); ++i) {
     for (const std::string& id : ids) {
-      if (id == rows_[i].name && rows_[i].pick != fresh[i].pick) {
+      // The preset follows the rows it sets (below), as on load.
+      if (id == "difficulty preset" || id != rows_[i].name) continue;
+      if (rows_[i].pick != fresh[i].pick || rows_[i].explicit_default) {
         rows_[i].pick = fresh[i].pick;
+        rows_[i].explicit_default = false;
         dirty_ = true;
       }
     }
   }
+  sync_difficulty_preset();
 }
 
 void SettingsPage::select_row(int flat_idx) {

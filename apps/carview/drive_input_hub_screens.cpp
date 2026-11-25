@@ -912,7 +912,8 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   make_none_affordable = false;
                   app.audio_host.trigger_ui(audio::UiCue::kCancel);
                 }
-                return true;
+                return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
+                        e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
               }
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode k = e.key.key;
