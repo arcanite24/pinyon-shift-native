@@ -418,7 +418,18 @@ bool draw_hud_countdown(ui::List& l, const RaceHud& r, float w, float h, float s
   if (root < 0 || group < 0) return false;
   sc.bindings().fit_text = false;
   sc.hide(child(sd, group, "Paused"));
-  // No count on screen: the gantry's LED panels count (Q74).
+  // No count on screen at a gantry: its LED panels count (Q74).
+  // interim (SPEC_QUESTIONS Q173): a start without one (a street race's open
+  // road) counts 3, 2, 1 on TEXT_COUNT, the node gantry starts leave empty.
+  if (!r.start_gantry && r.phase == RaceHud::kCountdown && r.clock < 0.0 && r.clock >= -3.0) {
+    const int tc = child(sd, group, "TEXT_COUNT");
+    if (tc < 0) return true;
+    const int count = std::clamp(r.digit > 0 ? r.digit : int(std::ceil(-r.clock)), 1, 3);
+    sc.hide(child(sd, group, "GO"));
+    sc.show(tc);
+    sc.text(tc, std::to_string(count));
+    return sc.draw(l, hud_frame(HudAnchor::kCentre, w, h, s), root) >= 0;
+  }
 
   if (r.phase != RaceHud::kRacing || r.clock < 0.0 || r.clock >= kGoSeconds) return true;
   // GO! over the road, fading out (its tape stays at the scene's alpha 0,

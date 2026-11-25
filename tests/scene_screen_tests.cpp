@@ -999,6 +999,15 @@ int main() {
         check(count.items().empty(), "I_321_Go: no count on screen before GO!");
       }
       hud_shot("hud_race_count.png", "15_countdown_orig.png", go_d);
+      // A start without a gantry (a street race) counts on TEXT_COUNT (Q173 interim).
+      go.start_gantry = false;
+      {
+        carview::ui::List count;
+        check(carview::draw_hud_countdown(count, go, 1280.0f, 720.0f, 1.0f) && !count.items().empty(),
+              "I_321_Go: a start without a gantry counts on screen");
+      }
+      hud_shot("hud_race_count_street.png", "15_countdown_orig.png", go_d);
+      go.start_gantry = true;
       go.phase = carview::RaceHud::kRacing;
       go.clock = 20.0, go.wrong_way = true;
       hud_shot("hud_race_wrong_way.png", "16_race_hud_orig.png", go_d);

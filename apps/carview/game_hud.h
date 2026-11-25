@@ -230,6 +230,8 @@ struct RaceHud {
   enum Phase { kGrid, kCountdown, kRacing, kFinished } phase = kGrid;
   std::string event;
   bool circuit = false, stage = false;
+  // The route has a start line, whose gantry LEDs count the start (Q74).
+  bool start_gantry = true;
   int lap = 0, laps = 1, place = 0, cars = 1, digit = 0;
   double clock = 0, progress = 0, best_lap = -1, last_lap = -1, finish_time = -1;
   double lap_time = 0;  // s into the current lap

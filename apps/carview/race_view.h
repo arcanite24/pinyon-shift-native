@@ -375,6 +375,7 @@ class RaceView {
   double wrong_way_ = 0;  // s the player has driven against the line (ours)
   bool circuit_ = true;
   bool street_ = false;                   // a line built along the road map (no AI line)
+  bool start_gantry_ = true;              // the route has a start line (its gantry counts)
   race::HandOfGodReset hand_of_god_;      // GameTunableSettings.ini [HandOfGodReset]
   race::RaceBoostTunables boost_tunables_;  // GlobalRegistry.xml AI/Racing/RaceBehavior (WORLD-05)
   bool stage_ = false;                   // a Rally stage (Options::stage_world)

@@ -122,7 +122,9 @@ bool draw_hud_direction_arrow(ui::List& l, const GpsHud& gps, float w, float h, 
 // The start (I_321_Go): the original shows no count on screen (the start
 // gantry's LEDs count 0:05..0:01, world.frag on the race clock); at the
 // signal its GO node shows GO! (InGame IDS_3_2_1_GO) for kGoSeconds.
-// TEXT_COUNT stays empty (Q74). True when the scene is present.
+// TEXT_COUNT stays empty there (Q74); a start without a gantry
+// (!r.start_gantry) counts 3, 2, 1 on it, an interim (Q173). True when the scene
+// is present.
 inline constexpr double kGoSeconds = 0.8;
 bool draw_hud_countdown(ui::List& l, const RaceHud& r, float w, float h, float s);
 // The wrong way sign (WrongWay/Sign_Top) while `r.wrong_way`, lowered `dy`
