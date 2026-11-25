@@ -1906,6 +1906,28 @@ unit, and how many frames a pulse lasts, which the followers' attack
 rates make matter), and the impulse branch of the layer update (edge,
 level or force).
 
+(2026-11-25) The executable's InputType name table gives the ids:
+
+| Id | InputType |
+|---|---|
+| 0 | ConstantOne |
+| 1 | Gs_Lateral |
+| 2 | Gs_Longitudinal |
+| 3 | WorldCollision |
+| 4 | WorldCollision_Lateral |
+| 5 | WorldCollision_Longitudinal |
+| 6 | CarCollision |
+| 7 | CarCollision_Lateral |
+| 8 | CarCollision_Longitudinal |
+| 9 to 11 | Slip, Slip_Lateral, Slip_Longitudinal |
+| 12 | Speed |
+| 13 | SpeedMPH |
+| 14 | RPM |
+| 15 | SuspensionBias_Lateral |
+
+The writer is the code that fills ids 3 to 8 for the layer update. It
+is not traced yet.
+
 ## Q73 (UI, not blocking): the dial's rpm scale
 
 The HUD dial (`947_HUD` `GAUGE_ANALOG`) has 12 numeral slots, 12 large,
@@ -2235,6 +2257,14 @@ Still interim:
   from the schema at run time.
 
 Needed: the table that maps MetaDifficulty to assists.
+
+(2026-11-25) Not found as data. A scan of the executable's image looked
+for 5 or more rows of small values, as bytes or 32-bit words, at row
+strides of 7 to 10, with the second row equal to Medium's values (three
+1s and four 0s). It finds only monotonic ramps and unrelated bit
+patterns. The presets are likely set in code by the assists popup's
+handler (the spinner list that carries the labels), which is not
+traced.
 
 ## Q72 (FEEL-26, FEEL-27, FEEL-31, not blocking): look-around, sputter rumble and camera blur
 
