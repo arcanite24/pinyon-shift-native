@@ -455,6 +455,12 @@ int main() {
           &kBalance, &kPlace, &kPointsEarned, &kPointsN, &kCollectIt, &kWristbandUnlocked, &kPointsToNext,
           &kPointToNext, &kPleaseWait, &kYouWonACar, &kStayInCar, &kStayInCarQ, &kCarSelectTitle})
       check_ref(*r, "race screen " + std::string(r->fallback));
+    for (const carview::StringRef* r :
+         {&carview::pause_text::kNoNetworkTitle, &carview::pause_text::kNoNetworkBody, &carview::pause_text::kQuitTitle,
+          &carview::pause_text::kQuitDesc, &carview::pause_text::kQuitRaceTitle, &carview::pause_text::kQuitRaceDesc,
+          &carview::pause_text::kExitSinglePlayer, &carview::pause_text::kQuitButton, &carview::pause_text::kCancel,
+          &carview::pause_text::kOk})
+      check_ref(*r, "pause popup " + std::string(r->fallback));
     std::vector<std::string> rows;
     for (auto g : carview::kGridRows) rows.push_back(carview::text_of(carview::grid_row_text(g)));
     check((rows == std::vector<std::string>{"START RACE", "DIFFICULTY", "OPTIONS", "QUIT RACE"}),
@@ -857,8 +863,44 @@ int main() {
     pm.back();
     pm.open_screen(PauseMenu::Screen::kMessageCentre);
     shot("message_centre.png", pm, false);
+    pm.back();
+    // The popups over the rows: MESSAGE CENTER offline, QUIT, QUIT RACE.
+    auto popup = [&](PauseMenu& m, std::string& title, std::vector<std::pair<std::string, std::string>>& prompts) {
+      carview::PauseScreenHud ps;
+      carview::fill_pause_screen(m, 1e9, ps);
+      std::string message;
+      return carview::pause_popup_text(ps, title, message, prompts) && !message.empty();
+    };
+    {
+      std::string title;
+      std::vector<std::pair<std::string, std::string>> prompts;
+      check(!popup(pm, title, prompts), "no popup over the rows");
+      pm.open_screen(PauseMenu::Screen::kOffline);
+      check(pm.popup_open() && popup(pm, title, prompts) &&
+                title == carview::text_of(carview::pause_text::kNoNetworkTitle) && prompts.size() == 1,
+            "MESSAGE CENTER offline: the NO NETWORK ACCESS popup (" + title + ")");
+      shot("pause_offline.png", pm, false);
+      pm.back();
+      pm.open_confirm(PauseMenu::kQuitToTitle);
+      check(pm.popup_open() && popup(pm, title, prompts) && title == "QUIT" &&
+                (prompts == std::vector<std::pair<std::string, std::string>>{{"A", "EXIT SINGLE PLAYER"},
+                                                                              {"B", "CANCEL"}}),
+            "QUIT asks: A EXIT SINGLE PLAYER, B CANCEL (28_quit_prompt_orig.png)");
+      shot("pause_quit.png", pm, false);
+      pm.back();
+      check(!pm.popup_open() && pm.open, "B on the popup returns to the rows");
+    }
     pm.show(true);
     shot("pause_race.png", pm, true);
+    {
+      std::string title;
+      std::vector<std::pair<std::string, std::string>> prompts;
+      pm.open_confirm(PauseMenu::kQuitRace);
+      check(popup(pm, title, prompts) && title == "QUIT RACE" && prompts.size() == 2,
+            "QUIT RACE asks first (" + title + ")");
+      shot("pause_quit_race.png", pm, true);
+      pm.back();
+    }
 
     // The driving HUD, over the original's captures when
     // SHIFT_SCENE_SCREEN_HUD_DIR names their folder (the calibration loop:
@@ -1035,6 +1077,24 @@ int main() {
       hud_shot("race_summary.png", "10_event_card_prerace_orig.png", sum_d);
       es.restrictions_view = true;
       hud_shot("race_summary_restrictions.png", "10_event_card_prerace_orig.png", sum_d);
+      // Car select on 108_C_BUY_CARSELECT's car list (11_car_select_orig.png).
+      es.restrictions_view = false;
+      es.screen = S::kCarSelect;
+      es.car_list.title = carview::text_of(carview::car_list_text::kCarSelect);
+      for (int64_t id : {int64_t(1259), int64_t(1105), int64_t(1286)}) {
+        carview::CarTile tile;
+        tile.car_id = id;
+        es.car_list.tiles.push_back(tile);
+      }
+      es.car_list.selected = 1;
+      es.car_list.prompts = {{"A", "SELECT"}, {"B", "BACK"}, {"Y", "TOGGLE"}};
+      {
+        carview::ui::List l;
+        check(carview::draw_car_list(l, sum_d, es.car_list, float(W), float(H)) && !l.items().empty(),
+              "car select draws on 108_C_BUY_CARSELECT");
+      }
+      hud_shot("race_car_select.png", "11_car_select_orig.png", sum_d);
+      es.screen = S::kEventSummary;
 
       carview::RaceHud rr;
       rr.phase = carview::RaceHud::kGrid;
@@ -1057,6 +1117,10 @@ int main() {
       rr.screen = S::kCashReward, rr.screen_t = 3.0;
       rr.base_credits = 0, rr.mileage_bonus = 400, rr.difficulty_pct = 40, rr.credits = 560, rr.balance = 118010;
       hud_shot("race_cash.png", "17_results_cash_reward_orig.png", rd);
+      // A star in the field: BEAT THE STAR after FINISHED.
+      rr.nemesis_bonus = 1500, rr.credits = 2060;
+      hud_shot("race_cash_star.png", "17_results_cash_reward_orig.png", rd);
+      rr.nemesis_bonus = 0;
       rr.screen = S::kPoints;
       rr.band_before = 2970, rr.band_after = 3080, rr.band_lo = 2000, rr.band_hi = 4100;
       rr.band_name = "ORANGE WRISTBAND", rr.band_next = "PURPLE";
