@@ -995,14 +995,14 @@ int main() {
     CHECK(bright_digits >= 1);
   }
 
-  // 4. Phase R2-6 checks: BGF property targets + UiScene::geometry_of non-quad mesh + CONTROLLER/* glyph routing
+  // 4. Phase R2-6 checks: BGF attribute hashes + UiScene::geometry_of non-quad mesh + CONTROLLER/* glyph routing
   //    + per-page Post-Race tally timing + BAR/PSI boost & lap split delta formatting.
   {
-    CHECK(fh1::classify_bgf_property(fh1::bgf_attr::kPosX) == fh1::UiBgfPropTarget::kPosX);
-    CHECK(fh1::classify_bgf_property(fh1::bgf_attr::kScaleY) == fh1::UiBgfPropTarget::kScaleY);
-    CHECK(fh1::classify_bgf_property(fh1::bgf_attr::kRotation) == fh1::UiBgfPropTarget::kRotation);
-    CHECK(fh1::classify_bgf_property(fh1::bgf_attr::kAlpha) == fh1::UiBgfPropTarget::kAlpha);
-    CHECK(fh1::classify_bgf_property(0xDEADBEEFu, 0u) == fh1::UiBgfPropTarget::kUnknown);
+    // The runtime's name hash, h = (h + c) * 65599; attributes keep 27 bits.
+    CHECK(fh1::ui_name_hash("") == 0u);
+    CHECK(fh1::ui_name_hash("a") == 97u * 65599u);
+    CHECK(fh1::ui_attr_hash("opacity") == (fh1::ui_name_hash("opacity") & 0x07FFFFFFu));
+    CHECK(fh1::ui_attr::kPositionX != fh1::ui_attr::kPositionY);
 
     // Non-quad UiGeometry mesh renders via SceneDraw::model() using UiScene::geometry_of().
     fh1::UiScene sc;

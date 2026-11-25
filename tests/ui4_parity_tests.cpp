@@ -49,6 +49,7 @@
 #include "garage/pi_calc.h"
 #include "hub_scene.h"
 #include "hud.h"
+#include "scene_timeline.h"
 #include "hud_scene.h"
 #include "pause_screen.h"
 #include "livery_editor.h"
@@ -2105,7 +2106,8 @@ void test_round3_subtitle_lift_upgrade_units_and_rewind_touch() {
 }
 
 void test_round2_phase6_ui4_parity() {
-  // 1. BGF binary parser: state records & animation channels/events (pos X/Y, scale, rotation, color, alpha).
+  // 1. The BGF timeline in its decoded layout (docs/UI_SCENE_ANIMATION.md):
+  //    curves, actions, the empty table and slides, played by SceneTimeline.
   {
     std::vector<uint8_t> buf(0x8C, 0);
     std::memcpy(buf.data() + 6, "AnarkBGF", 8);
@@ -2125,149 +2127,147 @@ void test_round2_phase6_ui4_parity() {
       v.push_back(uint8_t((x >> 8) & 0xFF));
       v.push_back(uint8_t(x & 0xFF));
     };
-    auto push_f32 = [&](std::vector<uint8_t>& v, float f) {
+    auto fbits = [](float f) {
       uint32_t bits = 0;
       std::memcpy(&bits, &f, 4);
-      push_u32(v, bits);
+      return bits;
     };
     auto append_section = [&](const std::vector<uint8_t>& sec) {
       push_u32(buf, uint32_t(sec.size()));
       buf.insert(buf.end(), sec.begin(), sec.end());
     };
+    constexpr uint32_t kFloat = 3u << 27, kInt = 1u << 27;
+    const uint32_t kPosX = fh1::ui_attr::kPositionX, kOpacity = fh1::ui_attr::kOpacity;
 
-    constexpr uint32_t kItemHash = 0x11223344u;
-    constexpr uint32_t kFbfId = 42u;
-    constexpr uint32_t kStateHash = 0x55667788u;
+    put_u32(buf, 0x24, 2);  // elements: the scene's root group (item 0) and a model (item 1)
+    put_u32(buf, 0x44, 1);  // curves
+    put_u32(buf, 0x4C, 1);  // action owners
+    put_u32(buf, 0x5C, 3);  // slides
 
-    put_u32(buf, 0x24, 1);  // element_count
-    put_u32(buf, 0x28, 0);  // wrapper_count
-    put_u32(buf, 0x2C, 0);  // property_count
-    put_u32(buf, 0x30, 0);  // relation_count
-    put_u32(buf, 0x3C, 0);  // identity_count
-    put_u32(buf, 0x44, 1);  // style_count
-    put_u32(buf, 0x4C, 1);  // track_count
-    put_u32(buf, 0x5C, 1);  // anim_count
-    put_u32(buf, 0x88, 0);  // identity section size = 0
-
-    // Section 2: Items (1 item mapping kItemHash -> FBF object 42).
     std::vector<uint8_t> items_sec;
-    push_u32(items_sec, kItemHash);
+    push_u32(items_sec, 0x11111111u);
+    push_u32(items_sec, 0xFFFFFFFFu);
+    push_u32(items_sec, 41u);  // FBF object
+    items_sec.push_back(1);
+    items_sec.push_back(0);
     push_u32(items_sec, 0);
-    push_u32(items_sec, kFbfId);
-    items_sec.push_back(4);  // kind = model
-    items_sec.push_back(0);  // flags
-    push_u32(items_sec, 0);  // property count
+    push_u32(items_sec, 0x22222222u);
+    push_u32(items_sec, 0x11111111u);
+    push_u32(items_sec, 42u);
+    items_sec.push_back(4);
+    items_sec.push_back(0);
+    push_u32(items_sec, 1);  // its base position.x
+    push_u32(items_sec, kFloat | kPosX);
+    push_u32(items_sec, fbits(0.0f));
     append_section(items_sec);
+    append_section({});  // relations
 
-    // Section 3: Relations (empty).
-    append_section({});
+    // Curve 0: item 1's position.x, 0 -> 100 over 0..1000 ms (linear controls).
+    std::vector<uint8_t> curve_sec;
+    push_u32(curve_sec, 1);
+    push_u32(curve_sec, kFloat | kPosX);
+    curve_sec.push_back(1);
+    curve_sec.push_back(0);
+    push_u16(curve_sec, 2);
+    const float keys[2][6] = {{0, 0, 0, 100.0f / 3.0f, 0, 200.0f / 3.0f}, {1000, 100, 0, 0, 0, 0}};
+    for (const auto& k : keys) {
+      push_u32(curve_sec, uint32_t(k[0]));
+      push_u32(curve_sec, fbits(k[1]));
+      push_u32(curve_sec, uint32_t(k[2]));
+      push_u32(curve_sec, fbits(k[3]));
+      push_u32(curve_sec, uint32_t(k[4]));
+      push_u32(curve_sec, fbits(k[5]));
+    }
+    append_section(curve_sec);
 
-    // Section 4: Styles / States (1 style with 2 state records: PosX + Alpha).
-    std::vector<uint8_t> style_sec;
-    push_u32(style_sec, kItemHash);
-    push_u32(style_sec, 7u);   // style_id
-    push_u16(style_sec, 0u);   // reserved
-    push_u16(style_sec, 2u);   // state_count
-    // Record 0: PosX = 64.0
-    push_u32(style_sec, kStateHash);
-    push_u32(style_sec, kItemHash);
-    push_u32(style_sec, fh1::bgf_attr::kPosX);
-    push_u32(style_sec, 1u);
-    push_f32(style_sec, 64.0f);
-    push_u32(style_sec, 0u);
-    // Record 1: Alpha = 0.5
-    push_u32(style_sec, kStateHash);
-    push_u32(style_sec, kItemHash);
-    push_u32(style_sec, fh1::bgf_attr::kAlpha);
-    push_u32(style_sec, 10u);
-    push_f32(style_sec, 0.5f);
-    push_u32(style_sec, 0u);
-    append_section(style_sec);
+    // Actions: item 0 on OUTRO (stored with other top bits: events compare
+    // 27 bits) goes to the "Out" slide (full 32-bit name hash) and sets
+    // item 1's opacity to 50.
+    std::vector<uint8_t> act_sec;
+    push_u32(act_sec, 0);  // owner
+    push_u32(act_sec, 1);  // events
+    push_u32(act_sec, (fh1::ui_name_hash("OUTRO") & 0x07FFFFFFu) | 0xA8000000u);
+    push_u32(act_sec, 2);
+    for (uint32_t x : {0u, 0u, fh1::ui_handler::kGotoSlide, fh1::ui_name_hash("Out"), 0u}) push_u32(act_sec, x);
+    for (uint32_t x : {0u, 1u, fh1::ui_handler::kSetProperty, kFloat | kOpacity, fbits(50.0f)}) push_u32(act_sec, x);
+    append_section(act_sec);
+    append_section({});  // the empty table
 
-    // Section 5: Tracks (1 track with PosX keyframes 0 -> 100 over 0..1s).
-    std::vector<uint8_t> track_sec;
-    push_u32(track_sec, kItemHash);
-    push_u32(track_sec, 1u);  // child_count
-    push_u32(track_sec, fh1::bgf_attr::kPosX);
-    push_u32(track_sec, 2u);  // key_count
-    // Key 0
-    push_u32(track_sec, kItemHash);
-    push_u32(track_sec, fh1::bgf_attr::kPosX);
-    push_f32(track_sec, 0.0f);
-    push_u32(track_sec, 1u);
-    push_f32(track_sec, 0.0f);
-    // Key 1
-    push_u32(track_sec, kItemHash);
-    push_u32(track_sec, fh1::bgf_attr::kPosX);
-    push_f32(track_sec, 1.0f);
-    push_u32(track_sec, 1u);
-    push_f32(track_sec, 100.0f);
-    append_section(track_sec);
-
-    // Section 6: Empty companion table.
-    append_section({});
-
-    // Section 7: Animations (1 anim with 2 channels: ScaleX 1->2 and Rotation 0->0.5, plus 1 event).
-    std::vector<uint8_t> anim_sec;
-    push_u32(anim_sec, 0xABCD0001u);  // name_hash
-    push_u32(anim_sec, 0u);
-    push_f32(anim_sec, 2.0f);         // duration
-    push_u32(anim_sec, 0u);
-    push_u32(anim_sec, kItemHash);    // owner_item at +16
-    push_u32(anim_sec, 0u);
-    push_u32(anim_sec, 0u);
-    anim_sec.push_back(1u);           // flags at +28
-    push_u32(anim_sec, 2u);           // track_count at +29
-    // Channel 0: ScaleX (2 keys, 1 event)
-    push_u32(anim_sec, fh1::bgf_attr::kScaleX);
-    anim_sec.push_back(3u);
-    push_u32(anim_sec, 2u);
-    push_f32(anim_sec, 0.0f);
-    push_f32(anim_sec, 1.0f);
-    push_f32(anim_sec, 1.0f);
-    push_f32(anim_sec, 2.0f);
-    push_u32(anim_sec, 1u);
-    push_u32(anim_sec, 0xCAFE0001u);
-    // Channel 1: Rotation (2 keys, 0 events)
-    push_u32(anim_sec, fh1::bgf_attr::kRotation);
-    anim_sec.push_back(5u);
-    push_u32(anim_sec, 2u);
-    push_f32(anim_sec, 0.0f);
-    push_f32(anim_sec, 0.0f);
-    push_f32(anim_sec, 1.0f);
-    push_f32(anim_sec, 0.5f);
-    push_u32(anim_sec, 0u);
-    append_section(anim_sec);
+    std::vector<uint8_t> slide_sec;
+    auto slide = [&](const char* name, uint8_t flags, uint32_t t0, uint32_t t1, uint32_t tracks) {
+      char nm[16] = {};
+      std::memcpy(nm, name, std::strlen(name));
+      slide_sec.insert(slide_sec.end(), nm, nm + 16);
+      push_u32(slide_sec, 0);  // component: the scene
+      slide_sec.push_back(flags);
+      push_u32(slide_sec, t0);
+      push_u32(slide_sec, t1);
+      push_u32(slide_sec, tracks);
+    };
+    auto track = [&](uint32_t item, bool active, std::vector<std::pair<uint32_t, uint32_t>> values,
+                     std::vector<std::array<uint16_t, 3>> refs) {
+      push_u32(slide_sec, item);
+      slide_sec.push_back(active ? 1 : 0);
+      push_u32(slide_sec, uint32_t(values.size()));
+      for (auto [t, v] : values) push_u32(slide_sec, t), push_u32(slide_sec, v);
+      push_u32(slide_sec, uint32_t(refs.size()));
+      for (auto r : refs) {
+        slide_sec.push_back(uint8_t(r[0]));
+        slide_sec.push_back(uint8_t(r[1]));
+        push_u16(slide_sec, r[2]);
+      }
+    };
+    // The Master Slide lists everything disabled; "In" plays once (flags 9)
+    // with the curve and the actions; "Out" turns the model off.
+    slide("Master Slide", 0, 0, 1000, 2);
+    track(0, false, {}, {{1, 0, 0}, {1, 0, 1}});
+    track(1, false, {{kFloat | kOpacity, fbits(100.0f)}}, {{0, 0, 0}});
+    slide("In", 9, 0, 1000, 2);
+    track(0, true, {}, {{1, 1, 0}, {1, 1, 1}});
+    track(1, true, {{kInt | fh1::ui_attr::kEndTime, 1000u}}, {{0, 1, 0}});
+    slide("Out", 9, 0, 500, 2);
+    track(0, true, {}, {});
+    track(1, false, {}, {});
+    append_section(slide_sec);
 
     fh1::UiBgfDocument doc;
     std::string err;
-    check(fh1::parse_ui_bgf(buf, doc, &err), "parse_ui_bgf parses full state records and animation bodies");
-    check(doc.styles.size() == 1 && doc.styles[0].states.size() == 2,
-          "BGF style parses 2 state records instead of skipping them");
-    check(doc.styles[0].states[0].target == fh1::UiBgfPropTarget::kPosX &&
-              std::fabs(doc.styles[0].states[0].value - 64.0f) < 1e-4f,
-          "BGF state record 0 stores PosX=64");
-    check(doc.styles[0].states[1].target == fh1::UiBgfPropTarget::kAlpha &&
-              std::fabs(doc.styles[0].states[1].value - 0.5f) < 1e-4f,
-          "BGF state record 1 stores Alpha=0.5");
-    check(doc.tracks.size() == 1 && doc.tracks[0].target == fh1::UiBgfPropTarget::kPosX,
-          "BGF track stores semantic PosX property target");
-    check(doc.animations.size() == 1 && doc.animations[0].channels.size() == 2,
-          "BGF animation parses channel bodies instead of skipping them");
-    check(doc.animations[0].channels[0].target == fh1::UiBgfPropTarget::kScaleX &&
-              doc.animations[0].channels[0].events.size() == 1 &&
-              doc.animations[0].channels[0].events[0] == 0xCAFE0001u,
-          "BGF animation channel 0 preserves ScaleX target and event payload");
-    check(std::fabs(fh1::evaluate_bgf_anim_channel(doc.animations[0].channels[0], 0.5f) - 1.5f) < 1e-4f,
-          "evaluate_bgf_anim_channel interpolates ScaleX cleanly");
+    check(fh1::parse_ui_bgf(buf, doc, &err) && doc.has_timeline, "parse_ui_bgf reads the timeline sections");
+    check(doc.curves.size() == 1 && doc.curves[0].item == 1 && doc.curves[0].attr == kPosX &&
+              doc.curves[0].keys.size() == 2 && doc.curves[0].keys[1].time_ms == 1000.0f,
+          "BGF curve: item, 27-bit attribute and keys");
+    check(doc.actions.size() == 2 && doc.actions[0].handler == fh1::ui_handler::kGotoSlide &&
+              doc.actions[1].target == 1 && doc.actions[1].arg_tag == (kFloat | kOpacity),
+          "BGF actions: GOTO and SET with their arguments");
+    check(doc.slides.size() == 3 && doc.slides[0].master() && doc.slides[1].name == "In" &&
+              !doc.slides[1].loops() && doc.slides[1].tracks[1].refs[0].enabled && doc.find_slide(0, "Out") == 2,
+          "BGF slides: names, flags, tracks and references");
+    check(std::fabs(fh1::evaluate_bgf_curve(doc.curves[0], 250.0f) - 25.0f) < 1e-3f,
+          "evaluate_bgf_curve: linear controls give a straight line");
+    // An eased key (controls at the ends' values): smoothstep, 50 at the middle, 15.625 at a quarter.
+    fh1::UiBgfCurve ease;
+    ease.keys = {{0, 0, 0, 0, 0, 100}, {1000, 100, 0, 0, 0, 0}};
+    check(std::fabs(fh1::evaluate_bgf_curve(ease, 500.0f) - 50.0f) < 1e-3f &&
+              std::fabs(fh1::evaluate_bgf_curve(ease, 250.0f) - 15.625f) < 1e-3f &&
+              fh1::evaluate_bgf_curve(ease, -5.0f) == 0.0f && fh1::evaluate_bgf_curve(ease, 2000.0f) == 100.0f,
+          "evaluate_bgf_curve: Bezier on the values, clamped outside the keys");
+    // A dynamic restart keeps the controls' places between the new start and the end.
+    fh1::UiBgfCurve dyn = doc.curves[0];
+    fh1::restart_bgf_curve(dyn, 70.0f);
+    check(dyn.keys[0].value == 70.0f && std::fabs(dyn.keys[0].c1_value - 80.0f) < 1e-3f &&
+              std::fabs(dyn.keys[0].c2_value - 90.0f) < 1e-3f,
+          "restart_bgf_curve: a dynamic curve starts from the current value");
 
-    // Verify SceneDraw::draw_subtree() applies PosX & ScaleX tracks WITHOUT corrupting node alpha!
     fh1::UiScene sc;
     sc.has_bgf = true;
     sc.bgf = doc;
+    fh1::UiObject g;
+    g.kind = fh1::UiObjectKind::kGroup;
+    g.id = 41;
+    sc.objects.push_back(g);
     fh1::UiObject m;
     m.kind = fh1::UiObjectKind::kModel;
-    m.id = kFbfId;
+    m.id = 42;
     m.name = "AnimatedQuad";
     m.geometry = 0;
     sc.objects.push_back(m);
@@ -2282,30 +2282,56 @@ void test_round2_phase6_ui4_parity() {
     geo.bounds_max = {50, 50, 0};
     geo.is_unit_quad = true;
     sc.geometries.push_back(geo);
+    fh1::UiNode rootn;
+    rootn.object = 41;
+    rootn.object_index = 0;
+    sc.nodes.push_back(rootn);
     fh1::UiNode nd;
-    nd.parent = -1;
-    nd.object = kFbfId;
-    nd.object_index = 0;
+    nd.parent = 0;
+    nd.object = 42;
+    nd.object_index = 1;
     nd.opacity = 1.0f;
     nd.alpha = 1.0f;
+    nd.drawable = true;
     nd.bounds_min = {-20, -10, 0};
     nd.bounds_max = {20, 10, 0};
     sc.nodes.push_back(nd);
 
+    carview::SceneTimeline tl;
+    tl.bind(&sc);
+    check(tl.ok() && tl.slide(0) == "In" && tl.item_of_node(1) == 1, "SceneTimeline starts on the first slide");
+    tl.advance(0.5f);
+    check(std::fabs(tl.value(1, kPosX) - 50.0f) < 1e-3f && !tl.done(0), "SceneTimeline plays the slide's curve");
+
     carview::SceneDraw sd(&sc, true);
     carview::SceneFrame sf{0.0f, 0.0f, 1.0f};
     carview::SceneBindings sb;
-    sb.anim_time = 0.5f;  // PosX = +50, ScaleX = 1.5x, Rotation = 0.25 rad; Alpha must stay 1.0!
+    tl.apply(sb);
     carview::ui::List l_sub;
     check(sd.draw_subtree(l_sub, sf, 0, sb) == 1 && l_sub.items().size() == 1,
-          "SceneDraw::draw_subtree emits animated model");
+          "SceneDraw::draw_subtree emits the animated model");
     if (!l_sub.items().empty()) {
       const auto& inst = l_sub.items()[0];
-      const uint8_t alpha_byte = uint8_t((inst.color >> 24) & 0xFF);
       const float cx = 0.5f * (inst.rect[0] + inst.rect[2]);
-      check(alpha_byte == 255, "Non-alpha BGF PosX/ScaleX tracks do NOT overwrite alpha");
-      check(std::fabs(cx - 690.0f) < 2.0f, "BGF PosX track shifts node X (+50px from 640 -> 690)");
+      check(uint8_t((inst.color >> 24) & 0xFF) == 255, "the curve on position.x leaves the opacity (100) alone");
+      check(std::fabs(cx - 690.0f) < 2.0f, "the timeline's position.x moves the node (+50 px from 640 to 690)");
     }
+
+    tl.advance(0.75f);
+    check(tl.done(0) && tl.slide(0) == "In" && std::fabs(tl.value(1, kPosX) - 100.0f) < 1e-3f,
+          "a play-once slide holds at its end");
+    check(tl.fire("INTRO") == 0, "an event with no actions runs nothing");
+    check(tl.fire("OUTRO") == 2 && tl.slide(0) == "Out", "OUTRO runs its GOTO and SET");
+    check(std::fabs(tl.value(1, kPosX) - 100.0f) < 1e-3f && std::fabs(tl.value(1, kOpacity) - 50.0f) < 1e-3f,
+          "the left slide's curve value stays; SET sets the opacity");
+    check(tl.fire("OUTRO") == 0, "the actions only run while their slide is current");
+    carview::SceneBindings sb_out;
+    tl.apply(sb_out);
+    carview::ui::List l_out;
+    check(sb_out.anim.count(1) && sb_out.anim[1].inactive && sd.draw_subtree(l_out, sf, 0, sb_out) == 0,
+          "an element off in the current slide is not drawn");
+    tl.reset();
+    check(tl.slide(0) == "In" && tl.time_ms(0) == 0.0f, "reset goes back to the load state");
 
     // Verify resolve_scene_draw() never permanently caches nullptr before scenes load!
     carview::set_ui_scenes([](const std::string&) -> const fh1::UiScene* { return nullptr; });

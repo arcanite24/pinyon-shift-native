@@ -2,8 +2,9 @@
 // layout of a screen. The FBF holds the native objects (groups, text boxes,
 // models, materials, textures), the BSG the scene graph (one 96-byte node
 // per drawable or group: parent, object, position, rotation, scale, bounds,
-// opacity). Text content, list rows, states and animations are set at run
-// time by the title's UI code and are not here.
+// opacity). The BGF holds the items, contracts and the timeline (slides,
+// curves, actions; docs/UI_SCENE_ANIMATION.md). Text content and list rows
+// are set at run time by the title's UI code and are not here.
 // Spec: FORMAT-UISCENES (FBF kinds and bodies, BSG node layout, units:
 // pixels of a 1280x720 canvas, origin at the centre, y up; unit quads of
 // +-50 sized by 100 x scale; texture paths and their archives).
@@ -103,104 +104,126 @@ struct UiBgfRelation {
   std::vector<uint32_t> children;
 };
 
-enum class UiBgfPropTarget : uint8_t {
-  kUnknown = 0,
-  kPosX,
-  kPosY,
-  kScaleX,
-  kScaleY,
-  kRotation,
-  kColorR,
-  kColorG,
-  kColorB,
-  kColorRgba,
-  kAlpha,
-};
-
-// Clean-room FNV-1a 32-bit property attribute hashes recognized by classify_bgf_property().
-namespace bgf_attr {
-inline constexpr uint32_t fnv1a_32(std::string_view s) {
-  uint32_t h = 2166136261u;
-  for (unsigned char c : s) {
-    h ^= c;
-    h *= 16777619u;
-  }
+// The scene's timeline (docs/UI_SCENE_ANIMATION.md). The runtime is Anark
+// Gameface's: every component (the scene root and each wrapper item) has
+// slides, a "Master Slide" first; a slide sets its elements' properties when
+// it starts, plays its curves over its time range and holds the actions its
+// events run (go to a slide, set a property). Names are hashed with
+// `ui_name_hash`; attributes are its low 27 bits (`ui_attr_hash`), with the
+// value's type in the tag's top 5 bits.
+constexpr uint32_t ui_name_hash(std::string_view s) {
+  uint32_t h = 0;
+  for (unsigned char c : s) h = (h + c) * 65599u;
   return h;
 }
-inline constexpr uint32_t kPosX = fnv1a_32("position.x");
-inline constexpr uint32_t kPosY = fnv1a_32("position.y");
-inline constexpr uint32_t kScaleX = fnv1a_32("scale.x");
-inline constexpr uint32_t kScaleY = fnv1a_32("scale.y");
-inline constexpr uint32_t kRotation = fnv1a_32("rotation");
-inline constexpr uint32_t kColorR = fnv1a_32("color.r");
-inline constexpr uint32_t kColorG = fnv1a_32("color.g");
-inline constexpr uint32_t kColorB = fnv1a_32("color.b");
-inline constexpr uint32_t kColorRgba = fnv1a_32("color");
-inline constexpr uint32_t kAlpha = fnv1a_32("alpha");
-}  // namespace bgf_attr
+constexpr uint32_t ui_attr_hash(std::string_view s) { return ui_name_hash(s) & 0x07FFFFFFu; }
 
-// Maps a BGF attribute hash and/or channel tag byte to a semantic property target.
-UiBgfPropTarget classify_bgf_property(uint32_t attr_hash, uint32_t raw_tag = 0);
+namespace ui_attr {
+inline constexpr uint32_t kOpacity = ui_attr_hash("opacity");    // percent, 0..100
+inline constexpr uint32_t kEndTime = ui_attr_hash("endtime");    // ms, int
+inline constexpr uint32_t kStartTime = ui_attr_hash("starttime");
+inline constexpr uint32_t kPositionX = ui_attr_hash("position.x");  // scene units, y up
+inline constexpr uint32_t kPositionY = ui_attr_hash("position.y");
+inline constexpr uint32_t kPositionZ = ui_attr_hash("position.z");
+inline constexpr uint32_t kScaleX = ui_attr_hash("scale.x");
+inline constexpr uint32_t kScaleY = ui_attr_hash("scale.y");
+inline constexpr uint32_t kScaleZ = ui_attr_hash("scale.z");
+inline constexpr uint32_t kRotationX = ui_attr_hash("rotation.x");  // radians
+inline constexpr uint32_t kRotationY = ui_attr_hash("rotation.y");
+inline constexpr uint32_t kRotationZ = ui_attr_hash("rotation.z");
+inline constexpr uint32_t kPivotX = ui_attr_hash("pivot.x");
+inline constexpr uint32_t kPivotY = ui_attr_hash("pivot.y");
+inline constexpr uint32_t kDiffuseR = ui_attr_hash("diffuse.r");  // material, 0..255
+inline constexpr uint32_t kDiffuseG = ui_attr_hash("diffuse.g");
+inline constexpr uint32_t kDiffuseB = ui_attr_hash("diffuse.b");
+inline constexpr uint32_t kDiffuseA = ui_attr_hash("diffuse.a");
+inline constexpr uint32_t kTextColorR = ui_attr_hash("textcolor.r");  // text, 0..255
+inline constexpr uint32_t kTextColorG = ui_attr_hash("textcolor.g");
+inline constexpr uint32_t kTextColorB = ui_attr_hash("textcolor.b");
+inline constexpr uint32_t kTextColorA = ui_attr_hash("textcolor.a");
+inline constexpr uint32_t kPositionU = ui_attr_hash("positionu");  // texture offset
+inline constexpr uint32_t kPositionV = ui_attr_hash("positionv");
+}  // namespace ui_attr
 
-struct UiBgfStateRecord {
-  uint32_t state_hash = 0;
-  uint32_t target_item = 0;
-  uint32_t attr_hash = 0;
-  uint32_t value_type = 0;
-  uint32_t raw_value = 0;
-  float value = 0.0f;
-  uint32_t extra = 0;
-  UiBgfPropTarget target = UiBgfPropTarget::kUnknown;
+// A tagged property value: the attribute (27 bits), its type (the tag's top 5
+// bits; their low 3: 1 int, 3 float, 5 string) and the raw 32-bit value.
+struct UiBgfValue {
+  uint32_t attr = 0;
+  uint8_t type = 0;
+  uint32_t raw = 0;
+  float f() const;
+  float number() const;  // an int's value, else the float's
+};
+// A tagged raw value as a number (an int's value, else the float's).
+float ui_bgf_number(uint32_t tag, uint32_t raw);
+
+// A key of an animation curve. The value between key i and i + 1 is the
+// cubic Bezier (value_i, c1_value_i, c2_value_i, value_i+1) at s = the
+// normalised time. The control times are 0 in every retail key, which the
+// title's evaluator (82F2EF08) takes as s linear in time.
+struct UiBgfCurveKey {
+  float time_ms = 0, value = 0;
+  float c1_time = 0, c1_value = 0;
+  float c2_time = 0, c2_value = 0;
 };
 
-struct UiBgfStyle {
-  uint32_t owner_item = 0;
-  uint16_t state_count = 0;
-  uint32_t style_id = 0;
-  std::vector<UiBgfStateRecord> states;
+// An animation curve: one attribute of one element (BGF item index).
+struct UiBgfCurve {
+  uint32_t item = 0;
+  uint32_t attr = 0;
+  bool flag = true;      // header byte 8 (1 in every retail curve)
+  bool dynamic = false;  // header byte 9: the first key starts from the current value
+  std::vector<UiBgfCurveKey> keys;
 };
 
-struct UiBgfKeyframe {
-  uint32_t target_item = 0;
-  uint32_t attr_hash = 0;
-  float time = 0.0f;
-  float value = 0.0f;
-  uint32_t raw_tag = 0;
-  uint32_t raw_value = 0;
-  UiBgfPropTarget target = UiBgfPropTarget::kUnknown;
+// An action: when `event` reaches its owner, run `handler` on `target`.
+struct UiBgfAction {
+  uint32_t owner = 0;    // the item that holds it (a contract or behaviour)
+  uint32_t event = 0;    // the event's name hash (compare 27 bits)
+  uint32_t source = 0, target = 0;  // item indexes
+  uint32_t handler = 0;  // kGotoSlide, kSetProperty, ...
+  uint32_t arg_tag = 0;  // GOTO: the slide name hash; SET: the attribute tag; GOTO_TIME: ms
+  uint32_t arg = 0;      // SET: the value
+};
+namespace ui_handler {
+inline constexpr uint32_t kGotoSlide = 0x1195C23Bu;    // arg_tag: slide name hash
+inline constexpr uint32_t kSetProperty = 0x7E4906FDu;  // arg_tag: attribute tag, arg: value
+inline constexpr uint32_t kGotoTime = 0x5B2FA69Cu;     // arg_tag: ms (the pause menu's SIZEn)
+inline constexpr uint32_t kPause = 0x4F15F91Eu;        // paired with kGotoTime (probable)
+inline constexpr uint32_t kPlay = 0x573BA2B8u;         // no argument (probable)
+}  // namespace ui_handler
+
+// What a slide does with one element: whether it is active (on), the values
+// set when the slide starts, and the curves and actions it lists (`enabled`
+// false: listed but not run in this slide; the Master Slide lists every one
+// disabled).
+struct UiBgfSlideRef {
+  bool action = false;
+  bool enabled = false;
+  uint16_t index = 0;  // into UiBgfDocument::curves or ::actions
+};
+struct UiBgfSlideTrack {
+  uint32_t item = 0;
+  bool active = false;
+  std::vector<UiBgfValue> values;
+  std::vector<UiBgfSlideRef> refs;
 };
 
-struct UiBgfTrack {
-  uint32_t owner_item = 0;
-  std::vector<UiBgfKeyframe> keys;
-  uint32_t target_item = 0;
-  uint32_t attr_hash = 0;
-  UiBgfPropTarget target = UiBgfPropTarget::kUnknown;
-};
-
-struct UiBgfAnimKey {
-  float time = 0.0f;
-  float value = 0.0f;
-  uint32_t raw_value = 0;
-};
-
-struct UiBgfAnimChannel {
-  uint32_t attr_hash = 0;
-  uint8_t channel_tag = 0;
-  UiBgfPropTarget target = UiBgfPropTarget::kUnknown;
-  std::vector<UiBgfAnimKey> keys;
-  std::vector<uint32_t> events;
-};
-
-struct UiBgfAnimation {
-  uint32_t owner_item = 0;
-  uint32_t track_count = 0;
-  uint32_t key_count = 0;
-  uint32_t event_count = 0;
-  uint32_t name_hash = 0;
-  float duration = 0.0f;
+// A slide. `flags` is the stored byte: bits 0..1 the repetitions (0 loop
+// forever, 1 play once), bit 2 starts paused (the game sets its time), bit 3
+// set on nearly every play-once slide (effect unknown, Q183), bit 4 plays
+// through to the next slide at its end.
+struct UiBgfSlide {
+  std::string name;
+  uint32_t component = 0;  // the owning component's item index (0: the scene)
   uint8_t flags = 0;
-  std::vector<UiBgfAnimChannel> channels;
+  uint32_t start_ms = 0, end_ms = 0;
+  std::vector<UiBgfSlideTrack> tracks;
+  bool loops() const { return (flags & 3u) == 0; }
+  bool paused() const { return (flags & 4u) != 0; }
+  bool play_through() const { return (flags & 16u) != 0; }
+  bool master() const { return name == "Master Slide"; }
+  float duration_ms() const { return float(end_ms) - float(start_ms); }
 };
 
 struct UiBgfDocument {
@@ -211,11 +234,20 @@ struct UiBgfDocument {
   std::vector<UiBgfItem> items;
   std::vector<UiContract> contracts;
   std::vector<UiBgfRelation> relations;
-  std::vector<UiBgfStyle> styles;
-  std::vector<UiBgfTrack> tracks;
-  std::vector<UiBgfAnimation> animations;
+  // The timeline: false when its sections did not read to their
+  // declarations (the layout above still holds).
+  bool has_timeline = false;
+  std::vector<UiBgfCurve> curves;
+  std::vector<UiBgfAction> actions;
+  std::vector<UiBgfSlide> slides;
   bool has_contract(std::string_view type) const;
   std::vector<const UiContract*> find_contracts(std::string_view type) const;
+  // The slides of a component in file order (its Master Slide first).
+  std::vector<int> slides_of(uint32_t component) const;
+  // A component's slide by name (exact, case-sensitive); -1: none.
+  int find_slide(uint32_t component, std::string_view name) const;
+  // The item whose FBF object id is `object` (kinds 1..7); -1: none.
+  int item_of_object(uint32_t object) const;
 };
 
 struct UiScene {
@@ -226,7 +258,7 @@ struct UiScene {
   std::vector<uint32_t> pool;
   // FBF geometry descriptors (unit quads and non-quad meshes).
   std::vector<UiGeometry> geometries;
-  // Optional BGF document (contracts, states, tracks, animations).
+  // Optional BGF document (items, contracts, the timeline).
   UiBgfDocument bgf;
   bool has_bgf = false;
   int find_object(uint32_t id) const;
@@ -238,8 +270,8 @@ bool parse_ui_fbf(std::span<const uint8_t> data, UiScene& out, std::string* erro
 // Reads the BSG's nodes and pool, links them to the objects and resolves
 // the canvas transforms. Call after parse_ui_fbf.
 bool parse_ui_bsg(std::span<const uint8_t> data, UiScene& out, std::string* error);
-// Reads the BGF document: identity pool, items, contracts, relations, styles,
-// tracks/keyframes, and animations.
+// Reads the BGF document: identity pool, items, contracts, relations and the
+// timeline (curves, actions, slides).
 bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string* error);
 
 class Archive;
@@ -247,9 +279,13 @@ class Archive;
 // the app's scene resolver and the scene corpus tests share it.
 bool load_ui_scene(Archive& ui_zip, const std::string& name, UiScene& out, std::string* error);
 
-// Evaluates a BGF keyframe track or animation channel linearly at `time_s`.
-float evaluate_bgf_track(const UiBgfTrack& track, float time_s, float fallback = 0.0f);
-float evaluate_bgf_anim_channel(const UiBgfAnimChannel& ch, float time_s, float fallback = 0.0f);
+// A curve's value at `time_ms` (the slide's time), as the title evaluates
+// it (82F2EF08): before the first key its value, after the last the last;
+// between keys the cubic Bezier on the values with s linear in time.
+float evaluate_bgf_curve(const UiBgfCurve& curve, float time_ms);
+// A dynamic curve started from `start` (82F2D4B0): the first key takes the
+// value and its control values keep their place between it and the next.
+void restart_bgf_curve(UiBgfCurve& curve, float start);
 
 // SUPER_STACKER reflow: computes packed Y (or X) positions for `count` visible
 // rows starting at `origin` with pitch `step` (negative for top-down in scene y-up
