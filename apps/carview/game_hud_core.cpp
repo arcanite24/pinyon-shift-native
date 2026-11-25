@@ -998,6 +998,12 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   if (st.driving && !menu) {
     const bool show_tags = !st.name_tags.empty() && (!st.race || st.race->phase == RaceHud::kRacing);
     const WorldMarkerHud* active_wm = (st.world_marker && st.world_marker->visible && !st.race) ? st.world_marker : nullptr;
+    // In an activation zone the event prompt is 947_HUD's ActivationPrompt;
+    // the original draws no label over an event out of range.
+    if (active_wm && hud_prompt_available()) {
+      if (active_wm->in_range) draw_hud_prompt(l, *active_wm, w, h, g.s);
+      active_wm = nullptr;
+    }
     if (show_tags || active_wm) {
       static const std::vector<NameTagHud> kEmptyTags;
       render_world_labels_and_nameplates(l, show_tags ? st.name_tags : kEmptyTags, active_wm, st.race != nullptr, w, h,

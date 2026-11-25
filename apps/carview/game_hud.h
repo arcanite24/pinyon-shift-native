@@ -310,6 +310,10 @@ struct WorldMarkerHud {
   bool is_festival = false;
   bool eligible = true;
   double distance_m = 0;
+  // The prompt's sponsor line ("HORIZON presents"; empty: none) and its
+  // icon (an ICONS/ACTIVATIONZONEICONS texture; empty: the scene's).
+  std::string sponsor;
+  std::string icon;
 };
 
 // Top-centre Skill Chain & Popularity Rank disc (race-hud.png, race-hud-skill-banked.png).

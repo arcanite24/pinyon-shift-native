@@ -1,6 +1,7 @@
 #include "hud_screen.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -256,6 +257,18 @@ constexpr float kEndConLeft = 68.0f, kEndConGap = 15.0f;
 constexpr float kDiscFillRadius = 31.0f, kDiscFillWidth = 5.0f;
 // The fill runs clockwise from the groove's open end (7:30) round 270 degrees.
 constexpr float kDiscFillStart = -2.356f, kDiscFillSweep = 4.712f;
+// The event prompt's stacker, measured on 09_event_marker_prompt_orig.png
+// (the same as 30_skill_toast_orig.png): the title, name and call to
+// action lines' offsets from where the scene lays them, and the tapes'
+// ends.
+constexpr float kPromptTitleDx = -27.0f, kPromptTitleDy = -1.0f;
+constexpr float kPromptNameDx = -19.0f, kPromptNameDy = -1.0f;
+// The name line draws a little larger than laid out.
+constexpr float kPromptLineScale = 1.07f;
+// The type icon sits lower and larger than laid out.
+constexpr float kPromptIconDx = 3.0f, kPromptIconDy = 7.0f, kPromptIconScale = 1.15f;
+constexpr float kPromptCtaDx = 101.0f, kPromptCtaDy = 57.0f;
+constexpr float kPromptTapePad = 10.0f, kPromptPillLead = 4.0f, kPromptPillTail = 30.0f;
 
 void bind_end_condition(SceneScreen& sc, const RaceHud& r) {
   const SceneDraw& sd = sc.scene();
@@ -547,6 +560,100 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
           ui::fade(kSkillYellow, fade), true);
   }
   return true;
+}
+
+// --- ActivationPrompt -----------------------------------------------------
+
+std::string event_sponsor(int64_t event_id) {
+  const std::string id = "IDS_Sponsor_" + std::to_string(event_id);
+  const auto t = lookup(StringRef{"Events", id, 0, {}});
+  return t ? *t : std::string();
+}
+
+std::string event_name_without_sponsor(std::string name, std::string_view sponsor) {
+  if (sponsor.empty() || name.size() <= sponsor.size()) return name;
+  for (size_t i = 0; i < sponsor.size(); ++i)
+    if (std::toupper(static_cast<unsigned char>(name[i])) != std::toupper(static_cast<unsigned char>(sponsor[i])))
+      return name;
+  size_t cut = sponsor.size();
+  while (cut < name.size() && name[cut] == ' ') ++cut;
+  return name.substr(cut);
+}
+
+namespace {
+
+std::string upper(std::string s) {
+  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
+  return s;
+}
+
+}  // namespace
+
+bool hud_prompt_available() {
+  const SceneScreen sc(kHudScene);
+  return sc.node("ActivationPrompt") >= 0;
+}
+
+bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, float s) {
+  SceneScreen sc(kHudScene);
+  const SceneDraw& sd = sc.scene();
+  const int prompt = sc.node("ActivationPrompt");
+  const int all = child(sd, prompt, "All");
+  const int name_group = child(sd, all, "Event_Name"), cta = child(sd, all, "Call_to_Action");
+  const int title = child(sd, all, "Title");
+  if (prompt < 0 || name_group < 0 || cta < 0 || title < 0) return false;
+  sc.bindings().fit_text = false;
+
+  // The title line (a sponsor's "HORIZON PRESENTS"), the event's name with
+  // its type icon, and the call to action under them: the group's stacker
+  // packs the three (measured on 09_event_marker_prompt_orig.png).
+  if (!wm.sponsor.empty()) {
+    show_all(sc, title);
+    sc.text(child(sd, title, "Text"), upper(wm.sponsor));
+    sc.hide(child(sd, title, "Tape"));
+    sc.at(title).dx = kPromptTitleDx;
+    sc.at(title).dy = kPromptTitleDy;
+  } else {
+    sc.hide(title);
+  }
+  const int name_text = child(sd, name_group, "Text");
+  sc.text(name_text, upper(wm.title));
+  sc.at(name_group).dx = kPromptNameDx;
+  sc.at(name_group).dy = kPromptNameDy;
+  sc.at(name_group).scale = kPromptLineScale;
+  if (const int icon_group = child(sd, name_group, "Icon"); icon_group >= 0) {
+    sc.at(icon_group).dx = kPromptIconDx;
+    sc.at(icon_group).dy = kPromptIconDy;
+    sc.at(icon_group).scale = kPromptIconScale;
+    if (const int icon = child(sd, icon_group, "DEFAULT"); icon >= 0 && !wm.icon.empty()) sc.at(icon).texture = wm.icon;
+  }
+  // The name's tape runs from the icon to past the name.
+  if (const int tape = child(sd, name_group, "Tape"); tape >= 0) {
+    for (int c : sd.children_of(tape)) {
+      if (sd.object_name(c) == "Dirt_Tile") continue;
+      const float right = sd.at(name_text)[0] + sd.measure(name_text, upper(wm.title)) + kPromptTapePad;
+      sc.at(c).visible_width = std::max(0.0f, right - sd.rect(c)[0]);
+    }
+  }
+  const int locked = child(sd, cta, "Locked"), def = child(sd, cta, "Default");
+  const int on = wm.eligible ? def : locked;
+  sc.hide(wm.eligible ? locked : def);
+  const int cta_text = child(sd, on, "Text");
+  sc.text(cta_text, upper(wm.prompt));
+  sc.at(cta).dx = kPromptCtaDx;
+  sc.at(cta).dy = kPromptCtaDy;
+  if (const int bar = child(sd, on, "Bar"); bar >= 0 && cta_text >= 0) {
+    // The pill ends a little past the right-aligned text and starts before
+    // its button.
+    const float left = sd.at(cta_text)[0] - sd.measure(cta_text, upper(wm.prompt)) - kPromptPillLead;
+    sc.at(bar).dx = left - sd.rect(bar)[0];
+    sc.at(bar).visible_width = sd.at(cta_text)[0] + kPromptPillTail - left;
+  }
+  if (wm.eligible) {
+    if (const int glyph = child_path(sd, def, "Icon/States/Icon"); glyph >= 0) sc.at(glyph).texture = "CONTROLLER/X_BUTTON";
+    sc.hide(child_path(sd, def, "Icon/Rectangle"));
+  }
+  return sc.draw(l, hud_frame(HudAnchor::kTop, w, h, s), prompt) > 0;
 }
 
 }  // namespace carview

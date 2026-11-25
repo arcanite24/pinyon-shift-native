@@ -82,4 +82,16 @@ std::string skill_multiplier_text(const SkillChainHud& sk);
 // popularity disc (PopularityBar).
 bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, float s, double time);
 
+// An event's sponsor line ("HORIZON presents", Events/IDS_Sponsor_<id>), or
+// empty; and its name with that sponsor cut from the front.
+std::string event_sponsor(int64_t event_id);
+std::string event_name_without_sponsor(std::string name, std::string_view sponsor);
+
+// The event prompt (ActivationPrompt) while the car is in an activation
+// zone: the sponsor line, the event's name with its type icon, and the call
+// to action (SIGN ME UP! for a sponsored event, else ENTER NOW; the locked
+// bar with the reason when the car is not eligible).
+bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, float s);
+bool hud_prompt_available();
+
 }  // namespace carview

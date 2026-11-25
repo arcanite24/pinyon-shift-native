@@ -405,6 +405,10 @@ void test_scene_turn_and_dial_scale() {
   CHECK(r34.top == 10 && r34.step == 2 && r34.last == 10);
   CHECK(low.top == 8 && low.step == 1 && low.last == 7);
   CHECK(carview::dial_scale(9500).top == 12 && carview::dial_scale(9500).step == 2);
+  // A sponsored event's name loses its sponsor line.
+  CHECK(carview::event_name_without_sponsor("HORIZON presents The Gauntlet", "HORIZON presents") == "The Gauntlet");
+  CHECK(carview::event_name_without_sponsor("Red Rock Rampage", "HORIZON presents") == "Red Rock Rampage");
+  CHECK(carview::event_name_without_sponsor("Red Rock", "") == "Red Rock");
   // The race clock: two-digit minutes.
   CHECK(carview::hud_clock(16.851) == "00:16.851" && carview::hud_clock(164.698) == "02:44.698");
   CHECK(carview::hud_clock(-1) == "00:00.000");

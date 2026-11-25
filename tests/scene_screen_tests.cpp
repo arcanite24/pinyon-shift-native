@@ -29,6 +29,7 @@
 #include "freeroam/skills.h"
 #include "game_hud.h"
 #include "hud_scene.h"
+#include "hud_screen.h"
 #include "pause_screen.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -327,6 +328,20 @@ int main() {
     r34.redline_rpm = 8000;
     r34.gear = 1;
     hud_shot("hud_roam_r34.png", "15_countdown_orig.png", r34);
+
+    // The event prompt in an activation zone (09_event_marker_prompt_orig.png).
+    carview::WorldMarkerHud wm;
+    wm.visible = wm.in_range = true;
+    wm.sponsor = carview::event_sponsor(43);
+    check(wm.sponsor == "HORIZON presents", "Events/IDS_Sponsor_43 reads HORIZON presents: " + wm.sponsor);
+    wm.title = carview::event_name_without_sponsor(carview::text_of({"Events", "IDS_Name_43", 0, "?"}), wm.sponsor);
+    check(wm.title == "The Gauntlet", "event 43's name without its sponsor: " + wm.title);
+    wm.prompt = carview::text_of(carview::hud_text::kSignMeUp);
+    wm.icon = std::getenv("SHIFT_HUD_PROMPT_ICON") ? std::getenv("SHIFT_HUD_PROMPT_ICON") : "ICONS/ACTIVATIONZONEICONS/P2P2";
+    carview::DriveHud prompt_d = roam;
+    prompt_d.kmh = 0, prompt_d.rpm = 900, prompt_d.gear = 1;
+    prompt_d.world_marker = &wm;
+    hud_shot("hud_prompt.png", "09_event_marker_prompt_orig.png", prompt_d);
 
     // A sprint (16_race_hud_orig.png) and a circuit (the oracle's
     // race-hud-notification.png, by absolute path in SHIFT_SCENE_SCREEN_ORACLE).
