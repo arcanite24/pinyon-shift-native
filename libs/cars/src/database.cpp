@@ -577,6 +577,12 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
       car.media_name = q.s(0);
     }
     row_into(db, "SELECT * FROM Data_Car WHERE Id = ?", id, "Data_Car", v);
+    // The car's stability-control window (SPEC-CAR-PHYSICS, Stability
+    // control): Data_Car.AutoSteerOverrideID selects its AutoSteerOverrides
+    // row (STMSlipMin, STMSlipMax, AutoSteerSTMSlipMin, AutoSteerSTMSlipMax).
+    if (const auto it = v.find("Data_Car.AutoSteerOverrideID"); it != v.end())
+      row_into(db, "SELECT * FROM AutoSteerOverrides WHERE Id = ?", int64_t(std::llround(it->second)),
+               "AutoSteerOverrides", v);
     // The stock row of each per-car upgrade table (SPEC-CAR-PHYSICS: by
     // IsStock, not by Level). A required table without exactly one fails.
     struct Table {

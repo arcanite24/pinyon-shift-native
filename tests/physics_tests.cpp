@@ -8,12 +8,16 @@
 //         sidewall factor and the load blend of the tyre curves;
 //   scenarios on the analytic ground: A (0-100 km/h), B (the stop), the
 //         full-lock circle, against the spec's tolerances.
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
+#include "cars/bake_format.h"
 #include "cars/physics.h"
 #include "cars/sources.h"
 #include "drive/contact.h"
@@ -684,10 +688,11 @@ void synthetic_r2_4_checks() {
 
 }  // namespace
 
-// FEEL-10: each car's TCS slip targets from its own gamedb row, through the
-// engine's car-parameter resolution (the R34 and two cars with other
-// AutoSteerOverrideIDs).
-void per_car_assists(const cars::Install& install, const cars::PhysicsSettings& settings) {
+// FEEL-10 and the STM window: each car's TCS slip targets and STM window from
+// its own gamedb rows, through the engine's car-parameter resolution (the R34
+// and two cars with other AutoSteerOverrideIDs).
+void per_car_assists(const cars::Install& install, const cars::PhysicsSettings& settings, const char* game_root,
+                     const char* state_root) {
   std::vector<cars::CarPhysics> rows;
   std::string error;
   const std::vector<int64_t> ids = {445, 282, 249};  // R34, Beetle 04, 250 GTO
@@ -703,12 +708,50 @@ void per_car_assists(const cars::Install& install, const cars::PhysicsSettings& 
     CHECK(car.has("Data_Car.AssistsTCSSlipDefTakeoff") && car.has("Data_Car.AssistsTCSSlipDefMoving"));
     CHECK(p.tcs_slip_takeoff == car.get("Data_Car.AssistsTCSSlipDefTakeoff", -1));
     CHECK(p.tcs_slip_moving == car.get("Data_Car.AssistsTCSSlipDefMoving", -1));
-    std::printf("car %lld %s: TCS slip takeoff %.2f moving %.2f\n", static_cast<long long>(car.car_id),
-                car.media_name.c_str(), p.tcs_slip_takeoff, p.tcs_slip_moving);
+    // The STM window: the AutoSteerOverrides row the car names.
+    CHECK(car.has("AutoSteerOverrides.STMSlipMin") && car.has("AutoSteerOverrides.STMSlipMax"));
+    CHECK(car.get("AutoSteerOverrides.Id", -1) == car.get("Data_Car.AutoSteerOverrideID", -2));
+    CHECK(p.stm_slip_min == car.get("AutoSteerOverrides.STMSlipMin", -1));
+    CHECK(p.stm_slip_max == car.get("AutoSteerOverrides.STMSlipMax", -1));
+    std::printf("car %lld %s: TCS slip takeoff %.2f moving %.2f; AutoSteerOverrides %.0f: STM %.2f to %.2f\n",
+                static_cast<long long>(car.car_id), car.media_name.c_str(), p.tcs_slip_takeoff, p.tcs_slip_moving,
+                car.get("Data_Car.AutoSteerOverrideID", -1), p.stm_slip_min, p.stm_slip_max);
   }
-  // The R34's row (SPEC-CAR-PHYSICS, Traction control; gamedb Data_Car 445).
+  // The R34's rows (SPEC-CAR-PHYSICS, Traction control and Stability
+  // control; gamedb Data_Car 445, AutoSteerOverrides 3).
   CHECK(rows[0].get("Data_Car.AssistsTCSSlipDefTakeoff", -1) == 33.0);
   CHECK(rows[0].get("Data_Car.AssistsTCSSlipDefMoving", -1) == 0.5);
+  CHECK(rows[0].get("Data_Car.AutoSteerOverrideID", -1) == 3);
+  CHECK(rows[0].get("AutoSteerOverrides.STMSlipMin", -1) == 1.5);
+  CHECK(rows[0].get("AutoSteerOverrides.STMSlipMax", -1) == 3.0);
+  // Three different override rows among the three cars.
+  CHECK(rows[1].get("Data_Car.AutoSteerOverrideID", -1) != rows[0].get("Data_Car.AutoSteerOverrideID", -1) &&
+        rows[2].get("Data_Car.AutoSteerOverrideID", -1) != rows[0].get("Data_Car.AutoSteerOverrideID", -1) &&
+        rows[1].get("Data_Car.AutoSteerOverrideID", -1) != rows[2].get("Data_Car.AutoSteerOverrideID", -1));
+  // A bake written before the join (no AutoSteerOverrides rows) still gets
+  // the car's window, from the disc's database.
+  cars::CarPhysics old = rows[0];
+  for (auto it = old.values.begin(); it != old.values.end();)
+    it = it->first.rfind("AutoSteerOverrides.", 0) == 0 ? old.values.erase(it) : std::next(it);
+  CHECK(!old.has("AutoSteerOverrides.STMSlipMin"));
+  const auto bake = std::filesystem::temp_directory_path() / "shift_physics_tests_old_bake";
+  std::error_code ec;
+  std::filesystem::create_directories(bake / "cars", ec);
+  std::string name = rows[0].media_name;
+  for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
+  {
+    std::ofstream out(bake / "cars" / (name + ".physics.txt"), std::ios::binary);
+    out << cars::physics_to_text(old, settings);
+  }
+  cars::bake::CarInfo info;
+  info.car_id = rows[0].car_id;
+  info.media_name = rows[0].media_name;
+  drive::set_disc_physics_root(game_root, state_root);
+  std::vector<std::string> notes;
+  const drive::CarParams from_old = drive::params_for_baked_car(info, bake, &notes);
+  std::printf("old bake: STM %.2f to %.2f (%zu notes)\n", from_old.stm_slip_min, from_old.stm_slip_max, notes.size());
+  CHECK(from_old.stm_slip_min == 1.5 && from_old.stm_slip_max == 3.0);
+  std::filesystem::remove_all(bake, ec);
 }
 
 int main() {
@@ -763,7 +806,7 @@ int main() {
               probe_v.brake_const(1) * 0.81 * unit_r, p.brake_friction_scale, p.aero_drag_long);
 
   unit_checks(r34, settings, p);
-  per_car_assists(install, settings);
+  per_car_assists(install, settings, root, state ? state : "");
   scenario_a(p);
   scenario_b(p);
   turn_circle(p);
