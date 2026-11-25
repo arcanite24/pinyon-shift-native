@@ -66,6 +66,7 @@ struct OutpostMissionCard {
   bool completed = false;
   bool is_stunt = true;
   std::vector<std::string> detail_lines;
+  bool is_garage = false;  // the garage service card (its art), not read from the title
 };
 
 // Draws authentic FH1 Outpost PR Stunts Hub (H_MISSIONS_HUB +3.0 deg tilted Mission Tickets).

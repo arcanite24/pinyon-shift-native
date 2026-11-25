@@ -494,10 +494,10 @@ void draw_outpost_hub_ui4(ui::List& l, float screen_w, float screen_h, std::stri
           l.rect(cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, ui::rgba(24, 28, 36, 250));
           l.rect(cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y0 + 34.0f * s, ui::rgba(239, 36, 147, 36));
           l.rect(cx0 + 4.0f * s, art_y1 - 32.0f * s, cx1 - 4.0f * s, art_y1, ui::rgba(218, 255, 0, 26));
-          std::string tup = c.title;
-          for (char& ch : tup) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+          // The card's own kind: a destination named with "CAR" (NORTH
+          // CARSON) is not the garage.
           std::array<float, 4> svc_uv{};
-          const bool is_garage = tup.find("CAR") != std::string::npos || tup.find("GARAGE") != std::string::npos;
+          const bool is_garage = c.is_garage;
           const bool has_svc =
               is_garage ? (ui_texture("ICONS/CAROUSELICONS/GARAGELARGE", svc_uv) ||
                            ui_texture("ICONS/CAROUSELICONS/GARAGE", svc_uv) ||

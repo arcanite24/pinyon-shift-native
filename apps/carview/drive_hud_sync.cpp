@@ -1083,6 +1083,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               mc.status_line = mc.completed ? "COMPLETED (REPLAY)" : "NEW PR STUNT";
             } else {
               mc.is_stunt = false;
+              mc.is_garage = item.kind == OutpostHubItem::kGarage;
               mc.kind_label = (item.kind == OutpostHubItem::kGarage)       ? "GARAGE"
                               : (item.kind == OutpostHubItem::kNearbyEvents) ? "EVENTS"
                                                                              : "FAST TRAVEL";
