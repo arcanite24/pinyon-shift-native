@@ -664,6 +664,7 @@ void test_lazy_targets_and_reflection_schedule() {
   // World memory budgets per preset.
   const auto mb_low = choose_world_memory_budget(16ULL << 30, true, 0.25f);
   const auto mb_high = choose_world_memory_budget(16ULL << 30, false, 1.0f);
+  CHECK(mb_low.vertex_arena_bytes >= (192ULL << 20));
   CHECK(mb_low.vertex_arena_bytes < mb_high.vertex_arena_bytes);
   CHECK(mb_low.dyn_env_size == 128 && mb_low.dyn_env_mips == 8);
   CHECK(mb_high.dyn_env_size == 256 && mb_high.dyn_env_mips == 9);

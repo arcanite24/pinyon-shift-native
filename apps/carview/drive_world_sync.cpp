@@ -62,6 +62,48 @@ bool is_under_tunnel_roof(const drive::Ground* ground, const drive::Vec3& pos) {
 
 }  // namespace
 
+void DriveSession::poll_async_guest_loads() {
+  for (auto it = festival_guest_loads.begin(); it != festival_guest_loads.end();) {
+    if (!it->second.valid()) {
+      it = festival_guest_loads.erase(it);
+      continue;
+    }
+    if (it->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      ++it;
+      continue;
+    }
+    std::unique_ptr<Showroom> gs = it->second.get();
+    festival_guests[it->first] = std::move(gs);
+    it = festival_guest_loads.erase(it);
+  }
+}
+
+void DriveSession::request_guest_load_async(const std::string& key, const std::string& media,
+                                            const ShowroomOptions& opt, size_t max_cache) {
+  if (key.empty() || media.empty()) return;
+  if (festival_guests.count(key) || festival_guest_loads.count(key)) return;
+  if (festival_guests.size() + festival_guest_loads.size() >= max_cache) return;
+  if (festival_guest_loads.size() >= 2) return;  // cap concurrent background uploads to prevent CPU contention
+  Renderer* r = &host.renderer;
+  const std::filesystem::path bake = app.bake_dir;
+  const std::filesystem::path root = app.game_root_of();
+  const VkImageView env_view = host.showroom.dynamic_env_view();
+  const VkSampler env_sampler = host.showroom.dynamic_env_sampler();
+  ShowroomOptions local_opt = opt;
+  if (local_opt.game_root.empty()) local_opt.game_root = root;
+  festival_guest_loads.emplace(
+      key, std::async(std::launch::async, [r, bake, root, media, local_opt, env_view, env_sampler]() {
+        auto gs = std::make_unique<Showroom>(*r);
+        gs->set_guest();
+        if (env_view && env_sampler) gs->set_shared_dynamic_env(env_view, env_sampler);
+        std::string ge;
+        if (!gs->load(bake, media, local_opt, ge)) return std::unique_ptr<Showroom>{};
+        gs->load_car_lamps(root, media);
+        if (!gs->upload(ge)) return std::unique_ptr<Showroom>{};
+        return gs;
+      }));
+}
+
 void DriveSession::open_replay_viewer(bool browser_if_empty) {
         if (replay_rec.frame_count() >= 2) {
           if (app.race) {
@@ -142,6 +184,7 @@ void DriveSession::place_world() {
         float m[16];
         scenery_transform(info, vehicle, host.showroom.world_origin_x(), host.showroom.world_origin_z(), m);
         host.showroom.set_world_transform(m);
+        poll_async_guest_loads();
         if (traffic) traffic->place(info, vehicle);
         else host.showroom.set_instances({});
         if (replay_viewer.active() && replay_viewer.current_cars().size() > 1) {
@@ -231,21 +274,10 @@ void DriveSession::place_world() {
               }
               if (it == festival_guests.end() && festival_guests.size() < 36 && uploads_this_frame < 1) {
                 ++uploads_this_frame;
-                auto gs = std::make_unique<Showroom>(host.renderer);
-                gs->set_guest();
-                if (host.showroom.dynamic_env_view() && host.showroom.dynamic_env_sampler()) {
-                  gs->set_shared_dynamic_env(host.showroom.dynamic_env_view(), host.showroom.dynamic_env_sampler());
-                }
                 ShowroomOptions opt{};
                 opt.game_root = app.game_root_of();
                 if (paint_seq > 0) opt.match_sequence = paint_seq;
-                std::string ge;
-                if (gs->load(app.bake_dir, media, opt, ge) && gs->upload(ge)) {
-                  gs->load_car_lamps(app.game_root_of(), media);
-                  it = festival_guests.emplace(slot_key, std::move(gs)).first;
-                } else {
-                  it = festival_guests.emplace(slot_key, nullptr).first;
-                }
+                request_guest_load_async(slot_key, media, opt, 36);
               }
               if (it != festival_guests.end() && it->second) guest_sr = it->second.get();
               // Temporary fallback while an extra slot clone awaits the 1-per-frame upload budget,
@@ -413,21 +445,9 @@ void DriveSession::place_world() {
                 (occ == 0u) ? fc.spec.car_media : (fc.spec.car_media + "@dup" + std::to_string(occ));
             auto it = festival_guests.find(gkey);
             if (it == festival_guests.end() && festival_guests.size() < 24) {
-              auto gs = std::make_unique<Showroom>(host.renderer);
-              gs->set_guest();
-              if (host.showroom.dynamic_env_view() && host.showroom.dynamic_env_sampler()) {
-                gs->set_shared_dynamic_env(host.showroom.dynamic_env_view(), host.showroom.dynamic_env_sampler());
-              }
               ShowroomOptions opt{};
               opt.game_root = app.game_root_of();
-              std::string ge;
-              if (gs->load(app.bake_dir, fc.spec.car_media, opt, ge) && gs->upload(ge)) {
-                gs->load_car_lamps(app.game_root_of(), fc.spec.car_media);
-                if (!fest_fallback) fest_fallback = gs.get();
-                it = festival_guests.emplace(gkey, std::move(gs)).first;
-              } else {
-                it = festival_guests.emplace(gkey, nullptr).first;
-              }
+              request_guest_load_async(gkey, fc.spec.car_media, opt, 24);
             }
             Showroom* guest_sr = (it != festival_guests.end() && it->second) ? it->second.get() : nullptr;
             if (!guest_sr && occ > 0u) {

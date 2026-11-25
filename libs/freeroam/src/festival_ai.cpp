@@ -1279,12 +1279,17 @@ FestivalCollisionImpulse FestivalManager::resolve_player_collision(const traffic
     }
     const double ai_dv_x = -(j_mag / ai_mass) * nx;
     const double ai_dv_z = -(j_mag / ai_mass) * nz;
-    car.knockback_vx += ai_dv_x;
-    car.knockback_vz += ai_dv_z;
+    // Apply lateral + damped longitudinal knockback strictly through knockback_vx/vz
+    // (never double-adding longitudinal dv to both knockback_v and car.speed).
+    const double ai_dv_fwd = ai_dv_x * fx + ai_dv_z * fz;
+    const double ai_dv_lat_x = ai_dv_x - ai_dv_fwd * fx;
+    const double ai_dv_lat_z = ai_dv_z - ai_dv_fwd * fz;
+    car.knockback_vx += ai_dv_lat_x + ai_dv_fwd * 0.45 * fx;
+    car.knockback_vz += ai_dv_lat_z + ai_dv_fwd * 0.45 * fz;
     const double kb_mag = std::hypot(car.knockback_vx, car.knockback_vz);
-    if (kb_mag > 25.0) {
-      car.knockback_vx *= 25.0 / kb_mag;
-      car.knockback_vz *= 25.0 / kb_mag;
+    if (kb_mag > 12.0) {
+      car.knockback_vx *= 12.0 / kb_mag;
+      car.knockback_vz *= 12.0 / kb_mag;
     }
     // Realistic lateral/longitudinal lever-arm angular spin & yaw-rate response,
     // suspension roll/pitch reaction metadata, smooth off-road recovery steering,
@@ -1294,13 +1299,18 @@ FestivalCollisionImpulse FestivalManager::resolve_player_collision(const traffic
     const double torque = std::clamp(loc_f, -kHalfL, kHalfL) * ai_lat_imp -
                           std::clamp(loc_r, -kHalfW, kHalfW) * ai_long_imp;
     const double ai_inertia = std::max(1200.0, ai_mass * 1.9);
-    const double d_yaw = std::clamp((torque * 0.85) / ai_inertia, -3.5, 3.5);
-    car.spin_yaw_rate = std::clamp(car.spin_yaw_rate + d_yaw, -4.2, 4.2);
-    car.yaw_rate = std::clamp(car.yaw_rate + d_yaw, -4.2, 4.2);
+    const double d_yaw = std::clamp((torque * 0.85) / ai_inertia, -3.2, 3.2);
+    car.spin_yaw_rate = std::clamp(car.spin_yaw_rate + d_yaw, -3.8, 3.8);
+    car.yaw_rate = std::clamp(car.yaw_rate + d_yaw, -3.8, 3.8);
     car.roll = std::clamp(car.roll + std::clamp((ai_lat_imp / ai_mass) * 0.025, -0.18, 0.18), -0.22, 0.22);
     car.pitch_impulse =
         std::clamp(car.pitch_impulse + std::clamp((-ai_long_imp / ai_mass) * 0.016, -0.14, 0.14), -0.18, 0.18);
-    car.speed = std::max(0.0, car.speed + ai_dv_x * fx + ai_dv_z * fz);
+    // Impact scrubs forward speed on head-on hits and nudges gently on rear-ends (capped).
+    if (ai_dv_fwd < 0.0) {
+      car.speed = std::max(0.0, car.speed + ai_dv_fwd * 0.65);
+    } else {
+      car.speed = std::min(car.speed + std::min(ai_dv_fwd * 0.25, 5.0), 42.0);
+    }
 
     const double dv_ai = j_mag / ai_mass;
     if (dv_ai > 1.8 || std::fabs(car.lateral - kLane) > 1.8) {

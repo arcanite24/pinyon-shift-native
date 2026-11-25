@@ -687,7 +687,8 @@ void test_r3_e1_campaign_parity() {
     check(flow.viper_convoy_passed() == 0 && flow.viper_convoy_remaining() == race::CampaignFlow::kViperConvoyTarget,
           "convoy counter starts at 0 / target");
     const auto obj0 = flow.next_objective(0, -1, 250);
-    check(obj0.title.find("0 / 5") != std::string::npos, "objective displays live convoy pass progress");
+    check(obj0.title == "DRIVE TO THE HORIZON FESTIVAL",
+          "Viper intro objective stays 1:1 DRIVE TO THE HORIZON FESTIVAL");
 
     check(flow.on_viper_convoy_pass(1), "first convoy pass recorded");
     check(flow.viper_convoy_passed() == 1 && flow.viper_convoy_remaining() == 4, "convoy counter advances to 1/5");
@@ -702,8 +703,8 @@ void test_r3_e1_campaign_parity() {
     check(flow.heard_dialogs().count("m0_viper_convoy_clear") == 1, "convoy clear queues VO cue");
     check(!flow.on_viper_convoy_pass(1), "extra passes beyond target ignored");
     const auto obj_done = flow.next_objective(0, -1, 250);
-    check(obj_done.detail.find("CONVOY PASSED") != std::string::npos,
-          "objective updates cleanly once entire convoy is passed");
+    check(obj_done.title == "DRIVE TO THE HORIZON FESTIVAL",
+          "Viper intro objective remains DRIVE TO THE HORIZON FESTIVAL after ambient convoy passes");
   }
 }
 

@@ -131,7 +131,7 @@ StoryAction StoryIntro::enter_stage(StoryStage next) {
     case StoryStage::kViperDrive:
       convoy_passed_ = 0;
       objective_title_ = "DRIVE TO THE HORIZON FESTIVAL";
-      objective_detail_ = "2013 SRT VIPER GTS — PASS FESTIVAL DRIVERS TO THE MAIN GATE";
+      objective_detail_ = "2013 SRT VIPER GTS — FOLLOW THE GPS TO THE FESTIVAL";
       act.swap_car = true;
       act.car_media = kViperMedia;
       act.car_id = kViperCarId;
@@ -330,19 +330,16 @@ void StoryIntro::draw_hud(ui::List& l, float screen_w, float screen_h, bool metr
     char dbuf[128];
     if (metric_units) {
       if (dist_to_festival_ >= 1000.0)
-        std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %.1f KM  •  PASSED %d / %d DRIVERS",
-                      dist_to_festival_ / 1000.0, convoy_passed_, kConvoyTarget);
+        std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %.1f KM", dist_to_festival_ / 1000.0);
       else
-        std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %d M  •  PASSED %d / %d DRIVERS",
-                      int(std::lround(dist_to_festival_)), convoy_passed_, kConvoyTarget);
+        std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %d M", int(std::lround(dist_to_festival_)));
     } else {
       const double miles = dist_to_festival_ / 1609.344;
       if (miles >= 0.25)
-        std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %.1f MI  •  PASSED %d / %d DRIVERS",
-                      miles, convoy_passed_, kConvoyTarget);
+        std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %.1f MI", miles);
       else
-        std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %d YD  •  PASSED %d / %d DRIVERS",
-                      int(std::lround(dist_to_festival_ * 1.0936133)), convoy_passed_, kConvoyTarget);
+        std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %d YD",
+                      int(std::lround(dist_to_festival_ * 1.0936133)));
     }
     sub = dbuf;
   }

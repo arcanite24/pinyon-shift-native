@@ -953,15 +953,16 @@ ReflectionStep schedule_reflections(uint64_t frame_index, float reflection_rate,
 WorldMemoryBudget choose_world_memory_budget(uint64_t device_local_bytes, bool low_preset, float reflection_rate) {
   WorldMemoryBudget b{};
   if (low_preset) {
-    // 96-112 MiB vertex + 24-28 MiB index: holds dense Colorado highway gathers and
-    // New Career / Fast Travel teleports cleanly without exhausting the resident arena.
-    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 12, 96ULL << 20, 112ULL << 20);
-    b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 8, 96ULL << 20, 128ULL << 20);
-    b.texture_lru_count = 768;
+    // 192-384 MiB vertex arena: scales cleanly with VRAM so dense 1.3M+ tri Horizon Festival
+    // gathers and 240 km/h highway regathers never overflow or trigger blocking arena resets,
+    // while still staying below the High/Ultra 512 MiB budget.
+    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 12, 192ULL << 20, 384ULL << 20);
+    b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 8, 128ULL << 20, 256ULL << 20);
+    b.texture_lru_count = (device_local_bytes >= (4ULL << 30)) ? 1536u : 1024u;
   } else {
-    // 128-512 MiB vertex (scales with VRAM, e.g. ~160 MiB on 2 GB, 512 MiB on 6+ GB):
-    // generous headroom for dense 11M-tri Horizon Festival gathers and 240 km/h streaming.
-    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 10, 128ULL << 20, 512ULL << 20);
+    // 256-512 MiB vertex (scales with VRAM, e.g. 256 MiB on 2 GB, 512 MiB on 6+ GB):
+    // generous headroom for dense Horizon Festival gathers and 240 km/h streaming without resets.
+    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 10, 256ULL << 20, 512ULL << 20);
     // Keep desktop LRU budget generous (up to 512 MiB on >= 8 GB GPUs and 3584 textures,
     // staying comfortably within WorldGpu::kMaxTextures = 4096) so highway drives never thrash.
     const uint64_t max_tex_bytes = (device_local_bytes >= (8ULL << 30)) ? (512ULL << 20) : (320ULL << 20);

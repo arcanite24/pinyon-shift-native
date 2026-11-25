@@ -76,11 +76,29 @@ struct DriveSession {
   };
 
   struct FestivalGuestsGuard {
+    Renderer* renderer = nullptr;
     Showroom* host_showroom = nullptr;
     std::map<std::string, std::unique_ptr<Showroom>>* map = nullptr;
+    std::map<std::string, std::future<std::unique_ptr<Showroom>>>* pending = nullptr;
     ~FestivalGuestsGuard() {
       if (host_showroom) host_showroom->set_instances({});
-      if (map) map->clear();
+      std::vector<std::unique_ptr<Showroom>> drained;
+      if (pending) {
+        for (auto& [k, fut] : *pending) {
+          if (fut.valid()) {
+            if (auto sr = fut.get()) drained.push_back(std::move(sr));
+          }
+        }
+        pending->clear();
+      }
+      if (renderer && ((map && !map->empty()) || !drained.empty())) renderer->wait_idle();
+      for (auto& sr : drained)
+        if (sr) sr->skip_wait_idle_on_destroy();
+      if (map) {
+        for (auto& [k, sr] : *map)
+          if (sr) sr->skip_wait_idle_on_destroy();
+        map->clear();
+      }
     }
   };
 
@@ -206,6 +224,7 @@ struct DriveSession {
   traffic::Roads festival_roads;
   std::unique_ptr<freeroam::FestivalManager> festival_mgr;
   std::map<std::string, std::unique_ptr<Showroom>> festival_guests;
+  std::map<std::string, std::future<std::unique_ptr<Showroom>>> festival_guest_loads;
   FestivalGuestsGuard festival_guard;
 
   SafeReset safe_reset;
@@ -530,6 +549,9 @@ struct DriveSession {
   void sample_driving_input(drive::Input& in, double& rig_look);
 
   // Interactive window loop (drive_render_loop.cpp)
+  void poll_async_guest_loads();
+  void request_guest_load_async(const std::string& key, const std::string& media, const ShowroomOptions& opt,
+                                size_t max_cache = 36);
   void apply_story_action(const StoryAction& sa);
   std::string find_baked_car(const std::string& media, int64_t car_id);
   void apply_campaign_action(const race::CampaignAction& ca);

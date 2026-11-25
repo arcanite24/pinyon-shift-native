@@ -121,8 +121,37 @@ void Bodies::hold_lane(drive::Vehicle& v, double target, const std::array<double
 }
 
 bool Bodies::collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b, double* impulse) {
+  const Vec3 pre_b_vel = b.velocity();
   double j = 0;
   if (!drive::car_contact(a, scale_a, b, scale_b, {o_.restitution, o_.friction}, &j)) return false;
+  // Realistic crumple-zone impulse absorption on struck traffic cars:
+  // cap single-hit horizontal delta-v, prevent vertical upward catapults, and
+  // clamp angular tumble rates so high-speed crashes spin/skid traffic naturally
+  // ~10-25 m instead of launching cars comically far down the road or airborne.
+  Vec3 bv = b.velocity();
+  const double dvx = bv.x - pre_b_vel.x;
+  const double dvz = bv.z - pre_b_vel.z;
+  const double dvh = std::hypot(dvx, dvz);
+  constexpr double kMaxTrafficDeltaV = 15.0;  // m/s (~54 km/h single-impact impulse cap)
+  if (dvh > kMaxTrafficDeltaV) {
+    const double s = kMaxTrafficDeltaV / dvh;
+    bv.x = pre_b_vel.x + dvx * s;
+    bv.z = pre_b_vel.z + dvz * s;
+  }
+  const double bh = std::hypot(bv.x, bv.z);
+  constexpr double kMaxTrafficCrashSpeed = 34.0;
+  if (bh > kMaxTrafficCrashSpeed) {
+    const double s = kMaxTrafficCrashSpeed / bh;
+    bv.x *= s;
+    bv.z *= s;
+  }
+  const double max_vy = std::min(std::max(pre_b_vel.y, 0.0) + 1.0, 1.8);
+  if (bv.y > max_vy) bv.y = max_vy;
+  Vec3 ba = b.angular_velocity();
+  ba.x = std::clamp(ba.x, -2.0, 2.0);
+  ba.y = std::clamp(ba.y, -3.2, 3.2);
+  ba.z = std::clamp(ba.z, -2.0, 2.0);
+  b.set_velocity(bv, ba);
   largest_ = std::max(largest_, j);
   if (impulse) *impulse = j;
   return true;
@@ -204,6 +233,27 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
       }
     }
     b.v->step(drive_input(c, *b.v, b.prev_steer), ground);
+    // Struck off-line traffic cars scrub speed through locked tyres / road drag
+    // so they spin/skid to a grounded stop within ~10-25 m instead of sliding forever.
+    if (c.off_line || b.since_contact < 1.5) {
+      constexpr double dt = drive::Vehicle::kStep;
+      Vec3 v = b.v->velocity();
+      Vec3 w = b.v->angular_velocity();
+      const double vh = std::hypot(v.x, v.z);
+      const double decel = c.off_line ? 8.5 : 3.5;
+      if (vh > 0.05) {
+        const double nh = std::max(0.0, vh - decel * dt);
+        const double sc = nh / vh;
+        v.x *= sc;
+        v.z *= sc;
+      }
+      if (v.y > 2.2) v.y = 2.2;
+      const double wd = std::exp(-dt * (c.off_line ? 4.0 : 2.0));
+      w.x *= wd;
+      w.y *= wd;
+      w.z *= wd;
+      b.v->set_velocity(v, w);
+    }
   }
   // Contacts: resolve player-vs-traffic first so struck traffic immediately receives
   // impact momentum, then run an iterative pairwise traffic-vs-traffic solver (up to

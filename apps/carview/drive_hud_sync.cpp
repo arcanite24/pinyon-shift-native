@@ -1031,17 +1031,10 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               have_sw_paint = true;
             }
             if (!target_media.empty() && target_media != app.car) {
+              poll_async_guest_loads();
               auto it = festival_guests.find(target_media);
               if (it == festival_guests.end()) {
-                auto gs = std::make_unique<Showroom>(host.renderer);
-                gs->set_guest();
-                std::string ge;
-                if (gs->load(app.bake_dir, target_media, ShowroomOptions{}, ge) && gs->upload(ge)) {
-                  gs->load_car_lamps(app.game_root_of(), target_media);
-                  it = festival_guests.emplace(target_media, std::move(gs)).first;
-                } else {
-                  it = festival_guests.emplace(target_media, nullptr).first;
-                }
+                request_guest_load_async(target_media, target_media, ShowroomOptions{}, 36);
               }
               if (it != festival_guests.end() && it->second) {
                 if (have_sw_paint) it->second->set_paint_spec(sw_paint);

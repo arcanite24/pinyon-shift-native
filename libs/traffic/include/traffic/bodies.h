@@ -36,7 +36,7 @@ struct BodiesOptions {
   double accel_max_input = 0.2;  // AI/Traffic/VehicleControls/AccelMaxInput (the throttle on the line)
   double brake_max_input = 0.2;  // AI/Traffic/VehicleControls/BrakeMaxInput (the brake cap on the line)
   double steering_multiplier = 1.0;
-  double restitution = 0.2, friction = 0.3;
+  double restitution = 0.05, friction = 0.45;
   TrafficConfig::LaneGains gains_min, gains_max{0.9, 0.93, 0.93};
   double gains_length_min = 4.5, gains_length_max = 10;
   double hold_after_contact = 1.0;  // s without the lane hold after a contact (ours)

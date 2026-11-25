@@ -905,23 +905,10 @@ bool DriveSession::step(const drive::Input& user_in) {
               auto it = g_viper_convoy.prev_ahead_m.find(cid);
               if (it != g_viper_convoy.prev_ahead_m.end() && it->second > 2.0 && ahead_m < -2.0) {
                 if (g_viper_convoy.counted_ids.insert(cid).second) {
+                  // Track ambient Festival-bound highway passes silently for radio banter
+                  // (1:1 retail FH1 Viper intro objective stays strictly "DRIVE TO THE HORIZON FESTIVAL").
                   if (app.campaign.on_viper_convoy_pass(1, &app.audio_host)) {
                     app.story_intro.on_convoy_pass(1);
-                    app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
-                    const int passed = app.campaign.flow().viper_convoy_passed();
-                    const int target = app.campaign.flow().viper_convoy_target();
-                    const int rem = app.campaign.flow().viper_convoy_remaining();
-                    if (rem > 0) {
-                      popup = {"FESTIVAL DRIVER PASSED",
-                               std::to_string(passed) + " / " + std::to_string(target) + "  •  " +
-                                   std::to_string(rem) + " LEFT TO OVERTAKE",
-                               vehicle.time(), double(passed) / double(std::max(1, target)),
-                               carview::ui::rgba(249, 0, 100)};
-                    } else {
-                      popup = {"FESTIVAL CONVOY CLEARED!",
-                               "ALL " + std::to_string(target) + " DRIVERS PASSED  •  HEAD FOR THE MAIN GATE",
-                               vehicle.time(), 1.0, carview::ui::rgba(218, 255, 0)};
-                    }
                   }
                 }
               }

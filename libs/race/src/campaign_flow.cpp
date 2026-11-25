@@ -2070,16 +2070,9 @@ CampaignObjective CampaignFlow::next_objective(int wristband_points, int collect
 
   if (stage_ == CampaignStage::kViperIntroDrive) {
     obj.valid = true;
-    const int rem = viper_convoy_remaining();
-    if (rem > 0) {
-      obj.title = "PASS FESTIVAL DRIVERS  •  " + std::to_string(viper_convoy_passed_) + " / " +
-                  std::to_string(kViperConvoyTarget);
-      obj.detail = "2013 SRT VIPER GTS  •  " + std::to_string(rem) + " FESTIVAL DRIVERS AHEAD";
-    } else {
-      obj.title = "DRIVE TO THE HORIZON FESTIVAL";
-      obj.detail = "2013 SRT VIPER GTS  •  CONVOY PASSED — REACH THE MAIN GATE";
-    }
-    obj.gps_label = "HORIZON FESTIVAL MAIN GATE";
+    obj.title = "DRIVE TO THE HORIZON FESTIVAL";
+    obj.detail = "2013 SRT VIPER GTS  •  FOLLOW THE GPS TO THE HORIZON FESTIVAL";
+    obj.gps_label = "HORIZON FESTIVAL";
     obj.gps_xz = {festival_gate_[0], festival_gate_[2]};
     obj.distance_m = dist_to_festival_;
     obj.is_urgent = true;

@@ -634,13 +634,53 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
       release_retired();
       arena_lru_.reset(cap_v, cap_i);
       if (!attempt_lru()) {
-        const auto& fd = st.draws[fail_idx];
-        error = "world arena full (draw " + std::to_string(fail_idx) + "/" + std::to_string(st.draws.size()) +
-                " v=" + std::to_string(fd.vertex_count) + " i=" + std::to_string(fd.index_count) +
-                " used=" + std::to_string(arena_lru_.vertex_used()) + "/" +
-                std::to_string(arena_lru_.vertex_capacity()) + " idx=" + std::to_string(arena_lru_.index_used()) +
-                "/" + std::to_string(arena_lru_.index_capacity()) + ")";
-        return false;
+        // Never abort the game if a dense gather (e.g. Horizon Festival on an unusually small
+        // arena override) exceeds capacity: place nearest draws first and skip only overflow tail.
+        arena_lru_.reset(cap_v, cap_i);
+        vertex_copies.clear();
+        index_copies.clear();
+        std::fill(placed.begin(), placed.end(), nullptr);
+        std::vector<size_t> order(st.draws.size());
+        for (size_t i = 0; i < st.draws.size(); ++i) order[i] = i;
+        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+          const auto& da = st.draws[a];
+          const auto& db = st.draws[b];
+          const float ax = 0.5f * (da.box_min[0] + da.box_max[0]);
+          const float az = 0.5f * (da.box_min[2] + da.box_max[2]);
+          const float bx = 0.5f * (db.box_min[0] + db.box_max[0]);
+          const float bz = 0.5f * (db.box_min[2] + db.box_max[2]);
+          return (ax * ax + az * az) < (bx * bx + bz * bz);
+        });
+        size_t skipped = 0;
+        for (size_t idx : order) {
+          auto& d = st.draws[idx];
+          if (d.vertex_count == 0 || d.index_count == 0) continue;
+          const WorldArenaLru::Entry* rd = arena_lru_.acquire(d.key, generation);
+          const bool known = rd != nullptr;
+          if (!rd)
+            rd = arena_lru_.place(d.key, d.vertex_count, d.index_count, st.origin_x, st.origin_z, generation,
+                                  r_.frames_done());
+          if (!rd) {
+            d.vertex_count = 0;
+            d.index_count = 0;
+            d.resident = false;
+            ++skipped;
+            continue;
+          }
+          placed[idx] = rd;
+          if (!known) {
+            vertex_copies.push_back({VkDeviceSize(d.vertex_begin) * sizeof(WorldVertex),
+                                     VkDeviceSize(rd->vertex_base) * sizeof(WorldVertex),
+                                     VkDeviceSize(d.vertex_count) * sizeof(WorldVertex)});
+            index_copies.push_back({VkDeviceSize(staged_first[idx]) * sizeof(uint32_t),
+                                    VkDeviceSize(rd->index_base) * sizeof(uint32_t),
+                                    VkDeviceSize(d.index_count) * sizeof(uint32_t)});
+          }
+        }
+        if (skipped > 0) {
+          std::fprintf(stderr, "carview: note: world arena tight (%llu/%u verts); skipped %zu distant draws\n",
+                       (unsigned long long)arena_lru_.vertex_used(), arena_lru_.vertex_capacity(), skipped);
+        }
       }
     }
 
@@ -718,12 +758,50 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
     release_retired();
     res.reset(cap_v, cap_i);
     if (!attempt_rt()) {
-      const auto& fd = st.draws[fail_idx];
-      error = "world arena full (draw " + std::to_string(fail_idx) + "/" + std::to_string(st.draws.size()) +
-              " v=" + std::to_string(fd.vertex_count) + " i=" + std::to_string(fd.index_count) +
-              " used=" + std::to_string(res.vertex_used()) + "/" + std::to_string(res.vertex_capacity()) +
-              " idx=" + std::to_string(res.index_used()) + "/" + std::to_string(res.index_capacity()) + ")";
-      return false;
+      res.reset(cap_v, cap_i);
+      vertex_copies.clear();
+      index_copies.clear();
+      std::fill(placed.begin(), placed.end(), nullptr);
+      std::vector<size_t> order(st.draws.size());
+      for (size_t i = 0; i < st.draws.size(); ++i) order[i] = i;
+      std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        const auto& da = st.draws[a];
+        const auto& db = st.draws[b];
+        const float ax = 0.5f * (da.box_min[0] + da.box_max[0]);
+        const float az = 0.5f * (da.box_min[2] + da.box_max[2]);
+        const float bx = 0.5f * (db.box_min[0] + db.box_max[0]);
+        const float bz = 0.5f * (db.box_min[2] + db.box_max[2]);
+        return (ax * ax + az * az) < (bx * bx + bz * bz);
+      });
+      size_t skipped = 0;
+      for (size_t idx : order) {
+        auto& d = st.draws[idx];
+        if (d.vertex_count == 0 || d.index_count == 0) continue;
+        const gpuworld::ResidentDraw* rd = res.acquire(d.key, generation);
+        const bool known = rd != nullptr;
+        if (!rd)
+          rd = res.place(d.key, d.vertex_count, d.index_count, st.origin_x, st.origin_z, generation, r_.frames_done());
+        if (!rd) {
+          d.vertex_count = 0;
+          d.index_count = 0;
+          d.resident = false;
+          ++skipped;
+          continue;
+        }
+        placed[idx] = rd;
+        if (!known) {
+          vertex_copies.push_back({VkDeviceSize(d.vertex_begin) * sizeof(WorldVertex),
+                                   VkDeviceSize(rd->vertex_base) * sizeof(WorldVertex),
+                                   VkDeviceSize(d.vertex_count) * sizeof(WorldVertex)});
+          index_copies.push_back({VkDeviceSize(staged_first[idx]) * sizeof(uint32_t),
+                                  VkDeviceSize(rd->index_base) * sizeof(uint32_t),
+                                  VkDeviceSize(d.index_count) * sizeof(uint32_t)});
+        }
+      }
+      if (skipped > 0) {
+        std::fprintf(stderr, "carview: note: world arena tight (%llu/%u verts); skipped %zu distant draws\n",
+                     (unsigned long long)res.vertex_used(), res.vertex_capacity(), skipped);
+      }
     }
   }
   for (size_t i = 0; i < st.draws.size(); ++i) {

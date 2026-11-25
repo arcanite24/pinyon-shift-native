@@ -175,7 +175,7 @@ DriveSession::DriveSession(DriveApp& a, DriveWorldHost& h)
                                            audio_turbo_level, audio_sc_level, audio_sc_is_centrifugal,
                                            audio_camshaft_level, physics_notes)),
       race_models{a.race.get()},
-      festival_guard{&h.showroom, &festival_guests},
+      festival_guard{&h.renderer, &h.showroom, &festival_guests, &festival_guest_loads},
       save_due(a.new_career_save_pending),
       live_motion_blur(a.motion_blur_flag >= 0 ? a.motion_blur_flag == 1 : !a.low_preset),
       live_dof(a.dof_flag >= 0 ? a.dof_flag == 1 : !a.low_preset),
