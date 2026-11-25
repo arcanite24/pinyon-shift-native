@@ -2353,10 +2353,10 @@ void phase_r2_5_audio_completeness_checks() {
         <VolumeAdjustments BurbleVolume="0.75"/>
         <FocusPEQ Active="1" CenterFrequency="1200" Bandwidth="1.2" Gain="1.6"/>
         <Distortion Active="1" Level="0.5" VolumeCompensate="0.85"/>
-        <TrashDSP Active="1" Cutoff1="350" Cutoff2="2400">
-          <Low inputgain="1.2" overdrive="0.4" mix="0.5" outputgain="1.0"/>
-          <Mid inputgain="1.1" overdrive="0.6" mix="0.4" outputgain="1.0"/>
-          <High inputgain="1.0" overdrive="0.3" mix="0.25" outputgain="1.0"/>
+        <TrashDSP Active="1" VolumeCompensate="0.5" Cutoff1="350" Cutoff2="2400">
+          <Band1 effecttype="1" inputgain="0" overdrive="0.4" mix="50" outputgain="0"/>
+          <Band2 effecttype="2" inputgain="1" overdrive="0.6" mix="40" outputgain="-3"/>
+          <Band3 effecttype="2" inputgain="0" overdrive="0.3" mix="80" outputgain="2"/>
         </TrashDSP>
       </Engine>
     )";
@@ -2386,6 +2386,12 @@ void phase_r2_5_audio_completeness_checks() {
     CHECK(es.focus_peq.active && near(es.focus_peq.center_freq.eval({0.5, 0.5, 0.5, 0.0}), 1200.0, 1e-3));
     CHECK(es.distortion.active);
     CHECK(es.trash_dsp.active && near(es.trash_dsp.cutoff1_hz, 350.0, 1e-3));
+    // Band gains in dB and mix in percent, as on the disc.
+    CHECK(near(es.trash_dsp.volume_compensate, 0.5, 1e-9));
+    CHECK(near(es.trash_dsp.bands[0].output_gain, 1.0, 1e-9) && near(es.trash_dsp.bands[0].mix, 0.5, 1e-9));
+    CHECK(near(es.trash_dsp.bands[1].output_gain, std::pow(10.0, -3.0 / 20.0), 1e-9));
+    CHECK(near(es.trash_dsp.bands[1].input_gain, std::pow(10.0, 1.0 / 20.0), 1e-9));
+    CHECK(near(es.trash_dsp.bands[2].output_gain, std::pow(10.0, 2.0 / 20.0), 1e-9) && near(es.trash_dsp.bands[2].mix, 0.8, 1e-9));
     CHECK(es.has_other_volumes);
     CHECK(near(es.other_volumes[size_t(audio::View::kCockpit)].wind, 0.35, 1e-4));
     CHECK(near(es.other_volumes[size_t(audio::View::kCockpit)].tires, 0.40, 1e-4));

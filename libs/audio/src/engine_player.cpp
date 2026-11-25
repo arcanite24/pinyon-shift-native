@@ -454,8 +454,9 @@ void EnginePlayer::render(float* out, int frames) {
             const double lo = trash_lp1_[c];
             const double mid = trash_lp2_[c] - trash_lp1_[c];
             const double hi = ch[c] - trash_lp2_[c];
-            ch[c] = shape_band(lo, sound_.trash_dsp.bands[0]) + shape_band(mid, sound_.trash_dsp.bands[1]) +
-                    shape_band(hi, sound_.trash_dsp.bands[2]);
+            ch[c] = (shape_band(lo, sound_.trash_dsp.bands[0]) + shape_band(mid, sound_.trash_dsp.bands[1]) +
+                     shape_band(hi, sound_.trash_dsp.bands[2])) *
+                    sound_.trash_dsp.volume_compensate;
           }
         }
         if (std::isfinite(ch[0])) out_chunk[2 * f] += float(ch[0]);
