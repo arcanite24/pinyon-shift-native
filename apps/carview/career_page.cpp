@@ -189,6 +189,12 @@ void CareerPage::fill(std::string& title, std::vector<std::string>& lines, int& 
   selected = int(selected_) - first;
 }
 
+void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page, int64_t credits_override,
+                          float open_progress) {
+  static const std::vector<SponsorChallengeRow> kEmptySponsors;
+  draw_career_page_ui4(l, w, h, page, kEmptySponsors, credits_override, open_progress);
+}
+
 void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page,
                           const std::vector<SponsorChallengeRow>& sponsors, int64_t credits_override,
                           float open_progress) {

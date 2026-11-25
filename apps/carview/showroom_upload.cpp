@@ -941,7 +941,8 @@ void Showroom::pump_deferred_uploads(VkCommandBuffer cmd) {
       ring.mapped = nullptr;
       r_.destroy_buffer(ring.staging);
       ring.capacity = 0;
-      const VkDeviceSize new_cap = std::max(kDefaultRingBytes, (kept + 65535ull) & ~65535ull);
+      const VkDeviceSize new_cap =
+          std::max<VkDeviceSize>(kDefaultRingBytes, VkDeviceSize((uint64_t(kept) + 65535ull) & ~65535ull));
       if (!r_.create_buffer(new_cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ring.staging) ||
           vmaMapMemory(r_.allocator_, ring.staging.allocation, &ring.mapped) != VK_SUCCESS) {

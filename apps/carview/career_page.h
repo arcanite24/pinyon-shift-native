@@ -93,8 +93,10 @@ class CareerPage {
 };
 
 // Renders the 4-tab FH1 Progress / Sponsor Challenges / Stats / Content Packs screen via UI4 chrome.
+void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page, int64_t credits_override = -1,
+                          float open_progress = 1.0f);
 void draw_career_page_ui4(ui::List& l, float w, float h, const CareerPage& page,
-                          const std::vector<SponsorChallengeRow>& sponsors = {}, int64_t credits_override = -1,
+                          const std::vector<SponsorChallengeRow>& sponsors, int64_t credits_override = -1,
                           float open_progress = 1.0f);
 
 // Sanitizes control characters to spaces while preserving all UTF-8 international text intact.
