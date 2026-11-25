@@ -22,6 +22,17 @@ add_executable(audio_tests audio_tests.cpp)
 target_link_libraries(audio_tests PRIVATE shift_audio)
 add_test(NAME audio_tests COMMAND audio_tests)
 
+# The cutscene reader and player on synthetic documents; the corpus test
+# parses every free-roam cutscene on the disc (skipped, exit 77, without
+# SHIFT_GAME_ROOT).
+add_executable(cutscene_tests cutscene_tests.cpp)
+target_link_libraries(cutscene_tests PRIVATE shift_cutscene)
+add_test(NAME cutscene_tests COMMAND cutscene_tests)
+add_executable(cutscene_corpus_tests cutscene_corpus_tests.cpp)
+target_link_libraries(cutscene_corpus_tests PRIVATE shift_cutscene)
+add_test(NAME cutscene_corpus_tests COMMAND cutscene_corpus_tests)
+set_tests_properties(cutscene_corpus_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
+
 add_executable(data_tests data_tests.cpp)
 target_link_libraries(data_tests PRIVATE shift_data)
 add_test(NAME data_tests COMMAND data_tests)
