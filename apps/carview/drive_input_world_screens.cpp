@@ -578,11 +578,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                           app.audio_host.trigger_ui(audio::UiCue::kError);
                           return;
                         }
-                        // Retail FH1 Fast Travel fee: FREE once all 3 PR Stunts at this Outpost
-                        // are completed (or Fast Travel Anywhere is enabled); otherwise 10,000 CR.
-                        const bool ft_free = ft_anywhere ||
-                                             app.outpost_progress.is_outpost_fast_travel_free(app.outposts, op->id);
-                        const int64_t ft_fee = ft_free ? 0 : 10000LL;
+                        // The map's fee: less for each of the outpost's missions done.
+                        const int64_t ft_fee = outpost_travel_fee(op->id);
                         if (ft_fee > 0 && app.career.credits < ft_fee) {
                           notice = "NEED " + carview::thousands(ft_fee) + " CR TO FAST TRAVEL";
                           notice_until = vehicle.time() + 3.5;

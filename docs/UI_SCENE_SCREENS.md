@@ -183,7 +183,10 @@ caller then draws the old hand-drawn block.
 `drive_map_screen.cpp`, the cursor and zoom in `map_cursor.h` and the
 filter in `map_filter.h`.
 
-- **Cursor.** The left stick, the D-pad and WASD/arrows move a free cursor
+- **Cursor.** The map opens centred on the player with the cursor on the
+  player's arrow (`map_open_orig.png`); near the map's edge the view stays
+  inside the map and the cursor opens off the centre, still on the arrow.
+  The left stick, the D-pad and WASD/arrows move a free cursor
   (`MAP_OVERLAY/CURSOR`) at 490 px/s, slowed to 0.45 times over an icon.
   Past 190 px across or 120 px up from the centre the map scrolls under it
   at 470 px/s; it stops at x 96..1184, y 88..635. Within 30 px of an icon
@@ -325,9 +328,13 @@ destinations, and an outpost must be discovered (Q90).
   LEADERBOARD (the engine has no leaderboards). The selected event's course
   outline (pink, `map_popup_event_details_back_orig.png`) is not drawn. The
   original zooms out about a sixth past its opening scale
-  (`map_zoom_out_orig.png`); the engine stops at the opening scale, and
-  its camera stays inside the painted part of the background texture (the
-  texture's black margins never show). In the live render the FILTER title tape is greyer and
+  (`map_zoom_out_orig.png`); the engine stops at the opening scale. The
+  engine's view stops where the background texture's paint ends (its
+  black side margins never show); at the west edge the original stops
+  about 100 px (opening scale) further in
+  (`map_streethub_search_w_orig.png`: about 140 px of desert west of
+  Carson's highway curve at its scale, the engine about 285 px at its
+  own). In the live render the FILTER title tape is greyer and
   taller than the original's white bar, and the list's scroll indicator is
   drawn by hand (a track and a thumb at the cursor's row) in place of the
   scene's. The icons' open and pulse animations and the barn rumour's

@@ -60,7 +60,16 @@ void DriveSession::map_cursor_world() {
 }
 
 void DriveSession::map_screen_open() {
+  // The cursor opens on the player (map_open_orig.png), which is off the
+  // centre when the view is held inside the map near its edge.
   map_cursor.reset();
+  if (map_w > 64 && map_h > 64) {
+    const SceneFrame fr = SceneScreen::frame(float(map_w), float(map_h));
+    const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
+    const auto p = vehicle.position();
+    map_cursor.absorb(float((0.5 * map_w + (p.x - map_cx) / mpp - fr.ox) / fr.s) - MapCursor::kCx,
+                      float((0.5 * map_h - (p.z - map_cz) / mpp - fr.oy) / fr.s) - MapCursor::kCy);
+  }
   map_opened_at = now_s();
   map_base_zoom = map_zoom;
   map_filter_open = false;
