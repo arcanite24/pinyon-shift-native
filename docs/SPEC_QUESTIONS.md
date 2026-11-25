@@ -2043,7 +2043,9 @@ Open points:
   (2026-11-25) Both caps are now gone (Q101's decoded wheel query and
   bump stop). Superseded: "The load cap now applies only to a wheel
   more than 5 cm into its bump stop". With the mod on every car, the
-  oracle lap reads 38.976 s, and the AI gate shows no regression.
+  oracle lap reads 38.980 s. The AI gate showed no regression from the
+  caps' removal, and leans slower on NR02 and FR22 once the spring stops
+  at the travel (Q101).
 
   **Resolved (2026-11-25): the exemption is gone.** The controller that
   weaved was the oracle lap's pure-pursuit follower. That follower is
@@ -2206,8 +2208,9 @@ carview wheel path does not yet pass its 900-degree setting). Interim:
   steering-lock caps (degrees, converted) of the surfaces under the
   wheels in contact, 9999 when none is. The wheel path takes it without
   speed narrowing. The engine now does the same.
-- **The countersteer state.** It is ours: the road wheels turned the way
-  the rear slides, with a mean rear slip above 0.5. The original tests
+- **The countersteer state.** It is off, so CounterSteerScale never
+  applies. A guess would switch on the 900-degree table's 1.5 scale,
+  which is the only table carview's wheels reach. The original tests
   the sign of the road wheels' angle against the same field of the two
   front wheel blocks. It counts as countersteer when the angle is
   positive and the first front wheel's field is negative, or the angle
@@ -2585,16 +2588,22 @@ The engine now runs this query on its ray, with these interim parts:
   test, and the penetration is that of the sphere at the top of the
   sweep along the hit's normal.
 - **Every substep.** The query runs every substep, not once per frame.
+- **The damper's rate.** The engine differentiates the unclamped
+  compression, so a step drives the ordinary damper to its clamp. Then
+  BumpstopDamping, which joins it before the clamp, changes nothing: the
+  step tests read the same with BumpstopDamping at 0. The original's
+  damper reads the suspension's own velocity, whose handling where the
+  position clamps is not decoded.
 
 The 0.14 m cap and the load cap are gone. With them gone:
 - The 0.35 m vertical step at 90 km/h is within the wheel's reach. It
-  lifts the test car 1.88 m at 5.5 m/s, from the bump stop's spring
-  alone: with BumpstopDamping set to 0 the result is the same. (2.24 m
-  at 6.1 m/s while the main spring still acted past the travel.)
+  lifts the test car 1.88 m at 5.5 m/s. (2.24 m at 6.1 m/s while the
+  main spring still acted past the travel.)
 - A 0.7 m step is out of reach. The wheels stay on the road and the body
   meets it (0.07 m/s up).
 - The 150 km/h wall lifts the nose at 1.58 m/s (1.1 with the caps).
-- The oracle lap is unchanged at 38.976 s.
+- The oracle lap reads 38.980 s (38.976 s before the spring stopped at
+  the travel; oracle 38.784 s).
 - The AI gate (AI-driven player) leans slower on NR02 and FR22 once the
   spring stops at the travel: 6-seed means 158.7 -> 164.6 s and
   164.8 -> 166.7 s, within the seed spread.
