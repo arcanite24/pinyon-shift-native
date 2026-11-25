@@ -51,6 +51,8 @@ constexpr double kOpeningFadeIn = 2.0;  // play_intro_camera: CFadeIn 2 s, S cur
 constexpr double kWaypointRadius = 20.0;
 // The event sign-up sphere re-arms once the player has left it by this much.
 constexpr double kRearmMargin = 10.0;
+// A launched event that has not started racing this long is taken as declined.
+constexpr double kLaunchGrace = 10.0;
 
 }  // namespace
 
@@ -539,18 +541,35 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
   // Drive to an event's sign-up sphere, then start it (each new entry; the
   // host's own event marker can start it too).
   auto sign_up = [&](int64_t id) {
-    if (awaiting_race_ || in.racing) return;
-    double radius = 0, d = 0;
-    if (!event_trigger(id, in.player_pos, radius, d)) {
-      // No trigger known: launch at once (interim).
-      c.launch_event_id = id;
-      awaiting_race_ = true;
+    if (in.racing) {
+      raced_ = true;
       return;
     }
-    if (d <= radius && !in_trigger_) {
+    double radius = 0, d = 0;
+    const bool have_trigger = event_trigger(id, in.player_pos, radius, d);
+    if (awaiting_race_) {
+      // A launched event that was declined or quit (it ran, or never
+      // started, and reported no result): the sphere re-arms once the
+      // player is out of it.
+      const bool gave_up = raced_ || step_t_ - launch_t_ > kLaunchGrace;
+      if (have_trigger && gave_up && d > radius + kRearmMargin) {
+        awaiting_race_ = false;
+        in_trigger_ = false;
+      }
+      return;
+    }
+    auto launch = [&]() {
       c.launch_event_id = id;
       awaiting_race_ = true;
+      raced_ = false;
+      launch_t_ = step_t_;
+    };
+    if (!have_trigger) {
+      // No trigger known: launch at once (interim).
+      launch();
+      return;
     }
+    if (d <= radius && !in_trigger_) launch();
     if (d <= radius) in_trigger_ = true;
     else if (d > radius + kRearmMargin) in_trigger_ = false;
   };

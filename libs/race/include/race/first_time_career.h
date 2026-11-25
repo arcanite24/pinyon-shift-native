@@ -276,6 +276,8 @@ class FirstTimeCareer {
   int waypoint_ = 0;            // the race's sat-nav route: HalfWay, TollBooth, Beyond
   bool in_trigger_ = false;     // inside the event's sign-up sphere (edge)
   bool awaiting_race_ = false;  // an event was launched and has not reported
+  bool raced_ = false;          // ...and the player has been in it since
+  double launch_t_ = 0.0;
   struct Trigger {
     int64_t id;
     std::array<double, 3> pos;

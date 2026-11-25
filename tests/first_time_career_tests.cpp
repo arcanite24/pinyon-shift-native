@@ -323,6 +323,21 @@ void test_heats_and_showcase() {
   i2.player_pos = {kHeatsNode[0] + 20.0, 0, kHeatsNode[2]};
   c = f2.update(i2);
   check(c.launch_event_id == 77, "inside 27 m: the final signs up");
+  // Declined: the event never runs; once out of the sphere it re-arms.
+  i2.player_pos = {kHeatsNode[0] + 100.0, 0, kHeatsNode[2]};
+  for (int k = 0; k < 120; ++k) f2.update(i2);
+  i2.player_pos = {kHeatsNode[0] + 20.0, 0, kHeatsNode[2]};
+  c = f2.update(i2);
+  check(c.launch_event_id == 77, "a declined final signs up again on re-entry");
+  // Quit: it ran (racing) and reported nothing.
+  i2.racing = true;
+  f2.update(i2);
+  i2.racing = false;
+  i2.player_pos = {kHeatsNode[0] + 100.0, 0, kHeatsNode[2]};
+  f2.update(i2);
+  i2.player_pos = {kHeatsNode[0] + 20.0, 0, kHeatsNode[2]};
+  c = f2.update(i2);
+  check(c.launch_event_id == 77, "a quit final signs up again on re-entry");
 }
 
 void test_tutor() {
