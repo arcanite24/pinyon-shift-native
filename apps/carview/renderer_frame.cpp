@@ -10,13 +10,79 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                             VkBuffer capture_dst, bool capture_before_ui, VkFormat final_format,
                             VkBuffer inspector_dst) {
   if (final_format == VK_FORMAT_UNDEFINED) final_format = color_format_;
-  const bool msaa = samples_ != VK_SAMPLE_COUNT_1_BIT;
-  if (scene_.before) scene_.before(cmd);
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, color_stage, VK_ACCESS_2_NONE,
-                color_stage, color_write);
+
+  // Fast path when a 100% opaque fullscreen overlay (World Map or FMV) covers the
+  // viewport: skip 3D scene, shadows, GTAO, Hi-Z, and post passes completely.
+  const bool need_hdr_stage_fast =
+      (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0);
+  if (skip_scene_ && !need_hdr_stage_fast && !inspector_active_ && capture_dst == VK_NULL_HANDLE) {
+    image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, color_stage, VK_ACCESS_2_NONE,
+                  color_stage, color_write);
+    VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkPipelineStageFlags2 last_stage = color_stage;
+    VkAccessFlags2 last_access = color_write;
+    if (overlay_staged_) {
+      image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    last_stage, last_access, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+      VkBufferImageCopy regions[kOverlayLayers]{};
+      uint32_t count = 0;
+      for (int li = 0; li < kOverlayLayers; ++li) {
+        const auto& l = overlays_[li];
+        if (!l.staged) continue;
+        VkBufferImageCopy& region = regions[count++];
+        region.bufferOffset = slot().overlay_off[li];
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageOffset = {l.at.x, l.at.y, 0};
+        region.imageExtent = {l.width, l.height, 1};
+      }
+      vkCmdCopyBufferToImage(cmd, slot().overlay.buffer, final_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, count,
+                             regions);
+      layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      last_stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+      last_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    } else {
+      VkRenderingAttachmentInfo clr{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+      clr.imageView = final_view;
+      clr.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      clr.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      clr.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      clr.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+      VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+      ri.renderArea = {{0, 0}, {target_width_, target_height_}};
+      ri.layerCount = 1;
+      ri.colorAttachmentCount = 1;
+      ri.pColorAttachments = &clr;
+      vkCmdBeginRendering(cmd, &ri);
+      vkCmdEndRendering(cmd);
+    }
+    record_ui(cmd, final_image, final_view, layout, last_stage, last_access, ui_pipeline_, target_width_,
+              target_height_);
+    if (final_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+      if (layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, final_layout, last_stage, last_access,
+                      VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+      }
+    } else {
+      image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, final_layout, last_stage, last_access,
+                    VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
+    }
+    return;
+  }
+
+  const bool msaa = samples_ != VK_SAMPLE_COUNT_1_BIT;
+  if (scene_.before) scene_.before(cmd);
+  const bool post = options_.post.enabled && hdr_.view;
+  // Defer final_image (swapchain) COLOR_ATTACHMENT_OUTPUT barrier when rendering to
+  // offscreen HDR first: lets shadows, 3D scene, Hi-Z, and post passes overlap with
+  // swapchain presentation instead of stalling on image_ready before scene draw.
+  if (!post) {
+    image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, color_stage, VK_ACCESS_2_NONE,
+                  color_stage, color_write);
+  }
   if (msaa) {
     image_barrier(cmd, msaa_color_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, color_stage, VK_ACCESS_2_NONE,
@@ -26,7 +92,6 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   const uint32_t rh = render_height();
   // Under the post chain the scene goes to the HDR image (resolved into
   // it with MSAA), and the composite writes the final image.
-  const bool post = options_.post.enabled && hdr_.view;
   const VkImageView scene_view = post ? hdr_.view : final_view;
   if (post)
     image_barrier(cmd, hdr_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -128,6 +193,7 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   rendering.pColorAttachments = &color;
   rendering.pDepthAttachment = &depth;
   vkCmdBeginRendering(cmd, &rendering);
+  in_render_pass_ = true;
   VkViewport viewport{0, 0, float(rw), float(rh), 0.0f, 1.0f};
   VkRect2D scissor{{0, 0}, {rw, rh}};
   vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -148,7 +214,9 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, index_count_, 1, 0, 0, 0);
   }
+  in_render_pass_ = false;
   vkCmdEndRendering(cmd);
+  if (lazy_memory_supported_) mark(cmd, "scene");
 
   if (two_pass || post || need_hiz) {
     const auto read_stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -269,9 +337,9 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
   }
 
-  VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  VkImageLayout layout = post ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   VkPipelineStageFlags2 last_stage = color_stage;
-  VkAccessFlags2 last_access = color_write;
+  VkAccessFlags2 last_access = post ? VK_ACCESS_2_NONE : color_write;
   auto record_capture_copy = [&]() {
     image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   last_stage, last_access, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -315,7 +383,14 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   };
 
   if (!use_modern_chain) {
-    if (post) record_post(cmd, final_view, post_final_, 1.0f);
+    if (post) {
+      image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    last_stage, last_access, color_stage, color_write);
+      layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      last_stage = color_stage;
+      last_access = color_write;
+      record_post(cmd, final_view, post_final_, 1.0f);
+    }
     if (capture_dst != VK_NULL_HANDLE && capture_before_ui) record_capture_copy();
     copy_overlays(final_image, layout, last_stage, last_access);
     record_ui(cmd, final_image, final_view, layout, last_stage, last_access, ui_pipeline_, target_width_,

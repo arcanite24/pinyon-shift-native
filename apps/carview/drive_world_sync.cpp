@@ -82,6 +82,13 @@ void DriveSession::request_guest_load_async(const std::string& key, const std::s
                                             const ShowroomOptions& opt, size_t max_cache) {
   if (key.empty() || media.empty()) return;
   if (festival_guests.count(key) || festival_guest_loads.count(key)) return;
+#ifdef __ANDROID__
+  // Cap guest car models on unified-RAM mobile devices so roaming AI and
+  // Autoshow browsing never grow unbounded into lowmemorykiller OOM.
+  // Never erase existing entries here: callers may hold raw Showroom* pointers
+  // in an in-progress Instance list for the current frame.
+  max_cache = std::min<size_t>(max_cache, 6u);
+#endif
   if (festival_guests.size() + festival_guest_loads.size() >= max_cache) return;
   if (festival_guest_loads.size() >= 2) return;  // cap concurrent background uploads to prevent CPU contention
   Renderer* r = &host.renderer;
@@ -653,6 +660,7 @@ void DriveSession::place_world() {
           ctel.shifting = vehicle.shifting();
           ctel.dt = lin.dt;
           set_driver_wristband_color(resolve_wristband_rgba(app));
+          host.showroom.set_driver_visible(!autoshow.is_open() && !shop.is_open() && !paint_open && !garage_open);
           host.showroom.set_cockpit_telemetry(ctel);
           host.showroom.set_cockpit_anim(cockpit_anim, tod_cockpit_cam);
         }

@@ -400,9 +400,9 @@ void test_achievements_system_and_persistence() {
     ds_out.intro_completed = true;
     ds_out.tod_sec = 7200.0;  // 02:00 midnight
     std::string serr;
-    assert(drive::write_drive_save(save_tmp, ds_out, &serr));
+    assert(drive::write_save(save_tmp, ds_out, &serr));
     drive::DriveSave ds_in;
-    assert(drive::read_drive_save(save_tmp, ds_in, &serr));
+    assert(drive::read_save(save_tmp, ds_in, &serr));
     assert(ds_in.intro_completed);
     assert(ds_in.tod_sec > 7199.0 && ds_in.tod_sec < 7201.0);
     std::filesystem::remove(save_tmp, sec);

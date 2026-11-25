@@ -8,11 +8,19 @@ package net.shiftengine.drive;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.system.Os;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 import java.io.BufferedReader;
@@ -29,6 +37,16 @@ public class DriveActivity extends SDLActivity {
     public static final String EXTRA_FORCE_PLAY = "net.shiftengine.drive.FORCE_PLAY";
 
     private boolean mRedirectingToSetup = false;
+    private TextView mSetupPill = null;
+    private final Handler mUiHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mHideSetupPill = () -> {
+        if (mSetupPill != null) {
+            mSetupPill.animate().alpha(0.0f).setDuration(300)
+                    .withEndAction(() -> {
+                        if (mSetupPill != null) mSetupPill.setVisibility(View.GONE);
+                    }).start();
+        }
+    };
 
     @Override
     protected String[] getLibraries() {
@@ -68,7 +86,76 @@ public class DriveActivity extends SDLActivity {
         }
 
         super.onCreate(savedInstanceState);
+        enableImmersiveFullscreen();
         attachSetupCornerButton();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        enableImmersiveFullscreen();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            enableImmersiveFullscreen();
+        }
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (ev != null && ev.getActionMasked() == MotionEvent.ACTION_DOWN && mSetupPill != null) {
+            final float d = getResources().getDisplayMetrics().density;
+            final int w = getWindow().getDecorView().getWidth();
+            if (ev.getY() < 42f * d && Math.abs(ev.getX() - 0.5f * w) < 96f * d) {
+                revealSetupPillBriefly();
+            }
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void enableImmersiveFullscreen() {
+        if (mRedirectingToSetup) return;
+        try {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                WindowManager.LayoutParams lp = getWindow().getAttributes();
+                lp.layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                getWindow().setAttributes(lp);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                getWindow().setDecorFitsSystemWindows(false);
+                WindowInsetsController ctrl = getWindow().getInsetsController();
+                if (ctrl != null) {
+                    ctrl.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                    ctrl.setSystemBarsBehavior(
+                            WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                }
+            } else {
+                View decor = getWindow().getDecorView();
+                decor.setSystemUiVisibility(
+                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_FULLSCREEN);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void revealSetupPillBriefly() {
+        if (mSetupPill == null) return;
+        mUiHandler.removeCallbacks(mHideSetupPill);
+        mSetupPill.animate().cancel();
+        mSetupPill.setVisibility(View.VISIBLE);
+        mSetupPill.setAlpha(0.55f);
+        mUiHandler.postDelayed(mHideSetupPill, 4000);
     }
 
     private void configureEnvironment() {
@@ -167,6 +254,8 @@ public class DriveActivity extends SDLActivity {
             lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
             lp.topMargin = Math.round(4 * d);
             getWindow().addContentView(pill, lp);
+            mSetupPill = pill;
+            revealSetupPillBriefly();
         } catch (Throwable ignored) {
         }
     }

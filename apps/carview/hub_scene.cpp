@@ -1923,14 +1923,15 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
     draw_autoshow_confirm_modal(list, w, h, lo, autoshow, bands, credits);
   }
 
-  // ---- 6. Optional Toast Notice (docked bottom-right cleanly above bottom margin) ----
+  // ---- 6. Optional Toast Notice (docked cleanly above bottom button bar — zero overlap) ----
   if (!notice.empty()) {
-    const float nw = 380.0f * s;
-    ui4::brush(list, w - nw - 40.0f * s, lo.button_bar.y0 - 2.0f * s, w - 40.0f * s, lo.button_bar.y1 - 2.0f * s,
-               ui4::kPink);
-    ui::TextStyle ns = ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kRight);
-    ui4::fit_text(notice, ns, nw - 24.0f * s, 9.0f * s);
-    list.text(w - 52.0f * s, lo.button_bar.y0 + 7.0f * s, notice, ns);
+    const float nw = std::min(w - 80.0f * s, 520.0f * s);
+    const float ny1 = lo.button_bar.y0 - 8.0f * s;
+    const float ny0 = ny1 - 26.0f * s;
+    ui4::brush(list, w - nw - 40.0f * s, ny0, w - 40.0f * s, ny1, ui4::kPink);
+    ui::TextStyle ns = ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite, ui::Align::kRight);
+    ui4::fit_text(notice, ns, nw - 24.0f * s, 8.5f * s);
+    list.text(w - 52.0f * s, ny0 + 6.5f * s, notice, ns);
   }
 
   // ---- 7. Bottom Controller / Keyboard Button Bar ----

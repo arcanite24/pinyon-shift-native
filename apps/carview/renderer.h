@@ -679,6 +679,9 @@ class Renderer {
     vol_state_valid_ = true;
   }
   void set_hud_layout(const modern::HudLayout& layout) { hud_layout_ = layout; }
+  // When true (opaque fullscreen World Map or FMV), skip 3D scene/shadow/post passes and draw overlays + UI directly.
+  void set_skip_scene(bool skip) { skip_scene_ = skip; }
+  bool bc_compression_supported() const { return bc_compression_supported_; }
   void set_hdr_pattern(uint32_t pattern, float pattern_nits = 1000.0f) {
     if ((pattern != 0) != (hdr_pattern_ != 0)) targets_dirty_ = true;
     hdr_pattern_ = pattern;
@@ -948,6 +951,9 @@ class Renderer {
   double timestamp_ns_ = 0;  // ns per tick; 0 without timestamps
   static constexpr uint32_t kTimestamps = 64;
   bool timing_ = false;
+  bool in_render_pass_ = false;
+  bool skip_scene_ = false;
+  bool bc_compression_supported_ = false;
   uint32_t mark_end_ = 1;
   std::vector<const char*> mark_labels_;
   std::vector<std::pair<std::string, double>> stage_ms_;

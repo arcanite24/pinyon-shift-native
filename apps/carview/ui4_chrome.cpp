@@ -71,10 +71,17 @@ bool draw_keyboard_glyph(ui::List& l, float cx, float cy, float r, const std::st
   const float char_w = r * (lbl.size() > 3 ? 0.50f : 0.62f);
   const float hw = std::max(r * 1.08f, float(lbl.size()) * char_w * 0.56f + r * 0.45f);
   const float hh = r * 0.88f;
-  const float rad = std::max(2.0f, r * 0.24f);
+  const float rad = l.turned() ? 0.0f : std::max(2.0f, r * 0.24f);
   // Subtle 3D keycap base bevel + crisp dark mechanical keycap top face.
-  l.rect(cx - hw, cy - hh + r * 0.14f, cx + hw, cy + hh + r * 0.18f, ui::fade(ui::rgba(10, 12, 16, 245), alpha), rad);
-  l.rect(cx - hw, cy - hh, cx + hw, cy + hh, ui::fade(ui::rgba(36, 40, 48, 246), alpha), rad);
+  if (l.turned()) {
+    // Inside a tilted scope, zero-radius flat rects rotate cleanly in lockstep with text.
+    const float bw = std::max(1.1f, r * 0.12f);
+    l.rect(cx - hw - bw, cy - hh - bw, cx + hw + bw, cy + hh + bw, ui::fade(ui::rgba(226, 230, 238, 225), alpha));
+    l.rect(cx - hw, cy - hh, cx + hw, cy + hh, ui::fade(ui::rgba(36, 40, 48, 246), alpha));
+  } else {
+    l.rect(cx - hw, cy - hh + r * 0.14f, cx + hw, cy + hh + r * 0.18f, ui::fade(ui::rgba(10, 12, 16, 245), alpha), rad);
+    l.rect(cx - hw, cy - hh, cx + hw, cy + hh, ui::fade(ui::rgba(36, 40, 48, 246), alpha), rad);
+  }
   // Semantic bottom highlight bar (green Accept, red Cancel, pink Menu/Map, amber Rewind).
   uint32_t accent = ui::rgba(216, 222, 234, 210);
   if (u == "A" || u == "ACCEPT" || u == "CONFIRM" || u == "SELECT") accent = kGreen;
@@ -83,8 +90,10 @@ bool draw_keyboard_glyph(ui::List& l, float cx, float cy, float r, const std::st
   else if (u == "Y" || u == "REWIND") accent = kAmber;
   else if (u == "X" || u == "ACTIVATE" || u == "CAMERA") accent = kBlue;
   l.rect(cx - hw + 2.0f, cy + hh - std::max(1.8f, r * 0.18f), cx + hw - 2.0f, cy + hh, ui::fade(accent, alpha));
-  l.frame(cx - hw, cy - hh, cx + hw, cy + hh, ui::fade(ui::rgba(226, 230, 238, 225), alpha),
-          std::max(1.1f, r * 0.12f), rad);
+  if (!l.turned()) {
+    l.frame(cx - hw, cy - hh, cx + hw, cy + hh, ui::fade(ui::rgba(226, 230, 238, 225), alpha),
+            std::max(1.1f, r * 0.12f), rad);
+  }
   const float fsz = r * (lbl.size() >= 5 ? 0.72f : lbl.size() >= 3 ? 0.82f : 1.00f);
   ui::TextStyle ts = style(ui::Font::kB, fsz, ui::fade(kWhite, alpha), ui::Align::kCenter);
   fit_text(lbl, ts, (2.0f * hw) - 4.0f, r * 0.50f);
@@ -1178,8 +1187,8 @@ void subtle_vignette(ui::List& l, float w, float h, float strength) {
   if (k <= 0.01f) return;
   const uint8_t top_a = uint8_t(std::lround(75.0f * k));
   const uint8_t bot_a = uint8_t(std::lround(125.0f * k));
-  l.rect(0, 0, w, h * 0.22f, ui::rgba(4, 6, 10, top_a), 0.0f, ui::rgba(4, 6, 10, 0));
-  l.rect(0, h * 0.74f, w, h, ui::rgba(4, 6, 10, 0), 0.0f, ui::rgba(4, 6, 10, bot_a));
+  l.fullscreen_band(0, 0, w, h * 0.22f, ui::rgba(4, 6, 10, top_a), ui::rgba(4, 6, 10, 0));
+  l.fullscreen_band(0, h * 0.74f, w, h, ui::rgba(4, 6, 10, 0), ui::rgba(4, 6, 10, bot_a));
 }
 
 bool upgrade_part_icon(ui::List& l, float x0, float y0, float x1, float y1, int part_enum, int level, bool is_stock,

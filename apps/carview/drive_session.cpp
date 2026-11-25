@@ -296,6 +296,25 @@ void DriveSession::init_session() {
           std::printf("engine swap audio: %s -> %s (EngineID %lld)\n", app.car.c_str(), audio_car.c_str(),
                       (long long)swapped_engine_id);
         }
+        // On slim/mobile installs where only a subset of cars have baked engine sounds,
+        // fall back to any available baked engine bank so the player car never drives silently.
+        if (!loaded_car_audio && !app.sound_dir.empty()) {
+          std::error_code sec;
+          if (std::filesystem::is_directory(app.sound_dir, sec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(app.sound_dir, sec)) {
+              if (!entry.is_directory(sec)) continue;
+              if (!std::filesystem::is_regular_file(entry.path() / "sound.txt", sec)) continue;
+              const std::string fb_car = entry.path().filename().string();
+              std::string fb_note;
+              if (app.audio_host.load_car(app.sound_dir, app.game_root_of(), app.state_root, fb_car, audio_upgrades,
+                                          vehicle.params().idle_rpm, vehicle.params().redline_rpm, &fb_note)) {
+                loaded_car_audio = true;
+                sound_note = fb_note + " (fallback for " + app.car + ")";
+                break;
+              }
+            }
+          }
+        }
         if (loaded_car_audio)
           std::printf("%s\n", sound_note.c_str());
         else

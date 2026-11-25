@@ -1493,6 +1493,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           vehicle.set_pose(stepped);
           host.renderer.set_camera_projection(host.cam_proj.near_z, host.cam_proj.far_z, host.cam_proj.proj00, host.cam_proj.proj11);
           host.renderer.set_camera_vp(host.cam_proj.vp_unjittered, w_jitter_uv_x, w_jitter_uv_y);
+          host.renderer.set_skip_scene(map_overlay.active || app.fmv_player.active());
           const auto wf_t0 = std::chrono::steady_clock::now();
           if (!host.renderer.draw_frame(FrameConstants{}, app.error)) {
             std::fprintf(stderr, "carview: %s\n", app.error.c_str());

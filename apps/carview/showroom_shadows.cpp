@@ -224,7 +224,12 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
   // within Near/Mid shadow reach so Colorado forests cast dappled tree shadows onto roads & cars.
   ShadowTreeCache* tree_cache = nullptr;
   VkDeviceSize tree_vb_offset = 0;
-  if (!world_trees_.empty() && shadow_cutout_) {
+#ifdef __ANDROID__
+  const bool allow_shadow_cutouts = !low_memory_mode_;
+#else
+  const bool allow_shadow_cutouts = true;
+#endif
+  if (allow_shadow_cutouts && !world_trees_.empty() && shadow_cutout_) {
     const float* from = shadow_direction_set_ ? shadow_direction_ : world_sun_;
     float sun_sc[3] = {
         world_transform_[0] * from[0] + world_transform_[1] * from[1] + world_transform_[2] * from[2],
@@ -442,8 +447,16 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
         }
         if (max_d2 < max_r * max_r) continue;
       }
-      // Far cascade skips tiny billboard/cutout draws unless Ultra PCSS is active for fast 4K framing.
-      if (is_far && d.blend == 1 && !ultra_pcss) continue;
+      // Skip alpha-tested cutouts on mobile low-memory (avoids Adreno LRZ kill) or far cascade unless Ultra PCSS.
+      if (d.blend == 1 && (!allow_shadow_cutouts || (is_far && !ultra_pcss))) continue;
+      if (!allow_shadow_cutouts && is_far) {
+        // On mobile low-memory, skip LOD props and small geometry in the far shadow cascade
+        // (cars + buildings + terrain still cast full shadows in near & far cascades).
+        if ((fl & (128u | 256u | 512u)) != 0u) continue;
+        const float h_m = d.box_max[1] - d.box_min[1];
+        const float w_m = std::max(d.box_max[0] - d.box_min[0], d.box_max[2] - d.box_min[2]);
+        if (h_m < 4.5f && w_m < 14.0f) continue;
+      }
       ++shadow_drawn_;
       const VkPipeline pipeline = d.blend == 1 ? shadow_cutout_ : shadow_world_;
       if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
@@ -594,9 +607,9 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
   draw_cascade(0, shadow_set_, shadow_frame_, false, true);
   if (cascades >= 3u && shadow_set_mid_ && shadow_set_far_ && atlas_w >= size * 3u) {
     draw_cascade(size, shadow_set_mid_, shadow_frame_mid_, false, true);
-    draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, true);
+    draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, allow_shadow_cutouts);
   } else if (shadow_set_far_ && atlas_w >= size * 2u) {
-    draw_cascade(size, shadow_set_far_, shadow_frame_far_, true, true);
+    draw_cascade(size, shadow_set_far_, shadow_frame_far_, true, allow_shadow_cutouts);
   }
   vkCmdEndRendering(cmd);
 

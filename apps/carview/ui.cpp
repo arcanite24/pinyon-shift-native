@@ -267,6 +267,11 @@ void List::fullscreen_backdrop(float x0, float y0, float x1, float y1, uint32_t 
                     kRoundRect, kUiFlagFullscreen});
 }
 
+void List::fullscreen_band(float x0, float y0, float x1, float y1, uint32_t color, uint32_t color2) {
+  items_.push_back({{x0, y0, x1, y1}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, color,
+                    color2 ? color2 : color, kRoundRect, kUiFlagFullscreenX});
+}
+
 void List::fullscreen_cover_image(float x0, float y0, float x1, float y1, std::array<float, 4> uv,
                                   std::array<float, 4> full_uv, float content_aspect, uint32_t tint) {
   items_.push_back({{x0, y0, x1, y1},

@@ -179,10 +179,11 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     else if (a == "--no-far") no_far = true;
     else if (a == "--no-trees") no_trees = true;
     else if (a == "--bench") bench = headless = async_stream = true;  // streams like the window
-    else if (a == "--msaa") msaa = uint32_t(std::atoi(next()));
+    else if (a == "--msaa") msaa = uint32_t(std::atoi(next())), cli_msaa_explicit = true;
     else if (a == "--preset") {
       const std::string p = next();
       preset_name = p;
+      cli_preset_explicit = true;
       carview::GraphicsPresetSpec pspec;
       if (carview::resolve_graphics_preset(p, pspec)) {
         msaa = pspec.msaa;
@@ -373,6 +374,11 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       else if (a == "--ssr") cli_ssr_explicit = true;
       else if (a == "--volumetric-fog") cli_volfog_explicit = true;
       else if (a == "--car-detail" || a == "--no-car-detail") cli_cardetail_explicit = true;
+      else if (a == "--aa") cli_aa_explicit = true;
+      else if (a == "--texture-cap") cli_texcap_explicit = true;
+      else if (a == "--fps-cap") cli_fpscap_explicit = true;
+      else if (a == "--render-scale" || a == "--scene-540p" || a == "--no-scene-540p") cli_scale_explicit = true;
+      else if (a == "--output") cli_output_explicit = true;
     } else if (a == "--hdr-pattern") {
       cli_hdr_pattern = uint32_t(std::clamp(std::atoi(next()), 0, 3));
     } else if (a == "--hdr-pattern-nits") {
@@ -401,6 +407,40 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
   }
   // Apply scalable Phase A + B SOTA defaults per graphics preset unless explicitly overridden via CLI/settings.
+#ifdef __ANDROID__
+  if (!cli_preset_explicit) {
+    // Mobile TBDR + unified RAM default (Snapdragon / Adreno / Mali):
+    // 1x MSAA + 720p FSR1 upscale + low 2-cascade shadows + bloom deliver locked 60 FPS
+    // while keeping unified RAM well below Android lowmemorykiller thresholds.
+    low_preset = true;
+    if (!cli_msaa_explicit) msaa = 1;
+    if (shadows_flag.empty()) shadows_flag = "low";
+    if (bloom_flag < 0) bloom_flag = 1;
+    preset_reflection_rate = 0.25f;
+    preset_anisotropy = 4.0f;
+    if (!cli_aa_explicit) cli_graphics.aa = carview::modern::AaMode::kFxaaWorld;
+    if (!cli_ssao_explicit) cli_graphics.ssao = carview::modern::SsaoQuality::kOff;
+    if (!cli_sscs_explicit) cli_graphics.contact_shadows = carview::modern::ContactShadows::kOff;
+    if (!cli_hextile_explicit) cli_graphics.hex_tiling = false;
+    if (!cli_velblur_explicit) cli_graphics.velocity_blur = carview::modern::VelocityBlur::kOff;
+    if (!cli_pcss_explicit) cli_graphics.shadow_pcss = carview::modern::ShadowPcss::kLow;
+    if (!cli_ssr_explicit) cli_graphics.ssr = carview::modern::SsrQuality::kOff;
+    if (!cli_volfog_explicit) cli_graphics.volumetric_fog = carview::modern::VolumetricFog::kOff;
+    if (!cli_cardetail_explicit) cli_graphics.car_detail = false;
+    if (!cli_texcap_explicit) cli_graphics.texture_cap = carview::modern::TextureCap::k1024;
+    if (!cli_fpscap_explicit) cli_graphics.fps_cap = 60;
+    if (!cli_scale_explicit) {
+      cli_graphics.scale = 1;
+      cli_graphics.base_540p = false;
+    }
+    if (!cli_output_explicit) {
+      cli_graphics.upscaler = carview::modern::Upscaler::kCas;
+      cli_graphics.sharpening = 55.0f;
+    }
+    if (motion_blur_flag < 0) motion_blur_flag = 0;
+    if (dof_flag < 0) dof_flag = 0;
+  } else
+#endif
   {
     carview::GraphicsPresetSpec pspec;
     if (carview::resolve_graphics_preset(preset_name, pspec)) {
@@ -413,6 +453,27 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       if (!cli_volfog_explicit) cli_graphics.volumetric_fog = pspec.volumetric_fog;
       if (!cli_cardetail_explicit) cli_graphics.car_detail = pspec.car_detail;
     }
+#ifdef __ANDROID__
+    if (low_preset) {
+      // Mobile TBDR tuning for Android low / smooth-60 / low-power presets:
+      // 720p -> 1080p FSR1, quarter-rate reflections, 1024px texture cap, and disabling
+      // desktop-heavy GTAO/SSCS/DoF unless explicitly opted in.
+      preset_reflection_rate = std::min(preset_reflection_rate, 0.25f);
+      if (!cli_ssao_explicit) cli_graphics.ssao = carview::modern::SsaoQuality::kOff;
+      if (!cli_sscs_explicit) cli_graphics.contact_shadows = carview::modern::ContactShadows::kOff;
+      if (!cli_texcap_explicit) cli_graphics.texture_cap = carview::modern::TextureCap::k1024;
+      if (!cli_scale_explicit) {
+        cli_graphics.scale = 1;
+        cli_graphics.base_540p = false;
+      }
+      if (!cli_output_explicit && cli_graphics.scale != 0) {
+        cli_graphics.upscaler = carview::modern::Upscaler::kCas;
+        cli_graphics.sharpening = 55.0f;
+      }
+      if (motion_blur_flag < 0) motion_blur_flag = 0;
+      if (dof_flag < 0) dof_flag = 0;
+    }
+#endif
   }
   // Apply deterministic defaults for named benchmark scenarios (--bench-scenario).
   if (bench_scenario_set) {

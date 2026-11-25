@@ -62,7 +62,7 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
   }
   const int fit_rows = std::clamp(int((g.B(612) - g.T(first_bottom)) / (row_step * s)) + 1, 1, 8);
   const int first = std::clamp(st.menu_selected - fit_rows / 2, 0, std::max(0, n - fit_rows));
-  const float max_item_w = st.career ? g.L(265) : (has_right ? g.L(495) : (g.w - g.L(300)));
+  const float max_item_w = st.career ? g.L(265) : (has_right ? g.L(495) : (pause ? g.L(480) : (g.w - g.L(300))));
   const float left_shift = st.career ? -62.0f * s : 0.0f;
   const auto stack_ys = fh1::reflow_stacker(first_bottom, row_step, std::min(n - first, fit_rows));
 

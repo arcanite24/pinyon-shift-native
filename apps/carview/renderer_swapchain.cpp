@@ -206,6 +206,9 @@ bool Renderer::render_timed(const FrameConstants& constants, uint32_t width, uin
 
 void Renderer::mark(VkCommandBuffer cmd, const char* label) {
   if (!timing_ || !ts_pool_ || mark_labels_.size() + 2 >= kTimestamps) return;
+  // On mobile TBDR GPUs (Adreno/Mali), vkCmdWriteTimestamp2 inside dynamic rendering
+  // causes tile pipeline barriers and attributes the entire pass to the first mark.
+  if (lazy_memory_supported_ && in_render_pass_) return;
   mark_labels_.push_back(label);
   vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, ts_pool_, uint32_t(mark_labels_.size()));
 }

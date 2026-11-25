@@ -51,6 +51,7 @@ inline constexpr uint32_t kMaskBorderTransparent = 1u << 0;  // addressing mode 
 inline constexpr uint32_t kMaskRepeat = 1u << 1;             // tiled pattern: fract(uv)
 inline constexpr uint32_t kUiFlagFullscreen = 1u << 2;       // expand to full physical viewport (ignores HUD 16:9 lock/safe-zone)
 inline constexpr uint32_t kUiFlagFullscreenCover = 1u << 3;  // full physical viewport cover-fill (m = full uv, r[0] = aspect)
+inline constexpr uint32_t kUiFlagFullscreenX = 1u << 4;      // expand X to full physical viewport width while preserving Y
 
 enum Kind : uint32_t {
   kRoundRect = 0,    // p: radius, stroke (0 fills), inset, -; q: softness; colour top to color2 bottom
@@ -211,6 +212,7 @@ class List {
   // Full-viewport backdrop / cover-fill video quad: fills the physical screen
   // edge-to-edge even when HUD 16:9 aspect lock or safe-zone margins are active.
   void fullscreen_backdrop(float x0, float y0, float x1, float y1, uint32_t color);
+  void fullscreen_band(float x0, float y0, float x1, float y1, uint32_t color, uint32_t color2 = 0);
   void fullscreen_cover_image(float x0, float y0, float x1, float y1, std::array<float, 4> uv,
                               std::array<float, 4> full_uv, float content_aspect,
                               uint32_t tint = rgba(255, 255, 255));

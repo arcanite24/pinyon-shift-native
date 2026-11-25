@@ -178,11 +178,15 @@ bool discover_install(const fs::path& game_root, const fs::path& state_root, con
   out = Install{};
   std::error_code ec;
   out.media = fs::is_directory(game_root / "media", ec) ? game_root / "media" : game_root;
-  if (!fs::is_directory(out.media / "cars", ec)) {
+  const bool has_cars_dir = fs::is_directory(out.media / "cars", ec);
+  const bool has_db_file = fs::is_regular_file(out.media / "db" / "gamedb.slt", ec) ||
+                           fs::is_regular_file(out.media / "DB" / "gamedb.slt", ec);
+  if (!has_cars_dir && !has_db_file) {
     if (error) *error = "no media/cars folder under " + game_root.string();
     return false;
   }
   for (const char* kind : {"cars", "wheels"}) {
+    if (!fs::is_directory(out.media / kind, ec)) continue;
     auto& map = kind[0] == 'c' ? out.base_cars : out.base_wheels;
     std::vector<fs::path> zips;
     for (const auto& e : fs::directory_iterator(out.media / kind, ec))

@@ -402,14 +402,14 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
   const uint32_t rh = re.h ? re.h : height;
   if (samples_ != VK_SAMPLE_COUNT_1_BIT &&
       !create_image(rw, rh, 1, scene_format(), samples_,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, msaa_color_)) {
     error = "MSAA colour target";
     return false;
   }
   const VkImageUsageFlags depth_usage =
       samples_ != VK_SAMPLE_COUNT_1_BIT
-          ? (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT)
+          ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
           : (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
   if (!create_image(rw, rh, 1, depth_format_, samples_, depth_usage,
                     VK_IMAGE_ASPECT_DEPTH_BIT, depth_)) {

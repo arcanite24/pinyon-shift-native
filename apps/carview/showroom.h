@@ -905,6 +905,7 @@ class Showroom {
   }
   // Whether the car is drawn (the world reference frame leaves it out).
   void set_draw_car(bool draw) { draw_car_ = draw; }
+  void set_driver_visible(bool visible) { draw_driver_ = visible; }
   // Paint (SPEC-AUTOSHOW-PAINT, Manufacturer colors): the car's colour
   // rows, the drawn one, and a live preview that retints the paint draws
   // (metallic flag and stripe too; a row's own atlas needs the car rebuilt).
@@ -1511,6 +1512,7 @@ class Showroom {
   // The textured world.
   bool world_textured_ = false;
   bool draw_car_ = true;
+  bool draw_driver_ = true;
   VkPipeline world_opaque_ = VK_NULL_HANDLE, world_opaque_after_z_ = VK_NULL_HANDLE,
              world_opaque_dither_ = VK_NULL_HANDLE, world_z_prepass_ = VK_NULL_HANDLE,
              world_coverage_ = VK_NULL_HANDLE, world_alpha_ = VK_NULL_HANDLE, world_water_ = VK_NULL_HANDLE;

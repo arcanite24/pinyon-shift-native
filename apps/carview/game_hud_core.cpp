@@ -161,19 +161,19 @@ void render_fh1_dial(ui::List& l, const DriveHud& st, float cx, float cy, float 
   const std::string unit_lbl = st.metric_units
                                    ? format_unit_label(str("UnitStrings", "IDS_Units_KMH", "km/h"), "km/h")
                                    : format_unit_label(str("UnitStrings", "IDS_Units_MPH", "mph"), "mph");
-  l.text(cx, cy - 31.5f * s, unit_lbl, unit_ts);
+  l.text(cx, cy - 35.0f * s, unit_lbl, unit_ts);
 
   const double disp_spd = st.metric_units ? std::fabs(st.kmh) : (std::fabs(st.kmh) * 0.62137119);
   const int v = std::min(999, int(std::lround(disp_spd)));
   char digits[8];
   std::snprintf(digits, sizeof digits, "%03d", v);
   const size_t lead = v >= 100 ? 0 : v >= 10 ? 1 : 2;
-  const float slot_w = 21.5f * s;
-  const float speed_y = cy - 16.5f * s;
+  const float slot_w = 20.5f * s;
+  const float speed_y = cy - 22.5f * s;
   for (int i = 0; i < 3; ++i) {
     const float slot_cx = cx + float(i - 1) * slot_w;
     const bool is_lead = size_t(i) < lead;
-    TextStyle dts = font(ui::Font::kE, 30.5f * s, is_lead ? rgba(235, 238, 244, 68) : rgba(250, 251, 255, 255),
+    TextStyle dts = font(ui::Font::kE, 29.0f * s, is_lead ? rgba(235, 238, 244, 68) : rgba(250, 251, 255, 255),
                          Align::kCenter);
     dts.stretch = 0.86f;
     const std::string ch(1, digits[i]);
@@ -189,18 +189,19 @@ void render_fh1_dial(ui::List& l, const DriveHud& st, float cx, float cy, float 
   char gb[8];
   if (!gear) std::snprintf(gb, sizeof gb, "%d", st.gear), gear = gb;
   if (at_redline) {
-    l.circle(cx - 21.0f * s, cy + 28.5f * s, 12.5f * s, ui::fade(kNeedleHot, 0.25f + 0.55f * red_pulse));
+    l.circle(cx - 24.0f * s, cy + 28.0f * s, 12.0f * s, ui::fade(kNeedleHot, 0.25f + 0.55f * red_pulse));
   }
   const uint32_t gear_col = at_redline ? (red_pulse > 0.5f ? rgba(255, 68, 132, 255) : rgba(255, 240, 246, 255))
                                        : rgba(238, 240, 245, 245);
-  TextStyle gts = font(ui::Font::kE, 18.5f * s, gear_col, Align::kCenter);
+  TextStyle gts = font(ui::Font::kE, 18.0f * s, gear_col, Align::kCenter);
   gts.stretch = 0.92f;
   TextStyle gsh = gts;
   gsh.color = rgba(0, 0, 0, 145);
-  l.text(cx - 21.0f * s + 1.0f * s, cy + 19.5f * s + 1.2f * s, gear, gsh);
-  l.text(cx - 21.0f * s, cy + 19.5f * s, gear, gts);
+  l.text(cx - 24.0f * s + 1.0f * s, cy + 19.0f * s + 1.2f * s, gear, gsh);
+  l.text(cx - 24.0f * s, cy + 19.0f * s, gear, gts);
 
-  // R3-UI-03: Tri-state ABS / TCS / STM badges (OFF dimmed grey, ON steady white, Intervening ~7 Hz amber blink).
+  // R3-UI-03: Tri-state ABS / TCS / STM badges (OFF dimmed grey, ON steady white, Intervening ~7 Hz amber blink)
+  // aligned cleanly below the speed digits and to the right of the gear indicator with zero overlap.
   const AssistBadgeState abs_st = compute_assist_badge_state(st.abs_enabled, st.abs, st.abs_flash_timer);
   const AssistBadgeState tcs_st = compute_assist_badge_state(st.tcs_enabled, st.tcs, st.tcs_flash_timer);
   const AssistBadgeState stm_st = compute_assist_badge_state(st.stm_enabled, st.stm, st.stm_flash_timer);
@@ -226,11 +227,11 @@ void render_fh1_dial(ui::List& l, const DriveHud& st, float cx, float cy, float 
     }
   }
   if (!drew_assists) {
-    draw_assist_badge(l, cx - 1.5f * s, cy + 23.0f * s, s, "ABS", abs_st, st.time, false);
-    draw_assist_badge(l, cx + 22.0f * s, cy + 23.0f * s, s, "TCS", tcs_st, st.time, false);
-    draw_assist_badge(l, cx + 45.5f * s, cy + 23.0f * s, s, "STM", stm_st, st.time, true);
+    draw_assist_badge(l, cx + 1.0f * s, cy + 24.5f * s, s, "ABS", abs_st, st.time, false);
+    draw_assist_badge(l, cx + 23.0f * s, cy + 24.5f * s, s, "TCS", tcs_st, st.time, false);
+    draw_assist_badge(l, cx + 45.0f * s, cy + 24.5f * s, s, "STM", stm_st, st.time, true);
   } else {
-    draw_assist_badge(l, cx + 44.0f * s, cy + 23.0f * s, s, "STM", stm_st, st.time, true);
+    draw_assist_badge(l, cx + 46.0f * s, cy + 24.5f * s, s, "STM", stm_st, st.time, true);
   }
 
   // Optional Forced-Induction Boost mini-bar (BAR when metric, PSI when imperial) tucked neatly below gear/assist row.

@@ -112,6 +112,13 @@ struct DriveConfig {
   bool cli_ssr_explicit = false;
   bool cli_volfog_explicit = false;
   bool cli_cardetail_explicit = false;
+  bool cli_preset_explicit = false;
+  bool cli_msaa_explicit = false;
+  bool cli_aa_explicit = false;
+  bool cli_texcap_explicit = false;
+  bool cli_fpscap_explicit = false;
+  bool cli_scale_explicit = false;
+  bool cli_output_explicit = false;
   uint32_t cli_hdr_pattern = 0;
   float cli_hdr_pattern_nits = 1000.0f;
   bool cli_perf_overlay = false;

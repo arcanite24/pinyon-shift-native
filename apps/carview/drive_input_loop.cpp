@@ -36,6 +36,9 @@ void DriveSession::try_trigger_rewind() {
 void DriveSession::poll_sdl_events() {
   SDL_Event e;
   while (SDL_PollEvent(&e)) {
+            if ((e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP) && e.key.key == SDLK_AC_BACK) {
+              e.key.key = SDLK_ESCAPE;
+            }
             if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_TERMINATING) running = false;
             // Android / mobile lifecycle (WILL/DID_ENTER_BACKGROUND, FOREGROUND, LOW_MEMORY).
             if (const auto lc = app_lifecycle.handle_event(e.type, app.audio_host.running()); lc.handled) {
@@ -52,7 +55,12 @@ void DriveSession::poll_sdl_events() {
               }
               if (lc.trim_memory) {
                 host.showroom.set_low_memory_mode(true);
-                host.showroom.set_world_texture_budget({96u * 1024u * 1024u, 256u});
+                host.showroom.set_world_texture_budget({48u * 1024u * 1024u, 256u});
+                if (!festival_guests.empty()) {
+                  host.renderer.wait_idle();
+                  host.showroom.set_instances({});
+                  festival_guests.clear();
+                }
               }
               continue;
             }

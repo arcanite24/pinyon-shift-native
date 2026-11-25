@@ -584,6 +584,10 @@ bool Renderer::create_device(std::string& error) {
       f2.features.samplerAnisotropy = VK_TRUE;
       anisotropy_ = std::min(options_.anisotropy, props.limits.maxSamplerAnisotropy);
     }
+    if (offered.textureCompressionBC) {
+      f2.features.textureCompressionBC = VK_TRUE;
+      bc_compression_supported_ = true;
+    }
   }
   std::vector<const char*> extensions;
   if (surface_) extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);

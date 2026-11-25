@@ -1145,7 +1145,7 @@ void Showroom::update_driver_mesh(float wheel_rad) {
 }
 
 void Showroom::record_driver_draw(VkCommandBuffer cmd) {
-  if (!vfx_ready_ || !world_opaque_ || !world_white_set_) return;
+  if (!draw_driver_ || !vfx_ready_ || !world_opaque_ || !world_white_set_) return;
   if (!driver_assets_tried_ && !guest_ && r_.device_ && !options_.game_root.empty()) {
     (void)load_driver_assets();
   }

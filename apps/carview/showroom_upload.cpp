@@ -9,8 +9,18 @@
 namespace carview {
 
 bool Showroom::upload(std::string& error) {
-  const modern::WorldMemoryBudget mem_budget =
+  modern::WorldMemoryBudget mem_budget =
       modern::choose_world_memory_budget(r_.device_local_bytes(), low_memory_mode_, reflection_rate_);
+#ifdef __ANDROID__
+  // Android devices share unified RAM across CPU & GPU, so device_local_bytes
+  // reports total RAM rather than dedicated VRAM. Cap the world arena and
+  // texture LRU so streaming stays comfortably below lowmemorykiller thresholds.
+  mem_budget.vertex_arena_bytes = std::min<uint64_t>(mem_budget.vertex_arena_bytes, 96ULL << 20);
+  mem_budget.texture_lru_bytes = std::min<uint64_t>(mem_budget.texture_lru_bytes, 96ULL << 20);
+  mem_budget.texture_lru_count = std::min<uint32_t>(mem_budget.texture_lru_count, 768u);
+  mem_budget.dyn_env_size = 128;
+  mem_budget.dyn_env_mips = 8;
+#endif
   dyn_env_size_ = mem_budget.dyn_env_size;
   dyn_env_mips_ = std::min(mem_budget.dyn_env_mips, kDynEnvMips);
   {

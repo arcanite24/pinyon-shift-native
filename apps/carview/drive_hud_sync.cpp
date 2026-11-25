@@ -911,7 +911,12 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           carview::draw_radio_popup_gpu(list, radio_popup_gpu, float(width), float(height));
         if (app.story_intro.stage() == carview::StoryStage::kBootSplash)
           app.story_intro.draw_hud(list, float(width), float(height));
-        if (!app.show_title && !ceremony.active) {
+        const bool suppress_campaign_hud =
+            map_overlay.active || !st.menu.empty() || settings_page.is_open() || career_page.is_open() ||
+            events_page.is_open() || outpost_hub_open || garage_open || shop.is_open() || autoshow.is_open() ||
+            paint_open || club_open || car_club_open || app.rally_hub_open || app.rally_service_open ||
+            app.rally_results_open || grid_menu_open;
+        if (!app.show_title && !ceremony.active && (!suppress_campaign_hud || app.campaign.is_blocking_gameplay())) {
           carview::campaign_ui::DrawContext cctx;
           cctx.screen_w = float(width);
           cctx.screen_h = float(height);

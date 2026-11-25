@@ -285,6 +285,9 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
         it.rect[1] = vy0;
         it.rect[2] = vx1;
         it.rect[3] = vy1;
+      } else if ((it.flags & ui::kUiFlagFullscreenX) != 0u) {
+        it.rect[0] = vx0;
+        it.rect[2] = vx1;
       } else if ((it.flags & ui::kUiFlagFullscreenCover) != 0u) {
         const float video_aspect = it.r[0] > 0.01f ? it.r[0] : (16.0f / 9.0f);
         float draw_w = vw_phys, draw_h = vh_phys;

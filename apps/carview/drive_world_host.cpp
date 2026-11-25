@@ -338,7 +338,11 @@ bool DriveWorldHost::open_world_and_car() {
       const std::string level = !app.shadows_flag.empty() ? app.shadows_flag : app.low_preset ? "low" : "high";
       ShadowSettings& shadow = render_options.shadow;
       if (level == "low") {
+#ifdef __ANDROID__
+        shadow.size = 768, shadow.radius = 40, shadow.taps = 1, shadow.cascades = 2;
+#else
         shadow.size = 1024, shadow.radius = 40, shadow.taps = 1, shadow.cascades = 2;
+#endif
       } else if (level == "high") {
         shadow.size = 2048, shadow.radius = 60, shadow.taps = 4;
         shadow.cascades = uint32_t(carview::modern::shadow_cascade_count(app.cli_graphics.shadow_pcss));
@@ -654,12 +658,29 @@ bool DriveWorldHost::open_world_and_car() {
           gather_options.render_data = !app.flat_world;
           gather_options.props = !app.no_props;
           gather_options.route = active_route;
-          if (!app.flat_world && !app.no_far) gather_options.far_radius = 3000;
+          if (!app.flat_world && !app.no_far) {
+#ifdef __ANDROID__
+            gather_options.far_radius = app.low_preset ? 2200.0 : 3000.0;
+#else
+            gather_options.far_radius = 3000;
+#endif
+          }
           if (const char* fi = std::getenv("SHIFT_FAR_INNER")) gather_options.far_inner = std::atof(fi);
-          if (!app.flat_world && !app.no_trees) gather_options.tree_radius = kTreeRadius;
+          if (!app.flat_world && !app.no_trees) {
+#ifdef __ANDROID__
+            gather_options.tree_radius = app.low_preset ? 850.0 : kTreeRadius;
+#else
+            gather_options.tree_radius = kTreeRadius;
+#endif
+          }
           if (!app.flat_world) {
+#ifdef __ANDROID__
+            const double prop_radius = app.low_preset ? 320.0 : kPropRadius;
+            gather_options.radius = app.low_preset ? 420.0 : kModelRadius;
+#else
             const double prop_radius = app.low_preset ? kLowPropRadius : kPropRadius;
             gather_options.radius = app.low_preset ? kLowModelRadius : kModelRadius;
+#endif
             gather_options.prop_radius = prop_radius;
             gather_options.prop_near_radius = kPropLod0 + kPropLodBand + kRegather + kSwapLag;
             showroom.set_world_fade(float(kPropLod0), float(kPropLodBand),

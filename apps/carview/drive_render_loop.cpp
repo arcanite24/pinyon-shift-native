@@ -277,7 +277,8 @@ void DriveSession::run_window_loop() {
         if (app.pending_barn_restorations.empty() && app.have_saved && !app.saved.pending_barn_restorations.empty()) {
           restore_pending_barns_from_save(app, app.saved);
         }
-        slice12.sync_pad_capabilities(pads);
+        slice12.sync_pad_capabilities(pads, !pads.empty());
+        if (!pads.empty()) app.touch_controls.notify_gamepad_input(0.0);
         slice12.sync_wheel_devices();
         photo_mode.set_metric_units(app.metric_units);
         app.story_intro.set_metric_units(app.metric_units);
