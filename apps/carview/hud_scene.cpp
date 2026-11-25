@@ -559,9 +559,12 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
     }
   }
 
-  // Sort by BSG Z depth (back to front), preserving tree order for equal Z.
+  // Sort by BSG Z depth, back to front, preserving tree order for equal Z.
+  // The scenes' cameras sit at z -600 looking down +z, so the nearer node has
+  // the smaller z (a row's text at -14 over its tapes at -10 and -11) and draws
+  // last.
   std::stable_sort(drawables.begin(), drawables.end(), [](const DrawEntry& a, const DrawEntry& b) {
-    if (std::fabs(a.z - b.z) > 1e-4f) return a.z < b.z;
+    if (std::fabs(a.z - b.z) > 1e-4f) return a.z > b.z;
     return a.order < b.order;
   });
 
