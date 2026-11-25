@@ -339,7 +339,127 @@ AiCarState ai_state(const Vehicle& v) {
                             : float(std::clamp(std::atan(cp.steer_gees_fit * cp.steer_max_gees * cp.gravity * s.wheelbase / (sp * sp)),
                                                std::min(cp.steer_min_lock, cp.max_steer), cp.max_steer));
   }
+  s.yaw_rate = float(v.angular_velocity().y);
   return s;
+}
+
+AiYawGain ai_yaw_gain(const CarParams& p) {
+  AiYawGain g;
+  g.fill(4.0f);
+  const FlatGround flat;
+  const auto& wc = p.wheel_centres;
+  const double wb = std::max(0.5, std::fabs((wc[0].z + wc[1].z) / 2 - (wc[2].z + wc[3].z) / 2));
+  for (int b = 0; b < int(g.size()); ++b) {
+    const double v = (b + 0.5) * 5;
+    Vehicle car(p);
+    car.set_ai_controls(true);
+    car.launch({0, 0, 0}, 0.0, v);
+    // A small steer: about 1.5 m/s^2 on the kinematic path, inside the
+    // tyres' linear range.
+    const double lock = std::max(0.05, car.steer_lock());
+    const double s = std::clamp(1.5 * wb / (v * v) / lock, 0.004, 0.1);
+    double sum = 0;
+    int n = 0;
+    for (int k = 0; k < 150; ++k) {
+      Input in;
+      in.steer = s;
+      const double err = v - car.speed();
+      if (err > 0) in.throttle = std::clamp(0.3 + 0.2 * err, 0.0, 1.0);
+      else in.brake = std::clamp(-0.1 * err, 0.0, 1.0);
+      car.step(in, flat);
+      if (k >= 90) sum += car.angular_velocity().y, ++n;
+    }
+    const double r = sum / std::max(1, n) / s;
+    if (std::isfinite(r) && r > 0.05 && r < 40) g[size_t(b)] = float(r);
+  }
+  return g;
+}
+
+double ai_yaw_gain_at(const AiYawGain& g, double v) {
+  const double x = std::max(0.0, v / 5.0 - 0.5);
+  const int i = std::min(int(x), int(g.size()) - 2);
+  const double f = std::clamp(x - i, 0.0, 1.0);
+  return g[size_t(i)] + f * (g[size_t(i + 1)] - g[size_t(i)]);
+}
+
+namespace {
+double mean_gain(const AiYawGain& G) {
+  double gbar = 0;
+  for (int b = 3; b <= 8; ++b) gbar += G[size_t(b)];
+  return std::max(0.5, gbar / 6);
+}
+}  // namespace
+
+double ai_controller_lookahead(const AiCarState& c, const AiYawGain& G, double chi_car, double floor_track,
+                               AiSteerState& st) {
+  constexpr double dt = Vehicle::kStep;
+  // v x T, T = 1.2 / mean G (at most 1 s), stretched up to 4 x in a slide
+  // (heading . velocity 0.98 or less); the floor runs from 0.25 m at 7 m/s
+  // to the track's at 17 m/s and falls at most 0.2 m a 30 Hz frame; the
+  // look-ahead grows at most 0.9 v dt a step; 40 m more off the road.
+  const double T = std::clamp(0.6 * 2.0 / mean_gain(G), 0.0, 1.0);
+  const double vlen = std::hypot(c.vel_x, c.vel_z);
+  const double dcos = vlen > 0.5 ? (c.vel_x * c.fwd_x + c.vel_z * c.fwd_z) / vlen : 1.0;
+  const double slide = dcos <= 0.98 ? 4.0 : dcos >= 1.0 ? 1.0 : 1.0 + 3.0 * (1.0 - dcos) / 0.02;
+  const double v = std::fabs(c.speed);
+  const double hi_floor = std::max(double(st.look) - 0.2 * 30 * dt, floor_track);
+  const double lower = v <= 7 ? 0.25 : v >= 17 ? hi_floor : 0.25 + (hi_floor - 0.25) * (v - 7) / 10;
+  const double upper = std::min(double(st.look) + 0.9 * v * dt, 100.0);
+  const double Lk = std::min(std::max(v * T * slide, lower), upper);
+  st.look = float(Lk);
+  return std::clamp(Lk + 40 * std::clamp(std::fabs(chi_car) - 1, 0.0, 1.0), 6.0, 100.0);
+}
+
+double ai_controller_steer(const AiCarState& c, const AiYawGain& G, const AiCapacity* cap, double chi_car, double e,
+                           double lx, double lz, double gx, double gz, bool back, AiSteerState& st) {
+  const double v = std::fabs(c.speed);
+  const double gbar = mean_gain(G);
+  const double D = std::max(0.1, std::hypot(lx, lz));
+  // More than a metre off the line, the tangent turns towards the point.
+  if (std::fabs(e) > 1) {
+    const double w = std::clamp((std::fabs(e) - 1) / 4, 0.0, 1.0);
+    gx = (1 - w) * gx + w * lx / D, gz = (1 - w) * gz + w * lz / D;
+    const double gl = std::max(1e-6, std::hypot(gx, gz));
+    gx /= gl, gz /= gl;
+  }
+  // The Hermite curve from the car (tangent D f) to the point (tangent
+  // D g), at s = 0.8: its tangent's angle and the chord's length.
+  const double hx = 0.96 * lx + 0.32 * D * gx, hz = 0.96 * lz - 0.28 * D + 0.32 * D * gz;
+  const double cx = 0.896 * lx - 0.128 * D * gx, cz = 0.896 * lz + 0.032 * D - 0.128 * D * gz;
+  const double ell = std::max(0.1, std::hypot(cx, cz));
+  const double a = std::atan2(hx, hz);
+  double wd = std::fabs(chi_car) < 1.1 ? 2 * v * std::sin(a) / ell : a;
+  // The steering-saturation grip term, open while the driver's grip level
+  // is above 0.94: the curve's curvature over the lateral limit's (the
+  // table without the skill), past 0.8, up to ramp(level, 0.94, 1.25);
+  // recomputed every update.
+  st.sat = 0;
+  constexpr double kLevelMin = 0.94, kLevelMax = 1.25;
+  if (cap && v > 1 && st.level > kLevelMin) {
+    const double alat = double(cap->lateral[size_t(AiCapacity::index(v))]) * ai_aero_factor(v);
+    if (alat > 0) {
+      const double r = std::fabs(std::sin(a)) / ell * v * v / alat;
+      const double top = std::min(1.0, (double(st.level) - kLevelMin) / (kLevelMax - kLevelMin));
+      if (r > 0.8) st.sat = float(std::min(r - 0.8, top));
+    }
+  }
+  // The lateral limit: the curve's curvature capped at the car's lateral
+  // capacity (the planner's table x the aero factor) over v^2.
+  if (std::fabs(chi_car) < 0.9 && cap && v > 1) {
+    const double alat = double(cap->lateral[size_t(AiCapacity::index(v))]) * ai_aero_factor(v);
+    const double q = std::fabs(std::sin(a)) / ell, lim = alat / (v * v);
+    if (alat > 0 && q > lim) wd /= q / lim;
+  }
+  double s = wd / std::max(0.2, ai_yaw_gain_at(G, v));
+  // Yaw-rate damping, never past straight ahead.
+  const double sd = s - double(c.yaw_rate) * 0.75 * (2 / gbar) * (2 / gbar);
+  s = s != 0 && sd * s < 0 ? 0.0 : sd;
+  s = std::clamp(s, -1.0, 1.0);
+  // The under-steer boost: while steering back, the steer grows by the
+  // growth of |e| (1 to 2 x).
+  const double ae = std::fabs(e);
+  st.boost = back ? float(std::clamp(double(st.boost) + (ae - double(st.abs_e)), 1.0, 2.0)) : 1.0f;
+  return std::clamp(s * double(st.boost), -1.0, 1.0);
 }
 
 AiField::AiField(const RacingLine& line, size_t cars, const Options& options)
@@ -355,6 +475,17 @@ AiField::AiField(const RacingLine& line, size_t cars, const Options& options)
       target_(cars, 0),
       cap_(cars, 1e9f),
       prev_steer_(cars, 0),
+      look_(cars, 7.5f),
+      boost_(cars, 1.0f),
+      abs_e_(cars, 0),
+      chi_(cars, 0),
+      prev_throttle_(cars, 0),
+      sat_(cars, 0),
+      yaw_gain_(cars, [] {
+        AiYawGain g;
+        g.fill(4.0f);
+        return g;
+      }()),
       capacity_(cars, nullptr),
       plan_c_(cars, 0),
       plan_b_(cars, 0),
@@ -391,6 +522,7 @@ void AiField::set_progress(size_t i, double distance) {
   seg_[i] = uint32_t(line_.segment(distance, 0));
   progress_[i] = distance;
   prev_steer_[i] = 0.0f;
+  look_[i] = 7.5f, boost_[i] = 1.0f, abs_e_[i] = 0, chi_[i] = 0, prev_throttle_[i] = 0, sat_[i] = 0;
 }
 
 double AiField::planned_speed(size_t i, double p) const {
@@ -451,6 +583,7 @@ void AiField::place(size_t i, double distance, float lane, float skill) {
   lane_[i] = lane;
   skill_[i] = skill;
   prev_steer_[i] = 0.0f;
+  look_[i] = 7.5f, boost_[i] = 1.0f, abs_e_[i] = 0, chi_[i] = 0, prev_throttle_[i] = 0, sat_[i] = 0;
 }
 
 void AiField::start_pose(size_t i, double& x, double& z, double& heading) const {
@@ -548,11 +681,43 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     }
     Input& in = inputs[i];
     in = Input{};
-    const float raw_steer = c.steer_lock > 0 ? std::clamp(delta / c.steer_lock, -1.0f, 1.0f) : 0.0f;
+    float raw_steer = c.steer_lock > 0 ? std::clamp(delta / c.steer_lock, -1.0f, 1.0f) : 0.0f;
+    // The title's line controller (decoded, SPEC-RACE-AI Steering).
+    const double dt = Vehicle::kStep;
+    const double e = double(cross_[i]) - double(lane_[i]);  // m from the driven line
+    double chi_car = 0;
+    bool back = false;
+    if (o_.controller) {
+      const bool rooms = L.room_right.size() == L.size() && L.room_left.size() == L.size();
+      const double hw_side = rooms ? double(cross_[i] >= 0 ? L.room_right[s] : L.room_left[s]) : 4.5;
+      chi_car = cross_[i] / std::max(1.0, hw_side);
+      const AiYawGain& G = yaw_gain_[i];
+      // The grip level: the planner's cornering scalar C (the AISkills
+      // cornering skill, boosts included; 0 without a set_planner plan).
+      AiSteerState ss{look_[i], boost_[i], abs_e_[i], capacity_[i] ? plan_c_[i] : 0.0f};
+      const double Ltot = ai_controller_lookahead(c, G, chi_car, o_.min_lookahead_track, ss);
+      back = double(prev_steer_[i]) * e < 0;  // steering back towards the line
+      // The aim point on the driven line, moved 0.2 e towards the car when
+      // more than a metre off it.
+      double lane_aim = lane_[i];
+      if (std::fabs(chi_car) < 0.9 && (std::fabs(e) > 1 || back)) lane_aim += 0.2 * e;
+      const double la = progress_[i] + Ltot;
+      const size_t ks = L.segment(la, s);
+      const double kf = std::clamp((la - L.dist[ks]) / std::max(1e-6, double(L.dist[ks + 1] - L.dist[ks])), 0.0, 1.0);
+      const double kex = L.x[ks + 1] - L.x[ks], kez = L.z[ks + 1] - L.z[ks];
+      const double klen = std::max(1e-6, std::hypot(kex, kez));
+      const double ptx = L.x[ks] + kf * kex + lane_aim * kez / klen, ptz = L.z[ks] + kf * kez - lane_aim * kex / klen;
+      // In the car's frame (x right, z forward).
+      const double rx0 = ptx - c.x, rz0 = ptz - c.z;
+      const double lx0 = rx0 * c.fwd_z - rz0 * c.fwd_x, lz0 = rx0 * c.fwd_x + rz0 * c.fwd_z;
+      const double gx = (kex * c.fwd_z - kez * c.fwd_x) / klen, gz = (kex * c.fwd_x + kez * c.fwd_z) / klen;
+      raw_steer = float(ai_controller_steer(c, G, capacity_[i], chi_car, e, lx0, lz0, gx, gz, back, ss));
+      look_[i] = ss.look, boost_[i] = ss.boost, sat_[i] = ss.sat;
+    }
     float steer_out = raw_steer;
     // No rate limit on the slip rule (SPEC-RACE-AI: the wheels follow the
     // steer at every speed); pure pursuit keeps its own.
-    if (o_.steer_rate > 0.0f && !o_.slip_rule) {
+    if (o_.steer_rate > 0.0f && !o_.slip_rule && !o_.controller) {
       const float vz_b = c.vel_x * c.fwd_x + c.vel_z * c.fwd_z;
       const float vx_b = c.vel_x * c.fwd_z - c.vel_z * c.fwd_x;
       const bool sliding = std::hypot(vx_b, vz_b) > 5.0f && vz_b > 1.0f && std::fabs(std::atan2(vx_b, vz_b)) > 0.12f;
@@ -578,6 +743,28 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     } else if (err >= 0) in.throttle = std::clamp(0.15f + o_.throttle_gain * err, 0.0f, 1.0f);
     else if (err < -o_.deadband) in.brake = std::clamp(o_.brake_gain * (-err - o_.deadband), 0.0f, 1.0f);
     else in.throttle = 0.1f;
+    if (o_.controller) {
+      // Track-edge avoidance: steering back but still running out, with
+      // the edge under 1.25 (half widths per m/s) away, below the plan:
+      // ease the gas by 0.016 x d|e|/dt.
+      const double ae = std::fabs(e);
+      const double de = (ae - double(abs_e_[i])) / dt;
+      if (o_.track_edge_avoidance && back && de > 0 && ae > 0.5) {
+        const double room = chi_car > double(chi_[i]) ? 1 - chi_car : 1 + chi_car;
+        if (room > 0 && room / de < 1.25 && err > -1 && err > 0) {
+          in.throttle = float(std::clamp(double(prev_throttle_[i]) - 0.016 * de, 0.0, 1.0));
+          in.brake = 0;
+        }
+      }
+      // Turned 84 degrees or more off the line (the heading's dot with the
+      // line's direction under 0.1): at most 0.6 gas.
+      {
+        const double sx = L.x[s + 1] - L.x[s], sz = L.z[s + 1] - L.z[s];
+        const double sl = std::hypot(sx, sz);
+        if (sl > 1e-6 && (c.fwd_x * sx + c.fwd_z * sz) / sl < 0.1) in.throttle = std::min(float(in.throttle), 0.6f);
+      }
+      abs_e_[i] = float(ae), chi_[i] = float(chi_car), prev_throttle_[i] = float(in.throttle);
+    }
   }
 }
 

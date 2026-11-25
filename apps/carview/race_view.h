@@ -323,6 +323,7 @@ class RaceView {
     float traction_cap = 1;  // drive::ai_traction's state
     race::RaceBoost boost;   // this step's start or nemesis boost (race::race_boost)
     drive::AiCapacity capacity;  // the speed planner's tables (SPEC-RACE-AI)
+    drive::AiYawGain yaw_gain{};  // the line controller's G(v)
     double upgrade_t = 0;        // AI car upgrades: > 0 up, < 0 down (fraction of the range)
     int target_shown_pi = 0;     // faked target shown PI when UpgradeAI is active
     int upgraded_shown_pi = 0;   // solved/upgraded shown PI displayed on HUD & standings
@@ -408,6 +409,7 @@ class RaceView {
   race::DlsSettings dls_settings_;
   std::vector<race::DlsState> dls_state_;
   float slope_curvature_ = 0.75f;
+  bool track_edge_avoidance_ = true;  // the set's DisableTrackEdgeAvoidance false
   std::vector<drive::DraftCar> draft_pool_scratch_;
   std::vector<drive::DraftCar> draft_leaders_scratch_;
   std::vector<double> draft_leader_strength_scratch_;

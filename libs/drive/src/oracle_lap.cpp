@@ -1,5 +1,7 @@
 #include "drive/oracle_lap.h"
 
+#include "drive/ai_driver.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -235,6 +237,39 @@ Input LineFollower::input(const Vehicle& v) {
   Input in;
   pedals_at(progress_, in.throttle, in.brake);
   const double speed = std::fabs(v.speed());
+  if (options_.controller) {
+    if (!tables_) {
+      const AiCapacity cap = ai_capacity(v.params());
+      lateral_ = cap.lateral;
+      gain_ = ai_yaw_gain(v.params());
+      tables_ = true;
+    }
+    AiCapacity cap;
+    cap.lateral = lateral_;
+    const AiCarState c = ai_state(v);
+    // The oracle's path has no road widths: 4.5 m half widths (the race
+    // lines' measured spread), so chi stays inside the road.
+    const double e = cross_, chi = cross_ / 4.5;
+    AiSteerState ss{look_, boost_, abs_e_};
+    const double ltot = ai_controller_lookahead(c, gain_, chi, 8.0, ss);
+    const bool back = double(prev_steer_) * e < 0;
+    double tx = 0, tz = 0, ux = 0, uz = 0;
+    point_at(progress_ + ltot, tx, tz);
+    point_at(progress_ + ltot + 1.0, ux, uz);
+    double gx = ux - tx, gz = uz - tz;
+    const double gl = std::max(1e-6, std::hypot(gx, gz));
+    gx /= gl, gz /= gl;
+    if (std::fabs(chi) < 0.9 && (std::fabs(e) > 1 || back)) tx += 0.2 * e * gz, tz -= 0.2 * e * gx;
+    const double rx = tx - c.x, rz = tz - c.z;
+    const double lx = rx * c.fwd_z - rz * c.fwd_x, lz = rx * c.fwd_x + rz * c.fwd_z;
+    const double cgx = gx * c.fwd_z - gz * c.fwd_x, cgz = gx * c.fwd_x + gz * c.fwd_z;
+    const double st = ai_controller_steer(c, gain_, &cap, chi, e, lx, lz, cgx, cgz, back, ss);
+    look_ = ss.look, boost_ = ss.boost, abs_e_ = float(std::fabs(e)), prev_steer_ = float(st);
+    saturated_ = std::fabs(st) >= 1.0;
+    sat_ = ss.sat;
+    in.steer = st;
+    return in;
+  }
   if (options_.slip_rule) {
     // The AI's rule: the bearing of the line point T v ahead and the body's
     // slip angle, no speed narrowing and no rate limit.

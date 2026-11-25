@@ -3184,6 +3184,14 @@ cars. NR02's Challenger went from 138.6 s with 0 resets to 277.1 s with
   never acted. The engine's TCS reaches 1.0 for three steps at the launch,
   against the title's 0.064 peak.
 
+Update: under the decoded line controller (Q125), STM acts on 0 steps of
+the oracle lap. TCS still reaches 1.0, but only for three steps (25 ms)
+at the launch. In a race the AI's TCS target is a slip ratio of 0.77
+(`AssistsTCSSlipDefMoving` 0.5, `TCSFullEffectFricDiffAI` 0.25 and the steer
+scale), so on NR02 it never cut the Challenger's power slide (rear slip
+0.15 to 0.6). Running the race without TCS or without STM made NR02
+slower, by 31 s and 27 s.
+
 Gate (seed 1, AI mean time / resets), oracle in brackets:
 
 | Event | Before (f55db691) | Neither assist | TCS + STM | TCS + STM + `ai_traction` |
@@ -3310,3 +3318,83 @@ round for the festival cars, so their hour factor may not be traffic's.
 Needed: the group spawn's rule (how many cars, where, and whether they
 drive together), the festival cars' hour factor, and a free-roam count
 of festival cars against D_s at one more site than the oracle's road.
+
+## Q125 (WORLD-02/03, not blocking): the line controller's interim parts
+
+The race AI and the oracle lap's follower now steer by the decoded line
+controller (PredictiveControllerRLH) instead of the slip rule. The slip
+rule was ours: `0.27 alpha + 0.29 beta` on a look-ahead of 1.0 s x v.
+The decode found no slip-angle or countersteer term anywhere between the
+controller and the wheels. The engine now runs these decoded parts:
+
+- The look-ahead is T x v, with T = clamp(1.2 / G, 0, 1) s. It carries
+  the slide stretch, the speed floor, the limits on growth and fall, and
+  the widening by 40 x (|chi| - 1), clamped to 6 to 100 m.
+- The aim is the Hermite curve at s = 0.8, which gives omega = 2 v sin(a)
+  / l (or a, past |chi| 1.1). Inside |chi| 0.9, omega is capped by the
+  lateral limit.
+- steer = omega / G(v), less a yaw-rate damping of 0.75 (2 / G)^2 that
+  never crosses straight ahead. The under-steer boost (1 to 2) applies
+  while steering back.
+- More than a metre off the line, the aim point moves 0.2 e towards the
+  car and the tangent turns towards the point.
+- Track-edge avoidance acts on the throttle only (prev - 0.016 d|e|/dt),
+  and the set's `DisableTrackEdgeAvoidance` turns it off.
+- With the heading 84 degrees or more off the line, the gas is at most
+  0.6.
+- The steering-saturation grip term goes on both axles' AI grip factor.
+  It applies past 0.8 of the lateral limit's curvature and is recomputed
+  every update. Its cap is ramp(level, 0.94, 1.25), where the level is
+  the drivatar's cornering skill: AISkills' `SoloLapping_Cornering*`,
+  times the nemesis `SkillBoostFactor` 1.5, at most 1.25. The engine
+  uses the planner's C as the level, boosts included. A car with no
+  drivatar profile has a level of 0.95, so the term is next to nothing,
+  and the oracle lap's follower does not apply it. On the title's oracle
+  lap, all 285 of the AI grip factor's non-unit samples have the 1.1 rear
+  ratio, with no equal-axle term.
+
+The oracle lap is now 38.976 s, +0.50 % (it was 39.003 s under the slip
+rule). Its cross-track error is at most 1.04 m (rms 0.27 m), against
+3.38 m before. STM acts on 0 steps, against 87.
+
+Interim (ours):
+
+- G(v) is the yaw rate per unit steer, in 20 bins of 5 m/s. Ours comes
+  from our own vehicle sim, a small steady steer on flat ground. The
+  title builds its table per car with its own sim, which was not decoded.
+- The track's look-ahead floor is 8 m; the title's is 6 to 10 m, by
+  track. chi is the cross-track over the line's room on that side (4.5 m
+  on the oracle lap).
+- The pedals keep our band rule. The hold value (a car method) and the
+  off-track cap (from a smoothed wheel metric) were not decoded.
+- The saturation term's threshold of 0.94 is 0.97 when an integer on
+  the car body is 2, and what that integer means is not known.
+  The integer cheat levels (`SoloLapping_NominalCheatLevel`,
+  `SoloLapping_TorqueBoostCheatLevel`) are not loaded. They would raise
+  the level to 1 + 0.025 n and turn on the heavy-braking term. Both are
+  0 here.
+
+Gate: the 3-seed mean of each seed's AI mean time, in seconds, with the
+oracle in brackets. f55db691 is before WORLD-02/03, and the slip rule is
+6faaef8c.
+
+| Event | f55db691 | Slip rule | Controller |
+|---|---|---|---|
+| FR22 (161.5) | 173.1 | 192.5 | 163.8 |
+| FR16 (124.0) | 121.9 | 127.3 | 122.0 |
+| FR24 (110.8) | 108.4 | 109.3 | 108.9 |
+| FR01 (102.7) | 103.6 | 102.3 | 102.1 |
+| NR02 (130.7) | 153.5 | 139.6 | 150.0 |
+| EXHIBITION_FEST_003 (179.0) | 191.0 | 194.2 | 183.6 |
+
+Car-to-car contacts per race were as high as 33,151 under the slip rule
+(FR22, seed 2). Under the controller they are 150 to 631. Most of the slip rule's count came from cars piling up
+behind the line's end after finishing. NR02's rival is the one car that
+still slides: on seed 1 the Challenger power-slides at about 40 m/s and
+spins.
+
+Needed:
+
+- the title's G table for one car, from a memory read of the controller;
+- the hold throttle;
+- the cheat levels per AISkills row.

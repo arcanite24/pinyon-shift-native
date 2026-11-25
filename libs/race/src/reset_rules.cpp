@@ -158,6 +158,8 @@ bool parse_ai_racing_set(std::string_view airacing_xml, std::string_view set, Ai
     d.legal_side = audio::iequals(side, "Right") ? 2 : audio::iequals(side, "Left") ? 1 : 0;
   }
   g(ctl, "SpeedComputerSlopeModifier", r.slope_modifier);
+  if (!ctl->has("DisableTrackEdgeAvoidance")) absent += (absent.empty() ? "" : ", ") + std::string("DisableTrackEdgeAvoidance");
+  else r.disable_track_edge = audio::iequals(ctl->attr("DisableTrackEdgeAvoidance"), "true");
   g(ctl, "SpeedComputerSlopeCurvatureModifier", r.slope_curvature);
   if (!absent.empty()) return fail(error, "AIRacing.xml: set " + std::string(set) + " lacks " + absent);
   out = r;

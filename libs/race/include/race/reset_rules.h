@@ -79,6 +79,7 @@ struct AiRacingSet {
   DlsSettings dls;
   double slope_modifier = 1.0;     // SpeedComputerSlopeModifier
   double slope_curvature = 0.75;   // SpeedComputerSlopeCurvatureModifier
+  bool disable_track_edge = false;  // DisableTrackEdgeAvoidance
 };
 // False (with `error`) when the set, a block or an attribute is missing.
 bool parse_ai_racing_set(std::string_view airacing_xml, std::string_view set, AiRacingSet& out, std::string* error);

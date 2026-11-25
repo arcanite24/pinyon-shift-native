@@ -4,6 +4,7 @@
 // it, and the race clock stopped at the start/finish plane.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -67,6 +68,10 @@ class LineFollower {
     // v ahead, at least 2 m); false: pure pursuit (the M3 interim).
     bool slip_rule = true;
     double slip_lookahead_s = 1.0;
+    // The title's line controller (decoded, drive::ai_controller_steer),
+    // with the car's own capacity and yaw-gain tables; takes precedence
+    // over slip_rule.
+    bool controller = true;
   };
   LineFollower(const OracleLine& line, const Options& options);
 
@@ -75,7 +80,9 @@ class LineFollower {
 
   double progress() const { return progress_; }      // m along the oracle's path
   double cross_track() const { return cross_; }      // m from the line, positive to the car's right
-  bool saturated() const { return saturated_; }      // the stick asked for more than full lock
+  bool saturated() const { return saturated_; }
+  // The controller's steering-saturation grip term (0 to 0.19), last step.
+  double grip_sat() const { return sat_; }      // the stick asked for more than full lock
   double length() const { return dist_.empty() ? 0 : dist_.back(); }
 
   // The oracle's pedals at a distance along its path (the last sample at
@@ -96,6 +103,12 @@ class LineFollower {
   size_t seg_ = 0;
   double progress_ = 0, cross_ = 0;
   bool saturated_ = false;
+  double sat_ = 0;
+  // The line controller's tables (from the car on its first step) and state.
+  bool tables_ = false;
+  std::array<float, 20> gain_{};
+  std::array<float, 40> lateral_{};
+  float look_ = 7.5f, boost_ = 1.0f, abs_e_ = 0, prev_steer_ = 0;
 };
 
 // Times the gate: the race time at which the point crosses the plane in its
