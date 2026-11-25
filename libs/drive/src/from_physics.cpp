@@ -549,14 +549,8 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.steer_slow_speed = get("Data_Car.SteerSpeedSensitiveSlowSpeed", p.steer_slow_speed);
   p.steer_fast_speed = get("Data_Car.SteerSpeedSensitiveFastSpeed", p.steer_fast_speed);
   p.steer_fast_rate_scale = std::clamp(get("Data_Car.SteerSpeedSensitiveFastRateScale", p.steer_fast_rate_scale), 0.1, 1.0);
-  p.sw_filter_speed0 = s.get("SteeringWheelFilter\\Speed0", p.sw_filter_speed0);
-  p.sw_filter_scale0 = s.get("SteeringWheelFilter\\ControlScale0", p.sw_filter_scale0);
-  p.sw_filter_speed1 = s.get("SteeringWheelFilter\\Speed1", p.sw_filter_speed1);
-  p.sw_filter_scale1 = s.get("SteeringWheelFilter\\ControlScale1", p.sw_filter_scale1);
-  p.sw_filter_corr_speed0 = s.get("SteeringWheelFilter\\CorrectSpeed0", p.sw_filter_corr_speed0);
-  p.sw_filter_corr_scale0 = s.get("SteeringWheelFilter\\CorrectControlScale0", p.sw_filter_corr_scale0);
-  p.sw_filter_corr_speed1 = s.get("SteeringWheelFilter\\CorrectSpeed1", p.sw_filter_corr_speed1);
-  p.sw_filter_corr_scale1 = s.get("SteeringWheelFilter\\CorrectControlScale1", p.sw_filter_corr_scale1);
+  // PhysicsSettings.ini's SteeringWheelFilter block is not read: the original
+  // never binds those keys (FEEL-15, SPEC_QUESTIONS Q70).
   p.enable_rwd_launch_assist = s.get("EnableRWDLaunchAssist", 1.0) >= 0.5;
 
   // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): DB BodyAero* and

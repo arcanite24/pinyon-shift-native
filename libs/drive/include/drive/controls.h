@@ -117,6 +117,9 @@ struct AssistSettings {
   int shifting = 0;              // 0 Automatic, 1 Manual, 2 Manual + Clutch
   int driving_line = 2;          // 0 Off, 1 Braking Only, 2 Full
   bool rewind = true;            // Rewind ON/OFF (REWIND.md: OFF adds +20% bonus)
+  // Engine extra, not an original assist: the steering helpers (lane
+  // centring, countersteer bias, front peak-slip pull). Off by default.
+  bool engine_steer_assist = false;
 
   static constexpr AssistSettings retail_defaults() {
     return AssistSettings{1, 1, true, true, 0, 2, true};

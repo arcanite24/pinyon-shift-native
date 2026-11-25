@@ -290,6 +290,7 @@ void apply_vehicle_assists(drive::Vehicle& vehicle, const drive::AssistSettings&
   va.traction_control = assists.traction_control;
   va.stability_control = assists.stability_control;
   va.shifting = assists.shifting;
+  va.engine_steer_assist = assists.engine_steer_assist;
   vehicle.set_assists(va);
 }
 

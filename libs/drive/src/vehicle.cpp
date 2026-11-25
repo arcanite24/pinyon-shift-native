@@ -745,16 +745,16 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     steer_ang_vel_ = 0.0;
     return;
   }
-  // Forza dynamic pad steering filter (SPEC-CAR-PHYSICS, Steering-at-speed filter
-  // and Assisted / Normal / Simulation steering):
-  // - Dedicated digital keyboard steering filter (0-120 ms tap ramp, highway cap,
-  //   instant countersteer exception, crisp return-to-center)
-  // - SteeringWheelFilter speed-dependent stick shaping
-  // - Speed-sensitive rate interpolation across [SlowSpeed, FastSpeed] toward FastRateScale
-  // - Normal/Assisted active countersteer bias above ~6 deg rear slip at > 8 m/s
-  // - Dynamic peak-slip tracking (SteerAngVelDynFindPeak) in Normal/Assisted modes
-  // - Countersteer boost above rear slip threshold
-  // - Acceleration-ramped angular velocity over SteerAccelTimeToMaxRate
+  // The pad steering filter (SPEC-CAR-PHYSICS, Steering-at-speed filter and
+  // Assisted / Normal / Simulation steering):
+  // - the speed-sensitive lock (steer_lock) and the rate scaled across
+  //   [SlowSpeed, FastSpeed] toward FastRateScale;
+  // - the countersteer rate (SteerAngVelCountersteer) while the stick
+  //   holds against a rear slide;
+  // - the angular velocity ramped over SteerAccelTimeToMaxRate.
+  // Engine extensions: a keyboard filter (the 360 has no keyboard), and the
+  // opt-in steering helpers (lane centring, a countersteer bias and a front
+  // peak-slip pull), off unless VehicleAssists::engine_steer_assist.
   const double v_abs = std::fabs(speed());
   const double lock = std::min(steer_lock(), std::max(p_.steer_min_lock, surf_steer_lock_cap_rad_));
   const Vec3 vl_cs = rotate_inverse(rot_, vel_);
@@ -798,25 +798,19 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     kb_steer_filtered_ = shaped_.steer;
   }
 
-  const double u_sw = assists_.steering == 2
-                          ? ramp(v_abs, p_.sw_filter_corr_speed0, p_.sw_filter_corr_speed1)
-                          : ramp(v_abs, p_.sw_filter_speed0, p_.sw_filter_speed1);
-  const double sw_scale = assists_.steering == 2
-                              ? lerp(p_.sw_filter_corr_scale0, p_.sw_filter_corr_scale1, u_sw)
-                              : lerp(p_.sw_filter_scale0, p_.sw_filter_scale1, u_sw);
-  // Subtle highway-speed center precision from SteeringWheelFilter while keeping
-  // full mid-stick authority at cornering speeds.
-  const double sw_blend = std::clamp(0.08 * (sw_scale - 1.0) * u_sw, 0.0, 0.25);
+  // FEEL-15: the stick maps linearly onto the lock (the SteeringWheelFilter
+  // block of PhysicsSettings.ini is never read by the original).
   const double stick_abs = std::fabs(eff_stick);
-  const double stick_shaped = sign(eff_stick) * lerp(stick_abs, stick_abs * stick_abs, sw_blend);
-  double target = stick_shaped * lock;
+  double target = eff_stick * lock;
   if (kb_countersteering) {
     const double kb_cs_lock = std::min(p_.max_steer, std::max(lock, 0.35));
-    target = stick_shaped * kb_cs_lock;
+    target = eff_stick * kb_cs_lock;
   }
-  // Assisted steering mode: gentle road/lane centering bias when road guidance is
-  // provided on Input, fading out smoothly when the player applies deliberate lock.
-  if (assists_.steering == 0 && raw.has_assist_lane && v_abs > 3.0) {
+  const bool helpers = assists_.engine_steer_assist;
+  // Steering helper (engine extra, opt-in): in Assisted steering, a gentle
+  // road/lane centring bias when road guidance is provided on Input, fading
+  // out when the player applies deliberate lock.
+  if (helpers && assists_.steering == 0 && raw.has_assist_lane && v_abs > 3.0) {
     const double speed_fade = ramp(v_abs, 3.0, 12.0);
     const double player_fade = 1.0 - 0.65 * stick_abs;
     const double raw_bias = 0.45 * raw.assist_heading_error_rad - 0.08 * raw.assist_lateral_offset_m;
@@ -824,11 +818,11 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     const double lane_bias = std::clamp(raw_bias, -max_bias, max_bias) * speed_fade * player_fade;
     target = std::clamp(target + lane_bias, -lock, lock);
   }
-  // Assisted / Normal active countersteer assist (Simulation == 2 stays raw/unassisted):
-  // when rear slip exceeds ~6 deg at > 8 m/s, apply a bounded countersteer bias that
-  // blends out smoothly when holding handbrake or actively steering past it.
+  // Steering helper (engine extra, opt-in; Simulation stays raw): when rear
+  // slip exceeds ~6 deg at > 8 m/s, a bounded countersteer bias that blends
+  // out when holding the handbrake or actively steering past it.
   bool cs_assist_active = false;
-  if (assists_.steering <= 1 && vl_cs.z > 8.0 && (w_[2].contact || w_[3].contact)) {
+  if (helpers && assists_.steering <= 1 && vl_cs.z > 8.0 && (w_[2].contact || w_[3].contact)) {
     constexpr double kCsSlipStart = 6.0 * kPi / 180.0;
     constexpr double kCsSlipFull = 10.0 * kPi / 180.0;
     if (std::fabs(rear_slip_rad) > kCsSlipStart) {
@@ -861,10 +855,11 @@ void Vehicle::shape_input(const Input& raw, double dt) {
                               : p_.steer_rate * lerp(share, share * p_.steer_fast_rate_scale, u_spd) * kb_tap_rate_scale) *
                     std::clamp(surf_steer_rate_mult_, 0.35, 2.0);
   if (centring && raw.input_is_keyboard) rate_use = std::max(rate_use, p_.straighten_rate * 1.45);
-  // Dynamic peak-slip tracking: in Normal/Assisted modes (and not during
-  // handbrake drift initiation), when front tyres wash past peak lateral slip,
-  // pull target angle smoothly toward peak front grip via SteerAngVelDynFindPeak.
-  if (assists_.steering != 2 && !countersteering && handbrake_shaped_ < 0.1 && v_abs > 5.0 && stick_abs > 0.05) {
+  // Steering helper (engine extra, opt-in): in Normal/Assisted (and not
+  // during handbrake drift initiation), when the fronts wash past peak
+  // lateral slip, pull the target toward peak front grip.
+  if (helpers && assists_.steering != 2 && !countersteering && handbrake_shaped_ < 0.1 && v_abs > 5.0 &&
+      stick_abs > 0.05) {
     const double mean_front_sa = 0.5 * (std::fabs(w_[0].slip_angle) + std::fabs(w_[1].slip_angle));
     if (mean_front_sa > 1.2) {
       const double peak_pull = std::clamp(1.2 / mean_front_sa, 0.78, 1.0);
@@ -901,8 +896,8 @@ double Vehicle::steer_lock() const {
                            ? std::min(p_.max_steer, p_.max_steer_filtered)
                            : p_.max_steer;
   if (ai_ || v <= 0.1) return max_a;
-  const double mode_gees = assists_.steering == 2 ? 1.25 : (assists_.steering == 0 ? 0.90 : 1.0);
-  return std::clamp(std::atan(p_.steer_gees_fit * p_.steer_max_gees * mode_gees * p_.gravity * wheelbase / (v * v)),
+  // The lock law is ours (interim, FEEL-16 d): the same in every steering mode.
+  return std::clamp(std::atan(p_.steer_gees_fit * p_.steer_max_gees * p_.gravity * wheelbase / (v * v)),
                     std::min(p_.steer_min_lock, max_a), max_a);
 }
 

@@ -72,6 +72,7 @@ constexpr Kept kKept[] = {
     {"assist-shifting", true, "assist-shifting"},
     {"assist-line", true, "assist-line"},
     {"assist-rewind", true, "assist-rewind"},
+    {"engine-steer-assist", false, "engine-steer-assist"},
     {"damage", true, "damage"},
     {"hour", true, "hour"},
     {"day-length", true, "day-length"},
@@ -259,7 +260,8 @@ bool is_control_or_assist_flag(const std::string& t) {
          t == "--no-rumble" || t == "--rumble-scale" || t == "--controller-layout" || t == "--steer-dz-in" ||
          t == "--steer-dz-out" || t == "--throttle-dz-in" || t == "--throttle-dz-out" || t == "--brake-dz-in" ||
          t == "--brake-dz-out" || t == "--assist-braking" || t == "--assist-steering" || t == "--assist-tcs" ||
-         t == "--assist-stm" || t == "--assist-shifting" || t == "--assist-line" || t == "--assist-rewind";
+         t == "--assist-stm" || t == "--assist-shifting" || t == "--assist-line" || t == "--assist-rewind" ||
+         t == "--engine-steer-assist";
 }
 
 struct PresetSotaDefaults {
@@ -578,6 +580,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"depth of field", {{"on", {}}, {"off", {"--no-dof"}}}},
       {"photo camera through walls", {{"off", {}}, {"on", {"--photo-through-walls"}}}},
       {"wider photo limits", {{"off", {}}, {"on", {"--photo-wider-limits"}}}},
+      {"steering helpers", {{"off", {}}, {"on", {"--engine-steer-assist"}}}},
       {"ai opponents",
        {{"stock", {}},
         {"no rubber-banding", {"--ai-mode", "fair"}},
@@ -1406,6 +1409,7 @@ LiveSettings SettingsPage::live_settings() const {
   const std::string ln = pick_val("driving line");
   c.assists.driving_line = ln.empty() ? 2 : std::atoi(ln.c_str());
   c.assists.rewind = pick_label("rewind") != "off";
+  c.assists.engine_steer_assist = pick_label("steering helpers") == "on";
   // Slice 12 live settings.
   ls.camera_editor.chase_height_m = num_or("chase height", 0.0);
   ls.camera_editor.chase_distance_m = num_or("chase distance", 0.0);
@@ -1655,6 +1659,7 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
   set_by_val("shifting", c.assists.shifting == 0 ? "" : std::to_string(c.assists.shifting));
   set_by_val("driving line", c.assists.driving_line == 2 ? "" : std::to_string(c.assists.driving_line));
   set_by_label("rewind", c.assists.rewind ? "on" : "off");
+  set_by_label("steering helpers", c.assists.engine_steer_assist ? "on" : "off");
 
   if (!live.preset.empty()) set_by_val("preset", live.preset);
   if (!live.shadows.empty()) set_by_val("shadows", live.shadows);

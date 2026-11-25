@@ -718,6 +718,23 @@ void test_friction_torque_mod() {
   CHECK(near(ftm(0, false, 1200, 300, 0.97, 1, 3000), ftm(1, false, 1200, 300, 0.97, 1, 3000)));
 }
 
+// FEEL-15: the pad stick maps linearly onto the speed-sensitive lock at any
+// speed (no SteeringWheelFilter shaping on the pad).
+void test_pad_steering_linear() {
+  const auto p = test_car();
+  const drive::FlatGround flat;
+  for (double speed : {10.0, 40.0}) {
+    drive::Vehicle v(p);
+    v.launch({0, 0, 0}, 0.0, speed);
+    drive::Input in{};
+    in.steer = 0.5;
+    in.throttle = 0.3;
+    for (int i = 0; i < 120; ++i) v.step(in, flat);
+    std::printf("pad half stick at %.0f m/s: steer %.4f of lock %.4f\n", speed, v.steer_angle(), v.steer_lock());
+    CHECK(std::fabs(v.steer_angle() - 0.5 * v.steer_lock()) < 0.02 * v.steer_lock() + 1e-4);
+  }
+}
+
 void test_assists_and_transmission() {
   const drive::FlatGround flat;
 
@@ -924,12 +941,14 @@ void test_assists_and_transmission() {
     a2.steering = 2;  // Simulation
     v_ast.set_assists(a0);
     v_sim.set_assists(a2);
-    // At rest, Assisted caps to SteerMaxAngleFiltered while Simulation uses SteerMaxAngle;
-    // at mid speed (18 m/s), Simulation allows wider steering lock than Assisted.
+    // At rest, Assisted caps to SteerMaxAngleFiltered while Simulation uses
+    // SteerMaxAngle; at 18 m/s, where the speed-sensitive lock is below both
+    // caps, the lock is the same in every mode (FEEL-16 d: no per-mode gees).
     CHECK(v_sim.steer_lock() > v_ast.steer_lock());
     v_ast.launch({0, 0, 0}, 0, 18.0);
     v_sim.launch({0, 0, 0}, 0, 18.0);
-    CHECK(v_sim.steer_lock() > v_ast.steer_lock());
+    CHECK(v_ast.steer_lock() < p.max_steer_filtered);
+    CHECK(std::fabs(v_sim.steer_lock() - v_ast.steer_lock()) < 1e-12);
 
     drive::Input in{0, 1.0, 0.0, false};
     drive::apply_auto_brake(in, 35.0, 25.0);
@@ -1002,6 +1021,7 @@ int main() {
   }
   test_per_car_physics();
   test_friction_torque_mod();
+  test_pad_steering_linear();
   test_assists_and_transmission();
   // Pillar 1 deep behavioral parity tests:
   // 1) HandbrakeGripMultiplier scales rear k_x/k_y on surface with handbrake_grip < 1.
@@ -1287,20 +1307,29 @@ int main() {
     }
     // FEEL-11: the original's FrictionTorqueMod is no yaw damper. Past the
     // second yaw cosine it scales the tyres' straightening torque by 0.8 and
-    // clamps it, so in Normal steering the slide's yaw rate falls off less than
-    // in Simulation, whose rows leave the torque alone.
+    // clamps it, so in Normal steering the slide's yaw rate falls off (slightly) less
+    // than in Simulation, whose rows leave the torque alone.
     std::printf("FTM slide: yaw rate normal %.4f sim %.4f\n", v_norm.angular_velocity().y, v_sim.angular_velocity().y);
-    CHECK(v_norm.angular_velocity().y > v_sim.angular_velocity().y + 0.01);
+    CHECK(v_norm.angular_velocity().y > v_sim.angular_velocity().y + 1e-3);
 
-    // Assisted steering gentle lane centering bias: car right of lane center (+2.5 m)
-    // with zero stick steers gently left; Simulation mode ignores lane guidance.
-    drive::Vehicle v_ast(p), v_sim2(p);
+    // FEEL-16: lane centring is an opt-in engine helper. With it on, a car
+    // right of lane centre (+2.5 m) with zero stick steers gently left in
+    // Assisted; Simulation ignores lane guidance; Assisted without the
+    // helper (the default, as in the original) ignores it too.
+    drive::Vehicle v_ast(p), v_sim2(p), v_ast_plain(p);
     drive::VehicleAssists a_ast;
     a_ast.steering = 0;  // Assisted
+    drive::VehicleAssists a_ast_plain = a_ast;
+    CHECK(!a_ast_plain.engine_steer_assist);
+    a_ast.engine_steer_assist = true;
+    drive::VehicleAssists a_sim_helpers = a_sim;
+    a_sim_helpers.engine_steer_assist = true;
     v_ast.set_assists(a_ast);
-    v_sim2.set_assists(a_sim);
+    v_sim2.set_assists(a_sim_helpers);
+    v_ast_plain.set_assists(a_ast_plain);
     v_ast.launch({0, 0, 0}, 0.0, 20.0);
     v_sim2.launch({0, 0, 0}, 0.0, 20.0);
+    v_ast_plain.launch({0, 0, 0}, 0.0, 20.0);
     drive::Input lane_in{};
     lane_in.throttle = 0.2;
     lane_in.has_assist_lane = true;
@@ -1309,9 +1338,11 @@ int main() {
     for (int i = 0; i < 30; ++i) {
       v_ast.step(lane_in, flat_g);
       v_sim2.step(lane_in, flat_g);
+      v_ast_plain.step(lane_in, flat_g);
     }
     CHECK(v_ast.steer_angle() < -0.02);
     CHECK(std::fabs(v_sim2.steer_angle()) < 1e-6);
+    CHECK(std::fabs(v_ast_plain.steer_angle()) < 1e-6);
   }
   // 11) P0-K2: PendingBarnRestoration serialization/deserialization round-trip.
   {
@@ -1662,29 +1693,41 @@ int main() {
       CHECK(v_hi.steer_angle() < v_lo.steer_angle() * 0.5);
     }
 
-    // R3-PHY-06: Normal steering active countersteer assist vs raw Simulation + handbrake blend-out.
+    // R3-PHY-06 / FEEL-16: the countersteer bias is an opt-in engine helper.
+    // With it on, Normal countersteers into the slide, Simulation stays raw
+    // and the handbrake blends it out; Normal without it (the default, as in
+    // the original, whose countersteer is only a faster steering rate) does
+    // not steer by itself.
     {
-      drive::Vehicle v_norm(p), v_sim(p), v_hb(p);
+      drive::Vehicle v_norm(p), v_sim(p), v_hb(p), v_plain(p);
       drive::VehicleAssists a_norm, a_sim;
       a_norm.steering = 1;  // Normal
       a_sim.steering = 2;   // Simulation
+      const drive::VehicleAssists a_plain = a_norm;
+      a_norm.engine_steer_assist = true;
+      a_sim.engine_steer_assist = true;
       v_norm.set_assists(a_norm);
       v_sim.set_assists(a_sim);
       v_hb.set_assists(a_norm);
+      v_plain.set_assists(a_plain);
       // Oversteer slide: nose pointed +0.30 rad (~17 deg) right of velocity at 22 m/s -> rear slip < 0 -> countersteer left (< 0).
       v_norm.launch({0, 0, 0}, 0.30, 22.0);
       v_sim.launch({0, 0, 0}, 0.30, 22.0);
       v_hb.launch({0, 0, 0}, 0.30, 22.0);
+      v_plain.launch({0, 0, 0}, 0.30, 22.0);
       v_norm.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
       v_sim.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
       v_hb.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
+      v_plain.set_velocity({0.0, 0.0, 22.0}, {0.0, 0.4, 0.0});
       for (int i = 0; i < 25; ++i) {
         v_norm.step({0.0, 0.2, 0.0, false}, flat);
         v_sim.step({0.0, 0.2, 0.0, false}, flat);
         v_hb.step({0.0, 0.2, 0.0, true}, flat);
+        v_plain.step({0.0, 0.2, 0.0, false}, flat);
       }
       CHECK(v_norm.steer_angle() < -0.08);                // Normal actively countersteers left into slide
       CHECK(std::fabs(v_sim.steer_angle()) < 1e-6);       // Simulation stays completely raw
+      CHECK(std::fabs(v_plain.steer_angle()) < 1e-6);     // no helper: the stick alone steers
       CHECK(std::fabs(v_hb.steer_angle()) < std::fabs(v_norm.steer_angle()) * 0.35);  // handbrake blends it out
     }
 

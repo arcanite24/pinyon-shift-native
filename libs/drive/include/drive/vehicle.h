@@ -422,12 +422,6 @@ struct CarParams {
   double steer_fast_speed = 67.056;       // m/s (Data_Car.SteerSpeedSensitiveFastSpeed, 150 mph)
   double steer_fast_rate_scale = 0.45;    // Data_Car.SteerSpeedSensitiveFastRateScale
   double steer_rate_min_share = 0.25;
-  // SteeringWheelFilter (PhysicsSettings.ini): default (Assisted/Normal) and
-  // corrected (Simulation) speed-dependent stick/wheel shaping ramps.
-  double sw_filter_speed0 = 10.0, sw_filter_scale0 = 1.5;
-  double sw_filter_speed1 = 50.0, sw_filter_scale1 = 3.0;
-  double sw_filter_corr_speed0 = 5.0, sw_filter_corr_scale0 = 1.0;
-  double sw_filter_corr_speed1 = 25.0, sw_filter_corr_scale1 = 2.5;
   // RWD Launch Assist (PhysicsSettings.ini EnableRWDLaunchAssist).
   bool enable_rwd_launch_assist = true;
 
@@ -496,7 +490,8 @@ struct Input {
   int shift = 0;
   bool linear_steer = false;  // true for 900-deg steering wheel: bypass gamepad speed narrowing
   // Optional road/lane guidance for Assisted steering mode (assists_.steering == 0):
-  // when has_assist_lane is true, Assisted steering adds a gentle centering bias
+  // when has_assist_lane is true and the engine's steering helpers are on
+  // (VehicleAssists::engine_steer_assist), Assisted steering adds a gentle centering bias
   // toward the lane (assist_heading_error_rad: signed angle to road tangent,
   // positive right; assist_lateral_offset_m: signed distance right of lane center).
   bool has_assist_lane = false;
@@ -519,6 +514,10 @@ struct VehicleAssists {
   bool traction_control = false;
   bool stability_control = false;
   int shifting = 0;           // 0 Automatic, 1 Manual, 2 Manual + Clutch
+  // Engine extra, not one of the original's assists (FEEL-16): lane centring
+  // (in Assisted steering), a countersteer bias and a front peak-slip pull
+  // on the pad. Off unless the player opts in.
+  bool engine_steer_assist = false;
 };
 
 // FrictionTorqueMod (SPEC_QUESTIONS Q68): the yaw torque the four tyres put

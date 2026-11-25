@@ -1905,3 +1905,56 @@ Open points:
   so the swing is rectified into a net turning torque. The original's
   yaw rate on the same stretch is smooth. Needed: nothing from the spec.
   The exemption comes off once the load chatter is fixed.
+
+## Q69 (FEEL-16/17, not blocking): the pad steering filter's law
+
+The engine's pad filter is now the parts SPEC-CAR-PHYSICS names, plus
+its own keyboard filter. Those parts are the speed-sensitive lock, the
+rate scaled toward FastRateScale, SteerAngVelCountersteer while the
+stick holds against a rear slide, and the SteerAccelTimeToMaxRate ramp.
+Three engine-only helpers are now an opt-in extra (ENGINE tab,
+"steering helpers", off by default): the Assisted lane-centring bias,
+the injected countersteer angle and the front peak-slip pull. The
+per-mode lock factors (Simulation 1.25, Assisted 0.90) are gone.
+
+Still ours (interim):
+
+- **The lock law.** It is atan(1.61 * MaxGees * g * wheelbase / v^2)
+  between MinMaxAngle and the mode's cap. The 1.61 is a fit.
+- **The countersteer trigger.** It fires at a mean normalised rear slip
+  above 0.5. Settings carry NormRearSlipAngleToCountersteer 50; its unit
+  is not read.
+- **SteerAngVelDynFindPeak (10 deg/s).** It is unused unless the helpers
+  are on.
+- **SlowSpeed and FastSpeed units.** They are read as m/s (FEEL-17).
+
+Needed: the pad filter's narrowing law (which G it queries), the unit of
+NormRearSlipAngleToCountersteer, and what DynFindPeak drives. A trace of
+pad input against road-wheel angle at several speeds would settle the
+lock law.
+
+## Q70 (FEEL-15, not blocking): the wheel path's mapping
+
+The SteeringWheelFilter block of PhysicsSettings.ini (Speed 10/50,
+ControlScale 1.5/3.0, CorrectSpeed 5/25, CorrectControlScale 1.0/2.5)
+is dead data:
+
+- the settings loader never binds its keys;
+- the strings "CorrectSpeed" and "CorrectControlScale" are not in the
+  executable.
+
+The engine no longer reads it, and the pad no longer squares the stick
+by it.
+
+The wheel's steering goes through a WheelMapping step instead. It has
+four tables, picked by steering mode and 900-degree option:
+WheelMapping, 900Degree, SimSteer and 900DegreeSimSteer. Their fields
+are WheelMapSteerSpeed0/1, SteerScale0/1, NormSteerInput1/Output1 and
+CounterSteerScale. None of these keys are in the shipped ini, so their
+values are the executable's built-in defaults, which are not game files.
+
+Engine interim: the wheel maps linearly to full lock (steer x
+SteerMaxAngle) with no rate limit, as before. Needed: the WheelMapping
+law and its default values from a decode of the settings constructor,
+or a wheel trace. The values would then come from the executable rather
+than from data.
