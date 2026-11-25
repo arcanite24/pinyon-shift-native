@@ -17,6 +17,7 @@
 
 #include "audio/xml.h"
 #include "cars/mods.h"
+#include "fh1data/fs_walk.h"
 #include "fh1data/xds.h"
 #include "hud_scene.h"
 #include "hud_screen.h"
@@ -156,12 +157,16 @@ bool load_ui_fonts(const std::filesystem::path& game_root, UiFontCache& cache,
           };
           for (const auto& base : bases) {
             if (!std::filesystem::exists(base, ec)) continue;
-            for (const auto& ent : std::filesystem::recursive_directory_iterator(base, ec)) {
-              if (ent.is_regular_file(ec) && ent.path().filename() == "CoDriverIconSet.xds") {
+            // The DLC catalogue's paths pass 260 characters: a walk that
+            // neither throws nor stops at MAX_PATH (fh1data/fs_walk.h).
+            fh1::walk_tree(base, [&](const std::filesystem::directory_entry& ent) {
+              std::error_code fec;
+              if (ent.is_regular_file(fec) && ent.path().filename() == "CoDriverIconSet.xds") {
                 st->rally_tex_dir = ent.path().parent_path().parent_path().parent_path();
-                break;
+                return false;
               }
-            }
+              return true;
+            });
             if (!st->rally_tex_dir.empty()) break;
           }
         }

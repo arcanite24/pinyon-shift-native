@@ -1,6 +1,7 @@
 #include "cars/mods.h"
 #include "audio/bake.h"
 #include "audio/xma_decode.h"
+#include "fh1data/fs_walk.h"
 
 #include <algorithm>
 #include <atomic>
@@ -98,10 +99,14 @@ std::filesystem::path find_ffmpeg() {
 #ifdef _WIN32
   if (const char* local = std::getenv("LOCALAPPDATA")) {
     const std::filesystem::path packages = std::filesystem::path(local) / "Microsoft" / "WinGet" / "Packages";
+    std::filesystem::path found;
     if (std::filesystem::is_directory(packages, ec))
-      for (const auto& e : std::filesystem::recursive_directory_iterator(
-               packages, std::filesystem::directory_options::skip_permission_denied, ec))
-        if (e.path().filename() == exe) return e.path();
+      fh1::walk_tree(packages, [&](const std::filesystem::directory_entry& e) {
+        if (e.path().filename() != exe) return true;
+        found = fh1::usable_path(e.path());
+        return false;
+      });
+    if (!found.empty()) return found;
   }
 #endif
   return {};
