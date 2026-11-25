@@ -4040,8 +4040,9 @@ of either screen exists, so the intro draws at the scene's own rects with
 its tapes cut to their texts and its reward lines (alpha 0 at rest)
 shown; the win's banner has A CONTINUE alone; the flow's cutscenes
 (`RandomEncounter_Intro`, the win's `Cockpit_Cam_Activate`) do not play
-and the player keeps control; and the free-roam HUD hides while the
-screens show. The rival's driving and pace stay the AI branch's
+and the player keeps control; and the engine's own head-to-head meter,
+the GPS turn and the stunt meters hide while the screens show (the speed
+dial stays through the intro and hides on the banner). The rival's driving and pace stay the AI branch's
 (WORLD-07). Needed: captures of a head-to-head's intro and of a win's
 banner and earnings.
 
@@ -4073,3 +4074,16 @@ at full opacity, but no gantry start fills it. ui4audio has a street
 start cue (`321MomentStartStreet`) and a street go cue (`321GoStreet`),
 but no street count cue. Needed: a capture of a street race's start, or
 the code that writes `TEXT_COUNT` (Q74).
+
+## Q174 (RACE, not blocking): POINTS AVAILABLE on a ticket that pays none
+
+The event list's payout line now shows the wristband points a festival
+win pays (`WristbandTables::points_for(level, 1)`). That is the ticket's
+POINTS AVAILABLE (`10_event_card_prerace_orig.png`, 110 PTS). Only
+festival events pay wristband points (`race::award`, style 1), so the
+list shows none for the other kinds. The ticket (`event_ticket`) still
+fills POINTS AVAILABLE from the same table for every kind, so a street
+race's or a showcase's ticket can name points the race does not pay. No
+capture shows such a ticket. Needed: a capture of a street race's,
+showcase's or rivals ticket, to see whether its POINTS AVAILABLE tape
+shows, and with what.
