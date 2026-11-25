@@ -8,6 +8,7 @@
 // SHIFT_SCENE_SCREEN_SHOT_DIR the screens are also drawn to PNGs there, over
 // SHIFT_SCENE_SCREEN_BACKDROP (a 1280x720 PNG) when given.
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -162,6 +163,19 @@ int main() {
     // The driving HUD's bound nodes (hud_screen.cpp), by element.
     const SceneDraw sd(carview::ui_scene(std::string(carview::kHudScene)));
     check(sd.ok(), "947_HUD loads");
+    {
+      // The dial's red zone (Redline/rotation/HalfRectangle) is laid flat in
+      // its XZ plane and stood up by a -90 degree turn about x: it draws as
+      // the dial ring's lower half (253 x 126 px), not a zero-height strip.
+      const int red = sd.find_path("RPM_and_MPH/Redline/rotation");
+      const std::vector<int> half = sd.children_of(red);
+      check(red >= 0 && !half.empty(), "947_HUD: the red zone's half ring");
+      if (!half.empty()) {
+        const auto r = sd.rect(half[0]);
+        check(std::fabs((r[2] - r[0]) - 253.0f) < 2.0f && std::fabs((r[3] - r[1]) - 126.5f) < 2.0f,
+              "947_HUD: the red zone stands up to the ring's half (253 x 126 px)");
+      }
+    }
     check_nodes(sd, "947_HUD",
                 {// The dial.
                  "GAUGE_ANALOG", "GAUGE_ANALOG/ASSIST_ICONS", "ASSIST_ICONS/HUD_SHIFT_LIGHT", "GAUGE_ANALOG/FUEL_ANALOG",
