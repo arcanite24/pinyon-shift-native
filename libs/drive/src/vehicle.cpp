@@ -229,14 +229,7 @@ double CarParams::TireAffectCurve::evaluate(double temp_c) const {
     const double f = idx - double(i0);
     return std::clamp(lerp(values[i0], values[i0 + 1], f), 0.5, 1.5);
   }
-  // Default thermal window: subtle cold warmup below 55 C, optimal 55..110 C = 1.0,
-  // gradual overheating falloff above 110 C.
-  if (temp_c < 55.0) {
-    const double u = std::clamp((temp_c - 25.0) / 30.0, 0.0, 1.0);
-    return lerp(0.96, 1.0, u);
-  }
-  const double t_over = std::max(0.0, temp_c - 110.0);
-  return 1.0 - std::clamp(t_over * 0.0022, 0.0, 0.14);
+  return 1.0;  // no curve: no effect (the engine's old thermal window was invented, FEEL-02)
 }
 
 double tyre_peak_mu(const CarParams& p, int axle, TyrePeak kind, double load_n, double speed) {
@@ -1684,16 +1677,16 @@ void Vehicle::substep(double dt, const Ground& ground) {
     // excess over 1 is 1.1 x the front's.
     const double dirt = ai_ && dirt_rule_ ? std::clamp(1 + (a == 0 ? 0.5 : 0.55) * dirt_k_, 0.0, 2.0) : 1.0;
     const double ai = ai_grip_[a] * dirt;
-    // Thermal tyre affect curve (List_TireAffectCurve) & compound TireMod_FrictionScale.
-    const double thermal_grip = p.tire_affect_curve.evaluate(tyre_temp_c_[size_t(i)]);
     // Braking friction on a slowed wheel, else the speed-blended accel
     // scale (SPEC-CAR-PHYSICS, Brakes: Braking friction).
     double kx = grip[i] * rear * hb_grip * ai * p.long_scale[a] * p.long_misc_scale * p.tire_mod_friction_scale *
-                damage_.tyre_grip[size_t(i)] * thermal_grip;
+                damage_.tyre_grip[size_t(i)];
     kx *= slowing[i] ? (p.brake_friction_scale * (abs_off_boost ? p.abs_off_braking_friction_scale : 1.0))
                      : lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(vx[i]), p.accel_speed0, p.accel_speed1));
     double ky = grip[i] * rear * hb_grip * ai * p.lat_scale[a] * p.lat_compound_scale * p.long_misc_scale *
-                p.tire_mod_friction_scale * damage_.tyre_grip[size_t(i)] * thermal_grip;
+                p.tire_mod_friction_scale * damage_.tyre_grip[size_t(i)];
+    // No thermal grip factor (FEEL-02): the original's tyre temperature model
+    // is not decoded, and its affect curves stay within 1 % of 1.
     // No camber term (FEEL-01): in the original, camber acts only through
     // List_TireAffectCurve, which stays within 1 % of 1 on the R34
     // (SPEC-CAR-PHYSICS, tyre law).
@@ -1992,8 +1985,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (!w.contact || w.load <= 0) w.fx = 0;
     w.omega = omega_new[i];
     w.spin = std::fmod(w.spin + w.omega * dt, 2 * kPi);
-    // Update dynamic tyre carcass temperature (C): heats from sustained slip energy
-    // scaled by HeatTireScale, cools toward 75 C operating / 30 C ambient.
+    // A tyre temperature estimate (ours) for telemetry and replays only; it
+    // no longer changes grip (FEEL-02).
     const double slip_mag = std::hypot(w.slip_ratio, w.slip_angle * 0.12);
     const double heat_in =
         (w.contact && slip_mag > 0.35)

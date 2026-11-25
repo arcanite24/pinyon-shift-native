@@ -735,6 +735,26 @@ void test_pad_steering_linear() {
   }
 }
 
+// FEEL-02: no thermal grip factor. The empty curve is 1 at any temperature,
+// and even a loaded List_TireAffectCurve far from 1 leaves a long, hot
+// skid's grip unchanged.
+void test_no_thermal_grip() {
+  const drive::CarParams::TireAffectCurve none{};
+  CHECK(none.evaluate(20) == 1.0 && none.evaluate(170) == 1.0);
+  const auto p = test_car();
+  auto hot = p;
+  hot.tire_affect_curve.values = {0.6, 0.6, 0.6};
+  const drive::FlatGround flat;
+  drive::Vehicle a(p), b(hot);
+  a.launch({0, 0, 0}, 0.0, 25.0);
+  b.launch({0, 0, 0}, 0.0, 25.0);
+  for (int i = 0; i < 600; ++i) {
+    a.step({0.6, 0.5, 0.0, false}, flat);
+    b.step({0.6, 0.5, 0.0, false}, flat);
+  }
+  CHECK(drive::trace_row(a) == drive::trace_row(b));
+}
+
 void test_assists_and_transmission() {
   const drive::FlatGround flat;
 
@@ -1022,6 +1042,7 @@ int main() {
   test_per_car_physics();
   test_friction_torque_mod();
   test_pad_steering_linear();
+  test_no_thermal_grip();
   test_assists_and_transmission();
   // Pillar 1 deep behavioral parity tests:
   // 1) HandbrakeGripMultiplier scales rear k_x/k_y on surface with handbrake_grip < 1.

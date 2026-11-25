@@ -240,13 +240,15 @@ struct CarParams {
   // GameFrictionScaleBraking, in place of the accel blend.
   double brake_friction_scale = 1.8;
   // Compound / global tyre friction modifier (TireMod_FrictionScale), heating
-  // scale (HeatTireScale), and thermal grip curve (List_TireAffectCurve).
+  // scale (HeatTireScale), and thermal grip curve (List_TireAffectCurve). The
+  // curve is loaded but not applied (FEEL-02: the temperature model it needs
+  // is not decoded).
   double tire_mod_friction_scale = 1.0;
   double heat_tire_scale = 1.0;
   struct TireAffectCurve {
     double temp_min_c = 20.0;
     double temp_max_c = 180.0;
-    std::vector<double> values;  // empty = default thermal window curve
+    std::vector<double> values;  // empty = 1 at every temperature
     double evaluate(double temp_c) const;
   };
   TireAffectCurve tire_affect_curve{};
