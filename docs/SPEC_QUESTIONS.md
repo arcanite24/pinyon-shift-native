@@ -3534,3 +3534,42 @@ on screen: credits 167,700 and 6 garage cars, as the capture shows.
 
 The reader is unchanged. The f32 at header +8 and the zero word stay open
 (Q60).
+
+## Q163 (PROG-15, answered in part): `DialoguesState`, the heard-dialogue record
+
+Supersedes Q60's "Also open: `CHorizonDialoguesState` (hashed line keys,
+kept as bytes …)" as far as the layout and the key go. Read from the
+class's serializer and the dialogue script loader in the recomp's
+generated code.
+
+**Layout** (`CHorizonDialoguesState` v1): a u32 entry count, then that many
+12-byte entries (key u32, variant u32, count u32), in ascending key order.
+In memory the state is an ordered map from key to (count, variant), and
+the serializer writes key, variant, count. All three reference saves parse
+exactly: 4 + 12n bytes, with n = 126 (`user`), 176 (`user-modded`) and 79
+(the `appdata-2026-09-27` seed of Q162).
+
+**Key:** a hash of the `DialogueScript_<LANG>.xml` trigger id. The id is
+read from the `Trigger` element's `id` attribute and passed to the game's
+string hash with 32 bits and folding on:
+
+    h = 0xFFFFFFFF
+    for each byte c of the id, lowercased (as a signed char):
+        h = rotl32(h ^ c, 7)
+
+Every key on `user` (126 of 126) and on the seed (79 of 79) is a trigger in
+`DialogueScript_EN.xml`. On `user-modded` 170 of 176 are. That save was
+written by v4, and the other 6 are probably Horizon Rally triggers
+(`Rally_DialogueScript_*.xml` is not in the local game copy), so that part
+is unconfirmed.
+
+**Values:** count is the times the trigger played. On 369 of 375 entries
+the variant equals count mod the trigger's `Filename` count, so it is the
+next variant to play. The 6 exceptions (`HEATSFinalTicketNeedsWin`,
+`RouteSetOnMap`) suggest that some triggers pick a variant another way.
+That last point is inferred.
+
+**Still open:**
+- where in the dialogue manager an entry is added or bumped, and whether a
+  one-shot trigger is skipped on count > 0 or on its own flag;
+- what makes those 6 entries differ.
