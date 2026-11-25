@@ -1032,7 +1032,10 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       // the results table (X on the banner) keeps its own page.
       const bool table = r.screen == race_flow::Screen::kFinishBanner && r.results_table;
       if (r.screen != race_flow::Screen::kNone && !table && draw_race_screen(l, st, r, w, h)) {
-      } else if (r.phase == RaceHud::kGrid) event_card(l, r, g);
+        // After START RACE the original counts down under the racing HUD
+        // (15_countdown_orig.png); the engine's own grid card stays only for
+        // a grid without the race screens.
+      } else if (r.phase == RaceHud::kGrid && r.grid_menu_open) event_card(l, r, g);
       else if (r.phase == RaceHud::kFinished) results(l, r, st, g);
       else {
         race_hud(l, r, g, st.hud);
