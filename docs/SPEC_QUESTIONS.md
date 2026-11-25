@@ -2243,3 +2243,33 @@ not from a crowd record (`Colorado_track_00.crowd` is 12 bytes).
 
 Needed: the `.anim.bin` key layout (rotation and translation tracks, rate)
 and the source of the start-line spectator instances.
+
+## Q110 (WORLD-POST, not blocking): overall exposure and grade against the original
+
+Matched free-roam captures (`world_{day,dusk,night}_orig.png` against
+`world_*_engine_after.png`) put the engine darker overall: mean luma 96.6
+against 111.6 by day, 53.0 against 58.8 at dusk, 29.4 against 34.5 at
+night, with the sky brighter and bluer and the ground darker. The
+originals were taken with the recomp's bloom, depth of field and MSAA
+off, and the car and pose differ, so part of the gap is the frame, not
+the grade. No tone-map, LUT or exposure change was made to close it by
+eye.
+
+Needed: the original's post chain constants for one time of day
+(exposure, tone curve, colour cube in use), or matched captures with the
+same post settings on both sides.
+
+## Q111 (WORLD-15, not blocking): where the animated showcase props stand in free roam
+
+The `animatedobjects.zip` `.pgeo` meshes (balloon race, showcase-intro
+balloons, air walkers, main stage lights, plane banner, blimp, Ferris
+wheel) are placed by `AnimatedWorldSystem::populate_pgeo_placements` at
+anchors the engine picked (box-derived spreads, the festival hub, a
+reservoir vista) with its own colour palettes. The fixed-position props
+are gone (WORLD-15), but these placements are not from a placement
+record either. Whether the original shows any of them outside the
+showcase events that own them is not known.
+
+Needed: the placement source for these `.pgeo` objects (a track object
+list or the showcase event scripts), and a free-roam capture of the
+festival and a showcase start in the original.
