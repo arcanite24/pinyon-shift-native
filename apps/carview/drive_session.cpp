@@ -728,6 +728,7 @@ void DriveSession::init_session() {
         }
         live_hud_speedo_mode = init_ls.hud_speedo_mode;
         live_minimap_mode = init_ls.minimap_mode;
+        live_hud = init_ls.hud;
       }
       live_sound_enabled = app.audio_cfg.sound;
       live_radio_enabled = app.audio_cfg.radio_on;

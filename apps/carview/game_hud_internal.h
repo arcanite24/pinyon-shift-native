@@ -186,7 +186,8 @@ inline void help_item(ui::List& l, const Layout& g, float x0, float x1, float y0
 
 // Race HUD builders (game_hud_race.cpp)
 void event_card(ui::List& l, const RaceHud& r, const Layout& g);
-void race_hud(ui::List& l, const RaceHud& r, const Layout& g);
+// `hud`: the original's HUD options (lap time and position, wrong way).
+void race_hud(ui::List& l, const RaceHud& r, const Layout& g, const HudToggles& hud = {});
 void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g);
 void opponent_name_tags(ui::List& l, const std::vector<NameTagHud>& tags, const Layout& g);
 void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g, bool metric_units);

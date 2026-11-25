@@ -58,6 +58,11 @@ constexpr Kept kKept[] = {
     {"no-switch-handbrake-clutch", false, "switch-handbrake-clutch"},
     {"hud-speedo", true, "hud-speedo"},
     {"minimap-mode", true, "minimap-mode"},
+    // The original's HUD options, by their profile names (Options/Timers..).
+    {"no-hud-timers", false, "hud-timers"},
+    {"no-hud-wrong-way", false, "hud-wrong-way"},
+    {"no-hud-names-over-cars", false, "hud-names-over-cars"},
+    {"no-hud-popularity-skills", false, "hud-popularity-skills"},
     {"steer-dz-in", true, "steer-dz-in"},
     {"steer-dz-out", true, "steer-dz-out"},
     {"throttle-dz-in", true, "throttle-dz-in"},
@@ -484,6 +489,10 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"switch handbrake/clutch", {{"off", {}}, {"on", {"--switch-handbrake-clutch"}}}},
       {"speedometer", {{"analog", {}}, {"digital", {"--hud-speedo", "digital"}}, {"off", {"--hud-speedo", "off"}}}},
       {"minimap", {{"rotating", {}}, {"north-up", {"--minimap-mode", "north-up"}}, {"off", {"--minimap-mode", "off"}}}},
+      {"lap time and position", {{"on", {}}, {"off", {"--no-hud-timers"}}}},
+      {"wrong way warning", {{"on", {}}, {"off", {"--no-hud-wrong-way"}}}},
+      {"names over cars", {{"on", {}}, {"off", {"--no-hud-names-over-cars"}}}},
+      {"popularity and skills", {{"on", {}}, {"off", {"--no-hud-popularity-skills"}}}},
       {"units", {{"metric (km/h)", {}}, {"imperial (mph)", {"--units", "imperial"}}}},
       {"steer deadzone in",
        {{"24%", {}},
@@ -1087,7 +1096,8 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
       name == "collectibles" || name == "treasure map" || name == "braking" || name == "steering" ||
       name == "traction control" || name == "stability control" || name == "shifting" || name == "driving line" ||
       name == "rewind" || name == "damage" || name == "ai opponents" || name == "units" || name == "speedometer" ||
-      name == "minimap" || name == "hud 16:9 lock" || name == "hud scale" || name == "safe zone" ||
+      name == "minimap" || name == "lap time and position" || name == "wrong way warning" ||
+      name == "names over cars" || name == "popularity and skills" || name == "hud 16:9 lock" || name == "hud scale" || name == "safe zone" ||
       name.rfind("telemetry", 0) == 0) {
     return SettingsPage::Tab::kGameplay;
   }
@@ -1357,6 +1367,10 @@ LiveSettings SettingsPage::live_settings() const {
     const std::string mm = pick_val("minimap");
     ls.minimap_mode = (mm == "north-up") ? 1 : (mm == "off") ? 2 : 0;
   }
+  ls.hud.timers = pick_label("lap time and position") != "off";
+  ls.hud.wrong_way = pick_label("wrong way warning") != "off";
+  ls.hud.names_over_cars = pick_label("names over cars") != "off";
+  ls.hud.popularity_skills = pick_label("popularity and skills") != "off";
   {
     const std::string lg = pick_val("language");
     ls.language = lg.empty() ? "EN" : lg;
@@ -1621,6 +1635,10 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
   set_by_val("units", live.metric_units ? "" : "imperial");
   set_by_val("speedometer", live.hud_speedo_mode == 1 ? "digital" : live.hud_speedo_mode == 2 ? "off" : "");
   set_by_val("minimap", live.minimap_mode == 1 ? "north-up" : live.minimap_mode == 2 ? "off" : "");
+  set_by_label("lap time and position", live.hud.timers ? "on" : "off");
+  set_by_label("wrong way warning", live.hud.wrong_way ? "on" : "off");
+  set_by_label("names over cars", live.hud.names_over_cars ? "on" : "off");
+  set_by_label("popularity and skills", live.hud.popularity_skills ? "on" : "off");
   set_by_val("language", (live.language.empty() || live.language == "EN") ? "" : live.language);
   set_by_val("damage", live.damage_mode == 0 ? "none" : live.damage_mode == 2 ? "simulation" : "");
   set_by_label("photo camera through walls", live.photo_through_walls ? "on" : "off");
@@ -1864,6 +1882,10 @@ std::string SettingsPage::format_row_name(const char* raw_name) const {
   if (n == "units") return resolve_setting_loc("InGame", "IDS_HudOption_Units", raw_name);
   if (n == "speedometer") return resolve_setting_loc("InGame", "IDS_HudOption_Speedometer", raw_name);
   if (n == "minimap") return resolve_setting_loc("InGame", "IDS_HudOption_Map", raw_name);
+  if (n == "lap time and position") return resolve_setting_loc("InGame", "IDS_HudOption_Timers", raw_name);
+  if (n == "wrong way warning") return resolve_setting_loc("InGame", "IDS_HudOption_WrongWay", raw_name);
+  if (n == "names over cars") return resolve_setting_loc("InGame", "IDS_HudOption_Names", raw_name);
+  if (n == "popularity and skills") return resolve_setting_loc("InGame", "IDS_HudOption_PopularitySkills", raw_name);
   if (n == "rumble") return resolve_setting_loc("MyProfile", "IDS_Option_RumbleSetting", raw_name);
   if (n == "controller layout") return resolve_setting_loc("MyProfile", "IDS_Option_Layout", raw_name);
   if (n == "switch handbrake/clutch")

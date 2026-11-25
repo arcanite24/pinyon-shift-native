@@ -341,14 +341,12 @@ void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
 }
 
 // (b2) The race HUD: laps (or the distance), the timers, place, standings.
-void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
+void race_hud(ui::List& l, const RaceHud& r, const Layout& g, const HudToggles& hud) {
   const float s = g.s;
   const bool racing = r.phase == RaceHud::kRacing;
-  // 947_HUD's EndConditionBlock and PlaceBlock (E 48 current, E 26 slash
-  // and total, E 16 label; right-aligned boxes end at their node); the
-  // drop shadow is ours. Without the scene: the drawn blocks below.
   // The blocks from 947_HUD (hud_screen.h); the drawn ones below without it.
-  const bool scene_blocks = draw_hud_race(l, r, g.w, g.h, s);
+  // LAP TIME AND POSITION off: no lap, place, times or standings at all.
+  const bool scene_blocks = !hud.timers || draw_hud_race(l, r, g.w, g.h, s);
   const SceneDraw sc = resolve_scene_draw("947_HUD");
   const int endcon = sc.find("EndConditionBlock"), placeblk = sc.find("PlaceBlock");
   const bool scened = endcon >= 0 && placeblk >= 0;
@@ -373,7 +371,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
     stext(tr, sc.find("TEXT_PLACE_MAX", placeblk), std::to_string(r.cars));
   }
   // Laps: "1/3 LAPS"; sprints: the distance done.
-  if (!scened) {
+  if (!scened && hud.timers) {
     char big[16], of[16];
     if (r.circuit) {
       std::snprintf(big, sizeof big, "%d", racing ? std::max(1, r.lap) : 0);
@@ -421,7 +419,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
     }
   }
   // Place: "PLACE 3/8".
-  if (!scened) {
+  if (!scened && hud.timers) {
     char p[8], of[8];
     std::snprintf(p, sizeof p, "%d", std::max(1, r.place));
     std::snprintf(of, sizeof of, "/%d", r.cars);
@@ -591,7 +589,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
   }
   // R3-UI-11: Pulsing "WRONG WAY" warning icon + text (always shows both icon and label).
   const float ww_lift = r.missed_checkpoint ? 86.0f : 0.0f;
-  if (racing && r.wrong_way && !draw_hud_wrong_way(l, r, g.w, g.h, g.s, ww_lift)) {
+  if (racing && r.wrong_way && hud.wrong_way && !draw_hud_wrong_way(l, r, g.w, g.h, g.s, ww_lift)) {
     const float pulse = 0.70f + 0.30f * float(std::cos(r.clock * 6.2832 * 2.2));
     const float y_off = ww_lift * s;
     const float cx = 0.5f * g.w;

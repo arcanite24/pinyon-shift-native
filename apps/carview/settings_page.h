@@ -16,6 +16,7 @@
 #include "drive/telemetry_udp.h"
 #include "drive/trainer.h"
 #include "drive/wheel_ffb.h"
+#include "hud_notify.h"
 #include "render_modern.h"
 
 namespace carview {
@@ -38,6 +39,7 @@ struct LiveSettings {
   bool metric_units = true;  // true: Metric (km/h, km/m), false: Imperial (MPH, mi/ft)
   int hud_speedo_mode = 0;   // 0=Analog, 1=Digital, 2=Off
   int minimap_mode = 0;      // 0=Rotating, 1=North-Up, 2=Off
+  HudToggles hud;            // the original's HUD options (hud_notify.h)
   std::string language = "EN";
   bool photo_through_walls = false;
   bool photo_wider_limits = false;

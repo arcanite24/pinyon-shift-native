@@ -271,6 +271,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         d.boost_psi = vehicle.boost_psi();
         d.boost_max_psi = vehicle.params().boost_max_psi;
         d.speedo_mode = live_hud_speedo_mode;
+        d.hud = live_hud;
         d.club_tag = app.saved.car_club_tag;
         // Barn Find proximity radar: signal strength [0..1] when driving inside an active rumour circle.
         if (!app.race && app.progress_loaded && !app.collectibles.barns.empty()) {

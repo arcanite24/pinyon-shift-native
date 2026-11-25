@@ -768,6 +768,7 @@ void DriveSession::choose() {
             snap.metric_units = app.metric_units;
             snap.hud_speedo_mode = live_hud_speedo_mode;
             snap.minimap_mode = live_minimap_mode;
+            snap.hud = live_hud;
             if (!app.language.empty()) snap.language = app.language;
             snap.photo_through_walls = live_photo_through_walls;
             snap.photo_wider_limits = live_photo_wider_limits;

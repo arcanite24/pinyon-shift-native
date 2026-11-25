@@ -356,6 +356,7 @@ struct DriveSession {
   bool loaded_camera_effects = true;
   int live_hud_speedo_mode = 0;  // 0=Analog, 1=Digital, 2=Off
   int live_minimap_mode = 0;     // 0=Rotating, 1=North-Up, 2=Off
+  HudToggles live_hud;           // the original's HUD options
 
   WheelPose poses[4]{};
   CameraPull camera_pull;

@@ -996,7 +996,8 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   float bottom_lift = compute_subtitle_bottom_lift(st.subtitle_active, st.subtitle_lines, st.subtitle_box_h_canvas);
   // The driving HUD hides under a menu (SPEC-UI-LAYOUTS d).
   if (st.driving && !menu) {
-    const bool show_tags = !st.name_tags.empty() && (!st.race || st.race->phase == RaceHud::kRacing);
+    const bool show_tags = st.hud.names_over_cars && !st.name_tags.empty() &&
+                           (!st.race || st.race->phase == RaceHud::kRacing);
     const WorldMarkerHud* active_wm = (st.world_marker && st.world_marker->visible && !st.race) ? st.world_marker : nullptr;
     // In an activation zone the event prompt is 947_HUD's ActivationPrompt;
     // the original draws no label over an event out of range.
@@ -1019,7 +1020,8 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       const float used = speed_activity_hud(l, *st.speed_hud, g, st.metric_units, bottom_lift);
       if (used > 0.0f) bottom_lift += used + 8.0f;
     }
-    if (st.skills && !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open)))
+    if (st.skills && st.hud.popularity_skills &&
+        !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open)))
       if (!draw_hud_skills(l, *st.skills, g.w, g.h, g.s, st.time)) skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
       const RaceHud& r = *st.race;
@@ -1027,7 +1029,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       if (r.phase == RaceHud::kGrid) event_card(l, r, g);
       else if (r.phase == RaceHud::kFinished) results(l, r, st, g);
       else {
-        race_hud(l, r, g);
+        race_hud(l, r, g, st.hud);
         showcase_hud(l, r, g, st.metric_units);
       }
     } else {

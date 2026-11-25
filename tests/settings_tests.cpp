@@ -609,6 +609,22 @@ int main() {
     CHECK(p6_ls.hud_speedo_mode == 1);
     CHECK(p6_ls.minimap_mode == 1);
     CHECK(p6_ls.controls.switch_handbrake_clutch == true);
+    // The original's HUD options: on by default, off by their profile names,
+    // and back from the live state.
+    CHECK(p6_ls.hud == carview::HudToggles{});
+    {
+      carview::SettingsPage hp;
+      hp.load({"--no-hud-timers", "--no-hud-names-over-cars"});
+      const auto hl = hp.live_settings();
+      CHECK(!hl.hud.timers && hl.hud.wrong_way && !hl.hud.names_over_cars && hl.hud.popularity_skills);
+      carview::LiveSettings off;
+      off.hud.wrong_way = off.hud.popularity_skills = false;
+      carview::SettingsPage hs;
+      hs.load({});
+      hs.sync_from_live(off);
+      CHECK(hs.value("wrong way warning") == "off" && hs.value("popularity and skills") == "off");
+      CHECK(hs.value("lap time and position") == "on" && hs.value("names over cars") == "on");
+    }
     // Pro (+45) + ABS Off (+10) + Sim Steering (+5) + STM Off (+5) + M+C (+15) + Line Off (+10) + Sim Damage (+10) + Rewind Off (+20) = 120%
     CHECK(p6.difficulty_credit_bonus_pct() == 120);
     const auto base_lay = drive::default_controller_layout(0);

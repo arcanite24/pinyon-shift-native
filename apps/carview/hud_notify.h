@@ -1,6 +1,7 @@
 // The kinds of HUD notification (947_HUD's CombinedNotification and
-// PopularityUnlock), kept apart from hud_screen.h so the session and the HUD
-// state can name them without the scene code.
+// PopularityUnlock) and the original's HUD toggles, kept apart from
+// hud_screen.h so the settings, the session and the HUD state can name them
+// without the scene code.
 #pragma once
 
 #include <cstdint>
@@ -32,5 +33,19 @@ enum class NotifyKind : uint8_t {
 
 // The icon a notification shows (CombinedNotification/Icons).
 enum class NotifyIcon : uint8_t { kMisc, kSponsor, kMail };
+
+// The original's HUD options (ForzaProfile.sch Options/*, InGame
+// IDS_HudOption_*) the engine honours, on by default as in the original:
+// LAP TIME AND POSITION (Timers: the race's lap, place, times and
+// standings), WRONG WAY WARNING (WrongWay), NAMES OVER CARS (NamesOverCars)
+// and POPULARITY AND SKILLS (PopularitySkills: the skill chain and the
+// popularity disc).
+struct HudToggles {
+  bool timers = true;
+  bool wrong_way = true;
+  bool names_over_cars = true;
+  bool popularity_skills = true;
+  bool operator==(const HudToggles&) const = default;
+};
 
 }  // namespace carview
