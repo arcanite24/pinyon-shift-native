@@ -1029,164 +1029,14 @@ bool DriveSession::step(const drive::Input& user_in) {
           bonus_in.assists_pct = race::assist_difficulty_bonus_percent(app.race->assists());
           bonus_in.skills_points = app.skill_tracker ? app.skill_tracker->race_skills_banked() : 0;
           bonus_in.wristband_level = app.collected_wristband;
-          const int64_t bal_before = app.career.credits;
-          const int pop_before = app.current_pop_rank();
-          if (const race::RaceAward* a = app.race->award(app.career, app.wristbands, app.race_top_speed, bonus_in)) {
-            if (slice12.trainer.pacing.modifies_economy()) {
-              const int64_t scaled_cr = slice12.trainer.pacing.scale_credits(a->credits);
-              const int64_t extra_cr = scaled_cr - a->credits;
-              if (extra_cr != 0) {
-                app.career.credits = std::clamp<int64_t>(app.career.credits + extra_cr, 0, 999999999);
-                app.career.total_winnings = std::max<int64_t>(0, app.career.total_winnings + extra_cr);
-              }
-              const int scaled_wb = slice12.trainer.pacing.scale_points(a->wristband_points);
-              const int extra_wb = scaled_wb - a->wristband_points;
-              if (extra_wb != 0) app.career.wristband_points = std::max(0, app.career.wristband_points + extra_wb);
-            }
+          bonus_in.mileage = app.post_race_options.for_mode(
+              race::post_race_mode(app.race->event().career_type, app.race->rivals_solo()));
+          // RACE-05: the award is computed at the line and held; the career,
+          // the garage and the save change only when the player leaves the
+          // finish banner (race_continue). Headless runs have no banner.
+          if (app.race->award(app.career, app.wristbands, app.race_top_speed, bonus_in)) {
             if (app.skill_tracker) app.skill_tracker->reset_race_skills_banked();
-            if (app.legacy_fm4_progression && app.have_prog_tables) {
-              const int drv_xp = slice12.trainer.pacing.scale_points(a->driver_xp);
-              const int aff_xp = slice12.trainer.pacing.scale_points(a->affinity_xp);
-              const auto pu = race::apply_progression_xp(app.career, drv_xp, current_make_id(), aff_xp,
-                                                         app.prog_tables);
-              for (int64_t gcid : pu.gift_cars) {
-                const std::string gnm = app.award_garage_car(gcid, 0, false, /*is_prize=*/true);
-                if (!gnm.empty()) {
-                  popup = {"DRIVER LEVEL " + std::to_string(pu.new_driver_level) + " GIFT CAR!", gnm, vehicle.time(),
-                           -1, carview::ui::rgba(247, 255, 38)};
-                  app.garage_picker();
-                }
-              }
-              if (pu.affinity_bonus_credits > 0) {
-                app.sponsor_banner_title = "AFFINITY LEVEL " + std::to_string(pu.new_affinity_level);
-                app.sponsor_banner_detail = "+" + carview::thousands(pu.affinity_bonus_credits) + " Cr  (" +
-                                        std::to_string(int(std::lround(pu.affinity_discount * 100.0))) + "% UPGRADE DISC)";
-                app.sponsor_banner_at = vehicle.time();
-              }
-            }
-            const int lvl = app.wristbands.level_index(app.career.wristband_points);
-            std::string band_label = "no wristband";
-            if (lvl >= 0 && size_t(lvl) < app.wristbands.levels.size()) {
-              band_label = carview::game_text(app.wristbands.levels[size_t(lvl)].second);
-              if (band_label.empty() || band_label.rfind("_&", 0) == 0) {
-                if (const auto* ms = race::find_wristband_milestone(lvl)) {
-                  band_label = std::string(ms->colour_key) + " Wristband";
-                } else {
-                  band_label = "Wristband " + std::to_string(lvl + 1);
-                }
-              } else {
-                std::string low = band_label;
-                for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-                if (low.find("wristband") == std::string::npos) band_label += " Wristband";
-              }
-            }
-            std::printf("race: award %lld CR (base %lld, mileage %lld, diff +%d%% %lld, assists %lld, skills %lld, nemesis %lld), %d wristband points (total %d, %s), credits %lld%s%s\n",
-                        (long long)a->credits, (long long)a->base_credits, (long long)a->mileage_bonus,
-                        a->difficulty_pct, (long long)a->difficulty_bonus, (long long)a->assists_bonus,
-                        (long long)a->skills_bonus, (long long)a->nemesis_bonus, a->wristband_points,
-                        app.career.wristband_points, band_label.c_str(),
-                        (long long)app.career.credits, a->first_completion ? ", first completion" : "",
-                        a->prize_car ? (", prize car " + std::to_string(a->prize_car)).c_str() : "");
-            if (a->prize_car > 0) {
-              int prize_col = 0;
-              if (const auto* cev = app.career_catalog.find_event(app.race_event)) prize_col = cev->prize_car_colour;
-              won_car_name = app.award_garage_car(a->prize_car, prize_col, false, /*is_prize=*/true);
-              app.garage_picker();
-            }
-            // Dynamic difficulty (AISkillAdjustments): update profile Main/AISkill
-            // after finished races in STOCK mode (skipped in Fair / Hard+).
-            const double pl_t = app.race->session().car(app.race->player_index()).finish;
-            const double ai_ref = app.race->ai_reference_time();
-            const race::AiMode eff_mode =
-                race::is_pinyon_hard(app.race_options.difficulty, app.race_options.ai_mode)
-                    ? race::AiMode::kHard
-                    : (app.race_options.rubberband ? app.race_options.ai_mode : race::AiMode::kFair);
-            app.dynamic_ai_skill = race::update_dynamic_ai_skill(
-                app.dynamic_ai_skill, pl_t, ai_ref, app.career.num_races, eff_mode, app.race->event().skill_adjustments);
-            if (!app.headless) {
-              const race::CareerEvent* cev = app.have_career_catalog ? app.career_catalog.find_event(app.race_event) : nullptr;
-              const int pl = app.race->player_place();
-              const int ncars = app.race->is_showcase() ? 2 : int(app.race->player_index()) + 1;
-              // R3-CAM-03: Capture actual RaceView standings (real drivers, cars, class/PI, finish clock/gap/best lap)
-              // for Post-Race Stage 1 RACE RESULTS instead of fabricating boss names or fake +0.92s gaps.
-              std::vector<race::RaceFinishStanding> finish_standings;
-              const RaceHud rh = app.race->hud_info();
-              if (app.race->is_showcase()) {
-                race::RaceFinishStanding p_st;
-                p_st.place = pl;
-                p_st.is_player = true;
-                p_st.finish_time_s = rh.finish_time;
-                p_st.best_lap_s = rh.best_lap;
-                if (!rh.rows.empty()) {
-                  p_st.driver_name = rh.rows.front().name;
-                  p_st.car_name = rh.rows.front().car;
-                  p_st.class_name = rh.rows.front().car_class;
-                  p_st.pi = rh.rows.front().pi;
-                } else {
-                  p_st.driver_name = "YOU";
-                  p_st.car_name = carview::car_name(app.car);
-                }
-                const auto& sc_opp = app.race->showcase();
-                race::RaceFinishStanding a_st;
-                a_st.place = (pl == 1 ? 2 : 1);
-                a_st.driver_name = sc_opp.spec().display_name;
-                a_st.car_name = "AIRBORNE CHALLENGER";
-                a_st.finish_time_s = sc_opp.pose().finished ? sc_opp.pose().finish_time : -1.0;
-                const double est_gap =
-                    (a_st.finish_time_s > 0.0 && p_st.finish_time_s > 0.0)
-                        ? std::fabs(a_st.finish_time_s - p_st.finish_time_s)
-                        : (std::fabs(rh.showcase_gap_m) / std::max(10.0, sc_opp.pose().speed_mps));
-                p_st.gap_s = (pl == 1) ? 0.0 : est_gap;
-                a_st.gap_s = (pl == 1) ? est_gap : 0.0;
-                if (pl == 1) {
-                  finish_standings.push_back(std::move(p_st));
-                  finish_standings.push_back(std::move(a_st));
-                } else {
-                  finish_standings.push_back(std::move(a_st));
-                  finish_standings.push_back(std::move(p_st));
-                }
-              } else {
-                const bool event_is_boss = cev && race::find_boss_by_event(cev->horizon_id) != nullptr;
-                double lead_finish_t = -1.0;
-                for (const auto& r : rh.rows) {
-                  if (r.place == 1 && r.finished && r.time > 0.0) {
-                    lead_finish_t = r.time;
-                    break;
-                  }
-                }
-                finish_standings.reserve(rh.rows.size());
-                for (const auto& r : rh.rows) {
-                  race::RaceFinishStanding st;
-                  st.place = r.place;
-                  st.driver_name = !r.name.empty() ? r.name : (r.player ? "YOU" : "HORIZON DRIVER");
-                  st.car_name = r.car;
-                  st.class_name = r.car_class;
-                  st.pi = r.pi;
-                  st.finish_time_s = r.finished ? r.time : -1.0;
-                  st.best_lap_s = r.best_lap;
-                  st.is_player = r.player;
-                  st.is_boss = (!r.player && event_is_boss);
-                  if (r.place == 1) {
-                    st.gap_s = 0.0;
-                  } else if (lead_finish_t > 0.0 && r.finished && r.time > 0.0) {
-                    st.gap_s = std::max(0.0, r.time - lead_finish_t);
-                  } else {
-                    st.gap_s = std::max(0.0, r.gap);
-                  }
-                  finish_standings.push_back(std::move(st));
-                }
-              }
-              const auto camp_act = app.campaign.on_race_finished(
-                  cev, *a, pl, ncars, pop_before, app.current_pop_rank(), bal_before, app.career.credits,
-                  app.career.wristband_points, app.collected_wristband, won_car_name,
-                  app.have_career_catalog ? &app.career_catalog : nullptr, app.fmv_player, &app.audio_host,
-                  finish_standings);
-              apply_campaign_action(camp_act);
-              app.campaign_owns_post_race = true;
-              // radiodj.xml: a wristband tier's festival results queue its "after n events" update.
-              if (cev && cev->style == 1) app.audio_host.radio_festival_event_finished(cev->level, pl);
-            }
-            save_due = true;  // the window saves the award at once
+            if (app.headless) commit_race_award();
           }
         }
         // game_free_roam_flow.xml: a wristband ready to collect enters radiodj.special_wristband
@@ -1687,6 +1537,169 @@ bool DriveSession::step(const drive::Input& user_in) {
                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count());
         step_world_stream_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - st_t0).count();
         return true;
+}
+
+bool DriveSession::commit_race_award() {
+  if (!app.race) return false;
+  const int64_t bal_before = app.career.credits;
+  const int pop_before = app.current_pop_rank();
+  const race::RaceAward* a = app.race->commit_award(app.career);
+  if (!a) return false;
+  if (slice12.trainer.pacing.modifies_economy()) {
+    const int64_t scaled_cr = slice12.trainer.pacing.scale_credits(a->credits);
+    const int64_t extra_cr = scaled_cr - a->credits;
+    if (extra_cr != 0) {
+      app.career.credits = std::clamp<int64_t>(app.career.credits + extra_cr, 0, 999999999);
+      app.career.total_winnings = std::max<int64_t>(0, app.career.total_winnings + extra_cr);
+    }
+    const int scaled_wb = slice12.trainer.pacing.scale_points(a->wristband_points);
+    const int extra_wb = scaled_wb - a->wristband_points;
+    if (extra_wb != 0) app.career.wristband_points = std::max(0, app.career.wristband_points + extra_wb);
+  }
+  if (app.legacy_fm4_progression && app.have_prog_tables) {
+    const int drv_xp = slice12.trainer.pacing.scale_points(a->driver_xp);
+    const int aff_xp = slice12.trainer.pacing.scale_points(a->affinity_xp);
+    const auto pu = race::apply_progression_xp(app.career, drv_xp, current_make_id(), aff_xp,
+                                               app.prog_tables);
+    for (int64_t gcid : pu.gift_cars) {
+      const std::string gnm = app.award_garage_car(gcid, 0, false, /*is_prize=*/true);
+      if (!gnm.empty()) {
+        popup = {"DRIVER LEVEL " + std::to_string(pu.new_driver_level) + " GIFT CAR!", gnm, vehicle.time(),
+                 -1, carview::ui::rgba(247, 255, 38)};
+        app.garage_picker();
+      }
+    }
+    if (pu.affinity_bonus_credits > 0) {
+      app.sponsor_banner_title = "AFFINITY LEVEL " + std::to_string(pu.new_affinity_level);
+      app.sponsor_banner_detail = "+" + carview::thousands(pu.affinity_bonus_credits) + " Cr  (" +
+                              std::to_string(int(std::lround(pu.affinity_discount * 100.0))) + "% UPGRADE DISC)";
+      app.sponsor_banner_at = vehicle.time();
+    }
+  }
+  const int lvl = app.wristbands.level_index(app.career.wristband_points);
+  std::string band_label = "no wristband";
+  if (lvl >= 0 && size_t(lvl) < app.wristbands.levels.size()) {
+    band_label = carview::game_text(app.wristbands.levels[size_t(lvl)].second);
+    if (band_label.empty() || band_label.rfind("_&", 0) == 0) {
+      if (const auto* ms = race::find_wristband_milestone(lvl)) {
+        band_label = std::string(ms->colour_key) + " Wristband";
+      } else {
+        band_label = "Wristband " + std::to_string(lvl + 1);
+      }
+    } else {
+      std::string low = band_label;
+      for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+      if (low.find("wristband") == std::string::npos) band_label += " Wristband";
+    }
+  }
+  std::printf("race: award %lld CR (base %lld, mileage %lld, diff +%d%% %lld, assists %lld, skills %lld, nemesis %lld), %d wristband points (total %d, %s), credits %lld%s%s\n",
+              (long long)a->credits, (long long)a->base_credits, (long long)a->mileage_bonus,
+              a->difficulty_pct, (long long)a->difficulty_bonus, (long long)a->assists_bonus,
+              (long long)a->skills_bonus, (long long)a->nemesis_bonus, a->wristband_points,
+              app.career.wristband_points, band_label.c_str(),
+              (long long)app.career.credits, a->first_completion ? ", first completion" : "",
+              a->prize_car ? (", prize car " + std::to_string(a->prize_car)).c_str() : "");
+  if (a->prize_car > 0) {
+    int prize_col = 0;
+    if (const auto* cev = app.career_catalog.find_event(app.race_event)) prize_col = cev->prize_car_colour;
+    won_car_name = app.award_garage_car(a->prize_car, prize_col, false, /*is_prize=*/true);
+    app.garage_picker();
+  }
+  // Dynamic difficulty (AISkillAdjustments): update profile Main/AISkill
+  // after finished races in STOCK mode (skipped in Fair / Hard+).
+  const double pl_t = app.race->session().car(app.race->player_index()).finish;
+  const double ai_ref = app.race->ai_reference_time();
+  const race::AiMode eff_mode =
+      race::is_pinyon_hard(app.race_options.difficulty, app.race_options.ai_mode)
+          ? race::AiMode::kHard
+          : (app.race_options.rubberband ? app.race_options.ai_mode : race::AiMode::kFair);
+  app.dynamic_ai_skill = race::update_dynamic_ai_skill(
+      app.dynamic_ai_skill, pl_t, ai_ref, app.career.num_races, eff_mode, app.race->event().skill_adjustments);
+  if (!app.headless) {
+    const race::CareerEvent* cev = app.have_career_catalog ? app.career_catalog.find_event(app.race_event) : nullptr;
+    const int pl = app.race->player_place();
+    const int ncars = app.race->is_showcase() ? 2 : int(app.race->player_index()) + 1;
+    // R3-CAM-03: Capture actual RaceView standings (real drivers, cars, class/PI, finish clock/gap/best lap)
+    // for Post-Race Stage 1 RACE RESULTS instead of fabricating boss names or fake +0.92s gaps.
+    std::vector<race::RaceFinishStanding> finish_standings;
+    const RaceHud rh = app.race->hud_info();
+    if (app.race->is_showcase()) {
+      race::RaceFinishStanding p_st;
+      p_st.place = pl;
+      p_st.is_player = true;
+      p_st.finish_time_s = rh.finish_time;
+      p_st.best_lap_s = rh.best_lap;
+      if (!rh.rows.empty()) {
+        p_st.driver_name = rh.rows.front().name;
+        p_st.car_name = rh.rows.front().car;
+        p_st.class_name = rh.rows.front().car_class;
+        p_st.pi = rh.rows.front().pi;
+      } else {
+        p_st.driver_name = "YOU";
+        p_st.car_name = carview::car_name(app.car);
+      }
+      const auto& sc_opp = app.race->showcase();
+      race::RaceFinishStanding a_st;
+      a_st.place = (pl == 1 ? 2 : 1);
+      a_st.driver_name = sc_opp.spec().display_name;
+      a_st.car_name = "AIRBORNE CHALLENGER";
+      a_st.finish_time_s = sc_opp.pose().finished ? sc_opp.pose().finish_time : -1.0;
+      const double est_gap =
+          (a_st.finish_time_s > 0.0 && p_st.finish_time_s > 0.0)
+              ? std::fabs(a_st.finish_time_s - p_st.finish_time_s)
+              : (std::fabs(rh.showcase_gap_m) / std::max(10.0, sc_opp.pose().speed_mps));
+      p_st.gap_s = (pl == 1) ? 0.0 : est_gap;
+      a_st.gap_s = (pl == 1) ? est_gap : 0.0;
+      if (pl == 1) {
+        finish_standings.push_back(std::move(p_st));
+        finish_standings.push_back(std::move(a_st));
+      } else {
+        finish_standings.push_back(std::move(a_st));
+        finish_standings.push_back(std::move(p_st));
+      }
+    } else {
+      const bool event_is_boss = cev && race::find_boss_by_event(cev->horizon_id) != nullptr;
+      double lead_finish_t = -1.0;
+      for (const auto& r : rh.rows) {
+        if (r.place == 1 && r.finished && r.time > 0.0) {
+          lead_finish_t = r.time;
+          break;
+        }
+      }
+      finish_standings.reserve(rh.rows.size());
+      for (const auto& r : rh.rows) {
+        race::RaceFinishStanding st;
+        st.place = r.place;
+        st.driver_name = !r.name.empty() ? r.name : (r.player ? "YOU" : "HORIZON DRIVER");
+        st.car_name = r.car;
+        st.class_name = r.car_class;
+        st.pi = r.pi;
+        st.finish_time_s = r.finished ? r.time : -1.0;
+        st.best_lap_s = r.best_lap;
+        st.is_player = r.player;
+        st.is_boss = (!r.player && event_is_boss);
+        if (r.place == 1) {
+          st.gap_s = 0.0;
+        } else if (lead_finish_t > 0.0 && r.finished && r.time > 0.0) {
+          st.gap_s = std::max(0.0, r.time - lead_finish_t);
+        } else {
+          st.gap_s = std::max(0.0, r.gap);
+        }
+        finish_standings.push_back(std::move(st));
+      }
+    }
+    const auto camp_act = app.campaign.on_race_finished(
+        cev, *a, pl, ncars, pop_before, app.current_pop_rank(), bal_before, app.career.credits,
+        app.career.wristband_points, app.collected_wristband, won_car_name,
+        app.have_career_catalog ? &app.career_catalog : nullptr, app.fmv_player, &app.audio_host,
+        finish_standings);
+    apply_campaign_action(camp_act);
+    app.campaign_owns_post_race = true;
+    // radiodj.xml: a wristband tier's festival results queue its "after n events" update.
+    if (cev && cev->style == 1) app.audio_host.radio_festival_event_finished(cev->level, pl);
+  }
+  save_due = true;  // the window saves the award at once
+  return true;
 }
 
 }  // namespace carview

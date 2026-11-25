@@ -147,6 +147,8 @@ struct DriveApp : DriveConfig {
   std::unique_ptr<RaceView> race;
   race::CareerRecord career;
   race::WristbandTables wristbands;
+  race::PostRaceOptions post_race_options;  // PostRaceOptions mileage rules (empty: no mileage bonus)
+  bool have_post_race_options = false;
   double race_top_speed = 0;
   cars::PhysicsSettings race_phys_settings;
   garage::PiConfig race_pi_cfg = garage::synthetic_pi_config();

@@ -120,6 +120,12 @@ bool DriveApp::start_race(const std::string& id, std::string& why) {
       if (!race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e))
         std::fprintf(stderr, "carview: note: no wristband tables: %s\n", e.c_str());
     }
+    if (!have_post_race_options) {
+      std::string e;
+      have_post_race_options = race::load_post_race_options(game_root_of(), post_race_options, &e);
+      if (!have_post_race_options)
+        std::fprintf(stderr, "carview: note: no PostRaceOptions, no mileage bonus: %s\n", e.c_str());
+    }
     return true;
 }
 

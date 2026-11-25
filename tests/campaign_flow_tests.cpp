@@ -148,8 +148,11 @@ void test_minute0_to_endgame_state_machine() {
     check(flow.reward_tally().next_unlock_headline.find("DARIUS FLYNT") != std::string::npos,
           "HEADLINE_EVENT tally announces Darius Flynt Showdown unlock");
 
-    // Advance PostRaceFinish (Stage 1) -> RewardTally Stage 2 (Credits) -> Stage 3 (Wristband/Pop) -> FreeRoam!
-    flow.advance_or_skip();  // Stage 1 -> Stage 2 (Credits)
+    // RACE-01: on_race_finished runs after the finish banner, so the tally opens on
+    // Stage 2 (Credits) -> Stage 3 (Wristband/Pop) -> FreeRoam!
+    check(flow.stage() == race::CampaignStage::kRewardTally &&
+              flow.reward_tally().stage == race::PostRaceStage::kCreditsEarned,
+          "HEADLINE_EVENT finish opens the tally on the credits page");
     flow.advance_or_skip();  // finish Stage 2 animation
     flow.advance_or_skip();  // Stage 2 -> Stage 3 (Wristband & Popularity)
     flow.advance_or_skip();  // finish Stage 3 animation
@@ -186,12 +189,11 @@ void test_minute0_to_endgame_state_machine() {
     aw.credits = 65000;
     aw.wristband_points = 0;
     flow.on_race_finished(&finale_ev, aw, 1, 2, 5, 1, 300000, 365000, 10000, 6, "2010 Ferrari 599XX");
-    check(flow.stage() == race::CampaignStage::kPostRaceFinish && flow.is_blocking_gameplay(),
-          "race finish enters blocking Stage 1 PostRaceFinish (Race Results)");
-    flow.advance_or_skip();
-    check(flow.stage() == race::CampaignStage::kRewardTally &&
+    // RACE-01: the finish banner (and its RACE RESULTS popup) came before this call;
+    // the campaign's tally is only the credits and points pages after it.
+    check(flow.stage() == race::CampaignStage::kRewardTally && flow.is_blocking_gameplay() &&
               flow.reward_tally().stage == race::PostRaceStage::kCreditsEarned,
-          "PostRaceFinish transitions to Stage 2 Credits Earned");
+          "leaving the finish banner opens the blocking tally on Stage 2 Credits Earned");
     check(flow.reward_tally().active, "RewardTally active");
 
     // Step Stage 2 partway and verify animated rolling credits.
@@ -492,16 +494,11 @@ void test_pt_e_campaign_and_post_race_parity() {
     ctx.screen_w = 1280.0f;
     ctx.screen_h = 720.0f;
 
-    // Render Stage 1 (RACE RESULTS).
-    carview::ui::List l1;
-    carview::campaign_ui::draw(l1, flow, ctx);
-    check(l1.items().size() > 25, "Stage 1 RACE RESULTS renders rich UI4 podium table");
-
-    // Advance -> Stage 2 (CREDITS EARNED).
-    flow.advance_or_skip();
+    // RACE-01: the finish banner and its RACE RESULTS popup came first; the tally
+    // opens on Stage 2 (CREDITS EARNED).
     check(flow.stage() == race::CampaignStage::kRewardTally &&
               flow.reward_tally().stage == race::PostRaceStage::kCreditsEarned,
-          "Stage 1 advances to Stage 2 CREDITS EARNED");
+          "the tally opens on Stage 2 CREDITS EARNED");
     flow.update(1.5, {0.0, 0.0}, false, false);
     carview::ui::List l2;
     carview::campaign_ui::draw(l2, flow, ctx);

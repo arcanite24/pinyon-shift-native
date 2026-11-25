@@ -524,6 +524,9 @@ struct DriveSession {
   void choose();
   void race_continue();
   void race_restart();
+  // Commits the finished race's held award (career, garage, campaign tally,
+  // save); false when none is held.
+  bool commit_race_award();
   void open_menu();
   bool activate_world_trigger();
 

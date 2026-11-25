@@ -773,6 +773,7 @@ void DriveSession::choose() {
           }
           if (act == PauseMenu::kReset) put_back();
           if (act == PauseMenu::kRestartRace && app.race) {
+            app.race->drop_award();  // a restart forfeits a finished race's award (RACE-05)
             club_pending.event_restarted = true;
             club_step();
             results_page = 0;
@@ -780,6 +781,7 @@ void DriveSession::choose() {
             running = false;
           }
           if (act == PauseMenu::kQuitRace && app.race) {
+            app.race->drop_award();
             results_page = 0;
             app.restore_pre_race_tod();
             app.leave_race = true;
@@ -800,6 +802,12 @@ void DriveSession::race_continue() {
           if (results_table) return;  // the table takes only B
           if (results_page == 0) {
             app.audio_host.trigger_ui(audio::UiCue::kAccept);
+            // RACE-05: the original updates and saves the profile on the finish
+            // banner's done exit, so Continue is what pays the race.
+            commit_race_award();
+            // RACE-01: with the campaign on, its tally is the credits and points
+            // pages after the banner; it ends the race when it is done.
+            if (app.campaign_owns_post_race) return;
             results_page = 1;
             return;
           }
@@ -829,6 +837,7 @@ void DriveSession::race_continue() {
 
 void DriveSession::race_restart() {
           if (results_table) return;
+          if (app.race) app.race->drop_award();  // finishing then restarting pays nothing (RACE-05)
           results_page = 0;
           app.next_event = app.race_event;
           running = false;

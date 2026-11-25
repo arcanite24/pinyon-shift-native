@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace cars {
@@ -154,7 +155,47 @@ int assist_difficulty_bonus_percent(const DifficultyAssists& assists);
 int difficulty_bonus_percent(int difficulty_index);
 // Combined AI difficulty + per-assist difficulty bonus percentage.
 int total_difficulty_bonus_percent(int difficulty_index, const DifficultyAssists& assists);
-int64_t mileage_bonus_credits(double distance_m);
+
+// The mileage bonus rule of one race mode, from the game's
+// gametunablesettings.zip PostRaceOptions/PostRaceOptions_<mode>.xml
+// `<MileageCredits totalDistance=".." reward=".." increment=".."/>`: the
+// distance driven (m, up to totalDistance) pays reward × d / totalDistance,
+// floored to a multiple of increment (offline career modes: 5,000 Cr over
+// 50 km in steps of 100; Rivals: 20,000 in steps of 400). An empty rule
+// (data not loaded) pays nothing.
+struct MileageCredits {
+  double total_distance_m = 0;
+  double reward = 0;
+  int64_t increment = 0;
+  bool valid() const { return total_distance_m > 0 && reward > 0 && increment > 0; }
+};
+int64_t mileage_bonus_credits(double distance_m, const MileageCredits& rule);
+
+// The offline PostRaceOptions file each race picks.
+enum class PostRaceMode : uint8_t {
+  kFestivalRace,
+  kStreetRace,
+  kHeadline,
+  kNemesisRace,
+  kExhibition,
+  kRaceEncounter,
+  kRivals,
+  kCount
+};
+// From Events.CareerTypeId (4 street, 11 nemesis, 12 headline, 7/8
+// showcase, else festival); a Rivals run picks the Rivals file.
+PostRaceMode post_race_mode(int career_type, bool rivals);
+// "PostRaceOptions/PostRaceOptions_Offline_<Mode>.xml".
+std::string post_race_options_member(PostRaceMode mode);
+// The MileageCredits element of one PostRaceOptions file.
+bool parse_mileage_credits(std::string_view xml, MileageCredits& out, std::string* error);
+
+struct PostRaceOptions {
+  MileageCredits mileage[size_t(PostRaceMode::kCount)];
+  const MileageCredits& for_mode(PostRaceMode m) const { return mileage[size_t(m)]; }
+};
+// Reads every offline mode's file from <game_root>/media/gametunablesettings.zip.
+bool load_post_race_options(const std::filesystem::path& game_root, PostRaceOptions& out, std::string* error);
 
 // Optional extra race-breakdown inputs (defaults preserve backward compatibility).
 struct RaceBonusInputs {
@@ -164,6 +205,7 @@ struct RaceBonusInputs {
   int wristband_level = -1;     // current wristband level (-1: infer from record.wristband_points)
   double reward_multiplier = 1.0;  // Festival Pacing multiplier (0.5x..5.0x)
   int prize_car_max_place = 1;     // Rewards_EventPrizes finishing place cutoff (1 or 2)
+  MileageCredits mileage;          // the race mode's PostRaceOptions rule (empty: no mileage bonus)
 };
 
 // One finished (or not-finished) race of an event with one race, applied
@@ -176,5 +218,52 @@ RaceAward award_race(CareerRecord& record, int64_t event_id, int64_t race_id, in
                      double prize, int racers, int place, bool finished, double race_time, double top_speed,
                      int64_t prize_car, const WristbandTables& tables, int difficulty_pct = 0, double distance_m = 0,
                      const RaceBonusInputs& extras = {});
+
+// What commit_race_award writes besides the award itself.
+struct RaceAwardCommit {
+  int64_t event_id = 0, race_id = 0;
+  int career_type = 0;
+  int place = 0;
+  bool finished = false;
+  double race_time = 0, top_speed = 0;
+};
+// award_race in two halves: compute_race_award reads `record` (best places,
+// prize cars, wristband points) and changes nothing; commit_race_award
+// writes the records, counters, credits, wristband points and the prize car
+// in the spec's order. award_race is compute then commit.
+RaceAward compute_race_award(const CareerRecord& record, int64_t event_id, int career_type, int style, int level,
+                             double prize, int racers, int place, bool finished, int64_t prize_car,
+                             const WristbandTables& tables, int difficulty_pct = 0, double distance_m = 0,
+                             const RaceBonusInputs& extras = {});
+void commit_race_award(CareerRecord& record, const RaceAward& award, const RaceAwardCommit& c);
+
+// The award of a finished race, held until the player leaves the finish
+// banner (the original updates and saves the profile only on the banner's
+// done exit): Continue commits it once; Restart and Quit drop it.
+class PendingRaceAward {
+ public:
+  void hold(const RaceAward& award, const RaceAwardCommit& c) {
+    award_ = award;
+    commit_ = c;
+    held_ = true;
+  }
+  bool held() const { return held_; }
+  // The held award (for the post-race screens), or null.
+  const RaceAward* award() const { return held_ ? &award_ : nullptr; }
+  // Applies the held award to `record` once and returns it; null when
+  // nothing is held (already committed or dropped).
+  const RaceAward* commit(CareerRecord& record) {
+    if (!held_) return nullptr;
+    held_ = false;
+    commit_race_award(record, award_, commit_);
+    return &award_;
+  }
+  void drop() { held_ = false; }
+
+ private:
+  RaceAward award_;
+  RaceAwardCommit commit_;
+  bool held_ = false;
+};
 
 }  // namespace race
