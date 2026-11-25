@@ -7,6 +7,7 @@
 
 #include "game_hud.h"
 #include "race_screens.h"
+#include "scene_timeline.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -64,6 +65,13 @@ constexpr float kListDx = -45.0f, kListDy = -62.0f;
 // from 192 in 29_message_center_offline_orig.png; the other rows keep the
 // scene's 50 px pitch).
 constexpr float kFocusDy = -5.0f;
+// With the rows' slides (MENU-17), the rows above the focus rest 7 px up
+// and those below 6 px down, so the list's rest is 7 px higher than the
+// measurement above, which had the spread folded in. Then the focused row
+// needs no kFocusDy. This places SETTINGS at 193 (MAP focused, 07_) and 194
+// (QUIT focused, 07b_) against the captures' 199 - 6 and 187 + 7.
+constexpr float kListTimelineDy = -7.0f;
+constexpr float kRowAboveDy = -7.0f, kRowBelowDy = 6.0f;  // BLURREDABOVE / BLURREDBELOW, for the hit boxes
 // The player bar's packing (its stackers are not run), measured on the same
 // capture: the objective ends at x 1030, left of the wristband; each pill
 // starts a few pixels left of its right-aligned text.
@@ -143,6 +151,51 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
 
 namespace {
 
+// The rows' own slides (MENU-17, docs/UI_SCENE_ANIMATION.md). The focused
+// row is on FOCUSED: scale 1.2, its tapes pink (250, 0, 100), its clip-on
+// in. The rows above it rest 7 px up (BLURREDABOVE) and the rows below 6 px
+// down (BLURREDBELOW): 07_pause_menu_orig.png (MAP focused) and
+// 07b_pause_menu_scrolled_orig.png (QUIT focused) put SETTINGS..MY PROFILE
+// 12-13 px apart. While the focus moves, the new row plays FOCUSABOVE or
+// FOCUSBELOW and the old one BLURBELOW or BLURABOVE (150 ms), scrubbed by
+// the measured cross-fade (`fade`, over kPauseFadeSeconds). False without
+// the scene's timeline; the measured looks are drawn then.
+bool pause_rows_anim(SceneScreen& sc, const PauseScreenHud& ps, int first, int slots) {
+  static SceneTimeline tl;
+  tl.bind(sc.scene().scene());
+  if (!tl.ok() || !scene_timelines_enabled()) return false;
+  const int n = int(ps.rows.size());
+  const bool moving = ps.from >= 0 && ps.from != ps.selected && ps.fade < 1.0;
+  for (int slot = 0; slot < slots; ++slot) {
+    const int btn = sc.node("Button" + std::to_string(slot));
+    const int i = first + slot;
+    const int comp = tl.item_of_node(btn);
+    if (btn < 0 || comp < 0 || i >= n) continue;
+    const char* want = i < ps.selected ? "BLURREDABOVE" : i > ps.selected ? "BLURREDBELOW" : "FOCUSED";
+    bool scrub = false;
+    if (moving && i == ps.selected) want = ps.selected > ps.from ? "FOCUSBELOW" : "FOCUSABOVE", scrub = true;
+    if (moving && i == ps.from) want = ps.from > ps.selected ? "BLURBELOW" : "BLURABOVE", scrub = true;
+    if (tl.slide(uint32_t(comp)) != want) tl.go_to(uint32_t(comp), want);
+    // The move's slides run 150 ms (their curves' last key).
+    tl.set_time(uint32_t(comp), scrub ? float(ps.fade) * 150.0f : 0.0f);
+  }
+  // Only the rows' looks: the list's own slide (Option_List's Slide1, which
+  // the game scrubs with its SIZE events) is not sent, so kListDx / kListDy
+  // still place the list (Q187).
+  SceneBindings all;
+  tl.apply(all);
+  std::vector<int> stack;
+  for (int slot = 0; slot < slots; ++slot) stack.push_back(sc.node("Button" + std::to_string(slot)));
+  while (!stack.empty()) {
+    const int nd = stack.back();
+    stack.pop_back();
+    if (nd < 0) continue;
+    if (auto it = all.anim.find(nd); it != all.anim.end()) sc.bindings().anim[nd] = it->second;
+    for (int c : sc.scene().children_of(nd)) stack.push_back(c);
+  }
+  return true;
+}
+
 void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float w, float h, bool help = true) {
   SceneScreen sc(kPauseScene);
   const SceneDraw& sd = sc.scene();
@@ -152,10 +205,6 @@ void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float 
   // The original draws the rows and the player bar at full size past their
   // text boxes (SPONSOR CHALLENGES, COLLECT .. WRISTBAND).
   sc.bindings().fit_text = false;
-  // The list group, placed where the original draws it.
-  const int list = sc.node("Option_List/Option_List");
-  if (list >= 0) sc.at(list).dx = kListDx, sc.at(list).dy = kListDy;
-
   const int n = int(ps.rows.size());
   // The scene's rows: the title update's scene has nine (Button0..8), for the
   // packages' 1000 CLUB and HORIZON RALLY (club_pause.png); the disc's has
@@ -163,6 +212,11 @@ void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float 
   int slots = 0;
   while (slots < 9 && sc.node("Button" + std::to_string(slots)) >= 0) ++slots;
   const int first = window_first(ps.selected, n, slots);
+  const bool timeline = pause_rows_anim(sc, ps, first, slots);
+  // The list group, placed where the original draws it.
+  const float list_dy = kListDy + (timeline ? kListTimelineDy : 0.0f);
+  const int list = sc.node("Option_List/Option_List");
+  if (list >= 0) sc.at(list).dx = kListDx, sc.at(list).dy = list_dy;
   for (int slot = 0; slot < slots; ++slot) {
     const int btn = sc.node("Button" + std::to_string(slot));
     const int i = first + slot;
@@ -183,18 +237,24 @@ void draw_list(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, float 
     for (const char* name : {"Dirt_Tile", "Crisp_Tape", "Smudge_Tape"}) {
       const int t = child(sd, body, name);
       if (t < 0) continue;
-      sc.at(t).tint = tape;
+      if (!timeline) sc.at(t).tint = tape;
       if (std::string_view(name) != "Dirt_Tile") sc.at(t).visible_width = tw + 64.0f;
     }
-    if (const int clip = child(sd, body, "Clipon"); clip >= 0 && sel > 0.0f) sc.show(clip, sel);
-    const float row_dy = i == ps.selected ? kFocusDy : 0.0f;
-    if (row_dy != 0.0f) sc.at(btn).dy = row_dy;
-    const float k = i == ps.selected ? kPauseFocusScale : 1.0f;
-    if (i == ps.selected) sc.at(btn).scale = kPauseFocusScale;
+    if (const int clip = child(sd, body, "Clipon"); !timeline && clip >= 0 && sel > 0.0f) sc.show(clip, sel);
+    float row_dy = 0.0f;
+    if (!timeline) {
+      row_dy = i == ps.selected ? kFocusDy : 0.0f;
+      if (row_dy != 0.0f) sc.at(btn).dy = row_dy;
+      if (i == ps.selected) sc.at(btn).scale = kPauseFocusScale;
+    } else {
+      // The slides move the rows; the hit boxes follow their rests.
+      row_dy = i < ps.selected ? kRowAboveDy : i > ps.selected ? kRowBelowDy : 0.0f;
+    }
+    const float k = i == ps.selected ? (timeline ? 1.2f : kPauseFocusScale) : 1.0f;
     // Mouse: the row's tapes.
     const auto c = sd.at(text);
     const float x0 = c[0] + kListDx - 30.0f, x1 = c[0] + kListDx + k * tw + 30.0f;
-    const float y0 = c[1] + kListDy + row_dy - 24.0f * k, y1 = c[1] + kListDy + row_dy + 24.0f * k;
+    const float y0 = c[1] + list_dy + row_dy - 24.0f * k, y1 = c[1] + list_dy + row_dy + 24.0f * k;
     l.add_hit(f.x(x0), f.y(y0), f.x(x1), f.y(y1), ui::kHitRow, i);
   }
   if (ps.screen == Screen::kExtras) {
