@@ -2626,12 +2626,19 @@ and REWARD with the reward on a pink tape under it
 (`14_rival_intro_orig.png`). The scene rests at its intro start (the big
 tape off-screen left), so the engine places the lines where the capture
 has them; the tapes land lower than their static rects say, and the
-engine corrects them by offsets fitted to that one capture. As interims it
-holds the callout 3 s (`kRivalIntro`), and it has no data yet for which
-events carry a star rival, so the callout is never reached in play (Q98).
-Needed: the callout's intro end state (so the offsets can go), the
-cutscene's length, and where the event's star rival comes from (`Events`
-or the rivals tables).
+engine corrects them by offsets fitted to that one capture. The star
+rival is now the field's first opponent flagged `AIPlayers.Nemesis`, and
+the reward line is its BEAT THE STAR bonus (no line when the bonus is
+zero). The timing follows `nemesis_show`: its `CCutsceneNemesisUITrigger`
+shows the callout from 0.8 s for 10 s, and the flow then waits half a
+second (`kRivalIntro`, 11.3 s), with the cutscene's cameras under it. As
+interims the sequence is taken to end with the UI trigger's duration (the
+cutscene itself loops from 4.8 s), A skips it, and
+`CIsNemesisInEvent check_wristband="true"` (the star is skipped below the
+player's wristband) is not decoded, so every event with a star shows it.
+Needed: the callout's intro end state (so the offsets can go), a capture
+timing the callout from START to the count, and `CIsNemesisInEvent`'s
+wristband check.
 
 ## Q96 (UI, not blocking): the points and won-car screens
 
@@ -2650,13 +2657,15 @@ race that wins a car), or the intro timelines' end states.
 When the current car does not qualify, the original's summary leads to
 car select (`108_C_BUY_CARSELECT`: a carousel of the garage's eligible
 cars with a buy-car tile, and the focused car's card and stats;
-`11_car_select_orig.png`). That scene is not bound (its carousel's layout
-and the cars' thumbnails are not decoded); as an interim the engine lists
-the eligible cars on `H_GENERIC_TITLE`'s rows under a CAR SELECT title.
-The grid menu's DIFFICULTY row opens the original's difficulty screen; as
-an interim the engine steps the difficulty in place (A, or left and
-right). Needed: the carousel's layout and thumbnail source, and a capture
-of the difficulty screen opened from the grid menu.
+`11_car_select_orig.png`). The engine now draws it on that scene's car
+list, as My Garage does (`car_list_screen.h`): the eligible cars' tiles,
+the focused car's panel (Y TOGGLE), A SELECT and B BACK. As interims the
+buy-car tile and X CAR LIST are not shown (the engine has no buy flow from
+here), and neither is BACK SEARCH. The grid menu's DIFFICULTY row opens
+the difficulty screen (`300_I_OPT_ASSISTS_DIFFICULTY`, the options page);
+its rows reach the race when it closes. Needed: a capture of car select's
+buy-car tile and X CAR LIST in use, and one of the difficulty screen
+opened from the grid menu (its help bar there).
 
 ## Q98 (UI, not blocking): the tombola, the rival offer and star rivals
 
@@ -2664,10 +2673,13 @@ The post-race order has two screens the engine does not draw yet: the car
 tombola (`H_CAR_TOMBOLA`, after an event whose prize is a tombola) and
 the rival offer (online only, so never reached offline). The flow model
 has steps for both (`race_flow::post_steps`), but the session sets
-neither yet. The engine also lacks which events carry a star rival, which gates
-the rival callout (Q95). Needed: a capture of a tombola after a race, the
-data that marks an event's prize as a tombola, and the event to star
-rival mapping.
+neither yet. The rival offer needs a live session (`CanShowRivalOffer`),
+so offline it is never shown, as the engine does. For the tombola no
+career event's data marks a tombola prize in the tables read so far
+(`Events`, `Rewards_*`), so the engine never reaches it. The event's star
+rival now comes from the field (`AIPlayers.Nemesis`, Q95). Needed: a
+capture of a tombola after a race, and the data that marks an event's
+prize as a tombola.
 
 ## Q99 (UI, not blocking): the tapes' specular sheens
 
@@ -3941,3 +3953,77 @@ recorded: the tag by day, its fade with distance, whether a leader or a
 rival gets a different tag, and the scene or texture it comes from.
 
 Needed: a daytime race capture with several tags at different distances.
+
+## Q167 (UI, not blocking): the pause menu's popups
+
+MESSAGE CENTER offline opens the NO NETWORK ACCESS popup (LiveStrings'
+`IDS_Not_Connected_To_Live_PopUp_Title` and `_Body`), and QUIT asks first
+on `H_MESSAGE_POPUP` with A EXIT SINGLE PLAYER and B CANCEL over a blurred
+frame (`28_quit_prompt_orig.png`). QUIT RACE asks with PauseMenu's
+`IDS_QuitRace` and `IDS_QuitRace_Desc_Career`. As interims: the offline
+popup's help bar is A OK and QUIT RACE's is A QUIT, B CANCEL (neither
+popup is captured with its bar); the blur covers the 3D frame only, so
+the pause list behind the popup stays sharp, while the capture blurs it;
+and the blur is the post shader's depth-of-field run uniformly at its
+widest radius, not the original's backdrop filter. Needed: captures of
+the offline popup and the QUIT RACE popup, and the backdrop blur's
+radius and whether it takes the UI under the popup.
+
+## Q168 (RACE-09, RACE-13, RACE-25, not blocking): the race cutscenes
+
+The race now plays the flows' cutscenes from gamemodes.zip
+(`cutscenes_default_race.xml`, and the track's own
+`Tracks/cutscenes_<Tracks.DevName>.xml` where `race_specific="true"`):
+`prerace_intro` under the title card, `prerace_looping_01` under the grid
+menu, `nemesis_show` under the rival callout, `prerace_countdown` after
+START (its `Follow` cut hands the view to the driving camera), then
+`postrace_finishline` under the banner, `postrace_transition_01` under the
+cash, `_02` under the points and `postrace_rewardcar_transition_01` under
+the won car. Cams on a named node take the route's transform of that name
+(`start_location_00`; FESTIVAL_FEST_001's intro node lies 13 m from it).
+As interims:
+
+- The menu keeps the measured 1.8 s after the card, while most festival
+  intros raise their `CCutsceneCountdownTrigger` (the flow's
+  `wait_for_cutscene_countdown` before the menu) at 5 s, the first race's
+  at 18 s. Whether the card shows partway into the intro, or the capture
+  pressed A, is not known.
+- The engine's count starts at START, not at `prerace_countdown`'s
+  `CCutsceneStartCountdownTrigger` (1.3 s), and its HUD returns on its own
+  swoop timing, not at the `CCutsceneCountdownTrigger` (2.75 s).
+- The cutscenes' events are not acted on: the audio cues
+  (`UIInGame/UI/Cutscenes`), `HideAllCars`, the cutscene cars and people,
+  and `PlacePlayerCar` (the car stays where the race left it). Without
+  `HideAllCars` the AI cars show under the grid cameras.
+- A cam on a node no file or route places (the default
+  `postrace_finishline`'s `CameraTargetNode_0`) uses the player car; the
+  world streams around the car, not the camera.
+- Rivals' `Cockpit_Cam_Activate` and the street and star flows' own
+  orders are not wired; they use the festival order.
+
+Needed: a capture timing the card, the menu and the intro's cuts from the
+load; the count's start against `CCutsceneStartCountdownTrigger`; and the
+default `CameraTargetNode_0`'s source.
+
+## Q169 (MENU-04, VIS-12, not blocking): the pause menu's SETTINGS row and X EXTRAS
+
+Offline the original's pause menu has seven rows. The engine shows MAP,
+SETTINGS, PHOTO MODE, MESSAGE CENTER, SPONSOR CHALLENGES, CAREER and
+QUIT, which matches the recomp's captures (`07_pause_menu_orig.png`,
+`28_quit_prompt_orig.png`: SETTINGS in the second row). The disc's
+`pause.xml` also has a MULTIPLAYER exit (`onMultiplayer`), which the
+recomp's row may stand in for. The engine's own screens (events, garage, upgrades,
+paint, difficulty, restart, ...) sit behind X EXTRAS in the help bar,
+which the original does not have. Kept as interims: the captured row
+order, and X EXTRAS as an engine addition outside the original's rows.
+Needed, an owner's call: whether that slot shows SETTINGS (as the recomp
+does) or the disc's row, and whether X EXTRAS stays.
+
+## Q170 (VIS-25, not blocking): the Sponsor Challenges screen
+
+SPONSOR CHALLENGES opens `H_SPONSOR_CHALLENGE_STATUS` with the scene's
+texts, logos, bars and layout. As interims its panes are placed at rects
+measured on the capture (the scene rests at its intro start), and the
+original's BUY POPULARITY SPIKE prompt is not shown: the engine has no
+tokens or store. Needed: the scene's intro end state, and whether BUY
+POPULARITY SPIKE shows offline.

@@ -305,18 +305,18 @@ destinations, and an outpost must be discovered (Q90).
 
 ## Interims in the pilot
 
-- **Message Centre.** Offline, the original answers MESSAGE CENTER with a "NO
-  NETWORK ACCESS" popup over the pause menu
-  (`29_message_center_offline_orig.png`). The engine opens
-  `802_MESSAGE_CENTER` with its title and an empty inbox (NO MESSAGES / YOU
-  HAVE NO MESSAGES / Please check back later.) on a plain pane; the scene's
-  list, tabs and images are hidden.
+- **Popups.** Offline, MESSAGE CENTER answers with the NO NETWORK ACCESS
+  popup over the pause menu, as the original does; QUIT asks first (A EXIT
+  SINGLE PLAYER, B CANCEL, `28_quit_prompt_orig.png`) and QUIT RACE asks
+  with the career description. Both popups blur the frame behind them, but
+  not the pause list; the offline and QUIT RACE popups' help bars are not
+  captured (Q167).
 - **Sponsor Challenges.** The scene's texts, logos, bars and layout with the
   measured panes above. The original's BUY POPULARITY SPIKE prompt is not
-  shown (the engine has no tokens).
+  shown (the engine has no tokens; Q170).
 - **EXTRAS.** The engine's own screens (events, garage, upgrades, paint, ...)
   sit behind X EXTRAS in the help bar, in the same list with the scene's
-  screen-title text reading EXTRAS. The original has neither.
+  screen-title text reading EXTRAS. The original has neither (Q169).
 
 ## Interims in the HUD
 
@@ -383,14 +383,19 @@ flow files) as plain steps, with the timings measured on the captures;
   a toast. A 0.5 s fade, then the load names the event.
 - **Pre-race.** `PRE_AND_POST_RACE`'s title card for 1.8 s, then
   `H_GENERIC_TITLE` (START RACE, DIFFICULTY, OPTIONS, QUIT RACE), and the
-  rival callout where the event has a star rival. A restart shows only the
-  menu.
+  rival callout where the field has a star driver. DIFFICULTY opens the
+  difficulty screen. A restart shows only the menu. Each step plays the
+  flow's cutscene: `prerace_intro`, `prerace_looping_01`, `nemesis_show`,
+  then `prerace_countdown` after START.
 - **Post-race.** `H_POST_RACE_FINISHED` (X results, B replay, Y restart);
   then the AI cars go and the car waits at the post-race location;
   `H_POST_RACE_CREDITS_BREAKDOWN` (it moves on by itself),
   `H_POST_RACE_CAREER_POINTS`, `H_POST_RACE_WON_CAR`, STAY IN CAR on
-  `H_MESSAGE_POPUP` when the event lent a car, then black and the load back
-  to free roam. Head to heads, Rivals, showcases and Rally skip the steps
+  `H_MESSAGE_POPUP` (over a blurred frame) when the event lent a car, then
+  black and the load back to free roam. The banner plays
+  `postrace_finishline`, the cash `postrace_transition_01`, the points
+  `_02` and the won car `postrace_rewardcar_transition_01`; the cash lists
+  BEAT THE STAR after FINISHED. Head to heads, Rivals, showcases and Rally skip the steps
   the original skips (`race_flow::post_steps`).
   The flow's only post-race speech (`radiodj.post_race`) comes before the
   results, so the campaign's call-ins and objective tracker wait from the
@@ -405,14 +410,19 @@ flow files) as plain steps, with the timings measured on the captures;
 
 - **Ticket.** The surface line for surfaces other than asphalt (Q93); the
   value tapes' colours for tickets other than festival ones (Q94).
-- **Rival callout.** Its tapes' offsets and its 3 s hold; no event carries a
-  star rival yet, so it is not reached in play (Q95, Q98).
+- **Rival callout.** Its tapes' offsets; its timing is `nemesis_show`'s UI
+  trigger, and the star's wristband check is not decoded (Q95).
 - **Points and won car.** Shown at measured rects without their intros'
   end states; no wristband art or car render (Q96).
-- **Car select and difficulty.** Car select lists the eligible cars on
-  `H_GENERIC_TITLE`'s rows; DIFFICULTY steps the difficulty in place (Q97).
-- **Not drawn.** The tombola and the rival offer (Q98); the title and
-  rival tapes' specular sheens (Q99).
+- **Car select.** On `108_C_BUY_CARSELECT`'s car list without the buy-car
+  tile, X CAR LIST or SEARCH (Q97).
+- **Cutscenes.** The flows' race cutscenes play under the screens and the
+  count, but their events (sounds, hidden cars, placed cars and people)
+  are not acted on, and the menu and count keep the measured timings
+  (Q168).
+- **Not drawn.** The tombola (no data marks a tombola prize) and the rival
+  offer (online only) (Q98); the title and rival tapes' specular sheens
+  (Q99).
 
 ## The front end and the load screen
 
