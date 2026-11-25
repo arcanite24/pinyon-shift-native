@@ -2722,7 +2722,22 @@ GlobalRegistry `Activities/BarnFinds`. Five points are still open:
   not track dialogue, so its timer never pauses for it.
 - **Collection.** The title collects a ready car on its garage Barn Finds
   screen, with a COLLECT CAR confirmation. The engine collects it when the
-  garage opens, and the garage insert itself was not traced.
+  garage opens. UI.zip has no Barn Finds scene: its only barn scene is
+  `H_BARN_FIND_HUD`, the driving HUD's. The screen is therefore probably a
+  garage car list with Barnfind's popups:
+  - `IDS_Collect_Popup_Title` / `_Message`: "COLLECT CAR", "This Barn Find
+    will now be added to your garage."
+  - `IDS_Wrecked_Popup_*`: "NOT READY", "Please come back later. This Barn
+    Find is still being restored".
+  - `IDS_Locked_Popup_*`: "NOT DISCOVERED", "This Barn Find has not been
+    discovered yet!".
+  - `IDS_Trade_BarnFind_*`: "CAN'T SELL BARN FIND".
+  - `IDS_ViewMapAction`: "VIEW ON MAP".
+
+  Porting it means the garage list's Barn Finds filter, its entries for
+  every barn state, and those popups on a message-popup scene. That is the
+  garage screen's work, not a scene of its own, and it is left for the
+  garage screen's port.
 
 Needed: what the two predicates test, the timer behind the idle check, and
 the value behind the ready check.
@@ -2738,15 +2753,37 @@ those lines are blank or interim:
 - **Blank:** the wristband announcement, the Star Showdown challenge and
   victory lines, and the Showcase intro and victory lines. Their dialogue
   cues still play the VO.
-- **Interim:** the campaign cinematics' eyebrows, detail lines and badges
-  (for example "HORIZON STAR SHOWDOWN • 1-ON-1 PINK SLIP"), and the unlock
-  subtitles ("Star Showdown unlocked! ..."). Each is engine text.
+- **From the string tables** (the English text is the fallback without a
+  resolver):
+
+  | Where | String |
+  |---|---|
+  | Wristband ceremony eyebrow | PostRaceFlow `IDS_WristbandUnlocked` "WRISTBAND UNLOCKED!" |
+  | Showcase intro eyebrow and detail | InGame `IDS_HudMsg_ShowcaseEvent` "SHOWCASE EVENT", CareerEventUI `IDS_ShowcaseInstructions` "WIN THE RACE TO KEEP THE CAR" |
+  | Showcase unlock subtitle | InGame `IDS_ShowcaseEventUnlocked_Message` "SHOWCASE EVENT UNLOCKED!" |
+  | Star Showdown intro eyebrow and detail | CareerEventUI `IDS_TitleNemesisRace` "STAR SHOWDOWN", `IDS_NemesisCalloutTitle` "Beat {0}" |
+  | Showcase and Star Showdown victory eyebrows | CareerEventUI `IDS_Headline_Event_Won` "WINNER" |
+  | Collect-wristband objective | InGame `IDS_CollectWristband` "COLLECT {0} WRISTBAND", `IDS_WristbandNewAvailable` "NEW WRISTBAND AT RACE CENTRAL" |
+  | Finale objective | InGame `IDS_HudMsg_HorizonFinal` "HORIZON FINAL", PostRaceFlow `IDS_HeadlineEventAvailableLn2` "WIN TO BE CHAMPION!" |
+  | Star Showdown objective detail | "Beat {0}" |
+  | Barn rumour subtitle | Barnfind `IDS_Spawned_Body` "NEW BARN FIND RUMOR" |
+  | Barn found detail and subtitle | Activities `IDS_BarnfindBeingRestored_Message` "{0} IS BEING RESTORED", `IDS_BarnfindBeingRestored_Title` "DAK WILL CALL YOU WHEN IT'S READY" |
+  | Barn ready headline, detail and subtitle | Barnfind `IDS_Ready_Message` "BARN FIND READY - {0}", `IDS_Title` "Head to the garage to collect it!" |
+
+- **Interim, with no string to use:** the wristband ceremony's subheadline
+  and badge ("7 NEW FESTIVAL EVENTS • STAR SHOWDOWN UNLOCKED", "WRISTBAND
+  TIER 2 / 7"), the Showcase and Star Showdown badges and victory
+  subheadlines ("POPULARITY RANK #250 SHOWCASE", "PINK SLIP CLAIMED"), the
+  Star Showdown unlock subtitle ("Star Showdown unlocked! ..."), the
+  "COMPLETE" and "DEFEATED" headline suffixes, and the free-roam objective
+  texts. Each is engine text.
 - **Casing:** names go in as the string tables hold them ("Hailey Harper",
   "Manic MINI"). Only captions built from an all-capitals format are in
   capitals ("{0} WRISTBAND" gives "PURPLE WRISTBAND").
 
-Needed: which of these screens the title draws, what text each one shows,
-and whether the UI changes the case.
+Needed: which of these screens the title draws, which strings each one
+uses (the ones above are matched by their wording, not traced to their
+callers), and whether the UI changes the case.
 
 ## Q107 (WORLD-11, not blocking): how an ordinary event sets and holds the time of day
 

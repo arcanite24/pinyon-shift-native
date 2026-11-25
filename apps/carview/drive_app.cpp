@@ -659,6 +659,8 @@ bool DriveApp::init(int& exit_code) {
     // The campaign's wristband, Star Showdown and Showcase tables. The raw
     // text: game_text strips "{0}" placeholders, and the wristband name
     // goes into Scoreboard's "{0} WRISTBAND".
+    race::set_campaign_caption_resolver(
+        [](std::string_view ref) { return carview::game_text_raw(std::string(ref)); });
     race::CampaignTablesLoad tl;
     if (race::load_campaign_tables(game_root_of(), state_root, shared_db,
                                    [](std::string_view ref) { return carview::game_text_raw(std::string(ref)); }, &tl,

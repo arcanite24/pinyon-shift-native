@@ -9,6 +9,18 @@
 #include <map>
 
 namespace race {
+
+std::string air_challenges_text(std::string_view ids) {
+  // AirChallenges.str (EN): the pilots, and the vehicle names, which are
+  // all "---".
+  static const std::map<std::string, std::string, std::less<>> kText = {
+      {"IDS_Pilot1", "Biplane"},  {"IDS_Pilot2", "Plane"},  {"IDS_Pilot3", "Chopper"}, {"IDS_Pilot4", "Balloon"},
+      {"IDS_Vehicle1", "---"},    {"IDS_Vehicle2", "---"},  {"IDS_Vehicle3", "---"},   {"IDS_Vehicle4", "---"},
+  };
+  auto it = kText.find(ids);
+  return it == kText.end() ? std::string() : it->second;
+}
+
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
@@ -29,10 +41,17 @@ bool contains_ci(std::string_view hay, std::string_view needle) {
   return lower_ascii(hay).find(lower_ascii(needle)) != std::string::npos;
 }
 
+void set_opponent(ShowcaseSpec& s, std::string_view pilot_ids, std::string_view vehicle_ids) {
+  s.pilot_name_ids = pilot_ids;
+  s.vehicle_name_ids = vehicle_ids;
+  s.display_name = air_challenges_text(pilot_ids);
+  s.vehicle_name = air_challenges_text(vehicle_ids);
+}
+
 void apply_visual_defaults(ShowcaseSpec& s) {
   switch (s.kind) {
     case ShowcaseAircraftKind::kMustangP51:
-      s.display_name = "P-51 MUSTANG";
+      set_opponent(s, "IDS_Pilot2", "IDS_Vehicle2");
       s.base_altitude_m = 26.0;
       s.swoop_altitude_m = 15.0;
       s.lateral_sway_m = 15.0;
@@ -40,7 +59,7 @@ void apply_visual_defaults(ShowcaseSpec& s) {
       s.scale = 1.45;
       break;
     case ShowcaseAircraftKind::kHelicopter:
-      s.display_name = "HELICOPTER";
+      set_opponent(s, "IDS_Pilot3", "IDS_Vehicle3");
       s.base_altitude_m = 21.0;
       s.swoop_altitude_m = 12.5;
       s.lateral_sway_m = 12.0;
@@ -48,7 +67,7 @@ void apply_visual_defaults(ShowcaseSpec& s) {
       s.scale = 1.2;
       break;
     case ShowcaseAircraftKind::kBiplane:
-      s.display_name = "BIPLANE";
+      set_opponent(s, "IDS_Pilot1", "IDS_Vehicle1");
       s.base_altitude_m = 24.0;
       s.swoop_altitude_m = 14.5;
       s.lateral_sway_m = 14.0;
@@ -56,7 +75,7 @@ void apply_visual_defaults(ShowcaseSpec& s) {
       s.scale = 1.15;
       break;
     case ShowcaseAircraftKind::kHotAirBalloon:
-      s.display_name = "HOT-AIR BALLOON";
+      set_opponent(s, "IDS_Pilot4", "IDS_Vehicle4");
       s.base_altitude_m = 36.0;
       s.swoop_altitude_m = 22.0;
       s.lateral_sway_m = 10.0;
@@ -65,7 +84,7 @@ void apply_visual_defaults(ShowcaseSpec& s) {
       break;
     case ShowcaseAircraftKind::kStuntJet:
     default:
-      s.display_name = "SHOWCASE AIRCRAFT";
+      set_opponent(s, "", "");  // no such opponent on the disc
       s.base_altitude_m = 26.0;
       s.swoop_altitude_m = 15.0;
       s.lateral_sway_m = 15.0;
@@ -372,7 +391,7 @@ ShowcaseSpec showcase_spec_for(std::string_view horizon_id) {
   } else {
     s.kind = ShowcaseAircraftKind::kMustangP51;
     apply_visual_defaults(s);
-    s.display_name = "SHOWCASE AIRCRAFT";
+    set_opponent(s, "", "");
     fill_uniform_difficulty(s, 1.0, 0.75, 1.3);
   }
   return s;
@@ -406,7 +425,11 @@ bool parse_airborne_challenges_xml(std::string_view xml, std::vector<ShowcaseSpe
       cur.kind = infer_kind(cur.event_id, cur.anim_pgeo, refname);
       const ShowcaseSpec def = showcase_spec_for_event(cur.event_id, cur.horizon_id);
       if (cur.horizon_id.empty()) cur.horizon_id = def.horizon_id;
-      cur.display_name = def.display_name;
+      // The XML names its opponent; the kind's defaults fill a missing one.
+      if (cur.pilot_name_ids.empty()) cur.pilot_name_ids = def.pilot_name_ids;
+      if (cur.vehicle_name_ids.empty()) cur.vehicle_name_ids = def.vehicle_name_ids;
+      cur.display_name = air_challenges_text(cur.pilot_name_ids);
+      cur.vehicle_name = air_challenges_text(cur.vehicle_name_ids);
       cur.base_altitude_m = def.base_altitude_m;
       cur.swoop_altitude_m = def.swoop_altitude_m;
       cur.lateral_sway_m = def.lateral_sway_m;
@@ -449,6 +472,7 @@ bool parse_airborne_challenges_xml(std::string_view xml, std::vector<ShowcaseSpe
       if (t.has("anim_in_race")) cur.anim_in_race = t.attr("anim_in_race");
     } else if (t.name == "opponent") {
       if (t.has("locstringpilotname")) cur.pilot_name_ids = t.attr("locstringpilotname");
+      if (t.has("locstringairvehname")) cur.vehicle_name_ids = t.attr("locstringairvehname");
     } else if (t.name == "animstart") {
       cur.on_countdown = t.boolean("on_countdown", false);
     } else if (t.name == "timing") {
