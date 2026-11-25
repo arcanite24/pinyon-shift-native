@@ -151,9 +151,9 @@ class CampaignDirector {
   float skip_hold_progress() const { return skip_hold_progress_; }
   bool is_cinematic_camera_active() const;
   bool is_blocking_gameplay() const;
-  // A cutscene the career's AI drives the player's car through (the opening's
-  // PlacePlayerCar with its initial speed): the car's physics keep running
-  // under it although gameplay is blocked.
+  // The opening's cutscene, which the career's AI drives the player's car
+  // through (PlacePlayerCar at its initial speed): the car's physics keep
+  // running under it although gameplay is blocked.
   bool cutscene_drives_player() const;
 
  private:

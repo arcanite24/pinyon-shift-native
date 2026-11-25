@@ -788,7 +788,11 @@ bool CampaignDirector::is_blocking_gameplay() const {
 }
 
 bool CampaignDirector::cutscene_drives_player() const {
-  return cutscenes_.active() && ftc_.active() && !ftc_.controls_enabled() && ftc_.ai_driving();
+  // The opening only: the diner cutscenes and Festival_Race_Outro also give
+  // the car to the AI, but their car is parked or out of shot and they keep
+  // the paused sim (interim, Q66).
+  return cutscenes_.active() && ftc_.active() && ftc_.stage() == race::FtcStage::kOpeningCutscene &&
+         !ftc_.controls_enabled() && ftc_.ai_driving();
 }
 
 }  // namespace carview
