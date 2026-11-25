@@ -226,16 +226,14 @@ MapScene DriveSession::map_scene() {
               mm.title = st.title;
               mm.completed = app.outpost_progress.is_stunt_completed(st.id);
               mm.is_new = !mm.completed;
-              mm.subtitle = std::string(freeroam::pr_stunt_kind_name(st.kind)) + "  •  " +
-                            carview::thousands(st.reward_credits) + " Cr";
+              // PR stunts pay nothing; they lower the outpost's fast-travel price.
+              mm.subtitle = std::string(freeroam::pr_stunt_kind_name(st.kind)) + "  •  FAST TRAVEL DISCOUNT";
               if (st.kind == freeroam::PrStuntKind::kSpeed) {
-                mm.detail_line = "TARGET: " + carview::format_speed_unit(st.target_mph, app.metric_units, false) +
-                                 "  •  +" + carview::thousands(st.reward_popularity) + " POP";
+                mm.detail_line = "TARGET: " + carview::format_speed_unit(st.target_mph, app.metric_units, false);
               } else if (st.kind == freeroam::PrStuntKind::kSkill) {
-                mm.detail_line = "TARGET: " + carview::thousands(st.target_points) + " SKILL PTS  •  +" +
-                                 carview::thousands(st.reward_popularity) + " POP";
+                mm.detail_line = "TARGET: " + carview::thousands(st.target_points) + " SKILL PTS";
               } else {
-                mm.detail_line = "PHOTO CHALLENGE  •  +" + carview::thousands(st.reward_popularity) + " POP";
+                mm.detail_line = "PHOTO CHALLENGE";
               }
               mm.x = st.target_pos.x;
               mm.z = st.target_pos.z;

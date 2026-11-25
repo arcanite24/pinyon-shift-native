@@ -104,8 +104,8 @@ void DriveSession::rebuild_outpost_hub() {
           if (st->time_limit_s > 0.0) {
             item.detail_lines.push_back("TIME LIMIT: " + std::to_string(int(std::lround(st->time_limit_s))) + " SEC");
           }
-          item.detail_lines.push_back("REWARD: " + carview::thousands(st->reward_credits) + " Cr   +   " +
-                                      carview::thousands(st->reward_popularity) + " POPULARITY");
+          // A PR stunt pays no credits or popularity: it lowers the outpost's fast-travel price.
+          item.detail_lines.push_back("REWARD: FAST TRAVEL DISCOUNT");
           item.detail_lines.push_back(done ? "STATUS: COMPLETED (REPLAYABLE)" : "STATUS: NEW PR STUNT");
           outpost_hub_items.push_back(std::move(item));
         }
@@ -1017,8 +1017,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
                   mc.target_line = "TARGET: " + carview::thousands(pst->target_points) + " PTS";
                 else
                   mc.target_line = "REACH LANDMARK & SNAP PHOTO";
-                mc.reward_line = carview::thousands(pst->reward_credits) + " Cr  +  " +
-                                 carview::thousands(pst->reward_popularity) + " POP";
+                mc.reward_line = "FAST TRAVEL DISCOUNT";
               }
               mc.status_line = mc.completed ? "COMPLETED (REPLAY)" : "NEW PR STUNT";
             } else {

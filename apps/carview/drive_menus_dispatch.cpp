@@ -552,10 +552,11 @@ void DriveSession::update_map_selection() {
               if (player_dist <= disc_rad) {
                 map_overlay.gps_hint = "ENTER OUTPOST";
               } else if (m.discovered || ft_anywhere) {
-                const bool ft_free = ft_anywhere ||
-                                     (app.have_outposts &&
-                                      app.outpost_progress.is_outpost_fast_travel_free(app.outposts, m.id));
-                const int64_t ft_fee = ft_free ? 0 : 10000LL;
+                const int64_t ft_fee =
+                    ft_anywhere || !app.have_outposts
+                        ? 0
+                        : std::max<int64_t>(0, app.outpost_progress.fast_travel_cost(app.outposts, m.id,
+                                                                                     app.fast_travel_tuning));
                 map_overlay.gps_hint =
                     ft_fee > 0 ? ("FAST TRAVEL (" + carview::thousands(ft_fee) + " CR)") : "FAST TRAVEL (FREE)";
               } else {

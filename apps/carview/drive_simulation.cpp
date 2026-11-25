@@ -548,10 +548,8 @@ bool DriveSession::free_roam_step() {
                                                                                    : NotifyKind::kSkillStuntDone;
                 const int64_t ft_cost =
                     app.outpost_progress.fast_travel_cost(app.outposts, st.outpost_id, app.fast_travel_tuning);
-                std::vector<std::string> done_lines;
-                if (ft_cost >= 0) done_lines.push_back("FAST TRAVEL " + (ft_cost == 0 ? std::string("FREE")
-                                                                                      : carview::thousands(ft_cost) + " CR"));
-                popup = Popup::notify(done, vehicle.time(), {}, done_lines);
+                // The popup reads FAST TRAVEL DISCOUNT EARNED (GasStation strings).
+                popup = Popup::notify(done, vehicle.time());
                 std::printf("t %.2f s: %s done%s, fast travel %lld CR\n", vehicle.time(), st.title.c_str(),
                             first_time ? "" : " (repeat)", static_cast<long long>(ft_cost));
                 app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
