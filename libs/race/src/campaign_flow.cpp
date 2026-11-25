@@ -872,13 +872,14 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.duration_s = 6.0;
       cinematic_.letterbox_amount = 1.0f;
       cinematic_.eyebrow = "HORIZON SHOWCASE EVENT";
-      cinematic_.headline = sc.display_name;
+      // The cinematic lines are in capitals; the table names are as the string tables hold them.
+      const std::string sc_name = upper_ascii(sc.display_name), sc_opp = upper_ascii(sc.opponent_label);
+      cinematic_.headline = sc_name;
       // An exhibition has no single opponent to name.
       cinematic_.subheadline =
-          sc.opponent_label.empty() ? sc.loaner_car_display : sc.loaner_car_display + "  VS  " + sc.opponent_label;
-      cinematic_.detail_line = sc.opponent_label.empty()
-                                   ? "WIN THE RACE TO KEEP THE " + sc.loaner_car_display
-                                   : "BEAT THE " + sc.opponent_label + " TO WIN THE " + sc.loaner_car_display;
+          sc_opp.empty() ? sc.loaner_car_display : sc.loaner_car_display + "  VS  " + sc_opp;
+      cinematic_.detail_line = sc_opp.empty() ? "WIN THE RACE TO KEEP THE " + sc.loaner_car_display
+                                              : "BEAT THE " + sc_opp + " TO WIN THE " + sc.loaner_car_display;
       cinematic_.badge_text = "POPULARITY RANK #" + std::to_string(sc.popularity_rank_req) + " SHOWCASE";
       cinematic_.accent_rgba = pack_rgba(0xF9, 0x00, 0x64);
       cinematic_.showcase_index = sc.index;
@@ -895,7 +896,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.duration_s = 6.5;
       cinematic_.letterbox_amount = 1.0f;
       cinematic_.eyebrow = "SHOWCASE VICTORY!";
-      cinematic_.headline = std::string(sc.display_name) + " COMPLETE";
+      cinematic_.headline = upper_ascii(sc.display_name) + " COMPLETE";
       cinematic_.subheadline = "NEW PRIZE CAR DELIVERED TO YOUR GARAGE";
       cinematic_.reward_car = sc.loaner_car_display;
       cinematic_.detail_line = sc.victory_line;
@@ -921,9 +922,9 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.letterbox_amount = 1.0f;
       cinematic_.eyebrow = boss.is_finale_champion ? "HORIZON FESTIVAL FINALE  •  CHAMPION VS CHAMPION"
                                                    : "HORIZON STAR SHOWDOWN  •  1-ON-1 PINK SLIP";
-      cinematic_.headline = boss.rival_name;
-      cinematic_.subheadline = std::string(boss.rival_title) + "  •  " + boss.car_display;
-      cinematic_.detail_line = "BEAT " + std::string(boss.rival_name) + " TO WIN THE " + boss.car_display + " PINK SLIP";
+      cinematic_.headline = upper_ascii(boss.rival_name);
+      cinematic_.subheadline = boss.rival_title + "  •  " + boss.car_display;
+      cinematic_.detail_line = "BEAT " + upper_ascii(boss.rival_name) + " TO WIN THE " + boss.car_display + " PINK SLIP";
       cinematic_.badge_text = boss.is_finale_champion ? "FINAL BOSS SHOWDOWN" : "STAR SHOWDOWN #" + std::to_string(boss.index + 1);
       cinematic_.accent_rgba = character_profile(boss.character).accent_rgba;
       cinematic_.boss_index = boss.index;
@@ -942,7 +943,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       cinematic_.duration_s = 6.8;
       cinematic_.letterbox_amount = 1.0f;
       cinematic_.eyebrow = "STAR SHOWDOWN VICTORY  •  PINK SLIP WON";
-      cinematic_.headline = std::string(boss.rival_name) + " DEFEATED";
+      cinematic_.headline = upper_ascii(boss.rival_name) + " DEFEATED";
       cinematic_.subheadline = "RIVAL VEHICLE ADDED TO YOUR HORIZON GARAGE";
       cinematic_.reward_car = boss.car_display;
       cinematic_.detail_line = boss.victory_line;
@@ -1664,12 +1665,13 @@ CampaignAction CampaignFlow::on_barn_restored(const std::string& barn_id, const 
   auto act = enter_stage(CampaignStage::kBarnRestored, TransitionKind::kBrushWipe);
   cinematic_.headline = car_name.empty() ? "RESTORATION COMPLETE" : car_name;
   cinematic_.reward_car = car_name;
-  cinematic_.detail_line = "Fresh paint, rebuilt engine, and ready for the Colorado open road.";
-  dialogs_.enqueue(
-      {"barn_restored_" + barn_id, CharacterId::kDakStewart, "", "", "1040BarnFindAtWorkshop", "",
-       "Good news — your barn find restoration is finished and gleaming in the Horizon Garage. Come take her for a spin!",
-       6.0, 7, true, true},
-      &heard_dialogs_);
+  // Restored is not yet in the garage: the car is collected there
+  // (Barnfind IDS_Title, the title's own line).
+  constexpr const char* kCollectIt = "Head to the garage to collect it!";
+  cinematic_.detail_line = kCollectIt;
+  dialogs_.enqueue({"barn_restored_" + barn_id, CharacterId::kDakStewart, "", "", "1040BarnFindAtWorkshop", "",
+                    kCollectIt, 6.0, 7, true, true},
+                   &heard_dialogs_);
   act.save_requested = true;
   return act;
 }
@@ -2084,9 +2086,9 @@ CampaignObjective CampaignFlow::next_objective(int wristband_points, int collect
   if (const BossRivalSpec* boss = find_boss_by_level(std::clamp(collected_wristband, 0, 6))) {
     if (!boss->is_finale_champion && wristband_points >= boss->unlock_points) {
       obj.valid = true;
-      obj.title = std::string("STAR SHOWDOWN: ") + boss->rival_name;
+      obj.title = std::string("STAR SHOWDOWN: ") + upper_ascii(boss->rival_name);
       obj.detail = std::string("BEAT THE ") + boss->car_display + " TO WIN THE PINK SLIP";
-      obj.gps_label = std::string("STAR SHOWDOWN  •  ") + boss->rival_name;
+      obj.gps_label = std::string("STAR SHOWDOWN  •  ") + upper_ascii(boss->rival_name);
       obj.is_urgent = true;
       if (catalog) {
         if (const CareerEvent* bev = catalog->find_event(boss->horizon_id); bev && bev->has_trigger) {

@@ -318,7 +318,12 @@ bool load_campaign_tables(const std::filesystem::path& game_root, const std::fil
                  // The format is in capitals ("{0} WRISTBAND"), and so is the name in it.
                  const std::string name = upper_ascii(caption(col_text(s, 2), colour));
                  std::string disp = band_format;
-                 if (auto at = disp.find("{0}"); at != std::string::npos) disp.replace(at, 3, name);
+                 if (auto at = disp.find("{0}"); at != std::string::npos) {
+                   disp.replace(at, 3, name);
+                 } else {
+                   ++n.captions_missing;  // a format without its placeholder
+                   disp = name + " WRISTBAND";
+                 }
                  w.display_name = disp.empty() && fb ? fb->display_name : disp;
                  bands.push_back(std::move(w));
                },

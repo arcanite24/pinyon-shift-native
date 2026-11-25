@@ -659,13 +659,16 @@ bool DriveApp::init(int& exit_code) {
     if (!have_career_catalog && !e.empty()) std::fprintf(stderr, "carview: note: no career catalog: %s\n", e.c_str());
     if (have_career_catalog) campaign.set_career_catalog(&career_catalog);
     e.clear();
-    // The campaign's wristband, Star Showdown and Showcase tables.
+    // The campaign's wristband, Star Showdown and Showcase tables. The raw
+    // text: game_text strips "{0}" placeholders, and the wristband name
+    // goes into Scoreboard's "{0} WRISTBAND".
     race::CampaignTablesLoad tl;
     if (race::load_campaign_tables(game_root_of(), state_root, shared_db,
-                                   [](std::string_view ref) { return carview::game_text(std::string(ref)); }, &tl,
+                                   [](std::string_view ref) { return carview::game_text_raw(std::string(ref)); }, &tl,
                                    &e))
-      std::printf("campaign: %d wristbands, %d star showdowns, %d showcases from the disc (%d captions missing)\n",
-                  tl.wristbands, tl.bosses, tl.showcases, tl.captions_missing);
+      std::printf("campaign: %d wristbands (%s..), %d star showdowns, %d showcases from the disc (%d captions missing)\n",
+                  tl.wristbands, race::wristband_milestones().front().display_name.c_str(), tl.bosses, tl.showcases,
+                  tl.captions_missing);
     else if (!e.empty())
       std::fprintf(stderr, "carview: note: built-in campaign tables: %s\n", e.c_str());
     e.clear();

@@ -390,6 +390,18 @@ void test_r2_5_campaign_parity() {
     check(total_wb_events == 69, "69 wristband-tiered Festival events (+1 qualifier = 70 total)");
     // No shipped caption for the ceremony: the announcement is empty.
     check(bands[5].announcement.empty(), "no invented wristband announcement");
+    // NEM_FINAL's UnlockPointsReq is 0: Darius opens from the HEADLINE_EVENT
+    // win, never from points, so a Gold holder short of the finale is not
+    // sent to him.
+    {
+      const auto* darius = race::find_boss_by_key("darius");
+      check(darius && darius->unlock_points == 0 && darius->is_finale_champion, "NEM_FINAL has no points gate");
+      race::CampaignFlow gold;
+      const auto obj = gold.next_objective(7000, 6, 250);
+      std::printf("   gold, 7000 pts, no finale: objective \"%s\"\n", obj.title.c_str());
+      check(obj.valid && obj.title.find("DARIUS") == std::string::npos,
+            "Gold wristband without the finale win: no Darius objective");
+    }
     check(bands[5].display_name == "PURPLE WRISTBAND", "Scoreboard '{0} WRISTBAND' with the level's name");
 
     race::CampaignFlow reg_flow;
