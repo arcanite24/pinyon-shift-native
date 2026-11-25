@@ -108,6 +108,11 @@ class AudioEngine {
   int load_rally_ambience_beds(const std::filesystem::path& rally_root_or_state_root,
                                const std::filesystem::path& cache_dir);
   void set_rally_world(bool on);
+  // The game state the ambience events read that the audio thread cannot see
+  // itself (InRace, PreRaceAmbience, CameraType, CrowdExcitement; each 0..1).
+  // CurrentTime, CarSpeed, Speed, Engine_RPM and RadioIsPlaying come from the
+  // time of day, the focus car and the radio.
+  void set_ambience_state(float in_race, float pre_race_ambience, float camera_type, float crowd_excitement);
   void set_ambience_bed_sample(AmbienceBedSlot slot, PcmSample pcm);
   void set_rally_ambience_bed_sample(int region_idx, std::string_view region_name, PcmSample pcm);
   void set_vo_base_root(const std::filesystem::path& game_root) { vo_base_game_root_ = game_root; }
@@ -274,6 +279,7 @@ class AudioEngine {
       kRallyWorld,
       kDialogDuck,
       kRadioViperLock,
+      kAmbienceState,
     };
     Kind kind = kBusLevel;
     int i0 = 0;
@@ -342,6 +348,7 @@ class AudioEngine {
   RtAcousticsSample last_acoustics_{};
   bool have_acoustics_ = false;
   float tod_hour_ = 12.0f;
+  AmbienceParams ambience_params_{};  // audio thread: InRace, PreRaceAmbience, CameraType, CrowdExcitement set by command
 
   EnginePlayer::Update last_engine_in_{};
   bool have_engine_in_ = false;

@@ -376,8 +376,25 @@ void test_other_car_engines() {
   CHECK(sfx.other_car_engine_count() == 1);
 }
 
+// AUDIO-11: the ambience events' parameter names resolve to the engine's
+// sources; an unknown one reads the parameter's minimum.
+void test_ambience_params() {
+  audio::AmbienceParams p;
+  p.current_time_s = 3600.0f;
+  p.in_race = 1.0f;
+  p.car_speed_mph = 42.0f;
+  CHECK(audio::AmbienceParams::id_of("(distance)") == audio::AmbienceParams::kDistance);
+  CHECK(p.value(audio::AmbienceParams::id_of("CurrentTime")) == 3600.0f);
+  CHECK(p.value(audio::AmbienceParams::id_of("inrace")) == 1.0f);
+  CHECK(p.value(audio::AmbienceParams::id_of("CarSpeed")) == 42.0f);
+  CHECK(audio::AmbienceParams::id_of("PhaseRate") == audio::AmbienceParams::kNone);
+  CHECK(std::isnan(p.value(audio::AmbienceParams::kNone)));
+  CHECK(audio::ambience_event_hash("Default_Crickets_Bed") == audio::ambience_event_hash("default_crickets_bed"));
+}
+
 int run_unit() {
   test_title_snapshot_only_without_matrix();
+  test_ambience_params();
   test_fev_evaluator();
   test_ui_catalog();
   test_other_car_engines();
@@ -784,6 +801,128 @@ void corpus_other_car_banks(const std::filesystem::path& game, const std::filesy
   corpus_other_car_playback(files, cfg, media_by_id, groups_by_media);
 }
 
+// AUDIO-11: the disc's ambience events drive the beds and emitters through
+// the player's own render path: CurrentTime (crickets day / night), InRace
+// (race crowds), PreRaceAmbience (grandstand), CarSpeed (the region quad)
+// and (distance) (the event's own rolloff).
+void corpus_ambience_events(const std::filesystem::path& game) {
+  std::error_code ec;
+  const auto cache = std::filesystem::temp_directory_path(ec) / "shift-audio-parity-ambience";
+  audio::AmbienceBedPlayer amb(48000);
+  const auto t0 = std::chrono::steady_clock::now();
+  const int queued = amb.load_from_disc(game, cache);
+  CHECK(queued > 0);
+  constexpr int kBlock = 512;
+  std::vector<float> buf(size_t(kBlock) * 2);
+  audio::RtAcousticsSample quiet{};
+  const char* snap = "DefaultLocation";
+  std::memcpy(quiet.ambience_snapshot.data(), snap, std::strlen(snap));
+  audio::AmbienceParams p0{};
+  int last = -1;
+  auto stable_since = std::chrono::steady_clock::now();
+  for (;;) {
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    amb.render(quiet, p0, buf.data(), kBlock);
+    const int have = amb.loaded_bed_count() + amb.loaded_event_sample_count();
+    const auto now = std::chrono::steady_clock::now();
+    if (have != last) {
+      last = have;
+      stable_since = now;
+    }
+    if (have >= queued || now - stable_since > std::chrono::seconds(20) || now - t0 > std::chrono::minutes(6)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  std::printf("ambience: %d events, %d of %d beds and event loops decoded (%d region/crowd beds) in %.1f s\n",
+              amb.loaded_event_count(), last, queued, amb.loaded_bed_count(),
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+  CHECK(amb.loaded_event_count() > 50);
+  CHECK(amb.loaded_event_sample_count() > 10);
+
+  auto emitter = [&](const char* event, float distance) {
+    audio::RtAcousticsSample s = quiet;
+    auto& e = s.active_emitters[0];
+    e.active = true;
+    e.event_hash = audio::ambience_event_hash(event);
+    e.id_hash = e.event_hash;
+    e.distance_m = distance;
+    e.pan = 0.0f;
+    return s;
+  };
+  // Two seconds to settle the gains, then one second measured.
+  auto energy = [&](const audio::RtAcousticsSample& s, const audio::AmbienceParams& p, std::vector<float>* keep) {
+    double e = 0;
+    for (int b = 0; b < 3 * 48000 / kBlock; ++b) {
+      std::fill(buf.begin(), buf.end(), 0.0f);
+      amb.render(s, p, buf.data(), kBlock);
+      if (b < 2 * 48000 / kBlock) continue;
+      for (int i = 0; i < kBlock; ++i) {
+        const float m = buf[size_t(2 * i)] + buf[size_t(2 * i + 1)];
+        e += double(m) * m;
+        if (keep) keep->push_back(m);
+      }
+    }
+    return e;
+  };
+  auto corr = [](const std::vector<float>& a, const std::vector<float>& b) {
+    double xy = 0, xx = 0, yy = 0;
+    for (size_t k = 0; k < std::min(a.size(), b.size()); ++k) {
+      xy += double(a[k]) * b[k];
+      xx += double(a[k]) * a[k];
+      yy += double(b[k]) * b[k];
+    }
+    return (xx > 0 && yy > 0) ? xy / std::sqrt(xx * yy) : 1.0;
+  };
+
+  // The region bed alone: CarSpeed's curve (1 to 5 mph, 0 by 35 mph).
+  audio::AmbienceParams fast = p0;
+  fast.car_speed_mph = fast.speed = 60.0f;
+  const double bed_still = energy(quiet, p0, nullptr), bed_fast = energy(quiet, fast, nullptr);
+  std::printf("  region bed (Default_Quad_Plain): %.4f at 0 mph, %.6f at 60 mph\n", bed_still, bed_fast);
+  CHECK(bed_still > 1e-3 && bed_fast < 0.01 * bed_still);
+
+  // The emitters at 40 mph, where the quad bed is out (0 by 35 mph) and the
+  // emitters' own CarSpeed curves are not (crickets 0.5, race crowd 0.75).
+  audio::AmbienceParams noon = p0;
+  noon.car_speed_mph = noon.speed = 40.0f;
+  CHECK(energy(quiet, noon, nullptr) < 0.01 * bed_still);
+
+  // Time of day on a placed Default_Crickets_Bed (1,783 on the map):
+  // Crickets_Day at noon, Crickets_Night at 23:00.
+  const auto crickets = emitter("Default_Crickets_Bed", 10.0f);
+  audio::AmbienceParams night = noon;
+  noon.current_time_s = 12.0f * 3600.0f;
+  night.current_time_s = 23.0f * 3600.0f;
+  std::vector<float> s_noon, s_night;
+  const double e_noon = energy(crickets, noon, &s_noon), e_night = energy(crickets, night, &s_night);
+  const double c_tod = corr(s_noon, s_night);
+  audio::AmbienceParams pre = noon;
+  pre.pre_race_ambience = 1.0f;
+  const double e_pre = energy(crickets, pre, nullptr);
+  const double e_far = energy(emitter("Default_Crickets_Bed", 70.0f), noon, nullptr);
+  std::printf("  crickets at 10 m: noon %.4f, 23:00 %.4f (correlation %.3f); PreRaceAmbience 1 %.5f; at 70 m %.5f\n",
+              e_noon, e_night, c_tod, e_pre, e_far);
+  CHECK(e_noon > 1e-3 && e_night > 1e-3 && std::fabs(c_tod) < 0.9);
+  CHECK(e_pre < 0.05 * e_noon);
+  CHECK(e_far < 0.05 * e_noon);
+
+  // Race state on a placed Default_Race_Crowd_Amb_A (InRace window 0.4..1).
+  const auto crowd = emitter("Default_Race_Crowd_Amb_A", 5.0f);
+  audio::AmbienceParams racing = noon;
+  racing.in_race = 1.0f;
+  const double c_free = energy(crowd, noon, nullptr), c_race = energy(crowd, racing, nullptr);
+  std::printf("  race crowd at 5 m: free roam %.5f, in race %.4f\n", c_free, c_race);
+  CHECK(c_race > 1e-3 && c_free < 0.05 * c_race);
+
+  // Default_Crowd_Grandstand (620 placed): InRace gates it, PreRaceAmbience
+  // ducks it to 0.063.
+  const auto stand = emitter("Default_Crowd_Grandstand", 5.0f);
+  audio::AmbienceParams racing_pre = racing;
+  racing_pre.pre_race_ambience = 1.0f;
+  const double g_race = energy(stand, racing, nullptr), g_pre = energy(stand, racing_pre, nullptr);
+  std::printf("  grandstand at 5 m in race: %.4f, PreRaceAmbience 1 %.5f\n", g_race, g_pre);
+  CHECK(g_race > 1e-3 && g_pre < 0.05 * g_race);
+}
+
 int run_corpus() {
   const char* game = std::getenv("SHIFT_GAME_ROOT");
   if (!game || !*game || !std::filesystem::exists(game)) {
@@ -795,6 +934,7 @@ int run_corpus() {
   corpus_ui_catalog(root);
   const char* state = std::getenv("SHIFT_STATE_ROOT");
   corpus_other_car_banks(root, state && *state ? std::filesystem::path(state) : std::filesystem::path{});
+  corpus_ambience_events(root);
   return failures;
 }
 

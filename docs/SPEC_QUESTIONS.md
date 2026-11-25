@@ -1736,3 +1736,78 @@ code. Also open: `CHorizonDialoguesState` (hashed line keys, kept as
 bytes; the engine seeds its own heard-dialogue keys from the career
 instead) and the meaning of `CFirstTimeCareerState` stages other than 1
 and 2 (both finished saves read stage 8).
+
+## Q80 (audio, not blocking): what drives the ambience state
+
+SPEC-AUDIO-EVENTS "World ambience" lists the parameters of
+`AMB_Default.fev` and `Colorado_Festival.fev`. The engine now evaluates the
+events' own curves (AUDIO-11), and feeds `CurrentTime` from the time of
+day, `CarSpeed`, `Speed` and `Engine_RPM` from the focus car,
+`RadioIsPlaying` from the radio, and `InRace` from the flag that selects
+the `Race` snapshot. Missing:
+
+- **`PreRaceAmbience` (0..1).** It is on `Default_Crickets_Bed` (silent
+  from 0.5), `Default_Crowd_Grandstand` (ducked to 0.063 from 0.5) and
+  `Default_Street_Race_Music`. Which race phase sets it, and whether 1
+  means "in the pre-race" or "out of it", is not decoded. The engine keeps
+  it at 0 (`AudioHost::set_pre_race_ambience` has no caller).
+- **`CrowdExcitement`** (`Colorado_Festival.fev`): its source is not
+  decoded either. The engine keeps it at 0 (`set_crowd_excitement`).
+- **`CameraType` (0..1)**: which camera is which value. The engine keeps
+  it at 0.
+- **`Triggerable_Events.fev`** (28 scripted flybys driven by `Speed`,
+  `PhaseRate`, `ClimbAngle`, `Bank`, `Pitch`): their dispatch and paths
+  are not decoded, so no flyby plays.
+
+Needed, narrow: the writers of these parameters in the ambience code the
+findings name (`COpenWorldAmbience`, `CAmbientAudio`).
+
+## Q81 (audio, not blocking): ambience playback the disc does not settle
+
+- **Spawned sounds.** A sound definition's property template starts with
+  u32 play mode, u32 spawn time min and max (ms), u32 maximum spawned and
+  f32 volume. That layout is read from the values (Tree_Rustle
+  1,000..10,000 ms, Air_Horns 500..30,000, Shouts_Lots 0..2,000 with 3
+  spawned; the continuous beds River, Crickets and Race_Crowd_Amb read
+  0..0), not from a spec. The engine loops the 0..0 beds and does not play
+  the spawned one-shots (horns, whistles, door slams, dogs, shouts).
+- **Placement.** Every placed Track3D event but the 110,000
+  `Default_Reflections_*` placements is now an emitter; the engine plays
+  the 8 nearest. FMOD's voice limit per event (`max_playbacks`) is not
+  applied.
+- **Quad beds.** The region beds are 4-channel (`_F` and `_R` stems, the
+  rear on `Speaker Level` 2). The engine plays the front stem only.
+- **Regional banks.** Placements name `AMB_Main_Town`, `AMB_Mountains`
+  and `AMB_Foothills` events that are not on the base disc; they stay
+  silent.
+- **Trees.** The ambience templates name a `TreeEventName`
+  (`Default_Tree`, `Default_Tree_Desert`: birds by day, crickets by night)
+  and the tiles hold 76,636 `<Tree>` positions, but no tree is an emitter
+  yet.
+
+## Q82 (audio, not blocking): TrashDSP units and the overdrive scale
+
+The focus car's `_ET.xml` `TrashDSP` bands read `inputgain`/`outputgain`
+0, 1, 2, -2, 3, -3 and `mix` 80 (1,739 of 2,055 bands), so the engine now
+reads the gains as dB and mix as a percentage, and scales the band sum by
+the TrashDSP's own `VolumeCompensate` (0.18 to 0.25 on most tunings). That
+is an inference from the value distributions. Before, a 0 dB band
+multiplied by zero: VW_Beetle_04's focus exhaust rendered silent; it now
+renders at 48.1 (the same loops as another car, without the focus DSP:
+56.9). `overdrive` reads 2.8 to 7.5 on the disc but the shaper takes 0..1,
+so it saturates at 1. `UseCurves="1"` (208 tunings) per-band curves are not
+read. Needed: the shaping curve and the overdrive scale.
+
+## Q83 (audio, not blocking): UI cues and other-car audio left open
+
+- `kAchievementReward` and `kSkillBreak` map to `Hud_GeneralNotificationAppear`
+  and `Lose_Points`, which are empty events on the disc, so both are
+  silent. Is another event meant?
+- The 3-2-1 countdown plays `321MomentStart`, `321Count` per digit and
+  `321Go`; digit 3 gets no `321Count` (the MomentStart covers it). Not
+  confirmed.
+- Stereo UI samples are folded to mono; LFE stems fold into stereo at full
+  level.
+- Other cars at the Default view are point sources (the view's speaker
+  pans are 0 on the disc); traffic has no throttle signal and plays at
+  0.5. The pitch-envelope scale of FEV events is not decoded.

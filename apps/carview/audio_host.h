@@ -151,6 +151,11 @@ class AudioHost {
   void trigger_speed_cam();
   void set_window_minimized(bool minimized);
   void set_pre_event(bool active);
+  // The ambience events' PreRaceAmbience and CrowdExcitement (0..1). Which
+  // game state drives them is not decoded (docs/SPEC_QUESTIONS.md Q80), so
+  // nothing calls these yet and both stay at their minimum.
+  void set_pre_race_ambience(float v);
+  void set_crowd_excitement(float v);
   void set_barnfind_active(bool active);
   void set_race_encounter_active(bool active);
   void trigger_collision(const audio::CollisionHit& hit);
@@ -365,6 +370,9 @@ class AudioHost {
   bool speed_zone_active_ = false;
   bool window_minimized_ = false;
   bool pre_event_active_ = false;
+  float amb_pre_race_ = 0.0f, amb_crowd_ = 0.0f;
+  float amb_sent_[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
+  void sync_ambience_state(bool in_race);
   bool barnfind_active_ = false;
   bool race_encounter_active_ = false;
   bool viper_intro_locked_ = false;

@@ -358,7 +358,18 @@ bool parse_fev(std::span<const uint8_t> bytes, FevProject& out, std::string* err
   uint32_t tpl_count = 0;
   if (!r.u32(tpl_count)) return done_fail();
   const size_t tpl_size = out.version >= 0x00400000u ? 70 : 60;
-  if (!r.skip(size_t(tpl_count) * tpl_size)) return done_fail();
+  if (tpl_count > 100000u) {
+    r.fail("implausible template count");
+    return done_fail();
+  }
+  out.templates.resize(tpl_count);
+  for (uint32_t i = 0; i < tpl_count; ++i) {
+    FevSoundDefTemplate& t = out.templates[i];
+    if (!r.u32(t.play_mode) || !r.u32(t.spawn_min_ms) || !r.u32(t.spawn_max_ms) || !r.u32(t.max_spawned) ||
+        !r.f32(t.volume) || !r.skip(tpl_size - 20))
+      return done_fail();
+    if (!std::isfinite(t.volume) || t.volume < 0.0f) t.volume = 1.0f;
+  }
 
   // 7. Sound definitions
   uint32_t sd_count = 0;

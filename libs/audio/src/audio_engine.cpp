@@ -768,6 +768,17 @@ void AudioEngine::set_rally_world(bool on) {
   enqueue(c);
 }
 
+void AudioEngine::set_ambience_state(float in_race, float pre_race_ambience, float camera_type,
+                                     float crowd_excitement) {
+  Command c;
+  c.kind = Command::kAmbienceState;
+  c.f0 = in_race;
+  c.f1 = pre_race_ambience;
+  c.f2 = camera_type;
+  c.f3 = crowd_excitement;
+  enqueue(c);
+}
+
 void AudioEngine::set_ambience_bed_sample(AmbienceBedSlot slot, PcmSample pcm) {
   ambience_bed_.set_bed_sample(slot, std::move(pcm));
 }
@@ -1047,6 +1058,14 @@ void AudioEngine::drain_commands() {
       case Command::kRallyWorld:
         ambience_bed_.set_rally_world(c.b0);
         break;
+      case Command::kAmbienceState: {
+        auto unit = [](float v) { return std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 0.0f; };
+        ambience_params_.in_race = unit(c.f0);
+        ambience_params_.pre_race_ambience = unit(c.f1);
+        ambience_params_.camera_type = unit(c.f2);
+        ambience_params_.crowd_excitement = unit(c.f3);
+        break;
+      }
       case Command::kSnapshot: mixer_.snapshots().set_active(c.i0, c.b0); break;
       case Command::kMatrixActivate:
         if (use_matrix_) {
@@ -1504,7 +1523,16 @@ void AudioEngine::render_block(float* out, int frames) {
       std::fill(abuf.begin(), abuf.begin() + ptrdiff_t(samples), 0.0f);
       buses[int(Bus::kAmbience)] = abuf.data();
     }
-    if (have_acoustics_) ambience_bed_.render(last_acoustics_, last_veh_state_.speed_mph, abuf.data(), frames, tod_hour_);
+    if (have_acoustics_) {
+      AmbienceParams& ap = ambience_params_;
+      float h = std::fmod(tod_hour_, 24.0f);
+      if (!(h >= 0.0f)) h = std::isfinite(h) ? h + 24.0f : 12.0f;
+      ap.current_time_s = h * 3600.0f;
+      ap.car_speed_mph = ap.speed = std::isfinite(last_veh_state_.speed_mph) ? std::fabs(last_veh_state_.speed_mph) : 0.0f;
+      ap.engine_rpm = std::isfinite(last_veh_state_.rpm) ? last_veh_state_.rpm : 0.0f;
+      ap.radio_is_playing = (user_music_on || runtime_radio_on || (radio_ && radio_->on())) ? 1.0f : 0.0f;
+      ambience_bed_.render(last_acoustics_, ap, abuf.data(), frames);
+    }
     if (radio_player_) {
       if (!user_music_on) {
         radio_player_->render_location_stations(abuf.data(), frames);

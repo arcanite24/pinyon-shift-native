@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <span>
 #include <sstream>
@@ -129,6 +130,48 @@ void parse_track3d_node(const XmlNode& track3d, std::vector<AmbientEmitter3D>& o
 }
 
 }  // namespace
+
+uint32_t ambience_event_hash(std::string_view event_name) {
+  uint32_t h = 2166136261u;
+  for (char c : event_name) h = (h ^ uint8_t(std::tolower(static_cast<unsigned char>(c)))) * 16777619u;
+  return h == 0u ? 1u : h;
+}
+
+int8_t AmbienceParams::id_of(std::string_view name) {
+  auto is = [&](std::string_view n) {
+    if (n.size() != name.size()) return false;
+    for (size_t i = 0; i < n.size(); ++i)
+      if (std::tolower(static_cast<unsigned char>(n[i])) != std::tolower(static_cast<unsigned char>(name[i])))
+        return false;
+    return true;
+  };
+  if (is("(distance)")) return kDistance;
+  if (is("CurrentTime")) return 0;
+  if (is("CarSpeed")) return 1;
+  if (is("Speed")) return 2;
+  if (is("InRace")) return 3;
+  if (is("PreRaceAmbience")) return 4;
+  if (is("CameraType")) return 5;
+  if (is("RadioIsPlaying")) return 6;
+  if (is("Engine_RPM")) return 7;
+  if (is("CrowdExcitement")) return 8;
+  return kNone;
+}
+
+float AmbienceParams::value(int8_t id) const {
+  switch (id) {
+    case 0: return current_time_s;
+    case 1: return car_speed_mph;
+    case 2: return speed;
+    case 3: return in_race;
+    case 4: return pre_race_ambience;
+    case 5: return camera_type;
+    case 6: return radio_is_playing;
+    case 7: return engine_rpm;
+    case 8: return crowd_excitement;
+    default: return std::numeric_limits<float>::quiet_NaN();
+  }
+}
 
 bool parse_reverb_xml(std::string_view xml, std::vector<ReverbTemplate>& out, std::string* error) {
   out.clear();
@@ -436,14 +479,18 @@ void WorldAcousticsData::clear_soundscapes() {
 }
 
 void WorldAcousticsData::add_tile(SoundscapeTile tile) {
+  for (auto& em : tile.emitters)
+    if (em.event_hash == 0u) em.event_hash = ambience_event_hash(em.event_name);
   for (auto& rz : tile.reverb_zones) reverb_zones_.push_back(std::move(rz));
   for (auto& az : tile.ambience_zones) ambience_zones_.push_back(std::move(az));
+  // Every placed Track3D event (crickets beds, rivers, crowds, the festival)
+  // but the Default_Reflections_* whooshes, which follow passing objects
+  // (110,000 of the 125,000 placements) and are not modelled.
   for (auto& em : tile.emitters) {
     const std::string low = lower_str(em.event_name);
-    if (low.find("festival") != std::string::npos || low.find("crowd") != std::string::npos ||
-        low.find("stage") != std::string::npos || low.find("water") != std::string::npos) {
-      emitters_.push_back(std::move(em));
-    }
+    if (low.find("reflections") != std::string::npos) continue;
+    em.event_hash = ambience_event_hash(em.event_name);
+    emitters_.push_back(std::move(em));
   }
 }
 
@@ -544,6 +591,8 @@ AcousticsSample WorldAcousticsData::evaluate(float x, float y, float z, float li
         dst.gain = att;
         dst.pan = pan;
         dst.id_hash = hash_emitter(em.event_name, em.object_name, ei);
+        dst.event_hash = em.event_hash != 0u ? em.event_hash : ambience_event_hash(em.event_name);
+        dst.distance_m = d;
       }
     }
   }
@@ -958,23 +1007,26 @@ bool decode_amb_subsound(const std::filesystem::path& bank_path, uint32_t subsou
 }
 
 bool pick_first_fev_sample(const FevProject& proj, const FevEvent& ev, std::filesystem::path& bank_out,
-                           uint32_t& sub_out) {
-  auto pick = [&](const std::vector<FevSoundInstance>& insts) -> bool {
-    for (const auto& si : insts) {
+                           uint32_t& sub_out, int* layer_out = nullptr, int* inst_out = nullptr) {
+  auto pick = [&](const std::vector<FevSoundInstance>& insts, int layer) -> bool {
+    for (size_t ii = 0; ii < insts.size(); ++ii) {
+      const auto& si = insts[ii];
       if (si.sound_def_index >= proj.sound_defs.size()) continue;
       for (const auto& en : proj.sound_defs[si.sound_def_index].entries) {
         if (en.entry_type == 0 && !en.wavebank_name.empty()) {
           bank_out = cars::mods::resolve(proj.dir / (en.wavebank_name + ".fsb"));
           sub_out = en.subsound_index;
+          if (layer_out) *layer_out = layer;
+          if (inst_out) *inst_out = int(ii);
           return true;
         }
       }
     }
     return false;
   };
-  if (pick(ev.simple_instances)) return true;
-  for (const auto& ly : ev.layers)
-    if (pick(ly.instances)) return true;
+  if (pick(ev.simple_instances, -1)) return true;
+  for (size_t li = 0; li < ev.layers.size(); ++li)
+    if (pick(ev.layers[li].instances, int(li))) return true;
   return false;
 }
 
@@ -1070,6 +1122,10 @@ AmbienceBedPlayer::~AmbienceBedPlayer() {
     delete p;
     p = nullptr;
   }
+  for (PcmSample*& p : event_pcm_) {
+    delete p;
+    p = nullptr;
+  }
 }
 
 void AmbienceBedPlayer::stop_worker() {
@@ -1113,6 +1169,15 @@ void AmbienceBedPlayer::drain_loaded() {
   };
   drain_bed(loaded_q_);
   drain_bed(direct_loaded_q_);
+  LoadedEventPcm le;
+  while (event_loaded_q_.pop(le)) {
+    if (le.id >= 0 && le.id < kMaxEventSamples) {
+      retire_pcm(event_pcm_[size_t(le.id)]);
+      event_pcm_[size_t(le.id)] = le.pcm;
+    } else {
+      retire_pcm(le.pcm);
+    }
+  }
   auto drain_rally = [&](SpscQueue<LoadedRallyBed>& q) {
     LoadedRallyBed rb;
     while (q.pop(rb)) {
@@ -1166,6 +1231,19 @@ int AmbienceBedPlayer::loaded_bed_count() const {
   return n;
 }
 
+int AmbienceBedPlayer::loaded_event_count() const {
+  const EventTable* t = events_.load(std::memory_order_acquire);
+  return t ? int(t->by_name.size()) : 0;
+}
+
+int AmbienceBedPlayer::loaded_event_sample_count() const { return event_sample_count_.load(std::memory_order_acquire); }
+
+const AmbienceBedPlayer::EventTable::Ref* AmbienceBedPlayer::EventTable::find(uint32_t hash) const {
+  const auto it = std::lower_bound(by_name.begin(), by_name.end(), hash,
+                                   [](const Ref& r, uint32_t h) { return r.hash < h; });
+  return (it != by_name.end() && it->hash == hash) ? &*it : nullptr;
+}
+
 int AmbienceBedPlayer::rally_bed_count() const {
   int n = 0;
   for (const PcmSample* p : rally_beds_)
@@ -1181,15 +1259,25 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
     AmbienceBedSlot slot;
     std::filesystem::path bank;
     uint32_t sub = 0;
+    int event_sample = -1;  // >= 0: an event sound def's loop bed (event_pcm_ id)
   };
   std::vector<Job> jobs;
   std::array<bool, int(AmbienceBedSlot::kCount)> assigned{};
+  auto table = std::make_unique<EventTable>();
+  EventTable::SlotRef cur_ref{};
   auto assign_slot = [&](AmbienceBedSlot slot, const std::filesystem::path& bank, uint32_t sub) {
     if (assigned[size_t(slot)]) return;
     std::error_code ec;
     if (!std::filesystem::exists(bank, ec)) return;
     assigned[size_t(slot)] = true;
     jobs.push_back({slot, bank, sub});
+    table->slots[size_t(slot)] = cur_ref;
+  };
+  auto param_ids = [](const FevEvent& ev) {
+    std::array<int8_t, 12> ids{};
+    ids.fill(AmbienceParams::kNone);
+    for (size_t i = 0; i < ev.params.size() && i < ids.size(); ++i) ids[i] = AmbienceParams::id_of(ev.params[i].name);
+    return ids;
   };
 
   const std::filesystem::path amb_dirs[] = {
@@ -1208,10 +1296,46 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
       const auto fev_path = cars::mods::resolve(amb_dir / fev_name);
       FevProject proj;
       if (!load_fev(fev_path, proj, nullptr)) continue;
-      for (const auto& ev : proj.events) {
+      // The project's events and their continuous beds (sound defs whose
+      // template has no spawn time; spawned one-shots are not played).
+      const int pi = int(table->projects.size());
+      const int base = table->sample_count;
+      table->sd_base.push_back(base);
+      table->sample_count += int(proj.sound_defs.size());
+      std::vector<bool> queued_sd(proj.sound_defs.size(), false);
+      for (size_t ei = 0; ei < proj.events.size(); ++ei) {
+        const FevEvent& ev = proj.events[ei];
+        EventTable::Ref ref;
+        ref.hash = ambience_event_hash(ev.name);
+        ref.proj = uint16_t(pi);
+        ref.ev = uint16_t(ei);
+        ref.param_id = param_ids(ev);
+        table->by_name.push_back(ref);
+        for (const auto& ly : ev.layers) {
+          for (const auto& si : ly.instances) {
+            const size_t sd = si.sound_def_index;
+            if (sd >= proj.sound_defs.size() || queued_sd[sd] || base + int(sd) >= kMaxEventSamples) continue;
+            const FevSoundDefTemplate* tpl = proj.template_of(proj.sound_defs[sd]);
+            if (tpl && tpl->spawned()) continue;
+            for (const auto& en : proj.sound_defs[sd].entries) {
+              if (en.entry_type != 0 || en.wavebank_name.empty()) continue;
+              const auto bank = cars::mods::resolve(proj.dir / (en.wavebank_name + ".fsb"));
+              std::error_code bec;
+              if (!std::filesystem::exists(bank, bec)) break;
+              queued_sd[sd] = true;
+              jobs.push_back({AmbienceBedSlot::kCount, bank, en.subsound_index, base + int(sd)});
+              break;
+            }
+          }
+        }
+      }
+      for (size_t ei = 0; ei < proj.events.size(); ++ei) {
+        const FevEvent& ev = proj.events[ei];
         std::filesystem::path bank;
         uint32_t sub = 0;
-        if (!pick_first_fev_sample(proj, ev, bank, sub)) continue;
+        int layer = 0, inst = 0;
+        if (!pick_first_fev_sample(proj, ev, bank, sub, &layer, &inst)) continue;
+        cur_ref = {pi, int(ei), layer, inst};
         const std::string lp = lower_str(ev.path);
         if (lp.find("crowd") != std::string::npos || lp.find("cheer") != std::string::npos) {
           assign_slot(AmbienceBedSlot::kCrowd, bank, sub);
@@ -1231,7 +1355,9 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
           assign_slot(AmbienceBedSlot::kDefault, bank, sub);
         }
       }
+      table->projects.push_back(std::move(proj));
     }
+    cur_ref = {};
     // Fallback: if AMB_Quads_Stream.fsb exists directly under amb_dir, queue its subsounds.
     const auto quad_fsb = cars::mods::resolve(amb_dir / "AMB_Quads_Stream.fsb");
     std::error_code ec;
@@ -1260,6 +1386,22 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
   stop_worker_.store(true, std::memory_order_release);
   if (worker_.joinable()) worker_.join();
   stop_worker_.store(false, std::memory_order_release);
+  if (!table->projects.empty()) {
+    // One name per event; the earlier project (AMB_Default before
+    // Colorado_Festival) wins a shared name.
+    std::stable_sort(table->by_name.begin(), table->by_name.end(),
+                     [](const EventTable::Ref& a, const EventTable::Ref& b) { return a.hash < b.hash; });
+    table->by_name.erase(std::unique(table->by_name.begin(), table->by_name.end(),
+                                     [](const EventTable::Ref& a, const EventTable::Ref& b) { return a.hash == b.hash; }),
+                         table->by_name.end());
+    for (size_t s = 0; s < table->slots.size(); ++s) {
+      const auto& sr = table->slots[s];
+      table->slot_param_id[s].fill(AmbienceParams::kNone);
+      if (sr.proj >= 0) table->slot_param_id[s] = param_ids(table->projects[size_t(sr.proj)].events[size_t(sr.ev)]);
+    }
+    event_tables_.push_back(std::move(table));
+    events_.store(event_tables_.back().get(), std::memory_order_release);
+  }
   worker_ = std::thread([this, jobs = std::move(jobs), cache_dir, game_root]() {
     const std::filesystem::path ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
     std::error_code tec;
@@ -1284,7 +1426,12 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
       }
       if (ok && !pcm->data.empty()) {
         PcmSample* raw = pcm.release();
-        if (!loaded_q_.push({j.slot, raw})) delete raw;
+        if (j.event_sample >= 0) {
+          if (event_loaded_q_.push({j.event_sample, raw})) event_sample_count_.fetch_add(1, std::memory_order_acq_rel);
+          else delete raw;
+        } else if (!loaded_q_.push({j.slot, raw})) {
+          delete raw;
+        }
       }
     }
     std::filesystem::remove_all(temp_dir, tec);
@@ -1409,12 +1556,93 @@ int AmbienceBedPlayer::load_rally_from_disc(const std::filesystem::path& rally_r
   return queued;
 }
 
+float AmbienceBedPlayer::event_level(const EventTable& t, int proj, const FevEvent& ev,
+                                     const std::array<int8_t, 12>& pid, const AmbienceParams& params, float distance,
+                                     FevInstanceLevel* out, int& count) const {
+  (void)t;
+  (void)proj;
+  float raw[12];
+  const size_t np = std::min(ev.params.size(), size_t(12));
+  for (size_t i = 0; i < np; ++i) {
+    float x = pid[i] == AmbienceParams::kDistance ? distance : params.value(pid[i]);
+    if (!std::isfinite(x)) x = ev.params[i].min_val;  // no source: the parameter's minimum
+    raw[i] = x;
+  }
+  count = evaluate_fev_event(ev, raw, np, out, kMaxEventLevels);
+  float sum = 0.0f;
+  for (int k = 0; k < count; ++k) sum += out[k].gain;
+  return sum;
+}
+
+bool AmbienceBedPlayer::render_event_emitter(const EventTable& t, const RtAmbientEmitter& em, EmitterVoice3D& v,
+                                             const AmbienceParams& params, float* out_stereo, int frames) {
+  const EventTable::Ref* ref = em.active ? t.find(em.event_hash) : nullptr;
+  FevInstanceLevel lv[kMaxEventLevels];
+  int n = 0;
+  const FevProject* pj = ref ? &t.projects[ref->proj] : nullptr;
+  if (pj) event_level(t, ref->proj, pj->events[ref->ev], ref->param_id, params, em.distance_m, lv, n);
+  if (em.active && em.id_hash != v.id_hash) {
+    v.id_hash = em.id_hash;
+    v.ev_gain.fill(0.0f);
+    for (size_t k = 0; k < v.ev_phase.size(); ++k) v.ev_phase[k] = double(em.id_hash & 0x3FFFu) * 3.0 + double(k) * 7919.0;
+  }
+  // Gains and pan follow the event at the block rate (~60 ms smoothing).
+  const float a = 1.0f - std::exp(-float(frames) / (0.06f * float(rate_)));
+  if (em.active) v.pan += (std::clamp(em.pan, -1.0f, 1.0f) - v.pan) * a;
+  const float pan_l = std::sqrt(0.5f * (1.0f - v.pan));
+  const float pan_r = std::sqrt(0.5f * (1.0f + v.pan));
+  float total = 0.0f;
+  for (int k = 0; k < kMaxEventLevels; ++k) {
+    const PcmSample* pcm = nullptr;
+    float target = 0.0f;
+    if (pj && k < n) {
+      const int id = t.sd_base[ref->proj] + int(lv[k].sound_def);
+      if (id >= 0 && id < kMaxEventSamples) pcm = event_pcm_[size_t(id)];
+      const FevSoundDefTemplate* tpl =
+          lv[k].sound_def < pj->sound_defs.size() ? pj->template_of(pj->sound_defs[lv[k].sound_def]) : nullptr;
+      if (pcm && !(tpl && tpl->spawned())) target = lv[k].gain * (tpl ? tpl->volume : 1.0f);
+    }
+    float& g = v.ev_gain[size_t(k)];
+    if (!pcm || pcm->data.empty() || (target < 1e-5f && g < 1e-5f)) {
+      g = 0.0f;
+      continue;
+    }
+    const float g0 = g, g1 = g + (target - g) * a;
+    const size_t len = pcm->data.size();
+    const double step = double(std::max(1, pcm->rate)) / double(rate_);
+    double ph = std::fmod(v.ev_phase[size_t(k)], double(len));
+    if (ph < 0.0) ph += double(len);
+    for (int i = 0; i < frames; ++i) {
+      const float gi = g0 + (g1 - g0) * (float(i + 1) / float(frames));
+      const size_t s0 = size_t(ph) % len;
+      const float frac = float(ph - std::floor(ph));
+      const float x = (pcm->data[s0] + (pcm->data[(s0 + 1) % len] - pcm->data[s0]) * frac) * gi;
+      out_stereo[2 * i] += x * pan_l;
+      out_stereo[2 * i + 1] += x * pan_r;
+      ph += step;
+      if (ph >= double(len)) ph = std::fmod(ph, double(len));
+    }
+    v.ev_phase[size_t(k)] = ph;
+    g = g1;
+    total += g1;
+  }
+  v.gain = total;
+  return true;
+}
+
 void AmbienceBedPlayer::render_3d_emitters(const RtAcousticsSample& sample, float* out_stereo, int frames) {
   if (!out_stereo || frames <= 0) return;
   const float sm = 1.0f - std::exp(-1.0f / (0.06f * float(rate_)));
+  const EventTable* tbl = events_.load(std::memory_order_acquire);
   for (size_t vi = 0; vi < emitter_voices_.size(); ++vi) {
     const auto& em = sample.active_emitters[vi];
     auto& v = emitter_voices_[vi];
+    // With the disc's events an emitter plays its own event (no stand-in
+    // when it names one the disc lacks).
+    if (tbl) {
+      render_event_emitter(*tbl, em, v, params_, out_stereo, frames);
+      continue;
+    }
     const float target_g = em.active ? std::clamp(em.gain, 0.0f, 1.0f) : 0.0f;
     const float target_pan = em.active ? std::clamp(em.pan, -1.0f, 1.0f) : v.pan;
     if (em.active && em.id_hash != v.id_hash) {
@@ -1496,11 +1724,47 @@ void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, f
 
 void AmbienceBedPlayer::render(const RtAcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
                                float tod_hour) {
+  AmbienceParams p;
+  float h = std::fmod(tod_hour, 24.0f);
+  if (!(h >= 0.0f)) h = std::isfinite(h) ? h + 24.0f : 12.0f;
+  p.current_time_s = h * 3600.0f;
+  p.car_speed_mph = p.speed = speed_mph;
+  render(sample, p, out_stereo, frames);
+}
+
+void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbienceParams& params, float* out_stereo,
+                               int frames) {
   if (!out_stereo || frames <= 0) return;
   drain_loaded();
+  params_ = params;
+  const float speed_mph = std::isfinite(params.car_speed_mph) ? params.car_speed_mph : 0.0f;
+  const EventTable* tbl = events_.load(std::memory_order_acquire);
+  // A slot's gain from the event its bed came from (its CarSpeed curve, at
+  // the parameters; the bed has no position, so (distance) reads its minimum).
+  auto slot_gain = [&](int s, float* out) -> bool {
+    if (!tbl) return false;
+    const auto& sr = tbl->slots[size_t(s)];
+    if (sr.proj < 0 || sr.layer < 0) return false;  // no event, or a simple one (no layer curves)
+    const FevProject& pj = tbl->projects[size_t(sr.proj)];
+    const FevEvent& ev = pj.events[size_t(sr.ev)];
+    FevInstanceLevel lv[kMaxEventLevels];
+    int n = 0;
+    event_level(*tbl, sr.proj, ev, tbl->slot_param_id[size_t(s)], params, 0.0f, lv, n);
+    float g = 0.0f;
+    for (int k = 0; k < n; ++k) {
+      if (int(lv[k].layer) != sr.layer || int(lv[k].instance) != sr.inst) continue;
+      const FevSoundDefTemplate* tpl =
+          lv[k].sound_def < pj.sound_defs.size() ? pj.template_of(pj.sound_defs[lv[k].sound_def]) : nullptr;
+      g = lv[k].gain * (tpl ? tpl->volume : 1.0f);
+    }
+    *out = g;
+    return true;
+  };
 
   // Compute smooth night factor [0..1] from 24h ToD clock (dusk 19:30..21:00, dawn 05:00..06:30).
-  float h = std::fmod(tod_hour, 24.0f);
+  // (Only the no-disc fallback uses it; the disc's events carry CurrentTime.)
+  float h = std::fmod(params.current_time_s / 3600.0f, 24.0f);
+  if (!std::isfinite(h)) h = 12.0f;
   if (h < 0.0f) h += 24.0f;
   float night_amt = 0.0f;
   if (h >= 21.0f || h <= 5.0f) night_amt = 1.0f;
@@ -1511,8 +1775,9 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, float speed_mph,
   const float speed_target =
       speed_mph <= 35.0f ? 1.0f : speed_mph >= 55.0f ? 0.15f : 1.0f - 0.85f * ((speed_mph - 35.0f) / 20.0f);
   // Festival energy rises slightly at night; open countryside breeze calms slightly after dusk.
-  const float fest_target = std::max(sample.festival_proximity, sample.crowd_proximity) * (1.0f + 0.15f * night_amt);
-  const float nature_tod_scale = 1.0f - 0.25f * night_amt;
+  const float fest_target =
+      std::max(sample.festival_proximity, sample.crowd_proximity) * (tbl ? 1.0f : 1.0f + 0.15f * night_amt);
+  const float nature_tod_scale = tbl ? 1.0f : 1.0f - 0.25f * night_amt;
   const float sm = 1.0f - std::exp(-1.0f / (0.15f * float(rate_)));
   const std::string_view snap_view = sample.ambience_snapshot_view();
 
@@ -1649,9 +1914,17 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, float speed_mph,
         bed_gain_[size_t(s)] = 0.0f;
         continue;
       }
-      const float target = (s == int(AmbienceBedSlot::kCrowd))
-                               ? (0.28f * fest_target)
-                               : ((s == int(region)) ? (0.18f * speed_target * nature_tod_scale) : 0.0f);
+      float target = (s == int(AmbienceBedSlot::kCrowd))
+                         ? (0.28f * fest_target)
+                         : ((s == int(region)) ? (0.18f * speed_target * nature_tod_scale) : 0.0f);
+      if (tbl) {
+        // The disc's events: the region's quad bed at its event's level, and
+        // no global crowd bed (each crowd emitter plays its own event).
+        float eg = 0.0f;
+        if (s == int(AmbienceBedSlot::kCrowd)) target = 0.0f;
+        else if (s == int(region)) target = slot_gain(s, &eg) ? eg : target;
+        else target = 0.0f;
+      }
       if (target < 1e-4f && bed_gain_[size_t(s)] < 1e-4f) {
         bed_gain_[size_t(s)] = 0.0f;
         continue;
@@ -1680,7 +1953,7 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, float speed_mph,
   }
 
   // Only synthesize procedural fallback for layers missing real disc PCM beds.
-  if (have_reg_pcm && have_crowd_pcm) {
+  if (have_reg_pcm && (have_crowd_pcm || tbl)) {
     render_3d_emitters(sample, out_stereo, frames);
     return;
   }
@@ -1712,7 +1985,7 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, float speed_mph,
     phase_ += 2.0 * 3.14159265 * 0.18 / double(rate_);
     const float swell = 0.85f + 0.15f * std::sin(float(phase_));
     const float nature_gain = have_reg_pcm ? 0.0f : (0.018f * env_speed_ * swell);
-    const float crowd_gain = have_crowd_pcm ? 0.0f : (0.045f * env_festival_);
+    const float crowd_gain = (have_crowd_pcm || tbl) ? 0.0f : (0.045f * env_festival_);
 
     out_stereo[2 * i] += (lp_l_ - bp_l_) * nature_gain + lp_l_ * crowd_gain;
     out_stereo[2 * i + 1] += (lp_r_ - bp_r_) * nature_gain + lp_r_ * crowd_gain;

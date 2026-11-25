@@ -469,9 +469,9 @@ void test_crash_data_30hz_ambient_dynamic_lfe_and_3d_emitters() {
   CHECK(stage.gain_reduction_db() < 0.05f);  // loud LFE did not compress stereo L/R
   CHECK(stage.peak() > 0.30f);               // LFE was folded into stereo output post-compressor
 
-  // 3. 4-voice distance-culled 3D ambient emitter pool.
+  // 3. The distance-culled 3D ambient emitter pool (kMaxActiveEmitters voices).
   audio::WorldAcousticsData ac;
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < audio::AcousticsSample::kMaxActiveEmitters + 2; ++i) {
     audio::AmbientEmitter3D em;
     em.object_name = "water_river_" + std::to_string(i);
     em.event_name = "amb_water_stream";

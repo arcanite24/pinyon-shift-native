@@ -137,6 +137,22 @@ struct FevSoundDefEntry {
   float osc_freq = 0.0f;
 };
 
+// The head of a sound-definition property template (section 6). On the
+// disc's AMB_Default.fev: u32 play mode, u32 spawn time min and max (ms), u32
+// maximum spawned sounds, f32 volume. Spawned one-shots carry a spawn time
+// (Tree_Rustle 1,000..10,000 ms, Air_Horns 500..30,000, Car_Door_Slams
+// 0..30,000, Shouts_Lots 0..2,000 with 3 spawned); the continuous beds
+// (River, Crickets, Race_Crowd_Amb) carry 0..0. The rest of the block
+// (randomisation and recalculation flags) is not decoded.
+struct FevSoundDefTemplate {
+  uint32_t play_mode = 0;
+  uint32_t spawn_min_ms = 0;
+  uint32_t spawn_max_ms = 0;
+  uint32_t max_spawned = 1;
+  float volume = 1.0f;
+  bool spawned() const { return spawn_max_ms > 0; }
+};
+
 struct FevSoundDef {
   std::string name;
   uint32_t template_index = 0;
@@ -150,8 +166,14 @@ struct FevProject {
   std::vector<FevWavebank> wavebanks;
   FevCategory root_category;
   std::vector<FevEvent> events;
+  std::vector<FevSoundDefTemplate> templates;
   std::vector<FevSoundDef> sound_defs;
   uint32_t reverb_count = 0;
+
+  // The sound definition's property template, or null.
+  const FevSoundDefTemplate* template_of(const FevSoundDef& sd) const {
+    return sd.template_index < templates.size() ? &templates[sd.template_index] : nullptr;
+  }
 
   // Case-insensitive lookup by full path "<project>/<group>/.../<event>"
   // (or "<group>/.../<event>" without project prefix).

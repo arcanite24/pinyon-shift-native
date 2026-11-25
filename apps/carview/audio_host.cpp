@@ -1411,6 +1411,7 @@ void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race,
   }
   last_rewinding_ = rewinding;
   last_in_race_ = in_race;
+  sync_ambience_state(in_race);
   if (engine_.has_snapshot_matrix()) {
     sync_gameplay_snapshot();
   }
@@ -1486,6 +1487,19 @@ void AudioHost::set_window_minimized(bool minimized) {
   window_minimized_ = minimized;
   engine_.set_mute(cfg_.mute || !cfg_.sound || window_minimized_);
 }
+
+void AudioHost::sync_ambience_state(bool in_race) {
+  // InRace: the race is running (the same flag that picks the Race snapshot).
+  // CameraType's two values are not decoded (Q80): it stays at 0.
+  const float want[4] = {in_race ? 1.0f : 0.0f, amb_pre_race_, 0.0f, amb_crowd_};
+  if (std::equal(std::begin(want), std::end(want), std::begin(amb_sent_))) return;
+  std::copy(std::begin(want), std::end(want), std::begin(amb_sent_));
+  engine_.set_ambience_state(want[0], want[1], want[2], want[3]);
+}
+
+void AudioHost::set_pre_race_ambience(float v) { amb_pre_race_ = std::clamp(std::isfinite(v) ? v : 0.0f, 0.0f, 1.0f); }
+
+void AudioHost::set_crowd_excitement(float v) { amb_crowd_ = std::clamp(std::isfinite(v) ? v : 0.0f, 0.0f, 1.0f); }
 
 void AudioHost::set_pre_event(bool active) {
   if (active == pre_event_active_) return;
