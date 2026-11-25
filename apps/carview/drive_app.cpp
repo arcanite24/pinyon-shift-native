@@ -643,7 +643,7 @@ bool DriveApp::init(int& exit_code) {
   // CampaignDirector::load_from_save does the same on every load path.
   const int saved_pop_rank =
       have_saved && have_skills_data ? skills_data.rank_for_points(saved.popularity_points) : 0;
-  if (have_saved && saved.owned_garage) race::seed_imported_campaign(saved, saved_pop_rank);
+  if (have_saved && race::imported_campaign_needs_seed(saved)) race::seed_imported_campaign(saved, saved_pop_rank);
   if (imported)
     std::printf("import: popularity %.0f (rank %d), wristband %d collected, %zu bosses, %zu showcases, finale %s\n",
                 saved.popularity_points, saved_pop_rank, saved.collected_wristband, saved.unlocked_bosses.size(),

@@ -437,10 +437,12 @@ void test_import_run_then_reload() {
   CHECK(disk.owned_garage && disk.popularity_points == 1689100.0 && disk.fame_rewards_claimed == 8);
   CHECK(disk.collected_wristband == 6 && disk.intro_completed && disk.level == 1);
   CHECK(disk.sponsors.size() == 1 && disk.sponsors[0].id == "Drift" && disk.sponsors[0].claimed == 10);
-  // What CampaignDirector::load_from_save does for an owned_garage save.
+  // What CampaignDirector::load_from_save does for a not yet seeded import.
+  CHECK(race::imported_campaign_needs_seed(disk));
   const int rank = synthetic_ladder().rank_for_points(1689100.0);
   race::seed_imported_campaign(disk, rank);
   CHECK(disk.finale_complete && disk.unlocked_bosses.size() == 7);
+  CHECK(!race::imported_campaign_needs_seed(disk));
   race::CampaignFlow flow;
   race::CampaignSaveState st;
   st.campaign_stage = disk.campaign_stage, st.completed_cutscenes = disk.completed_cutscenes;
@@ -457,6 +459,31 @@ void test_import_run_then_reload() {
   CHECK(again.unlocked_bosses == disk.unlocked_bosses && again.completed_cutscenes == disk.completed_cutscenes);
 }
 
+// ---- 9. An engine career with a prize car also has owned_garage; its own
+// mirror is kept, so an unlock still pending at save time plays on reload.
+void test_engine_career_not_seeded() {
+  drive::DriveSave native;
+  native.owned_garage = true, native.career_started = true, native.intro_completed = true;
+  native.campaign_stage = "freeroam";
+  native.wristband_points = 3080, native.collected_wristband = 4;
+  native.unlocked_bosses = {"ali", "duke", "ramona"};  // marko's rule is met, his line not yet queued
+  native.heard_dialogs = {"boss_unlock_ali", "boss_unlock_duke", "boss_unlock_ramona"};
+  CHECK(!race::imported_campaign_needs_seed(native));
+  race::CampaignFlow flow;
+  race::CampaignSaveState st;
+  st.campaign_stage = native.campaign_stage, st.heard_dialogs = native.heard_dialogs;
+  st.unlocked_bosses = native.unlocked_bosses;
+  flow.load_from(st);
+  flow.on_wristband_points_changed(native.wristband_points, native.collected_wristband);
+  CHECK(pending_dialog(flow) > 0);
+  // Seeding it (the old owned_garage gate) would have swallowed that line.
+  drive::DriveSave seeded = native;
+  race::seed_imported_campaign(seeded, 0);
+  CHECK(std::count(seeded.heard_dialogs.begin(), seeded.heard_dialogs.end(), "boss_unlock_marko") == 1);
+  // A fresh engine career (no prize car yet) is not an import either.
+  CHECK(!race::imported_campaign_needs_seed(drive::DriveSave{}));
+}
+
 }  // namespace
 
 int main() {
@@ -468,6 +495,7 @@ int main() {
   test_export_round_trip();
   test_rank_from_points();
   test_import_run_then_reload();
+  test_engine_career_not_seeded();
   if (g_failures) {
     std::printf("save_import_tests: %d failure(s)\n", g_failures);
     return 1;

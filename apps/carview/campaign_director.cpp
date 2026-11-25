@@ -61,7 +61,7 @@ void CampaignDirector::configure(const std::filesystem::path& game_root, std::st
 
 void CampaignDirector::load_from_save(const drive::DriveSave& in, int popularity_rank) {
   drive::DriveSave seeded;
-  const bool from_profile = in.owned_garage;
+  const bool from_profile = race::imported_campaign_needs_seed(in);
   if (from_profile) {
     seeded = in;
     race::seed_imported_campaign(seeded, popularity_rank);

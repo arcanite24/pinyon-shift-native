@@ -2148,6 +2148,11 @@ void seed_imported_campaign(drive::DriveSave& save, int popularity_rank) {
   if (save.campaign_stage.empty()) save.campaign_stage = st.campaign_stage;
 }
 
+bool imported_campaign_needs_seed(const drive::DriveSave& save) {
+  return save.owned_garage && save.completed_cutscenes.empty() && save.heard_dialogs.empty() &&
+         save.unlocked_bosses.empty() && save.unlocked_showcases.empty() && !save.finale_complete;
+}
+
 CampaignObjective CampaignFlow::next_objective(int wristband_points, int collected_wristband, int pop_rank,
                                                const CareerCatalog* catalog) const {
   CampaignObjective obj;

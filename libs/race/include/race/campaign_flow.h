@@ -482,6 +482,13 @@ CampaignSaveState infer_campaign_state(const CampaignImportInputs& in);
 // the sets are united, the finale kept once set, the stage kept when set.
 // `popularity_rank` 0 means unknown (showcases then come from the unlocks).
 void seed_imported_campaign(drive::DriveSave& save, int popularity_rank);
+// True for a save imported from an original profile whose campaign mirror
+// has not been rebuilt yet: `owned_garage` with no cutscene, dialogue,
+// boss, showcase or finale recorded. `owned_garage` alone is not enough
+// (an engine career sets it on its first prize car); once the engine has
+// played or seeded the save its own mirror is the record, and seeding it
+// again could mark lines as heard that were queued but never played.
+bool imported_campaign_needs_seed(const drive::DriveSave& save);
 
 // ---- Master Campaign Progression State Machine ----
 class CampaignFlow {
