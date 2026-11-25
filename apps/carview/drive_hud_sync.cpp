@@ -305,30 +305,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         carview::TitleScreenHud ts_hud;
         if (app.show_title && !settings_page.is_open()) {
           ts_hud.active = true;
-          ts_hud.menu_phase = app.title_menu_phase;
-          ts_hud.has_save = app.have_saved && (app.saved.career_started || app.saved.owned_garage || app.career.num_races > 0 || app.career.credits > 0);
-          ts_hud.confirm_new_career = app.title_confirm_new;
-          ts_hud.confirm_selected = app.title_confirm_selected;
-          if (ts_hud.has_save)
-            ts_hud.menu = {"CONTINUE CAREER", "NEW CAREER", "FREE ROAM", "SETTINGS", "QUIT"};
-          else
-            ts_hud.menu = {"NEW CAREER", "FREE ROAM", "SETTINGS", "QUIT"};
-          ts_hud.selected = std::clamp(app.title_selected, 0, int(ts_hud.menu.size()) - 1);
-          if (ts_hud.has_save) {
-            const int li = std::clamp(app.collected_wristband, 0, std::max(0, int(app.wristbands.levels.size()) - 1));
-            if (!app.wristbands.levels.empty())
-              ts_hud.save_band_name = carview::game_text(app.wristbands.levels[size_t(li)].second) + " WRISTBAND";
-            ts_hud.save_band_points = app.career.wristband_points;
-            ts_hud.save_pop_rank = app.current_pop_rank();
-            ts_hud.save_car_name = carview::car_name(app.car);
-            if (const garage::Car* sc = app.career_garage.selected_car(); sc && !app.class_bands.empty()) {
-              ts_hud.save_car_class = app.class_bands[size_t(garage::class_of(sc->performance_index, app.class_bands))].name;
-              ts_hud.save_car_pi = garage::shown_index(sc->performance_index, app.class_bands);
-            }
-            ts_hud.save_credits = app.career.credits;
-            ts_hud.save_races = app.career.num_races;
-            ts_hud.save_wins = app.career.num_victories;
-          }
+          ts_hud.menu = app.title;
           d.title_screen = &ts_hud;
         }
         if (ceremony.active) d.ceremony = &ceremony;

@@ -698,16 +698,12 @@ int run_headless_menu_dumps(const DriveConfig& cfg, UiFontCache& font_cache) {
     };
     {
       carview::TitleScreenHud ts;
-      ts.active = true, ts.menu_phase = false;
+      ts.active = true;
       carview::DriveHud d;
       d.title_screen = &ts, d.time = 0.0;
       if (!dump_hud("_title_splash", d)) return 1;
-      ts.menu_phase = true, ts.has_save = true;
-      ts.menu = {"CONTINUE CAREER", "NEW CAREER", "FREE ROAM", "SETTINGS", "QUIT"};
-      ts.selected = 0;
-      ts.save_band_name = "GREEN WRISTBAND", ts.save_band_points = 410, ts.save_pop_rank = 224;
-      ts.save_car_name = "1995 Volkswagen Corrado VR6", ts.save_car_class = "D", ts.save_car_pi = 285;
-      ts.save_credits = 18500, ts.save_races = 5, ts.save_wins = 3;
+      ts.menu.show_menu();
+      ts.menu.has_save = true;
       if (!dump_hud("_title_menu", d)) return 1;
     }
     {

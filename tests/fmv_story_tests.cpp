@@ -215,6 +215,28 @@ void test_fmv_real_wmv_if_available() {
 
 void test_story_intro_state_machine() {
   carview::StoryIntro story;
+  // BOOT-01: the boot plays the original's two splashes in its order, never
+  // Forza_Intro (the attract movie, BOOT-06) even when the disc has it.
+  {
+    std::error_code ec;
+    const auto root = std::filesystem::temp_directory_path(ec) / "shift_boot_splash_test";
+    std::filesystem::remove_all(root, ec);
+    const auto si = root / "media" / "ui" / "videos" / "splash_intros";
+    std::filesystem::create_directories(si, ec);
+    for (const char* f : {"T10_MS_Combined.wmv", "Dolby_Corona_Intro.wmv", "Forza_Intro.wmv", "Forza_Tone.wmv",
+                          "MSGS_Logo.wmv"})
+      std::ofstream(si / f) << "stub";
+    carview::StoryIntro boot;
+    boot.begin_boot(root, false, false, false);
+    check(boot.stage() == carview::StoryStage::kBootSplash, "boot with splashes on disc enters the splash stage");
+    check((boot.splash_queue() ==
+           std::vector<carview::FmvMovieId>{carview::FmvMovieId::kT10MsCombined, carview::FmvMovieId::kDolbyCorona}),
+          "boot splashes are T10_MS_Combined then Dolby_Corona_Intro only");
+    check(carview::kAttractMovie == carview::FmvMovieId::kForzaIntro, "attract mode plays Forza_Intro");
+    check(!carview::FmvPlayer::resolve_movie(root, carview::kAttractMovie).empty(),
+          "the attract movie resolves from splash_intros");
+    std::filesystem::remove_all(root, ec);
+  }
   // Boot with skip_intro_movies=true, start_in_single_player=false -> title screen.
   {
     auto act = story.begin_boot({}, true, false, false);

@@ -18,6 +18,8 @@ The code is in `apps/carview`:
 | `hud_screen.h/.cpp` | The driving HUD on `947_HUD`: dial, race blocks, skills, prompt, notifications, start, wrong way |
 | `hud_notify.h` | The notification kinds and icons, and the HUD toggles (`HudToggles`) |
 | `help_bar_screen.cpp` | The help bar on `BUTTON_BAR_SCENE` (installed into `ui4::button_bar`) |
+| `title_menu.h` | The front end's model: Press Start, the profile step, SINGLE PLAYER / MULTIPLAYER, EXTRAS, popups |
+| `frontend_screens.h/.cpp` | The front end on `120_P_PRE_SPLASH` and the load screen on `2_C_INI_LOADING` |
 | `tests/scene_screen_tests.cpp` | The corpus test: scenes, nodes, strings, cues; optional renders |
 
 ## The pieces
@@ -390,3 +392,72 @@ flow files) as plain steps, with the timings measured on the captures;
   `H_GENERIC_TITLE`'s rows; DIFFICULTY steps the difficulty in place (Q97).
 - **Not drawn.** The tombola and the rival offer (Q98); the title and
   rival tapes' specular sheens (Q99).
+
+## The front end and the load screen
+
+The boot plays the original's two splashes, `T10_MS_Combined` then
+`Dolby_Corona_Intro` (`kBootSplashes`), then the title over the looping
+`PressStart.wmv`. After 53 s idle on Press Start the original replays
+`forza_intro.wmv` (`kAttractMovie`) and comes back to Press Start.
+
+- **Press Start.** `120_P_PRE_SPLASH`'s `Content` group (the logo and
+  `TitleTapeText` reading PRESS START) moved by one measured offset
+  (`title_layout::kContentDx/Dy`, matched to the pixel on
+  `01_title_pressstart_orig.png`). The scene's own Kinect and controller
+  prompts (`Start`), install pane, help bar, video placeholder and fader are
+  hidden. No help bar, as the original.
+- **Profile step.** Press Start's outro and the menu's intro
+  (`TitleMenu::kProfileSeconds`): the logo fades, then the menu shows. A save
+  that exists but does not read shows the table's INVALID PROFILE popup once
+  the menu is up.
+- **Menu.** `SPLASH_MENU`'s rows: SINGLE PLAYER (`Main/IDS_Horizon`) and
+  MULTIPLAYER. The selected row on its pink tapes (`Crisp_Tape`,
+  `smudge_tape`) cut to its text, a size step up; the other plain, light grey,
+  moved in (`02_title_menu_orig.png`). Help bar A SELECT, B BACK. SINGLE
+  PLAYER continues a played career through the load screen, or starts the
+  first-time career; MULTIPLAYER shows the original's NO NETWORK ACCESS
+  popup (`LiveStrings`, the title it shows for features that need Xbox
+  LIVE). B goes back to Press Start.
+- **EXTRAS.** The engine's NEW CAREER (with a confirm over a save), FREE
+  ROAM, SETTINGS and QUIT sit behind X EXTRAS in the help bar, on the same
+  rows, as the pause menu has its extras. The original has none of them.
+- **Load screen.** `2_C_INI_LOADING`: the tip's title on `Title_Text`'s black
+  tape, its message wrapped on `Body_Text`'s `Line_n` pills (dark text on
+  white), `Info`'s PLEASE WAIT and turning `LoadSpinner`, over `BG` with
+  `LOADING/BGLOADINGIMAGES/IMAGE1` (the stage every capture shows). No
+  progress bar. `Stat_Text` (the big pink title) carries the event's name on
+  event loads (an engine request) and is hidden otherwise. The texts' offsets
+  against their tapes and pills are measured on `03_loading_tip_orig.png`
+  (`loading_layout`).
+- **Tips.** Each load takes its LoadingDefs.xml group's `tipcount` tips, at
+  random or, with `order="sequential"`, the next in file order (a cursor per
+  group for the session), each held its `displaytime`. Free roam uses
+  `freeroam`; an event `festival_N` by its level (N = level + 1: its
+  wristband's star rival's tips, `11b_event_loading_orig.png`),
+  `festival_heats` for a qualifier, `streetrace`, `showcase`, else
+  `festivalevent` (`loading_group_for_event`).
+- **Timing.** The load from the title into free roam holds 1 s at least,
+  loads into and out of an event 3 s, fast travel and a restart none
+  (`LoadingScreen::kTitleMinSeconds`, `kEventMinSeconds`).
+- **Sound.** Loads use the Loading mix: the radio ducked to 0.25, no menu
+  music bed, no VO.
+
+## Interims in the front end
+
+- **Profile step.** A fixed 0.35 s with a fade: the `START_OUTRO` and
+  `MENU_INTRO` slides are not decoded; no profile picker or storage device
+  (Q137).
+- **Menu states.** The selected row's size step and offset, the unselected
+  row's indent and grey are measured, not read from the scene's states;
+  `menu_shadow` is hidden (Q138).
+- **Popups.** NO NETWORK ACCESS and INVALID PROFILE draw on
+  `H_MESSAGE_POPUP` as STAY IN CAR does; the original's exact popup for
+  MULTIPLAYER offline on PC is not recorded (Q138).
+- **Tips.** Which value picks `festival_N` (the event's level or the
+  player's wristband) is ambiguous in the one capture; a long load comes
+  round to its first tip again; the other load contexts (paint shop,
+  workshop, missions, online) are not wired (Q139).
+- **Load screen.** The spinner's rate and the event name's place on
+  `Stat_Text` are set by eye (Q140).
+- **Not started.** An autosave or storage notice: no scene or string for
+  one was found (Q142).

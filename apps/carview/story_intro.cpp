@@ -33,8 +33,11 @@ StoryAction StoryIntro::begin_boot(const std::filesystem::path& game_root, bool 
   splash_idx_ = 0;
 
   if (!skip_movies_) {
-    // Queue available boot splash movies from the disc.
-    for (FmvMovieId id : {FmvMovieId::kT10MsCombined, FmvMovieId::kDolbyCorona, FmvMovieId::kForzaIntro}) {
+    // The original's boot splashes, in its order: T10_MS_Combined, then
+    // Dolby_Corona_Intro, then the title (every recorded boot opens these two
+    // and PressStart.wmv). Forza_Intro.wmv is the title's attract movie
+    // (kAttractMovie), not a boot splash.
+    for (FmvMovieId id : kBootSplashes) {
       if (!FmvPlayer::resolve_movie(game_root_, id).empty()) splash_queue_.push_back(id);
     }
   }

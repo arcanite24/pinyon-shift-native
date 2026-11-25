@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
@@ -28,6 +30,7 @@
 #include "fh1data/ui_scene.h"
 #include "fh1data/xds.h"
 #include "freeroam/skills.h"
+#include "frontend_screens.h"
 #include "game_hud.h"
 #include "hud_scene.h"
 #include "hud_screen.h"
@@ -233,7 +236,40 @@ int main() {
     if (sd.ok()) check_nodes(sd, scene, paths);
   }
 
+  // The front end's and the loading screen's scenes (frontend_screens.cpp).
+  for (const auto& [scene, paths] : carview::frontend_scene_nodes()) {
+    const SceneDraw sd(carview::ui_scene(std::string(scene)));
+    check(sd.ok(), std::string(scene) + " loads");
+    if (sd.ok()) check_nodes(sd, scene, paths);
+  }
+  // Every load group the engine names is one LoadingDefs.xml has.
+  {
+    std::ifstream f(game_root / "media" / "ui" / "LoadingDefs.xml", std::ios::binary);
+    const std::string xml((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::vector<fh1::UiLoadingTip> tips;
+    check(fh1::parse_loading_defs_xml(xml, tips), "LoadingDefs.xml parses");
+    std::set<std::string> groups;
+    for (const auto& t : tips) groups.insert(t.group);
+    std::set<std::string> named{"freeroam"};
+    for (int style : {1, 2, 3, 5, 6})
+      for (int level = -1; level <= 6; ++level) named.insert(carview::loading_group_for_event(style, level));
+    for (const auto& g : named) check(groups.count(g) == 1, "LoadingDefs.xml has group " + g);
+    for (const auto& t : tips)
+      if (t.group == "freeroam") check(t.group_tip_count == 2 && !t.group_sequential, "freeroam: 2 tips at random");
+    for (const auto& t : tips)
+      if (t.group == "festival_heats") check(t.group_tip_count == 2 && t.group_sequential, "festival_heats: sequential");
+  }
+
   // 2. Every string the screens bind resolves in the EN tables.
+  {
+    using namespace carview::title_text;
+    for (const carview::StringRef* r :
+         {&kPressStart, &kSinglePlayer, &kMultiplayer, &kSelect, &kBack, &kContinue, &kYes, &kNo, &kPleaseWait,
+          &kNoNetworkTitle, &kNoNetworkBody, &kProfileCorruptTitle, &kProfileCorruptBody})
+      check_ref(*r, "front end " + std::string(r->fallback));
+    check(carview::text_of(kSinglePlayer) == "SINGLE PLAYER" && carview::text_of(kMultiplayer) == "MULTIPLAYER",
+          "the menu's rows read SINGLE PLAYER / MULTIPLAYER");
+  }
   {
     using namespace carview::race_text;
     for (const carview::StringRef* r :
@@ -736,6 +772,64 @@ int main() {
       ms.dialog = carview::MapDialog::kConfirm;
       ms.dialog_body = "Are you sure you want to Fast Travel here for 10,000 credits?";
       hud_shot("map_fasttravel_confirm.png", "map_fasttravel_confirm_orig.png", md);
+    }
+
+    // The front end and the loading screen over the original's frames.
+    {
+      carview::TitleScreenHud ts;
+      ts.active = true;
+      carview::DriveHud td;
+      td.title_screen = &ts;
+      td.time = 1.0;
+      hud_shot("title_pressstart.png", "01_title_pressstart_orig.png", td);
+      ts.menu.show_menu();
+      hud_shot("title_menu.png", "02_title_menu_orig.png", td);
+      ts.menu.move(1);
+      ts.menu.confirm();
+      hud_shot("title_no_network.png", "02_title_menu_orig.png", td);
+      ts.menu.confirm();
+      ts.menu.open_extras();
+      hud_shot("title_extras.png", "02_title_menu_orig.png", td);
+    }
+    auto load_shot = [&](const std::string& file, const std::string& orig, const carview::LoadingSceneHud& lh) {
+      std::vector<uint8_t> fb = backdrop;
+      if (!hud_dir.empty()) {
+        int w = 0, h = 0, n = 0;
+        if (uint8_t* px = stbi_load((hud_dir / orig).string().c_str(), &w, &h, &n, 4)) {
+          if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
+          stbi_image_free(px);
+        }
+      }
+      carview::ui::List l;
+      check(carview::draw_loading_scene(l, lh, float(W), float(H)), "draw " + file);
+      carview::ui::rasterize(l.items(), fb, W, H);
+      if (!lh.backdrop.empty()) {
+        // PLEASE WAIT over the backdrop (03_loading_tip_orig.png: 992..1150 x 646..664).
+        int lit = 0;
+        for (uint32_t y = 646; y < 664; ++y)
+          for (uint32_t x = 992; x < 1150; ++x) {
+            const uint8_t* p = &fb[(size_t(y) * W + x) * 4];
+            lit += p[0] > 235 && p[1] > 235 && p[2] > 235;
+          }
+        check(lit > 200, file + ": PLEASE WAIT drawn over the backdrop");
+      }
+      const auto p = out_dir / file;
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + file);
+    };
+    {
+      carview::LoadingSceneHud lh;
+      lh.tip_title = carview::text_of({"Tips", "IDS_PopularityTitle", 0, "POPULARITY"});
+      lh.tip_body = carview::text_of({"Tips", "IDS_PopularityTip", 0, ""});
+      lh.t = 0.3;
+      // Over the original's frame (no backdrop: the calibration loop) and
+      // with it.
+      load_shot("loading_tip.png", "03_loading_tip_orig.png", lh);
+      lh.backdrop = "LOADING/BGLOADINGIMAGES/IMAGE1";
+      load_shot("loading_tip_bg.png", "03_loading_tip_orig.png", lh);
+      lh.tip_title = carview::text_of({"Tips", "IDS_AliTitle", 0, "ALI HOWARD"});
+      lh.tip_body = carview::text_of({"Tips", "IDS_AliTip", 0, ""});
+      lh.event_title = "THE GAUNTLET";
+      load_shot("loading_event.png", "11b_event_loading_orig.png", lh);
     }
   }
 

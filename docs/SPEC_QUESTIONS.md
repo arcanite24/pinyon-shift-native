@@ -2942,3 +2942,89 @@ meantime. B on the ticket returns to the map with the event still
 selected (`map_popup_event_details_back_orig.png`). Unknown: whether A on
 the ticket starts the event or sets a route. Needed, narrow: a capture of
 A on the ticket.
+
+## Q136 (BOOT-01, BOOT-06, not blocking): skipping the boot splashes and the attract loop
+
+The engine boots with the original's two splashes (`T10_MS_Combined`,
+`Dolby_Corona_Intro`) and, after 53 s idle on Press Start, plays
+`forza_intro.wmv` and returns to Press Start. Not recorded: which inputs
+skip a splash (the engine keeps its hold-to-skip), whether any input other
+than a button resets the idle timer, and whether the attract movie can be
+skipped. `Forza_Tone.wmv` is no longer played anywhere; where the original
+uses it is not known.
+
+Needed: a recorded boot with inputs during each splash, and one attract
+cycle with an input partway through.
+
+## Q137 (BOOT-04, not blocking): the profile step after Press Start
+
+The original reads its profile after Press Start, then shows the menu.
+The engine reads its save at startup and shows a fixed 0.35 s step (the
+logo fades, then the menu shows; `TitleMenu::kProfileSeconds`), because the
+scene's `START_OUTRO` and `MENU_INTRO` slides are not decoded. There is no
+profile picker or storage-device step. A save that does not read shows
+`Main/IDS_ProfileCorrupt_*` (INVALID PROFILE) once the menu is up; what
+the original does next (new profile, retry) is not known.
+
+Needed: the slides' timelines, and the original's flow for a damaged
+profile.
+
+## Q138 (BOOT-02, BOOT-03, not blocking): the front-end menu's states and its offline popup
+
+The selected row's size step (1.03) and offset, and the unselected row's
+28 px indent and grey (195) are measured on `02_title_menu_orig.png`, not
+read from the scene's states; `menu_shadow` is hidden. MULTIPLAYER offline
+shows `LiveStrings/IDS_Not_Connected_To_Live_PopUp_*` (NO NETWORK ACCESS)
+on `H_MESSAGE_POPUP`, the title the original uses for MESSAGE CENTER
+offline; the original's popup for MULTIPLAYER on PC is not recorded.
+
+Needed: the decoded `SPLASH_MENU_BUTTON` states, and a capture of
+MULTIPLAYER chosen offline.
+
+## Q139 (LOAD-01, LOAD-02, not blocking): which tips a load shows
+
+Each load shows its LoadingDefs.xml group's `tipcount` tips (random, or
+the next in file order for `order="sequential"`, a cursor per group for
+the session), each for its `displaytime`; a load longer than all of them
+comes round to the first again. An event's group is `festival_N` with
+N = the event's level + 1; `11b_event_loading_orig.png` (a level-1 event
+while the player held the Green wristband) fits both the event's level
+and the player's wristband, so which one the original uses is open.
+Qualifiers use `festival_heats`, street races `streetrace`, showcases
+`showcase`, the rest `festivalevent`. The other contexts (paint shop,
+workshop, photo, skill and speed missions, online) are not wired, the
+`layout` attribute's slides are not decoded, and every capture shows the
+backdrop `IMAGE1`, which is the only one used.
+
+Needed: the group index's source for festival events, whether sequential
+cursors persist across sessions, and what shows after the last tip.
+
+## Q140 (LOAD-03, LOAD-04, not blocking): the load screen's spinner and the event name
+
+PLEASE WAIT and the spinner sit where `03_loading_tip_orig.png` has them;
+the spinner turns once a second (set by eye). On event loads the engine
+puts the event's name on the scene's `Stat_Text` (an engine request; no
+original frame shows it), placed by eye. The minimum holds (1 s from the
+title into free roam, 3 s into and out of events, none for fast travel)
+follow the recomp; the engine's 0.25 s fades are its own.
+
+Needed: the spinner's rate and the fades' timings from the scene's
+timelines.
+
+## Q141 (LOAD-05, not blocking): the load's mix fade
+
+Loads use the Loading mix (game music 0.25, menu and homespace music,
+cars and VO 0) and no UI music. With the game's `AudioMixerSnapshots.xml`
+loaded the file's 2 s fade applies; the engine's built-in fallback keeps a
+0.1 s fade. Whether the original plays the `LoadingScreen` UI event when a
+load starts is not recorded; the engine plays nothing.
+
+Needed: a recorded load with its audio.
+
+## Q142 (BOOT-05, not blocking): an autosave or storage notice
+
+No scene or string for an autosave or storage notice was found among the
+front end's scenes or the string tables; the engine shows none.
+
+Needed: a capture of any save notice the original shows at boot or after
+Press Start.

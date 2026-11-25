@@ -117,7 +117,9 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             UiMusic ui_mus = UiMusic::kNone;
             if (!app.fmv_player.active()) {
               if (loading_screen.active()) {
-                ui_mus = UiMusic::kLoading;
+                // No music bed: the original's loads only duck the radio
+                // (AudioMixerSnapshots.xml Loading: GameMusic 0.25, MenuMusic 0).
+                ui_mus = UiMusic::kNone;
               } else if (app.show_title) {
                 ui_mus = UiMusic::kTitle;
               } else if (map_open) {

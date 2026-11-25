@@ -1,4 +1,5 @@
 #include "game_hud_internal.h"
+#include "frontend_screens.h"
 
 namespace carview::hud_detail {
 
@@ -176,158 +177,43 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
   if (pause || st.credits >= 0) draw_career_header(l, st, g);
 }
 
-// (e) Authentic Forza Horizon Title Screen (120_P_PRE_SPLASH parity).
+/// (e) The front end: 120_P_PRE_SPLASH (frontend_screens.cpp); a plain
+// stand-in when the scene is missing.
 void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, double time) {
+  if (draw_title_screen(l, ts, g.w, g.h)) return;
   const float s = g.s;
-  const SceneDraw splash_sc = resolve_scene_draw("120_P_PRE_SPLASH", true);
-  // Keep live 3D Colorado & car crisp and open (subtle bottom edge vignette only).
-  ui4::subtle_vignette(l, g.w, g.h, ts.menu_phase ? 0.28f : 0.18f);
-
-  std::array<float, 4> logo_uv;
-  const bool have_logo = ui_texture("E3/E3LARGELOGO", logo_uv) || ui_texture("E3/E3LargeLogo", logo_uv);
-
-  if (!ts.menu_phase) {
-    // 120_P_PRE_SPLASH splash phase: Forza Horizon logo cleanly in upper third
-    // + Start@(910, 560) with PILL30PXPINLEFT + active Accept glyph so hero car stays unobstructed.
-    if (have_logo) {
-      const float lw = 540 * s, lh = 162 * s;
-      l.image(0.5f * g.w - 0.5f * lw, g.T(64), 0.5f * g.w + 0.5f * lw, g.T(64) + lh, logo_uv);
+  const TitleMenu& m = ts.menu;
+  if (m.phase == TitleMenu::Phase::kPressStart || m.phase == TitleMenu::Phase::kProfile) {
+    std::array<float, 4> logo_uv;
+    if (ui_texture("E3/LOGOMEDIUM", logo_uv)) {
+      l.image(g.C(808), g.T(493), g.C(1180), g.T(595), logo_uv);
     } else {
-      Turn t(l, 0.5f * g.w, g.T(152));
-      ui4::brush(l, g.C(420), g.T(90), g.C(860), g.T(146), ui4::kBrushBlack);
-      l.text(0.5f * g.w, g.T(98), "FORZA", font(ui::Font::kE, 44 * s, kText, Align::kCenter));
-      ui4::brush(l, g.C(382), g.T(142), g.C(898), g.T(216), ui4::kPink, true);
-      l.text(0.5f * g.w, g.T(151), "HORIZON", font(ui::Font::kE, 58 * s, kText, Align::kCenter));
+      l.text(g.C(994), g.T(520), "FORZA HORIZON", font(ui::Font::kE, 44 * s, kText, Align::kCenter));
     }
-    // 120_P_PRE_SPLASH Start@(910, 612) PILL30PXPINLEFT + active Accept glyph (cleanly below hero car).
-    float start_cx = g.R(910), start_cy = g.B(612);
-    if (splash_sc.ok()) {
-      if (const int sn = splash_sc.find("Start"); sn >= 0) {
-        const auto pt = splash_sc.at(sn);
-        if (pt[0] > 100.0f && pt[0] < 1200.0f) start_cx = g.C(pt[0]);
-        if (pt[1] > 560.0f && pt[1] < 660.0f) start_cy = g.T(pt[1]);
-      }
+    if (m.phase == TitleMenu::Phase::kPressStart) {
+      const float pulse = 0.78f + 0.22f * float(std::cos(time * 3.4));
+      l.text(g.C(1168), g.T(606), text_of(title_text::kPressStart),
+             font(ui::Font::kE, 26 * s, ui::fade(kText, pulse), Align::kRight));
+      l.add_hit(0, 0, g.w, g.h, ui::kHitConfirm, 0);
     }
-    const float pulse = 0.78f + 0.22f * float(std::cos(time * 3.4));
-    const std::string prompt = "PRESS TO START";
-    TextStyle ps = font(ui::Font::kB, 16 * s, ui::fade(kText, pulse));
-    const float glyph_pad = ui4::glyph_set() == ui4::GlyphSet::kKeyboard ? 72 * s : 44 * s;
-    const float pw = ui::List::measure(prompt, ps) + glyph_pad + 22 * s;
-    const float px0 = std::clamp(start_cx - 0.5f * pw, g.L(80), g.w - pw - g.L(60));
-    const float px1 = px0 + pw;
-    const float py0 = start_cy - 19 * s, py1 = start_cy + 19 * s;
-    std::array<float, 4> pin_uv{};
-    if (ui_texture("KITPARTS/PILL30PXPINLEFT", pin_uv)) {
-      l.image(px0, py0, px1, py1, pin_uv, ui4::kPillGrey);
-    } else {
-      ui4::pill(l, px0, py0, px1, py1, ui4::kPillGrey, ui4::PillKind::kMenu);
-    }
-    const float cy = 0.5f * (py0 + py1);
-    const float gx = px0 + (ui4::glyph_set() == ui4::GlyphSet::kKeyboard ? 36 * s : 25 * s);
-    ui4::button_glyph(l, gx, cy, 10.5f * s, "A", pulse);
-    l.text(px0 + glyph_pad, cy - 8.0f * s, prompt, ps);
-    l.add_hit(px0, py0, px1, py1, ui::kHitConfirm, 0);
-    l.text(g.R(1210), g.B(672), "FORZA HORIZON  //  COLORADO FESTIVAL",
-           font(ui::Font::kB, 12 * s, rgba(220, 224, 232, 190), Align::kRight));
     return;
   }
-
-  // Menu phase: logo top-right, fixed-pitch tilted brush menu down the left,
-  // compact career save card tucked in the lower-right (never clipping the hero car).
-  if (have_logo) {
-    l.image(g.R(842), g.T(28), g.R(1214), g.T(140), logo_uv);
-  } else {
-    Turn t(l, g.R(1028), g.T(78));
-    brush(l, g.R(862), g.T(40), g.R(1204), g.T(78), kBrush);
-    l.text(g.R(1033), g.T(46), "FORZA", font(ui::Font::kE, 25 * s, kText, Align::kCenter));
-    brush(l, g.R(844), g.T(74), g.R(1214), g.T(122), kPink);
-    l.text(g.R(1029), g.T(81), "HORIZON", font(ui::Font::kE, 35 * s, kText, Align::kCenter));
-  }
-
-  // Left tilted brush menu (120_P_PRE_SPLASH SPLASH_MENU): rock-solid fixed row pitch & dimensions.
-  Turn mt(l, g.L(226), g.T(195));
-  for (size_t i = 0; i < ts.menu.size(); ++i) {
-    const bool sel = !ts.confirm_new_career && int(i) == ts.selected;
-    const float bottom = g.T(224 + 54.0f * float(i));
-    const std::string& item = ts.menu[i];
-    TextStyle it = font(ui::Font::kE, 34 * s, kText);
-    fit(item, it, g.L(480), 16 * s);
+  const auto rows = m.rows();
+  for (size_t i = 0; i < rows.size(); ++i) {
+    const bool sel = int(i) == m.selected && m.popup == TitleMenu::Popup::kNone;
+    const std::string item = text_of(title_row_text(rows[i]));
+    TextStyle it = font(ui::Font::kE, 24 * s, sel ? kText : title_layout::kRowUnselected);
     const float tw = ui::List::measure(item, it);
-    const float bx0 = g.L(156);
-    const float by0 = bottom - 34 * s - 6 * s;
-    const float bx1 = std::max(g.L(340), g.L(184) + tw + 30 * s);
-    const float by1 = bottom + 6 * s;
-    if (!ts.confirm_new_career) l.add_hit(bx0, by0, bx1, by1, ui::kHitRow, int(i));
-    brush(l, bx0, by0, bx1, by1, sel ? kPink : kBrush);
-    l.text(g.L(184), bottom - it.size, item, it);
+    const float y = g.T(560 + 37.0f * float(i));
+    if (sel) brush(l, g.C(856), y, g.C(870) + tw + 30 * s, y + 35 * s, kPink);
+    l.text(g.C(866), y + 4 * s, item, it);
+    l.add_hit(g.C(856), y, g.C(870) + tw + 30 * s, y + 35 * s, ui::kHitRow, int(i));
   }
-  l.unturn();
-
-  // Right-side Career Save preview card (or New Career confirmation modal) —
-  // authentic FH1 sharp distressed panel tucked neatly in lower-right so hero car stays clear.
-  if (ts.confirm_new_career) {
-    const float x0 = g.R(750), x1 = g.R(1216), y0 = g.B(376), y1 = g.B(626);
-    ui4::panel(l, x0, y0, x1, y1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-    {
-      Turn ct(l, 0.5f * (x0 + x1), y0 + 26 * s, ui4::kTiltRad * 0.6f);
-      ui4::brush(l, x0 - 10 * s, y0 + 12 * s, x0 + 340 * s, y0 + 50 * s, ui4::kPink);
-      l.text(x0 + 18 * s, y0 + 19 * s, "START NEW CAREER?", font(ui::Font::kE, 24 * s, kText));
-    }
-    l.text(x0 + 22 * s, y0 + 68 * s, "THIS WILL OVERWRITE YOUR EXISTING CAREER SAVE",
-           font(ui::Font::kB, 13 * s, kDim));
-    l.text(x0 + 22 * s, y0 + 88 * s, "AND START FRESH IN THE 1995 VW CORRADO VR6.",
-           font(ui::Font::kB, 13 * s, kDim));
-    const char* opts[2] = {"CONFIRM NEW CAREER", "CANCEL"};
-    for (int i = 0; i < 2; ++i) {
-      const bool sel = ts.confirm_selected == i;
-      const float by = y0 + 126 * s + float(i) * 46 * s;
-      l.add_hit(x0 + 22 * s, by, x1 - 22 * s, by + 36 * s, i == 0 ? ui::kHitConfirm : ui::kHitCancel, i);
-      ui4::brush(l, x0 + 22 * s, by, x1 - 22 * s, by + 36 * s, sel ? ui4::kPink : ui4::kBrushBlack);
-      l.text(x0 + 38 * s, by + 7 * s, opts[i], font(ui::Font::kE, 20 * s, kText));
-    }
-  } else if (ts.has_save) {
-    const float x0 = g.R(816), x1 = g.R(1216), y0 = g.B(430), y1 = g.B(626);
-    const uint32_t bc = ui4::wristband_colour(ts.save_band_name);
-    ui4::panel(l, x0, y0, x1, y1, s, ui4::kCharcoalDark, bc, 0, true);
-    {
-      Turn stt(l, x0 + 104 * s, y0 + 16 * s, ui4::kTiltRad * 0.5f);
-      ui4::brush(l, x0 - 6 * s, y0 + 6 * s, x0 + 174 * s, y0 + 30 * s, ui4::kBrushBlack);
-      l.text(x0 + 12 * s, y0 + 12 * s, "SAVED CAREER", font(ui::Font::kE, 13 * s, ui4::kWhite));
-    }
-    std::string cw = ts.save_band_name.substr(0, ts.save_band_name.find(' '));
-    for (char& ch : cw) ch = char(std::toupper(static_cast<unsigned char>(ch)));
-    std::array<float, 4> wb_uv;
-    const bool have_wb = !cw.empty() && ui_texture("WRISTBANDS/" + cw, wb_uv);
-    if (have_wb) l.image(x1 - 144 * s, y0 + 12 * s, x1 - 12 * s, y0 + 46 * s, wb_uv);
-    const std::string wb_label = ts.save_band_name.empty() ? std::string("YELLOW WRISTBAND") : ts.save_band_name;
-    TextStyle wbs = font(ui::Font::kE, 20 * s, bc);
-    fit(wb_label, wbs, (x1 - x0) - (have_wb ? 174 * s : 36 * s), 12 * s);
-    l.text(x0 + 18 * s, y0 + 38 * s + (20 * s - wbs.size) * 0.5f, wb_label, wbs);
-
-    char line1[96], line2[96];
-    std::snprintf(line1, sizeof line1, "%s PTS  •  POPULARITY %d%s", thousands(ts.save_band_points).c_str(),
-                  ts.save_pop_rank, place_suffix(ts.save_pop_rank));
-    l.text(x0 + 18 * s, y0 + 66 * s, line1, font(ui::Font::kB, 12 * s, ui4::kYellow));
-
-    l.text(x0 + 18 * s, y0 + 92 * s, "CURRENT CAR", font(ui::Font::kB, 10 * s, kDim));
-    TextStyle cn = font(ui::Font::kB, 16 * s, kText);
-    cn.keep_case = true;
-    fit(ts.save_car_name, cn, x1 - x0 - 122 * s, 10 * s);
-    l.text(x0 + 18 * s, y0 + 108 * s, ts.save_car_name, cn);
-    if (!ts.save_car_class.empty()) {
-      ui4::class_badge(l, x1 - 92 * s, y0 + 104 * s, 21 * s, ts.save_car_class, ts.save_car_pi);
-    }
-    l.rect(x0 + 18 * s, y0 + 136 * s, x1 - 18 * s, y0 + 137 * s, rgba(255, 255, 255, 35));
-    ui4::offwhite_strip(l, x0 + 18 * s, y0 + 148 * s, x0 + 196 * s, y0 + 178 * s, s, true);
-    TextStyle cr = font(ui::Font::kE, 18 * s, ui4::kInk);
-    cr.keep_case = true;
-    l.text(x0 + 28 * s, y0 + 153 * s, thousands(ts.save_credits) + " Cr", cr);
-    std::snprintf(line2, sizeof line2, "RACES %d • WINS %d", ts.save_races, ts.save_wins);
-    l.text(x1 - 18 * s, y0 + 157 * s, line2, font(ui::Font::kB, 12 * s, kDim, Align::kRight));
+  if (m.popup == TitleMenu::Popup::kNone) {
+    std::vector<ui4::Prompt> prompts{{"A", text_of(title_text::kSelect)}, {"B", text_of(title_text::kBack)}};
+    if (m.phase == TitleMenu::Phase::kMenu) prompts.push_back({"X", text_of(title_text::kExtras)});
+    ui4::button_bar(l, prompts, g.w, g.h);
   }
-
-  ui4::button_bar(
-      l, {{"A", str("HelpButtons", "IDS_Select", "SELECT")}, {"B", str("HelpButtons", "IDS_Back", "BACK")}}, g.w, g.h);
 }
 
 // (f) 947_HUD/ActivationPrompt: clean white circular disc icon + large white italic

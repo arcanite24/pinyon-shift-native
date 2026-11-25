@@ -461,6 +461,7 @@ void DriveSession::run_window_loop() {
                 title_attract_playing = false;
                 title_idle_s = 0.0;
                 if (!app.no_title) app.show_title = true;
+                app.title.reset();
               }
             }
           } else {
@@ -468,7 +469,12 @@ void DriveSession::run_window_loop() {
           }
           // Authentic PressStart.wmv seamless looping animated title screen backdrop when present & decodable;
           // otherwise falls back seamlessly to the live 3D Colorado Festival scenic overlook.
-          // After 53 s idle on Press Start (retail attract timer), launch Forza_Tone.wmv / FMV_01.wmv.
+          // After 53 s idle on Press Start the original replays forza_intro.wmv
+          // (kAttractMovie), then returns to Press Start.
+          if (app.show_title) {
+            app.title.has_save = app.played_career();
+            app.title.update(frame_dt);
+          }
           if (app.show_title && !app.fmv_player.active() && !app.headless) {
             if (!app.title_video_tried) {
               app.title_video_tried = true;
@@ -479,16 +485,12 @@ void DriveSession::run_window_loop() {
             if (app.title_video.active()) {
               app.title_video.update(frame_dt, false);
             }
-            if (!app.title_menu_phase && !settings_page.is_open()) {
+            if (app.title.phase == carview::TitleMenu::Phase::kPressStart && !settings_page.is_open()) {
               title_idle_s += frame_dt;
-              if (title_idle_s >= 53.0) {
+              if (title_idle_s >= carview::kAttractIdleSeconds) {
                 title_idle_s = 0.0;
-                auto ap = carview::FmvPlayer::resolve_movie(app.game_root_of(), carview::FmvMovieId::kForzaTone,
-                                                            app.state_root);
-                if (ap.empty()) {
-                  ap = carview::FmvPlayer::resolve_movie(app.game_root_of(), carview::FmvMovieId::kFmv01Opening,
-                                                         app.state_root);
-                }
+                const auto ap = carview::FmvPlayer::resolve_movie(app.game_root_of(), carview::kAttractMovie,
+                                                                  app.state_root);
                 if (!ap.empty() && app.fmv_player.open(ap, app.language, 1280, 720)) {
                   if (app.title_video.active()) app.title_video.close();
                   app.title_video_tried = false;
@@ -539,12 +541,11 @@ void DriveSession::run_window_loop() {
           }
           if (loading_screen.active()) {
             loading_screen.update(frame_dt);
+            // Held until the world is in and the load's minimum has passed
+            // (LoadingScreen::kTitleMinSeconds from the title).
             const double elapsed = loading_screen.elapsed();
-            const double min_hold = std::max(0.25, loading_min_until);
+            const double min_hold = std::max(0.0, loading_min_until);
             const bool waiting_world = pending_title_resume_gather || host.showroom.has_pending_world();
-            const float prog = waiting_world ? float(std::clamp(elapsed / (min_hold + 2.0), 0.10, 0.92))
-                                             : float(std::clamp(elapsed / min_hold, 0.05, 1.0));
-            loading_screen.set_progress(prog);
             if (!waiting_world && elapsed >= min_hold) {
               loading_screen.stop();
             }

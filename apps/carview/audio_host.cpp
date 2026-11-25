@@ -742,6 +742,13 @@ void AudioHost::set_ui_music(audio::AudioEngine::UiMusicMode mode) {
   engine_.set_ui_music(mode);
 }
 
+void AudioHost::set_blocking_load(bool on) {
+  if (on) set_ui_music(audio::AudioEngine::UiMusicMode::kNone);
+  last_loading_ = on;
+  if (engine_.has_snapshot_matrix()) sync_gameplay_snapshot();
+  else engine_.set_snapshot(snap_loading_, on);
+}
+
 uint8_t AudioHost::map_tire_surface_group(std::string_view physics_surface) const {
   auto low = [](std::string_view sv) {
     std::string s(sv);

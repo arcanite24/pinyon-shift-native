@@ -419,8 +419,7 @@ void DriveSession::start_new_career() {
           app.fast_travel = true;
           app.saved.has_spawn = false;
           app.show_title = false;
-          app.title_menu_phase = false;
-          app.title_confirm_new = false;
+          app.title.reset();
           app.race.reset();
           app.race_event.clear();
           app.pre_loaner_car.clear();
@@ -832,9 +831,7 @@ void DriveSession::choose() {
             app.pending_event_loaner_car.clear();
             save_now("title");
             app.show_title = true;
-            app.title_menu_phase = true;
-            app.title_confirm_new = false;
-            app.title_selected = 0;
+            app.title.show_menu();
           }
           if (act == PauseMenu::kQuit) running = false;
 }
