@@ -185,7 +185,8 @@ void DriveSession::map_screen_fill() {
         p.kind = m.popup_line.empty() ? MapPopupKind::kSimple : MapPopupKind::kGeneric;
         p.title = m.title;
         p.line = m.popup_line;
-        x_label = text_of(map_text::kLeaderboard);
+        // The original's X LEADERBOARD: the engine has no leaderboards, so
+        // no prompt.
         break;
       default:
         p.kind = MapPopupKind::kSimple;
@@ -383,8 +384,40 @@ bool DriveSession::map_screen_event(const SDL_Event& e) {
       map_dirty = true;
       return true;
     }
-    return false;  // DETAILS, LEADERBOARD: the session's own handling
+    // DETAILS: the original shows the event's ticket over the map
+    // (map_popup_event_details_orig.png); the engine's events page is the
+    // interim.
+    if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
+      const MapMarker& m = cached_map_markers[size_t(map_selected_marker)];
+      if ((m.kind == MapMarker::kEvent || m.kind == MapMarker::kStreetHub) && !app.race) {
+        const int hub = m.kind == MapMarker::kStreetHub ? m.site_or_hub : 0;
+        close_map();
+        open_events_browser(hub);
+      }
+    }
+    return true;
   }
+  // The mouse wheel and +/- zoom like the right stick (to 2.6 times, never
+  // past the opening scale); the original has no centre-on-car.
+  if (e.type == SDL_EVENT_MOUSE_WHEEL && e.wheel.y != 0.0f) {
+    map_screen_step(0.12, 0.0f, 0.0f, e.wheel.y > 0.0f ? 1.0f : -1.0f);
+    return true;
+  }
+  if (e.type == SDL_EVENT_KEY_DOWN) {
+    switch (e.key.key) {
+      case SDLK_EQUALS:
+      case SDLK_PLUS:
+      case SDLK_KP_PLUS:
+      case SDLK_MINUS:
+      case SDLK_KP_MINUS:
+      case SDLK_TAB:
+      case SDLK_E: return true;
+      default: break;
+    }
+  }
+  if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && (e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH ||
+                                                  e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER))
+    return true;
   return false;
 }
 
