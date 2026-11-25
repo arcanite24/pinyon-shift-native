@@ -1975,6 +1975,15 @@ Still ours (interim):
 - **SteerAngVelDynFindPeak (10 deg/s).** It is unused unless the helpers
   are on.
 - **SlowSpeed and FastSpeed units.** They are read as m/s (FEEL-17).
+  Every car ships SlowSpeed 1.0, FastSpeed 120.0 and FastRateScale 1.0.
+  In the engine the two speeds only blend the rate toward FastRateScale,
+  so with the shipped rows the unit changes nothing today. It matters
+  once the lock law is the spec's u_spd narrowing toward MinMaxAngle:
+  120 m/s, 120 mph (53.6 m/s) and 120 km/h (33.3 m/s) give very
+  different curves. The oracle lap cannot settle it, since the AI
+  bypasses the pad filter. The name has no unit suffix, while the
+  tables that use mph say so (FrictionLowSpeedMph,
+  MaxForwardVelShiftReverseMPH).
 
 Needed: the pad filter's narrowing law (which G it queries), the unit of
 NormRearSlipAngleToCountersteer, and what DynFindPeak drives. A trace of
@@ -2332,3 +2341,27 @@ Still interim:
   zones.
 
 Needed: the input manager's dead-zone rescale and its wheel rows.
+
+## Q105 (FEEL-08, not blocking): thresholds beside the tyre law
+
+The tyre law follows SPEC-CAR-PHYSICS, but four thresholds next to it
+are the engine's. None of them is in the spec or the car data:
+
+- **VelDepFriction's fade-in.** The surface drag is scaled by
+  min(1, |v| / 0.2 m/s) per wheel axis, and runs only when the car has
+  aero drag (`aero_drag_long > 0`). The spec confirms the slew-clamped
+  `-sign(v) * coeff * N`, not the fade or the gate.
+- **Bearing drag in the air.** A wheel off the ground loses spin as
+  `omega *= 1 - 0.5 dt`.
+- **RWD launch assist.** Below 11 m/s on a RWD car's rear wheels, slip
+  past 1.7 is cut to 0.35 of its excess, fading out from 5 to 11 m/s.
+  The spec gives only "damps slip > 1.7 below ~5..11 m/s". The player
+  only; the AI skips it.
+- **Gravity per off-ground tyre.** Gravity is scaled by
+  PerTyreOffGravityScale to the power of the number of wheels off the
+  ground (all four: AirborneGravityScale). The settings name the
+  constant, not whether it multiplies per tyre or adds.
+
+Needed: the launch assist's gain, and how the per-tyre gravity scale
+combines. Both are visible in a standing-start trace of a RWD car and a
+trace of a car with one or two wheels off a kerb.
