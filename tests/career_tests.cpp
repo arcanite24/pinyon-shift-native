@@ -689,39 +689,25 @@ void test_r3_e1_street_hubs_and_buyins() {
   rec.wristband_points = 300;
   CHECK(!cat.is_hub_unlocked(cat.hubs[0], rec, 0));  // below 310 pts
 
-  rec.wristband_points = 5000;
-  CHECK(!cat.is_hub_unlocked(cat.hubs[0], rec, -1));  // pre-Yellow Wristband locked
-  CHECK(cat.is_hub_unlocked(cat.hubs[0], rec, 0));    // Hub 1 unlocks!
-  CHECK(!cat.is_hub_unlocked(cat.hubs[1], rec, 0));   // Hub 2 STILL locked until Hub 1 completed!
-  CHECK(!cat.is_hub_unlocked(cat.hubs[2], rec, 0));   // Hub 3 STILL locked until Hub 2 completed!
-  CHECK(!cat.is_event_unlocked(cat.events[2], rec, 0, 250));
-  CHECK(cat.hub_unlock_requirement(1) == 0);
-  CHECK(cat.hub_unlock_requirement(2) == 2);
-  CHECK(cat.hub_unlock_requirement(3) == 2);
-
-  // Complete 1 Hub 1 race -> Hub 2 still requires 1 more Hub 1 race.
-  rec.event_places[57] = 1;
-  CHECK(cat.hub_events_completed(1, rec) == 1);
+  // The points threshold alone opens a hub (EventHubs.UnlockPointsReq):
+  // no wristband and no races from the previous hub.
+  rec.wristband_points = 310;
+  CHECK(cat.is_hub_unlocked(cat.hubs[0], rec, -1));
   CHECK(!cat.is_hub_unlocked(cat.hubs[1], rec, 0));
-
-  // Complete 2nd Hub 1 race -> Hub 2 unlocks! Hub 3 still locked!
-  rec.event_places[80] = 2;
-  CHECK(cat.hub_events_completed(1, rec) == 2);
+  rec.wristband_points = 1700;
   CHECK(cat.is_hub_unlocked(cat.hubs[1], rec, 0));
-  CHECK(cat.is_event_unlocked(cat.events[2], rec, 0, 250));
+  CHECK(cat.hub_events_completed(1, rec) == 0);
   CHECK(!cat.is_hub_unlocked(cat.hubs[2], rec, 0));
-
-  // Hub 2 also requires its points threshold (1700).
-  rec.wristband_points = 1200;
-  CHECK(!cat.is_hub_unlocked(cat.hubs[1], rec, 0));
-  rec.wristband_points = 5000;
-  CHECK(cat.is_hub_unlocked(cat.hubs[1], rec, 0));
-
-  // Complete both Hub 2 races -> Hub 3 unlocks!
-  rec.event_places[38] = 1;
-  rec.event_places[53] = 1;
+  CHECK(cat.is_event_unlocked(cat.events[2], rec, 0, 250));
+  CHECK(cat.hub_unlock_requirement(1) == 0);
+  CHECK(cat.hub_unlock_requirement(2) == 0);
+  CHECK(cat.hub_unlock_requirement(3) == 0);
+  rec.wristband_points = 4500;
   CHECK(cat.is_hub_unlocked(cat.hubs[2], rec, 0));
   CHECK(cat.is_event_unlocked(cat.events[4], rec, 0, 250));
+  rec.event_places[57] = 1;
+  CHECK(cat.hub_events_completed(1, rec) == 1);
+  rec.wristband_points = 5000;
 
   // CR entry buy-in fee validation & atomic deduction.
   race::CareerEvent fest;

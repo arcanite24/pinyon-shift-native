@@ -153,42 +153,18 @@ int CareerCatalog::hub_events_completed(int hub_id, const CareerRecord& rec) con
 }
 
 int CareerCatalog::hub_unlock_requirement(int hub_id) const {
-  if (hub_id <= 1) return 0;
-  const StreetHub* prev = find_hub(hub_id - 1);
-  if (!prev) return 0;
-  int prev_total = 0;
-  for (const auto& ev : events) {
-    if (ev.style == 2 && ev.hub_id == prev->id) ++prev_total;
-  }
-  if (prev_total <= 0) return 0;
-  if (!prev->initial_events.empty()) {
-    int present_init = 0;
-    for (int64_t eid : prev->initial_events) {
-      if (const CareerEvent* ev = find_event_by_id(eid); ev && ev->style == 2 && ev->hub_id == prev->id) {
-        ++present_init;
-      }
-    }
-    const int base_req = present_init > 0 ? present_init : int(prev->initial_events.size());
-    return std::min(prev_total, std::max(1, base_req));
-  }
-  return std::min(prev_total, 2);
+  // The original asks for no races from the previous hub (see below).
+  (void)hub_id;
+  return 0;
 }
 
 bool CareerCatalog::is_hub_unlocked(const StreetHub& hub, const CareerRecord& rec, int collected_wristband) const {
-  // Progressive 3-hub tier unlocking (R3-CAM-13):
-  // - Hub 1 (Carson): unlocks at its points threshold (310 pts) once Yellow Wristband is earned.
-  // - Hub 2 (Red Rock): unlocks after Hub 1 is unlocked, Hub 1 tier races are completed, and Hub 2 points (1700).
-  // - Hub 3 (Observatory): unlocks after Hub 2 is unlocked, Hub 2 tier races are completed, and Hub 3 points (4500).
-  if (collected_wristband < 0) return false;
-  if (rec.wristband_points < hub.unlock_points_req) return false;
-  if (hub.id > 1) {
-    if (const StreetHub* prev = find_hub(hub.id - 1)) {
-      if (!is_hub_unlocked(*prev, rec, collected_wristband)) return false;
-      const int req = hub_unlock_requirement(hub.id);
-      if (req > 0 && hub_events_completed(prev->id, rec) < req) return false;
-    }
-  }
-  return true;
+  // The title unlocks the street hubs with one query on every points change,
+  // "SELECT Id FROM EventHubs WHERE UnlockPointsReq <= <points>": the
+  // points threshold alone (310 / 1700 / 4500), with no wristband and no
+  // previous-hub races.
+  (void)collected_wristband;
+  return rec.wristband_points >= hub.unlock_points_req;
 }
 
 int64_t CareerCatalog::street_race_buy_in(const CareerEvent& ev) {

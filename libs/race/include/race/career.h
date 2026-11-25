@@ -156,6 +156,7 @@ struct CareerCatalog {
   // Event & hub unlock predicates.
   bool is_hub_unlocked(const StreetHub& hub, const CareerRecord& rec, int collected_wristband) const;
   int hub_events_completed(int hub_id, const CareerRecord& rec) const;
+  // Races of the previous hub a hub needs: 0 (the original has no such chain).
   int hub_unlock_requirement(int hub_id) const;
   bool is_event_unlocked(const CareerEvent& ev, const CareerRecord& rec, int collected_wristband,
                          int popularity_rank) const;
