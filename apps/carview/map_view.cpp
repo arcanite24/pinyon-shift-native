@@ -1055,23 +1055,17 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       }
     }
   }
-  // Free-roam traffic: small red dots with a dark rim (the profile's
-  // traffic cell, 04_roam_hud_day_idle_orig.png).
-  for (const auto& t : scene.traffic) {
-    if (std::hypot(t[0] - scene.x, t[1] - scene.z) > reach) continue;
-    const P p = project(t[0], t[1]);
-    if (p.depth < 1) continue;
-    cv.line(p.x, p.y, p.x, p.y, 8 * unit + 2.0, Rgba{40, 8, 16, 220});
-    cv.line(p.x, p.y, p.x, p.y, 8 * unit, Rgba{226, 28, 72, 250});
-  }
-  // Roaming Festival AI racers: distinct Horizon-pink discs with bright rim.
-  for (const auto& f : scene.festival_ai) {
-    if (std::hypot(f[0] - scene.x, f[1] - scene.z) > reach) continue;
-    const P p = project(f[0], f[1]);
-    if (p.depth < 1) continue;
-    cv.line(p.x, p.y, p.x, p.y, 15 * unit + 2, Rgba{255, 255, 255, 240});
-    cv.line(p.x, p.y, p.x, p.y, 15 * unit - 1.5, Rgba{245, 0, 96, 255});
-  }
+  // Traffic and the Festival's roaming drivers: the profile's vehicle
+  // icon (MapProfileMinimap.xml vehicle_festival_traffic and vehicle_ai,
+  // cell 5,3 at size 45), untinted.
+  auto vehicle = [&](double x, double z) {
+    if (std::hypot(x - scene.x, z - scene.z) > reach) return;
+    const P p = project(x, z);
+    if (p.depth < 1) return;
+    cv.icon(small_icons_, 5, 3, p.x, p.y, 45.0 * unit, 0, Rgba{255, 255, 255, 255});
+  };
+  for (const auto& t : scene.traffic) vehicle(t[0], t[1]);
+  for (const auto& f : scene.festival_ai) vehicle(f[0], f[1]);
   // Opponents: white discs with a grey rim, as the race frames show.
   for (const auto& o : scene.opponents) {
     if (std::hypot(o[0] - scene.x, o[1] - scene.z) > reach) continue;
@@ -1694,11 +1688,13 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
       cv.icon(large_icons_, 2, 4, dp[0], dp[1] - 10.0 * unit, 52.0 * unit, 0, Rgba{74, 238, 97, 255});
     }
   }
+  // The Festival's roaming drivers: the full-screen profile's vehicle_ai
+  // icon (its shadow cell 4,3 offset, then cell 5,3; size 25).
   for (const auto& f : scene.festival_ai) {
     const auto p = to_screen(f[0], f[1]);
     if (p[0] < -20 || p[0] > rw + 20 || p[1] < -20 || p[1] > rh + 20) continue;
-    cv.line(p[0], p[1], p[0], p[1], 13, Rgba{255, 255, 255, 235});
-    cv.line(p[0], p[1], p[0], p[1], 9, Rgba{245, 0, 96, 255});
+    cv.icon(large_icons_, 4, 3, p[0] - 3.0 * unit, p[1] + 3.0 * unit, 25.0 * unit, 0, Rgba{255, 255, 255, 220});
+    cv.icon(large_icons_, 5, 3, p[0], p[1], 25.0 * unit, 0, Rgba{255, 255, 255, 255});
   }
   for (const auto& o : scene.opponents) {
     const auto p = to_screen(o[0], o[1]);

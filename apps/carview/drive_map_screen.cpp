@@ -64,7 +64,7 @@ void DriveSession::map_screen_open() {
   map_opened_at = now_s();
   map_base_zoom = map_zoom;
   map_filter_open = false;
-  map_filter_row = 0;
+  map_filter_row = map_filter_first = 0;
   map_dialog = MapDialog::kNone;
   map_cursor_world();
 }
@@ -121,6 +121,7 @@ void DriveSession::map_screen_fill() {
   ms.filter = map_filter;
   ms.filter_open = map_filter_open;
   ms.filter_row = map_filter_row;
+  ms.filter_first = map_filter_first;
   ms.dialog = map_dialog;
   if (map_dialog == MapDialog::kConfirm) {
     ms.dialog_body = map_dialog_cost > 0
@@ -381,6 +382,12 @@ bool DriveSession::map_screen_event(const SDL_Event& e) {
     } else if (k == Key::kDown && map_filter_row + 1 < kMapFilterRows) {
       ++map_filter_row;
       app.audio_host.trigger_ui(audio::UiCue::kMove);
+    }
+    if (k == Key::kUp || k == Key::kDown) {
+      // Eight rows show; the list scrolls only past its ends.
+      constexpr int kShown = 8;
+      if (map_filter_row < map_filter_first) map_filter_first = map_filter_row;
+      if (map_filter_row >= map_filter_first + kShown) map_filter_first = map_filter_row - (kShown - 1);
     } else if (k == Key::kA) {
       map_filter.toggle(MapFilterRow(map_filter_row));
       app.audio_host.trigger_ui(audio::UiCue::kAccept);
@@ -394,7 +401,7 @@ bool DriveSession::map_screen_event(const SDL_Event& e) {
   }
   if (k == Key::kLB) {
     map_filter_open = true;
-    map_filter_row = 0;
+    map_filter_row = map_filter_first = 0;
     map_dirty = true;
     app.audio_host.trigger_ui(audio::UiCue::kAccept);
     return true;

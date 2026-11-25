@@ -97,6 +97,7 @@ struct MapScreenHud {
   std::vector<std::pair<std::string, std::string>> prompts;  // (button, label)
   bool filter_open = false;
   int filter_row = 0;
+  int filter_first = -1;  // the first row shown; -1: as scrolled down to filter_row
   MapFilterSet filter;
   MapDialog dialog = MapDialog::kNone;
   std::string dialog_body;

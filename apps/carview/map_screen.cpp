@@ -33,6 +33,12 @@ constexpr int kFilterWindow = 8;    // rows the original shows at once
 // The list sits higher than the scene lays it out (the "All" row's tape from
 // y 257 in map_filter_orig.png, the scene's first Pill from 285).
 constexpr float kFilterDy = -30.0f;
+constexpr float kFilterLean = 0.052f;
+constexpr float kFilterNameX = 371.0f;  // the first row name's left edge
+constexpr float kFilterPillW = 494.0f;  // rows end about x 860 (map_filter_orig.png)
+constexpr float kTrackX0 = 870.0f, kTrackY0 = 242.0f, kTrackY1 = 463.0f, kThumbLen = 56.0f;
+constexpr uint32_t kTrack = ui::rgba(20, 20, 20, 235);
+constexpr uint32_t kThumb = ui::rgba(214, 214, 214, 250);
 constexpr float kFilterTitleDy = -28.0f;
 constexpr float kFilterBarDy = 14.0f;
 constexpr uint32_t kFilterBar = ui::rgba(226, 226, 226);
@@ -355,15 +361,21 @@ void draw_filter(ui::List& l, const MapScreenHud& ms, const SceneFrame& f) {
   }
   const int list = sc.node("SCROLLING_LIST");
   const int bars_group = child(sd, list, "Group");
-  // Everything but the rows, then the rows one by one.
+  // Everything but the rows and the scroll indicator, then the rows one by
+  // one and the indicator by hand.
   sc.hide(bars_group);
+  sc.hide(sc.node("NAV_POSITION_INDICATOR"));
+  sc.bindings().dx = 0.0f;
   sc.bindings().dy = kFilterDy;
   sc.draw(l, f);
   sc.at(bars_group) = NodeOverride{};
 
   std::array<int, 5> bars{};
   for (int i = 0; i < 5; ++i) bars[size_t(i)] = sc.node(i == 0 ? "FixedSettingsBar" : "FixedSettingsBar" + std::to_string(i + 1));
-  const int first = window_first(ms.filter_row, kMapFilterRows, kFilterWindow);
+  // The list scrolls only when the cursor passes its first or last row
+  // (map_filter_2_orig.png: Outposts in the last of eight with All on top).
+  const int first = std::clamp(ms.filter_first >= 0 ? ms.filter_first : ms.filter_row - (kFilterWindow - 1), 0,
+                               kMapFilterRows - kFilterWindow);
   for (int slot = 0; slot < kFilterWindow && first + slot < kMapFilterRows; ++slot) {
     const int bar = bars[size_t(slot % 5)];
     if (bar < 0) continue;
@@ -373,21 +385,48 @@ void draw_filter(ui::List& l, const MapScreenHud& ms, const SceneFrame& f) {
     const int name = child(sd, g, "TEXT_SETTING_NAME"), value = child(sd, g, "TEXT_SETTING");
     SceneBindings& b = sc.bindings();
     b.by_node.clear();
-    b.dy = kFilterDy + float(slot / 5) * 5.0f * kRowPitch;
+    // The rows lie on one leaning line (the bars' 0.052 rad): the original
+    // starts each row's name 1.5 px right of the one above, from x 371 for
+    // the first (map_filter_orig.png), where the scene's five bars carry
+    // their own few pixels of jitter. Rows past the fifth reuse the bars
+    // 140 px lower.
+    const float drop = float(slot / 5) * 5.0f * kRowPitch;
+    const float name_x = name >= 0 ? sd.rect(name)[0] : 0.0f;
+    b.dx = name >= 0 ? kFilterNameX + float(slot) * kRowPitch * kFilterLean - name_x : 0.0f;
+    b.dy = kFilterDy + drop;
     const bool focus = row == ms.filter_row;
     sc.text(name, text_of(map_filter_text(MapFilterRow(row))));
     sc.hide(value);
-    if (pill >= 0) sc.at(pill).tint = focus ? kRowPink : kRowBlack;
+    if (pill >= 0) {
+      sc.at(pill).tint = focus ? kRowPink : kRowBlack;
+      // Narrower than the scene's pill, left edge kept (single-texture
+      // models take no crop, so the pill is squeezed).
+      const auto pr = sd.rect(pill);
+      if (const float pw = pr[2] - pr[0]; pw > kFilterPillW) {
+        sc.at(pill).stretch_x = kFilterPillW / pw;
+        sc.at(pill).dx = -0.5f * (pw - kFilterPillW);
+      }
+    }
     sc.draw(l, f, bar);
     // The tick, right of the row (a check glyph the font lacks).
     if (ms.filter.ticked[size_t(row)] && pill >= 0) {
       const auto r = sd.rect(pill);
-      const float cx = r[2] - 28.0f, cy = 0.5f * (r[1] + r[3]) + b.dy - 6.0f;
+      const float cx = r[2] - 41.0f + b.dx, cy = 0.5f * (r[1] + r[3]) + b.dy - 13.0f;
       const float k = f.s;
       l.line(f.x(cx - 7.0f), f.y(cy), f.x(cx - 2.0f), f.y(cy + 5.0f), 3.0f * k, kWhite);
       l.line(f.x(cx - 2.0f), f.y(cy + 5.0f), f.x(cx + 8.0f), f.y(cy - 6.0f), 3.0f * k, kWhite);
     }
   }
+  // The scroll indicator: a dark track leaning with the list right of the
+  // rows and a light thumb at the selected row's share of it
+  // (map_filter_orig.png at All, map_filter_2_orig.png at Outposts,
+  // map_filter_3_orig.png at Barn Finds).
+  const float t = float(ms.filter_row) / float(kMapFilterRows - 1);
+  auto track_x = [](float y) { return kTrackX0 + (y - kTrackY0) * kFilterLean; };
+  const float k = f.s;
+  l.line(f.x(track_x(kTrackY0)), f.y(kTrackY0), f.x(track_x(kTrackY1)), f.y(kTrackY1), 4.0f * k, kTrack);
+  const float y0 = kTrackY0 + t * (kTrackY1 - kTrackY0 - kThumbLen), y1 = y0 + kThumbLen;
+  l.line(f.x(track_x(y0)), f.y(y0 + 3.0f), f.x(track_x(y1)), f.y(y1 - 3.0f), 6.0f * k, kThumb);
 }
 
 // --- The fast travel dialogs (H_MESSAGE_POPUP) ---------------------------------

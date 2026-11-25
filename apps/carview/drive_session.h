@@ -460,7 +460,7 @@ struct DriveSession {
   MapFilterSet map_filter;
   // The FILTER popup (LB on the map) and its cursor row.
   bool map_filter_open = false;
-  int map_filter_row = 0;
+  int map_filter_row = 0, map_filter_first = 0;
   // The scene-driven pause map (drive_map_screen.cpp): the free cursor, the
   // world point under it, the opening zoom and the fast travel dialog.
   MapScreenHud map_screen_hud;
