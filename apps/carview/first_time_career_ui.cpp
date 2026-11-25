@@ -11,6 +11,7 @@
 #include "fh1data/stringtables.h"
 #include "fh1data/ui_scene.h"
 #include "hud_scene.h"
+#include "scene_timeline.h"
 #include "ui4_chrome.h"
 
 namespace carview::ftc_ui {
@@ -112,26 +113,12 @@ void coloured_line(ui::List& l, float cx, float y, std::string_view text, ui::Te
 // layer's enabled opacity curve. False without the scene or a card's curve.
 bool scene_card_keys(std::array<std::array<double, 4>, race::kOpeningTitleCards>& out) {
   const fh1::UiScene* sc = ui_scene("H_OPENING_TITLES");
-  if (!sc || !sc->has_bgf || !sc->bgf.has_timeline) return false;
   static constexpr const char* kLayers[] = {"_Microsoft", "_Turn10", "_Playground", "_Horizon"};
-  const auto& d = sc->bgf;
-  const int play = d.find_slide(0, "PLAY");
-  if (play < 0) return false;
+  static_assert(std::size(kLayers) == race::kOpeningTitleCards);
   for (int c = 0; c < race::kOpeningTitleCards; ++c) {
-    bool found = false;
-    for (const auto& tr : d.slides[size_t(play)].tracks) {
-      if (tr.item >= d.items.size()) continue;
-      const int oi = sc->find_object(d.items[tr.item].value);
-      if (oi < 0 || sc->objects[size_t(oi)].name != kLayers[c]) continue;
-      for (const auto& r : tr.refs) {
-        if (r.action || !r.enabled || r.index >= d.curves.size()) continue;
-        const auto& cv = d.curves[r.index];
-        if (cv.attr != fh1::ui_attr::kOpacity || cv.keys.size() != 4) continue;
-        for (size_t k = 0; k < 4; ++k) out[size_t(c)][k] = cv.keys[k].time_ms / 1000.0;
-        found = true;
-      }
-    }
-    if (!found) return false;
+    const auto k = slide_curve_keys(sc, 0, "PLAY", kLayers[c], fh1::ui_attr::kOpacity);
+    if (k.size() != 4) return false;
+    for (size_t j = 0; j < 4; ++j) out[size_t(c)][j] = k[j] / 1000.0;
   }
   return true;
 }

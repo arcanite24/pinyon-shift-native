@@ -109,4 +109,11 @@ class SceneTimeline {
   std::vector<std::vector<int>> action_slides_;
 };
 
+// The key times (ms) of the curve on `attr` (27-bit) that `slide` of
+// `component` enables for the element whose FBF object is named `object`
+// (e.g. H_OPENING_TITLES' PLAY slide's `_Microsoft` opacity). Empty when the
+// scene, slide, element or curve is missing.
+std::vector<float> slide_curve_keys(const fh1::UiScene* scene, uint32_t component, std::string_view slide,
+                                    std::string_view object, uint32_t attr);
+
 }  // namespace carview

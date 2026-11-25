@@ -225,8 +225,11 @@ int ui_scene_dump(int argc, char** argv) {
     };
     for (size_t i = 0; i < doc.items.size(); ++i) {
       const auto& it = doc.items[i];
-      std::printf("item %zu kind %u value %u %s name %08x parent %08x props %zu\n", i, it.kind, it.value,
+      std::printf("item %zu kind %u value %u %s name %08x parent %08x props %zu", i, it.kind, it.value,
                   name_of(it.value).c_str(), it.name_hash, it.parent_hash, it.properties.size());
+      for (const auto& [tag, raw] : it.properties)
+        std::printf(" %07x=%g", tag & 0x7FFFFFFu, fh1::ui_bgf_number(tag, raw));
+      std::printf("\n");
     }
     for (const auto& c : doc.contracts) {
       std::printf("contract item %d %s state %s", c.item_index, c.type.c_str(), c.initial_state.c_str());

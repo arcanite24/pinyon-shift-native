@@ -406,4 +406,26 @@ void SceneTimeline::apply(SceneBindings& b) const {
   }
 }
 
+std::vector<float> slide_curve_keys(const fh1::UiScene* scene, uint32_t component, std::string_view slide,
+                                    std::string_view object, uint32_t attr) {
+  std::vector<float> keys;
+  if (!scene || !scene->has_bgf || !scene->bgf.has_timeline) return keys;
+  const auto& d = scene->bgf;
+  const int s = d.find_slide(component, slide);
+  if (s < 0) return keys;
+  for (const auto& tr : d.slides[size_t(s)].tracks) {
+    if (tr.item >= d.items.size()) continue;
+    const int oi = scene->find_object(d.items[tr.item].value);
+    if (oi < 0 || scene->objects[size_t(oi)].name != object) continue;
+    for (const auto& r : tr.refs) {
+      if (r.action || !r.enabled || r.index >= d.curves.size()) continue;
+      const auto& cv = d.curves[r.index];
+      if (cv.attr != attr) continue;
+      for (const auto& k : cv.keys) keys.push_back(k.time_ms);
+      return keys;
+    }
+  }
+  return keys;
+}
+
 }  // namespace carview
