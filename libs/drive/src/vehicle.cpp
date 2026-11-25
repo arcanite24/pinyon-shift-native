@@ -1359,11 +1359,13 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const Vec3 hard = pos_ + rotate(rot_, hard_local - com_local_);
     // Ackermann (ours: the spec has no steering geometry): each front wheel
     // points at one turn centre on the rear axle's line, steer_angle_ being
-    // the angle of a wheel on the centre line. Static toe (Forza convention:
-    // + = toe-out, - = toe-in) rotates each wheel's heading in the XZ plane.
+    // the angle of a wheel on the centre line. The original's slip heading
+    // has the steer angle and the inner wheel's extra lock but no toe
+    // (FEEL-03), so static toe (Forza convention: + = toe-out, - = toe-in)
+    // is kept for drawing the wheel only.
     const double toe_sign = (i % 2 == 0) ? -1.0 : 1.0;
-    const double wheel_toe = toe_sign * p.static_toe_rad[a];
-    w.steer = wheel_toe;
+    w.toe = toe_sign * p.static_toe_rad[a];
+    w.steer = 0.0;
     const double eff_steer = std::clamp(steer_angle_ + damage_.steer_pull_rad, -p.max_steer, p.max_steer);
     if (a == 0 && std::fabs(eff_steer) > 1e-9) {
       const double z_rear = 0.5 * (p.wheel_centres[2].z + p.wheel_centres[3].z);
@@ -1371,7 +1373,6 @@ void Vehicle::substep(double dt, const Ground& ground) {
       const double centre_x = base / std::tan(eff_steer);
       w.steer = std::atan(base / (centre_x - p.wheel_centres[i].x));
       if (w.steer * eff_steer < 0) w.steer += eff_steer > 0 ? kPi : -kPi;  // past 90 degrees
-      w.steer += wheel_toe;
     }
     Hit hit;
     const double reach = p.probe_height + std::max(p.rest_length, axle_rest) + droop_[i] + radius;

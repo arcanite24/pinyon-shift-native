@@ -694,10 +694,7 @@ void apply_tune(const CarTune& tune, const cars::CarPhysics& car, CarParams& p) 
     }
     if (toes[a] > -90.0) {
       const double t = std::clamp(toes[a], -5.0, 5.0);
-      p.static_toe_rad[a] = t * kDeg;
-      // Excessive toe increases scrubbing drag / lowers straight-line speed slightly.
-      p.long_scale[a] *= std::clamp(1.0 - 0.004 * std::fabs(t), 0.94, 1.0);
-      if (a == 1 && t < 0) p.lat_scale[1] *= std::clamp(1.0 + 0.008 * std::min(1.5, -t), 1.0, 1.02);
+      p.static_toe_rad[a] = t * kDeg;  // drawn only (FEEL-03)
     }
   }
   if (tune.front_caster_deg > -90.0) {

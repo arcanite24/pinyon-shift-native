@@ -1708,7 +1708,7 @@ void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Ve
           wposes[wi].centre[0] = float(w.centre.x);
           wposes[wi].centre[1] = float(w.centre.y);
           wposes[wi].centre[2] = float(w.centre.z);
-          wposes[wi].steer = float(w.steer);
+          wposes[wi].steer = float(w.steer + w.toe);
           wposes[wi].spin = float(w.spin);
           wposes[wi].omega = float(w.omega);
         }

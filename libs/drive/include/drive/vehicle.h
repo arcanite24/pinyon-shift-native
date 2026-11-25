@@ -542,7 +542,8 @@ double auto_brake_target_for_curvature(double curvature_inv_m, double lateral_gr
 // Per-wheel state for the renderer and the trace.
 struct WheelState {
   double compression = 0;   // m above rest (positive: compressed)
-  double steer = 0;         // rad, positive towards +x
+  double steer = 0;         // rad, positive towards +x; the tyre heading (no toe)
+  double toe = 0;           // rad, static toe for drawing the wheel only (FEEL-03)
   double spin = 0;          // rad, rolling forward is positive
   double omega = 0;         // rad/s
   double load = 0;          // N

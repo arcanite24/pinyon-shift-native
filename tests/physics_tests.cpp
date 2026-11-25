@@ -492,16 +492,23 @@ void synthetic_r2_4_checks() {
     CHECK(std::fabs(p_rally.tire_affect_curve.evaluate(100.0) - 1.00) < 1e-6);
     CHECK(std::fabs(p_rally.tire_affect_curve.evaluate(20.0) - 0.85) < 1e-6);
 
-    // Static toe rotates front/rear wheel headings symmetrically (toe-out + / toe-in -).
+    // Static toe is drawn (toe-out + / toe-in -, symmetric) but stays out of
+    // the tyre heading and the axle grip scales (FEEL-03).
     drive::CarTune tune;
     tune.front_toe_deg = 2.0;
     tune.rear_toe_deg = -1.5;
+    const drive::CarParams p_untuned = p_base;
     drive::apply_tune(tune, base_cp, p_base);
+    for (int a = 0; a < 2; ++a) {
+      CHECK(p_base.long_scale[a] == p_untuned.long_scale[a]);
+      CHECK(p_base.lat_scale[a] == p_untuned.lat_scale[a]);
+    }
     drive::Vehicle v_toe(p_base);
     v_toe.step({}, flat);
-    CHECK(v_toe.wheels()[0].steer < -0.02 && v_toe.wheels()[1].steer > 0.02);
-    CHECK(std::fabs(v_toe.wheels()[0].steer + v_toe.wheels()[1].steer) < 1e-9);
-    CHECK(v_toe.wheels()[2].steer > 0.02 && v_toe.wheels()[3].steer < -0.02);
+    CHECK(v_toe.wheels()[0].toe < -0.02 && v_toe.wheels()[1].toe > 0.02);
+    CHECK(std::fabs(v_toe.wheels()[0].toe + v_toe.wheels()[1].toe) < 1e-9);
+    CHECK(v_toe.wheels()[2].toe > 0.02 && v_toe.wheels()[3].toe < -0.02);
+    for (int i = 0; i < 4; ++i) CHECK(v_toe.wheels()[i].steer == 0.0);
   }
 
   // 3. Coupled zero-lag LSD: transfers torque on the very first step of a split-mu launch.
