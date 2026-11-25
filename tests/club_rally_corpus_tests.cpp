@@ -21,6 +21,7 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "audio/vo_player.h"
 #include "cars/physics.h"
 #include "cars/sources.h"
 #include "cars/strings.h"
@@ -139,6 +140,15 @@ int main() {
     for (const auto& c : dealer)
       if (std::find(ids.begin(), ids.end(), c.id) != ids.end() && c.base_cost > 0) ++on_sale;
     check(on_sale == 5, "the five Rally cars are on sale: " + std::to_string(on_sale));
+  }
+  // The Rally flows' VO lines resolve to samples in the package's bank.
+  {
+    audio::VoPlayer vo(48000, true);
+    std::string note;
+    check(vo.load_rally_vo(state_root, "EN", &note), "rally VO loads: " + note);
+    for (const char* id : {"PostraceHeatsQualification", "ToTheAutoshow", "ChampionshipStructure", "CoDriverIntro",
+                           "HorizonRallyChampion"})
+      check(vo.trigger(id, false), std::string("rally VO plays ") + id);
   }
   fh1::StringTables tables;
   check(cars::load_string_tables(inst, tables, &why, "EN"), "EN string tables load");

@@ -3121,7 +3121,9 @@ harness's play bake none of the five Rally cars (nor the heats' loaner)
 is baked, so the restricted Autoshow is empty and the hub opens straight
 away ("no cars to buy"). The five are on sale at a price
 (`club_rally_corpus_tests` checks the dealer list; 7,000 to 240,000 Cr),
-so a bake with them lists them. The VO lines queue behind each other
+so a bake with them lists them (checked with a baked stand-in accepted by
+the filter: the Autoshow listed that one car and its exit opened the
+hub). The VO lines queue behind each other
 (`VoPlayer::trigger` without interrupt).
 
 Needed: `CSetRestrictionsForFirstRallyAutoshow`'s restrictions (cars,
@@ -3263,8 +3265,9 @@ as the interim: the overlay.
 
 V4-21, the co-driver and Alice: the first visit now plays
 `PostraceHeatsQualification`, `ToTheAutoshow`, `ChampionshipStructure`
-and `CoDriverIntro` (Q145), and the first championship win plays
-`HorizonRallyChampion` (Q147). Not played: `CCoDriverPepTalk` before
+and `CoDriverIntro` (Q145), and becoming champion (the final on the podium,
+once) plays `HorizonRallyChampion` (Q147); `club_rally_corpus_tests`
+checks that each resolves to a sample in `Rally_VO_EN`. Not played: `CCoDriverPepTalk` before
 every countdown and `CRallyStageIntro` on a first start. Both behaviours
 take no parameters; the dialogue script's candidates are `PreRace`,
 `PreRaceFirstStage`, `PreRaceLastStage`, `FinalPreRaceFirstStage`,
