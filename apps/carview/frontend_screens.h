@@ -69,17 +69,22 @@ struct TitleRowNodes {
 TitleRowNodes title_row_nodes(const SceneDraw& sd, int slot);
 
 // Measured placements (1280x720 canvas) of the original's captures. The
-// scene rests at its intro start (the slides are not decoded), so its
-// Content group (the logo and PRESS START) sits off screen right.
+// scene's slides do not move its Content group (the logo and PRESS START),
+// which rests off screen right (Q137).
 namespace title_layout {
 // 01_title_pressstart_orig.png: the logo's pink plate at 922..1180 x 533..594
 // and PRESS START at 988..1168 x 611..628 (both matched to the pixel).
 inline constexpr float kContentDx = -405.0f, kContentDy = 248.0f;
 inline constexpr float kPressStartScale = 1.0f;  // TitleTape's size step (its rest scale is 0.5)
 // 02_title_menu_orig.png: SINGLE PLAYER (selected) at 865..1138 x 564..588 on
-// its tape at 858..1154 x 559..594, a size step up from the row's rest;
-// MULTIPLAYER (unselected) at 883..1129 x 602..625, its rest size moved in
-// 28 px, a light grey (195). The rows' states are not decoded (Q138).
+// its tape at 858..1154 x 559..594; MULTIPLAYER (unselected) at 883..1129 x
+// 602..625, moved in 28 px, a light grey (195). The rows' colours and the
+// selected row's size come from their slides; the offsets do not (Q138).
+// The capture's selected row is 1.03 its rest size: the Focused slide rests
+// at 0.7 and pulses to 0.722 (x1.031) at 1.04..1.27 s of its 2.5 s loop, so
+// the capture matches the pulse's peak (Q185). kRowSelectedScale and
+// kRowUnselected are the looks without a timeline (the scene's Blurred
+// text is 200).
 inline constexpr float kRowSelectedScale = 1.03f, kRowSelectedDx = 8.0f;
 inline constexpr float kRowUnselectedDx = 28.0f;
 inline constexpr uint32_t kRowUnselected = ui::rgba(195, 195, 195);

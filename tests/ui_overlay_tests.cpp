@@ -3,6 +3,9 @@
 // fail cleanly; with --corpus (SHIFT_GAME_ROOT and SHIFT_STATE_ROOT; exit 77
 // without them) it checks the v4 scenes, textures and LoadingDefs.xml win
 // over the disc's and that the disc alone still resolves.
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -10,7 +13,9 @@
 #include <string>
 #include <vector>
 
+#include "fh1data/archive.h"
 #include "fh1data/ui_overlay.h"
+#include "fh1data/ui_scene.h"
 
 namespace {
 
@@ -42,6 +47,85 @@ void unit() {
   check(!e.empty(), "load_scene says why it failed");
   check(fh1::UiOverlay::v4_media_zip_of({}).empty(), "no state root, no media.zip");
   check(fh1::UiOverlay::v4_media_zip_of("does-not-exist").empty(), "a missing media.zip is empty");
+}
+
+// The BGF timelines (docs/UI_SCENE_ANIMATION.md) of every scene in `zip`
+// under Scenes/ui4/: each reads to its sections' ends, its curves' control
+// times are all 0 (the evaluator's linear case), each component's slides
+// start with its Master Slide and every reference is in range.
+void timelines(fh1::Archive& zip, const char* what) {
+  int scenes = 0, read = 0, curves = 0, slides = 0, bad_ctrl = 0, bad_master = 0;
+  for (const auto& m : zip.members()) {
+    const std::string& n = m.name;
+    if (n.size() < 4 || n.compare(n.size() - 4, 4, ".bgf") != 0) continue;
+    std::string low = n;
+    for (char& c : low) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (low.rfind("scenes/ui4/", 0) != 0 && low.rfind("ui/scenes/ui4/", 0) != 0) continue;
+    auto r = zip.read(n);
+    fh1::UiBgfDocument doc;
+    if (!r.ok() || !fh1::parse_ui_bgf(r.data, doc, nullptr)) continue;
+    ++scenes;
+    if (!doc.has_timeline) {
+      std::fprintf(stderr, "FAIL: %s %s: the timeline does not read\n", what, n.c_str());
+      ++failures;
+      continue;
+    }
+    ++read;
+    curves += int(doc.curves.size());
+    slides += int(doc.slides.size());
+    for (const auto& c : doc.curves)
+      for (const auto& k : c.keys)
+        if (k.c1_time != 0.0f || k.c2_time != 0.0f) ++bad_ctrl;
+    std::vector<uint32_t> seen;
+    for (const auto& sl : doc.slides) {
+      if (std::find(seen.begin(), seen.end(), sl.component) != seen.end()) continue;
+      seen.push_back(sl.component);
+      if (!sl.master()) ++bad_master;
+    }
+  }
+  std::printf("ui_overlay corpus: %s: %d scene BGFs, %d timelines, %d curves, %d slides\n", what, scenes, read,
+              curves, slides);
+  check(scenes > 0 && read == scenes, "every scene BGF's timeline reads");
+  check(bad_ctrl == 0, "every curve key's control times are 0");
+  check(bad_master == 0, "every component's slides start with its Master Slide");
+}
+
+// The decoded timelines against what is known of them.
+void known_timelines(fh1::UiOverlay& ui) {
+  auto doc_of = [&](const char* scene, fh1::UiBgfDocument& doc) {
+    const auto f = ui.scene_file(scene, "bgf");
+    return f.ok() && fh1::parse_ui_bgf(f.read.data, doc, nullptr) && doc.has_timeline;
+  };
+  fh1::UiBgfDocument d;
+  // 120_P_PRE_SPLASH's root slides, the contract's states (START, MENU, ...).
+  check(doc_of("120_P_PRE_SPLASH", d), "120_P_PRE_SPLASH's timeline");
+  for (const char* n : {"Master Slide", "Start", "Start_Outro", "Start_Intro", "Menu_Intro", "Menu", "OUTRO"})
+    check(d.find_slide(0, n) >= 0, (std::string("120_P_PRE_SPLASH has the slide ") + n).c_str());
+  // The pause menu's INTRO and OUTRO: 300 ms, played once.
+  check(doc_of("925_PAUSE_MENU", d), "925_PAUSE_MENU's timeline");
+  for (const char* n : {"INTRO", "OUTRO"}) {
+    const int s = d.find_slide(0, n);
+    check(s >= 0 && d.slides[size_t(s)].duration_ms() == 300.0f && !d.slides[size_t(s)].loops(),
+          (std::string("925_PAUSE_MENU's ") + n + " is 300 ms, once").c_str());
+  }
+  // H_OPENING_TITLES' PLAY: 33 s; each card's opacity curve has four keys
+  // (Q164's timing, read again from the curves).
+  check(doc_of("H_OPENING_TITLES", d), "H_OPENING_TITLES's timeline");
+  const int play = d.find_slide(0, "PLAY");
+  check(play >= 0 && d.slides[size_t(play)].end_ms == 33000, "H_OPENING_TITLES' PLAY is 33 s");
+  const std::pair<uint32_t, std::array<float, 4>> cards[] = {{5, {4500, 5000, 8000, 8500}},
+                                                             {11, {12000, 12500, 15500, 16000}},
+                                                             {17, {18621, 19121, 22121, 22621}},
+                                                             {23, {28165, 28665, 31665, 32165}}};
+  for (const auto& [item, keys] : cards) {
+    bool found = false;
+    for (const auto& c : d.curves) {
+      if (c.item != item || c.attr != fh1::ui_attr::kOpacity || c.keys.size() != 4) continue;
+      found = true;
+      for (size_t k = 0; k < 4; ++k) found = found && c.keys[k].time_ms == keys[k];
+    }
+    check(found, ("H_OPENING_TITLES: card item " + std::to_string(item) + "'s opacity keys").c_str());
+  }
 }
 
 // Loads `scene` and checks its .fbf and .bsg came from `fbf` and `bsg`.
@@ -115,6 +199,13 @@ int corpus(const std::filesystem::path& game_root, const std::filesystem::path& 
     check(d.ok() && d.origin == Origin::kDisc, "the disc alone resolves the disc texture");
     check(v4.read.data != d.read.data, "the v4 texture is not the disc's");
   }
+
+  // The timelines: the disc's scenes, v4's, and the known ones as mounted.
+  if (auto zip = fh1::Archive::open(game_root / "media" / "UI.zip", nullptr)) timelines(*zip, "disc UI.zip");
+  else check(false, "UI.zip opens");
+  if (auto zip = fh1::Archive::open(media, nullptr)) timelines(*zip, "v4 media.zip");
+  else check(false, "v4 media.zip opens");
+  known_timelines(ui);
 
   // LoadingDefs.xml: v4's copy (more tips) over the disc's loose file.
   {

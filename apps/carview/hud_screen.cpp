@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "game_hud.h"
+#include "scene_timeline.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -849,6 +850,37 @@ float notify_alpha(double age, double life) {
   return std::min(in, out);
 }
 
+// The panel's own SHOW and HIDE slides (CombinedNotification's component,
+// docs/UI_SCENE_ANIMATION.md): SHOW fades its State in over 0.166 s while it
+// grows from 0.9 past 1.03 to 1 at 0.218 s; HIDE fades it out and shrinks it
+// to 0.8 over 0.002..0.137 s, ending the notification's life. Writes the
+// State node's look into the frame; false without the scene's timeline.
+bool notify_state_anim(SceneScreen& sc, int root, int state, double age, double life) {
+  static SceneTimeline tl;
+  tl.bind(sc.scene().scene());
+  if (!tl.ok() || !scene_timelines_enabled() || root < 0 || state < 0) return false;
+  const int comp = tl.item_of_node(root);
+  const auto& d = sc.scene().scene()->bgf;
+  if (comp < 0) return false;
+  const int hide = d.find_slide(uint32_t(comp), "HIDE");
+  if (hide < 0 || d.find_slide(uint32_t(comp), "SHOW") < 0) return false;
+  // HIDE's length: its curves' last key.
+  float hide_ms = 0.0f;
+  for (const auto& tr : d.slides[size_t(hide)].tracks)
+    for (const auto& r : tr.refs)
+      if (!r.action && r.enabled && r.index < d.curves.size() && !d.curves[r.index].keys.empty())
+        hide_ms = std::max(hide_ms, d.curves[r.index].keys.back().time_ms);
+  const double left_ms = (life - age) * 1000.0;
+  // Enter a slide once (entering bakes and restarts its curves), then scrub.
+  const char* want = left_ms <= hide_ms ? "HIDE" : "SHOW";
+  if (tl.slide(uint32_t(comp)) != want) tl.go_to(uint32_t(comp), want);
+  tl.set_time(uint32_t(comp), float(left_ms <= hide_ms ? hide_ms - left_ms : age * 1000.0));
+  SceneBindings all;
+  tl.apply(all);
+  if (auto it = all.anim.find(state); it != all.anim.end()) sc.bindings().anim[state] = it->second;
+  return true;
+}
+
 float draw_popularity_unlock(ui::List& l, const NotifyView& st, float w, float h, float s, float a) {
   SceneScreen sc(kHudScene);
   const SceneDraw& sd = sc.scene();
@@ -904,7 +936,8 @@ float draw_hud_notification(ui::List& l, const NotifyView& st, float w, float h,
   const int tape = child_path(sd, root, "State/DoubleTape");
   if (root < 0 || tape < 0) return 0.0f;
   sc.bindings().fit_text = false;
-  sc.bindings().opacity = a;
+  // The panel's SHOW / HIDE slides; without them the measured fade.
+  if (!notify_state_anim(sc, root, child(sd, root, "State"), st.age, st.life)) sc.bindings().opacity = a;
   sc.bindings().dy = -lift;
 
   const int t1 = child(sd, tape, "TEXT1"), t2 = child(sd, tape, "TEXT2");

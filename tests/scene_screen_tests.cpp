@@ -42,6 +42,7 @@
 #include "map_screen.h"
 #include "pause_screen.h"
 #include "race_screens.h"
+#include "scene_timeline.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include "ui.h"
@@ -796,6 +797,142 @@ int main() {
     carview::set_ui_textures(nullptr);
   }
 
+  // 4b. The front end's timeline (no textures needed, so only the texts
+  // draw): SINGLE PLAYER fades in over Menu_Intro (0.49..1.01 s), and PRESS
+  // START fades out with the logo's Content (0..0.3 s).
+  {
+    carview::TitleScreenHud ts;
+    ts.active = true;
+    auto alpha_in = [](const carview::ui::List& l, float x0, float y0, float x1, float y1) {
+      int a = 0;
+      for (const auto& it : l.items()) {
+        const float cx = 0.5f * (it.rect[0] + it.rect[2]), cy = 0.5f * (it.rect[1] + it.rect[3]);
+        if (cx >= x0 && cx < x1 && cy >= y0 && cy < y1) a = std::max(a, int((it.color >> 24) & 0xFF));
+      }
+      return a;
+    };
+    std::map<int, std::pair<int, int>> at;  // ms -> (SINGLE PLAYER alpha, PRESS START alpha)
+    ts.menu.reset();
+    {
+      carview::ui::List l;
+      carview::draw_title_screen(l, ts, 1280.0f, 720.0f);
+    }
+    ts.menu.confirm();
+    double t = 0.0;
+    for (int ms : {100, 250, 600, 1200}) {
+      while (t < ms / 1000.0 - 1e-9) {
+        const double dt = std::min(1.0 / 60.0, ms / 1000.0 - t);
+        ts.menu.update(dt);
+        t += dt;
+        carview::ui::List f;
+        carview::draw_title_screen(f, ts, 1280.0f, 720.0f);
+      }
+      carview::ui::List l;
+      carview::draw_title_screen(l, ts, 1280.0f, 720.0f);
+      // SINGLE PLAYER at 865..1138 x 564..588; PRESS START at 981..1176 x
+      // 604..636 (MULTIPLAYER comes in over it from 0.49 s).
+      at[ms] = {alpha_in(l, 840, 555, 1180, 597), alpha_in(l, 970, 600, 1190, 640)};
+    }
+    std::printf("title transition: menu/press start alpha 0.1 s %d/%d, 0.25 s %d/%d, 0.6 s %d/%d, 1.2 s %d/%d\n",
+                at[100].first, at[100].second, at[250].first, at[250].second, at[600].first, at[600].second,
+                at[1200].first, at[1200].second);
+    check(at[250].first < 40 && at[600].first > 0 && at[600].first < at[1200].first && at[1200].first >= 250,
+          "title transition: the menu fades in over Menu_Intro");
+    check(at[100].second > 0 && at[100].second < 255 && at[250].second < at[100].second,
+          "title transition: PRESS START fades out over Menu_Intro");
+  }
+
+  // 4c. The opening titles' keys as the engine reads them (by the card
+  // layers' names) from H_OPENING_TITLES' PLAY slide (Q164, Q186).
+  {
+    const fh1::UiScene* ot = carview::ui_scene("H_OPENING_TITLES");
+    static constexpr const char* kLayers[] = {"_Microsoft", "_Turn10", "_Playground", "_Horizon"};
+    static constexpr float kWant[4][4] = {{4500, 5000, 8000, 8500},
+                                          {12000, 12500, 15500, 16000},
+                                          {18621, 19121, 22121, 22621},
+                                          {28165, 28665, 31665, 32165}};
+    for (int c = 0; c < 4; ++c) {
+      const auto k = carview::slide_curve_keys(ot, 0, "PLAY", kLayers[c], fh1::ui_attr::kOpacity);
+      bool ok = k.size() == 4;
+      for (size_t j = 0; ok && j < 4; ++j) ok = std::fabs(k[j] - kWant[c][j]) < 1.0f;
+      std::string got;
+      for (float v : k) got += " " + std::to_string(int(std::lround(v)));
+      check(ok, std::string("opening titles: ") + kLayers[c] + "'s PLAY keys:" + got);
+    }
+  }
+
+  // 4d. The notification panel: its State plays SHOW (0.9 to 1.03 by 0.166 s,
+  // 1 at 0.218 s, fading in) and HIDE (to 0.8, fading out, in its last
+  // 0.137 s). Measured on the drawn items' extent and alpha.
+  {
+    carview::DriveHud n;
+    n.driving = true;
+    n.time = 10.0;
+    const auto t = carview::notify_text(carview::NotifyKind::kDiscountSigns, {}, {"12", "100"}, {"12%"});
+    n.popup_kind = carview::NotifyKind::kDiscountSigns, n.popup_title = t.title, n.popup_text = t.message;
+    auto measure = [&](double age) {
+      n.popup_at = n.time - age;
+      carview::ui::List l;
+      carview::build_drive_hud(l, n, 1280.0f, 720.0f);
+      float x0 = 1e9f, x1 = -1e9f;
+      int a = 0;
+      for (const auto& it : l.items()) {
+        const float cx = 0.5f * (it.rect[0] + it.rect[2]), cy = 0.5f * (it.rect[1] + it.rect[3]);
+        if (cx < 400 || cx > 880 || cy < 590 || cy > 670) continue;
+        x0 = std::min(x0, it.rect[0]), x1 = std::max(x1, it.rect[2]);
+        a = std::max(a, int((it.color >> 24) & 0xFF));
+      }
+      return std::pair<float, int>{x1 - x0, a};
+    };
+    const auto s05 = measure(0.05), s17 = measure(0.166), s25 = measure(0.25);
+    const auto e10 = measure(carview::kPopupSeconds - 0.10);
+    std::printf("notification: width/alpha 0.05 s %.0f/%d, 0.166 s %.0f/%d, 0.25 s %.0f/%d, end-0.1 s %.0f/%d\n",
+                s05.first, s05.second, s17.first, s17.second, s25.first, s25.second, e10.first, e10.second);
+    check(s25.second >= 250 && s05.second < 128 && s05.first < s25.first && s17.first > s25.first * 1.02f &&
+              s17.first < s25.first * 1.04f,
+          "notification: SHOW grows from 0.9 past 1.03 and fades in");
+    check(e10.second < s25.second && e10.first < s25.first && e10.first > s25.first * 0.8f,
+          "notification: HIDE shrinks toward 0.8 and fades out");
+  }
+
+  // 4e. MENU-17: the pause rows' slides spread the rows about the focus:
+  // rows above it rest 7 px up, rows below 6 px down. 07_ and
+  // 07b_pause_menu*_orig.png put PHOTO MODE's text 13 px apart (250 with MAP
+  // focused, 237 with QUIT focused); the static look has none.
+  {
+    carview::DriveHud d;
+    d.driving = false, d.pause = true, d.menu_title = "paused";
+    PauseMenu m;
+    m.show(false);
+    // The centre of PHOTO MODE's (row 2's) first glyph: the rows slant, so
+    // each row's leftmost glyph, top to bottom.
+    auto row2 = [&](int sel, bool on) {
+      carview::set_scene_timelines_enabled(on);
+      m.selected = sel, m.shown_selected = sel, m.shown_from = -1, m.shown_at = -1e9;
+      carview::PauseScreenHud ps;
+      carview::fill_pause_screen(m, 1e9, ps);
+      d.pause_screen = &ps;
+      carview::ui::List l;
+      carview::build_drive_hud(l, d, 1280.0f, 720.0f);
+      std::vector<float> first;
+      for (const auto& it : l.items()) {
+        const float cy = 0.5f * (it.rect[1] + it.rect[3]);
+        if (it.rect[0] < 150 || it.rect[0] > 200 || cy < 100 || cy > 540 || ((it.color >> 24) & 0xFF) < 128) continue;
+        first.push_back(cy);
+      }
+      std::sort(first.begin(), first.end());
+      return first.size() >= 3 ? first[2] : 0.0f;
+    };
+    const int last = int(m.rows().size()) - 1;
+    const float map_on = row2(0, true), quit_on = row2(last, true);
+    const float map_off = row2(0, false), quit_off = row2(last, false);
+    carview::set_scene_timelines_enabled(true);
+    std::printf("pause rows: PHOTO MODE's centre MAP focused %.1f, QUIT focused %.1f (static %.1f, %.1f)\n", map_on,
+                quit_on, map_off, quit_off);
+    check(map_on - quit_on > 11.0f && map_on - quit_on < 15.0f && std::fabs(map_off - quit_off) < 1.0f,
+          "pause rows: 13 px between a row below the focus and above it");
+  }
+
   // 5. Optional renders.
   if (const char* shot_env = std::getenv("SHIFT_SCENE_SCREEN_SHOT_DIR"); shot_env && *shot_env) {
     const std::filesystem::path out_dir = shot_env;
@@ -853,6 +990,50 @@ int main() {
     PauseMenu pm;
     pm.show(false);
     shot("pause_roam.png", pm, false);
+    // MENU-17: the rows' slides over 07 (MAP focused) and 07b (QUIT
+    // focused), with the timeline and without, and the move from MAP to
+    // SETTINGS a third and two thirds through.
+    {
+      const char* cap = std::getenv("SHIFT_SCENE_SCREEN_HUD_DIR");
+      auto pause_over = [&](const std::string& file, const char* orig, PauseMenu& m, double fade) {
+        std::vector<uint8_t> fb = backdrop;
+        if (cap && *cap) {
+          int w = 0, h = 0, n = 0;
+          const auto src = std::filesystem::path(cap) / orig;
+          if (uint8_t* px = stbi_load(src.string().c_str(), &w, &h, &n, 4)) {
+            if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
+            stbi_image_free(px);
+          }
+        }
+        carview::PauseScreenHud ps;
+        carview::fill_pause_screen(m, m.shown_at + fade * carview::kPauseFadeSeconds, ps);
+        ps.sponsors = &rows;
+        d.pause_screen = &ps;
+        carview::ui::List l;
+        carview::build_drive_hud(l, d, float(W), float(H));
+        carview::ui::rasterize(l.items(), fb, W, H);
+        const auto p = out_dir / file;
+        check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + file);
+      };
+      PauseMenu m;
+      m.show(false);
+      const int last = int(m.rows().size()) - 1;
+      for (const bool on : {true, false}) {
+        carview::set_scene_timelines_enabled(on);
+        const std::string suf = on ? "" : "_static";
+        m.selected = 0, m.shown_selected = 0, m.shown_from = -1, m.shown_at = -1e9;
+        pause_over("pause_anim_0_map" + suf + ".png", "07_pause_menu_orig.png", m, 1.0);
+        m.selected = 1, m.shown_selected = 1, m.shown_from = 0, m.shown_at = 0.0;
+        pause_over("pause_anim_1_move_0.33" + suf + ".png", "07_pause_menu_orig.png", m, 0.33);
+        pause_over("pause_anim_2_move_0.66" + suf + ".png", "07_pause_menu_orig.png", m, 0.66);
+        m.selected = last, m.shown_selected = last, m.shown_from = -1, m.shown_at = -1e9;
+        pause_over("pause_anim_3_quit" + suf + ".png", "07b_pause_menu_scrolled_orig.png", m, 1.0);
+        // A capture the list's rest was not fitted to: SETTINGS focused.
+        m.selected = 1, m.shown_selected = 1, m.shown_from = -1, m.shown_at = -1e9;
+        pause_over("pause_anim_4_settings" + suf + ".png", "29_message_center_offline_orig.png", m, 1.0);
+      }
+      carview::set_scene_timelines_enabled(true);
+    }
     pm.move(2);
     shot("pause_roam_photo.png", pm, false);
     pm.open_extras();
@@ -1076,6 +1257,19 @@ int main() {
       n.popup_kind = carview::NotifyKind::kDiscountSigns, n.popup_title = t.title, n.popup_text = t.message;
       n.popup_at = n.time - 1.5;
       hud_shot("hud_notify_signs.png", "05_roam_hud_day_drive_orig.png", n);
+      // The notification panel's SHOW (0..0.218 s) and HIDE (the last 0.137 s),
+      // with the timeline and without (the measured fade).
+      for (const bool on : {true, false}) {
+        carview::set_scene_timelines_enabled(on);
+        for (const double age : {0.05, 0.12, 0.17, 0.25, carview::kPopupSeconds - 0.10, carview::kPopupSeconds - 0.04}) {
+          char name[64];
+          std::snprintf(name, sizeof name, "hud_notify_anim_%04d%s.png", int(age * 1000.0 + 0.5), on ? "" : "_static");
+          n.popup_at = n.time - age;
+          hud_shot(name, "05_roam_hud_day_drive_orig.png", n);
+        }
+      }
+      carview::set_scene_timelines_enabled(true);
+      n.popup_at = n.time - 1.5;
       const auto u = carview::notify_text(carview::NotifyKind::kShowcaseUnlocked, {}, {}, {});
       n.popup_kind = carview::NotifyKind::kShowcaseUnlocked, n.popup_title = u.title, n.popup_text = u.message;
       check(u.title == "SHOWCASE EVENT UNLOCKED!" && u.message == "Show me!", "showcase lines: " + u.title);
@@ -1239,6 +1433,7 @@ int main() {
       td.time = 1.0;
       hud_shot("title_pressstart.png", "01_title_pressstart_orig.png", td);
       ts.menu.show_menu();
+      ts.menu.update(0.8);  // the Menu slide's fade in (0..0.507 s) done, before the Focused pulse
       hud_shot("title_menu.png", "02_title_menu_orig.png", td);
       ts.menu.move(1);
       ts.menu.confirm();
@@ -1253,6 +1448,7 @@ int main() {
       carview::TitleScreenHud ts;
       ts.active = true;
       ts.menu.show_menu();
+      ts.menu.update(0.8);
       carview::ui::List l;
       check(carview::draw_title_screen(l, ts, 1280.0f, 720.0f), "draw the title menu");
       std::vector<uint8_t> fb(size_t(1280) * 720 * 4, 0);
@@ -1274,6 +1470,83 @@ int main() {
           if (!is_pink && (p[0] > 30 || p[1] > 30 || p[2] > 30)) ++medal;
         }
       check(medal < 50, "title menu: no medal beside SINGLE PLAYER (" + std::to_string(medal) + " px)");
+    }
+    {
+      // The front end's transitions from the scene's slides
+      // (docs/UI_SCENE_ANIMATION.md): Press Start -> Menu_Intro (the logo
+      // out over 0.3 s, the menu in over 0.49..1.01 s), then a row's Focus
+      // (0.1 s) and the other's Blur (0.5 s). With SHIFT_SCENE_SCREEN_SHOT_DIR
+      // each step is drawn twice: title_anim_<step>.png from the timeline and
+      // title_anim_<step>_static.png with the timelines off (as before).
+      carview::TitleScreenHud ts;
+      ts.active = true;
+      carview::DriveHud td;
+      td.title_screen = &ts;
+      struct Step {
+        const char* name;
+        double t;  // seconds since the transition started
+        int phase; // 0 Press Start, 1 profile -> menu, 2 row move
+      };
+      const Step steps[] = {{"0_pressstart", 0.0, 0}, {"1_intro_0.10", 0.10, 1}, {"2_intro_0.25", 0.25, 1},
+                            {"3_intro_0.60", 0.60, 1}, {"4_intro_0.80", 0.80, 1}, {"5_intro_1.20", 1.20, 1},
+                            {"6_move_0.05", 0.05, 2}, {"7_move_0.25", 0.25, 2}, {"8_move_0.60", 0.60, 2}};
+      // The pixels' share in the menu's box (840..1180 x 540..640) and the
+      // logo's (900..1200 x 520..640) that are not the backdrop.
+      auto lit = [&](const std::vector<uint8_t>& fb, int x0, int y0, int x1, int y1) {
+        int n = 0;
+        for (int y = y0; y < y1; ++y)
+          for (int x = x0; x < x1; ++x) {
+            const uint8_t* p = &fb[(size_t(y) * W + size_t(x)) * 4];
+            if (std::abs(int(p[0]) - 70) + std::abs(int(p[1]) - 92) + std::abs(int(p[2]) - 64) > 40) ++n;
+          }
+        return n;
+      };
+      std::map<std::string, int> menu_px;
+      for (bool on : {true, false}) {
+        carview::set_scene_timelines_enabled(on);
+        for (const Step& st : steps) {
+          // Each step from a fresh model brought to its time (the screen's
+          // timeline follows the model's phase and time).
+          ts.menu.reset();
+          ts.menu.update(0.5);
+          carview::ui::List warm;
+          carview::draw_title_screen(warm, ts, float(W), float(H));
+          if (st.phase >= 1) {
+            ts.menu.confirm();
+            double left = st.phase == 1 ? st.t : 1.5;
+            while (left > 1e-9) {
+              const double dt = std::min(left, 1.0 / 60.0);
+              ts.menu.update(dt);
+              carview::ui::List f;
+              carview::draw_title_screen(f, ts, float(W), float(H));
+              left -= dt;
+            }
+          }
+          if (st.phase == 2) {
+            ts.menu.move(1);
+            double left = st.t;
+            while (left > 1e-9) {
+              const double dt = std::min(left, 1.0 / 60.0);
+              ts.menu.update(dt);
+              carview::ui::List f;
+              carview::draw_title_screen(f, ts, float(W), float(H));
+              left -= dt;
+            }
+          }
+          carview::ui::List l;
+          check(carview::draw_title_screen(l, ts, float(W), float(H)), std::string("draw title step ") + st.name);
+          std::vector<uint8_t> fb = backdrop;
+          carview::ui::rasterize(l.items(), fb, W, H);
+          if (on) menu_px[st.name] = lit(fb, 840, 540, 1180, 640);
+          const auto p = out_dir / (std::string("title_anim_") + st.name + (on ? "" : "_static") + ".png");
+          check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0,
+                "write " + p.filename().string());
+        }
+      }
+      carview::set_scene_timelines_enabled(true);
+      std::printf("title transition: menu box pixels");
+      for (const auto& [k, v] : menu_px) std::printf(" %s=%d", k.c_str(), v);
+      std::printf("\n");
     }
     auto load_shot = [&](const std::string& file, const std::string& orig, const carview::LoadingSceneHud& lh) {
       std::vector<uint8_t> fb = backdrop;

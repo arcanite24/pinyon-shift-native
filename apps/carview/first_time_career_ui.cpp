@@ -9,6 +9,9 @@
 #include <vector>
 
 #include "fh1data/stringtables.h"
+#include "fh1data/ui_scene.h"
+#include "hud_scene.h"
+#include "scene_timeline.h"
 #include "ui4_chrome.h"
 
 namespace carview::ftc_ui {
@@ -106,15 +109,33 @@ void coloured_line(ui::List& l, float cx, float y, std::string_view text, ui::Te
 // timed by the scene's PLAY animation (race::opening_title_alpha, Q164).
 // Interim: the cards are centred and the shadow layers are not drawn; the
 // scene's placement is not read yet.
+// The cards' key times (seconds) from the scene's PLAY slide: each card
+// layer's enabled opacity curve. False without the scene or a card's curve.
+bool scene_card_keys(std::array<std::array<double, 4>, race::kOpeningTitleCards>& out) {
+  const fh1::UiScene* sc = ui_scene("H_OPENING_TITLES");
+  static constexpr const char* kLayers[] = {"_Microsoft", "_Turn10", "_Playground", "_Horizon"};
+  static_assert(std::size(kLayers) == race::kOpeningTitleCards);
+  for (int c = 0; c < race::kOpeningTitleCards; ++c) {
+    const auto k = slide_curve_keys(sc, 0, "PLAY", kLayers[c], fh1::ui_attr::kOpacity);
+    if (k.size() != 4) return false;
+    for (size_t j = 0; j < 4; ++j) out[size_t(c)][j] = k[j] / 1000.0;
+  }
+  return true;
+}
+
 void draw_opening_titles(ui::List& l, double t, float w, float h) {
   static constexpr const char* kCards[] = {"OPENINGTITLES/TITLEMICROSOFT", "OPENINGTITLES/TITLETURN10",
                                            "OPENINGTITLES/TITLEPLAYGROUND", "OPENINGTITLES/HORIZONLOGO"};
   static_assert(std::size(kCards) == race::kOpeningTitleCards);
+  // The timing from the scene's own curves when it is there (the table in
+  // race::opening_title_alpha otherwise).
+  std::array<std::array<double, 4>, race::kOpeningTitleCards> keys{};
+  const bool from_scene = scene_card_keys(keys);
   int i = 0;
   float a = 0.0f;
   for (int c = 0; c < race::kOpeningTitleCards && a <= 0.0f; ++c) {
     i = c;
-    a = race::opening_title_alpha(c, t);
+    a = from_scene ? race::opening_title_alpha(keys[size_t(c)], t) : race::opening_title_alpha(c, t);
   }
   if (a <= 0.0f) return;
   std::array<float, 4> uv{};

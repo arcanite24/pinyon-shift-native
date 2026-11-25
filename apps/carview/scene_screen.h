@@ -17,6 +17,8 @@
 
 namespace carview {
 
+class SceneTimeline;
+
 // A string in the game's string tables: `table` (e.g. "PauseMenu") and the
 // id's IDS_ name, or its 16-bit hash in `raw` when the name is unknown.
 // `fallback` is shown when the tables are not loaded or lack the key.
@@ -80,6 +82,10 @@ class SceneScreen {
   static SceneFrame frame(float w, float h);
   // Draws the subtree at `root` (-1: the whole scene) with the overrides.
   int draw(ui::List& l, const SceneFrame& f, int root = -1) const;
+  // Binds the screen's timeline (kept by the screen's model across frames)
+  // to this frame's scene and writes its state into the frame's bindings;
+  // false when the scene has none.
+  bool play(SceneTimeline& tl);
 
  private:
   std::string name_;

@@ -212,7 +212,7 @@ int ui_scene_dump(int argc, char** argv) {
   }
   std::printf("version %u, %zu objects, %zu nodes, %zu pool\n", sc.version, sc.objects.size(), sc.nodes.size(), sc.pool.size());
   // `bgf` as a fourth argument: the BGF document's items, contracts and
-  // state styles instead (the run-time looks the scene does not show at rest).
+  // timeline (slides, curves, actions) instead.
   if (argc > 4 && std::strcmp(argv[4], "bgf") == 0) {
     auto bgf = read_bgf();
     fh1::UiBgfDocument doc;
@@ -225,8 +225,11 @@ int ui_scene_dump(int argc, char** argv) {
     };
     for (size_t i = 0; i < doc.items.size(); ++i) {
       const auto& it = doc.items[i];
-      std::printf("item %zu kind %u value %u %s name %08x parent %08x props %zu\n", i, it.kind, it.value,
+      std::printf("item %zu kind %u value %u %s name %08x parent %08x props %zu", i, it.kind, it.value,
                   name_of(it.value).c_str(), it.name_hash, it.parent_hash, it.properties.size());
+      for (const auto& [tag, raw] : it.properties)
+        std::printf(" %07x=%g", tag & 0x7FFFFFFu, fh1::ui_bgf_number(tag, raw));
+      std::printf("\n");
     }
     for (const auto& c : doc.contracts) {
       std::printf("contract item %d %s state %s", c.item_index, c.type.c_str(), c.initial_state.c_str());
@@ -234,15 +237,30 @@ int ui_scene_dump(int argc, char** argv) {
       for (const auto& e : c.events) std::printf(" e:%s", e.c_str());
       std::printf("\n");
     }
-    for (const auto& s : doc.styles) {
-      std::printf("style owner %u (%s) states %u\n", s.owner_item, name_of(s.owner_item).c_str(), s.state_count);
-      for (const auto& r : s.states)
-        std::printf("  state %08x item %u (%s) attr %08x target %u value %.3f raw %08x\n", r.state_hash, r.target_item,
-                    name_of(r.target_item).c_str(), r.attr_hash, uint32_t(r.target), r.value, r.raw_value);
+    std::printf("timeline %s: %zu curves, %zu actions, %zu slides\n", doc.has_timeline ? "read" : "not read",
+                doc.curves.size(), doc.actions.size(), doc.slides.size());
+    auto item_name = [&](uint32_t item) -> std::string {
+      return item < doc.items.size() ? name_of(doc.items[item].value) : std::string("?");
+    };
+    for (const auto& s : doc.slides) {
+      std::printf("slide %s component %u (%s) flags %u %u..%u ms, %zu elements\n", s.name.c_str(), s.component,
+                  item_name(s.component).c_str(), s.flags, s.start_ms, s.end_ms, s.tracks.size());
+      for (const auto& t : s.tracks) {
+        std::printf("  item %u (%s)%s", t.item, item_name(t.item).c_str(), t.active ? "" : " off");
+        for (const auto& v : t.values) std::printf(" %07x=%.4g", v.attr, v.number());
+        for (const auto& r : t.refs) {
+          if (r.action || !r.enabled) continue;
+          const auto& c = doc.curves[r.index];
+          std::printf(" curve %07x%s[", c.attr, c.dynamic ? "*" : "");
+          for (const auto& k : c.keys) std::printf(" %.0f:%.4g", k.time_ms, k.value);
+          std::printf(" ]");
+        }
+        std::printf("\n");
+      }
     }
-    for (const auto& a : doc.animations)
-      std::printf("anim owner %u (%s) name %08x dur %.2f channels %zu\n", a.owner_item, name_of(a.owner_item).c_str(),
-                  a.name_hash, a.duration, a.channels.size());
+    for (const auto& a : doc.actions)
+      std::printf("action owner %u event %08x %u->%u handler %08x arg %08x %08x\n", a.owner, a.event, a.source,
+                  a.target, a.handler, a.arg_tag, a.arg);
     return 0;
   }
   const bool all = argc > 4;

@@ -5,6 +5,7 @@
 
 #include "game_hud.h"
 #include "race_screens.h"
+#include "scene_timeline.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -25,10 +26,79 @@ int child(const SceneDraw& sd, int parent, std::string_view name) {
   return -1;
 }
 
-float ease(double t, double len) {
-  if (len <= 0.0) return 1.0f;
-  const float u = float(std::clamp(t / len, 0.0, 1.0));
-  return u * u * (3.0f - 2.0f * u);
+// The front end's timeline (docs/UI_SCENE_ANIMATION.md): the scene's root
+// slides (Start, Menu_Intro, Menu, Start_Intro) and each row's (Blurred,
+// Focus, Focused, Blur), driven from the model's phase as the title's
+// contract fires them. The model is a value each frame, so the timeline
+// follows its phase and time: a new phase goes to its slide, the time in it
+// advances the timeline.
+struct TitleAnim {
+  SceneTimeline tl;
+  bool init = false;
+  Phase phase = Phase::kPressStart;
+  double phase_t = 0.0;
+  int focus = -1;  // the focused row's slot
+  uint32_t row_comp[5] = {};
+};
+TitleAnim& title_anim() {
+  static TitleAnim a;
+  return a;
+}
+
+// The rows' components (their buttons' items).
+void title_rows(TitleAnim& a, const SceneDraw& sd) {
+  for (int slot = 0; slot < 5; ++slot) {
+    const int item = a.tl.item_of_node(title_row_nodes(sd, slot).button);
+    a.row_comp[slot] = item >= 0 ? uint32_t(item) : 0u;
+  }
+}
+
+void title_focus(TitleAnim& a, int focus, bool animate) {
+  for (int slot = 0; slot < 5; ++slot) {
+    const uint32_t c = a.row_comp[slot];
+    if (!c) continue;
+    if (!animate) a.tl.go_to(c, slot == focus ? "Focused" : "Blurred");
+    else if (slot == focus && slot != a.focus) a.tl.go_to(c, "Focus");
+    else if (slot == a.focus && slot != focus) a.tl.go_to(c, "Blur");
+  }
+  a.focus = focus;
+}
+
+bool title_timeline(SceneScreen& sc, const TitleMenu& m) {
+  TitleAnim& a = title_anim();
+  const bool fresh = a.tl.scene() != sc.scene().scene();
+  a.tl.bind(sc.scene().scene());
+  if (!a.tl.ok()) return false;
+  const int focus = (m.menu_visible() || m.phase == Phase::kProfile) && m.popup == Popup::kNone ? m.selected : -1;
+  // A model seen anew (another phase it did not step into, or its time gone
+  // back): its phase's slide from the start.
+  const bool same = a.init && !fresh && a.phase == m.phase && m.phase_t >= a.phase_t;
+  const bool stepped = a.init && !fresh && a.phase != m.phase;
+  double dt = m.phase_t;
+  if (same) {
+    dt = m.phase_t - a.phase_t;
+  } else if (stepped && a.phase == Phase::kPressStart && m.phase == Phase::kProfile) {
+    a.tl.go_to(0, "Menu_Intro");  // MENU_INTRO: the logo goes, the menu comes
+  } else if (stepped && a.phase == Phase::kProfile && m.phase == Phase::kMenu) {
+    dt = std::max(0.0, TitleMenu::kProfileSeconds - a.phase_t) + m.phase_t;  // Menu_Intro plays on
+  } else if (stepped && m.phase == Phase::kPressStart) {
+    a.tl.go_to(0, "Start_Intro");  // back to Press Start: the logo comes back
+  } else if (stepped && m.menu_visible() && (a.phase == Phase::kMenu || a.phase == Phase::kExtras)) {
+    // EXTRAS and back: the same menu, its rows refocused below.
+  } else {
+    a.tl.reset();
+    title_rows(a, sc.scene());
+    a.tl.go_to(0, m.phase == Phase::kPressStart ? "Start" : m.phase == Phase::kProfile ? "Menu_Intro" : "Menu");
+    a.focus = -1;
+    title_focus(a, focus, false);
+  }
+  if (!a.init || fresh) title_rows(a, sc.scene());
+  if (focus != a.focus) title_focus(a, focus, true);
+  a.tl.advance(float(dt));
+  a.init = true;
+  a.phase = m.phase;
+  a.phase_t = m.phase_t;
+  return sc.play(a.tl);
 }
 
 // The tape behind a selected row ends a little past its text.
@@ -99,34 +169,39 @@ bool draw_title_screen(ui::List& l, const TitleScreenHud& ts, float w, float h) 
   for (const char* n : {"Video", "Fader", "Start", "Install", "ButtonBar", "BREADCRUMB", "menu_shadow"})
     sc.hide(sc.node(n));
 
+  // The scene's timeline: the logo's and the menu's fades, the rows' looks.
+  const bool timeline = title_timeline(sc, m);
+
   // Press Start: the logo and PRESS START (Content), where the original's
-  // intro leaves them; they go out over the profile step.
+  // intro leaves them; Menu_Intro fades them out.
   const int content = sc.node("Content");
   if (content >= 0) {
-    float a = 0.0f;
-    if (m.phase == Phase::kPressStart) a = 1.0f;
-    else if (m.phase == Phase::kProfile) a = 1.0f - ease(m.phase_t, TitleMenu::kProfileSeconds);
-    if (a <= 0.0f) {
+    if (m.menu_visible()) {
       sc.hide(content);
     } else {
       sc.at(content).dx = title_layout::kContentDx;
       sc.at(content).dy = title_layout::kContentDy;
-      if (a < 1.0f) sc.show(content, a);
+      // No timeline: the logo fades over the step's first 0.35 s.
+      if (!timeline && m.phase == Phase::kProfile) {
+        const float u = float(std::clamp(m.phase_t / 0.35, 0.0, 1.0));
+        sc.show(content, 1.0f - u * u * (3.0f - 2.0f * u));
+      }
       if (const int tape = sc.node("TitleTape"); tape >= 0 && title_layout::kPressStartScale != 1.0f)
         sc.at(tape).scale = title_layout::kPressStartScale;
       sc.text(sc.node("TitleTapeText"), text_of(title_text::kPressStart));
       // Anywhere on Press Start confirms (the mouse).
-      l.add_hit(0, 0, w, h, ui::kHitConfirm, 0);
+      if (m.phase == Phase::kPressStart) l.add_hit(0, 0, w, h, ui::kHitConfirm, 0);
     }
   }
 
-  // The menu: SPLASH_MENU's rows, the selected one on its pink tape, the
-  // others plain.
+  // The menu: SPLASH_MENU's rows, their looks from their slides (the
+  // focused one on its pink tape). Menu_Intro fades it in over the profile
+  // step.
   const int menu = sc.node("Menu");
-  if (!m.menu_visible()) {
+  if (!m.menu_visible() && (m.phase != Phase::kProfile || !timeline)) {
     sc.hide(menu);
   } else {
-    const auto rows = m.rows();
+    const auto rows = m.phase == Phase::kProfile ? std::vector<Row>{Row::kSinglePlayer, Row::kMultiplayer} : m.rows();
     for (int slot = 0; slot < 5; ++slot) {
       const TitleRowNodes rn = title_row_nodes(sd, slot);
       const int btn = rn.button;
@@ -142,21 +217,22 @@ bool draw_title_screen(ui::List& l, const TitleScreenHud& ts, float w, float h) 
       const std::string label = text_of(title_row_text(rows[size_t(slot)]));
       sc.text(text, label);
       const bool sel = slot == m.selected && m.popup == Popup::kNone;
-      if (text >= 0) sc.at(text).tint = sel ? kWhite : title_layout::kRowUnselected;
       // The text node draws at its group's scale (0.7).
       const float tw = text >= 0 ? sd.measure(text, label) : 0.0f;
+      for (const char* t : {"Crisp_Tape", "smudge_tape"})
+        if (const int n = child(sd, tape, t); n >= 0) sc.at(n).visible_width = tw + kRowTapePad;
+      if (!timeline) {
+        // No timeline: the looks measured on 02_title_menu_orig.png.
+        if (text >= 0) sc.at(text).tint = sel ? kWhite : title_layout::kRowUnselected;
+        if (!sel) sc.hide(tape);
+        if (sel) sc.at(btn).scale = title_layout::kRowSelectedScale;
+        for (const char* t : {"Crisp_Tape", "smudge_tape", "Dirt"})
+          if (const int n = child(sd, tape, t); n >= 0 && sel) sc.at(n).tint = kRowTape;
+      }
       if (!sel) {
-        sc.hide(tape);
         if (text >= 0) sc.at(text).dx = title_layout::kRowUnselectedDx;
       } else {
-        sc.at(btn).scale = title_layout::kRowSelectedScale;
         sc.at(btn).dx = title_layout::kRowSelectedDx;
-        for (const char* t : {"Crisp_Tape", "smudge_tape"})
-          if (const int n = child(sd, tape, t); n >= 0) sc.at(n).visible_width = tw + kRowTapePad;
-        // v4's special row rests on a grey tape (its other rows' are pink);
-        // selected, it is pink as theirs (02_title_menu_orig.png).
-        for (const char* t : {"Crisp_Tape", "smudge_tape", "Dirt"})
-          if (const int n = child(sd, tape, t); n >= 0) sc.at(n).tint = kRowTape;
       }
       if (text >= 0) {
         const auto c = sd.at(text);

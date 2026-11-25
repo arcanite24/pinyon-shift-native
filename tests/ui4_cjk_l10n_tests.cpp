@@ -43,13 +43,14 @@ void check(bool cond, const char* msg) {
 }
 
 void test_bgf_track_and_stacker() {
-  fh1::UiBgfTrack tr;
-  tr.keys.push_back({1, 2, 0.0f, 0.0f, 0, 0});
-  tr.keys.push_back({1, 2, 1.0f, 100.0f, 0, 0});
-  tr.keys.push_back({1, 2, 2.0f, 50.0f, 0, 0});
-  check(std::fabs(fh1::evaluate_bgf_track(tr, 0.0f) - 0.0f) < 1e-4f, "track eval at t=0");
-  check(std::fabs(fh1::evaluate_bgf_track(tr, 0.5f) - 50.0f) < 1e-4f, "track eval at t=0.5");
-  check(std::fabs(fh1::evaluate_bgf_track(tr, 1.5f) - 75.0f) < 1e-4f, "track eval at t=1.5");
+  // A linear curve (control values a third of the way): 0 -> 100 -> 50 over 2 s.
+  fh1::UiBgfCurve tr;
+  tr.keys.push_back({0.0f, 0.0f, 0, 100.0f / 3.0f, 0, 200.0f / 3.0f});
+  tr.keys.push_back({1000.0f, 100.0f, 0, 250.0f / 3.0f, 0, 200.0f / 3.0f});
+  tr.keys.push_back({2000.0f, 50.0f, 0, 0, 0, 0});
+  check(std::fabs(fh1::evaluate_bgf_curve(tr, 0.0f) - 0.0f) < 1e-3f, "curve eval at t=0");
+  check(std::fabs(fh1::evaluate_bgf_curve(tr, 500.0f) - 50.0f) < 1e-3f, "curve eval at t=0.5");
+  check(std::fabs(fh1::evaluate_bgf_curve(tr, 1500.0f) - 75.0f) < 1e-3f, "curve eval at t=1.5");
 
   const auto ys = fh1::reflow_stacker(125.0f, 50.0f, 5);
   check(ys.size() == 5 && std::fabs(ys[0] - 125.0f) < 1e-4f && std::fabs(ys[4] - 325.0f) < 1e-4f,
@@ -378,8 +379,8 @@ void test_disc_ui4_cjk_and_18_languages(const std::filesystem::path& game_root,
           "925_PAUSE_MENU parsed real SUPER_STACKER contract via 0xACA9EC63");
     check(pause->bgf.has_contract("PAUSE_MENU_BUTTON"),
           "925_PAUSE_MENU parsed real PAUSE_MENU_BUTTON contracts via 0xACA9EC63");
-    check(!pause->bgf.styles.empty() && !pause->bgf.animations.empty(),
-          "925_PAUSE_MENU parsed BGF styles and animations");
+    check(pause->bgf.has_timeline && !pause->bgf.slides.empty() && !pause->bgf.curves.empty(),
+          "925_PAUSE_MENU parsed its BGF timeline");
   }
 
   // 2. Verify all 18+ player languages load from disc string tables!

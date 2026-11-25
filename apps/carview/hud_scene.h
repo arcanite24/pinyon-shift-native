@@ -66,15 +66,26 @@ struct NodeOverride {
   bool wrap = false;
 };
 
+// A node's state from the scene's timeline (scene_timeline.h, written by
+// SceneTimeline::apply). The scene's BSG holds the items' base values; these
+// replace them in the node's own frame, under any NodeOverride.
+struct NodeAnim {
+  bool inactive = false;         // not active in its component's slide: the subtree is hidden
+  std::optional<float> opacity;  // the node's own opacity, 0..1 (its parents' still multiply)
+  float dx = 0.0f, dy = 0.0f;    // canvas px move of the node and its subtree
+  float sx = 1.0f, sy = 1.0f;    // scale about the node's own position; the subtree follows
+  float turn = 0.0f;             // radians (scene y up) about the node's position; the subtree orbits
+  std::optional<std::array<float, 4>> colour;  // a model's material or a text's colour, 0..1 rgba
+};
+
 // Binding table passed to SceneDraw::draw_subtree().
 struct SceneBindings {
   std::unordered_map<std::string, NodeOverride> by_name;
   std::unordered_map<int, NodeOverride> by_node;
+  std::unordered_map<int, NodeAnim> anim;  // by node index (SceneTimeline::apply)
   bool ignore_zero_alpha = false;  // treat BSG opacity==0 as 1.0 unless overridden
   float opacity = 1.0f;            // global opacity multiplier
   float dx = 0.0f, dy = 0.0f;      // global canvas offset
-  float anim_time = -1.0f;         // >= 0 evaluates matching BGF tracks & animation channels
-  uint32_t state_hash = 0;         // != 0 applies matching BGF style state records
   uint32_t default_text_color = ui::rgba(255, 255, 255, 255);
   bool fit_text = true;
 
@@ -116,10 +127,17 @@ class SceneDraw {
   // (border-transparent crop or tiled pattern * mask). `visible` > 0 overrides
   // the visible crop width in canvas pixels. `tint` != 0 replaces the material
   // colour. `tex_override` swaps the main texture. False when nothing could be drawn.
+  // `am`: an animated ancestor's (or the node's own) map of the scene's
+  // canvas, x' = (ax x + bx, ay y + by), applied before dx/dy.
+  struct AnimMap {
+    float ax = 1.0f, ay = 1.0f, bx = 0.0f, by = 0.0f;
+    bool identity() const { return ax == 1.0f && ay == 1.0f && bx == 0.0f && by == 0.0f; }
+    std::array<float, 2> apply(float x, float y) const { return {ax * x + bx, ay * y + by}; }
+  };
   bool model(ui::List& l, const SceneFrame& f, int node, float opacity = 1, float dx = 0, float dy = 0,
              float visible = 0, uint32_t tint = 0, std::string_view tex_override = {},
              float extra_angle = 0.0f, float scale_x = 1.0f, float scale_y = 1.0f, float k = 1.0f, float kbx = 0.0f,
-             float kby = 0.0f, float kt = 0.0f, bool wrap = false) const;
+             float kby = 0.0f, float kt = 0.0f, bool wrap = false, const AnimMap& am = {}) const;
   // A text node's style (font resolved via fontmap.xml, size; the colour given).
   ui::TextStyle style(int node, const SceneFrame& f, uint32_t colour) const;
   // Draws `text` in a text node's box; returns the width drawn, canvas pixels.
@@ -132,7 +150,7 @@ class SceneDraw {
   // The advance of `text` in a text node's font and size, canvas pixels.
   float measure(int node, std::string_view text) const;
   // Walks a BSG subtree in Z/painter order, drawing all visible models and
-  // bound text nodes with per-node overrides and optional BGF track animation.
+  // bound text nodes with per-node overrides and the timeline's state (anim).
   // Returns the number of drawables emitted.
   int draw_subtree(ui::List& l, const SceneFrame& f, int root_node, const SceneBindings& bindings = {}) const;
   int draw_subtree(ui::List& l, const SceneFrame& f, std::string_view root_name,

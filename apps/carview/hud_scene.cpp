@@ -182,7 +182,8 @@ std::array<float, 2> turn_point(float x, float y, float k, float t, float bx, fl
 
 bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity, float dx, float dy, float visible,
                       uint32_t tint, std::string_view tex_override, float extra_angle, float scale_x,
-                      float scale_y, float k, float kbx, float kby, float kt, bool wrap) const {
+                      float scale_y, float k, float kbx, float kby, float kt, bool wrap,
+                      const AnimMap& am) const {
   if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return false;
   if (opacity <= 1e-4f) return false;
   const fh1::UiNode& n = sc_->nodes[size_t(node)];
@@ -212,6 +213,12 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
     const float hwx = 0.5f * (r[2] - r[0]) * scale_x;
     const float hwy = 0.5f * (r[3] - r[1]) * scale_y;
     r = {rcx - hwx, rcy - hwy, rcx + hwx, rcy + hwy};
+  }
+  if (!am.identity()) {
+    const auto p0 = am.apply(r[0], r[1]);
+    const auto p1 = am.apply(r[2], r[3]);
+    r = {std::min(p0[0], p1[0]), std::min(p0[1], p1[1]), std::max(p0[0], p1[0]), std::max(p0[1], p1[1])};
+    if (visible > 0.0f) visible *= std::fabs(am.ax);
   }
   r[0] += dx, r[2] += dx, r[1] += dy, r[3] += dy;
   // A scaled or turned ancestor (NodeOverride::scale / turn):
@@ -417,94 +424,6 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
   const size_t ncount = sc_->nodes.size();
   if (root_node >= int(ncount)) return 0;
 
-  // Evaluate BGF state records, keyframe tracks, and animation channels onto their real property targets.
-  struct BgfEval {
-    std::optional<float> alpha;
-    std::optional<float> dx;
-    std::optional<float> dy;
-    std::optional<float> scale_x;
-    std::optional<float> scale_y;
-    std::optional<float> rotation;
-    std::optional<float> color_r;
-    std::optional<float> color_g;
-    std::optional<float> color_b;
-    std::optional<uint32_t> color_rgba;
-  };
-  std::unordered_map<uint32_t, BgfEval> bgf_eval;
-  if (sc_->has_bgf && (bindings.anim_time >= 0.0f || bindings.state_hash != 0)) {
-    std::unordered_map<uint32_t, uint32_t> hash_to_fbf;
-    for (const auto& it : sc_->bgf.items) {
-      if (it.value != 0) hash_to_fbf[it.name_hash] = it.value;
-    }
-    auto apply_prop = [&](uint32_t item_hash, fh1::UiBgfPropTarget tgt, float val, uint32_t raw_val) {
-      if (tgt == fh1::UiBgfPropTarget::kUnknown) return;
-      const auto it = hash_to_fbf.find(item_hash);
-      if (it == hash_to_fbf.end()) return;
-      BgfEval& ev = bgf_eval[it->second];
-      switch (tgt) {
-        case fh1::UiBgfPropTarget::kAlpha: ev.alpha = std::clamp(val, 0.0f, 1.0f); break;
-        case fh1::UiBgfPropTarget::kPosX: ev.dx = val; break;
-        case fh1::UiBgfPropTarget::kPosY: ev.dy = val; break;
-        case fh1::UiBgfPropTarget::kScaleX: ev.scale_x = val; break;
-        case fh1::UiBgfPropTarget::kScaleY: ev.scale_y = val; break;
-        case fh1::UiBgfPropTarget::kRotation: ev.rotation = val; break;
-        case fh1::UiBgfPropTarget::kColorR: ev.color_r = std::clamp(val, 0.0f, 1.0f); break;
-        case fh1::UiBgfPropTarget::kColorG: ev.color_g = std::clamp(val, 0.0f, 1.0f); break;
-        case fh1::UiBgfPropTarget::kColorB: ev.color_b = std::clamp(val, 0.0f, 1.0f); break;
-        case fh1::UiBgfPropTarget::kColorRgba: ev.color_rgba = raw_val; break;
-        case fh1::UiBgfPropTarget::kUnknown: break;
-      }
-    };
-    if (bindings.state_hash != 0) {
-      for (const auto& st : sc_->bgf.styles) {
-        for (const auto& rec : st.states) {
-          if (rec.state_hash != bindings.state_hash) continue;
-          const auto tgt = rec.target != fh1::UiBgfPropTarget::kUnknown
-                               ? rec.target
-                               : fh1::classify_bgf_property(rec.attr_hash, rec.value_type);
-          const uint32_t target_h = rec.target_item != 0 ? rec.target_item : st.owner_item;
-          apply_prop(target_h, tgt, rec.value, rec.raw_value);
-        }
-      }
-    }
-    if (bindings.anim_time >= 0.0f) {
-      for (const auto& tr : sc_->bgf.tracks) {
-        if (tr.keys.empty()) continue;
-        // Group keyframes within a track by (target_item, property target).
-        std::unordered_map<uint64_t, std::vector<fh1::UiBgfKeyframe>> grouped;
-        for (const auto& kf : tr.keys) {
-          auto tgt = kf.target != fh1::UiBgfPropTarget::kUnknown
-                         ? kf.target
-                         : fh1::classify_bgf_property(kf.attr_hash, kf.raw_tag);
-          if (tgt == fh1::UiBgfPropTarget::kUnknown) tgt = tr.target;
-          if (tgt == fh1::UiBgfPropTarget::kUnknown) continue;
-          const uint32_t ih = kf.target_item != 0 ? kf.target_item : tr.owner_item;
-          const uint64_t gkey = (uint64_t(ih) << 8) | uint64_t(tgt);
-          grouped[gkey].push_back(kf);
-        }
-        for (const auto& [gkey, keys] : grouped) {
-          fh1::UiBgfTrack sub;
-          sub.keys = keys;
-          const float val = fh1::evaluate_bgf_track(sub, bindings.anim_time, 0.0f);
-          const uint32_t ih = uint32_t(gkey >> 8);
-          const auto tgt = static_cast<fh1::UiBgfPropTarget>(gkey & 0xFFu);
-          apply_prop(ih, tgt, val, keys.back().raw_value);
-        }
-      }
-      for (const auto& an : sc_->bgf.animations) {
-        for (const auto& ch : an.channels) {
-          if (ch.keys.empty()) continue;
-          const auto tgt = ch.target != fh1::UiBgfPropTarget::kUnknown
-                               ? ch.target
-                               : fh1::classify_bgf_property(ch.attr_hash, ch.channel_tag);
-          if (tgt == fh1::UiBgfPropTarget::kUnknown) continue;
-          const float val = fh1::evaluate_bgf_anim_channel(ch, bindings.anim_time, 0.0f);
-          apply_prop(an.owner_item, tgt, val, ch.keys.back().raw_value);
-        }
-      }
-    }
-  }
-
   // Parents precede children in BSG; propagate subtree membership, visibility,
   // accumulated alpha, offsets, scales, rotations, and colour overrides in a single forward pass.
   std::vector<uint8_t> in_sub(ncount, 0);
@@ -515,6 +434,8 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
   std::vector<float> acc_sy(ncount, 1.0f);
   std::vector<float> acc_ang(ncount, 0.0f);
   std::vector<uint32_t> bgf_tint(ncount, 0u);
+  // The timeline's map of the rest canvas (SceneBindings::anim): x' = a x + b.
+  std::vector<AnimMap> acc_am(ncount);
   // Scale about pivots (NodeOverride::scale): a node's offset canvas point p
   // draws at acc_k * p + acc_b.
   std::vector<float> acc_k(ncount, 1.0f), acc_bx(ncount, 0.0f), acc_by(ncount, 0.0f), acc_t(ncount, 0.0f);
@@ -547,53 +468,63 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
     node_ov[i] = ov;
     if (ov && ov->visible.has_value() && !*ov->visible) continue;
 
-    const auto bit = bgf_eval.find(n.object);
-    const BgfEval* bev = (bit != bgf_eval.end()) ? &bit->second : nullptr;
+    const auto ait = bindings.anim.find(int(i));
+    const NodeAnim* an = ait != bindings.anim.end() ? &ait->second : nullptr;
+    if (an && an->inactive && !(ov && ov->visible.has_value() && *ov->visible)) continue;
 
     const float parent_a = parent_in ? eff_alpha[size_t(n.parent)] : bindings.opacity;
     float local_a = n.opacity;
     if (bindings.ignore_zero_alpha && local_a <= 1e-4f) local_a = 1.0f;
-    if (bev && bev->alpha.has_value()) local_a = *bev->alpha;
+    if (an && an->opacity.has_value()) local_a = *an->opacity;
     float a = parent_a * local_a;
     if (ov && ov->alpha.has_value()) a = *ov->alpha * bindings.opacity;
     if (ov && ov->visible.has_value() && *ov->visible && a <= 1e-4f) a = bindings.opacity;
 
     in_sub[i] = 1;
     eff_alpha[i] = a;
-    acc_dx[i] = (parent_in ? acc_dx[size_t(n.parent)] : bindings.dx) + (ov ? ov->dx : 0.0f) +
-                (bev && bev->dx.has_value() ? *bev->dx : 0.0f);
-    acc_dy[i] = (parent_in ? acc_dy[size_t(n.parent)] : bindings.dy) + (ov ? ov->dy : 0.0f) +
-                (bev && bev->dy.has_value() ? *bev->dy : 0.0f);
-    acc_sx[i] = (parent_in ? acc_sx[size_t(n.parent)] : 1.0f) *
-                (bev && bev->scale_x.has_value() ? *bev->scale_x : 1.0f) * (ov ? ov->stretch_x : 1.0f);
-    acc_sy[i] = (parent_in ? acc_sy[size_t(n.parent)] : 1.0f) *
-                (bev && bev->scale_y.has_value() ? *bev->scale_y : 1.0f) * (ov ? ov->stretch_y : 1.0f);
-    acc_ang[i] = (parent_in ? acc_ang[size_t(n.parent)] : 0.0f) + (ov ? ov->extra_angle : 0.0f) +
-                 (bev && bev->rotation.has_value() ? *bev->rotation : 0.0f);
+    acc_dx[i] = (parent_in ? acc_dx[size_t(n.parent)] : bindings.dx) + (ov ? ov->dx : 0.0f);
+    acc_dy[i] = (parent_in ? acc_dy[size_t(n.parent)] : bindings.dy) + (ov ? ov->dy : 0.0f);
+    acc_sx[i] = (parent_in ? acc_sx[size_t(n.parent)] : 1.0f) * (ov ? ov->stretch_x : 1.0f);
+    acc_sy[i] = (parent_in ? acc_sy[size_t(n.parent)] : 1.0f) * (ov ? ov->stretch_y : 1.0f);
+    acc_ang[i] = (parent_in ? acc_ang[size_t(n.parent)] : 0.0f) + (ov ? ov->extra_angle : 0.0f);
+    {
+      // The timeline: the node moves by (dx, dy) under its parent's map and
+      // scales about its own (moved) position, its subtree with it.
+      AnimMap m = parent_in ? acc_am[size_t(n.parent)] : AnimMap{};
+      if (an && (an->dx != 0.0f || an->dy != 0.0f || an->sx != 1.0f || an->sy != 1.0f)) {
+        const auto c = at(int(i));
+        const auto p = m.apply(c[0], c[1]);
+        const float px = p[0] + m.ax * an->dx, py = p[1] + m.ay * an->dy;
+        AnimMap q;
+        q.ax = m.ax * an->sx;
+        q.ay = m.ay * an->sy;
+        q.bx = px - q.ax * c[0];
+        q.by = py - q.ay * c[1];
+        m = q;
+      }
+      acc_am[i] = m;
+    }
     {
       float k = parent_in ? acc_k[size_t(n.parent)] : 1.0f;
       float bx = parent_in ? acc_bx[size_t(n.parent)] : 0.0f, by = parent_in ? acc_by[size_t(n.parent)] : 0.0f;
       float t = parent_in ? acc_t[size_t(n.parent)] : 0.0f;
-      if (ov && (ov->scale != 1.0f || ov->turn != 0.0f)) {
+      const float o_scale = ov ? ov->scale : 1.0f;
+      const float o_turn = (ov ? ov->turn : 0.0f) + (an ? an->turn : 0.0f);
+      if (o_scale != 1.0f || o_turn != 0.0f) {
         // About the node's drawn position P: x' = P + s R(turn) (T(x) - P).
-        const auto c = at(int(i));
+        const auto c = acc_am[i].apply(at(int(i))[0], at(int(i))[1]);
         const auto p = turn_point(c[0] + acc_dx[i], c[1] + acc_dy[i], k, t, bx, by);
-        const auto b = turn_point(bx - p[0], by - p[1], ov->scale, ov->turn, p[0], p[1]);
-        k *= ov->scale;
-        t += ov->turn;
+        const auto b = turn_point(bx - p[0], by - p[1], o_scale, o_turn, p[0], p[1]);
+        k *= o_scale;
+        t += o_turn;
         bx = b[0], by = b[1];
       }
       acc_k[i] = k, acc_bx[i] = bx, acc_by[i] = by, acc_t[i] = t;
     }
-    if (bev) {
-      if (bev->color_rgba.has_value()) {
-        bgf_tint[i] = *bev->color_rgba;
-      } else if (bev->color_r.has_value() || bev->color_g.has_value() || bev->color_b.has_value()) {
-        const uint8_t cr = uint8_t(std::lround(std::clamp(bev->color_r.value_or(1.0f), 0.0f, 1.0f) * 255.0f));
-        const uint8_t cg = uint8_t(std::lround(std::clamp(bev->color_g.value_or(1.0f), 0.0f, 1.0f) * 255.0f));
-        const uint8_t cb = uint8_t(std::lround(std::clamp(bev->color_b.value_or(1.0f), 0.0f, 1.0f) * 255.0f));
-        bgf_tint[i] = ui::rgba(cr, cg, cb, 255);
-      }
+    if (an && an->colour.has_value()) {
+      const auto& c = *an->colour;
+      auto byte = [](float v) { return uint8_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+      bgf_tint[i] = ui::rgba(byte(c[0]), byte(c[1]), byte(c[2]), byte(c[3]));
     }
 
     if (a <= 1e-4f || n.object_index < 0) continue;
@@ -630,7 +561,9 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
       const uint32_t tint = (ov && ov->tint.has_value()) ? *ov->tint : bgf_tint[size_t(d.idx)];
       const std::string_view tex_ov = (ov && ov->texture.has_value()) ? std::string_view(*ov->texture) : std::string_view{};
       const bool wrap = ov && ov->wrap;
-      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea, sx, sy, k, kbx, kby, kt, wrap)) ++emitted;
+      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea, sx, sy, k, kbx, kby, kt, wrap,
+                acc_am[size_t(d.idx)]))
+        ++emitted;
     } else if (o.kind == fh1::UiObjectKind::kText) {
       if (!ov || !ov->text.has_value() || ov->text->empty()) continue;
       const uint32_t base_col = ov->tint.has_value() ? *ov->tint
@@ -638,8 +571,11 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
                                                           : bindings.default_text_color;
       const uint32_t col = ui::fade(base_col, a);
       const auto c = at(d.idx);
-      const auto p = turn_point(c[0] + dx, c[1] + dy, k, kt, kbx, kby);
-      if (text(l, f, d.idx, *ov->text, col, p[0] - c[0], p[1] - c[1], bindings.fit_text, k, ea + kt) > 0.0f)
+      const AnimMap& am = acc_am[size_t(d.idx)];
+      const auto ca = am.apply(c[0], c[1]);
+      const auto p = turn_point(ca[0] + dx, ca[1] + dy, k, kt, kbx, kby);
+      if (text(l, f, d.idx, *ov->text, col, p[0] - c[0], p[1] - c[1], bindings.fit_text, k * std::fabs(am.ay),
+               ea + kt) > 0.0f)
         ++emitted;
     }
   }

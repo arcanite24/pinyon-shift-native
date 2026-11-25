@@ -4,6 +4,7 @@
 
 #include "fh1data/stringtables.h"
 #include "game_hud.h"
+#include "scene_timeline.h"
 
 namespace carview {
 
@@ -118,6 +119,13 @@ SceneFrame SceneScreen::frame(float w, float h) {
 
 int SceneScreen::draw(ui::List& l, const SceneFrame& f, int root) const {
   return draw_.ok() ? draw_.draw_subtree(l, f, root, b_) : 0;
+}
+
+bool SceneScreen::play(SceneTimeline& tl) {
+  tl.bind(draw_.scene());
+  if (!tl.ok() || !scene_timelines_enabled()) return false;
+  tl.apply(b_);
+  return true;
 }
 
 }  // namespace carview

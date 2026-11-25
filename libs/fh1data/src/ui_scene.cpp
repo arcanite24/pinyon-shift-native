@@ -62,64 +62,6 @@ const UiGeometry* UiScene::geometry_of(int node_index) const {
   return &geometries[o.geometry];
 }
 
-UiBgfPropTarget classify_bgf_property(uint32_t attr_hash, uint32_t raw_tag) {
-  using namespace bgf_attr;
-  switch (attr_hash) {
-    case kPosX:
-    case fnv1a_32("x"):
-    case fnv1a_32("pos.x"):
-    case fnv1a_32("translation.x"):
-      return UiBgfPropTarget::kPosX;
-    case kPosY:
-    case fnv1a_32("y"):
-    case fnv1a_32("pos.y"):
-    case fnv1a_32("translation.y"):
-      return UiBgfPropTarget::kPosY;
-    case kScaleX:
-    case fnv1a_32("sx"):
-      return UiBgfPropTarget::kScaleX;
-    case kScaleY:
-    case fnv1a_32("sy"):
-      return UiBgfPropTarget::kScaleY;
-    case kRotation:
-    case fnv1a_32("rotation.z"):
-    case fnv1a_32("angle"):
-      return UiBgfPropTarget::kRotation;
-    case kColorR:
-    case fnv1a_32("colour.r"):
-      return UiBgfPropTarget::kColorR;
-    case kColorG:
-    case fnv1a_32("colour.g"):
-      return UiBgfPropTarget::kColorG;
-    case kColorB:
-    case fnv1a_32("colour.b"):
-      return UiBgfPropTarget::kColorB;
-    case kColorRgba:
-    case fnv1a_32("colour"):
-    case fnv1a_32("tint"):
-      return UiBgfPropTarget::kColorRgba;
-    case kAlpha:
-    case fnv1a_32("opacity"):
-    case fnv1a_32("color.a"):
-    case fnv1a_32("colour.a"):
-      return UiBgfPropTarget::kAlpha;
-    default: break;
-  }
-  switch (raw_tag & 0xFFu) {
-    case 1u: return UiBgfPropTarget::kPosX;
-    case 2u: return UiBgfPropTarget::kPosY;
-    case 3u: return UiBgfPropTarget::kScaleX;
-    case 4u: return UiBgfPropTarget::kScaleY;
-    case 5u: return UiBgfPropTarget::kRotation;
-    case 6u: return UiBgfPropTarget::kColorR;
-    case 7u: return UiBgfPropTarget::kColorG;
-    case 8u: return UiBgfPropTarget::kColorB;
-    case 9u: return UiBgfPropTarget::kColorRgba;
-    case 10u: return UiBgfPropTarget::kAlpha;
-    default: return UiBgfPropTarget::kUnknown;
-  }
-}
-
 bool UiBgfDocument::has_contract(std::string_view type) const {
   for (const auto& c : contracts)
     if (c.type == type) return true;
@@ -385,6 +327,13 @@ bool load_ui_scene(Archive& ui_zip, const std::string& name, UiScene& out, std::
   return true;
 }
 
+namespace {
+struct BgfCounts {
+  uint32_t curves = 0, action_owners = 0, slides = 0;
+};
+bool parse_bgf_timeline(std::span<const uint8_t> data, size_t cursor, const BgfCounts& n, UiBgfDocument& out);
+}  // namespace
+
 bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string* error) {
   out = UiBgfDocument{};
   static constexpr char kMarker[8] = {'A', 'n', 'a', 'r', 'k', 'B', 'G', 'F'};
@@ -412,9 +361,10 @@ bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string
   out.property_count = u32_at(0x2C);
   const uint32_t relation_count = u32_at(0x30);
   const uint32_t identity_count = u32_at(0x3C);
-  const uint32_t style_count = u32_at(0x44);
-  const uint32_t track_count = u32_at(0x4C);
-  const uint32_t anim_count = u32_at(0x5C);
+  BgfCounts header_counts;
+  header_counts.curves = u32_at(0x44);
+  header_counts.action_owners = u32_at(0x4C);
+  header_counts.slides = u32_at(0x5C);
 
   // 1. Identity string pool at 0x88.
   const uint32_t id_declared = u32_at(0x88);
@@ -561,180 +511,205 @@ bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string
     }
   }
 
-  // 4. Styles / States section (12 + state_count * 24 bytes per style).
-  if (cursor + 4 <= data.size()) {
-    const uint32_t st_declared = u32_at(cursor);
-    cursor += 4;
-    const size_t st_end = cursor + size_t(st_declared);
-    if (st_end <= data.size()) {
-      out.styles.reserve(style_count);
-      for (uint32_t i = 0; i < style_count && cursor + 12 <= st_end; ++i) {
-        UiBgfStyle st;
-        st.owner_item = u32_at(cursor);
-        st.style_id = u32_at(cursor + 4);
-        st.state_count = u16_at(cursor + 10);
-        cursor += 12;
-        if (cursor + size_t(st.state_count) * 24 > st_end) break;
-        st.states.reserve(st.state_count);
-        for (uint16_t s = 0; s < st.state_count; ++s) {
-          UiBgfStateRecord rec;
-          rec.state_hash = u32_at(cursor);
-          rec.target_item = u32_at(cursor + 4);
-          rec.attr_hash = u32_at(cursor + 8);
-          rec.value_type = u32_at(cursor + 12);
-          rec.raw_value = u32_at(cursor + 16);
-          rec.value = f32_at(cursor + 16);
-          rec.extra = u32_at(cursor + 20);
-          rec.target = classify_bgf_property(rec.attr_hash, rec.value_type);
-          st.states.push_back(rec);
-          cursor += 24;
-        }
-        out.styles.push_back(std::move(st));
-      }
-      cursor = st_end;
-    }
-  }
-
-  // 5. Tracks / Keyframes section.
-  if (cursor + 4 <= data.size()) {
-    const uint32_t tr_declared = u32_at(cursor);
-    cursor += 4;
-    const size_t tr_end = cursor + size_t(tr_declared);
-    if (tr_end <= data.size()) {
-      out.tracks.reserve(track_count);
-      for (uint32_t i = 0; i < track_count && cursor + 8 <= tr_end; ++i) {
-        UiBgfTrack tr;
-        tr.owner_item = u32_at(cursor);
-        tr.target_item = tr.owner_item;
-        const uint32_t child_count = u32_at(cursor + 4);
-        cursor += 8;
-        for (uint32_t ch = 0; ch < child_count && cursor + 8 <= tr_end; ++ch) {
-          const uint32_t ch_attr = u32_at(cursor);
-          const uint32_t key_count = u32_at(cursor + 4);
-          cursor += 8;
-          for (uint32_t k = 0; k < key_count && cursor + 20 <= tr_end; ++k) {
-            UiBgfKeyframe kf;
-            kf.target_item = u32_at(cursor);
-            kf.attr_hash = u32_at(cursor + 4);
-            if (kf.attr_hash == 0) kf.attr_hash = ch_attr;
-            kf.time = f32_at(cursor + 8);
-            kf.raw_tag = u32_at(cursor + 12);
-            kf.raw_value = u32_at(cursor + 16);
-            kf.value = f32_at(cursor + 16);
-            kf.target = classify_bgf_property(kf.attr_hash, kf.raw_tag);
-            if (tr.target == UiBgfPropTarget::kUnknown && kf.target != UiBgfPropTarget::kUnknown) {
-              tr.target = kf.target;
-              tr.attr_hash = kf.attr_hash;
-            }
-            if (kf.target_item != 0 && tr.target_item == tr.owner_item) tr.target_item = kf.target_item;
-            tr.keys.push_back(kf);
-            cursor += 20;
-          }
-        }
-        out.tracks.push_back(std::move(tr));
-      }
-      cursor = tr_end;
-    }
-  }
-
-  // 6. Empty companion table + 7. Animations section.
-  if (cursor + 4 <= data.size()) {
-    const uint32_t empty_decl = u32_at(cursor);
-    cursor += 4 + size_t(empty_decl);
-  }
-  if (cursor + 4 <= data.size()) {
-    const uint32_t anim_declared = u32_at(cursor);
-    cursor += 4;
-    const size_t anim_end = cursor + size_t(anim_declared);
-    if (anim_end <= data.size()) {
-      out.animations.reserve(anim_count);
-      for (uint32_t i = 0; i < anim_count && cursor + 33 <= anim_end; ++i) {
-        UiBgfAnimation an;
-        an.name_hash = u32_at(cursor);
-        const float hdr_dur = f32_at(cursor + 8);
-        an.duration = (std::isfinite(hdr_dur) && hdr_dur > 0.0f && hdr_dur < 3600.0f) ? hdr_dur : 0.0f;
-        an.owner_item = u32_at(cursor + 16);
-        an.flags = data[cursor + 28];
-        an.track_count = u32_at(cursor + 29);
-        cursor += 33;
-        an.channels.reserve(std::min<uint32_t>(an.track_count, 256u));
-        for (uint32_t t = 0; t < an.track_count && cursor + 9 <= anim_end; ++t) {
-          UiBgfAnimChannel ch;
-          ch.attr_hash = u32_at(cursor);
-          ch.channel_tag = data[cursor + 4];
-          ch.target = classify_bgf_property(ch.attr_hash, ch.channel_tag);
-          cursor += 5;
-          const uint32_t kc = u32_at(cursor);
-          cursor += 4;
-          if (cursor + size_t(kc) * 8 > anim_end) break;
-          ch.keys.reserve(kc);
-          for (uint32_t k = 0; k < kc; ++k) {
-            UiBgfAnimKey ak;
-            ak.time = f32_at(cursor);
-            ak.raw_value = u32_at(cursor + 4);
-            ak.value = f32_at(cursor + 4);
-            if (std::isfinite(ak.time) && ak.time > an.duration) an.duration = ak.time;
-            ch.keys.push_back(ak);
-            cursor += 8;
-          }
-          if (cursor + 4 > anim_end) {
-            an.key_count += kc;
-            an.channels.push_back(std::move(ch));
-            break;
-          }
-          const uint32_t ec = u32_at(cursor);
-          cursor += 4;
-          if (cursor + size_t(ec) * 4 > anim_end) {
-            an.key_count += kc;
-            an.channels.push_back(std::move(ch));
-            break;
-          }
-          ch.events.reserve(ec);
-          for (uint32_t e = 0; e < ec; ++e) {
-            ch.events.push_back(u32_at(cursor));
-            cursor += 4;
-          }
-          an.key_count += kc;
-          an.event_count += ec;
-          an.channels.push_back(std::move(ch));
-        }
-        out.animations.push_back(std::move(an));
-      }
-    }
+  // 4..7. The timeline: curves, actions, an empty table, slides. Each is a
+  // length-prefixed section whose records must consume the declaration
+  // exactly (the title checks the same sums: 82F26AC0, 82F26D90, 82F284A8);
+  // on any mismatch the timeline is dropped and the layout kept.
+  out.has_timeline = parse_bgf_timeline(data, cursor, header_counts, out);
+  if (!out.has_timeline) {
+    out.curves.clear();
+    out.actions.clear();
+    out.slides.clear();
   }
   return true;
 }
 
-float evaluate_bgf_track(const UiBgfTrack& track, float time_s, float fallback) {
-  if (track.keys.empty()) return fallback;
-  if (time_s <= track.keys.front().time) return track.keys.front().value;
-  if (time_s >= track.keys.back().time) return track.keys.back().value;
-  for (size_t i = 0; i + 1 < track.keys.size(); ++i) {
-    const auto& a = track.keys[i];
-    const auto& b = track.keys[i + 1];
-    if (time_s >= a.time && time_s <= b.time) {
-      const float span = b.time - a.time;
-      const float t = span > 1e-6f ? (time_s - a.time) / span : 0.0f;
-      return a.value + (b.value - a.value) * t;
+namespace {
+bool parse_bgf_timeline(std::span<const uint8_t> data, size_t cursor, const BgfCounts& n, UiBgfDocument& out) {
+  Reader r{data, cursor};
+  auto section = [&](size_t& end) {
+    const uint32_t declared = r.u32();
+    end = r.p + declared;
+    return !r.bad && end <= data.size();
+  };
+  auto ftime = [](uint32_t v) { return float(v); };  // times are stored as integer milliseconds
+  // Curves (82F26AC0): item, attribute, two flag bytes, a key count, then
+  // keys of (time ms int, value, c1 time int, c1 value, c2 time int, c2 value).
+  size_t end = 0;
+  if (!section(end)) return false;
+  out.curves.reserve(n.curves);
+  for (uint32_t i = 0; i < n.curves; ++i) {
+    UiBgfCurve c;
+    c.item = r.u32();
+    c.attr = r.u32() & 0x07FFFFFFu;
+    c.flag = r.u8() == 1;
+    c.dynamic = r.u8() == 1;
+    const uint16_t keys = uint16_t(r.u8() << 8 | r.u8());
+    if (r.bad || r.p + size_t(keys) * 24 > end) return false;
+    c.keys.reserve(keys);
+    for (uint16_t k = 0; k < keys; ++k) {
+      UiBgfCurveKey key;
+      key.time_ms = ftime(r.u32());
+      key.value = r.f32();
+      key.c1_time = ftime(r.u32());
+      key.c1_value = r.f32();
+      key.c2_time = ftime(r.u32());
+      key.c2_value = r.f32();
+      c.keys.push_back(key);
+    }
+    out.curves.push_back(std::move(c));
+  }
+  if (r.bad || r.p != end) return false;
+  // Actions (82F26D90): per owner item, events of (name hash, count) and
+  // their actions of (source, target, handler, argument tag, argument).
+  if (!section(end)) return false;
+  for (uint32_t i = 0; i < n.action_owners; ++i) {
+    const uint32_t owner = r.u32();
+    const uint32_t events = r.u32();
+    for (uint32_t e = 0; e < events && !r.bad; ++e) {
+      const uint32_t event = r.u32();
+      const uint32_t count = r.u32();
+      if (r.bad || r.p + size_t(count) * 20 > end) return false;
+      for (uint32_t a = 0; a < count; ++a) {
+        UiBgfAction act;
+        act.owner = owner;
+        act.event = event;
+        act.source = r.u32();
+        act.target = r.u32();
+        act.handler = r.u32();
+        act.arg_tag = r.u32();
+        act.arg = r.u32();
+        out.actions.push_back(act);
+      }
     }
   }
-  return track.keys.back().value;
+  if (r.bad || r.p != end) return false;
+  // The companion table between actions and slides is empty in every scene.
+  if (!section(end) || end != r.p) return false;
+  // Slides (82F284A8): a 16-byte name, the component's item, the flag byte,
+  // start and end ms, then per element (item, active byte, values of
+  // (tag, value), references of (kind byte: 0 curve, else action; enabled
+  // byte; u16 index)).
+  if (!section(end)) return false;
+  out.slides.reserve(n.slides);
+  for (uint32_t i = 0; i < n.slides; ++i) {
+    UiBgfSlide s;
+    if (!r.need(16)) return false;
+    const char* name = reinterpret_cast<const char*>(data.data() + r.p);
+    s.name.assign(name, strnlen(name, 16));
+    r.p += 16;
+    s.component = r.u32();
+    s.flags = r.u8();
+    s.start_ms = r.u32();
+    s.end_ms = r.u32();
+    const uint32_t tracks = r.u32();
+    if (r.bad || tracks > 65536) return false;
+    s.tracks.reserve(tracks);
+    for (uint32_t t = 0; t < tracks; ++t) {
+      UiBgfSlideTrack tr;
+      tr.item = r.u32();
+      tr.active = r.u8() != 0;
+      const uint32_t values = r.u32();
+      if (r.bad || r.p + size_t(values) * 8 > end) return false;
+      tr.values.reserve(values);
+      for (uint32_t v = 0; v < values; ++v) {
+        const uint32_t tag = r.u32();
+        tr.values.push_back({tag & 0x07FFFFFFu, uint8_t(tag >> 27), r.u32()});
+      }
+      const uint32_t refs = r.u32();
+      if (r.bad || r.p + size_t(refs) * 4 > end) return false;
+      tr.refs.reserve(refs);
+      for (uint32_t k = 0; k < refs; ++k) {
+        UiBgfSlideRef ref;
+        ref.action = r.u8() != 0;
+        ref.enabled = r.u8() != 0;
+        ref.index = uint16_t((r.u8() << 8 | r.u8()) & 0x3FFF);
+        tr.refs.push_back(ref);
+      }
+      s.tracks.push_back(std::move(tr));
+    }
+    out.slides.push_back(std::move(s));
+  }
+  if (r.bad || r.p != end) return false;
+  for (const auto& s : out.slides)
+    for (const auto& t : s.tracks)
+      for (const auto& ref : t.refs)
+        if (ref.index >= (ref.action ? out.actions.size() : out.curves.size())) return false;
+  return true;
+}
+}  // namespace
+
+float UiBgfValue::f() const {
+  float v = 0;
+  std::memcpy(&v, &raw, 4);
+  return v;
 }
 
-float evaluate_bgf_anim_channel(const UiBgfAnimChannel& ch, float time_s, float fallback) {
-  if (ch.keys.empty()) return fallback;
-  if (time_s <= ch.keys.front().time) return ch.keys.front().value;
-  if (time_s >= ch.keys.back().time) return ch.keys.back().value;
-  for (size_t i = 0; i + 1 < ch.keys.size(); ++i) {
-    const auto& a = ch.keys[i];
-    const auto& b = ch.keys[i + 1];
-    if (time_s >= a.time && time_s <= b.time) {
-      const float span = b.time - a.time;
-      const float t = span > 1e-6f ? (time_s - a.time) / span : 0.0f;
-      return a.value + (b.value - a.value) * t;
-    }
+float UiBgfValue::number() const { return ui_bgf_number(uint32_t(type) << 27, raw); }
+
+float ui_bgf_number(uint32_t tag, uint32_t raw) {
+  if (((tag >> 27) & 7u) == 1u) return float(int32_t(raw));
+  float v = 0;
+  std::memcpy(&v, &raw, 4);
+  return v;
+}
+
+std::vector<int> UiBgfDocument::slides_of(uint32_t component) const {
+  std::vector<int> out;
+  for (size_t i = 0; i < slides.size(); ++i)
+    if (slides[i].component == component) out.push_back(int(i));
+  return out;
+}
+
+int UiBgfDocument::find_slide(uint32_t component, std::string_view name) const {
+  for (size_t i = 0; i < slides.size(); ++i)
+    if (slides[i].component == component && slides[i].name == name) return int(i);
+  return -1;
+}
+
+int UiBgfDocument::item_of_object(uint32_t object) const {
+  for (size_t i = 0; i < items.size(); ++i)
+    if (items[i].kind >= 1 && items[i].kind <= 7 && items[i].value == object) return int(i);
+  return -1;
+}
+
+float evaluate_bgf_curve(const UiBgfCurve& c, float t) {
+  const auto& k = c.keys;
+  if (k.empty()) return 0.0f;
+  if (k.size() < 2) return k[0].value;
+  // The first key later than t (82F2EF08 walks from the first).
+  size_t i = 0;
+  while (i < k.size() && !(k[i].time_ms > t)) ++i;
+  if (i == 0) return k[0].value;
+  if (i == k.size()) return k.back().value;
+  const UiBgfCurveKey& a = k[i - 1];
+  const UiBgfCurveKey& b = k[i];
+  if (b.time_ms == a.time_ms) return b.value;
+  // With control times (none in the retail scenes) the title solves the
+  // time cubic for s (82F2E3B8); taken as linear here.
+  const float s = (t - a.time_ms) / (b.time_ms - a.time_ms);
+  const float u = 1.0f - s;
+  return u * u * u * a.value + 3.0f * a.c1_value * s * u * u + 3.0f * a.c2_value * s * s * u + s * s * s * b.value;
+}
+
+void restart_bgf_curve(UiBgfCurve& c, float start) {
+  if (c.keys.empty()) return;
+  UiBgfCurveKey& a = c.keys[0];
+  if (c.keys.size() < 2) {
+    a.value = start;
+    return;
   }
-  return ch.keys.back().value;
+  const float v1 = c.keys[1].value;
+  const float third = (v1 - a.value) * (1.0f / 3.0f);
+  float k1 = 0.0f, k2 = 0.0f;
+  if (third != 0.0f) {
+    k2 = (v1 - a.c2_value) / third;
+    k1 = (a.c1_value - a.value) / third;
+  }
+  const float nt = (v1 - start) * (1.0f / 3.0f);
+  a.c1_value = nt * k1 + start;
+  a.c2_value = v1 - nt * k2;
+  a.value = start;
 }
 
 std::vector<float> reflow_stacker(float origin, float step, int count) {

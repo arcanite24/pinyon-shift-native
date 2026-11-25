@@ -45,10 +45,11 @@ struct TitleMenu {
     Cue cue = Cue::kNone;
   };
 
-  // The profile step's length: Press Start's outro and the menu's intro
-  // (the scene's START_OUTRO and MENU_INTRO slides; their timelines are not
-  // decoded, Q137).
-  static constexpr double kProfileSeconds = 0.35;
+  // The profile step's length: the scene's Menu_Intro slide fades the logo
+  // out over 0..0.299 s and the menu in over 0.493..1.013 s; the rows take
+  // input from when the menu starts to show (inferred; no profile picker,
+  // Q137).
+  static constexpr double kProfileSeconds = 0.493;
 
   Phase phase = Phase::kPressStart;
   Popup popup = Popup::kNone;
