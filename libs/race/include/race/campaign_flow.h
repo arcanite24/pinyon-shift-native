@@ -205,6 +205,11 @@ class DialogQueue {
   void update(double dt, const DialogVoTelemetry& vo);
   void skip_current();
   void clear();
+  // Held, no cue starts (queued cues wait, and the one playing ends on
+  // time); released, the next one starts. The original speaks nothing over
+  // its rewards screens.
+  void set_held(bool held);
+  bool held() const { return held_; }
 
   bool active() const { return active_; }
   const DialogCue& current() const { return current_; }
@@ -246,6 +251,7 @@ class DialogQueue {
   bool vo_hold_active_ = false;
   double vo_ended_elapsed_ = -1.0;
   std::vector<DialogCue> queue_;
+  bool held_ = false;
 };
 
 // ---- UI4 Screen Transition State Machine ----

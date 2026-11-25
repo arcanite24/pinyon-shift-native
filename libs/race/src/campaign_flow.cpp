@@ -497,8 +497,14 @@ void DialogQueue::set_vo_telemetry(bool vo_playing, float vo_elapsed_s, float vo
   vo_active_trigger_.assign(active_trigger.begin(), active_trigger.end());
 }
 
+void DialogQueue::set_held(bool held) {
+  if (held_ == held) return;
+  held_ = held;
+  if (!held_ && !active_) begin_next();
+}
+
 void DialogQueue::begin_next() {
-  if (queue_.empty()) {
+  if (queue_.empty() || held_) {
     active_ = false;
     elapsed_ = 0.0;
     effective_duration_s_ = 0.0;

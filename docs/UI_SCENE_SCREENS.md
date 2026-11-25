@@ -289,6 +289,9 @@ flow files) as plain steps, with the timings measured on the captures;
   `H_MESSAGE_POPUP` when the event lent a car, then black and the load back
   to free roam. Head to heads, Rivals, showcases and Rally skip the steps
   the original skips (`race_flow::post_steps`).
+  The flow's only post-race speech (`radiodj.post_race`) comes before the
+  results, so the campaign's call-ins and objective tracker wait from the
+  finish until free roam (`DialogQueue::set_held`).
 - **Measured placements.** Every scene here rests at its intro start (the
   stackers and timelines are not run), so the drawn positions are offsets
   measured on `10_`..`18_*_orig.png`: the ticket's value tapes, the rival

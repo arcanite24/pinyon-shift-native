@@ -28,6 +28,9 @@ struct DrawContext {
   bool metric_units = true;
   bool suppress_subtitle = false;
   bool suppress_callin = false;
+  // The race's own screens (race_flow.h) are up: the objective tracker and
+  // the call-ins wait for free roam.
+  bool race_screens = false;
   const race::CareerCatalog* catalog = nullptr;
 };
 

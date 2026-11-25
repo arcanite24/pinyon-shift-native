@@ -244,6 +244,23 @@ void test_dialog_queue_ducking_and_waveforms() {
   check(q.duck_factor() < 0.05f, "audio ducking releases smoothly after speech");
 }
 
+// The race screens hold the queue from the finish to free roam: a post-race
+// call-in waits, then plays.
+void test_dialog_queue_held_over_race_screens() {
+  race::DialogQueue q;
+  race::DialogCue c;
+  c.id = "post_race";
+  c.subtitle = "Solid podium finish!";
+  c.duration_s = 3.0;
+  q.set_held(true);
+  check(q.enqueue(c), "a held queue still takes cues");
+  check(!q.active(), "a held queue starts no cue");
+  q.update(5.0);
+  check(!q.active() && q.queued_count() == 1, "the cue waits while held");
+  q.set_held(false);
+  check(q.active() && q.current().id == "post_race", "released, the waiting cue starts");
+}
+
 void test_save_load_roundtrip() {
   carview::CampaignDirector dir;
   dir.configure({}, "EN", true);
@@ -707,6 +724,7 @@ int main() {
   test_easing_and_transitions();
   test_minute0_to_endgame_state_machine();
   test_dialog_queue_ducking_and_waveforms();
+  test_dialog_queue_held_over_race_screens();
   test_save_load_roundtrip();
   test_director_first_time_career();
   test_director_cameras_cli_stages_and_ui_raster();
