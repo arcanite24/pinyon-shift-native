@@ -2395,11 +2395,15 @@ void phase_r2_5_audio_completeness_checks() {
     ep.set({3000.0, 0.0, 0.0, 0.0, audio::View::kFollow});
     std::vector<float> buf(960 * 2, 0.0f);
     ep.render(buf.data(), 960);
-    // Sudden full-throttle torque step excites drivetrain spring oscillation!
+    // A full-throttle torque step: the drivetrain_spring stage is omitted
+    // (SPEC-ENGINE-SOUND "Unknowns"), so the audio rpm stays on the rpm map.
     ep.set({3400.0, 1.0, 1.0, 0.0, audio::View::kFollow});
+    const double mapped = ep.audio_rpm();
     ep.render(buf.data(), 960);
+    ep.set({3400.0, 1.0, 1.0, 0.0, audio::View::kFollow});
+    CHECK(near(ep.audio_rpm(), mapped, 1e-9));
     CHECK(rms(buf) > 0.02);
-    CHECK(std::fabs(ep.drivetrain_spring_offset()) > 0.1 || ep.distortion_level() > 0.1);
+    CHECK(ep.distortion_level() > 0.1);
     for (float v : buf) CHECK(std::isfinite(v));
   }
 

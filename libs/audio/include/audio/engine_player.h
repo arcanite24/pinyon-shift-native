@@ -48,7 +48,7 @@ class EnginePlayer {
   void trigger_expander(int group = -1);
   // Triggers per-car ShiftVolumeScalar momentary volume boost on upshift/downshift.
   void trigger_shift_boost(bool upshift);
-  // Advances Expander & drivetrain-spring timers by `dt` seconds (also advanced
+  // Advances Expander & shift-boost timers by `dt` seconds (also advanced
   // automatically by render()).
   void advance_dsp(double dt);
 
@@ -65,7 +65,6 @@ class EnginePlayer {
   double load_peq_gain(size_t group) const;
   double focus_peq_gain() const { return cur_focus_peq_gain_; }
   double distortion_level() const { return cur_dist_level_; }
-  double drivetrain_spring_offset() const { return rpm_spring_offset_; }
   double shift_boost_gain() const { return std::clamp(1.0 + shift_boost_cur_, 0.2, 3.0); }
   bool intake_chuff_active() const { return chuff_active_; }
 
@@ -174,12 +173,7 @@ class EnginePlayer {
   double shift_boost_elapsed_s_ = 0.0;
   double shift_boost_dur_s_ = 0.0;
 
-  // Focus _ET.xml DSP state (drivetrain spring, FocusPEQ, Distortion, 3-band TrashDSP).
-  double spring_x1_ = 0.0, spring_v1_ = 0.0;
-  double spring_x2_ = 0.0, spring_v2_ = 0.0;
-  double rpm_spring_offset_ = 0.0;
-  double prev_spring_torque_ = 0.0;
-  bool have_spring_torque_ = false;
+  // Focus _ET.xml DSP state (FocusPEQ, Distortion, 3-band TrashDSP).
   Biquad focus_peq_l_, focus_peq_r_;
   double cur_focus_peq_gain_ = 1.0;
   double cur_dist_level_ = 0.0;

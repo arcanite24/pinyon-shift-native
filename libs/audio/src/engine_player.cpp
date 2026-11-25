@@ -181,32 +181,9 @@ void EnginePlayer::advance_dsp(double dt) {
     shift_boost_cur_ = 0.0;
   }
 
-  // Two-mode damped drivetrain spring oscillation (drivetrain_spring_*).
-  if (sound_.drivetrain_spring.enabled && sound_.drivetrain_spring.clamp > 0.0) {
-    const auto& ds = sound_.drivetrain_spring;
-    const double w1 = 2.0 * kPi * std::clamp(ds.spring_f1, 0.5, 45.0);
-    const double w2 = 2.0 * kPi * std::clamp(ds.spring_f2, 0.5, 60.0);
-    const double c1 = 2.0 * std::clamp(ds.damper_r1, 0.05, 10.0) * w1;
-    const double c2 = 2.0 * std::clamp(ds.damper_r2, 0.05, 10.0) * w2;
-    const int steps = std::max(1, std::min(64, int(std::ceil(clamped_dt / 0.002))));
-    const double h = clamped_dt / double(steps);
-    for (int s = 0; s < steps; ++s) {
-      const double a1 = -w1 * w1 * spring_x1_ - c1 * spring_v1_;
-      spring_v1_ += a1 * h;
-      spring_x1_ += spring_v1_ * h;
-      const double a2 = -w2 * w2 * spring_x2_ - c2 * spring_v2_;
-      spring_v2_ += a2 * h;
-      spring_x2_ += spring_v2_ * h;
-    }
-    if (!std::isfinite(spring_x1_) || !std::isfinite(spring_v1_)) spring_x1_ = spring_v1_ = 0.0;
-    if (!std::isfinite(spring_x2_) || !std::isfinite(spring_v2_)) spring_x2_ = spring_v2_ = 0.0;
-    const double lim = ds.clamp;
-    spring_x1_ = std::clamp(spring_x1_, -lim, lim);
-    spring_x2_ = std::clamp(spring_x2_, -lim, lim);
-    rpm_spring_offset_ = std::clamp((spring_x1_ + 0.45 * spring_x2_) * ds.scalar, -lim, lim);
-  } else {
-    rpm_spring_offset_ = 0.0;
-  }
+  // No drivetrain_spring stage. The engine tuning's drivetrain_spring_*
+  // values are parsed (engine_sound.cpp), but the game's two-spring update
+  // is not decoded, and SPEC-ENGINE-SOUND "Unknowns" says to omit it.
 }
 
 void EnginePlayer::set(const Update& u) {
@@ -219,20 +196,6 @@ void EnginePlayer::set(const Update& u) {
   const double pos_t = safe_clamp(u.pos_torque, 0.0, 1.0, 0.0);
   const double raw_neg = safe_finite(u.neg_torque, 0.0);
   const double neg_in = raw_neg < 0 ? std::clamp(raw_neg, -1.0, 0.0) : std::clamp(raw_neg, 0.0, 1.0);
-  const double signed_torque = pos_t - std::fabs(neg_in);
-  if (sound_.drivetrain_spring.enabled && sound_.drivetrain_spring.clamp > 0.0) {
-    if (have_spring_torque_) {
-      const double dtq = std::clamp(signed_torque - prev_spring_torque_, -2.0, 2.0);
-      if (std::fabs(dtq) > 0.02) {
-        const double impulse = dtq * std::min(sound_.drivetrain_spring.clamp, 600.0) * 6.0;
-        spring_v1_ += impulse;
-        spring_v2_ += impulse * 0.6;
-      }
-    }
-    prev_spring_torque_ = signed_torque;
-    have_spring_torque_ = true;
-    audio_rpm_ = std::clamp(audio_rpm_ + rpm_spring_offset_, 0.0, 32000.0);
-  }
   SoundInputs in{n, thr, pos_t, neg_in};
   const double global = safe_clamp(sound_.global_volume.eval(in, neg_raises) * sound_.engine_volume * master, 0.0, 16.0, 0.0);
   const size_t view = size_t(std::clamp(int(u.view), 0, kViews - 1));
