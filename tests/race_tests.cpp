@@ -31,6 +31,7 @@
 #include "race/rewards.h"
 #include "race/rivals.h"
 #include "race/route.h"
+#include "race/dls.h"
 #include "race/session.h"
 #include "race/showcase.h"
 #include "race/street_line.h"
@@ -750,15 +751,41 @@ void test_line_and_ground() {
   drive::Hit hit;
   CHECK(ground.raycast({0, 10, 50}, {0, -1, 0}, 20, hit) && near(hit.distance, 8, 1e-3));
   CHECK(!ground.raycast({0, 10, 0}, {0, -1, 0}, 20, hit));  // the circle's middle: no road
-  // Lanes: a car 5 m behind a slower one moves aside; with nothing ahead it returns.
-  std::vector<double> prog{100, 105};
-  std::vector<float> cross{0, 0}, speed{30, 20}, lane{0, 0};
-  std::vector<race::LaneParams> lp(2);
-  for (int k = 0; k < 60; ++k) race::plan_lanes(rl.line, prog, cross, speed, lp, 1, lane, 0.05);
-  CHECK(std::fabs(lane[0]) > 3.0 && std::fabs(lane[0]) <= 0.5 * 6 + 0.3 + 1e-4 && lane[1] == 0);
-  prog[1] = 90;
-  for (int k = 0; k < 80; ++k) race::plan_lanes(rl.line, prog, cross, speed, lp, 1, lane, 0.05);
-  CHECK(lane[0] == 0);
+  // The passing search: a car 10 m behind a slower one picks the first
+  // clear slot beside it (3.5 m: the covered slots end at 2.5 m, the 3 m
+  // slot pays half the next slot's time-to-collision cost); once past it,
+  // it returns to the line.
+  {
+    std::vector<race::DlsCar> cars(2);
+    cars[0].progress = 100, cars[0].speed = 30;
+    cars[1].progress = 110, cars[1].speed = 20, cars[1].kind = race::DlsCar::Kind::kHuman;
+    const race::DlsMeeting m = race::dls_predict(cars[0], 0, cars[1]);
+    CHECK(m.valid && m.hit && near(m.t, (10 - 4.6) / 10, 0.04));
+    float to = 0;
+    uint8_t side = 0;
+    const race::DlsSettings set;
+    const double c = race::dls_search(rl.line, cars, 0, 0, 1, m, 0, set, to, side);
+    CHECK(c < set.max_acceptable_cost && near(std::fabs(to), 3.5, 1e-4));
+    // Sticking to a side: the other side costs ChangePassSidesCost more.
+    float to2 = 0;
+    uint8_t side2 = 0;
+    race::dls_search(rl.line, cars, 0, 0, 1, m, 2, set, to2, side2);
+    CHECK(to2 > 0 && side2 == 2);
+    std::vector<race::DlsState> st(1);
+    std::vector<float> lane{0, 0}, cap{1e9f, 1e9f};
+    std::vector<race::LaneParams> lp(1);
+    for (int k = 0; k < 60; ++k) {
+      race::dls_update(rl.line, cars, 1, lp, set, 0.05, st, lane, cap);
+      cars[0].cross = lane[0];
+    }
+    CHECK(st[0].target == 1 && std::fabs(lane[0]) > 3.0 && std::fabs(lane[0]) <= 3.5 + 1e-4 && lane[1] == 0);
+    cars[1].progress = 80;
+    for (int k = 0; k < 200; ++k) {
+      race::dls_update(rl.line, cars, 1, lp, set, 0.05, st, lane, cap);
+      cars[0].cross = lane[0];
+    }
+    CHECK(st[0].target == -1 && lane[0] == 0);
+  }
 }
 
 // ---- the disc ----
@@ -1112,7 +1139,7 @@ int main() {
     CHECK(!race::event_uses_traffic(1));  // Festival
     CHECK(!race::event_uses_traffic(8));  // Showcase
 
-    // Race AI traffic avoidance: plan_lanes steers around traffic obstacle & caps speed if blocked.
+    // Race AI traffic avoidance: the passing search steers around a traffic car.
     {
       drive::RacingLine rl;
       for (int i = 0; i <= 40; ++i) {
@@ -1125,12 +1152,15 @@ int main() {
         rl.room_left.push_back(4.5f);
         rl.room_right.push_back(4.5f);
       }
-      double prog[1] = {50.0};
-      float cross[1] = {0.0f}, spd[1] = {35.0f}, lane[1] = {0.0f}, cap[1] = {1e9f};
+      race::DlsCar cars[2];
+      cars[0].progress = 50, cars[0].speed = 35;
+      cars[1].progress = 75, cars[1].cross = 0.5f, cars[1].speed = 13.4f, cars[1].kind = race::DlsCar::Kind::kTraffic;
+      float lane[1] = {0.0f}, cap[1] = {1e9f};
       race::LaneParams lp[1] = {{7.0f, 0.3f, 0.4f}};
-      race::TrafficObstacle obs[1] = {{75.0, 0.5f, 13.4f, false}};
-      for (int s = 0; s < 30; ++s) race::plan_lanes(rl, prog, cross, spd, lp, 1, lane, 1.0 / 60.0, 3.2, cap, obs);
-      CHECK(lane[0] < -1.0f);  // moved left around traffic car at cross = +0.5
+      race::DlsState st[1];
+      const race::DlsSettings set;
+      for (int s = 0; s < 30; ++s) race::dls_update(rl, cars, 1, lp, set, 1.0 / 60.0, st, lane, cap);
+      CHECK(st[0].target == 1 && lane[0] < -1.0f);  // moved left around the traffic car at cross = +0.5
     }
 
     // Airborne Showcases: all 7 PLANE_RACE events + XML parser + spring rubber-banding & timing checkpoints.
@@ -1613,7 +1643,8 @@ int main() {
       CHECK(turned_on);
     }
 
-    // R2-4: Passing_AggressionLevel affects plan_lanes() overtaking willingness/rate.
+    // The passing search on a road too narrow to pass: each failed search adds
+    // 5 to the frustration; past 1000 the car follows, trailing the car ahead.
     {
       drive::RacingLine rl;
       for (int i = 0; i <= 40; ++i) {
@@ -1623,19 +1654,22 @@ int main() {
         rl.dist.push_back(float(i * 10));
         rl.radius.push_back(1e6f);
         rl.speed.push_back(60.0f);
-        rl.room_left.push_back(5.5f);
-        rl.room_right.push_back(5.5f);
+        rl.room_left.push_back(0.5f);
+        rl.room_right.push_back(0.5f);
       }
-      double prog[2] = {50.0, 62.0};
-      float cross[2] = {0.0f, 0.0f}, spd[2] = {22.0f, 20.5f};
-      float lane_passive[2] = {0.0f, 0.0f}, lane_aggro[2] = {0.0f, 0.0f};
-      race::LaneParams lp_passive[2] = {{7.0f, 0.3f, 0.4f, 0.0f}, {7.0f, 0.3f, 0.4f, 0.0f}};
-      race::LaneParams lp_aggro[2] = {{7.0f, 0.3f, 0.4f, 1.0f}, {7.0f, 0.3f, 0.4f, 1.0f}};
-      for (int s = 0; s < 30; ++s) {
-        race::plan_lanes(rl, prog, cross, spd, lp_passive, 1, lane_passive, 1.0 / 60.0, 2.0);
-        race::plan_lanes(rl, prog, cross, spd, lp_aggro, 1, lane_aggro, 1.0 / 60.0, 2.0);
-      }
-      CHECK(std::fabs(lane_aggro[0]) > std::fabs(lane_passive[0]) + 0.5f);
+      race::DlsCar cars[2];
+      cars[0].progress = 50, cars[0].speed = 22;
+      cars[1].progress = 58, cars[1].speed = 20.5f;
+      float lane[1] = {0.0f}, cap[1] = {1e9f};
+      race::LaneParams lp[1] = {{7.0f, 0.3f, 0.4f, 0.5f}};
+      race::DlsState st[1];
+      const race::DlsSettings set;
+      for (int s = 0; s < 200; ++s) race::dls_update(rl, cars, 1, lp, set, 1.0 / 60.0, st, lane, cap);
+      CHECK(st[0].target == 1 && !st[0].following && near(st[0].frustration, 1000, 1e-3) && lane[0] == 0);
+      race::dls_update(rl, cars, 1, lp, set, 1.0 / 60.0, st, lane, cap);
+      CHECK(st[0].following);
+      // Trailing at 0.75 x 7 m: 8 m apart less the 4.6 m of the two cars is inside it.
+      CHECK(cap[0] < 20.5f + 0.1f);
     }
 
     // R2-4: Hand-of-God start-line launch grace (< 25 s && !has_launched), widened Street

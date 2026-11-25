@@ -117,6 +117,60 @@ bool load_ai_reset_rules(const std::filesystem::path& game_root, std::string_vie
   return parse_ai_reset_rules(text, set, out, error);
 }
 
+bool parse_ai_racing_set(std::string_view airacing_xml, std::string_view set, AiRacingSet& out,
+                         std::string* error) {
+  audio::XmlNode root;
+  std::string why;
+  if (!audio::parse_xml(airacing_xml, root, &why)) return fail(error, "AIRacing.xml: " + why);
+  const audio::XmlNode* settings = nullptr;
+  for (const auto& c : root.children)
+    if (audio::iequals(c.name, "Settings") && audio::iequals(c.attr("name"), set)) settings = &c;
+  if (!settings) return fail(error, "AIRacing.xml: no <Settings name=\"" + std::string(set) + "\">");
+  const audio::XmlNode* dls = settings->find("Batch/DLS");
+  const audio::XmlNode* pass = settings->find("Batch/PassingDriver");
+  const audio::XmlNode* ctl = settings->find("Batch/PredictiveControllerRLH");
+  if (!dls || !pass || !ctl)
+    return fail(error, "AIRacing.xml: set " + std::string(set) + " lacks DLS, PassingDriver or PredictiveControllerRLH");
+  std::string absent;
+  auto g = [&](const audio::XmlNode* n, const char* name, double& v) {
+    if (!n->has(name)) absent += (absent.empty() ? "" : ", ") + std::string(name);
+    else v = n->number(name, 0);
+  };
+  AiRacingSet r;
+  DlsSettings& d = r.dls;
+  g(dls, "TimeToCollsionCost", d.time_to_collision_cost);
+  g(dls, "OutOfBoundsCost", d.out_of_bounds_cost);
+  g(dls, "OffTrackCost", d.off_track_cost);
+  g(dls, "CarCost", d.car_cost);
+  g(dls, "OffLineCost", d.off_line_cost);
+  g(dls, "ChangePassSidesCost", d.change_pass_sides_cost);
+  g(dls, "HeadOnPassWrongSideCost", d.head_on_wrong_side_cost);
+  g(dls, "MaxAcceptableCost", d.max_acceptable_cost);
+  g(dls, "ExtraCarWidthAI", d.extra_width_ai);
+  g(dls, "ExtraCarWidthHuman", d.extra_width_human);
+  g(dls, "ExtraCarWidthTraffic", d.extra_width_traffic);
+  g(pass, "TimeBetweenDynamicLineUpdates", d.update_interval);
+  if (!pass->has("ShouldIgnoreCarsNotApproached")) absent += (absent.empty() ? "" : ", ") + std::string("ShouldIgnoreCarsNotApproached");
+  else d.ignore_cars_not_approached = audio::iequals(pass->attr("ShouldIgnoreCarsNotApproached"), "true");
+  if (!pass->has("LegalSideOfRoad")) absent += (absent.empty() ? "" : ", ") + std::string("LegalSideOfRoad");
+  else {
+    const std::string side = pass->attr("LegalSideOfRoad");
+    d.legal_side = audio::iequals(side, "Right") ? 2 : audio::iequals(side, "Left") ? 1 : 0;
+  }
+  g(ctl, "SpeedComputerSlopeModifier", r.slope_modifier);
+  g(ctl, "SpeedComputerSlopeCurvatureModifier", r.slope_curvature);
+  if (!absent.empty()) return fail(error, "AIRacing.xml: set " + std::string(set) + " lacks " + absent);
+  out = r;
+  return true;
+}
+
+bool load_ai_racing_set(const std::filesystem::path& game_root, std::string_view set, AiRacingSet& out,
+                        std::string* error) {
+  std::string text;
+  if (!read_member(game_root, "AIRacing.xml", text, error)) return false;
+  return parse_ai_racing_set(text, set, out, error);
+}
+
 bool parse_global_registry(std::string_view xml, std::map<std::string, double>& out, std::string* error) {
   std::map<std::string, double> r;
   auto attr = [](std::string_view elem, std::string_view name, std::string& v) {

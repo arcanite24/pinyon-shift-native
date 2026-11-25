@@ -296,6 +296,7 @@ class RaceView {
     race::DriverAi player_ai{};
     std::vector<size_t> next_checkpoint;
     std::vector<float> lanes;
+    std::vector<race::DlsState> dls;
     double ppx = 0.0, ppz = 0.0, wrong_way = 0.0;
     std::vector<double> split_times;
     double last_split_delta = 0.0, last_split_at = -1e9;
@@ -401,7 +402,12 @@ class RaceView {
   std::vector<float> last_planner_c_;
   std::vector<float> last_planner_b_;
   // Reusable per-step scratch buffers (zero heap allocations on the 120 Hz step path).
-  std::vector<race::TrafficObstacle> traffic_obs_scratch_;
+  std::vector<race::DlsCar> dls_cars_;
+  // SPEC-RACE-AI, Traffic between cars: the passing search's settings (the
+  // race's AIRacing.xml set) and each AI car's state.
+  race::DlsSettings dls_settings_;
+  std::vector<race::DlsState> dls_state_;
+  float slope_curvature_ = 0.75f;
   std::vector<drive::DraftCar> draft_pool_scratch_;
   std::vector<drive::DraftCar> draft_leaders_scratch_;
   std::vector<double> draft_leader_strength_scratch_;

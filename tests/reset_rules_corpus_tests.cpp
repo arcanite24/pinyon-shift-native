@@ -74,6 +74,27 @@ int main() {
     CHECK(near(r.slow_speed, 3) && near(r.slow_time, 25));
     CHECK(near(r.upside_down_speed, 3) && near(r.upside_down_time, 3) && near(r.upside_down_up_y, 0.3));
     CHECK(near(r.fell_low, -50) && near(r.cancel_moved_m, 20));
+    // WORLD-01: the set's passing search and slope weights.
+    race::AiRacingSet a;
+    error.clear();
+    const bool aok = race::load_ai_racing_set(root, set, a, &error);
+    if (!aok) std::printf("AIRacing.xml %s passing: %s\n", set, error.c_str());
+    CHECK(aok);
+    const auto& d = a.dls;
+    std::printf("AIRacing.xml %s DLS: TTC %.0f OOB %.0f off-track %.0f car %.0f off-line %.1f change sides %.0f "
+                "head-on %.0f max %.0f, widths %.2f/%.2f/%.2f, every %.2f s, legal side %d; slope %.2f curvature %.2f\n",
+                set, d.time_to_collision_cost, d.out_of_bounds_cost, d.off_track_cost, d.car_cost, d.off_line_cost,
+                d.change_pass_sides_cost, d.head_on_wrong_side_cost, d.max_acceptable_cost, d.extra_width_ai,
+                d.extra_width_human, d.extra_width_traffic, d.update_interval, d.legal_side, a.slope_modifier,
+                a.slope_curvature);
+    CHECK(near(d.time_to_collision_cost, 160) && near(d.off_line_cost, 3.3) && near(d.change_pass_sides_cost, 60));
+    CHECK(near(d.max_acceptable_cost, 400) && near(d.update_interval, 0.2) && d.ignore_cars_not_approached);
+    CHECK(near(d.extra_width_ai, 0.2) && near(d.extra_width_human, 0.3) && near(d.extra_width_traffic, 0.35));
+    const bool def = std::string(set) == "default";
+    CHECK(near(d.out_of_bounds_cost, def ? 400 : 40) && near(d.off_track_cost, def ? 400 : 8));
+    CHECK(near(d.car_cost, def ? 400 : 100) && near(d.head_on_wrong_side_cost, def ? 0 : 50));
+    CHECK(d.legal_side == (def ? 0 : 2) && near(a.slope_modifier, 1.0));
+    CHECK(near(a.slope_curvature, def ? 0.75 : std::string(set) == "freeroam" ? 1.0 : 0.5));
   }
   {
     // WORLD-05: the race boosts' registry values equal the struct's

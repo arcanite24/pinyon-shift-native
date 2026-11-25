@@ -2830,12 +2830,12 @@ Gate (seed 1, AI mean time / resets), oracle in brackets:
 
 | Event | Before (f55db691) | Neither assist | TCS + STM | TCS + STM + `ai_traction` |
 |---|---|---|---|---|
-| FR22 (161.5) | 172.6 / 1 | 194.4 / 2 | 192.7 / 2 | 188.9 / 2 |
-| FR16 (124.0) | 123.4 / 0 | 137.4 / 8 | 121.8 / 0 | 123.6 / 0 |
+| FR22 (161.5) | 172.6 / 0 | 194.4 / 0 | 192.7 / 2 | 188.9 / 2 |
+| FR16 (124.0) | 123.4 / 1 | 137.4 / 1 | 121.8 / 0 | 123.6 / 0 |
 | FR24 (110.8) | 108.6 / 0 | 109.0 / 0 | 108.4 / 0 | 108.9 / 0 |
-| FR01 (102.7) | 108.6 / 1 | 121.3 / 1 | 105.8 / 1 | 102.2 / 1 |
+| FR01 (102.7) | 108.6 / 1 | 121.3 / 8 | 105.8 / 1 | 102.2 / 1 |
 | NR02 (130.7) | 138.6 / 0 | 277.1 / 10 | 151.5 / 0 | 132.6 / 0 |
-| EXHIBITION_FEST_003 (179.0) | 193.8 / 0 | 197.9 / 10 | 185.0 / 0 | 209.9 / 4 |
+| EXHIBITION_FEST_003 (179.0) | 193.8 / 0 | 197.9 / 2 | 185.0 / 0 | 209.9 / 4 |
 
 TCS + STM ships; `ai_traction` stays only on the pure-pursuit path
 (`SHIFT_AI_STEER=pursuit`). NR02's rival lost 20 s of the 25 s it had
@@ -2858,3 +2858,60 @@ flags of an AI car in a race trace; and an AI car's speed against its
 plan on `FR22` and `NR02`, to tell the planner's tables from the car's
 handling.
 
+## Q123 (WORLD-01, not blocking): the passing search's interim parts
+
+The overtaking heuristic (`plan_lanes`) is replaced by the decoded
+dynamic-line search (`race::dls_update`, libs/race/src/dls.cpp). It runs
+on each set's `<DLS>` and `<PassingDriver>` values from AIRacing.xml:
+`default` for festival races, `streetrace` for street and traffic races,
+`freeroam` in free roam. Decoded and implemented:
+
+- 201 slots 0.5 m apart around the car's predicted place, with slots
+  1 to 199 scored;
+- the OUT and EDGE slots from the road's half width at the meeting point;
+- the cars alongside (within 3 m) covering every slot from their near
+  edge, and the predicted meetings covering the other car's lateral span
+  widened by ExtraCarWidth;
+- the cost sum (OutOfBounds, OffTrack, Car, OffLine weighted by
+  max(1, v x 3.3 / d), TimeToCollision on the slot and half its
+  neighbours, ChangePassSides, HeadOnPassWrongSide by LegalSideOfRoad);
+- the strict argmin, accepted below MaxAcceptableCost;
+- a search every 0.2 s, and on failure a hold, +5 frustration and a
+  retry next frame, with following past 1000;
+- the target as the first car met (a hit, or a miss under 0.2 m) among
+  those not yet passed;
+- the lane's rate as the offset over the distance to the meeting,
+  capped at 0.2 of the half width a waypoint (2 m).
+
+Interim (ours):
+
+- The predictions run along the shared line at constant speed. Each car
+  keeps its lateral place, and the own car moves to its lane over 1 s.
+  The boxes are aligned with the line, not the four corners.
+- A covered car is skipped when its near end is more than 1.5 own half
+  lengths from the car at the meeting. The decode reads "the along-track
+  positions differ by more than 1.5 x own half-length", which would skip
+  a car about to be rear-ended.
+- The target stays chosen until the car is past it or stops closing on
+  it, as if in the same lane.
+- After a pass, or with no target, the lane returns to the line at 1 m a
+  25 m (at least 0.3 m/s), never into a car alongside.
+- Following trails at 0.75 x TrailingDistance. With any car in both the
+  car's path and its lane, a speed cap brakes at 12 m/s^2 to 1 m behind
+  it.
+- Not modelled: the use-rate flag, the low-relative-velocity passes, the
+  starting-line passing state (`StartingLineMinSpeedForPassingState`,
+  `StartingLinePassingDynLineUpdateInterval`), the temperament's TTC
+  threshold and front margin, and ChiVariance.
+
+Gate (seed 1, AI mean time / resets / car-to-car contacts), plan_lanes
+then the search: FR22 192.7/2/11178 to 188.3/1/1857, FR16 121.8/0/450
+to 133.3/2/1467, FR24 108.4/0/819 to 109.1/0/1532, FR01 105.8/1/1576
+to 105.0/0/1367, NR02 151.5/0/56 to 135.0/0/121 (one AI: the change is
+the streetrace set's 0.5 slope weight), EXHIBITION_FEST_003
+185.0/0/750 to 193.9/2/1551. Contacts rise on four routes: the interim
+trailing lets a car close to a metre.
+
+Needed: the transition shape from the current lane to the chosen one,
+the return to the line after a pass, the trailing controller, and what
+the "along-track" test in the coverage compares.

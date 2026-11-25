@@ -471,6 +471,16 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     std::string ae;
     if (race::load_ai_reset_rules(root, set, rules, &ae)) sopt.ai_rules = rules;
     else std::fprintf(stderr, "race: note: no AI reset rules (%s): AI cars do not reset\n", ae.c_str());
+    // WORLD-01: the set's passing search and its speed computer's slope weight.
+    race::AiRacingSet ars;
+    std::string de;
+    if (race::load_ai_racing_set(root, set, ars, &de)) {
+      dls_settings_ = ars.dls;
+      slope_curvature_ = float(ars.slope_curvature);
+    } else {
+      dls_settings_ = {}, slope_curvature_ = 0.75f;
+      std::fprintf(stderr, "race: note: AIRacing.xml set %s not read (%s): the default set's values\n", set, de.c_str());
+    }
     sopt.ai_hand_of_god = false;
   }
   if (street_ || race::event_uses_traffic(event_.career_type)) {
@@ -482,7 +492,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   // SPEC-RACE-AI, Throttle: full gas below the plan; no slowing for
   // distance off the lane.
   field_ = std::make_unique<drive::AiField>(line_.line, size_t(cars),
-                                            drive::AiField::Options{.full_gas = true, .slip_rule = slip_rule()});
+                                            drive::AiField::Options{.full_gas = true, .slope_curvature = slope_curvature_, .slip_rule = slip_rule()});
   const double from = circuit_ ? line_.gate_progress - 0.5 * line_.lap_length : std::max(0.0, line_.gate_progress - 1500);
   cars_.clear();
   cars_.resize(size_t(cars - 1));
@@ -559,6 +569,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   }
   const size_t n = size_t(cars);
   states_.resize(n), inputs_.resize(n), progress_.resize(n), cross_.resize(n), speed_.resize(n), lanes_.assign(n, 0), caps_.assign(n, 1e9f);
+  dls_state_.assign(n, race::DlsState{});
   samples_.resize(n);
   lane_params_.resize(n);
   last_planner_c_.assign(n, -1.0f);
@@ -1088,7 +1099,17 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   // Lanes from the last step's progress, then the field's pass.
   for (size_t k = 0; k <= n; ++k)
     progress_[k] = field_->progress(k), cross_[k] = field_->cross_track(k), speed_[k] = states_[k].speed;
-  traffic_obs_scratch_.clear();
+  // The passing search's view of every car: the AI cars, the player, and
+  // the street traffic near the field projected onto the line.
+  dls_cars_.resize(n + 1);
+  for (size_t k = 0; k <= n; ++k) {
+    const drive::Vehicle& v = k < n ? *cars_[k].body : player;
+    race::DlsCar& d = dls_cars_[k];
+    d.progress = progress_[k], d.cross = cross_[k], d.speed = speed_[k];
+    d.half_width = float(0.5 * std::max(1.0, v.params().size.x));
+    d.half_length = float(0.5 * std::max(2.0, v.params().size.z));
+    d.kind = k < n ? race::DlsCar::Kind::kAi : race::DlsCar::Kind::kHuman;
+  }
   if (traffic && traffic->cars() && !traffic->cars()->empty()) {
     double min_p = progress_[0], max_p = progress_[0];
     for (size_t k = 1; k <= n; ++k)
@@ -1109,11 +1130,14 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
       const double room = std::min(12.0, room_val);
       if (std::fabs(cross) > room + 3.0) continue;
       const double dir_dot = std::sin(tc.heading) * std::sin(lh) + std::cos(tc.heading) * std::cos(lh);
-      traffic_obs_scratch_.push_back({tp, float(cross), float(tc.speed), dir_dot < 0.0});
+      race::DlsCar d;
+      d.progress = tp, d.cross = float(cross), d.speed = float(dir_dot < 0.0 ? -tc.speed : tc.speed);
+      d.kind = race::DlsCar::Kind::kTraffic;
+      dls_cars_.push_back(d);
     }
   }
-  race::plan_lanes(line_.line, progress_, cross_, speed_, lane_params_, n, lanes_, drive::Vehicle::kStep, 2.1, caps_,
-                   traffic_obs_scratch_);
+  if (dls_state_.size() < n) dls_state_.resize(n);
+  race::dls_update(line_.line, dls_cars_, n, lane_params_, dls_settings_, drive::Vehicle::kStep, dls_state_, lanes_, caps_);
   for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]), field_->set_speed_cap(k, caps_[k]);
   field_->drive(states_, inputs_);
   // Held on the grid in first until GO while passing player throttle through for launch revving.
@@ -1173,6 +1197,7 @@ void RaceView::reset_car_to_progress(drive::Vehicle& v, size_t i, double p, cons
   v.launch({x, y + 0.05, z}, h, speed);
   field_->set_lane(i, 0);
   if (i < lanes_.size()) lanes_[i] = 0;
+  if (i < dls_state_.size()) dls_state_[i] = race::DlsState{};
   session_->reset_done(i);
   ++resets_;
   std::printf("race: t %.2f s: %s reset to the line at %.0f m (%.1f m/s; %s)\n", session_->clock(), name_of(i).c_str(),
@@ -2544,6 +2569,7 @@ RaceView::RewindSnapshot RaceView::capture_rewind() const {
   snap.player_ai = player_ai_;
   snap.next_checkpoint = next_checkpoint_;
   snap.lanes = lanes_;
+  snap.dls = dls_state_;
   snap.ppx = ppx_;
   snap.ppz = ppz_;
   snap.wrong_way = wrong_way_;
@@ -2587,6 +2613,7 @@ void RaceView::restore_rewind(const RewindSnapshot& s, bool mark_player_lap_dirt
   player_ai_ = s.player_ai;
   next_checkpoint_ = s.next_checkpoint;
   lanes_ = s.lanes;
+  dls_state_ = s.dls;
   ppx_ = s.ppx;
   ppz_ = s.ppz;
   wrong_way_ = s.wrong_way;

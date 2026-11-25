@@ -5,6 +5,7 @@ add_library(shift_race STATIC
   src/difficulty.cpp
   src/race_line.cpp
   src/session.cpp
+  src/dls.cpp
   src/reset_rules.cpp
   src/rewards.cpp
   src/showcase.cpp
