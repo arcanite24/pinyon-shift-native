@@ -42,6 +42,8 @@ class CutsceneRuntime {
   // Scripted fades (FtcFade); they also advance in update().
   void fade(const race::FtcFade& f);
   void step_fades(double dt);
+  // Drops the scripted fade (and the black a cut or fade-out left).
+  void clear_fade() { fade_on_ = false; }
   // The overlay to draw over the frame: the scripted fade and the
   // cutscene's own fades, whichever covers more.
   cutscene::Overlay overlay() const;

@@ -117,6 +117,7 @@ class CampaignDirector {
   race::FirstTimeCareer ftc_;
   FtcFrameInput ftc_in_;
   bool ftc_resume_pending_ = false;
+  race::FtcStage ftc_last_stage_ = race::FtcStage::kNotStarted;
   race::FtcStage ftc_resume_stage_ = race::FtcStage::kNotStarted;
   bool ftc_confirm_ = false;
   bool ftc_race_finished_ = false;

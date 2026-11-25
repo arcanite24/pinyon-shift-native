@@ -242,7 +242,12 @@ void CampaignDirector::handle_cutscene_events(const std::vector<const cutscene::
 
 race::CampaignAction CampaignDirector::apply_ftc(const race::FtcCommands& c, FmvPlayer& fmv, AudioHost* audio) {
   race::CampaignAction act;
+  // A black out lasts until the next fade, cutscene or movie, or until the
+  // flow moves to a stage that scripts no fade of its own (interim, Q60 e).
+  if (ftc_.stage() != ftc_last_stage_ && c.fades.empty()) cutscenes_.clear_fade();
+  ftc_last_stage_ = ftc_.stage();
   for (const auto& f : c.fades) cutscenes_.fade(f);
+  if (!c.play_movie.empty()) cutscenes_.clear_fade();
   if (c.stop_cutscene) cutscenes_.stop();
   if (!c.play_cutscene.empty()) {
     cutscenes_.ensure_loaded(game_root_);
