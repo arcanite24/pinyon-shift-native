@@ -3373,6 +3373,16 @@ Interim (ours):
   `SoloLapping_TorqueBoostCheatLevel`) are not loaded. They would raise
   the level to 1 + 0.025 n and turn on the heavy-braking term. Both are
   0 here.
+- The level is the planner's C. That covers AISkills' cornering skill,
+  the rubber bands' mistakes, and the start and nemesis boosts' skill
+  factor. The decode confirmed only the nemesis `SkillBoostFactor` as
+  feeding the level, so the other paths are assumed. A boosted car
+  reaches 1.25, where the cap is 1.0: the term reaches 1.0 on FR22 seed
+  2, and is above 0.19 on 1.7 % of the AI's samples. The decode also
+  found a rule that caps every skill at 0.93 above a car quantity it
+  could not read. That would close the term for every car it applies to.
+- The AI grip terms add up. The dirt term and this one are summed and
+  then clamped to [0, 2], as in the title.
 
 Gate: the 3-seed mean of each seed's AI mean time, in seconds, with the
 oracle in brackets. f55db691 is before WORLD-02/03, and the slip rule is
@@ -3380,18 +3390,33 @@ oracle in brackets. f55db691 is before WORLD-02/03, and the slip rule is
 
 | Event | f55db691 | Slip rule | Controller |
 |---|---|---|---|
-| FR22 (161.5) | 173.1 | 192.5 | 163.8 |
-| FR16 (124.0) | 121.9 | 127.3 | 122.0 |
-| FR24 (110.8) | 108.4 | 109.3 | 108.9 |
-| FR01 (102.7) | 103.6 | 102.3 | 102.1 |
-| NR02 (130.7) | 153.5 | 139.6 | 150.0 |
-| EXHIBITION_FEST_003 (179.0) | 191.0 | 194.2 | 183.6 |
+| FR22 (161.5) | 173.1 | 192.5 | 163.0 |
+| FR16 (124.0) | 121.9 | 127.3 | 122.6 |
+| FR24 (110.8) | 108.4 | 109.3 | 109.0 |
+| FR01 (102.7) | 103.6 | 102.3 | 101.9 |
+| NR02 (130.7) | 153.5 | 139.6 | 179.3 |
+| EXHIBITION_FEST_003 (179.0) | 191.0 | 194.2 | 186.6 |
 
 Car-to-car contacts per race were as high as 33,151 under the slip rule
-(FR22, seed 2). Under the controller they are 150 to 631. Most of the slip rule's count came from cars piling up
-behind the line's end after finishing. NR02's rival is the one car that
-still slides: on seed 1 the Challenger power-slides at about 40 m/s and
-spins.
+(FR22, seed 2). Most of that count came from cars piling up behind the
+end of the line after finishing. Under the controller, contacts are 150
+to 831 per race.
+
+NR02 is the event the controller misses. Its one rival, the Challenger,
+power-slides at about 40 m/s on full gas in 3rd and spins. The race
+turns on whether it crashes, so 3 seeds are not enough. Over seeds 1 to
+9:
+
+| Build | NR02 mean |
+|---|---|
+| f55db691 | 158.2 s |
+| Controller, grip terms multiplied (e0e89cc0) | 165.5 s |
+| Controller, grip terms summed | 175.0 s |
+
+The slip rule's 0.29 beta (139.6 s over 3 seeds) held the car straight.
+The title has no such term, so what keeps its Challenger straight is
+still to find: the hold throttle, the G table, or the car's own
+physics.
 
 Needed:
 

@@ -1673,8 +1673,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
         (a == 1 && handbrake_shaped_ > 0.0) ? lerp(1.0, surf[i].handbrake_grip, handbrake_shaped_) : 1.0;
     // The AI's grip factor on dirt (an off-road surface): the rear's
     // excess over 1 is 1.1 x the front's.
-    const double dirt = ai_ && dirt_rule_ ? std::clamp(1 + (a == 0 ? 0.5 : 0.55) * dirt_k_, 0.0, 2.0) : 1.0;
-    const double ai = ai_grip_[a] * dirt;
+    // The terms add up (the steering-saturation term arrives in
+    // ai_grip_), and the sum is clamped to [0, 2].
+    const double dirt = ai_ && dirt_rule_ ? (a == 0 ? 0.5 : 0.55) * dirt_k_ : 0.0;
+    const double ai = std::clamp(ai_grip_[a] + dirt, 0.0, 2.0);
     // Braking friction on a slowed wheel, else the speed-blended accel
     // scale (SPEC-CAR-PHYSICS, Brakes: Braking friction).
     double kx = grip[i] * rear * hb_grip * ai * p.long_scale[a] * p.long_misc_scale * p.tire_mod_friction_scale *
