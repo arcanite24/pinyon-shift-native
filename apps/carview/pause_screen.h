@@ -61,6 +61,10 @@ struct PauseScreenHud {
   std::string band_texture;  // WRISTBANDS/<COLOUR>; empty: the scene's
 };
 
+// Binds a scene's PlayerBar (the pause menu's, shared by H_EVENT_SUMMARY):
+// the wristband objective, the car and its class, the credits.
+void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& band_texture = {});
+
 // Fills `out` from the menu (the rows' texts resolved now).
 void fill_pause_screen(const PauseMenu& menu, double now, PauseScreenHud& out);
 

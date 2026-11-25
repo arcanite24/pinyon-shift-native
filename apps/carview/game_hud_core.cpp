@@ -1,6 +1,7 @@
 #include "game_hud_internal.h"
 #include "hud_screen.h"
 #include "pause_screen.h"
+#include "race_screens.h"
 #include "touch_controls.h"
 
 #include <cstdlib>
@@ -995,7 +996,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   // stack concurrent cards upward so zero banners ever overlap!
   float bottom_lift = compute_subtitle_bottom_lift(st.subtitle_active, st.subtitle_lines, st.subtitle_box_h_canvas);
   // The driving HUD hides under a menu (SPEC-UI-LAYOUTS d).
-  if (st.driving && !menu) {
+  if (st.driving && !menu && !st.event_summary) {
     const bool show_tags = st.hud.names_over_cars && !st.name_tags.empty() &&
                            (!st.race || st.race->phase == RaceHud::kRacing);
     const WorldMarkerHud* active_wm = (st.world_marker && st.world_marker->visible && !st.race) ? st.world_marker : nullptr;
@@ -1021,12 +1022,17 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       if (used > 0.0f) bottom_lift += used + 8.0f;
     }
     if (st.skills && st.hud.popularity_skills &&
-        !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open)))
+        !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open ||
+                      (st.race->phase == RaceHud::kGrid && st.race->screen != race_flow::Screen::kNone))))
       if (!draw_hud_skills(l, *st.skills, g.w, g.h, g.s, st.time)) skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
       const RaceHud& r = *st.race;
       if (r.phase != RaceHud::kFinished) reset_post_race_page_timer();
-      if (r.phase == RaceHud::kGrid) event_card(l, r, g);
+      // The original's screens around the race from their scenes (race_screens.h);
+      // the results table (X on the banner) keeps its own page.
+      const bool table = r.screen == race_flow::Screen::kFinishBanner && r.results_table;
+      if (r.screen != race_flow::Screen::kNone && !table && draw_race_screen(l, st, r, w, h)) {
+      } else if (r.phase == RaceHud::kGrid) event_card(l, r, g);
       else if (r.phase == RaceHud::kFinished) results(l, r, st, g);
       else {
         race_hud(l, r, g, st.hud);
@@ -1046,7 +1052,8 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     } else if (popup_card(l, st, g, bottom_lift)) {
       bottom_lift += 72.0f;
     }
-    const bool hide_dial = st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open);
+    const bool hide_dial = st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open ||
+                                       (st.race->phase == RaceHud::kGrid && st.race->screen != race_flow::Screen::kNone));
     if (!hide_dial) {
       if (st.speedo_mode == 1) render_digital_dial(l, st, g);
       else if (st.speedo_mode == 0) dial(l, st, g);
@@ -1091,6 +1098,8 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   // The pause menu from its own scene (925_PAUSE_MENU and the screens it
   // opens); the shared menu panel when the scene is missing.
   if (st.pause_screen && draw_pause_screen(l, st, *st.pause_screen, w, h)) return;
+  // The event summary at a marker (H_EVENT_SUMMARY).
+  if (st.event_summary && draw_event_summary(l, st, *st.event_summary, w, h)) return;
   if (menu) menu_panel(l, st, g);
   if (menu && st.career) career_board(l, *st.career, w, h, s);
 }
